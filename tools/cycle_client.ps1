@@ -4,7 +4,7 @@
 # 내 서버가 답하면 목록에 뜬다.
 #
 #   .\tools\cycle_client.ps1 -Sp (Resolve-Path .\tools) -Out C:\경로\shot.png
-param([string]$Sp, [string]$Out, [switch]$KeepAlive)
+param([string]$Sp, [string]$Out, [switch]$KeepAlive, [switch]$NoKill)
 $ErrorActionPreference = 'Continue'
 $dir = "C:\Program Files\GOG Galaxy\Games\Nox"
 $script:log = @()
@@ -15,8 +15,11 @@ function Step($name, $ok, $detail) {
   return [bool]$ok
 }
 
-Get-Process -Name Game -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
+if (-not $NoKill) {
+  Get-Process -Name Game -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Seconds 2
+}
+$before = @(Get-Process -Name Game -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
 $t0 = Get-Date
 
 # 조준 계수 3.06 은 마우스 가속이 꺼진 상태의 값이다.

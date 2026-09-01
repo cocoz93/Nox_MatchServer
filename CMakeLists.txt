@@ -16,6 +16,9 @@ target_include_directories(nox_proto PUBLIC server/include)
 add_executable(nox_server server/src/main.cpp)
 target_link_libraries(nox_server PRIVATE nox_proto)
 
+add_executable(nox_proxy server/src/proxy.cpp)
+target_link_libraries(nox_proxy PRIVATE nox_proto)
+
 add_executable(proto_test server/tests/proto_test.cpp)
 target_link_libraries(proto_test PRIVATE nox_proto)
 
