@@ -1,4 +1,4 @@
-﻿param([string]$Sp, [switch]$KeepAlive)
+﻿param([string]$Sp, [switch]$KeepAlive, [string[]]$GameArgs = @('-serveronly'), [int]$Port = 18590)
 $ErrorActionPreference = 'Continue'
 $dir = "C:\Program Files\GOG Galaxy\Games\Nox"
 $script:log = @()
@@ -15,7 +15,7 @@ $t0 = Get-Date
 $accelOff = $false
 try { & "$Sp\mouseaccel.ps1" -Off | Out-Null; $accelOff = $true } catch { }
 [void](Step "마우스 가속 끄기" $accelOff "")
-$p = Start-Process -FilePath "$dir\Game.exe" -ArgumentList "-serveronly" -WorkingDirectory $dir -PassThru
+$p = Start-Process -FilePath "$dir\Game.exe" -ArgumentList $GameArgs -WorkingDirectory $dir -PassThru
 Start-Sleep -Seconds 26
 if (-not (Step "게임 기동" (-not $p.HasExited) "PID=$($p.Id)")) { if ($accelOff) { & "$Sp\mouseaccel.ps1" -Restore | Out-Null }; return }
 $steps = @(
@@ -42,13 +42,13 @@ if ($clickOk) {
   for ($t = 0; $t -lt 12; $t++) {
     Start-Sleep -Seconds 2
     $waited += 2
-    if (Get-NetUDPEndpoint -LocalPort 18590 -OwningProcess $p.Id -ErrorAction SilentlyContinue) { $bound = $true; break }
+    if (Get-NetUDPEndpoint -LocalPort $Port -OwningProcess $p.Id -ErrorAction SilentlyContinue) { $bound = $true; break }
   }
 }
-[void](Step "UDP 18590 개방" $bound "대기 $waited 초")
+[void](Step "UDP $Port 개방" $bound "대기 $waited 초")
 $got = $false
 if ($bound) {
-  $r = & "$Sp\probe.ps1" -Targets @('127.0.0.1') -WaitMs 3000 2>&1
+  $r = & "$Sp\probe.ps1" -Targets @('127.0.0.1') -Port $Port -WaitMs 3000 2>&1
   $txt = ($r | Out-String)
   $got = ($txt -match 'REPLY #1') -and ($txt -match 'len=82')
   [void](Step "프로브 왕복 82바이트" $got "")
