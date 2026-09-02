@@ -1,6 +1,6 @@
 ﻿# 게임 창을 잡고 커서를 목표로 옮긴 뒤(선택적으로) 클릭하고 화면을 찍는다.
 # Cx,Cy 는 게임 화면 1280x960 기준 좌표. Gain 은 실측 계수(화면좌표 = 보낸값 x Gain).
-param([int]$Pid_, [int]$Cx, [int]$Cy, [string]$Out, [switch]$Click, [double]$Gain = 3.06)
+param([int]$Pid_, [int]$Cx, [int]$Cy, [string]$Out, [switch]$Click, [double]$Gain = 3.06, [switch]$NoActivate, [switch]$NoHome)
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
 using System;
@@ -66,13 +66,21 @@ $cr = New-Object Drv+RECT
 [void][Drv]::GetClientRect($h, [ref]$cr)
 $cw = $cr.Right - $cr.Left; $ch = $cr.Bottom - $cr.Top
 # 1) 창 안 빈 곳을 실제로 눌러 게임이 마우스를 다시 잡게 한다 (이걸 빼면 이후 입력이 전부 무시됨)
-[void][Drv]::SetCursorPos(($pt.X + 100), ($pt.Y + 900))
-Start-Sleep -Milliseconds 250
-[Drv]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 90
-[Drv]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 900
+#    ⚠ 이 클릭은 팝업을 닫는다. 팝업 위를 눌러야 할 때는 -NoActivate 로 건너뛴다
+#      (앞선 호출로 이미 마우스를 잡고 있을 때만 안전하다)
+if (-not $NoActivate) {
+  [void][Drv]::SetCursorPos(($pt.X + 100), ($pt.Y + 900))
+  Start-Sleep -Milliseconds 250
+  [Drv]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 90
+  [Drv]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 900
+}
 # 2) 커서를 좌상단에 붙여 기준점을 만든다
-for ($i = 0; $i -lt 5; $i++) { [Drv]::mouse_event(0x0001, -3000, -3000, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 100 }
-Start-Sleep -Milliseconds 300
+#    ⚠ 마우스가 팝업 밖으로 나가면 팝업이 닫힌다. 그럴 때는 -NoHome 으로 건너뛰고
+#      Cx,Cy 를 "지금 자리에서의 이동량"으로 준다
+if (-not $NoHome) {
+  for ($i = 0; $i -lt 5; $i++) { [Drv]::mouse_event(0x0001, -3000, -3000, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 100 }
+  Start-Sleep -Milliseconds 300
+}
 # 3) 목표까지 잘게 나눠 이동
 $rx = [int]([Math]::Round($Cx / $Gain)); $ry = [int]([Math]::Round($Cy / $Gain))
 $n = [Math]::Max([Math]::Ceiling($rx / 4.0), [Math]::Ceiling($ry / 4.0)); if ($n -lt 1) { $n = 1 }

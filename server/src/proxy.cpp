@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <share.h>
 #include <map>
 #include <string>
 #include <vector>
@@ -134,7 +135,9 @@ int main(int argc, char** argv) {
     }
 
     if (!dumpPath.empty()) {
-        if (fopen_s(&g_dump, dumpPath.c_str(), "wb") != 0 || !g_dump) {
+        // 돌고 있는 동안에도 남이 읽을 수 있게 공유해서 연다
+        g_dump = _fsopen(dumpPath.c_str(), "wb", _SH_DENYWR);
+        if (!g_dump) {
             std::printf("기록 파일을 열지 못했다: %s\n", dumpPath.c_str());
             return 1;
         }
