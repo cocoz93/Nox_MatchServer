@@ -263,10 +263,11 @@ int main(int argc, char** argv) {
             if (g_ownAccept) {
                 // ★ 수락은 재전송된다. 재전송분도 평문이라 keyed 뒤에 와도 번역하면 안 된다.
                 //   무늬(80 00 1f 00 01 01 00 00 00 키)로 알아본다.
+                // 5번은 플레이어 번호다 (첫째 0x01, 둘째 0x02 …). 고정으로 보면 안 된다.
                 const bool looksAccept =
                     (n == 10 && buf[0] == 0x80 && buf[1] == 0x00 &&
                      buf[2] == static_cast<uint8_t>(nox::Op::ACCEPTED) &&
-                     buf[3] == 0x00 && buf[4] == 0x01 && buf[5] == 0x01);
+                     buf[3] == 0x00 && buf[4] == 0x01 && buf[5] != 0x00);
                 if (looksAccept) {
                     kv.second.hostKey = buf[9];
                     kv.second.myKey = g_myKey;
@@ -274,7 +275,8 @@ int main(int argc, char** argv) {
                     // ★ 호스트 것을 고쳐 쓰지 않고 10바이트를 처음부터 내가 조립한다.
                     //   실측 3세션에서 키 자리(9번)만 다르고 나머지는 늘 같았다.
                     const uint8_t mine[10] = {0x80, 0x00, 0x1f, 0x00, 0x01,
-                                              0x01, 0x00, 0x00, 0x00, kv.second.myKey};
+                                              buf[5],   // 플레이어 번호는 호스트 것을 그대로 쓴다
+                                              0x00, 0x00, 0x00, kv.second.myKey};
                     std::memcpy(buf, mine, sizeof(mine));
                     n = static_cast<int>(sizeof(mine));
                     if (g_dump) {
