@@ -72,7 +72,18 @@ FILE* g_dump = nullptr;
 bool g_quiet = false;
 bool g_ownAccept = false;     // U3.1 — 접속 수락을 내가 만들어 보낸다
 uint8_t g_myKey = 0x42;       // 그때 클라에게 주는 XOR 키 (호스트 것과 일부러 다르게)
+std::string g_mapName;        // U3.2 — 맵 지정(0x2b) 의 이름 칸을 내가 쓴다
 std::map<uint8_t, unsigned long long> g_opCount;   // U2.7 에서 쓸 오프코드 집계
+
+// U3.2 — 맵 이름 칸을 내 것으로 바꾼다. 길이가 같을 때만(뒤 칸이 밀리면 안 된다).
+// 맵 이름은 두 군데에 실린다: 0x2b 의 3번, 0xb8 의 10번.
+bool PatchMapName(uint8_t* p, int n, int off, const std::string& name) {
+    if (n < off + static_cast<int>(name.size()) + 1) return false;
+    const size_t was = std::strlen(reinterpret_cast<char*>(p) + off);
+    if (was != name.size()) return false;
+    std::memcpy(p + off, name.data(), name.size());
+    return true;
+}
 
 void Log(const char* dir, const sockaddr_in& who, const uint8_t* p, int n) {
     const uint8_t op = (n >= static_cast<int>(nox::kHeaderSize)) ? p[2] : 0xFF;
@@ -138,6 +149,7 @@ int main(int argc, char** argv) {
         else if (a == "--dump" && i + 1 < argc) dumpPath = argv[++i];
         else if (a == "--quiet") g_quiet = true;
         else if (a == "--own-accept") g_ownAccept = true;
+        else if (a == "--map" && i + 1 < argc) g_mapName = argv[++i];
         else if (a == "--my-key" && i + 1 < argc) g_myKey = static_cast<uint8_t>(std::strtoul(argv[++i], nullptr, 0));
         else { std::printf("모르는 인자: %s\n", a.c_str()); return 2; }
     }
@@ -264,8 +276,33 @@ int main(int argc, char** argv) {
                         std::printf("[수락을 내 것으로 — 호스트키 0x%02x -> 내 키 0x%02x]\n",
                                     kv.second.hostKey, kv.second.myKey);
                 } else if (kv.second.keyed) {
-                    const uint8_t d = static_cast<uint8_t>(kv.second.hostKey ^ kv.second.myKey);
-                    if (d) for (int i = 0; i < n; ++i) buf[i] ^= d;
+                    // ★ 호스트 키로 풀어 평문으로 본다 → 손댈 것을 손대고 → 내 키로 다시 잠근다.
+                    //   (예전 코드는 잠긴 상태의 buf[2] 를 오프코드로 착각했다)
+                    if (kv.second.hostKey)
+                        for (int i = 0; i < n; ++i) buf[i] ^= kv.second.hostKey;
+
+                    // U3.2 — 맵 지정은 내가 쓴다. 이름이 실리는 자리는 두 군데다.
+                    if (!g_mapName.empty() && n > 12) {
+                        int off = -1;
+                        if (buf[2] == static_cast<uint8_t>(nox::Op::USE_MAP)) off = 3;
+                        else if (buf[2] == 0xb8) off = 10;   // 맵 정보(90바이트). 이름 10번
+                        if (off >= 0) {
+                            const bool ok = PatchMapName(buf, n, off, g_mapName);
+                            if (g_dump) {
+                                std::fprintf(g_dump, "  [맵 이름 %s — 0x%02x 의 %d번 → %s]\n",
+                                             ok ? "바꿈" : "못 바꿈(길이 다름)", buf[2], off,
+                                             g_mapName.c_str());
+                                std::fflush(g_dump);
+                            }
+                            if (!g_quiet)
+                                std::printf("[맵 이름 %s — 0x%02x 의 %d번 → %s]\n",
+                                            ok ? "바꿈" : "못 바꿈(길이 다름)", buf[2], off,
+                                            g_mapName.c_str());
+                        }
+                    }
+
+                    if (kv.second.myKey)
+                        for (int i = 0; i < n; ++i) buf[i] ^= kv.second.myKey;
                 }
             }
             Log("S->C", kv.second.addr, buf, n);
