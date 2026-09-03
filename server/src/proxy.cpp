@@ -73,6 +73,7 @@ bool g_quiet = false;
 bool g_ownAccept = false;     // U3.1 — 접속 수락을 내가 만들어 보낸다
 uint8_t g_myKey = 0x42;       // 그때 클라에게 주는 XOR 키 (호스트 것과 일부러 다르게)
 std::string g_mapName;        // U3.2 — 맵 지정(0x2b) 의 이름 칸을 내가 쓴다
+std::string g_chatText;       // U3.3 — 방송되는 채팅 글자를 내 것으로 바꾼다
 std::map<uint8_t, unsigned long long> g_opCount;   // U2.7 에서 쓸 오프코드 집계
 
 // U3.2 — 맵 이름 칸을 내 것으로 바꾼다. 길이가 같을 때만(뒤 칸이 밀리면 안 된다).
@@ -150,6 +151,7 @@ int main(int argc, char** argv) {
         else if (a == "--quiet") g_quiet = true;
         else if (a == "--own-accept") g_ownAccept = true;
         else if (a == "--map" && i + 1 < argc) g_mapName = argv[++i];
+        else if (a == "--chat" && i + 1 < argc) g_chatText = argv[++i];
         else if (a == "--my-key" && i + 1 < argc) g_myKey = static_cast<uint8_t>(std::strtoul(argv[++i], nullptr, 0));
         else { std::printf("모르는 인자: %s\n", a.c_str()); return 2; }
     }
@@ -299,6 +301,22 @@ int main(int argc, char** argv) {
                                             ok ? "바꿈" : "못 바꿈(길이 다름)", buf[2], off,
                                             g_mapName.c_str());
                         }
+                    }
+
+                    // U3.3 — 방송 채팅(0xa8)의 글자는 맨 뒤에 있다. 길이도 내가 정한다.
+                    //   배치: 머리 3 + 10바이트 칸 + 글자(13번부터, NUL 종료)
+                    if (!g_chatText.empty() && n > 13 && buf[2] == 0xa8) {
+                        const int room = static_cast<int>(sizeof(buf)) - 14;
+                        const int len = static_cast<int>(
+                            g_chatText.size() < static_cast<size_t>(room) ? g_chatText.size() : room);
+                        std::memcpy(buf + 13, g_chatText.data(), len);
+                        buf[13 + len] = 0;
+                        n = 13 + len + 1;
+                        if (g_dump) {
+                            std::fprintf(g_dump, "  [채팅을 내 것으로 — %s]\n", g_chatText.c_str());
+                            std::fflush(g_dump);
+                        }
+                        if (!g_quiet) std::printf("[채팅을 내 것으로 — %s]\n", g_chatText.c_str());
                     }
 
                     if (kv.second.myKey)
