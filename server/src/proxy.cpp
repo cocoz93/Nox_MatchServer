@@ -34,6 +34,10 @@ struct Peer {
     sockaddr_in addr{};           // 클라 주소
     unsigned long long toHost = 0;
     unsigned long long toClient = 0;
+    // U3.1 — 접속 수락을 내가 만들어 보낼 때 쓴다
+    uint8_t hostKey = 0;          // 호스트가 정한 XOR 키
+    uint8_t myKey = 0;            // 내가 클라에게 준 XOR 키
+    bool keyed = false;           // 수락이 오간 뒤인가
 };
 
 // 클라를 구분하는 열쇠 — 주소와 포트
@@ -66,6 +70,8 @@ std::string HexOf(const uint8_t* p, int n) {
 
 FILE* g_dump = nullptr;
 bool g_quiet = false;
+bool g_ownAccept = false;     // U3.1 — 접속 수락을 내가 만들어 보낸다
+uint8_t g_myKey = 0x42;       // 그때 클라에게 주는 XOR 키 (호스트 것과 일부러 다르게)
 std::map<uint8_t, unsigned long long> g_opCount;   // U2.7 에서 쓸 오프코드 집계
 
 void Log(const char* dir, const sockaddr_in& who, const uint8_t* p, int n) {
@@ -131,6 +137,8 @@ int main(int argc, char** argv) {
         else if (a == "--host-port" && i + 1 < argc) hostPort = std::atoi(argv[++i]);
         else if (a == "--dump" && i + 1 < argc) dumpPath = argv[++i];
         else if (a == "--quiet") g_quiet = true;
+        else if (a == "--own-accept") g_ownAccept = true;
+        else if (a == "--my-key" && i + 1 < argc) g_myKey = static_cast<uint8_t>(std::strtoul(argv[++i], nullptr, 0));
         else { std::printf("모르는 인자: %s\n", a.c_str()); return 2; }
     }
 
@@ -214,7 +222,12 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (it != peers.end()) {
+                    // 기록은 클라 쪽 키 공간으로 통일한다. 번역은 기록 뒤에.
                     Log("C->S", from, buf, n);
+                    if (g_ownAccept && it->second.keyed) {
+                        const uint8_t d = static_cast<uint8_t>(it->second.hostKey ^ it->second.myKey);
+                        if (d) for (int i = 0; i < n; ++i) buf[i] ^= d;
+                    }
                     sendto(it->second.up, reinterpret_cast<const char*>(buf), n, 0,
                            reinterpret_cast<sockaddr*>(&hostAddr), sizeof(hostAddr));
                     ++it->second.toHost;
@@ -227,9 +240,34 @@ int main(int argc, char** argv) {
             if (!FD_ISSET(kv.second.up, &rd)) continue;
             sockaddr_in from{};
             int fromLen = sizeof(from);
-            const int n = recvfrom(kv.second.up, reinterpret_cast<char*>(buf), sizeof(buf), 0,
+            int n = recvfrom(kv.second.up, reinterpret_cast<char*>(buf), sizeof(buf), 0,
                                    reinterpret_cast<sockaddr*>(&from), &fromLen);
             if (n <= 0) continue;
+            if (g_ownAccept) {
+                if (!kv.second.keyed && n == 10 &&
+                    buf[2] == static_cast<uint8_t>(nox::Op::ACCEPTED)) {
+                    kv.second.hostKey = buf[9];
+                    kv.second.myKey = g_myKey;
+                    kv.second.keyed = true;
+                    // ★ 호스트 것을 고쳐 쓰지 않고 10바이트를 처음부터 내가 조립한다.
+                    //   실측 3세션에서 키 자리(9번)만 다르고 나머지는 늘 같았다.
+                    const uint8_t mine[10] = {0x80, 0x00, 0x1f, 0x00, 0x01,
+                                              0x01, 0x00, 0x00, 0x00, kv.second.myKey};
+                    std::memcpy(buf, mine, sizeof(mine));
+                    n = static_cast<int>(sizeof(mine));
+                    if (g_dump) {
+                        std::fprintf(g_dump, "  [수락을 내 것으로 — 호스트키 0x%02x -> 내 키 0x%02x]\n",
+                                     kv.second.hostKey, kv.second.myKey);
+                        std::fflush(g_dump);
+                    }
+                    if (!g_quiet)
+                        std::printf("[수락을 내 것으로 — 호스트키 0x%02x -> 내 키 0x%02x]\n",
+                                    kv.second.hostKey, kv.second.myKey);
+                } else if (kv.second.keyed) {
+                    const uint8_t d = static_cast<uint8_t>(kv.second.hostKey ^ kv.second.myKey);
+                    if (d) for (int i = 0; i < n; ++i) buf[i] ^= d;
+                }
+            }
             Log("S->C", kv.second.addr, buf, n);
             // 반드시 듣는 소켓으로 되돌린다. 클라는 18590 에서 답이 오길 기대한다.
             sendto(down, reinterpret_cast<const char*>(buf), n, 0,
