@@ -1,6 +1,6 @@
 ﻿# 게임 창을 잡고 커서를 목표로 옮긴 뒤(선택적으로) 클릭하고 화면을 찍는다.
 # Cx,Cy 는 게임 화면 1280x960 기준 좌표. Gain 은 실측 계수(화면좌표 = 보낸값 x Gain).
-param([int]$Pid_, [int]$Cx, [int]$Cy, [string]$Out, [switch]$Click, [double]$Gain = 3.06, [switch]$NoActivate, [switch]$NoHome, [int]$Hold = 0)
+param([int]$Pid_, [int]$Cx, [int]$Cy, [string]$Out, [switch]$Click, [double]$Gain = 3.06, [switch]$NoActivate, [switch]$NoHome, [int]$Hold = 0, [switch]$Right)
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @'
 using System;
@@ -95,7 +95,11 @@ Start-Sleep -Milliseconds 500
 if ($Click) {
   # -Hold 을 주면 그만큼 누른 채로 있는다. 녹스는 버튼을 누르고 있는 동안 커서 쪽으로 걷는다.
   $down = if ($Hold -gt 0) { $Hold } else { 90 }
-  [Drv]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds $down
-  [Drv]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 1600
+  # nox.cfg 실측: MOUSE_BUTTON_RIGHT = MoveForward (이동), MOUSE_BUTTON_LEFT = Action
+  # 걷게 하려면 -Right 로 오른쪽 버튼을 누른 채 유지한다.
+  $bDown = if ($Right) { 0x0008 } else { 0x0002 }
+  $bUp   = if ($Right) { 0x0010 } else { 0x0004 }
+  [Drv]::mouse_event($bDown, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds $down
+  [Drv]::mouse_event($bUp, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 1600
 }
 [Drv]::Shot($h, $Out)
