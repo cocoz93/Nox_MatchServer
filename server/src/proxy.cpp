@@ -239,8 +239,11 @@ int main(int argc, char** argv) {
                     // 기록은 클라 쪽 키 공간으로 통일한다. 번역은 기록 뒤에.
                     Log("C->S", from, buf, n);
                     if (g_ownAccept && it->second.keyed) {
-                        const uint8_t d = static_cast<uint8_t>(it->second.hostKey ^ it->second.myKey);
-                        if (d) for (int i = 0; i < n; ++i) buf[i] ^= d;
+                        // 내 키로 풀어 평문에서 손대고 호스트 키로 다시 잠근다
+                        if (it->second.myKey)
+                            for (int i = 0; i < n; ++i) buf[i] ^= it->second.myKey;
+                        if (it->second.hostKey)
+                            for (int i = 0; i < n; ++i) buf[i] ^= it->second.hostKey;
                     }
                     sendto(it->second.up, reinterpret_cast<const char*>(buf), n, 0,
                            reinterpret_cast<sockaddr*>(&hostAddr), sizeof(hostAddr));
@@ -258,8 +261,13 @@ int main(int argc, char** argv) {
                                    reinterpret_cast<sockaddr*>(&from), &fromLen);
             if (n <= 0) continue;
             if (g_ownAccept) {
-                if (!kv.second.keyed && n == 10 &&
-                    buf[2] == static_cast<uint8_t>(nox::Op::ACCEPTED)) {
+                // ★ 수락은 재전송된다. 재전송분도 평문이라 keyed 뒤에 와도 번역하면 안 된다.
+                //   무늬(80 00 1f 00 01 01 00 00 00 키)로 알아본다.
+                const bool looksAccept =
+                    (n == 10 && buf[0] == 0x80 && buf[1] == 0x00 &&
+                     buf[2] == static_cast<uint8_t>(nox::Op::ACCEPTED) &&
+                     buf[3] == 0x00 && buf[4] == 0x01 && buf[5] == 0x01);
+                if (looksAccept) {
                     kv.second.hostKey = buf[9];
                     kv.second.myKey = g_myKey;
                     kv.second.keyed = true;
