@@ -33,6 +33,8 @@ struct OutPacket {
 struct Projectile {
     std::string owner;   // 쏜 사람의 주소
     uint8_t spell = 0;
+    uint16_t netCode = 0;  // 클라에게 「이게 그거다」로 알릴 번호
+    uint8_t facing = 0;    // 날아가는 쪽(한 바퀴를 256으로)
     double x = 0, y = 0;
     double vx = 0, vy = 0;
     double traveled = 0; // 지금까지 간 거리. 사거리를 넘으면 사라진다
@@ -204,6 +206,13 @@ public:
     //    **값은 게임이 도는지 보려고 넣은 자리표시**다. 실측이 생기면 갈아 끼운다.
     static int SpellDamage(uint8_t spell);
 
+    // 이 주문이 날리는 것의 **와이어 종류 번호**. 공격이 아니면 0.
+    //
+    // ★ 이건 **실측이다** — OpenNox 가 준 종류표(`/debug/nox/types`, 2,874종)에서 찾았다:
+    //     695 Fireball [COMPLEX] · 710 LightningBolt [COMPLEX] · 703 SmallEnergyBolt [COMPLEX]
+    //   셋 다 복합이라 좌표 뒤에 한 바이트가 더 붙는다(사람과 같다).
+    static uint16_t ProjectileType(uint8_t spell);
+
     // 이 상대에게 준 XOR 키. 아직 안 줬으면 0.
     // 덤프의 SEND 를 사람이 읽으려면 이게 필요하다.
     uint8_t KeyFor(const std::string& addr) const {
@@ -328,6 +337,10 @@ private:
     unsigned long long melees_ = 0;
     unsigned long long hits_ = 0;
     std::vector<Projectile> shots_;
+    // 날아가는 것에 매길 번호.
+    // ⚠ **진짜 서버가 번호를 어떻게 매기는지는 모른다.** 캡처에서 사람이 715·720·728 을
+    //   받은 것만 봤다. 사람과 안 부딪히게 넉넉히 띄운 자리에서 시작할 뿐이다.
+    uint16_t nextShotNetCode_ = 4096;
     std::map<uint8_t, unsigned long long> spells_;
     unsigned long long spellsOnSelf_ = 0;
     std::vector<AcceptScript> script_;   // 접속 대본

@@ -111,6 +111,49 @@ int Server::SpellDamage(uint8_t spell) {
     }
 }
 
+// 이 주문이 날리는 것의 와이어 종류 번호.
+//
+// ★ 실측이다 — OpenNox 종류표(2,874종)에서 그대로 찾은 값이고, 셋 다 복합이다.
+// 항목 하나를 채운다 — **처음 보는 것은 전체 번호로, 그 뒤로는 별칭으로.**
+//
+// ★★ 2026-09-07 에 찾은 결함이다. 전에는 첫 등장부터 별칭으로 보냈다.
+//    그러면 클라는 **그 별칭이 무엇인지 알 길이 없다** — 별칭에는 종류가 안 실린다.
+//
+//    「서버가 `0xa5 NEW_ALIAS` 로 알려 주면 되지 않나」 싶지만 **방향이 반대다** —
+//    실측에서 `0xa5` 는 서버 SEND **0건**, 클라→서버로만 왔다(0907 덤프 187건,
+//    클라 덤프 839건). 별칭은 **클라가 스스로 굴리고 서버에 알려 주는 것**이고,
+//    서버는 같은 규칙으로 따라 굴린다(Alias.h). 그러니 클라가 (번호,종류)를
+//    이미 알고 있어야 같은 자리를 고른다. **그 앎은 전체 번호로 온 첫 등장에서 온다.**
+static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
+                      uint32_t frame, int x, int y, uint8_t facing, ObjEntry& e) {
+    uint16_t hadNet = 0, hadType = 0;
+    const int slot = tbl.Generate(netCode, type, frame);
+    const bool known = slot > 0 && tbl.Lookup(slot, hadNet, hadType) &&
+                       hadNet == netCode && hadType == type;
+    const int alias = tbl.Assign(netCode, type, frame);
+    if (known && alias > 0) {
+        e.alias = static_cast<uint8_t>(alias);
+    } else {
+        e.alias = 0xff;          // 처음이다 — 번호와 종류를 실어 보낸다
+        e.netCode = netCode;
+    }
+    e.type = type;
+    e.absolute = true;           // 항목마다 절대 좌표 — 앞의 것에 안 얽힌다
+    e.x = x;
+    e.y = y;
+    e.extra = 1;                 // 복합이라 방향·애니 1바이트
+    e.extraBytes[0] = facing;
+}
+
+uint16_t Server::ProjectileType(uint8_t spell) {
+    switch (spell) {
+        case 27: return 695;   // Fireball
+        case 43: return 710;   // LightningBolt
+        case 24: return 703;   // SmallEnergyBolt
+        default: return 0;
+    }
+}
+
 // 사거리 안에서 가장 가까운 다른 사람.
 std::string Server::NearestOther(const std::string& self, double range) const {
     auto me = sessions_.find(self);
@@ -359,6 +402,9 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         p.vx = kProjectileSpeed * std::cos(rad);
                         p.vy = kProjectileSpeed * std::sin(rad);
                         p.damage = dmg;
+                        p.facing = s.facing;
+                        p.netCode = nextShotNetCode_++;
+                        if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;  // 한 바퀴 돌면
                         shots_.push_back(p);
                     }
                 }
@@ -611,19 +657,19 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             ObjEntry e;
             // 별칭은 **클라와 똑같은 규칙**으로 잡는다. 한 칸만 어긋나면
             // 그때부터 클라가 엉뚱한 것을 그린다(Alias.h 참조).
-            const int alias = s.aliases.Assign(o.netCode, kPlayerType, frame_);
-            if (alias > 0) {
-                e.alias = static_cast<uint8_t>(alias);
-            } else {
-                e.alias = 0xff;              // 자리가 없으면 전체 번호로
-                e.netCode = o.netCode;
-            }
-            e.type = kPlayerType;
-            e.absolute = true;               // 항목마다 절대 좌표 — 앞의 것에 안 얽힌다
-            e.x = o.x;
-            e.y = o.y;
-            e.extra = 1;                     // 플레이어는 복합이라 방향·애니 1바이트
-            e.extraBytes[0] = o.facing;
+            FillEntry(s.aliases, o.netCode, kPlayerType, frame_, o.x, o.y, o.facing, e);
+            m.objects.push_back(e);
+        }
+
+        // ★ 날아가는 것도 싣는다. 이게 없으면 **서버만 알고 화면엔 아무것도 안 날아간다.**
+        //   종류 번호는 종류표에서 찾은 실측값이고 셋 다 복합이라 사람과 같은 짜임이다.
+        for (const auto& p : shots_) {
+            const uint16_t ptype = ProjectileType(p.spell);
+            if (ptype == 0) continue;
+
+            ObjEntry e;
+            FillEntry(s.aliases, p.netCode, ptype, frame_,
+                      static_cast<int>(p.x), static_cast<int>(p.y), p.facing, e);
             m.objects.push_back(e);
         }
 

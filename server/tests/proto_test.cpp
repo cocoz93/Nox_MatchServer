@@ -11,6 +11,7 @@
 
 #include "nox/Messages.h"
 #include "nox/Server.h"
+#include "nox/UpdateStream.h"
 #include "nox/SpellNames.h"
 #include "nox/Opcode.h"
 
@@ -732,6 +733,64 @@ void TestProjectile() {
     std::printf("  투사체 — 비키면 안 맞음·사거리·자폭 안 함·가는 도중·방향\n");
 }
 
+// ── 날아가는 것이 **화면에 실려 나가나** ────────────────────────
+//
+// 서버가 안다고 클라가 보는 것이 아니다. `0xa4` 항목에 실려야 그려진다.
+// 그래서 나간 조각을 **다시 뜯어** 확인한다 — 「보냈다」가 아니라 「담겼다」를 본다.
+void TestProjectileVisible() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+    nox::Server srv;
+    srv.DebugEnterGame(a, 728);
+    srv.DebugEnterGame(b, 729);
+    srv.DebugMoveTo(b, 1600, 1000);   // 멀리 둬서 날아가는 동안 안 맞게
+
+    std::vector<nox::OutPacket> out;
+    auto pkt = SpellPacket(27, false);
+    srv.OnPacket(a, pkt.data(), pkt.size(), out);
+    out.clear();
+    srv.Tick(0, out);
+    srv.Tick(33, out);   // 한 틱만 — 아직 날아가는 중이다
+    Check(srv.flying() == 1, "아직 날아가는 중이어야 함");
+
+    // 나간 0xa4 를 뜯어 파이어볼(695)이 항목에 있는지 본다
+    bool seen = false;
+    int players = 0;
+    for (const auto& p : out) {
+        auto body = Body(p);
+        if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+        nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
+        Check(m.ok, "내가 만든 0xa4 를 내가 못 뜯음");
+        for (const auto& e : m.objects) {
+            if (e.type == 695) seen = true;
+            if (e.type == nox::kPlayerType) ++players;
+        }
+    }
+    Check(seen, "파이어볼(695)이 상태 갱신에 안 실림");
+    Check(players > 0, "사람이 상태 갱신에서 사라짐");
+
+    // 맞고 나면 더는 안 실려야 한다 — 안 지우면 화면에 영원히 떠 있는다
+    FlyUntilDone(srv, out);
+    out.clear();
+    srv.Tick(33 * 200, out);
+    bool still = false;
+    for (const auto& p : out) {
+        auto body = Body(p);
+        if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+        nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
+        for (const auto& e : m.objects) if (e.type == 695) still = true;
+    }
+    Check(!still, "사라진 파이어볼이 아직도 실려 나감");
+
+    // 종류 번호가 주문마다 갈리나 — 뭉뚱그리면 번개가 파이어볼로 보인다
+    Check(nox::Server::ProjectileType(27) == 695, "파이어볼 종류가 695 가 아님");
+    Check(nox::Server::ProjectileType(43) == 710, "번개 종류가 710 이 아님");
+    Check(nox::Server::ProjectileType(24) == 703, "에너지볼트 종류가 703 이 아님");
+    Check(nox::Server::ProjectileType(4) == 0, "점멸이 날아가는 것으로 잡힘");
+
+    std::printf("  투사체가 화면에 실린다 — 상태 갱신을 다시 뜯어 확인\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -767,6 +826,7 @@ int main() {
     TestSpellDamage();
     TestMelee();
     TestProjectile();
+    TestProjectileVisible();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();
