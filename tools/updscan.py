@@ -62,8 +62,10 @@ def harvest_keys(path):
 
         80 00 1f 00 01 01 00 00 00 60      ← 마지막 0x60 이 키
     """
+    # ⚠ 두 방향을 다 훑는다. 서버 덤프에서는 수락이 SEND 에 있지만
+    #   **클라 덤프에서는 RECV 에 있다.** 어느 쪽이든 수락 시점엔 아직 평문이다.
     keys = {}
-    for _t, _d, peer, raw in read_dump(path, "SEND"):
+    for _t, _d, peer, raw in read_dump(path, ""):
         b = raw[2:]
         for j in range(2, len(b) - 5):
             if b[j] == 0x01 and b[j - 1] == 0x00 and b[j - 2] == 0x1F:
@@ -245,6 +247,7 @@ def main():
     ap.add_argument("--xor", default="", help="XOR 키를 직접 준다 (예 0x60). 안 주면 수락 패킷에서 찾는다")
     ap.add_argument("--tally", default="", help="opennox 의 noxnet 폴더 경로. 주면 삼킴을 걷어낸 전수 집계를 낸다")
     ap.add_argument("--pick", default="", help="이 오프코드들의 원문을 뽑는다 (쉼표, 예 0x42,0x80)")
+    ap.add_argument("--client", action="store_true", help="클라 쪽에서 잡은 덤프다 (방향이 뒤집힌다)")
     a = ap.parse_args()
 
     if a.codes:
@@ -395,7 +398,13 @@ def build_lengths(noxnet_dir):
 
 def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
     """삼킴을 걷어낸 상태로 오프코드를 전수로 센다."""
-    lens = cli if a.dir == "SEND" else srv
+    # 어느 표를 쓰나 — **읽는 쪽**이 정한다.
+    #   서버 덤프: SEND(서버→클라)는 클라가 읽으니 cli, RECV 는 srv
+    #   클라 덤프: 방향이 뒤집히므로 --client 로 맞바꾼다
+    if a.client:
+        lens = srv if a.dir == "SEND" else cli
+    else:
+        lens = cli if a.dir == "SEND" else srv
     pick = {int(x, 0) for x in a.pick.split(",") if x.strip()} if a.pick else set()
     picked = defaultdict(list)
     counts = Counter()
@@ -415,6 +424,10 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
         buf = raw[2:]
         i = 0
         while i < len(buf):
+            # 패킷 꼬리의 0 은 채움이지 메시지가 아니다.
+            # 안 걸러 내면 `0x00 MSG_SERVER_CONNECT` 로 세어 버린다(0906 서버 RECV 에서 21,759건).
+            if not any(buf[i:]):
+                break
             op = buf[i]
             if op == UPDATE_STREAM:
                 frame += 1
@@ -456,11 +469,34 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
                 else:
                     ln = None
             elif op == SERVER_CMD:
-                # msg_server_cmd.go — 본문은 ID 1 + NetCode 2 + 길이 1 + 2*sz.
-                # ⚠ Encode 는 그 뒤에 0 을 둘 더 쓰는데(`data[4+n+0]=0; data[4+n+1]=0`)
-                #   Decode 는 `4+2*sz` 만 돌려줘 그 둘을 안 센다. 참 길이는 둘을 포함한다.
-                #   실측 표본 sz=3 → 7+6 = 13바이트로 패킷 나머지와 정확히 맞았다.
-                ln = 7 + 2 * buf[i + 4] if i + 4 < len(buf) else None
+                # msg_server_cmd.go — 본문은 ID 1 + NetCode 2 + 길이 1 + 2*sz. 전체 5 + 2*sz.
+                #
+                # ⚠⚠ 2026-09-07 정정 — 한때 `7 + 2*sz` 로 두었다(Encode 가 뒤에 0 을 둘 더 쓰고
+                #   Decode 는 안 세므로 그 둘이 메시지에 든다고 본 것). **아니었다.**
+                #   클라 덤프에서 `bb 00 d8 02 07` + 14바이트가 **정확히 패킷 끝**이라
+                #   더 먹을 2바이트가 없다. 09-07 서버 덤프에서 그 둘이 맞아 보였던 것은
+                #   **거기 꼬리에 채움 0 이 두 개 있었기 때문**이다. 우연히 들어맞았다.
+                #
+                #   A/B (멈춘 자리 수) —
+                #     클라 0906 SEND   7+2sz: 15,708   →   5+2sz: 8
+                #     서버 0906 RECV   7+2sz: 15,766   →   5+2sz: 7,872
+                #
+                # ★ 그러므로 `dumpscan/fix.go` 의 `serverCmdTrailer = 2` 도 보편 규칙이 아니다.
+                #
+                # ★★ 그리고 그 2바이트의 정체가 밝혀졌다 — **보내는 클라가 갈린다.**
+                #
+                #     sz=7  남는 것 없음   15,699 전수 정확   ← OpenNox 클라
+                #     sz=3  2바이트 남음                      ← 정품 클라
+                #           `00 c8` 23,713 · `00 00` 21,246 · `00 b8` 7,800 · `80 00` 6 · `00 ee` 1
+                #
+                #   같은 덤프 안에서도 상대별로 갈린다(0906 서버 RECV: sz=7 이 15,699 로
+                #   클라 덤프의 건수와 **정확히 같다** — 그 하나가 OpenNox 클라다).
+                #   → 진행 기록의 미결 「0xbb 뒤 00 b8」이 이것이었다.
+                #
+                #   그 2바이트는 늘 **패킷 끝에 정확히 2바이트만** 남는다. 그걸로 가른다.
+                ln = 5 + 2 * buf[i + 4] if i + 4 < len(buf) else None
+                if ln is not None and len(buf) - (i + ln) == 2:
+                    ln += 2
             else:
                 ln = lens.get(op)
             if ln is None or i + ln > len(buf):
