@@ -242,6 +242,7 @@ def main():
     ap.add_argument("--codes", default="")
     ap.add_argument("--xor", default="", help="XOR 키를 직접 준다 (예 0x60). 안 주면 수락 패킷에서 찾는다")
     ap.add_argument("--tally", default="", help="opennox 의 noxnet 폴더 경로. 주면 삼킴을 걷어낸 전수 집계를 낸다")
+    ap.add_argument("--pick", default="", help="이 오프코드들의 원문을 뽑는다 (쉼표, 예 0x42,0x80)")
     a = ap.parse_args()
 
     if a.codes:
@@ -393,6 +394,8 @@ def build_lengths(noxnet_dir):
 def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
     """삼킴을 걷어낸 상태로 오프코드를 전수로 센다."""
     lens = cli if a.dir == "SEND" else srv
+    pick = {int(x, 0) for x in a.pick.split(",") if x.strip()} if a.pick else set()
+    picked = defaultdict(list)
     counts = Counter()
     stuck = Counter()          # 길이를 몰라 멈춘 자리
     frame = 0
@@ -444,6 +447,8 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
                 n_stuck += 1
                 break
             counts[op] += 1
+            if op in pick and len(picked[op]) < a.show:
+                picked[op].append((_t, peer, buf[i:i + ln].hex(" ")))
             i += ln
 
     total = sum(counts.values())
@@ -459,6 +464,11 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
             print(f"  0x{op:02x} {c:9d}  {name_of.get(op, '?')}")
 
     # 이번 밤 내내 물어 온 것들을 따로 짚는다.
+    for op in sorted(picked):
+        print(f"\n── 0x{op:02x} {name_of.get(op, '?')} 원문 {len(picked[op])}개 (전체 {counts[op]}개)")
+        for t, peer, h in picked[op]:
+            print(f"   {t}  {peer}  {h}")
+
     print("\n★ 체력·죽음 계열 —")
     for op in (0x41, 0x42, 0x43, 0x45, 0xDD, 0xDE, 0xE8, 0xE9, 0x73, 0x4B, 0x4C):
         print(f"  0x{op:02x} {counts.get(op, 0):9d}  {name_of.get(op, '?')}")
