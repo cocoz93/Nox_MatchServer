@@ -205,6 +205,17 @@ constexpr uint16_t kFlagTypeBlue = 173;
 constexpr double kFlagTouchRange = 40.0;
 constexpr uint16_t kCaptureLimit = 3;
 
+// ── 퀘스트 ──────────────────────────────────────────────────
+//
+// 「불려 나온 것」과 「맵에 사는 몬스터」는 **같은 것**으로 다룬다 —
+// `Creature` 의 주인(`owner`)이 비어 있으면 아무 편도 아니고, 그래서 모두를 노린다.
+// 사람 쪽에서도 주인이 자기가 아니니 때릴 수 있다. 규칙 하나로 둘이 풀린다.
+//
+// ⚠ **마릿수·자리·체력은 실측이 아니다.** 퀘스트 맵(`G_*`)을 올려 본 적이 없다 —
+//   우리 캡처는 `estate.map`(Arena) 하나뿐이다.
+constexpr int kQuestMonsters = 5;
+constexpr double kQuestSpread = 300.0;   // 이만큼 벌려 세운다
+
 constexpr double kProjectileSpeed = 26.0;    // 한 틱에 미는 거리
 constexpr double kProjectileHitRadius = 24.0; // 이 안에 들어오면 맞은 것으로 본다
 
@@ -314,6 +325,12 @@ public:
     //
     // ⚠ **팀을 어떻게 나누는지는 실측이 아니다.** 진짜 녹스는 콘솔·메뉴로 고르게 한다.
     void StartCtf(int redX, int redY, int blueX, int blueY);
+
+    // 퀘스트 판을 차린다 — 주인 없는 몬스터를 `count` 마리 세운다.
+    // 다 잡으면 판이 끝난다.
+    void StartQuest(int count, int centerX, int centerY);
+    int QuestLeft() const { return questTotal_ - questKilled_; }
+    int QuestKilled() const { return questKilled_; }
     uint16_t CapturesOf(uint8_t team) const { return team < 3 ? caps_[team] : 0; }
     uint8_t TeamOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -450,6 +467,13 @@ private:
     void SendFlagInform(InformCode code, uint16_t playerNetCode, uint8_t team,
                         std::vector<OutPacket>& out);
 
+    // 글자 한 줄을 모두에게 — `0xa8 TEXT_MESSAGE`. 짜임은 실측이다.
+    //
+    // ⚠ **문구는 우리가 지은 것**이다. 진짜 녹스는 시스템 문구를 `0xa9` 갈래 15 로
+    //   **CSF 열쇠**만 보내고 클라가 `nox.csf` 에서 찾는다(PROTOCOL.md 「알림」 절).
+    //   퀘스트 완료에 해당하는 열쇠를 모르므로, **아는 통로인 채팅**으로 대신 알린다.
+    void SendNotice(const char* text, std::vector<OutPacket>& out);
+
     // 깃발을 들고 있으면 그 자리에 떨어뜨린다 (죽었을 때).
     void DropFlag(const std::string& who, std::vector<OutPacket>& out);
 
@@ -495,6 +519,8 @@ private:
     uint32_t nextTimerFrame_ = 0;
     std::vector<Flag> flags_;
     uint16_t caps_[3] = {0, 0, 0};   // 팀별 득점 (1·2 만 쓴다)
+    int questTotal_ = 0;
+    int questKilled_ = 0;
     std::vector<Projectile> shots_;
     std::vector<Creature> pets_;
     // 날아가는 것에 매길 번호.

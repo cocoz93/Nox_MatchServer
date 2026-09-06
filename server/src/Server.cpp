@@ -227,8 +227,16 @@ Target Server::NearestTarget(const std::string& friendOwner, double x, double y,
 void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
     if (idx >= pets_.size()) return;
     const uint16_t netCode = pets_[idx].netCode;
+    const bool wild = pets_[idx].owner.empty();   // 주인 없는 것 = 맵의 몬스터
     pets_.erase(pets_.begin() + static_cast<long>(idx));
     ++petsKilled_;
+    if (wild && questTotal_ > 0) {
+        ++questKilled_;
+        if (!roundOver_ && questKilled_ >= questTotal_) {
+            roundOver_ = true;
+            SendNotice("Quest complete", out);
+        }
+    }
 
     uint8_t msg[3];
     msg[0] = static_cast<uint8_t>(Op::DESTROY_OBJECT);
@@ -341,6 +349,51 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
 //   d3 | 번호 4 | 남은 시간 4(밀리초, 부호 있음) | 지금 틱 4
 //
 // 한도가 없으면 남은 시간이 **음수로 계속 내려간다** — 실측이 그랬다.
+void Server::StartQuest(int count, int centerX, int centerY) {
+    questTotal_ = count;
+    questKilled_ = 0;
+    roundOver_ = false;
+
+    // 가운데를 둘러 고르게 세운다. ⚠ 자리 규칙은 실측이 아니다.
+    for (int i = 0; i < count; ++i) {
+        const double ang = 2.0 * 3.14159265358979 * i / (count > 0 ? count : 1);
+        Creature k;
+        k.owner.clear();                 // ★ 주인이 없다 — 아무 편도 아니다
+        k.type = SummonType(79);         // Bomber. 종류표에서 확인한 번호다
+        k.netCode = nextShotNetCode_++;
+        if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+        k.x = centerX + kQuestSpread * std::cos(ang);
+        k.y = centerY + kQuestSpread * std::sin(ang);
+        k.health = kPetHealth;
+        pets_.push_back(k);
+    }
+}
+
+// 글자 한 줄 — `0xa8 TEXT_MESSAGE`. 짜임은 실측이고 **문구만 우리 것**이다.
+void Server::SendNotice(const char* text, std::vector<OutPacket>& out) {
+    const size_t n = std::strlen(text);
+    if (n == 0 || n > 200) return;
+    std::vector<uint8_t> msg;
+    msg.reserve(11 + n);
+    msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
+    for (auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        Session& s = kv.second;
+        msg.resize(1);
+        msg.push_back(static_cast<uint8_t>(s.netCode));
+        msg.push_back(static_cast<uint8_t>(s.netCode >> 8));
+        msg.push_back(0x02);                       // 깃발 = UTF-8 (그래야 한 글자 한 바이트)
+        msg.push_back(static_cast<uint8_t>(s.x));
+        msg.push_back(static_cast<uint8_t>(s.x >> 8));
+        msg.push_back(static_cast<uint8_t>(s.y));
+        msg.push_back(static_cast<uint8_t>(s.y >> 8));
+        msg.push_back(static_cast<uint8_t>(n));
+        msg.push_back(0); msg.push_back(0);        // 지속 = 0
+        msg.insert(msg.end(), text, text + n);
+        Emit(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
+    }
+}
+
 void Server::StartCtf(int redX, int redY, int blueX, int blueY) {
     flags_.clear();
     caps_[0] = caps_[1] = caps_[2] = 0;

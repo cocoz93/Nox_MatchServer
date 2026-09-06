@@ -1206,6 +1206,140 @@ void TestCtf() {
     std::printf("  깃발 — 화면에 실림·적 것만 듦·득점·죽으면 떨굼·한도\n");
 }
 
+// 상태 갱신 본문에서 「전체 번호로 온 항목」을 종류별로 센다.
+//
+// ★★ 왜 뜯지 않고 바이트를 직접 보나 — 우리 `DecodeUpdate` 는 **종류표가 없어서**
+//    복합 오브젝트 뒤에 몇 바이트가 붙는지 **짐작으로 갈래를 연다.** 항목이 서넛만 돼도
+//    엉뚱한 갈래로 자리를 잡아 개수가 부풀 수 있다(퀘스트 시험에서 넷을 일곱으로 읽었다).
+//    진짜 클라는 `thing.bin` 이 있어 안 헷갈리니 **와이어는 멀쩡했다** —
+//    본문 58바이트가 손으로 센 값(머리 11 + 항목 11×4 + 끝 3)과 정확히 같았다.
+//    그러니 시험이 그 짐작에 기대면 안 된다. 첫 등장 꼴을 바이트로 직접 센다.
+//
+//    첫 등장 항목의 꼴:  00 ff <번호 2> <종류 2> <x 2> <y 2> [붙는 1]
+int CountFirstSight(const std::vector<uint8_t>& body, uint16_t type) {
+    int n = 0;
+    for (size_t i = 0; i + 6 < body.size(); ++i) {
+        if (body[i] != 0x00 || body[i + 1] != 0xff) continue;
+        const uint16_t t = static_cast<uint16_t>(body[i + 4] | (body[i + 5] << 8));
+        if (t == type) ++n;
+    }
+    return n;
+}
+
+// ── 퀘스트 ────────────────────────────────────────────────────
+//
+// 「불려 나온 것」과 「맵의 몬스터」를 같은 것으로 다루는 설계라,
+// 먼저 볼 것은 **사람이 주인 없는 몬스터를 때릴 수 있나**다. 이게 안 되면 판이 안 끝난다.
+void TestQuest() {
+    const std::string a = "10.0.0.1:1000";
+
+    // ① 판을 차리면 몬스터가 서고 **화면에도 실린다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.StartQuest(3, 1000, 1000);
+        Check(srv.pets() == 3, "몬스터가 셋이 아님");
+        Check(srv.QuestLeft() == 3, "남은 수가 셋이 아님");
+
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        out.clear();
+        srv.Tick(33, out);
+        int seen = 0, players = 0, streams = 0;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+            ++streams;
+            seen += CountFirstSight(body, 1348);              // Bomber
+            players += CountFirstSight(body, nox::kPlayerType);
+        }
+        Check(streams > 0, "0xa4 가 아예 안 나감");
+        Check(seen == 3, "몬스터 셋이 상태 갱신에 다 안 실림");
+        Check(players == 1, "사람이 상태 갱신에서 사라짐");
+    }
+
+    // ★★ ② 사람이 **주인 없는 몬스터를 때릴 수 있다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.StartQuest(1, 1000, 1000);
+        srv.DebugMoveTo(a, 1300, 1000);   // 몬스터가 (1300,1000) 에 선다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(0, out);
+        const unsigned long long before = srv.petsKilled();
+        int guard = 0;
+        while (srv.pets() > 0 && guard++ < 40) {
+            auto pkt = InputPacket(6);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            ms += 33 * (nox::kMeleeCooldownTicks + 1);
+            srv.Tick(ms, out);
+        }
+        Check(srv.pets() == 0, "사람이 몬스터를 못 때린다");
+        Check(srv.petsKilled() == before + 1, "죽은 수가 안 오름");
+    }
+
+    // ③ 다 잡으면 판이 끝나고 **알림이 나간다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.StartQuest(2, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(0, out);
+        int guard = 0;
+        while (!srv.RoundOver() && guard++ < 400) {
+            out.clear();
+            // 몬스터가 다가와 붙으면 근접이 닿는다
+            auto pkt = InputPacket(6);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            ms += 33 * (nox::kMeleeCooldownTicks + 1);
+            srv.Tick(ms, out);
+        }
+        Check(srv.RoundOver(), "다 잡아도 판이 안 끝남");
+        Check(srv.QuestLeft() == 0, "남은 수가 0 이 아님");
+
+        bool noticed = false;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (!body.empty() && body[0] == static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) {
+                // 짜임이 맞나 — 머리 10 + 글자 길이
+                Check(body.size() == 11 + body[8], "0xa8 길이가 머리10+글자와 안 맞음");
+                Check((body[3] & 0x02) != 0, "UTF-8 깃발이 아님");
+                noticed = true;
+            }
+        }
+        Check(noticed, "퀘스트 완료 알림이 안 나감");
+    }
+
+    // ★★ ④ **소환수는 퀘스트 셈에 안 든다** — 주인이 있으니 맵 몬스터가 아니다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        const std::string b = "10.0.0.2:1000";
+        srv.DebugEnterGame(b, 729);
+        srv.StartQuest(2, 5000, 5000);          // 몬스터는 멀리 둔다
+        std::vector<nox::OutPacket> out;
+        auto sum = SpellPacket(79, false);
+        srv.OnPacket(b, sum.data(), sum.size(), out);   // b 가 하나 부른다
+        Check(srv.pets() == 3, "소환수까지 셋이 아님");
+
+        uint32_t ms = 0;
+        srv.Tick(0, out);
+        int guard = 0;
+        while (srv.pets() > 2 && guard++ < 40) {         // a 가 b 의 소환수를 잡는다
+            auto pkt = InputPacket(6);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            ms += 33 * (nox::kMeleeCooldownTicks + 1);
+            srv.Tick(ms, out);
+        }
+        Check(srv.QuestKilled() == 0, "소환수를 잡았는데 퀘스트 셈이 올랐다");
+        Check(!srv.RoundOver(), "소환수를 잡고 판이 끝났다");
+    }
+
+    std::printf("  퀘스트 — 몬스터가 서고·사람이 때리고·다 잡으면 끝·소환수는 셈 밖\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -1246,6 +1380,7 @@ int main() {
     TestPetDies();
     TestArena();
     TestCtf();
+    TestQuest();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();
