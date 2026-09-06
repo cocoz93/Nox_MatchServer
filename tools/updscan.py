@@ -39,6 +39,8 @@ TRY_SPELL = 0x79
 SERVER_CMD = 0xBB
 SEQ_IMPORTANT = 0xCC
 TEXT_MESSAGE = 0xA8
+INFORM = 0xA9
+REPORT_SPELL_START = 0x70
 MAX_COORD = 6000
 ALIAS_TTL = 60          # 프레임. alias.go 와 같은 값
 STEP_BUDGET = 20000     # 되짚기가 지수로 터지지 않게 (앞선 도구에서 겪은 함정)
@@ -52,6 +54,46 @@ try:
     sys.stdout.reconfigure(encoding="utf-8")
 except Exception:
     pass
+
+
+# `0xa9 INFORM` 은 **태그 유니온**이다 — 오프코드 다음 1바이트가 갈래를 정하고,
+# 갈래마다 본문 길이가 다르다. opennox `msg_inform.go` 의 `EncodeSize()` 를 옮겼다.
+#
+#   갈래 → 본문 길이 (오프코드 1 + 갈래 1 은 따로 더한다)
+INFORM_LEN = {
+    0: 4, 1: 4, 2: 4,        # InformSpell    — 주문 실패·성공·능력
+    3: 4, 4: 4, 18: 4, 19: 4, 20: 4,   # InformPlayer   — 시간초과·깃발회수·퇴장·순간이동·비밀
+    8: 4, 16: 4,             # InformTeam     — 깃발부활·다른팀
+    12: 4,                   # InformObserver
+    13: 4,                   # InformPlayerState
+    5: 8, 6: 8, 7: 8, 9: 8, 10: 8, 11: 8,   # InformTeamPlayer — 깃발·왕관·공
+    14: 9,                   # ★ InformKill   — 죽인 쪽·죽은 쪽이 여기 있을 수 있다
+    17: 0,                   # InformClassChanged
+    21: 4,                   # InformWarpWait
+}
+INFORM_NAME = {
+    0: "SpellErr", 1: "SpellOK", 2: "Ability", 3: "PlayerTimeout", 4: "FlagRetrieve",
+    5: "FlagCapture", 6: "FlagPickup", 7: "FlagDrop", 8: "FlagRespawn", 9: "BallScore",
+    10: "CrownPickup", 11: "CrownDrop", 12: "Observer", 13: "PlayerState", 14: "Kill",
+    15: "StringID", 16: "WrongTeam", 17: "ClassChanged", 18: "PlayerExit",
+    19: "PlayerWarp", 20: "PlayerSecret", 21: "PlayerWarpWait",
+}
+
+
+def inform_len(buf, i):
+    """`0xa9` 하나의 전체 길이. 갈래 15(StringID)만 0 으로 닫는 가변이다."""
+    if i + 1 >= len(buf):
+        return None, None
+    code = buf[i + 1]
+    if code == 15:
+        end = buf.find(b"\x00", i + 3)      # 오프코드1 + 갈래1 + IsSign1 다음부터
+        if end < 0:
+            return None, code
+        return (end + 1) - i, code
+    n = INFORM_LEN.get(code)
+    if n is None:
+        return None, code
+    return 2 + n, code
 
 
 def harvest_keys(path):
@@ -409,6 +451,7 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
     picked = defaultdict(list)
     counts = Counter()
     inner = Counter()          # 0xcc 껍데기 안에 들어 있던 것
+    informs = Counter()        # 0xa9 의 갈래별 개수
     stuck = Counter()          # 길이를 몰라 멈춘 자리
     frame = 0
     al = Aliases()
@@ -460,6 +503,21 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
                     inner[sub] += 1
                     if sub in pick and len(picked[sub]) < a.show:
                         picked[sub].append((_t, peer + " (0xcc 속)", buf[i + 4:i + ln].hex(" ")))
+            elif op == REPORT_SPELL_START:
+                # opennox 에는 구조체도 길이표도 없다. 원문으로 잰다 — **2바이트**다.
+                #   70 04 · 70 2b · 70 1b   ← 주문 번호 4 Blink · 43 Lightning · 27 Fireball
+                # ★ 이 셋은 09-07 조작 실측에서 A·D·F 키에 배정된 주문과 **같다.**
+                #   딴 길로 얻은 값이 맞은 것이라 우연이 아니다.
+                ln = 2
+                if 0x70 in pick and len(picked[0x70]) < a.show:
+                    picked[0x70].append((_t, peer, buf[i:i + 2].hex(" ")))
+            elif op == INFORM:
+                ln, icode = inform_len(buf, i)
+                if ln is not None:
+                    informs[icode] += 1
+                    if INFORM in pick and len(picked[INFORM]) < a.show:
+                        picked[INFORM].append((_t, peer + f" [{INFORM_NAME.get(icode, icode)}]",
+                                               buf[i:i + ln].hex(" ")))
             elif op == TEXT_MESSAGE:
                 # msg_text.go — 머리 10바이트(번호2·깃발1·x2·y2·크기1·지속2) + 데이터.
                 # 데이터 길이는 `크기`인데 깃발에 UTF8(0x2)·Localized(0x8) 가 없으면 UTF-16 이라 두 배다.
@@ -515,6 +573,11 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
     print("-" * 58)
     for op, c in counts.most_common(60):
         print(f"  0x{op:02x} {c:9d}  {name_of.get(op, '?')}")
+    if informs:
+        print(f"\n★ 0xa9 INFORM 갈래별 (합 {sum(informs.values())}개) —")
+        for c, n in informs.most_common(25):
+            print(f"  갈래 {c:3d} {n:8d}  {INFORM_NAME.get(c, '?')}")
+
     if inner:
         print(f"\n★ 0xcc SEQ_IMPORTANT 껍데기 안에 들어 있던 것 (합 {sum(inner.values())}개) —")
         for op, c in inner.most_common(25):
