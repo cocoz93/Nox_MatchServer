@@ -113,7 +113,7 @@ int Server::SpellDamage(uint8_t spell) {
 
 // 이 주문이 날리는 것의 와이어 종류 번호.
 //
-// ★ 실측이다 — OpenNox 종류표(2,874종)에서 그대로 찾은 값이고, 셋 다 복합이다.
+// ⚠ **실측이 아니라 이름 짐작이다** (09-07 정정, 까닭은 Server.h 의 ProjectileType 주석).
 // 항목 하나를 채운다 — **처음 보는 것은 전체 번호로, 그 뒤로는 별칭으로.**
 //
 // ★★ 2026-09-07 에 찾은 결함이다. 전에는 첫 등장부터 별칭으로 보냈다.
@@ -150,7 +150,7 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
 
 uint16_t Server::ProjectileType(uint8_t spell) {
     switch (spell) {
-        case 27: return 695;   // Fireball
+        case 27: return 695;   // ⚠ 추정. 09-06 클라 덤프에는 693 TitanFireball 이 보였다
         case 43: return 710;   // LightningBolt
         case 24: return 703;   // SmallEnergyBolt
         default: return 0;
