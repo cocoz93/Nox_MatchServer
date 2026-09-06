@@ -791,6 +791,73 @@ void TestProjectileVisible() {
     std::printf("  투사체가 화면에 실린다 — 상태 갱신을 다시 뜯어 확인\n");
 }
 
+// ── 소환 (컨저러) ─────────────────────────────────────────────
+void TestSummon() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+
+    // ① 부르면 하나 생기고 **화면에도 실린다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(79, false);   // 79 = SPELL_SUMMON_BOMBER
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.pets() == 1, "불렀는데 안 생김");
+        Check(srv.flying() == 0, "소환이 투사체로 날아감");
+
+        out.clear();
+        srv.Tick(0, out);
+        srv.Tick(33, out);
+        bool seen = false;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+            nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
+            for (const auto& e : m.objects) if (e.type == 1348) seen = true;   // Bomber
+        }
+        Check(seen, "불려 나온 것(1348 Bomber)이 상태 갱신에 안 실림");
+    }
+
+    // ★★ ② **부른 사람은 안 때린다** — 이게 없으면 부르자마자 자기가 맞는다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(79, false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        srv.Tick(0, out);
+        srv.Tick(33 * 200, out);   // 넉넉히 돌린다
+        Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "부른 사람이 자기 것에게 맞음");
+    }
+
+    // ③ 남에게는 다가가 때린다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1400, 1000);   // 멀리 둔다 — 다가가야 닿는다
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(79, false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        srv.Tick(0, out);
+        srv.Tick(33, out);
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "부르자마자 멀리 있는 사람이 맞음");
+        srv.Tick(33 * 300, out);          // 걸어가 때릴 시간을 준다
+        Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "다가가서 안 때림");
+        Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "부른 사람이 맞음");
+    }
+
+    // ④ 주문마다 다른 것이 나온다 — 뭉뚱그리면 유령이 곰으로 보인다
+    Check(nox::Server::SummonType(79) == 1348, "BOMBER 가 1348 이 아님");
+    Check(nox::Server::SummonType(85) == 1325, "GHOST 가 1325 가 아님");
+    Check(nox::Server::SummonType(84) == 1337, "EMBER_DEMON 이 1337 이 아님");
+    Check(nox::Server::SummonType(27) == 0, "파이어볼이 소환으로 잡힘");
+    Check(nox::Server::ProjectileType(79) == 0, "소환이 투사체로도 잡힘");
+
+    std::printf("  소환 — 생김·화면에 실림·부른 사람은 안 맞음·다가가 때림\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -827,6 +894,7 @@ int main() {
     TestMelee();
     TestProjectile();
     TestProjectileVisible();
+    TestSummon();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();

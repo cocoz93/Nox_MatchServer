@@ -154,6 +154,28 @@ uint16_t Server::ProjectileType(uint8_t spell) {
     }
 }
 
+// 이 주문이 불러내는 것의 와이어 종류 번호.
+//
+// ★ 실측이다 — `SpellNames.cpp` 의 `SPELL_SUMMON_*` 과 OpenNox 종류표의 같은 이름을
+//   짝지었다. 열둘 모두 종류표에서 COMPLEX 로 나온다.
+uint16_t Server::SummonType(uint8_t spell) {
+    switch (spell) {
+        case 75: return 1357;  // SUMMON_BAT                → Bat
+        case 76: return 1366;  // SUMMON_BLACK_BEAR         → BlackBear
+        case 77: return 1365;  // SUMMON_BEAR               → Bear
+        case 78: return 1382;  // SUMMON_BEHOLDER           → Beholder
+        case 79: return 1348;  // SUMMON_BOMBER             → Bomber
+        case 80: return 1371;  // SUMMON_CARNIVOROUS_PLANT  → CarnivorousPlant
+        case 81: return 1355;  // SUMMON_ALBINO_SPIDER      → AlbinoSpider
+        case 82: return 1356;  // SUMMON_SMALL_ALBINO_SPIDER→ SmallAlbinoSpider
+        case 83: return 1317;  // SUMMON_EVIL_CHERUB        → EvilCherub
+        case 84: return 1337;  // SUMMON_EMBER_DEMON        → EmberDemon
+        case 85: return 1325;  // SUMMON_GHOST              → Ghost
+        case 86: return 1358;  // SUMMON_GIANT_LEECH        → GiantLeech
+        default: return 0;
+    }
+}
+
 // 사거리 안에서 가장 가까운 다른 사람.
 std::string Server::NearestOther(const std::string& self, double range) const {
     auto me = sessions_.find(self);
@@ -384,6 +406,24 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //    ⚠ 대상 고르기가 **가장 얇다** — 자기에게 건 것이 아니면
                 //      사거리 안에서 가장 가까운 한 사람이다. 진짜 녹스는 날아가는
                 //      투사체가 부딪히는 것을 본다. 그건 다음 조각이다.
+                // ② 소환 주문이면 부른다.
+                if (const uint16_t stype = SummonType(spell)) {
+                    Creature k;
+                    k.owner = from;
+                    k.type = stype;
+                    k.netCode = nextShotNetCode_++;
+                    if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+                    k.facing = s.facing;
+                    // 부른 사람 바로 앞에 세운다.
+                    const double rad = s.facing * 3.14159265358979 / 128.0;
+                    k.x = s.x + kPetReach * std::cos(rad);
+                    k.y = s.y + kPetReach * std::sin(rad);
+                    k.health = kPetHealth;
+                    pets_.push_back(k);
+                    ++handled_;
+                    break;
+                }
+
                 const int dmg = SpellDamage(spell);
                 if (dmg > 0) {
                     if (onSelf) {
@@ -590,6 +630,40 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
     }
 
+    // ── 불려 나온 것들을 움직인다 ──
+    // 부른 사람 편이다 — **부른 사람은 안 때린다.** 그게 없으면 부르자마자 자기가 맞는다.
+    for (int step = 0; step < ticks && !pets_.empty(); ++step) {
+        for (auto& k : pets_) {
+            // 가장 가까운 「남」을 고른다 (부른 사람과 그 사람은 뺀다)
+            const std::string* best = nullptr;
+            double bestD2 = 1e18;
+            for (const auto& kv : sessions_) {
+                if (kv.first == k.owner) continue;
+                const Session& o = kv.second;
+                if (!o.inGame || o.respawnAtFrame != 0) continue;
+                const double dx = o.x - k.x, dy = o.y - k.y;
+                const double d2 = dx * dx + dy * dy;
+                if (d2 < bestD2) { bestD2 = d2; best = &kv.first; }
+            }
+            if (!best) continue;
+
+            const Session& tgt = sessions_.at(*best);
+            const double dx = tgt.x - k.x, dy = tgt.y - k.y;
+            const double d = std::sqrt(dx * dx + dy * dy);
+            if (d > kPetReach) {
+                // 아직 멀다 — 다가간다.
+                k.x += kPetSpeed * dx / d;
+                k.y += kPetSpeed * dy / d;
+                k.facing = static_cast<uint8_t>(
+                    static_cast<int>(std::atan2(dy, dx) * 128.0 / 3.14159265358979) & 0xFF);
+            } else if (frame_ >= k.nextHitFrame) {
+                // 닿았다 — 때린다. 쉬는 시간은 사람 근접과 같은 규칙이다.
+                k.nextHitFrame = frame_ + kMeleeCooldownTicks;
+                Damage(*best, kPetDamage, out);
+            }
+        }
+    }
+
     // 게임에 들어와 있는 사람에게만 보낸다.
     for (auto& kv : sessions_) {
         Session& s = kv.second;
@@ -670,6 +744,14 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             ObjEntry e;
             FillEntry(s.aliases, p.netCode, ptype, frame_,
                       static_cast<int>(p.x), static_cast<int>(p.y), p.facing, e);
+            m.objects.push_back(e);
+        }
+
+        // 불려 나온 것도 싣는다 — 안 그러면 사람을 때리는 게 화면에 안 보인다.
+        for (const auto& k : pets_) {
+            ObjEntry e;
+            FillEntry(s.aliases, k.netCode, k.type, frame_,
+                      static_cast<int>(k.x), static_cast<int>(k.y), k.facing, e);
             m.objects.push_back(e);
         }
 

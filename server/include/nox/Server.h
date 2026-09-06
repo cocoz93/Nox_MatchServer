@@ -29,6 +29,17 @@ struct OutPacket {
     std::vector<uint8_t> data;
 };
 
+// 불려 나온 것 하나. 부른 사람 편이라 부른 사람은 안 때린다.
+struct Creature {
+    std::string owner;     // 부른 사람의 주소
+    uint16_t netCode = 0;
+    uint16_t type = 0;     // 와이어 종류 번호 (종류표에서 찾은 실측값)
+    uint8_t facing = 0;
+    double x = 0, y = 0;
+    uint16_t health = 0;
+    uint32_t nextHitFrame = 0;   // 이 프레임 전에는 못 때린다
+};
+
 // 날아가는 것 하나. 쏜 사람은 안 맞는다.
 struct Projectile {
     std::string owner;   // 쏜 사람의 주소
@@ -132,6 +143,16 @@ constexpr double kSpellRange = 210.0;
 // ⚠⚠ **아래 둘도 실측이 아니다.** 덤프에 투사체의 자리가 안 실린다 —
 //    `0xa4` 상태 갱신에 오브젝트로 들어오지만 그것이 파이어볼인지 가릴 종류 번호를
 //    아직 못 짚었다. 걸음(7/틱)보다 서너 배 빠른 값으로 두었을 뿐이다.
+// ── 불려 나온 것 (소환) ─────────────────────────────────────
+//
+// ⚠⚠ **아래 넷도 실측이 아니다.** 소환 표본이 덤프에 없다 — 09-06·09-07 어느 캡처에도
+//    `SPELL_SUMMON_*` 이 안 왔다(주문 표본 83개가 전부 공격·이동·치유였다).
+//    걸음(7/틱)보다 조금 느리게, 사람보다 약하게 둔 자리표시다.
+constexpr double kPetSpeed = 5.0;          // 한 틱에 다가가는 거리
+constexpr double kPetReach = 40.0;         // 이 안에 들어오면 때린다
+constexpr int kPetDamage = 8;
+constexpr uint16_t kPetHealth = 40;
+
 constexpr double kProjectileSpeed = 26.0;    // 한 틱에 미는 거리
 constexpr double kProjectileHitRadius = 24.0; // 이 안에 들어오면 맞은 것으로 본다
 
@@ -213,6 +234,14 @@ public:
     //   셋 다 복합이라 좌표 뒤에 한 바이트가 더 붙는다(사람과 같다).
     static uint16_t ProjectileType(uint8_t spell);
 
+    // 이 주문이 불러내는 것의 **와이어 종류 번호**. 소환 주문이 아니면 0.
+    //
+    // ★ **실측이다.** 두 표를 짝지어 얻었다 —
+    //   `SpellNames.cpp`(기계로 뽑은 136개)의 `SPELL_SUMMON_*` 과
+    //   OpenNox 종류표(`/debug/nox/types`, 2,874종)의 같은 이름.
+    //   짝지은 열둘이 **전부 COMPLEX** 라 사람·투사체와 같은 짜임으로 실린다.
+    static uint16_t SummonType(uint8_t spell);
+
     // 이 상대에게 준 XOR 키. 아직 안 줬으면 0.
     // 덤프의 SEND 를 사람이 읽으려면 이게 필요하다.
     uint8_t KeyFor(const std::string& addr) const {
@@ -283,6 +312,8 @@ public:
     unsigned long long hits() const { return hits_; }
     // 지금 날아가고 있는 것의 수.
     size_t flying() const { return shots_.size(); }
+    // 지금 불려 나와 있는 것의 수.
+    size_t pets() const { return pets_.size(); }
     void SetTickMs(uint32_t ms) { tickMs_ = ms; }
 
     // 읽었지만 아직 답을 안 만드는 오프코드의 집계.
@@ -337,6 +368,7 @@ private:
     unsigned long long melees_ = 0;
     unsigned long long hits_ = 0;
     std::vector<Projectile> shots_;
+    std::vector<Creature> pets_;
     // 날아가는 것에 매길 번호.
     // ⚠ **진짜 서버가 번호를 어떻게 매기는지는 모른다.** 캡처에서 사람이 715·720·728 을
     //   받은 것만 봤다. 사람과 안 부딪히게 넉넉히 띄운 자리에서 시작할 뿐이다.
