@@ -8,6 +8,7 @@ using System.Drawing;
 using System.Runtime.InteropServices;
 public class Drv {
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, IntPtr e);
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint f, IntPtr e);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
@@ -82,7 +83,15 @@ if (-not $NoHome) {
   Start-Sleep -Milliseconds 300
 }
 # 3) 목표까지 잘게 나눠 이동
-$rx = [int]([Math]::Round($Cx / $Gain)); $ry = [int]([Math]::Round($Cy / $Gain))
+#    ★ 2026-09-07 고침 — 예전에는 좌상단(0,0)에서 Cx,Cy 만큼만 옮겼다.
+#      그런데 바로 위에서 창을 (200,15)로 옮겨 두므로 실제로 눌린 자리는
+#      클라이언트 좌표 (Cx-208, Cy-46) 였다. **늘 왼쪽 위로 208x46 px 밀렸다.**
+#      화면 한가운데(640,480)를 달라고 해도 (432,434)를 눌렀으니, 캐릭터에서 커서로
+#      가는 방향이 통째로 틀어졌다 — walkto 가 두 자리를 오가며 진동한 원인이다.
+#      이제 창 원점($pt)과 실제 클라이언트 크기($cw,$ch)를 반영한다.
+$sx = [int]([Math]::Round($pt.X + $Cx * $cw / 1280.0))
+$sy = [int]([Math]::Round($pt.Y + $Cy * $ch / 960.0))
+$rx = [int]([Math]::Round($sx / $Gain)); $ry = [int]([Math]::Round($sy / $Gain))
 $n = [Math]::Max([Math]::Ceiling($rx / 4.0), [Math]::Ceiling($ry / 4.0)); if ($n -lt 1) { $n = 1 }
 $ax = 0; $ay = 0
 for ($i = 1; $i -le $n; $i++) {
@@ -91,6 +100,18 @@ for ($i = 1; $i -le $n; $i++) {
   $ax = $tx; $ay = $ty
   Start-Sleep -Milliseconds 12
 }
+# 3-2) 커서를 읽어 남은 만큼 되짚는다.
+#      Gain 은 실측 계수라 마우스 가속 설정이 바뀌면 어긋난다. 읽어서 맞추면 그 의존이 사라진다.
+$cur = New-Object Drv+POINT
+for ($k = 0; $k -lt 6; $k++) {
+  [void][Drv]::GetCursorPos([ref]$cur)
+  $ex = $sx - $cur.X; $ey = $sy - $cur.Y
+  if ([Math]::Abs($ex) -le 2 -and [Math]::Abs($ey) -le 2) { break }
+  [Drv]::mouse_event(0x0001, [int]([Math]::Round($ex / $Gain)), [int]([Math]::Round($ey / $Gain)), 0, [IntPtr]::Zero)
+  Start-Sleep -Milliseconds 60
+}
+[void][Drv]::GetCursorPos([ref]$cur)
+"커서 목표 ($sx,$sy) 실제 ($($cur.X),$($cur.Y))"
 Start-Sleep -Milliseconds 500
 if ($Click) {
   # -Hold 을 주면 그만큼 누른 채로 있는다. 녹스는 버튼을 누르고 있는 동안 커서 쪽으로 걷는다.
