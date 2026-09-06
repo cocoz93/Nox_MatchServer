@@ -94,6 +94,11 @@ constexpr uint16_t kDefaultMaxHealth = 75;
 //   09-06 덤프의 죽음은 단 두 건이고, 그 뒤 같은 번호의 부활이 안 잡혔다.
 //   그래서 잴 수가 없었다. 30Hz 기준 5초로 두었을 뿐이니 **캡처로 갈아 끼울 자리**다.
 constexpr uint32_t kRespawnDelayTicks = 150;
+
+// ⚠ **주문 사거리도 실측이 아니다.** 맞았는지 안 맞았는지 가릴 근거가 덤프에 없다
+//   (`0x42` 가 나간 순간의 두 사람 거리를 짝지을 수 없었다). 걸음 7/틱 기준
+//   서른 걸음쯤으로 두었을 뿐이다.
+constexpr double kSpellRange = 210.0;
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.
@@ -153,6 +158,14 @@ public:
     // 이 스위치를 안 두고 돌렸을 때 `0x3f`(클라 입력) 32,450건이
     // `0x4f`(방어구 장착)로 읽혔다 — 정확히 `0x3f ^ 0x70` 이다.
     void SetInboundPlain(bool v) { inboundPlain_ = v; }
+
+    // 이 주문이 몇 대미지인가. 공격 주문이 아니면 0.
+    //
+    // ⚠⚠ **숫자는 실측이 아니다.** 09-06 덤프에 `0x42` 표본이 −24·−36·−75·−127 로 있지만
+    //    **어느 공격이 만든 값인지 가릴 수 없었다**(그 시각에 주문·근접이 섞여 있다).
+    //    어느 주문이 공격이냐는 이름표(`SpellNames.cpp`)에서 가른 것이고,
+    //    **값은 게임이 도는지 보려고 넣은 자리표시**다. 실측이 생기면 갈아 끼운다.
+    static int SpellDamage(uint8_t spell);
 
     // 이 상대에게 준 XOR 키. 아직 안 줬으면 0.
     // 덤프의 SEND 를 사람이 읽으려면 이게 필요하다.
@@ -228,6 +241,9 @@ public:
 
 private:
     Session& SessionFor(const std::string& addr);
+
+    // 사거리 안에서 가장 가까운 **다른** 사람. 없으면 빈 문자열.
+    std::string NearestOther(const std::string& self) const;
 
     // `0xcc SEQ_IMPORTANT` 껍데기에 싸서 내보낸다.
     //

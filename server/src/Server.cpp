@@ -98,6 +98,38 @@ void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n,
     Emit(s, /*reliable=*/false, /*stream=*/0, buf.data(), buf.size(), out);
 }
 
+// 공격 주문과 그 위력.
+//
+// **어느 주문이 공격이냐**는 이름표에서 갈랐다(`SpellNames.cpp`, 기계로 뽑은 것).
+// **위력 숫자는 실측이 아니다** — Server.h 의 SpellDamage 주석 참조.
+int Server::SpellDamage(uint8_t spell) {
+    switch (spell) {
+        case 27: return 30;   // SPELL_FIREBALL       — 09-07 조작 실측에서 F 키
+        case 43: return 25;   // SPELL_CHAIN_LIGHTNING — D 키. 표시 이름이 "Lightning"
+        case 24: return 15;   // SPELL_LIGHTNING       — 표시 이름은 "Energy Bolt"
+        default: return 0;    // 그 밖(점멸·보호막·치유 …)은 피해가 없다
+    }
+}
+
+// 사거리 안에서 가장 가까운 다른 사람.
+std::string Server::NearestOther(const std::string& self) const {
+    auto me = sessions_.find(self);
+    if (me == sessions_.end() || !me->second.inGame) return {};
+
+    std::string best;
+    double bestD2 = kSpellRange * kSpellRange;
+    for (const auto& kv : sessions_) {
+        if (kv.first == self) continue;
+        const Session& o = kv.second;
+        if (!o.inGame || o.respawnAtFrame != 0) continue;   // 죽어 있는 사람은 안 맞는다
+        const double dx = static_cast<double>(o.x - me->second.x);
+        const double dy = static_cast<double>(o.y - me->second.y);
+        const double d2 = dx * dx + dy * dy;
+        if (d2 <= bestD2) { bestD2 = d2; best = kv.first; }
+    }
+    return best;
+}
+
 bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>& out) {
     auto it = sessions_.find(addr);
     if (it == sessions_.end()) return false;
@@ -274,8 +306,35 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             // 효과 메시지(0x80 계열)의 짜임을 아직 모른다.
             case Op::TRY_SPELL: {
                 if (!s.inGame || it.bodyLen() != kTrySpellBodyLen) break;
-                ++spells_[it.body()[0]];
-                if (it.body()[kTrySpellBodyLen - 1]) ++spellsOnSelf_;
+                const uint8_t spell = it.body()[0];
+                const bool onSelf = it.body()[kTrySpellBodyLen - 1] != 0;
+                ++spells_[spell];
+                if (onSelf) ++spellsOnSelf_;
+
+                // ① 시전을 알린다 — 실측 `70 1b`(파이어볼) 꼴로 2바이트다.
+                //    보는 사람 모두에게 나간다(누가 뭘 걸었는지 그려야 하니까).
+                {
+                    uint8_t msg[2];
+                    msg[0] = static_cast<uint8_t>(Op::REPORT_SPELL_START);
+                    msg[1] = spell;
+                    for (auto& kv2 : sessions_) {
+                        if (kv2.second.inGame) {
+                            Emit(kv2.second, /*reliable=*/false, /*stream=*/0,
+                                 msg, sizeof(msg), out);
+                        }
+                    }
+                }
+
+                // ② 공격 주문이면 맞힌다.
+                //    ⚠ 대상 고르기가 **가장 얇다** — 자기에게 건 것이 아니면
+                //      사거리 안에서 가장 가까운 한 사람이다. 진짜 녹스는 날아가는
+                //      투사체가 부딪히는 것을 본다. 그건 다음 조각이다.
+                const int dmg = SpellDamage(spell);
+                if (dmg > 0) {
+                    const std::string target = onSelf ? from : NearestOther(from);
+                    if (!target.empty()) Damage(target, dmg, out);
+                }
+                ++handled_;
                 break;
             }
 

@@ -454,6 +454,93 @@ void TestDeathFlow() {
     std::printf("  죽음·부활 흐름 — 맞음→죽음→기다림→부활\n");
 }
 
+// ── 주문이 실제로 사람을 깎는가 ────────────────────────────────
+//
+// 클라가 보내는 조각을 그대로 만들어 `OnPacket` 에 넣는다.
+// 머리 2바이트 + `79 | 주문번호1 | 0 채움19 | 대상플래그1` (본문 21 = kTrySpellBodyLen).
+std::vector<uint8_t> SpellPacket(uint8_t spell, bool onSelf) {
+    std::vector<uint8_t> p(nox::kWireHeaderSize + 1 + nox::kTrySpellBodyLen, 0);
+    p[0] = 0x00;   // 비신뢰 · 스트림 0
+    p[1] = 0x00;   // 순번
+    p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::TRY_SPELL);
+    p[nox::kWireHeaderSize + 1] = spell;
+    p.back() = onSelf ? 1 : 0;
+    return p;
+}
+
+void TestSpellDamage() {
+    nox::Server srv;
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+    srv.DebugEnterGame(a, 728);
+    srv.DebugEnterGame(b, 729);
+
+    // ① 파이어볼을 남에게 — 맞는 쪽이 깎여야 한다
+    {
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(27, /*onSelf=*/false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth - nox::Server::SpellDamage(27),
+              "파이어볼을 맞은 쪽이 안 깎임");
+        Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "쏜 쪽이 깎임");
+
+        // 시전 알림이 **보는 사람 모두**에게 나갔나
+        int spellStarts = 0;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (!body.empty() && body[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) {
+                Check(body.size() == 2, "0x70 이 2바이트가 아님");
+                Check(body[1] == 27, "0x70 의 주문이 27 이 아님");
+                ++spellStarts;
+            }
+        }
+        Check(spellStarts == 2, "0x70 이 둘에게 안 나감");
+    }
+
+    // ② 자기에게 걸면 자기가 깎인다 (대상 플래그 1)
+    {
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(27, /*onSelf=*/true);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(a) == nox::kDefaultMaxHealth - nox::Server::SpellDamage(27),
+              "자기에게 건 파이어볼이 자기를 안 깎음");
+    }
+
+    // ③ 공격이 아닌 주문은 아무도 안 깎는다
+    {
+        const uint16_t before = srv.HealthOf(b);
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(4, /*onSelf=*/false);   // 4 = 점멸
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(b) == before, "점멸이 남을 깎음");
+        Check(nox::Server::SpellDamage(4) == 0, "점멸이 공격으로 잡힘");
+    }
+
+    // ④ 계속 때리면 죽는다 — 흐름이 끝까지 이어지는지
+    {
+        int guard = 0;
+        while (srv.IsAlive(b) && guard++ < 20) {
+            std::vector<nox::OutPacket> out;
+            auto pkt = SpellPacket(27, /*onSelf=*/false);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        }
+        Check(!srv.IsAlive(b), "파이어볼을 스무 번 맞고도 안 죽음");
+        Check(srv.HealthOf(b) == 0, "죽었는데 체력이 0 이 아님");
+    }
+
+    // ⑤ 죽은 사람은 다음 대상에서 빠진다 — 이제 a 만 남으니 아무도 안 맞는다
+    {
+        const uint16_t before = srv.HealthOf(a);
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(27, /*onSelf=*/false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(a) == before, "남이 없는데 자기가 맞음");
+        Check(srv.HealthOf(b) == 0, "죽은 사람이 또 맞음");
+    }
+
+    std::printf("  주문 피해 — 시전 알림·대상 고르기·죽을 때까지\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -486,6 +573,7 @@ int main() {
     std::printf("\n[표·경계]\n");
     TestGameplayMessages();
     TestDeathFlow();
+    TestSpellDamage();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();
