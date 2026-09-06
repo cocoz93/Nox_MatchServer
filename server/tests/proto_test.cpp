@@ -468,21 +468,42 @@ std::vector<uint8_t> SpellPacket(uint8_t spell, bool onSelf) {
     return p;
 }
 
+// 시전한 뒤 투사체가 날아가 닿을 때까지 틱을 돌린다.
+// 돌려주는 값 = 그 사이에 나간 조각들.
+void FlyUntilDone(nox::Server& srv, std::vector<nox::OutPacket>& out, int maxTicks = 40) {
+    uint32_t ms = 1;
+    srv.Tick(0, out);
+    for (int i = 0; i < maxTicks && srv.flying() > 0; ++i) {
+        ms += 33;
+        srv.Tick(ms, out);
+    }
+}
+
 void TestSpellDamage() {
     nox::Server srv;
     const std::string a = "10.0.0.1:1000";
     const std::string b = "10.0.0.2:1000";
     srv.DebugEnterGame(a, 728);
     srv.DebugEnterGame(b, 729);
+    // ★ 이제 파이어볼은 **날아간다.** 바라보는 쪽이 기본 0(월드 +x)이므로
+    //   맞으려면 b 가 a 의 앞쪽에 있어야 한다. 같은 자리에 두면 안 맞는 게 옳다.
+    srv.DebugMoveTo(b, 1100, 1000);
 
     // ① 파이어볼을 남에게 — 맞는 쪽이 깎여야 한다
     {
         std::vector<nox::OutPacket> out;
         auto pkt = SpellPacket(27, /*onSelf=*/false);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        // ★ 쏘자마자는 아무도 안 깎여야 한다 — 날아가는 중이다
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "쏘자마자 맞음 (투사체가 안 날아감)");
+        Check(srv.flying() == 1, "날아가는 것이 하나가 아님");
+
+        FlyUntilDone(srv, out);
         Check(srv.HealthOf(b) == nox::kDefaultMaxHealth - nox::Server::SpellDamage(27),
-              "파이어볼을 맞은 쪽이 안 깎임");
+              "날아간 파이어볼이 안 맞음");
         Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "쏜 쪽이 깎임");
+        Check(srv.hits() == 1, "맞은 횟수가 1 이 아님");
+        Check(srv.flying() == 0, "맞았는데 안 사라짐");
 
         // 시전 알림이 **보는 사람 모두**에게 나갔나
         int spellStarts = 0;
@@ -504,6 +525,7 @@ void TestSpellDamage() {
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
         Check(srv.HealthOf(a) == nox::kDefaultMaxHealth - nox::Server::SpellDamage(27),
               "자기에게 건 파이어볼이 자기를 안 깎음");
+        Check(srv.flying() == 0, "자기에게 건 것이 날아감");
     }
 
     // ③ 공격이 아닌 주문은 아무도 안 깎는다
@@ -523,6 +545,7 @@ void TestSpellDamage() {
             std::vector<nox::OutPacket> out;
             auto pkt = SpellPacket(27, /*onSelf=*/false);
             srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            FlyUntilDone(srv, out);
         }
         Check(!srv.IsAlive(b), "파이어볼을 스무 번 맞고도 안 죽음");
         Check(srv.HealthOf(b) == 0, "죽었는데 체력이 0 이 아님");
@@ -534,6 +557,7 @@ void TestSpellDamage() {
         std::vector<nox::OutPacket> out;
         auto pkt = SpellPacket(27, /*onSelf=*/false);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        FlyUntilDone(srv, out);
         Check(srv.HealthOf(a) == before, "남이 없는데 자기가 맞음");
         Check(srv.HealthOf(b) == 0, "죽은 사람이 또 맞음");
     }
@@ -621,6 +645,93 @@ void TestMelee() {
     std::printf("  근접 공격 — 한 대·쉬는 시간·걸음과 구분·사거리\n");
 }
 
+// ── 투사체만의 성질 ───────────────────────────────────────────
+//
+// 시전하는 순간 맞으면 **피할 수가 없다.** 여기서 보는 것은 「비키면 안 맞나」다.
+// 그게 안 되면 투사체를 만든 뜻이 없다.
+void TestProjectile() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+
+    // ① 옆으로 비켜 있으면 안 맞는다 — 앞으로만 날아가니까
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1000, 1100);   // 바라보는 쪽(+x)이 아니라 옆(+y)이다
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(27, false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        FlyUntilDone(srv, out);
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "옆에 비켜 있는데 맞음");
+        Check(srv.hits() == 0, "안 맞았는데 맞은 것으로 셈");
+    }
+
+    // ② 사거리를 넘으면 사라진다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1000 + static_cast<int>(nox::kSpellRange) + 100, 1000);
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(27, false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        FlyUntilDone(srv, out);
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "사거리 밖인데 맞음");
+        Check(srv.flying() == 0, "사거리를 넘었는데 안 사라짐");
+    }
+
+    // ③ 쏜 사람은 자기 것에 안 맞는다 — 자기 자리에서 나가니 이게 없으면 늘 자폭한다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(27, false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        FlyUntilDone(srv, out);
+        Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "쏜 사람이 자기 것에 맞음");
+    }
+
+    // ④ 가는 도중에는 아직 안 맞는다 — 한 틱만 돌려 본다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1180, 1000);   // 한 틱(26)으로는 못 닿는 거리
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(27, false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        srv.Tick(0, out);
+        srv.Tick(33, out);                // 딱 한 틱
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "한 틱 만에 180 을 날아가 맞음");
+        Check(srv.flying() == 1, "가는 도중인데 사라짐");
+        FlyUntilDone(srv, out);
+        Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "끝까지 날아가도 안 맞음");
+    }
+
+    // ⑤ 바라보는 쪽을 바꾸면 그쪽으로 날아간다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1000, 1100);   // +y 쪽
+        // 바라보는 쪽을 +y(한 바퀴 256 중 64)로 돌린다 — 코드 1 이 방향이다
+        std::vector<uint8_t> face(nox::kWireHeaderSize + 1 + 1 + 4 + 1, 0);
+        face[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::PLAYER_INPUT);
+        face[nox::kWireHeaderSize + 1] = 5;   // 항목 길이 = 코드4 + 데이터1
+        face[nox::kWireHeaderSize + 2] = 1;   // CCTurn 같은 방향 코드
+        face.back() = 64;                     // 한 바퀴 256 중 64 = +y
+        std::vector<nox::OutPacket> out;
+        srv.OnPacket(a, face.data(), face.size(), out);
+        auto pkt = SpellPacket(27, false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        FlyUntilDone(srv, out);
+        Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "바라보는 쪽으로 안 날아감");
+    }
+
+    std::printf("  투사체 — 비키면 안 맞음·사거리·자폭 안 함·가는 도중·방향\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -655,6 +766,7 @@ int main() {
     TestDeathFlow();
     TestSpellDamage();
     TestMelee();
+    TestProjectile();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();

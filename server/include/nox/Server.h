@@ -29,6 +29,16 @@ struct OutPacket {
     std::vector<uint8_t> data;
 };
 
+// 날아가는 것 하나. 쏜 사람은 안 맞는다.
+struct Projectile {
+    std::string owner;   // 쏜 사람의 주소
+    uint8_t spell = 0;
+    double x = 0, y = 0;
+    double vx = 0, vy = 0;
+    double traveled = 0; // 지금까지 간 거리. 사거리를 넘으면 사라진다
+    int damage = 0;
+};
+
 // ★ 스트림 하나의 순번 — 실측으로 밝힌 규칙이다.
 //
 //   **신뢰 전송은 순번을 하나 써서 올리고, 비신뢰는 「직전 신뢰가 쓴 값」을 그대로 싣는다.**
@@ -112,6 +122,17 @@ constexpr double kSpellRange = 210.0;
 // ⚠⚠ **아래 세 숫자는 실측이 아니다.** 주문 쪽과 같은 사정이다 —
 //    09-06 덤프의 `0x42` 표본이 무슨 공격이 만든 값인지 가릴 수 없었다.
 //    닿는 거리는 「검 한 자루쯤」, 다시 때리기까지는 「초당 두 대쯤」으로 둔 자리표시다.
+// ── 날아가는 것 (투사체) ────────────────────────────────────
+//
+// 왜 필요한가 — 시전하는 순간 맞으면 **피할 수가 없다.** 녹스에서 파이어볼은
+// 날아가고, 옆으로 비키면 안 맞는다. 그게 있어야 싸움이 싸움이 된다.
+//
+// ⚠⚠ **아래 둘도 실측이 아니다.** 덤프에 투사체의 자리가 안 실린다 —
+//    `0xa4` 상태 갱신에 오브젝트로 들어오지만 그것이 파이어볼인지 가릴 종류 번호를
+//    아직 못 짚었다. 걸음(7/틱)보다 서너 배 빠른 값으로 두었을 뿐이다.
+constexpr double kProjectileSpeed = 26.0;    // 한 틱에 미는 거리
+constexpr double kProjectileHitRadius = 24.0; // 이 안에 들어오면 맞은 것으로 본다
+
 constexpr double kMeleeRange = 45.0;
 constexpr int kMeleeDamage = 12;
 constexpr uint32_t kMeleeCooldownTicks = 15;   // 30Hz 기준 0.5초
@@ -249,6 +270,10 @@ public:
     unsigned long long moves() const { return moves_; }
     // 쉬는 시간을 지나 실제로 나간 근접 공격 수(누른 횟수가 아니다).
     unsigned long long melees() const { return melees_; }
+    // 날아가다 사람에게 맞은 횟수.
+    unsigned long long hits() const { return hits_; }
+    // 지금 날아가고 있는 것의 수.
+    size_t flying() const { return shots_.size(); }
     void SetTickMs(uint32_t ms) { tickMs_ = ms; }
 
     // 읽었지만 아직 답을 안 만드는 오프코드의 집계.
@@ -301,6 +326,8 @@ private:
     bool tickStarted_ = false;
     unsigned long long moves_ = 0;
     unsigned long long melees_ = 0;
+    unsigned long long hits_ = 0;
+    std::vector<Projectile> shots_;
     std::map<uint8_t, unsigned long long> spells_;
     unsigned long long spellsOnSelf_ = 0;
     std::vector<AcceptScript> script_;   // 접속 대본

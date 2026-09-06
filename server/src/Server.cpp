@@ -343,8 +343,24 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //      투사체가 부딪히는 것을 본다. 그건 다음 조각이다.
                 const int dmg = SpellDamage(spell);
                 if (dmg > 0) {
-                    const std::string target = onSelf ? from : NearestOther(from, kSpellRange);
-                    if (!target.empty()) Damage(target, dmg, out);
+                    if (onSelf) {
+                        // 자기에게 건 것은 날아갈 데가 없다. 그 자리에서 받는다.
+                        Damage(from, dmg, out);
+                    } else {
+                        // ★ 날려 보낸다. 시전하는 순간 맞으면 **피할 수가 없다** —
+                        //   비켜서 안 맞는 것이 있어야 싸움이 싸움이 된다.
+                        //   방향은 그 사람이 바라보는 쪽(한 바퀴를 256으로 나눈 값).
+                        const double rad = s.facing * 3.14159265358979 / 128.0;
+                        Projectile p;
+                        p.owner = from;
+                        p.spell = spell;
+                        p.x = s.x;
+                        p.y = s.y;
+                        p.vx = kProjectileSpeed * std::cos(rad);
+                        p.vy = kProjectileSpeed * std::sin(rad);
+                        p.damage = dmg;
+                        shots_.push_back(p);
+                    }
                 }
                 ++handled_;
                 break;
@@ -489,6 +505,44 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         ++ticks;
     }
     if (ticks == 0) return 0;
+
+    // ── 날아가는 것들을 민다 ──
+    // 지나간 틱 수만큼 밀어야 한다. 한 번만 밀면 서버가 늦게 돈 만큼 느려진다.
+    for (int step = 0; step < ticks && !shots_.empty(); ++step) {
+        for (size_t i = 0; i < shots_.size();) {
+            Projectile& p = shots_[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.traveled += kProjectileSpeed;
+
+            // 사거리를 넘었거나 맵 밖이면 그냥 사라진다.
+            if (p.traveled > kSpellRange || p.x < 0 || p.y < 0 ||
+                p.x > kMaxCoord || p.y > kMaxCoord) {
+                shots_.erase(shots_.begin() + static_cast<long>(i));
+                continue;
+            }
+
+            // 누구에게 닿았나. **쏜 사람은 안 맞는다.**
+            std::string hit;
+            for (const auto& kv : sessions_) {
+                if (kv.first == p.owner) continue;
+                const Session& o = kv.second;
+                if (!o.inGame || o.respawnAtFrame != 0) continue;
+                const double dx = o.x - p.x;
+                const double dy = o.y - p.y;
+                if (dx * dx + dy * dy <= kProjectileHitRadius * kProjectileHitRadius) {
+                    hit = kv.first;
+                    break;
+                }
+            }
+            if (hit.empty()) { ++i; continue; }
+
+            const int dmg = p.damage;
+            shots_.erase(shots_.begin() + static_cast<long>(i));   // 먼저 지운다
+            ++hits_;
+            Damage(hit, dmg, out);   // 그 다음에 깎는다 (p 는 이미 없다)
+        }
+    }
 
     // 게임에 들어와 있는 사람에게만 보낸다.
     for (auto& kv : sessions_) {
