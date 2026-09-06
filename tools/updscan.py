@@ -34,6 +34,9 @@ OPNAME = {}
 TIMESTAMP = 0x27
 UPDATE_STREAM = 0xA4
 SERVER_ACCEPT = 0x01
+PLAYER_INPUT = 0x3F
+TRY_SPELL = 0x79
+SERVER_CMD = 0xBB
 MAX_COORD = 6000
 ALIAS_TTL = 60          # 프레임. alias.go 와 같은 값
 STEP_BUDGET = 20000     # 되짚기가 지수로 터지지 않게 (앞선 도구에서 겪은 함정)
@@ -238,6 +241,7 @@ def main():
     ap.add_argument("--show", type=int, default=8)
     ap.add_argument("--codes", default="")
     ap.add_argument("--xor", default="", help="XOR 키를 직접 준다 (예 0x60). 안 주면 수락 패킷에서 찾는다")
+    ap.add_argument("--tally", default="", help="opennox 의 noxnet 폴더 경로. 주면 삼킴을 걷어낸 전수 집계를 낸다")
     a = ap.parse_args()
 
     if a.codes:
@@ -247,6 +251,11 @@ def main():
     xor_key = harvest_keys(a.dump) if not a.xor else {}
     fixed_key = int(a.xor, 0) if a.xor else 0
     print(f"XOR 키: {a.xor if a.xor else {p: hex(k) for p, k in xor_key.items()}}")
+
+    if a.tally:
+        name_of2, cli, srv = build_lengths(a.tally)
+        return tally(a, complex_of, xor_key, fixed_key, name_of2, cli, srv)
+
     frame = 0
     al = Aliases()
 
@@ -310,6 +319,149 @@ def main():
             print(f"   {t}  {h}")
         print()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 길이표 — opennox 원본에서 그대로 뽑는다
+#
+# 왜 뽑아 쓰나 — 손으로 옮겨 적으면 그 순간 정본이 둘이 되고, 나중에 어느 쪽이
+# 맞는지 다투게 된다. 원본을 읽어 만들면 다툴 일이 없다.
+#
+# 세 군데서 모은다 —
+#   codes.go 의 `MSG_X = Op(N)`        → 이름 ↔ 번호
+#   codes.go 의 `opLen` 지도            → 구조체가 없는 것들의 본문 길이
+#   msg_*.go 의 `EncodeSize()` 상수 반환 → 구조체가 있는 것들의 본문 길이
+#
+# ★ 방향이 갈리는 것은 넷뿐이다 — `0xaa IMPORTANT` 와 `0xab IMPORTANT_ACK` 의
+#   Cli/Srv 짝. 나머지 37개는 `Register` 로 양쪽 공통이다. 그래서 표를 둘로 나눈다.
+#   서버 덤프에서 SEND(서버→클라)는 **클라가 읽는 표**, RECV 는 **서버가 읽는 표**다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+RE_NETOP = re.compile(
+    r"func \(\w*\s*\*(\w+)\) NetOp\(\) netmsg\.Op \{\s*return netmsg\.(MSG_\w+)\s*\}")
+RE_SIZE = re.compile(
+    r"func \(\w*\s*\*(\w+)\) EncodeSize\(\) int \{\s*return (-?\d+)\s*\}")
+RE_REG = re.compile(r"netmsg\.(Register|RegisterClient|RegisterServer)\(&(\w+)\{\}")
+RE_CONST = re.compile(r"^\s*(MSG_\w+)\s*=\s*Op\((\d+)\)", re.M)
+RE_OPLEN = re.compile(r"^\s*(MSG_\w+):\s*(-?\d+),", re.M)
+
+
+def build_lengths(noxnet_dir):
+    """(번호→이름, SEND용 길이표, RECV용 길이표)를 만든다. 길이는 오프코드를 포함한 전체."""
+    import glob
+    import os
+
+    codes = open(os.path.join(noxnet_dir, "netmsg", "codes.go"), encoding="utf-8").read()
+    num_of = {m.group(1): int(m.group(2)) for m in RE_CONST.finditer(codes)}
+    name_of = {v: k for k, v in num_of.items()}
+    oplen = {m.group(1): int(m.group(2)) for m in RE_OPLEN.finditer(codes)}
+
+    struct_op, struct_size, reg = {}, {}, {}
+    for path in glob.glob(os.path.join(noxnet_dir, "*.go")):
+        src = open(path, encoding="utf-8").read()
+        for m in RE_NETOP.finditer(src):
+            struct_op[m.group(1)] = m.group(2)
+        for m in RE_SIZE.finditer(src):
+            struct_size[m.group(1)] = int(m.group(2))
+        for m in RE_REG.finditer(src):
+            reg[m.group(2)] = m.group(1)
+
+    def table(kind):
+        """kind = 'RegisterClient' 또는 'RegisterServer'. 공통 등록은 양쪽에 다 들어간다."""
+        t = {}
+        for name, n in num_of.items():
+            if name in oplen and oplen[name] >= 0:
+                t[n] = 1 + oplen[name]
+        for st, how in reg.items():
+            if how != "Register" and how != kind:
+                continue
+            op = struct_op.get(st)
+            if not op or op not in num_of:
+                continue
+            if st in struct_size:
+                t[num_of[op]] = 1 + struct_size[st]
+            else:
+                t.pop(num_of[op], None)   # 길이가 가변이면 표에서 뺀다
+        return t
+
+    # UPDATE_STREAM 은 여기서 따로 뜯으므로 표에 두지 않는다.
+    cli, srv = table("RegisterClient"), table("RegisterServer")
+    cli.pop(UPDATE_STREAM, None)
+    srv.pop(UPDATE_STREAM, None)
+    return name_of, cli, srv
+
+
+def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
+    """삼킴을 걷어낸 상태로 오프코드를 전수로 센다."""
+    lens = cli if a.dir == "SEND" else srv
+    counts = Counter()
+    stuck = Counter()          # 길이를 몰라 멈춘 자리
+    frame = 0
+    al = Aliases()
+    n_pkt = n_stuck = 0
+
+    for _t, d, peer, raw in read_dump(a.dump, a.dir):
+        if len(raw) < 3:
+            continue
+        n_pkt += 1
+        k = fixed_key or xor_key.get(peer, 0)
+        if k and d == "SEND":
+            raw = bytes(c ^ k for c in raw)
+        buf = raw[2:]
+        i = 0
+        while i < len(buf):
+            op = buf[i]
+            if op == UPDATE_STREAM:
+                frame += 1
+                end = parse_update(buf, i, complex_of, al, frame)
+                if end is None:
+                    stuck[op] += 1
+                    n_stuck += 1
+                    break
+                counts[op] += 1
+                # 항목 목록 뒤의 채움 0 하나를 흡수한다 (PROTOCOL.md 「종결자 3 대 4」 참조).
+                # 서버→클라에 오프코드 0x00 은 없으므로 안전하다.
+                if end < len(buf) and buf[end] == 0:
+                    end += 1
+                i = end
+                continue
+            # 길이표에 안 담기는 가변길이 둘. 근거는 dumpscan/fix.go 에 적혀 있다 —
+            #   0x3f PLAYER_INPUT : 오프코드 다음 바이트가 본문 길이 (msg_player_input.go:62)
+            #   0x79 TRY_SPELL    : 구조체도 길이표도 없다. 실측 22바이트(오프코드 포함)
+            if op == PLAYER_INPUT:
+                ln = 2 + buf[i + 1] if i + 1 < len(buf) else None
+            elif op == TRY_SPELL:
+                ln = 22
+            elif op == SERVER_CMD:
+                # msg_server_cmd.go — 본문은 ID 1 + NetCode 2 + 길이 1 + 2*sz.
+                # ⚠ Encode 는 그 뒤에 0 을 둘 더 쓰는데(`data[4+n+0]=0; data[4+n+1]=0`)
+                #   Decode 는 `4+2*sz` 만 돌려줘 그 둘을 안 센다. 참 길이는 둘을 포함한다.
+                #   실측 표본 sz=3 → 7+6 = 13바이트로 패킷 나머지와 정확히 맞았다.
+                ln = 7 + 2 * buf[i + 4] if i + 4 < len(buf) else None
+            else:
+                ln = lens.get(op)
+            if ln is None or i + ln > len(buf):
+                stuck[op] += 1
+                n_stuck += 1
+                break
+            counts[op] += 1
+            i += ln
+
+    total = sum(counts.values())
+    print(f"{a.dir} 패킷 {n_pkt}개 → 메시지 {total}개  ·  길이를 몰라 멈춘 자리 {n_stuck}곳")
+    print(f"길이표 {len(lens)}종 (opennox 원본에서 뽑음)\n")
+    print(f"{'코드':>6} {'개수':>9}  이름")
+    print("-" * 58)
+    for op, c in counts.most_common(60):
+        print(f"  0x{op:02x} {c:9d}  {name_of.get(op, '?')}")
+    if stuck:
+        print(f"\n멈춘 자리의 오프코드 (길이 미상이거나 잘림) —")
+        for op, c in stuck.most_common(15):
+            print(f"  0x{op:02x} {c:9d}  {name_of.get(op, '?')}")
+
+    # 이번 밤 내내 물어 온 것들을 따로 짚는다.
+    print("\n★ 체력·죽음 계열 —")
+    for op in (0x41, 0x42, 0x43, 0x45, 0xDD, 0xDE, 0xE8, 0xE9, 0x73, 0x4B, 0x4C):
+        print(f"  0x{op:02x} {counts.get(op, 0):9d}  {name_of.get(op, '?')}")
 
 if __name__ == "__main__":
     sys.exit(main())
