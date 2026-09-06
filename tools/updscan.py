@@ -37,6 +37,8 @@ SERVER_ACCEPT = 0x01
 PLAYER_INPUT = 0x3F
 TRY_SPELL = 0x79
 SERVER_CMD = 0xBB
+SEQ_IMPORTANT = 0xCC
+TEXT_MESSAGE = 0xA8
 MAX_COORD = 6000
 ALIAS_TTL = 60          # 프레임. alias.go 와 같은 값
 STEP_BUDGET = 20000     # 되짚기가 지수로 터지지 않게 (앞선 도구에서 겪은 함정)
@@ -397,6 +399,7 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
     pick = {int(x, 0) for x in a.pick.split(",") if x.strip()} if a.pick else set()
     picked = defaultdict(list)
     counts = Counter()
+    inner = Counter()          # 0xcc 껍데기 안에 들어 있던 것
     stuck = Counter()          # 길이를 몰라 멈춘 자리
     frame = 0
     al = Aliases()
@@ -434,6 +437,24 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
                 ln = 2 + buf[i + 1] if i + 1 < len(buf) else None
             elif op == TRY_SPELL:
                 ln = 22
+            elif op == SEQ_IMPORTANT:
+                # ★ 또 하나의 껍데기다 (msg_seq_important.go) —
+                #     cc | ID 2바이트(LE) | 길이 1바이트 | 속 메시지 그 길이만큼
+                #   `0xaa` 와 같은 짜임이라 **안에 한 층이 더 있다.** 속도 함께 센다.
+                ln = 4 + buf[i + 3] if i + 3 < len(buf) else None
+                if ln is not None and i + ln <= len(buf) and ln > 4:
+                    sub = buf[i + 4]
+                    inner[sub] += 1
+                    if sub in pick and len(picked[sub]) < a.show:
+                        picked[sub].append((_t, peer + " (0xcc 속)", buf[i + 4:i + ln].hex(" ")))
+            elif op == TEXT_MESSAGE:
+                # msg_text.go — 머리 10바이트(번호2·깃발1·x2·y2·크기1·지속2) + 데이터.
+                # 데이터 길이는 `크기`인데 깃발에 UTF8(0x2)·Localized(0x8) 가 없으면 UTF-16 이라 두 배다.
+                if i + 8 < len(buf):
+                    dsz = buf[i + 8] if (buf[i + 3] & 0x0A) else buf[i + 8] * 2
+                    ln = 11 + dsz
+                else:
+                    ln = None
             elif op == SERVER_CMD:
                 # msg_server_cmd.go — 본문은 ID 1 + NetCode 2 + 길이 1 + 2*sz.
                 # ⚠ Encode 는 그 뒤에 0 을 둘 더 쓰는데(`data[4+n+0]=0; data[4+n+1]=0`)
@@ -458,6 +479,11 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
     print("-" * 58)
     for op, c in counts.most_common(60):
         print(f"  0x{op:02x} {c:9d}  {name_of.get(op, '?')}")
+    if inner:
+        print(f"\n★ 0xcc SEQ_IMPORTANT 껍데기 안에 들어 있던 것 (합 {sum(inner.values())}개) —")
+        for op, c in inner.most_common(25):
+            print(f"  0x{op:02x} {c:9d}  {name_of.get(op, '?')}")
+
     if stuck:
         print(f"\n멈춘 자리의 오프코드 (길이 미상이거나 잘림) —")
         for op, c in stuck.most_common(15):
@@ -469,9 +495,15 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
         for t, peer, h in picked[op]:
             print(f"   {t}  {peer}  {h}")
 
-    print("\n★ 체력·죽음 계열 —")
-    for op in (0x41, 0x42, 0x43, 0x45, 0xDD, 0xDE, 0xE8, 0xE9, 0x73, 0x4B, 0x4C):
-        print(f"  0x{op:02x} {counts.get(op, 0):9d}  {name_of.get(op, '?')}")
+    # ⚠ 껍데기(0xcc) 속에 든 것을 안 더하면 표가 거짓말을 한다.
+    #   실제로 `0x43 REPORT_PLAYER_HEALTH` 86건이 전부 껍데기 속에 있었고,
+    #   겉 개수만 보면 0으로 보여 「체력 절대값은 안 온다」로 잘못 읽힌다.
+    print("\n★ 체력·죽음·줍기 계열 (겉 + 0xcc 속) —")
+    for op in (0x41, 0x42, 0x43, 0x45, 0x48, 0x49, 0xDD, 0xDE, 0xE8, 0xE9,
+               0x73, 0x4B, 0x4C, 0x60, 0x61):
+        o, n = counts.get(op, 0), inner.get(op, 0)
+        mark = f"  (겉 {o} + 속 {n})" if n else ""
+        print(f"  0x{op:02x} {o + n:9d}  {name_of.get(op, '?')}{mark}")
 
 if __name__ == "__main__":
     sys.exit(main())
