@@ -1,0 +1,280 @@
+﻿// MsgLen.cpp — 오프코드별 본문 길이 표. **손으로 고치지 말 것.**
+//
+// 생성 = tools/dumpscan -genlen
+// 출처 = opennox/libs noxnet (MIT). 자세한 고지는 THIRD_PARTY.md.
+//
+// 길이는 **오프코드를 뺀 본문**이다. 패킷 안에서 한 메시지가 차지하는 자리는
+// 1 + 이 값이다. -1 은 가변이라 표로 못 정하는 것 (Nox::MsgBodyLen 참조).
+#include "nox/MsgLen.h"
+
+namespace nox {
+
+// 색인 = 오프코드. 값 = 본문 길이, -1 이면 가변 또는 미상.
+const int16_t kMsgBodyLen[256] = {
+    /* 0x00 */    0,   // MSG_SERVER_CONNECT
+    /* 0x01 */    5,   // MSG_SERVER_ACCEPT
+    /* 0x02 */    0,   // MSG_CODE2
+    /* 0x03 */    0,   // MSG_CODE3
+    /* 0x04 */   -1,   // MSG_CODE4
+    /* 0x05 */   -1,   // MSG_CODE5
+    /* 0x06 */    4,   // MSG_CLIENT_PING
+    /* 0x07 */   -1,   // MSG_CODE7
+    /* 0x08 */    4,   // MSG_CLIENT_PONG
+    /* 0x09 */   -1,   // MSG_CODE9
+    /* 0x0A */   -1,   // MSG_CLIENT_CLOSE
+    /* 0x0B */   -1,   // MSG_SERVER_CLOSE
+    /* 0x0C */    9,   // MSG_SERVER_DISCOVER
+    /* 0x0D */   -1,   // MSG_SERVER_INFO
+    /* 0x0E */   97,   // MSG_SERVER_TRY_JOIN
+    /* 0x0F */    0,   // MSG_PASSWORD_REQUIRED
+    /* 0x10 */    5,   // MSG_SERVER_PING
+    /* 0x11 */   19,   // MSG_SERVER_PASSWORD
+    /* 0x12 */    5,   // MSG_SERVER_PONG
+    /* 0x13 */    1,   // MSG_SERVER_ERROR
+    /* 0x14 */    0,   // MSG_SERVER_JOIN_OK
+    /* 0x15 */    0,   // MSG_SERVER_JOIN_FAIL
+    /* 0x16 */   -1,   // MSG_CODE22
+    /* 0x17 */   -1,   // MSG_CODE23
+    /* 0x18 */   -1,   // MSG_CODE24
+    /* 0x19 */   -1,   // MSG_CODE25
+    /* 0x1A */   -1,   // MSG_CODE26
+    /* 0x1B */   -1,   // MSG_CODE27
+    /* 0x1C */   -1,   // MSG_CODE28
+    /* 0x1D */   -1,   // MSG_CODE29
+    /* 0x1E */   -1,   // MSG_CODE30
+    /* 0x1F */    1,   // MSG_ACCEPTED
+    /* 0x20 */  153,   // MSG_CLIENT_ACCEPT
+    /* 0x21 */   -1,   // MSG_SERVER_CLOSE_ACK
+    /* 0x22 */   -1,   // MSG_CLIENT_CLOSE_ACK
+    /* 0x23 */    4,   // MSG_SPEED
+    /* 0x24 */   -1,   // MSG_PING
+    /* 0x25 */   -1,   // MSG_CODE37
+    /* 0x26 */   -1,   // MSG_CODE38
+    /* 0x27 */    2,   // MSG_TIMESTAMP
+    /* 0x28 */    4,   // MSG_FULL_TIMESTAMP
+    /* 0x29 */   -1,   // MSG_NEED_TIMESTAMP
+    /* 0x2A */   -1,   // MSG_SIMULATED_TIMESTAMP
+    /* 0x2B */   40,   // MSG_USE_MAP
+    /* 0x2C */    6,   // MSG_JOIN_DATA
+    /* 0x2D */  128,   // MSG_NEW_PLAYER
+    /* 0x2E */    2,   // MSG_PLAYER_QUIT
+    /* 0x2F */    8,   // MSG_SIMPLE_OBJ
+    /* 0x30 */   -1,   // MSG_COMPLEX_OBJ
+    /* 0x31 */    2,   // MSG_DESTROY_OBJECT
+    /* 0x32 */    2,   // MSG_OBJECT_OUT_OF_SIGHT
+    /* 0x33 */    2,   // MSG_OBJECT_IN_SHADOWS
+    /* 0x34 */    2,   // MSG_OBJECT_FRIEND_ADD
+    /* 0x35 */    2,   // MSG_OBJECT_FRIEND_REMOVE
+    /* 0x36 */    2,   // MSG_RESET_FRIENDS
+    /* 0x37 */    2,   // MSG_ENABLE_OBJECT
+    /* 0x38 */    2,   // MSG_DISABLE_OBJECT
+    /* 0x39 */    3,   // MSG_DRAW_FRAME
+    /* 0x3A */    2,   // MSG_DESTROY_WALL
+    /* 0x3B */    2,   // MSG_OPEN_WALL
+    /* 0x3C */    2,   // MSG_CLOSE_WALL
+    /* 0x3D */    5,   // MSG_CHANGE_OR_ADD_WALL_MAGIC
+    /* 0x3E */    2,   // MSG_REMOVE_WALL_MAGIC
+    /* 0x3F */   -1,   // MSG_PLAYER_INPUT
+    /* 0x40 */   -1,   // MSG_PLAYER_SET_WAYPOINT
+    /* 0x41 */    3,   // MSG_REPORT_HEALTH  ← cdecode.c 에서 채움
+    /* 0x42 */    4,   // MSG_REPORT_HEALTH_DELTA
+    /* 0x43 */    2,   // MSG_REPORT_PLAYER_HEALTH
+    /* 0x44 */    6,   // MSG_REPORT_ITEM_HEALTH
+    /* 0x45 */    4,   // MSG_REPORT_MANA
+    /* 0x46 */   -1,   // MSG_REPORT_POISON
+    /* 0x47 */    1,   // MSG_REPORT_STAMINA
+    /* 0x48 */   13,   // MSG_REPORT_STATS
+    /* 0x49 */    4,   // MSG_REPORT_ARMOR_VALUE
+    /* 0x4A */    4,   // MSG_REPORT_GOLD
+    /* 0x4B */    4,   // MSG_REPORT_PICKUP
+    /* 0x4C */    8,   // MSG_REPORT_MODIFIABLE_PICKUP
+    /* 0x4D */    4,   // MSG_REPORT_DROP
+    /* 0x4E */   10,   // MSG_REPORT_LESSON
+    /* 0x4F */    6,   // MSG_REPORT_MUNDANE_ARMOR_EQUIP
+    /* 0x50 */    6,   // MSG_REPORT_MUNDANE_WEAPON_EQUIP
+    /* 0x51 */   10,   // MSG_REPORT_MODIFIABLE_WEAPON_EQUIP
+    /* 0x52 */   10,   // MSG_REPORT_MODIFIABLE_ARMOR_EQUIP
+    /* 0x53 */    6,   // MSG_REPORT_ARMOR_DEQUIP
+    /* 0x54 */    6,   // MSG_REPORT_WEAPON_DEQUIP
+    /* 0x55 */   -1,   // MSG_REPORT_TREASURE_COUNT
+    /* 0x56 */    7,   // MSG_REPORT_FLAG_BALL_WINNER
+    /* 0x57 */    7,   // MSG_REPORT_FLAG_WINNER
+    /* 0x58 */    7,   // MSG_REPORT_DEATHMATCH_WINNER
+    /* 0x59 */    7,   // MSG_REPORT_DEATHMATCH_TEAM_WINNER
+    /* 0x5A */    6,   // MSG_REPORT_ENCHANTMENT
+    /* 0x5B */    1,   // MSG_REPORT_ITEM_ENCHANTMENT
+    /* 0x5C */   -1,   // MSG_REPORT_LIGHT_COLOR
+    /* 0x5D */   -1,   // MSG_REPORT_LIGHT_INTENSITY
+    /* 0x5E */    3,   // MSG_REPORT_Z_PLUS
+    /* 0x5F */    3,   // MSG_REPORT_Z_MINUS
+    /* 0x60 */    2,   // MSG_REPORT_EQUIP
+    /* 0x61 */    2,   // MSG_REPORT_DEQUIP
+    /* 0x62 */   -1,   // MSG_REPORT_ACQUIRE_SPELL
+    /* 0x63 */   -1,   // MSG_REPORT_TARGET
+    /* 0x64 */    4,   // MSG_REPORT_CHARGES
+    /* 0x65 */    6,   // MSG_REPORT_X_STATUS
+    /* 0x66 */   -1,   // MSG_REPORT_PLAYER_STATUS
+    /* 0x67 */    6,   // MSG_REPORT_MODIFIER
+    /* 0x68 */    7,   // MSG_REPORT_STAT_MODIFIER
+    /* 0x69 */   -1,   // MSG_REPORT_NPC
+    /* 0x6A */    6,   // MSG_REPORT_CLIENT_STATUS
+    /* 0x6B */    6,   // MSG_REPORT_ANIMATION_FRAME
+    /* 0x6C */   -1,   // MSG_REPORT_ACQUIRE_CREATURE
+    /* 0x6D */   -1,   // MSG_REPORT_LOSE_CREATURE
+    /* 0x6E */   -1,   // MSG_REPORT_EXPERIENCE
+    /* 0x6F */   -1,   // MSG_REPORT_SPELL_AWARD
+    /* 0x70 */   -1,   // MSG_REPORT_SPELL_START
+    /* 0x71 */   -1,   // MSG_REPORT_INVENTORY_LOADED
+    /* 0x72 */   -1,   // MSG_TRY_DROP
+    /* 0x73 */   -1,   // MSG_TRY_GET
+    /* 0x74 */   -1,   // MSG_TRY_USE
+    /* 0x75 */   -1,   // MSG_TRY_EQUIP
+    /* 0x76 */   -1,   // MSG_TRY_DEQUIP
+    /* 0x77 */   -1,   // MSG_TRY_TARGET
+    /* 0x78 */   -1,   // MSG_TRY_CREATURE_COMMAND
+    /* 0x79 */   -1,   // MSG_TRY_SPELL
+    /* 0x7A */   -1,   // MSG_TRY_ABILITY
+    /* 0x7B */   -1,   // MSG_TRY_COLLIDE
+    /* 0x7C */   -1,   // MSG_FX_PARTICLEFX
+    /* 0x7D */   -1,   // MSG_FX_PLASMA
+    /* 0x7E */   11,   // MSG_FX_SUMMON
+    /* 0x7F */    2,   // MSG_FX_SUMMON_CANCEL
+    /* 0x80 */    3,   // MSG_FX_SHIELD
+    /* 0x81 */    4,   // MSG_FX_BLUE_SPARKS
+    /* 0x82 */    4,   // MSG_FX_YELLOW_SPARKS
+    /* 0x83 */    4,   // MSG_FX_CYAN_SPARKS
+    /* 0x84 */    4,   // MSG_FX_VIOLET_SPARKS
+    /* 0x85 */    4,   // MSG_FX_EXPLOSION
+    /* 0x86 */    4,   // MSG_FX_LESSER_EXPLOSION
+    /* 0x87 */    4,   // MSG_FX_COUNTERSPELL_EXPLOSION
+    /* 0x88 */    4,   // MSG_FX_THIN_EXPLOSION
+    /* 0x89 */    4,   // MSG_FX_TELEPORT
+    /* 0x8A */    4,   // MSG_FX_SMOKE_BLAST
+    /* 0x8B */    4,   // MSG_FX_DAMAGE_POOF
+    /* 0x8C */    8,   // MSG_FX_LIGHTNING
+    /* 0x8D */    8,   // MSG_FX_ENERGY_BOLT
+    /* 0x8E */    8,   // MSG_FX_CHAIN_LIGHTNING_BOLT
+    /* 0x8F */    8,   // MSG_FX_DRAIN_MANA
+    /* 0x90 */    8,   // MSG_FX_CHARM
+    /* 0x91 */    8,   // MSG_FX_GREATER_HEAL
+    /* 0x92 */   -1,   // MSG_FX_MAGIC
+    /* 0x93 */    5,   // MSG_FX_SPARK_EXPLOSION
+    /* 0x94 */    8,   // MSG_FX_DEATH_RAY
+    /* 0x95 */    8,   // MSG_FX_SENTRY_RAY
+    /* 0x96 */    4,   // MSG_FX_RICOCHET
+    /* 0x97 */    1,   // MSG_FX_JIGGLE
+    /* 0x98 */   -1,   // MSG_FX_GREEN_BOLT
+    /* 0x99 */   -1,   // MSG_FX_GREEN_EXPLOSION
+    /* 0x9A */    4,   // MSG_FX_WHITE_FLASH
+    /* 0x9B */   -1,   // MSG_FX_GENERATING_MAP
+    /* 0x9C */   -1,   // MSG_FX_ASSEMBLING_MAP
+    /* 0x9D */   -1,   // MSG_FX_POPULATING_MAP
+    /* 0x9E */    6,   // MSG_FX_DURATION_SPELL
+    /* 0x9F */    5,   // MSG_FX_DELTAZ_SPELL_START
+    /* 0xA0 */   -1,   // MSG_FX_TURN_UNDEAD
+    /* 0xA1 */   -1,   // MSG_FX_ARROW_TRAP
+    /* 0xA2 */   10,   // MSG_FX_VAMPIRISM
+    /* 0xA3 */    4,   // MSG_FX_MANA_BOMB_CANCEL
+    /* 0xA4 */   -1,   // MSG_UPDATE_STREAM
+    /* 0xA5 */    9,   // MSG_NEW_ALIAS
+    /* 0xA6 */    3,   // MSG_AUDIO_EVENT
+    /* 0xA7 */    3,   // MSG_AUDIO_PLAYER_EVENT
+    /* 0xA8 */   -1,   // MSG_TEXT_MESSAGE
+    /* 0xA9 */   -1,   // MSG_INFORM
+    /* 0xAA */    4,   // MSG_IMPORTANT  ← cdecode.c 에서 채움
+    /* 0xAB */    4,   // MSG_IMPORTANT_ACK  ← cdecode.c 에서 채움
+    /* 0xAC */    4,   // MSG_MOUSE
+    /* 0xAD */    0,   // MSG_INCOMING_CLIENT
+    /* 0xAE */    2,   // MSG_OUTGOING_CLIENT
+    /* 0xAF */   19,   // MSG_GAME_SETTINGS
+    /* 0xB0 */   48,   // MSG_GAME_SETTINGS_2
+    /* 0xB1 */   59,   // MSG_UPDATE_GUI_GAME_SETTINGS
+    /* 0xB2 */    3,   // MSG_DOOR_ANGLE
+    /* 0xB3 */    3,   // MSG_OBELISK_CHARGE
+    /* 0xB4 */    3,   // MSG_PENTAGRAM_ACTIVATE
+    /* 0xB5 */   13,   // MSG_CLIENT_PREDICT_LINEAR
+    /* 0xB6 */   -1,   // MSG_REQUEST_MAP
+    /* 0xB7 */   -1,   // MSG_CANCEL_MAP
+    /* 0xB8 */   87,   // MSG_MAP_SEND_START
+    /* 0xB9 */   -1,   // MSG_MAP_SEND_PACKET
+    /* 0xBA */    1,   // MSG_MAP_SEND_ABORT
+    /* 0xBB */   -1,   // MSG_SERVER_CMD
+    /* 0xBC */   -1,   // MSG_SYSOP_PW
+    /* 0xBD */   -1,   // MSG_SYSOP_RESULT
+    /* 0xBE */    0,   // MSG_KEEP_ALIVE
+    /* 0xBF */    1,   // MSG_RECEIVED_MAP
+    /* 0xC0 */    0,   // MSG_CLIENT_READY
+    /* 0xC1 */   -1,   // MSG_REQUEST_SAVE_PLAYER
+    /* 0xC2 */   -1,   // MSG_XFER_MSG
+    /* 0xC3 */   11,   // MSG_PLAYER_OBJ
+    /* 0xC4 */   -1,   // MSG_TEAM_MSG
+    /* 0xC5 */   -1,   // MSG_KICK_NOTIFICATION
+    /* 0xC6 */   -1,   // MSG_TIMEOUT_NOTIFICATION
+    /* 0xC7 */    0,   // MSG_SERVER_QUIT
+    /* 0xC8 */   -1,   // MSG_SERVER_QUIT_ACK
+    /* 0xC9 */   -1,   // MSG_TRADE
+    /* 0xCA */   -1,   // MSG_CHAT_KILL
+    /* 0xCB */   -1,   // MSG_MESSAGES_KILL
+    /* 0xCC */   -1,   // MSG_SEQ_IMPORTANT
+    /* 0xCD */    2,   // MSG_REPORT_ABILITY_AWARD
+    /* 0xCE */    2,   // MSG_REPORT_ABILITY_STATE
+    /* 0xCF */    2,   // MSG_REPORT_ACTIVE_ABILITIES
+    /* 0xD0 */   -1,   // MSG_DIALOG
+    /* 0xD1 */   -1,   // MSG_REPORT_GUIDE_AWARD
+    /* 0xD2 */    6,   // MSG_INTERESTING_ID
+    /* 0xD3 */   12,   // MSG_TIMER_STATUS
+    /* 0xD4 */   -1,   // MSG_REQUEST_TIMER_STATUS
+    /* 0xD5 */   -1,   // MSG_JOURNAL_MSG
+    /* 0xD6 */   -1,   // MSG_CHAPTER_END
+    /* 0xD7 */    4,   // MSG_REPORT_ALL_LATENCY
+    /* 0xD8 */    5,   // MSG_REPORT_FLAG_STATUS
+    /* 0xD9 */    3,   // MSG_REPORT_BALL_STATUS
+    /* 0xDA */   -1,   // MSG_REPORT_OBJECT_POISON
+    /* 0xDB */   -1,   // MSG_REPORT_MONITOR_CREATURE
+    /* 0xDC */   -1,   // MSG_REPORT_UNMONITOR_CREATURE
+    /* 0xDD */    6,   // MSG_REPORT_TOTAL_HEALTH
+    /* 0xDE */    6,   // MSG_REPORT_TOTAL_MANA
+    /* 0xDF */    5,   // MSG_REPORT_SPELL_STAT
+    /* 0xE0 */   -1,   // MSG_REPORT_SECONDARY_WEAPON
+    /* 0xE1 */   -1,   // MSG_REPORT_LAST_QUIVER
+    /* 0xE2 */   -1,   // MSG_INFO_BOOK_DATA
+    /* 0xE3 */   -1,   // MSG_SOCIAL
+    /* 0xE4 */    2,   // MSG_FADE_BEGIN
+    /* 0xE5 */   -1,   // MSG_MUSIC_EVENT
+    /* 0xE6 */   -1,   // MSG_MUSIC_PUSH_EVENT
+    /* 0xE7 */   -1,   // MSG_MUSIC_POP_EVENT
+    /* 0xE8 */    2,   // MSG_PLAYER_DIED
+    /* 0xE9 */    8,   // MSG_PLAYER_RESPAWN
+    /* 0xEA */    4,   // MSG_FORGET_DRAWABLES
+    /* 0xEB */    1,   // MSG_RESET_ABILITIES
+    /* 0xEC */    1,   // MSG_RATE_CHANGE
+    /* 0xED */   -1,   // MSG_REPORT_CREATURE_CMD
+    /* 0xEE */   -1,   // MSG_VOTE
+    /* 0xEF */   16,   // MSG_STAT_MULTIPLIERS
+    /* 0xF0 */   -1,   // MSG_GAUNTLET
+    /* 0xF1 */   -1,   // MSG_INVENTORY_FAIL
+    /* 0xF2 */   -1,   // Op(242)
+    /* 0xF3 */   -1,   // Op(243)
+    /* 0xF4 */   -1,   // Op(244)
+    /* 0xF5 */   -1,   // Op(245)
+    /* 0xF6 */   -1,   // Op(246)
+    /* 0xF7 */   -1,   // Op(247)
+    /* 0xF8 */   -1,   // Op(248)
+    /* 0xF9 */   -1,   // Op(249)
+    /* 0xFA */   -1,   // Op(250)
+    /* 0xFB */   -1,   // Op(251)
+    /* 0xFC */   -1,   // Op(252)
+    /* 0xFD */   -1,   // Op(253)
+    /* 0xFE */   -1,   // Op(254)
+    /* 0xFF */   -1,   // Op(255)
+};
+
+// 방향이 정해지면 길이가 고정인 것들. 위 표에는 -1 로 들어 있다.
+int MsgBodyLenByDir(uint8_t op, bool fromClient) {
+    switch (op) {
+        default: return kMsgBodyLen[op];
+    }
+}
+
+// 뽑은 결과 — 길이를 아는 것 144개(그중 손으로 채운 것 3) / 가변·미상 112개
+}  // namespace nox

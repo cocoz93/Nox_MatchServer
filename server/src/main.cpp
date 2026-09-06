@@ -1,8 +1,14 @@
-﻿// main.cpp — 서버 찾기에만 답하는 최소 서버 (P0).
+﻿// main.cpp — 진짜 소켓을 `nox::Server` 에 붙인다.
 //
-// 클라가 뿌리는 SERVER_DISCOVER(0x0C)를 받으면, 정품 호스트가 뱉었던 응답을
-// 구조체로 읽어 Token과 서버 이름만 바꿔 되돌려준다.
-// 정체를 모르는 자리는 원본 그대로 나가므로 클라의 버전 필터에 걸릴 수 없다.
+// **여기에는 프로토콜이 없다.** 받은 바이트를 그대로 넘기고, 나온 바이트를 그대로 보낸다.
+// 서버가 무엇에 어떻게 답하는지는 전부 `server/src/Server.cpp` 에 있고,
+// 같은 로직을 대조 장치(`server/src/replay.cpp`)가 덤프로 돌려 채점한다.
+//
+//   [진짜 소켓]  main.cpp    ─┐
+//                             ├─▶  Server::OnPacket  ─▶  나갈 조각들
+//   [덤프 재생]  replay.cpp  ─┘
+//
+// 지금 답하는 것 = 서버 찾기 · 접속 시도 · 접속 수락 · 핑.
 //
 //   nox_server.exe [--port 18590] [--name "MY SERVER"] [--selftest] [--quiet]
 #include <winsock2.h>
@@ -11,11 +17,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <string>
+#include <vector>
 
 #include "nox/Messages.h"
 #include "nox/Opcode.h"
 #include "nox/Recording.h"
+#include "nox/Server.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -120,6 +129,21 @@ int main(int argc, char** argv) {
     }
     tmpl.serverName = name;
 
+    // ★ 서버 로직은 `nox::Server` 가 들고 있다. 여기는 소켓만 붙인다.
+    //   같은 로직을 대조 장치(server/src/replay.cpp)가 덤프로 돌려 채점한다.
+    //
+    // 서버 찾기에 답할 원본은 녹음을 쓰되, 이름만 인자로 바꿔 넣는다.
+    nox::Server srv;
+    {
+        uint8_t info[256] = {};
+        nox::Writer w(info, sizeof(info));
+        if (!tmpl.Encode(w) || !w.ok()) {
+            std::printf("소개 원본을 만들지 못했다\n");
+            return 1;
+        }
+        srv.SetInfoTemplate(info, w.written());
+    }
+
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
         std::printf("WSAStartup 실패\n");
@@ -143,50 +167,78 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::printf("서버 찾기 응답 대기 — UDP %d, 이름 \"%s\"\n", port, name.c_str());
+    std::printf("접속 대기 — UDP %d, 이름 \"%s\"\n", port, name.c_str());
+    std::printf("답하는 것: 서버 찾기 · 접속 시도 · 접속 수락 · 핑\n");
     std::fflush(stdout);
 
-    uint8_t in[2048];
-    uint8_t out[256];
-    unsigned long long answered = 0;
-    for (;;) {
-        sockaddr_in from = {};
-        int fromLen = sizeof(from);
-        const int n = recvfrom(s, reinterpret_cast<char*>(in), sizeof(in), 0,
-                               reinterpret_cast<sockaddr*>(&from), &fromLen);
-        if (n == SOCKET_ERROR) continue;
-        if (n < static_cast<int>(nox::kHeaderSize)) continue;
-
+    // 주소를 문자열로 만든다. `Server` 는 이 문자열로 상대를 가른다.
+    auto keyOf = [](const sockaddr_in& a) {
         char ip[64] = {};
-        inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
+        inet_ntop(AF_INET, &a.sin_addr, ip, sizeof(ip));
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "%s:%d", ip, ntohs(a.sin_port));
+        return std::string(buf);
+    };
 
-        if (in[2] != static_cast<uint8_t>(nox::Op::SERVER_DISCOVER)) {
-            if (!quiet) {
-                std::printf("[무시] %s:%d 오프코드 0x%02x\n", ip, ntohs(from.sin_port), in[2]);
+    uint8_t in[2048];
+    std::map<std::string, sockaddr_in> addrOf;   // 문자열 → 진짜 주소
+    std::vector<nox::OutPacket> outs;
+    unsigned long long nRecv = 0, nSent = 0, nTicks = 0;
+
+    // 나갈 조각을 실제로 내보낸다. 틱과 수신 양쪽에서 쓴다.
+    auto flush = [&]() {
+        for (const auto& p : outs) {
+            auto it = addrOf.find(p.to);
+            if (it == addrOf.end()) continue;
+            sendto(s, reinterpret_cast<const char*>(p.data.data()),
+                   static_cast<int>(p.data.size()), 0,
+                   reinterpret_cast<sockaddr*>(&it->second), sizeof(it->second));
+            ++nSent;
+        }
+        outs.clear();
+    };
+
+    // ★ `recvfrom` 을 그냥 부르면 패킷이 올 때까지 막혀서 **틱이 안 돈다.**
+    //   기다리는 시간을 틱 주기로 잘라 두고, 그 사이사이에 틱을 돌린다.
+    for (;;) {
+        fd_set rd;
+        FD_ZERO(&rd);
+        FD_SET(s, &rd);
+        timeval tv{};
+        tv.tv_usec = 5000;   // 5ms — 틱 주기보다 촘촘히 깨어난다
+        const int ready = select(0, &rd, nullptr, nullptr, &tv);
+
+        if (ready > 0 && FD_ISSET(s, &rd)) {
+            sockaddr_in from = {};
+            int fromLen = sizeof(from);
+            const int n = recvfrom(s, reinterpret_cast<char*>(in), sizeof(in), 0,
+                                   reinterpret_cast<sockaddr*>(&from), &fromLen);
+            if (n > 0) {
+                ++nRecv;
+                const std::string who = keyOf(from);
+                addrOf[who] = from;
+                const size_t got = srv.OnPacket(who, in, static_cast<size_t>(n), outs);
+                const size_t made = outs.size();
+                flush();
+                if (!quiet) {
+                    std::printf("[받음 %llu] %s  %d바이트 → 메시지 %zu개, 보낸 조각 %zu개\n",
+                                nRecv, who.c_str(), n, got, made);
+                    std::fflush(stdout);
+                }
+            }
+        }
+
+        const int ticks = srv.Tick(GetTickCount(), outs);
+        if (ticks > 0) {
+            nTicks += static_cast<unsigned long long>(ticks);
+            const size_t made = outs.size();
+            flush();
+            // 매 틱 찍으면 화면이 흐르니 1초에 한 번만.
+            if (!quiet && made > 0 && (srv.frame() % 30) == 0) {
+                std::printf("[틱] 프레임 %u · 이번에 보낸 조각 %zu개 (누적 틱 %llu)\n",
+                            srv.frame(), made, nTicks);
                 std::fflush(stdout);
             }
-            continue;
-        }
-
-        nox::MsgServerDiscover req;
-        nox::Reader r(in + nox::kHeaderSize, static_cast<size_t>(n) - nox::kHeaderSize);
-        if (!req.Decode(r)) {
-            if (!quiet) std::printf("[불량] %s 서버 찾기를 읽지 못함\n", ip);
-            continue;
-        }
-
-        nox::MsgServerInfo info = tmpl;
-        info.token = req.token;   // 요청의 시각을 그대로 돌려줘야 클라가 자기 것으로 알아본다
-
-        const size_t len = BuildInfo(info, out, sizeof(out));
-        if (len == 0) continue;
-        sendto(s, reinterpret_cast<const char*>(out), static_cast<int>(len), 0,
-               reinterpret_cast<sockaddr*>(&from), fromLen);
-        ++answered;
-        if (!quiet) {
-            std::printf("[응답 %llu] %s:%d  token=0x%08X  %zu바이트\n",
-                        answered, ip, ntohs(from.sin_port), req.token, len);
-            std::fflush(stdout);
         }
     }
 }
