@@ -112,12 +112,12 @@ int Server::SpellDamage(uint8_t spell) {
 }
 
 // 사거리 안에서 가장 가까운 다른 사람.
-std::string Server::NearestOther(const std::string& self) const {
+std::string Server::NearestOther(const std::string& self, double range) const {
     auto me = sessions_.find(self);
     if (me == sessions_.end() || !me->second.inGame) return {};
 
     std::string best;
-    double bestD2 = kSpellRange * kSpellRange;
+    double bestD2 = range * range;
     for (const auto& kv : sessions_) {
         if (kv.first == self) continue;
         const Session& o = kv.second;
@@ -284,6 +284,18 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         if (s.x > kMaxCoord) s.x = kMaxCoord;
                         if (s.y > kMaxCoord) s.y = kMaxCoord;
                         ++moves_;
+                    } else if (code == 6) {
+                        // 왼버튼 = `CCAction`(6). 근접 공격이다.
+                        // 근거는 둘 — 09-07 조작 실측과 opennox 의 CtrlCode 표.
+                        //
+                        // ⚠ 버튼을 누르고 있으면 이 코드가 **매 틱** 온다.
+                        //   쉬는 시간을 안 두면 초당 서른 대가 들어간다.
+                        if (frame_ >= s.nextMeleeFrame) {
+                            s.nextMeleeFrame = frame_ + kMeleeCooldownTicks;
+                            const std::string t = NearestOther(from, kMeleeRange);
+                            if (!t.empty()) Damage(t, kMeleeDamage, out);
+                            ++melees_;
+                        }
                     }
                     q += dataLen; qn -= dataLen;
                 }
@@ -331,7 +343,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //      투사체가 부딪히는 것을 본다. 그건 다음 조각이다.
                 const int dmg = SpellDamage(spell);
                 if (dmg > 0) {
-                    const std::string target = onSelf ? from : NearestOther(from);
+                    const std::string target = onSelf ? from : NearestOther(from, kSpellRange);
                     if (!target.empty()) Damage(target, dmg, out);
                 }
                 ++handled_;

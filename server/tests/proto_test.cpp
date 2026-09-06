@@ -541,6 +541,86 @@ void TestSpellDamage() {
     std::printf("  주문 피해 — 시전 알림·대상 고르기·죽을 때까지\n");
 }
 
+// ── 근접 공격 ─────────────────────────────────────────────────
+//
+// 클라의 `0x3f PLAYER_INPUT` 을 흉내낸다.
+// 본문 = `[항목 길이] [코드1 0 0 0] …` — 코드마다 4바이트를 쓰고 뒤에 데이터가 붙는다.
+// `CCAction`(6) 은 데이터가 없다.
+std::vector<uint8_t> InputPacket(uint8_t code) {
+    std::vector<uint8_t> p(nox::kWireHeaderSize + 1 + 1 + 4, 0);
+    p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::PLAYER_INPUT);
+    p[nox::kWireHeaderSize + 1] = 4;      // 항목 길이
+    p[nox::kWireHeaderSize + 2] = code;   // 코드
+    return p;
+}
+
+void TestMelee() {
+    nox::Server srv;
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+    srv.DebugEnterGame(a, 728);
+    srv.DebugEnterGame(b, 729);   // 둘 다 (1000,1000) — 근접 사거리 안이다
+
+    // ① 한 번 치면 한 번 깎인다
+    {
+        std::vector<nox::OutPacket> out;
+        auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth - nox::kMeleeDamage,
+              "왼버튼 한 번에 안 깎임");
+        Check(srv.melees() == 1, "근접 집계가 1 이 아님");
+    }
+
+    // ★★ ② 누르고 있으면 매 틱 오는데, **쉬는 시간이 먹혀야 한다**
+    //    이게 없으면 초당 서른 대가 들어가 게임이 아니게 된다
+    {
+        const uint16_t before = srv.HealthOf(b);
+        for (int i = 0; i < 10; ++i) {
+            std::vector<nox::OutPacket> out;
+            auto pkt = InputPacket(6);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        }
+        Check(srv.HealthOf(b) == before, "쉬는 시간 안에 또 맞음");
+        Check(srv.melees() == 1, "쉬는 시간 중에도 근접이 나감");
+    }
+
+    // ③ 시간이 지나면 다시 칠 수 있다
+    {
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.Tick(33 * (nox::kMeleeCooldownTicks + 1), out);
+        const uint16_t before = srv.HealthOf(b);
+        auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(b) == before - nox::kMeleeDamage, "쉬는 시간이 지났는데 안 깎임");
+        Check(srv.melees() == 2, "근접 집계가 2 가 아님");
+    }
+
+    // ④ 걸음 코드는 때리지 않는다 — 코드를 뭉뚱그리면 걷기만 해도 사람이 죽는다
+    {
+        const uint16_t before = srv.HealthOf(b);
+        std::vector<nox::OutPacket> out;
+        auto pkt = InputPacket(2);   // CCMoveForward
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(b) == before, "걸음 코드가 사람을 깎음");
+    }
+
+    // ⑤ 멀리 있으면 안 닿는다 — 주문 사거리(210)보다 근접이 짧아야 한다
+    {
+        nox::Server far;
+        far.DebugEnterGame(a, 728);
+        far.DebugEnterGame(b, 729);
+        far.DebugMoveTo(b, 1000 + static_cast<int>(nox::kMeleeRange) + 20, 1000);
+        std::vector<nox::OutPacket> out;
+        auto pkt = InputPacket(6);
+        far.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(far.HealthOf(b) == nox::kDefaultMaxHealth, "근접 사거리 밖인데 맞음");
+        Check(nox::kMeleeRange < nox::kSpellRange, "근접이 주문보다 멀다");
+    }
+
+    std::printf("  근접 공격 — 한 대·쉬는 시간·걸음과 구분·사거리\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -574,6 +654,7 @@ int main() {
     TestGameplayMessages();
     TestDeathFlow();
     TestSpellDamage();
+    TestMelee();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();

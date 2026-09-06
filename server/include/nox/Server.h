@@ -76,6 +76,7 @@ struct Session {
     uint16_t maxHealth = 0;
     uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
+    uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
 
     // 이 상대가 **자기 쪽에서 굴리고 있을** 별칭 표. 서버가 똑같이 굴려야
     // 어긋나지 않는다(Alias.h 참조).
@@ -99,6 +100,21 @@ constexpr uint32_t kRespawnDelayTicks = 150;
 //   (`0x42` 가 나간 순간의 두 사람 거리를 짝지을 수 없었다). 걸음 7/틱 기준
 //   서른 걸음쯤으로 두었을 뿐이다.
 constexpr double kSpellRange = 210.0;
+
+// ── 근접 공격 (왼버튼) ──────────────────────────────────────
+//
+// **왼버튼이 `CCAction`(6)이라는 것은 실측이다** — 두 출처가 맞았다:
+//   ① 09-07 조작 실측 — 왼버튼을 누르니 코드 6 이 눌린 횟수만큼 왔다
+//   ② opennox `noxnet/msg_player_input.go:210` — `CCAction = CtrlCode(6)`
+// ⚠ 다만 **줍기는 아니다.** 왼버튼으로 물건 위에서 눌러도 `0x73 TRY_GET` 이 안 나갔다
+//   (2회 시도 실패로 확인). 줍기는 다른 길이다.
+//
+// ⚠⚠ **아래 세 숫자는 실측이 아니다.** 주문 쪽과 같은 사정이다 —
+//    09-06 덤프의 `0x42` 표본이 무슨 공격이 만든 값인지 가릴 수 없었다.
+//    닿는 거리는 「검 한 자루쯤」, 다시 때리기까지는 「초당 두 대쯤」으로 둔 자리표시다.
+constexpr double kMeleeRange = 45.0;
+constexpr int kMeleeDamage = 12;
+constexpr uint32_t kMeleeCooldownTicks = 15;   // 30Hz 기준 0.5초
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.
@@ -193,6 +209,14 @@ public:
         s.y = 1000;
     }
 
+    // ★ 시험용 — 자리를 옮긴다. 사거리 시험에 쓴다.
+    void DebugMoveTo(const std::string& addr, int x, int y) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return;
+        it->second.x = x;
+        it->second.y = y;
+    }
+
     // ★ 피해를 준다. 체력이 0 이하가 되면 죽음을 알리고 부활을 예약한다.
     //
     // 나가는 것은 캡처에서 본 그대로다 —
@@ -223,6 +247,8 @@ public:
 
     uint32_t frame() const { return frame_; }
     unsigned long long moves() const { return moves_; }
+    // 쉬는 시간을 지나 실제로 나간 근접 공격 수(누른 횟수가 아니다).
+    unsigned long long melees() const { return melees_; }
     void SetTickMs(uint32_t ms) { tickMs_ = ms; }
 
     // 읽었지만 아직 답을 안 만드는 오프코드의 집계.
@@ -243,7 +269,7 @@ private:
     Session& SessionFor(const std::string& addr);
 
     // 사거리 안에서 가장 가까운 **다른** 사람. 없으면 빈 문자열.
-    std::string NearestOther(const std::string& self) const;
+    std::string NearestOther(const std::string& self, double range) const;
 
     // `0xcc SEQ_IMPORTANT` 껍데기에 싸서 내보낸다.
     //
@@ -274,6 +300,7 @@ private:
     uint32_t lastTickMs_ = 0;
     bool tickStarted_ = false;
     unsigned long long moves_ = 0;
+    unsigned long long melees_ = 0;
     std::map<uint8_t, unsigned long long> spells_;
     unsigned long long spellsOnSelf_ = 0;
     std::vector<AcceptScript> script_;   // 접속 대본
