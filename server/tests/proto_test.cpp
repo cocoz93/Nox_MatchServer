@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "nox/Messages.h"
+#include "nox/SpellNames.h"
 #include "nox/Opcode.h"
 
 namespace {
@@ -135,6 +136,29 @@ void TestBounds() {
 
 } // namespace
 
+
+// 주문 이름표 — 09-06 캡처로 실측한 다섯이 계속 맞는지 지킨다.
+// 표는 tools/dumpscan -genspells 로 뽑는다. 번호가 밀리면 여기서 걸린다.
+void TestSpellNames() {
+    struct { int id; const char* name; const char* ko; } kKnown[] = {
+        {  4, "SPELL_BLINK",            "점멸"     },
+        { 27, "SPELL_FIREBALL",         "파이어볼" },
+        { 41, "SPELL_LESSER_HEAL",      "약한치유" },
+        { 43, "SPELL_CHAIN_LIGHTNING",  "연쇄번개" },
+        { 51, "SPELL_SHIELD",           "보호막"   },
+    };
+    for (const auto& k : kKnown) {
+        const char* got = nox::SpellName(k.id);
+        bool ok = std::strcmp(got, k.name) == 0;
+        if (!ok) std::printf("      주문 %d: 표에는 \"%s\", 실측은 %s(%s)\n", k.id, got, k.name, k.ko);
+        Check(ok, "주문 번호와 이름이 실측과 다름");
+    }
+    Check(nox::kSpellCount > 100, "주문 표가 너무 작다 — 생성이 덜 됐다");
+    Check(std::strcmp(nox::SpellName(0), "") == 0, "0번은 빈 이름이어야 한다");
+    Check(std::strcmp(nox::SpellName(-1), "") == 0, "음수는 빈 이름이어야 한다");
+    Check(std::strcmp(nox::SpellName(nox::kSpellCount), "") == 0, "범위 밖은 빈 이름이어야 한다");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -166,6 +190,7 @@ int main() {
 
     std::printf("\n[표·경계]\n");
     TestOpcodeTable();
+    TestSpellNames();
     TestBounds();
 
     std::printf("\n%s\n", g_failed == 0 ? "전부 통과" : "실패 있음");
