@@ -61,6 +61,9 @@ struct UpdateMsg {
     std::vector<ObjEntry> objects;
     size_t consumed = 0;     // 이 메시지가 먹은 바이트 (끝 표식 포함)
     bool ok = false;         // 끝 표식까지 깨끗하게 닿았나
+    // 갈래를 열어 보다 예산이 바닥나 그만둔 것. ok=false 인 까닭을 가르는 자리다 —
+    // 「짜임을 몰라서」와 「너무 많이 갈려서」는 다른 문제다.
+    bool budgetOut = false;
 };
 
 // 상태 갱신 하나를 뜯는다. `data` 는 오프코드(0xa4) **다음**부터다.

@@ -115,7 +115,15 @@ Check ($upd -ge 3)  "상태 갱신(0xa4)이 스스로 온다 — $upd 건"
 #
 # 본문 = 길이 1B + [코드 4B + 데이터]. 방향(1) 뒤에 앞으로(2)를 넣는다.
 Write-Host "6) 이동"
+# 쌓인 것을 버린다 — 서버가 30Hz 로 계속 뿌려 큐에 옛 패킷이 남는다.
+# 이걸 안 하면 지나간 자리를 읽어 「안 움직였다」로 잘못 본다.
+function Clear-Queue {
+  while ($udp.Available -gt 0) {
+    try { [void]$udp.Receive([ref]$any) } catch { break }
+  }
+}
 function Get-Pos {
+  Clear-Queue
   for ($i = 0; $i -lt 20; $i++) {
     try {
       $g = $udp.Receive([ref]$any)
@@ -132,6 +140,7 @@ $before = Get-Pos
 $inp = @(0x01, 0x05, 0x3f, 10,  1,0,0,0, 0,  2,0,0,0, 1)   # 방향 0, 앞으로
 $inpX = @(); foreach ($b in $inp) { $inpX += [byte]($b -bxor $k) }
 for ($i = 0; $i -lt 6; $i++) { [void]$udp.Send([byte[]]$inpX, $inpX.Length, $ep); Start-Sleep -Milliseconds 60 }
+Start-Sleep -Milliseconds 150
 $after = Get-Pos
 if ($before -and $after) {
   Write-Host ("     자리: ({0},{1}) -> ({2},{3})" -f $before.x, $before.y, $after.x, $after.y)
@@ -179,6 +188,44 @@ for ($i = 0; $i -lt 25; $i++) {
 Check ($k2 -ne 0) "둘째가 접속했다"
 Check ($objs -ge 2) "첫째의 상태 갱신에 사람이 둘 실린다 — $objs 명"
 $udp2.Close()
+
+# ── 8. 주문 시전 — 한 조각에 주문과 이동을 이어 붙여 보낸다
+#
+# 여기서 확인하는 것 = 서버가 주문을 **정확히 22바이트로 먹는가**.
+# 길이를 틀리면 뒤에 붙인 이동이 밀려 읽히지 않아 자리가 안 움직인다.
+# 즉 자리가 움직이면 그 자체가 「경계를 맞게 잡았다」는 증거다.
+#
+#   79 | 주문번호 1 | 0 으로 채운 19 | 대상 플래그 1        = 22바이트
+#   파이어볼 27 은 남에게 쏘는 것이라 마지막 자리가 0 이다(캡처 18건 전수).
+Write-Host "8) 주문 시전 (파이어볼)"
+$move = @(0x3f, 10,  1,0,0,0, 0,  2,0,0,0, 1)     # 방향 0, 앞으로
+$spell = @(0x79, 27)
+for ($i = 0; $i -lt 19; $i++) { $spell += 0 }
+$spell += 0
+Check ($spell.Length -eq 22) "주문 조각이 22바이트다 — $($spell.Length)"
+
+function Send-And-Move($bytes, $times) {
+  $x = @(); foreach ($b in $bytes) { $x += [byte]($b -bxor $k) }
+  $a = Get-Pos
+  for ($i = 0; $i -lt $times; $i++) { [void]$udp.Send([byte[]]$x, $x.Length, $ep); Start-Sleep -Milliseconds 60 }
+  Start-Sleep -Milliseconds 150
+  $b2 = Get-Pos
+  return @{ a = $a; b = $b2 }
+}
+
+# (a) 먼저 이동만 — 이 자리에서 원래 움직이는지 기준을 잡는다.
+$r = Send-And-Move (@(0x01, 0x05) + $move) 6
+if ($r.a -and $r.b) {
+  Write-Host ("     이동만: ({0},{1}) -> ({2},{3})" -f $r.a.x, $r.a.y, $r.b.x, $r.b.y)
+  Check ($r.b.x -ne $r.a.x -or $r.b.y -ne $r.a.y) "(기준) 이동만 보내면 움직인다"
+} else { Check $false "(기준) 상태 갱신을 읽었다" }
+
+# (b) 주문 + 이동을 한 조각에 — 주문을 22바이트로 정확히 먹어야 뒤 이동이 읽힌다.
+$r2 = Send-And-Move (@(0x01, 0x05) + $spell + $move) 6
+if ($r2.a -and $r2.b) {
+  Write-Host ("     주문+이동: ({0},{1}) -> ({2},{3})" -f $r2.a.x, $r2.a.y, $r2.b.x, $r2.b.y)
+  Check ($r2.b.x -ne $r2.a.x -or $r2.b.y -ne $r2.a.y) "주문 뒤에 붙인 이동까지 읽었다 — 경계가 맞다"
+} else { Check $false "주문을 보낸 뒤에도 상태 갱신이 온다" }
 
 $udp.Close()
 Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue

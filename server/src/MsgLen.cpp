@@ -76,7 +76,7 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x3E */    2,   // MSG_REMOVE_WALL_MAGIC
     /* 0x3F */   -1,   // MSG_PLAYER_INPUT
     /* 0x40 */   -1,   // MSG_PLAYER_SET_WAYPOINT
-    /* 0x41 */    3,   // MSG_REPORT_HEALTH  ← cdecode.c 에서 채움
+    /* 0x41 */    3,   // MSG_REPORT_HEALTH  ← 손으로 채움 (근거는 genlen.go 의 extra)
     /* 0x42 */    4,   // MSG_REPORT_HEALTH_DELTA
     /* 0x43 */    2,   // MSG_REPORT_PLAYER_HEALTH
     /* 0x44 */    6,   // MSG_REPORT_ITEM_HEALTH
@@ -132,7 +132,7 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x76 */   -1,   // MSG_TRY_DEQUIP
     /* 0x77 */   -1,   // MSG_TRY_TARGET
     /* 0x78 */   -1,   // MSG_TRY_CREATURE_COMMAND
-    /* 0x79 */   -1,   // MSG_TRY_SPELL
+    /* 0x79 */   21,   // MSG_TRY_SPELL  ← 손으로 채움 (근거는 genlen.go 의 extra)
     /* 0x7A */   -1,   // MSG_TRY_ABILITY
     /* 0x7B */   -1,   // MSG_TRY_COLLIDE
     /* 0x7C */   -1,   // MSG_FX_PARTICLEFX
@@ -181,8 +181,8 @@ const int16_t kMsgBodyLen[256] = {
     /* 0xA7 */    3,   // MSG_AUDIO_PLAYER_EVENT
     /* 0xA8 */   -1,   // MSG_TEXT_MESSAGE
     /* 0xA9 */   -1,   // MSG_INFORM
-    /* 0xAA */    4,   // MSG_IMPORTANT  ← cdecode.c 에서 채움
-    /* 0xAB */    4,   // MSG_IMPORTANT_ACK  ← cdecode.c 에서 채움
+    /* 0xAA */    4,   // MSG_IMPORTANT  ← 손으로 채움 (근거는 genlen.go 의 extra)
+    /* 0xAB */    4,   // MSG_IMPORTANT_ACK  ← 손으로 채움 (근거는 genlen.go 의 extra)
     /* 0xAC */    4,   // MSG_MOUSE
     /* 0xAD */    0,   // MSG_INCOMING_CLIENT
     /* 0xAE */    2,   // MSG_OUTGOING_CLIENT
@@ -276,5 +276,5 @@ int MsgBodyLenByDir(uint8_t op, bool fromClient) {
     }
 }
 
-// 뽑은 결과 — 길이를 아는 것 144개(그중 손으로 채운 것 3) / 가변·미상 112개
+// 뽑은 결과 — 길이를 아는 것 145개(그중 손으로 채운 것 4) / 가변·미상 111개
 }  // namespace nox

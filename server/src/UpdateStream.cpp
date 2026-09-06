@@ -11,6 +11,26 @@ uint16_t RdU16(const uint8_t* p) {
     return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
+// 갈래를 몇 번까지 열어 볼지. 넘으면 그 조각은 못 읽은 것으로 둔다.
+//
+// 왜 필요한가 — 종류를 모르는 항목이 이어지면 갈래가 4^n 으로 벌어진다.
+// 2026-09-06 캡처의 1,473바이트 조각 하나에서 도구가 10분을 넘겨도 안 끝났다
+// (무한 루프가 아니라 지수 폭발이었다).
+//
+// 실측으로 정한 값이다 (SNAP_server_0906.txt, 상태 갱신 49,628건) —
+//
+//     예산   못 읽은 것   걸린 시간
+//     20만        19건       328ms
+//     200만        1건       356ms   ← 채택
+//
+// 열 배로 올려도 시간이 거의 안 늘고 판독만 좋아진다. 대부분의 조각은 예산을
+// 몇 번 쓰지도 않고 끝나기 때문이다. 남은 1건은 09-05 부터 알던 `0x2a` 자리로,
+// 표본이 하나뿐이라 규칙을 못 박는다.
+//
+// ⚠ **더 올리지 말 것.** 갈래를 넓힐수록 「아무 데나 끼워 맞춰」 판독률만 오른다
+//    (아래 09-05 경고 참조). 못 읽는 것을 남겨 두는 편이 낫다.
+constexpr size_t kWalkBudget = 2000000;
+
 // 항목을 하나씩 따라간다. 끝 표식에 닿으면 참.
 //
 // ★ 갈래를 여는 자리가 하나 있다 — 복합 오브젝트의 마지막 덧붙이 바이트다.
@@ -20,8 +40,14 @@ uint16_t RdU16(const uint8_t* p) {
 // ⚠ 갈래를 함부로 넓히면 "아무 데나 끼워 맞춰" 100% 가 나온다. 09-05 에 그렇게
 //   속은 적이 있다(좌표라고 읽은 값이 `(1,64)` 로 2만 7천 번). 그래서 갈래는
 //   **복합인 것에만, 두 가지로만** 연다. 복합이 아니면 0 으로 못박는다.
+//
+// ★ 갈래는 되돌아가며 다시 여는 재귀라 지수로 벌어질 수 있다. 그래서 예산을 들고 다닌다
+//   (위 kWalkBudget 참조). 바닥나면 **못 읽은 것으로 둔다**.
 bool Walk(const uint8_t* data, size_t n, int x, int y,
-          const AliasTable* aliases, std::vector<ObjEntry>& objs, size_t& used) {
+          const AliasTable* aliases, std::vector<ObjEntry>& objs, size_t& used,
+          size_t& budget) {
+    if (budget == 0) return false;
+    --budget;
     if (n < 3) return false;
     if (data[0] == 0 && data[1] == 0 && data[2] == 0) {
         used = 3;
@@ -101,7 +127,7 @@ bool Walk(const uint8_t* data, size_t n, int x, int y,
         for (int j = 0; j < extra && j < 3; ++j) e.extraBytes[j] = p[j];
         objs.push_back(e);
         size_t sub = 0;
-        if (Walk(p + extra, left - extra, x, y, aliases, objs, sub)) {
+        if (Walk(p + extra, left - extra, x, y, aliases, objs, sub, budget)) {
             used = static_cast<size_t>(p - data) + extra + sub;
             return true;
         }
@@ -145,7 +171,9 @@ UpdateMsg DecodeUpdate(const uint8_t* data, size_t n, const AliasTable* aliases)
 
     // ── 항목. 좌표는 직전 항목에서 이어 쌓인다.
     size_t used = 0;
-    if (!Walk(p, left, m.x, m.y, aliases, m.objects, used)) {
+    size_t budget = kWalkBudget;
+    if (!Walk(p, left, m.x, m.y, aliases, m.objects, used, budget)) {
+        m.budgetOut = (budget == 0);
         m.objects.clear();
         return m;
     }

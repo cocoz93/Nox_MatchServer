@@ -172,6 +172,11 @@ public:
     // 이것이 다음에 무엇을 옮겨야 하는지 알려주는 나침반이다.
     const std::map<uint8_t, unsigned long long>& stoppedByOp() const { return stoppedByOp_; }
 
+    // 시전된 주문 — 번호별 횟수. 번호는 opennox `spell` 패키지 ID 와 같다.
+    const std::map<uint8_t, unsigned long long>& spells() const { return spells_; }
+    // 그중 자기에게 건 것 (마지막 자리가 1 인 것)
+    unsigned long long spellsOnSelf() const { return spellsOnSelf_; }
+
 private:
     Session& SessionFor(const std::string& addr);
 
@@ -197,6 +202,8 @@ private:
     uint32_t lastTickMs_ = 0;
     bool tickStarted_ = false;
     unsigned long long moves_ = 0;
+    std::map<uint8_t, unsigned long long> spells_;
+    unsigned long long spellsOnSelf_ = 0;
     std::vector<AcceptScript> script_;   // 접속 대본
     size_t scriptAt_ = 0;
 };
@@ -205,9 +212,34 @@ private:
 // 상태 갱신 30,169건이 이 번호였고, thing.bin 712번 `NewPlayer`(복합)와 맞는다.
 constexpr uint16_t kPlayerType = 713;
 
-// 한 걸음에 얼마나 미나. **실측이 아니다** — 눈으로 확인할 만한 값으로 잡아둔 것이고,
-// 정품과 맞춰보려면 캡처가 필요하다.
-constexpr double kStepPerTick = 12.0;
+// 한 걸음에 얼마나 미나. **2026-09-06 캡처로 실측했다** (전에는 지어낸 12.0 이었다).
+//
+//   표본 866 (바로 다음 틱, 프레임 차 1 짜리만)
+//   가장 잦은 값 7 — 271회, 31.3%
+//
+// dx·dy 를 그대로 보면 길이는 일정한데 방향만 흩어진다. 잦은 것부터 —
+//
+//   (5,-5) 7.07 · (7,-2) 7.28 · (6,-4) 7.21 · (6,-3) 6.71 · (7,-3) 7.62
+//
+// 축만 딱 떨어지는 값이 아니라 6.3~7.6 에 퍼져 있는데, 이는 방향을 한 바퀴 256으로
+// 나눠 쓰고 좌표를 정수로 자르기 때문이다. 아래 계산이 바로 그 짜임이라 값이 맞는다.
+//
+// ⚠ **느린 무리가 따로 있다** — 2.8~4.2 에 330건이 몰려 있고(빠른 쪽은 360건),
+//    걷기와 달리기로 갈리는 것으로 보이나 아직 가리지 못했다. 지금은 잦은 쪽을 쓴다.
+// ⚠ 클라의 예측과 맞는지는 **정품 클라로 눈으로 봐야** 안다. 아직 안 했다.
+constexpr double kStepPerTick = 7.0;
+
+// ★ 주문 시전(0x79)의 본문 길이. **2026-09-06 캡처 표본 83개 전수로 확정했다.**
+//
+//     79 │ 주문번호 1 │ 0 으로 채운 19 │ 대상 플래그 1
+//
+// 판정 = 22바이트(오프코드 포함) 뒤 자리가 83/83 모두 아는 오프코드였다
+// (전부 0x3F PLAYER_INPUT). 다른 길이로 잘라 보면 78% 아래로 떨어진다.
+constexpr size_t kTrySpellBodyLen = 21;
+
+// 파이어볼의 주문 번호. opennox `spell` 패키지의 `SPELL_FIREBALL = ID(27)` 과 같다 —
+// 와이어에 실려 온 번호가 그 표와 그대로 맞는 것을 캡처에서 확인했다.
+constexpr uint8_t kSpellFireball = 27;
 
 // SERVER_INFO 본문에서 토큰이 앉는 자리. 실측으로 확정했다.
 constexpr size_t kInfoTokenOffset = 41;

@@ -137,11 +137,22 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             // ★ 클라 입력 — 매 틱 온다. 트래픽에서 가장 잦은 메시지다(32,450건).
             //
             //   본문 = 길이 1B + [코드 4B + 데이터]*
-            //   코드는 4바이트를 먹지만 **뜻이 있는 것은 첫 바이트**다.
+            //   코드는 4바이트를 먹고 **첫 바이트가 무엇을 눌렀나**를 가리킨다.
             //   실측 `3f 0a | 01 00 00 00 63 | 01 00 00 00 63` — 방향(1) 두 번, 값 0x63.
             //
-            // 데이터 크기 (noxnet/msg_player_input.go 의 DataSize):
-            //   방향(1)·앞뒤좌우(2~5)·주문끝(19) = 1바이트, 주문시전(21·22) = 4바이트, 그 밖 0.
+            // 데이터 크기 (noxnet/msg_player_input.go 의 `CtrlCode.DataSize()`):
+            //   방향(1)·앞뒤좌우(2~5)·주문끝(28) = 1바이트,
+            //   주문시전(29 CastQueuedSpell·30 CastMostRecentSpell) = 4바이트, 그 밖 0.
+            //
+            // ⚠ 2026-09-07 정정 — 여기 `19·21·22` 라고 적혀 있었다. **옮겨 적기 오류였다.**
+            //   19=Inventory·21=SpellGestureDown·22=SpellGestureLeft 는 전부 크기 0 이고,
+            //   1바이트짜리는 28, 4바이트짜리는 29·30 이다.
+            //   ⚠ 09-06 캡처로는 못 가린다 — 그 여섯 코드가 **한 건도 안 잡혔다.**
+            //   근거는 opennox 소스뿐이니, 주문 몸짓·시전을 실제로 담은 캡처로 다시 확인할 것.
+            //
+            // ⚠ 아직 못 읽는 자리 — 코드 4바이트의 **위 3바이트**. 서버 덤프에서 방향(1) 항목의
+            //   36.8%(54,254건)가 셋째·넷째 바이트에 0 아닌 값을 담고 있다.
+            //   opennox 도 첫 바이트만 읽고 버린다. 무엇인지 미상 (`tools/dumpscan -inputs`).
             case Op::PLAYER_INPUT: {
                 if (!s.inGame || it.bodyLen() < 1) break;
                 const uint8_t* q = it.body() + 1;
@@ -152,8 +163,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     q += 4; qn -= 4;
                     size_t dataLen = 0;
                     switch (code) {
-                        case 1: case 2: case 3: case 4: case 5: case 19: dataLen = 1; break;
-                        case 21: case 22: dataLen = 4; break;
+                        case 1: case 2: case 3: case 4: case 5: case 28: dataLen = 1; break;
+                        case 29: case 30: dataLen = 4; break;
                         default: dataLen = 0; break;
                     }
                     if (qn < dataLen) break;
@@ -178,6 +189,27 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     }
                     q += dataLen; qn -= dataLen;
                 }
+                break;
+            }
+
+            // ★ 주문 시전 — 2026-09-06 캡처로 짜임을 확정했다(표본 83개 전수).
+            //
+            //   79 │ 주문번호 1 │ 0 으로 채운 19 │ 대상 플래그 1
+            //
+            // 주문번호는 opennox `spell` 패키지 ID 와 그대로 같다 (0x1B = 27 = 파이어볼).
+            // ⚠ **겨눈 쪽이 여기 없다** — 가운데 19바이트가 표본 전수에서 0 이었다.
+            //    대상도 좌표도 안 실린다. 겨눈 쪽은 따로 오는 마우스(0xAC)와
+            //    바라보는 쪽(PLAYER_INPUT 코드 1)에 있다.
+            // 마지막 자리는 주문마다 갈렸다 — 남에게 쏘는 것(파이어볼·연쇄번개)이 0,
+            // 자기에게 거는 것(점멸·치유·보호막)이 1. 보호막만 18건 중 1건이 0 이라
+            // 「자기 대상 여부」로 단정하지는 않는다.
+            //
+            // 지금은 받아서 세는 데까지다. **효과를 되쏘는 것은 아직 못 한다** —
+            // 효과 메시지(0x80 계열)의 짜임을 아직 모른다.
+            case Op::TRY_SPELL: {
+                if (!s.inGame || it.bodyLen() != kTrySpellBodyLen) break;
+                ++spells_[it.body()[0]];
+                if (it.body()[kTrySpellBodyLen - 1]) ++spellsOnSelf_;
                 break;
             }
 
