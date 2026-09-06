@@ -40,6 +40,16 @@ struct Creature {
     uint32_t nextHitFrame = 0;   // 이 프레임 전에는 못 때린다
 };
 
+// 공격이 닿을 수 있는 것 하나 — **사람이거나 불려 나온 것**이다.
+//
+// 왜 한 덩이로 묶나 — 근접·투사체·소환수가 저마다 「누구를 때리나」를 따로 고르면
+// 셋이 조금씩 다르게 굴어 어긋난다. 고르는 자리를 하나로 모은다.
+struct Target {
+    std::string addr;   // 사람이면 그 주소
+    int pet = -1;       // 불려 나온 것이면 그 자리 번호
+    bool none() const { return addr.empty() && pet < 0; }
+};
+
 // 날아가는 것 하나. 쏜 사람은 안 맞는다.
 struct Projectile {
     std::string owner;   // 쏜 사람의 주소
@@ -314,6 +324,8 @@ public:
     size_t flying() const { return shots_.size(); }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
+    // 불려 나온 것이 죽은 횟수.
+    unsigned long long petsKilled() const { return petsKilled_; }
     void SetTickMs(uint32_t ms) { tickMs_ = ms; }
 
     // 읽었지만 아직 답을 안 만드는 오프코드의 집계.
@@ -335,6 +347,25 @@ private:
 
     // 사거리 안에서 가장 가까운 **다른** 사람. 없으면 빈 문자열.
     std::string NearestOther(const std::string& self, double range) const;
+
+    // ★ 사거리 안에서 가장 가까운 **적** — 사람이든 불려 나온 것이든.
+    //
+    // `friendOwner` 는 「내 편의 주인」이다. 사람이 때릴 때는 자기 주소,
+    // 불려 나온 것이 때릴 때는 부른 사람의 주소를 넣는다. 그러면
+    // **자기 자신도, 자기가 부른 것도** 대상에서 빠진다.
+    //
+    // ⚠ 「부른 사람의 공격에도 소환수가 안 맞는다」는 **근거 없이 정한 것**이다.
+    //   덤프에 소환 표본이 아예 없어 진짜 녹스가 어떻게 하는지 모른다.
+    //   자기 소환수를 자기가 때려 죽이는 것이 이상해 보여 그렇게 뒀을 뿐이다.
+    Target NearestTarget(const std::string& friendOwner, double x, double y,
+                         double range) const;
+
+    // 고른 대상을 깎는다. 사람이면 Damage(), 불려 나온 것이면 그쪽 체력을 깎고
+    // 0 이 되면 없애며 `0x31 DESTROY_OBJECT` 를 뿌린다.
+    void HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out);
+
+    // 불려 나온 것 하나를 없애고 모두에게 알린다.
+    void KillPet(size_t idx, std::vector<OutPacket>& out);
 
     // `0xcc SEQ_IMPORTANT` 껍데기에 싸서 내보낸다.
     //
@@ -367,6 +398,7 @@ private:
     unsigned long long moves_ = 0;
     unsigned long long melees_ = 0;
     unsigned long long hits_ = 0;
+    unsigned long long petsKilled_ = 0;
     std::vector<Projectile> shots_;
     std::vector<Creature> pets_;
     // 날아가는 것에 매길 번호.

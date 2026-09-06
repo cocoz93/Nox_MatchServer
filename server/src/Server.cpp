@@ -195,6 +195,63 @@ std::string Server::NearestOther(const std::string& self, double range) const {
     return best;
 }
 
+Target Server::NearestTarget(const std::string& friendOwner, double x, double y,
+                             double range) const {
+    Target best;
+    double bestD2 = range * range;
+
+    for (const auto& kv : sessions_) {
+        if (kv.first == friendOwner) continue;          // 나 자신은 안 때린다
+        const Session& o = kv.second;
+        if (!o.inGame || o.respawnAtFrame != 0) continue;
+        const double dx = o.x - x, dy = o.y - y;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 <= bestD2) { bestD2 = d2; best.addr = kv.first; best.pet = -1; }
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        if (pets_[i].owner == friendOwner) continue;    // 내 편은 안 때린다
+        const double dx = pets_[i].x - x, dy = pets_[i].y - y;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 <= bestD2) { bestD2 = d2; best.addr.clear(); best.pet = static_cast<int>(i); }
+    }
+    return best;
+}
+
+// 불려 나온 것 하나를 없애고 모두에게 알린다.
+//
+// ★ `0x31 DESTROY_OBJECT` 는 실측이다 — `31 d6 02`(번호 2바이트, 모두 3바이트).
+//   09-06 덤프에 54건 있었다. **이걸 안 보내면 화면에 시체가 영원히 남는다.**
+void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
+    if (idx >= pets_.size()) return;
+    const uint16_t netCode = pets_[idx].netCode;
+    pets_.erase(pets_.begin() + static_cast<long>(idx));
+    ++petsKilled_;
+
+    uint8_t msg[3];
+    msg[0] = static_cast<uint8_t>(Op::DESTROY_OBJECT);
+    msg[1] = static_cast<uint8_t>(netCode);
+    msg[2] = static_cast<uint8_t>(netCode >> 8);
+    for (auto& kv : sessions_) {
+        if (kv.second.inGame) {
+            Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+        }
+    }
+}
+
+void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out) {
+    if (t.none() || dmg <= 0) return;
+    if (t.pet < 0) { Damage(t.addr, dmg, out); return; }
+
+    const size_t i = static_cast<size_t>(t.pet);
+    if (i >= pets_.size()) return;
+    Creature& k = pets_[i];
+    if (k.health > dmg) {
+        k.health = static_cast<uint16_t>(k.health - dmg);
+        return;
+    }
+    KillPet(i, out);
+}
+
 bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>& out) {
     auto it = sessions_.find(addr);
     if (it == sessions_.end()) return false;
@@ -357,8 +414,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         //   쉬는 시간을 안 두면 초당 서른 대가 들어간다.
                         if (frame_ >= s.nextMeleeFrame) {
                             s.nextMeleeFrame = frame_ + kMeleeCooldownTicks;
-                            const std::string t = NearestOther(from, kMeleeRange);
-                            if (!t.empty()) Damage(t, kMeleeDamage, out);
+                            const Target t = NearestTarget(from, s.x, s.y, kMeleeRange);
+                            HurtTarget(t, kMeleeDamage, out);
                             ++melees_;
                         }
                     }
@@ -608,25 +665,14 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 continue;
             }
 
-            // 누구에게 닿았나. **쏜 사람은 안 맞는다.**
-            std::string hit;
-            for (const auto& kv : sessions_) {
-                if (kv.first == p.owner) continue;
-                const Session& o = kv.second;
-                if (!o.inGame || o.respawnAtFrame != 0) continue;
-                const double dx = o.x - p.x;
-                const double dy = o.y - p.y;
-                if (dx * dx + dy * dy <= kProjectileHitRadius * kProjectileHitRadius) {
-                    hit = kv.first;
-                    break;
-                }
-            }
-            if (hit.empty()) { ++i; continue; }
+            // 누구에게 닿았나. **쏜 사람과 그가 부른 것은 안 맞는다.**
+            const Target hit = NearestTarget(p.owner, p.x, p.y, kProjectileHitRadius);
+            if (hit.none()) { ++i; continue; }
 
             const int dmg = p.damage;
             shots_.erase(shots_.begin() + static_cast<long>(i));   // 먼저 지운다
             ++hits_;
-            Damage(hit, dmg, out);   // 그 다음에 깎는다 (p 는 이미 없다)
+            HurtTarget(hit, dmg, out);   // 그 다음에 깎는다 (p 는 이미 없다)
         }
     }
 
@@ -634,22 +680,22 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     // 부른 사람 편이다 — **부른 사람은 안 때린다.** 그게 없으면 부르자마자 자기가 맞는다.
     for (int step = 0; step < ticks && !pets_.empty(); ++step) {
         for (auto& k : pets_) {
-            // 가장 가까운 「남」을 고른다 (부른 사람과 그 사람은 뺀다)
-            const std::string* best = nullptr;
-            double bestD2 = 1e18;
-            for (const auto& kv : sessions_) {
-                if (kv.first == k.owner) continue;
-                const Session& o = kv.second;
-                if (!o.inGame || o.respawnAtFrame != 0) continue;
-                const double dx = o.x - k.x, dy = o.y - k.y;
-                const double d2 = dx * dx + dy * dy;
-                if (d2 < bestD2) { bestD2 = d2; best = &kv.first; }
-            }
-            if (!best) continue;
+            // 가장 가까운 적을 고른다 — **남의 소환수도 문다.**
+            // 아주 멀리까지 보게 해서 「가장 가까운 적을 쫓는다」가 되게 한다.
+            const Target t = NearestTarget(k.owner, k.x, k.y, 1e9);
+            if (t.none()) continue;
 
-            const Session& tgt = sessions_.at(*best);
-            const double dx = tgt.x - k.x, dy = tgt.y - k.y;
+            double tx = 0, ty = 0;
+            if (t.pet >= 0) {
+                tx = pets_[static_cast<size_t>(t.pet)].x;
+                ty = pets_[static_cast<size_t>(t.pet)].y;
+            } else {
+                tx = sessions_.at(t.addr).x;
+                ty = sessions_.at(t.addr).y;
+            }
+            const double dx = tx - k.x, dy = ty - k.y;
             const double d = std::sqrt(dx * dx + dy * dy);
+            if (d < 1e-6) continue;
             if (d > kPetReach) {
                 // 아직 멀다 — 다가간다.
                 k.x += kPetSpeed * dx / d;
@@ -659,7 +705,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             } else if (frame_ >= k.nextHitFrame) {
                 // 닿았다 — 때린다. 쉬는 시간은 사람 근접과 같은 규칙이다.
                 k.nextHitFrame = frame_ + kMeleeCooldownTicks;
-                Damage(*best, kPetDamage, out);
+                HurtTarget(t, kPetDamage, out);
+                break;   // 목록이 바뀔 수 있다 — 이번 걸음은 여기서 접는다
             }
         }
     }

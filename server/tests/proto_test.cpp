@@ -858,6 +858,99 @@ void TestSummon() {
     std::printf("  소환 — 생김·화면에 실림·부른 사람은 안 맞음·다가가 때림\n");
 }
 
+// ── 불려 나온 것도 맞고 죽는다 ─────────────────────────────────
+void TestPetDies() {
+    const std::string a = "10.0.0.1:1000";   // 부르는 쪽
+    const std::string b = "10.0.0.2:1000";   // 때리는 쪽
+
+    // ① 남의 소환수를 근접으로 때려 죽인다 — 그리고 **0x31 이 나가야 한다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        std::vector<nox::OutPacket> out;
+        auto sum = SpellPacket(79, false);
+        srv.OnPacket(a, sum.data(), sum.size(), out);
+        Check(srv.pets() == 1, "안 불려 나옴");
+
+        // b 를 소환수 옆에 세운다 (a 는 (1000,1000), 소환수는 그 앞 40)
+        srv.DebugMoveTo(b, 1040, 1000);
+
+        uint32_t ms = 0;
+        srv.Tick(0, out);
+        int guard = 0;
+        while (srv.pets() > 0 && guard++ < 60) {
+            out.clear();
+            auto pkt = InputPacket(6);              // 왼버튼
+            srv.OnPacket(b, pkt.data(), pkt.size(), out);
+            ms += 33 * (nox::kMeleeCooldownTicks + 1);
+            srv.Tick(ms, out);
+        }
+        Check(srv.pets() == 0, "때려도 안 죽음");
+        Check(srv.petsKilled() == 1, "죽은 횟수가 1 이 아님");
+
+        // ★ 마지막 묶음에 0x31 DESTROY_OBJECT 가 담겼나 — 안 보내면 시체가 남는다
+        bool destroyed = false;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (body.size() == 3 &&
+                body[0] == static_cast<uint8_t>(nox::Op::DESTROY_OBJECT)) destroyed = true;
+        }
+        Check(destroyed, "0x31 DESTROY_OBJECT 가 안 나감");
+
+        // 죽은 뒤에는 상태 갱신에도 안 실려야 한다
+        out.clear();
+        ms += 33;
+        srv.Tick(ms, out);
+        bool still = false;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+            nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
+            for (const auto& e : m.objects) if (e.type == 1348) still = true;
+        }
+        Check(!still, "죽은 소환수가 아직도 상태 갱신에 실림");
+    }
+
+    // ★★ ② 부른 사람의 공격에는 안 맞는다 (근거 없이 정한 규칙이지만 그대로 도는지)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        std::vector<nox::OutPacket> out;
+        auto sum = SpellPacket(79, false);
+        srv.OnPacket(a, sum.data(), sum.size(), out);
+        uint32_t ms = 0;
+        srv.Tick(0, out);
+        for (int i = 0; i < 30; ++i) {
+            auto pkt = InputPacket(6);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            ms += 33 * (nox::kMeleeCooldownTicks + 1);
+            srv.Tick(ms, out);
+        }
+        Check(srv.pets() == 1, "부른 사람이 자기 소환수를 죽임");
+        Check(srv.petsKilled() == 0, "부른 사람의 공격에 맞음");
+    }
+
+    // ③ 투사체도 남의 소환수를 맞힌다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        std::vector<nox::OutPacket> out;
+        auto sum = SpellPacket(79, false);
+        srv.OnPacket(a, sum.data(), sum.size(), out);
+        // b 를 소환수 뒤쪽에 세우고 소환수 쪽(+x)으로 쏘게 한다
+        srv.DebugMoveTo(b, 900, 1000);
+        // b 의 바라보는 쪽은 0(+x) 이라 소환수(1040,1000) 를 지나간다
+        auto pkt = SpellPacket(27, false);
+        srv.OnPacket(b, pkt.data(), pkt.size(), out);
+        FlyUntilDone(srv, out);
+        Check(srv.hits() >= 1, "투사체가 소환수를 못 맞힘");
+    }
+
+    std::printf("  소환수도 맞고 죽는다 — 0x31 로 사라짐·부른 사람 공격엔 안 맞음\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -895,6 +988,7 @@ int main() {
     TestProjectile();
     TestProjectileVisible();
     TestSummon();
+    TestPetDies();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();
