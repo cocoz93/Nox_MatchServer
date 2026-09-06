@@ -1,4 +1,4 @@
-﻿// Messages.h — 1단계에 필요한 메시지들.
+// Messages.h — 1단계에 필요한 메시지들.
 //
 // 목표는 둘이다.
 //   ① 클라의 멀티플레이 목록에 내 서버가 뜬다      (DISCOVER → INFO)
@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "nox/ByteBuffer.h"
 #include "nox/Opcode.h"
@@ -283,6 +284,214 @@ struct MsgClientClose {
 struct MsgServerClose {
     static constexpr Op kOp = Op::SERVER_CLOSE;
     static constexpr size_t kSize = 0;
+};
+
+// ── 게임 중 ──────────────────────────────────────────────
+//
+// 여기부터는 **실제 캡처에서 바이트를 확인한 것들**이다. 위쪽 접속 절과 달리
+// "이럴 것"이 아니라 "이렇다". 표본과 근거는 Docs/PROTOCOL.md 에 있다.
+//
+// ⚠ 이것들은 대개 껍데기 안에 들어 온다 —
+//   `0xaa IMPORTANT`(서버→클라 쪽은 1바이트 표식) 뒤에 이어 붙거나,
+//   `0xcc SEQ_IMPORTANT` 로 한 겹 더 싸여 온다. 껍데기를 안 벗기면 **안 보인다.**
+
+// 서버 → 클라. 2바이트. 누가 죽었는지만 알린다.
+// 실측 `e8 d8 02` — 번호 728. (2026-09-06 덤프)
+struct MsgPlayerDied {
+    static constexpr Op kOp = Op::PLAYER_DIED;
+    static constexpr size_t kSize = 2;
+
+    uint16_t netCode = 0;
+
+    bool Encode(Writer& w) const { return w.U16(netCode); }
+    bool Decode(Reader& r) { return r.U16(netCode); }
+};
+
+// 서버 → 클라. 8바이트.
+// 실측 `e9 d0 02 5d b8 00 00 ff 01` — 번호 720 · 틱 47,197.
+//
+// ★ 4바이트가 **틱 번호**다. 표본 다섯의 (값 차이 ÷ 시각 차이)가 모두 28.0~28.3/초로,
+//   걸음으로 따로 잰 틱 35.77ms(28.0Hz)와 맞았다. 서로 다른 길로 얻은 값이 만난 것이다.
+// ⚠ 끝의 `ff 01` 은 다섯 표본 전수가 같아서 뜻을 모른다. 그대로 싣고 나른다.
+struct MsgPlayerRespawn {
+    static constexpr Op kOp = Op::PLAYER_RESPAWN;
+    static constexpr size_t kSize = 8;
+
+    uint16_t netCode = 0;
+    uint32_t tick = 0;
+    uint8_t unk7 = 0xFF;   // 표본 전수 0xff
+    uint8_t unk8 = 0x01;   // 표본 전수 0x01
+
+    bool Encode(Writer& w) const {
+        return w.U16(netCode) && w.U32(tick) && w.U8(unk7) && w.U8(unk8);
+    }
+    bool Decode(Reader& r) {
+        return r.U16(netCode) && r.U32(tick) && r.U8(unk7) && r.U8(unk8);
+    }
+};
+
+// 서버 → 클라. 2바이트. **내 체력의 절대값**이다(번호가 없다).
+// 실측 `43 4a 00` → 74. 지속 피해가 들면 74 → 72 → 69 → 65 로 **35ms 간격**에 이어 온다.
+struct MsgReportPlayerHealth {
+    static constexpr Op kOp = Op::REPORT_PLAYER_HEALTH;
+    static constexpr size_t kSize = 2;
+
+    uint16_t health = 0;
+
+    bool Encode(Writer& w) const { return w.U16(health); }
+    bool Decode(Reader& r) { return r.U16(health); }
+};
+
+// 서버 → 클라. 4바이트. 남의 체력이 얼마나 변했는지.
+// 실측 `42 d8 02 81 ff` — 번호 728 · **−127**. 표본 열 건이 전수 음수였다(피해만 있었다).
+struct MsgReportHealthDelta {
+    static constexpr Op kOp = Op::REPORT_HEALTH_DELTA;
+    static constexpr size_t kSize = 4;
+
+    uint16_t netCode = 0;
+    int16_t delta = 0;    // 음수 = 피해
+
+    bool Encode(Writer& w) const { return w.U16(netCode) && w.U16(static_cast<uint16_t>(delta)); }
+    bool Decode(Reader& r) {
+        uint16_t v = 0;
+        if (!r.U16(netCode) || !r.U16(v)) return false;
+        delta = static_cast<int16_t>(v);
+        return true;
+    }
+};
+
+// 서버 → 클라. 6바이트. 지금 체력과 최대 체력.
+// 실측 `dd d0 02 4b 00 4b 00` — 번호 720 · 75/75. 최대값이 위 `0x43` 이 오르내리는 범위와 맞는다.
+struct MsgReportTotalHealth {
+    static constexpr Op kOp = Op::REPORT_TOTAL_HEALTH;
+    static constexpr size_t kSize = 6;
+
+    uint16_t netCode = 0;
+    uint16_t health = 0;
+    uint16_t maxHealth = 0;
+
+    bool Encode(Writer& w) const { return w.U16(netCode) && w.U16(health) && w.U16(maxHealth); }
+    bool Decode(Reader& r) { return r.U16(netCode) && r.U16(health) && r.U16(maxHealth); }
+};
+
+// 서버 → 클라. 4바이트. 바닥의 물건을 주웠다.
+// 실측 `4b b0 00 7e 02` — 번호 176 · 종류 638(BluePotion).
+// ★ 같은 순간 같은 번호로 `0x31 DESTROY_OBJECT` 가 함께 나간다 — 바닥의 물건이 사라지는 것.
+struct MsgReportPickup {
+    static constexpr Op kOp = Op::REPORT_PICKUP;
+    static constexpr size_t kSize = 4;
+
+    uint16_t netCode = 0;
+    uint16_t type = 0;    // 와이어 종류 번호 = thing.bin 순번 + 1
+
+    bool Encode(Writer& w) const { return w.U16(netCode) && w.U16(type); }
+    bool Decode(Reader& r) { return r.U16(netCode) && r.U16(type); }
+};
+
+// 서버 → 클라. 8바이트. 수식이 붙는 물건을 주웠다(무기·방어구).
+// 실측 `4c cc 02 6d 04 ff bf ff ff` — 번호 716 · 종류 1133(StreetPants).
+// ⚠ 수식 4바이트는 `ff` 가 「없음」 표시로 보이나 미확정이다. 그대로 나른다.
+struct MsgReportModifiablePickup {
+    static constexpr Op kOp = Op::REPORT_MODIFIABLE_PICKUP;
+    static constexpr size_t kSize = 8;
+
+    uint16_t netCode = 0;
+    uint16_t type = 0;
+    uint8_t mods[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+
+    bool Encode(Writer& w) const {
+        return w.U16(netCode) && w.U16(type) && w.Bytes(mods, sizeof(mods));
+    }
+    bool Decode(Reader& r) {
+        return r.U16(netCode) && r.U16(type) && r.Bytes(mods, sizeof(mods));
+    }
+};
+
+// 서버 → 클라. 4바이트. 물건을 떨어뜨렸다.
+// 실측 `4d db 02 91 04` — 번호 731 · 종류 1169(Longsword).
+// ★ 죽음(`0xE8`) **0.03초 뒤**에 방패·검이 이걸로 떨어졌다. 죽으면 장비를 흘린다.
+struct MsgReportDrop {
+    static constexpr Op kOp = Op::REPORT_DROP;
+    static constexpr size_t kSize = 4;
+
+    uint16_t netCode = 0;
+    uint16_t type = 0;
+
+    bool Encode(Writer& w) const { return w.U16(netCode) && w.U16(type); }
+    bool Decode(Reader& r) { return r.U16(netCode) && r.U16(type); }
+};
+
+// 서버 → 클라. 2바이트. 그 물건을 착용했다.
+// 실측 `60 cc 02` — 접속 직후 처음 지급 장비가 줍기(`0x4C`) 뒤에 곧바로 이걸로 이어진다.
+struct MsgReportEquip {
+    static constexpr Op kOp = Op::REPORT_EQUIP;
+    static constexpr size_t kSize = 2;
+
+    uint16_t netCode = 0;
+
+    bool Encode(Writer& w) const { return w.U16(netCode); }
+    bool Decode(Reader& r) { return r.U16(netCode); }
+};
+
+// ── 껍데기 ───────────────────────────────────────────────
+//
+// ★★ 이걸 안 벗기면 위의 것들이 **하나도 안 보인다.** 2026-09-07 에 이것 때문에
+//    세 덤프 90만 메시지에서 죽음·체력·줍기가 전부 0건으로 보였다.
+
+// 서버 → 클라. 신뢰 전송 껍데기. 머리 3바이트 + 속 메시지.
+// 실측 `cc 20 00 07 | 6a cb 02 00 00 00 00` — 번호 0x0020 · 속 7바이트.
+struct MsgSeqImportant {
+    static constexpr Op kOp = Op::SEQ_IMPORTANT;
+    static constexpr size_t kHeaderSize = 3;
+
+    uint16_t id = 0;
+    uint8_t innerSize = 0;   // 속 메시지의 길이(오프코드 포함)
+
+    size_t EncodeSize() const { return kHeaderSize + innerSize; }
+
+    // 속은 그대로 두고 머리만 다룬다. 벗긴 뒤 innerSize 바이트를 다시 읽으면 된다.
+    bool Encode(Writer& w) const { return w.U16(id) && w.U8(innerSize); }
+    bool Decode(Reader& r) { return r.U16(id) && r.U8(innerSize); }
+};
+
+// 서버 → 클라. 머리 10바이트 + 글자. 말풍선.
+// 실측 `a8 d0 02 02 96 0e 0a 0b 02 00 00 74 00` — 번호 720 · UTF-8 · (3734, 2826) · 두 글자.
+//
+// ★ 글자 길이는 `size` 인데 깃발에 UTF8(0x2)·Localized(0x8) 가 **없으면 UTF-16 이라 두 배**다.
+// ★ 말풍선 좌표를 서버가 정해 준다.
+struct MsgTextMessage {
+    static constexpr Op kOp = Op::TEXT_MESSAGE;
+    static constexpr size_t kHeaderSize = 10;
+
+    enum Flags : uint8_t { kTeam = 0x01, kUtf8 = 0x02, kLocalized = 0x08, kNotice = 0x10 };
+
+    uint16_t netCode = 0;
+    uint8_t flags = kUtf8;
+    uint16_t posX = 0;
+    uint16_t posY = 0;
+    uint8_t size = 0;        // 글자 수
+    uint16_t durMs = 0;
+    std::vector<uint8_t> data;
+
+    // 글자가 차지하는 바이트 수. 깃발이 정한다.
+    size_t DataSize() const {
+        return (flags & (kUtf8 | kLocalized)) ? size : static_cast<size_t>(size) * 2;
+    }
+    size_t EncodeSize() const { return kHeaderSize + DataSize(); }
+
+    bool Encode(Writer& w) const {
+        return w.U16(netCode) && w.U8(flags) && w.U16(posX) && w.U16(posY) &&
+               w.U8(size) && w.U16(durMs) &&
+               w.Bytes(data.data(), data.size());
+    }
+    bool Decode(Reader& r) {
+        if (!(r.U16(netCode) && r.U8(flags) && r.U16(posX) && r.U16(posY) &&
+              r.U8(size) && r.U16(durMs))) {
+            return false;
+        }
+        data.resize(DataSize());
+        return data.empty() || r.Bytes(data.data(), data.size());
+    }
 };
 
 } // namespace nox
