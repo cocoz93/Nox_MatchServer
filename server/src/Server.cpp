@@ -238,9 +238,10 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
     }
 }
 
-void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out) {
+void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
+                        const std::string& by) {
     if (t.none() || dmg <= 0) return;
-    if (t.pet < 0) { Damage(t.addr, dmg, out); return; }
+    if (t.pet < 0) { Damage(t.addr, dmg, out, by); return; }
 
     const size_t i = static_cast<size_t>(t.pet);
     if (i >= pets_.size()) return;
@@ -252,7 +253,8 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out) {
     KillPet(i, out);
 }
 
-bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>& out) {
+bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
+                    const std::string& by) {
     auto it = sessions_.find(addr);
     if (it == sessions_.end()) return false;
     Session& s = it->second;
@@ -297,7 +299,61 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
         EmitSeq(s, msg, sizeof(msg), out);
     }
     s.respawnAtFrame = frame_ + kRespawnDelayTicks;
+    ++s.deaths;
+
+    // ④ 점수 — 때린 쪽이 있고 자기 자신이 아니면 그쪽이 하나 얻는다.
+    //    자기가 자기를 죽인 것(자기에게 건 주문)은 점수가 아니다.
+    if (!by.empty() && by != addr) {
+        auto k = sessions_.find(by);
+        if (k != sessions_.end()) {
+            ++k->second.kills;
+            if (!roundOver_ && k->second.kills >= kArenaKillLimit) {
+                roundOver_ = true;
+                // ⚠⚠ `0x58 REPORT_DEATHMATCH_WINNER` 의 **속 짜임은 모른다.**
+                //    opennox 길이표에 본문 7바이트라고만 있고(codes.go:301) 구조체가 없다.
+                //    우리 덤프에도 **0건**이다 — 겨루기 모드로 돌린 적이 없다.
+                //    길이는 맞으니 흐름은 안 어긋나지만, **안에 든 값은 확인 안 됐다.**
+                //    번호 2 + 점수 2 + 채움 3 으로 두었을 뿐이다. 표본이 생기면 고칠 것.
+                uint8_t msg[8];
+                msg[0] = static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER);
+                msg[1] = static_cast<uint8_t>(k->second.netCode);
+                msg[2] = static_cast<uint8_t>(k->second.netCode >> 8);
+                msg[3] = static_cast<uint8_t>(k->second.kills);
+                msg[4] = static_cast<uint8_t>(k->second.kills >> 8);
+                msg[5] = msg[6] = msg[7] = 0;
+                for (auto& kv : sessions_) {
+                    if (kv.second.inGame) {
+                        EmitSeq(kv.second, msg, sizeof(msg), out);
+                    }
+                }
+            }
+        }
+    }
     return true;
+}
+
+// 판 시계 — 짜임은 실측이다(PROTOCOL.md 「판 시계」 절).
+//
+//   d3 | 번호 4 | 남은 시간 4(밀리초, 부호 있음) | 지금 틱 4
+//
+// 한도가 없으면 남은 시간이 **음수로 계속 내려간다** — 실측이 그랬다.
+void Server::SendTimer(std::vector<OutPacket>& out) {
+    const int32_t remain = -static_cast<int32_t>(frame_ * tickMs_);
+    uint8_t msg[13];
+    msg[0] = static_cast<uint8_t>(Op::TIMER_STATUS);
+    msg[1] = msg[2] = msg[3] = msg[4] = 0;      // 표본 전수가 0 이었다
+    const uint32_t r = static_cast<uint32_t>(remain);
+    msg[5] = static_cast<uint8_t>(r);
+    msg[6] = static_cast<uint8_t>(r >> 8);
+    msg[7] = static_cast<uint8_t>(r >> 16);
+    msg[8] = static_cast<uint8_t>(r >> 24);
+    msg[9]  = static_cast<uint8_t>(frame_);
+    msg[10] = static_cast<uint8_t>(frame_ >> 8);
+    msg[11] = static_cast<uint8_t>(frame_ >> 16);
+    msg[12] = static_cast<uint8_t>(frame_ >> 24);
+    for (auto& kv : sessions_) {
+        if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+    }
 }
 
 size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
@@ -415,7 +471,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         if (frame_ >= s.nextMeleeFrame) {
                             s.nextMeleeFrame = frame_ + kMeleeCooldownTicks;
                             const Target t = NearestTarget(from, s.x, s.y, kMeleeRange);
-                            HurtTarget(t, kMeleeDamage, out);
+                            HurtTarget(t, kMeleeDamage, out, from);
                             ++melees_;
                         }
                     }
@@ -485,7 +541,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 if (dmg > 0) {
                     if (onSelf) {
                         // 자기에게 건 것은 날아갈 데가 없다. 그 자리에서 받는다.
-                        Damage(from, dmg, out);
+                        Damage(from, dmg, out, from);   // 자기에게 건 것 — 점수는 안 준다
                     } else {
                         // ★ 날려 보낸다. 시전하는 순간 맞으면 **피할 수가 없다** —
                         //   비켜서 안 맞는 것이 있어야 싸움이 싸움이 된다.
@@ -672,7 +728,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             const int dmg = p.damage;
             shots_.erase(shots_.begin() + static_cast<long>(i));   // 먼저 지운다
             ++hits_;
-            HurtTarget(hit, dmg, out);   // 그 다음에 깎는다 (p 는 이미 없다)
+            HurtTarget(hit, dmg, out, p.owner);   // 그 다음에 깎는다 (p 는 이미 없다)
         }
     }
 
@@ -705,10 +761,16 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             } else if (frame_ >= k.nextHitFrame) {
                 // 닿았다 — 때린다. 쉬는 시간은 사람 근접과 같은 규칙이다.
                 k.nextHitFrame = frame_ + kMeleeCooldownTicks;
-                HurtTarget(t, kPetDamage, out);
+                HurtTarget(t, kPetDamage, out, k.owner);   // 부른 사람의 점수다
                 break;   // 목록이 바뀔 수 있다 — 이번 걸음은 여기서 접는다
             }
         }
+    }
+
+    // 판 시계 — 실측 간격이 2초 남짓이었다.
+    if (frame_ >= nextTimerFrame_) {
+        nextTimerFrame_ = frame_ + kTimerEveryTicks;
+        SendTimer(out);
     }
 
     // 게임에 들어와 있는 사람에게만 보낸다.

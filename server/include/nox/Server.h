@@ -110,6 +110,8 @@ struct Session {
     uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
+    uint16_t kills = 0;            // 죽인 수 (아레나 점수)
+    uint16_t deaths = 0;           // 죽은 수
 
     // 이 상대가 **자기 쪽에서 굴리고 있을** 별칭 표. 서버가 똑같이 굴려야
     // 어긋나지 않는다(Alias.h 참조).
@@ -162,6 +164,17 @@ constexpr double kPetSpeed = 5.0;          // 한 틱에 다가가는 거리
 constexpr double kPetReach = 40.0;         // 이 안에 들어오면 때린다
 constexpr int kPetDamage = 8;
 constexpr uint16_t kPetHealth = 40;
+
+// ── 아레나 (점수 겨루기) ────────────────────────────────────
+//
+// ⚠ **점수 한도는 실측이 아니다.** 콘솔의 `set deaths {n}` 으로 서버가 정하는 값이고
+//   (→ `Docs/CONSOLE.md`), 우리 캡처는 `Game Type: Arena` 에 한도 없이 돌았다.
+//   열 명 죽이면 끝나는 것으로 두었을 뿐이다.
+constexpr uint16_t kArenaKillLimit = 10;
+
+// 판 시계를 얼마마다 뿌리나. 실측 표본은 **2초 남짓 간격**이었다
+// (15:05:08.299 · 10.538 · 12.709 · 14.867 — 2.2초씩). 30Hz 기준 그만큼으로 둔다.
+constexpr uint32_t kTimerEveryTicks = 66;
 
 constexpr double kProjectileSpeed = 26.0;    // 한 틱에 미는 거리
 constexpr double kProjectileHitRadius = 24.0; // 이 안에 들어오면 맞은 것으로 본다
@@ -293,7 +306,21 @@ public:
     //   0xE8 PLAYER_DIED          0xcc 껍데기 안  (실측 2건 전수)
     //
     // 돌려주는 값 = 이 피해로 죽었나.
-    bool Damage(const std::string& addr, int amount, std::vector<OutPacket>& out);
+    // `by` 는 때린 쪽의 주소다. 죽으면 그쪽 점수가 오른다.
+    // 불·독처럼 임자가 없는 피해면 빈 문자열을 넣는다.
+    bool Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
+                const std::string& by = std::string());
+
+    uint16_t KillsOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.kills;
+    }
+    uint16_t DeathsOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.deaths;
+    }
+    // 판이 끝났나 (점수 한도에 닿았나).
+    bool RoundOver() const { return roundOver_; }
 
     // 지금 살아 있나. 없는 상대면 거짓.
     bool IsAlive(const std::string& addr) const {
@@ -362,7 +389,11 @@ private:
 
     // 고른 대상을 깎는다. 사람이면 Damage(), 불려 나온 것이면 그쪽 체력을 깎고
     // 0 이 되면 없애며 `0x31 DESTROY_OBJECT` 를 뿌린다.
-    void HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out);
+    void HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
+                    const std::string& by = std::string());
+
+    // 판 시계를 뿌린다 — `0xd3 TIMER_STATUS`. 짜임은 실측이다(PROTOCOL.md 「판 시계」).
+    void SendTimer(std::vector<OutPacket>& out);
 
     // 불려 나온 것 하나를 없애고 모두에게 알린다.
     void KillPet(size_t idx, std::vector<OutPacket>& out);
@@ -399,6 +430,8 @@ private:
     unsigned long long melees_ = 0;
     unsigned long long hits_ = 0;
     unsigned long long petsKilled_ = 0;
+    bool roundOver_ = false;
+    uint32_t nextTimerFrame_ = 0;
     std::vector<Projectile> shots_;
     std::vector<Creature> pets_;
     // 날아가는 것에 매길 번호.

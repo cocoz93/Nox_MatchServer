@@ -951,6 +951,117 @@ void TestPetDies() {
     std::printf("  소환수도 맞고 죽는다 — 0x31 로 사라짐·부른 사람 공격엔 안 맞음\n");
 }
 
+// ── 아레나 — 점수와 시계 ───────────────────────────────────────
+void TestArena() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+
+    // ① 근접으로 죽이면 **때린 쪽** 점수가 오른다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        uint32_t ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        int guard = 0;
+        while (srv.IsAlive(b) && guard++ < 40) {
+            auto pkt = InputPacket(6);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            ms += 33 * (nox::kMeleeCooldownTicks + 1);
+            srv.Tick(ms, out);
+        }
+        Check(!srv.IsAlive(b), "안 죽음");
+        Check(srv.KillsOf(a) == 1, "때린 쪽 점수가 1 이 아님");
+        Check(srv.DeathsOf(b) == 1, "죽은 쪽의 죽은 수가 1 이 아님");
+        Check(srv.KillsOf(b) == 0, "맞은 쪽에 점수가 붙음");
+    }
+
+    // ★★ ② 자기에게 건 주문으로 죽어도 **점수는 안 준다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        std::vector<nox::OutPacket> out;
+        int guard = 0;
+        while (srv.IsAlive(a) && guard++ < 20) {
+            auto pkt = SpellPacket(27, /*onSelf=*/true);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        }
+        Check(!srv.IsAlive(a), "자기 주문으로 안 죽음");
+        Check(srv.KillsOf(a) == 0, "자기를 죽이고 점수를 얻음");
+        Check(srv.DeathsOf(a) == 1, "죽은 수가 안 오름");
+    }
+
+    // ③ 한도에 닿으면 판이 끝나고 **0x58 이 나간다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        uint32_t ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        int guard = 0;
+        while (!srv.RoundOver() && guard++ < 2000) {
+            out.clear();
+            auto pkt = InputPacket(6);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            ms += 33 * (nox::kMeleeCooldownTicks + 1);
+            srv.Tick(ms, out);   // 부활도 여기서 돈다
+        }
+        Check(srv.RoundOver(), "한도에 닿아도 안 끝남");
+        Check(srv.KillsOf(a) >= nox::kArenaKillLimit, "점수가 한도에 안 닿음");
+
+        bool won = false;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            // 껍데기(0xcc) 속에 들어간다
+            if (body.size() >= 5 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) &&
+                body[4] == static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER)) won = true;
+        }
+        Check(won, "0x58 REPORT_DEATHMATCH_WINNER 가 안 나감");
+    }
+
+    // ④ 판 시계 — 짜임이 실측 표본과 같은가
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        out.clear();
+        srv.Tick(33 * 100, out);
+
+        const std::vector<uint8_t>* timer = nullptr;
+        std::vector<uint8_t> inner;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (body.size() >= 5 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) &&
+                body[4] == static_cast<uint8_t>(nox::Op::TIMER_STATUS)) {
+                inner.assign(body.begin() + 4, body.end());
+                timer = &inner;
+            }
+        }
+        Check(timer != nullptr, "0xd3 TIMER_STATUS 가 안 나감");
+        if (timer) {
+            Check(timer->size() == 13, "0xd3 이 13바이트가 아님");
+            // 첫 4바이트는 실측 표본 전수가 0 이었다
+            Check((*timer)[1] == 0 && (*timer)[2] == 0 && (*timer)[3] == 0 && (*timer)[4] == 0,
+                  "0xd3 첫 칸이 0 이 아님");
+            const int32_t remain = static_cast<int32_t>(
+                (*timer)[5] | ((*timer)[6] << 8) | ((*timer)[7] << 16) |
+                (static_cast<uint32_t>((*timer)[8]) << 24));
+            const uint32_t tick = (*timer)[9] | ((*timer)[10] << 8) | ((*timer)[11] << 16) |
+                                  (static_cast<uint32_t>((*timer)[12]) << 24);
+            Check(tick == srv.frame(), "0xd3 의 틱이 지금 틱이 아님");
+            Check(remain < 0, "한도가 없는데 남은 시간이 음수가 아님");
+            // 실측에서 (남은시간 / 틱) 이 −35.6 근처였다. 우리 것도 그 언저리여야 한다
+            const double ratio = static_cast<double>(remain) / static_cast<double>(tick ? tick : 1);
+            Check(ratio < -30.0 && ratio > -40.0, "남은시간/틱 비가 실측(−35.6) 언저리가 아님");
+        }
+    }
+
+    std::printf("  아레나 — 점수·자살은 점수 없음·승자 알림·판 시계\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -989,6 +1100,7 @@ int main() {
     TestProjectileVisible();
     TestSummon();
     TestPetDies();
+    TestArena();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();
