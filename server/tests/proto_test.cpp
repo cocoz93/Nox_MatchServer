@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "nox/Messages.h"
+#include "nox/Server.h"
 #include "nox/SpellNames.h"
 #include "nox/Opcode.h"
 
@@ -320,6 +321,139 @@ void TestGameplayMessages() {
     std::printf("  게임 중 메시지 13종 — 캡처한 실제 바이트로 뜯음\n");
 }
 
+// ── 서버 로직 — 죽음과 부활이 실제로 도는가 ────────────────────
+//
+// 위 시험들은 「바이트를 제대로 뜯나」를 본다. 여기는 **흐름이 도나**를 본다.
+// 둘은 다른 것이다 — 짜임이 맞아도 순서나 껍데기가 틀리면 게임은 안 돈다.
+
+// 나간 조각에서 메시지 부분만 꺼낸다(머리 2바이트를 뗀다). 키를 안 준 상대라 평문이다.
+std::vector<uint8_t> Body(const nox::OutPacket& p) {
+    return std::vector<uint8_t>(p.data.begin() + nox::kWireHeaderSize, p.data.end());
+}
+
+// out 안에서 이 오프코드로 시작하는 메시지를 찾는다. 껍데기(0xcc) 속도 들여다본다.
+const std::vector<uint8_t>* FindMsg(const std::vector<std::vector<uint8_t>>& msgs, uint8_t op) {
+    for (const auto& m : msgs) {
+        if (!m.empty() && m[0] == op) return &m;
+    }
+    return nullptr;
+}
+
+// 나간 조각들을 메시지 목록으로 편다. 0xcc 껍데기는 벗겨 속을 넣는다.
+std::vector<std::vector<uint8_t>> Flatten(const std::vector<nox::OutPacket>& out) {
+    std::vector<std::vector<uint8_t>> msgs;
+    for (const auto& p : out) {
+        std::vector<uint8_t> b = Body(p);
+        if (b.size() >= 4 && b[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
+            const size_t inner = b[3];
+            if (4 + inner <= b.size()) {
+                msgs.emplace_back(b.begin() + 4, b.begin() + 4 + inner);
+                continue;
+            }
+        }
+        msgs.push_back(std::move(b));
+    }
+    return msgs;
+}
+
+void TestDeathFlow() {
+    nox::Server srv;
+    const std::string who = "10.0.0.1:1000";
+    srv.DebugEnterGame(who, 728);
+    Check(srv.IsAlive(who), "들어오자마자 살아 있지 않음");
+    Check(srv.HealthOf(who) == nox::kDefaultMaxHealth, "처음 체력이 최대가 아님");
+
+    // ① 안 죽을 만큼 때린다 — 증감과 절대값이 둘 다 나가야 한다
+    {
+        std::vector<nox::OutPacket> out;
+        const bool died = srv.Damage(who, 30, out);
+        Check(!died, "30 맞고 죽으면 안 됨");
+        Check(srv.HealthOf(who) == 45, "75-30 이 45 가 아님");
+
+        auto msgs = Flatten(out);
+        const auto* d = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
+        Check(d != nullptr, "0x42 가 안 나감");
+        if (d) {
+            Check(d->size() == 5, "0x42 가 5바이트가 아님");
+            Check((*d)[1] == 0xd8 && (*d)[2] == 0x02, "0x42 의 번호가 728 이 아님");
+            const int16_t delta = static_cast<int16_t>((*d)[3] | ((*d)[4] << 8));
+            Check(delta == -30, "0x42 의 증감이 -30 이 아님");
+        }
+        const auto* h = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH));
+        Check(h != nullptr, "0x43 이 안 나감 (껍데기 안에 있어야 한다)");
+        if (h) Check(((*h)[1] | ((*h)[2] << 8)) == 45, "0x43 값이 45 가 아님");
+
+        // 0x43 은 **껍데기 안**에 있어야 한다 — 겉으로 나가면 틀린 것이다
+        bool wrapped = false;
+        for (const auto& p : out) {
+            auto b = Body(p);
+            if (!b.empty() && b[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) wrapped = true;
+        }
+        Check(wrapped, "0xcc 껍데기가 안 쓰임");
+    }
+
+    // ② 죽인다
+    {
+        std::vector<nox::OutPacket> out;
+        const bool died = srv.Damage(who, 100, out);
+        Check(died, "100 맞고 안 죽음");
+        Check(srv.HealthOf(who) == 0, "죽었는데 체력이 0 이 아님");
+        Check(!srv.IsAlive(who), "죽었는데 살아 있다고 나옴");
+
+        auto msgs = Flatten(out);
+        const auto* e = FindMsg(msgs, static_cast<uint8_t>(nox::Op::PLAYER_DIED));
+        Check(e != nullptr, "0xe8 이 안 나감");
+        if (e) {
+            Check(e->size() == 3, "0xe8 이 3바이트가 아님");
+            Check((*e)[1] == 0xd8 && (*e)[2] == 0x02, "0xe8 의 번호가 728 이 아님");
+        }
+        // 체력이 0 밑으로 안 내려가야 한다 — 증감은 남은 만큼만
+        const auto* d = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
+        if (d) {
+            const int16_t delta = static_cast<int16_t>((*d)[3] | ((*d)[4] << 8));
+            Check(delta == -45, "남은 45 만 깎여야 하는데 아님");
+        }
+    }
+
+    // ③ 죽어 있는 동안 또 때려도 아무 일 없어야 한다
+    {
+        std::vector<nox::OutPacket> out;
+        Check(!srv.Damage(who, 10, out), "죽은 사람이 또 죽음");
+        Check(out.empty(), "죽은 사람을 때렸는데 뭔가 나감");
+    }
+
+    // ④ 시간이 지나면 되살아난다
+    {
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);                    // 첫 호출은 기준점만 잡는다
+        out.clear();
+        // 부활까지 필요한 시간 + 여유. 기본 틱이 33ms 다
+        srv.Tick(33 * (nox::kRespawnDelayTicks + 2), out);
+        Check(srv.IsAlive(who), "때가 지났는데 안 살아남");
+        Check(srv.HealthOf(who) == nox::kDefaultMaxHealth, "되살아났는데 체력이 최대가 아님");
+
+        auto msgs = Flatten(out);
+        const auto* r = FindMsg(msgs, static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN));
+        Check(r != nullptr, "0xe9 가 안 나감");
+        if (r) {
+            Check(r->size() == 9, "0xe9 가 9바이트가 아님");
+            Check((*r)[1] == 0xd8 && (*r)[2] == 0x02, "0xe9 의 번호가 728 이 아님");
+            const uint32_t tick = (*r)[3] | ((*r)[4] << 8) | ((*r)[5] << 16) |
+                                  (static_cast<uint32_t>((*r)[6]) << 24);
+            Check(tick == srv.frame(), "0xe9 의 4바이트가 지금 틱이 아님");
+            Check((*r)[7] == 0xff && (*r)[8] == 0x01, "0xe9 끝 두 바이트가 표본과 다름");
+        }
+        const auto* tot = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
+        Check(tot != nullptr, "0xdd 가 안 나감");
+        if (tot) {
+            Check(((*tot)[3] | ((*tot)[4] << 8)) == nox::kDefaultMaxHealth, "0xdd 의 지금 체력이 다름");
+            Check(((*tot)[5] | ((*tot)[6] << 8)) == nox::kDefaultMaxHealth, "0xdd 의 최대 체력이 다름");
+        }
+    }
+
+    std::printf("  죽음·부활 흐름 — 맞음→죽음→기다림→부활\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -351,6 +485,7 @@ int main() {
 
     std::printf("\n[표·경계]\n");
     TestGameplayMessages();
+    TestDeathFlow();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();

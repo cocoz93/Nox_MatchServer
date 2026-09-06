@@ -47,3 +47,7 @@ CMakeSettings.json
 *.png
 *.jpg
 *.bmp
+
+# 파이썬이 만드는 바이트코드 캐시 — 2026-09-07 에 실수로 커밋됐다가 뺐다
+__pycache__/
+*.pyc

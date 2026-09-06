@@ -1,4 +1,4 @@
-﻿// Server.cpp — 접속 절차 세 자리에 답한다.
+// Server.cpp — 접속 절차 세 자리에 답한다.
 //
 //   0x0C SERVER_DISCOVER  →  0x0D SERVER_INFO      (녹음 재생, 토큰만 바꿔서)
 //   0x0E SERVER_TRY_JOIN  →  0x14 SERVER_JOIN_OK   (지금은 무조건 받아준다)
@@ -78,6 +78,72 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
     // (덤프의 `70 70 74` 가 XOR 0x70 을 풀면 `00 00 04` 인 것이 그 증거다)
     if (s.keyed) ApplyXor(p.data.data(), p.data.size(), s.xorKey);
     out.push_back(std::move(p));
+}
+
+// `0xcc SEQ_IMPORTANT` 로 싸서 내보낸다 — 머리 `cc | 번호 2 | 속길이 1` 뒤에 속 메시지.
+//
+// 실측 원문: `cc 20 00 07 | 6a cb 02 00 00 00 00`  (속 7바이트짜리 REPORT_CLIENT_STATUS)
+void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n,
+                     std::vector<OutPacket>& out) {
+    if (n == 0 || n > 0xFF) return;
+    std::vector<uint8_t> buf;
+    buf.reserve(4 + n);
+    buf.push_back(static_cast<uint8_t>(Op::SEQ_IMPORTANT));
+    buf.push_back(static_cast<uint8_t>(s.seqImpId));
+    buf.push_back(static_cast<uint8_t>(s.seqImpId >> 8));
+    buf.push_back(static_cast<uint8_t>(n));
+    buf.insert(buf.end(), msg, msg + n);
+    ++s.seqImpId;
+    // 껍데기가 신뢰를 맡으므로 패킷 자체는 비신뢰다 (Server.h 의 EmitSeq 주석 참조).
+    Emit(s, /*reliable=*/false, /*stream=*/0, buf.data(), buf.size(), out);
+}
+
+bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>& out) {
+    auto it = sessions_.find(addr);
+    if (it == sessions_.end()) return false;
+    Session& s = it->second;
+    if (!s.inGame || s.respawnAtFrame != 0 || amount <= 0) return false;
+
+    const int before = s.health;
+    int after = before - amount;
+    if (after < 0) after = 0;
+    s.health = static_cast<uint16_t>(after);
+
+    // ① 얼마나 깎였나 — 겉에 그냥 실어 보낸다.
+    //    실측 `42 d8 02 81 ff` = 번호 728 · −127. 증감은 **부호 있는 16비트**다.
+    {
+        const int16_t delta = static_cast<int16_t>(after - before);
+        const uint16_t raw = static_cast<uint16_t>(delta);
+        uint8_t msg[5];
+        msg[0] = static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA);
+        msg[1] = static_cast<uint8_t>(s.netCode);
+        msg[2] = static_cast<uint8_t>(s.netCode >> 8);
+        msg[3] = static_cast<uint8_t>(raw);
+        msg[4] = static_cast<uint8_t>(raw >> 8);
+        Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+    }
+
+    // ② 내 체력의 절대값 — 껍데기 안이다. 실측 `43 4a 00`.
+    {
+        uint8_t msg[3];
+        msg[0] = static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH);
+        msg[1] = static_cast<uint8_t>(s.health);
+        msg[2] = static_cast<uint8_t>(s.health >> 8);
+        EmitSeq(s, msg, sizeof(msg), out);
+    }
+
+    if (s.health > 0) return false;
+
+    // ③ 죽음 — 껍데기 안. 실측 `e8 d8 02`.
+    {
+        uint8_t msg[3];
+        msg[0] = static_cast<uint8_t>(Op::PLAYER_DIED);
+        msg[1] = static_cast<uint8_t>(s.netCode);
+        msg[2] = static_cast<uint8_t>(s.netCode >> 8);
+        EmitSeq(s, msg, sizeof(msg), out);
+    }
+    s.respawnAtFrame = frame_ + kRespawnDelayTicks;
+    return true;
 }
 
 size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
@@ -308,6 +374,10 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 s.inGame = true;
                 if (s.x == 0 && s.y == 0) { s.x = 1000; s.y = 1000; }
                 if (s.netCode == 0) s.netCode = 713;
+                if (s.maxHealth == 0) {
+                    s.maxHealth = kDefaultMaxHealth;
+                    s.health = s.maxHealth;
+                }
 
                 if (!useMapBody_.empty()) {
                     std::vector<uint8_t> msg = useMapBody_;
@@ -353,6 +423,41 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     for (auto& kv : sessions_) {
         Session& s = kv.second;
         if (!s.inGame) continue;
+
+        // 죽어 있고 때가 됐으면 되살린다.
+        if (s.respawnAtFrame != 0 && frame_ >= s.respawnAtFrame) {
+            s.respawnAtFrame = 0;
+            s.health = s.maxHealth;
+
+            // 부활 — 껍데기 안. 실측 `e9 d0 02 5d b8 00 00 ff 01`.
+            // ★ 4바이트는 **틱 번호**다(표본 다섯의 값차/시간차가 모두 28/초였다).
+            //   끝의 `ff 01` 은 표본 전수가 같아 뜻을 모른다. 그대로 싣는다.
+            {
+                uint8_t msg[9];
+                msg[0] = static_cast<uint8_t>(Op::PLAYER_RESPAWN);
+                msg[1] = static_cast<uint8_t>(s.netCode);
+                msg[2] = static_cast<uint8_t>(s.netCode >> 8);
+                msg[3] = static_cast<uint8_t>(frame_);
+                msg[4] = static_cast<uint8_t>(frame_ >> 8);
+                msg[5] = static_cast<uint8_t>(frame_ >> 16);
+                msg[6] = static_cast<uint8_t>(frame_ >> 24);
+                msg[7] = 0xFF;
+                msg[8] = 0x01;
+                EmitSeq(s, msg, sizeof(msg), out);
+            }
+            // 되살아난 체력 — 실측 `dd d0 02 4b 00 4b 00` (지금/최대).
+            {
+                uint8_t msg[7];
+                msg[0] = static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH);
+                msg[1] = static_cast<uint8_t>(s.netCode);
+                msg[2] = static_cast<uint8_t>(s.netCode >> 8);
+                msg[3] = static_cast<uint8_t>(s.health);
+                msg[4] = static_cast<uint8_t>(s.health >> 8);
+                msg[5] = static_cast<uint8_t>(s.maxHealth);
+                msg[6] = static_cast<uint8_t>(s.maxHealth >> 8);
+                EmitSeq(s, msg, sizeof(msg), out);
+            }
+        }
 
         // ① 시각 — 본문 2바이트(LE16). 클라는 이 값으로 프레임을 맞춘다.
         {

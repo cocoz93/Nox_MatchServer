@@ -1,4 +1,4 @@
-﻿// Server.h — 접속을 받는 서버 로직. **소켓을 모른다.**
+// Server.h — 접속을 받는 서버 로직. **소켓을 모른다.**
 //
 // 왜 소켓을 떼어놨나 — 판정을 사람 눈에서 떼기 위해서다.
 // 여기가 `recvfrom` 을 직접 부르면 채점하려고 매번 클라를 띄워야 한다.
@@ -70,6 +70,13 @@ struct Session {
     int x = 0, y = 0;        // 맵 위 자리
     uint8_t facing = 0;      // 바라보는 쪽. 한 바퀴를 256으로 나눈 값
 
+    // ── 체력과 죽음 (2026-09-07) ─────────────────────────
+    // 짜임과 값은 캡처에서 얻었다(Docs/PROTOCOL.md 「죽음과 부활 ✅」·「체력」 절).
+    uint16_t health = 0;
+    uint16_t maxHealth = 0;
+    uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
+    uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
+
     // 이 상대가 **자기 쪽에서 굴리고 있을** 별칭 표. 서버가 똑같이 굴려야
     // 어긋나지 않는다(Alias.h 참조).
     AliasTable aliases;
@@ -78,6 +85,15 @@ struct Session {
     StreamSeq seq[128];
 };
 
+// 접속할 때 주는 최대 체력. **실측값이다** —
+//   dd d0 02 4b 00 4b 00   번호 720 · 75/75      (`0xDD REPORT_TOTAL_HEALTH`)
+// 다른 상대는 150 이었다(직업이나 레벨에 달린 것으로 보이나 확인 못 했다).
+constexpr uint16_t kDefaultMaxHealth = 75;
+
+// ⚠ **죽고 나서 얼마 만에 부활하나 — 이 값은 실측이 아니다.**
+//   09-06 덤프의 죽음은 단 두 건이고, 그 뒤 같은 번호의 부활이 안 잡혔다.
+//   그래서 잴 수가 없었다. 30Hz 기준 5초로 두었을 뿐이니 **캡처로 갈아 끼울 자리**다.
+constexpr uint32_t kRespawnDelayTicks = 150;
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.
@@ -150,6 +166,39 @@ public:
     size_t OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     std::vector<OutPacket>& out);
 
+    // ★ 시험용 — 접속 절차를 다 밟지 않고 게임 안 상태를 만든다.
+    //
+    // 진짜 흐름은 `OnPacket` 이 만든다. 여기는 **죽음·부활을 시험하려고** 둔 좁은 통로다.
+    // 이게 없으면 죽음 시험을 하려고 216바이트 접속 묶음까지 흉내내야 한다.
+    void DebugEnterGame(const std::string& addr, uint16_t netCode) {
+        Session& s = SessionFor(addr);
+        s.inGame = true;
+        s.netCode = netCode;
+        s.maxHealth = kDefaultMaxHealth;
+        s.health = s.maxHealth;
+        s.x = 1000;
+        s.y = 1000;
+    }
+
+    // ★ 피해를 준다. 체력이 0 이하가 되면 죽음을 알리고 부활을 예약한다.
+    //
+    // 나가는 것은 캡처에서 본 그대로다 —
+    //   0x42 REPORT_HEALTH_DELTA  겉에 그냥      (실측 10건 전수가 비신뢰 패킷)
+    //   0xE8 PLAYER_DIED          0xcc 껍데기 안  (실측 2건 전수)
+    //
+    // 돌려주는 값 = 이 피해로 죽었나.
+    bool Damage(const std::string& addr, int amount, std::vector<OutPacket>& out);
+
+    // 지금 살아 있나. 없는 상대면 거짓.
+    bool IsAlive(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it != sessions_.end() && it->second.inGame && it->second.respawnAtFrame == 0;
+    }
+    uint16_t HealthOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.health;
+    }
+
     // ★ 틱 — 시각을 넣으면 주기가 지난 만큼 프레임을 올리고 상태를 뿌린다.
     //
     // 실측 주기는 **35.77ms(28Hz)** 였다(표본 27,619). 목표가 30Hz(33.3ms)인데
@@ -179,6 +228,13 @@ public:
 
 private:
     Session& SessionFor(const std::string& addr);
+
+    // `0xcc SEQ_IMPORTANT` 껍데기에 싸서 내보낸다.
+    //
+    // ★ 신뢰 전송은 **패킷 머리 비트가 아니라 이 껍데기**가 맡는다 — 실측이 그렇다.
+    //   09-06 덤프에서 `0xcc` 581건이 **전수 비신뢰 패킷**에 실려 있었다.
+    //   (머리의 신뢰 비트는 접속 절차에서만 쓴다)
+    void EmitSeq(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
 
     // 머리 2바이트를 붙여 한 조각을 만든다. keyed 면 XOR 을 건다.
     void Emit(Session& s, bool reliable, uint8_t stream,
@@ -240,6 +296,7 @@ constexpr size_t kTrySpellBodyLen = 21;
 // 파이어볼의 주문 번호. opennox `spell` 패키지의 `SPELL_FIREBALL = ID(27)` 과 같다 —
 // 와이어에 실려 온 번호가 그 표와 그대로 맞는 것을 캡처에서 확인했다.
 constexpr uint8_t kSpellFireball = 27;
+
 
 // SERVER_INFO 본문에서 토큰이 앉는 자리. 실측으로 확정했다.
 constexpr size_t kInfoTokenOffset = 41;
