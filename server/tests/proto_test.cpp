@@ -282,7 +282,42 @@ void TestGameplayMessages() {
         Check(u16.DataSize() == 4, "UTF-16 일 때 글자 길이가 두 배가 안 됨");
     }
 
-    std::printf("  게임 중 메시지 11종 — 캡처한 실제 바이트로 뜯음\n");
+    // 70 1b  — 주문 27. **주문 이름표와 맞물려** 본다. 표가 어긋나면 여기서 걸린다
+    {
+        auto m = Parse<nox::MsgReportSpellStart>("REPORT_SPELL_START", {0x1b},
+                                                 nox::MsgReportSpellStart::kSize);
+        Check(m.spell == 27, "REPORT_SPELL_START 주문이 27 이 아님");
+        Check(std::strcmp(nox::SpellName(m.spell), "SPELL_FIREBALL") == 0,
+              "주문 27 이 SPELL_FIREBALL 이 아님");
+    }
+
+    // a9 0c 01 00 00 00  — 갈래 12 Observer, 본문 4바이트
+    {
+        auto m = Parse<nox::MsgInform>("INFORM(Observer)", {0x0c, 0x01, 0x00, 0x00, 0x00}, 5);
+        Check(m.code == nox::InformCode::Observer, "INFORM 갈래가 Observer 가 아님");
+        Check(m.body.size() == 4, "Observer 본문이 4바이트가 아님");
+    }
+
+    // a9 0f 00 "use.c:HadAbility" 00  — 갈래 15 StringID. **글자가 아니라 CSF 열쇠**다
+    {
+        std::vector<uint8_t> body = {0x0f, 0x00};
+        const char* key = "use.c:HadAbility";
+        for (const char* p = key; *p; ++p) body.push_back(static_cast<uint8_t>(*p));
+        body.push_back(0);
+
+        auto m = Parse<nox::MsgInform>("INFORM(StringID)", body, body.size());
+        Check(m.code == nox::InformCode::StringID, "INFORM 갈래가 StringID 가 아님");
+        Check(m.StringId() == "use.c:HadAbility", "CSF 열쇠가 표본과 다름");
+    }
+
+    // 갈래마다 본문 길이가 달라야 한다 — 하나로 뭉뚱그리면 파서가 어긋난다
+    Check(nox::MsgInform::BodySize(nox::InformCode::ClassChanged) == 0, "ClassChanged 본문이 0 이 아님");
+    Check(nox::MsgInform::BodySize(nox::InformCode::SpellOK) == 4, "SpellOK 본문이 4 가 아님");
+    Check(nox::MsgInform::BodySize(nox::InformCode::FlagCapture) == 8, "FlagCapture 본문이 8 이 아님");
+    Check(nox::MsgInform::BodySize(nox::InformCode::Kill) == 9, "Kill 본문이 9 가 아님");
+    Check(nox::MsgInform::BodySize(nox::InformCode::StringID) == -1, "StringID 가 가변으로 안 잡힘");
+
+    std::printf("  게임 중 메시지 13종 — 캡처한 실제 바이트로 뜯음\n");
 }
 
 int main() {

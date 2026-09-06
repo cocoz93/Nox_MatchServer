@@ -433,6 +433,101 @@ struct MsgReportEquip {
     bool Decode(Reader& r) { return r.U16(netCode); }
 };
 
+// 서버 → 클라. 2바이트. 누군가 주문을 걸기 시작했다.
+// 실측 `70 04`(Blink) · `70 2b`(Lightning) · `70 1b`(Fireball).
+//
+// ★ opennox 에는 이 메시지의 구조체도 길이표도 **없다.** 원문으로 재서 2바이트를 얻었다.
+//   그 세 값이 조작 실측에서 A·D·F 키에 배정된 주문과 같아, 딴 길로 만나 맞았다.
+struct MsgReportSpellStart {
+    static constexpr Op kOp = Op::REPORT_SPELL_START;
+    static constexpr size_t kSize = 1;
+
+    uint8_t spell = 0;   // SpellName(spell) 로 이름을 얻는다
+
+    bool Encode(Writer& w) const { return w.U8(spell); }
+    bool Decode(Reader& r) { return r.U8(spell); }
+};
+
+// ── 알림 ─────────────────────────────────────────────────
+
+// `0xa9 INFORM` 의 갈래. 오프코드 다음 1바이트가 이것이고, 갈래가 본문 길이를 정한다.
+enum class InformCode : uint8_t {
+    SpellErr = 0, SpellOK = 1, Ability = 2,
+    PlayerTimeout = 3, FlagRetrieve = 4,
+    FlagCapture = 5, FlagPickup = 6, FlagDrop = 7,
+    FlagRespawn = 8, BallScore = 9,
+    CrownPickup = 10, CrownDrop = 11,
+    Observer = 12, PlayerState = 13, Kill = 14, StringID = 15,
+    WrongTeam = 16, ClassChanged = 17,
+    PlayerExit = 18, PlayerWarp = 19, PlayerSecret = 20, PlayerWarpWait = 21,
+};
+
+// 서버 → 클라. **태그 유니온**이다.
+//
+// 실측(09-06 덤프) 75건 = StringID 63 · SpellOK 9 · Observer 3. `Kill` 은 0건이었다.
+//
+// ★★ 갈래 15(StringID)의 알맹이는 **글자가 아니라 CSF 열쇠**다 —
+//    `a9 0f 00 "use.c:HadAbility"`. `use.c` 가 원본 파일, 뒤가 문구 번호고
+//    클라가 `nox.csf` 에서 찾아 띄운다. 채팅(`0xa8`)만 글자를 싣는다.
+//    → 문구를 우리말로 바꾸는 일은 **서버가 아니라 클라 쪽**에 있다.
+struct MsgInform {
+    static constexpr Op kOp = Op::INFORM;
+    static constexpr size_t kHeaderSize = 1;   // 갈래 1바이트
+
+    InformCode code = InformCode::SpellErr;
+    std::vector<uint8_t> body;                 // 갈래에 딸린 알맹이 그대로
+
+    // 갈래별 본문 길이. -1 이면 가변(StringID 하나뿐이다).
+    static int BodySize(InformCode c) {
+        switch (c) {
+            case InformCode::ClassChanged:
+                return 0;
+            case InformCode::FlagCapture: case InformCode::FlagPickup:
+            case InformCode::FlagDrop:    case InformCode::BallScore:
+            case InformCode::CrownPickup: case InformCode::CrownDrop:
+                return 8;
+            case InformCode::Kill:
+                return 9;
+            case InformCode::StringID:
+                return -1;
+            default:
+                return 4;
+        }
+    }
+
+    size_t EncodeSize() const { return kHeaderSize + body.size(); }
+
+    // 갈래 15 의 알맹이에서 CSF 열쇠를 꺼낸다. 앞 1바이트는 IsSign 이다.
+    std::string StringId() const {
+        if (code != InformCode::StringID || body.size() < 2) return {};
+        return ReadFixedString(body.data() + 1, body.size() - 1);
+    }
+
+    bool Encode(Writer& w) const {
+        return w.U8(static_cast<uint8_t>(code)) && w.Bytes(body.data(), body.size());
+    }
+
+    bool Decode(Reader& r) {
+        uint8_t c = 0;
+        if (!r.U8(c)) return false;
+        code = static_cast<InformCode>(c);
+        const int n = BodySize(code);
+        if (n >= 0) {
+            body.resize(static_cast<size_t>(n));
+            return body.empty() || r.Bytes(body.data(), body.size());
+        }
+        // StringID — IsSign 1바이트 + 0 으로 닫는 글자
+        body.assign(1, 0);
+        if (!r.U8(body[0])) return false;
+        uint8_t ch = 0;
+        do {
+            if (!r.U8(ch)) return false;
+            body.push_back(ch);
+        } while (ch != 0);
+        return true;
+    }
+};
+
 // ── 껍데기 ───────────────────────────────────────────────
 //
 // ★★ 이걸 안 벗기면 위의 것들이 **하나도 안 보인다.** 2026-09-07 에 이것 때문에
