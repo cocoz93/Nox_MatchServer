@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "nox/Alias.h"
+#include "nox/Messages.h"   // InformCode
 #include "nox/UpdateStream.h"
 #include "nox/Wire.h"
 
@@ -38,6 +39,20 @@ struct Creature {
     double x = 0, y = 0;
     uint16_t health = 0;
     uint32_t nextHitFrame = 0;   // 이 프레임 전에는 못 때린다
+};
+
+// 깃발 하나.
+//
+// ★ 종류 번호는 실측이다 — OpenNox 종류표에 `176 RedFlag`·`173 BlueFlag` 로 있고
+//   **둘 다 복합이 아니다**(사람·투사체와 달리 좌표 뒤에 붙는 바이트가 없다).
+struct Flag {
+    uint8_t team = 0;          // 이 깃발의 임자 팀
+    uint16_t netCode = 0;
+    uint16_t type = 0;
+    double homeX = 0, homeY = 0;   // 제자리
+    double x = 0, y = 0;           // 지금 자리
+    std::string carrier;           // 들고 있는 사람. 비었으면 바닥에 있다
+    bool atHome = true;
 };
 
 // 공격이 닿을 수 있는 것 하나 — **사람이거나 불려 나온 것**이다.
@@ -110,6 +125,7 @@ struct Session {
     uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
+    uint8_t team = 0;              // 0 = 무소속 · 1 = 빨강 · 2 = 파랑
     uint16_t kills = 0;            // 죽인 수 (아레나 점수)
     uint16_t deaths = 0;           // 죽은 수
 
@@ -175,6 +191,19 @@ constexpr uint16_t kArenaKillLimit = 10;
 // 판 시계를 얼마마다 뿌리나. 실측 표본은 **2초 남짓 간격**이었다
 // (15:05:08.299 · 10.538 · 12.709 · 14.867 — 2.2초씩). 30Hz 기준 그만큼으로 둔다.
 constexpr uint32_t kTimerEveryTicks = 66;
+
+// ── 깃발 (CTF) ──────────────────────────────────────────────
+//
+// ★ 종류 번호만 실측이다 — 종류표의 `176 RedFlag` · `173 BlueFlag`.
+//
+// ⚠⚠ **나머지는 전부 실측이 아니다.** 우리 캡처는 `Game Type: Arena` 하나뿐이고
+//    (→ `Docs/CONSOLE.md`), OpenNox 전용 서버는 **CTF 맵을 못 올린다**
+//    (`panic: server should not load GUI` — 09-07 확인). 그래서 CTF 트래픽 표본이 0이다.
+//    깃발 자리·닿는 거리·득점 한도·팀 배정 규칙은 **게임이 도는지 보려고 둔 자리표시**다.
+constexpr uint16_t kFlagTypeRed = 176;
+constexpr uint16_t kFlagTypeBlue = 173;
+constexpr double kFlagTouchRange = 40.0;
+constexpr uint16_t kCaptureLimit = 3;
 
 constexpr double kProjectileSpeed = 26.0;    // 한 틱에 미는 거리
 constexpr double kProjectileHitRadius = 24.0; // 이 안에 들어오면 맞은 것으로 본다
@@ -281,6 +310,25 @@ public:
     //
     // 진짜 흐름은 `OnPacket` 이 만든다. 여기는 **죽음·부활을 시험하려고** 둔 좁은 통로다.
     // 이게 없으면 죽음 시험을 하려고 216바이트 접속 묶음까지 흉내내야 한다.
+    // 깃발 판을 차린다. 팀은 들어온 차례로 번갈아 준다.
+    //
+    // ⚠ **팀을 어떻게 나누는지는 실측이 아니다.** 진짜 녹스는 콘솔·메뉴로 고르게 한다.
+    void StartCtf(int redX, int redY, int blueX, int blueY);
+    uint16_t CapturesOf(uint8_t team) const { return team < 3 ? caps_[team] : 0; }
+    uint8_t TeamOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.team;
+    }
+    // 이 사람이 깃발을 들고 있나.
+    bool Carrying(const std::string& addr) const {
+        for (const auto& f : flags_) if (f.carrier == addr) return true;
+        return false;
+    }
+    void DebugSetTeam(const std::string& addr, uint8_t team) {
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) it->second.team = team;
+    }
+
     void DebugEnterGame(const std::string& addr, uint16_t netCode) {
         Session& s = SessionFor(addr);
         s.inGame = true;
@@ -395,6 +443,19 @@ private:
     // 판 시계를 뿌린다 — `0xd3 TIMER_STATUS`. 짜임은 실측이다(PROTOCOL.md 「판 시계」).
     void SendTimer(std::vector<OutPacket>& out);
 
+    // 깃발 알림 하나 — `0xa9 INFORM` 의 갈래.
+    //
+    // ★ 속 짜임은 실측이다 — opennox `InformTeamPlayer`(msg_inform.go:253) 가
+    //   `PlayerID 4바이트 + TeamID 4바이트`, 본문 8. 갈래 5·6·7 이 이걸 쓴다.
+    void SendFlagInform(InformCode code, uint16_t playerNetCode, uint8_t team,
+                        std::vector<OutPacket>& out);
+
+    // 깃발을 들고 있으면 그 자리에 떨어뜨린다 (죽었을 때).
+    void DropFlag(const std::string& who, std::vector<OutPacket>& out);
+
+    // 깃발 줍기·득점을 살핀다. 틱마다 부른다.
+    void UpdateFlags(std::vector<OutPacket>& out);
+
     // 불려 나온 것 하나를 없애고 모두에게 알린다.
     void KillPet(size_t idx, std::vector<OutPacket>& out);
 
@@ -432,6 +493,8 @@ private:
     unsigned long long petsKilled_ = 0;
     bool roundOver_ = false;
     uint32_t nextTimerFrame_ = 0;
+    std::vector<Flag> flags_;
+    uint16_t caps_[3] = {0, 0, 0};   // 팀별 득점 (1·2 만 쓴다)
     std::vector<Projectile> shots_;
     std::vector<Creature> pets_;
     // 날아가는 것에 매길 번호.

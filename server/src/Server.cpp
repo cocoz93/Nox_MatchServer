@@ -125,7 +125,8 @@ int Server::SpellDamage(uint8_t spell) {
 //    서버는 같은 규칙으로 따라 굴린다(Alias.h). 그러니 클라가 (번호,종류)를
 //    이미 알고 있어야 같은 자리를 고른다. **그 앎은 전체 번호로 온 첫 등장에서 온다.**
 static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
-                      uint32_t frame, int x, int y, uint8_t facing, ObjEntry& e) {
+                      uint32_t frame, int x, int y, uint8_t facing, ObjEntry& e,
+                      bool complex = true) {
     uint16_t hadNet = 0, hadType = 0;
     const int slot = tbl.Generate(netCode, type, frame);
     const bool known = slot > 0 && tbl.Lookup(slot, hadNet, hadType) &&
@@ -141,8 +142,10 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
     e.absolute = true;           // 항목마다 절대 좌표 — 앞의 것에 안 얽힌다
     e.x = x;
     e.y = y;
-    e.extra = 1;                 // 복합이라 방향·애니 1바이트
-    e.extraBytes[0] = facing;
+    // ⚠ 복합이 아니면 **한 바이트도 붙지 않는다.** 깃발이 그렇다(종류표에서 확인).
+    //   붙이면 클라가 그 바이트를 다음 항목의 시작으로 읽어 그 뒤가 다 어긋난다.
+    e.extra = complex ? 1 : 0;
+    if (complex) e.extraBytes[0] = facing;
 }
 
 uint16_t Server::ProjectileType(uint8_t spell) {
@@ -300,6 +303,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     }
     s.respawnAtFrame = frame_ + kRespawnDelayTicks;
     ++s.deaths;
+    DropFlag(addr, out);   // 들고 있었으면 그 자리에 떨군다
 
     // ④ 점수 — 때린 쪽이 있고 자기 자신이 아니면 그쪽이 하나 얻는다.
     //    자기가 자기를 죽인 것(자기에게 건 주문)은 점수가 아니다.
@@ -337,6 +341,126 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
 //   d3 | 번호 4 | 남은 시간 4(밀리초, 부호 있음) | 지금 틱 4
 //
 // 한도가 없으면 남은 시간이 **음수로 계속 내려간다** — 실측이 그랬다.
+void Server::StartCtf(int redX, int redY, int blueX, int blueY) {
+    flags_.clear();
+    caps_[0] = caps_[1] = caps_[2] = 0;
+
+    Flag red;
+    red.team = 1;
+    red.type = kFlagTypeRed;
+    red.netCode = nextShotNetCode_++;
+    red.homeX = red.x = redX;
+    red.homeY = red.y = redY;
+    flags_.push_back(red);
+
+    Flag blue;
+    blue.team = 2;
+    blue.type = kFlagTypeBlue;
+    blue.netCode = nextShotNetCode_++;
+    blue.homeX = blue.x = blueX;
+    blue.homeY = blue.y = blueY;
+    flags_.push_back(blue);
+
+    // 팀은 들어온 차례로 번갈아. ⚠ 진짜 녹스가 이렇게 나누는지는 모른다.
+    uint8_t next = 1;
+    for (auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        kv.second.team = next;
+        next = (next == 1) ? 2 : 1;
+    }
+}
+
+// 깃발 알림 — `0xa9 INFORM` 의 갈래 5·6·7.
+// 속 짜임은 opennox `InformTeamPlayer` 그대로다: PlayerID 4 + TeamID 4.
+void Server::SendFlagInform(InformCode code, uint16_t playerNetCode, uint8_t team,
+                            std::vector<OutPacket>& out) {
+    uint8_t msg[10];
+    msg[0] = static_cast<uint8_t>(Op::INFORM);
+    msg[1] = static_cast<uint8_t>(code);
+    const uint32_t pid = playerNetCode;
+    msg[2] = static_cast<uint8_t>(pid);
+    msg[3] = static_cast<uint8_t>(pid >> 8);
+    msg[4] = msg[5] = 0;
+    msg[6] = team;
+    msg[7] = msg[8] = msg[9] = 0;
+    for (auto& kv : sessions_) {
+        if (kv.second.inGame) {
+            Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+        }
+    }
+}
+
+void Server::DropFlag(const std::string& who, std::vector<OutPacket>& out) {
+    for (auto& f : flags_) {
+        if (f.carrier != who) continue;
+        auto it = sessions_.find(who);
+        if (it != sessions_.end()) { f.x = it->second.x; f.y = it->second.y; }
+        f.carrier.clear();
+        f.atHome = false;
+        SendFlagInform(InformCode::FlagDrop,
+                       it == sessions_.end() ? 0 : it->second.netCode,
+                       f.team, out);
+    }
+}
+
+void Server::UpdateFlags(std::vector<OutPacket>& out) {
+    if (flags_.empty()) return;
+
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame || s.respawnAtFrame != 0 || s.team == 0) continue;
+
+        for (auto& f : flags_) {
+            const double dx = f.x - s.x, dy = f.y - s.y;
+            const double d2 = dx * dx + dy * dy;
+            const bool near = d2 <= kFlagTouchRange * kFlagTouchRange;
+
+            if (f.team != s.team) {
+                // 적 깃발 — 바닥에 있고 가까우면 든다.
+                if (f.carrier.empty() && near) {
+                    f.carrier = kv.first;
+                    SendFlagInform(InformCode::FlagPickup, s.netCode, s.team, out);
+                }
+            } else {
+                // 내 깃발 — 바닥에 나와 있고 가까우면 제자리로 돌린다.
+                if (f.carrier.empty() && !f.atHome && near) {
+                    f.x = f.homeX; f.y = f.homeY; f.atHome = true;
+                    SendFlagInform(InformCode::FlagRetrieve, s.netCode, s.team, out);
+                }
+            }
+        }
+
+        // 적 깃발을 들고 **내 깃발이 제자리에 있을 때** 내 진영에 닿으면 득점.
+        // ⚠ 「내 깃발이 제자리에 있어야 한다」는 CTF 의 흔한 규칙이지만 **실측은 아니다.**
+        Flag* mine = nullptr;
+        Flag* held = nullptr;
+        for (auto& f : flags_) {
+            if (f.team == s.team) mine = &f;
+            if (f.carrier == kv.first) held = &f;
+        }
+        if (held && mine && mine->atHome) {
+            const double dx = mine->homeX - s.x, dy = mine->homeY - s.y;
+            if (dx * dx + dy * dy <= kFlagTouchRange * kFlagTouchRange) {
+                held->carrier.clear();
+                held->x = held->homeX; held->y = held->homeY; held->atHome = true;
+                if (s.team < 3) ++caps_[s.team];
+                SendFlagInform(InformCode::FlagCapture, s.netCode, s.team, out);
+                if (!roundOver_ && caps_[s.team] >= kCaptureLimit) roundOver_ = true;
+            }
+        }
+    }
+
+    // 들려 있는 깃발은 든 사람을 따라간다.
+    for (auto& f : flags_) {
+        if (f.carrier.empty()) continue;
+        auto it = sessions_.find(f.carrier);
+        if (it == sessions_.end() || !it->second.inGame) { f.carrier.clear(); continue; }
+        f.x = it->second.x;
+        f.y = it->second.y;
+        f.atHome = false;
+    }
+}
+
 void Server::SendTimer(std::vector<OutPacket>& out) {
     const int32_t remain = -static_cast<int32_t>(frame_ * tickMs_);
     uint8_t msg[13];
@@ -767,6 +891,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
     }
 
+    UpdateFlags(out);
+
     // 판 시계 — 실측 간격이 2초 남짓이었다.
     if (frame_ >= nextTimerFrame_) {
         nextTimerFrame_ = frame_ + kTimerEveryTicks;
@@ -853,6 +979,17 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             ObjEntry e;
             FillEntry(s.aliases, p.netCode, ptype, frame_,
                       static_cast<int>(p.x), static_cast<int>(p.y), p.facing, e);
+            m.objects.push_back(e);
+        }
+
+        // 깃발도 싣는다. **복합이 아니라 붙는 바이트가 없다**(종류표 확인).
+        //   들고 있는 것은 안 싣는다 — 든 사람에 겹쳐 보이면 어지럽다.
+        for (const auto& f : flags_) {
+            if (!f.carrier.empty()) continue;
+            ObjEntry e;
+            FillEntry(s.aliases, f.netCode, f.type, frame_,
+                      static_cast<int>(f.x), static_cast<int>(f.y), 0, e,
+                      /*complex=*/false);
             m.objects.push_back(e);
         }
 

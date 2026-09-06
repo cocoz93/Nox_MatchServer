@@ -1062,6 +1062,150 @@ void TestArena() {
     std::printf("  아레나 — 점수·자살은 점수 없음·승자 알림·판 시계\n");
 }
 
+// ── 깃발 (CTF) ───────────────────────────────────────────────
+void TestCtf() {
+    const std::string a = "10.0.0.1:1000";   // 빨강
+    const std::string b = "10.0.0.2:1000";   // 파랑
+
+    // 판을 차린다 — 빨강 진영 (1000,1000) · 파랑 진영 (2000,1000)
+    auto setup = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.StartCtf(1000, 1000, 2000, 1000);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+        // ⚠ 둘 다 기본 자리가 (1000,1000) 인데 그게 **빨강 깃발의 제자리**다.
+        //   그대로 두면 파랑인 b 가 시작하자마자 빨강 깃발을 주워 간다 —
+        //   처음에 이걸 놓쳐 시험 다섯 줄이 한꺼번에 떨어졌다. **코드는 맞게 굴었다.**
+        srv.DebugMoveTo(b, 1500, 1500);
+    };
+
+    // ① 깃발이 **화면에 실린다** (복합이 아니라 붙는 바이트가 없어야 한다)
+    {
+        nox::Server srv;
+        setup(srv);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        out.clear();
+        srv.Tick(33, out);
+        int redSeen = 0, blueSeen = 0, checked = 0;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+            nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
+            Check(m.ok, "깃발이 든 0xa4 를 못 뜯음");
+            ++checked;
+
+            // ★ 항목 수를 센다 — 사람 둘 + 깃발 둘 = 넷.
+            //
+            //   처음에는 `e.extra == 0` 을 봤는데 **그건 시험이 아니었다.**
+            //   `extra` 는 뜯는 쪽이 **종류를 보고 정하는 값**이라, 내가 한 바이트를
+            //   더 실어도 그대로 0 으로 돌아온다. 일부러 붙여 봤더니 안 걸렸다.
+            //   대신 **개수**를 보면 걸린다 — 군더더기 바이트는 다음 항목의 시작으로
+            //   읽혀 목록이 어긋나기 때문이다.
+            Check(m.objects.size() == 4, "상태 갱신 항목이 넷이 아님 (군더더기 바이트?)");
+            for (const auto& e : m.objects) {
+                if (e.type == nox::kFlagTypeRed) ++redSeen;
+                if (e.type == nox::kFlagTypeBlue) ++blueSeen;
+            }
+        }
+        Check(checked > 0, "0xa4 가 아예 안 나감");
+        Check(redSeen > 0 && blueSeen > 0, "깃발이 상태 갱신에 안 실림");
+    }
+
+    // ★★ ② 적 깃발에 닿으면 들고, **내 깃발은 안 든다**
+    {
+        nox::Server srv;
+        setup(srv);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.DebugMoveTo(a, 1000, 1000);   // 자기 깃발 위
+        srv.Tick(33, out);
+        Check(!srv.Carrying(a), "자기 깃발을 들었다");
+
+        srv.DebugMoveTo(a, 2000, 1000);   // 적 깃발 위
+        out.clear();
+        srv.Tick(66, out);
+        Check(srv.Carrying(a), "적 깃발을 안 들었다");
+
+        // 줍기 알림이 실제로 나갔나 (0xa9 갈래 6)
+        bool picked = false;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (body.size() >= 2 && body[0] == static_cast<uint8_t>(nox::Op::INFORM) &&
+                body[1] == static_cast<uint8_t>(nox::InformCode::FlagPickup)) picked = true;
+        }
+        Check(picked, "FlagPickup 알림이 안 나감");
+    }
+
+    // ③ 들고 내 진영에 닿으면 득점
+    {
+        nox::Server srv;
+        setup(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(0, out);
+        srv.DebugMoveTo(a, 2000, 1000);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.Carrying(a), "안 들었다");
+        srv.DebugMoveTo(a, 1000, 1000);
+        out.clear();
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.CapturesOf(1) == 1, "득점이 안 됐다");
+        Check(!srv.Carrying(a), "득점했는데 아직 들고 있다");
+        bool cap = false;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (body.size() >= 2 && body[0] == static_cast<uint8_t>(nox::Op::INFORM) &&
+                body[1] == static_cast<uint8_t>(nox::InformCode::FlagCapture)) cap = true;
+        }
+        Check(cap, "FlagCapture 알림이 안 나감");
+    }
+
+    // ★★ ④ 들고 있다 죽으면 **그 자리에 떨어뜨린다**
+    {
+        nox::Server srv;
+        setup(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(0, out);
+        srv.DebugMoveTo(a, 2000, 1000);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.Carrying(a), "안 들었다");
+
+        out.clear();
+        srv.Damage(a, 999, out, b);          // b 가 죽인다
+        Check(!srv.IsAlive(a), "안 죽음");
+        Check(!srv.Carrying(a), "죽었는데 아직 들고 있다");
+        bool dropped = false;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            if (body.size() >= 2 && body[0] == static_cast<uint8_t>(nox::Op::INFORM) &&
+                body[1] == static_cast<uint8_t>(nox::InformCode::FlagDrop)) dropped = true;
+        }
+        Check(dropped, "FlagDrop 알림이 안 나감");
+    }
+
+    // ⑤ 한도에 닿으면 판이 끝난다
+    {
+        nox::Server srv;
+        setup(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(0, out);
+        for (int i = 0; i < nox::kCaptureLimit; ++i) {
+            srv.DebugMoveTo(a, 2000, 1000);
+            ms += 33; srv.Tick(ms, out);
+            srv.DebugMoveTo(a, 1000, 1000);
+            ms += 33; srv.Tick(ms, out);
+        }
+        Check(srv.CapturesOf(1) == nox::kCaptureLimit, "득점이 한도에 안 닿음");
+        Check(srv.RoundOver(), "한도에 닿아도 판이 안 끝남");
+    }
+
+    std::printf("  깃발 — 화면에 실림·적 것만 듦·득점·죽으면 떨굼·한도\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -1101,6 +1245,7 @@ int main() {
     TestSummon();
     TestPetDies();
     TestArena();
+    TestCtf();
     TestOpcodeTable();
     TestSpellNames();
     TestBounds();
