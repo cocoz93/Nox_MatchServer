@@ -588,6 +588,21 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 break;
             }
 
+            // ★★ 신뢰 메시지 되받기 — 클라가 0xAA 로 보내면 0xAB 로 번호를 그대로
+            //    돌려줘야 한다. 안 하면 클라는 답이 올 때까지 **영원히 재전송**하고
+            //    로딩에서 안 넘어간다 — 화면이 검은 채로 멈춘다.
+            //    2026-09-07 실측: 내 서버엔 IMPORTANT 1,378건 · 정품엔 0건,
+            //    CLIENT_READY 도 71번(정품 2번) 재전송하고 있었다.
+            case Op::IMPORTANT: {
+                if (it.bodyLen() < 4) break;
+                uint8_t msg[5];
+                msg[0] = static_cast<uint8_t>(Op::IMPORTANT_ACK);
+                std::memcpy(msg + 1, it.body(), 4);
+                Emit(s, /*reliable=*/false, head.stream, msg, sizeof(msg), out);
+                ++handled_;
+                break;
+            }
+
             // ★ 클라 입력 — 매 틱 온다. 트래픽에서 가장 잦은 메시지다(32,450건).
             //
             //   본문 = 길이 1B + [코드 4B + 데이터]*
@@ -821,7 +836,10 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //    예전에는 Emit 뒤에 채워서 접속 묶음의 오브젝트 번호가 0 으로 나갔다.
                 //    클라는 「네 캐릭터 번호는 0」을 받으니 카메라를 붙일 대상이 없어
                 //    화면이 검은 채로 멈춘다(2026-09-07, 정품과 바이트 대조로 잡음).
-                if (s.x == 0 && s.y == 0) { s.x = 1000; s.y = 1000; }
+                // ★ 스폰 자리 — 예전엔 (1000,1000) 이라는 지어낸 값이었다.
+                //   estate.map 에서 정품이 쓰는 자리를 덤프에서 읽어 넣는다
+                //   (2026-09-07 레퍼런스 상태방송 머리: x=2304 y=3498).
+                if (s.x == 0 && s.y == 0) { s.x = 2304; s.y = 3498; }
                 if (s.netCode == 0) s.netCode = 713;
                 if (s.maxHealth == 0) {
                     s.maxHealth = kDefaultMaxHealth;
