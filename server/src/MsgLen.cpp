@@ -1,4 +1,4 @@
-﻿// MsgLen.cpp — 오프코드별 본문 길이 표. **손으로 고치지 말 것.**
+// MsgLen.cpp — 오프코드별 본문 길이 표. **손으로 고치지 말 것.**
 //
 // 생성 = tools/dumpscan -genlen
 // 출처 = opennox/libs noxnet (MIT). 자세한 고지는 THIRD_PARTY.md.
@@ -181,7 +181,9 @@ const int16_t kMsgBodyLen[256] = {
     /* 0xA7 */    3,   // MSG_AUDIO_PLAYER_EVENT
     /* 0xA8 */   -1,   // MSG_TEXT_MESSAGE
     /* 0xA9 */   -1,   // MSG_INFORM
-    /* 0xAA */    4,   // MSG_IMPORTANT  ← 손으로 채움 (근거는 genlen.go 의 extra)
+    /* 0xAA */    5,   // MSG_IMPORTANT  ★2026-09-07 실측 5 (손으로 채운 4 는 틀렸다).
+                   //               표본 셋이 다 맞음 — 20B=2+12+6 · 30B=2+12+10+6 ·
+                   //               195B=2+12+5+10x17+6. 4 면 1바이트가 남아 패킷이 통째로 버려졌다
     /* 0xAB */    4,   // MSG_IMPORTANT_ACK  ← 손으로 채움 (근거는 genlen.go 의 extra)
     /* 0xAC */    4,   // MSG_MOUSE
     /* 0xAD */    0,   // MSG_INCOMING_CLIENT

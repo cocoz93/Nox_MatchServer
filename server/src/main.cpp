@@ -258,7 +258,10 @@ int main(int argc, char** argv) {
                 const size_t made = outs.size();
                 flush();
                 if (!quiet) {
-                    std::printf("[받음 %llu] %s  %d바이트 → 메시지 %zu개, 보낸 조각 %zu개\n",
+                    // ★ 한 메시지도 못 읽었으면 그 바이트를 찍는다.
+        //   「0개」를 그냥 지나치면 파서가 멈춘 자리를 영영 못 본다.
+        if (got == 0 && n > 3) DumpHex("  [못 읽음]", in, static_cast<size_t>(n));
+        std::printf("[받음 %llu] %s  %d바이트 → 메시지 %zu개, 보낸 조각 %zu개\n",
                                 nRecv, who.c_str(), n, got, made);
                     std::fflush(stdout);
                 }
