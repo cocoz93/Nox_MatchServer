@@ -236,6 +236,13 @@ constexpr double kQuestSpread = 300.0;   // 이만큼 벌려 세운다
 constexpr double kProjectileSpeed = 26.0;    // 한 틱에 미는 거리
 constexpr double kProjectileHitRadius = 24.0; // 이 안에 들어오면 맞은 것으로 본다
 
+// ★★ 한 틱에 미는 거리가 판정 반경보다 **크면 표적을 뛰어넘는다.**
+//   26 > 24 라 틱 사이로 지나가 버렸다(2026-09-08: 시전 12건에 피해 1건).
+//   그래서 한 걸음을 넷으로 쪼갠다 — 26/4 = 6.5 로 반경 24 보다 넉넉히 작다.
+//   ⚠ 속도나 반경을 만지면 **이 값도 같이 볼 것.** 지켜야 하는 조건은
+//     `kProjectileSpeed / kProjectileSubSteps < kProjectileHitRadius` 다.
+constexpr int kProjectileSubSteps = 4;
+
 constexpr double kMeleeRange = 45.0;
 constexpr int kMeleeDamage = 12;
 constexpr uint32_t kMeleeCooldownTicks = 15;   // 30Hz 기준 0.5초

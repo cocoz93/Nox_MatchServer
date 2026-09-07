@@ -335,10 +335,14 @@ int main(int argc, char** argv) {
                 //   시전에서 멈췄나, 날아가다 사라졌나, 맞았는데 피해가 0이냐가 갈린다.
                 unsigned long long nSpell = 0;
                 for (const auto& sp : srv.spells()) nSpell += sp.second;
+                // ★ 판이 끝났나도 같이 — 아레나의 끝조건이 「한 판이 시작되고 끝난다」라서
+                //   이 한 글자가 그 판정이다. 승리 조각(0x58)은 속 짜임이 미상이라
+                //   클라 화면에 안 그려질 수 있으니, 서버 쪽에서 보이게 둔다.
                 std::printf("[틱] 프레임 %u · 조각 %zu개 · 걸음 %llu · 근접 %llu · "
-                            "주문 %llu · 나는것 %zu · 맞음 %llu (누적 틱 %llu)\n",
+                            "주문 %llu · 나는것 %zu · 맞음 %llu · 판끝 %s (누적 틱 %llu)\n",
                             srv.frame(), made, srv.moves(), srv.melees(),
-                            nSpell, srv.flying(), srv.hits(), nTicks);
+                            nSpell, srv.flying(), srv.hits(),
+                            srv.RoundOver() ? "예" : "아니오", nTicks);
                 std::fflush(stdout);
             }
         }

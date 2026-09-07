@@ -942,25 +942,42 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     for (int step = 0; step < ticks && !shots_.empty(); ++step) {
         for (size_t i = 0; i < shots_.size();) {
             Projectile& p = shots_[i];
-            p.x += p.vx;
-            p.y += p.vy;
-            p.traveled += kProjectileSpeed;
+            // ★★ 한 걸음을 잘게 쪼개 밀면서 매번 본다.
+            //   한 틱에 미는 거리(26)가 판정 반경(24)보다 커서 **표적을 뛰어넘고 있었다** —
+            //   틱 사이에 지나가 버리면 영영 안 맞는다. 2026-09-08 실측:
+            //   시전 12건에 피해 1건. 쪼개면 한 걸음이 반경보다 작아져 그 구멍이 없어진다.
+            // ★ 그리고 **밀기 전에 한 번** 본다(sub == 0). 같은 자리에서 쏘면 표적이
+            //   코앞인데, 먼저 밀어 버리면 첫 판정 때 이미 26 만큼 멀어져 있다.
+            bool gone = false;
+            for (int sub = 0; sub <= kProjectileSubSteps && !gone; ++sub) {
+                if (sub > 0) {
+                    p.x += p.vx / kProjectileSubSteps;
+                    p.y += p.vy / kProjectileSubSteps;
+                    p.traveled += kProjectileSpeed / kProjectileSubSteps;
+                }
 
-            // 사거리를 넘었거나 맵 밖이면 그냥 사라진다.
-            if (p.traveled > kSpellRange || p.x < 0 || p.y < 0 ||
-                p.x > kMaxCoord || p.y > kMaxCoord) {
+                // 사거리를 넘었거나 맵 밖이면 그냥 사라진다.
+                if (p.traveled > kSpellRange || p.x < 0 || p.y < 0 ||
+                    p.x > kMaxCoord || p.y > kMaxCoord) {
+                    shots_.erase(shots_.begin() + static_cast<long>(i));
+                    gone = true;
+                    break;
+                }
+
+                // 누구에게 닿았나. **쏜 사람과 그가 부른 것은 안 맞는다.**
+                const Target hit = NearestTarget(p.owner, p.x, p.y, kProjectileHitRadius);
+                if (hit.none()) continue;
+
+                // ⚠ 지우기 **전에** 쓸 값을 다 꺼내 둔다. 전에는 지운 뒤에 `p.owner` 를
+                //   읽었다 — 주석에는 「p 는 이미 없다」고 적어 놓고 그대로 썼다.
+                const int dmg = p.damage;
+                const std::string owner = p.owner;
                 shots_.erase(shots_.begin() + static_cast<long>(i));
-                continue;
+                ++hits_;
+                HurtTarget(hit, dmg, out, owner);
+                gone = true;
             }
-
-            // 누구에게 닿았나. **쏜 사람과 그가 부른 것은 안 맞는다.**
-            const Target hit = NearestTarget(p.owner, p.x, p.y, kProjectileHitRadius);
-            if (hit.none()) { ++i; continue; }
-
-            const int dmg = p.damage;
-            shots_.erase(shots_.begin() + static_cast<long>(i));   // 먼저 지운다
-            ++hits_;
-            HurtTarget(hit, dmg, out, p.owner);   // 그 다음에 깎는다 (p 는 이미 없다)
+            if (!gone) ++i;
         }
     }
 
