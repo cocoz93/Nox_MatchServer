@@ -327,8 +327,11 @@ int main(int argc, char** argv) {
             flush();
             // 매 틱 찍으면 화면이 흐르니 1초에 한 번만.
             if (!quiet && made > 0 && (srv.frame() % 30) == 0) {
-                std::printf("[틱] 프레임 %u · 이번에 보낸 조각 %zu개 (누적 틱 %llu)\n",
-                            srv.frame(), made, nTicks);
+                // ★ 걸음·근접 누계를 같이 찍는다 — 클라가 보낸 조작이 **실제로 반영됐나**를
+                //   보는 유일한 자리다. 와이어에 걸음 코드가 152번 보여도 서버는 두 번만
+                //   밀 수 있다(2026-09-08 실측). 둘을 나란히 놓아야 그 어긋남이 보인다.
+                std::printf("[틱] 프레임 %u · 조각 %zu개 · 걸음 %llu · 근접 %llu (누적 틱 %llu)\n",
+                            srv.frame(), made, srv.moves(), srv.melees(), nTicks);
                 std::fflush(stdout);
             }
         }

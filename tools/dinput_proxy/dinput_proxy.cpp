@@ -182,7 +182,12 @@ public:
     long  cState, cData, cAcq, cInj;
     bool  isMouse, isKb;
     EvQueue q;
+    // ★★ 큐와 **따로** 드는 「지금 눌려 있나」. 큐는 변화를 나르고 이건 현재를 답한다.
+    //   하나로 겸하면 GetDeviceData 가 먼저 큐를 비울 때 GetDeviceState 가
+    //   아무 일도 없던 것으로 본다 — 홀드가 표현되지 않는다(2026-09-08 실측:
+    //   좌버튼을 4초 눌러도 게임이 낸 행동 코드가 1건뿐이었다).
     BYTE  btn[4];
+    BYTE  keys[256];
 
     DevProxy(IDirectInputDeviceA* real, REFGUID g)
         : r(real), ref(1), dev(g), cState(0), cData(0), cAcq(0), cInj(0)
@@ -191,6 +196,7 @@ public:
         isMouse = (IsEqualGUID(g, GUID_SysMouse) != 0);
         isKb    = (IsEqualGUID(g, GUID_SysKeyboard) != 0);
         memset(btn, 0, sizeof(btn));
+        memset(keys, 0, sizeof(keys));
         Log("[장치] 껍데기 생성 %s  (진짜 %p)", devName, real);
     }
 
@@ -242,21 +248,20 @@ public:
 
     STDMETHOD(GetDeviceState)(DWORD cb, LPVOID p)
     {
+        // ★ 여기서는 **큐를 건드리지 않는다.** 이동량은 GetDeviceData 가 나르고,
+        //   여기서는 「지금 눌려 있나」만 답한다. 두 경로가 같은 큐를 두고 다투면
+        //   먼저 부른 쪽이 비워 버려 나중 쪽이 눌림을 못 본다.
         if (g_inject && isMouse && cb == sizeof(DIMOUSESTATE) && p) {
-            // 큐에 쌓인 이동량을 합쳐 상태로 돌려준다 (이 경로를 쓰는 코드가 있을 때 대비)
             DIMOUSESTATE* m = (DIMOUSESTATE*)p;
             memset(m, 0, sizeof(DIMOUSESTATE));
             EnterCriticalSection(&g_qcs);
-            DIDEVICEOBJECTDATA e;
-            while (q.Pop(&e)) {
-                if (e.dwOfs == OFS_X) m->lX += (LONG)e.dwData;
-                else if (e.dwOfs == OFS_Y) m->lY += (LONG)e.dwData;
-                else if (e.dwOfs == OFS_Z) m->lZ += (LONG)e.dwData;
-                else if (e.dwOfs >= OFS_B0 && e.dwOfs < OFS_B0 + 4) {
-                    btn[e.dwOfs - OFS_B0] = (BYTE)(e.dwData ? 0x80 : 0x00);
-                }
-            }
             for (int i = 0; i < 4; i++) m->rgbButtons[i] = btn[i];
+            LeaveCriticalSection(&g_qcs);
+            return DI_OK;
+        }
+        if (g_inject && isKb && cb == 256 && p) {
+            EnterCriticalSection(&g_qcs);
+            memcpy(p, keys, 256);
             LeaveCriticalSection(&g_qcs);
             return DI_OK;
         }
@@ -364,6 +369,7 @@ static void HandleLine(char* s, HANDLE h)
         if (sscanf(s, "%*s %i %i", &a, &b) == 2 && g_mouseDev && a >= 0 && a < 4) {
             EnterCriticalSection(&g_qcs);
             g_mouseDev->q.Push(OFS_B0 + a, b ? 0x80 : 0x00);
+            g_mouseDev->btn[a] = (BYTE)(b ? 0x80 : 0x00);   // ★ 지금 눌려 있나
             LeaveCriticalSection(&g_qcs);
             sprintf(reply, "ok\n");
         } else sprintf(reply, "err\n");
@@ -372,6 +378,7 @@ static void HandleLine(char* s, HANDLE h)
         if (sscanf(s, "%*s %i %i", &a, &b) == 2 && g_kbDev) {
             EnterCriticalSection(&g_qcs);
             g_kbDev->q.Push((DWORD)a, b ? 0x80 : 0x00);
+            g_kbDev->keys[a & 0xff] = (BYTE)(b ? 0x80 : 0x00);   // ★ 지금 눌려 있나
             LeaveCriticalSection(&g_qcs);
             sprintf(reply, "ok\n");
         } else sprintf(reply, "err 키보드 장치 없음\n");
