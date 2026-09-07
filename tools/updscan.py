@@ -104,17 +104,46 @@ def harvest_keys(path):
     MsgServerAccept 는 ID 4바이트 다음 바이트가 XorKey 다). 실측 원문 —
 
         80 00 1f 00 01 01 00 00 00 60      ← 마지막 0x60 이 키
+
+    ★★ 2026-09-07 고침 — **이 함수가 조용히 0을 만들고 있었다.**
+
+    예전에는 세 바이트 무늬(`1f 00 01`)를 파일 전체에서 찾아 **걸릴 때마다 덮어썼다.**
+    수락 뒤의 바이트는 이미 암호문이라 그 안에서 우연히 같은 무늬가 나오고,
+    **뒤엣것이 진짜 키를 이긴다.** `CAP_server_0907b.txt` 에서 실제로 그랬다 —
+
+        05:46:16.395 SEND … 80 00 1f 00 01 01 00 00 00 63   ← 진짜 수락, 키 0x63
+        06:19:56.152 RECV … 00 1a e2 aa 1f 00 01 00 bb 00 cb 02 03 0d   ← 우연, 0x02 를 집는다
+
+    그래서 키가 0x02 가 되고 **659,715 패킷 중 659,714 자리가 「길이 미상」으로 멈춰**
+    집계가 전부 0 이 됐다. 「장비를 안 준다」로 읽힌 것이 실은 이것이었다.
+    (0x63 으로 풀면 메시지 2,010,806개 · 멈춘 자리 17곳 · 0x4c=4 · 0x60=4 · 0xdd=2)
+
+    고친 방식 둘 —
+      · **수락 패킷의 생김새를 요구한다** — 길이 10 · `raw[0]==0x80` · 무늬가 0번 자리
+      · **상대별로 처음 하나만 받고 덮어쓰지 않는다**
     """
     # ⚠ 두 방향을 다 훑는다. 서버 덤프에서는 수락이 SEND 에 있지만
     #   **클라 덤프에서는 RECV 에 있다.** 어느 쪽이든 수락 시점엔 아직 평문이다.
     keys = {}
+    loose = {}      # 생김새가 안 맞는 후보. 엄격한 것을 하나도 못 찾았을 때만 쓴다
     for _t, _d, peer, raw in read_dump(path, ""):
         b = raw[2:]
+        # 엄격 — 수락 패킷은 머리 2바이트 뒤 곧바로 `1f 00 01` 로 시작하고 전체가 10바이트다
+        strict = (len(raw) == 10 and raw[0] == 0x80 and len(b) >= 8
+                  and b[0] == 0x1F and b[1] == 0x00 and b[2] == 0x01)
+        if strict and b[7]:
+            keys.setdefault(peer, b[7])
+            continue
+        if peer in keys:
+            continue
         for j in range(2, len(b) - 5):
             if b[j] == 0x01 and b[j - 1] == 0x00 and b[j - 2] == 0x1F:
                 k = b[j + 5]
                 if k:
-                    keys[peer] = k
+                    loose.setdefault(peer, k)
+                break
+    for peer, k in loose.items():
+        keys.setdefault(peer, k)
     return keys
 
 
