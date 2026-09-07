@@ -1158,7 +1158,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         uint8_t body[512];
         body[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
         const size_t n = EncodeUpdate(m, body + 1, sizeof(body) - 1);
-        if (n) Emit(s, /*reliable=*/false, /*stream=*/0, body, 1 + n, out);
+        if (n && sendUpdates_) Emit(s, /*reliable=*/false, /*stream=*/0, body, 1 + n, out);
     }
     return ticks;
 }
