@@ -1157,7 +1157,28 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
         uint8_t body[512];
         body[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
-        const size_t n = EncodeUpdate(m, body + 1, sizeof(body) - 1);
+        size_t n = EncodeUpdate(m, body + 1, sizeof(body) - 1);
+        // ★★ 갱신 **바로 뒤에** 사람마다 높이(Z)를 붙인다 — `5e | 번호 2 | z 1`.
+        //   정품은 한 조각 안에서 `27 TIMESTAMP` → `a4 UPDATE_STREAM` → `5e` 순으로 보낸다
+        //   (2026-09-08 실측: `… a4 cb 42 0a f6 0e 30 00 00 00 00 | 5e cb 02 00`).
+        //   녹스는 아이소메트릭이라 그릴 자리를 정하려면 높이가 있어야 하는 것으로 보인다.
+        //   ⚠ **z 값은 실측이 아니다** — 정품 표본이 전부 0 이라 0 으로 둔다.
+        //   ⚠⚠ **효과는 확인되지 않았다.** 이걸 넣어도 클라 화면에 캐릭터가 안 뜬다
+        //      (2026-09-08 AH14 캡처). 깨지지도 않고 정품이 보내는 것이라 남겨 둘 뿐이다.
+        //      「이것 때문에 그려진다」고 읽지 말 것.
+        if (n) {
+            for (const auto& kv2 : sessions_) {
+                const Session& o = kv2.second;
+                if (!o.inGame) continue;
+                if (1 + n + 4 > sizeof(body)) break;
+                uint8_t* p = body + 1 + n;
+                p[0] = static_cast<uint8_t>(Op::REPORT_Z_PLUS);
+                p[1] = static_cast<uint8_t>(o.netCode);
+                p[2] = static_cast<uint8_t>(o.netCode >> 8);
+                p[3] = 0;
+                n += 4;
+            }
+        }
         if (n && sendUpdates_) Emit(s, /*reliable=*/false, /*stream=*/0, body, 1 + n, out);
     }
     return ticks;
