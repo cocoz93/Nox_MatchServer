@@ -330,8 +330,15 @@ int main(int argc, char** argv) {
                 // ★ 걸음·근접 누계를 같이 찍는다 — 클라가 보낸 조작이 **실제로 반영됐나**를
                 //   보는 유일한 자리다. 와이어에 걸음 코드가 152번 보여도 서버는 두 번만
                 //   밀 수 있다(2026-09-08 실측). 둘을 나란히 놓아야 그 어긋남이 보인다.
-                std::printf("[틱] 프레임 %u · 조각 %zu개 · 걸음 %llu · 근접 %llu (누적 틱 %llu)\n",
-                            srv.frame(), made, srv.moves(), srv.melees(), nTicks);
+                // ★ 주문·날아가는 것·맞은 수도 같이. 「주문은 나갔는데 아무도 안 맞는다」가
+                //   실제로 있었다(2026-09-08: 시전 12건 · 피해 1건). 셋을 나란히 놓아야
+                //   시전에서 멈췄나, 날아가다 사라졌나, 맞았는데 피해가 0이냐가 갈린다.
+                unsigned long long nSpell = 0;
+                for (const auto& sp : srv.spells()) nSpell += sp.second;
+                std::printf("[틱] 프레임 %u · 조각 %zu개 · 걸음 %llu · 근접 %llu · "
+                            "주문 %llu · 나는것 %zu · 맞음 %llu (누적 틱 %llu)\n",
+                            srv.frame(), made, srv.moves(), srv.melees(),
+                            nSpell, srv.flying(), srv.hits(), nTicks);
                 std::fflush(stdout);
             }
         }
