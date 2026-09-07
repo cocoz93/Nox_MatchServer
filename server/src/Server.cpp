@@ -928,6 +928,64 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
 //
 // ★ 상태 갱신의 짜임은 왕복 검사로 굳혀 두었다 — 덤프 30,087건을 뜯어 다시 짜면
 //   원본과 바이트가 같다(nox_verify). 그러니 여기서는 **무엇을 담을지**만 정하면 된다.
+// 서두(녹음본) 조각 하나에서 **사람 항목만** 이 사람 것으로 갈아 끼운다.
+//
+// 왜 필요한가 — 서두는 남이 접속했을 때 녹음한 것이라 그 사람의 번호(715)와
+// 자리(2600,2578)가 박혀 있다. 그대로 흘리면 클라는 「내가 715, 저기에 있다」로
+// 알았다가 내 갱신이 다른 번호·다른 자리를 말해 **딴 오브젝트로 본다**.
+//
+// ⚠ **무늬 찾기로 하지 않는다.** 뜯어서(DecodeUpdate) 고치고 다시 짠다(EncodeUpdate).
+//   바이트열을 눈대중으로 찾으면 우연히 같은 자리를 건드린다.
+// 돌려주는 값 = 갈아 끼운 것이 있으면 참(그때만 out 이 채워진다).
+static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCode,
+                               int x, int y, std::vector<uint8_t>& out) {
+    out.clear();
+    out.reserve(frag.size() + 16);
+    bool any = false;
+    size_t pos = 0;
+    while (pos < frag.size()) {
+        const uint8_t op = frag[pos];
+        const size_t msz = MessageSize(frag.data() + pos, frag.size() - pos,
+                                       /*fromClient=*/false);
+        if (msz > 0) {                       // 길이를 아는 메시지 — 그대로 옮긴다
+            if (pos + msz > frag.size()) break;
+            out.insert(out.end(), frag.begin() + pos, frag.begin() + pos + msz);
+            pos += msz;
+            continue;
+        }
+        if (op != static_cast<uint8_t>(Op::UPDATE_STREAM)) break;   // 모르는 것 — 접는다
+
+        UpdateMsg um = DecodeUpdate(frag.data() + pos + 1, frag.size() - pos - 1, nullptr);
+        if (!um.ok || um.consumed == 0) break;
+        bool hit = false;
+        for (auto& e : um.objects) {
+            if (e.type != kPlayerType) continue;
+            e.alias = 0xff;                  // 전체 번호로 다시 소개한다
+            e.netCode = netCode;
+            e.x = x;
+            e.y = y;
+            hit = true;
+        }
+        if (hit) {
+            // 머리도 이 사람이 보는 자리로. 안 맞추면 화면이 남의 자리에 선다.
+            um.x = x;
+            um.y = y;
+        }
+        uint8_t buf[1024];
+        buf[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
+        const size_t n = EncodeUpdate(um, buf + 1, sizeof(buf) - 1);
+        if (n == 0) break;                   // 다시 못 짜면 손대지 않는다
+        out.insert(out.end(), buf, buf + 1 + n);
+        pos += 1 + um.consumed;
+        any = any || hit;
+    }
+    if (!any) { out.clear(); return false; }
+    // ⚠ 끝까지 못 읽었으면 **남은 것은 원본 그대로** 붙인다. 통째로 포기하면
+    //   갈아 끼우기가 조용히 안 먹는다(2026-09-08: 그래서 첫 시도가 헛돌았다).
+    if (pos < frag.size()) out.insert(out.end(), frag.begin() + pos, frag.end());
+    return true;
+}
+
 int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     if (!tickStarted_) {
         tickStarted_ = true;
@@ -1084,7 +1142,14 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                                   (static_cast<uint32_t>(m[2]) << 8);
                     s.tickFrameSet = true;
                 }
-                Emit(s, /*reliable=*/false, /*stream=*/0, m.data(), m.size(), out);
+                // ★★ 서두는 **녹음본이라 남의 번호·남의 자리**를 담고 있다.
+                //   그 안의 사람 항목을 이 사람 것으로 갈아 끼운다 — 안 그러면 클라가
+                //   서두에서 「나는 715, 저기 (2600,2578)」로 알았다가 내 갱신이
+                //   다른 번호·다른 자리를 말해 **딴 오브젝트로 본다**(2026-09-08 대조).
+                std::vector<uint8_t> patched;
+                const std::vector<uint8_t>& send =
+                    PatchPreludePlayer(m, s.netCode, s.x, s.y, patched) ? patched : m;
+                Emit(s, /*reliable=*/false, /*stream=*/0, send.data(), send.size(), out);
             }
             continue;
         }
