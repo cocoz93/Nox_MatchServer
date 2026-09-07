@@ -22,9 +22,16 @@ int main(int argc, char** argv) {
     //   클라가 FX_TELEPORT 를 51,941번 보낸 것처럼 보였다(2026-09-08).
     //   지문 = 접속 직후 158바이트 줄에 `4a 00 61 00 63 00 6b 00`("Jack")이 **그냥 보인다**.
     bool recvPlain = false;
+    // ★ `--updates N` — 뜯은 상태 갱신 앞 N 개를 항목까지 펼쳐 찍는다.
+    //   「정품이 사람을 무슨 **종류 번호**로 싣나」를 눈으로 보는 자리다.
+    long updShow = 0, updShown = 0;
     std::map<int, bool> want;
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--recv-plain") == 0) { recvPlain = true; continue; }
+        if (std::strcmp(argv[i], "--updates") == 0 && i + 1 < argc) {
+            updShow = std::strtol(argv[++i], nullptr, 10);
+            continue;
+        }
         want[(int)std::strtol(argv[i], nullptr, 16)] = true;
     }
 
@@ -80,7 +87,20 @@ int main(int argc, char** argv) {
                     //   디코더가 갈래를 넓게 연다. 길이를 얻는 데는 그걸로 족하다.
                     const nox::UpdateMsg um =
                         nox::DecodeUpdate(b + eaten + 1, bodyAll - eaten - 1, nullptr);
-                    if (um.ok && um.consumed > 0) msz = 1 + um.consumed;
+                    if (um.ok && um.consumed > 0) {
+                        msz = 1 + um.consumed;
+                        if (updShown < updShow) {
+                            ++updShown;
+                            std::printf("  [갱신 %ld] %s %s  머리 별칭=%02x 번호=%u 종류=%u "
+                                        "자리=(%d,%d) 항목 %zu개\n",
+                                        updShown, ln.dir.c_str(), ln.peer.c_str(),
+                                        um.headAlias, um.headNetCode, um.headType,
+                                        um.x, um.y, um.objects.size());
+                            for (const auto& e : um.objects)
+                                std::printf("       별칭=%02x 번호=%-5u 종류=%-5u 자리=(%d,%d) 덧붙이=%d\n",
+                                            e.alias, e.netCode, e.type, e.x, e.y, e.extra);
+                        }
+                    }
                     else { ++updUnread; break; }
                 } else {
                     break;   // 길이를 모르는 다른 오프코드 — 여기서 접는다
