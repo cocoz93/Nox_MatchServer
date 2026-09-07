@@ -120,6 +120,7 @@ int main(int argc, char** argv) {
     std::string name = "MY_SERVER";
     bool quiet = false;
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
+    bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -131,6 +132,8 @@ int main(int argc, char** argv) {
             port = std::atoi(argv[++i]);
         } else if (a == "--name" && i + 1 < argc) {
             name = argv[++i];
+        } else if (a == "--mirror") {
+            mirror = true;
         } else if (a == "--dump" && i + 1 < argc) {
             dumpPath = argv[++i];
         } else {
@@ -173,6 +176,10 @@ int main(int argc, char** argv) {
             srv.SetJoinTemplate(setup.joinBody.data(), setup.joinBody.size());
             srv.SetUseMapTemplate(setup.useMapBody.data(), setup.useMapBody.size());
             srv.SetPostMap(setup.postMap);
+            if (mirror) {
+                srv.SetMirror(setup.mirror);
+                std::printf("[재생 모드] 정품 조각 %zu개를 그대로 내보낸다\n", setup.mirror.size());
+            }
             std::printf("덤프에서 뽑음 — 접속 묶음 %zu바이트 · 맵 지정 %zu바이트 · 뒤따르는 것 %zu개\n",
                         setup.joinBody.size(), setup.useMapBody.size(), setup.postMap.size());
         } else {

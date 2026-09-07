@@ -128,6 +128,10 @@ bool Sniff(const char* path, Setup& out) {
             continue;
         }
 
+        // ★ 맵 지정 뒤 조각 전부를 순서대로 (mirror 용). 앞의 600개만.
+        if (!out.useMapBody.empty() && out.mirror.size() < 600)
+            out.mirror.push_back(std::vector<uint8_t>(d.begin() + 2, d.end()));
+
         // ★ 맵 지정 뒤에 이어지는 INFORM(0xa9)·공지(0xc2). 앞의 4개만 챙긴다.
         //   정품 09-05 순서: 218B INFORM → 43B USE_MAP → 105B INFORM → 142B 공지 → 205B INFORM
         if (!out.useMapBody.empty() && out.postMap.size() < 4 &&

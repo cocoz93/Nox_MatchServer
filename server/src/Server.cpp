@@ -1029,6 +1029,17 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             }
         }
 
+        // ★ 재생 모드 — 내가 만든 것 대신 정품이 보냈던 조각을 순서대로 내보낸다.
+        //   클라가 그려지면 「내용이 틀렸다」, 안 그려지면 「구조가 틀렸다」로 갈린다.
+        if (!mirror_.empty()) {
+            if (mirrorAt_ < mirror_.size()) {
+                const std::vector<uint8_t>& m = mirror_[mirrorAt_++];
+                if (!m.empty())
+                    Emit(s, /*reliable=*/false, /*stream=*/0, m.data(), m.size(), out);
+            }
+            continue;
+        }
+
         // ① 시각 — 본문 2바이트(LE16). 클라는 이 값으로 프레임을 맞춘다.
         {
             uint8_t msg[3];

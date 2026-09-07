@@ -35,6 +35,9 @@ struct Setup {
     // ★ 맵 지정 뒤에 정품이 더 보내는 것들 — 105바이트 INFORM · 142바이트 공지 ·
     //   205바이트 INFORM. 이게 없으면 클라가 로딩에서 안 넘어간다(2026-09-07).
     std::vector<std::vector<uint8_t>> postMap;
+    // ★ 맵 지정 뒤 정품이 보낸 조각 전부(머리 뺀 알맹이). --mirror 가 이걸 그대로 재생한다.
+    //   「내가 만든 내용이 틀린 건가, 구조가 틀린 건가」를 가르는 장치다.
+    std::vector<std::vector<uint8_t>> mirror;
     bool haveInfo = false;
     // 접속마다 정품이 쓴 값들. 순서대로 쌓는다.
     std::vector<Server::AcceptScript> accepts;
