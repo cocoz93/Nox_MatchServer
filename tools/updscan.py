@@ -41,6 +41,7 @@ SEQ_IMPORTANT = 0xCC
 TEXT_MESSAGE = 0xA8
 INFORM = 0xA9
 REPORT_SPELL_START = 0x70
+SOCIAL = 0xE3
 MAX_COORD = 6000
 ALIAS_TTL = 60          # 프레임. alias.go 와 같은 값
 STEP_BUDGET = 20000     # 되짚기가 지수로 터지지 않게 (앞선 도구에서 겪은 함정)
@@ -503,6 +504,13 @@ def tally(a, complex_of, xor_key, fixed_key, name_of, cli, srv):
                     inner[sub] += 1
                     if sub in pick and len(picked[sub]) < a.show:
                         picked[sub].append((_t, peer + " (0xcc 속)", buf[i + 4:i + ln].hex(" ")))
+            elif op == SOCIAL:
+                # 0xe3 SOCIAL — opennox 길이표에 없어 여기서 90곳이나 멈춰 있었다.
+                #   원본 둘이 같은 말을 한다: 서버는 `return 2, true`
+                #   (opennox-src/src/network_server.go:298), 클라는 `[2]byte{op, emote}`
+                #   (src/network.go:150-152). **오프코드 1 + 감정표현 1 = 2바이트.**
+                #   갈래는 1 웃기 · 2 주먹질 · 4 가리키기.
+                ln = 2
             elif op == REPORT_SPELL_START:
                 # opennox 에는 구조체도 길이표도 없다. 원문으로 잰다 — **2바이트**다.
                 #   70 04 · 70 2b · 70 1b   ← 주문 번호 4 Blink · 43 Lightning · 27 Fireball
