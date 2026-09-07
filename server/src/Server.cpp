@@ -159,8 +159,9 @@ uint16_t Server::ProjectileType(uint8_t spell) {
 
 // 이 주문이 불러내는 것의 와이어 종류 번호.
 //
-// ★ 실측이다 — `SpellNames.cpp` 의 `SPELL_SUMMON_*` 과 OpenNox 종류표의 같은 이름을
-//   짝지었다. 열둘 모두 종류표에서 COMPLEX 로 나온다.
+// ⚠ **실측이 아니라 이름 짝짓기다** (Server.h 의 SummonType 주석 참조).
+//   `SpellNames.cpp` 의 `SPELL_SUMMON_*` 과 종류표의 같은 이름을 맞춘 것이고,
+//   **소환 표본이 덤프에 없어 대조한 적이 없다.** 열둘이 COMPLEX 인 것만 표에서 확인했다.
 uint16_t Server::SummonType(uint8_t spell) {
     switch (spell) {
         case 75: return 1357;  // SUMMON_BAT                → Bat
@@ -1024,7 +1025,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
 
         // ★ 날아가는 것도 싣는다. 이게 없으면 **서버만 알고 화면엔 아무것도 안 날아간다.**
-        //   종류 번호는 종류표에서 찾은 실측값이고 셋 다 복합이라 사람과 같은 짜임이다.
+        //   ⚠ 종류 번호는 **이름 짐작**이다(실측 아님). 셋 다 복합인 것만 표에서 확인했다.
         for (const auto& p : shots_) {
             const uint16_t ptype = ProjectileType(p.spell);
             if (ptype == 0) continue;

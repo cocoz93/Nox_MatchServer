@@ -34,7 +34,7 @@ struct OutPacket {
 struct Creature {
     std::string owner;     // 부른 사람의 주소
     uint16_t netCode = 0;
-    uint16_t type = 0;     // 와이어 종류 번호 (종류표에서 찾은 실측값)
+    uint16_t type = 0;     // 와이어 종류 번호 (⚠ 종류표에서 이름으로 고른 것. 실측 아님)
     uint8_t facing = 0;
     double x = 0, y = 0;
     uint16_t health = 0;
@@ -43,8 +43,11 @@ struct Creature {
 
 // 깃발 하나.
 //
-// ★ 종류 번호는 실측이다 — OpenNox 종류표에 `176 RedFlag`·`173 BlueFlag` 로 있고
-//   **둘 다 복합이 아니다**(사람·투사체와 달리 좌표 뒤에 붙는 바이트가 없다).
+// ⚠ **종류 번호는 실측이 아니라 이름 짐작이다** (09-07 자가검증에서 잡음).
+//   종류표에 `176 RedFlag`·`173 BlueFlag` 라는 **이름이 있다**는 것뿐이고,
+//   **네 덤프 어디에도 깃발 오브젝트가 0건**이다(CTF 로 돌린 적이 없다).
+//   투사체 쪽에서 같은 방식으로 고른 `695 Fireball` 이 0건이었던 것과 같은 자리다.
+//   ★ 다만 **둘 다 복합이 아니라는 것은 표에서 확인**했다 — 붙는 바이트가 없다.
 struct Flag {
     uint8_t team = 0;          // 이 깃발의 임자 팀
     uint16_t netCode = 0;
@@ -194,9 +197,11 @@ constexpr uint32_t kTimerEveryTicks = 66;
 
 // ── 깃발 (CTF) ──────────────────────────────────────────────
 //
-// ★ 종류 번호만 실측이다 — 종류표의 `176 RedFlag` · `173 BlueFlag`.
+// ⚠⚠ **이 절에는 실측이 하나도 없다.** 종류 번호마저 이름 짐작이다 —
+//    종류표에 `176 RedFlag`·`173 BlueFlag` 라는 이름이 있을 뿐 덤프에는 0건이다.
+//    (표에서 확인한 것은 **복합이 아니라는 것** 하나뿐이고, 그건 짜임에만 쓴다.)
 //
-// ⚠⚠ **나머지는 전부 실측이 아니다.** 우리 캡처는 `Game Type: Arena` 하나뿐이고
+//    까닭은 하나다 — 우리 캡처는 `Game Type: Arena` 하나뿐이고
 //    (→ `Docs/CONSOLE.md`), OpenNox 전용 서버는 **CTF 맵을 못 올린다**
 //    (`panic: server should not load GUI` — 09-07 확인). 그래서 CTF 트래픽 표본이 0이다.
 //    깃발 자리·닿는 거리·득점 한도·팀 배정 규칙은 **게임이 도는지 보려고 둔 자리표시**다.
@@ -477,8 +482,9 @@ private:
 
     // 깃발 알림 하나 — `0xa9 INFORM` 의 갈래.
     //
-    // ★ 속 짜임은 실측이다 — opennox `InformTeamPlayer`(msg_inform.go:253) 가
-    //   `PlayerID 4바이트 + TeamID 4바이트`, 본문 8. 갈래 5·6·7 이 이걸 쓴다.
+    // ⚠ 속 짜임은 **opennox 원본을 옮긴 것**이지 와이어로 대조한 것이 아니다 —
+    //   `InformTeamPlayer`(msg_inform.go:253) 가 `PlayerID 4 + TeamID 4`, 본문 8.
+    //   **깃발 갈래(5·6·7)는 우리 덤프에 0건**이라 맞춰 볼 거리가 없었다.
     void SendFlagInform(InformCode code, uint16_t playerNetCode, uint8_t team,
                         std::vector<OutPacket>& out);
 
