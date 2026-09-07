@@ -118,6 +118,9 @@ struct Session {
 
     // 게임에 들어와 있는가 — 여기가 참이면 매 틱 상태를 받는다.
     bool inGame = false;
+    // ★ 첫 세계 스냅샷을 몇 틱 뒤에 보낼지. 접속 직후 같은 묶음으로 보내면 클라가 못 쓴다
+    //   (정품도 다른 조각 여덟 개가 지난 뒤 아홉째로 보낸다 — 2026-09-07 이분법).
+    int snapDelay = -1;
     int x = 0, y = 0;        // 맵 위 자리
     uint8_t facing = 0;      // 바라보는 쪽. 한 바퀴를 256으로 나눈 값
 
@@ -274,6 +277,8 @@ public:
     // ★ 맵 지정 뒤에 이어 보낼 것들(정품이 보내는 105B INFORM · 142B 공지 · 205B INFORM).
     //   없으면 클라가 로딩에서 안 넘어간다.
     void SetPostMap(const std::vector<std::vector<uint8_t>>& v) { postMap_ = v; }
+    // ★ 접속 직후 한 번 내보낼 첫 세계 스냅샷. 없으면 클라 화면이 검은 채로 남는다.
+    void SetFirstSnapshot(const std::vector<uint8_t>& v) { firstSnapshot_ = v; }
     // ★ 진단용 — 켜면 매 틱 「내가 만든 것」 대신 **정품이 보냈던 조각**을 순서대로 내보낸다.
     void SetMirror(const std::vector<std::vector<uint8_t>>& v) { mirror_ = v; mirrorAt_ = 0; }
     bool MirrorOn() const { return !mirror_.empty(); }
@@ -531,6 +536,7 @@ private:
     std::vector<uint8_t> joinBody_;     // 접속 직후 나가는 216바이트 묶음
     std::vector<uint8_t> useMapBody_;
     std::vector<std::vector<uint8_t>> postMap_;
+    std::vector<uint8_t> firstSnapshot_;
     std::vector<std::vector<uint8_t>> mirror_;
     size_t mirrorAt_ = 0;   // 그 다음 41바이트 USE_MAP
     uint32_t frame_ = 0;

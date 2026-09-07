@@ -38,6 +38,8 @@ struct Setup {
     // ★ 맵 지정 뒤 정품이 보낸 조각 전부(머리 뺀 알맹이). --mirror 가 이걸 그대로 재생한다.
     //   「내가 만든 내용이 틀린 건가, 구조가 틀린 건가」를 가르는 장치다.
     std::vector<std::vector<uint8_t>> mirror;
+    // ★ 맵 지정 뒤 처음 오는 큰 조각 = 첫 세계 스냅샷. 이것 없이는 화면이 검다.
+    std::vector<uint8_t> firstSnapshot;
     bool haveInfo = false;
     // 접속마다 정품이 쓴 값들. 순서대로 쌓는다.
     std::vector<Server::AcceptScript> accepts;

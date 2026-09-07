@@ -146,6 +146,7 @@ int main(int argc, char** argv) {
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)
+    bool prelude = false;   // 서두 — 정품 앞 9개를 흘려보낸 뒤 내 생성으로
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -157,6 +158,8 @@ int main(int argc, char** argv) {
             port = std::atoi(argv[++i]);
         } else if (a == "--name" && i + 1 < argc) {
             name = argv[++i];
+        } else if (a == "--prelude") {
+            prelude = true;
         } else if (a == "--mirror") {
             mirror = true;
         } else if (a == "--mirror-limit" && i + 1 < argc) {
@@ -204,6 +207,16 @@ int main(int argc, char** argv) {
             srv.SetJoinTemplate(setup.joinBody.data(), setup.joinBody.size());
             srv.SetUseMapTemplate(setup.useMapBody.data(), setup.useMapBody.size());
             srv.SetPostMap(setup.postMap);
+            // ★★ 서두(prelude) — 정품이 접속 뒤 보낸 **앞 9개 조각**을 그대로 흘려보내고,
+            //   그 뒤부터 내 생성으로 이어받는다. 이걸 빼면 클라 화면이 검은 채로 남는다.
+            //   2026-09-07 이분법으로 9가 경계임을 확인했다(8개면 검정, 9개면 세계가 뜬다).
+            //   ⚠ 임시 발판이다 — 9번(첫 세계 스냅샷)을 내가 만들게 되면 없앤다.
+            if (!mirror && prelude) {
+                std::vector<std::vector<uint8_t>> pre = setup.mirror;
+                if (pre.size() > 9) pre.resize(9);
+                srv.SetMirror(pre);
+                std::printf("서두 %zu개를 흘려보낸 뒤 내 생성으로 이어받는다\n", pre.size());
+            }
             if (mirror) {
                 std::vector<std::vector<uint8_t>> m = setup.mirror;
                 if (mirrorLimit > 0 && static_cast<size_t>(mirrorLimit) < m.size())

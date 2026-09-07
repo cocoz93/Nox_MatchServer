@@ -847,7 +847,11 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 // ★ 스폰 자리 — 예전엔 (1000,1000) 이라는 지어낸 값이었다.
                 //   estate.map 에서 정품이 쓰는 자리를 덤프에서 읽어 넣는다
                 //   (2026-09-07 레퍼런스 상태방송 머리: x=2304 y=3498).
-                if (s.x == 0 && s.y == 0) { s.x = 2304; s.y = 3498; }
+                // ★ 스폰 자리는 **맵마다 다르다**. 지금은 덤프의 맵을 그대로 쓰므로
+                //   그 덤프에서 정품이 쓴 자리를 그대로 쓴다.
+                //   09-05 덤프(bludeath.map)의 상태갱신 머리: x=3864 y=2534.
+                //   ⚠ estate 좌표(2304,3498)를 bludeath 에 쓰면 맵 밖이라 아무것도 안 그려진다.
+                if (s.x == 0 && s.y == 0) { s.x = 3864; s.y = 2534; }
                 if (s.netCode == 0) s.netCode = 713;
                 if (s.maxHealth == 0) {
                     s.maxHealth = kDefaultMaxHealth;
@@ -1031,12 +1035,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
         // ★ 재생 모드 — 내가 만든 것 대신 정품이 보냈던 조각을 순서대로 내보낸다.
         //   클라가 그려지면 「내용이 틀렸다」, 안 그려지면 「구조가 틀렸다」로 갈린다.
-        if (!mirror_.empty()) {
-            if (mirrorAt_ < mirror_.size()) {
-                const std::vector<uint8_t>& m = mirror_[mirrorAt_++];
-                if (!m.empty())
-                    Emit(s, /*reliable=*/false, /*stream=*/0, m.data(), m.size(), out);
-            }
+        // ★ 재생분이 남아 있으면 그것부터. **다 쓰면 내 생성으로 이어받는다** —
+        //   「첫 스냅샷만 문제인가, 내 스트림 자체가 문제인가」를 가르는 자리다.
+        if (mirrorAt_ < mirror_.size()) {
+            const std::vector<uint8_t>& m = mirror_[mirrorAt_++];
+            if (!m.empty())
+                Emit(s, /*reliable=*/false, /*stream=*/0, m.data(), m.size(), out);
             continue;
         }
 

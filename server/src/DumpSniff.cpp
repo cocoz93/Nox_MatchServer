@@ -139,6 +139,15 @@ bool Sniff(const char* path, Setup& out) {
              d[2] == static_cast<uint8_t>(Op::XFER_MSG))) {
             out.postMap.push_back(std::vector<uint8_t>(d.begin() + 2, d.end()));
         }
+
+        // ★★ 첫 「세계 스냅샷」 — 맵 지정 뒤 처음 오는 큰 TIMESTAMP 조각이다.
+        //    속에 UPDATE_STREAM 이 통째로 들어 있고 **이것 하나가 없으면 화면이 검다**.
+        //    2026-09-07 이분법으로 짚었다: 앞 8개까지는 검정, 9번째(이것)에서 HUD 가 뜬다.
+        //    이걸 보낸 뒤부터는 내가 만드는 매 틱 갱신으로 세계가 유지된다(실측).
+        if (!out.useMapBody.empty() && out.firstSnapshot.empty() &&
+            d[2] == static_cast<uint8_t>(Op::TIMESTAMP) && d.size() > 100) {
+            out.firstSnapshot.assign(d.begin() + 2, d.end());
+        }
     }
     std::fclose(f);
     return out.haveInfo;
