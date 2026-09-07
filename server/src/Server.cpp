@@ -852,7 +852,9 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //   09-05 덤프(bludeath.map)의 상태갱신 머리: x=3864 y=2534.
                 //   ⚠ estate 좌표(2304,3498)를 bludeath 에 쓰면 맵 밖이라 아무것도 안 그려진다.
                 if (s.x == 0 && s.y == 0) { s.x = 3864; s.y = 2534; }
-                if (s.netCode == 0) s.netCode = 713;
+                // ★ 오브젝트 번호는 **접속마다 달라야 한다**. 전에는 모두 713 이라
+                //   둘째 클라가 첫째와 같은 번호를 받아 화면이 검었다(2026-09-08).
+                if (s.netCode == 0) s.netCode = nextPlayerNetCode_++;
                 if (s.maxHealth == 0) {
                     s.maxHealth = kDefaultMaxHealth;
                     s.health = s.maxHealth;
@@ -1037,8 +1039,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   클라가 그려지면 「내용이 틀렸다」, 안 그려지면 「구조가 틀렸다」로 갈린다.
         // ★ 재생분이 남아 있으면 그것부터. **다 쓰면 내 생성으로 이어받는다** —
         //   「첫 스냅샷만 문제인가, 내 스트림 자체가 문제인가」를 가르는 자리다.
-        if (mirrorAt_ < mirror_.size()) {
-            const std::vector<uint8_t>& m = mirror_[mirrorAt_++];
+        if (s.preludeAt < mirror_.size()) {
+            const std::vector<uint8_t>& m = mirror_[s.preludeAt++];
             if (!m.empty())
                 Emit(s, /*reliable=*/false, /*stream=*/0, m.data(), m.size(), out);
             continue;

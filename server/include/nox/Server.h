@@ -120,7 +120,8 @@ struct Session {
     bool inGame = false;
     // ★ 첫 세계 스냅샷을 몇 틱 뒤에 보낼지. 접속 직후 같은 묶음으로 보내면 클라가 못 쓴다
     //   (정품도 다른 조각 여덟 개가 지난 뒤 아홉째로 보낸다 — 2026-09-07 이분법).
-    int snapDelay = -1;
+    // ★ 서두를 어디까지 흘렸나. **접속마다 따로** — 전역으로 두면 둘째 클라가 서두를 못 받는다.
+    size_t preludeAt = 0;
     int x = 0, y = 0;        // 맵 위 자리
     uint8_t facing = 0;      // 바라보는 쪽. 한 바퀴를 256으로 나눈 값
 
@@ -562,6 +563,8 @@ private:
     // 날아가는 것에 매길 번호.
     // ⚠ **진짜 서버가 번호를 어떻게 매기는지는 모른다.** 캡처에서 사람이 715·720·728 을
     //   받은 것만 봤다. 사람과 안 부딪히게 넉넉히 띄운 자리에서 시작할 뿐이다.
+    // 사람 오브젝트 번호. 정품이 713·715 를 쓰는 자리라 그 언저리에서 시작한다.
+    uint16_t nextPlayerNetCode_ = 713;
     uint16_t nextShotNetCode_ = 4096;
     std::map<uint8_t, unsigned long long> spells_;
     unsigned long long spellsOnSelf_ = 0;
