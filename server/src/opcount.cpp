@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
     nox::dump::Line ln;
     std::map<std::string, uint8_t> keys;          // 상대별 XOR 키
     std::map<int, long long> sendOps, recvOps;
-    long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0, partSend = 0, partRecv = 0;  // ★ 멈춘 자리도 센다
+    long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0, partSend = 0, partRecv = 0, updUnread = 0;  // ★ 멈춘 자리도 센다
 
     while (std::fgets(buf, sizeof(buf), f)) {
         if (!nox::dump::ParseLine(buf, ln)) continue;
@@ -59,23 +59,44 @@ int main(int argc, char** argv) {
 
         if (send) ++nSend; else ++nRecv;
 
-        nox::MessageIter it(d.data() + nox::kWireHeaderSize,
-                            d.size() - nox::kWireHeaderSize, !send);
+        // ★★ **직접 훑는다.** `MessageIter` 는 길이표에 -1 인 오프코드를 만나면 선다.
+        //   정품은 `0x27 TIMESTAMP` 뒤에 `0xa4 UPDATE_STREAM`(-1)을 붙여 보내므로,
+        //   그대로 두면 조각의 93~98% 가 뒤쪽을 못 읽힌 채 「그건 0건」으로 보인다.
+        //   `0xa4` 는 길이가 표에 없을 뿐 **뜯을 수는 있다** — DecodeUpdate 가
+        //   먹은 바이트 수(consumed)를 돌려주니 그걸로 건너뛴다.
+        const uint8_t* b = d.data() + nox::kWireHeaderSize;
         const size_t bodyAll = d.size() - nox::kWireHeaderSize;
         size_t eaten = 0;
         int got = 0;
-        while (it.Next()) {
+        while (eaten < bodyAll) {
+            const int op = b[eaten];
+            // ⚠ **길이는 `MessageSize` 로 물을 것.** 원시 길이표(MsgBodyLenByDir)만 보면
+            //   `0x3f PLAYER_INPUT` 처럼 **본문 첫 바이트에 길이가 든** 메시지를 못 다뤄
+            //   클라→서버가 통째로 안 읽힌다(2026-09-08: RECV 96,290 중 94,581 멈춤).
+            size_t msz = nox::MessageSize(b + eaten, bodyAll - eaten, !send);
+            if (msz == 0) {
+                if (op == (int)nox::Op::UPDATE_STREAM) {
+                    // ⚠ 별칭 표 없이 뜯는다 — 별칭으로만 온 항목은 종류를 모르니
+                    //   디코더가 갈래를 넓게 연다. 길이를 얻는 데는 그걸로 족하다.
+                    const nox::UpdateMsg um =
+                        nox::DecodeUpdate(b + eaten + 1, bodyAll - eaten - 1, nullptr);
+                    if (um.ok && um.consumed > 0) msz = 1 + um.consumed;
+                    else { ++updUnread; break; }
+                } else {
+                    break;   // 길이를 모르는 다른 오프코드 — 여기서 접는다
+                }
+            }
+            const int bl = (int)msz - 1;
+            if (eaten + msz > bodyAll) break;
             ++got;
-            eaten += 1 + it.bodyLen();
-            const int op = (int)it.op();
             if (send) ++sendOps[op]; else ++recvOps[op];
             // ★★ `0xcc SEQ_IMPORTANT` 는 **껍데기**다 — cc | 번호 2 | 속길이 1 | 속 메시지.
             //   속을 안 더하면 REPORT_* 가 통째로 0건으로 보인다. 2026-09-06 에 그 0 을
             //   「서버가 장비를 안 줬다」로 읽어 밤을 새웠다. 여기서 같은 실수를 안 한다.
-            if (op == (int)nox::Op::SEQ_IMPORTANT && it.bodyLen() >= 4) {
-                const uint8_t* ib = it.body();
+            if (op == (int)nox::Op::SEQ_IMPORTANT && bl >= 4) {
+                const uint8_t* ib = b + eaten + 1;
                 const int innerLen = ib[2];
-                if (innerLen >= 1 && (size_t)(3 + innerLen) <= it.bodyLen()) {
+                if (innerLen >= 1 && 3 + innerLen <= bl) {
                     const int iop = ib[3];
                     if (send) ++sendOps[iop]; else ++recvOps[iop];
                     if (want.count(iop)) {
@@ -92,6 +113,7 @@ int main(int argc, char** argv) {
                 for (size_t i = 0; i < d.size() && i < 24; ++i) std::printf("%02x ", d[i]);
                 std::printf("\n");
             }
+            eaten += 1 + (size_t)bl;
         }
         // 키를 아직 못 받은 상대(서버 찾기 단계)는 「멈춤」이 아니다. 갈라 센다.
         if (got == 0) { if (!keyed) ++preKey; else if (send) ++stallSend; else ++stallRecv; }
@@ -110,6 +132,7 @@ int main(int argc, char** argv) {
     std::printf("   갈라 보면 SEND %lld · RECV %lld\n", stallSend, stallRecv);
     std::printf("   **끝까지 못 읽은 조각** SEND %lld · RECV %lld"
                 "  (첫 메시지는 읽었으나 뒤가 남음)\n", partSend, partRecv);
+    std::printf("   0xa4 를 못 뜯어 접은 조각 %lld\n", updUnread);
     std::printf("   (키 받기 전이라 안 푼 조각 %lld — 이건 멈춤이 아니다)\n", preKey);
     std::printf("\n-- 서버→클라 상위 --\n");
     std::multimap<long long, int> a;
