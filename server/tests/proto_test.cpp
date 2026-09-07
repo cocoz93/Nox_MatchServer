@@ -1340,6 +1340,64 @@ void TestQuest() {
     std::printf("  퀘스트 — 몬스터가 서고·사람이 때리고·다 잡으면 끝·소환수는 셈 밖\n");
 }
 
+// ── 실측값 못 박기 ────────────────────────────────────────────
+//
+// ★★ 왜 이 시험이 따로 있나 — 2026-09-07 에 **돌연변이로 시험을 시험해 봤다.**
+//    상수 열둘을 하나씩 틀어 보니 **넷만 걸리고 여덟은 안 걸렸다.**
+//
+//    안 걸린 여덟은 대개 **결함이 아니다.** 시험이 상수를 기호로 쓰기 때문이다 —
+//      Check(HealthOf(b) == kDefaultMaxHealth - kMeleeDamage)
+//    처럼 쓰면 `kMeleeDamage` 가 바뀌어도 양쪽이 같이 바뀌어 통과한다.
+//    그리고 **그게 자리표시 값에는 옳은 설계다.** 아직 못 잰 숫자를 시험에 박아 두면
+//    진짜 실측이 들어올 때마다 시험을 고쳐야 한다.
+//
+//    ★ 하지만 그 사이에 **실측값도 같이 안 묶여 있었다.** 덤프에서 바이트로 얻은 값은
+//      함부로 바뀌면 안 되는데, 바꿔도 아무도 안 짖었다. 그래서 여기서 못 박는다.
+//
+//    ⚠ 이 시험이 깨지면 「시험을 고칠 것」이 아니라 **「왜 실측값을 바꿨나」를 물을 것.**
+void TestMeasuredConstants() {
+    // 접속할 때 주는 최대 체력 — 실측 `dd d0 02 4b 00 4b 00` (번호 720 · 75/75)
+    Check(nox::kDefaultMaxHealth == 75, "최대 체력 실측값(75)이 바뀌었다");
+
+    // 한 걸음 — 2026-09-06 캡처 표본 866개에서 가장 잦은 값 7
+    Check(nox::kStepPerTick == 7.0, "걸음 실측값(7.0)이 바뀌었다");
+
+    // 플레이어의 와이어 종류 번호 — 상태 갱신 30,169건이 이 번호였다
+    Check(nox::kPlayerType == 713, "플레이어 종류 실측값(713)이 바뀌었다");
+
+    // 주문 시전 본문 길이 — 표본 83개 전수로 확정
+    Check(nox::kTrySpellBodyLen == 21, "0x79 본문 길이 실측값(21)이 바뀌었다");
+    Check(nox::kSpellFireball == 27, "파이어볼 주문 번호(27)가 바뀌었다");
+
+    // SERVER_INFO 의 토큰 자리
+    Check(nox::kInfoTokenOffset == 41, "토큰 자리 실측값(41)이 바뀌었다");
+
+    // 주문 번호 ↔ 이름 — 표가 어긋나면 여기서 걸린다
+    Check(std::strcmp(nox::SpellName(4), "SPELL_BLINK") == 0, "주문 4 가 점멸이 아님");
+    Check(std::strcmp(nox::SpellName(27), "SPELL_FIREBALL") == 0, "주문 27 이 파이어볼이 아님");
+    Check(std::strcmp(nox::SpellName(43), "SPELL_CHAIN_LIGHTNING") == 0, "주문 43 이 연쇄번개가 아님");
+
+    // 메시지 길이 — 전부 덤프의 진짜 바이트에서 얻은 것
+    Check(nox::MsgPlayerDied::kSize == 2, "0xE8 길이(2)가 바뀌었다");
+    Check(nox::MsgPlayerRespawn::kSize == 8, "0xE9 길이(8)가 바뀌었다");
+    Check(nox::MsgReportPlayerHealth::kSize == 2, "0x43 길이(2)가 바뀌었다");
+    Check(nox::MsgReportHealthDelta::kSize == 4, "0x42 길이(4)가 바뀌었다");
+    Check(nox::MsgReportTotalHealth::kSize == 6, "0xDD 길이(6)가 바뀌었다");
+    Check(nox::MsgReportPickup::kSize == 4, "0x4B 길이(4)가 바뀌었다");
+    Check(nox::MsgReportModifiablePickup::kSize == 8, "0x4C 길이(8)가 바뀌었다");
+    Check(nox::MsgReportDrop::kSize == 4, "0x4D 길이(4)가 바뀌었다");
+    Check(nox::MsgReportEquip::kSize == 2, "0x60 길이(2)가 바뀌었다");
+    Check(nox::MsgReportSpellStart::kSize == 1, "0x70 길이(1)가 바뀌었다");
+    Check(nox::MsgSeqImportant::kHeaderSize == 3, "0xCC 머리 길이(3)가 바뀌었다");
+    Check(nox::MsgTextMessage::kHeaderSize == 10, "0xA8 머리 길이(10)가 바뀌었다");
+
+    // `0xa9` 갈래별 본문 길이 — opennox 원본에서 옮긴 것
+    Check(nox::MsgInform::BodySize(nox::InformCode::Kill) == 9, "INFORM Kill 본문(9)이 바뀌었다");
+    Check(nox::MsgInform::BodySize(nox::InformCode::FlagCapture) == 8, "INFORM 깃발 본문(8)이 바뀌었다");
+
+    std::printf("  실측값 못 박기 — 상수·길이 23자리\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -1370,6 +1428,7 @@ int main() {
     TestTryJoin();
 
     std::printf("\n[표·경계]\n");
+    TestMeasuredConstants();
     TestGameplayMessages();
     TestDeathFlow();
     TestSpellDamage();
