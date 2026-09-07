@@ -122,6 +122,14 @@ struct Session {
     //   (정품도 다른 조각 여덟 개가 지난 뒤 아홉째로 보낸다 — 2026-09-07 이분법).
     // ★ 서두를 어디까지 흘렸나. **접속마다 따로** — 전역으로 두면 둘째 클라가 서두를 못 받는다.
     size_t preludeAt = 0;
+    // ★★ 이 사람에게 흘려보낸 프레임. **접속마다 따로 센다.**
+    //   전역 하나로 두면 늦게 붙은 사람의 시계가 서두(녹음본이라 늘 3219 로 고정)에서
+    //   내 현재 프레임으로 크게 건너뛴다. 2026-09-08 두 클라 대조로 짚었다:
+    //     첫째 3221 → 2609 (뒤로 612)   → 세계 정상
+    //     둘째 3221 → 5199 (앞으로 1978 ≈ 66초) → 화면 검정
+    //   별칭표(aliases)도 접속마다 따로이므로, 그 수명을 재는 프레임도 여기 것을 쓴다.
+    uint32_t tickFrame = 0;
+    bool tickFrameSet = false;
     int x = 0, y = 0;        // 맵 위 자리
     uint8_t facing = 0;      // 바라보는 쪽. 한 바퀴를 256으로 나눈 값
 
@@ -281,7 +289,22 @@ public:
     // ★ 접속 직후 한 번 내보낼 첫 세계 스냅샷. 없으면 클라 화면이 검은 채로 남는다.
     void SetFirstSnapshot(const std::vector<uint8_t>& v) { firstSnapshot_ = v; }
     // ★ 진단용 — 켜면 매 틱 「내가 만든 것」 대신 **정품이 보냈던 조각**을 순서대로 내보낸다.
-    void SetMirror(const std::vector<std::vector<uint8_t>>& v) { mirror_ = v; mirrorAt_ = 0; }
+    void SetMirror(const std::vector<std::vector<uint8_t>>& v) {
+        mirror_ = v;
+        mirrorAt_ = 0;
+        // ★★ 서두는 **녹음본이라 프레임이 고정**이다(늘 3219 에서 시작한다).
+        //   그러니 접속 묶음이 말하는 프레임도 거기에 맞춰야 시계가 한 줄로 이어진다.
+        //   안 맞추면 늦게 붙은 사람은 접속 때 받은 프레임이 서두보다 앞서서,
+        //   그 뒤 갱신이 전부 **과거로 보여 버려진다** — 화면이 검다(2026-09-08).
+        preludeFirstFrame_ = 0;
+        for (const std::vector<uint8_t>& m : mirror_) {
+            if (m.size() >= 3 && m[0] == 0x27) {   // 0x27 TIMESTAMP
+                preludeFirstFrame_ = static_cast<uint32_t>(m[1]) |
+                                     (static_cast<uint32_t>(m[2]) << 8);
+                break;
+            }
+        }
+    }
     bool MirrorOn() const { return !mirror_.empty(); }
 
     // 서버의 현재 프레임. 진짜 서버는 30Hz 틱이 올리고,
@@ -539,6 +562,8 @@ private:
     std::vector<std::vector<uint8_t>> postMap_;
     std::vector<uint8_t> firstSnapshot_;
     std::vector<std::vector<uint8_t>> mirror_;
+    // 서두의 첫 TIMESTAMP 프레임. 0 이면 서두에 시각이 안 실린 것이다.
+    uint32_t preludeFirstFrame_ = 0;
     size_t mirrorAt_ = 0;   // 그 다음 41바이트 USE_MAP
     uint32_t frame_ = 0;
     uint16_t netCode_ = 0;

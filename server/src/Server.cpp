@@ -145,7 +145,16 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
     // ⚠ 복합이 아니면 **한 바이트도 붙지 않는다.** 깃발이 그렇다(종류표에서 확인).
     //   붙이면 클라가 그 바이트를 다음 항목의 시작으로 읽어 그 뒤가 다 어긋난다.
     e.extra = complex ? 1 : 0;
-    if (complex) e.extraBytes[0] = facing;
+    if (complex) {
+        e.extraBytes[0] = facing;
+        // ★★ 방향 바이트의 최상위 비트는 값이 아니라 **신호**다 —
+        //   클라는 그게 서 있으면 「스프라이트 프레임이 한 바이트 더 온다」로 읽는다
+        //   (UpdateStream.cpp 의 Walk: `if (p[0] & 0x80) ++base`).
+        //   그런데 한 바이트만 실으면 다음 항목을 한 칸 밀려 읽고
+        //   그 뒤가 전부 어긋난다. 2026-09-08 실측 — 사람이 0x80 넘는 쪽을
+        //   보는 순간 두 클라가 동시에 `0xae` 를 보내고 서버 목록으로 나갔다.
+        if (facing & 0x80) { e.extra = 2; e.extraBytes[1] = 0; }
+    }
 }
 
 uint16_t Server::ProjectileType(uint8_t spell) {
@@ -815,7 +824,10 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 } else {
                     s.connectId = nextConnectId_++;
                     s.xorKey = xorKey_;
-                    s.frame = frame_;
+                    // ★★ 서두가 있으면 그 바로 앞 프레임을 준다 — 시계가 한 줄로 이어지게.
+                    //   전역 프레임을 주면 늦게 붙은 사람은 서두보다 앞서서, 그 뒤 갱신이
+                    //   전부 과거로 보여 버려진다(2026-09-08 둘째 클라 검은 화면의 원인).
+                    s.frame = preludeFirstFrame_ ? preludeFirstFrame_ - 1 : frame_;
                     s.netCode = netCode_;
                 }
 
@@ -1041,17 +1053,32 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   「첫 스냅샷만 문제인가, 내 스트림 자체가 문제인가」를 가르는 자리다.
         if (s.preludeAt < mirror_.size()) {
             const std::vector<uint8_t>& m = mirror_[s.preludeAt++];
-            if (!m.empty())
+            if (!m.empty()) {
+                // ★ 서두에 실린 프레임을 따라간다. 서두가 끝나면 그 다음 수부터 이어 센다.
+                //   안 이으면 시계가 튀고, 앞으로 튄 쪽 클라는 화면이 검다(Server.h 의 대조표).
+                if (m.size() >= 3 && m[0] == static_cast<uint8_t>(Op::TIMESTAMP)) {
+                    s.tickFrame = static_cast<uint32_t>(m[1]) |
+                                  (static_cast<uint32_t>(m[2]) << 8);
+                    s.tickFrameSet = true;
+                }
                 Emit(s, /*reliable=*/false, /*stream=*/0, m.data(), m.size(), out);
+            }
             continue;
         }
+
+        // 서두가 없거나 거기에 프레임이 안 실렸으면 접속한 그 시점부터 센다.
+        if (!s.tickFrameSet) {
+            s.tickFrame = s.frame;
+            s.tickFrameSet = true;
+        }
+        ++s.tickFrame;
 
         // ① 시각 — 본문 2바이트(LE16). 클라는 이 값으로 프레임을 맞춘다.
         {
             uint8_t msg[3];
             msg[0] = static_cast<uint8_t>(Op::TIMESTAMP);
-            msg[1] = static_cast<uint8_t>(frame_);
-            msg[2] = static_cast<uint8_t>(frame_ >> 8);
+            msg[1] = static_cast<uint8_t>(s.tickFrame);
+            msg[2] = static_cast<uint8_t>(s.tickFrame >> 8);
             Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
         }
 
@@ -1076,7 +1103,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             ObjEntry e;
             // 별칭은 **클라와 똑같은 규칙**으로 잡는다. 한 칸만 어긋나면
             // 그때부터 클라가 엉뚱한 것을 그린다(Alias.h 참조).
-            FillEntry(s.aliases, o.netCode, kPlayerType, frame_, o.x, o.y, o.facing, e);
+            FillEntry(s.aliases, o.netCode, kPlayerType, s.tickFrame, o.x, o.y, o.facing, e);
             m.objects.push_back(e);
         }
 
@@ -1087,7 +1114,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (ptype == 0) continue;
 
             ObjEntry e;
-            FillEntry(s.aliases, p.netCode, ptype, frame_,
+            FillEntry(s.aliases, p.netCode, ptype, s.tickFrame,
                       static_cast<int>(p.x), static_cast<int>(p.y), p.facing, e);
             m.objects.push_back(e);
         }
@@ -1097,7 +1124,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         for (const auto& f : flags_) {
             if (!f.carrier.empty()) continue;
             ObjEntry e;
-            FillEntry(s.aliases, f.netCode, f.type, frame_,
+            FillEntry(s.aliases, f.netCode, f.type, s.tickFrame,
                       static_cast<int>(f.x), static_cast<int>(f.y), 0, e,
                       /*complex=*/false);
             m.objects.push_back(e);
@@ -1106,7 +1133,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         // 불려 나온 것도 싣는다 — 안 그러면 사람을 때리는 게 화면에 안 보인다.
         for (const auto& k : pets_) {
             ObjEntry e;
-            FillEntry(s.aliases, k.netCode, k.type, frame_,
+            FillEntry(s.aliases, k.netCode, k.type, s.tickFrame,
                       static_cast<int>(k.x), static_cast<int>(k.y), k.facing, e);
             m.objects.push_back(e);
         }
