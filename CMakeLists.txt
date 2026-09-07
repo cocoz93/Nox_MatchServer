@@ -30,6 +30,9 @@ add_executable(nox_replay server/src/replay.cpp)
 target_link_libraries(nox_replay PRIVATE nox_proto)
 
 # 상태 갱신 판독기 — 내 파서가 덤프를 끝까지 읽는지 성공률로 잰다.
+add_executable(nox_opcount server/src/opcount.cpp)
+target_link_libraries(nox_opcount PRIVATE nox_proto)
+
 add_executable(nox_verify server/src/verify_update.cpp)
 target_link_libraries(nox_verify PRIVATE nox_proto)
 
