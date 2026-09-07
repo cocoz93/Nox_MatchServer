@@ -64,7 +64,15 @@ Write-Host (Shot "${Tag}2_chars")
 & $di -Target $pid_ -Cmd ($home3 + @('m 313 372','sleep 400','mb 0 1','sleep 150','mb 0 0','sleep 8000')) | Out-Null   # Load
 Write-Host (Shot "${Tag}3_ingame")
 
-# 5) 관전 해제 — SPACE → ENTER → 왼클릭
-& $di -Target $pid_ -Cmd @('k 0x39 1','sleep 150','k 0x39 0','sleep 900','k 0x1C 1','sleep 150','k 0x1C 0','sleep 900','mb 0 1','sleep 150','mb 0 0','sleep 2500') | Out-Null
+# 5) 관전 해제 — SPACE → ENTER → 왼클릭 → **ESC**
+#
+# ★★ 마지막 ESC 를 빼면 안 된다. 여기 ENTER 는 관전을 깨우지만 **채팅 입력줄도 연다.**
+#    그 뒤로 누르는 키는 전부 채팅 글자로 들어가 게임에 안 닿는다 —
+#    2026-09-08 에 주문키 A~G 를 아무리 눌러도 `0x79 TRY_SPELL` 이 0건이었고,
+#    화면을 찍어 보니 한가운데 `asdfgaaaaaa` 라는 입력줄이 떠 있었다.
+#    ESC 로 닫자마자 같은 키 다섯이 그대로 시전으로 나갔다(0x79 5건,
+#    화면에 "You cast Force Field. / You invoke the Fireball spell." 이 찍힘).
+#    ⚠ 마우스는 채팅줄과 무관해서 근접 공격만 잘 되었다 — 그래서 오래 못 봤다.
+& $di -Target $pid_ -Cmd @('k 0x39 1','sleep 150','k 0x39 0','sleep 900','k 0x1C 1','sleep 150','k 0x1C 0','sleep 900','mb 0 1','sleep 150','mb 0 0','sleep 2000','k 0x01 1','sleep 150','k 0x01 0','sleep 800') | Out-Null
 Write-Host (Shot "${Tag}4_wake")
 Write-Host "pid=$pid_"
