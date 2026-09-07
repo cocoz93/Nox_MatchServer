@@ -1053,8 +1053,11 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //    이것이 M 의 「서로를 본다」다. 관심영역(멀리 있는 것은 빼기)은 나중에.
         UpdateMsg m;
         m.headAlias = 0xff;                  // 머리는 전체 번호로
-        m.headNetCode = s.netCode;
-        m.headType = kPlayerType;
+        // ★ 정품은 머리에 **빈 오브젝트**(번호 0·종류 0)를 넣는다.
+        //   머리는 「보는 자리」일 뿐이고, 플레이어는 아래 항목으로만 싣는다.
+        //   여기에 플레이어를 넣으면 항목과 겹쳐 클라가 못 알아본다(2026-09-07 대조).
+        m.headNetCode = 0;
+        m.headType = 0;
         m.x = s.x;
         m.y = s.y;
         m.flags = 0;

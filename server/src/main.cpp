@@ -23,7 +23,9 @@
 
 #include "nox/Messages.h"
 #include "nox/Opcode.h"
+#include <map>
 #include "nox/DumpSniff.h"
+#include "nox/MsgLen.h"
 #include "nox/Recording.h"
 #include "nox/Server.h"
 
@@ -40,6 +42,28 @@ void DumpHex(const char* tag, const uint8_t* p, size_t n) {
     std::printf("\n");
 }
 
+// 재생 조각들이 무슨 메시지로 이뤄졌는지 센다. 이분법에 들어가기 전에 지형부터 본다.
+void MirrorStat(const std::vector<std::vector<uint8_t>>& v) {
+    std::map<uint8_t, int> hist;
+    int unparsed = 0;
+    for (const auto& fr : v) {
+        size_t i = 0;
+        bool ok = true;
+        while (i < fr.size()) {
+            const uint8_t op = fr[i];
+            const int bl = nox::MsgBodyLenByDir(op, /*fromClient=*/false);
+            if (bl < 0) { ok = false; break; }
+            hist[op]++;
+            i += 1 + static_cast<size_t>(bl);
+            if (i > fr.size()) { ok = false; break; }
+        }
+        if (!ok) ++unparsed;
+    }
+    std::printf("[재생 조각] %zu개 · 못 쪼갠 조각 %d개\n", v.size(), unparsed);
+    for (const auto& kv : hist)
+        std::printf("   0x%02x %-30s %d\n", kv.first,
+                    nox::OpName(static_cast<nox::Op>(kv.first)), kv.second);
+}
 // 덤프 기본 자리 — exe 는 <리포>\build\Release\ 에 있으니 두 단 위가 리포다.
 std::string DefaultDumpPath() {
     char exe[MAX_PATH] = {};
@@ -121,6 +145,7 @@ int main(int argc, char** argv) {
     bool quiet = false;
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
+    int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -134,6 +159,9 @@ int main(int argc, char** argv) {
             name = argv[++i];
         } else if (a == "--mirror") {
             mirror = true;
+        } else if (a == "--mirror-limit" && i + 1 < argc) {
+            mirror = true;
+            mirrorLimit = std::atoi(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
             dumpPath = argv[++i];
         } else {
@@ -177,8 +205,11 @@ int main(int argc, char** argv) {
             srv.SetUseMapTemplate(setup.useMapBody.data(), setup.useMapBody.size());
             srv.SetPostMap(setup.postMap);
             if (mirror) {
-                srv.SetMirror(setup.mirror);
-                std::printf("[재생 모드] 정품 조각 %zu개를 그대로 내보낸다\n", setup.mirror.size());
+                std::vector<std::vector<uint8_t>> m = setup.mirror;
+                if (mirrorLimit > 0 && static_cast<size_t>(mirrorLimit) < m.size())
+                    m.resize(static_cast<size_t>(mirrorLimit));
+                MirrorStat(m);
+                srv.SetMirror(m);
             }
             std::printf("덤프에서 뽑음 — 접속 묶음 %zu바이트 · 맵 지정 %zu바이트 · 뒤따르는 것 %zu개\n",
                         setup.joinBody.size(), setup.useMapBody.size(), setup.postMap.size());
