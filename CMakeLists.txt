@@ -14,6 +14,7 @@ add_library(nox_proto STATIC
   server/src/SpellNames.cpp
   server/src/ThingFlags.cpp
   server/src/Server.cpp
+  server/src/DumpSniff.cpp
   server/src/UpdateStream.cpp
 )
 target_include_directories(nox_proto PUBLIC server/include)

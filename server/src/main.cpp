@@ -1,4 +1,4 @@
-﻿// main.cpp — 진짜 소켓을 `nox::Server` 에 붙인다.
+// main.cpp — 진짜 소켓을 `nox::Server` 에 붙인다.
 //
 // **여기에는 프로토콜이 없다.** 받은 바이트를 그대로 넘기고, 나온 바이트를 그대로 보낸다.
 // 서버가 무엇에 어떻게 답하는지는 전부 `server/src/Server.cpp` 에 있고,
@@ -23,6 +23,7 @@
 
 #include "nox/Messages.h"
 #include "nox/Opcode.h"
+#include "nox/DumpSniff.h"
 #include "nox/Recording.h"
 #include "nox/Server.h"
 
@@ -37,6 +38,19 @@ void DumpHex(const char* tag, const uint8_t* p, size_t n) {
         if ((i + 1) % 22 == 0 && i + 1 < n) std::printf("\n  ");
     }
     std::printf("\n");
+}
+
+// 덤프 기본 자리 — exe 는 <리포>\build\Release\ 에 있으니 두 단 위가 리포다.
+std::string DefaultDumpPath() {
+    char exe[MAX_PATH] = {};
+    if (!GetModuleFileNameA(nullptr, exe, MAX_PATH)) return {};
+    std::string p(exe);
+    for (int i = 0; i < 3; ++i) {          // 파일명 · Release · build
+        const size_t at = p.find_last_of("\\/");
+        if (at == std::string::npos) return {};
+        p.resize(at);
+    }
+    return p + "\\_evidence\\CAP_arena_0907_ok.txt";
 }
 
 // 녹음을 구조체로 읽는다. 실패하면 배치 해석이 틀린 것이다.
@@ -105,6 +119,7 @@ int main(int argc, char** argv) {
     // 이름에 공백을 쓰지 않는다. Start-Process 등에서 인자가 쪼개진다.
     std::string name = "MY_SERVER";
     bool quiet = false;
+    std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -116,6 +131,8 @@ int main(int argc, char** argv) {
             port = std::atoi(argv[++i]);
         } else if (a == "--name" && i + 1 < argc) {
             name = argv[++i];
+        } else if (a == "--dump" && i + 1 < argc) {
+            dumpPath = argv[++i];
         } else {
             std::printf("모르는 인자: %s\n", a.c_str());
             return 2;
@@ -142,6 +159,26 @@ int main(int argc, char** argv) {
             return 1;
         }
         srv.SetInfoTemplate(info, w.written());
+    }
+
+    // ★★ 접속 뒤에 내려줄 것 — 접속 묶음(216바이트)과 맵 지정(41바이트).
+    //    이게 비어 있으면 Server.cpp 의 CLIENT_ACCEPT 가 아무것도 안 보내고,
+    //    클라는 `Connected!` 화면에서 멈춘 채 자기소개만 재전송한다(2026-09-07 실측).
+    //    대조 장치(replay.cpp)만 갖고 있던 배선이라 본체에서 빠져 있었다.
+    {
+        if (dumpPath.empty()) dumpPath = DefaultDumpPath();
+        nox::dump::Setup setup;
+        if (!dumpPath.empty() && nox::dump::Sniff(dumpPath.c_str(), setup) &&
+            !setup.joinBody.empty() && !setup.useMapBody.empty()) {
+            srv.SetJoinTemplate(setup.joinBody.data(), setup.joinBody.size());
+            srv.SetUseMapTemplate(setup.useMapBody.data(), setup.useMapBody.size());
+            std::printf("덤프에서 뽑음 — 접속 묶음 %zu바이트 · 맵 지정 %zu바이트\n",
+                        setup.joinBody.size(), setup.useMapBody.size());
+        } else {
+            std::printf("[경고] 접속 묶음·맵 지정을 못 얻었다. 클라는 접속만 되고 게임에 못 들어간다.\n");
+            std::printf("  찾아본 덤프: %s\n", dumpPath.empty() ? "(없음)" : dumpPath.c_str());
+            std::printf("  --dump <서버쪽 덤프> 로 지정할 것\n");
+        }
     }
 
     WSADATA wsa;
