@@ -1,4 +1,4 @@
-// Server.h — 접속을 받는 서버 로직. **소켓을 모른다.**
+﻿// Server.h — 접속을 받는 서버 로직. **소켓을 모른다.**
 //
 // 왜 소켓을 떼어놨나 — 판정을 사람 눈에서 떼기 위해서다.
 // 여기가 `recvfrom` 을 직접 부르면 채점하려고 매번 클라를 띄워야 한다.
@@ -313,6 +313,11 @@ public:
         }
     }
     bool MirrorOn() const { return !mirror_.empty(); }
+    // ★ 진단용 — 끄면 매 틱 상태 갱신(0xa4)을 **안 보낸다.**
+    //   왜 필요한가 : 정품(opennox)은 클라가 둘 붙어도 갱신을 **한 번도 안 보내는데**
+    //   화면에 자기 캐릭터가 이름표까지 나온다(2026-09-08 대조). 내 서버는 갱신을
+    //   매 틱 보내는데 아무것도 안 그려진다. 「내 갱신이 오히려 방해하나」를 가르는 자리다.
+    void SetSendUpdates(bool v) { sendUpdates_ = v; }
 
     // 서버의 현재 프레임. 진짜 서버는 30Hz 틱이 올리고,
     // 덤프를 재생할 때는 그때 나간 값을 넣어 준다(시점에 달린 값이라 재현이 안 된다).
@@ -571,6 +576,7 @@ private:
     std::vector<std::vector<uint8_t>> mirror_;
     // 서두의 첫 TIMESTAMP 프레임. 0 이면 서두에 시각이 안 실린 것이다.
     uint32_t preludeFirstFrame_ = 0;
+    bool sendUpdates_ = true;
     size_t mirrorAt_ = 0;   // 그 다음 41바이트 USE_MAP
     uint32_t frame_ = 0;
     uint16_t netCode_ = 0;

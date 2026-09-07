@@ -1,4 +1,4 @@
-// main.cpp — 진짜 소켓을 `nox::Server` 에 붙인다.
+﻿// main.cpp — 진짜 소켓을 `nox::Server` 에 붙인다.
 //
 // **여기에는 프로토콜이 없다.** 받은 바이트를 그대로 넘기고, 나온 바이트를 그대로 보낸다.
 // 서버가 무엇에 어떻게 답하는지는 전부 `server/src/Server.cpp` 에 있고,
@@ -147,6 +147,7 @@ int main(int argc, char** argv) {
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)
     bool prelude = false;   // 서두 — 정품 앞 9개를 흘려보낸 뒤 내 생성으로
+    bool noUpdate = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -160,6 +161,9 @@ int main(int argc, char** argv) {
             name = argv[++i];
         } else if (a == "--prelude") {
             prelude = true;
+        } else if (a == "--no-update") {
+            // ★ 진단용 — 상태 갱신을 끈다. Server.h 의 SetSendUpdates 주석 참조.
+            noUpdate = true;
         } else if (a == "--mirror") {
             mirror = true;
         } else if (a == "--mirror-limit" && i + 1 < argc) {
@@ -207,6 +211,7 @@ int main(int argc, char** argv) {
             srv.SetJoinTemplate(setup.joinBody.data(), setup.joinBody.size());
             srv.SetUseMapTemplate(setup.useMapBody.data(), setup.useMapBody.size());
             srv.SetPostMap(setup.postMap);
+            srv.SetSendUpdates(!noUpdate);
             // ★★ 서두(prelude) — 정품이 접속 뒤 보낸 **앞 9개 조각**을 그대로 흘려보내고,
             //   그 뒤부터 내 생성으로 이어받는다. 이걸 빼면 클라 화면이 검은 채로 남는다.
             //   2026-09-07 이분법으로 9가 경계임을 확인했다(8개면 검정, 9개면 세계가 뜬다).

@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
     nox::dump::Line ln;
     std::map<std::string, uint8_t> keys;          // 상대별 XOR 키
     std::map<int, long long> sendOps, recvOps;
-    long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0;  // ★ 멈춘 자리도 센다
+    long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0, partSend = 0, partRecv = 0;  // ★ 멈춘 자리도 센다
 
     while (std::fgets(buf, sizeof(buf), f)) {
         if (!nox::dump::ParseLine(buf, ln)) continue;
@@ -61,9 +61,12 @@ int main(int argc, char** argv) {
 
         nox::MessageIter it(d.data() + nox::kWireHeaderSize,
                             d.size() - nox::kWireHeaderSize, !send);
+        const size_t bodyAll = d.size() - nox::kWireHeaderSize;
+        size_t eaten = 0;
         int got = 0;
         while (it.Next()) {
             ++got;
+            eaten += 1 + it.bodyLen();
             const int op = (int)it.op();
             if (send) ++sendOps[op]; else ++recvOps[op];
             // ★★ `0xcc SEQ_IMPORTANT` 는 **껍데기**다 — cc | 번호 2 | 속길이 1 | 속 메시지.
@@ -92,6 +95,12 @@ int main(int argc, char** argv) {
         }
         // 키를 아직 못 받은 상대(서버 찾기 단계)는 「멈춤」이 아니다. 갈라 센다.
         if (got == 0) { if (!keyed) ++preKey; else if (send) ++stallSend; else ++stallRecv; }
+        // ★★ **끝까지 못 읽은 조각**을 따로 센다. 이게 없으면 「멈춤 0」인데도
+        //   조각의 절반을 못 본 채 「그 오프코드는 없었다」로 읽게 된다.
+        //   실제로 그랬다 — 정품이 TIMESTAMP 뒤에 붙여 보내는 `0xa4`(길이 -1)에서
+        //   파서가 멈추는데, 첫 메시지는 읽었으니 「멈춤」에 안 잡혔다.
+        //   그 바람에 「정품은 상태 갱신을 안 보낸다」고 잘못 읽었다(2026-09-08).
+        else if (eaten < bodyAll) { if (send) ++partSend; else ++partRecv; }
     }
     std::fclose(f);
 
@@ -99,6 +108,8 @@ int main(int argc, char** argv) {
     std::printf("\n조각 SEND %lld · RECV %lld · **한 메시지도 못 읽은 조각 %lld**\n",
                 nSend, nRecv, stallSend + stallRecv);
     std::printf("   갈라 보면 SEND %lld · RECV %lld\n", stallSend, stallRecv);
+    std::printf("   **끝까지 못 읽은 조각** SEND %lld · RECV %lld"
+                "  (첫 메시지는 읽었으나 뒤가 남음)\n", partSend, partRecv);
     std::printf("   (키 받기 전이라 안 푼 조각 %lld — 이건 멈춤이 아니다)\n", preKey);
     std::printf("\n-- 서버→클라 상위 --\n");
     std::multimap<long long, int> a;
