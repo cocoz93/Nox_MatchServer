@@ -817,6 +817,16 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             // 클라가 「받았다」고 알려오면, 서버가 게임에 필요한 것을 한꺼번에 내려준다.
             // 216바이트 묶음(메시지 여섯) → USE_MAP 순서다. 순서를 바꾸면 순번이 어긋난다.
             case Op::CLIENT_ACCEPT: {
+                // ★★ 기본값을 **묶음을 만들기 전에** 채운다.
+                //    예전에는 Emit 뒤에 채워서 접속 묶음의 오브젝트 번호가 0 으로 나갔다.
+                //    클라는 「네 캐릭터 번호는 0」을 받으니 카메라를 붙일 대상이 없어
+                //    화면이 검은 채로 멈춘다(2026-09-07, 정품과 바이트 대조로 잡음).
+                if (s.x == 0 && s.y == 0) { s.x = 1000; s.y = 1000; }
+                if (s.netCode == 0) s.netCode = 713;
+                if (s.maxHealth == 0) {
+                    s.maxHealth = kDefaultMaxHealth;
+                    s.health = s.maxHealth;
+                }
                 if (!joinBody_.empty()) {
                     std::vector<uint8_t> msg = joinBody_;
                     if (msg.size() > kJoinNetCodeB + 1) {
@@ -836,12 +846,6 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 }
                 // 여기서부터 게임에 들어온 것으로 본다 — 매 틱 상태를 받는다.
                 s.inGame = true;
-                if (s.x == 0 && s.y == 0) { s.x = 1000; s.y = 1000; }
-                if (s.netCode == 0) s.netCode = 713;
-                if (s.maxHealth == 0) {
-                    s.maxHealth = kDefaultMaxHealth;
-                    s.health = s.maxHealth;
-                }
 
                 if (!useMapBody_.empty()) {
                     std::vector<uint8_t> msg = useMapBody_;
