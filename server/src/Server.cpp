@@ -796,7 +796,15 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
 
             case Op::SERVER_CONNECT: {
                 // 이미 키를 준 상대가 다시 보내면 재전송이다. 번호를 새로 매기지 않는다.
-                if (s.keyed) break;
+                // ★ 다만 **답은 한다** — 정품은 이 두 번째 요청에 0x04 를 하나 돌려준다
+                //   (3바이트·비신뢰·본문 0). 09-05 정품 덤프의 자리 그대로다.
+                //   무엇인지는 아직 모른다(PROTOCOL.md 도 「미상」).
+                if (s.keyed) {
+                    const uint8_t m4[1] = {static_cast<uint8_t>(Op::CODE4)};
+                    Emit(s, /*reliable=*/false, /*stream=*/0, m4, sizeof(m4), out);
+                    ++handled_;
+                    break;
+                }
                 if (scriptAt_ < script_.size()) {
                     // 덤프 재생 — 그때 서버가 정한 값들을 그대로 쓴다.
                     const AcceptScript& a = script_[scriptAt_++];
@@ -870,6 +878,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     if (msg.size() > kUseMapFrame + 3)
                         PutU32(msg.data() + kUseMapFrame, s.frame);
                     Emit(s, /*reliable=*/true, /*stream=*/0, msg.data(), msg.size(), out);
+                    ++handled_;
+                }
+                // ★ 맵 지정 뒤에 정품이 더 보내는 것들을 그대로 이어 보낸다.
+                for (const auto& p : postMap_) {
+                    if (p.empty()) continue;
+                    Emit(s, /*reliable=*/true, /*stream=*/0, p.data(), p.size(), out);
                     ++handled_;
                 }
                 break;

@@ -125,6 +125,15 @@ bool Sniff(const char* path, Setup& out) {
         if (out.useMapBody.empty() && d.size() == 43 &&
             d[2] == static_cast<uint8_t>(Op::USE_MAP)) {
             out.useMapBody.assign(d.begin() + 2, d.end());
+            continue;
+        }
+
+        // ★ 맵 지정 뒤에 이어지는 INFORM(0xa9)·공지(0xc2). 앞의 4개만 챙긴다.
+        //   정품 09-05 순서: 218B INFORM → 43B USE_MAP → 105B INFORM → 142B 공지 → 205B INFORM
+        if (!out.useMapBody.empty() && out.postMap.size() < 4 &&
+            (d[2] == static_cast<uint8_t>(Op::INFORM) ||
+             d[2] == static_cast<uint8_t>(Op::XFER_MSG))) {
+            out.postMap.push_back(std::vector<uint8_t>(d.begin() + 2, d.end()));
         }
     }
     std::fclose(f);

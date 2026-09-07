@@ -32,6 +32,9 @@ struct Setup {
     std::vector<uint8_t> infoBody;
     std::vector<uint8_t> joinBody;     // 접속 직후 216바이트 묶음
     std::vector<uint8_t> useMapBody;   // 그 다음 41바이트 USE_MAP
+    // ★ 맵 지정 뒤에 정품이 더 보내는 것들 — 105바이트 INFORM · 142바이트 공지 ·
+    //   205바이트 INFORM. 이게 없으면 클라가 로딩에서 안 넘어간다(2026-09-07).
+    std::vector<std::vector<uint8_t>> postMap;
     bool haveInfo = false;
     // 접속마다 정품이 쓴 값들. 순서대로 쌓는다.
     std::vector<Server::AcceptScript> accepts;

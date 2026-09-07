@@ -172,8 +172,9 @@ int main(int argc, char** argv) {
             !setup.joinBody.empty() && !setup.useMapBody.empty()) {
             srv.SetJoinTemplate(setup.joinBody.data(), setup.joinBody.size());
             srv.SetUseMapTemplate(setup.useMapBody.data(), setup.useMapBody.size());
-            std::printf("덤프에서 뽑음 — 접속 묶음 %zu바이트 · 맵 지정 %zu바이트\n",
-                        setup.joinBody.size(), setup.useMapBody.size());
+            srv.SetPostMap(setup.postMap);
+            std::printf("덤프에서 뽑음 — 접속 묶음 %zu바이트 · 맵 지정 %zu바이트 · 뒤따르는 것 %zu개\n",
+                        setup.joinBody.size(), setup.useMapBody.size(), setup.postMap.size());
         } else {
             std::printf("[경고] 접속 묶음·맵 지정을 못 얻었다. 클라는 접속만 되고 게임에 못 들어간다.\n");
             std::printf("  찾아본 덤프: %s\n", dumpPath.empty() ? "(없음)" : dumpPath.c_str());

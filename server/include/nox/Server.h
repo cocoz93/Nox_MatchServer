@@ -271,6 +271,9 @@ public:
     // 그것이 프레임과 NetCode 다. 두 접속의 216바이트를 견줘 확인한 것이다.
     void SetJoinTemplate(const uint8_t* body, size_t n);
     void SetUseMapTemplate(const uint8_t* body, size_t n);
+    // ★ 맵 지정 뒤에 이어 보낼 것들(정품이 보내는 105B INFORM · 142B 공지 · 205B INFORM).
+    //   없으면 클라가 로딩에서 안 넘어간다.
+    void SetPostMap(const std::vector<std::vector<uint8_t>>& v) { postMap_ = v; }
 
     // 서버의 현재 프레임. 진짜 서버는 30Hz 틱이 올리고,
     // 덤프를 재생할 때는 그때 나간 값을 넣어 준다(시점에 달린 값이라 재현이 안 된다).
@@ -523,7 +526,8 @@ private:
 
     std::vector<uint8_t> infoBody_;
     std::vector<uint8_t> joinBody_;     // 접속 직후 나가는 216바이트 묶음
-    std::vector<uint8_t> useMapBody_;   // 그 다음 41바이트 USE_MAP
+    std::vector<uint8_t> useMapBody_;
+    std::vector<std::vector<uint8_t>> postMap_;   // 그 다음 41바이트 USE_MAP
     uint32_t frame_ = 0;
     uint16_t netCode_ = 0;
     uint8_t xorKey_ = 0x70;
