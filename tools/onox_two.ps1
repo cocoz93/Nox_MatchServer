@@ -26,8 +26,16 @@ function Spawn([string]$cmd, [string]$cwd) {
   return $r.ProcessId
 }
 
-Get-Process nox_server, nox_proxy, opennox -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process nox_server, nox_proxy, opennox, opennox-server -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
+# ⚠ **포트가 실제로 빌 때까지 기다린다.** 프로세스를 죽여도 UDP 소켓이 잠깐 남는다.
+#   안 기다리면 서버가 `bind 실패 (10048)` 로 조용히 죽고, 화면만 보면
+#   「접속이 안 된다」로 보인다(2026-09-08: 정품 서버가 18591 을 쥔 채 남아 있었다).
+foreach ($try in 1..10) {
+  $busy = @(netstat -ano -p UDP | Select-String ':18591\s')
+  if ($busy.Count -eq 0) { break }
+  Start-Sleep -Seconds 1
+}
 if (Test-Path $dump) { Remove-Item $dump -Force }
 
 # 서두는 **오늘 뜬 정품 덤프**를 쓴다 — 09-07 덤프는 지금 클라와 값이 어긋난다
