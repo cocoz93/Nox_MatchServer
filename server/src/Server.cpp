@@ -1459,6 +1459,26 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 n += 4;
             }
         }
+        // ★★★ **지연 보고 `0xd7`** — 갱신 조각 끝에 `d7 <번호2> <지연2>` 로 붙는다.
+        //   정품 실측(2026-09-08): 본문 `cb 02 00 00`, 갱신 1,287건 대 217건이니
+        //   **약 6틱에 한 번**이다. 내가 이걸 **0건** 보내고 있었다.
+        //   클라 화면에 「network timeout ... removed from the game」이 반복해서 뜨는데,
+        //   이 신호가 없어 클라가 상대를 죽은 것으로 보는 것일 수 있다 → 관측대기에서 시험으로.
+        //   ⚠ `0x5e` 처럼 **매 틱 보내면 클라가 죽는다.** 정품 비율을 지킬 것.
+        if (n && (frame_ % 6) == 0) {
+            for (const auto& kv2 : sessions_) {
+                const Session& o = kv2.second;
+                if (!o.inGame) continue;
+                if (1 + n + 5 > sizeof(body)) break;
+                uint8_t* p = body + 1 + n;
+                p[0] = static_cast<uint8_t>(Op::REPORT_ALL_LATENCY);
+                p[1] = static_cast<uint8_t>(o.netCode);
+                p[2] = static_cast<uint8_t>(o.netCode >> 8);
+                p[3] = 0;      // 지연 — 정품 표본이 전부 0 이라 0 으로 둔다
+                p[4] = 0;
+                n += 5;
+            }
+        }
         if (n && sendUpdates_) Emit(s, /*reliable=*/false, /*stream=*/0, body, 1 + n, out);
     }
     return ticks;
