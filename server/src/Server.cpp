@@ -994,6 +994,13 @@ static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCod
             e.netCode = netCode;
             e.x = x;
             e.y = y;
+            // ⚠ **덧붙이는 건드리지 않는다.** 녹음본의 사람 항목은 `[c0 00]` 인데
+            //   정품 지금 덤프는 `[40 00]` 이라, 정품에 맞춰 `[40 00]` 으로 강제해 봤더니
+            //   **클라가 접속을 끊었다**(2026-09-08 실측: 화면이 서버 목록으로 되돌아갔다).
+            //   `c0` 의 bit 7 이 「한 바이트 더」 신호인 것은 맞지만, 그 다음 `00` 이
+            //   그 한 바이트를 채우고 있어 **녹음본 안에서는 짝이 맞는다.**
+            //   즉 뜯어 본 「별칭=0f·번호 0」 쓰레기 항목은 원인이 아니라 **내 디코더가
+            //   갈래를 넓게 연 결과**일 수 있다 — 관측대기로 남긴다.
             hit = true;
         }
         if (hit) {
@@ -1131,9 +1138,14 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             // 서두는 남의 세션 녹음이라 사람 항목의 번호·자리가 남의 것이다.
             std::vector<uint8_t> patched;
             const std::vector<uint8_t>& snap =
-                PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched)
+                (patchSnapshot_ &&
+                 PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched))
                     ? patched : firstSnapshot_;
             Emit(s, /*reliable=*/true, /*stream=*/0, snap.data(), snap.size(), out);
+            // 스냅샷 안에 이미 전체번호(ff) 머리의 갱신이 들어 있다 — 그것이 **첫 갱신**이다.
+            // 그러니 이 틱에 내 갱신을 또 보태지 않고, 다음 틱부터 별칭 `01` 로 잇는다.
+            s.sentFirstUpdate = true;
+            continue;
         }
 
         // 죽어 있고 때가 됐으면 되살린다.
@@ -1213,6 +1225,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
         }
 
+        // ★★ **첫 세계 스냅샷이 아직 안 나갔으면 갱신을 참는다.** 정품은 USE_MAP 뒤로
+        //   시각(`27`)만 몇 번 보내다가 스냅샷을 첫 `a4` 로 내보낸다. 내가 먼저
+        //   내 갱신을 흘리면 클라는 **세계를 모르는 채 사람 하나만 받는다**(2026-09-08 대조:
+        //   정품 첫 갱신은 항목 14개, 내 첫 갱신은 1개였다).
+        if (s.snapshotIn >= 0) continue;
+
         // ② 상태 갱신 — 머리는 「보는 사람」, 항목에는 **게임에 있는 모두**를 싣는다.
         //    이것이 M 의 「서로를 본다」다. 관심영역(멀리 있는 것은 빼기)은 나중에.
         UpdateMsg m;
@@ -1222,12 +1240,13 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //     내 것 계속 ff + 번호 0 + 종류 0
         //   ⚠ **`01` 이 무엇의 별칭인지는 모른다.** 플레이어 별칭은 `cb` 였으니
         //     자기 자신은 아니다. 고정값으로 보고 그대로 맞춘다.
-        if (s.tickFrameSet && s.preludeAt > 0) {
+        if (s.sentFirstUpdate) {
             m.headAlias = 0x01;
         } else {
             m.headAlias = 0xff;              // 첫 갱신은 전체 번호로
             m.headNetCode = 0;
             m.headType = 0;
+            s.sentFirstUpdate = true;
         }
         m.x = s.x;
         m.y = s.y;

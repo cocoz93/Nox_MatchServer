@@ -12,7 +12,8 @@
 #     → _evidence\CAP_<Tag>.txt · _evidence\onox_<Tag>.png
 param(
   [Parameter(Mandatory=$true)][string]$Tag,
-  [switch]$Genuine          # 내 서버 대신 정품(opennox-server)을 뒤에 둔다 — 대조군용
+  [switch]$Genuine,         # 내 서버 대신 정품(opennox-server)을 뒤에 둔다 — 대조군용
+  [string]$ServerArgs = ''  # 내 서버에 덧붙일 인자 (예: '--raw-snapshot')
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -38,8 +39,8 @@ if ($Genuine) {
   Write-Host "정품 서버 pid=$bpid"
 } else {
   $exe = Join-Path $root 'build\Release\nox_server.exe'
-  $bpid = Spawn ('"' + $exe + '" --port 18591 --quiet') $root
-  Write-Host "내 서버 pid=$bpid"
+  $bpid = Spawn ('"' + $exe + '" --port 18591 --quiet ' + $ServerArgs) $root
+  Write-Host ("내 서버 pid={0} {1}" -f $bpid, $ServerArgs)
 }
 Start-Sleep -Seconds 3
 

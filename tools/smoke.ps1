@@ -100,7 +100,9 @@ Start-Sleep -Milliseconds 200
 Write-Host "5) 틱 방송"
 $udp.Client.ReceiveTimeout = 1500
 $tick = 0; $upd = 0
-for ($i = 0; $i -lt 12; $i++) {
+# ★ 접속 뒤 첫 몇 틱은 **시각만** 나간다 — 첫 세계 스냅샷을 기다리는 구간이다
+#   (Server.h 의 kSnapshotDelayTicks). 그만큼 더 받아야 갱신이 잡힌다.
+for ($i = 0; $i -lt 30; $i++) {
   try {
     $g = $udp.Receive([ref]$any)
     $d = @(); foreach ($b in $g) { $d += ($b -bxor $k) }
@@ -128,9 +130,14 @@ function Get-Pos {
     try {
       $g = $udp.Receive([ref]$any)
       $d = @(); foreach ($b in $g) { $d += ($b -bxor $k) }
-      # 0xa4 상태 갱신: [op][ff][번호2][종류2][x2][y2]...  머리가 전체 번호로 온다
+      # 0xa4 상태 갱신의 머리는 두 꼴이다 (정품과 같게 맞춰 둔 규약):
+      #   첫 갱신  [op][ff][번호2][종류2][x2][y2]...   ← 전체 번호로 소개
+      #   그 뒤    [op][01][x2][y2]...                 ← 별칭 한 바이트
       if ($d[2] -eq 0xa4 -and $d[3] -eq 0xff) {
         return @{ x = ($d[8] + $d[9] * 256); y = ($d[10] + $d[11] * 256) }
+      }
+      if ($d[2] -eq 0xa4 -and $d[3] -eq 0x01) {
+        return @{ x = ($d[4] + $d[5] * 256); y = ($d[6] + $d[7] * 256) }
       }
     } catch { return $null }
   }
@@ -176,8 +183,14 @@ for ($i = 0; $i -lt 25; $i++) {
   try {
     $g = $udp.Receive([ref]$any)
     $d = @(); foreach ($b in $g) { $d += ($b -bxor $k) }
-    if ($d[2] -ne 0xa4 -or $d[3] -ne 0xff) { continue }
-    $n = 0; $j = 14      # 머리(ff+번호2+종류2+x2+y2+깃발1+애니1) 다음
+    if ($d[2] -ne 0xa4) { continue }
+    # 머리 길이는 별칭 꼴에 따라 다르다 (Get-Pos 의 주석 참조)
+    #   ff : op1 + ff1 + 번호2 + 종류2 + x2 + y2 + 깃발1 + 애니1 = 12, 머리 앞 2바이트 더해 14
+    #   01 : op1 + 01 1 + x2 + y2 + 깃발1 + 애니1              =  8, 머리 앞 2바이트 더해 10
+    if     ($d[3] -eq 0xff) { $j = 14 }
+    elseif ($d[3] -eq 0x01) { $j = 10 }
+    else                    { continue }
+    $n = 0
     while ($j + 2 -lt $d.Length) {
       if ($d[$j] -eq 0 -and $d[$j+1] -eq 0 -and $d[$j+2] -eq 0) { break }
       $n++; $j += 8      # 00 + 별칭 + x2 + y2 + 덧붙이1 + (다음 00)

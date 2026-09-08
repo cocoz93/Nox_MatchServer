@@ -148,6 +148,9 @@ int main(int argc, char** argv) {
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)
     bool prelude = false;   // 서두 — 정품 앞 9개를 흘려보낸 뒤 내 생성으로
     bool noUpdate = false;
+    // 첫 세계 스냅샷을 **녹음본 그대로** 내보낸다(사람 항목을 안 갈아 끼움).
+    // 「몸이 안 그려지는 게 갈아끼우기 탓인가」를 가르는 시험용.
+    bool rawSnapshot = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -164,6 +167,8 @@ int main(int argc, char** argv) {
         } else if (a == "--no-update") {
             // ★ 진단용 — 상태 갱신을 끈다. Server.h 의 SetSendUpdates 주석 참조.
             noUpdate = true;
+        } else if (a == "--raw-snapshot") {
+            rawSnapshot = true;
         } else if (a == "--mirror") {
             mirror = true;
         } else if (a == "--mirror-limit" && i + 1 < argc) {
@@ -215,6 +220,7 @@ int main(int argc, char** argv) {
             //   이 한 조각에 살려내기·장비·최대 체력/마나가 다 실려 있어,
             //   빠지면 이름표만 뜨고 몸이 없다.
             srv.SetFirstSnapshot(setup.firstSnapshot);
+            srv.SetPatchSnapshot(!rawSnapshot);
             srv.SetSendUpdates(!noUpdate);
             // ★★ 서두(prelude) — 정품이 접속 뒤 보낸 **앞 9개 조각**을 그대로 흘려보내고,
             //   그 뒤부터 내 생성으로 이어받는다. 이걸 빼면 클라 화면이 검은 채로 남는다.
