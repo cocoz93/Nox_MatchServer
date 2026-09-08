@@ -128,9 +128,12 @@ int main(int argc, char** argv) {
                 }
             }
             if (want.count(op)) {
-                std::printf("  ★ %s %s op=0x%02x len=%zu | ", ln.dir.c_str(),
-                            ln.peer.c_str(), op, d.size());
-                for (size_t i = 0; i < d.size() && i < 24; ++i) std::printf("%02x ", d[i]);
+                // ★ 조각 앞부분이 아니라 **그 메시지의 본문**을 찍는다.
+                //   앞부분만 찍으면 뒤에 붙은 메시지는 영영 안 보인다(2026-09-08).
+                std::printf("  ★ %s %s op=0x%02x 본문%d바이트 | ", ln.dir.c_str(),
+                            ln.peer.c_str(), op, bl);
+                for (int i = 0; i < bl && i < 32; ++i)
+                    std::printf("%02x ", b[eaten + 1 + i]);
                 std::printf("\n");
             }
             eaten += 1 + (size_t)bl;
