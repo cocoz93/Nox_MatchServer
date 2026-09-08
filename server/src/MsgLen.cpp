@@ -272,8 +272,28 @@ const int16_t kMsgBodyLen[256] = {
 };
 
 // 방향이 정해지면 길이가 고정인 것들. 위 표에는 -1 로 들어 있다.
+//
+// ★ **여기가 손으로 채우는 자리다.** 위 표는 기계가 뽑으므로 손대지 않는다.
+//   아래 값은 전부 **덤프에서 잰 것**이고, 근거를 같이 적는다.
 int MsgBodyLenByDir(uint8_t op, bool fromClient) {
     switch (op) {
+        // `00 00 04` 3바이트 조각으로만 온다 — 본문 0. 양방향 같다.
+        case 0x04: return 0;   // MSG_CODE4
+        // 클라가 나갈 때 3바이트 조각으로 온다 — 본문 0.
+        case 0x0A: return 0;   // MSG_CLIENT_CLOSE
+        // ★★ 클라→서버 `0xd0 MSG_DIALOG` 는 **본문 10**이다.
+        //   2026-09-08 실측 — 표본 8개가 전부 같은 모양이고 늘 조각의 마지막이다:
+        //     d0 02 03 0d f0 ad f0 00 00 00 [b8|00]   (남은 11 = 오프코드 1 + 본문 10)
+        //   이걸 몰라 클라→서버 조각 96,290 중 30,507(32%) 이 뒤를 못 읽혔고,
+        //   본문 속 `f0` 을 오프코드로 오독해 「클라가 GAUNTLET 을 15,700번 보냈다」로 보였다.
+        //   ⚠ **서버→클라 방향은 아직 모른다** — 그쪽 표본은 못 봤다(116건 멈춤).
+        case 0xD0: return fromClient ? 10 : kMsgBodyLen[op];
+        // ★ 클라→서버 `0xf0 MSG_GAUNTLET` 은 **본문 1**(서브코드 하나)이다.
+        //   근거 둘 — opennox `src/network.go:223 netSendGauntlet()` 이 `[2]byte` 로
+        //   `{MSG_GAUNTLET, 27}` 을 보내고, 우리 덤프 표본도 `f0 00` 뒤가 전부 채움 0이다.
+        //   ⚠ 서버→클라 쪽은 서브코드마다 길이가 달라 보인다
+        //     (opennox `client__network__cdecode.c:2880` 의 `switch (data[1])`). 손대지 않는다.
+        case 0xF0: return fromClient ? 1 : kMsgBodyLen[op];
         default: return kMsgBodyLen[op];
     }
 }

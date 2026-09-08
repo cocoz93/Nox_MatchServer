@@ -42,7 +42,9 @@ int main(int argc, char** argv) {
     nox::dump::Line ln;
     std::map<std::string, uint8_t> keys;          // 상대별 XOR 키
     std::map<int, long long> sendOps, recvOps;
-    long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0, partSend = 0, partRecv = 0, updUnread = 0;  // ★ 멈춘 자리도 센다
+    // 판독이 멈춘 오프코드. 0x1000 비트를 세워 클라→서버를 가른다.
+    std::map<int, long long> stopOps;
+    long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0, partSend = 0, partRecv = 0, updUnread = 0, padTail = 0;  // ★ 멈춘 자리도 센다
 
     while (std::fgets(buf, sizeof(buf), f)) {
         if (!nox::dump::ParseLine(buf, ln)) continue;
@@ -76,6 +78,15 @@ int main(int argc, char** argv) {
         size_t eaten = 0;
         int got = 0;
         while (eaten < bodyAll) {
+            // ★★ **조각 끝의 0 채움은 메시지가 아니다.** 남은 게 전부 0 이면 거기서 끝난다.
+            //   이걸 안 가르면 `0x00 MSG_SERVER_CONNECT`(본문 0)로 읽혀
+            //   **서버가 클라에게 CONNECT 를 11,020번 보낸 것처럼** 보인다(2026-09-08).
+            {
+                bool allZero = true;
+                for (size_t i = eaten; i < bodyAll; ++i)
+                    if (b[i] != 0) { allZero = false; break; }
+                if (allZero) { padTail += bodyAll - eaten; eaten = bodyAll; break; }
+            }
             const int op = b[eaten];
             // ⚠ **길이는 `MessageSize` 로 물을 것.** 원시 길이표(MsgBodyLenByDir)만 보면
             //   `0x3f PLAYER_INPUT` 처럼 **본문 첫 바이트에 길이가 든** 메시지를 못 다뤄
@@ -103,6 +114,18 @@ int main(int argc, char** argv) {
                     }
                     else { ++updUnread; break; }
                 } else {
+                    // ★ **어디서 멈췄는지 센다.** 이게 없으면 「32% 를 못 읽는다」까지만 알고
+                    //   무엇을 고쳐야 하는지는 모른다(2026-09-08).
+                    const int key = send ? op : (op | 0x1000);
+                    // 그 자리 바이트도 앞의 몇 건만 찍는다 — 길이를 눈으로 재는 자리다.
+                    if (stopOps[key] < 8) {
+                        std::printf("  ▲멈춤 %s op=0x%02x 남은%zu | ", ln.dir.c_str(), op,
+                                    bodyAll - eaten);
+                        for (size_t i = eaten; i < bodyAll && i < eaten + 20; ++i)
+                            std::printf("%02x ", b[i]);
+                        std::printf("\n");
+                    }
+                    ++stopOps[key];
                     break;   // 길이를 모르는 다른 오프코드 — 여기서 접는다
                 }
             }
@@ -155,8 +178,24 @@ int main(int argc, char** argv) {
     std::printf("   갈라 보면 SEND %lld · RECV %lld\n", stallSend, stallRecv);
     std::printf("   **끝까지 못 읽은 조각** SEND %lld · RECV %lld"
                 "  (첫 메시지는 읽었으나 뒤가 남음)\n", partSend, partRecv);
-    std::printf("   0xa4 를 못 뜯어 접은 조각 %lld\n", updUnread);
+    std::printf("   0xa4 를 못 뜯어 접은 조각 %lld · 끝의 채움 0 %lld바이트\n",
+                updUnread, padTail);
     std::printf("   (키 받기 전이라 안 푼 조각 %lld — 이건 멈춤이 아니다)\n", preKey);
+    // ★ **어느 오프코드에서 멈췄나.** 「몇 퍼센트를 못 읽는다」까지만 알면
+    //   무엇을 고쳐야 하는지는 모른다. 고칠 자리를 이름으로 짚어 준다.
+    if (!stopOps.empty()) {
+        std::printf("\n-- 판독이 멈춘 자리 --\n");
+        std::multimap<long long, int> sm;
+        for (auto& p : stopOps) sm.insert({-p.second, p.first});
+        int sn = 0;
+        for (auto& p : sm) {
+            if (++sn > 10) break;
+            const int op = p.second & 0xff;
+            std::printf("   %s 0x%02x  %-32s x %lld\n",
+                        (p.second & 0x1000) ? "클라→서버" : "서버→클라",
+                        op, nox::OpName((nox::Op)op), -p.first);
+        }
+    }
     std::printf("\n-- 서버→클라 상위 --\n");
     std::multimap<long long, int> a;
     for (auto& p : sendOps) a.insert({-p.second, p.first});
