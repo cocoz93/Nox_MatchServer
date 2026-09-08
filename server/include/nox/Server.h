@@ -612,6 +612,10 @@ private:
     //   09-06 덤프에서 `0xcc` 581건이 **전수 비신뢰 패킷**에 실려 있었다.
     //   (머리의 신뢰 비트는 접속 절차에서만 쓴다)
     void EmitSeq(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
+    // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
+    // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
+    void EmitNewPlayer(Session& to, const Session& who, uint8_t status,
+                       std::vector<OutPacket>& out);
 
     // 머리 2바이트를 붙여 한 조각을 만든다. keyed 면 XOR 을 건다.
     void Emit(Session& s, bool reliable, uint8_t stream,
@@ -732,6 +736,14 @@ constexpr size_t kJoinNetCodeB = 88; // 2d NEW_PLAYER 의 번호 (LE16)
 //   사람이 둘 이상일 때 **서로를 소개**하려면 이 조각만 떼어 다시 보내야 한다.
 constexpr size_t kJoinNewPlayerAt = 87;
 constexpr size_t kJoinNewPlayerLen = 129;
+
+// ★★ `2d NEW_PLAYER` 안 **상태 플래그**(4바이트, LE). 오픈녹스 원본에서 자리를 얻었다:
+//   `nox_xxx_netNewPlayerMakePacket_4DDA90` 이 `buf[112] = Field3680 & 0x423` 을 쓴다.
+//     bit0 = **HUD 를 안 그린다**(`nox_client_onClientStatusA`: `v&1` → renderGUI=false)
+//     bit1 = 관전 중 (`observeClear` 가 이 비트를 보고 카메라를 푼다)
+//   내가 서두에서 베껴 쓰던 값이 `01 00 00 00` 이라 **HUD 가 영영 안 떴다**(2026-09-09 실측).
+//   정품은 같은 사람에게 `2d` 를 두 번 보낸다 — 처음 `01`, 놀기 시작할 때 `00`.
+constexpr size_t kNewPlayerStatusAt = 112;
 
 // ★ NEW_PLAYER 안의 플레이어 정보 97바이트는 **거의 그대로 클라가 보낸 것**이다.
 //   `0x20 CLIENT_ACCEPT` 본문의 앞 97바이트와 견주니 —

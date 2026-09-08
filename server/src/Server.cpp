@@ -108,6 +108,23 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
 // `0xcc SEQ_IMPORTANT` 로 싸서 내보낸다 — 머리 `cc | 번호 2 | 속길이 1` 뒤에 속 메시지.
 //
 // 실측 원문: `cc 20 00 07 | 6a cb 02 00 00 00 00`  (속 7바이트짜리 REPORT_CLIENT_STATUS)
+void Server::EmitNewPlayer(Session& to, const Session& who, uint8_t status,
+                           std::vector<OutPacket>& out) {
+    if (joinBody_.size() < kJoinNewPlayerAt + kJoinNewPlayerLen) return;
+    std::vector<uint8_t> np(joinBody_.begin() + kJoinNewPlayerAt,
+                            joinBody_.begin() + kJoinNewPlayerAt + kJoinNewPlayerLen);
+    PutU16(np.data() + 1, who.netCode);
+    // ★ 상태는 4바이트지만 우리가 쓰는 값은 하위 한 바이트뿐이다(0x423 안에 든다).
+    if (np.size() > kNewPlayerStatusAt + 3) {
+        np[kNewPlayerStatusAt] = status;
+        np[kNewPlayerStatusAt + 1] = 0;
+        np[kNewPlayerStatusAt + 2] = 0;
+        np[kNewPlayerStatusAt + 3] = 0;
+    }
+    EmitSeq(to, np.data(), np.size(), out);
+    ++handled_;
+}
+
 void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n,
                      std::vector<OutPacket>& out) {
     if (n == 0 || n > 0xFF) return;
@@ -716,6 +733,20 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         //   **한 톨도 안 변했다**(정품은 826 → 1220 으로 HUD 가 떴다).
                         if (s.observer) {
                             s.observer = false;
+                            // ★★★ **순서가 중요하다 — 상태를 먼저 갈아 끼우고 알린다.**
+                            //   오픈녹스 원본에서 `6a` 처리는 마지막에
+                            //   `nox_client_onClientStatusA(playerInfo->Field3680)` 을 부르는데,
+                            //   그 필드는 **`2d NEW_PLAYER` 의 112번 자리가 채운다**
+                            //   (`nox_xxx_netNewPlayerMakePacket_4DDA90`: `buf[112] = Field3680 & 0x423`).
+                            //   즉 `6a` 는 **저장돼 있는 값을 읽어** GUI 를 켤지 정한다.
+                            //   내가 서두에서 베껴 쓰던 값이 `01`(= HUD 숨김)이라,
+                            //   `6a` 를 먼저 보내면 옛 값을 읽어 그대로 숨긴 채로 끝났다.
+                            EmitNewPlayer(s, s, 0, out);
+                            for (auto& kv2 : sessions_) {
+                                Session& o = kv2.second;
+                                if (!o.inGame || o.addr == s.addr) continue;
+                                EmitNewPlayer(o, s, 0, out);   // 남들에게도 「이제 논다」
+                            }
                             const uint8_t st[7] = {
                                 static_cast<uint8_t>(Op::REPORT_CLIENT_STATUS),
                                 static_cast<uint8_t>(s.netCode),
@@ -1300,21 +1331,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   묶음(216바이트) 안 `2d` 는 87번 자리에서 시작해 129바이트다 — 6+5+7+20+49.
         if (s.pendingIntro) {
             s.pendingIntro = false;
-            if (joinBody_.size() >= kJoinNewPlayerAt + kJoinNewPlayerLen) {
-                auto introduce = [&](Session& to, const Session& who) {
-                    std::vector<uint8_t> np(
-                        joinBody_.begin() + kJoinNewPlayerAt,
-                        joinBody_.begin() + kJoinNewPlayerAt + kJoinNewPlayerLen);
-                    PutU16(np.data() + 1, who.netCode);   // 소개하는 사람의 번호
-                    EmitSeq(to, np.data(), np.size(), out);
-                    ++handled_;
-                };
-                for (auto& kv2 : sessions_) {
-                    Session& o = kv2.second;
-                    if (!o.inGame || o.addr == s.addr) continue;
-                    introduce(o, s);   // 먼저 와 있던 사람에게 새 사람을
-                    introduce(s, o);   // 새 사람에게 먼저 와 있던 사람을
-                }
+            for (auto& kv2 : sessions_) {
+                Session& o = kv2.second;
+                if (!o.inGame || o.addr == s.addr) continue;
+                // 상태는 **그 사람이 지금 어떤지** 그대로 — 관전 중이면 1, 놀고 있으면 0.
+                EmitNewPlayer(o, s, s.observer ? 1 : 0, out);   // 먼저 온 사람에게 새 사람을
+                EmitNewPlayer(s, o, o.observer ? 1 : 0, out);   // 새 사람에게 먼저 온 사람을
             }
         }
 
