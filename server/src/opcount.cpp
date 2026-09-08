@@ -139,11 +139,14 @@ int main(int argc, char** argv) {
                         msz = 1 + um.consumed;
                         if (updShown < updShow) {
                             ++updShown;
+                            // ★ 머리의 `flags`·`headFrame`·`headAnim` 까지 찍는다 —
+                            //   여기에 「무엇을 어떤 자세로 그릴지」가 실릴 수 있다.
                             std::printf("  [갱신 %ld] %s %s  머리 별칭=%02x 번호=%u 종류=%u "
-                                        "자리=(%d,%d) 항목 %zu개\n",
+                                        "자리=(%d,%d) flags=%02x frame=%02x anim=%02x 항목 %zu개\n",
                                         updShown, ln.dir.c_str(), ln.peer.c_str(),
                                         um.headAlias, um.headNetCode, um.headType,
-                                        um.x, um.y, um.objects.size());
+                                        um.x, um.y, um.flags, um.headFrame, um.headAnim,
+                                        um.objects.size());
                             for (const auto& e : um.objects) {
                                 std::printf("       별칭=%02x 번호=%-5u 종류=%-5u 자리=(%d,%d) 덧붙이=%d [",
                                             e.alias, e.netCode, e.type, e.x, e.y, e.extra);
