@@ -906,7 +906,15 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 // ★★ 그래서 **상수로 박지 않고 서두에서 읽는다**(`SetFirstSnapshot`).
                 //   2026-09-08: 서두를 estate 로 바꿨는데 스폰이 bludeath 값 그대로라
                 //   **사람만 세계에서 멀리 떨어져** 있었다. 위 경고가 반대로 실현된 것이다.
-                if (s.x == 0 && s.y == 0) { s.x = spawnX_; s.y = spawnY_; }
+                // ★★★ **사람마다 자리를 흩뜨린다.** 전에는 모두 같은 자리에 세웠다 —
+                //   둘이 **겹쳐 서면 화면에서 하나로 보인다.** 「서로 안 보인다」의
+                //   후보로 오래 붙들고 있던 것이 실은 이것일 수 있다(2026-09-08).
+                //   정품 2인 덤프에서도 둘은 (2627,3831) 과 (3174,2468) 로 멀리 떨어져 있었다.
+                if (s.x == 0 && s.y == 0) {
+                    const int n = static_cast<int>(inGameCount());
+                    s.x = spawnX_ + (n % 4) * 40;
+                    s.y = spawnY_ + (n / 4) * 40;
+                }
                 // ★ 오브젝트 번호는 **접속마다 달라야 한다**. 전에는 모두 713 이라
                 //   둘째 클라가 첫째와 같은 번호를 받아 화면이 검었다(2026-09-08).
                 if (s.netCode == 0) s.netCode = nextPlayerNetCode_++;
@@ -1329,6 +1337,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                     e.dy = static_cast<int8_t>(dy);
                 }
             }
+            // 후보 ⑴(남을 `ff`)·⑵(남 덧붙이 `00`)는 이 자리에서 각각 재 봤다 —
+            // **둘 다 클라는 안 죽지만 상대가 안 보인다.** 원인이 다른 데 있다.
             m.objects.push_back(e);
         }
 
