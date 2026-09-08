@@ -502,6 +502,12 @@ public:
     }
     // 마지막 틱에 상태 갱신에 실은 사람 수(마지막으로 만든 것 기준).
     size_t lastUpdateObjects() const { return lastUpdateObjects_; }
+    // ★ 첫 사람의 `snapshotIn`. 「사람 1(갱신에 0)」이 나올 때 **왜 갱신을 안 만드는지**
+    //   가르는 자리다 — 이 값이 0 이상이면 스냅샷을 기다리느라 매 틱 건너뛰고 있다.
+    int firstSnapshotIn() const {
+        for (const auto& kv : sessions_) if (kv.second.inGame) return kv.second.snapshotIn;
+        return -99;
+    }
     unsigned long long moves() const { return moves_; }
     // 쉬는 시간을 지나 실제로 나간 근접 공격 수(누른 횟수가 아니다).
     unsigned long long melees() const { return melees_; }
