@@ -151,6 +151,9 @@ int main(int argc, char** argv) {
     // 첫 세계 스냅샷을 **녹음본 그대로** 내보낸다(사람 항목을 안 갈아 끼움).
     // 「몸이 안 그려지는 게 갈아끼우기 탓인가」를 가르는 시험용.
     bool rawSnapshot = false;
+    // 새로 들어온 사람의 장비를 먼저 와 있던 사람들에게 **안 알린다.**
+    // 「둘째가 들어오는 순간 첫째가 죽는 것」이 이 알림 탓인지 가르는 시험용.
+    bool noNewGear = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -169,6 +172,9 @@ int main(int argc, char** argv) {
             noUpdate = true;
         } else if (a == "--raw-snapshot") {
             rawSnapshot = true;
+        } else if (a == "--no-newgear") {
+            // ★ 진단용 — 새 사람 장비 알림을 끈다. Server.h 의 SetNotifyNewGear 주석 참조.
+            noNewGear = true;
         } else if (a == "--mirror") {
             mirror = true;
         } else if (a == "--mirror-limit" && i + 1 < argc) {
@@ -244,6 +250,7 @@ int main(int argc, char** argv) {
             srv.SetFirstSnapshot(setup.firstSnapshot);
             srv.SetPatchSnapshot(!rawSnapshot);
             srv.SetSendUpdates(!noUpdate);
+            srv.SetNotifyNewGear(!noNewGear);
             // ★★ 서두(prelude) — 정품이 접속 뒤 보낸 **앞 9개 조각**을 그대로 흘려보내고,
             //   그 뒤부터 내 생성으로 이어받는다. 이걸 빼면 클라 화면이 검은 채로 남는다.
             //   2026-09-07 이분법으로 9가 경계임을 확인했다(8개면 검정, 9개면 세계가 뜬다).

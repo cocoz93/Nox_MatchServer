@@ -978,7 +978,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //   ⚠ 스냅샷을 통째로/껍데기 전부 보내면 **받는 클라가 죽는다**(실측).
                 //     정품 순서에서 장비에 해당하는 `cc(4c)`(집을 것) + `cc(60)`(장착)
                 //     **네 쌍만** 골라 보낸다.
-                if (!firstSnapshot_.empty()) {
+                //   ★ `--no-newgear` 로 끌 수 있다 — Server.h 의 SetNotifyNewGear 참조.
+                if (notifyNewGear_ && !firstSnapshot_.empty()) {
                     std::vector<uint8_t> patched;
                     const std::vector<uint8_t>& src =
                         PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched)
@@ -1356,9 +1357,17 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
         lastLoopSeen_ = 0;
         lastSessions_ = sessions_.size();
-        for (auto& kv2 : sessions_) {
-            Session& o = kv2.second;
-            if (!o.inGame) continue;
+        // ★★ **보는 사람을 첫 항목으로 놓는다.** 두 가지가 여기에 달려 있다:
+        //   ⑴ 정품 2인 갱신이 「자기 먼저(상대좌표) · 남 나중(절대좌표)」 순서다
+        //   ⑵ 아래 상대좌표 최적화가 **첫 항목에만** 걸린다(기준이 머리 좌표라서)
+        //   `sessions_` 는 주소로 묶인 map 이라 순서가 회차마다 뒤바뀐다 —
+        //   맡겨 두면 남이 첫째가 되어 자기 항목이 절대좌표로 나갔다(2026-09-09 실측).
+        std::vector<Session*> order;
+        order.reserve(sessions_.size());
+        for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second == &s) order.push_back(&kv2.second);
+        for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second != &s) order.push_back(&kv2.second);
+        for (Session* op : order) {
+            Session& o = *op;
             ++lastLoopSeen_;
 
             ObjEntry e;
@@ -1397,6 +1406,18 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                     e.absolute = true;
                     e.extra = 1;
                     e.extraBytes[0] = 0x00;
+                } else {
+                    // ★★★ **별칭을 `ff` 로 올렸으면 덧붙이도 첫 소개 규약(2바이트)으로
+                    //   같이 올려야 한다.** `FillEntry` 는 「`ff` 면 `40 00`, 별칭이면 `40`」
+                    //   으로 정해 놓는데, 여기서 별칭만 `ff` 로 덮고 덧붙이는 1 로 둔 채
+                    //   내보내고 있었다. 클라는 `40` 다음 바이트를 **다음 항목의 시작**으로
+                    //   읽어 스트림이 통째로 어긋난다.
+                    //   지문 = 둘째가 들어온 지 100ms 남짓에 **먼저 있던 클라가 그냥 사라진다**
+                    //   (`0x0a CLIENT_CLOSE` 도 `0xae` 도 없이 프로세스가 죽는다).
+                    //   2026-09-09 실측 — `--no-update` 로 갱신만 끄면 둘 다 끝까지 살았다.
+                    e.extra = 2;
+                    e.extraBytes[0] = 0x40;
+                    e.extraBytes[1] = 0x00;
                 }
             }
             m.objects.push_back(e);

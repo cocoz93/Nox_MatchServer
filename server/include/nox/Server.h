@@ -337,6 +337,12 @@ public:
     // ★ 첫 세계 스냅샷의 사람 항목을 이 사람 것으로 갈아 끼울지. 끄면 **녹음본 그대로** 나간다.
     //   「몸이 안 그려지는 게 갈아끼우기 탓인가」를 가르는 시험 손잡이다(--raw-snapshot).
     void SetPatchSnapshot(bool v) { patchSnapshot_ = v; }
+    // ★ 진단용 — 끄면 **새로 들어온 사람의 장비(`cc(4c)`+`cc(60)`)를 먼저 와 있던
+    //   사람들에게 안 알린다.** 이걸 켠 채로 정품 클라 둘을 붙이면 **둘째가 들어오는
+    //   그 순간 첫째가 죽는다**(2026-09-08 실측: A 마지막 송신 23:44:26.942 ·
+    //   B 접속 23:44:26.617 · 그 사이에 A 로 간 82바이트가 이 알림이다).
+    //   가르는 자리 = 죽음이 **이 알림 탓인가, 사람 둘 실린 상태 갱신 탓인가**.
+    void SetNotifyNewGear(bool v) { notifyNewGear_ = v; }
 
     // 서버의 현재 프레임. 진짜 서버는 30Hz 틱이 올리고,
     // 덤프를 재생할 때는 그때 나간 값을 넣어 준다(시점에 달린 값이라 재현이 안 된다).
@@ -614,6 +620,7 @@ private:
     uint32_t preludeFirstFrame_ = 0;
     bool sendUpdates_ = true;
     bool patchSnapshot_ = true;
+    bool notifyNewGear_ = true;
     size_t lastUpdateObjects_ = 0;   // 마지막 갱신에 실은 사람 수
     // ★ 갱신을 만드는 세션 루프가 **실제로 몇 번 돌았나**. 「사람 1(갱신에 0)」이
     //   코드로 설명이 안 돼서 박은 계수기다 — 읽어서 두 번 못 찾았다(2026-09-08).

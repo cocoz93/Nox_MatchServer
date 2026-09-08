@@ -1,0 +1,194 @@
+﻿# two_genuine.ps1 — 정품 클라 **둘**을 내 서버에 붙이는 한 바퀴. 숨은 데스크톱이라 화면을 안 뺏는다.
+#
+# 왜 만드나 — 「클라가 접속 직후 죽는다」는 09-08 저녁에 **오픈녹스 클라로만** 잰 값이다.
+#   정품 클라 둘은 커밋 8b78b89(09-08 02:52)에 동시 인게임이 됐고, 4164afb(05:42)에는
+#   아레나 한 판까지 돌았다. 그 뒤 서버가 여덟 번 바뀌었으니 지금도 그런지 다시 잰다.
+#   이 시험이 가르는 것 = 죽음이 **내 서버 탓인가, 오픈녹스 클라 고유의 것인가.**
+#
+#   .\tools\two_genuine.ps1 -Tag g1 [-Genuine] [-ServerArgs '--raw-snapshot']
+#
+# 산출물 : _evidence\CAP_<Tag>.txt (와이어) · srv_<Tag>.log (서버 틱) ·
+#          _evidence\desk1\<Tag>A*.png / <Tag>B*.png / <Tag>_A2.png (B 접속 뒤 A 화면)
+param(
+  [Parameter(Mandatory=$true)][string]$Tag,
+  [switch]$Genuine,            # 내 서버 대신 정품(opennox-server)을 뒤에 둔다 — 대조군
+  [string]$ServerArgs = '',
+  # ★ 서두를 어느 녹음에서 뽑을지. **이것이 클라 종류와 짝이다.**
+  #   onox    = SNAP_onox_ref.txt  (오픈녹스 클라로 뜬 것 — 09-08 저녁 작업이 여기 맞춰져 있다)
+  #   default = --dump 를 안 준다  → main.cpp DefaultDumpPath() = CAP_arena_0907_ok.txt
+  #                                  (**정품 클라**로 뜬 09-07 아레나 녹음)
+  #   그 밖   = 준 경로를 그대로 쓴다
+  [string]$Prelude = 'onox',
+  [int]$WaitMenu = 40,
+  # 둘 다 들어온 뒤 몇 초를 더 지켜보나. 늦게 죽는 것을 잡는 자리다.
+  [int]$WatchSeconds = 40
+)
+# ★ Stop 으로 두면 네이티브 도구가 stderr 에 한 줄만 뱉어도 한 바퀴가 통째로 끊긴다
+$ErrorActionPreference = 'Continue'
+$root = Split-Path -Parent $PSScriptRoot
+$ev   = Join-Path $root '_evidence'
+$ctrl = Join-Path $ev 'desk1'
+$dump = Join-Path $ev ("CAP_{0}.txt" -f $Tag)
+$slog = Join-Path $ev ("srv_{0}.log" -f $Tag)
+
+function Spawn([string]$cmd, [string]$cwd) {
+  # ★ 툴 세션이 끝나면 자식이 같이 죽는다 → WMI 로 띄운다
+  $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+    CommandLine = $cmd; CurrentDirectory = $cwd }
+  if ($r.ReturnValue -ne 0) { Write-Host "[FAIL] 못 띄움($($r.ReturnValue)): $cmd"; exit 1 }
+  return $r.ProcessId
+}
+function Send-Desk([string]$lines) {
+  [IO.File]::WriteAllText((Join-Path $ctrl 'cmd.txt'), $lines, (New-Object Text.UTF8Encoding($false)))
+}
+function Shot([int]$target, [string]$name) {
+  # ★ target 을 빼면 shotfull 이 「대상 없음」으로 조용히 실패한다
+  if ($target -le 0) { Write-Host "  (샷 건너뜀 — pid 를 못 잡았다: $name)"; return }
+  Send-Desk "target $target`nshotfull $ctrl\$name.png`n"
+  Start-Sleep -Seconds 2
+}
+# ★★ pid 0 을 걸러야 한다 — `Get-Process -Id 0` 은 **Idle 프로세스라 성공한다.**
+#   pid 를 못 잡은 회차가 통째로 「살아있음」으로 찍혀 판정이 뒤집혔다(2026-09-09).
+function Alive([int]$p) {
+  if ($p -le 4) { return $false }
+  return ($null -ne (Get-Process -Id $p -ErrorAction SilentlyContinue))
+}
+# 클라가 태어난 자리에서 적어 둔 pid 를 읽는다. 이름으로 다시 찾으면 이미 죽었을 때 0 이 된다.
+function LastPid() {
+  $f = Join-Path $ctrl 'lastpid.txt'
+  if (-not (Test-Path $f)) { return 0 }
+  $v = 0; [void][int]::TryParse(([IO.File]::ReadAllText($f)).Trim(), [ref]$v); return $v
+}
+
+# 0. 자리 비우기. ★ 서버도 매 바퀴 새로 띄운다 (죽은 세션이 남으면 새 접속이 목록으로 되돌아간다)
+Get-Process nox_server, nox_proxy, opennox, opennox-server, deskhost -ErrorAction SilentlyContinue |
+  Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name Game, Game2, Game3, Game4, Game5 -ErrorAction SilentlyContinue |
+  Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+# 프로세스를 죽여도 UDP 소켓이 잠깐 남는다. 안 기다리면 서버가 bind 10048 로 조용히 죽고
+# 화면만 보면 「접속이 안 된다」로 보인다.
+foreach ($try in 1..12) {
+  $busy = @(netstat -ano -p UDP | Select-String ':1859[01]\s')
+  if ($busy.Count -eq 0) { break }
+  Start-Sleep -Seconds 1
+}
+foreach ($f in @($dump, $slog)) { if (Test-Path $f) { [IO.File]::Delete($f) } }
+if (-not (Test-Path $ctrl)) { New-Item -ItemType Directory $ctrl | Out-Null }
+
+# 1. 서버
+if ($Prelude -eq 'onox')      { $dumpArg = ' --dump "' + (Join-Path $ev 'SNAP_onox_ref.txt') + '"' }
+elseif ($Prelude -eq 'default') { $dumpArg = '' }
+else                          { $dumpArg = ' --dump "' + $Prelude + '"' }
+if ($Genuine) {
+  $g = Join-Path $root 'third_party\opennox\opennox-server.exe'
+  $spid = Spawn ('"' + $g + '" -serveronly -noDraw -port 18591') (Split-Path -Parent $g)
+  Write-Host "정품 서버 pid=$spid"
+} else {
+  # ★ 로그를 파일로 받는다 — WMI 로 띄우면 콘솔이 없어 stdout 이 사라진다.
+  #   틱 로그의 「사람 N(갱신에 M)」이 서로 보이는지를 가르는 자리다.
+  $spid = Spawn ('cmd /c ""' + (Join-Path $root 'build\Release\nox_server.exe') +
+    '" --port 18591' + $dumpArg + ' ' + $ServerArgs + ' > "' + $slog + '" 2>&1"') $root
+  Write-Host ("내 서버 pid={0} 서두={1} {2}" -f $spid, $Prelude, $ServerArgs)
+}
+Start-Sleep -Seconds 3
+
+# 2. 프록시 (와이어를 뜬다)
+$ppid = Spawn ('"' + (Join-Path $root 'build\Release\nox_proxy.exe') +
+  '" --listen 18590 --host 127.0.0.1 --host-port 18591 --dump "' + $dump + '"') $root
+Write-Host "프록시 pid=$ppid"
+Start-Sleep -Seconds 2
+
+# 3. 클라 A
+$join = Join-Path $PSScriptRoot 'join_my_server.ps1'
+Write-Host "--- A (Game3) 몰기 ---"
+& $join -Exe 'Game3.exe' -Tag ("{0}A" -f $Tag) -WaitMenu $WaitMenu
+$aPid = LastPid
+Write-Host ("A pid={0} · A 상태(B 몰기 전): {1}" -f $aPid, $(if (Alive $aPid) { '살아있음' } else { '죽음' }))
+
+# 4. 클라 B
+Write-Host "--- B (Game4) 몰기 ---"
+& $join -Exe 'Game4.exe' -Tag ("{0}B" -f $Tag) -WaitMenu $WaitMenu
+$bPid = LastPid
+
+# 여기서 기다리지 않는다 — 3초 사이에 A 가 죽어 못 찍은 적이 있다
+$aAlive2 = Alive $aPid
+$bAlive2 = Alive $bPid
+Write-Host ("A 상태(B 몰기 후): {0} · B 상태: {1}" -f
+  $(if ($aAlive2) { '살아있음' } else { '죽음' }), $(if ($bAlive2) { '살아있음' } else { '죽음' }))
+# ★ B 가 들어온 뒤 **A 화면에 B 가 보이는지**가 판정이다
+if ($aAlive2) { Shot $aPid ("{0}_A2" -f $Tag) }
+if ($bAlive2) { Shot $bPid ("{0}_B2" -f $Tag) }
+
+# 4.5 생존 시계열 — ★ 「죽었다/살았다」 한 번 찍는 것으로는 **늦게 죽는 것**을 못 잡는다.
+#   한 회차에서 「끄니까 살았다」로 읽었는데 실은 상대가 아직 안 들어와 있었다(2026-09-08).
+#   여기서는 초 단위로 둘을 같이 재고, 죽은 순간을 초로 남긴다.
+$watchLog = Join-Path $ev ("alive_{0}.log" -f $Tag)
+$sb2 = New-Object Text.StringBuilder
+$aDeadAt = ''; $bDeadAt = ''
+for ($k = 0; $k -lt $WatchSeconds; $k += 2) {
+  $ta = Alive $aPid; $tb = Alive $bPid
+  $stamp = (Get-Date -Format 'HH:mm:ss.fff')
+  [void]$sb2.AppendLine(("{0} A={1} B={2}" -f $stamp, $(if($ta){1}else{0}), $(if($tb){1}else{0})))
+  if (-not $ta -and $aDeadAt -eq '') { $aDeadAt = $stamp }
+  if (-not $tb -and $bDeadAt -eq '') { $bDeadAt = $stamp }
+  Start-Sleep -Seconds 2
+}
+[IO.File]::WriteAllText($watchLog, $sb2.ToString(), (New-Object Text.UTF8Encoding($false)))
+Write-Host ("생존 감시 {0}초 — A {1} · B {2}" -f $WatchSeconds,
+  $(if ($aDeadAt -eq '') { '끝까지 살아있음' } else { "죽음 $aDeadAt" }),
+  $(if ($bDeadAt -eq '') { '끝까지 살아있음' } else { "죽음 $bDeadAt" }))
+# 감시 뒤 화면 — 여기까지 살아 있으면 **정말 붙어 있는 것**이다
+if (Alive $aPid) { Shot $aPid ("{0}_A3" -f $Tag) }
+if (Alive $bPid) { Shot $bPid ("{0}_B3" -f $Tag) }
+
+# 5. 판정 자리
+#
+# ★ 공유 읽기로 연다 — 서버·프록시가 **아직 쓰고 있는** 파일이다.
+function ReadShared([string]$p) {
+  if (-not (Test-Path $p)) { return '' }
+  $f = New-Object IO.FileStream($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+  $r = New-Object IO.StreamReader($f, [Text.Encoding]::UTF8)
+  $t = $r.ReadToEnd(); $r.Close(); $f.Close(); return $t
+}
+Write-Host ""
+Write-Host "================= 판정 ================="
+
+# ⑴ 서버가 스스로 말하는 사람 수 — 와이어를 뜯어 세는 것보다 이쪽이 믿을 만하다
+$logText = ReadShared $slog
+$tick = @(($logText -split "`r?`n") | Where-Object { $_ -match '\[틱\]' })
+Write-Host ("틱 {0}개" -f $tick.Count)
+if ($tick.Count -gt 0) {
+  $prevPeople = ''
+  foreach ($l in $tick) {
+    if ($l -match '(사람 \d+\(갱신에 \d+\))' -and $Matches[1] -ne $prevPeople) {
+      Write-Host ("  사람 수 변화: {0}" -f $Matches[1]); $prevPeople = $Matches[1]
+    }
+  }
+  Write-Host ("  마지막 틱: {0}" -f $tick[-1])
+}
+
+# ⑵ 세션별 시계열 — ★ **「사람 2」만 보고 「둘 다 붙었다」로 읽으면 안 된다.**
+#   한 회차에서 둘째가 접속만 하고 8건 만에 조용해졌는데 사람 수는 2였다(2026-09-08).
+#   상대가 **언제까지 보냈나**를 같이 봐야 붙어 있는 것과 들어오다 만 것이 갈린다.
+$re = [regex]'^(\d\d:\d\d:\d\d\.\d+) (C->S|S->C) ([\d\.]+):(\d+) len=(\d+)'
+$ses = @{}
+foreach ($l in ((ReadShared $dump) -split "`r?`n")) {
+  $m = $re.Match($l); if (-not $m.Success) { continue }
+  $port = $m.Groups[4].Value
+  if (-not $ses.ContainsKey($port)) { $ses[$port] = @{ cs=0; sc=0; first=$m.Groups[1].Value; lastCS='' } }
+  if ($m.Groups[2].Value -eq 'C->S') { $ses[$port].cs++; $ses[$port].lastCS = $m.Groups[1].Value }
+  else { $ses[$port].sc++ }
+}
+Write-Host "--- 상대별 (조각 2건짜리는 서버 찾기·접속 시도용 임시 포트다) ---"
+$ses.Keys | Sort-Object | ForEach-Object {
+  Write-Host ("  {0,-7} C->S {1,5} · S->C {2,5}  처음 {3}  마지막 보낸 때 {4}" -f
+    $_, $ses[$_].cs, $ses[$_].sc, $ses[$_].first, $(if ($ses[$_].lastCS -eq '') { '(없음)' } else { $ses[$_].lastCS }))
+}
+Write-Host ("화면: {0}\{1}A*.png · {1}B*.png · {1}_A2/_A3.png · {1}_B2/_B3.png" -f $ctrl, $Tag)
+Write-Host ("생존 시계열: {0}" -f $watchLog)
+
+# ⑶ 복호본 — `nox_opcount` 는 이 형식만 읽는다(프록시 덤프를 그대로 주면 0줄).
+$snap = Join-Path $ev ("SNAP_{0}.txt" -f $Tag)
+& (Join-Path $PSScriptRoot 'cap2sniff.ps1') -In $dump -Out $snap | Out-Null
+Write-Host ("복호본: {0}" -f $snap)

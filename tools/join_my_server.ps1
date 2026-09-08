@@ -43,6 +43,11 @@ $name = [IO.Path]::GetFileName($Exe)
 $pid_ = (Get-CimInstance Win32_Process -Filter "Name='$name'" | Select-Object -Last 1).ProcessId
 if (-not $pid_) { Write-Host '[FAIL] 클라가 안 떴다'; exit 1 }
 Write-Host "클라 pid=$pid_"
+# ★★ pid 를 **파일로 남긴다.** 부르는 쪽이 끝난 뒤 이름으로 다시 찾으면,
+#   그 사이에 클라가 죽어 있을 때 조회가 빈손이 되어 pid=0 이 된다.
+#   그리고 `Get-Process -Id 0` 은 **Idle 프로세스라 성공한다** — 죽은 클라가
+#   「살아있음」으로 보였다(2026-09-09 실측). 태어난 자리에서 적어 둘 것.
+[IO.File]::WriteAllText((Join-Path $ctrl 'lastpid.txt'), "$pid_", (New-Object Text.UTF8Encoding($false)))
 Send-Desk "target $pid_`n"   # ★ 이걸 빼면 shotfull 이 「target 없음」으로 조용히 실패한다
 Start-Sleep -Milliseconds 500
 
