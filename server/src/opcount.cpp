@@ -122,6 +122,12 @@ int main(int argc, char** argv) {
                     sane = true;
                 }
                 if (sane) msz = q - eaten;
+                // ★★ `cc` 로 시작하지 않으면 **본문 0** 이다 — 그 뒤가 바로 다음 메시지다.
+                //   opennox `network_client.go:302` 의 `n = 1`(호스트가 아닐 때) 분기다.
+                //   실측 표본이 그대로 맞는다(2026-09-08):
+                //     aa 32 0d 02  →  0x32 OBJECT_OUT_OF_SIGHT(본문 2) + `0d 02`
+                //     aa 31 d6 02  →  0x31 DESTROY_OBJECT(본문 2)     + `d6 02`
+                else msz = 1;
             }
             if (msz == 0) {
                 if (op == (int)nox::Op::UPDATE_STREAM) {
