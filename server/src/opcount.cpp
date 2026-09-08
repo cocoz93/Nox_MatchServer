@@ -144,9 +144,15 @@ int main(int argc, char** argv) {
                                         updShown, ln.dir.c_str(), ln.peer.c_str(),
                                         um.headAlias, um.headNetCode, um.headType,
                                         um.x, um.y, um.objects.size());
-                            for (const auto& e : um.objects)
-                                std::printf("       별칭=%02x 번호=%-5u 종류=%-5u 자리=(%d,%d) 덧붙이=%d\n",
+                            for (const auto& e : um.objects) {
+                                std::printf("       별칭=%02x 번호=%-5u 종류=%-5u 자리=(%d,%d) 덧붙이=%d [",
                                             e.alias, e.netCode, e.type, e.x, e.y, e.extra);
+                                // ★ 덧붙이 **값**까지 찍는다 — 방향·애니 프레임이 여기 들어 있다.
+                                //   개수만 봐서는 「무엇을 그릴지」를 못 가른다.
+                                for (int j = 0; j < e.extra && j < 3; ++j)
+                                    std::printf("%02x ", e.extraBytes[j]);
+                                std::printf("]\n");
+                            }
                         }
                     }
                     else { ++updUnread; break; }
