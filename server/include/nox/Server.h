@@ -130,6 +130,15 @@ struct Session {
     //   ⚠ 앞서는 이 판정을 `preludeAt > 0`(서두 재생 진행도)으로 했는데, 재생을 안 쓰면
     //     늘 0 이라 **매 틱 사람을 처음 보는 것처럼 다시 소개**하고 있었다.
     bool sentFirstUpdate = false;
+    // ★★ 접속 직후 클라는 **관전(observer)** 이다 — HUD(주문 5개·체력/마나 막대)가 없고
+    //   화면에 자기 몸이 반투명하게만 보인다. 정품 서버는 **첫 왼클릭(입력 코드 6)** 에
+    //   `6a REPORT_CLIENT_STATUS` 를 신뢰로 보내 관전을 푼다(2026-09-09 정품 대조:
+    //   00:31:14 에 `cc(6a cb 02 00 00 00 00)` + `cc(ea 59 05 00 00)` 한 쌍).
+    //   내 서버는 그 클릭을 근접 공격으로만 읽어 관전이 영영 안 풀렸다.
+    bool observer = true;
+    // 아직 서로 소개(`2d NEW_PLAYER`)를 안 주고받았다. 발송은 `Tick` 에서 한다 —
+    // 접속 답장에 붙이면 정품이 그 자리에 보내는 것과 어긋난다.
+    bool pendingIntro = false;
     // ★ 서두를 어디까지 흘렸나. **접속마다 따로** — 전역으로 두면 둘째 클라가 서두를 못 받는다.
     size_t preludeAt = 0;
     // ★★ 이 사람에게 흘려보낸 프레임. **접속마다 따로 센다.**
@@ -438,7 +447,10 @@ public:
         if (it != sessions_.end()) it->second.team = team;
     }
 
-    void DebugEnterGame(const std::string& addr, uint16_t netCode) {
+    // ★ `observer` 를 켜면 **막 접속한 상태**(관전)로 만든다. 기본은 이미 놀고 있는 상태다 —
+    //   시험 대부분은 싸움을 재는 것이라 관전 단계를 매번 거치게 하면 잡음만 는다.
+    //   관전 풀기 자체는 `TestObserverExit` 에서 따로 잰다.
+    void DebugEnterGame(const std::string& addr, uint16_t netCode, bool observer = false) {
         Session& s = SessionFor(addr);
         s.inGame = true;
         s.netCode = netCode;
@@ -446,6 +458,7 @@ public:
         s.health = s.maxHealth;
         s.x = 1000;
         s.y = 1000;
+        s.observer = observer;
     }
 
     // ★ 시험용 — 자리를 옮긴다. 사거리 시험에 쓴다.
@@ -713,6 +726,12 @@ constexpr size_t kJoinFrameA = 7;    // 28 FULL_TIMESTAMP 의 값 (LE32)
 constexpr size_t kJoinNetCodeA = 12; // 2c JOIN_DATA 의 번호 (LE16)
 constexpr size_t kJoinFrameB = 19;   // af GAME_SETTINGS 안의 프레임 (LE32)
 constexpr size_t kJoinNetCodeB = 88; // 2d NEW_PLAYER 의 번호 (LE16)
+
+// ★ 묶음 안 `2d NEW_PLAYER` 가 시작하는 자리와 길이.
+//   앞의 다섯(6+5+7+20+49 = 87) 뒤에 129바이트로 붙어 216 으로 딱 떨어진다.
+//   사람이 둘 이상일 때 **서로를 소개**하려면 이 조각만 떼어 다시 보내야 한다.
+constexpr size_t kJoinNewPlayerAt = 87;
+constexpr size_t kJoinNewPlayerLen = 129;
 
 // ★ NEW_PLAYER 안의 플레이어 정보 97바이트는 **거의 그대로 클라가 보낸 것**이다.
 //   `0x20 CLIENT_ACCEPT` 본문의 앞 97바이트와 견주니 —

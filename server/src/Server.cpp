@@ -708,9 +708,27 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         // 왼버튼 = `CCAction`(6). 근접 공격이다.
                         // 근거는 둘 — 09-07 조작 실측과 opennox 의 CtrlCode 표.
                         //
+                        // ★★★ **첫 왼클릭은 공격이 아니라 「관전 풀기」다.**
+                        //   접속 직후 클라는 관전이라 HUD 가 없다. 정품은 이 클릭에
+                        //   `6a REPORT_CLIENT_STATUS <내번호2> 00 00 00 00` 을 신뢰로 보낸다
+                        //   (2026-09-09 정품 대조군 와이어). 그전에는 내가 이걸 안 보내
+                        //   관전이 영영 안 풀렸다 — 화면 색이 관전 해제 앞뒤로 978 → 978 로
+                        //   **한 톨도 안 변했다**(정품은 826 → 1220 으로 HUD 가 떴다).
+                        if (s.observer) {
+                            s.observer = false;
+                            const uint8_t st[7] = {
+                                static_cast<uint8_t>(Op::REPORT_CLIENT_STATUS),
+                                static_cast<uint8_t>(s.netCode),
+                                static_cast<uint8_t>(s.netCode >> 8),
+                                0, 0, 0, 0 };
+                            EmitSeq(s, st, sizeof(st), out);
+                            ++handled_;
+                        }
                         // ⚠ 버튼을 누르고 있으면 이 코드가 **매 틱** 온다.
                         //   쉬는 시간을 안 두면 초당 서른 대가 들어간다.
-                        if (frame_ >= s.nextMeleeFrame) {
+                        //   ⚠ `break` 로 빠져나가지 않는다 — 이 조각에 뒤따르는
+                        //     방향(코드 1) 항목까지 같이 버려진다.
+                        else if (frame_ >= s.nextMeleeFrame) {
                             s.nextMeleeFrame = frame_ + kMeleeCooldownTicks;
                             const Target t = NearestTarget(from, s.x, s.y, kMeleeRange);
                             HurtTarget(t, kMeleeDamage, out, from);
@@ -972,6 +990,26 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //   같은 묶음에 붙여 보냈더니 화면이 검은 채로 남았다(2026-09-08 실측).
                 //   정품처럼 몇 틱 뒤로 미룬다. 실제 발송은 `Tick` 에서.
                 if (!firstSnapshot_.empty()) s.snapshotIn = kSnapshotDelayTicks;
+
+                // ★★★ **사람 소개를 서로 주고받는다** — `2d NEW_PLAYER`.
+                //   내가 보내던 것은 **접속한 본인 것 하나뿐**이었다. 정품은 다르다
+                //   (2026-09-09 대조: 정품 클라 A 가 자기 `cb 02` 와 상대 `d0 02` 를
+                //    둘 다 받았고, 내 서버에서 A 는 자기 `c9 02` 하나만 받았다).
+                //   이 소개가 없으면 클라에 **그 사람의 playerInfo 가 아예 없다** —
+                //   오픈녹스 원본을 보면 `2d` 가 이름·배운 주문(100번 자리)·장비·
+                //   상태 플래그(112번 자리)를 통째로 실어 나른다
+                //   (`nox_xxx_netNewPlayerMakePacket_4DDA90`). 상태 알림(`6a`)도
+                //   `playerInfoGetByID` 가 빈손이면 그 자리에서 되돌아간다.
+                //
+                //   묶음(216바이트) 안 `2d` 는 87번 자리에서 시작해 129바이트다 —
+                //   6+5+7+20+49 로 딱 떨어진다(Server.h 의 kJoin* 주석).
+                //   ⚠ **여기서 바로 보내지 않는다.** 정품은 접속 답장에 붙이지 않고
+                //     조금 뒤 다른 것들과 묶어 보낸다(2026-09-09 정품 덤프: 208바이트
+                //     조각의 79번 자리). 접속 답장에 붙였더니 재생 대조(`replay_connect`)가
+                //     「정품은 여기서 다른 것을 보냈다」로 두 자리를 잡아냈다.
+                //     실제 발송은 `Tick` 에서 — 첫 스냅샷과 같은 자리다.
+                s.pendingIntro = true;
+
                 // ★★★ **먼저 와 있던 사람들에게 이 사람의 장비만 보낸다.**
                 //   미니맵에는 둘이 찍히는데 몸이 안 그려진다 = 오브젝트는 있고
                 //   **입힐 것이 없다**. 아침에 자기 몸이 안 그려지던 것과 같은 증상이다.
@@ -1248,6 +1286,36 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             // 그러니 이 틱에 내 갱신을 또 보태지 않고, 다음 틱부터 별칭 `01` 로 잇는다.
             s.sentFirstUpdate = true;
             continue;
+        }
+
+        // ★★★ **사람 소개를 서로 주고받는다** — `2d NEW_PLAYER`.
+        //   내가 보내던 것은 **접속한 본인 것 하나뿐**이었다. 정품은 다르다
+        //   (2026-09-09 대조: 정품 클라 A 가 자기 `cb 02` 와 상대 `d0 02` 를 둘 다 받았고,
+        //    내 서버에서 A 는 자기 `c9 02` 하나만 받았다).
+        //   이 소개가 없으면 클라에 **그 사람의 playerInfo 가 아예 없다** — 오픈녹스
+        //   원본을 보면 `2d` 가 이름·배운 주문(100번 자리)·장비·상태 플래그(112번 자리)를
+        //   통째로 실어 나르고(`nox_xxx_netNewPlayerMakePacket_4DDA90`),
+        //   상태 알림(`6a`)도 `playerInfoGetByID` 가 빈손이면 그 자리에서 되돌아간다.
+        //
+        //   묶음(216바이트) 안 `2d` 는 87번 자리에서 시작해 129바이트다 — 6+5+7+20+49.
+        if (s.pendingIntro) {
+            s.pendingIntro = false;
+            if (joinBody_.size() >= kJoinNewPlayerAt + kJoinNewPlayerLen) {
+                auto introduce = [&](Session& to, const Session& who) {
+                    std::vector<uint8_t> np(
+                        joinBody_.begin() + kJoinNewPlayerAt,
+                        joinBody_.begin() + kJoinNewPlayerAt + kJoinNewPlayerLen);
+                    PutU16(np.data() + 1, who.netCode);   // 소개하는 사람의 번호
+                    EmitSeq(to, np.data(), np.size(), out);
+                    ++handled_;
+                };
+                for (auto& kv2 : sessions_) {
+                    Session& o = kv2.second;
+                    if (!o.inGame || o.addr == s.addr) continue;
+                    introduce(o, s);   // 먼저 와 있던 사람에게 새 사람을
+                    introduce(s, o);   // 새 사람에게 먼저 와 있던 사람을
+                }
+            }
         }
 
         // 죽어 있고 때가 됐으면 되살린다.

@@ -646,6 +646,53 @@ void TestMelee() {
     std::printf("  근접 공격 — 한 대·쉬는 시간·걸음과 구분·사거리\n");
 }
 
+// ── 관전 풀기 ─────────────────────────────────────────────────
+//
+// 접속 직후 클라는 **관전(observer)** 이다 — HUD(주문 5개·체력/마나 막대)가 없고
+// 자기 몸이 반투명하게만 보인다. 정품 서버는 **첫 왼클릭**에
+// `6a REPORT_CLIENT_STATUS <내번호2> 00 00 00 00` 을 `cc` 껍데기에 실어 관전을 푼다.
+// 2026-09-09 정품 대조로 확정 — 그 알림 앞뒤로 화면 색이 826 → 1220 으로 뛰었고,
+// 안 보내던 내 서버는 978 → 978 로 한 톨도 안 변했다.
+void TestObserverExit() {
+    nox::Server srv;
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+    srv.DebugEnterGame(a, 728, /*observer=*/true);
+    srv.DebugEnterGame(b, 729);   // 둘 다 (1000,1000) — 근접 사거리 안이다
+
+    const uint16_t before = srv.HealthOf(b);
+
+    // ① 첫 클릭은 관전 풀기다. **때리지 않는다**
+    {
+        std::vector<nox::OutPacket> out;
+        auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(b) == before, "관전 중 첫 클릭이 때렸다");
+        Check(srv.melees() == 0, "관전 중 첫 클릭이 근접으로 세어졌다");
+
+        const auto msgs = Flatten(out);
+        const std::vector<uint8_t>* st =
+            FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_CLIENT_STATUS));
+        Check(st != nullptr, "관전 풀기 알림(0x6a)이 안 나갔다");
+        if (st) {
+            Check(st->size() == 7, "0x6a 길이가 7 이 아님");
+            // 알리는 대상은 **자기 번호**다. 남의 번호를 실으면 클라가 엉뚱한 것을 깨운다
+            Check((*st)[1] == 0xd8 && (*st)[2] == 0x02, "0x6a 가 자기 번호(728)를 안 실었다");
+        }
+    }
+
+    // ② 두 번째 클릭부터는 여느 근접 공격이다
+    {
+        std::vector<nox::OutPacket> out;
+        auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(b) == before - nox::kMeleeDamage, "관전을 푼 뒤 클릭이 안 때렸다");
+        Check(srv.melees() == 1, "관전을 푼 뒤 근접 집계가 1 이 아님");
+    }
+
+    std::printf("  관전 풀기 — 첫 클릭은 알림·둘째부터 공격\n");
+}
+
 // ── 투사체만의 성질 ───────────────────────────────────────────
 //
 // 시전하는 순간 맞으면 **피할 수가 없다.** 여기서 보는 것은 「비키면 안 맞나」다.
@@ -1433,6 +1480,7 @@ int main() {
     TestDeathFlow();
     TestSpellDamage();
     TestMelee();
+    TestObserverExit();
     TestProjectile();
     TestProjectileVisible();
     TestSummon();

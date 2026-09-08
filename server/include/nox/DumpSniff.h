@@ -20,6 +20,10 @@ struct Line {
     std::string dir;    // "RECV" 또는 "SEND"
     std::string peer;
     std::vector<uint8_t> data;
+    // 줄 맨 앞의 시각 `HH:MM:SS.mmm`. 없으면 빈 문자열.
+    // ★ 왜 담나 — 「그 순간에 무엇이 오갔나」를 물어야 할 때가 잦다(관전 해제 직후처럼).
+    //   자리가 고정폭이라 문자열 비교만으로 앞뒤가 갈린다.
+    std::string time;
 };
 
 // 12:15:09.262 RECV 172.17.192.1:54721 len=12 | 00 00 0c ... | ....

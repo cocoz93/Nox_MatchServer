@@ -154,6 +154,8 @@ int main(int argc, char** argv) {
     // 새로 들어온 사람의 장비를 먼저 와 있던 사람들에게 **안 알린다.**
     // 「둘째가 들어오는 순간 첫째가 죽는 것」이 이 알림 탓인지 가르는 시험용.
     bool noNewGear = false;
+    // 첫 세계 스냅샷을 아예 안 보낸다. HUD 실종이 이 배선 탓인지 가르는 시험용.
+    bool noSnapshot = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -172,6 +174,8 @@ int main(int argc, char** argv) {
             noUpdate = true;
         } else if (a == "--raw-snapshot") {
             rawSnapshot = true;
+        } else if (a == "--no-snapshot") {
+            noSnapshot = true;
         } else if (a == "--no-newgear") {
             // ★ 진단용 — 새 사람 장비 알림을 끈다. Server.h 의 SetNotifyNewGear 주석 참조.
             noNewGear = true;
@@ -247,7 +251,10 @@ int main(int argc, char** argv) {
             // ★★★ 첫 세계 스냅샷 — 뽑아만 두고 **넘기는 줄이 없었다**(2026-09-08).
             //   이 한 조각에 살려내기·장비·최대 체력/마나가 다 실려 있어,
             //   빠지면 이름표만 뜨고 몸이 없다.
-            srv.SetFirstSnapshot(setup.firstSnapshot);
+            //   ★ `--no-snapshot` 으로 끌 수 있다 — 09-08 05:42 에 아레나가 한 판 돌 때는
+            //     이 배선이 아직 없었고 그때는 HUD(주문 5개·체력/마나 막대)가 떠 있었다.
+            //     「HUD 가 사라진 게 이 스냅샷 탓인가」를 가르는 자리다.
+            if (!noSnapshot) srv.SetFirstSnapshot(setup.firstSnapshot);
             srv.SetPatchSnapshot(!rawSnapshot);
             srv.SetSendUpdates(!noUpdate);
             srv.SetNotifyNewGear(!noNewGear);

@@ -13,7 +13,11 @@
 #include "nox/Wire.h"
 
 int main(int argc, char** argv) {
-    if (argc < 2) { std::printf("쓰기: opcount <덤프> [찾을오프코드hex ...]\n"); return 1; }
+    if (argc < 2) {
+        std::printf("쓰기: opcount <덤프> [--recv-plain] [--seq N] [--updates N]\n"
+                    "               [--from HH:MM:SS.mmm] [--to HH:MM:SS.mmm] [찾을오프코드hex ...]\n");
+        return 1;
+    }
 
     // ★★ 덤프가 **어디서 떴는지**에 따라 클라→서버가 평문일 수 있다.
     //   서버 자신이 뜬 덤프(SNAP_server_*)는 **받은 것을 푼 뒤** 적으므로 RECV 가 평문이고,
@@ -29,9 +33,16 @@ int main(int argc, char** argv) {
     //   개수만 세면 「무엇이 빠졌나」는 알아도 **「어디에 실려 오나」**를 못 본다.
     //   서두에 넣을 메시지를 정품 덤프에서 뽑을 때 이 자리가 필요하다(2026-09-08).
     long seqShow = 0, seqShown = 0;
+    // ★ `--from HH:MM:SS.mmm` / `--to ...` — **그 순간만** 센다.
+    //   왜 필요한가 : 전체 집계는 「내가 무엇을 안 보내나」는 알려 줘도
+    //   「관전 해제를 누른 그 몇 초에 정품이 무엇을 보냈나」는 못 알려 준다.
+    //   ⚠ XOR 키는 **창 밖에서도 계속 거둔다** — 수락 조각은 언제나 창보다 앞에 있다.
+    std::string fromT, toT;
     std::map<int, bool> want;
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--recv-plain") == 0) { recvPlain = true; continue; }
+        if (std::strcmp(argv[i], "--from") == 0 && i + 1 < argc) { fromT = argv[++i]; continue; }
+        if (std::strcmp(argv[i], "--to") == 0 && i + 1 < argc) { toT = argv[++i]; continue; }
         if (std::strcmp(argv[i], "--updates") == 0 && i + 1 < argc) {
             updShow = std::strtol(argv[++i], nullptr, 10);
             continue;
@@ -73,6 +84,11 @@ int main(int argc, char** argv) {
         if (decrypt && k != keys.end() && k->second)
             nox::ApplyXor(d.data(), d.size(), k->second);
         const bool keyed = (k != keys.end());
+
+        // ★ 시간 창 — 키를 거둔 **뒤**에 거른다. 앞에서 거르면 창 안의 조각이
+        //   열쇠 없이 암호문으로 남아 통째로 「못 읽음」이 된다.
+        if (!fromT.empty() && (ln.time.empty() || ln.time < fromT)) continue;
+        if (!toT.empty()   && (ln.time.empty() || ln.time > toT))   continue;
 
         if (send) ++nSend; else ++nRecv;
 

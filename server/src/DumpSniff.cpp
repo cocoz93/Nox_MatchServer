@@ -24,6 +24,9 @@ int HexVal(char c) {
 }  // namespace
 
 bool ParseLine(const char* s, Line& out) {
+    // 맨 앞 `HH:MM:SS.mmm` — 자리와 구분자만 보고 가른다(정규식은 6만 줄에서 눈에 띄게 느리다).
+    out.time.clear();
+    if (s[0] && s[1] && s[2] == ':' && s[5] == ':' && s[8] == '.') out.time.assign(s, 12);
     const char* p = std::strstr(s, " RECV ");
     if (p) out.dir = "RECV";
     else {
