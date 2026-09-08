@@ -1208,6 +1208,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             // 별칭은 **클라와 똑같은 규칙**으로 잡는다. 한 칸만 어긋나면
             // 그때부터 클라가 엉뚱한 것을 그린다(Alias.h 참조).
             FillEntry(s.aliases, o.netCode, kPlayerType, s.tickFrame, o.x, o.y, o.facing, e);
+            // ★★ **별칭으로 보낼 때는 좌표도 상대로.** 정품 원바이트가 그렇다(2026-09-08):
+            //     정품  … 01 <머리좌표4> 00 00 │ cb 00 00 │ 40 │ 끝     (14바이트)
+            //     내 것 … 01 <머리좌표4> 00 00 │ 00 c9 <절대좌표4> │ 40 │ 끝  (17바이트)
+            //   절대 모드는 앞에 `00` 표시가 더 붙는다. 정품은 그 경로를 안 쓴다.
+            //   ⚠ 기준은 **머리 좌표**다 — 이 항목이 목록의 첫째일 때만 맞는다.
+            //     사람이 첫 항목이라 지금은 맞지만, 앞에 뭘 더 넣으면 같이 손봐야 한다.
+            if (e.alias != 0xff && m.objects.empty()) {
+                const int dx = o.x - m.x, dy = o.y - m.y;
+                if (dx >= -128 && dx <= 127 && dy >= -128 && dy <= 127) {
+                    e.absolute = false;
+                    e.dx = static_cast<int8_t>(dx);
+                    e.dy = static_cast<int8_t>(dy);
+                }
+            }
             m.objects.push_back(e);
         }
 
