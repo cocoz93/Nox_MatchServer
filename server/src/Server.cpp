@@ -1354,9 +1354,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         m.flags = 0;
         m.headAnim = 0;
 
+        lastLoopSeen_ = 0;
+        lastSessions_ = sessions_.size();
         for (auto& kv2 : sessions_) {
             Session& o = kv2.second;
             if (!o.inGame) continue;
+            ++lastLoopSeen_;
 
             ObjEntry e;
             // 별칭은 **클라와 똑같은 규칙**으로 잡는다. 한 칸만 어긋나면
@@ -1433,6 +1436,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         uint8_t body[512];
         body[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
         size_t n = EncodeUpdate(m, body + 1, sizeof(body) - 1);
+        // ⚠ **이 대입이 없어서 「갱신에 0」이 나왔다**(2026-09-08). `git checkout` 으로
+        //   이분법을 하다가 잃었고, 초기값 0 을 관측으로 읽어 한참을 헤맸다.
+        //   ★ 계측을 고칠 때는 **그 계측이 실제로 갱신되는지부터** 볼 것.
+        lastUpdateObjects_ = m.objects.size();
         // ★★ 갱신 **바로 뒤에** 사람마다 높이(Z)를 붙인다 — `5e | 번호 2 | z 1`.
         //   정품은 한 조각 안에서 `27 TIMESTAMP` → `a4 UPDATE_STREAM` → `5e` 순으로 보낸다
         //   (2026-09-08 실측: `… a4 cb 42 0a f6 0e 30 00 00 00 00 | 5e cb 02 00`).

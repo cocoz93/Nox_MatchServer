@@ -504,6 +504,8 @@ public:
     size_t lastUpdateObjects() const { return lastUpdateObjects_; }
     // ★ 첫 사람의 `snapshotIn`. 「사람 1(갱신에 0)」이 나올 때 **왜 갱신을 안 만드는지**
     //   가르는 자리다 — 이 값이 0 이상이면 스냅샷을 기다리느라 매 틱 건너뛰고 있다.
+    size_t lastLoopSeen() const { return lastLoopSeen_; }
+    size_t lastSessions() const { return lastSessions_; }
     int firstSnapshotIn() const {
         for (const auto& kv : sessions_) if (kv.second.inGame) return kv.second.snapshotIn;
         return -99;
@@ -613,6 +615,10 @@ private:
     bool sendUpdates_ = true;
     bool patchSnapshot_ = true;
     size_t lastUpdateObjects_ = 0;   // 마지막 갱신에 실은 사람 수
+    // ★ 갱신을 만드는 세션 루프가 **실제로 몇 번 돌았나**. 「사람 1(갱신에 0)」이
+    //   코드로 설명이 안 돼서 박은 계수기다 — 읽어서 두 번 못 찾았다(2026-09-08).
+    size_t lastLoopSeen_ = 0;        // 루프가 본 세션 수(inGame 통과분)
+    size_t lastSessions_ = 0;        // 그때의 sessions_.size()
     size_t mirrorAt_ = 0;   // 그 다음 41바이트 USE_MAP
     uint32_t frame_ = 0;
     uint16_t netCode_ = 0;
