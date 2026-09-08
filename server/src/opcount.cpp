@@ -92,6 +92,29 @@ int main(int argc, char** argv) {
             //   `0x3f PLAYER_INPUT` 처럼 **본문 첫 바이트에 길이가 든** 메시지를 못 다뤄
             //   클라→서버가 통째로 안 읽힌다(2026-09-08: RECV 96,290 중 94,581 멈춤).
             size_t msz = nox::MessageSize(b + eaten, bodyAll - eaten, !send);
+            // ★★ `0xaa MSG_IMPORTANT` 는 **`0xcc` 껍데기들의 목록**이다.
+            //   길이표의 「본문 5」는 껍데기 머리(cc | 번호2 | 속길이1)까지만 센 값이라
+            //   두 번째 껍데기부터 어긋난다. 실측 짜임(2026-09-08):
+            //     aa │ cc 17 00 07 │ 6a cb 02 00 00 00 00 │ cc 18 00 …
+            //          머리 4        속 7바이트              다음 껍데기
+            //   이걸 몰라 서버→클라 662건이 멈췄고, 어긋난 자리의 0 을
+            //   `0x00 SERVER_CONNECT` 로 읽어 **3만 건이 헛것으로** 잡혔다.
+            if (op == (int)nox::Op::IMPORTANT) {
+                size_t q = eaten + 1;
+                bool sane = false;
+                while (q + 4 <= bodyAll && b[q] == (uint8_t)nox::Op::SEQ_IMPORTANT) {
+                    const size_t inner = b[q + 3];
+                    if (q + 4 + inner > bodyAll) break;
+                    // 껍데기 속 메시지도 센다 — 여기 REPORT_* 들이 들어 있다.
+                    if (inner >= 1) {
+                        const int iop = b[q + 4];
+                        if (send) ++sendOps[iop]; else ++recvOps[iop];
+                    }
+                    q += 4 + inner;
+                    sane = true;
+                }
+                if (sane) msz = q - eaten;
+            }
             if (msz == 0) {
                 if (op == (int)nox::Op::UPDATE_STREAM) {
                     // ⚠ 별칭 표 없이 뜯는다 — 별칭으로만 온 항목은 종류를 모르니
