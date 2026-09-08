@@ -972,6 +972,45 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //   같은 묶음에 붙여 보냈더니 화면이 검은 채로 남았다(2026-09-08 실측).
                 //   정품처럼 몇 틱 뒤로 미룬다. 실제 발송은 `Tick` 에서.
                 if (!firstSnapshot_.empty()) s.snapshotIn = kSnapshotDelayTicks;
+                // ★★★ **먼저 와 있던 사람들에게 이 사람의 장비만 보낸다.**
+                //   미니맵에는 둘이 찍히는데 몸이 안 그려진다 = 오브젝트는 있고
+                //   **입힐 것이 없다**. 아침에 자기 몸이 안 그려지던 것과 같은 증상이다.
+                //   ⚠ 스냅샷을 통째로/껍데기 전부 보내면 **받는 클라가 죽는다**(실측).
+                //     정품 순서에서 장비에 해당하는 `cc(4c)`(집을 것) + `cc(60)`(장착)
+                //     **네 쌍만** 골라 보낸다.
+                if (!firstSnapshot_.empty()) {
+                    std::vector<uint8_t> patched;
+                    const std::vector<uint8_t>& src =
+                        PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched)
+                            ? patched : firstSnapshot_;
+                    std::vector<uint8_t> gear;
+                    size_t q = 0;
+                    while (q + 4 <= src.size()) {
+                        if (src[q] != static_cast<uint8_t>(Op::SEQ_IMPORTANT)) { ++q; continue; }
+                        const size_t inner = src[q + 3];
+                        if (q + 4 + inner > src.size()) break;
+                        const uint8_t iop = (inner >= 1) ? src[q + 4] : 0;
+                        // ★ `4c`(집을 것)+`60`(장착)만 보내니 **몸은 그려지는데 누워 있었다.**
+                        //   정품 순서에서 그 앞에 오는 `e9`(살려내기)와
+                        //   `dd`/`de`(최대 체력·마나)를 같이 보내 세운다.
+                        //   ⚠ 더 넣으면 나빠진다 — 하나씩 재서 확인했다(2026-09-08):
+                        //     `e9`+`dd`+`de` 셋 다  → 받는 클라가 **죽는다**
+                        //     `e9`(살려내기)만      → 상대가 **아예 안 보인다**(오브젝트가 사라짐)
+                        //   **`4c`+`60` 둘만**이 맞다. 다만 상대가 **누워 있다** —
+                        //   세우는 것은 다른 자리에서 풀 것(자세/애니 쪽으로 보인다).
+                        if (iop == 0x4c || iop == 0x60)
+                            gear.insert(gear.end(), src.begin() + q, src.begin() + q + 4 + inner);
+                        q += 4 + inner;
+                    }
+                    if (!gear.empty()) {
+                        for (auto& kv2 : sessions_) {
+                            Session& o = kv2.second;
+                            if (!o.inGame || o.addr == s.addr) continue;
+                            Emit(o, /*reliable=*/true, /*stream=*/0, gear.data(), gear.size(), out);
+                            ++handled_;
+                        }
+                    }
+                }
                 break;
             }
 
