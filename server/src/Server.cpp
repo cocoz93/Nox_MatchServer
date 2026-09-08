@@ -20,6 +20,27 @@ namespace nox {
 static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCode,
                                int x, int y, std::vector<uint8_t>& out);
 
+// ★★ 첫 세계 스냅샷을 받아 두고, **그 머리 좌표를 스폰 자리로 삼는다.**
+//   서두가 찍힌 맵의 그 자리라야 사람이 스냅샷 속 다른 오브젝트들과 같은 동네에 선다.
+void Server::SetFirstSnapshot(const std::vector<uint8_t>& v) {
+    firstSnapshot_ = v;
+    // 조각 안을 훑어 `0xa4` 를 찾는다. 앞에 `0x27 TIMESTAMP` 같은 게 붙어 있다.
+    size_t pos = 0;
+    while (pos < firstSnapshot_.size()) {
+        const uint8_t op = firstSnapshot_[pos];
+        if (op == static_cast<uint8_t>(Op::UPDATE_STREAM)) {
+            const UpdateMsg um =
+                DecodeUpdate(firstSnapshot_.data() + pos + 1, firstSnapshot_.size() - pos - 1, nullptr);
+            if (um.ok && um.consumed > 0) { spawnX_ = um.x; spawnY_ = um.y; }
+            return;
+        }
+        const size_t msz = MessageSize(firstSnapshot_.data() + pos, firstSnapshot_.size() - pos,
+                                       /*fromClient=*/false);
+        if (msz == 0) return;            // 모르는 것 — 기본값을 쓴다
+        pos += msz;
+    }
+}
+
 void Server::SetInfoTemplate(const uint8_t* body, size_t n) {
     infoBody_.assign(body, body + n);
 }
@@ -882,7 +903,10 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //   그 덤프에서 정품이 쓴 자리를 그대로 쓴다.
                 //   09-05 덤프(bludeath.map)의 상태갱신 머리: x=3864 y=2534.
                 //   ⚠ estate 좌표(2304,3498)를 bludeath 에 쓰면 맵 밖이라 아무것도 안 그려진다.
-                if (s.x == 0 && s.y == 0) { s.x = 3864; s.y = 2534; }
+                // ★★ 그래서 **상수로 박지 않고 서두에서 읽는다**(`SetFirstSnapshot`).
+                //   2026-09-08: 서두를 estate 로 바꿨는데 스폰이 bludeath 값 그대로라
+                //   **사람만 세계에서 멀리 떨어져** 있었다. 위 경고가 반대로 실현된 것이다.
+                if (s.x == 0 && s.y == 0) { s.x = spawnX_; s.y = spawnY_; }
                 // ★ 오브젝트 번호는 **접속마다 달라야 한다**. 전에는 모두 713 이라
                 //   둘째 클라가 첫째와 같은 번호를 받아 화면이 검었다(2026-09-08).
                 if (s.netCode == 0) s.netCode = nextPlayerNetCode_++;
@@ -967,11 +991,38 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
 // ⚠ **무늬 찾기로 하지 않는다.** 뜯어서(DecodeUpdate) 고치고 다시 짠다(EncodeUpdate).
 //   바이트열을 눈대중으로 찾으면 우연히 같은 자리를 건드린다.
 // 돌려주는 값 = 갈아 끼운 것이 있으면 참(그때만 out 이 채워진다).
+// ★★★ 서두에 실린 **남의 번호**를 이 사람 번호로 바꾼다.
+//   `0xa4` 안의 사람 항목만 고치면 모자란다 — 장비·체력·부활은 `0xcc` 껍데기 안에
+//   **대상 번호를 앞 2바이트로** 달고 온다. 그 번호가 남의 것이면 클라는
+//   「713번 사람은 만들었는데 입힐 장비와 체력은 715번 것」이 되어 **몸을 못 그린다**.
+//   실측(2026-09-08, 내 번호 713):
+//       dd cb 02 4b 00 4b 00        최대 체력 → 0x02cb = 715
+//       e9 cb 02 dd 07 00 00 ff 01  살려내기   → 715
+//   길이를 안 바꾸는 **자리 치환**이라 뒤 스트림이 밀리지 않는다.
+static void PatchSeqTargets(std::vector<uint8_t>& buf, uint16_t from, uint16_t to) {
+    if (from == to) return;
+    const uint8_t f0 = static_cast<uint8_t>(from), f1 = static_cast<uint8_t>(from >> 8);
+    const uint8_t t0 = static_cast<uint8_t>(to),   t1 = static_cast<uint8_t>(to >> 8);
+    size_t q = 0;
+    while (q + 4 <= buf.size()) {
+        if (buf[q] != static_cast<uint8_t>(Op::SEQ_IMPORTANT)) { ++q; continue; }
+        const size_t inner = buf[q + 3];
+        if (q + 4 + inner > buf.size()) break;
+        // 껍데기 머리 4바이트 뒤가 속 메시지다. `[오프코드][대상번호 2]…` 꼴이면 바꾼다.
+        if (inner >= 3 && buf[q + 5] == f0 && buf[q + 6] == f1) {
+            buf[q + 5] = t0;
+            buf[q + 6] = t1;
+        }
+        q += 4 + inner;
+    }
+}
+
 static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCode,
                                int x, int y, std::vector<uint8_t>& out) {
     out.clear();
     out.reserve(frag.size() + 16);
     bool any = false;
+    uint16_t origPlayer = 0;      // 서두에 박힌 남의 번호
     size_t pos = 0;
     while (pos < frag.size()) {
         const uint8_t op = frag[pos];
@@ -990,6 +1041,7 @@ static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCod
         bool hit = false;
         for (auto& e : um.objects) {
             if (e.type != kPlayerType) continue;
+            if (origPlayer == 0) origPlayer = e.netCode;   // 껍데기 치환에 쓸 남의 번호
             e.alias = 0xff;                  // 전체 번호로 다시 소개한다
             e.netCode = netCode;
             e.x = x;
@@ -1020,6 +1072,8 @@ static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCod
     // ⚠ 끝까지 못 읽었으면 **남은 것은 원본 그대로** 붙인다. 통째로 포기하면
     //   갈아 끼우기가 조용히 안 먹는다(2026-09-08: 그래서 첫 시도가 헛돌았다).
     if (pos < frag.size()) out.insert(out.end(), frag.begin() + pos, frag.end());
+    // ★★★ 껍데기 속 대상 번호도 함께 옮긴다 — 여기까지 해야 장비·체력이 이 사람에게 붙는다.
+    PatchSeqTargets(out, origPlayer, netCode);
     return true;
 }
 

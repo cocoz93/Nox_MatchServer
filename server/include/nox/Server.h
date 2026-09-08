@@ -308,7 +308,9 @@ public:
     //   없으면 클라가 로딩에서 안 넘어간다.
     void SetPostMap(const std::vector<std::vector<uint8_t>>& v) { postMap_ = v; }
     // ★ 접속 직후 한 번 내보낼 첫 세계 스냅샷. 없으면 클라 화면이 검은 채로 남는다.
-    void SetFirstSnapshot(const std::vector<uint8_t>& v) { firstSnapshot_ = v; }
+    // ★★ 스냅샷을 넣으면 **스폰 자리도 여기서 정해진다.** 정의는 Server.cpp.
+    //   서두가 찍힌 그 맵의 그 자리라야 사람이 세계 오브젝트들과 같은 동네에 선다.
+    void SetFirstSnapshot(const std::vector<uint8_t>& v);
     // ★ 진단용 — 켜면 매 틱 「내가 만든 것」 대신 **정품이 보냈던 조각**을 순서대로 내보낸다.
     void SetMirror(const std::vector<std::vector<uint8_t>>& v) {
         mirror_ = v;
@@ -621,6 +623,15 @@ private:
     //   받은 것만 봤다. 사람과 안 부딪히게 넉넉히 띄운 자리에서 시작할 뿐이다.
     // 사람 오브젝트 번호. 정품이 713·715 를 쓰는 자리라 그 언저리에서 시작한다.
     uint16_t nextPlayerNetCode_ = 713;
+    // ★★ 스폰 자리. **서두(첫 세계 스냅샷)의 머리 좌표에서 읽는다** — 서두가 찍힌 맵의
+    //   그 자리다. 상수로 박아 두면 맵이 바뀌는 순간 **사람만 세계에서 멀리 떨어진다**.
+    //   실측(2026-09-08): 서두는 estate 인데 스폰은 bludeath 좌표(3864,2534)라
+    //   스냅샷 속 다른 오브젝트들이 (2500~3400, 3200~3800)에 있는데 사람만 저쪽에 있었다.
+    //   ⚠ 이 파일 안에 「estate 좌표를 bludeath 에 쓰면 맵 밖」이라는 경고가 이미 있었다 —
+    //     그 경고가 **반대 방향으로** 실현된 것이다.
+    //   서두에서 못 읽으면 아래 기본값(09-05 bludeath 덤프 값)으로 떨어진다.
+    int spawnX_ = 3864;
+    int spawnY_ = 2534;
     uint16_t nextShotNetCode_ = 4096;
     std::map<uint8_t, unsigned long long> spells_;
     unsigned long long spellsOnSelf_ = 0;
