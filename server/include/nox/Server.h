@@ -493,6 +493,15 @@ public:
     int Tick(uint32_t nowMs, std::vector<OutPacket>& out);
 
     uint32_t frame() const { return frame_; }
+    // ★ 게임에 들어와 있는 사람 수. **「서로 보임」이 안 될 때 여기부터 본다** —
+    //   와이어를 뜯어 세면 내 디코더가 항목을 잘못 쪼개 읽어 헛것을 볼 수 있다(2026-09-08).
+    size_t inGameCount() const {
+        size_t n = 0;
+        for (const auto& kv : sessions_) if (kv.second.inGame) ++n;
+        return n;
+    }
+    // 마지막 틱에 상태 갱신에 실은 사람 수(마지막으로 만든 것 기준).
+    size_t lastUpdateObjects() const { return lastUpdateObjects_; }
     unsigned long long moves() const { return moves_; }
     // 쉬는 시간을 지나 실제로 나간 근접 공격 수(누른 횟수가 아니다).
     unsigned long long melees() const { return melees_; }
@@ -597,6 +606,7 @@ private:
     uint32_t preludeFirstFrame_ = 0;
     bool sendUpdates_ = true;
     bool patchSnapshot_ = true;
+    size_t lastUpdateObjects_ = 0;   // 마지막 갱신에 실은 사람 수
     size_t mirrorAt_ = 0;   // 그 다음 41바이트 USE_MAP
     uint32_t frame_ = 0;
     uint16_t netCode_ = 0;

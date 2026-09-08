@@ -36,7 +36,11 @@ if ($Genuine) {
   $g = Join-Path $root 'third_party\opennox\opennox-server.exe'
   $spid = Spawn ('"' + $g + '" -serveronly -noDraw -port 18591') (Split-Path -Parent $g)
 } else {
-  $spid = Spawn ('"' + (Join-Path $root 'build\Release\nox_server.exe') + '" --port 18591 --quiet --dump "' + $prelude + '" ' + $ServerArgs) $root
+  # ★ 서버 로그를 파일로 받는다 — WMI 로 띄우면 콘솔이 없어 stdout 이 사라진다.
+  #   틱 로그의 「사람 N(갱신에 M)」이 **서로 보이는지**를 가르는 자리다.
+  $slog = Join-Path $ev ("srv_{0}.log" -f $Tag)
+  if (Test-Path $slog) { Remove-Item $slog -Force }
+  $spid = Spawn ('cmd /c ""' + (Join-Path $root 'build\Release\nox_server.exe') + '" --port 18591 --dump "' + $prelude + '" ' + $ServerArgs + ' > "' + $slog + '" 2>&1"') $root
 }
 Start-Sleep -Seconds 3
 $ppid = Spawn ('"' + (Join-Path $root 'build\Release\nox_proxy.exe') + '" --listen 18590 --host 127.0.0.1 --host-port 18591 --dump "' + $dump + '"') $root
@@ -71,6 +75,12 @@ if ($alive2) {
 $sc = @(Select-String -Path $dump -Pattern 'S->C' -ErrorAction SilentlyContinue).Count
 Write-Host ""
 Write-Host ("=== 서버→클라 {0}건 ===" -f $sc)
+# ★ 서버가 스스로 말하는 사람 수 — 와이어를 뜯어 세는 것보다 이쪽이 믿을 만하다
+$slog2 = Join-Path $ev ("srv_{0}.log" -f $Tag)
+if (Test-Path $slog2) {
+  Write-Host "--- 서버 틱 로그 마지막 3줄 ---"
+  Get-Content $slog2 -Tail 3 -ErrorAction SilentlyContinue
+}
 Write-Host ("화면: onox_{0}_A.png · onox_{0}_B.png · onox_{0}_A2.png(B 접속 뒤 A 화면)" -f $Tag)
 # 상대별 조각 수 — 둘 다 제대로 붙었으면 양쪽 다 수십 개가 나온다
 $snap = Join-Path $ev ("SNAP_{0}.txt" -f $Tag)

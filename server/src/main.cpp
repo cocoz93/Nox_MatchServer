@@ -375,9 +375,14 @@ int main(int argc, char** argv) {
                 // ★ 판이 끝났나도 같이 — 아레나의 끝조건이 「한 판이 시작되고 끝난다」라서
                 //   이 한 글자가 그 판정이다. 승리 조각(0x58)은 속 짜임이 미상이라
                 //   클라 화면에 안 그려질 수 있으니, 서버 쪽에서 보이게 둔다.
-                std::printf("[틱] 프레임 %u · 조각 %zu개 · 걸음 %llu · 근접 %llu · "
+                // ★ 「사람」 = 게임에 들어와 있는 수 / 갱신에 실은 수.
+                //   **둘이 서로 보이는지**를 가르는 자리다. 와이어를 뜯어 세면
+                //   내 디코더가 항목을 잘못 쪼개 헛것을 볼 수 있다(2026-09-08 세 번).
+                std::printf("[틱] 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
+                            "걸음 %llu · 근접 %llu · "
                             "주문 %llu · 나는것 %zu · 맞음 %llu · 판끝 %s (누적 틱 %llu)\n",
-                            srv.frame(), made, srv.moves(), srv.melees(),
+                            srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
+                            srv.moves(), srv.melees(),
                             nSpell, srv.flying(), srv.hits(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 std::fflush(stdout);
