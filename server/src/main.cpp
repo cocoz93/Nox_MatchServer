@@ -215,6 +215,28 @@ int main(int argc, char** argv) {
             !setup.joinBody.empty() && !setup.useMapBody.empty()) {
             srv.SetJoinTemplate(setup.joinBody.data(), setup.joinBody.size());
             srv.SetUseMapTemplate(setup.useMapBody.data(), setup.useMapBody.size());
+            // ★★ **소개의 맵 이름을 서두의 맵과 맞춘다.** 소개 원본은 녹음(so_druid)인데
+            //   서두를 다른 덤프(estate)로 바꾸면 **둘이 어긋난다** — 클라 로그에
+            //   `M:"so_druid"` 로 뜨는데 실제로 읽는 맵은 estate 다(2026-09-08).
+            //   `useMapBody` 는 오프코드부터라 이름은 1번부터 시작한다.
+            if (setup.useMapBody.size() > 10) {
+                const char* mn = reinterpret_cast<const char*>(setup.useMapBody.data()) + 1;
+                size_t mlen = strnlen(mn, setup.useMapBody.size() - 1);
+                // ⚠ `USE_MAP` 은 `estate.map` 처럼 **확장자까지** 담는데(10글자),
+                //   소개(`SERVER_INFO`)의 칸은 9바이트다. `.map` 을 떼야 들어간다.
+                //   이걸 안 떼서 첫 시도가 조용히 안 먹었다(2026-09-08).
+                const char* dot = static_cast<const char*>(memchr(mn, '.', mlen));
+                if (dot) mlen = static_cast<size_t>(dot - mn);
+                if (mlen > 0 && mlen < 9) {
+                    tmpl.mapName.assign(mn, mlen);
+                    uint8_t info2[256] = {};
+                    nox::Writer w2(info2, sizeof(info2));
+                    if (tmpl.Encode(w2) && w2.ok()) {
+                        srv.SetInfoTemplate(info2, w2.written());
+                        std::printf("소개 맵 이름을 서두에 맞춤: %s\n", tmpl.mapName.c_str());
+                    }
+                }
+            }
             srv.SetPostMap(setup.postMap);
             // ★★★ 첫 세계 스냅샷 — 뽑아만 두고 **넘기는 줄이 없었다**(2026-09-08).
             //   이 한 조각에 살려내기·장비·최대 체력/마나가 다 실려 있어,
