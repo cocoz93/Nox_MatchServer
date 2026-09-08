@@ -21,7 +21,13 @@ param(
   [string]$Prelude = 'onox',
   [int]$WaitMenu = 40,
   # 둘 다 들어온 뒤 몇 초를 더 지켜보나. 늦게 죽는 것을 잡는 자리다.
-  [int]$WatchSeconds = 40
+  [int]$WatchSeconds = 40,
+  # ★ 싸움 — 둘 다 **왼버튼을 누른 채로** 둔다. 스폰이 40px 떨어져 있고
+  #   근접 사거리가 45 라 바로 닿는다(Server.h 의 kMeleeRange).
+  #   한 대 12 · 최대 체력 75 · 쉬는 시간 0.5초 → 한 사람 죽이는 데 최소 3.5초,
+  #   판끝(10킬)까지 최소 35초. 넉넉히 주려면 180 쯤.
+  #   ⚠ 첫 클릭은 **관전 풀기**라 공격이 아니다 — 접속 몰기에서 이미 한 번 썼다.
+  [int]$FightSeconds = 0
 )
 # ★ Stop 으로 두면 네이티브 도구가 stderr 에 한 줄만 뱉어도 한 바퀴가 통째로 끊긴다
 $ErrorActionPreference = 'Continue'
@@ -54,6 +60,13 @@ function Alive([int]$p) {
   return ($null -ne (Get-Process -Id $p -ErrorAction SilentlyContinue))
 }
 # 클라가 태어난 자리에서 적어 둔 pid 를 읽는다. 이름으로 다시 찾으면 이미 죽었을 때 0 이 된다.
+# ★ 공유 읽기 — 서버·프록시가 **아직 쓰고 있는** 파일이다. 그냥 열면 튕긴다.
+function ReadShared([string]$p) {
+  if (-not (Test-Path $p)) { return '' }
+  $f = New-Object IO.FileStream($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+  $r = New-Object IO.StreamReader($f, [Text.Encoding]::UTF8)
+  $t = $r.ReadToEnd(); $r.Close(); $f.Close(); return $t
+}
 function LastPid() {
   $f = Join-Path $ctrl 'lastpid.txt'
   if (-not (Test-Path $f)) { return 0 }
@@ -120,6 +133,36 @@ Write-Host ("A 상태(B 몰기 후): {0} · B 상태: {1}" -f
 if ($aAlive2) { Shot $aPid ("{0}_A2" -f $Tag) }
 if ($bAlive2) { Shot $bPid ("{0}_B2" -f $Tag) }
 
+# 4.4 싸움 — **눌렀다 떼기를 되풀이한다.**
+#
+# ★★ 누른 채로 두면 안 된다. 왼버튼(입력 코드 6)은 **누르는 순간 한 번만** 온다 —
+#   2026-09-09 실측: 180초를 누른 채 두었는데 조각 10,885 개 중 코드 6 은 **2건**뿐이고
+#   나머지는 전부 방향(코드 1)이었다. 서버 쪽 주석의 「누르고 있으면 매 틱 온다」는 틀렸다.
+#   (같은 것이 2026-09-08 기록에도 있었다 — 「4초 눌러도 코드 6 단 1회」)
+# ★ 한 대 12 · 최대 체력 75 → 죽이는 데 7대. 판끝 10킬이면 한쪽이 70대를 때려야 한다.
+#   근접 쉬는 시간이 0.5초라 **한 번 누르고 0.5초**가 가장 촘촘한 박자다.
+if ($FightSeconds -gt 0 -and (Alive $aPid) -and (Alive $bPid)) {
+  $di = Join-Path $PSScriptRoot 'di.ps1'
+  Write-Host ("--- 싸움 {0}초 (눌렀다 떼기를 되풀이) ---" -f $FightSeconds)
+  $pulse = @('inject 1')
+  foreach ($i in 1..25) { $pulse += @('mb 0 1','sleep 80','mb 0 0','sleep 420') }
+  $t0 = Get-Date
+  $over = $false
+  while (-not $over -and ((Get-Date) - $t0).TotalSeconds -lt $FightSeconds) {
+    foreach ($p in @($aPid, $bPid)) {
+      if (-not (Alive $p)) { continue }
+      & $di -Target $p -Cmd $pulse | Out-Null
+      # ★ 서버 틱 로그를 **그 자리에서** 읽는다. 끝나고 한 번만 보면
+      #   판이 언제 끝났는지 못 본다(판끝 뒤에도 로그가 계속 흐른다).
+      $last = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '\[틱\]' } | Select-Object -Last 1)
+      if ($last.Count -gt 0) { Write-Host ("  {0}" -f $last[0]) }
+      if ($last.Count -gt 0 -and $last[0] -match '판끝 예') { Write-Host '  ★ 판이 끝났다'; $over = $true; break }
+    }
+    if (-not (Alive $aPid) -or -not (Alive $bPid)) { Write-Host '  ⚠ 클라가 죽었다 — 싸움 중단'; break }
+  }
+  foreach ($p in @($aPid, $bPid)) { if (Alive $p) { & $di -Target $p -Cmd @('mb 0 0') | Out-Null } }
+}
+
 # 4.5 생존 시계열 — ★ 「죽었다/살았다」 한 번 찍는 것으로는 **늦게 죽는 것**을 못 잡는다.
 #   한 회차에서 「끄니까 살았다」로 읽었는데 실은 상대가 아직 안 들어와 있었다(2026-09-08).
 #   여기서는 초 단위로 둘을 같이 재고, 죽은 순간을 초로 남긴다.
@@ -143,14 +186,6 @@ if (Alive $aPid) { Shot $aPid ("{0}_A3" -f $Tag) }
 if (Alive $bPid) { Shot $bPid ("{0}_B3" -f $Tag) }
 
 # 5. 판정 자리
-#
-# ★ 공유 읽기로 연다 — 서버·프록시가 **아직 쓰고 있는** 파일이다.
-function ReadShared([string]$p) {
-  if (-not (Test-Path $p)) { return '' }
-  $f = New-Object IO.FileStream($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
-  $r = New-Object IO.StreamReader($f, [Text.Encoding]::UTF8)
-  $t = $r.ReadToEnd(); $r.Close(); $f.Close(); return $t
-}
 Write-Host ""
 Write-Host "================= 판정 ================="
 
@@ -166,6 +201,19 @@ if ($tick.Count -gt 0) {
     }
   }
   Write-Host ("  마지막 틱: {0}" -f $tick[-1])
+  # ★ **가장 큰 값**을 따로 뽑는다 — 판이 끝나면 계수기가 되돌아가서
+  #   마지막 줄만 보면 「한 판이 돌았다」를 놓친다.
+  $best = @{ '근접'=0; '맞음'=0; '주문'=0; '걸음'=0 }
+  $roundOver = $false
+  foreach ($l in $tick) {
+    foreach ($k in @('근접','맞음','주문','걸음')) {
+      if ($l -match ($k + ' (\d+)') -and [int]$Matches[1] -gt $best[$k]) { $best[$k] = [int]$Matches[1] }
+    }
+    if ($l -match '판끝 예') { $roundOver = $true }
+  }
+  Write-Host ("  최대: 걸음 {0} · 근접 {1} · 주문 {2} · 맞음 {3} · 판끝 {4}" -f
+    $best['걸음'], $best['근접'], $best['주문'], $best['맞음'],
+    $(if ($roundOver) { '**예**' } else { '아니오' }))
 }
 
 # ⑵ 세션별 시계열 — ★ **「사람 2」만 보고 「둘 다 붙었다」로 읽으면 안 된다.**
