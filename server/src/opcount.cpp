@@ -156,6 +156,12 @@ int main(int argc, char** argv) {
                                     std::printf("%02x ", e.extraBytes[j]);
                                 std::printf("]\n");
                             }
+                            // ★ **원바이트도 같이.** 항목으로 뜯으면 같아 보여도
+                            //   바이트로는 다를 수 있다 — 뜯는 쪽이 갈래를 열어 맞춰 버리기 때문.
+                            std::printf("       원문 a4 ");
+                            for (size_t j = 0; j < um.consumed && j < 40; ++j)
+                                std::printf("%02x ", b[eaten + 1 + j]);
+                            std::printf("(%zu바이트)\n", um.consumed);
                         }
                     }
                     else { ++updUnread; break; }
