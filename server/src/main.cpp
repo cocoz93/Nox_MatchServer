@@ -211,6 +211,10 @@ int main(int argc, char** argv) {
             srv.SetJoinTemplate(setup.joinBody.data(), setup.joinBody.size());
             srv.SetUseMapTemplate(setup.useMapBody.data(), setup.useMapBody.size());
             srv.SetPostMap(setup.postMap);
+            // ★★★ 첫 세계 스냅샷 — 뽑아만 두고 **넘기는 줄이 없었다**(2026-09-08).
+            //   이 한 조각에 살려내기·장비·최대 체력/마나가 다 실려 있어,
+            //   빠지면 이름표만 뜨고 몸이 없다.
+            srv.SetFirstSnapshot(setup.firstSnapshot);
             srv.SetSendUpdates(!noUpdate);
             // ★★ 서두(prelude) — 정품이 접속 뒤 보낸 **앞 9개 조각**을 그대로 흘려보내고,
             //   그 뒤부터 내 생성으로 이어받는다. 이걸 빼면 클라 화면이 검은 채로 남는다.

@@ -16,6 +16,10 @@
 
 namespace nox {
 
+// 정의는 아래 틱 앞에 있다. 접속 처리(첫 세계 스냅샷)에서 먼저 부르므로 여기서 알린다.
+static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCode,
+                               int x, int y, std::vector<uint8_t>& out);
+
 void Server::SetInfoTemplate(const uint8_t* body, size_t n) {
     infoBody_.assign(body, body + n);
 }
@@ -919,6 +923,23 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     Emit(s, /*reliable=*/true, /*stream=*/0, p.data(), p.size(), out);
                     ++handled_;
                 }
+                // ★★★ **첫 세계 스냅샷** — 이 한 조각에 사람을 그리는 데 필요한 것이 다 있다.
+                //   정품 덤프를 나란히 놓고 재어 확정했다(2026-09-08, 487바이트 조각 하나):
+                //
+                //     27 a4 b2 a7 aa e4 cc(e4) cc(dd) de cc(e9) cc(4c) cc(60) cc(4c) cc(60)
+                //     cc(4c) cc(60) cc(4c) cc(44) cc(60) cc(6a) ef cc(b3) 67 cc(5a) 49
+                //     cc(dd) de 48 cc(43)
+                //
+                //   `0xe9` 살려내기 · `0x60` 장비 넷 · `0x4c` 집을 것 넷 ·
+                //   `0xdd`/`0xde` 최대 체력·마나 · `0x43` 현재 체력 · `0x48` 능력치.
+                //   이걸 안 보내면 **이름표만 뜨고 몸이 없고 막대가 텅 빈다** — 실측 증상 그대로다.
+                //
+                // ⚠ 뽑아만 두고 **아무도 안 보내고 있었다**. `SetFirstSnapshot` 은 정의만
+                //   있었고 부르는 곳이 없었다 — 이 파일 머리 주석이 경고하던 그 빠진 배선이다.
+                // ⚠⚠ **여기서 바로 보내면 안 된다.** 클라가 아직 맵을 안 읽었다 —
+                //   같은 묶음에 붙여 보냈더니 화면이 검은 채로 남았다(2026-09-08 실측).
+                //   정품처럼 몇 틱 뒤로 미룬다. 실제 발송은 `Tick` 에서.
+                if (!firstSnapshot_.empty()) s.snapshotIn = kSnapshotDelayTicks;
                 break;
             }
 
@@ -1101,6 +1122,19 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     for (auto& kv : sessions_) {
         Session& s = kv.second;
         if (!s.inGame) continue;
+
+        // ★★★ 첫 세계 스냅샷 — 접속 처리에서 예약해 둔 것을 **몇 틱 뒤** 여기서 보낸다.
+        //   이 한 조각에 `0xe9` 살려내기 · `0x60` 장비 넷 · `0x4c` 집을 것 넷 ·
+        //   `0xdd`/`0xde` 최대 체력·마나가 다 실려 있다(정품 대조, 2026-09-08).
+        //   접속과 같은 묶음으로 보내면 클라가 아직 맵을 안 읽어 그냥 버린다.
+        if (s.snapshotIn >= 0 && --s.snapshotIn < 0 && !firstSnapshot_.empty()) {
+            // 서두는 남의 세션 녹음이라 사람 항목의 번호·자리가 남의 것이다.
+            std::vector<uint8_t> patched;
+            const std::vector<uint8_t>& snap =
+                PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched)
+                    ? patched : firstSnapshot_;
+            Emit(s, /*reliable=*/true, /*stream=*/0, snap.data(), snap.size(), out);
+        }
 
         // 죽어 있고 때가 됐으면 되살린다.
         if (s.respawnAtFrame != 0 && frame_ >= s.respawnAtFrame) {

@@ -30,9 +30,14 @@ public class WinCtl {
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint f);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
   public const uint LDOWN = 0x0002, LUP = 0x0004, KEYUP = 0x0002;
+  // 절대 좌표 이동 — 0..65535 로 정규화해 보낸다.
+  // ⚠ VIRTUALDESK 를 같이 세우지 않으면 **주 모니터 기준**이라 둘째 모니터가 안 닿는다.
+  public const uint MOVE = 0x0001, ABSOLUTE = 0x8000, VIRTUALDESK = 0x4000;
 }
 '@
 
@@ -56,8 +61,36 @@ function ToScreen([int]$cx, [int]$cy) {
 
 if ($ClickX -ge 0 -and $ClickY -ge 0) {
   $s = ToScreen $ClickX $ClickY
-  [WinCtl]::SetCursorPos($s[0], $s[1]) | Out-Null
-  Start-Sleep -Milliseconds 250
+  # ⚠⚠ **`SetCursorPos` 만으로는 녹스 커서가 안 따라온다.** 메뉴가 뜬 뒤에는 게임이
+  #   커서를 잡고 있어 그 호출을 무시한다. 지문 = **직전 단계의 커서 자리에 그대로
+  #   남아 있고 클릭이 헛돈다**(2026-09-08: 메인 메뉴에서 Multiplay 를 눌렀는데
+  #   커서가 Play Intro 위에 남아 그 항목이 강조돼 있었다. 두 걸음으로 밀어도 같았다).
+  #   답 = **입력 이벤트로 옮긴다**. `mouse_event` 의 절대 이동은 시스템이 진짜
+  #   마우스 움직임으로 만들어 주므로 SDL 이 읽는 경로를 그대로 탄다.
+  # ⚠⚠ **모니터가 둘이면 주 모니터 기준으로 재면 안 된다.** SM_CXSCREEN(1920)으로
+  #   정규화했더니 커서가 화면 왼쪽 위로 튀었다(2026-09-08). 가상 화면 전체
+  #   (여기선 3840x1080)를 기준으로 재고 VIRTUALDESK 를 같이 세운다.
+  $vx = [WinCtl]::GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+  $vy = [WinCtl]::GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
+  $vw = [WinCtl]::GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+  $vh = [WinCtl]::GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
+  $flags = [WinCtl]::MOVE -bor [WinCtl]::ABSOLUTE -bor [WinCtl]::VIRTUALDESK
+  # ★ **한 번에 건너뛰지 말고 여러 걸음으로 간다.** 큰 점프 하나는 게임이 통째로
+  #   건너뛴다 — 두 걸음으로도 안 됐다(2026-09-08: 메인 메뉴에서 Multiplay 를 눌렀는데
+  #   커서가 직전 자리인 Play Intro 위에 남아 그 항목이 강조된 채였다).
+  #   실제 마우스처럼 잘게 움직이면 매 걸음이 움직임 이벤트가 되어 확실히 따라온다.
+  $cur = New-Object WinCtl+POINT
+  [WinCtl]::GetCursorPos([ref]$cur) | Out-Null
+  $steps = 10
+  foreach ($i in 1..$steps) {
+    $px = [int]($cur.X + ($s[0] - $cur.X) * $i / $steps)
+    $py = [int]($cur.Y + ($s[1] - $cur.Y) * $i / $steps)
+    $nx = [int]([math]::Round(($px - $vx) * 65535.0 / ($vw - 1)))
+    $ny = [int]([math]::Round(($py - $vy) * 65535.0 / ($vh - 1)))
+    [WinCtl]::mouse_event($flags, $nx, $ny, 0, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 30
+  }
+  Start-Sleep -Milliseconds 300
   [WinCtl]::mouse_event([WinCtl]::LDOWN, 0, 0, 0, [IntPtr]::Zero)
   Start-Sleep -Milliseconds 120
   [WinCtl]::mouse_event([WinCtl]::LUP, 0, 0, 0, [IntPtr]::Zero)

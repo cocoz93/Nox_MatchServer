@@ -25,11 +25,19 @@ int main(int argc, char** argv) {
     // ★ `--updates N` — 뜯은 상태 갱신 앞 N 개를 항목까지 펼쳐 찍는다.
     //   「정품이 사람을 무슨 **종류 번호**로 싣나」를 눈으로 보는 자리다.
     long updShow = 0, updShown = 0;
+    // ★ `--seq N` — 서버→클라 조각 앞 N 개를 **한 줄에 오프코드 순서대로** 찍는다.
+    //   개수만 세면 「무엇이 빠졌나」는 알아도 **「어디에 실려 오나」**를 못 본다.
+    //   서두에 넣을 메시지를 정품 덤프에서 뽑을 때 이 자리가 필요하다(2026-09-08).
+    long seqShow = 0, seqShown = 0;
     std::map<int, bool> want;
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "--recv-plain") == 0) { recvPlain = true; continue; }
         if (std::strcmp(argv[i], "--updates") == 0 && i + 1 < argc) {
             updShow = std::strtol(argv[++i], nullptr, 10);
+            continue;
+        }
+        if (std::strcmp(argv[i], "--seq") == 0 && i + 1 < argc) {
+            seqShow = std::strtol(argv[++i], nullptr, 10);
             continue;
         }
         want[(int)std::strtol(argv[i], nullptr, 16)] = true;
@@ -77,6 +85,7 @@ int main(int argc, char** argv) {
         const size_t bodyAll = d.size() - nox::kWireHeaderSize;
         size_t eaten = 0;
         int got = 0;
+        std::string seqLine;   // --seq 용, 이 조각에 실린 오프코드 순서
         while (eaten < bodyAll) {
             // ★★ **조각 끝의 0 채움은 메시지가 아니다.** 남은 게 전부 0 이면 거기서 끝난다.
             //   이걸 안 가르면 `0x00 MSG_SERVER_CONNECT`(본문 0)로 읽혀
@@ -185,6 +194,11 @@ int main(int argc, char** argv) {
             if (eaten + msz > bodyAll) break;
             ++got;
             if (send) ++sendOps[op]; else ++recvOps[op];
+            if (seqShow > 0 && send) {
+                char t[32];
+                std::snprintf(t, sizeof(t), "%s%02x", seqLine.empty() ? "" : " ", op);
+                seqLine += t;
+            }
             // ★★ `0xcc SEQ_IMPORTANT` 는 **껍데기**다 — cc | 번호 2 | 속길이 1 | 속 메시지.
             //   속을 안 더하면 REPORT_* 가 통째로 0건으로 보인다. 2026-09-06 에 그 0 을
             //   「서버가 장비를 안 줬다」로 읽어 밤을 새웠다. 여기서 같은 실수를 안 한다.
@@ -194,6 +208,12 @@ int main(int argc, char** argv) {
                 if (innerLen >= 1 && 3 + innerLen <= bl) {
                     const int iop = ib[3];
                     if (send) ++sendOps[iop]; else ++recvOps[iop];
+                    // 껍데기 속은 `cc(60)` 꼴로 적는다 — 겉만 보면 전부 `cc` 라 뭐가 왔는지 모른다
+                    if (seqShow > 0 && send && !seqLine.empty()) {
+                        char t[16];
+                        std::snprintf(t, sizeof(t), "(%02x)", iop);
+                        seqLine += t;
+                    }
                     if (want.count(iop)) {
                         std::printf("  ★속 %s %s op=0x%02x(껍데기 0xcc 안) | ",
                                     ln.dir.c_str(), ln.peer.c_str(), iop);
@@ -220,6 +240,11 @@ int main(int argc, char** argv) {
                 std::printf("\n");
             }
             eaten += 1 + (size_t)bl;
+        }
+        if (seqShow > 0 && send && !seqLine.empty() && seqShown < seqShow) {
+            ++seqShown;
+            std::printf("  [조각 %3ld] %s len=%-4zu %s%s\n", seqShown, ln.peer.c_str(), d.size(),
+                        seqLine.c_str(), eaten < bodyAll ? "  …뒤가 남음" : "");
         }
         // 키를 아직 못 받은 상대(서버 찾기 단계)는 「멈춤」이 아니다. 갈라 센다.
         if (got == 0) { if (!keyed) ++preKey; else if (send) ++stallSend; else ++stallRecv; }
@@ -260,13 +285,13 @@ int main(int argc, char** argv) {
     std::multimap<long long, int> a;
     for (auto& p : sendOps) a.insert({-p.second, p.first});
     int n = 0;
-    for (auto& p : a) { if (++n > 14) break;
+    for (auto& p : a) { if (++n > 60) break;
         std::printf("   0x%02x  %-34s x %lld\n", p.second, nox::OpName((nox::Op)p.second), -p.first); }
     std::printf("\n-- 클라→서버 상위 --\n");
     std::multimap<long long, int> b;
     for (auto& p : recvOps) b.insert({-p.second, p.first});
     n = 0;
-    for (auto& p : b) { if (++n > 14) break;
+    for (auto& p : b) { if (++n > 60) break;
         std::printf("   0x%02x  %-34s x %lld\n", p.second, nox::OpName((nox::Op)p.second), -p.first); }
 
     for (auto& w : want) {

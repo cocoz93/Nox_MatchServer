@@ -120,6 +120,11 @@ struct Session {
     bool inGame = false;
     // ★ 첫 세계 스냅샷을 몇 틱 뒤에 보낼지. 접속 직후 같은 묶음으로 보내면 클라가 못 쓴다
     //   (정품도 다른 조각 여덟 개가 지난 뒤 아홉째로 보낸다 — 2026-09-07 이분법).
+    //   ⚠ 이 주석만 있고 **필드가 없었다.** 그래서 접속 처리에서 곧바로 보냈고 화면이 검었다.
+    //     정품 조각 순서를 다시 재 보면(2026-09-08): `2b`(USE_MAP) 뒤로 `27 27 27 08 04` 가
+    //     지나간 **여섯째**에 스냅샷이 온다. 그 사이가 클라가 맵을 읽는 시간이다.
+    //   남은 틱 수. 0 이 되는 틱에 보내고 -1 로 잠근다(-1 = 보낼 것 없음 또는 이미 보냄).
+    int snapshotIn = -1;
     // ★ 서두를 어디까지 흘렸나. **접속마다 따로** — 전역으로 두면 둘째 클라가 서두를 못 받는다.
     size_t preludeAt = 0;
     // ★★ 이 사람에게 흘려보낸 프레임. **접속마다 따로 센다.**
@@ -246,6 +251,10 @@ constexpr int kProjectileSubSteps = 4;
 constexpr double kMeleeRange = 45.0;
 constexpr int kMeleeDamage = 12;
 constexpr uint32_t kMeleeCooldownTicks = 15;   // 30Hz 기준 0.5초
+
+// 첫 세계 스냅샷을 접속 뒤 몇 틱 미룰지. 정품 조각 순서에서 잰 값이다 —
+// `2b`(USE_MAP) 와 스냅샷 사이에 다섯 조각(`27 27 27 08 04`)이 지나간다.
+constexpr int kSnapshotDelayTicks = 5;
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.
