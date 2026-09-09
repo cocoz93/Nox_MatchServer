@@ -288,21 +288,30 @@ int main(int argc, char** argv) {
         ws.reserve(cells.size());
         for (const auto& w : cells) ws.emplace_back(w.x, w.y);
         srv.SetWalls(ws);
-        // 정적 오브젝트 — 이름을 와이어 번호로 바꿔 싣는다 (P4-a).
-        //   thing.bin 을 못 읽으면 벽만 켜진다 — 있으면 전부.
+        // 정적 오브젝트 — **아이템만, 정품 번호로** (P4-d).
+        //
+        // ★ 두 규칙 다 실측이다 (2026-09-10):
+        //   ① 정품 갱신·스냅샷에 실리는 정적은 아이템뿐(물약·무기·사과 — 장식 0건).
+        //      나무·불꽃을 새 번호로 소개하면 클라에 이중 실체가 생겨 **첫 프레임에
+        //      죽는다**(ao1~ao5, 문법·좌표 전수 유효였는데도).
+        //   ② 번호 = 맵 ObjectData 색인 + 75 (BluePotion 101→176 · FanChakram 105→180).
+        //      클라가 맵을 읽으며 같은 번호를 만들어 두므로 이 번호라야 실체가 합쳐진다.
+        //      ⚠ +75 는 estate 실측 — 다른 맵은 미확인.
         nox::ThingDb tdb;
         size_t nStat = 0, nSkip = 0;
         if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
             std::vector<nox::Server::WorldStatic> st;
-            uint16_t nextCode = 20000;   // 사람(713~)·투사체(4096~)와 안 겹치는 대역
-            for (const auto& o : mf.ReadObjects()) {
-                const uint16_t wire = tdb.WireByName(o.type);
-                if (wire == 0) { ++nSkip; continue; }
+            const auto objs = mf.ReadObjects();
+            for (size_t i = 0; i < objs.size(); ++i) {
+                const uint16_t wire = tdb.WireByName(objs[i].type);
+                const nox::ThingInfo* ti = wire ? tdb.ByWire(wire) : nullptr;
+                if (!ti) { ++nSkip; continue; }
+                if (!ti->isPickup) continue;   // 장식은 클라가 맵에서 스스로 만든다
                 nox::Server::WorldStatic w2;
-                w2.netCode = nextCode++;
+                w2.netCode = static_cast<uint16_t>(i + 75);
                 w2.type = wire;
-                w2.x = static_cast<int>(o.x);
-                w2.y = static_cast<int>(o.y);
+                w2.x = static_cast<int>(objs[i].x);
+                w2.y = static_cast<int>(objs[i].y);
                 st.push_back(w2);
             }
             nStat = st.size();

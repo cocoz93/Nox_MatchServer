@@ -912,8 +912,8 @@ void TestMapSections() {
 //
 // 같은 estate 맵이니 — 스냅샷의 오브젝트 좌표가 맵 파일의 오브젝트와
 // 맞아떨어져야 한다. 파서는 왕복 검증된 DecodeUpdate 를 쓴다(눈대중 파싱 금지).
-void TestSnapshotVsMap() {
-    static const uint8_t kSnap[543] = {
+// 녹음 첫 스냅샷 543B — TestSnapshotVsMap 과 TestMapNetCodeRule 이 같이 쓴다.
+static const uint8_t kSnap543[543] = {
         0x27, 0x21, 0x4b, 0xa4, 0xff, 0x00, 0x00, 0x00, 0x00, 0xde, 0x0a, 0xb0, 0x0d, 0x00, 0x00, 0xff,
 
         0xc9, 0x02, 0xc9, 0x02, 0x00, 0x01, 0xc0, 0x00, 0x0f, 0x00, 0xff, 0x28, 0x02, 0x8a, 0x04, 0xc3,
@@ -981,10 +981,13 @@ void TestSnapshotVsMap() {
         0x00, 0x4b, 0x00, 0xde, 0xc9, 0x02, 0x96, 0x00, 0x96, 0x00, 0x48, 0xc9, 0x02, 0x4b, 0x00, 0x96,
 
         0x00, 0x72, 0x06, 0x5c, 0x44, 0x23, 0x00, 0x0a, 0xcc, 0x16, 0x00, 0x03, 0x43, 0x4b, 0x00,
-    };
+};
+
+void TestSnapshotVsMap() {
+    const uint8_t* kSnap = kSnap543;
     // 27 xx xx 뒤가 a4 상태 갱신이다
     Check(kSnap[0] == 0x27 && kSnap[3] == 0xa4, "스냅샷 앞머리가 다르다");
-    const nox::UpdateMsg um = nox::DecodeUpdate(kSnap + 4, sizeof(kSnap) - 4, nullptr);
+    const nox::UpdateMsg um = nox::DecodeUpdate(kSnap + 4, sizeof(kSnap543) - 4, nullptr);
     Check(um.ok, "스냅샷 갱신을 못 뜿었다");
     if (!um.ok) return;
 
@@ -1030,6 +1033,91 @@ void TestSnapshotVsMap() {
     Check(matched >= 2, "맵 정적 오브젝트와 정확히 겹치는 항목이 둘도 안 된다 — 좌표계가 어긋났다");
     std::printf("  스냅샷↔맵 대조 — 전체번호 %zu개 중 %zu개가 맵 오브젝트와 2유닛 안 일치\n",
                 checked, matched);
+}
+
+// ── 정품 오브젝트 번호 ↔ 맵 색인 — 연번 규칙 규명 (P4-d ①) ──────────
+//
+// 정품 스냅샷의 아이템 번호(176~651)는 맵 로드 때 매기는 연번으로 보인다
+// (사과 455·456·457 이 연속). 클라도 같은 순회로 같은 번호를 만들어 두므로,
+// 서버가 **그 번호로 불러야** 실체가 합쳐진다 — 20000번대 새 번호는 이중
+// 실체를 만들어 클라를 죽였다(2026-09-10 ao1~ao5). 여기서 좌표로 짝을 지어
+// nc 와 맵 색인의 관계를 찍는다 — 규칙이 서면 P4-d ③ 의 번호 재구성 근거다.
+void TestMapNetCodeRule() {
+    const nox::UpdateMsg um =
+        nox::DecodeUpdate(kSnap543 + 4, sizeof(kSnap543) - 4, nullptr);
+    Check(um.ok, "번호 규칙 — 스냅샷을 못 뜯었다");
+    if (!um.ok) return;
+    nox::MapFile mf;
+    if (!mf.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\maps\\estate\\Estate.map")) {
+        std::printf("  번호 규칙 — 건너뜀(맵 없음)\n");
+        return;
+    }
+    const auto objs = mf.ReadObjects();
+    size_t matched = 0;
+    std::printf("  번호 규칙 — 정품 nc ↔ 맵 색인 (좌표 2유닛 짝):\n");
+    for (const auto& e : um.objects) {
+        if (e.alias != 0xff || e.type == nox::kPlayerType) continue;
+        int best = -1; double bd = 1e18;
+        for (size_t i = 0; i < objs.size(); ++i) {
+            const double dx = objs[i].x - e.x, dy = objs[i].y - e.y;
+            const double d2 = dx * dx + dy * dy;
+            if (d2 < bd) { bd = d2; best = static_cast<int>(i); }
+        }
+        if (best >= 0 && bd <= 4.0) {
+            ++matched;
+            std::printf("    nc=%3u ↔ 색인 %3d (차 %+d) %s\n", e.netCode, best,
+                        static_cast<int>(e.netCode) - best, objs[best].type.c_str());
+        }
+    }
+    // 스냅샷은 정적(맵)과 동적(서버 생성)이 섞이므로 전수 일치는 기대하지 않는다 —
+    // 좌표가 정확히 겹치는 것(=맵 아이템)만이 규칙의 표본이다.
+    Check(matched >= 2, "번호 규칙 — 맵과 겹치는 표본이 둘도 안 된다");
+}
+
+// ── 아이템 판별(isPickup) 경계 확정 (P4-d ②) ──────────
+//
+// 정품 갱신에 실리는 실측 집합(물약·무기·방어구·사과·화살통 …)은 전부 isPickup 이고,
+// 장식(나무·불꽃·꽃·화덕)은 전부 아니어야 한다. CLASS 원문도 같이 찍는다 —
+// 경계가 틀리면 여기서 원문을 보고 ParseClasses 의 후보를 고친다.
+void TestPickupClass() {
+    nox::ThingDb tdb;
+    if (!tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+        std::printf("  아이템 판별 — 건너뜀(thing.bin 없음)\n");
+        return;
+    }
+    // 정품 갱신·스냅샷 실측 집합 (2026-09-10 오픈녹스 ref + 녹음 543B)
+    static const char* kMust[] = {
+        "RedPotion", "BluePotion", "RedApple", "Cider", "WoodenShield", "BattleAxe",
+        "GreatSword", "Breastplate", "LeatherHelm", "LeatherArmoredBoots",
+        "FanChakram", "Quiver", "CrossBow", "Bow", "Sword", "LeatherArmor",
+    };
+    // ao1~ao5 붕괴 갱신의 장식 (실었다가 클라가 죽은 것들)
+    static const char* kMustNot[] = {
+        "TreePine14", "FlameImmobile", "SmallFlameImmobile", "MediumFlameImmobile",
+        "FlowersYellowSparse", "OgreFirePitUnlit",
+    };
+    size_t bad = 0;
+    for (const char* nm : kMust) {
+        const uint16_t w = tdb.WireByName(nm);
+        const nox::ThingInfo* t = w ? tdb.ByWire(w) : nullptr;
+        if (!t) { std::printf("    [?] %s — 종류표에 없음\n", nm); ++bad; continue; }
+        if (!t->isPickup) {
+            std::printf("    [✗] %-20s isPickup=0  CLASS=%s\n", nm, t->classRaw.c_str());
+            ++bad;
+        }
+    }
+    for (const char* nm : kMustNot) {
+        const uint16_t w = tdb.WireByName(nm);
+        const nox::ThingInfo* t = w ? tdb.ByWire(w) : nullptr;
+        if (!t) { std::printf("    [?] %s — 종류표에 없음\n", nm); ++bad; continue; }
+        if (t->isPickup) {
+            std::printf("    [✗] %-20s isPickup=1  CLASS=%s\n", nm, t->classRaw.c_str());
+            ++bad;
+        }
+    }
+    if (bad == 0) std::printf("  아이템 판별 — 실측 집합 %zu+%zu 전부 경계 안\n",
+                              std::size(kMust), std::size(kMustNot));
+    Check(bad == 0, "아이템 판별 경계가 실측 집합과 어긋난다 — 위 CLASS 원문으로 후보 수정");
 }
 
 // ── 시야 예산 — 상한 없이는 a4 가 통째로 비어 나간다 (P4-b 방어) ──────────
@@ -2160,6 +2248,8 @@ int main() {
     TestJoinBundle();
     TestSnapshotTail();
     TestSnapshotVsMap();
+    TestMapNetCodeRule();
+    TestPickupClass();
     TestAoiBudget();
     TestObserverExit();
     TestSnapshotSeqRenumber();

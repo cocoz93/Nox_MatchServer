@@ -329,12 +329,15 @@ static void Relativize(ObjEntry& e, uint16_t netCode, int wx, int wy,
 //   한다는 규약도 실측으로 닫혀 있다(ff+상대 기각 기록).
 //   base 는 「직전 항목의 실제 자리」로 이어 굴린다 — 사람 루프의 baseX/baseY 와 같은 축.
 //
-// ★★★ **소개(ff)는 물체당 한 임대(2초)에 1번** — introAt 스로틀 (2026-09-10 ao2~ao4).
-//   스냅샷이 소개한 20개를 갱신이 매 틱 다시 소개하니(30/s×20) **클라 게임 루프가
-//   첫 프레임에 멎었다** — 문법·종류는 전수 유효했는데도(updscan 대조), 입력이
-//   1,499B 로 한 번에 토해지고 화면이 검은 채 침묵했다. 클라는 스냅샷 소개만으로
-//   별칭을 각 1번 알려 주므로(pa2 실측: 정적 20개 a5 각 ×1) 재소개는 필요 없다.
-//   별칭을 기다리는 동안 그 물체는 **이번 갱신에서 뺀다**(base 도 안 굴린다).
+// ★★★ **정적·아이템은 「반경에 새로 들 때 한 번」만 소개하고 다시는 안 싣는다**
+//   (2026-09-10 ao1~ao6 여섯 런 + 정품 전수 대조로 확정).
+//
+//   정품 갱신 1,879건의 항목엔 정적·아이템 **별칭 항목이 0건**이다 — 항상 갱신은
+//   `a4 01 <좌표> 00 00 | cb <dx dy> 40 | 끝` 으로 **사람뿐**이고, 아이템은 첫 소개
+//   (스냅샷·큰 갱신)에 1번 실리고 끝이다. 갱신 항목은 「움직인 것」의 목록이라,
+//   아이템을 매 틱 항목에 넣으면(별칭+상대라도, 문법이 전수 유효해도) 클라 게임
+//   루프가 첫 프레임에 멎는다 — ao1~ao6 이 전부 그 죽음이었다.
+//   여기서는 introAt(이 사람에게 소개한 물체)에 없는 것만 ff 로 1번 소개한다.
 static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
                              AliasTable& tbl, std::map<uint16_t, uint32_t>& introAt,
                              uint32_t frame, int sx, int sy,
@@ -342,6 +345,7 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
     struct Near { double d2; const Server::WorldStatic* w; };
     std::vector<Near> near_;
     for (const auto& w : statics) {
+        if (introAt.count(w.netCode)) continue;   // 이미 소개했다 — 다시는 안 싣는다
         const double dx = w.x - sx, dy = w.y - sy;
         const double d2 = dx * dx + dy * dy;
         if (d2 > kAoiRadius * kAoiRadius) continue;
@@ -356,24 +360,9 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
         ObjEntry e;
         FillEntry(tbl, nr.w->netCode, nr.w->type, frame, nr.w->x, nr.w->y, 0, e,
                   /*complex=*/ThingIsComplex(nr.w->type));
-        if (e.alias != 0xff) {
-            // 별칭 흐름 — 상대가 되면 상대로, 안 되면 이번 틱은 소개 스로틀을 따진다.
-            const int dx = nr.w->x - baseX, dy = nr.w->y - baseY;
-            if (dx >= -128 && dx <= 127 && dy >= -128 && dy <= 127) {
-                e.absolute = false;
-                e.dx = static_cast<int8_t>(dx);
-                e.dy = static_cast<int8_t>(dy);
-                baseX = nr.w->x;
-                baseY = nr.w->y;
-                m.objects.push_back(e);
-                continue;
-            }
-            e.alias = 0xff;               // 별칭+절대는 금지 문법 — 소개로 되돌린다
-            e.netCode = nr.w->netCode;
-        }
-        // 소개(ff) — 한 임대 안에 다시 소개하지 않는다. 빠진 항목은 base 도 안 굴린다.
-        const auto it = introAt.find(nr.w->netCode);
-        if (it != introAt.end() && frame - it->second < kAliasTTL) continue;
+        e.alias = 0xff;                    // 소개는 늘 전체번호+절대 — 별칭이 있어도
+        e.netCode = nr.w->netCode;         // (별칭 재사용은 「움직이는 것」의 규약이다)
+        e.absolute = true;
         introAt[nr.w->netCode] = frame;
         baseX = nr.w->x;
         baseY = nr.w->y;

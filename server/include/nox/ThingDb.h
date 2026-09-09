@@ -27,12 +27,18 @@ struct ThingInfo {
     bool complex = false;
     // EXTENT CIRCLE 의 반지름. CIRCLE 이 아니면(BOX·CENTER·없음) 0.
     float radius = 0.0f;
-    // 자주 쓰는 클래스만 비트로. (전체 문자열은 서버에 필요 없다)
+    // 자주 쓰는 클래스만 비트로.
     bool isMonster = false;
     bool isPlayer = false;
     bool isMissile = false;
     bool isObstacle = false;
     bool isImmobile = false;
+    // 갱신·스냅샷에 실어도 되는 것 (P4-d). 정품이 네트워크로 부르는 정적은
+    // **아이템뿐**이라(2026-09-10 오픈녹스 ref 전수 집계: 물약·무기·사과 — 장식 0건)
+    // 이 비트로 거른다. 장식(나무·불꽃)을 실으면 클라에 이중 실체가 생겨 죽는다.
+    bool isPickup = false;
+    // CLASS 원문 — 필터 설계·진단용. '+' 로 이어진 값 그대로.
+    std::string classRaw;
 };
 
 class ThingDb {

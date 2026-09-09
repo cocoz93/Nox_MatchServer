@@ -251,9 +251,16 @@ void ParseClasses(const std::string& val, ThingInfo& t) {
         else if (c == "MISSILE") t.isMissile = true;
         else if (c == "OBSTACLE") t.isObstacle = true;
         else if (c == "IMMOBILE") t.isImmobile = true;
+        // 갱신에 실어도 되는 아이템 (P4-d — ThingDb.h isPickup 주석 참조).
+        //   후보 셋은 정품 갱신 실측 집합(물약·무기·방어구·사과·화살통)의 CLASS 를
+        //   TestPickupClass 로 찍어 확정한다.
+        else if (c == "WEAPON" || c == "ARMOR" || c == "FOOD" || c == "PICKUP")
+            t.isPickup = true;
         start = e + 1;
         if (e == val.size()) break;
     }
+    if (!t.classRaw.empty()) t.classRaw += "+";   // CLASS 속성이 여러 줄일 수 있다
+    t.classRaw += val;
 }
 
 // "CIRCLE r" 만 잡는다 — BOX·CENTER·NULL 은 반지름 0
