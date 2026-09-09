@@ -9,7 +9,9 @@ param(
   [Parameter(Mandatory=$true)][string]$Tag,
   [string]$ServerArgs = '',
   [int]$Seconds = 180,
-  [int]$WaitMenu = 40
+  [int]$WaitMenu = 40,
+  # 싸움에 쓸 시간(초). 0 이면 안 싸운다.
+  [int]$FightSeconds = 0
 )
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSScriptRoot
@@ -77,6 +79,25 @@ $rpid = 0
 $f = Join-Path $ctrl 'lastpid.txt'
 if (Test-Path $f) { [void][int]::TryParse(([IO.File]::ReadAllText($f)).Trim(), [ref]$rpid) }
 Write-Host "진짜 클라 pid=$rpid"
+
+# ★ 싸움 — 진짜 클라가 가짜를 때려 판을 끝낸다.
+#   왼버튼은 **누르는 순간 한 번만** 오므로 눌렀다 떼기를 되풀이한다(2026-09-09 실측).
+#   주문키(A~G = 스캔코드 0x1E~0x22)도 섞는다.
+if ($FightSeconds -gt 0) {
+  $di = Join-Path $PSScriptRoot 'di.ps1'
+  Write-Host ("--- 싸움 {0}초 ---" -f $FightSeconds)
+  $pulse = @('inject 1')
+  foreach ($i in 1..20) { $pulse += @('mb 0 1','sleep 80','mb 0 0','sleep 420') }
+  foreach ($k in @(0x1E,0x22)) { $pulse += @(("k 0x{0:x2} 1" -f $k),'sleep 120',("k 0x{0:x2} 0" -f $k),'sleep 600') }
+  $t0 = Get-Date
+  while (((Get-Date) - $t0).TotalSeconds -lt $FightSeconds) {
+    & $di -Target $rpid -Cmd $pulse | Out-Null
+    $tk = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '\[틱\]' } | Select-Object -Last 1)
+    if ($tk.Count) { Write-Host ("  {0}" -f $tk[0]) }
+    if ($tk.Count -and $tk[0] -match '판끝 예') { Write-Host '  ★ 판이 끝났다'; break }
+    if (-not (Get-Process -Id $rpid -ErrorAction SilentlyContinue)) { Write-Host '  ⚠ 진짜 클라가 죽었다'; break }
+  }
+}
 
 # 판정 — 서버가 세는 사람 수 · 진짜 클라 화면
 Start-Sleep -Seconds 3
