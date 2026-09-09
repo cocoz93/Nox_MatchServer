@@ -115,6 +115,12 @@ void Server::EmitNewPlayer(Session& to, const Session& who, uint8_t status,
     std::vector<uint8_t> np(joinBody_.begin() + kJoinNewPlayerAt,
                             joinBody_.begin() + kJoinNewPlayerAt + kJoinNewPlayerLen);
     PutU16(np.data() + 1, who.netCode);
+    // ★★★ **이름을 사람마다 갈라 준다.** 서두가 녹음본이라 모두가 같은 "Jack" 이었다 —
+    //   이름·외모가 똑같으니 클라가 **같은 사람으로 보고 하나만 그렸을** 수 있다.
+    //   (2026-09-09: 자리·좌표 모드·덧붙이·간격을 다 기각하고 남은 후보가 「누구냐」였다.)
+    //   이름은 3번 자리부터 UTF-16LE 다 — 실측 `2d <번호2> 4a 00 61 00 63 00 6b 00`("Jack").
+    //   첫 글자만 번호에 따라 바꾼다. 길이·짜임은 그대로라 안전하다.
+    if (np.size() > 4) np[3] = static_cast<uint8_t>('A' + (who.netCode % 26));
     // ★ 상태는 4바이트지만 우리가 쓰는 값은 하위 한 바이트뿐이다(0x423 안에 든다).
     if (np.size() > kNewPlayerStatusAt + 3) {
         np[kNewPlayerStatusAt] = status;
@@ -1488,6 +1494,23 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 // 상태는 **그 사람이 지금 어떤지** 그대로 — 관전 중이면 1, 놀고 있으면 0.
                 EmitNewPlayer(o, s, s.observer ? 1 : 0, out);   // 먼저 온 사람에게 새 사람을
                 EmitNewPlayer(s, o, o.observer ? 1 : 0, out);   // 새 사람에게 먼저 온 사람을
+
+                // ★★★ **상대 몫의 첫 스냅샷을 통째로 보낸다** (`--peer-snapshot`).
+                //   2026-09-09 — 자리·좌표 모드·덧붙이·간격·장비·번호·별칭·이름을 다 기각하고
+                //   남은 가설 = **스프라이트는 첫 스냅샷에서만 만들어지고 갱신만으로는 안 만들어진다.**
+                //   내 몸은 스냅샷에 있어 그려지고, 상대는 갱신에만 있어 미니맵에만 찍힌다.
+                //   ⚠ 09-08 에 「스냅샷을 통째로 보내면 받는 클라가 죽는다」고 적었지만
+                //     그건 **오픈녹스 클라** 이야기다 — 정품 클라는 `--peer-ops` 를 넓게 줘도 멀쩡했다.
+                if (peerSnapshot_ && !firstSnapshot_.empty()) {
+                    std::vector<uint8_t> pa, pb;
+                    const std::vector<uint8_t>& sa =
+                        PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, pa, forceHudOn_) ? pa : firstSnapshot_;
+                    Emit(o, /*reliable=*/true, /*stream=*/0, sa.data(), sa.size(), out);
+                    const std::vector<uint8_t>& sb =
+                        PatchPreludePlayer(firstSnapshot_, o.netCode, o.x, o.y, pb, forceHudOn_) ? pb : firstSnapshot_;
+                    Emit(s, /*reliable=*/true, /*stream=*/0, sb.data(), sb.size(), out);
+                    ++handled_;
+                }
             }
         }
 
@@ -1603,10 +1626,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   ⑵ 아래 상대좌표 최적화가 **첫 항목에만** 걸린다(기준이 머리 좌표라서)
         //   `sessions_` 는 주소로 묶인 map 이라 순서가 회차마다 뒤바뀐다 —
         //   맡겨 두면 남이 첫째가 되어 자기 항목이 절대좌표로 나갔다(2026-09-09 실측).
+        //   ★ `--peer-first` 로 순서를 뒤집는다 — **가르는 시험용**이다.
+        //     자기는 그려지고 남은 안 그려지는데, 둘의 차이가 이제 「목록에서의 자리」와
+        //     그에 딸린 좌표 모드(첫째=상대·나머지=절대)뿐이다. 뒤집었을 때
+        //     **남이 그려지고 자기가 안 그려지면** 원인은 자리·좌표 모드이고,
+        //     그대로면 원인은 「누구냐」쪽이다(2026-09-09).
         std::vector<Session*> order;
         order.reserve(sessions_.size());
-        for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second == &s) order.push_back(&kv2.second);
-        for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second != &s) order.push_back(&kv2.second);
+        if (peerFirst_) {
+            for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second != &s) order.push_back(&kv2.second);
+            for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second == &s) order.push_back(&kv2.second);
+        } else {
+            for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second == &s) order.push_back(&kv2.second);
+            for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second != &s) order.push_back(&kv2.second);
+        }
         // 상대좌표의 기준. 첫 항목은 머리 좌표에서 출발하고, 그 뒤로는 앞 항목 자리를 잇는다.
         int baseX = m.x, baseY = m.y;
         for (Session* op : order) {
