@@ -35,6 +35,10 @@ param(
   #   2026-09-10 에 두 번 틀렸다(배율 2.13 이라 했는데 걷기가 계속 어긋났다).
   [string]$CursorProbe = '',
   [string]$ShotDir = '',
+  # ★ 판을 실제로 뛴다 — `ctf` 는 적 깃발을 가지러 갔다 집으로, `quest` 는 몬스터를 찾아가 때린다.
+  #   **정상 배치**(멀리 떨어진 자리)에서도 판이 도는지 보는 자리다.
+  [ValidateSet('','ctf','quest')][string]$Play = '',
+  [int]$PlaySeconds = 300,
   [switch]$Quiet
 )
 $ErrorActionPreference = 'Continue'
@@ -65,14 +69,38 @@ function ReadShared([string]$p) {
 }
 
 # 마지막 `[자리]` 줄에서 이 사람의 좌표를 뽑는다
-function Where-Me() {
+function LastPos() {
   $lines = @((ReadShared $Log) -split "`r?`n" | Where-Object { $_ -match '^\[자리\]' })
-  if ($lines.Count -eq 0) { return $null }
-  $last = $lines[-1]
-  if ($last -match ("사람 {0}=(-?\d+),(-?\d+),(\d+)" -f $NetCode)) {
-    return @{ x = [double]$Matches[1]; y = [double]$Matches[2]; facing = [int]$Matches[3] }
+  if ($lines.Count -eq 0) { return '' }
+  return $lines[-1]
+}
+function Where-Me() {
+  $last = LastPos
+  if ($last -eq '') { return $null }
+  if ($last -match ("사람 {0}=(-?\d+),(-?\d+),(\d+),(\d+)" -f $NetCode)) {
+    return @{ x = [double]$Matches[1]; y = [double]$Matches[2]; facing = [int]$Matches[3]; team = [int]$Matches[4] }
   }
   return $null
+}
+# 깃발 넷 — 팀 · 지금자리 · 들렸나 · 집자리
+function Flags() {
+  $out = @()
+  foreach ($m in [regex]::Matches((LastPos), '깃발 (\d+)=(-?\d+),(-?\d+),(\d+),(-?\d+),(-?\d+)')) {
+    $out += @{ team=[int]$m.Groups[1].Value; x=[double]$m.Groups[2].Value; y=[double]$m.Groups[3].Value
+               held=[int]$m.Groups[4].Value; hx=[double]$m.Groups[5].Value; hy=[double]$m.Groups[6].Value }
+  }
+  return $out
+}
+function Monsters() {
+  $out = @()
+  foreach ($m in [regex]::Matches((LastPos), '몸 (\d+)=(-?\d+),(-?\d+)')) {
+    $out += @{ code=[int]$m.Groups[1].Value; x=[double]$m.Groups[2].Value; y=[double]$m.Groups[3].Value }
+  }
+  return $out
+}
+function RoundOver() {
+  $l = @((ReadShared $Log) -split "`r?`n" | Where-Object { $_ -match '\[틱\]' } | Select-Object -Last 1)
+  return ($l.Count -gt 0 -and $l[0] -match '판끝 예')
 }
 
 # 커서를 화면 가운데에서 screenDeg 쪽으로 밀고 오른버튼을 잠깐 누른다
@@ -261,6 +289,67 @@ if ($ScaleProbe) {
   exit 0
 }
 if ($Sweep) { Build-Table; Do-Sweep; exit 0 }
+
+# ── 판을 실제로 뛴다 ─────────────────────────────────────────
+#
+# 한 걸음 = 「지금 자리 → 목표」 각을 재고 그쪽으로 오른버튼 한 번.
+# 목표는 판마다 다르다 —
+#   깃발 : 적 깃발을 안 들었으면 그 자리로, 들었으면 우리 집으로
+#   퀘스트: 가장 가까운 몬스터로. 사거리 안이면 왼버튼으로 때린다.
+if ($Play -ne '') {
+  Build-Table
+  $t0 = Get-Date
+  $stuck = 0
+  while (((Get-Date) - $t0).TotalSeconds -lt $PlaySeconds) {
+    if (RoundOver) { Say '  ★ 판이 끝났다'; exit 0 }
+    $me = Where-Me
+    if (-not $me) { Say '  [FAIL] 자리를 잃었다'; exit 1 }
+
+    $tx = $null; $ty = $null; $what = ''
+    if ($Play -eq 'ctf') {
+      $fs = Flags
+      if ($fs.Count -lt 2) { Say '  [FAIL] 깃발이 안 보인다'; exit 1 }
+      $mine = $fs | Where-Object { $_.team -eq $me.team } | Select-Object -First 1
+      $foe  = $fs | Where-Object { $_.team -ne $me.team } | Select-Object -First 1
+      # 적 깃발이 내 자리에 붙어 오면 내가 든 것이다(들림=1 이고 거리가 가깝다)
+      $carrying = ($foe.held -eq 1 -and
+                   [math]::Sqrt([math]::Pow($foe.x-$me.x,2)+[math]::Pow($foe.y-$me.y,2)) -lt 20)
+      if ($carrying) { $tx = $mine.hx; $ty = $mine.hy; $what = '집으로' }
+      else           { $tx = $foe.x;  $ty = $foe.y;  $what = '적 깃발' }
+    } else {
+      $ms = Monsters
+      if ($ms.Count -eq 0) { Say '  몬스터가 없다 — 판이 끝난 듯'; Start-Sleep -Seconds 2; continue }
+      $near1 = $ms | Sort-Object { [math]::Sqrt([math]::Pow($_.x-$me.x,2)+[math]::Pow($_.y-$me.y,2)) } | Select-Object -First 1
+      $tx = $near1.x; $ty = $near1.y; $what = ('몬스터 {0}' -f $near1.code)
+    }
+
+    $dx = $tx - $me.x; $dy = $ty - $me.y
+    $dist = [math]::Sqrt($dx*$dx + $dy*$dy)
+    if ($Play -eq 'quest' -and $dist -le 40) {
+      # 사거리 안 — 때린다
+      & $di -Target $Pid_ -Cmd @('inject 1','mb 0 1','sleep 80','mb 0 0','sleep 450',
+                                 'mb 0 1','sleep 80','mb 0 0','sleep 450') | Out-Null
+      Say ("  {0} 사거리 안({1:N0}) — 때림" -f $what, $dist)
+      continue
+    }
+    if ($Play -eq 'ctf' -and $dist -le 25) { Start-Sleep -Milliseconds 400; continue }
+
+    $worldDeg = [math]::Atan2($dy, $dx) * $R2D
+    $wantF = [int][math]::Round((($worldDeg + 360) % 360) * 256.0 / 360.0) % 256
+    $screenDeg = ScreenAngleFor $wantF
+    Step-Toward $screenDeg
+    $after = Where-Me
+    $mv = if ($after) { [math]::Sqrt([math]::Pow($after.x-$me.x,2)+[math]::Pow($after.y-$me.y,2)) } else { 0 }
+    if ($mv -lt 6) {
+      $stuck++
+      Step-Toward (($screenDeg + 60) % 360)     # 벽 — 돌아간다
+      if ($stuck -ge 12) { Say '  [FAIL] 열두 번 막혔다'; exit 1 }
+    } else { $stuck = 0 }
+    Say ("  {0} 까지 {1,5:N0} · 화면각 {2,5:N0} · {3:N0} 감" -f $what, $dist, $screenDeg, $mv)
+  }
+  Say '  [미달] 시간 안에 못 끝냈다'
+  exit 1
+}
 Say ("목표 ({0},{1}) · 지금 ({2},{3})" -f [int]$Tx, [int]$Ty, [int]$me.x, [int]$me.y)
 Build-Table
 

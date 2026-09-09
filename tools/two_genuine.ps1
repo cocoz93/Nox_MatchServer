@@ -36,6 +36,9 @@ param(
   # ★ 걷기 시험 — A 를 지금 자리에서 이만큼 떨어진 곳까지 걸려 보낸다. "250,0" 꼴.
   #   화면각↔월드각 차(Δ)를 배우는 자리라, 붙기 전에 여기서 먼저 맞춰 둔다.
   [string]$WalkTest = '',
+  # ★ 판을 실제로 뛴다 — A 가 깃발을 가지러 가거나 몬스터를 찾아간다.
+  #   **정상 배치**(멀리 떨어진 자리)에서도 판이 도는지 보는 자리다.
+  [int]$PlaySeconds = 0,
   # ★ 직업 — **캐릭터 목록에서 어느 줄을 고르나**로 갈린다.
   #   2026-09-09 실측 목록 = **1 컨저러 · 2 위저드 · 3~5 워리어** (새로 만든 것이 맨 위로 온다).
   #   워리어는 근접(왼버튼), 위저드는 주문키(F 파이어볼 · D 연쇄번개)로 싸운다.
@@ -236,6 +239,21 @@ if ($WalkTest -ne '' -and (Alive $aPid)) {
       } else {
         & (Join-Path $PSScriptRoot 'walk_genuine.ps1') -Pid_ $aPid -NetCode $nc -Log $slog -Tx $tx -Ty $ty
       }
+    }
+  }
+}
+
+# 4.57 판 뛰기 — A 를 몰아 실제로 깃발을 나르거나 몬스터를 잡는다.
+if ($PlaySeconds -gt 0 -and $Mode -ne 'arena' -and (Alive $aPid)) {
+  $line = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '^\[자리\]' } | Select-Object -Last 1)
+  if ($line.Count -gt 0) {
+    $codes = [regex]::Matches($line[0], '사람 (\d+)=')
+    $nc = 0
+    foreach ($m in $codes) { $v=[int]$m.Groups[1].Value; if ($nc -eq 0 -or $v -lt $nc) { $nc = $v } }
+    if ($nc -gt 0) {
+      Write-Host ("--- 판 뛰기 ({0}) — 사람 {1}, {2}초 ---" -f $Mode, $nc, $PlaySeconds)
+      & (Join-Path $PSScriptRoot 'walk_genuine.ps1') -Pid_ $aPid -NetCode $nc -Log $slog `
+        -Tx 0 -Ty 0 -Play $Mode -PlaySeconds $PlaySeconds
     }
   }
 }

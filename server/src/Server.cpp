@@ -512,12 +512,15 @@ std::string Server::PositionsLine() const {
     for (const auto& kv : sessions_) {
         const Session& o = kv.second;
         if (!o.inGame) continue;
-        std::snprintf(buf, sizeof(buf), " 사람 %u=%d,%d,%u",
-                      (unsigned)o.netCode, o.x, o.y, (unsigned)o.facing);
+        std::snprintf(buf, sizeof(buf), " 사람 %u=%d,%d,%u,%u",
+                      (unsigned)o.netCode, o.x, o.y, (unsigned)o.facing, (unsigned)o.team);
         s += buf;
     }
     for (const auto& f : flags_) {
-        std::snprintf(buf, sizeof(buf), " 깃발 %u=%d,%d", (unsigned)f.team, (int)f.x, (int)f.y);
+        // 팀 = 지금자리 · 들렸나 · 집자리. 몰이가 「가서 들고 → 집으로」 하려면 셋 다 있어야 한다.
+        std::snprintf(buf, sizeof(buf), " 깃발 %u=%d,%d,%u,%d,%d", (unsigned)f.team,
+                      (int)f.x, (int)f.y, (unsigned)(f.carrier.empty() ? 0 : 1),
+                      (int)f.homeX, (int)f.homeY);
         s += buf;
     }
     for (const auto& k : pets_) {
@@ -655,8 +658,12 @@ void Server::UpdateFlags(std::vector<OutPacket>& out) {
                 // 적 깃발 — 바닥에 있고 가까우면 든다.
                 if (f.carrier.empty() && near) {
                     f.carrier = kv.first;
+                    f.atHome = false;
                     SendFlagInform(InformCode::FlagPickup, s.netCode, s.team, out);
                 }
+                // ★ **든 깃발은 든 사람을 따라다닌다.** 안 그러면 화면에서 깃발이
+                //   집에 그대로 붙어 있어 「들었는데 왜 안 따라오나」가 된다(2026-09-10).
+                if (f.carrier == kv.first) { f.x = s.x; f.y = s.y; }
             } else {
                 // 내 깃발 — 바닥에 나와 있고 가까우면 제자리로 돌린다.
                 if (f.carrier.empty() && !f.atHome && near) {

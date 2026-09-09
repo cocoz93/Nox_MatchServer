@@ -179,7 +179,9 @@ int main(int argc, char** argv) {
     int questCount = 4;
     // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —
     //   안 그러면 걸어가 붙이는 조종까지 필요해져 판정이 흐려진다.
-    double questSpread = 20.0;
+    double questSpread = 300.0;
+    // ★ 깃발 진영을 가운데에서 이만큼씩 벌린다. 사람이 **걸어가 뺏어 와야** 판이 된다.
+    int ctfSpan = 220;
     bool modeStarted = false;   // 남 항목 덧붙이 값. -1 이면 서버 기본(0x30)   // 0 이면 서버 기본값(40)
 
     for (int i = 1; i < argc; ++i) {
@@ -238,6 +240,8 @@ int main(int argc, char** argv) {
             questCount = std::atoi(argv[++i]);
         } else if (a == "--quest-spread" && i + 1 < argc) {
             questSpread = std::atof(argv[++i]);
+        } else if (a == "--ctf-span" && i + 1 < argc) {
+            ctfSpan = std::atoi(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
             dumpPath = argv[++i];
         } else {
@@ -453,11 +457,13 @@ int main(int argc, char** argv) {
             modeStarted = true;
             const int mx = srv.spawnX() + 20, my = srv.spawnY();   // 두 사람 사이
             if (mode == "ctf") {
-                // 두 깃발을 **둘 다 닿는 자리**에 둔다(사거리 40). 걸어가는 조종 없이
-                // 줍기·득점·판끝이 도는지만 본다 — **이건 간추린 판이라고 적어 둔다.**
-                srv.StartCtf(mx, my - 15, mx, my + 15);
+                // ★ **정상 배치** — 두 진영을 갈라 놓는다. 사람이 **걸어가 뺏어 와야** 득점이다.
+                //   ⚠ 전에는 둘 다 닿는 자리(사람 사이)에 뒀다. 걸어가는 조종이 없어서였는데,
+                //     그러면 줍자마자 득점이 되어 **판이 아니라 배선 확인**밖에 안 된다.
+                //     2026-09-10 에 걷기 조종을 만들었으니 제자리로 돌린다(`--ctf-span` 으로 조절).
+                srv.StartCtf(mx - ctfSpan, my, mx + ctfSpan, my);
                 std::printf("[모드] 깃발 — (%d,%d)·(%d,%d), 득점 한도 %u\n",
-                            mx, my - 15, mx, my + 15, (unsigned)nox::kCaptureLimit);
+                            mx - ctfSpan, my, mx + ctfSpan, my, (unsigned)nox::kCaptureLimit);
             } else {
                 srv.StartQuest(questCount, mx, my, questSpread);
                 std::printf("[모드] 퀘스트 — 몬스터 %d마리 (%d,%d) 반경 %.0f\n",
