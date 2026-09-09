@@ -1591,6 +1591,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         order.reserve(sessions_.size());
         for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second == &s) order.push_back(&kv2.second);
         for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second != &s) order.push_back(&kv2.second);
+        // 상대좌표의 기준. 첫 항목은 머리 좌표에서 출발하고, 그 뒤로는 앞 항목 자리를 잇는다.
+        int baseX = m.x, baseY = m.y;
         for (Session* op : order) {
             Session& o = *op;
             ++lastLoopSeen_;
@@ -1605,14 +1607,22 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   절대 모드는 앞에 `00` 표시가 더 붙는다. 정품은 그 경로를 안 쓴다.
             //   ⚠ 기준은 **머리 좌표**다 — 이 항목이 목록의 첫째일 때만 맞는다.
             //     사람이 첫 항목이라 지금은 맞지만, 앞에 뭘 더 넣으면 같이 손봐야 한다.
-            if (e.alias != 0xff && m.objects.empty()) {
-                const int dx = o.x - m.x, dy = o.y - m.y;
+            //   ★★★ **정정(2026-09-09) — 기준은 머리가 아니라 「바로 앞 항목」이다.**
+            //     뜯는 쪽(`UpdateStream.cpp`)이 `x += e.dx; y += e.dy;` 로 **이어서 더한다.**
+            //     첫 항목만 머리 좌표에서 출발할 뿐, 둘째부터는 앞 항목 자리가 기준이다.
+            //     그래서 **둘째 항목도 상대좌표를 쓸 수 있다** — 이걸 몰라서 남 항목을
+            //     늘 절대좌표로 보냈고, 그 탓에 남을 별칭으로 보낼 길이 막혀 있었다.
+            if (e.alias != 0xff) {
+                const int dx = o.x - baseX, dy = o.y - baseY;
                 if (dx >= -128 && dx <= 127 && dy >= -128 && dy <= 127) {
                     e.absolute = false;
                     e.dx = static_cast<int8_t>(dx);
                     e.dy = static_cast<int8_t>(dy);
                 }
             }
+            // 다음 항목의 기준은 이 항목의 자리다(절대로 보냈든 상대로 보냈든 같다).
+            baseX = o.x;
+            baseY = o.y;
             // ★★★ **사람이 둘 이상이면 정품은 짜임을 통째로 바꾼다** (2026-09-08 실측):
             //
             //   a4 01 <머리4> 00 00 │ ff d0 02 c9 02 │ 01 01 │ 40 00 │
@@ -1643,11 +1653,21 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 //      churn 이 큰 진짜 까닭은 따로 있다 — 정품은 2인 갱신을 거의 안 보낸다
                 //      (3,488 중 **2건**). 둘이 서로 시야 밖이라 각자 자기만 실린다.
                 //      즉 이건 **관심영역(AOI)을 안 만든 탓**이지 소개 형태 탓이 아니다.
-                e.alias = 0xff;
-                e.netCode = o.netCode;
+                //   ★★★ **정정(2026-09-09 저녁) — 매 틱 `ff` 는 클라를 무너뜨린다.**
+                //     사람 눈 판정: 둘이 움직이다 보면 **1분 안에 둘 다 끊긴다.**
+                //     끊기기 직전 와이어는 멀쩡했다(갱신 30바이트·좌표 정상). 대신 지표가 튄다 —
+                //     `a5 NEW_ALIAS` 3,073 대 갱신 2,129 로 **갱신보다 별칭이 많다**(1.44개/갱신).
+                //     정품은 0.03이다. 초당 서른 번 오브젝트를 새로 등록시키고 있었던 것.
+                //     그래서 **이미 소개한 사람은 별칭으로 보낸다** — 남 항목도 마찬가지다.
+                //     남을 별칭으로 못 보내던 까닭은 좌표를 늘 절대로 보냈기 때문인데,
+                //     기준이 「앞 항목」이라는 것을 알고 나니 상대좌표로 보낼 수 있다(위 참조).
+                if (introEveryTick_ || e.alias == 0xff) {
+                    e.alias = 0xff;
+                    e.netCode = o.netCode;
+                }
                 if (&o != &s) {
-                    e.absolute = true;
-                    e.extra = 1;
+                    e.extra = (e.alias == 0xff) ? 2 : 1;
+                    if (e.extra == 2) e.extraBytes[1] = 0x00;
                     // ★★★ **`00` 이 아니라 `0x30` 이다.** 2026-09-09 에 정품 2인 갱신과
                     //   원바이트를 나란히 놓으니 30바이트 중 **이 한 자리만** 달랐다:
                     //     내 것 … 00 ff ce 02 c9 02 <좌표4> **00** │ 00 00
@@ -1665,7 +1685,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                     //   지문 = 둘째가 들어온 지 100ms 남짓에 **먼저 있던 클라가 그냥 사라진다**
                     //   (`0x0a CLIENT_CLOSE` 도 `0xae` 도 없이 프로세스가 죽는다).
                     //   2026-09-09 실측 — `--no-update` 로 갱신만 끄면 둘 다 끝까지 살았다.
-                    e.extra = 2;
+                    //   ★ 별칭으로 보낼 때는 한 바이트(`40`)다 — 정품 1인 갱신이 그 꼴이다.
+                    e.extra = (e.alias == 0xff) ? 2 : 1;
                     e.extraBytes[0] = 0x40;
                     e.extraBytes[1] = 0x00;
                 }
