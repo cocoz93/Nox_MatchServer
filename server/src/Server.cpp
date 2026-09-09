@@ -605,6 +605,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         std::vector<OutPacket>& out) {
     Session& s = SessionFor(from);
     ++s.recvPackets;
+    s.lastSeenFrame = frame_;   // 끊긴 세션을 걷어내는 근거. Tick 의 「자리 비우기」 참조
 
     // 받은 것이 암호문이면 먼저 푼다. 사본을 뜬다 — 부르는 쪽 버퍼를 건드리지 않는다.
     // ⚠ 덤프 재생일 때는 이미 평문이라 풀면 안 된다 (SetInboundPlain 주석 참조).
@@ -1302,6 +1303,26 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         ++ticks;
     }
     if (ticks == 0) return 0;
+
+    // ── 자리 비우기 — **조용해진 세션을 걷어낸다** ──
+    //
+    // 지우는 자리가 아예 없었다. 클라를 죽이면 세션이 그대로 남아 사람 수에 계속
+    // 세어졌고, 시험할 때마다 유령이 끼어 「누가 누구를 보는가」 판정이 흐려졌다
+    // (2026-09-09 — 두 클라를 붙였는데 서버가 사람 3 이라고 했다).
+    // ⚠ 접속 절차 중인 세션도 지운다 — 서버 찾기만 하고 사라진 상대가 쌓인다.
+    {
+        std::vector<std::string> gone;
+        for (const auto& kv : sessions_) {
+            const Session& o = kv.second;
+            // 아직 한 번도 못 받은 세션(이제 막 만든 것)은 건드리지 않는다.
+            if (o.lastSeenFrame == 0) continue;
+            if (frame_ - o.lastSeenFrame > kSessionTimeoutTicks) gone.push_back(kv.first);
+        }
+        for (const std::string& addr : gone) {
+            std::printf("조용해서 내보냄: %s\n", addr.c_str());
+            sessions_.erase(addr);
+        }
+    }
 
     // ── 날아가는 것들을 민다 ──
     // 지나간 틱 수만큼 밀어야 한다. 한 번만 밀면 서버가 늦게 돈 만큼 느려진다.

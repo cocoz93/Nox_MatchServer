@@ -116,6 +116,10 @@ struct Session {
     uint32_t frame = 0;      // 이 사람에게 실어 보낼 프레임
     uint16_t netCode = 0;    // 이 사람에게 준 오브젝트 번호
     unsigned long long recvPackets = 0;
+    // ★★ 이 사람에게서 마지막으로 무언가를 받은 프레임. **끊긴 세션을 걷어내는 근거다.**
+    //   지우는 자리가 아예 없어서 클라를 죽이면 세션이 그대로 남았고, 시험할 때마다
+    //   「사람 3」 같은 유령이 끼어 판정이 흐려졌다(2026-09-09).
+    uint32_t lastSeenFrame = 0;
 
     // 게임에 들어와 있는가 — 여기가 참이면 매 틱 상태를 받는다.
     bool inGame = false;
@@ -222,6 +226,11 @@ constexpr uint16_t kPetHealth = 40;
 //   (→ `Docs/CONSOLE.md`), 우리 캡처는 `Game Type: Arena` 에 한도 없이 돌았다.
 //   열 명 죽이면 끝나는 것으로 두었을 뿐이다.
 constexpr uint16_t kArenaKillLimit = 10;
+
+// ★ 이 프레임 수만큼 아무것도 안 오면 세션을 걷어낸다. 30Hz 기준 30초. 8초로 뒀더니 **진짜 클라도 걸렸다**(2026-09-09).
+//   정품 클라는 조용해도 핑을 계속 보내므로 살아 있으면 걸리지 않는다
+//   (실측: 접속당 `0x06 CLIENT_PING` 이 꾸준히 온다).
+constexpr uint32_t kSessionTimeoutTicks = 900;
 
 // 판 시계를 얼마마다 뿌리나. 실측 표본은 **2초 남짓 간격**이었다
 // (15:05:08.299 · 10.538 · 12.709 · 14.867 — 2.2초씩). 30Hz 기준 그만큼으로 둔다.
