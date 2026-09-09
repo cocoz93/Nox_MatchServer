@@ -8,6 +8,7 @@
 #include "nox/MapFile.h"
 
 #include <cstdio>
+#include <cstring>
 
 #include "nox/NoxCrypt.h"
 
@@ -86,6 +87,129 @@ bool MapFile::Load(const std::string& path) {
 
     if (sections_.empty()) { error_ = "no sections"; return false; }
     return true;
+}
+
+// ObjectTOC + ObjectData → 오브젝트 목록. 짜임 = maps/map_objects.go ReadObjects.
+//
+//   TOC  = vers u16 · cnt u16 · [번호 u16 + 이름(len8)]*
+//   Data = vers u16 · [번호 u16(0=끝) · **채움** · 크기 u64 · 짐(크기바이트)]*
+//
+// ★ 채움 규칙이 함정이다 — binenc 의 `Align(+2)` 는 `ReadNext(8-(off+2)%8)` 인데
+//   off 는 **vers 를 뗀 자리** 기준이라, 섹션 본문 기준으로 셈하면
+//   `8 - (본문오프셋 % 8)` 이고 **경계에 서 있어도 8 을 먹는다.**
+std::vector<MapObject> MapFile::ReadObjects() {
+    std::vector<MapObject> out;
+    const MapSection* toc = Find("ObjectTOC");
+    const MapSection* dat = Find("ObjectData");
+    if (!toc || !dat) { error_ = "ObjectTOC/ObjectData missing"; return out; }
+
+    // ── TOC
+    std::vector<std::pair<uint16_t, std::string>> types;
+    {
+        const uint8_t* p = buf_.data() + toc->offset;
+        size_t off = 0, n = toc->size;
+        auto u16 = [&]() -> uint16_t {
+            if (off + 2 > n) return 0;
+            uint16_t v = p[off] | (p[off + 1] << 8); off += 2; return v;
+        };
+        const uint16_t vers = u16();
+        if (vers > 1) { error_ = "toc vers " + std::to_string(vers); return out; }
+        const uint16_t cnt = u16();
+        for (uint16_t i = 0; i < cnt; ++i) {
+            const uint16_t ind = u16();
+            if (off >= n) { error_ = "toc underrun"; return out; }
+            const uint8_t len = p[off++];
+            if (off + len > n) { error_ = "toc name underrun"; return out; }
+            types.emplace_back(ind, std::string(reinterpret_cast<const char*>(p + off), len));
+            off += len;
+        }
+    }
+    auto typeName = [&](uint16_t ind) -> const std::string* {
+        for (const auto& t : types) if (t.first == ind) return &t.second;
+        return nullptr;
+    };
+
+    // ── Data
+    const uint8_t* p = buf_.data() + dat->offset;
+    size_t off = 0;
+    const size_t n = dat->size;
+    auto u16 = [&]() -> uint16_t {
+        if (off + 2 > n) { off = n + 1; return 0; }
+        uint16_t v = p[off] | (p[off + 1] << 8); off += 2; return v;
+    };
+    const uint16_t vers = u16();
+    if (vers > 1) { error_ = "data vers " + std::to_string(vers); return out; }
+
+    for (;;) {
+        const uint16_t ind = u16();
+        if (ind == 0 || off > n) break;
+        // ★ 채움 — 경계여도 8 을 먹는다 (위 주석)
+        off += 8 - (off % 8);
+        if (off + 8 > n) { error_ = "size underrun"; return out; }
+        uint64_t sz = 0;
+        for (int i = 7; i >= 0; --i) sz = (sz << 8) | p[off + i];
+        off += 8;
+        if (off + sz > n) { error_ = "object overrun"; return out; }
+
+        const std::string* ty = typeName(ind);
+        if (!ty) { error_ = "toc entry missing " + std::to_string(ind); return out; }
+
+        // 짐 머리 — 두 꼴이 있다 (2026-09-10 estate 원바이트로 확정):
+        //
+        //   [Object 직접]      vers u16(61~64) · extent u32 · id u32 · x f32 · y f32 …
+        //   [타입xfer + Object] 타입vers u16 · **Object vers u16(61~64)** · extent · id · x · y …
+        //
+        //   실측 — ObeliskPrimitive 짐 `3d 00 | 40 00 | fd 0b 00 00 | 00…00 | 00 10 58 45 …`
+        //   = 타입vers 61 · Object vers 64 · extent 3069 · id 0 · x 3457.0 · y 3028.0.
+        //   판별은 「어느 u16 이 61~64 인가」로 한다. 나머지 짐은 크기로 건너뛴다.
+        if (sz >= 20) {
+            const uint8_t* q = p + off;
+            const uint16_t v0 = q[0] | (q[1] << 8);
+            const uint16_t v1 = q[2] | (q[3] << 8);
+            size_t h = SIZE_MAX;               // Object 머리가 시작하는 자리
+            if (v1 >= 61 && v1 <= 64) h = 2;   // 타입xfer vers 가 앞에 하나 더
+            else if (v0 >= 61 && v0 <= 64) h = 0;
+            if (h != SIZE_MAX && sz >= h + 18) {
+                MapObject o;
+                o.type = *ty;
+                o.extent = q[h + 2] | (q[h + 3] << 8) | (q[h + 4] << 16) |
+                           (static_cast<uint32_t>(q[h + 5]) << 24);
+                float fx, fy;
+                std::memcpy(&fx, q + h + 10, 4);
+                std::memcpy(&fy, q + h + 14, 4);
+                o.x = fx;
+                o.y = fy;
+                out.push_back(std::move(o));
+            }
+        }
+        off += static_cast<size_t>(sz);
+    }
+    return out;
+}
+
+void MapFile::DumpFirstObjects(size_t count) const {
+    const MapSection* toc = Find("ObjectTOC");
+    const MapSection* dat = Find("ObjectData");
+    if (!toc || !dat) return;
+    const uint8_t* p = buf_.data() + dat->offset;
+    const size_t n = dat->size;
+    size_t off = 2;   // vers
+    for (size_t k = 0; k < count && off + 2 <= n; ++k) {
+        const uint16_t ind = p[off] | (p[off + 1] << 8);
+        off += 2;
+        if (ind == 0) break;
+        off += 8 - (off % 8);
+        if (off + 8 > n) break;
+        uint64_t sz = 0;
+        for (int i = 7; i >= 0; --i) sz = (sz << 8) | p[off + i];
+        off += 8;
+        if (off + sz > n) break;
+        std::printf("    [짐%zu] 번호=%u 크기=%llu | ", k, ind,
+                    static_cast<unsigned long long>(sz));
+        for (size_t i = 0; i < sz && i < 40; ++i) std::printf("%02x ", p[off + i]);
+        std::printf("\n");
+        off += static_cast<size_t>(sz);
+    }
 }
 
 }  // namespace nox

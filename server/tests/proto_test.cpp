@@ -18,6 +18,7 @@
 #include "nox/ThingFlags.h"
 #include "nox/NoxCrypt.h"
 #include "nox/BlowfishTables.h"
+#include "nox/MapFile.h"
 
 namespace {
 
@@ -822,6 +823,64 @@ void TestThingDb() {
         Check(pl->radius > 0.0f, "NewPlayer 의 충돌 반지름이 0 이다 — EXTENT 가 안 읽혔다");
 
     std::printf("  thing.bin 직접 읽기 — %zu종, 기존 표와 전수 일치\n", db.Count());
+}
+
+// ── .map 섹션 워커 (독립 서버 P2-a) ──────────────────
+//
+// 시험이 보는 것 — ① 복호(키 19)와 머리가 맞는가(magic) ② 섹션 이름·크기가
+//   끝까지 읽혀 오버런 없이 나오는가 ③ 서버가 쓸 세 섹션이 있는가.
+void TestMapSections() {
+    const char* kMap = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\maps\\estate\\Estate.map";
+    FILE* probe = std::fopen(kMap, "rb");
+    if (!probe) { std::printf("  .map 섹션 워커 — 건너뜀 (맵 없음)\n"); return; }
+    std::fclose(probe);
+
+    nox::MapFile mf;
+    const bool ok = mf.Load(kMap);
+    Check(ok, ".map 읽기 실패");
+    if (!ok) { std::printf("    까닭: %s\n", mf.Error().c_str()); return; }
+
+    // 서버가 쓸 섹션 셋이 있어야 한다
+    Check(mf.Find("ObjectTOC") != nullptr, "ObjectTOC 섹션이 없다");
+    Check(mf.Find("ObjectData") != nullptr, "ObjectData 섹션이 없다");
+    Check(mf.Find("WallMap") != nullptr, "WallMap 섹션이 없다");
+    Check(mf.Find("MapInfo") != nullptr, "MapInfo 섹션이 없다");
+
+    std::printf("  .map 섹션 워커 — %zu섹션: ", mf.Sections().size());
+    for (const auto& s : mf.Sections()) std::printf("%s(%zu) ", s.name.c_str(), s.size);
+    std::printf("\n");
+
+    // ── P2-b: 오브젝트 목록 ──
+    //
+    // ★ 검증은 **녹음본과의 대조**다 — 서버 스폰 자리(3864,2534)는 estate 녹음에서
+    //   읽어 낸 것이니, 맵에도 그 근처가 걸을 수 있는 땅이라야 하고,
+    //   좌표는 전부 맵 범위(0~6000) 안이라야 한다.
+    const std::vector<nox::MapObject> objs = mf.ReadObjects();
+    Check(!objs.empty(), "오브젝트가 하나도 안 읽혔다");
+    if (!objs.empty()) {
+        size_t badPos = 0;
+        for (const auto& o : objs)
+            if (o.x < 0 || o.x > 6000 || o.y < 0 || o.y > 6000) ++badPos;
+        Check(badPos == 0, "맵 범위(0~6000) 밖 좌표가 있다 — 걸음이 밀렸다");
+
+        // 녹음본 첫 스냅샷에 실려 오던 오브젝트 종류가 맵에도 있어야 한다.
+        // (09-09 스냅샷 실측 — 종류 649 셋 · 1152 둘 · 1154 둘 등. 649 는 이름 짐작이
+        //  아니라 **좌표 대조**로 본다: 스냅샷 머리 자리(3864,2534) 반경 600 에
+        //  오브젝트가 여럿 있어야 한다.)
+        size_t nearSpawn = 0;
+        for (const auto& o : objs) {
+            const double dx = o.x - 3864, dy = o.y - 2534;
+            if (dx * dx + dy * dy < 600.0 * 600.0) ++nearSpawn;
+        }
+        Check(nearSpawn > 0, "스폰(3864,2534) 근처에 오브젝트가 하나도 없다 — 좌표가 밀렸다");
+        if (badPos || nearSpawn == 0) mf.DumpFirstObjects(3);
+        std::printf("  .map 오브젝트 — %zu개, 스폰 반경 600 안 %zu개, 첫 셋: ", objs.size(), nearSpawn);
+        for (size_t i = 0; i < objs.size() && i < 3; ++i)
+            std::printf("%s(%.0f,%.0f) ", objs[i].type.c_str(), objs[i].x, objs[i].y);
+        std::printf("\n");
+    } else if (!mf.Error().empty()) {
+        std::printf("    까닭: %s\n", mf.Error().c_str());
+    }
 }
 
 void TestObserverExit() {
@@ -1686,6 +1745,7 @@ int main() {
     TestSpellDamage();
     TestMelee();
     TestThingDb();
+    TestMapSections();
     TestObserverExit();
     TestSnapshotSeqRenumber();
     TestProjectile();

@@ -22,6 +22,18 @@ struct MapSection {
     size_t size = 0;
 };
 
+// 맵에 놓인 오브젝트 하나 — 서버가 세계를 세우는 데 필요한 것만.
+//
+// ★ 항목의 짐(xfer)은 종류마다 다르지만 **머리 다섯은 공통**이다
+//   (opennox/libs xfer_default.go: vers u16 · extent u32 · id u32 · x f32 · y f32).
+//   서버는 머리만 읽고 나머지는 크기로 건너뛴다 — 인벤토리·마법부여 따위는
+//   맵을 세우는 데 필요 없다.
+struct MapObject {
+    std::string type;    // 종류 이름 ("NewPlayer", "Tree" …)
+    uint32_t extent = 0; // 맵 안 고유 번호
+    float x = 0, y = 0;
+};
+
 class MapFile {
 public:
     bool Load(const std::string& path);
@@ -37,6 +49,14 @@ public:
     // 섹션 본문에 접근 — Find 로 받은 offset/size 와 짝
     const uint8_t* Data() const { return buf_.data(); }
     const std::string& Error() const { return error_; }
+
+    // ObjectTOC + ObjectData 를 뜯어 맵의 오브젝트 목록을 돌려준다.
+    // 실패면 빈 목록 — Error() 에 까닭.
+    std::vector<MapObject> ReadObjects();
+
+    // ★ 진단 — 첫 항목 몇 개의 짐(원바이트)을 찍는다. 짐 머리 해석이 틀렸을 때
+    //   **원바이트를 보고서** 자리표를 다시 잡는 용도다(2026-09-10 좌표 깨짐).
+    void DumpFirstObjects(size_t count) const;
 
 private:
     std::vector<uint8_t> buf_;
