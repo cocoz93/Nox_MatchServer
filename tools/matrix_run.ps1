@@ -32,7 +32,10 @@ foreach ($it in $combos) {
   $args2 = @{ Tag = $tag; Prelude = 'default'; Class = $it.c; Mode = $it.m; WatchSeconds = 6 }
   if ($it.fight -gt 0) { $args2.FightSeconds = $it.fight }
   if ($it.play  -gt 0) { $args2.PlaySeconds  = $it.play }
-  $out = & (Join-Path $PSScriptRoot 'two_genuine.ps1') @args2 2>&1 | Out-String
+  # ⚠ `2>&1` 로는 Write-Host 가 안 잡힌다 — PS5 에서 Write-Host 는 **정보 스트림(6번)**이다.
+  #   그래서 첫 판이 실제로는 「판끝 예」인데 $out 이 비어 판끝X 로 찍혔다(2026-09-10).
+  #   `*>&1` 로 모든 스트림을 합친다.
+  $out = & (Join-Path $PSScriptRoot 'two_genuine.ps1') @args2 *>&1 | Out-String
 
   # 판정 추출 — 마지막 틱 줄에서 판끝·수치, 생존
   $last = ''
