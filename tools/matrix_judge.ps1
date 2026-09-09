@@ -14,7 +14,10 @@ function ReadShared([string]$p) {
   $t = $r.ReadToEnd(); $r.Close(); $f.Close(); return $t
 }
 
-$combos = @('w_arena','w_ctf','w_quest','z_arena','z_ctf','z_quest','c_arena','c_ctf','c_quest')
+# 새 태그(직업 이름 전체)와 옛 태그 둘 다 본다
+$combos = @('warrior_arena','warrior_ctf','warrior_quest','wizard_arena','wizard_ctf','wizard_quest',
+            'conjurer_arena','conjurer_ctf','conjurer_quest',
+            'w_arena','w_ctf','w_quest','c_arena','c_ctf','c_quest')
 foreach ($c in $combos) {
   $slog = Join-Path $ev ("srv_M_{0}.log" -f $c)
   $alog = Join-Path $ev ("alive_M_{0}.log" -f $c)

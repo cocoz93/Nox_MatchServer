@@ -24,7 +24,8 @@ $combos = @(
 )
 
 foreach ($it in $combos) {
-  $tag = ('M_{0}_{1}' -f $it.c.Substring(0,1), $it.m)
+  # ⚠ 첫 글자만 쓰면 warrior/wizard 가 둘 다 'w' 라 로그가 덮인다(2026-09-10 실측)
+  $tag = ('M_{0}_{1}' -f $it.c, $it.m)
   $t0 = Get-Date
   # ⚠ **배열 스플래팅 금지** — PS 5.1 에서 이름 결합이 어긋나 'default' 가
   #   WaitMenu(int) 로 떨어지며 아홉 조합이 전부 0초에 죽었다(2026-09-10).

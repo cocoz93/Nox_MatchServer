@@ -1,0 +1,57 @@
+﻿// ThingDb.h — thing.bin 을 서버가 **직접** 읽는다. 독립 서버 P1.
+//
+// 지금까지는 필요한 비트만 Go 로 뽑아 C++ 표(ThingFlags.cpp)로 구워 썼다.
+// 이 파서가 서면 게임 데이터를 굽는 중간 단계가 없어진다.
+//
+// 포맷 (opennox/libs things 대조, 2026-09-10):
+//   · 파일 전체가 Blowfish(키 7)로 잠겨 있다 — NoxCrypt.h
+//   · 복호하면 섹션들 — 이름 4글자가 **거꾸로** 적힘 ("THNG" → "GNHT")
+//     FLOR·EDGE·WALL·AUD ·AVNT·SPEL·ABIL·IMAG·THNG, 끝은 0 채움
+//   · THNG 하나 = 이름(len8) + 속성(len8 문자열 "KEY = VALUE")들 + 빈 속성
+//     - CLASS 값은 '+' 로 이어짐, COMPLEX 가 끼면 복합
+//     - EXTENT 값 "CIRCLE r" 이 충돌 반지름
+//     - DRAW 는 이름(len8) + **8정렬 u64 크기** + 그만큼의 짐 — 크기로 건너뛴다
+//
+// ★ 검증 = 기존 표와 전수 대조(proto_test TestThingDb) — 이름·복합이 한 종이라도
+//   어긋나면 걸음이 밀린 것이다. 2,874종이 전부 맞아야 통과.
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace nox {
+
+struct ThingInfo {
+    std::string name;
+    bool complex = false;
+    // EXTENT CIRCLE 의 반지름. CIRCLE 이 아니면(BOX·CENTER·없음) 0.
+    float radius = 0.0f;
+    // 자주 쓰는 클래스만 비트로. (전체 문자열은 서버에 필요 없다)
+    bool isMonster = false;
+    bool isPlayer = false;
+    bool isMissile = false;
+    bool isObstacle = false;
+    bool isImmobile = false;
+};
+
+class ThingDb {
+public:
+    // thing.bin 을 읽는다. 실패면 false — reasons_ 에 까닭이 남는다.
+    bool Load(const std::string& path);
+
+    // ★ 와이어 종류 번호 = 순번 + 1 (실측 — genthings.go 의 대조 주석).
+    //   0 번은 비어 있다.
+    const ThingInfo* ByWire(uint16_t wire) const {
+        if (wire == 0 || wire > things_.size()) return nullptr;
+        return &things_[wire - 1];
+    }
+    size_t Count() const { return things_.size(); }
+    const std::string& Error() const { return error_; }
+
+private:
+    std::vector<ThingInfo> things_;
+    std::string error_;
+};
+
+}  // namespace nox

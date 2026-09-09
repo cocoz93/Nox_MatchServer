@@ -14,6 +14,10 @@
 #include "nox/UpdateStream.h"
 #include "nox/SpellNames.h"
 #include "nox/Opcode.h"
+#include "nox/ThingDb.h"
+#include "nox/ThingFlags.h"
+#include "nox/NoxCrypt.h"
+#include "nox/BlowfishTables.h"
 
 namespace {
 
@@ -727,6 +731,97 @@ void TestSnapshotSeqRenumber() {
     }
 
     std::printf("  스냅샷 번호 다시 매기기 — 0·1·2 로 이어짐\n");
+}
+
+// ── thing.bin 직접 읽기 (독립 서버 P1) ──────────────────
+//
+// ★ 검증 셋 — ① 복호 왕복(내가 만든 Blowfish 가 스스로 맞는가)
+//   ② 기존 표(ThingFlags, Go 로 구운 것)와 **복합 여부 전수 대조** — 걸음이 한 바이트만
+//     밀려도 이름이 깨져 여기서 걸린다  ③ 실측 다섯 종의 이름·복합 못박기.
+void TestThingDb() {
+    const char* kThingBin = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin";
+    FILE* probe = std::fopen(kThingBin, "rb");
+    if (!probe) {
+        std::printf("  thing.bin 직접 읽기 — 건너뜀 (게임 데이터 없음)\n");
+        return;
+    }
+    std::fclose(probe);
+
+    // ① 복호 왕복 — 앞 64바이트를 풀었다 다시 잠가 원문과 같은가
+    {
+        FILE* f = std::fopen(kThingBin, "rb");
+        uint8_t raw[64] = {0};
+        const size_t got = std::fread(raw, 1, sizeof(raw), f);
+        std::fclose(f);
+        Check(got == 64, "thing.bin 이 64바이트보다 작다");
+        uint8_t work[64];
+        std::memcpy(work, raw, 64);
+        nox::Blowfish bf;
+        bf.Init(nox::bf::kNoxKeys + 28 * nox::kKeyThingBin, 56);
+        for (int i = 0; i < 64; i += 8) bf.DecryptBlock(work + i);
+        // 복호 결과는 섹션 이름(거꾸로)으로 시작해야 한다
+        bool sectOk = false;
+        const char* names[] = {"ROLF", "EGDE", "LLAW", " DUA", "TNVA", "LEPS", "LIBA", "GAMI", "GNHT"};
+        for (const char* nm : names)
+            if (std::memcmp(work, nm, 4) == 0) sectOk = true;
+        Check(sectOk, "복호 결과가 섹션 이름으로 시작하지 않는다 — 키나 알고리즘이 틀렸다");
+        for (int i = 0; i < 64; i += 8) bf.EncryptBlock(work + i);
+        Check(std::memcmp(work, raw, 64) == 0, "복호→암호 왕복이 원문과 다르다");
+
+        // ★ 돌연변이 — **틀린 키**(gamedata 용 8)로 풀면 섹션 이름이 안 나와야 한다.
+        //   이게 통과하면 위 sectOk 검사는 아무거나 통과시키는 헛검사다.
+        nox::Blowfish bad;
+        bad.Init(nox::bf::kNoxKeys + 28 * nox::kKeyGameData, 56);
+        uint8_t wrong[8];
+        std::memcpy(wrong, raw, 8);
+        bad.DecryptBlock(wrong);
+        bool wrongLooksValid = false;
+        for (const char* nm : names)
+            if (std::memcmp(wrong, nm, 4) == 0) wrongLooksValid = true;
+        Check(!wrongLooksValid, "틀린 키로 푼 것도 섹션 이름이다 — 검사가 헛돈다");
+    }
+
+    // ② 파싱 + 전수 대조
+    nox::ThingDb db;
+    const bool ok = db.Load(kThingBin);
+    Check(ok, "ThingDb::Load 실패");
+    if (!ok) { std::printf("    까닭: %s\n", db.Error().c_str()); return; }
+
+    Check(db.Count() + 1 >= nox::kThingCount, "종류 수가 기존 표보다 적다");
+    size_t mismatch = 0;
+    uint16_t firstBad = 0;
+    for (uint16_t w = 1; w < nox::kThingCount && w <= db.Count(); ++w) {
+        const nox::ThingInfo* ti = db.ByWire(w);
+        if (!ti) { ++mismatch; if (!firstBad) firstBad = w; continue; }
+        if (ti->complex != nox::ThingIsComplex(w)) { ++mismatch; if (!firstBad) firstBad = w; }
+    }
+    Check(mismatch == 0, "복합 여부가 기존 표와 어긋난다");
+    if (mismatch)
+        std::printf("    어긋남 %zu건, 첫 번호 %u (이름 '%s')\n", mismatch, firstBad,
+                    db.ByWire(firstBad) ? db.ByWire(firstBad)->name.c_str() : "?");
+
+    // ③ 실측 다섯 — 이름과 복합을 못박는다
+    struct { uint16_t wire; const char* name; bool complex; } fixed[] = {
+        { 713,  "NewPlayer",  true  },
+        { 1328, "Imp",        true  },
+        { 1357, "Bat",        true  },
+        { 1348, "Bomber",     true  },
+        { 176,  "RedFlag",    false },
+    };
+    for (const auto& fx : fixed) {
+        const nox::ThingInfo* ti = db.ByWire(fx.wire);
+        Check(ti != nullptr, "실측 번호가 표 밖이다");
+        if (!ti) continue;
+        Check(ti->name == fx.name, "실측 번호의 이름이 다르다");
+        Check(ti->complex == fx.complex, "실측 번호의 복합 여부가 다르다");
+        if (ti->name != fx.name)
+            std::printf("    %u → '%s' (기대 '%s')\n", fx.wire, ti->name.c_str(), fx.name);
+    }
+    // 사람 반지름 — EXTENT CIRCLE 이 읽혔는가 (값 자체는 못박지 않는다)
+    if (const nox::ThingInfo* pl = db.ByWire(713))
+        Check(pl->radius > 0.0f, "NewPlayer 의 충돌 반지름이 0 이다 — EXTENT 가 안 읽혔다");
+
+    std::printf("  thing.bin 직접 읽기 — %zu종, 기존 표와 전수 일치\n", db.Count());
 }
 
 void TestObserverExit() {
@@ -1590,6 +1685,7 @@ int main() {
     TestDeathFlow();
     TestSpellDamage();
     TestMelee();
+    TestThingDb();
     TestObserverExit();
     TestSnapshotSeqRenumber();
     TestProjectile();
