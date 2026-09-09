@@ -1425,6 +1425,16 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   묶음(216바이트) 안 `2d` 는 87번 자리에서 시작해 129바이트다 — 6+5+7+20+49.
         if (s.pendingIntro) {
             s.pendingIntro = false;
+            // ★★★ **사람이 늘면 다음 갱신의 머리를 다시 `ff`(전체)로 되돌린다.**
+            //   2026-09-09 사람 눈 판정 — 정품 서버에서는 먼저 들어온 쪽에 상대가
+            //   **그려지는데** 내 서버는 양쪽 다 안 그려졌다. 정품 덤프에서 상대 사람이
+            //   실려 오는 갱신은 늘 **머리 별칭 `ff`**(번호 0·종류 0)에 세계 오브젝트까지
+            //   함께 담긴 큰 갱신이었다(항목 12~15개). 내 것은 접속 첫 틱에 한 번만 `ff` 를
+            //   쓰고 그 뒤로는 `01` 짜리 작은 갱신만 보냈다 —
+            //   즉 **새로 들어온 사람을 「전체 갱신」에 실어 소개한 적이 없다.**
+            for (auto& kv3 : sessions_) {
+                if (kv3.second.inGame) kv3.second.sentFirstUpdate = false;
+            }
             for (auto& kv2 : sessions_) {
                 Session& o = kv2.second;
                 if (!o.inGame || o.addr == s.addr) continue;
