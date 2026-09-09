@@ -308,12 +308,11 @@ int main(int argc, char** argv) {
                     mapPath.c_str(), ws.size(), nStat, nSkip);
         if (standalone) {
             std::string nm = mapPath;
-            const size_t sl = nm.find_last_of("\/");
+            const size_t sl = nm.find_last_of("\\/");
             if (sl != std::string::npos) nm = nm.substr(sl + 1);
             for (char& ch : nm) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
             srv.SetStandalone(nm, mf.Crc());
-            std::printf("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)
-",
+            std::printf("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)\n",
                         nm.c_str(), mf.Crc());
         }
     }
