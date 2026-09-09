@@ -9,7 +9,10 @@
 #
 #   $pid = & .\tools\onox_restart.ps1
 param(
-  [int]$WaitSeconds = 16
+  [int]$WaitSeconds = 16,
+  # ★ 창모드로 띄우면 opennox.yml 의 크기를 쓰고, 끄면 전체화면이다.
+  #   onox_join.ps1 의 좌표는 **1920x1080 전체화면 기준**이라 기본을 전체화면으로 둔다.
+  [switch]$Windowed
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -19,7 +22,7 @@ $logs = Join-Path $root '_evidence\onox_cli_auto'
 Get-Process opennox -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 
-$cmd = '"' + $exe + '" -window -logs "' + $logs + '"'
+$cmd = '"' + $exe + '"' + $(if ($Windowed) { ' -window' } else { '' }) + ' -logs "' + $logs + '"'
 $res = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
   CommandLine = $cmd; CurrentDirectory = (Split-Path -Parent $exe) }
 if ($res.ReturnValue -ne 0) { Write-Host "[FAIL] 못 띄움 반환=$($res.ReturnValue)"; exit 1 }
