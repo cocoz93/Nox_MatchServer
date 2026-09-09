@@ -20,6 +20,7 @@ add_library(nox_proto STATIC
   server/src/core/ThingDb.cpp
   server/src/core/MapFile.cpp
   server/src/core/JoinBundle.cpp
+  server/src/core/SnapshotTail.cpp
 )
 target_include_directories(nox_proto PUBLIC server/include)
 
