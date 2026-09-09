@@ -386,6 +386,8 @@ public:
     void SetPeerFirst(bool v) { peerFirst_ = v; }
     // ★ 상대 몫 첫 스냅샷 통째 보내기(--peer-snapshot).
     void SetPeerSnapshot(bool v) { peerSnapshot_ = v; }
+    // ★ 남의 종류 번호(--peer-type N). 0 이면 사람. 가르는 시험용.
+    void SetPeerType(uint16_t v) { peerType_ = v; }
     // ★ 옛 동작(매 틱 전체번호 소개)으로 되돌리는 대조용 손잡이(--intro-every-tick).
     void SetIntroEveryTick(bool v) { introEveryTick_ = v; }
     // 클라에게서 받은 별칭 알림 수. 틱 로그에 찍어 「받고 있나」를 바로 본다.
@@ -690,6 +692,8 @@ private:
     // 새 사람이 들어올 때 **상대 몫의 첫 스냅샷을 통째로** 보낸다.
     // 「스프라이트는 스냅샷에서만 만들어진다」 가설을 가르는 자리.
     bool peerSnapshot_ = false;
+    // 남을 사람 아닌 종류로 보내 본다(0 이면 사람 그대로). 가르는 시험용.
+    uint16_t peerType_ = 0;
     // 사람 둘 이상일 때 매 틱 f 로 다시 소개할지. 기본 꺼짐 — 켜면 클라가
     // 갱신마다 별칭을 새로 만든다(2026-09-09 실측: 정품의 30배).
     // ★★ 기본이 **켜짐**이다. 끄면(별칭으로 보내면) **아무도 안 그려진다**(2026-09-09 사람 눈).

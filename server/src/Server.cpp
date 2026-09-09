@@ -1649,7 +1649,14 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             ObjEntry e;
             // 별칭은 **클라와 똑같은 규칙**으로 잡는다. 한 칸만 어긋나면
             // 그때부터 클라가 엉뚱한 것을 그린다(Alias.h 참조).
-            FillEntry(s.aliases, o.netCode, kPlayerType, s.tickFrame, o.x, o.y, o.facing, e);
+            // ★ `--peer-type N` — **남을 사람 아닌 종류로 보내 본다**(가르는 시험).
+            //   자기는 그려지고 남은 안 그려지는데, 자리·좌표·덧붙이·이름·스냅샷을 다 기각했다.
+            //   남을 박쥐 같은 다른 종류로 보내서 **뭐라도 그려지면** 클라는 남의 오브젝트를
+            //   그릴 수 있는 것이고 문제는 「사람 종류」에 있다. 아무것도 안 그려지면
+            //   애초에 남 항목으로는 그릴 것을 안 만드는 것이다(2026-09-09).
+            const uint16_t useType =
+                (&o != &s && peerType_ != 0) ? peerType_ : kPlayerType;
+            FillEntry(s.aliases, o.netCode, useType, s.tickFrame, o.x, o.y, o.facing, e);
             // ★★ **별칭으로 보낼 때는 좌표도 상대로.** 정품 원바이트가 그렇다(2026-09-08):
             //     정품  … 01 <머리좌표4> 00 00 │ cb 00 00 │ 40 │ 끝     (14바이트)
             //     내 것 … 01 <머리좌표4> 00 00 │ 00 c9 <절대좌표4> │ 40 │ 끝  (17바이트)

@@ -170,6 +170,7 @@ int main(int argc, char** argv) {
     int spawnSpread = 0;
     bool peerFirst = false;
     bool peerSnapshot = false;
+    int peerType = 0;
     int peerPose = -1;   // 남 항목 덧붙이 값. -1 이면 서버 기본(0x30)   // 0 이면 서버 기본값(40)
 
     for (int i = 1; i < argc; ++i) {
@@ -196,6 +197,8 @@ int main(int argc, char** argv) {
         } else if (a == "--alias-intro") {
             // 진단용 — 이미 소개한 사람을 별칭으로 보낸다. 지금은 아무도 안 그려진다.
             introEveryTick = false;
+        } else if (a == "--peer-type" && i + 1 < argc) {
+            peerType = std::atoi(argv[++i]);
         } else if (a == "--peer-snapshot") {
             peerSnapshot = true;
         } else if (a == "--peer-first") {
@@ -295,6 +298,7 @@ int main(int argc, char** argv) {
             if (peerPose >= 0) srv.SetPeerPose((uint8_t)peerPose);
             srv.SetPeerFirst(peerFirst);
             srv.SetPeerSnapshot(peerSnapshot);
+            if (peerType > 0) srv.SetPeerType((uint16_t)peerType);
             srv.SetIntroEveryTick(introEveryTick);
             if (!peerOps.empty()) {
                 std::set<uint8_t> ops;
