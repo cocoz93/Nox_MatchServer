@@ -1157,7 +1157,23 @@ void TestArena() {
             auto body = Body(p);
             // 껍데기(0xcc) 속에 들어간다
             if (body.size() >= 5 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) &&
-                body[4] == static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER)) won = true;
+                body[4] == static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER)) {
+                won = true;
+                // ★★★ 속 짜임 — 오픈녹스 `cdecode.c` case 88 에서 확정
+                //   58 | 승자 번호 2 | 끝난 까닭 1 | 프레임 4
+                Check(body.size() >= 12, "0x58 이 8바이트가 아니다");
+                if (body.size() >= 12) {
+                    Check((body[5] | (body[6] << 8)) == 728, "0x58 의 승자 번호가 728 이 아니다");
+                    Check(body[7] == 0,
+                          "0x58 의 끝난 까닭이 0(보통 승리)이 아니다 — 여기에 점수를 실으면 안 된다");
+                    const uint32_t f = static_cast<uint32_t>(body[8]) |
+                                       (static_cast<uint32_t>(body[9]) << 8) |
+                                       (static_cast<uint32_t>(body[10]) << 16) |
+                                       (static_cast<uint32_t>(body[11]) << 24);
+                    // 0 이면 클라가 `프레임 <= 저장값(0)` 으로 **통째로 버린다**
+                    Check(f > 0, "0x58 의 프레임이 0 이다 — 클라가 그냥 버린다");
+                }
+            }
         }
         Check(won, "0x58 REPORT_DEATHMATCH_WINNER 가 안 나감");
     }

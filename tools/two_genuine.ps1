@@ -150,8 +150,13 @@ if ($bAlive2) { Shot $bPid ("{0}_B2" -f $Tag) }
 if ($FightSeconds -gt 0 -and (Alive $aPid) -and (Alive $bPid)) {
   $di = Join-Path $PSScriptRoot 'di.ps1'
   Write-Host ("--- 싸움 {0}초 (눌렀다 떼기를 되풀이) ---" -f $FightSeconds)
+  # ★ 한 번에 여섯 대씩(약 3초)만 때리고 로그를 본다.
+  #   ⚠ 전에는 스물다섯 대(약 12.5초)씩 몰아쳤다. 그 사이에 판이 끝나면 **끝난 뒤에도
+  #     계속 눌러** 승자 화면을 제 손으로 닫아 버렸다 — 2026-09-09 실측:
+  #     진 쪽(A)에는 「Qack has taught you well.」 이 떴는데 **이긴 쪽(B)에는 아무것도 없었다.**
+  #     클릭 한 번을 A 에 보내니 A 의 것도 사라져, 배너를 닫는 것이 클릭임을 확인했다.
   $pulse = @('inject 1')
-  foreach ($i in 1..25) { $pulse += @('mb 0 1','sleep 80','mb 0 0','sleep 420') }
+  foreach ($i in 1..6) { $pulse += @('mb 0 1','sleep 80','mb 0 0','sleep 420') }
   $t0 = Get-Date
   $over = $false
   while (-not $over -and ((Get-Date) - $t0).TotalSeconds -lt $FightSeconds) {

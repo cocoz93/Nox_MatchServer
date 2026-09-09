@@ -444,22 +444,34 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
             ++k->second.kills;
             if (!roundOver_ && k->second.kills >= kArenaKillLimit) {
                 roundOver_ = true;
-                // ⚠⚠ `0x58 REPORT_DEATHMATCH_WINNER` 의 **속 짜임은 모른다.**
-                //    opennox 길이표에 본문 7바이트라고만 있고(codes.go:301) 구조체가 없다.
-                //    우리 덤프에도 **0건**이다 — 겨루기 모드로 돌린 적이 없다.
-                //    길이는 맞으니 흐름은 안 어긋나지만, **안에 든 값은 확인 안 됐다.**
-                //    번호 2 + 점수 2 + 채움 3 으로 두었을 뿐이다. 표본이 생기면 고칠 것.
-                uint8_t msg[8];
-                msg[0] = static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER);
-                msg[1] = static_cast<uint8_t>(k->second.netCode);
-                msg[2] = static_cast<uint8_t>(k->second.netCode >> 8);
-                msg[3] = static_cast<uint8_t>(k->second.kills);
-                msg[4] = static_cast<uint8_t>(k->second.kills >> 8);
-                msg[5] = msg[6] = msg[7] = 0;
+                // `0x58 REPORT_DEATHMATCH_WINNER` — **짜임을 오픈녹스 원본에서 확정했다**
+                //   (2026-09-09, `client__network__cdecode.c` case 88. 우리 덤프 표본은 여전히 0건).
+                //
+                //     58 | 승자 번호 2 | 끝난 까닭 1 | 프레임 4        모두 8바이트
+                //
+                //   · **승자 번호** — 0 이면 무승부("DM_Tie"). 클라는 이 번호로
+                //     `playerInfoGetByID` 를 찾고 **빈손이면 글이 없이 지나간다.**
+                //   · **끝난 까닭** — 1 이면 「시간 초과」를 앞에 붙인다. 0 이 보통 승리이고,
+                //     0 일 때만 `sub_4947E0`(승자를 점수판에 올리는 것)이 돈다.
+                //     ⚠ 전에는 여기에 **죽인 수(10)** 를 실었다. 그래서 시간초과도 아니고
+                //       점수판에도 안 올라가는 어정쩡한 값이 됐다.
+                //   · **프레임** — ★★★ **맵을 받은 프레임보다 커야 한다.**
+                //     클라는 `if (프레임 <= 저장값) return;` 으로 **통째로 버린다.**
+                //     그 저장값은 `USE_MAP` 의 프레임에서 온다(`network_client.go`).
+                //     우리는 `USE_MAP` 에 `s.frame` 을 실으므로 지금 세고 있는 `s.tickFrame`
+                //     을 실으면 늘 그보다 크다.
+                //     ⚠ 전에는 0 을 실었다 — 저장값도 0 이라 `0 <= 0` 으로 **매번 버려졌다.**
+                //       화면에 승자가 안 뜨던 것이 이것이다.
                 for (auto& kv : sessions_) {
-                    if (kv.second.inGame) {
-                        EmitSeq(kv.second, msg, sizeof(msg), out);
-                    }
+                    Session& o = kv.second;
+                    if (!o.inGame) continue;
+                    uint8_t msg[8];
+                    msg[0] = static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER);
+                    msg[1] = static_cast<uint8_t>(k->second.netCode);
+                    msg[2] = static_cast<uint8_t>(k->second.netCode >> 8);
+                    msg[3] = 0;   // 보통 승리 (1 이면 시간 초과)
+                    PutU32(msg + 4, o.tickFrame);
+                    EmitSeq(o, msg, sizeof(msg), out);
                 }
             }
         }
