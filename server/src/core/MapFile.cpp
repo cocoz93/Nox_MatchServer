@@ -187,6 +187,34 @@ std::vector<MapObject> MapFile::ReadObjects() {
     return out;
 }
 
+// WallMap = 격자머리 18B(u16 + u32×4) + [벽 7B]* + 끝 0xff.
+//   벽 7B = x · y · 방향(위 비트는 신호) · 재질 · 변형 · 미니맵 · 손댐 (map_walls.go)
+std::vector<MapFile::WallCell> MapFile::ReadWalls() {
+    std::vector<WallCell> out;
+    const MapSection* ws = Find("WallMap");
+    if (!ws) { error_ = "WallMap missing"; return out; }
+    const uint8_t* p = buf_.data() + ws->offset;
+    const size_t n = ws->size;
+    size_t off = 18;   // 격자 머리
+    for (;;) {
+        if (off >= n) { error_ = "wall list unterminated"; out.clear(); return out; }
+        const uint8_t x = p[off];
+        if (x == 0xff) {
+            ++off;
+            // 종결 뒤에 남는 게 있으면 걸음이 밀린 것이다 (Go 도 trailing 을 오류로 본다)
+            if (off != n) { error_ = "trailing wall data " + std::to_string(n - off); out.clear(); }
+            return out;
+        }
+        if (off + 7 > n) { error_ = "wall entry underrun"; out.clear(); return out; }
+        WallCell w;
+        w.x = x;
+        w.y = p[off + 1];
+        w.dir = p[off + 2] & 0x7f;
+        out.push_back(w);
+        off += 7;
+    }
+}
+
 void MapFile::DumpFirstObjects(size_t count) const {
     const MapSection* toc = Find("ObjectTOC");
     const MapSection* dat = Find("ObjectData");

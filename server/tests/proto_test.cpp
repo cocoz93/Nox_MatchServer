@@ -881,6 +881,20 @@ void TestMapSections() {
     } else if (!mf.Error().empty()) {
         std::printf("    까닭: %s\n", mf.Error().c_str());
     }
+
+    // ── P2-c: 벽 격자 ──
+    //
+    // 포맷 자체가 검증이다 — 종결 0xff 에 **정확히** 닿아야 하고 뒤에 남으면 실패.
+    // (7바이트 걸음이 한 칸이라도 밀리면 종결을 못 만나거나 trailing 이 남는다)
+    const std::vector<nox::MapFile::WallCell> walls = mf.ReadWalls();
+    Check(!walls.empty(), "벽이 하나도 안 읽혔다");
+    if (walls.empty() && !mf.Error().empty()) std::printf("    까닭: %s\n", mf.Error().c_str());
+    if (!walls.empty()) {
+        // 크기 검산 — (3211 - 18 - 1) / 7 = 456 이 딱 떨어져야 한다
+        Check((mf.Find("WallMap")->size - 18 - 1) % 7 == 0, "WallMap 크기가 7 로 안 나뉜다");
+        std::printf("  .map 벽 — %zu칸 (격자 x %u~%u · y %u~%u)\n", walls.size(),
+                    walls.front().x, walls.back().x, walls.front().y, walls.back().y);
+    }
 }
 
 void TestObserverExit() {

@@ -58,6 +58,12 @@ public:
     //   **원바이트를 보고서** 자리표를 다시 잡는 용도다(2026-09-10 좌표 깨짐).
     void DumpFirstObjects(size_t count) const;
 
+    // WallMap → 벽 목록. 격자 칸 좌표(바이트)다 — 월드 좌표가 아니다.
+    //   한 칸 = 23 유닛 (녹스 격자 상수. 256칸 × 23 ≈ 5888 로 맵 범위와 맞는다)
+    //   ⚠ 실제 배율·오프셋 검증은 P3(벽 돌진)에서 실클라로 한다.
+    struct WallCell { uint8_t x = 0, y = 0, dir = 0; };
+    std::vector<WallCell> ReadWalls();
+
 private:
     std::vector<uint8_t> buf_;
     std::vector<MapSection> sections_;
