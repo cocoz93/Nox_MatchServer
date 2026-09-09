@@ -161,7 +161,12 @@ int main(int argc, char** argv) {
     bool hudOff = false;
     // 새 사람이 들어올 때 남들에게 넘길 오프코드 (쉼표로, 16진). 빈 문자열이면 기본값.
     std::string peerOps;
-    bool introEveryTick = false;
+    // ★★ 기본을 **서버 쪽 기본값(켜짐)에 맞춘다.** 전에는 여기서 false 로 두고
+    //   인자와 무관하게 늘 `SetIntroEveryTick(...)` 을 불러 **헤더 기본값을 덮고 있었다** —
+    //   그래서 `--intro-every-tick` 을 준 회차만 몸이 그려지고 나머지는 안 그려졌다.
+    //   「회차마다 다르다」로 보이던 것의 정체가 이것이다(2026-09-09).
+    //   끄려면 `--alias-intro` 를 준다.
+    bool introEveryTick = true;
     int spawnSpread = 0;   // 0 이면 서버 기본값(40)
 
     for (int i = 1; i < argc; ++i) {
@@ -185,6 +190,9 @@ int main(int argc, char** argv) {
             peerOps = argv[++i];
         } else if (a == "--intro-every-tick") {
             introEveryTick = true;
+        } else if (a == "--alias-intro") {
+            // 진단용 — 이미 소개한 사람을 별칭으로 보낸다. 지금은 아무도 안 그려진다.
+            introEveryTick = false;
         } else if (a == "--spawn-spread" && i + 1 < argc) {
             spawnSpread = std::atoi(argv[++i]);
         } else if (a == "--hud-off") {
