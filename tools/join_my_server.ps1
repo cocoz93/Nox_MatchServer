@@ -77,9 +77,40 @@ Write-Host (Shot "${Tag}2_chars")
 #   창 1296x999 에서 줄 y = 260 · 292 · 325 · 357, x 아무 데나(600).
 #   주입 좌표 = (화면 − 창테두리(8,31)) / 2.04  — Load 버튼 (648,790)→(313,372) 로 검산했다.
 if ($CharRow -ge 1 -and $CharRow -le 5) {
+  # ★★ **줄 클릭은 다운 60ms** — 150ms 로 누르면 드래그로 읽혀 선택이 안 바뀐다
+  #   (2026-09-10 실측: 커서는 위저드 줄 위인데 하이라이트가 1번 그대로 → 위저드 조합이
+  #   컨저러로 뛰었다. 주문 58·128 이 증거. 메뉴 버튼들은 150ms 로도 먹혀 오래 몰랐다).
+  #   클릭 뒤 **하이라이트를 픽셀로 판독**해 틀리면 재시도한다(3회).
   $rowY = @(112, 128, 144, 160, 176)[$CharRow - 1]
-  & $di -Target $pid_ -Cmd ($home3 + @('m 290 ' + $rowY,'sleep 400','mb 0 1','sleep 150','mb 0 0','sleep 900')) | Out-Null
-  Write-Host (Shot "${Tag}2b_pick")
+  Add-Type -AssemblyName System.Drawing
+  function Which-Row([string]$png) {
+    $img = [Drawing.Bitmap]::FromFile($png)
+    $rows = @(260, 292, 325, 357, 389)   # 1296x999 캡처의 줄 중심 y (실측)
+    $best = 0; $bestN = -1
+    for ($r = 0; $r -lt $rows.Count; $r++) {
+      $n = 0
+      for ($y = $rows[$r] - 8; $y -le $rows[$r] + 8; $y += 2) {
+        for ($x = 240; $x -lt 1020; $x += 6) {
+          $c = $img.GetPixel($x, $y)
+          $mx = [math]::Max($c.R, [math]::Max($c.G, $c.B))
+          $mn = [math]::Min($c.R, [math]::Min($c.G, $c.B))
+          if ($mx - $mn -lt 25 -and $mx -ge 110 -and $mx -le 210) { $n++ }
+        }
+      }
+      if ($n -gt $bestN) { $bestN = $n; $best = $r + 1 }
+    }
+    $img.Dispose()
+    return $best
+  }
+  $picked = 0
+  foreach ($try in 1..3) {
+    & $di -Target $pid_ -Cmd ($home3 + @('m 290 ' + $rowY,'sleep 500','mb 0 1','sleep 60','mb 0 0','sleep 700')) | Out-Null
+    [void](Shot "${Tag}2b_pick")
+    $picked = Which-Row (Join-Path $ctrl "${Tag}2b_pick.png")
+    if ($picked -eq $CharRow) { break }
+    Write-Host ("  ⚠ 픽 판독 {0}번 (바람 {1}번) — 재시도 {2}/3" -f $picked, $CharRow, $try)
+  }
+  Write-Host ("  픽 확인 = {0}번 줄" -f $picked)
 }
 if ($StopAtChars) { Write-Host "pid=$pid_"; Write-Host '캐릭터 목록에서 멈췄다'; exit 0 }
 & $di -Target $pid_ -Cmd ($home3 + @('m 313 372','sleep 400','mb 0 1','sleep 150','mb 0 0','sleep 8000')) | Out-Null   # Load
