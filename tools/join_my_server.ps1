@@ -102,15 +102,26 @@ if ($CharRow -ge 1 -and $CharRow -le 5) {
     $img.Dispose()
     return $best
   }
+  # ★★ **목록 진입 직후에는 클릭이 안 먹는다** — 커서가 줄 위에 정확히 있어도
+  #   하이라이트가 안 바뀐다(2026-09-10 v3 실측: 3회 전부 1번 그대로).
+  #   따로 돌린 탐침(진입 15초+ 뒤)에서는 같은 60ms 클릭이 먹혔다 → 시간이 갈랐다.
+  #   그래서 첫 시도 전에 쉬고, 시도 사이도 벌리고, 다섯 번을 준다.
+  Start-Sleep -Seconds 2
   $picked = 0
-  foreach ($try in 1..3) {
+  foreach ($try in 1..5) {
     & $di -Target $pid_ -Cmd ($home3 + @('m 290 ' + $rowY,'sleep 500','mb 0 1','sleep 60','mb 0 0','sleep 700')) | Out-Null
     [void](Shot "${Tag}2b_pick")
     $picked = Which-Row (Join-Path $ctrl "${Tag}2b_pick.png")
     if ($picked -eq $CharRow) { break }
-    Write-Host ("  ⚠ 픽 판독 {0}번 (바람 {1}번) — 재시도 {2}/3" -f $picked, $CharRow, $try)
+    Write-Host ("  ⚠ 픽 판독 {0}번 (바람 {1}번) — 재시도 {2}/5" -f $picked, $CharRow, $try)
+    Start-Sleep -Milliseconds 1500
   }
   Write-Host ("  픽 확인 = {0}번 줄" -f $picked)
+  if ($picked -ne $CharRow) {
+    # ⚠ 틀린 직업으로 조용히 뛰면 결과 라벨이 전부 거짓이 된다 — 여기서 끊는 게 낫다.
+    Write-Host ("[FAIL] 캐릭터 픽 실패 — {0}번을 원했는데 {1}번" -f $CharRow, $picked)
+    exit 1
+  }
 }
 if ($StopAtChars) { Write-Host "pid=$pid_"; Write-Host '캐릭터 목록에서 멈췄다'; exit 0 }
 & $di -Target $pid_ -Cmd ($home3 + @('m 313 372','sleep 400','mb 0 1','sleep 150','mb 0 0','sleep 8000')) | Out-Null   # Load

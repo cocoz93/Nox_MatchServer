@@ -28,6 +28,7 @@
 #include "nox/MsgLen.h"
 #include "nox/Recording.h"
 #include "nox/Server.h"
+#include "nox/MapFile.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -176,6 +177,8 @@ int main(int argc, char** argv) {
     //   전에는 깃발·퀘스트가 **단위시험에서만** 섰다(`StartCtf`·`StartQuest` 를 아무도 안 불렀다).
     //   실클라로 돌려 보려면 켜는 손잡이가 있어야 한다(2026-09-09).
     std::string mode = "arena";
+    // ★ 독립 서버 P3 — .map 을 직접 읽어 벽 충돌을 켤다. 비면 종전처럼 벽 없음.
+    std::string mapPath;
     int questCount = 4;
     // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —
     //   안 그러면 걸어가 붙이는 조종까지 필요해져 판정이 흐려진다.
@@ -240,6 +243,8 @@ int main(int argc, char** argv) {
             questCount = std::atoi(argv[++i]);
         } else if (a == "--quest-spread" && i + 1 < argc) {
             questSpread = std::atof(argv[++i]);
+        } else if (a == "--map" && i + 1 < argc) {
+            mapPath = argv[++i];
         } else if (a == "--ctf-span" && i + 1 < argc) {
             ctfSpan = std::atoi(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
@@ -262,6 +267,19 @@ int main(int argc, char** argv) {
     //
     // 서버 찾기에 답할 원본은 녹음을 쓰되, 이름만 인자로 바꿔 넣는다.
     nox::Server srv;
+    if (!mapPath.empty()) {
+        nox::MapFile mf;
+        if (!mf.Load(mapPath)) {
+            std::printf("맵을 못 읽음: %s (%s)\n", mapPath.c_str(), mf.Error().c_str());
+            return 1;
+        }
+        const auto cells = mf.ReadWalls();
+        std::vector<std::pair<uint8_t, uint8_t>> ws;
+        ws.reserve(cells.size());
+        for (const auto& w : cells) ws.emplace_back(w.x, w.y);
+        srv.SetWalls(ws);
+        std::printf("[맵] %s — 벽 %zu칸, 충돌 켜짐\n", mapPath.c_str(), ws.size());
+    }
     {
         uint8_t info[256] = {};
         nox::Writer w(info, sizeof(info));

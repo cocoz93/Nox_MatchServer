@@ -46,6 +46,8 @@ bool MapFile::Load(const std::string& path) {
     if (magic_ == 0xFADEFACE) {
         align();               // crc 는 정렬 u32 — 블록 하나를 통째로 먹는다
         if (!need(8)) return false;
+        crc_ = buf_[off] | (buf_[off + 1] << 8) | (buf_[off + 2] << 16) |
+               (static_cast<uint32_t>(buf_[off + 3]) << 24);
         off += 8;
     } else if (magic_ != 0xFADEBEEF) {
         char h[32];

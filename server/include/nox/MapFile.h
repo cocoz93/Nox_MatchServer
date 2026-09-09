@@ -39,6 +39,8 @@ public:
     bool Load(const std::string& path);
 
     uint32_t Magic() const { return magic_; }
+    // 맵 CRC — 서버가 USE_MAP 에 실어 보내는 바로 그 값이다(와이어 실측과 교차 검증).
+    uint32_t Crc() const { return crc_; }
     uint32_t WallOffX() const { return wallOffX_; }
     uint32_t WallOffY() const { return wallOffY_; }
     const std::vector<MapSection>& Sections() const { return sections_; }
@@ -68,6 +70,7 @@ private:
     std::vector<uint8_t> buf_;
     std::vector<MapSection> sections_;
     uint32_t magic_ = 0;
+    uint32_t crc_ = 0;
     uint32_t wallOffX_ = 0;
     uint32_t wallOffY_ = 0;
     std::string error_;
