@@ -853,12 +853,22 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         else if (code == 4) dir += 192;   // 왼
                         else if (code == 5) dir += 64;    // 오른
                         const double rad = (dir & 0xFF) * 3.14159265358979 / 128.0;
-                        s.x += static_cast<int>(kStepPerTick * std::cos(rad));
-                        s.y += static_cast<int>(kStepPerTick * std::sin(rad));
-                        if (s.x < 0) s.x = 0;
-                        if (s.y < 0) s.y = 0;
-                        if (s.x > kMaxCoord) s.x = kMaxCoord;
-                        if (s.y > kMaxCoord) s.y = kMaxCoord;
+                        int nx = s.x + static_cast<int>(kStepPerTick * std::cos(rad));
+                        int ny = s.y + static_cast<int>(kStepPerTick * std::sin(rad));
+                        if (nx < 0) nx = 0;
+                        if (ny < 0) ny = 0;
+                        if (nx > kMaxCoord) nx = kMaxCoord;
+                        if (ny > kMaxCoord) ny = kMaxCoord;
+                        // ★ 벽 충돌 (P3) — 갈 수 없으면 **축을 갈라** 미끄러진다.
+                        //   대각으로 벽에 스치면 통째로 서 버리는 것보다, 갈 수 있는
+                        //   축만 가는 쪽이 원작의 「벽 타기」 느낌과 맞는다.
+                        //   반지름은 thing.bin NewPlayer EXTENT 를 P4 에서 잇기 전까지
+                        //   근접 판정과 같은 자리표시를 쓴다.
+                        if (CanStand(nx, ny, kBodyRadius)) { s.x = nx; s.y = ny; }
+                        else if (CanStand(nx, s.y, kBodyRadius)) { s.x = nx; }
+                        else if (CanStand(s.x, ny, kBodyRadius)) { s.y = ny; }
+                        // 다 막히면 제자리 — 걸음은 세지 않는다? 아니다,
+                        // 클라는 걸었다고 믿으니 서버 집계는 그대로 센다.
                         ++moves_;
                     } else if (code == 6) {
                         // 왼버튼 = `CCAction`(6). 근접 공격이다.

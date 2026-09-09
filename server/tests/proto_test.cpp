@@ -897,6 +897,73 @@ void TestMapSections() {
     }
 }
 
+// ── 벽 충돌 (독립 서버 P3-a) ──────────────────────────────
+//
+// 시험 셋 — ① 벽이 없으면 걸음이 그대로 간다 ② 벽 앞에서 막힌다
+//   ③ 대각으로 스치면 갈 수 있는 축으로 **미끄러진다**.
+void TestWallCollision() {
+    const std::string a = "10.0.0.1:1000";
+
+    // 걸음 입력 한 조각 — 방향(코드 1)로 바라보게 하고 앞으로(코드 2) 한 걸음.
+    // ⚠ **와이어 머리 2바이트를 잊지 말 것** — 빼먹으면 서버가 op 를 머리로 떼어
+    //   전부 어긋난다(이 시험이 처음에 그 탓에 「걸음이 안 갔다」로 실패했다).
+    auto walkPkt = [](uint8_t facing) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::PLAYER_INPUT));
+        p.push_back(10);                        // 항목 길이 합
+        const uint8_t items[10] = { 1, 0, 0, 0, facing,
+                                    2, 0, 0, 0, facing };
+        p.insert(p.end(), items, items + 10);
+        return p;
+    };
+
+    // ① 벽 없음 — 동쪽(0)으로 걸으면 x 가 는다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);   // (1000,1000)
+        std::vector<nox::OutPacket> out;
+        auto pkt = walkPkt(0);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.XOf(a) > 1000, "벽이 없는데 걸음이 안 갔다");
+    }
+
+    // ② 동쪽 바로 앞이 벽 — 막힌다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        // (1000,1000) 동쪽 칸 = x 44 (1012/23=44) — 몸 반지름까지 치면 한 걸음에 닿는다
+        std::vector<std::pair<uint8_t, uint8_t>> cells = { { 44, 42 }, { 44, 43 }, { 44, 44 } };
+        srv.SetWalls(cells);
+        std::vector<nox::OutPacket> out;
+        for (int i = 0; i < 6; ++i) {   // 여섯 걸음 — 벽을 넘으면 x 가 1012 를 훌쩍 넘는다
+            auto pkt = walkPkt(0);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        }
+        Check(srv.XOf(a) < 1012, "동쪽 벽을 뚫었다");
+    }
+
+    // ③ 대각(북동 = 224)으로 스치면 y 축으로 미끄러진다
+    //   ⚠ 시작점 주의 — (1000,1000)은 몸 가장자리(+12)가 1012 = 칸 44 경계에 **정확히**
+    //     걸려 시작부터 낀 상태다(처음에 이 배치로 「미끄러짐 없음」 오판). 990 에서 출발.
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugMoveTo(a, 990, 1000);
+        std::vector<std::pair<uint8_t, uint8_t>> cells = { { 44, 42 }, { 44, 43 }, { 44, 44 } };
+        srv.SetWalls(cells);
+        const int y0 = srv.YOf(a);
+        std::vector<nox::OutPacket> out;
+        for (int i = 0; i < 6; ++i) {
+            auto pkt = walkPkt(224);   // 북동 — x+ 는 막히고 y- 는 열려 있다
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        }
+        Check(srv.XOf(a) < 1012, "미끄러지다 벽을 뚫었다");
+        Check(srv.YOf(a) < y0, "미끄러짐이 없다 — 대각에서 통째로 멈췄다");
+    }
+
+    std::printf("  벽 충돌 — 통과·막힘·미끄러짐\n");
+}
+
 void TestObserverExit() {
     nox::Server srv;
     const std::string a = "10.0.0.1:1000";
@@ -1760,6 +1827,7 @@ int main() {
     TestMelee();
     TestThingDb();
     TestMapSections();
+    TestWallCollision();
     TestObserverExit();
     TestSnapshotSeqRenumber();
     TestProjectile();

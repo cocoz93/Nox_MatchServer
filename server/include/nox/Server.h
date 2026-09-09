@@ -279,6 +279,12 @@ constexpr uint32_t kMeleeCooldownTicks = 15;   // 30Hz 기준 0.5초
 // 첫 세계 스냅샷을 접속 뒤 몇 틱 미룰지. 정품 조각 순서에서 잰 값이다 —
 // `2b`(USE_MAP) 와 스냅샷 사이에 다섯 조각(`27 27 27 08 04`)이 지나간다.
 constexpr int kSnapshotDelayTicks = 5;
+
+// 벽 격자 한 칸의 월드 크기와 몸 반지름 (독립 서버 P3).
+// ⚠ 둘 다 짐작이다 — 칸 23(256칸×23≈5888) · 반지름 12. P3-b 벽 돌진과
+//   thing.bin NewPlayer EXTENT 로 검증·교체한다.
+constexpr double kWallCell = 23.0;
+constexpr double kBodyRadius = 12.0;
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.
@@ -380,6 +386,30 @@ public:
     // ★ 스폰 간격(--spawn-spread). 크게 주면 「가려서 안 보이는 것」과
     //   「안 그려지는 것」이 갈린다. 단 45 를 넘기면 근접이 안 닿는다.
     void SetSpawnSpread(int v) { spawnSpread_ = v; }
+
+    // ── 벽 충돌 (독립 서버 P3) ─────────────────────────────
+    //
+    // 맵의 벽 격자를 받아 걸음을 막는다. 격자 한 칸 = kWallCell 유닛.
+    // ⚠ 배율 23 은 **녹스 격자 상수**(256칸×23≈5888)로 둔 값 — 실클라 벽 돌진(P3-b)으로
+    //   검증하기 전까지는 짐작이다. wallOffX/Y 보정도 같은 자리에서 확인한다.
+    void SetWalls(const std::vector<std::pair<uint8_t, uint8_t>>& cells) {
+        walls_.assign(256 * 256, 0);
+        for (const auto& c : cells) walls_[c.second * 256 + c.first] = 1;
+        wallsOn_ = !cells.empty();
+    }
+    bool WallAt(double x, double y) const {
+        if (!wallsOn_) return false;
+        const int cx = static_cast<int>(x / kWallCell);
+        const int cy = static_cast<int>(y / kWallCell);
+        if (cx < 0 || cx > 255 || cy < 0 || cy > 255) return true;   // 맵 밖 = 벽
+        return walls_[cy * 256 + cx] != 0;
+    }
+    // 이 자리에 설 수 있나 — 몸 반지름의 네 모서리가 벽 칸을 안 밟아야 한다.
+    bool CanStand(double x, double y, double r) const {
+        if (!wallsOn_) return true;
+        return !WallAt(x - r, y) && !WallAt(x + r, y) && !WallAt(x, y - r) && !WallAt(x, y + r);
+    }
+
     // ★ 남 항목 덧붙이 값(--peer-pose HH). 자기 것은 늘 0x40 이고 그건 그려진다.
     void SetPeerPose(uint8_t v) { peerPose_ = v; }
     // ★ 갱신 항목 순서 뒤집기(--peer-first). 가르는 시험용.
@@ -518,6 +548,16 @@ public:
     void DebugArmSnapshot(const std::string& addr) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.snapshotIn = 0;
+    }
+
+    // ★ 시험용 — 지금 자리. 벽 충돌 시험이 이걸로 잰다.
+    int XOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.x;
+    }
+    int YOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.y;
     }
 
     // ★ 시험용 — 자리를 옮긴다. 사거리 시험에 쓴다.
@@ -740,6 +780,8 @@ private:
     std::set<uint8_t> peerOps_{0x4c, 0x60};
     // 스폰 자리를 사람마다 몇 픽셀씩 벌리나. 기본 40 은 근접 사거리(45) 안이다.
     int spawnSpread_ = 40;
+    std::vector<uint8_t> walls_;   // 256×256 벽 격자 (P3)
+    bool wallsOn_ = false;
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
     // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
     uint8_t peerPose_ = 0x30;
@@ -833,6 +875,7 @@ constexpr uint16_t kPlayerType = 713;
 //     몬스터 8 IDLE · 9 DIE · 10 DEAD · 11 HURT · 12 MOVE …
 //   몬스터에 사람 번호(0)를 실으면 그 자리에 애니가 없어 **아무것도 안 그려진다.**
 constexpr uint8_t kCreatureAnimIdle = 8;
+
 
 // 한 걸음에 얼마나 미나. **2026-09-06 캡처로 실측했다** (전에는 지어낸 12.0 이었다).
 //
