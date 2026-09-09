@@ -11,7 +11,14 @@ param(
   [string]$Desk = 'NoxDesk1',
   [string]$Ctrl = 'desk1',        # 제어 폴더 이름 (_evidence 아래). 데스크톱 이름과 다르다
   [string]$Tag  = 'j',
-  [int]$WaitMenu = 40
+  [int]$WaitMenu = 40,
+  # ★ 캐릭터 목록에서 몇 번째 줄을 고를까 (1 부터). **직업이 여기서 갈린다.**
+  #   2026-09-09 실측 목록 — **새로 만든 것이 맨 위로 온다.**
+  #   컨저러를 만든 뒤: 1 Conjurer · 2 Wizard · 3~5 Warrior.
+  #   0 이면 안 고른다(맨 위가 이미 골라져 있다).
+  [int]$CharRow = 0,
+  # ★ 캐릭터 목록에서 멈춘다 — 새 캐릭터를 만들려면 Load 를 누르면 안 된다.
+  [switch]$StopAtChars
 )
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -66,6 +73,15 @@ Write-Host (Shot "${Tag}1_list")
 & $di -Target $pid_ -Cmd ($home3 + @('m 259 57','sleep 400','mb 0 1','sleep 150','mb 0 0','sleep 2000')) | Out-Null    # 서버줄
 & $di -Target $pid_ -Cmd @('m 14 100','sleep 400','mb 0 1','sleep 150','mb 0 0','sleep 3000') | Out-Null               # Join (상대 이동)
 Write-Host (Shot "${Tag}2_chars")
+# ★ 캐릭터 줄 고르기 — **직업이 여기서 갈린다.**
+#   창 1296x999 에서 줄 y = 260 · 292 · 325 · 357, x 아무 데나(600).
+#   주입 좌표 = (화면 − 창테두리(8,31)) / 2.04  — Load 버튼 (648,790)→(313,372) 로 검산했다.
+if ($CharRow -ge 1 -and $CharRow -le 5) {
+  $rowY = @(112, 128, 144, 160, 176)[$CharRow - 1]
+  & $di -Target $pid_ -Cmd ($home3 + @('m 290 ' + $rowY,'sleep 400','mb 0 1','sleep 150','mb 0 0','sleep 900')) | Out-Null
+  Write-Host (Shot "${Tag}2b_pick")
+}
+if ($StopAtChars) { Write-Host "pid=$pid_"; Write-Host '캐릭터 목록에서 멈췄다'; exit 0 }
 & $di -Target $pid_ -Cmd ($home3 + @('m 313 372','sleep 400','mb 0 1','sleep 150','mb 0 0','sleep 8000')) | Out-Null   # Load
 Write-Host (Shot "${Tag}3_ingame")
 

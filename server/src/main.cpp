@@ -171,7 +171,16 @@ int main(int argc, char** argv) {
     bool peerFirst = false;
     bool peerSnapshot = false;
     int peerType = 0;
-    int peerPose = -1;   // 남 항목 덧붙이 값. -1 이면 서버 기본(0x30)   // 0 이면 서버 기본값(40)
+    int peerPose = -1;
+    // ★ 어떤 판을 차릴까 — `arena`(기본) · `ctf`(깃발) · `quest`(몬스터 잡기).
+    //   전에는 깃발·퀘스트가 **단위시험에서만** 섰다(`StartCtf`·`StartQuest` 를 아무도 안 불렀다).
+    //   실클라로 돌려 보려면 켜는 손잡이가 있어야 한다(2026-09-09).
+    std::string mode = "arena";
+    int questCount = 4;
+    // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —
+    //   안 그러면 걸어가 붙이는 조종까지 필요해져 판정이 흐려진다.
+    double questSpread = 20.0;
+    bool modeStarted = false;   // 남 항목 덧붙이 값. -1 이면 서버 기본(0x30)   // 0 이면 서버 기본값(40)
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -219,6 +228,16 @@ int main(int argc, char** argv) {
         } else if (a == "--mirror-limit" && i + 1 < argc) {
             mirror = true;
             mirrorLimit = std::atoi(argv[++i]);
+        } else if (a == "--mode" && i + 1 < argc) {
+            mode = argv[++i];
+            if (mode != "arena" && mode != "ctf" && mode != "quest") {
+                std::printf("모르는 모드: %s (arena · ctf · quest)\n", mode.c_str());
+                return 2;
+            }
+        } else if (a == "--quest-count" && i + 1 < argc) {
+            questCount = std::atoi(argv[++i]);
+        } else if (a == "--quest-spread" && i + 1 < argc) {
+            questSpread = std::atof(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
             dumpPath = argv[++i];
         } else {
@@ -427,6 +446,26 @@ int main(int argc, char** argv) {
             }
         }
 
+        // ★★ **판을 차리는 자리** — 사람이 다 들어온 뒤라야 한다.
+        //   `StartCtf` 는 **그때 게임 안에 있는 사람에게만** 팀을 준다. 접속 전에 부르면
+        //   팀이 0 으로 남아 깃발 판정이 통째로 건너뛴다(`UpdateFlags` 의 `s.team == 0` 걸림).
+        if (!modeStarted && mode != "arena" && srv.inGameCount() >= 2) {
+            modeStarted = true;
+            const int mx = srv.spawnX() + 20, my = srv.spawnY();   // 두 사람 사이
+            if (mode == "ctf") {
+                // 두 깃발을 **둘 다 닿는 자리**에 둔다(사거리 40). 걸어가는 조종 없이
+                // 줍기·득점·판끝이 도는지만 본다 — **이건 간추린 판이라고 적어 둔다.**
+                srv.StartCtf(mx, my - 15, mx, my + 15);
+                std::printf("[모드] 깃발 — (%d,%d)·(%d,%d), 득점 한도 %u\n",
+                            mx, my - 15, mx, my + 15, (unsigned)nox::kCaptureLimit);
+            } else {
+                srv.StartQuest(questCount, mx, my, questSpread);
+                std::printf("[모드] 퀘스트 — 몬스터 %d마리 (%d,%d) 반경 %.0f\n",
+                            questCount, mx, my, questSpread);
+            }
+            std::fflush(stdout);
+        }
+
         const int ticks = srv.Tick(GetTickCount(), outs);
         if (ticks > 0) {
             nTicks += static_cast<unsigned long long>(ticks);
@@ -448,13 +487,23 @@ int main(int argc, char** argv) {
                 // ★ 「사람」 = 게임에 들어와 있는 수 / 갱신에 실은 수.
                 //   **둘이 서로 보이는지**를 가르는 자리다. 와이어를 뜯어 세면
                 //   내 디코더가 항목을 잘못 쪼개 헛것을 볼 수 있다(2026-09-08 세 번).
+                // ★ 모드별 진척 — 아레나가 아니면 이 값이 「판이 도는가」의 판정이다.
+                char modeInfo[96] = "";
+                if (mode == "ctf") {
+                    std::snprintf(modeInfo, sizeof(modeInfo), " · 깃발 %zu개 득점 %u:%u",
+                                  srv.FlagCount(), (unsigned)srv.CapturesOf(1),
+                                  (unsigned)srv.CapturesOf(2));
+                } else if (mode == "quest") {
+                    std::snprintf(modeInfo, sizeof(modeInfo), " · 몬스터 남음 %d(잡음 %d)",
+                                  srv.QuestLeft(), srv.QuestKilled());
+                }
                 std::printf("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
                             "걸음 %llu · 근접 %llu · "
-                            "주문 %llu · 나는것 %zu · 맞음 %llu · 별칭받음 %llu · 판끝 %s (누적 틱 %llu)\n",
+                            "주문 %llu · 나는것 %zu · 맞음 %llu · 별칭받음 %llu%s · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
                             srv.moves(), srv.melees(),
-                            nSpell, srv.flying(), srv.hits(), srv.aliasHeard(),
+                            nSpell, srv.flying(), srv.hits(), srv.aliasHeard(), modeInfo,
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 std::fflush(stdout);
             }

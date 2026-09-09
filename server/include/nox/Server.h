@@ -469,7 +469,14 @@ public:
 
     // 퀘스트 판을 차린다 — 주인 없는 몬스터를 `count` 마리 세운다.
     // 다 잡으면 판이 끝난다.
-    void StartQuest(int count, int centerX, int centerY);
+    //   ★ `spread` — 가운데에서 이만큼 벌려 세운다. 기본은 실측 아닌 자리표시 300.
+    //     실클라로 돌릴 때는 **근접 사거리 안**(45)에 세워야 걷지 않고도 시험이 된다.
+    void StartQuest(int count, int centerX, int centerY, double spread = kQuestSpread);
+
+    // 서두(녹음본)에서 읽어 낸 스폰 자리. 모드를 차릴 때 기준으로 쓴다.
+    int spawnX() const { return spawnX_; }
+    int spawnY() const { return spawnY_; }
+    size_t FlagCount() const { return flags_.size(); }
     int QuestLeft() const { return questTotal_ - questKilled_; }
     int QuestKilled() const { return questKilled_; }
     uint16_t CapturesOf(uint8_t team) const { return team < 3 ? caps_[team] : 0; }

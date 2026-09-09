@@ -298,6 +298,12 @@ uint16_t Server::SummonType(uint8_t spell) {
         case 84: return 1337;  // SUMMON_EMBER_DEMON        → EmberDemon
         case 85: return 1325;  // SUMMON_GHOST              → Ghost
         case 86: return 1358;  // SUMMON_GIANT_LEECH        → GiantLeech
+        // ★ 87 은 표에 없었다 — **컨저러 캐릭터를 만들어 실제로 눌러 보고서야 알았다.**
+        //   2026-09-09: 컨저러 주문칸 A 가 `0x79` 로 87 을 보냈는데 여기가 0 을 돌려줘
+        //   시전 수만 오르고 **소환수가 하나도 안 생겼다.**
+        //   번호 = `dumpscan -things <thing.bin> -find Imp` 의 색인 1327 + 1.
+        //   **와이어 번호는 색인 +1** 이다(genthings.go 의 실측 주석). Bat 색인 1356 → 1357 로 검산했다.
+        case 87: return 1328;  // SUMMON_IMP                → Imp
         default: return 0;
     }
 }
@@ -484,7 +490,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
 //   d3 | 번호 4 | 남은 시간 4(밀리초, 부호 있음) | 지금 틱 4
 //
 // 한도가 없으면 남은 시간이 **음수로 계속 내려간다** — 실측이 그랬다.
-void Server::StartQuest(int count, int centerX, int centerY) {
+void Server::StartQuest(int count, int centerX, int centerY, double spread) {
     questTotal_ = count;
     questKilled_ = 0;
     roundOver_ = false;
@@ -497,8 +503,8 @@ void Server::StartQuest(int count, int centerX, int centerY) {
         k.type = SummonType(79);         // Bomber. 종류표에서 확인한 번호다
         k.netCode = nextShotNetCode_++;
         if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
-        k.x = centerX + kQuestSpread * std::cos(ang);
-        k.y = centerY + kQuestSpread * std::sin(ang);
+        k.x = centerX + spread * std::cos(ang);
+        k.y = centerY + spread * std::sin(ang);
         k.health = kPetHealth;
         pets_.push_back(k);
     }
@@ -593,6 +599,10 @@ void Server::DropFlag(const std::string& who, std::vector<OutPacket>& out) {
 
 void Server::UpdateFlags(std::vector<OutPacket>& out) {
     if (flags_.empty()) return;
+    // ★ **판이 끝났으면 더 세지 않는다.** 2026-09-09 실측 — 깃발을 둘 다
+    //   닿는 자리에 두고 돌렸더니 득점이 매 틱 올라 **1378:1378** 이 됐다.
+    //   한도(3)에서 `roundOver_` 는 섰는데 세는 것을 안 멈춘 탓이다.
+    if (roundOver_) return;
 
     for (auto& kv : sessions_) {
         Session& s = kv.second;

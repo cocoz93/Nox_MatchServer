@@ -30,7 +30,18 @@ param(
   [int]$FightSeconds = 0,
   # `-Genuine` 일 때 정품 서버에 덧붙일 인자. 맵은 여기서 고른다:
   #   -GenuineArgs '-autoexec "load bludeath"'
-  [string]$GenuineArgs = ''
+  [string]$GenuineArgs = '',
+  # ★ 키 탐침 — 어떤 키가 걸음이고 어떤 키가 무슨 주문인지 잰다 (4.6 절 참조)
+  [switch]$Probe,
+  # ★ 직업 — **캐릭터 목록에서 어느 줄을 고르나**로 갈린다.
+  #   2026-09-09 실측 목록 = **1 컨저러 · 2 위저드 · 3~5 워리어** (새로 만든 것이 맨 위로 온다).
+  #   워리어는 근접(왼버튼), 위저드는 주문키(F 파이어볼 · D 연쇄번개)로 싸운다.
+  #   ⚠ 컨저러는 목록에 없어서 `tools\newchar.ps1` 로 새로 만들었다 —
+  #     위저드 주문칸 다섯(4 점멸 · 51 보호막 · 43 연쇄번개 · 27 파이어볼 · 41 약한치유)에
+  #     소환(75~86)이 하나도 없어, 직업을 바꾸지 않고는 소환을 시킬 길이 없었다.
+  [ValidateSet('warrior','wizard','conjurer')][string]$Class = 'warrior',
+  # ★ 모드 — 서버에 그대로 넘긴다. `ctf`·`quest` 는 둘 다 들어온 뒤에 차려진다.
+  [ValidateSet('arena','ctf','quest')][string]$Mode = 'arena'
 )
 # ★ Stop 으로 두면 네이티브 도구가 stderr 에 한 줄만 뱉어도 한 바퀴가 통째로 끊긴다
 $ErrorActionPreference = 'Continue'
@@ -107,8 +118,8 @@ if ($Genuine) {
   # ★ 로그를 파일로 받는다 — WMI 로 띄우면 콘솔이 없어 stdout 이 사라진다.
   #   틱 로그의 「사람 N(갱신에 M)」이 서로 보이는지를 가르는 자리다.
   $spid = Spawn ('cmd /c ""' + (Join-Path $root 'build\Release\nox_server.exe') +
-    '" --port 18591' + $dumpArg + ' ' + $ServerArgs + ' > "' + $slog + '" 2>&1"') $root
-  Write-Host ("내 서버 pid={0} 서두={1} {2}" -f $spid, $Prelude, $ServerArgs)
+    '" --port 18591' + $dumpArg + ' --mode ' + $Mode + ' ' + $ServerArgs + ' > "' + $slog + '" 2>&1"') $root
+  Write-Host ("내 서버 pid={0} 서두={1} 모드={2} 직업={3} {4}" -f $spid, $Prelude, $Mode, $Class, $ServerArgs)
 }
 Start-Sleep -Seconds 3
 
@@ -121,13 +132,15 @@ Start-Sleep -Seconds 2
 # 3. 클라 A
 $join = Join-Path $PSScriptRoot 'join_my_server.ps1'
 Write-Host "--- A (Game3) 몰기 ---"
-& $join -Exe 'Game3.exe' -Tag ("{0}A" -f $Tag) -WaitMenu $WaitMenu
+# 실측 목록(2026-09-09, 컨저러를 만든 뒤) — 1 컨저러 · 2 위저드 · 3~5 워리어
+$charRow = switch ($Class) { 'conjurer' { 1 } 'wizard' { 2 } default { 3 } }
+& $join -Exe 'Game3.exe' -Tag ("{0}A" -f $Tag) -WaitMenu $WaitMenu -CharRow $charRow
 $aPid = LastPid
 Write-Host ("A pid={0} · A 상태(B 몰기 전): {1}" -f $aPid, $(if (Alive $aPid) { '살아있음' } else { '죽음' }))
 
 # 4. 클라 B
 Write-Host "--- B (Game4) 몰기 ---"
-& $join -Exe 'Game4.exe' -Tag ("{0}B" -f $Tag) -WaitMenu $WaitMenu
+& $join -Exe 'Game4.exe' -Tag ("{0}B" -f $Tag) -WaitMenu $WaitMenu -CharRow $charRow
 $bPid = LastPid
 
 # 여기서 기다리지 않는다 — 3초 사이에 A 가 죽어 못 찍은 적이 있다
@@ -156,7 +169,22 @@ if ($FightSeconds -gt 0 -and (Alive $aPid) -and (Alive $bPid)) {
   #     진 쪽(A)에는 「Qack has taught you well.」 이 떴는데 **이긴 쪽(B)에는 아무것도 없었다.**
   #     클릭 한 번을 A 에 보내니 A 의 것도 사라져, 배너를 닫는 것이 클릭임을 확인했다.
   $pulse = @('inject 1')
-  foreach ($i in 1..6) { $pulse += @('mb 0 1','sleep 80','mb 0 0','sleep 420') }
+  if ($Class -eq 'conjurer') {
+    # ★ 컨저러 — A 가 소환(87 SUMMON_IMP)이다. 2026-09-09 실측 칸 —
+    #   A 87 임프소환 · S 74 기절 · D 128 독구름 · F 58 요정떼 · G 41 약한치유.
+    #   소환수가 알아서 다가가 때리므로 사람은 소환만 되풀이한다.
+    foreach ($i in 1..3) { $pulse += @('k 0x1E 1','sleep 90','k 0x1E 0','sleep 900') }
+  } elseif ($Class -eq 'wizard') {
+    # ★ 위저드 — 주문키를 누른다. F=파이어볼(27) · D=연쇄번개(43).
+    #   2026-09-09 실측으로 칸을 확정했다 — A 4 점멸 · S 51 보호막 · D 43 연쇄번개 ·
+    #   F 27 파이어볼 · G 41 약한치유. 공격은 D·F 둘뿐이다.
+    foreach ($i in 1..3) {
+      $pulse += @('k 0x21 1','sleep 90','k 0x21 0','sleep 500',
+                  'k 0x20 1','sleep 90','k 0x20 0','sleep 500')
+    }
+  } else {
+    foreach ($i in 1..6) { $pulse += @('mb 0 1','sleep 80','mb 0 0','sleep 420') }
+  }
   $t0 = Get-Date
   $over = $false
   while (-not $over -and ((Get-Date) - $t0).TotalSeconds -lt $FightSeconds) {
@@ -172,6 +200,53 @@ if ($FightSeconds -gt 0 -and (Alive $aPid) -and (Alive $bPid)) {
     if (-not (Alive $aPid) -or -not (Alive $bPid)) { Write-Host '  ⚠ 클라가 죽었다 — 싸움 중단'; break }
   }
   foreach ($p in @($aPid, $bPid)) { if (Alive $p) { & $di -Target $p -Cmd @('mb 0 0') | Out-Null } }
+}
+
+# 4.6 키 탐침 — **어떤 키가 걸음이고 어떤 키가 무슨 주문인가**를 잰다.
+#
+# 왜 필요한가 — 3직업(근접·주문·소환)을 실클라로 돌리려면 「주문 키」를 알아야 하는데
+#   지금 아는 것은 화면에 A~G 다섯 칸이 있다는 것뿐이다. 어떤 칸이 무슨 주문 번호인지,
+#   그중에 소환(75~86)이 있는지 **잰 적이 없다.** 걸음도 마찬가지 — 지금껏 걸음 0 이었다.
+#
+# 재는 법 — 키를 하나씩 눌렀다 떼고, 그 사이 서버 틱로그의 「걸음·주문」이 오르는지 본다.
+#   주문 번호는 이 회차 캡처의 `0x79 TRY_SPELL` 을 나중에 뜯어 읽는다(시각으로 짝짓는다).
+if ($Probe -and (Alive $aPid)) {
+  $di = Join-Path $PSScriptRoot 'di.ps1'
+  # DIK 코드. 주문칸은 화면에 A·S·D·F·G 로 적혀 있다.
+  $keys = [ordered]@{
+    'A'=0x1E; 'S'=0x1F; 'D'=0x20; 'F'=0x21; 'G'=0x22;
+    '위'=0xC8; '아래'=0xD0; '왼'=0xCB; '오른'=0xCD;
+    'W'=0x11; 'Q'=0x10; 'E'=0x12; 'Z'=0x2C; 'X'=0x2D; 'C'=0x2E
+  }
+  function TickNums() {
+    $l = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '\[틱\]' } | Select-Object -Last 1)
+    if ($l.Count -eq 0) { return @{ '걸음'=0; '주문'=0; '근접'=0 } }
+    $h = @{}
+    foreach ($k in @('걸음','주문','근접')) {
+      if ($l[0] -match ($k + ' (\d+)')) { $h[$k] = [int]$Matches[1] } else { $h[$k] = 0 }
+    }
+    return $h
+  }
+  Write-Host '--- 키 탐침 (A 클라) ---'
+  & $di -Target $aPid -Cmd @('inject 1') | Out-Null
+  $before = TickNums
+  foreach ($name in $keys.Keys) {
+    $code = $keys[$name]
+    $t0 = Get-Date -Format 'HH:mm:ss.fff'
+    & $di -Target $aPid -Cmd @(("k {0} 1" -f $code), 'sleep 700', ("k {0} 0" -f $code), 'sleep 900') | Out-Null
+    $after = TickNums
+    $d = @{}
+    foreach ($k in @('걸음','주문','근접')) { $d[$k] = $after[$k] - $before[$k] }
+    Write-Host ("  {0,-4} (0x{1:x2}) {2}  걸음 +{3} · 주문 +{4} · 근접 +{5}" -f
+      $name, $code, $t0, $d['걸음'], $d['주문'], $d['근접'])
+    $before = $after
+  }
+  # 오른버튼도 본다 — 녹스의 걸음이 마우스일 가능성
+  $t0 = Get-Date -Format 'HH:mm:ss.fff'
+  & $di -Target $aPid -Cmd @('mb 1 1','sleep 1200','mb 1 0','sleep 900') | Out-Null
+  $after = TickNums
+  Write-Host ("  오른버튼      {0}  걸음 +{1} · 주문 +{2} · 근접 +{3}" -f $t0,
+    ($after['걸음']-$before['걸음']), ($after['주문']-$before['주문']), ($after['근접']-$before['근접']))
 }
 
 # 4.5 생존 시계열 — ★ 「죽었다/살았다」 한 번 찍는 것으로는 **늦게 죽는 것**을 못 잡는다.
