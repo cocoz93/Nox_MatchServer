@@ -77,48 +77,16 @@ Write-Host (Shot "${Tag}2_chars")
 #   창 1296x999 에서 줄 y = 260 · 292 · 325 · 357, x 아무 데나(600).
 #   주입 좌표 = (화면 − 창테두리(8,31)) / 2.04  — Load 버튼 (648,790)→(313,372) 로 검산했다.
 if ($CharRow -ge 1 -and $CharRow -le 5) {
-  # ★★ **줄 클릭은 다운 60ms** — 150ms 로 누르면 드래그로 읽혀 선택이 안 바뀐다
-  #   (2026-09-10 실측: 커서는 위저드 줄 위인데 하이라이트가 1번 그대로 → 위저드 조합이
-  #   컨저러로 뛰었다. 주문 58·128 이 증거. 메뉴 버튼들은 150ms 로도 먹혀 오래 몰랐다).
-  #   클릭 뒤 **하이라이트를 픽셀로 판독**해 틀리면 재시도한다(3회).
-  $rowY = @(112, 128, 144, 160, 176)[$CharRow - 1]
-  Add-Type -AssemblyName System.Drawing
-  function Which-Row([string]$png) {
-    $img = [Drawing.Bitmap]::FromFile($png)
-    $rows = @(260, 292, 325, 357, 389)   # 1296x999 캡처의 줄 중심 y (실측)
-    $best = 0; $bestN = -1
-    for ($r = 0; $r -lt $rows.Count; $r++) {
-      $n = 0
-      for ($y = $rows[$r] - 8; $y -le $rows[$r] + 8; $y += 2) {
-        for ($x = 240; $x -lt 1020; $x += 6) {
-          $c = $img.GetPixel($x, $y)
-          $mx = [math]::Max($c.R, [math]::Max($c.G, $c.B))
-          $mn = [math]::Min($c.R, [math]::Min($c.G, $c.B))
-          if ($mx - $mn -lt 25 -and $mx -ge 110 -and $mx -le 210) { $n++ }
-        }
-      }
-      if ($n -gt $bestN) { $bestN = $n; $best = $r + 1 }
-    }
-    $img.Dispose()
-    return $best
-  }
-  # ★★ **목록 진입 직후에는 클릭이 안 먹는다** — 커서가 줄 위에 정확히 있어도
-  #   하이라이트가 안 바뀐다(2026-09-10 v3 실측: 3회 전부 1번 그대로).
-  #   따로 돌린 탐침(진입 15초+ 뒤)에서는 같은 60ms 클릭이 먹혔다 → 시간이 갈랐다.
-  #   그래서 첫 시도 전에 쉬고, 시도 사이도 벌리고, 다섯 번을 준다.
-  Start-Sleep -Seconds 2
+  # ★★ 픽은 **별도 프로세스**로 한다 — 같은 클릭이 이 스크립트 안에서는 다섯 번
+  #   내리 실패하고, 끝나서 따로 띄우면 매번 먹혔다(2026-09-10 pick_probe2 실측).
+  #   안팎의 무엇이 가르는지는 못 좁혔다 — 원인은 관측대기, 재현되는 꼴을 쓴다.
+  $pickOut = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'pick_row.ps1') `
+    -Pid_ $pid_ -Row $CharRow -Ctrl $ctrl 2>&1 | Out-String
   $picked = 0
-  foreach ($try in 1..5) {
-    & $di -Target $pid_ -Cmd ($home3 + @('m 290 ' + $rowY,'sleep 500','mb 0 1','sleep 60','mb 0 0','sleep 700')) | Out-Null
-    [void](Shot "${Tag}2b_pick")
-    $picked = Which-Row (Join-Path $ctrl "${Tag}2b_pick.png")
-    if ($picked -eq $CharRow) { break }
-    Write-Host ("  ⚠ 픽 판독 {0}번 (바람 {1}번) — 재시도 {2}/5" -f $picked, $CharRow, $try)
-    Start-Sleep -Milliseconds 1500
-  }
-  Write-Host ("  픽 확인 = {0}번 줄" -f $picked)
+  if ($pickOut -match 'PICKED=(\d+)') { $picked = [int]$Matches[1] }
+  Write-Host ("  픽 확인 = {0}번 줄 (바람 {1})" -f $picked, $CharRow)
+  Copy-Item (Join-Path $ctrl 'pickrow.png') (Join-Path $ctrl "${Tag}2b_pick.png") -Force -ErrorAction SilentlyContinue
   if ($picked -ne $CharRow) {
-    # ⚠ 틀린 직업으로 조용히 뛰면 결과 라벨이 전부 거짓이 된다 — 여기서 끊는 게 낫다.
     Write-Host ("[FAIL] 캐릭터 픽 실패 — {0}번을 원했는데 {1}번" -f $CharRow, $picked)
     exit 1
   }
