@@ -226,8 +226,12 @@ int main(int argc, char** argv) {
                     if (send) ++sendOps[iop]; else ++recvOps[iop];
                     // 껍데기 속은 `cc(60)` 꼴로 적는다 — 겉만 보면 전부 `cc` 라 뭐가 왔는지 모른다
                     if (seqShow > 0 && send && !seqLine.empty()) {
-                        char t[16];
-                        std::snprintf(t, sizeof(t), "(%02x)", iop);
+                        // ★ **이어달기 번호까지 찍는다.** 클라는 이 번호로 순서를 맞추고
+                        //   **이미 지나간 번호를 조용히 버린다**(GAME2_3.c `sub_48D5A0`·`sub_48D4F0`).
+                        //   번호만 없으면 「보냈는데 안 먹는다」를 영영 못 가른다.
+                        char t[24];
+                        std::snprintf(t, sizeof(t), "#%u(%02x)",
+                                      (unsigned)(ib[0] | (ib[1] << 8)), iop);
                         seqLine += t;
                     }
                     if (want.count(iop)) {

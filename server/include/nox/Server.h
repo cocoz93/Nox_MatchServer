@@ -501,6 +501,12 @@ public:
         s.observer = observer;
     }
 
+    // ★ 시험용 — 첫 세계 스냅샷을 **다음 틱에** 이 사람에게 보내도록 예약한다.
+    void DebugArmSnapshot(const std::string& addr) {
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) it->second.snapshotIn = 0;
+    }
+
     // ★ 시험용 — 자리를 옮긴다. 사거리 시험에 쓴다.
     void DebugMoveTo(const std::string& addr, int x, int y) {
         auto it = sessions_.find(addr);
@@ -676,6 +682,23 @@ private:
     // 위를 **놀고 있는 모두**에게. 관전을 풀 때 쓴다.
     void BroadcastClientStatus(uint16_t netCode, uint32_t status,
                                std::vector<OutPacket>& out);
+
+    // 녹음본 조각 안의 `cc` 껍데기 번호를 **이 세션의 이어달기 번호로 다시 매긴다.**
+    //
+    // ★★★ **이걸 안 하면 스냅샷 뒤에 보낸 신뢰 메시지가 통째로 사라진다.**
+    //   클라는 `cc` 번호로 순서를 맞추고 **이미 지나간 번호를 조용히 버린다**
+    //   (`GAME2_3.c` `sub_48D5A0` → `sub_48D4F0`: 지금 기다리는 번호보다 만 개 안쪽으로
+    //    작으면 버림 · `sub_48D660`: 기다리는 번호와 같은 것만 꺼내 쓰고 하나씩 올림).
+    //
+    //   내 녹음본은 그 녹음 때의 번호(0 · 3~22)를 그대로 담고 있는데
+    //   서버도 0 부터 매기니 **두 줄기가 겹친다.** 2026-09-09 실측 —
+    //   나중에 들어온 쪽이 스냅샷 뒤에 받은 `2d`(#3)·`6a`(#4)가 스냅샷의 같은 번호에
+    //   먼저 먹혀 **버려졌고**, 그래서 **그쪽 화면에서만 상대가 안 보였다.**
+    //   (먼저 온 쪽은 번호가 이미 #41 까지 올라가 있어 멀쩡했다 — 증상이 한쪽만이던 까닭)
+    //
+    // ⚠ 녹음본의 번호에는 **구멍도 있다**(1·2번이 없다). 그대로 두면 클라가
+    //   그 자리에서 **30초**를 기다린다(`sub_48D660` 의 `0x7530`). 다시 매기면 구멍도 없어진다.
+    void RenumberSeq(Session& s, std::vector<uint8_t>& frag);
 
     // 머리 2바이트를 붙여 한 조각을 만든다. keyed 면 XOR 을 건다.
     void Emit(Session& s, bool reliable, uint8_t stream,

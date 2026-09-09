@@ -661,6 +661,74 @@ void TestMelee() {
 // `6a REPORT_CLIENT_STATUS <내번호2> 00 00 00 00` 을 `cc` 껍데기에 실어 관전을 푼다.
 // 2026-09-09 정품 대조로 확정 — 그 알림 앞뒤로 화면 색이 826 → 1220 으로 뛰었고,
 // 안 보내던 내 서버는 978 → 978 로 한 톨도 안 변했다.
+// ── 녹음본 스냅샷의 이어달기 번호 ──────────────────────
+//
+// ★★★ **클라는 `cc` 번호로 순서를 맞추고 지나간 번호를 조용히 버린다.**
+//   녹음본은 그 녹음 때의 번호(0 · 3 · 4 …)를 담고 있고 서버도 0 부터 매기니
+//   그대로 흘리면 겹친다 — 스냅샷 뒤에 보낸 `2d`·`6a` 가 통째로 사라진다.
+//   (2026-09-09 실측: 나중에 들어온 쪽 화면에서만 상대가 안 보이던 까닭)
+//
+// ⚠ 이 시험이 진짜로 필요한 까닭 — 처음 넣은 재번호 코드는 **한 줄도 안 고쳤다.**
+//   조각을 훑는 걸음이 길이표에 없는 `a4`(갱신)에서 멈춰 뒤의 `cc` 를 못 봤는데,
+//   빌드도 시험도 다 통과해서 **와이어를 뜯어보고서야** 알았다.
+void TestSnapshotSeqRenumber() {
+    nox::Server srv;
+
+    // 진짜 녹음본과 같은 모양 — `27`(시각) + `a4`(갱신) 뒤에 `cc` 셋, 번호는 0·3·4.
+    const std::vector<uint8_t> snap = {
+        0x27, 0x11, 0x22,
+        0xa4, 0xff, 0x00, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x0a, 0x00, 0x00, 0x00,
+              0x00, 0x00, 0x00,
+        0xcc, 0x00, 0x00, 0x03, 0xe4, 0x00, 0x01,
+        0xcc, 0x03, 0x00, 0x03, 0xdd, 0x00, 0x01,
+        0xcc, 0x04, 0x00, 0x03, 0xde, 0x00, 0x01,
+    };
+    // 위 자리표 — `cc` 는 18 · 25 · 32 번 바이트에서 시작한다
+    const size_t at[3] = { 18, 25, 32 };
+    Check(snap[at[0]] == 0xcc && snap[at[1]] == 0xcc && snap[at[2]] == 0xcc,
+          "시험이 잡은 `cc` 자리가 틀렸다");
+
+    srv.SetFirstSnapshot(snap);
+    const std::string a = "10.0.0.1:1000";
+    srv.DebugEnterGame(a, 728);
+
+    std::vector<nox::OutPacket> warm;
+    srv.Tick(0, warm);              // 첫 호출은 기준점만 잡는다
+    srv.DebugArmSnapshot(a);
+    std::vector<nox::OutPacket> out;
+    srv.Tick(33, out);
+
+    // ⚠ 여기서 `&bodies.back()` 을 들고 있으면 안 된다 — 다음 push_back 이 옮겨 담으면
+    //   그 손잡이가 죽는다. 값으로 복사해 둔다(2026-09-09 이 시험이 그 탓에 헛돌았다).
+    std::vector<uint8_t> got;
+    for (const auto& p : out) {
+        if (p.to != a) continue;
+        std::vector<uint8_t> b = Body(p);
+        if (b.size() == snap.size()) got = b;
+    }
+    Check(!got.empty(), "스냅샷 조각이 안 나갔다");
+    if (got.empty()) { std::printf("  스냅샷 번호 다시 매기기 — 못 쟀다\n"); return; }
+
+    // 번호가 **끊김 없이 하나씩** 이어져야 한다.
+    //   ⚠ 시작값을 못 박지 않는다 — 이 세션은 스냅샷 전에 판 시계(`d3`)를 이미 한 통 받았고,
+    //     그 통도 같은 계수기를 쓴다. 봐야 할 것은 **이어지는가**다.
+    //     녹음본 그대로면 0·3·4 라 여기서 걸린다.
+    unsigned seq[3] = {0, 0, 0};
+    for (int k = 0; k < 3; ++k) {
+        Check(got[at[k]] == 0xcc, "그 자리가 `cc` 가 아니다");
+        seq[k] = got[at[k] + 1] | (got[at[k] + 2] << 8);
+    }
+    const bool chained = (seq[1] == seq[0] + 1) && (seq[2] == seq[1] + 1);
+    Check(chained, "녹음본 번호가 그대로다 — 이러면 뒤에 보내는 신뢰 메시지가 사라진다");
+    if (!chained) {
+        std::printf("  나온 번호: %u %u %u · 조각: ", seq[0], seq[1], seq[2]);
+        for (size_t i = 0; i < got.size(); ++i) std::printf("%02x ", got[i]);
+        std::printf("\n");
+    }
+
+    std::printf("  스냅샷 번호 다시 매기기 — 0·1·2 로 이어짐\n");
+}
+
 void TestObserverExit() {
     nox::Server srv;
     const std::string a = "10.0.0.1:1000";
@@ -1507,6 +1575,7 @@ int main() {
     TestSpellDamage();
     TestMelee();
     TestObserverExit();
+    TestSnapshotSeqRenumber();
     TestProjectile();
     TestProjectileVisible();
     TestSummon();

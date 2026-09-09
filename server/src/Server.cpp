@@ -135,6 +135,28 @@ void Server::EmitNewPlayer(Session& to, const Session& who, uint8_t status,
 // `6a REPORT_CLIENT_STATUS <번호2> <상태4>` 한 통. 받는 쪽 한 명에게.
 //
 // 실측 원문: `cc 20 00 07 | 6a cb 02 00 00 00 00`
+// 녹음본 조각의 `cc` 번호를 이 세션 것으로 다시 매긴다. 자세한 까닭은 Server.h 선언 자리에.
+void Server::RenumberSeq(Session& s, std::vector<uint8_t>& frag) {
+    size_t pos = 0;
+    while (pos < frag.size()) {
+        const uint8_t op = frag[pos];
+        size_t msz = MessageSize(frag.data() + pos, frag.size() - pos, /*fromClient=*/false);
+        // ⚠ `a4` 는 길이표에 없다(가변). 이걸 안 다루면 걸음이 **첫 갱신에서 멈춰**
+        //   뒤의 `cc` 를 하나도 못 고친다 — 09-09 에 실제로 그렇게 헛돌았다.
+        if (msz == 0 && op == static_cast<uint8_t>(Op::UPDATE_STREAM)) {
+            const UpdateMsg um = DecodeUpdate(frag.data() + pos + 1, frag.size() - pos - 1, nullptr);
+            if (um.ok && um.consumed > 0) msz = 1 + um.consumed;
+        }
+        if (msz == 0) break;   // 모르는 것 — 여기서 멈춘다. 뒤를 억지로 고치면 더 나쁘다
+        if (op == static_cast<uint8_t>(Op::SEQ_IMPORTANT) && msz >= 4) {
+            frag[pos + 1] = static_cast<uint8_t>(s.seqImpId);
+            frag[pos + 2] = static_cast<uint8_t>(s.seqImpId >> 8);
+            ++s.seqImpId;
+        }
+        pos += msz;
+    }
+}
+
 void Server::EmitClientStatus(Session& to, uint16_t netCode, uint32_t status,
                               std::vector<OutPacket>& out) {
     const uint8_t st[7] = {
@@ -1140,7 +1162,11 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         for (auto& kv2 : sessions_) {
                             Session& o = kv2.second;
                             if (!o.inGame || o.addr == s.addr) continue;
-                            Emit(o, /*reliable=*/true, /*stream=*/0, gear.data(), gear.size(), out);
+                            // ★ 녹음본에서 떼어 온 껍데기라 번호가 그 녹음 때 것이다.
+                            //   받는 사람마다 **그 사람의 번호로 다시 매겨** 보낸다.
+                            std::vector<uint8_t> g = gear;
+                            RenumberSeq(o, g);
+                            Emit(o, /*reliable=*/true, /*stream=*/0, g.data(), g.size(), out);
                             ++handled_;
                         }
                     }
@@ -1470,10 +1496,14 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         if (s.snapshotIn >= 0 && --s.snapshotIn < 0 && !firstSnapshot_.empty()) {
             // 서두는 남의 세션 녹음이라 사람 항목의 번호·자리가 남의 것이다.
             std::vector<uint8_t> patched;
-            const std::vector<uint8_t>& snap =
-                (patchSnapshot_ &&
-                 PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_))
-                    ? patched : firstSnapshot_;
+            if (!(patchSnapshot_ &&
+                  PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_))) {
+                patched = firstSnapshot_;
+            }
+            // ★★★ **번호를 다시 매긴 뒤에 보낸다** — 안 그러면 이 뒤에 보내는
+            //   신뢰 메시지가 녹음본의 같은 번호에 먹혀 조용히 사라진다(Server.h RenumberSeq 참조).
+            RenumberSeq(s, patched);
+            const std::vector<uint8_t>& snap = patched;
             Emit(s, /*reliable=*/true, /*stream=*/0, snap.data(), snap.size(), out);
             // 스냅샷 안에 이미 전체번호(ff) 머리의 갱신이 들어 있다 — 그것이 **첫 갱신**이다.
             // 그러니 이 틱에 내 갱신을 또 보태지 않고, 다음 틱부터 별칭 `01` 로 잇는다.
@@ -1484,6 +1514,13 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   소개받을 자리가 없었다**(2026-09-09 사람 눈 판정).
             //   여기서 머리를 되돌리면 다음 틱 갱신이 전체번호로 둘을 다 싣는다.
             if (inGameCount() >= 2) s.sentFirstUpdate = false;
+            // ★★★ **소개를 다시 한다 — 스냅샷이 앞서 보낸 소개를 지우기 때문이다.**
+            //   이 녹음본 안에 `ea FORGET_DRAWABLES` 와 `b1`(맵 `estate` 로 새 판)이 들어 있다
+            //   (2026-09-09 와이어 실측: 545바이트 조각의 210·216번 자리).
+            //   접속 순서상 소개(`2d`·`6a`)는 **스냅샷보다 170ms 앞서** 나가므로 통째로 날아간다.
+            //   그래서 **나중에 들어온 쪽만** 상대를 못 봤다 — 먼저 온 쪽은 스냅샷을 안 받으니 멀쩡했다.
+            //   여기서 다시 세워 두면 다음 틱에 아래 소개 자리가 한 번 더 돈다.
+            if (inGameCount() >= 2) s.pendingIntro = true;
             continue;
         }
 
@@ -1535,12 +1572,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 //     그건 **오픈녹스 클라** 이야기다 — 정품 클라는 `--peer-ops` 를 넓게 줘도 멀쩡했다.
                 if (peerSnapshot_ && !firstSnapshot_.empty()) {
                     std::vector<uint8_t> pa, pb;
-                    const std::vector<uint8_t>& sa =
-                        PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, pa, forceHudOn_) ? pa : firstSnapshot_;
-                    Emit(o, /*reliable=*/true, /*stream=*/0, sa.data(), sa.size(), out);
-                    const std::vector<uint8_t>& sb =
-                        PatchPreludePlayer(firstSnapshot_, o.netCode, o.x, o.y, pb, forceHudOn_) ? pb : firstSnapshot_;
-                    Emit(s, /*reliable=*/true, /*stream=*/0, sb.data(), sb.size(), out);
+                    if (!PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, pa, forceHudOn_)) pa = firstSnapshot_;
+                    RenumberSeq(o, pa);   // 받는 쪽은 o 다 — 번호도 o 의 것이라야 한다
+                    Emit(o, /*reliable=*/true, /*stream=*/0, pa.data(), pa.size(), out);
+                    if (!PatchPreludePlayer(firstSnapshot_, o.netCode, o.x, o.y, pb, forceHudOn_)) pb = firstSnapshot_;
+                    RenumberSeq(s, pb);
+                    Emit(s, /*reliable=*/true, /*stream=*/0, pb.data(), pb.size(), out);
                     ++handled_;
                 }
             }
