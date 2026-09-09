@@ -29,6 +29,7 @@
 #include "nox/Recording.h"
 #include "nox/Server.h"
 #include "nox/MapFile.h"
+#include "nox/ThingDb.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -278,7 +279,28 @@ int main(int argc, char** argv) {
         ws.reserve(cells.size());
         for (const auto& w : cells) ws.emplace_back(w.x, w.y);
         srv.SetWalls(ws);
-        std::printf("[맵] %s — 벽 %zu칸, 충돌 켜짐\n", mapPath.c_str(), ws.size());
+        // 정적 오브젝트 — 이름을 와이어 번호로 바꿔 싣는다 (P4-a).
+        //   thing.bin 을 못 읽으면 벽만 켜진다 — 있으면 전부.
+        nox::ThingDb tdb;
+        size_t nStat = 0, nSkip = 0;
+        if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            std::vector<nox::Server::WorldStatic> st;
+            uint16_t nextCode = 20000;   // 사람(713~)·투사체(4096~)와 안 겹치는 대역
+            for (const auto& o : mf.ReadObjects()) {
+                const uint16_t wire = tdb.WireByName(o.type);
+                if (wire == 0) { ++nSkip; continue; }
+                nox::Server::WorldStatic w2;
+                w2.netCode = nextCode++;
+                w2.type = wire;
+                w2.x = static_cast<int>(o.x);
+                w2.y = static_cast<int>(o.y);
+                st.push_back(w2);
+            }
+            nStat = st.size();
+            srv.SetWorldStatics(std::move(st));
+        }
+        std::printf("[맵] %s — 벽 %zu칸 · 정적 %zu개(변환 실패 %zu) · 충돌 켜짐\n",
+                    mapPath.c_str(), ws.size(), nStat, nSkip);
     }
     {
         uint8_t info[256] = {};

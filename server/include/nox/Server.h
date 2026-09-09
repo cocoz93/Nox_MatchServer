@@ -285,6 +285,9 @@ constexpr int kSnapshotDelayTicks = 5;
 //   thing.bin NewPlayer EXTENT 로 검증·교체한다.
 constexpr double kWallCell = 23.0;
 constexpr double kBodyRadius = 12.0;
+
+// 시야 반경 (P4-b). ⚠ 화면 반경보다 조금 넓게 잡은 자리표시 — 실측 아님.
+constexpr double kAoiRadius = 700.0;
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.
@@ -405,6 +408,19 @@ public:
         return walls_[cy * 256 + cx] != 0;
     }
     // 이 자리에 설 수 있나 — 몸 반지름의 네 모서리가 벽 칸을 안 밟아야 한다.
+    // ── 세계 정적 오브젝트 (독립 서버 P4-a) ────────
+    //
+    // 맵 파일에서 읽은 것들. 아직 갱신에 실지는 않는다(P4-b 에서 AOI 로) —
+    // 지금은 스냅샷 조립(P5-c)과 AOI 의 바닥이다.
+    struct WorldStatic {
+        uint16_t netCode = 0;   // 서버가 붙인 번호 (맵 extent 그대로 쓰지 않는다 — 충돌 여지)
+        uint16_t type = 0;      // 와이어 종류 번호
+        int x = 0, y = 0;
+    };
+    void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
+    void SetAoi(bool on) { aoiOn_ = on; }
+    size_t WorldStaticCount() const { return statics_.size(); }
+
     bool CanStand(double x, double y, double r) const {
         if (!wallsOn_) return true;
         return !WallAt(x - r, y) && !WallAt(x + r, y) && !WallAt(x, y - r) && !WallAt(x, y + r);
@@ -780,6 +796,8 @@ private:
     std::set<uint8_t> peerOps_{0x4c, 0x60};
     // 스폰 자리를 사람마다 몇 픽셀씩 벌리나. 기본 40 은 근접 사거리(45) 안이다.
     int spawnSpread_ = 40;
+    std::vector<WorldStatic> statics_;
+    bool aoiOn_ = false;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
     std::vector<uint8_t> walls_;   // 256×256 벽 격자 (P3)
     bool wallsOn_ = false;
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는

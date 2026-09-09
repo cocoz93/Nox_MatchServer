@@ -47,6 +47,14 @@ public:
         return &things_[wire - 1];
     }
     size_t Count() const { return things_.size(); }
+
+    // 이름 → 와이어 번호. 맵 파일은 오브젝트를 이름으로 담으니(P4)
+    // 서버가 갱신에 실으려면 이 변환이 있어야 한다. 못 찾으면 0.
+    uint16_t WireByName(const std::string& name) const {
+        for (size_t i = 0; i < things_.size(); ++i)
+            if (things_[i].name == name) return static_cast<uint16_t>(i + 1);
+        return 0;
+    }
     const std::string& Error() const { return error_; }
 
 private:

@@ -13,6 +13,7 @@
 
 #include "nox/Messages.h"
 #include "nox/Opcode.h"
+#include "nox/ThingFlags.h"
 
 namespace nox {
 
@@ -1938,6 +1939,22 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             FillEntry(s.aliases, k.netCode, k.type, s.tickFrame,
                       static_cast<int>(k.x), static_cast<int>(k.y), k.facing, e);
             m.objects.push_back(e);
+        }
+
+        // ── 맵 정적 오브젝트 — **시야 반경 안만** (독립 서버 P4-b) ──
+        //
+        // 전부 실으면 갱신이 512B 를 넘고 별칭도 마른다. 화면 반경보다 조금 넓게 잘라
+        // 담고, 드나듦은 별칭 임대(2초)가 알아서 정리한다.
+        // ⚠ 기본 꺼짐(aoiOn_) — 실클라 검증(P4-c) 전에는 켜지 않는다.
+        if (aoiOn_) {
+            for (const auto& w : statics_) {
+                const double dx = w.x - s.x, dy = w.y - s.y;
+                if (dx * dx + dy * dy > kAoiRadius * kAoiRadius) continue;
+                ObjEntry e;
+                FillEntry(s.aliases, w.netCode, w.type, s.tickFrame, w.x, w.y, 0, e,
+                          /*complex=*/ThingIsComplex(w.type));
+                m.objects.push_back(e);
+            }
         }
 
         uint8_t body[512];
