@@ -14,6 +14,7 @@
 #include "nox/Messages.h"
 #include "nox/Opcode.h"
 #include "nox/ThingFlags.h"
+#include "nox/JoinBundle.h"
 
 namespace nox {
 
@@ -1148,9 +1149,25 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     }
                     Emit(s, /*reliable=*/true, /*stream=*/0, msg.data(), msg.size(), out);
                     ++handled_;
+                } else if (standalone_) {
+                    // ★ 독립 모드 — 녹음 없이 조립해 보낸다 (P5-c-2).
+                    //   플레이어 정보 97B 는 방금 받은 CLIENT_ACCEPT 에서 그대로.
+                    const uint8_t* info97 =
+                        (it.bodyLen() >= 97) ? it.body() : nullptr;
+                    std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97);
+                    Emit(s, /*reliable=*/true, /*stream=*/0, jb.data(), jb.size(), out);
+                    ++handled_;
                 }
                 // 여기서부터 게임에 들어온 것으로 본다 — 매 틱 상태를 받는다.
                 s.inGame = true;
+
+                if (standalone_ && useMapBody_.empty()) {
+                    std::vector<uint8_t> um = BuildUseMap(saMapName_, saMapCrc_, s.frame);
+                    Emit(s, /*reliable=*/true, /*stream=*/0, um.data(), um.size(), out);
+                    ++handled_;
+                    // 스냅샷도 예약 — 발송 자리에서 조립본을 보낸다
+                    s.snapshotIn = kSnapshotDelayTicks;
+                }
 
                 if (!useMapBody_.empty()) {
                     std::vector<uint8_t> msg = useMapBody_;
@@ -1571,10 +1588,43 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   이 한 조각에 `0xe9` 살려내기 · `0x60` 장비 넷 · `0x4c` 집을 것 넷 ·
         //   `0xdd`/`0xde` 최대 체력·마나가 다 실려 있다(정품 대조, 2026-09-08).
         //   접속과 같은 묶음으로 보내면 클라가 아직 맵을 안 읽어 그냥 버린다.
-        if (s.snapshotIn >= 0 && --s.snapshotIn < 0 && !firstSnapshot_.empty()) {
+        if (s.snapshotIn >= 0 && --s.snapshotIn < 0 &&
+            (!firstSnapshot_.empty() || standalone_)) {
             // 서두는 남의 세션 녹음이라 사람 항목의 번호·자리가 남의 것이다.
             std::vector<uint8_t> patched;
-            if (!(patchSnapshot_ &&
+            if (firstSnapshot_.empty()) {
+                // ★ 독립 모드 (P5-c-2) — 녹음 없이 조립한다:
+                //   27 시각 + a4(사람 + 시야 안 정적) + cc 꼬리부(BuildSnapshotTail).
+                patched.push_back(static_cast<uint8_t>(Op::TIMESTAMP));
+                patched.push_back(static_cast<uint8_t>(s.tickFrame));
+                patched.push_back(static_cast<uint8_t>(s.tickFrame >> 8));
+                UpdateMsg m;
+                m.headAlias = 0xff;
+                m.headNetCode = 0;
+                m.headType = 0;
+                m.x = s.x;
+                m.y = s.y;
+                m.flags = 0;
+                m.headAnim = 0;
+                ObjEntry me;
+                FillEntry(s.aliases, s.netCode, kPlayerType, s.tickFrame, s.x, s.y,
+                          s.facing, me);
+                m.objects.push_back(me);
+                for (const auto& w : statics_) {
+                    const double ddx = w.x - s.x, ddy = w.y - s.y;
+                    if (ddx * ddx + ddy * ddy > kAoiRadius * kAoiRadius) continue;
+                    ObjEntry e;
+                    FillEntry(s.aliases, w.netCode, w.type, s.tickFrame, w.x, w.y, 0, e,
+                              /*complex=*/ThingIsComplex(w.type));
+                    m.objects.push_back(e);
+                }
+                uint8_t ub[480];
+                ub[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
+                const size_t un = EncodeUpdate(m, ub + 1, sizeof(ub) - 1);
+                patched.insert(patched.end(), ub, ub + 1 + un);
+                const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode);
+                patched.insert(patched.end(), tail.begin(), tail.end());
+            } else if (!(patchSnapshot_ &&
                   PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_))) {
                 patched = firstSnapshot_;
             }

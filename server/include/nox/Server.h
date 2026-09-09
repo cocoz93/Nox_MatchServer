@@ -419,6 +419,19 @@ public:
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
     void SetAoi(bool on) { aoiOn_ = on; }
+
+    // ── 독립 모드 (P5-c-2) ──────────────────────
+    //
+    // 녹음본(joinBody_·useMapBody_·firstSnapshot_) 없이 접속을 받는다.
+    //   접속 묶음 = BuildJoinBundle(클라 97B 되돌려줌)
+    //   USE_MAP    = BuildUseMap(아래 메타)
+    //   스냅샷      = 27 + a4(현 세계) + BuildSnapshotTail(순번은 RenumberSeq 가 다시)
+    // ⚠ 기본 꺼짐 — 실클라 검증(P5-c 졸업) 전에는 녹음 경로가 정본이다.
+    void SetStandalone(const std::string& mapFileName, uint32_t mapCrc) {
+        standalone_ = true;
+        saMapName_ = mapFileName;
+        saMapCrc_ = mapCrc;
+    }
     size_t WorldStaticCount() const { return statics_.size(); }
 
     bool CanStand(double x, double y, double r) const {
@@ -797,7 +810,10 @@ private:
     // 스폰 자리를 사람마다 몇 픽셀씩 벌리나. 기본 40 은 근접 사거리(45) 안이다.
     int spawnSpread_ = 40;
     std::vector<WorldStatic> statics_;
-    bool aoiOn_ = false;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
+    bool aoiOn_ = false;
+    bool standalone_ = false;
+    std::string saMapName_;
+    uint32_t saMapCrc_ = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
     std::vector<uint8_t> walls_;   // 256×256 벽 격자 (P3)
     bool wallsOn_ = false;
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는

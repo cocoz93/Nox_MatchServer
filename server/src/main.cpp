@@ -16,6 +16,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <map>
 #include <string>
@@ -180,6 +181,7 @@ int main(int argc, char** argv) {
     std::string mode = "arena";
     // ★ 독립 서버 P3 — .map 을 직접 읽어 벽 충돌을 켤다. 비면 종전처럼 벽 없음.
     std::string mapPath;
+    bool standalone = false;
     int questCount = 4;
     // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —
     //   안 그러면 걸어가 붙이는 조종까지 필요해져 판정이 흐려진다.
@@ -246,6 +248,9 @@ int main(int argc, char** argv) {
             questSpread = std::atof(argv[++i]);
         } else if (a == "--map" && i + 1 < argc) {
             mapPath = argv[++i];
+        } else if (a == "--standalone") {
+            // 독립 모드 — 녹음 없이 접속 묶음·USE_MAP·스냅샷을 조립(P5-c-2). --map 필수.
+            standalone = true;
         } else if (a == "--ctf-span" && i + 1 < argc) {
             ctfSpan = std::atoi(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
@@ -301,6 +306,16 @@ int main(int argc, char** argv) {
         }
         std::printf("[맵] %s — 벽 %zu칸 · 정적 %zu개(변환 실패 %zu) · 충돌 켜짐\n",
                     mapPath.c_str(), ws.size(), nStat, nSkip);
+        if (standalone) {
+            std::string nm = mapPath;
+            const size_t sl = nm.find_last_of("\/");
+            if (sl != std::string::npos) nm = nm.substr(sl + 1);
+            for (char& ch : nm) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            srv.SetStandalone(nm, mf.Crc());
+            std::printf("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)
+",
+                        nm.c_str(), mf.Crc());
+        }
     }
     {
         uint8_t info[256] = {};
