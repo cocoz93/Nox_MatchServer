@@ -380,6 +380,8 @@ public:
     // ★ 스폰 간격(--spawn-spread). 크게 주면 「가려서 안 보이는 것」과
     //   「안 그려지는 것」이 갈린다. 단 45 를 넘기면 근접이 안 닿는다.
     void SetSpawnSpread(int v) { spawnSpread_ = v; }
+    // ★ 남 항목 덧붙이 값(--peer-pose HH). 자기 것은 늘 0x40 이고 그건 그려진다.
+    void SetPeerPose(uint8_t v) { peerPose_ = v; }
     // ★ 옛 동작(매 틱 전체번호 소개)으로 되돌리는 대조용 손잡이(--intro-every-tick).
     void SetIntroEveryTick(bool v) { introEveryTick_ = v; }
     // 클라에게서 받은 별칭 알림 수. 틱 로그에 찍어 「받고 있나」를 바로 본다.
@@ -676,6 +678,9 @@ private:
     std::set<uint8_t> peerOps_{0x4c, 0x60};
     // 스폰 자리를 사람마다 몇 픽셀씩 벌리나. 기본 40 은 근접 사거리(45) 안이다.
     int spawnSpread_ = 40;
+    // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
+    // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
+    uint8_t peerPose_ = 0x30;
     // 사람 둘 이상일 때 매 틱 f 로 다시 소개할지. 기본 꺼짐 — 켜면 클라가
     // 갱신마다 별칭을 새로 만든다(2026-09-09 실측: 정품의 30배).
     // ★★ 기본이 **켜짐**이다. 끄면(별칭으로 보내면) **아무도 안 그려진다**(2026-09-09 사람 눈).

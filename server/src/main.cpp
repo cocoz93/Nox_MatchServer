@@ -167,7 +167,8 @@ int main(int argc, char** argv) {
     //   「회차마다 다르다」로 보이던 것의 정체가 이것이다(2026-09-09).
     //   끄려면 `--alias-intro` 를 준다.
     bool introEveryTick = true;
-    int spawnSpread = 0;   // 0 이면 서버 기본값(40)
+    int spawnSpread = 0;
+    int peerPose = -1;   // 남 항목 덧붙이 값. -1 이면 서버 기본(0x30)   // 0 이면 서버 기본값(40)
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -193,6 +194,8 @@ int main(int argc, char** argv) {
         } else if (a == "--alias-intro") {
             // 진단용 — 이미 소개한 사람을 별칭으로 보낸다. 지금은 아무도 안 그려진다.
             introEveryTick = false;
+        } else if (a == "--peer-pose" && i + 1 < argc) {
+            peerPose = (int)std::strtol(argv[++i], nullptr, 16);
         } else if (a == "--spawn-spread" && i + 1 < argc) {
             spawnSpread = std::atoi(argv[++i]);
         } else if (a == "--hud-off") {
@@ -283,6 +286,7 @@ int main(int argc, char** argv) {
             srv.SetNotifyNewGear(!noNewGear);
             srv.SetForceHudOn(!hudOff);
             if (spawnSpread > 0) srv.SetSpawnSpread(spawnSpread);
+            if (peerPose >= 0) srv.SetPeerPose((uint8_t)peerPose);
             srv.SetIntroEveryTick(introEveryTick);
             if (!peerOps.empty()) {
                 std::set<uint8_t> ops;
