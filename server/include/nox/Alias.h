@@ -68,7 +68,7 @@ public:
         return a;
     }
 
-    // ★★ **클라가 알려 준 별칭을 오브젝트로 되찾는다.**
+    // ★★ **클라가 알려 준 별칭을 오브젝트로 되찾는다 — 그리고 쓰는 동안 임대를 민다.**
     //
     //   왜 필요한가 — 별칭은 클라가 굴리고 `0xa5 NEW_ALIAS` 로 서버에 알려 준다.
     //   서버가 같은 규칙으로 따라 굴리게 해 뒀지만 실제로는 어긋났다 —
@@ -76,11 +76,21 @@ public:
     //   전체번호로 다시 소개했고, 그러니 클라가 초당 서른 번 오브젝트를 새로 등록해
     //   1분쯤에 끊겼다(`a5` 3,073 대 갱신 2,129 · 정품은 갱신당 0.03).
     //   **따라 굴리지 말고 클라가 말해 준 것을 그대로 쓴다.**
-    //   ⚠ 임대가 지난 자리는 안 쓴다 — 클라가 그 자리를 다른 것에 내줬을 수 있다.
-    int FindByObject(uint16_t netCode, uint16_t type, uint32_t frame) const {
+    //
+    //   ★★ 임대 연장(2026-09-10 ao2 실측) — 연장 없이는 **2초 만에 별칭을 버리고
+    //   전체번호 재소개로 돌아간다**(별칭 사용 60틱 → 그 뒤 소개 1,482건). 클라는
+    //   같은 (번호,종류)가 계속 보이면 **같은 칸을 다시 쓰고 `a5` 를 또 보내지 않으니**
+    //   서버는 영영 별칭을 못 되찾고, 매 틱 21개 재소개에 클라가 ~20초 만에 죽었다.
+    //   서버가 그 별칭으로 계속 보내는 동안은 클라 쪽 칸도 살아 있다 — 쓸 때마다 민다.
+    //   ⚠ 임대가 **이미** 지난 자리는 여전히 안 쓴다 — 시야 밖으로 나가 한동안 안 보낸
+    //     물체의 칸은 클라가 다른 것에 내줬을 수 있다.
+    int FindByObject(uint16_t netCode, uint16_t type, uint32_t frame) {
         for (int a = kAliasMin; a <= kAliasMax; ++a) {
-            const AliasSlot& s = slots_[a];
-            if (s.used && s.netCode == netCode && s.type == type && s.deadline >= frame) return a;
+            AliasSlot& s = slots_[a];
+            if (s.used && s.netCode == netCode && s.type == type && s.deadline >= frame) {
+                s.deadline = frame + kAliasTTL;
+                return a;
+            }
         }
         return -1;
     }

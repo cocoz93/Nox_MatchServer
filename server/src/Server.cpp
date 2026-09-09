@@ -288,15 +288,57 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
     }
 }
 
+// 별칭 항목의 좌표를 상대(직전 항목 기준)로 바꾼다 — 못 하면 전체번호+절대로 후퇴.
+//
+// ★★ 클라는 `00 <별칭> <절대4>` 를 못 읽는다(2026-09-09 사람·2026-09-10 정적 실측 —
+//   둘 다 화면이 검어지고 클라가 죽었다). 규약은 「별칭이면 상대 · `ff` 면 절대」 둘뿐.
+//   base 는 「직전 항목의 실제 자리」 — 디코더(UpdateStream.cpp)가 절대 항목에서
+//   기준을 리셋하고 상대에서 더해 가는 것과 같은 축이다.
+// ⚠ 별칭 임대 연장(Alias.h)을 넣기 전에는 임대가 2초에 끝나 다들 `ff` 로 나갔기
+//   때문에 이 지뢰가 안 밟혔다 — 연장 뒤로는 별칭이 유지되므로 **별칭을 쓰는 모든
+//   항목**(투사체·깃발·소환수·정적)이 이 길을 지나야 한다.
+static void Relativize(ObjEntry& e, uint16_t netCode, int wx, int wy,
+                       int& baseX, int& baseY) {
+    if (e.alias != 0xff) {
+        const int dx = wx - baseX, dy = wy - baseY;
+        if (dx >= -128 && dx <= 127 && dy >= -128 && dy <= 127) {
+            e.absolute = false;
+            e.dx = static_cast<int8_t>(dx);
+            e.dy = static_cast<int8_t>(dy);
+        } else {
+            e.alias = 0xff;
+            e.netCode = netCode;
+        }
+    }
+    baseX = wx;
+    baseY = wy;
+}
+
 // 시야 반경 안 정적 오브젝트를 **가까운 순 상한**으로 갱신에 담는다 (P4-b).
 //
 // ★ 상한 없이는 EncodeUpdate 가 512B 를 넘겨 **0 을 돌려주고 갱신이 통째로 무산**된다.
 //   스냅샷 조립이 그렇게 죽었다(2026-09-10 pa1 실측: 스냅샷이 387B —
 //   `27 | a4 | cc 꼬리` 로 **a4 본문이 텅 비어** 사람 몸까지 안 실렸고 화면이 검었다).
 //   estate 스폰 주변은 반경 700 안 정적이 40개를 넘는다.
+//
+// ★★ **별칭이면 좌표도 상대(직전 항목 기준)라야 한다** (2026-09-10 ao3 실측).
+//   `00 <별칭> <절대4>` 꼴은 클라가 못 읽는다 — 사람 항목에서 이미 밟은 지뢰
+//   (「별칭으로 보냈더니 화면이 검어졌다」, 갱신 루프의 2026-09-09 기록)를 정적이
+//   그대로 다시 밟아, 접속 8초에 화면이 검어지고 20초에 클라가 죽었다.
+//   상대차가 ±127 을 넘는 자리만 전체번호(ff)+절대로 후퇴한다 — `ff` 는 절대라야
+//   한다는 규약도 실측으로 닫혀 있다(ff+상대 기각 기록).
+//   base 는 「직전 항목의 실제 자리」로 이어 굴린다 — 사람 루프의 baseX/baseY 와 같은 축.
+//
+// ★★★ **소개(ff)는 물체당 한 임대(2초)에 1번** — introAt 스로틀 (2026-09-10 ao2~ao4).
+//   스냅샷이 소개한 20개를 갱신이 매 틱 다시 소개하니(30/s×20) **클라 게임 루프가
+//   첫 프레임에 멎었다** — 문법·종류는 전수 유효했는데도(updscan 대조), 입력이
+//   1,499B 로 한 번에 토해지고 화면이 검은 채 침묵했다. 클라는 스냅샷 소개만으로
+//   별칭을 각 1번 알려 주므로(pa2 실측: 정적 20개 a5 각 ×1) 재소개는 필요 없다.
+//   별칭을 기다리는 동안 그 물체는 **이번 갱신에서 뺀다**(base 도 안 굴린다).
 static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
-                             AliasTable& tbl, uint32_t frame, int sx, int sy,
-                             UpdateMsg& m) {
+                             AliasTable& tbl, std::map<uint16_t, uint32_t>& introAt,
+                             uint32_t frame, int sx, int sy,
+                             int& baseX, int& baseY, UpdateMsg& m) {
     struct Near { double d2; const Server::WorldStatic* w; };
     std::vector<Near> near_;
     for (const auto& w : statics) {
@@ -314,6 +356,27 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
         ObjEntry e;
         FillEntry(tbl, nr.w->netCode, nr.w->type, frame, nr.w->x, nr.w->y, 0, e,
                   /*complex=*/ThingIsComplex(nr.w->type));
+        if (e.alias != 0xff) {
+            // 별칭 흐름 — 상대가 되면 상대로, 안 되면 이번 틱은 소개 스로틀을 따진다.
+            const int dx = nr.w->x - baseX, dy = nr.w->y - baseY;
+            if (dx >= -128 && dx <= 127 && dy >= -128 && dy <= 127) {
+                e.absolute = false;
+                e.dx = static_cast<int8_t>(dx);
+                e.dy = static_cast<int8_t>(dy);
+                baseX = nr.w->x;
+                baseY = nr.w->y;
+                m.objects.push_back(e);
+                continue;
+            }
+            e.alias = 0xff;               // 별칭+절대는 금지 문법 — 소개로 되돌린다
+            e.netCode = nr.w->netCode;
+        }
+        // 소개(ff) — 한 임대 안에 다시 소개하지 않는다. 빠진 항목은 base 도 안 굴린다.
+        const auto it = introAt.find(nr.w->netCode);
+        if (it != introAt.end() && frame - it->second < kAliasTTL) continue;
+        introAt[nr.w->netCode] = frame;
+        baseX = nr.w->x;
+        baseY = nr.w->y;
         m.objects.push_back(e);
     }
 }
@@ -1643,7 +1706,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 m.objects.push_back(me);
                 // 시야 안 정적 — **상한 필수** (AppendAoiStatics 주석: 상한 없이는
                 // 스폰 주변 40개↑ 가 480B 를 넘겨 a4 가 통째로 비어 나갔다).
-                AppendAoiStatics(statics_, s.aliases, s.tickFrame, s.x, s.y, m);
+                int snBaseX = s.x, snBaseY = s.y;   // 직전 항목(me)의 자리
+                AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,
+                                 s.tickFrame, s.x, s.y, snBaseX, snBaseY, m);
                 uint8_t ub[480];
                 ub[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
                 const size_t un = EncodeUpdate(m, ub + 1, sizeof(ub) - 1);
@@ -1995,6 +2060,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             ObjEntry e;
             FillEntry(s.aliases, p.netCode, ptype, s.tickFrame,
                       static_cast<int>(p.x), static_cast<int>(p.y), p.facing, e);
+            // ★ 별칭이면 상대로 (Relativize 주석 — 임대 연장 뒤로는 여기도 별칭이 온다)
+            Relativize(e, p.netCode, static_cast<int>(p.x), static_cast<int>(p.y),
+                       baseX, baseY);
             m.objects.push_back(e);
         }
 
@@ -2006,6 +2074,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             FillEntry(s.aliases, f.netCode, f.type, s.tickFrame,
                       static_cast<int>(f.x), static_cast<int>(f.y), 0, e,
                       /*complex=*/false);
+            Relativize(e, f.netCode, static_cast<int>(f.x), static_cast<int>(f.y),
+                       baseX, baseY);
             m.objects.push_back(e);
         }
 
@@ -2014,6 +2084,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             ObjEntry e;
             FillEntry(s.aliases, k.netCode, k.type, s.tickFrame,
                       static_cast<int>(k.x), static_cast<int>(k.y), k.facing, e);
+            Relativize(e, k.netCode, static_cast<int>(k.x), static_cast<int>(k.y),
+                       baseX, baseY);
             m.objects.push_back(e);
         }
 
@@ -2022,7 +2094,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         // 담는 규칙과 상한의 이유는 AppendAoiStatics 주석에. 드나듦은 별칭 임대(2초)가
         // 알아서 정리하고, 같은 자리에 서 있으면 부분집합이 안 바뀌어 별칭도 안정된다.
         // ⚠ 기본 꺼짐(aoiOn_) — 실클라 검증(P4-c) 전에는 켜지 않는다.
-        if (aoiOn_) AppendAoiStatics(statics_, s.aliases, s.tickFrame, s.x, s.y, m);
+        if (aoiOn_)
+            AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,
+                             s.tickFrame, s.x, s.y, baseX, baseY, m);
 
         uint8_t body[512];
         body[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
