@@ -820,6 +820,14 @@ private:
 // 상태 갱신 30,169건이 이 번호였고, thing.bin 712번 `NewPlayer`(복합)와 맞는다.
 constexpr uint16_t kPlayerType = 713;
 
+// 몬스터·소환수의 **대기 애니 번호**. 갱신 항목 덧붙이 한 바이트의 아래 4비트에 실린다.
+//
+// ★ 애니 번호표가 사람과 몬스터로 갈린다(`draw_debug.go` 의 두 표) —
+//     사람   0 IDLE · 1 DIE · 2 DEAD · 3 JUMP · 4 WALK …
+//     몬스터 8 IDLE · 9 DIE · 10 DEAD · 11 HURT · 12 MOVE …
+//   몬스터에 사람 번호(0)를 실으면 그 자리에 애니가 없어 **아무것도 안 그려진다.**
+constexpr uint8_t kCreatureAnimIdle = 8;
+
 // 한 걸음에 얼마나 미나. **2026-09-06 캡처로 실측했다** (전에는 지어낸 12.0 이었다).
 //
 //   표본 866 (바로 다음 틱, 프레임 차 1 짜리만)
