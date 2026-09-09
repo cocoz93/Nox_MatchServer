@@ -657,6 +657,26 @@ private:
     void EmitNewPlayer(Session& to, const Session& who, uint8_t status,
                        std::vector<OutPacket>& out);
 
+    // `6a REPORT_CLIENT_STATUS` 한 통 — **한 사람의 상태를 「받는 쪽 한 명」에게 알린다.**
+    //
+    // ★★★ **이게 남의 몸을 그리게 하는 열쇠다** (2026-09-09 오픈녹스 원본 대조).
+    //   클라의 사람 그리기(`drawable_player.go` `DrawPlayer`)는 **자기가 아닌 사람**에 대해
+    //   `if pl.Field3680 & 0x1 { return }` — 즉 **1번 비트가 서 있으면 아무것도 안 그린다.**
+    //   그 비트를 세우는 곳은 `2d NEW_PLAYER` 인데
+    //   (`network_client.go`: `pl.Field3680 |= data[112:]`) **OR 라서 0 을 다시 보내도 안 꺼진다.**
+    //   끄는 길은 `6a` 하나뿐이다 — `cdecode.c` case 106 이
+    //   `Field3680 &= ~0x423` 한 뒤 `|= 상태 & 0x423` 로 **갈아 끼운다.**
+    //   그 자리의 「내 번호냐」 검사는 **HUD 를 켤지에만** 걸리고 상태 갱신은 누구 것이든 한다.
+    //
+    // ⚠ 전에는 이걸 **본인에게만** 보냈다. 그래서 먼저 들어온 쪽에는 나중 사람의 1번 비트가
+    //   영영 서 있었고, 실제로 **한쪽에서만 상대가 보였다**(09-09 사람 눈 판정과 맞는다).
+    void EmitClientStatus(Session& to, uint16_t netCode, uint32_t status,
+                          std::vector<OutPacket>& out);
+
+    // 위를 **놀고 있는 모두**에게. 관전을 풀 때 쓴다.
+    void BroadcastClientStatus(uint16_t netCode, uint32_t status,
+                               std::vector<OutPacket>& out);
+
     // 머리 2바이트를 붙여 한 조각을 만든다. keyed 면 XOR 을 건다.
     void Emit(Session& s, bool reliable, uint8_t stream,
               const uint8_t* msg, size_t n, std::vector<OutPacket>& out);

@@ -132,6 +132,32 @@ void Server::EmitNewPlayer(Session& to, const Session& who, uint8_t status,
     ++handled_;
 }
 
+// `6a REPORT_CLIENT_STATUS <번호2> <상태4>` 한 통. 받는 쪽 한 명에게.
+//
+// 실측 원문: `cc 20 00 07 | 6a cb 02 00 00 00 00`
+void Server::EmitClientStatus(Session& to, uint16_t netCode, uint32_t status,
+                              std::vector<OutPacket>& out) {
+    const uint8_t st[7] = {
+        static_cast<uint8_t>(Op::REPORT_CLIENT_STATUS),
+        static_cast<uint8_t>(netCode),
+        static_cast<uint8_t>(netCode >> 8),
+        static_cast<uint8_t>(status),
+        static_cast<uint8_t>(status >> 8),
+        static_cast<uint8_t>(status >> 16),
+        static_cast<uint8_t>(status >> 24) };
+    EmitSeq(to, st, sizeof(st), out);
+    ++handled_;
+}
+
+void Server::BroadcastClientStatus(uint16_t netCode, uint32_t status,
+                                   std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame) continue;
+        EmitClientStatus(o, netCode, status, out);
+    }
+}
+
 void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n,
                      std::vector<OutPacket>& out) {
     if (n == 0 || n > 0xFF) return;
@@ -771,13 +797,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                                 if (!o.inGame || o.addr == s.addr) continue;
                                 EmitNewPlayer(o, s, 0, out);   // 남들에게도 「이제 논다」
                             }
-                            const uint8_t st[7] = {
-                                static_cast<uint8_t>(Op::REPORT_CLIENT_STATUS),
-                                static_cast<uint8_t>(s.netCode),
-                                static_cast<uint8_t>(s.netCode >> 8),
-                                0, 0, 0, 0 };
-                            EmitSeq(s, st, sizeof(st), out);
-                            ++handled_;
+                            // ★★★ **모두에게 보낸다 — 본인에게만이 아니다.**
+                            //   `2d` 가 세운 1번 비트(관전)는 OR 라 안 꺼지고,
+                            //   남의 몸을 안 그리게 막는 것이 바로 그 비트다
+                            //   (`DrawPlayer`: 자기가 아니면 `Field3680 & 1` 이면 되돌아간다).
+                            //   본인에게만 보내던 탓에 **먼저 온 쪽 화면에서만 상대가 사라졌다.**
+                            BroadcastClientStatus(s.netCode, 0, out);
                         }
                         // ⚠ 쉬는 시간을 둔다. 없으면 초당 서른 대가 들어갈 수 있다.
                         //   ⚠⚠ **정정(2026-09-09)** — 여기 「버튼을 누르고 있으면 매 틱 온다」고
@@ -1494,6 +1519,13 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 // 상태는 **그 사람이 지금 어떤지** 그대로 — 관전 중이면 1, 놀고 있으면 0.
                 EmitNewPlayer(o, s, s.observer ? 1 : 0, out);   // 먼저 온 사람에게 새 사람을
                 EmitNewPlayer(s, o, o.observer ? 1 : 0, out);   // 새 사람에게 먼저 온 사람을
+
+                // ★★★ **소개 바로 뒤에 상태를 한 번 더 갈아 끼운다.**
+                //   `2d` 의 상태 자리는 클라에서 `|=` 로 들어가 **한 번 선 비트가 안 꺼진다.**
+                //   그래서 「이 사람은 관전이 아니다」를 `2d` 로는 말할 수 없다 — `6a` 뿐이다.
+                //   ⚠ 서로 **상대 것만** 보낸다. 자기 번호로 오면 클라가 HUD 를 다시 켜고 끈다.
+                EmitClientStatus(o, s.netCode, s.observer ? 1u : 0u, out);
+                EmitClientStatus(s, o.netCode, o.observer ? 1u : 0u, out);
 
                 // ★★★ **상대 몫의 첫 스냅샷을 통째로 보낸다** (`--peer-snapshot`).
                 //   2026-09-09 — 자리·좌표 모드·덧붙이·간격·장비·번호·별칭·이름을 다 기각하고

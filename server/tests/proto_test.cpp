@@ -357,6 +357,14 @@ std::vector<std::vector<uint8_t>> Flatten(const std::vector<nox::OutPacket>& out
     return msgs;
 }
 
+// 받는 쪽을 가려서 푼다 — **누구에게 갔는지**를 봐야 하는 시험용.
+std::vector<std::vector<uint8_t>> FlattenTo(const std::vector<nox::OutPacket>& out,
+                                            const std::string& to) {
+    std::vector<nox::OutPacket> mine;
+    for (const auto& p : out) if (p.to == to) mine.push_back(p);
+    return Flatten(mine);
+}
+
 void TestDeathFlow() {
     nox::Server srv;
     const std::string who = "10.0.0.1:1000";
@@ -678,6 +686,24 @@ void TestObserverExit() {
             Check(st->size() == 7, "0x6a 길이가 7 이 아님");
             // 알리는 대상은 **자기 번호**다. 남의 번호를 실으면 클라가 엉뚱한 것을 깨운다
             Check((*st)[1] == 0xd8 && (*st)[2] == 0x02, "0x6a 가 자기 번호(728)를 안 실었다");
+        }
+
+        // ★★★ **남에게도 가야 한다.** 이게 안 가면 남의 화면에서 이 사람이 안 그려진다 —
+        //   `2d NEW_PLAYER` 가 세운 관전 비트는 클라에서 `|=` 라 안 꺼지고,
+        //   `DrawPlayer` 는 자기가 아닌 사람의 그 비트가 서 있으면 그리지 않고 되돌아간다.
+        //   (2026-09-09 오픈녹스 원본: `drawable_player.go` · `network_client.go` · `cdecode.c` case 106)
+        {
+            const auto other = FlattenTo(out, b);
+            const std::vector<uint8_t>* st2 =
+                FindMsg(other, static_cast<uint8_t>(nox::Op::REPORT_CLIENT_STATUS));
+            Check(st2 != nullptr, "관전 풀기 알림(0x6a)이 상대에게 안 갔다");
+            if (st2) {
+                Check(st2->size() == 7, "상대에게 간 0x6a 길이가 7 이 아님");
+                Check((*st2)[1] == 0xd8 && (*st2)[2] == 0x02,
+                      "상대에게 간 0x6a 가 관전을 푸는 사람 번호(728)를 안 실었다");
+                Check((*st2)[3] == 0 && (*st2)[4] == 0 && (*st2)[5] == 0 && (*st2)[6] == 0,
+                      "상대에게 간 0x6a 상태가 0 이 아니다 — 관전 비트가 안 꺼진다");
+            }
         }
     }
 
