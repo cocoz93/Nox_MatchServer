@@ -477,6 +477,12 @@ public:
     int spawnX() const { return spawnX_; }
     int spawnY() const { return spawnY_; }
     size_t FlagCount() const { return flags_.size(); }
+
+    // ★ 지금 누가 어디 있나 — **하네스가 걸어가게 하려면 이게 있어야 한다.**
+    //   정품 클라는 자기 자리를 밖으로 안 알려 준다(오픈녹스만 디버그 API 가 있다).
+    //   서버는 이미 다 알고 있으니 로그로 내보내고, 하네스가 그걸 읽어 각을 잰다.
+    //   짜임 — `사람 <번호>=<x>,<y>,<방향>` · `깃발 <팀>=<x>,<y>` · `몬스터 <번호>=<x>,<y>`
+    std::string PositionsLine() const;
     int QuestLeft() const { return questTotal_ - questKilled_; }
     int QuestKilled() const { return questKilled_; }
     uint16_t CapturesOf(uint8_t team) const { return team < 3 ? caps_[team] : 0; }

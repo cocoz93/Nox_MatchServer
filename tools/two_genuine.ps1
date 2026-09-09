@@ -33,6 +33,9 @@ param(
   [string]$GenuineArgs = '',
   # ★ 키 탐침 — 어떤 키가 걸음이고 어떤 키가 무슨 주문인지 잰다 (4.6 절 참조)
   [switch]$Probe,
+  # ★ 걷기 시험 — A 를 지금 자리에서 이만큼 떨어진 곳까지 걸려 보낸다. "250,0" 꼴.
+  #   화면각↔월드각 차(Δ)를 배우는 자리라, 붙기 전에 여기서 먼저 맞춰 둔다.
+  [string]$WalkTest = '',
   # ★ 직업 — **캐릭터 목록에서 어느 줄을 고르나**로 갈린다.
   #   2026-09-09 실측 목록 = **1 컨저러 · 2 위저드 · 3~5 워리어** (새로 만든 것이 맨 위로 온다).
   #   워리어는 근접(왼버튼), 위저드는 주문키(F 파이어볼 · D 연쇄번개)로 싸운다.
@@ -200,6 +203,41 @@ if ($FightSeconds -gt 0 -and (Alive $aPid) -and (Alive $bPid)) {
     if (-not (Alive $aPid) -or -not (Alive $bPid)) { Write-Host '  ⚠ 클라가 죽었다 — 싸움 중단'; break }
   }
   foreach ($p in @($aPid, $bPid)) { if (Alive $p) { & $di -Target $p -Cmd @('mb 0 0') | Out-Null } }
+}
+
+# 4.55 걷기 시험 — A 를 정해진 자리까지 걸려 본다.
+#
+# ★ 왜 여기 두나 — 깃발·퀘스트를 **정상 배치**(멀리 떨어진 자리)로 돌리려면
+#   사람이 걸어가야 한다. 걸음은 오른버튼이고 방향은 커서인데, 화면각과 월드각의
+#   차를 모르니 **먼저 배우는 자리**가 필요하다(walk_genuine.ps1 이 그걸 한다).
+if ($WalkTest -ne '' -and (Alive $aPid)) {
+  $parts = $WalkTest -split ','
+  $offX = [double]$parts[0]; $offY = [double]$parts[1]
+  $line = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '^\[자리\]' } | Select-Object -Last 1)
+  if ($line.Count -eq 0) { Write-Host '  [FAIL] 자리 줄이 없다' }
+  else {
+    $codes = [regex]::Matches($line[0], '사람 (\d+)=(-?\d+),(-?\d+)')
+    if ($codes.Count -lt 1) { Write-Host '  [FAIL] 자리 줄에 사람이 없다' }
+    else {
+      # A 가 먼저 들어왔으므로 번호가 더 작다 (번호는 5씩 올라간다)
+      $best = $null
+      foreach ($m in $codes) { if (-not $best -or [int]$m.Groups[1].Value -lt [int]$best.Groups[1].Value) { $best = $m } }
+      $nc = [int]$best.Groups[1].Value
+      $tx = [double]$best.Groups[2].Value + $offX
+      $ty = [double]$best.Groups[3].Value + $offY
+      Write-Host ("--- 걷기 시험 — 사람 {0} 을 ({1},{2}) 로 ---" -f $nc, [int]$tx, [int]$ty)
+      if ($WalkTest -like 'cursor*') {
+        & (Join-Path $PSScriptRoot 'walk_genuine.ps1') -Pid_ $aPid -NetCode $nc -Log $slog -Tx $tx -Ty $ty `
+          -CursorProbe '100,60;200,60;300,60;400,60;100,160;100,260' -ShotDir $ctrl
+      } elseif ($WalkTest -eq 'scale,0' -or $WalkTest -eq 'scale') {
+        & (Join-Path $PSScriptRoot 'walk_genuine.ps1') -Pid_ $aPid -NetCode $nc -Log $slog -Tx $tx -Ty $ty -ScaleProbe
+      } elseif ($WalkTest -eq 'sweep,0' -or $WalkTest -eq 'sweep') {
+        & (Join-Path $PSScriptRoot 'walk_genuine.ps1') -Pid_ $aPid -NetCode $nc -Log $slog -Tx $tx -Ty $ty -Sweep
+      } else {
+        & (Join-Path $PSScriptRoot 'walk_genuine.ps1') -Pid_ $aPid -NetCode $nc -Log $slog -Tx $tx -Ty $ty
+      }
+    }
+  }
 }
 
 # 4.6 키 탐침 — **어떤 키가 걸음이고 어떤 키가 무슨 주문인가**를 잰다.

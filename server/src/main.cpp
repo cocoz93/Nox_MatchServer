@@ -505,6 +505,8 @@ int main(int argc, char** argv) {
                             srv.moves(), srv.melees(),
                             nSpell, srv.flying(), srv.hits(), srv.aliasHeard(), modeInfo,
                             srv.RoundOver() ? "예" : "아니오", nTicks);
+                // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
+                std::printf("%s\n", srv.PositionsLine().c_str());
                 std::fflush(stdout);
             }
         }

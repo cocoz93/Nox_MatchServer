@@ -505,6 +505,29 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
 //   d3 | 번호 4 | 남은 시간 4(밀리초, 부호 있음) | 지금 틱 4
 //
 // 한도가 없으면 남은 시간이 **음수로 계속 내려간다** — 실측이 그랬다.
+// 지금 누가 어디 있나 — 한 줄로. 하네스가 이 줄을 읽어 걸어갈 각을 잰다.
+std::string Server::PositionsLine() const {
+    std::string s = "[자리]";
+    char buf[96];
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame) continue;
+        std::snprintf(buf, sizeof(buf), " 사람 %u=%d,%d,%u",
+                      (unsigned)o.netCode, o.x, o.y, (unsigned)o.facing);
+        s += buf;
+    }
+    for (const auto& f : flags_) {
+        std::snprintf(buf, sizeof(buf), " 깃발 %u=%d,%d", (unsigned)f.team, (int)f.x, (int)f.y);
+        s += buf;
+    }
+    for (const auto& k : pets_) {
+        std::snprintf(buf, sizeof(buf), " 몸 %u=%d,%d",
+                      (unsigned)k.netCode, (int)k.x, (int)k.y);
+        s += buf;
+    }
+    return s;
+}
+
 void Server::StartQuest(int count, int centerX, int centerY, double spread) {
     questTotal_ = count;
     questKilled_ = 0;
