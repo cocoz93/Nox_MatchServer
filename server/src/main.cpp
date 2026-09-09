@@ -159,6 +159,8 @@ int main(int argc, char** argv) {
     // 서두 안 cc(6a … 01) 의 상태를 0 으로 뒤집는 것을 **끈다**(녹음본 값 그대로).
     // 기본은 뒤집는 쪽이다 — Server.h 의 SetForceHudOn 주석 참조.
     bool hudOff = false;
+    // 새 사람이 들어올 때 남들에게 넘길 오프코드 (쉼표로, 16진). 빈 문자열이면 기본값.
+    std::string peerOps;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -177,6 +179,8 @@ int main(int argc, char** argv) {
             noUpdate = true;
         } else if (a == "--raw-snapshot") {
             rawSnapshot = true;
+        } else if (a == "--peer-ops" && i + 1 < argc) {
+            peerOps = argv[++i];
         } else if (a == "--hud-off") {
             hudOff = true;
         } else if (a == "--no-snapshot") {
@@ -264,6 +268,20 @@ int main(int argc, char** argv) {
             srv.SetSendUpdates(!noUpdate);
             srv.SetNotifyNewGear(!noNewGear);
             srv.SetForceHudOn(!hudOff);
+            if (!peerOps.empty()) {
+                std::set<uint8_t> ops;
+                size_t at = 0;
+                while (at < peerOps.size()) {
+                    size_t comma = peerOps.find(',', at);
+                    if (comma == std::string::npos) comma = peerOps.size();
+                    const std::string tok = peerOps.substr(at, comma - at);
+                    if (!tok.empty())
+                        ops.insert(static_cast<uint8_t>(std::strtol(tok.c_str(), nullptr, 16)));
+                    at = comma + 1;
+                }
+                srv.SetPeerOps(ops);
+                std::printf("남에게 넘길 오프코드 %zu개\n", ops.size());
+            }
             // ★★ 서두(prelude) — 정품이 접속 뒤 보낸 **앞 9개 조각**을 그대로 흘려보내고,
             //   그 뒤부터 내 생성으로 이어받는다. 이걸 빼면 클라 화면이 검은 채로 남는다.
             //   2026-09-07 이분법으로 9가 경계임을 확인했다(8개면 검정, 9개면 세계가 뜬다).

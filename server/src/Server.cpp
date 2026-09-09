@@ -972,7 +972,11 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 }
                 // ★ 오브젝트 번호는 **접속마다 달라야 한다**. 전에는 모두 713 이라
                 //   둘째 클라가 첫째와 같은 번호를 받아 화면이 검었다(2026-09-08).
-                if (s.netCode == 0) s.netCode = nextPlayerNetCode_++;
+                // ★ 다섯 칸씩 띄운다 — 본인 + 장비 넷. Server.h 의 kNetCodeStride 참조.
+                if (s.netCode == 0) {
+                    s.netCode = nextPlayerNetCode_;
+                    nextPlayerNetCode_ += kNetCodeStride;
+                }
                 if (s.maxHealth == 0) {
                     s.maxHealth = kDefaultMaxHealth;
                     s.health = s.maxHealth;
@@ -1074,7 +1078,10 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         //     `e9`(살려내기)만      → 상대가 **아예 안 보인다**(오브젝트가 사라짐)
                         //   **`4c`+`60` 둘만**이 맞다. 다만 상대가 **누워 있다** —
                         //   세우는 것은 다른 자리에서 풀 것(자세/애니 쪽으로 보인다).
-                        if (iop == 0x4c || iop == 0x60)
+                        // ★ 어떤 오프코드를 넘길지는 `--peer-ops` 로 바꿀 수 있다.
+                        //   「무엇을 더 보내야 상대가 그려지나」를 다시 컴파일하지 않고
+                        //   한 번에 쓸어보려고 손잡이로 뺐다(2026-09-09).
+                        if (peerOps_.count(iop) != 0)
                             gear.insert(gear.end(), src.begin() + q, src.begin() + q + 4 + inner);
                         q += 4 + inner;
                     }
@@ -1122,20 +1129,32 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
 //       dd cb 02 4b 00 4b 00        최대 체력 → 0x02cb = 715
 //       e9 cb 02 dd 07 00 00 ff 01  살려내기   → 715
 //   길이를 안 바꾸는 **자리 치환**이라 뒤 스트림이 밀리지 않는다.
+// 사람 하나가 차지하는 번호 칸 수 — 본인 + 장비 넷. Server.h 의 kNetCodeStride 와 같은 값이다.
+static constexpr uint16_t kSlotSpan = 5;
+
 static void PatchSeqTargets(std::vector<uint8_t>& buf, uint16_t from, uint16_t to,
                             bool forceHudOn) {
     if (from == to) return;
-    const uint8_t f0 = static_cast<uint8_t>(from), f1 = static_cast<uint8_t>(from >> 8);
-    const uint8_t t0 = static_cast<uint8_t>(to),   t1 = static_cast<uint8_t>(to >> 8);
     size_t q = 0;
     while (q + 4 <= buf.size()) {
         if (buf[q] != static_cast<uint8_t>(Op::SEQ_IMPORTANT)) { ++q; continue; }
         const size_t inner = buf[q + 3];
         if (q + 4 + inner > buf.size()) break;
         // 껍데기 머리 4바이트 뒤가 속 메시지다. `[오프코드][대상번호 2]…` 꼴이면 바꾼다.
-        if (inner >= 3 && buf[q + 5] == f0 && buf[q + 6] == f1) {
-            buf[q + 5] = t0;
-            buf[q + 6] = t1;
+        //
+        // ★★★ **사람 하나가 아니라 다섯 칸을 통째로 옮긴다** — 본인 + 장비 넷.
+        //   정품은 사람마다 장비 번호가 다르다(715→716~719 · 720→721~724).
+        //   내 서버는 사람만 옮기고 장비는 녹음본 번호(716~719)를 **둘 다 그대로** 써서
+        //   두 사람이 같은 오브젝트를 가리켰다 — 미니맵엔 둘인데 몸은 하나였다(2026-09-09).
+        //   ⚠ 한 칸씩 여러 번 훑으면 **먼저 바꾼 값을 다시 바꾼다**(715→713 뒤에 717→715 가
+        //     또 걸린다). 그래서 한 번에 범위로 판정하고 한 번만 쓴다.
+        if (inner >= 3) {
+            const uint16_t id = static_cast<uint16_t>(buf[q + 5] | (buf[q + 6] << 8));
+            if (id >= from && id < from + kSlotSpan) {
+                const uint16_t nid = static_cast<uint16_t>(to + (id - from));
+                buf[q + 5] = static_cast<uint8_t>(nid);
+                buf[q + 6] = static_cast<uint8_t>(nid >> 8);
+            }
         }
         // ★★★ **서두 안에 「HUD 를 숨겨라」가 들어 있다.**
         //   녹음본에 `cc 00 00 07 | 6a <번호2> 01 00 00 00` 이 그대로 있다(182번 자리).
@@ -1174,7 +1193,6 @@ static BarePatchStat PatchBareTargets(std::vector<uint8_t>& buf, uint16_t from, 
     BarePatchStat st;
     st.total = buf.size();
     if (from == to) return st;
-    const uint8_t f0 = static_cast<uint8_t>(from), f1 = static_cast<uint8_t>(from >> 8);
     // ★★ **걷지 않고 훑는다.** 처음에는 메시지를 차례로 걸어가며 고치려 했는데
     //   `0xaa MSG_IMPORTANT` 에서 길이가 어긋나 **187/543 바이트에서 섰다** —
     //   고칠 `0xde` 는 302번 자리라 거기까지 가 보지도 못했다(2026-09-09 계측).
@@ -1183,9 +1201,11 @@ static BarePatchStat PatchBareTargets(std::vector<uint8_t>& buf, uint16_t from, 
     //     나란히 있는 자리만 손대고, 몇 자리를 고쳤는지 세어 로그로 남긴다.
     for (size_t q = 0; q + 3 <= buf.size(); ++q) {
         if (!BareTargetOpcode(buf[q])) continue;
-        if (buf[q + 1] != f0 || buf[q + 2] != f1) continue;
-        buf[q + 1] = static_cast<uint8_t>(to);
-        buf[q + 2] = static_cast<uint8_t>(to >> 8);
+        const uint16_t id = static_cast<uint16_t>(buf[q + 1] | (buf[q + 2] << 8));
+        if (id < from || id >= from + kSlotSpan) continue;
+        const uint16_t nid = static_cast<uint16_t>(to + (id - from));
+        buf[q + 1] = static_cast<uint8_t>(nid);
+        buf[q + 2] = static_cast<uint8_t>(nid >> 8);
         ++st.patched;
     }
     st.stoppedAt = buf.size();
