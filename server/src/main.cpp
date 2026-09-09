@@ -161,6 +161,8 @@ int main(int argc, char** argv) {
     bool hudOff = false;
     // 새 사람이 들어올 때 남들에게 넘길 오프코드 (쉼표로, 16진). 빈 문자열이면 기본값.
     std::string peerOps;
+    bool introEveryTick = false;
+    int spawnSpread = 0;   // 0 이면 서버 기본값(40)
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -181,6 +183,10 @@ int main(int argc, char** argv) {
             rawSnapshot = true;
         } else if (a == "--peer-ops" && i + 1 < argc) {
             peerOps = argv[++i];
+        } else if (a == "--intro-every-tick") {
+            introEveryTick = true;
+        } else if (a == "--spawn-spread" && i + 1 < argc) {
+            spawnSpread = std::atoi(argv[++i]);
         } else if (a == "--hud-off") {
             hudOff = true;
         } else if (a == "--no-snapshot") {
@@ -268,6 +274,8 @@ int main(int argc, char** argv) {
             srv.SetSendUpdates(!noUpdate);
             srv.SetNotifyNewGear(!noNewGear);
             srv.SetForceHudOn(!hudOff);
+            if (spawnSpread > 0) srv.SetSpawnSpread(spawnSpread);
+            srv.SetIntroEveryTick(introEveryTick);
             if (!peerOps.empty()) {
                 std::set<uint8_t> ops;
                 size_t at = 0;

@@ -27,7 +27,10 @@ param(
   #   한 대 12 · 최대 체력 75 · 쉬는 시간 0.5초 → 한 사람 죽이는 데 최소 3.5초,
   #   판끝(10킬)까지 최소 35초. 넉넉히 주려면 180 쯤.
   #   ⚠ 첫 클릭은 **관전 풀기**라 공격이 아니다 — 접속 몰기에서 이미 한 번 썼다.
-  [int]$FightSeconds = 0
+  [int]$FightSeconds = 0,
+  # `-Genuine` 일 때 정품 서버에 덧붙일 인자. 맵은 여기서 고른다:
+  #   -GenuineArgs '-autoexec "load bludeath"'
+  [string]$GenuineArgs = ''
 )
 # ★ Stop 으로 두면 네이티브 도구가 stderr 에 한 줄만 뱉어도 한 바퀴가 통째로 끊긴다
 $ErrorActionPreference = 'Continue'
@@ -95,8 +98,11 @@ elseif ($Prelude -eq 'default') { $dumpArg = '' }
 else                          { $dumpArg = ' --dump "' + $Prelude + '"' }
 if ($Genuine) {
   $g = Join-Path $root 'third_party\opennox\opennox-server.exe'
-  $spid = Spawn ('"' + $g + '" -serveronly -noDraw -port 18591') (Split-Path -Parent $g)
-  Write-Host "정품 서버 pid=$spid"
+  # ★ `-autoexec` 로 맵을 고른다(기본은 `load estate`). estate 는 넓어서 둘이 서로
+  #   시야 밖에 스폰한다 — **정품에서도 서로 안 보인다**. 「상대가 그려진 상태」의
+  #   표본을 뜨려면 BluDeath 같은 작은 데스매치 맵이라야 한다(2026-09-09).
+  $spid = Spawn ('"' + $g + '" -serveronly -noDraw -port 18591 ' + $GenuineArgs) (Split-Path -Parent $g)
+  Write-Host ("정품 서버 pid={0} {1}" -f $spid, $GenuineArgs)
 } else {
   # ★ 로그를 파일로 받는다 — WMI 로 띄우면 콘솔이 없어 stdout 이 사라진다.
   #   틱 로그의 「사람 N(갱신에 M)」이 서로 보이는지를 가르는 자리다.
