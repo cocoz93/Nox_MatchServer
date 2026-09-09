@@ -288,6 +288,10 @@ constexpr double kBodyRadius = 12.0;
 
 // 시야 반경 (P4-b). ⚠ 화면 반경보다 조금 넓게 잡은 자리표시 — 실측 아님.
 constexpr double kAoiRadius = 700.0;
+// 갱신 하나에 싣는 정적 오브젝트 상한 (P4-b). EncodeUpdate 는 512B 를 넘치면
+// **0 을 돌려줘 갱신이 통째로 멎는다** — 정적이 많은 자리에서 사람 이동까지 같이
+// 멈추는 사고를 막으려면 수를 잘라야 한다. 가까운 순으로 담아 화면에 보이는 것부터.
+constexpr size_t kAoiMaxPerUpdate = 20;
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.

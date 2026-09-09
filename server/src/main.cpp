@@ -182,6 +182,7 @@ int main(int argc, char** argv) {
     // ★ 독립 서버 P3 — .map 을 직접 읽어 벽 충돌을 켤다. 비면 종전처럼 벽 없음.
     std::string mapPath;
     bool standalone = false;
+    bool aoi = false;
     int questCount = 4;
     // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —
     //   안 그러면 걸어가 붙이는 조종까지 필요해져 판정이 흐려진다.
@@ -251,6 +252,9 @@ int main(int argc, char** argv) {
         } else if (a == "--standalone") {
             // 독립 모드 — 녹음 없이 접속 묶음·USE_MAP·스냅샷을 조립(P5-c-2). --map 필수.
             standalone = true;
+        } else if (a == "--aoi") {
+            // 시야 반경(P4-b) — 갱신 스트림에 맵 정적 오브젝트를 반경 안만 싣는다. --map 필수.
+            aoi = true;
         } else if (a == "--ctf-span" && i + 1 < argc) {
             ctfSpan = std::atoi(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
@@ -312,8 +316,18 @@ int main(int argc, char** argv) {
             if (sl != std::string::npos) nm = nm.substr(sl + 1);
             for (char& ch : nm) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
             srv.SetStandalone(nm, mf.Crc());
+            // 소개(SERVER_INFO)의 맵 이름도 이 맵으로 — 칸이 9바이트라 확장자를 뗀다.
+            std::string bare = nm;
+            const size_t dot2 = bare.find('.');
+            if (dot2 != std::string::npos) bare.resize(dot2);
+            if (!bare.empty() && bare.size() < 9) tmpl.mapName = bare;
             std::printf("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)\n",
                         nm.c_str(), mf.Crc());
+        }
+        if (aoi) {
+            srv.SetAoi(true);
+            std::printf("[시야] 정적 오브젝트를 반경 %d 안만 갱신에 실음\n",
+                        static_cast<int>(nox::kAoiRadius));
         }
     }
     {
@@ -333,7 +347,12 @@ int main(int argc, char** argv) {
     {
         if (dumpPath.empty()) dumpPath = DefaultDumpPath();
         nox::dump::Setup setup;
-        if (!dumpPath.empty() && nox::dump::Sniff(dumpPath.c_str(), setup) &&
+        // ★ 독립 모드면 녹음 서두를 **아예 안 채운다** — 조립 분기(Server.cpp)가 전부
+        //   「비어 있을 때만」 게이트라, 기본 녹음이 채우면 조립이 한 번도 안 돈다.
+        //   실제로 sa1·sa2(2026-09-10)의 「독립 스냅샷」은 바이트가 녹음과 동일했다 —
+        //   졸업 판정이 이 배선 하나로 뒤집혔다.
+        if (!standalone &&
+            !dumpPath.empty() && nox::dump::Sniff(dumpPath.c_str(), setup) &&
             !setup.joinBody.empty() && !setup.useMapBody.empty()) {
             srv.SetJoinTemplate(setup.joinBody.data(), setup.joinBody.size());
             srv.SetUseMapTemplate(setup.useMapBody.data(), setup.useMapBody.size());
@@ -367,30 +386,6 @@ int main(int argc, char** argv) {
             //     이 배선이 아직 없었고 그때는 HUD(주문 5개·체력/마나 막대)가 떠 있었다.
             //     「HUD 가 사라진 게 이 스냅샷 탓인가」를 가르는 자리다.
             if (!noSnapshot) srv.SetFirstSnapshot(setup.firstSnapshot);
-            srv.SetPatchSnapshot(!rawSnapshot);
-            srv.SetSendUpdates(!noUpdate);
-            srv.SetNotifyNewGear(!noNewGear);
-            srv.SetForceHudOn(!hudOff);
-            if (spawnSpread > 0) srv.SetSpawnSpread(spawnSpread);
-            if (peerPose >= 0) srv.SetPeerPose((uint8_t)peerPose);
-            srv.SetPeerFirst(peerFirst);
-            srv.SetPeerSnapshot(peerSnapshot);
-            if (peerType > 0) srv.SetPeerType((uint16_t)peerType);
-            srv.SetIntroEveryTick(introEveryTick);
-            if (!peerOps.empty()) {
-                std::set<uint8_t> ops;
-                size_t at = 0;
-                while (at < peerOps.size()) {
-                    size_t comma = peerOps.find(',', at);
-                    if (comma == std::string::npos) comma = peerOps.size();
-                    const std::string tok = peerOps.substr(at, comma - at);
-                    if (!tok.empty())
-                        ops.insert(static_cast<uint8_t>(std::strtol(tok.c_str(), nullptr, 16)));
-                    at = comma + 1;
-                }
-                srv.SetPeerOps(ops);
-                std::printf("남에게 넘길 오프코드 %zu개\n", ops.size());
-            }
             // ★★ 서두(prelude) — 정품이 접속 뒤 보낸 **앞 9개 조각**을 그대로 흘려보내고,
             //   그 뒤부터 내 생성으로 이어받는다. 이걸 빼면 클라 화면이 검은 채로 남는다.
             //   2026-09-07 이분법으로 9가 경계임을 확인했다(8개면 검정, 9개면 세계가 뜬다).
@@ -410,10 +405,37 @@ int main(int argc, char** argv) {
             }
             std::printf("덤프에서 뽑음 — 접속 묶음 %zu바이트 · 맵 지정 %zu바이트 · 뒤따르는 것 %zu개\n",
                         setup.joinBody.size(), setup.useMapBody.size(), setup.postMap.size());
+        } else if (standalone) {
+            std::printf("[독립 모드] 녹음 서두를 안 읽는다 — 접속 묶음·맵 지정·스냅샷 전부 조립\n");
         } else {
             std::printf("[경고] 접속 묶음·맵 지정을 못 얻었다. 클라는 접속만 되고 게임에 못 들어간다.\n");
             std::printf("  찾아본 덤프: %s\n", dumpPath.empty() ? "(없음)" : dumpPath.c_str());
             std::printf("  --dump <서버쪽 덤프> 로 지정할 것\n");
+        }
+        // ── 서두와 무관한 일반 설정 — 독립 모드에서도 적용돼야 하므로 밖에 둔다.
+        srv.SetPatchSnapshot(!rawSnapshot);
+        srv.SetSendUpdates(!noUpdate);
+        srv.SetNotifyNewGear(!noNewGear);
+        srv.SetForceHudOn(!hudOff);
+        if (spawnSpread > 0) srv.SetSpawnSpread(spawnSpread);
+        if (peerPose >= 0) srv.SetPeerPose((uint8_t)peerPose);
+        srv.SetPeerFirst(peerFirst);
+        srv.SetPeerSnapshot(peerSnapshot);
+        if (peerType > 0) srv.SetPeerType((uint16_t)peerType);
+        srv.SetIntroEveryTick(introEveryTick);
+        if (!peerOps.empty()) {
+            std::set<uint8_t> ops;
+            size_t at = 0;
+            while (at < peerOps.size()) {
+                size_t comma = peerOps.find(',', at);
+                if (comma == std::string::npos) comma = peerOps.size();
+                const std::string tok = peerOps.substr(at, comma - at);
+                if (!tok.empty())
+                    ops.insert(static_cast<uint8_t>(std::strtol(tok.c_str(), nullptr, 16)));
+                at = comma + 1;
+            }
+            srv.SetPeerOps(ops);
+            std::printf("남에게 넘길 오프코드 %zu개\n", ops.size());
         }
     }
 

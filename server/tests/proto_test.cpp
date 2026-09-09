@@ -1032,6 +1032,96 @@ void TestSnapshotVsMap() {
                 checked, matched);
 }
 
+// ── 시야 예산 — 상한 없이는 a4 가 통째로 비어 나간다 (P4-b 방어) ──────────
+//
+// 2026-09-10 pa1 실측 — 조립 스냅샷이 387B(`27 | a4 | cc 꼬리`)로 나갔다.
+// estate 스폰 주변은 반경 700 안 정적이 40개를 넘어, 전부 절대 소개(항목 ~11B)로
+// 실으면 EncodeUpdate 예산 479B 를 넘겨 **0 을 돌려준다** — 사람 몸까지 안 실려
+// 화면이 검었다. 여기서 그 환경을 재현하고, kAoiMaxPerUpdate 상한이 막는지 본다.
+void TestAoiBudget() {
+    nox::MapFile mf;
+    if (!mf.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\maps\\estate\\Estate.map")) {
+        std::printf("  시야 예산 — 건너뜀(맵 없음)\n");
+        return;
+    }
+    nox::ThingDb tdb;
+    if (!tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+        std::printf("  시야 예산 — 건너뜀(thing.bin 없음)\n");
+        return;
+    }
+    // main.cpp 와 같은 절차로 정적 목록 재구성
+    struct P { uint16_t nc, tp; double x, y; };
+    std::vector<P> st;
+    uint16_t nextCode = 20000;
+    for (const auto& o : mf.ReadObjects()) {
+        const uint16_t wire = tdb.WireByName(o.type);
+        if (wire == 0) continue;
+        st.push_back({ nextCode++, wire, o.x, o.y });
+    }
+    Check(st.size() > 40, "estate 정적이 40개도 안 된다 — 파서가 이상하다");
+
+    // 실측 스폰 두 자리(sa2 · pa1)에서 반경 안 수를 센다
+    const double spawns[2][2] = { { 2782, 3504 }, { 3864, 2534 } };
+    size_t worst = 0;
+    for (const auto& sp : spawns) {
+        size_t n = 0;
+        for (const auto& w : st) {
+            const double dx = w.x - sp[0], dy = w.y - sp[1];
+            if (dx * dx + dy * dy <= nox::kAoiRadius * nox::kAoiRadius) ++n;
+        }
+        if (n > worst) worst = n;
+    }
+    std::printf("  시야 예산 — 스폰 주변 반경 %d 안 정적 최대 %zu개 (상한 %zu)\n",
+                static_cast<int>(nox::kAoiRadius), worst, nox::kAoiMaxPerUpdate);
+    Check(worst > nox::kAoiMaxPerUpdate,
+          "반경 안 정적이 상한보다 적다 — 이 시험의 전제(넘침 환경)가 깨졌다");
+
+    // 갱신 조립 — 사람 하나 + 정적 N 개를 절대 소개로. 상한 없이(전부) vs 상한.
+    // ★ 자리는 **가장 몰린 스폰**으로 — 널널한 자리로 조립하면 넘침이 재현 안 된다.
+    auto build = [&](const double* sp, size_t cap) {
+        nox::UpdateMsg m;
+        m.headAlias = 0xff; m.headNetCode = 0; m.headType = 0;
+        m.x = static_cast<int>(sp[0]); m.y = static_cast<int>(sp[1]);
+        m.flags = 0; m.headAnim = 0;
+        nox::ObjEntry me;
+        me.alias = 0xff; me.netCode = 713; me.type = nox::kPlayerType;
+        me.absolute = true; me.x = m.x; me.y = m.y;
+        me.extra = 2; me.extraBytes[0] = 0x40; me.extraBytes[1] = 0;
+        m.objects.push_back(me);
+        size_t n = 0;
+        for (const auto& w : st) {
+            const double dx = w.x - sp[0], dy = w.y - sp[1];
+            if (dx * dx + dy * dy > nox::kAoiRadius * nox::kAoiRadius) continue;
+            if (n++ >= cap) break;
+            nox::ObjEntry e;
+            e.alias = 0xff; e.netCode = w.nc; e.type = w.tp;
+            e.absolute = true; e.x = static_cast<int>(w.x); e.y = static_cast<int>(w.y);
+            e.extra = 1; e.extraBytes[0] = 0x08;
+            m.objects.push_back(e);
+        }
+        uint8_t buf[480];
+        buf[0] = 0xa4;
+        return nox::EncodeUpdate(m, buf + 1, sizeof(buf) - 1);
+    };
+    const double* dense = spawns[0];
+    {
+        size_t best = 0;
+        for (const auto& sp : spawns) {
+            size_t n = 0;
+            for (const auto& w : st) {
+                const double dx = w.x - sp[0], dy = w.y - sp[1];
+                if (dx * dx + dy * dy <= nox::kAoiRadius * nox::kAoiRadius) ++n;
+            }
+            if (n > best) { best = n; dense = sp; }
+        }
+    }
+    const size_t unAll = build(dense, st.size());              // 상한 없음 — 결함 재현
+    const size_t unCap = build(dense, nox::kAoiMaxPerUpdate);  // 상한 — 방어
+    std::printf("  시야 예산 — 전부 실으면 %zuB · 상한이면 %zuB\n", unAll, unCap);
+    Check(unAll == 0, "전부 실었는데 넘치지 않았다 — 예산 계산이 달라졌다(상한 상향 검토)");
+    Check(unCap > 0, "상한을 걸어도 a4 가 비어 나온다 — 상한이 예산보다 크다");
+}
+
 void TestJoinBundle() {
     // 녹음본 접속 묶음 216B — SNAP_M_warrior_ctf 복호본에서 실측(2026-09-10)
     static const uint8_t kRec[216] = {
@@ -2070,6 +2160,7 @@ int main() {
     TestJoinBundle();
     TestSnapshotTail();
     TestSnapshotVsMap();
+    TestAoiBudget();
     TestObserverExit();
     TestSnapshotSeqRenumber();
     TestProjectile();

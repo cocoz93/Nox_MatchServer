@@ -8,6 +8,7 @@
 //   "무늬"로 외웠는데, 표대로 쪼개보니 두 메시지가 붙은 것이었다.
 #include "nox/Server.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -284,6 +285,36 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
             if (e.alias == 0xff) { e.extra = 2; e.extraBytes[1] = 0; }
             else                 { e.extra = 1; }
         }
+    }
+}
+
+// 시야 반경 안 정적 오브젝트를 **가까운 순 상한**으로 갱신에 담는다 (P4-b).
+//
+// ★ 상한 없이는 EncodeUpdate 가 512B 를 넘겨 **0 을 돌려주고 갱신이 통째로 무산**된다.
+//   스냅샷 조립이 그렇게 죽었다(2026-09-10 pa1 실측: 스냅샷이 387B —
+//   `27 | a4 | cc 꼬리` 로 **a4 본문이 텅 비어** 사람 몸까지 안 실렸고 화면이 검었다).
+//   estate 스폰 주변은 반경 700 안 정적이 40개를 넘는다.
+static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
+                             AliasTable& tbl, uint32_t frame, int sx, int sy,
+                             UpdateMsg& m) {
+    struct Near { double d2; const Server::WorldStatic* w; };
+    std::vector<Near> near_;
+    for (const auto& w : statics) {
+        const double dx = w.x - sx, dy = w.y - sy;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 > kAoiRadius * kAoiRadius) continue;
+        near_.push_back({ d2, &w });
+    }
+    if (near_.size() > kAoiMaxPerUpdate) {
+        std::partial_sort(near_.begin(), near_.begin() + kAoiMaxPerUpdate, near_.end(),
+                          [](const Near& a, const Near& b) { return a.d2 < b.d2; });
+        near_.resize(kAoiMaxPerUpdate);
+    }
+    for (const auto& nr : near_) {
+        ObjEntry e;
+        FillEntry(tbl, nr.w->netCode, nr.w->type, frame, nr.w->x, nr.w->y, 0, e,
+                  /*complex=*/ThingIsComplex(nr.w->type));
+        m.objects.push_back(e);
     }
 }
 
@@ -1610,14 +1641,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 FillEntry(s.aliases, s.netCode, kPlayerType, s.tickFrame, s.x, s.y,
                           s.facing, me);
                 m.objects.push_back(me);
-                for (const auto& w : statics_) {
-                    const double ddx = w.x - s.x, ddy = w.y - s.y;
-                    if (ddx * ddx + ddy * ddy > kAoiRadius * kAoiRadius) continue;
-                    ObjEntry e;
-                    FillEntry(s.aliases, w.netCode, w.type, s.tickFrame, w.x, w.y, 0, e,
-                              /*complex=*/ThingIsComplex(w.type));
-                    m.objects.push_back(e);
-                }
+                // 시야 안 정적 — **상한 필수** (AppendAoiStatics 주석: 상한 없이는
+                // 스폰 주변 40개↑ 가 480B 를 넘겨 a4 가 통째로 비어 나갔다).
+                AppendAoiStatics(statics_, s.aliases, s.tickFrame, s.x, s.y, m);
                 uint8_t ub[480];
                 ub[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
                 const size_t un = EncodeUpdate(m, ub + 1, sizeof(ub) - 1);
@@ -1991,21 +2017,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             m.objects.push_back(e);
         }
 
-        // ── 맵 정적 오브젝트 — **시야 반경 안만** (독립 서버 P4-b) ──
+        // ── 맵 정적 오브젝트 — **시야 반경 안만, 가까운 순 상한** (독립 서버 P4-b) ──
         //
-        // 전부 실으면 갱신이 512B 를 넘고 별칭도 마른다. 화면 반경보다 조금 넓게 잘라
-        // 담고, 드나듦은 별칭 임대(2초)가 알아서 정리한다.
+        // 담는 규칙과 상한의 이유는 AppendAoiStatics 주석에. 드나듦은 별칭 임대(2초)가
+        // 알아서 정리하고, 같은 자리에 서 있으면 부분집합이 안 바뀌어 별칭도 안정된다.
         // ⚠ 기본 꺼짐(aoiOn_) — 실클라 검증(P4-c) 전에는 켜지 않는다.
-        if (aoiOn_) {
-            for (const auto& w : statics_) {
-                const double dx = w.x - s.x, dy = w.y - s.y;
-                if (dx * dx + dy * dy > kAoiRadius * kAoiRadius) continue;
-                ObjEntry e;
-                FillEntry(s.aliases, w.netCode, w.type, s.tickFrame, w.x, w.y, 0, e,
-                          /*complex=*/ThingIsComplex(w.type));
-                m.objects.push_back(e);
-            }
-        }
+        if (aoiOn_) AppendAoiStatics(statics_, s.aliases, s.tickFrame, s.x, s.y, m);
 
         uint8_t body[512];
         body[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
