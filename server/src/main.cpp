@@ -156,6 +156,9 @@ int main(int argc, char** argv) {
     bool noNewGear = false;
     // 첫 세계 스냅샷을 아예 안 보낸다. HUD 실종이 이 배선 탓인지 가르는 시험용.
     bool noSnapshot = false;
+    // 서두 안 cc(6a … 01) 의 상태를 0 으로 뒤집는 것을 **끈다**(녹음본 값 그대로).
+    // 기본은 뒤집는 쪽이다 — Server.h 의 SetForceHudOn 주석 참조.
+    bool hudOff = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -174,6 +177,8 @@ int main(int argc, char** argv) {
             noUpdate = true;
         } else if (a == "--raw-snapshot") {
             rawSnapshot = true;
+        } else if (a == "--hud-off") {
+            hudOff = true;
         } else if (a == "--no-snapshot") {
             noSnapshot = true;
         } else if (a == "--no-newgear") {
@@ -258,6 +263,7 @@ int main(int argc, char** argv) {
             srv.SetPatchSnapshot(!rawSnapshot);
             srv.SetSendUpdates(!noUpdate);
             srv.SetNotifyNewGear(!noNewGear);
+            srv.SetForceHudOn(!hudOff);
             // ★★ 서두(prelude) — 정품이 접속 뒤 보낸 **앞 9개 조각**을 그대로 흘려보내고,
             //   그 뒤부터 내 생성으로 이어받는다. 이걸 빼면 클라 화면이 검은 채로 남는다.
             //   2026-09-07 이분법으로 9가 경계임을 확인했다(8개면 검정, 9개면 세계가 뜬다).

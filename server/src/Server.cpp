@@ -1,4 +1,4 @@
-// Server.cpp — 접속 절차 세 자리에 답한다.
+﻿// Server.cpp — 접속 절차 세 자리에 답한다.
 //
 //   0x0C SERVER_DISCOVER  →  0x0D SERVER_INFO      (녹음 재생, 토큰만 바꿔서)
 //   0x0E SERVER_TRY_JOIN  →  0x14 SERVER_JOIN_OK   (지금은 무조건 받아준다)
@@ -18,7 +18,8 @@ namespace nox {
 
 // 정의는 아래 틱 앞에 있다. 접속 처리(첫 세계 스냅샷)에서 먼저 부르므로 여기서 알린다.
 static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCode,
-                               int x, int y, std::vector<uint8_t>& out);
+                               int x, int y, std::vector<uint8_t>& out,
+                               bool forceHudOn = false);
 
 // ★★ 첫 세계 스냅샷을 받아 두고, **그 머리 좌표를 스폰 자리로 삼는다.**
 //   서두가 찍힌 맵의 그 자리라야 사람이 스냅샷 속 다른 오브젝트들과 같은 동네에 선다.
@@ -1056,7 +1057,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 if (notifyNewGear_ && !firstSnapshot_.empty()) {
                     std::vector<uint8_t> patched;
                     const std::vector<uint8_t>& src =
-                        PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched)
+                        PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_)
                             ? patched : firstSnapshot_;
                     std::vector<uint8_t> gear;
                     size_t q = 0;
@@ -1121,7 +1122,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
 //       dd cb 02 4b 00 4b 00        최대 체력 → 0x02cb = 715
 //       e9 cb 02 dd 07 00 00 ff 01  살려내기   → 715
 //   길이를 안 바꾸는 **자리 치환**이라 뒤 스트림이 밀리지 않는다.
-static void PatchSeqTargets(std::vector<uint8_t>& buf, uint16_t from, uint16_t to) {
+static void PatchSeqTargets(std::vector<uint8_t>& buf, uint16_t from, uint16_t to,
+                            bool forceHudOn) {
     if (from == to) return;
     const uint8_t f0 = static_cast<uint8_t>(from), f1 = static_cast<uint8_t>(from >> 8);
     const uint8_t t0 = static_cast<uint8_t>(to),   t1 = static_cast<uint8_t>(to >> 8);
@@ -1135,12 +1137,64 @@ static void PatchSeqTargets(std::vector<uint8_t>& buf, uint16_t from, uint16_t t
             buf[q + 5] = t0;
             buf[q + 6] = t1;
         }
+        // ★★★ **서두 안에 「HUD 를 숨겨라」가 들어 있다.**
+        //   녹음본에 `cc 00 00 07 | 6a <번호2> 01 00 00 00` 이 그대로 있다(182번 자리).
+        //   `01` 은 상태 bit0 = **GUI 안 그림**(오픈녹스 `nox_client_onClientStatusA`:
+        //   `v&1` 이면 renderGUI=false). 접속하자마자 이걸 받으니 HUD 가 없는 것이 당연했다.
+        //   `--hud-on` 을 주면 그 자리를 0 으로 뒤집는다.
+        //   ⚠ 정품은 처음에 `01` 을 주고 놀기 시작할 때 `00` 을 준다 — 그러니 이건
+        //     「정품 흉내」가 아니라 **가르는 시험**이다. 켜서 HUD 가 뜨면 이 자리가 맞는 것.
+        if (forceHudOn && inner >= 7 &&
+            buf[q + 4] == static_cast<uint8_t>(Op::REPORT_CLIENT_STATUS)) {
+            buf[q + 7] = 0; buf[q + 8] = 0; buf[q + 9] = 0; buf[q + 10] = 0;
+        }
         q += 4 + inner;
     }
 }
 
+// 껍데기(`0xcc`) **밖에** 맨몸으로 실린 메시지의 대상 번호를 옮긴다.
+//
+// ⚠ **아무 자리나 바꾸면 안 된다.** 두 바이트가 우연히 남의 번호와 같은 좌표일 수 있다.
+//   그래서 **머리 바로 뒤 두 바이트가 오브젝트 번호인 것이 와이어로 확인된 오프코드**만
+//   손댄다. 지금 목록의 근거(2026-09-09 정품·내 서버 덤프에서 눈으로 본 원바이트):
+//     de  `de cb 02 96 00 96 00`      최대 마나  = <번호2> <지금2> <최대2>
+//     48  `48 cb 02 4b 00 96 00 72`   능력치     = <번호2> …
+//   ★ 늘리려면 **그 오프코드의 원바이트를 먼저 볼 것.** 짐작으로 넣지 말 것.
+static bool BareTargetOpcode(uint8_t op) {
+    return op == static_cast<uint8_t>(Op::REPORT_TOTAL_MANA) ||
+           op == static_cast<uint8_t>(Op::REPORT_STATS);
+}
+
+// ★ 몇 자리를 고쳤고 **어디서 걷기가 멈췄나**를 같이 돌려준다.
+//   「0 자리 고침」만 보면 「고칠 게 없었다」와 「거기까지 못 갔다」가 안 갈린다.
+//   실제로 두 번을 그렇게 헛짚었다(2026-09-09).
+struct BarePatchStat { int patched = 0; size_t stoppedAt = 0; size_t total = 0; };
+
+static BarePatchStat PatchBareTargets(std::vector<uint8_t>& buf, uint16_t from, uint16_t to) {
+    BarePatchStat st;
+    st.total = buf.size();
+    if (from == to) return st;
+    const uint8_t f0 = static_cast<uint8_t>(from), f1 = static_cast<uint8_t>(from >> 8);
+    // ★★ **걷지 않고 훑는다.** 처음에는 메시지를 차례로 걸어가며 고치려 했는데
+    //   `0xaa MSG_IMPORTANT` 에서 길이가 어긋나 **187/543 바이트에서 섰다** —
+    //   고칠 `0xde` 는 302번 자리라 거기까지 가 보지도 못했다(2026-09-09 계측).
+    //   `PatchSeqTargets` 도 같은 이유로 훑기를 쓴다.
+    //   ⚠ 훑기는 우연히 같은 세 바이트를 만날 수 있다. 그래서 **오프코드 + 남의 번호**가
+    //     나란히 있는 자리만 손대고, 몇 자리를 고쳤는지 세어 로그로 남긴다.
+    for (size_t q = 0; q + 3 <= buf.size(); ++q) {
+        if (!BareTargetOpcode(buf[q])) continue;
+        if (buf[q + 1] != f0 || buf[q + 2] != f1) continue;
+        buf[q + 1] = static_cast<uint8_t>(to);
+        buf[q + 2] = static_cast<uint8_t>(to >> 8);
+        ++st.patched;
+    }
+    st.stoppedAt = buf.size();
+    return st;
+}
+
 static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCode,
-                               int x, int y, std::vector<uint8_t>& out) {
+                               int x, int y, std::vector<uint8_t>& out,
+                               bool forceHudOn) {
     out.clear();
     out.reserve(frag.size() + 16);
     bool any = false;
@@ -1195,7 +1249,19 @@ static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCod
     //   갈아 끼우기가 조용히 안 먹는다(2026-09-08: 그래서 첫 시도가 헛돌았다).
     if (pos < frag.size()) out.insert(out.end(), frag.begin() + pos, frag.end());
     // ★★★ 껍데기 속 대상 번호도 함께 옮긴다 — 여기까지 해야 장비·체력이 이 사람에게 붙는다.
-    PatchSeqTargets(out, origPlayer, netCode);
+    PatchSeqTargets(out, origPlayer, netCode, forceHudOn);
+    // ★★★ **껍데기 밖에 맨몸으로 실린 것도 옮긴다.** `PatchSeqTargets` 는 `0xcc` 속만 본다.
+    //   2026-09-09 실측 — 같은 조각 안에서 `dd`(최대 체력)는 내 번호로 나가는데
+    //   바로 다음 `de`(최대 마나)는 **남의 번호 715 그대로** 나가고 있었다:
+    //     ★속 op=0xdd(껍데기 안) | dd c9 02 4b 00 4b 00   ← 갈아끼움
+    //     ★   op=0xde(맨몸)      | cb 02 96 00 96 00      ← 남의 번호
+    //   마나 막대가 안 뜨는 것과 자리가 같다.
+    const BarePatchStat bst = PatchBareTargets(out, origPlayer, netCode);
+    // ★ 접속마다 한 줄. 「0 자리 고침」이 「고칠 게 없었다」인지 「거기까지 못 갔다」인지
+    //   멈춘 자리를 같이 봐야 갈린다. [[feedback_zero_needs_stall_count]]
+    std::printf("서두 맨몸 대상 %d자리 고침 · 걷기 %zu/%zu 바이트 · 멈춘 오프코드 0x%02x\n",
+                bst.patched, bst.stoppedAt, bst.total,
+                bst.stoppedAt < out.size() ? out[bst.stoppedAt] : 0);
     return true;
 }
 
@@ -1315,7 +1381,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             std::vector<uint8_t> patched;
             const std::vector<uint8_t>& snap =
                 (patchSnapshot_ &&
-                 PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched))
+                 PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_))
                     ? patched : firstSnapshot_;
             Emit(s, /*reliable=*/true, /*stream=*/0, snap.data(), snap.size(), out);
             // 스냅샷 안에 이미 전체번호(ff) 머리의 갱신이 들어 있다 — 그것이 **첫 갱신**이다.
@@ -1400,7 +1466,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 //   다른 번호·다른 자리를 말해 **딴 오브젝트로 본다**(2026-09-08 대조).
                 std::vector<uint8_t> patched;
                 const std::vector<uint8_t>& send =
-                    PatchPreludePlayer(m, s.netCode, s.x, s.y, patched) ? patched : m;
+                    PatchPreludePlayer(m, s.netCode, s.x, s.y, patched, forceHudOn_) ? patched : m;
                 Emit(s, /*reliable=*/false, /*stream=*/0, send.data(), send.size(), out);
             }
             continue;
