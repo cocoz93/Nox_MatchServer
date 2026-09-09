@@ -426,11 +426,11 @@ int main(int argc, char** argv) {
                 //   내 디코더가 항목을 잘못 쪼개 헛것을 볼 수 있다(2026-09-08 세 번).
                 std::printf("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
                             "걸음 %llu · 근접 %llu · "
-                            "주문 %llu · 나는것 %zu · 맞음 %llu · 판끝 %s (누적 틱 %llu)\n",
+                            "주문 %llu · 나는것 %zu · 맞음 %llu · 별칭받음 %llu · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
                             srv.moves(), srv.melees(),
-                            nSpell, srv.flying(), srv.hits(),
+                            nSpell, srv.flying(), srv.hits(), srv.aliasHeard(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 std::fflush(stdout);
             }

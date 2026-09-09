@@ -170,12 +170,13 @@ int Server::SpellDamage(uint8_t spell) {
 static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
                       uint32_t frame, int x, int y, uint8_t facing, ObjEntry& e,
                       bool complex = true) {
-    uint16_t hadNet = 0, hadType = 0;
-    const int slot = tbl.Generate(netCode, type, frame);
-    const bool known = slot > 0 && tbl.Lookup(slot, hadNet, hadType) &&
-                       hadNet == netCode && hadType == type;
-    const int alias = tbl.Assign(netCode, type, frame);
-    if (known && alias > 0) {
+    // ★★★ **정정(2026-09-09) — 따라 굴리지 않고 클라가 알려 준 것만 쓴다.**
+    //   전에는 `Generate`/`Assign` 으로 클라와 같은 규칙을 흉내 냈는데 어긋났다.
+    //   별칭으로 보내면 아무것도 안 그려졌고, 그래서 매 틱 전체번호로 다시 소개하다가
+    //   클라를 1분 만에 무너뜨렸다. 이제 `0xa5 NEW_ALIAS` 로 **받은 자리만** 쓴다.
+    //   못 찾으면 전체 번호(`ff`)로 소개한다 — 그걸 받은 클라가 별칭을 정해 알려 준다.
+    const int alias = tbl.FindByObject(netCode, type, frame);
+    if (alias > 0) {
         e.alias = static_cast<uint8_t>(alias);
     } else {
         e.alias = 0xff;          // 처음이다 — 번호와 종류를 실어 보낸다
@@ -661,6 +662,21 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             //    로딩에서 안 넘어간다 — 화면이 검은 채로 멈춘다.
             //    2026-09-07 실측: 내 서버엔 IMPORTANT 1,378건 · 정품엔 0건,
             //    CLIENT_READY 도 71번(정품 2번) 재전송하고 있었다.
+            // ★★★ **별칭은 클라가 정해서 알려 준다.** `a5 <별칭> <번호2> <종류2> …`
+            //   방향이 클라→서버뿐이다(실측: 서버 SEND 0건). 그동안 이걸 **안 받고**
+            //   같은 규칙으로 따라 굴리기만 했는데, 실제로는 어긋나서 별칭으로 보내면
+            //   아무것도 안 그려졌다. 받아서 그대로 쓰면 그럴 일이 없다.
+            case Op::NEW_ALIAS: {
+                if (it.bodyLen() < 5) break;
+                const uint8_t* b = it.body();
+                const uint8_t alias = b[0];
+                const uint16_t nc = static_cast<uint16_t>(b[1] | (b[2] << 8));
+                const uint16_t ty = static_cast<uint16_t>(b[3] | (b[4] << 8));
+                s.aliases.Set(alias, nc, ty, s.tickFrame + kAliasTTL);
+                ++aliasHeard_;
+                break;
+            }
+
             case Op::IMPORTANT: {
                 if (it.bodyLen() < 4) break;
                 uint8_t msg[5];
