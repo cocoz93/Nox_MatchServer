@@ -907,6 +907,73 @@ void Server::AssignTeams() {
     }
 }
 
+// 깃발 판 승자 — `0x57 REPORT_FLAG_WINNER`, 총 8바이트.
+//
+// ⭕ **짜임을 오픈녹스 클라 원본에서 확정했다** (2026-09-11, `cdecode.c:982-1023`).
+//   우리 덤프 표본은 0건인데, 그 까닭은 **정품 녹음에 CTF 판이 한 판도 없어서**다.
+//
+//     57 | 팀 ID 2 | 끝난 까닭 1 | 프레임 4
+//
+// ★ `0x58`(데스매치 승자)과 **딱 한 필드만 다르다** — `0x58` 은 +1 이 사람 번호
+//   (`netClearHighBit` → `playerInfoGetByID`), `0x57` 은 +1 이 **팀 ID**(`getTeamByID`).
+//   나머지 세 자리는 완전히 같다.
+// · 팀이 0 이거나 없는 팀이면 클라가 무승부(`CTF_Tie`)로 띄운다.
+// · 끝난 까닭 1 이면 「시간 초과」를 앞에 붙인다. 0 이 보통 승리.
+// ★★ **프레임이 문지기다** — `cdecode.c:1000` 의 `if (프레임 <= 저장값) return 8;`.
+//   `0x58` 에서 0 을 실어 매번 버려졌던 그 사고와 같은 자리다. 받는 사람의 `tickFrame` 을 싣는다.
+void Server::SendFlagWinner(uint8_t team, std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame) continue;
+        uint8_t msg[8];
+        msg[0] = static_cast<uint8_t>(Op::REPORT_FLAG_WINNER);
+        msg[1] = team;
+        msg[2] = 0;
+        msg[3] = 0;                       // 보통 승리 (1 이면 시간 초과)
+        PutU32(msg + 4, o.tickFrame);
+        EmitSeq(o, msg, sizeof(msg), out);
+    }
+}
+
+// 깃발 상태 HUD — `0xd8 REPORT_FLAG_STATUS`, 총 6바이트.
+//
+// ⭕ **짜임 확정** (2026-09-11, `cdecode.c:2659-2664` · `gui_ctf.c:25-66` · `GAME2_1.c:4159-4177`).
+//   그동안 「짜임 미상」으로 **아예 안 보냈다** — 깃발 HUD 가 안 돌던 것이 이것이다.
+//
+//     d8 | 상태 1 | 팀 칸 1 | 깃발 번호 1 | 든 사람 번호 2
+//
+// · 상태 — `0`=제자리 · `1`=누가 들었음 · `2`=밖에 나감
+// · 팀 칸 — **1~16** (클라 GUI 자식 ID `8810+n`)
+// · 깃발 번호 — **1 또는 2**
+// · 든 사람 번호 — 안 들렸으면 0
+// ⚠ **바뀔 때만 보낸다.** 매 틱 보내면 안 된다 — `0x5e` 를 매 틱 보내다가
+//   정품의 270배가 되어 클라가 죽은 적이 있다(2026-09-08). 상태 지문이 달라진
+//   깃발만 내보낸다.
+void Server::SendFlagStatus(std::vector<OutPacket>& out) {
+    for (auto& f : flags_) {
+        if (f.team < 1 || f.team > 2) continue;
+        uint16_t carrier = 0;
+        uint8_t state = f.atHome ? 0 : 2;      // 집에 없고 안 들렸으면 「밖」
+        if (!f.carrier.empty()) {
+            auto it = sessions_.find(f.carrier);
+            if (it != sessions_.end()) { carrier = it->second.netCode; state = 1; }
+        }
+        const uint32_t mark = (static_cast<uint32_t>(state) << 16) | carrier;
+        if (f.sentMark == mark) continue;      // 안 바뀌었으면 안 보낸다
+        f.sentMark = mark;
+
+        uint8_t msg[6];
+        msg[0] = static_cast<uint8_t>(Op::REPORT_FLAG_STATUS);
+        msg[1] = state;
+        msg[2] = f.team;                       // 팀 칸 (1~16 중 1·2 만 쓴다)
+        msg[3] = f.team;                       // 깃발 번호 (1 또는 2)
+        msg[4] = static_cast<uint8_t>(carrier);
+        msg[5] = static_cast<uint8_t>(carrier >> 8);
+        Broadcast(/*viaSeq=*/true, msg, sizeof(msg), out);
+        ++flagStatusSent_;
+    }
+}
+
 // 깃발 알림 — `0xa9 INFORM` 의 갈래 5·6·7.
 // 속 짜임은 opennox `InformTeamPlayer` 그대로다: PlayerID 4 + TeamID 4.
 void Server::SendFlagInform(InformCode code, uint16_t playerNetCode, uint8_t team,
@@ -948,6 +1015,9 @@ void Server::DropFlag(const std::string& who, std::vector<OutPacket>& out) {
 
 void Server::UpdateFlags(std::vector<OutPacket>& out) {
     if (flags_.empty()) return;
+    // ★ 깃발 HUD 는 **상태가 바뀐 것만** 나간다(`SendFlagStatus` 안에서 지문 대조).
+    //   그동안 짜임을 몰라 아예 안 보냈다 — 「깃발 HUD 가 안 돈다」가 이것이었다.
+    SendFlagStatus(out);
     // ★ **판이 끝났으면 더 세지 않는다.** 2026-09-09 실측 — 깃발을 둘 다
     //   닿는 자리에 두고 돌렸더니 득점이 매 틱 올라 **1378:1378** 이 됐다.
     //   한도(3)에서 `roundOver_` 는 섰는데 세는 것을 안 멈춘 탓이다.
@@ -999,6 +1069,7 @@ void Server::UpdateFlags(std::vector<OutPacket>& out) {
                 if (!roundOver_ && caps_[s.team] >= kCaptureLimit) {
                     roundOver_ = true;
                     restartAtFrame_ = frame_ + kRoundRestartTicks;
+                    SendFlagWinner(s.team, out);
                 }
             }
         }

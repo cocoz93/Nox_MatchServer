@@ -65,6 +65,10 @@ struct Flag {
     double x = 0, y = 0;           // 지금 자리
     std::string carrier;           // 들고 있는 사람. 비었으면 바닥에 있다
     bool atHome = true;
+    // 마지막으로 클라에 알린 상태 지문(상태<<16 | 든사람번호). **바뀔 때만 보내려고** 둔다.
+    // ⚠ 매 틱 보내면 클라가 죽는다 — `0x5e` 를 270배 보냈던 사고(2026-09-08).
+    // 0xFFFFFFFF = 아직 한 번도 안 보냄.
+    uint32_t sentMark = 0xFFFFFFFFu;
 };
 
 // 공격이 닿을 수 있는 것 하나 — **사람이거나 불려 나온 것**이다.
@@ -648,6 +652,12 @@ public:
     // ⚠ `sessions_` 순회는 **주소 사전순**이라 들어온 차례가 아니다 — `joinOrder` 로 정렬한다.
     void AssignTeams();
 
+    // 깃발 판 승자 `0x57`(8B) · 깃발 상태 HUD `0xd8`(6B).
+    // ⭕ 둘 다 오픈녹스 클라 원본에서 짜임 확정(2026-09-11). 우리 덤프 표본은 0건인데
+    //   그 까닭은 **정품 녹음에 CTF 판이 한 판도 없어서**다.
+    void SendFlagWinner(uint8_t team, std::vector<OutPacket>& out);
+    void SendFlagStatus(std::vector<OutPacket>& out);
+
     // 퀘스트 판을 차린다 — 주인 없는 몬스터를 `count` 마리 세운다.
     // 다 잡으면 판이 끝난다.
     //   ★ `spread` — 가운데에서 이만큼 벌려 세운다. 기본은 실측 아닌 자리표시 300.
@@ -825,6 +835,8 @@ public:
     unsigned long long chats() const { return chats_; }
     // 몇 판을 마쳤나. 0 이면 아직 한 판도 안 끝난 것이다.
     unsigned long long roundsPlayed() const { return roundsPlayed_; }
+    // 깃발 HUD 를 몇 번 보냈나. **매 틱 수준으로 오르면 과잉이다**(0x5e 270배 사고 참조).
+    unsigned long long flagStatusSent() const { return flagStatusSent_; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
     void DebugCapture(const std::string& addr, int n) {
         auto it = sessions_.find(addr);
@@ -1082,6 +1094,7 @@ private:
     uint32_t nextJoinOrder_ = 0;       // 접속한 차례에 매기는 번호 (팀 나누기용)
     uint32_t restartAtFrame_ = 0;      // 이 프레임에 판을 다시 연다. 0 이면 예약 없음
     unsigned long long roundsPlayed_ = 0;
+    unsigned long long flagStatusSent_ = 0;   // 깃발 HUD 를 보낸 횟수 (과잉 감시용)
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)

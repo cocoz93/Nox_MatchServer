@@ -214,14 +214,45 @@ function MoveTo([int]$ix, [int]$iy) {
   SendMoves $m; $script:curX = $ix; $script:curY = $iy
 }
 
+# ★★ 화면을 찍는다 — **여기서부터는 코드로 못 가른다.**
+#   P4 소스 조사가 준 가르는 물음: 「커서가 손 모양으로 바뀌는가」
+#     안 바뀌면 ①드로어블 없음 ~ ④클래스 갈림 · 바뀌는데 안 집히면 ⑤거리 또는 ⑥무게.
+#   캡처를 남겨 두면 사람이 아니라 **내가 그림을 열어 볼 수 있다.**
+# ⚠ **숨긴 데스크톱이라 평범한 창 캡처가 안 먹는다.** `capwin.ps1` 을 직접 부르면
+#   조용히 아무것도 안 남는다(2026-09-11 1차 시도). 하네스가 쓰는 길은
+#   **제어 폴더에 명령을 써서 `deskhost` 가 찍게 하는 것**이다(`join_my_server.ps1:29-37`).
+$shotDir = Join-Path $ev 'desk1'
+if (-not (Test-Path $shotDir)) { New-Item -ItemType Directory $shotDir | Out-Null }
+function Shot([string]$name) {
+  $png = Join-Path $shotDir ("{0}_{1}.png" -f $Tag, $name)
+  [IO.File]::WriteAllText((Join-Path $shotDir 'cmd.txt'),
+                          ("shotfull {0}`n" -f $png), (New-Object Text.UTF8Encoding($false)))
+  Start-Sleep -Seconds 2
+  if (Test-Path $png) { Write-Host ("  찍음: {0}" -f (Split-Path -Leaf $png)) }
+  else { Write-Host ("  ⚠ 캡처 실패: {0}" -f (Split-Path -Leaf $png)) }
+}
+
+# ★★ **먼저 UI 창을 닫는다.** 4단계 키 스윕이 `I`(인벤토리)와 주문책을 열어 두는데,
+#   창이 열려 있으면 왼클릭이 **UI 로 먹혀** 세계에 안 닿는다.
+#   2026-09-11 캡처(sw6_cursor_on_item.png)에서 인벤토리와 주문책이 둘 다 열려 있었다.
+& $di -Target $cpid -Cmd @('k 0x17 1','sleep 120','k 0x17 0','sleep 400',
+                           'k 0x01 1','sleep 120','k 0x01 0','sleep 600') | Out-Null
+
 Write-Host '--- 커서를 물건 위에 올리고 왼클릭 (nox.cfg: MousePickup = Left) ---'
-$SCALE = 2.13
+Shot 'before'
+# ★ 배율은 **짐작이 아니라 이 회차 캡처에서 잰 값**이다.
+#   전에 2.13 을 썼는데(walk_genuine 의 다른 조건 실측), 홈에서 303단위를 밀었더니
+#   커서가 400px 자리에 있었다 → **400/303 = 1.32 px/단위**.
+#   그 탓에 커서가 목표(645,470)가 아니라 (400,320) 에 있었고,
+#   캐릭터에서 **250px** 떨어져 클라의 집기 한계(75px)를 훌쩍 넘었다.
+$SCALE = 1.32
 # 캐릭터(=물건) 자리 둘레를 훑는다. 물건이 몸에 가려 조금 어긋나 그려질 수 있다.
 $grid = @()
 foreach ($oy in @(0, -30, 30, -60, 60)) { foreach ($ox in @(0, -30, 30)) { $grid += ,@($ox, $oy) } }
 foreach ($g in $grid) {
   $px = 645 + $g[0]; $py = 470 + $g[1]
   MoveTo ([int]($px / $SCALE)) ([int]($py / $SCALE))
+  if ($g[0] -eq 0 -and $g[1] -eq 0) { Shot 'cursor_on_item' }   # 물건 바로 위 — 손 모양인지 본다
   & $di -Target $cpid -Cmd @('mb 0 1', ("sleep {0}" -f $HoldMs), 'mb 0 0', ("sleep {0}" -f $GapMs)) | Out-Null
   $now = SeenOps
   $new = @($now.Keys | Where-Object { -not $seen.ContainsKey($_) } | Sort-Object)
