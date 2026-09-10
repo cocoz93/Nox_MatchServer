@@ -363,6 +363,9 @@ int main(int argc, char** argv) {
                 //   우리 CLASS 기준과 어긋나는 것이 10종 있다(화살·차크람 같은 날아가는 것).
                 //   실어 봐야 클라가 못 집으니 세계에 놓지 않는다.
                 if (!ti->hasWeight) { ++noWeight[objs[i].type]; continue; }
+                // 겉모습(P7) — 입었을 때 남에게 알릴 장비 비트. 표에 없으면 0(안 알림).
+                bool isW = false;
+                const uint32_t ebit = nox::EquipBitFor(objs[i].type.c_str(), &isW);
                 nox::Server::WorldStatic w2;
                 w2.netCode = static_cast<uint16_t>(i + 75);
                 w2.type = wire;
@@ -383,6 +386,8 @@ int main(int argc, char** argv) {
                     w2.useKind = mana ? nox::UseKind::Mana : nox::UseKind::Health;
                     w2.useAmount = ti->useArg;
                 }
+                w2.equipBit = ebit;
+                w2.isWeapon = isW;
                 st.push_back(w2);
             }
             nStat = st.size();

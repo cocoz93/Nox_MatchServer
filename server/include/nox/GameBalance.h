@@ -371,4 +371,16 @@ constexpr double kFlagTouchDist  = kPlayerRadius + kFlagRadius;   // 20
 constexpr uint32_t kRespawnMinTicks   = 45;    // 30 + 15
 constexpr uint32_t kRespawnInvulnTicks = 150;  // 5초 무적
 
+// ── 장비 겉모습 비트 ◑ ──────────────────────────────────────────
+//
+// `0x4f`~`0x54`(장비 겉모습)의 u32 는 **장비 한 칸을 고르는 한 비트**다 —
+// 클라가 그 비트로 `panim.Weapon[i]`/`panim.Armor[i]` 그림 칸을 고른다.
+// 표는 opennox 서버 원본 그대로다(◑ `object_weapon.go:108-134` · `object_armor.go:140-167`,
+// 2026-09-11 전수 옮김). 교차검증 — 정품 송신부(`GAME1.c:2664~2730`)가 워리어에게
+// Sword(0x100)+WoodenShield(0x1000000), 위저드에게 StaffWooden(0x8000)+WizardRobe(0x4000)
+// 를 보내는데 **우리 시작 장비와 일치**한다.
+//
+// 이름으로 찾는다. 모르면 0 — **0 이면 겉모습을 안 보낸다**(짐작으로 안 채운다).
+uint32_t EquipBitFor(const char* thingName, bool* isWeapon);
+
 }  // namespace nox

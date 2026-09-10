@@ -109,6 +109,8 @@ struct Projectile {
     uint16_t netCode = 0;  // 클라에게 「이게 그거다」로 알릴 번호
     uint8_t facing = 0;    // 날아가는 쪽(한 바퀴를 256으로)
     double x = 0, y = 0;
+    // 쏜 자리 — 선 이펙트(번개 0x8c·에너지볼트 0x8d)가 「어디서 어디까지」를 실어서다.
+    double launchX = 0, launchY = 0;
     double vx = 0, vy = 0;
     double traveled = 0; // 지금까지 간 거리. 사거리를 넘으면 사라진다
     int damage = 0;
@@ -218,6 +220,10 @@ struct Session {
         // 쓰면 무슨 일이 나는가 — 세계에 있을 때 정해진 것을 그대로 들고 온다.
         UseKind useKind = UseKind::None;
         int useAmount = 0;
+        // ★ 겉모습(P7) — 입으면 남들에게 `0x4f`~`0x52` 로 알릴 때 실을 **장비 비트**.
+        //   `EquipBitFor(이름)` 가 채운다. **0 이면 겉모습을 안 보낸다**(모르는 것은 안 지어냄).
+        uint32_t equipBit = 0;
+        bool isWeapon = false;
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
@@ -564,6 +570,10 @@ public:
         //   ⭕ 값이 파일에 있다. 지어낸 숫자가 아니다.
         UseKind useKind = UseKind::None;
         int useAmount = 0;
+        // ★ 겉모습(P7) — 입으면 남들에게 `0x4f`~`0x52` 로 알릴 때 실을 **장비 비트**.
+        //   `EquipBitFor(이름)` 가 채운다. **0 이면 겉모습을 안 보낸다**(모르는 것은 안 지어냄).
+        uint32_t equipBit = 0;
+        bool isWeapon = false;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
 
@@ -706,6 +716,7 @@ public:
     // 문·오벨리스크를 매 틱 돌본다 (P5). 문은 다가가면 열리고, 오벨리스크는 마나를 채운다.
     void UpdateProps(std::vector<OutPacket>& out);
 
+    void SendProjectileFx(const Projectile& p, std::vector<OutPacket>& out);
     void SendFlagWinner(uint8_t team, std::vector<OutPacket>& out);
     void SendFlagStatus(std::vector<OutPacket>& out);
 
@@ -890,6 +901,9 @@ public:
     unsigned long long flagStatusSent() const { return flagStatusSent_; }
     // 부활 무적이 막은 피해 횟수. 0 이면 무적이 한 번도 안 걸린 것이다.
     unsigned long long invulnBlocked() const { return invulnBlocked_; }
+    unsigned long long appearanceSent() const { return appearanceSent_; }
+    unsigned long long appearanceUnknown() const { return appearanceUnknown_; }
+    unsigned long long fxSent() const { return fxSent_; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
     void DebugCapture(const std::string& addr, int n) {
         auto it = sessions_.find(addr);
@@ -1149,6 +1163,9 @@ private:
     unsigned long long roundsPlayed_ = 0;
     unsigned long long flagStatusSent_ = 0;   // 깃발 HUD 를 보낸 횟수 (과잉 감시용)
     unsigned long long invulnBlocked_ = 0;    // 부활 무적으로 막은 피해 횟수
+    unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
+    unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
+    unsigned long long fxSent_ = 0;           // 그린 이펙트 수
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)

@@ -792,6 +792,159 @@ std::vector<uint8_t> CodePacket(nox::Op op, uint16_t netCode) {
     return p;
 }
 
+// ── P7 — 겉모습(0x4f~0x54)과 이펙트(0x85·0x8c) ──────────────────────────
+//
+// ★ 겉모습 — 입기·벗기가 그동안 **본인 표시(0x60/0x61)만** 보냈다. 남 화면의 몸이
+//   안 바뀌던 자리다. 짜임은 클라 원본 확정 —
+//     입기: op | 번호2(bit15=사람) | 장비비트4 | (수식4, 빈 칸 ff)
+//     벗기: op | 번호2(bit15 안 봄) | 장비비트4
+//   장비 비트표는 opennox 서버 원문 그대로(무기 27칸·방어구 26칸, GameBalance.cpp).
+// ★ 이펙트 — 투사체가 끝나는 자리에서 한 번. 점 5B(0x85) · 선 9B(0x8c/0x8d).
+void TestAppearanceAndFx() {
+    // 표부터 — 교차검증에 쓴 넷이 원문 값 그대로인가
+    bool w = false;
+    Check(nox::EquipBitFor("Sword", &w) == 0x100 && w, "Sword 비트가 0x100 이 아님");
+    Check(nox::EquipBitFor("WoodenShield", &w) == 0x1000000 && !w, "WoodenShield 비트가 다름");
+    Check(nox::EquipBitFor("StaffWooden", &w) == 0x8000 && w, "StaffWooden 비트가 다름");
+    Check(nox::EquipBitFor("WizardRobe", &w) == 0x4000 && !w, "WizardRobe 비트가 다름");
+    Check(nox::EquipBitFor("NoSuchThing", &w) == 0, "모르는 이름인데 0 이 아님");
+
+    const std::string a = "10.9.9.1:41091";
+    const std::string b = "10.9.9.2:41092";
+
+    // ① 입으면 남에게 0x51(무기·수식·11B)이 bit15 와 장비 비트를 싣고 간다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic sw;
+        sw.netCode = 500; sw.type = 1160; sw.x = 1000; sw.y = 1000;
+        sw.modifiable = true;                    // 무기라 수식이 붙는다
+        sw.equipBit = 0x200;                     // Longsword
+        sw.isWeapon = true;
+        st.push_back(sw);
+        nox::Server::WorldStatic unk;            // 표에 없는 것 — 겉모습을 안 보내야 한다
+        unk.netCode = 501; unk.type = 700; unk.x = 1000; unk.y = 1000;
+        st.push_back(unk);
+        srv.SetWorldStatics(st);
+
+        for (uint16_t nc : { (uint16_t)500, (uint16_t)501 }) {
+            std::vector<nox::OutPacket> o1;
+            const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nc);
+            srv.OnPacket(a, g.data(), g.size(), o1);
+        }
+        Check(srv.CarriedCount(a) == 2, "둘을 못 주웠다");
+
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> e = CodePacket(nox::Op::TRY_EQUIP, 500);
+        srv.OnPacket(a, e.data(), e.size(), out);
+        const auto toB = FlattenTo(out, b);
+        const auto* m = FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MODIFIABLE_WEAPON_EQUIP));
+        Check(m != nullptr, "입었는데 남에게 0x51 이 안 감");
+        if (m) {
+            Check(m->size() == 11, "0x51 이 11바이트가 아님");
+            Check((*m)[1] == 0xd8 && (*m)[2] == 0x82,
+                  "번호에 bit15(사람 표식)가 안 실렸다");          // 0x02d8|0x8000 = 0x82d8
+            Check((*m)[3] == 0x00 && (*m)[4] == 0x02 && (*m)[5] == 0x00 && (*m)[6] == 0x00,
+                  "장비 비트 0x200 이 안 실렸다");
+            Check((*m)[7] == 0xFF && (*m)[10] == 0xFF, "빈 수식 칸이 ff 가 아님");
+        }
+        Check(srv.appearanceSent() == 1, "겉모습 송신을 안 셌다");
+
+        // ② 벗으면 0x54(7B) — bit15 없이
+        std::vector<nox::OutPacket> out2;
+        const std::vector<uint8_t> d = CodePacket(nox::Op::TRY_DEQUIP, 500);
+        srv.OnPacket(a, d.data(), d.size(), out2);
+        const auto toB2 = FlattenTo(out2, b);
+        const auto* m2 = FindMsg(toB2, static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP));
+        Check(m2 != nullptr, "벗었는데 남에게 0x54 가 안 감");
+        if (m2) {
+            Check(m2->size() == 7, "0x54 가 7바이트가 아님");
+            Check((*m2)[1] == 0xd8 && (*m2)[2] == 0x02, "벗기에 bit15 가 실렸다 — 클라가 안 본다");
+        }
+
+        // ③ 장비 비트를 모르는 것 — 본인 0x60 은 가되 남에게는 아무것도 안 간다
+        const unsigned long long unkBefore = srv.appearanceUnknown();
+        std::vector<nox::OutPacket> out3;
+        const std::vector<uint8_t> e2 = CodePacket(nox::Op::TRY_EQUIP, 501);
+        srv.OnPacket(a, e2.data(), e2.size(), out3);
+        Check(srv.appearanceUnknown() == unkBefore + 1, "모르는 장비를 안 셌다");
+        const auto toB3 = FlattenTo(out3, b);
+        for (uint8_t op : { 0x4F, 0x50, 0x51, 0x52 }) {
+            const std::string why = "장비 비트를 모르는데 겉모습을 지어 보냈다";
+            Check(FindMsg(toB3, op) == nullptr, why.c_str());
+        }
+    }
+
+    // ④ 파이어볼이 끝난 자리에서 0x85 가 터진다 (5B, 좌표는 맞은 자리)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1000, 1140);   // 사거리(180) 안
+        srv.SetSpellCost(27, 0);
+
+        std::vector<nox::OutPacket> all;
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);           // ★ 겨눔·시전은 Tick(0) 뒤에 — frame_ 이 맞아야 겨눔이 안 낡는다
+        srv.DebugAimAt(a, 1000, 1140);   // 표적을 정통으로 겨눈다
+        std::vector<nox::OutPacket> cast1;
+        const std::vector<uint8_t> sp = SpellPacket(27, false);
+        srv.OnPacket(a, sp.data(), sp.size(), cast1);
+        for (int t = 1; t <= 40 && srv.hits() == 0; ++t) {
+            std::vector<nox::OutPacket> o1;
+            srv.Tick(33 * t, o1);
+            all.insert(all.end(), o1.begin(), o1.end());
+        }
+        Check(srv.hits() == 1, "파이어볼이 안 맞았다 — 이펙트 시험 전제가 깨짐");
+        const auto toBfx = FlattenTo(all, b);
+        const auto* fx = FindMsg(toBfx, static_cast<uint8_t>(nox::Op::FX_EXPLOSION));
+        Check(fx != nullptr, "맞았는데 0x85 폭발이 안 감");
+        if (fx) {
+            Check(fx->size() == 5, "0x85 가 5바이트가 아님");
+            const int16_t fy = static_cast<int16_t>((*fx)[3] | ((*fx)[4] << 8));
+            Check(fy > 1050 && fy < 1160, "폭발 좌표가 맞은 자리가 아님");
+        }
+        Check(srv.fxSent() == 1, "이펙트 송신을 안 셌다");
+    }
+
+    // ⑤ 번개는 선(9B) — 쏜 자리에서 끝난 자리까지
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1000, 1140);   // 사거리 안
+        srv.SetSpellCost(43, 0);
+
+        std::vector<nox::OutPacket> all;
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
+        srv.DebugAimAt(a, 1000, 1140);
+        std::vector<nox::OutPacket> cast1;
+        const std::vector<uint8_t> sp = SpellPacket(43, false);
+        srv.OnPacket(a, sp.data(), sp.size(), cast1);
+        for (int t = 1; t <= 40 && srv.hits() == 0; ++t) {
+            std::vector<nox::OutPacket> o1;
+            srv.Tick(33 * t, o1);
+            all.insert(all.end(), o1.begin(), o1.end());
+        }
+        const auto toBfx = FlattenTo(all, b);
+        const auto* fx = FindMsg(toBfx, static_cast<uint8_t>(nox::Op::FX_LIGHTNING));
+        Check(fx != nullptr, "번개가 끝났는데 0x8c 선이 안 감");
+        if (fx) {
+            Check(fx->size() == 9, "0x8c 가 9바이트가 아님");
+            const uint16_t sy = static_cast<uint16_t>((*fx)[3] | ((*fx)[4] << 8));
+            Check(sy > 900 && sy < 1100, "선의 시작이 쏜 자리가 아님");
+        }
+    }
+
+    std::printf("  P7 — 입으면 남에게 0x51(bit15+장비비트) · 벗기 0x54 · 모르면 안 보냄 · 폭발 0x85·번개 0x8c\n");
+}
+
 // ── P5 — 부활 무적 · 문 · 오벨리스크 ────────────────────────────────────
 //
 // ★ 부활 무적 — 상수(`kRespawnInvulnTicks` 150)는 있었는데 **아무도 안 봤다**.
@@ -3270,6 +3423,7 @@ int main() {
     TestAoiSightExit();
     TestSpellMana();
     TestManaSpend();
+    TestAppearanceAndFx();
     TestPropsAndInvuln();
     TestRoundFlow();
     TestAim();

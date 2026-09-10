@@ -919,6 +919,47 @@ void Server::AssignTeams() {
     }
 }
 
+// 투사체가 끝난 자리의 이펙트 (P7).
+//
+// ⭕ 짜임은 클라 원본 확정(2026-09-11) — 점(총 5B) `op | x:i16 | y:i16` ·
+//   선(총 9B) `op | x1 | y1 | x2 | y2`(u16 넷). 그림 이름까지 코드에 있다
+//   (0x85 "FireBoom" · 0x8c "DynamicLightning" · 0x8d "DynamicEnergyBolt").
+// ◑ **주문↔이펙트 대응은 이름 짝짓기다** — 파이어볼→FireBoom 은 자연스럽지만
+//   정품 와이어로 짝을 확인한 표본은 없다(전투 FX 표본 0건).
+// · 명중이든 소진이든 **끝나는 자리에서 한 번** 그린다.
+void Server::SendProjectileFx(const Projectile& p, std::vector<OutPacket>& out) {
+    const int16_t ex = static_cast<int16_t>(p.x);
+    const int16_t ey = static_cast<int16_t>(p.y);
+    switch (p.spell) {
+        case 27: {   // 파이어볼 → 0x85 EXPLOSION — 끝난 점에서 터진다
+            uint8_t m[5] = {
+                static_cast<uint8_t>(Op::FX_EXPLOSION),
+                static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8),
+                static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8),
+            };
+            Broadcast(/*viaSeq=*/false, m, sizeof(m), out);
+            ++fxSent_;
+            break;
+        }
+        case 43:     // 연쇄번개 → 0x8c · 에너지볼트 → 0x8d — 쏜 자리에서 끝난 자리까지 선
+        case 24: {
+            const uint16_t sx = static_cast<uint16_t>(p.launchX);
+            const uint16_t sy = static_cast<uint16_t>(p.launchY);
+            uint8_t m[9] = {
+                static_cast<uint8_t>(p.spell == 43 ? Op::FX_LIGHTNING : Op::FX_ENERGY_BOLT),
+                static_cast<uint8_t>(sx), static_cast<uint8_t>(sx >> 8),
+                static_cast<uint8_t>(sy), static_cast<uint8_t>(sy >> 8),
+                static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8),
+                static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8),
+            };
+            Broadcast(/*viaSeq=*/false, m, sizeof(m), out);
+            ++fxSent_;
+            break;
+        }
+        default: break;   // 대응을 모르는 주문은 안 그린다
+    }
+}
+
 // 문과 오벨리스크를 매 틱 돌본다 (P5).
 //
 // ★ **문은 다가가면 열린다** — 클라가 요청을 안 보낸다.
@@ -1501,6 +1542,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.modifiable = w.modifiable;
                 c.useKind = w.useKind;
                 c.useAmount = w.useAmount;
+                c.equipBit = w.equipBit;
+                c.isWeapon = w.isWeapon;
                 s.inventory.push_back(c);
                 ++picked_;
                 ++handled_;
@@ -1597,6 +1640,40 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     };
                     EmitSeq(s, msg, sizeof(msg), out);   // 본인에게
                     if (wear) ++equipped_; else ++dequipped_;
+
+                    // ★★ **남들에게 겉모습을 알린다** (P7). 그동안 본인 표시(0x60/0x61)만
+                    //   있어서 옆 사람 화면의 몸이 안 바뀌었다.
+                    //   짜임은 클라 원본 확정(2026-09-11) —
+                    //     입기: op | 번호2(**bit15=사람**) | 장비비트4 | (수식4, 빈 칸 ff)
+                    //     벗기: op | 번호2(**bit15 안 봄** — 클라가 사람 전용으로 처리) | 장비비트4
+                    //   장비비트가 0 이면(표에 없는 이름) **안 보낸다** — 짐작으로 안 채운다.
+                    if (c.equipBit != 0) {
+                        uint8_t am[11];
+                        size_t an = 7;
+                        if (wear) {
+                            am[0] = static_cast<uint8_t>(c.modifiable
+                                ? (c.isWeapon ? Op::REPORT_MODIFIABLE_WEAPON_EQUIP
+                                              : Op::REPORT_MODIFIABLE_ARMOR_EQUIP)
+                                : (c.isWeapon ? Op::REPORT_MUNDANE_WEAPON_EQUIP
+                                              : Op::REPORT_MUNDANE_ARMOR_EQUIP));
+                        } else {
+                            am[0] = static_cast<uint8_t>(
+                                c.isWeapon ? Op::REPORT_WEAPON_DEQUIP : Op::REPORT_ARMOR_DEQUIP);
+                        }
+                        const uint16_t who = static_cast<uint16_t>(
+                            s.netCode | (wear ? 0x8000u : 0u));
+                        am[1] = static_cast<uint8_t>(who);
+                        am[2] = static_cast<uint8_t>(who >> 8);
+                        PutU32(am + 3, c.equipBit);
+                        if (wear && c.modifiable) {
+                            am[7] = am[8] = am[9] = am[10] = 0xFF;   // 수식 없음 = -1
+                            an = 11;
+                        }
+                        Broadcast(/*viaSeq=*/true, am, an, out);
+                        ++appearanceSent_;
+                    } else {
+                        ++appearanceUnknown_;
+                    }
                     break;
                 }
                 ++handled_;
@@ -1619,6 +1696,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.modifiable = s.inventory[i].modifiable;
                     back.useKind = s.inventory[i].useKind;
                     back.useAmount = s.inventory[i].useAmount;
+                    back.equipBit = s.inventory[i].equipBit;
+                    back.isWeapon = s.inventory[i].isWeapon;
                     back.x = s.x;
                     back.y = s.y;
                     statics_.push_back(back);
@@ -1810,6 +1889,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         p.spell = spell;
                         p.x = s.x;
                         p.y = s.y;
+                        p.launchX = s.x;
+                        p.launchY = s.y;
                         p.vx = kProjectileSpeed * std::cos(rad);
                         p.vy = kProjectileSpeed * std::sin(rad);
                         p.damage = dmg;
@@ -2413,6 +2494,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 // 사거리를 넘었거나 맵 밖이면 그냥 사라진다.
                 if (p.traveled > kSpellRange || p.x < 0 || p.y < 0 ||
                     p.x > kMaxCoord || p.y > kMaxCoord) {
+                    SendProjectileFx(p, out);   // 못 맞혀도 끝나는 자리에서 그린다
                     shots_.erase(shots_.begin() + static_cast<long>(i));
                     gone = true;
                     break;
@@ -2426,6 +2508,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 //   읽었다 — 주석에는 「p 는 이미 없다」고 적어 놓고 그대로 썼다.
                 const int dmg = p.damage;
                 const std::string owner = p.owner;
+                SendProjectileFx(p, out);       // 맞은 자리에서 그린다
                 shots_.erase(shots_.begin() + static_cast<long>(i));
                 ++hits_;
                 // 주문 피해는 **방어를 안 탄다** — 파이어볼 직격이 종류 1,
