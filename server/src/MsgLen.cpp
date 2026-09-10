@@ -299,6 +299,13 @@ int MsgBodyLenByDir(uint8_t op, bool fromClient) {
         //   ⚠ 서버→클라 쪽은 서브코드마다 길이가 달라 보인다
         //     (opennox `client__network__cdecode.c:2880` 의 `switch (data[1])`). 손대지 않는다.
         case 0xF0: return fromClient ? 1 : kMsgBodyLen[op];
+        // ★★ 클라→서버 `0xd4 MSG_REQUEST_TIMER_STATUS` 는 **본문 0**이다.
+        //   2026-09-10 실측 — 정품 소매 클라가 낸 표본 **336건**(SNAP_M_* 여섯 갈래)이
+        //   전수 「▲멈춤 … 남은 1 | d4」다. 즉 조각 맨 끝에 **홑 `d4` 한 바이트**로 온다.
+        //   ⚠ 이걸 몰라(`-1`) 그 조각을 **통째로 버렸다** — 같이 실린 정상 메시지까지 죽었다.
+        //     09-10 실클라 아레나 런의 `[버림]` 228건이 전수 이것이었다.
+        //   ⚠ 서버→클라 쪽은 표본이 없다 — 표의 `-1` 을 그대로 둔다.
+        case 0xD4: return fromClient ? 0 : kMsgBodyLen[op];
         default: return kMsgBodyLen[op];
     }
 }

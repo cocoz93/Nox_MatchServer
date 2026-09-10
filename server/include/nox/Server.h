@@ -197,6 +197,8 @@ struct Session {
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
 
+    // `0x0a CLIENT_CLOSE` 를 받았다 — 다음 틱에 걷어낸다(30초 타임아웃을 안 기다린다).
+    bool closing = false;
     uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
@@ -366,6 +368,10 @@ constexpr double kPickupReach = kWallCell;
 // 못 받으면 `0xF1 INVENTORY_FAIL` 로 되돌려 주므로 서버가 미리 자를 일이 아니다.
 // 이 값은 규칙이 아니라 폭주 방지용 울타리다.
 constexpr size_t kInventoryGuard = 64;
+
+// 채팅 한 줄에 실을 수 있는 글자 수. 크기 칸이 **1바이트**라 255가 천장이고,
+// 정품 표본의 최대가 250(`fa 00 00`)이었다. 그보다 길면 버린다.
+constexpr size_t kChatMaxBytes = 250;
 
 class Server {
 public:
@@ -767,6 +773,13 @@ public:
     unsigned long long useUnknown() const { return useUnknown_; }
     unsigned long long equipped() const { return equipped_; }
     unsigned long long dequipped() const { return dequipped_; }
+    // 클라가 판 시계를 물어본 횟수. 전에는 이 조각을 통째로 버려 **0으로 보였다.**
+    unsigned long long timerAsks() const { return timerAsks_; }
+    unsigned long long chats() const { return chats_; }
+    // ★ **닿은 피해 전부** — 근접·투사체·소환수를 다 센다.
+    //   `hits()` 는 **투사체 명중만** 센다. 둘을 갈라야 「싸움이 안 붙었다」와
+    //   「투사체만 안 맞았다」가 구분된다(09-10 오판의 자리).
+    unsigned long long hurts() const { return hurts_; }
     bool IsEquipped(const std::string& addr, uint16_t netCode) const {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return false;
@@ -913,6 +926,13 @@ private:
     // ★ 신뢰 전송은 **패킷 머리 비트가 아니라 이 껍데기**가 맡는다 — 실측이 그렇다.
     //   09-06 덤프에서 `0xcc` 581건이 **전수 비신뢰 패킷**에 실려 있었다.
     //   (머리의 신뢰 비트는 접속 절차에서만 쓴다)
+    // 판 시계 한 통(13바이트)을 만든다. 주기 발송과 `0xd4` 즉답이 같은 내용을 쓴다.
+    void BuildTimerStatus(uint8_t msg[13]) const;
+
+    // 한 사람이 한 말을 모두에게. 머리는 **서버가 새로 짓는다**(남의 번호로 말하기 방지).
+    void BroadcastChat(const Session& who, const uint8_t* text, size_t n,
+                       std::vector<OutPacket>& out);
+
     void EmitSeq(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
     // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
@@ -992,6 +1012,9 @@ private:
     unsigned long long useUnknown_ = 0;         // 갈래를 몰라 아무 일도 안 난 쓰기
     unsigned long long equipped_ = 0;
     unsigned long long dequipped_ = 0;
+    unsigned long long timerAsks_ = 0;          // `0xd4` 를 받은 횟수
+    unsigned long long chats_ = 0;              // 되돌려 방송한 채팅 수
+    unsigned long long hurts_ = 0;              // 닿은 피해 전부 (근접+투사체+소환수)
 
     std::vector<uint8_t> infoBody_;
     std::vector<uint8_t> joinBody_;     // 접속 직후 나가는 216바이트 묶음

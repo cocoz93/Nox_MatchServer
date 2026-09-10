@@ -28,7 +28,7 @@ foreach ($c in $combos) {
   $last = $ticks[-1]
   $over = if ($last -match '판끝 예') { '판끝O' } else { '판끝X' }
   $nums = ''
-  foreach ($k in @('걸음','근접','주문','맞음')) {
+  foreach ($k in @('걸음','근접','주문','피해')) {
     if ($last -match ($k + ' (\d+)')) { if ([int]$Matches[1] -gt 0) { $nums += (' {0} {1}' -f $k, $Matches[1]) } }
   }
   if ($last -match '득점 (\d+):(\d+)') { $nums += (' 득점 {0}:{1}' -f $Matches[1], $Matches[2]) }

@@ -581,6 +581,11 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
 void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                         const std::string& by, DamageKind kind) {
     if (t.none() || dmg <= 0) return;
+    // ★ **닿은 피해를 여기서 센다.** `hits_` 는 「투사체가 명중한 횟수」만 세는데,
+    //   판정 요약이 그것을 「맞음」이라 찍어 왔다. 그래서 근접으로 피해가 122건 오간
+    //   실클라 런이 「맞음 0」으로 나와 **싸움이 안 붙은 것으로 오판**했다(09-10).
+    //   갈라 세야 「안 맞았다」와 「투사체만 안 맞았다」가 구분된다.
+    ++hurts_;
     if (t.pet < 0) {
         // ★ 사람이면 **입은 것으로 깎는다** — 방어합은 직업 기본 장비에서 온다
         //   (⭕ modifier.bin ARMOR_VALUE: 평상복 각 0.01 · 로브 0.20 · 나무방패 0.0).
@@ -755,6 +760,32 @@ void Server::StartQuest(int count, int centerX, int centerY, double spread) {
     }
 }
 
+// 한 사람이 한 말을 **모두에게.** 머리는 서버가 새로 짓는다 —
+// 말한 이의 번호와 그때 좌표로. 글자만 받은 것에서 가져온다.
+//
+// ⚠ 클라가 준 머리를 그대로 쓰면 **남의 번호로 말하기**가 된다.
+void Server::BroadcastChat(const Session& who, const uint8_t* text, size_t n,
+                           std::vector<OutPacket>& out) {
+    if (n == 0 || n > kChatMaxBytes) return;
+    std::vector<uint8_t> msg;
+    msg.reserve(11 + n);
+    msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
+    msg.push_back(static_cast<uint8_t>(who.netCode));
+    msg.push_back(static_cast<uint8_t>(who.netCode >> 8));
+    msg.push_back(0x02);                                  // 깃발 = UTF-8 (한 글자 한 바이트)
+    msg.push_back(static_cast<uint8_t>(who.x));
+    msg.push_back(static_cast<uint8_t>(who.x >> 8));
+    msg.push_back(static_cast<uint8_t>(who.y));
+    msg.push_back(static_cast<uint8_t>(who.y >> 8));
+    msg.push_back(static_cast<uint8_t>(n));
+    msg.push_back(0); msg.push_back(0);                   // 미상 2 — 표본 전수가 0
+    msg.insert(msg.end(), text, text + n);
+    for (auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
+    }
+}
+
 // 글자 한 줄 — `0xa8 TEXT_MESSAGE`. 짜임은 실측이고 **문구만 우리 것**이다.
 void Server::SendNotice(const char* text, std::vector<OutPacket>& out) {
     const size_t n = std::strlen(text);
@@ -912,6 +943,23 @@ void Server::UpdateFlags(std::vector<OutPacket>& out) {
         f.y = it->second.y;
         f.atHome = false;
     }
+}
+
+// 판 시계 한 통을 만든다. 보내는 곳이 둘이라 따로 뺐다 —
+// 주기 발송(`SendTimer`)과 **클라가 `0xd4` 로 물어봤을 때의 즉답**.
+void Server::BuildTimerStatus(uint8_t msg[13]) const {
+    const int32_t remain = -static_cast<int32_t>(frame_ * tickMs_);
+    msg[0] = static_cast<uint8_t>(Op::TIMER_STATUS);
+    msg[1] = msg[2] = msg[3] = msg[4] = 0;      // 표본 전수가 0 이었다
+    const uint32_t r = static_cast<uint32_t>(remain);
+    msg[5] = static_cast<uint8_t>(r);
+    msg[6] = static_cast<uint8_t>(r >> 8);
+    msg[7] = static_cast<uint8_t>(r >> 16);
+    msg[8] = static_cast<uint8_t>(r >> 24);
+    msg[9]  = static_cast<uint8_t>(frame_);
+    msg[10] = static_cast<uint8_t>(frame_ >> 8);
+    msg[11] = static_cast<uint8_t>(frame_ >> 16);
+    msg[12] = static_cast<uint8_t>(frame_ >> 24);
 }
 
 void Server::SendTimer(std::vector<OutPacket>& out) {
@@ -1361,6 +1409,72 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     ++dropped_;
                     break;
                 }
+                ++handled_;
+                break;
+            }
+
+            // ── 채팅 ──────────────────────────────────────────────────
+            //
+            // ★ 이 갈래가 없어서 **사람이 친 말이 아무 데도 안 갔다.** 서버는
+            //   `SendNotice` 로 보내기만 했다(퀘스트 전멸 알림 한 줄).
+            //
+            // ⭕ **보내는 짜임은 확정이다** — 정품 표본 26건이 전수 같은 꼴이다:
+            //     `cb 02 02 20 0c cc 09 fa 00 00` + 글자
+            //      번호2 · 깃발1(0x02=UTF-8) · x2 · y2 · 크기1 · 미상2
+            //   x,y 는 **말하는 사람의 그때 좌표**를 따라간다(표본에서 말할 때마다 바뀐다).
+            //
+            // ⚠ **받는 짜임은 표본이 없다** (2026-09-10 전수). 「클라→서버 277건」으로
+            //   보이던 것은 조각을 잘못 쪼갠 잡음이었다 — 277건이 전부 **같은 바이트**이고
+            //   전부 조각 한가운데(자리14/30)다. `0xd8` 15,700건과 같은 지문이다.
+            //   그래서 꼴은 `Wire.h` 의 규칙(opennox `msg_text.go`)에만 근거한다.
+            //
+            // ★★ 그래서 **되돌릴 때 클라가 준 머리를 안 쓴다.** 글자만 꺼내고
+            //   번호·좌표는 **서버가 아는 값으로 새로 짓는다.** 까닭 둘 —
+            //     ① 받는 짜임이 표본 없이 소스 근거뿐이라 머리를 믿을 수 없다
+            //     ② 머리를 그대로 실으면 **남의 번호로 말하기**가 된다
+            case Op::TEXT_MESSAGE: {
+                if (!s.inGame || it.bodyLen() < 10) break;
+                const uint8_t* b = it.body();
+                size_t sz = b[7];
+                if ((b[2] & 0x02) == 0 && (b[2] & 0x08) == 0) sz *= 2;   // UTF-16 이면 두 배
+                if (sz > it.bodyLen() - 10) sz = it.bodyLen() - 10;
+                if (sz == 0 || sz > kChatMaxBytes) { ++handled_; break; }
+                BroadcastChat(s, b + 10, sz, out);
+                ++chats_;
+                ++handled_;
+                break;
+            }
+
+            // ── 클라가 판 시계를 물어봤다 ────────────────────────────
+            //
+            // ★ 이 갈래는 **조각을 죽이던 자리**다. 길이표가 `-1`(미상)이라 조각을 훑는
+            //   걸음이 여기서 멈추고 **그 조각을 통째로 버렸다** — 같이 실린 정상
+            //   메시지까지 같이 죽었다. 09-10 실클라 런의 `[버림]` 228건이 전수 이것이다.
+            //   본문 0 은 실측이다(정품 클라 표본 336건이 전수 「남은 1」 = 홑 `d4`).
+            //
+            // 답은 주기 발송과 **같은 내용을 그 사람에게만** 보낸다.
+            case Op::REQUEST_TIMER_STATUS: {
+                if (!s.inGame) break;
+                uint8_t msg[13];
+                BuildTimerStatus(msg);
+                EmitSeq(s, msg, sizeof(msg), out);
+                ++timerAsks_;
+                ++handled_;
+                break;
+            }
+
+            // ── 정상 종료 알림 ──────────────────────────────────────
+            //
+            // ⚠ **정품 클라가 이걸 안 보낼 수도 있다** — 코드 주석에 「정품 클라도 `0a` 도
+            //   `ae` 도 없이 프로세스가 죽는다」는 실측이 남아 있다. 그래서 이건
+            //   **타임아웃(30초)을 대신하는 것이 아니라 앞당기는 것**이다.
+            //   실제로 오는지는 `[처음]` 진단 줄로 관측한다.
+            //
+            // ⚠ 여기서 세션을 지우면 **지금 잡고 있는 `s` 참조가 죽는다.**
+            //   표시만 하고 걷어내기는 Tick 의 「자리 비우기」가 한다 — 나감 알림
+            //   (`2e`·`31`)과 깃발 떨구기가 이미 거기 있다.
+            case Op::CLIENT_CLOSE: {
+                s.closing = true;
                 ++handled_;
                 break;
             }
@@ -1954,6 +2068,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         std::vector<std::string> gone;
         for (const auto& kv : sessions_) {
             const Session& o = kv.second;
+            // ★ 정상 종료를 알린 사람은 **아래 문지기보다 먼저** 걷어낸다.
+            //   「한 번도 못 받은 세션」 검사에 걸리면 `0x0a` 를 보내고도 안 나간다 —
+            //   틱이 아직 0 이면 `lastSeenFrame` 도 0 이라 늘 걸린다(시험이 잡아냈다).
+            if (o.closing) { gone.push_back(kv.first); continue; }
             // 아직 한 번도 못 받은 세션(이제 막 만든 것)은 건드리지 않는다.
             if (o.lastSeenFrame == 0) continue;
             if (frame_ - o.lastSeenFrame > kSessionTimeoutTicks) gone.push_back(kv.first);

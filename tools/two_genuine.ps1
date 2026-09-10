@@ -109,6 +109,17 @@ foreach ($try in 1..12) {
 foreach ($f in @($dump, $slog)) { if (Test-Path $f) { [IO.File]::Delete($f) } }
 if (-not (Test-Path $ctrl)) { New-Item -ItemType Directory $ctrl | Out-Null }
 
+# ★★ 런 전 문지기 — 2026-09-10 에 이것이 없어서 **실클라 네 판을 날렸다.**
+#   증상은 「접속 요청 158바이트에 답이 0개」였고 로그 어디에도 까닭이 없었다.
+#   진짜 원인은 -ServerArgs 에 --map 을 안 준 것 하나였다. 맵이 없으면
+#   SetStandalone 이 안 불려 CLIENT_ACCEPT 가 조용히 아무 답도 안 보낸다.
+if (-not $Genuine -and $ServerArgs -match '--standalone' -and $ServerArgs -notmatch '--map') {
+  Write-Host '[멈춤] --standalone 인데 -ServerArgs 에 --map 이 없다.' -ForegroundColor Red
+  Write-Host '       하네스는 --map 을 자기가 안 붙인다. 이대로 돌리면 아무도 못 들어온다.'
+  Write-Host '  보기: -ServerArgs ''--standalone --map "<게임폴더>\maps\estate\Estate.map"'''
+  exit 2
+}
+
 # 1. 서버
 if ($Prelude -eq 'onox')      { $dumpArg = ' --dump "' + (Join-Path $ev 'SNAP_onox_ref.txt') + '"' }
 elseif ($Prelude -eq 'default') { $dumpArg = '' }
@@ -345,16 +356,16 @@ if ($tick.Count -gt 0) {
   Write-Host ("  마지막 틱: {0}" -f $tick[-1])
   # ★ **가장 큰 값**을 따로 뽑는다 — 판이 끝나면 계수기가 되돌아가서
   #   마지막 줄만 보면 「한 판이 돌았다」를 놓친다.
-  $best = @{ '근접'=0; '맞음'=0; '주문'=0; '걸음'=0 }
+  $best = @{ '근접'=0; '피해'=0; '주문'=0; '걸음'=0 }
   $roundOver = $false
   foreach ($l in $tick) {
-    foreach ($k in @('근접','맞음','주문','걸음')) {
+    foreach ($k in @('근접','피해','주문','걸음')) {
       if ($l -match ($k + ' (\d+)') -and [int]$Matches[1] -gt $best[$k]) { $best[$k] = [int]$Matches[1] }
     }
     if ($l -match '판끝 예') { $roundOver = $true }
   }
-  Write-Host ("  최대: 걸음 {0} · 근접 {1} · 주문 {2} · 맞음 {3} · 판끝 {4}" -f
-    $best['걸음'], $best['근접'], $best['주문'], $best['맞음'],
+  Write-Host ("  최대: 걸음 {0} · 근접 {1} · 주문 {2} · 피해 {3} · 판끝 {4}" -f
+    $best['걸음'], $best['근접'], $best['주문'], $best['피해'],
     $(if ($roundOver) { '**예**' } else { '아니오' }))
 }
 
@@ -382,3 +393,12 @@ Write-Host ("생존 시계열: {0}" -f $watchLog)
 $snap = Join-Path $ev ("SNAP_{0}.txt" -f $Tag)
 & (Join-Path $PSScriptRoot 'cap2sniff.ps1') -In $dump -Out $snap | Out-Null
 Write-Host ("복호본: {0}" -f $snap)
+# ★★ 끝나면 **치운다.** 2026-09-10 — 하네스가 아무것도 안 죽이고 끝나서
+#   서버·프록시·게임 클라 둘이 남았고, 그것이 exe 를 잠가 다음 빌드가
+#   `LNK1104` 로 조용히 실패했다. 그 결과 7분짜리 다음 런을 **옛 바이너리로** 돌렸다.
+#   이 다섯 줄이 그 사고를 막는다.
+Get-Process nox_server, nox_proxy, opennox, opennox-server, deskhost -ErrorAction SilentlyContinue |
+  Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process -Name Game, Game2, Game3, Game4, Game5 -ErrorAction SilentlyContinue |
+  Stop-Process -Force -ErrorAction SilentlyContinue
+Write-Host '치움: 서버·프록시·클라 (다음 빌드가 exe 를 잠기지 않게)'

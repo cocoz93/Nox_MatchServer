@@ -792,6 +792,135 @@ std::vector<uint8_t> CodePacket(nox::Op op, uint16_t netCode) {
     return p;
 }
 
+// ── 채팅 — 친 말이 모두에게 가는가, 남의 번호로 말할 수 있는가 ──────────
+//
+// ⭕ **보내는 짜임은 정품 표본 26건으로 확정**이다:
+//    `cb 02 02 20 0c cc 09 fa 00 00` + 글자
+//     번호2 · 깃발1(0x02=UTF-8) · x2 · y2 · 크기1 · 미상2
+// ⚠ **받는 짜임은 표본이 0건**이다(2026-09-10 전수). 「클라→서버 277건」으로 보이던 것은
+//   조각을 잘못 쪼갠 잡음이었다 — 전부 같은 바이트, 전부 조각 한가운데.
+//   그래서 **클라가 준 머리를 안 쓴다** — 글자만 꺼내고 번호·좌표는 서버가 새로 짓는다.
+void TestChat() {
+    nox::Server srv;
+    const std::string a = "10.9.6.1:41061";
+    const std::string b = "10.9.6.2:41062";
+    srv.DebugEnterGame(a, 728);
+    srv.DebugEnterGame(b, 729);
+    srv.DebugMoveTo(a, 0x0c20, 0x09cc);        // 정품 표본과 같은 좌표로 맞춰 본다
+
+    // 클라가 보낸다고 보는 꼴 — 머리 10 + 글자. ★ 머리의 번호를 **남의 것(729)** 으로
+    //   넣어 본다. 서버가 그것을 그대로 쓰면 「남의 번호로 말하기」가 된다.
+    auto ChatPacket = [](uint16_t claimNet, const char* text) {
+        const size_t n = std::strlen(text);
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 1 + 10 + n, 0);
+        size_t i = nox::kWireHeaderSize;
+        p[i++] = static_cast<uint8_t>(nox::Op::TEXT_MESSAGE);
+        p[i++] = static_cast<uint8_t>(claimNet);
+        p[i++] = static_cast<uint8_t>(claimNet >> 8);
+        p[i++] = 0x02;                          // UTF-8
+        p[i++] = 0x11; p[i++] = 0x11;           // 거짓 x
+        p[i++] = 0x22; p[i++] = 0x22;           // 거짓 y
+        p[i++] = static_cast<uint8_t>(n);
+        p[i++] = 0; p[i++] = 0;
+        std::memcpy(p.data() + i, text, n);
+        return p;
+    };
+
+    {
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> pkt = ChatPacket(/*claimNet=*/729, "hello");
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.chats() == 1, "채팅을 받은 것으로 안 셌다");
+
+        // ① 말한 사람에게도, 남에게도 간다
+        for (const std::string& to : { a, b }) {
+            const auto msgs = FlattenTo(out, to);
+            const auto* m = FindMsg(msgs, static_cast<uint8_t>(nox::Op::TEXT_MESSAGE));
+            const std::string why = std::string("채팅이 ") + to + " 에게 안 감";
+            Check(m != nullptr, why.c_str());
+            if (!m) continue;
+            Check(m->size() == 1 + 10 + 5, "채팅 길이가 머리10+글자5 가 아님");
+            // ② ★ 번호는 **말한 사람(728)** 이라야 한다 — 클라가 우긴 729 가 아니라
+            Check((*m)[1] == 0xd8 && (*m)[2] == 0x02,
+                  "채팅 번호가 말한 사람이 아니다 — 남의 번호로 말하기가 뚫렸다");
+            // ③ 좌표도 서버가 아는 값 — 클라가 준 거짓 좌표가 아니라
+            Check((*m)[4] == 0x20 && (*m)[5] == 0x0c, "채팅 x 가 서버가 아는 값이 아님");
+            Check((*m)[6] == 0xcc && (*m)[7] == 0x09, "채팅 y 가 서버가 아는 값이 아님");
+            Check((*m)[3] == 0x02, "깃발이 UTF-8(0x02) 이 아님");
+            Check((*m)[8] == 5, "크기 칸이 글자 수가 아님");
+            Check(std::memcmp(m->data() + 11, "hello", 5) == 0, "글자가 다름");
+        }
+    }
+
+    // ④ 빈 말은 안 보낸다
+    {
+        const unsigned long long before = srv.chats();
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> pkt = ChatPacket(728, "");
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.chats() == before, "빈 말을 방송했다");
+    }
+
+    std::printf("  채팅 — 모두에게 감 · 번호·좌표는 서버가 새로 지음(남의 번호로 말하기 막힘)\n");
+}
+
+// ── 판 시계 물음(0xd4) · 정상 종료(0x0a) ────────────────────────────────
+//
+// ★ `0xd4` 는 **조각을 죽이던 자리**다. 길이표가 `-1` 이라 그 조각을 통째로 버렸고,
+//   같이 실린 정상 메시지까지 죽었다(09-10 실클라 런의 `[버림]` 228건이 전수 이것).
+//   본문 0 은 실측 — 정품 클라 표본 336건이 전수 「남은 1」(홑 `d4`)이었다.
+void TestTimerAskAndClose() {
+    // ① 길이표 — 클라→서버만 본문 0, 서버→클라는 표본이 없으니 미상 그대로
+    Check(nox::MsgBodyLenByDir(0xD4, /*fromClient=*/true) == 0,
+          "0xd4 클라→서버 본문이 0 이 아님");
+    Check(nox::MsgBodyLenByDir(0xD4, /*fromClient=*/false) < 0,
+          "0xd4 서버→클라는 아직 미상이라야 한다 — 표본이 없다");
+
+    nox::Server srv;
+    const std::string a = "10.9.5.1:41051";
+    const std::string b = "10.9.5.2:41052";
+    srv.DebugEnterGame(a, 728);
+    srv.DebugEnterGame(b, 729);
+
+    // ② `0xd4` 홑 한 바이트 조각 — 안 버려지고 `0xd3` 로 답해야 한다
+    {
+        std::vector<uint8_t> pkt(nox::kWireHeaderSize + 1, 0);
+        pkt[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::REQUEST_TIMER_STATUS);
+        std::vector<nox::OutPacket> out;
+        const unsigned long long stopped = srv.stopped();
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.stopped() == stopped, "0xd4 조각이 버려졌다 — 길이표가 아직 미상이다");
+        Check(srv.timerAsks() == 1, "0xd4 를 받은 것으로 안 셌다");
+        const auto toA = FlattenTo(out, a);
+        const auto* t = FindMsg(toA, static_cast<uint8_t>(nox::Op::TIMER_STATUS));
+        Check(t != nullptr, "0xd4 에 0xd3 로 안 답함");
+        if (t) Check(t->size() == 13, "0xd3 가 13바이트가 아님");
+        // ⚠ 물어본 사람에게만 — 주기 발송은 따로 있다
+        Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::TIMER_STATUS)) == nullptr,
+              "0xd4 즉답이 남에게도 감");
+    }
+
+    // ③ 정상 종료 — 30초를 안 기다리고 다음 틱에 나간다
+    {
+        std::vector<uint8_t> pkt(nox::kWireHeaderSize + 1, 0);
+        pkt[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::CLIENT_CLOSE);
+        std::vector<nox::OutPacket> out;
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.inGameCount() == 2, "받자마자 지우면 안 된다 — 잡고 있는 참조가 죽는다");
+
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
+        std::vector<nox::OutPacket> t2;
+        srv.Tick(33, t2);
+        Check(srv.inGameCount() == 1, "정상 종료를 알렸는데 안 나감");
+        const auto toB = FlattenTo(t2, b);
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::PLAYER_QUIT)) != nullptr,
+              "나감 0x2E 가 남은 사람에게 안 감");
+    }
+
+    std::printf("  판 시계 물음·정상 종료 — 0xd4 안 버려지고 0xd3 즉답 · 0x0a 면 바로 나감\n");
+}
+
 // ── 줍기 — 집으면 내 것이 되고 바닥에서 사라지는가 ──────────────────────
 //
 // ★ 이 갈래는 **`switch` 까지 오지도 못했다.** `0x73` 의 길이가 `-1` 이라 조각을
@@ -2910,6 +3039,8 @@ int main() {
     TestAoiSightExit();
     TestSpellMana();
     TestManaSpend();
+    TestChat();
+    TestTimerAskAndClose();
     TestPickup();
     TestUseAndEquip();
     TestUseFromFile();

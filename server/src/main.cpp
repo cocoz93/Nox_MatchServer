@@ -316,6 +316,7 @@ int main(int argc, char** argv) {
         //      ⚠ +75 는 estate 실측 — 다른 맵은 미확인.
         nox::ThingDb tdb;
         size_t nStat = 0, nSkip = 0;
+        std::map<std::string, int> notPickup;   // 아이템이 아니라 걸러진 것 — 이름별로
         if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
             std::vector<nox::Server::WorldStatic> st;
             const auto objs = mf.ReadObjects();
@@ -323,7 +324,10 @@ int main(int argc, char** argv) {
                 const uint16_t wire = tdb.WireByName(objs[i].type);
                 const nox::ThingInfo* ti = wire ? tdb.ByWire(wire) : nullptr;
                 if (!ti) { ++nSkip; continue; }
-                if (!ti->isPickup) continue;   // 장식은 클라가 맵에서 스스로 만든다
+                // ★ 아이템이 아닌 것도 **이름을 세어 둔다.** 전에는 조용히 버려서
+                //   「맵에 무엇이 있는지」를 아무도 몰랐다 — estate 161개 중 149개가
+                //   여기서 사라지는데 문·오벨리스크가 그 안에 있는지조차 못 봤다.
+                if (!ti->isPickup) { ++notPickup[objs[i].type]; continue; }
                 nox::Server::WorldStatic w2;
                 w2.netCode = static_cast<uint16_t>(i + 75);
                 w2.type = wire;
@@ -364,6 +368,15 @@ int main(int argc, char** argv) {
                     mapPath.c_str(), ws.size(), nStat, nSkip);
         std::printf("[주문] 마나 표 %zu개 — 0 이면 thing.bin 을 못 읽은 것이고 주문이 공짜가 된다\n",
                     srv.SpellCostCount());
+        // ★ 아이템이 아니라 걸러진 것 — **맵에 무엇이 있는지 한 번은 봐야 한다.**
+        //   문·오벨리스크·레버가 여기 있으면 그것이 다음에 살릴 것이다.
+        if (!notPickup.empty()) {
+            size_t total = 0;
+            for (const auto& kv : notPickup) total += static_cast<size_t>(kv.second);
+            std::printf("[맵 밖] 아이템 아닌 것 %zu개 / %zu종 —", total, notPickup.size());
+            for (const auto& kv : notPickup) std::printf(" %sx%d", kv.first.c_str(), kv.second);
+            std::printf("\n");
+        }
         if (standalone) {
             std::string nm = mapPath;
             const size_t sl = nm.find_last_of("\\/");
@@ -692,11 +705,12 @@ int main(int argc, char** argv) {
                 }
                 std::printf("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
                             "걸음 %llu · 근접 %llu(클릭 %llu) · "
-                            "주문 %llu · 나는것 %zu · 맞음 %llu · 별칭받음 %llu%s · 판끝 %s (누적 틱 %llu)\n",
+                            "주문 %llu · 나는것 %zu · 피해 %llu(투사체명중 %llu) · 별칭받음 %llu%s"
+                            " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
                             srv.moves(), srv.melees(), srv.code6Seen(),
-                            nSpell, srv.flying(), srv.hits(), srv.aliasHeard(), modeInfo,
+                            nSpell, srv.flying(), srv.hurts(), srv.hits(), srv.aliasHeard(), modeInfo,
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());

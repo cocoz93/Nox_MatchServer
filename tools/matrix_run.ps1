@@ -44,7 +44,7 @@ foreach ($it in $combos) {
   $over  = if ($last -match '판끝 예') { '판끝O' } else { '판끝X' }
   $alive = if ($out -match '생존 감시.*A 끝까지 살아있음 · B 끝까지 살아있음') { '생존O' } else { '생존X' }
   $nums = ''
-  foreach ($k in @('걸음','근접','주문','맞음')) {
+  foreach ($k in @('걸음','근접','주문','피해')) {
     if ($last -match ($k + ' (\d+)')) { $nums += (' {0} {1}' -f $k, $Matches[1]) }
   }
   $ctf = ''
