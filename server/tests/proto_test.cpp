@@ -339,6 +339,12 @@ std::vector<uint8_t> Body(const nox::OutPacket& p) {
     return std::vector<uint8_t>(p.data.begin() + nox::kWireHeaderSize, p.data.end());
 }
 
+// 시험 기본 캐릭터는 **위저드**다(DebugEnterGame 기본값) — 체력 75·힘 35.
+// 맨손 한 대 = 힘 35 × 0.04 + 5 = 6.4 → 6. 전에는 누구나 12 로 고정이었다.
+const int kWizardPunch = nox::MeleeDamageFor(nox::CharClass::Wizard,
+                                             nox::StrengthOnline(nox::CharClass::Wizard),
+                                             /*kick=*/false);
+
 // out 안에서 이 오프코드로 시작하는 메시지를 찾는다. 껍데기(0xcc) 속도 들여다본다.
 const std::vector<uint8_t>* FindMsg(const std::vector<std::vector<uint8_t>>& msgs, uint8_t op) {
     for (const auto& m : msgs) {
@@ -499,8 +505,13 @@ void TestSpellDamage() {
     nox::Server srv;
     const std::string a = "10.0.0.1:1000";
     const std::string b = "10.0.0.2:1000";
-    srv.DebugEnterGame(a, 728);
-    srv.DebugEnterGame(b, 729);
+    // ★ **둘 다 워리어로 둔다** — 정본 파이어볼은 최대 세기에서 127 이라
+    //   위저드(75)는 한 방에 죽는다. 여기서 보려는 것은 「날아가서 맞나」이므로
+    //   맞고도 살아남는 워리어(150)로 재야 판정이 흐려지지 않는다.
+    //   ⚠ 한 방에 죽는 것 자체는 결함이 아니다 — 정본이 그렇다.
+    srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+    srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+    const int kHP = nox::HealthOnline(nox::CharClass::Warrior);
     // ★ 이제 파이어볼은 **날아간다.** 바라보는 쪽이 기본 0(월드 +x)이므로
     //   맞으려면 b 가 a 의 앞쪽에 있어야 한다. 같은 자리에 두면 안 맞는 게 옳다.
     srv.DebugMoveTo(b, 1100, 1000);
@@ -511,13 +522,13 @@ void TestSpellDamage() {
         auto pkt = SpellPacket(27, /*onSelf=*/false);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
         // ★ 쏘자마자는 아무도 안 깎여야 한다 — 날아가는 중이다
-        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "쏘자마자 맞음 (투사체가 안 날아감)");
+        Check(srv.HealthOf(b) == kHP, "쏘자마자 맞음 (투사체가 안 날아감)");
         Check(srv.flying() == 1, "날아가는 것이 하나가 아님");
 
         FlyUntilDone(srv, out);
-        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth - nox::Server::SpellDamage(27),
+        Check(srv.HealthOf(b) == kHP - nox::Server::SpellDamage(27),
               "날아간 파이어볼이 안 맞음");
-        Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "쏜 쪽이 깎임");
+        Check(srv.HealthOf(a) == kHP, "쏜 쪽이 깎임");
         Check(srv.hits() == 1, "맞은 횟수가 1 이 아님");
         Check(srv.flying() == 0, "맞았는데 안 사라짐");
 
@@ -539,7 +550,7 @@ void TestSpellDamage() {
         std::vector<nox::OutPacket> out;
         auto pkt = SpellPacket(27, /*onSelf=*/true);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(srv.HealthOf(a) == nox::kDefaultMaxHealth - nox::Server::SpellDamage(27),
+        Check(srv.HealthOf(a) == kHP - nox::Server::SpellDamage(27),
               "자기에게 건 파이어볼이 자기를 안 깎음");
         Check(srv.flying() == 0, "자기에게 건 것이 날아감");
     }
@@ -606,7 +617,7 @@ void TestMelee() {
         std::vector<nox::OutPacket> out;
         auto pkt = InputPacket(6);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth - nox::kMeleeDamage,
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth - kWizardPunch,
               "왼버튼 한 번에 안 깎임");
         Check(srv.melees() == 1, "근접 집계가 1 이 아님");
     }
@@ -632,7 +643,7 @@ void TestMelee() {
         const uint16_t before = srv.HealthOf(b);
         auto pkt = InputPacket(6);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(srv.HealthOf(b) == before - nox::kMeleeDamage, "쉬는 시간이 지났는데 안 깎임");
+        Check(srv.HealthOf(b) == before - kWizardPunch, "쉬는 시간이 지났는데 안 깎임");
         Check(srv.melees() == 2, "근접 집계가 2 가 아님");
     }
 
@@ -1035,6 +1046,106 @@ void TestSnapshotVsMap() {
                 checked, matched);
 }
 
+// ── 기획데이터 정본 — 옮겨 적은 값이 맞나 (P6) ──────────
+//
+// 게임 파일을 런타임에 안 읽고 `GameBalance.h` 에 옮겨 적었다. 그러면 **옮기다 틀릴 수
+// 있다.** 여기서 그 값들을 숫자로 못박는다 — 표를 잘못 만지면 여기서 걸린다.
+// 근거는 전부 `Docs/GAMEDATA_AUDIT.md`.
+void TestGameBalance() {
+    using nox::CharClass;
+    // ⭕ gamedata.bin — 아레나·레벨10 직업 스탯
+    Check(nox::HealthOnline(CharClass::Warrior)  == 150, "워리어 체력이 150 이 아님");
+    Check(nox::HealthOnline(CharClass::Wizard)   ==  75, "위저드 체력이 75 가 아님");
+    Check(nox::HealthOnline(CharClass::Conjurer) == 100, "컨저러 체력이 100 이 아님");
+    Check(nox::ManaOnline(CharClass::Warrior)    ==   0, "워리어 마나가 0 이 아님");
+    Check(nox::ManaOnline(CharClass::Wizard)     == 150, "위저드 마나가 150 이 아님");
+    Check(nox::ManaOnline(CharClass::Conjurer)   == 125, "컨저러 마나가 125 가 아님");
+    Check(nox::StrengthOnline(CharClass::Warrior) == 125, "워리어 힘이 125 가 아님");
+
+    // ◑ 캠페인 보간은 **레벨 1 이 기본값, 10 이 최대값** — 0 이 아니다
+    Check(nox::HealthAtLevel(CharClass::Warrior, 1)  ==  20, "레벨1 체력이 기본값(20)이 아님");
+    Check(nox::HealthAtLevel(CharClass::Warrior, 10) == 150, "레벨10 체력이 최대값이 아님");
+    Check(nox::ManaAtLevel(CharClass::Warrior, 1)    ==   0, "워리어는 어느 레벨에서도 마나 0");
+
+    // ⭕ modifier.bin — 무기 표. 순서가 밀리면 엉뚱한 무기를 든다
+    Check(std::string(nox::kWeapons[2].name) == "Longsword", "무기표 2번이 롱소드가 아님");
+    Check(nox::kWeapons[2].damageMin == 9 && nox::kWeapons[2].reqStrength == 30,
+          "롱소드 최소값·요구힘이 다름");
+    // 워리어(힘 125)가 롱소드로 = (125−30)×0.30 + 9 = 37.5 → 38
+    Check(nox::MeleeDamageFor(CharClass::Warrior, 125, false) == 38,
+          "워리어 롱소드 피해가 38 이 아님");
+    // 위저드(힘 35)는 맨손 = 35×0.04 + 5 = 6.4 → 6
+    Check(nox::MeleeDamageFor(CharClass::Wizard, 35, false) == 6,
+          "위저드 맨손 피해가 6 이 아님");
+    Check(nox::MeleeRangeFor(CharClass::Warrior) == 45.0, "롱소드 사거리가 45 가 아님");
+
+    // ⭕ thing.bin — 파이어볼 COLLIDE 인자 ÷2
+    Check(nox::FireballDirectDamage(1) ==  64, "레벨1 파이어볼이 64 가 아님");
+    Check(nox::FireballDirectDamage(5) == 127, "레벨5 파이어볼이 127 이 아님");
+    Check(nox::kFireballPerFrame == 12.0, "파이어볼 속도가 12.0 이 아님");
+    Check(nox::kPlayerWalkPerFrame == 3.0, "걷기가 3.0 이 아님");
+
+    // ⭕ monster.bin — 소환수
+    const nox::MonsterStats* imp = nox::FindMonster(1328);
+    Check(imp && imp->health == 25, "임프 체력이 25 가 아님");
+    const nox::MonsterStats* bat = nox::FindMonster(1357);
+    Check(bat && bat->health == 35 && bat->meleeDamage == 4, "박쥐 값이 다름");
+
+    // ◑ 방어구 — 곱해서 깎고, 전기는 안 탄다
+    Check(nox::ApplyArmor(100, 0.23, nox::DamageKind::Physical) == 77, "방어 0.23 에 77 이 아님");
+    Check(nox::ApplyArmor(100, 0.23, nox::DamageKind::Electric) == 100, "전기가 방어를 탐");
+    Check(nox::ApplyArmor(100, 5.0,  nox::DamageKind::Physical) == 0,  "방어합이 1.0 에서 안 잘림");
+
+    // ◑ 기본 장비 — 워리어는 셔츠를 안 받는다
+    const nox::Loadout w = nox::LoadoutFor(CharClass::Warrior);
+    Check(w.weapon == nox::kItemLongsword, "워리어가 롱소드를 안 듦");
+    for (int i = 0; i < w.count; ++i)
+        Check(w.items[i] != nox::kItemStreetShirt, "워리어가 셔츠를 받음");
+    const nox::Loadout z = nox::LoadoutFor(CharClass::Wizard);
+    Check(z.count == 4 && z.weapon == 0, "위저드 장비가 넷·무기없음이 아님");
+    Check(nox::LoadoutFor(CharClass::Conjurer).count == 3, "컨저러 장비가 셋이 아님");
+
+    std::printf("  기획데이터 — 직업 스탯·무기·주문·몬스터·방어구·장비 전수 대조 통과\n");
+}
+
+// ── 스냅샷이 직업마다 다른가 (P6) ──────────
+//
+// 정본화 전에는 **누구에게나 위저드 한 벌**이 나갔다. 직업을 바꾸면 체력·장비가
+// 따라 바뀌어야 하고, **위저드 것은 예전 그대로**여야 한다(TestSnapshotTail 이 그 짝).
+void TestSnapshotPerClass() {
+    using nox::CharClass;
+    const auto wiz = nox::BuildSnapshotTail(713, CharClass::Wizard);
+    const auto war = nox::BuildSnapshotTail(713, CharClass::Warrior);
+    const auto con = nox::BuildSnapshotTail(713, CharClass::Conjurer);
+    Check(wiz != war, "워리어 스냅샷이 위저드와 같다 — 직업이 안 갈림");
+    Check(con != wiz && con != war, "컨저러 스냅샷이 남과 같다");
+
+    // 체력 자리(`0xdd <번호2> <지금2> <최대2>`)가 직업 값인가
+    auto hasTotalHealth = [](const std::vector<uint8_t>& m, uint16_t want) {
+        for (size_t i = 0; i + 6 < m.size(); ++i)
+            if (m[i] == 0xdd && m[i + 1] == 0xc9 && m[i + 2] == 0x02 &&
+                (m[i + 3] | (m[i + 4] << 8)) == want) return true;
+        return false;
+    };
+    Check(hasTotalHealth(wiz,  75), "위저드 스냅샷에 체력 75 가 없다");
+    Check(hasTotalHealth(war, 150), "워리어 스냅샷에 체력 150 이 없다");
+    Check(hasTotalHealth(con, 100), "컨저러 스냅샷에 체력 100 이 없다");
+
+    // 장비 자리(`0x4c <번호2> <종류2> …`)에 로브가 위저드에게만 있나
+    auto hasItem = [](const std::vector<uint8_t>& m, uint16_t type) {
+        for (size_t i = 0; i + 4 < m.size(); ++i)
+            if (m[i] == 0x4c && (m[i + 3] | (m[i + 4] << 8)) == type) return true;
+        return false;
+    };
+    Check(hasItem(wiz, nox::kItemWizardRobe),  "위저드에게 로브가 없다");
+    Check(!hasItem(war, nox::kItemWizardRobe), "워리어가 마법사 로브를 입었다");
+    Check(!hasItem(con, nox::kItemWizardRobe), "컨저러가 마법사 로브를 입었다");
+    Check(hasItem(war, nox::kItemLongsword),   "워리어가 롱소드를 안 들었다");
+    Check(!hasItem(war, nox::kItemStreetShirt), "워리어가 셔츠를 입었다");
+    std::printf("  스냅샷 — 직업마다 체력·장비가 갈린다 (위저드 %zuB · 워리어 %zuB · 컨저러 %zuB)\n",
+                wiz.size(), war.size(), con.size());
+}
+
 // ── 정품 오브젝트 번호 ↔ 맵 색인 — 연번 규칙 규명 (P4-d ①) ──────────
 //
 // 정품 스냅샷의 아이템 번호(176~651)는 맵 로드 때 매기는 연번으로 보인다
@@ -1307,7 +1418,7 @@ void TestSnapshotTail() {
 
         0x06, 0x5c, 0x44, 0x23, 0x00, 0x0a, 0xcc, 0x16, 0x00, 0x03, 0x43, 0x4b, 0x00,
     };
-    const std::vector<uint8_t> built = nox::BuildSnapshotTail(713);
+    const std::vector<uint8_t> built = nox::BuildSnapshotTail(713, nox::CharClass::Wizard);
     Check(built.size() == 381, "꼬리 크기가 381 이 아니다");
     size_t diff = 0, first = 0;
     for (size_t i = 0; i < 381 && i < built.size(); ++i)
@@ -1432,7 +1543,7 @@ void TestObserverExit() {
         std::vector<nox::OutPacket> out;
         auto pkt = InputPacket(6);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(srv.HealthOf(b) == before - nox::kMeleeDamage, "관전을 푼 뒤 클릭이 안 때렸다");
+        Check(srv.HealthOf(b) == before - kWizardPunch, "관전을 푼 뒤 클릭이 안 때렸다");
         Check(srv.melees() == 1, "관전을 푼 뒤 근접 집계가 1 이 아님");
     }
 
@@ -2248,6 +2359,8 @@ int main() {
     TestJoinBundle();
     TestSnapshotTail();
     TestSnapshotVsMap();
+    TestGameBalance();
+    TestSnapshotPerClass();
     TestMapNetCodeRule();
     TestPickupClass();
     TestAoiBudget();

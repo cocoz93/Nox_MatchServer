@@ -198,15 +198,60 @@ void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n,
     Emit(s, /*reliable=*/false, /*stream=*/0, buf.data(), buf.size(), out);
 }
 
-// 공격 주문과 그 위력.
+// 불려 나온 것의 값 — **종류마다 다르다** (2026-09-10 정본화, ⭕ monster.bin).
+//
+// 전에는 넷 다 상수 하나였다(체력 40 · 피해 8 · 사거리 40 · 속도 5).
+// 이제 표에서 찾는다 — 임프는 체력 25 에 원거리 5, 박쥐는 체력 35 에 근접 4 다.
+//
+// ⚠ 닿는 거리 — 파일의 `MELEE_ATTACK_RANGE` 는 몬스터 기준이라 **사람 몸 반지름을
+//   더해야** 실제로 닿는다. 안 더하면 박쥐(15)가 사람 몸(10) 안으로 못 들어와
+//   영영 다가가기만 한다.
+// ⚠ 속도가 사람보다 느리다(임프 3.75 · 박쥐 3.28 대 사람 달리기 7). 정본이 그렇다 —
+//   도망가는 사람은 못 잡는다. 퀘스트에서 몬스터가 안 닿으면 이 줄을 먼저 볼 것.
+struct PetTuning {
+    int      health;
+    int      damage;
+    double   reach;
+    double   speed;
+    uint32_t delay;
+};
+
+static PetTuning TuningFor(uint16_t type) {
+    const MonsterStats* m = FindMonster(type);
+    if (!m) return { kPetHealth, kPetDamage, kPetReach, kPetSpeed, kMeleeCooldownTicks };
+    PetTuning t;
+    t.health = m->health;
+    // 근접이 비어 있으면 원거리형이다. 지금 발사체 피해를 아는 것은 임프뿐.
+    t.damage = (m->meleeDamage > 0) ? m->meleeDamage
+             : ((m->wireType == 1328) ? kImpShotDamage : kPetDamage);
+    t.reach  = (m->meleeRange > 0.0) ? m->meleeRange + kPlayerRadius : kPetReach;
+    t.speed  = (m->speed > 0) ? m->speed / kThingSpeedDivisor : 0.0;   // 0 = 못 움직인다
+    t.delay  = static_cast<uint32_t>((m->minDelay > 0) ? m->minDelay : kDefaultMonsterDelay);
+    return t;
+}
+
+// 공격 주문과 그 위력. **2026-09-10 정본화** — 근거는 `GameBalance.h`.
 //
 // **어느 주문이 공격이냐**는 이름표에서 갈랐다(`SpellNames.cpp`, 기계로 뽑은 것).
-// **위력 숫자는 실측이 아니다** — Server.h 의 SpellDamage 주석 참조.
+//
+// ★ 파이어볼 ⭕ — thing.bin 의 `COLLIDE = SparkExplosionCollide <n>` 인자를 반으로.
+//   레벨은 주문을 얼마나 충전했나인데 **와이어에 안 실린다**(`0x79` 본문 21B 가
+//   주문 번호와 0 채움뿐). 지금은 최대 세기로 본다 — 아레나 캐릭은 레벨 10 이다.
+// ★ 번개·에너지볼트 ⭕ — 파일 값은 **프레임당** 피해다. 우리는 한 방으로 주므로
+//   한 번 시전이 얼마나 이어지는지를 곱해야 한다 —
+//   `ARENA TargetedSpellLifetime = 45` 프레임(⭕ gamedata.bin)을 쓴다.
+constexpr uint8_t kAssumedSpellLevel = 5;      // ⚠ 와이어에 없어 최대로 가정
+constexpr int     kTargetedSpellFrames = 45;   // ⭕ gamedata `ARENA TargetedSpellLifetime`
+
 int Server::SpellDamage(uint8_t spell) {
     switch (spell) {
-        case 27: return 30;   // SPELL_FIREBALL       — 09-07 조작 실측에서 F 키
-        case 43: return 25;   // SPELL_CHAIN_LIGHTNING — D 키. 표시 이름이 "Lightning"
-        case 24: return 15;   // SPELL_LIGHTNING       — 표시 이름은 "Energy Bolt"
+        case 27:   // SPELL_FIREBALL — 09-07 조작 실측에서 F 키
+            return FireballDirectDamage(kAssumedSpellLevel);
+        case 43:   // SPELL_CHAIN_LIGHTNING — D 키. 표시 이름이 "Lightning"
+            return static_cast<int>(kLightningPerFrame * kTargetedSpellFrames + 0.5);
+        case 24:   // SPELL_LIGHTNING — 표시 이름은 "Energy Bolt"
+            return static_cast<int>(kEnergyBoltPerFrame[kAssumedSpellLevel - 1] *
+                                    kTargetedSpellFrames + 0.5);
         default: return 0;    // 그 밖(점멸·보호막·치유 …)은 피해가 없다
     }
 }
@@ -631,7 +676,7 @@ void Server::StartQuest(int count, int centerX, int centerY, double spread) {
         if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
         k.x = centerX + spread * std::cos(ang);
         k.y = centerY + spread * std::sin(ang);
-        k.health = kPetHealth;
+        k.health = static_cast<uint16_t>(TuningFor(k.type).health);
         pets_.push_back(k);
     }
 }
@@ -1000,8 +1045,20 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         //     방향(코드 1) 항목까지 같이 버려진다.
                         else if (frame_ >= s.nextMeleeFrame) {
                             s.nextMeleeFrame = frame_ + kMeleeCooldownTicks;
-                            const Target t = NearestTarget(from, s.x, s.y, kMeleeRange);
-                            HurtTarget(t, kMeleeDamage, out, from);
+                            // ★★ **직업이 든 것으로 때린다** (2026-09-10 정본화).
+                            //   멀티/아레나 기본 장비가 직업마다 다르다 —
+                            //     워리어  롱소드 → (힘−30)×0.30 + 9
+                            //     위저드·컨저러  맨손 → 힘×0.04 + 5
+                            //   발차기(+5)는 **워리어만** 나오는데, 워리어는 무기를 들어
+                            //   실제로는 안 쓰인다. 규칙대로 자리는 남겨 둔다.
+                            //   전에는 누구나 12 로 고정이었다. 그 값이 맨손 평균(11.25)에
+                            //   가까워 맞아 보였지만 **우연이었다.**
+                            const bool kick = (s.charClass == CharClass::Warrior) &&
+                                              (NextRandom(100) >= 100 - kKickPercent);
+                            const int dmg = MeleeDamageFor(s.charClass, s.strength, kick);
+                            const Target t = NearestTarget(from, s.x, s.y,
+                                                           MeleeRangeFor(s.charClass));
+                            HurtTarget(t, dmg, out, from);
                             ++melees_;
                         }
                     }
@@ -1059,9 +1116,9 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     k.facing = s.facing;
                     // 부른 사람 바로 앞에 세운다.
                     const double rad = s.facing * 3.14159265358979 / 128.0;
-                    k.x = s.x + kPetReach * std::cos(rad);
+                    k.x = s.x + kPetReach * std::cos(rad);   // 세우는 자리는 그대로
                     k.y = s.y + kPetReach * std::sin(rad);
-                    k.health = kPetHealth;
+                    k.health = static_cast<uint16_t>(TuningFor(k.type).health);
                     pets_.push_back(k);
                     ++handled_;
                     break;
@@ -1213,8 +1270,21 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     s.netCode = nextPlayerNetCode_;
                     nextPlayerNetCode_ += kNetCodeStride;
                 }
+                // ★★ **직업과 레벨을 읽어 스탯을 정한다** (2026-09-10 기획데이터 이식).
+                //   전에는 누구에게나 75/150 — 녹음본 주인공(위저드) 값이 굳어 있었다.
+                //   그래서 워리어가 정본 150 대신 75 로 놀았다. 자리는 `GameBalance.h`.
+                if (it.bodyLen() > kInfoLevelAt) {
+                    const uint8_t c = it.body()[kInfoClassAt];
+                    s.charClass = (c <= 2) ? static_cast<CharClass>(c) : CharClass::Warrior;
+                    const uint8_t lv = it.body()[kInfoLevelAt];
+                    s.charLevel = (lv > kMaxLevel) ? kMaxLevel : lv;
+                }
                 if (s.maxHealth == 0) {
-                    s.maxHealth = kDefaultMaxHealth;
+                    // ★ **온라인은 레벨을 안 본다** — 그 직업의 최대 스탯을 그대로 준다
+                    //   (`GameBalance.h` HealthOnline 주석 · 정품이 접속자 레벨도 10 으로 민다).
+                    s.maxHealth = static_cast<uint16_t>(HealthOnline(s.charClass));
+                    s.maxMana   = static_cast<uint16_t>(ManaOnline(s.charClass));
+                    s.strength  = StrengthOnline(s.charClass);
                     s.health = s.maxHealth;
                 }
                 if (!joinBody_.empty()) {
@@ -1640,16 +1710,19 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             const double dx = tx - k.x, dy = ty - k.y;
             const double d = std::sqrt(dx * dx + dy * dy);
             if (d < 1e-6) continue;
-            if (d > kPetReach) {
-                // 아직 멀다 — 다가간다.
-                k.x += kPetSpeed * dx / d;
-                k.y += kPetSpeed * dy / d;
+            const PetTuning tune = TuningFor(k.type);
+            if (d > tune.reach) {
+                // 아직 멀다 — 다가간다. 속도는 그 몬스터 것이다.
+                if (tune.speed > 0.0) {
+                    k.x += tune.speed * dx / d;
+                    k.y += tune.speed * dy / d;
+                }
                 k.facing = static_cast<uint8_t>(
                     static_cast<int>(std::atan2(dy, dx) * 128.0 / 3.14159265358979) & 0xFF);
             } else if (frame_ >= k.nextHitFrame) {
-                // 닿았다 — 때린다. 쉬는 시간은 사람 근접과 같은 규칙이다.
-                k.nextHitFrame = frame_ + kMeleeCooldownTicks;
-                HurtTarget(t, kPetDamage, out, k.owner);   // 부른 사람의 점수다
+                // 닿았다 — 때린다. 쉬는 시간도 그 몬스터 것이다(파일에 없으면 30).
+                k.nextHitFrame = frame_ + tune.delay;
+                HurtTarget(t, tune.damage, out, k.owner);   // 부른 사람의 점수다
                 break;   // 목록이 바뀔 수 있다 — 이번 걸음은 여기서 접는다
             }
         }
@@ -1703,7 +1776,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 ub[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
                 const size_t un = EncodeUpdate(m, ub + 1, sizeof(ub) - 1);
                 patched.insert(patched.end(), ub, ub + 1 + un);
-                const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode);
+                const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode, s.charClass);
                 patched.insert(patched.end(), tail.begin(), tail.end());
             } else if (!(patchSnapshot_ &&
                   PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_))) {

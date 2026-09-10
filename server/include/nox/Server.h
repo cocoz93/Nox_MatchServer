@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "nox/Alias.h"
+#include "nox/GameBalance.h"   // 직업·레벨·정본 수치
 #include "nox/Messages.h"   // InformCode
 #include "nox/UpdateStream.h"
 #include "nox/Wire.h"
@@ -161,6 +162,15 @@ struct Session {
     // 짜임과 값은 캡처에서 얻었다(Docs/PROTOCOL.md 「죽음과 부활 ✅」·「체력」 절).
     uint16_t health = 0;
     uint16_t maxHealth = 0;
+
+    // ── 캐릭터 (2026-09-10 기획데이터 이식) ───────────────
+    // 접속 정보 97바이트의 자리 51·52 에서 읽는다(`GameBalance.h` 참조).
+    // 체력·마나·힘은 **직업과 레벨이 정한다** — 전에는 셋 다 위저드 값으로 굳어 있었다.
+    CharClass charClass = CharClass::Warrior;
+    uint8_t   charLevel = kMaxLevel;
+    uint16_t  maxMana   = 0;
+    int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
+
     uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
@@ -185,15 +195,16 @@ struct Session {
     StreamSeq seq[128];
 };
 
-// 접속할 때 주는 최대 체력. **실측값이다** —
+// 접속할 때 주는 최대 체력 — **이제 직업·레벨이 정한다**(`GameBalance.h`).
 //   dd d0 02 4b 00 4b 00   번호 720 · 75/75      (`0xDD REPORT_TOTAL_HEALTH`)
-// 다른 상대는 150 이었다(직업이나 레벨에 달린 것으로 보이나 확인 못 했다).
+// ★ 그 75 는 「기본값」이 아니라 **위저드의 아레나 최대 체력**이었다
+//   (`ARENA WizardMaxHealth = 75`). 「다른 상대는 150」도 풀린다 — 워리어였던 것이다.
+//   여기 상수는 직업을 아직 못 읽은 자리(대조 장치 등)의 되돌림 값으로만 남긴다.
 constexpr uint16_t kDefaultMaxHealth = 75;
 
-// ⚠ **죽고 나서 얼마 만에 부활하나 — 이 값은 실측이 아니다.**
-//   09-06 덤프의 죽음은 단 두 건이고, 그 뒤 같은 번호의 부활이 안 잡혔다.
-//   그래서 잴 수가 없었다. 30Hz 기준 5초로 두었을 뿐이니 **캡처로 갈아 끼울 자리**다.
-constexpr uint32_t kRespawnDelayTicks = 150;
+// 죽고 나서 부활까지 ◑ — 30틱 + 15틱 = **45**. `GameBalance.h` kRespawnMinTicks 참조.
+// ★ 전에 쓰던 150 은 **부활 직후 무적 시간**이었다. 값은 실재하는데 뜻이 달랐다.
+constexpr uint32_t kRespawnDelayTicks = kRespawnMinTicks;
 
 // ⚠ **주문 사거리도 실측이 아니다.** 맞았는지 안 맞았는지 가릴 근거가 덤프에 없다
 //   (`0x42` 가 나간 순간의 두 사람 거리를 짝지을 수 없었다). 걸음 7/틱 기준
@@ -221,13 +232,14 @@ constexpr double kSpellRange = 210.0;
 //    아직 못 짚었다. 걸음(7/틱)보다 서너 배 빠른 값으로 두었을 뿐이다.
 // ── 불려 나온 것 (소환) ─────────────────────────────────────
 //
-// ⚠⚠ **아래 넷도 실측이 아니다.** 소환 표본이 덤프에 없다 — 09-06·09-07 어느 캡처에도
-//    `SPELL_SUMMON_*` 이 안 왔다(주문 표본 83개가 전부 공격·이동·치유였다).
-//    걸음(7/틱)보다 조금 느리게, 사람보다 약하게 둔 자리표시다.
-constexpr double kPetSpeed = 5.0;          // 한 틱에 다가가는 거리
-constexpr double kPetReach = 40.0;         // 이 안에 들어오면 때린다
-constexpr int kPetDamage = 8;
-constexpr uint16_t kPetHealth = 40;
+// ★★ **이제 monster.bin 의 아레나 값을 쓴다**(`GameBalance.h` kMonsters).
+//    종류 번호로 찾아 체력·피해·사거리·속도를 그 몬스터 것으로 준다.
+//    아래 넷은 **표에 없는 종류의 되돌림 값**으로만 남는다(전에는 이것이 전부였다).
+// ⚠ 속도는 thing 눈금(32로 나눠 쓴다) — Imp 120 → 3.75 유닛/프레임.
+constexpr double kPetSpeed = 5.0;          // 되돌림 — 한 틱에 다가가는 거리
+constexpr double kPetReach = 40.0;         // 되돌림 — 이 안에 들어오면 때린다
+constexpr int kPetDamage = 8;              // 되돌림
+constexpr uint16_t kPetHealth = 40;        // 되돌림
 
 // ── 아레나 (점수 겨루기) ────────────────────────────────────
 //
@@ -257,7 +269,9 @@ constexpr uint32_t kTimerEveryTicks = 66;
 //    깃발 자리·닿는 거리·득점 한도·팀 배정 규칙은 **게임이 도는지 보려고 둔 자리표시**다.
 constexpr uint16_t kFlagTypeRed = 176;
 constexpr uint16_t kFlagTypeBlue = 173;
-constexpr double kFlagTouchRange = 40.0;
+// ★ 닿는 거리는 **거리 상수가 아니라 부딪힘**이었다 — 깃발도 사람도
+//   `EXTENT = CIRCLE 10`(⭕ thing.bin) 이니 두 반지름의 합 20 이다.
+constexpr double kFlagTouchRange = kFlagTouchDist;
 constexpr uint16_t kCaptureLimit = 3;
 
 // ── 퀘스트 ──────────────────────────────────────────────────
@@ -271,29 +285,38 @@ constexpr uint16_t kCaptureLimit = 3;
 constexpr int kQuestMonsters = 5;
 constexpr double kQuestSpread = 300.0;   // 이만큼 벌려 세운다
 
-constexpr double kProjectileSpeed = 26.0;    // 한 틱에 미는 거리
-constexpr double kProjectileHitRadius = 24.0; // 이 안에 들어오면 맞은 것으로 본다
+// ★ 파이어볼 속도 ⭕ — `thing.bin Fireball SPEED = 192` ÷32 후 투사체라 ×2 = **12.0**.
+//   전에 쓰던 26 은 「걸음보다 서너 배」로 둔 자리표시였다.
+constexpr double kProjectileSpeed = kFireballPerFrame;
+// ★ 맞는 반경 — 파이어볼은 점(`EXTENT = CENTER`)이고 대신 **광역**이다.
+//   광역 안쪽 15 는 고정, 바깥쪽은 세기÷3. 여기는 「닿았나」를 가리는 값이라
+//   광역 안쪽(15)에 사람 반지름(10)을 더해 둔다.
+constexpr double kProjectileHitRadius = kFireballSplashInner + kPlayerRadius;   // 25
 
 // ★★ 한 틱에 미는 거리가 판정 반경보다 **크면 표적을 뛰어넘는다.**
 //   26 > 24 라 틱 사이로 지나가 버렸다(2026-09-08: 시전 12건에 피해 1건).
-//   그래서 한 걸음을 넷으로 쪼갠다 — 26/4 = 6.5 로 반경 24 보다 넉넉히 작다.
+//   지금은 12 < 25 라 한 조각으로도 안 넘지만, 쪼개면 판정이 더 촘촘해진다.
 //   ⚠ 속도나 반경을 만지면 **이 값도 같이 볼 것.** 지켜야 하는 조건은
 //     `kProjectileSpeed / kProjectileSubSteps < kProjectileHitRadius` 다.
 constexpr int kProjectileSubSteps = 4;
 
-constexpr double kMeleeRange = 45.0;
-constexpr int kMeleeDamage = 12;
-constexpr uint32_t kMeleeCooldownTicks = 15;   // 30Hz 기준 0.5초
+// 근접 — **맨손이 기본**(정품 아레나는 무기를 안 준다). 피해는 힘이 정하므로
+// 상수가 아니다(`GameBalance.h` UnarmedDamage). 여기 둘은 사거리와 간격.
+// ⚠ 공격 간격은 **파일에도 코드에도 없는 유일한 값**이다 — 몬스터는 25~35 프레임으로
+//   적혀 있는데 사람 쪽만 없다. 공격 동작 길이가 정하는 것으로 보인다. 15 는 자리표시.
+constexpr double kMeleeRange = kUnarmedRange;
+constexpr uint32_t kMeleeCooldownTicks = 15;   // ⚠ 자리표시 — 30Hz 기준 0.5초
 
 // 첫 세계 스냅샷을 접속 뒤 몇 틱 미룰지. 정품 조각 순서에서 잰 값이다 —
 // `2b`(USE_MAP) 와 스냅샷 사이에 다섯 조각(`27 27 27 08 04`)이 지나간다.
 constexpr int kSnapshotDelayTicks = 5;
 
 // 벽 격자 한 칸의 월드 크기와 몸 반지름 (독립 서버 P3).
-// ⚠ 둘 다 짐작이다 — 칸 23(256칸×23≈5888) · 반지름 12. P3-b 벽 돌진과
-//   thing.bin NewPlayer EXTENT 로 검증·교체한다.
+// ★ 둘 다 **닫혔다**(2026-09-10). 칸 23 은 실클라 돌진 3표본이 정합했고,
+//   재구현 코드도 칸 크기로 23 을 나눈다(◑). 반지름은 thing.bin 에서 나왔다.
 constexpr double kWallCell = 23.0;
-constexpr double kBodyRadius = 12.0;
+// ★ 몸 반지름 ⭕ — `thing.bin NewPlayer EXTENT = CIRCLE 10`. 전에는 짐작한 12 였다.
+constexpr double kBodyRadius = kPlayerRadius;
 
 // 시야 반경 (P4-b). ⚠ 화면 반경보다 조금 넓게 잡은 자리표시 — 실측 아님.
 constexpr double kAoiRadius = 700.0;
@@ -575,11 +598,18 @@ public:
     // ★ `observer` 를 켜면 **막 접속한 상태**(관전)로 만든다. 기본은 이미 놀고 있는 상태다 —
     //   시험 대부분은 싸움을 재는 것이라 관전 단계를 매번 거치게 하면 잡음만 는다.
     //   관전 풀기 자체는 `TestObserverExit` 에서 따로 잰다.
-    void DebugEnterGame(const std::string& addr, uint16_t netCode, bool observer = false) {
+    // ★ 시험용 접속. 직업을 고를 수 있다 — **스탯이 직업으로 갈리므로**
+    //   기본은 위저드로 둔다(옛 시험이 기대하던 체력 75 가 위저드 값이었다).
+    void DebugEnterGame(const std::string& addr, uint16_t netCode, bool observer = false,
+                        CharClass cls = CharClass::Wizard) {
         Session& s = SessionFor(addr);
         s.inGame = true;
         s.netCode = netCode;
-        s.maxHealth = kDefaultMaxHealth;
+        s.charClass = cls;
+        s.charLevel = kMaxLevel;
+        s.maxHealth = static_cast<uint16_t>(HealthOnline(cls));
+        s.maxMana = static_cast<uint16_t>(ManaOnline(cls));
+        s.strength = StrengthOnline(cls);
         s.health = s.maxHealth;
         s.x = 1000;
         s.y = 1000;
@@ -674,6 +704,13 @@ public:
     // 쉬는 시간을 지나 실제로 나간 근접 공격 수(누른 횟수가 아니다).
     unsigned long long melees() const { return melees_; }
     unsigned long long code6Seen() const { return code6Seen_; }
+
+    // 0 이상 n 미만의 난수. **재현 가능한 것으로 둔다** — 시험이 흔들리면 안 된다.
+    //   (선형 합동법. 정품과 같은 난수열일 까닭이 없고, 필요한 것은 「가끔 발차기」뿐이다)
+    uint32_t NextRandom(uint32_t n) {
+        rngState_ = rngState_ * 1664525u + 1013904223u;
+        return n ? (rngState_ >> 16) % n : 0;
+    }
     // 날아가다 사람에게 맞은 횟수.
     unsigned long long hits() const { return hits_; }
     // 지금 날아가고 있는 것의 수.
@@ -874,6 +911,7 @@ private:
     bool tickStarted_ = false;
     unsigned long long moves_ = 0;
     unsigned long long melees_ = 0;
+    uint32_t rngState_ = 0x13572468u;   // NextRandom 의 씨앗 — 고정이라 시험이 재현된다
     // 진단(2026-09-10 sq1) — 코드6(왼클릭)이 분기에 몇 번 도달했나.
     // 클라는 231번 보냈는데 성사가 15에서 멎었다 — 유실이 파싱이냐 조건이냐를 가른다.
     unsigned long long code6Seen_ = 0;

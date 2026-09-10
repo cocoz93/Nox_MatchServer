@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "nox/GameBalance.h"   // CharClass
+
 namespace nox {
 
 constexpr size_t kJoinBundleSize = 216;
@@ -38,6 +40,6 @@ std::vector<uint8_t> BuildUseMap(const std::string& mapName, uint32_t mapCrc,
 
 // 첫 스냅샷의 cc 꼬리부(381B) — 사람 하나를 세우는 고정 절차.
 // ⚠ 장비 색·오벨리스크 대상 등 낱값은 estate 실측 그대로다(뜻 미상).
-std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode);
+std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls);
 
 }  // namespace nox

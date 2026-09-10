@@ -16,6 +16,7 @@ add_library(nox_proto STATIC
   server/src/Server.cpp
   server/src/DumpSniff.cpp
   server/src/UpdateStream.cpp
+  server/src/core/GameBalance.cpp
   server/src/core/NoxCrypt.cpp
   server/src/core/ThingDb.cpp
   server/src/core/MapFile.cpp

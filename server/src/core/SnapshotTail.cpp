@@ -44,7 +44,7 @@ void PushRaw(std::vector<uint8_t>& m, const uint8_t* body, size_t n) {
 
 }  // namespace
 
-std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode) {
+std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls) {
     std::vector<uint8_t> m;
     m.reserve(400);
     uint16_t seq = 0;
@@ -91,40 +91,76 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode) {
         uint16_t z = 0;
         PushSeq(m, z, e4in, 3);
     }
-    // 최대 체력·마나 (75·150)
+    // 최대 체력·마나 — **직업이 정한다** (2026-09-10 정본화).
+    //   전에는 75·150 이 박혀 있었다. 그 값은 「기본값」이 아니라 **위저드의 아레나
+    //   최대치**였다(⭕ gamedata.bin `ARENA WizardMaxHealth/Mana`) — 녹음의 주인공이
+    //   위저드였을 뿐이다. 그래서 워리어가 정본 150 대신 75 로 놀았다.
+    const uint16_t hp = static_cast<uint16_t>(HealthOnline(cls));
+    const uint16_t mp = static_cast<uint16_t>(ManaOnline(cls));
+    const uint8_t hpLo = static_cast<uint8_t>(hp),  hpHi = static_cast<uint8_t>(hp >> 8);
+    const uint8_t mpLo = static_cast<uint8_t>(mp),  mpHi = static_cast<uint8_t>(mp >> 8);
     {
-        uint8_t dd[7] = { 0xdd, lo, hi, 0x4b, 0x00, 0x4b, 0x00 };
+        uint8_t dd[7] = { 0xdd, lo, hi, hpLo, hpHi, hpLo, hpHi };
         seq = 3;
         PushSeq(m, seq, dd, 7);
-        uint8_t de[7] = { 0xde, lo, hi, 0x96, 0x00, 0x96, 0x00 };
+        uint8_t de[7] = { 0xde, lo, hi, mpLo, mpHi, mpLo, mpHi };
         PushRaw(m, de, 7);
     }
-    // 살려내기
+    // 살려내기 — 체력 자리가 여기에도 있다
     {
-        uint8_t e9[9] = { 0xe9, lo, hi, 0x1f, 0x4b, 0x00, 0x00, 0xff, 0x01 };
+        uint8_t e9[9] = { 0xe9, lo, hi, 0x1f, hpLo, hpHi, 0x00, 0xff, 0x01 };
         PushSeq(m, seq, e9, 9);   // #4
     }
-    // 장비 넷 — 종류·색은 실측 그대로 (뜻 미상: 4c 의 뒤 4바이트는 색으로 보인다)
+    // 기본 장비 — **직업마다 다르다** ◑ (`GameBalance.h` LoadoutFor 주석).
+    //   워리어 롱소드+나무방패+바지+신발(셔츠 없음) · 위저드 로브+평상복 셋 ·
+    //   컨저러 평상복 셋(무기 없음).
+    // ★ 내구도(`0x44`)는 **`DURABILITY > 0` 인 것만** 보낸다 — 녹음이 로브 하나에만
+    //   보낸 까닭이 이것이다(평상복 셋은 modifier.bin 에서 DURABILITY = 0).
+    //   로브 값 325 가 녹음의 `0x0145` 와 정확히 같다.
+    // ⚠ 색 4바이트는 뜻 미상이다. 녹음에서 본 것은 그대로 쓰고, 못 본 것(방패·검)은
+    //   흰색(ff ff ff ff)으로 둔다.
     {
-        struct { uint16_t type; uint8_t c[4]; bool health; } gear[4] = {
-            { 0x046c, { 0xff, 0xba, 0xc6, 0xff }, false },
-            { 0x046d, { 0xff, 0xbf, 0xff, 0xff }, false },
-            { 0x046e, { 0xb9, 0xca, 0xff, 0xff }, false },
-            { 0x0479, { 0xff, 0xff, 0xff, 0xff }, true },
-        };
+        struct GearItem { uint16_t type; uint16_t durability; uint8_t c[4]; };
+        static const GearItem kShirt    = { kItemStreetShirt,      0, { 0xff, 0xba, 0xc6, 0xff } };
+        static const GearItem kPants    = { kItemStreetPants,      0, { 0xff, 0xbf, 0xff, 0xff } };
+        static const GearItem kSneakers = { kItemStreetSneakers,   0, { 0xb9, 0xca, 0xff, 0xff } };
+        static const GearItem kRobe     = { kItemWizardRobe,     325, { 0xff, 0xff, 0xff, 0xff } };
+        static const GearItem kShield   = { kItemWoodenShield,   200, { 0xff, 0xff, 0xff, 0xff } };
+        static const GearItem kSword    = { kItemLongsword,      180, { 0xff, 0xff, 0xff, 0xff } };
+
+        const GearItem* gear[4] = {};
+        int nGear = 0;
+        switch (cls) {
+            case CharClass::Wizard:
+                gear[0] = &kShirt; gear[1] = &kPants; gear[2] = &kSneakers; gear[3] = &kRobe;
+                nGear = 4;
+                break;
+            case CharClass::Conjurer:
+                gear[0] = &kShirt; gear[1] = &kPants; gear[2] = &kSneakers;
+                nGear = 3;
+                break;
+            case CharClass::Warrior:
+            default:
+                gear[0] = &kPants; gear[1] = &kSneakers; gear[2] = &kShield; gear[3] = &kSword;
+                nGear = 4;
+                break;
+        }
         uint16_t itemCode = netCode;   // 장비 번호 = 사람 번호 +1 부터 (다섯 칸 규칙)
-        for (int g = 0; g < 4; ++g) {
+        for (int g = 0; g < nGear; ++g) {
+            const GearItem& it = *gear[g];
             ++itemCode;
             uint8_t pk[9] = { 0x4c, static_cast<uint8_t>(itemCode),
                               static_cast<uint8_t>(itemCode >> 8),
-                              static_cast<uint8_t>(gear[g].type),
-                              static_cast<uint8_t>(gear[g].type >> 8),
-                              gear[g].c[0], gear[g].c[1], gear[g].c[2], gear[g].c[3] };
+                              static_cast<uint8_t>(it.type),
+                              static_cast<uint8_t>(it.type >> 8),
+                              it.c[0], it.c[1], it.c[2], it.c[3] };
             PushSeq(m, seq, pk, 9);
-            if (gear[g].health) {
-                uint8_t hp[7] = { 0x44, static_cast<uint8_t>(itemCode),
-                                  static_cast<uint8_t>(itemCode >> 8), 0x45, 0x01, 0x45, 0x01 };
-                PushSeq(m, seq, hp, 7);
+            if (it.durability > 0) {
+                const uint8_t dLo = static_cast<uint8_t>(it.durability);
+                const uint8_t dHi = static_cast<uint8_t>(it.durability >> 8);
+                uint8_t dur[7] = { 0x44, static_cast<uint8_t>(itemCode),
+                                   static_cast<uint8_t>(itemCode >> 8), dLo, dHi, dLo, dHi };
+                PushSeq(m, seq, dur, 7);
             }
             uint8_t eq[3] = { 0x60, static_cast<uint8_t>(itemCode),
                               static_cast<uint8_t>(itemCode >> 8) };
@@ -154,16 +190,16 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode) {
         const uint8_t ar[5] = { 0x49, 0x20, 0x85, 0x6b, 0x3e };
         PushRaw(m, ar, 5);
     }
-    // 총량 재확인 + 능력치(48) + 72 + 현재 체력(43)
+    // 총량 재확인 + 능력치(48) + 72 + 현재 체력(43) — 여기도 직업 값으로 간다
     {
-        uint8_t dd[7] = { 0xdd, lo, hi, 0x4b, 0x00, 0x4b, 0x00 };
+        uint8_t dd[7] = { 0xdd, lo, hi, hpLo, hpHi, hpLo, hpHi };
         PushSeq(m, seq, dd, 7);       // #21
-        uint8_t de48[21] = { 0xde, lo, hi, 0x96, 0x00, 0x96, 0x00,
-                             0x48, lo, hi, 0x4b, 0x00, 0x96, 0x00,
+        uint8_t de48[21] = { 0xde, lo, hi, mpLo, mpHi, mpLo, mpHi,
+                             0x48, lo, hi, hpLo, hpHi, mpLo, mpHi,
                              0x72, 0x06, 0x5c, 0x44, 0x23, 0x00, 0x0a };
         PushRaw(m, de48, 21);
-        const uint8_t hp[3] = { 0x43, 0x4b, 0x00 };
-        PushSeq(m, seq, hp, 3);       // #22
+        const uint8_t cur[3] = { 0x43, hpLo, hpHi };
+        PushSeq(m, seq, cur, 3);      // #22
     }
     return m;
 }
