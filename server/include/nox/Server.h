@@ -832,6 +832,23 @@ public:
     // 이것이 다음에 무엇을 옮겨야 하는지 알려주는 나침반이다.
     const std::map<uint8_t, unsigned long long>& stoppedByOp() const { return stoppedByOp_; }
 
+    // ── 마지막 조각을 어떻게 읽었나 (진단) ─────────────────
+    //
+    // ★ 왜 필요한가 — 「메시지 2개, 보낸 조각 0개」가 나오는데 **그 둘이 무엇인지
+    //   알 길이 없었다**(2026-09-10). 조각을 버린 것도 아니고(`stoppedByOp` 0건)
+    //   크래시도 아닌데 답만 없는 상태다. 그 자리에서 짐작만 쌓였다.
+    // ⚠⚠ 열쇠 상태를 **같이** 봐야 한다 — 복호가 어긋나면 쓰레기 바이트가
+    //   **그럴듯한 오프코드로 보인다.** 「메시지 N개」만 보면 속는다.
+    const std::vector<uint8_t>& LastFragOps() const { return lastFragOps_; }
+    bool IsKeyed(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it != sessions_.end() && it->second.keyed;
+    }
+    uint8_t KeyOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.xorKey;
+    }
+
     // 시전된 주문 — 번호별 횟수. 번호는 opennox `spell` 패키지 ID 와 같다.
     const std::map<uint8_t, unsigned long long>& spells() const { return spells_; }
     // 그중 자기에게 건 것 (마지막 자리가 1 인 것)
@@ -964,6 +981,7 @@ private:
     unsigned long long handled_ = 0;   // 답을 만든 메시지 수
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
+    std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)
     std::map<uint8_t, uint8_t> spellCost_;      // 주문 번호 → 마나 (thing.bin SPEL)
     unsigned long long spellsNoMana_ = 0;       // 마나가 모자라 튕긴 시전
     unsigned long long tryGets_ = 0;            // `0x73` 을 받은 횟수

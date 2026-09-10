@@ -970,9 +970,11 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
 
     MessageIter it(body, bodyLen, /*fromClient=*/true);
     size_t count = 0;
+    lastFragOps_.clear();   // 진단 — 이 조각에서 무엇을 읽었는지 남긴다
     while (it.Next()) {
         ++count;
         ++seen_[it.op()];
+        if (lastFragOps_.size() < 16) lastFragOps_.push_back(it.op());
 
         switch (static_cast<Op>(it.op())) {
             // 핑에 그대로 되돌린다. 값은 클라의 시각이라 **손대지 않는다.**

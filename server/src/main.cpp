@@ -278,6 +278,22 @@ int main(int argc, char** argv) {
     //
     // 서버 찾기에 답할 원본은 녹음을 쓰되, 이름만 인자로 바꿔 넣는다.
     nox::Server srv;
+
+    // ★★ **`--standalone` 은 맵이 있어야 성립한다.** 접속 묶음에 맵 이름과 CRC 를
+    //   싣기 때문이다(`SetStandalone`). 맵이 없으면 `standalone_` 이 안 켜지고,
+    //   그러면 `CLIENT_ACCEPT` 가 **조용히 아무것도 안 보내는 분기**로 빠진다.
+    //
+    // ⚠ 2026-09-10 — 이걸로 실클라 회귀 네 판을 날렸다. 증상이 「접속 요청 158바이트에
+    //   답이 0개」였는데 로그 어디에도 까닭이 없어 코드 회귀를 의심하고 이분법까지 돌렸다.
+    //   **안 되는 것을 조용히 지나가게 두면 다음 사람이 반나절을 쓴다.** 여기서 죽인다.
+    if (standalone && mapPath.empty()) {
+        std::printf("[멈춤] --standalone 에는 --map 이 있어야 한다.\n"
+                    "       맵이 없으면 접속 묶음을 만들 수 없어 **아무도 못 들어온다**\n"
+                    "       (클라가 접속 요청을 되풀이하다 20초 뒤 조용히 끊는다).\n"
+                    "  보기: --standalone --map \"C:\\...\\maps\\estate\\Estate.map\"\n");
+        return 2;
+    }
+
     if (!mapPath.empty()) {
         nox::MapFile mf;
         if (!mf.Load(mapPath)) {
@@ -559,6 +575,19 @@ int main(int argc, char** argv) {
         if (got == 0 && n > 3) DumpHex("  [못 읽음]", in, static_cast<size_t>(n));
         std::printf("[받음 %llu] %s  %d바이트 → 메시지 %zu개, 보낸 조각 %zu개\n",
                                 nRecv, who.c_str(), n, got, made);
+                    // ★ **뜯었는데 답이 없으면 무엇을 봤는지 찍는다.**
+                    //   2026-09-10: 접속 요청 158바이트가 「메시지 2개, 보낸 조각 0개」로
+                    //   나오는데 그 둘이 무엇인지 알 길이 없어 반나절을 짐작으로 보냈다.
+                    //   조각을 버린 것도 아니고(`[버림]` 0건) 크래시도 아닌데 답만 없었다.
+                    //   ⚠ 열쇠 상태를 같이 찍는다 — **복호가 어긋나면 쓰레기가
+                    //     그럴듯한 오프코드 두 개로 보인다.** 「메시지 2개」의 함정이 그것이다.
+                    if (got > 0 && made == 0 && n > 3) {
+                        std::printf("     ↳ 본 것:");
+                        for (uint8_t o : srv.LastFragOps())
+                            std::printf(" %02x(%s)", o, nox::OpName(static_cast<nox::Op>(o)));
+                        std::printf("  · 열쇠 %s 0x%02x\n",
+                                    srv.IsKeyed(who) ? "있음" : "없음", srv.KeyOf(who));
+                    }
                     std::fflush(stdout);
                 }
             }
