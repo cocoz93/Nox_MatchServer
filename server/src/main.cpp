@@ -546,9 +546,33 @@ int main(int argc, char** argv) {
                 //   ⚠ 전에는 둘 다 닿는 자리(사람 사이)에 뒀다. 걸어가는 조종이 없어서였는데,
                 //     그러면 줍자마자 득점이 되어 **판이 아니라 배선 확인**밖에 안 된다.
                 //     2026-09-10 에 걷기 조종을 만들었으니 제자리로 돌린다(`--ctf-span` 으로 조절).
-                srv.StartCtf(mx - ctfSpan, my, mx + ctfSpan, my);
-                std::printf("[모드] 깃발 — (%d,%d)·(%d,%d), 득점 한도 %u\n",
-                            mx - ctfSpan, my, mx + ctfSpan, my, (unsigned)nox::kCaptureLimit);
+                // ★★ **깃발은 「걸어서 닿는 자리」에만 놓는다** (2026-09-10).
+                //   닿는 거리를 정본(20 = 두 반지름의 합)으로 줄이자 판이 안 돌았다 —
+                //   사람이 29~32 까지 가고 더 못 갔다(gd2·gd3).
+                //   벽 지도를 찍어 보니(`nox_datadump --walls`) estate 스폰 동쪽에
+                //   **대각 벽**이 지나가고 깃발이 **그 너머**였다.
+                //   전에는 닿는 거리가 40 이라 **벽 너머로 손이 닿아** 판이 돌았고,
+                //   그래서 이 배치 결함이 가려져 있었다.
+                // ★ 그래서 「그 자리에 설 수 있나」가 아니라 **「가운데에서 거기까지
+                //   걸어갈 수 있나」**를 본다. 막히면 막히기 직전으로 당긴다.
+                auto placeFlag = [&](int wantX, int wantY, int fromX) {
+                    const int dir = (wantX > fromX) ? 1 : -1;
+                    int good = fromX;
+                    for (int x = fromX; dir > 0 ? x <= wantX : x >= wantX; x += dir * 4) {
+                        if (!srv.CanStand(x, wantY, nox::kPlayerRadius)) break;
+                        good = x;
+                    }
+                    // 벽에 바짝 붙지 않게 한 몸 물린다
+                    if (good != wantX) good -= dir * static_cast<int>(nox::kPlayerRadius * 2);
+                    return good;
+                };
+                const int redX  = placeFlag(mx - ctfSpan, my, mx);
+                const int blueX = placeFlag(mx + ctfSpan, my, mx);
+                srv.StartCtf(redX, my, blueX, my);
+                std::printf("[모드] 깃발 — (%d,%d)·(%d,%d), 득점 한도 %u%s\n",
+                            redX, my, blueX, my, (unsigned)nox::kCaptureLimit,
+                            (redX != mx - ctfSpan || blueX != mx + ctfSpan)
+                                ? "  ← 벽을 피해 당김" : "");
             } else {
                 srv.StartQuest(questCount, mx, my, questSpread);
                 std::printf("[모드] 퀘스트 — 몬스터 %d마리 (%d,%d) 반경 %.0f\n",

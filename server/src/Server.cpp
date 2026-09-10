@@ -524,9 +524,19 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
 }
 
 void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
-                        const std::string& by) {
+                        const std::string& by, DamageKind kind) {
     if (t.none() || dmg <= 0) return;
-    if (t.pet < 0) { Damage(t.addr, dmg, out, by); return; }
+    if (t.pet < 0) {
+        // ★ 사람이면 **입은 것으로 깎는다** — 방어합은 직업 기본 장비에서 온다
+        //   (⭕ modifier.bin ARMOR_VALUE: 평상복 각 0.01 · 로브 0.20 · 나무방패 0.0).
+        //   ⚠ 아직 「입은 것」을 세션이 따로 안 들고 있어 직업 기본 장비로 본다.
+        //     주워 입기를 붙이면 그때 세션 값으로 바꾼다.
+        auto vi = sessions_.find(t.addr);
+        const double armor = (vi != sessions_.end())
+                                 ? LoadoutFor(vi->second.charClass).armorSum : 0.0;
+        Damage(t.addr, ApplyArmor(dmg, armor, kind), out, by);
+        return;
+    }
 
     const size_t i = static_cast<size_t>(t.pet);
     if (i >= pets_.size()) return;
@@ -1128,6 +1138,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 if (dmg > 0) {
                     if (onSelf) {
                         // 자기에게 건 것은 날아갈 데가 없다. 그 자리에서 받는다.
+                        // ★ 방어구를 안 거치는 것이 맞다 — 주문 피해는 방어를 안 탄다.
                         Damage(from, dmg, out, from);   // 자기에게 건 것 — 점수는 안 준다
                     } else {
                         // ★ 날려 보낸다. 시전하는 순간 맞으면 **피할 수가 없다** —
@@ -1683,7 +1694,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 const std::string owner = p.owner;
                 shots_.erase(shots_.begin() + static_cast<long>(i));
                 ++hits_;
-                HurtTarget(hit, dmg, out, owner);
+                // 주문 피해는 **방어를 안 탄다** — 파이어볼 직격이 종류 1,
+                // 에너지볼트·연쇄번개가 전기다(GameBalance.h DamageKind 주석).
+                HurtTarget(hit, dmg, out, owner, DamageKind::Ignores);
                 gone = true;
             }
             if (!gone) ++i;

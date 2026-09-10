@@ -755,8 +755,12 @@ private:
 
     // 고른 대상을 깎는다. 사람이면 Damage(), 불려 나온 것이면 그쪽 체력을 깎고
     // 0 이 되면 없애며 `0x31 DESTROY_OBJECT` 를 뿌린다.
+    // ★ 방어구는 **여기서** 깎는다 — 싸움 피해가 다 이 자리를 지난다(근접·주문·소환수).
+    //   `Damage()` 는 그대로 **날 피해**를 적용한다(시험이 정확한 값을 넣는 자리다).
+    //   피해 종류별로 방어가 먹는 정도가 다르다 — `GameBalance.h` DamageKind 주석.
     void HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
-                    const std::string& by = std::string());
+                    const std::string& by = std::string(),
+                    DamageKind kind = DamageKind::Physical);
 
     // 판 시계를 뿌린다 — `0xd3 TIMER_STATUS`. 짜임은 실측이다(PROTOCOL.md 「판 시계」).
     void SendTimer(std::vector<OutPacket>& out);

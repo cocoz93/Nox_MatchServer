@@ -332,7 +332,12 @@ if ($Play -ne '') {
       Say ("  {0} 사거리 안({1:N0}) — 때림" -f $what, $dist)
       continue
     }
-    if ($Play -eq 'ctf' -and $dist -le 25) { Start-Sleep -Milliseconds 400; continue }
+    # ★★ 깃발은 **몸이 겹쳐야** 잡힌다 — 서버의 닿는 거리는 20 이다
+    #   (사람 반지름 10 + 깃발 반지름 10, `GameBalance.h` kFlagTouchDist).
+    #   여기 있던 25 는 **접촉이 40 이던 시절 값**이라, 정본으로 줄이자
+    #   24 에서 걸음을 멈추고 영영 기다렸다(2026-09-10 gd2~gd4 세 판 헛돔).
+    #   ⚠ 이 값은 서버 상수보다 **작아야** 한다. 크면 안 닿는 자리에서 멈춘다.
+    if ($Play -eq 'ctf' -and $dist -le 14) { Start-Sleep -Milliseconds 400; continue }
 
     $worldDeg = [math]::Atan2($dy, $dx) * $R2D
     $wantF = [int][math]::Round((($worldDeg + 360) % 360) * 256.0 / 360.0) % 256
@@ -340,7 +345,10 @@ if ($Play -ne '') {
     Step-Toward $screenDeg
     $after = Where-Me
     $mv = if ($after) { [math]::Sqrt([math]::Pow($after.x-$me.x,2)+[math]::Pow($after.y-$me.y,2)) } else { 0 }
-    if ($mv -lt 6) {
+    # ⚠ 「막혔다」 기준을 6 → 3 으로 내렸다. 정본 이식 뒤 한 걸음이 4~5 로 잘아져
+    #   멀쩡히 나아가는데도 막힘으로 세어 열두 번 만에 접혔다(2026-09-10 gd5:
+    #   거리가 148→121 로 줄고 있는데 「0 감」이 여섯 줄 이어졌다).
+    if ($mv -lt 3) {
       $stuck++
       Step-Toward (($screenDeg + 60) % 360)     # 벽 — 돌아간다
       if ($stuck -ge 12) { Say '  [FAIL] 열두 번 막혔다'; exit 1 }

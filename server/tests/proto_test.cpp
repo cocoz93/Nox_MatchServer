@@ -340,10 +340,15 @@ std::vector<uint8_t> Body(const nox::OutPacket& p) {
 }
 
 // 시험 기본 캐릭터는 **위저드**다(DebugEnterGame 기본값) — 체력 75·힘 35.
-// 맨손 한 대 = 힘 35 × 0.04 + 5 = 6.4 → 6. 전에는 누구나 12 로 고정이었다.
-const int kWizardPunch = nox::MeleeDamageFor(nox::CharClass::Wizard,
-                                             nox::StrengthOnline(nox::CharClass::Wizard),
-                                             /*kick=*/false);
+//   맨손 한 대 = 힘 35 × 0.04 + 5 = 6.4 → 6
+//   맞는 쪽도 위저드라 방어합 0.23(로브 0.20 + 평상복 셋 각 0.01) →
+//   실제로 깎이는 값 = 6 × 0.77 = 4.62 → **5**
+// 전에는 누구나 12 로 고정이었고 방어구도 없었다.
+const int kWizardPunch = nox::ApplyArmor(
+    nox::MeleeDamageFor(nox::CharClass::Wizard,
+                        nox::StrengthOnline(nox::CharClass::Wizard), /*kick=*/false),
+    nox::LoadoutFor(nox::CharClass::Wizard).armorSum,
+    nox::DamageKind::Physical);
 
 // out 안에서 이 오프코드로 시작하는 메시지를 찾는다. 껍데기(0xcc) 속도 들여다본다.
 const std::vector<uint8_t>* FindMsg(const std::vector<std::vector<uint8_t>>& msgs, uint8_t op) {
@@ -1093,7 +1098,7 @@ void TestGameBalance() {
 
     // ◑ 방어구 — 곱해서 깎고, 전기는 안 탄다
     Check(nox::ApplyArmor(100, 0.23, nox::DamageKind::Physical) == 77, "방어 0.23 에 77 이 아님");
-    Check(nox::ApplyArmor(100, 0.23, nox::DamageKind::Electric) == 100, "전기가 방어를 탐");
+    Check(nox::ApplyArmor(100, 0.23, nox::DamageKind::Ignores) == 100, "주문이 방어를 탐");
     Check(nox::ApplyArmor(100, 5.0,  nox::DamageKind::Physical) == 0,  "방어합이 1.0 에서 안 잘림");
 
     // ◑ 기본 장비 — 워리어는 셔츠를 안 받는다

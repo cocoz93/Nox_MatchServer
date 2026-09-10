@@ -22,7 +22,9 @@
 //   키 번호는 파일 이름에서 정한다(NoxCrypt.h 의 표) — --key 로 덮어쓸 수 있다.
 //
 // ⚠ 원본 파일은 **읽기만** 한다.
+#include "nox/MapFile.h"
 #include "nox/NoxCrypt.h"
+#include "nox/Server.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -82,6 +84,49 @@ int main(int argc, char** argv) {
     std::string outPath, near;
     bool wantStrings = false, wantKeys = false;
     size_t minLen = 4, span = 400, hexN = 0;
+    // 벽 지도 — `.map` 을 그림으로 본다. 「벽이냐 조종이냐」를 가르는 자리다.
+    int wallX = -1, wallY = -1, wallW = 240, wallH = 120;
+    for (int i = 2; i + 2 < argc; ++i) {
+        if (std::string(argv[i]) == "--walls") {
+            wallX = std::atoi(argv[i + 1]);
+            wallY = std::atoi(argv[i + 2]);
+            if (i + 4 < argc && argv[i + 3][0] != '-') {
+                wallW = std::atoi(argv[i + 3]);
+                wallH = std::atoi(argv[i + 4]);
+            }
+            break;
+        }
+    }
+    if (wallX >= 0) {
+        nox::MapFile mf;
+        if (!mf.Load(path)) {
+            std::printf("맵을 못 읽음: %s (%s)\n", path.c_str(), mf.Error().c_str());
+            return 1;
+        }
+        std::vector<std::pair<uint8_t, uint8_t>> ws;
+        for (const auto& w : mf.ReadWalls()) ws.emplace_back(w.x, w.y);
+        nox::Server srv;
+        srv.SetWalls(ws);
+        std::printf("[벽 지도] %s — 가운데 (%d,%d) · 폭 %d 높이 %d · 한 글자 = %d 유닛\n",
+                    path.c_str(), wallX, wallY, wallW, wallH,
+                    static_cast<int>(nox::kWallCell));
+        std::printf("  # 벽 · . 빈 곳 · + 가운데 · o 몸(반지름 %d)이 설 수 있는 곳\n",
+                    static_cast<int>(nox::kPlayerRadius));
+        const int step = static_cast<int>(nox::kWallCell);
+        for (int y = wallY - wallH; y <= wallY + wallH; y += step) {
+            std::printf("  %5d ", y);
+            for (int x = wallX - wallW; x <= wallX + wallW; x += step) {
+                const bool mid = (std::abs(x - wallX) < step / 2) &&
+                                 (std::abs(y - wallY) < step / 2);
+                char c = srv.WallAt(x, y) ? '#'
+                       : (srv.CanStand(x, y, nox::kPlayerRadius) ? 'o' : '.');
+                if (mid) c = '+';
+                std::printf("%c", c);
+            }
+            std::printf("\n");
+        }
+        return 0;
+    }
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--key" && i + 1 < argc)          key = std::atoi(argv[++i]);

@@ -214,10 +214,17 @@ inline double MeleeRangeFor(CharClass c) {
 //   1.0 에서 자른 뒤 곱해서 깎는다.
 //   `nox_server_handler_PlayerDamage_4E17B0` (opennox src/legacy/GAME3_3.c:350~424)
 //
-//     물리      받는 피해 = 원 피해 × (1 − 방어합)
-//     한 종류   방어가 절반만 먹는다 (× (1 − 방어합×0.5))
-//     전기      **방어를 아예 안 탄다** — 에너지볼트·연쇄번개가 여기다
-enum class DamageKind { Physical, HalfArmor, Electric };
+//   피해 종류(1바이트)마다 방어가 먹는 정도가 다르다 —
+//     0·3·7·8·0xA·0xB   물리     받는 피해 = 원 피해 × (1 − 방어합)
+//     2                 절반     × (1 − 방어합 × 0.5)
+//     9·0x11            전기     **방어를 안 탄다** — 에너지볼트·연쇄번개
+//     1·0xC·4·5·6·0xE~0x10       **방어를 안 탄다** — 파이어볼 직격이 종류 1 이다
+//   그래서 갈래를 「방어가 얼마나 먹나」로 셋만 둔다.
+enum class DamageKind {
+    Physical,    // 방어합만큼 깎인다 — 근접·타격
+    HalfArmor,   // 방어가 절반만
+    Ignores,     // 방어를 안 탄다 — 주문(파이어볼·전기)
+};
 
 inline int ApplyArmor(int damage, double armorSum, DamageKind kind) {
     if (armorSum > 1.0) armorSum = 1.0;
@@ -226,7 +233,7 @@ inline int ApplyArmor(int damage, double armorSum, DamageKind kind) {
     switch (kind) {
         case DamageKind::Physical:  f = 1.0 - armorSum;       break;
         case DamageKind::HalfArmor: f = 1.0 - armorSum * 0.5; break;
-        case DamageKind::Electric:  f = 1.0;                  break;
+        case DamageKind::Ignores:   f = 1.0;                  break;
     }
     const double d = damage * f;
     return (d <= 0.0) ? 0 : static_cast<int>(d + 0.5);
