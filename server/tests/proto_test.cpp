@@ -781,6 +781,110 @@ void TestManaSpend() {
     std::printf("  마나 — 시전에 깎임 · 바닥나면 못 씀 · 0x45 는 본인에게만\n");
 }
 
+// 오프코드 하나 + 번호 두 바이트짜리 조각. `0x73`·`0xF1` 이 같은 꼴이다.
+std::vector<uint8_t> CodePacket(nox::Op op, uint16_t netCode) {
+    std::vector<uint8_t> p(nox::kWireHeaderSize + 3, 0);
+    p[0] = 0x00;   // 비신뢰 · 스트림 0
+    p[1] = 0x00;
+    p[nox::kWireHeaderSize + 0] = static_cast<uint8_t>(op);
+    p[nox::kWireHeaderSize + 1] = static_cast<uint8_t>(netCode);
+    p[nox::kWireHeaderSize + 2] = static_cast<uint8_t>(netCode >> 8);
+    return p;
+}
+
+// ── 줍기 — 집으면 내 것이 되고 바닥에서 사라지는가 ──────────────────────
+//
+// ★ 이 갈래는 **`switch` 까지 오지도 못했다.** `0x73` 의 길이가 `-1` 이라 조각을
+//   훑는 걸음이 거기서 멈추고 조각을 통째로 버렸다. 길이표를 채워 풀었다.
+// ★ `4c`(수식 붙는 것)의 짜임은 정품 표본 10건으로 확인했다 —
+//   `4c cc 02 6d 04 ff bf ff ff` = 번호2 · 종류2 · 수식4(빈 칸은 `ff`).
+void TestPickup() {
+    nox::Server srv;
+    const std::string a = "10.9.3.1:41031";
+    const std::string b = "10.9.3.2:41032";
+    srv.DebugEnterGame(a, 728);
+    srv.DebugEnterGame(b, 729);
+    srv.DebugMoveTo(a, 1000, 1000);
+    srv.DebugMoveTo(b, 1000, 1000);
+
+    const uint16_t kPotion = 176;    // 물약 — 수식 안 붙는다 → `4b`
+    const uint16_t kSword  = 180;    // 무기 — 수식 붙는다   → `4c`
+    const uint16_t kFar    = 200;    // 멀리 있는 것
+    std::vector<nox::Server::WorldStatic> st;
+    st.push_back({ kPotion, 638, 1000, 1000, false });
+    st.push_back({ kSword, 1133, 1005, 1000, true });
+    st.push_back({ kFar,    638, 9000, 9000, false });
+    srv.SetWorldStatics(st);
+    Check(srv.WorldStaticCount() == 3, "정적 셋을 안 넣었다");
+
+    // ① 발밑의 물약 — `4b`(5B) 는 나에게만, `31` 은 모두에게, 세계에서 사라진다
+    {
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> pkt = CodePacket(nox::Op::TRY_GET, kPotion);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+
+        Check(srv.Carries(a, kPotion), "주웠는데 인벤토리에 없다");
+        Check(srv.WorldStaticCount() == 2, "주웠는데 세계에서 안 없어졌다");
+
+        const auto toA = FlattenTo(out, a);
+        const auto* pk = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_PICKUP));
+        Check(pk != nullptr, "0x4b 가 안 나감");
+        if (pk) {
+            Check(pk->size() == 5, "0x4b 가 5바이트가 아님");
+            // ★ 첫 필드는 **물건 번호**다 — 집는 이(728)가 아니다
+            Check((*pk)[1] == 0xb0 && (*pk)[2] == 0x00, "0x4b 의 첫 필드가 물건 번호가 아님");
+            Check((*pk)[3] == 0x7e && (*pk)[4] == 0x02, "0x4b 의 종류가 638 이 아님");
+        }
+        // 소멸은 옆 사람에게도 가야 한다
+        const auto toB = FlattenTo(out, b);
+        const auto* de = FindMsg(toB, static_cast<uint8_t>(nox::Op::DESTROY_OBJECT));
+        Check(de != nullptr, "0x31 이 옆 사람에게 안 감");
+        // ⚠ 주운 사실 자체는 남에게 갈 것이 아니다
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_PICKUP)) == nullptr,
+              "0x4b 가 남에게도 감");
+    }
+
+    // ② 수식 붙는 물건은 `4c`(9B) — 빈 수식 칸은 `ff`
+    {
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> pkt = CodePacket(nox::Op::TRY_GET, kSword);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        const auto toA = FlattenTo(out, a);
+        const auto* pk = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_MODIFIABLE_PICKUP));
+        Check(pk != nullptr, "0x4c 가 안 나감");
+        if (pk) {
+            Check(pk->size() == 9, "0x4c 가 9바이트가 아님");
+            Check((*pk)[5] == 0xff && (*pk)[6] == 0xff && (*pk)[7] == 0xff && (*pk)[8] == 0xff,
+                  "0x4c 의 빈 수식 칸이 ff 가 아님");
+        }
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_PICKUP)) == nullptr,
+              "수식 붙는 물건인데 4b 로 보냄");
+    }
+
+    // ③ 손이 안 닿으면 못 줍는다
+    {
+        const unsigned long long before = srv.pickTooFar();
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> pkt = CodePacket(nox::Op::TRY_GET, kFar);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.pickTooFar() == before + 1, "멀리 있는 것을 못 집은 것으로 안 셈");
+        Check(!srv.Carries(a, kFar), "손도 안 닿는데 주워졌다");
+        Check(srv.WorldStaticCount() == 1, "못 주웠는데 세계에서 없어졌다");
+    }
+
+    // ④ 클라가 `0xF1` 로 되돌리면 **도로 떨군다** — 안 그러면 물건이 세상에서 사라진다
+    {
+        const size_t worldBefore = srv.WorldStaticCount();
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> pkt = CodePacket(nox::Op::INVENTORY_FAIL, kPotion);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(!srv.Carries(a, kPotion), "되돌렸는데 아직 들고 있다");
+        Check(srv.WorldStaticCount() == worldBefore + 1, "되돌렸는데 바닥에 안 놓였다");
+    }
+
+    std::printf("  줍기 — 4b/4c 갈라짐 · 31 은 모두에게 · 손 닿는 데까지 · F1 이면 도로 떨굼\n");
+}
+
 // ── 주문이 실제로 사람을 깎는가 ────────────────────────────────
 //
 // 클라가 보내는 조각을 그대로 만들어 `OnPacket` 에 넣는다.
@@ -2660,6 +2764,7 @@ int main() {
     TestAoiSightExit();
     TestSpellMana();
     TestManaSpend();
+    TestPickup();
     TestSpellDamage();
     TestMelee();
     TestThingDb();

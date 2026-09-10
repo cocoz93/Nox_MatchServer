@@ -456,6 +456,20 @@ static void CollectAoiExits(std::map<uint16_t, uint32_t>& introAt,
     }
 }
 
+// 세계에서 정적 하나를 뺀다. **지우는 길이 아예 없었다**(계획서 벽②).
+//
+// ⚠ `staticIntroAt` 에서도 지운다 — 안 지우면 「이미 소개했다」가 영영 남아,
+//   같은 번호가 나중에 다시 놓일 때(되돌려 떨구기) 아무에게도 소개되지 않는다.
+bool Server::TakeStatic(uint16_t netCode) {
+    size_t at = statics_.size();
+    for (size_t i = 0; i < statics_.size(); ++i)
+        if (statics_[i].netCode == netCode) { at = i; break; }
+    if (at == statics_.size()) return false;
+    statics_.erase(statics_.begin() + static_cast<long>(at));
+    for (auto& kv : sessions_) kv.second.staticIntroAt.erase(netCode);
+    return true;
+}
+
 uint16_t Server::ProjectileType(uint8_t spell) {
     switch (spell) {
         case 27: return 695;   // ⚠ 추정. 09-06 클라 덤프에는 693 TitanFireball 이 보였다
@@ -1147,6 +1161,108 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             //
             // 지금은 받아서 세는 데까지다. **효과를 되쏘는 것은 아직 못 한다** —
             // 효과 메시지(0x80 계열)의 짜임을 아직 모른다.
+            // ── 줍기 ──────────────────────────────────────────────────
+            //
+            // ★ 이 갈래가 **`switch` 까지 오지도 못했다.** `0x73` 의 길이가 `-1` 이라
+            //   조각을 훑는 걸음이 거기서 멈추고 **조각을 통째로 버렸기 때문**이다
+            //   (`MsgLen.cpp` 를 채워 풀었다). 사람은 눌렀는데 로그에도 안 남았다.
+            //
+            // 보내는 것 둘 —
+            //   `4b <번호2><종류2>`(5B) 또는 수식 붙는 것이면 `4c <번호2><종류2><수식4>`(9B)
+            //     → **집는 이에게만.** 첫 필드는 「집는 이」가 아니라 **물건 번호**다
+            //       (정품 `0x4c` 표본 10건: 사람은 713 인데 실린 값이 716·717·718…).
+            //   `31 <번호2>`(3B) → **보고 있던 모두에게.** 바닥에서 사라지는 것.
+            case Op::TRY_GET: {
+                if (!s.inGame || it.bodyLen() != 2) break;
+                const uint16_t want = static_cast<uint16_t>(
+                    it.body()[0] | (it.body()[1] << 8));
+                ++tryGets_;
+
+                // 세계에 있나 — 없으면 조용히 넘긴다(남이 먼저 주웠을 수 있다).
+                size_t at = statics_.size();
+                for (size_t i = 0; i < statics_.size(); ++i)
+                    if (statics_[i].netCode == want) { at = i; break; }
+                if (at == statics_.size()) { ++handled_; break; }
+
+                const WorldStatic w = statics_[at];
+                const double dx = w.x - s.x, dy = w.y - s.y;
+                if (dx * dx + dy * dy > kPickupReach * kPickupReach) {
+                    ++pickTooFar_;
+                    ++handled_;
+                    break;      // 손이 안 닿는다
+                }
+                if (s.inventory.size() >= kInventoryGuard) { ++handled_; break; }
+
+                // ① 집는 이에게 — 무엇을 들었는지
+                if (w.modifiable) {
+                    uint8_t msg[9];
+                    msg[0] = static_cast<uint8_t>(Op::REPORT_MODIFIABLE_PICKUP);
+                    msg[1] = static_cast<uint8_t>(w.netCode);
+                    msg[2] = static_cast<uint8_t>(w.netCode >> 8);
+                    msg[3] = static_cast<uint8_t>(w.type);
+                    msg[4] = static_cast<uint8_t>(w.type >> 8);
+                    // 수식 네 칸 — **빈 칸은 `ff`(-1)** 다. 정품 표본이 그렇다
+                    //   (`ff ff ff ff` 도 있고 `b9 ca ff ff` 처럼 둘만 붙은 것도 있다).
+                    //   맵에 놓인 물건에 수식이 붙어 있는지는 아직 안 읽는다 → 전부 빈 칸.
+                    msg[5] = msg[6] = msg[7] = msg[8] = 0xFF;
+                    EmitSeq(s, msg, sizeof(msg), out);
+                } else {
+                    uint8_t msg[5];
+                    msg[0] = static_cast<uint8_t>(Op::REPORT_PICKUP);
+                    msg[1] = static_cast<uint8_t>(w.netCode);
+                    msg[2] = static_cast<uint8_t>(w.netCode >> 8);
+                    msg[3] = static_cast<uint8_t>(w.type);
+                    msg[4] = static_cast<uint8_t>(w.type >> 8);
+                    EmitSeq(s, msg, sizeof(msg), out);
+                }
+
+                // ② 모두에게 — 바닥에서 사라진다
+                {
+                    uint8_t msg[3];
+                    msg[0] = static_cast<uint8_t>(Op::DESTROY_OBJECT);
+                    msg[1] = static_cast<uint8_t>(w.netCode);
+                    msg[2] = static_cast<uint8_t>(w.netCode >> 8);
+                    Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);
+                }
+
+                // ③ 세계에서 뺀다. **지우는 길이 아예 없었다**(계획서 벽②).
+                TakeStatic(w.netCode);
+
+                Session::Carried c;
+                c.netCode = w.netCode;
+                c.type = w.type;
+                c.modifiable = w.modifiable;
+                s.inventory.push_back(c);
+                ++picked_;
+                ++handled_;
+                break;
+            }
+
+            // ── 인벤토리가 꽉 찼다고 클라가 되돌린 것 ─────────────────
+            //
+            // ★ **이건 클라가 보낸다.** 우리가 준 물건을 못 받겠다는 뜻이라
+            //   **도로 그 자리에 떨궈야** 한다. 안 그러면 물건이 세상에서 사라진다.
+            case Op::INVENTORY_FAIL: {
+                if (!s.inGame || it.bodyLen() != 2) break;
+                const uint16_t nc = static_cast<uint16_t>(
+                    it.body()[0] | (it.body()[1] << 8));
+                for (size_t i = 0; i < s.inventory.size(); ++i) {
+                    if (s.inventory[i].netCode != nc) continue;
+                    WorldStatic back;
+                    back.netCode = nc;
+                    back.type = s.inventory[i].type;
+                    back.modifiable = s.inventory[i].modifiable;
+                    back.x = s.x;
+                    back.y = s.y;
+                    statics_.push_back(back);
+                    s.inventory.erase(s.inventory.begin() + static_cast<long>(i));
+                    ++dropped_;
+                    break;
+                }
+                ++handled_;
+                break;
+            }
+
             case Op::TRY_SPELL: {
                 if (!s.inGame || it.bodyLen() != kTrySpellBodyLen) break;
                 const uint8_t spell = it.body()[0];

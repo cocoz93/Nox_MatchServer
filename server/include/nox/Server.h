@@ -175,6 +175,16 @@ struct Session {
     // ★ **지금 마나.** 이 칸이 없어서 주문이 무한이었다 — `maxMana` 는 쓰기만 하고
     //   읽는 데가 없었다. 시전할 때 깎고 `0x45` 로 알린다.
     uint16_t  mana      = 0;
+
+    // ★ **가진 것.** 이 칸이 없어서 주울 수도 입을 수도 없었다(계획서 벽②).
+    //   세계에서 집어 든 물건이 여기로 옮겨 온다.
+    struct Carried {
+        uint16_t netCode = 0;   // 세계에 있을 때 쓰던 번호를 그대로 들고 온다
+        uint16_t type = 0;
+        bool modifiable = false;
+        bool equipped = false;  // ④에서 쓴다
+    };
+    std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
 
     uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
@@ -336,6 +346,16 @@ constexpr size_t kAoiMaxPerUpdate = 20;
 // 들어왔다 나갔다를 되풀이해(플래핑) 별칭과 조각을 헛되이 태운다. 20% 여유를 둔다.
 // ⚠ 이 1.2 배는 실측이 아니라 우리 값이다.
 constexpr double kAoiDropRadius = kAoiRadius * 1.2;
+
+// 물건에 손이 닿는 거리. ➖ **우리 값이다** — 파일에도 코드에도 근거가 없다.
+// 몸 반지름(10)과 벽 한 칸(23)을 놓고 「한 칸 안」으로 잡았다.
+// 정품은 물건을 밟고 서서 줍는 꼴이라 이보다 짧을 수도 있다.
+constexpr double kPickupReach = kWallCell;
+
+// 한 사람이 들 수 있는 물건 수의 **안전 한도**. 진짜 한도는 서버가 아니라 **클라가 쥔다** —
+// 못 받으면 `0xF1 INVENTORY_FAIL` 로 되돌려 주므로 서버가 미리 자를 일이 아니다.
+// 이 값은 규칙이 아니라 폭주 방지용 울타리다.
+constexpr size_t kInventoryGuard = 64;
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.
@@ -464,6 +484,11 @@ public:
         uint16_t netCode = 0;   // 서버가 붙인 번호 (맵 extent 그대로 쓰지 않는다 — 충돌 여지)
         uint16_t type = 0;      // 와이어 종류 번호
         int x = 0, y = 0;
+        // 수식(마법부여)이 붙는 물건인가 — 무기·방어구·완드·깃발.
+        // 주울 때 `4b`(5B) 대신 **`4c`(9B, 수식 4바이트)** 로 알려야 한다.
+        // ⭕ `4c` 는 정품 표본 10건으로 짜임 확인(`4c cc 02 6d 04 ff bf ff ff`).
+        // `main.cpp` 가 `thing.bin` 의 CLASS 로 정한다.
+        bool modifiable = false;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
     void SetAoi(bool on) { aoiOn_ = on; }
@@ -689,6 +714,17 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.mana;
     }
+    size_t CarriedCount(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.inventory.size();
+    }
+    bool Carries(const std::string& addr, uint16_t netCode) const {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return false;
+        for (const auto& c : it->second.inventory)
+            if (c.netCode == netCode) return true;
+        return false;
+    }
 
     // ── 주문 마나 비용 ─────────────────────────────────
     //
@@ -706,6 +742,11 @@ public:
     }
     // 마나가 모자라 튕긴 시전 수 — 「눌렀는데 아무 일도 안 난다」를 로그로 가른다.
     unsigned long long spellsNoMana() const { return spellsNoMana_; }
+    // 줍기 — 요청·성공·손이 안 닿음·되돌려 떨굼. 셋을 갈라야 「왜 안 주워지나」가 보인다.
+    unsigned long long tryGets() const { return tryGets_; }
+    unsigned long long picked() const { return picked_; }
+    unsigned long long pickTooFar() const { return pickTooFar_; }
+    unsigned long long dropped() const { return dropped_; }
 
     // ★ 틱 — 시각을 넣으면 주기가 지난 만큼 프레임을 올리고 상태를 뿌린다.
     //
@@ -867,6 +908,9 @@ private:
     void Broadcast(bool viaSeq, const uint8_t* msg, size_t n,
                    std::vector<OutPacket>& out);
 
+    // 세계에서 정적 하나를 뺀다(주웠을 때). 없으면 false.
+    bool TakeStatic(uint16_t netCode);
+
     // 녹음본 조각 안의 `cc` 껍데기 번호를 **이 세션의 이어달기 번호로 다시 매긴다.**
     //
     // ★★★ **이걸 안 하면 스냅샷 뒤에 보낸 신뢰 메시지가 통째로 사라진다.**
@@ -895,6 +939,10 @@ private:
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::map<uint8_t, uint8_t> spellCost_;      // 주문 번호 → 마나 (thing.bin SPEL)
     unsigned long long spellsNoMana_ = 0;       // 마나가 모자라 튕긴 시전
+    unsigned long long tryGets_ = 0;            // `0x73` 을 받은 횟수
+    unsigned long long picked_ = 0;             // 실제로 집어 든 것
+    unsigned long long pickTooFar_ = 0;         // 손이 안 닿아 못 집은 것
+    unsigned long long dropped_ = 0;            // 클라가 되돌려 도로 떨군 것
 
     std::vector<uint8_t> infoBody_;
     std::vector<uint8_t> joinBody_;     // 접속 직후 나가는 216바이트 묶음

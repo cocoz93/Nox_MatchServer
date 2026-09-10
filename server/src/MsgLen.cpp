@@ -125,11 +125,15 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x6F */   -1,   // MSG_REPORT_SPELL_AWARD
     /* 0x70 */   -1,   // MSG_REPORT_SPELL_START
     /* 0x71 */   -1,   // MSG_REPORT_INVENTORY_LOADED
-    /* 0x72 */   -1,   // MSG_TRY_DROP
-    /* 0x73 */   -1,   // MSG_TRY_GET
-    /* 0x74 */   -1,   // MSG_TRY_USE
-    /* 0x75 */   -1,   // MSG_TRY_EQUIP
-    /* 0x76 */   -1,   // MSG_TRY_DEQUIP
+    // ★ 아래 다섯은 **길이를 몰라 조각을 통째로 버리던 자리**다 (2026-09-10 채움).
+    //   `-1` 이면 그 조각의 나머지가 정상 메시지라도 같이 죽는다 → 「줍기가 안 된다」의 뿌리.
+    //   값의 근거 = 정품 서버가 갈래마다 **소비하는 바이트 수**(`sdecode.c`).
+    //   ⚠ 이 표는 **오프코드를 뺀 본문 길이**다 (`0x42` 가 4 로 적힌 것을 볼 것).
+    /* 0x72 */    6,   // MSG_TRY_DROP   번호2 + 놓을 자리 x2·y2
+    /* 0x73 */    2,   // MSG_TRY_GET    번호2 — 세계의 오브젝트를 가리킨다
+    /* 0x74 */    2,   // MSG_TRY_USE    번호2 — 인벤토리 안의 것
+    /* 0x75 */    2,   // MSG_TRY_EQUIP  번호2
+    /* 0x76 */    2,   // MSG_TRY_DEQUIP 번호2
     /* 0x77 */   -1,   // MSG_TRY_TARGET
     /* 0x78 */   -1,   // MSG_TRY_CREATURE_COMMAND
     /* 0x79 */   21,   // MSG_TRY_SPELL  ← 손으로 채움 (근거는 genlen.go 의 extra)
@@ -254,7 +258,8 @@ const int16_t kMsgBodyLen[256] = {
     /* 0xEE */   -1,   // MSG_VOTE
     /* 0xEF */   16,   // MSG_STAT_MULTIPLIERS
     /* 0xF0 */   -1,   // MSG_GAUNTLET
-    /* 0xF1 */   -1,   // MSG_INVENTORY_FAIL
+    // ★ **클라가 보낸다.** 인벤토리가 꽉 차 못 받으면 이걸로 되돌린다 → 서버가 도로 떨궈야 한다.
+    /* 0xF1 */    2,   // MSG_INVENTORY_FAIL  번호2
     /* 0xF2 */   -1,   // Op(242)
     /* 0xF3 */   -1,   // Op(243)
     /* 0xF4 */   -1,   // Op(244)

@@ -313,6 +313,13 @@ int main(int argc, char** argv) {
                 w2.type = wire;
                 w2.x = static_cast<int>(objs[i].x);
                 w2.y = static_cast<int>(objs[i].y);
+                // 수식이 붙는 갈래인가 — 주울 때 `4b` 가 아니라 `4c` 로 알려야 한다.
+                // CLASS 원문으로 가른다(`WEAPON`·`ARMOR`·`WAND`·`FLAG`).
+                w2.modifiable =
+                    ti->classRaw.find("WEAPON") != std::string::npos ||
+                    ti->classRaw.find("ARMOR")  != std::string::npos ||
+                    ti->classRaw.find("WAND")   != std::string::npos ||
+                    ti->classRaw.find("FLAG")   != std::string::npos;
                 st.push_back(w2);
             }
             nStat = st.size();
