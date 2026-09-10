@@ -53,6 +53,14 @@ struct ThingInfo {
     bool isPickup = false;
     // CLASS 원문 — 필터 설계·진단용. '+' 로 이어진 값 그대로.
     std::string classRaw;
+    // SUBCLASS 원문 — 물약이 체력인지 마나인지가 여기 있다(`POTION+HEALTH_POTION`).
+    std::string subclassRaw;
+    // ★ **쓰면 무슨 일이 나는가.** `USE = PotionUse 50` 을 갈라 담는다.
+    //   ⭕ 값이 파일에 있다 — 빨강·파랑 물약이 둘 다 50, 작은 물약이 3, 음식이 10.
+    //   ⚠ 숫자의 뜻은 갈래마다 다르다. **회복량으로 읽어도 되는 것은
+    //     `PotionUse`·`ConsumeUse` 뿐**이고, `WandUse 20` 의 20 은 회복이 아니다.
+    std::string useHandler;
+    int useArg = 0;
 };
 
 class ThingDb {

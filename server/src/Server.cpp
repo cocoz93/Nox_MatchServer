@@ -1232,8 +1232,106 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.netCode = w.netCode;
                 c.type = w.type;
                 c.modifiable = w.modifiable;
+                c.useKind = w.useKind;
+                c.useAmount = w.useAmount;
                 s.inventory.push_back(c);
                 ++picked_;
+                ++handled_;
+                break;
+            }
+
+            // ── 쓰기 ──────────────────────────────────────────────────
+            //
+            // ★ **무슨 일이 나는지가 파일에 있다** — `thing.bin` 의 `USE = PotionUse 50`.
+            //   빨강·파랑 물약이 둘 다 50, 작은 물약 3, 음식 10. 지어낸 숫자가 아니다.
+            // ⚠ 숫자를 회복량으로 읽어도 되는 갈래는 `PotionUse`·`ConsumeUse` 뿐이라
+            //   나머지(`ReadUse` 70종·`WandUse`…)는 **아무 일도 안 일어난다.**
+            //   「안 된다」를 「0 만큼 된다」로 꾸미지 않는다.
+            case Op::TRY_USE: {
+                if (!s.inGame || it.bodyLen() != 2) break;
+                const uint16_t nc = static_cast<uint16_t>(
+                    it.body()[0] | (it.body()[1] << 8));
+                size_t at = s.inventory.size();
+                for (size_t i = 0; i < s.inventory.size(); ++i)
+                    if (s.inventory[i].netCode == nc) { at = i; break; }
+                if (at == s.inventory.size()) { ++handled_; break; }
+
+                const Session::Carried c = s.inventory[at];
+                if (c.useKind == UseKind::None) { ++useUnknown_; ++handled_; break; }
+
+                if (c.useKind == UseKind::Health) {
+                    const int before = s.health;
+                    int after = before + c.useAmount;
+                    if (after > s.maxHealth) after = s.maxHealth;
+                    s.health = static_cast<uint16_t>(after);
+                    // 늘어난 만큼을 `42` 로 — **증감은 부호 있는 16비트**라 양수도 실린다.
+                    //   번호가 실리므로 모두에게 보낸다(남이 회복하는 것도 보여야 한다).
+                    const uint16_t raw = static_cast<uint16_t>(
+                        static_cast<int16_t>(after - before));
+                    uint8_t d[5] = {
+                        static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA),
+                        static_cast<uint8_t>(s.netCode),
+                        static_cast<uint8_t>(s.netCode >> 8),
+                        static_cast<uint8_t>(raw),
+                        static_cast<uint8_t>(raw >> 8),
+                    };
+                    Broadcast(/*viaSeq=*/false, d, sizeof(d), out);
+                    // 절대값은 번호가 없어 **본인에게만**
+                    uint8_t abs[3] = {
+                        static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH),
+                        static_cast<uint8_t>(s.health),
+                        static_cast<uint8_t>(s.health >> 8),
+                    };
+                    EmitSeq(s, abs, sizeof(abs), out);
+                } else {
+                    int after = s.mana + c.useAmount;
+                    if (after > s.maxMana) after = s.maxMana;
+                    s.mana = static_cast<uint16_t>(after);
+                    uint8_t m[5] = {
+                        static_cast<uint8_t>(Op::REPORT_MANA),
+                        static_cast<uint8_t>(s.netCode),
+                        static_cast<uint8_t>(s.netCode >> 8),
+                        static_cast<uint8_t>(s.mana),
+                        static_cast<uint8_t>(s.mana >> 8),
+                    };
+                    EmitSeq(s, m, sizeof(m), out);   // 홀로
+                }
+
+                // 쓴 것은 없어진다. 세계에 되돌려 놓지 않는다.
+                s.inventory.erase(s.inventory.begin() + static_cast<long>(at));
+                ++used_;
+                ++handled_;
+                break;
+            }
+
+            // ── 입기·벗기 ─────────────────────────────────────────────
+            //
+            // ⭕ `60 REPORT_EQUIP`(3B, 물건 번호)은 정품 표본 **22건**으로 확인했다
+            //   (`60 cc 02` — `4c` 로 준 물건 716 을 그대로 가리킨다).
+            // ⚠ **남들에게 겉모습을 알리는 `0x4F`~`0x52` 는 아직 안 보낸다.**
+            //   길이는 알지만(6·10) 짜임 안에 **뜻 모르는 u32 한 칸**이 있고
+            //   읽을 수 있는 정품 덤프 전부에서 **표본이 0건**이다.
+            //   모르는 칸을 채워 보내는 것은 이 클라에게 두 번 당한 짓이라 하지 않는다.
+            //   → 실클라로 한 번 입어 보면 표본이 생긴다. 그때 켠다.
+            case Op::TRY_EQUIP:
+            case Op::TRY_DEQUIP: {
+                if (!s.inGame || it.bodyLen() != 2) break;
+                const bool wear = (static_cast<Op>(it.op()) == Op::TRY_EQUIP);
+                const uint16_t nc = static_cast<uint16_t>(
+                    it.body()[0] | (it.body()[1] << 8));
+                for (auto& c : s.inventory) {
+                    if (c.netCode != nc) continue;
+                    if (c.equipped == wear) break;    // 이미 그 상태다
+                    c.equipped = wear;
+                    uint8_t msg[3] = {
+                        static_cast<uint8_t>(wear ? Op::REPORT_EQUIP : Op::REPORT_DEQUIP),
+                        static_cast<uint8_t>(nc),
+                        static_cast<uint8_t>(nc >> 8),
+                    };
+                    EmitSeq(s, msg, sizeof(msg), out);   // 본인에게
+                    if (wear) ++equipped_; else ++dequipped_;
+                    break;
+                }
                 ++handled_;
                 break;
             }
@@ -1252,6 +1350,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.netCode = nc;
                     back.type = s.inventory[i].type;
                     back.modifiable = s.inventory[i].modifiable;
+                    back.useKind = s.inventory[i].useKind;
+                    back.useAmount = s.inventory[i].useAmount;
                     back.x = s.x;
                     back.y = s.y;
                     statics_.push_back(back);

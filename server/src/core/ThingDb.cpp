@@ -336,6 +336,22 @@ bool ReadThing(Cur& c, ThingInfo& t) {
                 ParseClasses(val, t);
             } else if (key == "EXTENT") {
                 ParseExtent(val, t);
+            } else if (key == "SUBCLASS") {
+                // 물약이 체력인지 마나인지가 여기 있다 — `POTION+HEALTH_POTION`.
+                if (!t.subclassRaw.empty()) t.subclassRaw += "+";
+                t.subclassRaw += val;
+            } else if (key == "USE") {
+                // ★ **쓰면 무슨 일이 나는가가 파일에 있다** — `USE = PotionUse 50`.
+                //   앞이 다루는 이름, 뒤가 숫자다. 숫자가 없는 갈래도 있다(`ReadUse`).
+                //   ⚠ 숫자의 뜻은 갈래마다 다르다. 회복량으로 읽어도 되는 것은
+                //     `PotionUse`·`ConsumeUse` 뿐이다.
+                const size_t sp = val.find(' ');
+                if (sp == std::string::npos) {
+                    t.useHandler = val;
+                } else {
+                    t.useHandler = Trim(val.substr(0, sp));
+                    t.useArg = std::atoi(Trim(val.substr(sp + 1)).c_str());
+                }
             }
             // 그 밖의 키(HEALTH·SPEED·FLAGS…)는 값이 문자열 안에 들어 있어 걸음에 영향 없다
             if (c.bad) return false;

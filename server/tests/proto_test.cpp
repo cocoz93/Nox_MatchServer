@@ -885,6 +885,152 @@ void TestPickup() {
     std::printf("  줍기 — 4b/4c 갈라짐 · 31 은 모두에게 · 손 닿는 데까지 · F1 이면 도로 떨굼\n");
 }
 
+// ── 쓰기·입기 — 물약이 실제로 채우는가, 입은 것이 기록되는가 ──────────────
+//
+// ★ 회복량은 **파일에서 온다** — `thing.bin` 의 `USE = PotionUse 50`.
+//   여기서는 그 값을 시험이 직접 넣어 논리만 본다(파일 대조는 `TestUseFromFile`).
+// ⭕ `60 REPORT_EQUIP`(3B)은 정품 표본 22건으로 확인된 메시지다.
+void TestUseAndEquip() {
+    nox::Server srv;
+    const std::string a = "10.9.4.1:41041";
+    srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+    srv.DebugMoveTo(a, 1000, 1000);
+
+    const uint16_t kRed = 176, kBlue = 177, kSword = 180, kBook = 181;
+    std::vector<nox::Server::WorldStatic> st;
+    st.push_back({ kRed,   638, 1000, 1000, false, nox::UseKind::Health, 50 });
+    st.push_back({ kBlue,  639, 1000, 1000, false, nox::UseKind::Mana,   50 });
+    st.push_back({ kSword, 1133, 1000, 1000, true,  nox::UseKind::None,   0 });
+    st.push_back({ kBook,  700, 1000, 1000, false, nox::UseKind::None,   0 });
+    srv.SetWorldStatics(st);
+    for (uint16_t nc : { kRed, kBlue, kSword, kBook }) {
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_GET, nc);
+        srv.OnPacket(a, p.data(), p.size(), out);
+    }
+    Check(srv.CarriedCount(a) == 4, "넷을 다 못 주웠다");
+
+    // ① 빨강 물약 — 다친 뒤에 쓰면 그만큼 찬다
+    {
+        std::vector<nox::OutPacket> hurt;
+        srv.Damage(a, 40, hurt);
+        const uint16_t low = srv.HealthOf(a);
+        Check(low < srv.HealthOf(a) + 40, "안 다쳤다");
+
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_USE, kRed);
+        srv.OnPacket(a, p.data(), p.size(), out);
+        // 위저드 최대 체력은 75 라 40 맞고 50 을 마시면 **최대치에서 멈춘다**
+        Check(srv.HealthOf(a) == nox::HealthOnline(nox::CharClass::Wizard),
+              "물약을 마셨는데 최대치까지 안 참");
+        Check(!srv.Carries(a, kRed), "마신 물약이 아직 인벤토리에 있다");
+
+        const auto toA = FlattenTo(out, a);
+        const auto* d = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
+        Check(d != nullptr, "회복 0x42 가 안 나감");
+        if (d) {
+            const int16_t delta = static_cast<int16_t>((*d)[3] | ((*d)[4] << 8));
+            Check(delta > 0, "회복인데 증감이 양수가 아님");
+            Check(delta == nox::HealthOnline(nox::CharClass::Wizard) - low,
+                  "회복량이 실제로 찬 만큼이 아님");
+        }
+    }
+
+    // ② 파란 물약 — 마나를 채우고 `0x45` 로 알린다
+    {
+        std::vector<nox::OutPacket> burn;
+        srv.SetSpellCost(27, 30);
+        for (int i = 0; i < 2; ++i) {
+            const std::vector<uint8_t> sp = SpellPacket(27, false);
+            srv.OnPacket(a, sp.data(), sp.size(), burn);
+        }
+        const uint16_t low = srv.ManaOf(a);
+        Check(low < nox::ManaOnline(nox::CharClass::Wizard), "마나를 안 썼다");
+
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_USE, kBlue);
+        srv.OnPacket(a, p.data(), p.size(), out);
+        Check(srv.ManaOf(a) == low + 50, "파란 물약이 50 을 안 채웠다");
+        const auto toA = FlattenTo(out, a);
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_MANA)) != nullptr,
+              "마나 0x45 가 안 나감");
+    }
+
+    // ③ 갈래를 모르는 것(책) — **아무 일도 안 일어나고 없어지지도 않는다.**
+    //    「안 된다」를 「0 만큼 된다」로 꾸미지 않는 자리다.
+    {
+        const unsigned long long before = srv.useUnknown();
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_USE, kBook);
+        srv.OnPacket(a, p.data(), p.size(), out);
+        Check(srv.useUnknown() == before + 1, "모르는 갈래를 안 셌다");
+        Check(srv.Carries(a, kBook), "아무 일도 안 났는데 없어졌다");
+    }
+
+    // ④ 입기·벗기 — `60`/`61` 이 본인에게, 상태가 기록된다
+    {
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> on = CodePacket(nox::Op::TRY_EQUIP, kSword);
+        srv.OnPacket(a, on.data(), on.size(), out);
+        Check(srv.IsEquipped(a, kSword), "입었는데 기록이 안 됨");
+        const auto toA = FlattenTo(out, a);
+        const auto* e = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_EQUIP));
+        Check(e != nullptr, "0x60 이 안 나감");
+        if (e) {
+            Check(e->size() == 3, "0x60 이 3바이트가 아님");
+            // ★ 실린 것은 **물건 번호**다 — 정품 `60 cc 02` 가 물건 716 을 가리키듯이
+            Check((*e)[1] == 0xb4 && (*e)[2] == 0x00, "0x60 이 물건 번호가 아님");
+        }
+
+        std::vector<nox::OutPacket> out2;
+        const std::vector<uint8_t> off = CodePacket(nox::Op::TRY_DEQUIP, kSword);
+        srv.OnPacket(a, off.data(), off.size(), out2);
+        Check(!srv.IsEquipped(a, kSword), "벗었는데 기록이 안 됨");
+        Check(FindMsg(FlattenTo(out2, a), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) != nullptr,
+              "0x61 이 안 나감");
+    }
+
+    std::printf("  쓰기·입기 — 물약이 채움(최대에서 멈춤) · 모르는 갈래는 아무 일 없음 · 60/61\n");
+}
+
+// ── 물약 회복량이 **파일에서** 오는가 ──────────────────────────────────
+//
+// 위 시험은 논리만 본다. 이건 `thing.bin` 을 직접 열어 값을 확인한다 —
+// 「우리가 넣은 50」이 아니라 「파일에 적힌 50」이라야 정본이다.
+void TestUseFromFile() {
+    nox::ThingDb tdb;
+    if (!tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+        std::printf("  쓰기 정본 — 건너뜀(thing.bin 없음)\n");
+        return;
+    }
+    struct KV { const char* name; const char* handler; int arg; const char* sub; };
+    const KV known[] = {
+        { "RedPotion",  "PotionUse", 50, "HEALTH_POTION" },
+        { "BluePotion", "PotionUse", 50, "MANA_POTION" },
+    };
+    for (const KV& k : known) {
+        const uint16_t wire = tdb.WireByName(k.name);
+        const std::string miss = std::string(k.name) + " 을 표에서 못 찾음";
+        Check(wire != 0, miss.c_str());
+        if (!wire) continue;
+        const nox::ThingInfo* ti = tdb.ByWire(wire);
+        const std::string hb = std::string(k.name) + " 의 USE 다루는 이름이 다름";
+        const std::string ab = std::string(k.name) + " 의 USE 숫자가 다름";
+        const std::string sb = std::string(k.name) + " 의 SUBCLASS 가 다름";
+        Check(ti && ti->useHandler == k.handler, hb.c_str());
+        Check(ti && ti->useArg == k.arg, ab.c_str());
+        Check(ti && ti->subclassRaw.find(k.sub) != std::string::npos, sb.c_str());
+    }
+    // 회복량을 담은 갈래가 실제로 얼마나 있나 — 0 이면 파서가 그 키를 안 읽는 것이다
+    size_t withUse = 0;
+    for (size_t i = 1; i <= tdb.Count(); ++i) {
+        const nox::ThingInfo* ti = tdb.ByWire(static_cast<uint16_t>(i));
+        if (ti && (ti->useHandler == "PotionUse" || ti->useHandler == "ConsumeUse")) ++withUse;
+    }
+    Check(withUse > 0, "USE 를 읽은 것이 하나도 없다 — 파서가 그 키를 안 본다");
+    std::printf("  쓰기 정본 — 물약 USE = PotionUse 50 (파일) · 회복 갈래 %zu종\n", withUse);
+}
+
 // ── 주문이 실제로 사람을 깎는가 ────────────────────────────────
 //
 // 클라가 보내는 조각을 그대로 만들어 `OnPacket` 에 넣는다.
@@ -2765,6 +2911,8 @@ int main() {
     TestSpellMana();
     TestManaSpend();
     TestPickup();
+    TestUseAndEquip();
+    TestUseFromFile();
     TestSpellDamage();
     TestMelee();
     TestThingDb();

@@ -27,6 +27,13 @@
 namespace nox {
 
 // 나갈 조각 하나.
+// 물건을 쓰면 무슨 일이 나는가. `thing.bin` 의 `USE = <다루는이름> <숫자>` 에서 온다.
+//
+// ⚠ **숫자를 회복량으로 읽어도 되는 갈래는 둘뿐이다** — `PotionUse`(물약)·`ConsumeUse`(음식).
+//   `WandUse 20` 의 20 은 회복이 아니라 완드 충전이고, `ReadUse`(책 70종)는 숫자가 없다.
+//   그래서 「모르는 갈래」를 None 으로 두고 **아무 일도 안 일어나게** 한다 — 지어내지 않는다.
+enum class UseKind : uint8_t { None = 0, Health, Mana };
+
 struct OutPacket {
     std::string to;
     std::vector<uint8_t> data;
@@ -182,7 +189,10 @@ struct Session {
         uint16_t netCode = 0;   // 세계에 있을 때 쓰던 번호를 그대로 들고 온다
         uint16_t type = 0;
         bool modifiable = false;
-        bool equipped = false;  // ④에서 쓴다
+        bool equipped = false;
+        // 쓰면 무슨 일이 나는가 — 세계에 있을 때 정해진 것을 그대로 들고 온다.
+        UseKind useKind = UseKind::None;
+        int useAmount = 0;
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
@@ -356,6 +366,7 @@ constexpr double kPickupReach = kWallCell;
 // 못 받으면 `0xF1 INVENTORY_FAIL` 로 되돌려 주므로 서버가 미리 자를 일이 아니다.
 // 이 값은 규칙이 아니라 폭주 방지용 울타리다.
 constexpr size_t kInventoryGuard = 64;
+
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.
@@ -489,6 +500,10 @@ public:
         // ⭕ `4c` 는 정품 표본 10건으로 짜임 확인(`4c cc 02 6d 04 ff bf ff ff`).
         // `main.cpp` 가 `thing.bin` 의 CLASS 로 정한다.
         bool modifiable = false;
+        // ★ 쓰면 무슨 일이 나는가 — `thing.bin` 의 `USE = PotionUse 50` 에서 온다.
+        //   ⭕ 값이 파일에 있다. 지어낸 숫자가 아니다.
+        UseKind useKind = UseKind::None;
+        int useAmount = 0;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
     void SetAoi(bool on) { aoiOn_ = on; }
@@ -747,6 +762,18 @@ public:
     unsigned long long picked() const { return picked_; }
     unsigned long long pickTooFar() const { return pickTooFar_; }
     unsigned long long dropped() const { return dropped_; }
+    unsigned long long used() const { return used_; }
+    // 쓰긴 했는데 **무슨 일이 나는지 모르는** 갈래(`ReadUse`·`WandUse`…). 지어내지 않은 자리의 수.
+    unsigned long long useUnknown() const { return useUnknown_; }
+    unsigned long long equipped() const { return equipped_; }
+    unsigned long long dequipped() const { return dequipped_; }
+    bool IsEquipped(const std::string& addr, uint16_t netCode) const {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return false;
+        for (const auto& c : it->second.inventory)
+            if (c.netCode == netCode) return c.equipped;
+        return false;
+    }
 
     // ★ 틱 — 시각을 넣으면 주기가 지난 만큼 프레임을 올리고 상태를 뿌린다.
     //
@@ -943,6 +970,10 @@ private:
     unsigned long long picked_ = 0;             // 실제로 집어 든 것
     unsigned long long pickTooFar_ = 0;         // 손이 안 닿아 못 집은 것
     unsigned long long dropped_ = 0;            // 클라가 되돌려 도로 떨군 것
+    unsigned long long used_ = 0;               // 실제로 효과가 난 쓰기
+    unsigned long long useUnknown_ = 0;         // 갈래를 몰라 아무 일도 안 난 쓰기
+    unsigned long long equipped_ = 0;
+    unsigned long long dequipped_ = 0;
 
     std::vector<uint8_t> infoBody_;
     std::vector<uint8_t> joinBody_;     // 접속 직후 나가는 216바이트 묶음

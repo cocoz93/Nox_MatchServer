@@ -320,6 +320,14 @@ int main(int argc, char** argv) {
                     ti->classRaw.find("ARMOR")  != std::string::npos ||
                     ti->classRaw.find("WAND")   != std::string::npos ||
                     ti->classRaw.find("FLAG")   != std::string::npos;
+                // 쓰면 무슨 일이 나는가 — `USE = PotionUse 50` 을 그대로 옮긴다.
+                // ⚠ 숫자를 회복량으로 읽어도 되는 갈래는 둘뿐이다(ThingDb.h 주석).
+                if (ti->useHandler == "PotionUse" || ti->useHandler == "ConsumeUse") {
+                    const bool mana =
+                        ti->subclassRaw.find("MANA") != std::string::npos;
+                    w2.useKind = mana ? nox::UseKind::Mana : nox::UseKind::Health;
+                    w2.useAmount = ti->useArg;
+                }
                 st.push_back(w2);
             }
             nStat = st.size();
