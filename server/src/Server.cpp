@@ -760,6 +760,19 @@ void Server::StartQuest(int count, int centerX, int centerY, double spread) {
     }
 }
 
+// 이 사람이 지금 겨누고 있는 쪽(라디안).
+//
+// 겨눈 자리가 있고 아직 싱싱하면 **거기를 향해**, 아니면 몸이 바라보는 쪽으로.
+// ⚠ 겨눈 자리가 제 몸과 겹치면 방향이 안 나온다 — 그때도 몸 방향으로 되돌아간다.
+double Server::AimRadians(const Session& s) const {
+    const bool fresh = s.hasAim && (frame_ - s.aimAtFrame <= kAimStaleTicks);
+    if (fresh) {
+        const double dx = s.aimX - s.x, dy = s.aimY - s.y;
+        if (dx * dx + dy * dy > 1.0) return std::atan2(dy, dx);
+    }
+    return s.facing * 3.14159265358979 / 128.0;
+}
+
 // 한 사람이 한 말을 **모두에게.** 머리는 서버가 새로 짓는다 —
 // 말한 이의 번호와 그때 좌표로. 글자만 받은 것에서 가져온다.
 //
@@ -1413,6 +1426,25 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 break;
             }
 
+            // ── 마우스 조준 ───────────────────────────────────────────
+            //
+            // ⭕ 짜임은 실측이다 — 본문 4바이트 = **월드 좌표 x2·y2**.
+            //   정품 클라 표본이 **18,700건 넘는다**(CTF 실전 포함). 우리는 그동안
+            //   **안 읽고 버렸다** — 그래서 투사체가 늘 몸이 바라보는 쪽으로만 났다.
+            //
+            // ⚠ 아주 자주 온다(한 판에 수천 건). 담아만 두고 계산은 쏠 때 한 번 한다.
+            case Op::MOUSE: {
+                if (!s.inGame || it.bodyLen() != 4) break;
+                const uint8_t* b = it.body();
+                s.aimX = static_cast<int16_t>(b[0] | (b[1] << 8));
+                s.aimY = static_cast<int16_t>(b[2] | (b[3] << 8));
+                s.aimAtFrame = frame_;
+                s.hasAim = true;
+                ++aims_;
+                ++handled_;
+                break;
+            }
+
             // ── 채팅 ──────────────────────────────────────────────────
             //
             // ★ 이 갈래가 없어서 **사람이 친 말이 아무 데도 안 갔다.** 서버는
@@ -1561,8 +1593,14 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     } else {
                         // ★ 날려 보낸다. 시전하는 순간 맞으면 **피할 수가 없다** —
                         //   비켜서 안 맞는 것이 있어야 싸움이 싸움이 된다.
-                        //   방향은 그 사람이 바라보는 쪽(한 바퀴를 256으로 나눈 값).
-                        const double rad = s.facing * 3.14159265358979 / 128.0;
+                        //
+                        // ★★ **겨눈 쪽으로 난다** (2026-09-10). 전에는 늘 몸이 바라보는
+                        //   쪽으로만 날아갔다 — 녹스는 마우스로 겨누는 게임인데 그게 없었다.
+                        //   겨눈 자리는 `0xac MOUSE` 로 온다(정품 클라 표본 18,700+, 4바이트 x,y).
+                        //   ⚠ 겨눔이 **낡았으면**(마지막 `0xac` 이 오래됐으면) 몸 방향으로
+                        //     되돌아간다 — 안 그러면 옛 자리를 향해 엉뚱하게 쏜다.
+                        //     그 시한 `kAimStaleTicks` 는 ➖ 우리 값이다.
+                        const double rad = AimRadians(s);
                         Projectile p;
                         p.owner = from;
                         p.spell = spell;

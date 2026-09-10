@@ -792,6 +792,72 @@ std::vector<uint8_t> CodePacket(nox::Op op, uint16_t netCode) {
     return p;
 }
 
+// ── 마우스 조준 — 투사체가 겨눈 쪽으로 나는가 ───────────────────────────
+//
+// ⭕ `0xac MOUSE` 짜임은 실측 — 본문 4바이트 = 월드 좌표 x2·y2, 정품 표본 18,700+.
+// ★ 전에는 투사체가 **늘 몸이 바라보는 쪽**으로만 났다(`s.facing`). 녹스는 마우스로
+//   겨누는 게임인데 `0xac` 를 안 읽고 버리고 있었다.
+void TestAim() {
+    nox::Server srv;
+    const std::string a = "10.9.7.1:41071";
+    srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+    srv.DebugMoveTo(a, 1000, 1000);
+    // 몸은 +x 를 본다(facing 기본 0). 겨눔은 **+y 쪽**으로 준다 — 갈리는 자리다.
+
+    // ① `0xac` 를 받아야 한다 — 전에는 세지도 않았다
+    {
+        std::vector<uint8_t> pkt(nox::kWireHeaderSize + 5, 0);
+        size_t i = nox::kWireHeaderSize;
+        pkt[i++] = static_cast<uint8_t>(nox::Op::MOUSE);
+        pkt[i++] = static_cast<uint8_t>(1000);        // x = 1000 (제자리)
+        pkt[i++] = static_cast<uint8_t>(1000 >> 8);
+        pkt[i++] = static_cast<uint8_t>(1600);        // y = 1600 (아래쪽)
+        pkt[i++] = static_cast<uint8_t>(1600 >> 8);
+        std::vector<nox::OutPacket> out;
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.aims() == 1, "0xac 를 받은 것으로 안 셌다 — 아직 버리고 있다");
+    }
+
+    // ② 쏘면 **겨눈 쪽(+y)** 으로 난다. 몸 방향(+x)이 아니라
+    {
+        srv.SetSpellCost(27, 0);
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> sp = SpellPacket(27, /*onSelf=*/false);
+        srv.OnPacket(a, sp.data(), sp.size(), out);
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
+        std::vector<nox::OutPacket> t1;
+        srv.Tick(33, t1);
+        Check(srv.flying() == 1, "투사체가 안 생겼다");
+        const auto sh = srv.DebugShotAt(0);
+        Check(sh.second > 1000, "투사체가 겨눈 쪽(+y)으로 안 갔다");
+        Check(std::abs(sh.first - 1000.0) < 3.0,
+              "투사체가 몸 방향(+x)으로 갔다 — 겨눔을 안 쓴다");
+    }
+
+    // ③ 겨눔이 낡으면 몸 방향으로 되돌아간다 (➖ 우리 값 kAimStaleTicks)
+    {
+        nox::Server s2;
+        s2.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        s2.DebugMoveTo(a, 1000, 1000);
+        s2.SetSpellCost(27, 0);
+        s2.DebugAimAt(a, 1000, 1600);
+        std::vector<nox::OutPacket> warm;
+        s2.Tick(0, warm);
+        std::vector<nox::OutPacket> aged;
+        s2.Tick(33 * (nox::kAimStaleTicks + 5), aged);   // 겨눔을 늙힌다
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> sp = SpellPacket(27, false);
+        s2.OnPacket(a, sp.data(), sp.size(), out);
+        std::vector<nox::OutPacket> t1;
+        s2.Tick(33 * (nox::kAimStaleTicks + 6), t1);
+        const auto sh = s2.DebugShotAt(0);
+        Check(sh.first > 1000, "겨눔이 낡았는데 몸 방향(+x)으로 안 갔다");
+    }
+
+    std::printf("  겨눔 — 0xac 를 읽고 투사체가 겨눈 쪽으로 · 낡으면 몸 방향으로\n");
+}
+
 // ── 채팅 — 친 말이 모두에게 가는가, 남의 번호로 말할 수 있는가 ──────────
 //
 // ⭕ **보내는 짜임은 정품 표본 26건으로 확정**이다:
@@ -3039,6 +3105,7 @@ int main() {
     TestAoiSightExit();
     TestSpellMana();
     TestManaSpend();
+    TestAim();
     TestChat();
     TestTimerAskAndClose();
     TestPickup();

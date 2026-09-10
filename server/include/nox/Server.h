@@ -199,6 +199,16 @@ struct Session {
 
     // `0x0a CLIENT_CLOSE` 를 받았다 — 다음 틱에 걷어낸다(30초 타임아웃을 안 기다린다).
     bool closing = false;
+
+    // ★ **겨눈 자리** — `0xac MOUSE` 가 나르는 월드 좌표다(⭕ 정품 표본 18,700+).
+    //   투사체가 여기를 향해 난다. 겨눔이 없거나 낡았으면 몸 방향으로 되돌아간다.
+    //
+    // ⚠ **「없음」을 `aimAtFrame == 0` 으로 나타내지 않는다.** 0 은 진짜 프레임 번호라
+    //   첫 틱 전에 받은 겨눔이 영영 「없음」으로 읽힌다 — 시험이 그걸 잡았다.
+    //   같은 함정을 `closing` 에서도 한 번 밟았다(2026-09-10, 하루에 둘).
+    bool hasAim = false;
+    int aimX = 0, aimY = 0;
+    uint32_t aimAtFrame = 0;
     uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
@@ -372,6 +382,11 @@ constexpr size_t kInventoryGuard = 64;
 // 채팅 한 줄에 실을 수 있는 글자 수. 크기 칸이 **1바이트**라 255가 천장이고,
 // 정품 표본의 최대가 250(`fa 00 00`)이었다. 그보다 길면 버린다.
 constexpr size_t kChatMaxBytes = 250;
+
+// 겨눈 자리가 이보다 오래되면 안 쓴다 — 몸 바라보는 쪽으로 되돌아간다.
+// ➖ **우리 값이다.** 정품이 낡은 겨눔을 어떻게 다루는지는 모른다.
+// 30Hz 기준 1초. 클라는 마우스가 움직일 때마다 보내므로(표본 18,700+) 짧아도 충분하다.
+constexpr uint32_t kAimStaleTicks = 30;
 
 class Server {
 public:
@@ -776,6 +791,22 @@ public:
     // 클라가 판 시계를 물어본 횟수. 전에는 이 조각을 통째로 버려 **0으로 보였다.**
     unsigned long long timerAsks() const { return timerAsks_; }
     unsigned long long chats() const { return chats_; }
+    // 겨눔을 받은 횟수. 0 이면 `0xac` 를 안 읽는 것이고 투사체가 몸 방향으로만 난다.
+    unsigned long long aims() const { return aims_; }
+    // 시험용 — 날아가는 것 하나의 자리. 없으면 (0,0).
+    std::pair<double, double> DebugShotAt(size_t i) const {
+        if (i >= shots_.size()) return { 0.0, 0.0 };
+        return { shots_[i].x, shots_[i].y };
+    }
+    // 시험용 — 겨눈 자리를 직접 넣는다.
+    void DebugAimAt(const std::string& addr, int x, int y) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return;
+        it->second.aimX = x;
+        it->second.aimY = y;
+        it->second.aimAtFrame = frame_;
+        it->second.hasAim = true;
+    }
     // ★ **닿은 피해 전부** — 근접·투사체·소환수를 다 센다.
     //   `hits()` 는 **투사체 명중만** 센다. 둘을 갈라야 「싸움이 안 붙었다」와
     //   「투사체만 안 맞았다」가 구분된다(09-10 오판의 자리).
@@ -933,6 +964,9 @@ private:
     void BroadcastChat(const Session& who, const uint8_t* text, size_t n,
                        std::vector<OutPacket>& out);
 
+    // 이 사람이 지금 겨누는 쪽(라디안). 겨눔이 없거나 낡았으면 몸 바라보는 쪽.
+    double AimRadians(const Session& s) const;
+
     void EmitSeq(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
     // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
@@ -1014,6 +1048,7 @@ private:
     unsigned long long dequipped_ = 0;
     unsigned long long timerAsks_ = 0;          // `0xd4` 를 받은 횟수
     unsigned long long chats_ = 0;              // 되돌려 방송한 채팅 수
+    unsigned long long aims_ = 0;               // `0xac` 로 받은 겨눔 수
     unsigned long long hurts_ = 0;              // 닿은 피해 전부 (근접+투사체+소환수)
 
     std::vector<uint8_t> infoBody_;
