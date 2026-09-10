@@ -41,6 +41,10 @@ target_link_libraries(nox_opcount PRIVATE nox_proto)
 add_executable(nox_verify server/src/verify_update.cpp)
 target_link_libraries(nox_verify PRIVATE nox_proto)
 
+# 게임 데이터 파일 속을 보는 도구 — 어떤 수치가 파일에 있나(P6 기획데이터 전수검사)
+add_executable(nox_datadump server/src/datadump.cpp)
+target_link_libraries(nox_datadump PRIVATE nox_proto)
+
 add_executable(proto_test server/tests/proto_test.cpp)
 target_link_libraries(proto_test PRIVATE nox_proto)
 
