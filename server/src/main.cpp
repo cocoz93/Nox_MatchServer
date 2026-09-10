@@ -329,6 +329,7 @@ int main(int argc, char** argv) {
         std::map<std::string, int> noWeight;    // 아이템인데 WEIGHT 가 없어 걸러진 것
         if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
             std::vector<nox::Server::WorldStatic> st;
+            std::vector<nox::Server::WorldProp> props;
             const auto objs = mf.ReadObjects();
             for (size_t i = 0; i < objs.size(); ++i) {
                 const uint16_t wire = tdb.WireByName(objs[i].type);
@@ -337,6 +338,24 @@ int main(int argc, char** argv) {
                 // ★ 아이템이 아닌 것도 **이름을 세어 둔다.** 전에는 조용히 버려서
                 //   「맵에 무엇이 있는지」를 아무도 몰랐다 — estate 161개 중 149개가
                 //   여기서 사라지는데 문·오벨리스크가 그 안에 있는지조차 못 봤다.
+                // ★★ **문과 오벨리스크는 세계에 싣는다** (P5, 2026-09-11).
+                //   estate 실측 — WoodenDoor 3 · ArchedHalfDoor 2 · ObeliskPrimitive 2.
+                //   아이템이 아니라 여태 조용히 버려졌다. 이것들은 집는 게 아니라
+                //   **다루는** 것이다 — 문은 다가가면 열리고, 오벨리스크는 옆에 서면 마나가 찬다.
+                {
+                    const bool isDoor = objs[i].type.find("Door") != std::string::npos;
+                    const bool isObelisk = objs[i].type.find("Obelisk") != std::string::npos;
+                    if (isDoor || isObelisk) {
+                        nox::Server::WorldProp wp;
+                        wp.netCode = static_cast<uint16_t>(i + 75);
+                        wp.type = wire;
+                        wp.x = static_cast<int>(objs[i].x);
+                        wp.y = static_cast<int>(objs[i].y);
+                        wp.kind = isDoor ? nox::PropKind::Door : nox::PropKind::Obelisk;
+                        props.push_back(wp);
+                        continue;
+                    }
+                }
                 if (!ti->isPickup) { ++notPickup[objs[i].type]; continue; }
                 // ★★ **클라가 집을 수 있는 것만 싣는다.**
                 //   클라는 `WEIGHT` 가 있는 물건에만 `ClassPickup` 을 붙인다
@@ -368,6 +387,10 @@ int main(int argc, char** argv) {
             }
             nStat = st.size();
             srv.SetWorldStatics(std::move(st));
+            if (!props.empty()) {
+                std::printf("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());
+                srv.SetWorldProps(std::move(props));
+            }
 
             // ★ 주문 마나 비용 — 같은 파일의 SPEL 섹션에서 온다.
             //   주문 번호(와이어)로 표를 만든다: 번호 → 속이름 → 마나.

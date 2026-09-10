@@ -153,34 +153,13 @@ $clk  = Clicks
 $hit = $null
 $baseMoved = $false
 
-foreach ($name in $moves.Keys) {
-  $mv = $moves[$name]
-  if ($mv.kind -eq 'key') {
-    & $di -Target $cpid -Cmd @(("k {0} 1" -f $mv.code), ("sleep {0}" -f $HoldMs),
-                               ("k {0} 0" -f $mv.code), ("sleep {0}" -f $GapMs)) | Out-Null
-  } else {
-    & $di -Target $cpid -Cmd @(("mb {0} 1" -f $mv.code), ("sleep {0}" -f $HoldMs),
-                               ("mb {0} 0" -f $mv.code), ("sleep {0}" -f $GapMs)) | Out-Null
-  }
-  $now = SeenOps
-  $new = @($now.Keys | Where-Object { -not $seen.ContainsKey($_) } | Sort-Object)
-  $nowAsks = PickAsks
-  $dAsk = $nowAsks - $asks
-  $nowClk = Clicks
-  $dClk = $nowClk - $clk
-  if ($dClk -gt 0) { $baseMoved = $true }
-  $lines += ("{0,-16} | {1,-24} | +{2}" -f $name, ($(if ($new.Count) { $new -join ' ' } else { '(없음)' })), $dAsk)
-  Write-Host ("  {0,-16} 새 오프코드 {1,-22} 줍기요청 +{2} · 클릭 +{3}" -f
-    $name, $(if ($new.Count) { $new -join ' ' } else { '(없음)' }), $dAsk, $dClk)
-  if ($new -contains '73' -or $dAsk -gt 0) {
-    $hit = $name
-    Write-Host ("  ★★ 찾았다 — 「{0}」 가 줍기를 보낸다" -f $name) -ForegroundColor Green
-  }
-  $seen = $now
-  $asks = $nowAsks
-  $clk = $nowClk
-}
 
+# ★★ **순서를 뒤집었다 (2026-09-11, 수단 바꾸기 ④).**
+#   무엇이 달라지나 — **밀려나기 전에 잰다.**
+#   키 스윕이 방향키를 누르며 캐릭터를 **96유닛 밀어냈고**(sw7: 걸음 16),
+#   커서 단계에 왔을 때는 이미 물건에서 떨어져 클라 집기 한계 75px 밖이었다.
+#   「물건까지 거리 0」은 **런 초반 값**이라 그때는 참이었지만 재는 시점엔 거짓이었다.
+#   → 커서 단계를 **먼저** 돌린다. 키 스윕은 그 뒤에 (거기서 밀려나도 무관하다).
 
 # ── 5. ★ 커서를 물건 위에 올리고 왼클릭 ─────────────────────────────
 #
@@ -232,11 +211,9 @@ function Shot([string]$name) {
   else { Write-Host ("  ⚠ 캡처 실패: {0}" -f (Split-Path -Leaf $png)) }
 }
 
-# ★★ **먼저 UI 창을 닫는다.** 4단계 키 스윕이 `I`(인벤토리)와 주문책을 열어 두는데,
-#   창이 열려 있으면 왼클릭이 **UI 로 먹혀** 세계에 안 닿는다.
-#   2026-09-11 캡처(sw6_cursor_on_item.png)에서 인벤토리와 주문책이 둘 다 열려 있었다.
-& $di -Target $cpid -Cmd @('k 0x17 1','sleep 120','k 0x17 0','sleep 400',
-                           'k 0x01 1','sleep 120','k 0x01 0','sleep 600') | Out-Null
+# ⚠ **UI 닫기를 뺐다** — 순서를 뒤집어 이제 이 단계가 **먼저**다.
+#   키 스윕이 아직 안 돌았으니 인벤토리는 닫혀 있고, 여기서 `I` 를 누르면
+#   닫는 게 아니라 **오히려 연다.** (sw6 에서 창이 열려 클릭이 UI 로 먹혔었다)
 
 Write-Host '--- 커서를 물건 위에 올리고 왼클릭 (nox.cfg: MousePickup = Left) ---'
 Shot 'before'
@@ -268,6 +245,37 @@ foreach ($g in $grid) {
     break
   }
   $seen = $now; $asks = $nowAsks; $clk = $nowClk
+}
+
+# ── (뒤로 옮김) 조작을 하나씩 넣으며 새 오프코드를 본다 ──
+if (-not $hit) {
+foreach ($name in $moves.Keys) {
+  $mv = $moves[$name]
+  if ($mv.kind -eq 'key') {
+    & $di -Target $cpid -Cmd @(("k {0} 1" -f $mv.code), ("sleep {0}" -f $HoldMs),
+                               ("k {0} 0" -f $mv.code), ("sleep {0}" -f $GapMs)) | Out-Null
+  } else {
+    & $di -Target $cpid -Cmd @(("mb {0} 1" -f $mv.code), ("sleep {0}" -f $HoldMs),
+                               ("mb {0} 0" -f $mv.code), ("sleep {0}" -f $GapMs)) | Out-Null
+  }
+  $now = SeenOps
+  $new = @($now.Keys | Where-Object { -not $seen.ContainsKey($_) } | Sort-Object)
+  $nowAsks = PickAsks
+  $dAsk = $nowAsks - $asks
+  $nowClk = Clicks
+  $dClk = $nowClk - $clk
+  if ($dClk -gt 0) { $baseMoved = $true }
+  $lines += ("{0,-16} | {1,-24} | +{2}" -f $name, ($(if ($new.Count) { $new -join ' ' } else { '(없음)' })), $dAsk)
+  Write-Host ("  {0,-16} 새 오프코드 {1,-22} 줍기요청 +{2} · 클릭 +{3}" -f
+    $name, $(if ($new.Count) { $new -join ' ' } else { '(없음)' }), $dAsk, $dClk)
+  if ($new -contains '73' -or $dAsk -gt 0) {
+    $hit = $name
+    Write-Host ("  ★★ 찾았다 — 「{0}」 가 줍기를 보낸다" -f $name) -ForegroundColor Green
+  }
+  $seen = $now
+  $asks = $nowAsks
+  $clk = $nowClk
+}
 }
 $lines += ''
 if ($hit) { $lines += ("결과: **{0}** 가 0x73 을 보낸다" -f $hit) }

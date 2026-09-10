@@ -615,6 +615,18 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     if (it == sessions_.end()) return false;
     Session& s = it->second;
     if (!s.inGame || s.respawnAtFrame != 0 || amount <= 0) return false;
+    // ★ **부활 직후 무적** — 살아나자마자 또 죽는 것을 막는다.
+    //
+    //   `kRespawnInvulnTicks`(150 = 5초)는 ◑ 오픈녹스 `playerRespawn` 재구현 값이다.
+    //   전에는 **상수만 있고 아무도 안 봤다**(`GameBalance.h:372`, 참조 0건) — 그래서
+    //   스폰 자리에 서 있던 사람이 되살아나는 즉시 다시 맞았다.
+    //
+    //   ⚠ 「없음」을 프레임 0 으로 나타내지 않는다 — 0 은 진짜 프레임이라 첫 틱에
+    //     되살아난 사람이 영영 무적이 된다. 오늘 이 함정을 두 번 밟았다(`closing`·`hasAim`).
+    if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) {
+        ++invulnBlocked_;
+        return false;
+    }
 
     const int before = s.health;
     int after = before - amount;
@@ -904,6 +916,70 @@ void Server::AssignTeams() {
     for (Session* s : ins) {
         s->team = next;
         next = (next == 1) ? 2 : 1;
+    }
+}
+
+// 문과 오벨리스크를 매 틱 돌본다 (P5).
+//
+// ★ **문은 다가가면 열린다** — 클라가 요청을 안 보낸다.
+//   근거: 정품 덤프에 문 관련 **클라→서버 메시지가 0건**이고, 서버→클라 `0xb2` 만
+//   201건 흐른다. 즉 여는 판단은 서버가 한다.
+//   ⚠ 여는 거리와 각 값은 ➖ 우리 값이다(`Server.h` 주석 참조).
+//
+// ★ **오벨리스크는 옆에 서면 마나를 채운다** — gamedata 에 Regen 키가 0개이고
+//   오벨리스크 항목도 없다. 정품 온라인의 마나 회복 수단이 이것으로 보인다.
+//   ⚠ 채우는 속도는 ➖ 우리 값. P4 캠페인에서 정품 시계열이 잡히면 그 값으로 고친다.
+void Server::UpdateProps(std::vector<OutPacket>& out) {
+    if (props_.empty()) return;
+    for (auto& p : props_) {
+        double best = 1e18;
+        Session* nearest = nullptr;
+        for (auto& kv : sessions_) {
+            Session& s = kv.second;
+            if (!s.inGame || s.respawnAtFrame != 0) continue;
+            const double dx = p.x - s.x, dy = p.y - s.y;
+            const double d2 = dx * dx + dy * dy;
+            if (d2 < best) { best = d2; nearest = &s; }
+        }
+        if (!nearest) continue;
+
+        if (p.kind == PropKind::Door) {
+            const bool want = best <= kDoorOpenDist * kDoorOpenDist;
+            if (want == p.open) continue;          // 안 바뀌면 안 보낸다
+            p.open = want;
+            if (want) ++doorsOpened_;
+            uint8_t full[4] = {
+                static_cast<uint8_t>(Op::DOOR_ANGLE),
+                static_cast<uint8_t>(p.netCode),
+                static_cast<uint8_t>(p.netCode >> 8),
+                static_cast<uint8_t>(want ? kDoorOpen : kDoorClosed),
+            };
+            Broadcast(/*viaSeq=*/false, full, sizeof(full), out);
+        } else {
+            if (best > kObeliskDist * kObeliskDist) continue;
+            if (frame_ < p.nextManaFrame) continue;
+            p.nextManaFrame = frame_ + kObeliskEveryTicks;
+            if (nearest->mana >= nearest->maxMana) continue;
+            const int after = nearest->mana + kObeliskManaPerTick;
+            nearest->mana = static_cast<uint16_t>(
+                after > nearest->maxMana ? nearest->maxMana : after);
+            ++obeliskMana_;
+            uint8_t m[5] = {
+                static_cast<uint8_t>(Op::REPORT_MANA),
+                static_cast<uint8_t>(nearest->netCode),
+                static_cast<uint8_t>(nearest->netCode >> 8),
+                static_cast<uint8_t>(nearest->mana),
+                static_cast<uint8_t>(nearest->mana >> 8),
+            };
+            EmitSeq(*nearest, m, sizeof(m), out);   // 홀로 — 제 마나다
+            uint8_t ob[4] = {
+                static_cast<uint8_t>(Op::OBELISK_CHARGE),
+                static_cast<uint8_t>(p.netCode),
+                static_cast<uint8_t>(p.netCode >> 8),
+                0x32,                               // 표본 전수가 0x32 였다
+            };
+            Broadcast(/*viaSeq=*/true, ob, sizeof(ob), out);
+        }
     }
 }
 
@@ -2400,6 +2476,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     }
 
     UpdateFlags(out);
+    UpdateProps(out);   // 문·오벨리스크 (P5)
 
     // 판 시계 — 실측 간격이 2초 남짓이었다.
     if (frame_ >= nextTimerFrame_) {
@@ -2539,6 +2616,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         // 죽어 있고 때가 됐으면 되살린다.
         if (s.respawnAtFrame != 0 && frame_ >= s.respawnAtFrame) {
             s.respawnAtFrame = 0;
+            // ★ 되살아난 뒤 얼마간은 안 맞는다. 상수는 있었는데 아무도 안 봤다.
+            s.invulnUntilFrame = frame_ + kRespawnInvulnTicks;
+            s.invulnUntilSet = true;
             s.health = s.maxHealth;
             // 마나도 되돌린다. ➖ **우리 값이다** — 정품이 부활에 마나를 채우는지는
             // 표본이 없어 모른다. 0 으로 되살리면 위저드·컨저러가 아무것도 못 하므로

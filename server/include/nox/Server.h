@@ -34,6 +34,27 @@ namespace nox {
 //   그래서 「모르는 갈래」를 None 으로 두고 **아무 일도 안 일어나게** 한다 — 지어내지 않는다.
 enum class UseKind : uint8_t { None = 0, Health, Mana };
 
+// 세계에서 **다루는** 것 — 집는 게 아니다.
+enum class PropKind : uint8_t { Door = 0, Obelisk };
+
+// 문이 다가가면 열리는 거리 · 오벨리스크가 마나를 채워 주는 거리.
+// ➖ **우리 값이다.** 정품 수치는 파일에도 캡처에도 없다.
+// 문은 벽 한 칸(23)의 세 배쯤, 오벨리스크는 「옆에 선다」니 그보다 가깝게 잡았다.
+constexpr double kDoorOpenDist = 70.0;
+constexpr double kObeliskDist = 50.0;
+// 오벨리스크가 한 틱에 채우는 마나. ➖ 우리 값 — gamedata 에 오벨리스크 항목이 없고
+// 주석이 가리키는 `OblivionStaffRechargeRate = 2` 하나가 지팡이 쪽에서 겸한다.
+// 30Hz 에 2 면 초당 60 이라 너무 빠르다. 여섯 틱에 1 로 둔다(초당 5).
+constexpr uint32_t kObeliskEveryTicks = 6;
+constexpr int kObeliskManaPerTick = 1;
+// 문 각도 — `0xb2` 의 셋째 바이트. 정품 표본에 `00`·`10`·`18` 이 보였다(`CAP_server_0906`).
+// ◑ 값의 뜻(각도 단위)은 모른다. **닫힘 0 · 열림 0x18** 두 값만 쓴다.
+constexpr uint8_t kDoorClosed = 0x00;
+constexpr uint8_t kDoorOpen = 0x18;
+// 주운 아이템이 되살아나기까지. ➖ 우리 값 — `thing.bin` 의 `FLAGS = RESPAWN` 이
+// 「되살아난다」는 것만 말하고 **얼마 뒤인지는 안 적혀 있다**. 30Hz 기준 30초.
+constexpr uint32_t kItemRespawnTicks = 900;
+
 struct OutPacket {
     std::string to;
     std::vector<uint8_t> data;
@@ -214,6 +235,11 @@ struct Session {
     int aimX = 0, aimY = 0;
     uint32_t aimAtFrame = 0;
     uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
+    // ★ **부활 직후 무적이 끝나는 프레임.** 살아나자마자 또 죽는 것을 막는다.
+    //   ⚠ 「없음」을 0 으로 겸하지 않는다 — 0 은 진짜 프레임 번호라, 첫 틱에 되살아난
+    //     사람이 영영 무적이 된다. 오늘 같은 함정을 두 번 밟았다(`closing`·`hasAim`).
+    bool invulnUntilSet = false;
+    uint32_t invulnUntilFrame = 0;
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
     uint8_t team = 0;              // 0 = 무소속 · 1 = 빨강 · 2 = 파랑
@@ -540,6 +566,28 @@ public:
         int useAmount = 0;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
+
+    // ── 다루는 것 — 문·오벨리스크 (P5) ────────────
+    //
+    // 집는 게 아니라 **다가가면 반응하는** 것들이다. estate 실측 —
+    // WoodenDoor 3 · ArchedHalfDoor 2 · ObeliskPrimitive 2.
+    struct WorldProp {
+        uint16_t netCode = 0;
+        uint16_t type = 0;
+        int x = 0, y = 0;
+        PropKind kind = PropKind::Door;
+        bool open = false;          // 문만 쓴다
+        uint32_t nextManaFrame = 0; // 오벨리스크만 쓴다
+    };
+    void SetWorldProps(std::vector<WorldProp> v) { props_ = std::move(v); }
+    size_t WorldPropCount() const { return props_.size(); }
+    // 시험용 — 그 문이 열려 있나
+    bool PropOpen(uint16_t netCode) const {
+        for (const auto& p : props_) if (p.netCode == netCode) return p.open;
+        return false;
+    }
+    unsigned long long doorsOpened() const { return doorsOpened_; }
+    unsigned long long obeliskMana() const { return obeliskMana_; }
     void SetAoi(bool on) { aoiOn_ = on; }
 
     // ── 독립 모드 (P5-c-2) ──────────────────────
@@ -655,6 +703,9 @@ public:
     // 깃발 판 승자 `0x57`(8B) · 깃발 상태 HUD `0xd8`(6B).
     // ⭕ 둘 다 오픈녹스 클라 원본에서 짜임 확정(2026-09-11). 우리 덤프 표본은 0건인데
     //   그 까닭은 **정품 녹음에 CTF 판이 한 판도 없어서**다.
+    // 문·오벨리스크를 매 틱 돌본다 (P5). 문은 다가가면 열리고, 오벨리스크는 마나를 채운다.
+    void UpdateProps(std::vector<OutPacket>& out);
+
     void SendFlagWinner(uint8_t team, std::vector<OutPacket>& out);
     void SendFlagStatus(std::vector<OutPacket>& out);
 
@@ -837,6 +888,8 @@ public:
     unsigned long long roundsPlayed() const { return roundsPlayed_; }
     // 깃발 HUD 를 몇 번 보냈나. **매 틱 수준으로 오르면 과잉이다**(0x5e 270배 사고 참조).
     unsigned long long flagStatusSent() const { return flagStatusSent_; }
+    // 부활 무적이 막은 피해 횟수. 0 이면 무적이 한 번도 안 걸린 것이다.
+    unsigned long long invulnBlocked() const { return invulnBlocked_; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
     void DebugCapture(const std::string& addr, int n) {
         auto it = sessions_.find(addr);
@@ -1095,6 +1148,7 @@ private:
     uint32_t restartAtFrame_ = 0;      // 이 프레임에 판을 다시 연다. 0 이면 예약 없음
     unsigned long long roundsPlayed_ = 0;
     unsigned long long flagStatusSent_ = 0;   // 깃발 HUD 를 보낸 횟수 (과잉 감시용)
+    unsigned long long invulnBlocked_ = 0;    // 부활 무적으로 막은 피해 횟수
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)
@@ -1131,6 +1185,9 @@ private:
     // 스폰 자리를 사람마다 몇 픽셀씩 벌리나. 기본 40 은 근접 사거리(45) 안이다.
     int spawnSpread_ = 40;
     std::vector<WorldStatic> statics_;
+    std::vector<WorldProp> props_;
+    unsigned long long doorsOpened_ = 0;
+    unsigned long long obeliskMana_ = 0;
     bool aoiOn_ = false;
     bool standalone_ = false;
     std::string saMapName_;

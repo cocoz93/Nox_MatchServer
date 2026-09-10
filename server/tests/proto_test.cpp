@@ -792,6 +792,117 @@ std::vector<uint8_t> CodePacket(nox::Op op, uint16_t netCode) {
     return p;
 }
 
+// ── P5 — 부활 무적 · 문 · 오벨리스크 ────────────────────────────────────
+//
+// ★ 부활 무적 — 상수(`kRespawnInvulnTicks` 150)는 있었는데 **아무도 안 봤다**.
+//   그래서 스폰 자리에 서 있던 사람이 되살아나는 즉시 다시 맞았다.
+// ★ 문 — **다가가면 열린다.** 클라가 요청을 안 보낸다(정품 덤프에 문 관련
+//   클라→서버 0건, 서버→클라 `0xb2` 만 201건). 여는 판단은 서버가 한다.
+// ★ 오벨리스크 — 옆에 서면 마나가 찬다. gamedata 에 Regen 키가 0개라
+//   이것이 정품 온라인의 마나 회복 수단으로 보인다.
+void TestPropsAndInvuln() {
+    const std::string a = "10.9.8.1:41081";
+
+    // 부활 무적 — 죽고 되살아난 직후엔 안 맞는다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
+        std::vector<nox::OutPacket> kill;
+        srv.Damage(a, srv.HealthOf(a) + 100, kill);
+        Check(!srv.IsAlive(a), "안 죽음");
+
+        std::vector<nox::OutPacket> rez;
+        srv.Tick(33 * (nox::kRespawnDelayTicks + 2), rez);
+        Check(srv.IsAlive(a), "안 되살아남");
+        const uint16_t full = srv.HealthOf(a);
+
+        const unsigned long long before = srv.invulnBlocked();
+        std::vector<nox::OutPacket> hit;
+        srv.Damage(a, 30, hit);
+        Check(srv.HealthOf(a) == full, "부활 직후인데 맞았다 — 무적이 안 걸렸다");
+        Check(srv.invulnBlocked() == before + 1, "무적으로 막은 것을 안 셌다");
+
+        std::vector<nox::OutPacket> later;
+        srv.Tick(33 * (nox::kRespawnDelayTicks + nox::kRespawnInvulnTicks + 5), later);
+        std::vector<nox::OutPacket> hit2;
+        srv.Damage(a, 30, hit2);
+        Check(srv.HealthOf(a) < full, "무적이 끝났는데도 안 맞는다 — 영영 무적이다");
+    }
+
+    // 문 — 멀면 닫혀 있고, 다가가면 열린다
+    {
+        nox::Server s2;
+        s2.DebugEnterGame(a, 728);
+        s2.DebugMoveTo(a, 5000, 5000);
+        std::vector<nox::Server::WorldProp> ps;
+        nox::Server::WorldProp door;
+        door.netCode = 300; door.type = 306;
+        door.x = 1000; door.y = 1000;
+        door.kind = nox::PropKind::Door;
+        ps.push_back(door);
+        s2.SetWorldProps(ps);
+        Check(s2.WorldPropCount() == 1, "문을 안 실었다");
+
+        std::vector<nox::OutPacket> warm;
+        s2.Tick(0, warm);
+        std::vector<nox::OutPacket> far;
+        s2.Tick(33, far);
+        Check(!s2.PropOpen(300), "멀리 있는데 문이 열렸다");
+
+        s2.DebugMoveTo(a, 1010, 1000);
+        std::vector<nox::OutPacket> nearOut;
+        s2.Tick(66, nearOut);
+        Check(s2.PropOpen(300), "다가갔는데 문이 안 열렸다");
+        const auto msgs = FlattenTo(nearOut, a);
+        const auto* d = FindMsg(msgs, static_cast<uint8_t>(nox::Op::DOOR_ANGLE));
+        Check(d != nullptr, "0xb2 가 안 나감");
+        if (d) {
+            Check(d->size() == 4, "0xb2 가 4바이트가 아님");
+            Check((*d)[3] == nox::kDoorOpen, "열림 각이 안 실렸다");
+        }
+        // 안 바뀌면 다시 안 보낸다 — 매 틱 보내면 클라가 죽는다
+        std::vector<nox::OutPacket> again;
+        s2.Tick(99, again);
+        Check(FindMsg(FlattenTo(again, a), static_cast<uint8_t>(nox::Op::DOOR_ANGLE)) == nullptr,
+              "안 바뀌었는데 0xb2 를 또 보냈다");
+    }
+
+    // 오벨리스크 — 옆에 서면 마나가 찬다
+    {
+        nox::Server s3;
+        s3.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        s3.DebugMoveTo(a, 1000, 1000);
+        s3.SetSpellCost(27, 60);
+        std::vector<nox::OutPacket> burn;
+        const std::vector<uint8_t> sp = SpellPacket(27, false);
+        s3.OnPacket(a, sp.data(), sp.size(), burn);
+        const uint16_t low = s3.ManaOf(a);
+        Check(low < nox::ManaOnline(nox::CharClass::Wizard), "마나를 안 썼다");
+
+        std::vector<nox::Server::WorldProp> ps;
+        nox::Server::WorldProp ob;
+        ob.netCode = 400; ob.type = 121;
+        ob.x = 1010; ob.y = 1000;
+        ob.kind = nox::PropKind::Obelisk;
+        ps.push_back(ob);
+        s3.SetWorldProps(ps);
+
+        std::vector<nox::OutPacket> warm;
+        s3.Tick(0, warm);
+        std::vector<nox::OutPacket> fill;
+        s3.Tick(33 * (nox::kObeliskEveryTicks * 4), fill);
+        Check(s3.ManaOf(a) > low, "오벨리스크 옆인데 마나가 안 찼다");
+        Check(s3.obeliskMana() > 0, "오벨리스크가 채운 것을 안 셌다");
+        Check(FindMsg(FlattenTo(fill, a), static_cast<uint8_t>(nox::Op::REPORT_MANA)) != nullptr,
+              "마나 0x45 가 안 나감");
+    }
+
+    std::printf("  P5 — 부활 무적 · 문은 다가가면 열림(안 바뀌면 안 보냄) · 오벨리스크가 마나를 채움\n");
+}
+
 // ── 판 흐름 — 팀 배정과 판 다시 열기 ────────────────────────────────────
 //
 // ★ 전에 두 군데가 틀렸다 (2026-09-11 감사) —
@@ -3159,6 +3270,7 @@ int main() {
     TestAoiSightExit();
     TestSpellMana();
     TestManaSpend();
+    TestPropsAndInvuln();
     TestRoundFlow();
     TestAim();
     TestChat();
