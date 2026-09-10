@@ -76,13 +76,26 @@ std::vector<uint8_t> BuildJoinBundle(uint16_t netCode, uint32_t frame,
     m.insert(m.end(), kB0Body, kB0Body + sizeof(kB0Body));
 
     // 2d NEW_PLAYER — 번호 + 정보 97 + 꼬리 29
+    const std::vector<uint8_t> np = BuildNewPlayer(netCode, info97);
+    m.insert(m.end(), np.begin(), np.end());
+
+    return m;
+}
+
+// 2d NEW_PLAYER 하나만. **남을 소개할 때** 쓴다.
+//
+// ★ 왜 따로 필요한가 — 독립 모드에는 녹음(`joinBody_`)이 없어서 `EmitNewPlayer` 가
+//   조기 return 하고 있었다(2026-09-10 감사). 그래서 접속 묶음 안 자기 소개 하나만
+//   나가고 **남을 소개하는 2d 가 한 번도 안 나갔다.**
+std::vector<uint8_t> BuildNewPlayer(uint16_t netCode, const uint8_t* info97) {
+    std::vector<uint8_t> m;
+    m.reserve(kNewPlayerSize);
     uint8_t head2d[3] = { 0x2d };
     PutU16(head2d + 1, netCode);
     m.insert(m.end(), head2d, head2d + 3);
     if (info97) m.insert(m.end(), info97, info97 + 97);
     else m.insert(m.end(), 97, 0);
     m.insert(m.end(), kNewPlayerTail, kNewPlayerTail + sizeof(kNewPlayerTail));
-
     return m;
 }
 

@@ -277,6 +277,7 @@ constexpr double kEnergyBoltPerFrame[5] = { 1.3, 1.6, 2.0, 2.3, 2.6 };
 constexpr double kLightningPerFrame     = 1.5;
 constexpr double kLightningRange        = 240.0;   // ⭕ gamedata `LightningRange`
 
+
 // ── 속도 ─────────────────────────────────────────────────────────
 //
 // ◑ `thing.bin` 의 `SPEED` 는 **32로 나눈다.** 투사체(CLASS 에 MISSILE)면 ×2.
@@ -293,6 +294,16 @@ constexpr double kThingSpeedDivisor  = 32.0;
 constexpr double kMissileSpeedFactor = 2.0;
 constexpr double kPlayerWalkPerFrame = 96.0 / kThingSpeedDivisor;                        // 3.0
 constexpr double kFireballPerFrame   = 192.0 / kThingSpeedDivisor * kMissileSpeedFactor; // 12.0
+
+// 날아가는 것의 **수명** ⭕ gamedata.bin — 목표를 물었으면 45, 아니면 15 프레임(아레나).
+//   `GAME4_3.c:5787` — `v2[1]`(물린 목표)이 있으면 Targeted, 없으면 UnTargeted 를 읽고
+//   `gameFrame() - 만든프레임 <= 그 값` 인 동안만 산다.
+// ★ 우리 파이어볼은 목표를 안 문다 → **15 프레임**.
+//   한 틱에 12.0 씩 가므로 **180 유닛**을 날면 사라진다.
+//   ⚠ 전에 쓰던 210 은 「걸음 서른 걸음쯤」으로 지어낸 값이었다.
+constexpr int    kTargetedSpellFrames   = 45;
+constexpr int    kUnTargetedSpellFrames = 15;
+constexpr double kProjectileMaxTravel   = kFireballPerFrame * kUnTargetedSpellFrames;
 
 // ── 몬스터 ⭕ monster.bin (아레나 값) ─────────────────────────────
 //

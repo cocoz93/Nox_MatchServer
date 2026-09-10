@@ -168,6 +168,9 @@ struct Session {
     // 체력·마나·힘은 **직업과 레벨이 정한다** — 전에는 셋 다 위저드 값으로 굳어 있었다.
     CharClass charClass = CharClass::Warrior;
     uint8_t   charLevel = kMaxLevel;
+    // ★ 클라가 보낸 접속 정보 97바이트 그대로. **남에게 이 사람을 소개할 때** 쓴다
+    //   (`2d NEW_PLAYER`). 독립 모드에는 녹음이 없어 이것 말고는 만들 재료가 없다.
+    std::vector<uint8_t> info97;
     uint16_t  maxMana   = 0;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
 
@@ -206,10 +209,12 @@ constexpr uint16_t kDefaultMaxHealth = 75;
 // ★ 전에 쓰던 150 은 **부활 직후 무적 시간**이었다. 값은 실재하는데 뜻이 달랐다.
 constexpr uint32_t kRespawnDelayTicks = kRespawnMinTicks;
 
-// ⚠ **주문 사거리도 실측이 아니다.** 맞았는지 안 맞았는지 가릴 근거가 덤프에 없다
-//   (`0x42` 가 나간 순간의 두 사람 거리를 짝지을 수 없었다). 걸음 7/틱 기준
-//   서른 걸음쯤으로 두었을 뿐이다.
-constexpr double kSpellRange = 210.0;
+// 날아가는 것이 사라지기 전까지 가는 거리 ⭕ — **투사체 수명 × 속도**다.
+//   목표를 안 문 주문은 `ARENA UnTargetedSpellLifetime = 15` 프레임을 산다
+//   (gamedata.bin · opennox GAME4_3.c:5787). 한 틱에 12.0 이니 **180 유닛**.
+// ★ 전에 쓰던 210 은 「걸음 서른 걸음쯤」으로 지어낸 값이었다.
+// ⚠ 이름이 「주문 사거리」지만 실제로 쓰는 곳은 **투사체 비행 한계** 한 자리다.
+constexpr double kSpellRange = kProjectileMaxTravel;
 
 // ── 근접 공격 (왼버튼) ──────────────────────────────────────
 //

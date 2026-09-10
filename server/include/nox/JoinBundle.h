@@ -28,6 +28,8 @@ namespace nox {
 
 constexpr size_t kJoinBundleSize = 216;
 constexpr size_t kUseMapSize = 41;
+constexpr size_t kNewPlayerSize = 129;   // 2d + 번호2 + 정보97 + 꼬리29
+
 
 // 접속 묶음 216B. info97 이 null 이면 그 97자리는 0 — **실전에서는 꼭 채울 것**
 // (이름·직업·외모가 전부 여기서 나온다).
@@ -37,6 +39,9 @@ std::vector<uint8_t> BuildJoinBundle(uint16_t netCode, uint32_t frame,
 // USE_MAP 41B. mapName 은 "estate.map" 꼴(32자 미만).
 std::vector<uint8_t> BuildUseMap(const std::string& mapName, uint32_t mapCrc,
                                  uint32_t frame);
+
+// 2d NEW_PLAYER 하나만 — **남을 소개할 때**. 독립 모드에는 녹음이 없어 이것으로 만든다.
+std::vector<uint8_t> BuildNewPlayer(uint16_t netCode, const uint8_t* info97);
 
 // 첫 스냅샷의 cc 꼬리부(381B) — 사람 하나를 세우는 고정 절차.
 // ⚠ 장비 색·오벨리스크 대상 등 낱값은 estate 실측 그대로다(뜻 미상).

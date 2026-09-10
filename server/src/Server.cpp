@@ -114,9 +114,20 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
 // 실측 원문: `cc 20 00 07 | 6a cb 02 00 00 00 00`  (속 7바이트짜리 REPORT_CLIENT_STATUS)
 void Server::EmitNewPlayer(Session& to, const Session& who, uint8_t status,
                            std::vector<OutPacket>& out) {
-    if (joinBody_.size() < kJoinNewPlayerAt + kJoinNewPlayerLen) return;
-    std::vector<uint8_t> np(joinBody_.begin() + kJoinNewPlayerAt,
-                            joinBody_.begin() + kJoinNewPlayerAt + kJoinNewPlayerLen);
+    // ★★ **녹음이 없으면 조립한다** (2026-09-10 감사에서 잡음).
+    //   전에는 여기서 그냥 되돌아갔다. 독립 모드에는 `joinBody_` 가 비어 있어
+    //   **남을 소개하는 `2d` 가 한 번도 안 나갔다** — 접속 묶음 안 자기 소개 하나뿐이었다.
+    //   소개가 없으면 클라에 그 사람의 playerInfo 가 없어 이름·외모가 안 서고,
+    //   상태 알림(`6a`)도 빈손이면 되돌아간다(09-09 기록).
+    std::vector<uint8_t> np;
+    if (joinBody_.size() >= kJoinNewPlayerAt + kJoinNewPlayerLen) {
+        np.assign(joinBody_.begin() + kJoinNewPlayerAt,
+                  joinBody_.begin() + kJoinNewPlayerAt + kJoinNewPlayerLen);
+    } else if (!who.info97.empty()) {
+        np = BuildNewPlayer(who.netCode, who.info97.data());
+    } else {
+        return;   // 재료가 없다 — 지어내지 않는다
+    }
     PutU16(np.data() + 1, who.netCode);
     // ★★★ **이름을 사람마다 갈라 준다.** 서두가 녹음본이라 모두가 같은 "Jack" 이었다 —
     //   이름·외모가 똑같으니 클라가 **같은 사람으로 보고 하나만 그렸을** 수 있다.
@@ -241,7 +252,6 @@ static PetTuning TuningFor(uint16_t type) {
 //   한 번 시전이 얼마나 이어지는지를 곱해야 한다 —
 //   `ARENA TargetedSpellLifetime = 45` 프레임(⭕ gamedata.bin)을 쓴다.
 constexpr uint8_t kAssumedSpellLevel = 5;      // ⚠ 와이어에 없어 최대로 가정
-constexpr int     kTargetedSpellFrames = 45;   // ⭕ gamedata `ARENA TargetedSpellLifetime`
 
 int Server::SpellDamage(uint8_t spell) {
     switch (spell) {
@@ -755,6 +765,10 @@ void Server::StartCtf(int redX, int redY, int blueX, int blueY) {
 // 속 짜임은 opennox `InformTeamPlayer` 그대로다: PlayerID 4 + TeamID 4.
 void Server::SendFlagInform(InformCode code, uint16_t playerNetCode, uint8_t team,
                             std::vector<OutPacket>& out) {
+    // ★★ **본문 길이는 갈래가 정한다** — 늘 10바이트로 보내면 안 된다(2026-09-10 감사).
+    //   `Wire.h` 의 길이표: 깃발 회수(4)는 본문 **4**, 줍기·놓기·득점(5·6·7)은 **8**.
+    //   회수에 8을 실으면 남는 4바이트를 클라가 **다음 메시지의 시작으로 읽어** 그 뒤가
+    //   통째로 밀린다. 우리가 보내는 넷 중 회수 하나만 어긋나 있었다.
     uint8_t msg[10];
     msg[0] = static_cast<uint8_t>(Op::INFORM);
     msg[1] = static_cast<uint8_t>(code);
@@ -764,9 +778,11 @@ void Server::SendFlagInform(InformCode code, uint16_t playerNetCode, uint8_t tea
     msg[4] = msg[5] = 0;
     msg[6] = team;
     msg[7] = msg[8] = msg[9] = 0;
+    const size_t body = (code == InformCode::FlagRetrieve) ? 4 : 8;
+    const size_t n = 2 + body;
     for (auto& kv : sessions_) {
         if (kv.second.inGame) {
-            Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+            Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, n, out);
         }
     }
 }
@@ -1290,6 +1306,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 // ★★ **직업과 레벨을 읽어 스탯을 정한다** (2026-09-10 기획데이터 이식).
                 //   전에는 누구에게나 75/150 — 녹음본 주인공(위저드) 값이 굳어 있었다.
                 //   그래서 워리어가 정본 150 대신 75 로 놀았다. 자리는 `GameBalance.h`.
+                if (it.bodyLen() >= kJoinPlayerInfoLen)
+                    s.info97.assign(it.body(), it.body() + kJoinPlayerInfoLen);
                 if (it.bodyLen() > kInfoLevelAt) {
                     const uint8_t c = it.body()[kInfoClassAt];
                     s.charClass = (c <= 2) ? static_cast<CharClass>(c) : CharClass::Warrior;
