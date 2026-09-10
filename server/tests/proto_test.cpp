@@ -481,6 +481,157 @@ void TestDeathFlow() {
     std::printf("  죽음·부활 흐름 — 맞음→죽음→기다림→부활\n");
 }
 
+// ── 두루 보내기 — 남이 맞고·죽고·되살아나는 것이 **내 화면에도** 오는가 ─────
+//
+// 전에는 피해·죽음·부활을 **맞은 본인에게만** 보냈다. 옆 사람 화면에서는 아무 일도
+// 안 일어났고, 나간 사람 몸은 영영 서 있었다.
+//
+// ★ 이 시험이 앞선 것들과 다른 점 = **받는 쪽을 가려서 본다**(`FlattenTo`).
+//   `Flatten` 은 나간 것을 다 합치므로 「본인에게만 갔다」와 「모두에게 갔다」를 **못 가른다.**
+//   실제로 이 프로젝트에서 시험이 통과했는데 한 줄도 안 고쳐진 적이 있다.
+void TestBroadcastToOthers() {
+    nox::Server srv;
+    const std::string a = "10.9.0.1:41001";
+    const std::string b = "10.9.0.2:41002";
+    srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+    srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+
+    // ① 피해 — a 가 맞으면 **b 에게도** a 의 번호로 `0x42` 가 가야 한다
+    {
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 30, out);
+        const auto toB = FlattenTo(out, b);
+        const auto* d = FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
+        Check(d != nullptr, "남이 맞은 0x42 가 옆 사람에게 안 감");
+        if (d) {
+            Check(d->size() == 5, "방송된 0x42 가 5바이트가 아님");
+            Check((*d)[1] == 0xd8 && (*d)[2] == 0x02,
+                  "방송된 0x42 의 번호가 맞은 사람(728)이 아님");
+            const int16_t delta = static_cast<int16_t>((*d)[3] | ((*d)[4] << 8));
+            Check(delta == -30, "방송된 0x42 의 증감이 -30 이 아님");
+        }
+        // ⚠⚠ **번호가 없는 `0x43` 은 남에게 새면 안 된다.** 받는 쪽이 제 것으로 읽어
+        //     남의 체력바가 망가진다. 이게 이 조각에서 제일 쉽게 저지를 실수다.
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH)) == nullptr,
+              "번호 없는 0x43 이 남에게 새어 나감");
+        // 본인은 당연히 둘 다 받는다
+        const auto toA = FlattenTo(out, a);
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH)) != nullptr,
+              "본인이 0x43 을 못 받음");
+    }
+
+    // ② 죽음 — `0xE8` 이 옆 사람에게
+    {
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, srv.HealthOf(a) + 100, out);
+        Check(!srv.IsAlive(a), "치명타를 맞고도 안 죽음");
+        const auto toB = FlattenTo(out, b);
+        const auto* d = FindMsg(toB, static_cast<uint8_t>(nox::Op::PLAYER_DIED));
+        Check(d != nullptr, "남이 죽은 0xE8 이 옆 사람에게 안 감");
+        if (d) {
+            Check(d->size() == 3, "방송된 0xE8 이 3바이트가 아님");
+            Check((*d)[1] == 0xd8 && (*d)[2] == 0x02, "방송된 0xE8 의 번호가 죽은 사람이 아님");
+        }
+    }
+
+    // ③ 부활 — `0xE9`·`0xDD` 가 옆 사람에게
+    {
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);                                        // 첫 호출은 기준점만
+        std::vector<nox::OutPacket> out;
+        srv.Tick(33 * (nox::kRespawnDelayTicks + 2), out);
+        Check(srv.IsAlive(a), "기다렸는데 안 되살아남");
+        const auto toB = FlattenTo(out, b);
+        const auto* r = FindMsg(toB, static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN));
+        Check(r != nullptr, "남이 되살아난 0xE9 가 옆 사람에게 안 감");
+        if (r) {
+            Check(r->size() == 9, "방송된 0xE9 가 9바이트가 아님");
+            Check((*r)[1] == 0xd8 && (*r)[2] == 0x02, "방송된 0xE9 의 번호가 다름");
+        }
+        const auto* tot = FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
+        Check(tot != nullptr, "남의 되살아난 체력 0xDD 가 옆 사람에게 안 감");
+        if (tot) Check(tot->size() == 7, "방송된 0xDD 가 7바이트가 아님");
+    }
+
+    std::printf("  두루 보내기 — 피해·죽음·부활이 옆 사람에게 · 0x43 은 안 새어 나감\n");
+}
+
+// 받는 쪽으로 간 **생바이트** 안에서 이 토막을 몇 번 보는가.
+//
+// ⚠ `FlattenTo` 로는 이걸 못 센다 — 갱신 뒤에 이어 붙인 메시지는 `0xa4` 한 덩어리
+//   안에 들어가 있어 「메시지 목록」으로 갈라지지 않는다. 그래서 바이트로 센다.
+size_t CountBytes(const std::vector<nox::OutPacket>& out, const std::string& to,
+                  const std::vector<uint8_t>& pat) {
+    size_t hits = 0;
+    for (const auto& p : out) {
+        if (p.to != to) continue;
+        const std::vector<uint8_t> b = Body(p);
+        if (b.size() < pat.size()) continue;
+        for (size_t i = 0; i + pat.size() <= b.size(); ++i)
+            if (std::equal(pat.begin(), pat.end(), b.begin() + i)) ++hits;
+    }
+    return hits;
+}
+
+// ── 시야 이탈 — 멀어지면 `32` 로 지우는가 ──────────────────────────────
+//
+// 전에는 「반경에 들 때 한 번 소개」만 있고 나갈 때가 없었다. 클라는 한 번 본 것을
+// 영영 들고 있었다.
+// ★ 정품도 이 메시지를 쓴다 — **서버→클라 156건**
+//   (`_evidence/CAP_server_0906.txt`, 2026-09-10 `nox_opcount` 대조). 지어낸 것이 아니다.
+// ★ 판정은 **가까울 때 0 · 멀 때 1** 의 차이로 본다. 한쪽만 보면 우연히 같은
+//   세 바이트가 갱신 속에 있었을 때 속는다.
+void TestAoiSightExit() {
+    nox::Server srv;
+    srv.SetAoi(true);
+    // 시험용 번호 0x4321 — 갱신 속 우연한 세 바이트와 겹칠 확률을 낮추려고 고른 값.
+    const uint16_t kCode = 0x4321;
+    std::vector<nox::Server::WorldStatic> st;
+    st.push_back({ kCode, 1234, 1000, 1000 });
+    srv.SetWorldStatics(st);
+
+    const std::string a = "10.9.1.1:41011";
+    srv.DebugEnterGame(a, 728);
+    srv.DebugMoveTo(a, 1000, 1000);
+
+    const std::vector<uint8_t> pat = {
+        static_cast<uint8_t>(nox::Op::OBJECT_OUT_OF_SIGHT), 0x21, 0x43,
+    };
+
+    std::vector<nox::OutPacket> warm;
+    srv.Tick(0, warm);                     // 첫 호출은 기준점만 잡는다
+
+    // ① 바로 옆에 있을 때 — 소개는 되고 `32` 는 나가면 안 된다
+    size_t nearHits = 0;
+    {
+        std::vector<nox::OutPacket> out;
+        srv.Tick(33, out);
+        nearHits = CountBytes(out, a, pat);
+        Check(nearHits == 0, "옆에 있는데 벌써 32 가 나감");
+    }
+
+    // ② 시야 밖으로 걸어가면 — `32 <번호2>` 가 나가야 한다
+    {
+        srv.DebugMoveTo(a, 1000 + static_cast<int>(nox::kAoiDropRadius) + 300, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(66, out);
+        const size_t farHits = CountBytes(out, a, pat);
+        Check(farHits > nearHits, "시야 밖으로 갔는데 32 가 안 나감");
+    }
+
+    // ③ 되돌아오면 **다시 소개**돼야 한다 — `introAt` 에서 지웠어야 성립한다
+    {
+        srv.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(99, out);
+        // 소개는 `ff` + 전체번호라 갱신 안에 종류·좌표까지 실린다. 번호 두 바이트만 본다.
+        const std::vector<uint8_t> code = { 0x21, 0x43 };
+        Check(CountBytes(out, a, code) > 0, "되돌아왔는데 다시 소개가 안 됨");
+    }
+
+    std::printf("  시야 이탈 — 멀어지면 32 · 되돌아오면 재소개 (정품 156건 대조)\n");
+}
+
 // ── 주문이 실제로 사람을 깎는가 ────────────────────────────────
 //
 // 클라가 보내는 조각을 그대로 만들어 `OnPacket` 에 넣는다.
@@ -2356,6 +2507,8 @@ int main() {
     TestMeasuredConstants();
     TestGameplayMessages();
     TestDeathFlow();
+    TestBroadcastToOthers();
+    TestAoiSightExit();
     TestSpellDamage();
     TestMelee();
     TestThingDb();

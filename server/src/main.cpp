@@ -622,6 +622,20 @@ int main(int argc, char** argv) {
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());
+
+                // ★ **버린 것 한 줄** — 길이를 모르는 메시지를 만나면 그 조각을 통째로
+                //   폐기한다(`Server.cpp` 의 `probe.stopped()`). 사람은 눌렀는데
+                //   아무 일도 안 일어나고 로그에도 안 남던 것이 이것이다.
+                //   여기에 찍어 두면 **놀다가 무엇이 버려지는지**가 바로 보인다.
+                //   ⚠ 옆의 이름은 참고용이다. 진짜 판정은 오프코드 번호로 한다.
+                if (!srv.stoppedByOp().empty()) {
+                    std::printf("[버림] 조각 %llu개 —", srv.stopped());
+                    for (const auto& kv : srv.stoppedByOp()) {
+                        std::printf(" %02x(%s)x%llu", kv.first,
+                                    nox::OpName(static_cast<nox::Op>(kv.first)), kv.second);
+                    }
+                    std::printf("\n");
+                }
                 std::fflush(stdout);
             }
         }

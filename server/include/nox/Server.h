@@ -329,6 +329,10 @@ constexpr double kAoiRadius = 700.0;
 // **0 을 돌려줘 갱신이 통째로 멎는다** — 정적이 많은 자리에서 사람 이동까지 같이
 // 멈추는 사고를 막으려면 수를 잘라야 한다. 가까운 순으로 담아 화면에 보이는 것부터.
 constexpr size_t kAoiMaxPerUpdate = 20;
+// 시야에서 **빼는** 반경. 들일 때보다 넓다 — 경계에 서 있으면 같은 것이 매 틱
+// 들어왔다 나갔다를 되풀이해(플래핑) 별칭과 조각을 헛되이 태운다. 20% 여유를 둔다.
+// ⚠ 이 1.2 배는 실측이 아니라 우리 값이다.
+constexpr double kAoiDropRadius = kAoiRadius * 1.2;
 class Server {
 public:
     // 서버 찾기에 답할 원본. 머리 2바이트와 오프코드를 뺀 **본문**을 넣는다.
@@ -824,6 +828,19 @@ private:
     // 위를 **놀고 있는 모두**에게. 관전을 풀 때 쓴다.
     void BroadcastClientStatus(uint16_t netCode, uint32_t status,
                                std::vector<OutPacket>& out);
+
+    // 한 통을 **놀고 있는 모두**에게. `viaSeq` 면 `0xcc` 껍데기에 싸서, 아니면 생으로.
+    //
+    // ★ 왜 필요한가 — 피해·죽음·부활을 **맞은 본인에게만** 보내고 있었다.
+    //   그래서 남이 맞는 것도 죽는 것도 되살아나는 것도 화면에 안 나타났다.
+    //   두루 보내는 자리마다 손으로 반복문을 쓰던 것을 이 하나로 모은다.
+    //
+    // ⚠⚠ **번호가 실린 메시지만 이 길을 쓴다.** `0x43 REPORT_PLAYER_HEALTH` 처럼
+    //   누구 것인지 안 실리는 메시지를 태우면 받는 쪽이 **제 것으로 읽어**
+    //   남의 체력바가 망가진다. 태워도 되는 것 =
+    //   `0x42`·`0xDD`·`0xE8`·`0xE9`·`0x2E`·`0x31`·`0x32` (전부 첫 두 바이트가 번호다).
+    void Broadcast(bool viaSeq, const uint8_t* msg, size_t n,
+                   std::vector<OutPacket>& out);
 
     // 녹음본 조각 안의 `cc` 껍데기 번호를 **이 세션의 이어달기 번호로 다시 매긴다.**
     //

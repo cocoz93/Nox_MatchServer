@@ -194,6 +194,16 @@ void Server::BroadcastClientStatus(uint16_t netCode, uint32_t status,
     }
 }
 
+void Server::Broadcast(bool viaSeq, const uint8_t* msg, size_t n,
+                       std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame) continue;
+        if (viaSeq) EmitSeq(o, msg, n, out);
+        else        Emit(o, /*reliable=*/false, /*stream=*/0, msg, n, out);
+    }
+}
+
 void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n,
                      std::vector<OutPacket>& out) {
     if (n == 0 || n > 0xFF) return;
@@ -425,6 +435,27 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
     }
 }
 
+// 소개해 둔 정적 중 **시야에서 벗어난 것**을 골라낸다.
+//
+// ★ 왜 필요한가 — 지금까지는 「반경에 들 때 한 번 소개」만 있고 나갈 때가 없었다.
+//   그래서 클라는 한 번 본 것을 영영 들고 있었고, 멀리 걸어가도 안 지웠다.
+//   정품은 `32 OBJECT_OUT_OF_SIGHT` 로 지운다 — 2026-09-10 대조에서 서버→클라
+//   방향으로 **156건**(`_evidence/CAP_server_0906.txt`). 지어낸 메시지가 아니다.
+//
+// ⚠ 골라낸 것은 `introAt` 에서 지운다. 그래야 되돌아왔을 때 다시 소개된다.
+static void CollectAoiExits(std::map<uint16_t, uint32_t>& introAt,
+                            const std::vector<Server::WorldStatic>& statics,
+                            int sx, int sy, std::vector<uint16_t>& gone) {
+    for (const auto& w : statics) {
+        auto it = introAt.find(w.netCode);
+        if (it == introAt.end()) continue;          // 아직 소개도 안 했다
+        const double dx = w.x - sx, dy = w.y - sy;
+        if (dx * dx + dy * dy <= kAoiDropRadius * kAoiDropRadius) continue;
+        gone.push_back(w.netCode);
+        introAt.erase(it);
+    }
+}
+
 uint16_t Server::ProjectileType(uint8_t spell) {
     switch (spell) {
         case 27: return 695;   // ⚠ 추정. 09-06 클라 덤프에는 693 TitanFireball 이 보였다
@@ -572,6 +603,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
 
     // ① 얼마나 깎였나 — 겉에 그냥 실어 보낸다.
     //    실측 `42 d8 02 81 ff` = 번호 728 · −127. 증감은 **부호 있는 16비트**다.
+    //    ★ 번호가 실려 있으니 **모두에게** 보낸다 — 그래야 남이 맞는 것이 보인다.
     {
         const int16_t delta = static_cast<int16_t>(after - before);
         const uint16_t raw = static_cast<uint16_t>(delta);
@@ -581,10 +613,11 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
         msg[2] = static_cast<uint8_t>(s.netCode >> 8);
         msg[3] = static_cast<uint8_t>(raw);
         msg[4] = static_cast<uint8_t>(raw >> 8);
-        Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+        Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);
     }
 
     // ② 내 체력의 절대값 — 껍데기 안이다. 실측 `43 4a 00`.
+    //    ⚠ **이것만은 본인에게만** — 번호가 안 실려서 받는 쪽이 제 것으로 읽는다.
     {
         uint8_t msg[3];
         msg[0] = static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH);
@@ -596,12 +629,13 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     if (s.health > 0) return false;
 
     // ③ 죽음 — 껍데기 안. 실측 `e8 d8 02`.
+    //    ★ **모두에게.** 남이 쓰러지는 것을 봐야 판이 판이 된다.
     {
         uint8_t msg[3];
         msg[0] = static_cast<uint8_t>(Op::PLAYER_DIED);
         msg[1] = static_cast<uint8_t>(s.netCode);
         msg[2] = static_cast<uint8_t>(s.netCode >> 8);
-        EmitSeq(s, msg, sizeof(msg), out);
+        Broadcast(/*viaSeq=*/true, msg, sizeof(msg), out);
     }
     s.respawnAtFrame = frame_ + kRespawnDelayTicks;
     ++s.deaths;
@@ -1676,8 +1710,41 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (frame_ - o.lastSeenFrame > kSessionTimeoutTicks) gone.push_back(kv.first);
         }
         for (const std::string& addr : gone) {
+            // ★ 나갔다고 **알린다.** 전에는 조용히 지우기만 해서 남은 사람들 화면에
+            //   그 몸이 영영 서 있었다. 둘을 같이 보낸다 —
+            //     `2e PLAYER_QUIT`(껍데기 안)  = 사람 목록·점수판에서 뺀다
+            //     `31 DESTROY_OBJECT`(생)      = 세계에서 몸을 지운다
+            //   ⚠ 지우기 **전에** 번호를 떠 둔다. 지운 뒤에는 읽을 자리가 없다.
+            uint16_t netCode = 0;
+            bool wasInGame = false;
+            {
+                auto g = sessions_.find(addr);
+                if (g != sessions_.end()) {
+                    netCode   = g->second.netCode;
+                    wasInGame = g->second.inGame;
+                    // 깃발을 들고 있었으면 그 자리에 떨군다 — 안 그러면 깃발이
+                    // 사라진 사람 손에 남아 판이 영영 안 끝난다.
+                    if (wasInGame) DropFlag(addr, out);
+                }
+            }
             std::printf("조용해서 내보냄: %s\n", addr.c_str());
             sessions_.erase(addr);
+
+            if (wasInGame && netCode != 0) {
+                uint8_t quit[3] = {
+                    static_cast<uint8_t>(Op::PLAYER_QUIT),
+                    static_cast<uint8_t>(netCode),
+                    static_cast<uint8_t>(netCode >> 8),
+                };
+                Broadcast(/*viaSeq=*/true, quit, sizeof(quit), out);
+
+                uint8_t bye[3] = {
+                    static_cast<uint8_t>(Op::DESTROY_OBJECT),
+                    static_cast<uint8_t>(netCode),
+                    static_cast<uint8_t>(netCode >> 8),
+                };
+                Broadcast(/*viaSeq=*/false, bye, sizeof(bye), out);
+            }
         }
     }
 
@@ -1921,7 +1988,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 msg[6] = static_cast<uint8_t>(frame_ >> 24);
                 msg[7] = 0xFF;
                 msg[8] = 0x01;
-                EmitSeq(s, msg, sizeof(msg), out);
+                // ★ **모두에게.** 남이 되살아나는 것도 보여야 한다.
+                //   ⚠ 4바이트에 싣는 것은 서버 전역 `frame_` 그대로다 — 받는 쪽마다
+                //     다시 매기지 않는다. `0x57`(승자)처럼 프레임 문지기가 있는지는
+                //     확인된 바 없고, `frame_` 은 늘 커지므로 0 을 실어 버려지던
+                //     그 사고와는 모양이 다르다. 안 보이면 여기부터 의심할 것.
+                Broadcast(/*viaSeq=*/true, msg, sizeof(msg), out);
             }
             // 되살아난 체력 — 실측 `dd d0 02 4b 00 4b 00` (지금/최대).
             {
@@ -1933,7 +2005,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 msg[4] = static_cast<uint8_t>(s.health >> 8);
                 msg[5] = static_cast<uint8_t>(s.maxHealth);
                 msg[6] = static_cast<uint8_t>(s.maxHealth >> 8);
-                EmitSeq(s, msg, sizeof(msg), out);
+                Broadcast(/*viaSeq=*/true, msg, sizeof(msg), out);
             }
         }
 
@@ -2194,9 +2266,14 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         // 담는 규칙과 상한의 이유는 AppendAoiStatics 주석에. 드나듦은 별칭 임대(2초)가
         // 알아서 정리하고, 같은 자리에 서 있으면 부분집합이 안 바뀌어 별칭도 안정된다.
         // ⚠ 기본 꺼짐(aoiOn_) — 실클라 검증(P4-c) 전에는 켜지 않는다.
-        if (aoiOn_)
+        std::vector<uint16_t> outOfSight;
+        if (aoiOn_) {
             AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,
                              s.tickFrame, s.x, s.y, baseX, baseY, m);
+            // 멀어진 것은 갱신 **항목이 아니라** 별도 메시지로 알린다 —
+            // 갱신에 실을 수 있는 것은 「움직인 것」뿐이라는 규약(P4 8런의 결론) 때문이다.
+            CollectAoiExits(s.staticIntroAt, statics_, s.x, s.y, outOfSight);
+        }
 
         uint8_t body[512];
         body[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
@@ -2230,6 +2307,19 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 p[3] = 0;
                 n += 4;
             }
+        }
+        // ★ **시야에서 빠진 것** — `32 <번호2>`. 갱신 뒤에 이어 붙인다.
+        //   정품도 한 조각 안에 여러 메시지를 이어 담으므로 꼴이 같다.
+        //   ⚠ `n` 이 0(갱신이 통째로 안 나갔다)이면 붙이지 않는다 —
+        //     머리 없는 조각을 만들면 클라가 그 뒤를 통째로 오해한다.
+        for (uint16_t nc : outOfSight) {
+            if (!n) break;
+            if (1 + n + 3 > sizeof(body)) break;
+            uint8_t* p = body + 1 + n;
+            p[0] = static_cast<uint8_t>(Op::OBJECT_OUT_OF_SIGHT);
+            p[1] = static_cast<uint8_t>(nc);
+            p[2] = static_cast<uint8_t>(nc >> 8);
+            n += 3;
         }
         // ★★★ **지연 보고 `0xd7`** — 갱신 조각 끝에 `d7 <번호2> <지연2>` 로 붙는다.
         //   정품 실측(2026-09-08): 본문 `cb 02 00 00`, 갱신 1,287건 대 217건이니
