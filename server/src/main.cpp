@@ -184,6 +184,7 @@ int main(int argc, char** argv) {
     std::string mapPath;
     bool standalone = false;
     bool aoi = false;
+    bool itemAtSpawn = false;   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
     int questCount = 4;
     // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —
     //   안 그러면 걸어가 붙이는 조종까지 필요해져 판정이 흐려진다.
@@ -256,6 +257,14 @@ int main(int argc, char** argv) {
         } else if (a == "--aoi") {
             // 시야 반경(P4-b) — 갱신 스트림에 맵 정적 오브젝트를 반경 안만 싣는다. --map 필수.
             aoi = true;
+        } else if (a == "--item-at-spawn") {
+            // ★ 시험용 — 아이템 하나를 **스폰 자리로 옮긴다.**
+            //
+            //   왜 — 「어떤 조작이 줍기를 보내나」를 재려면 물건 위에 서 있어야 하는데,
+            //   걸어가는 길이 자꾸 어긋난다(2026-09-10 스윕 1차: 도착 실패로 127유닛 밖에서
+            //   재는 바람에 30가지가 전부 0건으로 나왔다. 그건 「없었다」가 아니라 「못 쟀다」다).
+            //   재는 대상은 **조작**이지 걷기가 아니니, 걷기를 빼 버린다.
+            itemAtSpawn = true;
         } else if (a == "--ctf-span" && i + 1 < argc) {
             ctfSpan = std::atoi(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
@@ -395,6 +404,15 @@ int main(int argc, char** argv) {
             srv.SetAoi(true);
             std::printf("[시야] 정적 오브젝트를 반경 %d 안만 갱신에 실음\n",
                         static_cast<int>(nox::kAoiRadius));
+        }
+        if (itemAtSpawn) {
+            // 스폰 자리를 아이템 자리로. 걷기를 빼고 **조작만** 재려는 것이다.
+            // ⚠ **아이템을 옮기는 것이 아니다** — 클라가 맵대로 만든 실체와 어긋난다.
+            if (srv.DebugSpawnAtStatic())
+                std::printf("[시험] 스폰 자리를 아이템 자리(%d,%d)로 옮겼다 — 걷지 않고 줍기 조작을 잰다\n",
+                            srv.spawnX(), srv.spawnY());
+            else
+                std::printf("[시험] ⚠ 아이템이 없다 — 스윕이 무효다\n");
         }
     }
     {

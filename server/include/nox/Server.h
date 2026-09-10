@@ -644,6 +644,22 @@ public:
     // 서두(녹음본)에서 읽어 낸 스폰 자리. 모드를 차릴 때 기준으로 쓴다.
     int spawnX() const { return spawnX_; }
     int spawnY() const { return spawnY_; }
+
+    // ★ 시험용 — **스폰 자리를 아이템 자리로** 옮긴다. 없으면 false.
+    //
+    //   「어떤 조작이 줍기를 보내나」를 재려면 물건 위에 서 있어야 하는데 걷기가 자꾸 어긋난다.
+    //
+    // ⚠⚠ **반대로 하면 안 된다** — 아이템을 옮기면 **클라와 어긋난다.**
+    //   클라는 맵을 읽어 **자기가 그 자리에 아이템을 만든다**(`main.cpp` 「번호 = 맵 색인+75」).
+    //   서버가 좌표만 바꿔 보내면 클라 화면에는 옛 자리에 그대로 있고 발밑엔 아무것도 없다.
+    //   2026-09-10 스윕 2·3차가 그래서 헛돌았다 — 왼클릭은 먹었는데(클릭 +1)
+    //   **주울 물건이 화면에 없어서** 공격만 나갔다.
+    bool DebugSpawnAtStatic() {
+        if (statics_.empty()) return false;
+        spawnX_ = statics_[0].x;
+        spawnY_ = statics_[0].y;
+        return true;
+    }
     size_t FlagCount() const { return flags_.size(); }
 
     // ★ 지금 누가 어디 있나 — **하네스가 걸어가게 하려면 이게 있어야 한다.**

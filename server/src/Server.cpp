@@ -731,6 +731,38 @@ std::string Server::PositionsLine() const {
                       (unsigned)k.netCode, (int)k.x, (int)k.y);
         s += buf;
     }
+    // ★ **바닥에 놓인 물건** — 하네스가 여기까지 걸어가 줍기 조작을 시험한다.
+    //   ⚠ 열두 개가 다 나오면 줄이 길어진다. **첫 사람에게 가장 가까운 셋**만 —
+    //     「어디로 걸어갈까」에 필요한 것은 그것뿐이다.
+    if (!statics_.empty()) {
+        int px = 0, py = 0;
+        bool have = false;
+        for (const auto& kv : sessions_) {
+            if (!kv.second.inGame) continue;
+            px = kv.second.x; py = kv.second.y; have = true; break;
+        }
+        if (have) {
+            std::vector<std::pair<double, const WorldStatic*>> near_;
+            near_.reserve(statics_.size());
+            for (const auto& w : statics_) {
+                const double dx = w.x - px, dy = w.y - py;
+                near_.push_back({ dx * dx + dy * dy, &w });
+            }
+            const size_t k = near_.size() < 3 ? near_.size() : 3;
+            std::partial_sort(near_.begin(), near_.begin() + k, near_.end(),
+                              [](const std::pair<double, const WorldStatic*>& a,
+                                 const std::pair<double, const WorldStatic*>& b) {
+                                  return a.first < b.first;
+                              });
+            for (size_t i = 0; i < k; ++i) {
+                std::snprintf(buf, sizeof(buf), " 물건 %u=%d,%d,%u",
+                              (unsigned)near_[i].second->netCode,
+                              near_[i].second->x, near_[i].second->y,
+                              (unsigned)near_[i].second->type);
+                s += buf;
+            }
+        }
+    }
     return s;
 }
 
