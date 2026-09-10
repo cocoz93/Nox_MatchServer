@@ -956,6 +956,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         // 클라는 걸었다고 믿으니 서버 집계는 그대로 센다.
                         ++moves_;
                     } else if (code == 6) {
+                        ++code6Seen_;   // 진단(sq1): 코드6 도달 수 — 성사 15 vs 클라 송신 231 을 가른다
                         // 왼버튼 = `CCAction`(6). 근접 공격이다.
                         // 근거는 둘 — 09-07 조작 실측과 opennox 의 CtrlCode 표.
                         //

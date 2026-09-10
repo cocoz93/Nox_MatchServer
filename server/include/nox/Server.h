@@ -673,6 +673,7 @@ public:
     unsigned long long moves() const { return moves_; }
     // 쉬는 시간을 지나 실제로 나간 근접 공격 수(누른 횟수가 아니다).
     unsigned long long melees() const { return melees_; }
+    unsigned long long code6Seen() const { return code6Seen_; }
     // 날아가다 사람에게 맞은 횟수.
     unsigned long long hits() const { return hits_; }
     // 지금 날아가고 있는 것의 수.
@@ -873,6 +874,9 @@ private:
     bool tickStarted_ = false;
     unsigned long long moves_ = 0;
     unsigned long long melees_ = 0;
+    // 진단(2026-09-10 sq1) — 코드6(왼클릭)이 분기에 몇 번 도달했나.
+    // 클라는 231번 보냈는데 성사가 15에서 멎었다 — 유실이 파싱이냐 조건이냐를 가른다.
+    unsigned long long code6Seen_ = 0;
     unsigned long long hits_ = 0;
     unsigned long long petsKilled_ = 0;
     bool roundOver_ = false;
