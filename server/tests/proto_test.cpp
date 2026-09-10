@@ -1,4 +1,4 @@
-// proto_test.cpp — 이식한 메시지 정의가 스스로 앞뒤가 맞는지만 본다.
+﻿// proto_test.cpp — 이식한 메시지 정의가 스스로 앞뒤가 맞는지만 본다.
 //
 // 여기서 통과한다고 클라가 받아준다는 뜻은 아니다.
 // 진짜 검증은 캡처와 대조하는 것이고, 이건 그 전에 오타를 거르는 용도다.
@@ -790,6 +790,60 @@ std::vector<uint8_t> CodePacket(nox::Op op, uint16_t netCode) {
     p[nox::kWireHeaderSize + 1] = static_cast<uint8_t>(netCode);
     p[nox::kWireHeaderSize + 2] = static_cast<uint8_t>(netCode >> 8);
     return p;
+}
+
+// ── 판 흐름 — 팀 배정과 판 다시 열기 ────────────────────────────────────
+//
+// ★ 전에 두 군데가 틀렸다 (2026-09-11 감사) —
+//   ① 팀을 `sessions_` 순회로 나눴는데 그 열쇠가 **주소 문자열**이라 **사전순**이었다.
+//      「들어온 차례로」라는 주석과 실제가 달랐고, 포트가 어떻게 뽑히느냐에 따라 팀이 뒤집혔다.
+//   ② **두 명이 찬 그 순간 한 번만** 나눠서, 셋째부터 팀 0 으로 남아 깃발 판정에서 빠졌다.
+// ★ 그리고 **판이 한 번 끝나면 다시 못 열었다** — `roundOver_` 를 되돌리는 데가
+//   `StartQuest` 하나뿐이었다.
+void TestRoundFlow() {
+    nox::Server srv;
+    // 주소를 **사전순과 접속순이 어긋나게** 고른다 — 이게 이 시험의 핵심이다.
+    //   사전순: "10.0.0.1" < "10.0.0.2" < "10.0.0.3"
+    //   접속순: c(10.0.0.3) → a(10.0.0.1) → b(10.0.0.2)
+    const std::string a = "10.0.0.1:1", b = "10.0.0.2:2", c = "10.0.0.3:3";
+    srv.DebugEnterGame(c, 728);
+    srv.DebugEnterGame(a, 729);
+    srv.DebugEnterGame(b, 730);
+    srv.StartCtf(1000, 1000, 2000, 2000);
+
+    // ① 팀은 **접속한 차례**로 갈린다 — 사전순이 아니라
+    Check(srv.TeamOf(c) == 1, "첫째로 들어온 사람이 1팀이 아님 — 사전순으로 나눴다");
+    Check(srv.TeamOf(a) == 2, "둘째로 들어온 사람이 2팀이 아님");
+    Check(srv.TeamOf(b) == 1, "셋째로 들어온 사람이 1팀이 아님");
+
+    // ② 판이 선 뒤에 들어온 사람도 팀을 받는다 (전에는 0 으로 남았다)
+    {
+        const std::string d = "10.0.0.4:4";
+        srv.DebugEnterGame(d, 731);
+        std::vector<uint8_t> pkt(nox::kWireHeaderSize + 1, 0);
+        pkt[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::CLIENT_ACCEPT);
+        // DebugEnterGame 은 CLIENT_ACCEPT 를 안 거치므로 직접 부른다
+        srv.AssignTeams();
+        Check(srv.TeamOf(d) != 0, "판이 선 뒤 들어온 사람이 팀 0 으로 남았다");
+    }
+
+    // ③ 깃발 3점이면 판끝, 그리고 **때가 되면 다시 열린다**
+    {
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
+        Check(!srv.RoundOver(), "시작하자마자 판끝이면 안 된다");
+        srv.DebugCapture(c, 3);            // 1팀이 3점
+        Check(srv.RoundOver(), "3점인데 판끝이 아님");
+        Check(srv.roundsPlayed() == 0, "아직 다시 안 열렸는데 판 수가 올랐다");
+
+        std::vector<nox::OutPacket> out;
+        srv.Tick(33 * (nox::kRoundRestartTicks + 2), out);
+        Check(!srv.RoundOver(), "때가 됐는데 판이 안 다시 열렸다");
+        Check(srv.roundsPlayed() == 1, "판 수가 안 올랐다");
+        Check(srv.CapturesOf(1) == 0, "다시 열렸는데 점수가 안 지워졌다");
+    }
+
+    std::printf("  판 흐름 — 팀은 접속 차례로(사전순 아님) · 늦게 와도 배정 · 판끝 뒤 다시 열림\n");
 }
 
 // ── 마우스 조준 — 투사체가 겨눈 쪽으로 나는가 ───────────────────────────
@@ -3105,6 +3159,7 @@ int main() {
     TestAoiSightExit();
     TestSpellMana();
     TestManaSpend();
+    TestRoundFlow();
     TestAim();
     TestChat();
     TestTimerAskAndClose();

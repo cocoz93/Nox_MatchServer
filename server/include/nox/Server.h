@@ -213,6 +213,10 @@ struct Session {
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
     uint8_t team = 0;              // 0 = 무소속 · 1 = 빨강 · 2 = 파랑
+    // ★ **접속한 차례.** 팀을 번갈아 나눌 때 쓴다.
+    //   ⚠ `sessions_` 를 그냥 돌면 **주소 문자열 사전순**이라 들어온 차례가 아니다 —
+    //     포트가 어떻게 뽑히느냐에 따라 A·B 팀이 뒤집혔다(2026-09-11 감사).
+    uint32_t joinOrder = 0;
     uint16_t kills = 0;            // 죽인 수 (아레나 점수)
     uint16_t deaths = 0;           // 죽은 수
 
@@ -387,6 +391,11 @@ constexpr size_t kChatMaxBytes = 250;
 // ➖ **우리 값이다.** 정품이 낡은 겨눔을 어떻게 다루는지는 모른다.
 // 30Hz 기준 1초. 클라는 마우스가 움직일 때마다 보내므로(표본 18,700+) 짧아도 충분하다.
 constexpr uint32_t kAimStaleTicks = 30;
+
+// 판이 끝나고 다음 판을 열기까지. ➖ **우리 값이다** — 정품이 몇 초 뒤에 새 판을
+// 여는지는 표본이 없다. 승자 화면을 볼 시간은 줘야 하므로 30Hz 기준 8초로 둔다.
+// ★ 이것이 없어서 **판이 한 번 끝나면 그 프로세스에서 다시 못 열었다**(2026-09-11 감사).
+constexpr uint32_t kRoundRestartTicks = 240;
 
 class Server {
 public:
@@ -635,6 +644,10 @@ public:
     // ⚠ **팀을 어떻게 나누는지는 실측이 아니다.** 진짜 녹스는 콘솔·메뉴로 고르게 한다.
     void StartCtf(int redX, int redY, int blueX, int blueY);
 
+    // 팀을 접속한 차례로 번갈아 나눈다. 사람이 들어올 때마다 다시 부른다.
+    // ⚠ `sessions_` 순회는 **주소 사전순**이라 들어온 차례가 아니다 — `joinOrder` 로 정렬한다.
+    void AssignTeams();
+
     // 퀘스트 판을 차린다 — 주인 없는 몬스터를 `count` 마리 세운다.
     // 다 잡으면 판이 끝난다.
     //   ★ `spread` — 가운데에서 이만큼 벌려 세운다. 기본은 실측 아닌 자리표시 300.
@@ -692,6 +705,9 @@ public:
     void DebugEnterGame(const std::string& addr, uint16_t netCode, bool observer = false,
                         CharClass cls = CharClass::Wizard) {
         Session& s = SessionFor(addr);
+        // ⚠ 진짜 접속 경로(`CLIENT_ACCEPT`)와 **같은 일을 해야** 한다 —
+        //   `joinOrder` 를 여기서 안 매기면 팀이 사전순으로 갈린다(시험이 잡았다).
+        if (!s.inGame) s.joinOrder = ++nextJoinOrder_;
         s.inGame = true;
         s.netCode = netCode;
         s.charClass = cls;
@@ -807,6 +823,20 @@ public:
     // 클라가 판 시계를 물어본 횟수. 전에는 이 조각을 통째로 버려 **0으로 보였다.**
     unsigned long long timerAsks() const { return timerAsks_; }
     unsigned long long chats() const { return chats_; }
+    // 몇 판을 마쳤나. 0 이면 아직 한 판도 안 끝난 것이다.
+    unsigned long long roundsPlayed() const { return roundsPlayed_; }
+    // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
+    void DebugCapture(const std::string& addr, int n) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end() || it->second.team >= 3) return;
+        for (int i = 0; i < n; ++i) {
+            ++caps_[it->second.team];
+            if (!roundOver_ && caps_[it->second.team] >= kCaptureLimit) {
+                roundOver_ = true;
+                restartAtFrame_ = frame_ + kRoundRestartTicks;
+            }
+        }
+    }
     // 겨눔을 받은 횟수. 0 이면 `0xac` 를 안 읽는 것이고 투사체가 몸 방향으로만 난다.
     unsigned long long aims() const { return aims_; }
     // 시험용 — 날아가는 것 하나의 자리. 없으면 (0,0).
@@ -1049,6 +1079,9 @@ private:
     std::map<std::string, Session> sessions_;
     std::map<uint8_t, unsigned long long> seen_;
     unsigned long long handled_ = 0;   // 답을 만든 메시지 수
+    uint32_t nextJoinOrder_ = 0;       // 접속한 차례에 매기는 번호 (팀 나누기용)
+    uint32_t restartAtFrame_ = 0;      // 이 프레임에 판을 다시 연다. 0 이면 예약 없음
+    unsigned long long roundsPlayed_ = 0;
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)

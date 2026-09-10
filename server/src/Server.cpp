@@ -563,6 +563,7 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
         ++questKilled_;
         if (!roundOver_ && questKilled_ >= questTotal_) {
             roundOver_ = true;
+            restartAtFrame_ = frame_ + kRoundRestartTicks;
             SendNotice("Quest complete", out);
         }
     }
@@ -668,6 +669,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
             ++k->second.kills;
             if (!roundOver_ && k->second.kills >= kArenaKillLimit) {
                 roundOver_ = true;
+                restartAtFrame_ = frame_ + kRoundRestartTicks;
                 // `0x58 REPORT_DEATHMATCH_WINNER` — **짜임을 오픈녹스 원본에서 확정했다**
                 //   (2026-09-09, `client__network__cdecode.c` case 88. 우리 덤프 표본은 여전히 0건).
                 //
@@ -876,11 +878,31 @@ void Server::StartCtf(int redX, int redY, int blueX, int blueY) {
     blue.homeY = blue.y = blueY;
     flags_.push_back(blue);
 
-    // 팀은 들어온 차례로 번갈아. ⚠ 진짜 녹스가 이렇게 나누는지는 모른다.
-    uint8_t next = 1;
+    roundOver_ = false;   // 깃발 판을 다시 차릴 수 있게. 전에는 안 되돌려 한 번 끝나면 끝이었다
+    AssignTeams();
+}
+
+// 팀을 번갈아 나눈다. ⚠ 진짜 녹스가 이렇게 나누는지는 모른다(➖ 우리 값).
+//
+// ★★ 전에는 여기가 **두 군데 틀렸다** (2026-09-11 감사).
+//   ① 「들어온 차례로」라고 주석에 적혀 있었지만 실제로는 `sessions_` 를 그냥 돌았는데,
+//      그 열쇠가 **접속 주소 문자열**이라 순서가 **사전순**이었다. 포트 번호가 어떻게
+//      뽑히느냐에 따라 A·B 팀이 뒤집혔다 — 같은 시험을 두 번 돌리면 결과가 달랐다.
+//   ② **두 명이 다 들어온 그 순간 한 번만** 불렸다. 셋째부터는 `team == 0` 으로 남아
+//      `UpdateFlags` 의 팀 검사에 걸려 **깃발 판정에서 통째로 빠졌다.**
+//
+// 고침 — `joinOrder`(접속한 차례)로 정렬해 나누고, **사람이 들어올 때마다 다시 부른다.**
+void Server::AssignTeams() {
+    std::vector<Session*> ins;
     for (auto& kv : sessions_) {
-        if (!kv.second.inGame) continue;
-        kv.second.team = next;
+        if (kv.second.inGame) ins.push_back(&kv.second);
+    }
+    std::sort(ins.begin(), ins.end(), [](const Session* a, const Session* b) {
+        return a->joinOrder < b->joinOrder;
+    });
+    uint8_t next = 1;
+    for (Session* s : ins) {
+        s->team = next;
         next = (next == 1) ? 2 : 1;
     }
 }
@@ -974,7 +996,10 @@ void Server::UpdateFlags(std::vector<OutPacket>& out) {
                 held->x = held->homeX; held->y = held->homeY; held->atHome = true;
                 if (s.team < 3) ++caps_[s.team];
                 SendFlagInform(InformCode::FlagCapture, s.netCode, s.team, out);
-                if (!roundOver_ && caps_[s.team] >= kCaptureLimit) roundOver_ = true;
+                if (!roundOver_ && caps_[s.team] >= kCaptureLimit) {
+                    roundOver_ = true;
+                    restartAtFrame_ = frame_ + kRoundRestartTicks;
+                }
             }
         }
     }
@@ -1815,7 +1840,13 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     ++handled_;
                 }
                 // 여기서부터 게임에 들어온 것으로 본다 — 매 틱 상태를 받는다.
+                if (!s.inGame) s.joinOrder = ++nextJoinOrder_;
                 s.inGame = true;
+
+                // ★ 깃발 판이 이미 서 있으면 **새로 온 사람에게도 팀을 준다.**
+                //   전에는 두 명이 찬 그 순간 한 번만 나눠서, 셋째부터 팀 0 으로 남아
+                //   깃발 판정에서 통째로 빠졌다(2026-09-11 감사).
+                if (!flags_.empty()) AssignTeams();
 
                 if (standalone_ && useMapBody_.empty()) {
                     std::vector<uint8_t> um = BuildUseMap(saMapName_, saMapCrc_, s.frame);
@@ -2127,6 +2158,34 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         ++ticks;
     }
     if (ticks == 0) return 0;
+
+    // ── 판 다시 열기 ────────────────────────────────────────────────
+    //
+    // ★ 전에는 **판이 한 번 끝나면 그 프로세스에서 다시 못 열었다.**
+    //   `roundOver_` 를 되돌리는 곳이 `StartQuest` 하나뿐이었고 아레나·깃발은
+    //   되돌리는 데가 아예 없었다(2026-09-11 감사). 사람 둘이 앉아 계속 놀 수가 없었다.
+    //
+    // ⚠ 다시 여는 시점 `kRoundRestartTicks` 는 ➖ **우리 값이다.** 정품이 몇 초 뒤에
+    //   새 판을 여는지는 표본이 없다. 승자 화면을 볼 시간은 줘야 하므로 몇 초로 둔다.
+    if (roundOver_ && restartAtFrame_ != 0 && frame_ >= restartAtFrame_) {
+        restartAtFrame_ = 0;
+        roundOver_ = false;
+        // 점수를 지운다 — 셋 다.
+        for (auto& kv : sessions_) {
+            kv.second.kills = 0;
+            kv.second.deaths = 0;
+        }
+        caps_[0] = caps_[1] = caps_[2] = 0;
+        questKilled_ = 0;
+        // 깃발은 집으로 되돌린다(들고 있던 사람 손에서도 뺀다).
+        for (auto& f : flags_) {
+            f.carrier.clear();
+            f.x = f.homeX; f.y = f.homeY; f.atHome = true;
+        }
+        ++roundsPlayed_;
+        std::printf("[판] 다시 엶 — %llu번째 판 (점수·깃발 초기화)\n", roundsPlayed_ + 1);
+        std::fflush(stdout);
+    }
 
     // ── 자리 비우기 — **조용해진 세션을 걷어낸다** ──
     //
