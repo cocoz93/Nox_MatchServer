@@ -569,6 +569,26 @@ int main(int argc, char** argv) {
                 const size_t got = srv.OnPacket(who, in, static_cast<size_t>(n), outs);
                 const size_t made = outs.size();
                 flush();
+
+                // ★★ **클라가 처음 보낸 오프코드를 그때그때 알린다.**
+                //
+                //   왜 — 「어떤 조작이 무슨 메시지를 보내나」를 알 길이 없었다.
+                //   `0x73 TRY_GET`(줍기)이 왼버튼이 아니라는 것까지는 알아냈지만
+                //   **그럼 무엇이냐**는 짐작뿐이었고, 그래서 「사람이 눌러 봐야 한다」로 넘겼다.
+                //   이 한 줄이면 키를 하나씩 눌러 보며 **조작 ↔ 메시지 대응표**를 자동으로 만든다.
+                //
+                //   ⚠ `--quiet` 여도 찍는다. 드물게 나오고, 나오는 순간이 곧 답이다.
+                {
+                    static std::map<uint8_t, bool> told;
+                    for (const auto& kv : srv.seen()) {
+                        if (told.count(kv.first)) continue;
+                        told[kv.first] = true;
+                        std::printf("[처음] 클라가 보낸 새 오프코드 0x%02x (%s)\n",
+                                    kv.first, nox::OpName(static_cast<nox::Op>(kv.first)));
+                        std::fflush(stdout);
+                    }
+                }
+
                 if (!quiet) {
                     // ★ 한 메시지도 못 읽었으면 그 바이트를 찍는다.
         //   「0개」를 그냥 지나치면 파서가 멈춘 자리를 영영 못 본다.
@@ -686,6 +706,16 @@ int main(int argc, char** argv) {
                 //   아무 일도 안 일어나고 로그에도 안 남던 것이 이것이다.
                 //   여기에 찍어 두면 **놀다가 무엇이 버려지는지**가 바로 보인다.
                 //   ⚠ 옆의 이름은 참고용이다. 진짜 판정은 오프코드 번호로 한다.
+                // ★ 물건 다루기 — 요청·성공·손이 안 닿음을 **갈라서** 찍는다.
+                //   합치면 「안 주워진다」의 까닭이 안 보인다: 요청이 0 이면 조작을 못 찾은 것이고,
+                //   요청은 있는데 성공이 0 이면 거리·번호 문제다.
+                if (srv.tryGets() || srv.used() || srv.equipped()) {
+                    std::printf("[물건] 줍기요청 %llu(성공 %llu·멂 %llu) · 쓰기 %llu(모르는갈래 %llu)"
+                                " · 입기 %llu · 벗기 %llu · 되돌림 %llu\n",
+                                srv.tryGets(), srv.picked(), srv.pickTooFar(),
+                                srv.used(), srv.useUnknown(),
+                                srv.equipped(), srv.dequipped(), srv.dropped());
+                }
                 if (!srv.stoppedByOp().empty()) {
                     std::printf("[버림] 조각 %llu개 —", srv.stopped());
                     for (const auto& kv : srv.stoppedByOp()) {
