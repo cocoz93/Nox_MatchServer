@@ -681,7 +681,13 @@ void Server::StartQuest(int count, int centerX, int centerY, double spread) {
         const double ang = 2.0 * 3.14159265358979 * i / (count > 0 ? count : 1);
         Creature k;
         k.owner.clear();                 // ★ 주인이 없다 — 아무 편도 아니다
-        k.type = SummonType(79);         // Bomber. 종류표에서 확인한 번호다
+        // ★★ **Bomber 를 쓰면 안 된다** (2026-09-10) — 정본 체력이 **1** 이다.
+        //   자폭형이라 그렇게 적혀 있는데(⭕ monster.bin `ARENA HEALTH = 1`),
+        //   퀘스트 몬스터로 쓰면 **한 대에 죽어 사냥이 안 된다**.
+        //   정본화 전에는 우리가 체력 40 을 억지로 물려 가려져 있었다.
+        //   ★ 어느 몬스터를 세울지는 **우리가 정할 값**이다 — 거머리(체력 60·피해 20)로
+        //     둔다. 워리어 롱소드(38)로 두 대, 사람 150 을 깎는 데 여덟 대라 판이 선다.
+        k.type = SummonType(86);         // GiantLeech (1358)
         k.netCode = nextShotNetCode_++;
         if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
         k.x = centerX + spread * std::cos(ang);

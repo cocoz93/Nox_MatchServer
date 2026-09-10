@@ -2175,7 +2175,7 @@ void TestQuest() {
             auto body = Body(p);
             if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
             ++streams;
-            seen += CountFirstSight(body, 1348);              // Bomber
+            seen += CountFirstSight(body, 1358);              // GiantLeech (퀘스트 몬스터)
             players += CountFirstSight(body, nox::kPlayerType);
         }
         Check(streams > 0, "0xa4 가 아예 안 나감");
