@@ -22,6 +22,20 @@
 
 namespace nox {
 
+// SPEL 섹션 한 칸 — 이름과 그 뒤 세 바이트.
+//
+// ★ **첫 바이트가 마나 비용이다 (⭕ 확정, 2026-09-10).**
+//   짐작이 아니라 전수 대조로 정했다 — 정품 콘솔 `list spells` 가 뱉은
+//   `_evidence/CONSOLE_list_spells.txt` 115줄의 `Cost:NNN` 과
+//   여기서 읽은 115개가 **값 하나까지 다 같다**(`proto_test TestSpellMana`).
+//   ⚠ 콘솔은 보이는 이름(`Ring of Fire`) 차례고 파일은 속이름(`SPELL_CLEANSING_FLAME`)
+//     차례라 줄 순서가 다르다. 그래서 **정렬해서 전수 대조**한다.
+struct SpellRaw {
+    std::string name;      // 속이름 — `SPELL_FIREBALL` 꼴
+    uint8_t mana = 0;      // ⭕ 마나 비용
+    uint8_t rest[2] = { 0, 0 };   // 뜻 미상. 값이 흩어져 있어 짐작하지 않는다
+};
+
 struct ThingInfo {
     std::string name;
     bool complex = false;
@@ -63,8 +77,24 @@ public:
     }
     const std::string& Error() const { return error_; }
 
+    // ── 주문 (SPEL 섹션) ────────────────────────────────
+    const std::vector<SpellRaw>& Spells() const { return spells_; }
+
+    // 속이름으로 마나 비용을 찾는다. 없으면 `have` 가 false — **0 과 「모름」을 가른다.**
+    // ⚠ 이걸 안 가르면 표에 없는 주문이 「공짜」가 된다.
+    uint8_t ManaByName(const std::string& name, bool* have = nullptr) const {
+        for (const auto& s : spells_) {
+            if (s.name != name) continue;
+            if (have) *have = true;
+            return s.mana;
+        }
+        if (have) *have = false;
+        return 0;
+    }
+
 private:
     std::vector<ThingInfo> things_;
+    std::vector<SpellRaw> spells_;
     std::string error_;
 };
 

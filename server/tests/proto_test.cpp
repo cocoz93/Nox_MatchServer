@@ -5,9 +5,11 @@
 //
 // 빌드:
 //   cl /std:c++17 /EHsc /I server\include server\tests\proto_test.cpp server\src\Opcode.cpp
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "nox/Messages.h"
@@ -630,6 +632,153 @@ void TestAoiSightExit() {
     }
 
     std::printf("  시야 이탈 — 멀어지면 32 · 되돌아오면 재소개 (정품 156건 대조)\n");
+}
+
+// ── 주문 마나 비용 — thing.bin 에서 읽은 값이 **정품 콘솔과 같은가** ──────────
+//
+// SPEL 섹션의 이름 뒤 첫 바이트를 마나 비용으로 읽는다. 그게 맞다는 근거는
+// 정품 콘솔 `list spells` 가 뱉은 115줄(`_evidence/CONSOLE_list_spells.txt`,
+// `이름 <탭> Cost:NNN`)이다.
+//
+// ⚠ **줄 순서로 맞추면 안 된다.** 콘솔은 보이는 이름(`Ring of Fire`) 차례고
+//   파일은 속이름(`SPELL_CLEANSING_FLAME`) 차례라 자리가 어긋난다.
+//   그래서 **정렬해서 전수 대조**한다 — 115개 값이 하나도 안 틀려야 통과.
+void TestSpellMana() {
+    nox::ThingDb tdb;
+    if (!tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+        std::printf("  주문 마나 — 건너뜀(thing.bin 없음)\n");
+        return;
+    }
+    Check(!tdb.Spells().empty(), "SPEL 섹션이 비었다 — 파서가 그 섹션을 안 읽는다");
+
+    FILE* f = std::fopen(
+        "C:\\Users\\USER\\Desktop\\MyGit\\Nox_Server\\_evidence\\CONSOLE_list_spells.txt", "rb");
+    if (!f) {
+        // 증거 파일은 `_evidence/`(git 밖)라 없을 수 있다. 그때는 값 대조를 건너뛴다.
+        // ⚠ 걸음 자체는 `TestThingDb` 가 지킨다 — SPEL 을 잘못 걸으면 뒤의 THNG 2,874종이 무너진다.
+        std::printf("  주문 마나 — %zu개 읽음. 콘솔 정답지가 없어 값 대조는 건너뜀\n",
+                    tdb.Spells().size());
+        return;
+    }
+    std::vector<int> console;
+    char line[512];
+    while (std::fgets(line, sizeof(line), f)) {
+        const char* at = std::strstr(line, "Cost:");
+        if (at) console.push_back(std::atoi(at + 5));
+    }
+    std::fclose(f);
+
+    Check(console.size() == tdb.Spells().size(),
+          "콘솔 줄 수와 SPEL 칸 수가 다르다 — 걸음이 밀렸다");
+
+    std::vector<int> parsed;
+    parsed.reserve(tdb.Spells().size());
+    for (const auto& s : tdb.Spells()) parsed.push_back(s.mana);
+    std::sort(parsed.begin(), parsed.end());
+    std::sort(console.begin(), console.end());
+    Check(parsed == console, "마나 비용이 콘솔과 다르다 — 읽는 바이트 자리가 틀렸다");
+
+    // 이름을 짝지어 아는 것 몇 개는 자리까지 확인한다(정렬 대조는 자리를 안 본다).
+    struct KV { const char* name; int mana; };
+    const KV known[] = {
+        { "SPELL_ANCHOR", 10 }, { "SPELL_CHANNEL_LIFE", 0 }, { "SPELL_COUNTERSPELL", 20 },
+        { "SPELL_CURE_POISON", 30 }, { "SPELL_DEATH", 85 }, { "SPELL_CLEANSING_FLAME", 60 },
+    };
+    for (const KV& k : known) {
+        bool have = false;
+        const int got = tdb.ManaByName(k.name, &have);
+        const std::string miss = std::string("SPEL 에 ") + k.name + " 이 없다";
+        const std::string diff = std::string(k.name) + " 의 마나가 콘솔과 다르다";
+        Check(have, miss.c_str());
+        Check(got == k.mana, diff.c_str());
+    }
+
+    // 우리가 실제로 쏘는 주문들이 표에 있는가 — 없으면 그 주문은 공짜가 된다.
+    const int fired[] = { 27, 43, 24, 41, 4, 51, 75, 86, 87 };
+    int missing = 0;
+    for (int id : fired) {
+        bool have = false;
+        tdb.ManaByName(nox::SpellName(id), &have);
+        if (!have) ++missing;
+    }
+    std::printf("  주문 마나 — %zu개 전수 일치(정품 콘솔 대조) · 우리가 쏘는 %zu개 중 표에 없는 것 %d\n",
+                tdb.Spells().size(), sizeof(fired) / sizeof(fired[0]), missing);
+}
+
+// 아래에서 정의한다 — 시전 조각 하나를 만든다.
+std::vector<uint8_t> SpellPacket(uint8_t spell, bool onSelf);
+
+// ── 마나가 실제로 깎이는가 · 모자라면 못 쓰는가 ─────────────────────────
+//
+// 전에는 `maxMana` 를 쓰기만 하고 읽는 데가 없어 **주문이 무한이었다.**
+// ★ 표를 시험 안에서 직접 넣는다 — thing.bin 이 없는 자리에서도 이 논리는 돌아야 한다.
+void TestManaSpend() {
+    nox::Server srv;
+    const std::string a = "10.9.2.1:41021";
+    const std::string b = "10.9.2.2:41022";
+    srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+    srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+    const uint16_t full = srv.ManaOf(a);
+    Check(full == nox::ManaOnline(nox::CharClass::Wizard), "들어오자마자 마나가 최대가 아님");
+
+    const uint8_t kSpell = 27;      // 파이어볼
+    const uint8_t kCost = 30;
+    srv.SetSpellCost(kSpell, kCost);
+    Check(srv.SpellCost(kSpell) == kCost, "넣은 비용이 안 들어감");
+
+    // ① 한 번 쏘면 그만큼 깎이고 `0x45` 가 **본인에게만** 간다
+    {
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> pkt = SpellPacket(kSpell, /*onSelf=*/false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.ManaOf(a) == full - kCost, "시전했는데 마나가 안 깎임");
+
+        const auto toA = FlattenTo(out, a);
+        const auto* m = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_MANA));
+        Check(m != nullptr, "0x45 가 안 나감");
+        if (m) {
+            Check(m->size() == 5, "0x45 가 5바이트가 아님");
+            Check((*m)[1] == 0xd8 && (*m)[2] == 0x02, "0x45 의 번호가 시전자가 아님");
+            const int mana = (*m)[3] | ((*m)[4] << 8);
+            Check(mana == full - kCost, "0x45 가 실은 값이 지금 마나가 아님");
+        }
+        // ⚠ 홀로 보내는 메시지다 — 남에게 가면 조각만 헛되이 태운다
+        const auto toB = FlattenTo(out, b);
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MANA)) == nullptr,
+              "0x45 가 남에게도 감");
+    }
+
+    // ② 마나가 바닥나면 **시전 자체가 안 일어난다**
+    {
+        const int room = srv.ManaOf(a) / kCost;
+        for (int i = 0; i < room; ++i) {
+            std::vector<nox::OutPacket> out;
+            const std::vector<uint8_t> pkt = SpellPacket(kSpell, false);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        }
+        Check(srv.ManaOf(a) < kCost, "다 쓰고도 비용만큼 남아 있음");
+
+        const unsigned long long before = srv.spellsNoMana();
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> pkt = SpellPacket(kSpell, false);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.spellsNoMana() == before + 1, "마나가 없는데 튕긴 것으로 안 셈");
+        // 시전 알림(0x70)이 나가면 안 된다 — 못 쓴 주문이다
+        const auto toA = FlattenTo(out, a);
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) == nullptr,
+              "마나가 없는데 시전 알림이 나감");
+    }
+
+    // ③ 비용을 모르는 주문(표에 없음)은 공짜로 나간다 — **그건 「0」이 아니라 「모름」이다**
+    {
+        const uint16_t was = srv.ManaOf(a);
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> pkt = SpellPacket(/*spell=*/43, false);   // 표에 안 넣었다
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.ManaOf(a) == was, "표에 없는 주문이 마나를 깎았다");
+    }
+
+    std::printf("  마나 — 시전에 깎임 · 바닥나면 못 씀 · 0x45 는 본인에게만\n");
 }
 
 // ── 주문이 실제로 사람을 깎는가 ────────────────────────────────
@@ -2509,6 +2658,8 @@ int main() {
     TestDeathFlow();
     TestBroadcastToOthers();
     TestAoiSightExit();
+    TestSpellMana();
+    TestManaSpend();
     TestSpellDamage();
     TestMelee();
     TestThingDb();

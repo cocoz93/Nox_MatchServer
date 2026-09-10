@@ -1151,6 +1151,36 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 if (!s.inGame || it.bodyLen() != kTrySpellBodyLen) break;
                 const uint8_t spell = it.body()[0];
                 const bool onSelf = it.body()[kTrySpellBodyLen - 1] != 0;
+
+                // ── 마나 ──────────────────────────────────────────
+                //
+                // ★ 여기가 없어서 **주문이 무한이었다.** 비용은 `thing.bin` SPEL 섹션
+                //   첫 바이트다(정품 콘솔 `list spells` 115줄과 전수 일치).
+                // ⚠ 표가 비어 있으면 비용 0 — 「공짜」가 아니라 **「표를 못 읽었다」**다.
+                //   기동 로그의 「주문 마나 표 N개」를 볼 것.
+                {
+                    const uint8_t cost = SpellCost(spell);
+                    if (cost > s.mana) {
+                        ++spellsNoMana_;
+                        ++handled_;
+                        break;              // 못 쓴다 — 시전 자체가 안 일어난다
+                    }
+                    if (cost) {
+                        s.mana = static_cast<uint16_t>(s.mana - cost);
+                        // `45 <번호2> <지금마나2>` — **홀로 보낸다.**
+                        // 정품 서버→클라 방향에 286건(`_evidence/CAP_server_0906.txt`).
+                        // ⚠ 두루 보내면 안 된다: 클라는 자기 번호가 아니면 버리므로
+                        //   해는 없지만 조각만 헛되이 태운다.
+                        uint8_t msg[5];
+                        msg[0] = static_cast<uint8_t>(Op::REPORT_MANA);
+                        msg[1] = static_cast<uint8_t>(s.netCode);
+                        msg[2] = static_cast<uint8_t>(s.netCode >> 8);
+                        msg[3] = static_cast<uint8_t>(s.mana);
+                        msg[4] = static_cast<uint8_t>(s.mana >> 8);
+                        EmitSeq(s, msg, sizeof(msg), out);
+                    }
+                }
+
                 ++spells_[spell];
                 if (onSelf) ++spellsOnSelf_;
 
@@ -1355,6 +1385,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     s.maxMana   = static_cast<uint16_t>(ManaOnline(s.charClass));
                     s.strength  = StrengthOnline(s.charClass);
                     s.health = s.maxHealth;
+                    s.mana   = s.maxMana;
                 }
                 if (!joinBody_.empty()) {
                     std::vector<uint8_t> msg = joinBody_;
@@ -1973,6 +2004,19 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         if (s.respawnAtFrame != 0 && frame_ >= s.respawnAtFrame) {
             s.respawnAtFrame = 0;
             s.health = s.maxHealth;
+            // 마나도 되돌린다. ➖ **우리 값이다** — 정품이 부활에 마나를 채우는지는
+            // 표본이 없어 모른다. 0 으로 되살리면 위저드·컨저러가 아무것도 못 하므로
+            // 채우는 쪽을 골랐다. 알게 되면 여기부터 고칠 것.
+            if (s.mana != s.maxMana) {
+                s.mana = s.maxMana;
+                uint8_t mp[5];
+                mp[0] = static_cast<uint8_t>(Op::REPORT_MANA);
+                mp[1] = static_cast<uint8_t>(s.netCode);
+                mp[2] = static_cast<uint8_t>(s.netCode >> 8);
+                mp[3] = static_cast<uint8_t>(s.mana);
+                mp[4] = static_cast<uint8_t>(s.mana >> 8);
+                EmitSeq(s, mp, sizeof(mp), out);   // 홀로 — 남에게 갈 값이 아니다
+            }
 
             // 부활 — 껍데기 안. 실측 `e9 d0 02 5d b8 00 00 ff 01`.
             // ★ 4바이트는 **틱 번호**다(표본 다섯의 값차/시간차가 모두 28/초였다).

@@ -172,11 +172,19 @@ void SkipAVNT(Cur& c) {
 }
 
 // spell.go SkipSpellsSect
-void SkipSPEL(Cur& c) {
+//
+// ★ 이제 **건너뛰지 않고 읽는다** — 이름과 이름 뒤 세 바이트를 담는다.
+//   **첫 바이트가 마나 비용이다** — 정품 콘솔 `list spells` 115줄과 전수 일치
+//   (`_evidence/CONSOLE_list_spells.txt`, 2026-09-10). 나머지 둘은 뜻을 모른다.
+void SkipSPEL(Cur& c, std::vector<SpellRaw>* outSpells) {
     const uint32_t n = c.U32();
     for (uint32_t i = 0; i < n && !c.bad; ++i) {
-        c.SkipBytes8();
-        c.Skip(1 + 2);
+        SpellRaw sr;
+        sr.name    = c.Str8();
+        sr.mana    = c.U8();
+        sr.rest[0] = c.U8();
+        sr.rest[1] = c.U8();
+        if (outSpells && !c.bad) outSpells->push_back(sr);
         const uint8_t sz = c.U8();
         for (int j = 0; j < sz && !c.bad; ++j) {
             const uint8_t v = c.U8();
@@ -358,7 +366,7 @@ bool ThingDb::Load(const std::string& path) {
         else if (sect == "WALL") SkipWALL(c);
         else if (sect == "AUD ") SkipAUD(c);
         else if (sect == "AVNT") SkipAVNT(c);
-        else if (sect == "SPEL") SkipSPEL(c);
+        else if (sect == "SPEL") SkipSPEL(c, &spells_);
         else if (sect == "ABIL") SkipABIL(c);
         else if (sect == "IMAG") SkipIMAG(c);
         else if (sect == "THNG") {

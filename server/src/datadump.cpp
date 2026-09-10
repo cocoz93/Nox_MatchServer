@@ -25,6 +25,7 @@
 #include "nox/MapFile.h"
 #include "nox/NoxCrypt.h"
 #include "nox/Server.h"
+#include "nox/ThingDb.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -96,6 +97,23 @@ int main(int argc, char** argv) {
             }
             break;
         }
+    }
+    // `--spells` — thing.bin 의 SPEL 섹션을 편다. 이름 · 마나 · 미상 둘.
+    //
+    // 마나 자리는 정품 콘솔 `list spells` 115줄과 **전수 대조로 확정**했다
+    // (`_evidence/CONSOLE_list_spells.txt`). 미상 둘은 그대로 둔다.
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) != "--spells") continue;
+        nox::ThingDb tdb;
+        if (!tdb.Load(path)) {
+            std::printf("thing.bin 을 못 읽음: %s (%s)\n", path.c_str(), tdb.Error().c_str());
+            return 1;
+        }
+        std::printf("[주문] %zu개 — 이름 · 마나 · 미상2\n", tdb.Spells().size());
+        for (const auto& s : tdb.Spells())
+            std::printf("  %-28s 마나 %3u   %3u %3u\n", s.name.c_str(), s.mana,
+                        s.rest[0], s.rest[1]);
+        return 0;
     }
     if (wallX >= 0) {
         nox::MapFile mf;

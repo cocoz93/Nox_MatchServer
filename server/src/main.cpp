@@ -31,6 +31,7 @@
 #include "nox/Server.h"
 #include "nox/MapFile.h"
 #include "nox/ThingDb.h"
+#include "nox/SpellNames.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -316,9 +317,22 @@ int main(int argc, char** argv) {
             }
             nStat = st.size();
             srv.SetWorldStatics(std::move(st));
+
+            // ★ 주문 마나 비용 — 같은 파일의 SPEL 섹션에서 온다.
+            //   주문 번호(와이어)로 표를 만든다: 번호 → 속이름 → 마나.
+            //   ⚠ 여기가 0 이면 **모든 주문이 공짜**가 된다. 아래 로그로 바로 보인다.
+            for (int id = 0; id < nox::kSpellCount; ++id) {
+                const char* nm2 = nox::SpellName(id);
+                if (!nm2 || !*nm2) continue;
+                bool have = false;
+                const uint8_t cost = tdb.ManaByName(nm2, &have);
+                if (have) srv.SetSpellCost(static_cast<uint8_t>(id), cost);
+            }
         }
         std::printf("[맵] %s — 벽 %zu칸 · 정적 %zu개(변환 실패 %zu) · 충돌 켜짐\n",
                     mapPath.c_str(), ws.size(), nStat, nSkip);
+        std::printf("[주문] 마나 표 %zu개 — 0 이면 thing.bin 을 못 읽은 것이고 주문이 공짜가 된다\n",
+                    srv.SpellCostCount());
         if (standalone) {
             std::string nm = mapPath;
             const size_t sl = nm.find_last_of("\\/");

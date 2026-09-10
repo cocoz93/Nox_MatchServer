@@ -172,6 +172,9 @@ struct Session {
     //   (`2d NEW_PLAYER`). 독립 모드에는 녹음이 없어 이것 말고는 만들 재료가 없다.
     std::vector<uint8_t> info97;
     uint16_t  maxMana   = 0;
+    // ★ **지금 마나.** 이 칸이 없어서 주문이 무한이었다 — `maxMana` 는 쓰기만 하고
+    //   읽는 데가 없었다. 시전할 때 깎고 `0x45` 로 알린다.
+    uint16_t  mana      = 0;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
 
     uint32_t respawnAtFrame = 0;   // 0 이면 살아 있다
@@ -620,6 +623,7 @@ public:
         s.maxMana = static_cast<uint16_t>(ManaOnline(cls));
         s.strength = StrengthOnline(cls);
         s.health = s.maxHealth;
+        s.mana = s.maxMana;
         s.x = 1000;
         s.y = 1000;
         s.observer = observer;
@@ -681,6 +685,27 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.health;
     }
+    uint16_t ManaOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.mana;
+    }
+
+    // ── 주문 마나 비용 ─────────────────────────────────
+    //
+    // 주문 번호 → 마나. `thing.bin` 의 SPEL 섹션에서 오고 `main.cpp` 가 채운다
+    // (`ThingDb::ManaByName(SpellName(번호))`). 값의 근거는 `ThingDb.h SpellRaw` 주석.
+    //
+    // ⚠⚠ **표가 비면 모든 주문이 공짜가 된다.** 그건 「비용이 0」이 아니라
+    //   「표를 못 읽었다」는 뜻이다. 그래서 개수를 밖에서 볼 수 있게 둔다 —
+    //   기동 로그가 0 을 찍으면 파일을 못 읽은 것이다.
+    void SetSpellCost(uint8_t spell, uint8_t mana) { spellCost_[spell] = mana; }
+    size_t SpellCostCount() const { return spellCost_.size(); }
+    uint8_t SpellCost(uint8_t spell) const {
+        auto it = spellCost_.find(spell);
+        return it == spellCost_.end() ? 0 : it->second;
+    }
+    // 마나가 모자라 튕긴 시전 수 — 「눌렀는데 아무 일도 안 난다」를 로그로 가른다.
+    unsigned long long spellsNoMana() const { return spellsNoMana_; }
 
     // ★ 틱 — 시각을 넣으면 주기가 지난 만큼 프레임을 올리고 상태를 뿌린다.
     //
@@ -868,6 +893,8 @@ private:
     unsigned long long handled_ = 0;   // 답을 만든 메시지 수
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
+    std::map<uint8_t, uint8_t> spellCost_;      // 주문 번호 → 마나 (thing.bin SPEL)
+    unsigned long long spellsNoMana_ = 0;       // 마나가 모자라 튕긴 시전
 
     std::vector<uint8_t> infoBody_;
     std::vector<uint8_t> joinBody_;     // 접속 직후 나가는 216바이트 묶음
