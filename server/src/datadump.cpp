@@ -115,6 +115,41 @@ int main(int argc, char** argv) {
                         s.rest[0], s.rest[1]);
         return 0;
     }
+    // `--pickup` — **우리 기준(CLASS)과 클라 기준(WEIGHT)이 어긋나는지** 잰다.
+    //   클라는 `WEIGHT` 가 있는 물건만 집게 해 준다(`object_type.go:355-362`).
+    //   우리는 CLASS(WEAPON·ARMOR·FOOD·PICKUP)로 걸러 왔다. 두 집합이 다르면
+    //   **우리가 세계에 실은 물건을 클라가 영영 못 집는다.**
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) != "--pickup") continue;
+        nox::ThingDb tdb;
+        if (!tdb.Load(path)) {
+            std::printf("thing.bin 을 못 읽음: %s (%s)\n", path.c_str(), tdb.Error().c_str());
+            return 1;
+        }
+        size_t both = 0, classOnly = 0, weightOnly = 0, neither = 0;
+        std::vector<std::string> classOnlyNames;
+        for (size_t k = 1; k <= tdb.Count(); ++k) {
+            const nox::ThingInfo* ti = tdb.ByWire(static_cast<uint16_t>(k));
+            if (!ti) continue;
+            if (ti->isPickup && ti->hasWeight) ++both;
+            else if (ti->isPickup) {
+                ++classOnly;
+                if (classOnlyNames.size() < 30) classOnlyNames.push_back(ti->name);
+            } else if (ti->hasWeight) ++weightOnly;
+            else ++neither;
+        }
+        std::printf("[집기 기준 대조] 전체 %zu종\n", tdb.Count());
+        std::printf("  둘 다 (우리도 클라도 집기)        %zu\n", both);
+        std::printf("  ★ 우리만 (CLASS 는 맞는데 WEIGHT 없음) %zu  ← **클라가 못 집는다**\n", classOnly);
+        std::printf("  클라만 (WEIGHT 는 있는데 CLASS 밖)  %zu  ← 우리가 안 싣는다\n", weightOnly);
+        std::printf("  둘 다 아님                        %zu\n", neither);
+        if (!classOnlyNames.empty()) {
+            std::printf("  우리만인 것 (앞 %zu):", classOnlyNames.size());
+            for (const auto& n2 : classOnlyNames) std::printf(" %s", n2.c_str());
+            std::printf("\n");
+        }
+        return 0;
+    }
     if (wallX >= 0) {
         nox::MapFile mf;
         if (!mf.Load(path)) {

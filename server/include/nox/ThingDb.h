@@ -51,6 +51,13 @@ struct ThingInfo {
     // **아이템뿐**이라(2026-09-10 오픈녹스 ref 전수 집계: 물약·무기·사과 — 장식 0건)
     // 이 비트로 거른다. 장식(나무·불꽃)을 실으면 클라에 이중 실체가 생겨 죽는다.
     bool isPickup = false;
+    // ★★ **클라가 「집을 수 있나」를 정하는 진짜 기준.**
+    //   `client/object_type.go:355-362` — WEIGHT 를 읽는 바로 그 자리에서
+    //   `typ.ObjClass |= object.ClassPickup` 을 한다.
+    //   **WEIGHT 가 없으면 클라가 영영 못 집는다** — 서버가 뭘 보내든 상관없다.
+    //   ⚠ 우리 `isPickup` 은 CLASS 로 거른다. 기준이 다르므로 어긋날 수 있다.
+    bool hasWeight = false;
+    int weight = 0;
     // CLASS 원문 — 필터 설계·진단용. '+' 로 이어진 값 그대로.
     std::string classRaw;
     // SUBCLASS 원문 — 물약이 체력인지 마나인지가 여기 있다(`POTION+HEALTH_POTION`).

@@ -326,6 +326,7 @@ int main(int argc, char** argv) {
         nox::ThingDb tdb;
         size_t nStat = 0, nSkip = 0;
         std::map<std::string, int> notPickup;   // 아이템이 아니라 걸러진 것 — 이름별로
+        std::map<std::string, int> noWeight;    // 아이템인데 WEIGHT 가 없어 걸러진 것
         if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
             std::vector<nox::Server::WorldStatic> st;
             const auto objs = mf.ReadObjects();
@@ -337,6 +338,12 @@ int main(int argc, char** argv) {
                 //   「맵에 무엇이 있는지」를 아무도 몰랐다 — estate 161개 중 149개가
                 //   여기서 사라지는데 문·오벨리스크가 그 안에 있는지조차 못 봤다.
                 if (!ti->isPickup) { ++notPickup[objs[i].type]; continue; }
+                // ★★ **클라가 집을 수 있는 것만 싣는다.**
+                //   클라는 `WEIGHT` 가 있는 물건에만 `ClassPickup` 을 붙인다
+                //   (`client/object_type.go:355-362`, 2026-09-11 소스 확인).
+                //   우리 CLASS 기준과 어긋나는 것이 10종 있다(화살·차크람 같은 날아가는 것).
+                //   실어 봐야 클라가 못 집으니 세계에 놓지 않는다.
+                if (!ti->hasWeight) { ++noWeight[objs[i].type]; continue; }
                 nox::Server::WorldStatic w2;
                 w2.netCode = static_cast<uint16_t>(i + 75);
                 w2.type = wire;
@@ -379,6 +386,12 @@ int main(int argc, char** argv) {
                     srv.SpellCostCount());
         // ★ 아이템이 아니라 걸러진 것 — **맵에 무엇이 있는지 한 번은 봐야 한다.**
         //   문·오벨리스크·레버가 여기 있으면 그것이 다음에 살릴 것이다.
+        // ★ 아이템인데 클라가 못 집는 것 — 있으면 이름을 찍는다(조용히 버리지 않는다)
+        if (!noWeight.empty()) {
+            std::printf("[집기 불가] CLASS 는 아이템인데 WEIGHT 가 없어 뺀 것 —");
+            for (const auto& kv : noWeight) std::printf(" %sx%d", kv.first.c_str(), kv.second);
+            std::printf("\n");
+        }
         if (!notPickup.empty()) {
             size_t total = 0;
             for (const auto& kv : notPickup) total += static_cast<size_t>(kv.second);

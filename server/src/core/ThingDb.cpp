@@ -336,6 +336,15 @@ bool ReadThing(Cur& c, ThingInfo& t) {
                 ParseClasses(val, t);
             } else if (key == "EXTENT") {
                 ParseExtent(val, t);
+            } else if (key == "WEIGHT") {
+                // ★★ **클라는 「집을 수 있나」를 `WEIGHT` 로 정한다** — CLASS 가 아니다.
+                //   `client/object_type.go:355-362` 이 WEIGHT 를 읽는 바로 그 자리에서
+                //   `typ.ObjClass |= object.ClassPickup` 을 한다.
+                //   즉 **WEIGHT 가 없는 물건은 클라가 영영 못 집는다.**
+                //   우리 `isPickup` 은 CLASS(WEAPON·ARMOR·FOOD·PICKUP)로 거르므로
+                //   기준이 다르다 — 어긋나는지 재려고 값을 따로 담는다.
+                t.weight = std::atoi(val.c_str());
+                t.hasWeight = true;
             } else if (key == "SUBCLASS") {
                 // 물약이 체력인지 마나인지가 여기 있다 — `POTION+HEALTH_POTION`.
                 if (!t.subclassRaw.empty()) t.subclassRaw += "+";
