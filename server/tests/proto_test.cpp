@@ -3221,13 +3221,15 @@ int CountFirstSight(const std::vector<uint8_t>& body, uint16_t type) {
 void TestQuest() {
     const std::string a = "10.0.0.1:1000";
 
-    // ① 판을 차리면 몬스터가 서고 **화면에도 실린다**
+    // ① 판을 차리면 **스테이지 1** 몬스터가 서고 화면에도 실린다
+    //   ★ 스테이지 1 = 거머리(1358) 2마리 (GameBalance.h kQuestStages).
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
-        srv.StartQuest(3, 1000, 1000);
-        Check(srv.pets() == 3, "몬스터가 셋이 아님");
-        Check(srv.QuestLeft() == 3, "남은 수가 셋이 아님");
+        srv.StartQuest(0, 1000, 1000);                // count 는 이제 안 쓴다
+        Check(srv.pets() == 2, "스테이지 1 몬스터가 둘이 아님");
+        Check(srv.QuestLeft() == 2, "남은 수가 둘이 아님");
+        Check(srv.QuestStage() == 0, "첫 스테이지가 0 이 아님");
 
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
@@ -3238,66 +3240,69 @@ void TestQuest() {
             auto body = Body(p);
             if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
             ++streams;
-            seen += CountFirstSight(body, 1358);              // GiantLeech (퀘스트 몬스터)
+            seen += CountFirstSight(body, 1358);              // GiantLeech (스테이지 1)
             players += CountFirstSight(body, nox::kPlayerType);
         }
         Check(streams > 0, "0xa4 가 아예 안 나감");
-        Check(seen == 3, "몬스터 셋이 상태 갱신에 다 안 실림");
+        Check(seen == 2, "몬스터 둘이 상태 갱신에 다 안 실림");
         Check(players == 1, "사람이 상태 갱신에서 사라짐");
     }
 
-    // ★★ ② 사람이 **주인 없는 몬스터를 때릴 수 있다**
+    // ★★ ② 사람이 **주인 없는 몬스터를 때릴 수 있다** (근접으로)
+    //   ★ 스테이지 1(거머리 2)을 근접으로 잡는다. 한 마리 잡으면 아직 남아 스폰이 안 온다.
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
-        srv.StartQuest(1, 1000, 1000);
-        srv.DebugMoveTo(a, 1300, 1000);   // 몬스터가 (1300,1000) 에 선다
+        srv.StartQuest(0, 1000, 1000);
+        // 몬스터가 스폰되는 원 위 첫 자리로 붙는다 (i=0 → center + spread·(cos0,sin0))
+        srv.DebugMoveTo(a, 1000 + static_cast<int>(nox::kQuestSpread), 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(0, out);
         const unsigned long long before = srv.petsKilled();
         int guard = 0;
-        while (srv.pets() > 0 && guard++ < 40) {
+        while (srv.petsKilled() == before && guard++ < 60) {
             auto pkt = InputPacket(6);
             srv.OnPacket(a, pkt.data(), pkt.size(), out);
             ms += 33 * (nox::kMeleeCooldownTicks + 1);
             srv.Tick(ms, out);
         }
-        Check(srv.pets() == 0, "사람이 몬스터를 못 때린다");
-        Check(srv.petsKilled() == before + 1, "죽은 수가 안 오름");
+        Check(srv.petsKilled() == before + 1, "사람이 몬스터를 못 때린다(죽은 수 안 오름)");
     }
 
-    // ③ 다 잡으면 판이 끝나고 **알림이 나간다**
+    // ③ ★★ **스테이지가 오른다** — 한 웨이브를 다 잡으면 다음 웨이브가 밀려오고,
+    //   마지막 스테이지를 잡아야 판이 끝난다. 위치·근접에 안 기대고 헬퍼로 잡는다.
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
-        srv.StartQuest(2, 1000, 1000);
-        std::vector<nox::OutPacket> out;
-        uint32_t ms = 0;
-        srv.Tick(0, out);
-        int guard = 0;
-        while (!srv.RoundOver() && guard++ < 400) {
-            out.clear();
-            // 몬스터가 다가와 붙으면 근접이 닿는다
-            auto pkt = InputPacket(6);
-            srv.OnPacket(a, pkt.data(), pkt.size(), out);
-            ms += 33 * (nox::kMeleeCooldownTicks + 1);
-            srv.Tick(ms, out);
-        }
-        Check(srv.RoundOver(), "다 잡아도 판이 안 끝남");
-        Check(srv.QuestLeft() == 0, "남은 수가 0 이 아님");
+        srv.StartQuest(0, 1000, 1000);
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
 
-        bool noticed = false;
-        for (const auto& p : out) {
+        int lastStage = -1, stageChanges = 0;
+        int guard = 0;
+        std::vector<nox::OutPacket> all;
+        while (!srv.RoundOver() && guard++ < 200) {
+            if (srv.QuestStage() != lastStage) { ++stageChanges; lastStage = srv.QuestStage(); }
+            std::vector<nox::OutPacket> out;
+            srv.DebugKillOneWild(out);          // 이 웨이브의 몬스터를 하나씩
+            all.insert(all.end(), out.begin(), out.end());
+        }
+        Check(srv.RoundOver(), "다섯 스테이지를 다 잡아도 판이 안 끝남");
+        // 스테이지가 다섯이니 적어도 다섯 번 바뀌었어야 한다
+        Check(stageChanges >= nox::kQuestStageCount,
+              "스테이지가 안 올랐다 — 웨이브가 한 번에 다 나왔다");
+
+        // 스테이지 알림(0xa8)이 여러 번 나갔다
+        int notices = 0;
+        for (const auto& p : all) {
             auto body = Body(p);
             if (!body.empty() && body[0] == static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) {
-                // 짜임이 맞나 — 머리 10 + 글자 길이
-                Check(body.size() == 11 + body[8], "0xa8 길이가 머리10+글자와 안 맞음");
-                Check((body[3] & 0x02) != 0, "UTF-8 깃발이 아님");
-                noticed = true;
+                Check(body.size() == 11u + body[8], "0xa8 길이가 머리10+글자와 안 맞음");
+                ++notices;
             }
         }
-        Check(noticed, "퀘스트 완료 알림이 안 나감");
+        Check(notices >= 2, "스테이지 알림이 두 번도 안 나감");
     }
 
     // ★★ ④ **소환수는 퀘스트 셈에 안 든다** — 주인이 있으니 맵 몬스터가 아니다

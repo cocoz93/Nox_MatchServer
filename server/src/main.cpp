@@ -759,8 +759,9 @@ int main(int argc, char** argv) {
                                   srv.FlagCount(), (unsigned)srv.CapturesOf(1),
                                   (unsigned)srv.CapturesOf(2));
                 } else if (mode == "quest") {
-                    std::snprintf(modeInfo, sizeof(modeInfo), " · 몬스터 남음 %d(잡음 %d)",
-                                  srv.QuestLeft(), srv.QuestKilled());
+                    std::snprintf(modeInfo, sizeof(modeInfo),
+                                  " · 스테이지 %d · 이 웨이브 남음 %d(잡음 %d)",
+                                  srv.QuestStage() + 1, srv.QuestLeft(), srv.QuestKilled());
                 }
                 std::printf("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
                             "걸음 %llu · 근접 %llu(클릭 %llu) · "

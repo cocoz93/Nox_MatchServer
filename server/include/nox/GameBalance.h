@@ -346,6 +346,33 @@ constexpr MonsterStats kMonsters[] = {
 //   `ARENA ImpShotDamage = 5`
 constexpr int kImpShotDamage = 5;
 
+// ── 퀘스트 웨이브·스테이지 ──────────────────────────────────────
+//
+// 정품 NoxQuest 는 웨이브가 밀려오고 스테이지가 오른다. 우리도 그 꼴로 —
+// **스테이지마다 몬스터 한 무리를 세우고, 다 잡으면 다음 스테이지**로.
+//
+// ⚠ **스테이지 구성은 ➖ 우리 값이다.** 정품은 전용 맵(`G_*`)의 생성기 배치라
+//   파일에 「스테이지 1 은 거머리 둘」 같은 표가 없다. 세기 순으로 우리가 짠다 —
+//   약한 것부터 강한 것으로, 수도 조금씩 늘려. 아래 종류·수·체력은 kMonsters(⭕)에서 온다.
+//
+// ⭕ **한 번에 사는 수의 천장은 파일에 있다** — gamedata `GeneratorMaxActiveCreatures`
+//   High/Normal/Low/Singular = 8/5/2/1. Normal(5)을 웨이브 한 무리의 상한으로 쓴다.
+struct QuestStage {
+    const char* label;        // 화면에 띄울 이름
+    uint16_t monster;         // 와이어 종류 번호 (kMonsters)
+    int count;                // 이 스테이지에 세우는 마릿수
+};
+constexpr QuestStage kQuestStages[] = {
+    { "Stage 1: Leeches",  1358, 2 },   // GiantLeech 체력 60
+    { "Stage 2: Spiders",  1355, 3 },   // AlbinoSpider 체력 60·피해 15
+    { "Stage 3: Bears",    1366, 3 },   // BlackBear 체력 90
+    { "Stage 4: Grizzly",  1365, 3 },   // Bear 체력 120·피해 45
+    { "Stage 5: Beholder", 1382, 1 },   // Beholder 체력 250 — 보스
+};
+constexpr int kQuestStageCount = static_cast<int>(sizeof(kQuestStages) / sizeof(kQuestStages[0]));
+// 한 웨이브 상한 ⭕ gamedata `GeneratorMaxActiveCreaturesNormal`.
+constexpr int kWaveMaxActive = 5;
+
 // 파일에 공격 간격이 없을 때 쓸 값 ➖ — 몬스터 표의 흔한 값(25~35)에서 가운데를 쓴다.
 constexpr int kDefaultMonsterDelay = 30;
 

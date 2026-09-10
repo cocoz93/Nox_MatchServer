@@ -561,10 +561,16 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
     ++petsKilled_;
     if (wild && questTotal_ > 0) {
         ++questKilled_;
+        // 스테이지를 다 잡았다 — 다음 스테이지, 아니면 판끝.
         if (!roundOver_ && questKilled_ >= questTotal_) {
-            roundOver_ = true;
-            restartAtFrame_ = frame_ + kRoundRestartTicks;
-            SendNotice("Quest complete", out);
+            if (questStage_ + 1 < kQuestStageCount) {
+                ++questStage_;
+                SpawnQuestStage(&out);   // 다음 웨이브가 밀려온다
+            } else {
+                roundOver_ = true;
+                restartAtFrame_ = frame_ + kRoundRestartTicks;
+                SendNotice("Quest complete", out);
+            }
         }
     }
 
@@ -780,30 +786,47 @@ std::string Server::PositionsLine() const {
     return s;
 }
 
+// 퀘스트를 연다 — **스테이지 1 부터.** `count` 는 이제 안 쓴다(스테이지 표가 정한다).
+//
+// ★★ 전에는 「몬스터 N 마리 세우고 다 잡으면 끝」이었다. 정품 NoxQuest 는 웨이브가
+//   밀려오고 스테이지가 오른다(사용자 결정, 2026-09-11). 스테이지 표는 `GameBalance.h`.
 void Server::StartQuest(int count, int centerX, int centerY, double spread) {
-    questTotal_ = count;
+    (void)count;
+    questCenterX_ = centerX;
+    questCenterY_ = centerY;
+    questSpread_ = spread;
+    questStage_ = 0;
     questKilled_ = 0;
     roundOver_ = false;
+    SpawnQuestStage(nullptr);   // 첫 스테이지 (알림은 판이 뜬 뒤 첫 틱에서)
+}
 
-    // 가운데를 둘러 고르게 세운다. ⚠ 자리 규칙은 실측이 아니다.
-    for (int i = 0; i < count; ++i) {
-        const double ang = 2.0 * 3.14159265358979 * i / (count > 0 ? count : 1);
+// 지금 스테이지의 몬스터를 세운다. `out` 이 있으면 스테이지 알림도 보낸다.
+void Server::SpawnQuestStage(std::vector<OutPacket>* out) {
+    if (questStage_ >= kQuestStageCount) return;
+    // ⚠ `QuestStage`(타입)는 멤버 함수 `QuestStage()` 와 이름이 겹쳐 클래스 안에서 가려진다.
+    //   `auto` 로 받아 그 충돌을 피한다.
+    const auto& st = kQuestStages[questStage_];
+    // ⚠ 한 웨이브 상한(⭕ gamedata Normal=5). 스테이지 표가 그보다 크면 잘라 세운다.
+    const int n = st.count < kWaveMaxActive ? st.count : kWaveMaxActive;
+    questTotal_ = n;
+    questKilled_ = 0;
+    for (int i = 0; i < n; ++i) {
+        const double ang = 2.0 * 3.14159265358979 * i / (n > 0 ? n : 1);
         Creature k;
-        k.owner.clear();                 // ★ 주인이 없다 — 아무 편도 아니다
-        // ★★ **Bomber 를 쓰면 안 된다** (2026-09-10) — 정본 체력이 **1** 이다.
-        //   자폭형이라 그렇게 적혀 있는데(⭕ monster.bin `ARENA HEALTH = 1`),
-        //   퀘스트 몬스터로 쓰면 **한 대에 죽어 사냥이 안 된다**.
-        //   정본화 전에는 우리가 체력 40 을 억지로 물려 가려져 있었다.
-        //   ★ 어느 몬스터를 세울지는 **우리가 정할 값**이다 — 거머리(체력 60·피해 20)로
-        //     둔다. 워리어 롱소드(38)로 두 대, 사람 150 을 깎는 데 여덟 대라 판이 선다.
-        k.type = SummonType(86);         // GiantLeech (1358)
+        k.owner.clear();                 // 주인이 없다 — 아무 편도 아니다
+        k.type = st.monster;
         k.netCode = nextShotNetCode_++;
         if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
-        k.x = centerX + spread * std::cos(ang);
-        k.y = centerY + spread * std::sin(ang);
+        k.x = questCenterX_ + questSpread_ * std::cos(ang);
+        k.y = questCenterY_ + questSpread_ * std::sin(ang);
         k.health = static_cast<uint16_t>(TuningFor(k.type).health);
         pets_.push_back(k);
     }
+    std::printf("[스테이지] %d/%d — %s (%d마리)\n",
+                questStage_ + 1, kQuestStageCount, st.label, n);
+    std::fflush(stdout);
+    if (out) SendNotice(st.label, *out);
 }
 
 // 이 사람이 지금 겨누고 있는 쪽(라디안).
@@ -2404,7 +2427,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             kv.second.deaths = 0;
         }
         caps_[0] = caps_[1] = caps_[2] = 0;
-        questKilled_ = 0;
+        // 퀘스트는 스테이지 1 부터 다시. 새 웨이브가 다음 틱에 밀려온다.
+        if (questTotal_ > 0) {
+            questStage_ = 0;
+            questAnnounced_ = false;
+            SpawnQuestStage(nullptr);
+        }
         // 깃발은 집으로 되돌린다(들고 있던 사람 손에서도 뺀다).
         for (auto& f : flags_) {
             f.carrier.clear();
@@ -2560,6 +2588,11 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
     UpdateFlags(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
+    // 퀘스트 첫 스테이지 알림 — StartQuest 때는 out 이 없어 못 보냈다. 첫 틱에 한 번.
+    if (questTotal_ > 0 && !questAnnounced_) {
+        questAnnounced_ = true;
+        if (questStage_ < kQuestStageCount) SendNotice(kQuestStages[questStage_].label, out);
+    }
 
     // 판 시계 — 실측 간격이 2초 남짓이었다.
     if (frame_ >= nextTimerFrame_) {

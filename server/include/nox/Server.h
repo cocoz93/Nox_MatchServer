@@ -725,6 +725,8 @@ public:
     //   ★ `spread` — 가운데에서 이만큼 벌려 세운다. 기본은 실측 아닌 자리표시 300.
     //     실클라로 돌릴 때는 **근접 사거리 안**(45)에 세워야 걷지 않고도 시험이 된다.
     void StartQuest(int count, int centerX, int centerY, double spread = kQuestSpread);
+    // 지금 스테이지의 몬스터를 세운다. out 이 있으면 스테이지 알림도.
+    void SpawnQuestStage(std::vector<OutPacket>* out);
 
     // 서두(녹음본)에서 읽어 낸 스폰 자리. 모드를 차릴 때 기준으로 쓴다.
     int spawnX() const { return spawnX_; }
@@ -754,6 +756,13 @@ public:
     std::string PositionsLine() const;
     int QuestLeft() const { return questTotal_ - questKilled_; }
     int QuestKilled() const { return questKilled_; }
+    int QuestStage() const { return questStage_; }
+    // 시험용 — 주인 없는 몬스터 하나를 죽인다(위치·근접에 안 기대고 스테이지 진행을 잰다).
+    void DebugKillOneWild(std::vector<OutPacket>& out) {
+        for (size_t i = 0; i < pets_.size(); ++i) {
+            if (pets_[i].owner.empty()) { KillPet(i, out); return; }
+        }
+    }
     uint16_t CapturesOf(uint8_t team) const { return team < 3 ? caps_[team] : 0; }
     uint8_t TeamOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -1267,6 +1276,10 @@ private:
     uint16_t caps_[3] = {0, 0, 0};   // 팀별 득점 (1·2 만 쓴다)
     int questTotal_ = 0;
     int questKilled_ = 0;
+    int questStage_ = 0;          // 지금 스테이지(0부터)
+    int questCenterX_ = 0, questCenterY_ = 0;
+    double questSpread_ = 0;
+    bool questAnnounced_ = false; // 첫 스테이지 알림을 보냈나
     std::vector<Projectile> shots_;
     std::vector<Creature> pets_;
     // 날아가는 것에 매길 번호.
