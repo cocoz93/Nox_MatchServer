@@ -170,6 +170,16 @@ inline size_t MessageSize(const uint8_t* p, size_t n, bool fromClient) {
                 case 0x0F: case 0x10: case 0x15: case 0x16:
                 case 0x18: case 0x1A: case 0x1C: case 0x1E: total = 4; break;
                 case 0x17: case 0x19: total = 5; break;
+                // ★★★ **`0x02` 는 거래가 아니라 `0xd0` 와 같은 계열이다** (2026-09-11 실측).
+                //   멈춤 표본이 그대로 말해 줬다 —
+                //       [멈춤표본] op=c9 남은 11 | c9 02 03 0d f0 ad f0 00
+                //   `MsgLen.cpp` 의 `0xd0 MSG_DIALOG` 주석에 적힌 무늬와 **글자까지 같다** —
+                //       d0 02 03 0d f0 ad f0 00 00 00 [b8|00]   (남은 11 = 본문 10)
+                //   가운데 `0d f0 ad f0` 은 `0xF0ADF00D` 매직이다. 즉 **머리만 다른 같은 꼴**이고
+                //   본문은 10 이다. 정품 서버 디코더(`sdecode.c`)의 TRADE 갈래에는 이 값이
+                //   없지만, **클라는 실제로 보낸다** — 표에 없다고 안 오는 것이 아니다.
+                //   ⚠ 이걸 몰라 두 클라 런에서 조각 1,560건을 버렸다.
+                case 0x02: total = 11; break;
                 default: return 0;             // 모르는 하위 명령은 넘겨짚지 않는다
             }
             return bn + 1 < total ? 0 : total;

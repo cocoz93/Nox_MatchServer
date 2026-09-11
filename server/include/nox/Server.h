@@ -1241,6 +1241,7 @@ private:
     //   ⚠ 그러니 기본 동작은 **안 바꾼다.** 근거가 설 때까지 보내는 쪽을 유지한다.
     //     (한 번 기본을 끔으로 돌렸다가 `proto_test` 가 「0x70 이 둘에게 안 나감」으로 잡아냈다)
     bool noSpellStart_ = false;
+    std::set<uint8_t> stopSampleShown_;   // 진단 — 멈춤 표본을 오프코드마다 한 번만
     int forceAnimDir_ = -1;     // 진단 — 덧붙이 방향 3비트 고정(-1 이면 안 함)
     int forceAnimPose_ = -1;    // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수

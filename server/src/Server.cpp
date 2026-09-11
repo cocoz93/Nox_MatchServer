@@ -1361,7 +1361,21 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
         while (probe.Next()) {}
         if (probe.stopped()) {
             ++stopped_;
-            ++stoppedByOp_[static_cast<uint8_t>(probe.stopOp())];
+            const uint8_t sop = static_cast<uint8_t>(probe.stopOp());
+            ++stoppedByOp_[sop];
+            // ★ 진단 — **멈춘 자리의 바이트를 그대로 남긴다**(오프코드마다 첫 한 번만).
+            //   「어느 오프코드에서 멈췄나」만으로는 못 고친다. `0xc9` 를 하위 명령별 표까지
+            //   넣었는데 여전히 버렸다 — **그 하위 명령이 표에 없는 값**일 수 있고,
+            //   그건 바이트를 봐야 안다. (2026-09-11)
+            if (stopSampleShown_.insert(sop).second) {
+                const size_t rest = probe.stopRest();
+                const size_t base = (bodyLen >= rest) ? bodyLen - rest : 0;
+                std::printf("[멈춤표본] op=%02x 남은 %zu |", sop, rest);
+                for (size_t q = 0; q < rest && q < 8; ++q)
+                    std::printf(" %02x", body[base + q]);
+                std::printf("\n");
+                std::fflush(stdout);
+            }
             return 0;
         }
     }
