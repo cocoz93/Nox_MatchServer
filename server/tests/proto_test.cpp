@@ -1611,17 +1611,34 @@ void TestSpellDamage() {
         Check(srv.hits() == 1, "맞은 횟수가 1 이 아님");
         Check(srv.flying() == 0, "맞았는데 안 사라짐");
 
-        // 시전 알림이 **보는 사람 모두**에게 나갔나
+        // ★★★ **정정(2026-09-11) — `0x70` 은 시전자에게만, 중요 메시지로 간다.**
+        //
+        //   전에는 「보는 사람 **모두**에게 나갔나」를 봤는데 **그 기대에 근거가 없었다.**
+        //   ⭕ 정품 송신 자리 `opennox/src/legacy/GAME4.c:2455-2463` —
+        //       v23[0] = 112;  v23[1] = <주문 번호>;
+        //       addToMsgListCli(*(uint8_t*)(v5 + 2064), 1, v23, 2);
+        //     앞 인자가 **시전자의 플레이어 인덱스**, 둘째 `1` 이 **중요** 표시다.
+        //   ⚠ 중요로 보내면 `cc SEQ_IMPORTANT` 봉투에 들어가므로 **봉투를 열어야** 보인다
+        //     (`cc <ID 2> <길이 1> <본문…>` — 본문은 `body[4]` 부터).
         int spellStarts = 0;
         for (const auto& p : out) {
             auto body = Body(p);
-            if (!body.empty() && body[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) {
-                Check(body.size() == 2, "0x70 이 2바이트가 아님");
-                Check(body[1] == 27, "0x70 의 주문이 27 이 아님");
+            const uint8_t* m = nullptr;
+            size_t mn = 0;
+            if (body.size() >= 5 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
+                m = body.data() + 4;            // 봉투 속
+                mn = body.size() - 4;
+            } else if (!body.empty()) {
+                m = body.data();
+                mn = body.size();
+            }
+            if (m && mn >= 1 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) {
+                Check(mn == 2, "0x70 이 2바이트가 아님");
+                Check(m[1] == 27, "0x70 의 주문이 27 이 아님");
                 ++spellStarts;
             }
         }
-        Check(spellStarts == 2, "0x70 이 둘에게 안 나감");
+        Check(spellStarts == 1, "0x70 이 시전자 한 명에게 안 나감");
     }
 
     // ② 자기에게 걸면 자기가 깎인다 (대상 플래그 1)

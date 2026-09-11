@@ -1962,21 +1962,31 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 ++spells_[spell];
                 if (onSelf) ++spellsOnSelf_;
 
-                // ① 시전을 알린다 — 실측 `70 1b`(파이어볼) 꼴로 2바이트다.
-                //    보는 사람 모두에게 나간다(누가 뭘 걸었는지 그려야 하니까).
-                // ★ 진단(2026-09-11) — 주문을 쓰면 클라가 게임에서 나간다(g8·g9). 시전은
-                //   성공하는데(주문 +1) 그 직후 0xae 가 온다. 응답을 하나씩 꺼서 가른다.
+                // ① 시전을 알린다 — `70 <주문번호>` 2바이트.
+                //
+                // ★★★ **정정(2026-09-11) — 시전자에게만, 중요 메시지로.**
+                //
+                //   ⭕ 정품 송신 자리 `opennox/src/legacy/GAME4.c:2455-2463` —
+                //       if (!*(uint8_t*)(v0 + 36)) {            // 몸짓 시전 중이 아닐 때
+                //           v23[0] = 112;  v23[1] = <주문 번호>;
+                //           addToMsgListCli(*(uint8_t*)(v5 + 2064), 1, v23, 2);
+                //       }                  //         ↑ **시전자**의 플레이어 인덱스 · ↑ **1 = 중요**
+                //     `v5` 는 시전자 → `+748` → `+276` 을 따라간 것이고 `+2064` 가 그 사람의
+                //     플레이어 인덱스다. 즉 **그 한 사람에게만** 간다.
+                //
+                //   ⚠ 전에는 **판 안의 모두에게** `reliable=false` 로 보냈다. 둘 다 달랐다.
+                //     받는 쪽(`opennox/src/network_client.go:274-279` → `Sub_49BB80(data[1])`)은
+                //     **시전자 UI**(주문서·재사용 대기)로 보이는데, 남이 그것을 받으면
+                //     **자기가 쓰지도 않은 주문의 상태**를 건드리게 된다.
+                //     사용자가 겪은 「주문 쓰니까 튕김」의 가장 유력한 용의자다.
+                //   ⚠ 앞서 `--no-spell-start` 로 가르려 한 실험은 **거짓 지문을 쓰던 때**라
+                //     무효다(「조용해서 내보냄」이 접속 임시 포트도 가리켰다). 다시 재야 한다.
                 if (!noSpellStart_)
                 {
                     uint8_t msg[2];
                     msg[0] = static_cast<uint8_t>(Op::REPORT_SPELL_START);
                     msg[1] = spell;
-                    for (auto& kv2 : sessions_) {
-                        if (kv2.second.inGame) {
-                            Emit(kv2.second, /*reliable=*/false, /*stream=*/0,
-                                 msg, sizeof(msg), out);
-                        }
-                    }
+                    EmitSeq(s, msg, sizeof(msg), out);   // 시전자에게만 · 중요
                 }
 
                 // ② 공격 주문이면 맞힌다.
