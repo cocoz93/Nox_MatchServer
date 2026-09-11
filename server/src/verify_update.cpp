@@ -406,6 +406,11 @@ int main(int argc, char** argv) {
         std::printf("  움직인 표본이 없다 — 이 덤프에서는 못 잰다\n");
     }
 
+    // ★ 계측 검증 — **키가 몇 개 상대에 붙었나**. 이것이 0 이거나 상대 수보다 적으면
+    //   SEND 를 못 풀고 **암호문을 오프코드로 세게 된다**(분포가 통째로 헛것이 된다).
+    std::printf("\n[키] 상대 %zu 곳에 XOR 키가 붙었다\n", keys.size());
+    for (const auto& kv : keys) std::printf("   %s -> 0x%02x\n", kv.first.c_str(), kv.second);
+
     std::printf("\n오프코드 분포 — 서버→클라 (많은 것부터 16개)\n");
     {
         std::vector<std::pair<uint8_t, unsigned long long>> v(opSend.begin(), opSend.end());
