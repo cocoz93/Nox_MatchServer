@@ -735,8 +735,14 @@ std::string Server::PositionsLine() const {
     for (const auto& kv : sessions_) {
         const Session& o = kv.second;
         if (!o.inGame) continue;
-        std::snprintf(buf, sizeof(buf), " 사람 %u=%d,%d,%u,%u",
-                      (unsigned)o.netCode, o.x, o.y, (unsigned)o.facing, (unsigned)o.team);
+        // ★ 체력·마나를 같이 찍는다 (2026-09-11). 안 찍어서 **마나가 얼마인지 아무도 몰랐고**,
+        //   화면의 빈 마나칸을 보고 「클라에게 안 알린 탓」이라고 잘못 짚었다.
+        //   시전은 `cost > s.mana` 면 **카운터도 안 올리고 조용히 안 일어난다** —
+        //   그래서 「주문이 안 나간다」와 「마나가 없다」가 로그에서 구분이 안 됐다.
+        std::snprintf(buf, sizeof(buf), " 사람 %u=%d,%d,%u,%u 체력%u/%u 마나%u/%u",
+                      (unsigned)o.netCode, o.x, o.y, (unsigned)o.facing, (unsigned)o.team,
+                      (unsigned)o.health, (unsigned)o.maxHealth,
+                      (unsigned)o.mana, (unsigned)o.maxMana);
         s += buf;
     }
     for (const auto& f : flags_) {
@@ -2593,6 +2599,28 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 break;   // 목록이 바뀔 수 있다 — 이번 걸음은 여기서 접는다
             }
         }
+    }
+
+    // ★★ **들어온 사람에게 마나를 한 번 알린다** (2026-09-11 화면으로 확인).
+    //   서버는 `ManaOnline` 으로 마나를 제대로 채워 놓고 **클라에게 말을 안 했다.**
+    //   `0x45` 가 나가는 데가 주문·부활·오벨리스크 셋뿐인데 **갓 들어온 사람은 그 셋 다
+    //   안 겪는다.** 그래서 `g1_A_join.png` 에서 체력 막대는 가득한데 마나 막대는
+    //   **테두리만** 있었다 — 사용자가 「마나칸 0」이라 한 그것이다.
+    //
+    // ⚠ 접속 묶음 **바로 뒤**에 보내면 안 된다 — 정품 덤프와 바이트가 밀려
+    //   `replay_connect` 가 깨진다(그렇게 넣었다가 실패로 확인했다). 첫 틱이 안전한 자리다.
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame || s.manaTold || s.netCode == 0) continue;
+        s.manaTold = true;
+        uint8_t mp[5] = {
+            static_cast<uint8_t>(Op::REPORT_MANA),
+            static_cast<uint8_t>(s.netCode),
+            static_cast<uint8_t>(s.netCode >> 8),
+            static_cast<uint8_t>(s.mana),
+            static_cast<uint8_t>(s.mana >> 8),
+        };
+        EmitSeq(s, mp, sizeof(mp), out);   // 홀로 — 제 마나다
     }
 
     UpdateFlags(out);
