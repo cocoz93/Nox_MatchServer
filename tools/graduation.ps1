@@ -62,6 +62,13 @@ function Shot([string]$name) {
   return (Test-Path $png)
 }
 # 서버가 스스로 말하는 값 하나
+# ★★ **시전 횟수는 틱 줄로 세면 안 된다** (2026-09-11).
+#   `[틱]` 은 5초에 한 번쯤 찍히는데 주문을 누른 뒤 1.5초 만에 읽으니 **아직 갱신 전**이다.
+#   그래서 서버는 `주문 1` 인데 하네스는 칸마다 `+0` 이라 찍었고, 그것을 「주문이 안 나간다」로
+#   읽어 한참을 헤맸다. `[시전]` 줄은 **받는 즉시** 찍히므로 이쪽이 맞다.
+function SpellSeen() {
+  return @([regex]::Matches((ReadShared $slog), '\[시전\]')).Count
+}
 function TickNum([string]$key) {
   $l = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '\[틱\]' } | Select-Object -Last 1)
   if ($l.Count -eq 0) { return -1 }
@@ -157,9 +164,9 @@ if ($NoSpells) {
 foreach ($k in $slots.Keys) {
   if ($NoSpells) { break }
   if (-not (Alive $pid1)) { break }
-  $sp0 = TickNum '주문'
+  $sp0 = SpellSeen
   & $di -Target $pid1 -Cmd @(("k {0} 1" -f $slots[$k]), 'sleep 120', ("k {0} 0" -f $slots[$k]), 'sleep 1500') | Out-Null
-  $sp1 = TickNum '주문'
+  $sp1 = SpellSeen
   # ★★ **프로세스가 살아 있어도 「게임에서 나갔으면」 죽은 것이다** (2026-09-11).
   #   g8 에서 소환을 쓰자 클라가 `0xae`(나가기)를 보내고 서버가 세션을 걷었는데,
   #   프로세스는 멀쩡해서 하네스가 **「클라 살아있음」이라 찍었다.** 그게 이 시험을
@@ -172,7 +179,7 @@ foreach ($k in $slots.Keys) {
   #   → 이제 **서버가 세는 사람 수**로 본다. 1 → 0 이면 진짜로 나간 것이다.
   $gone = ((TickNum '사람') -lt 1)
   $ok = (Alive $pid1) -and (-not $gone)
-  Write-Host ("  주문칸 {0}  주문 +{1}  클라 {2}" -f $k, ($sp1 - $sp0),
+  Write-Host ("  주문칸 {0}  클라가 보냄 +{1}  클라 {2}" -f $k, ($sp1 - $sp0),
               $(if ($ok) { '살아있음' } elseif ($gone) { '★게임에서 나감★' } else { '★죽음★' }))
   if (-not $ok) {
     # ★ 여기가 이 시험의 값어치다 — **어느 주문이 죽이는지** 짚어낸다
