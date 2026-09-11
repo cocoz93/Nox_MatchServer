@@ -5,6 +5,18 @@
 #
 #   .\tools\matrix_run.ps1            아홉 조합 전부
 #   결과  _evidence\matrix_result.txt (한 조합 한 줄)
+#
+# ★★★ **맵을 반드시 넘긴다** (2026-09-12 — 아홉 조합이 **전부 맵 없이** 돌던 것을 잡았다).
+#   `two_genuine.ps1:133` 에 맵 빠짐 방어가 있지만 조건이 `$ServerArgs -match '--standalone'`
+#   이라, `ServerArgs` 를 **아예 안 넘기면 방어를 비켜 간다.** 매트릭스가 그랬다.
+#   맵이 없으면 —
+#     · 벽이 없다(충돌 미검증)   · **주문 마나 표가 비어 모든 주문이 공짜**
+#     · 문·오벨리스크·아이템이 없다
+#   그래도 클라는 **녹음된 접속 묶음 216바이트**로 붙으므로 판은 돌아간다. 그래서 안 들켰다.
+#   ⭕ 지문 — 서버 로그에 `[맵]` 과 `[주문] 마나 표 N개` 줄이 **둘 다 없다.**
+param(
+  [string]$MapPath = 'C:\Program Files\GOG Galaxy\Games\Nox\maps\estate\Estate.map'
+)
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
 $resFile = Join-Path $repo '_evidence\matrix_result.txt'
@@ -30,7 +42,9 @@ foreach ($it in $combos) {
   # ⚠ **배열 스플래팅 금지** — PS 5.1 에서 이름 결합이 어긋나 'default' 가
   #   WaitMenu(int) 로 떨어지며 아홉 조합이 전부 0초에 죽었다(2026-09-10).
   #   해시테이블 스플래팅은 이름으로만 묶여 이 함정이 없다.
-  $args2 = @{ Tag = $tag; Prelude = 'default'; Class = $it.c; Mode = $it.m; WatchSeconds = 6 }
+  # ★ `ServerArgs` 를 반드시 준다 — 안 주면 맵 없이 돌고, 하네스의 방어도 안 걸린다(위 주석).
+  $args2 = @{ Tag = $tag; Prelude = 'default'; Class = $it.c; Mode = $it.m; WatchSeconds = 6
+              ServerArgs = ('--standalone --map "' + $MapPath + '"') }
   if ($it.fight -gt 0) { $args2.FightSeconds = $it.fight }
   if ($it.play  -gt 0) { $args2.PlaySeconds  = $it.play }
   # ⚠ `2>&1` 로는 Write-Host 가 안 잡힌다 — PS5 에서 Write-Host 는 **정보 스트림(6번)**이다.
