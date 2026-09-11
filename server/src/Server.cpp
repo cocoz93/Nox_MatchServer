@@ -2693,6 +2693,34 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             static_cast<uint8_t>(s.health >> 8),
         };
         EmitSeq(s, hp, sizeof(hp), out);
+
+        // ★★★ **막대가 그려지려면 「최대치」가 있어야 한다** (2026-09-11, 클라 원본 확정).
+        //   `0x43` 은 **현재값만** 세운다 — `sub_470CB0` → `windows[0].field_1`.
+        //   **최대값은 `field_2` 이고 그것을 세우는 것은 `0xdd` 다**
+        //   (`cdecode.c:2723` → `cliSetTotalHealth_470C80(현재, 최대)`).
+        //   **최대가 0 이면 막대가 안 그려진다.** 우리는 `0xdd` 를 **부활 때만** 보냈다.
+        //
+        //   ⚠ 나는 캡처에서 빨간 막대가 얇은 것을 보고 **「컨저러라 체력이 적어서」**라고
+        //     설명을 지어 붙였다. 관측은 「얇다」까지였는데 거기에 까닭을 달아 `⭕` 로 적었고,
+        //     그 한 줄이 이 결함을 오래 가렸다. **모르면 모른다고 적을 것.**
+        //
+        //   짜임 ⭕ — `op | 번호2 | 현재2 | 최대2`(총 7바이트). 마나는 `0xde` 로 같은 꼴이다.
+        {
+            uint8_t th[7] = {
+                static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH),
+                static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
+                static_cast<uint8_t>(s.health),  static_cast<uint8_t>(s.health >> 8),
+                static_cast<uint8_t>(s.maxHealth), static_cast<uint8_t>(s.maxHealth >> 8),
+            };
+            EmitSeq(s, th, sizeof(th), out);
+            uint8_t tm[7] = {
+                static_cast<uint8_t>(Op::REPORT_TOTAL_MANA),
+                static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
+                static_cast<uint8_t>(s.mana),    static_cast<uint8_t>(s.mana >> 8),
+                static_cast<uint8_t>(s.maxMana), static_cast<uint8_t>(s.maxMana >> 8),
+            };
+            EmitSeq(s, tm, sizeof(tm), out);
+        }
     }
 
     UpdateFlags(out);

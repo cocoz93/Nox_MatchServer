@@ -360,6 +360,16 @@ const std::vector<uint8_t>* FindMsg(const std::vector<std::vector<uint8_t>>& msg
     return nullptr;
 }
 
+// ★ **마지막** 것을 찾는다 (2026-09-11).
+//   `0xdd`(체력 현재+최대)를 **접속 직후에도** 보내게 되면서, 부활을 보는 시험이
+//   첫 번째(접속용)를 집어 엉뚱한 값을 봤다. 부활처럼 **나중 일**을 보는 자리는 이쪽을 쓴다.
+static const std::vector<uint8_t>* FindLastMsg(const std::vector<std::vector<uint8_t>>& v,
+                                               uint8_t op) {
+    const std::vector<uint8_t>* found = nullptr;
+    for (const auto& m : v) { if (!m.empty() && m[0] == op) found = &m; }
+    return found;
+}
+
 // 나간 조각들을 메시지 목록으로 편다. 0xcc 껍데기는 벗겨 속을 넣는다.
 std::vector<std::vector<uint8_t>> Flatten(const std::vector<nox::OutPacket>& out) {
     std::vector<std::vector<uint8_t>> msgs;
@@ -472,7 +482,7 @@ void TestDeathFlow() {
             Check(tick == srv.frame(), "0xe9 의 4바이트가 지금 틱이 아님");
             Check((*r)[7] == 0xff && (*r)[8] == 0x01, "0xe9 끝 두 바이트가 표본과 다름");
         }
-        const auto* tot = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
+        const auto* tot = FindLastMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
         Check(tot != nullptr, "0xdd 가 안 나감");
         if (tot) {
             Check(((*tot)[3] | ((*tot)[4] << 8)) == nox::kDefaultMaxHealth, "0xdd 의 지금 체력이 다름");
@@ -782,6 +792,7 @@ void TestManaSpend() {
 }
 
 // 오프코드 하나 + 번호 두 바이트짜리 조각. `0x73`·`0xF1` 이 같은 꼴이다.
+
 std::vector<uint8_t> CodePacket(nox::Op op, uint16_t netCode) {
     std::vector<uint8_t> p(nox::kWireHeaderSize + 3, 0);
     p[0] = 0x00;   // 비신뢰 · 스트림 0
