@@ -185,6 +185,7 @@ int main(int argc, char** argv) {
     bool standalone = false;
     bool aoi = false;
     bool itemAtSpawn = false;
+    int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
     int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
     int forcePose = -1;        // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
     bool spellStart = false;   // 시전 알림 0x70 을 켜는 손잡이 (기본 끔)   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
@@ -257,6 +258,9 @@ int main(int argc, char** argv) {
         } else if (a == "--standalone") {
             // 독립 모드 — 녹음 없이 접속 묶음·USE_MAP·스냅샷을 조립(P5-c-2). --map 필수.
             standalone = true;
+        } else if (a == "--start-health" && i + 1 < argc) {
+            // 진단 — 들어올 때 체력을 낮춘다. 죽음·부활을 재려고.
+            startHealth = std::atoi(argv[++i]);
         } else if (a == "--anim-dir" && i + 1 < argc) {
             // 진단 — 사람 항목 덧붙이의 방향 3비트를 못 박는다(0~7).
             forceDir = std::atoi(argv[++i]);
@@ -467,12 +471,14 @@ int main(int argc, char** argv) {
         }
         if (spellStart) srv.SetNoSpellStart(false);
         // ★ 켠 스위치를 찍는다. 안 찍으면 「줬는데 안 먹었다」를 못 가른다.
-        if (forcePose >= 0 || forceDir >= 0) {
-            std::printf("[진단스위치] 자세=%d · 방향=%d\n", forcePose, forceDir);
+        if (forcePose >= 0 || forceDir >= 0 || startHealth > 0) {
+            std::printf("[진단스위치] 자세=%d · 방향=%d · 시작체력=%d\n",
+                        forcePose, forceDir, startHealth);
             std::fflush(stdout);
         }
         if (forcePose >= 0) srv.SetForceAnimPose(forcePose);
         if (forceDir  >= 0) srv.SetForceAnimDir(forceDir);
+        if (startHealth > 0) srv.SetStartHealth(startHealth);
         if (itemAtSpawn) {
             // 스폰 자리를 아이템 자리로. 걷기를 빼고 **조작만** 재려는 것이다.
             // ⚠ **아이템을 옮기는 것이 아니다** — 클라가 맵대로 만든 실체와 어긋난다.

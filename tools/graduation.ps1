@@ -31,6 +31,9 @@ param(
   # ★ 판 종류. **rena 는 혼자 돌면 때릴 적이 없어** 「맞고 죽기」를 못 잰다 —
   #   quest 로 돌리면 몬스터가 나와 실제로 때린다(2026-09-11 sp1 런에서 드러난 구멍).
   [ValidateSet('arena','ctf','quest')][string]$Mode = 'arena',
+  # ★ 들어올 때 체력을 낮춘다(0 이면 안 건드림). **최대 체력은 그대로**라 부활 판정이 선다.
+  #   거머리 2마리가 90초에 38 밖에 못 깎아 「죽음·부활」을 못 쟀다(2026-09-11).
+  [int]$StartHealth = 0,
   [int]$WaitMenu = 40
 )
 $ErrorActionPreference = 'Continue'
@@ -72,6 +75,18 @@ function Shot([string]$name) {
 function SpellSeen() {
   return @([regex]::Matches((ReadShared $slog), '\[시전\]')).Count
 }
+# ★ 사람 체력을 읽는다 — `[자리]` 줄의 `체력N/M`. 못 읽으면 -1.
+#   ★★ 「죽었나」를 **피해 계수로 재면 안 된다** — 그 값은 **모든 대상에 준 피해 누계**라
+#     사람 체력과 다른 값이다(2026-09-11에 헷갈렸다). 체력은 체력으로 잰다.
+function PlayerHp([ref]$maxOut) {
+  $lines = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '\[자리\].*체력' })
+  if ($lines.Count -eq 0) { return -1 }
+  if ($lines[-1] -match '체력(\d+)/(\d+)') {
+    if ($maxOut) { $maxOut.Value = [int]$Matches[2] }
+    return [int]$Matches[1]
+  }
+  return -1
+}
 function TickNum([string]$key) {
   $l = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '\[틱\]' } | Select-Object -Last 1)
   if ($l.Count -eq 0) { return -1 }
@@ -90,14 +105,14 @@ if (-not (Test-Path $ctrl)) { New-Item -ItemType Directory $ctrl | Out-Null }
 # ── 1. 서버 ───────────────────────────────────────────────────────────
 if (Test-Path $slog) { [IO.File]::Delete($slog) }
 $srv = 'cmd /c ""' + (Join-Path $root 'build\Release\nox_server.exe') +
-       '" --port 18590 --standalone --map "' + $Map + '" --mode ' + $Mode + ' > "' + $slog + '" 2>&1"'
+       '" --port 18590 --standalone --map "' + $Map + '" --mode ' + $Mode + $(if ($StartHealth -gt 0) { ' --start-health ' + $StartHealth } else { '' }) + ' > "' + $slog + '" 2>&1"'
 Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c ' + $srv) -WindowStyle Hidden | Out-Null
 Start-Sleep -Seconds 3
 if ((ReadShared $slog) -notmatch '\[맵\]') {
   Write-Host '[멈춤] 서버 로그에 [맵] 줄이 없다 — 맵을 못 읽었다' -ForegroundColor Red
   Cleanup; exit 6
 }
-Write-Host ("[조건] 직업={0} · 판={1} · 캡처={2} · 꼬리표={3}" -f $Class, $Mode, $(if ($NoShots) { '끔' } else { '찍음' }), $Tag) -ForegroundColor Cyan
+Write-Host ("[조건] 직업={0} · 판={1} · 시작체력={2} · 캡처={3} · 꼬리표={4}" -f $Class, $Mode, $StartHealth, $(if ($NoShots) { '끔' } else { '찍음' }), $Tag) -ForegroundColor Cyan
 Write-Host '서버 떴음'
 
 # ── 2. 접속 ───────────────────────────────────────────────────────────
@@ -216,8 +231,10 @@ if ($code -eq 0 -and (Alive $pid1)) {
   Write-Host '--- 맞고 죽기 → 부활 (최대 90초) ---'
   $dmg0 = TickNum '피해'
   $died = $false
+  $sawDead = $false      # 체력이 0 까지 간 적이 있나 (죽음의 증거)
   for ($w = 0; $w -lt 90; $w += 5) {
     Start-Sleep -Seconds 5
+    if ((PlayerHp $null) -eq 0) { $sawDead = $true }
     if (-not (Alive $pid1)) {
       $fail += ("맞는 도중 클라가 죽었다 — 피해 {0} 쌓인 뒤 (주문이 아니라 **죽음**이 튕김의 자리일 수 있다)" -f ((TickNum '피해') - $dmg0))
       $code = 3; $died = $true; break
@@ -227,6 +244,18 @@ if ($code -eq 0 -and (Alive $pid1)) {
   Write-Host ("  피해 +{0} · 클라 {1}" -f ($dmg1 - $dmg0), $(if (Alive $pid1) { '살아있음' } else { '★죽음★' }))
   if (-not $died) {
     if (($dmg1 - $dmg0) -le 0) { $fail += '90초 동안 아무 피해도 안 들어왔다 — 죽음·부활을 못 쟀다' }
+    # ★★ **죽음·부활을 실제로 본다** — 체력이 0 까지 갔다가 최대로 돌아왔나.
+    #   $sawDead 는 위 순회에서 채운다. 여기서는 **지금 체력이 최대인지**만 본다.
+    $mx = 0
+    $hpNow = PlayerHp ([ref]$mx)
+    Write-Host ("  체력 {0}/{1} · 죽은 적 {2}" -f $hpNow, $mx, $(if ($sawDead) { '있음' } else { '없음' }))
+    if ($sawDead) {
+      if ($hpNow -eq $mx -and $mx -gt 0) { Write-Host '  ⭕ 죽음→부활 확인 (체력이 최대로 돌아왔다)' -ForegroundColor Green }
+      else { $fail += ("죽었는데 부활 뒤 체력이 최대가 아니다 ({0}/{1})" -f $hpNow, $mx) }
+    } else {
+      # ⚠ **못 잰 것과 안 되는 것을 가른다** — 안 죽었으면 결함이 아니라 상황을 못 만든 것이다.
+      Write-Host ("  ➖ 죽음·부활은 못 쟀다 — 90초 동안 안 죽었다 (체력 {0}/{1}). -StartHealth 로 낮춰 볼 것" -f $hpNow, $mx) -ForegroundColor Yellow
+    }
     if (Shot 'D2_hurt') { $shots += 'D2_hurt' }
   }
 }

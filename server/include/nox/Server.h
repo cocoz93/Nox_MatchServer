@@ -1056,6 +1056,8 @@ public:
     //   **덧붙이 바이트가 클라에 닿기는 하나?** 방향이 바뀌면 캐릭터가 다른 쪽을 보므로
     //   눈에 확 띈다. 방향도 안 먹으면 덧붙이 자체가 안 읽히는 것이다.
     void SetForceAnimDir(int v) { forceAnimDir_ = v; }
+    // ★ 진단 — 들어올 때 체력(0 이면 안 건드림). **최대 체력은 그대로** 둔다.
+    void SetStartHealth(int v) { startHealth_ = v; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
     void DebugCapture(const std::string& addr, int n) {
         auto it = sessions_.find(addr);
@@ -1329,6 +1331,7 @@ private:
     //     (한 번 기본을 끔으로 돌렸다가 `proto_test` 가 「0x70 이 둘에게 안 나감」으로 잡아냈다)
     bool noSpellStart_ = false;
     std::set<uint8_t> stopSampleShown_;   // 진단 — 멈춤 표본을 오프코드마다 한 번만
+    int startHealth_ = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
     int forceAnimDir_ = -1;     // 진단 — 덧붙이 방향 3비트 고정(-1 이면 안 함)
     int forceAnimPose_ = -1;    // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수

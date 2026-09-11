@@ -2290,6 +2290,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     s.strength  = StrengthOnline(s.charClass);
                     s.health = s.maxHealth;
                     s.mana   = s.maxMana;
+                    // ★ 진단 — 들어올 때 체력을 낮춰 둔다(`--start-health N`).
+                    //   ⚠ **최대 체력은 안 건드린다** — 그래야 부활 뒤 「최대로 돌아왔나」를 잰다.
+                    //   왜 필요한가: 실클라 졸업시험이 90초 동안 안 죽어 「죽음·부활」을 못 쟀다
+                    //   (거머리 2마리가 38 밖에 못 깎았다, 2026-09-11). 낮춰 두면 금방 죽는다.
+                    if (startHealth_ > 0 && startHealth_ < s.maxHealth)
+                        s.health = static_cast<uint16_t>(startHealth_);
                 }
                 if (!joinBody_.empty()) {
                     std::vector<uint8_t> msg = joinBody_;
