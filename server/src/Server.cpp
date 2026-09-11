@@ -1887,6 +1887,9 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
 
                 // ① 시전을 알린다 — 실측 `70 1b`(파이어볼) 꼴로 2바이트다.
                 //    보는 사람 모두에게 나간다(누가 뭘 걸었는지 그려야 하니까).
+                // ★ 진단(2026-09-11) — 주문을 쓰면 클라가 게임에서 나간다(g8·g9). 시전은
+                //   성공하는데(주문 +1) 그 직후 0xae 가 온다. 응답을 하나씩 꺼서 가른다.
+                if (!noSpellStart_)
                 {
                     uint8_t msg[2];
                     msg[0] = static_cast<uint8_t>(Op::REPORT_SPELL_START);

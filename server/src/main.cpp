@@ -184,7 +184,8 @@ int main(int argc, char** argv) {
     std::string mapPath;
     bool standalone = false;
     bool aoi = false;
-    bool itemAtSpawn = false;   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
+    bool itemAtSpawn = false;
+    bool spellStart = false;   // 시전 알림 0x70 을 켜는 손잡이 (기본 끔)   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
     int questCount = 4;
     // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —
     //   안 그러면 걸어가 붙이는 조종까지 필요해져 판정이 흐려진다.
@@ -254,6 +255,9 @@ int main(int argc, char** argv) {
         } else if (a == "--standalone") {
             // 독립 모드 — 녹음 없이 접속 묶음·USE_MAP·스냅샷을 조립(P5-c-2). --map 필수.
             standalone = true;
+        } else if (a == "--spell-start") {
+            // ★ 시전 알림(0x70)을 **켠다.** 기본은 끔 — Server.h 의 noSpellStart_ 주석 참조.
+            spellStart = true;
         } else if (a == "--aoi") {
             // 시야 반경(P4-b) — 갱신 스트림에 맵 정적 오브젝트를 반경 안만 싣는다. --map 필수.
             aoi = true;
@@ -443,6 +447,7 @@ int main(int argc, char** argv) {
         }
         if (aoi) {
             srv.SetAoi(true);
+    if (spellStart) srv.SetNoSpellStart(false);
             std::printf("[시야] 정적 오브젝트를 반경 %d 안만 갱신에 실음\n",
                         static_cast<int>(nox::kAoiRadius));
         }

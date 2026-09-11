@@ -919,6 +919,7 @@ public:
     unsigned long long appearanceSent() const { return appearanceSent_; }
     unsigned long long appearanceUnknown() const { return appearanceUnknown_; }
     unsigned long long fxSent() const { return fxSent_; }
+    void SetNoSpellStart(bool on) { noSpellStart_ = on; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
     void DebugCapture(const std::string& addr, int n) {
         auto it = sessions_.find(addr);
@@ -1181,6 +1182,16 @@ private:
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수
+    // ★ 시전 알림 `0x70` 을 끄는 **진단 스위치**. **기본은 보낸다.**
+    //
+    //   2026-09-11 — 주문을 쓰면 클라가 게임에서 나가는 일이 있어 이분법을 돌렸다.
+     //   `0x70` 만 끄니 클라가 붙어 있어 범인인 줄 알았는데, **대조군(켠 채)도 안 나갔다.**
+    //   즉 **이분법이 성립하지 않았다** — 두 회차 모두 「걷지 않고 바로 시전」이었다.
+    //   나간 회차(g9)는 **걷고 나서** 시전했다. 조건은 `0x70` 이 아니라 **걷기+시전**으로 보인다.
+    //
+    //   ⚠ 그러니 기본 동작은 **안 바꾼다.** 근거가 설 때까지 보내는 쪽을 유지한다.
+    //     (한 번 기본을 끔으로 돌렸다가 `proto_test` 가 「0x70 이 둘에게 안 나감」으로 잡아냈다)
+    bool noSpellStart_ = false;
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)
