@@ -112,6 +112,18 @@ foreach ($try in 1..12) {
   Start-Sleep -Seconds 1
 }
 foreach ($f in @($dump, $slog)) { if (Test-Path $f) { [IO.File]::Delete($f) } }
+
+# ★★★ **이 태그로 전에 찍은 캡처를 지운다** (2026-09-11 — 미결 「캡처 재사용 즉사」의 정체).
+#   Windows 는 파일 이름의 **대소문자를 안 가린다.** 낮에 `GEN2` 로 돌린 캡처가 남아 있는데
+#   밤에 `gen2` 로 돌리면 **같은 파일**이라, 이번 런이 못 찍은 자리에 **옛 그림이 그대로** 있다.
+#   하네스는 그것을 「이번 런의 화면」으로 읽고 **엉뚱한 판정**을 한다.
+#   실측 — `gen2` 회차에서 `A1_list` 는 23:29 인데 `A2_chars`·`A3_ingame` 은 **13:10**(낮)이었다.
+$staleDir = Join-Path $ev 'desk1'
+$stale = @(Get-ChildItem $staleDir -Filter ($Tag + '*.png') -ErrorAction SilentlyContinue)
+if ($stale.Count -gt 0) {
+  Write-Host ("[정리] 이 태그로 전에 찍은 캡처 {0}장을 지운다 — 안 지우면 옛 그림을 새 것으로 읽는다" -f $stale.Count) -ForegroundColor Yellow
+  foreach ($s in $stale) { try { [IO.File]::Delete($s.FullName) } catch {} }
+}
 if (-not (Test-Path $ctrl)) { New-Item -ItemType Directory $ctrl | Out-Null }
 
 # ★★ 런 전 문지기 — 2026-09-10 에 이것이 없어서 **실클라 네 판을 날렸다.**
