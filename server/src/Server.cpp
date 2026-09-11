@@ -902,6 +902,36 @@ void Server::FlushPending(std::vector<OutPacket>& out) {
         Session& s = kv.second;
         if (!s.inGame) { s.pending.clear(); continue; }
         for (const auto& pr : s.pending) {
+            // ★★ 마법부여 — `0x5A REPORT_ENCHANT`
+            //   ⭕ 짜임 `netReportEnchant_4D8F90`(`GAME3_2.c:4496-4503`):
+            //       v3[0] = 90;                                   // 0x5A
+            //       *(uint16_t*)&v3[1] = netGetUnitCodeServ(a2);  // 넷코드
+            //       *(uint32_t*)&v3[3] = a2[85];                  // **비트 묶음 uint32**
+            //       netSendPacket1(a1, v3, 7, 0, 1);              // 총 7 · **중요**
+            //   ⭕ 비트 자리 — `(Buffs & (1 << v))`(`client/drawable.go:739`) ·
+            //       `ENCHANT_INVULNERABLE = 23`(`server/spells_enchant.go:60`)
+            //   ★ 우리는 부활 무적을 이 비트로 알린다. 정품 더티 비트 `0x800000` 자리다.
+            if (pr.what == PendingReport::What::Enchant) {
+                const Session* who = nullptr;
+                for (const auto& kv2 : sessions_) {
+                    if (kv2.second.inGame && kv2.second.netCode == pr.netCode) { who = &kv2.second; break; }
+                }
+                if (!who) continue;
+                const uint32_t bits =
+                    (who->invulnUntilSet && frame_ < who->invulnUntilFrame) ? kEnchantInvulnerable : 0u;
+                uint8_t msg[7] = {
+                    static_cast<uint8_t>(Op::REPORT_ENCHANTMENT),
+                    static_cast<uint8_t>(pr.netCode),
+                    static_cast<uint8_t>(pr.netCode >> 8),
+                    static_cast<uint8_t>(bits),
+                    static_cast<uint8_t>(bits >> 8),
+                    static_cast<uint8_t>(bits >> 16),
+                    static_cast<uint8_t>(bits >> 24),
+                };
+                EmitSeq(s, msg, sizeof(msg), out);
+                ++enchantSent_;
+                continue;
+            }
             if (pr.what != PendingReport::What::UnitHealth) continue;   // 나머지는 아직
             // 그 번호의 임자를 찾는다 — **사람과 불려 나온 것 둘 다** 본다.
             uint16_t hp = 0;
@@ -2922,6 +2952,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
     UpdateFlags(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
+
+    // ★★ 무적이 **켜지거나 꺼지는 순간**을 잡는다 — 프레임 기반이라 「끝나는 때」는
+    //   아무도 안 알려 준다. 매 틱 지금 값과 **마지막으로 알린 값**을 견줘 다를 때만 올린다.
+    //   ⭕ 정품도 더티 비트가 켜졌을 때만 보낸다(`GAME4_2.c:7170`).
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame || s.netCode == 0) continue;
+        const uint32_t now =
+            (s.invulnUntilSet && frame_ < s.invulnUntilFrame) ? kEnchantInvulnerable : 0u;
+        if (now == s.enchantSent) continue;
+        s.enchantSent = now;
+        MarkDirty(s.netCode, PendingReport::What::Enchant);
+    }
+
     // ★ R4 — 이 틱에 바뀐 것들을 각자에게 보내고 목록을 비운다.
     //   정품의 「비트가 켜진 것만 보내고 곧바로 끈다」와 같은 자리다.
     FlushPending(out);

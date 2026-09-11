@@ -320,6 +320,9 @@ struct Session {
     //       ⑵ 시야(AOI)가 이미 세션 기준이라 **「볼 수 있는 사람에게만」이 공짜**다
     //       ⑶ 정품의 「보낸 뒤 비트 끄기」가 **목록 비우기**로 자연스럽다
     std::vector<PendingReport> pending;
+    // ★ 마지막으로 **알린** 마법부여 비트 묶음. 이것과 지금 값이 다를 때만 보낸다.
+    //   ⭕ 정품도 「바뀐 것」 비트가 켜졌을 때만 보낸다(`GAME4_2.c:7170`).
+    uint32_t enchantSent = 0;
 
     // 이 상대가 **자기 쪽에서 굴리고 있을** 별칭 표. 서버가 똑같이 굴려야
     // 어긋나지 않는다(Alias.h 참조).
@@ -488,6 +491,12 @@ constexpr double kAoiDropRadius = kAoiRadius * 1.2;
 //   ★ 정품 **서버**는 거리를 아예 안 본다(sdecode.c:117-143). 거르는 쪽은 **클라**다.
 //     우리는 안전장치로 남기되 **클라와 같은 문턱**을 쓴다.
 constexpr double kPickupReach = 75.0;
+
+// ★★ 마법부여 비트 — `0x5A REPORT_ENCHANT` 의 본문 4바이트가 이 비트 묶음이다.
+//   ⭕ `opennox/src/client/drawable.go:735-739` — `(Buffs & (1 << v)) != 0`
+//   ⭕ `opennox/src/server/spells_enchant.go:60` — `ENCHANT_INVULNERABLE = EnchantID(23)`
+//   즉 무적은 **1 << 23**. 우리는 부활 무적(`invulnUntilFrame`)에 이 비트를 쓴다.
+constexpr uint32_t kEnchantInvulnerable = 1u << 23;
 
 // 한 사람이 들 수 있는 물건 수의 **안전 한도**. 진짜 한도는 서버가 아니라 **클라가 쥔다** —
 // 못 받으면 `0xF1 INVENTORY_FAIL` 로 되돌려 주므로 서버가 미리 자를 일이 아니다.
@@ -866,6 +875,8 @@ public:
     void FlushPending(std::vector<OutPacket>& out);
     // 시험·로그용 —  x41 을 몇 번 보냈나.
     unsigned long long unitHealthSent() const { return unitHealthSent_; }
+    // 시험·로그용 — 0x5A 를 몇 번 보냈나.
+    unsigned long long enchantSent() const { return enchantSent_; }
 
     bool IsEnemyTo(const Session& a, const Session& b) const;
     // 시험·로그용 — 주소로 부른다. 둘 중 하나라도 없으면 `false`(적이 아님).
@@ -1391,7 +1402,8 @@ private:
     bool wallsOn_ = false;
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
     // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
-    unsigned long long unitHealthSent_ = 0;   //  x41 을 보낸 횟수 (R4)
+    unsigned long long unitHealthSent_ = 0;
+    unsigned long long enchantSent_ = 0;      // 0x5A 를 보낸 횟수 (R4)   //  x41 을 보낸 횟수 (R4)
     uint8_t peerPose_ = 0x30;
     // 갱신 항목 순서를 뒤집는다(남 먼저). 「자리 탓인가 누구냐 탓인가」를 가르는 시험용.
     bool peerFirst_ = false;

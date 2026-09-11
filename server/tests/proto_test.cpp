@@ -1880,6 +1880,66 @@ void TestDirtyUnitHealth() {
     }
 }
 
+// ── 부활 무적을 클라에게 알리나 (`0x5A REPORT_ENCHANT`) ──
+//
+// ★ 짜임 ⭕ `GAME3_2.c:4496-4503` — `[0]=0x5A · [1..2]=넷코드 · [3..6]=비트 묶음(uint32)` · 중요
+// ★ 비트 ⭕ `(Buffs & (1 << v))`(`client/drawable.go:739`) ·
+//   `ENCHANT_INVULNERABLE = 23`(`server/spells_enchant.go:60`) → **1 << 23**
+void TestEnchantInvuln() {
+    const std::string a = "10.0.0.1:1000";
+    nox::Server srv;
+    srv.DebugEnterGame(a, 728);
+
+    // 봉투를 열어 `0x5A` 의 비트 묶음을 꺼낸다. 없으면 false.
+    auto find5a = [](const std::vector<nox::OutPacket>& out, uint32_t* bitsOut) {
+        bool got = false;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            const uint8_t* m = nullptr;
+            size_t mn = 0;
+            if (body.size() >= 5 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
+                m = body.data() + 4; mn = body.size() - 4;
+            } else if (!body.empty()) {
+                m = body.data(); mn = body.size();
+            }
+            if (!m || mn < 7) continue;
+            if (m[0] != static_cast<uint8_t>(nox::Op::REPORT_ENCHANTMENT)) continue;
+            if (bitsOut)
+                *bitsOut = static_cast<uint32_t>(m[3]) | (static_cast<uint32_t>(m[4]) << 8) |
+                           (static_cast<uint32_t>(m[5]) << 16) | (static_cast<uint32_t>(m[6]) << 24);
+            got = true;
+        }
+        return got;
+    };
+
+    std::vector<nox::OutPacket> out;
+    // ① 죽인다 → 부활까지 틱을 돌린다. 부활 순간 **무적이 켜지고** `0x5A` 가 나가야 한다.
+    srv.Damage(a, 9999, out, "");
+    Check(srv.HealthOf(a) == 0, "안 죽었다");
+    out.clear();
+    uint32_t ms = 0;
+    for (int i = 0; i < 120; ++i) { ms += 33; srv.Tick(ms, out); }   // 부활 지연(45틱)을 넘긴다
+    Check(srv.HealthOf(a) > 0, "안 되살아났다 — 이 시험이 무의미해진다");
+    uint32_t bits = 0;
+    Check(find5a(out, &bits), "부활했는데 0x5A 가 안 나갔다");
+    Check(bits == nox::kEnchantInvulnerable, "0x5A 의 비트가 1<<23 이 아니다");
+    const unsigned long long afterRevive = srv.enchantSent();
+    Check(afterRevive >= 1, "0x5A 계수가 안 늘었다");
+
+    // ② 무적이 **끝나면** 0 으로 한 번 더 알려야 한다 (150틱 = 5초)
+    out.clear();
+    for (int i = 0; i < 200; ++i) { ms += 33; srv.Tick(ms, out); }
+    uint32_t bits2 = 0xFFFFFFFFu;
+    Check(find5a(out, &bits2), "무적이 끝났는데 0x5A 가 안 나갔다");
+    Check(bits2 == 0, "무적이 끝났는데 비트가 0 이 아니다");
+
+    // ③ 그 뒤로는 **안 바뀌니 또 안 보낸다**
+    const unsigned long long afterOff = srv.enchantSent();
+    out.clear();
+    for (int i = 0; i < 60; ++i) { ms += 33; srv.Tick(ms, out); }
+    Check(srv.enchantSent() == afterOff, "안 바뀌었는데 0x5A 를 또 보냄");
+}
+
 void TestMelee() {
     nox::Server srv;
     const std::string a = "10.0.0.1:1000";
@@ -3647,6 +3707,7 @@ int main() {
     TestSpellDamage();
     TestEnemyTo();
     TestDirtyUnitHealth();
+    TestEnchantInvuln();
     TestMelee();
     TestThingDb();
     TestMapSections();
