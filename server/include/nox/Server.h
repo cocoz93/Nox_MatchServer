@@ -257,7 +257,13 @@ struct Session {
     //   ⚠ 정품이 걷는 표본은 없다(덤프 6개 전수 정지). 그래서 **실험으로** 확인한다.
     double animPrevX = 0, animPrevY = 0;
     bool animMoving = false;
-    bool manaTold = false;
+    // ★★ **HUD(체력·마나)를 몇 번 되풀이해 보낸다** (2026-09-11).
+    //   한 번만 보냈더니 안 떴다 — 접속 직후라 클라가 아직 안 받을 채비였던 것으로 보인다.
+    //   ★ 왜 마나만 떴었나 — 마나는 **주문 쓸 때마다 다시** 나가서 결국 떴고,
+    //     체력은 **맞아야만** 나가므로 안 맞으면 그 한 번이 전부였다.
+    //   그래서 처음 얼마 동안 **여러 번** 보낸다. 값이 안 바뀌어도 몇 조각 더 태울 뿐이다.
+    int hudToldCount = 0;
+    uint32_t hudNextFrame = 0;
     bool invulnUntilSet = false;
     uint32_t invulnUntilFrame = 0;
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
@@ -445,6 +451,9 @@ constexpr uint32_t kAimStaleTicks = 30;
 // ★ 사람 자세 번호 ⭕ 소스 확증(`opennox/src/draw_debug.go:294` debugStates) —
 //   0 IDLE · 1 DIE · 2 DEAD · 3 JUMP · **4 WALK** · 5 WALK_AND_DRAG · **6 RUN** · 8 PICKUP
 //   갱신 항목 덧붙이 바이트의 **하위 4비트**가 이 번호다.
+// HUD(체력·마나)를 접속 직후 몇 번 되풀이해 보낼까. ➖ 우리 값 — 한 번은 놓친다.
+constexpr int kHudTellTimes = 5;
+
 constexpr uint8_t kAnimIdle = 0;
 constexpr uint8_t kAnimWalk = 4;
 

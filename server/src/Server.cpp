@@ -2665,8 +2665,13 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     //   `replay_connect` 가 깨진다(그렇게 넣었다가 실패로 확인했다). 첫 틱이 안전한 자리다.
     for (auto& kv : sessions_) {
         Session& s = kv.second;
-        if (!s.inGame || s.manaTold || s.netCode == 0) continue;
-        s.manaTold = true;
+        if (!s.inGame || s.netCode == 0) continue;
+        // ★ 처음 얼마 동안 **여러 번** 보낸다 — 한 번만 보내면 클라가 아직 채비 전이라 놓친다.
+        //   30틱(≈1초) 간격으로 `kHudTellTimes` 번. 그 뒤로는 값이 바뀔 때만 나간다.
+        if (s.hudToldCount >= kHudTellTimes) continue;
+        if (s.hudNextFrame != 0 && frame_ < s.hudNextFrame) continue;
+        ++s.hudToldCount;
+        s.hudNextFrame = frame_ + 30;
         uint8_t mp[5] = {
             static_cast<uint8_t>(Op::REPORT_MANA),
             static_cast<uint8_t>(s.netCode),
