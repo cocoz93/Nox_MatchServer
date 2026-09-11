@@ -289,6 +289,11 @@ int Server::SpellDamage(uint8_t spell) {
 //    클라 덤프 839건). 별칭은 **클라가 스스로 굴리고 서버에 알려 주는 것**이고,
 //    서버는 같은 규칙으로 따라 굴린다(Alias.h). 그러니 클라가 (번호,종류)를
 //    이미 알고 있어야 같은 자리를 고른다. **그 앎은 전체 번호로 온 첫 등장에서 온다.**
+// ⚠ 사람 종류 번호는 **두 군데**에 적혀 있다 — 여기(`kPlayerType`)와 뜯는 쪽
+//   (`ThingFlags.cpp` 의 `ThingIsPlayer`). 어긋나면 짜는 길이와 뜯는 길이가 갈려
+//   **사람 뒤 항목이 전부 밀린다.** 그래서 여기서 못 박는다.
+static_assert(kPlayerType == 713, "ThingIsPlayer() 의 713 과 같이 고칠 것");
+
 // ★ `playerAnim` — 사람 항목의 **자세 번호**(0 IDLE · 4 WALK). 사람이 아니면 안 쓴다.
 //   ⭕ 번호표는 소스 확증(`draw_debug.go:294`). 걸을 때 4 를 보내야 다리가 움직인다.
 static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
@@ -348,15 +353,27 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
         //      전에는 사람이면 **늘 2** 로 보내 그 자리가 어긋나 있었다.
         //   ⚠ 방향을 어디에 싣는지는 아직 모른다 — 여기가 아니다.
         if (type == kPlayerType) {
-            // ★★ **자세 번호를 하위 4비트에 싣는다** (2026-09-11).
-            //   전에는 늘 `0x40` 이라 하위 4비트가 0 = **IDLE 고정**이었다 —
-            //   걸어도 선 자세였고, 그것이 사용자가 말한 「걷기 애니메이션 없음」이다.
-            //   위 4비트(0x40)는 실측 그대로 두고 **아래 4비트만** 바꾼다.
-            //   ⚠ 정품이 걷는 표본은 없다. 이 값은 **실험 중**이다 —
-            //     클라가 죽으면 되돌린다(계측이 이제 그것을 잡아낸다).
-            e.extraBytes[0] = static_cast<uint8_t>(0x40 | (playerAnim & 0x0F));
-            if (e.alias == 0xff) { e.extra = 2; e.extraBytes[1] = 0; }
-            else                 { e.extra = 1; }
+            // ★★★ **정정(2026-09-11) — 사람 항목은 별칭이든 아니든 늘 두 바이트다.**
+            //
+            //   ⭕ 근거 — 클라 디코더 `GAME2_3.c:1685` —
+            //       if (*(uint8_t*)(v19 + 112) & 4) { v28 = *++v14; }  // 자세를 **별도 바이트**로
+            //       else                            { v28 = v20 & 0xF; }
+            //     `+112` 은 `ObjClass` 다(`client/drawable.go:572` — `ObjClass // 28, 112`).
+            //     그리고 **사람은 `Class & 0x4`** 다(`draw_debug.go:87` — 그 가지에서만
+            //     사람 자세표 `debugStates`(IDLE/DIE/DEAD/JUMP/WALK…)를 쓴다).
+            //     ★ 즉 사람이면 **자세가 늘 별도 한 바이트로 온다.** 별칭 여부와 무관하다 —
+            //       클래스는 오브젝트 속성이지 어떻게 줄여 보냈나와 상관이 없다.
+            //
+            //   ⚠ 위 실측 주석의 「별칭이면 덧붙이 1」과 부딪힌다. 1 로 보내면 클라는
+            //     **다음 항목의 첫 바이트를 자세로 먹고** 그 뒤가 밀린다. 사람이 마지막
+            //     항목이면 밀림이 화면에 안 드러나므로 실측 때 1 로 읽혔을 수 있다.
+            //
+            //   ★ **하위 4비트에 자세를 싣던 앞 시도는 화면을 못 바꿨다**(2026-09-11 실측):
+            //     서 있는 채로 자세만 0↔2 로 바꿔 찍었더니 다른 픽셀 9,476·4,672 로
+            //     **대조군(같은 자세 두 장) 8,200 범위 안**이었다. `else` 가지를 안 타는 것이다.
+            e.extraBytes[0] = 0x40;                                       // 방향(상위 3비트) · bit7=0
+            e.extraBytes[1] = static_cast<uint8_t>(playerAnim);           // ★ 자세 — 별도 바이트
+            e.extra = 2;
         }
     }
 }
@@ -2655,7 +2672,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         s.animPrevY = s.y;
 
         // ★★ **걷는 그림 칸을 굴린다** — 서 있으면 0 으로 되돌린다.
-        if (s.animMoving) {
+        if (forceAnimFrame_ >= 0) {
+            s.animFrame = static_cast<uint32_t>(forceAnimFrame_);   // 진단 — 걷는 그림 칸 고정
+        } else if (s.animMoving) {
             if (frame_ >= s.animNextFrameAt) {
                 s.animNextFrameAt = frame_ + kAnimStepTicks;
                 s.animFrame = (s.animFrame + 1) % kAnimWalkFrames;
@@ -2802,7 +2821,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 // ★ 걷고 있으면 WALK(4), 서 있으면 IDLE(0) — 2026-09-11 실험 중
                 FillEntry(s.aliases, s.netCode, kPlayerType, s.tickFrame, s.x, s.y,
                           s.facing, me, /*complex=*/true,
-                          /*playerAnim=*/ s.animMoving ? kAnimWalk : kAnimIdle);
+                          /*playerAnim=*/ forceAnimPose_ >= 0
+                              ? static_cast<uint8_t>(forceAnimPose_)
+                              : (s.animMoving ? kAnimWalk : kAnimIdle));
                 m.objects.push_back(me);
                 // 시야 안 정적 — **상한 필수** (AppendAoiStatics 주석: 상한 없이는
                 // 스폰 주변 40개↑ 가 480B 를 넘겨 a4 가 통째로 비어 나갔다).

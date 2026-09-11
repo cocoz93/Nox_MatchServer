@@ -113,8 +113,19 @@ bool Walk(const uint8_t* data, size_t n, int x, int y,
         if (left < 1) return false;
         int base = 1;                       // 방향·애니 1B
         if (p[0] & 0x80) ++base;            // 최상위 비트면 프레임 1B 더
-        cands[nCands++] = base;
-        cands[nCands++] = base + 1;         // `sprite[112] & 4` 는 아직 모른다
+        // ★★★ **`sprite[112] & 4` 가 무엇인지 알아냈다** (2026-09-11) —
+        //   `+112` 은 `ObjClass` 이고(`opennox/src/client/drawable.go:572`),
+        //   **사람이 그 `Class & 4`** 다(`draw_debug.go:87` — 그 가지에서만 사람 자세표
+        //   `IDLE/DIE/DEAD/JUMP/WALK…` 를 쓴다). 그러니 **사람이면 자세가 별도 한 바이트**로
+        //   더 붙는다(`GAME2_3.c:1685`). 갈래를 열 필요 없이 확정된다.
+        //   ⚠ 갈래를 열어 두면 **틀린 갈래를 먼저 잡아 그 뒤를 엉뚱하게 푼다** —
+        //     실제로 소환수가 갱신에서 사라졌다(proto_test 「불려 나온 것이 안 실림」).
+        if (ThingIsPlayer(e.type)) {
+            cands[nCands++] = base + 1;
+        } else {
+            cands[nCands++] = base;
+            cands[nCands++] = base + 1;     // 사람 말고 또 무엇이 `Class & 4` 인지는 미확인
+        }
     } else {
         cands[nCands++] = 0;                // 복합이 아니면 한 바이트도 안 붙는다
     }

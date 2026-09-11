@@ -961,6 +961,14 @@ public:
     unsigned long long fxSent() const { return fxSent_; }
     unsigned long long animFramesSent() const { return animFramesSent_; }
     void SetNoSpellStart(bool on) { noSpellStart_ = on; }
+    // ★ 진단 — 걷는 그림 칸을 **한 값으로 고정**한다(-1 이면 안 고정).
+    //   서 있는 채로 칸만 바꿔 캡처하면 **위치가 안 변해** 자세를 나란히 견줄 수 있다.
+    //   캡처 한 장에 2초가 걸려, 걸으면서 찍으면 캐릭터가 나무 뒤로 가 버린다(2026-09-11).
+    void SetForceAnimFrame(int v) { forceAnimFrame_ = v; }
+    // ★ 진단 — 사람 항목의 **자세 번호**를 못 박는다(-1 이면 안 함).
+    //   걷기(4)는 서기(0)와 그림 차이가 작아 캡처로 안 갈린다. 죽음(2)처럼
+    //   **눕는 자세**로 시험하면 먹는지 안 먹는지가 한눈에 난다.
+    void SetForceAnimPose(int v) { forceAnimPose_ = v; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
     void DebugCapture(const std::string& addr, int n) {
         auto it = sessions_.find(addr);
@@ -1234,6 +1242,8 @@ private:
     //   ⚠ 그러니 기본 동작은 **안 바꾼다.** 근거가 설 때까지 보내는 쪽을 유지한다.
     //     (한 번 기본을 끔으로 돌렸다가 `proto_test` 가 「0x70 이 둘에게 안 나감」으로 잡아냈다)
     bool noSpellStart_ = false;
+    int forceAnimPose_ = -1;    // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
+    int forceAnimFrame_ = -1;   // 진단 — 걷는 그림 칸 고정(-1 이면 안 함)
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)

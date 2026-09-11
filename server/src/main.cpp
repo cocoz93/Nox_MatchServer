@@ -185,6 +185,8 @@ int main(int argc, char** argv) {
     bool standalone = false;
     bool aoi = false;
     bool itemAtSpawn = false;
+    int forcePose = -1;        // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
+    int forceAnim = -1;        // 진단 — 걷는 그림 칸 고정(-1 이면 안 함)
     bool spellStart = false;   // 시전 알림 0x70 을 켜는 손잡이 (기본 끔)   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
     int questCount = 4;
     // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —
@@ -255,6 +257,12 @@ int main(int argc, char** argv) {
         } else if (a == "--standalone") {
             // 독립 모드 — 녹음 없이 접속 묶음·USE_MAP·스냅샷을 조립(P5-c-2). --map 필수.
             standalone = true;
+        } else if (a == "--anim-pose" && i + 1 < argc) {
+            // 진단 — 사람 자세 번호를 못 박는다(0 서기 · 2 죽음 · 4 걷기).
+            forcePose = std::atoi(argv[++i]);
+        } else if (a == "--anim-frame" && i + 1 < argc) {
+            // 진단 — 걷는 그림 칸을 한 값으로 고정한다. 서 있는 채로 자세를 견주려고.
+            forceAnim = std::atoi(argv[++i]);
         } else if (a == "--spell-start") {
             // ★ 시전 알림(0x70)을 **켠다.** 기본은 끔 — Server.h 의 noSpellStart_ 주석 참조.
             spellStart = true;
@@ -448,6 +456,8 @@ int main(int argc, char** argv) {
         if (aoi) {
             srv.SetAoi(true);
     if (spellStart) srv.SetNoSpellStart(false);
+    if (forceAnim >= 0) srv.SetForceAnimFrame(forceAnim);
+    if (forcePose >= 0) srv.SetForceAnimPose(forcePose);
             std::printf("[시야] 정적 오브젝트를 반경 %d 안만 갱신에 실음\n",
                         static_cast<int>(nox::kAoiRadius));
         }
