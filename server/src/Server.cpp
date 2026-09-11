@@ -2675,6 +2675,19 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             static_cast<uint8_t>(s.mana >> 8),
         };
         EmitSeq(s, mp, sizeof(mp), out);   // 홀로 — 제 마나다
+
+        // ★★ **체력도 같이 알린다** (2026-09-11, 사용자 플레이로 드러남).
+        //   `0x43` 은 **맞을 때만** 나갔다 — 마나와 **똑같은 빠뜨림**이다.
+        //   그래서 갓 들어온 사람은 체력바가 비어 보였다.
+        //   ⚠ 나는 캡처에서 빨간 막대가 얇은 것을 보고 **「컨저러라 체력이 적어서」**로
+        //     넘겼다. 마나만 보고 **바로 옆의 체력은 안 봤다.** HUD 는 하나씩 대조해야 한다.
+        //   ⚠ 번호가 안 실리는 메시지라 **본인에게만** 보낸다(`Damage` 쪽 주석과 같은 까닭).
+        uint8_t hp[3] = {
+            static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH),
+            static_cast<uint8_t>(s.health),
+            static_cast<uint8_t>(s.health >> 8),
+        };
+        EmitSeq(s, hp, sizeof(hp), out);
     }
 
     UpdateFlags(out);
