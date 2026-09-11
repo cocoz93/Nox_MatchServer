@@ -39,7 +39,65 @@ struct Line {
     bool send = false;
     std::string peer;
     std::vector<uint8_t> data;
+    bool plain = false;   // 이미 평문이라 XOR 을 풀면 안 된다
 };
+
+// ★★★ **덤프 꼴이 둘이다** (2026-09-11 — 13MB 짜리를 못 읽고 있었다).
+//
+//   ⑴ 한 줄 꼴  `... SEND <peer> len=N | aa bb cc ...`      ← 암호문, 키로 풀어야 한다
+//   ⑵ 두 줄 꼴  `13:10:45 S->C <peer> len=N op=0x0c MSG_...`
+//                `  00 00 0c 00 ...`                          ← **평문**, 바이트가 다음 줄
+//
+//   `CAP_GEN2.txt`(13MB)가 ⑵ 꼴인데 파서가 ⑴만 알아서 **갱신 스트림 0건**이 나왔다.
+//   그것을 「정품엔 없나 보다」로 읽을 뻔했다 — **0 은 「없었다」와 「못 읽었다」를 안 가른다.**
+//   ⑵ 꼴은 `op=` 이 이미 적혀 있다는 것 자체가 **뜨는 쪽이 이미 풀어 놓았다**는 뜻이다.
+struct PendingHdr {
+    bool valid = false;
+    bool send = false;
+    std::string peer;
+    size_t want = 0;
+};
+
+bool ParseHdr2(const char* s, PendingHdr& out) {
+    const char* p = std::strstr(s, " S->C ");
+    if (p) out.send = true;
+    else {
+        p = std::strstr(s, " C->S ");
+        if (!p) return false;
+        out.send = false;
+    }
+    p += 6;
+    const char* lenAt = std::strstr(p, " len=");
+    if (!lenAt) return false;
+    out.peer.assign(p, lenAt - p);
+    const int want = std::atoi(lenAt + 5);
+    if (want <= 0) return false;
+    out.want = static_cast<size_t>(want);
+    out.valid = true;
+    return true;
+}
+
+// 16진 바이트만 있는 줄인가 (두 줄 꼴의 둘째 줄)
+bool ParseHexOnly(const char* s, size_t want, std::vector<uint8_t>& out) {
+    out.clear();
+    const char* p = s;
+    while (*p == ' ' || *p == '\t') ++p;
+    while (out.size() < want) {
+        while (*p == ' ') ++p;
+        const int hi = (*p >= '0' && *p <= '9') ? *p - '0'
+                     : (*p >= 'a' && *p <= 'f') ? *p - 'a' + 10
+                     : (*p >= 'A' && *p <= 'F') ? *p - 'A' + 10 : -1;
+        if (hi < 0) break;
+        const char c2 = p[1];
+        const int lo = (c2 >= '0' && c2 <= '9') ? c2 - '0'
+                     : (c2 >= 'a' && c2 <= 'f') ? c2 - 'a' + 10
+                     : (c2 >= 'A' && c2 <= 'F') ? c2 - 'A' + 10 : -1;
+        if (lo < 0) break;
+        out.push_back(static_cast<uint8_t>(hi * 16 + lo));
+        p += 2;
+    }
+    return out.size() == want;
+}
 
 bool ParseLine(const char* s, Line& out) {
     const char* p = std::strstr(s, " RECV ");
@@ -113,13 +171,34 @@ int main(int argc, char** argv) {
 
     char buf[65536];
     Line ln;
+    PendingHdr hdr;
     while (std::fgets(buf, sizeof(buf), f)) {
-        if (!ParseLine(buf, ln)) continue;
+        if (!ParseLine(buf, ln)) {
+            // ⑵ 두 줄 꼴 — 머리를 잡아 두었다가 다음 줄의 16진을 붙인다.
+            PendingHdr h;
+            if (ParseHdr2(buf, h)) { hdr = h; continue; }
+            if (hdr.valid) {
+                std::vector<uint8_t> bytes;
+                const bool okHex = ParseHexOnly(buf, hdr.want, bytes);
+                const bool wasSend = hdr.send;
+                const std::string peer = hdr.peer;
+                hdr.valid = false;              // 머리는 한 번만 쓴다
+                if (!okHex) continue;
+                ln.send = wasSend;
+                ln.peer = peer;
+                ln.data.swap(bytes);
+                ln.plain = true;                // 이 꼴은 이미 평문이다
+            } else {
+                continue;
+            }
+        } else {
+            ln.plain = false;
+        }
         if (ln.data.size() < 3) continue;
 
         std::vector<uint8_t> d = ln.data;
         // SEND 는 암호화 이후라 풀어야 한다. RECV 는 복호화 직후라 이미 평문이다.
-        if (ln.send) {
+        if (ln.send && !ln.plain) {
             auto k = keys.find(ln.peer);
             if (k != keys.end() && k->second)
                 nox::ApplyXor(d.data(), d.size(), k->second);
