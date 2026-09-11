@@ -323,6 +323,23 @@ int MsgBodyLenByDir(uint8_t op, bool fromClient) {
         //   ⚠ 서버→클라 쪽은 표본이 없다 — 표의 `-1` 을 그대로 둔다.
         case 0xD4: return fromClient ? 0 : kMsgBodyLen[op];
 
+        // ★★★ **클라→서버 길이를 정품 서버 디코더로 전수 대조했다** (2026-09-11).
+        //
+        //   정답지 = `opennox/src/legacy/server__network__sdecode.c` — **지금까지 안 보던
+        //   파일**이다. 그동안 `client__network__cdecode.c`(서버→클라)만 읽었다.
+        //   바깥 `case` 16개가 곧 **클라가 보내는 오프코드 전부**이고, 각 `return` 이
+        //   「오프코드 1 + 본문」이다.
+        //
+        //   대조 결과 — `0x72`·`0x73`·`0x74`·`0x75`·`0x76`·`0x79`·`0xA5`·`0xE2`·`0xF1`
+        //   아홉은 **우리 값과 같았다**(⭕). `0x79 TRY_SPELL` 이 21 로 맞는 것도 확인 —
+        //   **주문 튕김은 길이 탓이 아니다.** 아래 넷만 갈렸다.
+        case 0x40: return fromClient ? 6 : kMsgBodyLen[op];   // PLAYER_SET_WAYPOINT (sdecode:94)
+        case 0x78: return fromClient ? 3 : kMsgBodyLen[op];   // TRY_CREATURE_COMMAND (sdecode:193)
+        case 0x7B: return fromClient ? 2 : kMsgBodyLen[op];   // TRY_COLLIDE (sdecode:256)
+        // ⚠ `0xE0` 은 **방향마다 본문이 다르다** — 클라→서버 2, 서버→클라 3.
+        //   우리 표는 서버→클라 값(3)을 담고 있었고 그대로 양방향에 쓰고 있었다.
+        case 0xE0: return fromClient ? 2 : kMsgBodyLen[op];   // REPORT_SECONDARY_WEAPON
+
         // ★★ 클라→서버 `0xae MSG_OUTGOING_CLIENT` 도 **본문 0**(총 1바이트)다.
         //
         //   ⭕ 근거는 클라 원본 — `opennox/src/client/network.go:77-79`

@@ -148,6 +148,32 @@ inline size_t MessageSize(const uint8_t* p, size_t n, bool fromClient) {
             const size_t need = 1 + body;
             return bn < need ? 0 : 1 + need;
         }
+        // ★★★ **`0xC9` 는 방향에 따라 뜻이 다르다** (2026-09-11 — 두 클라 런이 잡아냈다).
+        //
+        //     서버→클라  `MSG_SERVER_QUIT_ACK`   (`cdecode.c:2452`)
+        //     클라→서버  **`MSG_TRADE`**          (`sdecode.c:346`)
+        //
+        //   그리고 클라→서버 쪽은 **하위 명령(`b[0]`)마다 길이가 다르다.**
+        //   ⭕ 표는 정품 서버 디코더 `server__network__sdecode.c:346-445` 의 반환값 그대로다.
+        //
+        //   ⚠ 이걸 몰라 `-1` 이던 탓에 **클라 조각을 통째로 버렸다** — 두 클라 런에서
+        //     `[버림] c9(MSG_TRADE)` 가 213건까지 쌓여 판이 무효가 됐다(종료 5).
+        //     `0xd4`·`0xae` 와 **같은 꼴**이다: 같이 실린 정상 메시지까지 죽는다.
+        //   ★ 클라가 거래를 안 해도 온다 — **남이 화면에 들어오면** 보내는 것으로 보인다
+        //     (한 클라 런에서는 한 건도 안 왔다).
+        case 0xC9: {
+            if (!fromClient) break;            // 서버→클라는 표를 따른다
+            if (bn < 1) return 0;
+            size_t total = 0;                  // 오프코드까지 넣은 **총** 길이
+            switch (b[0]) {
+                case 0x0E: case 0x11: case 0x12: total = 2; break;
+                case 0x0F: case 0x10: case 0x15: case 0x16:
+                case 0x18: case 0x1A: case 0x1C: case 0x1E: total = 4; break;
+                case 0x17: case 0x19: total = 5; break;
+                default: return 0;             // 모르는 하위 명령은 넘겨짚지 않는다
+            }
+            return bn + 1 < total ? 0 : total;
+        }
         // XFER — 하위 코드마다 크기가 다르다 (noxnet/netxfer/message.go)
         case static_cast<uint8_t>(Op::XFER_MSG): {
             if (bn < 1) return 0;
