@@ -147,7 +147,7 @@ Start-Sleep -Seconds 3
 
 # 2. 프록시 (와이어를 뜬다)
 $ppid = Spawn ('"' + (Join-Path $root 'build\Release\nox_proxy.exe') +
-  '" --listen 18590 --host 127.0.0.1 --host-port 18591 --dump "' + $dump + '"') $root
+  '" --listen 18590 --host 127.0.0.1 --host-port 18591' + $(if ($Genuine) { ' --fix-players' } else { '' }) + ' --dump "' + $dump + '"') $root
 Write-Host "프록시 pid=$ppid"
 Start-Sleep -Seconds 2
 

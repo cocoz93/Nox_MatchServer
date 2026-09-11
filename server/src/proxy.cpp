@@ -72,6 +72,7 @@ FILE* g_dump = nullptr;
 bool g_quiet = false;
 bool g_ownAccept = false;     // U3.1 — 접속 수락을 내가 만들어 보낸다
 uint8_t g_myKey = 0x42;       // 그때 클라에게 주는 XOR 키 (호스트 것과 일부러 다르게)
+bool g_fixPlayers = false;    // --fix-players — 호스트가 광고하는 현재 인원을 0 으로
 std::string g_mapName;        // U3.2 — 맵 지정(0x2b) 의 이름 칸을 내가 쓴다
 std::string g_chatText;       // U3.3 — 방송되는 채팅 글자를 내 것으로 바꾼다
 std::map<uint8_t, unsigned long long> g_opCount;   // U2.7 에서 쓸 오프코드 집계
@@ -151,6 +152,7 @@ int main(int argc, char** argv) {
         else if (a == "--quiet") g_quiet = true;
         else if (a == "--own-accept") g_ownAccept = true;
         else if (a == "--map" && i + 1 < argc) g_mapName = argv[++i];
+        else if (a == "--fix-players") g_fixPlayers = true;
         else if (a == "--chat" && i + 1 < argc) g_chatText = argv[++i];
         else if (a == "--my-key" && i + 1 < argc) g_myKey = static_cast<uint8_t>(std::strtoul(argv[++i], nullptr, 0));
         else { std::printf("모르는 인자: %s\n", a.c_str()); return 2; }
@@ -332,6 +334,30 @@ int main(int argc, char** argv) {
                     if (kv.second.myKey)
                         for (int i = 0; i < n; ++i) buf[i] ^= kv.second.myKey;
                 }
+            }
+            // ★★★ **정품 호스트가 「꽉 찼다」로 광고하는 것을 고친다** (2026-09-11).
+            //
+            //   `-Genuine` 경로가 「트래픽 1건·즉사」로 죽던 진짜 원인이다 —
+             //   서버 목록에 뜨기는 하는데 **`255/31 · Status: Full`** 로 보여
+            //   **클라가 접속을 거부**했다. 프록시 덤프가 4줄(찾기 왕복)에서 끝난 까닭이다.
+            //
+            //   ⭕ 자리 — `MsgServerInfo` 는 `playersCur`(1B) · `playersMax`(1B) 로 시작하고
+            //     조각은 머리 3바이트 뒤부터 본문이다(`Messages.h:71-72`). 즉 **`buf[3]`**.
+            //     실측 — opennox: `00 00 0d **ff** 1f …`(255) · 우리 서버: `00 00 0d **00** 1f …`(0)
+            //
+            //   ⚠ 이 메시지는 **키 교환 전이라 평문**이다. 위의 `keyed` 가지가 아니라 여기서 고친다.
+            if (g_fixPlayers && n > 4 && buf[2] == static_cast<uint8_t>(nox::Op::SERVER_INFO) &&
+                buf[3] >= buf[4]) {
+                const uint8_t was = buf[3];
+                buf[3] = 0;
+                if (g_dump) {
+                    std::fprintf(g_dump, "  [인원 고침 — %u/%u 는 Full 이라 클라가 거부한다 → 0/%u]\n",
+                                 was, buf[4], buf[4]);
+                    std::fflush(g_dump);
+                }
+                if (!g_quiet)
+                    std::printf("[인원 고침] %u/%u → 0/%u (Full 이면 클라가 접속을 거부한다)\n",
+                                was, buf[4], buf[4]);
             }
             Log("S->C", kv.second.addr, buf, n);
             // 반드시 듣는 소켓으로 되돌린다. 클라는 18590 에서 답이 오길 기대한다.
