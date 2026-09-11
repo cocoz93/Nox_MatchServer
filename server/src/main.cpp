@@ -453,14 +453,26 @@ int main(int argc, char** argv) {
             std::printf("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)\n",
                         nm.c_str(), mf.Crc());
         }
+        // ★★★★ **여기가 깨져 있었다** (2026-09-11 발견·수리).
+        //   아래 세 뭉치가 **`if (aoi)` 블록 안에** 들어가 있었다 — 즉 `--aoi` 를 안 주면
+        //   `--spell-start` 도 `--anim-pose` 도 `--anim-dir` 도 **한 번도 적용되지 않았다.**
+        //   ⚠ 문법이 멀쩡해 **빌드도 시험 5/5 도 통과했다.** 그래서 오래 안 보였다.
+        //   ★ 잡아낸 것은 「**켠 스위치를 찍는다**」 한 줄이다 — `[진단스위치]` 가 안 나와서
+        //     비로소 「줬는데 안 먹었다」를 알았다. 계측을 만들고 **그 답이 읽히는지**까지
+        //     본 것이 값을 했다.
         if (aoi) {
             srv.SetAoi(true);
-    if (spellStart) srv.SetNoSpellStart(false);
-    if (forcePose >= 0) srv.SetForceAnimPose(forcePose);
-    if (forceDir  >= 0) srv.SetForceAnimDir(forceDir);
             std::printf("[시야] 정적 오브젝트를 반경 %d 안만 갱신에 실음\n",
                         static_cast<int>(nox::kAoiRadius));
         }
+        if (spellStart) srv.SetNoSpellStart(false);
+        // ★ 켠 스위치를 찍는다. 안 찍으면 「줬는데 안 먹었다」를 못 가른다.
+        if (forcePose >= 0 || forceDir >= 0) {
+            std::printf("[진단스위치] 자세=%d · 방향=%d\n", forcePose, forceDir);
+            std::fflush(stdout);
+        }
+        if (forcePose >= 0) srv.SetForceAnimPose(forcePose);
+        if (forceDir  >= 0) srv.SetForceAnimDir(forceDir);
         if (itemAtSpawn) {
             // 스폰 자리를 아이템 자리로. 걷기를 빼고 **조작만** 재려는 것이다.
             // ⚠ **아이템을 옮기는 것이 아니다** — 클라가 맵대로 만든 실체와 어긋난다.
