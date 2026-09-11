@@ -371,9 +371,28 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
             //   ★ **하위 4비트에 자세를 싣던 앞 시도는 화면을 못 바꿨다**(2026-09-11 실측):
             //     서 있는 채로 자세만 0↔2 로 바꿔 찍었더니 다른 픽셀 9,476·4,672 로
             //     **대조군(같은 자세 두 장) 8,200 범위 안**이었다. `else` 가지를 안 타는 것이다.
-            e.extraBytes[0] = 0x40;                                       // 방향(상위 3비트) · bit7=0
-            e.extraBytes[1] = static_cast<uint8_t>(playerAnim);           // ★ 자세 — 별도 바이트
-            e.extra = 2;
+            // ★★★ **되돌림(2026-09-11 실측) — 자세는 하위 4비트가 맞다.**
+            //
+            //   위 추론(사람이 `Class & 4` 라 자세가 별도 바이트)은 **화면이 반박했다.**
+            //   서 있는 채로 자세만 바꿔 **캐릭터 자리(95×135)** 만 재니 —
+            //
+            //     보낸 바이트                        화면
+            //     `0x40`(1B) · `0x40 02` · `0x40 04`  회색   ← 셋이 **픽셀 단위로 같다**
+            //     `0x42`(1B) · `0x44`(1B) · `0x40 FF` 파랑
+            //
+            //   ⑴ **1바이트 `0x42`·`0x44` 는 `0x40` 과 뚜렷이 다르다**(1,568 픽셀, 잡음 바닥 396)
+            //      → 하위 4비트가 실제로 화면을 바꾼다
+            //   ⑵ **2바이트로 보낸 `02`·`04` 는 아무 효과가 없다** → 클라가 그 바이트를
+            //      자세로 안 읽는다. `0xFF` 만 달랐는데, `0xff` 는 **다음 항목의 「전체 번호」
+            //      표식**이라 그 뒤를 통째로 다르게 읽은 것으로 보인다
+            //
+            //   ⚠ 즉 **사람의 `ObjClass` 에는 비트 2(0x4)가 안 켜져 있다.**
+            //     `draw_debug.go:87` 의 `Class()&0x4` 가지는 그리기 디버그의 갈래일 뿐,
+            //     와이어 길이를 정하는 `+112 & 4` 와 같은 비트라는 보장이 없었다.
+            //     ★ 정답지 읽기도 **화면으로 확인하기 전까지는 가설**이다.
+            e.extraBytes[0] = static_cast<uint8_t>(0x40 | (playerAnim & 0x0F));
+            if (e.alias == 0xff) { e.extra = 2; e.extraBytes[1] = 0; }
+            else                 { e.extra = 1; }
         }
     }
 }
@@ -2671,42 +2690,29 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         s.animPrevX = s.x;
         s.animPrevY = s.y;
 
-        // ★★ **걷는 그림 칸을 굴린다** — 서 있으면 0 으로 되돌린다.
-        if (forceAnimFrame_ >= 0) {
-            s.animFrame = static_cast<uint32_t>(forceAnimFrame_);   // 진단 — 걷는 그림 칸 고정
-        } else if (s.animMoving) {
-            if (frame_ >= s.animNextFrameAt) {
-                s.animNextFrameAt = frame_ + kAnimStepTicks;
-                s.animFrame = (s.animFrame + 1) % kAnimWalkFrames;
-            }
-        } else {
-            s.animFrame = 0;
-            s.animNextFrameAt = 0;
-        }
+        // ★ 진단 스위치 — 걷는 그림 칸을 한 값에 못 박는다(`--anim-frame`).
+        //   평소에는 **아무것도 안 한다.** 아래 까닭으로 서버는 칸을 안 굴린다.
+        if (forceAnimFrame_ >= 0) s.animFrame = static_cast<uint32_t>(forceAnimFrame_);
     }
 
-    // ★★★ **바뀐 프레임을 알린다** — `0x6B REPORT_ANIMATION_FRAME`.
+    // ★★★ **서버는 걷는 그림 칸을 안 굴린다** (2026-09-11 화면으로 확정).
     //
-    //   ⭕ 짜임·경로 전부 정품에서 확인(2026-09-11) —
-    //     `netReportAnimFrame_4D81F0` 이 `버퍼[0]=107 · 번호2 · 프레임u32` 로 7바이트를 보내고,
-    //     클라 `cdecode.c:1482-1498` 이 그것을 `spriteSetFrameMB` 에 넘겨 그림 칸을 세운다.
-    //   ⭕ **언제** 보내는지도 확인 — 정품은 「바뀐 것」 비트(`0x10000`)가 켜진 것만 보낸다
-    //     (`GAME4_2.c:7141-7150` netUpdateObjectSpecial). 그래서 우리도 **바뀔 때만** 보낸다.
-    //   ⚠ 매 틱 보내면 안 된다 — `0x5e` 를 매 틱 보내다 클라가 죽은 적이 있다(2026-09-08).
-    for (auto& kv : sessions_) {
-        Session& s = kv.second;
-        if (!s.inGame || s.netCode == 0) continue;
-        if (s.animFrame == s.animFrameSent) continue;
-        s.animFrameSent = s.animFrame;
-        uint8_t af[7] = {
-            static_cast<uint8_t>(Op::REPORT_ANIMATION_FRAME),
-            static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
-            static_cast<uint8_t>(s.animFrame), static_cast<uint8_t>(s.animFrame >> 8),
-            static_cast<uint8_t>(s.animFrame >> 16), static_cast<uint8_t>(s.animFrame >> 24),
-        };
-        Broadcast(/*viaSeq=*/false, af, sizeof(af), out);   // 남이 걷는 것도 보여야 한다
-        ++animFramesSent_;
-    }
+    //   한동안 `0x6B REPORT_ANIMATION_FRAME` 으로 칸을 6틱마다 한 칸씩 밀어 보냈다.
+    //   **아무 효과가 없었다.** 서 있는 채로 칸만 0↔2 로 바꿔 찍어 견주니 —
+    //     대조군(같은 칸 두 장) 8,200 픽셀 · 실험(칸 0 vs 2) 7,484 픽셀 — **실험이 더 작다.**
+    //
+    //   까닭은 클라 코드에 있었다. `0x6B` 은 `spriteSetFrameMB` 로 **스프라이트 칸만** 세울 뿐
+    //   (`cdecode.c:1482-1498`) **자세 시퀀스를 안 고른다.** 그리고 걷기 같은 되풀이 애니는
+    //   `AnimLoop` 라 클라가 **`Frame()` 으로 스스로 굴린다**(`drawable_vector.go:119-124`) —
+    //   `AnimStart` 조차 안 쓴다. 즉 **서버가 굴릴 자리가 아니다.**
+    //
+    //   ⭕ 반대 증거도 잡았다 — 자세만 4(WALK)로 못 박고 **안 걸은 채** 두 장을 찍으니
+    //     788 픽셀이 달랐다(잡음 바닥 396). 그 런의 계수는 `걸음 0 · 걷그림 2`,
+    //     즉 **서버가 칸을 한 번도 안 굴렸는데 화면은 돌았다.**
+    //
+    //   ⚠ `0x6B` 자체는 정품에도 있다(`netReportAnimFrame_4D81F0`). 다만 **「칸이 바뀐
+    //     오브젝트」 더티 비트 `0x10000`** 이 켜졌을 때만 나간다(`GAME4_2.c:7148`).
+    //     우리가 그 비트를 세울 일이 생기면 그때 되살린다. 지금은 세울 일이 없다.
 
     // ★★ **들어온 사람에게 마나를 한 번 알린다** (2026-09-11 화면으로 확인).
     //   서버는 `ManaOnline` 으로 마나를 제대로 채워 놓고 **클라에게 말을 안 했다.**

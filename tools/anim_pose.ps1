@@ -20,6 +20,8 @@ param(
   # 사람 **자세 번호**를 못 박는다. 0 서기 · 2 죽음(눕기) · 4 걷기.
   # ★ 걷기(4)는 서기와 그림 차이가 작다. **죽음(2)으로 먼저 가른다** — 먹으면 눕는다.
   [int]$Pose = -1,
+  # 연달아 두 장 찍는다 — 서 있는데도 달라지면 **애니가 도는 것**이다.
+  [switch]$Twice,
   [string]$Tag = 'pose',
   [string]$Map = 'C:\Program Files\GOG Galaxy\Games\Nox\maps\estate\Estate.map'
 )
@@ -63,12 +65,23 @@ if ($p.Count -eq 0) { Write-Host '[멈춤] 클라가 안 떴다' -ForegroundColo
 & $di -Target $p[0].Id -Cmd @('inject 1') | Out-Null
 Start-Sleep -Seconds 4
 
-# ★ 안 걷는다. 칸은 서버가 못 박아 두었으므로 서 있어도 그 칸이 방송된다.
-$png = Join-Path $ctrl ("{0}_stand.png" -f $Tag)
-if (Test-Path $png) { [IO.File]::Delete($png) }
-[IO.File]::WriteAllText((Join-Path $ctrl 'cmd.txt'), ("shotfull {0}`n" -f $png),
-                        (New-Object Text.UTF8Encoding($false)))
-Start-Sleep -Seconds 3
+# ★ 안 걷는다. 자세는 서버가 못 박아 두었으므로 서 있어도 그 자세가 방송된다.
+#
+# ★★ `-Twice` 면 **연달아 두 장**을 찍는다. 캐릭터가 안 움직이므로 배경도 그대로다 —
+#   그래서 두 장이 다르면 그것은 **애니메이션이 돌고 있다**는 뜻뿐이다.
+#   걷기(WALK)가 `AnimLoop` 면 프레임이 시간과 함께 계속 굴러간다
+#   (`opennox/src/drawable_vector.go:119` — `AnimStart` 를 안 쓰고 `Frame()` 으로 나눈다).
+$shots = @("{0}_stand.png" -f $Tag)
+if ($Twice) { $shots += ("{0}_stand2.png" -f $Tag) }
+$png = $null
+foreach ($nm in $shots) {
+  $f = Join-Path $ctrl $nm
+  if (Test-Path $f) { [IO.File]::Delete($f) }
+  [IO.File]::WriteAllText((Join-Path $ctrl 'cmd.txt'), ("shotfull {0}`n" -f $f),
+                          (New-Object Text.UTF8Encoding($false)))
+  Start-Sleep -Seconds 3
+  if ($png -eq $null) { $png = $f }
+}
 
 $t = ReadShared $slog
 $tick = @(($t -split "`r?`n") | Where-Object { $_ -match '\[틱\]' } | Select-Object -Last 1)
