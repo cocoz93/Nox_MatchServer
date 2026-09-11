@@ -114,11 +114,17 @@ if (Shot 'A_join') { $shots += 'A_join' }   # ★ HUD — 체력바·마나바�
 #   ⚠ **화살표키로는 안 걷는다** — 녹스의 걸음은 **오른버튼을 누르고 있는 것**이다
 #     (`two_genuine.ps1` 의 걷기도 `mb 1` 을 쓴다). 첫 회차에 화살표를 눌러 `걸음 +0` 이
 #     나왔고, 그것이 「걷기가 안 된다」로 잘못 읽힐 뻔했다 — 조종이 틀린 것이었다.
+# ★★ **짧게 걷고 바로 찍는다** (2026-09-11, 수단 바꾸기 ①).
+#   무엇이 달라지나 — **캐릭터가 화면에서 덜 움직인다.** 앞 회차는 0.9초씩 걸어
+#   둘째 장에서 캐릭터가 **나무 뒤로 들어가** 자세를 못 봤다(`zm_C_wide.png`).
 $beforeWalk = TickNum '걸음'
-& $di -Target $pid1 -Cmd @('mb 1 1','sleep 900') | Out-Null
+& $di -Target $pid1 -Cmd @('mb 1 1','sleep 250') | Out-Null
 if (Shot 'B_walk1') { $shots += 'B_walk1' }    # 걷는 도중 ①
-& $di -Target $pid1 -Cmd @('sleep 900') | Out-Null
+& $di -Target $pid1 -Cmd @('sleep 250') | Out-Null
 if (Shot 'C_walk2') { $shots += 'C_walk2' }    # 걷는 도중 ② — ①과 자세가 달라야 한다
+& $di -Target $pid1 -Cmd @('sleep 250') | Out-Null
+if (Shot 'C2_walk3') { $shots += 'C2_walk3' }  # ③ — 셋을 견주면 한 장이 가려도 남는다
+& $di -Target $pid1 -Cmd @('sleep 1200') | Out-Null   # 그 뒤 충분히 걸어 걸음이 오르게
 # ⚠ **오른버튼을 확실히 놓고 충분히 쉰다.**
 #   단서 — 걷기가 **실패한** 회차(g1)에서는 주문이 +1 나갔고, 실제로 걸은 회차부터
 #   주문이 전부 +0 이었다. 클라가 아직 「이동 중」이면 시전이 안 먹는 것으로 의심된다.
