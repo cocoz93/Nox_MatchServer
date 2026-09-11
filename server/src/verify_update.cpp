@@ -39,7 +39,13 @@ struct Line {
     bool send = false;
     std::string peer;
     std::vector<uint8_t> data;
-    bool plain = false;   // 이미 평문이라 XOR 을 풀면 안 된다
+    // ★ 두 줄 꼴(`C->S`/`S->C` + 다음 줄 16진)인가.
+    //   ⚠ 한때 이 꼴을 **평문으로 여겼다가 틀렸다**(2026-09-11) — 이 꼴은 **프록시가 뜬
+    //     와이어**라 키 교환 뒤로는 **양방향 다 암호문**이다. 한 줄 꼴(서버 내부 덤프)은
+    //     받는 쪽이 이미 풀어 놓은 것이라 `RECV` 가 평문인데, 그 규칙을 그대로 옮겨 썼다.
+    //   ★ 지문 — 조각 첫 오프코드 분포가 말이 안 된다(아레나 판에 `0x57 FLAG_WINNER`
+    //     6,754건). 평문 구간(`0x0d`·`0x1f`·`0x14`)만 **두 클라니 정확히 2건씩**이었다.
+    bool twoLine = false;
 };
 
 // ★★★ **덤프 꼴이 둘이다** (2026-09-11 — 13MB 짜리를 못 읽고 있었다).
@@ -187,18 +193,19 @@ int main(int argc, char** argv) {
                 ln.send = wasSend;
                 ln.peer = peer;
                 ln.data.swap(bytes);
-                ln.plain = true;                // 이 꼴은 이미 평문이다
+                ln.twoLine = true;              // 프록시 와이어 — 양방향 다 암호문이다
             } else {
                 continue;
             }
         } else {
-            ln.plain = false;
+            ln.twoLine = false;
         }
         if (ln.data.size() < 3) continue;
 
         std::vector<uint8_t> d = ln.data;
-        // SEND 는 암호화 이후라 풀어야 한다. RECV 는 복호화 직후라 이미 평문이다.
-        if (ln.send && !ln.plain) {
+        // 한 줄 꼴 — SEND 는 암호화 이후라 풀어야 하고 RECV 는 이미 평문이다.
+        // 두 줄 꼴(프록시 와이어) — **양방향 다** 풀어야 한다.
+        if (ln.twoLine || ln.send) {
             auto k = keys.find(ln.peer);
             if (k != keys.end() && k->second)
                 nox::ApplyXor(d.data(), d.size(), k->second);
@@ -305,7 +312,8 @@ int main(int argc, char** argv) {
             if (op == static_cast<uint8_t>(nox::Op::TIMESTAMP) && left >= 3)
                 frame = static_cast<uint32_t>(p[1] | (p[2] << 8));
             // 접속 수락 — 이 뒤로 그 상대는 암호문이다
-            if (op == static_cast<uint8_t>(nox::Op::SERVER_ACCEPT) && left >= 6 && ln.send)
+            if (op == static_cast<uint8_t>(nox::Op::SERVER_ACCEPT) && left >= 6 &&
+                (ln.send || ln.twoLine))
                 keys[ln.peer] = p[5];
 
             const size_t n = nox::MessageSize(p, left, !ln.send);
