@@ -29,8 +29,30 @@ enum class CharClass : uint8_t {
     Wizard   = 1,
     Conjurer = 2,
 };
-constexpr size_t kInfoClassAt = 51;
-constexpr size_t kInfoLevelAt = 52;
+// ★★★ **직업은 사람 정보 97바이트의 66번 자리다** (2026-09-11 정정).
+//
+//   ⭕ 근거 — 클라 원본 `libs/noxnet/msg_player_new.go:98-109` 의 `PlayerInfo` —
+//
+//       PlayerName      string   //  0-49
+//       Unk50           uint32   // 50-53
+//       Unk54           uint32   // 54-57
+//       Unk58           uint32   // 58-61
+//       Unk62           uint32   // 62-65
+//       **PlayerClass   byte     // 66**
+//       IsFemale        byte     // 67
+//       Colors                   // 68-87
+//
+//   ⚠⚠ **전에는 51 을 읽었다.** 51 은 `Unk50` 의 가운데 바이트라 **늘 0** 이었고,
+//     0 은 마침 워리어다 — 그래서 **누가 무엇을 골라도 워리어로 접속했다.**
+//     워리어는 최대 마나가 0 이므로 마나칸이 비고, 시전이 `cost > s.mana` 에서
+//     **카운터도 안 올린 채 조용히 전부 막혔다.**
+//     사용자가 겪은 「마나칸 0 · 마나 안 참 · 주문」이 전부 여기서 나왔다.
+//     지문 — 화면 캡처에는 `Jack the Conjurer` 가 골라져 있는데 서버는 `마나0/0`.
+constexpr size_t kInfoClassAt = 66;
+// ⚠ **레벨은 이 구조에 없다.** 전에 52 를 레벨로 읽었는데 그것도 `Unk50` 안이라
+//   늘 0 이었다(로그에 `레벨 0` 으로 찍혔다 — 레벨은 최소 1 이라 그 자체가 지문이었다).
+//   온라인은 레벨을 안 보고 직업 최대 스탯을 그대로 주므로(`HealthOnline` 주석) 해가 없다.
+//   캠페인을 붙일 때 다시 찾는다.
 constexpr uint8_t kMaxLevel   = 10;   // gamedata.bin 주석: "class stat maximums (at level 10)"
 
 // ── 직업별 스탯 ⭕ gamedata.bin ───────────────────────────────────

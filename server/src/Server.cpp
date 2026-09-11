@@ -2065,11 +2065,24 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //   그래서 워리어가 정본 150 대신 75 로 놀았다. 자리는 `GameBalance.h`.
                 if (it.bodyLen() >= kJoinPlayerInfoLen)
                     s.info97.assign(it.body(), it.body() + kJoinPlayerInfoLen);
-                if (it.bodyLen() > kInfoLevelAt) {
+                if (it.bodyLen() > kInfoClassAt) {
                     const uint8_t c = it.body()[kInfoClassAt];
                     s.charClass = (c <= 2) ? static_cast<CharClass>(c) : CharClass::Warrior;
-                    const uint8_t lv = it.body()[kInfoLevelAt];
-                    s.charLevel = (lv > kMaxLevel) ? kMaxLevel : lv;
+                    // ⚠ 레벨은 이 구조에 없다 — 온라인은 직업 최대 스탯을 그대로 준다.
+                    s.charLevel = kMaxLevel;
+                    // ★ **읽은 값을 찍는다** (2026-09-11). 화면에는 `Jack the Conjurer` 가
+                    //   골라져 있는데 서버는 `마나0/0`(워리어 값)으로 봤다 — 어디서 어긋나는지
+                    //   찍지 않으면 못 가른다. `원래 0x%02x` 가 51번 자리의 날바이트다.
+                    std::printf("[직업] 원래 0x%02x → %s · 레벨 %u · 본문 %zu바이트\n",
+                                c,
+                                (c == 0 ? "워리어" : c == 1 ? "위저드" : c == 2 ? "컨저러" : "모름→워리어"),
+                                (unsigned)s.charLevel, it.bodyLen());
+                    std::fflush(stdout);
+                } else {
+                    // ⚠ 여기로 오면 직업을 **아예 못 읽는다** — 기본값(워리어)이 그대로 남는다.
+                    std::printf("[직업] ✗ 본문이 %zu바이트뿐이라 직업을 못 읽었다 (%zu 넘어야 한다)\n",
+                                it.bodyLen(), kInfoClassAt);
+                    std::fflush(stdout);
                 }
                 if (s.maxHealth == 0) {
                     // ★ **온라인은 레벨을 안 본다** — 그 직업의 최대 스탯을 그대로 준다
