@@ -28,6 +28,9 @@ param(
   [switch]$NoShots,
   # 주문을 아예 안 누른다 — 「주문이 원인인가」를 가르는 진짜 대조군.
   [switch]$NoSpells,
+  # ★ 판 종류. **rena 는 혼자 돌면 때릴 적이 없어** 「맞고 죽기」를 못 잰다 —
+  #   quest 로 돌리면 몬스터가 나와 실제로 때린다(2026-09-11 sp1 런에서 드러난 구멍).
+  [ValidateSet('arena','ctf','quest')][string]$Mode = 'arena',
   [int]$WaitMenu = 40
 )
 $ErrorActionPreference = 'Continue'
@@ -87,14 +90,14 @@ if (-not (Test-Path $ctrl)) { New-Item -ItemType Directory $ctrl | Out-Null }
 # ── 1. 서버 ───────────────────────────────────────────────────────────
 if (Test-Path $slog) { [IO.File]::Delete($slog) }
 $srv = 'cmd /c ""' + (Join-Path $root 'build\Release\nox_server.exe') +
-       '" --port 18590 --standalone --map "' + $Map + '" --mode arena > "' + $slog + '" 2>&1"'
+       '" --port 18590 --standalone --map "' + $Map + '" --mode ' + $Mode + ' > "' + $slog + '" 2>&1"'
 Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c ' + $srv) -WindowStyle Hidden | Out-Null
 Start-Sleep -Seconds 3
 if ((ReadShared $slog) -notmatch '\[맵\]') {
   Write-Host '[멈춤] 서버 로그에 [맵] 줄이 없다 — 맵을 못 읽었다' -ForegroundColor Red
   Cleanup; exit 6
 }
-Write-Host ("[조건] 직업={0} · 캡처={1} · 꼬리표={2}" -f $Class, $(if ($NoShots) { '끔' } else { '찍음' }), $Tag) -ForegroundColor Cyan
+Write-Host ("[조건] 직업={0} · 판={1} · 캡처={2} · 꼬리표={3}" -f $Class, $Mode, $(if ($NoShots) { '끔' } else { '찍음' }), $Tag) -ForegroundColor Cyan
 Write-Host '서버 떴음'
 
 # ── 2. 접속 ───────────────────────────────────────────────────────────

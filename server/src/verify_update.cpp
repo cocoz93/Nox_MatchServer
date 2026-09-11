@@ -417,6 +417,17 @@ int main(int argc, char** argv) {
         std::printf("  ... 모두 %zu 가지\n", v.size());
     }
 
+    std::printf("\n오프코드 분포 — **클라→서버** (많은 것부터 16개)\n");
+    {
+        std::vector<std::pair<uint8_t, unsigned long long>> v(opRecv.begin(), opRecv.end());
+        std::sort(v.begin(), v.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        for (size_t i = 0; i < v.size() && i < 16; ++i)
+            std::printf("  %02x %-28s %llu\n", v[i].first,
+                        nox::OpName(static_cast<nox::Op>(v[i].first)), v[i].second);
+        std::printf("  ... 모두 %zu 가지\n", v.size());
+    }
+
     std::printf("\n덧붙이 바이트 — 몇 바이트가 붙었나\n");
     for (const auto& kv : extraHist)
         std::printf("  %d바이트  %llu\n", kv.first, kv.second);
