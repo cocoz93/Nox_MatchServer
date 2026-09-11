@@ -1,7 +1,23 @@
-// MsgLen.cpp — 오프코드별 본문 길이 표. **손으로 고치지 말 것.**
+﻿// MsgLen.cpp — 오프코드별 본문 길이 표.
 //
 // 생성 = tools/dumpscan -genlen
 // 출처 = opennox/libs noxnet (MIT). 자세한 고지는 THIRD_PARTY.md.
+//
+// ★★★ **2026-09-11 — 클라 디코더로 전수 대조해 33자리를 손으로 고쳤다.**
+//
+//   근거는 `opennox/src/legacy/client__network__cdecode.c` 의 각 `case` 가
+//   돌려주는 값이다. **그 반환값이 곧 「오프코드 1 + 본문」** 이므로 본문 = 반환값 − 1 이다.
+//   `case` 145개 중 **반환값이 하나뿐인 121개**만 썼다 — 값이 여럿인 넷
+//   (`0xC4`·`0xC9`·`0xEE`·`0xF0`)은 가변이라 `-1` 로 남겼다.
+//
+//   ⑴ **미상(-1) 32자리를 채웠다** — `0x30 COMPLEX_OBJ`(10) 부터 `0xED`(1) 까지.
+//      `-1` 은 조각을 **통째로 버리게** 한다(`0xae` 전례). 채운 만큼 구멍이 줄었다.
+//   ⑵ **어긋난 한 자리를 고쳤다** — `0x36 RESET_FRIENDS` 는 본문 **2 가 아니라 0** 이다
+//      (클라 `case 54` 는 `return 1`). `0xae` 와 같은 꼴이었다.
+//
+//   ⚠ 표와 생성기가 갈렸다 — `-genlen` 은 noxnet 표를 그대로 옮기는데,
+//     **noxnet 표가 클라 코드와 다른 자리가 있다**(`0xae` 에서 이미 겪었다).
+//     다시 생성하면 이 33자리가 되돌아간다. **생성 전에 이 주석을 볼 것.**
 //
 // 길이는 **오프코드를 뺀 본문**이다. 패킷 안에서 한 메시지가 차지하는 자리는
 // 1 + 이 값이다. -1 은 가변이라 표로 못 정하는 것 (Nox::MsgBodyLen 참조).
@@ -59,13 +75,13 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x2D */  128,   // MSG_NEW_PLAYER
     /* 0x2E */    2,   // MSG_PLAYER_QUIT
     /* 0x2F */    8,   // MSG_SIMPLE_OBJ
-    /* 0x30 */   -1,   // MSG_COMPLEX_OBJ
+    /* 0x30 */   10,   // MSG_COMPLEX_OBJ
     /* 0x31 */    2,   // MSG_DESTROY_OBJECT
     /* 0x32 */    2,   // MSG_OBJECT_OUT_OF_SIGHT
     /* 0x33 */    2,   // MSG_OBJECT_IN_SHADOWS
     /* 0x34 */    2,   // MSG_OBJECT_FRIEND_ADD
     /* 0x35 */    2,   // MSG_OBJECT_FRIEND_REMOVE
-    /* 0x36 */    2,   // MSG_RESET_FRIENDS
+    /* 0x36 */    0,   // MSG_RESET_FRIENDS  ★정정 2→0 (클라 case 54 는 return 1)
     /* 0x37 */    2,   // MSG_ENABLE_OBJECT
     /* 0x38 */    2,   // MSG_DISABLE_OBJECT
     /* 0x39 */    3,   // MSG_DRAW_FRAME
@@ -96,15 +112,15 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x52 */   10,   // MSG_REPORT_MODIFIABLE_ARMOR_EQUIP
     /* 0x53 */    6,   // MSG_REPORT_ARMOR_DEQUIP
     /* 0x54 */    6,   // MSG_REPORT_WEAPON_DEQUIP
-    /* 0x55 */   -1,   // MSG_REPORT_TREASURE_COUNT
+    /* 0x55 */    6,   // MSG_REPORT_TREASURE_COUNT
     /* 0x56 */    7,   // MSG_REPORT_FLAG_BALL_WINNER
     /* 0x57 */    7,   // MSG_REPORT_FLAG_WINNER
     /* 0x58 */    7,   // MSG_REPORT_DEATHMATCH_WINNER
     /* 0x59 */    7,   // MSG_REPORT_DEATHMATCH_TEAM_WINNER
     /* 0x5A */    6,   // MSG_REPORT_ENCHANTMENT
     /* 0x5B */    1,   // MSG_REPORT_ITEM_ENCHANTMENT
-    /* 0x5C */   -1,   // MSG_REPORT_LIGHT_COLOR
-    /* 0x5D */   -1,   // MSG_REPORT_LIGHT_INTENSITY
+    /* 0x5C */    5,   // MSG_REPORT_LIGHT_COLOR
+    /* 0x5D */    6,   // MSG_REPORT_LIGHT_INTENSITY
     /* 0x5E */    3,   // MSG_REPORT_Z_PLUS
     /* 0x5F */    3,   // MSG_REPORT_Z_MINUS
     /* 0x60 */    2,   // MSG_REPORT_EQUIP
@@ -113,16 +129,16 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x63 */   -1,   // MSG_REPORT_TARGET
     /* 0x64 */    4,   // MSG_REPORT_CHARGES
     /* 0x65 */    6,   // MSG_REPORT_X_STATUS
-    /* 0x66 */   -1,   // MSG_REPORT_PLAYER_STATUS
+    /* 0x66 */    4,   // MSG_REPORT_PLAYER_STATUS
     /* 0x67 */    6,   // MSG_REPORT_MODIFIER
     /* 0x68 */    7,   // MSG_REPORT_STAT_MODIFIER
-    /* 0x69 */   -1,   // MSG_REPORT_NPC
+    /* 0x69 */   20,   // MSG_REPORT_NPC
     /* 0x6A */    6,   // MSG_REPORT_CLIENT_STATUS
     /* 0x6B */    6,   // MSG_REPORT_ANIMATION_FRAME
-    /* 0x6C */   -1,   // MSG_REPORT_ACQUIRE_CREATURE
-    /* 0x6D */   -1,   // MSG_REPORT_LOSE_CREATURE
-    /* 0x6E */   -1,   // MSG_REPORT_EXPERIENCE
-    /* 0x6F */   -1,   // MSG_REPORT_SPELL_AWARD
+    /* 0x6C */    4,   // MSG_REPORT_ACQUIRE_CREATURE
+    /* 0x6D */    2,   // MSG_REPORT_LOSE_CREATURE
+    /* 0x6E */    4,   // MSG_REPORT_EXPERIENCE
+    /* 0x6F */    3,   // MSG_REPORT_SPELL_AWARD
     /* 0x70 */   -1,   // MSG_REPORT_SPELL_START
     /* 0x71 */   -1,   // MSG_REPORT_INVENTORY_LOADED
     // ★ 아래 다섯은 **길이를 몰라 조각을 통째로 버리던 자리**다 (2026-09-10 채움).
@@ -167,16 +183,16 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x95 */    8,   // MSG_FX_SENTRY_RAY
     /* 0x96 */    4,   // MSG_FX_RICOCHET
     /* 0x97 */    1,   // MSG_FX_JIGGLE
-    /* 0x98 */   -1,   // MSG_FX_GREEN_BOLT
+    /* 0x98 */   10,   // MSG_FX_GREEN_BOLT
     /* 0x99 */   -1,   // MSG_FX_GREEN_EXPLOSION
     /* 0x9A */    4,   // MSG_FX_WHITE_FLASH
     /* 0x9B */   -1,   // MSG_FX_GENERATING_MAP
     /* 0x9C */   -1,   // MSG_FX_ASSEMBLING_MAP
-    /* 0x9D */   -1,   // MSG_FX_POPULATING_MAP
+    /* 0x9D */    2,   // MSG_FX_POPULATING_MAP
     /* 0x9E */    6,   // MSG_FX_DURATION_SPELL
     /* 0x9F */    5,   // MSG_FX_DELTAZ_SPELL_START
-    /* 0xA0 */   -1,   // MSG_FX_TURN_UNDEAD
-    /* 0xA1 */   -1,   // MSG_FX_ARROW_TRAP
+    /* 0xA0 */    4,   // MSG_FX_TURN_UNDEAD
+    /* 0xA1 */    5,   // MSG_FX_ARROW_TRAP
     /* 0xA2 */   10,   // MSG_FX_VAMPIRISM
     /* 0xA3 */    4,   // MSG_FX_MANA_BOMB_CANCEL
     /* 0xA4 */   -1,   // MSG_UPDATE_STREAM
@@ -206,7 +222,7 @@ const int16_t kMsgBodyLen[256] = {
     /* 0xBA */    1,   // MSG_MAP_SEND_ABORT
     /* 0xBB */   -1,   // MSG_SERVER_CMD
     /* 0xBC */   -1,   // MSG_SYSOP_PW
-    /* 0xBD */   -1,   // MSG_SYSOP_RESULT
+    /* 0xBD */    1,   // MSG_SYSOP_RESULT
     /* 0xBE */    0,   // MSG_KEEP_ALIVE
     /* 0xBF */    1,   // MSG_RECEIVED_MAP
     /* 0xC0 */    0,   // MSG_CLIENT_READY
@@ -214,47 +230,47 @@ const int16_t kMsgBodyLen[256] = {
     /* 0xC2 */   -1,   // MSG_XFER_MSG
     /* 0xC3 */   11,   // MSG_PLAYER_OBJ
     /* 0xC4 */   -1,   // MSG_TEAM_MSG
-    /* 0xC5 */   -1,   // MSG_KICK_NOTIFICATION
-    /* 0xC6 */   -1,   // MSG_TIMEOUT_NOTIFICATION
+    /* 0xC5 */    0,   // MSG_KICK_NOTIFICATION
+    /* 0xC6 */    0,   // MSG_TIMEOUT_NOTIFICATION
     /* 0xC7 */    0,   // MSG_SERVER_QUIT
     /* 0xC8 */   -1,   // MSG_SERVER_QUIT_ACK
     /* 0xC9 */   -1,   // MSG_TRADE
-    /* 0xCA */   -1,   // MSG_CHAT_KILL
-    /* 0xCB */   -1,   // MSG_MESSAGES_KILL
+    /* 0xCA */    2,   // MSG_CHAT_KILL
+    /* 0xCB */    0,   // MSG_MESSAGES_KILL
     /* 0xCC */   -1,   // MSG_SEQ_IMPORTANT
     /* 0xCD */    2,   // MSG_REPORT_ABILITY_AWARD
     /* 0xCE */    2,   // MSG_REPORT_ABILITY_STATE
     /* 0xCF */    2,   // MSG_REPORT_ACTIVE_ABILITIES
     /* 0xD0 */   -1,   // MSG_DIALOG
-    /* 0xD1 */   -1,   // MSG_REPORT_GUIDE_AWARD
+    /* 0xD1 */    2,   // MSG_REPORT_GUIDE_AWARD
     /* 0xD2 */    6,   // MSG_INTERESTING_ID
     /* 0xD3 */   12,   // MSG_TIMER_STATUS
     /* 0xD4 */   -1,   // MSG_REQUEST_TIMER_STATUS
-    /* 0xD5 */   -1,   // MSG_JOURNAL_MSG
-    /* 0xD6 */   -1,   // MSG_CHAPTER_END
+    /* 0xD5 */   67,   // MSG_JOURNAL_MSG
+    /* 0xD6 */    2,   // MSG_CHAPTER_END
     /* 0xD7 */    4,   // MSG_REPORT_ALL_LATENCY
     /* 0xD8 */    5,   // MSG_REPORT_FLAG_STATUS
     /* 0xD9 */    3,   // MSG_REPORT_BALL_STATUS
-    /* 0xDA */   -1,   // MSG_REPORT_OBJECT_POISON
-    /* 0xDB */   -1,   // MSG_REPORT_MONITOR_CREATURE
-    /* 0xDC */   -1,   // MSG_REPORT_UNMONITOR_CREATURE
+    /* 0xDA */    3,   // MSG_REPORT_OBJECT_POISON
+    /* 0xDB */    4,   // MSG_REPORT_MONITOR_CREATURE
+    /* 0xDC */    2,   // MSG_REPORT_UNMONITOR_CREATURE
     /* 0xDD */    6,   // MSG_REPORT_TOTAL_HEALTH
     /* 0xDE */    6,   // MSG_REPORT_TOTAL_MANA
     /* 0xDF */    5,   // MSG_REPORT_SPELL_STAT
-    /* 0xE0 */   -1,   // MSG_REPORT_SECONDARY_WEAPON
-    /* 0xE1 */   -1,   // MSG_REPORT_LAST_QUIVER
-    /* 0xE2 */   -1,   // MSG_INFO_BOOK_DATA
+    /* 0xE0 */    3,   // MSG_REPORT_SECONDARY_WEAPON
+    /* 0xE1 */    2,   // MSG_REPORT_LAST_QUIVER
+    /* 0xE2 */    3,   // MSG_INFO_BOOK_DATA
     /* 0xE3 */   -1,   // MSG_SOCIAL
     /* 0xE4 */    2,   // MSG_FADE_BEGIN
-    /* 0xE5 */   -1,   // MSG_MUSIC_EVENT
-    /* 0xE6 */   -1,   // MSG_MUSIC_PUSH_EVENT
-    /* 0xE7 */   -1,   // MSG_MUSIC_POP_EVENT
+    /* 0xE5 */    2,   // MSG_MUSIC_EVENT
+    /* 0xE6 */    2,   // MSG_MUSIC_PUSH_EVENT
+    /* 0xE7 */    2,   // MSG_MUSIC_POP_EVENT
     /* 0xE8 */    2,   // MSG_PLAYER_DIED
     /* 0xE9 */    8,   // MSG_PLAYER_RESPAWN
     /* 0xEA */    4,   // MSG_FORGET_DRAWABLES
     /* 0xEB */    1,   // MSG_RESET_ABILITIES
     /* 0xEC */    1,   // MSG_RATE_CHANGE
-    /* 0xED */   -1,   // MSG_REPORT_CREATURE_CMD
+    /* 0xED */    1,   // MSG_REPORT_CREATURE_CMD
     /* 0xEE */   -1,   // MSG_VOTE
     /* 0xEF */   16,   // MSG_STAT_MULTIPLIERS
     /* 0xF0 */   -1,   // MSG_GAUNTLET

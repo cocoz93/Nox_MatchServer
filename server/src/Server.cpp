@@ -298,7 +298,8 @@ static_assert(kPlayerType == 713, "ThingIsPlayer() 의 713 과 같이 고칠 것
 //   ⭕ 번호표는 소스 확증(`draw_debug.go:294`). 걸을 때 4 를 보내야 다리가 움직인다.
 static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
                       uint32_t frame, int x, int y, uint8_t facing, ObjEntry& e,
-                      bool complex = true, uint8_t playerAnim = 0) {
+                      bool complex = true, uint8_t playerAnim = 0,
+                      int forceDir = -1) {
     // ★★★ **정정(2026-09-09) — 따라 굴리지 않고 클라가 알려 준 것만 쓴다.**
     //   전에는 `Generate`/`Assign` 으로 클라와 같은 규칙을 흉내 냈는데 어긋났다.
     //   별칭으로 보내면 아무것도 안 그려졌고, 그래서 매 틱 전체번호로 다시 소개하다가
@@ -390,9 +391,27 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
             //     `draw_debug.go:87` 의 `Class()&0x4` 가지는 그리기 디버그의 갈래일 뿐,
             //     와이어 길이를 정하는 `+112 & 4` 와 같은 비트라는 보장이 없었다.
             //     ★ 정답지 읽기도 **화면으로 확인하기 전까지는 가설**이다.
-            e.extraBytes[0] = static_cast<uint8_t>(0x40 | (playerAnim & 0x0F));
-            if (e.alias == 0xff) { e.extra = 2; e.extraBytes[1] = 0; }
-            else                 { e.extra = 1; }
+            // ★★★ **다시 2바이트로** (2026-09-11 두 번째 판정).
+            //
+            //   앞서 2바이트를 한 번 넣었다 뺐는데, 그때 실험이 **반쪽**이었다 —
+            //   `--anim-pose` 를 스냅샷 경로에만 걸고 **주기 갱신은 자세 0 을 계속 덮어쓰던**
+            //   상태로 쟀다. 두 경로 다 걸고 다시 재니 「하위 4비트가 먹는다」던 숫자가
+            //   전부 **토글 잡음**이었음이 드러났다(자세4 vs 자세0 = 216, 대조군 488).
+            //
+            //   ⭕ 2바이트를 받쳐 주는 근거 —
+            //     · 클라 `GAME2_3.c:1685` — `ObjClass & 4` 면 자세를 **별도 바이트**로 읽는다
+            //     · `+112` 이 `ObjClass` (`opennox/src/client/drawable.go:572`)
+            //     · **`verify_update`(정품 녹음 뜯고 다시 짜기)가 2바이트로도 통과한다**
+            //   ⚠ 위 코드는 `ff` 일 때 둘째 바이트를 **0 으로 고정**하고 별칭일 때는 아예
+            //     안 붙였다. 그러면 자세는 늘 IDLE 이고, 별칭 항목에서는 **다음 항목의 첫
+            //     바이트를 자세로 먹는다.** 그것이 「걷기 모션 없음」의 모습과 맞는다.
+            e.extraBytes[0] = 0x40;                              // 방향(상위 3비트) · bit7=0
+            e.extraBytes[1] = static_cast<uint8_t>(playerAnim);  // 자세 — 별도 바이트
+            e.extra = 2;
+            // ★ 진단 — 방향 3비트를 못 박는다. **덧붙이가 클라에 닿는지**를 가르는 시험이다.
+            if (forceDir >= 0) {
+                e.extraBytes[0] = static_cast<uint8_t>((forceDir & 0x07) << 4);
+            }
         }
     }
 }
@@ -2690,9 +2709,6 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         s.animPrevX = s.x;
         s.animPrevY = s.y;
 
-        // ★ 진단 스위치 — 걷는 그림 칸을 한 값에 못 박는다(`--anim-frame`).
-        //   평소에는 **아무것도 안 한다.** 아래 까닭으로 서버는 칸을 안 굴린다.
-        if (forceAnimFrame_ >= 0) s.animFrame = static_cast<uint32_t>(forceAnimFrame_);
     }
 
     // ★★★ **서버는 걷는 그림 칸을 안 굴린다** (2026-09-11 화면으로 확정).
@@ -2829,7 +2845,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                           s.facing, me, /*complex=*/true,
                           /*playerAnim=*/ forceAnimPose_ >= 0
                               ? static_cast<uint8_t>(forceAnimPose_)
-                              : (s.animMoving ? kAnimWalk : kAnimIdle));
+                              : (s.animMoving ? kAnimWalk : kAnimIdle),
+                          forceAnimDir_);
                 m.objects.push_back(me);
                 // 시야 안 정적 — **상한 필수** (AppendAoiStatics 주석: 상한 없이는
                 // 스폰 주변 40개↑ 가 480B 를 넘겨 a4 가 통째로 비어 나갔다).
@@ -3093,9 +3110,15 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             const uint16_t useType =
                 (&o != &s && peerType_ != 0) ? peerType_ : kPlayerType;
             // ★ 남도 걷는 자세가 보여야 한다. 사람이 아니면 이 값은 안 쓰인다.
+            // ★★ `--anim-pose` 진단은 **여기에도** 걸어야 한다(2026-09-11 자가검증에서 잡음).
+            //   앞서 스냅샷 쪽에만 걸어 놓고 「자세가 먹는다」고 판정했는데, **실제로 걸을 때
+            //   쓰이는 길은 이 주기 갱신**이다. 한쪽만 재고 다른 쪽을 결론지을 뻔했다.
             FillEntry(s.aliases, o.netCode, useType, s.tickFrame, o.x, o.y, o.facing, e,
                       /*complex=*/true,
-                      /*playerAnim=*/ o.animMoving ? kAnimWalk : kAnimIdle);
+                      /*playerAnim=*/ forceAnimPose_ >= 0
+                          ? static_cast<uint8_t>(forceAnimPose_)
+                          : (o.animMoving ? kAnimWalk : kAnimIdle),
+                      forceAnimDir_);
             // ★★ **별칭으로 보낼 때는 좌표도 상대로.** 정품 원바이트가 그렇다(2026-09-08):
             //     정품  … 01 <머리좌표4> 00 00 │ cb 00 00 │ 40 │ 끝     (14바이트)
             //     내 것 … 01 <머리좌표4> 00 00 │ 00 c9 <절대좌표4> │ 40 │ 끝  (17바이트)

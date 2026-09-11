@@ -54,14 +54,14 @@ bool ThingIsComplex(uint16_t wireType) {
     return (kThingComplexBits[wireType / 8] >> (wireType % 8)) & 1;
 }
 
-bool ThingKnown(uint16_t wireType) {
-    return wireType != 0 && wireType < kThingCount;
-}
-
-// ⭕ 713 = Thing 표의 사람 종류 번호. Server.h 의 `kPlayerType` 과 같은 값이며
+// ⭕ 713 = Thing 표의 사람 종류 번호. `Server.h` 의 `kPlayerType` 과 같은 값이며
 //   어긋나면 `Server.cpp` 의 정적 단언에서 걸린다.
 bool ThingIsPlayer(uint16_t wireType) {
     return wireType == 713;
+}
+
+bool ThingKnown(uint16_t wireType) {
+    return wireType != 0 && wireType < kThingCount;
 }
 
 }  // namespace nox

@@ -266,9 +266,6 @@ struct Session {
     //   ⚠ **우리는 이 경로가 통째로 없었다.** 갱신 스트림의 `0x40` 은 bit7=0 이라
     //     프레임 바이트도 안 따라간다 → **프레임이 0 에 고정**돼 자세가 안 바뀌었다.
     //   ⚠ 프레임 값의 범위는 **모른다**(스프라이트마다 다르다). 작게 굴려 보고 화면으로 확인한다.
-    uint32_t animFrame = 0;
-    uint32_t animFrameSent = 0xFFFFFFFFu;   // 마지막으로 알린 값. 바뀔 때만 보낸다
-    uint32_t animNextFrameAt = 0;           // 이 프레임에 다음 칸으로 넘긴다
     // ★★ **HUD(체력·마나)를 몇 번 되풀이해 보낸다** (2026-09-11).
     //   한 번만 보냈더니 안 떴다 — 접속 직후라 클라가 아직 안 받을 채비였던 것으로 보인다.
     //   ★ 왜 마나만 떴었나 — 마나는 **주문 쓸 때마다 다시** 나가서 결국 떴고,
@@ -466,10 +463,10 @@ constexpr uint32_t kAimStaleTicks = 30;
 // HUD(체력·마나)를 접속 직후 몇 번 되풀이해 보낼까. ➖ 우리 값 — 한 번은 놓친다.
 constexpr int kHudTellTimes = 5;
 
-// 걷는 그림이 한 칸 넘어가는 간격(틱). ➖ 우리 값 — 정품 값은 아직 모른다.
-constexpr uint32_t kAnimStepTicks = 6;
-// 걷는 그림이 몇 칸인지 **모른다.** 작게 잡아 보고 화면으로 늘린다.
-constexpr uint32_t kAnimWalkFrames = 4;
+// ★ **그림 칸 간격·칸 수는 서버가 안 정한다**(2026-09-11 화면으로 확정).
+//   클라가 `AnimLoop` 로 `Frame()` 에서 칸을 뽑는다(`opennox/src/drawable_vector.go:119`).
+//   서버가 굴려 `0x6B` 로 보내 봤지만 화면이 한 점도 안 바뀌었다.
+//   서버가 할 일은 **자세 번호를 바르게 실어 보내는 것**뿐이다.
 
 constexpr uint8_t kAnimIdle = 0;
 constexpr uint8_t kAnimWalk = 4;
@@ -959,16 +956,19 @@ public:
     unsigned long long appearanceSent() const { return appearanceSent_; }
     unsigned long long appearanceUnknown() const { return appearanceUnknown_; }
     unsigned long long fxSent() const { return fxSent_; }
-    unsigned long long animFramesSent() const { return animFramesSent_; }
     void SetNoSpellStart(bool on) { noSpellStart_ = on; }
     // ★ 진단 — 걷는 그림 칸을 **한 값으로 고정**한다(-1 이면 안 고정).
     //   서 있는 채로 칸만 바꿔 캡처하면 **위치가 안 변해** 자세를 나란히 견줄 수 있다.
     //   캡처 한 장에 2초가 걸려, 걸으면서 찍으면 캐릭터가 나무 뒤로 가 버린다(2026-09-11).
-    void SetForceAnimFrame(int v) { forceAnimFrame_ = v; }
     // ★ 진단 — 사람 항목의 **자세 번호**를 못 박는다(-1 이면 안 함).
     //   걷기(4)는 서기(0)와 그림 차이가 작아 캡처로 안 갈린다. 죽음(2)처럼
     //   **눕는 자세**로 시험하면 먹는지 안 먹는지가 한눈에 난다.
     void SetForceAnimPose(int v) { forceAnimPose_ = v; }
+    // ★★ 진단 — 사람 항목 덧붙이 **첫 바이트의 방향 3비트**를 못 박는다(0~7, -1 이면 안 함).
+    //   자세(하위 4비트든 별도 바이트든)가 두 방식 다 화면을 못 바꿨다. 그래서 묻는다 —
+    //   **덧붙이 바이트가 클라에 닿기는 하나?** 방향이 바뀌면 캐릭터가 다른 쪽을 보므로
+    //   눈에 확 띈다. 방향도 안 먹으면 덧붙이 자체가 안 읽히는 것이다.
+    void SetForceAnimDir(int v) { forceAnimDir_ = v; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
     void DebugCapture(const std::string& addr, int n) {
         auto it = sessions_.find(addr);
@@ -1231,7 +1231,6 @@ private:
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수
-    unsigned long long animFramesSent_ = 0;   // 걷는 그림 칸을 알린 횟수 (0x6B)
     // ★ 시전 알림 `0x70` 을 끄는 **진단 스위치**. **기본은 보낸다.**
     //
     //   2026-09-11 — 주문을 쓰면 클라가 게임에서 나가는 일이 있어 이분법을 돌렸다.
@@ -1242,8 +1241,8 @@ private:
     //   ⚠ 그러니 기본 동작은 **안 바꾼다.** 근거가 설 때까지 보내는 쪽을 유지한다.
     //     (한 번 기본을 끔으로 돌렸다가 `proto_test` 가 「0x70 이 둘에게 안 나감」으로 잡아냈다)
     bool noSpellStart_ = false;
+    int forceAnimDir_ = -1;     // 진단 — 덧붙이 방향 3비트 고정(-1 이면 안 함)
     int forceAnimPose_ = -1;    // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
-    int forceAnimFrame_ = -1;   // 진단 — 걷는 그림 칸 고정(-1 이면 안 함)
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)

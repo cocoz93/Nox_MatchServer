@@ -185,8 +185,8 @@ int main(int argc, char** argv) {
     bool standalone = false;
     bool aoi = false;
     bool itemAtSpawn = false;
+    int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
     int forcePose = -1;        // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
-    int forceAnim = -1;        // 진단 — 걷는 그림 칸 고정(-1 이면 안 함)
     bool spellStart = false;   // 시전 알림 0x70 을 켜는 손잡이 (기본 끔)   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
     int questCount = 4;
     // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —
@@ -257,12 +257,12 @@ int main(int argc, char** argv) {
         } else if (a == "--standalone") {
             // 독립 모드 — 녹음 없이 접속 묶음·USE_MAP·스냅샷을 조립(P5-c-2). --map 필수.
             standalone = true;
+        } else if (a == "--anim-dir" && i + 1 < argc) {
+            // 진단 — 사람 항목 덧붙이의 방향 3비트를 못 박는다(0~7).
+            forceDir = std::atoi(argv[++i]);
         } else if (a == "--anim-pose" && i + 1 < argc) {
             // 진단 — 사람 자세 번호를 못 박는다(0 서기 · 2 죽음 · 4 걷기).
             forcePose = std::atoi(argv[++i]);
-        } else if (a == "--anim-frame" && i + 1 < argc) {
-            // 진단 — 걷는 그림 칸을 한 값으로 고정한다. 서 있는 채로 자세를 견주려고.
-            forceAnim = std::atoi(argv[++i]);
         } else if (a == "--spell-start") {
             // ★ 시전 알림(0x70)을 **켠다.** 기본은 끔 — Server.h 의 noSpellStart_ 주석 참조.
             spellStart = true;
@@ -456,8 +456,8 @@ int main(int argc, char** argv) {
         if (aoi) {
             srv.SetAoi(true);
     if (spellStart) srv.SetNoSpellStart(false);
-    if (forceAnim >= 0) srv.SetForceAnimFrame(forceAnim);
     if (forcePose >= 0) srv.SetForceAnimPose(forcePose);
+    if (forceDir  >= 0) srv.SetForceAnimDir(forceDir);
             std::printf("[시야] 정적 오브젝트를 반경 %d 안만 갱신에 실음\n",
                         static_cast<int>(nox::kAoiRadius));
         }
@@ -780,12 +780,12 @@ int main(int argc, char** argv) {
                 }
                 std::printf("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
                             "걸음 %llu · 근접 %llu(클릭 %llu) · "
-                            "주문 %llu(마나막힘 %llu) · 나는것 %zu · 피해 %llu(투사체명중 %llu) · 걷그림 %llu · 별칭받음 %llu%s"
+                            "주문 %llu(마나막힘 %llu) · 나는것 %zu · 피해 %llu(투사체명중 %llu) · 별칭받음 %llu%s"
                             " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
                             srv.moves(), srv.melees(), srv.code6Seen(),
-                            nSpell, srv.spellsNoMana(), srv.flying(), srv.hurts(), srv.hits(), srv.animFramesSent(), srv.aliasHeard(), modeInfo,
+                            nSpell, srv.spellsNoMana(), srv.flying(), srv.hurts(), srv.hits(), srv.aliasHeard(), modeInfo,
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());

@@ -20,6 +20,9 @@ param(
   # 사람 **자세 번호**를 못 박는다. 0 서기 · 2 죽음(눕기) · 4 걷기.
   # ★ 걷기(4)는 서기와 그림 차이가 작다. **죽음(2)으로 먼저 가른다** — 먹으면 눕는다.
   [int]$Pose = -1,
+  # 덧붙이 첫 바이트의 **방향 3비트**(0~7)를 못 박는다.
+  # ★ 자세가 두 방식 다 안 먹어서, **덧붙이가 닿기는 하나**를 이걸로 가른다.
+  [int]$Dir = -1,
   # 연달아 두 장 찍는다 — 서 있는데도 달라지면 **애니가 도는 것**이다.
   [switch]$Twice,
   [string]$Tag = 'pose',
@@ -31,7 +34,7 @@ $slog = Join-Path $root ("_evidence\srv_{0}.log" -f $Tag)
 $ctrl = Join-Path $root '_evidence\desk1'
 $di   = Join-Path $PSScriptRoot 'di.ps1'
 
-Write-Host ("[조건] 자세={0} · 그림칸={1} · 꼬리표={2} · 안 걷는다" -f $Pose, $Frame, $Tag) -ForegroundColor Cyan
+Write-Host ("[조건] 자세={0} · 방향={1} · 꼬리표={2} · 안 걷는다" -f $Pose, $Dir, $Tag) -ForegroundColor Cyan
 
 function ReadShared([string]$p) {
   if (-not (Test-Path $p)) { return '' }
@@ -52,6 +55,7 @@ $exe = Join-Path $root 'build\Release\nox_server.exe'
 $args = '--port 18590 --standalone --map "' + $Map + '" --mode arena'
 if ($Frame -ge 0) { $args += ' --anim-frame ' + $Frame }
 if ($Pose  -ge 0) { $args += ' --anim-pose '  + $Pose  }
+if ($Dir   -ge 0) { $args += ' --anim-dir '   + $Dir   }
 $cmd = 'cmd /c ""' + $exe + '" ' + $args + ' > "' + $slog + '" 2>&1"'
 Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c ' + $cmd) -WindowStyle Hidden | Out-Null
 Start-Sleep -Seconds 3
