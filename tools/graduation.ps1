@@ -23,6 +23,9 @@ param(
   [string]$Map = 'C:\Program Files\GOG Galaxy\Games\Nox\maps\estate\Estate.map',
   # 어느 직업으로 볼까. **컨저러가 기본이다** — 소환이 거기 있다.
   [ValidateSet('conjurer','wizard','warrior')][string]$Class = 'conjurer',
+  # ★ 캡처를 끈다 — 「캡처가 튕김의 조건인가」를 가르려고(2026-09-11).
+  #   졸업시험은 나가는데 이분법(캡처 없음)은 안 나간다. 남은 차이 중 하나가 이것이다.
+  [switch]$NoShots,
   [int]$WaitMenu = 40
 )
 $ErrorActionPreference = 'Continue'
@@ -49,6 +52,7 @@ function Cleanup {
 }
 # 숨긴 데스크톱이라 평범한 창 캡처가 안 먹는다 — 제어 폴더에 명령을 써서 deskhost 가 찍는다.
 function Shot([string]$name) {
+  if ($NoShots) { return $false }   # 진단 — 캡처가 조건인지 가르는 중
   $png = Join-Path $ctrl ("{0}_{1}.png" -f $Tag, $name)
   [IO.File]::WriteAllText((Join-Path $ctrl 'cmd.txt'),
                           ("shotfull {0}`n" -f $png), (New-Object Text.UTF8Encoding($false)))
@@ -81,7 +85,8 @@ if ((ReadShared $slog) -notmatch '\[맵\]') {
   Write-Host '[멈춤] 서버 로그에 [맵] 줄이 없다 — 맵을 못 읽었다' -ForegroundColor Red
   Cleanup; exit 6
 }
-Write-Host ("서버 떴음 · 직업 {0}" -f $Class)
+Write-Host ("[조건] 직업={0} · 캡처={1} · 꼬리표={2}" -f $Class, $(if ($NoShots) { '끔' } else { '찍음' }), $Tag) -ForegroundColor Cyan
+Write-Host '서버 떴음'
 
 # ── 2. 접속 ───────────────────────────────────────────────────────────
 $row = switch ($Class) { 'conjurer' { 1 } 'wizard' { 2 } default { 3 } }
