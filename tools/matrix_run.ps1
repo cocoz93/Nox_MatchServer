@@ -38,18 +38,49 @@ foreach ($it in $combos) {
   #   `*>&1` 로 모든 스트림을 합친다.
   $out = & (Join-Path $PSScriptRoot 'two_genuine.ps1') @args2 *>&1 | Out-String
 
-  # 판정 추출 — 마지막 틱 줄에서 판끝·수치, 생존
+  # 판정 추출 — 수치·생존은 마지막 틱, **판끝은 전체 틱**
   $last = ''
   foreach ($ln in ($out -split "`r?`n")) { if ($ln -match '마지막 틱') { $last = $ln } }
-  $over  = if ($last -match '판끝 예') { '판끝O' } else { '판끝X' }
   $alive = if ($out -match '생존 감시.*A 끝까지 살아있음 · B 끝까지 살아있음') { '생존O' } else { '생존X' }
   $nums = ''
   foreach ($k in @('걸음','근접','주문','피해')) {
     if ($last -match ($k + ' (\d+)')) { $nums += (' {0} {1}' -f $k, $Matches[1]) }
   }
-  $ctf = ''
-  if ($last -match '득점 (\d+):(\d+)') { $ctf = (' 득점 {0}:{1}' -f $Matches[1], $Matches[2]) }
-  if ($last -match '잡음 (\d+)')      { $ctf += (' 잡음 {0}' -f $Matches[1]) }
+  # ★★★ **판끝을 마지막 틱으로 재면 안 된다** (2026-09-12 — 아홉 조합이 전부 `판끝X` 로
+  #   찍혔는데 **실제로는 일곱이 끝나 있었다**).
+  #   까닭 — 판이 끝나면 `kRoundRestartTicks` 뒤에 **재시작한다**(`Server.cpp`).
+  #   그래서 「판끝 예」는 **여덟 틱 동안만 참**이고, 그 창을 지나면 마지막 틱은 늘
+  #   「판끝 아니오」다. **창으로만 참인 값은 누적으로 재야 한다.**
+  #   ⚠ 같은 함정을 전에도 밟았다 — 「0 은 없었다와 못 읽었다를 안 가른다」와 같은 꼴.
+  #     다른 점은 0 이 아니라 `X` 였다는 것뿐이다.
+  # ★ 그리고 **생존O 는 「판이 도는가」를 안 본다** — 둘을 같이 봐야 판정이 선다.
+  $slog = Join-Path $repo ('_evidence\srv_{0}.log' -f $tag)
+  $over = '판끝X'
+  $ctf  = ''
+  if (Test-Path $slog) {
+    # ⚠ 서버가 아직 물고 있을 수 있으므로 공유 읽기로 연다.
+    $fs = New-Object IO.FileStream($slog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    try { $slt = (New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8)).ReadToEnd() } finally { $fs.Dispose() }
+    $tk = @($slt -split "`r?`n" | Where-Object { $_ -match '^\[틱\]' })
+    $nOver = @($tk | Where-Object { $_ -match '판끝 예' }).Count
+    if ($nOver -gt 0) { $over = ('판끝O({0}틱)' -f $nOver) }
+    # 득점·스테이지도 **최고점**으로 — 재시작이 값을 0 으로 되돌리기 때문이다.
+    $mx = 0
+    foreach ($t in $tk) {
+      if ($t -match '득점 (\d+):(\d+)') {
+        $s = [int]$Matches[1] + [int]$Matches[2]
+        if ($s -gt $mx) { $mx = $s; $ctf = (' 최고득점 {0}:{1}' -f $Matches[1], $Matches[2]) }
+      }
+    }
+    $st = @($slt -split "`r?`n" | Where-Object { $_ -match '\[스테이지\] (\d+)/' })
+    if ($st.Count -gt 0) {
+      $top = 0
+      foreach ($s in $st) { if ($s -match '\[스테이지\] (\d+)/') { if ([int]$Matches[1] -gt $top) { $top = [int]$Matches[1] } } }
+      $ctf += (' 최고스테이지 {0}' -f $top)
+    }
+  } else {
+    $over = '판끝?(로그없음)'
+  }
   $sec = [int]((Get-Date) - $t0).TotalSeconds
   $line = ('{0,-9} {1,-6} {2} {3}{4}{5} · {6}초' -f $it.c, $it.m, $over, $alive, $nums, $ctf, $sec)
   [IO.File]::AppendAllText($resFile, $line + "`r`n", (New-Object Text.UTF8Encoding($false)))
