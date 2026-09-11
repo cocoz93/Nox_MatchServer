@@ -830,13 +830,15 @@ int main(int argc, char** argv) {
                 // ★ 물건 다루기 — 요청·성공·손이 안 닿음을 **갈라서** 찍는다.
                 //   합치면 「안 주워진다」의 까닭이 안 보인다: 요청이 0 이면 조작을 못 찾은 것이고,
                 //   요청은 있는데 성공이 0 이면 거리·번호 문제다.
-                if (srv.tryGets() || srv.used() || srv.equipped()) {
-                    std::printf("[물건] 줍기요청 %llu(성공 %llu·멂 %llu) · 쓰기 %llu(모르는갈래 %llu)"
-                                " · 입기 %llu · 벗기 %llu · 되돌림 %llu\n",
-                                srv.tryGets(), srv.picked(), srv.pickTooFar(),
-                                srv.used(), srv.useUnknown(),
-                                srv.equipped(), srv.dequipped(), srv.dropped());
-                }
+                // ★★ **늘 찍는다** — 전에는 `tryGets()||used()||equipped()` 일 때만 찍었다.
+                //   그런데 바로 위 주석이 말하는 판정이 **「요청이 0 이면 조작을 못 찾은 것」**이다.
+                //   즉 **가장 알고 싶은 0 을 안 찍고 있었다.** 줄이 아예 없으면
+                //   「0 이었나」와 「안 쟀나」를 못 가른다(2026-09-11에 이 자리에서 걸렸다).
+                std::printf("[물건] 줍기요청 %llu(성공 %llu·멂 %llu) · 쓰기 %llu(모르는갈래 %llu)"
+                            " · 입기 %llu · 벗기 %llu · 되돌림 %llu\n",
+                            srv.tryGets(), srv.picked(), srv.pickTooFar(),
+                            srv.used(), srv.useUnknown(),
+                            srv.equipped(), srv.dequipped(), srv.dropped());
                 if (!srv.stoppedByOp().empty()) {
                     std::printf("[버림] 조각 %llu개 —", srv.stopped());
                     for (const auto& kv : srv.stoppedByOp()) {
