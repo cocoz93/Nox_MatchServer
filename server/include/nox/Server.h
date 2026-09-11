@@ -815,6 +815,8 @@ public:
     //   ➖ **퀘스트는 우리가 정한다** — 정품이 퀘스트에서 사람들을 어떻게 묶는지 못 봤다.
     //     협동 판이므로 **팀이 0 이어도 사람끼리는 아군**으로 본다.
     bool IsEnemyTo(const Session& a, const Session& b) const;
+    // 시험·로그용 — 주소로 부른다. 둘 중 하나라도 없으면 `false`(적이 아님).
+    bool IsEnemyTo(const std::string& a, const std::string& b) const;
 
     int QuestLeft() const { return questTotal_ - questKilled_; }
     int QuestKilled() const { return questKilled_; }

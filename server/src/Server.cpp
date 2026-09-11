@@ -865,6 +865,13 @@ bool Server::IsEnemyTo(const Session& a, const Session& b) const {
     return true;                                          // 팀 없는 사람끼리 — 아레나는 전원 적
 }
 
+bool Server::IsEnemyTo(const std::string& a, const std::string& b) const {
+    const auto ia = sessions_.find(a);
+    const auto ib = sessions_.find(b);
+    if (ia == sessions_.end() || ib == sessions_.end()) return false;
+    return IsEnemyTo(ia->second, ib->second);
+}
+
 // 퀘스트를 연다 — **스테이지 1 부터.** `count` 는 이제 안 쓴다(스테이지 표가 정한다).
 //
 // ★★ 전에는 「몬스터 N 마리 세우고 다 잡으면 끝」이었다. 정품 NoxQuest 는 웨이브가

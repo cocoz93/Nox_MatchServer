@@ -1701,6 +1701,54 @@ std::vector<uint8_t> InputPacket(uint8_t code) {
     return p;
 }
 
+// ── 누가 누구의 적인가 ────────────────────────────────
+//
+// ★ 왜 재나 — `0x41`(유닛 현재 체력)은 **적이 아닐 때만** 나간다
+//   (정품 `GAME4_2.c:7152-7157`). 즉 **남의 머리 위 체력**이 이 판정에 달려 있다.
+//   규칙은 정품 `opennox/src/server/object.go:1667-1741` 에서 옮겼다(`Server.h` 주석 참조).
+void TestEnemyTo() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+
+    // ① 아레나 — 팀이 없으니 **서로 적**이다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        Check(srv.TeamOf(a) == 0 && srv.TeamOf(b) == 0, "아레나인데 팀이 붙었다");
+        Check(srv.IsEnemyTo(a, b), "팀 없는 둘이 적이 아니라고 나온다");
+        Check(!srv.IsEnemyTo(a, a), "자기 자신이 적이라고 나온다");
+    }
+
+    // ② 깃발 — **같은 팀은 아군, 다른 팀은 적**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.StartCtf(1000, 1000, 2000, 2000);
+        const uint8_t ta = srv.TeamOf(a), tb = srv.TeamOf(b);
+        Check(ta != 0 && tb != 0, "깃발 판인데 팀이 0 이다");
+        if (ta == tb) Check(!srv.IsEnemyTo(a, b), "같은 팀인데 적이라고 나온다");
+        else          Check(srv.IsEnemyTo(a, b), "다른 팀인데 아군이라고 나온다");
+    }
+
+    // ③ 퀘스트 — 협동이므로 **사람끼리는 아군**(➖ 우리 값)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.StartQuest(2, 1000, 1000, 100.0);
+        Check(!srv.IsEnemyTo(a, b), "퀘스트인데 사람끼리 적이라고 나온다");
+    }
+
+    // ④ 없는 사람은 적이 아니다 (문지기)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        Check(!srv.IsEnemyTo(a, "9.9.9.9:1"), "없는 상대가 적이라고 나온다");
+    }
+}
+
 void TestMelee() {
     nox::Server srv;
     const std::string a = "10.0.0.1:1000";
@@ -3466,6 +3514,7 @@ int main() {
     TestUseAndEquip();
     TestUseFromFile();
     TestSpellDamage();
+    TestEnemyTo();
     TestMelee();
     TestThingDb();
     TestMapSections();
