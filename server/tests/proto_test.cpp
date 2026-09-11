@@ -1835,6 +1835,49 @@ void TestDirtyUnitHealth() {
         for (uint32_t ms = 150; ms <= 300; ms += 33) srv.Tick(ms, out);   // 값이 안 바뀐 틱들
         Check(srv.unitHealthSent() == afterFirst, "안 바뀌었는데 또 보냄 — 목록이 안 비워졌다");
     }
+
+    // ④ **불려 나온 것** — 주인에게만 간다 (남에게는 안 간다)
+    //
+    //   ⭕ 정품 `IsEnemyTo`(`opennox/src/server/object.go:1717-1721`) 는
+    //     `own1 := obj.FindOwnerChainPlayer()` 로 **주인을 따라 올라가** 견준다.
+    //     주인이 같으면 적이 아니다 → 내 소환수 체력은 나에게 온다.
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        std::vector<nox::OutPacket> out;
+        auto pkt = SpellPacket(79, false);          // 79 = SPELL_SUMMON_BOMBER (A 가 부른다)
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.pets() == 1, "불렀는데 안 생김");
+
+        out.clear();
+        // 체력을 **정해서** 바꾼다 — 얼마가 남아 있든 시험이 선다(Bomber 는 체력 1 이다).
+        const uint16_t petCode = srv.DebugSetOwnedPetHealth(a, 40);
+        Check(petCode != 0, "내 소환수를 못 찾았다 — 이 시험이 무의미해진다");
+        Check(srv.DebugOwnedPetHealth(a) == 40, "체력을 정했는데 안 바뀌었다");
+        for (uint32_t ms = 0; ms <= 120; ms += 33) srv.Tick(ms, out);
+
+        // 누구에게 갔는지 센다 — 받는 사람은 `OutPacket` 의 주소로 가른다.
+        int toOwner = 0, toOther = 0;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            const uint8_t* m = nullptr;
+            size_t mn = 0;
+            if (body.size() >= 5 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
+                m = body.data() + 4; mn = body.size() - 4;
+            } else if (!body.empty()) {
+                m = body.data(); mn = body.size();
+            }
+            if (!m || mn < 4) continue;
+            if (m[0] != static_cast<uint8_t>(nox::Op::REPORT_HEALTH)) continue;
+            const uint16_t code = static_cast<uint16_t>(m[1] | (m[2] << 8));
+            if (code != petCode) continue;
+            if (p.to == a) ++toOwner;
+            else if (p.to == b) ++toOther;
+        }
+        Check(toOwner >= 1, "내 소환수 체력이 주인에게 안 왔다");
+        Check(toOther == 0, "남의 소환수 체력이 적에게 갔다");
+    }
 }
 
 void TestMelee() {

@@ -870,6 +870,29 @@ public:
             if (pets_[i].owner.empty()) { KillPet(i, out); return; }
         }
     }
+    // 시험용 — 불려 나온 것 하나를 **깎는다**(죽이지 않는다). 넷코드를 돌려준다, 없으면 0.
+    //
+    // ★ 왜 필요한가 — `0x41`(유닛 현재 체력)이 **주인에게만** 가는지 재려면
+    //   소환수 체력을 바꿔야 하는데, 실제 경로(투사체 명중)는 자리·각도에 기대 흔들린다.
+    //   ⚠ 이 손잡이는 **`MarkDirty` 를 반드시 같이 부른다** — 안 그러면 실제 경로와 달라져
+    //     「시험은 통과하는데 판에서는 안 되는」 자리가 생긴다.
+    //   ⚠ 처음엔 「얼마 깎기」로 만들었다가 **Bomber 체력이 1 이라 아무것도 못 깎았다.**
+    //     0 을 돌려주며 까닭을 안 알려 줘 한참 헤맸다 — 「손잡이가 먹었는지 찍어라」를 어긴 자리다.
+    //     이제 **체력을 그 값으로 정한다** — 얼마가 남아 있든 시험이 선다.
+    uint16_t DebugSetOwnedPetHealth(const std::string& owner, uint16_t hp) {
+        for (auto& k : pets_) {
+            if (k.owner != owner) continue;
+            k.health = hp;
+            MarkDirty(k.netCode, PendingReport::What::UnitHealth);
+            return k.netCode;
+        }
+        return 0;
+    }
+    // 시험용 — 그 사람의 소환수 체력(없으면 0). 위 손잡이가 왜 실패했는지 가르는 데 쓴다.
+    uint16_t DebugOwnedPetHealth(const std::string& owner) const {
+        for (const auto& k : pets_) if (k.owner == owner) return k.health;
+        return 0;
+    }
     uint16_t CapturesOf(uint8_t team) const { return team < 3 ? caps_[team] : 0; }
     uint8_t TeamOf(const std::string& addr) const {
         auto it = sessions_.find(addr);

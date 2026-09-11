@@ -673,6 +673,9 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
     Creature& k = pets_[i];
     if (k.health > dmg) {
         k.health = static_cast<uint16_t>(k.health - dmg);
+        // ★ R4 — 불려 나온 것의 체력이 바뀌었다. **주인에게만** 흘러간다
+        //   (`FlushPending` 이 `IsEnemyTo` 로 거른다 — 남의 소환수는 적이라 안 간다).
+        MarkDirty(k.netCode, PendingReport::What::UnitHealth);
         return;
     }
     KillPet(i, out);
@@ -900,25 +903,42 @@ void Server::FlushPending(std::vector<OutPacket>& out) {
         if (!s.inGame) { s.pending.clear(); continue; }
         for (const auto& pr : s.pending) {
             if (pr.what != PendingReport::What::UnitHealth) continue;   // 나머지는 아직
-            // 그 번호의 임자를 찾는다 — 지금은 사람만 본다(몬스터는 다음 조각).
-            const Session* target = nullptr;
+            // 그 번호의 임자를 찾는다 — **사람과 불려 나온 것 둘 다** 본다.
+            uint16_t hp = 0;
+            bool found = false;
             for (const auto& kv2 : sessions_) {
                 if (kv2.second.inGame && kv2.second.netCode == pr.netCode) {
-                    target = &kv2.second;
+                    // ⭕ **적이 아닐 때만** 보낸다 — `GAME4_2.c:7152-7157`
+                    if (IsEnemyTo(s, kv2.second)) break;
+                    hp = kv2.second.health;
+                    found = true;
                     break;
                 }
             }
-            if (!target) continue;
-            // ⭕ **적이 아닐 때만** 보낸다 — `GAME4_2.c:7152-7157`
-            if (IsEnemyTo(s, *target)) continue;
+            if (!found) {
+                for (const auto& k : pets_) {
+                    if (k.netCode != pr.netCode) continue;
+                    // ★★ **불려 나온 것은 「주인이 같을 때만」 아군이다.**
+                    //   ⭕ 정품 `IsEnemyTo`(`opennox/src/server/object.go:1717-1721`) —
+                    //     `own1 := obj.FindOwnerChainPlayer()` · `own2 := …` ·
+                    //     `if own1 == own2 { return false }` — **주인을 따라 올라가** 견준다.
+                    //   즉 **내 소환수 체력은 나에게 오고, 남의 것·맵 몬스터는 적이라 안 온다.**
+                    //   ➖ 정품의 `SubClass & 0x20`(중립 몬스터) 갈래는 3모드에 안 쓴다.
+                    if (k.owner != kv.first) break;      // 남의 것이거나 주인 없는 맵 몬스터
+                    hp = k.health;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) continue;
             // ⭕ 짜임 — `netReportUnitCurrentHP_4D8620`(`GAME3_2.c:4022-4038`):
             //     [0]=65(0x41) · [1..2]=넷코드 · **[3]=체력 >> 1** · 총 4 · `a6=1`(중요)
             //   체력을 **2로 나눠 한 바이트**에 담는다(최대 510 까지 표현된다).
             uint8_t msg[4] = {
                 static_cast<uint8_t>(Op::REPORT_HEALTH),
-                static_cast<uint8_t>(target->netCode),
-                static_cast<uint8_t>(target->netCode >> 8),
-                static_cast<uint8_t>(target->health >> 1),
+                static_cast<uint8_t>(pr.netCode),
+                static_cast<uint8_t>(pr.netCode >> 8),
+                static_cast<uint8_t>(hp >> 1),
             };
             EmitSeq(s, msg, sizeof(msg), out);
             ++unitHealthSent_;
