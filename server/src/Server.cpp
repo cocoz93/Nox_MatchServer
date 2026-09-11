@@ -3083,6 +3083,25 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
         m.x = s.x;
         m.y = s.y;
+        // ★★★ **머리는 「카메라」다 — 사람이 아니다.** (2026-09-11 짜는 쪽 소스로 확정)
+        //
+        //   갱신 스트림 머리는 `MSG_PLAYER_OBJ` 에서 만들어지는데(`network_lists.go:230`),
+        //   그 메시지를 만드는 함수 이름이 답이다 —
+        //   `opennox/src/network.go:573` **`nox_xxx_netPlayerObjSendCamera_519330`** :
+        //
+        //       buf[0] = MSG_PLAYER_OBJ
+        //       PutUint16(buf[1:], 0)      // 번호 **0**
+        //       PutUint16(buf[3:], 0)      // 종류 **0**
+        //       PutUint16(buf[5:], pos.X)  // 카메라 자리
+        //       PutUint16(buf[7:], pos.Y)
+        //       buf[9]  = 0                // 방향 **0**
+        //       buf[10] = 0xff             // 그림 칸 **없음**
+        //       buf[11] = 0                // 자세 **0**
+        //
+        //   ⭕ 우리 실측(2026-09-08)의 「머리 `ff` · 번호 0 · 종류 0」과 **정확히 맞는다.**
+        //   ★ 잠깐 「머리가 곧 보는 사람이니 자세를 여기 실어야 한다」고 고쳤다가 되돌렸다 —
+        //     `sub_4DF810` 만 보면 그렇게 읽히지만, **그 입력을 만드는 함수**를 열어 보니
+        //     전부 0 인 카메라였다. **정답지도 한 겹만 읽으면 틀린 결론이 난다.**
         m.flags = 0;
         m.headAnim = 0;
 
