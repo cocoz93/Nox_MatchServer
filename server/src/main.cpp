@@ -715,7 +715,17 @@ int main(int argc, char** argv) {
         // ★★ **판을 차리는 자리** — 사람이 다 들어온 뒤라야 한다.
         //   `StartCtf` 는 **그때 게임 안에 있는 사람에게만** 팀을 준다. 접속 전에 부르면
         //   팀이 0 으로 남아 깃발 판정이 통째로 건너뛴다(`UpdateFlags` 의 `s.team == 0` 걸림).
-        if (!modeStarted && mode != "arena" && srv.inGameCount() >= 2) {
+        //
+        // ★★★ **정정(2026-09-11) — 퀘스트는 혼자서도 열려야 한다.**
+        //   전에는 모드를 가리지 않고 **둘 이상**을 기다렸다. 그래서 졸업시험(클라 하나)에서
+        //   `StartQuest` 가 **한 번도 안 불렸고**, 몬스터가 0 마리라 「맞고 죽기」를 90초
+        //   내내 못 쟀다. ⚠ 그런데 틱에는 **「스테이지 1」이 찍혀** 마치 판이 도는 것처럼
+        //   보였다 — 그 값은 `questStage_ + 1` 일 뿐이라 **표시가 사람을 속였다.**
+        //   지문은 **`이 웨이브 남음 0(잡음 0)`** 과 `[스테이지]` 줄 0건이었다.
+        //   ⭕ 정품 NoxQuest 는 **1~4인 협동**이라 혼자 시작이 정상이다.
+        //   깃발(CTF)은 두 편이 있어야 하므로 둘 이상을 그대로 기다린다.
+        const int needPlayers = (mode == "ctf") ? 2 : 1;
+        if (!modeStarted && mode != "arena" && srv.inGameCount() >= needPlayers) {
             modeStarted = true;
             const int mx = srv.spawnX() + 20, my = srv.spawnY();   // 두 사람 사이
             if (mode == "ctf") {
