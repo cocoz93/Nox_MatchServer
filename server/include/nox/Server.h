@@ -61,6 +61,28 @@ struct OutPacket {
 };
 
 // 불려 나온 것 하나. 부른 사람 편이라 부른 사람은 안 때린다.
+// ★★ **「바뀌었으니 이 사람에게 알려야 한다」 한 건** (R4 — 정품 더티 비트 틀).
+//
+//   정품의 비트 하나하나가 여기 `What` 하나에 해당한다
+//   (`GAME4_2.c:7136-7181` — 비트가 켜진 것만 보내고 곧바로 끈다).
+//
+//     비트         | 보내는 것        | 오프코드 | 우리
+//     `0x10000`    | 그림 칸          | `0x6B`   | ❌ 안 쓴다(클라가 굴린다 — 2026-09-11 실측)
+//     `0x20000`    | 유닛 현재 체력   | `0x41`   | `UnitHealth`  ← 먼저 붙인다
+//     `0x40000`    | 숨김             | `0x38`   | `Hidden`   (아직)
+//     `0x400000`   | 높이             | `0x9F`   | `Height`   (아직)
+//     `0x800000`   | 마법부여         | `0x5A`   | `Enchant`  (아직)
+//     `0x2000000`  | 팀 기지          | `0x67`   | `TeamBase` (아직)
+struct PendingReport {
+    enum class What : uint8_t { UnitHealth, Hidden, Height, Enchant, TeamBase };
+    uint16_t netCode = 0;   // 무엇이 바뀌었나 (오브젝트 번호)
+    What what = What::UnitHealth;
+
+    bool operator==(const PendingReport& o) const {
+        return netCode == o.netCode && what == o.what;
+    }
+};
+
 struct Creature {
     std::string owner;     // 부른 사람의 주소
     uint16_t netCode = 0;
@@ -284,6 +306,20 @@ struct Session {
     uint32_t joinOrder = 0;
     uint16_t kills = 0;            // 죽인 수 (아레나 점수)
     uint16_t deaths = 0;           // 죽은 수
+
+    // ★★★ **이 사람에게 아직 못 보낸 「바뀐 것」 목록** (R4 — 정품 더티 비트 틀을 옮긴 것).
+    //
+    //   ⭕ 정품은 오브젝트마다 **플레이어별 비트 한 칸**을 두고(`a2[플레이어번호+140]`),
+    //     값이 바뀐 쪽이 비트를 세운 뒤 **켜진 것만 보내고 비트를 끈다**
+    //     (`GAME4_2.c:7136-7181` `netUpdateObjectSpecial_527E50`).
+    //
+    //   ⚠ 우리는 오브젝트가 `Creature`·`WorldProp`·`Flag`·`Projectile` 로 **갈라져 있고**
+    //     세션은 주소로 찾는 `map` 이라, 오브젝트마다 칸을 두기가 나쁘다.
+    //     그래서 **반대로 세션에 「보낼 것 목록」을 둔다.** 얻는 것 셋 —
+    //       ⑴ 오브젝트가 갈라져 있어도 **붙일 자리가 한 군데**다
+    //       ⑵ 시야(AOI)가 이미 세션 기준이라 **「볼 수 있는 사람에게만」이 공짜**다
+    //       ⑶ 정품의 「보낸 뒤 비트 끄기」가 **목록 비우기**로 자연스럽다
+    std::vector<PendingReport> pending;
 
     // 이 상대가 **자기 쪽에서 굴리고 있을** 별칭 표. 서버가 똑같이 굴려야
     // 어긋나지 않는다(Alias.h 참조).
@@ -814,6 +850,13 @@ public:
     //
     //   ➖ **퀘스트는 우리가 정한다** — 정품이 퀘스트에서 사람들을 어떻게 묶는지 못 봤다.
     //     협동 판이므로 **팀이 0 이어도 사람끼리는 아군**으로 본다.
+    // ★ R4 — 「바뀌었으니 알려라」. 값이 바뀌는 자리에서 부른다.
+    void MarkDirty(uint16_t netCode, PendingReport::What what);
+    // 쌓인 것을 보내고 비운다 (틱 끝에서 한 번).
+    void FlushPending(std::vector<OutPacket>& out);
+    // 시험·로그용 —  x41 을 몇 번 보냈나.
+    unsigned long long unitHealthSent() const { return unitHealthSent_; }
+
     bool IsEnemyTo(const Session& a, const Session& b) const;
     // 시험·로그용 — 주소로 부른다. 둘 중 하나라도 없으면 `false`(적이 아님).
     bool IsEnemyTo(const std::string& a, const std::string& b) const;
@@ -1312,6 +1355,7 @@ private:
     bool wallsOn_ = false;
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
     // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
+    unsigned long long unitHealthSent_ = 0;   //  x41 을 보낸 횟수 (R4)
     uint8_t peerPose_ = 0x30;
     // 갱신 항목 순서를 뒤집는다(남 먼저). 「자리 탓인가 누구냐 탓인가」를 가르는 시험용.
     bool peerFirst_ = false;

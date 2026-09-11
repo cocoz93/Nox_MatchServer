@@ -701,6 +701,8 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     int after = before - amount;
     if (after < 0) after = 0;
     s.health = static_cast<uint16_t>(after);
+    // ★ R4 — 체력이 바뀌었다. 「알려야 할 것」에 올린다(보낼지는 틱 끝에서 가른다).
+    if (after != before) MarkDirty(s.netCode, PendingReport::What::UnitHealth);
 
     // ① 얼마나 깎였나 — 겉에 그냥 실어 보낸다.
     //    실측 `42 d8 02 81 ff` = 번호 728 · −127. 증감은 **부호 있는 16비트**다.
@@ -870,6 +872,59 @@ bool Server::IsEnemyTo(const std::string& a, const std::string& b) const {
     const auto ib = sessions_.find(b);
     if (ia == sessions_.end() || ib == sessions_.end()) return false;
     return IsEnemyTo(ia->second, ib->second);
+}
+
+// ★★★ **바뀌었으니 알려라** — 정품 더티 비트 틀(`GAME4_2.c:7136`)을 옮긴 것.
+//
+//   정품은 오브젝트에 **플레이어별 비트**를 세우는데, 우리는 **세션에 목록**을 쌓는다
+//   (까닭은 `Session::pending` 주석). 「누구에게 보낼까」는 **보낼 때** 가른다 —
+//   정품도 `netUpdateObjectSpecial` 안에서 그때 `unitIsEnemyTo` 를 묻는다.
+//   그 사이 팀이 바뀔 수 있으므로 **미리 거르지 않는다.**
+void Server::MarkDirty(uint16_t netCode, PendingReport::What what) {
+    if (netCode == 0) return;
+    const PendingReport pr{netCode, what};
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) continue;
+        // 같은 것이 이미 있으면 안 넣는다 — 한 틱에 값이 여러 번 바뀌어도 한 번만 보낸다.
+        // ⚠ 한 틱 목록은 짧으므로 선형 탐색으로 충분하다.
+        if (std::find(s.pending.begin(), s.pending.end(), pr) != s.pending.end()) continue;
+        s.pending.push_back(pr);
+    }
+}
+
+// 쌓인 것을 보내고 목록을 비운다 — 정품의 「보낸 뒤 비트 끄기」에 해당한다.
+void Server::FlushPending(std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) { s.pending.clear(); continue; }
+        for (const auto& pr : s.pending) {
+            if (pr.what != PendingReport::What::UnitHealth) continue;   // 나머지는 아직
+            // 그 번호의 임자를 찾는다 — 지금은 사람만 본다(몬스터는 다음 조각).
+            const Session* target = nullptr;
+            for (const auto& kv2 : sessions_) {
+                if (kv2.second.inGame && kv2.second.netCode == pr.netCode) {
+                    target = &kv2.second;
+                    break;
+                }
+            }
+            if (!target) continue;
+            // ⭕ **적이 아닐 때만** 보낸다 — `GAME4_2.c:7152-7157`
+            if (IsEnemyTo(s, *target)) continue;
+            // ⭕ 짜임 — `netReportUnitCurrentHP_4D8620`(`GAME3_2.c:4022-4038`):
+            //     [0]=65(0x41) · [1..2]=넷코드 · **[3]=체력 >> 1** · 총 4 · `a6=1`(중요)
+            //   체력을 **2로 나눠 한 바이트**에 담는다(최대 510 까지 표현된다).
+            uint8_t msg[4] = {
+                static_cast<uint8_t>(Op::REPORT_HEALTH),
+                static_cast<uint8_t>(target->netCode),
+                static_cast<uint8_t>(target->netCode >> 8),
+                static_cast<uint8_t>(target->health >> 1),
+            };
+            EmitSeq(s, msg, sizeof(msg), out);
+            ++unitHealthSent_;
+        }
+        s.pending.clear();
+    }
 }
 
 // 퀘스트를 연다 — **스테이지 1 부터.** `count` 는 이제 안 쓴다(스테이지 표가 정한다).
@@ -2841,6 +2896,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
     UpdateFlags(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
+    // ★ R4 — 이 틱에 바뀐 것들을 각자에게 보내고 목록을 비운다.
+    //   정품의 「비트가 켜진 것만 보내고 곧바로 끈다」와 같은 자리다.
+    FlushPending(out);
     // 퀘스트 첫 스테이지 알림 — StartQuest 때는 out 이 없어 못 보냈다. 첫 틱에 한 번.
     if (questTotal_ > 0 && !questAnnounced_) {
         questAnnounced_ = true;

@@ -1749,6 +1749,94 @@ void TestEnemyTo() {
     }
 }
 
+// ── 「바뀌었으니 알려라」 틀과 `0x41` ────────────────────
+//
+// ★ 정품은 오브젝트에 **플레이어별 더티 비트**를 세우고 바뀐 것만 보낸다
+//   (`GAME4_2.c:7136-7181`). 우리는 **세션에 목록**을 쌓아 같은 일을 한다.
+// ★ `0x41` 짜임 ⭕ `GAME3_2.c:4022-4038` —
+//     [0]=0x41 · [1..2]=넷코드 · **[3]=체력 >> 1** · 총 4 · 중요(`cc` 봉투 안)
+void TestDirtyUnitHealth() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+
+    // 봉투를 열어 `0x41` 을 센다 — 중요로 보내므로 `cc` 안에 있다.
+    auto count41 = [](const std::vector<nox::OutPacket>& out, uint8_t* hpOut) {
+        int n = 0;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            const uint8_t* m = nullptr;
+            size_t mn = 0;
+            if (body.size() >= 5 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
+                m = body.data() + 4; mn = body.size() - 4;
+            } else if (!body.empty()) {
+                m = body.data(); mn = body.size();
+            }
+            if (m && mn >= 4 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_HEALTH)) {
+                if (hpOut) *hpOut = m[3];
+                ++n;
+            }
+        }
+        return n;
+    };
+
+    // ① 퀘스트 — 사람끼리 아군이므로 **간다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.StartQuest(2, 5000, 5000, 100.0);   // 사람에게서 멀리 — 몬스터가 안 끼게
+        std::vector<nox::OutPacket> out;
+        auto pkt = InputPacket(6);              // A 가 B 를 친다 (둘 다 같은 자리)
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        const uint16_t hp = srv.HealthOf(b);
+        Check(hp < nox::kDefaultMaxHealth, "때렸는데 안 깎임");
+
+        out.clear();
+        // ⚠ `Tick(0)` **한 번으로는 아무것도 안 나온다** — 틱 주기를 안 넘긴다(조각 0 실측).
+        //   몇 틱 굴려야 `FlushPending` 이 실제로 돈다.
+        for (uint32_t ms = 0; ms <= 120; ms += 33) srv.Tick(ms, out);
+        uint8_t got = 0xFF;
+        const int n = count41(out, &got);
+        Check(n >= 1, "퀘스트인데 0x41 이 한 번도 안 나감");
+        Check(got == static_cast<uint8_t>(hp >> 1), "0x41 의 체력이 「체력>>1」이 아님");
+        Check(srv.unitHealthSent() >= 1, "0x41 계수가 안 늘었다");
+    }
+
+    // ② 아레나 — 서로 적이므로 **안 간다** (대조군)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        std::vector<nox::OutPacket> out;
+        auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "때렸는데 안 깎임(아레나)");
+
+        out.clear();
+        srv.Tick(0, out);
+        Check(count41(out, nullptr) == 0, "아레나인데 적에게 0x41 이 나갔다");
+        Check(srv.unitHealthSent() == 0, "아레나인데 0x41 계수가 늘었다");
+    }
+
+    // ③ 목록은 보낸 뒤 비워진다 — 안 바뀐 틱에는 또 안 나간다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.StartQuest(2, 5000, 5000, 100.0);
+        std::vector<nox::OutPacket> out;
+        auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        out.clear();
+        for (uint32_t ms = 0; ms <= 120; ms += 33) srv.Tick(ms, out);   // 실제로 돌게
+        const unsigned long long afterFirst = srv.unitHealthSent();
+        Check(afterFirst >= 1, "첫 묶음에서 0x41 이 안 나갔다 — 이 시험이 무의미해진다");
+        out.clear();
+        for (uint32_t ms = 150; ms <= 300; ms += 33) srv.Tick(ms, out);   // 값이 안 바뀐 틱들
+        Check(srv.unitHealthSent() == afterFirst, "안 바뀌었는데 또 보냄 — 목록이 안 비워졌다");
+    }
+}
+
 void TestMelee() {
     nox::Server srv;
     const std::string a = "10.0.0.1:1000";
@@ -3515,6 +3603,7 @@ int main() {
     TestUseFromFile();
     TestSpellDamage();
     TestEnemyTo();
+    TestDirtyUnitHealth();
     TestMelee();
     TestThingDb();
     TestMapSections();
