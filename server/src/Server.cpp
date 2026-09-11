@@ -1833,19 +1833,23 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             }
 
             case Op::TRY_SPELL: {
-                // ★ **왜 막혔는지 찍는다** (2026-09-11). 클라는 `0x79` 를 보내는데
-                //   서버 카운터가 0 이고 `마나막힘` 도 0 이었다 — 즉 이 문지기에서
-                //   조용히 되돌아갔다. 어느 쪽인지 안 찍으면 짐작밖에 안 된다.
-                if (!s.inGame || it.bodyLen() != kTrySpellBodyLen) {
-                    static int toldSpellGate = 0;
-                    if (toldSpellGate < 3) {
-                        ++toldSpellGate;
-                        std::printf("[시전막힘] inGame=%d · 본문 %zu바이트 (%zu 여야 한다)\n",
-                                    s.inGame ? 1 : 0, it.bodyLen(), kTrySpellBodyLen);
+                // ★★ **진입 자체를 무조건 찍는다** (2026-09-11).
+                //   논리로 후보를 다 배제했는데 현상이 남았다 — `0x79` 가 `seen_` 에는
+                //   들어가는데(그 자리는 switch **직전**이다) 주문 카운터도 마나막힘도 0 이고
+                //   문지기 진단조차 안 찍혔다. 어느 전제가 틀렸는지 **관측으로** 가른다.
+                {
+                    static int toldSpell = 0;
+                    if (toldSpell < 6) {
+                        ++toldSpell;
+                        std::printf("[시전] 들어옴 — inGame=%d · 본문 %zu(%zu 여야 함) · 주문번호 %u · 비용 %u · 마나 %u\n",
+                                    s.inGame ? 1 : 0, it.bodyLen(), kTrySpellBodyLen,
+                                    it.bodyLen() >= 1 ? (unsigned)it.body()[0] : 999u,
+                                    it.bodyLen() >= 1 ? (unsigned)SpellCost(it.body()[0]) : 999u,
+                                    (unsigned)s.mana);
                         std::fflush(stdout);
                     }
-                    break;
                 }
+                if (!s.inGame || it.bodyLen() != kTrySpellBodyLen) break;
                 const uint8_t spell = it.body()[0];
                 const bool onSelf = it.body()[kTrySpellBodyLen - 1] != 0;
 

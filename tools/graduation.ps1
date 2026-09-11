@@ -105,7 +105,10 @@ $beforeWalk = TickNum '걸음'
 if (Shot 'B_walk1') { $shots += 'B_walk1' }    # 걷는 도중 ①
 & $di -Target $pid1 -Cmd @('sleep 900') | Out-Null
 if (Shot 'C_walk2') { $shots += 'C_walk2' }    # 걷는 도중 ② — ①과 자세가 달라야 한다
-& $di -Target $pid1 -Cmd @('mb 1 0','sleep 300') | Out-Null
+# ⚠ **오른버튼을 확실히 놓고 충분히 쉰다.**
+#   단서 — 걷기가 **실패한** 회차(g1)에서는 주문이 +1 나갔고, 실제로 걸은 회차부터
+#   주문이 전부 +0 이었다. 클라가 아직 「이동 중」이면 시전이 안 먹는 것으로 의심된다.
+& $di -Target $pid1 -Cmd @('mb 1 0','sleep 400','mb 1 0','sleep 1200') | Out-Null
 $walked = (TickNum '걸음') - $beforeWalk
 Write-Host ("걸음 +{0}" -f $walked)
 if ($walked -le 0) { $fail += '걷기 입력이 서버에 안 닿는다' }
