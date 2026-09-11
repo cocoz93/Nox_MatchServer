@@ -155,6 +155,7 @@ int main(int argc, char** argv) {
     unsigned long long total = 0, good = 0, objs = 0, roundTrip = 0;
     int badShown = 0;
     std::map<uint16_t, unsigned long long> byType;
+    std::map<uint8_t, unsigned long long> opSend, opRecv;   // 오프코드 분포(방향별)
     std::map<int, unsigned long long> extraHist;
     int playerExtraShown = 0;   // 사람 덧붙이를 몇 건 찍었나 (너무 많이 안 찍게)
     std::set<std::pair<int, int>> coords;   // 좌표가 몇 가지나 나오나 — 끼워맞춤 감별용
@@ -215,6 +216,20 @@ int main(int argc, char** argv) {
         size_t left = d.size() - nox::kWireHeaderSize;
         while (left > 0) {
             const uint8_t op = p[0];
+
+            // ★★★ **봉투를 연다** (2026-09-11) — `cc SEQ_IMPORTANT` 는 「순번 붙은 메시지」의
+            //   껍데기이고 **속에 진짜 오프코드가 들어 있다**. 이걸 안 열면 `EmitSeq` 로 보낸
+            //   것이 분포에 **한 건도 안 잡힌다** — 「안 보냈다」로 오독하기 딱 좋은 자리다.
+            //   짜임 = **`cc <ID 2> <길이 1> <본문…>`** — 머리가 **4바이트**다
+            //   (`Wire.h:94` 「ID(2) + 길이(1) + 그만큼」 · `Server::EmitSeq` 도 같은 꼴).
+            //   ⚠ 처음에 5로 잡았다가 분포가 통째로 망가졌다(`be KEEP_ALIVE` 6,742건 같은
+            //     말도 안 되는 값). **한 바이트만 어긋나도 그 뒤가 전부 헛것이 된다.**
+            if (op == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && left >= 5) {
+                if (ln.send) ++opSend[op]; else ++opRecv[op];
+                p += 4;
+                left -= 4;
+                continue;                  // 속을 같은 루프로 계속 훑는다
+            }
 
             if (op == static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) {
                 ++total;
@@ -308,6 +323,11 @@ int main(int argc, char** argv) {
                 const uint16_t ty = static_cast<uint16_t>(p[4] | (p[5] << 8));
                 aliases.Set(alias, nc, ty, frame + nox::kAliasTTL);
             }
+            // ★★ **오프코드 분포를 방향별로 센다** (2026-09-11).
+            //   「보내는 코드를 넣었다」와 「와이어에 나갔다」를 가르는 유일한 수단이다.
+            //   ⚠ `nox_opcount` 는 두 줄 꼴 덤프를 못 읽어 **0 만 낸다** — 여기서 센다.
+            if (ln.send) ++opSend[op]; else ++opRecv[op];
+
             // 시각 — 별칭 임대의 기준이 된다
             if (op == static_cast<uint8_t>(nox::Op::TIMESTAMP) && left >= 3)
                 frame = static_cast<uint32_t>(p[1] | (p[2] << 8));
@@ -384,6 +404,17 @@ int main(int argc, char** argv) {
         }
     } else {
         std::printf("  움직인 표본이 없다 — 이 덤프에서는 못 잰다\n");
+    }
+
+    std::printf("\n오프코드 분포 — 서버→클라 (많은 것부터 16개)\n");
+    {
+        std::vector<std::pair<uint8_t, unsigned long long>> v(opSend.begin(), opSend.end());
+        std::sort(v.begin(), v.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        for (size_t i = 0; i < v.size() && i < 16; ++i)
+            std::printf("  %02x %-28s %llu\n", v[i].first,
+                        nox::OpName(static_cast<nox::Op>(v[i].first)), v[i].second);
+        std::printf("  ... 모두 %zu 가지\n", v.size());
     }
 
     std::printf("\n덧붙이 바이트 — 몇 바이트가 붙었나\n");
