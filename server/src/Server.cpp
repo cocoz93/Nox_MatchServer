@@ -289,9 +289,11 @@ int Server::SpellDamage(uint8_t spell) {
 //    클라 덤프 839건). 별칭은 **클라가 스스로 굴리고 서버에 알려 주는 것**이고,
 //    서버는 같은 규칙으로 따라 굴린다(Alias.h). 그러니 클라가 (번호,종류)를
 //    이미 알고 있어야 같은 자리를 고른다. **그 앎은 전체 번호로 온 첫 등장에서 온다.**
+// ★ `playerAnim` — 사람 항목의 **자세 번호**(0 IDLE · 4 WALK). 사람이 아니면 안 쓴다.
+//   ⭕ 번호표는 소스 확증(`draw_debug.go:294`). 걸을 때 4 를 보내야 다리가 움직인다.
 static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
                       uint32_t frame, int x, int y, uint8_t facing, ObjEntry& e,
-                      bool complex = true) {
+                      bool complex = true, uint8_t playerAnim = 0) {
     // ★★★ **정정(2026-09-09) — 따라 굴리지 않고 클라가 알려 준 것만 쓴다.**
     //   전에는 `Generate`/`Assign` 으로 클라와 같은 규칙을 흉내 냈는데 어긋났다.
     //   별칭으로 보내면 아무것도 안 그려졌고, 그래서 매 틱 전체번호로 다시 소개하다가
@@ -346,7 +348,13 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
         //      전에는 사람이면 **늘 2** 로 보내 그 자리가 어긋나 있었다.
         //   ⚠ 방향을 어디에 싣는지는 아직 모른다 — 여기가 아니다.
         if (type == kPlayerType) {
-            e.extraBytes[0] = 0x40;
+            // ★★ **자세 번호를 하위 4비트에 싣는다** (2026-09-11).
+            //   전에는 늘 `0x40` 이라 하위 4비트가 0 = **IDLE 고정**이었다 —
+            //   걸어도 선 자세였고, 그것이 사용자가 말한 「걷기 애니메이션 없음」이다.
+            //   위 4비트(0x40)는 실측 그대로 두고 **아래 4비트만** 바꾼다.
+            //   ⚠ 정품이 걷는 표본은 없다. 이 값은 **실험 중**이다 —
+            //     클라가 죽으면 되돌린다(계측이 이제 그것을 잡아낸다).
+            e.extraBytes[0] = static_cast<uint8_t>(0x40 | (playerAnim & 0x0F));
             if (e.alias == 0xff) { e.extra = 2; e.extraBytes[1] = 0; }
             else                 { e.extra = 1; }
         }
@@ -2633,6 +2641,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
     }
 
+    // ★★ **걷고 있나를 정한다** — 갱신 항목의 애니 번호(IDLE/WALK)를 가르는 데 쓴다.
+    //   지난 틱 자리와 견줘 움직였으면 걷는 것으로 본다.
+    //   ⚠ 문턱 1.0 은 ➖ 우리 값이다. 정품 덤프의 「정지」 표본이 틱당 0.3~1.3 유닛이라
+    //     그보다 위를 걷기로 잡았다. 너무 낮으면 서 있어도 걷는 자세가 된다.
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) continue;
+        const double dx = s.x - s.animPrevX;
+        const double dy = s.y - s.animPrevY;
+        s.animMoving = (dx * dx + dy * dy) > 1.0;
+        s.animPrevX = s.x;
+        s.animPrevY = s.y;
+    }
+
     // ★★ **들어온 사람에게 마나를 한 번 알린다** (2026-09-11 화면으로 확인).
     //   서버는 `ManaOnline` 으로 마나를 제대로 채워 놓고 **클라에게 말을 안 했다.**
     //   `0x45` 가 나가는 데가 주문·부활·오벨리스크 셋뿐인데 **갓 들어온 사람은 그 셋 다
@@ -2697,8 +2719,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 m.flags = 0;
                 m.headAnim = 0;
                 ObjEntry me;
+                // ★ 걷고 있으면 WALK(4), 서 있으면 IDLE(0) — 2026-09-11 실험 중
                 FillEntry(s.aliases, s.netCode, kPlayerType, s.tickFrame, s.x, s.y,
-                          s.facing, me);
+                          s.facing, me, /*complex=*/true,
+                          /*playerAnim=*/ s.animMoving ? kAnimWalk : kAnimIdle);
                 m.objects.push_back(me);
                 // 시야 안 정적 — **상한 필수** (AppendAoiStatics 주석: 상한 없이는
                 // 스폰 주변 40개↑ 가 480B 를 넘겨 a4 가 통째로 비어 나갔다).
@@ -2961,7 +2985,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   애초에 남 항목으로는 그릴 것을 안 만드는 것이다(2026-09-09).
             const uint16_t useType =
                 (&o != &s && peerType_ != 0) ? peerType_ : kPlayerType;
-            FillEntry(s.aliases, o.netCode, useType, s.tickFrame, o.x, o.y, o.facing, e);
+            // ★ 남도 걷는 자세가 보여야 한다. 사람이 아니면 이 값은 안 쓰인다.
+            FillEntry(s.aliases, o.netCode, useType, s.tickFrame, o.x, o.y, o.facing, e,
+                      /*complex=*/true,
+                      /*playerAnim=*/ o.animMoving ? kAnimWalk : kAnimIdle);
             // ★★ **별칭으로 보낼 때는 좌표도 상대로.** 정품 원바이트가 그렇다(2026-09-08):
             //     정품  … 01 <머리좌표4> 00 00 │ cb 00 00 │ 40 │ 끝     (14바이트)
             //     내 것 … 01 <머리좌표4> 00 00 │ 00 c9 <절대좌표4> │ 40 │ 끝  (17바이트)

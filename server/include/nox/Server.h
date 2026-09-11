@@ -249,6 +249,14 @@ struct Session {
     //   클라는 `0x45` 를 받아야 `cliSetMana` 로 그 값을 세운다(`cdecode.c:742-754`).
     //   ⚠ **접속 묶음 바로 뒤에 보내면 안 된다** — 정품 덤프와 바이트가 밀려
     //     `replay_connect` 가 깨진다(2026-09-11 실패로 확인). 그래서 **첫 틱**에 보낸다.
+    // ★★ **걷고 있나** — 갱신 항목의 애니 번호를 IDLE(0)/WALK(4) 로 가르는 데 쓴다.
+    //   ⭕ 번호표는 소스 확증(`draw_debug.go:294` debugStates) —
+    //     0 IDLE · 1 DIE · 2 DEAD · 3 JUMP · **4 WALK** · 6 RUN
+    //   지금까지 늘 `0x40`(하위4비트=0=IDLE)을 보내 **걸어도 선 자세**였다.
+    //   사용자가 말한 「걷기·뛰기 애니메이션 없음」이 이것이다.
+    //   ⚠ 정품이 걷는 표본은 없다(덤프 6개 전수 정지). 그래서 **실험으로** 확인한다.
+    double animPrevX = 0, animPrevY = 0;
+    bool animMoving = false;
     bool manaTold = false;
     bool invulnUntilSet = false;
     uint32_t invulnUntilFrame = 0;
@@ -433,6 +441,12 @@ constexpr size_t kChatMaxBytes = 250;
 // ➖ **우리 값이다.** 정품이 낡은 겨눔을 어떻게 다루는지는 모른다.
 // 30Hz 기준 1초. 클라는 마우스가 움직일 때마다 보내므로(표본 18,700+) 짧아도 충분하다.
 constexpr uint32_t kAimStaleTicks = 30;
+
+// ★ 사람 자세 번호 ⭕ 소스 확증(`opennox/src/draw_debug.go:294` debugStates) —
+//   0 IDLE · 1 DIE · 2 DEAD · 3 JUMP · **4 WALK** · 5 WALK_AND_DRAG · **6 RUN** · 8 PICKUP
+//   갱신 항목 덧붙이 바이트의 **하위 4비트**가 이 번호다.
+constexpr uint8_t kAnimIdle = 0;
+constexpr uint8_t kAnimWalk = 4;
 
 // 판이 끝나고 다음 판을 열기까지. ➖ **우리 값이다** — 정품이 몇 초 뒤에 새 판을
 // 여는지는 표본이 없다. 승자 화면을 볼 시간은 줘야 하므로 30Hz 기준 8초로 둔다.
