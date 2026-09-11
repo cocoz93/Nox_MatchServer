@@ -92,6 +92,7 @@ int main(int argc, char** argv) {
     int badShown = 0;
     std::map<uint16_t, unsigned long long> byType;
     std::map<int, unsigned long long> extraHist;
+    int playerExtraShown = 0;   // 사람 덧붙이를 몇 건 찍었나 (너무 많이 안 찍게)
     std::set<std::pair<int, int>> coords;   // 좌표가 몇 가지나 나오나 — 끼워맞춤 감별용
     int aliasMax = 0, netMin = -1, netMax = -1;
     unsigned long long overrun = 0;   // 길이가 남은 바이트를 넘어 멈춘 자리
@@ -166,6 +167,18 @@ int main(int argc, char** argv) {
                     }
                     if (e.type) ++byType[e.type];
                     ++extraHist[e.extra];
+                    // ★★ **사람 항목의 덧붙이 바이트를 그대로 찍는다** (2026-09-11).
+                    //   「몇 바이트냐」는 알아냈는데 **그 값이 무슨 뜻이냐**를 모른다.
+                    //   우리는 둘째 바이트에 자세를 싣고 있지만 화면이 안 바뀐다.
+                    //   정품이 거기 무엇을 넣는지 보면 끝난다. 표본이 적으니 전부 찍는다.
+                    if (e.type == 713 && e.extra > 0 && playerExtraShown < 40) {
+                        ++playerExtraShown;
+                        std::printf("  [사람 덧붙이] 별칭 0x%02x · %d바이트 ·",
+                                    e.alias, e.extra);
+                        for (int q = 0; q < e.extra && q < 3; ++q)
+                            std::printf(" %02x", e.extraBytes[q]);
+                        std::printf("   (자리 %d,%d)\n", e.x, e.y);
+                    }
                     if (coords.size() < 200000) coords.insert({e.x, e.y});
 
                     // ★ 걸음 속도 실측 — 플레이어가 한 틱에 얼마나 움직이나.
