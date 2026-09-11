@@ -35,6 +35,11 @@ param(
   [switch]$Probe,
   # ★ 걷기 시험 — A 를 지금 자리에서 이만큼 떨어진 곳까지 걸려 보낸다. "250,0" 꼴.
   #   화면각↔월드각 차(Δ)를 배우는 자리라, 붙기 전에 여기서 먼저 맞춰 둔다.
+  # ★★ **계측을 시험하는 스위치** — 이 초가 지나면 클라 B 를 일부러 죽인다.
+  #   왜 있나: 생존 감시가 **있었는데 판정으로 안 이어져** 죽은 런이 통과했다(2026-09-11).
+  #   고친 뒤에는 「무효를 내는가」를 **직접 확인해야** 한다. 안 내면 계측이 아직 거짓말한다.
+  #   기대 결과 — 종료 코드 3 + 「⛔ 판정 무효」.
+  [int]$SelfTestKill = 0,
   [string]$WalkTest = '',
   # ★ 판을 실제로 뛴다 — A 가 깃발을 가지러 가거나 몬스터를 찾아간다.
   #   **정상 배치**(멀리 떨어진 자리)에서도 판이 도는지 보는 자리다.
@@ -319,6 +324,17 @@ if ($Probe -and (Alive $aPid)) {
 # 4.5 생존 시계열 — ★ 「죽었다/살았다」 한 번 찍는 것으로는 **늦게 죽는 것**을 못 잡는다.
 #   한 회차에서 「끄니까 살았다」로 읽었는데 실은 상대가 아직 안 들어와 있었다(2026-09-08).
 #   여기서는 초 단위로 둘을 같이 재고, 죽은 순간을 초로 남긴다.
+# ★ 계측 자기시험 — 예약해 둔 초가 되면 클라 B 를 죽인다(백그라운드 작업으로).
+#   진짜 튕김과 같은 꼴을 만들어 **판정이 무효를 내는지** 본다.
+if ($SelfTestKill -gt 0) {
+  Write-Host ("[자기시험] {0}초 뒤 클라 B(pid={1}) 를 죽인다 — 판정이 무효를 내야 한다" -f $SelfTestKill, $bPid) -ForegroundColor Magenta
+  Start-Job -ScriptBlock {
+    param($sec, $target)
+    Start-Sleep -Seconds $sec
+    Stop-Process -Id $target -Force -ErrorAction SilentlyContinue
+  } -ArgumentList $SelfTestKill, $bPid | Out-Null
+}
+
 $watchLog = Join-Path $ev ("alive_{0}.log" -f $Tag)
 $sb2 = New-Object Text.StringBuilder
 $aDeadAt = ''; $bDeadAt = ''
@@ -393,6 +409,70 @@ Write-Host ("생존 시계열: {0}" -f $watchLog)
 $snap = Join-Path $ev ("SNAP_{0}.txt" -f $Tag)
 & (Join-Path $PSScriptRoot 'cap2sniff.ps1') -In $dump -Out $snap | Out-Null
 Write-Host ("복호본: {0}" -f $snap)
+
+# ── 6. ★★ 최종 판정 — **계측이 거짓말 못 하게 하는 문** ────────────────
+#
+# 왜 있나 (2026-09-11) — 생존 감시는 **이미 있었는데 판정으로 안 이어졌다.**
+#   죽어도 `Write-Host` 한 줄 찍고 끝이었고 **종료 코드는 늘 0** 이었다.
+#   그래서 요약할 때 그 줄을 안 읽으면 그대로 「통과」가 됐다 —
+#   실제로 2차 플랜 회귀가 그렇게 통과했고, 사용자가 5분 플레이하자 튕겼다.
+#
+# ★ 여기서 무효를 내면 **위의 수치는 믿을 수 없는 것**이다.
+#   「걸음 605」도 「주문 33」도 클라가 죽은 뒤라면 아무 뜻이 없다.
+#
+# 종료 코드 — 0 유효 · 3 클라 사망 · 4 클라 멈춤 · 5 버림 과다
+$verdictCode = 0
+$why = @()
+
+# ⑴ 클라가 끝까지 살아 있었나
+if ($aDeadAt -ne '') { $verdictCode = 3; $why += ("클라 A 가 {0} 에 죽었다" -f $aDeadAt) }
+if ($bDeadAt -ne '') { $verdictCode = 3; $why += ("클라 B 가 {0} 에 죽었다" -f $bDeadAt) }
+
+# ⑵ 멈춤 — 프로세스는 살아 있는데 **게임이 죽은** 꼴.
+#   ★ 지문은 실측이다(`srv_play.log`, 사용자 플레이) — 주문 쓰고 튕긴 직후
+#     클라가 보내는 것이 **3바이트짜리(조각 머리뿐)** 로만 이어졌다.
+#     살아 있는 클라는 입력·마우스를 실어 19바이트쯤 보낸다.
+$recv = @([regex]::Matches($logText, '\[받음 \d+\][^\r\n]*?\s(\d+)바이트'))
+if ($recv.Count -ge 40) {
+  $tailN = 30
+  $small = 0
+  for ($i = $recv.Count - $tailN; $i -lt $recv.Count; $i++) {
+    if ([int]$recv[$i].Groups[1].Value -le 3) { $small++ }
+  }
+  if ($small -eq $tailN) {
+    if ($verdictCode -eq 0) { $verdictCode = 4 }
+    $why += ("클라가 멈췄다 — 마지막 수신 {0}회가 전부 3바이트뿐(게임이 죽은 지문)" -f $tailN)
+  }
+}
+
+# ⑶ 버림 — 클라가 보낸 것을 우리가 통째로 버리는 것. 조용히 묻히면 안 된다.
+#   ★ 2026-09-11 사용자 플레이에서 `0xae` 가 63건 버려지는데 아무도 안 봤다.
+$dropCount = @([regex]::Matches($logText, '\[버림\]')).Count
+if ($dropCount -gt 20) {
+  if ($verdictCode -eq 0) { $verdictCode = 5 }
+  $why += ("서버가 클라 조각을 {0}건 버렸다" -f $dropCount)
+} elseif ($dropCount -gt 0) {
+  Write-Host ("  ⚠ 버림 {0}건 (임계 20 미만이라 무효는 아니다)" -f $dropCount) -ForegroundColor Yellow
+}
+
+# ⑷ 캡처가 남았나 — 화면으로만 보이는 것(애니메이션·마나바)은 이것 없이는 못 본다
+$shots = @(Get-ChildItem (Join-Path $ctrl ("{0}*.png" -f $Tag)) -ErrorAction SilentlyContinue)
+if ($shots.Count -eq 0) {
+  Write-Host '  ⚠ 캡처가 한 장도 없다 — 화면으로만 보이는 것은 판정 불가' -ForegroundColor Yellow
+}
+
+Write-Host ''
+Write-Host '================= 최종 판정 ================='
+if ($verdictCode -eq 0) {
+  Write-Host ("✅ 유효 — 클라 둘 다 끝까지 살아있음 · 멈춤 없음 · 버림 {0}건 · 캡처 {1}장" -f
+              $dropCount, $shots.Count) -ForegroundColor Green
+  Write-Host ('   ⚠ 「유효」는 **잰 값을 믿어도 된다**는 뜻이지 「게임이 된다」가 아니다.') -ForegroundColor DarkGray
+  Write-Host ('     화면으로만 보이는 것은 캡처를 열어 봐야 한다:') -ForegroundColor DarkGray
+  foreach ($s in $shots) { Write-Host ("       {0}" -f $s.FullName) -ForegroundColor DarkGray }
+} else {
+  Write-Host ('⛔ **판정 무효** — 위 수치는 믿을 수 없다') -ForegroundColor Red
+  foreach ($w in $why) { Write-Host ("   · {0}" -f $w) -ForegroundColor Red }
+}
 # ★★ 끝나면 **치운다.** 2026-09-10 — 하네스가 아무것도 안 죽이고 끝나서
 #   서버·프록시·게임 클라 둘이 남았고, 그것이 exe 를 잠가 다음 빌드가
 #   `LNK1104` 로 조용히 실패했다. 그 결과 7분짜리 다음 런을 **옛 바이너리로** 돌렸다.
@@ -402,3 +482,7 @@ Get-Process nox_server, nox_proxy, opennox, opennox-server, deskhost -ErrorActio
 Get-Process -Name Game, Game2, Game3, Game4, Game5 -ErrorAction SilentlyContinue |
   Stop-Process -Force -ErrorAction SilentlyContinue
 Write-Host '치움: 서버·프록시·클라 (다음 빌드가 exe 를 잠기지 않게)'
+
+# ★ **종료 코드로 낸다** — 요약할 때 줄을 골라 읽어도 이건 못 건너뛴다.
+#   백그라운드로 돌리면 알림에 "failed with exit code N" 으로 뜬다.
+exit $verdictCode
