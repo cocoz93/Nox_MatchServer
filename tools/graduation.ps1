@@ -26,6 +26,8 @@ param(
   # ★ 캡처를 끈다 — 「캡처가 튕김의 조건인가」를 가르려고(2026-09-11).
   #   졸업시험은 나가는데 이분법(캡처 없음)은 안 나간다. 남은 차이 중 하나가 이것이다.
   [switch]$NoShots,
+  # 주문을 아예 안 누른다 — 「주문이 원인인가」를 가르는 진짜 대조군.
+  [switch]$NoSpells,
   [int]$WaitMenu = 40
 )
 $ErrorActionPreference = 'Continue'
@@ -133,7 +135,20 @@ if (-not (Alive $pid1)) { $fail += '걷다가 클라가 죽었다'; $code = 3 }
 #      컨저러 기준 G 41 약한치유 · F 58 요정떼 · D 128 독구름 · S 74 기절 · **A 87 소환**
 $slots = [ordered]@{ 'G'=0x22; 'F'=0x21; 'D'=0x20; 'S'=0x1F; 'A'=0x1E }
 $killer = ''
+# ★★ **주문을 아예 안 누르는 대조군** (2026-09-11).
+#   지금까지 주문이 원인이라 **가정**하고 이분법을 돌렸는데, 회차마다 나가는 지점이
+#   달랐다 — 성공한 G 에서도, 마나가 모자라 시전이 안 된 S 에서도 나갔다.
+#   주문 없이도 나가면 원인은 주문이 아니라 **시간·놀고 있음**이다.
+#   이 대조군을 한 번도 안 돌린 것이 오늘의 빈 자리다.
+if ($NoSpells) {
+  Write-Host '  (주문 안 누름 — 같은 시간만 기다린다)'
+  Start-Sleep -Seconds 9
+  $goneIdle = ((ReadShared $slog) -match '조용해서 내보냄')
+  Write-Host ("  기다린 뒤 클라 {0}" -f $(if ($goneIdle) { '★게임에서 나감★' } else { '살아있음' }))
+  if ($goneIdle) { $fail += '주문을 안 눌렀는데도 클라가 나갔다 — 원인은 주문이 아니다'; $code = 3 }
+}
 foreach ($k in $slots.Keys) {
+  if ($NoSpells) { break }
   if (-not (Alive $pid1)) { break }
   $sp0 = TickNum '주문'
   & $di -Target $pid1 -Cmd @(("k {0} 1" -f $slots[$k]), 'sleep 120', ("k {0} 0" -f $slots[$k]), 'sleep 1500') | Out-Null
