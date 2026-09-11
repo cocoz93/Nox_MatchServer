@@ -762,8 +762,12 @@ int main(int argc, char** argv) {
                                 ? "  ← 벽을 피해 당김" : "");
             } else {
                 srv.StartQuest(questCount, mx, my, questSpread);
-                std::printf("[모드] 퀘스트 — 몬스터 %d마리 (%d,%d) 반경 %.0f\n",
-                            questCount, mx, my, questSpread);
+                // ⚠ **`questCount` 는 이제 안 쓰는 값이다** — 웨이브 마릿수는 스테이지 표가
+                //   정한다(`StartQuest` 주석 참조). 전에는 여기서 그 값을 「몬스터 N마리」로
+                //   찍어 **실제와 다른 수를 보여 줬다**(설정 4 · 실제 2).
+                //   ★ 실제로 몇 마리가 섰는지는 바로 위 `[스테이지]` 줄이 말한다.
+                std::printf("[모드] 퀘스트 — (%d,%d) 반경 %.0f · 마릿수는 위 [스테이지] 줄 참조\n",
+                            mx, my, questSpread);
             }
             std::fflush(stdout);
         }

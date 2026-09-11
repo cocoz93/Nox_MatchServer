@@ -855,6 +855,16 @@ std::string Server::PositionsLine() const {
     return s;
 }
 
+// 둘이 서로 적인가 — 선언부(`Server.h`)에 정품 규칙과 근거를 적어 두었다.
+bool Server::IsEnemyTo(const Session& a, const Session& b) const {
+    if (&a == &b) return false;                       // 자기 자신
+    // ➖ 퀘스트는 협동이므로 **사람끼리는 아군**으로 본다(우리 값 — 정품 확인 못 함).
+    if (questTotal_ > 0 || questStage_ > 0) return false;
+    if (a.team != 0 && a.team == b.team) return false;   // 같은 팀
+    if (a.team != 0 || b.team != 0) return true;         // 한쪽이라도 팀이 있으면 적
+    return true;                                          // 팀 없는 사람끼리 — 아레나는 전원 적
+}
+
 // 퀘스트를 연다 — **스테이지 1 부터.** `count` 는 이제 안 쓴다(스테이지 표가 정한다).
 //
 // ★★ 전에는 「몬스터 N 마리 세우고 다 잡으면 끝」이었다. 정품 NoxQuest 는 웨이브가

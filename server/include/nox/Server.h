@@ -797,6 +797,25 @@ public:
     //   서버는 이미 다 알고 있으니 로그로 내보내고, 하네스가 그걸 읽어 각을 잰다.
     //   짜임 — `사람 <번호>=<x>,<y>,<방향>` · `깃발 <팀>=<x>,<y>` · `몬스터 <번호>=<x>,<y>`
     std::string PositionsLine() const;
+
+    // ★★ **둘이 서로 적인가** — 정품 `IsEnemyTo` 를 사람 둘에 맞춰 옮긴 것.
+    //
+    //   ⭕ 정품 `opennox/src/server/object.go:1667-1741` 의 핵심 줄만 따왔다 —
+    //       자기 자신이면              → 적 아님
+    //       주인이 같으면              → 적 아님   (내 소환수)
+    //       **팀이 같으면**            → 적 아님
+    //       **한쪽이라도 팀이 있으면** → **적**
+    //       둘 다 몬스터면             → 적 아님
+    //       그 밖                      → **적**
+    //     (물고기·개구리·쥐·매혹 갈래는 3모드에 안 쓴다.)
+    //
+    //   ★ 왜 필요한가 — `0x41`(유닛 현재 체력)은 **적이 아닐 때만** 나간다
+    //     (`GAME4_2.c:7152-7157`). 즉 **남의 머리 위 체력**이 이 판정에 달려 있다.
+    //
+    //   ➖ **퀘스트는 우리가 정한다** — 정품이 퀘스트에서 사람들을 어떻게 묶는지 못 봤다.
+    //     협동 판이므로 **팀이 0 이어도 사람끼리는 아군**으로 본다.
+    bool IsEnemyTo(const Session& a, const Session& b) const;
+
     int QuestLeft() const { return questTotal_ - questKilled_; }
     int QuestKilled() const { return questKilled_; }
     int QuestStage() const { return questStage_; }
