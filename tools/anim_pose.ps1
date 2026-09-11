@@ -25,6 +25,9 @@ param(
   [int]$Dir = -1,
   # 연달아 두 장 찍는다 — 서 있는데도 달라지면 **애니가 도는 것**이다.
   [switch]$Twice,
+  # ★★ **와이어를 뜬다.** 서버를 18591 로 옮기고 프록시를 18590 에 세운다.
+  #   「코드를 넣었다」와 「실제로 나갔다」는 다른 말이다 — 오늘 이 구분을 안 해 여러 번 헤맸다.
+  [switch]$Proxy,
   [string]$Tag = 'pose',
   [string]$Map = 'C:\Program Files\GOG Galaxy\Games\Nox\maps\estate\Estate.map'
 )
@@ -56,11 +59,24 @@ $args = '--port 18590 --standalone --map "' + $Map + '" --mode arena'
 if ($Frame -ge 0) { $args += ' --anim-frame ' + $Frame }
 if ($Pose  -ge 0) { $args += ' --anim-pose '  + $Pose  }
 if ($Dir   -ge 0) { $args += ' --anim-dir '   + $Dir   }
+# ★ 프록시를 쓰면 서버는 18591 로 물러나고 클라가 붙는 18590 은 프록시가 맡는다.
+$srvPort = if ($Proxy) { 18591 } else { 18590 }
+$args = $args.Replace('--port 18590', '--port ' + $srvPort)
 $cmd = 'cmd /c ""' + $exe + '" ' + $args + ' > "' + $slog + '" 2>&1"'
 Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c ' + $cmd) -WindowStyle Hidden | Out-Null
 Start-Sleep -Seconds 3
 if ((ReadShared $slog) -notmatch '\[맵\]') { Write-Host '[멈춤] 서버가 맵을 못 읽었다' -ForegroundColor Red; Cleanup; exit 6 }
-Write-Host '서버 떴음'
+Write-Host ("서버 떴음 (포트 {0})" -f $srvPort)
+
+$dump = Join-Path $root ("_evidence\wire_{0}.txt" -f $Tag)
+if ($Proxy) {
+  if (Test-Path $dump) { [IO.File]::Delete($dump) }
+  $px = Join-Path $root 'build\Release\nox_proxy.exe'
+  $pcmd = '"' + $px + '" --listen 18590 --host 127.0.0.1 --host-port 18591 --dump "' + $dump + '"'
+  Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c ' + $pcmd) -WindowStyle Hidden | Out-Null
+  Start-Sleep -Seconds 2
+  Write-Host '프록시 떴음 (18590 → 18591)'
+}
 
 & (Join-Path $PSScriptRoot 'join_my_server.ps1') -Exe 'Game3.exe' -Tag $Tag -CharRow 1 |
   Select-String -Pattern '픽 확인' | ForEach-Object { Write-Host ("  " + $_.Line.Trim()) }
@@ -99,6 +115,22 @@ if (Test-Path $png) {
   Write-Host ("  캡처 {0} ({1:N0} 바이트)" -f (Split-Path -Leaf $png), (Get-Item $png).Length) -ForegroundColor Green
 } else {
   Write-Host '  [멈춤] 캡처가 안 나왔다' -ForegroundColor Red; Cleanup; exit 7
+}
+# ★★ **와이어를 읽는다** — 「보냈다고 코드에 적혀 있다」와 「실제로 나갔다」를 가른다.
+if ($Proxy -and (Test-Path $dump)) {
+  $oc = Join-Path $root 'build\Release\nox_opcount.exe'
+  $txt = (& $oc $dump 2>&1 | Out-String)
+  Write-Host ''
+  Write-Host '=== 와이어 (프록시 덤프) ==='
+  Write-Host ("  덤프 {0:N0} 바이트" -f (Get-Item $dump).Length)
+  # 서버→클라 절만 본다. 관심 오프코드만 골라 찍는다.
+  $want = @('dd','de','43','45','a4','6b','70')
+  foreach ($w in $want) {
+    $m = [regex]::Match($txt, ('(?m)^\s*' + $w + '\s+\S*\s*(\d+)'))
+    $n = if ($m.Success) { $m.Groups[1].Value } else { '?' }
+    Write-Host ("  0x{0} : {1}" -f $w, $n)
+  }
+  Write-Host '  (물음표면 opcount 출력 꼴이 달라진 것 — 원본을 직접 볼 것)'
 }
 Cleanup
 exit 0
