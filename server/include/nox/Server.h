@@ -978,6 +978,16 @@ public:
         it->second.y = y;
     }
 
+    // ★ 바라보는 쪽을 못 박는다 — **갱신 항목이 방향을 싣는지 재는 시험용**이다.
+    //   진짜 값은 클라가 `PLAYER_INPUT` 코드 1 로 보낸다(`Server.cpp:1592`).
+    //   ⚠ 이것 없이는 시험에서 방향을 못 바꾼다 — 2026-09-12 배선 때 돌연변이가
+    //     안 잡혀(시험 5개가 이 자리를 안 봤다) 시험을 새로 쓰면서 같이 넣었다.
+    void DebugSetFacing(const std::string& addr, uint8_t facing) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return;
+        it->second.facing = facing;
+    }
+
     // ★ 피해를 준다. 체력이 0 이하가 되면 죽음을 알리고 부활을 예약한다.
     //
     // 나가는 것은 캡처에서 본 그대로다 —

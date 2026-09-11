@@ -644,6 +644,73 @@ void TestAoiSightExit() {
     std::printf("  시야 이탈 — 멀어지면 32 · 되돌아오면 재소개 (정품 156건 대조)\n");
 }
 
+// ── 바라보는 쪽이 갱신 항목에 실리는가 ────────────────────────────────────
+//
+// 왜 새로 쓰나 (2026-09-12) — 방향을 배선하고 **돌연변이를 넣었더니 시험 다섯이
+// 하나도 안 잡았다.** `0x40` 고정으로 되돌려도 5/5 통과였다. 이 자리를 보는 시험이
+// 아예 없었던 것이다. 그래서 여기를 새로 연다.
+//
+// 무엇을 보나 — 사람 항목의 **첫 덧붙이 바이트**다. 클라는 그것을 이렇게 쪼갠다:
+//     방향 = (값 >> 4) & 7      (`GAME2_3.c:1677-1679`, 4 이상이면 +1)
+// 서버가 싣는 값은 `((facing >> 5) & 7) << 4` 이므로 —
+//     facing 224  →  (224>>5)&7 = 7  →  **0x70**
+//     facing 0    →  0              →  **0x00**
+// 자세는 **둘째 바이트**로 따로 가고 서 있으면 0 이다. 그래서 `70 00` 두 바이트를 센다.
+//
+// ⚠ 자세를 같이 보는 까닭 — 방향만 세면 「자세 자리를 방향이 밀어냈다」를 못 잡는다.
+//   그 사고를 이미 한 번 냈다(덮어쓰기 세 줄).
+// ★ 판정을 **바이트열 통째 비교**로 한다 — 항목 직렬화 꼴을 몰라도 되고,
+//   「어느 자리가 방향이냐」를 가정하지 않는다. 같은 상태에서 `facing` 만 바꿨으니
+//   달라진 자리가 곧 방향 자리다.
+//   ⚠ 패턴 세기(`CountBytes`)로는 못 판정한다 — `00 00` 은 좌표·머리에도 널려 있어
+//     「찾았다」가 곧 「그 자리에서 찾았다」가 아니다. 처음에 그렇게 썼다가
+//     ②가 우연히 통과했다.
+static std::vector<uint8_t> FacingWire(const std::string& a, uint8_t facing) {
+    nox::Server srv;
+    srv.DebugEnterGame(a, 0x0501);
+    srv.DebugMoveTo(a, 1000, 1000);
+    srv.DebugSetFacing(a, facing);
+    std::vector<nox::OutPacket> warm;
+    srv.Tick(0, warm);                      // 첫 호출은 기준점만 잡는다
+    std::vector<nox::OutPacket> out;
+    srv.Tick(33, out);
+    std::vector<uint8_t> all;
+    for (const auto& p : out) {
+        if (p.to != a) continue;
+        const std::vector<uint8_t> b = Body(p);
+        all.insert(all.end(), b.begin(), b.end());
+    }
+    return all;
+}
+
+void TestFacingOnWire() {
+    const std::string a = "10.9.2.2:41022";
+    const std::vector<uint8_t> w0   = FacingWire(a, 0);     // (0>>5)&7   = 0 → 0x00
+    const std::vector<uint8_t> w224 = FacingWire(a, 224);   // (224>>5)&7 = 7 → 0x70
+    const std::vector<uint8_t> w0b  = FacingWire(a, 0);     // 대조군 — 같은 값 두 번
+
+    Check(!w0.empty(), "갱신이 아예 안 나갔다 — 시험 전제가 깨졌다");
+    Check(w0.size() == w224.size(), "같은 상태인데 길이가 다르다");
+
+    // ★ 대조군이 0 이어야 한다. 아니면 프레임·난수 같은 것이 섞여 판정이 못 선다.
+    size_t drift = 0;
+    for (size_t i = 0; i < w0.size() && i < w0b.size(); ++i) if (w0[i] != w0b[i]) ++drift;
+    Check(drift == 0, "같은 facing 두 번인데 바이트가 흔들린다 — 판정 불가");
+
+    size_t diff = 0, at = 0;
+    for (size_t i = 0; i < w0.size(); ++i) if (w0[i] != w224[i]) { ++diff; if (diff == 1) at = i; }
+
+    // ★★ 여기가 **돌연변이를 잡는 자리**다 — `0x40` 고정으로 되돌리면 diff 가 0 이 된다.
+    Check(diff > 0, "바라보는 쪽을 바꿨는데 와이어가 한 바이트도 안 달라진다");
+    Check(diff == 1, "방향 말고 다른 자리까지 달라진다 — 자세를 밀어냈을 수 있다");
+    Check(w0[at] == 0x00 && w224[at] == 0x70,
+          "달라진 바이트가 방향 3비트 꼴이 아니다 (0x00 ↔ 0x70 이어야 한다)");
+
+    std::printf("  바라보는 쪽 — facing 0↔224 로 **한 바이트**만 달라짐 "
+                "(자리 %zu · 0x%02X→0x%02X · 대조군 흔들림 %zu)\n",
+                at, w0[at], w224[at], drift);
+}
+
 // ── 주문 마나 비용 — thing.bin 에서 읽은 값이 **정품 콘솔과 같은가** ──────────
 //
 // SPEL 섹션의 이름 뒤 첫 바이트를 마나 비용으로 읽는다. 그게 맞다는 근거는
@@ -3693,6 +3760,7 @@ int main() {
     TestDeathFlow();
     TestBroadcastToOthers();
     TestAoiSightExit();
+    TestFacingOnWire();
     TestSpellMana();
     TestManaSpend();
     TestAppearanceAndFx();
