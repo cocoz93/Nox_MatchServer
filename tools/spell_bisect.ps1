@@ -92,7 +92,11 @@ if ($Walk -and $steps -le 0) {
 ($t -split "`r?`n") | Where-Object { $_ -match '\[시전\]' } | Select-Object -First 2 |
   ForEach-Object { Write-Host ("  " + $_) }
 
-$gone = @([regex]::Matches($t, '조용해서 내보냄')).Count
+# ★ 지문 정정 — `조용해서 내보냄` 은 **접속 과정의 임시 포트**도 가리켜 거짓 양성이었다.
+#   서버가 세는 **사람 수**가 0 이 되는 것이 진짜 이탈이다.
+$people = 1
+if ($tickLines.Count -gt 0 -and $tickLines[-1] -match '사람 (\d+)') { $people = [int]$Matches[1] }
+$gone = $(if ($people -lt 1) { 1 } else { 0 })
 if ($gone -gt 0) {
   Write-Host ("  [나감] 클라가 게임에서 나갔다 ({0}건)" -f $gone) -ForegroundColor Red
 } else {
