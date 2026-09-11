@@ -22,17 +22,22 @@ $repo = Split-Path -Parent $PSScriptRoot
 $resFile = Join-Path $repo '_evidence\matrix_result.txt'
 [IO.File]::WriteAllText($resFile, ("시작 {0}`r`n" -f (Get-Date -Format 'HH:mm:ss')), (New-Object Text.UTF8Encoding($false)))
 
-# 조합마다 — 아레나는 싸움, 깃발·퀘스트는 판 뛰기(정상 배치)
+# 조각마다 — 아레나는 싸움, 깃발·퀘스트는 판 뛰기(정상 배치)
+#
+# ★ **퀘스트만 시간을 늘렸다** (2026-09-12). 맵을 싣고 돌렸더니 셋 다 판끝을 못 봤는데,
+#   벽에 막힌 게 아니라(「벽을 피해 당김」 0개) **다섯 스테이지에 280초가 모자랐다** —
+#   warrior 는 스테이지 4 에서 **한 마리 남기고** 끝났고 wizard 는 스테이지 5 까지 갔다.
+#   ⚠ 아레나·깃발은 **건드리지 않는다** — 지금 값으로 판끝까지 간다(깃발은 셋 다 득점 3).
 $combos = @(
   @{ c='warrior';  m='arena'; fight=220; play=0   },
   @{ c='warrior';  m='ctf';   fight=0;   play=280 },
-  @{ c='warrior';  m='quest'; fight=0;   play=280 },
+  @{ c='warrior';  m='quest'; fight=0;   play=480 },
   @{ c='wizard';   m='arena'; fight=220; play=0   },
   @{ c='wizard';   m='ctf';   fight=0;   play=280 },
-  @{ c='wizard';   m='quest'; fight=0;   play=280 },
+  @{ c='wizard';   m='quest'; fight=0;   play=480 },
   @{ c='conjurer'; m='arena'; fight=220; play=0   },
   @{ c='conjurer'; m='ctf';   fight=0;   play=280 },
-  @{ c='conjurer'; m='quest'; fight=0;   play=280 }
+  @{ c='conjurer'; m='quest'; fight=0;   play=480 }
 )
 
 foreach ($it in $combos) {
