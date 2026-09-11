@@ -2653,6 +2653,40 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         s.animMoving = (dx * dx + dy * dy) > 1.0;
         s.animPrevX = s.x;
         s.animPrevY = s.y;
+
+        // ★★ **걷는 그림 칸을 굴린다** — 서 있으면 0 으로 되돌린다.
+        if (s.animMoving) {
+            if (frame_ >= s.animNextFrameAt) {
+                s.animNextFrameAt = frame_ + kAnimStepTicks;
+                s.animFrame = (s.animFrame + 1) % kAnimWalkFrames;
+            }
+        } else {
+            s.animFrame = 0;
+            s.animNextFrameAt = 0;
+        }
+    }
+
+    // ★★★ **바뀐 프레임을 알린다** — `0x6B REPORT_ANIMATION_FRAME`.
+    //
+    //   ⭕ 짜임·경로 전부 정품에서 확인(2026-09-11) —
+    //     `netReportAnimFrame_4D81F0` 이 `버퍼[0]=107 · 번호2 · 프레임u32` 로 7바이트를 보내고,
+    //     클라 `cdecode.c:1482-1498` 이 그것을 `spriteSetFrameMB` 에 넘겨 그림 칸을 세운다.
+    //   ⭕ **언제** 보내는지도 확인 — 정품은 「바뀐 것」 비트(`0x10000`)가 켜진 것만 보낸다
+    //     (`GAME4_2.c:7141-7150` netUpdateObjectSpecial). 그래서 우리도 **바뀔 때만** 보낸다.
+    //   ⚠ 매 틱 보내면 안 된다 — `0x5e` 를 매 틱 보내다 클라가 죽은 적이 있다(2026-09-08).
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame || s.netCode == 0) continue;
+        if (s.animFrame == s.animFrameSent) continue;
+        s.animFrameSent = s.animFrame;
+        uint8_t af[7] = {
+            static_cast<uint8_t>(Op::REPORT_ANIMATION_FRAME),
+            static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
+            static_cast<uint8_t>(s.animFrame), static_cast<uint8_t>(s.animFrame >> 8),
+            static_cast<uint8_t>(s.animFrame >> 16), static_cast<uint8_t>(s.animFrame >> 24),
+        };
+        Broadcast(/*viaSeq=*/false, af, sizeof(af), out);   // 남이 걷는 것도 보여야 한다
+        ++animFramesSent_;
     }
 
     // ★★ **들어온 사람에게 마나를 한 번 알린다** (2026-09-11 화면으로 확인).

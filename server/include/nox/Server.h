@@ -257,6 +257,18 @@ struct Session {
     //   ⚠ 정품이 걷는 표본은 없다(덤프 6개 전수 정지). 그래서 **실험으로** 확인한다.
     double animPrevX = 0, animPrevY = 0;
     bool animMoving = false;
+    // ★★ **걷는 그림 프레임** (2026-09-11, 4차 R2①).
+    //   ⭕ 정품은 `0x6B REPORT_ANIMATION_FRAME`(7바이트: 번호2 + 프레임u32)로 보낸다
+    //     (`GAME3_2.c` netReportAnimFrame_4D81F0 · Go `network.go:734` 가 `Field33` 을 싣는다).
+    //     클라는 그 값을 드로어블의 프레임 자리에 넣는다(`spriteSetFrameMB_45AB80` → +308).
+    //   ⭕ 보내는 때도 확인했다 — 정품은 오브젝트마다 **「바뀐 것」 비트**를 두고
+    //     `0x10000` 이 켜진 것만 보낸다(`GAME4_2.c:7149` netUpdateObjectSpecial).
+    //   ⚠ **우리는 이 경로가 통째로 없었다.** 갱신 스트림의 `0x40` 은 bit7=0 이라
+    //     프레임 바이트도 안 따라간다 → **프레임이 0 에 고정**돼 자세가 안 바뀌었다.
+    //   ⚠ 프레임 값의 범위는 **모른다**(스프라이트마다 다르다). 작게 굴려 보고 화면으로 확인한다.
+    uint32_t animFrame = 0;
+    uint32_t animFrameSent = 0xFFFFFFFFu;   // 마지막으로 알린 값. 바뀔 때만 보낸다
+    uint32_t animNextFrameAt = 0;           // 이 프레임에 다음 칸으로 넘긴다
     // ★★ **HUD(체력·마나)를 몇 번 되풀이해 보낸다** (2026-09-11).
     //   한 번만 보냈더니 안 떴다 — 접속 직후라 클라가 아직 안 받을 채비였던 것으로 보인다.
     //   ★ 왜 마나만 떴었나 — 마나는 **주문 쓸 때마다 다시** 나가서 결국 떴고,
@@ -453,6 +465,11 @@ constexpr uint32_t kAimStaleTicks = 30;
 //   갱신 항목 덧붙이 바이트의 **하위 4비트**가 이 번호다.
 // HUD(체력·마나)를 접속 직후 몇 번 되풀이해 보낼까. ➖ 우리 값 — 한 번은 놓친다.
 constexpr int kHudTellTimes = 5;
+
+// 걷는 그림이 한 칸 넘어가는 간격(틱). ➖ 우리 값 — 정품 값은 아직 모른다.
+constexpr uint32_t kAnimStepTicks = 6;
+// 걷는 그림이 몇 칸인지 **모른다.** 작게 잡아 보고 화면으로 늘린다.
+constexpr uint32_t kAnimWalkFrames = 4;
 
 constexpr uint8_t kAnimIdle = 0;
 constexpr uint8_t kAnimWalk = 4;
@@ -942,6 +959,7 @@ public:
     unsigned long long appearanceSent() const { return appearanceSent_; }
     unsigned long long appearanceUnknown() const { return appearanceUnknown_; }
     unsigned long long fxSent() const { return fxSent_; }
+    unsigned long long animFramesSent() const { return animFramesSent_; }
     void SetNoSpellStart(bool on) { noSpellStart_ = on; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
     void DebugCapture(const std::string& addr, int n) {
@@ -1205,6 +1223,7 @@ private:
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수
+    unsigned long long animFramesSent_ = 0;   // 걷는 그림 칸을 알린 횟수 (0x6B)
     // ★ 시전 알림 `0x70` 을 끄는 **진단 스위치**. **기본은 보낸다.**
     //
     //   2026-09-11 — 주문을 쓰면 클라가 게임에서 나가는 일이 있어 이분법을 돌렸다.
