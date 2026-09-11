@@ -1811,6 +1811,15 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             // ⚠ 여기서 세션을 지우면 **지금 잡고 있는 `s` 참조가 죽는다.**
             //   표시만 하고 걷어내기는 Tick 의 「자리 비우기」가 한다 — 나감 알림
             //   (`2e`·`31`)과 깃발 떨구기가 이미 거기 있다.
+            // 클라가 나간다 — 두 가지 길로 온다.
+            //
+            //   `0x0a CLIENT_CLOSE`     접속 자체를 닫는다
+            //   `0xae OUTGOING_CLIENT`  **판에서 빠진다** (클라 원본 `network.go:77`)
+            //
+            // ★ `0xae` 는 `SendReliable` + `WaitServerResponse` 로 온다 — **답을 기다린다.**
+            //   전에는 길이를 2 로 잘못 알아 조각째 버렸고(2026-09-11 63건), 답이 없으니
+            //   클라가 깨끗하게 못 나갔다. 그것이 「재접속 안 됨」으로 보였다.
+            case Op::OUTGOING_CLIENT:
             case Op::CLIENT_CLOSE: {
                 s.closing = true;
                 ++handled_;

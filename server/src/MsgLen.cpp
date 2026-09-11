@@ -306,6 +306,26 @@ int MsgBodyLenByDir(uint8_t op, bool fromClient) {
         //     09-10 실클라 아레나 런의 `[버림]` 228건이 전수 이것이었다.
         //   ⚠ 서버→클라 쪽은 표본이 없다 — 표의 `-1` 을 그대로 둔다.
         case 0xD4: return fromClient ? 0 : kMsgBodyLen[op];
+
+        // ★★ 클라→서버 `0xae MSG_OUTGOING_CLIENT` 도 **본문 0**(총 1바이트)다.
+        //
+        //   ⭕ 근거는 클라 원본 — `opennox/src/client/network.go:77-79`
+        //
+        //       var data [1]byte
+        //       data[0] = byte(netmsg.MSG_OUTGOING_CLIENT)
+        //       seq, _ := c.Conn.SendReliable(data[:])
+        //
+        //   ⚠ **opennox 의 길이표(`netmsg/codes.go:347`)는 2 라 적어 놨고 우리가 그걸 베꼈다.**
+        //     같은 저장소 안에서 표와 코드가 갈린다 — 그때는 **실제로 보내는 코드가 이긴다.**
+        //     (`0xd4` 와 같은 사고다. 이번엔 표본이 아니라 소스가 잡아냈다)
+        //
+        //   ★ 그 탓에 클라가 나갈 때 보내는 이 한 바이트를 **조각째 버렸다** —
+        //     2026-09-11 사용자 플레이에서 63건. 본문 2 를 기다리는데 0 바이트뿐이라
+        //     `MessageIter` 가 멈추고, 멈추면 조각 전체가 죽는다.
+        //   ★★ 이 함수는 `WaitServerResponse` 로 **서버 답을 기다린다.** 버려서 답이 없으니
+        //     클라가 깨끗하게 못 나갔고, 그것이 「재접속 안 됨」으로 보였다.
+        case 0xAE: return fromClient ? 0 : kMsgBodyLen[op];
+
         default: return kMsgBodyLen[op];
     }
 }
