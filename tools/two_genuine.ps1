@@ -219,19 +219,54 @@ if ($FightSeconds -gt 0 -and (Alive $aPid) -and (Alive $bPid)) {
   } else {
     foreach ($i in 1..6) { $pulse += @('mb 0 1','sleep 80','mb 0 0','sleep 420') }
   }
-  $t0 = Get-Date
-  $over = $false
-  while (-not $over -and ((Get-Date) - $t0).TotalSeconds -lt $FightSeconds) {
-    foreach ($p in @($aPid, $bPid)) {
-      if (-not (Alive $p)) { continue }
-      & $di -Target $p -Cmd $pulse | Out-Null
-      # ★ 서버 틱 로그를 **그 자리에서** 읽는다. 끝나고 한 번만 보면
-      #   판이 언제 끝났는지 못 본다(판끝 뒤에도 로그가 계속 흐른다).
+  # ★★★ **겨누고 친다** (2026-09-12 교체).
+  #
+  #   옛 하네스는 위 `$pulse` 를 그대로 되풀이했다 — **커서를 한 번도 안 움직인다.**
+  #   그래서 몸 방향이 접속 초기값 66 에 붙박였고(66 × π/128 ≈ 93°, 아래쪽),
+  #   상대는 x 축으로 40 떨어진 자리(0°/180°)에 있어 **늘 빗나갔다.**
+  #   09-12 회귀 실측 — wizard 아레나 `주문 172(마나막힘 152) · 투사체명중 0`,
+  #   자리 줄에 둘 다 `facing 66` 이고 체력이 `75/75` 그대로였다.
+  #
+  #   지금은 A·B 각자 `walk_genuine.ps1 -Play arena` 를 띄워 **상대를 겨누고** 친다.
+  #   겨눔은 걷기와 같은 길이다(`Build-Table` 이 커서를 돌려 서버가 되돌려 주는
+  #   방향값으로 표를 만든다 — 짐작이 아니라 재는 것).
+  #   ⚠ `$pulse` 는 남겨 둔다 — 겨눔 일꾼이 못 서면 이 자리가 비교선이 된다.
+  $line = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '^\[자리\]' } | Select-Object -Last 1)
+  $ncs = @()
+  if ($line.Count -gt 0) {
+    foreach ($m in [regex]::Matches($line[0], '사람 (\d+)=')) { $ncs += [int]$m.Groups[1].Value }
+  }
+  $ncs = @($ncs | Sort-Object)
+  if ($ncs.Count -lt 2) {
+    Write-Host '  ⚠ 자리 줄에 사람이 둘이 안 보인다 — 싸움을 건너뛴다'
+  } else {
+    # A 가 먼저 들어왔으므로 번호가 더 작다(번호는 5씩 올라간다).
+    Write-Host ("--- 겨누고 치기 {0}초 — A={1} · B={2} ({3}) ---" -f $FightSeconds, $ncs[0], $ncs[1], $Class)
+    $walk = Join-Path $PSScriptRoot 'walk_genuine.ps1'
+    $procs = @()
+    foreach ($pair in @(@($aPid, $ncs[0]), @($bPid, $ncs[1]))) {
+      $procs += Start-Process powershell -PassThru -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $walk,
+        '-Pid_', $pair[0], '-NetCode', $pair[1], '-Log', $slog,
+        '-Tx', '0', '-Ty', '0', '-Play', 'arena',
+        '-PlaySeconds', $FightSeconds, '-Class', $Class)
+    }
+    # ★ 기다리는 동안 틱을 본다 — 판끝은 **여덟 틱 동안만 참**이라 끝나고 한 번만
+    #   보면 놓친다(matrix_run.ps1 의 누적 판정 주석과 같은 함정).
+    $t0 = Get-Date
+    while (((Get-Date) - $t0).TotalSeconds -lt ($FightSeconds + 30)) {
+      Start-Sleep -Seconds 5
       $last = @((ReadShared $slog) -split "`r?`n" | Where-Object { $_ -match '\[틱\]' } | Select-Object -Last 1)
       if ($last.Count -gt 0) { Write-Host ("  {0}" -f $last[0]) }
-      if ($last.Count -gt 0 -and $last[0] -match '판끝 예') { Write-Host '  ★ 판이 끝났다'; $over = $true; break }
+      if ($last.Count -gt 0 -and $last[0] -match '판끝 예') { Write-Host '  ★ 판이 끝났다'; break }
+      if (-not (Alive $aPid) -or -not (Alive $bPid)) { Write-Host '  ⚠ 클라가 죽었다 — 싸움 중단'; break }
+      if (@($procs | Where-Object { -not $_.HasExited }).Count -eq 0) {
+        Write-Host '  (겨눔 일꾼이 둘 다 끝났다)'; break
+      }
     }
-    if (-not (Alive $aPid) -or -not (Alive $bPid)) { Write-Host '  ⚠ 클라가 죽었다 — 싸움 중단'; break }
+    foreach ($p in $procs) {
+      if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+    }
   }
   foreach ($p in @($aPid, $bPid)) { if (Alive $p) { & $di -Target $p -Cmd @('mb 0 0') | Out-Null } }
 }
@@ -280,8 +315,10 @@ if ($PlaySeconds -gt 0 -and $Mode -ne 'arena' -and (Alive $aPid)) {
     foreach ($m in $codes) { $v=[int]$m.Groups[1].Value; if ($nc -eq 0 -or $v -lt $nc) { $nc = $v } }
     if ($nc -gt 0) {
       Write-Host ("--- 판 뛰기 ({0}) — 사람 {1}, {2}초 ---" -f $Mode, $nc, $PlaySeconds)
+      # ★ `-Class` 를 넘긴다 (2026-09-12) — 안 넘기면 퀘스트가 직업을 안 가리고
+      #   왼버튼만 누르고, 위저드는 그 자리에 걸린 주문이 **치유**라 몬스터가 안 죽는다.
       & (Join-Path $PSScriptRoot 'walk_genuine.ps1') -Pid_ $aPid -NetCode $nc -Log $slog `
-        -Tx 0 -Ty 0 -Play $Mode -PlaySeconds $PlaySeconds
+        -Tx 0 -Ty 0 -Play $Mode -PlaySeconds $PlaySeconds -Class $Class
     }
   }
 }
@@ -459,7 +496,22 @@ if ($recv.Count -ge 40) {
 
 # ⑶ 버림 — 클라가 보낸 것을 우리가 통째로 버리는 것. 조용히 묻히면 안 된다.
 #   ★ 2026-09-11 사용자 플레이에서 `0xae` 가 63건 버려지는데 아무도 안 봤다.
-$dropCount = @([regex]::Matches($logText, '\[버림\]')).Count
+#   ★★ 2026-09-12 — **두 번 틀린 것을 고쳤다.**
+#     ⑴ `[버림]` **줄 수**를 세고 있었다. 그 줄은 자리 줄처럼 **매 틱 찍히므로**
+#        430 은 「버린 조각 430개」가 아니라 「틱이 430번 돌았다」였다.
+#     ⑵ 버린 것이 전부 `0d(MSG_SERVER_INFO)` — **서버 찾기 브로드캐스트**이지
+#        게임 조각이 아니다. 정상으로 끝난 warrior 퀘스트에도 2,551건 있었다.
+#     → 마지막 줄의 **누적 수**를 읽고 거기서 서버 찾기(0d)를 뺀다.
+#     ⚠ 이 오판으로 09-12 wizard 퀘스트 시험이 **멀쩡한데 「판정 무효」**를 받았다.
+$dropLines = @([regex]::Matches($logText, '\[버림\] 조각 (\d+)개 — ([^\r\n]*)'))
+$dropCount = 0
+if ($dropLines.Count -gt 0) {
+  $lastDrop = $dropLines[$dropLines.Count - 1]
+  $dropCount = [int]$lastDrop.Groups[1].Value
+  if ($lastDrop.Groups[2].Value -match '0d\(MSG_SERVER_INFO\)x(\d+)') {
+    $dropCount -= [int]$Matches[1]
+  }
+}
 if ($dropCount -gt 20) {
   if ($verdictCode -eq 0) { $verdictCode = 5 }
   $why += ("서버가 클라 조각을 {0}건 버렸다" -f $dropCount)

@@ -36,9 +36,12 @@ param(
   [string]$CursorProbe = '',
   [string]$ShotDir = '',
   # ★ 판을 실제로 뛴다 — `ctf` 는 적 깃발을 가지러 갔다 집으로, `quest` 는 몬스터를 찾아가 때린다.
+  #   `arena` 는 걷지 않고 **상대를 겨누고 친다**.
   #   **정상 배치**(멀리 떨어진 자리)에서도 판이 도는지 보는 자리다.
-  [ValidateSet('','ctf','quest')][string]$Play = '',
+  [ValidateSet('','ctf','quest','arena')][string]$Play = '',
   [int]$PlaySeconds = 300,
+  # ★ 아레나에서 무엇으로 치나 — 직업마다 칸이 다르다(칸은 two_genuine.ps1 의 실측과 같다).
+  [ValidateSet('','warrior','wizard','conjurer')][string]$Class = '',
   [switch]$Quiet
 )
 $ErrorActionPreference = 'Continue'
@@ -97,6 +100,19 @@ function Monsters() {
     $out += @{ code=[int]$m.Groups[1].Value; x=[double]$m.Groups[2].Value; y=[double]$m.Groups[3].Value }
   }
   return $out
+}
+# 나 아닌 사람 중 가장 가까운 하나 — 아레나의 겨눌 대상이다.
+# ⚠ 자리 줄의 사람 항목은 `사람 <번호>=<x>,<y>,<방향>,<팀>` 이다(Server.h PositionsLine).
+function Foe($me) {
+  $best = $null; $bd = [double]::MaxValue
+  foreach ($m in [regex]::Matches((LastPos), '사람 (\d+)=(-?\d+),(-?\d+),(\d+),(\d+)')) {
+    $c = [int]$m.Groups[1].Value
+    if ($c -eq $NetCode) { continue }
+    $x = [double]$m.Groups[2].Value; $y = [double]$m.Groups[3].Value
+    $d = [math]::Sqrt([math]::Pow($x - $me.x, 2) + [math]::Pow($y - $me.y, 2))
+    if ($d -lt $bd) { $bd = $d; $best = @{ code = $c; x = $x; y = $y; dist = $d } }
+  }
+  return $best
 }
 function RoundOver() {
   $l = @((ReadShared $Log) -split "`r?`n" | Where-Object { $_ -match '\[틱\]' } | Select-Object -Last 1)
@@ -290,6 +306,65 @@ if ($ScaleProbe) {
 }
 if ($Sweep) { Build-Table; Do-Sweep; exit 0 }
 
+# ── 아레나 — 걷지 않고 **겨누고 친다** ───────────────────────
+#
+# ★★ 왜 생겼나 (2026-09-12) — 회귀에서 wizard 아레나가 **주문 172 발에 명중 0** 이었다.
+#   까닭은 서버가 아니라 하네스였다. 옛 싸움 하네스는 **커서를 한 번도 안 움직였고**,
+#   그래서 몸 방향이 접속 초기값 66 에 붙박였다(66 × π/128 ≈ 93°, 아래쪽).
+#   그런데 상대는 x 축으로 40 떨어진 자리(0° 또는 180°)에 있었다 —
+#   서버는 겨눔이 없으면 몸 방향으로 쏘므로(`Server.cpp` `AimRadians`) 늘 빗나갔다.
+#   ⭕ 지문 — 자리 줄에 둘 다 `facing 66` 이고 체력이 `75/75` 그대로였다.
+#
+# ★ 겨눔은 걷기와 같은 길로 한다 — `Build-Table` 이 커서를 열여섯 방향으로 돌려
+#   **서버가 되돌려 주는 방향값**으로 표를 만든다. 짐작이 아니라 재는 것이다.
+# 직업별 치는 칸 — two_genuine.ps1 의 2026-09-09 실측 칸과 같다.
+#   위저드 F=파이어볼(27) · D=연쇄번개(43) / 컨저러 A=임프소환(87) / 워리어 왼버튼
+#
+# ★★ **왼버튼은 위저드의 공격이 아니다** (2026-09-12). 09-12 회귀에서 wizard 퀘스트가
+#   스테이지 2 에서 멈췄는데, 시전된 주문이 전부 **41 = SPELL_LESSER_HEAL**(약한치유)
+#   이었다 — 퀘스트 몰이가 왼버튼만 눌렀고 그 자리에 걸린 주문이 치유였던 것이다.
+#   몬스터는 한 마리도 안 죽는다. 그래서 아레나·퀘스트 **둘 다** 이 칸을 쓴다.
+$hit = switch ($Class) {
+  'wizard'   { @('k 0x21 1','sleep 90','k 0x21 0','sleep 400','k 0x20 1','sleep 90','k 0x20 0') }
+  'conjurer' { @('k 0x1E 1','sleep 90','k 0x1E 0') }
+  default    { @('mb 0 1','sleep 80','mb 0 0') }
+}
+
+if ($Play -eq 'arena') {
+  Build-Table
+  $t0 = Get-Date
+  $shots = 0
+  while (((Get-Date) - $t0).TotalSeconds -lt $PlaySeconds) {
+    if (RoundOver) { Say ('  ★ 판이 끝났다 (친 횟수 {0})' -f $shots); exit 0 }
+    $me = Where-Me
+    if (-not $me) { Say '  [FAIL] 자리를 잃었다'; exit 1 }
+    $foe = Foe $me
+    if (-not $foe) { Say '  [FAIL] 상대가 안 보인다'; exit 1 }
+
+    # 상대 쪽 방향값 — 서버와 **같은 눈금**을 쓴다(`facing × π/128`, Server.cpp AimRadians).
+    $wantF = [int][math]::Round(([math]::Atan2($foe.y - $me.y, $foe.x - $me.x) * 128.0 / [math]::PI))
+    if ($wantF -lt 0) { $wantF += 256 }
+    $screenDeg = ScreenAngleFor $wantF
+    if ($null -eq $screenDeg) { Say '  [FAIL] 표가 비었다'; exit 1 }
+    Move-Cursor $screenDeg
+    Start-Sleep -Milliseconds 150
+
+    # ★ 겨눔이 **실제로 돌았는지** 보고 나서 친다. 안 돌았으면 치는 것이 뜻이 없다 —
+    #   이 한 줄이 없으면 「172 발 쐈다」가 또 판정으로 둔갑한다.
+    $now = Where-Me
+    $gap = 999
+    if ($now) { $gap = [math]::Abs($now.facing - $wantF); if ($gap -gt 128) { $gap = 256 - $gap } }
+
+    & $di -Target $Pid_ -Cmd (@('inject 1') + $hit) | Out-Null
+    $shots++
+    Say ("  {0,3}: 거리 {1,5:N0} · 바란방향 {2,3} · 지금 {3,3}(차 {4,3}) · 화면각 {5,5:N0}" -f `
+         $shots, $foe.dist, $wantF, $(if ($now) { $now.facing } else { -1 }), $gap, $screenDeg)
+    Start-Sleep -Milliseconds 250
+  }
+  Say ('  시간 끝 (친 횟수 {0})' -f $shots)
+  exit 0
+}
+
 # ── 판을 실제로 뛴다 ─────────────────────────────────────────
 #
 # 한 걸음 = 「지금 자리 → 목표」 각을 재고 그쪽으로 오른버튼 한 번.
@@ -326,10 +401,18 @@ if ($Play -ne '') {
     $dx = $tx - $me.x; $dy = $ty - $me.y
     $dist = [math]::Sqrt($dx*$dx + $dy*$dy)
     if ($Play -eq 'quest' -and $dist -le 40) {
-      # 사거리 안 — 때린다
-      & $di -Target $Pid_ -Cmd @('inject 1','mb 0 1','sleep 80','mb 0 0','sleep 450',
-                                 'mb 0 1','sleep 80','mb 0 0','sleep 450') | Out-Null
-      Say ("  {0} 사거리 안({1:N0}) — 때림" -f $what, $dist)
+      # 사거리 안 — 때린다. **직업 칸으로** 친다(위 `$hit` 주석 참조).
+      # ⚠ 옛 코드는 직업을 안 가리고 왼버튼만 눌렀고, 위저드는 그것이 **치유**였다.
+      #
+      # ★ 치기 전에 **겨눈다** (2026-09-12). 안 그러면 걸어온 방향 그대로 쏘는데,
+      #   몬스터는 움직이므로 어긋난다 — 09-12 시험에서 연쇄번개 242 발에
+      #   투사체명중이 **6** 뿐이었다.
+      $wf = [int][math]::Round(([math]::Atan2($dy, $dx) * 128.0 / [math]::PI))
+      if ($wf -lt 0) { $wf += 256 }
+      $sd = ScreenAngleFor $wf
+      if ($null -ne $sd) { Move-Cursor $sd; Start-Sleep -Milliseconds 120 }
+      & $di -Target $Pid_ -Cmd (@('inject 1') + $hit + @('sleep 450') + $hit) | Out-Null
+      Say ("  {0} 사거리 안({1:N0}) — 때림({2}) 겨눔 {3}" -f $what, $dist, $(if ($Class) { $Class } else { '왼버튼' }), $wf)
       continue
     }
     # ★★ 깃발은 **몸이 겹쳐야** 잡힌다 — 서버의 닿는 거리는 20 이다

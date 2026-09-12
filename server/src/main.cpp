@@ -822,6 +822,23 @@ int main(int argc, char** argv) {
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());
 
+                // ★★ **무엇을 썼나 한 줄** (2026-09-12).
+                //   09-12 회귀에서 wizard 가 「주문 226」이었는데 **무엇을 226 번 썼는지
+                //   알 길이 없었다.** 집계(`spells_`)는 진작 있었는데 **출력이 없었다** —
+                //   `[시전]` 줄은 앞 여섯 개만 찍으므로 전수가 아니다.
+                //   ⚠ 이 한 줄이 없으면 「공격 주문을 쐈다」와 「치유만 걸었다」가
+                //     로그에서 구분이 안 된다. 번호는 `SpellNames.cpp` 로 되짚는다.
+                if (!srv.spells().empty()) {
+                    std::string sp = "[주문칸]";
+                    char sb[40];
+                    for (const auto& kv : srv.spells()) {
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)kv.first,
+                                      (unsigned long long)kv.second);
+                        sp += sb;
+                    }
+                    std::printf("%s\n", sp.c_str());
+                }
+
                 // ★ **버린 것 한 줄** — 길이를 모르는 메시지를 만나면 그 조각을 통째로
                 //   폐기한다(`Server.cpp` 의 `probe.stopped()`). 사람은 눌렀는데
                 //   아무 일도 안 일어나고 로그에도 안 남던 것이 이것이다.
