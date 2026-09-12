@@ -57,14 +57,9 @@ foreach ($it in $combos) {
   #   `*>&1` 로 모든 스트림을 합친다.
   $out = & (Join-Path $PSScriptRoot 'two_genuine.ps1') @args2 *>&1 | Out-String
 
-  # 판정 추출 — 수치·생존은 마지막 틱, **판끝은 전체 틱**
-  $last = ''
-  foreach ($ln in ($out -split "`r?`n")) { if ($ln -match '마지막 틱') { $last = $ln } }
+  # 판정 추출 — 생존은 콘솔에서, **판끝도 수치도 서버 로그에서**
   $alive = if ($out -match '생존 감시.*A 끝까지 살아있음 · B 끝까지 살아있음') { '생존O' } else { '생존X' }
   $nums = ''
-  foreach ($k in @('걸음','근접','주문','피해')) {
-    if ($last -match ($k + ' (\d+)')) { $nums += (' {0} {1}' -f $k, $Matches[1]) }
-  }
   # ★★★ **판끝을 마지막 틱으로 재면 안 된다** (2026-09-12 — 아홉 조합이 전부 `판끝X` 로
   #   찍혔는데 **실제로는 일곱이 끝나 있었다**).
   #   까닭 — 판이 끝나면 `kRoundRestartTicks` 뒤에 **재시작한다**(`Server.cpp`).
@@ -83,6 +78,20 @@ foreach ($it in $combos) {
     $tk = @($slt -split "`r?`n" | Where-Object { $_ -match '^\[틱\]' })
     $nOver = @($tk | Where-Object { $_ -match '판끝 예' }).Count
     if ($nOver -gt 0) { $over = ('판끝O({0}틱)' -f $nOver) }
+    # ★★★ **수치도 마지막 틱으로 재면 안 된다** (2026-09-12 — 판끝을 고치면서
+    #   **절반만 고쳤다**). 재시작은 걸음·근접·주문·피해를 **0 으로 되돌린다** —
+    #   그래서 마지막 틱을 읽으면 **새 판의 값**이 나온다.
+    #   ⚠ 실제로 warrior 아레나가 「피해 1」, conjurer 아레나가 「피해 192」로 찍혔는데
+    #     판끝 순간의 틱을 보면 **156** 과 **1,585** 였다.
+    #   → 판끝이 난 판이면 **그 순간의 틱**에서, 안 난 판이면 마지막 틱에서 읽는다.
+    $numTick = $null
+    foreach ($t in $tk) { if ($t -match '판끝 예') { $numTick = $t; break } }
+    if ($null -eq $numTick -and $tk.Count -gt 0) { $numTick = $tk[-1] }
+    if ($null -ne $numTick) {
+      foreach ($k in @('걸음','근접','주문','피해')) {
+        if ($numTick -match ($k + ' (\d+)')) { $nums += (' {0} {1}' -f $k, $Matches[1]) }
+      }
+    }
     # 득점·스테이지도 **최고점**으로 — 재시작이 값을 0 으로 되돌리기 때문이다.
     $mx = 0
     foreach ($t in $tk) {

@@ -25,8 +25,20 @@ foreach ($c in $combos) {
   $t = ReadShared $slog
   $ticks = @(($t -split "`r?`n") | Where-Object { $_ -match '\[틱\]' })
   if ($ticks.Count -eq 0) { Write-Host ("{0,-9} 틱 없음" -f $c); continue }
-  $last = $ticks[-1]
-  $over = if ($last -match '판끝 예') { '판끝O' } else { '판끝X' }
+  # ★★★ **판끝도 수치도 마지막 틱으로 재면 안 된다** (2026-09-12).
+  #
+  #   판이 끝나면 `kRoundRestartTicks` 뒤에 **재시작한다**(`Server.cpp`). 그래서 —
+  #     ⑴ 「판끝 예」는 **여덟 틱 동안만 참**이다 → 전체를 훑어야 한다
+  #     ⑵ 걸음·근접·주문·피해는 재시작 때 **0 으로 되돌아간다** → 마지막 틱을 읽으면
+  #        **새 판의 값**을 읽는다
+  #   ⚠ 09-12 회귀에서 이것 때문에 warrior 아레나가 「피해 1」, conjurer 아레나가
+  #     「피해 192」로 찍혔다. 판끝 순간의 틱을 보면 실제로는 **156** 과 **1,585** 였다.
+  #     ⑴ 은 앞서 고쳤는데 ⑵ 를 같이 안 고쳐 **절반만 고친 꼴**이었다.
+  #   → 판끝이 난 판이면 **그 순간의 틱**에서, 안 난 판이면 마지막 틱에서 읽는다.
+  $overTick = $null
+  foreach ($ln in $ticks) { if ($ln -match '판끝 예') { $overTick = $ln; break } }
+  $over = if ($null -ne $overTick) { '판끝O' } else { '판끝X' }
+  $last = if ($null -ne $overTick) { $overTick } else { $ticks[-1] }
   $nums = ''
   foreach ($k in @('걸음','근접','주문','피해')) {
     if ($last -match ($k + ' (\d+)')) { if ([int]$Matches[1] -gt 0) { $nums += (' {0} {1}' -f $k, $Matches[1]) } }
