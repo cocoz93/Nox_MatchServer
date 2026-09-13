@@ -44,6 +44,18 @@ struct WallDefRaw {
     uint32_t flags = 0;
 };
 
+// 사람 애니 한 칸 — PlayerDraw STAT 섹션(2026-09-13 묶음 3-a).
+//   ⭕ 정답지 `server/object_type.go:1065~1080` — 이름을 playerAnimTypes 순번으로 바꿔
+//     [FramesPerDir, Field8] 을 담고, `PlayerAnimFrames(i)` 가 그대로 돌려준다.
+//   공격 판정 시각 = (지금 − 상태 시작) / (hold + 1) ≥ frames (`GAME4_3.c:4025~4031`).
+struct PlayerAnimFrames {
+    int frames = 0;   // FramesPerDir
+    int hold = 0;     // Field8 — 한 칸을 몇 틱 더 붙드나
+};
+constexpr int kPlayerAnimTypeCount = 55;   // playerAnimTypes 길이(`server/object_type.go:1093~1149`)
+// 순번 → STAT 이름. 모르는 순번이면 nullptr.
+const char* PlayerAnimTypeName(int i);
+
 struct ThingInfo {
     std::string name;
     float mass = 0.0f;   // MASS — 0 이면 파일에 없음(정답지 기본 1)
@@ -116,6 +128,12 @@ public:
     const std::vector<SpellRaw>& Spells() const { return spells_; }
     // ── 벽 재질 (WALL 섹션) ── 맵 벽 재질 바이트 = 이 순번
     const std::vector<WallDefRaw>& Walls() const { return walls_; }
+    // ── 사람 애니 (THNG 의 DRAW = PlayerDraw) ── 없는 순번은 {0,0}(정답지도 0,0)
+    const PlayerAnimFrames& PlayerAnim(int i) const {
+        static const PlayerAnimFrames kNone;
+        return (i >= 0 && i < kPlayerAnimTypeCount) ? playerAnims_[i] : kNone;
+    }
+    int PlayerAnimCount() const { return playerAnimSeen_; }
 
     // 속이름으로 마나 비용을 찾는다. 없으면 `have` 가 false — **0 과 「모름」을 가른다.**
     // ⚠ 이걸 안 가르면 표에 없는 주문이 「공짜」가 된다.
@@ -133,6 +151,8 @@ private:
     std::vector<ThingInfo> things_;
     std::vector<SpellRaw> spells_;
     std::vector<WallDefRaw> walls_;
+    PlayerAnimFrames playerAnims_[kPlayerAnimTypeCount];
+    int playerAnimSeen_ = 0;   // 표에 담긴 STAT 수(진단)
     std::string error_;
 };
 

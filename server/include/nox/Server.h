@@ -268,6 +268,19 @@ struct Session {
     uint8_t moveState = 13;        // 정답지 PlayerState — 0 걷기 · 5 달리기 · 13 가만(`GAME4.c:1709` 대응표)
     bool inputThisTick = false;    // 이번 틱에 조작 입력이 하나라도 왔나(정답지 Control 목록이 비었나)
     bool moveInputThisTick = false;// 이번 틱에 이동 코드(2~5)가 왔나
+    // ★★ **공격 상태** (2026-09-13 묶음 3-a — 정답지 `GAME4.c:1588` playerInputAttack · `GAME4_3.c:3855` playerAttack ·
+    //   `object.go:1394` playerSetState 이식). moveState 에 상태 1(공격)이 더해진다.
+    //   전에는 왼클릭 한 통에 **바로** 때리고 15틱 쉬었다(kMeleeCooldownTicks, 우리 값).
+    //   정답지는 클릭이 상태만 1로 바꾸고, 틱마다 애니 칸을 세다가 **애니가 끝나는 틱**에 판정한다.
+    bool actionThisTick = false;   // 이번 틱에 CCAction(코드 6)이 왔나
+    uint8_t attackAnim = 0;        // 플레이어 +8 (Field8) — 공격 애니 번호(23·24 주먹 · 25 훅). 0 이면 새로 뽑는다
+    uint32_t attackReadyFrame = 0; // 갱신 데이터 +0 (Field0) — 이 프레임 전에는 상태 1 로 못 들어간다. 0 이면 바로 가능
+    uint32_t stateFrame = 0;       // 오브젝트 +136 (Field34) — 상태가 바뀐 프레임
+    uint8_t animFrame = 0;         // 갱신 데이터 +236 (Field59_0) — 스냅샷에 실는 애니 칸
+    uint8_t facingPrev = 0;        // 오브젝트 +124 (Direction1) — 지난 틱 끝의 바라보는 쪽. 공격 방향 판정이 이것을 쓴다
+    uint8_t facingInput = 0;       // 이번 틱에 온 CCOrientation — ImplB 에서 facing 으로 옮긴다
+    bool hasFacingInput = false;
+    double forceX = 0, forceY = 0; // 남이 준 힘(+88 ForceVec 몫) — 적분 때 더하고 지운다
     bool hasAim = false;
     int aimX = 0, aimY = 0;
     uint32_t aimAtFrame = 0;
@@ -738,6 +751,11 @@ public:
     size_t ObstacleCount() const { return obstacles_.size(); }
     // 소환수 종류 번호 → 몸(모양·반지름·깃발·질량). main.cpp 가 thing.bin 에서 채운다.
     void SetTypeBody(uint16_t type, const PhysBody& b) { typeBodies_[type] = b; }
+    // 사람 애니 칸 수 표(묶음 3-a) — main.cpp·시험이 thing.bin PlayerDraw STAT 에서 채운다.
+    //   비어 있으면(0칸) 공격 상태가 첫 틱에 바로 판정하고 끝난다 — 정답지도 표가 0이면 그렇다.
+    void SetPlayerAnimFrames(int i, int frames, int hold) {
+        if (i >= 0 && i < kPlayerAnimSlots) { playerAnimFrames_[i][0] = frames; playerAnimFrames_[i][1] = hold; }
+    }
     // 시험용 — 선 추적(Flag1, 걸음과 같은 깃발)
     bool DebugTraceRay(float x1, float y1, float x2, float y2) const { return MapTraceRay(x1, y1, x2, y2, 0x1); }
     // 진단 — 가장 가까운 벽 선분까지 거리(±3칸). 벽 없으면 −1. 칸·방향도 돌려준다.
@@ -805,6 +823,8 @@ public:
     void SetFriends(bool on) { friendsOn_ = on; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 **그 사람 소유 임프**를 사람 자리에 만들어 **고정**한다(친구 판정용). 0 이면 끔.
     void SetDebugOwnPetAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; }
+    // 진단 — 같은 임프를 **주인 없이**(맵 몬스터 = 적) 사람 오른쪽 +25 에 고정하고 맞게 둔다(묶음 3-a 주먹 판정용).
+    void SetDebugDummyAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; debugPetWild_ = true; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꾼다(RESET_FRIENDS 판정용). 0 이면 끔.
     void SetDebugTeamAfter(uint32_t ticks) { debugTeamAfter_ = ticks; }
 
@@ -1093,6 +1113,24 @@ public:
         return it == sessions_.end() ? 0 : it->second.y;
     }
 
+    // ★ 시험용 — 공격 상태 들여다보기(묶음 3-a). 상태 · 애니 번호 · 애니 칸
+    uint8_t DebugStateOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0xff : it->second.moveState;
+    }
+    uint8_t DebugAttackAnimOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.attackAnim;
+    }
+    bool DebugPetXY(size_t i, double& x, double& y) const {
+        if (i >= pets_.size()) return false;
+        x = pets_[i].x; y = pets_[i].y;
+        return true;
+    }
+    uint8_t DebugAnimFrameOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.animFrame;
+    }
     // ★ 시험용 — 자리를 옮긴다. 사거리 시험에 쓴다.
     void DebugMoveTo(const std::string& addr, int x, int y) {
         auto it = sessions_.find(addr);
@@ -1109,6 +1147,7 @@ public:
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
         it->second.facing = facing;
+        it->second.facingPrev = facing;   // 3-a — 공격 방향은 지난 틱 끝 값(Direction1)을 본다. 「이미 그쪽을 보고 있었다」로 둔다
     }
 
     // ★ 피해를 준다. 체력이 0 이하가 되면 죽음을 알리고 부활을 예약한다.
@@ -1406,8 +1445,19 @@ private:
     void EmitImportantRaw(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
     // 틱마다 부른다. 준비(CLIENT_READY) 뒤에만 `[27 시각][aa][cc·맨 메시지…]` 한 조각을 낸다.
     void FlushImportant(Session& s, std::vector<OutPacket>& out);
-    // 사람 걷기 한 틱(묶음 2-a) — 힘·상태·적분. Server.cpp 정의 머리 주석 참조.
-    void UpdatePlayerMovement();
+    // 사람 한 틱(묶음 2-a 걷기 · 3-a 공격) — 상태·힘·적분. Server.cpp 정의 머리 주석 참조.
+    //   frame = 이 걸음의 프레임(Tick 이 여러 틱을 몰아 돌 때 걸음마다 다르다).
+    void UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out);
+    // ── 공격 (묶음 3-a) — 정답지 이식. Server.cpp 정의 머리 주석 참조 ──
+    bool PlayerSetState(Session& s, uint8_t st, uint32_t frame);             // playerSetState_4FA020 중 쓰이는 갈래
+    void PlayerInputAttack(Session& s, uint32_t frame);                      // playerInputAttack_4F9C70 맨손 갈래
+    bool PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out);   // playerAttack_538960 맨손 갈래
+    bool PlayerTraceAttack(Session& s, float range, int dmg, uint8_t anim, std::vector<OutPacket>& out);   // 538330
+    bool CursorOnFriend(const Session& s) const;                             // playerAimsAtEnemy_4F9DC0 의 거꾸로
+    bool MapTraceVision(float x1, float y1, float x2, float y2) const;       // `server/map.go:522` (장애물 그늘 · 벽 9)
+    bool MapTraceVisionSkip(float x1, float y1, float x2, float y2, int skipObstacle) const;
+    static uint8_t PlayerAnimByte(const Session& s);                          // mapPlrActionToStateId_4FA2B0
+    static bool PlayerAnimFrameSent(const Session& s);                        // netPlayerObjSend_518C30 의 +236 싣는 상태
     // ── 벽 충돌 (묶음 2-b) — 정답지 이식. Server.cpp 정의 머리 주석 참조 ──
     int WallShapeAt(int gx, int gy) const;                                   // sub_57B500 (문·창·비밀 없음)
     bool MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags) const;   // MapTraceRayAt
@@ -1557,6 +1607,7 @@ private:
     bool debugTeamDone_ = false;
     bool friendsOn_ = false;
     uint32_t debugOwnPetAfter_ = 0;   // 진단 --debug-own-pet (0 끔)
+    bool debugPetWild_ = false;        // 진단 --debug-dummy — 주인 없음 · 맞음
     uint16_t debugOwnPetNetCode_ = 0; // 만든 임프의 번호 — 이동 루프가 이것만 건너뛴다(고정)
     bool standalone_ = false;
     std::string saMapName_;
@@ -1568,11 +1619,13 @@ private:
     std::vector<uint32_t> wallDefFlags_;     // thing.bin WALL 순번 → 깃발
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
     std::map<uint16_t, PhysBody> typeBodies_;   // 소환수 종류 → 몸
+    static constexpr int kPlayerAnimSlots = 55;     // ThingDb kPlayerAnimTypeCount 와 같은 길이
+    int playerAnimFrames_[kPlayerAnimSlots][2] = {};   // [칸 수, 붙드는 틱] — PlayerAnimFrames(i)
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
     // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
     unsigned long long unitHealthSent_ = 0;
     unsigned long long enchantSent_ = 0;      // 0x5A 를 보낸 횟수 (R4)   //  x41 을 보낸 횟수 (R4)
-    uint8_t peerPose_ = 0x30;
+    int peerPose_ = -1;   // ⭕ 2026-09-13 — 기본은 덮지 않음(0x30 은 그때 상대의 방향이었다 · Server.cpp 남 항목 주석)
     // 갱신 항목 순서를 뒤집는다(남 먼저). 「자리 탓인가 누구냐 탓인가」를 가르는 시험용.
     bool peerFirst_ = false;
     // 새 사람이 들어올 때 **상대 몫의 첫 스냅샷을 통째로** 보낸다.
@@ -1706,6 +1759,18 @@ constexpr double kRunCursorDist    = 100.0;
 constexpr uint8_t kPlayerStateWalk = 0;
 constexpr uint8_t kPlayerStateRun  = 5;
 constexpr uint8_t kPlayerStateIdle = 13;
+constexpr uint8_t kPlayerStateAttack = 1;   // ⭕ 정답지 PlayerState1 — 공격(`object_update.go:224`)
+
+// ★★ **맨손 공격 값** (2026-09-13 묶음 3-a · 정답지 `GAME4_3.c:4020~4066`).
+//   애니   23 PUNCH_LEFT · 24 PUNCH_RIGHT(반반) · 워리어면 101분의 25 로 25 PUNCH_RIGHT_HOOK(`object.go:1453~1455`)
+//   시각   (프레임 − 상태 시작) ÷ (붙드는 틱 + 1) 이 칸 수에 닿는 틱에 판정 — thing.bin 주먹 8칸 · 붙듦 0 → **8틱 뒤**
+//   피해   힘 × 0.039999999 + 5(주먹) · + 10(훅) — float 로 담고 +0.5 버림(`:4037~4053` · sub_538510 `(long long)(f+0.5)`)
+//   사거리 몸 반지름 + 20(`:4054`) — 전에 두던 45(지팡이와 같게 둔 우리 값)가 아니다
+//   훅    맞은 쪽을 때린 쪽 반대로 힘 20(`GAME4_3.c:3683~3690` · objectApplyForce: 10×20÷질량 ÷ (거리+0.1))
+constexpr float  kUnarmedReachExtra = 20.0f;
+constexpr float  kUnarmedCoeffF     = 0.039999999f;
+constexpr float  kHookForce         = 20.0f;
+constexpr uint8_t kAnimPunchLeft = 23, kAnimPunchRight = 24, kAnimPunchHook = 25;
 
 // ★ 주문 시전(0x79)의 본문 길이. **2026-09-06 캡처 표본 83개 전수로 확정했다.**
 //

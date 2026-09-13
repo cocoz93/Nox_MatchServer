@@ -362,12 +362,33 @@ int Server::SpellDamage(uint8_t spell) {
 //   **사람 뒤 항목이 전부 밀린다.** 그래서 여기서 못 박는다.
 static_assert(kPlayerType == 713, "ThingIsPlayer() 의 713 과 같이 고칠 것");
 
+namespace {
+// nox_xxx_xferIndexedDirection_509E20 — 방향(0~255) → 행(x+3y+4). blob_587000 정수 방향표 192088 · 문턱 6(230092).
+const uint8_t kDirRow[256] = {
+    5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8,
+    8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+    7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+    6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
+    3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+};
+// 갱신 항목 방향 4비트 — 정답지 짜는 쪽 그대로(`GAME4_1.c:4302~4309` 소환수 · `:4471~4478` 사람):
+//   xferIndexedDirection 행(x+3y+4, 가운데 4 는 없음) → 4 이하면 그대로 · 넘으면 −1 → 0~7 을 위 4비트에.
+//   클라는 4 이상이면 +1 해서 9칸 그림표 자리로 되돌린다(GAME2_3.c:1677~1679).
+inline uint8_t WireDirNibble(uint8_t facing) {
+    const uint8_t row = kDirRow[facing];
+    return static_cast<uint8_t>(row <= 3 ? row : row - 1);
+}
+}  // namespace
+
 // ★ `playerAnim` — 사람 항목의 **자세 번호**(0 IDLE · 4 WALK). 사람이 아니면 안 쓴다.
 //   ⭕ 번호표는 소스 확증(`draw_debug.go:294`). 걸을 때 4 를 보내야 다리가 움직인다.
 static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
                       uint32_t frame, int x, int y, uint8_t facing, ObjEntry& e,
                       bool complex = true, uint8_t playerAnim = 0,
-                      int forceDir = -1) {
+                      int forceDir = -1, int playerFrame = -1) {
     // ★★★ **정정(2026-09-09) — 따라 굴리지 않고 클라가 알려 준 것만 쓴다.**
     //   전에는 `Generate`/`Assign` 으로 클라와 같은 규칙을 흉내 냈는데 어긋났다.
     //   별칭으로 보내면 아무것도 안 그려졌고, 그래서 매 틱 전체번호로 다시 소개하다가
@@ -405,7 +426,7 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
         //     몬스터(0x40000)   8 IDLE · 9 DIE · 10 DEAD · 11 HURT · 12 MOVE …
         //   몬스터 쪽 8=IDLE 은 `drawable_monster.go:144` 의 `if dr.AnimInd != 8 { // IDLE` 로 재확인.
         e.extraBytes[0] = static_cast<uint8_t>(
-            (((facing >> 5) & 0x07) << 4) | kCreatureAnimIdle);
+            (WireDirNibble(facing) << 4) | kCreatureAnimIdle);
         // ★ 최상위 비트(0x80)는 값이 아니라 **신호**다 — 서 있으면 클라가
         //   「스프라이트 프레임이 한 바이트 더 온다」로 읽는다(같은 자리).
         //   위 식은 방향을 **위 4비트 중 3비트**에만 넣으므로 이 비트가 늘 0 이다.
@@ -488,6 +509,11 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
             //        (`opennox/src/client/drawable_player.go:14`). 9칸 중 4번을 비우고
             //        0,1,2,3,5,6,7,8 여덟 자리를 쓴다
             //     ⑷ 변환 — `(facing>>5)&7`. **우리 소환수 가지가 이미 쓰던 식**이다(위 339행)
+            //        ❌ **정정(2026-09-13 묶음 3-a ④)** — 이 식은 틀렸다. 9칸 자리는 각도 팔분이 아니라
+            //          **(x+3y+4) 격자**다(`GAME4_1.c:4471~4478` xferIndexedDirection → 0 = 왼쪽 위 · 5 = 동쪽).
+            //          화면 증거: 서버 방향 10(동쪽)을 `(10>>5)&7 = 0` 으로 보내니 캐릭터가 **왼쪽 위로** 주먹을 뻗었다
+            //          (`_evidence/b3a_punch_exp2` f_29·f_49). 09-12 실측은 「바뀐다」만 쟀지 「맞는 쪽」을 안 쟀다.
+            //          → WireDirNibble(정답지 표 kDirRow) 로 바꿨다.
             //     ⑸ 값 — `facing` 은 살아 있다. 클라가 `PLAYER_INPUT` 코드 1 로 보내고
             //        (`Server.cpp:1592`) 걸음도 이 방향으로 민다(`:1597-1601`)
             //   ⭕ 실측(2026-09-12) — `--anim-dir 0` 두 장이 **196 픽셀**(잡음 바닥)인데
@@ -496,12 +522,22 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
             // ⚠ **하위 4비트는 0 으로 둔다.** 사람은 자세를 **둘째 바이트**로 받으므로
             //   (`ObjClass & 4` 가지) 하위 4비트를 안 읽는다. 소환수가 거기에
             //   `kCreatureAnimIdle` 을 넣는 것과 다르다 — 사람에 그걸 넣으면 안 된다.
-            e.extraBytes[0] = static_cast<uint8_t>(((facing >> 5) & 0x07) << 4);
+            e.extraBytes[0] = static_cast<uint8_t>(WireDirNibble(facing) << 4);
             e.extraBytes[1] = static_cast<uint8_t>(playerAnim);  // 자세 — 별도 바이트
             e.extra = 2;
+            // ★ 2026-09-13 묶음 3-a — **애니 칸 바이트.** 정답지 `nox_xxx_netPlayerObjSend_518C30`(GAME4_1.c:4447~4453)은
+            //   공격(상태 1) 같은 상태에서 +236 칸 번호를 b2[10] 에 싣고, 짜는 쪽(`network_lists.go:290~299`)이
+            //   그 값이 ff 가 아니면 방향 바이트에 0x80 을 켜고 **방향 · 칸 · 자세** 세 바이트로 보낸다.
+            //   클라는 0x80 이면 칸을 읽어 `spriteSetFrameMB` 에 넣는다(GAME2_3.c:1680~1682).
+            if (playerFrame >= 0) {
+                e.extraBytes[2] = e.extraBytes[1];
+                e.extraBytes[1] = static_cast<uint8_t>(playerFrame);
+                e.extraBytes[0] |= 0x80;
+                e.extra = 3;
+            }
             // ★ 진단 — 방향 3비트를 못 박는다. **덧붙이가 클라에 닿는지**를 가르는 시험이다.
             if (forceDir >= 0) {
-                e.extraBytes[0] = static_cast<uint8_t>((forceDir & 0x07) << 4);
+                e.extraBytes[0] = static_cast<uint8_t>(((forceDir & 0x07) << 4) | (e.extraBytes[0] & 0x80));
             }
         }
     }
@@ -743,7 +779,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                         const std::string& by, DamageKind kind) {
     if (t.none() || dmg <= 0) return;
     // 진단 임프(`--debug-own-pet`)는 맞지 않는다 — 판정 사진을 찍기 전에 몬스터에게 죽었다(09-13, 갱신에 프레임 1920~2010 만 실림 — 약 3초).
-    if (debugOwnPetNetCode_ != 0 && t.pet >= 0 &&
+    if (debugOwnPetNetCode_ != 0 && !debugPetWild_ && t.pet >= 0 &&
         pets_[static_cast<size_t>(t.pet)].netCode == debugOwnPetNetCode_) return;
     // ★ **닿은 피해를 여기서 센다.** `hits_` 는 「투사체가 명중한 횟수」만 세는데,
     //   판정 요약이 그것을 「맞음」이라 찍어 왔다. 그래서 근접으로 피해가 122건 오간
@@ -1716,7 +1752,10 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     // ★ 조작이 하나라도 왔다 — 정답지 ImplB 는 목록이 비었으면 상태를 안 건드린다(`object_update.go:485`).
                     s.inputThisTick = true;
                     if (code == 1 && dataLen == 1) {
-                        s.facing = q[0];          // 바라보는 쪽 — 정답지 CCOrientation → Direction2
+                        // 바라보는 쪽 — 정답지 CCOrientation → Direction2. ★ 2026-09-13 묶음 3-a 부터 틱의 ImplB 에서 갈아 끼운다
+                        //   (정답지는 조작 목록을 ImplA 힘·공격 **뒤에** 읽는다 — 받자마자 바꾸면 한 틱 이르다).
+                        s.facingInput = q[0];
+                        s.hasFacingInput = true;
                     } else if (code >= 2 && code <= 5 && dataLen == 1) {
                         // 걸음 — ★ 2026-09-13 부터 **바로 옮기지 않는다.** 「이번 틱에 이동 입력이 왔다」만 적고
                         //   틱의 걷기 물리(UpdatePlayerMovement)가 상태를 걷기/달리기로 바꿔 힘을 준다.
@@ -1769,6 +1808,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         //     그러니 쉬는 시간은 **연타를 막는 장치**로 남는다.
                         //   ⚠ `break` 로 빠져나가지 않는다 — 이 조각에 뒤따르는
                         //     방향(코드 1) 항목까지 같이 버려진다.
+                        // ★★ 2026-09-13 묶음 3-a — **맨손은 정답지로.** 클릭은 「이번 틱에 CCAction 이 왔다」만 적고
+                        //   틱의 ImplB(PlayerInputAttack)가 상태 1 로 바꾸고, ImplA(PlayerAttack)가 애니 끝 틱에 판정한다.
+                        //   ⚠ 무기를 든 사람(워리어 롱소드)은 무기 갈래(3-b)가 들어올 때까지 아래 옛 자리표시 길로 간다.
+                        else if (!WeaponOf(s.charClass)) {
+                            s.actionThisTick = true;
+                        }
                         else if (frame_ >= s.nextMeleeFrame) {
                             s.nextMeleeFrame = frame_ + kMeleeCooldownTicks;
                             // ★★ **직업이 든 것으로 때린다** (2026-09-10 정본화).
@@ -3165,13 +3210,27 @@ double Server::DebugWallDistance(double x, double y, int* outGx, int* outGy, int
 }
 
 // 사람 자세 번호 — 정답지는 **상태**에서 뽑는다(`GAME4.c:1709` nox_common_mapPlrActionToStateId_4FA2B0:
-//   0 걷기 → 4 · 5 달리기 → 6 · 13 가만 → 0). 전에는 지난 틱과 자리를 견줘 움직였으면 걷기(4)로 봤다
-//   (`animMoving`) — 달리기(6)가 없었고 멈춘 뒤 미끄러지는 동안에도 걷는 자세였다.
-//   ⚠ 공격·죽음 등 나머지 상태 대응은 그 상태들이 들어오는 묶음(3)에서 채운다.
-static uint8_t PlayerAnimOf(const Session& s) {
-    if (s.moveState == kPlayerStateRun) return kAnimRun;
-    if (s.moveState == kPlayerStateWalk) return kAnimWalk;
-    return kAnimIdle;
+//   0 걷기 → 4 · 5 달리기 → 6 · 13 가만 → 0 · 1 공격 → 애니 번호(맨손이면 +8 Field8)).
+//   전에는 지난 틱과 자리를 견줘 움직였으면 걷기(4)로 봤다(`animMoving`) — 달리기(6)가 없었고
+//   멈춘 뒤 미끄러지는 동안에도 걷는 자세였다.
+//   ⚠ 무기 든 공격(0x47F0000 → 29/31 · 그 밖 sub_4FA280)·가만(13)의 대검 0x26·죽음 등은 그 조각(3-b·3-c)에서 채운다.
+uint8_t Server::PlayerAnimByte(const Session& s) {
+    switch (s.moveState) {
+        case kPlayerStateWalk: return kAnimWalk;
+        case kPlayerStateRun: return kAnimRun;
+        case kPlayerStateAttack: return s.attackAnim;   // 맨손 — Field8 이 0 이 아니면 그 값(`:1733~1736`)
+        default: return kAnimIdle;
+    }
+}
+// 칸 번호(+236)를 싣는 상태 — `GAME4_1.c:4447~4453` 목록(1·2·10·14~22·24~30·32). 지금 들어오는 것은 1 뿐이다.
+bool Server::PlayerAnimFrameSent(const Session& s) {
+    switch (s.moveState) {
+        case 1: case 2: case 10: case 14: case 15: case 16: case 17: case 18: case 19: case 20:
+        case 21: case 22: case 24: case 25: case 26: case 27: case 28: case 29: case 30: case 32:
+            return true;
+        default:
+            return false;
+    }
 }
 
 // 사람 걷기 한 틱 — 정답지 순서 그대로 (묶음 2-a, 2026-09-13).
@@ -3186,24 +3245,31 @@ static uint8_t PlayerAnimOf(const Session& s) {
 //   ★ 벽 — 묶음 2-b(2026-09-13)에서 정답지로 바꿨다: 걸음마다 원 대 벽 밀어내기 + 선 추적(아래 ③).
 //     반지름 kBodyRadius(thing.bin NewPlayer EXTENT 10) · 질량 kPlayerMass(MASS 1).
 //   ⚠ 죽었거나(정답지 상태 3·4 는 ImplB 를 건너뜀) 관전(Field3680&3)이면 힘도 상태 변경도 없다 — 속도만 잦아든다.
-void Server::UpdatePlayerMovement() {
+//   ★ 2026-09-13 묶음 3-a — ① 에 상태 1(공격: PlayerAttack), ② 에 CCAction(PlayerInputAttack)이 더해졌다.
+//     바라보는 쪽(CCOrientation)도 ② 에서 갈아 끼운다 — 전에는 받자마자 바꿔 ① 힘이 한 틱 일찍 새 방향을 썼다.
+void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     // ★ 2026-09-13 묶음 2-c — 두 단계로 나눴다. 정답지는 한 걸음(0.2)마다 **움직이는 모두의 충돌을 먼저** 돌리고
     //   (`GAME4_1.c:3195` sub_5481C0 루프) **그다음 모두를 적분**한다(`:3200` 루프). 사람 하나씩 5걸음을 다 돌리면
     //   뒤에 도는 사람이 앞사람의 **끝난 자리**와 부딪혀 순서가 결과를 바꾼다.
     struct Mover { Session* s; double fx, fy, bx, by, ax, ay; bool collide; };
     std::vector<Mover> movers;
+    // 밖에서 x·y 를 바꿨으면(접속·부활·진단 옮기기) 실수 자리를 거기에 맞추고 멈춘다.
+    //   ★ 3-a — **모두 먼저** 맞춘다. 앞사람의 공격 판정이 뒷사람의 옛 실수 자리를 보면 안 된다.
     for (auto& kv : sessions_) {
         Session& s = kv.second;
         if (!s.inGame) continue;
-        // 밖에서 x·y 를 바꿨으면(접속·부활·진단 옮기기) 실수 자리를 거기에 맞추고 멈춘다.
         if (std::lround(s.posX) != s.x || std::lround(s.posY) != s.y) {
             s.posX = s.x; s.posY = s.y;
             s.velX = s.velY = 0.0;
         }
+    }
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) continue;
         const bool dead = (s.respawnAtFrame != 0);
         const bool canMove = !dead && !s.observer;
 
-        // ① 힘
+        // ① 힘 · 공격(ImplA)
         double fx = 0.0, fy = 0.0;
         bool run = false;
         if (canMove && (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun)) {
@@ -3211,20 +3277,42 @@ void Server::UpdatePlayerMovement() {
             run = !(s.moveState != kPlayerStateRun && cdx * cdx + cdy * cdy <= kRunCursorDist * kRunCursorDist);
             const double speed = kPlayerWalkPerFrame * (run ? 2.0 : 1.0);
             const double rad = s.facing * 2.0 * 3.14159265358979 / 256.0;
-            fx = std::cos(rad) * speed;
-            fy = std::sin(rad) * speed;
+            fx += std::cos(rad) * speed;
+            fy += std::sin(rad) * speed;
+        } else if (canMove && s.moveState == kPlayerStateAttack) {
+            // `object_update.go:224~234` — 0 이 오면 무기 쥠(&4)이면 14, 아니면 13 으로 · Field8 지움
+            if (!PlayerAttack(s, frame, out)) {
+                PlayerSetState(s, kPlayerStateIdle, frame);
+                s.attackAnim = 0;
+            }
         }
-        // ② 상태
+        // ② 조작(ImplB) — 목록이 비었으면 아무것도 안 한다(`object_update.go:485`)
         if (canMove && s.inputThisTick) {
-            if (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun) s.moveState = kPlayerStateIdle;
-            if (s.moveInputThisTick) s.moveState = run ? kPlayerStateRun : kPlayerStateWalk;
+            if (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun) {
+                PlayerSetState(s, kPlayerStateIdle, frame);
+                s.stateFrame = frame;
+            }
+            if (s.hasFacingInput) s.facing = s.facingInput;   // CCOrientation(`:497~502`, 얼림·광전사 없음)
+            // 이동 — 맨손 공격 중(상태 1)에는 안 먹는다(`:506~507`)
+            if (s.moveInputThisTick && s.moveState != kPlayerStateAttack) {
+                PlayerSetState(s, run ? kPlayerStateRun : kPlayerStateWalk, frame);
+                s.stateFrame = frame;
+            }
+            // CCAction(`:536~544`) — playerCanAttack(버프 25 없음 · 상태 23 아님) → 공 차기 아니면 playerInputAttack
+            if (s.actionThisTick && s.moveState != 23) PlayerInputAttack(s, frame);
         }
         if (dead) s.moveState = kPlayerStateIdle;
-        s.inputThisTick = s.moveInputThisTick = false;
+        s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
 
         // ⚠ 죽으면 정답지는 ALLOW_OVERLAP 을 켜고(상태 3→4, `object_update.go:247`) 관전은 NO_COLLIDE 를 켠다
         //   (`player.go:156`) — 둘 다 벽·오브젝트 충돌을 안 받는다(sub_5481C0 의 0x60 · 0x8 검사).
         movers.push_back({ &s, fx, fy, s.posX, s.posY, 0.0, 0.0, !dead && !s.observer });
+    }
+    // 남이 이번 틱에 준 힘(훅 20 — objectApplyForce_52DF80 → ForceVec)은 **모두의 갱신이 끝난 뒤** 적분에 들어간다
+    //   (`server.go:135` updateUnits: BBB 갱신 → updateCollide 적분 → CCC 에서 ForceVec 지움). 순서가 결과를 안 바꾸게 여기서 더한다.
+    for (auto& m : movers) {
+        m.fx += m.s->forceX; m.fy += m.s->forceY;
+        m.s->forceX = m.s->forceY = 0.0;
     }
 
     // ③ 적분 — 걸음(0.2)마다 [모두 충돌] → [모두 적분]. 사각형 칸 범위는 **프레임 시작 자리**(정답지 +232 는 +56 PosVec).
@@ -3285,7 +3373,352 @@ void Server::UpdatePlayerMovement() {
     for (auto& m : movers) {
         m.s->x = static_cast<int>(std::lround(m.s->posX));
         m.s->y = static_cast<int>(std::lround(m.s->posY));
+        m.s->facingPrev = m.s->facing;   // CCC: Direction1 = Direction2(`server.go:167`)
     }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 공격 (묶음 3-a, 2026-09-13) — 정답지 이식
+//
+//   흐름  클릭(CCAction) → ImplB playerInputAttack(`GAME4.c:1588`) → 상태 1
+//         → 틱마다 ImplA playerAttack(`GAME4_3.c:3855`) — 애니 칸이 끝나는 틱에 playerTraceAttack(`:3624`)
+//         → 0 을 돌려주면 상태 13(`object_update.go:224~234`)
+//   판정  sub_518040 사각형 후보(`GAME4_1.c:4091` · 거리 조건 sub_5180B0) → sub_5386A0 앞쪽 가장 가까운 것(몬스터 우선)
+//         → sub_538510 방향 표 · 깃발 · 선 추적(벽 0x5) → 피해 함수(+716) · 훅이면 힘 20
+//   ⚠ 빠진 것(다른 조각)  무기 갈래 전부(3-b) · 피해 함수 정답지(3-e: 지금은 HurtTarget) · 벽 부수기 mapDamageToWalls(9)
+//     · 빗나감 소리 879(10) · 소환수 밀기(몬스터 물리 6) · 버프(4) · 공 차기 checkWinkFlags(깃발공 모드 없음)
+//     · 커서 아래 물건(아이템 몸 표 없음)
+// ════════════════════════════════════════════════════════════════════════
+namespace {
+
+// nox_server_testTwoPointsAndDirection_4E6E50 의 표 — blob_587000 202504, [행][구역]. 맨손은 &1 을 본다.
+const uint8_t kDirSector[9][16] = {
+    { 0, 9, 6, 0, 5, 1, 4, 0, 10, 8, 2, 0, 0, 0, 0, 0 },
+    { 0, 1, 2, 0, 4, 5, 6, 0, 8, 9, 10, 0, 0, 0, 0, 0 },
+    { 0, 5, 10, 0, 6, 4, 2, 0, 9, 1, 8, 0, 0, 0, 0, 0 },
+    { 0, 8, 4, 0, 1, 9, 5, 0, 2, 10, 6, 0, 0, 0, 0, 0 },
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    { 0, 4, 8, 0, 2, 6, 10, 0, 1, 5, 9, 0, 0, 0, 0, 0 },
+    { 0, 10, 5, 0, 9, 8, 1, 0, 6, 2, 4, 0, 0, 0, 0, 0 },
+    { 0, 2, 1, 0, 8, 10, 9, 0, 4, 6, 5, 0, 0, 0, 0, 0 },
+    { 0, 6, 9, 0, 10, 2, 8, 0, 5, 4, 1, 0, 0, 0, 0, 0 },
+};
+// sub_4E6CE0 — 두 점의 상대 구역(GAME3_3.c:2424)
+int RegionCode(float fx, float fy, float tx, float ty) {
+    const float dx = tx - fx, dy = ty - fy;
+    const float a = dx * 0.41304299f - dy;
+    const double b = static_cast<double>(dx) * 2.4210529 - dy;
+    const float c = dx * -2.4210529f - dy;
+    const float d = dx * -0.41304299f - dy;
+    const int code = (a < 0.0f ? 0 : 8) | (b < 0.0 ? 0 : 4) | (c < 0.0f ? 0 : 2) | (d >= 0.0f ? 1 : 0);
+    switch (code) {
+        case 0: return 2;
+        case 2: return 6;
+        case 3: return 4;
+        case 4: return 10;
+        case 0xB: return 5;
+        case 0xC: return 8;
+        case 0xD: return 9;
+        case 0xF: return 1;
+        default: return 0;
+    }
+}
+uint8_t TestTwoPointsAndDirection(float fx, float fy, uint8_t dir, float tx, float ty) {
+    return kDirSector[kDirRow[dir]][RegionCode(fx, fy, tx, ty)];
+}
+// `server/math.go:49` PointOnTheLine — p 를 선분에 내린 발, 선분 상자 안이면 참
+bool PointOnTheLine(float x1, float y1, float x2, float y2, float px, float py, float& ox, float& oy) {
+    const double dpx = x2 - x1, dpy = y2 - y1;
+    const double d2 = dpy * dpy + dpx * dpx;
+    const double dd = static_cast<double>(py - y1) * dpy + static_cast<double>(px - x1) * dpx;
+    ox = static_cast<float>(dpx * dd / d2 + x1);
+    oy = static_cast<float>(dpy * dd / d2 + y1);
+    return std::min(x1, x2) <= ox && ox <= std::max(x1, x2) && std::min(y1, y2) <= oy && oy <= std::max(y1, y2);
+}
+// `server/map.go:606` LineTraceXxx — 두 선분(각자 사각형 두 점)이 걸치나
+bool LineTraceXxx(float ax0, float ay0, float ax1, float ay1, float bx0, float by0, float bx1, float by1) {
+    const float r1x0 = std::min(ax0, ax1), r1x1 = std::max(ax0, ax1), r1y0 = std::min(ay0, ay1), r1y1 = std::max(ay0, ay1);
+    const float r2x0 = std::min(bx0, bx1), r2x1 = std::max(bx0, bx1), r2y0 = std::min(by0, by1), r2y1 = std::max(by0, by1);
+    if (r1x1 < r2x0 || r1x0 > r2x1 || r1y1 < r2y0 || r1y0 > r2y1) return false;
+    if (r1y0 == r1y1 && r2y0 == r2y1) return true;
+    const float a1w = r1x1 - r1x0, a1h = r1y1 - r1y0, a2w = r2x1 - r2x0, a2h = r2y1 - r2y0;
+    const float dx = r2x0 - r1x0, dy = r2y0 - r1y0;
+    const float dd1 = dy * a1w - dx * a1h;
+    const float dd2 = a2w * a1h - a2h * a1w;
+    const float dd3 = dy * a2w - dx * a2h;
+    if (dd1 == 0.0f || dd2 == 0.0f || (dd1 < 0.0f && dd2 > 0.0f)) return false;
+    if ((dd1 > 0.0f && dd2 < 0.0f) || std::fabs(dd2) < std::fabs(dd1) ||
+        (dd3 < 0.0f && dd2 > 0.0f) || (dd3 > 0.0f && dd2 < 0.0f) || std::fabs(dd2) < std::fabs(dd3)) return false;
+    return true;
+}
+}  // namespace
+
+// `server/map.go:522` MapTraceVision — 그늘 깃발(0x10000) 장애물이 선을 가리나, 그다음 벽(깃발 9).
+//   ⚠ 문(클래스 0x80)은 묶음 9. 사람·소환수 몸에는 그늘 깃발이 없다(NewPlayer FLAGS NULL).
+//   skipObstacle = 판정 대상 자신(자기를 가린다고 보지 않는다 — `it == obj2`).
+bool Server::MapTraceVision(float x1, float y1, float x2, float y2) const {
+    return MapTraceVisionSkip(x1, y1, x2, y2, -1);
+}
+bool Server::MapTraceVisionSkip(float x1, float y1, float x2, float y2, int skipObstacle) const {
+    const float qx0 = std::min(x1, x2), qx1 = std::max(x1, x2), qy0 = std::min(y1, y2), qy1 = std::max(y1, y2);
+    for (size_t i = 0; i < obstacles_.size(); ++i) {
+        if (static_cast<int>(i) == skipObstacle) continue;
+        const PhysBody& o = obstacles_[i];
+        if (!(o.flags & 0x10000)) continue;
+        double ox0, oy0, ox1, oy1;
+        BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
+        if (ox1 < qx0 || ox0 > qx1 || oy1 < qy0 || oy0 > qy1) continue;   // EachObjInRect
+        if (o.shape == 2) {
+            float fx, fy;
+            if (PointOnTheLine(x1, y1, x2, y2, o.x, o.y, fx, fy)) {
+                const double dx = fx - o.x, dy = fy - o.y;
+                if (dy * dy + dx * dx <= static_cast<double>(o.r * o.r)) return false;
+            }
+        } else if (o.shape == 3) {
+            // 네 변 — LT·LB / LB2·LT2 / RT·RB / RB2·RT2 (LT2=LT … 는 CalcBox 가 같게 둔다)
+            const float px = o.x, py = o.y;
+            if (LineTraceXxx(x1, y1, x2, y2, px + o.boxLT, py + o.boxLB, px + o.boxLB, py + o.boxLT)) return false;
+            if (LineTraceXxx(x1, y1, x2, y2, px + o.boxLT, py + o.boxLB, px + o.boxRT, py + o.boxRB)) return false;
+            if (LineTraceXxx(x1, y1, x2, y2, px + o.boxRB, py + o.boxRT, px + o.boxRT, py + o.boxRB)) return false;
+            if (LineTraceXxx(x1, y1, x2, y2, px + o.boxRB, py + o.boxRT, px + o.boxLB, py + o.boxLT)) return false;
+        }
+    }
+    return MapTraceRay(x1, y1, x2, y2, 0x9);
+}
+
+// `object.go:1394` playerSetState 중 지금 들어오는 갈래 — 죽음·공중·도발·광전사·함성은 그 조각에서.
+bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame) {
+    bool res = true;
+    if (st != kPlayerStateAttack) {
+        s.attackAnim = 0;                                   // Field8 = 0(`:1426`)
+    } else {
+        // LABEL_26(`:1446~1464`) — 쉬는 시간이 끝났으면 애니를 새로 뽑는다. 아니면 상태를 안 바꾼다.
+        if (s.attackReadyFrame <= frame) {
+            s.attackReadyFrame = 0;
+            // ⚠ 무기를 들었으면 Field8 = 0 (3-b). 맨손 — 23·24 반반, 워리어면 IntClamp(0,100) > 75 로 25
+            s.attackAnim = static_cast<uint8_t>(kAnimPunchLeft + NextRandom(2));
+            if (s.charClass == CharClass::Warrior && NextRandom(101) > 75) s.attackAnim = kAnimPunchHook;
+            // 투명·무적 해제 · 타원 방패 취소 — 버프가 묶음 4 라 지금은 끌 것이 없다
+        } else {
+            res = false;
+            st = s.moveState;
+        }
+    }
+    if (s.moveState != st) {                                // LABEL_42
+        s.moveState = st;
+        s.stateFrame = frame;
+        s.animFrame = 0;
+    }
+    return res;
+}
+
+// `GAME4.c:1588` playerInputAttack — 겨눈 것이 적(또는 빈 곳)일 때만. 맨손 갈래.
+void Server::PlayerInputAttack(Session& s, uint32_t frame) {
+    if (CursorOnFriend(s)) {                                // playerAimsAtEnemy_4F9DC0 가 0
+        std::printf("[공격] 프레임 %u %s 커서 아래가 편 — 안 때림\n", frame, s.addr.c_str());
+        return;
+    }
+    if (s.moveState != kPlayerStateAttack) {
+        const bool entered = PlayerSetState(s, kPlayerStateAttack, frame);
+        std::printf("[공격] 프레임 %u %s %s 애니 %u\n", frame, s.addr.c_str(),
+                    entered ? "상태 1 들어감" : "쉬는 시간이라 안 들어감", s.attackAnim);
+        std::fflush(stdout);
+    }
+}
+
+// `GAME4.c:1637` playerAimsAtEnemy 의 거꾸로 — 커서 아래 것(findObjectAtCursor_54AF40)이 **적이 아니면** 참.
+//   퀘스트(게임 깃발 4096)면 늘 적으로 본다. 커서 오브젝트 고르기(`GAME5.c:3547~3640`) —
+//   커서 100 안 · 자기 아님 · 죽음/지워짐 아님 · 클래스 0x80000206 · 시야선 · 관전자 아님 ·
+//   원 몸이면 (x, y−z) 중심 반지름 안(int 로 자른 r²) · 여럿이면 y+z 가 가장 큰 것(화면에서 앞)
+bool Server::CursorOnFriend(const Session& s) const {
+    if (questTotal_ > 0 || questStage_ > 0) return false;   // gameFlags 4096
+    if (!s.hasAim) return false;
+    const float cx = static_cast<float>(s.aimX), cy = static_cast<float>(s.aimY);
+    float best = 0.0f;
+    enum { None, Player, Pet } kind = None;
+    const Session* bestP = nullptr;
+    const Creature* bestK = nullptr;
+    auto consider = [&](float ox, float oy, float r) -> bool {
+        const float dx0 = ox - cx, dy0 = oy - cy;
+        if (dx0 * dx0 + dy0 * dy0 > 100.0f * 100.0f) return false;         // EachObjInCircle 100
+        if (!MapTraceVision(ox, oy, static_cast<float>(s.posX), static_cast<float>(s.posY))) return false;   // mapCheck(후보, 사람)
+        const int r2 = static_cast<int>(r * r);
+        const float ddx = cx - ox, ddy = cy - oy;                            // z = 0
+        if (static_cast<float>(r2) <= ddy * ddy + ddx * ddx && cy != oy) return false;
+        if (cy == oy && !(cx > ox - r && cx < ox + r)) return false;
+        const float score = oy;                                              // +104 z + +60 y
+        if (score <= best) return false;
+        best = score;
+        return true;
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (&o == &s || !o.inGame || o.respawnAtFrame != 0 || o.observer) continue;   // 0x8020 · 관전(3680&1)
+        if (consider(static_cast<float>(o.posX), static_cast<float>(o.posY), static_cast<float>(kBodyRadius))) {
+            kind = Player; bestP = &o;
+        }
+    }
+    for (const auto& k : pets_) {
+        auto tb = typeBodies_.find(k.type);
+        if (tb == typeBodies_.end() || tb->second.shape != 2) continue;   // 상자 몸 몬스터는 map_57B850(아직 없음)
+        if (consider(static_cast<float>(k.x), static_cast<float>(k.y), tb->second.r)) { kind = Pet; bestK = &k; }
+    }
+    if (kind == Player) return !IsEnemyTo(s, *bestP);
+    if (kind == Pet) {
+        if (bestK->owner.empty()) return false;                // 맵 몬스터 — 사람에게 늘 적
+        if (bestK->owner == s.addr) return true;               // 내 소환수
+        return !IsEnemyTo(s.addr, bestK->owner);
+    }
+    return false;
+}
+
+// `GAME4_3.c:3855` playerAttack — 맨손 갈래(`:4020~4066`)와 끝(LABEL_159 `:4420~4439`). 참 = 아직 공격 중.
+bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out) {
+    if (s.attackAnim == 0) {
+        // `:3903~3916` — 애니가 비었으면 여기서 뽑는다(`!class && rand(0,100) >= 75` → 25)
+        s.attackAnim = static_cast<uint8_t>(kAnimPunchLeft + NextRandom(2));
+        if (s.charClass == CharClass::Warrior && NextRandom(101) >= 75) s.attackAnim = kAnimPunchHook;
+    }
+    const int anim = s.attackAnim;
+    const int frames = (anim < kPlayerAnimSlots) ? playerAnimFrames_[anim][0] : 0;
+    const int hold = (anim < kPlayerAnimSlots) ? playerAnimFrames_[anim][1] : 0;
+    if (s.attackReadyFrame == 0)
+        s.attackReadyFrame = frame + static_cast<uint32_t>(frames * (hold + 1));   // `:4022~4024`
+    const int idx = static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
+    if (idx >= frames) {
+        // 판정 — 피해는 float 로 담는다(calcBoltDamage_4EF1E0: (힘 − 0) × 계수 + 더함)
+        const int add = (anim == kAnimPunchLeft || anim == kAnimPunchRight) ? kPunchDamageMin
+                      : (anim == kAnimPunchHook) ? kKickDamageMin : 0;
+        const float coeff = (anim >= kAnimPunchLeft && anim <= kAnimPunchHook) ? kUnarmedCoeffF : 0.0f;
+        const float dmg = static_cast<float>(static_cast<double>(s.strength) * coeff + add);
+        const int dmgInt = static_cast<int>(static_cast<long long>(static_cast<double>(dmg) + 0.5));
+        const float range = static_cast<float>(kBodyRadius) + kUnarmedReachExtra;
+        const bool hit = PlayerTraceAttack(s, range, dmgInt, static_cast<uint8_t>(anim), out);
+        ++melees_;
+        std::printf("[공격] 프레임 %u %s 판정(시작 %u · 칸 %d/%d) 애니 %d 피해 %d 사거리 %.0f → %s\n", frame, s.addr.c_str(),
+                    s.stateFrame, idx, frames, anim, dmgInt, range, hit ? "닿음" : "빗나감");
+        std::fflush(stdout);
+    }
+    s.animFrame = static_cast<uint8_t>(idx >= frames ? frames - 1 : idx);   // LABEL_159
+    return idx < frames;
+}
+
+// `GAME4_3.c:3624` playerTraceAttack(무기 없음) — 참 = 무엇에든 닿음(빗나감 소리 879 를 가른다, 소리는 묶음 10).
+bool Server::PlayerTraceAttack(Session& s, float range, int dmg, uint8_t anim, std::vector<OutPacket>& out) {
+    const float ax = static_cast<float>(s.posX), ay = static_cast<float>(s.posY);
+    const float dirX = std::cos(s.facingPrev * 2.0f * 3.14159265f / 256.0f);
+    const float dirY = std::sin(s.facingPrev * 2.0f * 3.14159265f / 256.0f);
+    // 후보 — sub_518040(자리, 사거리) → sub_5180B0: 사거리 − (가장자리까지 거리) > 0 → sub_5386A0 고르기
+    float best = range;
+    enum { None, Player, Pet, Obstacle } kind = None;
+    std::string bestAddr;
+    int bestIdx = -1;
+    bool bestMonster = false;
+    auto pick = [&](const PhysBody& b, float ox, float oy, bool isEnemy, int obstacleIdx) -> bool {
+        // sub_5180B0 거리 조건
+        {
+            double gate;
+            if (b.shape == 2) {
+                gate = range - (std::sqrt((ax - ox) * (ax - ox) + (ay - oy) * (ay - oy)) - b.r);
+            } else if (b.shape == 3) {
+                float nx, ny;
+                gate = BoxOverlap(ax, ay, range, b, ox, oy, nx, ny);
+            } else {
+                gate = range - std::sqrt((ax - ox) * (ax - ox) + (ay - oy) * (ay - oy));
+            }
+            if (!(gate > 0.0)) return false;
+        }
+        // sub_5386A0
+        if (b.flags & 0x8049) return false;
+        if (!((b.cls & 6) || !(b.flags & 0x10) || (b.flags & 0x80))) return false;
+        if (!(isEnemy || !(b.cls & 6))) return false;
+        if (!MapTraceVisionSkip(ax, ay, ox, oy, obstacleIdx)) return false;   // unitCanInteractWith(…, 1)
+        if (!(best > 0.0f)) return false;
+        const float vx = ox - ax;
+        const double vy = oy - ay;
+        double len = std::sqrt(vy * vy + vx * vx);
+        if (len == 0.0) return false;
+        if (!(vy / len * dirY + vx / len * dirX > 0.5)) return false;
+        if (b.shape == 2) {
+            len = len - b.r;
+        } else if (b.shape == 3) {
+            float nx, ny;
+            const double v7 = BoxOverlap(ax, ay, best, b, ox, oy, nx, ny);
+            if (v7 < 0.0) return false;
+            len = best - v7;
+        }
+        if (len < 0.0) len = 0.0;
+        const bool isMonster = (b.cls & kClsMonster) != 0;
+        if ((len < best || (kind != None && !bestMonster && isMonster)) && (kind == None || !bestMonster)) {
+            best = static_cast<float>(len);
+            bestMonster = isMonster;
+            return true;
+        }
+        return false;
+    };
+    PhysBody playerBody;
+    playerBody.shape = 2; playerBody.r = static_cast<float>(kBodyRadius); playerBody.cls = kClsPlayer;
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (&o == &s || !o.inGame) continue;
+        PhysBody b = playerBody;
+        if (o.respawnAtFrame != 0) b.flags |= 0x8000 | 0x8;    // 죽음 DEAD · ALLOW_OVERLAP
+        if (o.observer) b.flags |= 0x40;                       // 관전 NO_COLLIDE
+        if (pick(b, static_cast<float>(o.posX), static_cast<float>(o.posY), IsEnemyTo(s, o), -1)) {
+            kind = Player; bestAddr = kv.first;
+        }
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        const Creature& k = pets_[i];
+        auto tb = typeBodies_.find(k.type);
+        if (tb == typeBodies_.end()) continue;                 // 몸을 모르는 종류(지어내지 않는다)
+        const bool enemy = k.owner.empty() || (k.owner != s.addr && IsEnemyTo(s.addr, k.owner));
+        if (pick(tb->second, static_cast<float>(k.x), static_cast<float>(k.y), enemy, -1)) {
+            kind = Pet; bestIdx = static_cast<int>(i);
+        }
+    }
+    for (size_t i = 0; i < obstacles_.size(); ++i) {
+        const PhysBody& o = obstacles_[i];
+        if (pick(o, o.x, o.y, false, static_cast<int>(i))) { kind = Obstacle; bestIdx = static_cast<int>(i); }
+    }
+    if (kind == None) return false;
+
+    // sub_538510 — 방향 표 &1 · 깃발 · 선 추적(벽 0x5) → 피해
+    float tx = 0, ty = 0;
+    uint32_t tflags = 0;
+    if (kind == Player) {
+        const Session& o = sessions_.at(bestAddr);
+        tx = static_cast<float>(o.posX); ty = static_cast<float>(o.posY);
+    } else if (kind == Pet) {
+        tx = static_cast<float>(pets_[bestIdx].x); ty = static_cast<float>(pets_[bestIdx].y);
+        tflags = typeBodies_.at(pets_[bestIdx].type).flags;
+    } else {
+        tx = obstacles_[bestIdx].x; ty = obstacles_[bestIdx].y;
+        tflags = obstacles_[bestIdx].flags;
+    }
+    if (!(TestTwoPointsAndDirection(ax, ay, s.facingPrev, tx, ty) & 1)) return false;
+    if (tflags & 0x8040) return false;
+    if (tflags & 0x8) return false;                            // a2+24 == 0 이면 ALLOW_OVERLAP 은 안 맞는다
+    const bool hit = true;                                     // 재질 NONE(0x4000) 이 아니면 닿음 — 재질은 아직 안 읽는다
+    if (!MapTraceRay(ax, ay, tx, ty, 0x5)) return hit;
+    if (kind == Player) {
+        HurtTarget(Target{ bestAddr, -1 }, dmg, out, s.addr, DamageKind::Physical);
+        // 훅 — 맞은 쪽 ForceVec += (맞은 자리 − 때린 자리) × (10 × 20 ÷ 질량) ÷ (거리 + 0.1)
+        auto it = sessions_.find(bestAddr);
+        if (anim == kAnimPunchHook && it != sessions_.end()) {
+            Session& o = it->second;
+            const float dpx = static_cast<float>(o.posX) - ax, dpy = static_cast<float>(o.posY) - ay;
+            const float r = static_cast<float>(std::sqrt(static_cast<double>(dpx * dpx + dpy * dpy)) + 0.1);
+            const float f = 10.0f * kHookForce / static_cast<float>(kPlayerMass);
+            o.forceX += static_cast<float>(static_cast<double>(dpx) * f / r);
+            o.forceY += static_cast<float>(static_cast<double>(dpy) * f / r);
+        }
+    } else if (kind == Pet) {
+        HurtTarget(Target{ std::string(), bestIdx }, dmg, out, s.addr, DamageKind::Physical);
+        // ⚠ 훅 힘 — 소환수는 아직 물리가 없다(묶음 6)
+    }
+    // 장애물 — 피해 함수가 없는 것(나무·바위). 부서지는 것은 묶음 5·9.
+    return hit;
 }
 
 int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
@@ -3462,18 +3895,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         for (const auto& kv : sessions_) {
             if (!kv.second.inGame) continue;
             Creature k;
-            k.owner = kv.second.addr;
+            k.owner = debugPetWild_ ? std::string() : kv.second.addr;   // --debug-dummy 면 주인 없음(적)
             k.type = SummonType(87);   // SUMMON_IMP → Imp
             k.netCode = nextShotNetCode_++;
             if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
             // ⚠ 사람 자리에 겹치면 화면에서 구분이 안 되고 커서도 안 걸렸다(09-13) — 오른쪽 +80 에 떨어뜨린다.
-            k.x = kv.second.x + 80;
+            k.x = kv.second.x + (debugPetWild_ ? 25 : 80);   // 허수아비는 주먹 사거리(30) 안
             k.y = kv.second.y;
             k.health = static_cast<uint16_t>(TuningFor(k.type).health);
             pets_.push_back(k);
             debugOwnPetNetCode_ = k.netCode;
-            std::printf("[진단] 프레임 %u 에 %s 소유 임프(번호 %u)를 사람(%d,%d) 오른쪽 +80 에 고정\n",
-                        frame_, kv.second.addr.c_str(), static_cast<unsigned>(k.netCode), kv.second.x, kv.second.y);
+            std::printf("[진단] 프레임 %u 에 %s %s 임프(번호 %u · 체력 %u)를 사람(%d,%d) 오른쪽 +%d 에 고정\n",
+                        frame_, kv.second.addr.c_str(), debugPetWild_ ? "옆에 주인 없는" : "소유",
+                        static_cast<unsigned>(k.netCode), static_cast<unsigned>(k.health),
+                        kv.second.x, kv.second.y, debugPetWild_ ? 25 : 80);
             std::fflush(stdout);
             break;
         }
@@ -3507,8 +3942,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         debugTeamDone_ = true;
     }
 
-    // ── 사람을 걷게 한다 (묶음 2-a) ──
-    for (int step = 0; step < ticks; ++step) UpdatePlayerMovement();
+    // ── 사람을 걷게 하고 때리게 한다 (묶음 2-a · 3-a) — 걸음마다 제 프레임으로 ──
+    for (int step = 0; step < ticks; ++step)
+        UpdatePlayerMovement(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
 
     // ── 불려 나온 것들을 움직인다 ──
     // 부른 사람 편이다 — **부른 사람은 안 때린다.** 그게 없으면 부르자마자 자기가 맞는다.
@@ -3550,7 +3986,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     }
 
     // ★★ **걷고 있나를 정한다** — 갱신 항목의 애니 번호(IDLE/WALK)를 가르는 데 썼다.
-    //   ⚠ 2026-09-13 부터 자세는 상태에서 뽑는다(PlayerAnimOf). 이 값은 더 안 쓰인다 — 진단용으로만 남는다.
+    //   ⚠ 2026-09-13 부터 자세는 상태에서 뽑는다(PlayerAnimByte). 이 값은 더 안 쓰인다 — 진단용으로만 남는다.
     //   지난 틱 자리와 견줘 움직였으면 걷는 것으로 본다.
     //   ⚠ 문턱 1.0 은 ➖ 우리 값이다. 정품 덤프의 「정지」 표본이 틱당 0.3~1.3 유닛이라
     //     그보다 위를 걷기로 잡았다. 너무 낮으면 서 있어도 걷는 자세가 된다.
@@ -3713,13 +4149,14 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 m.flags = 0;
                 m.headAnim = 0;
                 ObjEntry me;
-                // ★ 자세 — 상태에서 뽑는다(PlayerAnimOf: 걷기 4 · 달리기 6 · 가만 0). 2026-09-13 묶음 2-a
+                // ★ 자세 — 상태에서 뽑는다(PlayerAnimByte: 걷기 4 · 달리기 6 · 가만 0 · 공격 = 애니 번호). 묶음 2-a·3-a
                 FillEntry(s.aliases, s.netCode, kPlayerType, s.tickFrame, s.x, s.y,
                           s.facing, me, /*complex=*/true,
                           /*playerAnim=*/ forceAnimPose_ >= 0
                               ? static_cast<uint8_t>(forceAnimPose_)
-                              : PlayerAnimOf(s),
-                          forceAnimDir_);
+                              : PlayerAnimByte(s),
+                          forceAnimDir_,
+                          PlayerAnimFrameSent(s) ? s.animFrame : -1);
                 m.objects.push_back(me);
                 // 시야 안 정적 — **상한 필수** (AppendAoiStatics 주석: 상한 없이는
                 // 스폰 주변 40개↑ 가 480B 를 넘겨 a4 가 통째로 비어 나갔다).
@@ -4011,8 +4448,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                       /*complex=*/true,
                       /*playerAnim=*/ forceAnimPose_ >= 0
                           ? static_cast<uint8_t>(forceAnimPose_)
-                          : PlayerAnimOf(o),
-                      forceAnimDir_);
+                          : PlayerAnimByte(o),
+                      forceAnimDir_,
+                      PlayerAnimFrameSent(o) ? o.animFrame : -1);
             // ★★ **별칭으로 보낼 때는 좌표도 상대로.** 정품 원바이트가 그렇다(2026-09-08):
             //     정품  … 01 <머리좌표4> 00 00 │ cb 00 00 │ 40 │ 끝     (14바이트)
             //     내 것 … 01 <머리좌표4> 00 00 │ 00 c9 <절대좌표4> │ 40 │ 끝  (17바이트)
@@ -4090,7 +4528,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                     //   자기 항목과 같은 결함이었다(아래 `else` 가지 주석 참조).
                     //   `extra = 1` 이면 **자세 바이트가 안 나가** 클라가 다음 항목의
                     //   첫 바이트를 자세로 먹고 그 뒤가 통째로 밀린다.
-                    e.extra = 2;
+                    if (e.extra < 2) e.extra = 2;   // 3 = 애니 칸이 붙은 것(묶음 3-a) — 줄이지 않는다
                     // ★★★ **`00` 이 아니라 `0x30` 이다.** 2026-09-09 에 정품 2인 갱신과
                     //   원바이트를 나란히 놓으니 30바이트 중 **이 한 자리만** 달랐다:
                     //     내 것 … 00 ff ce 02 c9 02 <좌표4> **00** │ 00 00
@@ -4102,7 +4540,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                     //     정품 표본에서 두 사람은 1,400 떨어져 **서로 화면 밖**이었다.
                     //     자기 항목은 `40`(+`00`)인데 그건 그려진다 — `--peer-pose 40` 으로
                     //     남에게도 같은 값을 줘 가른다(2026-09-09).
-                    e.extraBytes[0] = peerPose_;
+                    // ⭕ 2026-09-13 묶음 3-a 정정 — `0x30` 은 **그때 상대가 바라보던 쪽**이었다.
+                    //   정답지 짜는 쪽(`GAME4_1.c:4471~4478`)이 이 바이트 위 4비트에 방향만 싣는다(0x80 = 애니 칸 붙음).
+                    //   고정값으로 덮으면 남의 방향이 늘 3 이 되고 0x80 도 지워진다. 진단 스위치를 줄 때만 덮는다.
+                    if (peerPose_ >= 0) e.extraBytes[0] = static_cast<uint8_t>(peerPose_);
                     // ★ 둘째 바이트(자세)는 `FillEntry` 가 넣은 것을 그대로 둔다.
                     //   전에는 여기서 `0x00` 으로 지웠다 — 남이 걸어도 늘 선 자세였다.
                 } else {
@@ -4133,7 +4574,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                     //
                     //   ⚠ 「별칭이면 한 바이트」라던 2026-09-08 실측은 **판독 오독**이었다
                     //     (그 덤프엔 별칭 사람 항목이 0건이었다 — `nox_verify` 로 확인).
-                    e.extra = 2;
+                    if (e.extra < 2) e.extra = 2;   // 3 = 애니 칸이 붙은 것(묶음 3-a)
                     // `extraBytes` 는 `FillEntry` 가 이미 채웠다 — **덮어쓰지 않는다.**
                 }
             }

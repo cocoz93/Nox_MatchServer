@@ -6,6 +6,7 @@
 
 #include <cctype>
 #include <cstring>
+#include <algorithm>
 
 #include "nox/NoxCrypt.h"
 
@@ -319,8 +320,41 @@ std::vector<std::string> FixAttrs(const std::string& attr) {
     return out;
 }
 
+// PlayerDraw 짐 — libs `things/thing_draw.go:335` readPlayerDraw 그대로.
+//   STAT = 이름(len8) · FramesPerDir(u8) · Field8(u8) · 이름(len8)
+//   SEQU = 이름(len8) · 8방향 × 직전 STAT 의 FramesPerDir 개 그림 참조
+//   END  = 끝. 모르는 섹션이면 멈춘다(바깥에서 크기로 건너뛰므로 걸음은 안 밀린다).
+void ReadPlayerDraw(Cur& c, size_t end, PlayerAnimFrames* anims, int* seen) {
+    int lastFrames = 0;
+    while (!c.bad && c.off < end) {
+        const std::string sect = c.Sect();
+        if (c.bad || sect == "END ") return;
+        if (sect == "STAT") {
+            const std::string name = c.Str8();
+            const int frames = c.U8();
+            const int hold = c.U8();
+            c.SkipBytes8();
+            if (c.bad) return;
+            lastFrames = frames;
+            for (int i = 0; i < kPlayerAnimTypeCount; ++i) {
+                if (name != PlayerAnimTypeName(i)) continue;
+                anims[i].frames = frames;
+                anims[i].hold = hold;
+                ++*seen;
+                break;
+            }
+        } else if (sect == "SEQU") {
+            c.SkipBytes8();
+            for (int d = 0; d < 8 && !c.bad; ++d)
+                for (int j = 0; j < lastFrames && !c.bad; ++j) SkipImageRef(c);
+        } else {
+            return;
+        }
+    }
+}
+
 // THNG 하나. Go ReadThingSect 에서 서버에 필요한 것만 남긴 판.
-bool ReadThing(Cur& c, ThingInfo& t) {
+bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
     t.name = c.Str8();
     if (c.bad) return false;
     for (;;) {
@@ -342,8 +376,18 @@ bool ReadThing(Cur& c, ThingInfo& t) {
                 // ★ 이름 + 8정렬 u64 크기 + 그만큼의 짐 — **크기로 통째 건너뛴다.**
                 //   Go 는 이름별 구조 skip 을 두지만 default 가 skip(sectSz)다.
                 //   크기가 짐과 안 맞으면 다음 이름들이 깨져 전수 대조에서 바로 걸린다.
-                c.Str8();
+                const std::string dname = c.Str8();
                 const uint64_t sz = c.U64Align();
+                // ★ 2026-09-13 묶음 3-a — PlayerDraw 만은 STAT(애니 칸 수)을 읽는다. 공격 시각이 애니 길이다.
+                //   정답지도 PlayerDraw 가 나올 때마다 표를 덮어쓴다(`server/object_type.go:1065`) — 같게 둔다.
+                //   다 읽든 말든 **끝 자리는 크기로 맞춘다** — 걸음이 밀리지 않게.
+                if (dname == "PlayerDraw" && !c.bad) {
+                    const size_t start = c.off;
+                    Cur sub = c;
+                    sub.err = nullptr;   // 읽다 틀려도 본 커서의 오류로 번지지 않게
+                    sub.n = std::min(c.n, start + static_cast<size_t>(sz));
+                    ReadPlayerDraw(sub, sub.n, anims, animSeen);
+                }
                 c.Skip(static_cast<size_t>(sz));
             } else if (key == "MENUICON" || key == "PRETTYIMAGE") {
                 SkipImageRef(c);
@@ -426,6 +470,22 @@ const char* const kClassNames[32] = {
 };
 }  // namespace
 
+const char* PlayerAnimTypeName(int i) {
+    // `server/object_type.go:1093~1149` playerAnimTypes 순서 · 이름은 libs `player/anims.go`
+    static const char* const kNames[kPlayerAnimTypeCount] = {
+        "IDLE", "DIE", "DEAD", "JUMP", "WALK", "WALK_AND_DRAG", "RUN", "RUNNING_JUMP", "PICKUP",
+        "DODGE_LEFT", "DODGE_RIGHT", "ELECTROCUTED", "FALL", "TRIP", "GET_UP", "LAUGH", "POINT",
+        "SIT", "SLEEP", "TALK", "TAUNT", "CAST_SPELL", "CONCENTRATE", "PUNCH_LEFT", "PUNCH_RIGHT",
+        "PUNCH_RIGHT_HOOK", "MACE_STRIKE", "SWORD_STRIKE", "LONG_SWORD_STRIKE", "STAFF_STRIKE",
+        "STAFF_BLOCK", "STAFF_SPELL_BLAST", "STAFF_THRUST", "SHOOT_BOW", "SHOOT_CROSSBOW",
+        "AXE_STRIKE", "GREAT_SWORD_PARRY", "GREAT_SWORD_STRIKE", "GREAT_SWORD_IDLE", "HAMMER_STRIKE",
+        "RAISE_SHIELD", "RECOIL_FORWARD", "RECOIL_BACKWARD", "RECOIL_SHIELD", "CHAKRAM_STRIKE",
+        "BERSERKER_CHARGE", "WARCRY", "GREAT_SWORD_BLOCK_LEFT", "GREAT_SWORD_BLOCK_RIGHT",
+        "GREAT_SWORD_BLOCK_DOWN", "ELECTRIC_ZAP", "DUST", "RECOIL", "SNEAK", "HARPOONTHROW",
+    };
+    return (i >= 0 && i < kPlayerAnimTypeCount) ? kNames[i] : nullptr;
+}
+
 uint32_t ParseObjectFlags(const std::string& raw) { return ParseNameBits(raw, kFlagNames, 32); }
 uint32_t ParseObjectClass(const std::string& raw) { return ParseNameBits(raw, kClassNames, 32); }
 
@@ -433,6 +493,8 @@ bool ThingDb::Load(const std::string& path) {
     things_.clear();
     walls_.clear();
     error_.clear();
+    for (auto& a : playerAnims_) a = PlayerAnimFrames{};
+    playerAnimSeen_ = 0;
 
     const std::vector<uint8_t> buf = DecryptFile(path, kKeyThingBin);
     if (buf.empty()) { error_ = "cannot read/decrypt " + path; return false; }
@@ -456,7 +518,7 @@ bool ThingDb::Load(const std::string& path) {
         else if (sect == "IMAG") SkipIMAG(c);
         else if (sect == "THNG") {
             ThingInfo t;
-            if (!ReadThing(c, t)) break;
+            if (!ReadThing(c, t, playerAnims_, &playerAnimSeen_)) break;
             things_.push_back(std::move(t));
         } else if (sect == std::string("\0\0\0\0", 4)) {
             break;   // 끝의 0 채움

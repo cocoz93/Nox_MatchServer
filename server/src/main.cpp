@@ -187,6 +187,7 @@ int main(int argc, char** argv) {
     double creatureAoiHalf = 0.0;   // 크리처 시야 판정 반폭 — 0 꺼짐 · <0 정답지 기본(740×580) · >0 판정용 정사각형
     int creatureAwayAfter = 0;      // 진단 — 첫 사람 들어오고 N 틱 뒤 크리처를 ±300 으로 옮김 (0 끔)
     bool friends = false;           // 친구 알림(OBJECT_FRIEND_ADD/REMOVE) — 부분 구현이라 기본 끔
+    int debugDummy = 0;             // 진단 — 첫 사람 N 틱 뒤 주인 없는 임프 허수아비(0 끔)
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
@@ -292,6 +293,9 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-own-pet" && i + 1 < argc) {
             // 진단 — 친구 판정용. 소환 조작을 빼 버리고 그 사람 소유 임프를 사람 자리에 고정한다.
             debugOwnPet = std::atoi(argv[++i]);
+        } else if (a == "--debug-dummy" && i + 1 < argc) {
+            // 진단 — 주먹 판정용(묶음 3-a). 첫 사람 N 틱 뒤 주인 없는 임프를 오른쪽 +25 에 고정(맞으면 깎이고 죽는다).
+            debugDummy = std::atoi(argv[++i]);
         } else if (a == "--debug-team-after" && i + 1 < argc) {
             // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
             debugTeamAfter = std::atoi(argv[++i]);
@@ -501,6 +505,12 @@ int main(int argc, char** argv) {
                     srv.SetTypeBody(w, b);
                 }
             }
+            // ★ 2026-09-13 묶음 3-a — 사람 애니 칸 수(PlayerDraw STAT). 맨손 공격이 끝나는 틱이 이 값이다.
+            for (int i = 0; i < nox::kPlayerAnimTypeCount; ++i)
+                srv.SetPlayerAnimFrames(i, tdb.PlayerAnim(i).frames, tdb.PlayerAnim(i).hold);
+            std::printf("[애니] 사람 STAT %d개 — 주먹 %d칸/붙듦 %d · 훅 %d칸/붙듦 %d\n", tdb.PlayerAnimCount(),
+                        tdb.PlayerAnim(23).frames, tdb.PlayerAnim(23).hold,
+                        tdb.PlayerAnim(25).frames, tdb.PlayerAnim(25).hold);
             if (!props.empty()) {
                 std::printf("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());
                 srv.SetWorldProps(std::move(props));
@@ -576,6 +586,10 @@ int main(int argc, char** argv) {
             srv.SetFriends(true);
             std::printf("[친구] 켬 — 자기 소환수·같은 팀을 OBJECT_FRIEND_ADD 로 알림 (적대 판정 부분 구현)\n");
             std::fflush(stdout);
+        }
+        if (debugDummy > 0) {
+            srv.SetDebugDummyAfter(static_cast<uint32_t>(debugDummy));
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주인 없는 임프 허수아비를 오른쪽 +25 에 고정\n", debugDummy);
         }
         if (debugOwnPet > 0) {
             srv.SetDebugOwnPetAfter(static_cast<uint32_t>(debugOwnPet));

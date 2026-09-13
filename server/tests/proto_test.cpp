@@ -652,10 +652,12 @@ void TestAoiSightExit() {
 //
 // 무엇을 보나 — 사람 항목의 **첫 덧붙이 바이트**다. 클라는 그것을 이렇게 쪼갠다:
 //     방향 = (값 >> 4) & 7      (`GAME2_3.c:1677-1679`, 4 이상이면 +1)
-// 서버가 싣는 값은 `((facing >> 5) & 7) << 4` 이므로 —
-//     facing 224  →  (224>>5)&7 = 7  →  **0x70**
-//     facing 0    →  0              →  **0x00**
-// 자세는 **둘째 바이트**로 따로 가고 서 있으면 0 이다. 그래서 `70 00` 두 바이트를 센다.
+// ❌ 정정(2026-09-13 묶음 3-a ④) — 서버가 싣는 값은 `((facing >> 5) & 7) << 4` 가 **아니다.**
+//   정답지(`GAME4_1.c:4471~4478`)는 방향표 행(x+3y+4, blob 192088 · 문턱 6)을 4 이하 그대로 · 넘으면 −1 로 싣는다.
+//     facing 0(동)    → 행 5 → 4 → **0x40**      facing 224(동북 위) → 행 2 → **0x20**
+//     facing 64(남)   → 행 7 → 6 → **0x60**      facing 128(서)      → 행 3 → **0x30**      facing 192(북) → 행 1 → **0x10**
+//   옛 식은 동쪽을 0(왼쪽 위 그림)으로 보내 **주먹이 엉뚱한 쪽으로** 나갔다(_evidence/b3a_punch_exp2).
+// 자세는 **둘째 바이트**로 따로 가고 서 있으면 0 이다.
 //
 // ⚠ 자세를 같이 보는 까닭 — 방향만 세면 「자세 자리를 방향이 밀어냈다」를 못 잡는다.
 //   그 사고를 이미 한 번 냈다(덮어쓰기 세 줄).
@@ -685,8 +687,8 @@ static std::vector<uint8_t> FacingWire(const std::string& a, uint8_t facing) {
 
 void TestFacingOnWire() {
     const std::string a = "10.9.2.2:41022";
-    const std::vector<uint8_t> w0   = FacingWire(a, 0);     // (0>>5)&7   = 0 → 0x00
-    const std::vector<uint8_t> w224 = FacingWire(a, 224);   // (224>>5)&7 = 7 → 0x70
+    const std::vector<uint8_t> w0   = FacingWire(a, 0);     // 동 — 행 5 → 0x40
+    const std::vector<uint8_t> w224 = FacingWire(a, 224);   // 동북 위 — 행 2 → 0x20
     const std::vector<uint8_t> w0b  = FacingWire(a, 0);     // 대조군 — 같은 값 두 번
 
     Check(!w0.empty(), "갱신이 아예 안 나갔다 — 시험 전제가 깨졌다");
@@ -703,8 +705,17 @@ void TestFacingOnWire() {
     // ★★ 여기가 **돌연변이를 잡는 자리**다 — `0x40` 고정으로 되돌리면 diff 가 0 이 된다.
     Check(diff > 0, "바라보는 쪽을 바꿨는데 와이어가 한 바이트도 안 달라진다");
     Check(diff == 1, "방향 말고 다른 자리까지 달라진다 — 자세를 밀어냈을 수 있다");
-    Check(w0[at] == 0x00 && w224[at] == 0x70,
-          "달라진 바이트가 방향 3비트 꼴이 아니다 (0x00 ↔ 0x70 이어야 한다)");
+    Check(w0[at] == 0x40 && w224[at] == 0x20,
+          "달라진 바이트가 정답지 방향 꼴이 아니다 (동 0x40 ↔ 동북 위 0x20 이어야 한다)");
+    // 네 방위 — 같은 자리에서 정답지 값이 나오나
+    {
+        const std::pair<uint8_t, uint8_t> dirs[] = { { 64, 0x60 }, { 128, 0x30 }, { 192, 0x10 } };
+        for (const auto& dv : dirs) {
+            const std::vector<uint8_t> w = FacingWire(a, dv.first);
+            Check(w.size() == w0.size() && at < w.size() && w[at] == dv.second,
+                  "남·서·북 방향 바이트가 정답지 표(0x60·0x30·0x10) 와 다르다");
+        }
+    }
 
     std::printf("  바라보는 쪽 — facing 0↔224 로 **한 바이트**만 달라짐 "
                 "(자리 %zu · 0x%02X→0x%02X · 대조군 흔들림 %zu)\n",
@@ -1853,8 +1864,8 @@ void TestDirtyUnitHealth() {
         srv.DebugEnterGame(b, 729);
         srv.StartQuest(2, 5000, 5000, 100.0);   // 사람에게서 멀리 — 몬스터가 안 끼게
         std::vector<nox::OutPacket> out;
-        auto pkt = InputPacket(6);              // A 가 B 를 친다 (둘 다 같은 자리)
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        // ⚠ 2026-09-13 묶음 3-a — 주먹은 이제 애니가 끝나야 닿고 퀘스트에선 사람끼리 안 맞는다 → 피해를 직접 준다
+        srv.Damage(b, 5, out, a);
         const uint16_t hp = srv.HealthOf(b);
         Check(hp < nox::kDefaultMaxHealth, "때렸는데 안 깎임");
 
@@ -1875,8 +1886,7 @@ void TestDirtyUnitHealth() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        auto pkt = InputPacket(6);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        srv.Damage(b, 5, out, a);
         Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "때렸는데 안 깎임(아레나)");
 
         out.clear();
@@ -1892,8 +1902,7 @@ void TestDirtyUnitHealth() {
         srv.DebugEnterGame(b, 729);
         srv.StartQuest(2, 5000, 5000, 100.0);
         std::vector<nox::OutPacket> out;
-        auto pkt = InputPacket(6);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        srv.Damage(b, 5, out, a);
         out.clear();
         for (uint32_t ms = 0; ms <= 120; ms += 33) srv.Tick(ms, out);   // 실제로 돌게
         const unsigned long long afterFirst = srv.unitHealthSent();
@@ -2008,73 +2017,233 @@ void TestEnchantInvuln() {
 }
 
 void TestMelee() {
-    nox::Server srv;
+    // ★★ 2026-09-13 묶음 3-a — **정답지 맨손 공격**으로 다시 썼다(옛 시험은 클릭 즉시 깎임 · 15틱 쉬기를 쟀다).
+    //   클릭 → ImplB 가 상태 1 · 그 틱이 상태 시작 → 틱마다 칸을 세고 **칸 수(주먹 8 · 붙듦 0)에 닿는 틱**에 판정
+    //   → 같은 틱에 상태 13. 다음 공격은 첫 공격 틱 + 8 이후(Field0) — 한 주기 9틱.
+    //   사거리 = 몸 반지름 10 + 20 · 앞쪽 60° 안(내적 > 0.5) · 방향 표 &1 · 벽 선 추적.
     const std::string a = "10.0.0.1:1000";
     const std::string b = "10.0.0.2:1000";
-    srv.DebugEnterGame(a, 728);
-    srv.DebugEnterGame(b, 729);   // 둘 다 (1000,1000) — 근접 사거리 안이다
-    // ★ 2026-09-13 묶음 2-c — 몸끼리 충돌(원 대 원)이 들어와 **겹친 몸은 틱에 튕겨 나간다.**
-    //   반지름 합(20) 밖 · 근접 사거리(45) 안인 25 로 벌린다.
-    srv.DebugMoveTo(b, 1025, 1000);
+    const int kPunchFrames = 8;   // ⭕ thing.bin PUNCH_LEFT/RIGHT/HOOK = 8칸 · 붙듦 0 (TestThingDb ⑥ 이 찍는다)
+    auto makeSrv = [&](nox::Server& srv) {
+        for (int i = 23; i <= 25; ++i) srv.SetPlayerAnimFrames(i, kPunchFrames, 0);
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1025, 1000);   // 반지름 합(20) 밖 · 사거리 안 · a 가 바라보는 +x 쪽
+    };
+    auto click = [&](nox::Server& srv, const std::string& who, uint8_t code, std::vector<nox::OutPacket>& out) {
+        // 걸음(2~5)은 데이터 1바이트가 붙는다(Server.cpp PLAYER_INPUT 길이 표) — 없으면 서버가 조각을 버린다
+        std::vector<uint8_t> pkt = InputPacket(code);
+        if (code >= 2 && code <= 5) { pkt[nox::kWireHeaderSize + 1] = 5; pkt.push_back(0); }
+        srv.OnPacket(who, pkt.data(), pkt.size(), out);
+    };
 
-    // ① 한 번 치면 한 번 깎인다
+    // ① 클릭한 순간에는 안 깎인다 · 상태 1 로 들어가 칸이 오른다 · 8틱째 판정 · 같은 틱에 상태 13
     {
+        nox::Server srv;
+        makeSrv(srv);
         std::vector<nox::OutPacket> out;
-        auto pkt = InputPacket(6);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth - kWizardPunch,
-              "왼버튼 한 번에 안 깎임");
-        Check(srv.melees() == 1, "근접 집계가 1 이 아님");
-    }
-
-    // ★★ ② 누르고 있으면 매 틱 오는데, **쉬는 시간이 먹혀야 한다**
-    //    이게 없으면 초당 서른 대가 들어가 게임이 아니게 된다
-    {
-        const uint16_t before = srv.HealthOf(b);
-        for (int i = 0; i < 10; ++i) {
-            std::vector<nox::OutPacket> out;
-            auto pkt = InputPacket(6);
-            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        click(srv, a, 6, out);
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "클릭한 순간 바로 깎였다 — 애니를 안 기다린다");
+        ms += 33; srv.Tick(ms, out);                               // 틱 T — 상태 1 로 들어간다
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "클릭한 틱에 상태 1 로 안 들어갔다");
+        const uint8_t anim = srv.DebugAttackAnimOf(a);
+        Check(anim == 23 || anim == 24, "위저드 맨손 애니가 23·24 가 아니다");
+        int hitTick = -1;
+        for (int t = 1; t <= 12 && hitTick < 0; ++t) {
+            ms += 33; srv.Tick(ms, out);
+            if (srv.HealthOf(b) != nox::kDefaultMaxHealth) hitTick = t;
+            else Check(srv.DebugAnimFrameOf(a) == t, "공격 중 애니 칸이 (프레임 − 시작) 이 아니다");
         }
-        Check(srv.HealthOf(b) == before, "쉬는 시간 안에 또 맞음");
-        Check(srv.melees() == 1, "쉬는 시간 중에도 근접이 나감");
+        Check(hitTick == kPunchFrames, "주먹이 애니 끝(8틱) 이 아닌 때에 닿았다");
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth - kWizardPunch, "한 대 피해가 맨손 식(힘×0.04+5, 방어) 과 다르다");
+        Check(srv.melees() == 1, "근접 집계가 1 이 아님");
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "판정한 틱에 상태 13 으로 안 돌아왔다");
+        Check(srv.DebugAttackAnimOf(a) == 0, "공격이 끝났는데 애니 번호(Field8) 가 안 지워졌다");
     }
 
-    // ③ 시간이 지나면 다시 칠 수 있다
+    // ② 공격 중 클릭은 무시 · 끝난 틱의 클릭도 쉬는 시간(Field0) 에 막힌다 · 그다음 틱부터 된다
     {
+        nox::Server srv;
+        makeSrv(srv);
         std::vector<nox::OutPacket> out;
-        srv.Tick(0, out);
-        srv.Tick(33 * (nox::kMeleeCooldownTicks + 1), out);
-        const uint16_t before = srv.HealthOf(b);
-        auto pkt = InputPacket(6);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(srv.HealthOf(b) == before - kWizardPunch, "쉬는 시간이 지났는데 안 깎임");
-        Check(srv.melees() == 2, "근접 집계가 2 가 아님");
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        click(srv, a, 6, out);
+        ms += 33; srv.Tick(ms, out);                               // T: 상태 1
+        for (int t = 1; t < kPunchFrames; ++t) { click(srv, a, 6, out); ms += 33; srv.Tick(ms, out); }
+        Check(srv.melees() == 0, "공격 중 클릭이 판정을 앞당겼다");
+        click(srv, a, 6, out);
+        ms += 33; srv.Tick(ms, out);                               // T+8: 판정 · 같은 틱 클릭은 Field0(T+9) 에 막힘
+        Check(srv.melees() == 1, "8틱째 판정이 안 났다");
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "쉬는 시간 중 클릭이 상태 1 로 넣었다");
+        click(srv, a, 6, out);
+        ms += 33; srv.Tick(ms, out);                               // T+9: 다시 상태 1
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "쉬는 시간이 끝났는데 공격이 안 들어간다");
     }
 
-    // ④ 걸음 코드는 때리지 않는다 — 코드를 뭉뚱그리면 걷기만 해도 사람이 죽는다
+    // ③ 공격 중 걸음 코드는 안 먹는다(맨손 상태 1) · 걸음 코드는 때리지 않는다
     {
-        const uint16_t before = srv.HealthOf(b);
+        nox::Server srv;
+        makeSrv(srv);
         std::vector<nox::OutPacket> out;
-        auto pkt = InputPacket(2);   // CCMoveForward
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(srv.HealthOf(b) == before, "걸음 코드가 사람을 깎음");
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        click(srv, a, 2, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateWalk, "걸음 코드가 걷기 상태로 안 바꿨다");
+        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "걸음 코드가 사람을 깎음");
+        click(srv, a, 6, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "걷다가 클릭해도 공격으로 안 바뀐다");
+        click(srv, a, 2, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "맨손 공격 중 걸음 코드가 공격을 끊었다");
     }
 
-    // ⑤ 멀리 있으면 안 닿는다 — 주문 사거리(210)보다 근접이 짧아야 한다
+    // ④ 사거리 — 반지름 10 + 20 = 30 을 가장자리(중심 − 상대 반지름 10)까지 잰다 → 중심 39 는 닿고 41 은 안 닿는다
     {
-        nox::Server far;
-        far.DebugEnterGame(a, 728);
-        far.DebugEnterGame(b, 729);
-        far.DebugMoveTo(b, 1000 + static_cast<int>(nox::kMeleeRange) + 20, 1000);
-        std::vector<nox::OutPacket> out;
-        auto pkt = InputPacket(6);
-        far.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(far.HealthOf(b) == nox::kDefaultMaxHealth, "근접 사거리 밖인데 맞음");
+        for (int dist : { 39, 41 }) {
+            nox::Server srv;
+            makeSrv(srv);
+            srv.DebugMoveTo(b, 1000 + dist, 1000);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            click(srv, a, 6, out);
+            for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+            const bool hit = srv.HealthOf(b) != nox::kDefaultMaxHealth;
+            Check(dist == 39 ? hit : !hit, dist == 39 ? "사거리 안(39) 인데 안 맞음" : "사거리 밖(41) 인데 맞음");
+        }
         Check(nox::kMeleeRange < nox::kSpellRange, "근접이 주문보다 멀다");
     }
 
-    std::printf("  근접 공격 — 한 대·쉬는 시간·걸음과 구분·사거리\n");
+    // ⑤ 방향 — 등 뒤(−x) · 옆(+y, 내적 0) 은 안 맞고, 그쪽을 보면 맞는다
+    {
+        struct Case { int bx, by; uint8_t face; bool expect; const char* why; };
+        const Case cases[] = {
+            { 975, 1000, 0, false, "등 뒤인데 맞음" },
+            { 1000, 1025, 0, false, "옆(90°) 인데 맞음" },
+            { 1000, 1025, 64, true, "+y 를 보는데 +y 가 안 맞음" },
+            { 975, 1000, 128, true, "−x 를 보는데 −x 가 안 맞음" },
+            // 두 문이 따로 막는 자리 — 계산은 blob 방향표·구역표로 뽑았다(방향 0: 표 ±67.5° · 내적 ±60°)
+            { 1011, 1022, 0, false, "63° — 내적 문(> 0.5)이 안 막음" },
+            { 1008, 1024, 16, false, "방향 16 에서 +49° — 방향 표 문(sub_4E6E50 &1)이 안 막음" },
+        };
+        for (const auto& c : cases) {
+            nox::Server srv;
+            makeSrv(srv);
+            srv.DebugMoveTo(b, c.bx, c.by);
+            srv.DebugSetFacing(a, c.face);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            click(srv, a, 6, out);
+            for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+            Check((srv.HealthOf(b) != nox::kDefaultMaxHealth) == c.expect, c.why);
+        }
+    }
+
+    // ⑥ 갱신 항목 — 공격 중에는 자세가 애니 번호 · 방향 바이트 0x80 · 칸 바이트가 붙는다(3바이트)
+    {
+        nox::Server srv;
+        makeSrv(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        click(srv, a, 6, out);
+        for (int t = 0; t < 4; ++t) { ms += 33; srv.Tick(ms, out); }
+        out.clear();
+        ms += 33; srv.Tick(ms, out);
+        bool seen = false;
+        for (const auto& p : out) {
+            if (p.to != a) continue;
+            auto body = Body(p);
+            if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+            nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
+            for (const auto& e : m.objects) {
+                if (e.type != nox::kPlayerType || e.extra != 3) continue;
+                if (!(e.extraBytes[0] & 0x80)) continue;
+                const uint8_t anim = e.extraBytes[2];
+                if (anim != 23 && anim != 24) continue;
+                Check(e.extraBytes[1] == srv.DebugAnimFrameOf(a) || e.extraBytes[1] + 1 == srv.DebugAnimFrameOf(a) ||
+                      e.extraBytes[1] == srv.DebugAnimFrameOf(a) + 1, "갱신의 애니 칸이 서버 칸과 한참 다르다");
+                seen = true;
+            }
+        }
+        Check(seen, "공격 중인데 갱신 항목에 [방향|0x80][칸][애니 23·24] 가 없다");
+    }
+
+    // ⑦ 벽 너머는 안 맞는다 — 칸 (44,43) 에 「\」 선분 하나(방향 1). y 1000 에서 x 1023 을 지난다.
+    //   a(1000)·b(1038) 둘 다 선분에서 10 넘게 떨어져(16.3 · 10.6) 벽에 밀리지 않는다. 벽 없는 대조군은 맞는다.
+    {
+        for (bool wall : { true, false }) {
+            nox::Server srv;
+            makeSrv(srv);
+            srv.DebugMoveTo(b, 1038, 1000);
+            if (wall) srv.SetWallTiles({ nox::Server::WallTileIn{ 44, 43, 1, 0, false } });
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            click(srv, a, 6, out);
+            for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+            const bool hit = srv.HealthOf(b) != nox::kDefaultMaxHealth;
+            Check(wall ? !hit : hit, wall ? "벽 너머인데 맞음" : "벽 없는 대조군(38) 이 안 맞음 — 벽 시험이 무의미해진다");
+            Check(srv.XOf(b) == 1038 && srv.XOf(a) == 1000, "벽 시험 중 몸이 밀렸다 — 자리 가정이 깨졌다");
+        }
+    }
+
+    // ⑧ 그늘 깃발(SHADOW 0x10000) 오브젝트가 선을 가리면 안 맞는다(MapTraceVision `server/map.go:539`).
+    //   가리개 = 반지름 3 원 · NO_COLLIDE(0x40) 라 후보(0x8049 거름)도 아니다. 그늘만 뺀 대조군은 맞는다.
+    {
+        for (bool shadow : { true, false }) {
+            nox::Server srv;
+            makeSrv(srv);
+            srv.DebugMoveTo(b, 1038, 1000);
+            nox::Server::PhysBody blocker;
+            blocker.x = 1019; blocker.y = 1000; blocker.shape = 2; blocker.r = 3.0f;
+            blocker.flags = 0x40 | (shadow ? 0x10000u : 0u);
+            srv.SetObstacles({ blocker });
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            click(srv, a, 6, out);
+            for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+            const bool hit = srv.HealthOf(b) != nox::kDefaultMaxHealth;
+            Check(shadow ? !hit : hit, shadow ? "그늘 오브젝트 너머인데 맞음" : "그늘 없는 대조군이 안 맞음 — 그늘 시험이 무의미해진다");
+        }
+    }
+
+    // ⑨ 방향 입력은 틱의 ImplB 에서 갈아 끼운다 — 그 틱의 힘(ImplA)은 **옛 방향**으로 준다(`object_update.go:117~118`).
+    //   동쪽으로 걷던 중 +y(64) 를 받은 틱에는 y 로 힘이 안 들어가 y 가 그대로다. 다음 틱부터 내려간다.
+    {
+        nox::Server srv;
+        makeSrv(srv);
+        srv.DebugMoveTo(b, 5000, 5000);
+        auto facePkt = [&](uint8_t dir) {
+            std::vector<uint8_t> p = InputPacket(1);
+            p[nox::kWireHeaderSize + 1] = 5;
+            p.push_back(dir);
+            return p;
+        };
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 4; ++t) { click(srv, a, 2, out); ms += 33; srv.Tick(ms, out); }
+        const int y0 = srv.YOf(a);
+        Check(srv.XOf(a) > 1000 && y0 == 1000, "동쪽 걷기 준비가 안 됐다 — 이 시험이 무의미해진다");
+        auto fp = facePkt(64);
+        srv.OnPacket(a, fp.data(), fp.size(), out);
+        click(srv, a, 2, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.YOf(a) == y0, "방향을 받은 틱에 벌써 새 방향으로 힘이 들어갔다(ImplA 가 ImplB 보다 먼저)");
+        click(srv, a, 2, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.YOf(a) > y0, "방향을 받은 다음 틱에도 새 방향으로 안 간다");
+    }
+
+    std::printf("  근접 공격(맨손 정답지) — 애니 끝 판정·쉬는 시간·걸음 막힘·사거리 30·앞쪽·갱신 칸 바이트\n");
 }
 
 // ── 중요 메시지 대기열 (2026-09-13) ───────────────────────────
@@ -2434,6 +2603,20 @@ void TestThingDb() {
                         nm, ti->shapeKind, ti->radius, ti->boxW, ti->boxH, ti->mass,
                         ti->hasCollide ? ti->collideRaw.c_str() : "-", ti->flagsRaw.c_str(), ti->classRaw.c_str());
         }
+    }
+
+    // ⑥ 사람 애니 칸 수(2026-09-13 묶음 3-a) — PlayerDraw STAT. 공격 시각이 이 값이다.
+    //   ⚠ 55종 전부가 파일에 있다는 보장은 없다 — 주먹 셋과 걷기·달리기가 0 이 아닌지만 판정, 나머지는 찍기만.
+    {
+        std::printf("  사람 애니 STAT %d개 담음 —", db.PlayerAnimCount());
+        for (int i = 0; i < nox::kPlayerAnimTypeCount; ++i) {
+            const auto& a = db.PlayerAnim(i);
+            if (a.frames) std::printf(" %d:%s=%d/%d", i, nox::PlayerAnimTypeName(i), a.frames, a.hold);
+        }
+        std::printf("\n");
+        for (int i : { 4, 6, 23, 24, 25 })
+            Check(db.PlayerAnim(i).frames > 0,
+                  (std::string("사람 애니 칸 수가 0 — ") + nox::PlayerAnimTypeName(i)).c_str());
     }
 
     std::printf("  thing.bin 직접 읽기 — %zu종, 기존 표와 전수 일치\n", db.Count());
@@ -3316,10 +3499,13 @@ void TestObserverExit() {
     }
 
     // ② 두 번째 클릭부터는 여느 근접 공격이다
+    //   ⚠ 2026-09-13 묶음 3-a — 주먹은 애니가 끝나는 틱에 닿고(시험 서버는 칸 표가 비어 다음 틱) · 같은 자리면 방향이 없어 안 닿는다.
     {
         std::vector<nox::OutPacket> out;
+        srv.DebugMoveTo(b, 1025, 1000);
         auto pkt = InputPacket(6);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        for (uint32_t ms = 0; ms <= 33 * 4; ms += 33) srv.Tick(ms, out);
         Check(srv.HealthOf(b) == before - kWizardPunch, "관전을 푼 뒤 클릭이 안 때렸다");
         Check(srv.melees() == 1, "관전을 푼 뒤 근접 집계가 1 이 아님");
     }
@@ -3405,6 +3591,9 @@ void TestProjectile() {
         face.back() = 64;                     // 한 바퀴 256 중 64 = +y
         std::vector<nox::OutPacket> out;
         srv.OnPacket(a, face.data(), face.size(), out);
+        // ⚠ 2026-09-13 묶음 3-a — 방향은 틱의 ImplB 에서 갈아 끼운다(정답지 조작 목록 순서) → 한 틱 돌린 뒤 쏜다
+        srv.Tick(0, out);
+        srv.Tick(33, out);
         auto pkt = SpellPacket(27, false);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
         FlyUntilDone(srv, out);
@@ -3555,7 +3744,15 @@ void TestPetDies() {
         Check(srv.pets() == 1, "안 불려 나옴");
 
         // b 를 소환수 옆에 세운다 (a 는 (1000,1000), 소환수는 그 앞 40)
-        srv.DebugMoveTo(b, 1040, 1000);
+        // ⚠ 2026-09-13 묶음 3-a — 주먹은 몸이 있는 것만 고르고(sub_5386A0) 같은 자리면 방향이 없어 안 닿는다.
+        //   시험 서버는 thing.bin 을 안 읽으니 몸을 준다(반지름 10 원 · 몬스터) · b 는 소환수 서쪽 25 에서 +x 를 본다.
+        {
+            nox::Server::PhysBody body;
+            body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+            srv.SetTypeBody(1348, body);
+        }
+        srv.DebugMoveTo(b, 1015, 1000);
+        srv.DebugMoveTo(a, 500, 1000);   // 부른 사람은 비킨다 — b 와 15 로 겹치면 몸끼리 튕겨 b 가 날아간다(2-c)
 
         uint32_t ms = 0;
         srv.Tick(0, out);
@@ -3966,7 +4163,13 @@ void TestQuest() {
         srv.DebugEnterGame(a, 728);
         srv.StartQuest(0, 1000, 1000);
         // 몬스터가 스폰되는 원 위 첫 자리로 붙는다 (i=0 → center + spread·(cos0,sin0))
-        srv.DebugMoveTo(a, 1000 + static_cast<int>(nox::kQuestSpread), 1000);
+        // ⚠ 2026-09-13 묶음 3-a — 몸을 주고(시험 서버는 thing.bin 을 안 읽음) 서쪽 25 에 서서 +x 를 본다(같은 자리면 안 닿는다).
+        {
+            nox::Server::PhysBody body;
+            body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+            srv.SetTypeBody(1358, body);
+        }
+        srv.DebugMoveTo(a, 1000 + static_cast<int>(nox::kQuestSpread) - 25, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(0, out);
