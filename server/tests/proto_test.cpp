@@ -4467,6 +4467,119 @@ void TestBuffSpells() {
     std::printf("  4-b2 — 버프 주문 19 함수 길이·세기·연기 · Death 한 번만 · 대상 없음 실패\n");
 }
 
+// ── 묶음 4-b3 — 움직임 버프 ─────────────────────────────────────────
+//
+// 정답지: updateUnitsCCC SpeedCur(`server.go:171`) · updateUnitBuffs 빠르게 ×1.25(`GAME4.c:3678`) · unitUpdatePlayerImplA(`object_update.go:132~191`)
+//   · 달리기 버프(`:120`) · updateObjectsVelocity_5118A0(`GAME4_1.c:3205`) · playerConfusedGetDirection_4F7A40(`GAME4.c:1187`)
+void TestMoveBuffs() {
+    const std::string a = "10.5.0.1:5001";
+    auto walkPkt = []() {
+        std::vector<uint8_t> mv = InputPacket(2);
+        mv[nox::kWireHeaderSize + 1] = 5;
+        mv.push_back(0);
+        return mv;
+    };
+    // 한 사람이 buff 를 달고 12틱 걸은 x 거리
+    auto walk = [&](int buff, int* facingAfter1, uint32_t* frameAt1) {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugAimAt(a, 3000, 1000);                         // 커서 멀리 — 달림
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        if (buff >= 0) srv.DebugApplyEnchant(a, buff, 0, 1);
+        ms += 34; srv.Tick(ms, out);                           // CCC 가 SpeedCur 를 한 번 셈
+        const auto mv = walkPkt();
+        const int x0 = srv.XOf(a);
+        for (int t = 0; t < 12; ++t) {
+            srv.OnPacket(a, mv.data(), mv.size(), out);
+            ms += 34; srv.Tick(ms, out);
+            // 첫 틱은 ImplB 가 걷기로 넣을 뿐 — 힘(과 혼란)은 다음 틱 ImplA 부터. 그래서 둘째 틱 방향·프레임을 본다
+            if (t == 0 && facingAfter1) *facingAfter1 = srv.DebugFacingOf(a);
+            if (t == 1 && facingAfter1) { *frameAt1 = srv.frame(); facingAfter1[1] = srv.DebugFacingOf(a); }
+        }
+        return srv.XOf(a) - x0;
+    };
+
+    // ① SpeedCur — 버프 없음 3.0 · 느림(4) × 0.5 · 빠르게(9) × 1.25 · 걸은 거리 비도 같다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugApplyEnchant(a, 4, 0, 1);
+        ms += 34; srv.Tick(ms, out);
+        Check(std::fabs(srv.DebugSpeedCur(a) - 1.5f) < 1e-6f, "느림인데 SpeedCur 가 1.5 가 아니다");
+        srv.DebugBuffOff(a, 4);
+        srv.DebugApplyEnchant(a, 9, 0, 1);
+        ms += 34; srv.Tick(ms, out);
+        Check(std::fabs(srv.DebugSpeedCur(a) - 3.75f) < 1e-6f, "빠르게인데 SpeedCur 가 3.75 가 아니다");
+        const int d0 = walk(-1, nullptr, nullptr), dSlow = walk(4, nullptr, nullptr), dHaste = walk(9, nullptr, nullptr);
+        Check(d0 > 20, "12틱 걸었는데 거의 안 갔다(시험 전제)");
+        Check(std::fabs(dSlow - 0.5 * d0) <= 0.08 * d0, "느림 걸음 거리가 절반이 아니다");
+        Check(std::fabs(dHaste - 1.25 * d0) <= 0.08 * d0, "빠르게 걸음 거리가 1.25 배가 아니다");
+    }
+
+    // ② 달리기(8) 버프 — 가만히 있어도 상태 5 로 묶여 달린다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugApplyEnchant(a, 8, 0, 1);
+        const int x0 = srv.XOf(a);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateRun && srv.XOf(a) > x0 + 10, "달리기 버프인데 상태 5 로 달리지 않는다");
+    }
+
+    // ③ 혼란(3) — 걷는 틱마다 방향을 (세기+3) × (삼각파 − 10) 만큼 흔든다
+    {
+        for (int power : { 1, 3 }) {
+            nox::Server srv;
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+            srv.DebugAimAt(a, 3000, 1000);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            srv.DebugApplyEnchant(a, 3, 0, power);
+            const auto mv = walkPkt();
+            int prev = srv.DebugFacingOf(a);
+            int checked = 0;
+            for (int t = 0; t < 30; ++t) {
+                srv.OnPacket(a, mv.data(), mv.size(), out);
+                const bool walking = srv.DebugStateOf(a) == nox::kPlayerStateWalk || srv.DebugStateOf(a) == nox::kPlayerStateRun;
+                ms += 34; srv.Tick(ms, out);
+                if (!walking) { prev = srv.DebugFacingOf(a); continue; }
+                int v3 = static_cast<int>((srv.frame() + 728u) % 40u);
+                if (v3 > 20) v3 = 40 - v3;
+                const int want = ((((power + 3) * (v3 - 10) + prev) % 256) + 256) % 256;
+                if (srv.DebugFacingOf(a) != want) { Check(false, "혼란 걸음 방향이 playerConfusedGetDirection 식과 다르다"); break; }
+                prev = srv.DebugFacingOf(a);
+                ++checked;
+            }
+            Check(checked >= 20, "혼란 걸음을 20틱 넘게 못 쟀다(시험 전제)");
+        }
+    }
+
+    // ④ 얼림(25)·붙잡힘(5) — 남이 준 힘(ForceVec)을 적분에 넣지 않는다 · 버프 없으면 밀린다
+    for (int buff : { -1, 25, 5 }) {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        if (buff >= 0) srv.DebugApplyEnchant(a, buff, 0, 1);
+        const int x0 = srv.XOf(a);
+        srv.DebugAddForce(a, 40.0, 0.0);
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+        if (buff < 0) Check(srv.XOf(a) > x0, "버프 없는데 힘을 받고 안 밀렸다(시험 전제)");
+        else Check(srv.XOf(a) == x0, buff == 25 ? "얼림인데 밀렸다" : "붙잡힘인데 밀렸다");
+    }
+    std::printf("  4-b3 — SpeedCur 느림 0.5·빠르게 1.25 · 달리기 버프 상태 5 · 혼란 방향 식 · 얼림·붙잡힘 힘 무시\n");
+}
+
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
 //
 // 정답지: 팀에 넣고 뺄 때 그 사람에게 `36 RESET_FRIENDS`(`sub_4D97E0`) → 친구 비트를 다시 세운다.
@@ -6522,6 +6635,7 @@ int main() {
     TestBuffs();
     TestDamageBuffs();
     TestBuffSpells();
+    TestMoveBuffs();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

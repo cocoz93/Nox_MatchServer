@@ -3604,13 +3604,16 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         // ① 힘 · 공격(ImplA)
         double fx = 0.0, fy = 0.0;
         bool run = false;
-        if (canMove && (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun)) {
+        if (canMove && (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun) && !s.buffs.Has(25) && !s.buffs.Has(5)) {
+            // `object_update.go:132~191` — playerCanMove(얼림 25·붙잡힘 5) · 달리기면 SpeedCur × 2(그 틱만) ·
+            //   혼란(3)이면 Direction2 를 흔든다(playerConfusedGetDirection_4F7A40) · 힘 = Direction2 방향 표 × SpeedCur
+            //   ⚠ 무게 넘침(+3656 → inform 13 3)·살금살금 능력·발소리는 아이템 5·능력 7·소리 10 · 작살 끌림 sub_4F9AB0 은 7
             const double cdx = s.aimX - s.posX, cdy = s.aimY - s.posY;
             run = !(s.moveState != kPlayerStateRun && cdx * cdx + cdy * cdy <= kRunCursorDist * kRunCursorDist);
-            const double speed = kPlayerWalkPerFrame * (run ? 2.0 : 1.0);
-            const double rad = s.facing * 2.0 * 3.14159265358979 / 256.0;
-            fx += std::cos(rad) * speed;
-            fy += std::sin(rad) * speed;
+            const double speed = static_cast<double>(s.speedCur) * (run ? 2.0 : 1.0);
+            if (s.buffs.Has(3)) s.facing = ConfusedDirection(s, frame);
+            fx += DirVecX(s.facing) * speed;
+            fy += DirVecY(s.facing) * speed;
         } else if (canMove && s.moveState == kPlayerStateAttack) {
             // `object_update.go:224~234` — 0 이 오면 활(WeaponEquip&4)이면 14 · Field34 = 프레임, 아니면 13 · Field8 지움
             if (!PlayerAttack(s, frame, out)) {
@@ -3698,6 +3701,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             // CCAction(`:536~544`) — playerCanAttack(버프 25 없음 · 상태 23 아님) → 공 차기 아니면 playerInputAttack
             if (s.actionThisTick && !orientationOnly && !s.buffs.Has(25) && s.moveState != 23) PlayerInputAttack(s, frame, out);
         }
+        // 달리기(8) 버프 — 공격 중(1)이 아니면 상태 5(달림)로 묶는다(`object_update.go:120~122`)
+        if (canMove && s.buffs.Has(8) && s.moveState != kPlayerStateAttack) PlayerSetState(s, kPlayerStateRun, frame);
         s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
 
         // ⚠ 죽으면 정답지는 ALLOW_OVERLAP 을 켜고(상태 3→4, `object_update.go:247`) 관전은 NO_COLLIDE 를 켠다
@@ -3761,8 +3766,11 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         }
         for (auto& m : movers) {
             Session& s = *m.s;
-            s.velX += ((m.ax + m.fx) - s.velX * kPlayerDamping) * kMoveSubStep;
-            s.velY += ((m.ay + m.fy) - s.velY * kPlayerDamping) * kMoveSubStep;
+            // updateObjectsVelocity_5118A0(`GAME4_1.c:3205~3213`) — 붙잡힘(5)·얼림(25)·매혹(28)이면 ForceVec(+88: 걸음·밀림)은 빼고 부딪힘 힘(+96)만
+            const bool pinned = s.buffs.Has(5) || s.buffs.Has(25) || s.buffs.Has(28);
+            const double pfx = pinned ? 0.0 : m.fx, pfy = pinned ? 0.0 : m.fy;
+            s.velX += ((m.ax + pfx) - s.velX * kPlayerDamping) * kMoveSubStep;
+            s.velY += ((m.ay + pfy) - s.velY * kPlayerDamping) * kMoveSubStep;
             double nx = s.posX + s.velX * kMoveSubStep;
             double ny = s.posY + s.velY * kMoveSubStep;
             if (nx < 0) nx = 0;
@@ -3792,6 +3800,13 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         m.s->y = static_cast<int>(std::lround(m.s->posY));
         m.s->facingPrev = m.s->facing;   // CCC: Direction1 = Direction2(`server.go:167`)
         m.s->prevX = m.bx; m.s->prevY = m.by;   // CCC: PrevPos(+72) = 이번 틱 시작 자리(movers 는 게임 안 모두 — 관전·죽음 포함)
+    }
+    // CCC: SpeedCur = (SpeedBonus + SpeedBase) × (1 − 0.2 × +541) · 느림(4)이면 × 0.5(`server.go:171~174`) — 빠르게(9) × 1.25 는 updateUnitBuffs 끝
+    //   ⚠ SpeedBonus(아이템 무게·마법부여 5) · +541 느려짐 겹수(독·5) 는 0
+    for (auto& m : movers) {
+        Session& s = *m.s;
+        s.speedCur = static_cast<float>((0.0 + kPlayerWalkPerFrame) * (1.0 - 0.2 * 0));
+        if (s.buffs.Has(4)) s.speedCur *= 0.5f;
     }
     // CCC: updateUnitBuffs_4FF620(`server.go:189`) — 버프 남은 틱 −1 · 0 이면 끔(4-a4)
     std::vector<std::string> buffUnits;
@@ -4808,7 +4823,21 @@ void Server::UpdateUnitBuffs(const Target& t, std::vector<OutPacket>& out) {
         b = BuffsOf(t);
         if (b) b->power[v] = 0;
     }
-    // 9(HASTED) 면 SpeedCur × 1.25 ⚠ 걸음 속도 모델(SpeedCur)은 빠르게·느리게 효과(4-b)와 함께
+    // 9(HASTED) 면 SpeedCur × 1.25(4-b3) — 사람만(소환수 걸음은 AI 6)
+    b = BuffsOf(t);
+    if (b && b->Has(9) && !t.addr.empty()) sessions_.at(t.addr).speedCur *= 1.25f;
+}
+
+// nox_xxx_playerConfusedGetDirection_4F7A40(`GAME4.c:1187`) — (프레임 + 번호) % 40 를 0~20 삼각파로 · (세기 + 3) × (파 − 10) 만큼 흔들어 0~255
+uint8_t Server::ConfusedDirection(const Session& s, uint32_t frame) const {
+    const int v1 = s.facing;
+    const int v2 = s.buffs.power[3];
+    int v3 = static_cast<int>((frame + static_cast<uint32_t>(s.netCode)) % 0x28u);
+    if (v3 > 20) v3 = 40 - v3;
+    int v4 = (v2 + 3) * (v3 - 10) + v1;
+    if (v4 < 0) v4 += static_cast<int>((static_cast<unsigned>(255 - v4) >> 8) << 8);
+    if (v4 >= 256) v4 += -256 * static_cast<int>(static_cast<unsigned>(v4) >> 8);
+    return static_cast<uint8_t>(v4);
 }
 
 // CanSee(server/object.go:76) — obj·targ 버프만 본다(시야선은 부르는 쪽 MapTraceVision)

@@ -365,6 +365,7 @@ struct Session {
     int hudToldCount = 0;
     uint32_t hudNextFrame = 0;
     Buffs buffs;                   // ★ 4-a4 버프 — 부활 무적(전 invulnUntil 자리표시)도 버프 23 으로
+    float speedCur = 3.0f;         // +544 SpeedCur — CCC 가 매 틱 셈(느림·빠르게, 4-b3) · NewPlayer SPEED 96/32
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     // ★★★ **중요 메시지 대기열** (2026-09-13 — 정답지 `nox_xxx_netSendPacket_4E5030`·`netImportant_4E5770` 이식).
     //   EmitSeq 는 바로 안 보내고 여기 쌓는다. 틱마다 `[27 시각][aa][cc…]` 한 조각으로 싣고,
@@ -1259,6 +1260,8 @@ public:
     }
     // 시험용 — 버프(4-a4)
     Target DebugFindObjectAtCursor(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? Target{} : FindObjectAtCursor(it->second); }
+    void DebugAddForce(const std::string& addr, double fx, double fy) { auto it = sessions_.find(addr); if (it != sessions_.end()) { it->second.forceX += fx; it->second.forceY += fy; } }
+    float DebugSpeedCur(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0.0f : it->second.speedCur; }
     uint8_t DebugFacingOf(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0 : it->second.facing; }
     bool DebugHasEnchant(const std::string& addr, int buff) const {
         auto it = sessions_.find(addr);
@@ -1775,6 +1778,7 @@ private:
     void ClearBuffs(const Target& t);                                   // unitClearBuffs_4FF580
     void SetBuffFlags(const Target& t, uint32_t bits);                  // setUnitBuffFlags_4E48F0
     void UpdateUnitBuffs(const Target& t, std::vector<OutPacket>& out); // updateUnitBuffs_4FF620(updateUnitsCCC)
+    uint8_t ConfusedDirection(const Session& s, uint32_t frame) const;  // playerConfusedGetDirection_4F7A40
     // CanSee(server/object.go:76) — obj 가 눈멀면 못 봄 · flags&1 아니면 투명 targ 는 적외선·느리면(속도 ≤ 6) 못 봄
     static bool CanSeeBuffs(const Buffs* obj, const Buffs* targ, double targVelX, double targVelY, int flags);
     void SendFxAllCli(float x, float y, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);   // netSendFxAllCli_523030
