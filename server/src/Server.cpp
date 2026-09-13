@@ -821,6 +821,154 @@ bool Server::OwnersEnemy(const std::string& a, bool aWild, const std::string& b,
     return IsEnemyTo(a, b);                                // 사람 대 사람(퀘스트 규칙은 IsEnemyTo 주석)
 }
 
+// ── 묶음 4-b1 — damageDefaultProc 의 버프 갈래 도우미 ─────────────────────────
+// a2(때린 이) — 소환수가 때렸으면 그 소환수, 아니면 사람(by). 둘 다 없으면 없음(주인 없는 불·독 등)
+Target Server::DamageAttacker(const std::string& by, const AttackSrc* src) const {
+    if (src && src->byPet >= 0 && static_cast<size_t>(src->byPet) < pets_.size()) return Target{ std::string(), src->byPet };
+    if (!by.empty() && sessions_.count(by)) return Target{ by, -1 };
+    return Target{};
+}
+
+// 감전(22) 되갚기(`GAME3_2.c:7101~7116`) — 무기(a3)로 근접(sub_4E1400)해 때린 유닛에게 ShockDamage[4] 전기(9) · 사람이면 상태 23 · 버프 끔(소리 135 → 10)
+//   sub_4E1400(a2, a3): 무기 클래스이고 원거리 SUBCLASS(0x47F0000) 아님 → 1 · 투사체면 0
+void Server::DamageShockBack(const Target& victim, const Buffs& vb, const Target& attacker, const AttackSrc* src, std::vector<OutPacket>& out) {
+    if (attacker.none() || !vb.Has(22) || !src || !src->obj || src->missile) return;
+    if (!attacker.addr.empty()) {
+        const Session& a = sessions_.at(attacker.addr);
+        if (WeaponEquipOf(a) & 0x47F0000) return;          // 지팡이·원거리 무기
+    }
+    BuffOff(victim, 22);
+    const int back = static_cast<int>(static_cast<float>(BalanceFloatInd("ShockDamage", 4)));
+    const std::string victimOwner = !victim.addr.empty() ? victim.addr : pets_[static_cast<size_t>(victim.pet)].owner;
+    HurtTarget(attacker, back, out, victimOwner, 9, nullptr);   // (a2+716)(a2, a1, 0, 피해, 9)
+    if (!attacker.addr.empty()) {
+        auto it = sessions_.find(attacker.addr);
+        if (it != sessions_.end()) PlayerSetState(it->second, 23, frame_);
+    }
+}
+
+// 불·전기 보호(`checkFireProtect_4DFE40` · `checkElectrProtect_4DFF40`) — 아이템 몫(최대 0.5, 아이템 5) + 버프 세기 표 · 합 최대 0.6 · 곱한 뒤 0 이면 1
+int Server::DamageProtect(const Buffs& b, uint8_t dtype, int amount) const {
+    auto protect = [&](int buff, const char* table) {
+        const float items = 0.0f;                           // ⚠ 입은 것 마법부여 합(sub_4DFD10 · 4DFD80) — 아이템 5
+        float r = items;
+        if (b.Has(buff)) r = static_cast<float>(BalanceFloatInd(table, static_cast<int>(b.power[buff]) - 1) + items);
+        if (r > 0.60000002f) r = 0.60000002f;
+        return r;
+    };
+    if (dtype == 1 || dtype == 12 || dtype == 7) {
+        const float v = protect(17, "FireSpellProtection");
+        amount = static_cast<int>(static_cast<float>((1.0 - v) * static_cast<double>(amount)));
+        if (!amount) amount = 1;
+    }
+    if (dtype == 9 || dtype == 17) {
+        const float v = protect(20, "ElectricitySpellProtection");
+        amount = static_cast<int>(static_cast<float>((1.0 - v) * static_cast<double>(amount)));
+        if (!amount) amount = 1;
+        // ⚠ 사람 +160 = 2 · NPC 몬스터 +2094 = 2(쓰는 곳 미확인 — 관측대기)
+    }
+    return amount;
+}
+
+// 흡혈(13, `GAME3_2.c:7268~7287`) — 때린 이가 흡혈이면 VampirismCoeff[세기−1] × 피해(최소 1)를 채우고 `a2 <때린 이 x,y> <맞은 이 x,y> <채운 양>` 을 맞은 자리 화면 안에
+void Server::DamageVampirism(const Target& attacker, const Target& victim, int amount, std::vector<OutPacket>& out) {
+    const Buffs* ab = BuffsOf(attacker);
+    if (!ab || !ab->Has(13)) return;
+    const float heal = static_cast<float>(BalanceFloatInd("VampirismCoeff", static_cast<int>(ab->power[13]) - 1) * static_cast<double>(amount));
+    uint16_t v32 = static_cast<uint16_t>(static_cast<int>(heal));
+    if (v32 < 1u) v32 = 1;
+    UnitAdjustHP(attacker, v32, out);
+    float ax = 0, ay = 0, vx = 0, vy = 0;
+    auto posOf = [&](const Target& t, float& x, float& y) {
+        if (!t.addr.empty()) { x = static_cast<float>(sessions_.at(t.addr).posX); y = static_cast<float>(sessions_.at(t.addr).posY); }
+        else { x = static_cast<float>(pets_[static_cast<size_t>(t.pet)].x); y = static_cast<float>(pets_[static_cast<size_t>(t.pet)].y); }
+    };
+    posOf(attacker, ax, ay);
+    posOf(victim, vx, vy);
+    const uint16_t p[4] = { static_cast<uint16_t>(static_cast<int>(ax)), static_cast<uint16_t>(static_cast<int>(ay)),
+                            static_cast<uint16_t>(static_cast<int>(vx)), static_cast<uint16_t>(static_cast<int>(vy)) };
+    uint8_t msg[11] = { static_cast<uint8_t>(Op::FX_VAMPIRISM) };
+    for (int k = 0; k < 4; ++k) { msg[1 + 2 * k] = static_cast<uint8_t>(p[k]); msg[2 + 2 * k] = static_cast<uint8_t>(p[k] >> 8); }
+    msg[9] = static_cast<uint8_t>(v32);
+    msg[10] = static_cast<uint8_t>(v32 >> 8);
+    SendFxAllCli(vx, vy, msg, sizeof(msg), out);           // netSendVampFx_523270 — 자리 = 맞은 이
+}
+
+// nox_xxx_unitAdjustHP_4EE460 — 최대 아래일 때만 채움(최대로 자름) · 사람은 `42` 증감(모두) + `43` 절대(본인) · 소환수는 주인 체력 알림
+void Server::UnitAdjustHP(const Target& t, int dv, std::vector<OutPacket>& out) {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        if (it == sessions_.end() || !it->second.inGame) return;
+        Session& s = it->second;
+        if (s.health >= s.maxHealth) return;
+        const int before = s.health;
+        int after = before + dv;
+        if (after > s.maxHealth) after = s.maxHealth;
+        s.health = static_cast<uint16_t>(after);
+        MarkDirty(s.netCode, PendingReport::What::UnitHealth);
+        const uint16_t raw = static_cast<uint16_t>(static_cast<int16_t>(after - before));
+        const uint8_t d[5] = { static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA), static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
+                               static_cast<uint8_t>(raw), static_cast<uint8_t>(raw >> 8) };
+        Broadcast(/*viaSeq=*/false, d, sizeof(d), out);
+        const uint8_t abs[3] = { static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH), static_cast<uint8_t>(s.health), static_cast<uint8_t>(s.health >> 8) };
+        EmitSeq(s, abs, sizeof(abs), out);
+        return;
+    }
+    if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return;
+    Creature& k = pets_[static_cast<size_t>(t.pet)];
+    const int maxHp = TuningFor(k.type).health;
+    if (k.health >= maxHp) return;
+    int after = k.health + dv;
+    if (after > maxHp) after = maxHp;
+    k.health = static_cast<uint16_t>(after);
+    MarkDirty(k.netCode, PendingReport::What::UnitHealth);   // mobInformOwnerHP_4EE4C0
+}
+
+// collSysAddCollision_548630 — 같은 짝(순서 무관)은 한 번만
+void Server::AddContact(const ContactRef& a, const ContactRef& b) const {
+    auto same = [](const ContactRef& x, const ContactRef& y) { return x.kind == y.kind && x.addr == y.addr && x.idx == y.idx; };
+    for (const auto& pr : contacts_)
+        if ((same(pr.first, a) && same(pr.second, b)) || (same(pr.first, b) && same(pr.second, a))) return;
+    contacts_.push_back({ a, b });
+}
+
+// nox_xxx_collide_4FDF90(`GAME4.c:2966`) — a1 이 a2 에 닿았다
+//   ① a1 감전(22) · a2 가 DEAD|ALLOW_OVERLAP 아닌 유닛 · 적 → 버프 끄고(소리 135 → 10) ShockDamage[세기−1] 전기(9)를 a2 에(때린 이 = a1)
+//   ② a2 가 유닛·몬스터 생성기(0x20006)이고 DEAD|DESTROYED 아니고 같은 편 아니면 a1 투명(0) 끔
+//   ③ a1 사람 · a2 몬스터 생성기(0x20000) → a1 투명 끔(생성기는 8 — 지금 없음)
+void Server::CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out) {
+    if (a1.kind == 3) return;                              // 장애물은 버프가 없다
+    const Target t1 = (a1.kind == 1) ? Target{ a1.addr, -1 } : Target{ std::string(), a1.idx };
+    const Target t2 = (a2.kind == 1) ? Target{ a2.addr, -1 } : Target{ std::string(), a2.idx };
+    const Buffs* b1 = BuffsOf(t1);
+    if (!b1) return;
+    const bool unit2 = (a2.kind == 1 || a2.kind == 2) && BuffsOf(t2) != nullptr;
+    bool dead2 = false;
+    if (a2.kind == 1 && unit2) dead2 = sessions_.at(a2.addr).respawnAtFrame != 0;   // DEAD(ALLOW_OVERLAP 은 죽음과 함께)
+    auto owner = [&](const Target& t) -> std::string { return !t.addr.empty() ? t.addr : pets_[static_cast<size_t>(t.pet)].owner; };
+    const std::string own1 = owner(t1);
+    if (b1->Has(22) && unit2 && !dead2) {
+        const std::string own2 = owner(t2);
+        if (OwnersEnemy(own1, own1.empty(), own2, own2.empty())) {
+            const int power = b1->power[22];
+            BuffOff(t1, 22);
+            const int dmg = static_cast<int>(static_cast<float>(BalanceFloatInd("ShockDamage", power - 1)));
+            AttackSrc src;
+            if (a1.kind == 1) { src.x = static_cast<float>(sessions_.at(a1.addr).posX); src.y = static_cast<float>(sessions_.at(a1.addr).posY); }
+            else { src.x = static_cast<float>(pets_[static_cast<size_t>(a1.idx)].x); src.y = static_cast<float>(pets_[static_cast<size_t>(a1.idx)].y); src.byPet = a1.idx; }
+            HurtTarget(t2, dmg, out, own1, 9, &src);           // (a2+716)(a2, a1, a1, 피해, 9)
+            if (!BuffsOf(t1)) return;                          // 되갚다 사라진 소환수
+        }
+    }
+    if (unit2 && !dead2) {
+        const std::string own2 = owner(t2);
+        const bool sameTeam = (!own1.empty() && own1 == own2) ||
+                              (a1.kind == 1 && a2.kind == 1 && sessions_.at(a1.addr).team != 0 &&
+                               sessions_.at(a1.addr).team == sessions_.at(a2.addr).team);
+        if (!sameTeam) BuffOff(t1, 0);
+    }
+}
+
 // 피해 함수(+716) — 정답지 이식(묶음 3-e, 2026-09-13).
 //   ⚠ 옮기지 않은 갈래(다른 조각): 방패·대검·지팡이 막기(3-e2 — 상태 15/16 · 18~21) · 되받아치기 버프 27 · 불/전기 보호 · 흡혈 ·
 //     전기 방패 22 · 마법 방패 26(주문 4) · 입은 것 닳기·방어 마법 효과(아이템 5) · 스켈레톤 막기(몬스터 행동 21 · AI 6)
@@ -850,6 +998,26 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         //   때린 이(a2)가 있으면: 무기·투사체(a3)가 있고 때린 이와 다르면 갈래 1·그 종류 /
         //   없고 피해 종류가 10(맨손)·2(망치)면 갈래 1·때린 이의 종류(사람 713 · 몬스터 그 종류). 막혀도 이 기록은 남는다
         s.killKind = 0;
+        // ── 되받아치기 방패(27, `GAME3_3.c:173~204`) — 때린 것(a3 없으면 a2)이 앞쪽이면 ──
+        //   투사체면 되받아치고(projectileReflect · 주인 바꿈) 막음 · 아니면 종류 16·17(맨손 마법·?)만 막음 · 종류 16 이면 점 효과 132
+        //   ⚠ 옛 자리표시 투사체(shots_)는 오브젝트가 없어 되받아치기 없이 막기만 — 진짜 투사체는 4-c
+        if (s.buffs.Has(27)) {
+            // v9 = a3 ? a3 : a2 — 무기·투사체 자리(src), 없으면 때린 사람 자리
+            float vx9 = 0, vy9 = 0;
+            bool have9 = false, missile9 = false;
+            if (src) { vx9 = src->x; vy9 = src->y; have9 = true; missile9 = src->missile; }
+            else if (!by.empty() && sessions_.count(by)) { vx9 = static_cast<float>(sessions_.at(by).posX); vy9 = static_cast<float>(sessions_.at(by).posY); have9 = true; }
+            if (have9 && (missile9 || dtype == 16 || dtype == 17) &&
+                (TestTwoPointsAndDirection(static_cast<float>(s.posX), static_cast<float>(s.posY), s.facingPrev, vx9, vy9) & 1)) {
+                if (dtype == 16) {
+                    const uint16_t fx = static_cast<uint16_t>(static_cast<int>(s.posX)), fy = static_cast<uint16_t>(static_cast<int>(s.posY));
+                    const uint8_t msg[5] = { static_cast<uint8_t>(Op::FX_VIOLET_SPARKS), static_cast<uint8_t>(fx), static_cast<uint8_t>(fx >> 8),
+                                             static_cast<uint8_t>(fy), static_cast<uint8_t>(fy >> 8) };
+                    SendFxAllCli(static_cast<float>(s.posX), static_cast<float>(s.posY), msg, sizeof(msg), out);
+                }
+                return;                                    // 소리 122 → 10
+            }
+        }
         if (src) {
             if (src->obj) {
                 s.killKind = 1;
@@ -933,13 +1101,23 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
             hp = static_cast<int>(static_cast<float>(1.0 * static_cast<double>(hp)));
             if (v44 > 0 && hp < 1) hp = 1;
         }
-        // ── nox_xxx_damageDefaultProc_4E0B30 ──
+        // ── nox_xxx_damageDefaultProc_4E0B30(`GAME3_2.c:7017`) ──
+        if (s.buffs.Has(23)) { ++invulnBlocked_; return; }   // 무적(소리 71 → 10)
         // 편 거르기 — 친선 피해 설정(게임플레이 깃발 1, 기본 꺼짐)이 꺼져 있으면 때린 쪽 주인이 적이 아닐 때 무시.
         //   단 자기가 자기를 때린 것은 퀘스트가 아니면 들어간다(`a1 != v12 || gameFlags 4096`).
         if (!OwnersEnemy(s.addr, false, by, byWild) && (by != s.addr || quest)) return;
-        // 한 대에 20 넘게 맞으면 움찔(상태 30 · 공격 중 1 · 방패 올리는 중 15 는 아님)
+        const Target attacker = DamageAttacker(by, src);
+        DamageShockBack(Target{ s.addr, -1 }, s.buffs, attacker, src, out);   // 감전(22) 되갚기
+        hp = DamageProtect(s.buffs, dtype, hp);            // 불·전기 보호(버프 17·20 + 아이템 5)
+        // 맞으면 투명(0)이 풀린다 — 때린 이가 없으면 종류 12 일 때만(+528/+532 때린 자리는 몬스터 AI 7)
+        if (!attacker.none() || dtype == 12) BuffOff(Target{ s.addr, -1 }, 0);
+        // ⚠ 입은 것 방어 효과 itemApplyDefendEffect2 · 무기 앞 피해 효과 itemApplyPreDamageEffect(아이템 5) · 맞는 소리(10)
         s.lastDamageType = dtype;                          // +524(`GAME3_2.c:7234`)
+        DamageVampirism(attacker, Target{ s.addr, -1 }, hp, out);   // 흡혈(13)
+        // ⚠ 공 들고 맞음(gameballOnPlayerDamage 8) · 퀘스트/코옵 sub_4FB050(8) · 몬스터 원한 sub_532880(7)
+        // 한 대에 20 넘게 맞으면 움찔(상태 30 · 공격 중 1 · 방패 올리는 중 15 는 아님)
         if (hp >= 20 && s.moveState != kPlayerStateAttack && s.moveState != 15) PlayerSetState(s, 30, frame_);
+        // ⚠ 마법 방패(26) 줄이기 unitShieldReduceDamage_52F710 → 방패 주문(4-d)
         // +520 마지막으로 때린 것(`GAME3_2.c:7229~7233`) — a3 가 있으면 그것(주인 = a2), 없으면 a2. 사슬의 사람 = `by`(소환수면 주인)
         Session::LastHit hit;
         if (src) {
@@ -977,7 +1155,11 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         }
     }
     // ── nox_xxx_damageDefaultProc_4E0B30 ──
+    if (k.buffs.Has(23)) return;                           // 무적(소리 71 → 10)
+    // ⚠ 몬스터 +2188·불 종류 +1440 깃발 · 죽은 좀비 갈래는 몬스터 AI(7)
     if (!OwnersEnemy(k.owner, k.owner.empty(), by, byWild)) return;   // 편 거르기(자기가 자기를 때리는 경우는 없음)
+    const Target attacker = DamageAttacker(by, src);
+    DamageShockBack(t, k.buffs, attacker, src, out);       // 감전(22) 되갚기 — 되갚는 이는 사람(무기)이라 소환수 목록은 안 바뀐다
     int v15 = dtype;
     if (body) {
         const uint32_t sub = body->subclass;
@@ -989,14 +1171,10 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
             if (v15 == 9 || v15 == 17) return;
         }
     }
-    if (v15 == 1 || v15 == 12 || v15 == 7) {               // 불 보호(버프 — 주문 4) 몫 · 0 이면 1
-        amount = static_cast<int>(static_cast<float>(1.0 * static_cast<double>(amount)));
-        if (!amount) amount = 1;
-    }
-    if (v15 == 9 || v15 == 17) {                           // 전기 보호 몫 · 0 이면 1
-        amount = static_cast<int>(static_cast<float>(1.0 * static_cast<double>(amount)));
-        if (!amount) amount = 1;
-    }
+    amount = DamageProtect(pets_[i].buffs, static_cast<uint8_t>(v15), amount);   // 불·전기 보호(버프 17·20 + 아이템 5)
+    if (!attacker.none() || v15 == 12) BuffOff(t, 0);      // 맞으면 투명 풀림
+    DamageVampirism(attacker, t, amount, out);             // 흡혈(13)
+    // ⚠ 마법 방패(26) 줄이기(4-d) · 맞는 소리(10) · 몬스터 원한(7)
     // unitDamageClear_4EE5E0
     if (k.health > amount) {
         k.health = static_cast<uint16_t>(k.health - amount);
@@ -3224,10 +3402,10 @@ double BoxOverlap(float px, float py, float r, const Server::PhysBody& b, float 
 
 // sub_548220(거르기 sub_548360 + 모양별 나누기) → 원 대 원(550D00) · 원 대 상자(54AD50, a3=0).
 //   ⚠ 뺀 것: 오각형·염력손·검은가루 예외 · Trigger 종류 예외 · NO_COLLIDE_OWNER 같은 편 · 문(5488B0/551250)·
-//     승강기(551AE0/551C40)·상자 대 상자(550F80) · 충돌 기록(collSysAddCollision → 콜백 548740) — 계기가 오는 묶음에서.
+//     승강기(551AE0/551C40)·상자 대 상자(550F80) · 충돌 기록은 4-b1 부터(콜백은 4FDF90 버프 몫만 — 사람·몬스터 충돌 함수는 7)
 void Server::BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, double by, double vx, double vy,
                         const PhysBody& a2, double ox, double oy, double obx, double oby, double ovx, double ovy,
-                        double& ax, double& ay) const {
+                        double& ax, double& ay, const ContactRef* ra, const ContactRef* rb) const {
     // 거르기 (sub_548360 에서 옮긴 것만)
     if ((a1.flags & (kFlDestroyed | kFlNoCollide)) || (a2.flags & (kFlDestroyed | kFlNoCollide))) return;
     if ((a1.cls & kClsDoor) && (a2.flags & (kFlBelow | kFlAllowOverlap))) return;
@@ -3252,6 +3430,7 @@ void Server::BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, dou
         if (overlap <= 0.0f) return;
         if (losPair && !MapTraceRay(static_cast<float>(bx), static_cast<float>(by),
                                     static_cast<float>(obx), static_cast<float>(oby), 0)) return;
+        if (ra && rb) AddContact(*rb, *ra);                // collSysAddCollision_548630(a2, a1) — 4-b1
         bool push = !((a1.flags & kFlAllowOverlap) || (a2.flags & kFlAllowOverlap));
         if ((!(a1.cls & 6) || (a2.flags & kFlNoPushChars) != kFlNoPushChars) && push) {
             const double unx = dx / len, uny = dy / len;
@@ -3277,6 +3456,7 @@ void Server::BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, dou
         if (over < 0.0) return;
         if (losPair && !MapTraceRay(static_cast<float>(bx), static_cast<float>(by),
                                     static_cast<float>(obx), static_cast<float>(oby), 0)) return;
+        if (ra && rb) AddContact(*ra, *rb);                // collSysAddCollision_548630(a1, a2) — 4-b1
         const bool push = !((a1.flags & kFlAllowOverlap) || (a2.flags & kFlAllowOverlap));
         if ((!(a1.cls & 6) || !(a2.flags & kFlNoPushChars)) && push) {
             const double k = kBodyPush * over;
@@ -3538,11 +3718,13 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     PhysBody playerBody;
     playerBody.shape = 2; playerBody.r = static_cast<float>(kBodyRadius);
     playerBody.cls = kClsPlayer; playerBody.flags = 0; playerBody.mass = static_cast<float>(kPlayerMass);   // NewPlayer FLAGS NULL
+    contacts_.clear();                                     // nox_xxx_allocHitArray_5486D0
     for (int i = 0; i < kMoveSubSteps; ++i) {
         for (auto& m : movers) {
             Session& s = *m.s;
             m.ax = m.ay = 0.0;
             if (!m.collide) continue;
+            const ContactRef me{ 1, s.addr, -1 };
             double qx0, qy0, qx1, qy1;
             BodyRect(playerBody, m.bx, m.by, qx0, qy0, qx1, qy1);
             // 오브젝트 먼저(getUnitsInRect → sub_548220) — 상대 사각형과 겹칠 때만(`server/map.go:302`)
@@ -3550,16 +3732,18 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 double ox0, oy0, ox1, oy1;
                 BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
+                const ContactRef other{ 3, std::string(), static_cast<int>(&o - obstacles_.data()) };
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
-                           o, o.x, o.y, o.x, o.y, 0.0, 0.0, m.ax, m.ay);
+                           o, o.x, o.y, o.x, o.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
             }
             for (const auto& m2 : movers) {
                 if (m2.s == m.s || !m2.collide) continue;
                 double ox0, oy0, ox1, oy1;
                 BodyRect(playerBody, m2.bx, m2.by, ox0, oy0, ox1, oy1);
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
+                const ContactRef other{ 1, m2.s->addr, -1 };
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
-                           playerBody, m2.s->posX, m2.s->posY, m2.bx, m2.by, m2.s->velX, m2.s->velY, m.ax, m.ay);
+                           playerBody, m2.s->posX, m2.s->posY, m2.bx, m2.by, m2.s->velX, m2.s->velY, m.ax, m.ay, &me, &other);
             }
             for (const auto& k : pets_) {
                 auto tb = typeBodies_.find(k.type);
@@ -3568,8 +3752,9 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 double ox0, oy0, ox1, oy1;
                 BodyRect(tb->second, k.x, k.y, ox0, oy0, ox1, oy1);
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
+                const ContactRef other{ 2, std::string(), static_cast<int>(&k - pets_.data()) };
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
-                           tb->second, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay);
+                           tb->second, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
             }
             // 벽 — 오브젝트 다음(sub_5481C0 순서)
             CircleVsWalls(m.bx, m.by, kBodyRadius, kPlayerMass, s.posX, s.posY, s.velX, s.velY, m.ax, m.ay);
@@ -3588,6 +3773,18 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                             static_cast<float>(nx), static_cast<float>(ny), 0x1)) {
                 s.posX = nx; s.posY = ny;
             }
+        }
+    }
+    // nox_xxx_collide_548740 — 부딪힌 짝마다 a.collide(b)·4FDF90(a, b) → b.collide(a)·4FDF90(b, a)
+    //   ⚠ 충돌 함수(+696 — PlayerCollide 광전사 · MonsterCollide 등)는 7 · 여기서는 버프 몫 4FDF90 만(4-b1)
+    {
+        const auto pairs = contacts_;
+        const size_t petCount = pets_.size();
+        for (const auto& pr : pairs) {
+            // 되갚기로 소환수가 죽으면 자리 번호가 밀린다 — 그 뒤 소환수 짝은 건너뛴다(정답지는 지우기가 틱 끝이라 안 밀림)
+            if (pets_.size() != petCount && (pr.first.kind == 2 || pr.second.kind == 2)) continue;
+            CollideBuffs(pr.first, pr.second, out);
+            CollideBuffs(pr.second, pr.first, out);
         }
     }
     for (auto& m : movers) {
@@ -5199,6 +5396,7 @@ Target Server::FindObjectAtCursor(const Session& s) const {
     for (const auto& kv : sessions_) {
         const Session& o = kv.second;
         if (&o == &s || !o.inGame || o.respawnAtFrame != 0 || o.observer) continue;   // 0x8020 · 관전(3680&1)
+        if (o.buffs.Has(0) && !s.buffs.Has(21)) continue;  // 투명이면 적외선일 때만(`GAME5.c:3588`, 4-b1)
         if (consider(static_cast<float>(o.posX), static_cast<float>(o.posY), static_cast<float>(kBodyRadius))) {
             found = Target{ o.addr, -1 };
         }
@@ -5207,6 +5405,7 @@ Target Server::FindObjectAtCursor(const Session& s) const {
         const Creature& k = pets_[i];
         auto tb = typeBodies_.find(k.type);
         if (tb == typeBodies_.end() || tb->second.shape != 2) continue;   // 상자 몸 몬스터는 map_57B850(아직 없음)
+        if (k.buffs.Has(0) && !s.buffs.Has(21)) continue;  // 투명이면 적외선일 때만(4-b1)
         if (consider(static_cast<float>(k.x), static_cast<float>(k.y), tb->second.r)) found = Target{ std::string(), static_cast<int>(i) };
     }
     return found;
@@ -5728,6 +5927,17 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             break;
         }
     }
+    if (debugEnchantBuff_ >= 0 && !debugEnchantDone_ && firstInGameFrame_ != 0 && frame_ >= firstInGameFrame_ + debugEnchantAfter_) {
+        for (auto& kv : sessions_) {
+            if (!kv.second.inGame || kv.second.observer) continue;
+            ApplyEnchant(Target{ kv.first, -1 }, debugEnchantBuff_, 0, debugEnchantPower_);
+            std::printf("[진단] 프레임 %u 에 %s 버프 %d(세기 %d) 걸음 → 비트 0x%08X\n", frame_, kv.first.c_str(), debugEnchantBuff_,
+                        debugEnchantPower_, kv.second.buffs.bits);
+            std::fflush(stdout);
+            debugEnchantDone_ = true;
+            break;
+        }
+    }
     if (debugAwayAfter_ > 0 && !debugAwayDone_) {
         const Session* who = nullptr;
         for (const auto& kv : sessions_) if (kv.second.inGame) { who = &kv.second; break; }
@@ -5802,6 +6012,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 src.x = static_cast<float>(k.x);
                 src.y = static_cast<float>(k.y);
                 src.byMonsterType = k.type;                 // a2 = 몬스터 — 죽음 알림은 그 몬스터 그림(3-d)
+                src.byPet = static_cast<int>(&k - pets_.data());   // 4-b1 흡혈·감전 되갚기의 a2
                 HurtTarget(t, tune.damage, out, k.owner, 0, &src);   // 부른 사람의 점수다
                 break;   // 목록이 바뀔 수 있다 — 이번 걸음은 여기서 접는다
             }

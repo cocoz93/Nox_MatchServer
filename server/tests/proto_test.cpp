@@ -4210,6 +4210,199 @@ void TestBuffs() {
     std::printf("  4-a4 — gamedata 파서·표 대조 · 걸기·끄기·틱·5a · 부활 무적 23 · DEATH · 반마법 14 · 얼림·붙잡힘 · CanSee · 되받아치기 27 · 도운 사람 · castBuffSpell · 소환수 · 눈먼 주먹\n");
 }
 
+// ── 묶음 4-b1 — 피해 쪽 버프(damageDefaultProc 완성) ─────────────────────
+//
+// 정답지: nox_xxx_damageDefaultProc_4E0B30(`GAME3_2.c:7017`) · checkFireProtect_4DFE40 · checkElectrProtect_4DFF40
+//   · PlayerDamage 27(`GAME3_3.c:173`) · nox_xxx_collide_4FDF90(`GAME4.c:2966`) · playerCursorScanFn_54AFB0(`GAME5.c:3588`)
+void TestDamageBuffs() {
+    const std::string a = "10.4.8.1:4801";
+    const std::string b = "10.4.8.2:4802";
+    const std::string c = "10.4.8.3:4803";
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("ARENA FireSpellProtection = 0.5f, 0.5f, 0.5f, 0.5f, 0.5f;\nARENA ElectricitySpellProtection = 0.5f, 0.5f, 0.5f, 0.5f, 0.5f;\n"
+                "ShockDamage = 15, 30, 45, 60, 75;\nVampirismCoeff = 0.1, 0.2, 0.3, 0.4, 0.5;\n");
+        srv.SetGamedata(g);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(b, 1100, 1000);
+    };
+    auto hasOp = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t op, size_t len) {
+        for (const auto& m : FlattenTo(out, to)) if (m.size() == len && m[0] == op) return true;
+        return false;
+    };
+
+    // ① 불(17)·전기(20) 보호 — 세기 표 0.5 로 절반 · 합 최대 0.6 · 곱해서 0 이면 1 · 보호 없으면 그대로
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        const uint16_t h0 = srv.HealthOf(b);
+        srv.DebugHurt(b, -1, 40, a, 1, out);
+        Check(srv.HealthOf(b) == h0 - 40, "보호 없는데 불 피해가 그대로가 아니다");
+        srv.DebugApplyEnchant(b, 17, 0, 2);
+        const uint16_t h1 = srv.HealthOf(b);
+        srv.DebugHurt(b, -1, 40, a, 1, out);
+        Check(srv.HealthOf(b) == h1 - 20, "불 보호(0.5)인데 불 피해가 절반이 아니다");
+        const uint16_t h2 = srv.HealthOf(b);
+        srv.DebugHurt(b, -1, 1, a, 12, out);
+        Check(srv.HealthOf(b) == h2 - 1, "보호로 0 이 된 피해가 1 이 아니다");
+        srv.DebugApplyEnchant(b, 20, 0, 1);
+        const uint16_t h3 = srv.HealthOf(b);
+        srv.DebugHurt(b, -1, 30, a, 9, out);
+        Check(srv.HealthOf(b) == h3 - 15, "전기 보호인데 전기 피해가 절반이 아니다");
+        nox::Server s2; mk(s2);
+        nox::Gamedata g;
+        g.Parse("ARENA FireSpellProtection = 0.9, 0.9, 0.9, 0.9, 0.9;\n");
+        s2.SetGamedata(g);
+        s2.DebugApplyEnchant(b, 17, 0, 1);
+        const uint16_t h4 = s2.HealthOf(b);
+        s2.DebugHurt(b, -1, 50, a, 1, out);
+        // 0.60000002f 로 자르므로 (1 − 0.60000002) × 50 = 19.999999 → 버림 19(정답지 float 그대로)
+        Check(s2.HealthOf(b) == h4 - 19, "보호 합이 0.60000002 에서 안 잘렸다(50 × 0.39999998 → 19)");
+    }
+
+    // ② 감전(22) 되갚기 — 근접 무기로 때린 사람에게 ShockDamage[4]=75 전기 · 상태 23 · 버프 꺼짐 · 투사체·맨손(무기 오브젝트 없음)은 안 됨
+    {
+        for (int kase = 0; kase < 3; ++kase) {
+            nox::Server srv; mk(srv);
+            std::vector<nox::OutPacket> out;
+            srv.DebugApplyEnchant(b, 22, 0, 1);
+            nox::Server::AttackSrc src;
+            src.x = 1000; src.y = 1000;
+            src.obj = (kase != 1);
+            src.missile = (kase == 2);
+            const uint16_t ha = srv.HealthOf(a);
+            srv.DebugHurt(b, -1, 10, a, 0, out, &src);
+            if (kase == 0) {
+                Check(srv.HealthOf(a) == ha - 75 && srv.DebugStateOf(a) == 23 && !srv.DebugHasEnchant(b, 22), "감전 되갚기(75 · 상태 23 · 버프 끔)가 아니다");
+            } else {
+                Check(srv.HealthOf(a) == ha && srv.DebugHasEnchant(b, 22), kase == 1 ? "무기 오브젝트 없이 감전을 되갚았다" : "투사체에 감전을 되갚았다");
+            }
+        }
+    }
+
+    // ③ 맞으면 투명(0) 풀림 — 때린 이가 있으면 늘 · 없으면 종류 12 만
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugApplyEnchant(b, 0, 0, 1);
+        srv.DebugHurt(b, -1, 5, "", 1, out);
+        Check(srv.DebugHasEnchant(b, 0), "때린 이 없는 불(1)에 투명이 풀렸다");
+        srv.DebugHurt(b, -1, 5, "", 12, out);
+        Check(!srv.DebugHasEnchant(b, 0), "때린 이 없는 종류 12 에 투명이 안 풀렸다");
+        srv.DebugApplyEnchant(b, 0, 0, 1);
+        srv.DebugHurt(b, -1, 5, a, 1, out);
+        Check(!srv.DebugHasEnchant(b, 0), "사람에게 맞았는데 투명이 안 풀렸다");
+    }
+
+    // ④ 흡혈(13) — 때린 이 세기 2(0.2) × 피해 50 = 10 채움 · `a2` 11바이트 · 최대면 안 채움
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(a, -1, 40, b, 1, out);
+        const uint16_t ha = srv.HealthOf(a);
+        srv.DebugApplyEnchant(a, 13, 0, 2);
+        std::vector<nox::OutPacket> o;
+        srv.DebugHurt(b, -1, 50, a, 1, o);
+        Check(srv.HealthOf(a) == ha + 10, "흡혈(0.2 × 50)만큼 안 채웠다");
+        Check(hasOp(o, a, static_cast<uint8_t>(nox::Op::FX_VAMPIRISM), 11), "흡혈 효과 `a2` 11바이트가 없다");
+        nox::Server full; mk(full);
+        full.DebugApplyEnchant(a, 13, 0, 2);
+        std::vector<nox::OutPacket> o4;
+        full.DebugHurt(b, -1, 50, a, 1, o4);
+        Check(!hasOp(o4, a, static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH), 3), "체력이 가득한데 흡혈이 체력 알림을 보냈다(unitAdjustHP 는 최대 아래일 때만)");
+    }
+
+    // ⑤ 소환수 — 무적(23)이면 안 깎임 · 불 보호 절반
+    {
+        nox::Server srv; mk(srv);
+        nox::Server::PhysBody body;
+        body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        std::vector<nox::OutPacket> out;
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(c, 3000, 3000);
+        SummonImp(srv, c, out);
+        Check(srv.pets() == 1, "임프가 안 불려 나옴(시험 전제)");
+        const uint16_t hp0 = srv.DebugPetHealth(0);
+        srv.DebugApplyEnchantPet(0, 23, 0, 1);
+        srv.DebugHurt(std::string(), 0, 3, b, 1, out);
+        Check(srv.DebugPetHealth(0) == hp0, "무적 소환수가 깎였다(damageDefaultProc 23)");
+        nox::Server s3; mk(s3);
+        s3.SetTypeBody(1328, body);
+        s3.DebugEnterGame(c, 730, false, nox::CharClass::Conjurer);
+        s3.DebugMoveTo(c, 3000, 3000);
+        std::vector<nox::OutPacket> o3;
+        SummonImp(s3, c, o3);
+        s3.DebugApplyEnchantPet(0, 17, 0, 1);
+        const uint16_t p0 = s3.DebugPetHealth(0);
+        s3.DebugHurt(std::string(), 0, 4, b, 1, o3);
+        Check(s3.DebugPetHealth(0) == p0 - 2, "소환수 불 보호(0.5)가 피해를 절반으로 안 줄였다");
+    }
+
+    // ⑥ 되받아치기 방패(27) 사람 — 앞쪽 종류 16 은 막고 `84` · 뒤쪽이면 맞음 · 앞쪽 투사체는 막음 · 앞쪽 칼(0)은 맞음
+    {
+        struct Row { float sx; uint8_t dtype; bool missile; bool blocked; const char* msg; };
+        const Row rows[] = { { 1050, 16, false, true, "앞쪽 종류 16 을 되받아치기 방패가 안 막았다" },
+                             { 1150, 16, false, false, "뒤쪽 종류 16 을 막았다" },
+                             { 1050, 0, true, true, "앞쪽 투사체를 되받아치기 방패가 안 막았다" },
+                             { 1050, 0, false, false, "앞쪽 칼(종류 0)을 되받아치기 방패가 막았다" } };
+        for (const auto& r : rows) {
+            nox::Server srv; mk(srv);
+            { std::vector<nox::OutPacket> o0; uint32_t m0 = 0; srv.Tick(m0, o0); m0 += 34; srv.Tick(m0, o0); }   // 옮긴 자리를 실수 자리에 맞춤
+            srv.DebugSetFacing(b, 128);
+            srv.DebugApplyEnchant(b, 27, 0, 1);
+            nox::Server::AttackSrc src;
+            src.x = r.sx; src.y = 1000; src.missile = r.missile;
+            std::vector<nox::OutPacket> out;
+            const uint16_t h = srv.HealthOf(b);
+            srv.DebugHurt(b, -1, 10, a, r.dtype, out, &src);
+            Check((srv.HealthOf(b) == h) == r.blocked, r.msg);
+            if (r.blocked && r.dtype == 16) Check(hasOp(out, a, static_cast<uint8_t>(nox::Op::FX_VIOLET_SPARKS), 5), "종류 16 을 막았는데 점 효과 `84` 가 없다");
+        }
+    }
+
+    // ⑦ 몸닿기(4FDF90) — 감전(22) 사람이 적과 부딪히면 ShockDamage[세기−1] · 버프 꺼짐 · 투명이면 적에 닿아 풀림 · 같은 편에 닿으면 안 풀림
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugMoveTo(b, 1012, 1000);                        // 몸 반지름 합 20 안 — 겹침
+        srv.DebugApplyEnchant(a, 22, 0, 2);
+        srv.DebugApplyEnchant(a, 0, 0, 1);
+        const uint16_t hb = srv.HealthOf(b);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.HealthOf(b) == hb - 30 && !srv.DebugHasEnchant(a, 22), "감전 몸닿기로 적이 ShockDamage[1]=30 을 안 받았다");
+        Check(!srv.DebugHasEnchant(a, 0), "적에 닿았는데 투명이 안 풀렸다");
+        nox::Server s2; mk(s2);
+        std::vector<nox::OutPacket> o2;
+        uint32_t m2 = 0;
+        s2.Tick(m2, o2);
+        s2.DebugSetTeam(a, 1); s2.DebugSetTeam(b, 1);
+        s2.DebugMoveTo(b, 1012, 1000);
+        s2.DebugApplyEnchant(a, 22, 0, 2);
+        s2.DebugApplyEnchant(a, 0, 0, 1);                     // 투명은 나중에(새 버프가 투명을 끈다)
+        const uint16_t hb2 = s2.HealthOf(b);
+        m2 += 34; s2.Tick(m2, o2);
+        Check(s2.DebugHasEnchant(a, 0) && s2.HealthOf(b) == hb2 && s2.DebugHasEnchant(a, 22), "같은 편에 닿았는데 투명이 풀리거나 감전했다");
+    }
+
+    // ⑧ 커서 고르기 — 투명한 사람은 적외선일 때만 커서 오브젝트
+    {
+        nox::Server srv; mk(srv);
+        { std::vector<nox::OutPacket> o0; uint32_t m0 = 0; srv.Tick(m0, o0); m0 += 34; srv.Tick(m0, o0); }
+        srv.DebugAimAt(a, 1100, 1000);
+        Check(srv.DebugFindObjectAtCursor(a).addr == b, "커서 아래 b 를 못 골랐다(시험 전제)");
+        srv.DebugApplyEnchant(b, 0, 0, 1);
+        Check(srv.DebugFindObjectAtCursor(a).none(), "투명한 b 를 커서가 골랐다");
+        srv.DebugApplyEnchant(a, 21, 0, 1);
+        Check(srv.DebugFindObjectAtCursor(a).addr == b, "적외선인데 투명한 b 를 커서가 못 골랐다");
+    }
+    (void)c;
+    std::printf("  4-b1 — 불·전기 보호(표·0.6·최소 1) · 감전 되갚기 · 맞으면 투명 풀림 · 흡혈 · 소환수 무적 · 되받아치기 27 · 몸닿기 감전·투명 · 커서 투명\n");
+}
+
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
 //
 // 정답지: 팀에 넣고 뺄 때 그 사람에게 `36 RESET_FRIENDS`(`sub_4D97E0`) → 친구 비트를 다시 세운다.
@@ -6263,6 +6456,7 @@ int main() {
     TestSpellFly();
     TestDurSpells();
     TestBuffs();
+    TestDamageBuffs();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

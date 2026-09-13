@@ -189,6 +189,7 @@ int main(int argc, char** argv) {
     bool friends = false;           // 친구 알림(OBJECT_FRIEND_ADD/REMOVE) — 부분 구현이라 기본 끔
     int debugDummy = 0;             // 진단 — 첫 사람 N 틱 뒤 주인 없는 임프 허수아비(0 끔)
     int debugDummyDx = 25;          // 진단 --debug-dummy-dx
+    int debugEnchantB = -1, debugEnchantP = 1, debugEnchantN = 0;   // 진단 --debug-enchant B P N
     int debugHurtEvery = 0;         // 진단 — N 틱마다 첫 사람에게 피해 25(0 끔)
     bool debugHurtFront = false;    // 진단 — 그 피해를 앞 30 에서 때린 것으로
     bool autoRespawn = false;       // 자동 부활(정답지 기본 꺼짐)
@@ -312,6 +313,11 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-dummy-dx" && i + 1 < argc) {
             // 진단 — 허수아비 오른쪽 거리(기본 25). 묶음 4-a2 날리기 화면 — 멀리 두면 Magic 이 날아가는 게 보인다.
             debugDummyDx = std::atoi(argv[++i]);
+        } else if (a == "--debug-enchant" && i + 3 < argc) {
+            // 진단 — 묶음 4-b 화면 판정. 첫 사람(관전 푼 뒤)에게 버프 B 를 세기 P 로 N 틱 뒤 끝없이 건다.
+            debugEnchantB = std::atoi(argv[++i]);
+            debugEnchantP = std::atoi(argv[++i]);
+            debugEnchantN = std::atoi(argv[++i]);
         } else if (a == "--debug-team-after" && i + 1 < argc) {
             // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
             debugTeamAfter = std::atoi(argv[++i]);
@@ -685,6 +691,10 @@ int main(int argc, char** argv) {
             srv.SetDebugHurtEvery(static_cast<uint32_t>(debugHurtEvery), debugHurtFront);
             std::printf("[진단스위치] %d 틱마다 첫 사람에게 피해 25(종류 0 · 주인 없음)%s\n", debugHurtEvery,
                         debugHurtFront ? " · 앞 30 에서" : "");
+        }
+        if (debugEnchantB >= 0) {
+            srv.SetDebugEnchant(debugEnchantB, debugEnchantP, static_cast<uint32_t>(debugEnchantN));
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 버프 %d(세기 %d) 끝없이\n", debugEnchantN, debugEnchantB, debugEnchantP);
         }
         if (debugDummy > 0) {
             srv.SetDebugDummyAfter(static_cast<uint32_t>(debugDummy));

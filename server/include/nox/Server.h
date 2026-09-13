@@ -903,7 +903,9 @@ public:
     void SetDebugOwnPetAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; }
     // 진단 — 같은 임프를 **주인 없이**(맵 몬스터 = 적) 사람 오른쪽 +25 에 고정하고 맞게 둔다(묶음 3-a 주먹 판정용).
     void SetDebugDummyAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; debugPetWild_ = true; }
-    void SetDebugDummyDx(int dx) { debugDummyDx_ = dx; }   // 진단 --debug-dummy-dx — 허수아비 오른쪽 거리(기본 25 · 4-a2 날리기 화면)
+    void SetDebugDummyDx(int dx) { debugDummyDx_ = dx; }
+    // 진단 --debug-enchant — 첫 사람 들어오고 after 틱 뒤 버프를 끝없이(길이 0) 건다(묶음 4-b 화면 판정)
+    void SetDebugEnchant(int buff, int power, uint32_t after) { debugEnchantBuff_ = buff; debugEnchantPower_ = power; debugEnchantAfter_ = after; }   // 진단 --debug-dummy-dx — 허수아비 오른쪽 거리(기본 25 · 4-a2 날리기 화면)
     // 진단 — N 틱마다 관전 아닌 첫 사람에게 주인 없는 것의 칼 피해 25(종류 0)를 준다(묶음 3-e 움찔·깎임 화면 판정용)
     void SetDebugHurtEvery(uint32_t ticks, bool front = false) { debugHurtEvery_ = ticks; debugHurtFront_ = front; }
     // ★ 묶음 3-c — 맵의 PlayerStart 자리(부활 자리 고르기 mapFindPlayerStart_4F7AB0). main.cpp 가 맵 오브젝트에서 채운다.
@@ -1237,6 +1239,7 @@ public:
         uint32_t missileSub = 0;  // 투사체 SUBCLASS(0x70 이면 되받아치지 않음)
         // 3-d 죽음 알림 — a2(때린 이)가 몬스터면 그 종류 번호(+4, 사람이면 0) · a3(무기·투사체 오브젝트)가 있나와 그 종류 번호
         uint16_t byMonsterType = 0;
+        int byPet = -1;           // 4-b1 — 때린 이가 소환수면 그 자리 번호(흡혈·감전 되갚기)
         bool obj = false;
         uint16_t objType = 0;
     };
@@ -1255,6 +1258,7 @@ public:
         return it != sessions_.end() && it->second.buffs.Has(23);
     }
     // 시험용 — 버프(4-a4)
+    Target DebugFindObjectAtCursor(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? Target{} : FindObjectAtCursor(it->second); }
     uint8_t DebugFacingOf(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0 : it->second.facing; }
     bool DebugHasEnchant(const std::string& addr, int buff) const {
         auto it = sessions_.find(addr);
@@ -1774,6 +1778,11 @@ private:
     // CanSee(server/object.go:76) — obj 가 눈멀면 못 봄 · flags&1 아니면 투명 targ 는 적외선·느리면(속도 ≤ 6) 못 봄
     static bool CanSeeBuffs(const Buffs* obj, const Buffs* targ, double targVelX, double targVelY, int flags);
     void SendFxAllCli(float x, float y, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);   // netSendFxAllCli_523030
+    Target DamageAttacker(const std::string& by, const AttackSrc* src) const;                               // 4-b1 a2
+    void DamageShockBack(const Target& victim, const Buffs& vb, const Target& attacker, const AttackSrc* src, std::vector<OutPacket>& out);
+    int DamageProtect(const Buffs& b, uint8_t dtype, int amount) const;                                     // 4DFE40·4DFF40
+    void DamageVampirism(const Target& attacker, const Target& victim, int amount, std::vector<OutPacket>& out);
+    void UnitAdjustHP(const Target& t, int dv, std::vector<OutPacket>& out);                                 // unitAdjustHP_4EE460
     void MarkAssist(const std::string& orig, const Target& targ);        // sub_4E7540(+3600 도운 사람) — 효과 묶음에서
     int DebugDurCreate(DurSpell& d, std::vector<OutPacket>& out);                                      // 시험용 create/update/destroy
     int DebugDurUpdate(DurSpell& d, std::vector<OutPacket>& out);
@@ -1870,9 +1879,18 @@ private:
                        double nx, double ny, double& vx, double& vy, double& ax, double& ay) const;
     // 오브젝트끼리(sub_548220 거르기·나누기 → 원 대 원 550D00 · 원 대 상자 54AD50). 자기(a1)만 민다.
     //   a1 = 움직이는 사람(지금 자리 nx,ny · 프레임 시작 bx,by · 속도 vx,vy), a2 = 상대(자리·속도).
+    // 4-b1 — 부딪힘 기록(collSysAddCollision_548630)의 임자. kind 1 사람 · 2 소환수 · 3 장애물
+    struct ContactRef {
+        uint8_t kind = 0;
+        std::string addr;
+        int idx = -1;
+    };
     void BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, double by, double vx, double vy,
                     const PhysBody& a2, double ox, double oy, double obx, double oby, double ovx, double ovy,
-                    double& ax, double& ay) const;
+                    double& ax, double& ay, const ContactRef* ra = nullptr, const ContactRef* rb = nullptr) const;
+    void AddContact(const ContactRef& a, const ContactRef& b) const;               // collSysAddCollision_548630(겹 없이)
+    void CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out);   // nox_xxx_collide_4FDF90
+    mutable std::vector<std::pair<ContactRef, ContactRef>> contacts_;              // 이 틱 부딪힘(allocHitArray 가 비움)
     // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
     void EmitNewPlayer(Session& to, const Session& who, uint8_t status,
@@ -2011,6 +2029,9 @@ private:
     uint32_t debugOwnPetAfter_ = 0;   // 진단 --debug-own-pet (0 끔)
     bool debugPetWild_ = false;        // 진단 --debug-dummy — 주인 없음 · 맞음
     int debugDummyDx_ = 25;            // 진단 --debug-dummy-dx
+    int debugEnchantBuff_ = -1, debugEnchantPower_ = 1;   // 진단 --debug-enchant
+    uint32_t debugEnchantAfter_ = 0;
+    bool debugEnchantDone_ = false;
     uint32_t debugHurtEvery_ = 0;      // 진단 --debug-hurt-every (0 끔)
     bool debugHurtFront_ = false;      // 진단 --debug-hurt-front — 앞 30 에서 때린 것으로
     std::vector<std::pair<float, float>> playerStarts_;   // 묶음 3-c PlayerStart 자리
