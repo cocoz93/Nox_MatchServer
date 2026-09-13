@@ -14,6 +14,7 @@
 
 #include "nox/Messages.h"
 #include "nox/Server.h"
+#include "nox/Gamedata.h"
 #include "nox/UpdateStream.h"
 #include "nox/SpellNames.h"
 #include "nox/Opcode.h"
@@ -3020,7 +3021,7 @@ void TestKillArmorCollide() {
         Check(ma.size() == 11 && mb.size() == 11, "죽음 알림 `a9 0e` 가 모두에게 11바이트로 안 감");
         if (mb.size() == 11) {
             Check(u16(mb, 2) == 728, "죽음 알림의 죽인 사람 번호가 틀림");
-            Check(u16(mb, 4) == 0, "도운 사람 자리가 0 이 아님(적는 주문이 아직 없다)");
+            Check(u16(mb, 4) == 0, "도운 사람 자리가 0 이 아님(도운 이 기록 없음)");
             Check(u16(mb, 6) == 729, "죽음 알림의 죽은 사람 번호가 틀림");
             Check(u16(mb, 8) == nox::kItemLongsword && mb[10] == 1, "무기로 죽였는데 갈래 1·무기 종류가 아님");
         }
@@ -3890,6 +3891,323 @@ void TestDurSpells() {
         Check(!anyRay(o, a), "자기에게 건 큰 치유 · 광선 아닌 주문에 `9e` 를 보냈다");
     }
     std::printf("  4-a3 — dt 끝·dt 0 · 같은 주문·소환 교체 · 플라스마 안 겹침 · create/update 취소 · 죽음·빠짐 · 걷기·자연의 힘 · 타원 방패 · 광선 멈춤\n");
+}
+
+// ── 묶음 4-a4 — 버프 틀 · gamedata.bin ──────────────────────────────
+//
+// 정답지: buffApplyTo_4FF380 · spellBuffOff_4FF5B0 · unitClearBuffs_4FF580 · updateUnitBuffs_4FF620 · setUnitBuffFlags_4E48F0
+//   · castBuffSpell(spells_buffs.go) · CanSee(server/object.go:76) · sub_4E7540(도운 사람) · libs balance/balance.go
+void TestBuffs() {
+    const std::string a = "10.4.7.1:4701";
+    const std::string b = "10.4.7.2:4702";
+    const std::string c = "10.4.7.3:4703";
+    auto enchantBits = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint16_t nc, uint32_t* bits) {
+        bool got = false;
+        for (const auto& m : FlattenTo(out, to)) {
+            if (m.size() != 7 || m[0] != static_cast<uint8_t>(nox::Op::REPORT_ENCHANTMENT) || (m[1] | (m[2] << 8)) != nc) continue;
+            if (bits) *bits = static_cast<uint32_t>(m[3]) | (static_cast<uint32_t>(m[4]) << 8) | (static_cast<uint32_t>(m[5]) << 16) |
+                              (static_cast<uint32_t>(m[6]) << 24);
+            got = true;
+        }
+        return got;
+    };
+    auto tickOut = [](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& o) { ms += 34; srv.Tick(ms, o); };
+
+    // ① gamedata 파서 — 태그·전역 · 여러 줄 값 · 사이에 # 줄이면 거기서 끝 · 끝 f 떼기 · 배열 · 이름은 대소문자 안 가림
+    {
+        nox::Gamedata g;
+        const std::string text = "# c\r\nFoo = 1.5f;\r\nARENA Foo = 2;\r\nSOLO Bar = 7;\r\nArr = 1, 2,\r\n 3;\r\nCut = 4\r\n# x\r\nZed = 9;\r\n";
+        Check(g.Parse(text), "gamedata 본보기 글을 못 읽었다");
+        Check(g.Float("ARENA", "foo") == 2.0 && g.Float("SOLO", "FOO") == 1.5, "태그 값이 먼저 · 없으면 전역이 아니다");
+        Check(g.Float("ARENA", "Bar", -1.0) == -1.0 && g.Float("SOLO", "Bar") == 7.0, "다른 태그 값을 가져왔다");
+        const auto arr = g.Array("ARENA", "arr");
+        Check(arr.size() == 3 && arr[2] == 3.0, "여러 줄 배열(1, 2, / 3;)을 못 읽었다");
+        Check(g.Float("ARENA", "cut") == 4.0 && g.Float("ARENA", "zed") == 9.0, "; 없이 # 줄이 오면 거기서 끝내야 한다");
+        nox::Gamedata bad;
+        Check(!bad.Parse("X = abc;\n"), "숫자가 아닌 값을 받아들였다");
+        nox::Gamedata real;
+        if (real.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\gamedata.bin")) {
+            Check(real.Float("ARENA", "TargetedSpellLifetime") == nox::kTargetedSpellFrames &&
+                  real.Float("ARENA", "UnTargetedSpellLifetime") == nox::kUnTargetedSpellFrames, "gamedata 수명이 GameBalance 표와 다르다");
+            Check(real.Float("ARENA", "InvulnerabilityEnchantDuration") == nox::kRespawnInvulnTicks, "gamedata 무적 길이가 150 이 아니다");
+            Check(real.Float("ARENA", "LightningRange") == nox::kLightningRange, "gamedata LightningRange 가 240 이 아니다");
+            const auto eb = real.Array("ARENA", "EnergyBoltDamage");
+            bool same = eb.size() == 5;
+            for (size_t i = 0; same && i < 5; ++i) same = std::fabs(eb[i] - nox::kEnergyBoltPerFrame[i]) < 1e-9;
+            Check(same, "gamedata EnergyBoltDamage 가 GameBalance 표와 다르다");
+            std::printf("  gamedata.bin — %zu개 · 표 대조(수명·무적·번개 거리·에너지볼트)\n", real.Count());
+        } else {
+            std::printf("  gamedata.bin 대조 — 건너뜀(%s)\n", real.Error().c_str());
+        }
+    }
+
+    // ② 걸기 — 비트·남은 틱·세기 · `5a` 모두에게 · 새 버프는 투명(0)을 끈다 · 끝없음(0)은 덮어쓰지 않는다 · 죽은 이는 안 걸린다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.Tick(ms, out);
+        srv.DebugApplyEnchant(a, 0, 100, 1);
+        std::vector<nox::OutPacket> o;
+        srv.DebugApplyEnchant(a, 21, 90, 3);
+        tickOut(srv, ms, o);
+        uint32_t bits = 0;
+        Check(enchantBits(o, b, 728, &bits) && bits == (1u << 21), "적외선을 걸었는데 `5a` 비트가 1<<21 이 아니다(투명이 안 꺼짐)");
+        Check(srv.DebugEnchantPower(a, 21) == 3 && srv.DebugEnchantDur(a, 21) == 89, "세기·남은 틱(90 − 1)이 틀리다");
+        srv.DebugApplyEnchant(a, 17, 0, 2);
+        srv.DebugApplyEnchant(a, 17, 50, 4);
+        Check(srv.DebugEnchantDur(a, 17) == 0 && srv.DebugEnchantPower(a, 17) == 2, "끝없는(0) 버프를 덮어썼다");
+        srv.DebugApplyEnchant(a, 21, 40, 5);
+        Check(srv.DebugEnchantDur(a, 21) == 40 && srv.DebugEnchantPower(a, 21) == 5, "남은 틱이 있는 버프를 새로 못 덮었다");
+        srv.Damage(b, 1000, out);
+        srv.DebugApplyEnchant(b, 21, 40, 5);
+        Check(!srv.DebugHasEnchant(b, 21), "죽은 이에게 버프가 걸렸다");
+    }
+
+    // ③ 틱마다 −1 → 0 되는 틱에 끄고 `5a` 0 · 끝없음은 안 줄어든다 · BuffOff 는 걸린 것만 알린다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.Tick(ms, out);
+        srv.DebugApplyEnchant(a, 9, 3, 1);
+        srv.DebugApplyEnchant(a, 18, 0, 1);
+        int offTick = -1;
+        for (int t = 1; t <= 6 && offTick < 0; ++t) {
+            std::vector<nox::OutPacket> o;
+            tickOut(srv, ms, o);
+            uint32_t bits = 0xFFFFFFFFu;
+            if (!srv.DebugHasEnchant(a, 9)) { offTick = t; Check(enchantBits(o, a, 728, &bits) && bits == (1u << 18), "꺼진 틱에 `5a` 가 남은 비트로 안 갔다"); }
+        }
+        Check(offTick == 3, "남은 틱 3 인데 3틱째에 안 꺼졌다");
+        for (int t = 0; t < 40; ++t) tickOut(srv, ms, out);
+        Check(srv.DebugHasEnchant(a, 18) && srv.DebugEnchantDur(a, 18) == 0, "끝없는 버프가 꺼졌거나 남은 틱이 줄었다");
+        std::vector<nox::OutPacket> o;
+        srv.DebugBuffOff(a, 9);
+        tickOut(srv, ms, o);
+        Check(!enchantBits(o, a, 728, nullptr), "안 걸린 버프를 끄는데 `5a` 를 보냈다");
+    }
+
+    // ④ 부활 무적 = 버프 23(150틱 · 세기 5) · 무기 클릭·공격 주문이 무적과 투명을 끈다 · DEATH(16) 는 무적을 뚫고 죽인다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        RegAllSpells(srv);
+        srv.SetAutoRespawn(true);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.Tick(ms, out);
+        srv.Damage(a, 1000, out);
+        for (int t = 0; t < 60 && !srv.IsAlive(a); ++t) tickOut(srv, ms, out);
+        Check(srv.IsAlive(a) && srv.DebugHasEnchant(a, 23) && srv.DebugEnchantPower(a, 23) == 5, "부활했는데 버프 23(세기 5)이 아니다");
+        Check(srv.DebugEnchantDur(a, 23) > 140 && srv.DebugEnchantDur(a, 23) <= 150, "부활 무적 남은 틱이 150 근처가 아니다");
+        srv.DebugApplyEnchant(a, 16, 2, 1);
+        for (int t = 0; t < 3; ++t) tickOut(srv, ms, out);
+        Check(!srv.IsAlive(a), "DEATH(16) 남은 틱이 끝났는데 무적이라 안 죽었다(unitDamageClear 는 무적을 안 본다)");
+        nox::Server srv2; std::vector<nox::OutPacket> out2; uint32_t ms2 = 0;
+        RegAllSpells(srv2);
+        srv2.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv2.Tick(ms2, out2);
+        srv2.DebugApplyEnchant(a, 23, 0, 5);
+        srv2.DebugApplyEnchant(a, 0, 0, 5);                     // 투명(0)은 23 을 건 뒤에 걸어야 남는다
+        CastAndWait(srv2, a, 27, false, ms2, out2);
+        Check(!srv2.DebugHasEnchant(a, 23) && !srv2.DebugHasEnchant(a, 0), "공격 주문을 말했는데 무적·투명이 안 꺼졌다");
+    }
+
+    // ⑤ 반마법(29)이면 시전 끝에 코드 14 · 얼림(25)이면 걷기·방향·공격 입력 무시 · 붙잡힘(5)이면 걷기만 무시
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        RegAllSpells(srv);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.Tick(ms, out);
+        srv.DebugApplyEnchant(a, 29, 0, 1);
+        std::vector<nox::OutPacket> o;
+        CastAndWait(srv, a, 27, false, ms, o);
+        bool code14 = false;
+        for (const auto& m : FlattenTo(o, a))
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 0 && m[2] == 14) code14 = true;
+        Check(code14, "반마법 버프인데 시전 끝에 `a9 00 0e` 가 없다");
+        for (int buff : { 25, 5 }) {
+            nox::Server s2; std::vector<nox::OutPacket> o2; uint32_t m2 = 0;
+            s2.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+            s2.SetPlayerAnimFrames(23, 8, 0); s2.SetPlayerAnimFrames(24, 8, 0);
+            s2.Tick(m2, o2);
+            s2.DebugApplyEnchant(a, buff, 0, 1);
+            const int x0 = s2.XOf(a);
+            std::vector<uint8_t> mv = InputPacket(2);
+            mv[nox::kWireHeaderSize + 1] = 5;
+            mv.push_back(0);
+            for (int t = 0; t < 5; ++t) { s2.OnPacket(a, mv.data(), mv.size(), o2); tickOut(s2, m2, o2); }
+            Check(s2.XOf(a) == x0 && s2.DebugStateOf(a) != nox::kPlayerStateWalk, buff == 25 ? "얼림인데 걸었다" : "붙잡힘인데 걸었다");
+            s2.DebugSetWeapon(a, 0);
+            auto click = InputPacket(6);
+            s2.OnPacket(a, click.data(), click.size(), o2);
+            tickOut(s2, m2, o2);
+            if (buff == 25) Check(s2.DebugStateOf(a) != nox::kPlayerStateAttack, "얼림인데 공격이 들어갔다(playerCanAttack)");
+            else Check(s2.DebugStateOf(a) == nox::kPlayerStateAttack, "붙잡힘은 공격을 막지 않는다");
+            std::vector<uint8_t> fp = InputPacket(1);
+            fp[nox::kWireHeaderSize + 1] = 5;
+            fp.push_back(64);
+            const uint8_t f0 = s2.DebugFacingOf(a);
+            s2.OnPacket(a, fp.data(), fp.size(), o2);
+            tickOut(s2, m2, o2);
+            if (buff == 25) Check(s2.DebugFacingOf(a) == f0, "얼림인데 방향 입력으로 돌았다(CCOrientation)");
+            else Check(s2.DebugFacingOf(a) == 64, "붙잡힘은 방향 입력을 막지 않는다");
+        }
+    }
+
+    // ⑥ CanSee — 눈먼 시전자는 둘레 찾기에서 아무도 못 찾음 · 가만히 선 투명 대상은 못 찾음 · 시전자가 적외선이면 찾음(날아가는 것에 21 복사)
+    {
+        // kase 4 — 만들 때는 둘레 밖(커서 먼 곳 · b 1650)이라 못 찾고, 날아가다 틱 찾기(날아가는 것 둘레 600)에서 찾는다
+        //   → 날아가는 것이 적외선(21)을 물려받아야 투명한 b 를 본다
+        for (int kase = 0; kase < 5; ++kase) {
+            nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+            RegSpell(srv, 12);
+            srv.SetMagicType(1237, 50, 10.0f, 0x4000);
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+            srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+            srv.DebugMoveTo(b, kase == 4 ? 1650 : 1150, 1000);
+            srv.DebugAimAt(a, 1150, kase == 4 ? 2100 : 1060);   // b 몸 밖(커서 오브젝트 아님) · 둘레 600 안(kase 4 는 밖)
+            if (kase == 1) srv.DebugApplyEnchant(a, 2, 0, 1);
+            if (kase >= 2) srv.DebugApplyEnchant(b, 0, 0, 1);
+            if (kase >= 3) srv.DebugApplyEnchant(a, 21, 0, 1);
+            CastAndWait(srv, a, 12, false, ms, out);
+            const unsigned long long before = srv.spellEffectDeferred();
+            for (int t = 0; t < 60 && srv.MissileCount() > 0; ++t) tickOut(srv, ms, out);
+            const bool hitB = srv.spellEffectDeferred() == before + 1 && srv.DebugLastAcceptTarget().addr == b;
+            static const char* kMsg[5] = { "눈멀지 않았는데 b 를 못 찾았다(시험 전제)", "눈먼 시전자가 b 를 찾았다",
+                                            "가만히 선 투명한 b 를 찾았다", "적외선인데 투명한 b 를 못 찾았다",
+                                            "날아가는 것이 시전자 적외선(21)을 안 물려받아 투명한 b 를 틱 찾기에서 못 봤다" };
+            Check((kase == 0 || kase >= 3) ? hitB : !hitB, kMsg[kase]);
+        }
+    }
+
+    // ⑦ 되받아치기 방패(27) — 앞에서 받으면 되받아치지 않고 주인·대상만 맞바꿈(b 가 받아들이지 않음)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        RegSpell(srv, 12);
+        srv.SetMagicType(1237, 50, 10.0f, 0x4000);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(b, 1150, 1000);
+        srv.DebugSetFacing(b, 128);
+        srv.DebugAimAt(a, 1150, 1000);
+        srv.DebugApplyEnchant(b, 27, 0, 1);
+        CastAndWait(srv, a, 12, false, ms, out);
+        float maxX = 0;
+        for (int t = 0; t < 90 && srv.MissileCount() > 0; ++t) {
+            float x = 0, y = 0;
+            if (srv.DebugMissileXY(0, x, y) && x > maxX) maxX = x;
+            tickOut(srv, ms, out);
+        }
+        // ★ 정답지 그대로 — 27 은 되받아치지 않고 주인·대상만 바꾼다(changeOwner 뒤 return) → Magic 이 b 를 지나가
+        //   a 쪽으로 돌려다 b 등에 맞아 튕기기를 되풀이하다 수명이 끝난다(시험 기록 DBG: 1148 → 1183 → 1163~1183 왕복)
+        Check(maxX > 1160.0f && srv.DebugLastAcceptTarget().addr != b, "되받아치기 방패(27)인데 b 가 받아들였다(주인·대상 맞바꿈 없음)");
+    }
+
+    // ⑧ 도운 사람 — castBuffSpell(orig·offensive)이 +3600 을 적고 10초 안에 남이 죽이면 `a9 0e` 에 싣는다 · 죽인 이와 같으면 0
+    //   + gamedata 이름 길이 · 초 · 세기 곱 · Once · Defensive(대상의 공격 지속 주문 취소) · 점 효과
+    {
+        auto killMsg = [](const std::vector<nox::OutPacket>& o, const std::string& to) -> std::vector<uint8_t> {
+            for (const auto& m : FlattenTo(o, to))
+                if (m.size() == 11 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 14) return m;
+            return {};
+        };
+        for (int kase = 0; kase < 3; ++kase) {
+            nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+            nox::Gamedata g;
+            g.Parse("ConfuseEnchantDuration = 90;\n");
+            srv.SetGamedata(g);
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+            srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+            srv.DebugEnterGame(c, 730, false, nox::CharClass::Warrior);
+            srv.Tick(ms, out);
+            nox::Server::BuffConf conf;
+            conf.durOpt = "ConfuseEnchantDuration";
+            conf.orig = b;
+            conf.offensive = true;
+            Check(srv.CastBuffSpell(12, 3, 2, nox::Target{ a, -1 }, conf, out) == 1, "castBuffSpell 이 1 이 아니다");
+            Check(srv.DebugEnchantDur(a, 3) == 90 && srv.DebugEnchantPower(a, 3) == 2, "gamedata 이름 길이(90)·세기가 안 들어갔다");
+            if (kase == 2) for (int t = 0; t < 301; ++t) tickOut(srv, ms, out);
+            std::vector<nox::OutPacket> o;
+            srv.Damage(a, 1000, o, kase == 1 ? b : c);
+            const auto m = killMsg(o, a);
+            const uint16_t assist = m.size() == 11 ? static_cast<uint16_t>(m[4] | (m[5] << 8)) : 0xFFFF;
+            static const char* kMsg[3] = { "도운 사람(b)이 죽음 알림에 안 실렸다", "죽인 이가 도운 이와 같은데 도운 자리가 0 이 아니다",
+                                           "10초가 지났는데 도운 사람을 실었다" };
+            Check(assist == (kase == 0 ? 729 : 0), kMsg[kase]);
+        }
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        RegAllSpells(srv);
+        srv.SetSpellDef(24, 10, 0x20 | 0x4, {});
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.Tick(ms, out);
+        nox::Server::BuffConf conf;
+        conf.dur = 2; conf.durInSec = true; conf.durLevelMul = true; conf.once = true;
+        srv.CastBuffSpell(51, 26, 3, nox::Target{ a, -1 }, conf, out);
+        Check(srv.DebugEnchantDur(a, 26) == 2 * 30 * 3, "초(×30)·세기 곱이 틀리다");
+        Check(srv.CastBuffSpell(51, 26, 3, nox::Target{ a, -1 }, conf, out) == 0, "Once 인데 두 번 걸렸다");
+        srv.DebugDurNew(a, 24, 0, -1, -1, false, nox::Target{}, out);
+        nox::Server::BuffConf def;
+        def.defensive = true; def.pointFx = static_cast<uint8_t>(nox::Op::FX_RICOCHET);
+        std::vector<nox::OutPacket> o;
+        srv.CastBuffSpell(18, 18, 1, nox::Target{ a, -1 }, def, o);
+        bool stat15 = false, fx = false;
+        for (const auto& m : FlattenTo(o, a)) {
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_STAT) && m[1] == 24 && m[5] == 15) stat15 = true;
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::FX_RICOCHET)) fx = true;
+        }
+        Check(stat15, "Defensive 인데 대상의 공격 지속 주문(24)이 취소되지 않았다");
+        Check(fx, "점 효과를 대상 자리로 안 보냈다");
+    }
+
+    // ⑨ 불려 나온 것에도 버프 · `5a` 는 그 번호로 · 눈먼 사람은 맨손으로 못 때린다(unitCanInteractWith 1)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        nox::Server::PhysBody body;
+        body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        SummonImp(srv, a, out);
+        ms = srv.DebugNowMs();
+        Check(srv.pets() == 1, "임프가 안 불려 나옴(시험 전제)");
+        std::vector<nox::OutPacket> o;
+        srv.DebugApplyEnchantPet(0, 2, 5, 1);
+        tickOut(srv, ms, o);
+        Check(srv.DebugPetHasEnchant(0, 2) && enchantBits(o, a, srv.DebugPetNetCode(0), nullptr), "소환수 버프가 `5a` 로 안 갔다");
+        nox::Server s2; std::vector<nox::OutPacket> o2; uint32_t m2 = 0;
+        for (int i = 23; i <= 25; ++i) s2.SetPlayerAnimFrames(i, 8, 0);
+        s2.DebugEnterGame(a, 728);
+        s2.DebugEnterGame(b, 729);
+        s2.DebugMoveTo(b, 1025, 1000);
+        s2.Tick(m2, o2);
+        s2.DebugApplyEnchant(a, 2, 0, 1);
+        auto click = InputPacket(6);
+        s2.OnPacket(a, click.data(), click.size(), o2);
+        for (int t = 0; t < 12; ++t) tickOut(s2, m2, o2);
+        Check(s2.HealthOf(b) == nox::kDefaultMaxHealth, "눈먼 사람이 맨손으로 때렸다");
+    }
+    // ⑩ 눈먼 워리어는 날아오는 Magic 을 못 봐서(CanInteract) 가만 7틱을 기다려 방패를 올린다
+    for (int blind = 0; blind < 2; ++blind) {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        RegSpell(srv, 12);
+        srv.SetMagicType(1237, 50, 10.0f, 0x4000);
+        srv.SetPlayerAnimFrames(40, 6, 1);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(b, 1150, 1000);
+        srv.DebugSetFacing(b, 128);
+        srv.DebugAimAt(a, 1150, 1000);
+        CastAndWait(srv, a, 12, false, ms, out);
+        if (blind) srv.DebugApplyEnchant(b, 2, 0, 1);
+        srv.DebugSetState(b, nox::kPlayerStateIdle);
+        int raiseTick = -1;
+        for (int t = 1; t <= 10 && raiseTick < 0; ++t) {
+            tickOut(srv, ms, out);
+            if (srv.DebugStateOf(b) == 15) raiseTick = t;
+        }
+        Check(blind ? raiseTick == 8 : (raiseTick > 0 && raiseTick <= 7),
+              blind ? "눈먼 워리어가 날아오는 Magic 을 보고 방패를 올렸다" : "눈멀지 않은 워리어가 Magic 을 보고 일찍 올리지 않았다(시험 전제)");
+    }
+    std::printf("  4-a4 — gamedata 파서·표 대조 · 걸기·끄기·틱·5a · 부활 무적 23 · DEATH · 반마법 14 · 얼림·붙잡힘 · CanSee · 되받아치기 27 · 도운 사람 · castBuffSpell · 소환수 · 눈먼 주먹\n");
 }
 
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
@@ -5944,6 +6262,7 @@ int main() {
     TestCastPipeline();
     TestSpellFly();
     TestDurSpells();
+    TestBuffs();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

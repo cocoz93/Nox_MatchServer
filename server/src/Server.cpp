@@ -844,7 +844,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         Session& s = vi->second;
         // ── nox_server_handler_PlayerDamage_4E17B0 ──
         if (!s.inGame || s.respawnAtFrame != 0) return;    // +16 & 2 · DEAD
-        if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) { ++invulnBlocked_; return; }   // 버프 23
+        if (s.buffs.Has(23)) { ++invulnBlocked_; return; }   // 버프 23
         if (s.observer) return;                            // 3680 & 1
         // ── 죽음 알림 기록(+304 갈래 · +300 종류, 묶음 3-d · `GAME3_3.c:164~246`) — 부를 때마다 0 에서 다시 ──
         //   때린 이(a2)가 있으면: 무기·투사체(a3)가 있고 때린 이와 다르면 갈래 1·그 종류 /
@@ -1009,7 +1009,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
 }
 
 bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
-                    const std::string& by, const Session::LastHit* hit) {
+                    const std::string& by, const Session::LastHit* hit, bool ignoreInvuln) {
     auto it = sessions_.find(addr);
     if (it == sessions_.end()) return false;
     Session& s = it->second;
@@ -1022,7 +1022,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     //
     //   ⚠ 「없음」을 프레임 0 으로 나타내지 않는다 — 0 은 진짜 프레임이라 첫 틱에
     //     되살아난 사람이 영영 무적이 된다. 오늘 이 함정을 두 번 밟았다(`closing`·`hasAim`).
-    if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) {
+    if (!ignoreInvuln && s.buffs.Has(23)) {                // 버프 23(4-a4) · unitDamageClear(DEATH 버프)는 안 본다
         ++invulnBlocked_;
         return false;
     }
@@ -1087,9 +1087,13 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     PlayerSetState(s, 3, frame_);
     ++s.deaths;
     DropFlag(addr, out);   // 들고 있었으면 그 자리에 떨군다
+    // `GAME5.c:5098~5104` — setUnitBuffFlags(0) · 능력 끄기(7) · +3600 = 0 · playerCancelSpells · unitClearBuffs
+    SetBuffFlags(Target{ addr, -1 }, 0);
+    s.assistSet = false;
     PlayerCancelSpells(addr, out);                         // playerCancelSpells_4FEAE0(`GAME5.c:5103`, 4-a3)
+    ClearBuffs(Target{ addr, -1 });
     // ⚠ 옮기지 않은 것 — 죽는 소리(10) · 가진 것 전부 떨구기(퀘스트 아니면 · 아이템 5)
-    //   · 모드별 점수 정답지(8 — 지금은 아래 우리 점수) · 버프·능력·주문 끄기(4·7)
+    //   · 모드별 점수 정답지(8 — 지금은 아래 우리 점수) · 능력 끄기(7)
 
     // ④ 점수 — 때린 쪽이 있고 자기 자신이 아니면 그쪽이 하나 얻는다.
     //    자기가 자기를 죽인 것(자기에게 건 주문)은 점수가 아니다.
@@ -1256,13 +1260,13 @@ void Server::FlushPending(std::vector<OutPacket>& out) {
             //       `ENCHANT_INVULNERABLE = 23`(`server/spells_enchant.go:60`)
             //   ★ 우리는 부활 무적을 이 비트로 알린다. 정품 더티 비트 `0x800000` 자리다.
             if (pr.what == PendingReport::What::Enchant) {
-                const Session* who = nullptr;
+                const Buffs* who = nullptr;                   // 4-a4 — 사람·불려 나온 것의 버프 비트(+340)
                 for (const auto& kv2 : sessions_) {
-                    if (kv2.second.inGame && kv2.second.netCode == pr.netCode) { who = &kv2.second; break; }
+                    if (kv2.second.inGame && kv2.second.netCode == pr.netCode) { who = &kv2.second.buffs; break; }
                 }
+                if (!who) for (const auto& k : pets_) if (k.netCode == pr.netCode) { who = &k.buffs; break; }
                 if (!who) continue;
-                const uint32_t bits =
-                    (who->invulnUntilSet && frame_ < who->invulnUntilFrame) ? kEnchantInvulnerable : 0u;
+                const uint32_t bits = who->bits;
                 uint8_t msg[7] = {
                     static_cast<uint8_t>(Op::REPORT_ENCHANTMENT),
                     static_cast<uint8_t>(pr.netCode),
@@ -3493,13 +3497,14 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 PlayerSetState(s, kPlayerStateIdle, frame);
                 s.stateFrame = frame;
             }
-            if (s.hasFacingInput) s.facing = s.facingInput;   // CCOrientation(`:497~502`, 얼림·광전사 없음)
+            if (s.hasFacingInput && !s.buffs.Has(25)) s.facing = s.facingInput;   // CCOrientation(`:497~502`) — 얼림(25)이면 안 돔 · ⚠ 퀘스트 거래·광전사는 5·7
             // 자연의 힘(31) 지속 중이면 방향 입력만 받는다(`:496` orientationOnly = Sub4FEE50 · 4-a3)
             const bool orientationOnly = DurActive(31, s.addr);
             // 이동 — playerCanMove 면 붙들고 있는 주문 취소(cancelAllSpells_4FEE90, `:509~510`) ·
             //   맨손 공격 중(상태 1)에는 안 먹는다(`:506~507`) · 방패 올린 채(16)면 먼저 내린다(17, `:513~514`)
-            //   ⚠ playerCanMove 의 버프 25·5 · 상태 1 + 특정 무기 갈래는 버프(4-a4)·아이템(5)
-            if (s.moveInputThisTick && !orientationOnly) {
+            //   playerCanMove_4F9BC0 — 얼림(25)·붙잡힘(5) 버프면 못 움직임 ⚠ 퀘스트 거래 · 상태 1 + 특정 무기 갈래는 아이템(5)
+            const bool playerCanMove = !s.buffs.Has(25) && !s.buffs.Has(5);
+            if (s.moveInputThisTick && !orientationOnly && playerCanMove) {
                 CancelChannelSpells(s.addr, out);
                 if (s.moveState != kPlayerStateAttack) {
                     if (s.moveState == 16) {
@@ -3511,7 +3516,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 }
             }
             // CCAction(`:536~544`) — playerCanAttack(버프 25 없음 · 상태 23 아님) → 공 차기 아니면 playerInputAttack
-            if (s.actionThisTick && !orientationOnly && s.moveState != 23) PlayerInputAttack(s, frame, out);
+            if (s.actionThisTick && !orientationOnly && !s.buffs.Has(25) && s.moveState != 23) PlayerInputAttack(s, frame, out);
         }
         s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
 
@@ -3591,6 +3596,11 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         m.s->facingPrev = m.s->facing;   // CCC: Direction1 = Direction2(`server.go:167`)
         m.s->prevX = m.bx; m.s->prevY = m.by;   // CCC: PrevPos(+72) = 이번 틱 시작 자리(movers 는 게임 안 모두 — 관전·죽음 포함)
     }
+    // CCC: updateUnitBuffs_4FF620(`server.go:189`) — 버프 남은 틱 −1 · 0 이면 끔(4-a4)
+    std::vector<std::string> buffUnits;
+    for (auto& m : movers) buffUnits.push_back(m.s->addr);
+    for (const auto& a : buffUnits) UpdateUnitBuffs(Target{ a, -1 }, out);
+    for (size_t i = pets_.size(); i-- > 0;) UpdateUnitBuffs(Target{ std::string(), static_cast<int>(i) }, out);   // 몬스터도 CCC 목록에(죽으면 지워지니 뒤에서부터)
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -3643,7 +3653,7 @@ bool Server::IncomingMissile(const Session& s) const {
     const float px = static_cast<float>(s.posX), py = static_cast<float>(s.posY);
     const float dirX = DirVecX(s.facingPrev);
     const float dirY = DirVecY(s.facingPrev);
-    auto test = [&](float mx, float my, float prevX, float prevY, double vx, double vy, const std::string& owner) {
+    auto test = [&](float mx, float my, float prevX, float prevY, double vx, double vy, const std::string& owner, const Buffs* mb) {
         if ((mx - px) * (mx - px) + (my - py) * (my - py) > 100.0f * 100.0f) return false;   // getMissilesInCircle 100
         if (owner == s.addr) return false;                                                   // 같은 사슬
         auto ow = sessions_.find(owner);
@@ -3659,15 +3669,15 @@ bool Server::IncomingMissile(const Session& s) const {
         const double v14 = std::sqrt(static_cast<double>(v11) * v11 + static_cast<double>(v10) * v10);
         if (v9 == 0.0 || v14 == 0.0) return false;
         if (!(vy / v9 * -(v11 / v14) + vx / v9 * -(v10 / v14) > 0.69999999)) return false;
-        if (!MapTraceVision(px, py, mx, my)) return false;                                   // CanInteract(나, 투사체, 0)
+        if (!CanSeeBuffs(&s.buffs, mb, vx, vy, 0) || !MapTraceVision(px, py, mx, my)) return false;   // CanInteract(나, 투사체, 0)
         return v14 < 100.0;                                                                  // 가장 가까운 것 < 100
     };
     for (const auto& p : shots_) {
         if (test(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.x - p.vx), static_cast<float>(p.y - p.vy),
-                 p.vx, p.vy, p.owner)) return true;
+                 p.vx, p.vy, p.owner, nullptr)) return true;
     }
     for (const auto& m : missiles_) {
-        if (test(m.posX, m.posY, m.prevX, m.prevY, m.velX, m.velY, m.owner)) return true;
+        if (test(m.posX, m.posY, m.prevX, m.prevY, m.velX, m.velY, m.owner, &m.buffs)) return true;
     }
     return false;
 }
@@ -3722,7 +3732,8 @@ bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame, std::vector<
                 s.attackAnim = static_cast<uint8_t>(kAnimPunchLeft + NextRandom(2));
                 if (s.charClass == CharClass::Warrior && NextRandom(101) > 75) s.attackAnim = kAnimPunchHook;
                 // 투명 해제 · 무적 해제 · 타원 방패 취소 — 버프 중 지금 있는 것은 부활 무적뿐
-                if (s.invulnUntilSet && frame < s.invulnUntilFrame) s.invulnUntilFrame = frame;
+                BuffOff(Target{ s.addr, -1 }, 0);
+                BuffOff(Target{ s.addr, -1 }, 23);
                 if (out) DurCancelFor(67, s.addr, *out);
             }
         } else {
@@ -3783,7 +3794,7 @@ void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& o
     s.dmgRemainder = 0.0f;                                 // +84
     s.respawnAtFrame = 0;                                  // 깃발 &= 0xFFEB3FE7 — DEAD 끔
     PlayerSetState(s, kPlayerStateIdle, frame);
-    s.invulnUntilSet = false;                              // unitClearBuffs(아래에서 23 을 다시 켠다)
+    ClearBuffs(Target{ s.addr, -1 });                      // unitClearBuffs_4FF580(아래에서 23 을 다시 켠다)
     PlayerCancelSpells(s.addr, out);                       // playerCancelSpells_4FEAE0(`GAME3_3.c:8119`, 4-a3)
     s.lastHit = Session::LastHit{};                        // +520 = 0(`GAME3_3.c:7958`, 3-d)
     MarkDirty(s.netCode, PendingReport::What::UnitHealth);
@@ -3824,8 +3835,7 @@ void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& o
     s.velX = s.velY = 0.0;
     ForgetDrawables(s, out);
     // 온라인이면 무적 버프 23 을 5초(5 × 30 틱)
-    s.invulnUntilFrame = frame + 5 * kServerTickRate;
-    s.invulnUntilSet = true;
+    ApplyEnchant(Target{ s.addr, -1 }, 23, 5 * static_cast<int>(kServerTickRate), 5);   // buffApplyTo(23, 5×FPS, 5) · GAME4.c:2201
     std::printf("[부활] 프레임 %u %s → (%.0f,%.0f) · 시작 지점 %zu곳 · 무적 %u틱\n", frame, s.addr.c_str(), sx, sy,
                 playerStarts_.size(), 5 * kServerTickRate);
     std::fflush(stdout);
@@ -3844,8 +3854,13 @@ void Server::SendKillInform(Session& s, std::vector<OutPacket>& out) {
         const auto k = sessions_.find(s.lastHit.player);
         if (k != sessions_.end() && k->second.inGame) killer = k->second.netCode;
     }
-    // 도운 사람 v2 — +3600 이 켜져 있고 10초 안(sub_4E7540: 혼란·기절·자리바꾸기 주문이 적는다 → 묶음 4). 적는 이가 아직 없어 0
-    const uint16_t assist = 0;
+    // 도운 사람 v2 — +3600 이 켜져 있고 10초(10×FPS) 안이면 +3604 사람(살아 있는 유닛) · 죽인 이·죽은 이와 같으면 0(sub_4E7540 · 4-a4)
+    uint16_t assist = 0;
+    if (s.assistSet && frame_ - s.assistFrame < 10u * kServerTickRate) {
+        const auto h = sessions_.find(s.assistBy);
+        if (h != sessions_.end() && h->second.inGame && h->second.addr != s.lastHit.player && h->second.addr != s.addr)
+            assist = h->second.netCode;
+    }
     // 갈래·종류 — +520 이 몬스터면(또는 주인이 몬스터인 무기·투사체면) 갈래 1·그 몬스터 종류, 그 밖은 기록(+304/+300)
     uint8_t kind = s.killKind;
     uint16_t type = s.killType;
@@ -3982,13 +3997,14 @@ int Server::SpellCheckClass(const Session& s, uint8_t spell) const {
 }
 
 // checkPlrCantCastSpell_4FD150(`GAME4.c:2706`)
-//   ⚠ 옮기지 않은 갈래 — KOTR 왕관·깃발볼 공(17·16)은 모드 8 · 버프 29(14)는 버프 틀(4-a) 뒤 ·
+//   ⚠ 옮기지 않은 갈래 — KOTR 왕관·깃발볼 공(17·16)은 모드 8 ·
 //     주먹(29)·자연의 힘(31)·유성(52) 이미 있음 3 · 매직미사일(50)·픽시(58) 개수 표는 그 효과(4-c) 와 함께
 int Server::CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) const {
     if (!glyph && flags_.size() > 0 && (SpellFlags(spell) & 0x80000)) {
         // CTF(게임 깃발 32) — 가진 것 가운데 FLAG 클래스(0x10000000)가 있으면 13
         for (const auto& f : flags_) if (f.carrier == s.addr) return 13;
     }
+    if (s.buffs.Has(29)) return 14;                        // LABEL_9 — 반마법(ANTI_MAGIC 29) 버프면 14(4-a4)
     const bool quest = (questTotal_ > 0 || questStage_ > 0);
     if (!quest && (spell == 111 || spell == 112 || spell == 113 || spell == 114)) return 10;   // sub_4D7100 — 퀘스트 전용 소환
     return 0;
@@ -4203,7 +4219,8 @@ bool Server::CastSpellByUser(uint8_t spell, int lvl, Session& s, const SpellArg&
     if (lvl < 0) lvl = SpellPower(s, spell);
     if (SpellFlags(spell) & 0x20) {
         // 공격 주문 — 투명(0) 끄기 · 무적(23) 끄기 · 타원 방패(67) 지속 주문 취소
-        if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) s.invulnUntilFrame = frame_;
+        BuffOff(Target{ s.addr, -1 }, 0);
+        BuffOff(Target{ s.addr, -1 }, 23);
         DurCancelFor(67, s.addr, out);
     }
     if (!(SpellFlags(spell) & 0x4) || arg.obj.addr == s.addr) return SpellAccept(spell, s, s.addr, arg, lvl, out);
@@ -4368,9 +4385,9 @@ static bool WallNormal(int shape, int32_t v9, uint8_t v4, float& nx, float& ny) 
 
 // server/spells.go:360 Nox_xxx_spellFlySearchTarget — 사람 시전자·공격 주문이면 커서 오브젝트가 적이면 그것 ·
 //   아니면 중심(pos 가 있고 선 추적 1|3 통과면 pos, 아니면 날아가는 것 자리) 둘레 dist 에서 가장 가까운 대상
-//   ⚠ CanSee(투명·눈멂 버프)는 버프 틀(4-a4) 뒤 — 지금은 시야선(MapTraceVision)만 · 몬스터 생성기(8)는 없음
+//   CanInteract = CanSee(버프 — 눈멂·투명·적외선, 4-a4) + 시야선 · 몬스터 생성기(8)는 없음
 Target Server::SpellFlySearchTarget(bool havePos, float px, float py, float mslX, float mslY, const std::string& mslOwner,
-                                    const std::string& mslSelf, uint32_t sflags, float dist, const Session* self) const {
+                                    const std::string& mslSelf, uint32_t sflags, float dist, const Session* self, const Buffs* mslBuffs) const {
     // a5 = 0 — 날아가는 것 자신(mslSelf: 만들 때는 시전자)은 뺀다
     if (self && (sflags & 0x20)) {
         const Target cur = FindObjectAtCursor(*self);
@@ -4385,25 +4402,26 @@ Target Server::SpellFlySearchTarget(bool havePos, float px, float py, float mslX
     const float dist2 = dist * dist;
     float minDist = 1e+08f;
     Target found;
-    auto consider = [&](const Target& t, float ox, float oy) {
+    auto consider = [&](const Target& t, float ox, float oy, const Buffs* tb, double tvx, double tvy) {
         if ((sflags & 0x20) && owner && !TargetIsEnemy(*owner, t)) return;
         const float dx = cx - ox, dy = cy - oy;
         const float odist = dy * dy + dx * dx;
         if (odist > dist2) return;
-        if (!MapTraceVision(ox, oy, mslX, mslY)) return;                         // CanInteract(msl, it)
-        if (owner && !MapTraceVision(ox, oy, static_cast<float>(owner->posX), static_cast<float>(owner->posY))) return;
+        if (!CanSeeBuffs(mslBuffs, tb, tvx, tvy, 0) || !MapTraceVision(ox, oy, mslX, mslY)) return;   // CanInteract(msl, it)
+        if (owner && (!CanSeeBuffs(&owner->buffs, tb, tvx, tvy, 0) ||
+                      !MapTraceVision(ox, oy, static_cast<float>(owner->posX), static_cast<float>(owner->posY)))) return;
         if (odist < minDist) { found = t; minDist = odist; }
     };
     for (const auto& kv : sessions_) {
         const Session& o = kv.second;
         if (!o.inGame || o.observer || o.respawnAtFrame != 0) continue;         // 관전 · DEAD
         if (!mslSelf.empty() && o.addr == mslSelf) continue;
-        consider(Target{ o.addr, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY));
+        consider(Target{ o.addr, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY), &o.buffs, o.velX, o.velY);
     }
     for (size_t i = 0; i < pets_.size(); ++i) {
         const auto tb = typeBodies_.find(pets_[i].type);
         if (tb != typeBodies_.end() && (tb->second.subclass & 0xC000)) continue;   // 몬스터 SUBCLASS 0x8000·0x4000
-        consider(Target{ std::string(), static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y));
+        consider(Target{ std::string(), static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y), &pets_[i].buffs, 0.0, 0.0);   // ⚠ 소환수 속도는 6
     }
     return found;
 }
@@ -4415,7 +4433,7 @@ bool Server::CreateSpellFly(Session& s, Target target, uint8_t spell, std::vecto
     if (target.none()) {
         // 사람 — 커서(playerinfo +2284/+2288) 둘레 600 에서 고른다(날아가는 것 = 시전자)
         target = SpellFlySearchTarget(true, static_cast<float>(s.aimX), static_cast<float>(s.aimY),
-                                      static_cast<float>(s.posX), static_cast<float>(s.posY), s.addr, s.addr, SpellFlags(spell), 600.0f, &s);
+                                      static_cast<float>(s.posX), static_cast<float>(s.posY), s.addr, s.addr, SpellFlags(spell), 600.0f, &s, &s.buffs);
     }
     const int dir = s.facingPrev;                            // +124 Direction1
     const float r = static_cast<float>(kBodyRadius) + 4.0f;  // +176 반지름 + 4
@@ -4441,7 +4459,12 @@ bool Server::CreateSpellFly(Session& s, Target target, uint8_t spell, std::vecto
     m.level = SpellPower(s, spell);
     m.velX = DirVecX(dir) * m.speed + static_cast<float>(s.velX);
     m.velY = DirVecY(dir) * m.speed + static_cast<float>(s.velY);
-    // ⚠ 시전자 버프 21 복사는 버프 틀(4-a4) · 시전 소리는 10
+    // 시전자가 적외선(21)이면 날아가는 것에도(buffApplyTo — 유닛이 아니라 알림 없음) · 시전 소리는 10
+    if (s.buffs.Has(21)) {
+        m.buffs.bits |= 1u << 21;
+        m.buffs.dur[21] = s.buffs.dur[21];
+        m.buffs.power[21] = s.buffs.power[21];
+    }
     std::printf("[날리기] 프레임 %u %s 주문 %u(%s) Magic 번호 %u 자리 (%.1f,%.1f) 대상 %s\n", frame_, s.addr.c_str(), spell,
                 SpellName(spell) ? SpellName(spell) : "?", m.netCode, sx, sy,
                 target.none() ? "없음" : (!target.addr.empty() ? target.addr.c_str() : "소환수"));
@@ -4457,6 +4480,165 @@ void Server::DestroyMissile(size_t i, std::vector<OutPacket>& out) {
     const uint8_t msg[3] = { static_cast<uint8_t>(Op::DESTROY_OBJECT), static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitImportantRaw(kv.second, msg, sizeof(msg), out);
     missiles_.erase(missiles_.begin() + static_cast<long>(i));
+}
+
+// ── 묶음 4-a4 버프 틀 ─────────────────────────────────────────────────
+//   정답지 GAME4.c:3538~3650(buffApplyTo · GetBuffTimer · GetPower · ClearBuffs · spellBuffOff · updateUnitBuffs) · GAME3_3.c:1269(setUnitBuffFlags)
+//   · spells_buffs.go(castBuffSpell) · server/object.go:76(CanSee) · GAME3_3.c:2593(sub_4E7540)
+//   ⚠ 소리(On/Off · 26 · 779)는 10 · Hecubah/Necromancer 갈래는 몬스터(7) · 보호 CRC 없음
+
+Buffs* Server::BuffsOf(const Target& t) {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        return (it != sessions_.end() && it->second.inGame) ? &it->second.buffs : nullptr;
+    }
+    return (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) ? &pets_[static_cast<size_t>(t.pet)].buffs : nullptr;
+}
+const Buffs* Server::BuffsOf(const Target& t) const {
+    return const_cast<Server*>(this)->BuffsOf(t);
+}
+uint16_t Server::UnitNetCode(const Target& t) const {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        return (it != sessions_.end() && it->second.inGame) ? it->second.netCode : 0;
+    }
+    return (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) ? pets_[static_cast<size_t>(t.pet)].netCode : 0;
+}
+
+// setUnitBuffFlags_4E48F0 — 비트를 넣고 보는 사람 모두에게 `5a` 를 올린다(더티 0x800000)
+void Server::SetBuffFlags(const Target& t, uint32_t bits) {
+    Buffs* b = BuffsOf(t);
+    if (!b) return;
+    b->bits = bits;
+    MarkDirty(UnitNetCode(t), PendingReport::What::Enchant);
+}
+
+// buffApplyTo_4FF380
+void Server::ApplyEnchant(const Target& t, int buff, int dur, int power) {
+    if (buff < 0 || buff >= 32) return;
+    Buffs* b = BuffsOf(t);
+    if (!b) return;
+    // ⚠ Hecubah 반마법(29) 무시 · 퀘스트 Hecubah/Necromancer 혼란(3) · 몬스터 공포(11) 소리 갈래는 몬스터(7)
+    if (!t.addr.empty() && sessions_.at(t.addr).respawnAtFrame != 0) return;   // +16 & 0x8022(DEAD)
+    if (!b->Has(buff) || b->dur[buff] != 0) {
+        if (buff != 0) BuffOff(t, 0);                    // 새 버프는 투명을 끈다
+        b->dur[buff] = static_cast<uint16_t>(dur);
+        b->power[buff] = static_cast<uint8_t>(power);
+        SetBuffFlags(t, b->bits | (1u << buff));
+        // 소리 On(주문 정의) → 10
+    }
+}
+
+// spellBuffOff_4FF5B0
+void Server::BuffOff(const Target& t, int buff) {
+    if (buff < 0 || buff >= 32) return;
+    Buffs* b = BuffsOf(t);
+    if (!b || !b->Has(buff)) return;
+    SetBuffFlags(t, b->bits & ~(1u << buff));
+    b->dur[buff] = 0;
+    b->power[buff] = 0;
+    // 16·30 아니면 소리 Off → 10
+}
+
+// unitClearBuffs_4FF580
+void Server::ClearBuffs(const Target& t) {
+    Buffs* b = BuffsOf(t);
+    if (!b) return;
+    SetBuffFlags(t, 0);
+    for (int i = 0; i < 32; ++i) { b->dur[i] = 0; b->power[i] = 0; }
+}
+
+// updateUnitBuffs_4FF620 — updateUnitsCCC(적분 뒤) 에서 유닛마다
+void Server::UpdateUnitBuffs(const Target& t, std::vector<OutPacket>& out) {
+    Buffs* b = BuffsOf(t);
+    if (!b || b->bits == 0) return;
+    for (int v = 0; v < 32; ++v) {
+        b = BuffsOf(t);
+        if (!b) return;
+        if (!b->Has(v)) continue;
+        // 16(DEATH) 이면 남은 틱 % 30 == 29 마다 소리 26 → 10
+        if (b->dur[v] == 0) continue;
+        --b->dur[v];
+        if (b->dur[v] != 0) continue;
+        if (v == 7) {
+            // ETHEREAL — 깃발 &~0x40(NO_COLLIDE) ⚠ 유닛 깃발 칸이 없어 효과 묶음(4-b)에서
+        } else if (v == 16) {
+            // DEATH — +520 = 0 · +524 = 13 · unitDamageClear_4EE5E0(9999999: 방어·무적 안 봄) · 소리 779(10) · 사람이면 제거전 죽음·교훈(8)
+            if (!t.addr.empty()) {
+                Session& s = sessions_.at(t.addr);
+                s.lastHit = Session::LastHit{};
+                s.lastDamageType = 13;
+                const Session::LastHit none;
+                Damage(t.addr, 9999999, out, std::string(), &none, /*ignoreInvuln=*/true);
+            } else {
+                KillPet(static_cast<size_t>(t.pet), out);   // 몬스터 죽음 함수(monsterCallDieFn) — 순번이 바뀌므로 여기서 끝
+                return;
+            }
+        }
+        BuffOff(t, v);
+        b = BuffsOf(t);
+        if (b) b->power[v] = 0;
+    }
+    // 9(HASTED) 면 SpeedCur × 1.25 ⚠ 걸음 속도 모델(SpeedCur)은 빠르게·느리게 효과(4-b)와 함께
+}
+
+// CanSee(server/object.go:76) — obj·targ 버프만 본다(시야선은 부르는 쪽 MapTraceVision)
+bool Server::CanSeeBuffs(const Buffs* obj, const Buffs* targ, double targVelX, double targVelY, int flags) {
+    if (obj && obj->Has(2)) return false;                                    // BLINDED
+    if (!(flags & 0x1) && targ && targ->Has(0)) {                            // INVISIBLE
+        const bool infra = obj && obj->Has(21);                              // 퀘스트 Hecubah/Necromancer 갈래는 7
+        // ⚠ 픽시(주인 적외선) 갈래는 4-c
+        if (!infra && std::fabs(targVelX) <= 6.0 && std::fabs(targVelY) <= 6.0) return false;
+    }
+    // ⚠ 폭탄병(Bomber) ↔ 살금살금(TreadLightly) 능력은 7
+    return true;
+}
+
+// netSendFxAllCli_523030 — 자리가 화면(반폭 640·반높이 480 + 50) 안인 사람에게 Kind1
+void Server::SendFxAllCli(float x, float y, const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame) continue;
+        if (std::fabs(x - o.posX) < 640.0 + 50.0 && std::fabs(y - o.posY) < 480.0 + 50.0)
+            Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, n, out);
+    }
+}
+
+// sub_4E7540 — 사람이 사람에게(서로 다름) 걸면 대상 +3600=1 · +3604=건 이 번호 · +3608=지금
+void Server::MarkAssist(const std::string& orig, const Target& targ) {
+    if (orig.empty() || targ.addr.empty() || orig == targ.addr) return;
+    auto o = sessions_.find(orig);
+    auto t = sessions_.find(targ.addr);
+    if (o == sessions_.end() || t == sessions_.end()) return;
+    t->second.assistSet = true;
+    t->second.assistBy = orig;
+    t->second.assistFrame = frame_;
+}
+
+// castBuffSpell(spells_buffs.go:25)
+int Server::CastBuffSpell(uint8_t spell, int enc, int lvl, const Target& targ, const BuffConf& opts, std::vector<OutPacket>& out) {
+    (void)spell;
+    Buffs* b = BuffsOf(targ);
+    if (!b) return 0;
+    if (opts.once && b->Has(enc)) return 0;
+    int dur = opts.dur;
+    if (!opts.durOpt.empty()) dur = static_cast<int>(BalanceFloat(opts.durOpt));
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    if (!opts.durOptMulQuest.empty() && quest) dur = static_cast<int>(static_cast<double>(dur) * BalanceFloat(opts.durOptMulQuest));
+    if (opts.durInSec) dur *= static_cast<int>(kServerTickRate);
+    if (opts.durLevelMul) dur *= lvl;
+    if (opts.defensive && !targ.addr.empty()) DurCancelOffensiveFor(targ.addr, out);
+    ApplyEnchant(targ, enc, dur, lvl);
+    if (!opts.orig.empty() && opts.offensive) MarkAssist(opts.orig, targ);
+    if (opts.pointFx != 0) {                                  // netSendPointFx_522FF0 — `<fx> <x2> <y2>` 화면 안 사람
+        float px = 0, py = 0;
+        if (!targ.addr.empty()) { px = static_cast<float>(sessions_.at(targ.addr).posX); py = static_cast<float>(sessions_.at(targ.addr).posY); }
+        else { px = static_cast<float>(pets_[static_cast<size_t>(targ.pet)].x); py = static_cast<float>(pets_[static_cast<size_t>(targ.pet)].y); }
+        const uint16_t ix = static_cast<uint16_t>(static_cast<int>(px)), iy = static_cast<uint16_t>(static_cast<int>(py));
+        const uint8_t msg[5] = { opts.pointFx, static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8), static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+        SendFxAllCli(px, py, msg, sizeof(msg), out);
+    }
+    return 1;
 }
 
 // ── 묶음 4-a3 지속 주문 틀 ─────────────────────────────────────────────
@@ -4690,7 +4872,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                 if (frame - m.frame136 > static_cast<uint32_t>(kServerTickRate >> 2) || m.frame136 == m.createdFrame) {
                     auto ownIt = sessions_.find(m.ud0);
                     m.ud1 = SpellFlySearchTarget(false, 0, 0, m.posX, m.posY, m.owner, std::string(), SpellFlags(m.spell), 600.0f,
-                                                 ownIt != sessions_.end() ? &ownIt->second : nullptr);
+                                                 ownIt != sessions_.end() ? &ownIt->second : nullptr, &m.buffs);
                     m.frame136 = frame;
                 }
             }
@@ -4852,7 +5034,13 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                             PlayerSetState(t, static_cast<uint8_t>(18 + NextRandom(3)), frame);
                             t.animFrame = static_cast<uint8_t>(playerAnimFrames_[PlayerAnimByte(t)][0] - 1);
                         }
-                        // ⚠ 반전(Inversion) 버프 · 되받아치기 버프 27 은 버프 틀(4-a4)
+                        // LABEL_13 — ⚠ 반전(Inversion)은 든 물건의 마법부여 함수(아이템 5)
+                        //   되받아치기 방패(27) 버프 · 앞쪽(날아가는 것 지금 자리 +56) → 주인·대상 맞바꿈(소리 122 → 10) · 되받아침 없이 그대로
+                        if (!handled && t.buffs.Has(27) &&
+                            (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY), t.facingPrev, m.posX, m.posY) & 1)) {
+                            changeOwner();
+                            handled = true;
+                        }
                     }
                     if (!handled) {
                         const bool isTarget = (hk == HitPlayer && m.ud1.addr == hAddr) || (hk == HitPet && m.ud1.pet == hIdx);
@@ -4965,7 +5153,9 @@ void Server::PlayerInputAttack(Session& s, uint32_t frame, std::vector<OutPacket
             std::fflush(stdout);
         }
         // 투명(0)·무적(23) 끄기 · 타원 방패(67) 취소 — 무기 갈래는 **클릭마다** 끈다(`:1629~1631`)
-        if (s.invulnUntilSet && frame < s.invulnUntilFrame) s.invulnUntilFrame = frame;
+        BuffOff(Target{ s.addr, -1 }, 0);
+        BuffOff(Target{ s.addr, -1 }, 23);
+        DurCancelFor(67, s.addr, out);                     // spellCancelDurSpell_4FEB10(67)
         return;
     }
     if (s.moveState != kPlayerStateAttack) {
@@ -5268,7 +5458,7 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
         if (b.flags & 0x8049) return false;
         if (!((b.cls & 6) || !(b.flags & 0x10) || (b.flags & 0x80))) return false;
         if (!(isEnemy || !(b.cls & 6))) return false;
-        if (!MapTraceVisionSkip(ax, ay, ox, oy, obstacleIdx)) return false;   // unitCanInteractWith(…, 1)
+        if (!CanSeeBuffs(&s.buffs, nullptr, 0.0, 0.0, 1) || !MapTraceVisionSkip(ax, ay, ox, oy, obstacleIdx)) return false;   // unitCanInteractWith(…, 1) — 눈멂만(4-a4)
         if (!(best > 0.0f)) return false;
         const float vx = ox - ax;
         const double vy = oy - ay;
@@ -5724,18 +5914,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     UpdateFlags(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
 
-    // ★★ 무적이 **켜지거나 꺼지는 순간**을 잡는다 — 프레임 기반이라 「끝나는 때」는
-    //   아무도 안 알려 준다. 매 틱 지금 값과 **마지막으로 알린 값**을 견줘 다를 때만 올린다.
-    //   ⭕ 정품도 더티 비트가 켜졌을 때만 보낸다(`GAME4_2.c:7170`).
-    for (auto& kv : sessions_) {
-        Session& s = kv.second;
-        if (!s.inGame || s.netCode == 0) continue;
-        const uint32_t now =
-            (s.invulnUntilSet && frame_ < s.invulnUntilFrame) ? kEnchantInvulnerable : 0u;
-        if (now == s.enchantSent) continue;
-        s.enchantSent = now;
-        MarkDirty(s.netCode, PendingReport::What::Enchant);
-    }
+    // (4-a4) 무적 켜짐·꺼짐 비교 루프는 걷어냄 — 버프가 바뀌는 자리(setUnitBuffFlags)가 곧바로 `5a` 를 올린다
 
     // ★ R4 — 이 틱에 바뀐 것들을 각자에게 보내고 목록을 비운다.
     //   정품의 「비트가 켜진 것만 보내고 곧바로 끈다」와 같은 자리다.

@@ -610,6 +610,17 @@ int main(int argc, char** argv) {
                     mapPath.c_str(), ws.size(), nStat, nSkip);
         std::printf("[주문] 마나 표 %zu개 — 0 이면 thing.bin 을 못 읽은 것이고 주문이 공짜가 된다\n",
                     srv.SpellCostCount());
+        // ★ 2026-09-14 묶음 4-a4 — gamedata.bin(기획 상수 · 버프 길이 등). 태그 ARENA
+        {
+            nox::Gamedata gd;
+            if (gd.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\gamedata.bin")) {
+                srv.SetGamedata(gd);
+                std::printf("[기획값] gamedata.bin %zu개 · ARENA TargetedSpellLifetime %.0f · InvulnerabilityEnchantDuration %.0f\n",
+                            gd.Count(), gd.Float("ARENA", "TargetedSpellLifetime"), gd.Float("ARENA", "InvulnerabilityEnchantDuration"));
+            } else {
+                std::printf("[기획값] ⚠ gamedata.bin 못 읽음 — %s\n", gd.Error().c_str());
+            }
+        }
         // ★ 아이템이 아니라 걸러진 것 — **맵에 무엇이 있는지 한 번은 봐야 한다.**
         //   문·오벨리스크·레버가 여기 있으면 그것이 다음에 살릴 것이다.
         // ★ 아이템인데 클라가 못 집는 것 — 있으면 이름을 찍는다(조용히 버리지 않는다)

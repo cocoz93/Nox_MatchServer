@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "nox/Gamedata.h"
+
 #include "nox/Alias.h"
 #include "nox/GameBalance.h"   // 직업·레벨·정본 수치
 #include "nox/Messages.h"   // InformCode
@@ -84,6 +86,16 @@ struct PendingReport {
     }
 };
 
+// ★ 묶음 4-a4 — 유닛 버프(마법부여). 오브젝트 +340 비트 · +344 남은 틱(u16×32) · +408 세기(u8×32)
+//   정답지 buffApplyTo_4FF380 · spellBuffOff_4FF5B0 · unitClearBuffs_4FF580 · updateUnitBuffs_4FF620(GAME4.c:3538~3650)
+//   번호 = EnchantID(server/spells_enchant.go) — 0 투명 · 2 눈멂 · 21 적외선 · 23 무적 · 25 얼림 · 29 반마법 …
+struct Buffs {
+    uint32_t bits = 0;
+    uint16_t dur[32] = {};
+    uint8_t power[32] = {};
+    bool Has(int b) const { return b >= 0 && b < 32 && (bits & (1u << b)) != 0; }
+};
+
 struct Creature {
     std::string owner;     // 부른 사람의 주소
     uint16_t netCode = 0;
@@ -92,6 +104,7 @@ struct Creature {
     double x = 0, y = 0;
     uint16_t health = 0;
     uint32_t nextHitFrame = 0;   // 이 프레임 전에는 못 때린다
+    Buffs buffs;                 // 4-a4
 };
 
 // 깃발 하나.
@@ -301,6 +314,10 @@ struct Session {
         uint16_t monsterType = 0; // 몬스터(또는 주인 몬스터)의 종류 번호
         std::string player;       // findParentChainPlayer — 주인 사슬에서 찾은 사람 주소(없으면 빈)
     } lastHit;
+    // +3600/+3604/+3608 도운 사람 — sub_4E7540(혼란·기절 등 공격 버프를 건 사람) · 죽음 알림이 10초 안이면 싣는다(4-a4)
+    bool assistSet = false;
+    std::string assistBy;
+    uint32_t assistFrame = 0;
     // +232 마지막으로 알린 방어값 — playerReportAnything 이 +228 과 다르면 `49` 를 보낸다(3-d)
     float armorReported = 0.0f;
     // ★ 시전(묶음 4-a · spellByBookInsert_4FE340 · spellCastByBook_4FCB80) — 갱신 데이터 자리
@@ -347,8 +364,7 @@ struct Session {
     //   그래서 처음 얼마 동안 **여러 번** 보낸다. 값이 안 바뀌어도 몇 조각 더 태울 뿐이다.
     int hudToldCount = 0;
     uint32_t hudNextFrame = 0;
-    bool invulnUntilSet = false;
-    uint32_t invulnUntilFrame = 0;
+    Buffs buffs;                   // ★ 4-a4 버프 — 부활 무적(전 invulnUntil 자리표시)도 버프 23 으로
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     // ★★★ **중요 메시지 대기열** (2026-09-13 — 정답지 `nox_xxx_netSendPacket_4E5030`·`netImportant_4E5770` 이식).
     //   EmitSeq 는 바로 안 보내고 여기 쌓는다. 틱마다 `[27 시각][aa][cc…]` 한 조각으로 싣고,
@@ -394,9 +410,6 @@ struct Session {
     //       ⑵ 시야(AOI)가 이미 세션 기준이라 **「볼 수 있는 사람에게만」이 공짜**다
     //       ⑶ 정품의 「보낸 뒤 비트 끄기」가 **목록 비우기**로 자연스럽다
     std::vector<PendingReport> pending;
-    // ★ 마지막으로 **알린** 마법부여 비트 묶음. 이것과 지금 값이 다를 때만 보낸다.
-    //   ⭕ 정품도 「바뀐 것」 비트가 켜졌을 때만 보낸다(`GAME4_2.c:7170`).
-    uint32_t enchantSent = 0;
 
     // 이 상대가 **자기 쪽에서 굴리고 있을** 별칭 표. 서버가 똑같이 굴려야
     // 어긋나지 않는다(Alias.h 참조).
@@ -588,7 +601,7 @@ constexpr double kPickupReach = 75.0;
 // ★★ 마법부여 비트 — `0x5A REPORT_ENCHANT` 의 본문 4바이트가 이 비트 묶음이다.
 //   ⭕ `opennox/src/client/drawable.go:735-739` — `(Buffs & (1 << v)) != 0`
 //   ⭕ `opennox/src/server/spells_enchant.go:60` — `ENCHANT_INVULNERABLE = EnchantID(23)`
-//   즉 무적은 **1 << 23**. 우리는 부활 무적(`invulnUntilFrame`)에 이 비트를 쓴다.
+//   즉 무적은 **1 << 23**. 4-a4 부터 부활 무적은 진짜 버프 23(buffApplyTo 5×30틱·세기 5)이다.
 constexpr uint32_t kEnchantInvulnerable = 1u << 23;
 
 // 한 사람이 들 수 있는 물건 수의 **안전 한도**. 진짜 한도는 서버가 아니라 **클라가 쥔다** —
@@ -1239,8 +1252,49 @@ public:
     }
     bool IsInvulnerable(const std::string& addr) const {
         auto it = sessions_.find(addr);
-        return it != sessions_.end() && it->second.invulnUntilSet && frame_ < it->second.invulnUntilFrame;
+        return it != sessions_.end() && it->second.buffs.Has(23);
     }
+    // 시험용 — 버프(4-a4)
+    uint8_t DebugFacingOf(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0 : it->second.facing; }
+    bool DebugHasEnchant(const std::string& addr, int buff) const {
+        auto it = sessions_.find(addr);
+        return it != sessions_.end() && it->second.buffs.Has(buff);
+    }
+    int DebugEnchantDur(const std::string& addr, int buff) const {
+        auto it = sessions_.find(addr);
+        return (it != sessions_.end() && buff >= 0 && buff < 32) ? it->second.buffs.dur[buff] : -1;
+    }
+    int DebugEnchantPower(const std::string& addr, int buff) const {
+        auto it = sessions_.find(addr);
+        return (it != sessions_.end() && buff >= 0 && buff < 32) ? it->second.buffs.power[buff] : -1;
+    }
+    void DebugApplyEnchant(const std::string& addr, int buff, int dur, int power) { ApplyEnchant(Target{ addr, -1 }, buff, dur, power); }
+    void DebugBuffOff(const std::string& addr, int buff) { BuffOff(Target{ addr, -1 }, buff); }
+    bool DebugPetHasEnchant(size_t i, int buff) const { return i < pets_.size() && pets_[i].buffs.Has(buff); }
+    uint16_t DebugPetNetCode(size_t i) const { return i < pets_.size() ? pets_[i].netCode : 0; }
+    void DebugApplyEnchantPet(size_t i, int buff, int dur, int power) { ApplyEnchant(Target{ std::string(), static_cast<int>(i) }, buff, dur, power); }
+    struct BuffConf {                    // spellBuffConf(spells_buffs.go:11)
+        int dur = 0;                     // 고정 길이
+        std::string durOpt;              // gamedata 이름(있으면 이 값)
+        std::string durOptMulQuest;      // 퀘스트면 곱할 gamedata 이름
+        bool durInSec = false;           // 초 단위 → ×30
+        bool durLevelMul = false;        // 세기 곱
+        bool once = false;               // 이미 걸려 있으면 안 건다
+        bool defensive = false;          // 대상의 공격 지속 주문 취소
+        std::string orig;                // 건 사람(Offensive 면 도운 사람 기록)
+        bool offensive = false;
+        uint8_t pointFx = 0;             // 대상 자리 점 효과 오프코드
+    };
+    int CastBuffSpell(uint8_t spell, int enc, int lvl, const Target& targ, const BuffConf& opts, std::vector<OutPacket>& out);   // castBuffSpell
+    // gamedata.bin — main 이 읽어 넣는다(4-a4). 태그 = ARENA(협동 모드가 아니면 · serverBalance.Tag)
+    void SetGamedata(const Gamedata& g) { gamedata_ = g; hasGamedata_ = true; }
+    double BalanceFloat(const std::string& key) const { return gamedata_.Float("ARENA", key, 0.0); }
+    double BalanceFloatInd(const std::string& key, int i) const {
+        if (i < 0) return 0.0;
+        const std::vector<double> arr = gamedata_.Array("ARENA", key);
+        return (static_cast<size_t>(i) < arr.size()) ? arr[static_cast<size_t>(i)] : 0.0;
+    }
+    bool HasGamedata() const { return hasGamedata_; }
     uint8_t DebugStaminaOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.stamina;
@@ -1292,7 +1346,7 @@ public:
     // 불·독처럼 임자가 없는 피해면 빈 문자열을 넣는다.
     // `hit` = 마지막으로 때린 것(+520, 3-d). 비었으면 `by` 로 채운다 — 사람이 맨손으로 때린 것(시험·자기 주문 자리)
     bool Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
-                const std::string& by = std::string(), const Session::LastHit* hit = nullptr);
+                const std::string& by = std::string(), const Session::LastHit* hit = nullptr, bool ignoreInvuln = false);
 
     uint16_t KillsOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -1652,6 +1706,7 @@ private:
         uint32_t frame136 = 0;           // +136
         bool destroyed = false;          // +16 & 0x20
         uint32_t flags = 0;              // +16 오브젝트 깃발(thing FLAGS — Magic 은 AIRBORNE)
+        Buffs buffs;                     // 시전자 적외선(21) 복사 — CanSee(4-a4)
         std::string owner;               // +508 주인(사람 주소)
         // SpellProjectileUpdateData(server/object_spell.go:5)
         std::string ud0;                 // [0] 시전자(되받아치면 바뀐다)
@@ -1663,7 +1718,7 @@ private:
     struct MagicTypeInfo { uint16_t type = 0; float speed = 0; float mass = 1.0f; uint32_t flags = 0; };
     bool CreateSpellFly(Session& s, Target target, uint8_t spell, std::vector<OutPacket>& out);   // createSpellFly_4FDDA0
     Target SpellFlySearchTarget(bool havePos, float px, float py, float mslX, float mslY, const std::string& mslOwner,
-                                const std::string& mslSelf, uint32_t sflags, float dist, const Session* self) const;   // server/spells.go:360
+                                const std::string& mslSelf, uint32_t sflags, float dist, const Session* self, const Buffs* mslBuffs) const;   // server/spells.go:360
     void UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out);                                 // updateUnitsCallUpdate 의 투사체 몫
     void DestroyMissile(size_t i, std::vector<OutPacket>& out);                                       // DelayedDelete → netReportDestroyObject
 
@@ -1707,6 +1762,19 @@ private:
     const DurSpell* DurFindByTarget(uint8_t spell, const Target& target) const;                         // sub_4FF2D0
     void NetStopRaySpell(const DurSpell& d, const Target& who, std::vector<OutPacket>& out);            // NetStopRaySpell
     void SpellCastByPlayer(uint32_t frame, std::vector<OutPacket>& out);                                // spellCastByPlayer(틱)
+    // ── 묶음 4-a4 버프 틀 ──
+    Buffs* BuffsOf(const Target& t);
+    const Buffs* BuffsOf(const Target& t) const;
+    uint16_t UnitNetCode(const Target& t) const;
+    void ApplyEnchant(const Target& t, int buff, int dur, int power);   // buffApplyTo_4FF380
+    void BuffOff(const Target& t, int buff);                            // spellBuffOff_4FF5B0
+    void ClearBuffs(const Target& t);                                   // unitClearBuffs_4FF580
+    void SetBuffFlags(const Target& t, uint32_t bits);                  // setUnitBuffFlags_4E48F0
+    void UpdateUnitBuffs(const Target& t, std::vector<OutPacket>& out); // updateUnitBuffs_4FF620(updateUnitsCCC)
+    // CanSee(server/object.go:76) — obj 가 눈멀면 못 봄 · flags&1 아니면 투명 targ 는 적외선·느리면(속도 ≤ 6) 못 봄
+    static bool CanSeeBuffs(const Buffs* obj, const Buffs* targ, double targVelX, double targVelY, int flags);
+    void SendFxAllCli(float x, float y, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);   // netSendFxAllCli_523030
+    void MarkAssist(const std::string& orig, const Target& targ);        // sub_4E7540(+3600 도운 사람) — 효과 묶음에서
     int DebugDurCreate(DurSpell& d, std::vector<OutPacket>& out);                                      // 시험용 create/update/destroy
     int DebugDurUpdate(DurSpell& d, std::vector<OutPacket>& out);
     void DebugDurDestroyFn(DurSpell& d, std::vector<OutPacket>& out);
@@ -1953,6 +2021,8 @@ private:
     Target spellTarget_;                           // 묶음 4-a playerinfo +3640(Obj3640) — 시전이 끝난 순간 고른 대상
     std::vector<MissileObj> missiles_;             // 묶음 4-a2 날아가는 오브젝트
     std::list<DurSpell> durSpells_;                // 묶음 4-a3 지속 주문 목록 — 머리에 넣는다(Add)
+    Gamedata gamedata_;                            // 묶음 4-a4 gamedata.bin
+    bool hasGamedata_ = false;
     uint16_t durLastId_ = 0;                       // NewRaw lastID
     int debugDurCreateRet_ = 0;                    // 시험용 create 가 돌려줄 값
     int debugDurUpdateStopAt_ = 0;                 // 시험용 update 가 이 횟수째에 1(0 이면 늘 0)

@@ -22,6 +22,7 @@ add_library(nox_proto STATIC
   server/src/core/MapFile.cpp
   server/src/core/JoinBundle.cpp
   server/src/core/SnapshotTail.cpp
+  server/src/core/Gamedata.cpp
 )
 target_include_directories(nox_proto PUBLIC server/include)
 
