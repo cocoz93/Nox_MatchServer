@@ -368,6 +368,8 @@ struct Session {
     // 이 사람에게 **친구로 알린**(OBJECT_FRIEND_ADD 를 보낸) 번호 (2026-09-13, `--friends` 일 때만).
     // 정답지는 오브젝트 쪽 +144 비트로 든다. 바뀔 때만 ADD/REMOVE 를 보내려고 들고 있다.
     std::set<uint16_t> friendsSent;
+    // 이 사람에게 마지막으로 `36 RESET_FRIENDS` 를 보냈을 때의 팀. 팀이 이것과 다르면 다시 보낸다.
+    uint8_t friendResetTeam = 0;
 
     // 스트림마다 따로 센다. 핑·퐁이 스트림 1 을 쓰는 것이 실측으로 확인됐다.
     StreamSeq seq[128];
@@ -746,6 +748,8 @@ public:
     void SetFriends(bool on) { friendsOn_ = on; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 **그 사람 소유 임프**를 사람 자리에 만들어 **고정**한다(친구 판정용). 0 이면 끔.
     void SetDebugOwnPetAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; }
+    // 진단 — 첫 사람이 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꾼다(RESET_FRIENDS 판정용). 0 이면 끔.
+    void SetDebugTeamAfter(uint32_t ticks) { debugTeamAfter_ = ticks; }
 
     // ── 독립 모드 (P5-c-2) ──────────────────────
     //
@@ -1477,6 +1481,8 @@ private:
     uint32_t debugAwayAfter_ = 0;     // 진단 --creature-away-after (0 끔)
     uint32_t firstInGameFrame_ = 0;
     bool debugAwayDone_ = false;
+    uint32_t debugTeamAfter_ = 0;     // 진단 --debug-team-after (0 끔)
+    bool debugTeamDone_ = false;
     bool friendsOn_ = false;
     uint32_t debugOwnPetAfter_ = 0;   // 진단 --debug-own-pet (0 끔)
     uint16_t debugOwnPetNetCode_ = 0; // 만든 임프의 번호 — 이동 루프가 이것만 건너뛴다(고정)

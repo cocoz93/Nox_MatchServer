@@ -2204,6 +2204,46 @@ void TestImportantQueue() {
     }
 }
 
+// ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
+//
+// 정답지: 팀에 넣고 뺄 때 그 사람에게 `36 RESET_FRIENDS`(`sub_4D97E0`) → 친구 비트를 다시 세운다.
+// 클라는 목록을 통째로 비우므로 **리셋 뒤에 친구를 다시 알려야** 한다 — 빠지면 제 소환수가 적으로 칠해진다.
+void TestResetFriends() {
+    nox::Server srv;
+    srv.SetFriends(true);
+    const std::string a = "10.9.9.3:49003";
+    srv.DebugEnterGame(a, 742);
+    std::vector<nox::OutPacket> out;
+    const auto pkt = SpellPacket(79, false);   // 소환 — 자기 소환수는 친구(⑬)
+    srv.OnPacket(a, pkt.data(), pkt.size(), out);
+    uint32_t ms = 0;
+    srv.Tick(ms, out);
+    auto count = [&](const std::vector<nox::OutPacket>& o, nox::Op op) {
+        size_t n = 0;
+        for (const auto& m : FlattenTo(o, a)) if (!m.empty() && m[0] == static_cast<uint8_t>(op)) ++n;
+        return n;
+    };
+    {
+        std::vector<nox::OutPacket> o;
+        ms += 34; srv.Tick(ms, o);
+        Check(count(o, nox::Op::OBJECT_FRIEND_ADD) == 1, "제 소환수 친구 알림이 한 번 안 나감");
+        Check(count(o, nox::Op::RESET_FRIENDS) == 0, "팀이 그대로인데 36 이 나감");
+    }
+    {
+        srv.DebugSetTeam(a, 1);
+        std::vector<nox::OutPacket> o;
+        ms += 34; srv.Tick(ms, o);
+        Check(count(o, nox::Op::RESET_FRIENDS) == 1, "팀이 바뀌었는데 36 RESET_FRIENDS 가 안 나감");
+        Check(count(o, nox::Op::OBJECT_FRIEND_ADD) == 1, "리셋 뒤 친구를 다시 안 알림");
+    }
+    {
+        std::vector<nox::OutPacket> o;
+        ms += 34; srv.Tick(ms, o);
+        Check(count(o, nox::Op::RESET_FRIENDS) == 0 && count(o, nox::Op::OBJECT_FRIEND_ADD) == 0,
+              "팀이 그대로인데 리셋·친구 알림이 되풀이됨");
+    }
+}
+
 // ── 관전 풀기 ─────────────────────────────────────────────────
 //
 // 접속 직후 클라는 **관전(observer)** 이다 — HUD(주문 5개·체력/마나 막대)가 없고
@@ -3921,6 +3961,7 @@ int main() {
     TestObserverExit();
     TestSnapshotSeqRenumber();
     TestImportantQueue();
+    TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
     TestSummon();

@@ -2984,6 +2984,22 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             std::fflush(stdout);
         }
     }
+    // ★ 진단 — 첫 사람 N틱 뒤 **그 사람 팀을 한 번 바꾼다**(`--debug-team-after N`, 2026-09-13).
+    //   왜 — 팀이 바뀌면 정답지는 그 사람에게 `36 RESET_FRIENDS` 를 보내고 친구를 다시 알린다.
+    //   친구 임프를 둔 채 팀을 바꿔 **다시 알리기가 빠지면 임프가 적(빨강)으로 바뀌는지**를 화면으로 가른다.
+    if (debugTeamAfter_ > 0 && !debugTeamDone_ && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugTeamAfter_) {
+        for (auto& kv : sessions_) {
+            if (!kv.second.inGame) continue;
+            const uint8_t before = kv.second.team;
+            kv.second.team = (before == 1) ? 2 : 1;
+            std::printf("[진단] 프레임 %u 에 %s 팀 %u → %u\n", frame_, kv.second.addr.c_str(),
+                        static_cast<unsigned>(before), static_cast<unsigned>(kv.second.team));
+            std::fflush(stdout);
+            break;
+        }
+        debugTeamDone_ = true;
+    }
 
     // ── 불려 나온 것들을 움직인다 ──
     // 부른 사람 편이다 — **부른 사람은 안 때린다.** 그게 없으면 부르자마자 자기가 맞는다.
@@ -3690,6 +3706,19 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   ⚠⚠ **부분 구현이다** — 적대 판정(`server/object.go:1667` IsEnemyTo, 규칙 20개) 중
         //     ⑬ 주인 같음 · ⑭ 같은 팀 · ⑱ 팀 있으면 적 · ⑳ 그 외 적 만 넣었다.
         //     매혹(⑪)·관전(⑫)·몬스터 종류와 SubClass(⑥~⑩)·생성기(④⑤⑮⑯)·도깨비불(⑰)은 묶음 4·6·8 에서 채운다.
+        //
+        // ★ **팀이 바뀌면 친구 목록을 비우라고 알린다** — `36 RESET_FRIENDS`(본문 없음, Packet1).
+        //   정답지: 팀에 넣을 때(`common__system__team.c:154`)·뺄 때(`GAME1_1.c:377`) 그 사람에게
+        //   `sub_4D97E0`(GAME3_2.c:4838) → 곧이어 친구 비트를 다시 세운다(`sub_4E8110`·monsterMarkUpdate).
+        //   클라는 목록을 통째로 비운다(`client__network__cdecode.c:595` → `sub_4959B0`).
+        //   그래서 여기서도 **보냈다고 적어 둔 친구를 잊어** 아래 블록이 다시 알리게 한다.
+        //   ⚠ 친구 알림이 꺼져 있어도 보낸다 — 정답지는 기능 스위치 없이 보낸다(클라 목록이 비어 있으면 해가 없다).
+        if (s.team != s.friendResetTeam) {
+            s.friendResetTeam = s.team;
+            const uint8_t reset[1] = { static_cast<uint8_t>(Op::RESET_FRIENDS) };
+            EmitSeq(s, reset, sizeof(reset), out);
+            s.friendsSent.clear();
+        }
         if (friendsOn_) {
             auto sendFriend = [&](uint16_t nc, bool friendly) {
                 const bool sent = s.friendsSent.count(nc) != 0;

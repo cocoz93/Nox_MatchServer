@@ -188,6 +188,7 @@ int main(int argc, char** argv) {
     int creatureAwayAfter = 0;      // 진단 — 첫 사람 들어오고 N 틱 뒤 크리처를 ±300 으로 옮김 (0 끔)
     bool friends = false;           // 친구 알림(OBJECT_FRIEND_ADD/REMOVE) — 부분 구현이라 기본 끔
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
+    int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     bool itemAtSpawn = false;
     int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
     int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
@@ -290,6 +291,9 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-own-pet" && i + 1 < argc) {
             // 진단 — 친구 판정용. 소환 조작을 빼 버리고 그 사람 소유 임프를 사람 자리에 고정한다.
             debugOwnPet = std::atoi(argv[++i]);
+        } else if (a == "--debug-team-after" && i + 1 < argc) {
+            // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
+            debugTeamAfter = std::atoi(argv[++i]);
         } else if (a == "--aoi") {
             // 시야 반경(P4-b) — 갱신 스트림에 맵 정적 오브젝트를 반경 안만 싣는다. --map 필수.
             aoi = true;
@@ -507,6 +511,11 @@ int main(int argc, char** argv) {
         if (debugOwnPet > 0) {
             srv.SetDebugOwnPetAfter(static_cast<uint32_t>(debugOwnPet));
             std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 소유 임프를 사람 자리에 고정\n", debugOwnPet);
+            std::fflush(stdout);
+        }
+        if (debugTeamAfter > 0) {
+            srv.SetDebugTeamAfter(static_cast<uint32_t>(debugTeamAfter));
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 팀을 한 번 바꿈\n", debugTeamAfter);
             std::fflush(stdout);
         }
         if (creatureAwayAfter > 0) {
