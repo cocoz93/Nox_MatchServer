@@ -190,6 +190,7 @@ int main(int argc, char** argv) {
     int debugDummy = 0;             // 진단 — 첫 사람 N 틱 뒤 주인 없는 임프 허수아비(0 끔)
     int debugHurtEvery = 0;         // 진단 — N 틱마다 첫 사람에게 피해 25(0 끔)
     bool debugHurtFront = false;    // 진단 — 그 피해를 앞 30 에서 때린 것으로
+    bool autoRespawn = false;       // 자동 부활(정답지 기본 꺼짐)
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
@@ -295,6 +296,9 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-own-pet" && i + 1 < argc) {
             // 진단 — 친구 판정용. 소환 조작을 빼 버리고 그 사람 소유 임프를 사람 자리에 고정한다.
             debugOwnPet = std::atoi(argv[++i]);
+        } else if (a == "--auto-respawn") {
+            // 자동 부활 서버 설정(정답지 기본 꺼짐 — 죽은 뒤 클릭해야 살아난다 · 묶음 3-c)
+            autoRespawn = true;
         } else if (a == "--debug-hurt-front") {
             // 진단 — 위 피해를 바라보는 쪽 30 앞에서 때린 것으로(방패 막기 판정 · 묶음 3-e2)
             debugHurtFront = true;
@@ -406,6 +410,16 @@ int main(int argc, char** argv) {
             std::vector<nox::Server::WorldStatic> st;
             std::vector<nox::Server::WorldProp> props;
             const auto objs = mf.ReadObjects();
+            if (!mf.Error().empty())
+                std::printf("[맵] ⚠ 오브젝트 읽기가 도중에 멈춤: %s — 읽은 %zu개만 쓴다\n", mf.Error().c_str(), objs.size());
+            // ★ 2026-09-13 묶음 3-c — 부활 자리(PlayerStart). 정답지 mapFindPlayerStart_4F7AB0 가 이 목록에서 고른다.
+            {
+                std::vector<std::pair<float, float>> starts;
+                for (const auto& o : objs)
+                    if (o.type == "PlayerStart") starts.push_back({ o.x, o.y });
+                std::printf("[부활 자리] PlayerStart %zu곳\n", starts.size());
+                srv.SetPlayerStarts(std::move(starts));
+            }
             for (size_t i = 0; i < objs.size(); ++i) {
                 const uint16_t wire = tdb.WireByName(objs[i].type);
                 const nox::ThingInfo* ti = wire ? tdb.ByWire(wire) : nullptr;
@@ -601,6 +615,10 @@ int main(int argc, char** argv) {
             srv.SetFriends(true);
             std::printf("[친구] 켬 — 자기 소환수·같은 팀을 OBJECT_FRIEND_ADD 로 알림 (적대 판정 부분 구현)\n");
             std::fflush(stdout);
+        }
+        if (autoRespawn) {
+            srv.SetAutoRespawn(true);
+            std::printf("[설정] 자동 부활 켬 — 죽고 45틱 뒤 클릭 없이 살아난다\n");
         }
         if (debugHurtEvery > 0) {
             srv.SetDebugHurtEvery(static_cast<uint32_t>(debugHurtEvery), debugHurtFront);

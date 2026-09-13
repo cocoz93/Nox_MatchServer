@@ -44,7 +44,7 @@ void PushRaw(std::vector<uint8_t>& m, const uint8_t* body, size_t n) {
 
 }  // namespace
 
-std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls) {
+std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame) {
     std::vector<uint8_t> m;
     m.reserve(400);
     uint16_t seq = 0;
@@ -71,7 +71,9 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls) {
     // 여기부터 순번이 1·2 로 오른다 (실측 — 위 다섯은 전부 #0)
     seq = 1;
     {
-        const uint8_t ea[5] = { 0xea, 0x17, 0x4b, 0x00, 0x00 };
+        // FORGET_DRAWABLES — 프레임 4바이트(녹음 0x4b17 — JoinBundle.h 주석)
+        const uint8_t ea[5] = { 0xea, static_cast<uint8_t>(eaFrame), static_cast<uint8_t>(eaFrame >> 8),
+                                static_cast<uint8_t>(eaFrame >> 16), static_cast<uint8_t>(eaFrame >> 24) };
         PushSeq(m, seq, ea, 5);
         // b1 — 새 판 알림. 01 + 맵이름 "estate"(13B 칸) + 방이름 "r Game"? …
         //   실측 원바이트 그대로. "estate" 뒤 채움과 "r Game" 의 정체는 미상 —
@@ -106,9 +108,10 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls) {
         uint8_t de[7] = { 0xde, lo, hi, mpLo, mpHi, mpLo, mpHi };
         PushRaw(m, de, 7);
     }
-    // 살려내기 — 체력 자리가 여기에도 있다
+    // 살려내기 — ❌ 정정(2026-09-13 묶음 3-c): 「체력 자리」가 아니라 **프레임 4바이트 · 무기 깃발 · 1**(netSendPlayerRespawn_4EFC30)
     {
-        uint8_t e9[9] = { 0xe9, lo, hi, 0x1f, hpLo, hpHi, 0x00, 0xff, 0x01 };
+        uint8_t e9[9] = { 0xe9, lo, hi, static_cast<uint8_t>(e9Frame), static_cast<uint8_t>(e9Frame >> 8),
+                          static_cast<uint8_t>(e9Frame >> 16), static_cast<uint8_t>(e9Frame >> 24), 0xff, 0x01 };
         PushSeq(m, seq, e9, 9);   // #4
     }
     // 기본 장비 — **직업마다 다르다** ◑ (`GameBalance.h` LoadoutFor 주석).

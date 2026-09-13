@@ -395,6 +395,8 @@ std::vector<std::vector<uint8_t>> FlattenTo(const std::vector<nox::OutPacket>& o
     return Flatten(mine);
 }
 
+std::vector<uint8_t> InputPacket(uint8_t code);   // 아래(조작 한 조각) — 3-c 부활 클릭에 앞에서도 쓴다
+
 void TestDeathFlow() {
     nox::Server srv;
     const std::string who = "10.0.0.1:1000";
@@ -461,14 +463,20 @@ void TestDeathFlow() {
         Check(out.empty(), "죽은 사람을 때렸는데 뭔가 나감");
     }
 
-    // ④ 시간이 지나면 되살아난다
+    // ④ ★ 2026-09-13 묶음 3-c — 시간만으로는 안 되살아난다(자동 부활 기본 꺼짐) · 상태 3 → 30틱 → 4 → 15틱 뒤 **클릭하면** 부활
     {
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);                    // 첫 호출은 기준점만 잡는다
         out.clear();
-        // 부활까지 필요한 시간 + 여유. 기본 틱이 33ms 다
-        srv.Tick(33 * (nox::kRespawnDelayTicks + 2), out);
-        Check(srv.IsAlive(who), "때가 지났는데 안 살아남");
+        Check(srv.DebugStateOf(who) == 3, "죽은 순간 상태가 3(DIE) 이 아니다");
+        srv.Tick(33 * 60, out);              // 60틱 — 3→4(30) · 15 도 넘김
+        Check(!srv.IsAlive(who), "클릭 없이 되살아났다 — 자동 부활은 정답지 기본 꺼짐");
+        Check(srv.DebugStateOf(who) == 4, "죽고 30틱이 지났는데 상태 4(DEAD) 가 아니다");
+        out.clear();
+        auto click = InputPacket(6);
+        srv.OnPacket(who, click.data(), click.size(), out);
+        srv.Tick(33 * 61, out);              // 한 틱
+        Check(srv.IsAlive(who), "상태 4 에서 클릭했는데 안 살아남");
         Check(srv.HealthOf(who) == nox::kDefaultMaxHealth, "되살아났는데 체력이 최대가 아님");
 
         auto msgs = Flatten(out);
@@ -479,7 +487,10 @@ void TestDeathFlow() {
             Check((*r)[1] == 0xd8 && (*r)[2] == 0x02, "0xe9 의 번호가 728 이 아님");
             const uint32_t tick = (*r)[3] | ((*r)[4] << 8) | ((*r)[5] << 16) |
                                   (static_cast<uint32_t>((*r)[6]) << 24);
-            Check(tick == srv.frame(), "0xe9 의 4바이트가 지금 틱이 아님");
+            // ★ 3-c — 프레임 = 받는 사람에게 같은 틱에 실린 시각(27) — 우리 서버는 접속마다 시계가 따로다
+            const auto* ts = FindLastMsg(msgs, static_cast<uint8_t>(nox::Op::TIMESTAMP));
+            Check(ts != nullptr && (tick & 0xFFFF) == static_cast<uint32_t>((*ts)[1] | ((*ts)[2] << 8)),
+                  "0xe9 의 4바이트가 그 틱의 시각(27) 과 다름");
             Check((*r)[7] == 0xff && (*r)[8] == 0x01, "0xe9 끝 두 바이트가 표본과 다름");
         }
         const auto* tot = FindLastMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
@@ -491,6 +502,121 @@ void TestDeathFlow() {
     }
 
     std::printf("  죽음·부활 흐름 — 맞음→죽음→기다림→부활\n");
+}
+
+// ── 죽음·부활 정답지(묶음 3-c) ─────────────────────────────────────
+//   diePlayer_54D2B0(상태 3) · object_update.go:242~275(3→4→클릭) · playerRespawn_4F7EF0 · mapFindPlayerStart_4F7AB0
+void TestRespawnFaithful() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+    auto click = [](nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out) {
+        auto p = InputPacket(6);
+        srv.OnPacket(who, p.data(), p.size(), out);
+    };
+
+    // ① 자세 1(DIE) → 30틱 넘어 2(DEAD) · 상태 3 이나 4 의 15틱 안 클릭은 안 살림 · 그 뒤 클릭은 살림
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(a, 9999, out, "");
+        Check(srv.DebugAnimByteOf(a) == 1, "죽은 순간 자세가 1(DIE) 이 아니다");
+        int to4 = -1;
+        for (int t = 1; t <= 40; ++t) {
+            if (t == 20) click(srv, a, out);                // 상태 3 중 클릭 — 무시
+            ms += 33; srv.Tick(ms, out);
+            if (to4 < 0 && srv.DebugStateOf(a) == 4) to4 = t;
+        }
+        Check(to4 == 31, "죽고 31틱째(30 넘김) 에 상태 4 가 아니다");
+        Check(srv.DebugAnimByteOf(a) == 2, "상태 4 자세가 2(DEAD) 가 아니다");
+        Check(!srv.IsAlive(a), "상태 3 중 클릭으로 살아났다");
+        // 상태 4 된 지 9틱(40−31) — 15 안이라 클릭해도 안 살림
+        click(srv, a, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(!srv.IsAlive(a), "상태 4 된 지 15틱 안인데 클릭으로 살아났다");
+        for (int t = 0; t < 10; ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(!srv.IsAlive(a), "클릭 없이 살아났다(자동 부활 꺼짐)");
+        click(srv, a, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.IsAlive(a), "상태 4 15틱 뒤 클릭했는데 안 살아났다");
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "살아난 뒤 상태가 13 이 아니다");
+        Check(srv.IsInvulnerable(a), "살아났는데 무적(버프 23) 이 아니다");
+    }
+
+    // ② 시작 지점 — 적(b)에게서 가장 먼 곳 · FORGET_DRAWABLES 는 본인에게만 · E9 는 모두 · DD 는 본인만 · DE 는 워리어가 아니면
+    {
+        nox::Server srv;
+        srv.SetPlayerStarts({ { 1100.0f, 1000.0f }, { 3000.0f, 3000.0f }, { 1500.0f, 1000.0f } });
+        srv.SetAutoRespawn(true);
+        srv.DebugEnterGame(a, 728);                          // 위저드
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(a, 9999, out, "");
+        out.clear();
+        int alive = -1;
+        for (int t = 1; t <= 60 && alive < 0; ++t) {
+            out.clear();                                    // 부활한 그 틱에 나간 것만 본다(HUD 되풀이 등 섞임 방지)
+            ms += 33; srv.Tick(ms, out);
+            if (srv.IsAlive(a)) alive = t;
+        }
+        Check(alive == 47, "자동 부활이 3(30)+4(15) 넘긴 47틱째가 아니다");
+        Check(srv.XOf(a) == 3000 && srv.YOf(a) == 3000, "적에게서 가장 먼 시작 지점(3000,3000) 으로 안 옮겼다");
+        const auto toA = FlattenTo(out, a);
+        const auto toB = FlattenTo(out, b);
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::FORGET_DRAWABLES)) != nullptr, "본인에게 FORGET_DRAWABLES(ea) 가 없다");
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::FORGET_DRAWABLES)) == nullptr, "FORGET_DRAWABLES 가 남에게 갔다");
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN)) != nullptr, "E9 가 남에게 안 갔다");
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_MANA)) != nullptr, "위저드인데 DE(최대 마나) 가 없다");
+        bool ddLeak = false;
+        for (const auto& m : toB)
+            if (m.size() >= 3 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH) && m[1] == 0xd8 && m[2] == 0x02) ddLeak = true;
+        Check(!ddLeak, "a(728) 의 DD 가 남에게 갔다");
+    }
+    {
+        // 적이 없으면 무작위 — 시작 지점 중 하나 · 워리어는 DE 없음
+        nox::Server srv;
+        srv.SetPlayerStarts({ { 1100.0f, 1000.0f }, { 3000.0f, 3000.0f } });
+        srv.SetAutoRespawn(true);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(a, 9999, out, "");
+        out.clear();
+        for (int t = 0; t < 60 && !srv.IsAlive(a); ++t) { out.clear(); ms += 33; srv.Tick(ms, out); }
+        const bool atStart = (srv.XOf(a) == 1100 && srv.YOf(a) == 1000) || (srv.XOf(a) == 3000 && srv.YOf(a) == 3000);
+        Check(atStart, "적이 없는데 시작 지점 중 한 곳으로 안 옮겼다");
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_TOTAL_MANA)) == nullptr, "워리어인데 DE 가 나갔다");
+    }
+    {
+        // 시작 지점이 없으면 (2000,2000)
+        nox::Server srv;
+        srv.SetAutoRespawn(true);
+        srv.DebugEnterGame(a, 728);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(a, 9999, out, "");
+        for (int t = 0; t < 60 && !srv.IsAlive(a); ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(srv.XOf(a) == 2000 && srv.YOf(a) == 2000, "시작 지점이 없는데 (2000,2000) 이 아니다");
+    }
+
+    // ③ 종류 16 으로 죽으면 자세 51(DUST)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(a, -1, 9999, b, 16, out);
+        Check(!srv.IsAlive(a), "종류 16 피해로 안 죽었다 — 이 시험이 무의미해진다");
+        Check(srv.DebugAnimByteOf(a) == 51, "종류 16 으로 죽었는데 자세가 51(DUST) 이 아니다");
+    }
+    std::printf("  죽음·부활(정답지) — 자세 1→2·30/15틱·클릭 부활·가장 먼 시작 지점·무작위·(2000,2000)·ea 본인만·e9 모두·dd/de·먼지 51\n");
 }
 
 // ── 두루 보내기 — 남이 맞고·죽고·되살아나는 것이 **내 화면에도** 오는가 ─────
@@ -550,9 +676,12 @@ void TestBroadcastToOthers() {
     {
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);                                        // 첫 호출은 기준점만
+        srv.Tick(33 * 60, warm);                                  // 상태 4 까지(3-c)
         std::vector<nox::OutPacket> out;
-        srv.Tick(33 * (nox::kRespawnDelayTicks + 2), out);
-        Check(srv.IsAlive(a), "기다렸는데 안 되살아남");
+        auto click = InputPacket(6);
+        srv.OnPacket(a, click.data(), click.size(), out);        // 클릭해야 부활(3-c)
+        srv.Tick(33 * 61, out);
+        Check(srv.IsAlive(a), "클릭했는데 안 되살아남");
         const auto toB = FlattenTo(out, b);
         const auto* r = FindMsg(toB, static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN));
         Check(r != nullptr, "남이 되살아난 0xE9 가 옆 사람에게 안 감");
@@ -560,9 +689,12 @@ void TestBroadcastToOthers() {
             Check(r->size() == 9, "방송된 0xE9 가 9바이트가 아님");
             Check((*r)[1] == 0xd8 && (*r)[2] == 0x02, "방송된 0xE9 의 번호가 다름");
         }
-        const auto* tot = FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
-        Check(tot != nullptr, "남의 되살아난 체력 0xDD 가 옆 사람에게 안 감");
-        if (tot) Check(tot->size() == 7, "방송된 0xDD 가 7바이트가 아님");
+        // ❌ 정정(3-c) — `0xDD` 는 **본인에게만** 간다(netReportTotalHealth_4D85C0 의 받는 이 = 그 사람 번호 · GAME3_3.c:7962)
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH)) == nullptr,
+              "되살아난 사람의 0xDD 가 옆 사람에게 새어 나감");
+        const auto toA2 = FlattenTo(out, a);
+        const auto* tot = FindMsg(toA2, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
+        Check(tot != nullptr && tot->size() == 7, "되살아난 본인이 0xDD 를 못 받음");
     }
 
     std::printf("  두루 보내기 — 피해·죽음·부활이 옆 사람에게 · 0x43 은 안 새어 나감\n");
@@ -1048,6 +1180,7 @@ void TestPropsAndInvuln() {
     // 부활 무적 — 죽고 되살아난 직후엔 안 맞는다
     {
         nox::Server srv;
+        srv.SetAutoRespawn(true);            // 3-c — 서버 설정 자동 부활(무적 시험이라 클릭 절차는 TestDeathFlow 가 본다)
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugMoveTo(a, 1000, 1000);
         std::vector<nox::OutPacket> warm;
@@ -1964,6 +2097,7 @@ void TestDirtyUnitHealth() {
 void TestEnchantInvuln() {
     const std::string a = "10.0.0.1:1000";
     nox::Server srv;
+    srv.SetAutoRespawn(true);   // 3-c — 서버 설정 자동 부활(클릭 절차는 TestDeathFlow)
     srv.DebugEnterGame(a, 728);
 
     // 봉투를 열어 `0x5A` 의 비트 묶음을 꺼낸다. 없으면 false.
@@ -2324,6 +2458,7 @@ void TestWeaponAttack() {
     {
         nox::Server srv;
         makeSrv(srv, 1050);
+        srv.SetAutoRespawn(true);   // 3-c — 서버 설정 자동 부활(클릭 절차는 TestDeathFlow)
         std::vector<nox::OutPacket> out;
         srv.Damage(a, 9999, out, "");
         uint32_t ms = 0;
@@ -2459,6 +2594,7 @@ void TestDamageHandler() {
     // ⑥ 무적이면 안 깎인다(버프 23)
     {
         nox::Server srv;
+        srv.SetAutoRespawn(true);   // 3-c — 서버 설정 자동 부활
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
@@ -3306,9 +3442,9 @@ void TestGameBalance() {
 // 따라 바뀌어야 하고, **위저드 것은 예전 그대로**여야 한다(TestSnapshotTail 이 그 짝).
 void TestSnapshotPerClass() {
     using nox::CharClass;
-    const auto wiz = nox::BuildSnapshotTail(713, CharClass::Wizard);
-    const auto war = nox::BuildSnapshotTail(713, CharClass::Warrior);
-    const auto con = nox::BuildSnapshotTail(713, CharClass::Conjurer);
+    const auto wiz = nox::BuildSnapshotTail(713, CharClass::Wizard, 0x4b17, 0x4b1f);
+    const auto war = nox::BuildSnapshotTail(713, CharClass::Warrior, 0x4b17, 0x4b1f);
+    const auto con = nox::BuildSnapshotTail(713, CharClass::Conjurer, 0x4b17, 0x4b1f);
     Check(wiz != war, "워리어 스냅샷이 위저드와 같다 — 직업이 안 갈림");
     Check(con != wiz && con != war, "컨저러 스냅샷이 남과 같다");
 
@@ -3610,7 +3746,7 @@ void TestSnapshotTail() {
 
         0x06, 0x5c, 0x44, 0x23, 0x00, 0x0a, 0xcc, 0x16, 0x00, 0x03, 0x43, 0x4b, 0x00,
     };
-    const std::vector<uint8_t> built = nox::BuildSnapshotTail(713, nox::CharClass::Wizard);
+    const std::vector<uint8_t> built = nox::BuildSnapshotTail(713, nox::CharClass::Wizard, 0x4b17, 0x4b1f);   // 녹음 그 판의 프레임(3-c 정정)
     Check(built.size() == 381, "꼬리 크기가 381 이 아니다");
     size_t diff = 0, first = 0;
     for (size_t i = 0; i < 381 && i < built.size(); ++i)
@@ -4280,8 +4416,10 @@ void TestArena() {
     }
 
     // ③ 한도에 닿으면 판이 끝나고 **0x58 이 나간다**
+    //   ⚠ 3-c — 되살아나면 PlayerStart 로 옮겨진다(시험 서버엔 없어 2000,2000). 자동 부활을 켜고 살아나면 옆으로 되돌려 세운다.
     {
         nox::Server srv;
+        srv.SetAutoRespawn(true);
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1025, 1000);   // 겹치면 몸끼리 튕긴다(묶음 2-c) — TestMelee 주석
@@ -4295,6 +4433,7 @@ void TestArena() {
             srv.OnPacket(a, pkt.data(), pkt.size(), out);
             ms += 33 * (nox::kMeleeCooldownTicks + 1);
             srv.Tick(ms, out);   // 부활도 여기서 돈다
+            if (srv.IsAlive(b) && srv.XOf(b) != 1025) srv.DebugMoveTo(b, 1025, 1000);
         }
         Check(srv.RoundOver(), "한도에 닿아도 안 끝남");
         Check(srv.KillsOf(a) >= nox::kArenaKillLimit, "점수가 한도에 안 닿음");
@@ -4568,7 +4707,10 @@ void TestQuest() {
     //   ★ 스테이지 1(거머리 2)을 근접으로 잡는다. 한 마리 잡으면 아직 남아 스폰이 안 온다.
     {
         nox::Server srv;
-        srv.DebugEnterGame(a, 728);
+        // ⚠ 3-c — 위저드는 거머리에게 먼저 죽고, 이제 클릭 없이는 안 살아난다. 롱소드 워리어로(방패로 앞을 막고 두 대에 잡음)
+        srv.SetPlayerAnimFrames(28, 8, 0);
+        srv.SetPlayerAnimFrames(40, 6, 1);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.StartQuest(0, 1000, 1000);
         // 몬스터가 스폰되는 원 위 첫 자리로 붙는다 (i=0 → center + spread·(cos0,sin0))
         // ⚠ 2026-09-13 묶음 3-a — 몸을 주고(시험 서버는 thing.bin 을 안 읽음) 서쪽 25 에 서서 +x 를 본다(같은 자리면 안 닿는다).
@@ -4746,6 +4888,7 @@ int main() {
     TestMeasuredConstants();
     TestGameplayMessages();
     TestDeathFlow();
+    TestRespawnFaithful();
     TestBroadcastToOthers();
     TestAoiSightExit();
     TestFacingOnWire();

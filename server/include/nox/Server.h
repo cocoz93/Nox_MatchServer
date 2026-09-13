@@ -288,6 +288,7 @@ struct Session {
     uint8_t stamina = 0;
     // ★ 피해 소수 이월(+84, 3-e) — 방어로 깎인 피해의 소수부를 다음 피해에 더한다(`GAME3_3.c:468` playerDecrementHPMana)
     float dmgRemainder = 0.0f;
+    uint8_t lastDamageType = 0;    // +524 — 마지막 피해 종류(damageDefaultProc). 16 에 죽으면 먼지 자세 51(`GAME4_1.c:4459`)
     bool hasAim = false;
     int aimX = 0, aimY = 0;
     uint32_t aimAtFrame = 0;
@@ -869,6 +870,11 @@ public:
     void SetDebugDummyAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; debugPetWild_ = true; }
     // 진단 — N 틱마다 관전 아닌 첫 사람에게 주인 없는 것의 칼 피해 25(종류 0)를 준다(묶음 3-e 움찔·깎임 화면 판정용)
     void SetDebugHurtEvery(uint32_t ticks, bool front = false) { debugHurtEvery_ = ticks; debugHurtFront_ = front; }
+    // ★ 묶음 3-c — 맵의 PlayerStart 자리(부활 자리 고르기 mapFindPlayerStart_4F7AB0). main.cpp 가 맵 오브젝트에서 채운다.
+    void SetPlayerStarts(std::vector<std::pair<float, float>> v) { playerStarts_ = std::move(v); }
+    size_t PlayerStartCount() const { return playerStarts_.size(); }
+    // 자동 부활 서버 설정(nox_server_doPlayersAutoRespawn_40A5F0 · 0x5D4594+3584). 정답지 기본 0 — 클릭해야 살아난다.
+    void SetAutoRespawn(bool on) { autoRespawn_ = on; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꾼다(RESET_FRIENDS 판정용). 0 이면 끔.
     void SetDebugTeamAfter(uint32_t ticks) { debugTeamAfter_ = ticks; }
 
@@ -1470,6 +1476,10 @@ private:
                     const std::string& by = std::string(), uint8_t dtype = 0, const AttackSrc* src = nullptr);
     // 방패를 올릴 까닭(들어오는 투사체) — `GAME4_3.c:2586` monsterTestBlockShield_533E70
     bool IncomingMissile(const Session& s) const;
+    // ── 죽음·부활 (묶음 3-c) ──
+    void PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& out);   // playerRespawn_4F7EF0 + playerMakeDefItems(,1,0)
+    bool FindPlayerStart(const Session& s, float& x, float& y);                  // mapFindPlayerStart_4F7AB0
+    void ForgetDrawables(Session& s, std::vector<OutPacket>& out);                // unitMove 의 플레이어 몫 `ea <프레임4>`
     static uint32_t ArmorEquipOf(const Session& s) { return nox::ArmorEquipOf(s.charClass); }
     // 두 쪽(주인 기준)이 적인가 — `server/object.go:1667` IsEnemyTo 를 사람·소환수·맵 몬스터에 맞춘 판.
     //   wild = 주인 없는 몬스터(자기 자신이 주인)
@@ -1702,6 +1712,8 @@ private:
     bool debugPetWild_ = false;        // 진단 --debug-dummy — 주인 없음 · 맞음
     uint32_t debugHurtEvery_ = 0;      // 진단 --debug-hurt-every (0 끔)
     bool debugHurtFront_ = false;      // 진단 --debug-hurt-front — 앞 30 에서 때린 것으로
+    std::vector<std::pair<float, float>> playerStarts_;   // 묶음 3-c PlayerStart 자리
+    bool autoRespawn_ = false;         // 묶음 3-c 자동 부활(정답지 기본 꺼짐)
     uint16_t debugOwnPetNetCode_ = 0; // 만든 임프의 번호 — 이동 루프가 이것만 건너뛴다(고정)
     bool standalone_ = false;
     std::string saMapName_;

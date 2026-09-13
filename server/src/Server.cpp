@@ -918,6 +918,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         //   단 자기가 자기를 때린 것은 퀘스트가 아니면 들어간다(`a1 != v12 || gameFlags 4096`).
         if (!OwnersEnemy(s.addr, false, by, byWild) && (by != s.addr || quest)) return;
         // 한 대에 20 넘게 맞으면 움찔(상태 30 · 공격 중 1 · 방패 올리는 중 15 는 아님)
+        s.lastDamageType = dtype;                          // +524(`GAME3_2.c:7234`)
         if (hp >= 20 && s.moveState != kPlayerStateAttack && s.moveState != 15) PlayerSetState(s, 30, frame_);
         Damage(t.addr, hp, out, by);                       // unitDamageClear_4EE5E0
         return;
@@ -1035,9 +1036,15 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
         msg[2] = static_cast<uint8_t>(s.netCode >> 8);
         Broadcast(/*viaSeq=*/true, msg, sizeof(msg), out);
     }
-    s.respawnAtFrame = frame_ + kRespawnDelayTicks;
+    // ★ 2026-09-13 묶음 3-c — 죽음은 **상태**다(diePlayer_54D2B0 · `GAME5.c:5066~5068`: DEAD 깃발 → 상태 3).
+    //   전에는 45틱 뒤 저절로 되살렸다(자리표시). 정답지는 상태 3 → 30틱 → 4 → 15틱 → **클릭해야** 부활(object_update.go:242~275).
+    //   respawnAtFrame 은 이제 「죽은 프레임」(DEAD 깃발 겸) — 0 이면 산 것.
+    s.respawnAtFrame = frame_ ? frame_ : 1;
+    PlayerSetState(s, 3, frame_);
     ++s.deaths;
     DropFlag(addr, out);   // 들고 있었으면 그 자리에 떨군다
+    // ⚠ 옮기지 않은 것 — 죽음 글(3-d CHAT_KILL/MESSAGES_KILL) · 죽는 소리(10) · 가진 것 전부 떨구기(퀘스트 아니면 · 아이템 5)
+    //   · 모드별 점수 정답지(8 — 지금은 아래 우리 점수) · 버프·능력·주문 끄기(4·7)
 
     // ④ 점수 — 때린 쪽이 있고 자기 자신이 아니면 그쪽이 하나 얻는다.
     //    자기가 자기를 죽인 것(자기에게 건 주문)은 점수가 아니다.
@@ -3370,6 +3377,8 @@ uint8_t Server::PlayerAnimByte(const Session& s) {
         }
         case kPlayerStateIdle: return (equip & 0x400) ? 0x26 : kAnimIdle;   // 대검이면 GREAT_SWORD_IDLE(`:1756~1758`)
         case 30: return 52;                                                  // 움찔 RECOIL(`:1793`)
+        case 3: case 4:                                                      // 죽음 DIE 1 · 죽어 있음 DEAD 2
+            return (s.lastDamageType == 16) ? 51 : (s.moveState == 3 ? 1 : 2);   // 종류 16 이면 DUST(`GAME4_1.c:4457~4461`)
         case 15: case 16: case 17: return 40;                                // RAISE_SHIELD(`:1759~1763`)
         case 18: return 48;                                                  // GREAT_SWORD_BLOCK_LEFT
         case 19: return 49;                                                  // GREAT_SWORD_BLOCK_RIGHT
@@ -3422,8 +3431,25 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     for (auto& kv : sessions_) {
         Session& s = kv.second;
         if (!s.inGame) continue;
+        // ⓪' 죽음(묶음 3-c) — `object_update.go:242~275` 상태 3: 30틱 넘으면 4(속도·힘 0) · 상태 4: 15틱 넘으면
+        //   관전 아니고 CCAction(클릭) 이 왔거나 자동 부활 설정이면 부활. 그 틱의 조작 목록은 비운다(`cb.Reset()`).
+        //   ⚠ 제거전 한도·관전 넘기기는 모드 규칙(8)
+        bool respawnedNow = false;                         // 이 틱의 ImplA 는 상태 4 갈래였다 — 13 갈래를 또 돌리지 않는다
+        if (s.respawnAtFrame != 0) {
+            if (s.moveState == 3 && (frame - s.stateFrame) > kServerTickRate) {
+                PlayerSetState(s, 4, frame);
+                s.stateFrame = frame;
+                s.velX = s.velY = 0.0;
+                s.forceX = s.forceY = 0.0;
+            } else if (s.moveState == 4 && (frame - s.stateFrame) > kServerTickRate / 2 && !s.observer &&
+                       (s.actionThisTick || autoRespawn_)) {
+                s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
+                PlayerRespawn(s, frame, out);
+                respawnedNow = true;
+            }
+        }
         const bool dead = (s.respawnAtFrame != 0);
-        const bool canMove = !dead && !s.observer;
+        const bool canMove = !dead && !s.observer && !respawnedNow;
 
         // ⓪ 기력 회복(`object_update.go:108` — 죽지 않았으면 100 아래일 때 100/30 씩, ImplA 보다 먼저)
         if (!dead && s.stamina < 100) s.stamina = static_cast<uint8_t>(s.stamina + 100 / kServerTickRate);
@@ -3511,7 +3537,6 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             // CCAction(`:536~544`) — playerCanAttack(버프 25 없음 · 상태 23 아님) → 공 차기 아니면 playerInputAttack
             if (s.actionThisTick && s.moveState != 23) PlayerInputAttack(s, frame, out);
         }
-        if (dead) s.moveState = kPlayerStateIdle;
         s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
 
         // ⚠ 죽으면 정답지는 ALLOW_OVERLAP 을 켜고(상태 3→4, `object_update.go:247`) 관전은 NO_COLLIDE 를 켠다
@@ -3698,6 +3723,7 @@ bool Server::MapTraceVisionSkip(float x1, float y1, float x2, float y2, int skip
 // `object.go:1394` playerSetState 중 지금 들어오는 갈래 — 죽음·공중·도발·광전사·함성은 그 조각에서.
 bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame) {
     bool res = true;
+    if (s.respawnAtFrame != 0 && st != 3 && st != 4) return false;   // DEAD 면 3·4 만(`:1398`)
     if (st != kPlayerStateAttack) {
         s.attackAnim = 0;                                   // Field8 = 0(`:1426`)
     } else {
@@ -3724,6 +3750,97 @@ bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame) {
         s.animFrame = 0;
     }
     return res;
+}
+
+// `GAME4.c:1211` mapFindPlayerStart_4F7AB0 — PlayerStart 중 **적에게서 가장 가까운 거리가 가장 먼** 곳.
+//   적(나 말고 · IsEnemyTo)이 하나도 없거나 고른 곳이 없으면 무작위(randomInt(0, 수−1)). PlayerStart 가 없으면 (2000,2000).
+//   ⚠ PlayerStart 의 ENABLED 깃발·팀(sub_4F7CE0)은 맵 xfer 를 아직 안 읽어 모두 켜짐·팀 없음으로 본다(맵 묶음 9).
+bool Server::FindPlayerStart(const Session& s, float& x, float& y) {
+    if (playerStarts_.empty()) { x = 2000.0f; y = 2000.0f; return false; }
+    bool noEnemy = true;                                   // v8
+    int best = -1;                                         // j
+    float bestD = 0.0f;                                    // v17
+    for (size_t i = 0; i < playerStarts_.size(); ++i) {
+        float nearest = 10000000.0f;                        // v15
+        for (const auto& kv : sessions_) {
+            const Session& o = kv.second;
+            if (&o == &s || !o.inGame || !IsEnemyTo(s, o)) continue;
+            const double dx = playerStarts_[i].first - o.posX, dy = playerStarts_[i].second - o.posY;
+            const double d2 = dy * dy + dx * dx;
+            if (d2 < nearest) nearest = static_cast<float>(d2);
+            noEnemy = false;
+        }
+        if (nearest > bestD) { best = static_cast<int>(i); bestD = nearest; }
+    }
+    if (noEnemy || best < 0) best = static_cast<int>(NextRandom(static_cast<uint32_t>(playerStarts_.size())));
+    x = playerStarts_[best].first;
+    y = playerStarts_[best].second;
+    return true;
+}
+
+// `object.go:722~731` unitMove 의 플레이어 몫 — 온라인이면 `ea <프레임4>` 를 그 사람에게(오래된 정적 그림을 지우라는 뜻,
+//   클라 sub_45A670) · Sub4DE4D0: 정적 오브젝트의 「보이는 중」 비트를 꺼서 다시 소개되게.
+void Server::ForgetDrawables(Session& s, std::vector<OutPacket>& out) {
+    const uint32_t f = s.tickFrame + 1;                    // 이 틱 끝에 실리는 시각(27) 과 같은 값
+    const uint8_t msg[5] = { static_cast<uint8_t>(Op::FORGET_DRAWABLES), static_cast<uint8_t>(f),
+                             static_cast<uint8_t>(f >> 8), static_cast<uint8_t>(f >> 16), static_cast<uint8_t>(f >> 24) };
+    EmitSeq(s, msg, sizeof(msg), out);
+    s.staticIntroAt.clear();
+}
+
+// `GAME4.c:1420` playerRespawn_4F7EF0 + `GAME3_3.c:7901` playerMakeDefItems(a1, 1, 0) — 퀘스트 아닌 갈래.
+//   ⚠ 옮기지 않은 것 — 기본 장비 다시 만들기(playerRespawnItem · 아이템 5 — 클라는 E9 의 무기 깃발로 겉모습을 되살린다) ·
+//     부활 소리 148(10) · 부활 이펙트 respawnPlayerImpl_53FBC0(4) · 능력·주문 끄기(7·4) · 퀘스트 목숨·되살림 자리(8)
+void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& out) {
+    s.health = s.maxHealth;                                // unitHPsetOnMax · 체력 기록도 같은 값(델타 알림 없음)
+    s.mana = s.maxMana;                                    // playerManaRefresh
+    s.dmgRemainder = 0.0f;                                 // +84
+    s.respawnAtFrame = 0;                                  // 깃발 &= 0xFFEB3FE7 — DEAD 끔
+    PlayerSetState(s, kPlayerStateIdle, frame);
+    s.invulnUntilSet = false;                              // unitClearBuffs(아래에서 23 을 다시 켠다)
+    MarkDirty(s.netCode, PendingReport::What::UnitHealth);
+    // 나에게 — 최대·지금 체력(`dd`) · 마나는 워리어가 아니면(`de`)
+    {
+        const uint8_t dd[7] = { static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH), static_cast<uint8_t>(s.netCode),
+                                static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(s.health),
+                                static_cast<uint8_t>(s.health >> 8), static_cast<uint8_t>(s.maxHealth),
+                                static_cast<uint8_t>(s.maxHealth >> 8) };
+        EmitSeq(s, dd, sizeof(dd), out);
+        if (s.charClass != CharClass::Warrior) {
+            const uint8_t de[7] = { static_cast<uint8_t>(Op::REPORT_TOTAL_MANA), static_cast<uint8_t>(s.netCode),
+                                    static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(s.mana),
+                                    static_cast<uint8_t>(s.mana >> 8), static_cast<uint8_t>(s.maxMana),
+                                    static_cast<uint8_t>(s.maxMana >> 8) };
+            EmitSeq(s, de, sizeof(de), out);
+        }
+    }
+    // 모두에게 — `e9 <번호2> <프레임4> <무기 깃발> 01`(netSendPlayerRespawn_4EFC30 · 끝 1 = 클라가 기본 장비 겉모습을 다시 세움)
+    //   무기 깃발 = getRespawnWeaponFlags_4EF580 — 서버에 쓸 수 있는 기본 장비 종류 비트. 모두 허용 = 0xff(녹음 값과 같음)
+    //   ⚠ 프레임은 받는 사람마다 그 사람의 틱 번호로 싣는다(우리 서버는 접속마다 시계가 따로다 — Session::tickFrame)
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame) continue;
+        const uint32_t f = o.tickFrame + 1;               // 이 틱 끝에 실리는 시각(27) 과 같은 값 — 대기열이 시각 뒤에 나간다
+        const uint8_t e9[9] = { static_cast<uint8_t>(Op::PLAYER_RESPAWN), static_cast<uint8_t>(s.netCode),
+                                static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(f), static_cast<uint8_t>(f >> 8),
+                                static_cast<uint8_t>(f >> 16), static_cast<uint8_t>(f >> 24), 0xff, 0x01 };
+        EmitSeq(o, e9, sizeof(e9), out);
+    }
+    // 자리 — 시작 지점 고르기 → 옮기기(FORGET_DRAWABLES)
+    float sx = 0.0f, sy = 0.0f;
+    FindPlayerStart(s, sx, sy);
+    s.x = static_cast<int>(std::lround(sx));
+    s.y = static_cast<int>(std::lround(sy));
+    s.posX = sx; s.posY = sy;
+    s.prevX = sx; s.prevY = sy;
+    s.velX = s.velY = 0.0;
+    ForgetDrawables(s, out);
+    // 온라인이면 무적 버프 23 을 5초(5 × 30 틱)
+    s.invulnUntilFrame = frame + 5 * kServerTickRate;
+    s.invulnUntilSet = true;
+    std::printf("[부활] 프레임 %u %s → (%.0f,%.0f) · 시작 지점 %zu곳 · 무적 %u틱\n", frame, s.addr.c_str(), sx, sy,
+                playerStarts_.size(), 5 * kServerTickRate);
+    std::fflush(stdout);
 }
 
 // 플레이어 +4 WeaponEquip — 든 무기의 클래스 비트. ⚠ 지금은 직업 기본 장비에서 온다(주워 들기·바꿔 들기는 묶음 5).
@@ -4613,7 +4730,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 ub[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
                 const size_t un = EncodeUpdate(m, ub + 1, sizeof(ub) - 1);
                 patched.insert(patched.end(), ub, ub + 1 + un);
-                const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode, s.charClass);
+                const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode, s.charClass, s.tickFrame, s.tickFrame);   // 3-c: 받는 사람의 지금 프레임
                 patched.insert(patched.end(), tail.begin(), tail.end());
             } else if (!(patchSnapshot_ &&
                   PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_))) {
@@ -4702,61 +4819,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             }
         }
 
-        // 죽어 있고 때가 됐으면 되살린다.
-        if (s.respawnAtFrame != 0 && frame_ >= s.respawnAtFrame) {
-            s.respawnAtFrame = 0;
-            // ★ 되살아난 뒤 얼마간은 안 맞는다. 상수는 있었는데 아무도 안 봤다.
-            s.invulnUntilFrame = frame_ + kRespawnInvulnTicks;
-            s.invulnUntilSet = true;
-            s.health = s.maxHealth;
-            // 마나도 되돌린다. ➖ **우리 값이다** — 정품이 부활에 마나를 채우는지는
-            // 표본이 없어 모른다. 0 으로 되살리면 위저드·컨저러가 아무것도 못 하므로
-            // 채우는 쪽을 골랐다. 알게 되면 여기부터 고칠 것.
-            if (s.mana != s.maxMana) {
-                s.mana = s.maxMana;
-                uint8_t mp[5];
-                mp[0] = static_cast<uint8_t>(Op::REPORT_MANA);
-                mp[1] = static_cast<uint8_t>(s.netCode);
-                mp[2] = static_cast<uint8_t>(s.netCode >> 8);
-                mp[3] = static_cast<uint8_t>(s.mana);
-                mp[4] = static_cast<uint8_t>(s.mana >> 8);
-                EmitSeq(s, mp, sizeof(mp), out);   // 홀로 — 남에게 갈 값이 아니다
-            }
-
-            // 부활 — 껍데기 안. 실측 `e9 d0 02 5d b8 00 00 ff 01`.
-            // ★ 4바이트는 **틱 번호**다(표본 다섯의 값차/시간차가 모두 28/초였다).
-            //   끝의 `ff 01` 은 표본 전수가 같아 뜻을 모른다. 그대로 싣는다.
-            {
-                uint8_t msg[9];
-                msg[0] = static_cast<uint8_t>(Op::PLAYER_RESPAWN);
-                msg[1] = static_cast<uint8_t>(s.netCode);
-                msg[2] = static_cast<uint8_t>(s.netCode >> 8);
-                msg[3] = static_cast<uint8_t>(frame_);
-                msg[4] = static_cast<uint8_t>(frame_ >> 8);
-                msg[5] = static_cast<uint8_t>(frame_ >> 16);
-                msg[6] = static_cast<uint8_t>(frame_ >> 24);
-                msg[7] = 0xFF;
-                msg[8] = 0x01;
-                // ★ **모두에게.** 남이 되살아나는 것도 보여야 한다.
-                //   ⚠ 4바이트에 싣는 것은 서버 전역 `frame_` 그대로다 — 받는 쪽마다
-                //     다시 매기지 않는다. `0x57`(승자)처럼 프레임 문지기가 있는지는
-                //     확인된 바 없고, `frame_` 은 늘 커지므로 0 을 실어 버려지던
-                //     그 사고와는 모양이 다르다. 안 보이면 여기부터 의심할 것.
-                Broadcast(/*viaSeq=*/true, msg, sizeof(msg), out);
-            }
-            // 되살아난 체력 — 실측 `dd d0 02 4b 00 4b 00` (지금/최대).
-            {
-                uint8_t msg[7];
-                msg[0] = static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH);
-                msg[1] = static_cast<uint8_t>(s.netCode);
-                msg[2] = static_cast<uint8_t>(s.netCode >> 8);
-                msg[3] = static_cast<uint8_t>(s.health);
-                msg[4] = static_cast<uint8_t>(s.health >> 8);
-                msg[5] = static_cast<uint8_t>(s.maxHealth);
-                msg[6] = static_cast<uint8_t>(s.maxHealth >> 8);
-                Broadcast(/*viaSeq=*/true, msg, sizeof(msg), out);
-            }
-        }
+        // ★ 2026-09-13 묶음 3-c — 여기서 45틱 뒤 저절로 되살리던 것을 걷어냈다. 부활은 걷기 틱의 상태 4 가 한다
+        //   (UpdatePlayerMovement · PlayerRespawn — 클릭하거나 자동 부활 설정일 때).
 
         // ★ 재생 모드 — 내가 만든 것 대신 정품이 보냈던 조각을 순서대로 내보낸다.
         //   클라가 그려지면 「내용이 틀렸다」, 안 그려지면 「구조가 틀렸다」로 갈린다.
