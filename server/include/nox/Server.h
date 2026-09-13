@@ -281,6 +281,8 @@ struct Session {
     uint8_t facingInput = 0;       // 이번 틱에 온 CCOrientation — ImplB 에서 facing 으로 옮긴다
     bool hasFacingInput = false;
     double forceX = 0, forceY = 0; // 남이 준 힘(+88 ForceVec 몫) — 적분 때 더하고 지운다
+    double prevX = 0, prevY = 0;   // +72 PrevPos — 지난 틱 시작 자리(막기 판정이 때린 쪽의 이 자리를 본다, 3-e2)
+    int64_t debugWeapon = -1;      // 시험용 바꿔 들기 — −1 기본 장비 · 0 맨손 · 그 밖 kWeapons 클래스 비트(주워 들기는 묶음 5)
     // ★ 기력(+91 Field22_3, 3-b) — 만들 때 0(`GAME4_1.c:732`), 살아 있으면 틱마다 100 아래일 때 100/30 = 3 씩(`object_update.go:108`).
     //   무기 공격이 무기별로 깎는다(weaponGetStaminaByType_4F7E80 — 롱소드 70). 깎을 때 `47 <기력>` 을 중요로 알린다.
     uint8_t stamina = 0;
@@ -866,7 +868,7 @@ public:
     // 진단 — 같은 임프를 **주인 없이**(맵 몬스터 = 적) 사람 오른쪽 +25 에 고정하고 맞게 둔다(묶음 3-a 주먹 판정용).
     void SetDebugDummyAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; debugPetWild_ = true; }
     // 진단 — N 틱마다 관전 아닌 첫 사람에게 주인 없는 것의 칼 피해 25(종류 0)를 준다(묶음 3-e 움찔·깎임 화면 판정용)
-    void SetDebugHurtEvery(uint32_t ticks) { debugHurtEvery_ = ticks; }
+    void SetDebugHurtEvery(uint32_t ticks, bool front = false) { debugHurtEvery_ = ticks; debugHurtFront_ = front; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꾼다(RESET_FRIENDS 판정용). 0 이면 끔.
     void SetDebugTeamAfter(uint32_t ticks) { debugTeamAfter_ = ticks; }
 
@@ -1160,12 +1162,22 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0xff : it->second.moveState;
     }
+    // 때린 것의 자리(묶음 3-e2 막기 판정) — 정답지는 때린 오브젝트(투사체면 투사체)의 +72 지난 자리를 본다
+    struct AttackSrc {
+        float x = 0, y = 0;       // +72 PrevPos
+        bool missile = false;     // 클래스 0x1 MISSILE
+        uint32_t missileSub = 0;  // 투사체 SUBCLASS(0x70 이면 되받아치지 않음)
+    };
     // ★ 시험용 — 피해 함수(3-e)를 바로 부른다. pet < 0 이면 사람(addr), 아니면 소환수 자리 번호
     void DebugHurt(const std::string& addr, int pet, int dmg, const std::string& by, uint8_t dtype,
-                   std::vector<OutPacket>& out) {
-        HurtTarget(Target{ pet < 0 ? addr : std::string(), pet }, dmg, out, by, dtype);
+                   std::vector<OutPacket>& out, const AttackSrc* src = nullptr) {
+        HurtTarget(Target{ pet < 0 ? addr : std::string(), pet }, dmg, out, by, dtype, src);
     }
     uint16_t DebugPetHealth(size_t i) const { return i < pets_.size() ? pets_[i].health : 0; }
+    void DebugSetWeapon(const std::string& addr, int64_t classBits) {
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) it->second.debugWeapon = classBits;
+    }
     bool IsInvulnerable(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it != sessions_.end() && it->second.invulnUntilSet && frame_ < it->second.invulnUntilFrame;
@@ -1455,7 +1467,10 @@ private:
     //   `dtype` = 정답지 피해 종류 번호(0 칼 · 1 불 · 2 망치·철퇴 · 9 전기 · 10 맨손 …).
     //   `Damage()` 는 그대로 **날 피해**를 적용한다(시험이 정확한 값을 넣는 자리다).
     void HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
-                    const std::string& by = std::string(), uint8_t dtype = 0);
+                    const std::string& by = std::string(), uint8_t dtype = 0, const AttackSrc* src = nullptr);
+    // 방패를 올릴 까닭(들어오는 투사체) — `GAME4_3.c:2586` monsterTestBlockShield_533E70
+    bool IncomingMissile(const Session& s) const;
+    static uint32_t ArmorEquipOf(const Session& s) { return nox::ArmorEquipOf(s.charClass); }
     // 두 쪽(주인 기준)이 적인가 — `server/object.go:1667` IsEnemyTo 를 사람·소환수·맵 몬스터에 맞춘 판.
     //   wild = 주인 없는 몬스터(자기 자신이 주인)
     bool OwnersEnemy(const std::string& a, bool aWild, const std::string& b, bool bWild) const;
@@ -1529,6 +1544,7 @@ private:
     void ReportStamina(Session& s, std::vector<OutPacket>& out);             // netReportStamina_4D8800 `47 <기력>`
     void EarthquakeSend(float x, float y, int jiggle, std::vector<OutPacket>& out);   // earthquakeSend_4D9110 `97 <흔들림>`
     static uint32_t WeaponEquipOf(const Session& s);                          // 플레이어 +4 WeaponEquip (지금은 직업 기본 장비)
+    static const WeaponStats* WeaponStatsOf(const Session& s);
     bool CursorOnFriend(const Session& s) const;                             // playerAimsAtEnemy_4F9DC0 의 거꾸로
     bool MapTraceVision(float x1, float y1, float x2, float y2) const;       // `server/map.go:522` (장애물 그늘 · 벽 9)
     bool MapTraceVisionSkip(float x1, float y1, float x2, float y2, int skipObstacle) const;
@@ -1685,6 +1701,7 @@ private:
     uint32_t debugOwnPetAfter_ = 0;   // 진단 --debug-own-pet (0 끔)
     bool debugPetWild_ = false;        // 진단 --debug-dummy — 주인 없음 · 맞음
     uint32_t debugHurtEvery_ = 0;      // 진단 --debug-hurt-every (0 끔)
+    bool debugHurtFront_ = false;      // 진단 --debug-hurt-front — 앞 30 에서 때린 것으로
     uint16_t debugOwnPetNetCode_ = 0; // 만든 임프의 번호 — 이동 루프가 이것만 건너뛴다(고정)
     bool standalone_ = false;
     std::string saMapName_;

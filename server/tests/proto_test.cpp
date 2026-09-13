@@ -2360,6 +2360,9 @@ void TestWeaponAttack() {
 
 // ── 피해 함수(묶음 3-e) ─────────────────────────────────────────
 //   사람 PlayerDamage(`GAME3_3.c:67`) · 몬스터 DefaultDamage 계열 → damageDefaultProc(`GAME3_2.c:7017`).
+// ── 방패·막기(묶음 3-e2) ─────────────────────────────────────────
+//   `object_update.go:327~398`(상태 13→15→16→17 · 18~21) · `GAME3_3.c:206~330`(막기 갈래) · `GAME4_3.c:2586`(들어오는 투사체)
+void TestShieldBlock();
 void TestDamageHandler() {
     const std::string a = "10.0.0.1:1000";
     const std::string b = "10.0.0.2:1000";
@@ -2469,6 +2472,154 @@ void TestDamageHandler() {
         Check(srv.HealthOf(b) == hp, "무적인데 깎였다");
     }
     std::printf("  피해 함수 — 버림·이월·종류별 방어·최소 1·편 거르기·움찔 20·몬스터 면역·골렘 전기 두 배·무적\n");
+}
+
+void TestShieldBlock() {
+    const std::string a = "10.0.0.1:1000";   // 워리어(나무 방패 0x1000000)
+    const std::string b = "10.0.0.2:1000";
+    const int kWarHP = nox::HealthOnline(nox::CharClass::Warrior);
+    auto makeSrv = [&](nox::Server& srv) {
+        srv.SetPlayerAnimFrames(40, 6, 1);    // ⭕ thing.bin RAISE_SHIELD 6/1
+        srv.SetPlayerAnimFrames(48, 3, 1);    // GREAT_SWORD_BLOCK_* 3/1
+        srv.SetPlayerAnimFrames(49, 3, 1);
+        srv.SetPlayerAnimFrames(47, 3, 1);
+        srv.SetPlayerAnimFrames(30, 6, 0);    // STAFF_BLOCK 6/0
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 5000, 5000);
+    };
+    auto move = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+        std::vector<uint8_t> pkt = InputPacket(2);
+        pkt[nox::kWireHeaderSize + 1] = 5;
+        pkt.push_back(0);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+    };
+    nox::Server::AttackSrc front;  front.x = 1030; front.y = 1000;   // a 가 바라보는 +x
+    nox::Server::AttackSrc back;   back.x = 970;   back.y = 1000;
+
+    // ① 가만히 30/4=7 틱을 넘기면 방패를 올린다(15) → RAISE_SHIELD 6칸×2틱 = 12틱 뒤 올린 채(16) · 자세 40
+    {
+        nox::Server srv;
+        makeSrv(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        int up15 = -1, up16 = -1;
+        for (int t = 1; t <= 30; ++t) {
+            ms += 33; srv.Tick(ms, out);
+            if (up15 < 0 && srv.DebugStateOf(a) == 15) up15 = t;
+            if (up16 < 0 && srv.DebugStateOf(a) == 16) up16 = t;
+        }
+        Check(up15 == 8, "가만 8틱째(7 넘김) 에 방패 올리기(15) 가 아니다");
+        Check(up16 == up15 + 12, "올리기 12틱 뒤 올린 채(16) 가 아니다");
+        Check(srv.DebugAnimByteOf(a) == 40, "방패 자세가 40(RAISE_SHIELD) 이 아니다");
+        Check(srv.DebugAnimFrameOf(a) == 5, "올린 채 칸이 마지막(5) 이 아니다");
+
+        // ② 걸음 입력 — 먼저 내리기(17), 다음 걸음 틱에 걷기(0)
+        move(srv, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.DebugStateOf(a) == 17, "방패 올린 채 걸음 입력이 내리기(17) 로 안 갔다");
+        move(srv, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateWalk, "내리는 중 걸음 입력이 걷기로 안 갔다");
+    }
+
+    // ③ 방패 올린 채(16) — 앞에서 온 칼은 막고 · 뒤에서 온 칼과 앞에서 온 전기(9)는 들어간다 · 올리기 전(13) 은 안 막음
+    {
+        nox::Server srv;
+        makeSrv(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(a, -1, 30, b, 0, out, &front);
+        Check(srv.HealthOf(a) < kWarHP, "방패를 아직 안 올렸는데(13) 막았다");
+        const uint16_t hp0 = srv.HealthOf(a);
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 40 && srv.DebugStateOf(a) != 16; ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(srv.DebugStateOf(a) == 16, "방패가 안 올라갔다 — 이 시험이 무의미해진다");
+        const uint16_t hp1 = srv.HealthOf(a);
+        Check(hp1 == hp0, "가만히 있는 사이 체력이 바뀌었다 — 이 시험이 무의미해진다");
+        srv.DebugHurt(a, -1, 30, b, 0, out, &front);
+        Check(srv.HealthOf(a) == hp1, "방패를 올렸는데 앞에서 온 칼에 깎였다");
+        srv.DebugHurt(a, -1, 30, b, 0, out, &back);
+        Check(srv.HealthOf(a) < hp1, "뒤에서 온 칼을 방패가 막았다");
+        const uint16_t hp2 = srv.HealthOf(a);
+        // 뒤에서 맞아 움찔(30) 했을 수 있다 — 다시 올릴 때까지 기다린다
+        for (int t = 0; t < 60 && srv.DebugStateOf(a) != 16; ++t) { ms += 33; srv.Tick(ms, out); }
+        srv.DebugHurt(a, -1, 30, b, 9, out, &front);
+        Check(srv.HealthOf(a) < hp2, "방패가 앞에서 온 전기(9) 까지 막았다");
+    }
+
+    // ④ 대검(0x400) — 가만(13) 에 앞에서 온 칼(0) 을 막고 18~20 으로 · 망치류(2) 는 못 막음
+    {
+        nox::Server srv;
+        makeSrv(srv);
+        srv.DebugSetWeapon(a, 0x400);
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(a, -1, 30, b, 0, out, &front);
+        Check(srv.HealthOf(a) == kWarHP, "대검 든 가만 상태가 앞 칼을 못 막았다");
+        const uint8_t st = srv.DebugStateOf(a);
+        Check(st >= 18 && st <= 20, "대검 막기 뒤 상태가 18~20 이 아니다");
+        nox::Server srv2;
+        makeSrv(srv2);
+        srv2.DebugSetWeapon(a, 0x400);
+        srv2.DebugHurt(a, -1, 30, b, 2, out, &front);
+        Check(srv2.HealthOf(a) < kWarHP, "대검이 종류 2(망치·철퇴) 를 막았다");
+        // 걷는 중(0) 에는 대검도 못 막는다(가만 13 · 막기 18~20 만)
+        nox::Server srv3;
+        makeSrv(srv3);
+        srv3.DebugSetWeapon(a, 0x400);
+        uint32_t ms = 0;
+        srv3.Tick(ms, out);
+        {
+            std::vector<uint8_t> pkt = InputPacket(2);
+            pkt[nox::kWireHeaderSize + 1] = 5;
+            pkt.push_back(0);
+            srv3.OnPacket(a, pkt.data(), pkt.size(), out);
+        }
+        ms += 33; srv3.Tick(ms, out);
+        Check(srv3.DebugStateOf(a) == nox::kPlayerStateWalk, "걷기 상태로 못 만들었다 — 이 시험이 무의미해진다");
+        nox::Server::AttackSrc front2;
+        front2.x = static_cast<float>(srv3.XOf(a) + 30); front2.y = static_cast<float>(srv3.YOf(a));
+        srv3.DebugHurt(a, -1, 30, b, 0, out, &front2);
+        Check(srv3.HealthOf(a) < kWarHP, "걷는 중인데 대검이 막았다");
+    }
+
+    // ⑤ 지팡이(0x8000) — 가만(13) 에 투사체 아닌 칼(0) 을 막고 21 · 투사체는 못 막음
+    {
+        nox::Server srv;
+        makeSrv(srv);
+        srv.DebugSetWeapon(a, 0x8000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(a, -1, 30, b, 0, out, &front);
+        Check(srv.HealthOf(a) == kWarHP && srv.DebugStateOf(a) == 21, "지팡이 가만 상태가 앞 칼을 막고 21 로 가지 않았다");
+        nox::Server srv2;
+        makeSrv(srv2);
+        srv2.DebugSetWeapon(a, 0x8000);
+        nox::Server::AttackSrc missile = front;
+        missile.missile = true;
+        srv2.DebugHurt(a, -1, 30, b, 0, out, &missile);
+        Check(srv2.HealthOf(a) < kWarHP, "지팡이가 투사체를 막았다");
+    }
+
+    // ⑥ 들어오는 투사체가 있으면 7틱 안 기다리고 바로 방패를 올린다(monsterTestBlockShield)
+    {
+        nox::Server srv;
+        makeSrv(srv);
+        srv.DebugMoveTo(b, 1090, 1000);
+        srv.DebugSetFacing(b, 128);            // b 가 −x(a 쪽) 을 본다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);           // 한 틱 — 아직 7 안 넘김
+        auto fire = SpellPacket(27, false);
+        srv.OnPacket(b, fire.data(), fire.size(), out);
+        Check(srv.flying() == 1, "파이어볼이 안 날았다 — 이 시험이 무의미해진다");
+        ms += 33; srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.DebugStateOf(a) == 15 || srv.DebugStateOf(a) == 30, "앞에서 투사체가 오는데 7틱 전에 방패를 안 올렸다");
+    }
+
+    std::printf("  방패·막기 — 가만 7틱 뒤 올리기·12틱 올린 채·걸음이면 내리기·앞 막기·뒤·전기 통과·대검·지팡이·투사체 보고 올리기\n");
 }
 
 // ── 중요 메시지 대기열 (2026-09-13) ───────────────────────────
@@ -4616,6 +4767,7 @@ int main() {
     TestMelee();
     TestWeaponAttack();
     TestDamageHandler();
+    TestShieldBlock();
     TestThingDb();
     TestMapSections();
     TestWallCollision();

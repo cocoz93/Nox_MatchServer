@@ -480,4 +480,31 @@ constexpr uint32_t kRespawnInvulnTicks = 150;  // 5초 무적
 // 이름으로 찾는다. 모르면 0 — **0 이면 겉모습을 안 보낸다**(짐작으로 안 채운다).
 uint32_t EquipBitFor(const char* thingName, bool* isWeapon);
 
+// 시작 장비 와이어 번호 → 이름(EquipBitFor 로 넘기려고). 모르면 nullptr.
+inline const char* LoadoutItemName(uint16_t wire) {
+    switch (wire) {
+        case kItemStreetShirt: return "StreetShirt";
+        case kItemStreetPants: return "StreetPants";
+        case kItemStreetSneakers: return "StreetSneakers";
+        case kItemWizardRobe: return "WizardRobe";
+        case kItemWoodenShield: return "WoodenShield";
+        case kItemLongsword: return "Longsword";
+        default: return nullptr;
+    }
+}
+// ★ 2026-09-13 묶음 3-e2 — 플레이어 +0 ArmorEquip(입은 갑옷 겉모습 비트 합). 방패 = 0x3000000(나무 0x1000000 · 강철 0x2000000).
+//   ⚠ 지금은 직업 기본 장비(주워 입기는 묶음 5).
+inline uint32_t ArmorEquipOf(CharClass c) {
+    const Loadout l = LoadoutFor(c);
+    uint32_t bits = 0;
+    for (int i = 0; i < l.count && i < 4; ++i) {
+        const char* nm = LoadoutItemName(l.items[i]);
+        if (!nm) continue;
+        bool isW = false;
+        const uint32_t b = EquipBitFor(nm, &isW);
+        if (!isW) bits |= b;
+    }
+    return bits;
+}
+
 }  // namespace nox

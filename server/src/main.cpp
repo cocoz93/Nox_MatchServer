@@ -189,6 +189,7 @@ int main(int argc, char** argv) {
     bool friends = false;           // 친구 알림(OBJECT_FRIEND_ADD/REMOVE) — 부분 구현이라 기본 끔
     int debugDummy = 0;             // 진단 — 첫 사람 N 틱 뒤 주인 없는 임프 허수아비(0 끔)
     int debugHurtEvery = 0;         // 진단 — N 틱마다 첫 사람에게 피해 25(0 끔)
+    bool debugHurtFront = false;    // 진단 — 그 피해를 앞 30 에서 때린 것으로
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
@@ -294,6 +295,9 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-own-pet" && i + 1 < argc) {
             // 진단 — 친구 판정용. 소환 조작을 빼 버리고 그 사람 소유 임프를 사람 자리에 고정한다.
             debugOwnPet = std::atoi(argv[++i]);
+        } else if (a == "--debug-hurt-front") {
+            // 진단 — 위 피해를 바라보는 쪽 30 앞에서 때린 것으로(방패 막기 판정 · 묶음 3-e2)
+            debugHurtFront = true;
         } else if (a == "--debug-hurt-every" && i + 1 < argc) {
             // 진단 — 피해 함수 판정용(묶음 3-e). N 틱마다 첫 사람에게 피해 25(움찔 문턱 20 넘김).
             debugHurtEvery = std::atoi(argv[++i]);
@@ -599,8 +603,9 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
         }
         if (debugHurtEvery > 0) {
-            srv.SetDebugHurtEvery(static_cast<uint32_t>(debugHurtEvery));
-            std::printf("[진단스위치] %d 틱마다 첫 사람에게 피해 25(종류 0 · 주인 없음)\n", debugHurtEvery);
+            srv.SetDebugHurtEvery(static_cast<uint32_t>(debugHurtEvery), debugHurtFront);
+            std::printf("[진단스위치] %d 틱마다 첫 사람에게 피해 25(종류 0 · 주인 없음)%s\n", debugHurtEvery,
+                        debugHurtFront ? " · 앞 30 에서" : "");
         }
         if (debugDummy > 0) {
             srv.SetDebugDummyAfter(static_cast<uint32_t>(debugDummy));
