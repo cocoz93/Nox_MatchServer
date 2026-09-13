@@ -3486,7 +3486,30 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
 
         // 불려 나온 것도 싣는다 — 안 그러면 사람을 때리는 게 화면에 안 보인다.
+        //
+        // ★ **시야 판정** (2026-09-13 · 기본 꺼짐 — `--creature-aoi`).
+        //   정답지 `legacy/GAME4_1.c:4488` `nox_xxx_netSendObjects2Plr_519410` 는 플레이어마다
+        //   오브젝트의 「보이는 중」 비트(+148)를 들고, 보이다가 안 보이면 사라짐을 보낸다.
+        //   순회 범위는 플레이어 위치 ± (화면절반 + 100) 사각형이다(`server.go:533` · `player.go:325`).
+        //   ⚠ 시야선(벽 뒤)은 아직 없다 — 거리만 본다(묶음 1 ⓓ3 에서 넣는다).
+        //   ⚠ 들어옴 ±half · 나감 ±half×1.2 — 경계를 드나드는 것이 매 틱 재소개되면 클라가
+        //     멎는다(Session::staticIntroAt 주석의 사고). 그 사이는 이전 상태를 유지한다.
+        //   ⚠ **별칭은 건드리지 않는다** — Alias.h 의 「잊지 말 것」 주석.
+        std::vector<uint16_t> creatureExits;
         for (const auto& k : pets_) {
+            if (creatureAoiHalfX_ > 0.0) {
+                const double dx = std::fabs(k.x - s.x);
+                const double dy = std::fabs(k.y - s.y);
+                const bool inside  = dx <= creatureAoiHalfX_ && dy <= creatureAoiHalfY_;
+                const bool outside = dx > creatureAoiHalfX_ * 1.2 || dy > creatureAoiHalfY_ * 1.2;
+                const bool was = s.visibleCreatures.count(k.netCode) != 0;
+                if (inside && !was) s.visibleCreatures.insert(k.netCode);
+                if (outside && was) {
+                    s.visibleCreatures.erase(k.netCode);
+                    creatureExits.push_back(k.netCode);
+                }
+                if (s.visibleCreatures.count(k.netCode) == 0) continue;   // 안 보이는 것은 안 싣는다
+            }
             ObjEntry e;
             FillEntry(s.aliases, k.netCode, k.type, s.tickFrame,
                       static_cast<int>(k.x), static_cast<int>(k.y), k.facing, e);
@@ -3494,13 +3517,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                        baseX, baseY);
             m.objects.push_back(e);
         }
+        // 죽어서 목록에서 빠진 것은 「보이는 중」에서도 지운다 — 번호가 다시 쓰일 때 섞이지 않게.
+        for (auto it = s.visibleCreatures.begin(); it != s.visibleCreatures.end();) {
+            bool alive = false;
+            for (const auto& k : pets_) if (k.netCode == *it) { alive = true; break; }
+            it = alive ? std::next(it) : s.visibleCreatures.erase(it);
+        }
 
         // ── 맵 정적 오브젝트 — **시야 반경 안만, 가까운 순 상한** (독립 서버 P4-b) ──
         //
         // 담는 규칙과 상한의 이유는 AppendAoiStatics 주석에. 드나듦은 별칭 임대(2초)가
         // 알아서 정리하고, 같은 자리에 서 있으면 부분집합이 안 바뀌어 별칭도 안정된다.
         // ⚠ 기본 꺼짐(aoiOn_) — 실클라 검증(P4-c) 전에는 켜지 않는다.
-        std::vector<uint16_t> outOfSight;
+        // ★ 크리처 사라짐(위 루프의 creatureExits)을 먼저 담는다 — 보내는 길은 정적 오브젝트와 같다.
+        std::vector<uint16_t> outOfSight(creatureExits);
         if (aoiOn_) {
             AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,
                              s.tickFrame, s.x, s.y, baseX, baseY, m);

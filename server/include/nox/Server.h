@@ -337,6 +337,11 @@ struct Session {
     //   별칭이 아직/다시 없을 때만, 물체당 2초에 1번으로 눌러 소개한다.
     std::map<uint16_t, uint32_t> staticIntroAt;
 
+    // 이 사람에게 **지금 보이는 중인** 크리처 번호 (2026-09-13, `--creature-aoi` 일 때만 쓴다).
+    // 정답지는 오브젝트 쪽에 플레이어별 비트(+148)로 든다(`GAME4_1.c:4488`). 여기선 사람 수가 적어
+    // 사람 쪽에 든다. 보이다가 빠지면 `OBJECT_OUT_OF_SIGHT` 를 보낸다.
+    std::set<uint16_t> visibleCreatures;
+
     // 스트림마다 따로 센다. 핑·퐁이 스트림 1 을 쓰는 것이 실측으로 확인됐다.
     StreamSeq seq[128];
 };
@@ -697,6 +702,9 @@ public:
     unsigned long long doorsOpened() const { return doorsOpened_; }
     unsigned long long obeliskMana() const { return obeliskMana_; }
     void SetAoi(bool on) { aoiOn_ = on; }
+    // 크리처 시야 판정 — 사각형 반폭. 0 이면 꺼짐(모두 싣는 옛 동작).
+    // 정답지 기본은 화면절반 + 100 (1280×960 이면 740 × 580, `player.go:325` · `server.go:533`).
+    void SetCreatureAoi(double halfX, double halfY) { creatureAoiHalfX_ = halfX; creatureAoiHalfY_ = halfY; }
 
     // ── 독립 모드 (P5-c-2) ──────────────────────
     //
@@ -1405,6 +1413,8 @@ private:
     unsigned long long doorsOpened_ = 0;
     unsigned long long obeliskMana_ = 0;
     bool aoiOn_ = false;
+    double creatureAoiHalfX_ = 0.0;   // 0 이면 크리처 시야 판정 꺼짐 (SetCreatureAoi)
+    double creatureAoiHalfY_ = 0.0;
     bool standalone_ = false;
     std::string saMapName_;
     uint32_t saMapCrc_ = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
