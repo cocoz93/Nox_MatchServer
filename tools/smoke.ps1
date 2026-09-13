@@ -91,6 +91,10 @@ $acc = New-Object byte[] 156
 $acc[0] = 0x01; $acc[1] = 0x05; $acc[2] = 0x20
 $accX = @(); foreach ($b in $acc) { $accX += [byte]($b -bxor $k) }
 [void]$udp.Send([byte[]]$accX, $accX.Length, $ep)
+# ★ 준비 — 진짜 클라는 맵을 읽고 `c0 CLIENT_READY` 를 보낸다. 서버는 이걸 받아야 첫 스냅샷과
+#   중요 메시지를 싣는다(2026-09-13, 정답지 `GAME3_2.c:5602` → `GAME3_3.c:1966`).
+$rdy = @(); foreach ($b in @(0x01,0x06,0xc0)) { $rdy += [byte]($b -bxor $k) }
+[void]$udp.Send([byte[]]$rdy, $rdy.Length, $ep)
 Start-Sleep -Milliseconds 200
 
 # ── 5. 틱 — 접속이 끝나면 서버가 스스로 매 틱 상태를 뿌린다
@@ -174,6 +178,8 @@ if ($k2 -ne 0) {
   $acc2[0] = 0x01; $acc2[1] = 0x05; $acc2[2] = 0x20
   $a2 = @(); foreach ($b in $acc2) { $a2 += [byte]($b -bxor $k2) }
   [void]$udp2.Send([byte[]]$a2, $a2.Length, $ep)
+  $r2x = @(); foreach ($b in @(0x01,0x06,0xc0)) { $r2x += [byte]($b -bxor $k2) }   # 준비 — 위 4.5 주석
+  [void]$udp2.Send([byte[]]$r2x, $r2x.Length, $ep)
   Start-Sleep -Milliseconds 300
 }
 # 첫째가 받는 상태 갱신에서 오브젝트 수를 센다.

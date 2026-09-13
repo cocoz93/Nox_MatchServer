@@ -215,8 +215,57 @@ void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n,
     buf.push_back(static_cast<uint8_t>(n));
     buf.insert(buf.end(), msg, msg + n);
     ++s.seqImpId;
-    // 껍데기가 신뢰를 맡으므로 패킷 자체는 비신뢰다 (Server.h 의 EmitSeq 주석 참조).
-    Emit(s, /*reliable=*/false, /*stream=*/0, buf.data(), buf.size(), out);
+    if (s.importantImmediate) {   // 시험용 — Session::importantImmediate 주석
+        // 껍데기가 신뢰를 맡으므로 패킷 자체는 비신뢰다 (Server.h 의 EmitSeq 주석 참조).
+        Emit(s, /*reliable=*/false, /*stream=*/0, buf.data(), buf.size(), out);
+        return;
+    }
+    // ★ 바로 안 보낸다 — 대기열에 쌓고 FlushImportant 가 준비 뒤에 싣고, 확인이 올 때까지 다시 싣는다.
+    //   (Session::importantQ 주석 — 한 번만 보내던 것이 접속 직후 순번 구멍을 만들어 뒤 cc 가 전부 막혔다)
+    if (s.importantQ.size() >= kImportantQueueMax) {
+        // 정답지는 넘치면 그 사람을 끊는다(`nox_xxx_importantCheckRate_4E52B0` → playerKickDueToRate).
+        // 여기서는 끊지 않고 알리기만 한다 — 끊기 경로는 아직 옮기지 않았다.
+        std::printf("[중요] %s 대기열 %zu 개로 넘침 — 새 순번 %u 버림\n", s.addr.c_str(),
+                    s.importantQ.size(), static_cast<unsigned>(s.seqImpId - 1));
+        return;
+    }
+    Session::PendingImportant p;
+    p.wire = std::move(buf);
+    s.importantQ.push_back(std::move(p));
+}
+
+// 중요 메시지 한 조각 — 정답지 `nox_xxx_netImportant_4E5770`(GAME3_3.c:1938)를 옮겼다.
+//   ① 준비 전(CLIENT_READY 전)이면 아무것도 안 싣는다(1966줄 `v3[3680] & 0x10`).
+//   ② 처음 싣는 것은 다 싣는다 · 이미 실은 것은 기다림(+132)이 끝났을 때 **틱당 1개까지**만 다시 싣는다
+//      (2001줄 `v14 >= byte(1565124+12*pl)` — 그 값은 처음 1, `nox_xxx_playerResetImportantCtr_4E4F40`).
+//   ③ 기다림 = FPS × 2 / 전송률(1) = 60틱(2039줄 · 1565125 자리 초깃값 2).
+//   ④ 머리 `aa` 는 조각마다 한 번(2011~2022줄 — 호스트가 아닌 사람에게는 `aa` 1바이트).
+//   ⑤ 확인은 조각의 시각으로 온다 — 클라가 같은 조각의 `27` 로 localFrame 을 잡아 `ab <그 프레임>` 을 돌려준다
+//      (`network_client.go:302~318`). 그래서 이 조각 머리에 `27` 을 **따로 붙인다.**
+void Server::FlushImportant(Session& s, std::vector<OutPacket>& out) {
+    if (!s.importantReady || s.importantQ.empty()) return;
+    std::vector<uint8_t> pkt;
+    pkt.reserve(kImportantPacketBudget + 8);
+    pkt.push_back(static_cast<uint8_t>(Op::TIMESTAMP));
+    pkt.push_back(static_cast<uint8_t>(s.tickFrame));
+    pkt.push_back(static_cast<uint8_t>(s.tickFrame >> 8));
+    pkt.push_back(static_cast<uint8_t>(Op::IMPORTANT));
+    const size_t headLen = pkt.size();
+    int resentThisTick = 0;
+    for (auto& p : s.importantQ) {
+        if (p.sent) {
+            if (p.wait > 0) { --p.wait; continue; }
+            if (resentThisTick >= 1) continue;
+        }
+        if (pkt.size() + p.wire.size() > kImportantPacketBudget) break;   // 다음 틱에
+        if (p.sent) { ++resentThisTick; ++s.importantResent; }
+        pkt.insert(pkt.end(), p.wire.begin(), p.wire.end());
+        p.sent = true;
+        p.sentFrame = s.tickFrame;
+        p.wait = kImportantResendTicks;
+    }
+    if (pkt.size() == headLen) return;
+    Emit(s, /*reliable=*/false, /*stream=*/0, pkt.data(), pkt.size(), out);
 }
 
 // 불려 나온 것의 값 — **종류마다 다르다** (2026-09-10 정본화, ⭕ monster.bin).
@@ -674,6 +723,9 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
 void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                         const std::string& by, DamageKind kind) {
     if (t.none() || dmg <= 0) return;
+    // 진단 임프(`--debug-own-pet`)는 맞지 않는다 — 판정 사진을 찍기 전에 몬스터에게 죽었다(09-13, 갱신에 프레임 1920~2010 만 실림 — 약 3초).
+    if (debugOwnPetNetCode_ != 0 && t.pet >= 0 &&
+        pets_[static_cast<size_t>(t.pet)].netCode == debugOwnPetNetCode_) return;
     // ★ **닿은 피해를 여기서 센다.** `hits_` 는 「투사체가 명중한 횟수」만 세는데,
     //   판정 요약이 그것을 「맞음」이라 찍어 왔다. 그래서 근접으로 피해가 122건 오간
     //   실클라 런이 「맞음 0」으로 나와 **싸움이 안 붙은 것으로 오판**했다(09-10).
@@ -1564,6 +1616,37 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 const uint16_t ty = static_cast<uint16_t>(b[3] | (b[4] << 8));
                 s.aliases.Set(alias, nc, ty, s.tickFrame + kAliasTTL);
                 ++aliasHeard_;
+                break;
+            }
+
+            // ★ 준비 — 이때부터 중요 메시지를 싣는다(정답지 `GAME3_2.c:5602` 상태 비트 0x10).
+            //   클라는 이걸 되풀이해 보낸다(09-13 로그: 약 62틱마다 · 까닭 미상, 관측대기).
+            case Op::CLIENT_READY:
+                if (!s.importantReady) {
+                    s.importantReady = true;
+                    std::printf("[중요] 프레임 %u %s 준비 — 대기 %zu 개를 싣기 시작\n",
+                                frame_, s.addr.c_str(), s.importantQ.size());
+                }
+                break;
+
+            // ★ 중요 메시지 확인 — `ab <프레임4>`. 그 프레임 조각에 실었던 것을 지운다
+            //   (정답지 `nox_net_importantACK_4E55A0` · `network_server.go:223`).
+            //   하위 16비트로 맞춘다 — 우리가 싣는 시각이 `27`(16비트)이고 클라가 윗자리를 제 시계로 채운다.
+            case Op::IMPORTANT_ACK: {
+                if (it.bodyLen() < 4) break;
+                const uint8_t* b = it.body();
+                const uint32_t fr = static_cast<uint32_t>(b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24));
+                const size_t before = s.importantQ.size();
+                s.importantQ.erase(std::remove_if(s.importantQ.begin(), s.importantQ.end(),
+                    [fr](const Session::PendingImportant& p) {
+                        return p.sent && ((p.sentFrame ^ fr) & 0xFFFF) == 0;
+                    }), s.importantQ.end());
+                if (s.importantAcked == 0 && before != s.importantQ.size())
+                    std::printf("[중요] 프레임 %u %s 첫 확인(시각 %u) — %zu 개 지움, 남은 %zu\n", frame_,
+                                s.addr.c_str(), static_cast<unsigned>(fr & 0xFFFF),
+                                before - s.importantQ.size(), s.importantQ.size());
+                s.importantAcked += static_cast<uint32_t>(before - s.importantQ.size());
+                ++handled_;
                 break;
             }
 
@@ -3064,7 +3147,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   이 한 조각에 `0xe9` 살려내기 · `0x60` 장비 넷 · `0x4c` 집을 것 넷 ·
         //   `0xdd`/`0xde` 최대 체력·마나가 다 실려 있다(정품 대조, 2026-09-08).
         //   접속과 같은 묶음으로 보내면 클라가 아직 맵을 안 읽어 그냥 버린다.
-        if (s.snapshotIn >= 0 && --s.snapshotIn < 0 &&
+        // ★ 2026-09-13 — **준비(CLIENT_READY) 전이면 0 에서 멈춰 기다린다.** 스냅샷 속 cc 는 대기열을 안 거치고
+        //   한 번만 나가므로, 준비 전에 닿아 클라가 버리면 순번 구멍이 생겨 뒤 cc 가 전부 막힌다(Session::importantQ 주석).
+        if (s.snapshotIn >= 0 && (s.snapshotIn > 0 || s.importantReady) && --s.snapshotIn < 0 &&
             (!firstSnapshot_.empty() || standalone_)) {
             // 서두는 남의 세션 녹음이라 사람 항목의 번호·자리가 남의 것이다.
             std::vector<uint8_t> patched;
@@ -3286,6 +3371,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             msg[2] = static_cast<uint8_t>(s.tickFrame >> 8);
             Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
         }
+        // ①' 중요 메시지 — 준비 뒤에만, 확인 올 때까지 다시 싣는다(Session::importantQ 주석).
+        FlushImportant(s, out);
 
         // ★★ **첫 세계 스냅샷이 아직 안 나갔으면 갱신을 참는다.** 정품은 USE_MAP 뒤로
         //   시각(`27`)만 몇 번 보내다가 스냅샷을 첫 `a4` 로 내보낸다. 내가 먼저
@@ -3592,6 +3679,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                     static_cast<uint8_t>(friendly ? Op::OBJECT_FRIEND_ADD : Op::OBJECT_FRIEND_REMOVE),
                     static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
                 EmitSeq(s, msg, sizeof(msg), out);
+                std::printf("[친구] 프레임 %u %s 에게 번호 %u %s\n", frame_, s.addr.c_str(),
+                            static_cast<unsigned>(nc), friendly ? "ADD" : "REMOVE");
                 if (friendly) s.friendsSent.insert(nc); else s.friendsSent.erase(nc);
             };
             for (const auto& k : pets_) {

@@ -298,6 +298,29 @@ struct Session {
     bool invulnUntilSet = false;
     uint32_t invulnUntilFrame = 0;
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
+    // ★★★ **중요 메시지 대기열** (2026-09-13 — 정답지 `nox_xxx_netSendPacket_4E5030`·`netImportant_4E5770` 이식).
+    //   EmitSeq 는 바로 안 보내고 여기 쌓는다. 틱마다 `[27 시각][aa][cc…]` 한 조각으로 싣고,
+    //   클라가 `ab <프레임4>` 로 확인하면 그 프레임에 실은 것을 지운다(`nox_net_importantACK_4E55A0`).
+    //   확인이 없으면 약 60틱 뒤 다시 싣는다.
+    //   왜 — 전에는 한 번만 보냈다. 클라는 **접속 완료 전의 cc 를 버리고**(`client__network__cdecode.c:2550`)
+    //   기다리는 번호가 끝내 안 오면 **뒤 번호를 영영 쌓아만 둔다**(`GAME2_3.c:531~564`, 30초 건너뛰기는
+    //   꺼내다가 빈틈에서 멈춘 적이 있을 때만 돈다 — 첫 번호부터 없으면 영영 안 돈다). 09-13 로그: 순번 0~4 가 프레임 1849 에 나갔고 첫
+    //   CLIENT_READY 는 1851 — 그 뒤 **모든 cc 가 적용 안 됐다**(친구 알림 빨강 · 맨 메시지로 보내면 파랑).
+    struct PendingImportant {
+        std::vector<uint8_t> wire;     // cc 머리까지 붙은 그대로
+        uint32_t sentFrame = 0;        // 마지막으로 실은 조각의 시각(클라 확인과 맞춰 본다)
+        uint32_t wait = 0;             // 다시 싣기까지 남은 틱
+        bool sent = false;
+    };
+    std::vector<PendingImportant> importantQ;
+    // 정답지는 CLIENT_READY 를 받아 상태 비트 0x10 을 세운 뒤에만 중요 메시지를 싣는다
+    //   (`GAME3_2.c:5602` gameServerReadyMB → `GAME3_3.c:1966` 의 `v3[3680] & 0x10`).
+    bool importantReady = false;
+    // 시험용 — 켜면 예전처럼 **바로** 한 통씩 보낸다(대기열·확인 없음). DebugEnterGame 만 켠다.
+    //   메시지 **내용**을 보는 시험 수십 곳이 처리 직후 out 을 들여다본다. 전송 경로는 TestImportantQueue 가 따로 잰다.
+    bool importantImmediate = false;
+    uint32_t importantAcked = 0;   // 진단 — 확인받아 지운 수
+    uint32_t importantResent = 0;  // 진단 — 다시 실은 수
     uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
     uint8_t team = 0;              // 0 = 무소속 · 1 = 빨강 · 2 = 파랑
     // ★ **접속한 차례.** 팀을 번갈아 나눌 때 쓴다.
@@ -467,6 +490,14 @@ constexpr uint32_t kMeleeCooldownTicks = 15;   // ⚠ 자리표시 — 30Hz 기�
 // 첫 세계 스냅샷을 접속 뒤 몇 틱 미룰지. 정품 조각 순서에서 잰 값이다 —
 // `2b`(USE_MAP) 와 스냅샷 사이에 다섯 조각(`27 27 27 08 04`)이 지나간다.
 constexpr int kSnapshotDelayTicks = 5;
+
+// 중요 메시지 대기열(Session::importantQ) 값 셋.
+//   다시 싣기 60틱 = 정답지 `gameFPS() * byte(1565125+12*pl)(=2) / rate(=1)` (GAME3_3.c:2039 · 1538줄 초깃값).
+//   조각 한도 512B · 대기열 상한 256 은 **자리표시** — 정답지는 사람별 상한이 아니라 전체 풀(서버 3072개, 1601~1609줄)이
+//   차면 가장 많이 쌓인 사람을 끊는다(1615줄 → `nox_xxx_importantCheckRate_4E52B0`).
+constexpr uint32_t kImportantResendTicks = 60;
+constexpr size_t kImportantPacketBudget = 512;
+constexpr size_t kImportantQueueMax = 256;
 
 // 벽 격자 한 칸의 월드 크기와 몸 반지름 (독립 서버 P3).
 // ★ 둘 다 **닫혔다**(2026-09-10). 칸 23 은 실클라 돌진 3표본이 정합했고,
@@ -970,6 +1001,19 @@ public:
         s.x = 1000;
         s.y = 1000;
         s.observer = observer;
+        s.importantReady = true;
+        s.importantImmediate = true;   // 시험 — Session::importantImmediate 주석
+    }
+    // 시험용 — 중요 메시지 경로를 진짜로(대기열·준비·확인) 돌리게 한다.
+    void DebugImportantReal(const std::string& addr, bool ready) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return;
+        it->second.importantImmediate = false;
+        it->second.importantReady = ready;
+    }
+    size_t DebugImportantPending(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.importantQ.size();
     }
 
     // ★ 시험용 — 첫 세계 스냅샷을 **다음 틱에** 이 사람에게 보내도록 예약한다.
@@ -1295,7 +1339,10 @@ private:
     // 이 사람이 지금 겨누는 쪽(라디안). 겨눔이 없거나 낡았으면 몸 바라보는 쪽.
     double AimRadians(const Session& s) const;
 
+    // ⚠ 2026-09-13 부터 **바로 안 보낸다** — 세션의 importantQ 에 쌓고 FlushImportant 가 싣는다.
     void EmitSeq(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
+    // 틱마다 부른다. 준비(CLIENT_READY) 뒤에만 `[27 시각][aa][cc…]` 한 조각을 낸다.
+    void FlushImportant(Session& s, std::vector<OutPacket>& out);
     // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
     void EmitNewPlayer(Session& to, const Session& who, uint8_t status,

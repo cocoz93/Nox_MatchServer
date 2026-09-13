@@ -2074,6 +2074,103 @@ void TestMelee() {
     std::printf("  근접 공격 — 한 대·쉬는 시간·걸음과 구분·사거리\n");
 }
 
+// ── 중요 메시지 대기열 (2026-09-13) ───────────────────────────
+//
+// 정답지 `nox_xxx_netImportant_4E5770`(GAME3_3.c:1938)·`nox_net_importantACK_4E55A0`(1832)를 옮긴 경로.
+//   ① 준비(c0) 전 = 쌓이기만 한다 · ② 준비 뒤 틱 = `[27 시각][aa][cc…]` 한 조각
+//   ③ `ab <그 시각>` = 그 조각에 실은 것을 지운다 · ④ 확인이 없으면 60틱 뒤 **같은 순번**으로 다시 싣는다.
+// ⚠ 왜 — 한 번만 보내던 때, 준비 전에 나간 순번 0~4 를 클라가 버려 **뒤 cc 가 전부 막혔다**
+//   (09-13 실클라: 친구 알림을 cc 로 보내면 빨강 · 맨 메시지로 보내면 파랑).
+static bool FindImportantPacket(const std::vector<nox::OutPacket>& out, const std::string& to,
+                                uint16_t* frame, std::vector<uint16_t>* ids) {
+    for (const auto& p : out) {
+        if (p.to != to) continue;
+        const std::vector<uint8_t> b = Body(p);
+        if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
+            b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
+        if (frame) *frame = static_cast<uint16_t>(b[1] | (b[2] << 8));
+        size_t q = 4;
+        while (q + 4 <= b.size() && b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
+            if (ids) ids->push_back(static_cast<uint16_t>(b[q + 1] | (b[q + 2] << 8)));
+            q += 4 + b[q + 3];
+        }
+        return true;
+    }
+    return false;
+}
+
+static std::vector<uint8_t> WireOf(std::initializer_list<uint8_t> msg) {
+    std::vector<uint8_t> p(nox::kWireHeaderSize, 0);   // 비신뢰 · 스트림 0 · 순번 0
+    p.insert(p.end(), msg);
+    return p;
+}
+
+void TestImportantQueue() {
+    nox::Server srv;
+    const std::string a = "10.9.9.1:49001";
+    srv.DebugEnterGame(a, 740);
+    srv.DebugImportantReal(a, /*ready=*/false);
+    uint32_t ms = 0;
+    std::vector<nox::OutPacket> warm;
+    srv.Tick(ms, warm);   // 첫 부름은 시계만 잡는다
+
+    // ① 준비 전 — 쌓이기만, 틱이 돌아도 안 나간다
+    {
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 10, out);
+        const size_t pend = srv.DebugImportantPending(a);
+        Check(pend > 0, "준비 전 중요 메시지가 대기열에 안 쌓임");
+        for (int i = 0; i < 3; ++i) { ms += 34; srv.Tick(ms, out); }
+        Check(!FindImportantPacket(out, a, nullptr, nullptr), "준비 전에 중요 조각(27 aa cc)이 나감");
+        Check(srv.DebugImportantPending(a) >= pend, "준비 전에 대기열이 줄었다");
+    }
+
+    // ② 준비 — 다음 틱에 [27][aa][cc…], 순번은 0 부터 빈틈 없이
+    uint16_t f1 = 0;
+    std::vector<uint16_t> ids1;
+    {
+        std::vector<nox::OutPacket> out;
+        const auto ready = WireOf({ static_cast<uint8_t>(nox::Op::CLIENT_READY) });
+        srv.OnPacket(a, ready.data(), ready.size(), out);
+        ms += 34; srv.Tick(ms, out);
+        Check(FindImportantPacket(out, a, &f1, &ids1), "준비 뒤 틱에 중요 조각이 안 나감");
+        Check(!ids1.empty() && ids1[0] == 0, "첫 중요 조각이 순번 0 부터가 아님");
+        bool contiguous = true;
+        for (size_t i = 1; i < ids1.size(); ++i) if (ids1[i] != ids1[i - 1] + 1) contiguous = false;
+        Check(contiguous, "첫 중요 조각의 순번에 빈틈이 있음");
+    }
+
+    // ③ 확인 — 그 시각으로 `ab` 가 오면 실었던 것이 지워진다
+    {
+        const size_t before = srv.DebugImportantPending(a);
+        std::vector<nox::OutPacket> out;
+        const auto ack = WireOf({ static_cast<uint8_t>(nox::Op::IMPORTANT_ACK),
+                                  static_cast<uint8_t>(f1), static_cast<uint8_t>(f1 >> 8), 0, 0 });
+        srv.OnPacket(a, ack.data(), ack.size(), out);
+        Check(srv.DebugImportantPending(a) + ids1.size() == before, "확인했는데 실은 만큼 안 지워짐");
+    }
+
+    // ④ 확인 없음 — 새로 실은 순번이 60틱 안에는 다시 안 나가고, 60틱 무렵 같은 순번으로 다시 나간다
+    {
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 5, out);
+        ms += 34; srv.Tick(ms, out);
+        std::vector<uint16_t> ids2;
+        Check(FindImportantPacket(out, a, nullptr, &ids2), "새 중요 메시지가 안 실림");
+        const uint16_t watch = ids2.empty() ? 0xFFFF : ids2.back();
+        int resentAt = -1;
+        for (int i = 1; i <= 70 && resentAt < 0; ++i) {
+            std::vector<nox::OutPacket> o;
+            ms += 34; srv.Tick(ms, o);
+            std::vector<uint16_t> ids;
+            if (FindImportantPacket(o, a, nullptr, &ids))
+                for (uint16_t id : ids) if (id == watch) resentAt = i;
+        }
+        Check(resentAt >= nox::kImportantResendTicks && resentAt <= nox::kImportantResendTicks + 2,
+              "확인 없는 중요 메시지가 60틱 무렵에 다시 안 실림");
+    }
+}
+
 // ── 관전 풀기 ─────────────────────────────────────────────────
 //
 // 접속 직후 클라는 **관전(observer)** 이다 — HUD(주문 5개·체력/마나 막대)가 없고
@@ -3790,6 +3887,7 @@ int main() {
     TestAoiBudget();
     TestObserverExit();
     TestSnapshotSeqRenumber();
+    TestImportantQueue();
     TestProjectile();
     TestProjectileVisible();
     TestSummon();
