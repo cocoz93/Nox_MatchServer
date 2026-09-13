@@ -4436,10 +4436,42 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
     if (!arg.obj.none() && !arg.obj.addr.empty() && (fl & 0x80000)) {
         for (const auto& f : flags_) if (f.carrier == arg.obj.addr) return false;
     }
-    // ⚠ lvl > 5 자르기는 효과 함수(fnc) 갈래만 — 지속 갈래(DurNew)는 자르지 않는다(spells.go:405~410)
-    (void)lvl;
     lastAcceptTarget_ = arg.obj;                             // 시험용 기록
     lastAcceptCaster_ = s.addr;
+    // ── 효과 갈래(spells.go:219~412 · 효과 = 주문 번호) ── 함수(fnc) 갈래는 lvl > 5 를 5 로 자르고 0 이면 PermanentFizzle(10) · false
+    int fnc = -1;                                            // -1 = 이 갈래가 아직 없음
+    {
+        const int fl5 = lvl > 5 ? 5 : lvl;
+        const Target targ = arg.obj;
+        BuffConf c;
+        switch (spell) {
+            case 1:   c.durOpt = "AnchorEnchantDuration"; c.orig = obj3; c.offensive = true; fnc = CastBuffSpell(spell, 14, fl5, targ, c, out); break;   // castAnchor
+            case 3:   c.dur = 4; c.durInSec = true; c.orig = obj3; c.offensive = true; fnc = CastBuffSpell(spell, 2, fl5, targ, c, out); break;         // castBlind
+            case 15:  c.dur = 450; c.once = true; c.orig = obj3; c.offensive = true; fnc = CastBuffSpell(spell, 16, fl5, targ, c, out); break;      // castDeath
+            case 17:  c.dur = 60; c.durInSec = true; fnc = CastBuffSpell(spell, 6, fl5, targ, c, out); break;                                    // castDetectMagic
+            case 26:  c.durOpt = "FearEnchantDuration"; fnc = CastBuffSpell(spell, 11, fl5, targ, c, out); break;                                // castFear
+            case 32:  c.dur = 4; c.durInSec = true; c.orig = obj3; c.offensive = true; fnc = CastBuffSpell(spell, 25, fl5, targ, c, out); break;    // castFreeze
+            case 36:  c.durOpt = "HasteEnchantDuration"; fnc = CastBuffSpell(spell, 9, fl5, targ, c, out); break;                               // castHaste
+            case 37:  c.durOpt = "InfravisionEnchantDuration"; fnc = CastBuffSpell(spell, 21, fl5, targ, c, out); break;                        // castInfravision
+            case 39:  c.durOpt = "InvisibilityEnchantDuration"; c.defensive = true; c.pointFx = static_cast<uint8_t>(Op::FX_SMOKE_BLAST);
+                      fnc = CastBuffSpell(spell, 0, fl5, targ, c, out); break;                                                                  // castInvisibility
+            case 40:  c.durOpt = "InvulnerabilityEnchantDuration"; c.defensive = true; fnc = CastBuffSpell(spell, 23, fl5, targ, c, out); break;  // castInvulnerability
+            case 42:  c.durOpt = "LightEnchantDuration"; c.orig = obj3; c.offensive = true; fnc = CastBuffSpell(spell, 15, fl5, targ, c, out); break;   // castLight
+            case 55:  c.dur = static_cast<int>(BalanceFloat("WarCryDuration")); c.orig = obj3; c.offensive = true;                              // castNullify — abilities.defs[Warcry].duration
+                      fnc = CastBuffSpell(spell, 29, fl5, targ, c, out); break;
+            case 61:  c.durOpt = "ProtectElectricityEnchantDuration"; fnc = CastBuffSpell(spell, 20, fl5, targ, c, out); break;                 // castProtectElectricity
+            case 62:  c.durOpt = "ProtectFireEnchantDuration"; fnc = CastBuffSpell(spell, 17, fl5, targ, c, out); break;                        // castProtectFire
+            case 64:  c.durOpt = "ProtectPoisonEnchantDuration"; fnc = CastBuffSpell(spell, 18, fl5, targ, c, out); break;                      // castProtectPoison
+            case 70:  c.durOpt = "RunEnchantDuration"; c.orig = obj3; c.offensive = true; fnc = CastBuffSpell(spell, 8, fl5, targ, c, out); break;      // castRun
+            case 72:  c.durOpt = "SlowEnchantDuration"; c.orig = obj3; c.offensive = true; fnc = CastBuffSpell(spell, 4, fl5, targ, c, out); break;     // castSlow
+            case 130: c.durOpt = "VampirismEnchantDuration"; c.durOptMulQuest = "QuestVampDurMultiplier";
+                      fnc = CastBuffSpell(spell, 13, fl5, targ, c, out); break;                                                                 // castVampirism
+            case 131: c.dur = 12; c.durInSec = true; c.durLevelMul = true; c.orig = obj3; c.offensive = true;
+                      fnc = CastBuffSpell(spell, 10, fl5, targ, c, out); break;                                                                 // castVillain
+            default: break;
+        }
+    }
+    if (fnc >= 0) return fnc != 0;                           // 0 이면 소리 PermanentFizzle(obj4) → 10
     if (SpellEffectPlaceholder(spell, s, arg, out)) return true;
     // 효과 함수를 아직 안 옮긴 주문 — 받아들인 것으로 친다(정답지 default: return true 와 같은 쪽) · 세고 적는다
     ++spellEffectDeferred_;

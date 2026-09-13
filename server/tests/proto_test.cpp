@@ -4403,6 +4403,70 @@ void TestDamageBuffs() {
     std::printf("  4-b1 — 불·전기 보호(표·0.6·최소 1) · 감전 되갚기 · 맞으면 투명 풀림 · 흡혈 · 소환수 무적 · 되받아치기 27 · 몸닿기 감전·투명 · 커서 투명\n");
 }
 
+// ── 묶음 4-b2 — 버프 주문 17(19 함수) ────────────────────────────────
+//
+// 정답지: spellAccept 효과 갈래(spells.go:219~412) · spell_anchor.go ~ spell_villain.go(castBuffSpell 한 줄씩)
+void TestBuffSpells() {
+    const std::string a = "10.4.9.1:4901";
+    struct Row { uint8_t spell; int enc; int dur; bool fx; const char* name; };
+    // 세기 = 온라인 주문 세기 3 · 초 단위는 ×30 · Villain 은 12초 × 세기
+    const Row rows[] = {
+        { 1, 14, 301, false, "Anchor" }, { 3, 2, 120, false, "Blind" }, { 15, 16, 450, false, "Death" },
+        { 17, 6, 1800, false, "DetectMagic" }, { 26, 11, 302, false, "Fear" }, { 32, 25, 120, false, "Freeze" },
+        { 36, 9, 303, false, "Haste" }, { 37, 21, 304, false, "Infravision" }, { 39, 0, 305, true, "Invisibility" },
+        { 40, 23, 306, false, "Invulnerability" }, { 42, 15, 307, false, "Light" }, { 55, 29, 308, false, "Nullify" },
+        { 61, 20, 309, false, "ProtectElectricity" }, { 62, 17, 310, false, "ProtectFire" }, { 64, 18, 311, false, "ProtectPoison" },
+        { 70, 8, 312, false, "Run" }, { 72, 4, 313, false, "Slow" }, { 130, 13, 314, false, "Vampirism" }, { 131, 10, 1080, false, "Villain" },
+    };
+    const char* kGd =
+        "AnchorEnchantDuration = 301;\nFearEnchantDuration = 302;\nHasteEnchantDuration = 303;\nInfravisionEnchantDuration = 304;\n"
+        "InvisibilityEnchantDuration = 305;\nInvulnerabilityEnchantDuration = 306;\nLightEnchantDuration = 307;\nWarCryDuration = 308;\n"
+        "ProtectElectricityEnchantDuration = 309;\nProtectFireEnchantDuration = 310;\nProtectPoisonEnchantDuration = 311;\n"
+        "RunEnchantDuration = 312;\nSlowEnchantDuration = 313;\nVampirismEnchantDuration = 314;\n";
+    auto mk = [&](nox::Server& srv, uint8_t spell) {
+        nox::Gamedata g;
+        g.Parse(kGd);
+        srv.SetGamedata(g);
+        srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });        // 어느 직업이나 · 겨누지 않음 · 음소 둘(9틱)
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+    };
+    for (const auto& r : rows) {
+        nox::Server srv; mk(srv, r.spell);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, r.spell, true, ms, out);
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "%s — 버프 %d 가 길이 %d · 세기 3 으로 안 걸렸다", r.name, r.enc, r.dur);
+        Check(srv.DebugHasEnchant(a, r.enc) && srv.DebugEnchantDur(a, r.enc) == r.dur && srv.DebugEnchantPower(a, r.enc) == 3, msg);
+        if (r.fx) {
+            bool smoke = false;
+            for (const auto& m : FlattenTo(out, a)) if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::FX_SMOKE_BLAST)) smoke = true;
+            Check(smoke, "Invisibility — 연기 점 효과 `8a` 가 없다");
+        }
+    }
+
+    // Death 는 Once — 두 번째는 0 → 받아들이지 않음(마나 되돌림 · STAT 0) · 대상 없으면(겨누지 않은 커서 빈 곳) 0 → 같은 길
+    {
+        nox::Server srv; mk(srv, 15);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        const uint16_t full = srv.ManaOf(a);
+        CastAndWait(srv, a, 15, true, ms, out);
+        std::vector<nox::OutPacket> o2;
+        CastAndWait(srv, a, 15, true, ms, o2);
+        bool stat0 = false;
+        for (const auto& m : FlattenTo(o2, a)) if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_STAT) && m[1] == 15 && m[5] == 0) stat0 = true;
+        Check(srv.ManaOf(a) == full - 10 && stat0, "Death(Once) 두 번째가 실패(마나 되돌림 · STAT 0)가 아니다");
+        nox::Server s2; mk(s2, 36);
+        std::vector<nox::OutPacket> o3;
+        uint32_t m3 = 0;
+        const uint16_t full2 = s2.ManaOf(a);
+        CastAndWait(s2, a, 36, false, m3, o3);
+        Check(!s2.DebugHasEnchant(a, 9) && s2.ManaOf(a) == full2, "대상 없는 Haste 가 걸렸거나 마나를 가져갔다(castBuffSpell 대상 없음 0)");
+    }
+    std::printf("  4-b2 — 버프 주문 19 함수 길이·세기·연기 · Death 한 번만 · 대상 없음 실패\n");
+}
+
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
 //
 // 정답지: 팀에 넣고 뺄 때 그 사람에게 `36 RESET_FRIENDS`(`sub_4D97E0`) → 친구 비트를 다시 세운다.
@@ -6457,6 +6521,7 @@ int main() {
     TestDurSpells();
     TestBuffs();
     TestDamageBuffs();
+    TestBuffSpells();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
