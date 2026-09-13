@@ -408,6 +408,10 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                 // 충돌 함수가 있나 — 정답지는 **두 오브젝트 다 있어야** 부딪힌다(`GAME5.c:1930` `!v4 || !v5 → 0`).
                 t.hasCollide = true;
                 t.collideRaw = val;
+            } else if (key == "SPEED") {
+                // ★ 4-a2 — 속도. 정답지 SpeedBase = SPEED / 32 · MISSILE 이면 ×2(`server/object_type.go:230~345`)
+                t.hasSpeed = true;
+                t.speed = std::atoi(val.c_str());
             } else if (key == "MASS") {
                 // 질량 — 벽에 밀릴 때 힘을 이것으로 나눈다(`server/object.go:1183` Sub548600 = dp / Mass).
                 //   없으면 정답지 기본 1(`server/object_type.go:197`).

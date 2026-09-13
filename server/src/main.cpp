@@ -188,6 +188,7 @@ int main(int argc, char** argv) {
     int creatureAwayAfter = 0;      // 진단 — 첫 사람 들어오고 N 틱 뒤 크리처를 ±300 으로 옮김 (0 끔)
     bool friends = false;           // 친구 알림(OBJECT_FRIEND_ADD/REMOVE) — 부분 구현이라 기본 끔
     int debugDummy = 0;             // 진단 — 첫 사람 N 틱 뒤 주인 없는 임프 허수아비(0 끔)
+    int debugDummyDx = 25;          // 진단 --debug-dummy-dx
     int debugHurtEvery = 0;         // 진단 — N 틱마다 첫 사람에게 피해 25(0 끔)
     bool debugHurtFront = false;    // 진단 — 그 피해를 앞 30 에서 때린 것으로
     bool autoRespawn = false;       // 자동 부활(정답지 기본 꺼짐)
@@ -308,6 +309,9 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-dummy" && i + 1 < argc) {
             // 진단 — 주먹 판정용(묶음 3-a). 첫 사람 N 틱 뒤 주인 없는 임프를 오른쪽 +25 에 고정(맞으면 깎이고 죽는다).
             debugDummy = std::atoi(argv[++i]);
+        } else if (a == "--debug-dummy-dx" && i + 1 < argc) {
+            // 진단 — 허수아비 오른쪽 거리(기본 25). 묶음 4-a2 날리기 화면 — 멀리 두면 Magic 이 날아가는 게 보인다.
+            debugDummyDx = std::atoi(argv[++i]);
         } else if (a == "--debug-team-after" && i + 1 < argc) {
             // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
             debugTeamAfter = std::atoi(argv[++i]);
@@ -564,6 +568,14 @@ int main(int argc, char** argv) {
                     ++nFn;
                 }
                 for (const auto& wp : nox::kWeapons) srv.SetWeaponWire(wp.classBits, tdb.WireByName(wp.name));
+                // ★ 4-a2 — 겨눈 주문이 날리는 "Magic"(SPEED · MASS)
+                if (const uint16_t mw = tdb.WireByName("Magic")) {
+                    const nox::ThingInfo* mt = tdb.ByWire(mw);
+                    if (mt) {
+                        srv.SetMagicType(mw, mt->hasSpeed ? mt->speed : 0, mt->mass, nox::ParseObjectFlags(mt->flagsRaw));
+                        std::printf("[날리기] Magic 종류 %u · SPEED %d · MASS %.1f\n", mw, mt->speed, mt->mass);
+                    }
+                }
                 std::printf("[충돌 함수] 종류 %zu개 · 맵 오브젝트 %zu개 —", nFn, refs.size());
                 for (const auto& kv : fnNames) std::printf(" %sx%d", kv.first.c_str(), kv.second);
                 std::printf("\n");
@@ -665,7 +677,8 @@ int main(int argc, char** argv) {
         }
         if (debugDummy > 0) {
             srv.SetDebugDummyAfter(static_cast<uint32_t>(debugDummy));
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주인 없는 임프 허수아비를 오른쪽 +25 에 고정\n", debugDummy);
+            srv.SetDebugDummyDx(debugDummyDx);
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주인 없는 임프 허수아비를 오른쪽 +%d 에 고정\n", debugDummy, debugDummyDx);
         }
         if (debugOwnPet > 0) {
             srv.SetDebugOwnPetAfter(static_cast<uint32_t>(debugOwnPet));

@@ -889,6 +889,7 @@ public:
     void SetDebugOwnPetAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; }
     // 진단 — 같은 임프를 **주인 없이**(맵 몬스터 = 적) 사람 오른쪽 +25 에 고정하고 맞게 둔다(묶음 3-a 주먹 판정용).
     void SetDebugDummyAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; debugPetWild_ = true; }
+    void SetDebugDummyDx(int dx) { debugDummyDx_ = dx; }   // 진단 --debug-dummy-dx — 허수아비 오른쪽 거리(기본 25 · 4-a2 날리기 화면)
     // 진단 — N 틱마다 관전 아닌 첫 사람에게 주인 없는 것의 칼 피해 25(종류 0)를 준다(묶음 3-e 움찔·깎임 화면 판정용)
     void SetDebugHurtEvery(uint32_t ticks, bool front = false) { debugHurtEvery_ = ticks; debugHurtFront_ = front; }
     // ★ 묶음 3-c — 맵의 PlayerStart 자리(부활 자리 고르기 mapFindPlayerStart_4F7AB0). main.cpp 가 맵 오브젝트에서 채운다.
@@ -1202,6 +1203,14 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0xff : it->second.moveState;
     }
+    // 시험용 — 상태를 지금 프레임으로 새로 넣는다(4-a2 들어오는 Magic 보고 방패 올리기 · 가만 7틱 시계를 0 으로)
+    void DebugSetState(const std::string& addr, uint8_t st) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return;
+        it->second.moveState = st;                          // 같은 상태여도 시작 프레임을 새로(PlayerSetState 는 같으면 안 건드린다)
+        it->second.stateFrame = frame_;
+        it->second.animFrame = 0;
+    }
     // 시험용 — +520 마지막으로 때린 것의 갈래(3-d · 0 없음 · 1 사람 · 2 몬스터 · 3 무기·투사체)
     uint8_t DebugLastHitCls(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -1333,6 +1342,21 @@ public:
     void SetSpellDef(uint8_t spell, uint8_t mana, uint32_t flags, const std::vector<uint8_t>& phonemes);
     uint32_t SpellFlags(uint8_t spell) const { return spell < 137 && spellDefs_[spell].valid ? spellDefs_[spell].flags : 0u; }
     size_t CastPending() const { return castList_.size(); }
+    // ★ 4-a2 — 겨눈 주문이 날리는 "Magic" 오브젝트(thing.bin). speedRaw = SPEED 원값(정답지 /32 · MISSILE ×2)
+    void SetMagicType(uint16_t type, int speedRaw, float mass, uint32_t flags) {
+        magicType_.type = type;
+        magicType_.flags = flags;                         // thing FLAGS(맞힘 거르기 sub_54E730)
+        magicType_.speed = static_cast<float>(speedRaw) / 32.0f * 2.0f;
+        magicType_.mass = mass > 0.0f ? mass : 1.0f;
+    }
+    size_t MissileCount() const { return missiles_.size(); }
+    unsigned long long spellEffectDeferred() const { return spellEffectDeferred_; }
+    Target DebugLastAcceptTarget() const { return lastAcceptTarget_; }
+    bool DebugMissileXY(size_t i, float& x, float& y) const {
+        if (i >= missiles_.size()) return false;
+        x = missiles_[i].posX; y = missiles_[i].posY;
+        return true;
+    }
     // 시험용 — 직업만 바꾼다(스탯은 그대로 · 주문 직업 거르기를 보려고)
     void DebugSetClass(const std::string& addr, CharClass cls) {
         auto it = sessions_.find(addr);
@@ -1589,6 +1613,37 @@ private:
     Target FindObjectAtCursor(const Session& s) const;                                 // findObjectAtCursor_54AF40
     bool TargetIsEnemy(const Session& s, const Target& t) const;                       // IsEnemyTo(사람, 대상)
     bool SpellEffectPlaceholder(uint8_t spell, Session& s, const SpellArg& arg, std::vector<OutPacket>& out);
+    // ── 날아가는 오브젝트 (묶음 4-a2 · 정답지 Objs.MissileList · server_update.go:72 updateUnitsCallUpdate) ──
+    struct MissileObj {
+        uint16_t netCode = 0;
+        uint16_t type = 0;
+        float posX = 0, posY = 0;        // +56 PosVec
+        float newX = 0, newY = 0;        // +64 NewPos
+        float prevX = 0, prevY = 0;      // +72 PrevPos
+        float velX = 0, velY = 0;        // +80 VelVec
+        float forceX = 0, forceY = 0;    // +88 ForceVec
+        float damping = 1.0f;            // +112 Float28(MISSILE 1.0)
+        float speed = 0;                 // +544 SpeedCur
+        uint8_t dir1 = 0, dir2 = 0;      // +124 Direction1 · +126 Direction2
+        uint32_t createdFrame = 0;       // +128
+        uint32_t frame136 = 0;           // +136
+        bool destroyed = false;          // +16 & 0x20
+        uint32_t flags = 0;              // +16 오브젝트 깃발(thing FLAGS — Magic 은 AIRBORNE)
+        std::string owner;               // +508 주인(사람 주소)
+        // SpellProjectileUpdateData(server/object_spell.go:5)
+        std::string ud0;                 // [0] 시전자(되받아치면 바뀐다)
+        Target ud1;                      // [1] 대상
+        std::string ud2;                 // [2] 처음 시전자
+        uint8_t spell = 0;               // [3]
+        int level = 0;                   // [4]
+    };
+    struct MagicTypeInfo { uint16_t type = 0; float speed = 0; float mass = 1.0f; uint32_t flags = 0; };
+    bool CreateSpellFly(Session& s, Target target, uint8_t spell, std::vector<OutPacket>& out);   // createSpellFly_4FDDA0
+    Target SpellFlySearchTarget(bool havePos, float px, float py, float mslX, float mslY, const std::string& mslOwner,
+                                const std::string& mslSelf, uint32_t sflags, float dist, const Session* self) const;   // server/spells.go:360
+    void UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out);                                 // updateUnitsCallUpdate 의 투사체 몫
+    void DestroyMissile(size_t i, std::vector<OutPacket>& out);                                       // DelayedDelete → netReportDestroyObject
+
     static uint32_t ArmorEquipOf(const Session& s) { return nox::ArmorEquipOf(s.charClass); }
     // 두 쪽(주인 기준)이 적인가 — `server/object.go:1667` IsEnemyTo 를 사람·소환수·맵 몬스터에 맞춘 판.
     //   wild = 주인 없는 몬스터(자기 자신이 주인)
@@ -1671,8 +1726,9 @@ private:
     static bool PlayerAnimFrameSent(const Session& s);                        // netPlayerObjSend_518C30 의 +236 싣는 상태
     // ── 벽 충돌 (묶음 2-b) — 정답지 이식. Server.cpp 정의 머리 주석 참조 ──
     int WallShapeAt(int gx, int gy) const;                                   // sub_57B500 (문·창·비밀 없음)
-    bool MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags) const;   // MapTraceRayAt
-    bool MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float y2, uint8_t flags) const;
+    struct TraceHit { float x = 0, y = 0; int gx = 0, gy = 0; };   // 4-a2 — 막힌 점과 칸(MapTraceRayAt outPos·outGrid)
+    bool MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags, TraceHit* hit = nullptr) const;   // MapTraceRayAt
+    bool MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float y2, uint8_t flags, float* hx = nullptr, float* hy = nullptr) const;
     // 원 대 벽(sub_54FEF0) — 사각형은 프레임 시작 자리(bx,by)로, 거리는 지금 자리(nx,ny)로 잰다.
     //   밀어낸 힘을 (ax,ay) 에 더하고 벽 쪽으로 가던 속도를 깎는다. 닿았으면 참.
     bool CircleVsWalls(double bx, double by, double r, double mass,
@@ -1819,6 +1875,7 @@ private:
     bool friendsOn_ = false;
     uint32_t debugOwnPetAfter_ = 0;   // 진단 --debug-own-pet (0 끔)
     bool debugPetWild_ = false;        // 진단 --debug-dummy — 주인 없음 · 맞음
+    int debugDummyDx_ = 25;            // 진단 --debug-dummy-dx
     uint32_t debugHurtEvery_ = 0;      // 진단 --debug-hurt-every (0 끔)
     bool debugHurtFront_ = false;      // 진단 --debug-hurt-front — 앞 30 에서 때린 것으로
     std::vector<std::pair<float, float>> playerStarts_;   // 묶음 3-c PlayerStart 자리
@@ -1827,6 +1884,10 @@ private:
     std::vector<PhonemeNode> phonemeTree_ = std::vector<PhonemeNode>(1);   // [0] = 뿌리
     std::vector<CastEntry> castList_;              // 묶음 4-a 시전 목록 — [0] 이 머리(가장 나중에 넣은 것)
     Target spellTarget_;                           // 묶음 4-a playerinfo +3640(Obj3640) — 시전이 끝난 순간 고른 대상
+    std::vector<MissileObj> missiles_;             // 묶음 4-a2 날아가는 오브젝트
+    Target lastAcceptTarget_;                      // 시험용 — 마지막 spellAccept 의 대상
+    std::string lastAcceptCaster_;
+    MagicTypeInfo magicType_;                      // 묶음 4-a2 thing "Magic"
     unsigned long long spellEffectDeferred_ = 0;   // 효과 함수를 아직 안 옮긴 주문이 받아들여진 수
     std::vector<MapObjRef> mapObjects_;            // 묶음 3-d 맵 오브젝트 번호·extent·종류
     std::map<uint16_t, std::string> collideFn_;    // 묶음 3-d 종류 → 충돌 함수 이름

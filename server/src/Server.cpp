@@ -17,6 +17,7 @@
 #include "nox/ThingFlags.h"
 #include "nox/JoinBundle.h"
 #include "nox/SpellNames.h"
+#include "nox/DirVectors.h"
 
 namespace nox {
 
@@ -2993,7 +2994,7 @@ int Server::WallShapeAt(int gx, int gy) const {
 }
 
 // mapTraceRayImpl(`server/wall.go:1055`) — 이 칸의 벽 선분을 p1→p2 가 가로지르나.
-bool Server::MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float y2, uint8_t flags) const {
+bool Server::MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float y2, uint8_t flags, float* hx, float* hy) const {
     if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256) return false;
     if (flags & 0x8) {   // Flag4 — 가까운 칸(60 안)은 Flag3 로
         const float v7 = gx * kGrid + 11.5f - x1, v8 = gy * kGrid + 11.5f - y1;
@@ -3010,22 +3011,33 @@ bool Server::MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float
     const float yl = std::min(y1, y2), yh = std::max(y1, y2);
     const float ox = gx * kGrid, oy = gy * kGrid;
     const WallSeg& s = kWallSegs[t];
+    // 교차점 — 왼쪽·오른쪽 대각선(둘 다면 p1 에 가까운 것이 첫째 · `server/wall.go:1110~1133`)
+    bool hitL = false, hitR = false;
+    float lx = 0, ly = 0, rx = 0, ry = 0;
     if (t != 0 && s.l) {
-        float lx, ly;
         CrossLeft(x1, y1, x2, y2, ox, oy, lx, ly);
-        if (ox + s.lmin <= lx && ox + s.lmax >= lx && lx >= xl && lx <= xh && ly >= yl && ly <= yh) return true;
+        hitL = (ox + s.lmin <= lx && ox + s.lmax >= lx && lx >= xl && lx <= xh && ly >= yl && ly <= yh);
     }
     if (t != 1 && s.r) {
-        float rx, ry;
         CrossRight(x1, y1, x2, y2, ox + kGrid, oy, rx, ry);
-        if (ox + s.rmin <= rx && ox + s.rmax >= rx && rx >= xl && rx <= xh && ry >= yl && ry <= yh) return true;
+        hitR = (ox + s.rmin <= rx && ox + s.rmax >= rx && rx >= xl && rx <= xh && ry >= yl && ry <= yh);
     }
-    return false;
+    if (!hitL && !hitR) return false;
+    if (hx && hy) {
+        bool useRight = !hitL;
+        if (hitL && hitR) {
+            const float dxl = x1 - lx, dxr = x1 - rx, dyl = y1 - ly, dyr = y1 - ry;
+            useRight = (dyr * dyr + dxr * dxr < dyl * dyl + dxl * dxl);
+        }
+        *hx = useRight ? rx : lx;
+        *hy = useRight ? ry : ly;
+    }
+    return true;
 }
 
 // MapTraceRayAt(`server/wall.go:898`) — p1→p2 가 벽에 안 막히면 참. 걸음·겨눔 모두 이 길.
 //   ⚠ 정답지 그대로의 걸음(곧은 가로·세로 먼저, 그 밖은 기울기 따라 칸 줄 훑기).
-bool Server::MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags) const {
+bool Server::MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags, TraceHit* hit) const {
     const int wx1 = static_cast<int>(x1 / kGrid), wy1 = static_cast<int>(y1 / kGrid);
     if (wx1 < 0 || wx1 >= 256 || wy1 < 0 || wy1 >= 256) return false;
     const int wx2 = static_cast<int>(x2 / kGrid), wy2 = static_cast<int>(y2 / kGrid);
@@ -3033,14 +3045,14 @@ bool Server::MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags) 
         const int step = (y2 < y1) ? -1 : 1;
         if (wy1 == wy2 + step) return true;
         for (int yi = wy1; yi != wy2 + step; yi += step)
-            if (MapTraceRayTile(wx1, yi, x1, y1, x2, y2, flags)) return false;
+            if (MapTraceRayTile(wx1, yi, x1, y1, x2, y2, flags, hit ? &hit->x : nullptr, hit ? &hit->y : nullptr)) { if (hit) { hit->gx = wx1; hit->gy = yi; } return false; }
         return true;
     }
     if (wy1 == wy2) {
         const int step = (x2 < x1) ? -1 : 1;
         if (wx1 == wx2 + step) return true;
         for (int xi = wx1; xi != wx2 + step; xi += step)
-            if (MapTraceRayTile(xi, wy1, x1, y1, x2, y2, flags)) return false;
+            if (MapTraceRayTile(xi, wy1, x1, y1, x2, y2, flags, hit ? &hit->x : nullptr, hit ? &hit->y : nullptr)) { if (hit) { hit->gx = xi; hit->gy = wy1; } return false; }
         return true;
     }
     const float dx = x2 - x1, dy = y2 - y1;
@@ -3062,7 +3074,7 @@ bool Server::MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags) 
             const int yi2 = static_cast<int>(std::trunc(static_cast<double>(yb / kGrid)) + stepY);
             const int dd = (yi1 >= yi2) ? -1 : 1;
             for (int yi = yi1; yi != yi2 + dd; yi += dd)
-                if (MapTraceRayTile(xi, yi, x1, y1, x2, y2, flags)) return false;
+                if (MapTraceRayTile(xi, yi, x1, y1, x2, y2, flags, hit ? &hit->x : nullptr, hit ? &hit->y : nullptr)) { if (hit) { hit->gx = xi; hit->gy = yi; } return false; }
         }
         return true;
     }
@@ -3083,7 +3095,7 @@ bool Server::MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags) 
         const int xi2 = static_cast<int>(std::trunc(static_cast<double>(xb / kGrid)) + stepX);
         const int dd = (xi1 >= xi2) ? -1 : 1;
         for (int xi = xi1; xi != xi2 + dd; xi += dd)
-            if (MapTraceRayTile(xi, yi, x1, y1, x2, y2, flags)) return false;
+            if (MapTraceRayTile(xi, yi, x1, y1, x2, y2, flags, hit ? &hit->x : nullptr, hit ? &hit->y : nullptr)) { if (hit) { hit->gx = xi; hit->gy = yi; } return false; }
     }
     return true;
 }
@@ -3506,6 +3518,9 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         m.s->forceX = m.s->forceY = 0.0;
     }
 
+    // ②' 날아가는 것들(4-a2) — 정답지 순서 BBB(갱신) → CallUpdate(투사체) → updateCollide(적분). 맞힘은 사람의 지난 틱 끝 자리 기준
+    UpdateMissiles(frame, out);
+
     // ③ 적분 — 걸음(0.2)마다 [모두 충돌] → [모두 적분]. 사각형 칸 범위는 **프레임 시작 자리**(정답지 +232 는 +56 PosVec).
     PhysBody playerBody;
     playerBody.shape = 2; playerBody.r = static_cast<float>(kBodyRadius);
@@ -3615,30 +3630,36 @@ bool LineTraceXxx(float ax0, float ay0, float ax1, float ay1, float bx0, float b
 // `GAME4_3.c:2586` monsterTestBlockShield_533E70 + sub_533EB0 — 100 안의 투사체 중 **앞쪽에서 나를 향해** 오는 것이 있나.
 //   남(같은 편·자기 것 아님 — sub_54E6F0) · 방향 표 &1(지난 자리) · 속도가 바라보는 쪽과 반대 · 옆으로 20 안 ·
 //   나를 겨누는 각(내적 > 0.7) · 시야선. ⚠ 투사체 SUBCLASS·충돌 함수 검사(sub_54E730 나머지)는 투사체 묶음(4)
+//   ★ 4-a2 — getMissilesInCircle 은 투사체 목록 전부를 돈다 → 날리는 Magic(missiles_)도 넣는다 · 바라보는 쪽은 방향 표(194136)
 bool Server::IncomingMissile(const Session& s) const {
     const float px = static_cast<float>(s.posX), py = static_cast<float>(s.posY);
-    const float dirX = std::cos(s.facingPrev * 2.0f * 3.14159265f / 256.0f);
-    const float dirY = std::sin(s.facingPrev * 2.0f * 3.14159265f / 256.0f);
-    for (const auto& p : shots_) {
-        const float mx = static_cast<float>(p.x), my = static_cast<float>(p.y);
-        if ((mx - px) * (mx - px) + (my - py) * (my - py) > 100.0f * 100.0f) continue;   // getMissilesInCircle 100
-        if (p.owner == s.addr) continue;                                                   // 같은 사슬
-        auto ow = sessions_.find(p.owner);
-        if (ow != sessions_.end() && ow->second.team != 0 && ow->second.team == s.team) continue;   // 같은 팀
-        const float prevX = static_cast<float>(p.x - p.vx), prevY = static_cast<float>(p.y - p.vy);   // +72
-        if (!(TestTwoPointsAndDirection(px, py, s.facingPrev, prevX, prevY) & 1)) continue;
-        const double v5 = p.vx * dirX, v6 = p.vy * dirY;
-        if (!(v5 + v6 < 0.0)) continue;
+    const float dirX = DirVecX(s.facingPrev);
+    const float dirY = DirVecY(s.facingPrev);
+    auto test = [&](float mx, float my, float prevX, float prevY, double vx, double vy, const std::string& owner) {
+        if ((mx - px) * (mx - px) + (my - py) * (my - py) > 100.0f * 100.0f) return false;   // getMissilesInCircle 100
+        if (owner == s.addr) return false;                                                   // 같은 사슬
+        auto ow = sessions_.find(owner);
+        if (ow != sessions_.end() && ow->second.team != 0 && ow->second.team == s.team) return false;   // 같은 팀
+        if (!(TestTwoPointsAndDirection(px, py, s.facingPrev, prevX, prevY) & 1)) return false;   // +72
+        const double v5 = vx * dirX, v6 = vy * dirY;
+        if (!(v5 + v6 < 0.0)) return false;
         const float v10 = mx - px, v11 = my - py;
         double v8 = static_cast<double>(dirX) * v11 + -static_cast<double>(dirY) * v10;
         if (v8 < 0.0) v8 = -v8;
-        if (!(v8 < 20.0)) continue;
-        const double v9 = std::sqrt(p.vx * p.vx + p.vy * p.vy);
+        if (!(v8 < 20.0)) return false;
+        const double v9 = std::sqrt(vx * vx + vy * vy);
         const double v14 = std::sqrt(static_cast<double>(v11) * v11 + static_cast<double>(v10) * v10);
-        if (v9 == 0.0 || v14 == 0.0) continue;
-        if (!(p.vy / v9 * -(v11 / v14) + p.vx / v9 * -(v10 / v14) > 0.69999999)) continue;
-        if (!MapTraceVision(px, py, mx, my)) continue;                                     // CanInteract(나, 투사체, 0)
-        return true;
+        if (v9 == 0.0 || v14 == 0.0) return false;
+        if (!(vy / v9 * -(v11 / v14) + vx / v9 * -(v10 / v14) > 0.69999999)) return false;
+        if (!MapTraceVision(px, py, mx, my)) return false;                                   // CanInteract(나, 투사체, 0)
+        return v14 < 100.0;                                                                  // 가장 가까운 것 < 100
+    };
+    for (const auto& p : shots_) {
+        if (test(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.x - p.vx), static_cast<float>(p.y - p.vy),
+                 p.vx, p.vy, p.owner)) return true;
+    }
+    for (const auto& m : missiles_) {
+        if (test(m.posX, m.posY, m.prevX, m.prevY, m.velX, m.velY, m.owner)) return true;
     }
     return false;
 }
@@ -4175,8 +4196,9 @@ bool Server::CastSpellByUser(uint8_t spell, int lvl, Session& s, const SpellArg&
         if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) s.invulnUntilFrame = frame_;
     }
     if (!(SpellFlags(spell) & 0x4) || arg.obj.addr == s.addr) return SpellAccept(spell, s, arg, lvl, out);
-    // 겨눈 주문 — createSpellFly_4FDDA0 로 "Magic" 오브젝트를 날린다(4-a2). ⚠ 지금은 날리지 않고 바로 받아들인다(자리표시)
-    return SpellAccept(spell, s, arg, lvl, out);
+    // 겨눈 주문 — createSpellFly_4FDDA0 로 "Magic" 오브젝트를 날린다(4-a2) · 닿으면 SpellProjectileCollide 가 받아들인다
+    (void)lvl;
+    return CreateSpellFly(s, arg.obj, spell, out);
 }
 
 // spellAccept(spells.go:193~420)
@@ -4190,6 +4212,8 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const SpellArg& arg, int lvl
     }
     if (lvl > 5) lvl = 5;
     (void)lvl;
+    lastAcceptTarget_ = arg.obj;                             // 시험용 기록
+    lastAcceptCaster_ = s.addr;
     if (SpellEffectPlaceholder(spell, s, arg, out)) return true;
     // 효과 함수를 아직 안 옮긴 주문 — 받아들인 것으로 친다(정답지 default: return true 와 같은 쪽) · 세고 적는다
     ++spellEffectDeferred_;
@@ -4239,6 +4263,418 @@ bool Server::SpellEffectPlaceholder(uint8_t spell, Session& s, const SpellArg& a
     if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
     shots_.push_back(p);
     return true;
+}
+
+// ── 날아가는 오브젝트 (묶음 4-a2) ─────────────────────────────────────────
+//
+// 정답지: 투사체(MISSILE)는 5×0.2 물리에 안 든다 — 따로 목록(Objs.MissileList)을 틱마다
+//   갱신 함수 → 움직임(sub_51B810) → 선 추적 맞힘(projectileTraceHit_537850 → 충돌 함수 둘) → PrevPos·PosVec 넘김(server_update.go:72~88).
+//   모양은 전부 EXTENT = CENTER(점)라 모양 충돌(sub_548220)에 안 걸리고, 선 추적으로만 맞는다.
+
+namespace {
+// sub_57F2A0(`GAME5_2.c:2061`) — 칸 안에서 점이 어느 삼각형 쪽인가. ⚠ LOBYTE 대입이 윗바이트를 남기는 것까지 그대로(칸 밖이면 0~3 밖 값)
+int32_t WallTriSide(float px, float py, int gx, int gy) {
+    const int32_t v3 = static_cast<int32_t>(px - static_cast<float>(23 * gx));
+    int32_t v4 = static_cast<int32_t>(py - static_cast<float>(23 * gy));
+    const uint32_t cond = (22 - v3 <= v4) ? 1u : 0u;
+    if (v3 <= v4) {
+        uint32_t t = (static_cast<uint32_t>(v4) & ~0xFFu) | cond;
+        uint32_t v6 = t - 1u;
+        v6 = (v6 & ~0xFFu) | ((v6 & 0xFFu) & 0xFDu);
+        return static_cast<int32_t>(v6 + 3u);
+    }
+    const uint32_t t = (static_cast<uint32_t>(v4) & ~0xFFu) | cond;
+    return static_cast<int32_t>(t + 1u);
+}
+// sub_57F1D0(`GAME5_2.c:2027`) — 칸 안(23 나머지) 사분면 비트
+uint8_t WallQuadBits(float hx, float hy) {
+    uint8_t v1 = 0;
+    const int v2 = static_cast<int>(hx);
+    const uint8_t v7 = static_cast<uint8_t>(static_cast<int>(hy) % 23);
+    const double v3 = static_cast<double>(static_cast<uint8_t>(v2 % 23));
+    if (v3 >= 11.5) {
+        if (static_cast<double>(v7) >= 11.5) v1 = 4;
+        if (static_cast<double>(v7) <= 11.5) v1 |= 1;
+    }
+    if (v3 <= 11.5) {
+        if (static_cast<double>(v7) >= 11.5) v1 |= 8;
+        if (static_cast<double>(v7) <= 11.5) v1 |= 2;
+    }
+    return v1;
+}
+const float kWallDiag = 0.70709997f;
+}  // namespace
+
+// sub_57CDB0(`GAME5_2.c:1757~2020`) — 벽 칸 모양(0~10) · 출발점 삼각형 · 맞은 점 사분면으로 벽 법선(대각선 넷 중 하나). 모르면 false(법선 안 씀)
+static bool WallNormal(int shape, int32_t v9, uint8_t v4, float& nx, float& ny) {
+    auto set = [&](float x, float y) { nx = x; ny = y; return true; };
+    switch (shape) {
+        case 0: if (v9 != 1 && v9) return set(kWallDiag, kWallDiag); return set(-kWallDiag, -kWallDiag);
+        case 1: if (v9 == 1 || v9 == 2) return set(kWallDiag, -kWallDiag); return set(-kWallDiag, kWallDiag);
+        case 2:
+            switch (v9) {
+                case 0: return set(-kWallDiag, (v4 & 2) ? kWallDiag : -kWallDiag);
+                case 1: if (!(v4 & 1)) return set(kWallDiag, -kWallDiag); return set(-kWallDiag, -kWallDiag);
+                case 2: return set(kWallDiag, (v4 & 1) ? kWallDiag : -kWallDiag);
+                case 3: if (!(v4 & 4)) return set(kWallDiag, kWallDiag); return set(-kWallDiag, kWallDiag);
+                default: return true;           // 정답지 default: return 1 — 법선을 안 적는다(앞 값 그대로)
+            }
+        case 3:
+            if (!v9) return set(-kWallDiag, (v4 & 2) ? kWallDiag : -kWallDiag);
+            if (v9 != 1) return set(kWallDiag, kWallDiag);
+            if (!(v4 & 1)) return set(kWallDiag, -kWallDiag);
+            return set(-kWallDiag, -kWallDiag);
+        case 4:
+            if (v9 == 1) { if (!(v4 & 1)) return set(kWallDiag, -kWallDiag); return set(-kWallDiag, -kWallDiag); }
+            if (v9 == 2) return set(kWallDiag, (v4 & 1) ? kWallDiag : -kWallDiag);
+            return set(-kWallDiag, kWallDiag);
+        case 5:
+            if (v9 == 2) return set(kWallDiag, (v4 & 1) ? kWallDiag : -kWallDiag);
+            if (v9 == 3) { if (!(v4 & 4)) return set(kWallDiag, kWallDiag); return set(-kWallDiag, kWallDiag); }
+            return set(-kWallDiag, -kWallDiag);
+        case 6:
+            if (!v9) return set(-kWallDiag, (v4 & 2) ? kWallDiag : -kWallDiag);
+            if (v9 == 3) { if (!(v4 & 4)) return set(kWallDiag, kWallDiag); return set(-kWallDiag, kWallDiag); }
+            return set(kWallDiag, -kWallDiag);
+        case 7:
+            if (v9 == 1) { if (!(v4 & 1)) return set(kWallDiag, -kWallDiag); return set(-kWallDiag, -kWallDiag); }
+            if (v4 & 1) return set(kWallDiag, kWallDiag);
+            return set(-kWallDiag, kWallDiag);
+        case 8:
+            if (v9 == 2) return set(kWallDiag, (v4 & 1) ? kWallDiag : -kWallDiag);
+            return set(-kWallDiag, (v4 & 1) ? -kWallDiag : kWallDiag);
+        case 9:
+            if (v9 == 3) { if (!(v4 & 4)) return set(kWallDiag, kWallDiag); return set(-kWallDiag, kWallDiag); }
+            if (v4 & 4) return set(kWallDiag, -kWallDiag);
+            return set(-kWallDiag, -kWallDiag);
+        case 10:
+            if (v9) { if (v4 & 2) return set(kWallDiag, -kWallDiag); return set(kWallDiag, kWallDiag); }
+            return set(-kWallDiag, (v4 & 2) ? kWallDiag : -kWallDiag);
+        default: return false;
+    }
+}
+
+// server/spells.go:360 Nox_xxx_spellFlySearchTarget — 사람 시전자·공격 주문이면 커서 오브젝트가 적이면 그것 ·
+//   아니면 중심(pos 가 있고 선 추적 1|3 통과면 pos, 아니면 날아가는 것 자리) 둘레 dist 에서 가장 가까운 대상
+//   ⚠ CanSee(투명·눈멂 버프)는 버프 틀(4-a4) 뒤 — 지금은 시야선(MapTraceVision)만 · 몬스터 생성기(8)는 없음
+Target Server::SpellFlySearchTarget(bool havePos, float px, float py, float mslX, float mslY, const std::string& mslOwner,
+                                    const std::string& mslSelf, uint32_t sflags, float dist, const Session* self) const {
+    // a5 = 0 — 날아가는 것 자신(mslSelf: 만들 때는 시전자)은 뺀다
+    if (self && (sflags & 0x20)) {
+        const Target cur = FindObjectAtCursor(*self);
+        if (!cur.none() && TargetIsEnemy(*self, cur) && (mslSelf.empty() || cur.addr != mslSelf)) return cur;
+    }
+    float cx = mslX, cy = mslY;
+    if (havePos) {
+        if (MapTraceRay(mslX, mslY, px, py, 0x5)) { cx = px; cy = py; }
+    }
+    auto ownerIt = sessions_.find(mslOwner);
+    const Session* owner = (ownerIt != sessions_.end()) ? &ownerIt->second : nullptr;
+    const float dist2 = dist * dist;
+    float minDist = 1e+08f;
+    Target found;
+    auto consider = [&](const Target& t, float ox, float oy) {
+        if ((sflags & 0x20) && owner && !TargetIsEnemy(*owner, t)) return;
+        const float dx = cx - ox, dy = cy - oy;
+        const float odist = dy * dy + dx * dx;
+        if (odist > dist2) return;
+        if (!MapTraceVision(ox, oy, mslX, mslY)) return;                         // CanInteract(msl, it)
+        if (owner && !MapTraceVision(ox, oy, static_cast<float>(owner->posX), static_cast<float>(owner->posY))) return;
+        if (odist < minDist) { found = t; minDist = odist; }
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.observer || o.respawnAtFrame != 0) continue;         // 관전 · DEAD
+        if (!mslSelf.empty() && o.addr == mslSelf) continue;
+        consider(Target{ o.addr, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY));
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        const auto tb = typeBodies_.find(pets_[i].type);
+        if (tb != typeBodies_.end() && (tb->second.subclass & 0xC000)) continue;   // 몬스터 SUBCLASS 0x8000·0x4000
+        consider(Target{ std::string(), static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y));
+    }
+    return found;
+}
+
+// createSpellFly_4FDDA0(`GAME4.c:2880`)
+bool Server::CreateSpellFly(Session& s, Target target, uint8_t spell, std::vector<OutPacket>& out) {
+    (void)out;
+    if (magicType_.type == 0) return false;
+    if (target.none()) {
+        // 사람 — 커서(playerinfo +2284/+2288) 둘레 600 에서 고른다(날아가는 것 = 시전자)
+        target = SpellFlySearchTarget(true, static_cast<float>(s.aimX), static_cast<float>(s.aimY),
+                                      static_cast<float>(s.posX), static_cast<float>(s.posY), s.addr, s.addr, SpellFlags(spell), 600.0f, &s);
+    }
+    const int dir = s.facingPrev;                            // +124 Direction1
+    const float r = static_cast<float>(kBodyRadius) + 4.0f;  // +176 반지름 + 4
+    const float px = static_cast<float>(s.posX), py = static_cast<float>(s.posY);
+    const float sx = static_cast<float>(static_cast<double>(r) * DirVecX(dir) + px) + static_cast<float>(s.velX);
+    const float sy = static_cast<float>(static_cast<double>(r) * DirVecY(dir) + py) + static_cast<float>(s.velY);
+    if (!MapTraceRay(px, py, sx, sy, 0x5)) return false;     // 몸 앞이 벽이면 안 만든다(정답지는 이때 0 을 돌려 fizzle)
+    MissileObj m;
+    m.netCode = nextShotNetCode_++;
+    if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+    m.type = magicType_.type;
+    m.flags = magicType_.flags;
+    m.posX = m.newX = m.prevX = sx;
+    m.posY = m.newY = m.prevY = sy;
+    m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
+    m.createdFrame = m.frame136 = frame_;
+    m.speed = magicType_.speed;
+    m.owner = s.addr;
+    m.ud0 = s.addr;
+    m.ud1 = target;
+    m.ud2 = s.addr;
+    m.spell = spell;
+    m.level = SpellPower(s, spell);
+    m.velX = DirVecX(dir) * m.speed + static_cast<float>(s.velX);
+    m.velY = DirVecY(dir) * m.speed + static_cast<float>(s.velY);
+    // ⚠ 시전자 버프 21 복사는 버프 틀(4-a4) · 시전 소리는 10
+    std::printf("[날리기] 프레임 %u %s 주문 %u(%s) Magic 번호 %u 자리 (%.1f,%.1f) 대상 %s\n", frame_, s.addr.c_str(), spell,
+                SpellName(spell) ? SpellName(spell) : "?", m.netCode, sx, sy,
+                target.none() ? "없음" : (!target.addr.empty() ? target.addr.c_str() : "소환수"));
+    std::fflush(stdout);
+    missiles_.push_back(m);
+    return true;
+}
+
+// netReportDestroyObject_5289D0(`GAME4_2.c:7630`) — 보던 사람에게 `31 <번호>` Packet0 · 날아가는 것은 갱신에 늘 실리므로 게임 안 모두
+void Server::DestroyMissile(size_t i, std::vector<OutPacket>& out) {
+    if (i >= missiles_.size()) return;
+    const uint16_t nc = missiles_[i].netCode;
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::DESTROY_OBJECT), static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitImportantRaw(kv.second, msg, sizeof(msg), out);
+    missiles_.erase(missiles_.begin() + static_cast<long>(i));
+}
+
+// 날아가는 것들 한 틱 — updateUnitsCallUpdate(server_update.go:72) 의 투사체 몫. 사람 적분 **앞**에서 부른다
+void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
+    for (size_t i = 0; i < missiles_.size();) {
+        MissileObj& m = missiles_[i];
+        // 만든 틱에는 안 돈다(ObjectsAddPending 뒤) — 우리 틀은 시전 목록(SpellCastByBook)이 이 뒤에 돌아 저절로 그렇다
+        // ① SpellProjectileUpdate 53B940(`GAME4_3.c:5764`)
+        {
+            const uint32_t life = m.ud1.none() ? 15u : 45u;   // ⭕ gamedata ARENA UnTargeted/TargetedSpellLifetime
+            if (frame - m.createdFrame > life) {
+                const int16_t fx = static_cast<int16_t>(m.posX), fy = static_cast<int16_t>(m.posY);
+                const uint8_t msg[5] = { static_cast<uint8_t>(Op::FX_RICOCHET), static_cast<uint8_t>(fx), static_cast<uint8_t>(fx >> 8),
+                                         static_cast<uint8_t>(fy), static_cast<uint8_t>(fy >> 8) };
+                for (auto& kv : sessions_) {                  // netSendFxAllCli_523030 — 화면(반폭+50) 안인 사람만 · Kind1
+                    const Session& o = kv.second;
+                    if (!o.inGame) continue;
+                    if (std::fabs(m.posX - o.posX) < 640.0 + 50.0 && std::fabs(m.posY - o.posY) < 480.0 + 50.0)
+                        Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+                }
+                DestroyMissile(i, out);
+                continue;
+            }
+            auto alive = [&](const std::string& a) {
+                auto it = sessions_.find(a);
+                return it != sessions_.end() && it->second.inGame;
+            };
+            if (!m.ud0.empty() && !alive(m.ud0)) m.ud0.clear();
+            if (!m.ud2.empty() && !alive(m.ud2)) m.ud2.clear();
+            if (!m.ud1.addr.empty()) {
+                auto it = sessions_.find(m.ud1.addr);
+                if (it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0) m.ud1 = Target{};   // 0x20 · 0x8000
+            } else if (m.ud1.pet >= 0 && static_cast<size_t>(m.ud1.pet) >= pets_.size()) {
+                m.ud1 = Target{};
+            }
+            if (m.ud1.none()) {
+                if (frame - m.frame136 > static_cast<uint32_t>(kServerTickRate >> 2) || m.frame136 == m.createdFrame) {
+                    auto ownIt = sessions_.find(m.ud0);
+                    m.ud1 = SpellFlySearchTarget(false, 0, 0, m.posX, m.posY, m.owner, std::string(), SpellFlags(m.spell), 600.0f,
+                                                 ownIt != sessions_.end() ? &ownIt->second : nullptr);
+                    m.frame136 = frame;
+                }
+            }
+            if (!m.ud1.none()) {
+                float tx = 0, ty = 0;
+                if (!m.ud1.addr.empty()) { tx = static_cast<float>(sessions_.at(m.ud1.addr).posX); ty = static_cast<float>(sessions_.at(m.ud1.addr).posY); }
+                else { tx = static_cast<float>(pets_[static_cast<size_t>(m.ud1.pet)].x); ty = static_cast<float>(pets_[static_cast<size_t>(m.ud1.pet)].y); }
+                const float v18 = tx - m.posX;
+                const float v17 = ty - m.posY;
+                const float v11 = static_cast<float>(std::sqrt(static_cast<double>(v17) * v17 + static_cast<double>(v18) * v18) + 0.10000000149011612);
+                m.damping = 0.89999998f;                     // 1063675494
+                m.forceX = v18 * m.speed / v11;
+                m.forceY = v17 * m.speed / v11;
+            } else {
+                const float v13 = static_cast<float>(std::sqrt(static_cast<double>(m.velX) * m.velX + static_cast<double>(m.velY) * m.velY) + 0.10000000149011612);
+                m.damping = 0.89999998f;
+                m.forceX = m.speed * m.velX / v13;
+                m.forceY = m.speed * m.velY / v13;
+            }
+        }
+        // ② 떨어짐(updateFallLogic) — 높이는 묶음 5·9
+        // ③ 움직임 sub_51B810(`GAME4_1.c:4799`)
+        m.posX = m.newX; m.posY = m.newY;
+        m.velX = (m.forceX + m.velX) * m.damping;
+        m.velY = (m.forceY + m.velY) * m.damping;
+        m.newX += m.velX; m.newY += m.velY;
+        // ④ 선 추적 맞힘 projectileTraceHit_537850(`GAME4_3.c:3386`) → 충돌 함수 둘(sub_537770)
+        bool erased = false;
+        {
+            enum { HitNone, HitPlayer, HitPet, HitObstacle } hk = HitNone;
+            std::string hAddr; int hIdx = -1;
+            float hx = 0, hy = 0;                            // 맞은 것 자리
+            float onx = 0, ony = 0;                          // 오브젝트 법선(점 − 그 자리)
+            // sub_54E730(날아가는 것, 대상) — 깃발 거르기. 대상 NO_COLLIDE(0x40) 는 안 맞음 · MISSILE_HIT(0x80) 는 늘 맞음 ·
+            //   BELOW|SHORT(0x11) 와 AIRBORNE(0x4000) 은 서로 안 맞음 · 어느 쪽이든 NO_COLLIDE_OWNER(0x400) 면 같은 편(주인 사슬)은 안 맞음
+            //   ⚠ 몬스터가 쏜 투사체 ↔ 몬스터 갈래(+508 주인 클래스 2)는 몬스터 시전(묶음 7) · 충돌 함수 없음은 hasCollide 로
+            auto passFlags = [&](uint32_t of, bool sameTeam) {
+                if (of & 0x40) return false;
+                if (of & 0x80) return true;
+                if ((m.flags & 0x11) && (of & 0x4000)) return false;
+                if ((of & 0x11) && (m.flags & 0x4000)) return false;
+                if (((m.flags | of) & 0x400) && sameTeam) return false;
+                return true;
+            };
+            auto ownIt = sessions_.find(m.owner);
+            const uint8_t ownTeam = (ownIt != sessions_.end()) ? ownIt->second.team : 0;
+            // sub_54E810 — 점이 모양 안에 드는 것(원 거리² ≤ R² · 상자 · 문 선분은 9) · 마지막 것
+            auto pointHit = [&](float qx, float qy) {
+                bool any = false;
+                for (const auto& kv : sessions_) {
+                    const Session& o = kv.second;
+                    if (!o.inGame || o.observer) continue;   // 관전 NO_COLLIDE(0x40)
+                    if (!passFlags(0, o.addr == m.owner || (ownTeam != 0 && o.team == ownTeam))) continue;   // NewPlayer FLAGS NULL
+                    const float dx = static_cast<float>(o.posX) - qx, dy = static_cast<float>(o.posY) - qy;
+                    if (dy * dy + dx * dx > static_cast<float>(kBodyRadius * kBodyRadius)) continue;
+                    hk = HitPlayer; hAddr = o.addr; hx = static_cast<float>(o.posX); hy = static_cast<float>(o.posY); any = true;
+                }
+                for (size_t k = 0; k < pets_.size(); ++k) {
+                    const auto tb = typeBodies_.find(pets_[k].type);
+                    if (tb == typeBodies_.end() || !tb->second.hasCollide || tb->second.shape != 2) continue;
+                    if (!passFlags(tb->second.flags, !pets_[k].owner.empty() && pets_[k].owner == m.owner)) continue;
+                    const float dx = static_cast<float>(pets_[k].x) - qx, dy = static_cast<float>(pets_[k].y) - qy;
+                    if (dy * dy + dx * dx > tb->second.r * tb->second.r) continue;
+                    hk = HitPet; hIdx = static_cast<int>(k); hx = static_cast<float>(pets_[k].x); hy = static_cast<float>(pets_[k].y); any = true;
+                }
+                for (size_t k = 0; k < obstacles_.size(); ++k) {
+                    const PhysBody& o = obstacles_[k];
+                    if (!passFlags(o.flags, false)) continue;
+                    bool in = false;
+                    if (o.shape == 2) {
+                        const float dx = o.x - qx, dy = o.y - qy;
+                        in = (dy * dy + dx * dx <= o.r * o.r);
+                    } else if (o.shape == 3) {
+                        // sub_547DB0 상자 — 마름모 네 변(0.70709997 대각선 거리)
+                        const float v5 = o.boxLT + o.x, v6 = o.boxLB + o.y;
+                        if ((v6 - v5 + qx - qy) * 0.70709997f < 0.0f &&
+                            (o.boxRB + o.y - (o.boxRT + o.x) + qx - qy) * 0.70709997f > 0.0f) {
+                            const float v7 = o.boxRT + o.x, v8 = o.boxRB + o.y;
+                            in = ((v8 + v7 - qx - qy) * 0.70709997f > 0.0f && (v6 + v5 - qx - qy) * 0.70709997f < 0.0f);
+                        }
+                    }
+                    if (!in) continue;
+                    hk = HitObstacle; hIdx = static_cast<int>(k); hx = o.x; hy = o.y; any = true;
+                }
+                return any;
+            };
+            const float ddx = m.newX - m.posX, ddy = m.newY - m.posY;
+            const double d2 = static_cast<double>(ddy) * ddy + static_cast<double>(ddx) * ddx;
+            if (d2 <= 36.0) {
+                if (pointHit(m.newX, m.newY)) { onx = m.posX - hx; ony = m.posY - hy; }
+            } else {
+                const int steps = static_cast<int>(std::sqrt(d2 * 0.027777778)) + 1;
+                const float stx = ddx / static_cast<float>(steps), sty = ddy / static_cast<float>(steps);
+                float lx = m.posX, ly = m.posY, qx = m.posX, qy = m.posY;
+                for (int k = 0; k < steps; ++k) {
+                    qx += stx; qy += sty;
+                    if (pointHit(qx, qy)) { onx = lx - hx; ony = ly - hy; break; }
+                    lx = qx; ly = qy;
+                }
+            }
+            TraceHit th;
+            bool wall = false;
+            float wnx = 0, wny = 0;
+            if (!MapTraceRay(m.posX, m.posY, m.newX, m.newY, 0x5, &th)) {
+                wall = WallNormal(WallShapeAt(th.gx, th.gy), WallTriSide(m.posX, m.posY, th.gx, th.gy),
+                                  WallQuadBits(th.x, th.y), wnx, wny);
+                m.newX = m.posX; m.newY = m.posY;
+            }
+            bool objHit = (hk != HitNone);
+            bool wallHit = wall;
+            if (objHit && wall) {
+                const double od = (m.posX - hx) * (m.posX - hx) + (m.posY - hy) * (m.posY - hy);
+                const double wd = (m.posX - th.x) * (m.posX - th.x) + (m.posY - th.y) * (m.posY - th.y);
+                if (od < wd) wallHit = false; else objHit = false;
+            }
+            // SpellProjectileCollide 4E9500(`GAME3_3.c:3925`) — 날아가는 것 쪽. 맞은 것 쪽 충돌 함수(PlayerCollide 등)는 광전사·버프 갈래뿐이라 4-a4·7
+            auto reflectFrom = [&](float ox, float oy) {     // projectileReflect_4E0A70
+                const double v3 = static_cast<double>(m.posX) - ox, v4 = static_cast<double>(m.posY) - oy;
+                m.dir1 = static_cast<uint8_t>(m.dir1 + 128);
+                const float v13 = static_cast<float>(std::sqrt(v4 * v4 + v3 * v3) + 0.1);
+                const double v6 = (v4 * m.velY + v3 * m.velX) / v13;
+                const float v9 = static_cast<float>(v6 * v3 / v13);
+                const float v10 = static_cast<float>(v6 * v4 / v13);
+                const float v11 = static_cast<float>(-v4);
+                const double v7 = (static_cast<double>(v11) * m.velX + v3 * m.velY) / v13;
+                const float v12 = static_cast<float>(v7 * v11 / v13);
+                m.velX = v12 - v9;
+                m.velY = static_cast<float>(v3 * v7 / v13) - v10;
+                m.newX = m.prevX; m.newY = m.prevY;
+            };
+            if (wallHit) {
+                // collideReflect_57B810 — 법선 부호 곱으로 속도 성분 맞바꿈
+                if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
+                else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
+            } else if (objHit) {
+                bool dead = false;
+                if (hk == HitPlayer) dead = (sessions_.at(hAddr).respawnAtFrame != 0);
+                if (!dead) {
+                    bool handled = false;
+                    if (hk == HitPlayer) {
+                        Session& t = sessions_.at(hAddr);
+                        auto changeOwner = [&]() {                   // changeOwner_52BE40 — 대상이 그 사람이면 주인과 맞바꿈 · 수명 새로
+                            if (m.ud1.addr == t.addr) {
+                                m.ud1 = Target{ m.ud0, -1 };
+                                m.ud0 = t.addr;
+                                m.owner = t.addr;
+                                m.createdFrame = frame;
+                            }
+                        };
+                        const bool front = (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY),
+                                                                      t.facingPrev, m.prevX, m.prevY) & 1) != 0;
+                        if (t.moveState == 16 && front) {            // 방패 올림 앞쪽 — 되받아침(소리 878 → 10)
+                            reflectFrom(hx, hy);
+                            changeOwner();
+                            handled = true;
+                        } else if (t.moveState == kPlayerStateIdle && (WeaponEquipOf(t) & 0x400) && front) {
+                            reflectFrom(hx, hy);                     // 대검 가만 앞쪽 — 되받아침 + 상태 18~20(소리 890 → 10)
+                            changeOwner();
+                            PlayerSetState(t, static_cast<uint8_t>(18 + NextRandom(3)), frame);
+                            t.animFrame = static_cast<uint8_t>(playerAnimFrames_[PlayerAnimByte(t)][0] - 1);
+                        }
+                        // ⚠ 반전(Inversion) 버프 · 되받아치기 버프 27 은 버프 틀(4-a4)
+                    }
+                    if (!handled) {
+                        const bool isTarget = (hk == HitPlayer && m.ud1.addr == hAddr) || (hk == HitPet && m.ud1.pet == hIdx);
+                        if (isTarget) {
+                            auto casterIt = sessions_.find(m.ud2);
+                            if (casterIt != sessions_.end()) {
+                                SpellArg arg;
+                                arg.obj = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                                SpellAccept(m.spell, casterIt->second, arg, m.level, out);
+                            }
+                            DestroyMissile(i, out);
+                            erased = true;
+                        } else {
+                            reflectFrom(hx, hy);
+                        }
+                    }
+                }
+                (void)onx; (void)ony;
+            }
+        }
+        if (erased) continue;
+        // ⑤ 넘김(server_update.go:80~85)
+        missiles_[i].dir1 = missiles_[i].dir2;
+        missiles_[i].prevX = missiles_[i].posX; missiles_[i].prevY = missiles_[i].posY;
+        missiles_[i].posX = missiles_[i].newX; missiles_[i].posY = missiles_[i].newY;
+        missiles_[i].forceX = missiles_[i].forceY = 0;
+        ++i;
+    }
 }
 
 // 든 무기의 종류 번호 — 죽음 알림의 무기 그림(3-d). 기본 장비는 직업 표, 시험용 바꿔 들기는 main 이 채운 이름 표
@@ -4882,7 +5318,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             k.netCode = nextShotNetCode_++;
             if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
             // ⚠ 사람 자리에 겹치면 화면에서 구분이 안 되고 커서도 안 걸렸다(09-13) — 오른쪽 +80 에 떨어뜨린다.
-            k.x = kv.second.x + (debugPetWild_ ? 25 : 80);   // 허수아비는 주먹 사거리(30) 안
+            k.x = kv.second.x + (debugPetWild_ ? debugDummyDx_ : 80);   // 허수아비는 주먹 사거리(30) 안(기본 25)
             k.y = kv.second.y;
             k.health = static_cast<uint16_t>(TuningFor(k.type).health);
             pets_.push_back(k);
@@ -4890,7 +5326,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             std::printf("[진단] 프레임 %u 에 %s %s 임프(번호 %u · 체력 %u)를 사람(%d,%d) 오른쪽 +%d 에 고정\n",
                         frame_, kv.second.addr.c_str(), debugPetWild_ ? "옆에 주인 없는" : "소유",
                         static_cast<unsigned>(k.netCode), static_cast<unsigned>(k.health),
-                        kv.second.x, kv.second.y, debugPetWild_ ? 25 : 80);
+                        kv.second.x, kv.second.y, debugPetWild_ ? debugDummyDx_ : 80);
             std::fflush(stdout);
             break;
         }
@@ -5534,6 +5970,17 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                       static_cast<int>(p.x), static_cast<int>(p.y), p.facing, e);
             // ★ 별칭이면 상대로 (Relativize 주석 — 임대 연장 뒤로는 여기도 별칭이 온다)
             Relativize(e, p.netCode, static_cast<int>(p.x), static_cast<int>(p.y),
+                       baseX, baseY);
+            m.objects.push_back(e);
+        }
+
+        // ★ 4-a2 날아가는 오브젝트(Magic 등) — SIMPLE 이라 붙는 바이트가 없다
+        for (const auto& mo : missiles_) {
+            ObjEntry e;
+            FillEntry(s.aliases, mo.netCode, mo.type, s.tickFrame,
+                      static_cast<int>(mo.posX), static_cast<int>(mo.posY), mo.dir1, e,
+                      /*complex=*/false);
+            Relativize(e, mo.netCode, static_cast<int>(mo.posX), static_cast<int>(mo.posY),
                        baseX, baseY);
             m.objects.push_back(e);
         }

@@ -935,6 +935,8 @@ const std::vector<TestSpellDef>& TestSpellDefs() {
     static const std::vector<TestSpellDef> kDefs = {
         {  4, 10, 0x811c0491, { 5, 3, 1 } },                // SPELL_BLINK
         { 24,  0, 0x42340033, { 7, 5, 3, 1 } },             // SPELL_LIGHTNING
+        { 12, 10, 0x222000b5, { 5, 3, 5 } },                // SPELL_CONFUSE(겨눈 주문 · 4-a2)
+        { 41, 30, 0x01400214, { 8, 1, 6 } },                // SPELL_LESSER_HEAL(겨눈 · 공격 아님)
         { 27, 30, 0x42200038, { 7, 7, 1 } },                // SPELL_FIREBALL
         { 43,  0, 0x42340033, { 7, 5, 3, 1, 3, 5, 7 } },    // SPELL_CHAIN_LIGHTNING
         { 87,  0, 0x44542438, { 0, 8, 2, 6, 5, 6 } },       // SPELL_SUMMON_IMP
@@ -3400,6 +3402,266 @@ void TestCastPipeline() {
     std::printf("  4-a — 음소 3틱·10/13/22틱에 끝 · 시전 중 거절 · 관전 글 · 친구 커서 거르기 · 소환 blob 비용 · 걸어도 계속\n");
 }
 
+// ── 묶음 4-a2 — 겨눈 주문 날리기(Magic) ─────────────────────────────
+//
+// 정답지: castSpell 이 TARGETED 주문을 createSpellFly_4FDDA0 로 "Magic" 을 날리고, 투사체 목록이 틱마다
+//   SpellProjectileUpdate(53B940 — 대상 쪽 힘 · 수명) → 움직임(51B810) → 선 추적 맞힘(537850) → SpellProjectileCollide(4E9500)
+void TestSpellFly() {
+    const std::string a = "10.4.5.1:4501";
+    const std::string b = "10.4.5.2:4502";
+    const uint16_t kMagic = 1237;
+    auto hasOp = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t op) {
+        for (const auto& m : FlattenTo(out, to)) if (!m.empty() && m[0] == op) return true;
+        return false;
+    };
+    auto setup = [&](nox::Server& srv) {
+        RegSpell(srv, 12);                                    // 혼란(TARGETED)
+        srv.SetMagicType(kMagic, 50, 10.0f, 0x4000);          // ⭕ thing.bin Magic SPEED 50 · MASS 10 · FLAGS AIRBORNE
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+    };
+
+    // ① 커서가 b 위 → 대상 b 로 날아가 닿으면 받아들이기(효과는 4-b) · 지움 알림 `31` · 갱신에 Magic 이 실린다
+    //   첫 틱 자리 = 1014 + (3.125·14/14.1 + 3.125)·0.9 = 1019.62(감쇠 0.9) · 10틱째에 b(1150) 몸에 닿는다
+    {
+        nox::Server srv;
+        setup(srv);
+        srv.DebugMoveTo(b, 1150, 1000);
+        srv.DebugAimAt(a, 1150, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, 12, false, ms, out);
+        Check(srv.MissileCount() == 1, "혼란을 겨눠 말했는데 Magic 이 안 생겼다");
+        float mx = 0, my = 0;
+        srv.DebugMissileXY(0, mx, my);
+        Check(std::fabs(mx - 1014.0f) < 0.01f && std::fabs(my - 1000.0f) < 0.01f, "Magic 이 몸 앞(반지름+4)에서 안 생겼다");
+        const unsigned long long before = srv.spellEffectDeferred();
+        bool seenEntry = false, destroyed = false;
+        int hitTick = -1;
+        float firstX = 0;
+        for (int t = 1; t <= 60 && srv.MissileCount() > 0; ++t) {
+            std::vector<nox::OutPacket> o;
+            ms += 34; srv.Tick(ms, o);
+            if (t == 1) { float y1 = 0; srv.DebugMissileXY(0, firstX, y1); }
+            for (const auto& p : o) {
+                auto body = Body(p);
+                if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+                nox::UpdateMsg um = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
+                for (const auto& e : um.objects) if (e.type == kMagic) seenEntry = true;
+            }
+            if (srv.MissileCount() == 0) { hitTick = t; destroyed = hasOp(o, a, static_cast<uint8_t>(nox::Op::DESTROY_OBJECT)) && hasOp(o, b, static_cast<uint8_t>(nox::Op::DESTROY_OBJECT)); }
+        }
+        Check(seenEntry, "날아가는 Magic 이 갱신 항목에 안 실렸다");
+        Check(std::fabs(firstX - 1019.623f) < 0.01f, "첫 틱 자리가 (힘+속도)×감쇠 0.9 가 아니다");
+        Check(hitTick == 10, "Magic 이 10틱째에 b 에 안 닿았다(힘·감쇠·속도가 틀림)");
+        Check(srv.spellEffectDeferred() == before + 1, "b 에 닿았는데 받아들이기(spellAccept)가 안 불렸다");
+        Check(srv.DebugLastAcceptTarget().addr == b, "받아들인 대상이 b 가 아니다");
+        Check(destroyed, "닿아 지웠는데 `31 <번호>` 가 모두에게 안 갔다");
+    }
+
+    // ② 대상 없음 — 둘레 600 에 아무도 없으면 앞으로 날다가 수명 15틱 넘어 FX_RICOCHET(0x96) · 지움 · 받아들이기 없음
+    {
+        nox::Server srv;
+        setup(srv);
+        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugAimAt(a, 1300, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, 12, false, ms, out);
+        Check(srv.MissileCount() == 1, "대상 없이도 Magic 은 생긴다");
+        const unsigned long long before = srv.spellEffectDeferred();
+        int goneTick = -1;
+        bool fx = false;
+        float lastX = 0, lastY = 0;
+        for (int t = 1; t <= 40 && srv.MissileCount() > 0; ++t) {
+            srv.DebugMissileXY(0, lastX, lastY);
+            std::vector<nox::OutPacket> o;
+            ms += 34; srv.Tick(ms, o);
+            if (srv.MissileCount() == 0) { goneTick = t; fx = hasOp(o, a, static_cast<uint8_t>(nox::Op::FX_RICOCHET)); }
+        }
+        Check(goneTick == 16, "대상 없는 Magic 이 수명 15틱을 넘긴 틱(만든 틱 +16)에 안 사라졌다");
+        Check(fx, "수명이 다해 지웠는데 FX_RICOCHET(0x96) 가 없다");
+        Check(lastX > 1014.0f + 10.0f, "대상 없는 Magic 이 앞으로 안 날았다");
+        Check(srv.spellEffectDeferred() == before, "대상이 없는데 받아들이기가 불렸다");
+    }
+
+    // ③ 방패 올린(16) 워리어가 앞에서 받으면 되받아쳐 주인과 대상이 바뀐다 → 시전자 a 에게 돌아와 닿는다
+    {
+        nox::Server srv;
+        setup(srv);
+        srv.SetPlayerAnimFrames(40, 6, 1);                    // RAISE_SHIELD
+        srv.DebugMoveTo(b, 1150, 1000);
+        srv.DebugSetFacing(b, 128);                           // a 쪽(−x)
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugStateOf(b) == 16, "워리어가 방패를 안 올렸다(시험 전제)");
+        srv.DebugAimAt(a, 1150, 1000);
+        CastAndWait(srv, a, 12, false, ms, out);
+        Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
+        const unsigned long long before = srv.spellEffectDeferred();
+        float farX = 0;
+        for (int t = 1; t <= 90 && srv.MissileCount() > 0; ++t) {
+            float x = 0, y = 0;
+            if (srv.DebugMissileXY(0, x, y) && x > farX) farX = x;
+            ms += 34; srv.Tick(ms, out);
+        }
+        Check(farX < 1150.0f && farX > 1100.0f, "Magic 이 방패 앞에서 안 튕겼다");
+        Check(srv.MissileCount() == 0 && srv.spellEffectDeferred() == before + 1, "되받아친 Magic 이 시전자에게 돌아와 받아들여지지 않았다");
+        Check(srv.DebugLastAcceptTarget().addr == a, "되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다(주인·대상 맞바꿈)");
+        Check(srv.DebugStateOf(b) == 16, "되받아친 워리어 상태가 바뀌었다");
+    }
+    // ④ 벽 — 선 추적이 막히면 새 자리를 되돌리고 벽 법선으로 속도 성분을 맞바꾼다(collideReflect_57B810)
+    {
+        nox::Server srv;
+        setup(srv);
+        srv.DebugMoveTo(b, 5000, 5000);
+        srv.SetWalls({ { 47, 43 } });                          // 앞 +x 쪽 칸(X 자 벽)
+        srv.DebugAimAt(a, 1300, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, 12, false, ms, out);
+        Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
+        float maxX = 0, lastY = 0;
+        for (int t = 1; t <= 14 && srv.MissileCount() > 0; ++t) {
+            float x = 0, y = 0;
+            srv.DebugMissileXY(0, x, y);
+            if (x > maxX) maxX = x;
+            lastY = y;
+            ms += 34; srv.Tick(ms, out);
+        }
+        // 6틱째 1076.44 → 다음 자리 1092.43 이 칸(47,43) X 벽에 막혀 새 자리를 되돌린다
+        Check(maxX < 1080.0f, "Magic 이 벽에 막혔는데 새 자리를 안 되돌렸다(벽 안쪽까지 들어감)");
+        Check(std::fabs(lastY - 1000.0f) > 5.0f, "Magic 이 벽에서 옆으로 안 튕겼다(속도 성분 맞바꿈)");
+    }
+    const std::string c = "10.4.5.3:4503";
+
+    // ⑤ 대상(b)이 아닌 사람(c)이 길목에 있으면 받아들이지 않고 튕긴다(`*(v5+4) == v3` 아니면 projectileReflect)
+    //   + 깃발 거르기(sub_54E730) — 날아가는 것에 NO_COLLIDE_OWNER(0x400)가 있으면 같은 편 c 는 지나간다
+    for (int k = 0; k < 2; ++k) {
+        nox::Server srv;
+        setup(srv);
+        if (k == 1) {
+            srv.SetMagicType(kMagic, 50, 10.0f, 0x4400);      // 시험용 — AIRBORNE + NO_COLLIDE_OWNER
+            srv.DebugSetTeam(a, 1);
+        }
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Warrior);
+        if (k == 1) srv.DebugSetTeam(c, 1);
+        srv.DebugMoveTo(b, 1150, 1000);
+        srv.DebugMoveTo(c, 1080, 1000);
+        srv.DebugAimAt(a, 1150, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, 12, false, ms, out);
+        Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
+        float maxX = 0;
+        for (int t = 1; t <= 60 && srv.MissileCount() > 0; ++t) {
+            float x = 0, y = 0;
+            if (srv.DebugMissileXY(0, x, y) && x > maxX) maxX = x;
+            ms += 34; srv.Tick(ms, out);
+        }
+        if (k == 0) {
+            Check(maxX < 1080.0f, "길목의 c 를 지나갔다(맞힘 없음)");
+            Check(srv.DebugLastAcceptTarget().addr != c, "대상이 아닌 c 에 닿았는데 받아들였다");
+        } else {
+            Check(maxX > 1100.0f && srv.DebugLastAcceptTarget().addr == b, "NO_COLLIDE_OWNER 인데 같은 편 c 에 막혔다");
+        }
+    }
+
+    // ⑥ 선 추적 조각 — 한 틱에 19 를 가는 사이(1127.88 → 1147.12) 가운데 반지름 4 장애물은 끝점만 봐선 안 걸린다
+    //   조각 수 = floor(√(d²/36))+1 → 조각 ≤ 6 이라 반드시 걸려 튕긴다
+    //   + 깃발 — SHORT(0x10) 장애물은 AIRBORNE Magic 이 넘어간다 · MISSILE_HIT(0x80) 이 붙으면 늘 맞는다 · NO_COLLIDE(0x40) 는 안 맞는다
+    for (uint32_t obFlags : { 0u, 0x10u, 0x90u, 0x40u }) {
+        nox::Server srv;
+        setup(srv);
+        srv.DebugMoveTo(b, 5000, 5000);
+        nox::Server::PhysBody ob;
+        ob.shape = 2; ob.r = 4.0f; ob.x = 1137.5f; ob.y = 1000.0f;
+        ob.flags = obFlags;
+        srv.SetObstacles({ ob });
+        srv.DebugAimAt(a, 1300, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, 12, false, ms, out);
+        Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
+        float maxX = 0;
+        for (int t = 1; t <= 14 && srv.MissileCount() > 0; ++t) {
+            float x = 0, y = 0;
+            if (srv.DebugMissileXY(0, x, y) && x > maxX) maxX = x;
+            ms += 34; srv.Tick(ms, out);
+        }
+        Check(maxX > 1120.0f, "장애물 앞까지 안 날았다(시험 전제)");
+        if (obFlags == 0x10u) Check(maxX > 1147.0f, "SHORT 장애물을 AIRBORNE Magic 이 못 넘었다(깃발 거르기 없음)");
+        else if (obFlags == 0x40u) Check(maxX > 1147.0f, "NO_COLLIDE 장애물에 Magic 이 맞았다");
+        else Check(maxX < 1140.0f, obFlags == 0 ? "틱 사이 가운데 장애물을 뚫고 지나갔다(선 추적 조각 없음)"
+                                                : "MISSILE_HIT 장애물을 지나갔다(늘 맞음 없음)");
+    }
+
+    // ⑦ 만들 때 찾기는 시전자 자신을 뺀다(a5 = 0 · msl = 시전자) — 커서가 제 발밑이어도 대상은 b
+    {
+        nox::Server srv;
+        setup(srv);
+        RegSpell(srv, 41);                                    // 작은 치유(TARGETED · 공격 아님)
+        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugAimAt(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, 41, false, ms, out);
+        Check(srv.MissileCount() == 1, "치유를 겨눠 말했는데 Magic 이 안 생겼다");
+        for (int t = 1; t <= 60 && srv.MissileCount() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugLastAcceptTarget().addr == b, "커서가 제 발밑일 때 대상이 b 가 아니다(시전자 자신을 안 뺐다)");
+    }
+
+    // ⑧ 대검 든 가만(13) 앞에서 받으면 되받아쳐 주인·대상이 바뀌고 18~20 → 시전자 a 에게 돌아와 닿는다
+    {
+        nox::Server srv;
+        setup(srv);
+        for (int anim : { 47, 48, 49 }) srv.SetPlayerAnimFrames(anim, 6, 1);   // GREAT_SWORD_BLOCK_*
+        srv.DebugSetClass(b, nox::CharClass::Conjurer);       // 방패가 없어야 가만(13)에 머문다
+        srv.DebugSetWeapon(b, 0x400);
+        srv.DebugMoveTo(b, 1150, 1000);
+        srv.DebugSetFacing(b, 128);
+        srv.DebugAimAt(a, 1150, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, 12, false, ms, out);
+        Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
+        Check(srv.DebugStateOf(b) == nox::kPlayerStateIdle, "b 가 가만(13)이 아니다(시험 전제)");
+        bool blocked = false;
+        for (int t = 1; t <= 90 && srv.MissileCount() > 0; ++t) {
+            ms += 34; srv.Tick(ms, out);
+            const uint8_t st = srv.DebugStateOf(b);
+            if (st >= 18 && st <= 20) blocked = true;
+        }
+        Check(blocked, "대검 가만 상태가 앞에서 온 Magic 에 18~20 막기를 안 했다");
+        Check(srv.DebugLastAcceptTarget().addr == a, "대검이 되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다");
+    }
+
+    // ⑨ 날아오는 Magic 도 「들어오는 투사체」다 — 방패 든 워리어가 가만 7틱을 안 기다리고 올린다(getMissilesInCircle)
+    //   b 는 틱 앞머리에 지난 틱 자리를 본다 → 5틱째 1061.8(88 거리)을 6틱째에 보고 15
+    {
+        nox::Server srv;
+        setup(srv);
+        srv.SetPlayerAnimFrames(40, 6, 1);
+        srv.DebugMoveTo(b, 1150, 1000);
+        srv.DebugSetFacing(b, 128);
+        srv.DebugAimAt(a, 1150, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, 12, false, ms, out);
+        Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
+        srv.DebugSetState(b, nox::kPlayerStateIdle);          // 가만 시계를 0 으로
+        int raiseTick = -1;
+        for (int t = 1; t <= 10 && raiseTick < 0; ++t) {
+            ms += 34; srv.Tick(ms, out);
+            if (srv.DebugStateOf(b) == 15) raiseTick = t;
+        }
+        Check(raiseTick > 0 && raiseTick <= 7, "Magic 이 날아오는데 가만 7틱을 기다려 방패를 올렸다");
+    }
+    std::printf("  4-a2 — Magic 몸 앞에 생김 · 첫 틱·10틱 닿음 · 지움 31 · 대상 없음 수명 15 · 방패·대검 되받아침 · 벽 튕김 · 길목 튕김 · 조각 추적 · 자신 빼기 · 들어오는 Magic\n");
+}
+
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
 //
 // 정답지: 팀에 넣고 뺄 때 그 사람에게 `36 RESET_FRIENDS`(`sub_4D97E0`) → 친구 비트를 다시 세운다.
@@ -5450,6 +5712,7 @@ int main() {
     TestImportantQueue();
     TestKillArmorCollide();
     TestCastPipeline();
+    TestSpellFly();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

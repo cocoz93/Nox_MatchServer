@@ -67,6 +67,8 @@ const char* PlayerAnimTypeName(int i);
 struct ThingInfo {
     std::string name;
     float mass = 0.0f;   // MASS — 0 이면 파일에 없음(정답지 기본 1)
+    bool hasSpeed = false;   // SPEED 가 있나(4-a2)
+    int speed = 0;           // SPEED 원값 — 정답지 SpeedBase = speed/32 · MISSILE ×2
     // ★ 2026-09-13 묶음 2-c — 오브젝트끼리 충돌에 쓰는 셋.
     int shapeKind = 0;          // EXTENT — 0 없음 · 1 CENTER · 2 CIRCLE · 3 BOX (`server/object_type.go:599`)
     float boxW = 0.0f, boxH = 0.0f;
