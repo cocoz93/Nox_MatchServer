@@ -185,6 +185,7 @@ int main(int argc, char** argv) {
     bool standalone = false;
     bool aoi = false;
     double creatureAoiHalf = 0.0;   // 크리처 시야 판정 반폭 — 0 꺼짐 · <0 정답지 기본(740×580) · >0 판정용 정사각형
+    int creatureAwayAfter = 0;      // 진단 — 첫 사람 들어오고 N 틱 뒤 크리처를 ±300 으로 옮김 (0 끔)
     bool itemAtSpawn = false;
     int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
     int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
@@ -278,6 +279,9 @@ int main(int argc, char** argv) {
             // 진단 — 위를 **판정용 정사각형 반폭 N** 으로 켠다. 작게 주면 몬스터가 사각형 밖에서 시작해
             //   「안 보이다가 다가오면 나타난다」를 화면으로 볼 수 있다.
             creatureAoiHalf = std::atof(argv[++i]);
+        } else if (a == "--creature-away-after" && i + 1 < argc) {
+            // 진단 — 「사라짐」을 화면으로 보려고 크리처를 사각형 밖으로 옮긴다. 걷기를 빼 버린다.
+            creatureAwayAfter = std::atoi(argv[++i]);
         } else if (a == "--aoi") {
             // 시야 반경(P4-b) — 갱신 스트림에 맵 정적 오브젝트를 반경 안만 싣는다. --map 필수.
             aoi = true;
@@ -485,6 +489,11 @@ int main(int argc, char** argv) {
             std::printf("[크리처시야] 켬 — 들어옴 ±%d×±%d · 나감 ±%d×±%d (시야선 없음, 거리만)\n",
                         static_cast<int>(hx), static_cast<int>(hy),
                         static_cast<int>(hx * 1.2), static_cast<int>(hy * 1.2));
+            std::fflush(stdout);
+        }
+        if (creatureAwayAfter > 0) {
+            srv.SetDebugCreatureAwayAfter(static_cast<uint32_t>(creatureAwayAfter));
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 크리처를 좌우 ±300 으로 옮김\n", creatureAwayAfter);
             std::fflush(stdout);
         }
         if (spellStart) srv.SetNoSpellStart(false);

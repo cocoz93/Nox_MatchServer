@@ -2833,6 +2833,27 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
     }
 
+    // ★ 진단 — 첫 사람이 들어오고 N 틱 뒤, 크리처를 사람 좌우 ±300 으로 **한 번** 옮긴다
+    //   (`--creature-away-after N`, 2026-09-13).
+    //   왜 — 「사라짐(OBJECT_OUT_OF_SIGHT)」을 화면으로 보려면 크리처가 시야 사각형 밖으로 나가야 하는데,
+    //   그러려면 사람이 걸어야 한다. **재는 대상은 사라짐이지 걷기가 아니니 걷기를 빼 버린다**
+    //   (`--item-at-spawn` 과 같은 논리).
+    //   ±300 은 화면 안(±640)이지만 판정용 사각형(--creature-aoi-half 120 → 나감 ±144) 밖이다 —
+    //   대조군(시야 판정 끔)은 계속 보이고, 실험군만 사라져야 한다.
+    if (debugAwayAfter_ > 0 && !debugAwayDone_) {
+        const Session* who = nullptr;
+        for (const auto& kv : sessions_) if (kv.second.inGame) { who = &kv.second; break; }
+        if (who && firstInGameFrame_ == 0) firstInGameFrame_ = frame_;
+        if (who && frame_ >= firstInGameFrame_ + debugAwayAfter_) {
+            int side = 1;
+            for (auto& k : pets_) { k.x = who->x + 300.0 * side; k.y = who->y; side = -side; }
+            debugAwayDone_ = true;
+            std::printf("[진단] 프레임 %u 에 크리처 %zu 마리를 사람(%d,%d) 좌우 ±300 으로 옮김\n",
+                        frame_, pets_.size(), who->x, who->y);
+            std::fflush(stdout);
+        }
+    }
+
     // ── 불려 나온 것들을 움직인다 ──
     // 부른 사람 편이다 — **부른 사람은 안 때린다.** 그게 없으면 부르자마자 자기가 맞는다.
     for (int step = 0; step < ticks && !pets_.empty(); ++step) {
@@ -3530,6 +3551,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         // 알아서 정리하고, 같은 자리에 서 있으면 부분집합이 안 바뀌어 별칭도 안정된다.
         // ⚠ 기본 꺼짐(aoiOn_) — 실클라 검증(P4-c) 전에는 켜지 않는다.
         // ★ 크리처 사라짐(위 루프의 creatureExits)을 먼저 담는다 — 보내는 길은 정적 오브젝트와 같다.
+        // ⚠ **효과는 증명되지 않았다** (2026-09-13 돌연변이 시험). 이 줄을 빼 OUT_OF_SIGHT 를 안 보내도
+        //   크리처가 화면에서 **똑같이 사라졌다** — 클라가 갱신에서 빠진 동적 오브젝트를 스스로 지운다.
+        //   (실험군·돌연변이 옮김 순간 사람 옆 자리 픽셀 차 457 대 445, 두 사진 모두 원뿔 없음)
+        //   정답지(`GAME4_1.c:4488`)가 보내므로 남긴다. 효과가 드러나는 조건(정적 오브젝트? 즉시 대 지연?)은 관측대기.
         std::vector<uint16_t> outOfSight(creatureExits);
         if (aoiOn_) {
             AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,

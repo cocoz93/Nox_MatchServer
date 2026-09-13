@@ -705,6 +705,8 @@ public:
     // 크리처 시야 판정 — 사각형 반폭. 0 이면 꺼짐(모두 싣는 옛 동작).
     // 정답지 기본은 화면절반 + 100 (1280×960 이면 740 × 580, `player.go:325` · `server.go:533`).
     void SetCreatureAoi(double halfX, double halfY) { creatureAoiHalfX_ = halfX; creatureAoiHalfY_ = halfY; }
+    // 진단 — 첫 사람이 들어오고 N 틱 뒤 크리처를 좌우 ±300 으로 한 번 옮긴다(사라짐 판정용). 0 이면 끔.
+    void SetDebugCreatureAwayAfter(uint32_t ticks) { debugAwayAfter_ = ticks; }
 
     // ── 독립 모드 (P5-c-2) ──────────────────────
     //
@@ -1415,6 +1417,9 @@ private:
     bool aoiOn_ = false;
     double creatureAoiHalfX_ = 0.0;   // 0 이면 크리처 시야 판정 꺼짐 (SetCreatureAoi)
     double creatureAoiHalfY_ = 0.0;
+    uint32_t debugAwayAfter_ = 0;     // 진단 --creature-away-after (0 끔)
+    uint32_t firstInGameFrame_ = 0;
+    bool debugAwayDone_ = false;
     bool standalone_ = false;
     std::string saMapName_;
     uint32_t saMapCrc_ = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
