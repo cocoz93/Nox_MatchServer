@@ -928,6 +928,49 @@ void TestSpellMana() {
 // 아래에서 정의한다 — 시전 조각 하나를 만든다.
 std::vector<uint8_t> SpellPacket(uint8_t spell, bool onSelf);
 
+// ★ 2026-09-13 묶음 4-a — 시험용 주문 정의. 값은 **thing.bin SPEL 그대로**(TestThingDb ⑨ 가 파일과 한 칸씩 대조한다).
+//   정의 없는 주문은 시전이 안 된다(정답지 DefByInd nil → 코드 10). 소환은 컨저러 전용(깃발 0x4000000)이다.
+struct TestSpellDef { uint8_t id; uint8_t mana; uint32_t flags; std::vector<uint8_t> phon; };
+const std::vector<TestSpellDef>& TestSpellDefs() {
+    static const std::vector<TestSpellDef> kDefs = {
+        {  4, 10, 0x811c0491, { 5, 3, 1 } },                // SPELL_BLINK
+        { 24,  0, 0x42340033, { 7, 5, 3, 1 } },             // SPELL_LIGHTNING
+        { 27, 30, 0x42200038, { 7, 7, 1 } },                // SPELL_FIREBALL
+        { 43,  0, 0x42340033, { 7, 5, 3, 1, 3, 5, 7 } },    // SPELL_CHAIN_LIGHTNING
+        { 87,  0, 0x44542438, { 0, 8, 2, 6, 5, 6 } },       // SPELL_SUMMON_IMP
+    };
+    return kDefs;
+}
+// 정의를 넣는다 — mana < 0 이면 파일 값, 아니면 시험이 정한 값(비용 논리를 따로 볼 때)
+void RegSpell(nox::Server& srv, uint8_t id, int mana = -1) {
+    for (const auto& d : TestSpellDefs()) {
+        if (d.id != id) continue;
+        srv.SetSpellDef(id, static_cast<uint8_t>(mana < 0 ? d.mana : mana), d.flags, d.phon);
+        return;
+    }
+    std::printf("  [실패] 시험 주문 표에 %u 가 없다\n", id);
+}
+void RegAllSpells(nox::Server& srv) { for (const auto& d : TestSpellDefs()) RegSpell(srv, d.id); }
+// 시전 한 번 — 조각을 보내고 음소를 다 말할 때까지((음소 수+1) × 3틱) 틱을 돌린다
+void CastAndWait(nox::Server& srv, const std::string& who, uint8_t spell, bool onSelf, uint32_t& ms,
+                 std::vector<nox::OutPacket>& out) {
+    srv.Tick(ms, out);                                   // 첫 부름이면 기준점만(시험이 이미 잡았으면 0틱)
+    const std::vector<uint8_t> pkt = SpellPacket(spell, onSelf);
+    srv.OnPacket(who, pkt.data(), pkt.size(), out);
+    for (int t = 0; t < 60 && (srv.DebugCasting(who) || srv.CastPending() > 0); ++t) {
+        ms += 34;
+        srv.Tick(ms, out);
+    }
+}
+// ★ 4-a — 소환 한 번. 소환은 컨저러 주문(깃발 0x4000000)이고 thing.bin 에 SUMMON_BOMBER(79) 정의가 없어 임프(87)를 부른다.
+//   시전 틀(음소 7개 × 3틱)을 거치므로 서버 시계를 이어서 틱을 돌린다.
+void SummonImp(nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out) {
+    RegSpell(srv, 87);
+    srv.DebugSetClass(who, nox::CharClass::Conjurer);
+    uint32_t ms = srv.DebugNowMs();
+    CastAndWait(srv, who, 87, false, ms, out);
+}
+
 // ── 마나가 실제로 깎이는가 · 모자라면 못 쓰는가 ─────────────────────────
 //
 // 전에는 `maxMana` 를 쓰기만 하고 읽는 데가 없어 **주문이 무한이었다.**
@@ -943,15 +986,28 @@ void TestManaSpend() {
 
     const uint8_t kSpell = 27;      // 파이어볼
     const uint8_t kCost = 30;
-    srv.SetSpellCost(kSpell, kCost);
+    RegSpell(srv, kSpell, kCost);   // 4-a — 정의(깃발·음소)까지
     Check(srv.SpellCost(kSpell) == kCost, "넣은 비용이 안 들어감");
 
     // ① 한 번 쏘면 그만큼 깎이고 `0x45` 가 **본인에게만** 간다
+    //   ★ 4-a — 마나는 **음소를 다 말한 뒤**(PlayerSpell) 깎인다. 받은 틱에는 `70` 만 나가고 마나는 그대로다
+    uint32_t ms = 0;
     {
         std::vector<nox::OutPacket> out;
-        const std::vector<uint8_t> pkt = SpellPacket(kSpell, /*onSelf=*/false);
+        srv.Tick(ms, out);
+        const std::vector<uint8_t> pkt = SpellPacket(kSpell, /*onSelf=*/false);   // 여기만은 틱을 손으로 돌린다
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.ManaOf(a) == full, "음소를 말하기도 전에 마나가 깎였다");
+        Check(srv.DebugStateOf(a) == 2, "시전을 넣었는데 상태 2(CAST_SPELL) 가 아니다");
+        const auto first = FlattenTo(out, a);
+        const auto* st = FindMsg(first, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START));
+        Check(st && st->size() == 2 && (*st)[1] == kSpell, "첫 음소 틱에 `70 <주문>` 이 시전자에게 안 나감");
+        Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) == nullptr, "`70` 이 남에게도 감");
+        out.clear();
+        for (int t = 0; t < 30 && srv.DebugCasting(a); ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.ManaOf(a) == full - kCost, "시전했는데 마나가 안 깎임");
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "시전이 끝났는데 상태 13 으로 안 돌아옴");
 
         const auto toA = FlattenTo(out, a);
         const auto* m = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_MANA));
@@ -966,36 +1022,68 @@ void TestManaSpend() {
         const auto toB = FlattenTo(out, b);
         Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MANA)) == nullptr,
               "0x45 가 남에게도 감");
+        // 성공 알림 — inform 1 <주문>(Kind1) · REPORT_SPELL_STAT <주문> 15(Unk21 깃발이 없는 주문)
+        bool okInform = false, okStat = false;
+        for (const auto& mm : toA) {
+            if (mm.size() == 6 && mm[0] == static_cast<uint8_t>(nox::Op::INFORM) && mm[1] == 1 && mm[2] == kSpell) okInform = true;
+            if (mm.size() == 6 && mm[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_STAT) && mm[1] == kSpell && mm[5] == 15) okStat = true;
+        }
+        Check(okInform, "시전 성공인데 `a9 01 <주문>` 이 없다");
+        Check(okStat, "시전 성공인데 `df <주문> 0f` 가 없다");
     }
 
-    // ② 마나가 바닥나면 **시전 자체가 안 일어난다**
+    // ② 마나가 바닥나면 효과가 안 난다 — 정답지는 첫 음소에 `70` 은 보내고, 끝에 마나를 못 내면 inform 0 코드 11 · STAT 0
     {
         const int room = srv.ManaOf(a) / kCost;
         for (int i = 0; i < room; ++i) {
             std::vector<nox::OutPacket> out;
-            const std::vector<uint8_t> pkt = SpellPacket(kSpell, false);
-            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            CastAndWait(srv, a, kSpell, false, ms, out);
         }
         Check(srv.ManaOf(a) < kCost, "다 쓰고도 비용만큼 남아 있음");
 
         const unsigned long long before = srv.spellsNoMana();
         std::vector<nox::OutPacket> out;
-        const std::vector<uint8_t> pkt = SpellPacket(kSpell, false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        CastAndWait(srv, a, kSpell, false, ms, out);
         Check(srv.spellsNoMana() == before + 1, "마나가 없는데 튕긴 것으로 안 셈");
-        // 시전 알림(0x70)이 나가면 안 된다 — 못 쓴 주문이다
         const auto toA = FlattenTo(out, a);
-        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) == nullptr,
-              "마나가 없는데 시전 알림이 나감");
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) != nullptr,
+              "마나가 없어도 첫 음소에 `70` 은 나가야 한다(정답지 castByBook 은 마나를 끝에 본다)");
+        bool code11 = false, stat0 = false;
+        for (const auto& mm : toA) {
+            if (mm.size() == 6 && mm[0] == static_cast<uint8_t>(nox::Op::INFORM) && mm[1] == 0 && mm[2] == 11) code11 = true;
+            if (mm.size() == 6 && mm[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_STAT) && mm[1] == kSpell && mm[5] == 0) stat0 = true;
+        }
+        Check(code11, "마나가 모자란데 `a9 00 0b` 가 없다");
+        Check(stat0, "마나가 모자란데 `df <주문> 00` 이 없다");
     }
 
-    // ③ 비용을 모르는 주문(표에 없음)은 공짜로 나간다 — **그건 「0」이 아니라 「모름」이다**
+    // ③ 정의가 없는 주문은 넣지도 않는다 — 코드 10(꺼짐) · STAT 0 · 마나 그대로
     {
         const uint16_t was = srv.ManaOf(a);
         std::vector<nox::OutPacket> out;
-        const std::vector<uint8_t> pkt = SpellPacket(/*spell=*/43, false);   // 표에 안 넣었다
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(srv.ManaOf(a) == was, "표에 없는 주문이 마나를 깎았다");
+        CastAndWait(srv, a, /*spell=*/43, false, ms, out);   // 정의를 안 넣었다
+        Check(srv.ManaOf(a) == was, "정의 없는 주문이 마나를 깎았다");
+        Check(!srv.DebugCasting(a) && srv.DebugStateOf(a) != 2, "정의 없는 주문이 시전 목록에 들어갔다");
+        bool code10 = false;
+        for (const auto& mm : FlattenTo(out, a))
+            if (mm.size() == 6 && mm[0] == static_cast<uint8_t>(nox::Op::INFORM) && mm[1] == 0 && mm[2] == 10) code10 = true;
+        Check(code10, "정의 없는 주문인데 `a9 00 0a` 가 없다");
+    }
+
+    // ④ 직업 거르기 — 위저드 주문(깃발 0x2000000)을 컨저러가 부르면 코드 9
+    {
+        nox::Server s2;
+        RegSpell(s2, kSpell, kCost);
+        const std::string c = "10.9.2.3:41023";
+        s2.DebugEnterGame(c, 730, false, nox::CharClass::Conjurer);
+        std::vector<nox::OutPacket> out;
+        uint32_t m2 = 0;
+        CastAndWait(s2, c, kSpell, false, m2, out);
+        bool code9 = false;
+        for (const auto& mm : FlattenTo(out, c))
+            if (mm.size() == 6 && mm[0] == static_cast<uint8_t>(nox::Op::INFORM) && mm[1] == 0 && mm[2] == 9) code9 = true;
+        Check(code9, "컨저러가 위저드 주문을 넣었는데 코드 9 가 아니다");
+        Check(s2.ManaOf(c) == nox::ManaOnline(nox::CharClass::Conjurer), "직업이 안 맞는데 마나를 깎았다");
     }
 
     std::printf("  마나 — 시전에 깎임 · 바닥나면 못 씀 · 0x45 는 본인에게만\n");
@@ -1106,15 +1194,14 @@ void TestAppearanceAndFx() {
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1000, 1140);   // 사거리(180) 안
-        srv.SetSpellCost(27, 0);
+        RegSpell(srv, 27, 0);
 
         std::vector<nox::OutPacket> all;
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);           // ★ 겨눔·시전은 Tick(0) 뒤에 — frame_ 이 맞아야 겨눔이 안 낡는다
         srv.DebugAimAt(a, 1000, 1140);   // 표적을 정통으로 겨눈다
         std::vector<nox::OutPacket> cast1;
-        const std::vector<uint8_t> sp = SpellPacket(27, false);
-        srv.OnPacket(a, sp.data(), sp.size(), cast1);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, cast1); }   // 4-a 시전 틀
         for (int t = 1; t <= 40 && srv.hits() == 0; ++t) {
             std::vector<nox::OutPacket> o1;
             srv.Tick(33 * t, o1);
@@ -1139,15 +1226,14 @@ void TestAppearanceAndFx() {
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1000, 1140);   // 사거리 안
-        srv.SetSpellCost(43, 0);
+        RegSpell(srv, 43, 0);
 
         std::vector<nox::OutPacket> all;
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);
         srv.DebugAimAt(a, 1000, 1140);
         std::vector<nox::OutPacket> cast1;
-        const std::vector<uint8_t> sp = SpellPacket(43, false);
-        srv.OnPacket(a, sp.data(), sp.size(), cast1);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, false, castMs, cast1); }   // 4-a 시전 틀
         for (int t = 1; t <= 40 && srv.hits() == 0; ++t) {
             std::vector<nox::OutPacket> o1;
             srv.Tick(33 * t, o1);
@@ -1250,10 +1336,9 @@ void TestPropsAndInvuln() {
         nox::Server s3;
         s3.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         s3.DebugMoveTo(a, 1000, 1000);
-        s3.SetSpellCost(27, 60);
+        RegSpell(s3, 27, 60);
         std::vector<nox::OutPacket> burn;
-        const std::vector<uint8_t> sp = SpellPacket(27, false);
-        s3.OnPacket(a, sp.data(), sp.size(), burn);
+        { uint32_t castMs = s3.DebugNowMs(); CastAndWait(s3, a, 27, false, castMs, burn); }   // 4-a 시전 틀
         const uint16_t low = s3.ManaOf(a);
         Check(low < nox::ManaOnline(nox::CharClass::Wizard), "마나를 안 썼다");
 
@@ -1360,10 +1445,9 @@ void TestAim() {
 
     // ② 쏘면 **겨눈 쪽(+y)** 으로 난다. 몸 방향(+x)이 아니라
     {
-        srv.SetSpellCost(27, 0);
+        RegSpell(srv, 27, 0);
         std::vector<nox::OutPacket> out;
-        const std::vector<uint8_t> sp = SpellPacket(27, /*onSelf=*/false);
-        srv.OnPacket(a, sp.data(), sp.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);
         std::vector<nox::OutPacket> t1;
@@ -1380,17 +1464,16 @@ void TestAim() {
         nox::Server s2;
         s2.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         s2.DebugMoveTo(a, 1000, 1000);
-        s2.SetSpellCost(27, 0);
+        RegSpell(s2, 27, 0);
         s2.DebugAimAt(a, 1000, 1600);
         std::vector<nox::OutPacket> warm;
         s2.Tick(0, warm);
         std::vector<nox::OutPacket> aged;
         s2.Tick(33 * (nox::kAimStaleTicks + 5), aged);   // 겨눔을 늙힌다
         std::vector<nox::OutPacket> out;
-        const std::vector<uint8_t> sp = SpellPacket(27, false);
-        s2.OnPacket(a, sp.data(), sp.size(), out);
+        { uint32_t castMs = s2.DebugNowMs(); CastAndWait(s2, a, 27, false, castMs, out); }   // 4-a 시전 틀
         std::vector<nox::OutPacket> t1;
-        s2.Tick(33 * (nox::kAimStaleTicks + 6), t1);
+        s2.Tick(s2.DebugNowMs() + 34, t1);   // 4-a — 시전 틀이 시계를 돌렸다 · 한 틱 더 날린다
         const auto sh = s2.DebugShotAt(0);
         Check(sh.first > 1000, "겨눔이 낡았는데 몸 방향(+x)으로 안 갔다");
     }
@@ -1674,10 +1757,9 @@ void TestUseAndEquip() {
     // ② 파란 물약 — 마나를 채우고 `0x45` 로 알린다
     {
         std::vector<nox::OutPacket> burn;
-        srv.SetSpellCost(27, 30);
+        RegSpell(srv, 27, 30);
         for (int i = 0; i < 2; ++i) {
-            const std::vector<uint8_t> sp = SpellPacket(27, false);
-            srv.OnPacket(a, sp.data(), sp.size(), burn);
+            { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, burn); }   // 4-a 시전 틀
         }
         const uint16_t low = srv.ManaOf(a);
         Check(low < nox::ManaOnline(nox::CharClass::Wizard), "마나를 안 썼다");
@@ -1792,7 +1874,7 @@ void FlyUntilDone(nox::Server& srv, std::vector<nox::OutPacket>& out, int maxTic
 }
 
 void TestSpellDamage() {
-    nox::Server srv;
+    nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
     const std::string a = "10.0.0.1:1000";
     const std::string b = "10.0.0.2:1000";
     // ★ **둘 다 워리어로 둔다** — 정본 파이어볼은 최대 세기에서 127 이라
@@ -1802,6 +1884,9 @@ void TestSpellDamage() {
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
     srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
     const int kHP = nox::HealthOnline(nox::CharClass::Warrior);
+    // ★ 4-a — 워리어는 주문을 못 쓴다(깃발 직업 거르기 코드 9). 체력은 워리어로 두고 직업만 위저드로 · 마나는 0 으로(맞기만 본다)
+    srv.DebugSetClass(a, nox::CharClass::Wizard);
+    RegSpell(srv, 27, 0);
     // ★ 이제 파이어볼은 **날아간다.** 바라보는 쪽이 기본 0(월드 +x)이므로
     //   맞으려면 b 가 a 의 앞쪽에 있어야 한다. 같은 자리에 두면 안 맞는 게 옳다.
     srv.DebugMoveTo(b, 1100, 1000);
@@ -1809,8 +1894,7 @@ void TestSpellDamage() {
     // ① 파이어볼을 남에게 — 맞는 쪽이 깎여야 한다
     {
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(27, /*onSelf=*/false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
         // ★ 쏘자마자는 아무도 안 깎여야 한다 — 날아가는 중이다
         Check(srv.HealthOf(b) == kHP, "쏘자마자 맞음 (투사체가 안 날아감)");
         Check(srv.flying() == 1, "날아가는 것이 하나가 아님");
@@ -1855,8 +1939,7 @@ void TestSpellDamage() {
     // ② 자기에게 걸면 자기가 깎인다 (대상 플래그 1)
     {
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(27, /*onSelf=*/true);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, /*onSelf=*/true, castMs, out); }   // 4-a 시전 틀
         Check(srv.HealthOf(a) == kHP - nox::Server::SpellDamage(27),
               "자기에게 건 파이어볼이 자기를 안 깎음");
         Check(srv.flying() == 0, "자기에게 건 것이 날아감");
@@ -1866,8 +1949,7 @@ void TestSpellDamage() {
     {
         const uint16_t before = srv.HealthOf(b);
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(4, /*onSelf=*/false);   // 4 = 점멸
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 4, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀   // 4 = 점멸
         Check(srv.HealthOf(b) == before, "점멸이 남을 깎음");
         Check(nox::Server::SpellDamage(4) == 0, "점멸이 공격으로 잡힘");
     }
@@ -1877,8 +1959,7 @@ void TestSpellDamage() {
         int guard = 0;
         while (srv.IsAlive(b) && guard++ < 20) {
             std::vector<nox::OutPacket> out;
-            auto pkt = SpellPacket(27, /*onSelf=*/false);
-            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
             FlyUntilDone(srv, out);
         }
         Check(!srv.IsAlive(b), "파이어볼을 스무 번 맞고도 안 죽음");
@@ -1889,8 +1970,7 @@ void TestSpellDamage() {
     {
         const uint16_t before = srv.HealthOf(a);
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(27, /*onSelf=*/false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(a) == before, "남이 없는데 자기가 맞음");
         Check(srv.HealthOf(b) == 0, "죽은 사람이 또 맞음");
@@ -2055,8 +2135,7 @@ void TestDirtyUnitHealth() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(79, false);          // 79 = SPELL_SUMMON_BOMBER (A 가 부른다)
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀          // 79 = SPELL_SUMMON_BOMBER (A 가 부른다)
         Check(srv.pets() == 1, "불렀는데 안 생김");
 
         out.clear();
@@ -2573,14 +2652,13 @@ void TestDamageHandler() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        auto sum = SpellPacket(79, false);     // a 가 Bomber 를 부른다
-        srv.OnPacket(a, sum.data(), sum.size(), out);
+        SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀     // a 가 Bomber 를 부른다
         Check(srv.pets() == 1, "소환이 안 됐다 — 이 시험이 무의미해진다");
         nox::Server::PhysBody body;
         body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         body.subclass = nox::Server::MonsterClassBitsOf("SMALL_MONSTER+IMMUNE_FIRE");
         body.damageFn = nox::Server::DamageFnOf("MechGolemDamage");
-        srv.SetTypeBody(1348, body);
+        srv.SetTypeBody(1328, body);   // 4-a — 임프
         srv.DebugSetOwnedPetHealth(a, 100);
         srv.DebugHurt("", 0, 10, b, 1, out);
         Check(srv.DebugPetHealth(0) == 100, "불 면역인데 종류 1 에 깎였다");
@@ -2635,7 +2713,7 @@ void TestShieldBlock() {
 
     // ① 가만히 30/4=7 틱을 넘기면 방패를 올린다(15) → RAISE_SHIELD 6칸×2틱 = 12틱 뒤 올린 채(16) · 자세 40
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         makeSrv(srv);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
@@ -2662,7 +2740,7 @@ void TestShieldBlock() {
 
     // ③ 방패 올린 채(16) — 앞에서 온 칼은 막고 · 뒤에서 온 칼과 앞에서 온 전기(9)는 들어간다 · 올리기 전(13) 은 안 막음
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         makeSrv(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugHurt(a, -1, 30, b, 0, out, &front);
@@ -2687,7 +2765,7 @@ void TestShieldBlock() {
 
     // ④ 대검(0x400) — 가만(13) 에 앞에서 온 칼(0) 을 막고 18~20 으로 · 망치류(2) 는 못 막음
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         makeSrv(srv);
         srv.DebugSetWeapon(a, 0x400);
         std::vector<nox::OutPacket> out;
@@ -2695,13 +2773,13 @@ void TestShieldBlock() {
         Check(srv.HealthOf(a) == kWarHP, "대검 든 가만 상태가 앞 칼을 못 막았다");
         const uint8_t st = srv.DebugStateOf(a);
         Check(st >= 18 && st <= 20, "대검 막기 뒤 상태가 18~20 이 아니다");
-        nox::Server srv2;
+        nox::Server srv2; RegAllSpells(srv2);   // 4-a 주문 정의
         makeSrv(srv2);
         srv2.DebugSetWeapon(a, 0x400);
         srv2.DebugHurt(a, -1, 30, b, 2, out, &front);
         Check(srv2.HealthOf(a) < kWarHP, "대검이 종류 2(망치·철퇴) 를 막았다");
         // 걷는 중(0) 에는 대검도 못 막는다(가만 13 · 막기 18~20 만)
-        nox::Server srv3;
+        nox::Server srv3; RegAllSpells(srv3);   // 4-a 주문 정의
         makeSrv(srv3);
         srv3.DebugSetWeapon(a, 0x400);
         uint32_t ms = 0;
@@ -2722,13 +2800,13 @@ void TestShieldBlock() {
 
     // ⑤ 지팡이(0x8000) — 가만(13) 에 투사체 아닌 칼(0) 을 막고 21 · 투사체는 못 막음
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         makeSrv(srv);
         srv.DebugSetWeapon(a, 0x8000);
         std::vector<nox::OutPacket> out;
         srv.DebugHurt(a, -1, 30, b, 0, out, &front);
         Check(srv.HealthOf(a) == kWarHP && srv.DebugStateOf(a) == 21, "지팡이 가만 상태가 앞 칼을 막고 21 로 가지 않았다");
-        nox::Server srv2;
+        nox::Server srv2; RegAllSpells(srv2);   // 4-a 주문 정의
         makeSrv(srv2);
         srv2.DebugSetWeapon(a, 0x8000);
         nox::Server::AttackSrc missile = front;
@@ -2739,7 +2817,7 @@ void TestShieldBlock() {
 
     // ⑥ 들어오는 투사체가 있으면 7틱 안 기다리고 바로 방패를 올린다(monsterTestBlockShield)
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         makeSrv(srv);
         srv.DebugMoveTo(b, 1090, 1000);
         srv.DebugSetFacing(b, 128);            // b 가 −x(a 쪽) 을 본다
@@ -2747,8 +2825,7 @@ void TestShieldBlock() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 33; srv.Tick(ms, out);           // 한 틱 — 아직 7 안 넘김
-        auto fire = SpellPacket(27, false);
-        srv.OnPacket(b, fire.data(), fire.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, b, 27, false, castMs, out); }   // 4-a 시전 틀
         Check(srv.flying() == 1, "파이어볼이 안 날았다 — 이 시험이 무의미해진다");
         ms += 33; srv.Tick(ms, out);
         ms += 33; srv.Tick(ms, out);
@@ -3042,8 +3119,7 @@ void TestKillArmorCollide() {
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1400, 1000);
         std::vector<nox::OutPacket> out;
-        auto sum = SpellPacket(79, false);
-        srv.OnPacket(a, sum.data(), sum.size(), out);
+        SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         Check(srv.pets() == 1, "소환수가 안 불려 나옴(시험 전제)");
         srv.Damage(b, nox::HealthOnline(nox::CharClass::Wizard) - 1, out, "");
         srv.Tick(0, out);
@@ -3130,6 +3206,200 @@ void TestKillArmorCollide() {
     std::printf("  3-d — 죽음 알림 갈래·종류·죽인 사람 · 방어값 녹음 일치·한 번 · 충돌 요청 찾기\n");
 }
 
+// ── 묶음 4-a — 시전 틀 ─────────────────────────────────────────────
+//
+// 정답지: 받기 sdecode:211 → spellByBookInsert_4FE340(상태 2) → 매 틱 spellCastByBook_4FCB80(음소를 3틱마다 하나)
+//   → 음소가 끝나면 PlayerSpell(player.go:462 — 직업·마나·inform 1·STAT 15) → castSpell → spellAccept
+void TestCastPipeline() {
+    const std::string a = "10.4.4.1:4001";
+    const std::string b = "10.4.4.2:4002";
+    auto count = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t op) {
+        size_t n = 0;
+        for (const auto& m : FlattenTo(out, to)) if (!m.empty() && m[0] == op) ++n;
+        return n;
+    };
+    auto hasStat = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t spell, uint8_t stat) {
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_STAT) && m[1] == spell && m[5] == stat) return true;
+        return false;
+    };
+    auto send = [](nox::Server& srv, const std::string& who, uint8_t spell, bool self, std::vector<nox::OutPacket>& out) {
+        const auto pkt = SpellPacket(spell, self);
+        srv.OnPacket(who, pkt.data(), pkt.size(), out);
+    };
+
+    // ① 파이어볼(음소 3) — 받은 다음 틱에 `70` · 상태 2 · 자세 21 · 음소 3 × 3틱 + 1 = 10틱째에 끝 · 마나 · inform 1 · STAT 15 · 상태 13
+    {
+        nox::Server srv;
+        RegSpell(srv, 27);
+        srv.SetPlayerAnimFrames(21, 8, 2);                    // ⭕ thing.bin CAST_SPELL 8/2
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        const uint16_t full = srv.ManaOf(a);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        send(srv, a, 27, false, out);
+        int endTick = -1;
+        std::vector<nox::OutPacket> endOut;
+        for (int t = 1; t <= 20 && endTick < 0; ++t) {
+            std::vector<nox::OutPacket> o;
+            ms += 34; srv.Tick(ms, o);
+            if (t == 1) {
+                Check(count(o, a, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) == 1, "받은 다음 틱에 `70` 이 없다");
+                Check(srv.DebugStateOf(a) == 2 && srv.DebugAnimByteOf(a) == 21, "시전 중인데 상태 2 · 자세 21(CAST_SPELL) 이 아니다");
+            }
+            if (t == 7) Check(srv.DebugAnimFrameOf(a) == 2, "시전 자세 칸이 (프레임−시작)÷3 이 아니다");
+            if (t > 1 && srv.DebugCasting(a)) Check(count(o, a, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) == 0, "`70` 이 첫 음소 뒤에도 나간다");
+            if (srv.DebugCasting(a)) Check(srv.ManaOf(a) == full, "음소를 다 말하기 전에 마나가 깎였다");
+            if (!srv.DebugCasting(a)) { endTick = t; endOut = o; }
+        }
+        Check(endTick == 10, "파이어볼(음소 3) 이 10틱째에 안 끝났다 — 음소 3틱 간격·끝 판정");
+        Check(srv.ManaOf(a) == full - 30, "끝났는데 마나 30 이 안 깎였다");
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "끝났는데 상태 13 으로 안 돌아왔다");
+        Check(hasStat(endOut, a, 27, 15), "끝났는데 `df 1b 00 00 00 0f` 가 없다");
+    }
+
+    // ② 시전 중이면 새 시전을 안 받는다 — 주문 하나면 STAT 0 · 목록은 하나 그대로
+    {
+        nox::Server srv;
+        RegSpell(srv, 27);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        send(srv, a, 27, false, out);
+        ms += 34; srv.Tick(ms, out);
+        out.clear();
+        send(srv, a, 27, false, out);
+        Check(srv.CastPending() == 1, "시전 중인데 두 번째가 목록에 들어갔다(+216)");
+        Check(hasStat(out, a, 27, 0), "시전 중이라 못 넣었는데 STAT 0 이 없다");
+    }
+
+    // ③ 관전이면 글 열쇠만 보내고 안 넣는다(STAT 도 없다 — v34 = 0 이면 그 갈래를 안 탄다)
+    {
+        nox::Server srv;
+        RegSpell(srv, 27);
+        srv.DebugEnterGame(a, 728, /*observer=*/true, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        send(srv, a, 27, false, out);
+        Check(srv.CastPending() == 0, "관전인데 시전 목록에 들어갔다");
+        bool key = false;
+        const std::string want = "GeneralPrint:NoSpellWarningGeneral";
+        for (const auto& m : FlattenTo(out, a))
+            if (m.size() == 3 + want.size() + 1 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 15 &&
+                std::string(m.begin() + 3, m.end() - 1) == want) key = true;
+        Check(key, "관전인데 `a9 0f 00 GeneralPrint:NoSpellWarningGeneral` 이 없다");
+        Check(!hasStat(out, a, 27, 0), "관전 갈래에서 STAT 을 보냈다");
+    }
+
+    // ④ 공격 주문 하나 · 커서가 친구(내 소환수) 위 → 넣지도 않고 STAT 도 없다(sdecode:239)
+    {
+        nox::Server srv;
+        RegAllSpells(srv);
+        nox::Server::PhysBody body;
+        body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        SummonImp(srv, a, out);
+        srv.DebugSetClass(a, nox::CharClass::Wizard);
+        double px = 0, py = 0;
+        Check(srv.DebugPetXY(0, px, py), "임프가 안 불려 나옴(시험 전제)");
+        srv.DebugAimAt(a, static_cast<int>(px), static_cast<int>(py));
+        out.clear();
+        send(srv, a, 27, false, out);
+        Check(srv.CastPending() == 0, "커서가 내 소환수 위인데 공격 주문을 넣었다");
+        Check(!hasStat(out, a, 27, 0), "친구 거르기 갈래에서 STAT 을 보냈다");
+        // 커서를 치우면 넣는다
+        srv.DebugAimAt(a, static_cast<int>(px) + 400, static_cast<int>(py) + 400);
+        send(srv, a, 27, false, out);
+        Check(srv.CastPending() == 1, "커서가 빈 곳인데 공격 주문을 안 넣었다");
+    }
+
+    // ⑤ 음소 나무 — 앞이 겹치는 두 주문. 에너지볼트(7531)는 4음소 = 13틱 · 연쇄번개(7531357)는 7음소 = 22틱에 끝
+    for (uint8_t sp : { static_cast<uint8_t>(24), static_cast<uint8_t>(43) }) {
+        nox::Server srv;
+        RegSpell(srv, 24);
+        RegSpell(srv, 43);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        send(srv, a, sp, false, out);
+        int endTick = -1;
+        std::vector<nox::OutPacket> endOut;
+        for (int t = 1; t <= 40 && endTick < 0; ++t) {
+            std::vector<nox::OutPacket> o;
+            ms += 34; srv.Tick(ms, o);
+            if (!srv.DebugCasting(a)) { endTick = t; endOut = o; }
+        }
+        const int want = (sp == 24) ? 13 : 22;
+        Check(endTick == want, sp == 24 ? "에너지볼트가 13틱째에 안 끝났다(겹치는 나무)" : "연쇄번개가 22틱째에 안 끝났다(겹치는 나무 — 에너지볼트 자리에서 멈췄나)");
+        bool inform = false;
+        for (const auto& m : FlattenTo(endOut, a))
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 1 && m[2] == sp) inform = true;
+        Check(inform, "끝났는데 `a9 01 <주문>` 이 그 주문이 아니다");
+    }
+
+    // ⑥ 소환 비용은 thing.bin 이 아니라 blob_587000 217668 표 — 파일에서 읽어 대조(임프 87) · 워리어는 코드 9
+    {
+        FILE* f = std::fopen("C:\\Users\\USER\\Desktop\\MyGit\\Nox_Server\\third_party\\opennox-src\\src\\common\\memmap\\nox\\blobdata\\blob_587000.dat", "rb");
+        int blobCost = -1;
+        if (f) {
+            if (std::fseek(f, 217668 + 4 * 87, SEEK_SET) == 0) {
+                uint8_t v[4] = {};
+                if (std::fread(v, 1, 4, f) == 4) blobCost = v[0] | (v[1] << 8) | (v[2] << 16) | (v[3] << 24);
+            }
+            std::fclose(f);
+        }
+        if (blobCost < 0) {
+            std::printf("  소환 비용 blob 대조 — 건너뜀(blob 없음)\n");
+        } else {
+            nox::Server srv;
+            RegSpell(srv, 87);
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+            srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+            srv.DebugMoveTo(b, 3000, 3000);
+            const uint16_t full = srv.ManaOf(a);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            CastAndWait(srv, a, 87, false, ms, out);
+            Check(srv.ManaOf(a) == full - blobCost, "임프 소환 마나가 blob_587000 217668 표 값과 다르다");
+            std::vector<nox::OutPacket> o2;
+            uint32_t m2 = srv.DebugNowMs();
+            srv.SetFriends(false);
+            CastAndWait(srv, b, 87, false, m2, o2);
+            bool code9 = false;
+            for (const auto& m : FlattenTo(o2, b))
+                if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 0 && m[2] == 9) code9 = true;
+            Check(code9, "워리어가 소환을 넣었는데 코드 9 가 아니다");
+            std::printf("  소환 비용 — 임프 %d (blob 대조)\n", blobCost);
+        }
+    }
+
+    // ⑦ 걸으면 상태 2 는 풀리지만 시전은 계속된다(ImplB 는 상태 2 를 안 막는다 · PlayerSpell 은 상태 2 일 때만 13 으로)
+    {
+        nox::Server srv;
+        RegSpell(srv, 27);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        send(srv, a, 27, false, out);
+        ms += 34; srv.Tick(ms, out);
+        std::vector<uint8_t> mv = InputPacket(2);
+        mv[nox::kWireHeaderSize + 1] = 5;
+        mv.push_back(0);
+        srv.OnPacket(a, mv.data(), mv.size(), out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugStateOf(a) != 2, "걸었는데 상태 2 가 그대로다");
+        Check(srv.DebugCasting(a), "걸었다고 시전이 취소됐다");
+        for (int t = 0; t < 20 && srv.DebugCasting(a); ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.ManaOf(a) == nox::ManaOnline(nox::CharClass::Wizard) - 30, "걸으면서 말한 파이어볼이 끝나지 않았다");
+    }
+    std::printf("  4-a — 음소 3틱·10/13/22틱에 끝 · 시전 중 거절 · 관전 글 · 친구 커서 거르기 · 소환 blob 비용 · 걸어도 계속\n");
+}
+
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
 //
 // 정답지: 팀에 넣고 뺄 때 그 사람에게 `36 RESET_FRIENDS`(`sub_4D97E0`) → 친구 비트를 다시 세운다.
@@ -3140,19 +3410,19 @@ void TestResetFriends() {
     const std::string a = "10.9.9.3:49003";
     srv.DebugEnterGame(a, 742);
     std::vector<nox::OutPacket> out;
-    const auto pkt = SpellPacket(79, false);   // 소환 — 자기 소환수는 친구(⑬)
-    srv.OnPacket(a, pkt.data(), pkt.size(), out);
-    uint32_t ms = 0;
-    srv.Tick(ms, out);
+    SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀   // 소환 — 자기 소환수는 친구(⑬)
+    uint32_t ms = srv.DebugNowMs();                // 4-a — 시전 틀이 시계를 돌렸다 · 이어서
     auto count = [&](const std::vector<nox::OutPacket>& o, nox::Op op) {
         size_t n = 0;
         for (const auto& m : FlattenTo(o, a)) if (!m.empty() && m[0] == static_cast<uint8_t>(op)) ++n;
         return n;
     };
     {
+        // 불려 나온 틱(시전 틀의 마지막 틱) 에 한 번 — SummonImp 의 out 에 있다
+        Check(count(out, nox::Op::OBJECT_FRIEND_ADD) == 1, "제 소환수 친구 알림이 한 번 안 나감");
         std::vector<nox::OutPacket> o;
         ms += 34; srv.Tick(ms, o);
-        Check(count(o, nox::Op::OBJECT_FRIEND_ADD) == 1, "제 소환수 친구 알림이 한 번 안 나감");
+        Check(count(o, nox::Op::OBJECT_FRIEND_ADD) == 0, "안 바뀌었는데 친구 알림을 또 보냄");
         Check(count(o, nox::Op::RESET_FRIENDS) == 0, "팀이 그대로인데 36 이 나감");
     }
     {
@@ -3403,6 +3673,23 @@ void TestThingDb() {
         for (int i : { 4, 6, 23, 24, 25 })
             Check(db.PlayerAnim(i).frames > 0,
                   (std::string("사람 애니 칸 수가 0 — ") + nox::PlayerAnimTypeName(i)).c_str());
+    }
+    // ⑨ 주문 정의(2026-09-13 묶음 4-a) — SPEL 칸 전체를 읽는다. 시험 주문 표(TestSpellDefs)가 파일과 한 칸씩 같은가 ·
+    //   끝 소리 이름까지 읽혀 섹션이 어긋나지 않았는가(115개 · 뒤 섹션도 읽힘) · 음소 수 0 인 주문 셈
+    {
+        Check(db.Spells().size() == 115, "SPEL 주문 수가 115 가 아니다 — 칸을 잘못 읽었다");
+        for (const auto& t : TestSpellDefs()) {
+            const char* nm = nox::SpellName(t.id);
+            const nox::SpellRaw* found = nullptr;
+            for (const auto& sr : db.Spells()) if (sr.name == nm) found = &sr;
+            Check(found != nullptr, (std::string("시험 주문이 thing.bin 에 없다 — ") + nm).c_str());
+            if (!found) continue;
+            Check(found->mana == t.mana && found->flags == t.flags && found->phonemes == t.phon,
+                  (std::string("시험 주문 표가 thing.bin 과 다르다 — ") + nm).c_str());
+        }
+        bool fireSound = false;
+        for (const auto& sr : db.Spells()) if (sr.name == "SPELL_FIREBALL" && !sr.castSound.empty()) fireSound = true;
+        Check(fireSound, "파이어볼 시전 소리 이름이 비었다 — 칸 끝을 못 읽었다");
     }
 
     std::printf("  thing.bin 직접 읽기 — %zu종, 기존 표와 전수 일치\n", db.Count());
@@ -4309,13 +4596,12 @@ void TestProjectile() {
 
     // ① 옆으로 비켜 있으면 안 맞는다 — 앞으로만 날아가니까
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1000, 1100);   // 바라보는 쪽(+x)이 아니라 옆(+y)이다
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(27, false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "옆에 비켜 있는데 맞음");
         Check(srv.hits() == 0, "안 맞았는데 맞은 것으로 셈");
@@ -4323,13 +4609,12 @@ void TestProjectile() {
 
     // ② 사거리를 넘으면 사라진다
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1000 + static_cast<int>(nox::kSpellRange) + 100, 1000);
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(27, false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "사거리 밖인데 맞음");
         Check(srv.flying() == 0, "사거리를 넘었는데 안 사라짐");
@@ -4337,24 +4622,22 @@ void TestProjectile() {
 
     // ③ 쏜 사람은 자기 것에 안 맞는다 — 자기 자리에서 나가니 이게 없으면 늘 자폭한다
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(27, false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "쏜 사람이 자기 것에 맞음");
     }
 
     // ④ 가는 도중에는 아직 안 맞는다 — 한 틱만 돌려 본다
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1180, 1000);   // 한 틱(26)으로는 못 닿는 거리
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(27, false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); }   // 4-a 시전 틀
         srv.Tick(0, out);
         srv.Tick(33, out);                // 딱 한 틱
         Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "한 틱 만에 180 을 날아가 맞음");
@@ -4365,7 +4648,7 @@ void TestProjectile() {
 
     // ⑤ 바라보는 쪽을 바꾸면 그쪽으로 날아간다
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1000, 1100);   // +y 쪽
@@ -4380,8 +4663,7 @@ void TestProjectile() {
         // ⚠ 2026-09-13 묶음 3-a — 방향은 틱의 ImplB 에서 갈아 끼운다(정답지 조작 목록 순서) → 한 틱 돌린 뒤 쏜다
         srv.Tick(0, out);
         srv.Tick(33, out);
-        auto pkt = SpellPacket(27, false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "바라보는 쪽으로 안 날아감");
     }
@@ -4396,14 +4678,13 @@ void TestProjectile() {
 void TestProjectileVisible() {
     const std::string a = "10.0.0.1:1000";
     const std::string b = "10.0.0.2:1000";
-    nox::Server srv;
+    nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
     srv.DebugEnterGame(a, 728);
     srv.DebugEnterGame(b, 729);
     srv.DebugMoveTo(b, 1600, 1000);   // 멀리 둬서 날아가는 동안 안 맞게
 
     std::vector<nox::OutPacket> out;
-    auto pkt = SpellPacket(27, false);
-    srv.OnPacket(a, pkt.data(), pkt.size(), out);
+    { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); }   // 4-a 시전 틀
     out.clear();
     srv.Tick(0, out);
     srv.Tick(33, out);   // 한 틱만 — 아직 날아가는 중이다
@@ -4457,8 +4738,7 @@ void TestSummon() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(79, false);   // 79 = SPELL_SUMMON_BOMBER
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀   // 79 = SPELL_SUMMON_BOMBER
         Check(srv.pets() == 1, "불렀는데 안 생김");
         Check(srv.flying() == 0, "소환이 투사체로 날아감");
 
@@ -4470,9 +4750,9 @@ void TestSummon() {
             auto body = Body(p);
             if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
             nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
-            for (const auto& e : m.objects) if (e.type == 1348) seen = true;   // Bomber
+            for (const auto& e : m.objects) if (e.type == 1328) seen = true;   // Imp(4-a)
         }
-        Check(seen, "불려 나온 것(1348 Bomber)이 상태 갱신에 안 실림");
+        Check(seen, "불려 나온 것(1328 Imp)이 상태 갱신에 안 실림");
     }
 
     // ★★ ② **부른 사람은 안 때린다** — 이게 없으면 부르자마자 자기가 맞는다
@@ -4480,8 +4760,7 @@ void TestSummon() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(79, false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         srv.Tick(0, out);
         srv.Tick(33 * 200, out);   // 넉넉히 돌린다
         Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "부른 사람이 자기 것에게 맞음");
@@ -4494,8 +4773,7 @@ void TestSummon() {
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1400, 1000);   // 멀리 둔다 — 다가가야 닿는다
         std::vector<nox::OutPacket> out;
-        auto pkt = SpellPacket(79, false);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         srv.Tick(0, out);
         srv.Tick(33, out);
         Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "부르자마자 멀리 있는 사람이 맞음");
@@ -4521,13 +4799,15 @@ void TestPetDies() {
 
     // ① 남의 소환수를 근접으로 때려 죽인다 — 그리고 **0x31 이 나가야 한다**
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        auto sum = SpellPacket(79, false);
-        srv.OnPacket(a, sum.data(), sum.size(), out);
+        srv.DebugMoveTo(b, 1300, 1300);   // 4-a — 시전 틀 동안 틱이 돈다. 같은 자리면 몸끼리 밀려(2-c) 부른 자리가 틀어진다
+        SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         Check(srv.pets() == 1, "안 불려 나옴");
+        double petX = 0, petY = 0;
+        srv.DebugPetXY(0, petX, petY);
 
         // b 를 소환수 옆에 세운다 (a 는 (1000,1000), 소환수는 그 앞 40)
         // ⚠ 2026-09-13 묶음 3-a — 주먹은 몸이 있는 것만 고르고(sub_5386A0) 같은 자리면 방향이 없어 안 닿는다.
@@ -4535,10 +4815,10 @@ void TestPetDies() {
         {
             nox::Server::PhysBody body;
             body.shape = 2; body.r = 10.0f; body.cls = 0x2;
-            srv.SetTypeBody(1348, body);
+            srv.SetTypeBody(1328, body);   // 4-a — 임프
         }
-        srv.DebugMoveTo(b, 1015, 1000);
-        srv.DebugMoveTo(a, 500, 1000);   // 부른 사람은 비킨다 — b 와 15 로 겹치면 몸끼리 튕겨 b 가 날아간다(2-c)
+        srv.DebugMoveTo(b, static_cast<int>(petX) - 25, static_cast<int>(petY));
+        srv.DebugMoveTo(a, 500, static_cast<int>(petY));   // 부른 사람은 비킨다 — b 와 15 로 겹치면 몸끼리 튕겨 b 가 날아간다(2-c)
 
         uint32_t ms = 0;
         srv.Tick(0, out);
@@ -4571,18 +4851,17 @@ void TestPetDies() {
             auto body = Body(p);
             if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
             nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
-            for (const auto& e : m.objects) if (e.type == 1348) still = true;
+            for (const auto& e : m.objects) if (e.type == 1328) still = true;
         }
         Check(!still, "죽은 소환수가 아직도 상태 갱신에 실림");
     }
 
     // ★★ ② 부른 사람의 공격에는 안 맞는다 (근거 없이 정한 규칙이지만 그대로 도는지)
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         std::vector<nox::OutPacket> out;
-        auto sum = SpellPacket(79, false);
-        srv.OnPacket(a, sum.data(), sum.size(), out);
+        SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         uint32_t ms = 0;
         srv.Tick(0, out);
         for (int i = 0; i < 30; ++i) {
@@ -4597,17 +4876,19 @@ void TestPetDies() {
 
     // ③ 투사체도 남의 소환수를 맞힌다
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        auto sum = SpellPacket(79, false);
-        srv.OnPacket(a, sum.data(), sum.size(), out);
+        srv.DebugMoveTo(b, 1300, 1300);   // 4-a — 시전 틀 동안 겹쳐 밀리지 않게
+        SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
+        double petX = 0, petY = 0;
+        srv.DebugPetXY(0, petX, petY);
         // b 를 소환수 뒤쪽에 세우고 소환수 쪽(+x)으로 쏘게 한다
-        srv.DebugMoveTo(b, 900, 1000);
+        srv.DebugMoveTo(b, static_cast<int>(petX) - 140, static_cast<int>(petY));
+        srv.DebugMoveTo(a, 500, 500);
         // b 의 바라보는 쪽은 0(+x) 이라 소환수(1040,1000) 를 지나간다
-        auto pkt = SpellPacket(27, false);
-        srv.OnPacket(b, pkt.data(), pkt.size(), out);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, b, 27, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.hits() >= 1, "투사체가 소환수를 못 맞힘");
     }
@@ -4622,7 +4903,7 @@ void TestArena() {
 
     // ① 근접으로 죽이면 **때린 쪽** 점수가 오른다
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1025, 1000);   // 겹치면 몸끼리 튕긴다(묶음 2-c) — TestMelee 주석
@@ -4644,13 +4925,12 @@ void TestArena() {
 
     // ★★ ② 자기에게 건 주문으로 죽어도 **점수는 안 준다**
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         std::vector<nox::OutPacket> out;
         int guard = 0;
         while (srv.IsAlive(a) && guard++ < 20) {
-            auto pkt = SpellPacket(27, /*onSelf=*/true);
-            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, /*onSelf=*/true, castMs, out); }   // 4-a 시전 틀
         }
         Check(!srv.IsAlive(a), "자기 주문으로 안 죽음");
         Check(srv.KillsOf(a) == 0, "자기를 죽이고 점수를 얻음");
@@ -4660,7 +4940,7 @@ void TestArena() {
     // ③ 한도에 닿으면 판이 끝나고 **0x58 이 나간다**
     //   ⚠ 3-c — 되살아나면 PlayerStart 로 옮겨진다(시험 서버엔 없어 2000,2000). 자동 부활을 켜고 살아나면 옆으로 되돌려 세운다.
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.SetAutoRespawn(true);
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
@@ -4708,7 +4988,7 @@ void TestArena() {
 
     // ④ 판 시계 — 짜임이 실측 표본과 같은가
     {
-        nox::Server srv;
+        nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
@@ -5019,8 +5299,7 @@ void TestQuest() {
         srv.DebugEnterGame(b, 729);
         srv.StartQuest(2, 5000, 5000);          // 몬스터는 멀리 둔다
         std::vector<nox::OutPacket> out;
-        auto sum = SpellPacket(79, false);
-        srv.OnPacket(b, sum.data(), sum.size(), out);   // b 가 하나 부른다
+        SummonImp(srv, b, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀   // b 가 하나 부른다
         Check(srv.pets() == 3, "소환수까지 셋이 아님");
 
         uint32_t ms = 0;
@@ -5170,6 +5449,7 @@ int main() {
     TestSnapshotSeqRenumber();
     TestImportantQueue();
     TestKillArmorCollide();
+    TestCastPipeline();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

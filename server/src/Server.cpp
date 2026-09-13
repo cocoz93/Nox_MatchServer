@@ -16,6 +16,7 @@
 #include "nox/Opcode.h"
 #include "nox/ThingFlags.h"
 #include "nox/JoinBundle.h"
+#include "nox/SpellNames.h"
 
 namespace nox {
 
@@ -2381,138 +2382,35 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             }
 
             case Op::TRY_SPELL: {
-                // ★★ **진입 자체를 무조건 찍는다** (2026-09-11).
-                //   논리로 후보를 다 배제했는데 현상이 남았다 — `0x79` 가 `seen_` 에는
-                //   들어가는데(그 자리는 switch **직전**이다) 주문 카운터도 마나막힘도 0 이고
-                //   문지기 진단조차 안 찍혔다. 어느 전제가 틀렸는지 **관측으로** 가른다.
-                {
-                    static int toldSpell = 0;
-                    if (toldSpell < 6) {
-                        ++toldSpell;
-                        std::printf("[시전] 들어옴 — inGame=%d · 본문 %zu(%zu 여야 함) · 주문번호 %u · 비용 %u · 마나 %u\n",
-                                    s.inGame ? 1 : 0, it.bodyLen(), kTrySpellBodyLen,
-                                    it.bodyLen() >= 1 ? (unsigned)it.body()[0] : 999u,
-                                    it.bodyLen() >= 1 ? (unsigned)SpellCost(it.body()[0]) : 999u,
-                                    (unsigned)s.mana);
-                        std::fflush(stdout);
-                    }
-                }
+                // ★★ 2026-09-13 묶음 4-a — 정답지 받기 그대로(sdecode:211 MSG_TRY_SPELL · 본문 21).
+                //   u32 × 5 주문(글리프면 여럿) · u8 대상 깃발(0 이 아니면 자기에게). 여기서는 **넣기만** 한다 —
+                //   음소를 3틱마다 하나씩 따라가다 끝나야 검사·마나·효과가 난다(SpellCastByBook · PlayerSpell).
+                //   ⚠ 전에는 받자마자 마나를 깎고 `70` 을 중요로 보내고 효과를 냈다(자리표시). `70` 은 Kind1(틱 목록)이다.
                 if (!s.inGame || it.bodyLen() != kTrySpellBodyLen) break;
-                const uint8_t spell = it.body()[0];
-                const bool onSelf = it.body()[kTrySpellBodyLen - 1] != 0;
-
-                // ── 마나 ──────────────────────────────────────────
-                //
-                // ★ 여기가 없어서 **주문이 무한이었다.** 비용은 `thing.bin` SPEL 섹션
-                //   첫 바이트다(정품 콘솔 `list spells` 115줄과 전수 일치).
-                // ⚠ 표가 비어 있으면 비용 0 — 「공짜」가 아니라 **「표를 못 읽었다」**다.
-                //   기동 로그의 「주문 마나 표 N개」를 볼 것.
-                {
-                    const uint8_t cost = SpellCost(spell);
-                    if (cost > s.mana) {
-                        ++spellsNoMana_;
-                        ++handled_;
-                        break;              // 못 쓴다 — 시전 자체가 안 일어난다
+                uint32_t sp[5] = {};
+                for (int k = 0; k < 5; ++k) {
+                    const auto* b = it.body() + 4 * k;
+                    sp[k] = static_cast<uint32_t>(b[0]) | (static_cast<uint32_t>(b[1]) << 8) |
+                            (static_cast<uint32_t>(b[2]) << 16) | (static_cast<uint32_t>(b[3]) << 24);
+                }
+                const bool targetSelf = it.body()[20] != 0;
+                bool ok = true;
+                if (s.observer) {
+                    SendPriMsg(s, "GeneralPrint:NoSpellWarningGeneral", out);   // 3680 & 1
+                    ok = false;
+                }
+                // 3680 & 2(몬스터 지켜보기 — "ConjureNoSpellWarning1") 는 관전 기능(8) · +16 & 0x4000 은 아직 켜는 곳 없음
+                if (ok) {                                  // 게임 깃발 128(Chat 모드) 아님
+                    int count = 0;
+                    for (int k = 0; k < 5; ++k) if (sp[k]) ++count;
+                    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+                    bool friendGate = false;               // 「주문 하나 · 공격 주문 · 커서 오브젝트가 친구」면 넣지도 않는다
+                    if (count == 1 && sp[0] < 137 && (SpellFlags(static_cast<uint8_t>(sp[0])) & 0x20) && !quest) {
+                        const Target cur = FindObjectAtCursor(s);
+                        if (!cur.none() && !TargetIsEnemy(s, cur)) friendGate = true;
                     }
-                    if (cost) {
-                        s.mana = static_cast<uint16_t>(s.mana - cost);
-                        // `45 <번호2> <지금마나2>` — **홀로 보낸다.**
-                        // 정품 서버→클라 방향에 286건(`_evidence/CAP_server_0906.txt`).
-                        // ⚠ 두루 보내면 안 된다: 클라는 자기 번호가 아니면 버리므로
-                        //   해는 없지만 조각만 헛되이 태운다.
-                        uint8_t msg[5];
-                        msg[0] = static_cast<uint8_t>(Op::REPORT_MANA);
-                        msg[1] = static_cast<uint8_t>(s.netCode);
-                        msg[2] = static_cast<uint8_t>(s.netCode >> 8);
-                        msg[3] = static_cast<uint8_t>(s.mana);
-                        msg[4] = static_cast<uint8_t>(s.mana >> 8);
-                        EmitSeq(s, msg, sizeof(msg), out);
-                    }
-                }
-
-                ++spells_[spell];
-                if (onSelf) ++spellsOnSelf_;
-
-                // ① 시전을 알린다 — `70 <주문번호>` 2바이트.
-                //
-                // ★★★ **정정(2026-09-11) — 시전자에게만, 중요 메시지로.**
-                //
-                //   ⭕ 정품 송신 자리 `opennox/src/legacy/GAME4.c:2455-2463` —
-                //       if (!*(uint8_t*)(v0 + 36)) {            // 몸짓 시전 중이 아닐 때
-                //           v23[0] = 112;  v23[1] = <주문 번호>;
-                //           addToMsgListCli(*(uint8_t*)(v5 + 2064), 1, v23, 2);
-                //       }                  //         ↑ **시전자**의 플레이어 인덱스 · ↑ **1 = 중요**
-                //     `v5` 는 시전자 → `+748` → `+276` 을 따라간 것이고 `+2064` 가 그 사람의
-                //     플레이어 인덱스다. 즉 **그 한 사람에게만** 간다.
-                //
-                //   ⚠ 전에는 **판 안의 모두에게** `reliable=false` 로 보냈다. 둘 다 달랐다.
-                //     받는 쪽(`opennox/src/network_client.go:274-279` → `Sub_49BB80(data[1])`)은
-                //     **시전자 UI**(주문서·재사용 대기)로 보이는데, 남이 그것을 받으면
-                //     **자기가 쓰지도 않은 주문의 상태**를 건드리게 된다.
-                //     사용자가 겪은 「주문 쓰니까 튕김」의 가장 유력한 용의자다.
-                //   ⚠ 앞서 `--no-spell-start` 로 가르려 한 실험은 **거짓 지문을 쓰던 때**라
-                //     무효다(「조용해서 내보냄」이 접속 임시 포트도 가리켰다). 다시 재야 한다.
-                if (!noSpellStart_)
-                {
-                    uint8_t msg[2];
-                    msg[0] = static_cast<uint8_t>(Op::REPORT_SPELL_START);
-                    msg[1] = spell;
-                    EmitSeq(s, msg, sizeof(msg), out);   // 시전자에게만 · 중요
-                }
-
-                // ② 공격 주문이면 맞힌다.
-                //    ⚠ 대상 고르기가 **가장 얇다** — 자기에게 건 것이 아니면
-                //      사거리 안에서 가장 가까운 한 사람이다. 진짜 녹스는 날아가는
-                //      투사체가 부딪히는 것을 본다. 그건 다음 조각이다.
-                // ② 소환 주문이면 부른다.
-                if (const uint16_t stype = SummonType(spell)) {
-                    Creature k;
-                    k.owner = from;
-                    k.type = stype;
-                    k.netCode = nextShotNetCode_++;
-                    if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
-                    k.facing = s.facing;
-                    // 부른 사람 바로 앞에 세운다.
-                    const double rad = s.facing * 3.14159265358979 / 128.0;
-                    k.x = s.x + kPetReach * std::cos(rad);   // 세우는 자리는 그대로
-                    k.y = s.y + kPetReach * std::sin(rad);
-                    k.health = static_cast<uint16_t>(TuningFor(k.type).health);
-                    pets_.push_back(k);
-                    ++handled_;
-                    break;
-                }
-
-                const int dmg = SpellDamage(spell);
-                if (dmg > 0) {
-                    if (onSelf) {
-                        // 자기에게 건 것은 날아갈 데가 없다. 그 자리에서 받는다.
-                        // ★ 방어구를 안 거치는 것이 맞다 — 주문 피해는 방어를 안 탄다.
-                        Damage(from, dmg, out, from);   // 자기에게 건 것 — 점수는 안 준다
-                    } else {
-                        // ★ 날려 보낸다. 시전하는 순간 맞으면 **피할 수가 없다** —
-                        //   비켜서 안 맞는 것이 있어야 싸움이 싸움이 된다.
-                        //
-                        // ★★ **겨눈 쪽으로 난다** (2026-09-10). 전에는 늘 몸이 바라보는
-                        //   쪽으로만 날아갔다 — 녹스는 마우스로 겨누는 게임인데 그게 없었다.
-                        //   겨눈 자리는 `0xac MOUSE` 로 온다(정품 클라 표본 18,700+, 4바이트 x,y).
-                        //   ⚠ 겨눔이 **낡았으면**(마지막 `0xac` 이 오래됐으면) 몸 방향으로
-                        //     되돌아간다 — 안 그러면 옛 자리를 향해 엉뚱하게 쏜다.
-                        //     그 시한 `kAimStaleTicks` 는 ➖ 우리 값이다.
-                        const double rad = AimRadians(s);
-                        Projectile p;
-                        p.owner = from;
-                        p.spell = spell;
-                        p.x = s.x;
-                        p.y = s.y;
-                        p.launchX = s.x;
-                        p.launchY = s.y;
-                        p.vx = kProjectileSpeed * std::cos(rad);
-                        p.vy = kProjectileSpeed * std::sin(rad);
-                        p.damage = dmg;
-                        p.facing = s.facing;
-                        p.netCode = nextShotNetCode_++;
-                        if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;  // 한 바퀴 돌면
-                        shots_.push_back(p);
+                    if (!friendGate && !SpellByBookInsert(s, sp, count, 3, targetSelf, out) && count == 1) {
+                        for (int k = 0; k < 5; ++k) if (sp[k]) ReportSpellStat(s, sp[k], 0, out);
                     }
                 }
                 ++handled_;
@@ -2666,6 +2564,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     //   (`GameBalance.h` HealthOnline 주석 · 정품이 접속자 레벨도 10 으로 민다).
                     s.maxHealth = static_cast<uint16_t>(HealthOnline(s.charClass));
                     s.maxMana   = static_cast<uint16_t>(ManaOnline(s.charClass));
+                    // 온라인 = EngineAdmin → serverSetAllSpells(p, true, 0): 주문 1~136 전부 세기 3(spells.go:117) · 직업 거르기는 시전 때
+                    for (int k = 1; k < 137; ++k) s.spellLvl[k] = 3;
                     s.strength  = StrengthOnline(s.charClass);
                     s.health = s.maxHealth;
                     s.mana   = s.maxMana;
@@ -3425,6 +3325,7 @@ uint8_t Server::PlayerAnimByte(const Session& s) {
             }
             return s.attackAnim;
         }
+        case 2: case 10: return 21;                                          // 시전 CAST_SPELL(`:1740~1743`, 4-a)
         case kPlayerStateIdle: return (equip & 0x400) ? 0x26 : kAnimIdle;   // 대검이면 GREAT_SWORD_IDLE(`:1756~1758`)
         case 30: return 52;                                                  // 움찔 RECOIL(`:1793`)
         case 3: case 4:                                                      // 죽음 DIE 1 · 죽어 있음 DEAD 2
@@ -3524,6 +3425,11 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                     s.attackAnim = 0;
                 }
             }
+        } else if (canMove && s.moveState == 2) {
+            // 시전(4-a) — `object_update.go:235~241` CAST_SPELL(21) 칸 = (프레임 − Field34) ÷ (붙듦+1) 을 u8 로 · 칸 수 넘으면 마지막 칸
+            const int frames = playerAnimFrames_[21][0], hold = playerAnimFrames_[21][1];
+            s.animFrame = static_cast<uint8_t>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
+            if (static_cast<int>(s.animFrame) >= frames) s.animFrame = static_cast<uint8_t>(frames - 1);
         } else if (canMove && s.moveState == 30) {
             // 움찔(3-e) — `object_update.go:454~461` RECOIL(52) 칸이 끝나면 13
             const int frames = playerAnimFrames_[52][0], hold = playerAnimFrames_[52][1];
@@ -3990,6 +3896,351 @@ void Server::TryCollide(Session& s, uint16_t code, std::vector<OutPacket>& out) 
     std::fflush(stdout);
 }
 
+// ── 시전 틀 (묶음 4-a) ───────────────────────────────────────────────
+//
+// 정답지 흐름 — 받기 sdecode:211 → spellByBookInsert_4FE340(목록에 넣고 상태 2) → 매 틱 spellCastByBook_4FCB80
+//   (음소를 3틱마다 하나씩 나무를 따라 걷고 · 첫 틱에 시전자에게 `70 <주문>`) → 끝에 PlayerSpell(player.go:462 — 검사·마나·inform)
+//   → castSpellByUser·castSpell(spells.go:422 — 공격 주문이면 투명·무적·타원 방패 끔 · 겨눈 주문은 날림)
+//   → spellAccept(spells.go:193 — 효과 함수 갈래)
+
+// server/spells.go createSpellFrom — 정의를 넣고 음소 나무를 자라게 한다(끝 자리 Ind = 주문 번호 · 음소 끝에 End 4)
+void Server::SetSpellDef(uint8_t spell, uint8_t mana, uint32_t flags, const std::vector<uint8_t>& phonemes) {
+    if (spell == 0 || spell >= 137) return;
+    SpellDef& d = spellDefs_[spell];
+    d.valid = true;
+    d.enabled = true;
+    d.mana = mana;
+    d.flags = flags;
+    d.phonemes.clear();
+    spellCost_[spell] = mana;
+    if (phonemes.empty()) return;
+    int leaf = 0;
+    for (uint8_t ph : phonemes) {
+        if (ph >= 9) return;
+        int next = phonemeTree_[static_cast<size_t>(leaf)].next[ph];
+        if (next < 0) {
+            phonemeTree_.push_back(PhonemeNode{});
+            next = static_cast<int>(phonemeTree_.size() - 1);
+            phonemeTree_[static_cast<size_t>(leaf)].next[ph] = next;
+        }
+        leaf = next;
+    }
+    phonemeTree_[static_cast<size_t>(leaf)].ind = spell;
+    d.phonemes = phonemes;
+    d.phonemes.push_back(4);                               // spell.PhonEnd
+}
+
+// spellGetPower_4FE7B0(`GAME4.c:3321`) — 멀티 모드(게임 깃발 1392 = KOTR|CTF|깃발볼|아레나|제거전)면 3 · 사람은 SpellLvl
+//   ⚠ 이 서버의 모드(아레나·CTF·퀘스트)는 퀘스트만 1392 밖 — 퀘스트는 SpellLvl(온라인이면 전부 3)
+int Server::SpellPower(const Session& s, uint8_t spell) const {
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    if (!quest) return 3;
+    return spell < 137 ? s.spellLvl[spell] : 0;
+}
+
+// sub_4FD0E0(`GAME4.c:2686`) — 꺼진 주문 10 · 사람이면 playerCheckSpellClass_57AEA0(`GAME5_2.c:1435`):
+//   위저드 0x2000000 · 컨저러 0x4000000 · 누구나 0x1000000 가 없으면 9 (워리어는 늘 9)
+int Server::SpellCheckClass(const Session& s, uint8_t spell) const {
+    if (spell >= 137 || !spellDefs_[spell].valid || !spellDefs_[spell].enabled) return 10;
+    const uint32_t fl = spellDefs_[spell].flags;
+    uint32_t cls;
+    if (s.charClass == CharClass::Wizard) cls = 0x2000000;
+    else if (s.charClass == CharClass::Conjurer) cls = 0x4000000;
+    else return 9;
+    return ((fl & 0x1000000) || (fl & cls)) ? 0 : 9;
+}
+
+// checkPlrCantCastSpell_4FD150(`GAME4.c:2706`)
+//   ⚠ 옮기지 않은 갈래 — KOTR 왕관·깃발볼 공(17·16)은 모드 8 · 버프 29(14)는 버프 틀(4-a) 뒤 ·
+//     주먹(29)·자연의 힘(31)·유성(52) 이미 있음 3 · 매직미사일(50)·픽시(58) 개수 표는 그 효과(4-c) 와 함께
+int Server::CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) const {
+    if (!glyph && flags_.size() > 0 && (SpellFlags(spell) & 0x80000)) {
+        // CTF(게임 깃발 32) — 가진 것 가운데 FLAG 클래스(0x10000000)가 있으면 13
+        for (const auto& f : flags_) if (f.carrier == s.addr) return 13;
+    }
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    if (!quest && (spell == 111 || spell == 112 || spell == 113 || spell == 114)) return 10;   // sub_4D7100 — 퀘스트 전용 소환
+    return 0;
+}
+
+// sub_4FCF90(`GAME4.c:2638`) — 소환(75~114)은 blob_587000 217668 표 · 그 밖 ManaCost(,a3) · 모자라면 −1
+//   ⚠ 모자랄 때 +160 = ManaCost(,1) · +164 = FPS 는 HUD 깜빡임 자리(아직 읽는 곳을 못 찾음 — 옮기지 않음)
+int Server::SpellManaTake(Session& s, uint8_t spell, int costKind, std::vector<OutPacket>& out) {
+    if (spell == 0 || spell >= 137) return -1;
+    int cost;
+    if (spell >= 75 && spell <= 114) {
+        static const uint8_t kSummonCost[40] = {   // blob_587000 217668 + 4×(75~114)
+            15, 60, 60, 60, 30, 30, 30, 15, 60, 60, 15, 30, 30, 30, 85, 85, 30, 60, 85, 60,
+            30, 30, 60, 30, 15, 30, 85, 30, 30, 15, 60, 30, 30, 30, 30, 60, 60, 60, 60, 60 };
+        cost = kSummonCost[spell - 75];
+    } else {
+        cost = spellDefs_[spell].mana;
+        if (costKind == 2) {
+            // ManaCost(id, 2) — 함정에 넣을 때 에너지볼트·연쇄번개·마나폭탄은 gamedata 값(4-e 글리프에서)
+        }
+    }
+    (void)costKind;
+    if (s.mana < cost) return -1;
+    s.mana = static_cast<uint16_t>(s.mana - cost);
+    const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_MANA), static_cast<uint8_t>(s.netCode),
+                             static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(s.mana),
+                             static_cast<uint8_t>(s.mana >> 8) };
+    EmitSeq(s, msg, sizeof(msg), out);                     // ⚠ 정답지는 playerReportAnything 의 +4≠+6 갈래 — 알리는 틀은 우리 식 그대로
+    return cost;
+}
+
+void Server::SpellManaGive(Session& s, int mana, std::vector<OutPacket>& out) {
+    if (mana <= 0) return;
+    s.mana = static_cast<uint16_t>(std::min<int>(s.mana + mana, s.maxMana));
+    const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_MANA), static_cast<uint8_t>(s.netCode),
+                             static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(s.mana),
+                             static_cast<uint8_t>(s.mana >> 8) };
+    EmitSeq(s, msg, sizeof(msg), out);
+}
+
+// netInformTextMsg(server/network.go:206) — `a9 <갈래> <u32>` Kind1(틱 목록) · 갈래 0 = 주문 실패 코드 · 1 = 시전 성공 주문 번호
+void Server::InformSpell(Session& s, uint8_t code, uint32_t val, std::vector<OutPacket>& out) {
+    const uint8_t msg[6] = { static_cast<uint8_t>(Op::INFORM), code, static_cast<uint8_t>(val),
+                             static_cast<uint8_t>(val >> 8), static_cast<uint8_t>(val >> 16), static_cast<uint8_t>(val >> 24) };
+    Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+}
+
+// netReportSpellStat(server/network.go:362) — `df <u32 주문> <u8>` Packet0(중요 · 봉투 없음)
+void Server::ReportSpellStat(Session& s, uint32_t spell, uint8_t stat, std::vector<OutPacket>& out) {
+    const uint8_t msg[6] = { static_cast<uint8_t>(Op::REPORT_SPELL_STAT), static_cast<uint8_t>(spell),
+                             static_cast<uint8_t>(spell >> 8), static_cast<uint8_t>(spell >> 16),
+                             static_cast<uint8_t>(spell >> 24), stat };
+    EmitImportantRaw(s, msg, sizeof(msg), out);
+}
+
+// netPriMsgToPlayer_4DA2C0(`GAME3_2.c:5209`) — `a9 0f <a3> <글 열쇠>\0` Kind1 · 글은 클라가 CSF 에서 찾는다 · 48 자 넘으면 안 보냄
+void Server::SendPriMsg(Session& s, const char* key, std::vector<OutPacket>& out) {
+    const size_t n = std::strlen(key);
+    if (n == 0 || n > 0x30) return;
+    std::vector<uint8_t> msg;
+    msg.push_back(static_cast<uint8_t>(Op::INFORM));
+    msg.push_back(15);
+    msg.push_back(0);
+    msg.insert(msg.end(), key, key + n + 1);
+    Emit(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
+}
+
+// spellByBookInsert_4FE340(`GAME4.c:3090~3265`)
+bool Server::SpellByBookInsert(Session& s, const uint32_t spells[5], int count, uint32_t gap, bool targetSelf,
+                               std::vector<OutPacket>& out) {
+    if (s.respawnAtFrame != 0) return false;               // +16 & 0x8022 — 죽음(0x8000)
+    for (int i = 0; i < 5; ++i) if (spells[i] >= 137) return false;
+    for (int i = 0; i < 5; ++i) if (spells[i] && s.spellLvl[spells[i]] == 0) return false;   // 안 배움
+    if (s.castFrame != 0) return false;                    // 시전 중
+    bool glyph = false;
+    for (int i = 0; i < count; ++i) if (spells[i] == 34) glyph = true;
+    if (glyph) {
+        // ⚠ 글리프 갈래(spellCheckSmth 마나 합 · 함정 수 한도 MaxTrapCount · 컨저러 폭탄병 한도)는 4-e 에서
+        return false;
+    }
+    int err = SpellCheckClass(s, static_cast<uint8_t>(spells[0]));
+    if (!err) err = CheckPlrCantCastSpell(s, static_cast<uint8_t>(spells[0]), false);
+    if (err) {
+        InformSpell(s, 0, static_cast<uint32_t>(err), out);   // + 소리 231(10)
+        return false;
+    }
+    // 받은 조작은 다음 틱(frame_ + 1)의 것이다 — 정답지는 같은 틱 안에서 받기 → 유닛 → 시전 순으로 돈다
+    const uint32_t now = frame_ + 1;
+    PlayerSetState(s, 2, now);
+    s.castFlag = 1;
+    s.castFrame = now;
+    CastEntry e;
+    e.caster = s.addr;
+    for (int i = 0; i < 5; ++i) e.spells[i] = (i < count) ? spells[i] : 0;
+    e.glyph = glyph;
+    e.nextFrame = now;
+    e.gap = gap;
+    e.targetSelf = targetSelf;
+    castList_.insert(castList_.begin(), e);                // 목록 머리
+    return true;
+}
+
+// spellCastByBook_4FCB80(`GAME4.c:2401~2573`) — 매 틱. 머리부터 돈다
+void Server::SpellCastByBook(uint32_t frame, std::vector<OutPacket>& out) {
+    for (size_t i = 0; i < castList_.size();) {
+        CastEntry& e = castList_[i];
+        auto it = sessions_.find(e.caster);
+        if (it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0) {   // +16 & 0x8020
+            castList_.erase(castList_.begin() + static_cast<long>(i));
+            continue;
+        }
+        Session& s = it->second;
+        if (frame < e.nextFrame) { ++i; continue; }
+        const uint32_t spell = e.spells[e.slot];
+        if (e.phoneme == 0 && !noSpellStart_) {
+            const uint8_t msg[2] = { static_cast<uint8_t>(Op::REPORT_SPELL_START), static_cast<uint8_t>(spell) };
+            Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);   // Kind1 — 시전자에게만
+        }
+        if (static_cast<uint32_t>(phonemeTree_[static_cast<size_t>(e.leaf)].ind) != spell) {
+            // 음소 하나 — 남에게 음소 소리(sub_4FC960 → 10) · 나무를 한 칸 · 사람이면 +184
+            uint8_t ph = 0;
+            if (spell < 137 && e.phoneme < spellDefs_[spell].phonemes.size()) ph = spellDefs_[spell].phonemes[e.phoneme];
+            int next = -1;
+            if (e.leaf >= 0 && ph < 9) next = phonemeTree_[static_cast<size_t>(e.leaf)].next[ph];
+            // PhonemeLeaf.Next 가 nil 이면 정답지는 nil 자리를 가리킨다 — 다음 비교에서 v7(nil 의 첫 u32) 을 읽는다.
+            //   정의가 있는 주문은 음소를 끝까지 따라가면 반드시 그 주문 자리에 닿는다. 없으면 뿌리로 두어 「모름」으로 끝낸다.
+            e.leaf = (next >= 0) ? next : 0;
+            s.castLeaf = e.leaf;
+            ++e.phoneme;
+            e.nextFrame = frame + e.gap;
+            if (next < 0) {
+                // 나무에서 떨어졌다 — 다음 틱에 끝 갈래로(음소 수를 넘기면 정답지도 PhonEnd 뒤 nil)
+                e.phoneme = 0xFF;
+            }
+            if (e.phoneme != 0xFF) { ++i; continue; }
+        }
+        // ⚠ 글리프 갈래(+29 — 마나 선불·+192 목록·다음 칸)는 4-e
+        s.castCursorX = static_cast<float>(s.aimX);        // +220/+224 = playerinfo 571/572
+        s.castCursorY = static_cast<float>(s.aimY);
+        const bool targetSelf = e.targetSelf;
+        castList_.erase(castList_.begin() + static_cast<long>(i));
+        // playerinfo[910] = [12] ? 시전자 : +288(커서 오브젝트) — PlayerSpell 이 쓴다
+        Target tgt;
+        if (targetSelf) tgt.addr = s.addr;
+        else tgt = FindObjectAtCursor(s);
+        spellTarget_ = tgt;
+        PlayerSpell(s, out);
+        s.castFrame = 0;
+        s.castFlag = 0;
+        s.glyphCount = 0;
+    }
+}
+
+// PlayerSpell(player.go:462~533)
+void Server::PlayerSpell(Session& s, std::vector<OutPacket>& out) {
+    bool unknown = true;                                   // ok2
+    int err = 1;                                           // a1
+    const int leaf = s.castLeaf;
+    const uint8_t spell = (leaf > 0) ? static_cast<uint8_t>(phonemeTree_[static_cast<size_t>(leaf)].ind) : 0;
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    if (leaf == 0) {
+        unknown = true;
+    } else if (spell != 0) {
+        if (!quest && (SpellFlags(spell) & 0x20)) {
+            const Target cur = FindObjectAtCursor(s);      // ud.CursorObj(+288)
+            if (!cur.none() && !TargetIsEnemy(s, cur)) {
+                return;                                    // ⚠ 정답지 그대로 — 상태 2·STAT 를 안 건드리고 나간다
+            }
+        }
+        if (s.spellLvl[spell] != 0 || spell == 34) {
+            unknown = false;
+            err = SpellCheckClass(s, spell);
+            if (err == 0) err = CheckPlrCantCastSpell(s, spell, false);
+            if (err != 0) {
+                InformSpell(s, 0, static_cast<uint32_t>(err), out);   // + 소리 PermanentFizzle(10)
+            } else {
+                const int mana = SpellManaTake(s, spell, 1, out);
+                if (mana < 0) {
+                    err = 11;
+                    ++spellsNoMana_;
+                    InformSpell(s, 0, 11, out);            // + 소리 ManaEmpty(10)
+                } else {
+                    SpellArg arg;
+                    arg.obj = spellTarget_;                // Obj3640
+                    if (quest && (SpellFlags(spell) & 0x20) && !arg.obj.none() && !TargetIsEnemy(s, arg.obj))
+                        arg.obj = Target{};
+                    arg.x = s.castCursorX;                 // CursorPos
+                    arg.y = s.castCursorY;
+                    if (CastSpellByUser(spell, -1, s, arg, out)) {
+                        InformSpell(s, 1, spell, out);
+                        ++spells_[spell];
+                    } else {
+                        SpellManaGive(s, mana, out);
+                        err = 8;
+                    }
+                }
+            }
+        }
+    }
+    if (s.moveState == 2) PlayerSetState(s, kPlayerStateIdle, frame_);
+    if (unknown) {
+        // 줄 글 "plyrspel.c:SpellUnknown"(netSendLineMessage_4D9EB0 · `a8` 글 — 서버가 문자열표를 찾아 싣는다) → 10
+    } else if (err != 0) {
+        ReportSpellStat(s, spell, 0, out);
+    } else if (!(SpellFlags(spell) & 0x100000)) {
+        ReportSpellStat(s, spell, 15, out);
+    }
+}
+
+// castSpellByUser4FDD20 · castSpell(spells.go:422~447)
+bool Server::CastSpellByUser(uint8_t spell, int lvl, Session& s, const SpellArg& arg, std::vector<OutPacket>& out) {
+    if (lvl < 0) lvl = SpellPower(s, spell);
+    if (SpellFlags(spell) & 0x20) {
+        // 공격 주문 — 투명(0) 끄기 · 무적(23) 끄기 · 타원 방패 지속 주문 취소(4-d)
+        if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) s.invulnUntilFrame = frame_;
+    }
+    if (!(SpellFlags(spell) & 0x4) || arg.obj.addr == s.addr) return SpellAccept(spell, s, arg, lvl, out);
+    // 겨눈 주문 — createSpellFly_4FDDA0 로 "Magic" 오브젝트를 날린다(4-a2). ⚠ 지금은 날리지 않고 바로 받아들인다(자리표시)
+    return SpellAccept(spell, s, arg, lvl, out);
+}
+
+// spellAccept(spells.go:193~420)
+bool Server::SpellAccept(uint8_t spell, Session& s, const SpellArg& arg, int lvl, std::vector<OutPacket>& out) {
+    if (spell == 0 || spell >= 137 || !spellDefs_[spell].valid) return false;
+    const uint32_t fl = spellDefs_[spell].flags;
+    // Unk8(0x80) — 대상이 있는데 유닛이 아니면 거절 · 지금 대상은 사람·소환수(유닛)뿐
+    // gameCaptureMagic_4FDC10 — CTF 에서 깃발 든 사람에게 CANT_HOLD_CROWN 주문 → 0 · 소리 PermanentFizzle(10)
+    if (!arg.obj.none() && !arg.obj.addr.empty() && (fl & 0x80000)) {
+        for (const auto& f : flags_) if (f.carrier == arg.obj.addr) return false;
+    }
+    if (lvl > 5) lvl = 5;
+    (void)lvl;
+    if (SpellEffectPlaceholder(spell, s, arg, out)) return true;
+    // 효과 함수를 아직 안 옮긴 주문 — 받아들인 것으로 친다(정답지 default: return true 와 같은 쪽) · 세고 적는다
+    ++spellEffectDeferred_;
+    std::printf("[시전] 프레임 %u %s 주문 %u(%s) — 효과 함수 아직 안 옮김(묶음 4-b~4-f)\n", frame_, s.addr.c_str(),
+                spell, SpellName(spell) ? SpellName(spell) : "?");
+    std::fflush(stdout);
+    return true;
+}
+
+// ★ 자리표시 효과 — 옛 시전 자리에 있던 투사체(27·24·43)·소환(75~87)을 그대로 옮겨 둔다. 4-c·4-d·4-f 에서 걷어낸다.
+bool Server::SpellEffectPlaceholder(uint8_t spell, Session& s, const SpellArg& arg, std::vector<OutPacket>& out) {
+    (void)out;
+    if (const uint16_t stype = SummonType(spell)) {
+        Creature k;
+        k.owner = s.addr;
+        k.type = stype;
+        k.netCode = nextShotNetCode_++;
+        if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+        k.facing = s.facing;
+        const double rad = s.facing * 3.14159265358979 / 128.0;
+        k.x = s.x + kPetReach * std::cos(rad);
+        k.y = s.y + kPetReach * std::sin(rad);
+        k.health = static_cast<uint16_t>(TuningFor(k.type).health);
+        pets_.push_back(k);
+        return true;
+    }
+    const int dmg = SpellDamage(spell);
+    if (dmg <= 0) return false;
+    if (arg.obj.addr == s.addr) {
+        ++spellsOnSelf_;
+        Damage(s.addr, dmg, out, s.addr);                  // 자기에게 건 것 — 점수는 안 준다
+        return true;
+    }
+    const double rad = AimRadians(s);
+    Projectile p;
+    p.owner = s.addr;
+    p.spell = spell;
+    p.x = s.x;
+    p.y = s.y;
+    p.launchX = s.x;
+    p.launchY = s.y;
+    p.vx = kProjectileSpeed * std::cos(rad);
+    p.vy = kProjectileSpeed * std::sin(rad);
+    p.damage = dmg;
+    p.facing = s.facing;
+    p.netCode = nextShotNetCode_++;
+    if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+    shots_.push_back(p);
+    return true;
+}
+
 // 든 무기의 종류 번호 — 죽음 알림의 무기 그림(3-d). 기본 장비는 직업 표, 시험용 바꿔 들기는 main 이 채운 이름 표
 uint16_t Server::WeaponWireOf(const Session& s) const {
     if (s.debugWeapon < 0) return LoadoutFor(s.charClass).weapon;
@@ -4089,12 +4340,17 @@ void Server::PlayerInputAttack(Session& s, uint32_t frame, std::vector<OutPacket
 //   원 몸이면 (x, y−z) 중심 반지름 안(int 로 자른 r²) · 여럿이면 y+z 가 가장 큰 것(화면에서 앞)
 bool Server::CursorOnFriend(const Session& s) const {
     if (questTotal_ > 0 || questStage_ > 0) return false;   // gameFlags 4096
-    if (!s.hasAim) return false;
+    const Target t = FindObjectAtCursor(s);
+    if (t.none()) return false;
+    return !TargetIsEnemy(s, t);
+}
+
+// findObjectAtCursor_54AF40 — 커서 둘레 100 · 시야선 · 몸 안에 커서 · 가장 아래(y 큰) 것. (3-a 에서 CursorOnFriend 안에 옮긴 것을 떼어 냄 · 4-a)
+Target Server::FindObjectAtCursor(const Session& s) const {
+    Target found;
+    if (!s.hasAim) return found;
     const float cx = static_cast<float>(s.aimX), cy = static_cast<float>(s.aimY);
     float best = 0.0f;
-    enum { None, Player, Pet } kind = None;
-    const Session* bestP = nullptr;
-    const Creature* bestK = nullptr;
     auto consider = [&](float ox, float oy, float r) -> bool {
         const float dx0 = ox - cx, dy0 = oy - cy;
         if (dx0 * dx0 + dy0 * dy0 > 100.0f * 100.0f) return false;         // EachObjInCircle 100
@@ -4112,21 +4368,30 @@ bool Server::CursorOnFriend(const Session& s) const {
         const Session& o = kv.second;
         if (&o == &s || !o.inGame || o.respawnAtFrame != 0 || o.observer) continue;   // 0x8020 · 관전(3680&1)
         if (consider(static_cast<float>(o.posX), static_cast<float>(o.posY), static_cast<float>(kBodyRadius))) {
-            kind = Player; bestP = &o;
+            found = Target{ o.addr, -1 };
         }
     }
-    for (const auto& k : pets_) {
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        const Creature& k = pets_[i];
         auto tb = typeBodies_.find(k.type);
         if (tb == typeBodies_.end() || tb->second.shape != 2) continue;   // 상자 몸 몬스터는 map_57B850(아직 없음)
-        if (consider(static_cast<float>(k.x), static_cast<float>(k.y), tb->second.r)) { kind = Pet; bestK = &k; }
+        if (consider(static_cast<float>(k.x), static_cast<float>(k.y), tb->second.r)) found = Target{ std::string(), static_cast<int>(i) };
     }
-    if (kind == Player) return !IsEnemyTo(s, *bestP);
-    if (kind == Pet) {
-        if (bestK->owner.empty()) return false;                // 맵 몬스터 — 사람에게 늘 적
-        if (bestK->owner == s.addr) return true;               // 내 소환수
-        return !IsEnemyTo(s.addr, bestK->owner);
+    return found;
+}
+
+// IsEnemyTo(사람, 대상) — 사람이면 팀 규칙 · 소환수면 주인 기준(맵 몬스터는 늘 적 · 내 것은 친구)
+bool Server::TargetIsEnemy(const Session& s, const Target& t) const {
+    if (!t.addr.empty()) {
+        if (t.addr == s.addr) return false;
+        auto it = sessions_.find(t.addr);
+        return it != sessions_.end() && IsEnemyTo(s, it->second);
     }
-    return false;
+    if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return false;
+    const Creature& k = pets_[static_cast<size_t>(t.pet)];
+    if (k.owner.empty()) return true;
+    if (k.owner == s.addr) return false;
+    return IsEnemyTo(s.addr, k.owner);
 }
 
 // `GAME4_3.c:3855` playerAttack — 맨손(`:4020~4066`) · 무기(`:4067~4419`) · 끝(LABEL_159 `:4420~4439`). 참 = 아직 공격 중.
@@ -4660,8 +4925,11 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     }
 
     // ── 사람을 걷게 하고 때리게 한다 (묶음 2-a · 3-a) — 걸음마다 제 프레임으로 ──
-    for (int step = 0; step < ticks; ++step)
+    //    그 틱의 시전 목록도 함께(spellBookReact_4FCB70 — 정답지는 유닛 갱신 뒤 · server.go:341)
+    for (int step = 0; step < ticks; ++step) {
         UpdatePlayerMovement(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
+        SpellCastByBook(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
+    }
 
     // ── 불려 나온 것들을 움직인다 ──
     // 부른 사람 편이다 — **부른 사람은 안 때린다.** 그게 없으면 부르자마자 자기가 맞는다.

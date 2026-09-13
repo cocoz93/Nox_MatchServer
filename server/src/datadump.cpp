@@ -109,10 +109,13 @@ int main(int argc, char** argv) {
             std::printf("thing.bin 을 못 읽음: %s (%s)\n", path.c_str(), tdb.Error().c_str());
             return 1;
         }
-        std::printf("[주문] %zu개 — 이름 · 마나 · 미상2\n", tdb.Spells().size());
-        for (const auto& s : tdb.Spells())
-            std::printf("  %-28s 마나 %3u   %3u %3u\n", s.name.c_str(), s.mana,
-                        s.rest[0], s.rest[1]);
+        std::printf("[주문] %zu개 — 이름 · 마나 · 값 · 깃발 · 음소\n", tdb.Spells().size());
+        for (const auto& s : tdb.Spells()) {
+            std::printf("  %-28s 마나 %3u  값 %5u  깃발 %08x  음소", s.name.c_str(), s.mana,
+                        s.price, s.flags);
+            for (uint8_t ph : s.phonemes) std::printf(" %u", ph);
+            std::printf("\n");
+        }
         return 0;
     }
     // `--pickup` — **우리 기준(CLASS)과 클라 기준(WEIGHT)이 어긋나는지** 잰다.

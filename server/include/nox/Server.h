@@ -302,6 +302,14 @@ struct Session {
     } lastHit;
     // +232 마지막으로 알린 방어값 — playerReportAnything 이 +228 과 다르면 `49` 를 보낸다(3-d)
     float armorReported = 0.0f;
+    // ★ 시전(묶음 4-a · spellByBookInsert_4FE340 · spellCastByBook_4FCB80) — 갱신 데이터 자리
+    uint8_t castFlag = 0;          // +188 — 시전 중 1
+    uint32_t castFrame = 0;        // +216 — 시전을 넣은 프레임. 0 이 아니면 새 시전을 안 받는다
+    int castLeaf = 0;              // +184 — 음소 나무에서 지금 자리(0 = 뿌리)
+    uint32_t glyphSpells[5] = {};  // +192~+208 — 글리프에 넣을 주문(마나 선불)
+    uint8_t glyphCount = 0;        // +212
+    float castCursorX = 0, castCursorY = 0;   // +220/+224 — 시전이 끝난 순간의 커서 자리(playerinfo 571/572)
+    uint8_t spellLvl[137] = {};    // playerinfo +3696 SpellLvl — 온라인은 전부 3(serverSetAllSpells, EngineAdmin)
     bool hasAim = false;
     int aimX = 0, aimY = 0;
     uint32_t aimAtFrame = 0;
@@ -1154,6 +1162,7 @@ public:
         s.strength = StrengthOnline(cls);
         s.health = s.maxHealth;
         s.mana = s.maxMana;
+        for (int k = 1; k < 137; ++k) s.spellLvl[k] = 3;   // 4-a — 온라인 serverSetAllSpells
         s.x = 1000;
         s.y = 1000;
         s.observer = observer;
@@ -1319,6 +1328,23 @@ public:
     // ⚠⚠ **표가 비면 모든 주문이 공짜가 된다.** 그건 「비용이 0」이 아니라
     //   「표를 못 읽었다」는 뜻이다. 그래서 개수를 밖에서 볼 수 있게 둔다 —
     //   기동 로그가 0 을 찍으면 파일을 못 읽은 것이다.
+    // ★ 묶음 4-a — 주문 정의(thing.bin SPEL 한 칸). 음소 나무도 여기서 자란다(server/spells.go createSpellFrom).
+    //   ⚠ SetSpellCost 만 부른 주문은 정의가 없어 **시전이 안 된다**(정답지도 DefByInd nil → 코드 10).
+    void SetSpellDef(uint8_t spell, uint8_t mana, uint32_t flags, const std::vector<uint8_t>& phonemes);
+    uint32_t SpellFlags(uint8_t spell) const { return spell < 137 && spellDefs_[spell].valid ? spellDefs_[spell].flags : 0u; }
+    size_t CastPending() const { return castList_.size(); }
+    // 시험용 — 직업만 바꾼다(스탯은 그대로 · 주문 직업 거르기를 보려고)
+    void DebugSetClass(const std::string& addr, CharClass cls) {
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) it->second.charClass = cls;
+    }
+    // 시험용 — 서버 시계(마지막 틱 ms). 시험 도우미가 시계를 이어 돌릴 때
+    uint32_t DebugNowMs() const { return lastTickMs_; }
+    // 시험용 — 그 사람이 시전 중인가(+216)
+    bool DebugCasting(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it != sessions_.end() && it->second.castFrame != 0;
+    }
     void SetSpellCost(uint8_t spell, uint8_t mana) { spellCost_[spell] = mana; }
     size_t SpellCostCount() const { return spellCost_.size(); }
     uint8_t SpellCost(uint8_t spell) const {
@@ -1520,6 +1546,49 @@ private:
     void PlayerReportAnything(Session& s, std::vector<OutPacket>& out);           // playerReportAnything_4D9900 — 방어값 갈래
     void TryCollide(Session& s, uint16_t code, std::vector<OutPacket>& out);      // sdecode `0x7B` MSG_TRY_COLLIDE
     uint16_t WeaponWireOf(const Session& s) const;
+    // ── 시전 틀 (묶음 4-a) ──
+    struct SpellDef {
+        bool valid = false;
+        bool enabled = true;             // spellIsEnabled — 서버 설정으로 끌 수 있다(기본 켜짐)
+        uint8_t mana = 0;
+        uint32_t flags = 0;
+        std::vector<uint8_t> phonemes;   // 파일 음소 + End(4)
+    };
+    struct PhonemeNode {                 // server.PhonemeLeaf
+        int ind = 0;                     // 끝이면 주문 번호
+        int next[9] = { -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+    };
+    struct CastEntry {                   // magicEnt (spellByBookInsert_4FE340)
+        std::string caster;              // [1] — 사람 주소(몬스터 시전은 묶음 6)
+        uint32_t spells[5] = {};         // [2..6]
+        uint8_t slot = 0;                // +28 지금 주문 칸
+        bool glyph = false;              // +29 글리프 섞임
+        int leaf = 0;                    // +32 음소 나무 자리
+        uint8_t phoneme = 0;             // +36 음소 번호
+        uint32_t nextFrame = 0;          // +40
+        uint32_t gap = 3;                // +44 음소 간격
+        bool targetSelf = false;         // +48 (TRY_SPELL 끝 바이트)
+    };
+    struct SpellArg {                    // server.SpellAcceptArg
+        Target obj;
+        float x = 0, y = 0;
+    };
+    bool SpellByBookInsert(Session& s, const uint32_t spells[5], int count, uint32_t gap, bool targetSelf, std::vector<OutPacket>& out);
+    void SpellCastByBook(uint32_t frame, std::vector<OutPacket>& out);
+    void PlayerSpell(Session& s, std::vector<OutPacket>& out);                       // player.go:462
+    bool CastSpellByUser(uint8_t spell, int lvl, Session& s, const SpellArg& arg, std::vector<OutPacket>& out);
+    bool SpellAccept(uint8_t spell, Session& s, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);   // spells.go:193
+    int SpellCheckClass(const Session& s, uint8_t spell) const;                        // sub_4FD0E0
+    int CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) const;      // checkPlrCantCastSpell_4FD150
+    int SpellManaTake(Session& s, uint8_t spell, int costKind, std::vector<OutPacket>& out);   // sub_4FCF90
+    void SpellManaGive(Session& s, int mana, std::vector<OutPacket>& out);             // sub_4FD030
+    int SpellPower(const Session& s, uint8_t spell) const;                             // spellGetPower_4FE7B0
+    void InformSpell(Session& s, uint8_t code, uint32_t val, std::vector<OutPacket>& out);   // netInformTextMsg 0/1
+    void ReportSpellStat(Session& s, uint32_t spell, uint8_t stat, std::vector<OutPacket>& out);   // netReportSpellStat_4D9630
+    void SendPriMsg(Session& s, const char* key, std::vector<OutPacket>& out);          // netPriMsgToPlayer_4DA2C0 `a9 0f`
+    Target FindObjectAtCursor(const Session& s) const;                                 // findObjectAtCursor_54AF40
+    bool TargetIsEnemy(const Session& s, const Target& t) const;                       // IsEnemyTo(사람, 대상)
+    bool SpellEffectPlaceholder(uint8_t spell, Session& s, const SpellArg& arg, std::vector<OutPacket>& out);
     static uint32_t ArmorEquipOf(const Session& s) { return nox::ArmorEquipOf(s.charClass); }
     // 두 쪽(주인 기준)이 적인가 — `server/object.go:1667` IsEnemyTo 를 사람·소환수·맵 몬스터에 맞춘 판.
     //   wild = 주인 없는 몬스터(자기 자신이 주인)
@@ -1754,6 +1823,11 @@ private:
     bool debugHurtFront_ = false;      // 진단 --debug-hurt-front — 앞 30 에서 때린 것으로
     std::vector<std::pair<float, float>> playerStarts_;   // 묶음 3-c PlayerStart 자리
     bool autoRespawn_ = false;         // 묶음 3-c 자동 부활(정답지 기본 꺼짐)
+    SpellDef spellDefs_[137];                      // 묶음 4-a 주문 정의
+    std::vector<PhonemeNode> phonemeTree_ = std::vector<PhonemeNode>(1);   // [0] = 뿌리
+    std::vector<CastEntry> castList_;              // 묶음 4-a 시전 목록 — [0] 이 머리(가장 나중에 넣은 것)
+    Target spellTarget_;                           // 묶음 4-a playerinfo +3640(Obj3640) — 시전이 끝난 순간 고른 대상
+    unsigned long long spellEffectDeferred_ = 0;   // 효과 함수를 아직 안 옮긴 주문이 받아들여진 수
     std::vector<MapObjRef> mapObjects_;            // 묶음 3-d 맵 오브젝트 번호·extent·종류
     std::map<uint16_t, std::string> collideFn_;    // 묶음 3-d 종류 → 충돌 함수 이름
     std::map<uint32_t, uint16_t> weaponWire_;      // 묶음 3-d 무기 클래스 비트 → 종류 번호

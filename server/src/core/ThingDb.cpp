@@ -180,28 +180,33 @@ void SkipAVNT(Cur& c) {
 //
 // ★ 이제 **건너뛰지 않고 읽는다** — 이름과 이름 뒤 세 바이트를 담는다.
 //   **첫 바이트가 마나 비용이다** — 정품 콘솔 `list spells` 115줄과 전수 일치
-//   (`_evidence/CONSOLE_list_spells.txt`, 2026-09-10). 나머지 둘은 뜻을 모른다.
+//   (`_evidence/CONSOLE_list_spells.txt`, 2026-09-10).
+//   ★ 2026-09-13 묶음 4-a — 뒤 둘은 값(U16)이었다. 칸 전체(음소·깃발·제목·소리)를 담는다(ThingDb.h SpellRaw 주석).
 void SkipSPEL(Cur& c, std::vector<SpellRaw>* outSpells) {
     const uint32_t n = c.U32();
+    auto soundName = [&c]() {
+        std::string s = c.Str8();
+        return s == "NULL" ? std::string() : s;
+    };
     for (uint32_t i = 0; i < n && !c.bad; ++i) {
         SpellRaw sr;
-        sr.name    = c.Str8();
-        sr.mana    = c.U8();
-        sr.rest[0] = c.U8();
-        sr.rest[1] = c.U8();
-        if (outSpells && !c.bad) outSpells->push_back(sr);
+        sr.name  = c.Str8();
+        sr.mana  = c.U8();
+        sr.price = c.U16();
         const uint8_t sz = c.U8();
         for (int j = 0; j < sz && !c.bad; ++j) {
             const uint8_t v = c.U8();
             if (v >= 9) { c.Fail("invalid spell code " + std::to_string(v)); return; }
+            sr.phonemes.push_back(v);
         }
         for (int k = 0; k < 2; ++k) SkipImageRef(c);
-        c.Skip(4);
-        c.SkipBytes8();
-        c.SkipBytes16();
-        c.SkipBytes8();
-        c.SkipBytes8();
-        c.SkipBytes8();
+        sr.flags = c.U32();
+        sr.title = c.Str8();
+        c.SkipBytes16();                   // 설명
+        sr.castSound = soundName();
+        sr.onSound = soundName();
+        sr.offSound = soundName();
+        if (outSpells && !c.bad) outSpells->push_back(sr);
     }
 }
 

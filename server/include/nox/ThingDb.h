@@ -30,10 +30,18 @@ namespace nox {
 //   여기서 읽은 115개가 **값 하나까지 다 같다**(`proto_test TestSpellMana`).
 //   ⚠ 콘솔은 보이는 이름(`Ring of Fire`) 차례고 파일은 속이름(`SPELL_CLEANSING_FLAME`)
 //     차례라 줄 순서가 다르다. 그래서 **정렬해서 전수 대조**한다.
+// ★ 2026-09-13 묶음 4-a — 칸 전체를 정답지 순서로 담는다(opennox libs `things/spell.go` ReadSpellsSect):
+//   Str8 이름 · U8 마나 · U16 값 · U8 음소 수 · 음소 U8×n(0~8) · ImageRef×2 · U32 깃발 · Str8 제목 · Str16 설명
+//   · Str8 시전 소리 · Str8 켜짐 소리 · Str8 꺼짐 소리("NULL" 이면 없음)
+//   ⚠ 전에 「뜻 미상 두 바이트」로 둔 것은 **값(U16)** 이었다.
 struct SpellRaw {
     std::string name;      // 속이름 — `SPELL_FIREBALL` 꼴
     uint8_t mana = 0;      // ⭕ 마나 비용
-    uint8_t rest[2] = { 0, 0 };   // 뜻 미상. 값이 흩어져 있어 짐작하지 않는다
+    uint16_t price = 0;    // 값(가게)
+    std::vector<uint8_t> phonemes;   // 몸짓 음소(0~8, 4 = End) — 파일 그대로(End 는 서버가 덧붙인다)
+    uint32_t flags = 0;    // things.SpellFlags(0x20 OFFENSIVE · 0x4 TARGETED …)
+    std::string title;
+    std::string castSound, onSound, offSound;   // 소리 이름(묶음 10)
 };
 
 // WALL 섹션 한 칸 — 벽 재질 정의 (2026-09-13 묶음 2-b).
