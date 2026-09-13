@@ -245,6 +245,25 @@ inline Loadout LoadoutFor(CharClass c) {
     }
 }
 
+// ★ 2026-09-13 묶음 3-e — 입은 것 하나의 ARMOR_VALUE(⭕ modifier.bin, 위 주석 값). 갑옷 아니면 0.
+inline float ItemArmorValue(uint16_t wire) {
+    switch (wire) {
+        case kItemStreetShirt: case kItemStreetPants: case kItemStreetSneakers: return 0.01f;
+        case kItemWizardRobe: return 0.2f;
+        case kItemWoodenShield: return 0.0f;
+        default: return 0.0f;
+    }
+}
+// 플레이어 +228 방어값 — `nox_xxx_recalculateArmorVal_53E300`(GAME4_3.c:7327): 입은 갑옷의 값을 **float 로** 더하고
+//   1.0(blob_581450 9512) 을 넘으면 1.0. ⚠ 지금은 직업 기본 장비(주워 입기는 묶음 5). 마법 효과(+76 콜백)는 5.
+inline float ArmorValueFloat(CharClass c) {
+    const Loadout l = LoadoutFor(c);
+    float v = 0.0f;
+    for (int i = 0; i < l.count && i < 4; ++i) v = ItemArmorValue(l.items[i]) + v;
+    if (v > 1.0) v = 1.0f;
+    return v;
+}
+
 // 든 무기의 스탯. 맨손이면 nullptr.
 inline const WeaponStats* WeaponOf(CharClass c) {
     if (LoadoutFor(c).weapon == kItemLongsword) return &kWeapons[2];   // Longsword

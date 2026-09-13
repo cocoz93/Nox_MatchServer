@@ -775,8 +775,20 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
     }
 }
 
+bool Server::OwnersEnemy(const std::string& a, bool aWild, const std::string& b, bool bWild) const {
+    // `server/object.go:1667~1741` 가운데 지금 있는 것들 — 같은 주인 → 적 아님 · 같은 팀 → 적 아님 ·
+    //   한쪽이라도 팀 있음 → 적 · 둘 다 몬스터 → 적 아님 · 그 밖 → 적
+    if (aWild && bWild) return false;                      // 둘 다 맵 몬스터(팀 없음)
+    if (aWild || bWild) return true;                       // 사람(또는 사람 소환수) 대 맵 몬스터
+    if (a == b) return false;                              // 같은 주인
+    return IsEnemyTo(a, b);                                // 사람 대 사람(퀘스트 규칙은 IsEnemyTo 주석)
+}
+
+// 피해 함수(+716) — 정답지 이식(묶음 3-e, 2026-09-13).
+//   ⚠ 옮기지 않은 갈래(다른 조각): 방패·대검·지팡이 막기(3-e2 — 상태 15/16 · 18~21) · 되받아치기 버프 27 · 불/전기 보호 · 흡혈 ·
+//     전기 방패 22 · 마법 방패 26(주문 4) · 입은 것 닳기·방어 마법 효과(아이템 5) · 스켈레톤 막기(몬스터 행동 21 · AI 6)
 void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
-                        const std::string& by, DamageKind kind) {
+                        const std::string& by, uint8_t dtype) {
     if (t.none() || dmg <= 0) return;
     // 진단 임프(`--debug-own-pet`)는 맞지 않는다 — 판정 사진을 찍기 전에 몬스터에게 죽었다(09-13, 갱신에 프레임 1920~2010 만 실림 — 약 3초).
     if (debugOwnPetNetCode_ != 0 && !debugPetWild_ && t.pet >= 0 &&
@@ -786,23 +798,99 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
     //   실클라 런이 「맞음 0」으로 나와 **싸움이 안 붙은 것으로 오판**했다(09-10).
     //   갈라 세야 「안 맞았다」와 「투사체만 안 맞았다」가 구분된다.
     ++hurts_;
+    const bool byWild = by.empty();                        // 주인 없는 것이 때림
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);   // gameFlags 4096
+
     if (t.pet < 0) {
-        // ★ 사람이면 **입은 것으로 깎는다** — 방어합은 직업 기본 장비에서 온다
-        //   (⭕ modifier.bin ARMOR_VALUE: 평상복 각 0.01 · 로브 0.20 · 나무방패 0.0).
-        //   ⚠ 아직 「입은 것」을 세션이 따로 안 들고 있어 직업 기본 장비로 본다.
-        //     주워 입기를 붙이면 그때 세션 값으로 바꾼다.
         auto vi = sessions_.find(t.addr);
-        const double armor = (vi != sessions_.end())
-                                 ? LoadoutFor(vi->second.charClass).armorSum : 0.0;
-        Damage(t.addr, ApplyArmor(dmg, armor, kind), out, by);
+        if (vi == sessions_.end()) return;
+        Session& s = vi->second;
+        // ── nox_server_handler_PlayerDamage_4E17B0 ──
+        if (!s.inGame || s.respawnAtFrame != 0) return;    // +16 & 2 · DEAD
+        if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) { ++invulnBlocked_; return; }   // 버프 23
+        if (s.observer) return;                            // 3680 & 1
+        // 방어 — 종류마다 방어값(+228)을 먹는 정도가 다르고, 깎인 피해의 소수부는 +84 에 이월된다
+        const float armor = ArmorValueFloat(s.charClass);
+        auto carry = [&](float f) {
+            const float a3 = static_cast<float>(static_cast<double>(f) + static_cast<double>(s.dmgRemainder));
+            const int v = static_cast<int>(a3);            // nox_float2int = (int)
+            s.dmgRemainder = static_cast<float>(static_cast<double>(a3) - static_cast<double>(v));
+            return v;
+        };
+        int hp;
+        switch (dtype) {
+            case 0: case 3: case 7: case 8: case 10: case 11:
+                hp = carry(static_cast<float>((1.0 - static_cast<double>(armor)) * static_cast<double>(dmg)));
+                break;
+            case 2:
+                hp = carry(static_cast<float>((1.0 - static_cast<double>(armor) * 0.5) * static_cast<double>(dmg)));
+                break;
+            case 9: case 17:
+                // sub_4E2220 — 1 + 금속 갑옷 몫. 기본 장비엔 금속이 없어 1(아이템 5 에서 채움)
+                hp = carry(static_cast<float>(1.0 * static_cast<double>(dmg)));
+                break;
+            default:                                       // 1·12·4·5·6·14·15·16 · 그 밖 — 그대로
+                hp = dmg;
+                break;
+        }
+        if (dmg > 0 && hp == 0) hp = 1;                    // `v33 > 0 && !a1`
+        if (quest) {                                       // × sub_4E40B0(blob 202032 = 1.0)
+            const int v44 = hp;
+            hp = static_cast<int>(static_cast<float>(1.0 * static_cast<double>(hp)));
+            if (v44 > 0 && hp < 1) hp = 1;
+        }
+        // ── nox_xxx_damageDefaultProc_4E0B30 ──
+        // 편 거르기 — 친선 피해 설정(게임플레이 깃발 1, 기본 꺼짐)이 꺼져 있으면 때린 쪽 주인이 적이 아닐 때 무시.
+        //   단 자기가 자기를 때린 것은 퀘스트가 아니면 들어간다(`a1 != v12 || gameFlags 4096`).
+        if (!OwnersEnemy(s.addr, false, by, byWild) && (by != s.addr || quest)) return;
+        // 한 대에 20 넘게 맞으면 움찔(상태 30 · 공격 중 1 · 방패 올리는 중 15 는 아님)
+        if (hp >= 20 && s.moveState != kPlayerStateAttack && s.moveState != 15) PlayerSetState(s, 30, frame_);
+        Damage(t.addr, hp, out, by);                       // unitDamageClear_4EE5E0
         return;
     }
 
     const size_t i = static_cast<size_t>(t.pet);
     if (i >= pets_.size()) return;
     Creature& k = pets_[i];
-    if (k.health > dmg) {
-        k.health = static_cast<uint16_t>(k.health - dmg);
+    const auto tb = typeBodies_.find(k.type);
+    const PhysBody* body = (tb != typeBodies_.end()) ? &tb->second : nullptr;
+    int amount = dmg;
+    // ── 몬스터 피해 함수(thing.bin DAMAGE) ──
+    if (body) {
+        switch (body->damageFn) {
+            case kDmgMechGolem: if (dtype == 9 || dtype == 17) amount = 2 * dmg; break;   // sub_4E24E0
+            case kDmgFlammable: if (dtype == 1 || dtype == 12 || dtype == 7) amount = 9999999; break;   // 4E2520
+            case kDmgBlackPowder:                                                          // 4E2560
+                if (dtype != 1 && dtype != 12 && dtype != 2 && dtype != 0) return;
+                amount = 999999;
+                break;
+            default: break;                                // Default · Stone · Skeleton(막기는 AI 6) · Player
+        }
+    }
+    // ── nox_xxx_damageDefaultProc_4E0B30 ──
+    if (!OwnersEnemy(k.owner, k.owner.empty(), by, byWild)) return;   // 편 거르기(자기가 자기를 때리는 경우는 없음)
+    int v15 = dtype;
+    if (body) {
+        const uint32_t sub = body->subclass;
+        if ((sub & 0x200) && v15 == 5) return;             // 독 면역
+        if (sub & 0x400) {                                 // 불 면역 — 1·12 무시 · 7 은 절반
+            if (v15 == 1 || v15 == 12) return;
+            if (v15 == 7) amount /= 2;
+        } else if (sub & 0x800) {                          // 전기 면역
+            if (v15 == 9 || v15 == 17) return;
+        }
+    }
+    if (v15 == 1 || v15 == 12 || v15 == 7) {               // 불 보호(버프 — 주문 4) 몫 · 0 이면 1
+        amount = static_cast<int>(static_cast<float>(1.0 * static_cast<double>(amount)));
+        if (!amount) amount = 1;
+    }
+    if (v15 == 9 || v15 == 17) {                           // 전기 보호 몫 · 0 이면 1
+        amount = static_cast<int>(static_cast<float>(1.0 * static_cast<double>(amount)));
+        if (!amount) amount = 1;
+    }
+    // unitDamageClear_4EE5E0
+    if (k.health > amount) {
+        k.health = static_cast<uint16_t>(k.health - amount);
         // ★ R4 — 불려 나온 것의 체력이 바뀌었다. **주인에게만** 흘러간다
         //   (`FlushPending` 이 `IsEnemyTo` 로 거른다 — 남의 소환수는 적이라 안 간다).
         MarkDirty(k.netCode, PendingReport::What::UnitHealth);
@@ -3207,6 +3295,7 @@ uint8_t Server::PlayerAnimByte(const Session& s) {
             return s.attackAnim;
         }
         case kPlayerStateIdle: return (equip & 0x400) ? 0x26 : kAnimIdle;   // 대검이면 GREAT_SWORD_IDLE(`:1756~1758`)
+        case 30: return 52;                                                  // 움찔 RECOIL(`:1793`)
         default: return kAnimIdle;
     }
 }
@@ -3280,6 +3369,11 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                     s.attackAnim = 0;
                 }
             }
+        } else if (canMove && s.moveState == 30) {
+            // 움찔(3-e) — `object_update.go:454~461` RECOIL(52) 칸이 끝나면 13
+            const int frames = playerAnimFrames_[52][0], hold = playerAnimFrames_[52][1];
+            s.animFrame = static_cast<uint8_t>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
+            if (s.animFrame >= frames) PlayerSetState(s, kPlayerStateIdle, frame);
         }
         // ② 조작(ImplB) — 목록이 비었으면 아무것도 안 한다(`object_update.go:485`)
         if (canMove && s.inputThisTick) {
@@ -3340,6 +3434,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             for (const auto& k : pets_) {
                 auto tb = typeBodies_.find(k.type);
                 if (tb == typeBodies_.end()) continue;   // 몸을 모르는 종류는 안 부딪힌다(지어내지 않는다)
+                if (!tb->second.hasCollide || (tb->second.shape != 2 && tb->second.shape != 3)) continue;   // COLLIDE 없음 · 몸 없음
                 double ox0, oy0, ox1, oy1;
                 BodyRect(tb->second, k.x, k.y, ox0, oy0, ox1, oy1);
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
@@ -3798,9 +3893,8 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
         if (!ai.hitsOverlap && (tflags & 0x8)) return;
         hitFlag = true;                                     // 재질 NONE(0x4000) 이 아니면 — 재질은 아직 안 읽는다
         if (!MapTraceRay(ax, ay, tx, ty, 0x5)) return;
-        const DamageKind dk = (ai.type == 2) ? DamageKind::HalfArmor : DamageKind::Physical;
         if (kind == Player) {
-            HurtTarget(Target{ addr, -1 }, ai.dmg, out, s.addr, dk);
+            HurtTarget(Target{ addr, -1 }, ai.dmg, out, s.addr, ai.type);
             auto it = sessions_.find(addr);
             if (!ai.weapon && ai.anim == kAnimPunchHook && it != sessions_.end()) {
                 // 훅 — 맞은 쪽 ForceVec += (맞은 자리 − 때린 자리) × (10 × 20 ÷ 질량) ÷ (거리 + 0.1)
@@ -3812,7 +3906,7 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
                 o.forceY += static_cast<float>(static_cast<double>(dpy) * f / r);
             }
         } else if (kind == Pet) {
-            HurtTarget(Target{ std::string(), idx }, ai.dmg, out, s.addr, dk);
+            HurtTarget(Target{ std::string(), idx }, ai.dmg, out, s.addr, ai.type);
             // ⚠ 훅 힘 — 소환수는 아직 물리가 없다(묶음 6)
         }
         // 장애물 — 피해 함수가 없는 것(나무·바위). 부서지는 것은 묶음 5·9.
@@ -4056,12 +4150,13 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 //   읽었다 — 주석에는 「p 는 이미 없다」고 적어 놓고 그대로 썼다.
                 const int dmg = p.damage;
                 const std::string owner = p.owner;
+                const uint8_t spellId = p.spell;
                 SendProjectileFx(p, out);       // 맞은 자리에서 그린다
                 shots_.erase(shots_.begin() + static_cast<long>(i));
                 ++hits_;
-                // 주문 피해는 **방어를 안 탄다** — 파이어볼 직격이 종류 1,
-                // 에너지볼트·연쇄번개가 전기다(GameBalance.h DamageKind 주석).
-                HurtTarget(hit, dmg, out, owner, DamageKind::Ignores);
+                // 주문 피해 종류 — 파이어볼 직격이 1(불), 에너지볼트·연쇄번개가 9(전기).
+                //   ⚠ 주문 효과 정답지는 묶음 4. 여기선 피해 함수(3-e)에 넘길 종류 번호만 맞춘다.
+                HurtTarget(hit, dmg, out, owner, static_cast<uint8_t>(spellId == 27 ? 1 : 9));
                 gone = true;
             }
             if (!gone) ++i;
@@ -4078,6 +4173,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     // 진단 둘이 함께 쓰는 「첫 사람이 들어온 프레임」.
     {
         for (const auto& kv : sessions_) if (kv.second.inGame) { if (firstInGameFrame_ == 0) firstInGameFrame_ = frame_; break; }
+    }
+    // ★ 진단(묶음 3-e) — N 틱마다 관전 아닌 첫 사람에게 주인 없는 것의 칼 피해 25. 움찔(20 이상)·체력 막대를 화면으로 본다.
+    if (debugHurtEvery_ > 0 && firstInGameFrame_ != 0 && frame_ > firstInGameFrame_ &&
+        (frame_ - firstInGameFrame_) % debugHurtEvery_ < static_cast<uint32_t>(ticks)) {
+        for (auto& kv : sessions_) {
+            Session& s = kv.second;
+            if (!s.inGame || s.observer || s.respawnAtFrame != 0) continue;
+            const uint16_t before = s.health;
+            HurtTarget(Target{ kv.first, -1 }, 25, out, std::string(), 0);
+            std::printf("[진단] 프레임 %u 에 %s 피해 25(종류 0) → 체력 %u→%u · 이월 %.2f · 상태 %u\n", frame_, kv.first.c_str(),
+                        before, s.health, s.dmgRemainder, s.moveState);
+            std::fflush(stdout);
+            break;
+        }
     }
     // ★ 진단 — 첫 사람이 들어오고 N 틱 뒤 **그 사람 소유 임프**를 사람 자리에 만들어 고정한다
     //   (`--debug-own-pet N`, 2026-09-13).

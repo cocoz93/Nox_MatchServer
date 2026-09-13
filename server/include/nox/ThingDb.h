@@ -95,6 +95,10 @@ struct ThingInfo {
     //     `PotionUse`·`ConsumeUse` 뿐**이고, `WandUse 20` 의 20 은 회복이 아니다.
     std::string useHandler;
     int useArg = 0;
+    // ★ 맞았을 때 부르는 피해 함수 이름(DAMAGE = DefaultDamage 꼴 · 묶음 3-e). 없으면 빈 문자열.
+    //   정답지 `legacy/object_damage.go` 등록표: DefaultDamage · PlayerDamage · SkeletonDamage · StoneDamage ·
+    //   MechGolemDamage · FlammableDamage · BlackPowderDamage · ArmorDamage · WeaponDamage · BallDamage · MonsterGeneratorDamage
+    std::string damageFn;
 };
 
 // '+' 로 이은 이름 목록 → 비트 (2026-09-13 묶음 2-c). 이름 순서 = 비트 순서

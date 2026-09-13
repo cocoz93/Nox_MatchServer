@@ -346,11 +346,11 @@ std::vector<uint8_t> Body(const nox::OutPacket& p) {
 //   맞는 쪽도 위저드라 방어합 0.23(로브 0.20 + 평상복 셋 각 0.01) →
 //   실제로 깎이는 값 = 6 × 0.77 = 4.62 → **5**
 // 전에는 누구나 12 로 고정이었고 방어구도 없었다.
-const int kWizardPunch = nox::ApplyArmor(
-    nox::MeleeDamageFor(nox::CharClass::Wizard,
-                        nox::StrengthOnline(nox::CharClass::Wizard), /*kick=*/false),
-    nox::LoadoutFor(nox::CharClass::Wizard).armorSum,
-    nox::DamageKind::Physical);
+// ❌ 정정(2026-09-13 묶음 3-e) — 반올림이 아니라 **버림 + 소수 이월**이다(`GAME3_3.c:468` playerDecrementHPMana:
+//   (1 − 방어) × 피해 를 float 로 · 앞서 남은 소수를 더해 (int) · 남은 소수는 다음에). 첫 대는 4.62 → **4**(0.62 이월).
+const int kWizardPunch = static_cast<int>(static_cast<float>(
+    (1.0 - static_cast<double>(nox::ArmorValueFloat(nox::CharClass::Wizard))) *
+    nox::MeleeDamageFor(nox::CharClass::Wizard, nox::StrengthOnline(nox::CharClass::Wizard), /*kick=*/false)));
 
 // out 안에서 이 오프코드로 시작하는 메시지를 찾는다. 껍데기(0xcc) 속도 들여다본다.
 const std::vector<uint8_t>* FindMsg(const std::vector<std::vector<uint8_t>>& msgs, uint8_t op) {
@@ -2263,7 +2263,8 @@ void TestWeaponAttack() {
         auto pkt = InputPacket(6);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
     };
-    const int kSword = nox::ApplyArmor(38, nox::LoadoutFor(nox::CharClass::Wizard).armorSum, nox::DamageKind::Physical);
+    // 위저드 방어 0.23 — (1 − 0.23f) × 38 = 29.26 → 버림 29(3-e 피해 함수)
+    const int kSword = static_cast<int>(static_cast<float>((1.0 - static_cast<double>(nox::ArmorValueFloat(nox::CharClass::Wizard))) * 38.0));
 
     // ① 기력은 0 에서 시작해 틱마다 3 — 모자라면 클릭해도 안 들어간다 · 70 넘으면 들어가고 70 깎고 알린다
     {
@@ -2355,6 +2356,119 @@ void TestWeaponAttack() {
     }
 
     std::printf("  무기 공격(롱소드) — 기력 0→3/틱·70 깎고 알림·자세 28·한가운데 칸 한 번·사거리 55·무적 끄기\n");
+}
+
+// ── 피해 함수(묶음 3-e) ─────────────────────────────────────────
+//   사람 PlayerDamage(`GAME3_3.c:67`) · 몬스터 DefaultDamage 계열 → damageDefaultProc(`GAME3_2.c:7017`).
+void TestDamageHandler() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+    const int kWizHP = nox::HealthOnline(nox::CharClass::Wizard);
+
+    // ① 방어 버림 + 소수 이월 — 위저드(0.23) 에 칼 6 을 셋: 4.62→4(.62) · 5.24→5(.24) · 4.86→4(.86)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(b, -1, 6, a, 0, out);
+        Check(srv.HealthOf(b) == kWizHP - 4, "첫 대가 버림 4 가 아니다");
+        srv.DebugHurt(b, -1, 6, a, 0, out);
+        Check(srv.HealthOf(b) == kWizHP - 9, "둘째 대가 이월 더해 5 가 아니다");
+        srv.DebugHurt(b, -1, 6, a, 0, out);
+        Check(srv.HealthOf(b) == kWizHP - 13, "셋째 대가 이월 더해 4 가 아니다");
+    }
+    // ② 종류별 — 2(망치·철퇴) 는 방어 절반 · 1(불) 은 방어 없음 · 1 짜리가 0 으로 버려지면 1
+    {
+        struct Case { int dmg; uint8_t type; int expect; const char* why; };
+        const Case cases[] = {
+            { 6, 2, 5, "종류 2 가 (1 − 0.23×0.5)×6 = 5.31 → 5 가 아니다" },
+            { 6, 1, 6, "종류 1(불) 이 방어 없이 6 이 아니다" },
+            { 1, 0, 1, "0.77 → 0 이 1 로 올라가지 않았다" },
+        };
+        for (const auto& c : cases) {
+            nox::Server srv;
+            srv.DebugEnterGame(a, 728);
+            srv.DebugEnterGame(b, 729);
+            std::vector<nox::OutPacket> out;
+            srv.DebugHurt(b, -1, c.dmg, a, c.type, out);
+            Check(srv.HealthOf(b) == kWizHP - c.expect, c.why);
+        }
+    }
+    // ③ 편 거르기 — 같은 팀이면 안 깎인다(친선 피해 기본 꺼짐) · 다른 팀은 깎인다 · 자기가 자기를 치면 깎인다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(b, -1, 6, a, 0, out);
+        Check(srv.HealthOf(b) == kWizHP, "같은 팀인데 깎였다");
+        srv.DebugSetTeam(b, 2);
+        srv.DebugHurt(b, -1, 6, a, 0, out);
+        Check(srv.HealthOf(b) < kWizHP, "다른 팀인데 안 깎였다");
+        srv.DebugHurt(a, -1, 6, a, 0, out);
+        Check(srv.HealthOf(a) < kWizHP, "자기가 자기를 쳤는데 안 깎였다(퀘스트 아님)");
+    }
+    // ④ 20 이상 맞으면 움찔(상태 30 · 자세 52) → RECOIL 칸이 끝나면 13 · 19 는 안 움찔
+    {
+        nox::Server srv;
+        srv.SetPlayerAnimFrames(52, 8, 0);   // ⭕ thing.bin RECOIL 8/0
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);   // 체력 150 · 방어 0.02
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(b, -1, 19, a, 1, out);
+        Check(srv.DebugStateOf(b) != 30, "19 에 움찔했다");
+        srv.DebugHurt(b, -1, 20, a, 1, out);
+        Check(srv.DebugStateOf(b) == 30, "20 을 맞았는데 움찔(상태 30) 이 아니다");
+        Check(srv.DebugAnimByteOf(b) == 52, "움찔 자세가 52(RECOIL) 가 아니다");
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        int back = -1;
+        for (int t = 1; t <= 12 && back < 0; ++t) { ms += 33; srv.Tick(ms, out); if (srv.DebugStateOf(b) == nox::kPlayerStateIdle) back = t; }
+        Check(back >= 8 && back <= 9, "움찔이 RECOIL 8칸 뒤에 13 으로 안 돌아왔다");
+    }
+    // ⑤ 몬스터 — 불 면역은 종류 1 무시 · 종류 0 은 깎임 · 기계 골렘 피해 함수는 전기 두 배 · 내 소환수는 내가 쳐도 안 깎임
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        std::vector<nox::OutPacket> out;
+        auto sum = SpellPacket(79, false);     // a 가 Bomber 를 부른다
+        srv.OnPacket(a, sum.data(), sum.size(), out);
+        Check(srv.pets() == 1, "소환이 안 됐다 — 이 시험이 무의미해진다");
+        nox::Server::PhysBody body;
+        body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        body.subclass = nox::Server::MonsterClassBitsOf("SMALL_MONSTER+IMMUNE_FIRE");
+        body.damageFn = nox::Server::DamageFnOf("MechGolemDamage");
+        srv.SetTypeBody(1348, body);
+        srv.DebugSetOwnedPetHealth(a, 100);
+        srv.DebugHurt("", 0, 10, b, 1, out);
+        Check(srv.DebugPetHealth(0) == 100, "불 면역인데 종류 1 에 깎였다");
+        srv.DebugHurt("", 0, 10, b, 0, out);
+        Check(srv.DebugPetHealth(0) == 90, "종류 0 이 10 깎지 않았다(몬스터는 방어 없음)");
+        srv.DebugHurt("", 0, 10, b, 9, out);
+        Check(srv.DebugPetHealth(0) == 70, "기계 골렘 피해 함수가 전기를 두 배로 안 했다");
+        srv.DebugHurt("", 0, 10, a, 0, out);
+        Check(srv.DebugPetHealth(0) == 70, "주인이 자기 소환수를 쳤는데 깎였다(편 거르기)");
+    }
+    // ⑥ 무적이면 안 깎인다(버프 23)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(b, 9999, out, "");
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 120 && srv.HealthOf(b) == 0; ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(srv.IsInvulnerable(b), "부활 무적이 아니다 — 이 시험이 무의미해진다");
+        const uint16_t hp = srv.HealthOf(b);
+        srv.DebugHurt(b, -1, 30, a, 0, out);
+        Check(srv.HealthOf(b) == hp, "무적인데 깎였다");
+    }
+    std::printf("  피해 함수 — 버림·이월·종류별 방어·최소 1·편 거르기·움찔 20·몬스터 면역·골렘 전기 두 배·무적\n");
 }
 
 // ── 중요 메시지 대기열 (2026-09-13) ───────────────────────────
@@ -2716,6 +2830,27 @@ void TestThingDb() {
         }
     }
 
+    // ⑧ 피해 함수(2026-09-13 묶음 3-e) — 사람은 PlayerDamage, 몬스터 표본의 DAMAGE·SUBCLASS 를 찍고 판정
+    {
+        const nox::ThingInfo* pl = db.ByWire(713);
+        Check(pl && pl->damageFn == "PlayerDamage", "NewPlayer DAMAGE 가 PlayerDamage 가 아니다 — DAMAGE 파싱이 틀렸다");
+        size_t monsters = 0, withFn = 0;
+        std::map<std::string, int> fns;
+        for (uint16_t w = 1; w <= db.Count(); ++w) {
+            const nox::ThingInfo* ti = db.ByWire(w);
+            if (!ti || !ti->isMonster) continue;
+            ++monsters;
+            if (!ti->damageFn.empty()) { ++withFn; ++fns[ti->damageFn]; }
+        }
+        std::printf("    [피해] 몬스터 %zu종 중 DAMAGE 있음 %zu —", monsters, withFn);
+        for (const auto& kv : fns) std::printf(" %s×%d", kv.first.c_str(), kv.second);
+        std::printf("\n");
+        for (const char* nm : { "Imp", "Bomber", "GiantLeech", "Skeleton", "StoneGolem", "MechanicalGolem", "FireSprite" }) {
+            const uint16_t w = db.WireByName(nm);
+            const nox::ThingInfo* ti = w ? db.ByWire(w) : nullptr;
+            if (ti) std::printf("    [피해] %-16s DAMAGE %-16s SUBCLASS %s\n", nm, ti->damageFn.c_str(), ti->subclassRaw.c_str());
+        }
+    }
     // ⑦ 무기 SUBCLASS(2026-09-13 묶음 3-b) — GameBalance kWeapons 의 클래스 비트가 파일과 같은가(libs WeaponClassNames 순서)
     {
         for (const auto& w : nox::kWeapons) {
@@ -4480,6 +4615,7 @@ int main() {
     TestEnchantInvuln();
     TestMelee();
     TestWeaponAttack();
+    TestDamageHandler();
     TestThingDb();
     TestMapSections();
     TestWallCollision();

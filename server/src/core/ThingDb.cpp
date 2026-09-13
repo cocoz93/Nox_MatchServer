@@ -432,6 +432,10 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                     t.useHandler = Trim(val.substr(0, sp));
                     t.useArg = std::atoi(Trim(val.substr(sp + 1)).c_str());
                 }
+            } else if (key == "DAMAGE") {
+                // 피해 함수 이름(묶음 3-e) — 뒤에 숫자가 붙는 꼴이 있을 수 있어 첫 낱말만
+                const size_t sp = val.find(' ');
+                t.damageFn = (sp == std::string::npos) ? val : Trim(val.substr(0, sp));
             }
             // 그 밖의 키(HEALTH·SPEED·FLAGS…)는 값이 문자열 안에 들어 있어 걸음에 영향 없다
             if (c.bad) return false;

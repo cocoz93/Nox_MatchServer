@@ -188,6 +188,7 @@ int main(int argc, char** argv) {
     int creatureAwayAfter = 0;      // 진단 — 첫 사람 들어오고 N 틱 뒤 크리처를 ±300 으로 옮김 (0 끔)
     bool friends = false;           // 친구 알림(OBJECT_FRIEND_ADD/REMOVE) — 부분 구현이라 기본 끔
     int debugDummy = 0;             // 진단 — 첫 사람 N 틱 뒤 주인 없는 임프 허수아비(0 끔)
+    int debugHurtEvery = 0;         // 진단 — N 틱마다 첫 사람에게 피해 25(0 끔)
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
@@ -293,6 +294,9 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-own-pet" && i + 1 < argc) {
             // 진단 — 친구 판정용. 소환 조작을 빼 버리고 그 사람 소유 임프를 사람 자리에 고정한다.
             debugOwnPet = std::atoi(argv[++i]);
+        } else if (a == "--debug-hurt-every" && i + 1 < argc) {
+            // 진단 — 피해 함수 판정용(묶음 3-e). N 틱마다 첫 사람에게 피해 25(움찔 문턱 20 넘김).
+            debugHurtEvery = std::atoi(argv[++i]);
         } else if (a == "--debug-dummy" && i + 1 < argc) {
             // 진단 — 주먹 판정용(묶음 3-a). 첫 사람 N 틱 뒤 주인 없는 임프를 오른쪽 +25 에 고정(맞으면 깎이고 죽는다).
             debugDummy = std::atoi(argv[++i]);
@@ -496,12 +500,19 @@ int main(int argc, char** argv) {
                 // 소환수 몸 — 몬스터 종류 전부(원만)
                 for (uint16_t w = 1; w <= tdb.Count(); ++w) {
                     const nox::ThingInfo* t2 = tdb.ByWire(w);
-                    if (!t2 || !t2->isMonster || !t2->hasCollide || t2->shapeKind != 2) continue;
+                    // ★ 2026-09-13 묶음 3-e — COLLIDE 없는 몬스터·상자 몸도 싣는다. 공격 고르기(sub_5180B0)와 피해 함수는
+                    //   충돌 함수와 무관하다. 걷기 충돌은 hasCollide 로 따로 거른다(`GAME5.c:1930` 둘 다 있어야 부딪힘).
+                    if (!t2 || !t2->isMonster) continue;
                     nox::Server::PhysBody b;
-                    b.shape = 2; b.r = t2->radius;
+                    b.shape = static_cast<uint8_t>((t2->shapeKind == 2 || t2->shapeKind == 3) ? t2->shapeKind : 0);
+                    b.r = t2->radius;
+                    if (b.shape == 3) nox::Server::CalcBox(b, t2->boxW, t2->boxH);
                     b.flags = nox::ParseObjectFlags(t2->flagsRaw);
                     b.cls = nox::ParseObjectClass(t2->classRaw);
                     b.mass = (t2->mass > 0.0f) ? t2->mass : 1.0f;   // 정답지 기본 1(`server/object_type.go:197`)
+                    b.subclass = nox::Server::MonsterClassBitsOf(t2->subclassRaw);
+                    b.damageFn = nox::Server::DamageFnOf(t2->damageFn);
+                    b.hasCollide = t2->hasCollide;
                     srv.SetTypeBody(w, b);
                 }
             }
@@ -586,6 +597,10 @@ int main(int argc, char** argv) {
             srv.SetFriends(true);
             std::printf("[친구] 켬 — 자기 소환수·같은 팀을 OBJECT_FRIEND_ADD 로 알림 (적대 판정 부분 구현)\n");
             std::fflush(stdout);
+        }
+        if (debugHurtEvery > 0) {
+            srv.SetDebugHurtEvery(static_cast<uint32_t>(debugHurtEvery));
+            std::printf("[진단스위치] %d 틱마다 첫 사람에게 피해 25(종류 0 · 주인 없음)\n", debugHurtEvery);
         }
         if (debugDummy > 0) {
             srv.SetDebugDummyAfter(static_cast<uint32_t>(debugDummy));

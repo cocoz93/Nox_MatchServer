@@ -284,6 +284,8 @@ struct Session {
     // ★ 기력(+91 Field22_3, 3-b) — 만들 때 0(`GAME4_1.c:732`), 살아 있으면 틱마다 100 아래일 때 100/30 = 3 씩(`object_update.go:108`).
     //   무기 공격이 무기별로 깎는다(weaponGetStaminaByType_4F7E80 — 롱소드 70). 깎을 때 `47 <기력>` 을 중요로 알린다.
     uint8_t stamina = 0;
+    // ★ 피해 소수 이월(+84, 3-e) — 방어로 깎인 피해의 소수부를 다음 피해에 더한다(`GAME3_3.c:468` playerDecrementHPMana)
+    float dmgRemainder = 0.0f;
     bool hasAim = false;
     int aimX = 0, aimY = 0;
     uint32_t aimAtFrame = 0;
@@ -744,7 +746,43 @@ public:
         uint32_t flags = 0;         // 오브젝트 깃발 비트
         uint32_t cls = 0;           // 클래스 비트
         float mass = 1.0f;
+        // 묶음 3-e — 몬스터 SUBCLASS 비트(libs MonsterClassNames 순서)와 피해 함수(thing.bin DAMAGE · 없으면 DefaultDamage)
+        uint32_t subclass = 0;
+        uint8_t damageFn = 0;       // DamageFnKind
+        bool hasCollide = true;     // COLLIDE 속성 — 없으면 걷기 충돌에서 빠진다(공격·피해는 받는다)
     };
+    enum DamageFnKind : uint8_t { kDmgDefault = 0, kDmgPlayer, kDmgSkeleton, kDmgStone, kDmgMechGolem, kDmgFlammable, kDmgBlackPowder, kDmgOther };
+    static uint8_t DamageFnOf(const std::string& name) {
+        if (name.empty() || name == "DefaultDamage") return kDmgDefault;
+        if (name == "PlayerDamage") return kDmgPlayer;
+        if (name == "SkeletonDamage") return kDmgSkeleton;
+        if (name == "StoneDamage") return kDmgStone;
+        if (name == "MechGolemDamage") return kDmgMechGolem;
+        if (name == "FlammableDamage") return kDmgFlammable;
+        if (name == "BlackPowderDamage") return kDmgBlackPowder;
+        return kDmgOther;
+    }
+    static uint32_t MonsterClassBitsOf(const std::string& raw) {
+        static const char* const kNames[] = {
+            "SMALL_MONSTER", "MEDIUM_MONSTER", "LARGE_MONSTER", "SHOPKEEPER", "NPC", "FEMALE_NPC",
+            "UNDEAD", "MONITOR", "MIGRATE", "IMMUNE_POISON", "IMMUNE_FIRE", "IMMUNE_ELECTRICITY",
+            "IMMUNE_FEAR", "BOMBER", "NO_TARGET", "NO_SPELL_TARGET", "HAS_SOUL", "WARCRY_STUN",
+            "LOOK_AROUND", "WOUNDED_NPC",
+        };
+        uint32_t bits = 0;
+        size_t start = 0;
+        while (start <= raw.size()) {
+            size_t e = raw.find('+', start);
+            if (e == std::string::npos) e = raw.size();
+            std::string tok = raw.substr(start, e - start);
+            while (!tok.empty() && tok.back() == ' ') tok.pop_back();
+            while (!tok.empty() && tok.front() == ' ') tok.erase(tok.begin());
+            for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
+                if (tok == kNames[i]) bits |= (1u << i);
+            start = e + 1;
+        }
+        return bits;
+    }
     static void CalcBox(PhysBody& b, float w, float h) {
         const float px = w * 0.35354999f, py = h * 0.35354999f;
         b.boxLT = -px + py; b.boxLB = -px - py; b.boxRT = px + py; b.boxRB = px - py;
@@ -827,6 +865,8 @@ public:
     void SetDebugOwnPetAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; }
     // 진단 — 같은 임프를 **주인 없이**(맵 몬스터 = 적) 사람 오른쪽 +25 에 고정하고 맞게 둔다(묶음 3-a 주먹 판정용).
     void SetDebugDummyAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; debugPetWild_ = true; }
+    // 진단 — N 틱마다 관전 아닌 첫 사람에게 주인 없는 것의 칼 피해 25(종류 0)를 준다(묶음 3-e 움찔·깎임 화면 판정용)
+    void SetDebugHurtEvery(uint32_t ticks) { debugHurtEvery_ = ticks; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꾼다(RESET_FRIENDS 판정용). 0 이면 끔.
     void SetDebugTeamAfter(uint32_t ticks) { debugTeamAfter_ = ticks; }
 
@@ -1120,6 +1160,12 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0xff : it->second.moveState;
     }
+    // ★ 시험용 — 피해 함수(3-e)를 바로 부른다. pet < 0 이면 사람(addr), 아니면 소환수 자리 번호
+    void DebugHurt(const std::string& addr, int pet, int dmg, const std::string& by, uint8_t dtype,
+                   std::vector<OutPacket>& out) {
+        HurtTarget(Target{ pet < 0 ? addr : std::string(), pet }, dmg, out, by, dtype);
+    }
+    uint16_t DebugPetHealth(size_t i) const { return i < pets_.size() ? pets_[i].health : 0; }
     bool IsInvulnerable(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it != sessions_.end() && it->second.invulnUntilSet && frame_ < it->second.invulnUntilFrame;
@@ -1402,14 +1448,17 @@ private:
     Target NearestTarget(const std::string& friendOwner, double x, double y,
                          double range) const;
 
-    // 고른 대상을 깎는다. 사람이면 Damage(), 불려 나온 것이면 그쪽 체력을 깎고
-    // 0 이 되면 없애며 `0x31 DESTROY_OBJECT` 를 뿌린다.
-    // ★ 방어구는 **여기서** 깎는다 — 싸움 피해가 다 이 자리를 지난다(근접·주문·소환수).
+    // 고른 대상을 깎는다 — 정답지 **피해 함수(+716)** 자리(묶음 3-e, 2026-09-13).
+    //   사람 = PlayerDamage(`GAME3_3.c:67`) → damageDefaultProc(`GAME3_2.c:7017`) → unitDamageClear = Damage()
+    //   몬스터 = thing.bin DAMAGE(없으면 DefaultDamage) → damageDefaultProc → 체력 · 0 이면 KillPet
+    //   `by` = 때린 쪽의 **주인 사람 주소**. 비었으면 주인 없는 것(맵 몬스터)이 때린 것으로 본다.
+    //   `dtype` = 정답지 피해 종류 번호(0 칼 · 1 불 · 2 망치·철퇴 · 9 전기 · 10 맨손 …).
     //   `Damage()` 는 그대로 **날 피해**를 적용한다(시험이 정확한 값을 넣는 자리다).
-    //   피해 종류별로 방어가 먹는 정도가 다르다 — `GameBalance.h` DamageKind 주석.
     void HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
-                    const std::string& by = std::string(),
-                    DamageKind kind = DamageKind::Physical);
+                    const std::string& by = std::string(), uint8_t dtype = 0);
+    // 두 쪽(주인 기준)이 적인가 — `server/object.go:1667` IsEnemyTo 를 사람·소환수·맵 몬스터에 맞춘 판.
+    //   wild = 주인 없는 몬스터(자기 자신이 주인)
+    bool OwnersEnemy(const std::string& a, bool aWild, const std::string& b, bool bWild) const;
 
     // 판 시계를 뿌린다 — `0xd3 TIMER_STATUS`. 짜임은 실측이다(PROTOCOL.md 「판 시계」).
     void SendTimer(std::vector<OutPacket>& out);
@@ -1635,6 +1684,7 @@ private:
     bool friendsOn_ = false;
     uint32_t debugOwnPetAfter_ = 0;   // 진단 --debug-own-pet (0 끔)
     bool debugPetWild_ = false;        // 진단 --debug-dummy — 주인 없음 · 맞음
+    uint32_t debugHurtEvery_ = 0;      // 진단 --debug-hurt-every (0 끔)
     uint16_t debugOwnPetNetCode_ = 0; // 만든 임프의 번호 — 이동 루프가 이것만 건너뛴다(고정)
     bool standalone_ = false;
     std::string saMapName_;
