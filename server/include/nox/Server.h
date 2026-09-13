@@ -1414,6 +1414,7 @@ public:
     size_t MissileCount() const { return missiles_.size(); }
     unsigned long long spellEffectDeferred() const { return spellEffectDeferred_; }
     Target DebugLastAcceptTarget() const { return lastAcceptTarget_; }
+    unsigned long long DebugAcceptCount() const { return acceptCount_; }   // spellAccept 가 캡처 검사를 지난 횟수(시험용)
     // 시험용 — 지속 주문 틀(4-a3). createRet: -1 create 없음 · 0/1 돌려줄 값 · updateStopAt: -1 update 없음 · 0 늘 0 · N 번째에 1
     bool DebugDurNew(const std::string& caster, uint8_t spell, uint32_t dt, int createRet, int updateStopAt, bool withDestroy,
                      const Target& target, std::vector<OutPacket>& out);
@@ -1728,6 +1729,12 @@ private:
                                 const std::string& mslSelf, uint32_t sflags, float dist, const Session* self, const Buffs* mslBuffs) const;   // server/spells.go:360
     void UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out);                                 // updateUnitsCallUpdate 의 투사체 몫
     void DestroyMissile(size_t i, std::vector<OutPacket>& out);                                       // DelayedDelete → netReportDestroyObject
+    void MissileChangeOwner(MissileObj& m, const std::string& own, uint32_t frame);                 // changeOwner_52BE40
+    int CastConfuse(const std::string& obj3, const Target& targ, int lvl);                          // 4-b4 52C1E0
+    int CastStun(const std::string& obj3, const Target& targ, int lvl);                             // 52C2C0
+    int CastFumble(const Target& targ);                                                              // 52C060
+    int CastInversion(const Session& a4, const std::string& obj3);                                  // 52BEB0
+    int CastCurePoison(uint8_t spell, Session& a2, const Target& targ, int lvl, std::vector<OutPacket>& out);   // 52CDB0
 
     // ── 묶음 4-a3 지속 주문 틀(server/spells_dur.go · spells_dur.go) ──
     struct DurSpell;
@@ -2053,6 +2060,7 @@ private:
     int debugDurUpdateStopAt_ = 0;                 // 시험용 update 가 이 횟수째에 1(0 이면 늘 0)
     int debugDurUpdates_ = 0, debugDurDestroys_ = 0;
     Target lastAcceptTarget_;                      // 시험용 — 마지막 spellAccept 의 대상
+    unsigned long long acceptCount_ = 0;
     std::string lastAcceptCaster_;
     MagicTypeInfo magicType_;                      // 묶음 4-a2 thing "Magic"
     unsigned long long spellEffectDeferred_ = 0;   // 효과 함수를 아직 안 옮긴 주문이 받아들여진 수

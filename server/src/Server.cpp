@@ -4452,6 +4452,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
         for (const auto& f : flags_) if (f.carrier == arg.obj.addr) return false;
     }
     lastAcceptTarget_ = arg.obj;                             // 시험용 기록
+    ++acceptCount_;
     lastAcceptCaster_ = s.addr;
     // ── 효과 갈래(spells.go:219~412 · 효과 = 주문 번호) ── 함수(fnc) 갈래는 lvl > 5 를 5 로 자르고 0 이면 PermanentFizzle(10) · false
     int fnc = -1;                                            // -1 = 이 갈래가 아직 없음
@@ -4483,6 +4484,11 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                       fnc = CastBuffSpell(spell, 13, fl5, targ, c, out); break;                                                                 // castVampirism
             case 131: c.dur = 12; c.durInSec = true; c.durLevelMul = true; c.orig = obj3; c.offensive = true;
                       fnc = CastBuffSpell(spell, 10, fl5, targ, c, out); break;                                                                 // castVillain
+            case 12: fnc = CastConfuse(obj3, targ, fl5); break;                                   // nox_xxx_castConfuse_52C1E0
+            case 74: fnc = CastStun(obj3, targ, fl5); break;                                      // nox_xxx_castStun_52C2C0
+            case 33: fnc = CastFumble(targ); break;                                               // nox_xxx_castFumble_52C060
+            case 38: fnc = CastInversion(s, obj3); break;                                         // sub_52BEB0
+            case 14: fnc = CastCurePoison(spell, s, targ, fl5, out); break;                       // nox_xxx_castCurePoison_52CDB0
             default: break;
         }
     }
@@ -4494,6 +4500,76 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 spell, SpellName(spell) ? SpellName(spell) : "?");
     std::fflush(stdout);
     return true;
+}
+
+// ── 묶음 4-b4 디버프 C 함수 ─────────────────────────────────────────────
+// nox_xxx_castConfuse_52C1E0(`GAME4_2.c:9421`) — 대상 없으면 0 · 혼란(3) ConfuseEnchantDuration · 세기 · 도운 사람(sub_4E7540 a3)
+int Server::CastConfuse(const std::string& obj3, const Target& targ, int lvl) {
+    if (!BuffsOf(targ)) return 0;
+    ApplyEnchant(targ, 3, static_cast<int>(static_cast<float>(BalanceFloat("ConfuseEnchantDuration"))), lvl);
+    MarkAssist(obj3, targ);
+    return 1;
+}
+
+// nox_xxx_castStun_52C2C0(`GAME4_2.c:9436`) — StunEnchantDuration · 사람: 주문 쓰는 직업(+2251)이면 붙잡힘(5) · 워리어면 느림(4)
+//   · 몬스터: 질량(+120) > 15 면 느림(4) 아니면 붙잡힘(5) · 도운 사람
+int Server::CastStun(const std::string& obj3, const Target& targ, int lvl) {
+    if (!BuffsOf(targ)) return 0;
+    const int dur = static_cast<int>(static_cast<float>(BalanceFloat("StunEnchantDuration")));
+    int buff = 5;
+    if (!targ.addr.empty()) {
+        buff = (sessions_.at(targ.addr).charClass != CharClass::Warrior) ? 5 : 4;
+    } else {
+        const auto tb = typeBodies_.find(pets_[static_cast<size_t>(targ.pet)].type);
+        const float mass = (tb != typeBodies_.end()) ? tb->second.mass : 1.0f;
+        buff = (mass > 15.0f) ? 4 : 5;
+    }
+    ApplyEnchant(targ, buff, dur, lvl);
+    MarkAssist(obj3, targ);
+    return 1;
+}
+
+// nox_xxx_castFumble_52C060(`GAME4_2.c:9359`) — 대상 없으면 0 · 소리(주문 On → 10) · 1
+//   ⚠ 사람·NPC: 든 무기·지팡이·방패(EQUIPPED 0x100 · 클래스 0x1001000 / 0x2000000+SUBCLASS 2) 떨구기는 아이템(5) · 공 들고 있으면 밀어내기(8)
+//   ⚠ 그 밖 몬스터(SUBCLASS 0x2000 아님): 가진 것 전부 떨구기(5) + 시전자 자리에서 힘 50(소환수 물리 6)
+int Server::CastFumble(const Target& targ) {
+    if (!BuffsOf(targ)) return 0;
+    return 1;
+}
+
+// sub_52BEB0(`GAME4_2.c:9295`) — 시전자(a4) 둘레 InversionRange 안 날아가는 것마다 changeOwner(그것, a3) · 소리(10) · 1
+int Server::CastInversion(const Session& a4, const std::string& obj3) {
+    const float r = static_cast<float>(BalanceFloat("InversionRange"));
+    const float r2 = r * r;
+    for (auto& m : missiles_) {                             // getMissilesInCircle — 거리² ≤ r²
+        const float dx = static_cast<float>(a4.posX) - m.posX, dy = static_cast<float>(a4.posY) - m.posY;
+        if (dx * dx + dy * dy <= r2) MissileChangeOwner(m, obj3, frame_);
+    }
+    // ⚠ 옛 자리표시 투사체(shots_)는 Magic 이 아니라 거른다(4-c)
+    return 1;
+}
+
+// nox_xxx_castCurePoison_52CDB0(`GAME4_2.c:9813`) — 대상 없으면 0 · 독(+540) 있으면 풀기(4-c 독과 함께) ·
+//   독 없고 대상이 시전자가 아니면 소리 · 1 / 독 없고 자기에게면 마나를 ManaCost(,1) 만큼 되돌려 줌 · 1
+int Server::CastCurePoison(uint8_t spell, Session& a2, const Target& targ, int lvl, std::vector<OutPacket>& out) {
+    (void)lvl;
+    if (!BuffsOf(targ)) return 0;
+    const int poison = 0;                                   // ⚠ +540 독 겹 — 독(4-c)이 오면 updatePoison·removePoison·PriMsg PoisonCure/PoisonClean
+    if (poison) return 1;
+    if (targ.addr != a2.addr) return 1;                     // 소리 → 10
+    SpellManaGive(a2, spellDefs_[spell].mana, out);          // sub_4FD030(대상, ManaCost(주문, 1))
+    return 1;
+}
+
+// changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)
+//   ⚠ 자리바꾸기(SWAP 115) 주문이면 cspellRemoveSpell_52BC90(4-e)
+void Server::MissileChangeOwner(MissileObj& m, const std::string& own, uint32_t frame) {
+    if (m.ud1.addr == own && !own.empty()) {
+        m.ud1 = Target{ m.ud0, -1 };
+        m.ud0 = own;
+        m.owner = own;
+        m.createdFrame = frame;
+    }
 }
 
 // ★ 자리표시 효과 — 옛 시전 자리에 있던 투사체(27·24·43)·소환(75~87)을 그대로 옮겨 둔다. 4-c·4-d·4-f 에서 걷어낸다.
@@ -5272,14 +5348,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     bool handled = false;
                     if (hk == HitPlayer) {
                         Session& t = sessions_.at(hAddr);
-                        auto changeOwner = [&]() {                   // changeOwner_52BE40 — 대상이 그 사람이면 주인과 맞바꿈 · 수명 새로
-                            if (m.ud1.addr == t.addr) {
-                                m.ud1 = Target{ m.ud0, -1 };
-                                m.ud0 = t.addr;
-                                m.owner = t.addr;
-                                m.createdFrame = frame;
-                            }
-                        };
+                        auto changeOwner = [&]() { MissileChangeOwner(m, t.addr, frame); };
                         const bool front = (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY),
                                                                       t.facingPrev, m.prevX, m.prevY) & 1) != 0;
                         if (t.moveState == 16 && front) {            // 방패 올림 앞쪽 — 되받아침(소리 878 → 10)

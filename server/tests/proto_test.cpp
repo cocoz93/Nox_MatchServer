@@ -3436,7 +3436,7 @@ void TestSpellFly() {
         float mx = 0, my = 0;
         srv.DebugMissileXY(0, mx, my);
         Check(std::fabs(mx - 1014.0f) < 0.01f && std::fabs(my - 1000.0f) < 0.01f, "Magic 이 몸 앞(반지름+4)에서 안 생겼다");
-        const unsigned long long before = srv.spellEffectDeferred();
+        const unsigned long long before = srv.DebugAcceptCount();
         bool seenEntry = false, destroyed = false;
         int hitTick = -1;
         float firstX = 0;
@@ -3455,7 +3455,7 @@ void TestSpellFly() {
         Check(seenEntry, "날아가는 Magic 이 갱신 항목에 안 실렸다");
         Check(std::fabs(firstX - 1019.623f) < 0.01f, "첫 틱 자리가 (힘+속도)×감쇠 0.9 가 아니다");
         Check(hitTick == 10, "Magic 이 10틱째에 b 에 안 닿았다(힘·감쇠·속도가 틀림)");
-        Check(srv.spellEffectDeferred() == before + 1, "b 에 닿았는데 받아들이기(spellAccept)가 안 불렸다");
+        Check(srv.DebugAcceptCount() == before + 1, "b 에 닿았는데 받아들이기(spellAccept)가 안 불렸다");
         Check(srv.DebugLastAcceptTarget().addr == b, "받아들인 대상이 b 가 아니다");
         Check(destroyed, "닿아 지웠는데 `31 <번호>` 가 모두에게 안 갔다");
     }
@@ -3470,7 +3470,7 @@ void TestSpellFly() {
         uint32_t ms = 0;
         CastAndWait(srv, a, 12, false, ms, out);
         Check(srv.MissileCount() == 1, "대상 없이도 Magic 은 생긴다");
-        const unsigned long long before = srv.spellEffectDeferred();
+        const unsigned long long before = srv.DebugAcceptCount();
         int goneTick = -1;
         bool fx = false;
         float lastX = 0, lastY = 0;
@@ -3483,7 +3483,7 @@ void TestSpellFly() {
         Check(goneTick == 16, "대상 없는 Magic 이 수명 15틱을 넘긴 틱(만든 틱 +16)에 안 사라졌다");
         Check(fx, "수명이 다해 지웠는데 FX_RICOCHET(0x96) 가 없다");
         Check(lastX > 1014.0f + 10.0f, "대상 없는 Magic 이 앞으로 안 날았다");
-        Check(srv.spellEffectDeferred() == before, "대상이 없는데 받아들이기가 불렸다");
+        Check(srv.DebugAcceptCount() == before, "대상이 없는데 받아들이기가 불렸다");
     }
 
     // ③ 방패 올린(16) 워리어가 앞에서 받으면 되받아쳐 주인과 대상이 바뀐다 → 시전자 a 에게 돌아와 닿는다
@@ -3501,7 +3501,7 @@ void TestSpellFly() {
         srv.DebugAimAt(a, 1150, 1000);
         CastAndWait(srv, a, 12, false, ms, out);
         Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
-        const unsigned long long before = srv.spellEffectDeferred();
+        const unsigned long long before = srv.DebugAcceptCount();
         float farX = 0;
         for (int t = 1; t <= 90 && srv.MissileCount() > 0; ++t) {
             float x = 0, y = 0;
@@ -3509,7 +3509,7 @@ void TestSpellFly() {
             ms += 34; srv.Tick(ms, out);
         }
         Check(farX < 1150.0f && farX > 1100.0f, "Magic 이 방패 앞에서 안 튕겼다");
-        Check(srv.MissileCount() == 0 && srv.spellEffectDeferred() == before + 1, "되받아친 Magic 이 시전자에게 돌아와 받아들여지지 않았다");
+        Check(srv.MissileCount() == 0 && srv.DebugAcceptCount() == before + 1, "되받아친 Magic 이 시전자에게 돌아와 받아들여지지 않았다");
         Check(srv.DebugLastAcceptTarget().addr == a, "되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다(주인·대상 맞바꿈)");
         Check(srv.DebugStateOf(b) == 16, "되받아친 워리어 상태가 바뀌었다");
     }
@@ -3526,7 +3526,7 @@ void TestSpellFly() {
         for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
         srv.DebugAimAt(a, 1150, 1000);
         CastAndWait(srv, a, 12, false, ms, out);
-        const unsigned long long before = srv.spellEffectDeferred();
+        const unsigned long long before = srv.DebugAcceptCount();
         float lastX = 0;
         bool left = false;
         for (int t = 1; t <= 90 && srv.MissileCount() > 0; ++t) {
@@ -3537,7 +3537,7 @@ void TestSpellFly() {
             ms += 34; srv.Tick(ms, out);
         }
         Check(left, "되받아침이 안 일어났다(시험 전제)");
-        Check(srv.MissileCount() == 0 && srv.spellEffectDeferred() == before, "주인이 빠진 Magic 을 받아들였다(obj3 없음)");
+        Check(srv.MissileCount() == 0 && srv.DebugAcceptCount() == before, "주인이 빠진 Magic 을 받아들였다(obj3 없음)");
     }
     // ④ 벽 — 선 추적이 막히면 새 자리를 되돌리고 벽 법선으로 속도 성분을 맞바꾼다(collideReflect_57B810)
     {
@@ -4069,9 +4069,9 @@ void TestBuffs() {
             if (kase >= 2) srv.DebugApplyEnchant(b, 0, 0, 1);
             if (kase >= 3) srv.DebugApplyEnchant(a, 21, 0, 1);
             CastAndWait(srv, a, 12, false, ms, out);
-            const unsigned long long before = srv.spellEffectDeferred();
+            const unsigned long long before = srv.DebugAcceptCount();
             for (int t = 0; t < 60 && srv.MissileCount() > 0; ++t) tickOut(srv, ms, out);
-            const bool hitB = srv.spellEffectDeferred() == before + 1 && srv.DebugLastAcceptTarget().addr == b;
+            const bool hitB = srv.DebugAcceptCount() == before + 1 && srv.DebugLastAcceptTarget().addr == b;
             static const char* kMsg[5] = { "눈멀지 않았는데 b 를 못 찾았다(시험 전제)", "눈먼 시전자가 b 를 찾았다",
                                             "가만히 선 투명한 b 를 찾았다", "적외선인데 투명한 b 를 못 찾았다",
                                             "날아가는 것이 시전자 적외선(21)을 안 물려받아 투명한 b 를 틱 찾기에서 못 봤다" };
@@ -4578,6 +4578,125 @@ void TestMoveBuffs() {
         else Check(srv.XOf(a) == x0, buff == 25 ? "얼림인데 밀렸다" : "붙잡힘인데 밀렸다");
     }
     std::printf("  4-b3 — SpeedCur 느림 0.5·빠르게 1.25 · 달리기 버프 상태 5 · 혼란 방향 식 · 얼림·붙잡힘 힘 무시\n");
+}
+
+// ── 묶음 4-b4 — 디버프 C 함수(Confuse · Stun · Fumble · Inversion · CurePoison) ──────────────
+//
+// 정답지: GAME4_2.c:9421(52C1E0) · 9436(52C2C0) · 9359(52C060) · 9295(52BEB0) · 9813(52CDB0) · spell_counter.go:82(changeOwner)
+void TestDebuffSpells() {
+    const std::string a = "10.5.1.1:5101";
+    const std::string b = "10.5.1.2:5102";
+    const std::string c = "10.5.1.3:5103";
+    auto mk = [&](nox::Server& srv, uint8_t spell, nox::CharClass bClass) {
+        nox::Gamedata g;
+        g.Parse("ConfuseEnchantDuration = 90;\nStunEnchantDuration = 60;\nInversionRange = 240.0f;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, bClass);
+        srv.DebugMoveTo(b, 1100, 1000);
+    };
+    auto syncTick = [](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) { srv.Tick(ms, out); ms += 34; srv.Tick(ms, out); };
+
+    // ① Confuse — 커서 아래 b 에 혼란 90 · 세기 3 · 도운 사람(a) 기록 → c 가 죽이면 `a9 0e` 도운 자리 728
+    {
+        nox::Server srv; mk(srv, 12, nox::CharClass::Warrior);
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        syncTick(srv, ms, out);
+        srv.DebugAimAt(a, 1100, 1000);
+        CastAndWait(srv, a, 12, false, ms, out);
+        Check(srv.DebugHasEnchant(b, 3) && srv.DebugEnchantDur(b, 3) == 90 && srv.DebugEnchantPower(b, 3) == 3, "Confuse — b 에 혼란 90·세기 3 이 안 걸렸다");
+        std::vector<nox::OutPacket> o;
+        srv.Damage(b, 1000, o, c);
+        uint16_t assist = 0xFFFF;
+        for (const auto& m : FlattenTo(o, b)) if (m.size() == 11 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 14) assist = static_cast<uint16_t>(m[4] | (m[5] << 8));
+        Check(assist == 728, "Confuse 를 건 a 가 죽음 알림 도운 자리에 안 실렸다");
+    }
+
+    // ② Stun — 위저드(주문 직업)는 붙잡힘(5) · 워리어는 느림(4) · 길이 60
+    for (int k = 0; k < 2; ++k) {
+        nox::Server srv; mk(srv, 74, k == 0 ? nox::CharClass::Wizard : nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        syncTick(srv, ms, out);
+        srv.DebugAimAt(a, 1100, 1000);
+        CastAndWait(srv, a, 74, false, ms, out);
+        const int want = k == 0 ? 5 : 4;
+        Check(srv.DebugHasEnchant(b, want) && !srv.DebugHasEnchant(b, 9 - want) && srv.DebugEnchantDur(b, want) == 60,
+              k == 0 ? "Stun — 위저드가 붙잡힘(5) 60 이 아니다" : "Stun — 워리어가 느림(4) 60 이 아니다");
+    }
+    //   소환수 — 질량 15 넘으면 느림(4) · 아니면 붙잡힘(5) · 소환수 AI(자리표시)가 움직이지 않게 진단 고정 임프(--debug-own-pet)로
+    for (float mass : { 10.0f, 20.0f }) {
+        nox::Server srv; mk(srv, 74, nox::CharClass::Warrior);
+        nox::Server::PhysBody body;
+        body.shape = 2; body.r = 10.0f; body.cls = 0x2; body.mass = mass;
+        srv.SetTypeBody(1328, body);
+        srv.SetDebugOwnPetAfter(1);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        syncTick(srv, ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() == 1, "진단 고정 임프가 안 생겼다(시험 전제)");
+        double px = 0, py = 0;
+        srv.DebugPetXY(0, px, py);
+        srv.DebugAimAt(a, static_cast<int>(px), static_cast<int>(py));
+        CastAndWait(srv, a, 74, false, ms, out);
+        Check(srv.DebugPetHasEnchant(0, mass > 15.0f ? 4 : 5), mass > 15.0f ? "Stun — 무거운 소환수가 느림(4)이 아니다" : "Stun — 가벼운 소환수가 붙잡힘(5)이 아니다");
+    }
+
+    // ③ Fumble — 대상 있으면 받아들임(효과는 아이템 5) · 대상 없으면 실패(마나 되돌림)
+    {
+        nox::Server srv; mk(srv, 33, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        syncTick(srv, ms, out);
+        const uint16_t full = srv.ManaOf(a);
+        srv.DebugAimAt(a, 2000, 2000);
+        CastAndWait(srv, a, 33, false, ms, out);
+        Check(srv.ManaOf(a) == full, "대상 없는 Fumble 이 마나를 가져갔다");
+        srv.DebugAimAt(a, 1100, 1000);
+        CastAndWait(srv, a, 33, false, ms, out);
+        Check(srv.ManaOf(a) == full - 10, "대상 있는 Fumble 이 받아들여지지 않았다");
+    }
+
+    // ④ Inversion — b 가 a 에게 날린 혼란 Magic 을 a 가 뒤집으면(둘레 240) 대상이 b 로 바뀌어 b 가 혼란
+    for (int far = 0; far < 2; ++far) {
+        nox::Server srv; mk(srv, 38, nox::CharClass::Wizard);
+        srv.SetSpellDef(12, 10, 0x1000000 | 0x4, { 5, 3, 5 });
+        srv.SetMagicType(1237, 50, 10.0f, 0x4000);
+        nox::Gamedata g;
+        g.Parse("ConfuseEnchantDuration = 90;\nInversionRange = 240.0f;\n");
+        srv.SetGamedata(g);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.DebugMoveTo(b, far ? 1900 : 1300, 1000);   // far — 뒤집기를 다 말할 때 Magic 이 둘레 240 밖                        // a 가 뒤집기를 다 말할 때(약 10틱) Magic 이 둘레 240 안 · 아직 안 닿음
+        srv.DebugSetFacing(b, 128);
+        syncTick(srv, ms, out);
+        srv.DebugAimAt(b, 1000, 1000);
+        CastAndWait(srv, b, 12, false, ms, out);
+        Check(srv.MissileCount() == 1, "b 의 혼란 Magic 이 안 생겼다(시험 전제)");
+        CastAndWait(srv, a, 38, true, ms, out);
+        for (int t = 0; t < 120 && srv.MissileCount() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        if (!far) Check(srv.DebugHasEnchant(b, 3) && !srv.DebugHasEnchant(a, 3), "Inversion 뒤 Magic 이 b 에게 돌아가 b 를 혼란시키지 않았다");
+        else Check(srv.DebugHasEnchant(a, 3) && !srv.DebugHasEnchant(b, 3), "둘레 240 밖 Magic 까지 Inversion 이 뒤집었다");
+    }
+
+    // ⑤ CurePoison — 독 없고 자기에게면 마나를 되돌려 받아 공짜 · 남에게면 마나 씀(독 풀기는 4-c)
+    {
+        nox::Server srv; mk(srv, 14, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        syncTick(srv, ms, out);
+        const uint16_t full = srv.ManaOf(a);
+        CastAndWait(srv, a, 14, true, ms, out);
+        Check(srv.ManaOf(a) == full, "독 없는 자기 CurePoison 이 마나를 되돌려 주지 않았다");
+        srv.DebugAimAt(a, 1100, 1000);
+        CastAndWait(srv, a, 14, false, ms, out);
+        Check(srv.ManaOf(a) == full - 10, "남에게 건 CurePoison 이 마나를 안 썼다");
+    }
+    std::printf("  4-b4 — Confuse 90·도운 사람 · Stun 직업·질량 갈래 · Fumble 대상 · Inversion 되돌림 · CurePoison 자기 공짜\n");
 }
 
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
@@ -6636,6 +6755,7 @@ int main() {
     TestDamageBuffs();
     TestBuffSpells();
     TestMoveBuffs();
+    TestDebuffSpells();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
