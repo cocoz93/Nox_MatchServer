@@ -281,6 +281,9 @@ struct Session {
     uint8_t facingInput = 0;       // 이번 틱에 온 CCOrientation — ImplB 에서 facing 으로 옮긴다
     bool hasFacingInput = false;
     double forceX = 0, forceY = 0; // 남이 준 힘(+88 ForceVec 몫) — 적분 때 더하고 지운다
+    // ★ 기력(+91 Field22_3, 3-b) — 만들 때 0(`GAME4_1.c:732`), 살아 있으면 틱마다 100 아래일 때 100/30 = 3 씩(`object_update.go:108`).
+    //   무기 공격이 무기별로 깎는다(weaponGetStaminaByType_4F7E80 — 롱소드 70). 깎을 때 `47 <기력>` 을 중요로 알린다.
+    uint8_t stamina = 0;
     bool hasAim = false;
     int aimX = 0, aimY = 0;
     uint32_t aimAtFrame = 0;
@@ -343,7 +346,6 @@ struct Session {
     bool importantImmediate = false;
     uint32_t importantAcked = 0;   // 진단 — 확인받아 지운 수
     uint32_t importantResent = 0;  // 진단 — 다시 실은 수
-    uint32_t nextMeleeFrame = 0;   // 이 프레임 전에는 근접이 안 나간다
     uint8_t team = 0;              // 0 = 무소속 · 1 = 빨강 · 2 = 파랑
     // ★ **접속한 차례.** 팀을 번갈아 나눌 때 쓴다.
     //   ⚠ `sessions_` 를 그냥 돌면 **주소 문자열 사전순**이라 들어온 차례가 아니다 —
@@ -1118,6 +1120,18 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0xff : it->second.moveState;
     }
+    bool IsInvulnerable(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it != sessions_.end() && it->second.invulnUntilSet && frame_ < it->second.invulnUntilFrame;
+    }
+    uint8_t DebugStaminaOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.stamina;
+    }
+    uint8_t DebugAnimByteOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : PlayerAnimByte(it->second);
+    }
     uint8_t DebugAttackAnimOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.attackAnim;
@@ -1448,11 +1462,24 @@ private:
     // 사람 한 틱(묶음 2-a 걷기 · 3-a 공격) — 상태·힘·적분. Server.cpp 정의 머리 주석 참조.
     //   frame = 이 걸음의 프레임(Tick 이 여러 틱을 몰아 돌 때 걸음마다 다르다).
     void UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out);
-    // ── 공격 (묶음 3-a) — 정답지 이식. Server.cpp 정의 머리 주석 참조 ──
+    // ── 공격 (묶음 3-a 맨손 · 3-b 무기) — 정답지 이식. Server.cpp 정의 머리 주석 참조 ──
+    // playerAttack 이 짓는 피해 꾸러미(`GAME4_3.c` v82 36바이트) 중 판정이 읽는 칸
+    struct AttackInfo {
+        int dmg = 0;              // +0 float 을 (long long)(f + 0.5) 한 값 — sub_538510 이 피해 함수에 넘기는 꼴
+        uint8_t type = 0;         // +4 피해 종류(맨손 10 · 칼 0 · 망치·철퇴 2)
+        float range = 0;          // +8
+        float px = 0, py = 0;     // +16 판정 중심(망치만 앞 35)
+        bool hitsOverlap = false; // +24 — 참이면 ALLOW_OVERLAP 오브젝트도 맞는다
+        bool weapon = false;      // +28 무기 오브젝트가 있나 — 없을 때만 훅 힘
+        uint8_t anim = 0;         // 훅(25) 가르기용
+    };
     bool PlayerSetState(Session& s, uint8_t st, uint32_t frame);             // playerSetState_4FA020 중 쓰이는 갈래
-    void PlayerInputAttack(Session& s, uint32_t frame);                      // playerInputAttack_4F9C70 맨손 갈래
-    bool PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out);   // playerAttack_538960 맨손 갈래
-    bool PlayerTraceAttack(Session& s, float range, int dmg, uint8_t anim, std::vector<OutPacket>& out);   // 538330
+    void PlayerInputAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out);   // playerInputAttack_4F9C70
+    bool PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out);   // playerAttack_538960
+    bool PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<OutPacket>& out);   // 538330
+    void ReportStamina(Session& s, std::vector<OutPacket>& out);             // netReportStamina_4D8800 `47 <기력>`
+    void EarthquakeSend(float x, float y, int jiggle, std::vector<OutPacket>& out);   // earthquakeSend_4D9110 `97 <흔들림>`
+    static uint32_t WeaponEquipOf(const Session& s);                          // 플레이어 +4 WeaponEquip (지금은 직업 기본 장비)
     bool CursorOnFriend(const Session& s) const;                             // playerAimsAtEnemy_4F9DC0 의 거꾸로
     bool MapTraceVision(float x1, float y1, float x2, float y2) const;       // `server/map.go:522` (장애물 그늘 · 벽 9)
     bool MapTraceVisionSkip(float x1, float y1, float x2, float y2, int skipObstacle) const;
@@ -1771,6 +1798,7 @@ constexpr float  kUnarmedReachExtra = 20.0f;
 constexpr float  kUnarmedCoeffF     = 0.039999999f;
 constexpr float  kHookForce         = 20.0f;
 constexpr uint8_t kAnimPunchLeft = 23, kAnimPunchRight = 24, kAnimPunchHook = 25;
+constexpr uint32_t kServerTickRate = 30;   // 정답지 s.TickRate() — 멀티 30(기력 회복 100/30 등)
 
 // ★ 주문 시전(0x79)의 본문 길이. **2026-09-06 캡처 표본 83개 전수로 확정했다.**
 //

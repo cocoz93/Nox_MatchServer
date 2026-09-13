@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace nox {
 
@@ -134,19 +135,47 @@ struct WeaponStats {
     double coeff;
     int    reqStrength;
     double range;
+    // ★ 2026-09-13 묶음 3-b — 무기 클래스 비트(thing.bin SUBCLASS · libs `object/subclass_weapon.go` 순서).
+    //   정답지는 이 비트(플레이어 WeaponEquip)로 공격 갈래·애니·기력을 고른다(`GAME4_3.c:4067~` · `GAME4.c:1395`).
+    //   proto_test TestThingDb ⑦ 이 파일 SUBCLASS 와 전수 대조한다.
+    uint32_t classBits;
 };
 
 // ⭕ modifier.bin `WEAPON_DEFINITIONS` — 워리어가 드는 것만 (지금 필요한 범위).
 constexpr WeaponStats kWeapons[] = {
-    { "Sword",        5, 0.21, 20, 40.0 },
-    { "MorningStar",  6, 0.25, 20, 35.0 },
-    { "Longsword",    9, 0.30, 30, 45.0 },
-    { "BattleAxe",   21, 0.38, 40, 40.0 },
-    { "OgreAxe",     30, 0.40, 50, 40.0 },
-    { "GreatSword",  50, 0.54, 70, 50.0 },
-    { "WarHammer",  100, 0.50, 70, 20.0 },
-    { "StaffWooden",  4, 0.40, 20, 45.0 },
+    { "Sword",        5, 0.21, 20, 40.0, 0x100  },   // SWORD
+    { "MorningStar",  6, 0.25, 20, 35.0, 0x800  },   // MACE
+    { "Longsword",    9, 0.30, 30, 45.0, 0x200  },   // LONG_SWORD
+    { "BattleAxe",   21, 0.38, 40, 40.0, 0x1000 },   // AXE
+    { "OgreAxe",     30, 0.40, 50, 40.0, 0x2000 },   // OGRE_AXE
+    { "GreatSword",  50, 0.54, 70, 50.0, 0x400  },   // GREAT_SWORD
+    { "WarHammer",  100, 0.50, 70, 20.0, 0x4000 },   // HAMMER
+    { "StaffWooden",  4, 0.40, 20, 45.0, 0x8000 },   // STAFF
 };
+
+// SUBCLASS 원문('+' 이음) → 무기 클래스 비트. 이름 순서 = 비트 순서(libs WeaponClassNames).
+inline uint32_t WeaponClassBitsOf(const std::string& raw) {
+    static const char* const kNames[] = {
+        "FLAG", "QUIVER", "BOW", "CROSSBOW", "ARROW", "BOLT", "CHAKRAM", "SHURIKEN", "SWORD", "LONG_SWORD",
+        "GREAT_SWORD", "MACE", "AXE", "OGRE_AXE", "HAMMER", "STAFF", "STAFF_SULPHOROUS_FLARE",
+        "STAFF_SULPHOROUS_SHOWER", "STAFF_LIGHTNING", "STAFF_FIREBALL", "STAFF_TRIPLE_FIREBALL",
+        "STAFF_FORCE_OF_NATURE", "STAFF_DEATH_RAY", "STAFF_OBLIVION_HALBERD", "STAFF_OBLIVION_HEART",
+        "STAFF_OBLIVION_WIERDLING", "STAFF_OBLIVION_ORB",
+    };
+    uint32_t bits = 0;
+    size_t start = 0;
+    while (start <= raw.size()) {
+        size_t e = raw.find('+', start);
+        if (e == std::string::npos) e = raw.size();
+        std::string tok = raw.substr(start, e - start);
+        while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t')) tok.pop_back();
+        while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.erase(tok.begin());
+        for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
+            if (tok == kNames[i]) bits |= (1u << i);
+        start = e + 1;
+    }
+    return bits;
+}
 
 inline int WeaponDamage(const WeaponStats& w, int strength) {
     const double d = (strength - w.reqStrength) * w.coeff + w.damageMin;

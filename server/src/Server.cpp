@@ -1799,38 +1799,13 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                             //   본인에게만 보내던 탓에 **먼저 온 쪽 화면에서만 상대가 사라졌다.**
                             BroadcastClientStatus(s.netCode, 0, out);
                         }
-                        // ⚠ 쉬는 시간을 둔다. 없으면 초당 서른 대가 들어갈 수 있다.
-                        //   ⚠⚠ **정정(2026-09-09)** — 여기 「버튼을 누르고 있으면 매 틱 온다」고
-                        //     적혀 있었는데 실측과 어긋난다. 코드 6 은 **누르는 순간 한 번만** 온다:
-                        //     180초를 누른 채 두었더니 클라가 보낸 조각 10,885 개 중 코드 6 은
-                        //     **2건**(누른 순간 하나씩)뿐이고 나머지는 전부 방향(코드 1)이었다.
-                        //     2026-09-08 기록의 「4초 눌러도 코드 6 단 1회」와도 맞는다.
-                        //     그러니 쉬는 시간은 **연타를 막는 장치**로 남는다.
-                        //   ⚠ `break` 로 빠져나가지 않는다 — 이 조각에 뒤따르는
-                        //     방향(코드 1) 항목까지 같이 버려진다.
-                        // ★★ 2026-09-13 묶음 3-a — **맨손은 정답지로.** 클릭은 「이번 틱에 CCAction 이 왔다」만 적고
-                        //   틱의 ImplB(PlayerInputAttack)가 상태 1 로 바꾸고, ImplA(PlayerAttack)가 애니 끝 틱에 판정한다.
-                        //   ⚠ 무기를 든 사람(워리어 롱소드)은 무기 갈래(3-b)가 들어올 때까지 아래 옛 자리표시 길로 간다.
-                        else if (!WeaponOf(s.charClass)) {
+                        // ⚠ 코드 6 은 **누르는 순간 한 번만** 온다(2026-09-09 실측 — 180초 눌러 조각 10,885 개 중 2건).
+                        // ★★ 2026-09-13 묶음 3-a·3-b — **정답지로.** 클릭은 「이번 틱에 CCAction 이 왔다」만 적는다.
+                        //   틱의 ImplB(PlayerInputAttack)가 기력(무기)·쉬는 시간(Field0)을 보고 상태 1 로 넣고,
+                        //   ImplA(PlayerAttack)가 맨손은 애니 끝 · 무기는 애니 한가운데 틱에 판정한다.
+                        //   전에는 여기서 바로 때리고 15틱 쉬었다(kMeleeCooldownTicks · 우리 값) — 걷어냈다.
+                        else {
                             s.actionThisTick = true;
-                        }
-                        else if (frame_ >= s.nextMeleeFrame) {
-                            s.nextMeleeFrame = frame_ + kMeleeCooldownTicks;
-                            // ★★ **직업이 든 것으로 때린다** (2026-09-10 정본화).
-                            //   멀티/아레나 기본 장비가 직업마다 다르다 —
-                            //     워리어  롱소드 → (힘−30)×0.30 + 9
-                            //     위저드·컨저러  맨손 → 힘×0.04 + 5
-                            //   발차기(+5)는 **워리어만** 나오는데, 워리어는 무기를 들어
-                            //   실제로는 안 쓰인다. 규칙대로 자리는 남겨 둔다.
-                            //   전에는 누구나 12 로 고정이었다. 그 값이 맨손 평균(11.25)에
-                            //   가까워 맞아 보였지만 **우연이었다.**
-                            const bool kick = (s.charClass == CharClass::Warrior) &&
-                                              (NextRandom(100) >= 100 - kKickPercent);
-                            const int dmg = MeleeDamageFor(s.charClass, s.strength, kick);
-                            const Target t = NearestTarget(from, s.x, s.y,
-                                                           MeleeRangeFor(s.charClass));
-                            HurtTarget(t, dmg, out, from);
-                            ++melees_;
                         }
                     }
                     q += dataLen; qn -= dataLen;
@@ -3215,10 +3190,23 @@ double Server::DebugWallDistance(double x, double y, int* outGx, int* outGy, int
 //   멈춘 뒤 미끄러지는 동안에도 걷는 자세였다.
 //   ⚠ 무기 든 공격(0x47F0000 → 29/31 · 그 밖 sub_4FA280)·가만(13)의 대검 0x26·죽음 등은 그 조각(3-b·3-c)에서 채운다.
 uint8_t Server::PlayerAnimByte(const Session& s) {
+    const uint32_t equip = WeaponEquipOf(s);
     switch (s.moveState) {
         case kPlayerStateWalk: return kAnimWalk;
         case kPlayerStateRun: return kAnimRun;
-        case kPlayerStateAttack: return s.attackAnim;   // 맨손 — Field8 이 0 이 아니면 그 값(`:1733~1736`)
+        case kPlayerStateAttack: case 14: case 22: {
+            // `:1720~1737` — 마법 지팡이(0x47F0000)는 29/31 · 무기(0·1 아님)거나 Field8 이 0 이면 sub_4FA280 표 · 맨손은 Field8
+            if (equip & 0x47F0000) return 31;   // ⚠ +96&2(충전 휘두르기) 면 29 — 마법 지팡이는 묶음 4
+            if ((equip && equip != 1) || s.attackAnim == 0) {
+                // sub_4FA280 — 비트 2 부터 가장 낮은 켜진 비트 → blob_587000 215824 표
+                static const uint8_t kWeaponAnim[27] = { 0, 0, 33, 34, 0, 0, 44, 44, 27, 28, 37, 26, 35, 39, 39,
+                                                         29, 31, 31, 31, 31, 31, 31, 31, 32, 32, 32, 31 };
+                for (int b = 2; b < 27; ++b) if (equip & (1u << b)) return kWeaponAnim[b];
+                return 0;
+            }
+            return s.attackAnim;
+        }
+        case kPlayerStateIdle: return (equip & 0x400) ? 0x26 : kAnimIdle;   // 대검이면 GREAT_SWORD_IDLE(`:1756~1758`)
         default: return kAnimIdle;
     }
 }
@@ -3269,6 +3257,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         const bool dead = (s.respawnAtFrame != 0);
         const bool canMove = !dead && !s.observer;
 
+        // ⓪ 기력 회복(`object_update.go:108` — 죽지 않았으면 100 아래일 때 100/30 씩, ImplA 보다 먼저)
+        if (!dead && s.stamina < 100) s.stamina = static_cast<uint8_t>(s.stamina + 100 / kServerTickRate);
         // ① 힘 · 공격(ImplA)
         double fx = 0.0, fy = 0.0;
         bool run = false;
@@ -3280,10 +3270,15 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             fx += std::cos(rad) * speed;
             fy += std::sin(rad) * speed;
         } else if (canMove && s.moveState == kPlayerStateAttack) {
-            // `object_update.go:224~234` — 0 이 오면 무기 쥠(&4)이면 14, 아니면 13 으로 · Field8 지움
+            // `object_update.go:224~234` — 0 이 오면 활(WeaponEquip&4)이면 14 · Field34 = 프레임, 아니면 13 · Field8 지움
             if (!PlayerAttack(s, frame, out)) {
-                PlayerSetState(s, kPlayerStateIdle, frame);
-                s.attackAnim = 0;
+                if (WeaponEquipOf(s) & 0x4) {
+                    PlayerSetState(s, 14, frame);
+                    s.stateFrame = frame;
+                } else {
+                    PlayerSetState(s, kPlayerStateIdle, frame);
+                    s.attackAnim = 0;
+                }
             }
         }
         // ② 조작(ImplB) — 목록이 비었으면 아무것도 안 한다(`object_update.go:485`)
@@ -3299,7 +3294,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 s.stateFrame = frame;
             }
             // CCAction(`:536~544`) — playerCanAttack(버프 25 없음 · 상태 23 아님) → 공 차기 아니면 playerInputAttack
-            if (s.actionThisTick && s.moveState != 23) PlayerInputAttack(s, frame);
+            if (s.actionThisTick && s.moveState != 23) PlayerInputAttack(s, frame, out);
         }
         if (dead) s.moveState = kPlayerStateIdle;
         s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
@@ -3495,10 +3490,15 @@ bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame) {
         // LABEL_26(`:1446~1464`) — 쉬는 시간이 끝났으면 애니를 새로 뽑는다. 아니면 상태를 안 바꾼다.
         if (s.attackReadyFrame <= frame) {
             s.attackReadyFrame = 0;
-            // ⚠ 무기를 들었으면 Field8 = 0 (3-b). 맨손 — 23·24 반반, 워리어면 IntClamp(0,100) > 75 로 25
-            s.attackAnim = static_cast<uint8_t>(kAnimPunchLeft + NextRandom(2));
-            if (s.charClass == CharClass::Warrior && NextRandom(101) > 75) s.attackAnim = kAnimPunchHook;
-            // 투명·무적 해제 · 타원 방패 취소 — 버프가 묶음 4 라 지금은 끌 것이 없다
+            if (WeaponEquipOf(s) != 0) {
+                s.attackAnim = 0;                           // 무기 — Field8 = 0(자세는 무기 비트에서 · PlayerAnimByte)
+            } else {
+                // 맨손 — 23·24 반반, 워리어면 IntClamp(0,100) > 75 로 25
+                s.attackAnim = static_cast<uint8_t>(kAnimPunchLeft + NextRandom(2));
+                if (s.charClass == CharClass::Warrior && NextRandom(101) > 75) s.attackAnim = kAnimPunchHook;
+                // 투명 해제 · 무적 해제 · 타원 방패 취소 — 버프 중 지금 있는 것은 부활 무적뿐
+                if (s.invulnUntilSet && frame < s.invulnUntilFrame) s.invulnUntilFrame = frame;
+            }
         } else {
             res = false;
             st = s.moveState;
@@ -3512,10 +3512,72 @@ bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame) {
     return res;
 }
 
-// `GAME4.c:1588` playerInputAttack — 겨눈 것이 적(또는 빈 곳)일 때만. 맨손 갈래.
-void Server::PlayerInputAttack(Session& s, uint32_t frame) {
+// 플레이어 +4 WeaponEquip — 든 무기의 클래스 비트. ⚠ 지금은 직업 기본 장비에서 온다(주워 들기·바꿔 들기는 묶음 5).
+uint32_t Server::WeaponEquipOf(const Session& s) {
+    const WeaponStats* w = WeaponOf(s.charClass);
+    return w ? w->classBits : 0u;
+}
+
+// `GAME4.c:1395` weaponGetStaminaByType_4F7E80 — 무기 비트 → 깎는 기력
+static int WeaponStaminaCost(uint32_t equip) {
+    if (equip & 0x200) return 70;
+    if (equip & 0x4000) return 100;
+    if (equip & 0x800) return 50;
+    if (equip & 0x100) return 45;
+    if (equip & 0x1000) return 75;
+    if (equip & 0x2000) return 100;
+    if (equip & 0x7FF8000) return 45;
+    return (equip & 0x400) ? 75 : 10;
+}
+
+// `GAME3_2.c:4124` netReportStamina_4D8800 — `47 <기력>` 2바이트 · 중요(netSendPacket1 → 4E5030 · cc)
+void Server::ReportStamina(Session& s, std::vector<OutPacket>& out) {
+    const uint8_t msg[2] = { static_cast<uint8_t>(Op::REPORT_STAMINA), s.stamina };
+    EmitSeq(s, msg, sizeof(msg), out);
+}
+
+// `server/network.go:629~645` earthquakeSend — 자리에서 300 안의 사람마다 `97 <흔들림>`(비신뢰 · 목록 Kind1)
+void Server::EarthquakeSend(float x, float y, int jiggle, std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame) continue;
+        const double dx = static_cast<double>(x - static_cast<float>(o.x));
+        const double dy = static_cast<double>(y - static_cast<float>(o.y));
+        const double dd2 = dy * dy + dx * dx;
+        if (dd2 >= 90000.0) continue;
+        const uint8_t msg[2] = { static_cast<uint8_t>(Op::FX_JIGGLE),
+                                 static_cast<uint8_t>(static_cast<int8_t>(static_cast<long long>((1.0 - dd2 * 1.1111111e-05) * jiggle))) };
+        Emit(o, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+    }
+}
+
+// `GAME4.c:1588` playerInputAttack — 겨눈 것이 적(또는 빈 곳)일 때만.
+void Server::PlayerInputAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out) {
     if (CursorOnFriend(s)) {                                // playerAimsAtEnemy_4F9DC0 가 0
         std::printf("[공격] 프레임 %u %s 커서 아래가 편 — 안 때림\n", frame, s.addr.c_str());
+        return;
+    }
+    const uint32_t equip = WeaponEquipOf(s);
+    if (equip) {
+        // ⚠ 마법 지팡이(0x47F0000 · 충전 쓰기 useByNetCode)는 주문 묶음(4)에서. 기본 장비에 없다.
+        if (s.moveState != kPlayerStateAttack) {
+            const int cost = WeaponStaminaCost(equip);
+            if (s.stamina >= cost) {
+                s.stamina = static_cast<uint8_t>(s.stamina - cost);
+                ReportStamina(s, out);
+                s.stateFrame = frame;                       // a1[34] = 프레임 — setState 보다 먼저
+                s.animFrame = 0;
+                const bool entered = PlayerSetState(s, kPlayerStateAttack, frame);
+                if (!entered) s.stamina = static_cast<uint8_t>(s.stamina + cost);   // sub_4F7DB0 되돌림
+                std::printf("[공격] 프레임 %u %s 무기 0x%X %s · 기력 %d 깎음 → %u\n", frame, s.addr.c_str(), equip,
+                            entered ? "상태 1 들어감" : "쉬는 시간이라 안 들어감(기력 되돌림)", cost, s.stamina);
+            } else {
+                std::printf("[공격] 프레임 %u %s 무기 0x%X 기력 모자람 %u < %d\n", frame, s.addr.c_str(), equip, s.stamina, cost);
+            }
+            std::fflush(stdout);
+        }
+        // 투명(0)·무적(23) 끄기 · 타원 방패(67) 취소 — 무기 갈래는 **클릭마다** 끈다(`:1629~1631`)
+        if (s.invulnUntilSet && frame < s.invulnUntilFrame) s.invulnUntilFrame = frame;
         return;
     }
     if (s.moveState != kPlayerStateAttack) {
@@ -3572,63 +3634,231 @@ bool Server::CursorOnFriend(const Session& s) const {
     return false;
 }
 
-// `GAME4_3.c:3855` playerAttack — 맨손 갈래(`:4020~4066`)와 끝(LABEL_159 `:4420~4439`). 참 = 아직 공격 중.
+// `GAME4_3.c:3855` playerAttack — 맨손(`:4020~4066`) · 무기(`:4067~4419`) · 끝(LABEL_159 `:4420~4439`). 참 = 아직 공격 중.
+//   무기 갈래는 **애니 한가운데 칸(frames/2)** 에 한 번 판정한다(지난 틱 칸보다 클 때만 — 같은 칸 두 번 방지).
+//   ⚠ 옮기지 않은 갈래(다른 묶음): 활·석궁(0x4·0x8 화살 오브젝트 5) · 차크람·수리검(0x40·0x80 날아가는 오브젝트 5)
+//     · 마법 지팡이 0x47F0000(주문 4) · 무기 마법 효과 itemApplyAttackEffect(5) · 광전사 돌진·함성(능력 4)
 bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out) {
-    if (s.attackAnim == 0) {
-        // `:3903~3916` — 애니가 비었으면 여기서 뽑는다(`!class && rand(0,100) >= 75` → 25)
-        s.attackAnim = static_cast<uint8_t>(kAnimPunchLeft + NextRandom(2));
-        if (s.charClass == CharClass::Warrior && NextRandom(101) >= 75) s.attackAnim = kAnimPunchHook;
-    }
-    const int anim = s.attackAnim;
-    const int frames = (anim < kPlayerAnimSlots) ? playerAnimFrames_[anim][0] : 0;
-    const int hold = (anim < kPlayerAnimSlots) ? playerAnimFrames_[anim][1] : 0;
-    if (s.attackReadyFrame == 0)
-        s.attackReadyFrame = frame + static_cast<uint32_t>(frames * (hold + 1));   // `:4022~4024`
-    const int idx = static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
-    if (idx >= frames) {
-        // 판정 — 피해는 float 로 담는다(calcBoltDamage_4EF1E0: (힘 − 0) × 계수 + 더함)
-        const int add = (anim == kAnimPunchLeft || anim == kAnimPunchRight) ? kPunchDamageMin
-                      : (anim == kAnimPunchHook) ? kKickDamageMin : 0;
-        const float coeff = (anim >= kAnimPunchLeft && anim <= kAnimPunchHook) ? kUnarmedCoeffF : 0.0f;
-        const float dmg = static_cast<float>(static_cast<double>(s.strength) * coeff + add);
-        const int dmgInt = static_cast<int>(static_cast<long long>(static_cast<double>(dmg) + 0.5));
-        const float range = static_cast<float>(kBodyRadius) + kUnarmedReachExtra;
-        const bool hit = PlayerTraceAttack(s, range, dmgInt, static_cast<uint8_t>(anim), out);
+    const uint32_t equip = WeaponEquipOf(s);
+    const WeaponStats* w = WeaponOf(s.charClass);
+    const uint8_t prevFrame = s.animFrame;                  // v76 아래 바이트(+236 지난 틱 값)
+    int frames = 0, hold = 0, idx = 0;
+    auto range = [&](int anim) {
+        frames = (anim >= 0 && anim < kPlayerAnimSlots) ? playerAnimFrames_[anim][0] : 0;
+        hold = (anim >= 0 && anim < kPlayerAnimSlots) ? playerAnimFrames_[anim][1] : 0;
+    };
+    auto calcIdx = [&]() { idx = static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1)); };
+    auto logJudge = [&](const AttackInfo& ai, bool hit, int anim) {
         ++melees_;
-        std::printf("[공격] 프레임 %u %s 판정(시작 %u · 칸 %d/%d) 애니 %d 피해 %d 사거리 %.0f → %s\n", frame, s.addr.c_str(),
-                    s.stateFrame, idx, frames, anim, dmgInt, range, hit ? "닿음" : "빗나감");
+        std::printf("[공격] 프레임 %u %s 판정(시작 %u · 칸 %d/%d) 애니 %d 피해 %d 종류 %u 사거리 %.0f → %s\n", frame,
+                    s.addr.c_str(), s.stateFrame, idx, frames, anim, ai.dmg, ai.type, ai.range, hit ? "닿음" : "빗나감");
         std::fflush(stdout);
+    };
+    // calcBoltDamage_4EF1E0 — (힘 − 요구힘) × 계수 + 최소 · float 로 담고 sub_538510 이 +0.5 버림
+    auto weaponDmg = [&]() {
+        const float f = static_cast<float>(static_cast<double>(s.strength - w->reqStrength) *
+                                           static_cast<double>(static_cast<float>(w->coeff)) + w->damageMin);
+        return static_cast<int>(static_cast<long long>(static_cast<double>(f) + 0.5));
+    };
+    auto meleeInfo = [&](uint8_t type, bool overlap) {
+        AttackInfo ai;
+        ai.dmg = weaponDmg();
+        ai.type = type;
+        ai.range = static_cast<float>(kBodyRadius) + static_cast<float>(w->range);
+        ai.px = static_cast<float>(s.posX); ai.py = static_cast<float>(s.posY);
+        ai.hitsOverlap = overlap;
+        ai.weapon = true;
+        return ai;
+    };
+    auto setReady = [&]() {
+        if (s.attackReadyFrame == 0) s.attackReadyFrame = frame + static_cast<uint32_t>(frames * (hold + 1));
+    };
+    auto midHit = [&]() { return idx == frames / 2 && idx > prevFrame; };
+
+    if (equip == 0) {
+        if (s.attackAnim == 0) {
+            // `:3903~3916` — 애니가 비었으면 여기서 뽑는다(`!class && rand(0,100) >= 75` → 25)
+            s.attackAnim = static_cast<uint8_t>(kAnimPunchLeft + NextRandom(2));
+            if (s.charClass == CharClass::Warrior && NextRandom(101) >= 75) s.attackAnim = kAnimPunchHook;
+        }
+        const int anim = s.attackAnim;
+        range(anim);
+        setReady();
+        calcIdx();
+        if (idx >= frames) {
+            AttackInfo ai;
+            const int add = (anim == kAnimPunchLeft || anim == kAnimPunchRight) ? kPunchDamageMin
+                          : (anim == kAnimPunchHook) ? kKickDamageMin : 0;
+            const float coeff = (anim >= kAnimPunchLeft && anim <= kAnimPunchHook) ? kUnarmedCoeffF : 0.0f;
+            const float dmg = static_cast<float>(static_cast<double>(s.strength) * coeff + add);
+            ai.dmg = static_cast<int>(static_cast<long long>(static_cast<double>(dmg) + 0.5));
+            ai.type = 10;
+            ai.range = static_cast<float>(kBodyRadius) + kUnarmedReachExtra;
+            ai.px = static_cast<float>(s.posX); ai.py = static_cast<float>(s.posY);
+            ai.anim = static_cast<uint8_t>(anim);
+            logJudge(ai, PlayerTraceAttack(s, ai, out), anim);
+        }
+    } else if (equip & 0x47F8000) {
+        // 지팡이 — 막대(0x8000) 면 29 휘두르기. 마법 지팡이는 +96&2 가 아니면 31(주문 4)
+        const int anim = 29;
+        range(anim);
+        setReady();                                         // 29 면 길이만큼 · 31 이면 지금(`:4075~4079`)
+        calcIdx();
+        if (idx < frames && midHit()) {
+            AttackInfo ai = meleeInfo(0, false);
+            logJudge(ai, PlayerTraceAttack(s, ai, out), anim);
+        }
+    } else if (equip & 0x7800000) {
+        const int anim = (equip & 0x3800000) ? 32 : 31;    // 32 찌르기만 판정
+        range(anim);
+        setReady();
+        calcIdx();
+        if (anim == 32 && midHit()) {
+            AttackInfo ai = meleeInfo(0, false);
+            logJudge(ai, PlayerTraceAttack(s, ai, out), anim);
+        }
+    } else if (!(equip & 0xC0)) {
+        struct Branch { uint32_t bits; int anim; uint8_t type; bool overlap; };
+        // `:4149~4288` 순서 그대로 — 롱소드 · 칼 · 대검 · 망치 · 철퇴 · 도끼
+        static const Branch kBranches[] = {
+            { 0x200, 28, 0, false }, { 0x100, 27, 0, false }, { 0x400, 37, 0, false },
+            { 0x4000, 39, 2, true }, { 0x800, 26, 2, true }, { 0x3000, 35, 0, true },
+        };
+        const Branch* br = nullptr;
+        for (const auto& b : kBranches) if (equip & b.bits) { br = &b; break; }
+        if (br) {
+            range(br->anim);
+            setReady();
+            calcIdx();
+            if (midHit()) {
+                AttackInfo ai = meleeInfo(br->type, br->overlap);
+                if (br->bits == 0x4000) {
+                    // 망치 — 앞 35 를 중심으로 반지름 = 무기 사거리(몸 반지름 안 더함) · 둘레 모두 · 땅울림(`:4220~4240`)
+                    const float rad = s.facingPrev * 2.0f * 3.14159265f / 256.0f;
+                    ai.px = std::cos(rad) * 35.0f + static_cast<float>(s.posX);
+                    ai.py = std::sin(rad) * 35.0f + static_cast<float>(s.posY);
+                    ai.range = static_cast<float>(w->range);
+                    logJudge(ai, PlayerTraceAttack(s, ai, out), br->anim);
+                    EarthquakeSend(static_cast<float>(s.posX), static_cast<float>(s.posY),
+                                   static_cast<int>(std::lround(static_cast<double>(s.strength) * 0.1)), out);   // nox_float2int
+                } else {
+                    logJudge(ai, PlayerTraceAttack(s, ai, out), br->anim);
+                }
+            }
+        }
+        // 활(0x4)·석궁(0x8) — 화살 오브젝트가 없어 묶음 5 로(여기 오면 아무 일도 안 하고 LABEL_159)
     }
+    // 차크람(0x40)·수리검(0x80) — 날아가는 오브젝트라 묶음 5 로
     s.animFrame = static_cast<uint8_t>(idx >= frames ? frames - 1 : idx);   // LABEL_159
     return idx < frames;
 }
 
-// `GAME4_3.c:3624` playerTraceAttack(무기 없음) — 참 = 무엇에든 닿음(빗나감 소리 879 를 가른다, 소리는 묶음 10).
-bool Server::PlayerTraceAttack(Session& s, float range, int dmg, uint8_t anim, std::vector<OutPacket>& out) {
+// `GAME4_3.c:3624` playerTraceAttack — 참 = 무엇에든 닿음(빗나감 소리 879~884 를 가른다, 소리는 묶음 10).
+//   망치(무기 SUBCLASS 0x4000)는 판정 중심 둘레 **모두**에 sub_538510 을 부르고, 그 밖은 하나를 고른다(sub_5386A0).
+bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<OutPacket>& out) {
     const float ax = static_cast<float>(s.posX), ay = static_cast<float>(s.posY);
     const float dirX = std::cos(s.facingPrev * 2.0f * 3.14159265f / 256.0f);
     const float dirY = std::sin(s.facingPrev * 2.0f * 3.14159265f / 256.0f);
-    // 후보 — sub_518040(자리, 사거리) → sub_5180B0: 사거리 − (가장자리까지 거리) > 0 → sub_5386A0 고르기
-    float best = range;
-    enum { None, Player, Pet, Obstacle } kind = None;
+    const bool hammer = ai.weapon && (WeaponEquipOf(s) & 0x4000);
+    const float gx = ai.px, gy = ai.py;                     // sub_518040 중심(a2+16 이거나 사람 자리)
+    bool hitFlag = false;                                   // dword_5d4594_2488656
+
+    enum Kind { None, Player, Pet, Obstacle };
+    // sub_5180B0 거리 조건 — 사거리 − (중심에서 가장자리까지) > 0
+    auto gate = [&](const PhysBody& b, float ox, float oy) {
+        double g;
+        if (b.shape == 2) {
+            g = ai.range - (std::sqrt((gx - ox) * (gx - ox) + (gy - oy) * (gy - oy)) - b.r);
+        } else if (b.shape == 3) {
+            float nx, ny;
+            g = BoxOverlap(gx, gy, ai.range, b, ox, oy, nx, ny);
+        } else {
+            g = ai.range - std::sqrt((gx - ox) * (gx - ox) + (gy - oy) * (gy - oy));
+        }
+        return g > 0.0;
+    };
+    // sub_538510 — 방향 표 &1 · 깃발 · 선 추적(벽 0x5) → 피해(+716) · 맨손 훅이면 힘 20
+    auto strike = [&](Kind kind, const std::string& addr, int idx) {
+        float tx = 0, ty = 0;
+        uint32_t tflags = 0;
+        if (kind == Player) {
+            const Session& o = sessions_.at(addr);
+            tx = static_cast<float>(o.posX); ty = static_cast<float>(o.posY);
+            if (o.respawnAtFrame != 0) tflags |= 0x8000 | 0x8;
+            if (o.observer) tflags |= 0x40;
+        } else if (kind == Pet) {
+            tx = static_cast<float>(pets_[idx].x); ty = static_cast<float>(pets_[idx].y);
+            tflags = typeBodies_.at(pets_[idx].type).flags;
+        } else {
+            tx = obstacles_[idx].x; ty = obstacles_[idx].y;
+            tflags = obstacles_[idx].flags;
+        }
+        if (!(TestTwoPointsAndDirection(ax, ay, s.facingPrev, tx, ty) & 1)) return;
+        if (tflags & 0x8040) return;
+        if (!ai.hitsOverlap && (tflags & 0x8)) return;
+        hitFlag = true;                                     // 재질 NONE(0x4000) 이 아니면 — 재질은 아직 안 읽는다
+        if (!MapTraceRay(ax, ay, tx, ty, 0x5)) return;
+        const DamageKind dk = (ai.type == 2) ? DamageKind::HalfArmor : DamageKind::Physical;
+        if (kind == Player) {
+            HurtTarget(Target{ addr, -1 }, ai.dmg, out, s.addr, dk);
+            auto it = sessions_.find(addr);
+            if (!ai.weapon && ai.anim == kAnimPunchHook && it != sessions_.end()) {
+                // 훅 — 맞은 쪽 ForceVec += (맞은 자리 − 때린 자리) × (10 × 20 ÷ 질량) ÷ (거리 + 0.1)
+                Session& o = it->second;
+                const float dpx = static_cast<float>(o.posX) - ax, dpy = static_cast<float>(o.posY) - ay;
+                const float r = static_cast<float>(std::sqrt(static_cast<double>(dpx * dpx + dpy * dpy)) + 0.1);
+                const float f = 10.0f * kHookForce / static_cast<float>(kPlayerMass);
+                o.forceX += static_cast<float>(static_cast<double>(dpx) * f / r);
+                o.forceY += static_cast<float>(static_cast<double>(dpy) * f / r);
+            }
+        } else if (kind == Pet) {
+            HurtTarget(Target{ std::string(), idx }, ai.dmg, out, s.addr, dk);
+            // ⚠ 훅 힘 — 소환수는 아직 물리가 없다(묶음 6)
+        }
+        // 장애물 — 피해 함수가 없는 것(나무·바위). 부서지는 것은 묶음 5·9.
+    };
+
+    PhysBody playerBody;
+    playerBody.shape = 2; playerBody.r = static_cast<float>(kBodyRadius); playerBody.cls = kClsPlayer;
+
+    if (hammer) {
+        // 둘레 모두 — 목록이 바뀔 수 있어(소환수가 죽으면 지워짐) 먼저 모은 뒤 친다
+        std::vector<std::pair<Kind, std::pair<std::string, uint16_t>>> hits;
+        for (const auto& kv : sessions_) {
+            const Session& o = kv.second;
+            if (&o == &s || !o.inGame) continue;
+            if (gate(playerBody, static_cast<float>(o.posX), static_cast<float>(o.posY))) hits.push_back({ Player, { kv.first, uint16_t{0} } });
+        }
+        for (const auto& k : pets_) {
+            auto tb = typeBodies_.find(k.type);
+            if (tb == typeBodies_.end()) continue;
+            if (gate(tb->second, static_cast<float>(k.x), static_cast<float>(k.y))) hits.push_back({ Pet, { std::string(), k.netCode } });
+        }
+        for (size_t i = 0; i < obstacles_.size(); ++i) {
+            if (gate(obstacles_[i], obstacles_[i].x, obstacles_[i].y)) hits.push_back({ Obstacle, { std::string(), static_cast<uint16_t>(i) } });
+        }
+        for (const auto& h : hits) {
+            if (h.first == Pet) {
+                int idx = -1;
+                for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == h.second.second) { idx = static_cast<int>(i); break; }
+                if (idx >= 0) strike(Pet, std::string(), idx);
+            } else if (h.first == Player) {
+                if (sessions_.count(h.second.first)) strike(Player, h.second.first, -1);
+            } else {
+                strike(Obstacle, std::string(), h.second.second);
+            }
+        }
+        return hitFlag;
+    }
+
+    // 하나 고르기 — sub_5386A0 앞쪽 가장 가까운 것(몬스터 우선)
+    float best = ai.range;
+    Kind kind = None;
     std::string bestAddr;
     int bestIdx = -1;
     bool bestMonster = false;
     auto pick = [&](const PhysBody& b, float ox, float oy, bool isEnemy, int obstacleIdx) -> bool {
-        // sub_5180B0 거리 조건
-        {
-            double gate;
-            if (b.shape == 2) {
-                gate = range - (std::sqrt((ax - ox) * (ax - ox) + (ay - oy) * (ay - oy)) - b.r);
-            } else if (b.shape == 3) {
-                float nx, ny;
-                gate = BoxOverlap(ax, ay, range, b, ox, oy, nx, ny);
-            } else {
-                gate = range - std::sqrt((ax - ox) * (ax - ox) + (ay - oy) * (ay - oy));
-            }
-            if (!(gate > 0.0)) return false;
-        }
-        // sub_5386A0
+        if (!gate(b, ox, oy)) return false;
         if (b.flags & 0x8049) return false;
         if (!((b.cls & 6) || !(b.flags & 0x10) || (b.flags & 0x80))) return false;
         if (!(isEnemy || !(b.cls & 6))) return false;
@@ -3656,8 +3886,6 @@ bool Server::PlayerTraceAttack(Session& s, float range, int dmg, uint8_t anim, s
         }
         return false;
     };
-    PhysBody playerBody;
-    playerBody.shape = 2; playerBody.r = static_cast<float>(kBodyRadius); playerBody.cls = kClsPlayer;
     for (const auto& kv : sessions_) {
         const Session& o = kv.second;
         if (&o == &s || !o.inGame) continue;
@@ -3682,43 +3910,9 @@ bool Server::PlayerTraceAttack(Session& s, float range, int dmg, uint8_t anim, s
         if (pick(o, o.x, o.y, false, static_cast<int>(i))) { kind = Obstacle; bestIdx = static_cast<int>(i); }
     }
     if (kind == None) return false;
-
-    // sub_538510 — 방향 표 &1 · 깃발 · 선 추적(벽 0x5) → 피해
-    float tx = 0, ty = 0;
-    uint32_t tflags = 0;
-    if (kind == Player) {
-        const Session& o = sessions_.at(bestAddr);
-        tx = static_cast<float>(o.posX); ty = static_cast<float>(o.posY);
-    } else if (kind == Pet) {
-        tx = static_cast<float>(pets_[bestIdx].x); ty = static_cast<float>(pets_[bestIdx].y);
-        tflags = typeBodies_.at(pets_[bestIdx].type).flags;
-    } else {
-        tx = obstacles_[bestIdx].x; ty = obstacles_[bestIdx].y;
-        tflags = obstacles_[bestIdx].flags;
-    }
-    if (!(TestTwoPointsAndDirection(ax, ay, s.facingPrev, tx, ty) & 1)) return false;
-    if (tflags & 0x8040) return false;
-    if (tflags & 0x8) return false;                            // a2+24 == 0 이면 ALLOW_OVERLAP 은 안 맞는다
-    const bool hit = true;                                     // 재질 NONE(0x4000) 이 아니면 닿음 — 재질은 아직 안 읽는다
-    if (!MapTraceRay(ax, ay, tx, ty, 0x5)) return hit;
-    if (kind == Player) {
-        HurtTarget(Target{ bestAddr, -1 }, dmg, out, s.addr, DamageKind::Physical);
-        // 훅 — 맞은 쪽 ForceVec += (맞은 자리 − 때린 자리) × (10 × 20 ÷ 질량) ÷ (거리 + 0.1)
-        auto it = sessions_.find(bestAddr);
-        if (anim == kAnimPunchHook && it != sessions_.end()) {
-            Session& o = it->second;
-            const float dpx = static_cast<float>(o.posX) - ax, dpy = static_cast<float>(o.posY) - ay;
-            const float r = static_cast<float>(std::sqrt(static_cast<double>(dpx * dpx + dpy * dpy)) + 0.1);
-            const float f = 10.0f * kHookForce / static_cast<float>(kPlayerMass);
-            o.forceX += static_cast<float>(static_cast<double>(dpx) * f / r);
-            o.forceY += static_cast<float>(static_cast<double>(dpy) * f / r);
-        }
-    } else if (kind == Pet) {
-        HurtTarget(Target{ std::string(), bestIdx }, dmg, out, s.addr, DamageKind::Physical);
-        // ⚠ 훅 힘 — 소환수는 아직 물리가 없다(묶음 6)
-    }
-    // 장애물 — 피해 함수가 없는 것(나무·바위). 부서지는 것은 묶음 5·9.
-    return hit;
+    strike(kind, bestAddr, bestIdx);
+    // ⚠ 무기 닳기 playerDamageWeapon_4E1560(ItemDamagePercentage) — 아이템 체력(묶음 5) · 벽 부수기 mapDamageToWalls(9)
+    return hitFlag;
 }
 
 int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {

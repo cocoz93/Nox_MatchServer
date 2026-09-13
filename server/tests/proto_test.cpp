@@ -2246,6 +2246,117 @@ void TestMelee() {
     std::printf("  근접 공격(맨손 정답지) — 애니 끝 판정·쉬는 시간·걸음 막힘·사거리 30·앞쪽·갱신 칸 바이트\n");
 }
 
+// ── 무기 공격(묶음 3-b) ─────────────────────────────────────────
+//   정답지 `GAME4_3.c:4149~4172`(롱소드) · `GAME4.c:1614~1627`(기력) · `object_update.go:108`(기력 회복).
+//   워리어 기본 장비 롱소드(LONG_SWORD 0x200) — 애니 28(8칸 · 붙듦 0) **한가운데 칸 4** 에 한 번 판정,
+//   사거리 = 몸 반지름 10 + 무기 45 · 피해 (힘 125 − 30) × 0.3 + 9 → 38 · 기력 70 깎고 `47 <기력>` 알림.
+void TestWeaponAttack() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+    auto makeSrv = [&](nox::Server& srv, int bx) {
+        srv.SetPlayerAnimFrames(28, 8, 0);   // ⭕ thing.bin LONG_SWORD_STRIKE 8/0 (TestThingDb ⑥)
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729);           // 위저드 — 방어합 0.23
+        srv.DebugMoveTo(b, bx, 1000);
+    };
+    auto click = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+        auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+    };
+    const int kSword = nox::ApplyArmor(38, nox::LoadoutFor(nox::CharClass::Wizard).armorSum, nox::DamageKind::Physical);
+
+    // ① 기력은 0 에서 시작해 틱마다 3 — 모자라면 클릭해도 안 들어간다 · 70 넘으면 들어가고 70 깎고 알린다
+    {
+        nox::Server srv;
+        makeSrv(srv, 1050);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        click(srv, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.DebugStaminaOf(a) == 3, "기력이 첫 틱에 3 이 아니다(0 에서 100/30)");
+        Check(srv.DebugStateOf(a) != nox::kPlayerStateAttack, "기력 3 인데 롱소드 공격(70)이 들어갔다");
+        for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(srv.DebugStaminaOf(a) >= 70, "31틱 뒤 기력이 70 아래 — 회복이 안 돈다");
+        const uint8_t before = srv.DebugStaminaOf(a);
+        out.clear();
+        click(srv, out);
+        ms += 33; srv.Tick(ms, out);                             // T: 회복 3 → 깎기 70
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "기력이 넉넉한데 공격이 안 들어갔다");
+        const int expect = std::min(before + 3, 102) - 70;
+        Check(srv.DebugStaminaOf(a) == expect, "롱소드가 기력을 70 깎지 않았다");
+        bool report = false;
+        for (const auto& m : Flatten(out))
+            if (m.size() == 2 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_STAMINA) && m[1] == expect) report = true;
+        Check(report, "기력을 깎았는데 `47 <기력>` 알림이 없다");
+        Check(srv.DebugAnimByteOf(a) == 28, "롱소드 공격 자세가 28(LONG_SWORD_STRIKE) 이 아니다");
+
+        // ② 한가운데 칸(4) 에서 한 번만 · 칸 8 에서 상태 13
+        int hitTick = -1, hits = 0;
+        uint16_t hp = srv.HealthOf(b);
+        for (int t = 1; t <= 10; ++t) {
+            ms += 33; srv.Tick(ms, out);
+            if (srv.HealthOf(b) != hp) { ++hits; if (hitTick < 0) hitTick = t; hp = srv.HealthOf(b); }
+            if (t == 7) Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "칸 7 인데 공격 상태가 끝났다");
+            if (t == 8) Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "칸 8 인데 상태 13 으로 안 돌아왔다");
+        }
+        Check(hitTick == 4, "롱소드가 애니 한가운데(4틱) 가 아닌 때에 닿았다");
+        Check(hits == 1, "한 번 휘두르는데 두 번 이상 맞았다");
+        Check(srv.HealthOf(b) == nox::HealthOnline(nox::CharClass::Wizard) - kSword, "롱소드 피해가 (힘−30)×0.3+9 · 방어 식과 다르다");
+    }
+
+    // ③ 사거리 — 몸 10 + 무기 45 = 55 를 상대 가장자리까지 → 중심 64 는 닿고 66 은 안 닿는다
+    for (int dist : { 64, 66 }) {
+        nox::Server srv;
+        makeSrv(srv, 1000 + dist);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
+        click(srv, out);
+        for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+        const bool hit = srv.HealthOf(b) != nox::HealthOnline(nox::CharClass::Wizard);
+        Check(dist == 64 ? hit : !hit, dist == 64 ? "롱소드 사거리 안(64) 인데 안 맞음" : "롱소드 사거리 밖(66) 인데 맞음");
+    }
+
+    // ④ 공격하면 부활 무적이 꺼진다(무기 갈래는 클릭마다 버프 23 끄기 · `GAME4.c:1630`)
+    {
+        nox::Server srv;
+        makeSrv(srv, 1050);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 9999, out, "");
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 120 && srv.HealthOf(a) == 0; ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(srv.HealthOf(a) > 0, "워리어가 안 되살아났다 — 이 시험이 무의미해진다");
+        Check(srv.IsInvulnerable(a), "부활 직후 무적이 아니다 — 이 시험이 무의미해진다");
+        click(srv, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(!srv.IsInvulnerable(a), "무기 공격 클릭을 했는데 부활 무적이 안 꺼졌다");
+    }
+
+    // ⑤ 칸을 붙드는 애니(붙듦 1)면 칸 4 가 두 틱 이어진다 — 「지난 틱 칸보다 클 때만」(v76 아래 바이트)이 두 번 치기를 막는다
+    {
+        nox::Server srv;
+        makeSrv(srv, 1050);
+        srv.SetPlayerAnimFrames(28, 8, 1);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
+        click(srv, out);
+        int hits = 0;
+        uint16_t hp = srv.HealthOf(b);
+        for (int t = 0; t < 20; ++t) {
+            ms += 33; srv.Tick(ms, out);
+            if (srv.HealthOf(b) != hp) { ++hits; hp = srv.HealthOf(b); }
+        }
+        Check(hits == 1, "붙듦 1 애니에서 한가운데 칸이 두 틱 이어져 두 번 맞았다");
+    }
+
+    std::printf("  무기 공격(롱소드) — 기력 0→3/틱·70 깎고 알림·자세 28·한가운데 칸 한 번·사거리 55·무적 끄기\n");
+}
+
 // ── 중요 메시지 대기열 (2026-09-13) ───────────────────────────
 //
 // 정답지 `nox_xxx_netImportant_4E5770`(GAME3_3.c:1938)·`nox_net_importantACK_4E55A0`(1832)를 옮긴 경로.
@@ -2605,6 +2716,17 @@ void TestThingDb() {
         }
     }
 
+    // ⑦ 무기 SUBCLASS(2026-09-13 묶음 3-b) — GameBalance kWeapons 의 클래스 비트가 파일과 같은가(libs WeaponClassNames 순서)
+    {
+        for (const auto& w : nox::kWeapons) {
+            const uint16_t wire = db.WireByName(w.name);
+            const nox::ThingInfo* ti = wire ? db.ByWire(wire) : nullptr;
+            std::printf("    [무기] %-12s 와이어 %u SUBCLASS %s\n", w.name, wire, ti ? ti->subclassRaw.c_str() : "(없음)");
+            Check(ti != nullptr, "kWeapons 이름이 thing.bin 에 없다");
+            if (ti) Check(nox::WeaponClassBitsOf(ti->subclassRaw) == w.classBits,
+                          (std::string("무기 클래스 비트가 thing.bin SUBCLASS 와 다르다 — ") + w.name).c_str());
+        }
+    }
     // ⑥ 사람 애니 칸 수(2026-09-13 묶음 3-a) — PlayerDraw STAT. 공격 시각이 이 값이다.
     //   ⚠ 55종 전부가 파일에 있다는 보장은 없다 — 주먹 셋과 걷기·달리기가 0 이 아닌지만 판정, 나머지는 찍기만.
     {
@@ -4357,6 +4479,7 @@ int main() {
     TestDirtyUnitHealth();
     TestEnchantInvuln();
     TestMelee();
+    TestWeaponAttack();
     TestThingDb();
     TestMapSections();
     TestWallCollision();
