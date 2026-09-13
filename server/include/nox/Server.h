@@ -259,6 +259,15 @@ struct Session {
     // ⚠ **「없음」을 `aimAtFrame == 0` 으로 나타내지 않는다.** 0 은 진짜 프레임 번호라
     //   첫 틱 전에 받은 겨눔이 영영 「없음」으로 읽힌다 — 시험이 그걸 잡았다.
     //   같은 함정을 `closing` 에서도 한 번 밟았다(2026-09-10, 하루에 둘).
+    // ★★ **걷기 물리** (2026-09-13 묶음 2-a — 정답지 `object_update.go` unitUpdatePlayerImplA/B ·
+    //   `GAME4_1.c:3166` nox_xxx_updateObjectsVelocity_5118A0 이식).
+    //   전에는 이동 입력 **한 통마다** 7 유닛을 바로 옮겼다(`kStepPerTick`, 속도는 실측 못 한 값).
+    //   정답지는 입력이 **상태**만 바꾸고, 틱마다 상태에 따라 힘을 주고 속도를 적분한다.
+    double posX = 0, posY = 0;     // 실수 자리(+56) — x·y 는 이것을 반올림한 값. 밖에서 x·y 를 바꾸면 다시 맞춘다
+    double velX = 0, velY = 0;     // 속도(+80 VelVec)
+    uint8_t moveState = 13;        // 정답지 PlayerState — 0 걷기 · 5 달리기 · 13 가만(`GAME4.c:1709` 대응표)
+    bool inputThisTick = false;    // 이번 틱에 조작 입력이 하나라도 왔나(정답지 Control 목록이 비었나)
+    bool moveInputThisTick = false;// 이번 틱에 이동 코드(2~5)가 왔나
     bool hasAim = false;
     int aimX = 0, aimY = 0;
     uint32_t aimAtFrame = 0;
@@ -567,6 +576,7 @@ constexpr int kHudTellTimes = 5;
 
 constexpr uint8_t kAnimIdle = 0;
 constexpr uint8_t kAnimWalk = 4;
+constexpr uint8_t kAnimRun = 6;    // ⭕ 정답지 상태 5(달리기) → 6 (`GAME4.c:1750` nox_common_mapPlrActionToStateId_4FA2B0)
 
 // 판이 끝나고 다음 판을 열기까지. ➖ **우리 값이다** — 정품이 몇 초 뒤에 새 판을
 // 여는지는 표본이 없다. 승자 화면을 볼 시간은 줘야 하므로 30Hz 기준 8초로 둔다.
@@ -1349,6 +1359,8 @@ private:
     void EmitImportantRaw(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
     // 틱마다 부른다. 준비(CLIENT_READY) 뒤에만 `[27 시각][aa][cc·맨 메시지…]` 한 조각을 낸다.
     void FlushImportant(Session& s, std::vector<OutPacket>& out);
+    // 사람 걷기 한 틱(묶음 2-a) — 힘·상태·적분. Server.cpp 정의 머리 주석 참조.
+    void UpdatePlayerMovement();
     // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
     void EmitNewPlayer(Session& to, const Session& who, uint8_t status,
@@ -1611,7 +1623,23 @@ constexpr uint8_t kCreatureAnimIdle = 8;
 // ⚠ **느린 무리가 따로 있다** — 2.8~4.2 에 330건이 몰려 있고(빠른 쪽은 360건),
 //    걷기와 달리기로 갈리는 것으로 보이나 아직 가리지 못했다. 지금은 잦은 쪽을 쓴다.
 // ⚠ 클라의 예측과 맞는지는 **정품 클라로 눈으로 봐야** 안다. 아직 안 했다.
-constexpr double kStepPerTick = 7.0;
+constexpr double kStepPerTick = 7.0;   // ⚠ 2026-09-13 부터 걷기에 안 쓴다 — 아래 걷기 물리 값으로 바뀜
+
+// ★★ **걷기 물리 값** (2026-09-13 묶음 2-a · 정답지).
+//   힘     = 바라보는 쪽 × 속도. 속도 = `thing.bin` NewPlayer SPEED 96 ÷ 32 = 3.0(`kPlayerWalkPerFrame`)
+//            달리기면 ×2 — 커서가 몸에서 100 밖이거나 이미 달리는 중일 때(`object_update.go:150`)
+//   적분   = 한 틱에 5번 · 한 번에 0.2 — 속도 += (힘 − 속도 × 감쇠) × 0.2 · 자리 += 속도 × 0.2
+//            (`server.go:146` updateCollide · `GAME4_1.c:3218~3225`)
+//   감쇠   = 투사체가 아니면 0.5(`server/object_type.go:344` Field13 → Float28 +112)
+//   ⇒ 끝 속도 = 힘 ÷ 감쇠 — 걷기 6 · 달리기 12 유닛/틱. 위 7 과 느린 무리 2.8~4.2 의 옛 실측과는 **어긋난다**
+//     (그 실측 도구의 해독이 다른 캡처에서 망가지는 것을 09-13 확인 — 관측대기).
+constexpr int    kMoveSubSteps     = 5;
+constexpr double kMoveSubStep      = 0.2;
+constexpr double kPlayerDamping    = 0.5;
+constexpr double kRunCursorDist    = 100.0;
+constexpr uint8_t kPlayerStateWalk = 0;
+constexpr uint8_t kPlayerStateRun  = 5;
+constexpr uint8_t kPlayerStateIdle = 13;
 
 // ★ 주문 시전(0x79)의 본문 길이. **2026-09-06 캡처 표본 83개 전수로 확정했다.**
 //

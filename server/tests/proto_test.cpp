@@ -3017,13 +3017,28 @@ void TestWallCollision() {
         return p;
     };
 
+    // ★ 2026-09-13 묶음 2-a — 걸음은 **입력이 상태를 바꾸고 틱이 옮긴다**(정답지 ImplA/B).
+    //   그래서 입력마다 틱을 한 번 돌린다. 첫 `Tick` 은 시계만 잡는다.
+    //   커서는 **몸을 따라** 바라보는 쪽 `aimAhead` 앞에 둔다 — 진짜 클라처럼. 100 안이면 걷기, 밖이면 달리기.
+    uint32_t ms = 0;
+    auto walkTick = [&](nox::Server& srv, uint8_t facing, std::vector<nox::OutPacket>& out,
+                        int aimAhead = 50) {
+        const double rad = facing * 2.0 * 3.14159265358979 / 256.0;
+        srv.DebugAimAt(a, srv.XOf(a) + static_cast<int>(aimAhead * std::cos(rad)),
+                       srv.YOf(a) + static_cast<int>(aimAhead * std::sin(rad)));
+        auto pkt = walkPkt(facing);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        ms += 34;
+        srv.Tick(ms, out);
+    };
+
     // ① 벽 없음 — 동쪽(0)으로 걸으면 x 가 는다
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);   // (1000,1000)
         std::vector<nox::OutPacket> out;
-        auto pkt = walkPkt(0);
-        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        srv.Tick(ms, out);
+        for (int i = 0; i < 3; ++i) walkTick(srv, 0, out);
         Check(srv.XOf(a) > 1000, "벽이 없는데 걸음이 안 갔다");
     }
 
@@ -3035,10 +3050,8 @@ void TestWallCollision() {
         std::vector<std::pair<uint8_t, uint8_t>> cells = { { 44, 42 }, { 44, 43 }, { 44, 44 } };
         srv.SetWalls(cells);
         std::vector<nox::OutPacket> out;
-        for (int i = 0; i < 6; ++i) {   // 여섯 걸음 — 벽을 넘으면 x 가 1012 를 훌쩍 넘는다
-            auto pkt = walkPkt(0);
-            srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        }
+        srv.Tick(ms, out);
+        for (int i = 0; i < 12; ++i) walkTick(srv, 0, out);   // 벽을 넘으면 x 가 1012 를 훌쩍 넘는다
         Check(srv.XOf(a) < 1012, "동쪽 벽을 뚫었다");
     }
 
@@ -3053,12 +3066,49 @@ void TestWallCollision() {
         srv.SetWalls(cells);
         const int y0 = srv.YOf(a);
         std::vector<nox::OutPacket> out;
-        for (int i = 0; i < 6; ++i) {
-            auto pkt = walkPkt(224);   // 북동 — x+ 는 막히고 y- 는 열려 있다
-            srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        }
+        srv.Tick(ms, out);
+        for (int i = 0; i < 12; ++i) walkTick(srv, 224, out);   // 북동 — x+ 는 막히고 y- 는 열려 있다
         Check(srv.XOf(a) < 1012, "미끄러지다 벽을 뚫었다");
         Check(srv.YOf(a) < y0, "미끄러짐이 없다 — 대각에서 통째로 멈췄다");
+    }
+
+    // ④ 속도 — 정답지 적분의 끝 속도 = 힘 ÷ 감쇠. 걷기 3.0/0.5 = 6 · 달리기 ×2 = 12 유닛/틱
+    //   커서가 몸에서 100 안이면 걷기, 밖이면 달리기(`object_update.go:150`). 멈추면 잦아든다.
+    {
+        auto speedAfter = [&](int aimDx, double* stopDist) {
+            nox::Server srv;
+            srv.DebugEnterGame(a, 728);
+            std::vector<nox::OutPacket> out;
+            srv.Tick(ms, out);
+            for (int i = 0; i < 40; ++i) walkTick(srv, 0, out, aimDx);   // 끝 속도에 닿을 만큼
+            const int x0 = srv.XOf(a);
+            walkTick(srv, 0, out, aimDx);
+            const int v = srv.XOf(a) - x0;
+            // 멈춤 — 방향만 보내면(이동 코드 없음) 상태가 가만으로 바뀌고 속도가 잦아든다
+            const int xs = srv.XOf(a);
+            for (int i = 0; i < 30; ++i) {
+                std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+                p.push_back(static_cast<uint8_t>(nox::Op::PLAYER_INPUT));
+                p.push_back(5);
+                const uint8_t item[5] = { 1, 0, 0, 0, 0 };
+                p.insert(p.end(), item, item + 5);
+                srv.OnPacket(a, p.data(), p.size(), out);
+                ms += 34;
+                srv.Tick(ms, out);
+            }
+            if (stopDist) *stopDist = srv.XOf(a) - xs;
+            return v;
+        };
+        double walkStop = 0, runStop = 0;
+        const int walk = speedAfter(50, &walkStop);    // 커서 50 앞 — 걷기
+        const int run  = speedAfter(400, &runStop);    // 커서 400 앞 — 달리기
+        Check(walk >= 5 && walk <= 7, "걷기 끝 속도가 6 안팎이 아님");
+        Check(run >= 11 && run <= 13, "달리기 끝 속도가 12 안팎이 아님");
+        // 멈춘 뒤 미끄러짐 = 속도 × 1/(1−0.9^5) 안팎 — 걷기 6 이면 약 15, 영영 가지는 않는다
+        //   ⚠ 멈춤 입력 첫 틱에는 아직 힘이 남는다(ImplA 가 ImplB 보다 먼저) — 한 걸음 더 간다.
+        Check(walkStop > 0 && walkStop < 30, "멈춘 뒤 안 잦아든다(또는 바로 선다)");
+        std::printf("  걷기 물리 — 끝 속도 걷기 %d · 달리기 %d · 멈춘 뒤 미끄러짐 %.0f/%.0f\n",
+                    walk, run, walkStop, runStop);
     }
 
     std::printf("  벽 충돌 — 통과·막힘·미끄러짐\n");

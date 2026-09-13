@@ -147,6 +147,12 @@ function Get-Pos {
   }
   return $null
 }
+# ★ 먼저 왼클릭(코드 6) 한 번 — 접속 직후는 관전이라 **걸음이 안 먹는다**(정답지 ImplB `Field3680&3`, 2026-09-13).
+#   진짜 클라도 첫 클릭이 관전을 푼다. 서버 걷기가 입력마다 옮기던 때는 관전이어도 걸어져 이 줄이 없었다.
+$click = @(0x01, 0x05, 0x3f, 4,  6,0,0,0)
+$clickX = @(); foreach ($b in $click) { $clickX += [byte]($b -bxor $k) }
+[void]$udp.Send([byte[]]$clickX, $clickX.Length, $ep)
+Start-Sleep -Milliseconds 100
 $before = Get-Pos
 $inp = @(0x01, 0x05, 0x3f, 10,  1,0,0,0, 0,  2,0,0,0, 1)   # 방향 0, 앞으로
 $inpX = @(); foreach ($b in $inp) { $inpX += [byte]($b -bxor $k) }

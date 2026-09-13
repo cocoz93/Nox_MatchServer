@@ -1713,32 +1713,17 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         default: dataLen = 0; break;
                     }
                     if (qn < dataLen) break;
+                    // ★ 조작이 하나라도 왔다 — 정답지 ImplB 는 목록이 비었으면 상태를 안 건드린다(`object_update.go:485`).
+                    s.inputThisTick = true;
                     if (code == 1 && dataLen == 1) {
-                        s.facing = q[0];          // 바라보는 쪽
+                        s.facing = q[0];          // 바라보는 쪽 — 정답지 CCOrientation → Direction2
                     } else if (code >= 2 && code <= 5 && dataLen == 1) {
-                        // 걸음 — 바라보는 쪽을 기준으로 민다.
-                        // 방향은 한 바퀴를 256으로 나눈 값이다(1바이트).
-                        // 속도는 아직 실측 못 했다. 눈으로 확인할 만한 값으로 둔다.
-                        int dir = s.facing;
-                        if (code == 3) dir += 128;        // 뒤
-                        else if (code == 4) dir += 192;   // 왼
-                        else if (code == 5) dir += 64;    // 오른
-                        const double rad = (dir & 0xFF) * 3.14159265358979 / 128.0;
-                        int nx = s.x + static_cast<int>(kStepPerTick * std::cos(rad));
-                        int ny = s.y + static_cast<int>(kStepPerTick * std::sin(rad));
-                        if (nx < 0) nx = 0;
-                        if (ny < 0) ny = 0;
-                        if (nx > kMaxCoord) nx = kMaxCoord;
-                        if (ny > kMaxCoord) ny = kMaxCoord;
-                        // ★ 벽 충돌 (P3) — 갈 수 없으면 **축을 갈라** 미끄러진다.
-                        //   대각으로 벽에 스치면 통째로 서 버리는 것보다, 갈 수 있는
-                        //   축만 가는 쪽이 원작의 「벽 타기」 느낌과 맞는다.
-                        //   반지름은 thing.bin NewPlayer EXTENT 를 P4 에서 잇기 전까지
-                        //   근접 판정과 같은 자리표시를 쓴다.
-                        if (CanStand(nx, ny, kBodyRadius)) { s.x = nx; s.y = ny; }
-                        else if (CanStand(nx, s.y, kBodyRadius)) { s.x = nx; }
-                        else if (CanStand(s.x, ny, kBodyRadius)) { s.y = ny; }
-                        // 다 막히면 제자리 — 걸음은 세지 않는다? 아니다,
+                        // 걸음 — ★ 2026-09-13 부터 **바로 옮기지 않는다.** 「이번 틱에 이동 입력이 왔다」만 적고
+                        //   틱의 걷기 물리(UpdatePlayerMovement)가 상태를 걷기/달리기로 바꿔 힘을 준다.
+                        //   ⭕ 앞·뒤·왼·오른(2~5)은 **힘의 방향을 안 바꾼다** — 정답지는 코드마다 깃발(+Field60)만
+                        //     다르게 켜고 힘은 늘 바라보는 쪽으로 준다(`object_update.go:519~534` · `:192`).
+                        //     전에 뒤·왼·오른을 128·192·64 로 돌려 민 것은 **우리가 지어낸 규칙**이었다.
+                        s.moveInputThisTick = true;
                         // 클라는 걸었다고 믿으니 서버 집계는 그대로 센다.
                         ++moves_;
                     } else if (code == 6) {
@@ -2782,6 +2767,84 @@ static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCod
     return true;
 }
 
+// 사람 자세 번호 — 정답지는 **상태**에서 뽑는다(`GAME4.c:1709` nox_common_mapPlrActionToStateId_4FA2B0:
+//   0 걷기 → 4 · 5 달리기 → 6 · 13 가만 → 0). 전에는 지난 틱과 자리를 견줘 움직였으면 걷기(4)로 봤다
+//   (`animMoving`) — 달리기(6)가 없었고 멈춘 뒤 미끄러지는 동안에도 걷는 자세였다.
+//   ⚠ 공격·죽음 등 나머지 상태 대응은 그 상태들이 들어오는 묶음(3)에서 채운다.
+static uint8_t PlayerAnimOf(const Session& s) {
+    if (s.moveState == kPlayerStateRun) return kAnimRun;
+    if (s.moveState == kPlayerStateWalk) return kAnimWalk;
+    return kAnimIdle;
+}
+
+// 사람 걷기 한 틱 — 정답지 순서 그대로 (묶음 2-a, 2026-09-13).
+//
+//   ① 힘(ImplA · `object_update.go:133~192`)  상태가 걷기(0)·달리기(5)이고 움직일 수 있으면
+//      달리기 = 이미 달리는 중이거나 커서가 몸에서 100 밖 → 속도 ×2 · 힘 = 바라보는 쪽 × 속도
+//   ② 상태(ImplB · `:480~534`)  이번 틱 조작이 있으면 — 걷던 중이면 일단 가만(13)으로,
+//      이동 코드가 있었으면 ①의 달리기 여부로 걷기/달리기. 조작이 하나도 없으면 상태를 그대로 둔다.
+//      ⚠ 입력은 **다음 틱 힘**으로 나타난다(정답지도 ImplA 가 ImplB 보다 먼저 돈다).
+//   ③ 적분(`server.go:146` · `GAME4_1.c:3218~3238`)  0.2 씩 5번 — 속도 += (힘 − 속도×0.5)×0.2, 자리 += 속도×0.2
+//
+//   ⚠ **벽은 아직 대역이다** — 정답지는 ③에서 선 추적(`nox_xxx_mapTraceRay_535250`, 막히면 그 걸음만 안 감)을 하고
+//     충돌 단계(`sub_5481C0` → `sub_54FEF0`·`sub_5504B0`)에서 벽을 밀어낸다. 그건 묶음 2-b 에서 옮긴다.
+//     그때까지는 옛 규칙 — 갈 수 없으면 **축을 갈라** 미끄러진다(대각으로 벽에 스칠 때 통째로 서지 않게).
+//     반지름은 근접 판정과 같은 자리표시(kBodyRadius).
+//   ⚠ 죽었거나(정답지 상태 3·4 는 ImplB 를 건너뜀) 관전(Field3680&3)이면 힘도 상태 변경도 없다 — 속도만 잦아든다.
+void Server::UpdatePlayerMovement() {
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) continue;
+        // 밖에서 x·y 를 바꿨으면(접속·부활·진단 옮기기) 실수 자리를 거기에 맞추고 멈춘다.
+        if (std::lround(s.posX) != s.x || std::lround(s.posY) != s.y) {
+            s.posX = s.x; s.posY = s.y;
+            s.velX = s.velY = 0.0;
+        }
+        const bool dead = (s.respawnAtFrame != 0);
+        const bool canMove = !dead && !s.observer;
+
+        // ① 힘
+        double fx = 0.0, fy = 0.0;
+        bool run = false;
+        if (canMove && (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun)) {
+            const double cdx = s.aimX - s.posX, cdy = s.aimY - s.posY;
+            run = !(s.moveState != kPlayerStateRun && cdx * cdx + cdy * cdy <= kRunCursorDist * kRunCursorDist);
+            const double speed = kPlayerWalkPerFrame * (run ? 2.0 : 1.0);
+            const double rad = s.facing * 2.0 * 3.14159265358979 / 256.0;
+            fx = std::cos(rad) * speed;
+            fy = std::sin(rad) * speed;
+        }
+        // ② 상태
+        if (canMove && s.inputThisTick) {
+            if (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun) s.moveState = kPlayerStateIdle;
+            if (s.moveInputThisTick) s.moveState = run ? kPlayerStateRun : kPlayerStateWalk;
+        }
+        if (dead) s.moveState = kPlayerStateIdle;
+        s.inputThisTick = s.moveInputThisTick = false;
+
+        // ③ 적분
+        for (int i = 0; i < kMoveSubSteps; ++i) {
+            s.velX += (fx - s.velX * kPlayerDamping) * kMoveSubStep;
+            s.velY += (fy - s.velY * kPlayerDamping) * kMoveSubStep;
+            double nx = s.posX + s.velX * kMoveSubStep;
+            double ny = s.posY + s.velY * kMoveSubStep;
+            if (nx < 0) nx = 0;
+            if (ny < 0) ny = 0;
+            if (nx > kMaxCoord) nx = kMaxCoord;
+            if (ny > kMaxCoord) ny = kMaxCoord;
+            if (CanStand(nx, ny, kBodyRadius)) {
+                s.posX = nx; s.posY = ny;
+            } else if (CanStand(nx, s.posY, kBodyRadius)) {
+                s.posX = nx;   // ⚠ 대역 — 묶음 2-b
+            } else if (CanStand(s.posX, ny, kBodyRadius)) {
+                s.posY = ny;   // ⚠ 대역 — 묶음 2-b
+            }
+        }
+        s.x = static_cast<int>(std::lround(s.posX));
+        s.y = static_cast<int>(std::lround(s.posY));
+    }
+}
+
 int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     if (!tickStarted_) {
         tickStarted_ = true;
@@ -3001,6 +3064,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         debugTeamDone_ = true;
     }
 
+    // ── 사람을 걷게 한다 (묶음 2-a) ──
+    for (int step = 0; step < ticks; ++step) UpdatePlayerMovement();
+
     // ── 불려 나온 것들을 움직인다 ──
     // 부른 사람 편이다 — **부른 사람은 안 때린다.** 그게 없으면 부르자마자 자기가 맞는다.
     for (int step = 0; step < ticks && !pets_.empty(); ++step) {
@@ -3040,7 +3106,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
     }
 
-    // ★★ **걷고 있나를 정한다** — 갱신 항목의 애니 번호(IDLE/WALK)를 가르는 데 쓴다.
+    // ★★ **걷고 있나를 정한다** — 갱신 항목의 애니 번호(IDLE/WALK)를 가르는 데 썼다.
+    //   ⚠ 2026-09-13 부터 자세는 상태에서 뽑는다(PlayerAnimOf). 이 값은 더 안 쓰인다 — 진단용으로만 남는다.
     //   지난 틱 자리와 견줘 움직였으면 걷는 것으로 본다.
     //   ⚠ 문턱 1.0 은 ➖ 우리 값이다. 정품 덤프의 「정지」 표본이 틱당 0.3~1.3 유닛이라
     //     그보다 위를 걷기로 잡았다. 너무 낮으면 서 있어도 걷는 자세가 된다.
@@ -3203,12 +3270,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 m.flags = 0;
                 m.headAnim = 0;
                 ObjEntry me;
-                // ★ 걷고 있으면 WALK(4), 서 있으면 IDLE(0) — 2026-09-11 실험 중
+                // ★ 자세 — 상태에서 뽑는다(PlayerAnimOf: 걷기 4 · 달리기 6 · 가만 0). 2026-09-13 묶음 2-a
                 FillEntry(s.aliases, s.netCode, kPlayerType, s.tickFrame, s.x, s.y,
                           s.facing, me, /*complex=*/true,
                           /*playerAnim=*/ forceAnimPose_ >= 0
                               ? static_cast<uint8_t>(forceAnimPose_)
-                              : (s.animMoving ? kAnimWalk : kAnimIdle),
+                              : PlayerAnimOf(s),
                           forceAnimDir_);
                 m.objects.push_back(me);
                 // 시야 안 정적 — **상한 필수** (AppendAoiStatics 주석: 상한 없이는
@@ -3501,7 +3568,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                       /*complex=*/true,
                       /*playerAnim=*/ forceAnimPose_ >= 0
                           ? static_cast<uint8_t>(forceAnimPose_)
-                          : (o.animMoving ? kAnimWalk : kAnimIdle),
+                          : PlayerAnimOf(o),
                       forceAnimDir_);
             // ★★ **별칭으로 보낼 때는 좌표도 상대로.** 정품 원바이트가 그렇다(2026-09-08):
             //     정품  … 01 <머리좌표4> 00 00 │ cb 00 00 │ 40 │ 끝     (14바이트)
