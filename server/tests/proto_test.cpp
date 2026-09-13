@@ -2169,6 +2169,39 @@ void TestImportantQueue() {
         Check(resentAt >= nox::kImportantResendTicks && resentAt <= nox::kImportantResendTicks + 2,
               "확인 없는 중요 메시지가 60틱 무렵에 다시 안 실림");
     }
+
+    // ⑤ 사라짐(32)은 **봉투 없이** 중요 조각에 실린다 — 정답지 `netObjectOutOfSight_528A60` → Packet0
+    {
+        nox::Server s2;
+        s2.SetAoi(true);
+        std::vector<nox::Server::WorldStatic> st;
+        st.push_back({ 0x4321, 1234, 1000, 1000 });
+        s2.SetWorldStatics(st);
+        const std::string b = "10.9.9.2:49002";
+        s2.DebugEnterGame(b, 741);
+        s2.DebugImportantReal(b, /*ready=*/true);
+        s2.DebugMoveTo(b, 1000, 1000);
+        std::vector<nox::OutPacket> o;
+        uint32_t t = 0;
+        s2.Tick(t, o);
+        t += 34; s2.Tick(t, o);   // 소개
+        s2.DebugMoveTo(b, 1000 + static_cast<int>(nox::kAoiDropRadius) + 300, 1000);
+        bool rawInImportant = false;
+        for (int i = 0; i < 3 && !rawInImportant; ++i) {
+            std::vector<nox::OutPacket> oo;
+            t += 34; s2.Tick(t, oo);
+            for (const auto& p : oo) {
+                if (p.to != b) continue;
+                const std::vector<uint8_t> body = Body(p);
+                if (body.size() < 7 || body[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
+                    body[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
+                for (size_t q = 4; q + 3 <= body.size(); ++q)
+                    if (body[q] == static_cast<uint8_t>(nox::Op::OBJECT_OUT_OF_SIGHT) &&
+                        body[q + 1] == 0x21 && body[q + 2] == 0x43) rawInImportant = true;
+            }
+        }
+        Check(rawInImportant, "사라짐(32)이 중요 조각에 맨 메시지로 안 실림");
+    }
 }
 
 // ── 관전 풀기 ─────────────────────────────────────────────────

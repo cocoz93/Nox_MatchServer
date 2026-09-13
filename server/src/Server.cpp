@@ -234,6 +234,25 @@ void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n,
     s.importantQ.push_back(std::move(p));
 }
 
+// 중요 대기열에 **봉투 없이** 싣는다 — 정답지 `nox_xxx_netSendPacket0_4E5420`(GAME3_3.c:1762, 마지막 인자 0).
+//   순번이 없으니 다시 실으면 클라가 **또 처리한다**(정답지도 같다). 사라짐·그늘처럼 두 번 받아도 같은 것만 쓴다.
+void Server::EmitImportantRaw(Session& s, const uint8_t* msg, size_t n,
+                              std::vector<OutPacket>& out) {
+    if (n == 0 || n > 0xFF) return;
+    if (s.importantImmediate) {   // 시험용 — Session::importantImmediate 주석
+        Emit(s, /*reliable=*/false, /*stream=*/0, msg, n, out);
+        return;
+    }
+    if (s.importantQ.size() >= kImportantQueueMax) {
+        std::printf("[중요] %s 대기열 %zu 개로 넘침 — 맨 메시지 0x%02x 버림\n", s.addr.c_str(),
+                    s.importantQ.size(), msg[0]);
+        return;
+    }
+    Session::PendingImportant p;
+    p.wire.assign(msg, msg + n);
+    s.importantQ.push_back(std::move(p));
+}
+
 // 중요 메시지 한 조각 — 정답지 `nox_xxx_netImportant_4E5770`(GAME3_3.c:1938)를 옮겼다.
 //   ① 준비 전(CLIENT_READY 전)이면 아무것도 안 싣는다(1966줄 `v3[3680] & 0x10`).
 //   ② 처음 싣는 것은 다 싣는다 · 이미 실은 것은 기다림(+132)이 끝났을 때 **틱당 1개까지**만 다시 싣는다
@@ -3760,18 +3779,15 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 n += 4;
             }
         }
-        // ★ **시야에서 빠진 것** — `32 <번호2>`. 갱신 뒤에 이어 붙인다.
-        //   정품도 한 조각 안에 여러 메시지를 이어 담으므로 꼴이 같다.
-        //   ⚠ `n` 이 0(갱신이 통째로 안 나갔다)이면 붙이지 않는다 —
-        //     머리 없는 조각을 만들면 클라가 그 뒤를 통째로 오해한다.
+        // ★ **시야에서 빠진 것** — `32 <번호2>`. **중요 대기열에 맨 메시지로** 싣는다(2026-09-13).
+        //   정답지 `nox_xxx_netObjectOutOfSight_528A60`(GAME4_2.c:7651) = `netSendPacket0_4E5420(pl, 32 번호2, 3, 0, 1)`
+        //   — Packet0 은 cc 봉투 없이 본문 그대로, 확인이 올 때까지 다시 싣는다.
+        //   전에는 갱신 조각 끝에 한 번만 붙였다(갱신이 안 나간 틱엔 아예 빠졌다).
+        //   ⚠ 싣는 것은 **다음 틱** FlushImportant — 정답지는 같은 프레임 갱신 뒤에 싣는다(network_lists.go:217). 1틱 늦다.
         for (uint16_t nc : outOfSight) {
-            if (!n) break;
-            if (1 + n + 3 > sizeof(body)) break;
-            uint8_t* p = body + 1 + n;
-            p[0] = static_cast<uint8_t>(Op::OBJECT_OUT_OF_SIGHT);
-            p[1] = static_cast<uint8_t>(nc);
-            p[2] = static_cast<uint8_t>(nc >> 8);
-            n += 3;
+            const uint8_t msg[3] = { static_cast<uint8_t>(Op::OBJECT_OUT_OF_SIGHT),
+                                     static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
+            EmitImportantRaw(s, msg, sizeof(msg), out);
         }
         // ★★★ **지연 보고 `0xd7`** — 갱신 조각 끝에 `d7 <번호2> <지연2>` 로 붙는다.
         //   정품 실측(2026-09-08): 본문 `cb 02 00 00`, 갱신 1,287건 대 217건이니

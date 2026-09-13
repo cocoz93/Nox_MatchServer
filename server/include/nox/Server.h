@@ -1341,7 +1341,9 @@ private:
 
     // ⚠ 2026-09-13 부터 **바로 안 보낸다** — 세션의 importantQ 에 쌓고 FlushImportant 가 싣는다.
     void EmitSeq(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
-    // 틱마다 부른다. 준비(CLIENT_READY) 뒤에만 `[27 시각][aa][cc…]` 한 조각을 낸다.
+    // 중요 대기열에 봉투 없이(Packet0) 싣는다 — 사라짐(32)·그늘(33) 등.
+    void EmitImportantRaw(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
+    // 틱마다 부른다. 준비(CLIENT_READY) 뒤에만 `[27 시각][aa][cc·맨 메시지…]` 한 조각을 낸다.
     void FlushImportant(Session& s, std::vector<OutPacket>& out);
     // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
