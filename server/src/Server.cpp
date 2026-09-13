@@ -2767,6 +2767,267 @@ static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCod
     return true;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 벽 충돌 — 정답지 이식 (2026-09-13 묶음 2-b)
+//
+//   ★ 정답지 벽은 **칸이 아니라 칸 안의 대각선 선분**이다. 칸 원점 (23x, 23y) 에서
+//     왼쪽 선분 = (0,0)→(23,23) 방향(\) · 오른쪽 선분 = (23,0)→(0,23) 방향(/).
+//     방향 0~10 이 둘 중 무엇을, 어느 구간(0~23 · 0~11.5 · 11.5~23)만큼 쓰는지 표가 정한다.
+//   전에는 벽 칸을 통째 네모로 막았다(CanStand) — 화면의 벽 선과 멈추는 자리가 달랐다.
+// ════════════════════════════════════════════════════════════════════════════
+namespace {
+// `GAME5.c:53` table_313272 — [왼쪽 켬, 최소, 최대, 오른쪽 켬, 최소, 최대]
+struct WallSeg { bool l; float lmin, lmax; bool r; float rmin, rmax; };
+constexpr WallSeg kWallSegs[11] = {
+    { false, 0, 0,     true,  0, 23 },
+    { true,  0, 23,    false, 0, 0 },
+    { true,  0, 23,    true,  0, 23 },
+    { true,  0, 11.5f, true,  0, 23 },
+    { true,  0, 23,    true,  11.5f, 23 },
+    { true,  11.5f, 23, true, 0, 23 },
+    { true,  0, 23,    true,  0, 11.5f },
+    { true,  0, 11.5f, true,  11.5f, 23 },
+    { true,  11.5f, 23, true, 11.5f, 23 },
+    { true,  11.5f, 23, true, 0, 11.5f },
+    { true,  0, 11.5f, true,  0, 11.5f },
+};
+// `0x587000+292496` 방향별 이웃 확인 비트 — 정답지 데이터 덩어리(`blob_587000.dat`)에서 읽은 값
+constexpr uint8_t kWallNeighborBits[11] = { 9, 6, 15, 11, 7, 13, 14, 3, 5, 12, 10 };
+constexpr float kGrid = 23.0f;
+constexpr float kInvGrid = 0.043478262f;      // `GAME5.c:6610`
+constexpr float kDiag = 0.70709997f;          // `GAME5.c:6735`
+constexpr float kWallPush = 100.0f;           // `dword_587000_292492` = 100.0 (데이터 덩어리)
+
+// sub_57CD30 · sub_57CD70 — 선분 p1→p2 와 칸 대각선의 교점
+inline void CrossLeft(float x1, float y1, float x2, float y2, float cx, float cy, float& ox, float& oy) {
+    const float dx = x2 - x1, dy = y2 - y1;
+    const float v = ((cy - y1) * dx - (cx - x1) * dy) / (dy - dx);
+    ox = cx + v; oy = cy + v;
+}
+inline void CrossRight(float x1, float y1, float x2, float y2, float cx, float cy, float& ox, float& oy) {
+    const float dx = x2 - x1, dy = y2 - y1;
+    const float v = ((cy - y1) * dx - (cx - x1) * dy) / (-dy - dx);
+    ox = cx - v; oy = cy + v;
+}
+// sub_550280 — 왼쪽 대각선 위 가장 가까운 점(구간 끝은 a4·a5 가 허락할 때만 붙든다)
+inline bool NearestOnLeft(float ox, float oy, float lo, float hi, bool a4, bool a5,
+                          float px, float py, float& cx, float& cy) {
+    float t = ((px - ox) + (py - oy)) * kDiag * kDiag;
+    if (t < lo) { if (!a4) return false; t = lo; }
+    if (t > hi) { if (!a5) return false; t = hi; }
+    cx = t + ox; cy = t + oy;
+    return true;
+}
+// sub_5502F0 — 오른쪽 대각선
+inline bool NearestOnRight(float ox, float oy, float lo, float hi, bool a4, bool a5,
+                           float px, float py, float& cx, float& cy) {
+    float t = 23.0f - ((py - oy) * kDiag - (px - (ox + 23.0f)) * kDiag) * kDiag;
+    if (t < lo) { if (!a4) return false; t = lo; }
+    if (t > hi) { if (!a5) return false; t = hi; }
+    cx = t + ox; cy = 23.0f - t + oy;
+    return true;
+}
+// sub_550380 — 가까운 점까지가 반지름보다 가까우면 밀어낸다: 벽 쪽 속도 성분을 없애고
+//   (반지름 − 거리) × 100 ÷ 질량 을 가속(+96 Pos24 = Sub548600)에 더한다.
+//   ⚠ 공(GameBall) 예외·충돌 기록(collSysAddCollision)은 사람에게 안 쓰여 뺐다.
+inline bool PushOut(double r, double mass, double px, double py, float cx, float cy,
+                    double& vx, double& vy, double& ax, double& ay) {
+    const float dx = static_cast<float>(px) - cx, dy = static_cast<float>(py) - cy;
+    float len = std::sqrt(dx * dx + dy * dy);
+    if (len == 0.0f) len = 0.0099999998f;
+    if (len >= static_cast<float>(r)) return false;
+    const float nx = dx / len, ny = dy / len;
+    const double into = -ny * vy + -nx * vx;
+    if (into > 0.0) { vx += into * nx; vy += into * ny; }
+    const double push = (r - len) * kWallPush;
+    ax += push * nx / mass;
+    ay += push * ny / mass;
+    return true;
+}
+}  // namespace
+
+// sub_57B500 의 문·창·비밀 벽 없는 판 — 벽이 있으면 방향, 없으면 −1.
+int Server::WallShapeAt(int gx, int gy) const {
+    if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256 || wallTiles_.empty()) return -1;
+    const WallTile& w = wallTiles_[gy * 256 + gx];
+    return w.present ? w.dir : -1;
+}
+
+// mapTraceRayImpl(`server/wall.go:1055`) — 이 칸의 벽 선분을 p1→p2 가 가로지르나.
+bool Server::MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float y2, uint8_t flags) const {
+    if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256) return false;
+    if (flags & 0x8) {   // Flag4 — 가까운 칸(60 안)은 Flag3 로
+        const float v7 = gx * kGrid + 11.5f - x1, v8 = gy * kGrid + 11.5f - y1;
+        if (v8 * v8 + v7 * v7 < 3600.0f) flags |= 0x4;
+    }
+    const int t = WallShapeAt(gx, gy);
+    if (t < 0 || t > 10) return false;
+    // GetWallAtGrid(Flag1 없음)은 칸 짝홀((x+y)&1)이 홀이면 벽이 없다고 본다(`server/wall.go:238`)
+    if (!(flags & 0x1) && ((gx + gy) & 1)) return false;
+    const WallTile& w = wallTiles_[gy * 256 + gx];
+    const uint32_t f2 = (w.tile < wallDefFlags_.size()) ? wallDefFlags_[w.tile] : 0;
+    if ((f2 & 0x2) || ((flags & 0x40) && !(f2 & 0x1))) return false;
+    const float xl = std::min(x1, x2), xh = std::max(x1, x2);
+    const float yl = std::min(y1, y2), yh = std::max(y1, y2);
+    const float ox = gx * kGrid, oy = gy * kGrid;
+    const WallSeg& s = kWallSegs[t];
+    if (t != 0 && s.l) {
+        float lx, ly;
+        CrossLeft(x1, y1, x2, y2, ox, oy, lx, ly);
+        if (ox + s.lmin <= lx && ox + s.lmax >= lx && lx >= xl && lx <= xh && ly >= yl && ly <= yh) return true;
+    }
+    if (t != 1 && s.r) {
+        float rx, ry;
+        CrossRight(x1, y1, x2, y2, ox + kGrid, oy, rx, ry);
+        if (ox + s.rmin <= rx && ox + s.rmax >= rx && rx >= xl && rx <= xh && ry >= yl && ry <= yh) return true;
+    }
+    return false;
+}
+
+// MapTraceRayAt(`server/wall.go:898`) — p1→p2 가 벽에 안 막히면 참. 걸음·겨눔 모두 이 길.
+//   ⚠ 정답지 그대로의 걸음(곧은 가로·세로 먼저, 그 밖은 기울기 따라 칸 줄 훑기).
+bool Server::MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags) const {
+    const int wx1 = static_cast<int>(x1 / kGrid), wy1 = static_cast<int>(y1 / kGrid);
+    if (wx1 < 0 || wx1 >= 256 || wy1 < 0 || wy1 >= 256) return false;
+    const int wx2 = static_cast<int>(x2 / kGrid), wy2 = static_cast<int>(y2 / kGrid);
+    if (wx1 == wx2) {
+        const int step = (y2 < y1) ? -1 : 1;
+        if (wy1 == wy2 + step) return true;
+        for (int yi = wy1; yi != wy2 + step; yi += step)
+            if (MapTraceRayTile(wx1, yi, x1, y1, x2, y2, flags)) return false;
+        return true;
+    }
+    if (wy1 == wy2) {
+        const int step = (x2 < x1) ? -1 : 1;
+        if (wx1 == wx2 + step) return true;
+        for (int xi = wx1; xi != wx2 + step; xi += step)
+            if (MapTraceRayTile(xi, wy1, x1, y1, x2, y2, flags)) return false;
+        return true;
+    }
+    const float dx = x2 - x1, dy = y2 - y1;
+    if (std::fabs(dy) >= std::fabs(dx)) {
+        const float mulX = (x1 >= x2) ? -1.0f : 1.0f;
+        const double stepY = (y1 >= y2) ? -1.0 : 1.0;
+        const float slope = dy / dx;
+        float xnext = 0;
+        for (float x = x1; mulX * x <= mulX * x2; x = xnext + 0.1f * mulX) {
+            const int xi = static_cast<int>(std::trunc(x / kGrid));
+            float xmin = static_cast<float>(xi) * kGrid, xmax = static_cast<float>(xi + 1) * kGrid;
+            if (mulX <= 0) std::swap(xmin, xmax);
+            xnext = xmax;
+            float ya = y1 + (xmin - x1) * slope;
+            if ((stepY > 0 && ya < y1) || (stepY < 0 && ya > y1)) ya = y1;
+            float yb = y1 + (xmax - x1) * slope;
+            if ((stepY > 0 && yb > y2) || (stepY < 0 && yb < y2)) yb = y2;
+            const int yi1 = static_cast<int>(std::trunc(static_cast<double>(ya / kGrid)) - stepY);
+            const int yi2 = static_cast<int>(std::trunc(static_cast<double>(yb / kGrid)) + stepY);
+            const int dd = (yi1 >= yi2) ? -1 : 1;
+            for (int yi = yi1; yi != yi2 + dd; yi += dd)
+                if (MapTraceRayTile(xi, yi, x1, y1, x2, y2, flags)) return false;
+        }
+        return true;
+    }
+    const float mulY = (y1 >= y2) ? -1.0f : 1.0f;
+    const double stepX = (x1 >= x2) ? -1.0 : 1.0;
+    const float slope = dx / dy;
+    float ynext = 0;
+    for (float y = y1; mulY * y <= mulY * y2; y = ynext + 0.1f * mulY) {
+        const int yi = static_cast<int>(std::trunc(y / kGrid));
+        float ymin = static_cast<float>(yi) * kGrid, ymax = static_cast<float>(yi + 1) * kGrid;
+        if (mulY <= 0) std::swap(ymin, ymax);
+        ynext = ymax;
+        float xa = x1 + (ymin - y1) * slope;
+        if ((stepX > 0 && xa < x1) || (stepX < 0 && xa > x1)) xa = x1;
+        float xb = x1 + (ymax - y1) * slope;
+        if ((stepX > 0 && xb > x2) || (stepX < 0 && xb < x2)) xb = x2;
+        const int xi1 = static_cast<int>(std::trunc(static_cast<double>(xa / kGrid)) - stepX);
+        const int xi2 = static_cast<int>(std::trunc(static_cast<double>(xb / kGrid)) + stepX);
+        const int dd = (xi1 >= xi2) ? -1 : 1;
+        for (int xi = xi1; xi != xi2 + dd; xi += dd)
+            if (MapTraceRayTile(xi, yi, x1, y1, x2, y2, flags)) return false;
+    }
+    return true;
+}
+
+// sub_54FEF0 + sub_54FFC0 — 원 대 벽. 사각형(프레임 시작 자리 ± 반지름)이 덮는 칸마다
+//   왼쪽·오른쪽 대각선에서 가장 가까운 점을 찾아 밀어낸다.
+//   ⚠ a4·a5(선분 끝을 붙들까)는 **두 대각선 사이에서 이어진다** — 정답지가 두 번째 블록에서 되돌리지 않는다.
+//   ⚠ 벽 소리·비밀 벽 열기(sub_548100)와 「닿은 벽」 기록(+296)은 뺐다 — 묶음 9·10.
+bool Server::CircleVsWalls(double bx, double by, double r, double mass,
+                           double nx, double ny, double& vx, double& vy, double& ax, double& ay) const {
+    if (!wallsOn_ || wallTiles_.empty()) return false;
+    const int x0 = static_cast<int>(static_cast<float>(bx - r) * kInvGrid);
+    const int y0 = static_cast<int>(static_cast<float>(by - r) * kInvGrid);
+    const int x1 = static_cast<int>(static_cast<float>(bx + r) * kInvGrid);
+    const int y1 = static_cast<int>(static_cast<float>(by + r) * kInvGrid);
+    const float px = static_cast<float>(nx), py = static_cast<float>(ny);
+    bool any = false;
+    for (int gy = y0; gy <= y1; ++gy) {
+        for (int gx = x0; gx <= x1; ++gx) {
+            const int d = WallShapeAt(gx, gy);
+            if (d < 0 || d > 10) continue;
+            const WallSeg& s = kWallSegs[d];
+            const uint8_t nb = kWallNeighborBits[d];
+            const float ox = gx * kGrid, oy = gy * kGrid;
+            bool a4 = false, a5 = false;
+            float cx = 0, cy = 0;
+            if (s.l) {
+                if ((nb & 2) && WallShapeAt(gx - 1, gy - 1) == -1) a4 = true;
+                if ((nb & 4) && WallShapeAt(gx + 1, gy + 1) == -1) a5 = true;
+                bool got;
+                if (d == 8 || d == 9) {
+                    a4 = true;
+                    got = NearestOnLeft(ox, oy, s.lmin, s.lmax, true, a5, px, py, cx, cy);
+                } else {
+                    if (d == 7 || d == 10) a5 = true;
+                    got = NearestOnLeft(ox, oy, s.lmin, s.lmax, a4, a5, px, py, cx, cy);
+                }
+                if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay)) any = true;
+            }
+            if (s.r) {
+                if ((nb & 8) && WallShapeAt(gx - 1, gy + 1) == -1) a4 = true;
+                if ((nb & 1) && WallShapeAt(gx + 1, gy - 1) == -1) a5 = true;
+                bool got;
+                if (d == 9 || d == 10) {
+                    got = NearestOnRight(ox, oy, s.rmin, s.rmax, a4, true, px, py, cx, cy);
+                } else {
+                    if (d == 7 || d == 8) a4 = true;
+                    got = NearestOnRight(ox, oy, s.rmin, s.rmax, a4, a5, px, py, cx, cy);
+                }
+                if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay)) any = true;
+            }
+        }
+    }
+    return any;
+}
+
+// 진단 — (x,y) 에서 가장 가까운 벽 선분까지 거리(±3칸 안). 벽 없으면 −1.
+double Server::DebugWallDistance(double x, double y, int* outGx, int* outGy, int* outDir) const {
+    double best = -1.0;
+    const int cx = static_cast<int>(x / kGrid), cy = static_cast<int>(y / kGrid);
+    for (int gy = cy - 3; gy <= cy + 3; ++gy) {
+        for (int gx = cx - 3; gx <= cx + 3; ++gx) {
+            const int d = WallShapeAt(gx, gy);
+            if (d < 0 || d > 10) continue;
+            const WallSeg& s = kWallSegs[d];
+            const float ox = gx * kGrid, oy = gy * kGrid;
+            float px, py;
+            auto take = [&](float qx, float qy) {
+                const double dd = std::sqrt((x - qx) * (x - qx) + (y - qy) * (y - qy));
+                if (best < 0 || dd < best) {
+                    best = dd;
+                    if (outGx) *outGx = gx;
+                    if (outGy) *outGy = gy;
+                    if (outDir) *outDir = d;
+                }
+            };
+            if (s.l && NearestOnLeft(ox, oy, s.lmin, s.lmax, true, true, static_cast<float>(x), static_cast<float>(y), px, py)) take(px, py);
+            if (s.r && NearestOnRight(ox, oy, s.rmin, s.rmax, true, true, static_cast<float>(x), static_cast<float>(y), px, py)) take(px, py);
+        }
+    }
+    return best;
+}
+
 // 사람 자세 번호 — 정답지는 **상태**에서 뽑는다(`GAME4.c:1709` nox_common_mapPlrActionToStateId_4FA2B0:
 //   0 걷기 → 4 · 5 달리기 → 6 · 13 가만 → 0). 전에는 지난 틱과 자리를 견줘 움직였으면 걷기(4)로 봤다
 //   (`animMoving`) — 달리기(6)가 없었고 멈춘 뒤 미끄러지는 동안에도 걷는 자세였다.
@@ -2786,10 +3047,8 @@ static uint8_t PlayerAnimOf(const Session& s) {
 //      ⚠ 입력은 **다음 틱 힘**으로 나타난다(정답지도 ImplA 가 ImplB 보다 먼저 돈다).
 //   ③ 적분(`server.go:146` · `GAME4_1.c:3218~3238`)  0.2 씩 5번 — 속도 += (힘 − 속도×0.5)×0.2, 자리 += 속도×0.2
 //
-//   ⚠ **벽은 아직 대역이다** — 정답지는 ③에서 선 추적(`nox_xxx_mapTraceRay_535250`, 막히면 그 걸음만 안 감)을 하고
-//     충돌 단계(`sub_5481C0` → `sub_54FEF0`·`sub_5504B0`)에서 벽을 밀어낸다. 그건 묶음 2-b 에서 옮긴다.
-//     그때까지는 옛 규칙 — 갈 수 없으면 **축을 갈라** 미끄러진다(대각으로 벽에 스칠 때 통째로 서지 않게).
-//     반지름은 근접 판정과 같은 자리표시(kBodyRadius).
+//   ★ 벽 — 묶음 2-b(2026-09-13)에서 정답지로 바꿨다: 걸음마다 원 대 벽 밀어내기 + 선 추적(아래 ③).
+//     반지름 kBodyRadius(thing.bin NewPlayer EXTENT 10) · 질량 kPlayerMass(MASS 1).
 //   ⚠ 죽었거나(정답지 상태 3·4 는 ImplB 를 건너뜀) 관전(Field3680&3)이면 힘도 상태 변경도 없다 — 속도만 잦아든다.
 void Server::UpdatePlayerMovement() {
     for (auto& kv : sessions_) {
@@ -2822,22 +3081,25 @@ void Server::UpdatePlayerMovement() {
         if (dead) s.moveState = kPlayerStateIdle;
         s.inputThisTick = s.moveInputThisTick = false;
 
-        // ③ 적분
+        // ③ 적분 — 걸음마다 먼저 벽에 밀리고(sub_5481C0 → CircleVsWalls, 가속 +96 은 걸음마다 0 부터),
+        //   (밀림 + 힘) 으로 속도를 적분한 뒤, 새 자리까지 선이 벽을 안 가로지를 때만 옮긴다(선 추적 Flag1).
+        //   ★ 2026-09-13 묶음 2-b — 옛 「칸 네모 + 축 가르기」 대역을 걷어냈다.
+        //   사각형 칸 범위는 **프레임 시작 자리**로 정한다(정답지 +232 는 +56 PosVec 에서, +56 은 프레임 끝에만 바뀜).
+        const double baseX = s.posX, baseY = s.posY;
         for (int i = 0; i < kMoveSubSteps; ++i) {
-            s.velX += (fx - s.velX * kPlayerDamping) * kMoveSubStep;
-            s.velY += (fy - s.velY * kPlayerDamping) * kMoveSubStep;
+            double ax = 0.0, ay = 0.0;
+            CircleVsWalls(baseX, baseY, kBodyRadius, kPlayerMass, s.posX, s.posY, s.velX, s.velY, ax, ay);
+            s.velX += ((ax + fx) - s.velX * kPlayerDamping) * kMoveSubStep;
+            s.velY += ((ay + fy) - s.velY * kPlayerDamping) * kMoveSubStep;
             double nx = s.posX + s.velX * kMoveSubStep;
             double ny = s.posY + s.velY * kMoveSubStep;
             if (nx < 0) nx = 0;
             if (ny < 0) ny = 0;
             if (nx > kMaxCoord) nx = kMaxCoord;
             if (ny > kMaxCoord) ny = kMaxCoord;
-            if (CanStand(nx, ny, kBodyRadius)) {
+            if (MapTraceRay(static_cast<float>(s.posX), static_cast<float>(s.posY),
+                            static_cast<float>(nx), static_cast<float>(ny), 0x1)) {
                 s.posX = nx; s.posY = ny;
-            } else if (CanStand(nx, s.posY, kBodyRadius)) {
-                s.posX = nx;   // ⚠ 대역 — 묶음 2-b
-            } else if (CanStand(s.posX, ny, kBodyRadius)) {
-                s.posY = ny;   // ⚠ 대역 — 묶음 2-b
             }
         }
         s.x = static_cast<int>(std::lround(s.posX));

@@ -178,6 +178,22 @@ int main(int argc, char** argv) {
             }
             std::printf("\n");
         }
+        // ★ 2026-09-13 묶음 2-b — 벽 **모양**(대각선 선분)으로 가운데에서 가장 가까운 벽까지 거리.
+        //   걷다 멈춘 자리를 넣으면 반지름(10) 안팎이어야 「벽 선에 붙어 멈췄다」다.
+        {
+            std::vector<nox::Server::WallTileIn> tiles;
+            for (const auto& w : mf.ReadWalls()) {
+                nox::Server::WallTileIn t;
+                t.x = w.x; t.y = w.y; t.dir = w.dir; t.tile = w.tile; t.flag80 = w.flag80;
+                tiles.push_back(t);
+            }
+            nox::Server shape;
+            shape.SetWallTiles(tiles);
+            int gx = -1, gy = -1, dir = -1;
+            const double dist = shape.DebugWallDistance(wallX, wallY, &gx, &gy, &dir);
+            if (dist < 0) std::printf("  가장 가까운 벽 선분 — ±3칸 안에 없음\n");
+            else std::printf("  가장 가까운 벽 선분 — 거리 %.1f · 칸 (%d,%d) 방향 %d\n", dist, gx, gy, dir);
+        }
         return 0;
     }
     for (int i = 2; i < argc; ++i) {

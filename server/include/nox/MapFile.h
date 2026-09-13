@@ -63,7 +63,10 @@ public:
     // WallMap → 벽 목록. 격자 칸 좌표(바이트)다 — 월드 좌표가 아니다.
     //   한 칸 = 23 유닛 (녹스 격자 상수. 256칸 × 23 ≈ 5888 로 맵 범위와 맞는다)
     //   ⚠ 실제 배율·오프셋 검증은 P3(벽 돌진)에서 실클라로 한다.
-    struct WallCell { uint8_t x = 0, y = 0, dir = 0; };
+    // ★ 2026-09-13 묶음 2-b — 재질(tile)과 방향 윗비트(flag80)를 더 담는다.
+    //   정답지 `GAME1_2.c:1285~1318` nox_server_mapRWWallMap_429B20: [x][y][방향|0x80][재질][변형]…
+    //   재질 = thing.bin WALL 순번(깃발 0x2 면 막지 않음) · 윗비트는 Flags4 |= 0x80.
+    struct WallCell { uint8_t x = 0, y = 0, dir = 0, tile = 0, variation = 0; bool flag80 = false; };
     std::vector<WallCell> ReadWalls();
 
 private:

@@ -212,6 +212,9 @@ std::vector<MapFile::WallCell> MapFile::ReadWalls() {
         w.x = x;
         w.y = p[off + 1];
         w.dir = p[off + 2] & 0x7f;
+        w.flag80 = (p[off + 2] & 0x80) != 0;
+        w.tile = p[off + 3];
+        w.variation = p[off + 4];
         out.push_back(w);
         off += 7;
     }

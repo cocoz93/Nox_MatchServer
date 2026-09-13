@@ -2407,6 +2407,18 @@ void TestThingDb() {
     if (const nox::ThingInfo* pl = db.ByWire(713))
         Check(pl->radius > 0.0f, "NewPlayer 의 충돌 반지름이 0 이다 — EXTENT 가 안 읽혔다");
 
+    // ④ 벽 재질(WALL 섹션, 2026-09-13 묶음 2-b) — 읽혔고, 섹션 걸음이 안 밀렸는가.
+    //   걸음이 밀렸으면 뒤따르는 THNG 이름 대조(②③)가 먼저 깨진다. 여기선 개수와 막지 않는 재질 수를 찍는다.
+    {
+        const auto& ws = db.Walls();
+        Check(!ws.empty(), "WALL 섹션이 0개 — 벽 재질을 못 읽었다");
+        size_t passable = 0;
+        for (const auto& w : ws) if (w.flags & 0x2) ++passable;
+        const nox::ThingInfo* pl = db.ByWire(713);
+        std::printf("  벽 재질 %zu종(막지 않음 0x2 %zu종) · NewPlayer 반지름 %.1f · MASS %.1f\n",
+                    ws.size(), passable, pl ? pl->radius : 0.0f, pl ? pl->mass : 0.0f);
+    }
+
     std::printf("  thing.bin 직접 읽기 — %zu종, 기존 표와 전수 일치\n", db.Count());
 }
 
@@ -3112,6 +3124,58 @@ void TestWallCollision() {
     }
 
     std::printf("  벽 충돌 — 통과·막힘·미끄러짐\n");
+}
+
+// ── 벽 모양 — 대각선 선분 (2026-09-13 묶음 2-b) ────────────────
+//
+// 정답지 벽은 칸이 아니라 칸 안 대각선이다. 방향 1 = 왼쪽 대각선(\) 0~23 전체.
+// 칸 (44,43) 원점 = (1012, 989) → 선분 (1012,989)→(1035,1012).
+// 동쪽으로 y=1000 을 달리면 선과 x≈1023 에서 만난다 — 멈추는 중심은 선에서 반지름 10 떨어진 곳,
+// 즉 **칸 네모 경계(1012−10=1002)보다 안쪽**까지 들어간다. 선을 따라 남동으로 미끄러진다.
+void TestWallShape() {
+    const std::string a = "10.0.0.1:1000";
+    auto walkPkt = [](uint8_t facing) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::PLAYER_INPUT));
+        p.push_back(10);
+        const uint8_t items[10] = { 1, 0, 0, 0, facing, 2, 0, 0, 0, facing };
+        p.insert(p.end(), items, items + 10);
+        return p;
+    };
+    nox::Server srv;
+    srv.DebugEnterGame(a, 728);
+    srv.DebugMoveTo(a, 960, 1000);
+    //   ⚠ 한 칸짜리면 선 끝까지 미끄러져 지나간다(처음에 그렇게 짜서 「뚫었다」로 오판) — 칸 (x, x−1) 을 스무 칸 잇는다.
+    std::vector<nox::Server::WallTileIn> tiles;
+    for (int gx = 40; gx < 60; ++gx) {
+        nox::Server::WallTileIn w; w.x = static_cast<uint8_t>(gx); w.y = static_cast<uint8_t>(gx - 1); w.dir = 1; w.tile = 0;
+        tiles.push_back(w);
+    }
+    srv.SetWallTiles(tiles);
+
+    // ① 선 추적 — 선을 가로지르는 선분은 막히고, 선과 나란한 선분은 안 막힌다
+    Check(!srv.DebugTraceRay(1000.0f, 1000.0f, 1030.0f, 1000.0f), "대각선 벽을 가로지르는 선이 안 막혔다");
+    Check(srv.DebugTraceRay(1000.0f, 1000.0f, 1000.0f, 1030.0f), "벽 없는 쪽 선이 막혔다");
+    Check(srv.DebugTraceRay(1014.0f, 986.0f, 1037.0f, 1009.0f), "대각선과 나란한 선이 막혔다");
+
+    // ② 동쪽으로 달리기 — 선에서 멈추고 선 따라 남동으로 미끄러진다
+    uint32_t ms = 0;
+    std::vector<nox::OutPacket> out;
+    srv.Tick(ms, out);
+    int maxX = 0;
+    for (int i = 0; i < 40; ++i) {
+        srv.DebugAimAt(a, srv.XOf(a) + 300, srv.YOf(a));
+        auto pkt = walkPkt(0);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        ms += 34;
+        srv.Tick(ms, out);
+        maxX = std::max(maxX, srv.XOf(a));
+    }
+    const int x = srv.XOf(a), y = srv.YOf(a);
+    // 선 방정식 y − 989 = x − 1012 → 중심이 선의 **왼아래(서남) 쪽**에 머물러야 한다: (x−1012) − (y−989) < 0
+    Check((x - 1012) - (y - 989) < 0, "대각선 벽을 뚫고 반대편으로 갔다");
+    Check(y > 1000, "대각선을 따라 남동으로 미끄러지지 않았다");
+    std::printf("  벽 모양 — 대각선 막힘·나란함 통과 · 달린 뒤 (%d,%d) · 가장 멀리 x %d\n", x, y, maxX);
 }
 
 void TestObserverExit() {
@@ -4000,6 +4064,7 @@ int main() {
     TestThingDb();
     TestMapSections();
     TestWallCollision();
+    TestWallShape();
     TestJoinBundle();
     TestSnapshotTail();
     TestSnapshotVsMap();

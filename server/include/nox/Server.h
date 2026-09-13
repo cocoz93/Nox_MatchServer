@@ -694,7 +694,33 @@ public:
         walls_.assign(256 * 256, 0);
         for (const auto& c : cells) walls_[c.second * 256 + c.first] = 1;
         wallsOn_ = !cells.empty();
+        // ★ 모양을 모르는 칸은 **X 자(방향 2, 대각선 둘 다)** 로 둔다 — 시험이 칸 좌표만 준다.
+        wallTiles_.assign(256 * 256, WallTile{});
+        for (const auto& c : cells) {
+            WallTile& w = wallTiles_[c.second * 256 + c.first];
+            w.present = true; w.dir = 2; w.tile = 0;
+        }
     }
+    // ★★ **벽 모양** (2026-09-13 묶음 2-b — 정답지 벽은 칸이 아니라 **칸 대각선 선분**이다).
+    //   방향 0~10 이 어느 대각선(\ 왼쪽 · / 오른쪽)의 어느 구간(0~23 · 0~11.5 · 11.5~23)인지를
+    //   `table_313272`(`GAME5.c:53`)가 정한다. 재질 = thing.bin WALL 순번(깃발 0x2 면 선 추적이 무시).
+    //   ⚠ 문·창·비밀 벽·부서진 벽 깃발(Flags4)은 아직 없다 — 묶음 9.
+    struct WallTileIn { uint8_t x = 0, y = 0, dir = 0, tile = 0; bool flag80 = false; };
+    void SetWallTiles(const std::vector<WallTileIn>& cells) {
+        wallTiles_.assign(256 * 256, WallTile{});
+        walls_.assign(256 * 256, 0);
+        for (const auto& c : cells) {
+            WallTile& w = wallTiles_[c.y * 256 + c.x];
+            w.present = true; w.dir = c.dir; w.tile = c.tile; w.flag80 = c.flag80;
+            walls_[c.y * 256 + c.x] = 1;
+        }
+        wallsOn_ = !cells.empty();
+    }
+    void SetWallDefFlags(std::vector<uint32_t> f) { wallDefFlags_ = std::move(f); }
+    // 시험용 — 선 추적(Flag1, 걸음과 같은 깃발)
+    bool DebugTraceRay(float x1, float y1, float x2, float y2) const { return MapTraceRay(x1, y1, x2, y2, 0x1); }
+    // 진단 — 가장 가까운 벽 선분까지 거리(±3칸). 벽 없으면 −1. 칸·방향도 돌려준다.
+    double DebugWallDistance(double x, double y, int* outGx = nullptr, int* outGy = nullptr, int* outDir = nullptr) const;
     bool WallAt(double x, double y) const {
         if (!wallsOn_) return false;
         const int cx = static_cast<int>(x / kWallCell);
@@ -1361,6 +1387,14 @@ private:
     void FlushImportant(Session& s, std::vector<OutPacket>& out);
     // 사람 걷기 한 틱(묶음 2-a) — 힘·상태·적분. Server.cpp 정의 머리 주석 참조.
     void UpdatePlayerMovement();
+    // ── 벽 충돌 (묶음 2-b) — 정답지 이식. Server.cpp 정의 머리 주석 참조 ──
+    int WallShapeAt(int gx, int gy) const;                                   // sub_57B500 (문·창·비밀 없음)
+    bool MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags) const;   // MapTraceRayAt
+    bool MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float y2, uint8_t flags) const;
+    // 원 대 벽(sub_54FEF0) — 사각형은 프레임 시작 자리(bx,by)로, 거리는 지금 자리(nx,ny)로 잰다.
+    //   밀어낸 힘을 (ax,ay) 에 더하고 벽 쪽으로 가던 속도를 깎는다. 닿았으면 참.
+    bool CircleVsWalls(double bx, double by, double r, double mass,
+                       double nx, double ny, double& vx, double& vy, double& ax, double& ay) const;
     // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
     void EmitNewPlayer(Session& to, const Session& who, uint8_t status,
@@ -1503,6 +1537,9 @@ private:
     uint32_t saMapCrc_ = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
     std::vector<uint8_t> walls_;   // 256×256 벽 격자 (P3)
     bool wallsOn_ = false;
+    struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; };
+    std::vector<WallTile> wallTiles_;        // 256×256 벽 모양 (묶음 2-b)
+    std::vector<uint32_t> wallDefFlags_;     // thing.bin WALL 순번 → 깃발
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
     // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
     unsigned long long unitHealthSent_ = 0;
@@ -1636,6 +1673,7 @@ constexpr double kStepPerTick = 7.0;   // ⚠ 2026-09-13 부터 걷기에 안 �
 constexpr int    kMoveSubSteps     = 5;
 constexpr double kMoveSubStep      = 0.2;
 constexpr double kPlayerDamping    = 0.5;
+constexpr double kPlayerMass       = 1.0;   // ⭕ thing.bin NewPlayer MASS 1 (proto_test TestThingDb 가 찍는다)
 constexpr double kRunCursorDist    = 100.0;
 constexpr uint8_t kPlayerStateWalk = 0;
 constexpr uint8_t kPlayerStateRun  = 5;

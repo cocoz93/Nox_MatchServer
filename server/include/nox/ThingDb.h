@@ -36,8 +36,17 @@ struct SpellRaw {
     uint8_t rest[2] = { 0, 0 };   // 뜻 미상. 값이 흩어져 있어 짐작하지 않는다
 };
 
+// WALL 섹션 한 칸 — 벽 재질 정의 (2026-09-13 묶음 2-b).
+//   ⭕ 깃발 0x2 면 **막지 않는 벽**이다(`server/wall.go:1083` mapTraceRayImpl `flags2&0x2 != 0 → nil`).
+//   0x1 은 시야선용(Flag7) — 묶음 1 ⓓ3 에서 쓴다.
+struct WallDefRaw {
+    std::string name;
+    uint32_t flags = 0;
+};
+
 struct ThingInfo {
     std::string name;
+    float mass = 0.0f;   // MASS — 0 이면 파일에 없음(정답지 기본 1)
     bool complex = false;
     // EXTENT CIRCLE 의 반지름. CIRCLE 이 아니면(BOX·CENTER·없음) 0.
     float radius = 0.0f;
@@ -94,6 +103,8 @@ public:
 
     // ── 주문 (SPEL 섹션) ────────────────────────────────
     const std::vector<SpellRaw>& Spells() const { return spells_; }
+    // ── 벽 재질 (WALL 섹션) ── 맵 벽 재질 바이트 = 이 순번
+    const std::vector<WallDefRaw>& Walls() const { return walls_; }
 
     // 속이름으로 마나 비용을 찾는다. 없으면 `have` 가 false — **0 과 「모름」을 가른다.**
     // ⚠ 이걸 안 가르면 표에 없는 주문이 「공짜」가 된다.
@@ -110,6 +121,7 @@ public:
 private:
     std::vector<ThingInfo> things_;
     std::vector<SpellRaw> spells_;
+    std::vector<WallDefRaw> walls_;
     std::string error_;
 };
 

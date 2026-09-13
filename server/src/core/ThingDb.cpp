@@ -113,11 +113,15 @@ void SkipEDGE(Cur& c) {
     c.CheckEnd();
 }
 
-// wall.go
-void SkipWALL(Cur& c) {
+// wall.go — ★ 2026-09-13 이름과 깃발을 담는다(`server/wall.go:60` ReadWall: 이름 뒤 첫 u32 가 Flags32).
+//   맵 벽의 재질 바이트가 이 목록의 순번이다(`mapTraceRayImpl` 의 `DefByInd(wl.Tile1)`).
+void SkipWALL(Cur& c, std::vector<WallDefRaw>* out) {
     c.Skip(4);
-    c.SkipBytes8();
-    c.Skip(3 * 4 + 2 * 1);
+    WallDefRaw d;
+    d.name = c.Str8();
+    d.flags = c.U32();
+    c.Skip(2 * 4 + 2 * 1);
+    if (out && !c.bad) out->push_back(d);
     const uint64_t v1 = c.U64Align();
     for (int i = 0; i < static_cast<int>(static_cast<uint8_t>(v1)) && !c.bad; ++i) c.SkipBytes8();
     for (int i = 0; i < 3; ++i) c.SkipBytes8();
@@ -336,6 +340,10 @@ bool ReadThing(Cur& c, ThingInfo& t) {
                 ParseClasses(val, t);
             } else if (key == "EXTENT") {
                 ParseExtent(val, t);
+            } else if (key == "MASS") {
+                // 질량 — 벽에 밀릴 때 힘을 이것으로 나눈다(`server/object.go:1183` Sub548600 = dp / Mass).
+                //   없으면 정답지 기본 1(`server/object_type.go:197`).
+                t.mass = static_cast<float>(std::atof(val.c_str()));
             } else if (key == "WEIGHT") {
                 // ★★ **클라는 「집을 수 있나」를 `WEIGHT` 로 정한다** — CLASS 가 아니다.
                 //   `client/object_type.go:355-362` 이 WEIGHT 를 읽는 바로 그 자리에서
@@ -372,6 +380,7 @@ bool ReadThing(Cur& c, ThingInfo& t) {
 
 bool ThingDb::Load(const std::string& path) {
     things_.clear();
+    walls_.clear();
     error_.clear();
 
     const std::vector<uint8_t> buf = DecryptFile(path, kKeyThingBin);
@@ -388,7 +397,7 @@ bool ThingDb::Load(const std::string& path) {
         if (c.bad) break;
         if (sect == "FLOR") SkipFLOR(c);
         else if (sect == "EDGE") SkipEDGE(c);
-        else if (sect == "WALL") SkipWALL(c);
+        else if (sect == "WALL") SkipWALL(c, &walls_);
         else if (sect == "AUD ") SkipAUD(c);
         else if (sect == "AVNT") SkipAVNT(c);
         else if (sect == "SPEL") SkipSPEL(c, &spells_);

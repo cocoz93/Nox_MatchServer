@@ -350,10 +350,29 @@ int main(int argc, char** argv) {
             return 1;
         }
         const auto cells = mf.ReadWalls();
-        std::vector<std::pair<uint8_t, uint8_t>> ws;
+        // ★ 2026-09-13 묶음 2-b — 벽 **모양**(방향·재질)까지 넘긴다. 칸 좌표만 넘기던 SetWalls 는 시험용으로 남는다.
+        std::vector<nox::Server::WallTileIn> ws;
         ws.reserve(cells.size());
-        for (const auto& w : cells) ws.emplace_back(w.x, w.y);
-        srv.SetWalls(ws);
+        for (const auto& w : cells) {
+            nox::Server::WallTileIn t;
+            t.x = w.x; t.y = w.y; t.dir = w.dir; t.tile = w.tile; t.flag80 = w.flag80;
+            ws.push_back(t);
+        }
+        srv.SetWallTiles(ws);
+        {
+            // 벽 재질 깃발 — thing.bin WALL 섹션(0x2 = 막지 않음). 방향이 표(0~10) 밖인 벽 수도 찍는다.
+            nox::ThingDb wdb;
+            size_t badDir = 0;
+            for (const auto& w : cells) if (w.dir > 10) ++badDir;
+            if (wdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+                std::vector<uint32_t> flags;
+                for (const auto& d : wdb.Walls()) flags.push_back(d.flags);
+                srv.SetWallDefFlags(flags);
+                std::printf("[벽] 모양 %zu칸 · 재질 %zu종 · 방향 표 밖 %zu칸\n", cells.size(), flags.size(), badDir);
+            } else {
+                std::printf("[벽] 모양 %zu칸 · ⚠ thing.bin 을 못 읽어 재질 깃발 없음(모두 막는 벽으로 봄)\n", cells.size());
+            }
+        }
         // 정적 오브젝트 — **아이템만, 정품 번호로** (P4-d).
         //
         // ★ 두 규칙 다 실측이다 (2026-09-10):
