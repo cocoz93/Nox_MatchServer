@@ -99,6 +99,11 @@ bool MapFile::Load(const std::string& path) {
 // ★ 채움 규칙이 함정이다 — binenc 의 `Align(+2)` 는 `ReadNext(8-(off+2)%8)` 인데
 //   off 는 **vers 를 뗀 자리** 기준이라, 섹션 본문 기준으로 셈하면
 //   `8 - (본문오프셋 % 8)` 이고 **경계에 서 있어도 8 을 먹는다.**
+// ❌ 정정(2026-09-13 묶음 3-c) — **경계면 안 먹는다.** 위 규칙은 libs 쓰기 쪽 식이고 정답지 읽기는
+//   `cryptfile.ReadAlignedU32`(internal/cryptfile/cryptfile.go:319 → File.ReadAligned) — 암호 블록(8바이트) 경계로
+//   맞춰 읽으니 이미 경계면 채움 0 이다. 옛 규칙은 estate 161번째(ColorLight 가 딱 경계에서 끝남)에서 크기를 잘못 읽고
+//   **「object overrun」으로 조용히 멈췄다** — 오브젝트 640개 중 161개만 읽혀 PlayerStart 14개가 통째로 빠졌다.
+//   고친 규칙으로 640개가 섹션 끝 바이트에서 정확히 끝난다(`_evidence` 없이 scratchpad p31/mapobjs.py 로 전수 확인).
 std::vector<MapObject> MapFile::ReadObjects() {
     std::vector<MapObject> out;
     const MapSection* toc = Find("ObjectTOC");
@@ -145,8 +150,8 @@ std::vector<MapObject> MapFile::ReadObjects() {
     for (;;) {
         const uint16_t ind = u16();
         if (ind == 0 || off > n) break;
-        // ★ 채움 — 경계여도 8 을 먹는다 (위 주석)
-        off += 8 - (off % 8);
+        // ★ 채움 — 암호 블록 경계까지. 이미 경계면 0 (위 정정)
+        off += (8 - (off % 8)) % 8;
         if (off + 8 > n) { error_ = "size underrun"; return out; }
         uint64_t sz = 0;
         for (int i = 7; i >= 0; --i) sz = (sz << 8) | p[off + i];
