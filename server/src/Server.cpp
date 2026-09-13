@@ -2078,6 +2078,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     std::printf("[중요] 프레임 %u %s 준비 — 대기 %zu 개를 싣기 시작\n",
                                 frame_, s.addr.c_str(), s.importantQ.size());
                 }
+                GameServerReadyMB(s, out);                 // network_server.go:99 → nox_xxx_gameServerReadyMB_4DD180
                 break;
 
             // ★ 중요 메시지 확인 — `ab <프레임4>`. 그 프레임 조각에 실었던 것을 지운다
@@ -4500,6 +4501,21 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 spell, SpellName(spell) ? SpellName(spell) : "?");
     std::fflush(stdout);
     return true;
+}
+
+// nox_xxx_gameServerReadyMB_4DD180(`GAME3_2.c:5592`) — CLIENT_READY 마다(정품 클라는 두 번 보낸다)
+//   ① +3680 |= 16(준비 — importantReady) ② 온라인·채팅 모드 아니면 무적 23 끄고 다시 5×FPS·세기 5
+//   ③ ⚠ 깃발 오브젝트(클래스 0x10000000) 미니맵 표시(미니맵) ④ ⚠ 관전이면 +908/+909 = 몸 자리 · 협동 팀(512)이면 관전 풀기(8)
+//   ⑤ ⚠ nox_xxx_wall_4DF1E0 — 부서진 벽·비밀 벽·마법 벽·퀘스트 문 알림(9·4-d) ⑥ ⚠ 퀘스트 건틀릿(8)
+//   ⑦ netStatsMultiplier_4D9C20 — `ef <f32 체력> <f32 마나> <f32 힘> <f32 속도>` Packet0 · 직업 배수(아레나는 초기값 1 · 퀘스트 DefaultStatMult 는 8)
+void Server::GameServerReadyMB(Session& s, std::vector<OutPacket>& out) {
+    if (!s.inGame) return;
+    BuffOff(Target{ s.addr, -1 }, 23);
+    ApplyEnchant(Target{ s.addr, -1 }, 23, 5 * static_cast<int>(kServerTickRate), 5);
+    const float mult[4] = { 1.0f, 1.0f, 1.0f, 1.0f };     // Health · Mana · Strength · Speed(server/player.go:167 init)
+    uint8_t msg[17] = { static_cast<uint8_t>(Op::STAT_MULTIPLIERS) };
+    for (int i = 0; i < 4; ++i) std::memcpy(msg + 1 + 4 * i, &mult[i], 4);
+    EmitImportantRaw(s, msg, sizeof(msg), out);
 }
 
 // ── 묶음 4-b4 디버프 C 함수 ─────────────────────────────────────────────

@@ -1730,6 +1730,7 @@ private:
     void UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out);                                 // updateUnitsCallUpdate 의 투사체 몫
     void DestroyMissile(size_t i, std::vector<OutPacket>& out);                                       // DelayedDelete → netReportDestroyObject
     void MissileChangeOwner(MissileObj& m, const std::string& own, uint32_t frame);                 // changeOwner_52BE40
+    void GameServerReadyMB(Session& s, std::vector<OutPacket>& out);                                // gameServerReadyMB_4DD180
     int CastConfuse(const std::string& obj3, const Target& targ, int lvl);                          // 4-b4 52C1E0
     int CastStun(const std::string& obj3, const Target& targ, int lvl);                             // 52C2C0
     int CastFumble(const Target& targ);                                                              // 52C060

@@ -2928,11 +2928,13 @@ void TestImportantQueue() {
     // ④ 확인 없음 — 새로 실은 순번이 60틱 안에는 다시 안 나가고, 60틱 무렵 같은 순번으로 다시 나간다
     {
         std::vector<nox::OutPacket> out;
+        srv.DebugBuffOff(a, 23);                               // 준비(CLIENT_READY)가 건 무적 23 을 끈다(gameServerReadyMB) — 안 끄면 피해가 막힌다
         srv.Damage(a, 5, out);
         ms += 34; srv.Tick(ms, out);
         std::vector<uint16_t> ids2;
         Check(FindImportantPacket(out, a, nullptr, &ids2), "새 중요 메시지가 안 실림");
-        const uint16_t watch = ids2.empty() ? 0xFFFF : ids2.back();
+        // 다시 싣기는 틱에 하나씩(정답지 카운터 1) — 같은 조각의 뒤 순번은 그만큼 밀리므로 **첫** 순번을 본다
+        const uint16_t watch = ids2.empty() ? 0xFFFF : ids2.front();
         int resentAt = -1;
         for (int i = 1; i <= 70 && resentAt < 0; ++i) {
             std::vector<nox::OutPacket> o;
@@ -4697,6 +4699,41 @@ void TestDebuffSpells() {
         Check(srv.ManaOf(a) == full - 10, "남에게 건 CurePoison 이 마나를 안 썼다");
     }
     std::printf("  4-b4 — Confuse 90·도운 사람 · Stun 직업·질량 갈래 · Fumble 대상 · Inversion 되돌림 · CurePoison 자기 공짜\n");
+}
+
+// ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
+//
+// 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
+//   ★ 없으면 버프가 한 번도 안 온 사람을 클라가 무적 그림(파랑·회색 깜빡임)으로 남겨 둔다(b4b1_vamp_ctrl 관측)
+void TestGameServerReady() {
+    const std::string a = "10.5.2.1:5201";
+    nox::Server srv;
+    srv.DebugEnterGame(a, 750);
+    srv.DebugImportantReal(a, /*ready=*/false);
+    uint32_t ms = 0;
+    std::vector<nox::OutPacket> out;
+    srv.Tick(ms, out);
+    Check(!srv.DebugHasEnchant(a, 23), "준비 전인데 무적 23 이 걸려 있다(시험 전제)");
+    const auto ready = WireOf({ static_cast<uint8_t>(nox::Op::CLIENT_READY) });
+    srv.OnPacket(a, ready.data(), ready.size(), out);
+    Check(srv.DebugHasEnchant(a, 23) && srv.DebugEnchantDur(a, 23) == 150 && srv.DebugEnchantPower(a, 23) == 5,
+          "CLIENT_READY 인데 무적 23(150 · 세기 5)이 안 걸렸다");
+    std::vector<nox::OutPacket> o;
+    ms += 34; srv.Tick(ms, o);
+    const uint8_t want[17] = { static_cast<uint8_t>(nox::Op::STAT_MULTIPLIERS), 0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f };
+    bool found = false;
+    for (const auto& p : o) {
+        if (p.to != a) continue;
+        const auto body = Body(p);
+        for (size_t i = 0; i + sizeof(want) <= body.size() && !found; ++i)
+            if (std::memcmp(body.data() + i, want, sizeof(want)) == 0) found = true;
+    }
+    Check(found, "준비 뒤 `ef` 직업 배수(1.0 넷)가 안 실렸다");
+    // 두 번째 준비(정품 클라는 두 번 보낸다) — 무적을 끄고 다시 150
+    for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, o); }
+    srv.OnPacket(a, ready.data(), ready.size(), o);
+    Check(srv.DebugEnchantDur(a, 23) == 150, "두 번째 CLIENT_READY 에 무적이 150 으로 다시 안 걸렸다");
+    std::printf("  접속 준비 — CLIENT_READY 무적 23(150·5) · `ef` 직업 배수 · 두 번째 준비 다시 150\n");
 }
 
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
@@ -6756,6 +6793,7 @@ int main() {
     TestBuffSpells();
     TestMoveBuffs();
     TestDebuffSpells();
+    TestGameServerReady();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
