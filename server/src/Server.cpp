@@ -1087,6 +1087,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     PlayerSetState(s, 3, frame_);
     ++s.deaths;
     DropFlag(addr, out);   // 들고 있었으면 그 자리에 떨군다
+    PlayerCancelSpells(addr, out);                         // playerCancelSpells_4FEAE0(`GAME5.c:5103`, 4-a3)
     // ⚠ 옮기지 않은 것 — 죽는 소리(10) · 가진 것 전부 떨구기(퀘스트 아니면 · 아이템 5)
     //   · 모드별 점수 정답지(8 — 지금은 아래 우리 점수) · 버프·능력·주문 끄기(4·7)
 
@@ -3493,17 +3494,24 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 s.stateFrame = frame;
             }
             if (s.hasFacingInput) s.facing = s.facingInput;   // CCOrientation(`:497~502`, 얼림·광전사 없음)
-            // 이동 — 맨손 공격 중(상태 1)에는 안 먹는다(`:506~507`) · 방패 올린 채(16)면 먼저 내린다(17, `:513~514`)
-            if (s.moveInputThisTick && s.moveState != kPlayerStateAttack) {
-                if (s.moveState == 16) {
-                    PlayerSetState(s, 17, frame);
-                } else {
-                    PlayerSetState(s, run ? kPlayerStateRun : kPlayerStateWalk, frame);
-                    s.stateFrame = frame;
+            // 자연의 힘(31) 지속 중이면 방향 입력만 받는다(`:496` orientationOnly = Sub4FEE50 · 4-a3)
+            const bool orientationOnly = DurActive(31, s.addr);
+            // 이동 — playerCanMove 면 붙들고 있는 주문 취소(cancelAllSpells_4FEE90, `:509~510`) ·
+            //   맨손 공격 중(상태 1)에는 안 먹는다(`:506~507`) · 방패 올린 채(16)면 먼저 내린다(17, `:513~514`)
+            //   ⚠ playerCanMove 의 버프 25·5 · 상태 1 + 특정 무기 갈래는 버프(4-a4)·아이템(5)
+            if (s.moveInputThisTick && !orientationOnly) {
+                CancelChannelSpells(s.addr, out);
+                if (s.moveState != kPlayerStateAttack) {
+                    if (s.moveState == 16) {
+                        PlayerSetState(s, 17, frame);
+                    } else {
+                        PlayerSetState(s, run ? kPlayerStateRun : kPlayerStateWalk, frame);
+                        s.stateFrame = frame;
+                    }
                 }
             }
             // CCAction(`:536~544`) — playerCanAttack(버프 25 없음 · 상태 23 아님) → 공 차기 아니면 playerInputAttack
-            if (s.actionThisTick && s.moveState != 23) PlayerInputAttack(s, frame, out);
+            if (s.actionThisTick && !orientationOnly && s.moveState != 23) PlayerInputAttack(s, frame, out);
         }
         s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
 
@@ -3698,7 +3706,7 @@ bool Server::MapTraceVisionSkip(float x1, float y1, float x2, float y2, int skip
 }
 
 // `object.go:1394` playerSetState 중 지금 들어오는 갈래 — 죽음·공중·도발·광전사·함성은 그 조각에서.
-bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame) {
+bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame, std::vector<OutPacket>* out) {
     bool res = true;
     if (s.respawnAtFrame != 0 && st != 3 && st != 4) return false;   // DEAD 면 3·4 만(`:1398`)
     if (st != kPlayerStateAttack) {
@@ -3715,6 +3723,7 @@ bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame) {
                 if (s.charClass == CharClass::Warrior && NextRandom(101) > 75) s.attackAnim = kAnimPunchHook;
                 // 투명 해제 · 무적 해제 · 타원 방패 취소 — 버프 중 지금 있는 것은 부활 무적뿐
                 if (s.invulnUntilSet && frame < s.invulnUntilFrame) s.invulnUntilFrame = frame;
+                if (out) DurCancelFor(67, s.addr, *out);
             }
         } else {
             res = false;
@@ -3775,6 +3784,7 @@ void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& o
     s.respawnAtFrame = 0;                                  // 깃발 &= 0xFFEB3FE7 — DEAD 끔
     PlayerSetState(s, kPlayerStateIdle, frame);
     s.invulnUntilSet = false;                              // unitClearBuffs(아래에서 23 을 다시 켠다)
+    PlayerCancelSpells(s.addr, out);                       // playerCancelSpells_4FEAE0(`GAME3_3.c:8119`, 4-a3)
     s.lastHit = Session::LastHit{};                        // +520 = 0(`GAME3_3.c:7958`, 3-d)
     MarkDirty(s.netCode, PendingReport::What::UnitHealth);
     // 나에게 — 최대·지금 체력(`dd`) · 마나는 워리어가 아니면(`de`)
@@ -4192,25 +4202,27 @@ void Server::PlayerSpell(Session& s, std::vector<OutPacket>& out) {
 bool Server::CastSpellByUser(uint8_t spell, int lvl, Session& s, const SpellArg& arg, std::vector<OutPacket>& out) {
     if (lvl < 0) lvl = SpellPower(s, spell);
     if (SpellFlags(spell) & 0x20) {
-        // 공격 주문 — 투명(0) 끄기 · 무적(23) 끄기 · 타원 방패 지속 주문 취소(4-d)
+        // 공격 주문 — 투명(0) 끄기 · 무적(23) 끄기 · 타원 방패(67) 지속 주문 취소
         if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) s.invulnUntilFrame = frame_;
+        DurCancelFor(67, s.addr, out);
     }
-    if (!(SpellFlags(spell) & 0x4) || arg.obj.addr == s.addr) return SpellAccept(spell, s, arg, lvl, out);
+    if (!(SpellFlags(spell) & 0x4) || arg.obj.addr == s.addr) return SpellAccept(spell, s, s.addr, arg, lvl, out);
     // 겨눈 주문 — createSpellFly_4FDDA0 로 "Magic" 오브젝트를 날린다(4-a2) · 닿으면 SpellProjectileCollide 가 받아들인다
     (void)lvl;
     return CreateSpellFly(s, arg.obj, spell, out);
 }
 
 // spellAccept(spells.go:193~420)
-bool Server::SpellAccept(uint8_t spell, Session& s, const SpellArg& arg, int lvl, std::vector<OutPacket>& out) {
-    if (spell == 0 || spell >= 137 || !spellDefs_[spell].valid) return false;
+bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, const SpellArg& arg, int lvl, std::vector<OutPacket>& out) {
+    if (spell == 0 || spell >= 137 || obj3.empty()) return false;   // spellID 0 · obj3 == nil(날아가는 것의 주인이 사라짐)
+    if (!spellDefs_[spell].valid) return false;
     const uint32_t fl = spellDefs_[spell].flags;
     // Unk8(0x80) — 대상이 있는데 유닛이 아니면 거절 · 지금 대상은 사람·소환수(유닛)뿐
     // gameCaptureMagic_4FDC10 — CTF 에서 깃발 든 사람에게 CANT_HOLD_CROWN 주문 → 0 · 소리 PermanentFizzle(10)
     if (!arg.obj.none() && !arg.obj.addr.empty() && (fl & 0x80000)) {
         for (const auto& f : flags_) if (f.carrier == arg.obj.addr) return false;
     }
-    if (lvl > 5) lvl = 5;
+    // ⚠ lvl > 5 자르기는 효과 함수(fnc) 갈래만 — 지속 갈래(DurNew)는 자르지 않는다(spells.go:405~410)
     (void)lvl;
     lastAcceptTarget_ = arg.obj;                             // 시험용 기록
     lastAcceptCaster_ = s.addr;
@@ -4447,6 +4459,200 @@ void Server::DestroyMissile(size_t i, std::vector<OutPacket>& out) {
     missiles_.erase(missiles_.begin() + static_cast<long>(i));
 }
 
+// ── 묶음 4-a3 지속 주문 틀 ─────────────────────────────────────────────
+//   정답지 server/spells_dur.go(DurSpell 칸 · 목록 · 취소) + spells_dur.go(New · 틱 · 지우기) + GAME4.c:3369~3525
+//   ⚠ 소리(On/Cast/Off)는 10 · 미니맵 표시 풀기(417470)는 미니맵 묶음 · 몬스터 주인(MonsterCancelDurSpell)은 7 · 글리프 주인은 4-e
+
+static bool SpellIsSummon(uint8_t sp) { return sp >= 75 && sp <= 114; }   // SPELL_SUMMON_BAT ~ SPELL_SUMMON_URCHIN_SHAMAN
+
+// spellsDuration.New(spells_dur.go:88)
+bool Server::DurNew(uint8_t spell, const std::string& a2, const std::string& obj3, bool u3Glyph, const SpellArg& arg, int lvl,
+                    const DurFns& fns, uint32_t dt, std::vector<OutPacket>& out) {
+    // u2 == nil || u2 죽음·지워짐 && u3 != nil && u3 글리프 아님 → false (u3 는 늘 있다 — 시전자 또는 날아가는 것)
+    auto u2It = sessions_.find(obj3);
+    if (obj3.empty() || u2It == sessions_.end() || !u2It->second.inGame) return false;
+    const Session& u2 = u2It->second;
+    if (u2.respawnAtFrame != 0 && !u3Glyph) return false;
+    if ((spell == 59 || spell == 43) && DurActive(spell, obj3)) return true;   // 플라스마·연쇄 번개는 이미 있으면 새로 안 만듦
+    DurCancelFor(spell, obj3, out);
+    DurOnNewSpell(out);
+    DurSpell d;
+    d.id = ++durLastId_;
+    d.spell = spell;
+    d.level = lvl;
+    d.obj12 = a2;
+    d.caster = obj3;
+    d.flag20 = u3Glyph;                                      // 글리프면 Obj24·Pos = 글리프 자리(4-e)
+    d.posX = static_cast<float>(u2.posX);
+    d.posY = static_cast<float>(u2.posY);
+    d.target = arg.obj;
+    d.pos2X = arg.x;
+    d.pos2Y = arg.y;
+    d.frame60 = frame_;
+    d.frame64 = frame_;
+    d.frame68 = dt + frame_;
+    d.fns = fns;
+    durSpells_.push_front(d);                                // Add — 머리에
+    // 소리 — 겨눔(0x4)이면 On · 아니면 Cast(10)
+    DurSpell& p = durSpells_.front();
+    if (fns.create == nullptr || (this->*fns.create)(p, out) == 0) return true;
+    DurCancel(p, out);
+    return false;
+}
+
+// onNewSpell — 취소 깃발 붙은 것을 전부 지운다
+void Server::DurOnNewSpell(std::vector<OutPacket>& out) {
+    for (auto it = durSpells_.begin(); it != durSpells_.end();) {
+        auto next = std::next(it);
+        if (it->flags88 & 1) DurDestroy(it, out);
+        it = next;
+    }
+}
+
+// destroyDurSpell(spells_dur.go:39)
+void Server::DurDestroy(std::list<DurSpell>::iterator it, std::vector<OutPacket>& out) {
+    // 소리 Off(10)
+    if (it->fns.destroy) (this->*(it->fns.destroy))(*it, out);
+    auto c = sessions_.find(it->caster);
+    if (!it->caster.empty() && c != sessions_.end() && c->second.inGame) {
+        // 워리어가 광전사 돌진 중이 아니면 상태 13 ⚠ 능력(광전사)은 묶음 7 — 지금은 늘 13
+        PlayerSetState(c->second, kPlayerStateIdle, frame_);
+    }
+    durSpells_.erase(it);                                    // Unlink · FreeRecursive(하위 포함)
+}
+
+// CancelSpell(server/spells_dur.go:181) = nox_xxx_spellCancelSpellDo_4FE9D0
+void Server::DurCancel(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (!d.caster.empty() && c != sessions_.end() && c->second.inGame)
+        ReportSpellStat(c->second, d.spell, (d.spell == 43) ? 0 : 15, out);
+    if (d.spell == 43) {
+        for (const auto& sub : d.sub108) if (!sub.target.none()) NetStopRaySpell(sub, sub.target, out);
+    } else if (!d.target.none()) {
+        NetStopRaySpell(d, d.target, out);
+    }
+    d.flags88 |= 1;
+}
+
+// CancelFor(server/spells_dur.go:169)
+void Server::DurCancelFor(uint8_t spell, const std::string& obj, std::vector<OutPacket>& out) {
+    for (auto& d : durSpells_) {
+        if ((d.spell == spell && d.caster == obj) || (SpellIsSummon(spell) && SpellIsSummon(d.spell) && d.caster == obj))
+            DurCancel(d, out);
+    }
+}
+
+// CancelOffensiveFor(server/spells_dur.go:159)
+void Server::DurCancelOffensiveFor(const std::string& obj, std::vector<OutPacket>& out) {
+    for (auto& d : durSpells_)
+        if (d.caster == obj && (SpellFlags(d.spell) & 0x20)) DurCancel(d, out);
+}
+
+// Sub4FEE50 — 안 취소된 · 글리프 아닌 · 그 주문 · 그 주인
+bool Server::DurActive(uint8_t spell, const std::string& obj) const {
+    for (const auto& d : durSpells_)
+        if (!d.flag20 && d.spell == spell && d.caster == obj && !(d.flags88 & 1)) return true;
+    return false;
+}
+
+// nox_xxx_playerCancelSpells_4FEAE0 — 그 주인의 것 전부
+void Server::PlayerCancelSpells(const std::string& obj, std::vector<OutPacket>& out) {
+    for (auto& d : durSpells_) if (d.caster == obj) DurCancel(d, out);
+}
+
+// nox_xxx_cancelAllSpells_4FEE90 — 걷기·뛰기 입력이면 붙들고 있는 주문(번개 24 · 연쇄 번개 43 · 큰 치유 35 · 생명 흘리기 8 · 마나 흡수 22 · 플라스마 59 · 타원 방패 67)
+void Server::CancelChannelSpells(const std::string& obj, std::vector<OutPacket>& out) {
+    for (auto& d : durSpells_) {
+        if (d.caster != obj) continue;
+        const uint8_t v = d.spell;
+        if (v == 24 || v == 43 || v == 35 || v == 8 || v == 22 || v == 59 || v == 67) DurCancel(d, out);
+    }
+}
+
+// sub_4FF2D0 — 안 취소된 · 그 주문 · 대상이 그것
+const Server::DurSpell* Server::DurFindByTarget(uint8_t spell, const Target& target) const {
+    for (const auto& d : durSpells_) {
+        if ((d.flags88 & 1) || d.spell != spell || d.target.none()) continue;
+        if (d.target.addr == target.addr && d.target.pet == target.pet) return &d;
+    }
+    return nullptr;
+}
+
+// NetStopRaySpell(server/spells.go:458) — `9e <갈래> <값> <u1 번호2> <u2 번호2>` Packet1 모두
+void Server::NetStopRaySpell(const DurSpell& d, const Target& who, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (d.caster.empty() || c == sessions_.end() || !c->second.inGame) return;
+    auto netOf = [&](const Target& t) -> uint16_t {
+        if (!t.addr.empty()) {
+            auto it = sessions_.find(t.addr);
+            return (it != sessions_.end() && it->second.inGame) ? it->second.netCode : 0;
+        }
+        return (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) ? pets_[static_cast<size_t>(t.pet)].netCode : 0;
+    };
+    if (who.none() || netOf(who) == 0) return;
+    uint8_t typ = 0, val = 0;
+    uint16_t n1 = c->second.netCode, n2 = netOf(who);
+    switch (d.spell) {
+        case 43:                                             // 연쇄 번개 — 하위마다
+            for (const auto& sub : d.sub108) NetStopRaySpell(sub, sub.target, out);
+            return;
+        case 59: typ = 8; val = c->second.facingPrev; break;             // 플라스마 — 주인 Direction1
+        case 9: typ = 9; val = static_cast<uint8_t>(d.level); break;     // 매혹
+        case 7: typ = 10; val = static_cast<uint8_t>(d.level); break;    // 연쇄 번개 조각
+        case 22: typ = 12; val = static_cast<uint8_t>(d.level); break;   // 마나 흡수
+        case 24: typ = 11; val = static_cast<uint8_t>(d.level); break;   // 번개
+        case 35:                                             // 큰 치유 — 자기에게면 없음 · 받는 쪽이 앞
+            if (!d.target.addr.empty() && d.target.addr == d.caster) return;
+            typ = 13; val = static_cast<uint8_t>(d.level);
+            std::swap(n1, n2);
+            break;
+        default: return;
+    }
+    const uint8_t msg[7] = { static_cast<uint8_t>(Op::FX_DURATION_SPELL), typ, val, static_cast<uint8_t>(n1), static_cast<uint8_t>(n1 >> 8),
+                             static_cast<uint8_t>(n2), static_cast<uint8_t>(n2 >> 8) };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+    // 미니맵 표시 풀기(Nox_xxx_netUnmarkMinimapSpec_417470 · 2) — 미니맵 표시 묶음
+}
+
+// spellCastByPlayer(spells_dur.go:62) — 틱마다 castByBook 다음
+void Server::SpellCastByPlayer(uint32_t frame, std::vector<OutPacket>& out) {
+    auto alive = [&](const std::string& a) {
+        auto s = sessions_.find(a);
+        return s != sessions_.end() && s->second.inGame;
+    };
+    for (auto it = durSpells_.begin(); it != durSpells_.end();) {
+        auto next = std::next(it);
+        DurSpell& d = *it;
+        if (d.flags88 & 1) { DurDestroy(it, out); it = next; continue; }
+        if (!d.caster.empty() && (!alive(d.caster) || sessions_.at(d.caster).respawnAtFrame != 0)) d.caster.clear();   // DEAD|DESTROYED
+        if (!d.obj12.empty() && !alive(d.obj12)) d.obj12.clear();                                                      // DESTROYED
+        if (d.caster.empty() && !d.flag20) { DurCancel(d, out); it = next; continue; }
+        if ((d.frame68 != d.frame60 && d.frame68 <= frame) || (d.fns.update && (this->*d.fns.update)(d, out) != 0))
+            DurCancel(d, out);
+        it = next;
+    }
+}
+
+// 시험용 create · update · destroy
+int Server::DebugDurCreate(DurSpell& d, std::vector<OutPacket>& out) { (void)d; (void)out; return debugDurCreateRet_; }
+int Server::DebugDurUpdate(DurSpell& d, std::vector<OutPacket>& out) {
+    (void)d; (void)out;
+    ++debugDurUpdates_;
+    return (debugDurUpdateStopAt_ > 0 && debugDurUpdates_ >= debugDurUpdateStopAt_) ? 1 : 0;
+}
+void Server::DebugDurDestroyFn(DurSpell& d, std::vector<OutPacket>& out) { (void)d; (void)out; ++debugDurDestroys_; }
+bool Server::DebugDurNew(const std::string& caster, uint8_t spell, uint32_t dt, int createRet, int updateStopAt, bool withDestroy,
+                         const Target& target, std::vector<OutPacket>& out) {
+    if (sessions_.find(caster) == sessions_.end()) return false;
+    DurFns f;
+    if (createRet >= 0) { debugDurCreateRet_ = createRet; f.create = &Server::DebugDurCreate; }
+    if (updateStopAt >= 0) { debugDurUpdateStopAt_ = updateStopAt; debugDurUpdates_ = 0; f.update = &Server::DebugDurUpdate; }
+    if (withDestroy) f.destroy = &Server::DebugDurDestroyFn;
+    SpellArg arg;
+    arg.obj = target;
+    return DurNew(spell, caster, caster, false, arg, 3, f, dt, out);
+}
+
 // 날아가는 것들 한 틱 — updateUnitsCallUpdate(server_update.go:72) 의 투사체 몫. 사람 적분 **앞**에서 부른다
 void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
     for (size_t i = 0; i < missiles_.size();) {
@@ -4655,7 +4861,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                             if (casterIt != sessions_.end()) {
                                 SpellArg arg;
                                 arg.obj = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
-                                SpellAccept(m.spell, casterIt->second, arg, m.level, out);
+                                SpellAccept(m.spell, casterIt->second, m.ud0, arg, m.level, out);   // (ud[3], ud[2], ud[0], 날아가는 것, 대상)
                             }
                             DestroyMissile(i, out);
                             erased = true;
@@ -4749,7 +4955,7 @@ void Server::PlayerInputAttack(Session& s, uint32_t frame, std::vector<OutPacket
                 ReportStamina(s, out);
                 s.stateFrame = frame;                       // a1[34] = 프레임 — setState 보다 먼저
                 s.animFrame = 0;
-                const bool entered = PlayerSetState(s, kPlayerStateAttack, frame);
+                const bool entered = PlayerSetState(s, kPlayerStateAttack, frame, &out);
                 if (!entered) s.stamina = static_cast<uint8_t>(s.stamina + cost);   // sub_4F7DB0 되돌림
                 std::printf("[공격] 프레임 %u %s 무기 0x%X %s · 기력 %d 깎음 → %u\n", frame, s.addr.c_str(), equip,
                             entered ? "상태 1 들어감" : "쉬는 시간이라 안 들어감(기력 되돌림)", cost, s.stamina);
@@ -4763,7 +4969,7 @@ void Server::PlayerInputAttack(Session& s, uint32_t frame, std::vector<OutPacket
         return;
     }
     if (s.moveState != kPlayerStateAttack) {
-        const bool entered = PlayerSetState(s, kPlayerStateAttack, frame);
+        const bool entered = PlayerSetState(s, kPlayerStateAttack, frame, &out);
         std::printf("[공격] 프레임 %u %s %s 애니 %u\n", frame, s.addr.c_str(),
                     entered ? "상태 1 들어감" : "쉬는 시간이라 안 들어감", s.attackAnim);
         std::fflush(stdout);
@@ -5200,6 +5406,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 }
             }
             std::printf("조용해서 내보냄: %s\n", addr.c_str());
+            if (wasInGame) PlayerCancelSpells(addr, out);   // 오브젝트 지움 → playerCancelSpells(object.go:70, 4-a3)
             sessions_.erase(addr);
 
             if (wasInGame && netCode != 0) {
@@ -5365,6 +5572,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     for (int step = 0; step < ticks; ++step) {
         UpdatePlayerMovement(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
         SpellCastByBook(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
+        SpellCastByPlayer(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);   // 4-a3 지속 주문(spellBookReact_4FCB70)
     }
 
     // ── 불려 나온 것들을 움직인다 ──

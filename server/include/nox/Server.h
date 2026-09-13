@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <list>
 #include <map>
 #include <set>
 #include <string>
@@ -1352,6 +1353,28 @@ public:
     size_t MissileCount() const { return missiles_.size(); }
     unsigned long long spellEffectDeferred() const { return spellEffectDeferred_; }
     Target DebugLastAcceptTarget() const { return lastAcceptTarget_; }
+    // 시험용 — 지속 주문 틀(4-a3). createRet: -1 create 없음 · 0/1 돌려줄 값 · updateStopAt: -1 update 없음 · 0 늘 0 · N 번째에 1
+    bool DebugDurNew(const std::string& caster, uint8_t spell, uint32_t dt, int createRet, int updateStopAt, bool withDestroy,
+                     const Target& target, std::vector<OutPacket>& out);
+    size_t DurCount() const { return durSpells_.size(); }
+    bool DebugDurActive(uint8_t spell, const std::string& caster) const { return DurActive(spell, caster); }
+    bool DebugDurCanceled(size_t i) const {
+        size_t k = 0;
+        for (const auto& d : durSpells_) if (k++ == i) return (d.flags88 & 1) != 0;
+        return false;
+    }
+    int DebugDurDestroys() const { return debugDurDestroys_; }
+    bool DebugDurFindByTarget(uint8_t spell, const Target& t) const { return DurFindByTarget(spell, t) != nullptr; }
+    void DebugDurCancelOffensiveFor(const std::string& addr, std::vector<OutPacket>& out) { DurCancelOffensiveFor(addr, out); }
+    void DebugPlayerCancelSpells(const std::string& addr, std::vector<OutPacket>& out) { PlayerCancelSpells(addr, out); }
+    // 시험용 — 게임에서 빠진 것으로(오브젝트 지워짐 · inGame 끔)
+    void DebugLeave(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.inGame = false; }
+    int DebugDurUpdates() const { return debugDurUpdates_; }
+    uint8_t DebugDurSpellAt(size_t i) const {
+        size_t k = 0;
+        for (const auto& d : durSpells_) if (k++ == i) return d.spell;
+        return 0;
+    }
     bool DebugMissileXY(size_t i, float& x, float& y) const {
         if (i >= missiles_.size()) return false;
         x = missiles_[i].posX; y = missiles_[i].posY;
@@ -1601,7 +1624,7 @@ private:
     void SpellCastByBook(uint32_t frame, std::vector<OutPacket>& out);
     void PlayerSpell(Session& s, std::vector<OutPacket>& out);                       // player.go:462
     bool CastSpellByUser(uint8_t spell, int lvl, Session& s, const SpellArg& arg, std::vector<OutPacket>& out);
-    bool SpellAccept(uint8_t spell, Session& s, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);   // spells.go:193
+    bool SpellAccept(uint8_t spell, Session& s, const std::string& obj3, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);   // spells.go:193 · a2 = s · obj3 = 주인
     int SpellCheckClass(const Session& s, uint8_t spell) const;                        // sub_4FD0E0
     int CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) const;      // checkPlrCantCastSpell_4FD150
     int SpellManaTake(Session& s, uint8_t spell, int costKind, std::vector<OutPacket>& out);   // sub_4FCF90
@@ -1643,6 +1666,50 @@ private:
                                 const std::string& mslSelf, uint32_t sflags, float dist, const Session* self) const;   // server/spells.go:360
     void UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out);                                 // updateUnitsCallUpdate 의 투사체 몫
     void DestroyMissile(size_t i, std::vector<OutPacket>& out);                                       // DelayedDelete → netReportDestroyObject
+
+    // ── 묶음 4-a3 지속 주문 틀(server/spells_dur.go · spells_dur.go) ──
+    struct DurSpell;
+    struct DurFns {                                  // New 의 create · update · destroy(없으면 nullptr)
+        int (Server::*create)(DurSpell&, std::vector<OutPacket>&) = nullptr;
+        int (Server::*update)(DurSpell&, std::vector<OutPacket>&) = nullptr;
+        void (Server::*destroy)(DurSpell&, std::vector<OutPacket>&) = nullptr;
+    };
+    struct DurSpell {
+        uint16_t id = 0;                 // +0 NewRaw 가 매긴 번호
+        uint8_t spell = 0;               // +4
+        int level = 0;                   // +8
+        std::string obj12;               // +12 처음 시전자(spellAccept a2)
+        std::string caster;              // +16 Caster16 주인(obj3) — 사람 주소(몬스터 시전은 묶음 7)
+        bool flag20 = false;             // +20 글리프가 건 것(4-e)
+        float posX = 0, posY = 0;        // +28 Pos
+        uint32_t field36 = 0;            // +36
+        Target target;                   // +48 Target48(sa.Obj)
+        float pos2X = 0, pos2Y = 0;      // +52 Pos2(sa.Pos)
+        uint32_t frame60 = 0;            // +60 만든 프레임
+        uint32_t frame64 = 0;            // +64
+        uint32_t frame68 = 0;            // +68 끝 프레임(dt + 만든 프레임 · dt 0 이면 60 과 같아 끝이 없다)
+        int32_t field72 = 0;             // +72
+        uint32_t field80 = 0, field84 = 0;
+        uint32_t flags88 = 0;            // +88 1 = 취소됨(다음 차례에 지운다)
+        DurFns fns;
+        std::vector<DurSpell> sub108;    // +108 하위(연쇄 번개 조각 · 4-d)
+    };
+    bool DurNew(uint8_t spell, const std::string& a2, const std::string& obj3, bool u3Glyph, const SpellArg& arg, int lvl,
+                const DurFns& fns, uint32_t dt, std::vector<OutPacket>& out);                          // spellsDuration.New
+    void DurOnNewSpell(std::vector<OutPacket>& out);                                                    // onNewSpell
+    void DurDestroy(std::list<DurSpell>::iterator it, std::vector<OutPacket>& out);                     // destroyDurSpell
+    void DurCancel(DurSpell& d, std::vector<OutPacket>& out);                                           // CancelSpell(4FE9D0)
+    void DurCancelFor(uint8_t spell, const std::string& obj, std::vector<OutPacket>& out);              // CancelFor(4FEB10)
+    void DurCancelOffensiveFor(const std::string& obj, std::vector<OutPacket>& out);                    // CancelOffensiveFor(4FF310)
+    bool DurActive(uint8_t spell, const std::string& obj) const;                                        // Sub4FEE50
+    void PlayerCancelSpells(const std::string& obj, std::vector<OutPacket>& out);                       // playerCancelSpells_4FEAE0
+    void CancelChannelSpells(const std::string& obj, std::vector<OutPacket>& out);                      // cancelAllSpells_4FEE90
+    const DurSpell* DurFindByTarget(uint8_t spell, const Target& target) const;                         // sub_4FF2D0
+    void NetStopRaySpell(const DurSpell& d, const Target& who, std::vector<OutPacket>& out);            // NetStopRaySpell
+    void SpellCastByPlayer(uint32_t frame, std::vector<OutPacket>& out);                                // spellCastByPlayer(틱)
+    int DebugDurCreate(DurSpell& d, std::vector<OutPacket>& out);                                      // 시험용 create/update/destroy
+    int DebugDurUpdate(DurSpell& d, std::vector<OutPacket>& out);
+    void DebugDurDestroyFn(DurSpell& d, std::vector<OutPacket>& out);
 
     static uint32_t ArmorEquipOf(const Session& s) { return nox::ArmorEquipOf(s.charClass); }
     // 두 쪽(주인 기준)이 적인가 — `server/object.go:1667` IsEnemyTo 를 사람·소환수·맵 몬스터에 맞춘 판.
@@ -1711,7 +1778,7 @@ private:
         bool weapon = false;      // +28 무기 오브젝트가 있나 — 없을 때만 훅 힘
         uint8_t anim = 0;         // 훅(25) 가르기용
     };
-    bool PlayerSetState(Session& s, uint8_t st, uint32_t frame);             // playerSetState_4FA020 중 쓰이는 갈래
+    bool PlayerSetState(Session& s, uint8_t st, uint32_t frame, std::vector<OutPacket>* out = nullptr);   // playerSetState_4FA020 중 쓰이는 갈래(out — 타원 방패 취소 STAT)
     void PlayerInputAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out);   // playerInputAttack_4F9C70
     bool PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out);   // playerAttack_538960
     bool PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<OutPacket>& out);   // 538330
@@ -1885,6 +1952,11 @@ private:
     std::vector<CastEntry> castList_;              // 묶음 4-a 시전 목록 — [0] 이 머리(가장 나중에 넣은 것)
     Target spellTarget_;                           // 묶음 4-a playerinfo +3640(Obj3640) — 시전이 끝난 순간 고른 대상
     std::vector<MissileObj> missiles_;             // 묶음 4-a2 날아가는 오브젝트
+    std::list<DurSpell> durSpells_;                // 묶음 4-a3 지속 주문 목록 — 머리에 넣는다(Add)
+    uint16_t durLastId_ = 0;                       // NewRaw lastID
+    int debugDurCreateRet_ = 0;                    // 시험용 create 가 돌려줄 값
+    int debugDurUpdateStopAt_ = 0;                 // 시험용 update 가 이 횟수째에 1(0 이면 늘 0)
+    int debugDurUpdates_ = 0, debugDurDestroys_ = 0;
     Target lastAcceptTarget_;                      // 시험용 — 마지막 spellAccept 의 대상
     std::string lastAcceptCaster_;
     MagicTypeInfo magicType_;                      // 묶음 4-a2 thing "Magic"

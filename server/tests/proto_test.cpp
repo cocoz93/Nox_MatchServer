@@ -3512,6 +3512,32 @@ void TestSpellFly() {
         Check(srv.DebugLastAcceptTarget().addr == a, "되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다(주인·대상 맞바꿈)");
         Check(srv.DebugStateOf(b) == 16, "되받아친 워리어 상태가 바뀌었다");
     }
+    // ③b 되받아친 주인(b)이 게임에서 빠지면 ud[0] 이 비고, 시전자에게 닿아도 받아들이지 않는다(spellAccept obj3 == nil → false)
+    {
+        nox::Server srv;
+        setup(srv);
+        srv.SetPlayerAnimFrames(40, 6, 1);
+        srv.DebugMoveTo(b, 1150, 1000);
+        srv.DebugSetFacing(b, 128);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        srv.DebugAimAt(a, 1150, 1000);
+        CastAndWait(srv, a, 12, false, ms, out);
+        const unsigned long long before = srv.spellEffectDeferred();
+        float lastX = 0;
+        bool left = false;
+        for (int t = 1; t <= 90 && srv.MissileCount() > 0; ++t) {
+            float x = 0, y = 0;
+            srv.DebugMissileXY(0, x, y);
+            if (!left && lastX > 0 && x < lastX) { srv.DebugLeave(b); left = true; }
+            lastX = x;
+            ms += 34; srv.Tick(ms, out);
+        }
+        Check(left, "되받아침이 안 일어났다(시험 전제)");
+        Check(srv.MissileCount() == 0 && srv.spellEffectDeferred() == before, "주인이 빠진 Magic 을 받아들였다(obj3 없음)");
+    }
     // ④ 벽 — 선 추적이 막히면 새 자리를 되돌리고 벽 법선으로 속도 성분을 맞바꾼다(collideReflect_57B810)
     {
         nox::Server srv;
@@ -3660,6 +3686,210 @@ void TestSpellFly() {
         Check(raiseTick > 0 && raiseTick <= 7, "Magic 이 날아오는데 가만 7틱을 기다려 방패를 올렸다");
     }
     std::printf("  4-a2 — Magic 몸 앞에 생김 · 첫 틱·10틱 닿음 · 지움 31 · 대상 없음 수명 15 · 방패·대검 되받아침 · 벽 튕김 · 길목 튕김 · 조각 추적 · 자신 빼기 · 들어오는 Magic\n");
+}
+
+// ── 묶음 4-a3 — 지속 주문 틀 ─────────────────────────────────────────
+//
+// 정답지: spellsDuration.New(spells_dur.go:88) · spellCastByPlayer(:62) · destroyDurSpell(:39) · server/spells_dur.go CancelFor·CancelSpell
+//   · GAME4.c 4FEAE0(주인 것 전부) · 4FEE90(붙들고 있는 주문) · 4FF2D0(대상으로 찾기) · server/spells.go:458 NetStopRaySpell
+//   효과 함수(create·update·destroy)는 4-b~4-f — 여기서는 시험용 함수로 틀만 잰다
+void TestDurSpells() {
+    const std::string a = "10.4.6.1:4601";
+    const std::string b = "10.4.6.2:4602";
+    auto hasStat = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t spell, uint8_t stat) {
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_STAT) && m[1] == spell && m[5] == stat) return true;
+        return false;
+    };
+    auto rayStop = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t typ, uint8_t val, uint16_t n1, uint16_t n2) {
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 7 && m[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) && m[1] == typ && m[2] == val &&
+                (m[3] | (m[4] << 8)) == n1 && (m[5] | (m[6] << 8)) == n2) return true;
+        return false;
+    };
+    auto anyRay = [](const std::vector<nox::OutPacket>& out, const std::string& to) {
+        for (const auto& m : FlattenTo(out, to)) if (!m.empty() && m[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL)) return true;
+        return false;
+    };
+    auto setup = [&](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        RegAllSpells(srv);
+        for (uint8_t id : { 4, 7, 9, 22, 24, 31, 35, 43, 51, 59, 67, 75 }) srv.SetSpellDef(id, 10, 0x2, {});   // 시험용 정의(깃발만)
+        srv.SetSpellDef(24, 10, 0x20 | 0x4, {});              // 번개는 공격 주문으로(CancelOffensiveFor)
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(b, 1300, 1000);
+        srv.Tick(ms, out);
+    };
+    const nox::Target none;
+
+    // ① dt 5 — 5틱째에 취소(STAT 15) · 다음 틱에 지움 · 주인 상태 13 · dt 0 이면 끝이 없다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, ms, out);
+        Check(srv.DebugDurNew(a, 4, 5, -1, -1, true, none, out), "지속 주문 New 가 false");
+        Check(srv.DurCount() == 1, "New 뒤 목록이 1 이 아니다");
+        int statTick = -1, goneTick = -1;
+        for (int t = 1; t <= 10 && goneTick < 0; ++t) {
+            std::vector<nox::OutPacket> o;
+            ms += 34; srv.Tick(ms, o);
+            if (statTick < 0 && hasStat(o, a, 4, 15)) statTick = t;
+            if (srv.DurCount() == 0) goneTick = t;
+        }
+        Check(statTick == 5, "dt 5 인데 5틱째에 STAT 15 로 취소되지 않았다");
+        Check(goneTick == 6, "취소 다음 틱에 지워지지 않았다");
+        Check(srv.DebugDurDestroys() == 1, "지울 때 destroy 함수가 한 번 불리지 않았다");
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "지운 뒤 주인 상태가 13 이 아니다");
+        Check(srv.DebugDurNew(a, 4, 0, -1, -1, false, none, out), "New(dt 0) 가 false");
+        for (int t = 0; t < 100; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DurCount() == 1, "dt 0 인데 끝났다(68 == 60 이면 끝 없음)");
+    }
+
+    // ② 같은 주문을 또 걸면 앞의 것을 취소(STAT 15)하고 곧바로 지운다(CancelFor → onNewSpell) · 소환끼리도 · 플라스마·연쇄 번개는 안 겹침
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, ms, out);
+        srv.DebugDurNew(a, 4, 0, -1, -1, false, none, out);
+        std::vector<nox::OutPacket> o;
+        srv.DebugDurNew(a, 4, 0, -1, -1, false, none, o);
+        Check(srv.DurCount() == 1 && hasStat(o, a, 4, 15), "같은 주문을 다시 걸었는데 앞의 것이 취소·지워지지 않았다");
+        srv.DebugDurNew(a, 75, 0, -1, -1, false, none, out);
+        std::vector<nox::OutPacket> o2;
+        srv.DebugDurNew(a, 87, 0, -1, -1, false, none, o2);
+        Check(srv.DurCount() == 2 && srv.DebugDurSpellAt(0) == 87 && hasStat(o2, a, 75, 15), "소환 둘 — 앞 소환(75)이 취소되지 않았다");
+        srv.DebugDurNew(b, 87, 0, -1, -1, false, none, out);
+        Check(srv.DurCount() == 3, "남(b)의 소환이 a 의 소환을 취소했다(주인이 같아야)");
+        std::vector<nox::OutPacket> o3;
+        srv.DebugDurNew(a, 59, 0, -1, -1, false, none, o3);
+        std::vector<nox::OutPacket> o4;
+        Check(srv.DebugDurNew(a, 59, 0, -1, -1, false, none, o4), "플라스마 두 번째가 false");
+        Check(srv.DurCount() == 4 && !hasStat(o4, a, 59, 15), "플라스마를 또 걸었는데 새로 만들거나 앞의 것을 취소했다(Sub4FEE50)");
+        Check(srv.DebugDurActive(59, a) && !srv.DebugDurActive(59, b), "Sub4FEE50 이 주인을 안 가린다");
+        std::vector<nox::OutPacket> o5;
+        srv.DebugPlayerCancelSpells(a, o5);
+        Check(!srv.DebugDurActive(59, a), "취소된 플라스마를 Sub4FEE50 이 아직 있다고 본다");
+        std::vector<nox::OutPacket> o6;
+        srv.DebugDurNew(a, 59, 0, -1, -1, false, none, o6);
+        Check(srv.DebugDurActive(59, a) && srv.DebugDurSpellAt(0) == 59, "취소 뒤 플라스마를 다시 걸었는데 새로 안 만들었다");
+    }
+
+    // ③ create 가 0 아니면 취소하고 false · update 가 1 을 돌려준 틱에 취소
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, ms, out);
+        std::vector<nox::OutPacket> o;
+        Check(!srv.DebugDurNew(a, 4, 0, 1, -1, false, none, o), "create 가 1 인데 New 가 true");
+        Check(hasStat(o, a, 4, 15) && srv.DebugDurCanceled(0), "create 실패인데 취소(STAT 15·깃발)가 아니다");
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.DurCount() == 0, "create 실패한 것이 다음 틱에 안 지워졌다");
+        Check(srv.DebugDurNew(a, 4, 0, 0, 3, false, none, out), "create 0 인데 New 가 false");
+        int statTick = -1;
+        for (int t = 1; t <= 6 && statTick < 0; ++t) {
+            std::vector<nox::OutPacket> o2;
+            ms += 34; srv.Tick(ms, o2);
+            if (hasStat(o2, a, 4, 15)) statTick = t;
+        }
+        Check(statTick == 3 && srv.DebugDurUpdates() == 3, "update 가 3번째에 1 인데 그 틱에 취소되지 않았다");
+    }
+
+    // ④ 주인이 죽으면(playerCancelSpells) 취소 · 게임에서 빠지면 틱에서 주인을 비우고 취소 · 연쇄 번개(43)는 STAT 0 · 부활도 취소
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, ms, out);
+        srv.DebugDurNew(a, 43, 0, -1, -1, false, none, out);
+        std::vector<nox::OutPacket> o;
+        srv.Damage(a, 1000, o);
+        Check(hasStat(o, a, 43, 0), "주인이 죽었는데 연쇄 번개가 STAT 0 으로 취소되지 않았다");
+        Check(!srv.DebugDurNew(a, 4, 0, -1, -1, false, none, out), "죽은 주인에게 New 가 true(u2 DEAD)");
+        nox::Server srv2; std::vector<nox::OutPacket> out2; uint32_t ms2 = 0;
+        setup(srv2, ms2, out2);
+        srv2.DebugDurNew(b, 4, 0, -1, -1, false, none, out2);
+        srv2.DebugLeave(b);
+        ms2 += 34; srv2.Tick(ms2, out2);
+        Check(srv2.DebugDurCanceled(0), "주인이 빠졌는데 틱에서 취소되지 않았다");
+        ms2 += 34; srv2.Tick(ms2, out2);
+        Check(srv2.DurCount() == 0, "주인이 빠진 것이 지워지지 않았다");
+    }
+
+    // ⑤ 걷기 입력이면 붙들고 있는 주문(24 등)만 취소 · 자연의 힘(31) 중이면 걷기 입력을 안 받는다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, ms, out);
+        srv.DebugDurNew(a, 24, 0, -1, -1, false, none, out);
+        srv.DebugDurNew(a, 4, 0, -1, -1, false, none, out);
+        std::vector<uint8_t> mv = InputPacket(2);
+        mv[nox::kWireHeaderSize + 1] = 5;
+        mv.push_back(0);
+        std::vector<nox::OutPacket> o;
+        srv.OnPacket(a, mv.data(), mv.size(), o);
+        ms += 34; srv.Tick(ms, o);
+        Check(hasStat(o, a, 24, 15) && !hasStat(o, a, 4, 15), "걷기 입력에 번개(24)만 취소되지 않았다(cancelAllSpells_4FEE90)");
+        nox::Server srv2; std::vector<nox::OutPacket> out2; uint32_t ms2 = 0;
+        setup(srv2, ms2, out2);
+        srv2.DebugDurNew(a, 31, 0, -1, -1, false, none, out2);
+        const int x0 = srv2.XOf(a);
+        for (int t = 0; t < 5; ++t) {
+            srv2.OnPacket(a, mv.data(), mv.size(), out2);
+            ms2 += 34; srv2.Tick(ms2, out2);
+        }
+        Check(srv2.XOf(a) == x0 && srv2.DebugStateOf(a) != nox::kPlayerStateWalk, "자연의 힘 중인데 걸었다(방향 입력만)");
+        Check(srv2.DurCount() == 1, "자연의 힘 중 걷기 입력이 주문을 취소했다");
+    }
+
+    // ⑥ 공격 주문을 말하거나 맨손으로 치면 타원 방패(67) 취소 · CancelOffensiveFor 는 공격 주문만
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, ms, out);
+        srv.DebugDurNew(a, 67, 0, -1, -1, false, none, out);
+        std::vector<nox::OutPacket> o;
+        CastAndWait(srv, a, 27, false, ms, o);
+        Check(hasStat(o, a, 67, 15), "파이어볼(공격)을 말했는데 타원 방패가 취소되지 않았다");
+        nox::Server srv2; std::vector<nox::OutPacket> out2; uint32_t ms2 = 0;
+        setup(srv2, ms2, out2);
+        srv2.DebugSetWeapon(a, 0);
+        for (int anim : { 23, 24, 25 }) srv2.SetPlayerAnimFrames(anim, 8, 0);   // 주먹 8칸(thing.bin)
+        srv2.DebugDurNew(a, 67, 0, -1, -1, false, none, out2);
+        { std::vector<nox::OutPacket> o0; ms2 += 34; srv2.Tick(ms2, o0); Check(!hasStat(o0, a, 67, 15), "치지 않았는데 타원 방패가 취소됐다"); }
+        std::vector<nox::OutPacket> o2;
+        auto click = InputPacket(6);
+        srv2.OnPacket(a, click.data(), click.size(), o2);
+        ms2 += 34; srv2.Tick(ms2, o2);
+        // ⚠ 정답지 그대로 — 같은 틱 spellCastByPlayer 가 취소된 방패를 지우며 상태 13 으로 돌린다(playerSetState 에 1→13 막는 문 없음)
+        Check(srv2.DebugStateOf(a) == nox::kPlayerStateIdle, "타원 방패를 지운 틱에 주인 상태가 13 이 아니다(destroyDurSpell)");
+        Check(hasStat(o2, a, 67, 15), "맨손으로 쳤는데 타원 방패가 취소되지 않았다");
+        nox::Server srv3; std::vector<nox::OutPacket> out3; uint32_t ms3 = 0;
+        setup(srv3, ms3, out3);
+        srv3.DebugDurNew(a, 24, 0, -1, -1, false, none, out3);
+        srv3.DebugDurNew(a, 4, 0, -1, -1, false, none, out3);
+        std::vector<nox::OutPacket> o3;
+        srv3.DebugDurCancelOffensiveFor(a, o3);
+        Check(hasStat(o3, a, 24, 15) && !hasStat(o3, a, 4, 15), "CancelOffensiveFor 가 공격 주문만 취소하지 않았다");
+    }
+
+    // ⑦ 대상 있는 것을 취소하면 `9e` 광선 멈춤 — 번개 11 · 마나 흡수 12 · 매혹 9 · 플라스마 8(주인 방향) · 큰 치유 13(받는 쪽이 앞 · 자기면 없음)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, ms, out);
+        srv.DebugSetFacing(a, 77);
+        const nox::Target tb{ b, -1 };
+        struct { uint8_t spell, typ, val; bool swap; } rows[] = { { 24, 11, 3, false }, { 22, 12, 3, false }, { 9, 9, 3, false },
+                                                                  { 59, 8, 77, false }, { 35, 13, 3, true } };
+        for (const auto& r : rows) {
+            srv.DebugDurNew(a, r.spell, 0, -1, -1, false, tb, out);
+            Check(srv.DebugDurFindByTarget(r.spell, tb), "대상으로 찾기(sub_4FF2D0)가 못 찾았다");
+            std::vector<nox::OutPacket> o;
+            srv.DebugPlayerCancelSpells(a, o);
+            const uint16_t n1 = r.swap ? 729 : 728, n2 = r.swap ? 728 : 729;
+            Check(rayStop(o, a, r.typ, r.val, n1, n2) && rayStop(o, b, r.typ, r.val, n1, n2), "취소했는데 `9e` 광선 멈춤이 모두에게 안 갔다");
+            Check(!srv.DebugDurFindByTarget(r.spell, tb), "취소된 것을 대상으로 찾았다");
+            ms += 34; srv.Tick(ms, out);
+        }
+        srv.DebugDurNew(a, 35, 0, -1, -1, false, nox::Target{ a, -1 }, out);
+        srv.DebugDurNew(a, 4, 0, -1, -1, false, tb, out);
+        std::vector<nox::OutPacket> o;
+        srv.DebugPlayerCancelSpells(a, o);
+        Check(!anyRay(o, a), "자기에게 건 큰 치유 · 광선 아닌 주문에 `9e` 를 보냈다");
+    }
+    std::printf("  4-a3 — dt 끝·dt 0 · 같은 주문·소환 교체 · 플라스마 안 겹침 · create/update 취소 · 죽음·빠짐 · 걷기·자연의 힘 · 타원 방패 · 광선 멈춤\n");
 }
 
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
@@ -5713,6 +5943,7 @@ int main() {
     TestKillArmorCollide();
     TestCastPipeline();
     TestSpellFly();
+    TestDurSpells();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
