@@ -2840,10 +2840,39 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     //   (`--item-at-spawn` 과 같은 논리).
     //   ±300 은 화면 안(±640)이지만 판정용 사각형(--creature-aoi-half 120 → 나감 ±144) 밖이다 —
     //   대조군(시야 판정 끔)은 계속 보이고, 실험군만 사라져야 한다.
+    // 진단 둘이 함께 쓰는 「첫 사람이 들어온 프레임」.
+    {
+        for (const auto& kv : sessions_) if (kv.second.inGame) { if (firstInGameFrame_ == 0) firstInGameFrame_ = frame_; break; }
+    }
+    // ★ 진단 — 첫 사람이 들어오고 N 틱 뒤 **그 사람 소유 임프**를 사람 자리에 만들어 고정한다
+    //   (`--debug-own-pet N`, 2026-09-13).
+    //   왜 — 친구 알림의 화면 효과는 **커서 색**이다(친구면 파랑 · 적이면 빨강, `video_cgo.go:616`).
+    //   퀘스트엔 소환수가 없고, 움직이는 소환수에 커서를 맞추기 어렵다. 그래서 사람 자리에 붙여 두고
+    //   커서를 화면 한가운데(=사람 자리)에 둔다. 소환 조작(A키)을 빼 버린다(`--item-at-spawn` 과 같은 논리).
+    if (debugOwnPetAfter_ > 0 && debugOwnPetNetCode_ == 0 && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugOwnPetAfter_) {
+        for (const auto& kv : sessions_) {
+            if (!kv.second.inGame) continue;
+            Creature k;
+            k.owner = kv.second.addr;
+            k.type = SummonType(87);   // SUMMON_IMP → Imp
+            k.netCode = nextShotNetCode_++;
+            if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+            // ⚠ 사람 자리에 겹치면 화면에서 구분이 안 되고 커서도 안 걸렸다(09-13) — 오른쪽 +80 에 떨어뜨린다.
+            k.x = kv.second.x + 80;
+            k.y = kv.second.y;
+            k.health = static_cast<uint16_t>(TuningFor(k.type).health);
+            pets_.push_back(k);
+            debugOwnPetNetCode_ = k.netCode;
+            std::printf("[진단] 프레임 %u 에 %s 소유 임프(번호 %u)를 사람(%d,%d) 오른쪽 +80 에 고정\n",
+                        frame_, kv.second.addr.c_str(), static_cast<unsigned>(k.netCode), kv.second.x, kv.second.y);
+            std::fflush(stdout);
+            break;
+        }
+    }
     if (debugAwayAfter_ > 0 && !debugAwayDone_) {
         const Session* who = nullptr;
         for (const auto& kv : sessions_) if (kv.second.inGame) { who = &kv.second; break; }
-        if (who && firstInGameFrame_ == 0) firstInGameFrame_ = frame_;
         if (who && frame_ >= firstInGameFrame_ + debugAwayAfter_) {
             int side = 1;
             for (auto& k : pets_) { k.x = who->x + 300.0 * side; k.y = who->y; side = -side; }
@@ -2858,6 +2887,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     // 부른 사람 편이다 — **부른 사람은 안 때린다.** 그게 없으면 부르자마자 자기가 맞는다.
     for (int step = 0; step < ticks && !pets_.empty(); ++step) {
         for (auto& k : pets_) {
+            if (debugOwnPetNetCode_ != 0 && k.netCode == debugOwnPetNetCode_) continue;   // 진단 임프 — 고정
             // 가장 가까운 적을 고른다 — **남의 소환수도 문다.**
             // 아주 멀리까지 보게 해서 「가장 가까운 적을 쫓는다」가 되게 한다.
             const Target t = NearestTarget(k.owner, k.x, k.y, 1e9);
@@ -3543,6 +3573,50 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             bool alive = false;
             for (const auto& k : pets_) if (k.netCode == *it) { alive = true; break; }
             it = alive ? std::next(it) : s.visibleCreatures.erase(it);
+        }
+
+        // ★ **친구 알림** (2026-09-13 · 기본 꺼짐 — `--friends`).
+        //   정답지 분배자(`GAME4_1.c:4488`)는 오브젝트의 +140(대기)·+144(친구) 비트를 보고
+        //   `OBJECT_FRIEND_ADD(52)` / `REMOVE(53)` 를 **Packet1** 로 보낸다(`GAME3_2.c:4831` →
+        //   `GAME3_3.c:1742` → `netImportant_4E5770` 이 [0xCC][순번][길이][본문] 로 싣는다 = 내 EmitSeq).
+        //   친구 = **적이 아닌 것**(`server/object.go:1575` — 함수 이름 「HostileMimic」은 동작과 반대다).
+        //   클라는 이 목록으로 **커서·선택 원 색**을 가른다(`video_cgo.go:616` 친구·물건 파랑 / 그 외 빨강).
+        //   ⚠⚠ **부분 구현이다** — 적대 판정(`server/object.go:1667` IsEnemyTo, 규칙 20개) 중
+        //     ⑬ 주인 같음 · ⑭ 같은 팀 · ⑱ 팀 있으면 적 · ⑳ 그 외 적 만 넣었다.
+        //     매혹(⑪)·관전(⑫)·몬스터 종류와 SubClass(⑥~⑩)·생성기(④⑤⑮⑯)·도깨비불(⑰)은 묶음 4·6·8 에서 채운다.
+        if (friendsOn_) {
+            auto sendFriend = [&](uint16_t nc, bool friendly) {
+                const bool sent = s.friendsSent.count(nc) != 0;
+                if (friendly == sent) return;   // 바뀔 때만 보낸다
+                const uint8_t msg[3] = {
+                    static_cast<uint8_t>(friendly ? Op::OBJECT_FRIEND_ADD : Op::OBJECT_FRIEND_REMOVE),
+                    static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
+                EmitSeq(s, msg, sizeof(msg), out);
+                if (friendly) s.friendsSent.insert(nc); else s.friendsSent.erase(nc);
+            };
+            for (const auto& k : pets_) {
+                if (creatureAoiHalfX_ > 0.0 && s.visibleCreatures.count(k.netCode) == 0) continue;
+                bool friendly = false;
+                if (!k.owner.empty() && k.owner == s.addr) {
+                    friendly = true;                                        // ⑬ 자기 소환수
+                } else if (!k.owner.empty() && s.team != 0) {
+                    auto oi = sessions_.find(k.owner);
+                    if (oi != sessions_.end() && oi->second.team == s.team) friendly = true;   // ⑭ 같은 팀
+                }
+                sendFriend(k.netCode, friendly);                            // 그 외 ⑱⑳ 적
+            }
+            for (const auto& kv2 : sessions_) {
+                const Session& o = kv2.second;
+                if (!o.inGame || o.addr == s.addr) continue;
+                sendFriend(o.netCode, s.team != 0 && o.team == s.team);    // ⑭ 같은 팀 · 그 외 ⑱⑳ 적
+            }
+            // 사라진 것(죽은 크리처·나간 사람)은 목록에서 지운다 — 번호가 다시 쓰일 때 섞이지 않게.
+            for (auto it = s.friendsSent.begin(); it != s.friendsSent.end();) {
+                bool alive = false;
+                for (const auto& k : pets_) if (k.netCode == *it) { alive = true; break; }
+                if (!alive) for (const auto& kv2 : sessions_) if (kv2.second.inGame && kv2.second.netCode == *it) { alive = true; break; }
+                it = alive ? std::next(it) : s.friendsSent.erase(it);
+            }
         }
 
         // ── 맵 정적 오브젝트 — **시야 반경 안만, 가까운 순 상한** (독립 서버 P4-b) ──

@@ -342,6 +342,10 @@ struct Session {
     // 사람 쪽에 든다. 보이다가 빠지면 `OBJECT_OUT_OF_SIGHT` 를 보낸다.
     std::set<uint16_t> visibleCreatures;
 
+    // 이 사람에게 **친구로 알린**(OBJECT_FRIEND_ADD 를 보낸) 번호 (2026-09-13, `--friends` 일 때만).
+    // 정답지는 오브젝트 쪽 +144 비트로 든다. 바뀔 때만 ADD/REMOVE 를 보내려고 들고 있다.
+    std::set<uint16_t> friendsSent;
+
     // 스트림마다 따로 센다. 핑·퐁이 스트림 1 을 쓰는 것이 실측으로 확인됐다.
     StreamSeq seq[128];
 };
@@ -707,6 +711,10 @@ public:
     void SetCreatureAoi(double halfX, double halfY) { creatureAoiHalfX_ = halfX; creatureAoiHalfY_ = halfY; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 크리처를 좌우 ±300 으로 한 번 옮긴다(사라짐 판정용). 0 이면 끔.
     void SetDebugCreatureAwayAfter(uint32_t ticks) { debugAwayAfter_ = ticks; }
+    // 친구 알림(OBJECT_FRIEND_ADD/REMOVE)을 켠다. 기본 꺼짐 — 부분 구현이라(Server.cpp 친구 알림 주석).
+    void SetFriends(bool on) { friendsOn_ = on; }
+    // 진단 — 첫 사람이 들어오고 N 틱 뒤 **그 사람 소유 임프**를 사람 자리에 만들어 **고정**한다(친구 판정용). 0 이면 끔.
+    void SetDebugOwnPetAfter(uint32_t ticks) { debugOwnPetAfter_ = ticks; }
 
     // ── 독립 모드 (P5-c-2) ──────────────────────
     //
@@ -1420,6 +1428,9 @@ private:
     uint32_t debugAwayAfter_ = 0;     // 진단 --creature-away-after (0 끔)
     uint32_t firstInGameFrame_ = 0;
     bool debugAwayDone_ = false;
+    bool friendsOn_ = false;
+    uint32_t debugOwnPetAfter_ = 0;   // 진단 --debug-own-pet (0 끔)
+    uint16_t debugOwnPetNetCode_ = 0; // 만든 임프의 번호 — 이동 루프가 이것만 건너뛴다(고정)
     bool standalone_ = false;
     std::string saMapName_;
     uint32_t saMapCrc_ = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
