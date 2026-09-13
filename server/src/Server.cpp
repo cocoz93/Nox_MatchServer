@@ -3896,8 +3896,8 @@ void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& o
 
 // ── 알림 (묶음 3-d) ───────────────────────────────────────────────
 //
-// diePlayer_54D2B0(`GAME5.c:4974~5057`) — 온라인(게임 깃발 0x2000 · 이 서버는 늘 온라인)이면 모두에게 `a9 0e` 11바이트.
-//   <죽인 사람 번호2><도운 사람 번호2><죽은 사람 번호2><종류2><갈래1> · Kind1(틱 목록, `GAME3_2.c:5189~5197`) = 비신뢰
+// diePlayer_54D2B0(`GAME5.c:4971~5057`) — 온라인(게임 깃발 0x2000 · 이 서버는 늘 온라인)이면 모두에게 `a9 0e` 11바이트.
+//   <죽인 사람 번호2><도운 사람 번호2><죽은 사람 번호2><종류2><갈래1> · Kind1(틱 목록, `GAME3_2.c:5190~5198`) = 비신뢰
 //   클라(sub_495210 · sub_495500)는 화면 위 가운데에 「죽인이 +도운이 [그림] 죽은이」를 90틱 띄운다 —
 //   갈래 1 이면 그 종류의 그림(pretty_image) · 2 면 피해 종류별 주문 그림 · 그 밖은 기본 그림(주문 15)
 void Server::SendKillInform(Session& s, std::vector<OutPacket>& out) {
@@ -3929,7 +3929,7 @@ void Server::SendKillInform(Session& s, std::vector<OutPacket>& out) {
     std::printf("[죽음 알림] 프레임 %u 죽은 %u · 죽인 %u · 종류 %u · 갈래 %u\n", frame_, s.netCode, killer, type, kind);
     std::fflush(stdout);
     s.killKind = 0;                                        // +304 = 0
-    // ⚠ 갈래 2·종류 2 면 죽인 사람의 능력 1(광전사 돌진) 쉬는 시간을 지운다(sub_4FC0B0 · `GAME5.c:5052`) → 묶음 7
+    // ⚠ 갈래 2·종류 2 면 죽인 사람의 능력 1(광전사 돌진) 쉬는 시간을 지운다(sub_4FC0B0 · `GAME5.c:5052~5053`) → 묶음 7
 }
 
 // playerReportAnything_4D9900(`GAME3_2.c:4855`) — 자기 몸 갱신(`GAME4_1.c:4428`)마다 「알린 값과 다른 것」만 본인에게 보낸다.
