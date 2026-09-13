@@ -3001,6 +3001,142 @@ bool Server::CircleVsWalls(double bx, double by, double r, double mass,
     return any;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// 오브젝트끼리 충돌 — 정답지 이식 (2026-09-13 묶음 2-c)
+// ════════════════════════════════════════════════════════════════════════════
+namespace {
+constexpr uint32_t kClsMonster = 0x2, kClsPlayer = 0x4, kClsDoor = 0x80, kClsElevator = 0x4000, kClsShaft = 0x8000;
+constexpr uint32_t kFlBelow = 0x1, kFlAllowOverlap = 0x8, kFlShort = 0x10, kFlDestroyed = 0x20, kFlNoCollide = 0x40,
+                   kFlNoPushChars = 0x2000, kFlAirborne = 0x4000, kFlFalling = 0x20000;
+constexpr float kBodyPush = 40.0f;   // `dword_587000_292488` = 40.0 (데이터 덩어리)
+// 딱 겹쳤을 때 고르는 방향 넷 — `0x587000+292784` · `+289928` (둘 다 ±0.1 축 벡터)
+constexpr float kNudge[4][2] = { { 0.1f, 0.0f }, { -0.1f, 0.0f }, { 0.0f, 0.1f }, { 0.0f, -0.1f } };
+
+// 몸의 충돌 사각형(+232~+244, `GAME3_3.c:2508` objectUnkUpdateCoords) — 프레임 시작 자리 기준
+inline void BodyRect(const Server::PhysBody& b, double x, double y,
+                     double& x0, double& y0, double& x1, double& y1) {
+    if (b.shape == 3) {
+        x0 = x + b.boxLB; y0 = y + b.boxLB; x1 = x + b.boxRT; y1 = y + b.boxRT;
+    } else {
+        x0 = x - b.r; y0 = y - b.r; x1 = x + b.r; y1 = y + b.r;
+    }
+}
+
+// sub_54A990 — 원(중심 p, 반지름 r)과 상자(자리 bx,by)의 겹침. 반환 ≥ 0 이면 닿음, n 은 상자→원 방향.
+//   상자 꼭짓점 넷: A (LT,LB) · B (LB2,LT2) · C (RT,RB) · D (RB2,RT2) — LT2=LT, LB2=LB, RT2=RT, RB2=RB.
+double BoxOverlap(float px, float py, float r, const Server::PhysBody& b, float bx, float by, float& nx, float& ny) {
+    const float ax = b.boxLT + bx, ay = b.boxLB + by;
+    const float cbx = b.boxLB + bx, cby = b.boxLT + by;
+    const float ccx = b.boxRT + bx, ccy = b.boxRB + by;
+    const float cdx = b.boxRB + bx, cdy = b.boxRT + by;
+    const float v31 = (ay - ax + px - py) * kDiag;
+    const float v29 = (cby - cbx + px - py) * kDiag;
+    const float v17 = (ccy + ccx - px - py) * kDiag;
+    const float v18 = (ay + ax - px - py) * kDiag;
+    int k = 0;
+    if (v31 <= 0.0f) { if (v29 < 0.0f) k = 2; } else { k = 1; }
+    if (v17 >= 0.0f) { if (v18 > 0.0f) k |= 4; } else { k |= 8; }
+    auto corner = [&](float qx, float qy) -> double {
+        const float dx = px - qx, dy = py - qy;
+        float len = std::sqrt(dy * dy + dx * dx);
+        if (len == 0.0f) len = 0.1f;
+        const double res = r - len;
+        if (res >= 0.0) { nx = dx / len; ny = dy / len; }
+        return res;
+    };
+    switch (k) {
+        case 0: {
+            float dx = px - bx, dy = py - by;
+            if (dx == 0.0f && dy == 0.0f) { const int i = std::rand() % 4; dx = kNudge[i][0]; dy = kNudge[i][1]; }
+            double len = std::sqrt(dy * dy + dx * dx);
+            if (len == 0.0) len = 0.1;
+            nx = static_cast<float>(dx / len); ny = static_cast<float>(dy / len);
+            return len;
+        }
+        case 1: nx = kDiag;  ny = -kDiag; return r - v31;
+        case 2: nx = -kDiag; ny = kDiag;  return r + v29;
+        case 4: nx = -kDiag; ny = -kDiag; return r - v18;
+        case 5: return corner(ax, ay);
+        case 6: return corner(cbx, cby);
+        case 8: nx = kDiag;  ny = kDiag;  return r + v17;
+        case 9: return corner(ccx, ccy);
+        case 10: return corner(cdx, cdy);
+        default: return -1.0;
+    }
+}
+}  // namespace
+
+// sub_548220(거르기 sub_548360 + 모양별 나누기) → 원 대 원(550D00) · 원 대 상자(54AD50, a3=0).
+//   ⚠ 뺀 것: 오각형·염력손·검은가루 예외 · Trigger 종류 예외 · NO_COLLIDE_OWNER 같은 편 · 문(5488B0/551250)·
+//     승강기(551AE0/551C40)·상자 대 상자(550F80) · 충돌 기록(collSysAddCollision → 콜백 548740) — 계기가 오는 묶음에서.
+void Server::BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, double by, double vx, double vy,
+                        const PhysBody& a2, double ox, double oy, double obx, double oby, double ovx, double ovy,
+                        double& ax, double& ay) const {
+    // 거르기 (sub_548360 에서 옮긴 것만)
+    if ((a1.flags & (kFlDestroyed | kFlNoCollide)) || (a2.flags & (kFlDestroyed | kFlNoCollide))) return;
+    if ((a1.cls & kClsDoor) && (a2.flags & (kFlBelow | kFlAllowOverlap))) return;
+    if ((a2.cls & kClsDoor) && (a1.flags & (kFlBelow | kFlAllowOverlap))) return;
+    if ((a1.flags & kFlAllowOverlap) && (a2.flags & kFlAllowOverlap)) return;
+    if (((a1.flags & (kFlBelow | kFlShort)) && (a2.flags & (kFlAirborne | kFlFalling))) ||
+        ((a2.flags & (kFlBelow | kFlShort)) && (a1.flags & (kFlAirborne | kFlFalling)))) return;
+    if ((a1.cls & kClsDoor) && (a2.cls & kClsDoor)) return;
+    if ((a1.cls & kClsElevator) && (a2.cls & kClsElevator)) return;
+    if ((a1.cls & kClsShaft) && (a2.cls & kClsShaft)) return;
+    if ((a1.cls | a2.cls) & (kClsDoor | kClsElevator | kClsShaft)) return;   // ⚠ 문·승강기 충돌은 묶음 9
+    if (a1.shape != 2) return;   // 사람·소환수는 원이다
+
+    const bool losPair = (a1.cls & 0x2204) && (a2.cls & 0x2204);
+    if (a2.shape == 2) {
+        // ── 원 대 원 (`GAME5.c:7183`) ──
+        float dx = static_cast<float>(ox - nx), dy = static_cast<float>(oy - ny);
+        if (dx == 0.0f && dy == 0.0f) { const int i = std::rand() % 4; dx = kNudge[i][0]; dy = kNudge[i][1]; }
+        float len = std::sqrt(dy * dy + dx * dx);
+        if (len == 0.0f) len = 0.0099999998f;
+        const float overlap = a1.r + a2.r - len;
+        if (overlap <= 0.0f) return;
+        if (losPair && !MapTraceRay(static_cast<float>(bx), static_cast<float>(by),
+                                    static_cast<float>(obx), static_cast<float>(oby), 0)) return;
+        bool push = !((a1.flags & kFlAllowOverlap) || (a2.flags & kFlAllowOverlap));
+        if ((!(a1.cls & 6) || (a2.flags & kFlNoPushChars) != kFlNoPushChars) && push) {
+            const double unx = dx / len, uny = dy / len;
+            const double dvx = vx - ovx, dvy = vy - ovy;
+            const double mmin = std::min(a1.mass, a2.mass);
+            const double k = kBodyPush * overlap;
+            double px = -(k * unx), py = -(k * uny);
+            if (!(a1.cls & 6) || !(a2.cls & 6)) {
+                const double t = -uny * dvx + dvy * unx;
+                px -= t * -uny * mmin * 0.69999999;
+                py -= t * mmin * unx * 0.69999999;
+            }
+            ax += px / a1.mass;
+            ay += py / a1.mass;
+        }
+        return;
+    }
+    if (a2.shape == 3) {
+        // ── 원 대 상자 (`GAME5.c:3465`, a3 = 0 — 원 쪽을 민다) ──
+        float unx = 0, uny = 0;
+        const double over = BoxOverlap(static_cast<float>(nx), static_cast<float>(ny), a1.r, a2,
+                                       static_cast<float>(ox), static_cast<float>(oy), unx, uny);
+        if (over < 0.0) return;
+        if (losPair && !MapTraceRay(static_cast<float>(bx), static_cast<float>(by),
+                                    static_cast<float>(obx), static_cast<float>(oby), 0)) return;
+        const bool push = !((a1.flags & kFlAllowOverlap) || (a2.flags & kFlAllowOverlap));
+        if ((!(a1.cls & 6) || !(a2.flags & kFlNoPushChars)) && push) {
+            const double k = kBodyPush * over;
+            const double dvx = vx - ovx, dvy = vy - ovy;
+            const double tx = -uny, ty = unx;
+            const double t = tx * dvx + dvy * unx;
+            const double mmin = std::min(a1.mass, a2.mass);
+            const double v16 = mmin * t;
+            const double px = unx * k - v16 * tx * 0.69999999;
+            const double py = uny * k - v16 * ty * 0.69999999;
+            ax += px / a1.mass;
+            ay += py / a1.mass;
+        }
+    }
+}
+
 // 진단 — (x,y) 에서 가장 가까운 벽 선분까지 거리(±3칸 안). 벽 없으면 −1.
 double Server::DebugWallDistance(double x, double y, int* outGx, int* outGy, int* outDir) const {
     double best = -1.0;
@@ -3051,6 +3187,11 @@ static uint8_t PlayerAnimOf(const Session& s) {
 //     반지름 kBodyRadius(thing.bin NewPlayer EXTENT 10) · 질량 kPlayerMass(MASS 1).
 //   ⚠ 죽었거나(정답지 상태 3·4 는 ImplB 를 건너뜀) 관전(Field3680&3)이면 힘도 상태 변경도 없다 — 속도만 잦아든다.
 void Server::UpdatePlayerMovement() {
+    // ★ 2026-09-13 묶음 2-c — 두 단계로 나눴다. 정답지는 한 걸음(0.2)마다 **움직이는 모두의 충돌을 먼저** 돌리고
+    //   (`GAME4_1.c:3195` sub_5481C0 루프) **그다음 모두를 적분**한다(`:3200` 루프). 사람 하나씩 5걸음을 다 돌리면
+    //   뒤에 도는 사람이 앞사람의 **끝난 자리**와 부딪혀 순서가 결과를 바꾼다.
+    struct Mover { Session* s; double fx, fy, bx, by, ax, ay; bool collide; };
+    std::vector<Mover> movers;
     for (auto& kv : sessions_) {
         Session& s = kv.second;
         if (!s.inGame) continue;
@@ -3081,16 +3222,54 @@ void Server::UpdatePlayerMovement() {
         if (dead) s.moveState = kPlayerStateIdle;
         s.inputThisTick = s.moveInputThisTick = false;
 
-        // ③ 적분 — 걸음마다 먼저 벽에 밀리고(sub_5481C0 → CircleVsWalls, 가속 +96 은 걸음마다 0 부터),
-        //   (밀림 + 힘) 으로 속도를 적분한 뒤, 새 자리까지 선이 벽을 안 가로지를 때만 옮긴다(선 추적 Flag1).
-        //   ★ 2026-09-13 묶음 2-b — 옛 「칸 네모 + 축 가르기」 대역을 걷어냈다.
-        //   사각형 칸 범위는 **프레임 시작 자리**로 정한다(정답지 +232 는 +56 PosVec 에서, +56 은 프레임 끝에만 바뀜).
-        const double baseX = s.posX, baseY = s.posY;
-        for (int i = 0; i < kMoveSubSteps; ++i) {
-            double ax = 0.0, ay = 0.0;
-            CircleVsWalls(baseX, baseY, kBodyRadius, kPlayerMass, s.posX, s.posY, s.velX, s.velY, ax, ay);
-            s.velX += ((ax + fx) - s.velX * kPlayerDamping) * kMoveSubStep;
-            s.velY += ((ay + fy) - s.velY * kPlayerDamping) * kMoveSubStep;
+        // ⚠ 죽으면 정답지는 ALLOW_OVERLAP 을 켜고(상태 3→4, `object_update.go:247`) 관전은 NO_COLLIDE 를 켠다
+        //   (`player.go:156`) — 둘 다 벽·오브젝트 충돌을 안 받는다(sub_5481C0 의 0x60 · 0x8 검사).
+        movers.push_back({ &s, fx, fy, s.posX, s.posY, 0.0, 0.0, !dead && !s.observer });
+    }
+
+    // ③ 적분 — 걸음(0.2)마다 [모두 충돌] → [모두 적분]. 사각형 칸 범위는 **프레임 시작 자리**(정답지 +232 는 +56 PosVec).
+    PhysBody playerBody;
+    playerBody.shape = 2; playerBody.r = static_cast<float>(kBodyRadius);
+    playerBody.cls = kClsPlayer; playerBody.flags = 0; playerBody.mass = static_cast<float>(kPlayerMass);   // NewPlayer FLAGS NULL
+    for (int i = 0; i < kMoveSubSteps; ++i) {
+        for (auto& m : movers) {
+            Session& s = *m.s;
+            m.ax = m.ay = 0.0;
+            if (!m.collide) continue;
+            double qx0, qy0, qx1, qy1;
+            BodyRect(playerBody, m.bx, m.by, qx0, qy0, qx1, qy1);
+            // 오브젝트 먼저(getUnitsInRect → sub_548220) — 상대 사각형과 겹칠 때만(`server/map.go:302`)
+            for (const auto& o : obstacles_) {
+                double ox0, oy0, ox1, oy1;
+                BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
+                if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
+                BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
+                           o, o.x, o.y, o.x, o.y, 0.0, 0.0, m.ax, m.ay);
+            }
+            for (const auto& m2 : movers) {
+                if (m2.s == m.s || !m2.collide) continue;
+                double ox0, oy0, ox1, oy1;
+                BodyRect(playerBody, m2.bx, m2.by, ox0, oy0, ox1, oy1);
+                if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
+                BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
+                           playerBody, m2.s->posX, m2.s->posY, m2.bx, m2.by, m2.s->velX, m2.s->velY, m.ax, m.ay);
+            }
+            for (const auto& k : pets_) {
+                auto tb = typeBodies_.find(k.type);
+                if (tb == typeBodies_.end()) continue;   // 몸을 모르는 종류는 안 부딪힌다(지어내지 않는다)
+                double ox0, oy0, ox1, oy1;
+                BodyRect(tb->second, k.x, k.y, ox0, oy0, ox1, oy1);
+                if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
+                BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
+                           tb->second, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay);
+            }
+            // 벽 — 오브젝트 다음(sub_5481C0 순서)
+            CircleVsWalls(m.bx, m.by, kBodyRadius, kPlayerMass, s.posX, s.posY, s.velX, s.velY, m.ax, m.ay);
+        }
+        for (auto& m : movers) {
+            Session& s = *m.s;
+            s.velX += ((m.ax + m.fx) - s.velX * kPlayerDamping) * kMoveSubStep;
+            s.velY += ((m.ay + m.fy) - s.velY * kPlayerDamping) * kMoveSubStep;
             double nx = s.posX + s.velX * kMoveSubStep;
             double ny = s.posY + s.velY * kMoveSubStep;
             if (nx < 0) nx = 0;
@@ -3102,8 +3281,10 @@ void Server::UpdatePlayerMovement() {
                 s.posX = nx; s.posY = ny;
             }
         }
-        s.x = static_cast<int>(std::lround(s.posX));
-        s.y = static_cast<int>(std::lround(s.posY));
+    }
+    for (auto& m : movers) {
+        m.s->x = static_cast<int>(std::lround(m.s->posX));
+        m.s->y = static_cast<int>(std::lround(m.s->posY));
     }
 }
 

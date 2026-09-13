@@ -278,7 +278,18 @@ void ParseClasses(const std::string& val, ThingInfo& t) {
 // "CIRCLE r" 만 잡는다 — BOX·CENTER·NULL 은 반지름 0
 void ParseExtent(const std::string& val, ThingInfo& t) {
     const std::string v = Trim(val);
+    // ★ 2026-09-13 묶음 2-c — 상자도 담는다(`server/object_type.go:286` things.Box → Shape.Box W·H).
+    if (Upper(v.substr(0, 3)) == "BOX") {
+        t.shapeKind = 3;
+        double w = 0, h = 0;
+        std::sscanf(v.c_str() + 3, "%lf %lf", &w, &h);
+        t.boxW = static_cast<float>(w);
+        t.boxH = static_cast<float>(h);
+        return;
+    }
+    if (Upper(v.substr(0, 6)) == "CENTER") { t.shapeKind = 1; return; }
     if (Upper(v.substr(0, 6)) != "CIRCLE") return;
+    t.shapeKind = 2;
     t.radius = static_cast<float>(std::atof(v.c_str() + 6));
 }
 
@@ -340,6 +351,14 @@ bool ReadThing(Cur& c, ThingInfo& t) {
                 ParseClasses(val, t);
             } else if (key == "EXTENT") {
                 ParseExtent(val, t);
+            } else if (key == "FLAGS") {
+                // 오브젝트 깃발 원문 — '+' 로 이어짐(`NO_COLLIDE+ALLOW_OVERLAP` 꼴). 충돌 거르기(sub_548360)에 쓴다.
+                if (!t.flagsRaw.empty()) t.flagsRaw += "+";
+                t.flagsRaw += val;
+            } else if (key == "COLLIDE") {
+                // 충돌 함수가 있나 — 정답지는 **두 오브젝트 다 있어야** 부딪힌다(`GAME5.c:1930` `!v4 || !v5 → 0`).
+                t.hasCollide = true;
+                t.collideRaw = val;
             } else if (key == "MASS") {
                 // 질량 — 벽에 밀릴 때 힘을 이것으로 나눈다(`server/object.go:1183` Sub548600 = dp / Mass).
                 //   없으면 정답지 기본 1(`server/object_type.go:197`).
@@ -377,6 +396,38 @@ bool ReadThing(Cur& c, ThingInfo& t) {
 }
 
 }  // namespace
+
+namespace {
+uint32_t ParseNameBits(const std::string& raw, const char* const* names, int count) {
+    uint32_t bits = 0;
+    size_t start = 0;
+    while (start <= raw.size()) {
+        size_t e = raw.find('+', start);
+        if (e == std::string::npos) e = raw.size();
+        const std::string tok = raw.substr(start, e - start);
+        for (int i = 0; i < count; ++i) {
+            if (tok == names[i]) { bits |= (1u << i); break; }
+        }
+        start = e + 1;
+    }
+    return bits;
+}
+const char* const kFlagNames[32] = {
+    "BELOW", "NO_UPDATE", "ACTIVE", "ALLOW_OVERLAP", "SHORT", "DESTROYED", "NO_COLLIDE", "MISSILE_HIT",
+    "EQUIPPED", "PARTITIONED", "NO_COLLIDE_OWNER", "OWNER_VISIBLE", "EDIT_VISIBLE", "NO_PUSH_CHARACTERS", "AIRBORNE", "DEAD",
+    "SHADOW", "FALLING", "IN_HOLE", "RESPAWN", "ON_OBJECT", "SIGHT_DESTROY", "TRANSIENT", "BOUNCY",
+    "ENABLED", "PENDING", "TRANSLUCENT", "STILL", "NO_AUTO_DROP", "FLICKER", "SELECTED", "MARKED",
+};
+const char* const kClassNames[32] = {
+    "MISSILE", "MONSTER", "PLAYER", "OBSTACLE", "FOOD", "EXIT", "KEY", "DOOR",
+    "INFO_BOOK", "TRIGGER", "TRANSPORTER", "HOLE", "WAND", "FIRE", "ELEVATOR", "ELEVATOR_SHAFT",
+    "DANGEROUS", "MONSTERGENERATOR", "READABLE", "LIGHT", "SIMPLE", "COMPLEX", "IMMOBILE", "VISIBLE_ENABLE",
+    "WEAPON", "ARMOR", "NOT_STACKABLE", "TREASURE", "FLAG", "CLIENT_PERSIST", "CLIENT_PREDICT", "PICKUP",
+};
+}  // namespace
+
+uint32_t ParseObjectFlags(const std::string& raw) { return ParseNameBits(raw, kFlagNames, 32); }
+uint32_t ParseObjectClass(const std::string& raw) { return ParseNameBits(raw, kClassNames, 32); }
 
 bool ThingDb::Load(const std::string& path) {
     things_.clear();

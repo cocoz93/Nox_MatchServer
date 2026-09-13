@@ -194,6 +194,22 @@ int main(int argc, char** argv) {
             if (dist < 0) std::printf("  가장 가까운 벽 선분 — ±3칸 안에 없음\n");
             else std::printf("  가장 가까운 벽 선분 — 거리 %.1f · 칸 (%d,%d) 방향 %d\n", dist, gx, gy, dir);
         }
+        // ★ 묶음 2-c — 폭·높이 안의 장애물(COLLIDE · NO_COLLIDE 아님 · IMMOBILE · 문 아님, main.cpp 와 같은 거르기)
+        {
+            nox::ThingDb tdb;
+            if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+                for (const auto& o : mf.ReadObjects()) {
+                    if (std::abs(o.x - wallX) > wallW || std::abs(o.y - wallY) > wallH) continue;
+                    const uint16_t w = tdb.WireByName(o.type);
+                    const nox::ThingInfo* t = w ? tdb.ByWire(w) : nullptr;
+                    if (!t || !t->hasCollide) continue;
+                    const uint32_t fl = nox::ParseObjectFlags(t->flagsRaw), cl = nox::ParseObjectClass(t->classRaw);
+                    if ((fl & 0x40) || !(cl & 0x400000) || (cl & 0x80) || (t->shapeKind != 2 && t->shapeKind != 3)) continue;
+                    std::printf("  장애물 %-22s (%.0f,%.0f) 모양 %d r%.0f 상자 %.0fx%.0f 깃발 %s\n", o.type.c_str(), o.x, o.y,
+                                t->shapeKind, t->radius, t->boxW, t->boxH, t->flagsRaw.c_str());
+                }
+            }
+        }
         return 0;
     }
     for (int i = 2; i < argc; ++i) {

@@ -47,6 +47,12 @@ struct WallDefRaw {
 struct ThingInfo {
     std::string name;
     float mass = 0.0f;   // MASS — 0 이면 파일에 없음(정답지 기본 1)
+    // ★ 2026-09-13 묶음 2-c — 오브젝트끼리 충돌에 쓰는 셋.
+    int shapeKind = 0;          // EXTENT — 0 없음 · 1 CENTER · 2 CIRCLE · 3 BOX (`server/object_type.go:599`)
+    float boxW = 0.0f, boxH = 0.0f;
+    std::string flagsRaw;       // FLAGS 원문 ('+' 로 이음)
+    bool hasCollide = false;    // COLLIDE 속성이 있나
+    std::string collideRaw;
     bool complex = false;
     // EXTENT CIRCLE 의 반지름. CIRCLE 이 아니면(BOX·CENTER·없음) 0.
     float radius = 0.0f;
@@ -78,6 +84,11 @@ struct ThingInfo {
     std::string useHandler;
     int useArg = 0;
 };
+
+// '+' 로 이은 이름 목록 → 비트 (2026-09-13 묶음 2-c). 이름 순서 = 비트 순서
+//   (opennox libs `object/flags.go` FlagsNames · `object/class.go` ClassNames). 모르는 이름·NULL 은 0.
+uint32_t ParseObjectFlags(const std::string& raw);
+uint32_t ParseObjectClass(const std::string& raw);
 
 class ThingDb {
 public:

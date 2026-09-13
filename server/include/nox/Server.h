@@ -717,6 +717,27 @@ public:
         wallsOn_ = !cells.empty();
     }
     void SetWallDefFlags(std::vector<uint32_t> f) { wallDefFlags_ = std::move(f); }
+
+    // ★★ **오브젝트끼리 충돌** (2026-09-13 묶음 2-c — 정답지 이식).
+    //   장애물 = 맵 오브젝트 중 COLLIDE 가 있고 NO_COLLIDE 가 아니며 IMMOBILE 인 것(나무·오벨리스크…).
+    //   ⚠ 문(DoorCollide — 밀면 도는 문)은 묶음 9, 아이템(PickupCollide — 차여 굴러감)은 묶음 5.
+    struct PhysBody {
+        float x = 0, y = 0;
+        uint8_t shape = 0;          // 2 원 · 3 상자
+        float r = 0;
+        float boxLT = 0, boxLB = 0, boxRT = 0, boxRB = 0;   // ShapeBox::Calc (`server/object_type.go:626`)
+        uint32_t flags = 0;         // 오브젝트 깃발 비트
+        uint32_t cls = 0;           // 클래스 비트
+        float mass = 1.0f;
+    };
+    static void CalcBox(PhysBody& b, float w, float h) {
+        const float px = w * 0.35354999f, py = h * 0.35354999f;
+        b.boxLT = -px + py; b.boxLB = -px - py; b.boxRT = px + py; b.boxRB = px - py;
+    }
+    void SetObstacles(std::vector<PhysBody> v) { obstacles_ = std::move(v); }
+    size_t ObstacleCount() const { return obstacles_.size(); }
+    // 소환수 종류 번호 → 몸(모양·반지름·깃발·질량). main.cpp 가 thing.bin 에서 채운다.
+    void SetTypeBody(uint16_t type, const PhysBody& b) { typeBodies_[type] = b; }
     // 시험용 — 선 추적(Flag1, 걸음과 같은 깃발)
     bool DebugTraceRay(float x1, float y1, float x2, float y2) const { return MapTraceRay(x1, y1, x2, y2, 0x1); }
     // 진단 — 가장 가까운 벽 선분까지 거리(±3칸). 벽 없으면 −1. 칸·방향도 돌려준다.
@@ -1395,6 +1416,11 @@ private:
     //   밀어낸 힘을 (ax,ay) 에 더하고 벽 쪽으로 가던 속도를 깎는다. 닿았으면 참.
     bool CircleVsWalls(double bx, double by, double r, double mass,
                        double nx, double ny, double& vx, double& vy, double& ax, double& ay) const;
+    // 오브젝트끼리(sub_548220 거르기·나누기 → 원 대 원 550D00 · 원 대 상자 54AD50). 자기(a1)만 민다.
+    //   a1 = 움직이는 사람(지금 자리 nx,ny · 프레임 시작 bx,by · 속도 vx,vy), a2 = 상대(자리·속도).
+    void BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, double by, double vx, double vy,
+                    const PhysBody& a2, double ox, double oy, double obx, double oby, double ovx, double ovy,
+                    double& ax, double& ay) const;
     // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
     void EmitNewPlayer(Session& to, const Session& who, uint8_t status,
@@ -1540,6 +1566,8 @@ private:
     struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; };
     std::vector<WallTile> wallTiles_;        // 256×256 벽 모양 (묶음 2-b)
     std::vector<uint32_t> wallDefFlags_;     // thing.bin WALL 순번 → 깃발
+    std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
+    std::map<uint16_t, PhysBody> typeBodies_;   // 소환수 종류 → 몸
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
     // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
     unsigned long long unitHealthSent_ = 0;

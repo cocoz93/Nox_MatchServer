@@ -189,6 +189,7 @@ int main(int argc, char** argv) {
     bool friends = false;           // 친구 알림(OBJECT_FRIEND_ADD/REMOVE) — 부분 구현이라 기본 끔
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
+    bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
     bool itemAtSpawn = false;
     int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
     int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
@@ -294,6 +295,9 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-team-after" && i + 1 < argc) {
             // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
             debugTeamAfter = std::atoi(argv[++i]);
+        } else if (a == "--no-obstacles") {
+            // 진단 — 장애물(오브젝트끼리 충돌)을 싣지 않는다. 묶음 2-c 화면 판정의 대조군.
+            noObstacles = true;
         } else if (a == "--aoi") {
             // 시야 반경(P4-b) — 갱신 스트림에 맵 정적 오브젝트를 반경 안만 싣는다. --map 필수.
             aoi = true;
@@ -451,6 +455,52 @@ int main(int argc, char** argv) {
             }
             nStat = st.size();
             srv.SetWorldStatics(std::move(st));
+
+            // ★ 2026-09-13 묶음 2-c — **장애물**(오브젝트끼리 충돌). COLLIDE 가 있고 NO_COLLIDE 가 아닌
+            //   IMMOBILE(질량 1e10, `server/object_type.go:337`) 오브젝트. 문·아이템은 뺀다(묶음 9·5 — Server.h 주석).
+            {
+                std::vector<nox::Server::PhysBody> obs;
+                std::map<std::string, int> obsNames;
+                for (const auto& o : objs) {
+                    const uint16_t w = tdb.WireByName(o.type);
+                    const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
+                    if (!t2 || !t2->hasCollide) continue;
+                    const uint32_t fl = nox::ParseObjectFlags(t2->flagsRaw);
+                    const uint32_t cl = nox::ParseObjectClass(t2->classRaw);
+                    if (fl & 0x40) continue;                      // NO_COLLIDE
+                    if (!(cl & 0x400000)) continue;               // IMMOBILE 만
+                    if (cl & 0x80) continue;                      // 문 — 묶음 9
+                    if (t2->shapeKind != 2 && t2->shapeKind != 3) continue;
+                    nox::Server::PhysBody b;
+                    b.x = o.x; b.y = o.y;
+                    b.shape = static_cast<uint8_t>(t2->shapeKind);
+                    b.r = t2->radius;
+                    if (b.shape == 3) nox::Server::CalcBox(b, t2->boxW, t2->boxH);
+                    b.flags = fl; b.cls = cl;
+                    b.mass = 1e10f;
+                    obs.push_back(b);
+                    ++obsNames[o.type];
+                }
+                std::printf("[장애물] %zu개 / %zu종 —", obs.size(), obsNames.size());
+                for (const auto& kv : obsNames) std::printf(" %sx%d", kv.first.c_str(), kv.second);
+                std::printf("\n");
+                if (noObstacles) {
+                    std::printf("[진단스위치] --no-obstacles — 장애물 %zu개를 싣지 않음(대조군)\n", obs.size());
+                    obs.clear();
+                }
+                srv.SetObstacles(std::move(obs));
+                // 소환수 몸 — 몬스터 종류 전부(원만)
+                for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                    const nox::ThingInfo* t2 = tdb.ByWire(w);
+                    if (!t2 || !t2->isMonster || !t2->hasCollide || t2->shapeKind != 2) continue;
+                    nox::Server::PhysBody b;
+                    b.shape = 2; b.r = t2->radius;
+                    b.flags = nox::ParseObjectFlags(t2->flagsRaw);
+                    b.cls = nox::ParseObjectClass(t2->classRaw);
+                    b.mass = (t2->mass > 0.0f) ? t2->mass : 1.0f;   // 정답지 기본 1(`server/object_type.go:197`)
+                    srv.SetTypeBody(w, b);
+                }
+            }
             if (!props.empty()) {
                 std::printf("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());
                 srv.SetWorldProps(std::move(props));

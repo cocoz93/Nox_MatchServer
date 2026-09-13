@@ -2013,6 +2013,9 @@ void TestMelee() {
     const std::string b = "10.0.0.2:1000";
     srv.DebugEnterGame(a, 728);
     srv.DebugEnterGame(b, 729);   // 둘 다 (1000,1000) — 근접 사거리 안이다
+    // ★ 2026-09-13 묶음 2-c — 몸끼리 충돌(원 대 원)이 들어와 **겹친 몸은 틱에 튕겨 나간다.**
+    //   반지름 합(20) 밖 · 근접 사거리(45) 안인 25 로 벌린다.
+    srv.DebugMoveTo(b, 1025, 1000);
 
     // ① 한 번 치면 한 번 깎인다
     {
@@ -2417,6 +2420,20 @@ void TestThingDb() {
         const nox::ThingInfo* pl = db.ByWire(713);
         std::printf("  벽 재질 %zu종(막지 않음 0x2 %zu종) · NewPlayer 반지름 %.1f · MASS %.1f\n",
                     ws.size(), passable, pl ? pl->radius : 0.0f, pl ? pl->mass : 0.0f);
+    }
+    // ⑤ 충돌 셋(2026-09-13 묶음 2-c) — estate 에 있는 종류를 찍는다(판정 없음, 목록 확인용)
+    {
+        const char* names[] = { "NewPlayer", "Imp", "RedPotion", "CaveRockPillarShort", "CaveRockPillarTall",
+                                "TreeForest01", "TreePine01", "WoodBed", "Fireplace", "OgreHutWallSkull4",
+                                "WoodenDoor", "ObeliskPrimitive", "FlowersBlueSparse", "BearskinRug" };
+        for (const char* nm : names) {
+            const uint16_t w = db.WireByName(nm);
+            const nox::ThingInfo* ti = w ? db.ByWire(w) : nullptr;
+            if (!ti) { std::printf("    [충돌] %-22s 없음\n", nm); continue; }
+            std::printf("    [충돌] %-22s 모양 %d r%.1f 상자 %.0fx%.0f 질량 %.1f · COLLIDE %s · FLAGS %s · CLASS %s\n",
+                        nm, ti->shapeKind, ti->radius, ti->boxW, ti->boxH, ti->mass,
+                        ti->hasCollide ? ti->collideRaw.c_str() : "-", ti->flagsRaw.c_str(), ti->classRaw.c_str());
+        }
     }
 
     std::printf("  thing.bin 직접 읽기 — %zu종, 기존 표와 전수 일치\n", db.Count());
@@ -3178,6 +3195,80 @@ void TestWallShape() {
     std::printf("  벽 모양 — 대각선 막힘·나란함 통과 · 달린 뒤 (%d,%d) · 가장 멀리 x %d\n", x, y, maxX);
 }
 
+// ── 몸끼리 충돌 (2026-09-13 묶음 2-c) ─────────────────────────
+//
+// 원 대 원(`GAME5.c:7183`): 겹침 × 40 으로 민다. 원 대 상자(`GAME5.c:3465` · 3299): 상자는 45도 돌린 마름모 —
+// W=H=20 이면 꼭짓점이 중심에서 20×0.35355×2 ≈ 14.1.
+// ★ **멈추지 않고 튕긴다** — 오브젝트 충돌 사각형은 프레임 시작 자리(+56)로 잡혀 한 프레임 늦게 닿고(조금 파고듦),
+//   벽(sub_550380)과 달리 벽 쪽 속도를 깎는 단계가 없어 탄성으로 되튄다. 처음에 「반지름 합에서 멈춘다」로 짰다가
+//   상자 쪽이 x 998 로 튕겨 나온 것을 보고 바로잡음(디버그 출력으로 겹침 4.09 · 속도 11→−21 확인).
+//   그래서 **뚫고 지나가지 않는가**(가장 멀리 간 x)와 **밀리는가**를 본다.
+void TestBodyCollision() {
+    const std::string a = "10.0.0.1:1000";
+    const std::string b = "10.0.0.2:1000";
+    auto walkPkt = [](uint8_t facing) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::PLAYER_INPUT));
+        p.push_back(10);
+        const uint8_t items[10] = { 1, 0, 0, 0, facing, 2, 0, 0, 0, facing };
+        p.insert(p.end(), items, items + 10);
+        return p;
+    };
+    auto runEast = [&](nox::Server& srv, int ticks) {
+        uint32_t ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.Tick(ms, out);
+        int maxX = 0;
+        for (int i = 0; i < ticks; ++i) {
+            srv.DebugAimAt(a, srv.XOf(a) + 300, srv.YOf(a));
+            auto pkt = walkPkt(0);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            ms += 34;
+            srv.Tick(ms, out);
+            maxX = std::max(maxX, srv.XOf(a));
+        }
+        return maxX;
+    };
+    // ① 나무(원 r15, 고정 at 1060) — 파고들어도(한 프레임 늦은 감지 — 가장자리 1045 까지 들어갔다) 중심을 못 넘는다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        nox::Server::PhysBody tree;
+        tree.x = 1060; tree.y = 1000; tree.shape = 2; tree.r = 15; tree.cls = 0x400000; tree.mass = 1e10f;
+        srv.SetObstacles({ tree });
+        const int maxX = runEast(srv, 30);
+        Check(maxX < 1060, "나무를 뚫고 중심을 넘어갔다");
+        Check(srv.XOf(a) < 1060, "나무 너머에 서 있다");
+        Check(maxX > 1025, "나무에 닿기도 전에 멈췄다");
+        std::printf("  몸 충돌 — 나무(r15 at 1060) 가장 멀리 x %d · 끝 x %d", maxX, srv.XOf(a));
+    }
+    // ② 오벨리스크(상자 20×20, 고정 at 1060) — 중심이 서쪽 꼭짓점(1045.9)을 넘지 않는다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        nox::Server::PhysBody ob;
+        ob.x = 1060; ob.y = 1000; ob.shape = 3; ob.cls = 0x400000; ob.mass = 1e10f;
+        nox::Server::CalcBox(ob, 20, 20);
+        srv.SetObstacles({ ob });
+        const int maxX = runEast(srv, 30);
+        Check(maxX < 1060, "상자를 뚫고 중심을 넘어갔다");
+        Check(srv.XOf(a) < 1060, "상자 너머에 서 있다");
+        Check(maxX > 1025, "상자에 닿기도 전에 멈췄다");
+        std::printf(" · 상자(20×20) 가장 멀리 x %d · 끝 x %d", maxX, srv.XOf(a));
+    }
+    // ③ 서 있는 사람을 밀면 그 사람이 밀려난다(둘 다 움직이는 몸)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1040, 1000);
+        runEast(srv, 30);
+        Check(srv.XOf(b) > 1040, "서 있는 사람이 안 밀렸다");
+        Check(srv.XOf(b) - srv.XOf(a) >= 15, "두 몸이 겹쳐 지나갔다");
+        std::printf(" · 밀린 사람 x %d (민 사람 %d)\n", srv.XOf(b), srv.XOf(a));
+    }
+}
+
 void TestObserverExit() {
     nox::Server srv;
     const std::string a = "10.0.0.1:1000";
@@ -3551,6 +3642,7 @@ void TestArena() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1025, 1000);   // 겹치면 몸끼리 튕긴다(묶음 2-c) — TestMelee 주석
         uint32_t ms = 0;
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
@@ -3587,6 +3679,7 @@ void TestArena() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1025, 1000);   // 겹치면 몸끼리 튕긴다(묶음 2-c) — TestMelee 주석
         uint32_t ms = 0;
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
@@ -4065,6 +4158,7 @@ int main() {
     TestMapSections();
     TestWallCollision();
     TestWallShape();
+    TestBodyCollision();
     TestJoinBundle();
     TestSnapshotTail();
     TestSnapshotVsMap();
