@@ -289,6 +289,19 @@ struct Session {
     // ★ 피해 소수 이월(+84, 3-e) — 방어로 깎인 피해의 소수부를 다음 피해에 더한다(`GAME3_3.c:468` playerDecrementHPMana)
     float dmgRemainder = 0.0f;
     uint8_t lastDamageType = 0;    // +524 — 마지막 피해 종류(damageDefaultProc). 16 에 죽으면 먼지 자세 51(`GAME4_1.c:4459`)
+    // ★ 죽음 알림(`a9 0e`, 3-d)에 실을 것 — 플레이어 +304 갈래 · +300 종류(`GAME3_3.c:164~246 · 344~437`).
+    //   피해 함수가 부를 때마다 0 에서 다시 적는다: 갈래 1 = 종류 번호(무기·투사체 · 없으면 맨손 10·망치 2 때 때린 이) · 2 = 피해 종류
+    uint8_t killKind = 0;
+    uint16_t killType = 0;
+    // +520 마지막으로 때린 것 — damageDefaultProc 가 적는다(`GAME3_2.c:7229~7233`: 무기·투사체가 있으면 그것, 없으면 때린 이). 부활 때 지운다
+    struct LastHit {
+        uint8_t cls = 0;          // 0 없음 · 1 사람 · 2 몬스터 · 3 무기·투사체
+        uint8_t ownerCls = 0;     // cls 3 의 주인 — 0 없음 · 1 사람 · 2 몬스터
+        uint16_t monsterType = 0; // 몬스터(또는 주인 몬스터)의 종류 번호
+        std::string player;       // findParentChainPlayer — 주인 사슬에서 찾은 사람 주소(없으면 빈)
+    } lastHit;
+    // +232 마지막으로 알린 방어값 — playerReportAnything 이 +228 과 다르면 `49` 를 보낸다(3-d)
+    float armorReported = 0.0f;
     bool hasAim = false;
     int aimX = 0, aimY = 0;
     uint32_t aimAtFrame = 0;
@@ -875,6 +888,18 @@ public:
     size_t PlayerStartCount() const { return playerStarts_.size(); }
     // 자동 부활 서버 설정(nox_server_doPlayersAutoRespawn_40A5F0 · 0x5D4594+3584). 정답지 기본 0 — 클릭해야 살아난다.
     void SetAutoRespawn(bool on) { autoRespawn_ = on; }
+    // ★ 묶음 3-d — TRY_COLLIDE 가 번호(또는 extent)로 오브젝트를 찾고, 그 종류의 충돌 함수(thing.bin COLLIDE 첫 낱말)를 고른다.
+    struct MapObjRef {
+        uint16_t netCode = 0;   // 우리가 매긴 번호(맵 색인 + 75)
+        uint32_t extent = 0;    // 맵 안 고유 번호 — 클라가 IMMOBILE·CLIENT_PERSIST 에 윗비트를 붙여 보낸다(`GAME5_2.c:893`)
+        uint16_t type = 0;
+    };
+    void SetMapObjects(std::vector<MapObjRef> v) { mapObjects_ = std::move(v); }
+    void SetCollideFn(uint16_t type, std::string fn) { collideFn_[type] = std::move(fn); }
+    // 무기 클래스 비트 → 종류 번호(죽음 알림의 무기 그림). main 이 thing.bin 이름으로 채운다
+    void SetWeaponWire(uint32_t classBits, uint16_t wire) { weaponWire_[classBits] = wire; }
+    unsigned long long tryCollides() const { return tryCollides_; }
+    unsigned long long tryCollideDeferred() const { return tryCollideDeferred_; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꾼다(RESET_FRIENDS 판정용). 0 이면 끔.
     void SetDebugTeamAfter(uint32_t ticks) { debugTeamAfter_ = ticks; }
 
@@ -1168,11 +1193,20 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0xff : it->second.moveState;
     }
+    // 시험용 — +520 마지막으로 때린 것의 갈래(3-d · 0 없음 · 1 사람 · 2 몬스터 · 3 무기·투사체)
+    uint8_t DebugLastHitCls(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0xff : it->second.lastHit.cls;
+    }
     // 때린 것의 자리(묶음 3-e2 막기 판정) — 정답지는 때린 오브젝트(투사체면 투사체)의 +72 지난 자리를 본다
     struct AttackSrc {
         float x = 0, y = 0;       // +72 PrevPos
         bool missile = false;     // 클래스 0x1 MISSILE
         uint32_t missileSub = 0;  // 투사체 SUBCLASS(0x70 이면 되받아치지 않음)
+        // 3-d 죽음 알림 — a2(때린 이)가 몬스터면 그 종류 번호(+4, 사람이면 0) · a3(무기·투사체 오브젝트)가 있나와 그 종류 번호
+        uint16_t byMonsterType = 0;
+        bool obj = false;
+        uint16_t objType = 0;
     };
     // ★ 시험용 — 피해 함수(3-e)를 바로 부른다. pet < 0 이면 사람(addr), 아니면 소환수 자리 번호
     void DebugHurt(const std::string& addr, int pet, int dmg, const std::string& by, uint8_t dtype,
@@ -1237,8 +1271,9 @@ public:
     // 돌려주는 값 = 이 피해로 죽었나.
     // `by` 는 때린 쪽의 주소다. 죽으면 그쪽 점수가 오른다.
     // 불·독처럼 임자가 없는 피해면 빈 문자열을 넣는다.
+    // `hit` = 마지막으로 때린 것(+520, 3-d). 비었으면 `by` 로 채운다 — 사람이 맨손으로 때린 것(시험·자기 주문 자리)
     bool Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
-                const std::string& by = std::string());
+                const std::string& by = std::string(), const Session::LastHit* hit = nullptr);
 
     uint16_t KillsOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -1480,6 +1515,11 @@ private:
     void PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& out);   // playerRespawn_4F7EF0 + playerMakeDefItems(,1,0)
     bool FindPlayerStart(const Session& s, float& x, float& y);                  // mapFindPlayerStart_4F7AB0
     void ForgetDrawables(Session& s, std::vector<OutPacket>& out);                // unitMove 의 플레이어 몫 `ea <프레임4>`
+    // ── 알림 (묶음 3-d) ──
+    void SendKillInform(Session& s, std::vector<OutPacket>& out);                 // diePlayer_54D2B0 의 `a9 0e`
+    void PlayerReportAnything(Session& s, std::vector<OutPacket>& out);           // playerReportAnything_4D9900 — 방어값 갈래
+    void TryCollide(Session& s, uint16_t code, std::vector<OutPacket>& out);      // sdecode `0x7B` MSG_TRY_COLLIDE
+    uint16_t WeaponWireOf(const Session& s) const;
     static uint32_t ArmorEquipOf(const Session& s) { return nox::ArmorEquipOf(s.charClass); }
     // 두 쪽(주인 기준)이 적인가 — `server/object.go:1667` IsEnemyTo 를 사람·소환수·맵 몬스터에 맞춘 판.
     //   wild = 주인 없는 몬스터(자기 자신이 주인)
@@ -1714,6 +1754,11 @@ private:
     bool debugHurtFront_ = false;      // 진단 --debug-hurt-front — 앞 30 에서 때린 것으로
     std::vector<std::pair<float, float>> playerStarts_;   // 묶음 3-c PlayerStart 자리
     bool autoRespawn_ = false;         // 묶음 3-c 자동 부활(정답지 기본 꺼짐)
+    std::vector<MapObjRef> mapObjects_;            // 묶음 3-d 맵 오브젝트 번호·extent·종류
+    std::map<uint16_t, std::string> collideFn_;    // 묶음 3-d 종류 → 충돌 함수 이름
+    std::map<uint32_t, uint16_t> weaponWire_;      // 묶음 3-d 무기 클래스 비트 → 종류 번호
+    unsigned long long tryCollides_ = 0;           // `0x7B` 를 받아 대상을 찾은 횟수
+    unsigned long long tryCollideDeferred_ = 0;    // 그 가운데 충돌 함수를 아직 안 옮긴 것
     uint16_t debugOwnPetNetCode_ = 0; // 만든 임프의 번호 — 이동 루프가 이것만 건너뛴다(고정)
     bool standalone_ = false;
     std::string saMapName_;

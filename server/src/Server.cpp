@@ -844,6 +844,19 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         if (!s.inGame || s.respawnAtFrame != 0) return;    // +16 & 2 · DEAD
         if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) { ++invulnBlocked_; return; }   // 버프 23
         if (s.observer) return;                            // 3680 & 1
+        // ── 죽음 알림 기록(+304 갈래 · +300 종류, 묶음 3-d · `GAME3_3.c:164~246`) — 부를 때마다 0 에서 다시 ──
+        //   때린 이(a2)가 있으면: 무기·투사체(a3)가 있고 때린 이와 다르면 갈래 1·그 종류 /
+        //   없고 피해 종류가 10(맨손)·2(망치)면 갈래 1·때린 이의 종류(사람 713 · 몬스터 그 종류). 막혀도 이 기록은 남는다
+        s.killKind = 0;
+        if (src) {
+            if (src->obj) {
+                s.killKind = 1;
+                s.killType = src->objType;
+            } else if (dtype == 10 || dtype == 2) {
+                s.killKind = 1;
+                s.killType = src->byMonsterType ? src->byMonsterType : kPlayerType;
+            }
+        }
         // ── 막기(묶음 3-e2 · `GAME3_3.c:206~330`) — 때린 것이 있고 · 종류 15 아님 · 주먹/유성/독구름 아님 · **앞쪽**이면 ──
         //   ① 방패(ArmorEquip 0x3000000)를 **올린 상태(16)** 면 전기(9·17) 말고 다 막는다(M_LABEL_78) — 투사체는 되받아친다
         //   ② 아니면 대검(0x400): 투사체·종류 0·11 을 가만(13)·막기(18~20) 중에 막는다 → 18~20 중 하나로
@@ -907,6 +920,11 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                 hp = dmg;
                 break;
         }
+        // 기록이 비었으면 갈래 2·피해 종류 — 정답지 switch 가 이름 붙인 종류(0~12·14~17)만 적는다(13·18 넘는 것은 default 라 안 적음)
+        if (s.killKind == 0 && (dtype <= 12 || (dtype >= 14 && dtype <= 17))) {
+            s.killKind = 2;
+            s.killType = dtype;
+        }
         if (dmg > 0 && hp == 0) hp = 1;                    // `v33 > 0 && !a1`
         if (quest) {                                       // × sub_4E40B0(blob 202032 = 1.0)
             const int v44 = hp;
@@ -920,7 +938,21 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         // 한 대에 20 넘게 맞으면 움찔(상태 30 · 공격 중 1 · 방패 올리는 중 15 는 아님)
         s.lastDamageType = dtype;                          // +524(`GAME3_2.c:7234`)
         if (hp >= 20 && s.moveState != kPlayerStateAttack && s.moveState != 15) PlayerSetState(s, 30, frame_);
-        Damage(t.addr, hp, out, by);                       // unitDamageClear_4EE5E0
+        // +520 마지막으로 때린 것(`GAME3_2.c:7229~7233`) — a3 가 있으면 그것(주인 = a2), 없으면 a2. 사슬의 사람 = `by`(소환수면 주인)
+        Session::LastHit hit;
+        if (src) {
+            const bool a2Monster = src->byMonsterType != 0;
+            const bool a2Player = !a2Monster && !byWild;
+            if (src->obj) {
+                hit.cls = 3;
+                hit.ownerCls = a2Monster ? 2 : (a2Player ? 1 : 0);
+            } else {
+                hit.cls = a2Monster ? 2 : (a2Player ? 1 : 0);
+            }
+            hit.monsterType = src->byMonsterType;
+            hit.player = by;
+        }
+        Damage(t.addr, hp, out, by, &hit);                 // unitDamageClear_4EE5E0
         return;
     }
 
@@ -975,7 +1007,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
 }
 
 bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
-                    const std::string& by) {
+                    const std::string& by, const Session::LastHit* hit) {
     auto it = sessions_.find(addr);
     if (it == sessions_.end()) return false;
     Session& s = it->second;
@@ -991,6 +1023,13 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     if (s.invulnUntilSet && frame_ < s.invulnUntilFrame) {
         ++invulnBlocked_;
         return false;
+    }
+    // +520 마지막으로 때린 것(3-d) — 피해 함수가 넘긴 것, 없으면 `by`(사람 · 무기 없음)로
+    if (hit) {
+        s.lastHit = *hit;
+    } else {
+        s.lastHit = Session::LastHit{};
+        if (!by.empty()) { s.lastHit.cls = 1; s.lastHit.player = by; }
     }
 
     const int before = s.health;
@@ -1027,6 +1066,9 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
 
     if (s.health > 0) return false;
 
+    // ★ 죽음 알림 `a9 0e` — diePlayer_54D2B0 가 소리·DEAD 깃발보다 먼저 보낸다(`GAME5.c:5051`, 묶음 3-d)
+    SendKillInform(s, out);
+
     // ③ 죽음 — 껍데기 안. 실측 `e8 d8 02`.
     //    ★ **모두에게.** 남이 쓰러지는 것을 봐야 판이 판이 된다.
     {
@@ -1043,7 +1085,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     PlayerSetState(s, 3, frame_);
     ++s.deaths;
     DropFlag(addr, out);   // 들고 있었으면 그 자리에 떨군다
-    // ⚠ 옮기지 않은 것 — 죽음 글(3-d CHAT_KILL/MESSAGES_KILL) · 죽는 소리(10) · 가진 것 전부 떨구기(퀘스트 아니면 · 아이템 5)
+    // ⚠ 옮기지 않은 것 — 죽는 소리(10) · 가진 것 전부 떨구기(퀘스트 아니면 · 아이템 5)
     //   · 모드별 점수 정답지(8 — 지금은 아래 우리 점수) · 버프·능력·주문 끄기(4·7)
 
     // ④ 점수 — 때린 쪽이 있고 자기 자신이 아니면 그쪽이 하나 얻는다.
@@ -2007,6 +2049,14 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             //     → **집는 이에게만.** 첫 필드는 「집는 이」가 아니라 **물건 번호**다
             //       (정품 `0x4c` 표본 10건: 사람은 713 인데 실린 값이 716·717·718…).
             //   `31 <번호2>`(3B) → **보고 있던 모두에게.** 바닥에서 사라지는 것.
+            // ── 충돌 요청(묶음 3-d) — `7b <번호2>` · Server::TryCollide 주석 ──
+            case Op::TRY_COLLIDE: {
+                if (!s.inGame || it.bodyLen() != 2) break;
+                TryCollide(s, static_cast<uint16_t>(it.body()[0] | (it.body()[1] << 8)), out);
+                ++handled_;
+                break;
+            }
+
             case Op::TRY_GET: {
                 if (!s.inGame || it.bodyLen() != 2) break;
                 const uint16_t want = static_cast<uint16_t>(
@@ -3798,6 +3848,7 @@ void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& o
     s.respawnAtFrame = 0;                                  // 깃발 &= 0xFFEB3FE7 — DEAD 끔
     PlayerSetState(s, kPlayerStateIdle, frame);
     s.invulnUntilSet = false;                              // unitClearBuffs(아래에서 23 을 다시 켠다)
+    s.lastHit = Session::LastHit{};                        // +520 = 0(`GAME3_3.c:7958`, 3-d)
     MarkDirty(s.netCode, PendingReport::What::UnitHealth);
     // 나에게 — 최대·지금 체력(`dd`) · 마나는 워리어가 아니면(`de`)
     {
@@ -3841,6 +3892,109 @@ void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& o
     std::printf("[부활] 프레임 %u %s → (%.0f,%.0f) · 시작 지점 %zu곳 · 무적 %u틱\n", frame, s.addr.c_str(), sx, sy,
                 playerStarts_.size(), 5 * kServerTickRate);
     std::fflush(stdout);
+}
+
+// ── 알림 (묶음 3-d) ───────────────────────────────────────────────
+//
+// diePlayer_54D2B0(`GAME5.c:4974~5057`) — 온라인(게임 깃발 0x2000 · 이 서버는 늘 온라인)이면 모두에게 `a9 0e` 11바이트.
+//   <죽인 사람 번호2><도운 사람 번호2><죽은 사람 번호2><종류2><갈래1> · Kind1(틱 목록, `GAME3_2.c:5189~5197`) = 비신뢰
+//   클라(sub_495210 · sub_495500)는 화면 위 가운데에 「죽인이 +도운이 [그림] 죽은이」를 90틱 띄운다 —
+//   갈래 1 이면 그 종류의 그림(pretty_image) · 2 면 피해 종류별 주문 그림 · 그 밖은 기본 그림(주문 15)
+void Server::SendKillInform(Session& s, std::vector<OutPacket>& out) {
+    // 죽인 사람 v24 = findParentChainPlayer(+520) — 사람이면 그 번호
+    uint16_t killer = 0;
+    if (!s.lastHit.player.empty()) {
+        const auto k = sessions_.find(s.lastHit.player);
+        if (k != sessions_.end() && k->second.inGame) killer = k->second.netCode;
+    }
+    // 도운 사람 v2 — +3600 이 켜져 있고 10초 안(sub_4E7540: 혼란·기절·자리바꾸기 주문이 적는다 → 묶음 4). 적는 이가 아직 없어 0
+    const uint16_t assist = 0;
+    // 갈래·종류 — +520 이 몬스터면(또는 주인이 몬스터인 무기·투사체면) 갈래 1·그 몬스터 종류, 그 밖은 기록(+304/+300)
+    uint8_t kind = s.killKind;
+    uint16_t type = s.killType;
+    if (s.lastHit.cls == 2 || (s.lastHit.cls == 3 && s.lastHit.ownerCls == 2)) {
+        kind = 1;
+        type = s.lastHit.monsterType;
+    }
+    const uint8_t msg[11] = {
+        static_cast<uint8_t>(Op::INFORM), static_cast<uint8_t>(InformCode::Kill),
+        static_cast<uint8_t>(killer), static_cast<uint8_t>(killer >> 8),
+        static_cast<uint8_t>(assist), static_cast<uint8_t>(assist >> 8),
+        static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
+        static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8), kind,
+    };
+    for (auto& kv : sessions_) {
+        if (kv.second.inGame) Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+    }
+    std::printf("[죽음 알림] 프레임 %u 죽은 %u · 죽인 %u · 종류 %u · 갈래 %u\n", frame_, s.netCode, killer, type, kind);
+    std::fflush(stdout);
+    s.killKind = 0;                                        // +304 = 0
+    // ⚠ 갈래 2·종류 2 면 죽인 사람의 능력 1(광전사 돌진) 쉬는 시간을 지운다(sub_4FC0B0 · `GAME5.c:5052`) → 묶음 7
+}
+
+// playerReportAnything_4D9900(`GAME3_2.c:4855`) — 자기 몸 갱신(`GAME4_1.c:4428`)마다 「알린 값과 다른 것」만 본인에게 보낸다.
+//   옮긴 갈래 — 방어값: +228(지금) 과 +232(알린 값)를 float 로 견줘 다르면 `49 <float 4>` 를 Packet0(중요 · 봉투 없음) · 알린 값을 맞춘다
+//   ⚠ 나머지 갈래 — 금 `4a`(+2164, 아이템 5) · 마법부여 표시 `5b`(+440, 아이템 5) · 퀘스트 목숨·은/금 열쇠 `f0 04~06`(8) ·
+//     총량 다시 알림 깃발 2184(dd·de·스탯) · 팀 체력(netSendPlrHealthToTeam) · 마나 +4≠+6(netReportMana — 지금은 쓰는 자리마다 우리 식)
+void Server::PlayerReportAnything(Session& s, std::vector<OutPacket>& out) {
+    const float armor = ArmorValueFloat(s.charClass);
+    if (s.armorReported != armor) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &armor, sizeof(bits));
+        const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_ARMOR_VALUE), static_cast<uint8_t>(bits),
+                                 static_cast<uint8_t>(bits >> 8), static_cast<uint8_t>(bits >> 16),
+                                 static_cast<uint8_t>(bits >> 24) };
+        EmitImportantRaw(s, msg, sizeof(msg), out);        // netReportArmorVal_4D8A30 — netSendPacket0
+        s.armorReported = armor;
+    }
+}
+
+// sdecode `0x7B` MSG_TRY_COLLIDE(`server__network__sdecode.c:256`) — 클라는 「쓰기」 커서(IMMOBILE 상자·미믹, `input_c.go:372~385`)에서
+//   누르면 `7b <번호2>` 를 보낸다(`GAME1_2.c:3162`). 서버는 관전(3680 & 3)·가게(+280)·대화(+284) 중이 아니면
+//   그 오브젝트의 충돌 함수(+696)를 (그것, 사람, 0) 으로 부른다. 윗비트(0x8000)가 선 번호는 extent 다(packetDynamicUnitCode_578B40)
+//   ⚠ 충돌 함수 자체(ChestCollide 등)는 그 오브젝트 묶음(상자·보물 5 · 맵 오브젝트 9)에서 옮긴다. 지금은 찾고 · 세고 · 적는다
+void Server::TryCollide(Session& s, uint16_t code, std::vector<OutPacket>& out) {
+    (void)out;
+    // 3680 & 1 관전 · & 2 몬스터 지켜보기(관전 기능 — 8) · 가게·대화 모임은 아직 없다(5·10)
+    if (s.observer) return;
+    uint16_t netCode = code;
+    if (code & 0x8000) {                                   // extent → 그 오브젝트의 번호(없으면 0)
+        netCode = 0;
+        for (const auto& m : mapObjects_) {
+            if (m.extent == static_cast<uint32_t>(code & 0x7FFF)) { netCode = m.netCode; break; }
+        }
+    }
+    if (netCode == 0) return;
+    // nox_server_getObjectFromNetCode_4ECCB0 — 사람 · 소환수·몬스터 · 깃발 · 맵 오브젝트
+    bool found = false;
+    uint16_t type = 0;
+    for (const auto& kv : sessions_) {
+        if (kv.second.inGame && kv.second.netCode == netCode) { type = kPlayerType; found = true; break; }
+    }
+    for (size_t i = 0; !found && i < pets_.size(); ++i) {
+        if (pets_[i].netCode == netCode) { type = pets_[i].type; found = true; }
+    }
+    for (size_t i = 0; !found && i < flags_.size(); ++i) {
+        if (flags_[i].netCode == netCode) { type = flags_[i].type; found = true; }
+    }
+    for (size_t i = 0; !found && i < mapObjects_.size(); ++i) {
+        if (mapObjects_[i].netCode == netCode) { type = mapObjects_[i].type; found = true; }
+    }
+    if (!found) return;
+    ++tryCollides_;
+    const auto fn = collideFn_.find(type);
+    if (fn == collideFn_.end() || fn->second.empty()) return;   // +696 이 없으면 아무 일 없음
+    ++tryCollideDeferred_;
+    std::printf("[충돌 요청] 프레임 %u %s → 번호 %u 종류 %u 충돌 함수 %s — 아직 안 옮김\n",
+                frame_, s.addr.c_str(), netCode, type, fn->second.c_str());
+    std::fflush(stdout);
+}
+
+// 든 무기의 종류 번호 — 죽음 알림의 무기 그림(3-d). 기본 장비는 직업 표, 시험용 바꿔 들기는 main 이 채운 이름 표
+uint16_t Server::WeaponWireOf(const Session& s) const {
+    if (s.debugWeapon < 0) return LoadoutFor(s.charClass).weapon;
+    const auto it = weaponWire_.find(static_cast<uint32_t>(s.debugWeapon));
+    return it == weaponWire_.end() ? 0 : it->second;
 }
 
 // 플레이어 +4 WeaponEquip — 든 무기의 클래스 비트. ⚠ 지금은 직업 기본 장비에서 온다(주워 들기·바꿔 들기는 묶음 5).
@@ -4142,6 +4296,8 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
         AttackSrc src;                                      // 막기 판정(3-e2) — 때린 사람의 지난 자리(+72)
         src.x = static_cast<float>(s.prevX);
         src.y = static_cast<float>(s.prevY);
+        src.obj = ai.weapon;                                // +28 무기 오브젝트 — 죽음 알림의 무기 그림(3-d)
+        src.objType = ai.weapon ? WeaponWireOf(s) : 0;
         if (kind == Player) {
             HurtTarget(Target{ addr, -1 }, ai.dmg, out, s.addr, ai.type, &src);
             auto it = sessions_.find(addr);
@@ -4404,6 +4560,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 src.x = static_cast<float>(p.x - p.vx);
                 src.y = static_cast<float>(p.y - p.vy);
                 src.missile = true;
+                src.obj = true;                  // a3 = 투사체 — 종류 번호는 주문 정답지(묶음 4)에서. 지금은 0
                 SendProjectileFx(p, out);       // 맞은 자리에서 그린다
                 shots_.erase(shots_.begin() + static_cast<long>(i));
                 ++hits_;
@@ -4542,6 +4699,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 AttackSrc src;                              // 막기 판정(3-e2) — 소환수 자리(소환수는 지난 자리를 아직 안 둔다)
                 src.x = static_cast<float>(k.x);
                 src.y = static_cast<float>(k.y);
+                src.byMonsterType = k.type;                 // a2 = 몬스터 — 죽음 알림은 그 몬스터 그림(3-d)
                 HurtTarget(t, tune.damage, out, k.owner, 0, &src);   // 부른 사람의 점수다
                 break;   // 목록이 바뀔 수 있다 — 이번 걸음은 여기서 접는다
             }
@@ -4757,8 +4915,14 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   그래서 **나중에 들어온 쪽만** 상대를 못 봤다 — 먼저 온 쪽은 스냅샷을 안 받으니 멀쩡했다.
             //   여기서 다시 세워 두면 다음 틱에 아래 소개 자리가 한 번 더 돈다.
             if (inGameCount() >= 2) s.pendingIntro = true;
+            // 스냅샷 꼬리에 방어값 `49` 가 들어 있다 — 그것이 첫 playerReportAnything 몫이다(+232 = +228).
+            //   녹음 서두는 위저드 녹음이라 그 값(0x3e6b8520)이다
+            s.armorReported = ArmorValueFloat(firstSnapshot_.empty() ? s.charClass : CharClass::Wizard);
             continue;
         }
+
+        // 자기 몸 갱신 몫 — 바뀐 것만 알린다(playerReportAnything_4D9900 · 묶음 3-d). 스냅샷을 기다리는 동안은 아니다
+        if (s.snapshotIn < 0) PlayerReportAnything(s, out);
 
         // ★★★ **사람 소개를 서로 주고받는다** — `2d NEW_PLAYER`.
         //   내가 보내던 것은 **접속한 본인 것 하나뿐**이었다. 정품은 다르다

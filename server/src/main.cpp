@@ -534,6 +534,41 @@ int main(int argc, char** argv) {
                     srv.SetTypeBody(w, b);
                 }
             }
+            // ★ 2026-09-13 묶음 3-d — TRY_COLLIDE 가 찾을 것(맵 오브젝트 번호·extent·종류 · 종류별 충돌 함수 이름)
+            //   · 죽음 알림의 무기 그림(무기 클래스 비트 → 종류 번호)
+            {
+                auto firstWord = [](const std::string& raw) {
+                    size_t b = raw.find_first_not_of(" \t");
+                    if (b == std::string::npos) return std::string();
+                    size_t e = raw.find_first_of(" \t", b);
+                    return raw.substr(b, e == std::string::npos ? std::string::npos : e - b);
+                };
+                std::vector<nox::Server::MapObjRef> refs;
+                std::map<std::string, int> fnNames;   // 맵에 놓인 것의 충돌 함수별 개수(진단)
+                for (size_t i = 0; i < objs.size(); ++i) {
+                    const uint16_t w = tdb.WireByName(objs[i].type);
+                    if (!w) continue;
+                    nox::Server::MapObjRef r;
+                    r.netCode = static_cast<uint16_t>(i + 75);
+                    r.extent = objs[i].extent;
+                    r.type = w;
+                    refs.push_back(r);
+                    const nox::ThingInfo* t2 = tdb.ByWire(w);
+                    if (t2 && t2->hasCollide) ++fnNames[firstWord(t2->collideRaw)];
+                }
+                size_t nFn = 0;
+                for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                    const nox::ThingInfo* t2 = tdb.ByWire(w);
+                    if (!t2 || !t2->hasCollide) continue;
+                    srv.SetCollideFn(w, firstWord(t2->collideRaw));
+                    ++nFn;
+                }
+                for (const auto& wp : nox::kWeapons) srv.SetWeaponWire(wp.classBits, tdb.WireByName(wp.name));
+                std::printf("[충돌 함수] 종류 %zu개 · 맵 오브젝트 %zu개 —", nFn, refs.size());
+                for (const auto& kv : fnNames) std::printf(" %sx%d", kv.first.c_str(), kv.second);
+                std::printf("\n");
+                srv.SetMapObjects(std::move(refs));
+            }
             // ★ 2026-09-13 묶음 3-a — 사람 애니 칸 수(PlayerDraw STAT). 맨손 공격이 끝나는 틱이 이 값이다.
             for (int i = 0; i < nox::kPlayerAnimTypeCount; ++i)
                 srv.SetPlayerAnimFrames(i, tdb.PlayerAnim(i).frames, tdb.PlayerAnim(i).hold);

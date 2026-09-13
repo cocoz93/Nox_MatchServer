@@ -190,7 +190,13 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t
         PushSeq(m, seq, b3s[4], 4);   // #19
         uint8_t en[7] = { 0x5a, lo, hi, 0x00, 0x00, 0x80, 0x00 };
         PushSeq(m, seq, en, 7);       // #20
-        const uint8_t ar[5] = { 0x49, 0x20, 0x85, 0x6b, 0x3e };
+        // 방어값 `49 <float 4>` — 첫 playerReportAnything 몫(+232 = 0 → +228). ★ 3-d: 직업 값으로 —
+        //   녹음 `20 85 6b 3e` 는 위저드 방어값을 **들어온 순서 거꾸로** float 로 더한 값과 한 비트까지 같다(ArmorValueFloat 주석)
+        const float armor = ArmorValueFloat(cls);
+        uint32_t bits = 0;
+        std::memcpy(&bits, &armor, sizeof(bits));
+        const uint8_t ar[5] = { 0x49, static_cast<uint8_t>(bits), static_cast<uint8_t>(bits >> 8),
+                                static_cast<uint8_t>(bits >> 16), static_cast<uint8_t>(bits >> 24) };
         PushRaw(m, ar, 5);
     }
     // 총량 재확인 + 능력치(48) + 72 + 현재 체력(43) — 여기도 직업 값으로 간다

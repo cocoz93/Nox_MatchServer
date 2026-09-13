@@ -2765,8 +2765,9 @@ void TestShieldBlock() {
 //   ③ `ab <그 시각>` = 그 조각에 실은 것을 지운다 · ④ 확인이 없으면 60틱 뒤 **같은 순번**으로 다시 싣는다.
 // ⚠ 왜 — 한 번만 보내던 때, 준비 전에 나간 순번 0~4 를 클라가 버려 **뒤 cc 가 전부 막혔다**
 //   (09-13 실클라: 친구 알림을 cc 로 보내면 빨강 · 맨 메시지로 보내면 파랑).
+// `entries` — 실린 항목 수(cc 봉투 + 봉투 없는 것). 3-d 부터 방어값 `49` 가 봉투 없이 같은 조각에 실린다
 static bool FindImportantPacket(const std::vector<nox::OutPacket>& out, const std::string& to,
-                                uint16_t* frame, std::vector<uint16_t>* ids) {
+                                uint16_t* frame, std::vector<uint16_t>* ids, size_t* entries = nullptr) {
     for (const auto& p : out) {
         if (p.to != to) continue;
         const std::vector<uint8_t> b = Body(p);
@@ -2774,10 +2775,19 @@ static bool FindImportantPacket(const std::vector<nox::OutPacket>& out, const st
             b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
         if (frame) *frame = static_cast<uint16_t>(b[1] | (b[2] << 8));
         size_t q = 4;
-        while (q + 4 <= b.size() && b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
-            if (ids) ids->push_back(static_cast<uint16_t>(b[q + 1] | (b[q + 2] << 8)));
-            q += 4 + b[q + 3];
+        size_t n = 0;
+        while (q < b.size()) {
+            if (b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && q + 4 <= b.size()) {
+                if (ids) ids->push_back(static_cast<uint16_t>(b[q + 1] | (b[q + 2] << 8)));
+                q += 4 + b[q + 3];
+            } else {
+                const int len = nox::MsgBodyLenByDir(b[q], /*fromClient=*/false);
+                if (len < 0) break;
+                q += 1 + static_cast<size_t>(len);
+            }
+            ++n;
         }
+        if (entries) *entries = n;
         return true;
     }
     return false;
@@ -2812,12 +2822,13 @@ void TestImportantQueue() {
     // ② 준비 — 다음 틱에 [27][aa][cc…], 순번은 0 부터 빈틈 없이
     uint16_t f1 = 0;
     std::vector<uint16_t> ids1;
+    size_t carried1 = 0;
     {
         std::vector<nox::OutPacket> out;
         const auto ready = WireOf({ static_cast<uint8_t>(nox::Op::CLIENT_READY) });
         srv.OnPacket(a, ready.data(), ready.size(), out);
         ms += 34; srv.Tick(ms, out);
-        Check(FindImportantPacket(out, a, &f1, &ids1), "준비 뒤 틱에 중요 조각이 안 나감");
+        Check(FindImportantPacket(out, a, &f1, &ids1, &carried1), "준비 뒤 틱에 중요 조각이 안 나감");
         Check(!ids1.empty() && ids1[0] == 0, "첫 중요 조각이 순번 0 부터가 아님");
         bool contiguous = true;
         for (size_t i = 1; i < ids1.size(); ++i) if (ids1[i] != ids1[i - 1] + 1) contiguous = false;
@@ -2831,7 +2842,7 @@ void TestImportantQueue() {
         const auto ack = WireOf({ static_cast<uint8_t>(nox::Op::IMPORTANT_ACK),
                                   static_cast<uint8_t>(f1), static_cast<uint8_t>(f1 >> 8), 0, 0 });
         srv.OnPacket(a, ack.data(), ack.size(), out);
-        Check(srv.DebugImportantPending(a) + ids1.size() == before, "확인했는데 실은 만큼 안 지워짐");
+        Check(srv.DebugImportantPending(a) + carried1 == before, "확인했는데 실은 만큼 안 지워짐");
     }
 
     // ④ 확인 없음 — 새로 실은 순번이 60틱 안에는 다시 안 나가고, 60틱 무렵 같은 순번으로 다시 나간다
@@ -2886,6 +2897,237 @@ void TestImportantQueue() {
         }
         Check(rawInImportant, "사라짐(32)이 중요 조각에 맨 메시지로 안 실림");
     }
+}
+
+// ── 묶음 3-d — 죽음 알림 `a9 0e` · 방어값 `49` · 충돌 요청 `7b` ─────────────
+//
+// 죽음 알림(diePlayer_54D2B0 `GAME5.c:4974~5057`): <죽인 사람2><도운 사람2><죽은 사람2><종류2><갈래1> 모두에게.
+//   갈래·종류는 피해 함수 기록(+304/+300 `GAME3_3.c:164~246 · 344~437`)과 +520(마지막으로 때린 것)으로 정한다.
+// 방어값(playerReportAnything_4D9900): +228 ≠ +232 이면 본인에게 `49 <float>` · 녹음 위저드 값 0x3e6b8520.
+// 충돌 요청(sdecode 0x7B): 관전 아니면 번호(윗비트면 extent)로 찾아 충돌 함수(+696) — 함수 자체는 5·9.
+void TestKillArmorCollide() {
+    const std::string a = "10.3.3.1:3001";
+    const std::string b = "10.3.3.2:3002";
+    // 죽음 알림 찾기 — 받는 사람별
+    auto killMsg = [](const std::vector<nox::OutPacket>& out, const std::string& to) -> std::vector<uint8_t> {
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() >= 2 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 14) return m;
+        return {};
+    };
+    auto u16 = [](const std::vector<uint8_t>& m, size_t at) { return static_cast<uint16_t>(m[at] | (m[at + 1] << 8)); };
+    // 한 번 죽이고 알림을 돌려준다(b 는 워리어 150 — 한 대에 죽게 체력을 먼저 깎는다)
+    auto killWith = [&](const std::string& by, uint8_t dtype, const nox::Server::AttackSrc* src,
+                        std::vector<uint8_t>* toA, std::vector<uint8_t>* toB) {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(b, 149, out, "");
+        out.clear();
+        srv.DebugHurt(b, -1, 50, by, dtype, out, src);
+        Check(!srv.IsAlive(b), "죽음 알림 시험 — 한 대에 안 죽었다(시험이 무의미)");
+        if (toA) *toA = killMsg(out, a);
+        if (toB) *toB = killMsg(out, b);
+    };
+
+    // ① 무기로 죽임 — 갈래 1 · 무기 종류 · 죽인 사람 번호 · 모두에게 11바이트
+    {
+        nox::Server::AttackSrc src;
+        src.x = 1000; src.y = 1000;
+        src.obj = true;
+        src.objType = nox::kItemLongsword;
+        std::vector<uint8_t> ma, mb;
+        killWith(a, 0, &src, &ma, &mb);
+        Check(ma.size() == 11 && mb.size() == 11, "죽음 알림 `a9 0e` 가 모두에게 11바이트로 안 감");
+        if (mb.size() == 11) {
+            Check(u16(mb, 2) == 728, "죽음 알림의 죽인 사람 번호가 틀림");
+            Check(u16(mb, 4) == 0, "도운 사람 자리가 0 이 아님(적는 주문이 아직 없다)");
+            Check(u16(mb, 6) == 729, "죽음 알림의 죽은 사람 번호가 틀림");
+            Check(u16(mb, 8) == nox::kItemLongsword && mb[10] == 1, "무기로 죽였는데 갈래 1·무기 종류가 아님");
+        }
+    }
+    // ② 맨손(종류 10 · 무기 없음) — 갈래 1 · 때린 사람의 종류 713
+    {
+        nox::Server::AttackSrc src;
+        src.x = 1000; src.y = 1000;
+        std::vector<uint8_t> mb;
+        killWith(a, 10, &src, nullptr, &mb);
+        Check(mb.size() == 11 && u16(mb, 8) == nox::kPlayerType && mb[10] == 1, "맨손으로 죽였는데 갈래 1·종류 713 이 아님");
+    }
+    // ③ 종류 0 · 무기 없음 — 갈래 2 · 피해 종류 0
+    {
+        nox::Server::AttackSrc src;
+        src.x = 1000; src.y = 1000;
+        std::vector<uint8_t> mb;
+        killWith(a, 0, &src, nullptr, &mb);
+        Check(mb.size() == 11 && u16(mb, 8) == 0 && mb[10] == 2, "종류 0·무기 없음인데 갈래 2·종류 0 이 아님");
+    }
+    // ④ 맵 몬스터 — 죽인 사람 0 · 갈래 1 · 몬스터 종류 / 소환수 — 죽인 사람 = 주인
+    {
+        nox::Server::AttackSrc src;
+        src.x = 1000; src.y = 1000;
+        src.byMonsterType = 1377;
+        std::vector<uint8_t> mb;
+        killWith("", 0, &src, nullptr, &mb);
+        Check(mb.size() == 11 && u16(mb, 2) == 0 && u16(mb, 8) == 1377 && mb[10] == 1,
+              "몬스터가 죽였는데 죽인 사람 0·갈래 1·몬스터 종류가 아님");
+        killWith(a, 0, &src, nullptr, &mb);
+        Check(mb.size() == 11 && u16(mb, 2) == 728 && u16(mb, 8) == 1377 && mb[10] == 1,
+              "소환수가 죽였는데 죽인 사람이 주인·갈래 1·몬스터 종류가 아님");
+        // 몬스터가 쏜 투사체 — 주인 몬스터 종류
+        src.obj = true;
+        src.objType = 555;
+        killWith("", 0, &src, nullptr, &mb);
+        Check(mb.size() == 11 && u16(mb, 8) == 1377 && mb[10] == 1, "몬스터 투사체로 죽었는데 주인 몬스터 종류가 아님");
+    }
+    // ⑤ 때린 것이 없음(종류 16) — 죽인 사람 0 · 갈래 2 · 16 / 종류 13 은 기록 안 함(갈래 0)
+    {
+        std::vector<uint8_t> mb;
+        killWith("", 16, nullptr, nullptr, &mb);
+        Check(mb.size() == 11 && u16(mb, 2) == 0 && u16(mb, 8) == 16 && mb[10] == 2, "때린 것 없이 종류 16 인데 갈래 2·16 이 아님");
+        killWith("", 13, nullptr, nullptr, &mb);
+        Check(mb.size() == 11 && mb[10] == 0, "종류 13 은 정답지 switch 밖인데 갈래를 적었다");
+        // 기록은 피해마다 0 에서 다시 — 무기로 한 대(안 죽음) 뒤 종류 13 으로 죽으면 갈래 0
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        nox::Server::AttackSrc w;
+        w.x = 1000; w.y = 1000; w.obj = true; w.objType = nox::kItemLongsword;
+        srv.DebugHurt(b, -1, 10, a, 0, out, &w);
+        srv.Damage(b, nox::HealthOnline(nox::CharClass::Warrior) - 20, out, "");
+        out.clear();
+        srv.DebugHurt(b, -1, 50, "", 13, out, nullptr);
+        const auto m13 = killMsg(out, b);
+        Check(m13.size() == 11 && m13[10] == 0, "앞 대의 갈래 1 기록이 다음 피해에서 안 비워졌다");
+    }
+    // ⑥ 실제 흐름 — 워리어가 롱소드로 휘둘러 죽이면 무기 그림 · 부활하면 +520 을 지운다
+    {
+        nox::Server srv;
+        srv.SetPlayerAnimFrames(28, 8, 0);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1050, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(b, nox::HealthOnline(nox::CharClass::Wizard) - 1, out, "");
+        for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
+        out.clear();
+        auto click = InputPacket(6);
+        srv.OnPacket(a, click.data(), click.size(), out);
+        for (int t = 0; t < 8 && srv.IsAlive(b); ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(!srv.IsAlive(b), "롱소드 한 번에 체력 1 짜리가 안 죽었다");
+        const auto mb = killMsg(out, b);
+        Check(mb.size() == 11 && u16(mb, 2) == 728 && u16(mb, 8) == nox::kItemLongsword && mb[10] == 1,
+              "롱소드로 죽였는데 알림에 롱소드 그림(갈래 1·1169)이 아님");
+        // 부활 뒤 주인 없는 피해로 죽으면 죽인 사람이 0 이어야 한다(+520 = 0)
+        for (int t = 0; t < 60; ++t) { ms += 33; srv.Tick(ms, out); }
+        auto clickB = InputPacket(6);
+        srv.OnPacket(b, clickB.data(), clickB.size(), out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.IsAlive(b), "클릭했는데 안 되살아남(시험 전제)");
+        Check(srv.DebugLastHitCls(b) == 0, "부활했는데 +520(마지막으로 때린 것)을 안 지웠다");
+        for (int t = 0; t < 5 * nox::kServerTickRate + 2; ++t) { ms += 33; srv.Tick(ms, out); }   // 부활 무적 5초
+        out.clear();
+        srv.Damage(b, 999, out);
+        const auto mb2 = killMsg(out, b);
+        Check(mb2.size() == 11 && u16(mb2, 2) == 0 && mb2[10] == 0, "부활 뒤에도 옛 죽인 사람·갈래가 남아 있다");
+    }
+
+    // ⑥-2 실제 흐름 — 소환수가 걸어가 때려 죽이면 죽인 사람 = 주인 · 갈래 1 · 소환수 종류
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(b, 1400, 1000);
+        std::vector<nox::OutPacket> out;
+        auto sum = SpellPacket(79, false);
+        srv.OnPacket(a, sum.data(), sum.size(), out);
+        Check(srv.pets() == 1, "소환수가 안 불려 나옴(시험 전제)");
+        srv.Damage(b, nox::HealthOnline(nox::CharClass::Wizard) - 1, out, "");
+        srv.Tick(0, out);
+        uint32_t ms = 0;
+        std::vector<uint8_t> mb;
+        for (int t = 0; t < 400 && srv.IsAlive(b); ++t) {
+            out.clear();
+            ms += 33; srv.Tick(ms, out);
+            if (!srv.IsAlive(b)) mb = killMsg(out, b);
+        }
+        Check(!srv.IsAlive(b), "소환수가 체력 1 짜리를 못 죽였다(시험 전제)");
+        Check(mb.size() == 11 && u16(mb, 2) == 728 && mb[10] == 1 && u16(mb, 8) != 0 && u16(mb, 8) != nox::kPlayerType,
+              "소환수가 죽였는데 알림이 주인·갈래 1·소환수 종류가 아님");
+    }
+
+    // ⑦ 방어값 — 녹음 값과 한 비트까지 · 첫 갱신에 본인에게만 한 번 · 다음 틱엔 안 보냄
+    {
+        const float wiz = nox::ArmorValueFloat(nox::CharClass::Wizard);
+        uint32_t bits = 0;
+        std::memcpy(&bits, &wiz, 4);
+        Check(bits == 0x3e6b8520u, "위저드 방어값이 녹음 `20 85 6b 3e` 와 다르다(더하는 순서)");
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);                                   // 위저드
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        auto armorMsgs = [](const std::vector<std::vector<uint8_t>>& v) {
+            std::vector<std::vector<uint8_t>> r;
+            for (const auto& m : v) if (!m.empty() && m[0] == static_cast<uint8_t>(nox::Op::REPORT_ARMOR_VALUE)) r.push_back(m);
+            return r;
+        };
+        const auto ta = armorMsgs(FlattenTo(out, a));
+        const auto tb = armorMsgs(FlattenTo(out, b));
+        Check(ta.size() == 1 && ta[0].size() == 5 && ta[0][1] == 0x20 && ta[0][2] == 0x85 && ta[0][3] == 0x6b && ta[0][4] == 0x3e,
+              "위저드 본인에게 방어값 `49 20 85 6b 3e` 가 한 번 안 감");
+        const float war = nox::ArmorValueFloat(nox::CharClass::Warrior);
+        uint32_t wb = 0;
+        std::memcpy(&wb, &war, 4);
+        Check(tb.size() == 1 && tb[0].size() == 5 && (tb[0][1] | (tb[0][2] << 8) | (tb[0][3] << 16) | (static_cast<uint32_t>(tb[0][4]) << 24)) == wb,
+              "워리어는 제 방어값을 받아야 하는데 아니다(남의 값이 샌다)");
+        out.clear();
+        ms += 33; srv.Tick(ms, out);
+        Check(armorMsgs(Flatten(out)).empty(), "방어값이 안 바뀌었는데 다음 틱에 또 보냄");
+        // 스냅샷 꼬리 — 직업 값이 실린다
+        const auto tail = nox::BuildSnapshotTail(713, nox::CharClass::Warrior, 1, 1);
+        bool tailHas = false;
+        for (size_t i = 0; i + 4 < tail.size(); ++i)
+            if (tail[i] == 0x49 && (tail[i + 1] | (tail[i + 2] << 8) | (tail[i + 3] << 16) | (static_cast<uint32_t>(tail[i + 4]) << 24)) == wb) tailHas = true;
+        Check(tailHas, "워리어 스냅샷 꼬리의 방어값이 직업 값이 아니다");
+    }
+
+    // ⑧ 충돌 요청 — 번호 · extent(윗비트) · 없는 것 · 함수 없는 종류 · 관전
+    {
+        nox::Server srv;
+        std::vector<nox::Server::MapObjRef> refs;
+        nox::Server::MapObjRef r1; r1.netCode = 200; r1.extent = 77; r1.type = 900; refs.push_back(r1);
+        nox::Server::MapObjRef r2; r2.netCode = 201; r2.extent = 78; r2.type = 901; refs.push_back(r2);
+        srv.SetMapObjects(refs);
+        srv.SetCollideFn(900, "ChestCollide");
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729, /*observer=*/true);
+        std::vector<nox::OutPacket> out;
+        auto send = [&](const std::string& who, uint16_t code) {
+            const auto p = WireOf({ static_cast<uint8_t>(nox::Op::TRY_COLLIDE), static_cast<uint8_t>(code), static_cast<uint8_t>(code >> 8) });
+            srv.OnPacket(who, p.data(), p.size(), out);
+        };
+        send(a, 200);
+        Check(srv.tryCollides() == 1 && srv.tryCollideDeferred() == 1, "번호로 보낸 충돌 요청이 상자를 못 찾음");
+        send(a, static_cast<uint16_t>(0x8000 | 77));
+        Check(srv.tryCollides() == 2, "윗비트 선 번호를 extent 로 안 찾음");
+        send(a, 200 | 0x8000);
+        Check(srv.tryCollides() == 2, "윗비트 선 번호를 번호로 찾았다(extent 200 은 없다)");
+        send(a, 999);
+        Check(srv.tryCollides() == 2, "없는 번호인데 찾았다고 셈");
+        send(a, 201);
+        Check(srv.tryCollides() == 3 && srv.tryCollideDeferred() == 2, "충돌 함수 없는 종류를 부를 것으로 셈");
+        send(b, 200);
+        Check(srv.tryCollides() == 3, "관전 중인데 충돌 요청을 받았다(3680 & 3)");
+        send(a, 729);
+        Check(srv.tryCollides() == 4, "사람 번호로 보낸 충돌 요청을 못 찾음");
+    }
+    std::printf("  3-d — 죽음 알림 갈래·종류·죽인 사람 · 방어값 녹음 일치·한 번 · 충돌 요청 찾기\n");
 }
 
 // ── 팀이 바뀌면 친구 목록 비우기 (2026-09-13) ─────────────────
@@ -4927,6 +5169,7 @@ int main() {
     TestObserverExit();
     TestSnapshotSeqRenumber();
     TestImportantQueue();
+    TestKillArmorCollide();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

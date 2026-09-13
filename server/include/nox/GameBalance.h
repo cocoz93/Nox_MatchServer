@@ -256,10 +256,14 @@ inline float ItemArmorValue(uint16_t wire) {
 }
 // 플레이어 +228 방어값 — `nox_xxx_recalculateArmorVal_53E300`(GAME4_3.c:7327): 입은 갑옷의 값을 **float 로** 더하고
 //   1.0(blob_581450 9512) 을 넘으면 1.0. ⚠ 지금은 직업 기본 장비(주워 입기는 묶음 5). 마법 효과(+76 콜백)는 5.
+//   ★ 3-d 정정 — **순서가 값을 바꾼다.** 인벤토리는 새로 든 것을 맨 앞에 끼운다(`GAME3_3.c:10635~10640` · `GAME4_2.c:3246~3251`)
+//   그래서 목록 순회는 든 순서의 **거꾸로**다. 위저드(셔츠·바지·신발 → 로브 순으로 받음, `GAME3_3.c:7990~8037`)를
+//   로브부터 더하면 0x3e6b8520 — 녹음 스냅샷의 `49 20 85 6b 3e` 와 같고, 든 순서대로 더하면 0x3e6b851f 로 한 비트 어긋난다.
 inline float ArmorValueFloat(CharClass c) {
     const Loadout l = LoadoutFor(c);
     float v = 0.0f;
-    for (int i = 0; i < l.count && i < 4; ++i) v = ItemArmorValue(l.items[i]) + v;
+    const int n = l.count < 4 ? l.count : 4;
+    for (int i = n - 1; i >= 0; --i) v = ItemArmorValue(l.items[i]) + v;
     if (v > 1.0) v = 1.0f;
     return v;
 }
