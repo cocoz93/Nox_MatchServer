@@ -7607,6 +7607,112 @@ void TestBlink() {
     std::printf("  4-e(1) — 점멸 길목/시작지점·닻이면 못 감·한 박자 뒤·점 효과 두 번\n");
 }
 
+// ── 묶음 4-e(2) — 표식·순간이동 ──────────────────────────────────────
+//
+// `sub_52CBD0` 표식 걸기(46~49) — 칸 = **주문 − 46** · 자리 = 시전자 자리(글리프에 걸면 글리프 자리).
+// `sub_5305D0`/`sub_530650` 표식으로 가기(122~125) — 칸 = **주문 − 122**.
+//   그 칸에 표식이 **없으면 아예 안 걸린다** · 있으면 아레나에선 시전이 끝나는 그 틱에 옮긴다.
+// `castTele_530820`/`sub_530880` 무작위 표식으로(121) — 걸린 표식 넷 가운데 하나를 골라 옮긴다. 없으면 그냥 끝.
+// 셋 다 **닻(버프 14)** 이면 못 옮기고 끝난다.
+void TestMarkTeleport() {
+    const std::string a = "10.9.16.1:9161";
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("TeleportDelay = 25, 20, 15, 10, 5;\n");
+        srv.SetGamedata(g);
+        for (uint8_t sp : { (uint8_t)46, (uint8_t)47, (uint8_t)121, (uint8_t)122, (uint8_t)123 })
+            srv.SetSpellDef(sp, 0, 0x1000000, { static_cast<uint8_t>(sp % 8), static_cast<uint8_t>((sp / 8) % 8), 2 });
+        srv.DebugEnterGame(a, 870, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+
+    // ① 표식을 걸고 딴 데로 간 뒤 **그 표식으로** 돌아온다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 46, /*onSelf=*/true, ms, out);   // 칸 0 에 (1000,1000)
+        srv.DebugMoveTo(a, 3000, 3000);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 122, true, ms, out);             // 칸 0 으로
+        Check(srv.XOf(a) > 950 && srv.XOf(a) < 1050, "표식으로 안 돌아왔다");
+    }
+
+    // ② **칸이 따로** 논다 — 칸 1 에 안 걸었으면 123 은 아예 안 걸린다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 46, true, ms, out);              // 칸 0 만 건다
+        srv.DebugMoveTo(a, 3000, 3000);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 123, true, ms, out);             // 칸 1 — 비어 있다
+        Check(srv.XOf(a) > 2950 && srv.XOf(a) < 3050, "빈 칸인데 옮겨졌다");
+        Check(srv.DurCount() == 0, "빈 칸인데 주문이 걸렸다");
+    }
+
+    // ③ 칸 1 에 걸면 123 이 그리로 간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugMoveTo(a, 2000, 2000);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 47, true, ms, out);              // 칸 1 에 (2000,2000)
+        srv.DebugMoveTo(a, 3000, 3000);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 123, true, ms, out);
+        Check(srv.XOf(a) > 1950 && srv.XOf(a) < 2050, "칸 1 표식으로 안 갔다");
+    }
+
+    // ④ **무작위 표식으로**(121) — 걸린 것이 하나뿐이면 그리로 간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 46, true, ms, out);              // 칸 0 에 (1000,1000)
+        srv.DebugMoveTo(a, 3000, 3000);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 121, true, ms, out);
+        Check(srv.XOf(a) > 950 && srv.XOf(a) < 1050, "무작위 표식으로 안 갔다");
+    }
+
+    // ⑤ 표식이 **하나도 없으면** 무작위 표식은 아무 일도 안 한다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 121, true, ms, out);
+        Check(srv.XOf(a) > 950 && srv.XOf(a) < 1050, "표식이 없는데 어디론가 옮겨졌다");
+    }
+
+    // ⑥ **닻(14)** 이면 못 옮긴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 46, true, ms, out);
+        srv.DebugMoveTo(a, 3000, 3000);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugApplyEnchant(a, 14, 300, 3);
+        CastAndWait(srv, a, 122, true, ms, out);
+        Check(srv.XOf(a) > 2950 && srv.XOf(a) < 3050, "닻이 걸렸는데 옮겨졌다");
+    }
+    std::printf("  4-e(2) — 표식 걸기·칸별로 따로·표식으로 가기·무작위 표식·표식 없음·닻\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -9722,6 +9828,7 @@ int main() {
     TestDeathRay();
     TestShieldSpell();
     TestBlink();
+    TestMarkTeleport();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

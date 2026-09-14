@@ -4488,6 +4488,23 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 30, out) ? 1 : 0;
                 break;
             }
+            case 46: case 47: case 48: case 49:                                                // Mark 1~4 — 표식 걸기
+                fnc = CastMark(spell, s, arg, out);
+                break;
+            case 121: {                                                                        // TeleportPop — 무작위 표식으로
+                DurFns f;
+                f.create = &Server::DurTelePopCreate;
+                f.update = &Server::DurTelePopTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
+                break;
+            }
+            case 122: case 123: case 124: case 125: {                                          // TeleportToMark 1~4
+                DurFns f;
+                f.create = &Server::DurTeleMarkCreate;
+                f.update = &Server::DurTeleMarkTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
+                break;
+            }
             case 4: {                                                                          // Blink — 지속(한 박자 뒤 자리 옮김)
                 DurFns f;
                 f.create = &Server::DurBlinkCreate;
@@ -5346,6 +5363,95 @@ int Server::DurBlinkTick(DurSpell& d, std::vector<OutPacket>& out) {
     TeleportTarget(d.target, tx, ty);
     pointFx(tx, ty);
     return 1;                                                // 한 번 옮기면 끝
+}
+
+// ── 묶음 4-e(2) 표식·순간이동 ─────────────────────────────────────────
+//
+// 옮길 때 점 효과 137 을 **떠난 자리와 닿은 자리** 두 번 보낸다(투명이면 안 보낸다 — 그건 묶음 4-a4 쪽).
+void Server::SendTeleportFx(float ox, float oy, float nx, float ny, std::vector<OutPacket>& out) {
+    auto one = [&](float px, float py) {
+        const uint16_t ix = static_cast<uint16_t>(static_cast<int>(px)), iy = static_cast<uint16_t>(static_cast<int>(py));
+        const uint8_t msg[5] = { static_cast<uint8_t>(Op::FX_TELEPORT),
+                                 static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                 static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+        SendFxAllCli(px, py, msg, sizeof(msg), out);
+    };
+    one(ox, oy);
+    one(nx, ny);
+}
+
+// sub_52CBD0(`GAME4_2.c:9800`) — 표식 걸기(46~49). 칸 = **주문 − 46**.
+//   자리 = 글리프에 건 것이면 그 글리프 자리, 아니면 **시전자 자리**.
+//   ⚠ 정답지는 `TeleportGlyph1~4` 오브젝트를 세워 두고 이미 있으면 **옮긴다** — 우리는 자리만 담는다(그림은 글리프 조각).
+int Server::CastMark(uint8_t spell, Session& caster, const SpellArg& arg, std::vector<OutPacket>& out) {
+    (void)arg;
+    (void)out;
+    if (spell < 46 || spell > 49) return 0;
+    const int slot = spell - 46;
+    caster.markSet[slot] = true;
+    caster.markX[slot] = static_cast<float>(caster.posX);
+    caster.markY[slot] = static_cast<float>(caster.posY);
+    return 1;
+}
+
+// sub_5305D0(`GAME4_3.c:...`) — 표식으로 가기(122~125) 켤 때.
+//   그 칸에 표식이 **없으면 아예 안 걸린다**. 있으면 언제 터질지만 잡는다(협동은 TeleportDelay, 아니면 다음 틱).
+int Server::DurTeleMarkCreate(DurSpell& d, std::vector<OutPacket>& out) {
+    (void)out;
+    auto c = sessions_.find(d.caster);
+    if (c == sessions_.end()) return 1;
+    const int slot = static_cast<int>(d.spell) - 122;
+    if (slot < 0 || slot > 3) return 1;
+    if (!c->second.markSet[slot]) return 1;                  // 표식이 없다
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    d.frame68 = quest ? (frame_ + static_cast<uint32_t>(BalanceFloatInd("TeleportDelay", d.level - 1)))
+                      : (frame_ + 1);
+    return 0;
+}
+
+// sub_530650 — 그 프레임이 되면 **한 번** 옮기고 끝난다. 닻(14)이면 못 옮긴 채 끝난다
+int Server::DurTeleMarkTick(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (c == sessions_.end() || !c->second.inGame) return 1;
+    if (d.target.none() || TargetHealth(d.target) <= 0) return 1;
+    if (d.frame68 - 1 != frame_) return 0;
+    if (const Buffs* b = BuffsOf(d.target)) { if (b->Has(14)) return 1; }   // 닻
+    const int slot = static_cast<int>(d.spell) - 122;
+    if (slot < 0 || slot > 3 || !c->second.markSet[slot]) return 1;
+    float ox = 0, oy = 0;
+    TargetXY(d.target, ox, oy);
+    TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
+    SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
+    return 1;
+}
+
+// castTele_530820 — 무작위 표식으로 가기(121) 켤 때. 때만 잡는다(표식 검사는 터질 때 한다)
+int Server::DurTelePopCreate(DurSpell& d, std::vector<OutPacket>& out) {
+    (void)out;
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    d.frame68 = quest ? (frame_ + static_cast<uint32_t>(BalanceFloatInd("TeleportDelay", d.level - 1)))
+                      : (frame_ + 1);
+    return 0;
+}
+
+// sub_530880 — 그 프레임이 되면 시전자의 표식 **네 칸 가운데 걸린 것 하나를 무작위로** 골라 옮긴다.
+//   하나도 없으면 그냥 끝난다. 닻(14)이면 못 옮긴 채 끝난다
+int Server::DurTelePopTick(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (c == sessions_.end() || !c->second.inGame) return 1;
+    if (d.target.none() || TargetHealth(d.target) <= 0) return 1;
+    if (d.frame68 - 1 != frame_) return 0;
+    if (const Buffs* b = BuffsOf(d.target)) { if (b->Has(14)) return 1; }
+    int have = 0;
+    for (int i = 0; i < 4; ++i) if (c->second.markSet[i]) ++have;
+    if (have == 0) return 1;                                 // 걸린 표식이 없다
+    int slot = 0;
+    do { slot = static_cast<int>(NextRandom(4)); } while (!c->second.markSet[slot]);
+    float ox = 0, oy = 0;
+    TargetXY(d.target, ox, oy);
+    TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
+    SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
+    return 1;
 }
 
 // ── 묶음 4-c1 밀기·당기기·땅흔들기 ─────────────────────────────────────

@@ -294,6 +294,11 @@ struct Session {
     uint8_t stamina = 0;
     // ★ 피해 소수 이월(+84, 3-e) — 방어로 깎인 피해의 소수부를 다음 피해에 더한다(`GAME3_3.c:468` playerDecrementHPMana)
     float dmgRemainder = 0.0f;
+    // ★ 표식 네 자리(playerinfo +116 + 4×칸) — 정답지는 `TeleportGlyph1~4` **오브젝트**를 세워 두고
+    //   그 오브젝트 자리를 쓴다. 우리는 자리만 담는다(그림은 묶음 4-e 글리프에서).
+    //   칸 = `주문 − 46`(표식 걸기 46~49) = `주문 − 122`(표식으로 가기 122~125).
+    bool markSet[4] = { false, false, false, false };
+    float markX[4] = { 0, 0, 0, 0 }, markY[4] = { 0, 0, 0, 0 };
     uint8_t lastDamageType = 0;    // +524 — 마지막 피해 종류(damageDefaultProc). 16 에 죽으면 먼지 자세 51(`GAME4_1.c:4459`)
     // ★ 죽음 알림(`a9 0e`, 3-d)에 실을 것 — 플레이어 +304 갈래 · +300 종류(`GAME3_3.c:164~246 · 344~437`).
     //   피해 함수가 부를 때마다 0 에서 다시 적는다: 갈래 1 = 종류 번호(무기·투사체 · 없으면 맨손 10·망치 2 때 때린 이) · 2 = 피해 종류
@@ -1941,6 +1946,12 @@ private:
     int CastArachnaphobia(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);            // spellArachna_52DC80
     int CastPixieSwarm(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out);            // castPixies_540440
     int CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);                // castDeathRay(spell_death_ray.go:19)
+    int CastMark(uint8_t spell, Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);    // sub_52CBD0
+    int DurTeleMarkCreate(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_5305D0
+    int DurTeleMarkTick(DurSpell& d, std::vector<OutPacket>& out);                                     // sub_530650
+    int DurTelePopCreate(DurSpell& d, std::vector<OutPacket>& out);                                    // castTele_530820
+    int DurTelePopTick(DurSpell& d, std::vector<OutPacket>& out);                                      // sub_530880
+    void SendTeleportFx(float ox, float oy, float nx, float ny, std::vector<OutPacket>& out);          // netSendPointFx 137 두 번
     int DurBlinkCreate(DurSpell& d, std::vector<OutPacket>& out);                                      // spellBlink2_530310
     int DurBlinkTick(DurSpell& d, std::vector<OutPacket>& out);                                        // spellBlink1_530380
     // teleportToMB_4E7190 — 그 자리로 옮긴다(물리 자리·옛 자리칸 둘 다).
