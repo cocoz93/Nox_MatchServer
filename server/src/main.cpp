@@ -424,6 +424,18 @@ int main(int argc, char** argv) {
                 srv.SetNamedType(nm, w);
                 std::printf("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");
             }
+            // ★ 4-c3 — 주문이 **날리는** 것(불덩이 셋). 빠르기·깃발·닿음 인자를 전부 thing.bin 에서 읽는다.
+            //   `COLLIDE = SparkExplosionCollide 192` 의 숫자가 터짐 크기를 다 정하므로 **짐작하지 않는다**.
+            for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball" }) {
+                const uint16_t w = tdb.WireByName(nm);
+                const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
+                int amount = 0;
+                if (t2 && !t2->collideArgs.empty()) amount = std::atoi(t2->collideArgs.c_str());
+                if (t2) srv.SetProjType(nm, w, t2->speed, nox::ParseObjectFlags(t2->flagsRaw),
+                                        static_cast<uint8_t>(amount < 0 ? 0 : (amount > 255 ? 255 : amount)));
+                std::printf("[날리기 종류] %s = %u · SPEED %d · 닿음 %s %d%s\n", nm, static_cast<unsigned>(w),
+                            t2 ? t2->speed : 0, t2 ? t2->collideFn.c_str() : "?", amount, t2 ? "" : " ⚠ 못 찾음");
+            }
             std::vector<nox::Server::WorldStatic> st;
             std::vector<nox::Server::WorldProp> props;
             const auto objs = mf.ReadObjects();

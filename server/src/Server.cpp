@@ -4543,6 +4543,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 60: fnc = CastPoison(obj3, targ, fl5, out); break;                            // castPoison_52C720
             case 128: fnc = CastToxicCloud(s, arg, out); break;                                // castToxicCloud_52DB60
             case 5: fnc = CastBurn(s, arg, out); break;                                       // castBurn_52C3E0
+            case 27: fnc = CastFireball(s, lvl, out); break;                                  // castFireball_52C790
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
@@ -5316,6 +5317,102 @@ int Server::CastBurn(Session& caster, const SpellArg& arg, std::vector<OutPacket
     return 1;
 }
 
+// castFireball_52C790(`GAME4_2.c:9580`) — 앞으로 날리는 불덩이. **겨눈 주문이 아니다**(Magic 을 안 쓴다).
+//   ★ 종류가 세기마다 다르다 — 정답지 표 `0x587000+258864+4×세기`:
+//     1 Fireball · 2 StrongFireball · **3·4·5 모두 TitanFireball**
+//   나는 자리 = 시전자 자리 + (몸 반지름 × 2) × 방향 + 시전자 속도.
+//   그 자리까지 선 추적(5)이 막히면 **시전자 제자리에** 만든다(실패가 아니다 — 벽에 붙어 쏘면 제 발밑에서 터진다).
+//   빠르기 = `FireballSpeedCoeff[세기-1]`(1.6·2.0·2.4·2.5·2.6) × 그 종류의 SPEED 기본값.
+int Server::CastFireball(Session& caster, int lvl, std::vector<OutPacket>& out) {
+    (void)out;
+    if (lvl < 1) lvl = 1;
+    if (lvl > 5) lvl = 5;
+    static const char* const kName[6] = { "", "Fireball", "StrongFireball", "TitanFireball", "TitanFireball", "TitanFireball" };
+    const ProjTypeInfo* pt = ProjType(kName[lvl]);
+    if (!pt || pt->type == 0) return 1;                      // newObjectByTypeID 가 0 이면 정답지도 1 을 돌려준다
+    const int dir = caster.facingPrev;                       // +124 Direction1
+    const float px = static_cast<float>(caster.posX), py = static_cast<float>(caster.posY);
+    const float reach = static_cast<float>(kBodyRadius) * 2.0f;   // +176 반지름 두 배
+    float sx = static_cast<float>(static_cast<double>(reach) * DirVecX(dir) + px) + static_cast<float>(caster.velX);
+    float sy = static_cast<float>(static_cast<double>(reach) * DirVecY(dir) + py) + static_cast<float>(caster.velY);
+    if (!MapTraceRay(px, py, sx, sy, 0x5)) { sx = px; sy = py; }  // 막히면 제자리
+    MissileObj m;
+    m.netCode = nextShotNetCode_++;
+    if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+    m.type = pt->type;
+    m.flags = pt->flags;
+    m.posX = m.newX = m.prevX = sx;
+    m.posY = m.newY = m.prevY = sy;
+    m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
+    m.createdFrame = m.frame136 = frame_;
+    m.speed = static_cast<float>(BalanceFloatInd("FireballSpeedCoeff", lvl - 1)) * pt->speed;
+    m.owner = caster.addr;
+    m.ud0 = m.ud2 = caster.addr;
+    m.spell = 27;
+    m.level = lvl;
+    m.collideKind = 1;                                       // SparkExplosionCollide
+    m.collideAmount = pt->collideAmount;
+    m.velX = DirVecX(dir) * m.speed + static_cast<float>(caster.velX);
+    m.velY = DirVecY(dir) * m.speed + static_cast<float>(caster.velY);
+    missiles_.push_back(m);
+    return 1;
+}
+
+// mapDamageUnitsAround_4E25B0(Go `game.go:1407`) — 둘레 피해. rr = max(r1, r2)
+//   · 자기(날아간 것)와 **이미 직접 맞은 것**은 건너뛴다 · 벽 너머(선 추적 1)는 안 닿는다
+//   · 안쪽 r2 까지는 온전, 그 밖은 `1 − (거리 − r2) / (rr − r2)` 로 줄어든다
+//   ⚠ 벽 피해(mapDamageToWalls_534FC0)는 아직 안 옮김 — 벽이 부서지는 묶음(9)에서
+void Server::DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,
+                               const std::string& by, const Target& skip, std::vector<OutPacket>& out) {
+    const float rr = (r1 < r2) ? r2 : r1;
+    if (rr <= 0.0f || dmg <= 0) return;
+    auto hit = [&](const Target& t, float tx, float ty) {
+        if (!skip.none() && t.addr == skip.addr && t.pet == skip.pet) return;
+        const float dx = tx - cx, dy = ty - cy;
+        const float dist = std::sqrt(dx * dx + dy * dy);
+        if (dist > rr) return;
+        if (!MapTraceRay(cx, cy, tx, ty, 0x1)) return;
+        float rdmg = static_cast<float>(dmg);
+        if (dist >= r2 && rr > r2) rdmg *= 1.0f - (dist - r2) / (rr - r2);
+        HurtTarget(t, static_cast<int>(rdmg), out, by, dtype, nullptr);
+    };
+    std::vector<std::string> who;
+    for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
+    for (const auto& addr : who) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) continue;
+        hit(Target{ addr, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
+    }
+    for (size_t k = 0; k < pets_.size(); ++k)
+        hit(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
+}
+
+// fireballCollide_4E9AC0(`GAME3_3.c:4160`) — 닿은 자리에서 터진다. 인자 한 바이트가 크기를 다 정한다.
+//   · 밀기 : 둘레 **양 × 0.66667** · 안쪽 0 · 힘 50
+//   · 직접 맞은 것 : **양 >> 1** 피해(종류 1 불)
+//   · 둘레 피해 : 바깥 **양 × 0.33333** · 안쪽 **15** · 같은 **양 >> 1** · 직접 맞은 것은 건너뜀
+//   · 불똥 그림 : `netSparkExplosionFx_5231B0` = **`93 <x u16> <y u16> <양 i8>` 6바이트**를 화면 안 모두에게
+//     ⚠ 옛 자리표시는 여기에 `85`(FireBoom)를 보냈다 — **짐작이었고, 정답지는 `93` 이다.**
+//   ⚠ 아직 안 옮긴 것 — 그을음(sMakeScorch) · 소리 42 · 벽 피해(mapDamageToWalls)
+void Server::FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPacket>& out) {
+    const int amount = static_cast<int>(m.collideAmount);
+    if (amount <= 0) return;
+    PushUnitsAround(m.posX, m.posY, static_cast<float>(static_cast<double>(amount) * 0.66666669), 0.0f, 50.0f);
+    const int dmg = amount >> 1;
+    if (!hit.none()) HurtTarget(hit, dmg, out, m.owner, 1, nullptr);
+    DamageUnitsAround(m.posX, m.posY, static_cast<float>(static_cast<double>(amount) * 0.33333334), 15.0f,
+                      dmg, 1, m.owner, hit, out);
+    const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
+    const uint8_t fx[6] = {
+        static_cast<uint8_t>(Op::FX_SPARK_EXPLOSION),
+        static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8),
+        static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8),
+        static_cast<uint8_t>(amount),
+    };
+    SendFxAllCli(m.posX, m.posY, fx, sizeof(fx), out);
+    ++fxSent_;
+}
+
 // changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)
 //   ⚠ 자리바꾸기(SWAP 115) 주문이면 cspellRemoveSpell_52BC90(4-e)
 void Server::MissileChangeOwner(MissileObj& m, const std::string& own, uint32_t frame) {
@@ -5929,7 +6026,18 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
     for (size_t i = 0; i < missiles_.size();) {
         MissileObj& m = missiles_[i];
         // 만든 틱에는 안 돈다(ObjectsAddPending 뒤) — 우리 틀은 시전 목록(SpellCastByBook)이 이 뒤에 돌아 저절로 그렇다
-        // ① SpellProjectileUpdate 53B940(`GAME4_3.c:5764`)
+        // ①-a ProjectileUpdate 53AC10(`object_update.go:938`) — 불덩이 같은 **보통 투사체**의 주기 함수.
+        //   하는 일이 하나뿐이다: 만든 뒤 **40틱**이 지나면 제 닿음 함수를 대상 없이(0,0) 부르고 지운다.
+        //   ⚠ 아래 ①-b(SpellProjectileUpdate)의 수명 15/45·대상 찾기·따라가는 힘은 **Magic 전용**이다 —
+        //     불덩이에 씌우면 15틱 만에 사라져 멀리 못 간다(실측: 세기 1 불덩이가 280 을 못 갔다).
+        if (m.collideKind == 1) {
+            if (frame - m.createdFrame > 40u) {
+                FireballExplode(m, Target{}, out);
+                DestroyMissile(i, out);
+                continue;
+            }
+        } else
+        // ①-b SpellProjectileUpdate 53B940(`GAME4_3.c:5764`)
         {
             const uint32_t life = m.ud1.none() ? 15u : 45u;   // ⭕ gamedata ARENA UnTargeted/TargetedSpellLifetime
             if (frame - m.createdFrame > life) {
@@ -6093,6 +6201,12 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                 m.newX = m.prevX; m.newY = m.prevY;
             };
             if (wallHit) {
+                if (m.collideKind == 1) {                    // 불덩이는 벽에서도 터진다(fireballCollide 의 a2 == 0 갈래)
+                    FireballExplode(m, Target{}, out);
+                    DestroyMissile(i, out);
+                    erased = true;
+                    continue;
+                }
                 // collideReflect_57B810 — 법선 부호 곱으로 속도 성분 맞바꿈
                 if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
                 else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
@@ -6120,9 +6234,25 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         //   되받아치기 방패(27) 버프 · 앞쪽(날아가는 것 지금 자리 +56) → 주인·대상 맞바꿈(소리 122 → 10) · 되받아침 없이 그대로
                         if (!handled && t.buffs.Has(27) &&
                             (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY), t.facingPrev, m.posX, m.posY) & 1)) {
-                            changeOwner();
+                            if (m.collideKind == 1) {
+                                // 불덩이는 제 닿음 함수 안에서 **되받아치고 주인을 넘긴다** — 터지지 않는다(소리 122)
+                                //   `projectileReflect_4E0A70` → `unitClearOwner_4EC300` → `unitSetOwner_4EC290(맞은 이, 불덩이)`
+                                reflectFrom(hx, hy);
+                                m.owner = t.addr;
+                                m.ud0 = m.ud2 = t.addr;
+                            } else {
+                                changeOwner();
+                            }
                             handled = true;
                         }
+                    }
+                    if (!handled && m.collideKind == 1) {
+                        // 불덩이 — 대상을 안 가린다(맞는 것마다 터진다). 되받아치기 방패(27)는 위에서 이미 handled
+                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        FireballExplode(m, tgt, out);
+                        DestroyMissile(i, out);
+                        erased = true;
+                        handled = true;
                     }
                     if (!handled) {
                         const bool isTarget = (hk == HitPlayer && m.ud1.addr == hAddr) || (hk == HitPet && m.ud1.pet == hIdx);

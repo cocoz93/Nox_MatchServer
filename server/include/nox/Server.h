@@ -1469,6 +1469,22 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.lastDamageType;
     }
+    // 날아가는 종류 하나 — thing.bin 에서 읽어 main 이 넣는다(이름으로 찾는다).
+    struct ProjTypeInfo { uint16_t type = 0; float speed = 0; uint32_t flags = 0; uint8_t collideAmount = 0; };
+    void SetProjType(const std::string& name, uint16_t type, int speedRaw, uint32_t flags, uint8_t collideAmount) {
+        ProjTypeInfo p;
+        p.type = type;
+        p.speed = static_cast<float>(speedRaw) / 32.0f * 2.0f;   // SpeedBase = SPEED/32 · MISSILE 은 ×2
+        p.flags = flags;
+        p.collideAmount = collideAmount;
+        projTypes_[name] = p;
+    }
+    const ProjTypeInfo* ProjType(const std::string& name) const {
+        auto it = projTypes_.find(name);
+        return it == projTypes_.end() ? nullptr : &it->second;
+    }
+    uint16_t DebugMissileType(size_t i) const { return i < missiles_.size() ? missiles_[i].type : 0; }
+    float DebugMissileX(size_t i) const { return i < missiles_.size() ? missiles_[i].posX : 0.0f; }
     void SetMagicType(uint16_t type, int speedRaw, float mass, uint32_t flags) {
         magicType_.type = type;
         magicType_.flags = flags;                         // thing FLAGS(맞힘 거르기 sub_54E730)
@@ -1493,6 +1509,15 @@ public:
     bool DebugDurFindByTarget(uint8_t spell, const Target& t) const { return DurFindByTarget(spell, t) != nullptr; }
     void DebugDurCancelOffensiveFor(const std::string& addr, std::vector<OutPacket>& out) { DurCancelOffensiveFor(addr, out); }
     void DebugPlayerCancelSpells(const std::string& addr, std::vector<OutPacket>& out) { PlayerCancelSpells(addr, out); }
+    // 시험용 — **세기를 박아** 효과 함수만 부른다. 온라인은 늘 세기 3 이라 세기별 갈래를 시험할 길이 없다.
+    bool DebugSpellAccept(const std::string& addr, uint8_t spell, int lvl, std::vector<OutPacket>& out) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return false;
+        SpellArg arg;
+        arg.x = static_cast<float>(it->second.aimX);
+        arg.y = static_cast<float>(it->second.aimY);
+        return SpellAccept(spell, it->second, addr, arg, lvl, out);
+    }
     // 시험용 — 게임에서 빠진 것으로(오브젝트 지워짐 · inGame 끔)
     void DebugLeave(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.inGame = false; }
     int DebugDurUpdates() const { return debugDurUpdates_; }
@@ -1645,6 +1670,8 @@ public:
     unsigned long long hits() const { return hits_; }
     // 지금 날아가고 있는 것의 수.
     size_t flying() const { return shots_.size(); }
+    // 지금 날아가고 있는 **정답지 오브젝트**(Magic·불덩이 …)의 수. 위 `flying()` 은 옛 자리표시 쪽이다.
+    size_t missiles() const { return missiles_.size(); }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
     // 불려 나온 것이 죽은 횟수.
@@ -1791,6 +1818,10 @@ private:
         std::string ud2;                 // [2] 처음 시전자
         uint8_t spell = 0;               // [3]
         int level = 0;                   // [4]
+        // ★ 닿음 함수 갈래(묶음 4-c3 날리는 것) — thing.bin `COLLIDE` 가 정한다.
+        //   0 = SpellProjectileCollide(Magic — 대상에 닿으면 주문 효과) · 1 = SparkExplosionCollide(불덩이 — 터진다)
+        uint8_t collideKind = 0;
+        uint8_t collideAmount = 0;       // SparkExplosionCollide 의 인자(불덩이 192 · 센 불덩이·거인 불덩이 255)
     };
     struct MagicTypeInfo { uint16_t type = 0; float speed = 0; float mass = 1.0f; uint32_t flags = 0; };
     // ── 묶음 4-c3 — 주문이 **놓는** 오브젝트(불꽃·독구름 …). 안 움직이고 수명이 다하면 사라진다
@@ -1884,6 +1915,12 @@ private:
     void DestroyPlaced(size_t i, std::vector<OutPacket>& out);
     int CastToxicCloud(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);               // castToxicCloud_52DB60
     int CastBurn(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);                     // castBurn_52C3E0
+    int CastFireball(Session& caster, int lvl, std::vector<OutPacket>& out);                             // castFireball_52C790
+    // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.
+    //   skip 은 이미 직접 맞은 것(두 번 때리지 않는다). 벽 너머(선 추적 1)는 안 닿는다.
+    void DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,
+                           const std::string& by, const Target& skip, std::vector<OutPacket>& out);
+    void FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPacket>& out);                 // fireballCollide_4E9AC0
     // ── 묶음 4-c2a 독 ──
     uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
     bool ActivatePoison(const Target& t, int add, int cap, std::vector<OutPacket>& out);                 // activatePoison_4EE7E0
@@ -2191,6 +2228,7 @@ private:
     unsigned long long acceptCount_ = 0;
     std::string lastAcceptCaster_;
     MagicTypeInfo magicType_;                      // 묶음 4-a2 thing "Magic"
+    std::map<std::string, ProjTypeInfo> projTypes_;   // 묶음 4-c3 이름 → 날아가는 종류(불덩이 셋 …)
     unsigned long long spellEffectDeferred_ = 0;   // 효과 함수를 아직 안 옮긴 주문이 받아들여진 수
     std::vector<MapObjRef> mapObjects_;            // 묶음 3-d 맵 오브젝트 번호·extent·종류
     std::map<uint16_t, std::string> collideFn_;    // 묶음 3-d 종류 → 충돌 함수 이름
