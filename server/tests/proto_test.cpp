@@ -9133,6 +9133,146 @@ void TestPlasma() {
     std::printf("  5-f — 플라스마: 완드 없으면 취소 · 앞쪽 400 안 적을 뭄 · 종류 14 · 틱마다 충전 하나 · 뒤로 돌면 잠깐 유예 · 대상 있으면 끝을 미룸\n");
 }
 
+// ── 묶음 5-g — 충전 지팡이로 거는 연쇄 번개 ────────────────────────────
+//
+// 묶음 4-d 에 「⚠ 안 옮긴 갈래 — 든 물건이 **충전 지팡이**면 마나 대신 충전을 쓴다」로
+// 적어 둔 그 자리다. 완드 길(5-e)이 뚫려 이제 옮긴다.
+//
+// `onStartLightning_52F820` 이 켤 때 **든 완드를 적어 두고**,
+// `onFrameLightning_52F8A0`(`GAME4_3.c:346~372`)이 틱마다 그 충전을 하나 쓴다.
+//   · **글리프가 건 것이면 안 본다**(글리프에는 손이 없다)
+//   · 플라스마와 달리 **완드가 없어도 취소되지 않는다** — 그냥 마나를 쓴다
+//   · 자세도 갈린다 — 완드면 **22(집중)**, 마나면 **10(시전)**
+void TestChargedStaffCast() {
+    const std::string a = "10.5.7.1:5701";
+    const std::string b = "10.5.7.2:5702";
+    auto mk = [&](nox::Server& srv, bool withWand) {
+        RegSpell(srv, 43, 0);                                // 연쇄 번개
+        nox::Gamedata g;
+        g.Parse("LightningRange = 240;\nLightningDamage = 1.5;\n");
+        srv.SetGamedata(g);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+        if (!withWand) return;
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 900; w.type = 651; w.x = 1000; w.y = 1000;
+        w.weight = 20; w.useFn = nox::UseFn::WandCast;
+        w.wandSpell = 43; w.chargesMax = 5; w.charges = 5;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> o;
+        const std::vector<uint8_t> g2 = CodePacket(nox::Op::TRY_GET, 900);
+        srv.OnPacket(a, g2.data(), g2.size(), o);
+    };
+    auto cast = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+        srv.DebugSpellAccept(a, 43, 1, out);
+    };
+    auto charges = [&](const std::vector<nox::OutPacket>& out, int& now, int& max) {
+        bool found = false;
+        for (const auto& m : FlattenTo(out, a))
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_CHARGES)) {
+                now = m[3]; max = m[4]; found = true;
+            }
+        return found;
+    };
+
+    // ① **완드가 없으면 마나를 쓴다**(예전 그대로)
+    {
+        nox::Server srv; mk(srv, /*withWand=*/false);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        const uint16_t m0 = srv.ManaOf(a);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.ManaOf(a) == m0 - 1, "완드가 없는데 마나를 안 썼다");
+        int now = -1, max = -1;
+        Check(!charges(out, now, max), "완드가 없는데 충전 알림이 갔다");
+    }
+
+    // ② **완드를 들었으면 마나 대신 충전을 쓴다**
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        const uint16_t m0 = srv.ManaOf(a);
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.ManaOf(a) == m0, "완드를 들었는데 마나를 썼다");
+        int now = -1, max = -1;
+        Check(charges(out, now, max), "완드를 들었는데 충전 알림이 안 왔다");
+        Check(now == 4 && max == 5, "충전이 4/5 가 아니다");
+    }
+
+    // ③ **충전을 다 쓰면 끝난다** — 5 충전이면 다섯 틱
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        Check(srv.DurCount() == 1, "연쇄 번개가 안 걸렸다(이 시험의 전제)");
+        for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DurCount() == 1, "4틱 만에 끝났다 — 충전 5 여야 한다");
+        ms += 34; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);                         // 취소 깃발이 여기서 치워진다
+        Check(srv.DurCount() == 0, "충전을 다 썼는데 안 끝났다");
+    }
+
+    // ④ **완드를 들면 마나가 0 이어도 돈다** — 마나를 아예 안 보기 때문
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        srv.DebugManaSub(a, 1000);                           // 마나를 말린다
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        int now = -1, max = -1;
+        Check(charges(out, now, max), "마나가 0 인데 완드로도 안 돌았다");
+    }
+
+    // ⑤ **자세가 갈린다** — 완드면 22(집중), 마나면 10(시전)
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugStateOf(a) == 22, "완드로 걸었는데 자세가 22 가 아니다");
+    }
+    {
+        nox::Server srv; mk(srv, /*withWand=*/false);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugStateOf(a) == 10, "마나로 걸었는데 자세가 10 이 아니다");
+    }
+    // ⑥ **도중에 완드가 말라도 곧바로 끝난다** — 0 에서 빼면 255 로 감긴다
+    //   (다른 길로 충전을 다 쓴 완드를 들고 있을 수 있다 — 그때 이 갈래가 열린다)
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        srv.DebugSetCharges(a, 900, 0);                      // 바깥에서 말린다
+        ms += 34; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);                         // 취소 깃발이 여기서 치워진다
+        Check(srv.DurCount() == 0, "충전이 0 인데 계속 돈다 — 0 에서 빼 255 로 감겼나");
+    }
+    std::printf("  5-g — 충전 지팡이: 완드 없으면 마나 · 들면 충전(마나 0 이어도 돎) · 다 쓰면 끝 · 도중에 말라도 끝 · 자세 22 대 10\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -11313,6 +11453,7 @@ int main() {
     TestEatAndMushroom();
     TestWandCharges();
     TestPlasma();
+    TestChargedStaffCast();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

@@ -5196,10 +5196,22 @@ Target Server::LightningSearch(const Session& owner, const Target& from, float r
 }
 
 // onStartLightning_52F820(`GAME4_2.c:11660`) — 켤 때 **에너지볼트(24)를 끄고** 소수 이월을 0 으로. 0 = 살려 둔다
-//   ⚠ 안 옮긴 갈래 — 든 물건이 **충전 지팡이**면 마나 대신 충전을 쓴다(아이템 묶음 5)
+//   ★ 묶음 5-g — **든 물건이 충전 지팡이면 그것을 적어 둔다.** 틱마다 마나 대신 그 충전을 쓴다.
+//     · **글리프가 건 것(`+20`)이면 안 본다** — 글리프에는 손이 없다
+//     · 정답지는 오브젝트 클래스 비트 `0x40000` 을 본다(플라스마의 `0x4000000` 과 **다른 갈래**다).
+//       우리는 그 비트를 아직 안 담아 **쓸 때 부르는 함수**(`WandCastUse`)로 갈음한다
+//     · ⚠ 플라스마와 달리 **완드가 없어도 취소되지 않는다** — 그냥 마나를 쓴다
 int Server::DurChainLightningCreate(DurSpell& d, std::vector<OutPacket>& out) {
     d.field72 = 0.0f;
+    d.field80 = 0;
     if (!d.caster.empty()) DurCancelFor(24, d.caster, out);
+    if (!d.flag20) {
+        auto c = sessions_.find(d.caster);
+        if (c != sessions_.end() && c->second.inGame) {
+            const int wi = HeldWandIndex(c->second);
+            if (wi >= 0) d.field80 = static_cast<uint32_t>(wi + 1);   // 0 은 「없음」이라 +1 해 담는다
+        }
+    }
     return 0;
 }
 
@@ -5276,6 +5288,23 @@ int Server::DurChainLightningTick(DurSpell& d, std::vector<OutPacket>& out) {
     for (size_t i = d.sub108.size(); i < prev.size(); ++i)     // 남은 옛 빔은 끈다
         if (!prev[i].target.none()) NetStopRaySpell(prev[i], prev[i].target, out);
 
+    // ★ 묶음 5-g — **완드를 들었으면 마나 대신 충전을 쓴다**(`GAME4_3.c:346~372`).
+    //   자세도 다르다 — 완드면 **22(집중)**, 마나면 **10(시전)**.
+    if (d.field80 != 0) {
+        const size_t wi = static_cast<size_t>(d.field80 - 1);
+        if (wi >= caster.inventory.size()) return 1;
+        Session::Carried& w = caster.inventory[wi];
+        if (w.chargesMax != 0) {
+            if (w.charges == 0) return 1;
+            --w.charges;
+            PlayerSetState(caster, 22, frame_);
+            SendCharges(caster, w, out);
+            if (w.charges == 0) return 1;
+        } else {
+            PlayerSetState(caster, 22, frame_);
+        }
+        return 0;                                             // 마나는 안 쓴다
+    }
     PlayerSetState(caster, 10, frame_);
     PlayerManaSub(caster, 1);
     if (caster.manaPrev == 0) return 1;
