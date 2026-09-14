@@ -7398,6 +7398,120 @@ void TestDeathRay() {
     std::printf("  4-d(3) — 죽음광선 한 방(종류 16)·둘레 15·선 그림 9바이트·벽 뒤 못 쏨\n");
 }
 
+// ── 묶음 4-d(4) — 마법 방패(Shield 51) ────────────────────────────────
+//
+// `castShield1_52F5A0` — 대상에게 버프 **26** 을 걸고 **막아 낼 양**(`ShieldHealth` 20·35·50·75·100)을 담아 둔다.
+//   ⚠ `ShieldDuration` 실측이 **0, 0, 0, 0, 0** 이다 — **시간으로는 안 끝나고** 그 양을 다 쓰면 끝난다.
+// `unitShieldReduceDamage_52F710` — 맞는 순간 끼어든다.
+//   · 남은 체력 > 피해 : 피해를 **반**(0 이면 1)으로 줄이고 그만큼 주머니를 깎는다
+//   · 죽을 만큼 : 체력을 **2** 로 두고 피해를 **0** 으로(아예 안 맞음) · 주머니를 통째로 비워 주문이 끝난다
+//   · **독(5)은 안 막는다**
+void TestShieldSpell() {
+    const std::string a = "10.9.14.1:9141";
+    const std::string b = "10.9.14.2:9142";
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("ShieldDuration = 0, 0, 0, 0, 0;\nShieldHealth = 20, 35, 50, 75, 100;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(51, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
+        // ⚠ **워리어는 주문을 못 쓴다**(직업 거르기 9) — 시전자는 위저드여야 한다.
+        //   그래서 「워리어가 방패 올린 채 앞에서 맞으면 피해 1」 갈래는 여기서 못 본다(미결).
+        srv.DebugEnterGame(a, 850, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 851, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1300, 1000);
+    };
+
+    // ① 걸면 버프 26 이 붙는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 51, /*onSelf=*/true, ms, out);
+        Check(srv.DebugHasEnchant(a, 26), "방패를 걸었는데 버프 26 이 없다");
+    }
+
+    // ② 맞으면 피해가 **반**이 된다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 51, true, ms, out);
+        const uint16_t aHp = srv.HealthOf(a);
+        // ⚠ **종류 1(불)** 로 친다 — 물리(0)면 **방어가 먼저 깎아** 방패 반감만 재기 어렵다
+        srv.DebugHurt(a, -1, 10, b, 1, out);
+        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        if (lost != 5) std::printf("  [방패] 10 을 맞고 잃은 값 %d — 5 여야 한다\n", lost);
+        Check(lost == 5, "방패가 피해를 반으로 안 줄였다");
+    }
+
+    // ③ **주머니(ShieldHealth)를 다 쓰면** 방패가 끝난다 — 세기 3 이면 50 이다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 51, true, ms, out);
+        Check(srv.DebugHasEnchant(a, 26), "방패가 안 걸렸다(시험 전제)");
+        // 한 번에 10 을 맞으면 5 가 깎이고 주머니에서 5 가 빠진다 → 열 번이면 50
+        for (int n = 0; n < 12 && srv.HealthOf(a) > 20; ++n) {
+            srv.DebugHurt(a, -1, 10, b, 1, out);
+            srv.DebugAdjustHP(a, 20);                        // 죽지 않게 되살려 가며 때린다
+        }
+        // ⚠ 취소는 **깃발만 세우고** 실제로 지우는 것은 다음 틱이다 — 한 틱 돌려야 버프가 풀린다
+        ms += 34; srv.Tick(ms, out);
+        Check(!srv.DebugHasEnchant(a, 26), "주머니를 다 썼는데 방패가 안 끝났다");
+    }
+
+    // ④ **죽을 만큼** 맞으면 체력이 2 로 남고 그 방망이는 안 맞은 것이 된다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 51, true, ms, out);
+        srv.DebugHurt(a, -1, 9999, b, 1, out);
+        Check(srv.HealthOf(a) == 2, "죽을 만큼 맞았는데 체력이 2 로 안 남았다");
+        ms += 34; srv.Tick(ms, out);
+        Check(!srv.DebugHasEnchant(a, 26), "죽을 만큼 맞았는데 방패가 안 끝났다");
+    }
+
+    // ⑤ **독(5)은 안 막는다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 51, true, ms, out);
+        const uint16_t aHp = srv.HealthOf(a);
+        srv.DebugHurt(a, -1, 10, b, 5, out);                 // 종류 5 = 독
+        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        if (lost != 10) std::printf("  [방패] 독 10 에 잃은 값 %d — 10 이어야 한다\n", lost);
+        Check(lost == 10, "방패가 독을 막았다(독은 안 막는다)");
+    }
+    // ⑥ **대상이 없으면** 안 걸린다 — 빈 곳을 겨누고 건다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 5000, 5000);                      // 커서에 아무도 없게
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 2000, 2000);                       // 빈 곳
+        CastAndWait(srv, a, 51, /*onSelf=*/false, ms, out);
+        Check(!srv.DebugHasEnchant(a, 26), "대상이 없는데 방패가 걸렸다");
+        Check(srv.DurCount() == 0, "대상이 없는데 지속 주문이 남았다");
+    }
+    std::printf("  4-d(4) — 방패 버프 26·피해 반감·주머니 소진·죽을 만큼이면 체력 2·독은 안 막음\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -9511,6 +9625,7 @@ int main() {
     TestEnergyBolt();
     TestChainLightning();
     TestDeathRay();
+    TestShieldSpell();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

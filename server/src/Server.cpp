@@ -1090,7 +1090,12 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         // ⚠ 공 들고 맞음(gameballOnPlayerDamage 8) · 퀘스트/코옵 sub_4FB050(8) · 몬스터 원한 sub_532880(7)
         // 한 대에 20 넘게 맞으면 움찔(상태 30 · 공격 중 1 · 방패 올리는 중 15 는 아님)
         if (hp >= 20 && s.moveState != kPlayerStateAttack && s.moveState != 15) PlayerSetState(s, 30, frame_);
-        // ⚠ 마법 방패(26) 줄이기 unitShieldReduceDamage_52F710 → 방패 주문(4-d)
+        // ★ 마법 방패(26) — 정답지 `damageDefaultProc` LABEL_137 자리.
+        //   독(5)은 안 막고, 죽음(15)을 자기가 자기에게 건 것도 안 막는다.
+        if (s.buffs.Has(26) && dtype != 5 && !(dtype == 15 && by == s.addr)) {
+            ShieldReduceDamage(Target{ s.addr, -1 }, hp, dtype, src, out);
+            if (hp == 0) return;                           // 막았다 — 아예 안 맞은 것이 된다
+        }
         // +520 마지막으로 때린 것(`GAME3_2.c:7229~7233`) — a3 가 있으면 그것(주인 = a2), 없으면 a2. 사슬의 사람 = `by`(소환수면 주인)
         Session::LastHit hit;
         if (src) {
@@ -4483,6 +4488,14 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 30, out) ? 1 : 0;
                 break;
             }
+            case 51: {                                                                         // Shield — 지속(마법 방패 26)
+                DurFns f;
+                f.create = &Server::DurShieldCreate;
+                f.update = &Server::DurShieldTick;
+                f.destroy = &Server::DurShieldDestroy;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
+                break;
+            }
             case 24: {                                                                         // EnergyBolt — 지속(전기 광선) · dt 30
                 DurFns f;
                 f.create = &Server::DurEnergyBoltCreate;
@@ -5176,6 +5189,89 @@ int Server::CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPa
     SendFxAllCli(arg.x, arg.y, fx, sizeof(fx), out);
     ++fxSent_;
     return 1;
+}
+
+// ── 묶음 4-d(4) 방패(Shield 51) ────────────────────────────────────────
+//
+// castShield1_52F5A0(`GAME4_2.c:11510`) — 대상에게 **마법 방패(버프 26)** 를 걸고 **막아 낼 양**을 담아 둔다.
+//   · 대상이 없거나 죽음·부서짐이면, 또는 사람도 몬스터도 아니면 **취소**
+//   · 길이 = `ShieldDuration[세기-1]` — ⚠ 실측이 **0, 0, 0, 0, 0** 이다(주석 처리된 옛 줄만 600~1800).
+//     즉 **시간으로는 안 끝나고**, 막아 낼 양(`ShieldHealth` 20·35·50·75·100)을 다 쓰면 끝난다
+int Server::DurShieldCreate(DurSpell& d, std::vector<OutPacket>& out) {
+    (void)out;
+    if (d.target.none()) return 1;
+    if (TargetHealth(d.target) <= 0) return 1;               // 죽음·부서짐
+    if (!BuffsOf(d.target)) return 1;                        // 사람도 몬스터도 아니다
+    const int dur = static_cast<int>(BalanceFloatInd("ShieldDuration", d.level - 1));
+    ApplyEnchant(d.target, 26, dur, d.level);
+    d.pool = static_cast<int>(BalanceFloatInd("ShieldHealth", d.level - 1));
+    return 0;
+}
+
+// sub_52F650(`:11540`) — 대상이 없거나 죽었으면 끝낸다. 그 밖에는 이어 간다
+int Server::DurShieldTick(DurSpell& d, std::vector<OutPacket>& out) {
+    (void)out;
+    if (d.target.none()) return 1;
+    return (TargetHealth(d.target) <= 0) ? 1 : 0;
+}
+
+// sub_52F670(`:11553`) — 끝날 때 버프 26 을 끈다
+void Server::DurShieldDestroy(DurSpell& d, std::vector<OutPacket>& out) {
+    (void)out;
+    if (!d.target.none()) BuffOff(d.target, 26);
+}
+
+// unitShield_52F690(`:11557`) — 그 대상에게 걸린 **방패 주문(51)** 을 찾아 주머니에서 뺀다.
+//   찾는 주문이 없으면 버프만 끄고, 다 쓰면(또는 대상이 죽었으면) 주문을 취소한다.
+void Server::ShieldDrain(const Target& t, int amount, std::vector<OutPacket>& out) {
+    DurSpell* found = nullptr;
+    for (auto& d : durSpells_) {
+        if (d.spell != 51) continue;
+        if (d.target.addr != t.addr || d.target.pet != t.pet) continue;
+        found = &d;
+        break;
+    }
+    if (!found) { BuffOff(t, 26); return; }
+    if (TargetHealth(t) <= 0) { DurCancel(*found, out); return; }
+    if (found->pool - amount > 0) found->pool -= amount;
+    else DurCancel(*found, out);
+}
+
+// unitShieldReduceDamage_52F710(`:11588`) — 맞는 순간 끼어든다.
+//   · 남은 체력이 **피해보다 크면** : 피해를 **반**으로(0 이면 1) 줄이고 그만큼 주머니에서 뺀다
+//   · 죽을 만큼이면 : 체력을 **2** 로 두고 피해를 **0** 으로(= 아예 안 맞음) · 주머니를 통째로 비운다
+//     ⚠ 단, **워리어가 방패를 올린 채 앞에서** 맞으면 피해를 **1** 로 남긴다(체력은 그대로 깎인다)
+//   ⚠ 아직 안 옮긴 것 — 소리 131 · 방패 그림(netSendShieldFx_523670)
+void Server::ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const AttackSrc* src, std::vector<OutPacket>& out) {
+    (void)dtype;
+    const int hp = TargetHealth(t);
+    if (hp > dmg) {
+        int half = dmg / 2;
+        if (half == 0) half = 1;
+        dmg = half;
+        ShieldDrain(t, dmg, out);
+        return;
+    }
+    bool guarded = false;
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        if (it != sessions_.end() && it->second.charClass == CharClass::Warrior && it->second.moveState == 16 && src) {
+            guarded = (TestTwoPointsAndDirection(static_cast<float>(it->second.posX), static_cast<float>(it->second.posY),
+                                                 it->second.facingPrev, src->x, src->y) & 1) != 0;
+        }
+    }
+    if (guarded) {
+        dmg = 1;
+    } else {
+        if (!t.addr.empty()) {
+            auto it = sessions_.find(t.addr);
+            if (it != sessions_.end()) it->second.health = 2;         // unitSetHP(2)
+        } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+            pets_[static_cast<size_t>(t.pet)].health = 2;
+        }
+        dmg = 0;
+    }
+    ShieldDrain(t, 999999, out);
 }
 
 // ── 묶음 4-c1 밀기·당기기·땅흔들기 ─────────────────────────────────────

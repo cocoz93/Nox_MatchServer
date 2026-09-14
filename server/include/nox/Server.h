@@ -1889,6 +1889,7 @@ private:
         uint32_t frame64 = 0;            // +64
         uint32_t frame68 = 0;            // +68 끝 프레임(dt + 만든 프레임 · dt 0 이면 60 과 같아 끝이 없다)
         float field72 = 0.0f;            // +72 소수 이월(회복·흡수 계수가 0.5 같은 소수라 틱마다 남는 몫을 쌓는다)
+        int pool = 0;                    // +18(u32) 방패가 막아 낼 남은 양(ShieldHealth). 0 이 되면 주문이 끝난다
         uint32_t field80 = 0, field84 = 0;
         uint32_t flags88 = 0;            // +88 1 = 취소됨(다음 차례에 지운다)
         DurFns fns;
@@ -1937,6 +1938,13 @@ private:
     int CastArachnaphobia(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);            // spellArachna_52DC80
     int CastPixieSwarm(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out);            // castPixies_540440
     int CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);                // castDeathRay(spell_death_ray.go:19)
+    int DurShieldCreate(DurSpell& d, std::vector<OutPacket>& out);                                     // castShield1_52F5A0
+    int DurShieldTick(DurSpell& d, std::vector<OutPacket>& out);                                       // sub_52F650
+    void DurShieldDestroy(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_52F670
+    // unitShield_52F690 — 방패 주머니에서 `amount` 를 뺀다. 다 쓰면 그 주문을 취소한다.
+    void ShieldDrain(const Target& t, int amount, std::vector<OutPacket>& out);
+    // unitShieldReduceDamage_52F710 — 맞을 때 끼어들어 피해를 깎는다. 0 이 되면 아예 안 맞은 것이 된다.
+    void ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const AttackSrc* src, std::vector<OutPacket>& out);
     // ── 묶음 4-d 지속 공격 ──
     // 대상의 자리. 없으면 false — 사람과 소환수를 한 자리에서 가른다.
     bool TargetXY(const Target& t, float& x, float& y) const {
