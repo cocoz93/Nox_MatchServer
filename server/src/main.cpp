@@ -487,6 +487,14 @@ int main(int argc, char** argv) {
                         continue;
                     }
                 }
+                // ★★ 묶음 5-h 정정 — **금은 이 두 문을 다 못 지난다.**
+                //   `Gold` 는 `CLASS = LIGHT+SIMPLE` 이라 우리 `isPickup` 이 거짓이고, `WEIGHT` 도 **없다**.
+                //   그런데도 금은 세계에 있어야 한다 — 커서로 집는 게 아니라 **밟고 지나가면 들어오기**
+                //   때문이다(`COLLIDE = PickupCollide`). 클라의 `ClassPickup`(WEIGHT) 기준은
+                //   **커서로 집는 것**에만 걸리는 문이다. 그래서 금은 두 문을 비켜 간다.
+                //   ⇒ 5-h 에서 「estate 에 금이 없다」고 적었는데, **우리 문이 막고 있던 것**도 겹쳐 있었다.
+                const bool isGold = (nox::PickupFnOf(ti->pickupFn) == nox::PickupFn::Gold);
+                if (!isGold) {
                 if (!ti->isPickup) { ++notPickup[objs[i].type]; continue; }
                 // ★★ **클라가 집을 수 있는 것만 싣는다.**
                 //   클라는 `WEIGHT` 가 있는 물건에만 `ClassPickup` 을 붙인다
@@ -494,6 +502,7 @@ int main(int argc, char** argv) {
                 //   우리 CLASS 기준과 어긋나는 것이 10종 있다(화살·차크람 같은 날아가는 것).
                 //   실어 봐야 클라가 못 집으니 세계에 놓지 않는다.
                 if (!ti->hasWeight) { ++noWeight[objs[i].type]; continue; }
+                }   // isGold 면 위 두 문을 비켜 간다
                 // 겉모습(P7) — 입었을 때 남에게 알릴 장비 비트. 표에 없으면 0(안 알림).
                 bool isW = false;
                 const uint32_t ebit = nox::EquipBitFor(objs[i].type.c_str(), &isW);
