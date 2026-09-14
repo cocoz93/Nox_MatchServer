@@ -1457,6 +1457,7 @@ public:
         return it == namedTypes_.end() ? 0 : it->second;
     }
     size_t PlacedCount() const { return placed_.size(); }
+    uint16_t DebugPlacedNetCode(size_t i) const { return i < placed_.size() ? placed_[i].netCode : 0; }
     void SetMagicType(uint16_t type, int speedRaw, float mass, uint32_t flags) {
         magicType_.type = type;
         magicType_.flags = flags;                         // thing FLAGS(맞힘 거르기 sub_54E730)

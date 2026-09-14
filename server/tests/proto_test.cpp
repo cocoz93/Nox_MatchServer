@@ -5819,7 +5819,71 @@ void TestToxicCloud() {
         const auto toA = FlattenTo(out, a);
         Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::DESTROY_OBJECT)) != nullptr, "구름 지움 알림이 안 나갔다");
     }
-    std::printf("  4-c3(1) — 독구름 놓기·둘레 75 피해+독(적에게만)·둘레 밖 제외·수명 뒤 사라짐\n");
+    // ⑤ 벽 뒤에는 **못 놓는다**(시전자→커서 선 추적이 막히면 실패) — 칸 23 이라 (46,43)이 1000 과 1150 사이
+    {
+        nox::Server srv; mk(srv, 2.0);
+        srv.SetWalls({ { 46, 43 } });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1150, 1000);
+        CastAndWait(srv, a, 128, false, ms, out);
+        Check(srv.PlacedCount() == 0, "벽 뒤인데 독구름이 놓였다(선 추적이 빠졌나)");
+    }
+
+    // ⑥ 벽 뒤 사람은 구름에 **안 닿는다**(둘레 안이어도)
+    {
+        nox::Server srv; mk(srv, 2.0);
+        srv.DebugMoveTo(b, 1060, 1000);                      // 둘레 75 안
+        srv.SetWalls({ { 45, 43 } });                        // 구름(1000)과 b(1060) 사이
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1000, 1000);                       // 제자리에 놓는다(선 추적 길이 0 이라 통과)
+        CastAndWait(srv, a, 128, false, ms, out);
+        Check(srv.PlacedCount() == 1, "구름이 안 놓였다(시험 전제)");
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "벽 뒤인데 구름에 맞았다");
+    }
+
+    // ⑦ 판정은 **5~10틱마다**다 — 매 틱 때리면 같은 시간에 피해가 몇 배가 된다(양으로 가른다)
+    {
+        nox::Server srv; mk(srv, 3.0);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1000, 1000);
+        CastAndWait(srv, a, 128, false, ms, out);
+        const uint16_t aHp = srv.HealthOf(a);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        Check(lost > 0, "구름 안인데 안 아팠다(시험 전제)");
+        Check(lost <= 50, "20틱에 피해가 너무 크다(판정 주기 5~10틱이 빠졌나)");
+    }
+
+    // ⑧ 놓인 구름이 **갱신 스트림에 실린다**(안 실으면 화면에 안 보인다)
+    {
+        nox::Server srv; mk(srv, 2.0);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1000, 1000);
+        CastAndWait(srv, a, 128, false, ms, out);
+        const uint16_t nc = srv.DebugPlacedNetCode(0);
+        Check(nc != 0, "구름 번호가 없다(시험 전제)");
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        bool inStream = false;
+        for (const auto& p : out) {
+            if (p.to != a) continue;
+            const auto body = Body(p);
+            for (size_t i = 0; i + 1 < body.size(); ++i)
+                if (body[i] == static_cast<uint8_t>(nc) && body[i + 1] == static_cast<uint8_t>(nc >> 8)) inStream = true;
+        }
+        Check(inStream, "놓인 구름이 갱신에 안 실렸다(화면에 안 보인다)");
+    }
+    std::printf("  4-c3(1) — 독구름 놓기·둘레 75 피해+독(적만)·둘레 밖·수명·벽 뒤 못 놓음/못 닿음·판정 주기·갱신 실림\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
