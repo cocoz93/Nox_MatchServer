@@ -4551,6 +4551,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 52: fnc = CastMeteor(s, arg, lvl, out); break;                               // castMeteor_52D9D0
             case 53: fnc = CastMeteorShower(s, arg, lvl, out); break;                         // castMeteorShower_52D8A0
             case 29: fnc = CastFist(s, arg, lvl, out); break;                                 // castFist_52D3C0
+            case 10: case 11: fnc = CastCleansingFlame(spell, s, lvl, out); break;            // spellCastCleansingFlame_52D5C0
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
@@ -5267,24 +5268,21 @@ void Server::UpdatePlaced(std::vector<OutPacket>& out) {
         //   몸이 겹친 틱마다 부른다. 피해 = **양 >> 1** · 단 양이 1 이면 홀수 프레임에만 1(짝수 틱은 0).
         //   ⚠ 갈래·팀을 안 가린다 — 불꽃 FLAGS 에 NO_COLLIDE_OWNER 가 없어 **시전자·같은 편도 탄다**
         //     (sub_548360 `v11 & 0x400 && unitsHaveSameTeam` 가지를 안 탄다).
-        if (o.kind == 2 && o.dmgAmount > 0) {
-            const int dmg = (o.dmgAmount == 1 && (frame_ & 1u)) ? 1 : (o.dmgAmount >> 1);
-            const float reach = o.radius + static_cast<float>(kBodyRadius);
-            const float rr = reach * reach;
-            auto touch = [&](const Target& t, float tx, float ty) {
-                const float dx = tx - o.x, dy = ty - o.y;
-                if (dx * dx + dy * dy > rr) return;
-                HurtTarget(t, dmg, out, o.owner, o.dmgType, nullptr);
-            };
-            std::vector<std::string> who;
-            for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
-            for (const auto& addr : who) {
-                auto it = sessions_.find(addr);
-                if (it == sessions_.end()) continue;
-                touch(Target{ addr, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
+        if (o.kind == 2) PlacedCollide(o, out);
+        // ── kind 6 — 바깥으로 나가는 불꽃(updateFlameCleanse_53D510) ──────────
+        //   ① 수명(+136)이 지났거나 ② **시작점에서 지금 자리까지 선 추적(65)이 막혔거나**
+        //   ③ 만든 지 3틱이 넘었는데 **한 틱 동안 안 움직였으면** 사라진다.
+        //   움직임은 감쇠 없이 속도를 그대로 더한다(+112 = 0).
+        if (o.kind == 6) {
+            const float px = o.x, py = o.y;
+            o.x += o.velX;
+            o.y += o.velY;
+            const bool stuck = (frame_ - o.createdFrame > 3u) && (px == o.x) && (py == o.y);
+            if (frame_ >= o.expireFrame || !MapTraceRay(o.originX, o.originY, o.x, o.y, 65) || stuck) {
+                DestroyPlaced(i, out);
+                continue;
             }
-            for (size_t k = 0; k < pets_.size(); ++k)
-                touch(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
+            PlacedCollide(o, out);
         }
         // ── kind 3 — 떨어지는 운석(MeteorUpdate = meteorExplode_53D6E0) ──────
         //   하는 일이 하나다: **높이(+104)가 0 이하면** 터뜨리고 지운다.
@@ -5477,6 +5475,89 @@ int Server::CastMeteorShower(Session& caster, const SpellArg& arg, int lvl, std:
     }
     if (PlacedObj* so = PlaceObject(NamedType("MeteorShower"), arg.x, arg.y, caster.addr, kPlacedNoLife, /*kind=*/4))
         so->damage = static_cast<int>(BalanceFloatInd("MeteorDamage", lvl - 1));
+    return 1;
+}
+
+// 놓인 것의 **닿음 함수** — 몸이 겹친 것에 한 틱마다 한 번.
+//   · `collideDamage_4E9430` — 피해 = **양 >> 1**, 단 양이 1 이면 홀수 프레임만 1. 갈래·팀을 안 가린다
+//   · `collideManadrain_4E9490` — **사람에게만**, 마나를 **양만큼** 깎는다(피해가 아니다)
+void Server::PlacedCollide(PlacedObj& o, std::vector<OutPacket>& out) {
+    if (o.dmgAmount == 0) return;
+    const int dmg = (o.dmgAmount == 1 && (frame_ & 1u)) ? 1 : (o.dmgAmount >> 1);
+    const float reach = o.radius + static_cast<float>(kBodyRadius);
+    const float rr = reach * reach;
+    auto touch = [&](const Target& t, float tx, float ty) {
+        const float dx = tx - o.x, dy = ty - o.y;
+        if (dx * dx + dy * dy > rr) return;
+        if (o.collideFn == 1) {
+            if (t.addr.empty()) return;                      // 사람만(+8 & 4)
+            auto it = sessions_.find(t.addr);
+            if (it == sessions_.end() || ManaOnline(it->second.charClass) == 0) return;   // 마나 없는 직업은 거른다
+            PlayerManaSub(it->second, static_cast<int>(o.dmgAmount));
+            return;
+        }
+        HurtTarget(t, dmg, out, o.owner, o.dmgType, nullptr);
+    };
+    std::vector<std::string> who;
+    for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
+    for (const auto& addr : who) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) continue;
+        touch(Target{ addr, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
+    }
+    for (size_t k = 0; k < pets_.size(); ++k)
+        touch(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
+}
+
+// spellCastCleansingFlame_52D5C0(`GAME4_2.c:10031`) — 시전자 둘레에 **불꽃 48개**를 뿌린다.
+//   · 온라인(협동 아님)이면 **세기를 4로 못 박는다**
+//   · 불꽃마다 `세기 − 무작위(0,1)` 로 종류를 고르고, 0 이하면 그 번은 안 만든다
+//   · 종류표 열 칸 — 붉은 다섯(주문 10 CleansingFlame) · 파란 다섯(주문 11 CleansingManaFlame).
+//     ★ 붉은 것은 `DamageCollide`(피해), **파란 것은 `ManaDrainCollide`(마나 빨기)** 다
+//   · 자리 = 시전자 + (불꽃 반지름 + 시전자 반지름 + 4) × 방향(무작위 0~255).
+//     시작점→그 자리 선 추적(65)이 막히면 그 불꽃은 **안 만든다**
+//   · 속도 = 방향 × 4 · 수명 = 지금 + 무작위(3초, 6초)
+int Server::CastCleansingFlame(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out) {
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    if (!quest) lvl = 4;                                     // gameFlags(2048) 밖 = 온라인
+    // 표 열 칸 — 0~4 붉은 · 5~9 파란. 정답지 셈은 `2487756 + 4×((주문 != 10 ? 5 : 0) + v8)` = 칸 (off + v8 − 1)
+    static const char* const kName[10] = {
+        "SmallFlameCleanse", "SmallFlameCleanse", "MediumFlameCleanse", "FlameCleanse", "LargeFlameCleanse",
+        "SmallBlueFlameCleanse", "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse",
+    };
+    static const float kRadius[10] = { 4, 4, 6, 8, 12, 4, 4, 6, 8, 12 };
+    static const uint8_t kAmount[10] = { 1, 1, 2, 3, 4, 3, 3, 6, 9, 12 };
+    const int off = (spell != 10) ? 5 : 0;
+    const bool manaFlame = (off == 5);
+    // ★ 이 사람의 불꽃이 하나라도 남아 있으면 **거절**한다(글 `plyrspel.c:TooManySpells`)
+    for (const auto& p : placed_) {
+        if (p.kind == 6 && p.owner == caster.addr) {
+            SendPriMsg(caster, "plyrspel.c:TooManySpells", out);
+            return 0;
+        }
+    }
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    for (int n = 0; n < 48; ++n) {
+        const int v8 = lvl - static_cast<int>(NextRandom(2));   // randomInt(0,1)
+        if (v8 < 1) continue;
+        const int idx = off + v8 - 1;
+        if (idx < 0 || idx >= 10) continue;
+        const int dir = static_cast<int>(NextRandom(256));
+        const float dist = kRadius[idx] + static_cast<float>(kBodyRadius) + 4.0f;
+        const float fx = cx + dist * DirVecX(dir);
+        const float fy = cy + dist * DirVecY(dir);
+        if (!MapTraceRay(cx, cy, fx, fy, 65)) continue;
+        PlacedObj* fo = PlaceObject(NamedType(kName[idx]), fx, fy, caster.addr, kPlacedNoLife, /*kind=*/6,
+                                    kAmount[idx], /*dmgType=*/1, kRadius[idx]);
+        if (!fo) continue;
+        fo->collideFn = manaFlame ? 1 : 0;
+        fo->velX = DirVecX(dir) * 4.0f;
+        fo->velY = DirVecY(dir) * 4.0f;
+        fo->originX = cx;
+        fo->originY = cy;
+        fo->expireFrame = frame_ + 3u * static_cast<uint32_t>(kServerTickRate)
+                        + NextRandom(3u * static_cast<uint32_t>(kServerTickRate) + 1u);   // randomInt(3×FPS, 6×FPS)
+    }
     return 1;
 }
 

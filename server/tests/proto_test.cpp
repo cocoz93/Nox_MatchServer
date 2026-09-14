@@ -6637,6 +6637,161 @@ void TestFist() {
     std::printf("  4-c4(1) — 주먹 떨어져 때림(종류 2)·한 사람에 하나·벽 뒤 못 띄움·닿는 둘레·흔들기 30·3초 수명\n");
 }
 
+// ── 묶음 4-c4(3) — 정화의 불꽃(CleansingFlame 10 · CleansingManaFlame 11) ──
+//
+// `spellCastCleansingFlame_52D5C0` — 시전자 둘레에 **불꽃 48개**를 무작위 방향으로 뿌린다.
+//   · 온라인이면 세기를 **4로 못 박는다** · 불꽃마다 `세기 − 무작위(0,1)` 로 종류를 고르고 0 이하면 안 만든다
+//   · 종류 열 칸 — 붉은 다섯(주문 10)은 `DamageCollide`, **파란 다섯(주문 11)은 `ManaDrainCollide`**
+//   · 자리 = 시전자 + (불꽃 반지름 + 몸 10 + 4) × 방향 · 속도 = 방향 × 4 · 수명 = 무작위(3초, 6초)
+//   · 그 사람 불꽃이 하나라도 남아 있으면 거절(글 `plyrspel.c:TooManySpells`)
+// `updateFlameCleanse_53D510` — 수명 다함 · 시작점에서 선 추적(65) 막힘 · 3틱 뒤 안 움직임 중 하나면 사라진다.
+void TestCleansingFlame() {
+    const std::string a = "10.9.8.1:9801";
+    const std::string b = "10.9.8.2:9802";
+    auto mk = [&](nox::Server& srv, uint8_t spell) {
+        srv.SetNamedType("SmallFlameCleanse", 930);
+        srv.SetNamedType("MediumFlameCleanse", 931);
+        srv.SetNamedType("FlameCleanse", 932);
+        srv.SetNamedType("LargeFlameCleanse", 933);
+        srv.SetNamedType("SmallBlueFlameCleanse", 934);
+        srv.SetNamedType("MediumBlueFlameCleanse", 935);
+        srv.SetNamedType("BlueFlameCleanse", 936);
+        srv.SetNamedType("LargeBlueFlameCleanse", 937);
+        srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });     // 어느 직업이나 · 겨누지 않음
+        srv.DebugEnterGame(a, 790, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 791, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1040, 1000);                      // 불꽃이 지나가는 자리
+    };
+
+    // ① 불꽃이 **여럿** 생기고, 시전자에게서 **바깥으로 나간다**
+    {
+        nox::Server srv; mk(srv, 10);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 10, true, ms, out);
+        const size_t n0 = srv.PlacedCount();
+        if (n0 < 20) std::printf("  [정화불꽃] 만든 개수 %zu — 48 가까워야 한다\n", n0);
+        Check(n0 >= 20, "불꽃이 너무 적게 생겼다(48번 돌지 않았나)");
+        // 처음 자리는 시전자에서 (반지름 + 10 + 4) 쯤 — 30 을 넘지 않는다
+        float d0 = 0;
+        for (size_t k = 0; k < srv.PlacedCount(); ++k) {
+            float px = 0, py = 0;
+            if (!srv.DebugPlacedXY(k, px, py)) continue;
+            const float d = std::sqrt((px - 1000.0f) * (px - 1000.0f) + (py - 1000.0f) * (py - 1000.0f));
+            if (d > d0) d0 = d;
+        }
+        Check(d0 > 10.0f && d0 < 40.0f, "불꽃 첫 자리가 시전자 둘레가 아니다");
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        float d1 = 0;
+        for (size_t k = 0; k < srv.PlacedCount(); ++k) {
+            float px = 0, py = 0;
+            if (!srv.DebugPlacedXY(k, px, py)) continue;
+            const float d = std::sqrt((px - 1000.0f) * (px - 1000.0f) + (py - 1000.0f) * (py - 1000.0f));
+            if (d > d1) d1 = d;
+        }
+        // 속도 4 로 10틱이면 40 쯤 더 나간다
+        if (d1 <= d0 + 20.0f) std::printf("  [정화불꽃] 10틱 뒤 가장 먼 거리 %.1f (처음 %.1f) — 40쯤 더 나가야 한다\n", d1, d0);
+        Check(d1 > d0 + 20.0f, "불꽃이 바깥으로 안 나갔다(속도 4 가 빠졌나)");
+    }
+
+    // ② 붉은 불꽃은 **닿으면 아프다**
+    {
+        nox::Server srv; mk(srv, 10);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 10, true, ms, out);
+        for (int t = 0; t < 15; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) < bHp, "붉은 정화의 불꽃이 닿았는데 안 아팠다");
+    }
+
+    // ③ **파란 불꽃은 마나를 깎는다 — 체력은 안 깎는다**
+    {
+        nox::Server srv; mk(srv, 11);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bMana = srv.ManaOf(b);
+        CastAndWait(srv, a, 11, true, ms, out);
+        for (int t = 0; t < 15; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.ManaOf(b) < bMana, "파란 정화의 불꽃이 마나를 안 깎았다");
+        Check(srv.HealthOf(b) == bHp, "파란 정화의 불꽃이 체력을 깎았다(마나만 깎아야 한다)");
+    }
+
+    // ④ 내 불꽃이 남아 있으면 **두 번째는 거절**된다
+    {
+        nox::Server srv; mk(srv, 10);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 10, true, ms, out);
+        const size_t n0 = srv.PlacedCount();
+        Check(n0 > 0, "첫 불꽃이 없다(시험 전제)");
+        CastAndWait(srv, a, 10, true, ms, out);
+        Check(srv.PlacedCount() <= n0, "두 번째 정화의 불꽃이 또 생겼다(하나만이어야 한다)");
+    }
+
+    // ⑤ 수명(3~6초)이 다하면 모두 사라진다
+    {
+        nox::Server srv; mk(srv, 10);
+        srv.DebugMoveTo(b, 5000, 5000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 10, true, ms, out);
+        Check(srv.PlacedCount() > 0, "불꽃이 없다(시험 전제)");
+        for (int t = 0; t < 200; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlacedCount() == 0, "200틱이 지났는데 불꽃이 남아 있다(수명이 빠졌나)");
+    }
+
+    // ⑥ 온라인은 **세기를 4로 못 박는다** — 세기 4 에서만 나오는 종류(FlameCleanse 932)가 섞여 있어야 한다.
+    //   세기 3 이면 칸이 하나씩 내려가 932 가 아예 안 나온다.
+    {
+        nox::Server srv; mk(srv, 10);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 10, true, ms, out);
+        bool sawLvl4 = false;
+        for (size_t k = 0; k < srv.PlacedCount(); ++k) if (srv.DebugPlacedType(k) == 932) sawLvl4 = true;
+        Check(sawLvl4, "세기 4 종류(FlameCleanse)가 하나도 없다 — 온라인 세기 못박기가 빠졌나");
+    }
+
+    // ⑦ 벽이 가리면 그쪽 불꽃은 **안 생긴다** — 개수로 가른다(칸 44 가 시전자 오른쪽에 붙어 있다)
+    {
+        nox::Server srv; mk(srv, 10);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 10, true, ms, out);
+        const size_t openCount = srv.PlacedCount();
+
+        nox::Server s2; mk(s2, 10);
+        s2.SetWalls({ { 44, 43 } });
+        s2.SetWallDefFlags({ 1 });                           // 선 추적 65 의 0x40 은 시야 깃발 있는 재질만 막는다
+        std::vector<nox::OutPacket> o2;
+        uint32_t m2 = 0;
+        s2.Tick(m2, o2);
+        m2 += 34; s2.Tick(m2, o2);
+        CastAndWait(s2, a, 10, true, m2, o2);
+        if (s2.PlacedCount() >= openCount)
+            std::printf("  [정화불꽃] 벽 있을 때 %zu · 없을 때 %zu — 벽 쪽이 적어야 한다\n", s2.PlacedCount(), openCount);
+        Check(s2.PlacedCount() < openCount, "벽이 가리는데 불꽃 수가 그대로다(선 추적이 빠졌나)");
+    }
+    std::printf("  4-c4(3) — 정화의 불꽃 48개·바깥으로 나감·붉은 피해/파란 마나 빨기·하나만·수명·세기 4·벽 가림\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -8742,6 +8897,7 @@ int main() {
     TestFireball();
     TestMeteor();
     TestFist();
+    TestCleansingFlame();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
