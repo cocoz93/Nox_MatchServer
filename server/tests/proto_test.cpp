@@ -9640,6 +9640,146 @@ void TestAIDeps() {
     std::printf("  6-b — 조건: 갈래 40~71 · 맞으면 유지 · 틀리면 할 일까지 빠짐 · 때·거리·안 움직임 · 또는 묶음 · 안 옮긴 것은 참\n");
 }
 
+// ── 묶음 6-c — 행동 하나하나(옮겨진 여섯) ──────────────────────────────
+//
+// ⭕ 정답지에서 **Go 로 옮겨진 행동은 여섯뿐**이다(`server/object_ai_actions.go`) —
+//   기다리기(1) · 상대 기다리기(2) · 상자로 변신(33) · 제 모습으로(34) ·
+//   떨구기(12, 아무것도 안 함) · 찾기(13, 아무것도 안 함).
+//   가기(7)·싸움(15)·바라보기(26) 따위는 아직 **C 안**이라 다음 조각이다.
+//
+// ★ 이 조각이 서면서 6-a 에서 「지금은 동치」로 적어 둔 돌연변이 둘(취소·시작)이 **열린다**.
+void TestAIActions() {
+    const std::string a = "10.6.2.1:6201";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1040, 1000, a);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.Tick(34, o);
+    };
+
+    // ① **기다리기(1)** — 그 프레임이 **되면**(>=) 스스로 빠진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 68;
+        srv.DebugAIPushDep(0, 1, std::string(), -1, /*u=*/6, 0);   // 6프레임까지
+        Check(srv.DebugAIStackInd(0) == 0, "기다리기가 바닥을 안 덮었다(이 시험의 전제)");
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out); }
+        Check(srv.DebugAIAction(0, 0) == 1, "아직 때가 안 됐는데 빠졌다");
+        for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out); }
+        Check(srv.DebugAIAction(0, 0) == 0, "때가 됐는데 안 빠졌다");
+    }
+
+    // ② **상대 기다리기(2)** — **행동을 바꾼 프레임 + 인자**를 **넘기면**(>) 빠진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 68;
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAIPushDep(0, 2, std::string(), -1, /*u=*/3, 0);   // 지금부터 3프레임
+        const uint32_t f0 = srv.DebugAIActionFrame(0);
+        Check(f0 != 0, "행동 바꾼 프레임이 안 적혔다");
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out); }
+        Check(srv.DebugAIAction(0, 0) == 2, "3프레임째인데 벌써 빠졌다 — 경계가 > 가 아닌가");
+        for (int t = 0; t < 2; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out); }
+        Check(srv.DebugAIAction(0, 0) == 0, "3프레임을 넘겼는데 안 빠졌다");
+    }
+
+    // ③ **상자로 변신(33)** — 「됐다」가 서야 빠지고 변신 표시가 켜진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPush(0, 33);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 33, "안 됐는데 빠졌다");
+        Check(!srv.DebugAIMorphed(0), "안 됐는데 변신했다");
+        srv.DebugAISetMorphReady(0, true);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "됐는데 안 빠졌다");
+        Check(srv.DebugAIMorphed(0), "변신 표시가 안 켜졌다");
+    }
+
+    // ④ **제 모습으로(34)** — 변신 표시를 끈다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPush(0, 33);
+        srv.DebugAISetMorphReady(0, true);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIMorphed(0), "변신이 안 됐다(이 시험의 전제)");
+        srv.DebugAIPush(0, 34);
+        srv.DebugAISetMorphReady(0, true);
+        srv.DebugAITick(0, out);
+        Check(!srv.DebugAIMorphed(0), "제 모습으로 안 돌아왔다");
+    }
+
+    // ⑤ **취소는 기다리기 둘만 스스로 빠진다** — 그 위에 뭘 올리면 기다리기가 사라진다
+    //   (6-a 에서 「지금은 동치」로 적어 둔 자리가 여기서 열린다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 99999, 0);     // 기다리기 — 오래
+        srv.DebugAITick(0, out);                                   // 시작시킨다
+        Check(srv.DebugAIStarted(0, 0), "기다리기가 안 시작됐다(이 시험의 전제)");
+        srv.DebugAIPush(0, 7);                                     // 그 위에 가기를 올린다
+        // ★ 취소가 기다리기를 **스스로 빼** 쌓임이 바닥까지 내려가고 **바닥에 놀기(0)가 남는다**.
+        //   그런데 밀기는 그 뒤에 **자리를 하나 올려** 새 할 일을 얹는다 —
+        //   그래서 끝 모습은 `[놀기, 가기]` 다. 기다리기는 사라졌지만 **빈 놀기 한 칸이 남는다**.
+        //   ⭕ 정답지도 같다 — `Cancel` 뒤에 `ud.AIStackInd++` 를 그냥 한다(`object_ai.go:111`).
+        Check(srv.DebugAIStackInd(0) == 1, "취소 뒤 자리가 1 이 아니다");
+        Check(srv.DebugAIAction(0, 1) == 7, "맨 위가 가기(7)가 아니다");
+        Check(srv.DebugAIAction(0, 0) == 0, "취소로 빠진 자리에 놀기(0)가 안 남았다");
+    }
+    // 변신은 취소돼도 안 빠진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPush(0, 33);
+        srv.DebugAITick(0, out);
+        srv.DebugAIPush(0, 7);
+        // 변신은 취소돼도 안 빠지므로 **그 위로 쌓인다** — 자리가 1 이고 아래가 33 그대로다
+        Check(srv.DebugAIStackInd(0) == 1, "변신 위에 안 쌓였다");
+        Check(srv.DebugAIAction(0, 0) == 33, "변신이 취소로 빠졌다 — 기다리기만 빠져야 한다");
+    }
+
+    // ⑥ **떨구기(12)·찾기(13)는 아무 일도 안 한다** — 틱을 돌려도 그대로 있다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPush(0, 12);
+        for (int t = 0; t < 5; ++t) srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 12, "아무 일도 안 하는 행동이 빠졌다");
+    }
+    // ⑦ **기다리기 경계는 `>=`** — 딱 그 프레임에 빠진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 68;
+        // 지금 프레임을 재고, 거기서 두 프레임 뒤를 목표로 삼는다
+        ms += 34; srv.Tick(ms, out);
+        const uint32_t target = srv.frame() + 2;
+        srv.DebugAIPushDep(0, 1, std::string(), -1, target, 0);
+        ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out);      // 목표 −1
+        Check(srv.DebugAIAction(0, 0) == 1, "목표 한 프레임 전인데 빠졌다");
+        ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out);      // 목표 그 프레임
+        Check(srv.DebugAIAction(0, 0) == 0, "딱 목표 프레임인데 안 빠졌다 — 경계가 > 인가");
+    }
+
+    // ⑧ **행동을 바꾸면 「됐다」 표시가 지워진다** — 묵은 표시로 엉뚱하게 빠지면 안 된다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAISetMorphReady(0, true);                          // 먼저 세워 둔다
+        srv.DebugAIPush(0, 33);                                     // 행동을 바꾸면 지워져야 한다
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 33, "묵은 「됐다」 표시로 곧바로 빠졌다");
+        Check(!srv.DebugAIMorphed(0), "묵은 표시로 변신까지 했다");
+    }
+    std::printf("  6-c — 행동 여섯: 기다리기 >=(경계 포함) · 상대 기다리기 > · 변신 33·34 · 취소는 기다리기만 · 12·13 은 가만히 · 행동 바꾸면 표시 지움\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -11835,6 +11975,7 @@ int main() {
     TestGold();
     TestAIStack();
     TestAIDeps();
+    TestAIActions();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

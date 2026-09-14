@@ -5778,10 +5778,12 @@ bool Server::AIIsCondition(uint8_t act) {
     return act >= 40 && act <= 71;
 }
 
-// monsterActionReset_50A0C0 — 행동을 바꿀 때 딸린 셈들을 0 으로.
-//   ⚠ 지금 우리 `Creature` 에는 그 셈 칸(Field2·67·74·91·120…)이 없다. 생기면 여기서 0 으로 둔다.
+// monsterActionReset_50A0C0 — 행동을 바꿀 때 딸린 셈들을 0 으로 하고 **바꾼 프레임을 적는다**.
+//   ⭕ 정답지는 `+124` 와 `+137` 에 **같은 프레임**을 적는다(`object_ai.go:60~61`).
+//   ⚠ 함께 0 이 되는 셈들(Field2·67·74·91·120…)은 우리 `Creature` 에 아직 없다 — 생기면 여기에 붙인다.
 void Server::AIActionReset(Creature& k) {
-    (void)k;
+    k.aiActionFrame = frame_;
+    k.aiMorphReady = false;
 }
 
 // monsterPushAction_50A260 — 할 일을 하나 올린다. 못 올리면 거짓.
@@ -5854,15 +5856,47 @@ void Server::AITick(Creature& k, std::vector<OutPacket>& out) {
     AIUpdate(k, curAct, out);
 }
 
-// 행동 하나하나 — **아직 놀기(0) 뿐이다.** 다음 조각에서 채운다.
+// ── 행동 하나하나(`server/object_ai_actions.go`) ──────────────────────
+//
+// ⭕ 정답지에서 **Go 로 옮겨진 행동은 여섯뿐**이다 — 기다리기(1) · 상대 기다리기(2) ·
+//   상자로 변신(33) · 제 모습으로(34) · 떨구기(12, 아무것도 안 함) · 찾기(13, 아무것도 안 함).
+//   나머지(가기 7 · 싸움 15 · 바라보기 26 …)는 아직 **C 안에** 있다 — 다음 조각이다.
+//
+// 시작은 넷 다 **아무 일도 안 한다**(정답지 `Start(_ *Object) {}`).
 void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
     (void)k; (void)act; (void)out;
 }
+
+// 갱신 — 여기가 알맹이다.
 void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
-    (void)k; (void)act; (void)out;
+    (void)out;
+    Creature::AIStackItem& st = k.aiStack[k.aiStackInd];
+    switch (act) {
+        case 1:      // 기다리기 — **그 프레임이 되면** 스스로 빠진다(`지금 >= 인자`)
+            if (frame_ >= st.argU32) AIPop(k);
+            break;
+        case 2:      // 상대 기다리기 — **행동을 바꾼 프레임 + 인자**를 **넘기면** 빠진다
+            //   ⚠ 기다리기(1)는 `>=`, 이쪽은 `>` 다. 정답지가 그렇게 갈라 놓았다
+            if (frame_ > k.aiActionFrame + st.argU32) AIPop(k);
+            break;
+        case 33:     // 상자로 변신 — 「됐다」가 서면 빠지고 **변신 표시를 켠다**
+            if (k.aiMorphReady) { AIPop(k); k.morphed = true; }
+            break;
+        case 34:     // 제 모습으로 — 빠지고 변신 표시를 **끈다**
+            if (k.aiMorphReady) { AIPop(k); k.morphed = false; }
+            break;
+        default: break;   // 12·13 은 아무 일도 안 한다 · 나머지는 아직 안 옮겼다
+    }
 }
+
+// 끝내기 — 넷 다 아무 일도 안 한다(정답지 `End(_ *Object) {}`).
 void Server::AIEnd(Creature& k, uint8_t act) { (void)k; (void)act; }
-void Server::AICancel(Creature& k, uint8_t act) { (void)k; (void)act; }
+
+// 취소 — ★ **기다리기 둘만** 스스로 빠진다(`Cancel` 이 `MonsterPopAction`).
+//   변신·떨구기·찾기는 취소돼도 가만히 있는다.
+void Server::AICancel(Creature& k, uint8_t act) {
+    if (act == 1 || act == 2) AIPop(k);
+}
 
 // nox_xxx_mobActionDependency(`unit_ai.go:44~262`) — 쌓임에 붙은 **조건**을 **위에서부터** 본다.
 //

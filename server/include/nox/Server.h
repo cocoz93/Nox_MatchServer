@@ -210,6 +210,12 @@ struct Creature {
     };
     AIStackItem aiStack[kAIStackMax];
     double prevX = 0, prevY = 0;               // 묶음 6-b — 지난 틱 자리(조건 71 「안 움직였나」)
+    // ★ 묶음 6-c — **행동을 바꾼 프레임**(`monsterActionReset` 의 `+124`·`+137`).
+    //   정답지는 둘을 **같은 값**으로 둔다 — `상대 기다리기(2)` 가 이것에 인자를 더해 잰다.
+    uint32_t aiActionFrame = 0;
+    // ★ 묶음 6-c — 변신(33·34)이 보는 「됐나」 표시(`Field120_3`). 지금은 시험이 직접 세운다.
+    bool aiMorphReady = false;
+    bool morphed = false;                      // 상자로 변신해 있나(`MonStatusMorphed`)
     int aiStackInd = 0;                        // 맨 위 자리(−1 은 「비었다」로만 잠깐 쓴다)
 };
 
@@ -1608,6 +1614,10 @@ public:
     }
     void DebugAIProcDeps(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AIProcDeps(pets_[i], out); }
     void DebugAISetPrevPos(size_t i) { if (i < pets_.size()) { pets_[i].prevX = pets_[i].x; pets_[i].prevY = pets_[i].y; } }
+    // 시험용 — 변신 「됐다」 표시·변신 상태(6-c)
+    void DebugAISetMorphReady(size_t i, bool v) { if (i < pets_.size()) pets_[i].aiMorphReady = v; }
+    bool DebugAIMorphed(size_t i) const { return i < pets_.size() && pets_[i].morphed; }
+    uint32_t DebugAIActionFrame(size_t i) const { return i < pets_.size() ? pets_[i].aiActionFrame : 0; }
     int  DebugAIPop(size_t i) { return i < pets_.size() ? AIPop(pets_[i]) : -1; }
     void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AITick(pets_[i], out); }
     uint32_t GoldOf(const std::string& addr) const {
@@ -2259,7 +2269,7 @@ private:
     void SendCharges(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);   // netReportCharges_4D82B0
     // 묶음 5-h — `4a REPORT_GOLD` = `<금 u32>` 5바이트(중요). sub_4D8870(`GAME3_2.c:4150`)
     // ── 묶음 6-a AI 행동 쌓기 ──
-    static void AIActionReset(Creature& k);
+    void AIActionReset(Creature& k);   // 6-c — 프레임을 적으므로 정적이 아니다
     bool AIPush(Creature& k, uint8_t act, const Target& targ = Target{}, float x = 0, float y = 0);
     int  AIPop(Creature& k);
     void AITick(Creature& k, std::vector<OutPacket>& out);
