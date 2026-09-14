@@ -143,19 +143,6 @@ struct Target {
     bool none() const { return addr.empty() && pet < 0; }
 };
 
-// 날아가는 것 하나. 쏜 사람은 안 맞는다.
-struct Projectile {
-    std::string owner;   // 쏜 사람의 주소
-    uint8_t spell = 0;
-    uint16_t netCode = 0;  // 클라에게 「이게 그거다」로 알릴 번호
-    uint8_t facing = 0;    // 날아가는 쪽(한 바퀴를 256으로)
-    double x = 0, y = 0;
-    // 쏜 자리 — 선 이펙트(번개 0x8c·에너지볼트 0x8d)가 「어디서 어디까지」를 실어서다.
-    double launchX = 0, launchY = 0;
-    double vx = 0, vy = 0;
-    double traveled = 0; // 지금까지 간 거리. 사거리를 넘으면 사라진다
-    int damage = 0;
-};
 
 // ★ 스트림 하나의 순번 — 실측으로 밝힌 규칙이다.
 //
@@ -987,7 +974,6 @@ public:
     //    **어느 공격이 만든 값인지 가릴 수 없었다**(그 시각에 주문·근접이 섞여 있다).
     //    어느 주문이 공격이냐는 이름표(`SpellNames.cpp`)에서 가른 것이고,
     //    **값은 게임이 도는지 보려고 넣은 자리표시**다. 실측이 생기면 갈아 끼운다.
-    static int SpellDamage(uint8_t spell);
 
     // 이 주문이 날리는 것의 **와이어 종류 번호**. 공격이 아니면 0.
     //
@@ -1006,7 +992,6 @@ public:
     //
     //   → **어느 번호가 맞는지 아직 모른다.** 셋 다 복합이라 짜임은 어긋나지 않지만,
     //     클라가 엉뚱한 그림을 그릴 수 있다. `Docs/UNMEASURED.md` 참조.
-    static uint16_t ProjectileType(uint8_t spell);
 
     // 이 주문이 불러내는 것의 **와이어 종류 번호**. 소환 주문이 아니면 0.
     //
@@ -1050,7 +1035,6 @@ public:
     // 문·오벨리스크를 매 틱 돌본다 (P5). 문은 다가가면 열리고, 오벨리스크는 마나를 채운다.
     void UpdateProps(std::vector<OutPacket>& out);
 
-    void SendProjectileFx(const Projectile& p, std::vector<OutPacket>& out);
     void SendFlagWinner(uint8_t team, std::vector<OutPacket>& out);
     void SendFlagStatus(std::vector<OutPacket>& out);
 
@@ -1612,10 +1596,6 @@ public:
     // 겨눔을 받은 횟수. 0 이면 `0xac` 를 안 읽는 것이고 투사체가 몸 방향으로만 난다.
     unsigned long long aims() const { return aims_; }
     // 시험용 — 날아가는 것 하나의 자리. 없으면 (0,0).
-    std::pair<double, double> DebugShotAt(size_t i) const {
-        if (i >= shots_.size()) return { 0.0, 0.0 };
-        return { shots_[i].x, shots_[i].y };
-    }
     // 시험용 — 겨눈 자리를 직접 넣는다.
     void DebugAimAt(const std::string& addr, int x, int y) {
         auto it = sessions_.find(addr);
@@ -1678,10 +1658,8 @@ public:
     // 0 이상 1 미만의 난수 실수(randomFloat 용). 같은 난수열을 쓴다.
     float NextRandomFloat() { return static_cast<float>(NextRandom(65536)) / 65536.0f; }
     // 날아가다 사람에게 맞은 횟수.
-    unsigned long long hits() const { return hits_; }
     // 지금 날아가고 있는 것의 수.
-    size_t flying() const { return shots_.size(); }
-    // 지금 날아가고 있는 **정답지 오브젝트**(Magic·불덩이 …)의 수. 위 `flying()` 은 옛 자리표시 쪽이다.
+    // 지금 날아가고 있는 오브젝트(Magic·불덩이 …)의 수.
     size_t missiles() const { return missiles_.size(); }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
@@ -2365,7 +2343,6 @@ private:
     // 진단(2026-09-10 sq1) — 코드6(왼클릭)이 분기에 몇 번 도달했나.
     // 클라는 231번 보냈는데 성사가 15에서 멎었다 — 유실이 파싱이냐 조건이냐를 가른다.
     unsigned long long code6Seen_ = 0;
-    unsigned long long hits_ = 0;
     unsigned long long petsKilled_ = 0;
     bool roundOver_ = false;
     uint32_t nextTimerFrame_ = 0;
@@ -2377,7 +2354,6 @@ private:
     int questCenterX_ = 0, questCenterY_ = 0;
     double questSpread_ = 0;
     bool questAnnounced_ = false; // 첫 스테이지 알림을 보냈나
-    std::vector<Projectile> shots_;
     std::vector<Creature> pets_;
     // 날아가는 것에 매길 번호.
     // ⚠ **진짜 서버가 번호를 어떻게 매기는지는 모른다.** 캡처에서 사람이 715·720·728 을

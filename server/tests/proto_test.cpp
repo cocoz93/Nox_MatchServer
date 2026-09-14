@@ -1891,16 +1891,6 @@ std::vector<uint8_t> SpellPacket(uint8_t spell, bool onSelf) {
     return p;
 }
 
-// 시전한 뒤 투사체가 날아가 닿을 때까지 틱을 돌린다.
-// 돌려주는 값 = 그 사이에 나간 조각들.
-void FlyUntilDone(nox::Server& srv, std::vector<nox::OutPacket>& out, int maxTicks = 40) {
-    uint32_t ms = 1;
-    srv.Tick(0, out);
-    for (int i = 0; i < maxTicks && srv.flying() > 0; ++i) {
-        ms += 33;
-        srv.Tick(ms, out);
-    }
-}
 
 void TestSpellDamage() {
     const std::string a = "10.0.0.1:1000";
@@ -8682,7 +8672,7 @@ void TestSummon() {
         std::vector<nox::OutPacket> out;
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀   // 79 = SPELL_SUMMON_BOMBER
         Check(srv.pets() == 1, "불렀는데 안 생김");
-        Check(srv.flying() == 0, "소환이 투사체로 날아감");
+        // ⚠ 자리표시 투사체를 걷어내 「투사체로 안 날아감」은 볼 것이 없어졌다(소환은 pets_ 로만 간다)
 
         out.clear();
         srv.Tick(0, out);
@@ -8729,7 +8719,7 @@ void TestSummon() {
     Check(nox::Server::SummonType(85) == 1325, "GHOST 가 1325 가 아님");
     Check(nox::Server::SummonType(84) == 1337, "EMBER_DEMON 이 1337 이 아님");
     Check(nox::Server::SummonType(27) == 0, "파이어볼이 소환으로 잡힘");
-    Check(nox::Server::ProjectileType(79) == 0, "소환이 투사체로도 잡힘");
+
 
     std::printf("  소환 — 생김·화면에 실림·부른 사람은 안 맞음·다가가 때림\n");
 }

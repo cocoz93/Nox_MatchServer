@@ -333,19 +333,6 @@ static PetTuning TuningFor(uint16_t type) {
 //   `ARENA TargetedSpellLifetime = 45` 프레임(⭕ gamedata.bin)을 쓴다.
 constexpr uint8_t kAssumedSpellLevel = 5;      // ⚠ 와이어에 없어 최대로 가정
 
-int Server::SpellDamage(uint8_t spell) {
-    switch (spell) {
-        case 27:   // SPELL_FIREBALL — 09-07 조작 실측에서 F 키
-            return FireballDirectDamage(kAssumedSpellLevel);
-        case 43:   // SPELL_CHAIN_LIGHTNING — D 키. 표시 이름이 "Lightning"
-            return static_cast<int>(kLightningPerFrame * kTargetedSpellFrames + 0.5);
-        case 24:   // SPELL_LIGHTNING — 표시 이름은 "Energy Bolt"
-            return static_cast<int>(kEnergyBoltPerFrame[kAssumedSpellLevel - 1] *
-                                    kTargetedSpellFrames + 0.5);
-        default: return 0;    // 그 밖(점멸·보호막·치유 …)은 피해가 없다
-    }
-}
-
 // 이 주문이 날리는 것의 와이어 종류 번호.
 //
 // ⚠ **실측이 아니라 이름 짐작이다** (09-07 정정, 까닭은 Server.h 의 ProjectileType 주석).
@@ -695,15 +682,6 @@ bool Server::TakeStatic(uint16_t netCode) {
     statics_.erase(statics_.begin() + static_cast<long>(at));
     for (auto& kv : sessions_) kv.second.staticIntroAt.erase(netCode);
     return true;
-}
-
-uint16_t Server::ProjectileType(uint8_t spell) {
-    switch (spell) {
-        case 27: return 695;   // ⚠ 추정. 09-06 클라 덤프에는 693 TitanFireball 이 보였다
-        case 43: return 710;   // LightningBolt
-        case 24: return 703;   // SmallEnergyBolt
-        default: return 0;
-    }
 }
 
 // 이 주문이 불러내는 것의 와이어 종류 번호.
@@ -1632,47 +1610,6 @@ void Server::AssignTeams() {
     for (Session* s : ins) {
         s->team = next;
         next = (next == 1) ? 2 : 1;
-    }
-}
-
-// 투사체가 끝난 자리의 이펙트 (P7).
-//
-// ⭕ 짜임은 클라 원본 확정(2026-09-11) — 점(총 5B) `op | x:i16 | y:i16` ·
-//   선(총 9B) `op | x1 | y1 | x2 | y2`(u16 넷). 그림 이름까지 코드에 있다
-//   (0x85 "FireBoom" · 0x8c "DynamicLightning" · 0x8d "DynamicEnergyBolt").
-// ◑ **주문↔이펙트 대응은 이름 짝짓기다** — 파이어볼→FireBoom 은 자연스럽지만
-//   정품 와이어로 짝을 확인한 표본은 없다(전투 FX 표본 0건).
-// · 명중이든 소진이든 **끝나는 자리에서 한 번** 그린다.
-void Server::SendProjectileFx(const Projectile& p, std::vector<OutPacket>& out) {
-    const int16_t ex = static_cast<int16_t>(p.x);
-    const int16_t ey = static_cast<int16_t>(p.y);
-    switch (p.spell) {
-        case 27: {   // 파이어볼 → 0x85 EXPLOSION — 끝난 점에서 터진다
-            uint8_t m[5] = {
-                static_cast<uint8_t>(Op::FX_EXPLOSION),
-                static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8),
-                static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8),
-            };
-            Broadcast(/*viaSeq=*/false, m, sizeof(m), out);
-            ++fxSent_;
-            break;
-        }
-        case 43:     // 연쇄번개 → 0x8c · 에너지볼트 → 0x8d — 쏜 자리에서 끝난 자리까지 선
-        case 24: {
-            const uint16_t sx = static_cast<uint16_t>(p.launchX);
-            const uint16_t sy = static_cast<uint16_t>(p.launchY);
-            uint8_t m[9] = {
-                static_cast<uint8_t>(p.spell == 43 ? Op::FX_LIGHTNING : Op::FX_ENERGY_BOLT),
-                static_cast<uint8_t>(sx), static_cast<uint8_t>(sx >> 8),
-                static_cast<uint8_t>(sy), static_cast<uint8_t>(sy >> 8),
-                static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8),
-                static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8),
-            };
-            Broadcast(/*viaSeq=*/false, m, sizeof(m), out);
-            ++fxSent_;
-            break;
-        }
-        default: break;   // 대응을 모르는 주문은 안 그린다
     }
 }
 
@@ -3823,10 +3760,6 @@ bool Server::IncomingMissile(const Session& s) const {
         if (!CanSeeBuffs(&s.buffs, mb, vx, vy, 0) || !MapTraceVision(px, py, mx, my)) return false;   // CanInteract(나, 투사체, 0)
         return v14 < 100.0;                                                                  // 가장 가까운 것 < 100
     };
-    for (const auto& p : shots_) {
-        if (test(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.x - p.vx), static_cast<float>(p.y - p.vy),
-                 p.vx, p.vy, p.owner, nullptr)) return true;
-    }
     for (const auto& m : missiles_) {
         if (test(m.posX, m.posY, m.prevX, m.prevY, m.velX, m.velY, m.owner, &m.buffs)) return true;
     }
@@ -6018,29 +5951,11 @@ bool Server::SpellEffectPlaceholder(uint8_t spell, Session& s, const SpellArg& a
         pets_.push_back(k);
         return true;
     }
-    const int dmg = SpellDamage(spell);
-    if (dmg <= 0) return false;
-    if (arg.obj.addr == s.addr) {
-        ++spellsOnSelf_;
-        Damage(s.addr, dmg, out, s.addr);                  // 자기에게 건 것 — 점수는 안 준다
-        return true;
-    }
-    const double rad = AimRadians(s);
-    Projectile p;
-    p.owner = s.addr;
-    p.spell = spell;
-    p.x = s.x;
-    p.y = s.y;
-    p.launchX = s.x;
-    p.launchY = s.y;
-    p.vx = kProjectileSpeed * std::cos(rad);
-    p.vy = kProjectileSpeed * std::sin(rad);
-    p.damage = dmg;
-    p.facing = s.facing;
-    p.netCode = nextShotNetCode_++;
-    if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
-    shots_.push_back(p);
-    return true;
+    // ★ 자리표시 투사체(shots_)는 **걷어냈다**(주문 27·43·24 가 모두 정답지로 옮겨졌다).
+    //   효과 함수를 아직 안 옮긴 주문은 위 소환 갈래에 걸리지 않으면 **아무 일도 안 한다** —
+    //   부르는 쪽이 「안 옮김」으로 세고 적는다.
+    (void)arg;
+    return false;
 }
 
 // ── 날아가는 오브젝트 (묶음 4-a2) ─────────────────────────────────────────
@@ -7425,60 +7340,6 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
     }
 
-    // ── 날아가는 것들을 민다 ──
-    // 지나간 틱 수만큼 밀어야 한다. 한 번만 밀면 서버가 늦게 돈 만큼 느려진다.
-    for (int step = 0; step < ticks && !shots_.empty(); ++step) {
-        for (size_t i = 0; i < shots_.size();) {
-            Projectile& p = shots_[i];
-            // ★★ 한 걸음을 잘게 쪼개 밀면서 매번 본다.
-            //   한 틱에 미는 거리(26)가 판정 반경(24)보다 커서 **표적을 뛰어넘고 있었다** —
-            //   틱 사이에 지나가 버리면 영영 안 맞는다. 2026-09-08 실측:
-            //   시전 12건에 피해 1건. 쪼개면 한 걸음이 반경보다 작아져 그 구멍이 없어진다.
-            // ★ 그리고 **밀기 전에 한 번** 본다(sub == 0). 같은 자리에서 쏘면 표적이
-            //   코앞인데, 먼저 밀어 버리면 첫 판정 때 이미 26 만큼 멀어져 있다.
-            bool gone = false;
-            for (int sub = 0; sub <= kProjectileSubSteps && !gone; ++sub) {
-                if (sub > 0) {
-                    p.x += p.vx / kProjectileSubSteps;
-                    p.y += p.vy / kProjectileSubSteps;
-                    p.traveled += kProjectileSpeed / kProjectileSubSteps;
-                }
-
-                // 사거리를 넘었거나 맵 밖이면 그냥 사라진다.
-                if (p.traveled > kSpellRange || p.x < 0 || p.y < 0 ||
-                    p.x > kMaxCoord || p.y > kMaxCoord) {
-                    SendProjectileFx(p, out);   // 못 맞혀도 끝나는 자리에서 그린다
-                    shots_.erase(shots_.begin() + static_cast<long>(i));
-                    gone = true;
-                    break;
-                }
-
-                // 누구에게 닿았나. **쏜 사람과 그가 부른 것은 안 맞는다.**
-                const Target hit = NearestTarget(p.owner, p.x, p.y, kProjectileHitRadius);
-                if (hit.none()) continue;
-
-                // ⚠ 지우기 **전에** 쓸 값을 다 꺼내 둔다. 전에는 지운 뒤에 `p.owner` 를
-                //   읽었다 — 주석에는 「p 는 이미 없다」고 적어 놓고 그대로 썼다.
-                const int dmg = p.damage;
-                const std::string owner = p.owner;
-                const uint8_t spellId = p.spell;
-                AttackSrc src;                   // 막기 판정(3-e2) — 투사체의 지난 자리
-                src.x = static_cast<float>(p.x - p.vx);
-                src.y = static_cast<float>(p.y - p.vy);
-                src.missile = true;
-                src.obj = true;                  // a3 = 투사체 — 종류 번호는 주문 정답지(묶음 4)에서. 지금은 0
-                SendProjectileFx(p, out);       // 맞은 자리에서 그린다
-                shots_.erase(shots_.begin() + static_cast<long>(i));
-                ++hits_;
-                // 주문 피해 종류 — 파이어볼 직격이 1(불), 에너지볼트·연쇄번개가 9(전기).
-                //   ⚠ 주문 효과 정답지는 묶음 4. 여기선 피해 함수(3-e)에 넘길 종류 번호만 맞춘다.
-                HurtTarget(hit, dmg, out, owner, static_cast<uint8_t>(spellId == 27 ? 1 : 9), &src);
-                gone = true;
-            }
-            if (!gone) ++i;
-        }
-    }
-
     // ★ 진단 — 첫 사람이 들어오고 N 틱 뒤, 크리처를 사람 좌우 ±300 으로 **한 번** 옮긴다
     //   (`--creature-away-after N`, 2026-09-13).
     //   왜 — 「사라짐(OBJECT_OUT_OF_SIGHT)」을 화면으로 보려면 크리처가 시야 사각형 밖으로 나가야 하는데,
@@ -8114,21 +7975,6 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                     // `extraBytes` 는 `FillEntry` 가 이미 채웠다 — **덮어쓰지 않는다.**
                 }
             }
-            m.objects.push_back(e);
-        }
-
-        // ★ 날아가는 것도 싣는다. 이게 없으면 **서버만 알고 화면엔 아무것도 안 날아간다.**
-        //   ⚠ 종류 번호는 **이름 짐작**이다(실측 아님). 셋 다 복합인 것만 표에서 확인했다.
-        for (const auto& p : shots_) {
-            const uint16_t ptype = ProjectileType(p.spell);
-            if (ptype == 0) continue;
-
-            ObjEntry e;
-            FillEntry(s.aliases, p.netCode, ptype, s.tickFrame,
-                      static_cast<int>(p.x), static_cast<int>(p.y), p.facing, e);
-            // ★ 별칭이면 상대로 (Relativize 주석 — 임대 연장 뒤로는 여기도 별칭이 온다)
-            Relativize(e, p.netCode, static_cast<int>(p.x), static_cast<int>(p.y),
-                       baseX, baseY);
             m.objects.push_back(e);
         }
 
