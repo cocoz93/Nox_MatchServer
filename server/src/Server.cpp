@@ -1215,7 +1215,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
 
     // ★ 7-c — 알림 바로 뒤가 점수 셈 자리다(`GAME5.c:5051` 알림 → `:5078` 셈).
     //   이 서버는 늘 아레나(깃발 256)라 `playerUpdateScore_54D980` 갈래만 탄다
-    PlayerUpdateScore(s, out);
+    DeathScoring(s, out);   // 8-f — 모드로 갈린다(전에는 늘 아레나였다)
 
     // ③ 죽음 — 껍데기 안. 실측 `e8 d8 02`.
     //    ★ **모두에게.** 남이 쓰러지는 것을 봐야 판이 판이 된다.
@@ -7012,6 +7012,20 @@ void Server::IncrementDeaths(Session& s, std::vector<OutPacket>& out) {
 }
 
 // `playerUpdateScore_54D980` — 아레나(깃발 256)의 죽음 셈
+// `GAME5.c:5078~5085` — 게임 깃발로 셈을 고른다
+void Server::DeathScoring(Session& victim, std::vector<OutPacket>& out) {
+    Session* killer = nullptr;
+    if (!victim.lastHit.player.empty()) {
+        auto k = sessions_.find(victim.lastHit.player);
+        if (k != sessions_.end() && k->second.inGame) killer = &k->second;
+    }
+    const uint32_t f = gameSettings_.gameFlags;
+    if (f & 0x100u)      PlayerUpdateScore(victim, out);   // 256 아레나(7-c)
+    else if (f & 0x10u)  KotrDeath(victim, killer, out);   // 16 왕 죽이기
+    else if (f & 0x400u) ElimDeath(victim, killer, out);   // 1024 탈락전
+    // 그 밖(깃발 판·퀘스트)은 아무 셈도 안 한다
+}
+
 void Server::PlayerUpdateScore(Session& victim, std::vector<OutPacket>& out) {
     Session* killer = nullptr;
     if (!victim.lastHit.player.empty()) {
@@ -7983,6 +7997,82 @@ void Server::VoteUpdate(std::vector<OutPacket>& out) {
         RemoveVote(i, out);
         KickPlayer(target, out);                      // `playerCallDisconnect(대상, 4)`
     }
+}
+
+// ── 묶음 8-f 모드별 죽음 셈 ───────────────────────────────────────────
+//
+// 정답지 `GAME5.c:5078~5085` 가 **게임 깃발로 갈래를 고른다** —
+//   **256 아레나** → `playerUpdateScore_54D980`(7-c 에서 옮김)
+//   **16 왕 죽이기(KOTR)** → `playerHandleKotrDeath_54DC40`(`GAME5.c:5444`)
+//   **1024 탈락전** → `playerHandleElimDeath_54D7A0`(`GAME5.c:5139`)
+//   ⚠ 셋 중 아무것도 아니면 **아무 셈도 안 한다**(깃발 판·퀘스트가 그 경우다)
+//
+// ⭕ 왕은 **왕관을 가진 사람**이다(`unitIsCrown_4E7BE0` 이 가방 사슬에서 `Crown` 을 찾는다).
+//   ⭕ `Crown` 은 thing.bin 종류 **242** · 무게 1 · `PICKUP = CrownPickup` ·
+//     ⭕ **우리 estate 맵에도 3개 있다**(맵 파서로 셈 — 157개 맵 거의 전부에 3개씩이다).
+//     ⚠ `CrownPickup` 갈래는 아직 안 옮겨 **보통 줄기**로 가방에 들어간다 — 왕 판정에는 그것으로 족하다
+//
+// ⭕ KOTR 점수 ⭕ gamedata.bin 「# KotR definitions」 —
+//   `KotRPawnKillsKingPoints` **1** · `KotRKingKillsPawnPoints` **1** · `KotRKingKillsKingPoints` **3**
+//
+// ⭕ KOTR 규칙(`playerHandleKotrDeath_54DC40`) —
+//   · **자살이거나 같은 편** — 죽인 이가 왕이 **아니면** 죽은 횟수만 +1 ·
+//     왕이**면** 죽인 이 점수 **−1**, 그 팀 **−1**, 죽은 횟수 +1
+//   · **편이 다르거나 편이 없음** —
+//     둘 중 하나라도 왕이면 점수를 준다. 죽인 이가 왕이면 `왕이 졸을` 점수(1),
+//     죽은 이가 왕이면 `졸이 왕을` 점수(1), **둘 다 왕이면 3**.
+//     편이 있으면 **팀 점수도 같은 만큼** 오른다. 그리고 죽은 횟수 +1
+//   · 아무도 왕이 아니면 **죽은 횟수만** 오른다
+//
+// ⭕ 탈락전 규칙(`playerHandleElimDeath_54D7A0`) — 점수는 **적을수록 좋다**(죽은 수를 센다).
+//   · **자살** — 점수 **−1** · 죽은 횟수 +1 · **제 팀 +1**
+//   · **같은 편** — 죽인 이 점수 **−1**
+//   · 그 밖(편이 없거나 다른 편) — 죽인 이 점수 **+1**
+//   · 그리고 **늘** 죽은 횟수 +1 과 **죽은 이 팀 +1**
+//   ⚠ 아레나와 달리 **자살도 죽은 횟수가 오른다**
+bool Server::IsCrown(const Session& s) const {
+    for (const auto& c : s.inventory) if (c.type == kCrownType) return true;
+    return false;
+}
+
+// `playerHandleKotrDeath_54DC40`
+void Server::KotrDeath(Session& victim, Session* killer, std::vector<OutPacket>& out) {
+    if (killer == nullptr) { IncrementDeaths(victim, out); return; }
+    const bool sameSide = (killer == &victim) || (victim.team != 0 && killer->team == victim.team);
+    if (sameSide) {
+        if (IsCrown(*killer)) {
+            ChangeScore(*killer, -1, out);
+            if (killer->team != 0)
+                if (const Team* t = TeamById(killer->team))
+                    TeamChangeScore(killer->team, t->score - 1, out);
+        }
+        IncrementDeaths(victim, out);
+        return;
+    }
+    const bool kKing = IsCrown(*killer), vKing = IsCrown(victim);
+    if (kKing || vKing) {
+        const int32_t pts = (kKing && vKing) ? kKotrKingKillsKing
+                          : (kKing ? kKotrKingKillsPawn : kKotrPawnKillsKing);
+        ChangeScore(*killer, pts, out);
+        if (killer->team != 0)                         // 편이 있으면 팀 점수도
+            if (const Team* t = TeamById(killer->team))
+                TeamChangeScore(killer->team, t->score + pts, out);
+    }
+    IncrementDeaths(victim, out);
+}
+
+// `playerHandleElimDeath_54D7A0`
+void Server::ElimDeath(Session& victim, Session* killer, std::vector<OutPacket>& out) {
+    if (killer == &victim || killer == nullptr) {
+        ChangeScore(victim, -1, out);                  // 자살
+    } else {
+        const bool sameTeam = victim.team != 0 && killer->team == victim.team;
+        ChangeScore(*killer, sameTeam ? -1 : +1, out);
+    }
+    IncrementDeaths(victim, out);                      // ⚠ 자살도 오른다(아레나와 다른 점)
+    if (victim.team != 0)                              // 죽은 이의 팀이 **오른다**(적을수록 좋으니 벌점이다)
+        if (const Team* t = TeamById(victim.team))
+            TeamChangeScore(victim.team, t->score + 1, out);
 }
 
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────

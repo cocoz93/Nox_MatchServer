@@ -731,6 +731,14 @@ constexpr uint16_t kGameBallType = 241;
 //   갈래 2·3 은 `sub_506A20` 이 **숫자 6 을 그대로** 넣는다
 constexpr uint8_t kVoteKickMinVotes = 4;
 
+// ── 묶음 8-f 모드별 죽음 셈 ⭕ thing.bin · gamedata.bin ───────────
+//   왕관 `Crown` 종류 **242**(무게 1 · `PICKUP = CrownPickup`) — ⭕ estate 맵에도 **3개** 있다.
+//   ⭕ gamedata.bin 「# KotR definitions」 — 졸이 왕을 **1** · 왕이 졸을 **1** · 왕이 왕을 **3**
+constexpr uint16_t kCrownType          = 242;
+constexpr int32_t  kKotrPawnKillsKing  = 1;
+constexpr int32_t  kKotrKingKillsPawn  = 1;
+constexpr int32_t  kKotrKingKillsKing  = 3;
+
 // ── 퀘스트 ──────────────────────────────────────────────────
 //
 // 「불려 나온 것」과 「맵에 사는 몬스터」는 **같은 것**으로 다룬다 —
@@ -1890,6 +1898,26 @@ public:
     bool IsInGame(const std::string& x) const { auto i = sessions_.find(x); return i != sessions_.end() && i->second.inGame; }
     void DebugKick(const std::string& x, std::vector<OutPacket>& out) { KickPlayer(x, out); }
 
+    // 시험용 — 모드별 죽음 셈
+    bool DebugIsCrown(const std::string& x) const {
+        auto i = sessions_.find(x); return i != sessions_.end() && IsCrown(i->second);
+    }
+    void DebugGiveCrown(const std::string& x) {
+        auto i = sessions_.find(x);
+        if (i == sessions_.end()) return;
+        // ⚠ 상수가 아니라 **날숫자 242** 를 넣는다 —
+        //   상수를 쓰면 상수를 바꾸는 돌연변이가 **양쪽을 같이 바꿔** 안 걸린다
+        Session::Carried c; c.netCode = 60000; c.type = 242;
+        i->second.inventory.push_back(c);
+    }
+    void DebugDeathScoring(const std::string& victim, const std::string& killer,
+                           std::vector<OutPacket>& out) {
+        auto v = sessions_.find(victim);
+        if (v == sessions_.end()) return;
+        v->second.lastHit = Session::LastHit{};
+        if (!killer.empty()) { v->second.lastHit.cls = 1; v->second.lastHit.player = killer; }
+        DeathScoring(v->second, out);
+    }
     // 시험용 — 투표
     size_t DebugVoteCount() const { return votes_.size(); }
     size_t DebugVoteVoters(size_t i) const { return i < votes_.size() ? votes_[i].voters.size() : 0; }
@@ -2711,6 +2739,12 @@ private:
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
+    // 묶음 8-f — 모드별 죽음 셈
+    bool IsCrown(const Session& s) const;
+    void KotrDeath(Session& victim, Session* killer, std::vector<OutPacket>& out);
+    void ElimDeath(Session& victim, Session* killer, std::vector<OutPacket>& out);
+    void DeathScoring(Session& victim, std::vector<OutPacket>& out);
+
     // 묶음 8-e — 투표(0xEE)
     struct Vote {
         uint8_t kind = 0;                 // [0] 0·1 강퇴 · 2 퀘스트 다시 시작 · 3 퀘스트에서 내보내기

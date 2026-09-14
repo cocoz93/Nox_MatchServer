@@ -14653,6 +14653,171 @@ void TestVote() {
     std::printf("  8-e — 투표: 첫 표에 ee 06 01 · 한 사람 한 표 · 물리면 줄고 0 이면 ee 06 00 · 통과하면 내보냄 · ee 07 은 갈래 2 만\n");
 }
 
+// ── 묶음 8-f — 모드별 죽음 셈 ────────────────────────────────────────
+//
+// 정답지 `GAME5.c:5078~5085` 가 깃발로 갈래를 고른다 —
+//   **256 아레나**(7-c) · **16 왕 죽이기** `playerHandleKotrDeath_54DC40` ·
+//   **1024 탈락전** `playerHandleElimDeath_54D7A0` · 그 밖은 **아무 셈도 안 한다**.
+//   · 왕 = **왕관(종류 242)을 가진 사람**. ⭕ estate 맵에도 3개 있다
+//   · ⭕ KOTR 점수 — 졸이 왕을 **1** · 왕이 졸을 **1** · 왕이 왕을 **3**
+//   · 탈락전은 점수가 **적을수록 좋다** — 죽은 이의 팀이 **오른다**(벌점)
+void TestModeScoring() {
+    const std::string a = "10.8.6.1:8601";
+    const std::string b = "10.8.6.2:8602";
+    auto mk = [&](nox::Server& srv, uint32_t flags) {
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        nox::GameSettings g = srv.Settings();
+        g.gameFlags = flags;
+        srv.SetGameSettings(g);
+        std::vector<nox::OutPacket> w;
+        srv.DebugSendTeamState(w);
+    };
+
+    // ① **왕관을 가지면 왕이다**
+    {
+        nox::Server srv; mk(srv, 0x10u);
+        Check(!srv.DebugIsCrown(a), "아무것도 안 가졌는데 왕이다");
+        srv.DebugGiveCrown(a);
+        Check(srv.DebugIsCrown(a), "왕관을 가졌는데 왕이 아니다");
+    }
+
+    // ② **KOTR — 아무도 왕이 아니면 죽은 횟수만 오른다**
+    {
+        nox::Server srv; mk(srv, 0x10u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == 0, "왕이 없는데 점수가 올랐다");
+        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+    }
+    // 죽인 이가 왕이면 1점
+    {
+        nox::Server srv; mk(srv, 0x10u);
+        srv.DebugGiveCrown(a);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == 1, "왕이 졸을 잡았는데 1점이 아니다");
+    }
+    // 죽은 이가 왕이면 1점
+    {
+        nox::Server srv; mk(srv, 0x10u);
+        srv.DebugGiveCrown(b);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == 1, "졸이 왕을 잡았는데 1점이 아니다");
+    }
+    // **둘 다 왕이면 3점**
+    {
+        nox::Server srv; mk(srv, 0x10u);
+        srv.DebugGiveCrown(a);
+        srv.DebugGiveCrown(b);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == 3, "왕이 왕을 잡았는데 3점이 아니다");
+    }
+    // 편이 있으면 팀 점수도 같은 만큼
+    {
+        nox::Server srv; mk(srv, 0x10u);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+        srv.DebugGiveCrown(a);
+        srv.DebugGiveCrown(b);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.DebugTeamScore(1) == 3, "팀 점수가 3 이 아니다");
+    }
+
+    // ③ **KOTR — 자살·같은 편** — 죽인 이가 왕일 때만 −1
+    {
+        nox::Server srv; mk(srv, 0x10u);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == 0, "왕이 아닌데 팀킬로 점수가 깎였다");
+        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+    }
+    {
+        nox::Server srv; mk(srv, 0x10u);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);
+        srv.DebugGiveCrown(a);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == -1, "왕이 팀킬을 했는데 −1 이 아니다");
+        Check(srv.DebugTeamScore(1) == -1, "왕의 팀킬인데 팀 점수가 −1 이 아니다");
+    }
+
+    // ④ **탈락전 — 자살은 점수 −1 · 죽은 횟수도 오른다**(아레나와 다른 점)
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(a, a, out);
+        Check(srv.KillsOf(a) == -1, "탈락전 자살인데 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(a) == 1, "탈락전 자살인데 죽은 횟수가 안 올랐다");
+    }
+    // 남이 죽이면 +1 · 죽은 이 팀이 **오른다**(벌점)
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == 1, "탈락전인데 죽인 이 점수가 1 이 아니다");
+        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+        Check(srv.DebugTeamScore(2) == 1, "죽은 이의 팀이 안 올랐다(탈락전은 벌점이다)");
+        Check(srv.DebugTeamScore(1) == 0, "죽인 이의 팀이 움직였다");
+    }
+    // 같은 편이면 죽인 이 −1
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == -1, "탈락전 팀킬인데 −1 이 아니다");
+    }
+
+    // ⑤ **아레나(256)는 7-c 셈 그대로** — 자살은 죽은 횟수가 **안** 오른다
+    {
+        nox::Server srv; mk(srv, 0x100u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(a, a, out);
+        Check(srv.KillsOf(a) == -1, "아레나 자살인데 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(a) == 0, "아레나 자살인데 죽은 횟수가 올랐다");
+    }
+
+    // ⑥ **셋 다 아니면 아무 셈도 안 한다**(깃발 판·퀘스트)
+    {
+        nox::Server srv; mk(srv, 0x20u);                  // CTF(32)
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == 0 && srv.DeathsOf(b) == 0, "모드가 아닌데 셈이 돌았다");
+    }
+
+    // ⑦ **아레나가 왕 죽이기보다 앞선다** — 둘 다 켜면 아레나 셈이다
+    {
+        nox::Server srv; mk(srv, 0x100u | 0x10u);
+        srv.DebugGiveCrown(a);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(b, a, out);
+        Check(srv.KillsOf(a) == 1, "아레나 셈이 아니다");
+        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+    }
+    // ⑧ **아레나가 왕 죽이기보다 앞선다는 것을 가르는 자리** — **자살**이면 둘이 다르다.
+    //   아레나는 점수 −1 · 죽은 횟수 **0** 이고,
+    //   왕 죽이기는 왕이 아닌 자살이라 점수 **0** · 죽은 횟수 **1** 이다
+    {
+        nox::Server srv; mk(srv, 0x100u | 0x10u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDeathScoring(a, a, out);                 // 왕관 없이 자살
+        Check(srv.KillsOf(a) == -1, "아레나 셈이 아니다(자살 점수)");
+        Check(srv.DeathsOf(a) == 0, "아레나 셈이 아니다(자살은 죽은 횟수가 안 오른다)");
+    }
+
+    std::printf("  8-f — 모드별 죽음 셈: 아레나·왕 죽이기(1·1·3)·탈락전 · 왕은 왕관 242 · 그 밖은 셈 없음\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -16885,6 +17050,7 @@ int main() {
     TestRoundEnd();
     TestFlagBall();
     TestVote();
+    TestModeScoring();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
