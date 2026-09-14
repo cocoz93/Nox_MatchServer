@@ -4539,6 +4539,9 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
                 break;
             }
+            case 23: fnc = CastEarthquake(s, fl5, out); break;                                 // castEquake_52DE40
+            case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
+            case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
             case 68: case 133: fnc = CastRestoreHealth(targ, out); break;                         // castSpellWinkORrestoreHealth_52BF20 RestoreHealth·Wink
             case 69: fnc = CastRestoreMana(targ); break;                                          // sub_52BF50 RestoreMana
@@ -4952,6 +4955,105 @@ int Server::DurDrainMana(DurSpell& d, std::vector<OutPacket>& out) {
     DrainApply(caster, found, take);                         // ⚠ 빨린 소리 230/229 는 소리 묶음(반 초마다)
     d.field36 = found;
     return 0;
+}
+
+// ── 묶음 4-c1 밀기·당기기·땅흔들기 ─────────────────────────────────────
+//
+// mapPushUnitsAround_52E040(`GAME4_2.c:10477`) + unitPushAroundFn_52E0E0(`:10507`)
+//   가운데에서 `outer` 안에 있는 **움직일 수 있는** 것마다 힘을 준다. 힘은 **×10** 해서 넣는다(정답지 `a3a[3] = a4 * 10.0`).
+//   · 가운데→그것 **선 추적(0)** 이 막히면 안 민다(벽 너머로는 안 밀린다)
+//   · 거리 d = √(dx²+dy²) **+ 0.1**(0 나눗셈 막기) · d > outer 면 건너뜀
+//   · d ≤ inner 면 힘 그대로 · 그 밖은 `(1 − (d−inner)/(outer−inner))` 로 줄어든다
+//   · 실제로 더하는 것은 **힘 ÷ 질량** 을 방향으로 나눈 것 — ForceVec 에 **더한다**(덮어쓰지 않는다)
+//   ⚠ outer 가 inner 보다 작으면 inner 를 outer 로 쓴다(정답지 a3a[1] 고르기)
+void Server::PushUnitsAround(float cx, float cy, float outer, float inner, float power) {
+    if (outer < inner) outer = inner;
+    const float force = power * 10.0f;
+    auto apply = [&](float ox, float oy, float mass, double& fx, double& fy) {
+        if (!MapTraceRay(cx, cy, ox, oy, 0x0)) return;       // 벽 너머로는 안 민다
+        const float dx = ox - cx, dy = oy - cy;
+        const float d = std::sqrt(dx * dx + dy * dy) + 0.1f;
+        if (d > outer) return;
+        const float f = (d > inner && outer > inner)
+                      ? (1.0f - (d - inner) / (outer - inner)) * force
+                      : force;
+        const float per = f / (mass > 0.0f ? mass : 1.0f);
+        fx += static_cast<double>(per * dx / d);             // ForceVec 에 **더한다**
+        fy += static_cast<double>(per * dy / d);
+    };
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame || o.respawnAtFrame != 0) continue;    // 죽은 것은 안 밀린다(isObjectMovable 깃발 갈래)
+        apply(static_cast<float>(o.posX), static_cast<float>(o.posY), static_cast<float>(kPlayerMass), o.forceX, o.forceY);
+    }
+    for (auto& k : pets_) {
+        const auto tb = typeBodies_.find(k.type);
+        const float mass = (tb != typeBodies_.end()) ? tb->second.mass : 1.0f;
+        double fx = 0, fy = 0;
+        apply(static_cast<float>(k.x), static_cast<float>(k.y), mass, fx, fy);
+        // ⚠ 소환수는 아직 ForceVec 적분이 없다(걸음을 AI 가 직접 옮긴다) — 힘을 자리로 바로 옮겨 둔다
+        k.x += fx;
+        k.y += fy;
+    }
+}
+
+// castPull_52BFA0(`GAME4_2.c:9337`) · castPush_52C000(`:9350`) — 시전자 자리에서 둘레 600·안쪽 10 로 민다(당기기는 **음수**)
+int Server::CastPushPull(const Session& caster, int lvl, bool pull) {
+    const double coeff = BalanceFloat(pull ? "PullPowerCoeff" : "PushPowerCoeff");
+    const float power = static_cast<float>(pull ? -(coeff * lvl) : (coeff * lvl));
+    PushUnitsAround(static_cast<float>(caster.posX), static_cast<float>(caster.posY), 600.0f, 10.0f, power);
+    return 1;                                                // 소리는 10
+}
+
+// earthquakeSend_4D9110(`GAME3_2.c:4579`) — 가운데에서 **300 안**(거리² < 90000)에 있는 사람마다
+//   `97 <세기>` 2바이트를 Kind1(틱 목록)로. 세기는 `(1 − 거리²/90000) × jiggle` 로 멀수록 약해진다
+void Server::SendJiggle(float cx, float cy, int jiggle, std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame) continue;
+        const float dx = cx - static_cast<float>(o.posX), dy = cy - static_cast<float>(o.posY);
+        const double d2 = static_cast<double>(dx) * dx + static_cast<double>(dy) * dy;
+        if (d2 >= 90000.0) continue;
+        const int v = static_cast<int>((1.0 - d2 / 90000.0) * static_cast<double>(jiggle));
+        const uint8_t msg[2] = { static_cast<uint8_t>(Op::FX_JIGGLE), static_cast<uint8_t>(v) };
+        Emit(o, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+    }
+}
+
+// castEquake_52DE40(`GAME4_2.c:10418`) + equakeDamage_52DEC0(`:10437`) — 둘레 안에 **거리에 반비례하는** 피해(종류 11) + 화면 흔들기
+//   피해 = EarthquakeDamage[세기−1] × (1 − 거리/EarthquakeRange) · 자기 자신·공중(0x4000)·체력 0 은 뺀다
+int Server::CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out) {
+    const float range = static_cast<float>(BalanceFloat("EarthquakeRange"));
+    const double base = BalanceFloatInd("EarthquakeDamage", lvl - 1);
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    auto hurtAt = [&](const Target& t, float ox, float oy) {
+        const float dx = ox - cx, dy = oy - cy;
+        const float dist = std::sqrt(dx * dx + dy * dy);
+        if (dist > range) return;
+        const double dmg = base * (1.0 - static_cast<double>(dist) / static_cast<double>(range));
+        if (dmg <= 0.0) return;
+        AttackSrc src;
+        src.x = cx; src.y = cy;
+        HurtTarget(t, static_cast<int>(dmg), out, caster.addr, 11, &src);   // 피해 종류 11
+    };
+    std::vector<std::string> who;
+    for (const auto& kv : sessions_) {
+        if (!kv.second.inGame || kv.first == caster.addr) continue;         // 자기 자신은 뺀다
+        if (kv.second.respawnAtFrame != 0 || kv.second.health == 0) continue;
+        who.push_back(kv.first);
+    }
+    for (const auto& addr : who) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) continue;
+        hurtAt(Target{ addr, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        if (pets_[i].health == 0) continue;
+        hurtAt(Target{ std::string(), static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y));
+    }
+    const int jiggle = static_cast<int>(BalanceFloatInd("EarthquakeJiggle", lvl - 1));
+    SendJiggle(cx, cy, jiggle, out);                         // 화면 흔들기 — 소리는 10
+    return 1;
 }
 
 // changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)

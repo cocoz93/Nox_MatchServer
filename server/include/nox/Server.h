@@ -1810,6 +1810,11 @@ private:
     int DurGreaterHealCreate(DurSpell& d, std::vector<OutPacket>& out);                                 // sub_52F220
     int DurGreaterHealTick(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_52F2E0
     int DurDrainMana(DurSpell& d, std::vector<OutPacket>& out);                                         // nox_xxx_spellDrainMana_52E210
+    // ── 묶음 4-c1 밀기·당기기·땅흔들기 ──
+    void PushUnitsAround(float cx, float cy, float outer, float inner, float power);                    // mapPushUnitsAround_52E040 + unitPushAroundFn_52E0E0
+    int CastPushPull(const Session& caster, int lvl, bool pull);                                        // castPush_52C000 · castPull_52BFA0
+    int CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out);                          // castEquake_52DE40 + equakeDamage_52DEC0
+    void SendJiggle(float cx, float cy, int jiggle, std::vector<OutPacket>& out);                       // earthquakeSend_4D9110 → `97 <세기>` Kind1
     Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기
     int DrainApply(Session& caster, const Target& t, int amount);                                        // sub_52E450
     int TargetMaxHealth(const Target& t) const;                                                          // unitGetMaxHP_4EE7A0

@@ -5488,6 +5488,102 @@ void TestDrainMana() {
     std::printf("  4-b5b(3) — DrainMana 적 마나 빨기 광선 `9e 05` · 0.5/틱 이월 · 가득/맞음/움직임/대상없음/달리기/같은편/둘레밖\n");
 }
 
+// ── 묶음 4-c1 — 밀기·당기기·땅흔들기 ──────────────────────────────────────
+//
+// 정답지: castPull_52BFA0 · castPush_52C000 · castEquake_52DE40(+equakeDamage_52DEC0)
+//   셋 다 둘레 훑기 한 함수를 쓴다 — mapPushUnitsAround_52E040 / unitsGetInCircle
+void TestPushPullQuake() {
+    const std::string a = "10.9.1.1:9101";
+    const std::string b = "10.9.1.2:9102";
+    const std::string c = "10.9.1.3:9103";
+    auto mk = [&](nox::Server& srv, uint8_t spell) {
+        nox::Gamedata g;
+        g.Parse("PushPowerCoeff = 1.0;\nPullPowerCoeff = 1.0;\n"
+                "EarthquakeRange = 200.0f;\nEarthquakeDamage = 30, 30, 30, 30, 30;\nEarthquakeJiggle = 50, 50, 50, 50, 50;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1080, 1000);                      // 시전자 오른쪽 80
+    };
+
+    // ① 밀기 — 남이 **멀어지는 쪽**으로 밀린다
+    {
+        nox::Server srv; mk(srv, 66);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int bx = srv.XOf(b);
+        CastAndWait(srv, a, 66, false, ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.XOf(b) > bx, "밀기인데 상대가 멀어지지 않았다");
+    }
+
+    // ② 당기기 — 남이 **가까워지는 쪽**으로 끌린다(힘이 음수)
+    {
+        nox::Server srv; mk(srv, 65);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int bx = srv.XOf(b);
+        CastAndWait(srv, a, 65, false, ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.XOf(b) < bx, "당기기인데 상대가 가까워지지 않았다");
+    }
+
+    // ③ 멀수록 약하게 — 가까운 b 가 먼 c 보다 많이 밀린다
+    {
+        nox::Server srv; mk(srv, 66);
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(c, 1400, 1000);                      // 둘레 600 안이지만 훨씬 멀다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int bx = srv.XOf(b), cx = srv.XOf(c);
+        CastAndWait(srv, a, 66, false, ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int bMoved = srv.XOf(b) - bx, cMoved = srv.XOf(c) - cx;
+        Check(bMoved > 0 && cMoved >= 0, "밀기가 아예 안 먹었다(시험 전제)");
+        Check(bMoved > cMoved, "가까운 쪽이 먼 쪽보다 더 밀리지 않았다(거리 비례가 빠짐)");
+    }
+
+    // ④ 땅흔들기 — 거리에 반비례하는 피해(종류 11) · 자기는 안 맞음 · 화면 흔들기 `97`
+    {
+        nox::Server srv; mk(srv, 23);
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(c, 1190, 1000);                      // 둘레 200 언저리 — b(80)보다 훨씬 멀다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const uint16_t aHp = srv.HealthOf(a), bHp = srv.HealthOf(b), cHp = srv.HealthOf(c);
+        CastAndWait(srv, a, 23, false, ms, out);
+        const int bLost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int cLost = static_cast<int>(cHp) - static_cast<int>(srv.HealthOf(c));
+        Check(srv.HealthOf(a) == aHp, "땅흔들기가 시전자를 때렸다");
+        Check(bLost > 0, "가까운 사람이 땅흔들기에 안 맞았다");
+        Check(bLost > cLost, "먼 사람이 가까운 사람만큼 맞았다(거리 반비례가 빠짐)");
+        // 화면 흔들기 — 둘레 300 안 사람에게 `97 <세기>` 2바이트
+        const auto toB = FlattenTo(out, b);
+        const auto* jig = FindMsg(toB, static_cast<uint8_t>(nox::Op::FX_JIGGLE));
+        Check(jig != nullptr && jig->size() == 2 && (*jig)[1] > 0, "화면 흔들기 `97` 이 안 나갔다");
+    }
+
+    // ⑤ 둘레 밖은 안 밀린다
+    {
+        nox::Server srv; mk(srv, 66);
+        srv.DebugMoveTo(b, 1000 + 900, 1000);                // 둘레 600 밖
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int bx = srv.XOf(b);
+        CastAndWait(srv, a, 66, false, ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.XOf(b) == bx, "둘레 밖인데 밀렸다");
+    }
+    std::printf("  4-c1 — 밀기/당기기 방향·거리 비례 · 둘레 밖 안 밀림 · 땅흔들기 거리 반비례 피해·자기 제외·화면 흔들기 `97`\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -7586,6 +7682,7 @@ int main() {
     TestChannelLife();
     TestGreaterHeal();
     TestDrainMana();
+    TestPushPullQuake();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
