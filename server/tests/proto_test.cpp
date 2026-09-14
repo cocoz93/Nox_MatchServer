@@ -10303,6 +10303,73 @@ void TestAIPathFind() {
         const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 48 * 23 + 11, 43 * 23 + 11, 0);
         Check(st != 0, "벽에 파묻혔는데 길을 냈다 — 벽 관문이 느슨한 갈래보다 먼저다");
     }
+    // ①-2 **오브젝트 모양이 깃발 0x1 을 찍는다**(6-e(2b·3))
+    //   칸 안 **아홉 점**(2.3·11.5·20.7 의 3×3) 중 하나라도 몸 안에 들면 그 칸을 찍는다
+    {
+        nox::Server srv;
+        nox::Server::PhysBody ob;
+        ob.x = 45 * 23.0f + 11.5f; ob.y = 43 * 23.0f + 11.5f;   // 칸 (45,43) 한가운데
+        ob.shape = 2; ob.r = 8.0f;                              // 칸보다 작다
+        srv.SetObstacles({ ob });
+        Check((srv.DebugPathFlags(45, 43) & 0x1) != 0, "오브젝트가 선 칸에 0x1 이 안 섰다");
+        Check((srv.DebugPathFlags(45, 43) & 0x2) != 0, "깃발 0x10 이 없는데 0x2 가 안 섰다");
+        Check((srv.DebugPathFlags(44, 43) & 0x1) == 0, "옆칸까지 찍었다");
+        Check(srv.DebugPathBlockedFlags(false, 45, 43), "찍힌 칸이 걷는 것을 안 막는다");
+    }
+    // 큰 것은 **여러 칸**을 찍는다
+    {
+        nox::Server srv;
+        nox::Server::PhysBody ob;
+        ob.x = 45 * 23.0f + 11.5f; ob.y = 43 * 23.0f + 11.5f;
+        ob.shape = 2; ob.r = 30.0f;                             // 칸을 넘는다
+        srv.SetObstacles({ ob });
+        Check((srv.DebugPathFlags(45, 43) & 0x1) != 0, "선 칸에 0x1 이 안 섰다");
+        Check((srv.DebugPathFlags(44, 43) & 0x1) != 0, "큰 것인데 옆칸을 안 찍었다");
+        Check((srv.DebugPathFlags(46, 43) & 0x1) != 0, "큰 것인데 반대 옆칸을 안 찍었다");
+    }
+    // ★ 깃발 **0x10** 이 있으면 0x2 는 안 찍는다
+    {
+        nox::Server srv;
+        nox::Server::PhysBody ob;
+        ob.x = 45 * 23.0f + 11.5f; ob.y = 43 * 23.0f + 11.5f;
+        ob.shape = 2; ob.r = 8.0f; ob.flags = 0x10;
+        srv.SetObstacles({ ob });
+        Check((srv.DebugPathFlags(45, 43) & 0x1) != 0, "0x1 이 안 섰다");
+        Check((srv.DebugPathFlags(45, 43) & 0x2) == 0, "깃발 0x10 인데 0x2 를 찍었다");
+    }
+    // ★ **아홉 점을 다 눌러 본다** — 칸 **가장자리**만 스치는 것도 찍힌다
+    //   (한가운데만 보면 못 찾고, 표본 자리가 0·11.5·23 이어도 못 찾는다)
+    {
+        nox::Server srv;
+        nox::Server::PhysBody ob;
+        ob.x = 1030.0f; ob.y = 43 * 23.0f + 11.5f;            // 칸 44 의 20.7 표본(1032.7)만 스친다
+        ob.shape = 2; ob.r = 3.0f;
+        srv.SetObstacles({ ob });
+        Check((srv.DebugPathFlags(44, 43) & 0x1) != 0, "가장자리만 스친 칸을 안 찍었다");
+        Check((srv.DebugPathFlags(43, 43) & 0x1) == 0, "안 닿는 칸까지 찍었다");
+    }
+    // ★ **몸 안인지 실제로 본다** — 칸 상자 안이어도 몸에 안 닿으면 안 찍는다
+    //   원의 칸 상자는 3×3 인데 **네 모서리 칸**은 원이 안 닿는다
+    {
+        nox::Server srv;
+        nox::Server::PhysBody ob;
+        ob.x = 45 * 23.0f + 11.5f; ob.y = 43 * 23.0f + 11.5f;
+        ob.shape = 2; ob.r = 18.0f;
+        srv.SetObstacles({ ob });
+        Check((srv.DebugPathFlags(45, 43) & 0x1) != 0, "한가운데 칸이 안 찍혔다");
+        Check((srv.DebugPathFlags(44, 43) & 0x1) != 0, "옆칸이 안 찍혔다(이 시험의 전제)");
+        Check((srv.DebugPathFlags(44, 42) & 0x1) == 0, "원이 안 닿는 모서리 칸까지 찍었다");
+    }
+    // 닿음이 없는 것은 안 찍는다
+    {
+        nox::Server srv;
+        nox::Server::PhysBody ob;
+        ob.x = 45 * 23.0f + 11.5f; ob.y = 43 * 23.0f + 11.5f;
+        ob.shape = 2; ob.r = 8.0f; ob.hasCollide = false;
+        srv.SetObstacles({ ob });
+        Check((srv.DebugPathFlags(45, 43) & 0x1) == 0, "닿음이 없는 것을 찍었다");
+    }
+
     // ③-2 **오브젝트가 막은 칸은 돌아간다** — 벽이 아니라 깃발 0x100 이 막는 자리
     {
         nox::Server srv;

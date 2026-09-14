@@ -983,7 +983,7 @@ public:
         const float px = w * 0.35354999f, py = h * 0.35354999f;
         b.boxLT = -px + py; b.boxLB = -px - py; b.boxRT = px + py; b.boxRB = px - py;
     }
-    void SetObstacles(std::vector<PhysBody> v) { obstacles_ = std::move(v); }
+    void SetObstacles(std::vector<PhysBody> v) { obstacles_ = std::move(v); AIPathBakeObstacles(); }
     size_t ObstacleCount() const { return obstacles_.size(); }
     // 소환수 종류 번호 → 몸(모양·반지름·깃발·질량). main.cpp 가 thing.bin 에서 채운다.
     void SetTypeBody(uint16_t type, const PhysBody& b) { typeBodies_[type] = b; }
@@ -2477,6 +2477,8 @@ private:
     void AIPathInvalidate(bool alsoFrame);
     void AIPathBakeWalls();
     // 묶음 6-j(2) — 길목 칸을 격자에 찍고(0x40), 거기서부터 물결로 찾는다
+    bool BodyContains(const PhysBody& o, float qx, float qy) const;   // sub_547DB0
+    void AIPathBakeObstacles();   // 묶음 6-e(2b·3) — 오브젝트 모양이 깃발 0x1(·0x2)을 찍는다
     void AIPathBakeWaypoints();
     bool AIPathFindWaypoint(const Creature& k, float& outX, float& outY);
     // 묶음 6-e(2b) — 그 칸 벽의 방향 번호(0~10, 없으면 −1) · 대각 이음매 판정

@@ -5879,6 +5879,7 @@ void Server::AIPathBakeWalls() {
     for (int y = 0; y < kAIIndexSize; ++y)
         for (int x = 0; x < kAIIndexSize; ++x)
             if (AIIndexNode* n = AIPathIndexAt(x, y)) n->flags &= static_cast<uint16_t>(~0x1);
+    AIPathBakeObstacles();   // 묶음 6-e(2b·3) — 오브젝트 모양이 0x1(·0x2)을 찍는다
     AIPathBakeWaypoints();   // 묶음 6-j(2) — 길목 칸(0x40)은 여기서 찍는다
 }
 
@@ -6696,6 +6697,55 @@ bool Server::AIPathDiagOk(int ii, int x1, int y1) const {
             return true;
         }
         default: return true;
+    }
+}
+
+// sub_547DB0 — **점이 그 몸 안에 드는가**. 원은 거리제곱, 상자는 **마름모 네 변**이다.
+//   (묶음 4-a2 에서 날아가는 것 닿음 판정에 인라인으로 있던 것을 함수로 뽑았다)
+bool Server::BodyContains(const PhysBody& o, float qx, float qy) const {
+    if (o.shape == 2) {
+        const float dx = o.x - qx, dy = o.y - qy;
+        return dy * dy + dx * dx <= o.r * o.r;
+    }
+    if (o.shape == 3) {
+        const float v5 = o.boxLT + o.x, v6 = o.boxLB + o.y;
+        if ((v6 - v5 + qx - qy) * 0.70709997f < 0.0f &&
+            (o.boxRB + o.y - (o.boxRT + o.x) + qx - qy) * 0.70709997f > 0.0f) {
+            const float v7 = o.boxRT + o.x, v8 = o.boxRB + o.y;
+            return (v8 + v7 - qx - qy) * 0.70709997f > 0.0f && (v6 + v5 - qx - qy) * 0.70709997f < 0.0f;
+        }
+    }
+    return false;
+}
+
+// ── 묶음 6-e(2b·3) 오브젝트 모양 찍기 ────────────────────────────────
+//
+// 정답지 `Sub50AFA0`(`server/object_ai_path.go:545~580`) — 클래스 **0x400000** 인 것의 몸이
+// **걸치는 칸마다** 깃발 **0x1** 을, 오브젝트 깃발 **0x10 이 없으면 0x2** 도 찍는다.
+//
+// ★ 어떻게 「걸친다」를 보나 — 칸 안의 **아홉 점**(blob `0x587000+234108`,
+//   {2.3 · 11.5 · 20.7} 의 3×3)을 차례로 눌러 보아 **하나라도 몸 안에 들면** 그 칸을 찍는다.
+//   ⚠ 그래서 **칸보다 작은 것은 칸 한가운데를 비켜 서면 안 찍힐 수 있다** — 정답지 그대로다.
+void Server::AIPathBakeObstacles() {
+    static const float kS[3] = { 2.3f, 11.5f, 20.7f };
+    for (const auto& o : obstacles_) {
+        if (!o.hasCollide) continue;
+        double ox0, oy0, ox1, oy1;
+        BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
+        const int gx0 = static_cast<int>(ox0 / kWallCell), gx1 = static_cast<int>(ox1 / kWallCell);
+        const int gy0 = static_cast<int>(oy0 / kWallCell), gy1 = static_cast<int>(oy1 / kWallCell);
+        for (int gy = gy0; gy <= gy1; ++gy)
+            for (int gx = gx0; gx <= gx1; ++gx) {
+                AIIndexNode* n = AIPathIndexAt(gx, gy);
+                if (!n) continue;
+                bool hit = false;
+                for (int a = 0; a < 3 && !hit; ++a)
+                    for (int b = 0; b < 3 && !hit; ++b)
+                        if (BodyContains(o, gx * 23.0f + kS[b], gy * 23.0f + kS[a])) hit = true;
+                if (!hit) continue;
+                n->flags |= 0x1;
+                if (!(o.flags & 0x10)) n->flags |= 0x2;
+            }
     }
 }
 
@@ -9101,20 +9151,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                 for (size_t k = 0; k < obstacles_.size(); ++k) {
                     const PhysBody& o = obstacles_[k];
                     if (!passFlags(o.flags, false)) continue;
-                    bool in = false;
-                    if (o.shape == 2) {
-                        const float dx = o.x - qx, dy = o.y - qy;
-                        in = (dy * dy + dx * dx <= o.r * o.r);
-                    } else if (o.shape == 3) {
-                        // sub_547DB0 상자 — 마름모 네 변(0.70709997 대각선 거리)
-                        const float v5 = o.boxLT + o.x, v6 = o.boxLB + o.y;
-                        if ((v6 - v5 + qx - qy) * 0.70709997f < 0.0f &&
-                            (o.boxRB + o.y - (o.boxRT + o.x) + qx - qy) * 0.70709997f > 0.0f) {
-                            const float v7 = o.boxRT + o.x, v8 = o.boxRB + o.y;
-                            in = ((v8 + v7 - qx - qy) * 0.70709997f > 0.0f && (v6 + v5 - qx - qy) * 0.70709997f < 0.0f);
-                        }
-                    }
-                    if (!in) continue;
+                    if (!BodyContains(o, qx, qy)) continue;
                     hk = HitObstacle; hIdx = static_cast<int>(k); hx = o.x; hy = o.y; any = true;
                 }
                 return any;
