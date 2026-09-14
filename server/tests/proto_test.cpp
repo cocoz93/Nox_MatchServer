@@ -9942,19 +9942,19 @@ void TestAIFace() {
 // ⚠ 정답지 `MapIndex` 는 격자 밖에 **널**을 주고 `CheckIndexFlags` 가 그걸 그냥 읽는다(터진다).
 //   우리는 밖을 **막힌 것**으로 본다 — 길 찾기가 맵 밖으로 새면 안 되기 때문.
 void TestAIPathIndex() {
-    // ① **벽을 굽는다** — 벽 칸에만 `0x1` 이 선다
+    // ① **굽기는 깃발 0x1 을 내린다** — ★ 2026-09-15 정정(6-e(2b·2))
+    //   정답지는 **벽을 0x1 에 안 찍는다**. 0x1 은 **오브젝트 모양**이 찍는 자리고(아직 미이식),
+    //   벽은 `sub_50B870`(칸의 벽 방향 번호)과 이음매 규칙으로만 막는다.
+    //   그래서 굽기는 **옛 자국을 내리는 일**만 한다
     {
         nox::Server srv;
         srv.SetWalls({ { 40, 30 }, { 41, 30 } });
         srv.DebugPathBakeWalls();
-        Check((srv.DebugPathFlags(40, 30) & 0x1) != 0, "벽 칸에 벽 깃발이 안 섰다");
-        Check((srv.DebugPathFlags(41, 30) & 0x1) != 0, "둘째 벽 칸에 벽 깃발이 안 섰다");
-        Check((srv.DebugPathFlags(42, 30) & 0x1) == 0, "빈 칸에 벽 깃발이 섰다");
-        // ★ **다시 구우면 옛 자국이 지워진다** — 굽기는 `|=` 만이 아니라 **없는 칸을 내려야** 한다
-        srv.SetWalls({ { 42, 30 } });
+        Check((srv.DebugPathFlags(40, 30) & 0x1) == 0, "벽을 0x1 에 구웠다 — 정답지는 안 찍는다");
+        srv.DebugPathSetFlags(40, 30, 0x1);                  // 오브젝트가 찍었다 치고
+        Check((srv.DebugPathFlags(40, 30) & 0x1) != 0, "손으로 찍은 0x1 이 안 보인다");
         srv.DebugPathBakeWalls();
-        Check((srv.DebugPathFlags(42, 30) & 0x1) != 0, "새 벽 칸에 깃발이 안 섰다");
-        Check((srv.DebugPathFlags(40, 30) & 0x1) == 0, "옛 벽 자국이 안 지워졌다");
+        Check((srv.DebugPathFlags(40, 30) & 0x1) == 0, "다시 구웠는데 옛 0x1 자국이 안 지워졌다");
     }
 
     // ② **격자 밖은 막힌 것** — 정답지와 갈리는 자리라 글로 박아 둔다
@@ -9966,14 +9966,14 @@ void TestAIPathIndex() {
         Check(srv.DebugPathBlockedByObj(false, 0, 30, 256), "아래쪽 밖이 오브젝트 판정에서 안 막혔다");
     }
 
-    // ③ **벽은 땅만, 구멍은 날것만** 막는다 — 서로 안 바뀐다
+    // ③ **0x1 은 땅만, 구멍(0x10)은 날것만** 막는다 — 서로 안 바뀐다
+    //   ⚠ 0x1 은 이제 벽이 아니라 **오브젝트 모양**의 자리다(위 ① 참조) — 손으로 찍어 본다
     {
         nox::Server srv;
-        srv.SetWalls({ { 40, 30 } });
-        srv.DebugPathBakeWalls();
+        srv.DebugPathSetFlags(40, 30, 0x1);
         srv.DebugPathSetFlags(41, 30, 0x10);                 // 구멍
-        Check(srv.DebugPathBlockedFlags(false, 40, 30), "벽이 걷는 것을 안 막았다");
-        Check(!srv.DebugPathBlockedFlags(true, 40, 30), "벽이 나는 것까지 막았다");
+        Check(srv.DebugPathBlockedFlags(false, 40, 30), "0x1 이 걷는 것을 안 막았다");
+        Check(!srv.DebugPathBlockedFlags(true, 40, 30), "0x1 이 나는 것까지 막았다");
         Check(!srv.DebugPathBlockedFlags(false, 41, 30), "구멍이 걷는 것을 막았다");
         Check(srv.DebugPathBlockedFlags(true, 41, 30), "구멍이 나는 것을 안 막았다");
     }
@@ -10015,11 +10015,11 @@ void TestAIPathIndex() {
     }
 
     // ⑦ **지날 수 있나 = 둘 다 아니어야** (`preCheckWalls2_50B8A0`)
+    //   ⚠ 여기서 보는 것은 **깃발과 오브젝트**다 — 벽은 이 함수가 아니라 `sub_50B870` 이 막는다
     {
         nox::Server srv; bump(srv);
-        srv.SetWalls({ { 40, 30 } });
-        srv.DebugPathBakeWalls();
-        Check(!srv.DebugPathCanPass(false, 0, 40, 30), "벽을 지나갔다");
+        srv.DebugPathSetFlags(40, 30, 0x1);
+        Check(!srv.DebugPathCanPass(false, 0, 40, 30), "0x1 칸을 지나갔다");
         Check(srv.DebugPathCanPass(false, 0, 42, 30), "빈 칸을 못 지나갔다");
         srv.DebugPathSetFlags(42, 30, 0x100);
         srv.DebugPathStamp(42, 30);
@@ -10290,7 +10290,9 @@ void TestAIPathFind() {
         Check(st == 0, "시작이 막혔다고 길을 못 냈다 — 느슨하게 열어야 한다");
         Check(srv.DebugPathLen() >= 2, "빠져나온 길이 없다");
     }
-    // ⑨-2 **둘레까지 막혀도** 느슨한 갈래로 빠져나온다 — 이게 없으면 아예 못 움직인다
+    // ⑨-2 **벽에 파묻히면 못 빠져나온다** — 느슨한 갈래는 **벽을 풀어 주지 않는다**
+    //   ★ 정답지에서 벽 관문(`sub_50B870`)은 **느슨한 갈래보다 먼저** 걸린다.
+    //     느슨하게 여는 것은 **오브젝트가 막은 것**(깃발·차지함)이지 벽이 아니다
     {
         nox::Server srv;
         std::vector<std::pair<uint8_t, uint8_t>> w;
@@ -10299,7 +10301,36 @@ void TestAIPathFind() {
         srv.SetWalls(w);                                     // 3×3 을 통째로 벽으로
         srv.DebugPathBakeWalls();
         const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 48 * 23 + 11, 43 * 23 + 11, 0);
-        Check(st == 0, "벽 속에 파묻혔는데 느슨한 갈래가 안 열렸다");
+        Check(st != 0, "벽에 파묻혔는데 길을 냈다 — 벽 관문이 느슨한 갈래보다 먼저다");
+    }
+    // ③-2 **오브젝트가 막은 칸은 돌아간다** — 벽이 아니라 깃발 0x100 이 막는 자리
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        srv.DebugSetFrame(15);
+        srv.DebugPathIndexObjects();                          // 세대를 올린다
+        // ⚠ 줄을 **다 막으면 안 된다** — 40 과 46 은 틔워 둬야 돌아갈 길이 있다
+        for (int y = 41; y <= 45; ++y) { srv.DebugPathSetFlags(45, y, 0x100); srv.DebugPathStamp(45, y); }
+        const int st = srv.DebugPathFindF(false, false, 0, 1000, 1000, 1150, 1000, 0,
+                                          [](int, int y) { return y >= 40 && y <= 46; });
+        Check(st == 0, "오브젝트 줄 너머로 못 갔다");
+        bool onIt = false;
+        for (size_t i = 0; i < srv.DebugPathLen(); ++i)
+            if (srv.DebugPathCellX(i) == 45 &&
+                srv.DebugPathCellY(i) >= 41 && srv.DebugPathCellY(i) <= 45) onIt = true;
+        Check(!onIt, "오브젝트가 막은 칸을 밟았다");
+    }
+
+    // ⑨-2b **오브젝트가 막은 것은 느슨한 갈래가 풀어 준다** — 벽이 아니라 차지함(0x100)이면 빠져나온다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        srv.DebugSetFrame(15);
+        srv.DebugPathIndexObjects();                          // 세대를 올린다
+        for (int y = 42; y <= 44; ++y)
+            for (int x = 42; x <= 44; ++x) { srv.DebugPathSetFlags(x, y, 0x100); srv.DebugPathStamp(x, y); }
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 48 * 23 + 11, 43 * 23 + 11, 0);
+        Check(st == 0, "오브젝트가 막은 자리인데 느슨한 갈래가 안 열렸다");
     }
     // ⑨-3 **거르개에도 같은 장치** — 시작 칸을 거르개가 막아도 빠져나온다
     {

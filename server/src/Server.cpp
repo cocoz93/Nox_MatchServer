@@ -5865,16 +5865,21 @@ void Server::AIPathInvalidate(bool alsoFrame) {
     if (alsoFrame) aiIndexFrame_ = 0;
 }
 
-// 맵 벽을 격자 깃발 `0x1` 로 굽는다. 벽은 안 바뀌므로 **한 번만** 하면 된다.
+// 격자 깃발을 다시 굽는다.
+//
+// ★★ **2026-09-15 정정(6-e(2b·2))** — 여기서 **벽을 굽지 않는다.**
+//   정답지 `Sub50AFA0`(`server/object_ai_path.go:512~596`)이 깃발 **0x1** 을 찍는 자리는
+//   **오브젝트 모양**(클래스 0x400000 을 칸마다 눌러 보는 자리)뿐이고, **벽은 안 찍는다**.
+//   벽은 **`sub_50B870`(칸의 벽 방향 번호 != −1)과 이음매 규칙**으로만 막는다.
+//   전에는 벽을 0x1 에 구워 **먼저 통째로** 막아, 이음매 규칙이 아예 효과가 없었다.
+//
+// ⚠ 그래서 지금 **0x1 을 찍는 것은 아무것도 없다** — 오브젝트 모양 찍기(`IndexObject`, 정답지 100줄)를
+//   아직 안 옮겼기 때문이다. 옮기면 여기가 아니라 그쪽이 찍는다.
 void Server::AIPathBakeWalls() {
     for (int y = 0; y < kAIIndexSize; ++y)
-        for (int x = 0; x < kAIIndexSize; ++x) {
-            AIIndexNode* n = AIPathIndexAt(x, y);
-            if (!n) continue;
-            const bool wall = wallsOn_ && walls_[static_cast<size_t>(y) * 256 + static_cast<size_t>(x)] != 0;
-            if (wall) n->flags |= 0x1; else n->flags &= static_cast<uint16_t>(~0x1);
-        }
-    AIPathBakeWaypoints();   // 묶음 6-j(2) — 길목 칸(0x40)도 같이 찍는다
+        for (int x = 0; x < kAIIndexSize; ++x)
+            if (AIIndexNode* n = AIPathIndexAt(x, y)) n->flags &= static_cast<uint16_t>(~0x1);
+    AIPathBakeWaypoints();   // 묶음 6-j(2) — 길목 칸(0x40)은 여기서 찍는다
 }
 
 // ── 묶음 6-e(2) 길 훑기 ───────────────────────────────────────────────
@@ -6089,6 +6094,10 @@ int Server::AIPathFind(bool awayFrom, const PathActor& act, float fromX, float f
                         if (AIPathBlockedFlags(act.airborne, x1, y2)) continue;
                         if (AIPathBlockedFlags(act.airborne, x2, y1)) continue;
                     }
+                    // ★ `sub_50B870` — **벽이 있는 칸은 못 지난다**. 정답지는 벽을 격자 깃발에
+                    //   안 찍고 **오로지 여기서** 막는다(6-e(2b·2)).
+                    //   ⚠ 이 관문은 **느슨한 갈래보다 먼저**다 — 벽에 파묻히면 못 빠져나온다
+                    if (WallDirAt(x2, y2) != -1) continue;
                     if (relaxWall) {
                         if (AIPathCanPass(act.airborne, act.subclass, x2, y2)) {
                             escWall = true;                  // 빠져나왔다
@@ -6627,7 +6636,7 @@ bool Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY) {
                 // ★ 정답지의 막힘 관문은 `sub_50B870`(벽 모서리 번호)·`sub_50C830`(물칸)인데
                 //   둘 다 아직 안 옮겼다. **우리가 가진 벽 깃발**로 대신 막는다 —
                 //   안 막으면 물결이 벽을 넘어가 **담 밖 길목까지 찾아낸다**(시험이 잡았다)
-                if (AIPathBlockedFlags(false, x2, y2)) continue;
+                if (WallDirAt(x2, y2) != -1) continue;       // sub_50B870 — 벽
                 const int nn = AIPathNewVisit(x2, y2, it, next);
                 if (nn < 0) return false;                    // 자국 자리를 다 썼다
                 next = nn;
