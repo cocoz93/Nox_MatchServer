@@ -5518,6 +5518,9 @@ void TestPushPullQuake() {
         CastAndWait(srv, a, 66, false, ms, out);
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.XOf(b) > bx, "밀기인데 상대가 멀어지지 않았다");
+        // ★ 크기도 재야 한다 — 힘을 **×10** 하는 걸 빼먹어도 밀리기는 하니 방향만 보면 안 걸린다
+        //   실측: ×10 있으면 39 · 없으면 4 남짓이라 20 이면 깨끗이 갈린다
+        Check(srv.XOf(b) - bx >= 20, "밀린 거리가 너무 작다(힘 ×10 이 빠졌나)");
     }
 
     // ② 당기기 — 남이 **가까워지는 쪽**으로 끌린다(힘이 음수)
@@ -5550,23 +5553,30 @@ void TestPushPullQuake() {
 
     // ④ 땅흔들기 — 거리에 반비례하는 피해(종류 11) · 자기는 안 맞음 · 화면 흔들기 `97`
     {
+        const std::string d = "10.9.1.4:9104";
         nox::Server srv; mk(srv, 23);
         srv.DebugEnterGame(c, 730, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(c, 1190, 1000);                      // 둘레 200 언저리 — b(80)보다 훨씬 멀다
+        srv.DebugMoveTo(c, 1190, 1000);                      // 둘레 200 안이지만 b(80)보다 훨씬 멀다
+        srv.DebugEnterGame(d, 731, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(d, 1000 + 400, 1000);                // **둘레 200 밖 · 화면 흔들기 300 도 밖**
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t aHp = srv.HealthOf(a), bHp = srv.HealthOf(b), cHp = srv.HealthOf(c);
+        const uint16_t aHp = srv.HealthOf(a), bHp = srv.HealthOf(b), cHp = srv.HealthOf(c), dHp = srv.HealthOf(d);
         CastAndWait(srv, a, 23, false, ms, out);
         const int bLost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
         const int cLost = static_cast<int>(cHp) - static_cast<int>(srv.HealthOf(c));
         Check(srv.HealthOf(a) == aHp, "땅흔들기가 시전자를 때렸다");
         Check(bLost > 0, "가까운 사람이 땅흔들기에 안 맞았다");
         Check(bLost > cLost, "먼 사람이 가까운 사람만큼 맞았다(거리 반비례가 빠짐)");
-        // 화면 흔들기 — 둘레 300 안 사람에게 `97 <세기>` 2바이트
+        Check(srv.HealthOf(d) == dHp, "둘레 밖 사람이 땅흔들기에 맞았다");
+        // 화면 흔들기 — 둘레 300 **안** 사람에게만 `97 <세기>` 2바이트
         const auto toB = FlattenTo(out, b);
         const auto* jig = FindMsg(toB, static_cast<uint8_t>(nox::Op::FX_JIGGLE));
         Check(jig != nullptr && jig->size() == 2 && (*jig)[1] > 0, "화면 흔들기 `97` 이 안 나갔다");
+        const auto toD = FlattenTo(out, d);
+        Check(FindMsg(toD, static_cast<uint8_t>(nox::Op::FX_JIGGLE)) == nullptr,
+              "둘레 300 밖 사람에게도 화면 흔들기가 갔다");
     }
 
     // ⑤ 둘레 밖은 안 밀린다
