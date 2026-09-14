@@ -2151,6 +2151,17 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 break;
             }
 
+            case Op::TRY_CREATURE_COMMAND: {
+                // ── 묶음 6-i 소환수 명령 — `sdecode.c:193`(`0x78`)
+                //   **몸 3바이트** — `<번호 u16><명령 u8>`. 번호가 **0 이면 내 것 전부**에게 준다
+                //   ⚠ 정답지는 사람 자료 `+3680 & 1`(명령 금지)일 때 통째로 무시한다 — 그 깃발은 아직 없다
+                if (!s.inGame || it.bodyLen() != 3) break;
+                const uint16_t nc = static_cast<uint16_t>(it.body()[0] | (it.body()[1] << 8));
+                OrderUnit(s, nc, it.body()[2]);
+                ++handled_;
+                break;
+            }
+
             case Op::TRY_GET: {
                 if (!s.inGame || it.bodyLen() != 2) break;
                 const uint16_t want = static_cast<uint16_t>(
@@ -6480,6 +6491,90 @@ void Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float
     missiles_.push_back(m);
 }
 
+// ── 묶음 6-i 소환수 명령 ──────────────────────────────────────────────
+//
+// 정답지 `nox_xxx_orderUnit_533900`(`legacy/GAME4_3.c:2367`) +
+//        `nox_xxx_enactUnitOrder_5339A0`(같은 파일 2394).
+//
+// ⭕ 명령 여섯 — **0 추방 · 1 관찰 · 2 가만히 · 3 지켜 · 4 따라와 · 5 사냥**
+//   · 번호가 **0** 이면 **내 것 전부**에게 준다(정답지는 「고른 것」 깃발 0x80 을 본 뒤 준다)
+//   · 2·3·4·5 는 **쌓임을 통째로 비우고** 그 행동 하나를 얹는다 —
+//     그래서 하던 싸움이 끊긴다. 이것이 명령이 「선다」는 뜻이다
+//   · 3·4·5 는 **못 움직이는 것에는 안 먹는다**(`monsterIsMoveing` 빠르기 >= 0.01)
+//   · **사나움**(`Aggression` +1304) — 가만히·지켜 **0.5** · 따라와·사냥 **0.83**
+//   · 지켜는 **보는 거리**(`SightRange` +1312)를 **250** 으로 놓고, 쏘는 것이면 뛰기 깃발을 켠다
+//
+// ⚠ 안 옮긴 것 — 추방(`banishUnit_5017F0`)·관찰(`playerObserveMonster_4DDE80`)은 묶음 6-j·10 ·
+//   말풍선(`monsterCmdSend_528BD0`)과 소리 · 「고른 것」 깃발(0x80)
+void Server::EnactUnitOrder(Session& src, Creature& k, uint8_t order) {
+    if (k.health == 0) return;                               // 죽은 것에는 안 먹는다(깃발 0x8000)
+    // `monsterIsMoveing_534320` 그대로 — **지금 빠르기**만 본다(종류표로 눅이지 않는다)
+    const bool canMove = k.speedCur >= 0.0099999998f;
+    switch (order) {
+        case 2:                                              // 가만히
+            k.aggression = 0.5f;
+            k.running = false;
+            AIClearStack(k);
+            AIPush(k, 0);
+            k.ordered = true;
+            break;
+        case 3: {                                            // 지켜 — **선 자리를 지킨다**
+            if (!canMove) break;
+            k.aggression = 0.5f;
+            const MonsterStats* m = FindMonster(k.type);
+            if (m && m->missileName != nullptr) k.running = true;   // 쏘는 것이면 뛰기 깃발
+            k.sightRange = 250.0f;
+            AIClearStack(k);
+            if (AIPush(k, 4)) {
+                k.aiStack[k.aiStackInd].argX = static_cast<float>(k.x);
+                k.aiStack[k.aiStackInd].argY = static_cast<float>(k.y);
+                k.aiStack[k.aiStackInd].argU32 = k.facing;
+            }
+            k.ordered = true;
+            break;
+        }
+        case 4:                                              // 따라와
+            if (!canMove) break;
+            k.aggression = 0.83f;
+            k.running = false;
+            AIClearStack(k);
+            if (AIPush(k, 3)) {
+                k.aiStack[k.aiStackInd].argX = static_cast<float>(src.posX);
+                k.aiStack[k.aiStackInd].argY = static_cast<float>(src.posY);
+                k.aiStack[k.aiStackInd].targetAddr = src.addr;
+            }
+            k.ordered = true;
+            break;
+        case 5:                                              // 사냥
+            if (!canMove) break;
+            k.aggression = 0.83f;
+            k.running = false;
+            AIClearStack(k);
+            AIPush(k, 5);
+            k.ordered = true;
+            break;
+        default: break;                                      // 0 추방 · 1 관찰 — 아직 안 옮겼다
+    }
+}
+
+void Server::AIClearStack(Creature& k) {
+    for (int i = 0; i < Creature::kAIStackMax; ++i) k.aiStack[i] = Creature::AIStackItem{};
+    k.aiStackInd = 0;
+    k.path.clear();
+    k.velX = 0; k.velY = 0;
+    aiStackChanged_ = true;
+}
+
+void Server::OrderUnit(Session& src, uint16_t netCode, uint8_t order) {
+    if (netCode != 0) {
+        for (auto& k : pets_)
+            if (k.netCode == netCode && k.owner == src.addr) { EnactUnitOrder(src, k, order); return; }
+        return;                                              // 남의 것·없는 것에는 안 먹는다
+    }
+    for (auto& k : pets_)                                    // 번호 0 = 내 것 전부
+        if (k.owner == src.addr) EnactUnitOrder(src, k, order);
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -9661,7 +9756,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 //     정답지에서 **싸움을 올리는 쪽이 호위**다(`mobActionEscort_546430`) —
                 //     호위가 바닥에 남아 **서 있는 명령**이 되고, 싸움이 끝나면 다시 주인에게 붙는다.
                 //     주인이 없는 것(퀘스트 몬스터)은 호위가 스스로 빠지므로 **싸움을 바로 쌓는다**
-                if (k.aiStackInd == 0 && k.aiStack[0].action == 0) {
+                //   ⚠ **사람이 명령을 준 것은 안 덮는다**(6-i) — 「가만히」가 바닥에 놀기를 남기므로
+                //     이 관문이 없으면 다음 틱에 호위로 되돌아가 명령이 안 선다
+                if (!k.ordered && k.aiStackInd == 0 && k.aiStack[0].action == 0) {
                     if (!k.owner.empty()) {
                         AIPush(k, 3);
                     } else if (AIPush(k, 15)) {
@@ -9680,7 +9777,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 k.enemyAddr.clear();
                 k.enemyPet = -1;
                 // ★ 적이 안 보여도 **주인이 있으면 호위**는 선다 — 그래야 따라다닌다
-                if (!k.owner.empty() && k.aiStackInd == 0 && k.aiStack[0].action == 0) AIPush(k, 3);
+                if (!k.ordered && !k.owner.empty() && k.aiStackInd == 0 && k.aiStack[0].action == 0) AIPush(k, 3);
             }
 
             k.velX = 0; k.velY = 0;

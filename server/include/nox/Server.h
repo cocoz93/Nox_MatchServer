@@ -243,6 +243,10 @@ struct Creature {
     // 묶음 6-h — 호위 거리(+1316 `Field329`, 기본 **30**)와 뛰는 중인가(깃발 0x4000)
     float escortDist = 30.0f;
     bool running = false;
+    // 묶음 6-i — 명령이 세우는 값
+    float aggression = 0.83f;   // +1304 Aggression (가만히·지켜 0.5 · 따라와·사냥 0.83)
+    float sightRange = 0.0f;    // +1312 SightRange (지켜가 250 으로 놓는다)
+    bool ordered = false;       // 사람이 명령을 준 적이 있나 — 틱의 기본 호위를 멈춘다
 };
 
 // 깃발 하나.
@@ -1680,6 +1684,9 @@ public:
     }
     void DebugSetPetSpeed(size_t i, float v) { if (i < pets_.size()) pets_[i].speedCur = v; }
     bool DebugPetRunning(size_t i) const { return i < pets_.size() && pets_[i].running; }
+    float DebugPetAggression(size_t i) const { return i < pets_.size() ? pets_[i].aggression : 0.0f; }
+    float DebugPetSight(size_t i) const { return i < pets_.size() ? pets_[i].sightRange : 0.0f; }
+    bool DebugPetOrdered(size_t i) const { return i < pets_.size() && pets_[i].ordered; }
     void DebugSetPetRunning(size_t i, bool v) { if (i < pets_.size()) pets_[i].running = v; }
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
     void DebugAIRandomWalk(size_t i) { if (i < pets_.size()) AIRandomWalk(pets_[i]); }
@@ -2424,6 +2431,10 @@ private:
     static bool AIHasAction(const Creature& k, uint8_t act);
     static uint8_t AIActionBelow(const Creature& k);   // sub_50A040 — 조건을 건너뛴 아래 행동
     void CreatureApplyVelocity(Creature& k);
+    // 묶음 6-i — 소환수 명령
+    void OrderUnit(Session& src, uint16_t netCode, uint8_t order);
+    void EnactUnitOrder(Session& src, Creature& k, uint8_t order);
+    void AIClearStack(Creature& k);
     // 묶음 6-g(3b) — 크리처가 `MISSILE_NAME` 오브젝트를 만들어 날린다
     void SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty, std::vector<OutPacket>& out);
     void AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out);

@@ -11931,6 +11931,156 @@ void TestAIEscort() {
     std::printf("  6-h — 호위(3): 곁 60 안이면 가만 · 멀면 44·56·49+가기 · 상대 있으면 싸움 · 뛰기 90/120\n");
 }
 
+// ── 묶음 6-i — 소환수 명령(0x78) ──────────────────────────────────────
+//
+// 정답지 `sdecode.c:193` + `orderUnit_533900` + `enactUnitOrder_5339A0`.
+//   · 몸 **3바이트** — `<번호 u16><명령 u8>` · 번호 **0 이면 내 것 전부**
+//   · 명령 여섯 — 0 추방 · 1 관찰 · **2 가만히 · 3 지켜 · 4 따라와 · 5 사냥**
+//   · 2~5 는 **쌓임을 통째로 비우고** 그 행동 하나를 얹는다(하던 싸움이 끊긴다)
+//   · 3·4·5 는 **못 움직이는 것에는 안 먹는다**
+//   · 사나움 — 가만히·지켜 **0.5** · 따라와·사냥 **0.83** · 지켜는 보는 거리 **250**
+void TestCreatureOrder() {
+    const std::string a = "10.6.14.1:7401";
+    const std::string b = "10.6.14.2:7402";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1200, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, a);               // 근접 몬스터
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.Tick(34, o);
+    };
+    // `<머리><0x78><번호 lo><번호 hi><명령>` — 몸 3바이트
+    auto order = [&](nox::Server& srv, const std::string& who, uint16_t nc, uint8_t cmd,
+                     std::vector<nox::OutPacket>& out) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 4, 0);
+        p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::TRY_CREATURE_COMMAND);
+        p[nox::kWireHeaderSize + 1] = static_cast<uint8_t>(nc);
+        p[nox::kWireHeaderSize + 2] = static_cast<uint8_t>(nc >> 8);
+        p[nox::kWireHeaderSize + 3] = cmd;
+        srv.OnPacket(who, p.data(), p.size(), out);
+    };
+
+    // ① **가만히(2)** — 쌓임을 비우고 놀기만 남긴다. 그리고 틱이 **안 덮는다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugAIAction(0, 0) == 3, "먼저 호위가 서 있어야 한다(이 시험의 전제)");
+        order(srv, a, srv.DebugPetNetCode(0), 2, out);
+        Check(srv.DebugAIStackInd(0) == 0 && srv.DebugAIAction(0, 0) == 0, "가만히가 놀기만 안 남겼다");
+        uint32_t ms = 68;
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugAIAction(0, 0) == 0, "틱이 명령을 덮어 호위로 되돌렸다");
+        Check(std::fabs(srv.DebugPetAggression(0) - 0.5f) < 0.001f, "사나움이 0.5 가 아니다");
+    }
+
+    // ② **지켜(3)** — 선 자리를 인자로 받는 지키기(4)가 선다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetPos(0, 1111, 1222);
+        order(srv, a, srv.DebugPetNetCode(0), 3, out);
+        Check(srv.DebugAIStackInd(0) == 0 && srv.DebugAIAction(0, 0) == 4, "지키기(4)가 안 섰다");
+        Check(srv.DebugAIArgX(0, 0) == 1111.0f, "지키기가 선 자리를 안 받았다");
+        Check(std::fabs(srv.DebugPetAggression(0) - 0.5f) < 0.001f, "사나움이 0.5 가 아니다");
+        Check(std::fabs(srv.DebugPetSight(0) - 250.0f) < 0.001f, "보는 거리가 250 이 아니다");
+    }
+
+    // ③ **따라와(4)** — 호위(3)가 서고 명령한 사람을 가리킨다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        order(srv, a, srv.DebugPetNetCode(0), 4, out);
+        Check(srv.DebugAIStackInd(0) == 0 && srv.DebugAIAction(0, 0) == 3, "호위(3)가 안 섰다");
+        Check(srv.DebugAITargetAddr(0, 0) == a, "호위가 명령한 사람을 안 가리킨다");
+        Check(std::fabs(srv.DebugPetAggression(0) - 0.83f) < 0.001f, "사나움이 0.83 이 아니다");
+    }
+
+    // ④ **사냥(5)** — 사냥(5)이 선다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        order(srv, a, srv.DebugPetNetCode(0), 5, out);
+        Check(srv.DebugAIStackInd(0) == 0 && srv.DebugAIAction(0, 0) == 5, "사냥(5)이 안 섰다");
+        Check(std::fabs(srv.DebugPetAggression(0) - 0.83f) < 0.001f, "사나움이 0.83 이 아니다");
+    }
+
+    // ⑤ **번호 0 은 내 것 전부** — 남의 것에는 안 먹는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSpawnPet(1358, 1050, 1000, a);               // 내 것 둘째
+        srv.DebugSpawnPet(1358, 1300, 1000, b);               // 남의 것
+        std::vector<nox::OutPacket> o2;
+        srv.Tick(68, o2);
+        order(srv, a, 0, 2, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "첫째에게 안 먹었다");
+        Check(srv.DebugAIAction(1, 0) == 0, "둘째에게 안 먹었다");
+        Check(srv.DebugAIAction(2, 0) != 0, "남의 것에까지 먹었다");
+    }
+    // 남의 번호를 대도 안 먹는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSpawnPet(1358, 1300, 1000, b);
+        std::vector<nox::OutPacket> o2;
+        srv.Tick(68, o2);
+        order(srv, a, srv.DebugPetNetCode(1), 2, out);
+        Check(srv.DebugAIAction(1, 0) != 0, "남의 소환수에 명령이 먹었다");
+    }
+
+    // ⑥ **못 움직이는 것에는 3·4·5 가 안 먹는다** — 가만히(2)는 먹는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSpawnPet(1371, 1400, 1000, a);               // CarnivorousPlant — SPEED 0
+        std::vector<nox::OutPacket> o2;
+        srv.Tick(68, o2);
+        srv.DebugSetPetSpeed(1, 0.0f);
+        // ⚠ 「따라와」로는 안 갈린다 — 틱이 이미 호위를 세워 둬서 **결과가 같아 보인다**.
+        //   **지켜(3)** 로 본다: 먹으면 지키기(4)가 서고 사나움이 0.5 가 된다
+        order(srv, a, srv.DebugPetNetCode(1), 3, out);
+        Check(srv.DebugAIAction(1, 0) != 4, "못 움직이는 것에 지켜가 먹었다");
+        Check(std::fabs(srv.DebugPetAggression(1) - 0.5f) > 0.001f, "못 움직이는데 사나움을 바꿨다");
+        // 따라와(4)도 안 먹는다 — 쌓임으로는 안 갈리므로 **명령 표시**로 본다
+        order(srv, a, srv.DebugPetNetCode(1), 4, out);
+        Check(!srv.DebugPetOrdered(1), "못 움직이는 것에 따라와가 먹었다");
+        order(srv, a, srv.DebugPetNetCode(1), 2, out);
+        Check(srv.DebugAIAction(1, 0) == 0, "못 움직이는 것에 가만히가 안 먹었다");
+        Check(std::fabs(srv.DebugPetAggression(1) - 0.5f) < 0.001f, "가만히가 사나움을 안 바꿨다");
+        Check(srv.DebugPetOrdered(1), "가만히가 명령 표시를 안 세웠다");
+    }
+
+    // ⑥-2 **적이 안 보일 때도 틱이 명령을 안 덮는다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, a);               // 적이 아무도 없다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        order(srv, a, srv.DebugPetNetCode(0), 2, out);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugAIAction(0, 0) == 0, "적이 없을 때 틱이 명령을 덮었다");
+    }
+
+    // ⑦ **몸 길이가 3 이 아니면 무시한다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 3, 0);   // 몸이 2바이트뿐
+        p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::TRY_CREATURE_COMMAND);
+        srv.OnPacket(a, p.data(), p.size(), out);
+        Check(srv.DebugAIAction(0, 0) == 3, "짧은 것을 받아 처리했다");
+        // ⚠ **긴 것은 올 수 없다** — 와이어 읽개가 오프코드마다 **정해진 길이**로 잘라 준다.
+        //   그래서 `!= 3` 과 `< 3` 은 이 자리에서 결과가 같다(돌연변이 OR1 이 안 갈리는 까닭)
+    }
+    std::printf("  6-i — 명령(0x78): 가만히·지켜·따라와·사냥 · 번호 0 은 전부 · 남의 것 안 먹음 · 못 움직이면 3·4·5 무효\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -14145,6 +14295,7 @@ int main() {
     TestAIFight();
     TestAIMelee();
     TestAIEscort();
+    TestCreatureOrder();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
