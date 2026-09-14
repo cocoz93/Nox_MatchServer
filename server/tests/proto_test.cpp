@@ -6820,9 +6820,11 @@ void TestArachnaphobia() {
         ms += 34; srv.Tick(ms, out);
         srv.DebugAimAt(a, 1200, 1000);
         CastAndWait(srv, a, 2, false, ms, out);
-        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.pets() > 0, "거미가 없다(시험 전제)");
+        // ⚠ **나온 자리**를 보는 시험이다 — 틱을 더 돌리면 안 된다.
+        //   소환수는 이제 **주인을 호위**하므로(6-h(2)) 곧바로 주인 쪽으로 걸어간다
         double px = 0, py = 0;
+        for (int t = 0; t < 10 && srv.pets() == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() > 0, "거미가 없다(시험 전제)");
         Check(srv.DebugPetXY(0, px, py), "거미 자리를 못 읽었다");
         Check(std::abs(px - 1200.0) < 5.0 && std::abs(py - 1000.0) < 5.0, "거미가 자리표 자리에 안 나왔다");
     }
@@ -11870,6 +11872,61 @@ void TestAIEscort() {
         srv.DebugAITick(0, out);                              // 싸움이 사슬을 쌓는다
         srv.DebugAITick(0, out);                              // 맨 위 가기를 굴린다
         Check(!srv.DebugPetRunning(0), "아래가 호위가 아닌데 뛰기로 갈아탔다");
+    }
+    // ⑦ **틱이 호위를 기본 할 일로 쌓는다** — 소환수가 주인을 따라온다(6-h(2))
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugAIAction(0, 0) == 3, "틱이 호위(3)를 안 쌓았다");
+        // 주인이 멀리 걸어가면 따라온다
+        srv.DebugMoveTo(a, 1600, 1000);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        double px = 0, py = 0;
+        for (int t = 0; t < 300; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugPetXY(0, px, py), "소환수 자리를 못 읽었다");
+        const double d = std::sqrt((px - 1600.0) * (px - 1600.0) + (py - 1000.0) * (py - 1000.0));
+        Check(d <= 60.0, "주인을 안 따라왔다(곁 60 안에 들어야 한다)");
+    }
+    // ★ **적이 보여도 주인이 있으면 호위가 바닥**이다 — 싸움은 호위가 올린다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1200, 1000);                       // 보이는 적
+        srv.DebugSpawnPet(1358, 1000, 1000, a);               // 근접 몬스터
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugAIAction(0, 0) == 3, "적이 보이는데 싸움을 바닥에 쌓았다 — 바닥은 호위여야 한다");
+        Check(srv.DebugAIAction(0, 1) == 15, "호위가 싸움을 안 올렸다");
+    }
+    // ★ **주인이 없으면 호위가 아니라 싸움**이 바닥이다(호위는 스스로 빠진다)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1358, 1200, 1000, std::string());   // 주인 없음 · a 가 보인다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugAIAction(0, 0) == 15, "주인이 없는데 바닥이 싸움이 아니다");
+    }
+    // 주인도 적도 없으면 아무것도 안 쌓는다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 5000, 5000, std::string());   // 주인 없음 · 아주 멀다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugAIAction(0, 0) != 3, "주인이 없는데 호위를 쌓았다");
     }
     std::printf("  6-h — 호위(3): 곁 60 안이면 가만 · 멀면 44·56·49+가기 · 상대 있으면 싸움 · 뛰기 90/120\n");
 }

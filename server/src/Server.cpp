@@ -9653,12 +9653,18 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (sees) {
                 k.enemyAddr = t.addr;
                 k.enemyPet = t.pet;
-                // ★ **할 일이 아예 없을 때만** 싸움을 쌓는다(바닥이 놀기 하나).
+                // ★ **할 일이 아예 없을 때만** 쌓는다(바닥이 놀기 하나).
                 //   ⚠ 정답지는 **적을 알아본 순간**(`unitUpdateSightMB_5281F0` 둘레)에 한 번 쌓는다.
                 //     그 「알아보기」를 아직 안 옮겨서, **놀고 있으면 쌓는다**로 대신한다.
                 //     이렇게 두면 이미 굴러가는 사슬을 매 틱 덮어쓰지 않는다
+                //   ★★ 묶음 6-h(2) — **주인이 있으면 싸움이 아니라 호위(3)** 를 쌓는다.
+                //     정답지에서 **싸움을 올리는 쪽이 호위**다(`mobActionEscort_546430`) —
+                //     호위가 바닥에 남아 **서 있는 명령**이 되고, 싸움이 끝나면 다시 주인에게 붙는다.
+                //     주인이 없는 것(퀘스트 몬스터)은 호위가 스스로 빠지므로 **싸움을 바로 쌓는다**
                 if (k.aiStackInd == 0 && k.aiStack[0].action == 0) {
-                    if (AIPush(k, 15)) {
+                    if (!k.owner.empty()) {
+                        AIPush(k, 3);
+                    } else if (AIPush(k, 15)) {
                         k.aiStack[k.aiStackInd].argX = sx;          // 마지막으로 본 자리
                         k.aiStack[k.aiStackInd].argY = sy;
                         k.aiStack[k.aiStackInd].argU32 = frame_;    // 마지막 소식 때
@@ -9673,6 +9679,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             } else if (!debugNoAutoFight_) {
                 k.enemyAddr.clear();
                 k.enemyPet = -1;
+                // ★ 적이 안 보여도 **주인이 있으면 호위**는 선다 — 그래야 따라다닌다
+                if (!k.owner.empty() && k.aiStackInd == 0 && k.aiStack[0].action == 0) AIPush(k, 3);
             }
 
             k.velX = 0; k.velY = 0;
