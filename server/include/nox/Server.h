@@ -232,6 +232,7 @@ struct Creature {
     float pathGoalX = 0, pathGoalY = 0;          // +68 그때 잡았던 목표
     float speedCur = 3.0f;                       // +544 SpeedCur
     double velX = 0, velY = 0;                   // 이번 틱에 갈 속도
+    uint32_t pathStuckFrame = 0;                 // +540 길 찾기 결과가 1 이었던 마지막 프레임
 };
 
 // 깃발 하나.
@@ -1650,6 +1651,9 @@ public:
     int DebugPetFacing(size_t i) const { return i < pets_.size() ? pets_[i].facing : -1; }
     int DebugPetFacingWant(size_t i) const { return i < pets_.size() ? pets_[i].facingWant : -1; }
     void DebugSetPetFacing(size_t i, uint8_t f) { if (i < pets_.size()) { pets_[i].facing = f; pets_[i].facingWant = f; } }
+    uint32_t DebugAIArgU32(size_t i, int j) const {
+        return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argU32 : 0;
+    }
     int  DebugAIPop(size_t i) { return i < pets_.size() ? AIPop(pets_[i]) : -1; }
     void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AITick(pets_[i], out); }
     // 시험용 — 길 찾기 격자 색인(6-e(1))

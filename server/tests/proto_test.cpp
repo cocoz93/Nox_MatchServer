@@ -11019,6 +11019,182 @@ void TestCreatureTickMove() {
     std::printf("  6-f(3) — 틱에 잇기: 벽을 돌아감 · 뚫린 데는 곧장 · 한 틱에 빠르기만큼 · 축 따로 미끄러짐\n");
 }
 
+// ── 묶음 6-f(4) — 행동 가기(7) ────────────────────────────────────────
+//
+// 정답지 `legacy/GAME4_3.c:9487` `nox_xxx_mobActionMoveTo_5443F0`.
+//   · **못 움직이면**(빠르기 < 0.01) 그냥 뺀다
+//   · `creatureSetMovePath` 가 **1 을 돌려줄 때만** 뒷갈래가 돈다 —
+//     「목표 8 안」이거나 **낸 길의 끝까지 걸어갔을 때**다
+//   · 그때 **길 찾기 결과(+284)** 로 갈린다 —
+//     **0** 제대로 닿음 → 그쪽을 보고 **뺀다** ·
+//     **2** 또는 **1 이 5초 안에 두 번** → **막혔다**고 보고 2~4초짜리 **때(41)** 를 깔고
+//     **아무 데나 걷기(29)** 를 올린다 ·
+//     결과가 0 이 아니면 **0.5~1초 기다리기(1)** 를 올린다
+//
+// ⚠ 지금 크리처 틱은 이 행동을 **안 거치고** `CreatureTickMove` 를 바로 부른다(6-f(3)).
+//   쌓임으로 굴리는 것은 뒤 조각이다 — 이 시험은 행동 자체를 곧바로 굴린다.
+void TestAIMoveTo() {
+    const std::string a = "10.6.9.1:6901";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetPetSpeed(0, 4.0f);
+        // ★ 1000 으로 둔다 — **막힘 판정이 「결과 1 이 5초(150틱) 안에 두 번」** 이라,
+        //   프레임이 150 보다 작으면 **첫 번째 1 도 「두 번째」로 보인다**(적어 둔 프레임이 0 이므로).
+        //   정답지도 게임 시작 직후엔 그렇다
+        srv.DebugSetFrame(1000);
+        srv.DebugPathBakeWalls();
+    };
+
+    // ① **못 움직이면 그냥 뺀다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetSpeed(0, 0.0f);
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "못 움직이는데 안 빠졌다");
+    }
+
+    // ② **아직 가는 중이면 안 빠진다** — 그리고 속도가 선다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 7, "가는 중인데 빠졌다");
+        Check(srv.DebugPetVelX(0) > 0, "가는 중인데 속도가 안 섰다");
+    }
+
+    // ③ **제대로 닿으면 그쪽을 보고 뺀다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 0);                          // +x 를 보고 선다
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1000, 1200);   // 아래쪽(+y)
+        srv.DebugAITick(0, out);
+        Check(srv.DebugPetPathStatus(0) == 0, "닿는 길인데 결과가 0 이 아니다(이 시험의 전제)");
+        // ⚠ **목표에 딱 겹치게 두면 안 된다** — 방향이 (0,0) 이라 돌아설 쪽이 안 나온다.
+        //   8 안으로만 들어가게 둔다
+        srv.DebugSetPetPos(0, 1000, 1194);                    // 6 만큼 못 미친 자리
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "다 왔는데 안 빠졌다");
+        // ★ `mobCalcDir_533CC0` 은 **돌아가려는 쪽만** 세운다 — 보는 쪽은 그대로다
+        Check(srv.DebugPetFacingWant(0) == 64, "다 온 뒤 목표 쪽(+y=64)으로 안 돌아섰다");
+        Check(srv.DebugPetFacing(0) != 64, "보는 쪽까지 같이 세웠다 — 돌아가려는 쪽만 건드려야 한다");
+    }
+
+    // ④ **막혔으면 때(41) 를 깔고 아무 데나 걷기(29) 를 올린다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int y = 41; y <= 45; ++y)
+            for (int x = 41; x <= 45; ++x)
+                if (x == 41 || x == 45 || y == 41 || y == 45) w.push_back({ static_cast<uint8_t>(x), static_cast<uint8_t>(y) });
+        srv.SetWalls(w);                                      // 가둔다
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugPetPathStatus(0) == 2, "갇혔는데 결과가 2 가 아니다(이 시험의 전제)");
+        const size_t n = srv.DebugPetPathCount(0);
+        Check(n > 0, "갇혀도 길은 나와야 한다(이 시험의 전제)");
+        srv.DebugSetPetPos(0, srv.DebugPetPathPtX(0, n - 1), srv.DebugPetPathPtY(0, n - 1));
+        srv.DebugAITick(0, out);                              // 낸 길의 끝까지 갔다
+        Check(srv.DebugAIAction(0, 0) == 7, "가기가 바닥에 안 남았다");
+        Check(srv.DebugAIAction(0, 1) == 41, "때(41) 조건이 안 깔렸다");
+        Check(srv.DebugAIAction(0, 2) == 29, "아무 데나 걷기(29)가 안 올라갔다");
+        Check(srv.DebugAIAction(0, 3) == 1, "기다리기(1)가 안 올라갔다");
+        Check(srv.DebugAIStackInd(0) == 3, "쌓임 맨 위가 기다리기가 아니다");
+    }
+
+    // ⑤ **결과가 0 이 아니면 기다리기만 올린다**(막힌 것으로는 안 볼 때)
+    //   결과 1 이 **처음** 났으면 아직 막힌 것이 아니다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int x = 41; x <= 95; ++x) {
+            w.push_back({ static_cast<uint8_t>(x), 42 });
+            w.push_back({ static_cast<uint8_t>(x), 44 });
+        }
+        w.push_back({ 41, 43 });
+        srv.SetWalls(w);                                      // 한 칸 복도 — 길이 31개로 잘린다
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 91 * 23 + 11.0f, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugPetPathStatus(0) == 1, "잘린 길인데 결과가 1 이 아니다(이 시험의 전제)");
+        const size_t n = srv.DebugPetPathCount(0);
+        srv.DebugSetPetPos(0, srv.DebugPetPathPtX(0, n - 1), srv.DebugPetPathPtY(0, n - 1));
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 1, "기다리기(1)가 안 올라갔다");
+        Check(srv.DebugAIStackInd(0) == 1, "처음 난 결과 1 인데 막힌 것으로 보고 더 올렸다");
+    }
+    // ⑥ **빠르기 경계는 0.01** — 0 보다 크기만 해서는 안 된다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetSpeed(0, 0.005f);                      // 0 보다는 크지만 0.01 보다 작다
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "0.005 는 못 움직이는 것인데 안 빠졌다");
+    }
+
+    // ⑦ **올린 때(41)·기다리기(1)의 때가 제대로 적힌다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int y = 41; y <= 45; ++y)
+            for (int x = 41; x <= 45; ++x)
+                if (x == 41 || x == 45 || y == 41 || y == 45) w.push_back({ static_cast<uint8_t>(x), static_cast<uint8_t>(y) });
+        srv.SetWalls(w);
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAITick(0, out);
+        const size_t n = srv.DebugPetPathCount(0);
+        srv.DebugSetPetPos(0, srv.DebugPetPathPtX(0, n - 1), srv.DebugPetPathPtY(0, n - 1));
+        srv.DebugAITick(0, out);
+        const uint32_t t41 = srv.DebugAIArgU32(0, 1);         // 때(41) — 2~4초
+        Check(t41 >= 1000 + 60 && t41 < 1000 + 120, "때(41)가 2~4초 뒤가 아니다");
+        const uint32_t t1 = srv.DebugAIArgU32(0, 3);          // 기다리기(1) — 0.5~1초
+        Check(t1 >= 1000 + 15 && t1 < 1000 + 30, "기다리기(1)가 0.5~1초 뒤가 아니다");
+    }
+
+    // ⑧ **결과 1 이 5초 안에 두 번이면 막힌 것으로 본다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        // ⚠ 복도를 **아주 길게** 해야 한다 — 한 번 걸어간 뒤 남은 길이 31칸 안에 들면
+        //   두 번째 길은 **닿아 버려** 결과가 0 이 되고 이 갈래를 못 본다
+        for (int x = 41; x <= 200; ++x) {
+            w.push_back({ static_cast<uint8_t>(x), 42 });
+            w.push_back({ static_cast<uint8_t>(x), 44 });
+        }
+        w.push_back({ 41, 43 });
+        srv.SetWalls(w);                                      // 한 칸 복도 — 길이 잘려 결과 1
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 190 * 23 + 11.0f, 1000);
+        srv.DebugAITick(0, out);
+        size_t n = srv.DebugPetPathCount(0);
+        srv.DebugSetPetPos(0, srv.DebugPetPathPtX(0, n - 1), srv.DebugPetPathPtY(0, n - 1));
+        srv.DebugAITick(0, out);                              // 첫 번째 결과 1 — 아직 안 막힘
+        Check(srv.DebugAIStackInd(0) == 1, "첫 번째인데 막힌 것으로 봤다(이 시험의 전제)");
+        srv.DebugAIPop(0);                                    // 얹힌 기다리기를 걷어낸다
+        Check(srv.DebugAIAction(0, 0) == 7, "가기가 안 남았다(이 시험의 전제)");
+        srv.DebugSetFrame(1060);                              // 60틱 = 2초 뒤 — 5초 안이다
+        srv.DebugAITick(0, out);
+        n = srv.DebugPetPathCount(0);
+        Check(n > 0, "두 번째 길이 안 나왔다(이 시험의 전제)");
+        srv.DebugSetPetPos(0, srv.DebugPetPathPtX(0, n - 1), srv.DebugPetPathPtY(0, n - 1));
+        srv.DebugAITick(0, out);                              // 두 번째 결과 1
+        Check(srv.DebugAIAction(0, 1) == 41, "5초 안에 두 번인데 때(41)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 2) == 29, "5초 안에 두 번인데 걷기(29)가 안 올라갔다");
+    }
+    std::printf("  6-f(4) — 가기(7): 못 움직이면 뺌 · 닿으면 보고 뺌 · 막히면 때(41)+걷기(29) · 아니면 기다리기(1)\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -13222,6 +13398,7 @@ int main() {
     TestCreatureMove();
     TestCreatureSetPath();
     TestCreatureTickMove();
+    TestAIMoveTo();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

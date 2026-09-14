@@ -6475,6 +6475,39 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
         case 34:     // 제 모습으로 — 빠지고 변신 표시를 **끈다**
             if (k.aiMorphReady) { AIPop(k); k.morphed = false; }
             break;
+        case 7: {    // ── 묶음 6-f(4) 가기 — `nox_xxx_mobActionMoveTo_5443F0`(`legacy/GAME4_3.c:9487`)
+            // ① **못 움직이면 그냥 뺀다**(`monsterIsMoveing_534320` = 빠르기 >= 0.01)
+            if (!(k.speedCur >= 0.0099999998f)) { AIPop(k); break; }
+            // ⚠ 아래 갈래(`sub_50A040 == 3`)의 **걷기·뛰기 갈아타기**는 6-h 주인 따르기에서 본다
+            if (CreatureSetMovePath(k, st.argX, st.argY) != 1) break;   // 아직 가는 중
+
+            // ② 길 찾기 **결과(+284)** 로 갈래가 갈린다
+            const uint8_t ps = k.pathStatus;
+            // **막힌 것으로 본다** — 결과 2 이거나, 결과 1 이 **5초 안에 두 번** 났을 때
+            const bool stuck = (ps == 2) ||
+                               (ps == 1 && (frame_ - k.pathStuckFrame) < static_cast<uint32_t>(5 * 30));
+            if (ps == 1) k.pathStuckFrame = frame_;
+            // ③ **제대로 닿았으면**(결과 0) 그쪽을 보고 **행동을 뺀다**
+            //   ⚠ `sub_547F10`(길목 모드)과 쌓임 항목 `+12` 갈래는 아직 안 옮겼다
+            if (ps == 0) {
+                // ★ `mobCalcDir_533CC0` 은 **돌아가려는 쪽(+126)만** 세운다 —
+                //   보는 쪽(+124)은 건드리지 않는다(그쪽은 딴 데서 8씩 쫓아간다)
+                k.facingWant = DirFromVec(st.argX - k.x, st.argY - k.y);
+                AIPop(k);
+                break;
+            }
+            // ④ **막혔으면** — 2~4초짜리 **때(41) 조건**을 깔고 **아무 데나 걷기(29)** 를 올린다
+            if (stuck) {
+                const int idx = AIPush(k, 41) ? k.aiStackInd : -1;
+                if (idx >= 0)
+                    k.aiStack[idx].argU32 = frame_ + 2 * 30 + NextRandom(2 * 30);
+                AIPush(k, 29);
+            }
+            // ⑤ 결과가 0 이 아니면 **잠깐 기다린다**(0.5~1초)
+            AIPush(k, 1);
+            k.aiStack[k.aiStackInd].argU32 = frame_ + 15 + NextRandom(15);
+            break;
+        }
         default: break;   // 12·13 은 아무 일도 안 한다 · 나머지는 아직 안 옮겼다
     }
 }
