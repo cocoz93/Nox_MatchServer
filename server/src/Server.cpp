@@ -1232,6 +1232,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     s.respawnAtFrame = frame_ ? frame_ : 1;
     PlayerSetState(s, 3, frame_);
     DropFlag(addr, out);   // 들고 있었으면 그 자리에 떨군다
+    DropBall(addr, out);   // 8-d — 공도 같이 떨군다
     // `GAME5.c:5098~5104` — setUnitBuffFlags(0) · 능력 끄기(7-d 에서 옮김) · +3600 = 0 · playerCancelSpells · unitClearBuffs
     SetBuffFlags(Target{ addr, -1 }, 0);
     s.assistSet = false;
@@ -7615,6 +7616,160 @@ void Server::SendTeamState(std::vector<OutPacket>& out) {
     }
 }
 
+// ── 묶음 8-d 플래그볼 ─────────────────────────────────────────────────
+//
+// 정답지 득점 `GAME3_3.c:4700~4770` · 공 상태 `sub_4E8290`(`src/flagball.go:5`) ·
+//        와이어 `netSendBallStatus_4D95F0`·`netFlagballWinner_4D8C40`(`GAME3_2.c:4785·4328`).
+//
+// ⭕ **자료가 실제로 있다.** `maps\FlagBall\FlagBall.map` 을 우리 파서로 열어 세어 보니
+//   `GameBallStart` **1** · `Flag`(골대) **2** · `PlayerStart` **18** 이다(전체 168개 25종).
+//   ⭕ thing.bin — `GameBall` 종류 **241**(COLLIDE `BallCollide`) · `GameBallStart` **243** · `Flag` **179**
+//   (우리 CTF 깃발은 176·177 로 **다른 것**이다 — 저건 깃발, 이건 골대다)
+//
+// ⭕ 공 상태 `d9 <상태 u8> <든 사람 넷코드 u16>` **4바이트** · **모두에게** · 순번 봉투.
+//   상태는 넷이다(`sub_4E8290` 을 부르는 자리로 확인) —
+//     **0** 제자리(판 시작·득점 뒤) · **1** 바닥에 굴러다님(떨어뜨림) ·
+//     **2** 팀 칭호가 2 가 **아닌** 쪽이 듦 · **4** 팀 칭호가 **2** 인 쪽이 듦
+//   ⚠ 그래서 「빨강이 들었나 파랑이 들었나」를 상태 번호로 가른다 — 넷코드만으로는 팀을 모른다
+//
+// ⭕ 득점(`GAME3_3.c:4700~4760`) — 공을 든 사람이 **골대의 다음 팀**과 같은 팀일 때 들어간다.
+//   팀이 둘이면 「**남의 골대에 넣는다**」와 같은 말이다.
+//   그때 — 사람 점수 **+1**(`4e`) · **팀 점수 +1**(`c4 08`) ·
+//   한도(`servGamedataGet(64)`)에 닿은 팀이 있으면 `0x56`(플래그볼 승자) ·
+//   그리고 공을 **`GameBallStart` 중 아무 데나** 다시 놓는다
+//   ⚠ 한도 자리는 8-a·8-c 와 **같은 값**이다 — `servGamedataGet(모드 번호)` 이고 플래그볼 모드 번호가 64다.
+//     ⇒ `GameSettings::limitValue`(⭕ 실측 15)를 그대로 쓴다
+//
+// ⛔ 안 옮긴 것 — 소리 927·929 · 점 효과 154 · 알림 9(글) → 묶음 10 ·
+//   공이 벽에 튕기는 물리(`BallCollide`) — 우리 공은 **든 사람만 따라다닌다**
+void Server::StartFlagBall(double ballX, double ballY,
+                           double goal1X, double goal1Y, double goal2X, double goal2Y) {
+    ball_.clear();
+    goals_.clear();
+    ballStarts_.clear();
+    GameBall b;
+    b.netCode = nextShotNetCode_++;
+    b.type = kGameBallType;
+    b.x = b.homeX = ballX;
+    b.y = b.homeY = ballY;
+    ball_.push_back(b);
+    ballStarts_.push_back({ ballX, ballY });
+    goals_.push_back(BallGoal{ 1, goal1X, goal1Y });
+    goals_.push_back(BallGoal{ 2, goal2X, goal2Y });
+    roundOver_ = false;
+    AssignTeams();
+}
+
+// `sub_4E8290` — 공 상태를 놓고 알린다. **바뀔 때만**(깃발과 같은 규칙)
+void Server::SendBallStatus(std::vector<OutPacket>& out) {
+    if (ball_.empty()) return;
+    GameBall& b = ball_[0];
+    uint16_t carrier = 0;
+    uint8_t state = b.atHome ? 0 : 1;
+    if (!b.carrier.empty()) {
+        auto it = sessions_.find(b.carrier);
+        if (it != sessions_.end()) {
+            carrier = it->second.netCode;
+            // 팀 칭호가 2 면 4, 아니면 2
+            const Team* t = TeamById(it->second.team);
+            state = (t && t->titleIdx == 2) ? 4 : 2;
+        }
+    }
+    const uint32_t mark = (static_cast<uint32_t>(state) << 16) | carrier;
+    if (b.sentMark == mark) return;
+    b.sentMark = mark;
+    const uint8_t msg[4] = { static_cast<uint8_t>(Op::REPORT_BALL_STATUS), state,
+                             static_cast<uint8_t>(carrier), static_cast<uint8_t>(carrier >> 8) };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+}
+
+// `netFlagballWinner_4D8C40` — 까닭 칸이 **늘 0** 이다(팀 데스매치 `0x59` 와 다른 점)
+void Server::SendFlagBallWinner(uint8_t teamId, std::vector<OutPacket>& out) {
+    SendRoundWinner(static_cast<uint8_t>(Op::REPORT_FLAG_BALL_WINNER), teamId, 0, out);
+}
+
+void Server::DropBall(const std::string& who, std::vector<OutPacket>& out) {
+    if (ball_.empty()) return;
+    GameBall& b = ball_[0];
+    if (b.carrier != who) return;
+    auto it = sessions_.find(who);
+    if (it != sessions_.end()) { b.x = it->second.x; b.y = it->second.y; }
+    b.carrier.clear();
+    b.atHome = false;
+    SendBallStatus(out);
+}
+
+// 골대의 **다음 팀** — 정답지 `teamNext(getTeamByID(골대팀))`, 끝이면 첫 팀으로 돈다
+uint8_t Server::TeamAfter(uint8_t teamId) const {
+    if (teams_.empty()) return 0;
+    for (size_t i = 0; i < teams_.size(); ++i)
+        if (teams_[i].id == teamId) return teams_[(i + 1) % teams_.size()].id;
+    return teams_[0].id;
+}
+
+void Server::UpdateBall(std::vector<OutPacket>& out) {
+    if (ball_.empty()) return;
+    SendBallStatus(out);
+    if (roundOver_) return;                              // 끝난 판은 더 안 센다(깃발과 같은 규칙)
+    GameBall& b = ball_[0];
+
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame || s.respawnAtFrame != 0 || s.team == 0) continue;
+        const double dx = b.x - s.x, dy = b.y - s.y;
+        if (b.carrier.empty() && dx * dx + dy * dy <= kFlagTouchRange * kFlagTouchRange) {
+            b.carrier = kv.first;                        // 줍는다
+            b.atHome = false;
+            SendBallStatus(out);
+        }
+        if (b.carrier != kv.first) continue;
+        b.x = s.x; b.y = s.y;                            // 든 사람을 따라다닌다
+
+        for (const BallGoal& g : goals_) {               // 골대에 닿았나
+            if (TeamAfter(g.team) != s.team) continue;   // **다음 팀**만 넣을 수 있다
+            const double gx = g.x - s.x, gy = g.y - s.y;
+            if (gx * gx + gy * gy > kFlagTouchRange * kFlagTouchRange) continue;
+            ChangeScore(s, +1, out);                     // 사람 점수
+            if (const Team* t = TeamById(s.team))        // 팀 점수
+                TeamChangeScore(s.team, t->score + 1, out);
+            // 공을 `GameBallStart` 중 아무 데나 다시 놓는다
+            b.carrier.clear();
+            b.atHome = true;
+            if (!ballStarts_.empty()) {
+                const size_t k = ballStarts_.size() == 1
+                               ? 0 : static_cast<size_t>(NextRandom(static_cast<uint32_t>(ballStarts_.size())));
+                b.x = ballStarts_[k].first;
+                b.y = ballStarts_[k].second;
+            } else {
+                b.x = b.homeX; b.y = b.homeY;
+            }
+            SendBallStatus(out);
+            // 한도에 닿은 팀이 있으면 판이 끝난다
+            const int32_t limit = static_cast<int32_t>(gameSettings_.limitValue);
+            if (limit > 0) {
+                for (const Team& t : teams_) {
+                    if (t.score < limit) continue;
+                    roundOver_ = true;
+                    restartAtFrame_ = frame_ + kRoundRestartTicks;
+                    SendFlagBallWinner(t.id, out);
+                    return;
+                }
+            }
+            break;
+        }
+    }
+
+    // 든 사람이 사라졌으면 공을 바닥에 둔다
+    if (!b.carrier.empty()) {
+        auto it = sessions_.find(b.carrier);
+        if (it == sessions_.end() || !it->second.inGame) {
+            b.carrier.clear();
+            b.atHome = false;
+            SendBallStatus(out);
+        }
+    }
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -10976,6 +11131,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     //   되풀이가 필요했던 까닭(cc 가 접속 직후 막힘)은 7821fc7 대기열로 해소됐다.
 
     UpdateFlags(out);
+    UpdateBall(out);          // 8-d 플래그볼
     UpdateProps(out);   // 문·오벨리스크 (P5)
 
     // (4-a4) 무적 켜짐·꺼짐 비교 루프는 걷어냄 — 버프가 바뀌는 자리(setUnitBuffFlags)가 곧바로 `5a` 를 올린다
@@ -11455,6 +11611,17 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                       /*complex=*/false);
             Relativize(e, f.netCode, static_cast<int>(f.x), static_cast<int>(f.y),
                        baseX, baseY);
+            m.objects.push_back(e);
+        }
+
+        // 8-d — 공도 싣는다(깃발과 같은 꼴). 들고 있는 것은 안 싣는다
+        for (const auto& bb : ball_) {
+            if (!bb.carrier.empty()) continue;
+            ObjEntry e;
+            FillEntry(s.aliases, bb.netCode, bb.type, s.tickFrame,
+                      static_cast<int>(bb.x), static_cast<int>(bb.y), 0, e,
+                      /*complex=*/false);
+            Relativize(e, bb.netCode, static_cast<int>(bb.x), static_cast<int>(bb.y), baseX, baseY);
             m.objects.push_back(e);
         }
 

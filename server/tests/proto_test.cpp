@@ -14202,6 +14202,204 @@ void TestRoundEnd() {
     std::printf("  8-c — 판 끝: 한도는 설정(15) · 팀이 먼저 0x59 · 아니면 0x58 · 협동팀·한도 0·관전자는 안 끝남\n");
 }
 
+// ── 묶음 8-d — 플래그볼(0xD9 공 상태 · 0x56 승자) ────────────────────
+//
+// 정답지 득점 `GAME3_3.c:4700~4770` · 공 상태 `sub_4E8290`(`flagball.go:5`) ·
+//        와이어 `netSendBallStatus_4D95F0`·`netFlagballWinner_4D8C40`(`GAME3_2.c:4785·4328`).
+//   · `d9 <상태 u8> <든 사람 넷코드 u16>` **4바이트** · 모두에게 · **바뀔 때만**
+//     상태 **0** 제자리 · **1** 바닥 · **2** 칭호가 2 가 아닌 팀이 듦 · **4** 칭호 2 인 팀이 듦
+//   · 득점은 **골대의 다음 팀**만(팀이 둘이면 「남의 골대」) — 사람 +1 · 팀 +1 · 공은 시작 자리로
+//   · 한도에 닿으면 `56 <팀 u16> <0> <프레임 u32>` **8바이트**(까닭 칸이 늘 0)
+void TestFlagBall() {
+    const std::string a = "10.8.4.1:8401";
+    const std::string b = "10.8.4.2:8402";
+    // 공(1000,1000) · 1팀 골대(1000,1400) · 2팀 골대(1000,600)
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.StartFlagBall(1000, 1000, 1000, 1400, 1000, 600);
+        // ⚠ `DebugEnterGame` 은 사람을 **공 근처**에 놓는다 — 치워 두지 않으면
+        //   둘째 사람이 공을 주워 가 시험이 엉뚱한 것을 재게 된다
+        srv.DebugSetPos(b, 5000, 5000);
+        std::vector<nox::OutPacket> w;
+        srv.DebugSendTeamState(w);
+    };
+    auto ballMsg = [&](const std::vector<nox::OutPacket>& out, std::vector<uint8_t>& m) {
+        bool found = false;
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 4 && x[0] == static_cast<uint8_t>(nox::Op::REPORT_BALL_STATUS)) { m = x; found = true; }
+        return found;
+    };
+
+    // ① **판을 차리면 공 하나와 팀 둘이 선다**
+    {
+        nox::Server srv; mk(srv);
+        Check(srv.BallCount() == 1, "공이 하나가 아니다");
+        Check(srv.BallX() == 1000 && srv.BallY() == 1000, "공이 놓은 자리에 없다");
+        Check(srv.BallCarrier().empty(), "차리자마자 누가 들었다");
+        Check(srv.DebugTeamCount() == 2, "팀이 둘이 안 섰다");
+    }
+
+    // ② **가까이 가면 줍는다** — `d9` 가 「누가 들었다」로 간다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateBall(out);
+        Check(srv.BallCarrier() == a, "가까이 갔는데 안 주웠다");
+        std::vector<uint8_t> m;
+        Check(ballMsg(out, m), "`d9` 가 안 갔다");
+        Check(m[1] == 2, "1팀(칭호 1)이 들었는데 상태가 2 가 아니다");
+        Check((m[2] | (m[3] << 8)) == 728, "든 사람 넷코드가 안 실렸다");
+    }
+    // 칭호 2 인 팀이 들면 상태 4
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 2);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateBall(out);
+        std::vector<uint8_t> m;
+        Check(ballMsg(out, m) && m[1] == 4, "2팀이 들었는데 상태가 4 가 아니다");
+    }
+    // 멀면 안 줍는다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateBall(out);
+        Check(srv.BallCarrier().empty(), "먼데 주웠다");
+    }
+
+    // ③ **든 공은 따라다닌다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateBall(out);
+        srv.DebugSetPos(a, 1100, 1050);
+        srv.DebugUpdateBall(out);
+        Check(srv.BallX() == 1100 && srv.BallY() == 1050, "든 공이 안 따라왔다");
+    }
+
+    // ④ **남의 골대에 넣으면 득점** — 사람 +1 · 팀 +1 · 공은 시작 자리로
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateBall(out);
+        Check(srv.BallCarrier() == a, "안 주웠다(이 시험의 전제)");
+        // 1팀은 **2팀 골대**(1000,600)에 넣는다 — `TeamAfter(2) == 1`
+        srv.DebugSetPos(a, 1000, 600);
+        out.clear();
+        srv.DebugUpdateBall(out);
+        Check(srv.KillsOf(a) == 1, "넣었는데 사람 점수가 1 이 아니다");
+        Check(srv.DebugTeamScore(1) == 1, "넣었는데 팀 점수가 1 이 아니다");
+        Check(srv.BallCarrier().empty(), "넣었는데 공을 계속 들고 있다");
+        Check(srv.BallX() == 1000 && srv.BallY() == 1000, "공이 시작 자리로 안 돌아갔다");
+        std::vector<uint8_t> m;
+        Check(ballMsg(out, m) && m[1] == 0, "넣은 뒤 `d9` 상태가 0(제자리)이 아니다");
+    }
+    // **제 골대에는 못 넣는다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateBall(out);
+        srv.DebugSetPos(a, 1000, 1400);                    // 1팀 골대
+        srv.DebugUpdateBall(out);
+        Check(srv.KillsOf(a) == 0, "제 골대에 넣고 점수를 얻었다");
+        Check(srv.BallCarrier() == a, "제 골대에서 공을 놓쳤다");
+    }
+
+    // ⑤ **한도에 닿으면 `0x56` 이 간다** — 까닭 칸은 늘 0
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.DebugTeamChangeScore(1, 14, out);
+        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugUpdateBall(out);
+        srv.DebugSetPos(a, 1000, 600);
+        out.clear();
+        srv.DebugUpdateBall(out);
+        Check(srv.DebugTeamScore(1) == 15, "팀 점수가 15 가 안 됐다");
+        Check(srv.RoundOver(), "한도에 닿았는데 판이 안 끝났다");
+        bool won = false;
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 8 && x[0] == static_cast<uint8_t>(nox::Op::REPORT_FLAG_BALL_WINNER)) {
+                won = true;
+                Check((x[1] | (x[2] << 8)) == 1, "`0x56` 에 팀 번호가 안 실렸다");
+                Check(x[3] == 0, "`0x56` 의 까닭 칸이 0 이 아니다");
+            }
+        Check(won, "`0x56` 이 안 갔다");
+    }
+
+    // ⑤' **끝난 판은 더 안 센다** — 깃발 판과 같은 규칙
+    //   (2026-09-09 깃발에서 **1378:1378** 이 됐던 사고가 이 관문을 빼면 생긴다)
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.DebugTeamChangeScore(1, 14, out);
+        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugUpdateBall(out);
+        srv.DebugSetPos(a, 1000, 600);
+        srv.DebugUpdateBall(out);
+        Check(srv.RoundOver(), "한도에 닿았는데 안 끝났다(이 시험의 전제)");
+        const int32_t after = srv.DebugTeamScore(1);
+        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugUpdateBall(out);
+        srv.DebugSetPos(a, 1000, 600);
+        srv.DebugUpdateBall(out);
+        Check(srv.DebugTeamScore(1) == after, "끝난 판인데 점수가 또 올랐다");
+    }
+
+    // ⑥ **죽으면 공을 떨군다** — 상태 1(바닥)
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateBall(out);
+        Check(srv.BallCarrier() == a, "안 주웠다(이 시험의 전제)");
+        out.clear();
+        int guard = 0;
+        while (srv.IsAlive(a) && guard++ < 40) srv.DebugHurt(a, -1, 30, b, 0, out);
+        Check(srv.BallCarrier().empty(), "죽었는데 공을 계속 들고 있다");
+        std::vector<uint8_t> m;
+        Check(ballMsg(out, m) && m[1] == 1, "떨군 공의 상태가 1(바닥)이 아니다");
+    }
+
+    // ⑦ **바뀔 때만 보낸다** — 같은 상태로 두 번 굴리면 한 번만 간다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateBall(out);
+        out.clear();
+        srv.DebugUpdateBall(out);
+        std::vector<uint8_t> m;
+        Check(!ballMsg(out, m), "안 바뀌었는데 `d9` 가 또 갔다");
+    }
+
+    // ⑧ **다음 팀 셈** — 팀이 둘이면 서로가 서로의 다음이다
+    {
+        nox::Server srv; mk(srv);
+        Check(srv.DebugTeamAfter(1) == 2, "1 의 다음이 2 가 아니다");
+        Check(srv.DebugTeamAfter(2) == 1, "2 의 다음이 1 이 아니다(끝에서 첫 팀으로 돌아야 한다)");
+    }
+    std::printf("  8-d — 플래그볼: 공 줍기·따라다님 · 남의 골대에 넣으면 사람+팀 +1 · d9 0/1/2/4 · 한도면 0x56\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -16432,6 +16630,7 @@ int main() {
     TestGameSettings();
     TestTeamMsg();
     TestRoundEnd();
+    TestFlagBall();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

@@ -272,6 +272,18 @@ struct Flag {
     uint32_t sentMark = 0xFFFFFFFFu;
 };
 
+// 묶음 8-d — 공과 골대. 깃발(`Flag`)과 짜임이 같다
+struct GameBall {
+    uint16_t netCode = 0;
+    uint16_t type = 0;
+    double homeX = 0, homeY = 0;
+    double x = 0, y = 0;
+    std::string carrier;
+    bool atHome = true;
+    uint32_t sentMark = 0xFFFFFFFFu;   // 바뀔 때만 보내려고(깃발과 같은 규칙)
+};
+struct BallGoal { uint8_t team = 0; double x = 0, y = 0; };
+
 // 공격이 닿을 수 있는 것 하나 — **사람이거나 불려 나온 것**이다.
 //
 // 왜 한 덩이로 묶나 — 근접·투사체·소환수가 저마다 「누구를 때리나」를 따로 고르면
@@ -701,6 +713,11 @@ constexpr uint16_t kFlagTypeBlue = 173;
 //   `EXTENT = CIRCLE 10`(⭕ thing.bin) 이니 두 반지름의 합 20 이다.
 constexpr double kFlagTouchRange = kFlagTouchDist;
 constexpr uint16_t kCaptureLimit = 3;
+
+// ── 묶음 8-d 플래그볼 ⭕ thing.bin ───────────────────────────────
+//   `GameBall` 241(COLLIDE BallCollide) · `GameBallStart` 243 · `Flag`(골대) 179.
+//   ⚠ CTF 깃발(176·177)과 **다른 것**이다 — 저건 깃발, 이건 골대다
+constexpr uint16_t kGameBallType = 241;
 
 // ── 퀘스트 ──────────────────────────────────────────────────
 //
@@ -1355,6 +1372,14 @@ public:
         return 0;
     }
     uint16_t CapturesOf(uint8_t team) const { return team < 3 ? caps_[team] : 0; }
+    // 묶음 8-d — 플래그볼 판을 차린다(깃발 판 `StartCtf` 와 같은 꼴)
+    void StartFlagBall(double ballX, double ballY,
+                       double goal1X, double goal1Y, double goal2X, double goal2Y);
+    void AddBallStart(double x, double y) { ballStarts_.push_back({ x, y }); }
+    size_t BallCount() const { return ball_.size(); }
+    std::string BallCarrier() const { return ball_.empty() ? std::string() : ball_[0].carrier; }
+    double BallX() const { return ball_.empty() ? 0.0 : ball_[0].x; }
+    double BallY() const { return ball_.empty() ? 0.0 : ball_[0].y; }
     uint8_t TeamOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.team;
@@ -1848,6 +1873,10 @@ public:
     void SetServerName(const std::string& n) { gameSettings_.name = n; }
     void SetGameFlags(uint32_t f) { gameSettings_.gameFlags = f; }
     void SetMaxPlayers(uint8_t n) { gameSettings_.maxPlayers = n; }
+
+    // 시험용 — 플래그볼
+    void DebugUpdateBall(std::vector<OutPacket>& out) { UpdateBall(out); }
+    uint8_t DebugTeamAfter(uint8_t id) const { return TeamAfter(id); }
 
     // 시험용 — 판 끝
     void DebugSetScore(const std::string& x, int32_t v) { auto i = sessions_.find(x); if (i != sessions_.end()) i->second.score = v; }
@@ -2650,6 +2679,13 @@ private:
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
+    // 묶음 8-d — 플래그볼
+    void SendBallStatus(std::vector<OutPacket>& out);
+    void SendFlagBallWinner(uint8_t teamId, std::vector<OutPacket>& out);
+    void DropBall(const std::string& who, std::vector<OutPacket>& out);
+    void UpdateBall(std::vector<OutPacket>& out);
+    uint8_t TeamAfter(uint8_t teamId) const;
+
     // 묶음 8-c — 판 끝 알림(0x58 혼자 · 0x59 팀)
     void SendRoundWinner(uint8_t op, uint16_t who, uint8_t reason, std::vector<OutPacket>& out);
     void RoundCheckLimit(std::vector<OutPacket>& out);
@@ -3093,6 +3129,9 @@ private:
     // 묶음 8-a — 이 판의 설정. 접속 묶음의 `af`·`b0` 가 여기서 나온다
     GameSettings gameSettings_;
     std::vector<Team> teams_;   // 묶음 8-b — 이 판의 팀들
+    std::vector<GameBall> ball_;                      // 묶음 8-d — 0 또는 1
+    std::vector<BallGoal> goals_;
+    std::vector<std::pair<double, double>> ballStarts_;
     bool roundOver_ = false;
     uint32_t nextTimerFrame_ = 0;
     std::vector<Flag> flags_;
