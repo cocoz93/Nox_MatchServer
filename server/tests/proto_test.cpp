@@ -9780,6 +9780,138 @@ void TestAIActions() {
     std::printf("  6-c — 행동 여섯: 기다리기 >=(경계 포함) · 상대 기다리기 > · 변신 33·34 · 취소는 기다리기만 · 12·13 은 가만히 · 행동 바꾸면 표시 지움\n");
 }
 
+// ── 묶음 6-d — 바라보기 행동(25·26·27) ────────────────────────────────
+//
+// `sub_545240`(`GAME5.c:154`) 하나가 셋을 다 굴린다.
+//   · 그 점까지의 방향을 단위로 만든다 — 길이에 **0.001** 을 더해 0 나눗셈을 막는다(정답지 그대로)
+//   · 지금 쪽과 **외적**으로 어느 쪽으로 돌지 정하고 **돌아가려는 쪽(+126)** 을 **8** 만큼 돌린다
+//   · 지금 쪽과 **내적이 0.9 를 넘으면** 다 본 것이라 행동이 빠진다(`sub_534120`)
+// ★ 취소도 스스로 빠진다 — 등록표가 `Cancel: nox_ai_action_pop_532100` 을 달았다(`legacy/unit_ai.go:57~60`).
+//
+// ⚠ 가기(7)는 **경로 찾기**(`creatureSetMovePath_50D5A0`)가 있어야 한다 — 다음 조각으로 미룬다.
+void TestAIFace() {
+    const std::string a = "10.6.3.1:6301";
+    const std::string b = "10.6.3.2:6302";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1000, 1400);                      // 소환수 기준 **아래쪽**(+y)
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.Tick(34, o);
+        srv.DebugSetPetFacing(0, 0);                         // +x 를 보고 선다
+    };
+
+    // ① **자리를 바라보기(25)** — 돌아가려는 쪽이 8씩 돌고, 다 보면 빠진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, /*x=*/1000, /*y=*/1400);
+        const int w0 = srv.DebugPetFacingWant(0);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugPetFacingWant(0) != w0, "돌아가려는 쪽이 안 돌았다");
+        const int d = (srv.DebugPetFacingWant(0) - w0 + 256) % 256;
+        Check(d == 8 || d == 248, "한 틱에 8 만큼 안 돌았다(어느 쪽이든 8 이어야 한다)");
+    }
+
+    // ② **다 보면 빠진다** — 이미 그쪽을 보고 있으면 한 틱에 끝난다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 64);                        // +y 쪽(한 바퀴 256 의 1/4)
+        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "이미 보고 있는데 안 빠졌다");
+    }
+    // 등지고 있으면 한 틱에 안 끝난다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 192);                       // −y 쪽 — 정반대
+        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 25, "등지고 있는데 한 틱에 끝났다");
+    }
+
+    // ③ **무엇을 바라보기(26)** — 대상 자리를 본다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 64);                        // 이미 b 쪽
+        srv.DebugAIPushDep(0, 26, b, -1, 0, 0);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "대상을 이미 보고 있는데 안 빠졌다");
+    }
+    // **대상이 없으면 그냥 빠진다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 26, "10.6.3.9:9999", -1, 0, 0);   // 없는 사람
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "대상이 없는데 안 빠졌다");
+    }
+
+    // ④ **각도를 바라보기(27)** — 인자가 방향 번호다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 64);
+        srv.DebugAIPushDep(0, 27, std::string(), -1, /*u=*/64, 0);   // 지금 쪽과 같은 번호
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "같은 각도인데 안 빠졌다");
+    }
+
+    // ⑤ **취소도 스스로 빠진다** — 바라보기 위에 뭘 올리면 바라보기가 사라진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 192);                       // 한 틱에 안 끝나게
+        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAITick(0, out);                             // 시작시킨다
+        Check(srv.DebugAIStarted(0, 0), "바라보기가 안 시작됐다(이 시험의 전제)");
+        srv.DebugAIPush(0, 12);                              // 그 위에 아무 일 안 하는 행동
+        Check(srv.DebugAIAction(0, 0) == 0, "취소가 바라보기를 안 뺐다");
+        Check(srv.DebugAIAction(0, 1) == 12, "새 할 일이 안 얹혔다");
+    }
+    // ⑥ **끝나는 문턱은 0.9** — 한 칸(8) 어긋난 것은 **끝난 것**, 네 칸(32) 어긋난 것은 **아직**
+    //   한 바퀴가 256 이니 8 칸 = 11.25°(내적 0.98) · 32 칸 = 45°(내적 0.707).
+    //   0.9 는 그 둘 **사이**에 있다 — 문턱을 0.5 나 0.99 로 옮기면 둘 중 하나가 뒤집힌다.
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 56);                        // b 쪽(64)에서 한 칸 어긋남
+        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "한 칸 어긋났는데 안 끝났다 — 문턱이 0.9 보다 빡빡한가");
+    }
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 32);                        // 네 칸(45°) 어긋남
+        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 25, "45° 어긋났는데 끝났다 — 문턱이 0.9 보다 헐거운가");
+    }
+
+    // ⑦ **제자리를 겨누면** 길이가 0 이라 나눗셈이 터진다 — 정답지는 **0.001** 을 더해 막는다
+    //   막이 있으면 방향이 (0,0) 이라 외적이 0 → **+8 쪽**으로 돈다.
+    //   막이 없으면 나눗셈이 NaN 이 되어 견줌이 다 거짓 → **−8 쪽**으로 돈다. 그 차이로 가른다.
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 0);
+        double px = 0, py = 0;
+        srv.DebugPetXY(0, px, py);   // ⚠ 소환수는 틱 동안 조금 움직인다 — **제 자리를 읽어** 겨눈다
+        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0,
+                           static_cast<float>(px), static_cast<float>(py));
+        srv.DebugAITick(0, out);
+        Check(srv.DebugPetFacingWant(0) == 8, "제자리를 겨눴는데 +8 쪽으로 안 돌았다 — 0 나눗셈 막이 빠졌나");
+    }
+    std::printf("  6-d — 바라보기: 한 틱 8씩 돎 · 내적 0.9 넘으면 끝(8칸 끝·32칸 아직) · 대상 없으면 곧 빠짐 · 각도 번호 · 제자리 겨눔 · 취소도 빠짐\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -11976,6 +12108,7 @@ int main() {
     TestAIStack();
     TestAIDeps();
     TestAIActions();
+    TestAIFace();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

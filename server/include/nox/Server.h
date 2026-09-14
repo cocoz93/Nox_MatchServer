@@ -174,6 +174,9 @@ struct Creature {
     uint16_t netCode = 0;
     uint16_t type = 0;     // 와이어 종류 번호 (⚠ 종류표에서 이름으로 고른 것. 실측 아님)
     uint8_t facing = 0;
+    // ★ 묶음 6-d — **돌아가려는 쪽**(오브젝트 `+126` Direction2). `facing`(+124)이 이쪽으로 쪻아간다.
+    //   바라보기 행동이 매 틱 **8씩** 이것을 돌린다(한 바퀴가 256 이니 한 틱에 1/32 바퀴).
+    uint8_t facingWant = 0;
     double x = 0, y = 0;
     uint16_t health = 0;
     uint32_t nextHitFrame = 0;   // 이 프레임 전에는 못 때린다
@@ -1618,6 +1621,10 @@ public:
     void DebugAISetMorphReady(size_t i, bool v) { if (i < pets_.size()) pets_[i].aiMorphReady = v; }
     bool DebugAIMorphed(size_t i) const { return i < pets_.size() && pets_[i].morphed; }
     uint32_t DebugAIActionFrame(size_t i) const { return i < pets_.size() ? pets_[i].aiActionFrame : 0; }
+    // 시험용 — 소환수의 보는 쪽·돌아가려는 쪽(6-d)
+    int DebugPetFacing(size_t i) const { return i < pets_.size() ? pets_[i].facing : -1; }
+    int DebugPetFacingWant(size_t i) const { return i < pets_.size() ? pets_[i].facingWant : -1; }
+    void DebugSetPetFacing(size_t i, uint8_t f) { if (i < pets_.size()) { pets_[i].facing = f; pets_[i].facingWant = f; } }
     int  DebugAIPop(size_t i) { return i < pets_.size() ? AIPop(pets_[i]) : -1; }
     void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AITick(pets_[i], out); }
     uint32_t GoldOf(const std::string& addr) const {
@@ -2277,6 +2284,8 @@ private:
     void AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIEnd(Creature& k, uint8_t act);
     void AICancel(Creature& k, uint8_t act);
+    // 묶음 6-d — 한 점을 바라보게 돌린다(`sub_545240`). 다 봤으면 참
+    bool AIFacePoint(Creature& k, float tx, float ty);
     // 묶음 6-b — 쌓임에 붙은 **조건**을 위에서부터 본다. 틀리면 그 아래까지 빼 버린다
     void AIProcDeps(Creature& k, std::vector<OutPacket>& out);
     bool CanInteractFrom(const Creature& k, const Target& t) const;

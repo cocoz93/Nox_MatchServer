@@ -5867,11 +5867,42 @@ void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
     (void)k; (void)act; (void)out;
 }
 
+// sub_545240(`GAME5.c:154`) — **한 점을 바라보게 돌린다**. 다 돌았으면 참(그러면 부르는 쪽이 뺀다).
+//   · 그 점까지의 방향을 단위로 만든다(길이에 **0.001** 을 더해 0 나눗셈을 막는다 — 정답지 그대로)
+//   · 지금 쪽과 **외적**을 재 어느 쪽으로 돌지 정하고 `돌아가려는 쪽`을 **8** 만큼 돌린다
+//   · 지금 쪽과 **내적이 0.9 를 넘으면** 다 본 것이다(`sub_534120`)
+bool Server::AIFacePoint(Creature& k, float tx, float ty) {
+    const float dx = tx - static_cast<float>(k.x);
+    const float dy = ty - static_cast<float>(k.y);
+    const float len = std::sqrt(dx * dx + dy * dy) + 0.001f;
+    const float nx = dx / len, ny = dy / len;
+    const float cx = DirVecX(k.facing), cy = DirVecY(k.facing);
+    if (ny * cx - nx * cy >= 0.0f) k.facingWant = static_cast<uint8_t>(k.facingWant + 8);
+    else                            k.facingWant = static_cast<uint8_t>(k.facingWant - 8);
+    return (cy * ny + cx * nx) > 0.89999998f;
+}
+
 // 갱신 — 여기가 알맹이다.
 void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
     (void)out;
     Creature::AIStackItem& st = k.aiStack[k.aiStackInd];
     switch (act) {
+        case 25:     // 자리를 바라보기(`sub_545210`) — 인자로 받은 점
+            if (AIFacePoint(k, st.argX, st.argY)) AIPop(k);
+            break;
+        case 26: {   // 무엇을 바라보기(`sub_545300`) — **대상이 없으면 그냥 뺀다**
+            float tx = 0, ty = 0;
+            const Target targ{ st.targetAddr, st.targetPet };
+            if (!TargetXY(targ, tx, ty)) { AIPop(k); break; }
+            if (AIFacePoint(k, tx, ty)) AIPop(k);
+            break;
+        }
+        case 27:     // 각도를 바라보기(`sub_545340`) — 인자가 **방향 번호**다.
+            //   그 번호의 단위 벡터를 「내 앞의 한 점」으로 삼으면 같은 셈이 된다
+            if (AIFacePoint(k, static_cast<float>(k.x) + DirVecX(static_cast<int>(st.argU32)) * 100.0f,
+                            static_cast<float>(k.y) + DirVecY(static_cast<int>(st.argU32)) * 100.0f))
+                AIPop(k);
+            break;
         case 1:      // 기다리기 — **그 프레임이 되면** 스스로 빠진다(`지금 >= 인자`)
             if (frame_ >= st.argU32) AIPop(k);
             break;
@@ -5894,8 +5925,10 @@ void Server::AIEnd(Creature& k, uint8_t act) { (void)k; (void)act; }
 
 // 취소 — ★ **기다리기 둘만** 스스로 빠진다(`Cancel` 이 `MonsterPopAction`).
 //   변신·떨구기·찾기는 취소돼도 가만히 있는다.
+//   ★ 바라보기 넷(25·26·27·28)도 스스로 빠진다 — 등록표가 `Cancel: nox_ai_action_pop_532100`
+//     을 달아 두었다(`legacy/unit_ai.go:57~60`).
 void Server::AICancel(Creature& k, uint8_t act) {
-    if (act == 1 || act == 2) AIPop(k);
+    if (act == 1 || act == 2 || (act >= 25 && act <= 28)) AIPop(k);
 }
 
 // nox_xxx_mobActionDependency(`unit_ai.go:44~262`) — 쌓임에 붙은 **조건**을 **위에서부터** 본다.
