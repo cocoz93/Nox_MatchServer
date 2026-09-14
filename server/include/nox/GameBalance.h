@@ -439,6 +439,9 @@ struct MonsterStats {
     double      missileRange;  // MISSILE_ATTACK_RANGE (+212)
     int         missileMin;    // ARENA MISSILE_ATTACK_MIN_DELAY (+220)
     int         missileMax;    // ARENA MISSILE_ATTACK_MAX_DELAY (+224)
+    // ── 묶음 6-h — **뛰기 배율** ⭕ monster.bin `ARENA RUN_MULTIPLIER` (몬스터표 **+96**)
+    //   `creatureActuallyMove_50D3B0` 이 **깃발 0x4000(뛰는 중)** 이면 빠르기에 이것을 곱한다
+    double      runMul;
 };
 
 // `SummonType()` 이 부를 수 있는 열셋 전부. **전부 monster.bin 에서 뽑은 값**이다.
@@ -446,19 +449,19 @@ struct MonsterStats {
 //   원거리형(Imp·EvilCherub·Beholder·Bomber·EmberDemon)은 근접 칸이 비어 있다.
 constexpr MonsterStats kMonsters[] = {
     //  이름                 번호   체력   피해   사거리    속도  최소 최대
-    { "EvilCherub",         1317,    40,    0,    0.0,   100,   0,  0,  "CherubArrow", 150.0, 15, 25 },
-    { "Ghost",              1325,    40,   10,   10.0,    60,   0,  0,  nullptr,         0.0,  0,  0 },
-    { "Imp",                1328,    25,    0,    0.0,   120,   0,  0,  "ImpShot",     150.0, 15, 30 },   // 발사체 피해 5
-    { "EmberDemon",         1337,    30,    0,   15.0,    85,   0,  0,  "Fireball",    200.0, 30, 60 },   // ★ 근접 15.0 정정
-    { "Bomber",             1348,     1,    0,    0.0,   120,   0,  0,  nullptr,         0.0,  0,  0 },   // 자폭형
-    { "AlbinoSpider",       1355,    60,   15,   15.0,    80,   0,  0,  nullptr,         0.0,  0,  0 },   // ★ 근접 15.0 정정
-    { "SmallAlbinoSpider",  1356,    25,    6,   15.0,   100,   0,  0,  nullptr,         0.0,  0,  0 },
-    { "Bat",                1357,    35,    4,   15.0,   105,   0,  0,  nullptr,         0.0,  0,  0 },
-    { "GiantLeech",         1358,    60,   20,   15.0,    50,  30, 40,  nullptr,         0.0,  0,  0 },
-    { "Bear",               1365,   120,   45,   20.0,    50,  30, 45,  nullptr,         0.0,  0,  0 },
-    { "BlackBear",          1366,    90,   18,   20.0,    60,  30, 45,  nullptr,         0.0,  0,  0 },
-    { "CarnivorousPlant",   1371,   100,  100,   40.0,     0,   0,  0,  nullptr,         0.0,  0,  0 },   // 못 움직인다
-    { "Beholder",           1382,   250,    0,    0.0,    60,   0,  0,  nullptr,       200.0,  0,  0 },   // ⚠ 사거리는 있는데 이름이 NULL
+    { "EvilCherub",         1317,    40,    0,    0.0,   100,   0,  0,  "CherubArrow", 150.0, 15, 25, 1.2 },
+    { "Ghost",              1325,    40,   10,   10.0,    60,   0,  0,  nullptr,         0.0,  0,  0, 1.1 },
+    { "Imp",                1328,    25,    0,    0.0,   120,   0,  0,  "ImpShot",     150.0, 15, 30, 1.3 },   // 발사체 피해 5
+    { "EmberDemon",         1337,    30,    0,   15.0,    85,   0,  0,  "Fireball",    200.0, 30, 60, 1.3 },   // ★ 근접 15.0 정정
+    { "Bomber",             1348,     1,    0,    0.0,   120,   0,  0,  nullptr,         0.0,  0,  0, 1.0 },   // 자폭형
+    { "AlbinoSpider",       1355,    60,   15,   15.0,    80,   0,  0,  nullptr,         0.0,  0,  0, 1.5 },   // ★ 근접 15.0 정정
+    { "SmallAlbinoSpider",  1356,    25,    6,   15.0,   100,   0,  0,  nullptr,         0.0,  0,  0, 1.5 },
+    { "Bat",                1357,    35,    4,   15.0,   105,   0,  0,  nullptr,         0.0,  0,  0, 1.3 },
+    { "GiantLeech",         1358,    60,   20,   15.0,    50,  30, 40,  nullptr,         0.0,  0,  0, 1.3 },
+    { "Bear",               1365,   120,   45,   20.0,    50,  30, 45,  nullptr,         0.0,  0,  0, 1.5 },
+    { "BlackBear",          1366,    90,   18,   20.0,    60,  30, 45,  nullptr,         0.0,  0,  0, 1.5 },
+    { "CarnivorousPlant",   1371,   100,  100,   40.0,     0,   0,  0,  nullptr,         0.0,  0,  0, 1.0 },   // 못 움직인다
+    { "Beholder",           1382,   250,    0,    0.0,    60,   0,  0,  nullptr,       200.0,  0,  0, 1.3 },   // ⚠ 사거리는 있는데 이름이 NULL
 };
 
 // 원거리 소환수의 발사체 피해 ⭕ gamedata.bin. 아직 Imp 만 확인했다.

@@ -11719,6 +11719,161 @@ void TestAIMelee() {
     std::printf("  6-g(2) — 근접(16): 쉬는 시간 끝나면 휘두름(다음 때 30~40) · 아니면 50+1 · 못 때리면 뺌\n");
 }
 
+// ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
+//
+// 정답지 `legacy/GAME5.c:924` `nox_xxx_mobActionEscort_546430`.
+//   · 호위할 것이 **없으면 뺀다** · **지금 상대가 있으면 싸움(15)** 을 올린다
+//   · **너무 멀면**(호위 거리 **30** + 30) 44·56·49 를 깔고 **가기(7)** 를 민다
+//   · 가까우면 아무 일도 안 한다
+// 그리고 가기(7)는 **바로 아래가 호위(3)면** 걷기·뛰기를 갈아탄다 —
+//   호위 거리 × 3(=90)보다 가까우면 **걷기**, 거기에 +30(=120)보다 멀면 **뛰기**, 그 사이는 **그대로**.
+//   뛰면 빠르기에 `ARENA RUN_MULTIPLIER`(임프 1.3)를 곱한다
+void TestAIEscort() {
+    const std::string a = "10.6.13.1:7301";
+    const std::string b = "10.6.13.2:7302";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 3000, 3000);                       // 멀리 — 끼어들지 않게
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);                         // 쌓임을 손으로 세운다
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.Tick(34, o);
+        srv.DebugSetPetSpeed(0, 4.0f);
+        srv.DebugSetFrame(1000);
+    };
+
+    // ① **곁에 있으면 아무 일도 안 한다** — 호위 거리 30 + 30 = 60 안
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetPos(0, 1050, 1000);                    // 50 — 60 안
+        srv.DebugAIPush(0, 3);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "곁에 있는데 뭘 올렸다");
+        Check(srv.DebugAIAction(0, 0) == 3, "호위가 빠졌다");
+    }
+    // 경계 — 딱 60 은 **곁**이다(`<=`)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetPos(0, 1060, 1000);
+        srv.DebugAIPush(0, 3);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "딱 60 인데 멀다고 봤다");
+    }
+
+    // ② **멀면 44·56·49 를 깔고 가기(7)를 민다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetPos(0, 1300, 1000);                    // 300 — 멀다
+        srv.DebugAIPush(0, 3);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 44, "공격받고 있지 않나(44)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 2) == 56, "보이는 적이 없나(56)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 3) == 49, "호위 거리보다 머나(49)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 4) == 7, "가기(7)가 맨 위에 안 왔다");
+        Check(std::fabs(srv.DebugAIArgF(0, 3) - 30.0f) < 0.01f, "49 의 자가 호위 거리(30)가 아니다");
+        Check(srv.DebugAITargetAddr(0, 3) == a, "49 가 주인을 안 가리킨다");
+        Check(srv.DebugAIArgX(0, 4) == 1000.0f, "가기가 주인 자리를 안 받았다");
+        Check(srv.DebugAIArgX(0, 0) == 1000.0f, "호위가 대상 자리를 안 적었다");
+    }
+
+    // ③ **호위할 것이 없으면 뺀다** — 주인 없는 것(퀘스트 몬스터)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSpawnPet(1328, 2000, 2000, std::string());   // 주인 없음
+        srv.DebugSetAutoFight(false);
+        srv.DebugAIPush(1, 3);
+        srv.DebugAITick(1, out);
+        Check(srv.DebugAIAction(1, 0) == 0, "호위할 것이 없는데 안 빠졌다");
+    }
+
+    // ④ **상대가 있으면 싸움(15)을 올린다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetPos(0, 1300, 1000);
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPush(0, 3);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 15, "상대가 있는데 싸움(15)을 안 올렸다");
+        Check(srv.DebugAIStackInd(0) == 1, "싸움 말고 다른 것도 올렸다");
+        Check(srv.DebugAIArgX(0, 1) == 3000.0f, "싸움이 상대 자리를 안 받았다");
+    }
+
+    // ⑤ **뛰기·걷기 갈아타기** — 가기(7) 아래가 호위(3)일 때만
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugPathBakeWalls();
+        srv.DebugSetPetPos(0, 1300, 1000);                    // 주인까지 300 — 120 밖이라 뛴다
+        srv.DebugAIPush(0, 3);
+        srv.DebugAITick(0, out);                              // 호위가 가기를 민다
+        Check(srv.DebugAIAction(0, 4) == 7, "가기가 안 올라갔다(이 시험의 전제)");
+        srv.DebugAITick(0, out);                              // 가기를 굴린다
+        Check(srv.DebugPetRunning(0), "120 밖인데 안 뛴다");
+        const double v1 = std::sqrt(srv.DebugPetVelX(0) * srv.DebugPetVelX(0) +
+                                    srv.DebugPetVelY(0) * srv.DebugPetVelY(0));
+        Check(std::fabs(v1 - 4.0 * 1.3) < 0.05, "뛰는데 빠르기에 1.3 을 안 곱했다");
+    }
+    // 가까우면 걷는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugPathBakeWalls();
+        srv.DebugSetPetPos(0, 1080, 1000);                    // 80 — 90 안이라 걷는다
+        srv.DebugAIPush(0, 3);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 4) == 7, "가기가 안 올라갔다(이 시험의 전제)");
+        srv.DebugAITick(0, out);
+        Check(!srv.DebugPetRunning(0), "90 안인데 뛴다");
+    }
+    // ★ **90~120 사이는 그대로 둔다** — 경계에서 달렸다 걸었다 하지 않게
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugPathBakeWalls();
+        srv.DebugSetPetPos(0, 1100, 1000);                    // 100 — 사이
+        srv.DebugSetPetRunning(0, true);
+        srv.DebugAIPush(0, 3);
+        srv.DebugAITick(0, out);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugPetRunning(0), "사이인데 뛰기가 꺼졌다");
+    }
+    // 사이에서 **꺼져 있으면 꺼진 채로** 있다 — 잣대가 90 하나뿐이면 여기서 켜진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugPathBakeWalls();
+        srv.DebugSetPetPos(0, 1100, 1000);                    // 100 — 90 과 120 사이
+        srv.DebugSetPetRunning(0, false);
+        srv.DebugAIPush(0, 3);
+        srv.DebugAITick(0, out);
+        srv.DebugAITick(0, out);
+        Check(!srv.DebugPetRunning(0), "사이인데 뛰기가 켜졌다 — 먼 잣대는 90 이 아니라 120 이다");
+    }
+
+    // ⑥ **아래가 호위가 아니면 갈아타지 않는다** — 싸움 사슬의 가기는 걷기 그대로
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugPathBakeWalls();
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetPetEnemy(0, b, -1);                       // b 는 (3000,3000) — 아주 멀다
+        srv.DebugSetPetRunning(0, false);
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/1000, 0, 3000, 3000);
+        srv.DebugAITick(0, out);                              // 싸움이 사슬을 쌓는다
+        srv.DebugAITick(0, out);                              // 맨 위 가기를 굴린다
+        Check(!srv.DebugPetRunning(0), "아래가 호위가 아닌데 뛰기로 갈아탔다");
+    }
+    std::printf("  6-h — 호위(3): 곁 60 안이면 가만 · 멀면 44·56·49+가기 · 상대 있으면 싸움 · 뛰기 90/120\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -13932,6 +14087,7 @@ int main() {
     TestAIRandomWalk();
     TestAIFight();
     TestAIMelee();
+    TestAIEscort();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

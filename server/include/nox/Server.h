@@ -240,6 +240,9 @@ struct Creature {
     std::string enemyAddr;
     int enemyPet = -1;
     uint32_t attackStartFrame = 0;               // +136 휘두르기를 시작한 프레임
+    // 묶음 6-h — 호위 거리(+1316 `Field329`, 기본 **30**)와 뛰는 중인가(깃발 0x4000)
+    float escortDist = 30.0f;
+    bool running = false;
 };
 
 // 깃발 하나.
@@ -1676,6 +1679,8 @@ public:
         if (i < pets_.size()) { pets_[i].x = x; pets_[i].y = y; }
     }
     void DebugSetPetSpeed(size_t i, float v) { if (i < pets_.size()) pets_[i].speedCur = v; }
+    bool DebugPetRunning(size_t i) const { return i < pets_.size() && pets_[i].running; }
+    void DebugSetPetRunning(size_t i, bool v) { if (i < pets_.size()) pets_[i].running = v; }
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
     void DebugAIRandomWalk(size_t i) { if (i < pets_.size()) AIRandomWalk(pets_[i]); }
     // 시험용 — 근접 공격(6-g(2))
@@ -2417,6 +2422,7 @@ private:
     int  AIPop(Creature& k);
     void AITick(Creature& k, std::vector<OutPacket>& out);
     static bool AIHasAction(const Creature& k, uint8_t act);
+    static uint8_t AIActionBelow(const Creature& k);   // sub_50A040 — 조건을 건너뛴 아래 행동
     void CreatureApplyVelocity(Creature& k);
     // 묶음 6-g(3b) — 크리처가 `MISSILE_NAME` 오브젝트를 만들어 날린다
     void SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty, std::vector<OutPacket>& out);

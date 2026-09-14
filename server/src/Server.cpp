@@ -6199,6 +6199,12 @@ bool Server::CreatureActuallyMove(Creature& k) {
     const double dx = k.path[static_cast<size_t>(pick)].first - k.x;
     const double dy = k.path[static_cast<size_t>(pick)].second - k.y;
     const double len = std::sqrt(dx * dx + dy * dy) + 0.01;    // blob 0x581450+10288 = 0.01
+    // ★ 묶음 6-h — **뛰는 중이면 빠르기에 뛰기 배율을 곱한다**(깃발 0x4000 · 몬스터표 +96)
+    double spd = k.speedCur;
+    if (k.running) {
+        const MonsterStats* ms = FindMonster(k.type);
+        if (ms && ms->runMul > 0.0) spd *= ms->runMul;
+    }
 
     // 보는 쪽 — 그 점으로 **들어오는 토막**의 방향
     double fx, fy;
@@ -6219,8 +6225,8 @@ bool Server::CreatureActuallyMove(Creature& k) {
     k.facing = dir;
     k.facingWant = dir;                                        // ★ 둘을 같이 놓는다
 
-    k.velX = k.speedCur * dx / len;
-    k.velY = k.speedCur * dy / len;
+    k.velX = spd * dx / len;
+    k.velY = spd * dy / len;
     return false;
 }
 
@@ -6577,6 +6583,14 @@ void Server::AITick(Creature& k, std::vector<OutPacket>& out) {
 //   나머지(가기 7 · 싸움 15 · 바라보기 26 …)는 아직 **C 안에** 있다 — 다음 조각이다.
 //
 // 시작은 넷 다 **아무 일도 안 한다**(정답지 `Start(_ *Object) {}`).
+// sub_50A040(`legacy/GAME4_1.c:391`) — 맨 위 **아래**의 행동. ★ **조건은 건너뛴다**.
+//   없으면 38(없음). 가기(7)가 「내 아래가 호위(3)인가」를 이것으로 묻는다
+uint8_t Server::AIActionBelow(const Creature& k) {
+    for (int i = k.aiStackInd - 1; i >= 0; --i)
+        if (!AIIsCondition(k.aiStack[i].action)) return k.aiStack[i].action;
+    return 38;
+}
+
 // nox_xxx_monsterIsActionScheduled_50A090 — 그 행동이 **쌓임 어딘가에** 있나
 bool Server::AIHasAction(const Creature& k, uint8_t act) {
     for (int i = 0; i <= k.aiStackInd && i < Creature::kAIStackMax; ++i)
@@ -6691,7 +6705,17 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
         case 7: {    // ── 묶음 6-f(4) 가기 — `nox_xxx_mobActionMoveTo_5443F0`(`legacy/GAME4_3.c:9487`)
             // ① **못 움직이면 그냥 뺀다**(`monsterIsMoveing_534320` = 빠르기 >= 0.01)
             if (!(k.speedCur >= 0.0099999998f)) { AIPop(k); break; }
-            // ⚠ 아래 갈래(`sub_50A040 == 3`)의 **걷기·뛰기 갈아타기**는 6-h 주인 따르기에서 본다
+            // ★ 묶음 6-h — **바로 아래가 호위(3)면 걷기·뛰기를 갈아탄다**(`sub_50A040 == 3`).
+            //   잣대는 **호위 거리 × 3**(그보다 가까우면 걷기)과 **거기에 +30**(그보다 멀면 뛰기).
+            //   ⚠ 그 사이는 **그대로 둔다** — 경계에서 달렸다 걸었다 하지 않게 하는 틈이다
+            if (AIActionBelow(k) == 3) {
+                const double near2 = k.escortDist * 3.0;
+                const double far2 = near2 + 30.0;
+                const double gx2 = st.argX - k.x, gy2 = st.argY - k.y;
+                const double d2 = gx2 * gx2 + gy2 * gy2;
+                if (d2 >= near2 * near2) { if (d2 > far2 * far2) k.running = true; }
+                else k.running = false;
+            }
             if (CreatureSetMovePath(k, st.argX, st.argY) != 1) break;   // 아직 가는 중
 
             // ② 길 찾기 **결과(+284)** 로 갈래가 갈린다
@@ -6721,6 +6745,47 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             // ⑤ 결과가 0 이 아니면 **잠깐 기다린다**(0.5~1초)
             AIPush(k, 1);
             k.aiStack[k.aiStackInd].argU32 = frame_ + 15 + NextRandom(16);   // randomInt(FPS/2, FPS) = 15~30
+            break;
+        }
+        case 3: {    // ── 묶음 6-h 호위 — `nox_xxx_mobActionEscort_546430`(`legacy/GAME5.c:924`)
+            //
+            // ⭕ 「주인 곁에 있어라」다. 셋으로 갈린다 —
+            //   · 호위할 것이 **없으면 뺀다**(`monsterGetObjEscortName_546600`)
+            //   · **지금 상대가 있으면 싸움(15)** 을 올린다(그쪽이 알아서 쫓고 때린다)
+            //   · **너무 멀면**(호위 거리 + 30) 조건을 깔고 **가기(7)** 를 민다
+            //     — 44 공격받고 있지 않나 · 56 보이는 적이 없나 · 49 **호위 거리보다 머나**
+            //   · 가까우면 아무 일도 안 한다(치유 갈래 `mobHealSomeone_5411A0` 은 아직 안 옮겼다)
+            //
+            // ⚠ 우리 크리처의 호위 대상은 **부른 사람**이다 — 정답지의 이름표가 `**PLAYER**` 인 갈래
+            // ⚠ `monsterCanAttackAtWill_534390`·`sub_5343C0` 는 안 옮겼다 — 소환수는 **늘 싸울 수 있다**로 본다
+            const Target master{ k.owner, -1 };
+            float mx = 0, my = 0;
+            if (k.owner.empty() || !TargetXY(master, mx, my)) { AIPop(k); break; }
+            st.argX = mx; st.argY = my;                       // +4·+8 — 호위 대상 자리
+            const Target foe{ k.enemyAddr, k.enemyPet };
+            float ex = 0, ey = 0;
+            if (!foe.none() && TargetXY(foe, ex, ey)) {
+                if (AIPush(k, 15)) {
+                    k.aiStack[k.aiStackInd].argX = ex;
+                    k.aiStack[k.aiStackInd].argY = ey;
+                    k.aiStack[k.aiStackInd].argU32 = frame_;
+                }
+                break;
+            }
+            const double ddx = k.x - mx, ddy = k.y - my;
+            const double lim = k.escortDist + 30.0;
+            if (ddx * ddx + ddy * ddy <= lim * lim) break;    // 곁에 있다 — 가만히
+            AIPush(k, 44);                                    // 공격받고 있지 않나
+            AIPush(k, 56);                                    // 보이는 적이 없나
+            if (AIPush(k, 49)) {                              // 호위 거리보다 머나
+                k.aiStack[k.aiStackInd].argF = k.escortDist;
+                k.aiStack[k.aiStackInd].targetAddr = k.owner;
+                k.aiStack[k.aiStackInd].targetPet = -1;
+            }
+            if (AIPush(k, 7)) {
+                k.aiStack[k.aiStackInd].argX = mx;
+                k.aiStack[k.aiStackInd].argY = my;
+            }
             break;
         }
         case 15: {   // ── 묶음 6-g(1) 싸움 — `nox_xxx_mobActionFight_531EC0`(`legacy/GAME4_3.c:1823`)
