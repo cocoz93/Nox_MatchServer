@@ -2800,7 +2800,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 // ★ 깃발 판이 이미 서 있으면 **새로 온 사람에게도 팀을 준다.**
                 //   전에는 두 명이 찬 그 순간 한 번만 나눠서, 셋째부터 팀 0 으로 남아
                 //   깃발 판정에서 통째로 빠졌다(2026-09-11 감사).
-                if (!flags_.empty()) AssignTeams();
+                if (!flags_.empty()) { AssignTeams(); SendTeamState(out); }   // 8-b — 나눈 뒤 알린다
 
                 if (standalone_ && useMapBody_.empty()) {
                     std::vector<uint8_t> um = BuildUseMap(saMapName_, saMapCrc_, s.frame);
@@ -6982,11 +6982,20 @@ void Server::PlayerUpdateScore(Session& victim, std::vector<OutPacket>& out) {
 
     if (killer == &victim || (killer == nullptr && !byNonPlayer && assist == nullptr)) {
         ChangeScore(victim, -1, out);                      // LABEL_31 — 죽은 횟수는 **안** 올린다
+        if (victim.team != 0) {                            // 8-b — 죽은 이의 팀도 한 칸 내려간다
+            if (const Team* t = TeamById(victim.team))
+                TeamChangeScore(victim.team, t->score - 1, out);
+        }
         return;
     }
     if (killer != nullptr) {
         const bool sameTeam = victim.team != 0 && killer->team == victim.team;
         ChangeScore(*killer, sameTeam ? -1 : +1, out);
+        // 8-b — 사람 점수와 **같이** 팀 점수도 움직인다(`netChangeTeamID(팀, 팀점수 ± 1)`)
+        if (killer->team != 0) {
+            if (const Team* t = TeamById(killer->team))
+                TeamChangeScore(killer->team, t->score + (sameTeam ? -1 : +1), out);
+        }
     }
     IncrementDeaths(victim, out);
     // LABEL_36 — 도운 사람은 죽인이·죽은이와 **편이 다를 때만** 받는다
@@ -7471,6 +7480,124 @@ bool Server::GuideAward(Session& s, uint8_t guide, bool announce, std::vector<Ou
     }
     SendGuideAward(s, guide, announce, out);
     return true;
+}
+
+// ── 묶음 8-b 팀 메시지(0xC4) ──────────────────────────────────────────
+//
+// 정답지 `sub_4197C0`·`sub_4198A0`·`sub_418D80`(`legacy/GAME1_1.c`) ·
+//        `NetTeamRemove`·`NetTeamChangeLessons`(`server/network.go:266~281`) ·
+//        받는 쪽 `network_server.go:251`.
+//
+// ⚠ **`TEAM_MSG` 는 팀 채팅이 아니다.** 하위 코드로 갈리는 **팀 명부·점수** 다중 메시지다.
+//   ⭕ 코드와 길이는 클라 해독(`cdecode.c:2305~2450`)의 `return` 값으로 확인했다 —
+//     `0` 만들기·고치기 **2×[15]+18** · `1` 사람 넣기 **10** · `2` 사람 빼기 **6** ·
+//     `3` 딴 팀으로 **10** · `4` 이름 바꾸기 **46** · `5` **6** · `6` 팀 지우기 **6** ·
+//     `7` **2** · `8` 점수 **10** · `9` **2**
+//
+// ★★ **우리 서버는 그동안 팀 번호만 정하고 클라에 한 번도 안 알렸다**
+//   (`AssignTeams` 는 `Session::team` 만 만졌고 `0xC4` 를 보내는 곳이 **0곳**이었다).
+//   ⇒ 클라의 팀 목록이 비어 있어 이름표 색도 점수판도 안 섰다. 이 조각이 그 구멍이다.
+//
+// ⭕ 코드 0 짜임(`sub_4197C0` `GAME1_1.c:558`) —
+//   `[2..5]` 팀 번호 u32(+57) · `[6..9]` u32(+60) · `[10..13]` **점수** u32(+52) ·
+//   `[14]` 협동팀(깃발 512)이면 1 — 받는 사람이 **그 팀에 저절로 든다** ·
+//   `[15]` 이름 길이(**와이드 글자 수**) · `[16]` 칭호 번호(+56) ·
+//   `[17]` **1 이면 클라가 제 기본 이름을 쓴다**(+68) · `[18..]` 이름(2바이트씩)
+//   ★ 우리는 `[17] = 1` 로 보내고 이름을 **안 싣는다** — 정품 팀 이름표를 **지어내지 않고**
+//     클라가 제 문자열표에서 고르게 둔다(`teamTitle(data[16])`)
+//
+// ⭕ 코드 1(`sub_4198A0` `:588`) — `[2..5]` 팀 번호 · `[6..7]` 넷코드 · `[8..9]` **그림 종류**
+// ⭕ 코드 6(`NetTeamRemove`) · 코드 5(`sub_418D80` `:310`) — `[2..5]` 팀 번호. **6바이트**
+// ⭕ 코드 8(`NetTeamChangeLessons`) — `[2..5]` 팀 번호 · `[6..9]` 점수. **10바이트**
+//   ← 7-c 와 이어진다. `playerUpdateScore_54D980` 이 사람 점수와 **같이** 팀 점수를 올린다
+//
+// ⚠ 보내는 대상 번호가 **159(0x9F)** 다 — 255(전체)와 다르다. `netSendPacket_4E5030` 이
+//   높은 비트(0x80)를 보고 `31` 번 자리를 빼는 꼴인데, **31 은 host 자신**이다
+//   (`netImportant_4E5770` 의 `a1 != 31`, `netClientSend2_4E53C0(31, …)`).
+//   ⇒ 붙어 있는 전용 서버에는 그 자리가 없으므로 **모두에게**와 같다. (자리 뜻은 ⚠ 미검증)
+void Server::SendTeamMsg(const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, n, out);
+}
+
+// 코드 0 — 팀 만들기·고치기
+void Server::SendTeamCreate(const Team& t, std::vector<OutPacket>& out) {
+    uint8_t msg[18];
+    msg[0] = static_cast<uint8_t>(Op::TEAM_MSG);
+    msg[1] = 0;
+    msg[2] = t.id; msg[3] = msg[4] = msg[5] = 0;
+    msg[6] = static_cast<uint8_t>(t.field60); msg[7] = static_cast<uint8_t>(t.field60 >> 8);
+    msg[8] = static_cast<uint8_t>(t.field60 >> 16); msg[9] = static_cast<uint8_t>(t.field60 >> 24);
+    const uint32_t sc = static_cast<uint32_t>(t.score);
+    msg[10] = static_cast<uint8_t>(sc); msg[11] = static_cast<uint8_t>(sc >> 8);
+    msg[12] = static_cast<uint8_t>(sc >> 16); msg[13] = static_cast<uint8_t>(sc >> 24);
+    msg[14] = 0;                  // 협동팀 깃발(512)일 때만 1 — 우리는 아레나다
+    msg[15] = 0;                  // 이름 길이 0 — 아래 [17] 이 켜져 클라가 제 이름을 쓴다
+    msg[16] = t.titleIdx;
+    msg[17] = 1;                  // 기본 이름 쓰기
+    SendTeamMsg(msg, sizeof(msg), out);
+}
+
+// 코드 1 — 사람을 팀에 넣는다
+void Server::SendTeamAddMember(uint8_t teamId, uint16_t netCode, uint16_t spriteType,
+                               std::vector<OutPacket>& out) {
+    uint8_t msg[10];
+    msg[0] = static_cast<uint8_t>(Op::TEAM_MSG);
+    msg[1] = 1;
+    msg[2] = teamId; msg[3] = msg[4] = msg[5] = 0;
+    msg[6] = static_cast<uint8_t>(netCode); msg[7] = static_cast<uint8_t>(netCode >> 8);
+    msg[8] = static_cast<uint8_t>(spriteType); msg[9] = static_cast<uint8_t>(spriteType >> 8);
+    SendTeamMsg(msg, sizeof(msg), out);
+}
+
+// 코드 6 — 팀 지우기
+void Server::SendTeamRemove(uint8_t teamId, std::vector<OutPacket>& out) {
+    uint8_t msg[6];
+    msg[0] = static_cast<uint8_t>(Op::TEAM_MSG);
+    msg[1] = 6;
+    msg[2] = teamId; msg[3] = msg[4] = msg[5] = 0;
+    SendTeamMsg(msg, sizeof(msg), out);
+}
+
+// 코드 8 — 팀 점수 (`netChangeTeamID_419090` 이 이것을 부른다)
+void Server::SendTeamScore(uint8_t teamId, int32_t score, std::vector<OutPacket>& out) {
+    uint8_t msg[10];
+    msg[0] = static_cast<uint8_t>(Op::TEAM_MSG);
+    msg[1] = 8;
+    msg[2] = teamId; msg[3] = msg[4] = msg[5] = 0;
+    const uint32_t v = static_cast<uint32_t>(score);
+    msg[6] = static_cast<uint8_t>(v); msg[7] = static_cast<uint8_t>(v >> 8);
+    msg[8] = static_cast<uint8_t>(v >> 16); msg[9] = static_cast<uint8_t>(v >> 24);
+    SendTeamMsg(msg, sizeof(msg), out);
+}
+
+Server::Team* Server::TeamById(uint8_t id) {
+    for (auto& t : teams_) if (t.id == id) return &t;
+    return nullptr;
+}
+
+// `netChangeTeamID_419090` — 팀 점수를 놓고 알린다
+void Server::TeamChangeScore(uint8_t teamId, int32_t score, std::vector<OutPacket>& out) {
+    Team* t = TeamById(teamId);
+    if (!t) return;
+    t->score = score;
+    SendTeamScore(teamId, score, out);
+}
+
+// 팀 상태를 통째로 알린다 — 팀을 나눈 뒤에 부른다
+void Server::SendTeamState(std::vector<OutPacket>& out) {
+    if (teams_.empty()) {
+        // 우리 판은 빨강(1)·파랑(2) 둘이다(`StartCtf` 와 `AssignTeams` 가 그 둘만 쓴다)
+        Team a; a.id = 1; a.titleIdx = 1;
+        Team b; b.id = 2; b.titleIdx = 2;
+        teams_.push_back(a);
+        teams_.push_back(b);
+    }
+    for (const Team& t : teams_) SendTeamCreate(t, out);
+    for (auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.team == 0) continue;
+        SendTeamAddMember(o.team, o.netCode, static_cast<uint16_t>(o.charClass), out);
+    }
 }
 
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────

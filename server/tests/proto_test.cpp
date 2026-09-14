@@ -13935,6 +13935,137 @@ void TestGameSettings() {
     std::printf("  8-a — 게임 설정: af 20B(깃발 0x7FFF0 가림)·b0 49B(이름 16칸) · 설정에서 지어 묶음에 실림\n");
 }
 
+// ── 묶음 8-b — 팀 메시지(0xC4) ───────────────────────────────────────
+//
+// 정답지 `sub_4197C0`·`sub_4198A0`(`GAME1_1.c`) · `NetTeamRemove`·`NetTeamChangeLessons`
+//        (`server/network.go:266~281`) · 길이는 `cdecode.c:2305~2450` 의 `return` 값.
+//   · `c4 00 …` 만들기 **2×[15]+18**(이름 없이 보내면 18) · `c4 01 …` 사람 넣기 **10**
+//   · `c4 06 …` 팀 지우기 **6** · `c4 08 …` 점수 **10**
+//   · 우리는 `[17] = 1` 로 보내 **클라가 제 기본 이름을 고르게** 한다(이름을 지어내지 않는다)
+void TestTeamMsg() {
+    const std::string a = "10.8.2.1:8201";
+    const std::string b = "10.8.2.2:8202";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+    };
+    auto teamMsgs = [&](const std::vector<nox::OutPacket>& out, uint8_t code) {
+        std::vector<std::vector<uint8_t>> v;
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() >= 2 && x[0] == static_cast<uint8_t>(nox::Op::TEAM_MSG) && x[1] == code) v.push_back(x);
+        return v;
+    };
+
+    // ① **팀 만들기(코드 0)** — 이름 없이 18바이트 · `[17] = 1`(클라가 이름을 고른다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendTeamState(out);
+        Check(srv.DebugTeamCount() == 2, "팀이 둘이 안 섰다");
+        const auto v = teamMsgs(out, 0);
+        Check(v.size() == 2, "`c4 00` 이 팀 수만큼 안 갔다");
+        Check(v[0].size() == 18, "`c4 00` 이 18바이트가 아니다");
+        Check(v[0][2] == 1 && v[1][2] == 2, "팀 번호가 1·2 가 아니다");
+        Check(v[0][14] == 0, "아레나인데 협동팀 비트가 섰다");
+        Check(v[0][15] == 0, "이름 길이가 0 이 아니다");
+        Check(v[0][16] == 1 && v[1][16] == 2, "칭호 번호가 팀 번호와 다르다");
+        Check(v[0][17] == 1, "기본 이름 쓰기가 안 켜졌다");
+    }
+
+    // ② **사람 넣기(코드 1)** — 10바이트 · 넷코드와 그림 종류
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendTeamState(out);
+        const auto v = teamMsgs(out, 1);
+        Check(v.size() == 2, "`c4 01` 이 사람 수만큼 안 갔다");
+        Check(v[0].size() == 10, "`c4 01` 이 10바이트가 아니다");
+        bool sawA = false, sawB = false;
+        for (const auto& m : v) {
+            const uint16_t nc = static_cast<uint16_t>(m[6] | (m[7] << 8));
+            if (nc == 728) { sawA = true; Check(m[2] == 1, "a 의 팀이 1 이 아니다"); }
+            if (nc == 729) { sawB = true; Check(m[2] == 2, "b 의 팀이 2 아니다"); }
+        }
+        Check(sawA && sawB, "두 사람이 다 안 실렸다");
+    }
+    // 팀 없는 사람은 안 실린다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(b, 0);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendTeamState(out);
+        Check(teamMsgs(out, 1).size() == 1, "팀 없는 사람까지 실렸다");
+    }
+
+    // ③ **모두에게 간다** — 남도 팀 명부를 봐야 한다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendTeamState(out);
+        int toB = 0;
+        for (const auto& x : FlattenTo(out, b))
+            if (x.size() >= 2 && x[0] == static_cast<uint8_t>(nox::Op::TEAM_MSG)) ++toB;
+        Check(toB == 4, "남에게 팀 메시지가 넷(팀 둘 + 사람 둘) 안 갔다");
+    }
+
+    // ④ **팀 점수(코드 8)** — 10바이트
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendTeamState(out);
+        out.clear();
+        srv.DebugTeamChangeScore(1, 7, out);
+        Check(srv.DebugTeamScore(1) == 7, "팀 점수가 안 놓였다");
+        const auto v = teamMsgs(out, 8);
+        Check(v.size() == 1, "`c4 08` 이 한 번 안 갔다");
+        Check(v[0].size() == 10, "`c4 08` 이 10바이트가 아니다");
+        Check(v[0][2] == 1, "팀 번호가 안 실렸다");
+        Check((v[0][6] | (v[0][7] << 8)) == 7, "점수가 안 실렸다");
+    }
+
+    // ⑤ **팀 지우기(코드 6)** — 6바이트
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendTeamRemove(2, out);
+        const auto v = teamMsgs(out, 6);
+        Check(v.size() == 1 && v[0].size() == 6, "`c4 06` 이 6바이트로 한 번 안 갔다");
+        Check(v[0][2] == 2, "지울 팀 번호가 안 실렸다");
+    }
+
+    // ⑥ **죽이면 팀 점수도 움직인다** — 7-c 의 셈에 붙는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendTeamState(out);
+        out.clear();
+        srv.DebugUpdateScore(b, a, std::string(), out);     // a(1팀)가 b(2팀)를 죽였다
+        Check(srv.DebugTeamScore(1) == 1, "죽인 이의 팀 점수가 1 이 안 됐다");
+        Check(teamMsgs(out, 8).size() == 1, "팀 점수 알림이 안 갔다");
+    }
+    // 같은 편을 죽이면 그 팀이 내려간다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(b, 1);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendTeamState(out);
+        srv.DebugUpdateScore(b, a, std::string(), out);
+        Check(srv.DebugTeamScore(1) == -1, "팀킬인데 팀 점수가 −1 이 아니다");
+    }
+    // 죽인 이가 없으면 죽은 이의 팀이 내려간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendTeamState(out);
+        srv.DebugUpdateScore(b, std::string(), std::string(), out);
+        Check(srv.DebugTeamScore(2) == -1, "죽인 이가 없는데 죽은 이 팀이 −1 이 아니다");
+        Check(srv.DebugTeamScore(1) == 0, "엉뚱한 팀이 움직였다");
+    }
+    std::printf("  8-b — 팀 메시지: c4 00 18B(이름은 클라가) · c4 01 10B · c4 06 6B · c4 08 10B · 죽음 셈에 팀 점수\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -16163,6 +16294,7 @@ int main() {
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();
+    TestTeamMsg();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

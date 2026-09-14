@@ -1849,6 +1849,12 @@ public:
     void SetGameFlags(uint32_t f) { gameSettings_.gameFlags = f; }
     void SetMaxPlayers(uint8_t n) { gameSettings_.maxPlayers = n; }
 
+    // 시험용 — 팀
+    void DebugSendTeamState(std::vector<OutPacket>& out) { SendTeamState(out); }
+    int DebugTeamScore(uint8_t id) { const Team* t = TeamById(id); return t ? t->score : -999; }
+    void DebugTeamChangeScore(uint8_t id, int32_t v, std::vector<OutPacket>& out) { TeamChangeScore(id, v, out); }
+    void DebugSendTeamRemove(uint8_t id, std::vector<OutPacket>& out) { SendTeamRemove(id, out); }
+    size_t DebugTeamCount() const { return teams_.size(); }
     // 시험용 — 안내서
     int DebugGuideLvl(const std::string& a, uint8_t g) const {
         auto i = sessions_.find(a); return i == sessions_.end() || g >= 41 ? -1 : i->second.guideLvl[g];
@@ -2640,6 +2646,23 @@ private:
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
+    // 묶음 8-b — 팀 메시지(0xC4). 팀 기록은 정답지 팀 오브젝트의 칸을 그대로 옮긴 것
+    struct Team {
+        uint8_t  id = 0;          // +57 팀 번호
+        int32_t  score = 0;       // +52 팀 점수(`netChangeTeamID` 가 놓는다)
+        uint8_t  titleIdx = 0;    // +56 칭호 번호 — 클라가 이것으로 기본 이름을 고른다
+        uint32_t field60 = 0;     // +60 뜻 미상(클라는 `sub_418830` 으로 넣기만 한다)
+    };
+    void SendTeamMsg(const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
+    void SendTeamCreate(const Team& t, std::vector<OutPacket>& out);
+    void SendTeamAddMember(uint8_t teamId, uint16_t netCode, uint16_t spriteType,
+                           std::vector<OutPacket>& out);
+    void SendTeamRemove(uint8_t teamId, std::vector<OutPacket>& out);
+    void SendTeamScore(uint8_t teamId, int32_t score, std::vector<OutPacket>& out);
+    Team* TeamById(uint8_t id);
+    void TeamChangeScore(uint8_t teamId, int32_t score, std::vector<OutPacket>& out);
+    void SendTeamState(std::vector<OutPacket>& out);
+
     // 묶음 7-h — 안내서(0xD1)
     void SendGuideAward(Session& s, uint8_t guide, bool announce, std::vector<OutPacket>& out);
     bool GuideAward(Session& s, uint8_t guide, bool announce, std::vector<OutPacket>& out);
@@ -3061,6 +3084,7 @@ private:
     unsigned long long petsKilled_ = 0;
     // 묶음 8-a — 이 판의 설정. 접속 묶음의 `af`·`b0` 가 여기서 나온다
     GameSettings gameSettings_;
+    std::vector<Team> teams_;   // 묶음 8-b — 이 판의 팀들
     bool roundOver_ = false;
     uint32_t nextTimerFrame_ = 0;
     std::vector<Flag> flags_;
