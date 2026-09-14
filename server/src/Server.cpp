@@ -1281,6 +1281,10 @@ void Server::SendRoundWinner(uint8_t op, uint16_t who, uint8_t reason, std::vect
 
 void Server::RoundCheckLimit(std::vector<OutPacket>& out) {
     if (roundOver_) return;
+    // ⭕ 묶음 8-g 에서 정답지를 다시 읽고 고친 것 — `checkVictory_509A60` 은 **1024(탈락전)를 먼저 보고
+    //   거기서 되돌아간다**(`GAME4_1.c:156~195`). 즉 탈락전은 **한도 판정을 아예 안 탄다**.
+    //   탈락전의 끝은 `CheckVictorySurvivors`(살아남은 쪽 하나)와 시간 초과뿐이다
+    if (gameSettings_.gameFlags & 0x400u) return;        // ⓪ 탈락전(1024)
     if (gameSettings_.gameFlags & 0x200u) return;        // ① 협동팀(512)
     const int32_t limit = static_cast<int32_t>(gameSettings_.limitValue);
     if (limit == 0) return;                              // ③
@@ -8075,6 +8079,133 @@ void Server::ElimDeath(Session& victim, Session* killer, std::vector<OutPacket>&
             TeamChangeScore(victim.team, t->score + 1, out);
 }
 
+// ── 묶음 8-g 판이 끝나는 나머지 길 ───────────────────────────────────
+//
+// 정답지 — 시간 초과 갈래잡이 `GAME4.c:6919~6930` ·
+//   `sub_5099B0`(`GAME4_1.c:120`) · `sub_5098A0`(`GAME4_1.c:57`) · `sub_5095E0`(`GAME4.c:6827`) ·
+//   그리고 매 프레임 도는 `nox_server_checkVictory_509A60`(`GAME4_1.c:154` · `server.go:143`).
+//
+// ⭕ **시간이 다하면 모드로 갈린다**(`GAME4.c:6919~6930`) —
+//   · 깃발 96(= 32 CTF | 64 플래그볼) → `sub_5099B0` —
+//     **점수가 가장 높은 팀**. 동점이거나 팀이 없으면 **무승부(0)**.
+//     플래그볼이면 `0x56`(까닭 늘 0) · 아니면 `0x57`(까닭 **1**)
+//   · 깃발 272(= 16 왕 죽이기 | 256 아레나) → `sub_5098A0` —
+//     **팀을 먼저** 훑어 최고 점수를 잡고, **이어서 사람**을 훑되 그 값을 **그대로 이어** 비교한다.
+//     ⇒ 사람은 **최고 팀 점수 이상**이어야 이긴다. 동점이면 무승부.
+//     사람이 이기면 `0x58`, 팀이 이기면 `0x59`. **까닭 1**(시간 초과)
+//   · 깃발 1024(탈락전) → `sub_5095E0` — 같은 꼴인데 **죽은 횟수가 가장 적은** 쪽이다
+//
+// ⭕ **탈락전은 매 프레임 「살아남은 쪽이 하나인가」도 본다**(`checkVictory_509A60` 앞머리) —
+//   목숨 한도(`servGamedataGet(모드)`)보다 **죽은 횟수가 적은** 사람만 셈에 넣고,
+//   그들이 **한 팀뿐이면 그 팀**, **한 사람뿐이면 그 사람**, **아무도 없으면 무승부**.
+//   둘 이상 남았으면 판이 이어진다. **까닭 0**
+//
+// ⚠ **시간 한도 값은 우리 캡처에 없다** — 한도 없이 돌았고 남은 시간이 음수로 내려갔다.
+//   그래서 `GameSettings::timeLimitFrames` 를 두되 **기본 0(=없음)** 으로 하고 규칙만 옮긴다
+void Server::RoundTimeUp(std::vector<OutPacket>& out) {
+    if (roundOver_) return;
+    const uint32_t f = gameSettings_.gameFlags;
+    // ⚠ 「판 끝」 깃발(`setGameFlags_40A4D0(8)`)은 **갈래 안에서** 선다 —
+    //   세 갈래 어디에도 안 걸리는 모드면 깃발도 안 서고 알림도 없다(`GAME4.c:6919~6930`)
+    auto markOver = [&]() { roundOver_ = true; restartAtFrame_ = frame_ + kRoundRestartTicks; };
+
+    if (f & 0x60u) {                                      // 96 — 깃발 판·플래그볼
+        int32_t best = -1;                                // ⚠ `sub_5099B0` 은 **−1** 에서 시작한다
+        uint8_t who = 0;
+        bool tie = false;
+        for (const Team& t : teams_) {
+            if (t.score < best) continue;
+            tie = (t.score == best) && who != 0;
+            best = t.score;
+            who = t.id;
+        }
+        if (tie) who = 0;                                 // 동점이면 무승부
+        markOver();
+        if (f & 0x40u) SendFlagBallWinner(who, out);      // 플래그볼 — 까닭 늘 0
+        else           SendFlagWinner(who, out);          // 깃발 판 — 까닭 1(그 함수가 넣는다)
+        return;
+    }
+
+    const bool elim = (f & 0x400u) != 0;
+    if (!(f & 0x110u) && !elim) return;                   // 272 도 1024 도 아니면 알릴 것이 없다
+
+    // 팀을 먼저, 그다음 사람 — **같은 값을 이어** 비교한다(정답지 그대로).
+    // ⚠ `sub_5098A0` 의 `v2 = 2147483648` 은 **부호 있는 int** 라 실제로는 최솟값이다
+    int32_t best = elim ? INT32_MAX : INT32_MIN;
+    uint8_t team = 0;
+    uint16_t player = 0;
+    bool tie = false;
+    auto better = [&](int32_t v) { return elim ? (v <= best) : (v >= best); };
+    // ⚠ **빈 팀도 셈에 든다.** 팀 목록은 「만들어진 팀」이지 「사람이 든 팀」이 아니다
+    //   (`serverTeams.First` 는 `active` 만 본다 · `wndGuiTeamCreate_4185B0` 은 빈 팀 둘을 만든다).
+    //   ⇒ 빈 팀이 둘이면 둘 다 점수 0 이라 **동점**이 되고, 탈락전에서는 그 0 을
+    //     죽은 횟수와 견주므로 사람은 0번 죽지 않는 한 못 이긴다 — 정답지가 그렇다
+    for (const Team& t : teams_) {
+        if (!better(t.score)) continue;
+        tie = (t.score == best) && team != 0;
+        best = t.score;
+        team = t.id;
+    }
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame || o.observer || o.team != 0) continue;   // 팀에 든 사람은 팀으로 센다
+        const int32_t v = elim ? static_cast<int32_t>(o.deaths) : o.score;
+        if (!better(v)) continue;
+        tie = (v == best) && player != 0;
+        best = v;
+        player = o.netCode;
+    }
+    markOver();
+    if (tie)             SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_TEAM_WINNER), 0, 1, out);
+    else if (player != 0) SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER), player, 1, out);
+    else if (team != 0)   SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_TEAM_WINNER), team, 1, out);
+}
+
+// `nox_server_checkVictory_509A60` 앞머리 — 탈락전에서 **살아남은 쪽이 하나인가**
+void Server::CheckVictorySurvivors(std::vector<OutPacket>& out) {
+    if (roundOver_) return;
+    if (!(gameSettings_.gameFlags & 0x400u)) return;      // 탈락전만
+    const int32_t lives = static_cast<int32_t>(gameSettings_.limitValue);
+    if (lives < 1) return;
+    uint8_t team = 0;
+    uint16_t lone = 0;
+    bool any = false;
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame || o.observer) continue;
+        if (static_cast<int32_t>(o.deaths) >= lives) continue;   // 이미 탈락
+        any = true;
+        if (o.team != 0) {
+            if (team != 0 && team != o.team) return;      // 두 팀이 남았다 — 판이 이어진다
+            // ⚠ 정답지는 **여기서 무소속(v9)을 안 본다** — 무소속을 먼저 찾아 놓았어도
+            //   팀 쪽이 나중에 들어오면 그냥 덮어써 **팀 승리**가 된다. 그대로 옮긴다
+            team = o.team;
+        } else {
+            if (lone != 0 || team != 0) return;           // 둘 이상 남았다
+            lone = o.netCode;
+        }
+    }
+    (void)any;
+    // `nox_xxx_gamePlayIsAnyPlayers_40A8A0`(`GAME1.c:498`) — **둘보다 많아야** 판이 끝난다.
+    //   · 팀을 만들어 두었으면(플레이 깃발 4 · `wndGuiTeamCreate_4185B0`) **사람이 든 팀**의 수를 세고
+    //   · 아니면 사람 수를 센다. 어느 쪽이든 **탈락 여부는 안 본다**(관전자만 뺀다)
+    //   ⚠ 우리 서버엔 플레이 깃발이 없어 「팀을 만들어 두었나」를 `teams_` 가 비었나로 대신한다
+    int head = 0;
+    if (!teams_.empty()) {
+        for (const Team& t : teams_)
+            for (const auto& kv : sessions_)
+                if (kv.second.inGame && !kv.second.observer && kv.second.team == t.id) { ++head; break; }
+    } else {
+        for (const auto& kv : sessions_) if (kv.second.inGame && !kv.second.observer) ++head;
+    }
+    if (head <= 1) return;
+    roundOver_ = true;
+    restartAtFrame_ = frame_ + kRoundRestartTicks;
+    if (team != 0)      SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_TEAM_WINNER), team, 0, out);
+    else if (lone != 0) SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER), lone, 0, out);
+    else                SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER), 0, 0, out);
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -11438,7 +11569,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     UpdateFlags(out);
     UpdateBall(out);          // 8-d 플래그볼
     VoteUpdate(out);          // 8-e 투표
-    VoteUpdate(out);          // 8-e 투표
+    CheckVictorySurvivors(out);   // 8-g — 탈락전에서 하나만 남았나(`server.go:143`)
+    if (gameSettings_.timeLimitFrames != 0 && frame_ >= gameSettings_.timeLimitFrames) RoundTimeUp(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
 
     // (4-a4) 무적 켜짐·꺼짐 비교 루프는 걷어냄 — 버프가 바뀌는 자리(setUnitBuffFlags)가 곧바로 `5a` 를 올린다

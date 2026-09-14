@@ -1898,6 +1898,13 @@ public:
     bool IsInGame(const std::string& x) const { auto i = sessions_.find(x); return i != sessions_.end() && i->second.inGame; }
     void DebugKick(const std::string& x, std::vector<OutPacket>& out) { KickPlayer(x, out); }
 
+    // 시험용 — 판 끝나는 나머지 길
+    void DebugRoundTimeUp(std::vector<OutPacket>& out) { RoundTimeUp(out); }
+    void DebugCheckVictory(std::vector<OutPacket>& out) { CheckVictorySurvivors(out); }
+    void DebugRoundCheckLimit(std::vector<OutPacket>& out) { RoundCheckLimit(out); }
+    void DebugSetDeaths(const std::string& x, uint32_t v) {
+        auto i = sessions_.find(x); if (i != sessions_.end()) i->second.deaths = v;
+    }
     // 시험용 — 모드별 죽음 셈
     bool DebugIsCrown(const std::string& x) const {
         auto i = sessions_.find(x); return i != sessions_.end() && IsCrown(i->second);
@@ -2739,6 +2746,10 @@ private:
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
+    // 묶음 8-g — 판이 끝나는 나머지 길
+    void RoundTimeUp(std::vector<OutPacket>& out);
+    void CheckVictorySurvivors(std::vector<OutPacket>& out);
+
     // 묶음 8-f — 모드별 죽음 셈
     bool IsCrown(const Session& s) const;
     void KotrDeath(Session& victim, Session* killer, std::vector<OutPacket>& out);

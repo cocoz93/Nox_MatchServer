@@ -55,6 +55,9 @@ struct GameSettings {
     uint8_t  bytes4[4]     = { 0xFF, 0xFF, 0xFF, 0xFF };   // Field44
     uint32_t field48       = 0xFFFFFFFFu;
     uint32_t timeLeft      = 0;             // 시간 제한이 걸렸을 때만 `Sub_40A230()`
+    // ⚠ 묶음 8-g — 판 시간 한도(프레임). **0 이면 한도 없음**.
+    //   우리 캡처는 한도 없이 돌았고 남은 시간이 음수로 내려갔다 — 값은 **실측이 아니라 설정**이다
+    uint32_t timeLimitFrames = 0;
 };
 
 // `af` 20바이트 · `b0` 49바이트를 각각 짓는다

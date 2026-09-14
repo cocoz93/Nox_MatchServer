@@ -14818,6 +14818,361 @@ void TestModeScoring() {
     std::printf("  8-f — 모드별 죽음 셈: 아레나·왕 죽이기(1·1·3)·탈락전 · 왕은 왕관 242 · 그 밖은 셈 없음\n");
 }
 
+// ── 묶음 8-g — 판이 끝나는 나머지 길 ────────────────────────────────
+//
+// 정답지 시간 초과 갈래잡이 `GAME4.c:6919~6930` ·
+//   `sub_5099B0`(깃발 96) · `sub_5098A0`(272) · `sub_5095E0`(1024) ·
+//   매 프레임 `checkVictory_509A60` 앞머리(탈락전 생존).
+//   · 272 = 왕 죽이기|아레나 — **팀 먼저, 이어서 사람**(같은 값을 이어 비교) · 까닭 **1**
+//   · 1024 탈락전 — 같은 꼴인데 **죽은 횟수가 적은** 쪽
+//   · 96 = CTF|플래그볼 — **점수 높은 팀**. 플래그볼이면 `0x56`, 아니면 `0x57`
+//   · 동점이면 **무승부(0)**
+void TestRoundTimeUp() {
+    const std::string a = "10.8.7.1:8701";
+    const std::string b = "10.8.7.2:8702";
+    // ⚠ **팀을 만들지 말지가 결과를 가른다.** 정답지의 팀 목록은 「사람이 든 팀」이 아니라
+    //   「만들어진 팀」이라, 빈 팀 둘(점수 0)이 있으면 그 0 이 기준값이 된다
+    auto mk = [&](nox::Server& srv, uint32_t flags, bool withTeams = false) {
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        nox::GameSettings g = srv.Settings();
+        g.gameFlags = flags;
+        srv.SetGameSettings(g);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+        if (withTeams) srv.DebugSendTeamState(w);
+    };
+    auto find = [&](const std::vector<nox::OutPacket>& out, uint8_t op, std::vector<uint8_t>& m) {
+        m.assign(8, 0);                                   // ⚠ 못 찾아도 뒤 칸 검사가 밖을 안 짚게
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 8 && x[0] == op) { m = x; return true; }
+        for (const auto& x : FlattenTo(out, a)) {         // 못 찾았으면 무엇이 갔는지 보여 준다
+            std::printf("      [간 것] ");
+            for (uint8_t v : x) std::printf("%02x ", v);
+            std::printf("\n");
+        }
+        std::fflush(stdout);
+        return false;
+    };
+
+    // ① **아레나 시간 초과 — 점수 높은 사람이 `0x58`, 까닭 1**
+    {
+        nox::Server srv; mk(srv, 0x100u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetScore(a, 3);
+        srv.DebugSetScore(b, 1);
+        srv.DebugRoundTimeUp(out);
+        Check(srv.RoundOver(), "시간이 다했는데 안 끝났다");
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER), m), "`0x58` 이 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 728, "점수 높은 사람이 안 실렸다");
+        Check(m[3] == 1, "까닭이 1(시간 초과)이 아니다");
+    }
+    // 동점이면 무승부(팀 승자 0)
+    {
+        nox::Server srv; mk(srv, 0x100u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetScore(a, 2);
+        srv.DebugSetScore(b, 2);
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_TEAM_WINNER), m), "무승부가 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 0, "무승부인데 번호가 0 이 아니다");
+        Check(m[3] == 1, "까닭이 1 이 아니다");
+    }
+    // 팀이 있으면 팀이 이긴다(사람은 팀 점수 이상이어야 이긴다)
+    {
+        nox::Server srv; mk(srv, 0x100u, true);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+        std::vector<nox::OutPacket> out;
+        srv.DebugTeamChangeScore(1, 5, out);
+        srv.DebugTeamChangeScore(2, 2, out);
+        out.clear();
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_TEAM_WINNER), m), "`0x59` 가 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 1, "점수 높은 팀이 안 실렸다");
+    }
+
+    // ★ **사람은 최고 팀 점수와 같기만 해도 이긴다** — 사람 고리의 동점 판정이
+    //   **앞서 찾은 사람**만 보기 때문이다(`v1 = v8 == v2 && v11`, 팀은 안 본다).
+    //   그래서 팀·사람이 둘 다 잡혔을 때 **사람이 먼저** 알려진다
+    {
+        nox::Server srv; mk(srv, 0x100u, true);
+        srv.DebugSetTeam(b, 2);                           // a 는 무소속
+        std::vector<nox::OutPacket> out;
+        srv.DebugTeamChangeScore(1, 5, out);
+        srv.DebugTeamChangeScore(2, 3, out);
+        srv.DebugSetScore(a, 5);                          // 최고 팀 점수와 **같다**
+        out.clear();
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER), m), "같은 점수 사람이 이겨 `0x58` 이 가야 한다");
+        Check((m[1] | (m[2] << 8)) == 728, "그 사람이 안 실렸다");
+    }
+    // ★ **팀에 든 사람은 사람 고리에서 빠진다**(`servObjectHasTeam_419130` 이 거른다)
+    {
+        nox::Server srv; mk(srv, 0x100u, true);
+        srv.DebugSetTeam(a, 1);
+        std::vector<nox::OutPacket> out;
+        srv.DebugTeamChangeScore(1, 2, out);
+        srv.DebugSetScore(a, 9);                          // 팀 점수보다 훨씬 높지만 셈 밖
+        srv.DebugSetScore(b, 0);
+        out.clear();
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_TEAM_WINNER), m), "팀이 이겨 `0x59` 가 가야 한다");
+        Check((m[1] | (m[2] << 8)) == 1, "그 팀이 안 실렸다");
+    }
+    // ★ **관전자는 셈 밖**(`+3680 & 1`)
+    {
+        nox::Server srv; mk(srv, 0x100u);
+        srv.DebugEnterGame("10.8.7.3:8703", 730, /*observer=*/true);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetScore("10.8.7.3:8703", 50);
+        srv.DebugSetScore(a, 3);
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER), m), "`0x58` 이 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 728, "관전자가 이겼다");
+    }
+    // ★ **세 갈래 어디에도 안 걸리면 아무것도 안 간다** — 판 끝 깃발도 안 선다
+    {
+        nox::Server srv; mk(srv, 0x1000u);                // 4096 퀘스트
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetScore(a, 3);
+        srv.DebugRoundTimeUp(out);
+        Check(!srv.RoundOver(), "갈래가 없는데 판이 끝났다");
+        Check(FlattenTo(out, a).empty(), "갈래가 없는데 뭔가 갔다");
+    }
+    // ★ **이미 끝난 판은 두 번 안 끝난다**
+    {
+        nox::Server srv; mk(srv, 0x100u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetScore(a, 3);
+        srv.DebugRoundTimeUp(out);
+        srv.DebugRoundTimeUp(out);
+        size_t n = 0;
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 8 && x[0] == static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER)) ++n;
+        Check(n == 1, "판 끝 알림이 한 번이 아니다");
+    }
+
+    // ② **탈락전 시간 초과 — 죽은 횟수가 적은 쪽**
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetDeaths(a, 5);
+        srv.DebugSetDeaths(b, 1);
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER), m), "`0x58` 이 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 729, "죽은 횟수가 적은 쪽이 안 실렸다");
+        Check(m[3] == 1, "까닭이 1 이 아니다");
+    }
+    // ★ **빈 팀이 둘 있으면 탈락전은 무승부다** — 정답지를 따라가 본 결과다.
+    //   팀 둘이 점수 0 으로 동점이 되고(`v1 = v4 == v2 && v0`), 이어지는 사람 고리는
+    //   **죽은 횟수를 그 0 과 견주므로** 한 번이라도 죽은 사람은 아예 후보가 안 된다.
+    //   ⇒ 처음엔 이걸 결함으로 봤는데, 트레이스해 보니 **정답지가 그렇다**
+    {
+        nox::Server srv; mk(srv, 0x400u, true);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetDeaths(a, 5);
+        srv.DebugSetDeaths(b, 1);
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_TEAM_WINNER), m), "빈 팀 둘이면 무승부여야 한다");
+        Check((m[1] | (m[2] << 8)) == 0, "무승부인데 번호가 0 이 아니다");
+    }
+
+    // ③ **깃발 판 시간 초과 — 점수 높은 팀에게 `0x57`**
+    {
+        nox::Server srv; mk(srv, 0x20u, true);
+        std::vector<nox::OutPacket> out;
+        srv.DebugTeamChangeScore(2, 4, out);
+        out.clear();
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_FLAG_WINNER), m), "`0x57` 이 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 2, "점수 높은 팀이 안 실렸다");
+    }
+    // ★ **깃발 갈래는 −1 에서 시작한다** — 점수가 −1 보다 낮은 팀은 아예 후보가 아니다
+    {
+        nox::Server srv; mk(srv, 0x20u, true);
+        std::vector<nox::OutPacket> out;
+        srv.DebugTeamChangeScore(1, -5, out);
+        srv.DebugTeamChangeScore(2, -3, out);
+        out.clear();
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_FLAG_WINNER), m), "`0x57` 이 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 0, "−1 보다 낮은 팀이 이겼다");
+    }
+    // ★ **깃발 갈래도 동점이면 무승부**
+    {
+        nox::Server srv; mk(srv, 0x20u, true);
+        std::vector<nox::OutPacket> out;
+        srv.DebugTeamChangeScore(1, 3, out);
+        srv.DebugTeamChangeScore(2, 3, out);
+        out.clear();
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_FLAG_WINNER), m), "`0x57` 이 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 0, "동점인데 한쪽이 이겼다");
+    }
+    // 플래그볼이면 `0x56`
+    {
+        nox::Server srv; mk(srv, 0x40u, true);
+        std::vector<nox::OutPacket> out;
+        srv.DebugTeamChangeScore(1, 4, out);
+        out.clear();
+        srv.DebugRoundTimeUp(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_FLAG_BALL_WINNER), m), "`0x56` 이 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 1, "점수 높은 팀이 안 실렸다");
+        Check(m[3] == 0, "플래그볼 까닭 칸은 늘 0 이어야 한다");
+    }
+
+    // ④ **탈락전 — 살아남은 사람이 하나면 끝난다**(까닭 0)
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugCheckVictory(out);
+        Check(!srv.RoundOver(), "둘 다 살아 있는데 끝났다");
+        srv.DebugSetDeaths(b, 15);                        // 목숨 한도(15)에 닿아 탈락
+        out.clear();
+        srv.DebugCheckVictory(out);
+        Check(srv.RoundOver(), "하나만 남았는데 안 끝났다");
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER), m), "`0x58` 이 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 728, "살아남은 사람이 안 실렸다");
+        Check(m[3] == 0, "까닭이 0 이 아니다");
+    }
+    // 한 팀만 남으면 그 팀이 이긴다
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetDeaths(b, 15);
+        srv.DebugCheckVictory(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_TEAM_WINNER), m), "`0x59` 가 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 1, "살아남은 팀이 안 실렸다");
+    }
+    // 아무도 안 남으면 무승부
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetDeaths(a, 15);
+        srv.DebugSetDeaths(b, 15);
+        srv.DebugCheckVictory(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER), m), "무승부가 안 갔다");
+        Check((m[1] | (m[2] << 8)) == 0, "무승부인데 번호가 0 이 아니다");
+    }
+    // ★ **두 팀이 살아 있으면 판이 이어진다**
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+        std::vector<nox::OutPacket> out;
+        srv.DebugCheckVictory(out);
+        Check(!srv.RoundOver(), "두 팀이 살아 있는데 끝났다");
+    }
+    // ★ **관전자는 사람 수 셈에서 빠진다** — 관전자를 더해도 「둘 넘게」가 안 된다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame("10.8.7.3:8703", 730, /*observer=*/true);
+        nox::GameSettings g = srv.Settings(); g.gameFlags = 0x400u; srv.SetGameSettings(g);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugCheckVictory(out);
+        Check(!srv.RoundOver(), "관전자를 사람으로 셌다");
+    }
+    // ★ **목숨 한도가 0 이면 생존 판정을 안 본다**(`v8 < 1` 이면 되돌아간다)
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        nox::GameSettings g = srv.Settings(); g.limitValue = 0; srv.SetGameSettings(g);
+        std::vector<nox::OutPacket> out;
+        srv.DebugCheckVictory(out);
+        Check(!srv.RoundOver(), "한도가 0 인데 판정이 돌았다");
+    }
+    // ★ **생존 판정은 매 프레임 틱에서 돈다**
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        srv.DebugSetDeaths(b, 15);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 34;
+        for (int t = 0; t < 4 && !srv.RoundOver(); ++t) { srv.Tick(ms, out); ms += 34; }
+        Check(srv.RoundOver(), "틱이 도는데 생존 판정이 안 걸렸다");
+    }
+
+    // ★ **무소속을 먼저 찾아도 팀이 덮어쓴다** — 정답지가 팀 갈래에서 무소속을 안 보기 때문이다
+    {
+        nox::Server srv; mk(srv, 0x400u);
+        srv.DebugSetTeam(b, 2);                           // a 는 무소속 · b 는 팀 2
+        std::vector<nox::OutPacket> out;
+        srv.DebugCheckVictory(out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_TEAM_WINNER), m), "팀이 덮어써 `0x59` 가 가야 한다");
+        Check((m[1] | (m[2] << 8)) == 2, "덮어쓴 팀이 안 실렸다");
+    }
+    // ★ **사람이 하나뿐이면 아예 안 끝난다**(`gamePlayIsAnyPlayers_40A8A0` 은 **둘 넘게**를 본다)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        nox::GameSettings g = srv.Settings(); g.gameFlags = 0x400u; srv.SetGameSettings(g);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugCheckVictory(out);
+        Check(!srv.RoundOver(), "혼자인데 이겼다고 했다");
+    }
+    // ★ **탈락전은 한도 판정을 안 탄다** — `checkVictory_509A60` 이 1024 에서 되돌아가기 때문이다
+    {
+        nox::Server srv; mk(srv, 0x400u, true);
+        std::vector<nox::OutPacket> out;
+        srv.DebugTeamChangeScore(1, 99, out);             // 한도(15)를 훌쩍 넘겨 놓고
+        out.clear();
+        srv.DebugRoundCheckLimit(out);
+        Check(!srv.RoundOver(), "탈락전인데 한도 판정으로 끝났다");
+    }
+
+    // **탈락전이 아니면 안 본다**
+    {
+        nox::Server srv; mk(srv, 0x100u);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetDeaths(b, 15);
+        srv.DebugCheckVictory(out);
+        Check(!srv.RoundOver(), "아레나인데 생존 판정이 돌았다");
+    }
+
+    // ⑤ **시간 한도 기본은 0(없음)** — 틱이 돌아도 안 끝난다
+    {
+        nox::Server srv; mk(srv, 0x100u);
+        Check(srv.Settings().timeLimitFrames == 0, "시간 한도 기본이 0 이 아니다");
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 34;
+        for (int t = 0; t < 20; ++t) { srv.Tick(ms, out); ms += 34; }
+        Check(!srv.RoundOver(), "한도가 없는데 시간으로 끝났다");
+    }
+    // 한도를 걸면 그 프레임에 끝난다
+    {
+        nox::Server srv; mk(srv, 0x100u);
+        nox::GameSettings g = srv.Settings();
+        g.timeLimitFrames = 5;
+        srv.SetGameSettings(g);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 34;
+        for (int t = 0; t < 20 && !srv.RoundOver(); ++t) { srv.Tick(ms, out); ms += 34; }
+        Check(srv.RoundOver(), "한도를 걸었는데 안 끝났다");
+    }
+    std::printf("  8-g — 판 끝 나머지: 시간 초과(272 팀→사람 · 1024 적은 죽음 · 96 팀 −1부터) 까닭 1 · "
+                "탈락전 생존 하나 까닭 0 · 빈 팀도 셈 · 혼자면 안 끝남 · 탈락전은 한도 판정 안 탐\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -17051,6 +17406,7 @@ int main() {
     TestFlagBall();
     TestVote();
     TestModeScoring();
+    TestRoundTimeUp();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
