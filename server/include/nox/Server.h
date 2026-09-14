@@ -201,7 +201,9 @@ struct Creature {
     //     그리고 **마지막 맨 위를 갱신(Update)** 한다(`unit_ai.go:581~603`)
     //
     // ⭕ 행동 갈래는 **0~38** 이다(`common/unit/ai` ActionType — 0 놀기 … 30 죽어가는 중 · 31 죽음 · 38 없음).
-    static constexpr int kAIStackMax = 8;      // 정답지 AIStack 길이(넘치면 안 쌓는다)
+    // ★ 2026-09-15 정정 — **24 다**(`server/object_monster.go:182` `AIStack [24]AIStackItem`).
+    //   8 로 두었던 것은 틀렸다. 관문도 정답지대로 `ind >= 길이 − 1` 이면 안 쌓는다
+    static constexpr int kAIStackMax = 24;
     struct AIStackItem {
         uint8_t action = 0;                    // ActionType
         bool started = false;                  // +5 Field5 — Start 를 했나

@@ -9462,11 +9462,13 @@ void TestAIStack() {
     {
         nox::Server srv; mk(srv);
         int pushed = 0;
-        for (int i = 0; i < 20; ++i) if (srv.DebugAIPush(0, 7)) ++pushed;
-        // 쌓임 칸은 여덟(`kAIStackMax`)이고 문은 `자리 >= 8 − 1` 이다.
-        //   바닥의 놀기를 덮어쓰는 첫 번째까지 세면 **여덟 번** 올라가고 맨 위 자리는 **7** 이다.
-        Check(pushed == 8, "꽉 찰 때까지 올라간 수가 8 이 아니다");
-        Check(srv.DebugAIStackInd(0) == 7, "맨 위 자리가 7 이 아니다");
+        for (int i = 0; i < 40; ++i) if (srv.DebugAIPush(0, 7)) ++pushed;
+        // ★ 2026-09-15 정정 — 쌓임 칸은 **스물넷**이다(`server/object_monster.go:182`
+        //   `AIStack [24]AIStackItem`). 전에 **여덟**으로 적어 두었고 이 시험이 그것을 **굳히고 있었다**.
+        //   문은 정답지대로 `자리 >= 길이 − 1` 이라, 바닥의 놀기를 덮어쓰는 첫 번째까지 세면
+        //   **스물네 번** 올라가고 맨 위 자리는 **23** 이다.
+        Check(pushed == 24, "꽉 찰 때까지 올라간 수가 24 가 아니다");
+        Check(srv.DebugAIStackInd(0) == 23, "맨 위 자리가 23 이 아니다");
         Check(!srv.DebugAIPush(0, 7), "꽉 찼는데 더 올라갔다");
     }
 
@@ -11362,9 +11364,29 @@ void TestAIFight() {
         Check(srv.DebugAITargetAddr(0, 6) == b, "49 가 그 적을 안 가리킨다");
         Check(srv.DebugAIArgX(0, 7) == 1400.0f, "맨 위 가기가 적 자리를 안 받았다");
     }
-    // ★ **근접이 없는 몬스터(임프)** — 때릴 수단이 없어 **일단 그 자리로만 간다**(`sub_531C10`)
+    // ★ **쏘는 몬스터(임프)** — **원거리 사슬**(`sub_531D50`)
+    //   60 · 45 보이나 · **17 쏘기** · 26 바라보기 · 47 줄이 막혔나 ·
+    //   49 **쏘기 사거리보다 머나** · 40 또는 · **7 가기**
     {
-        nox::Server srv; mk(srv);
+        nox::Server srv; mk(srv);                             // 임프 — ImpShot · 사거리 150
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
+        Check(srv.DebugAIAction(0, 2) == 45, "보이나(45)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 3) == 17, "쏘기(17)가 안 올라갔다");
+        Check(srv.DebugAIAction(0, 4) == 26, "바라보기(26)가 안 올라갔다");
+        Check(srv.DebugAIAction(0, 5) == 47, "줄이 막혔나(47)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 6) == 49, "더 머나(49)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 7) == 40, "또는(40)이 안 깔렸다");
+        Check(srv.DebugAIAction(0, 8) == 7, "가기(7)가 맨 위에 안 왔다");
+        Check(std::fabs(srv.DebugAIArgF(0, 6) - 150.0f) < 0.01f, "49 의 자가 쏘기 사거리가 아니다");
+        Check(srv.DebugAIArgX(0, 3) == 1400.0f, "쏘기가 적 자리를 안 받았다");
+    }
+    // ★ **때릴 수단이 아무것도 없는 것(Bomber)** — **일단 그 자리로만 간다**(`sub_531C10`)
+    {
+        nox::Server srv; mkT(srv, 1348);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetEnemy(0, b, -1);
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
@@ -11372,9 +11394,53 @@ void TestAIFight() {
         Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
         Check(srv.DebugAIAction(0, 2) == 42, "살아 있나(42)가 안 깔렸다");
         Check(srv.DebugAIAction(0, 3) == 7, "가기(7)가 안 올라갔다");
-        Check(srv.DebugAIStackInd(0) == 3, "근접이 없는데 때리기 사슬을 쌓았다");
+        Check(srv.DebugAIStackInd(0) == 3, "때릴 수단이 없는데 사슬을 쌓았다");
         Check(srv.DebugAIArgX(0, 3) == 1400.0f, "가기가 적 자리를 안 받았다");
         Check(srv.DebugAITargetAddr(0, 2) == b, "42 가 그 적을 안 가리킨다");
+    }
+    // ★ **쏘기도 근접도 되는 것(EmberDemon)** — **쏘기 사거리 절반 안**이면 근접 사슬로 간다
+    {
+        nox::Server srv; mkT(srv, 1337);                      // Fireball 200 · 근접 15
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetPos(0, 1350, 1000);                    // 적까지 50 — 200×0.5 = 100 안
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        // 쏘기도 되므로 **50(사거리×0.6) 조건이 끼어들어** 한 칸씩 밀린다 — 60·42·**50**·45·16…
+        Check(srv.DebugAIAction(0, 3) == 50, "쏘는 것인데 50 조건이 안 끼었다");
+        Check(srv.DebugAIAction(0, 4) == 45, "보이나(45)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 5) == 16, "가까운데 근접 사슬로 안 갔다");
+        Check(std::fabs(srv.DebugAIArgF(0, 3) - 120.0f) < 0.1f, "50 의 자가 쏘기 사거리×0.6 이 아니다");
+    }
+    // 멀면 원거리 사슬로 간다
+    {
+        nox::Server srv; mkT(srv, 1337);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetPos(0, 1000, 1000);                    // 적까지 400 — 100 밖
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 3) == 17, "먼데 원거리 사슬로 안 갔다");
+    }
+    // ★ **잣대는 쏘기 사거리의 「절반」** — 150 은 200 안이지만 100 밖이라 **원거리**다
+    {
+        nox::Server srv; mkT(srv, 1337);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetPos(0, 1250, 1000);                    // 적까지 150
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 3) == 17, "150 은 절반(100) 밖인데 근접으로 갔다 — 잣대가 절반이다");
+    }
+    // 경계 — **딱 절반(100)은 「가깝다」가 아니다**(`<` 다)
+    {
+        nox::Server srv; mkT(srv, 1337);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetPos(0, 1300, 1000);                    // 적까지 딱 100
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 3) == 17, "딱 절반인데 근접으로 갔다 — 경계가 < 다");
     }
 
     // ③ **대상이 사라졌으면 빠진다**
@@ -11578,6 +11644,54 @@ void TestAIMelee() {
         srv.DebugAITick(0, out);
         Check(srv.HealthOf(b) < hp0, "때렸는데 상대 체력이 안 줄었다");
         Check(srv.DebugAIAction(0, 0) == 0, "때린 뒤 안 빠졌다");
+    }
+    // ⑥ **쏘기(17) 시작** — 쉬는 시간을 **쏘기 간격**(임프 15~30)으로 잡는다
+    {
+        nox::Server srv; mk(srv, 1328);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPush(0, 17);
+        uint32_t lo = 99999, hi = 0;
+        for (int t = 0; t < 400; ++t) {
+            srv.DebugSetPetNextHit(0, 0);
+            srv.DebugAIStart(0, 17, out);
+            const uint32_t nh = srv.DebugPetNextHit(0);
+            lo = std::min(lo, nh); hi = std::max(hi, nh);
+        }
+        Check(lo == 1000 + 15, "쏘기 간격 최소 15 가 안 나왔다");
+        Check(hi == 1000 + 30, "쏘기 간격 최대 30 이 안 나왔다");
+    }
+    // 쉬는 중이면 **아무것도 안 올린다**(근접과 다르다)
+    {
+        nox::Server srv; mk(srv, 1328);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, 1100);
+        srv.DebugAIPush(0, 17);
+        srv.DebugAIStart(0, 17, out);
+        Check(srv.DebugAIStackInd(0) == 0, "쏘기는 쉬는 중에 아무것도 안 올려야 한다");
+        Check(srv.DebugPetNextHit(0) == 1100, "쉬는 중인데 다음 때를 바꿨다");
+    }
+
+    // ⑦ **쏘기(17) 굴리기** — 쏠 게 없으면 뺀다 · 있으면 피해를 주고 뺀다
+    {
+        nox::Server srv; mk(srv, 1358);                       // GiantLeech — 쏠 게 없다
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPush(0, 17);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "쏠 게 없는데 안 빠졌다");
+    }
+    {
+        nox::Server srv; mk(srv, 1328);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        const int hp0 = srv.HealthOf(b);
+        srv.DebugAIPush(0, 17);
+        srv.DebugAITick(0, out);
+        // ⚠ 딱 5 가 아니다 — 갑옷이 깎는다(그건 묶음 3 에서 따로 본다). **줄었나**만 본다
+        Check(srv.HealthOf(b) < hp0, "임프 발사체 피해가 안 들어갔다");
+        Check(srv.DebugAIAction(0, 0) == 0, "쏜 뒤 안 빠졌다");
     }
     std::printf("  6-g(2) — 근접(16): 쉬는 시간 끝나면 휘두름(다음 때 30~40) · 아니면 50+1 · 못 때리면 뺌\n");
 }

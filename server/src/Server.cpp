@@ -6375,8 +6375,10 @@ void Server::MonsterPushAttack(Creature& k, const Target& foe, float fx, float f
     const MonsterStats* m = FindMonster(k.type);
     const double reach = (m && m->meleeRange > 0.0) ? m->meleeRange : 0.0;
     const bool canMelee = reach > 0.0;
-    // ⚠ 쏠 수 있나는 못 읽는다 — 거짓으로 둔다(위 주석)
-    const bool canShoot = false;
+    // ★ 2026-09-15 — **monster.bin 을 직접 읽어 채웠다**. `monsterCanShoot_534280` 은
+    //   몬스터표 **+148(MISSILE_NAME)** 이 비었나만 본다
+    const bool canShoot = (m && m->missileName != nullptr);
+    const double shootRange = m ? m->missileRange : 0.0;
 
     auto push = [&](uint8_t act) {
         if (!AIPush(k, act)) return -1;
@@ -6385,6 +6387,32 @@ void Server::MonsterPushAttack(Creature& k, const Target& foe, float fx, float f
         return k.aiStackInd;
     };
 
+    // ── 갈래 고르기(`531B40`) ──
+    //   쏠 수 있으면 — 근접도 되고 **쏘기 사거리의 절반보다 가까우면** 근접 사슬, 아니면 **원거리 사슬**
+    if (canShoot) {
+        const double ex = fx - k.x, ey = fy - k.y;
+        const double dist = std::sqrt(ex * ex + ey * ey);
+        if (!(canMelee && dist < shootRange * 0.5)) {
+            // sub_531D50 — **원거리 사슬**(아래 → 위)
+            //   60 새 적 없음 · 45 보이나 · **17 쏘기** · 26 바라보기 ·
+            //   47 쏠 줄이 막혔나 · 49 **쏘기 사거리보다 머나** · 40 또는 · **7 가기**
+            push(60);
+            push(45);
+            const int i17 = push(17);
+            if (i17 >= 0) { k.aiStack[i17].argX = fx; k.aiStack[i17].argY = fy; }
+            push(26);
+            // ⚠ `sub_534710`(깃발 0x40 · 아래 행동 4)은 아직 안 옮겼다 — 늘 거짓으로 본다
+            push(47);                                        // 쏠 줄이 막혔나
+            const int i49r = push(49);
+            if (i49r >= 0) k.aiStack[i49r].argF = static_cast<float>(shootRange);
+            AIPush(k, 40);                                   // 또는 — 47 과 49 를 묶는다
+            if (push(7) >= 0) {
+                k.aiStack[k.aiStackInd].argX = fx;
+                k.aiStack[k.aiStackInd].argY = fy;
+            }
+            return;
+        }
+    }
     if (!canMelee) {
         // sub_531C10 — 때릴 수단이 없으면 **일단 그 자리로 간다**
         push(60);                                            // 새 적 없음
@@ -6398,9 +6426,9 @@ void Server::MonsterPushAttack(Creature& k, const Target& foe, float fx, float f
     // monsterAction_531C60
     push(60);
     push(42);
-    if (canShoot) {                                          // (지금은 안 탄다)
-        const int i = push(50);
-        if (i >= 0) k.aiStack[i].argF = 0.0f;                // 사거리×0.6 — 쏘기 사거리를 못 읽는다
+    if (canShoot) {
+        const int i = push(50);                              // 쏘기 사거리 × 0.6 안인가
+        if (i >= 0) k.aiStack[i].argF = static_cast<float>(shootRange * 0.60000002);
     }
     push(45);                                                // 보이나
     AIPush(k, 16);                                           // 근접 공격 — 대상을 안 받는다(정답지도 그렇다)
@@ -6520,6 +6548,20 @@ void Server::AITick(Creature& k, std::vector<OutPacket>& out) {
 void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
     (void)out;
     switch (act) {
+        case 17: {   // ── 묶음 6-g(3) 쏘기 시작 — `sub_532540`(`legacy/GAME4_3.c:2119`)
+            // 근접과 **같은 꼴**이다 — 쉬는 시간(+512)이 끝났으면 휘두르기를 시작하고
+            // 다음 때를 **쏘기 간격**(`monsterDef+220`·`+224`)으로 잡는다.
+            // ⚠ 근접과 달리 **쉬는 중에 아무것도 안 올린다**(정답지에 그 갈래가 없다)
+            const MonsterStats* m = FindMonster(k.type);
+            if (frame_ >= k.nextHitFrame) {
+                k.attackStartFrame = frame_;
+                const int lo = (m && m->missileMin > 0) ? m->missileMin : 30;
+                const int hi = (m && m->missileMax > 0) ? m->missileMax : lo;
+                const int span = (hi >= lo) ? (hi - lo + 1) : 1;
+                k.nextHitFrame = frame_ + static_cast<uint32_t>(lo) + NextRandom(static_cast<uint32_t>(span));
+            }
+            break;
+        }
         case 16: {   // ── 묶음 6-g(2) 근접 공격 시작 — `mobActionMelee1_532130`(`legacy/GAME4_3.c:1943`)
             //
             // ⭕ **쉬는 시간이 끝났나**(`+512`)로 갈린다.
@@ -6666,6 +6708,27 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 k.aiStack[k.aiStackInd].argY = lastY;
                 k.aiStack[k.aiStackInd].argU32 = 0;          // 정답지 `v3[3] = 0`
             }
+            break;
+        }
+        case 17: {   // 쏘기 — `mobActionMissileAtt_532610`
+            // ⚠⚠ **여기가 정답지와 갈리는 자리다.** 정답지는 애니의 **쏘는 칸**(`monsterDef+216`)에서
+            //   `MISSILE_NAME` 오브젝트를 **만들어 날린다**(앞질러 겨눔까지 한다).
+            //   우리는 **크리처 애니 칸이 없고** 그 발사체를 아직 안 만든다 —
+            //   지금은 **한 틱에 피해만 주고 뺀다**(임시 구현이 하던 것과 같다). 진짜 발사체는 **6-g(3b)**
+            const MonsterStats* m = FindMonster(k.type);
+            const Target foe{ k.enemyAddr, k.enemyPet };
+            if (!m || m->missileName == nullptr || foe.none()) { AIPop(k); break; }
+            // 발사체 피해는 아직 임프 것만 안다(`kImpShotDamage`)
+            const int dmg = (k.type == 1328) ? kImpShotDamage : 0;
+            if (dmg > 0) {
+                AttackSrc src;
+                src.x = static_cast<float>(k.x);
+                src.y = static_cast<float>(k.y);
+                src.byMonsterType = k.type;
+                src.byPet = static_cast<int>(&k - pets_.data());
+                HurtTarget(foe, dmg, out, k.owner, 0, &src);
+            }
+            AIPop(k);
             break;
         }
         case 16: {   // 근접 공격 — `mobActionMeleeAtt_532440`
