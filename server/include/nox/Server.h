@@ -1794,6 +1794,17 @@ public:
     void DebugGiveExp(const std::string& a, float v, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) PlayerGiveExp(i->second, v, out);
     }
+    int DebugSpellLvl(const std::string& a, uint8_t sp) const {
+        auto i = sessions_.find(a); return i == sessions_.end() || sp >= 137 ? -1 : i->second.spellLvl[sp];
+    }
+    void DebugSetSpellLvl(const std::string& a, uint8_t sp, uint8_t v) {
+        auto i = sessions_.find(a); if (i != sessions_.end() && sp < 137) i->second.spellLvl[sp] = v;
+    }
+    bool DebugGrantSpell(const std::string& a, uint8_t sp, uint8_t announce, bool extra,
+                         uint8_t forceLevel, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a);
+        return i != sessions_.end() && SpellGrantToPlayer(i->second, sp, announce, extra, forceLevel, out);
+    }
     bool DebugStatsDirty(const std::string& a) const {
         auto i = sessions_.find(a); return i != sessions_.end() && i->second.statsDirty;
     }
@@ -2512,6 +2523,11 @@ private:
     bool CanInteractFrom(const Creature& k, const Target& t) const;
     void SendGold(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-a — 경험치 알림·주기·레벨 오름
+    // 묶음 7-b — 주문 받기(0x6F)
+    void SendSpellAward(Session& s, uint8_t spell, uint8_t announce, bool extra,
+                        std::vector<OutPacket>& out);
+    bool SpellGrantToPlayer(Session& s, uint8_t spell, uint8_t announce, bool extra,
+                            uint8_t forceLevel, std::vector<OutPacket>& out);
     void SendExperience(Session& s, std::vector<OutPacket>& out);
     bool PlayerCheckLevel(Session& s);
     void PlayerGiveExp(Session& s, float amount, std::vector<OutPacket>& out);

@@ -997,6 +997,14 @@ const std::vector<TestSpellDef>& TestSpellDefs() {
         { 87,  0, 0x44542438, { 0, 8, 2, 6, 5, 6 } },       // SPELL_SUMMON_IMP
         { 51, 80, 0x12500214, { 1, 3, 7, 5, 1, 3, 7, 5 } }, // SPELL_SHIELD(5-b 방패 물약이 건다 · thing.bin 실측)
         { 59, 30, 0x40100822, { 7, 5, 3, 1, 3, 3, 3, 3, 5, 7 } },   // SPELL_PLASMA(5-f · thing.bin 실측)
+        // ★ 7-b 무리 주문 — 대표 셋과 딸림 둘. 값은 thing.bin SPEL 실측이다.
+        //   깃발 0x1000/0x4000/0x10000 = **대표**, 0x2000/0x8000/0x20000 = **딸림**.
+        //   134 를 받으면 소환 주문 **47개 전부**가, 135 를 받으면 MARK_1~4 가 같이 오른다.
+        { 134,  0, 0x04141a20, { 1, 1, 7, 7, 3, 5, 3, 5, 1, 7, 3, 5 } },   // SPELL_SUMMON_CREATURE(대표 A · 0x1000)
+        { 135,  0, 0x02004d00, { 1, 1, 7, 7, 3, 5, 3, 5, 1, 7, 3, 8 } },   // SPELL_MARK_LOCATION(대표 B · 0x4000)
+        {  46,  0, 0x02808500, { 1, 7, 1 } },                              // SPELL_MARK_1(딸림 B · 0x8000)
+        { 136,  0, 0x02190c04, { 1, 1, 7, 7, 3, 5, 3, 5, 1, 7, 3, 2 } },   // SPELL_TELEPORT_TO_MARKER(대표 C · 0x10000)
+        { 122, 10, 0x021e0405, { 7, 1, 1 } },                              // SPELL_TELEPORT_TO_MARK_1(딸림 C · 0x20000)
     };
     return kDefs;
 }
@@ -12596,6 +12604,172 @@ void TestPlayerExp() {
     std::printf("  7-a — 경험치(6e 5바이트·중요·u32 버림) · 레벨은 XPTable[레벨+1] · 한 번에 한 단계 · 천장 10\n");
 }
 
+// ── 묶음 7-b — 주문 받기(0x6F) ────────────────────────────────────────
+//
+// 정답지 `nox_xxx_spellGrantToPlayer_4FB550`(`server__magic__plyrspel.c:46`) ·
+//        `nox_xxx_netSendSpellAward_4D7F90`.
+//   · 와이어 `6f <주문 번호> <올린 뒤 레벨> <알림 | 0x80>` **4바이트**
+//   · `netSendPacket1_4E5390` 이라 **순번 봉투(`cc`)** 안에 들어간다 — 경험치(`6e`)와 반대다
+//   · 번호는 **1~136** · 천장 **5**(협동·퀘스트면 3) · 이미 천장이면 **아무것도 안 보낸다**
+//   · `forceLevel` 이 있으면 올리지 않고 **그 값으로 덮는다**
+//   · **무리 주문** — 이끄는 깃발(0x1000/0x4000/0x10000)을 받으면
+//     딸린 깃발(0x2000/0x8000/0x20000)을 가진 **성한 주문 전부**가 같이 오른다
+void TestSpellAward() {
+    const std::string a = "10.7.2.1:7201";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        for (int k = 1; k < 137; ++k) srv.DebugSetSpellLvl(a, static_cast<uint8_t>(k), 0);
+    };
+    // `6f` 를 찾는다 — 순번 봉투(`cc`)를 벗겨 넣어 주는 `FlattenTo` 로
+    auto awardMsg = [&](const std::vector<nox::OutPacket>& out, std::vector<uint8_t>& m) {
+        bool found = false;
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() >= 4 && x[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_AWARD)) { m = x; found = true; }
+        return found;
+    };
+
+    // ① **한 칸 오르고 `6f` 가 간다** — 셋째 칸은 **올린 뒤** 레벨
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugGrantSpell(a, 27, 1, false, 0, out), "주기가 실패했다");
+        Check(srv.DebugSpellLvl(a, 27) == 1, "레벨이 1 이 안 됐다");
+        std::vector<uint8_t> m;
+        Check(awardMsg(out, m), "`6f` 가 안 갔다");
+        Check(m.size() == 4, "`6f` 가 4바이트가 아니다");
+        Check(m[1] == 27, "`6f` 가 주문 번호를 안 실었다");
+        Check(m[2] == 1, "`6f` 가 올린 뒤 레벨을 안 실었다");
+        Check(m[3] == 1, "`6f` 넷째 칸이 알림 1 이 아니다");
+    }
+
+    // ② **넷째 인자는 0x80 으로 얹힌다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGrantSpell(a, 27, 1, true, 0, out);
+        std::vector<uint8_t> m;
+        Check(awardMsg(out, m) && m[3] == (1 | 0x80), "넷째 인자가 0x80 으로 안 얹혔다");
+    }
+    // 조용히 주면 아래 7비트가 0 이다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGrantSpell(a, 27, 0, false, 0, out);
+        std::vector<uint8_t> m;
+        Check(awardMsg(out, m) && m[3] == 0, "조용히 줬는데 알림 비트가 섰다");
+    }
+
+    // ③ **순번 봉투(`cc`)에 들어간다** — 경험치(`6e`)와 갈리는 자리다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
+        std::vector<nox::OutPacket> out;
+        srv.DebugImportantReal(a, /*ready=*/true);
+        srv.DebugGrantSpell(a, 27, 1, false, 0, out);
+        Check(out.empty(), "중요가 대기열에 안 쌓이고 곧바로 나갔다");
+        srv.Tick(34, out);
+        bool sequenced = false;
+        for (const auto& pk : out) {
+            if (pk.to != a) continue;
+            const std::vector<uint8_t> b = Body(pk);
+            if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
+                b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
+            size_t q = 4;
+            while (q + 4 <= b.size() && b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
+                const size_t inner = b[q + 3];
+                if (q + 4 + inner > b.size()) break;
+                if (inner == 4 && b[q + 4] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_AWARD)) sequenced = true;
+                q += 4 + inner;
+            }
+        }
+        Check(sequenced, "`6f` 가 순번 봉투(cc)로 안 갔다");
+    }
+
+    // ④ **천장 5** — 다섯 번 오르고 여섯 번째는 실패하며 아무것도 안 보낸다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        for (int i = 0; i < 5; ++i) Check(srv.DebugGrantSpell(a, 27, 0, false, 0, out), "다섯 번 안에서 실패했다");
+        Check(srv.DebugSpellLvl(a, 27) == 5, "다섯 번 줬는데 5 가 아니다");
+        out.clear();
+        Check(!srv.DebugGrantSpell(a, 27, 0, false, 0, out), "천장에서도 성공했다");
+        std::vector<uint8_t> m;
+        Check(!awardMsg(out, m), "천장인데 `6f` 가 갔다");
+    }
+
+    // ⑤ **번호 밖은 거른다** — 0 과 137
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        Check(!srv.DebugGrantSpell(a, 0, 0, false, 0, out), "0 번을 받아들였다");
+        Check(!srv.DebugGrantSpell(a, 137, 0, false, 0, out), "137 번을 받아들였다");
+        std::vector<uint8_t> m;
+        Check(!awardMsg(out, m), "번호 밖인데 `6f` 가 갔다");
+        Check(srv.DebugGrantSpell(a, 136, 0, false, 0, out), "136 번(마지막)이 막혔다");
+    }
+
+    // ⑥ **`forceLevel` 은 올리지 않고 덮는다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetSpellLvl(a, 27, 1);
+        srv.DebugGrantSpell(a, 27, 0, false, 4, out);
+        Check(srv.DebugSpellLvl(a, 27) == 4, "`forceLevel` 이 안 덮였다");
+        std::vector<uint8_t> m;
+        Check(awardMsg(out, m) && m[2] == 4, "`6f` 가 덮은 값을 안 실었다");
+    }
+
+    // ⑦ **무리 주문은 같이 오른다** — 134 소환 주문(대표 A)을 받으면 소환 47개가 다 오른다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        RegSpell(srv, 134); RegSpell(srv, 87);            // 대표 A 와 딸림 A(임프 소환)
+        RegSpell(srv, 27);                                 // 무리 밖 — 안 건드려야 한다
+        srv.DebugGrantSpell(a, 134, 0, false, 0, out);
+        Check(srv.DebugSpellLvl(a, 134) == 1, "대표 주문이 안 올랐다");
+        Check(srv.DebugSpellLvl(a, 87) == 1, "딸린 소환 주문이 같이 안 올랐다");
+        Check(srv.DebugSpellLvl(a, 27) == 0, "무리 밖 주문까지 올랐다");
+        // `6f` 는 **대표 하나만** 간다(정답지도 끝에 한 번만 보낸다)
+        int n = 0;
+        for (const auto& x : FlattenTo(out, a))
+            if (!x.empty() && x[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_AWARD)) ++n;
+        Check(n == 1, "무리마다 `6f` 를 보냈다(대표 하나만이어야 한다)");
+    }
+    // 무리 B — 135 를 받으면 MARK_1 이 같이 오른다. 정의가 **없는** 주문은 안 오른다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        RegSpell(srv, 135); RegSpell(srv, 46);
+        srv.DebugGrantSpell(a, 135, 0, false, 0, out);
+        Check(srv.DebugSpellLvl(a, 135) == 1, "대표 B 가 안 올랐다");
+        Check(srv.DebugSpellLvl(a, 46) == 1, "MARK_1 이 같이 안 올랐다");
+    }
+    // 무리 C — 136 → 122. 그리고 `forceLevel` 은 무리에도 **덮어** 간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        RegSpell(srv, 136); RegSpell(srv, 122);
+        srv.DebugSetSpellLvl(a, 122, 1);
+        srv.DebugGrantSpell(a, 136, 0, false, 4, out);
+        Check(srv.DebugSpellLvl(a, 136) == 4, "대표 C 에 forceLevel 이 안 먹었다");
+        Check(srv.DebugSpellLvl(a, 122) == 4, "딸림에 forceLevel 이 안 먹었다(올리기만 했다)");
+    }
+    // ⑧ **천장 넘은 레벨은 다음 번에 5 로 잘린다** — 천장 검사가 `==` 라 6 은 통과하기 때문이다
+    //   정답지 차례 그대로 — `++` → 5 로 자르기 → (협동/퀘스트면 3) → **그 다음에** `forceLevel` 덮기.
+    //   덮기가 자르기 **뒤**라 `forceLevel` 은 천장을 넘을 수 있고, 그 값이 다음 번에 잘린다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGrantSpell(a, 27, 0, false, 6, out);      // 덮기는 안 잘린다
+        Check(srv.DebugSpellLvl(a, 27) == 6, "`forceLevel` 6 이 잘렸다(덮기는 자르기 뒤다)");
+        Check(srv.DebugGrantSpell(a, 27, 0, false, 0, out), "6 은 천장(==5)이 아니라 통과해야 한다");
+        Check(srv.DebugSpellLvl(a, 27) == 5, "7 이 5 로 안 잘렸다");
+    }
+    std::printf("  7-b — 주문 받기(6f 4바이트·순번 봉투) · 올린 뒤 레벨 실음 · 천장 5 · forceLevel 덮기 · 무리 같이 오름\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -14813,6 +14987,7 @@ int main() {
     TestCreatureOrder();
     TestAIGuardHunt();
     TestPlayerExp();
+    TestSpellAward();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

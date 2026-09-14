@@ -6809,6 +6809,86 @@ void Server::PlayerGiveExp(Session& s, float amount, std::vector<OutPacket>& out
     PlayerCheckLevel(s);
 }
 
+// ── 묶음 7-b 주문 받기 ────────────────────────────────────────────────
+//
+// 정답지 `nox_xxx_spellGrantToPlayer_4FB550`(`legacy/server__magic__plyrspel.c:46`) ·
+//        `nox_xxx_netSendSpellAward_4D7F90`(`GAME3_2.c`).
+//
+// ⭕ 와이어 — `6f <주문 번호> <그 주문의 지금 레벨> <알림 | 0x80>` **4바이트**.
+//   ★ `netSendPacket1_4E5390(…, 0, 1)` — **Packet1** 이라 여섯째 인자가 **1**,
+//     즉 `cc <순번> <길이>` **순번 봉투**에 들어간다. 경험치(`6e`)와 반대다 —
+//     주문 레벨은 **놓치면 안 되는 상태**라 확인(`ab`)을 받아야 한다
+//   ★ 셋째 칸은 **보낼 때 읽은 레벨**이다(올린 **뒤**). 클라가 그 값을 그대로 제 표에 넣는다
+//     (`netSpellRewardCli_45CFE0` — `SpellLvl[번호] = a2`)
+//   ★ 넷째 칸 — 아래 7비트가 `알림`(0 이면 조용히), **0x80** 이 넷째 인자다.
+//     클라는 `& 0x80` 을 따로 떼어 넘긴다(`cdecode.c:1551~1559`)
+//
+// ⭕ 올리는 규칙
+//   · 주문 번호는 **1~136**. 벗어나면 "AwardSpellError" 글줄만 보내고 실패
+//   · **천장** — 협동(2048)·퀘스트(4096)면 **3**, 그 밖은 **5**. 이미 천장이면 "MaxSpellLevel" 글줄만
+//   · 한 칸 올리고(`++`) 천장으로 자른다 · `forceLevel` 이 있으면 **그 값으로 덮는다**
+//   · **무리 주문** — 깃발 `0x1000`/`0x4000`/`0x10000` 을 가진 주문을 받으면
+//     짝이 되는 `0x2000`/`0x8000`/`0x20000` 을 가진 **성한 주문 전부**가 같이 오른다
+//     (『보호 무리』처럼 한 장에 여러 개가 묶인 것)
+//   · 알림이면 소리 226 과 보상 알림을 **나와 남들 모두**에게 → 둘 다 묶음 10(소리)·미이식
+//
+// ⚠ 우리 서버는 **온라인 아레나**라 협동·퀘스트 깃발이 꺼져 있다 ⇒ 천장은 늘 **5**.
+//   퀘스트 전용 「한 번만 받는 주문 17종」 관문도 같은 이유로 안 탄다(그래도 옮겨 둔다)
+void Server::SendSpellAward(Session& s, uint8_t spell, uint8_t announce, bool extra,
+                            std::vector<OutPacket>& out) {
+    uint8_t msg[4];
+    msg[0] = static_cast<uint8_t>(Op::REPORT_SPELL_AWARD);
+    msg[1] = spell;
+    msg[2] = s.spellLvl[spell];                          // 올린 **뒤**의 레벨
+    msg[3] = static_cast<uint8_t>(extra ? (announce | 0x80) : announce);
+    EmitSeq(s, msg, sizeof(msg), out);                   // Packet1 = 순번 봉투
+}
+
+// 퀘스트에서 **한 번만** 받는 주문들(`plyrspel.c:80~82`) — 이미 1 이상이면 더 안 준다
+static bool SpellQuestOnce(uint8_t sp) {
+    switch (sp) {
+        case 34: case 134: case 45: case 46: case 47: case 48: case 49:
+        case 117: case 118: case 119: case 120: case 121: case 122:
+        case 123: case 124: case 125: case 19:
+            return true;
+        default: return false;
+    }
+}
+
+bool Server::SpellGrantToPlayer(Session& s, uint8_t spell, uint8_t announce, bool extra,
+                                uint8_t forceLevel, std::vector<OutPacket>& out) {
+    if (spell == 0 || spell >= 137) return false;        // "AwardSpellError"(글줄은 묶음 10)
+    const bool coopOrQuest = questTotal_ > 0 || questStage_ > 0;   // 2048·4096 자리
+    const uint8_t cap = coopOrQuest ? 3 : 5;
+    if (s.spellLvl[spell] == cap) return false;          // "MaxSpellLevel"
+    // 퀘스트면 목록의 17종은 한 번만
+    if (coopOrQuest && SpellQuestOnce(spell) && s.spellLvl[spell] != 0) return false;
+
+    ++s.spellLvl[spell];
+    if (s.spellLvl[spell] > 5) s.spellLvl[spell] = 5;
+    if (coopOrQuest && s.spellLvl[spell] > 3) s.spellLvl[spell] = 3;
+    if (forceLevel) s.spellLvl[spell] = forceLevel;
+
+    // 무리 주문 — 이끄는 깃발이 있으면 딸린 깃발을 가진 성한 주문을 모두 올린다
+    uint32_t member = 0;
+    const uint32_t fl = SpellFlags(spell);
+    if (fl & 0x1000)       member = 0x2000;
+    else if (fl & 0x4000)  member = 0x8000;
+    else if (fl & 0x10000) member = 0x20000;
+    if (member) {
+        for (int i = 1; i < 137; ++i) {
+            if (!(SpellFlags(static_cast<uint8_t>(i)) & member)) continue;
+            if (!spellDefs_[i].valid) continue;
+            if (forceLevel) s.spellLvl[i] = forceLevel;
+            else ++s.spellLvl[i];
+            if (s.spellLvl[i] > 5) s.spellLvl[i] = 5;
+            if (coopOrQuest && s.spellLvl[i] > 3) s.spellLvl[i] = 3;
+        }
+    }
+    SendSpellAward(s, spell, announce, extra, out);
+    return true;
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
