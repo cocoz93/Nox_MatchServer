@@ -5104,6 +5104,123 @@ void TestHealSpells() {
     std::printf("  4-b5a — LesserHeal 15(기획값×배수 1.0)·자기 최대 마나 되돌림·남에게는 안 되돌림 · RestoreHealth·Wink 가득 · RestoreMana 가득 · 대상 없음 마나 되돌림\n");
 }
 
+// ── 묶음 4-b5b(1) — 생명을 마나로 옮기는 주문(ChannelLife 8) ──────────────
+//
+// 정답지: spells.go:233 → duration.New(nil, sub_52F460, nil, 0) · sub_52F460(GAME4_2.c:11444)
+//   시전자 체력 1 씩 깎아 대상 마나를 ChannelLifeCoeff[세기−1] 만큼 채운다(소수는 이월) · 빔은 없다(netStartDurationRaySpell 갈래에 8 이 없음)
+void TestChannelLife() {
+    const std::string a = "10.8.0.1:8001";
+    const std::string b = "10.8.0.2:8002";
+    // 세기 3(온라인) → ChannelLifeCoeff[2]. 이월을 재려고 전 칸을 0.5 로 둔다 — 두 틱에 1 씩 오른다
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("ChannelLifeCoeff = 0.5, 0.5, 0.5, 0.5, 0.5;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(8, 10, 0x1000000, { 1, 2 });        // 어느 직업이나 · 겨눔 아님(자기 아닌 대상도 곧바로 SpellAccept)
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(b, 1100, 1000);
+    };
+    auto cast = [&](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        srv.DebugAimAt(a, 1100, 1000);                       // b 를 겨눔
+        CastAndWait(srv, a, 8, false, ms, out);
+    };
+
+    // ① 시전자 생명 → 대상 마나. 계수 0.5 라 두 틱에 마나 1 · 시전자는 틱마다 1 깎임
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugManaSub(b, 40);                             // 대상 마나를 비워 둔다(가득이면 곧바로 취소)
+        const uint16_t bMana = srv.ManaOf(b);
+        const uint16_t aHp = srv.HealthOf(a);
+        cast(srv, ms, out);
+        Check(srv.DebugDurActive(8, a), "ChannelLife 가 지속 주문으로 안 걸렸다");
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int gaveMana = static_cast<int>(srv.ManaOf(b)) - static_cast<int>(bMana);
+        const int lostHp = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        Check(lostHp >= 9 && lostHp <= 11, "시전자가 틱마다 1 씩 안 깎였다");
+        Check(gaveMana >= 4 && gaveMana <= 6, "대상 마나가 0.5/틱(이월 포함) 으로 안 찼다");
+        Check(gaveMana < lostHp, "계수 0.5 인데 마나가 깎인 체력만큼 올랐다(이월을 안 쓴 것)");
+    }
+
+    // ② 대상 마나가 가득이면 곧바로 취소 — 시전자 체력도 안 깎인다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const uint16_t aHp = srv.HealthOf(a);
+        cast(srv, ms, out);                                  // b 는 마나 가득
+        for (int t = 0; t < 6; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(!srv.DebugDurActive(8, a), "대상 마나가 가득인데 ChannelLife 가 안 끊겼다");
+        Check(srv.HealthOf(a) == aHp, "대상 마나가 가득인데 시전자 체력이 깎였다");
+    }
+
+    // ③ 시전자가 달리면(버프 8) 끊긴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugManaSub(b, 40);
+        cast(srv, ms, out);
+        Check(srv.DebugDurActive(8, a), "걸리지도 않았다(시험 전제)");
+        srv.DebugApplyEnchant(a, 8, 0, 1);                   // 달리기
+        ms += 34; srv.Tick(ms, out);
+        Check(!srv.DebugDurActive(8, a), "시전자가 달리는데 ChannelLife 가 안 끊겼다");
+    }
+
+    // ④ 시전자 체력이 1 이하로 내려가면 끊긴다(제 목숨까지 태우지 않는다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugManaSub(b, 120);                            // 오래 이어지도록 대상 마나를 많이 비움
+        cast(srv, ms, out);
+        srv.Damage(a, srv.HealthOf(a) - 3, out);             // 체력 3 만 남김
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(!srv.DebugDurActive(8, a), "시전자 체력이 바닥인데 ChannelLife 가 안 끊겼다");
+        Check(srv.HealthOf(a) >= 1 && srv.IsAlive(a), "ChannelLife 가 시전자를 죽였다(체력 1 이하면 멈춰야 한다)");
+    }
+
+    // ⑤ 소환수를 대상으로 걸 때 — 그 소환수가 **건 자리(시전자가 서 있던 곳)** 에서 5 넘게 떨어져 있으면 곧바로 끊긴다
+    //   ⚠ 정답지 sub_4FEA70 은 「대상과 **시전 자리**」를 견준다(대상과 시전자가 아니다) — 소환수 대상은 목줄이 짧다
+    //   ⚠ 판 짜기 함정 둘을 밟고 고친 자리다:
+    //     ⑴ 300 을 띄웠더니 **커서가 임프를 못 집어** 주문이 아예 안 붙었다 — 원본도 돌연변이도 그냥 통과(헛통과)
+    //     ⑵ 60 에서 **남의 임프**를 쓰면 걸어와 때려서 체력이 깎인다 → 그걸 ChannelLife 탓으로 오독한다
+    //   그래서 **제 임프**(주인은 안 때린다)를 60 띄워 쓰고, 임프가 시전 자리로 다가오기 전에 재려고 틱을 짧게 본다
+    {
+        const std::string c = "10.8.0.3:8003";
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        // ⚠⚠ **임프 몸을 먼저 등록해야 커서가 집는다** — FindObjectAtCursor 는 몸을 모르는 종류를 건너뛴다(지어내지 않는다).
+        //   이걸 빼먹어 대상이 none 으로 붙었고, 그 바람에 「목줄 검사를 지운」 돌연변이가 세 판이나 안 걸렸다(원본도 돌연변이도 대상 없음으로 취소)
+        nox::Server::PhysBody impBody;
+        impBody.shape = 2; impBody.r = 10.0f; impBody.cls = 0x2; impBody.mass = 10.0f;
+        srv.SetTypeBody(1328, impBody);
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(c, 3000, 3000);
+        SummonImp(srv, c, out);                              // ⚠ **남의** 임프라야 한다 — 제 소환수는 커서 친구 거르기에 걸려 대상이 안 잡힌다
+        double px = 0, py = 0;
+        Check(srv.DebugPetXY(0, px, py), "임프가 안 불려 나왔다(시험 전제)");
+        uint32_t ms = srv.DebugNowMs();
+        srv.DebugMoveTo(a, static_cast<int>(px) - 60, static_cast<int>(py));   // 60 — 더 띄우면 커서가 임프를 못 집어 주문이 아예 안 붙는다
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, static_cast<int>(px), static_cast<int>(py));
+        CastAndWait(srv, a, 8, false, ms, out);
+        for (int t = 0; t < 2; ++t) { ms += 34; srv.Tick(ms, out); }
+        // ⚠ 체력으로는 못 가른다 — **남의 임프가 걸어와 때리기** 때문이다(그걸 ChannelLife 탓으로 오독했던 자리)
+        // ⚠⚠ **알려진 구멍(09-14)** — 이 갈래는 「목줄 검사를 지운」 돌연변이(CL10)를 **아직 못 잡는다**. 네 판을 고쳐 봤고
+        //   몸 등록 빠짐·제 소환수 친구 거르기·거리 300 에서 대상 못 집음은 전부 걷어냈는데도 원본·돌연변이가 같이 끊긴다.
+        //   즉 **이 검사가 아니라 다른 이유로 끊기고 있다** — 소환수 대상 지속주문을 더 볼 때(4-f 소환) 다시 판다
+        Check(!srv.DebugDurActive(8, a), "소환수가 건 자리에서 5 넘게 떨어졌는데 ChannelLife 가 안 끊겼다");
+    }
+    std::printf("  4-b5b(1) — ChannelLife 생명→마나(0.5/틱 이월) · 대상 마나 가득/달리기/체력 1 이하/소환수 목줄 5 면 끊김\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -7199,6 +7316,7 @@ int main() {
     TestGameServerReady();
     TestReportFramework();
     TestHealSpells();
+    TestChannelLife();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

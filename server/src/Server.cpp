@@ -4519,6 +4519,13 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 33: fnc = CastFumble(targ); break;                                               // nox_xxx_castFumble_52C060
             case 38: fnc = CastInversion(s, obj3); break;                                         // sub_52BEB0
             case 14: fnc = CastCurePoison(spell, s, targ, fl5, out); break;                       // nox_xxx_castCurePoison_52CDB0
+            case 8: {                                                                          // ChannelLife — 지속(빔 없음)
+                // ⚠ 지속 갈래는 **레벨을 안 자른다**(정답지는 New 를 lvl>5 자르기 **앞**에서 돌려준다) — fl5 가 아니라 lvl
+                DurFns f;
+                f.update = &Server::DurChannelLife;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
+                break;
+            }
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
             case 68: case 133: fnc = CastRestoreHealth(targ, out); break;                         // castSpellWinkORrestoreHealth_52BF20 RestoreHealth·Wink
             case 69: fnc = CastRestoreMana(targ); break;                                          // sub_52BF50 RestoreMana
@@ -4653,6 +4660,79 @@ int Server::CastRestoreMana(const Target& targ) {
         if (it != sessions_.end() && it->second.inGame) PlayerManaAdd(it->second, it->second.maxMana);
     }
     return 1;                                              // 대상이 있으면(사람 아니어도) 받아들인 것
+}
+
+// ── 묶음 4-b5b 지속 회복·흡수 — 대상 값 읽기 ──
+// unitGetOldMana_4EEC80(`GAME3_3.c:7532`) — 이름과 달리 **지금** 마나(+748+4)다. 사람 아니면: 주인 있는 소환수 1000 · 그 밖 0
+int Server::TargetManaCur(const Target& t) const {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        return (it != sessions_.end() && it->second.inGame) ? static_cast<int>(it->second.mana) : 0;
+    }
+    return (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size() && !pets_[static_cast<size_t>(t.pet)].owner.empty()) ? 1000 : 0;
+}
+// playerGetMaxMana_4EECB0(`:7550`) — 사람만, 아니면 0
+int Server::TargetManaMax(const Target& t) const {
+    if (t.addr.empty()) return 0;
+    auto it = sessions_.find(t.addr);
+    return (it != sessions_.end() && it->second.inGame) ? static_cast<int>(it->second.maxMana) : 0;
+}
+// unitGetHP_4EE780
+int Server::TargetHealth(const Target& t) const {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        return (it != sessions_.end() && it->second.inGame) ? static_cast<int>(it->second.health) : 0;
+    }
+    return (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) ? static_cast<int>(pets_[static_cast<size_t>(t.pet)].health) : 0;
+}
+// sub_4FEA70(`GAME4.c:3352`) — x·y 어느 한쪽이라도 5 이상 떨어졌나
+bool Server::TargetMovedFrom(const Target& t, float x, float y) const {
+    float tx = 0, ty = 0;
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        if (it == sessions_.end()) return true;
+        tx = static_cast<float>(it->second.posX); ty = static_cast<float>(it->second.posY);
+    } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+        tx = static_cast<float>(pets_[static_cast<size_t>(t.pet)].x); ty = static_cast<float>(pets_[static_cast<size_t>(t.pet)].y);
+    } else {
+        return true;
+    }
+    return std::fabs(x - tx) >= 5.0f || std::fabs(y - ty) >= 5.0f;
+}
+
+// sub_52F460(`GAME4_2.c:11444`) ChannelLife — **시전자의 생명을 대상의 마나로 옮긴다**(빔 없음 — 이 주문은 netStartDurationRaySpell 갈래에 없다)
+//   대상(+48) 없음·죽음/지워짐 → 취소 · 글리프(+20)면 대상 마나 +20 · 대상 피해 20 하고 한 방에 끝
+//   시전자 달리기(8) → 취소 · 대상이 소환수고 건 자리에서 5 넘게 움직임 → 취소 · **대상 마나가 최대면 취소**
+//   시전자 체력 > 1 이면: ChannelLifeCoeff[세기−1] 을 소수 이월(+72)로 쌓아 대상 마나에 붓고 **시전자는 1 깎인다** · 아니면 취소
+int Server::DurChannelLife(DurSpell& d, std::vector<OutPacket>& out) {
+    if (!BuffsOf(d.target)) return 1;                       // +48 없음
+    if (!d.target.addr.empty()) {
+        auto it = sessions_.find(d.target.addr);
+        if (it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0) return 1;   // DEAD|DESTROYED(0x8020)
+    }
+    if (d.flag20) {                                         // 글리프가 건 것 — 한 방(대상이 제 생명을 제 마나로)
+        if (!d.target.addr.empty()) {
+            auto it = sessions_.find(d.target.addr);
+            if (it != sessions_.end()) PlayerManaAdd(it->second, 20);
+        }
+        Damage(d.target.addr, 20, out, std::string(), nullptr, /*ignoreInvuln=*/true);   // unitDamageClear
+        return 1;
+    }
+    const Buffs* cb = BuffsOf(Target{ d.caster, -1 });
+    if (cb && cb->Has(8)) return 1;                         // 시전자 달리기 — 채널 끊김
+    if (d.target.addr.empty() && TargetMovedFrom(d.target, d.posX, d.posY)) return 1;   // 소환수 대상이 자리를 떴다
+    if (TargetManaMax(d.target) == TargetManaCur(d.target)) return 1;                   // 대상 마나가 가득 — 더 줄 것이 없다
+    if (TargetHealth(Target{ d.caster, -1 }) <= 1) return 1;                            // 시전자가 더 못 버틴다
+    const float coeff = static_cast<float>(BalanceFloatInd("ChannelLifeCoeff", d.level - 1));
+    const float v = d.field72 + coeff;
+    const int give = static_cast<int>(v);                   // nox_float2int
+    d.field72 = v - static_cast<float>(give);               // 소수 이월
+    if (!d.target.addr.empty()) {
+        auto it = sessions_.find(d.target.addr);
+        if (it != sessions_.end()) PlayerManaAdd(it->second, give);
+    }
+    Damage(d.caster, 1, out, std::string(), nullptr, /*ignoreInvuln=*/true);            // unitDamageClear(시전자, 1)
+    return 0;                                               // 이어 간다
 }
 
 // changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)

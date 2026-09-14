@@ -1785,7 +1785,7 @@ private:
         uint32_t frame60 = 0;            // +60 만든 프레임
         uint32_t frame64 = 0;            // +64
         uint32_t frame68 = 0;            // +68 끝 프레임(dt + 만든 프레임 · dt 0 이면 60 과 같아 끝이 없다)
-        int32_t field72 = 0;             // +72
+        float field72 = 0.0f;            // +72 소수 이월(회복·흡수 계수가 0.5 같은 소수라 틱마다 남는 몫을 쌓는다)
         uint32_t field80 = 0, field84 = 0;
         uint32_t flags88 = 0;            // +88 1 = 취소됨(다음 차례에 지운다)
         DurFns fns;
@@ -1804,6 +1804,12 @@ private:
     const DurSpell* DurFindByTarget(uint8_t spell, const Target& target) const;                         // sub_4FF2D0
     void NetStopRaySpell(const DurSpell& d, const Target& who, std::vector<OutPacket>& out);            // NetStopRaySpell
     void SpellCastByPlayer(uint32_t frame, std::vector<OutPacket>& out);                                // spellCastByPlayer(틱)
+    // ── 묶음 4-b5b 지속 회복·흡수 ──
+    int DurChannelLife(DurSpell& d, std::vector<OutPacket>& out);                                       // sub_52F460
+    int TargetManaCur(const Target& t) const;                                                            // unitGetOldMana_4EEC80(이름과 달리 **지금** 마나 · 소환수 1000)
+    int TargetManaMax(const Target& t) const;                                                            // playerGetMaxMana_4EECB0(사람만 · 아니면 0)
+    int TargetHealth(const Target& t) const;                                                             // unitGetHP_4EE780
+    bool TargetMovedFrom(const Target& t, float x, float y) const;                                       // sub_4FEA70 — x·y 어느 쪽이든 5 이상 움직였나
     // ── 묶음 4-a4 버프 틀 ──
     Buffs* BuffsOf(const Target& t);
     const Buffs* BuffsOf(const Target& t) const;
