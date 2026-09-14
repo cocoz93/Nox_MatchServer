@@ -1759,6 +1759,10 @@ private:
     int CastFumble(const Target& targ);                                                              // 52C060
     int CastInversion(const Session& a4, const std::string& obj3);                                  // 52BEB0
     int CastCurePoison(uint8_t spell, Session& a2, const Target& targ, int lvl, std::vector<OutPacket>& out);   // 52CDB0
+    // ── 묶음 4-b5a 즉발 회복 ──
+    int CastLesserHeal(uint8_t spell, Session& caster, const Target& targ, std::vector<OutPacket>& out);         // sub_52DD50
+    int CastRestoreHealth(const Target& targ, std::vector<OutPacket>& out);                                       // castSpellWinkORrestoreHealth_52BF20
+    int CastRestoreMana(const Target& targ);                                                                      // sub_52BF50
 
     // ── 묶음 4-a3 지속 주문 틀(server/spells_dur.go · spells_dur.go) ──
     struct DurSpell;

@@ -4988,6 +4988,122 @@ void TestReportFramework() {
     std::printf("  갱신 알림 정답지화 — 42 보는 사람별·2틱·음수만·합침·소환수 · 43 바뀔 때만 · 45 다음 틱·겹침 지움·워리어 없음 · +2184 dd/de/48 · 부활 기록\n");
 }
 
+// ── 묶음 4-b5a — 즉발 회복(LesserHeal · RestoreHealth · Wink · RestoreMana) ──────────────
+//
+// 정답지: spells.go:288(41 LesserHeal)·334(68 RestoreHealth·133 Wink)·337(69 RestoreMana)
+//   GAME4_2.c:10369(52DD50) · 9307(52BF20) · 9320(52BF50)
+void TestHealSpells() {
+    const std::string a = "10.7.0.1:7001";
+    // LesserHealAmount 0.25 → 위저드 75 × 0.25 = 18.75 → 버림 18
+    auto mk = [&](nox::Server& srv, uint8_t spell) {
+        nox::Gamedata g;
+        g.Parse("LesserHealAmount = 0.25;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });    // 어느 직업이나 · 음소 둘(9틱)
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+    };
+    const int full = nox::HealthOnline(nox::CharClass::Wizard);   // 75
+
+    // ① LesserHeal 자기 — 다친 뒤 18 회복(LesserHealAmount × 직업 최대체력, 버림)
+    {
+        nox::Server srv; mk(srv, 41);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(a, 40, out);                              // 75 → 35
+        Check(srv.HealthOf(a) == full - 40, "다침 전제(35)가 아니다");
+        CastAndWait(srv, a, 41, true, ms, out);
+        Check(srv.HealthOf(a) == full - 40 + 18, "LesserHeal 이 18(0.25×75 버림) 안 채웠다");
+    }
+
+    // ② LesserHeal 자기 · 최대 체력 — 마나를 되돌려 공짜(cast 에서 뗀 마나가 다시 참)
+    {
+        nox::Server srv; mk(srv, 41);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const uint16_t manaFull = srv.ManaOf(a);
+        Check(srv.HealthOf(a) == full, "시작이 최대 체력이 아니다(전제)");
+        CastAndWait(srv, a, 41, true, ms, out);
+        Check(srv.HealthOf(a) == full, "최대인데 LesserHeal 이 체력을 바꿨다");
+        Check(srv.ManaOf(a) == manaFull, "최대 체력 자기 LesserHeal 이 마나를 안 되돌렸다(공짜여야 한다)");
+    }
+
+    // ③ RestoreHealth 자기 — 다친 뒤 가득
+    {
+        nox::Server srv; mk(srv, 68);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(a, 40, out);
+        Check(srv.HealthOf(a) == full - 40, "다침 전제가 아니다");
+        CastAndWait(srv, a, 68, true, ms, out);
+        Check(srv.HealthOf(a) == full, "RestoreHealth 가 최대로 안 채웠다");
+    }
+
+    // ③b Wink(133) — 회복 함수를 RestoreHealth 와 공유(순간이동은 안 딸림)
+    {
+        nox::Server srv; mk(srv, 133);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(a, 40, out);
+        CastAndWait(srv, a, 133, true, ms, out);
+        Check(srv.HealthOf(a) == full, "Wink 가 최대로 안 채웠다(회복 몫)");
+    }
+
+    // ④ RestoreMana 자기 — 마나 쓴 뒤 가득
+    {
+        nox::Server srv; mk(srv, 69);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const uint16_t manaFull = srv.ManaOf(a);
+        srv.DebugManaSub(a, 60);                             // 마나 씀
+        Check(srv.ManaOf(a) < manaFull, "마나가 안 줄었다(전제)");
+        CastAndWait(srv, a, 69, true, ms, out);
+        Check(srv.ManaOf(a) == manaFull, "RestoreMana 가 최대 마나로 안 채웠다");
+    }
+
+    // ⑤ 대상 없는 커서 빈 곳 — 세 회복 주문 다 받아들이지 않음(fnc 0). SpellAccept 가 false 면 시전 틀이 **마나를 되돌린다**(CastSpellByUser 실패 갈래)
+    //   ★ 체력만 보면 「대상 없음 → 1」 돌연변이를 못 잡는다(둘 다 효과 0) — **마나가 되돌아왔나**로 가른다 · 41·68·69 각각
+    for (uint8_t heal : { static_cast<uint8_t>(41), static_cast<uint8_t>(68), static_cast<uint8_t>(69) }) {
+        nox::Server srv; mk(srv, heal);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(a, 40, out);
+        srv.DebugManaSub(a, 5);                              // 마나를 조금 써 둔다 — RestoreMana(69)도 「채웠나」와 「되돌렸나」가 안 겹치게
+        const uint16_t manaBefore = srv.ManaOf(a);
+        srv.DebugAimAt(a, 4000, 4000);                       // 빈 곳
+        CastAndWait(srv, a, heal, false, ms, out);
+        char msg[96];
+        std::snprintf(msg, sizeof(msg), "대상 없는 회복 주문 %u 이 마나를 안 되돌렸다(SpellAccept 0 → 시전 틀이 되돌림)", heal);
+        Check(srv.ManaOf(a) == manaBefore, msg);
+        Check(srv.HealthOf(a) == full - 40, "대상 없는 회복 주문이 체력을 채웠다(효과가 0 이어야 한다)");
+    }
+
+    // ⑥ LesserHeal 을 **자기가 아닌** 최대 체력 대상에게 — 마나는 안 되돌아온다(되돌림은 「자기+최대」 갈래만)
+    {
+        const std::string b = "10.7.0.2:7002";
+        nox::Server srv;
+        nox::Gamedata g; g.Parse("LesserHealAmount = 0.25;\n"); srv.SetGamedata(g);
+        srv.SetSpellDef(41, 10, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(b, 1100, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const uint16_t manaFull = srv.ManaOf(a);
+        srv.DebugAimAt(a, 1100, 1000);                       // b 를 겨눔(자기 아님)
+        CastAndWait(srv, a, 41, false, ms, out);
+        Check(srv.HealthOf(b) == full, "b 가 최대 체력이 아니다(전제)");
+        Check(srv.ManaOf(a) == manaFull - 10, "자기가 아닌 최대 체력 대상 LesserHeal 인데 마나가 되돌아왔다(자기검사 빠짐)");
+    }
+    std::printf("  4-b5a — LesserHeal 18(0.25×75)·자기 최대 마나 되돌림·남에게는 안 되돌림 · RestoreHealth·Wink 가득 · RestoreMana 가득 · 대상 없음 마나 되돌림\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -7082,6 +7198,7 @@ int main() {
     TestDebuffSpells();
     TestGameServerReady();
     TestReportFramework();
+    TestHealSpells();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

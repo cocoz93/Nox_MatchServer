@@ -4519,6 +4519,9 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 33: fnc = CastFumble(targ); break;                                               // nox_xxx_castFumble_52C060
             case 38: fnc = CastInversion(s, obj3); break;                                         // sub_52BEB0
             case 14: fnc = CastCurePoison(spell, s, targ, fl5, out); break;                       // nox_xxx_castCurePoison_52CDB0
+            case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
+            case 68: case 133: fnc = CastRestoreHealth(targ, out); break;                         // castSpellWinkORrestoreHealth_52BF20 RestoreHealth·Wink
+            case 69: fnc = CastRestoreMana(targ); break;                                          // sub_52BF50 RestoreMana
             default: break;
         }
     }
@@ -4604,6 +4607,50 @@ int Server::CastCurePoison(uint8_t spell, Session& a2, const Target& targ, int l
     if (targ.addr != a2.addr) return 1;                     // 소리 → 10
     SpellManaGive(a2, spellDefs_[spell].mana, out);          // sub_4FD030(대상, ManaCost(주문, 1))
     return 1;
+}
+
+// ── 묶음 4-b5a 즉발 회복 (spells.go:288~337 · fnc(spellID, obj12, obj3, obj4, &sa, lvl)) ──
+//
+// sub_52DD50(`GAME4_2.c:10369`) LesserHeal — 대상 없으면 0 · 대상 최대HP && 자기(obj12==대상)면 마나 되돌림(공짜) ·
+//   아니면 LesserHealAmount(gamedata) × 시전자 직업 최대체력 만큼 회복 · 소리 aud44(spell,1)
+//   ⚠ 직접 시전은 obj12==obj3==시전자라 「자기」 검사 = 대상 == 시전자. 남에게 거는 것은 겨눔(0x4)이라 날아가는 것이 되어 맞을 때 SpellAccept(4-a2)
+//   ⚠ nox_float2int 을 **버림**((int))으로 둔다 — 이 리포 관례(Server.cpp 피해 계산). 정품 값과 1 차이면 반올림으로 바꿀 것(화면 ④ 때 대조)
+int Server::CastLesserHeal(uint8_t spell, Session& caster, const Target& targ, std::vector<OutPacket>& out) {
+    if (!BuffsOf(targ)) return 0;                          // *a5 == 0 — 대상 없음
+    bool atMax = false;
+    if (!targ.addr.empty()) {
+        auto it = sessions_.find(targ.addr);
+        atMax = (it != sessions_.end() && it->second.health >= it->second.maxHealth);
+    } else if (targ.pet >= 0 && static_cast<size_t>(targ.pet) < pets_.size()) {
+        const Creature& k = pets_[static_cast<size_t>(targ.pet)];
+        atMax = static_cast<int>(k.health) >= TuningFor(k.type).health;
+    }
+    if (atMax && targ.addr == caster.addr) {               // 최대 체력 && obj12(자기) == 대상 → 마나 되돌림
+        SpellManaGive(caster, spellDefs_[spell].mana, out);   // sub_4FD030(a3, ManaCost(spell, 1))
+        return 1;
+    }
+    double amount = BalanceFloat("LesserHealAmount");       // ARENA LesserHealAmount
+    amount *= static_cast<double>(HealthOnline(caster.charClass));   // 시전자 직업 최대 체력(사람 시전 기준)
+    UnitAdjustHP(targ, static_cast<int>(amount), out);     // unitAdjustHP(최대 아래일 때만·최대에서 자름) · 알림은 갱신 틱(PlayerReportAnything)
+    return 1;
+}
+
+// castSpellWinkORrestoreHealth_52BF20 RestoreHealth·Wink — 대상 없으면 0 · 있으면 최대 체력으로(unitHPsetOnMax) · 소리 754
+//   ⚠ Wink 는 정답지에서 이 함수(회복)뿐 — 순간이동 안 딸림
+int Server::CastRestoreHealth(const Target& targ, std::vector<OutPacket>& out) {
+    if (!BuffsOf(targ)) return 0;
+    UnitAdjustHP(targ, 999999, out);                       // 최대에서 잘려 가득 채움 · 이미 최대면 아무 일 없음(알림 없음)
+    return 1;
+}
+
+// sub_52BF50 RestoreMana — 대상 없으면 0 · 대상이 사람이면 최대 마나만큼 더함(playerManaAdd·최대에서 자름) · 소리 755
+int Server::CastRestoreMana(const Target& targ) {
+    if (!BuffsOf(targ)) return 0;
+    if (!targ.addr.empty()) {                              // 소환수는 마나 없음 — 사람만
+        auto it = sessions_.find(targ.addr);
+        if (it != sessions_.end() && it->second.inGame) PlayerManaAdd(it->second, it->second.maxMana);
+    }
+    return 1;                                              // 대상이 있으면(사람 아니어도) 받아들인 것
 }
 
 // changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)
@@ -6330,10 +6377,17 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (inGameCount() >= 2) s.pendingIntro = true;
             // 스냅샷 꼬리에 방어값 `49` 가 들어 있다 — 그것이 첫 playerReportAnything 몫이다(+232 = +228).
             //   녹음 서두는 위저드 녹음이라 그 값(0x3e6b8520)이다
-            s.armorReported = ArmorValueFloat(firstSnapshot_.empty() ? s.charClass : CharClass::Wizard);
-            // +2184·+10 도 같은 자리 — 꼬리의 dd·de·48(#21) 과 43(#22) 이 첫 playerReportAnything 몫이다
+            // +2184·+10·+6 도 같은 자리 — 꼬리의 dd·de·48(#21) 과 43(#22) 이 첫 playerReportAnything 몫이다.
+            // ★★ **「내가 무엇을 알렸나」를 적어야지 「지금 값」을 적으면 안 된다.**
+            //   꼬리는 `dd`·`43` 에 **직업 최대치**(HealthOnline)를 싣는다 — 정품은 접속 때 늘 가득이라 둘이 같지만,
+            //   `--start-health` 처럼 서버 값이 다르면 어긋난다. 「지금 값」을 적어 두면 PlayerReportAnything 이
+            //   「안 바뀌었다」고 보고 **영영 `43` 을 안 보낸다** → 클라 체력바가 가득인 채로 굳는다
+            //   (2026-09-14 b5a_heal 화면에서 잡음 — 전에는 HUD 5회 되풀이가 이걸 덮어 가리고 있었다).
+            const CharClass tailCls = firstSnapshot_.empty() ? s.charClass : CharClass::Wizard;
+            s.armorReported = ArmorValueFloat(tailCls);
             s.statsDirty = false;
-            s.healthReported = s.health;
+            s.healthReported = static_cast<uint16_t>(HealthOnline(tailCls));   // 꼬리가 실은 값
+            s.manaPrev      = static_cast<uint16_t>(ManaOnline(tailCls));      // 꼬리 `de`/`45` 가 실은 값
             continue;
         }
 
