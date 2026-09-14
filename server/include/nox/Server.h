@@ -930,6 +930,9 @@ public:
         // ★ 묶음 5-b — `SUBCLASS` 의 먹을거리 갈래 비트(`FoodClassBits`).
         //   물약이 무엇을 하는지가 여기 있다 — 체력·마나·독 해제·버프 여덟·방패.
         uint32_t foodBits = 0;
+        // ★ 묶음 5-c — **줍는 순간 부르는 함수가 물약 갈래인가**(`PICKUP = PotionPickup`).
+        //   참이면 줍는 그 자리에서 마실 수 있고, 마셨으면 가방에 안 들어간다.
+        bool potionPickup = false;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
 
@@ -1489,6 +1492,9 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.health;
     }
+    // 묶음 5-c — 그 직업이 이 먹을거리를 쓸 수 있나(`sub_57B370` 의 먹을거리 갈래).
+    //   셈만 하는 순수 함수라 시험이 셈 자체를 들여다본다.
+    static bool ClassCanUseFood(CharClass cls, uint32_t foodBits);
     uint16_t MaxHealthOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.maxHealth;
@@ -1647,6 +1653,8 @@ public:
     unsigned long long pickNoCap() const { return pickNoCap_; }
     unsigned long long pickTooHeavy() const { return pickTooHeavy_; }
     unsigned long long pickTooMany() const { return pickTooMany_; }
+    unsigned long long pickClassFail() const { return pickClassFail_; }
+    unsigned long long drankOnPickup() const { return drankOnPickup_; }
     unsigned long long dropped() const { return dropped_; }
 
     // ★ 묶음 5 — 그 사람의 **들 무게 밑천**(`+490`). 한도는 이 값의 **두 배**다.
@@ -2114,6 +2122,8 @@ private:
     void RemovePoison(const Target& t, std::vector<OutPacket>& out);                                     // removePoison_4EE9D0
     // 묶음 5-b — 가방에서 물약 쓰기(`usePotion_53EF70`). 하나라도 걸렸으면 참(= 물약이 없어진다)
     bool UsePotion(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);
+    // 묶음 5-c — 줍는 순간(`pickupPotion_4F37D0`). −1 못 줍는다 · 0 그냥 가방 · 1 그 자리에서 마셨다
+    int PickupPotion(Session& s, const WorldStatic& w, std::vector<OutPacket>& out);
     void PoisonTick(std::vector<OutPacket>& out);                                                        // server.go:175~201 감쇠 + 피해
     int CastPoison(const std::string& obj3, const Target& targ, int lvl, std::vector<OutPacket>& out);   // castPoison_52C720
     Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기
@@ -2350,6 +2360,8 @@ private:
     unsigned long long pickNoCap_ = 0;          // 묶음 5 — 들 밑천이 0 이라 못 집은 것
     unsigned long long pickTooHeavy_ = 0;       // 묶음 5 — 무게 한도를 넘겨 못 집은 것
     unsigned long long pickTooMany_ = 0;        // 묶음 5 — 같은 먹을거리를 너무 많이 들어 못 집은 것
+    unsigned long long pickClassFail_ = 0;      // 묶음 5-c — 직업이 못 쓰는 것이라 못 집은 것
+    unsigned long long drankOnPickup_ = 0;      // 묶음 5-c — 줍는 그 자리에서 마신 것
     unsigned long long dropped_ = 0;            // 클라가 되돌려 도로 떨군 것
     unsigned long long used_ = 0;               // 실제로 효과가 난 쓰기
     unsigned long long useUnknown_ = 0;         // 갈래를 몰라 아무 일도 안 난 쓰기

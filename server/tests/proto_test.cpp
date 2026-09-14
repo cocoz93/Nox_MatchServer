@@ -8372,6 +8372,199 @@ void TestUsePotion() {
     std::printf("  5-b — 물약: 가득이면 안 마심 · 독 있을 때만 해독 · 버프 여덟(120초·세기 3) · 겹치면 다 적용 · 갈래 없으면 그대로 · 죽으면 못 씀 · 방패는 주문 51 · 되돌아온 것도 제 갈래 · SUBCLASS 표\n");
 }
 
+// ── 묶음 5-c — 줍는 순간 마시기(`pickupPotion_4F37D0`) ──────────────────
+//
+// `PICKUP = PotionPickup` 인 물건만 이 길로 온다(thing.bin 실측 38종).
+//   ① 직업이 못 쓰는 것이면 **아예 못 줍는다** — `pickup.c:ObjectEquipClassFail`
+//   ② 마실 수 있으면 **그 자리에서 마시고 없어진다**(가방에 안 들어간다)
+//   ③ 못 마시면 그냥 가방으로
+//
+// ★★ **문턱이 가방에서 쓸 때와 다르다.**
+//     가방(5-b) — `지금 < 최대`         모자라기만 하면 마신다
+//     줍기(5-c) — `회복량 + 지금 < 최대` **넘칠 것 같으면 안 마시고 가방으로**
+//   아까운 물약을 버리지 않게 하는 규칙이다.
+//
+// ★ 직업 검사는 표가 아니라 셈이다 — `허용 = ~(SUBCLASS >> 5) | 0xFE`.
+//   `>> 5` 의 맨 아랫비트가 MANA_POTION 이라 **뜻은 「워리어는 마나 물약을 못 든다」** 하나다.
+void TestPickupPotion() {
+    const std::string a = "10.5.3.1:5301";
+    uint16_t nextNc = 500;
+    auto put = [&](nox::Server& srv, uint32_t bits, int amount, bool potionPickup) {
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = nextNc; w.type = 638; w.x = 1000; w.y = 1000;
+        w.weight = 5; w.isFood = true; w.foodBits = bits; w.useAmount = amount;
+        w.potionPickup = potionPickup;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        return nextNc++;
+    };
+    auto get = [&](nox::Server& srv, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nc);
+        srv.OnPacket(a, g.data(), g.size(), out);
+    };
+    auto mk = [&](nox::Server& srv, nox::CharClass cls = nox::CharClass::Wizard) {
+        srv.DebugEnterGame(a, 728, false, cls);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+
+    // ① **넘칠 것 같으면 안 마시고 가방으로** — 5-b 와 갈리는 바로 그 자리
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 10, out);                              // 위저드 75 → 65. 50 을 더하면 115 > 75
+        const uint16_t h0 = srv.HealthOf(a);
+        const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, true);
+        get(srv, red, out);
+        Check(srv.HealthOf(a) == h0, "넘치는데 줍는 순간 마셨다");
+        Check(srv.CarriedCount(a) == 1, "못 마셨으면 가방에 들어가야 한다");
+        Check(srv.drankOnPickup() == 0, "안 마셨는데 마신 것으로 셌다");
+    }
+
+    // ② **넉넉히 모자라면 그 자리에서 마시고 없어진다** — 가방에 안 들어간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 60, out);                              // 75 → 15. 50 을 더해도 65 < 75
+        const uint16_t h0 = srv.HealthOf(a);
+        const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, true);
+        get(srv, red, out);
+        Check(srv.HealthOf(a) == h0 + 50, "줍는 순간 50 을 안 채웠다");
+        Check(srv.CarriedCount(a) == 0, "마셨는데 가방에도 들어갔다");
+        Check(srv.WorldStaticCount() == 0, "마셨는데 바닥에 남았다");
+        Check(srv.drankOnPickup() == 1, "그 자리에서 마신 횟수가 안 올랐다");
+    }
+
+    // ③ **`PICKUP` 이 물약 갈래가 아니면 그냥 가방으로** — 갈래 비트가 같아도
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 60, out);
+        const uint16_t h0 = srv.HealthOf(a);
+        const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, /*potionPickup=*/false);
+        get(srv, red, out);
+        Check(srv.HealthOf(a) == h0, "PotionPickup 이 아닌데 줍는 순간 마셨다");
+        Check(srv.CarriedCount(a) == 1, "가방에 안 들어갔다");
+    }
+
+    // ④ **워리어는 마나 물약을 못 든다** — 셈 `~(SUBCLASS>>5)|0xFE` 의 유일한 뜻
+    {
+        nox::Server srv; mk(srv, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        const uint16_t blue = put(srv, nox::kFoodPotion | nox::kFoodManaPotion, 50, true);
+        get(srv, blue, out);
+        Check(srv.CarriedCount(a) == 0, "워리어가 마나 물약을 들었다");
+        Check(srv.WorldStaticCount() == 1, "못 드는데 바닥에서 없어졌다");
+        Check(HasPriMsg(out, a, "pickup.c:ObjectEquipClassFail"), "직업이 못 쓰는데 글이 안 왔다");
+        Check(srv.pickClassFail() == 1, "직업으로 막은 횟수가 안 올랐다");
+    }
+
+    // ⑤ **위저드·컨저러는 마나 물약을 든다** · 워리어도 **체력 물약은 든다**
+    {
+        nox::Server srv; mk(srv, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, true);
+        get(srv, red, out);
+        Check(srv.CarriedCount(a) == 1, "워리어가 체력 물약도 못 들었다");
+    }
+    {
+        nox::Server srv;
+        const std::string cj = "10.5.3.2:5302";
+        srv.DebugEnterGame(cj, 729, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(cj, 1000, 1000);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 590; w.type = 638; w.x = 1000; w.y = 1000;
+        w.weight = 5; w.isFood = true;
+        w.foodBits = nox::kFoodPotion | nox::kFoodManaPotion;
+        w.useAmount = 50; w.potionPickup = true;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 590);
+        srv.OnPacket(cj, g.data(), g.size(), out);
+        // 컨저러 마나 125 가 가득이라 못 마시고 가방으로 간다
+        Check(srv.CarriedCount(cj) == 1, "컨저러가 마나 물약을 못 들었다");
+    }
+
+    // ⑥ **직업 셈 자체** — 마나 물약만 워리어가 막힌다
+    {
+        Check(!nox::Server::ClassCanUseFood(nox::CharClass::Warrior,
+                  nox::kFoodPotion | nox::kFoodManaPotion), "워리어가 마나 물약을 쓸 수 있다고 나온다");
+        Check(nox::Server::ClassCanUseFood(nox::CharClass::Wizard,
+                  nox::kFoodPotion | nox::kFoodManaPotion), "위저드가 마나 물약을 못 쓴다고 나온다");
+        Check(nox::Server::ClassCanUseFood(nox::CharClass::Conjurer,
+                  nox::kFoodPotion | nox::kFoodManaPotion), "컨저러가 마나 물약을 못 쓴다고 나온다");
+        Check(nox::Server::ClassCanUseFood(nox::CharClass::Warrior,
+                  nox::kFoodPotion | nox::kFoodHealthPotion), "워리어가 체력 물약을 못 쓴다고 나온다");
+        Check(nox::Server::ClassCanUseFood(nox::CharClass::Warrior, 0), "갈래 없는 것도 못 쓴다고 나온다");
+    }
+
+    // ⑦ **독 해제는 줍는 순간에도 먹힌다** — 독이 있으면 바로 풀고 물약이 사라진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugPoisonPlayer(a, 5);
+        Check(srv.DebugPoisonOf(a) == 5, "독을 못 얹었다(이 시험의 전제)");
+        const uint16_t cure = put(srv, nox::kFoodPotion | nox::kFoodCurePoisonPotion, 0, true);
+        get(srv, cure, out);
+        Check(srv.DebugPoisonOf(a) == 0, "줍는 순간 독이 안 풀렸다");
+        Check(srv.CarriedCount(a) == 0, "독을 풀었는데 가방에도 들어갔다");
+    }
+    // 독이 없으면 그냥 가방으로
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        const uint16_t cure = put(srv, nox::kFoodPotion | nox::kFoodCurePoisonPotion, 0, true);
+        get(srv, cure, out);
+        Check(srv.CarriedCount(a) == 1, "독이 없는데 해독제가 없어졌다");
+    }
+    // ⑧ **딱 최대가 되는 것도 안 마신다** — 경계가 `<` 이지 `<=` 가 아니다
+    //   위저드 75 에서 50 을 깎으면 25. 50 을 더하면 정확히 75 = 최대라 **안 마신다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 50, out);
+        const uint16_t h0 = srv.HealthOf(a);
+        Check(h0 + 50 == srv.MaxHealthOf(a), "딱 맞게 안 다쳤다(이 시험의 전제)");
+        const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, true);
+        get(srv, red, out);
+        Check(srv.HealthOf(a) == h0, "딱 최대가 되는데 마셨다 — 경계가 <= 인가");
+        Check(srv.CarriedCount(a) == 1, "안 마셨으면 가방에 들어가야 한다");
+    }
+
+    // ⑨ **마나 문턱도 같은 꼴** — 넘칠 것 같으면 안 마시고 가방으로
+    {
+        nox::Server srv; mk(srv);                            // 위저드 마나 150
+        std::vector<nox::OutPacket> out;
+        srv.DebugManaAdd(a, -10);                            // 140. 50 을 더하면 190 > 150
+        const uint16_t m0 = srv.ManaOf(a);
+        const uint16_t blue = put(srv, nox::kFoodPotion | nox::kFoodManaPotion, 50, true);
+        get(srv, blue, out);
+        Check(srv.ManaOf(a) == m0, "마나가 넘치는데 줍는 순간 마셨다");
+        Check(srv.CarriedCount(a) == 1, "못 마셨으면 가방에 들어가야 한다");
+        // 넉넉히 모자라면 마신다
+        nox::Server s2; s2.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        s2.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::OutPacket> o2;
+        s2.DebugManaAdd(a, -100);                            // 50. 50 을 더해도 100 < 150
+        const uint16_t m1 = s2.ManaOf(a);
+        std::vector<nox::Server::WorldStatic> st2;
+        nox::Server::WorldStatic w2;
+        w2.netCode = 595; w2.type = 638; w2.x = 1000; w2.y = 1000;
+        w2.weight = 5; w2.isFood = true;
+        w2.foodBits = nox::kFoodPotion | nox::kFoodManaPotion;
+        w2.useAmount = 50; w2.potionPickup = true;
+        st2.push_back(w2);
+        s2.SetWorldStatics(st2);
+        const std::vector<uint8_t> g2 = CodePacket(nox::Op::TRY_GET, 595);
+        s2.OnPacket(a, g2.data(), g2.size(), o2);
+        Check(s2.ManaOf(a) == m1 + 50, "마나가 넉넉히 모자란데 줍는 순간 안 마셨다");
+        Check(s2.CarriedCount(a) == 0, "마셨는데 가방에도 들어갔다");
+    }
+    std::printf("  5-c — 줍는 순간: 넘치면 안 마시고 가방(경계 <) · 모자라면 그 자리에서 마심 · 마나도 같은 꼴 · PotionPickup 만 · 워리어는 마나 물약 못 듦 · 독 있으면 바로 풀림\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -8710,6 +8903,18 @@ void TestThingDb() {
         const nox::ThingInfo* pt = pw ? db.ByWire(pw) : nullptr;
         Check(pt && pt->carryCap == 100,
               "NewPlayer CARRYCAPACITY 가 100 이 아니다 — 파서가 안 읽거나 칸이 바뀌었다");
+        // ★ 묶음 5-c — **줍는 순간 부르는 함수**가 갈래를 가른다(`PICKUP = PotionPickup`).
+        //   물약만 그 자리에서 마실 수 있다 — 사과는 못 마신다.
+        {
+            const uint16_t rp = db.WireByName("RedPotion");
+            const nox::ThingInfo* rt = rp ? db.ByWire(rp) : nullptr;
+            Check(rt && rt->pickupFn == "PotionPickup",
+                  "RedPotion 의 PICKUP 이 PotionPickup 이 아니다 — 파서가 안 읽나");
+            const uint16_t ap = db.WireByName("RedApple");
+            const nox::ThingInfo* at = ap ? db.ByWire(ap) : nullptr;
+            Check(at && at->pickupFn != "PotionPickup",
+                  "RedApple 이 물약 갈래로 읽혔다");
+        }
         struct { const char* nm; int w; } kWeights[] = {
             { "RedApple", 2 }, { "BluePotion", 5 }, { "RedPotion", 8 },
             { "Longsword", 50 }, { "Breastplate", 150 }, { "WarHammer", 200 },
@@ -10519,6 +10724,7 @@ int main() {
     TestSummonSpell();
     TestPickupLimits();
     TestUsePotion();
+    TestPickupPotion();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

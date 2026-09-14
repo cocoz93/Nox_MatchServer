@@ -102,6 +102,13 @@ struct ThingInfo {
     //   ⭕ 사람은 100(= 한도 200) — thing.bin `INIT = PlayerInit` 칸에서 파서로 읽었다.
     //   0 이면 아예 못 든다(`object_pickup.go:23·68`).
     int carryCap = 0;
+    // ★ 묶음 5-c — **주울 때 부르는 함수 이름**(`PICKUP = PotionPickup` 꼴).
+    //   정답지 등록표(`legacy/object_pickup.go:26~49`) 열여섯 — thing.bin 실측 분포는
+    //   DefaultPickup 84 · ArmorPickup 54 · WeaponPickup 50 · **PotionPickup 38** ·
+    //   AudEventPickup 28 · FoodPickup 16 · SpellBookPickup 12 · OblivionPickup 8 ·
+    //   TrapPickup 6 · GoldPickup 6 · AmmoPickup 4 · CrownPickup 2.
+    //   갈래마다 「줍는 순간 무슨 일이 나는가」가 다르다 — 물약은 **그 자리에서 마실 수도** 있다.
+    std::string pickupFn;
     // CLASS 원문 — 필터 설계·진단용. '+' 로 이어진 값 그대로.
     std::string classRaw;
     // SUBCLASS 원문 — 물약이 체력인지 마나인지가 여기 있다(`POTION+HEALTH_POTION`).

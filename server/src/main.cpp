@@ -522,6 +522,8 @@ int main(int argc, char** argv) {
                 w2.isFood = ti->classRaw.find("FOOD") != std::string::npos;
                 // ★ 묶음 5-b — 물약이 무엇을 하는지는 `SUBCLASS` 비트에 있다(`POTION+HEALTH_POTION` 꼴).
                 w2.foodBits = nox::FoodClassBitsOf(ti->subclassRaw);
+                // ★ 묶음 5-c — 줍는 순간 부르는 함수. 물약 갈래만 그 자리에서 마실 수 있다.
+                w2.potionPickup = (ti->pickupFn == "PotionPickup");
                 st.push_back(w2);
             }
             nStat = st.size();

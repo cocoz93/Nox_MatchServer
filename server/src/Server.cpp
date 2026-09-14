@@ -2172,6 +2172,30 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 }
                 if (s.inventory.size() >= kInventoryGuard) { ++handled_; break; }
 
+                // ── 묶음 5-c — 물약은 **줍는 순간이 다르다**(`nox_xxx_pickupPotion_4F37D0`) ──
+                //
+                // `PICKUP = PotionPickup` 인 것만 이 길로 온다(thing.bin 실측 38종).
+                //   ① **직업이 못 쓰는 것이면 아예 못 줍는다** — 글 `pickup.c:ObjectEquipClassFail`
+                //   ② 마실 수 있으면 **그 자리에서 마시고 없어진다**(가방에 안 들어간다)
+                //   ③ 못 마시면 그냥 가방으로 — 아래 5-a 규칙을 그대로 탄다
+                if (w.potionPickup) {
+                    const int r = PickupPotion(s, w, out);
+                    if (r < 0) { ++pickClassFail_; ++handled_; break; }   // 못 줍는다
+                    if (r > 0) {                                          // 그 자리에서 마셨다
+                        {   // 모두에게 — 바닥에서 사라진다
+                            uint8_t msg[3];
+                            msg[0] = static_cast<uint8_t>(Op::DESTROY_OBJECT);
+                            msg[1] = static_cast<uint8_t>(w.netCode);
+                            msg[2] = static_cast<uint8_t>(w.netCode >> 8);
+                            Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);
+                        }
+                        TakeStatic(w.netCode);
+                        ++drankOnPickup_;
+                        ++handled_;
+                        break;
+                    }
+                }
+
                 // ── 묶음 5-a — 줍기 규칙(`nox_xxx_pickupDefault_4F31E0`) ──────────
                 //
                 // ① **들 밑천이 0 이면 아예 못 든다**(`object_pickup.go:23·68`).
@@ -5497,6 +5521,68 @@ int Server::DurTelePopTick(DurSpell& d, std::vector<OutPacket>& out) {
     TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
     return 1;
+}
+
+// ── 묶음 5-c 줍는 순간 마시기 ─────────────────────────────────────────
+//
+// playerClassCanUseItem_57B3D0 + sub_57B370(`object_pickup.go:107~131`) —
+//   **그 직업이 이 물건을 쓸 수 있나.** 먹을거리 갈래는 표가 아니라 **셈**으로 나온다:
+//     `허용 = ~(SUBCLASS >> 5) | 0xFE`  →  `(1 << 직업) & 허용` 이 0 이 아니면 쓸 수 있다
+//   `SUBCLASS >> 5` 의 맨 아랫비트가 **MANA_POTION**(갈래표 다섯째)이다. 그래서
+//     · 마나 물약이면 허용 = 0xFE → 워리어(1 << 0 = 1)만 걸러진다
+//     · 그 밖이면  허용 = 0xFF → 누구나 쓴다
+//   ★ 즉 이 셈 한 줄이 뜻하는 것은 **「워리어는 마나 물약을 못 든다」** 하나다.
+// ⚠ 무기·완드·방어구 갈래는 **수식표**(`Modif`)를 봐야 한다 — 그 표가 아직 없어 안 옮겼다.
+//   여기(`PotionPickup`)로 오는 것은 먹을거리뿐이라 이 조각에서는 걸리지 않는다.
+bool Server::ClassCanUseFood(CharClass cls, uint32_t foodBits) {
+    const uint32_t allow = (~(foodBits >> 5) | 0xFEu) & 0xFFu;
+    return ((1u << static_cast<int>(cls)) & allow) != 0;
+}
+
+// pickupPotion_4F37D0(`object_pickup.go:133~181`) — 물약을 주울 때.
+//   돌려주는 값 — **−1 못 줍는다 · 0 그냥 가방으로 · 1 그 자리에서 마셨다**
+//
+// ★ 가방에서 쓸 때(`UsePotion`)와 **문턱이 다르다**:
+//     가방  — `지금 < 최대`         (모자라기만 하면 마신다)
+//     줍기  — `회복량 + 지금 < 최대` (**넘칠 것 같으면 안 마시고 가방으로 간다**)
+//   아까운 물약을 버리지 않게 하는 규칙이다. 둘을 같게 만들면 가득 차기 직전에
+//   50 짜리를 주워 1 만 채우고 날리게 된다.
+//
+// ⚠ 안 옮긴 것 — 버프 물약 갈래는 **줍기에는 없다**(그냥 가방으로) · 소리는 묶음 10 ·
+//   `CheckXxx`(사람마다 켜지는 비트 `playersXxx`)는 무엇을 뜻하는지 못 짚어 안 옮겼다.
+//   그 비트가 켜지면 줍는 순간 **아무것도 안 마시고** 바로 가방으로 간다.
+int Server::PickupPotion(Session& s, const WorldStatic& w, std::vector<OutPacket>& out) {
+    // ① 직업 검사 — **온라인이고 퀘스트가 아닐 때만**(gameFlags 0x2000 && !0x1000).
+    //   우리 서버는 늘 온라인 아레나라 퀘스트 갈래만 빼면 된다.
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    if (!quest && !ClassCanUseFood(s.charClass, w.foodBits)) {
+        SendPriMsg(s, "pickup.c:ObjectEquipClassFail", out);
+        return -1;
+    }
+
+    bool consumed = false;
+    // ② 체력 — **회복량까지 더해도 최대 아래**일 때만 마신다
+    if ((w.foodBits & kFoodHealthPotion) && w.useAmount > 0) {
+        const int dhp = static_cast<int>(w.useAmount * ClassHealthMult(s.charClass));
+        if (dhp + static_cast<int>(s.health) < static_cast<int>(s.maxHealth)) {
+            UnitAdjustHP(Target{ s.addr, -1 }, dhp, out);
+            consumed = true;
+        }
+    }
+    // ③ 마나 — 같은 꼴
+    if ((w.foodBits & kFoodManaPotion) && w.useAmount > 0) {
+        const int dmp = static_cast<int>(w.useAmount * ClassManaMult(s.charClass));
+        if (dmp + static_cast<int>(s.mana) < static_cast<int>(s.maxMana)) {
+            PlayerManaAdd(s, dmp);
+            consumed = true;
+        }
+    }
+    // ④ 독 해제 — 독이 있으면 **바로 풀고 끝난다**(정답지가 여기서 곧장 돌아간다)
+    if ((w.foodBits & kFoodCurePoisonPotion) && s.poison != 0) {
+        RemovePoison(Target{ s.addr, -1 }, out);
+        return 1;
+    }
+    return consumed ? 1 : 0;
 }
 
 // ── 묶음 5-b 물약 쓰기 ────────────────────────────────────────────────
