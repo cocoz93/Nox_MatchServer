@@ -6883,6 +6883,76 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             }
             break;
         }
+        case 4: {    // ── 묶음 6-i(2) 지키기 — `nox_xxx_mobActionGuard_546010`(`legacy/GAME5.c:738`)
+            //
+            // ⭕ 「이 자리를 지켜라」다. 쌓임 항목의 `+4·+8` 이 **지킬 자리**, `+12` 가 **볼 쪽**이다.
+            //   · **지금 상대가 있으면 싸움(15)** 을 올린다(쫓고 때리는 것은 그쪽 몫)
+            //   · 아니면 **16프레임에 한 번**만 자리를 살핀다(`(프레임 + 번호) & 0xF`) —
+            //     지킬 자리에서 **8 넘게** 벗어났으면 **56·59·44** 를 깔고 **가기(7)** 로 되돌아간다
+            //   ⚠ 매 틱 살피지 않는 것이 핵심이다 — 번호를 더해 **개체마다 살피는 틱이 어긋난다**
+            //
+            // ⚠ 안 옮긴 것 — `sub_5343C0`(못 싸울 때의 43·52·40 갈래) · 흉내쟁이·식물 갈래 ·
+            //   `monsterLookAtDamager_5466B0`(때린 쪽 돌아보기) · 둘레 둘러보기(`sub_5466F0`·`sub_545DA0`)
+            const Target foe{ k.enemyAddr, k.enemyPet };
+            float ex = 0, ey = 0;
+            if (!foe.none() && TargetXY(foe, ex, ey)) {
+                if (AIPush(k, 15)) {
+                    k.aiStack[k.aiStackInd].argX = ex;
+                    k.aiStack[k.aiStackInd].argY = ey;
+                    k.aiStack[k.aiStackInd].argU32 = frame_;
+                }
+                break;
+            }
+            if (((frame_ + k.netCode) & 0xF) != 0) break;    // 이 틱은 안 살핀다
+            const double px = st.argX - k.x, py = st.argY - k.y;
+            if (px * px + py * py <= 64.0) break;            // 제자리다
+            AIPush(k, 56);                                   // 보이는 적이 없나
+            AIPush(k, 59);                                   // 귀에 걸리는 소리가 없나
+            AIPush(k, 44);                                   // 공격받고 있지 않나
+            const float postX = st.argX, postY = st.argY;
+            if (AIPush(k, 7)) {
+                k.aiStack[k.aiStackInd].argX = postX;
+                k.aiStack[k.aiStackInd].argY = postY;
+                k.aiStack[k.aiStackInd].argU32 = 0;
+            }
+            break;
+        }
+        case 5: {    // ── 묶음 6-i(3) 사냥 — `nox_xxx_mobActionHunt_5449D0`(`legacy/GAME4_3.c:9692`)
+            // 하는 일이 거의 없다 — **사나움을 0.83 으로 놓고 떠돌기(10)를 민다**.
+            //   `+4` 에 0(아직 고른 길목 없음) · `+12` 의 낮은 바이트에 **0x80**
+            //   (길목을 못 찾으면 `sub_50CB20` 으로 한 번 더 찾아보라는 표시)
+            k.aggression = 0.83f;
+            if (AIPush(k, 10)) {
+                k.aiStack[k.aiStackInd].argX = 0;
+                k.aiStack[k.aiStackInd].argU32 = 0x80;
+            }
+            break;
+        }
+        case 10: {   // ── 묶음 6-i(3) 떠돌기 — `nox_xxx_mobActionRoam_5457E0`(`legacy/GAME5.c:428`)
+            //
+            // ⭕ 정답지의 떠돌기는 **길목(Waypoint)을 하나 골라 그리로 걸어간다**.
+            //   · 그 전에 **지금 상대가 있으면 싸움(15)** 을 올린다
+            //   · 길목을 **하나도 못 찾으면** — 「Cannot find any waypoints」를 찍고
+            //     **스스로 빠진 뒤 1~2초 기다리기(1)** 를 올린다
+            //
+            // ⚠ **우리 맵 자료에는 길목이 없다**(6-e(2b) 의 길목 길과 같은 구멍).
+            //   그래서 늘 위의 **「길목 없음」 갈래**를 탄다 — 정답지가 같은 자리에서 하는 것 그대로다.
+            //   길목을 읽게 되면 그때 고르기·걸어가기가 살아난다
+            const Target foe{ k.enemyAddr, k.enemyPet };
+            float ex = 0, ey = 0;
+            if (!foe.none() && TargetXY(foe, ex, ey)) {
+                if (AIPush(k, 15)) {
+                    k.aiStack[k.aiStackInd].argX = ex;
+                    k.aiStack[k.aiStackInd].argY = ey;
+                    k.aiStack[k.aiStackInd].argU32 = frame_;
+                }
+                break;
+            }
+            AIPop(k);                                        // 길목이 없다 — 스스로 빠지고
+            if (AIPush(k, 1))                                // 1~2초 기다린다(randomInt(FPS, 2*FPS))
+                k.aiStack[k.aiStackInd].argU32 = frame_ + 30 + NextRandom(31);
+            break;
+        }
         case 15: {   // ── 묶음 6-g(1) 싸움 — `nox_xxx_mobActionFight_531EC0`(`legacy/GAME4_3.c:1823`)
             //
             // ⭕ 싸움은 **대상을 쫓는 행동이 아니라, 대상이 없으면 마지막 자리로 가 보는 행동**이다.

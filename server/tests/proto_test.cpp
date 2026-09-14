@@ -12081,6 +12081,160 @@ void TestCreatureOrder() {
     std::printf("  6-i — 명령(0x78): 가만히·지켜·따라와·사냥 · 번호 0 은 전부 · 남의 것 안 먹음 · 못 움직이면 3·4·5 무효\n");
 }
 
+// ── 묶음 6-i(2)(3) — 지키기(4)·사냥(5)·떠돌기(10) ─────────────────────
+//
+// 정답지 `mobActionGuard_546010`(`legacy/GAME5.c:738`) ·
+//        `mobActionHunt_5449D0`(`GAME4_3.c:9692`) · `mobActionRoam_5457E0`(`GAME5.c:428`).
+//   · 지키기 — 상대가 있으면 싸움(15) · 아니면 **16프레임에 한 번**만 살펴
+//     지킬 자리에서 **8 넘게** 벗어났으면 56·59·44 를 깔고 가기(7)로 되돌아간다
+//   · 사냥 — 사나움 0.83 을 놓고 **떠돌기(10)** 를 민다
+//   · 떠돌기 — 상대가 있으면 싸움(15) · 아니면 **길목이 없어** 스스로 빠지고 1~2초 기다린다
+void TestAIGuardHunt() {
+    const std::string a = "10.6.15.1:7501";
+    const std::string b = "10.6.15.2:7502";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 3000, 3000);
+        srv.DebugSpawnPet(1358, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.Tick(34, o);
+        srv.DebugSetPetSpeed(0, 4.0f);
+    };
+    // 지키기가 살피는 틱으로 프레임을 맞춘다 — `(프레임 + 번호) & 0xF == 0`
+    auto alignLook = [&](nox::Server& srv) {
+        const uint32_t nc = srv.DebugPetNetCode(0);
+        for (uint32_t f = 1000; f < 1064; ++f)
+            if (((f + nc) & 0xF) == 0) { srv.DebugSetFrame(f); return; }
+    };
+
+    // ① **제자리면 아무 일도 안 한다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        alignLook(srv);
+        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);   // 지킬 자리 = 선 자리
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "제자리인데 뭘 올렸다");
+    }
+
+    // ② **8 넘게 벗어나면 56·59·44 를 깔고 되돌아간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        alignLook(srv);
+        srv.DebugSetPetPos(0, 1100, 1000);                    // 자리에서 100
+        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 56, "보이는 적 없음(56)이 안 깔렸다");
+        Check(srv.DebugAIAction(0, 2) == 59, "귀에 걸리는 소리 없음(59)이 안 깔렸다");
+        Check(srv.DebugAIAction(0, 3) == 44, "공격받고 있지 않나(44)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 4) == 7, "가기(7)가 맨 위에 안 왔다");
+        Check(srv.DebugAIArgX(0, 4) == 1000.0f, "가기가 지킬 자리를 안 받았다");
+    }
+    // 경계 — 딱 8 은 **제자리**다(거리제곱 <= 64)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        alignLook(srv);
+        srv.DebugSetPetPos(0, 1008, 1000);
+        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "딱 8 인데 벗어났다고 봤다");
+    }
+
+    // ③ **16프레임에 한 번만 살핀다** — 아닌 틱에는 멀어도 아무 일이 없다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        alignLook(srv);
+        srv.DebugSetFrame(srv.DebugFrame() + 1);              // 살피는 틱에서 하나 어긋난다
+        srv.DebugSetPetPos(0, 1100, 1000);
+        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "살피는 틱이 아닌데 되돌아가기를 밀었다");
+    }
+    // ★ **8틱이 아니라 16틱이다** — 살피는 틱에서 8 을 더한 자리에서는 아무 일이 없어야 한다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        alignLook(srv);
+        srv.DebugSetFrame(srv.DebugFrame() + 8);
+        srv.DebugSetPetPos(0, 1100, 1000);
+        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "8틱 뒤에 또 살폈다 — 관문은 16틱이다");
+    }
+    // ★ **번호를 더하므로 개체마다 살피는 틱이 어긋난다** — 같이 세우면 한쪽만 살핀다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSpawnPet(1358, 1000, 1000, a);               // 번호가 다른 둘째
+        std::vector<nox::OutPacket> o2;
+        srv.Tick(68, o2);
+        srv.DebugSetAutoFight(false);
+        Check(srv.DebugPetNetCode(0) != srv.DebugPetNetCode(1), "번호가 같다(이 시험의 전제)");
+        alignLook(srv);                                        // 0번이 살피는 틱
+        srv.DebugSetPetPos(0, 1100, 1000);
+        srv.DebugSetPetPos(1, 1100, 1000);
+        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAIPushDep(1, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAITick(0, out);
+        srv.DebugAITick(1, out);
+        Check(srv.DebugAIStackInd(0) > 0, "0번이 살피는 틱인데 안 살폈다");
+        Check(srv.DebugAIStackInd(1) == 0, "번호를 안 더해 둘이 같은 틱에 살폈다");
+    }
+
+    // ④ **지키는 중에도 상대가 있으면 싸움이 먼저다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetPos(0, 1100, 1000);
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 15, "상대가 있는데 싸움(15)을 안 올렸다");
+        Check(srv.DebugAIStackInd(0) == 1, "싸움 말고 다른 것도 올렸다");
+    }
+
+    // ⑤ **사냥(5)은 떠돌기(10)를 민다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetAggression(0, 0.5f);                   // 먼저 다른 값으로 둔다
+        srv.DebugAIPush(0, 5);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 10, "떠돌기(10)가 안 올라갔다");
+        Check(srv.DebugAIArgU32(0, 1) == 0x80, "떠돌기에 0x80 표시를 안 넘겼다");
+        Check(std::fabs(srv.DebugPetAggression(0) - 0.83f) < 0.001f, "사나움이 0.83 이 아니다");
+    }
+
+    // ⑥ **떠돌기는 길목이 없어 스스로 빠지고 1~2초 기다린다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetFrame(1000);
+        srv.DebugAIPush(0, 10);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 1, "떠돌기가 빠지고 기다리기가 안 남았다");
+        const uint32_t t = srv.DebugAIArgU32(0, 0);
+        Check(t >= 1000 + 30 && t <= 1000 + 60, "기다리는 때가 1~2초가 아니다");
+    }
+    // 떠돌기 중에도 상대가 있으면 싸움이 먼저다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPush(0, 10);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 15, "떠돌기 중에 싸움(15)을 안 올렸다");
+    }
+    std::printf("  6-i(2)(3) — 지키기: 16틱마다 8 넘으면 복귀 · 사냥→떠돌기 · 떠돌기는 길목 없어 1~2초 기다림\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -14296,6 +14450,7 @@ int main() {
     TestAIMelee();
     TestAIEscort();
     TestCreatureOrder();
+    TestAIGuardHunt();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

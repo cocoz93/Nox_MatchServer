@@ -1687,6 +1687,7 @@ public:
     float DebugPetAggression(size_t i) const { return i < pets_.size() ? pets_[i].aggression : 0.0f; }
     float DebugPetSight(size_t i) const { return i < pets_.size() ? pets_[i].sightRange : 0.0f; }
     bool DebugPetOrdered(size_t i) const { return i < pets_.size() && pets_[i].ordered; }
+    void DebugSetPetAggression(size_t i, float v) { if (i < pets_.size()) pets_[i].aggression = v; }
     void DebugSetPetRunning(size_t i, bool v) { if (i < pets_.size()) pets_[i].running = v; }
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
     void DebugAIRandomWalk(size_t i) { if (i < pets_.size()) AIRandomWalk(pets_[i]); }
@@ -1750,6 +1751,7 @@ public:
     void DebugPathInvalidate(bool alsoFrame) { AIPathInvalidate(alsoFrame); }
     bool DebugPathCalculated() const { return aiIndexCalc_; }
     void DebugSetFrame(uint32_t f) { frame_ = f; }
+    uint32_t DebugFrame() const { return frame_; }
     uint16_t DebugPathFlags(int x, int y) { return AIPathFlagsAt(x, y); }
     void DebugPathSetFlags(int x, int y, uint16_t f) { if (AIIndexNode* n = AIPathIndexAt(x, y)) n->flags |= f; }
     void DebugPathStamp(int x, int y) { if (AIIndexNode* n = AIPathIndexAt(x, y)) n->gen = aiIndexGen_; }
