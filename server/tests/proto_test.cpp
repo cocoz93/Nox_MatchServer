@@ -10204,6 +10204,40 @@ void TestAIPathFind() {
         Check(srv.DebugPathCellX(last) == 44, "가장 가까운 칸을 안 골랐다");
     }
 
+    // ④-3 **대각 이음매 규칙**(6-e(2b)) — 벽의 **방향 번호**로 대각을 가른다
+    //   ⚠ **길 훑기로는 이 갈래를 못 본다** — 우리는 벽을 격자 깃발(0x1)로 **먼저** 막아서
+    //     옆칸에 벽이 있으면 방향과 상관없이 걸린다(아래 「찾은 것」 참조). 규칙만 따로 본다
+    {
+        nox::Server srv;
+        srv.SetWallTiles({ { 43, 44, 0, 0, false }, { 44, 43, 1, 0, false } });
+        Check(srv.DebugWallDirAt(43, 44) == 0, "벽 방향 번호를 안 읽는다");
+        Check(srv.DebugWallDirAt(50, 50) == -1, "벽 없는 칸이 −1 이 아니다");
+        Check(srv.DebugWallDirAt(-1, 0) == -1, "격자 밖이 −1 이 아니다");
+        // ii=4 는 아래칸이 **1·6·10·9**, 오른칸이 **1·4·7·8** 이어야 한다
+        Check(!srv.DebugDiagOk(4, 43, 43), "아래칸 방향 0 인데 ii=4 가 열렸다");
+        // ★ **같은 방향 0 이 ii=6 에서는 허용**이다 — 집합이 방향마다 다르다
+        Check(srv.DebugDiagOk(6, 43, 43), "아래칸 방향 0 은 ii=6 에서 허용인데 막혔다");
+    }
+    {
+        nox::Server srv;
+        srv.SetWallTiles({ { 43, 44, 1, 0, false }, { 44, 43, 1, 0, false } });
+        Check(srv.DebugDiagOk(4, 43, 43), "둘 다 방향 1 인데 ii=4 가 막혔다");
+        // 오른칸만 허용 밖으로 바꾸면 막힌다
+        srv.SetWallTiles({ { 43, 44, 1, 0, false }, { 44, 43, 0, 0, false } });
+        Check(!srv.DebugDiagOk(4, 43, 43), "오른칸 방향 0 인데 ii=4 가 열렸다");
+        // ★ **두 옆칸의 집합이 서로 다르다** — 아래칸은 1·6·10·9, 오른칸은 1·4·7·8.
+        //   4 와 6 을 서로 바꿔 놓으면 한쪽만 통과한다(자리를 뒤바꾸면 결과가 뒤집힌다)
+        srv.SetWallTiles({ { 43, 44, 4, 0, false }, { 44, 43, 6, 0, false } });
+        Check(!srv.DebugDiagOk(4, 43, 43), "아래칸 4 는 허용 밖인데 ii=4 가 열렸다");
+        srv.SetWallTiles({ { 43, 44, 6, 0, false }, { 44, 43, 4, 0, false } });
+        Check(srv.DebugDiagOk(4, 43, 43), "아래칸 6 · 오른칸 4 는 둘 다 허용인데 막혔다");
+    }
+    {
+        nox::Server srv;   // 벽이 아예 없으면 어느 대각이든 열린다
+        for (int ii = 4; ii <= 7; ++ii)
+            Check(srv.DebugDiagOk(ii, 43, 43), "벽이 없는데 대각이 막혔다");
+    }
+
     // ⑤ **깊이 한도** — 한 물결만 보고 멈춘다(2)
     {
         nox::Server srv;

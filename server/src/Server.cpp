@@ -6082,8 +6082,10 @@ int Server::AIPathFind(bool awayFrom, const PathActor& act, float fromX, float f
                         accept = true;
                 }
                 if (!accept) {
-                    // ⚠ 대각선 **이음매** 검사는 아직 두 직교 칸만 본다(6-e(2b))
+                    // 대각선 **이음매** — 두 옆칸의 **벽 방향 번호**가 그 대각을 막는가(6-e(2b)) ·
+                    //   그리고 두 옆칸이 아예 막혔나(정답지도 둘 다 본다)
                     if (ii >= 4) {
+                        if (!AIPathDiagOk(ii, x1, y1)) continue;
                         if (AIPathBlockedFlags(act.airborne, x1, y2)) continue;
                         if (AIPathBlockedFlags(act.airborne, x2, y1)) continue;
                     }
@@ -6634,6 +6636,58 @@ bool Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY) {
         wave = next;
     }
     return false;
+}
+
+// ── 묶음 6-e(2b) 대각 이음매 ──────────────────────────────────────────
+//
+// 정답지 `Sub_57B500`(`server/wall.go:839`) — 그 칸 벽의 **방향 번호**(0~10)를 준다.
+//   벽이 없거나 격자 밖이면 **−1**. 창·비밀벽·못 여는 문도 −1 이다
+//   ⚠ 문·창·비밀벽 깃발(`Flags4`)은 아직 없다(묶음 9) — 지금은 **벽이 있나/없나**로만 줄어든다
+int Server::WallDirAt(int x, int y) const {
+    if (x < 0 || x >= 256 || y < 0 || y >= 256) return -1;
+    if (wallTiles_.empty()) return -1;
+    const WallTile& w = wallTiles_[static_cast<size_t>(y) * 256 + static_cast<size_t>(x)];
+    return w.present ? static_cast<int>(w.dir) : -1;
+}
+
+// 길 훑기 cases 4~7 — **대각으로 갈 때 두 옆칸의 벽 방향이 그 대각을 막는가**.
+//   정답지 `nox_xxx_pathFind_50BA00`(`src/unit_ai_path.go:135~200`) 그대로.
+//   ★ 번호 집합이 방향마다 다르다 — 벽은 **칸 대각선 선분**이라 어느 대각을 막는지가 방향에 달렸다
+bool Server::AIPathDiagOk(int ii, int x1, int y1) const {
+    auto in = [](int v, int a, int b, int c, int d) {
+        return v == -1 || v == a || v == b || v == c || v == d;
+    };
+    switch (ii) {
+        case 4: {   // (+1,+1)
+            const int a = WallDirAt(x1, y1 + 1);
+            if (!in(a, 1, 6, 10, 9)) return false;
+            const int b = WallDirAt(x1 + 1, y1);
+            if (!in(b, 1, 4, 7, 8)) return false;
+            return true;
+        }
+        case 5: {   // (−1,−1)
+            const int a = WallDirAt(x1 - 1, y1);
+            if (!in(a, 1, 6, 10, 9)) return false;
+            const int b = WallDirAt(x1, y1 - 1);
+            if (!in(b, 1, 4, 7, 8)) return false;
+            return true;
+        }
+        case 6: {   // (−1,+1)
+            const int a = WallDirAt(x1, y1 + 1);
+            if (!in(a, 0, 5, 9, 8)) return false;
+            const int b = WallDirAt(x1 - 1, y1);
+            if (!in(b, 0, 3, 10, 7)) return false;
+            return true;
+        }
+        case 7: {   // (+1,−1)
+            const int a = WallDirAt(x1 + 1, y1);
+            if (!in(a, 0, 5, 9, 8)) return false;
+            const int b = WallDirAt(x1, y1 - 1);
+            if (!in(b, 0, 3, 10, 7)) return false;
+            return true;
+        }
+        default: return true;
+    }
 }
 
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────

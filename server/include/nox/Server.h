@@ -1765,6 +1765,8 @@ public:
     bool DebugPathBlockedFlags(bool air, int x, int y) { return AIPathBlockedFlags(air, x, y); }
     bool DebugPathBlockedByObj(bool air, uint32_t sub, int x, int y) { return AIPathBlockedByObj(air, sub, x, y); }
     bool DebugPathCanPass(bool air, uint32_t sub, int x, int y) { return AIPathCanPass(air, sub, x, y); }
+    int  DebugWallDirAt(int x, int y) const { return WallDirAt(x, y); }
+    bool DebugDiagOk(int ii, int x, int y) const { return AIPathDiagOk(ii, x, y); }
     int DebugPathFind(bool awayFrom, bool air, uint32_t sub, float fx, float fy, float tx, float ty, int maxDepth) {
         return AIPathFind(awayFrom, PathActor{ air, sub, -1 }, fx, fy, tx, ty, PathFilter(), maxDepth);
     }
@@ -2477,6 +2479,9 @@ private:
     // 묶음 6-j(2) — 길목 칸을 격자에 찍고(0x40), 거기서부터 물결로 찾는다
     void AIPathBakeWaypoints();
     bool AIPathFindWaypoint(const Creature& k, float& outX, float& outY);
+    // 묶음 6-e(2b) — 그 칸 벽의 방향 번호(0~10, 없으면 −1) · 대각 이음매 판정
+    int  WallDirAt(int x, int y) const;
+    bool AIPathDiagOk(int ii, int x1, int y1) const;
     bool MapTraceObstacles(int skipObstacle, float x1, float y1, float x2, float y2) const;
     void AIPathResetVisit();
     int  AIPathNewVisit(int x, int y, int parent, int next);
