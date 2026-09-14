@@ -1464,6 +1464,12 @@ public:
     }
     size_t PlacedCount() const { return placed_.size(); }
     uint16_t DebugPlacedNetCode(size_t i) const { return i < placed_.size() ? placed_[i].netCode : 0; }
+    bool DebugPlacedXY(size_t i, float& x, float& y) const {
+        if (i >= placed_.size()) return false;
+        x = placed_[i].x; y = placed_[i].y;
+        return true;
+    }
+    uint8_t DebugPlacedKind(size_t i) const { return i < placed_.size() ? placed_[i].kind : 0; }
     // 마지막으로 받은 피해 종류(+524) — 불꽃 1 · 독 5 처럼 **무엇에 맞았나**를 시험이 가른다
     uint8_t DebugLastDamageType(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -1666,6 +1672,8 @@ public:
         rngState_ = rngState_ * 1664525u + 1013904223u;
         return n ? (rngState_ >> 16) % n : 0;
     }
+    // 0 이상 1 미만의 난수 실수(randomFloat 용). 같은 난수열을 쓴다.
+    float NextRandomFloat() { return static_cast<float>(NextRandom(65536)) / 65536.0f; }
     // 날아가다 사람에게 맞은 횟수.
     unsigned long long hits() const { return hits_; }
     // 지금 날아가고 있는 것의 수.
@@ -1834,6 +1842,13 @@ private:
         uint32_t life = 0;           // 갱신자료 첫 칸 — 매 틱 하나씩 줄고 0 이면 지운다
         uint32_t nextHitFrame = 0;   // +136 다음 판정 프레임
         uint8_t kind = 0;            // 주기 함수 갈래 — 1 = 독구름(ToxicCloudUpdate) · 2 = 닿음 피해(DamageCollide)
+                                     //                 3 = 떨어지는 운석(MeteorUpdate) · 4 = 유성우 뿌리개(MeteorShowerUpdate)
+        // ★ kind 3·4 — 운석. `castMeteor_52D9D0` 이 높이 255 에 띄우고 z 속도 −MeteorSpeed 를 준다.
+        //   높이가 0 이하가 되면 `meteorExplode_53D6E0` 이 터뜨린다.
+        //   ⚠ 일반 떨어짐 논리(updateFallLogic · 중력·튐)는 아직 없다(묶음 5·9) — 운석은 제 값만 쓴다.
+        float z = 0.0f, zVel = 0.0f;
+        int damage = 0;              // 갱신자료 첫 칸 — MeteorDamage[세기-1]
+        uint32_t createdFrame = 0;   // +128 — 유성우가 「5초 지났나」를 잰다
         // ★ kind 2 — thing.bin `COLLIDE = DamageCollide <양> <피해종류>` 를 그대로 담는다(collideDamageLoad_536E10).
         //   불꽃(MediumFlame)은 `DamageCollide 2 DAMAGE_FLAME` → 양 2 · 종류 1.
         uint8_t dmgAmount = 0;
@@ -1909,13 +1924,19 @@ private:
     int CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out);                          // castEquake_52DE40 + equakeDamage_52DEC0
     void SendJiggle(float cx, float cy, int jiggle, std::vector<OutPacket>& out);                       // earthquakeSend_4D9110 → `97 <세기>` Kind1
     // ── 묶음 4-c3 놓는 오브젝트 ──
-    void PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind,
-                     uint8_t dmgAmount = 0, uint8_t dmgType = 0, float radius = 0.0f);
+    // 수명으로 안 지우는 것(운석처럼 제 조건으로 사라지는 것)에 쓰는 값.
+    static constexpr uint32_t kPlacedNoLife = 0xFFFFFFFFu;
+    // 놓은 것을 가리킨다. 못 놓았으면 nullptr. ⚠ 돌려준 포인터는 **다음 PlaceObject 까지만** 쓸 것(벡터가 옮겨 앉는다).
+    PlacedObj* PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind,
+                           uint8_t dmgAmount = 0, uint8_t dmgType = 0, float radius = 0.0f);
     void UpdatePlaced(std::vector<OutPacket>& out);                                                      // 놓인 것들의 주기 함수 + 수명
     void DestroyPlaced(size_t i, std::vector<OutPacket>& out);
     int CastToxicCloud(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);               // castToxicCloud_52DB60
     int CastBurn(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);                     // castBurn_52C3E0
     int CastFireball(Session& caster, int lvl, std::vector<OutPacket>& out);                             // castFireball_52C790
+    int CastMeteor(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);          // castMeteor_52D9D0
+    int CastMeteorShower(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);    // castMeteorShower_52D8A0
+    void MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out);                                       // meteorExplode_53D6E0
     // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.
     //   skip 은 이미 직접 맞은 것(두 번 때리지 않는다). 벽 너머(선 추적 1)는 안 닿는다.
     void DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,

@@ -962,6 +962,8 @@ const std::vector<TestSpellDef>& TestSpellDefs() {
         { 41, 30, 0x01400214, { 8, 1, 6 } },                // SPELL_LESSER_HEAL(겨눈 · 공격 아님)
         { 27, 30, 0x42200038, { 7, 7, 1 } },                // SPELL_FIREBALL
         { 43,  0, 0x42340033, { 7, 5, 3, 1, 3, 5, 7 } },    // SPELL_CHAIN_LIGHTNING
+        { 52, 30, 0x44200038, { 6, 6 } },                   // SPELL_METEOR(thing.bin 실측)
+        { 53, 60, 0x40200038, { 1, 6, 6 } },                // SPELL_METEOR_SHOWER(thing.bin 실측)
         { 87,  0, 0x44542438, { 0, 8, 2, 6, 5, 6 } },       // SPELL_SUMMON_IMP
     };
     return kDefs;
@@ -6287,6 +6289,187 @@ void TestFireball() {
     std::printf("  4-c3(3) — 불덩이 세기별 종류·직격 양>>1·둘레 감쇠(양까지)·둘레 밖·벽 뒤 못 닿음·벽에서 터짐·자폭 안 함·먼 거리·40틱 자폭\n");
 }
 
+// ── 묶음 4-c3(4) — 운석(Meteor) · 유성우(MeteorShower) ─────────────────
+//
+// `castMeteor_52D9D0` — 커서 자리 **하늘(높이 255)** 에 운석을 띄우고 z 속도 −MeteorSpeed(8)로 떨군다.
+//   한 사람이 **동시에 하나만** 띄울 수 있다(둘째는 글 `ExecSpel.c:TooManyMeteors` 와 함께 거절).
+// `meteorExplode_53D6E0` — 높이가 0 이하가 되면 터진다: 화면 흔들기 10 · 둘레 피해 바깥 80 · 안쪽 30 ·
+//   피해 `MeteorDamage[세기-1]`(45·65·85·105·125) · 종류 7(폭발).
+// `castMeteorShower_52D8A0` + `updateMeteorShower_53D5A0` — 뿌리개를 놓고 **5초(150틱)** 동안
+//   **4~8틱마다** 운석 하나를 떨군다. 자리 = 무작위 방향 · 거리는 `무작위실수(4,12)`의 **제곱**(16~144).
+void TestMeteor() {
+    const std::string a = "10.9.6.1:9601";
+    const std::string b = "10.9.6.2:9602";
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("MeteorDamage = 45, 65, 85, 105, 125;\nMeteorSpeed = 8;\n");
+        srv.SetGamedata(g);
+        srv.SetNamedType("Meteor", 910);
+        srv.SetNamedType("MeteorShower", 911);
+        srv.SetNamedType("MeteorExplode", 912);
+        RegSpell(srv, 52, 0);
+        RegSpell(srv, 53, 0);
+        // ★ 직업 거르기(thing.bin 깃발 실측) — 운석 `0x44200038` 은 **컨저러 전용**(0x4000000),
+        //   유성우 `0x40200038` 은 직업 비트도 「누구나」(0x1000000)도 없어 **사람은 아무도 못 쓴다**(몬스터 주문).
+        //   그래서 유성우는 시전 경로가 아니라 효과 함수를 바로 불러 시험한다.
+        srv.DebugEnterGame(a, 770, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 771, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1300, 1000);
+    };
+
+    // ① 커서 자리에 운석이 뜨고, **255 / 8 ≈ 32틱** 뒤에 떨어져 터진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);                       // b 머리 위
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 52, false, ms, out);
+        Check(srv.PlacedCount() == 1, "운석이 안 떴다");
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "20틱 만에 떨어졌다 — 255 높이를 8씩 내려와야 한다");
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        // 온라인 세기 3 → MeteorDamage[2] = 85. b 는 터진 자리 바로 아래라 안쪽 30 안 → 감쇠 없음.
+        // ⚠ 다만 피해 **종류 7(폭발)은 방어가 먹는 갈래**라 워리어 기본 방어만큼 깎여 들어온다.
+        const int want = nox::ApplyArmor(85, nox::ArmorValueFloat(nox::CharClass::Warrior), nox::DamageKind::Physical);
+        if (lost != want) std::printf("  [운석] 잃은 값 %d — %d(세기 3 · 방어 먹힘) 여야 한다\n", lost, want);
+        Check(lost == want, "운석 피해가 MeteorDamage[세기-1] 이 아니다");
+    }
+
+    // ② **한 사람에 하나뿐** — 둘째는 거절되고 글이 간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        CastAndWait(srv, a, 52, false, ms, out);
+        Check(srv.PlacedCount() == 1, "첫 운석이 안 떴다(시험 전제)");
+        out.clear();
+        CastAndWait(srv, a, 52, false, ms, out);
+        Check(srv.PlacedCount() == 1, "둘째 운석이 떴다 — 한 사람에 하나여야 한다");
+    }
+
+    // ③ 벽 뒤에는 **못 띄운다**(선 추적 73) — 칸 50(x 1150~1173)이 시전자와 커서 사이
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWalls({ { 50, 43 } });
+        // ⚠ 운석의 선 추적 깃발은 **73(0x49)** 이고, 0x40 은 「**시야 깃발(0x1)이 있는 재질만** 막는다」는 뜻이다.
+        //   시험 벽은 재질 0 이므로 깃발을 넣어 줘야 막는다 — 안 넣으면 벽이 있어도 통과한다.
+        srv.SetWallDefFlags({ 1 });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        CastAndWait(srv, a, 52, false, ms, out);
+        Check(srv.PlacedCount() == 0, "벽 뒤인데 운석이 떴다(선 추적이 빠졌나)");
+    }
+
+    // ④ 둘레 **밖**(80 초과)은 안 깎인다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 1300, 1150);                      // 떨어지는 자리에서 150
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 52, false, ms, out);
+        for (int t = 0; t < 45; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "둘레(80) 밖인데 운석에 깎였다");
+    }
+
+    // ⑤ 안쪽 30 **밖**(둘레 안)은 줄어든 값을 받는다 — 감쇠식이 도는지 양으로 가른다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 1300, 1060);                      // 떨어지는 자리에서 60
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 52, false, ms, out);
+        for (int t = 0; t < 45; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        // 거리 60 · 바깥 80 · 안쪽 30 → 85 × (1 − (60−30)/50) = 85 × 0.4 = 34, 거기서 방어가 먹는다
+        const int want = nox::ApplyArmor(static_cast<int>(85.0f * (1.0f - (60.0f - 30.0f) / (80.0f - 30.0f))),
+                                         nox::ArmorValueFloat(nox::CharClass::Warrior), nox::DamageKind::Physical);
+        if (lost != want) std::printf("  [운석] 60 에서 잃은 값 %d — %d 여야 한다\n", lost, want);
+        Check(lost == want, "운석 둘레 감쇠가 식과 다르다");
+    }
+
+    // ⑥ 화면 흔들기(0x9f)가 나간다 — 땅흔들기와 같은 알림이다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1100, 1000);                       // 시전자 가까이 — 흔들림이 닿게
+        CastAndWait(srv, a, 52, false, ms, out);
+        out.clear();
+        for (int t = 0; t < 45; ++t) { ms += 34; srv.Tick(ms, out); }
+        const auto toA = FlattenTo(out, a);
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::FX_JIGGLE)) != nullptr, "운석이 터졌는데 화면이 안 흔들렸다");
+    }
+
+    // ⑦ 유성우 — 뿌리개가 놓이고 **5초 동안 여러 개**를 떨군 뒤 스스로 사라진다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 5000, 5000);                      // 아무도 안 맞게
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugSpellAccept(a, 53, 3, out);                 // 사람은 못 쓰는 주문이라 효과 함수를 바로 부른다
+        Check(srv.PlacedCount() == 1, "유성우 뿌리개가 안 놓였다");
+        size_t most = 0;
+        float farthest = 0.0f;
+        for (int t = 0; t < 200; ++t) {
+            ms += 34; srv.Tick(ms, out);
+            if (srv.PlacedCount() > most) most = srv.PlacedCount();
+            // 떨어지는 운석이 뿌리개(1300,1000)에서 얼마나 흩어지나 — **거리는 무작위실수(4,12)의 제곱**이다
+            for (size_t k = 0; k < srv.PlacedCount(); ++k) {
+                if (srv.DebugPlacedKind(k) != 3) continue;
+                float px = 0, py = 0;
+                if (!srv.DebugPlacedXY(k, px, py)) continue;
+                const float d = std::sqrt((px - 1300.0f) * (px - 1300.0f) + (py - 1000.0f) * (py - 1000.0f));
+                if (d > farthest) farthest = d;
+            }
+        }
+        Check(most >= 4, "유성우가 운석을 여러 개 안 떨궜다");
+        // 제곱을 안 하면 거리가 4~12 에 갇힌다 — 16 을 넘는 것이 하나도 없으면 그 자리다
+        if (farthest <= 16.0f) std::printf("  [운석] 유성우가 가장 멀리 떨군 거리 %.1f — 16 을 넘어야 한다\n", farthest);
+        Check(farthest > 16.0f, "유성우가 떨군 자리가 너무 모였다(거리 제곱이 빠졌나)");
+        Check(srv.PlacedCount() == 0, "200틱이 지났는데 유성우가 안 걷혔다(5초 수명)");
+    }
+
+    // ⑧ 유성우가 떨군 운석도 **제 피해값을 물려받는다** — 뿌리개 아래 선 사람은 깎인다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 1300, 1000);                      // 뿌리개 바로 아래
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugSpellAccept(a, 53, 3, out);
+        for (int t = 0; t < 200; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) < bHp, "유성우 아래 서 있는데 안 깎였다(피해값을 안 물려줬나)");
+    }
+    std::printf("  4-c3(4) — 운석 떨어져 터짐(피해 표·감쇠·흔들기)·한 사람에 하나·벽 뒤 못 띄움 · 유성우 여러 개·5초 수명\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -8390,6 +8573,7 @@ int main() {
     TestToxicCloud();
     TestBurn();
     TestFireball();
+    TestMeteor();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

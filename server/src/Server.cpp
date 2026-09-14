@@ -4544,6 +4544,8 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 128: fnc = CastToxicCloud(s, arg, out); break;                                // castToxicCloud_52DB60
             case 5: fnc = CastBurn(s, arg, out); break;                                       // castBurn_52C3E0
             case 27: fnc = CastFireball(s, lvl, out); break;                                  // castFireball_52C790
+            case 52: fnc = CastMeteor(s, arg, lvl, out); break;                               // castMeteor_52D9D0
+            case 53: fnc = CastMeteorShower(s, arg, lvl, out); break;                         // castMeteorShower_52D8A0
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
@@ -5198,9 +5200,9 @@ int Server::CastPoison(const std::string& obj3, const Target& targ, int lvl, std
 //
 // 정답지는 `newObjectWithTypeInd(이름번호)` 로 만들고 `createAt_4DAA50` 로 자리에 놓은 뒤
 // 수명을 건다(불꽃은 unitSetDecayTime, 독구름은 갱신자료 첫 칸). 우리는 한 목록(placed_)에 담는다.
-void Server::PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind,
-                         uint8_t dmgAmount, uint8_t dmgType, float radius) {
-    if (type == 0 || life == 0) return;
+Server::PlacedObj* Server::PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind,
+                                       uint8_t dmgAmount, uint8_t dmgType, float radius) {
+    if (type == 0 || life == 0) return nullptr;
     PlacedObj o;
     o.netCode = nextShotNetCode_++;
     o.type = type;
@@ -5212,7 +5214,9 @@ void Server::PlaceObject(uint16_t type, float x, float y, const std::string& own
     o.dmgAmount = dmgAmount;
     o.dmgType = dmgType;
     o.radius = radius;
+    o.createdFrame = frame_;
     placed_.push_back(o);
+    return &placed_.back();
 }
 
 void Server::DestroyPlaced(size_t i, std::vector<OutPacket>& out) {
@@ -5277,8 +5281,43 @@ void Server::UpdatePlaced(std::vector<OutPacket>& out) {
             for (size_t k = 0; k < pets_.size(); ++k)
                 touch(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
         }
-        if (o.life > 0) --o.life;
-        if (o.life == 0) { DestroyPlaced(i, out); continue; }
+        // ── kind 3 — 떨어지는 운석(MeteorUpdate = meteorExplode_53D6E0) ──────
+        //   하는 일이 하나다: **높이(+104)가 0 이하면** 터뜨리고 지운다.
+        //   높이는 시전 때 255 로 띄우고(unitRaise) z 속도를 −MeteorSpeed(8)로 준다.
+        if (o.kind == 3) {
+            o.z += o.zVel;
+            if (o.z <= 0.0f) { MeteorExplode(o, out); DestroyPlaced(i, out); continue; }
+        }
+        // ── kind 4 — 유성우 뿌리개(updateMeteorShower_53D5A0) ────────────────
+        //   만든 뒤 **5초(150틱)** 동안 **4~8틱마다** 운석 하나를 무작위 자리에 떨군다.
+        //   자리 = 방향 무작위(0~255) · 거리 = `무작위실수(4,12)`의 **제곱**(16~144).
+        //   그 자리까지 선 추적(traceRay 5)이 막히면 그 번만 거른다. 5초가 지나면 스스로 지워진다.
+        if (o.kind == 4) {
+            if (frame_ - o.createdFrame >= 5u * static_cast<uint32_t>(kServerTickRate)) { DestroyPlaced(i, out); continue; }
+            if (frame_ >= o.nextHitFrame) {
+                // ⚠ 아래에서 `placed_` 에 새로 밀어 넣는다 — 벡터가 옮겨 앉으면 `o` 가 죽는다.
+                //   그래서 쓸 값을 **먼저 복사**하고, 되쓸 때는 자리(i)로 다시 잡는다.
+                const float ox = o.x, oy = o.y;
+                const std::string owner = o.owner;
+                const int dmg = o.damage;
+                const int dir = static_cast<int>(NextRandom(256));
+                const float r = 4.0f + NextRandomFloat() * 8.0f;         // randomFloat(4,12)
+                const float d = r * r;                                   // ★ **제곱**이 거리다(16~144)
+                const float mx = ox + d * DirVecX(dir);
+                const float my = oy + d * DirVecY(dir);
+                if (MapTraceRay(ox, oy, mx, my, 0x5)) {
+                    if (PlacedObj* mo = PlaceObject(NamedType("Meteor"), mx, my, owner, kPlacedNoLife, /*kind=*/3)) {
+                        mo->z = 255.0f;                                  // unitRaise_4E46F0(255)
+                        mo->zVel = -static_cast<float>(BalanceFloat("MeteorSpeed"));
+                        mo->damage = dmg;                                // 뿌리개가 든 값을 그대로
+                    }
+                }
+                placed_[i].nextHitFrame = frame_ + 4 + NextRandom(5);    // randomInt(4,8)
+            }
+        }
+        // ⚠ `o` 는 위 갈래에서 `placed_` 가 커졌으면 이미 죽은 참조다 — 자리(i)로 다시 잡는다
+        if (placed_[i].life > 0 && placed_[i].life != kPlacedNoLife) --placed_[i].life;
+        if (placed_[i].life == 0) { DestroyPlaced(i, out); continue; }
         ++i;
     }
 }
@@ -5356,6 +5395,58 @@ int Server::CastFireball(Session& caster, int lvl, std::vector<OutPacket>& out) 
     m.velY = DirVecY(dir) * m.speed + static_cast<float>(caster.velY);
     missiles_.push_back(m);
     return 1;
+}
+
+// castMeteor_52D9D0(`GAME4_2.c:10192`) — 커서 자리 **하늘(높이 255)** 에 운석을 띄우고 떨어뜨린다.
+//   ① 그 사람이 이미 띄운 운석이 있으면 **거절**하고 글(`ExecSpel.c:TooManyMeteors`)을 보낸다
+//   ② 시전자→커서 선 추적(깃발 **73**, 협동 모드면 9)이 막히면 글(0·2)을 내고 0
+//   ③ 갱신자료 첫 칸 = `MeteorDamage[세기-1]`(45·65·85·105·125) · z 속도 = **−MeteorSpeed(8)**
+int Server::CastMeteor(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out) {
+    for (const auto& p : placed_) {
+        if (p.kind == 3 && p.owner == caster.addr) {
+            SendPriMsg(caster, "ExecSpel.c:TooManyMeteors", out);   // netPriMsgToPlayer_4DA2C0
+            return 0;
+        }
+    }
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    if (!MapTraceRay(cx, cy, arg.x, arg.y, 73)) {
+        InformSpell(caster, 0, 2, out);
+        return 0;
+    }
+    if (PlacedObj* mo = PlaceObject(NamedType("Meteor"), arg.x, arg.y, caster.addr, kPlacedNoLife, /*kind=*/3)) {
+        mo->z = 255.0f;                                      // unitRaise_4E46F0(255)
+        mo->zVel = -static_cast<float>(BalanceFloat("MeteorSpeed"));
+        mo->damage = static_cast<int>(BalanceFloatInd("MeteorDamage", lvl - 1));
+    }
+    return 1;
+}
+
+// castMeteorShower_52D8A0(`GAME4_2.c:10112`) — 커서 자리에 **뿌리개**(보이지 않는 MeteorShower)를 놓는다.
+//   선 추적은 운석과 같다. 갱신자료 첫 칸에 같은 `MeteorDamage[세기-1]` 을 담아 떨어뜨릴 운석에 물려준다.
+//   ⚠ 운석과 달리 **「하나만」 제한이 없다**(정답지에 그 검사가 없다).
+int Server::CastMeteorShower(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out) {
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    if (!MapTraceRay(cx, cy, arg.x, arg.y, 73)) {
+        InformSpell(caster, 0, 2, out);
+        return 0;
+    }
+    if (PlacedObj* so = PlaceObject(NamedType("MeteorShower"), arg.x, arg.y, caster.addr, kPlacedNoLife, /*kind=*/4))
+        so->damage = static_cast<int>(BalanceFloatInd("MeteorDamage", lvl - 1));
+    return 1;
+}
+
+// meteorExplode_53D6E0(`GAME4_3.c:6540`) — 높이가 0 이하가 된 운석이 하는 일.
+//   · 그을음 · **화면 흔들기 10**(earthquakeSend) · `MeteorExplode` 그림 오브젝트 · 소리 87
+//   · 둘레 피해 : 바깥 **80** · 안쪽 **30** · 피해 = 갱신자료 첫 칸 · 종류 **7**(폭발)
+//   ⚠ 아직 안 옮긴 것 — 그을음 · 소리 · 벽 피해(mapDamageToWalls)
+void Server::MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out) {
+    const float x = o.x, y = o.y;
+    const int dmg = o.damage;
+    const std::string owner = o.owner;
+    SendJiggle(x, y, 10, out);                               // earthquakeSend_4D9110(자리, 10)
+    DamageUnitsAround(x, y, 80.0f, 30.0f, dmg, 7, owner, Target{}, out);
+    // 터짐 그림은 **1초 뒤 스스로 사라지는**(OneSecondDieUpdate) 장식 오브젝트다
+    PlaceObject(NamedType("MeteorExplode"), x, y, owner, static_cast<uint32_t>(kServerTickRate), /*kind=*/0);
 }
 
 // mapDamageUnitsAround_4E25B0(Go `game.go:1407`) — 둘레 피해. rr = max(r1, r2)
