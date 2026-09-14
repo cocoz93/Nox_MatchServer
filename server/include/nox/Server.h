@@ -1470,6 +1470,7 @@ public:
         return true;
     }
     uint8_t DebugPlacedKind(size_t i) const { return i < placed_.size() ? placed_[i].kind : 0; }
+    float DebugPlacedZ(size_t i) const { return i < placed_.size() ? placed_[i].z : 0.0f; }
     // 마지막으로 받은 피해 종류(+524) — 불꽃 1 · 독 5 처럼 **무엇에 맞았나**를 시험이 가른다
     uint8_t DebugLastDamageType(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -1843,6 +1844,8 @@ private:
         uint32_t nextHitFrame = 0;   // +136 다음 판정 프레임
         uint8_t kind = 0;            // 주기 함수 갈래 — 1 = 독구름(ToxicCloudUpdate) · 2 = 닿음 피해(DamageCollide)
                                      //                 3 = 떨어지는 운석(MeteorUpdate) · 4 = 유성우 뿌리개(MeteorShowerUpdate)
+                                     //                 5 = 떨어지는 주먹(FistUpdate + FistCollide)
+        bool landed = false;         // +16 비트 31 — 주먹이 한 번 땅에 닿았나(닿음 피해는 그 뒤에만)
         // ★ kind 3·4 — 운석. `castMeteor_52D9D0` 이 높이 255 에 띄우고 z 속도 −MeteorSpeed 를 준다.
         //   높이가 0 이하가 되면 `meteorExplode_53D6E0` 이 터뜨린다.
         //   ⚠ 일반 떨어짐 논리(updateFallLogic · 중력·튐)는 아직 없다(묶음 5·9) — 운석은 제 값만 쓴다.
@@ -1937,6 +1940,7 @@ private:
     int CastMeteor(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);          // castMeteor_52D9D0
     int CastMeteorShower(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);    // castMeteorShower_52D8A0
     void MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out);                                       // meteorExplode_53D6E0
+    int CastFist(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);            // castFist_52D3C0
     // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.
     //   skip 은 이미 직접 맞은 것(두 번 때리지 않는다). 벽 너머(선 추적 1)는 안 닿는다.
     void DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,

@@ -962,6 +962,7 @@ const std::vector<TestSpellDef>& TestSpellDefs() {
         { 41, 30, 0x01400214, { 8, 1, 6 } },                // SPELL_LESSER_HEAL(겨눈 · 공격 아님)
         { 27, 30, 0x42200038, { 7, 7, 1 } },                // SPELL_FIREBALL
         { 43,  0, 0x42340033, { 7, 5, 3, 1, 3, 5, 7 } },    // SPELL_CHAIN_LIGHTNING
+        { 29, 60, 0x44200038, { 0, 2, 1, 7 } },             // SPELL_FIST(thing.bin 실측 · 컨저러)
         { 52, 30, 0x44200038, { 6, 6 } },                   // SPELL_METEOR(thing.bin 실측)
         { 53, 60, 0x40200038, { 1, 6, 6 } },                // SPELL_METEOR_SHOWER(thing.bin 실측)
         { 87,  0, 0x44542438, { 0, 8, 2, 6, 5, 6 } },       // SPELL_SUMMON_IMP
@@ -6470,6 +6471,170 @@ void TestMeteor() {
     std::printf("  4-c3(4) — 운석 떨어져 터짐(피해 표·감쇠·흔들기)·한 사람에 하나·벽 뒤 못 띄움 · 유성우 여러 개·5초 수명\n");
 }
 
+// ── 묶음 4-c4(1) — 주먹(Fist of Vengeance) ────────────────────────────
+//
+// `castFist_52D3C0` — 운석과 같은 꼴로 커서 자리 하늘(255)에 띄워 떨어뜨린다. **한 사람에 하나**
+//   (둘째는 글 `ExecSpel.c:TooManyFists`). 세기별 종류 1 SmallFist(둘레 25) · 2 MediumFist(30) · 3~5 LargeFist(35).
+// 높이 물리는 `updateFallLogic_51B870` 의 **0x800000 갈래** — 중력 0.5 로 떨어지고 땅에서 **되튄다**(9.0 × 0.1).
+// `FistUpdate` — 처음 닿을 때 화면 흔들기 **30** · 3초(90틱)면 사라짐.
+// `FistCollide` — **닿은 뒤에만** 겹친 것을 때린다: `FistOfVengeanceDamage[세기-1]`(50·100·200·300·400) 종류 **2(짓눌림)**.
+void TestFist() {
+    const std::string a = "10.9.7.1:9701";
+    const std::string b = "10.9.7.2:9702";
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("FistOfVengeanceDamage = 50, 100, 200, 300, 400;\nFistSpeed = 10;\n");
+        srv.SetGamedata(g);
+        srv.SetNamedType("SmallFist", 920);
+        srv.SetNamedType("MediumFist", 921);
+        srv.SetNamedType("LargeFist", 922);
+        RegSpell(srv, 29, 0);
+        srv.DebugEnterGame(a, 780, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 781, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1300, 1000);
+    };
+
+    // ① 떨어져 닿으면 때린다 — 세기 3 → LargeFist · 피해 200(종류 2 는 방어가 절반만 먹는다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 29, false, ms, out);
+        Check(srv.PlacedCount() == 1, "주먹이 안 떴다");
+        Check(srv.HealthOf(b) == bHp, "뜨자마자 맞았다 — 아직 하늘에 있어야 한다");
+        // ★ **닿는 때까지 재야** 중력·떨어지는 속도가 걸린다.
+        //   255 에서 −10 으로 떠나 틱마다 0.5 씩 빨라지면 **18틱**에 땅이다.
+        //   중력이 없으면 26틱, 속도가 1 이면 31틱 — 22틱 안에 안 닿는다.
+        int hitTick = -1;
+        for (int t = 0; t < 22 && hitTick < 0; ++t) {
+            ms += 34; srv.Tick(ms, out);
+            if (srv.HealthOf(b) != bHp) hitTick = t;
+        }
+        if (hitTick < 0) std::printf("  [주먹] 22틱 안에 안 닿았다 — 18틱쯤이어야 한다\n");
+        Check(hitTick >= 0, "주먹이 22틱 안에 안 닿았다(중력·떨어지는 속도가 빠졌나)");
+        // 세기 3 → LargeFist · 피해 200. 워리어 체력 150 이라 **한 대에 죽는다**
+        Check(srv.HealthOf(b) == 0, "세기 3 주먹 한 대에 안 죽었다(피해 표가 세기를 안 타나)");
+    }
+
+    // ①b **되튄다** — 땅에 닿은 뒤 다시 떠오른다(되튐 9.0 × 0.1)
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 5000, 5000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        CastAndWait(srv, a, 29, false, ms, out);
+        bool landed = false, roseAgain = false;
+        for (int t = 0; t < 40 && srv.PlacedCount() > 0; ++t) {
+            ms += 34; srv.Tick(ms, out);
+            if (srv.PlacedCount() == 0) break;
+            const float z = srv.DebugPlacedZ(0);
+            if (z <= 0.0f) landed = true;
+            else if (landed) roseAgain = true;
+        }
+        Check(landed, "주먹이 땅에 안 닿았다(시험 전제)");
+        Check(roseAgain, "땅에 닿은 뒤 안 떠올랐다(되튐이 빠졌나)");
+    }
+
+    // ①c 세기별 **둘레**가 다르다 — 세기 3 은 35(+몸 10 = 45)라 40 떨어진 사람도 맞는다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 1300, 1040);                      // 40
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 29, false, ms, out);
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) < bHp, "40 은 세기 3 둘레(35+10=45) 안인데 안 맞았다");
+    }
+
+    // ② **한 사람에 하나뿐**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        CastAndWait(srv, a, 29, false, ms, out);
+        Check(srv.PlacedCount() == 1, "첫 주먹이 안 떴다(시험 전제)");
+        CastAndWait(srv, a, 29, false, ms, out);
+        Check(srv.PlacedCount() == 1, "둘째 주먹이 떴다 — 한 사람에 하나여야 한다");
+    }
+
+    // ③ 벽 뒤에는 **못 띄운다**(선 추적 73 · 재질 시야 깃발 필요)
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWalls({ { 50, 43 } });
+        srv.SetWallDefFlags({ 1 });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        CastAndWait(srv, a, 29, false, ms, out);
+        Check(srv.PlacedCount() == 0, "벽 뒤인데 주먹이 떴다");
+    }
+
+    // ④ **닿는 둘레는 35 + 몸 10 = 45** — 60 떨어진 사람은 안 맞는다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 1300, 1060);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 29, false, ms, out);
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "닿는 둘레(45) 밖인데 주먹에 맞았다");
+    }
+
+    // ⑤ 닿는 순간 **화면이 흔들린다**(30)
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 5000, 5000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1100, 1000);                       // 시전자 가까이
+        CastAndWait(srv, a, 29, false, ms, out);
+        out.clear();
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
+        const auto toA = FlattenTo(out, a);
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::FX_JIGGLE)) != nullptr, "주먹이 닿았는데 화면이 안 흔들렸다");
+    }
+
+    // ⑥ **3초(90틱)** 면 사라진다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 5000, 5000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        CastAndWait(srv, a, 29, false, ms, out);
+        for (int t = 0; t < 80; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlacedCount() == 1, "80틱 만에 사라졌다 — 3초는 남아야 한다");
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlacedCount() == 0, "100틱이 지났는데 주먹이 안 걷혔다");
+    }
+    std::printf("  4-c4(1) — 주먹 떨어져 때림(종류 2)·한 사람에 하나·벽 뒤 못 띄움·닿는 둘레·흔들기 30·3초 수명\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -8574,6 +8739,7 @@ int main() {
     TestBurn();
     TestFireball();
     TestMeteor();
+    TestFist();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

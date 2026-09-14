@@ -4546,6 +4546,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 27: fnc = CastFireball(s, lvl, out); break;                                  // castFireball_52C790
             case 52: fnc = CastMeteor(s, arg, lvl, out); break;                               // castMeteor_52D9D0
             case 53: fnc = CastMeteorShower(s, arg, lvl, out); break;                         // castMeteorShower_52D8A0
+            case 29: fnc = CastFist(s, arg, lvl, out); break;                                 // castFist_52D3C0
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
@@ -5288,6 +5289,46 @@ void Server::UpdatePlaced(std::vector<OutPacket>& out) {
             o.z += o.zVel;
             if (o.z <= 0.0f) { MeteorExplode(o, out); DestroyPlaced(i, out); continue; }
         }
+        // ── kind 5 — 떨어지는 주먹(FistUpdate 53D400 + FistCollide 4EADF0) ───
+        //   높이 물리는 `updateFallLogic_51B870` 의 **0x800000 갈래**를 그대로 쓴다:
+        //     높이 += z속도 · 높이 ≥ 0 이면 z속도 −= 0.5(중력) ·
+        //     아니면 높이 = 0 · z속도 = −z속도 × (되튐 9.0) × 0.1 · 그래도 2 미만이면 멈춘다
+        //   처음 땅에 닿을 때 **화면 흔들기 30** 을 보내고 「닿았음」을 적는다(+16 비트 31).
+        //   닿음 피해는 **닿은 뒤에만** — 몸이 겹친 틱마다 `FistOfVengeanceDamage`(50·100·200·300·400) 종류 **2(짓눌림)**.
+        //   수명은 3초(90틱).
+        if (o.kind == 5) {
+            o.z += o.zVel;
+            if (o.z >= 0.0f) {
+                o.zVel -= 0.5f;
+            } else {
+                o.z = 0.0f;
+                o.zVel = -o.zVel * 9.0f * 0.1f;              // +116 = 9.0(되튐)
+                if (o.zVel < 2.0f) { o.z = 0.0f; o.zVel = 0.0f; }
+            }
+            if (o.z <= 0.0f && !o.landed) {
+                o.landed = true;
+                SendJiggle(o.x, o.y, 30, out);               // earthquakeSend_4D9110(자리, 30)
+            }
+            if (o.z <= 0.0f && o.damage > 0) {
+                const float reach = o.radius + static_cast<float>(kBodyRadius);
+                const float rr = reach * reach;
+                auto touch = [&](const Target& t, float tx, float ty) {
+                    const float dx = tx - o.x, dy = ty - o.y;
+                    if (dx * dx + dy * dy > rr) return;
+                    HurtTarget(t, o.damage, out, o.owner, 2, nullptr);   // 종류 2 = 짓눌림
+                };
+                std::vector<std::string> who;
+                for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
+                for (const auto& addr : who) {
+                    auto it = sessions_.find(addr);
+                    if (it == sessions_.end()) continue;
+                    touch(Target{ addr, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
+                }
+                for (size_t k = 0; k < pets_.size(); ++k)
+                    touch(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
+            }
+            if (frame_ - o.createdFrame > 3u * static_cast<uint32_t>(kServerTickRate)) { DestroyPlaced(i, out); continue; }
+        }
         // ── kind 4 — 유성우 뿌리개(updateMeteorShower_53D5A0) ────────────────
         //   만든 뒤 **5초(150틱)** 동안 **4~8틱마다** 운석 하나를 무작위 자리에 떨군다.
         //   자리 = 방향 무작위(0~255) · 거리 = `무작위실수(4,12)`의 **제곱**(16~144).
@@ -5432,6 +5473,36 @@ int Server::CastMeteorShower(Session& caster, const SpellArg& arg, int lvl, std:
     }
     if (PlacedObj* so = PlaceObject(NamedType("MeteorShower"), arg.x, arg.y, caster.addr, kPlacedNoLife, /*kind=*/4))
         so->damage = static_cast<int>(BalanceFloatInd("MeteorDamage", lvl - 1));
+    return 1;
+}
+
+// castFist_52D3C0(`GAME4_2.c:9956`) — 커서 자리 하늘에 **주먹**을 띄워 떨어뜨린다. 운석과 같은 꼴이되,
+//   ① 그 사람이 이미 띄운 주먹이 있으면 글(`ExecSpel.c:TooManyFists`)과 함께 거절
+//   ② 세기별 종류 — 1 SmallFist(둘레 25) · 2 MediumFist(30) · **3·4·5 LargeFist(35)**
+//   ③ 갱신자료 첫 칸 = `FistOfVengeanceDamage[세기-1]`(50·100·200·300·400) · z 속도 = −FistSpeed(10)
+//   ④ 깃발에 0x800000 을 얹는다 — 떨어짐 논리에서 **되튀는 갈래**가 이 비트다
+int Server::CastFist(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out) {
+    if (lvl < 1) lvl = 1;
+    if (lvl > 5) lvl = 5;
+    for (const auto& p : placed_) {
+        if (p.kind == 5 && p.owner == caster.addr) {
+            SendPriMsg(caster, "ExecSpel.c:TooManyFists", out);
+            return 0;
+        }
+    }
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    if (!MapTraceRay(cx, cy, arg.x, arg.y, 73)) {
+        InformSpell(caster, 0, 2, out);
+        return 0;
+    }
+    static const char* const kName[6] = { "", "SmallFist", "MediumFist", "LargeFist", "LargeFist", "LargeFist" };
+    static const float kRadius[6]     = { 0.0f, 25.0f, 30.0f, 35.0f, 35.0f, 35.0f };   // EXTENT CIRCLE
+    if (PlacedObj* fo = PlaceObject(NamedType(kName[lvl]), arg.x, arg.y, caster.addr, kPlacedNoLife, /*kind=*/5,
+                                    /*dmgAmount=*/0, /*dmgType=*/0, kRadius[lvl])) {
+        fo->z = 255.0f;                                      // unitRaise_4E46F0(255)
+        fo->zVel = -static_cast<float>(BalanceFloat("FistSpeed"));
+        fo->damage = static_cast<int>(BalanceFloatInd("FistOfVengeanceDamage", lvl - 1));
+    }
     return 1;
 }
 

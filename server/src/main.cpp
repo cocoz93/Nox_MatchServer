@@ -419,7 +419,8 @@ int main(int argc, char** argv) {
         if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
             // ★ 4-c3 — 주문이 **이름으로** 놓는 오브젝트의 와이어 종류를 넘겨준다
             //   (정답지도 `getNameId("ToxicCloud")` 처럼 이름으로 찾는다). 못 찾으면 0 이라 안 놓인다
-            for (const char* nm : { "ToxicCloud", "MediumFlame", "Meteor", "MeteorShower", "MeteorExplode" }) {
+            for (const char* nm : { "ToxicCloud", "MediumFlame", "Meteor", "MeteorShower", "MeteorExplode",
+                                    "SmallFist", "MediumFist", "LargeFist" }) {
                 const uint16_t w = tdb.WireByName(nm);
                 srv.SetNamedType(nm, w);
                 std::printf("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");
