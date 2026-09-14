@@ -4552,6 +4552,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 53: fnc = CastMeteorShower(s, arg, lvl, out); break;                         // castMeteorShower_52D8A0
             case 29: fnc = CastFist(s, arg, lvl, out); break;                                 // castFist_52D3C0
             case 10: case 11: fnc = CastCleansingFlame(spell, s, lvl, out); break;            // spellCastCleansingFlame_52D5C0
+            case 2: fnc = CastArachnaphobia(s, arg, out); break;                              // spellArachna_52DC80
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
@@ -5331,6 +5332,21 @@ void Server::UpdatePlaced(std::vector<OutPacket>& out) {
             }
             if (frame_ - o.createdFrame > 3u * static_cast<uint32_t>(kServerTickRate)) { DestroyPlaced(i, out); continue; }
         }
+        // ── kind 7 — 거미 낳는 자리(updateArachnaphobia_53DA60) ──────────────
+        //   판정 프레임(+136)이 지나면 **SmallSpider 한 마리**를 제자리에 낳고 다음은 **1~5틱 뒤**.
+        //   만든 지 **3초(90틱)** 가 넘으면 사라진다. ⚠ 낳은 뒤에도 검사하므로 마지막 틱에도 한 마리 더 나온다.
+        if (o.kind == 7) {
+            if (frame_ > o.nextHitFrame) {
+                const float sx = o.x, sy = o.y;
+                const std::string owner = o.owner;
+                SpawnCreature(NamedType("SmallSpider"), sx, sy, owner);
+                placed_[i].nextHitFrame = frame_ + 1 + NextRandom(5);   // randomInt(1,5)
+            }
+            if (frame_ - placed_[i].createdFrame > 3u * static_cast<uint32_t>(kServerTickRate)) {
+                DestroyPlaced(i, out);
+                continue;
+            }
+        }
         // ── kind 4 — 유성우 뿌리개(updateMeteorShower_53D5A0) ────────────────
         //   만든 뒤 **5초(150틱)** 동안 **4~8틱마다** 운석 하나를 무작위 자리에 떨군다.
         //   자리 = 방향 무작위(0~255) · 거리 = `무작위실수(4,12)`의 **제곱**(16~144).
@@ -5475,6 +5491,34 @@ int Server::CastMeteorShower(Session& caster, const SpellArg& arg, int lvl, std:
     }
     if (PlacedObj* so = PlaceObject(NamedType("MeteorShower"), arg.x, arg.y, caster.addr, kPlacedNoLife, /*kind=*/4))
         so->damage = static_cast<int>(BalanceFloatInd("MeteorDamage", lvl - 1));
+    return 1;
+}
+
+// newObjectWithTypeInd_4E3450 + createAt_4DAA50 — 몬스터 하나를 그 자리에 만든다.
+//   ⚠ 움직임·AI 는 묶음 6·7 이다. 여기서는 **나오는 것까지**가 산출물이다.
+void Server::SpawnCreature(uint16_t type, float x, float y, const std::string& owner) {
+    if (type == 0) return;
+    Creature k;
+    k.owner = owner;
+    k.type = type;
+    k.netCode = nextShotNetCode_++;
+    if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+    k.x = x;
+    k.y = y;
+    k.health = static_cast<uint16_t>(TuningFor(type).health);
+    pets_.push_back(k);
+}
+
+// spellArachna_52DC80(`GAME4_2.c:10327`) — 시전자→커서 선 추적(5)이 통하면 그 자리에
+//   `ArachnaphobiaFocus`(보이지 않는 자리표)를 놓는다. 막히면 글(0·2)을 내고 0.
+int Server::CastArachnaphobia(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out) {
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    if (!MapTraceRay(cx, cy, arg.x, arg.y, 0x5)) {           // traceRay_5374B0
+        InformSpell(caster, 0, 2, out);
+        return 0;
+    }
+    if (PlacedObj* ao = PlaceObject(NamedType("ArachnaphobiaFocus"), arg.x, arg.y, caster.addr, kPlacedNoLife, /*kind=*/7))
+        ao->nextHitFrame = frame_;                           // +136 초깃값 — 놓자마자 한 마리
     return 1;
 }
 

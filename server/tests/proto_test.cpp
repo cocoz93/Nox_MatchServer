@@ -6792,6 +6792,94 @@ void TestCleansingFlame() {
     std::printf("  4-c4(3) — 정화의 불꽃 48개·바깥으로 나감·붉은 피해/파란 마나 빨기·하나만·수명·세기 4·벽 가림\n");
 }
 
+// ── 묶음 4-c4(4) — 거미공포(Arachnaphobia) ────────────────────────────
+//
+// `spellArachna_52DC80` — 독구름과 같은 꼴로 커서 자리에 `ArachnaphobiaFocus`(보이지 않는 자리표)를 놓는다.
+//   시전자→커서 선 추적(5)이 막히면 글(0·2)을 내고 거절.
+// `updateArachnaphobia_53DA60` — **1~5틱마다 SmallSpider 한 마리**를 그 자리에 낳고, 만든 지 **3초**면 사라진다.
+//   ⚠ 거미의 움직임·AI 는 묶음 6·7 — 여기서는 **나오는 것까지**가 산출물이다.
+void TestArachnaphobia() {
+    const std::string a = "10.9.9.1:9901";
+    auto mk = [&](nox::Server& srv) {
+        srv.SetNamedType("ArachnaphobiaFocus", 940);
+        srv.SetNamedType("SmallSpider", 941);
+        srv.SetSpellDef(2, 10, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
+        srv.DebugEnterGame(a, 800, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+
+    // ① 커서 자리에 자리표가 놓이고 거미가 **여러 마리** 나온다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1200, 1000);
+        CastAndWait(srv, a, 2, false, ms, out);
+        Check(srv.PlacedCount() == 1, "거미 자리표가 안 놓였다");
+        Check(srv.pets() == 0, "놓자마자 거미가 나왔다 — 첫 틱부터여야 한다");
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        if (srv.pets() < 5) std::printf("  [거미] 30틱에 나온 수 %zu — 1~5틱마다 한 마리여야 한다\n", srv.pets());
+        Check(srv.pets() >= 5, "거미가 너무 적게 나왔다");
+        // 사이가 **적어도 두 틱**이라(다음 = 지금 + 1~5 이고 검사는 `>`) 30틱에 많아야 15 다.
+        // ⚠ 20 보다 느슨하게 잡으면 「매 틱 낳기」(30마리)가 안 걸린다 — 실측으로 정한 값이다.
+        if (srv.pets() > 20) std::printf("  [거미] 30틱에 나온 수 %zu — 15 안쪽이어야 한다\n", srv.pets());
+        Check(srv.pets() <= 20, "거미가 너무 많이 나왔다(판정 주기 1~5틱이 빠졌나)");
+    }
+
+    // ② 거미는 **자리표 자리**에 나온다(시전자 발밑이 아니다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1200, 1000);
+        CastAndWait(srv, a, 2, false, ms, out);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() > 0, "거미가 없다(시험 전제)");
+        double px = 0, py = 0;
+        Check(srv.DebugPetXY(0, px, py), "거미 자리를 못 읽었다");
+        Check(std::abs(px - 1200.0) < 5.0 && std::abs(py - 1000.0) < 5.0, "거미가 자리표 자리에 안 나왔다");
+    }
+
+    // ③ **3초(90틱)** 면 자리표가 사라지고 더는 안 나온다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1200, 1000);
+        CastAndWait(srv, a, 2, false, ms, out);
+        for (int t = 0; t < 80; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlacedCount() == 1, "80틱 만에 자리표가 사라졌다 — 3초는 남아야 한다");
+        const size_t n80 = srv.pets();
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlacedCount() == 0, "100틱이 지났는데 자리표가 안 걷혔다");
+        const size_t n100 = srv.pets();
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() == n100, "자리표가 사라졌는데 거미가 더 나왔다");
+        Check(n100 > n80, "80~100틱 사이에 거미가 안 늘었다(시험 전제)");
+    }
+
+    // ④ 벽 뒤에는 **못 놓는다**(선 추적 5) — 칸 50 이 시전자와 커서 사이
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWalls({ { 50, 43 } });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1200, 1000);
+        CastAndWait(srv, a, 2, false, ms, out);
+        Check(srv.PlacedCount() == 0, "벽 뒤인데 거미 자리표가 놓였다");
+        Check(srv.pets() == 0, "벽 뒤인데 거미가 나왔다");
+    }
+    std::printf("  4-c4(4) — 거미공포 자리표·1~5틱마다 거미·자리표 자리에 나옴·3초 수명·벽 뒤 못 놓음\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -8898,6 +8986,7 @@ int main() {
     TestMeteor();
     TestFist();
     TestCleansingFlame();
+    TestArachnaphobia();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

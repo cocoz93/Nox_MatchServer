@@ -422,7 +422,8 @@ int main(int argc, char** argv) {
             for (const char* nm : { "ToxicCloud", "MediumFlame", "Meteor", "MeteorShower", "MeteorExplode",
                                     "SmallFist", "MediumFist", "LargeFist",
                                     "SmallFlameCleanse", "MediumFlameCleanse", "FlameCleanse", "LargeFlameCleanse",
-                                    "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse" }) {
+                                    "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse",
+                                    "ArachnaphobiaFocus", "SmallSpider" }) {
                 const uint16_t w = tdb.WireByName(nm);
                 srv.SetNamedType(nm, w);
                 std::printf("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");

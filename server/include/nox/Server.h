@@ -1846,6 +1846,8 @@ private:
         uint8_t kind = 0;            // 주기 함수 갈래 — 1 = 독구름(ToxicCloudUpdate) · 2 = 닿음 피해(DamageCollide)
                                      //                 3 = 떨어지는 운석(MeteorUpdate) · 4 = 유성우 뿌리개(MeteorShowerUpdate)
                                      //                 5 = 떨어지는 주먹(FistUpdate + FistCollide)
+                                     //                 6 = 바깥으로 나가는 불꽃(FlameCleanse)
+                                     //                 7 = 거미 낳는 자리(ArachnaphobiaUpdate)
         bool landed = false;         // +16 비트 31 — 주먹이 한 번 땅에 닿았나(닿음 피해는 그 뒤에만)
         // ★ kind 6 — 바깥으로 나가는 불꽃(정화의 불꽃). 놓인 것 가운데 **처음으로 움직인다**.
         float velX = 0.0f, velY = 0.0f;      // +80 — 매 틱 자리에 더한다(감쇠 0)
@@ -1948,6 +1950,8 @@ private:
     void MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out);                                       // meteorExplode_53D6E0
     int CastFist(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);            // castFist_52D3C0
     int CastCleansingFlame(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out);        // spellCastCleansingFlame_52D5C0
+    int CastArachnaphobia(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);            // spellArachna_52DC80
+    void SpawnCreature(uint16_t type, float x, float y, const std::string& owner);                       // newObjectWithTypeInd + createAt
     void PlacedCollide(PlacedObj& o, std::vector<OutPacket>& out);                                       // 놓인 것의 닿음 함수(피해·마나 빨기)
     // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.
     //   skip 은 이미 직접 맞은 것(두 번 때리지 않는다). 벽 너머(선 추적 1)는 안 닿는다.
