@@ -513,8 +513,10 @@ int main(int argc, char** argv) {
                 // ⚠ 숫자를 회복량으로 읽어도 되는 갈래는 둘뿐이다(ThingDb.h 주석).
                 //   ⚠ 「무엇을 하는가」는 이제 `SUBCLASS` 비트가 정한다(아래 `foodBits`) —
                 //     예전엔 SUBCLASS 글자에 "MANA" 가 들었나로 갈랐는데, 그러면 갈래 열일곱을 못 가른다.
-                if (ti->useHandler == "PotionUse" || ti->useHandler == "ConsumeUse")
-                    w2.useAmount = ti->useArg;
+                // ★ 묶음 5-d — **무엇을 부를지**는 `USE` 의 앞말이 정한다. 값은 갈래마다 뜻이 다르다.
+                //   ⚠ `ConsumeUse` 값은 **음수일 수 있다**(실측 −15) — 먹으면 깎이는 음식이다.
+                w2.useFn = nox::UseFnOf(ti->useHandler);
+                if (w2.useFn != nox::UseFn::None) w2.useAmount = ti->useArg;
                 w2.equipBit = ebit;
                 w2.isWeapon = isW;
                 // ★ 묶음 5 — 줍기 한도를 재는 두 값. 여기까지 온 물건은 `hasWeight` 가 참이다.

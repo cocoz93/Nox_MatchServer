@@ -2279,6 +2279,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.weight = w.weight;
                 c.isFood = w.isFood;
                 c.foodBits = w.foodBits;
+                c.useFn = w.useFn;
                 s.inventory.push_back(c);
                 ++picked_;
                 ++handled_;
@@ -2302,7 +2303,17 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 if (at == s.inventory.size()) { ++handled_; break; }
 
                 const Session::Carried c = s.inventory[at];
-                if (UsePotion(s, c, out)) {
+                // ★ 묶음 5-d — **무엇을 부를지는 `USE` 의 앞말이 정한다**(`UseFn`).
+                //   전에는 무엇이든 물약 길로 보냈다 — 사과·버섯·사이다가 조용히 아무 일도 안 했다.
+                bool spent = false;
+                switch (c.useFn) {
+                    case UseFn::Potion:         spent = UsePotion(s, c, out); break;
+                    case UseFn::Consume:        spent = UseConsume(s, c, out); break;
+                    case UseFn::Mushroom:       spent = UseMushroom(s, out); break;
+                    case UseFn::ConsumeConfuse: spent = UseCiderConfuse(s, c, out); break;
+                    default: break;             // 아직 안 옮긴 갈래(책·완드·활) — 아무 일도 안 난다
+                }
+                if (spent) {
                     // 쓴 것은 없어진다. 세계에 되돌려 놓지 않는다.
                     s.inventory.erase(s.inventory.begin() + static_cast<long>(at));
                     ++used_;
@@ -2399,6 +2410,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.weight = s.inventory[i].weight;
                     back.isFood = s.inventory[i].isFood;
                     back.foodBits = s.inventory[i].foodBits;
+                    back.useFn = s.inventory[i].useFn;
                     back.x = s.x;
                     back.y = s.y;
                     statics_.push_back(back);
@@ -5521,6 +5533,51 @@ int Server::DurTelePopTick(DurSpell& d, std::vector<OutPacket>& out) {
     TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
     return 1;
+}
+
+// ── 묶음 5-d 먹을거리·버섯·사이다 ─────────────────────────────────────
+//
+// useConsume_53EE10(`object_use.go:13~55`) — 먹는 것.
+//   · 먹을거리(CLASS 에 FOOD)가 아니면 아무 일도 안 난다
+//   · **물약 갈래(`POTION`)는 여기서 빠진다** — 그쪽은 `usePotion` 이 맡는다
+//   · **체력이 가득이면 안 먹는다**(그대로 남는다)
+//   · `USE` 값만큼 체력을 움직이고 없어진다
+//     ★ 값이 **음수인 것이 있다** — thing.bin 실측 `USE = ConsumeUse -15`.
+//       먹으면 깎이는 음식이다. 「회복량」이라고 부르면 이 갈래를 놓친다
+// ⚠ 안 옮긴 것 — 남녀·먹을거리 갈래별 소리(`SoundHumanFemaleEatApple` 따위)는 묶음 10.
+bool Server::UseConsume(Session& s, const Session::Carried& c, std::vector<OutPacket>& out) {
+    if (!c.isFood) return false;                             // CLASS 에 FOOD 가 아님
+    if (c.foodBits & kFoodPotion) return false;              // 물약은 usePotion 담당
+    if (c.useAmount == 0) return false;                      // UseData 없음
+    if (s.health >= s.maxHealth) return false;               // 가득이면 안 먹는다
+    UnitAdjustHP(Target{ s.addr, -1 }, c.useAmount, out);
+    return true;
+}
+
+// useMushroom_53ECE0(`object_use.go:57~70`) — 버섯.
+//   · 독이 있으면 **풀고** 글 `Use.c:MushroomClean` · 없으면 글 `Use.c:MushroomConfuse`
+//   · ★ **어느 쪽이든 10초 혼란(세기 5)** 이 걸린다. 독을 풀어도 어지럽다
+//   · 늘 없어진다(체력이 가득이어도)
+bool Server::UseMushroom(Session& s, std::vector<OutPacket>& out) {
+    if (s.poison != 0) {
+        RemovePoison(Target{ s.addr, -1 }, out);
+        SendPriMsg(s, "Use.c:MushroomClean", out);
+    } else {
+        SendPriMsg(s, "Use.c:MushroomConfuse", out);
+    }
+    ApplyEnchant(Target{ s.addr, -1 }, 3, 10 * static_cast<int>(kServerTickRate), 5);   // ENCHANT_CONFUSED
+    return true;
+}
+
+// useCiderConfuse_53EF00(`object_use.go:72~85`) — 사이다.
+//   · **5초 혼란(세기 4)** + 글 `Use.c:CiderConfuse`
+//   · 그러고 나서 먹기(`useConsume`)를 부른다 — 체력이 가득이면 안 채워지지만
+//     ★ **사이다는 그래도 없어진다**(정답지가 `useConsume` 의 답과 무관하게 지운다)
+bool Server::UseCiderConfuse(Session& s, const Session::Carried& c, std::vector<OutPacket>& out) {
+    ApplyEnchant(Target{ s.addr, -1 }, 3, 5 * static_cast<int>(kServerTickRate), 4);    // ENCHANT_CONFUSED
+    SendPriMsg(s, "Use.c:CiderConfuse", out);
+    UseConsume(s, c, out);
+    return true;
 }
 
 // ── 묶음 5-c 줍는 순간 마시기 ─────────────────────────────────────────

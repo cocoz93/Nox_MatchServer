@@ -1787,6 +1787,8 @@ void TestUseAndEquip() {
     SetWeights(st, 8);
     st[0].foodBits = nox::kFoodPotion | nox::kFoodHealthPotion;
     st[1].foodBits = nox::kFoodPotion | nox::kFoodManaPotion;
+    // ★ 5-d — **무엇을 부를지는 `USE` 의 앞말이 정한다**. 안 담으면 아무 일도 안 난다
+    st[0].useFn = st[1].useFn = nox::UseFn::Potion;
     srv.SetWorldStatics(st);
     for (uint16_t nc : { kRed, kBlue, kSword, kBook }) {
         std::vector<nox::OutPacket> out;
@@ -8193,6 +8195,7 @@ void TestUsePotion() {
         nox::Server::WorldStatic w;
         w.netCode = nextNc; w.type = 638; w.x = 1000; w.y = 1000;
         w.weight = 5; w.isFood = true; w.foodBits = bits; w.useAmount = amount;
+        w.useFn = nox::UseFn::Potion;                        // 5-d — 무엇을 부를지는 USE 앞말이 정한다
         st.push_back(w);
         srv.SetWorldStatics(st);
         std::vector<nox::OutPacket> o;
@@ -8394,6 +8397,7 @@ void TestPickupPotion() {
         nox::Server::WorldStatic w;
         w.netCode = nextNc; w.type = 638; w.x = 1000; w.y = 1000;
         w.weight = 5; w.isFood = true; w.foodBits = bits; w.useAmount = amount;
+        w.useFn = nox::UseFn::Potion;                        // 5-d — 무엇을 부를지는 USE 앞말이 정한다
         w.potionPickup = potionPickup;
         st.push_back(w);
         srv.SetWorldStatics(st);
@@ -8477,7 +8481,7 @@ void TestPickupPotion() {
         w.netCode = 590; w.type = 638; w.x = 1000; w.y = 1000;
         w.weight = 5; w.isFood = true;
         w.foodBits = nox::kFoodPotion | nox::kFoodManaPotion;
-        w.useAmount = 50; w.potionPickup = true;
+        w.useAmount = 50; w.useFn = nox::UseFn::Potion; w.potionPickup = true;
         st.push_back(w);
         srv.SetWorldStatics(st);
         std::vector<nox::OutPacket> out;
@@ -8554,7 +8558,7 @@ void TestPickupPotion() {
         w2.netCode = 595; w2.type = 638; w2.x = 1000; w2.y = 1000;
         w2.weight = 5; w2.isFood = true;
         w2.foodBits = nox::kFoodPotion | nox::kFoodManaPotion;
-        w2.useAmount = 50; w2.potionPickup = true;
+        w2.useAmount = 50; w2.useFn = nox::UseFn::Potion; w2.potionPickup = true;
         st2.push_back(w2);
         s2.SetWorldStatics(st2);
         const std::vector<uint8_t> g2 = CodePacket(nox::Op::TRY_GET, 595);
@@ -8563,6 +8567,178 @@ void TestPickupPotion() {
         Check(s2.CarriedCount(a) == 0, "마셨는데 가방에도 들어갔다");
     }
     std::printf("  5-c — 줍는 순간: 넘치면 안 마시고 가방(경계 <) · 모자라면 그 자리에서 마심 · 마나도 같은 꼴 · PotionPickup 만 · 워리어는 마나 물약 못 듦 · 독 있으면 바로 풀림\n");
+}
+
+// ── 묶음 5-d — 먹을거리·버섯·사이다 ────────────────────────────────────
+//
+// 여태 `TRY_USE` 는 **무엇이든 물약 길로** 보냈다. 사과·버섯·사이다는 조용히 아무 일도 안 났다.
+// 정답지는 `USE` 의 **앞말**로 부를 함수를 고른다(`legacy/object_use.go:26~56`).
+//   · `ConsumeUse` — 먹기. **체력이 가득이면 안 먹는다** · 물약 갈래는 여기서 빠진다
+//     ★ 값이 **음수인 것이 있다**(thing.bin 실측 `ConsumeUse -15`) — 먹으면 깎이는 음식이다
+//   · `MushroomUse` — 독이 있으면 풀고 `Use.c:MushroomClean`, 없으면 `Use.c:MushroomConfuse`.
+//     **어느 쪽이든 10초 혼란(세기 5)** 이 걸린다
+//   · `ConsumeConfuseUse` — **5초 혼란(세기 4)** + `Use.c:CiderConfuse` + 먹기.
+//     ★ 체력이 가득이라 안 먹혀도 **사이다는 없어진다**
+void TestEatAndMushroom() {
+    const std::string a = "10.5.4.1:5401";
+    uint16_t nextNc = 600;
+    auto give = [&](nox::Server& srv, nox::UseFn fn, uint32_t bits, int amount) {
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = nextNc; w.type = 640; w.x = 1000; w.y = 1000;
+        w.weight = 2; w.isFood = true; w.foodBits = bits;
+        w.useAmount = amount; w.useFn = fn;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> o;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nextNc);
+        srv.OnPacket(a, g.data(), g.size(), o);
+        return nextNc++;
+    };
+    auto use = [&](nox::Server& srv, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> u = CodePacket(nox::Op::TRY_USE, nc);
+        srv.OnPacket(a, u.data(), u.size(), out);
+    };
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+
+    // ① **체력이 가득이면 안 먹는다** — 음식이 그대로 남는다
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t apple = give(srv, nox::UseFn::Consume, nox::kFoodApple, 10);
+        std::vector<nox::OutPacket> out;
+        use(srv, apple, out);
+        Check(srv.CarriedCount(a) == 1, "가득 찼는데 사과가 없어졌다");
+        srv.Damage(a, 30, out);
+        const uint16_t h0 = srv.HealthOf(a);
+        use(srv, apple, out);
+        Check(srv.HealthOf(a) == h0 + 10, "사과가 10 을 안 채웠다");
+        Check(srv.CarriedCount(a) == 0, "먹었는데 안 없어졌다");
+    }
+
+    // ② **먹으면 깎이는 음식** — `ConsumeUse -15` 는 실측이다
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t bad = give(srv, nox::UseFn::Consume, nox::kFoodSimple, -15);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 30, out);                              // 가득이면 아예 안 먹으므로 먼저 깎는다
+        const uint16_t h0 = srv.HealthOf(a);
+        use(srv, bad, out);
+        Check(srv.HealthOf(a) == h0 - 15, "음수 음식이 체력을 안 깎았다");
+        Check(srv.CarriedCount(a) == 0, "먹었는데 안 없어졌다");
+    }
+
+    // ③ **물약 갈래는 먹기에서 빠진다** — `usePotion` 이 맡는다
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t p2 = give(srv, nox::UseFn::Consume,
+                                 nox::kFoodPotion | nox::kFoodHealthPotion, 50);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 30, out);
+        const uint16_t h0 = srv.HealthOf(a);
+        use(srv, p2, out);
+        Check(srv.HealthOf(a) == h0, "물약 갈래인데 먹기가 처리했다");
+        Check(srv.CarriedCount(a) == 1, "안 먹었는데 없어졌다");
+    }
+
+    // ④ **버섯 — 독이 없으면 혼란만** (글도 다르다)
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t mush = give(srv, nox::UseFn::Mushroom, nox::kFoodMushroom, 0);
+        std::vector<nox::OutPacket> out;
+        use(srv, mush, out);
+        Check(srv.DebugHasEnchant(a, 3), "버섯인데 혼란이 안 걸렸다");
+        Check(srv.DebugEnchantPower(a, 3) == 5, "버섯 혼란 세기가 5 가 아니다");
+        Check(HasPriMsg(out, a, "Use.c:MushroomConfuse"), "독이 없는데 MushroomConfuse 가 안 왔다");
+        Check(!HasPriMsg(out, a, "Use.c:MushroomClean"), "독이 없는데 MushroomClean 이 왔다");
+        Check(srv.CarriedCount(a) == 0, "버섯이 안 없어졌다");
+    }
+
+    // ⑤ **버섯 — 독이 있으면 풀고, 그래도 혼란은 걸린다**
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t mush = give(srv, nox::UseFn::Mushroom, nox::kFoodMushroom, 0);
+        std::vector<nox::OutPacket> out;
+        srv.DebugPoisonPlayer(a, 5);
+        use(srv, mush, out);
+        Check(srv.DebugPoisonOf(a) == 0, "버섯이 독을 안 풀었다");
+        Check(HasPriMsg(out, a, "Use.c:MushroomClean"), "독을 풀었는데 MushroomClean 이 안 왔다");
+        Check(srv.DebugHasEnchant(a, 3), "독을 풀었다고 혼란이 안 걸렸다 — 어느 쪽이든 걸려야 한다");
+    }
+
+    // ⑥ **사이다 — 5초 혼란(세기 4) + 먹기**
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t cider = give(srv, nox::UseFn::ConsumeConfuse, nox::kFoodJug, 10);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 30, out);
+        const uint16_t h0 = srv.HealthOf(a);
+        use(srv, cider, out);
+        Check(srv.DebugHasEnchant(a, 3), "사이다인데 혼란이 안 걸렸다");
+        Check(srv.DebugEnchantPower(a, 3) == 4, "사이다 혼란 세기가 4 가 아니다(버섯과 다르다)");
+        Check(HasPriMsg(out, a, "Use.c:CiderConfuse"), "사이다 글이 안 왔다");
+        Check(srv.HealthOf(a) == h0 + 10, "사이다가 10 을 안 채웠다");
+        Check(srv.CarriedCount(a) == 0, "사이다가 안 없어졌다");
+    }
+
+    // ⑦ **체력이 가득이면 사이다는 안 채우지만 그래도 없어진다**
+    //   (정답지가 `useConsume` 의 답과 무관하게 지운다 — 사과와 갈리는 자리)
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t cider = give(srv, nox::UseFn::ConsumeConfuse, nox::kFoodJug, 10);
+        std::vector<nox::OutPacket> out;
+        const uint16_t h0 = srv.HealthOf(a);
+        use(srv, cider, out);
+        Check(srv.HealthOf(a) == h0, "가득인데 사이다가 채웠다");
+        Check(srv.CarriedCount(a) == 0, "가득이어도 사이다는 없어져야 한다");
+        Check(srv.DebugHasEnchant(a, 3), "가득이어도 혼란은 걸려야 한다");
+    }
+
+    // ⑧ **아직 안 옮긴 갈래는 아무 일도 안 난다** — 그대로 남는다
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t book = give(srv, nox::UseFn::None, 0, 0);   // ReadUse 따위
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 30, out);
+        const uint16_t h0 = srv.HealthOf(a);
+        use(srv, book, out);
+        Check(srv.HealthOf(a) == h0, "안 옮긴 갈래가 뭔가 했다");
+        Check(srv.CarriedCount(a) == 1, "안 옮긴 갈래인데 없어졌다");
+    }
+    // ⑨ **먹을거리가 아니면 안 먹는다** — `CLASS` 에 FOOD 가 없으면 `ConsumeUse` 라도 그냥 남는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 690; w.type = 641; w.x = 1000; w.y = 1000;
+        w.weight = 2; w.isFood = false;                      // ★ 먹을거리가 아니다
+        w.useAmount = 10; w.useFn = nox::UseFn::Consume;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 690);
+        srv.OnPacket(a, g.data(), g.size(), out);
+        Check(srv.CarriedCount(a) == 1, "못 들었다(이 시험의 전제)");
+        srv.Damage(a, 30, out);
+        const uint16_t h0 = srv.HealthOf(a);
+        use(srv, 690, out);
+        Check(srv.HealthOf(a) == h0, "먹을거리가 아닌데 먹혔다");
+        Check(srv.CarriedCount(a) == 1, "먹을거리가 아닌데 없어졌다");
+    }
+
+    // ⑩ **`USE` 앞말을 갈래로 옮기는 표** — 하나만 어긋나도 엉뚱한 함수가 불린다
+    {
+        Check(nox::UseFnOf("PotionUse") == nox::UseFn::Potion, "PotionUse 가 안 옮겨졌다");
+        Check(nox::UseFnOf("ConsumeUse") == nox::UseFn::Consume, "ConsumeUse 가 안 옮겨졌다");
+        Check(nox::UseFnOf("ConsumeConfuseUse") == nox::UseFn::ConsumeConfuse,
+              "ConsumeConfuseUse 가 안 옮겨졌다 — 앞 세 글자가 같아 Consume 으로 새기 쉽다");
+        Check(nox::UseFnOf("MushroomUse") == nox::UseFn::Mushroom, "MushroomUse 가 안 옮겨졌다");
+        Check(nox::UseFnOf("ReadUse") == nox::UseFn::None, "아직 안 옮긴 갈래가 None 이 아니다");
+        Check(nox::UseFnOf("") == nox::UseFn::None, "빈 이름이 None 이 아니다");
+    }
+    std::printf("  5-d — 먹기: 가득이면 안 먹음 · 음수 음식은 깎음 · 물약 갈래는 빠짐 · 먹을거리 아니면 안 먹음 · 버섯 10초 혼란(세기 5)·독 풀기 · 사이다 5초(세기 4)·가득이어도 없어짐 · USE 앞말 표\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
@@ -8914,6 +9090,23 @@ void TestThingDb() {
             const nox::ThingInfo* at = ap ? db.ByWire(ap) : nullptr;
             Check(at && at->pickupFn != "PotionPickup",
                   "RedApple 이 물약 갈래로 읽혔다");
+        }
+        // ★ 묶음 5-d — **쓸 때 부르는 함수**도 파일 값이다(`USE = ConsumeUse 10`).
+        //   버섯·사이다는 값이 갈래를 정한다 — 이름이 비슷해 헷갈리기 쉬운 자리다.
+        {
+            struct { const char* nm; nox::UseFn fn; } kUse[] = {
+                { "RedPotion", nox::UseFn::Potion },
+                { "RedApple",  nox::UseFn::Consume },
+                { "Mushroom",  nox::UseFn::Mushroom },
+                { "Cider",     nox::UseFn::ConsumeConfuse },
+            };
+            for (const auto& k : kUse) {
+                const uint16_t wc = db.WireByName(k.nm);
+                const nox::ThingInfo* ti = wc ? db.ByWire(wc) : nullptr;
+                if (!ti || nox::UseFnOf(ti->useHandler) != k.fn)
+                    std::printf("  [실패] %s 의 USE 갈래가 다르다(읽은 이름 %s)\n",
+                                k.nm, ti ? ti->useHandler.c_str() : "?");
+            }
         }
         struct { const char* nm; int w; } kWeights[] = {
             { "RedApple", 2 }, { "BluePotion", 5 }, { "RedPotion", 8 },
@@ -10725,6 +10918,7 @@ int main() {
     TestPickupLimits();
     TestUsePotion();
     TestPickupPotion();
+    TestEatAndMushroom();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

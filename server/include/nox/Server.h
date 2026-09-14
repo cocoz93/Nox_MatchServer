@@ -35,6 +35,21 @@ namespace nox {
 // ⚠ **숫자를 회복량으로 읽어도 되는 갈래는 둘뿐이다** — `PotionUse`(물약)·`ConsumeUse`(음식).
 //   `WandUse 20` 의 20 은 회복이 아니라 완드 충전이고, `ReadUse`(책 70종)는 숫자가 없다.
 //   그래서 「모르는 갈래」를 None 으로 두고 **아무 일도 안 일어나게** 한다 — 지어내지 않는다.
+// ★ 묶음 5-d — **쓸 때 부르는 함수**(`USE = ConsumeUse 10` 의 앞말).
+//   정답지 등록표(`legacy/object_use.go:26~56`) · thing.bin 실측 분포 —
+//   ReadUse 140 · PotionUse 32 · WandUse 12 · **ConsumeUse 12** · SpellRewardUse 10 ·
+//   WandCastUse 8 · WarpReadUse 4 · BowUse 4 · AmmoUse 4 · **MushroomUse 2** ·
+//   FireWandUse 2 · FieldGuideUse 2 · **ConsumeConfuseUse 2** · AbilityRewardUse 2.
+//   ⚠ 여기 넣은 넷 말고는 아직 안 옮겼다 — 책(Read)·완드(Wand)·활(Bow)은 뒤 조각이다.
+enum class UseFn : uint8_t { None = 0, Potion, Consume, ConsumeConfuse, Mushroom };
+inline UseFn UseFnOf(const std::string& name) {
+    if (name == "PotionUse") return UseFn::Potion;
+    if (name == "ConsumeUse") return UseFn::Consume;
+    if (name == "ConsumeConfuseUse") return UseFn::ConsumeConfuse;
+    if (name == "MushroomUse") return UseFn::Mushroom;
+    return UseFn::None;
+}
+
 // ★★ 묶음 5-b — **먹을거리 갈래 비트**(`SUBCLASS = POTION+HEALTH_POTION` 의 뒷말).
 //   ⭕ 이름과 **차례**는 `blob_587000.dat` 0xf968~0xfa78 의 이름표에서 그대로 뽑았다
 //     (`SIMPLE` `APPLE` `JUG` `POTION` `HEALTH_POTION` … `VAMPIRISM_POTION`).
@@ -300,6 +315,7 @@ struct Session {
         uint8_t weight = 255;   // 묶음 5 — 줍기 한도를 재는 무게. 세계에 있을 때 값을 그대로 들고 온다
         bool isFood = false;    // 묶음 5 — 같은 종류 개수 한도(셋)를 재는 갈래
         uint32_t foodBits = 0;  // 묶음 5-b — SUBCLASS 먹을거리 갈래 비트(FoodClassBits)
+        UseFn useFn = UseFn::None;   // 묶음 5-d — 쓸 때 부르는 함수 갈래
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
@@ -930,6 +946,8 @@ public:
         // ★ 묶음 5-b — `SUBCLASS` 의 먹을거리 갈래 비트(`FoodClassBits`).
         //   물약이 무엇을 하는지가 여기 있다 — 체력·마나·독 해제·버프 여덟·방패.
         uint32_t foodBits = 0;
+        // ★ 묶음 5-d — **쓸 때 부르는 함수**(`USE = ConsumeUse 10` 의 앞말).
+        UseFn useFn = UseFn::None;
         // ★ 묶음 5-c — **줍는 순간 부르는 함수가 물약 갈래인가**(`PICKUP = PotionPickup`).
         //   참이면 줍는 그 자리에서 마실 수 있고, 마셨으면 가방에 안 들어간다.
         bool potionPickup = false;
@@ -2124,6 +2142,10 @@ private:
     bool UsePotion(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);
     // 묶음 5-c — 줍는 순간(`pickupPotion_4F37D0`). −1 못 줍는다 · 0 그냥 가방 · 1 그 자리에서 마셨다
     int PickupPotion(Session& s, const WorldStatic& w, std::vector<OutPacket>& out);
+    // 묶음 5-d — 먹기(`useConsume_53EE10`) · 버섯(`useMushroom_53ECE0`) · 사이다(`useCiderConfuse_53EF00`)
+    bool UseConsume(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);
+    bool UseMushroom(Session& s, std::vector<OutPacket>& out);
+    bool UseCiderConfuse(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);
     void PoisonTick(std::vector<OutPacket>& out);                                                        // server.go:175~201 감쇠 + 피해
     int CastPoison(const std::string& obj3, const Target& targ, int lvl, std::vector<OutPacket>& out);   // castPoison_52C720
     Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기
