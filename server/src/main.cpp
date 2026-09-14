@@ -432,7 +432,7 @@ int main(int argc, char** argv) {
             //   `COLLIDE = SparkExplosionCollide 192` 의 숫자가 터짐 크기를 다 정하므로 **짐작하지 않는다**.
             //   ★ 묶음 6-g(3b) — **크리처가 쏘는 것**도 같은 자리에서 읽는다.
             //     `ImpShot` 은 `SPEED = 400` · `COLLIDE = ProjectileCollide 5` 다
-            for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot" }) {
+            for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "HarpoonBolt" }) {
                 const uint16_t w = tdb.WireByName(nm);
                 const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
                 int amount = 0;

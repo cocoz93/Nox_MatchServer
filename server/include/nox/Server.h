@@ -524,6 +524,12 @@ struct Session {
     bool     abilActive[kAbilityCount] = {};       // ExecList 에 얹혀 있나
     uint32_t abilActiveUntil[kAbilityCount] = {};  // ExecAbilityClass.Frame — 이 프레임을 **넘으면** 끝
     bool     overweight = false;                   // +3656 짐 넘침 — 광전사 돌진을 막는다
+    // 묶음 7-f 작살 — 사람 자료 +132(대상) +136(화살) +140(frame35) +144(대상 자리) +152(frame38)
+    uint16_t harpoonBoltNc = 0;                    // 0 = 줄이 없다
+    Target   harpoonTarget;                        // 꽂힌 상대(없으면 none)
+    float    harpoonTargX = 0, harpoonTargY = 0;   // 마지막으로 본 상대 자리
+    uint32_t harpoonFrame35 = 0;                   // 0 이면 「걸림」을 아직 안 알렸다
+    uint32_t harpoonFrame38 = 0;                   // 30틱마다 상대가 움직였나 보는 시계
     // 묶음 7-c — 점수(+2136 `Lessons`)와 죽은 횟수(+2140). 둘 다 `4e` 한 통에 실린다
     int32_t score = 0;
     uint32_t deaths = 0;
@@ -1817,6 +1823,16 @@ public:
         if (!assist.empty()) MarkAssist(assist, Target{ victim, -1 });
         PlayerUpdateScore(v->second, out);
     }
+    // 시험용 — 작살
+    uint16_t DebugHarpoonBolt(const std::string& a) const {
+        auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.harpoonBoltNc;
+    }
+    std::string DebugHarpoonTarget(const std::string& a) const {
+        auto i = sessions_.find(a); return i == sessions_.end() ? std::string() : i->second.harpoonTarget.addr;
+    }
+    void DebugHarpoonBreak(const std::string& a, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); if (i != sessions_.end()) HarpoonBreak(i->second, false, out);
+    }
     // 시험용 — 능력
     int DebugAbilLvl(const std::string& a, uint8_t k) const {
         auto i = sessions_.find(a); return i == sessions_.end() || k >= 137 ? -1 : i->second.spellLvl[k];
@@ -2586,6 +2602,12 @@ private:
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
+    // 묶음 7-f — 작살
+    void SendHarpoonFx(uint8_t code, uint16_t n1, uint16_t n2, std::vector<OutPacket>& out);
+    MissileObj* HarpoonBoltOf(const Session& s);
+    void HarpoonDo(Session& s, std::vector<OutPacket>& out);
+    void HarpoonBreak(Session& s, bool emitSound, std::vector<OutPacket>& out);
+    bool HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPacket>& out);
     void AbilityUpdate(Session& s, std::vector<OutPacket>& out);
     void AbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityCancelAll(Session& s, std::vector<OutPacket>& out);

@@ -437,6 +437,16 @@ constexpr const char* kAbilityNames[kAbilityCount] = {
     "ABILITY_HARPOON", "ABILITY_TREAD_LIGHTLY", "ABILITY_EYE_OF_THE_WOLF",
 };
 
+// ── 묶음 7-f 작살 ⭕ gamedata.bin 「# Harpoon Specific」 토막 ─────
+//
+// 값은 파일에 적힌 그대로다. 거리는 맵 눈금, 프레임은 30fps 기준.
+constexpr int      kHarpoonDamage    = 1;     // HarpoonDamage — 꽂힐 때 한 번
+constexpr double   kHarpoonForce     = 10.0;  // HarpoonForce — 매 틱 끌어당기는 힘
+constexpr double   kHarpoonMaxDist   = 375.0; // MaxHarpoonDistance — 이보다 멀어지면 끊긴다
+constexpr double   kHarpoonMinDist   = 20.0;  // MinHarpoonDistance — 이보다 가까워지면 끊긴다(다 끌어왔다)
+constexpr double   kHarpoonMaxFlight = 300.0; // MaxHarpoonFlightDistance — **안 걸린 채** 이보다 멀리 날면 끊긴다
+constexpr uint32_t kHarpoonLifetime  = 150;   // MaxHarpoonExistence — 꽂힌 채 버틸 수 있는 프레임
+
 // ── 묶음 7 성장 ⭕ gamedata.bin `XPTable` ─────────────────────────
 //
 // 「첫 칸이 레벨 **0**, 그다음이 1」이라고 파일에 적혀 있다(주석 그대로).

@@ -7208,9 +7208,126 @@ void Server::AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out
             ApplyEnchant(self, 21, static_cast<int>(kAbilityDuration[5]), s.spellLvl[5]);
             break;
         }
-        default: return;                                   // 3 작살은 다음 조각
+        case 3:     // 작살 — 7-f
+            // ★ 작살은 **`cf 1` 을 안 보낸다.** 정답지 `harpoon.Do` 는 그것을 안 부르고,
+            //   대신 틀에서 `netHarpoonAttach`(`9e 07`)로 **줄이 걸렸다**를 알린다.
+            //   지속도 0 이라 지속 목록에도 안 올라간다 — 그래서 여기서 나간다
+            HarpoonDo(s, out);
+            return;
+        default: return;
     }
     SendAbilityActive(s, abil, true, out);                 // ★ 켜졌다는 여기서 나간다
+}
+
+// ── 묶음 7-f 작살 — 쏘기와 걸림 ───────────────────────────────────────
+//
+// 정답지 `abilityHarpoon`(`src/spell_harpoon.go`) · `NetHarpoonAttach/Break`(`server/network.go`).
+//
+// ⭕ 와이어 둘 — 둘 다 `9e`(지속 주문 그림)에 **갈래 번호만 다르다**.
+//   · 걸림 `9e 07 00 <주인 넷코드 u16> <화살 넷코드 u16>` **7바이트**
+//   · 끊김 `9e 0e 00 <주인 넷코드 u16> <화살 넷코드 u16>` **7바이트**
+//   `NetSendPacketXxx1(255, …)` 라 **모두에게** 가고 **순번 봉투**에 든다 — 줄이 남에게도 보여야 해서다
+//
+// ⭕ 쏘기(`Do`) — 상태 **32** 로 바꾸고 `HarpoonBolt` 을 **보는 쪽**으로 쏜다.
+//   화살은 몸 반지름 **+1** 앞에서 태어나고, 빠르기는 thing.bin `SPEED` 다
+//
+// ⭕ 닿음(`Collide`) — 갈래가 넷 중 하나다.
+//   · **벽**(대상 없음) → 그 칸에 피해 1(종류 11)을 주고 **소리 없이 끊긴다**
+//   · 대상이 **죽었거나 자기 자신** → 아무 일도 안 한다(화살은 그대로 난다)
+//   · 대상이 **적이 아니면** → 피해만 주고 **끊긴다**
+//   · **적이면** → 피해 1 을 주고 **꽂힌다**. 화살은 `NO_COLLIDE` 가 되고 도운 사람으로 기록된다
+//   ⚠ 정답지는 `CallDamage` 의 **돌려준 값**도 본다(막혔으면 끊김) — 우리 `HurtTarget` 은 값을 안 돌려준다.
+//     ⇒ 지금은 **편 가르기만** 본다. 막기 갈래는 그 함수가 값을 돌려주게 될 때 같이 옮긴다
+//
+// ⛔ 끌기와 끊김 관문(거리·수명·안 움직임·시야)은 **다음 조각(7-g)**.
+void Server::SendHarpoonFx(uint8_t code, uint16_t n1, uint16_t n2, std::vector<OutPacket>& out) {
+    const uint8_t msg[7] = { static_cast<uint8_t>(Op::FX_DURATION_SPELL), code, 0,
+                             static_cast<uint8_t>(n1), static_cast<uint8_t>(n1 >> 8),
+                             static_cast<uint8_t>(n2), static_cast<uint8_t>(n2 >> 8) };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+}
+
+// 지금 그 사람의 작살 화살을 찾는다 — 없으면 nullptr
+Server::MissileObj* Server::HarpoonBoltOf(const Session& s) {
+    if (s.harpoonBoltNc == 0) return nullptr;
+    for (auto& m : missiles_) if (m.netCode == s.harpoonBoltNc && !m.destroyed) return &m;
+    return nullptr;
+}
+
+// `abilityHarpoon::Do` — 화살을 만들어 쏜다
+void Server::HarpoonDo(Session& s, std::vector<OutPacket>& out) {
+    PlayerSetState(s, 32, frame_);                           // PlayerState32
+    const ProjTypeInfo* pt = ProjType("HarpoonBolt");
+    if (!pt || pt->type == 0) return;                        // 종류를 모르면 안 만든다
+    HarpoonBreak(s, /*emitSound=*/false, out);               // 남은 것이 있으면 먼저 치운다
+    MissileObj m;
+    m.netCode = nextShotNetCode_++;
+    m.type = pt->type;
+    m.flags = pt->flags;
+    const double r = static_cast<double>(kPlayerRadius) + 1.0;   // `u.Shape.Circle.R + 1.0`
+    m.posX = m.newX = m.prevX = static_cast<float>(s.posX + DirVecX(s.facingPrev) * r);
+    m.posY = m.newY = m.prevY = static_cast<float>(s.posY + DirVecY(s.facingPrev) * r);
+    m.dir1 = m.dir2 = s.facingPrev;                          // `u.Direction1`
+    m.createdFrame = m.frame136 = frame_;
+    m.speed = pt->speed;
+    m.owner = m.ud0 = m.ud2 = s.addr;
+    m.collideKind = 4;                                       // HarpoonCollide
+    m.collideAmount = static_cast<uint8_t>(kHarpoonDamage);
+    m.velX = DirVecX(m.dir1) * m.speed;
+    m.velY = DirVecY(m.dir1) * m.speed;
+    missiles_.push_back(m);
+    s.harpoonBoltNc = m.netCode;
+    s.harpoonTarget = Target{};
+    s.harpoonFrame35 = 0;                                    // 아직 걸림을 안 알렸다
+    s.harpoonFrame38 = 0;
+}
+
+// `abilityHarpoon::breakForOwner` — 줄을 끊는다
+void Server::HarpoonBreak(Session& s, bool emitSound, std::vector<OutPacket>& out) {
+    (void)emitSound;                                         // 소리 `SoundHarpoonBroken` 은 묶음 10
+    if (s.harpoonBoltNc == 0) return;
+    // `DisableAbility` — 끊김 와이어 + 켜짐 끄기
+    SendHarpoonFx(14, s.netCode, s.harpoonBoltNc, out);
+    if (s.abilActive[3]) {
+        SendAbilityActive(s, 3, false, out);
+        s.abilActive[3] = false;
+        s.abilActiveUntil[3] = 0;
+    }
+    for (size_t i = missiles_.size(); i-- > 0;) {
+        if (missiles_[i].netCode != s.harpoonBoltNc) continue;
+        DestroyMissile(i, out);
+        break;
+    }
+    s.harpoonBoltNc = 0;
+    s.harpoonTarget = Target{};
+    s.harpoonFrame35 = 0;
+    s.harpoonFrame38 = 0;
+}
+
+// `abilityHarpoon::Collide` — 화살이 무엇엔가 닿았다. 꽂히면 true(화살을 살려 둔다)
+bool Server::HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPacket>& out) {
+    auto oit = sessions_.find(m.owner);
+    if (oit == sessions_.end()) return false;
+    Session& own = oit->second;
+    if (targ.none()) {                                       // 벽 — 그 칸에 피해를 주고 조용히 끊는다
+        HarpoonBreak(own, /*emitSound=*/false, out);
+        return false;
+    }
+    if (!targ.addr.empty() && targ.addr == m.owner) return true;   // 자기에게는 안 꽂힌다
+    AttackSrc src;
+    src.x = m.posX; src.y = m.posY;
+    src.byMonsterType = m.type;
+    HurtTarget(targ, kHarpoonDamage, out, m.owner, 11, &src);      // DamageImpact = 11
+    if (!TargetIsEnemy(own, targ)) {                         // 적이 아니면 피해만 주고 끊긴다
+        HarpoonBreak(own, /*emitSound=*/false, out);
+        return false;
+    }
+    own.harpoonTarget = targ;
+    TargetXY(targ, own.harpoonTargX, own.harpoonTargY);
+    own.harpoonFrame38 = frame_;
+    m.flags |= 0x40;                                         // FlagNoCollide(비트 6 · ThingDb kFlagNames) — 더는 안 부딪힌다
+    MarkAssist(m.owner, targ);                               // sub_4E7540
+    return true;
 }
 
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
@@ -9505,6 +9622,10 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
             //   때가 되면 **대상 없이** 제 닿음 함수를 부르는데, 그쪽은 맵에 피해를 주고 사라진다.
             //   ⚠ 맵 피해(`damageToMap_534BC0`)는 아직 안 옮겼다 — 지금은 그냥 지운다
             if (frame - m.createdFrame > 40u) { DestroyMissile(i, out); continue; }
+        } else if (m.collideKind == 4) {
+            // ①-e 묶음 7-f 작살 — `UPDATE = HarpoonUpdate`(`updateHarpoon_54F380`).
+            //   ★ 아래 ①-b(주문 투사체)로 떨어지면 **15틱 만에 사라지고** 엉뚱한 상대를 찾아 휜다.
+            //     여기서는 **그냥 날게** 둔다 — 거리·수명·시야 관문과 끌기는 다음 조각(7-g)이다
         } else if (m.collideKind == 2) {
             // ①-c updatePixie_53CD20 — 여기서는 **수명만** 본다.
             //   ⚠ 적 찾기·떼 짓기·주인 따라가기·되돌아오기는 유닛 움직임 묶음(6·7)이다.
@@ -9665,6 +9786,17 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                 m.newX = m.prevX; m.newY = m.prevY;
             };
             if (wallHit) {
+                // 7-f — 작살은 벽에 닿으면 **대상 없이** 제 닿음 함수를 타 조용히 끊긴다.
+                // ⚠ `HarpoonCollide` 가 `HarpoonBreak` 을 통해 이미 지웠으면 목록이 줄어 색인 i 가 다음 것을 가리킨다.
+                //   그러나 주인을 못 찾는 따위로 **안 지워졌을 수도** 있으므로 여기서 한 번 더 확인한다 —
+                //   그러지 않으면 `continue` 가 같은 색인을 다시 보아 **무한 고리**가 된다(돌연변이 HP9 가 드러냈다)
+                if (m.collideKind == 4) {
+                    const uint16_t nc = m.netCode;
+                    HarpoonCollide(m, Target{}, out);
+                    if (i < missiles_.size() && missiles_[i].netCode == nc) DestroyMissile(i, out);
+                    erased = true;
+                    continue;
+                }
                 if (m.collideKind == 1) {                    // 불덩이는 벽에서도 터진다(fireballCollide 의 a2 == 0 갈래)
                     FireballExplode(m, Target{}, out);
                     DestroyMissile(i, out);
@@ -9735,6 +9867,12 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, &src);
                         DestroyMissile(i, out);
                         erased = true;
+                        handled = true;
+                    }
+                    // 7-f — 작살. 꽂히면 화살을 **살려 둔다**(줄이 된다)
+                    if (!handled && m.collideKind == 4) {
+                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        if (!HarpoonCollide(m, tgt, out)) { erased = true; }
                         handled = true;
                     }
                     if (!handled && m.collideKind == 1) {

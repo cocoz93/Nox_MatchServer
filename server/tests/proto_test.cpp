@@ -28,6 +28,11 @@ static void RegImpShot(nox::Server& srv) {
     srv.SetProjType("ImpShot", 1329, 400, 0x4000, 5);
 }
 
+// ★ 7-f — 작살 화살. ⭕ thing.bin 실측: 종류 526 · SPEED 800 · COLLIDE HarpoonCollide(인자 없음) · FLAGS AIRBORNE(0x4000)
+static void RegHarpoonBolt(nox::Server& srv) {
+    srv.SetProjType("HarpoonBolt", 526, 800, 0x4000, 0);
+}
+
 #include "nox/ThingDb.h"
 #include "nox/ThingFlags.h"
 #include "nox/NoxCrypt.h"
@@ -13387,6 +13392,136 @@ void TestAbilityEffects() {
     std::printf("  7-e — 능력 효과 넷: cf 1 은 효과에서 · 광전사 상태 1+투명·무적 끄기 · 살금살금 31 · 늑대의 눈 21 · 함성 300 안 적에게 29\n");
 }
 
+// ── 묶음 7-f — 작살 쏘기와 걸림 ──────────────────────────────────────
+//
+// 정답지 `abilityHarpoon`(`spell_harpoon.go`) · `NetHarpoonAttach/Break`(`server/network.go`).
+//   · 쏘면 상태 **32** · `HarpoonBolt` 이 **보는 쪽**으로 몸 반지름 +1 앞에서 태어난다
+//   · 걸림 `9e 07 00 <주인> <화살>` · 끊김 `9e 0e 00 <주인> <화살>` — 둘 다 7바이트, 모두에게, 순번 봉투
+//   · 닿음 — 적이면 피해 1(종류 11) 주고 **꽂힘** · 적이 아니면 피해만 주고 끊김 · 벽이면 조용히 끊김
+//   · ⭕ gamedata.bin — 피해 1 · 힘 10 · 최대 375 · 최소 20 · 안 걸린 비행 300 · 수명 150
+void TestHarpoon() {
+    const std::string a = "10.7.6.1:7601";
+    const std::string b = "10.7.6.2:7602";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+        RegHarpoonBolt(srv);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w); srv.Tick(34, w);
+        std::vector<nox::OutPacket> o2;
+        srv.DebugAbilAward(a, 3, false, o2);
+        srv.DebugSetFacing(a, 0);                          // +x 쪽 — b 를 겨눈다
+    };
+    auto fx = [&](const std::vector<nox::OutPacket>& out, uint8_t code, std::vector<uint8_t>& m) {
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 7 && x[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) && x[1] == code) {
+                m = x; return true;
+            }
+        return false;
+    };
+
+    // ① **쏘면 상태 32 · 화살이 하나 생긴다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        const size_t before = srv.missiles();
+        Check(srv.DebugAbilDo(a, 3, out), "작살 쓰기가 실패했다");
+        Check(srv.DebugStateOf(a) == 32, "작살인데 상태가 32 가 아니다");
+        Check(srv.missiles() == before + 1, "화살이 안 생겼다");
+        Check(srv.DebugHarpoonBolt(a) != 0, "화살 번호가 안 잡혔다");
+    }
+
+    // ② **적에게 닿으면 꽂힌다** — 피해 1 을 주고 화살이 안 사라진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        const int hp0 = srv.HealthOf(b);
+        srv.DebugAbilDo(a, 3, out);
+        uint32_t ms = 68;
+        for (int t = 0; t < 30 && srv.DebugHarpoonTarget(a).empty(); ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugHarpoonTarget(a) == b, "적에게 안 꽂혔다");
+        Check(srv.HealthOf(b) == hp0 - 1, "꽂히며 피해 1 을 안 줬다");
+        Check(srv.missiles() >= 1, "꽂혔는데 화살이 사라졌다");
+    }
+
+    // ③ **같은 편이면 피해만 주고 끊긴다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        uint32_t ms = 68;
+        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugHarpoonTarget(a).empty(), "같은 편에 꽂혔다");
+        Check(srv.DebugHarpoonBolt(a) == 0, "같은 편에 닿았는데 줄이 안 끊겼다");
+        std::vector<uint8_t> m;
+        Check(fx(out, 14, m), "끊김(`9e 0e`)이 안 갔다");
+    }
+
+    // ④ **끊김 와이어** — `9e 0e 00 <주인> <화살>` 7바이트, 모두에게
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        const uint16_t bolt = srv.DebugHarpoonBolt(a);
+        out.clear();
+        srv.DebugHarpoonBreak(a, out);
+        std::vector<uint8_t> m;
+        Check(fx(out, 14, m), "끊김이 안 갔다");
+        Check(m[2] == 0, "셋째 칸이 0 이 아니다");
+        Check((m[3] | (m[4] << 8)) == 728, "주인 번호가 안 실렸다");
+        Check((m[5] | (m[6] << 8)) == bolt, "화살 번호가 안 실렸다");
+        // 남에게도 간다
+        bool toB = false;
+        for (const auto& x : FlattenTo(out, b))
+            if (x.size() == 7 && x[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) && x[1] == 14) toB = true;
+        Check(toB, "끊김이 남에게 안 갔다");
+        Check(srv.DebugHarpoonBolt(a) == 0, "끊었는데 줄이 남았다");
+    }
+
+    // ⑤ **다시 쏘면 앞의 줄을 먼저 치운다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        const uint16_t first = srv.DebugHarpoonBolt(a);
+        srv.DebugAbilReset(a, 3, out);                     // 쉬는 시간을 지운다(줄은 그대로 둔다)
+        srv.DebugAbilDo(a, 3, out);
+        Check(srv.DebugHarpoonBolt(a) != first, "두 번째 화살 번호가 첫째와 같다");
+        Check(srv.DebugHarpoonBolt(a) != 0, "두 번째 화살이 없다");
+        Check(srv.missiles() == 1, "앞 화살이 안 치워져 둘이 남았다");
+    }
+
+    // ⑥ **벽에 닿으면 조용히 끊긴다** — 정답지 `Collide(대상 없음)` 갈래
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 5000, 5000);                    // 상대를 치운다
+        srv.SetWalls({ { 47, 43 } });                      // 앞 +x 쪽 칸
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        uint32_t ms = 68;
+        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugHarpoonBolt(a) == 0, "벽에 닿았는데 줄이 안 끊겼다");
+        Check(srv.missiles() == 0, "벽에 닿았는데 화살이 남았다");
+        std::vector<uint8_t> m;
+        Check(fx(out, 14, m), "벽에 닿았는데 끊김(`9e 0e`)이 안 갔다");
+    }
+
+    // ⑦ **작살에는 `cf 1` 이 안 간다** — 정답지 `harpoon.Do` 는 그것을 안 부른다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        for (const auto& x : FlattenTo(out, a))
+            Check(!(x.size() == 3 && x[0] == static_cast<uint8_t>(nox::Op::REPORT_ACTIVE_ABILITIES) &&
+                    x[1] == 3 && x[2] == 1), "작살에 `cf 1` 이 갔다");
+    }
+    std::printf("  7-f — 작살 쏘기·걸림: 상태 32 · 적이면 꽂히고 피해 1 · 같은 편이면 끊김 · 9e 0e 7바이트 모두에게\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -15611,6 +15746,7 @@ int main() {
     TestLessonScore();
     TestAbilities();
     TestAbilityEffects();
+    TestHarpoon();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
