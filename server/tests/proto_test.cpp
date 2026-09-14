@@ -5343,6 +5343,120 @@ void TestGreaterHeal() {
     std::printf("  4-b5b(2) — GreaterHeal 아군 치료 광선 `9e 06` · 틱마다 체력 1/마나 1 · 적·가득·맞음·마나 0 이면 끊김\n");
 }
 
+// ── 묶음 4-b5b(3) — 마나 빨기(DrainMana 22) ───────────────────────────────
+//
+// 정답지: spells.go:255 → duration.New(nil, nox_xxx_spellDrainMana_52E210, nil, 0)
+//   틱마다 **대상을 새로 찾아**(sub_52E610) 마나를 옮기고(sub_52E450) 빔을 옮겨 단다
+void TestDrainMana() {
+    const std::string a = "10.8.2.1:8201";
+    const std::string b = "10.8.2.2:8202";
+    // 계수 0.5 로 두어 이월을 잰다(두 틱에 1) · 둘레는 넉넉히
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("ManaDrainCoeff = 0.5, 0.5, 0.5, 0.5, 0.5;\nManaDrainRange = 300.0f;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(22, 10, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1080, 1000);                      // 둘레 안 · 팀이 없으니 아레나 규칙으로 서로 적
+    };
+    const uint8_t k9e = static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL);
+
+    // ① 적 마나를 빨아 온다 — 빔 `9e 05`(시전자가 앞) · 두 틱에 1(이월)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugManaSub(a, 60);                             // 시전자 마나가 가득이면 안 돈다
+        CastAndWait(srv, a, 22, false, ms, out);
+        Check(srv.DebugDurActive(22, a), "DrainMana 가 안 걸렸다");
+        const auto toB = FlattenTo(out, b);
+        const auto* ray = FindMsg(toB, k9e);
+        Check(ray != nullptr && ray->size() == 7 && (*ray)[1] == 5 &&
+              ((*ray)[3] | ((*ray)[4] << 8)) == 728 && ((*ray)[5] | ((*ray)[6] << 8)) == 729,
+              "마나 빨기 광선 `9e 05`(시전자가 앞)이 안 나갔다");
+        const uint16_t aMana = srv.ManaOf(a), bMana = srv.ManaOf(b);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int gained = static_cast<int>(srv.ManaOf(a)) - static_cast<int>(aMana);
+        const int lost = static_cast<int>(bMana) - static_cast<int>(srv.ManaOf(b));
+        Check(gained >= 4 && gained <= 6, "시전자 마나가 0.5/틱(이월 포함)으로 안 찼다");
+        Check(lost == gained, "빨린 만큼과 채워진 만큼이 다르다");
+    }
+
+    // ② 시전자 마나가 가득이면 곧바로 끊긴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const uint16_t bMana = srv.ManaOf(b);
+        CastAndWait(srv, a, 22, false, ms, out);
+        // ⚠ 시전 자체가 마나 10 을 쓰므로 **시전 직후는 가득이 아니다** — 도로 채워야 「가득」 갈래를 잰다
+        srv.DebugManaAdd(a, 999);
+        for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(!srv.DebugDurActive(22, a), "시전자 마나가 가득인데 안 끊겼다");
+        Check(srv.ManaOf(b) == bMana, "가득인데 남의 마나를 빨았다");
+    }
+
+    // ③ 시전자가 맞으면 끊긴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugManaSub(a, 60);
+        CastAndWait(srv, a, 22, false, ms, out);
+        Check(srv.DebugDurActive(22, a), "걸리지도 않았다(시험 전제)");
+        srv.Damage(a, 5, out);
+        ms += 34; srv.Tick(ms, out);
+        Check(!srv.DebugDurActive(22, a), "시전자가 맞았는데 안 끊겼다");
+    }
+
+    // ④ 시전자가 건 자리에서 5 넘게 움직이면 끊긴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugManaSub(a, 60);
+        CastAndWait(srv, a, 22, false, ms, out);
+        Check(srv.DebugDurActive(22, a), "걸리지도 않았다(시험 전제)");
+        srv.DebugMoveTo(a, 1040, 1000);                      // 40 이동
+        ms += 34; srv.Tick(ms, out);
+        Check(!srv.DebugDurActive(22, a), "시전자가 자리를 떴는데 안 끊겼다");
+    }
+
+    // ⑤ 빨 것이 없으면(적 마나 0) 끊긴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugManaSub(a, 60);
+        srv.DebugManaSub(b, srv.ManaOf(b));                  // 대상 마나 0
+        CastAndWait(srv, a, 22, false, ms, out);
+        for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(!srv.DebugDurActive(22, a), "빨 대상이 없는데 안 끊겼다");
+    }
+
+    // ⑥ 시전자가 달리면 끊긴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugManaSub(a, 60);
+        CastAndWait(srv, a, 22, false, ms, out);
+        Check(srv.DebugDurActive(22, a), "걸리지도 않았다(시험 전제)");
+        srv.DebugApplyEnchant(a, 8, 0, 1);
+        ms += 34; srv.Tick(ms, out);
+        Check(!srv.DebugDurActive(22, a), "시전자가 달리는데 안 끊겼다");
+    }
+    std::printf("  4-b5b(3) — DrainMana 적 마나 빨기 광선 `9e 05` · 0.5/틱 이월 · 가득/맞음/움직임/대상없음/달리기면 끊김\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -7440,6 +7554,7 @@ int main() {
     TestHealSpells();
     TestChannelLife();
     TestGreaterHeal();
+    TestDrainMana();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

@@ -4533,6 +4533,12 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
                 break;
             }
+            case 22: {                                                                         // DrainMana — 지속(마나 빨기 광선)
+                DurFns f;
+                f.update = &Server::DurDrainMana;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
+                break;
+            }
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
             case 68: case 133: fnc = CastRestoreHealth(targ, out); break;                         // castSpellWinkORrestoreHealth_52BF20 RestoreHealth·Wink
             case 69: fnc = CastRestoreMana(targ); break;                                          // sub_52BF50 RestoreMana
@@ -4859,6 +4865,92 @@ int Server::DurGreaterHealTick(DurSpell& d, std::vector<OutPacket>& out) {
     d.field72 = v - static_cast<float>(heal);                // 소수 이월
     UnitAdjustHP(d.target, heal, out);
     PlayerManaSub(caster, 1);
+    return 0;
+}
+
+// sub_52E610 + sub_52E660(`GAME4_2.c:10776`·10789) — 시전자 둘레 ManaDrainRange 에서 **빨 수 있는 것**을 고른다
+//   점수 = 무게 × 거리² 이고 **작은 쪽이 이긴다**. 사람은 무게 0.5 라 같은 거리면 마나 기둥(1.0)보다 **먼저 뽑힌다**
+//   거를 것: 자기 자신 · 죽음/지워짐 · 마나 0 · **적이 아님** · 같은 팀 · 관전 중 · 벽 뒤(선 추적 5)
+//   ⚠ 아직 안 옮긴 갈래 — 마나 기둥(클래스 0x400000·SUBCLASS 0x18, 무게 1.0)은 그 마나 웅덩이를 우리가 안 들고 있다(맵 오브젝트 묶음) ·
+//     소환수(+1440 & 0x20 마나 가진 몬스터)도 우리 소환수엔 마나가 없다(크리처 묶음)
+Target Server::DrainSearch(const Session& caster) const {
+    const float range = static_cast<float>(BalanceFloat("ManaDrainRange"));
+    const float range2 = range * range;
+    float best = 1e+30f;
+    Target found;
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || &o == &caster) continue;
+        if (o.respawnAtFrame != 0) continue;                 // DEAD|DESTROYED(0x8020)
+        if (o.observer) continue;                            // +3680 & 1
+        if (o.mana == 0) continue;                           // sub_52E7C0 — 빨 마나가 있어야
+        if (!IsEnemyTo(caster, o)) continue;                 // 적만 · 같은 팀 제외
+        const float dx = static_cast<float>(caster.posX - o.posX);
+        const float dy = static_cast<float>(caster.posY - o.posY);
+        const float d2 = dx * dx + dy * dy;
+        if (d2 > range2) continue;
+        const float score = 0.5f * d2;                       // 사람 무게 0.5
+        if (score >= best) continue;
+        if (!MapTraceRay(static_cast<float>(caster.posX), static_cast<float>(caster.posY),
+                         static_cast<float>(o.posX), static_cast<float>(o.posY), 0x5)) continue;   // 벽 뒤는 못 빤다
+        best = score;
+        found = Target{ o.addr, -1 };
+    }
+    return found;
+}
+
+// sub_52E450(`GAME4_2.c:10676`) — 실제로 빨아 옮긴다. 빨았으면 1
+//   시전자가 사람이고 **마나가 이미 가득이면 0** · 사람 대상은 min(대상 마나, 양) 만큼 · 시전자에게 그만큼 더한다
+//   ⚠ 퀘스트(4096)면 직업 마나 배수를 곱해 더한다 — 아레나는 그대로
+int Server::DrainApply(Session& caster, const Target& t, int amount) {
+    if (caster.mana >= caster.maxMana) return 0;
+    if (t.addr.empty()) return 0;                            // 마나 기둥·소환수 갈래는 아직(위 주석)
+    auto it = sessions_.find(t.addr);
+    if (it == sessions_.end() || !it->second.inGame) return 0;
+    Session& tgt = it->second;
+    const int took = (static_cast<int>(tgt.mana) <= amount) ? static_cast<int>(tgt.mana) : amount;
+    if (took <= 0) return 0;
+    PlayerManaSub(tgt, took);
+    PlayerManaAdd(caster, took);
+    return 1;
+}
+
+// nox_xxx_spellDrainMana_52E210(`GAME4_2.c:10568`) — **틱마다 대상을 새로 찾아** 마나를 빨고 빔을 옮겨 단다
+//   끊김: 시전자 달리기(8) · 시전자 마나 가득 · 시전자가 건 자리에서 5 넘게 움직임 · 시전자가 지난 1틱 안에 맞음 · 빨 대상이 없음
+//   글리프(+20)면 찾은 이의 마나 50 을 깎고 한 방으로 끝
+int Server::DurDrainMana(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    const bool haveCaster = !d.caster.empty() && c != sessions_.end() && c->second.inGame;
+    if (haveCaster && c->second.buffs.Has(8)) return 1;      // 달리면 끊긴다
+    if (!haveCaster && !d.flag20) return 1;
+    if (!haveCaster) return 1;                               // 글리프 갈래는 시전자 없이도 도는데, 우리 DurNew 는 시전자를 요구한다(4-e 에서)
+    Session& caster = c->second;
+    if (d.flag20) {                                          // 글리프 — 한 방
+        const Target g = DrainSearch(caster);
+        if (!g.addr.empty()) {
+            auto gi = sessions_.find(g.addr);
+            if (gi != sessions_.end()) PlayerManaSub(gi->second, 50);
+        }
+        return 1;
+    }
+    if (caster.mana >= caster.maxMana) return 1;             // 더 담을 데가 없다
+    if (TargetMovedFrom(Target{ d.caster, -1 }, d.posX, d.posY)) return 1;   // 시전자가 자리를 떴다
+    if (TargetJustDamaged(Target{ d.caster, -1 })) return 1; // 맞으면 끊긴다
+    const Target found = DrainSearch(caster);
+    d.target = found;
+    if (found.none()) {                                      // 빨 것이 없다 — 켜 둔 빔이 있으면 끈다
+        if (!d.field36.none()) NetStopRaySpell(d, d.field36, out);
+        return 1;
+    }
+    const float v = d.field72 + static_cast<float>(BalanceFloatInd("ManaDrainCoeff", d.level - 1));
+    const int take = static_cast<int>(v);
+    d.field72 = v - static_cast<float>(take);                // 소수 이월
+    if (!(d.field36.addr == found.addr && d.field36.pet == found.pet)) {     // 대상이 바뀌었다 — 빔을 옮겨 단다
+        if (!d.field36.none()) NetStopRaySpell(d, d.field36, out);
+        NetStartRaySpell(d, out);
+    }
+    DrainApply(caster, found, take);                         // ⚠ 빨린 소리 230/229 는 소리 묶음(반 초마다)
+    d.field36 = found;
     return 0;
 }
 

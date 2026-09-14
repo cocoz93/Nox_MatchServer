@@ -1779,7 +1779,7 @@ private:
         std::string caster;              // +16 Caster16 주인(obj3) — 사람 주소(몬스터 시전은 묶음 7)
         bool flag20 = false;             // +20 글리프가 건 것(4-e)
         float posX = 0, posY = 0;        // +28 Pos
-        uint32_t field36 = 0;            // +36
+        Target field36;                  // +36 먼젓번 빔 대상 — 바뀌면 옛 빔을 끄고 새 빔을 켠다(마나 빨기 52E210)
         Target target;                   // +48 Target48(sa.Obj)
         float pos2X = 0, pos2Y = 0;      // +52 Pos2(sa.Pos)
         uint32_t frame60 = 0;            // +60 만든 프레임
@@ -1809,6 +1809,9 @@ private:
     void NetStartRaySpell(const DurSpell& d, std::vector<OutPacket>& out);                              // netStartDurationRaySpell_4FF130
     int DurGreaterHealCreate(DurSpell& d, std::vector<OutPacket>& out);                                 // sub_52F220
     int DurGreaterHealTick(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_52F2E0
+    int DurDrainMana(DurSpell& d, std::vector<OutPacket>& out);                                         // nox_xxx_spellDrainMana_52E210
+    Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기
+    int DrainApply(Session& caster, const Target& t, int amount);                                        // sub_52E450
     int TargetMaxHealth(const Target& t) const;                                                          // unitGetMaxHP_4EE7A0
     bool CanInteract(const Session& obj, const Target& t) const;                                         // unitCanInteractWith_5370E0 = CanSee + 벽 시야추적
     bool TargetJustDamaged(const Target& t) const;                                                       // sub_4E6BD0 — 지난 1틱 안에 맞았나
