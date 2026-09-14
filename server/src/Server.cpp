@@ -4543,6 +4543,13 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
                 break;
             }
+            case 24: {                                                                         // EnergyBolt — 지속(전기 광선) · dt 30
+                DurFns f;
+                f.create = &Server::DurEnergyBoltCreate;
+                f.update = &Server::DurEnergyBoltTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 30, out) ? 1 : 0;
+                break;
+            }
             case 23: fnc = CastEarthquake(s, fl5, out); break;                                 // castEquake_52DE40
             case 60: fnc = CastPoison(obj3, targ, fl5, out); break;                            // castPoison_52C720
             case 128: fnc = CastToxicCloud(s, arg, out); break;                                // castToxicCloud_52DB60
@@ -4971,6 +4978,103 @@ int Server::DurDrainMana(DurSpell& d, std::vector<OutPacket>& out) {
     }
     DrainApply(caster, found, take);                         // ⚠ 빨린 소리 230/229 는 소리 묶음(반 초마다)
     d.field36 = found;
+    return 0;
+}
+
+// ── 묶음 4-d 지속 공격 — 에너지볼트(24) ────────────────────────────────
+//
+// spellEnergyBoltSetTarget_52EC60(`GAME4_2.c:10981`) — 둘레 안에서 **가장 가까운** 하나를 고른다.
+//   거른다: 죽음·부서짐(0x8020) · 자기 · **적이 아닌 것** · **앞쪽이 아닌 것**(TestTwoPointsAndDirection) ·
+//   상호작용 못 하는 것(CanInteract = 볼 수 있고 벽에 안 가림).
+Target Server::EnergyBoltSearch(const Session& caster, float range) const {
+    const float range2 = range * range;
+    float best = range2;
+    Target found;
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || &o == &caster) continue;
+        if (o.respawnAtFrame != 0) continue;                 // DEAD|DESTROYED
+        if (!IsEnemyTo(caster, o)) continue;
+        const float ox = static_cast<float>(o.posX), oy = static_cast<float>(o.posY);
+        if (!(TestTwoPointsAndDirection(static_cast<float>(caster.posX), static_cast<float>(caster.posY),
+                                        caster.facingPrev, ox, oy) & 1)) continue;   // 앞쪽만
+        if (!CanInteract(caster, Target{ o.addr, -1 })) continue;
+        const float dx = ox - static_cast<float>(caster.posX);
+        const float dy = oy - static_cast<float>(caster.posY);
+        const float d2 = dx * dx + dy * dy;
+        if (d2 >= best) continue;
+        best = d2;
+        found = Target{ o.addr, -1 };
+    }
+    for (size_t k = 0; k < pets_.size(); ++k) {
+        const Creature& c = pets_[k];
+        if (c.health == 0) continue;
+        if (!OwnersEnemy(caster.addr, false, c.owner, c.owner.empty())) continue;
+        const float ox = static_cast<float>(c.x), oy = static_cast<float>(c.y);
+        if (!(TestTwoPointsAndDirection(static_cast<float>(caster.posX), static_cast<float>(caster.posY),
+                                        caster.facingPrev, ox, oy) & 1)) continue;
+        const Target t{ std::string(), static_cast<int>(k) };
+        if (!CanInteract(caster, t)) continue;
+        const float dx = ox - static_cast<float>(caster.posX);
+        const float dy = oy - static_cast<float>(caster.posY);
+        const float d2 = dx * dx + dy * dy;
+        if (d2 >= best) continue;
+        best = d2;
+        found = t;
+    }
+    return found;
+}
+
+// spellEnergyBoltStop_52E820(`GAME4_2.c:10630`) — 켤 때 **연쇄 번개(43)를 끄고** 점 효과 130 을 낸다. 0 = 살려 둔다
+int Server::DurEnergyBoltCreate(DurSpell& d, std::vector<OutPacket>& out) {
+    if (!d.caster.empty()) DurCancelFor(43, d.caster, out);
+    return 0;
+}
+
+// spellEnergyBoltTick_52E850(`GAME4_2.c:10639`) — 매 틱
+//   끊기는 자리: 시전자가 **달리기(8)** · 시전자가 없음 · 만든 뒤 2틱 넘겨 **맞음** · **마나 0**
+//   고르기: 지금 대상이 아직 앞쪽·사거리 안·볼 수 있으면 그대로, 아니면 둘레에서 다시 고른다
+//   피해: `EnergyBoltDamage[세기-1]` + 소수 이월 · 종류 **17(공중 전기)** · 대상이 바뀌면 옛 빔을 끄고 새 빔을 켠다
+//   시전자는 자세 10 · **틱마다 마나 1**
+int Server::DurEnergyBoltTick(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (d.caster.empty() || c == sessions_.end() || !c->second.inGame) return 1;
+    Session& caster = c->second;
+    if (caster.buffs.Has(8)) return 1;                       // 달리면 끊긴다
+    const float range = static_cast<float>(BalanceFloat("LightningRange"));
+    if (frame_ - d.frame60 > 2 && TargetJustDamaged(Target{ d.caster, -1 })) return 1;
+    // 지금 대상을 지킬 수 있나
+    bool keep = false;
+    if (!d.target.none()) {
+        float tx = 0, ty = 0;
+        if (TargetXY(d.target, tx, ty)) {
+            const float dx = tx - static_cast<float>(caster.posX), dy = ty - static_cast<float>(caster.posY);
+            keep = (TargetHealth(d.target) > 0)
+                && ((TestTwoPointsAndDirection(static_cast<float>(caster.posX), static_cast<float>(caster.posY),
+                                               caster.facingPrev, tx, ty) & 1) != 0)
+                && (std::sqrt(dx * dx + dy * dy) <= range)
+                && CanInteract(caster, d.target);
+        }
+    }
+    if (!keep) d.target = EnergyBoltSearch(caster, range);
+    if (d.target.none()) {                                   // 맞힐 것이 없다 — 빔만 끄고 살려 둔다
+        if (!d.field36.none()) { NetStopRaySpell(d, d.field36, out); d.field36 = Target{}; }
+        return 0;
+    }
+    const float v = d.field72 + static_cast<float>(BalanceFloatInd("EnergyBoltDamage", d.level - 1));
+    const int dmg = static_cast<int>(v);
+    d.field72 = v - static_cast<float>(dmg);                 // 소수 이월
+    if (!(d.field36.addr == d.target.addr && d.field36.pet == d.target.pet)) {
+        if (!d.field36.none()) NetStopRaySpell(d, d.field36, out);
+        NetStartRaySpell(d, out);
+    }
+    HurtTarget(d.target, dmg, out, d.caster, 17, nullptr);   // 종류 17 = 공중 전기(방어를 안 탄다)
+    d.field36 = d.target;
+    PlayerSetState(caster, 10, frame_);                      // 시전 자세
+    PlayerManaSub(caster, 1);
+    // ★ 정답지는 깎은 **뒤에 「이전 마나」**(`unitGetOldMana_4EEC80` = +6)를 본다 —
+    //   즉 **이미 0 이던 틱**에 끊긴다(그 틱의 피해는 이미 들어간 뒤다).
+    if (caster.manaPrev == 0) return 1;
     return 0;
 }
 

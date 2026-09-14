@@ -1954,6 +1954,23 @@ private:
     int CastCleansingFlame(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out);        // spellCastCleansingFlame_52D5C0
     int CastArachnaphobia(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);            // spellArachna_52DC80
     int CastPixieSwarm(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out);            // castPixies_540440
+    // ── 묶음 4-d 지속 공격 ──
+    // 대상의 자리. 없으면 false — 사람과 소환수를 한 자리에서 가른다.
+    bool TargetXY(const Target& t, float& x, float& y) const {
+        if (!t.addr.empty()) {
+            auto it = sessions_.find(t.addr);
+            if (it == sessions_.end() || !it->second.inGame) return false;
+            x = static_cast<float>(it->second.posX); y = static_cast<float>(it->second.posY);
+            return true;
+        }
+        if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return false;
+        x = static_cast<float>(pets_[static_cast<size_t>(t.pet)].x);
+        y = static_cast<float>(pets_[static_cast<size_t>(t.pet)].y);
+        return true;
+    }
+    Target EnergyBoltSearch(const Session& caster, float range) const;                                   // spellEnergyBoltSetTarget_52EC60
+    int DurEnergyBoltCreate(DurSpell& d, std::vector<OutPacket>& out);                                   // spellEnergyBoltStop_52E820
+    int DurEnergyBoltTick(DurSpell& d, std::vector<OutPacket>& out);                                     // spellEnergyBoltTick_52E850
     void SpawnCreature(uint16_t type, float x, float y, const std::string& owner);                       // newObjectWithTypeInd + createAt
     void PlacedCollide(PlacedObj& o, std::vector<OutPacket>& out);                                       // 놓인 것의 닿음 함수(피해·마나 빨기)
     // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.

@@ -1505,9 +1505,9 @@ void TestAim() {
 
     // ② 쏘면 **겨눈 쪽(+y)** 으로 난다. 몸 방향(+x)이 아니라
     {
-        RegSpell(srv, 24, 0);
+        RegSpell(srv, 43, 0);
         std::vector<nox::OutPacket> out;
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);
         std::vector<nox::OutPacket> t1;
@@ -1524,14 +1524,14 @@ void TestAim() {
         nox::Server s2;
         s2.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         s2.DebugMoveTo(a, 1000, 1000);
-        RegSpell(s2, 24, 0);
+        RegSpell(s2, 43, 0);
         s2.DebugAimAt(a, 1000, 1600);
         std::vector<nox::OutPacket> warm;
         s2.Tick(0, warm);
         std::vector<nox::OutPacket> aged;
         s2.Tick(33 * (nox::kAimStaleTicks + 5), aged);   // 겨눔을 늙힌다
         std::vector<nox::OutPacket> out;
-        { uint32_t castMs = s2.DebugNowMs(); CastAndWait(s2, a, 24, false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = s2.DebugNowMs(); CastAndWait(s2, a, 43, false, castMs, out); }   // 4-a 시전 틀
         std::vector<nox::OutPacket> t1;
         s2.Tick(s2.DebugNowMs() + 34, t1);   // 4-a — 시전 틀이 시계를 돌렸다 · 한 틱 더 날린다
         const auto sh = s2.DebugShotAt(0);
@@ -1951,7 +1951,7 @@ void TestSpellDamage() {
     const int kHP = nox::HealthOnline(nox::CharClass::Warrior);
     // ★ 4-a — 워리어는 주문을 못 쓴다(깃발 직업 거르기 코드 9). 체력은 워리어로 두고 직업만 위저드로 · 마나는 0 으로(맞기만 본다)
     srv.DebugSetClass(a, nox::CharClass::Wizard);
-    RegSpell(srv, 24, 0);
+    RegSpell(srv, 43, 0);
     // ★ 이제 파이어볼은 **날아간다.** 바라보는 쪽이 기본 0(월드 +x)이므로
     //   맞으려면 b 가 a 의 앞쪽에 있어야 한다. 같은 자리에 두면 안 맞는 게 옳다.
     srv.DebugMoveTo(b, 1100, 1000);
@@ -1959,13 +1959,13 @@ void TestSpellDamage() {
     // ① 파이어볼을 남에게 — 맞는 쪽이 깎여야 한다
     {
         std::vector<nox::OutPacket> out;
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
         // ★ 쏘자마자는 아무도 안 깎여야 한다 — 날아가는 중이다
         Check(srv.HealthOf(b) == kHP, "쏘자마자 맞음 (투사체가 안 날아감)");
         Check(srv.flying() == 1, "날아가는 것이 하나가 아님");
 
         FlyUntilDone(srv, out);
-        Check(srv.HealthOf(b) == kHP - nox::Server::SpellDamage(24),
+        Check(srv.HealthOf(b) == kHP - nox::Server::SpellDamage(43),
               "날아간 파이어볼이 안 맞음");
         Check(srv.HealthOf(a) == kHP, "쏜 쪽이 깎임");
         Check(srv.hits() == 1, "맞은 횟수가 1 이 아님");
@@ -1994,7 +1994,7 @@ void TestSpellDamage() {
             }
             if (m && mn >= 1 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) {
                 Check(mn == 2, "0x70 이 2바이트가 아님");
-                Check(m[1] == 24, "0x70 의 주문이 24 가 아님");
+                Check(m[1] == 43, "0x70 의 주문이 43 이 아님");
                 ++spellStarts;
             }
         }
@@ -2004,8 +2004,8 @@ void TestSpellDamage() {
     // ② 자기에게 걸면 자기가 깎인다 (대상 플래그 1)
     {
         std::vector<nox::OutPacket> out;
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, /*onSelf=*/true, castMs, out); }   // 4-a 시전 틀
-        Check(srv.HealthOf(a) == kHP - nox::Server::SpellDamage(24),
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, /*onSelf=*/true, castMs, out); }   // 4-a 시전 틀
+        Check(srv.HealthOf(a) == kHP - nox::Server::SpellDamage(43),
               "자기에게 건 파이어볼이 자기를 안 깎음");
         Check(srv.flying() == 0, "자기에게 건 것이 날아감");
     }
@@ -2024,7 +2024,7 @@ void TestSpellDamage() {
         int guard = 0;
         while (srv.IsAlive(b) && guard++ < 20) {
             std::vector<nox::OutPacket> out;
-            { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
+            { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
             FlyUntilDone(srv, out);
         }
         Check(!srv.IsAlive(b), "파이어볼을 스무 번 맞고도 안 죽음");
@@ -2035,7 +2035,7 @@ void TestSpellDamage() {
     {
         const uint16_t before = srv.HealthOf(a);
         std::vector<nox::OutPacket> out;
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, /*onSelf=*/false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(a) == before, "남이 없는데 자기가 맞음");
         Check(srv.HealthOf(b) == 0, "죽은 사람이 또 맞음");
@@ -6984,6 +6984,193 @@ void TestPixieSwarm() {
     std::printf("  4-c4(5) — 픽시떼 수 채우기·세기별 수·시전자 둘레·수명 (날아다니는 AI 는 묶음 6·7)\n");
 }
 
+// ── 묶음 4-d(1) — 에너지볼트(Energy Bolt 24) ──────────────────────────
+//
+// 지속 주문이다(`duration.New(..., create = spellEnergyBoltStop_52E820, update = spellEnergyBoltTick_52E850, dt = 30)`).
+//   · 켤 때 **연쇄 번개(43)를 끈다**
+//   · 매 틱 : 시전자가 **달리면**(버프 8) 끊김 · 만든 뒤 2틱 넘겨 **맞으면** 끊김 · **마나 0** 이면 끊김
+//   · 대상 : 지금 대상이 앞쪽·`LightningRange` 안·볼 수 있으면 그대로, 아니면 둘레에서 **가장 가까운 적**을 다시 고른다
+//   · 피해 : `EnergyBoltDamage[세기-1]`(아레나 1.3·1.6·2.0·2.3·2.6) + **소수 이월** · 종류 **17(공중 전기 · 방어 안 탐)**
+//   · 대상이 바뀌면 옛 빔(`9e`)을 끄고 새 빔을 켠다 · 시전자는 자세 10 · **틱마다 마나 1**
+void TestEnergyBolt() {
+    const std::string a = "10.9.11.1:9111";
+    const std::string b = "10.9.11.2:9112";
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningRange = 300;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(24, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음 · 마나 0(끊김을 따로 본다)
+        srv.DebugEnterGame(a, 820, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 821, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);                      // a 의 몸 방향(+x) 앞
+    };
+
+    // ① 앞에 선 적을 **틱마다** 깎는다 — 세기 3 이면 2.0, 다섯 틱이면 10
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 24, true, ms, out);
+        // ⚠ **시전이 끝나는 그 틱에 이미 한 방**이 들어간다 — 재기는 그 뒤부터.
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        // 세기 3 → 2.0/틱, 종류 17 은 **방어를 안 타므로** 다섯 틱에 정확히 10 이다.
+        if (lost != 10) std::printf("  [에너지볼트] 다섯 틱에 잃은 값 %d — 10 이어야 한다\n", lost);
+        Check(lost == 10, "에너지볼트가 틱마다 EnergyBoltDamage 만큼 안 깎았다");
+        Check(srv.DebugLastDamageType(b) == 17, "피해 종류가 공중 전기(17)가 아니다");
+    }
+
+    // ①b **소수 이월** — 세기 1 은 1.3/틱이다. 열 틱이면 13 이지, 1 씩 잘라 10 이 아니다.
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugSpellAccept(a, 24, 1, out);                 // 세기를 1 로 박는다
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        // 1.3 × 10 = 13 인데 부동소수 나머지 탓에 12 로 떨어질 수 있다.
+        // **이월을 아예 안 하면 10**(1 씩 열 번)이라 12 를 문턱으로 잡으면 갈린다.
+        if (lost < 12) std::printf("  [에너지볼트] 세기 1 열 틱에 잃은 값 %d — 12 이상이어야 한다\n", lost);
+        Check(lost >= 12, "소수 이월이 빠졌다(1.3 을 1 로 잘랐나)");
+    }
+
+    // ①c 시전자가 **맞으면 끊긴다**(만든 뒤 2틱이 지난 다음)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 24, true, ms, out);
+        for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
+        const uint16_t aHp0 = srv.HealthOf(a);
+        srv.DebugHurt(a, -1, 5, b, 0, out);                  // ⚠ 인자는 (맞는 이, 소환수, 피해, 때린 이, 종류)
+        Check(srv.HealthOf(a) < aHp0, "시전자가 안 맞았다(시험 전제)");
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "시전자가 맞았는데 에너지볼트가 계속 나갔다");
+    }
+
+    // ①d 켤 때 **연쇄 번개(43)를 끈다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugDurNew(a, 43, 0, 0, -1, false, nox::Target{}, out), "연쇄 번개를 못 걸었다(시험 전제)");
+        Check(srv.DebugDurActive(43, a), "연쇄 번개가 안 걸렸다(시험 전제)");
+        srv.DebugSpellAccept(a, 24, 3, out);
+        Check(!srv.DebugDurActive(43, a), "에너지볼트를 켰는데 연쇄 번개가 안 꺼졌다");
+    }
+
+    // ② **빔 알림(`9e`)** 이 나간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 24, true, ms, out);
+        // ⚠ 빔은 **대상을 처음 잡는 틱**에 한 번 나간다 — 시전이 끝나는 그 틱이다. 비우면 놓친다.
+        ms += 34; srv.Tick(ms, out);
+        const auto toA = FlattenTo(out, a);
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL)) != nullptr, "에너지볼트 빔 알림(0x9e)이 안 나갔다");
+    }
+
+    // ③ **둘레 밖**(LightningRange 300)은 안 맞는다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 1500, 1000);                      // 500
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 24, true, ms, out);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "사거리(300) 밖인데 에너지볼트에 맞았다");
+    }
+
+    // ④ **뒤쪽**은 안 맞는다(앞쪽만 고른다)
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 900, 1000);                       // a 의 뒤(−x)
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 24, true, ms, out);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "뒤쪽인데 에너지볼트에 맞았다");
+    }
+
+    // ⑤ 시전자가 **달리면 끊긴다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 24, true, ms, out);
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugApplyEnchant(a, 8, 300, 3);                 // 달리기(8)
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "달리는데 에너지볼트가 계속 나갔다");
+    }
+
+    // ⑥ **마나가 바닥나면 끊긴다** — 틱마다 1 씩 쓴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t m0 = srv.ManaOf(a);
+        CastAndWait(srv, a, 24, true, ms, out);
+        for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.ManaOf(a) < m0, "에너지볼트가 마나를 안 썼다");
+        srv.DebugManaSub(a, 1000);                           // 바닥
+        // ★ 정답지는 깎은 뒤 **이전 마나**를 보므로, 0 이 된 그 틱의 피해는 이미 들어간다.
+        //   그래서 한 틱 지나고 나서 「더는 안 깎이나」를 본다.
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "마나가 0 인데 에너지볼트가 계속 나갔다");
+    }
+    // ⑦ **같은 편은 안 맞는다** — 적만 고른다
+    {
+        nox::Server srv; mk(srv);
+        // ★ 같은 편을 **더 가까이** 세운다 — 적 거르기가 빠지면 가까운 같은 편을 골라
+        //   뒤의 적이 안 맞는다. 「같은 편이 안 깎인다」만 보면 HurtTarget 의 편 거르기에 가려 못 갈린다.
+        const std::string c = "10.9.11.3:9113";
+        srv.DebugEnterGame(c, 822, false, nox::CharClass::Warrior);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(c, 1);                              // a 와 같은 편
+        srv.DebugMoveTo(c, 1050, 1000);                      // b(1100)보다 가깝다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t bHp = srv.HealthOf(b), cHp = srv.HealthOf(c);
+        CastAndWait(srv, a, 24, true, ms, out);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(c) == cHp, "같은 편인데 에너지볼트에 맞았다");
+        Check(srv.HealthOf(b) < bHp, "같은 편을 고르느라 뒤의 적을 안 맞혔다");
+    }
+    std::printf("  4-d(1) — 에너지볼트 틱 피해(종류 17)·빔 알림·사거리·앞쪽만·달리면 끊김·마나 바닥\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -8220,7 +8407,7 @@ void TestProjectile() {
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1000, 1100);   // 바라보는 쪽(+x)이 아니라 옆(+y)이다
         std::vector<nox::OutPacket> out;
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "옆에 비켜 있는데 맞음");
         Check(srv.hits() == 0, "안 맞았는데 맞은 것으로 셈");
@@ -8233,7 +8420,7 @@ void TestProjectile() {
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1000 + static_cast<int>(nox::kSpellRange) + 100, 1000);
         std::vector<nox::OutPacket> out;
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "사거리 밖인데 맞음");
         Check(srv.flying() == 0, "사거리를 넘었는데 안 사라짐");
@@ -8244,7 +8431,7 @@ void TestProjectile() {
         nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         std::vector<nox::OutPacket> out;
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "쏜 사람이 자기 것에 맞음");
     }
@@ -8256,7 +8443,7 @@ void TestProjectile() {
         srv.DebugEnterGame(b, 729);
         srv.DebugMoveTo(b, 1180, 1000);   // 한 틱(26)으로는 못 닿는 거리
         std::vector<nox::OutPacket> out;
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, false, castMs, out); }   // 4-a 시전 틀
         srv.Tick(0, out);
         srv.Tick(33, out);                // 딱 한 틱
         Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "한 틱 만에 180 을 날아가 맞음");
@@ -8282,7 +8469,7 @@ void TestProjectile() {
         // ⚠ 2026-09-13 묶음 3-a — 방향은 틱의 ImplB 에서 갈아 끼운다(정답지 조작 목록 순서) → 한 틱 돌린 뒤 쏜다
         srv.Tick(0, out);
         srv.Tick(33, out);
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "바라보는 쪽으로 안 날아감");
     }
@@ -8303,13 +8490,13 @@ void TestProjectileVisible() {
     srv.DebugMoveTo(b, 1600, 1000);   // 멀리 둬서 날아가는 동안 안 맞게
 
     std::vector<nox::OutPacket> out;
-    { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, false, castMs, out); }   // 4-a 시전 틀
+    { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, false, castMs, out); }   // 4-a 시전 틀
     out.clear();
     srv.Tick(0, out);
     srv.Tick(33, out);   // 한 틱만 — 아직 날아가는 중이다
     Check(srv.flying() == 1, "아직 날아가는 중이어야 함");
 
-    // 나간 0xa4 를 뜯어 에너지볼트(703)가 항목에 있는지 본다
+    // 나간 0xa4 를 뜯어 연쇄번개(710)가 항목에 있는지 본다
     bool seen = false;
     int players = 0;
     for (const auto& p : out) {
@@ -8318,11 +8505,11 @@ void TestProjectileVisible() {
         nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
         Check(m.ok, "내가 만든 0xa4 를 내가 못 뜯음");
         for (const auto& e : m.objects) {
-            if (e.type == 703) seen = true;
+            if (e.type == 710) seen = true;
             if (e.type == nox::kPlayerType) ++players;
         }
     }
-    Check(seen, "에너지볼트(703)가 상태 갱신에 안 실림");
+    Check(seen, "연쇄번개(710)가 상태 갱신에 안 실림");
     Check(players > 0, "사람이 상태 갱신에서 사라짐");
 
     // 맞고 나면 더는 안 실려야 한다 — 안 지우면 화면에 영원히 떠 있는다
@@ -8334,7 +8521,7 @@ void TestProjectileVisible() {
         auto body = Body(p);
         if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
         nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
-        for (const auto& e : m.objects) if (e.type == 703) still = true;
+        for (const auto& e : m.objects) if (e.type == 710) still = true;
     }
     Check(!still, "사라진 파이어볼이 아직도 실려 나감");
 
@@ -8507,7 +8694,7 @@ void TestPetDies() {
         srv.DebugMoveTo(b, static_cast<int>(petX) - 140, static_cast<int>(petY));
         srv.DebugMoveTo(a, 500, 500);
         // b 의 바라보는 쪽은 0(+x) 이라 소환수(1040,1000) 를 지나간다
-        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, b, 24, false, castMs, out); }   // 4-a 시전 틀
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, b, 43, false, castMs, out); }   // 4-a 시전 틀
         FlyUntilDone(srv, out);
         Check(srv.hits() >= 1, "투사체가 소환수를 못 맞힘");
     }
@@ -8549,7 +8736,7 @@ void TestArena() {
         std::vector<nox::OutPacket> out;
         int guard = 0;
         while (srv.IsAlive(a) && guard++ < 20) {
-            { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 24, /*onSelf=*/true, castMs, out); }   // 4-a 시전 틀
+            { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 43, /*onSelf=*/true, castMs, out); }   // 4-a 시전 틀
         }
         Check(!srv.IsAlive(a), "자기 주문으로 안 죽음");
         Check(srv.KillsOf(a) == 0, "자기를 죽이고 점수를 얻음");
@@ -9092,6 +9279,7 @@ int main() {
     TestCleansingFlame();
     TestArachnaphobia();
     TestPixieSwarm();
+    TestEnergyBolt();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
