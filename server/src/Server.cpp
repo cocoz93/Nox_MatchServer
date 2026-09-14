@@ -4498,6 +4498,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 52: fnc = CastMeteor(s, arg, lvl, out); break;                               // castMeteor_52D9D0
             case 53: fnc = CastMeteorShower(s, arg, lvl, out); break;                         // castMeteorShower_52D8A0
             case 29: fnc = CastFist(s, arg, lvl, out); break;                                 // castFist_52D3C0
+            case 16: fnc = CastDeathRay(s, arg, out); break;                                  // castDeathRay(15 는 SPELL_DEATH 다)
             case 10: case 11: fnc = CastCleansingFlame(spell, s, lvl, out); break;            // spellCastCleansingFlame_52D5C0
             case 2: fnc = CastArachnaphobia(s, arg, out); break;                              // spellArachna_52DC80
             case 58: fnc = CastPixieSwarm(spell, s, lvl, out); break;                        // castPixies_540440
@@ -5147,6 +5148,34 @@ int Server::DurChainLightningTick(DurSpell& d, std::vector<OutPacket>& out) {
     PlayerManaSub(caster, 1);
     if (caster.manaPrev == 0) return 1;
     return 0;
+}
+
+// castDeathRay(`spell_death_ray.go:19`) — 커서 자리에 **한 방**으로 터진다(지속 주문이 아니다).
+//   · 시전자→커서 **선 추적(9)** 이 막히면 글(0·2)을 내고 0
+//   · 둘레 피해 : 바깥 `DeathRayOutRadius`(15) · 안쪽 `DeathRayInRadius`(10) ·
+//     피해 `DeathRayDamage`(아레나 100) · 종류 **16(죽음광선)**
+//   · 그림 : `94 <시전자 x u16> <y u16> <커서 x u16> <y u16>` **9바이트 선**(netSendRayFx_5232F0)
+//   ⚠ 아직 안 옮긴 것 — 그을음(sMakeScorch) · 소리
+int Server::CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out) {
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    if (!MapTraceRay(cx, cy, arg.x, arg.y, 9)) {
+        InformSpell(caster, 0, 2, out);
+        return 0;
+    }
+    const int dmg = static_cast<int>(BalanceFloat("DeathRayDamage"));
+    const float rout = static_cast<float>(BalanceFloat("DeathRayOutRadius"));
+    const float rin = static_cast<float>(BalanceFloat("DeathRayInRadius"));
+    DamageUnitsAround(arg.x, arg.y, rout, rin, dmg, 16, caster.addr, Target{}, out);
+    const uint16_t x1 = static_cast<uint16_t>(static_cast<int>(cx)), y1 = static_cast<uint16_t>(static_cast<int>(cy));
+    const uint16_t x2 = static_cast<uint16_t>(static_cast<int>(arg.x)), y2 = static_cast<uint16_t>(static_cast<int>(arg.y));
+    const uint8_t fx[9] = { static_cast<uint8_t>(Op::FX_DEATH_RAY),
+                            static_cast<uint8_t>(x1), static_cast<uint8_t>(x1 >> 8),
+                            static_cast<uint8_t>(y1), static_cast<uint8_t>(y1 >> 8),
+                            static_cast<uint8_t>(x2), static_cast<uint8_t>(x2 >> 8),
+                            static_cast<uint8_t>(y2), static_cast<uint8_t>(y2 >> 8) };
+    SendFxAllCli(arg.x, arg.y, fx, sizeof(fx), out);
+    ++fxSent_;
+    return 1;
 }
 
 // ── 묶음 4-c1 밀기·당기기·땅흔들기 ─────────────────────────────────────

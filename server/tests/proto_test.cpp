@@ -7306,6 +7306,98 @@ void TestChainLightning() {
     std::printf("  4-d(2) — 연쇄 번개 틱 피해(종류 17)·뒤쪽도 맞음·사슬 튐·세기별 가지·빔 갈래 3·에너지볼트 끔·달리면 끊김·같은 편 제외\n");
 }
 
+// ── 묶음 4-d(3) — 죽음광선(Death Ray 16) ──────────────────────────────
+//
+// `castDeathRay`(spell_death_ray.go:19) — **한 방**이다(지속 주문이 아니다).
+//   · 시전자→커서 **선 추적(9)** 이 막히면 글(0·2)을 내고 거절
+//   · 둘레 피해 바깥 `DeathRayOutRadius`(15) · 안쪽 `DeathRayInRadius`(10) ·
+//     `DeathRayDamage`(아레나 100) · 종류 **16(죽음광선)**
+//   · 그림은 `94 <시전자 xy> <커서 xy>` **9바이트 선**
+//   ⚠ **주문 번호가 16 이다** — 15 는 `SPELL_DEATH`(버프)라 헷갈리기 쉽다
+void TestDeathRay() {
+    const std::string a = "10.9.13.1:9131";
+    const std::string b = "10.9.13.2:9132";
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("DeathRayDamage = 100;\nDeathRayOutRadius = 15;\nDeathRayInRadius = 10;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(16, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
+        srv.DebugEnterGame(a, 840, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 841, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1300, 1000);
+    };
+
+    // ① 커서 자리에 선 사람이 **한 방에** 크게 깎인다(종류 16 은 방어를 안 탄다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 16, false, ms, out);
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        // 종류 16 은 **방어를 안 타므로** 정확히 100 이다(워리어 150 이라 한 방에 죽지는 않는다)
+        if (lost != 100) std::printf("  [죽음광선] 잃은 값 %d — 100 이어야 한다\n", lost);
+        Check(lost == 100, "죽음광선이 DeathRayDamage 만큼 안 깎았다");
+        Check(srv.DebugLastDamageType(b) == 16, "피해 종류가 죽음광선(16)이 아니다");
+    }
+
+    // ② **한 방이다** — 다음 틱에 또 깎이지 않는다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetClass(b, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1100);                       // b 에서 100 — 둘레(15) 밖
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 16, false, ms, out);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "둘레(15) 밖인데 죽음광선에 맞았다");
+    }
+
+    // ③ **선 그림(`94`)** 이 9바이트로 나가고, 시작이 시전자 자리다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        out.clear();
+        CastAndWait(srv, a, 16, false, ms, out);
+        const auto toA = FlattenTo(out, a);
+        const auto* fx = FindMsg(toA, static_cast<uint8_t>(nox::Op::FX_DEATH_RAY));
+        Check(fx != nullptr, "죽음광선 선 그림(0x94)이 안 갔다");
+        if (fx) {
+            Check(fx->size() == 9, "0x94 가 9바이트가 아니다");
+            const uint16_t x1 = static_cast<uint16_t>((*fx)[1] | ((*fx)[2] << 8));
+            const uint16_t x2 = static_cast<uint16_t>((*fx)[5] | ((*fx)[6] << 8));
+            Check(x1 > 950 && x1 < 1050, "선의 시작이 시전자 자리가 아니다");
+            Check(x2 > 1250 && x2 < 1350, "선의 끝이 커서 자리가 아니다");
+        }
+    }
+
+    // ④ 벽 뒤에는 **못 쏜다**(선 추적 9) — 칸 50 이 시전자와 커서 사이
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWalls({ { 50, 43 } });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 16, false, ms, out);
+        Check(srv.HealthOf(b) == bHp, "벽 뒤인데 죽음광선에 맞았다");
+    }
+    std::printf("  4-d(3) — 죽음광선 한 방(종류 16)·둘레 15·선 그림 9바이트·벽 뒤 못 쏨\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -9418,6 +9510,7 @@ int main() {
     TestPixieSwarm();
     TestEnergyBolt();
     TestChainLightning();
+    TestDeathRay();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
