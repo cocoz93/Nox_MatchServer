@@ -2177,6 +2177,38 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 break;
             }
 
+            case Op::VOTE: {
+                // ── 묶음 8-e 투표 — `sdecode.c:315`(`0xEE`)
+                //   몸 — 갈래 0~3 은 **51바이트**(갈래 1 + 이름 와이드 25자) · 갈래 4·5 는 **1바이트**
+                //   갈래 0·2 는 퀘스트면 **3**, 아니면 **0** · 1·3 은 늘 **1** · 4·5 는 **2**
+                if (!s.inGame || it.bodyLen() < 1) break;
+                const uint8_t code = it.body()[0];
+                const bool quest = questTotal_ > 0 || questStage_ > 0;
+                std::string targetName;
+                if (code <= 3) {
+                    if (it.bodyLen() != 51) break;
+                    // 이름은 **와이드 2바이트씩** 25자. 아스키 자리만 추려 읽는다
+                    for (int k = 0; k < 25; ++k) {
+                        const uint8_t lo = it.body()[1 + 2 * k], hi = it.body()[2 + 2 * k];
+                        if (lo == 0 && hi == 0) break;
+                        targetName.push_back(static_cast<char>(lo));
+                    }
+                } else if (it.bodyLen() != 1) {
+                    break;
+                }
+                switch (code) {
+                    case 0: VoteCast(s, quest ? 3 : 0, targetName, out); break;
+                    case 1: VoteCast(s, 1, targetName, out); break;
+                    case 2: VoteWithdraw(s, quest ? 3 : 0, targetName, out); break;
+                    case 3: VoteWithdraw(s, 1, targetName, out); break;
+                    case 4: VoteCast(s, 2, std::string(), out); break;
+                    case 5: VoteWithdraw(s, 2, std::string(), out); break;
+                    default: break;
+                }
+                ++handled_;
+                break;
+            }
+
             case Op::TRY_ABILITY: {
                 // ── 묶음 7-d 능력 쓰기 — `network_server.go:91`(`0x7A`)
                 //   **몸 1바이트** — `<능력 번호>`. 채팅 모드가 아니고 `+3680 & 3`(관전)이 아니어야 한다
@@ -7770,6 +7802,189 @@ void Server::UpdateBall(std::vector<OutPacket>& out) {
     }
 }
 
+// `nox_xxx_playerCallDisconnect_4DEAB0(대상, 4)` — 사람을 내보낸다.
+//   조용해서 내보내는 길(틱 안)과 **같은 절차**를 한 자리로 모은 것이다 —
+//   들고 있던 깃발·공을 떨구고 · 걸던 주문을 끊고 · 표를 지우고 · 자리를 비우고 ·
+//   모두에게 `PLAYER_QUIT` 와 `DESTROY_OBJECT` 를 알린다.
+void Server::KickPlayer(const std::string& addr, std::vector<OutPacket>& out) {
+    uint16_t netCode = 0;
+    bool wasInGame = false;
+    {
+        auto g = sessions_.find(addr);
+        if (g == sessions_.end()) return;
+        netCode = g->second.netCode;
+        wasInGame = g->second.inGame;
+    }
+    if (wasInGame) {
+        DropFlag(addr, out);
+        DropBall(addr, out);
+        PlayerCancelSpells(addr, out);
+    }
+    VoteDropPlayer(addr, out);                          // 나간 사람의 표를 지운다(`sub_506740`)
+    sessions_.erase(addr);
+    if (!wasInGame || netCode == 0) return;
+    uint8_t quit[3] = { static_cast<uint8_t>(Op::PLAYER_QUIT),
+                        static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8) };
+    Broadcast(/*viaSeq=*/true, quit, sizeof(quit), out);
+    uint8_t bye[3] = { static_cast<uint8_t>(Op::DESTROY_OBJECT),
+                       static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8) };
+    Broadcast(/*viaSeq=*/false, bye, sizeof(bye), out);
+}
+
+// ── 묶음 8-e 투표(0xEE) ───────────────────────────────────────────────
+//
+// 정답지 `GAME4.c:5986~6640`(18함수) · 매 틱 `nox_xxx_voteUptate_506F30`
+//        (`server__system__server.c:721`) · 와이어 `sub_507190`·`netSendVote_506840`.
+//
+// ⭕ 와이어 셋 —
+//   · 받기 `ee <갈래 0~5> [겨눈 사람 이름 와이드 25자]` — **52바이트**(갈래 0~3) 또는 **2바이트**(4·5)
+//   · 보내기 `ee 06 <값>` **3바이트** — 목록이 **비었다가 찼을 때 1**, **비었을 때 0**
+//   · 보내기 `ee 07` **2바이트** — 갈래 2 투표가 사라질 때 **표를 던진 사람에게만**
+//
+// ⭕ 받는 갈래 여섯(`sdecode.c:315`) — 앞 넷은 이름이 붙고 뒤 둘은 안 붙는다.
+//   `0` 찬성(퀘스트면 **3**, 아니면 **0**) · `1` 찬성(늘 1) ·
+//   `2` 물리기(퀘스트면 3, 아니면 0) · `3` 물리기(늘 1) ·
+//   `4` 찬성 갈래 **2** · `5` 물리기 갈래 **2**
+//
+// ⭕ 투표 갈래 넷과 매 틱 하는 일(`voteUptate_506F30`) —
+//   `0`·`1` **강퇴** → `sub_506F80` · `2` **퀘스트 다시 시작** → `sub_507090` ·
+//   `3` **퀘스트에서 내보내기** → `sub_507100`
+//
+// ⭕ 필요한 표 수(⭕ `blob_587000.dat` 를 바이트로 읽음) —
+//   갈래 0·1 = **4**(오프셋 229980) · 갈래 2·3 = **6**(`sub_506A20` 이 **숫자 6 을 그대로** 넣는다).
+//   곁들여 229984 기본 4 · 229988 `resetQuestMinVotes` 6 · 229992 `kickQuestPlayerMinVotes` 5
+//
+// ⭕ **통과 규칙**(`sub_507000`) — 둘 중 하나면 통과다.
+//   ① 표가 **필요 수 이상**  ② 표가 **(사람 수 − 1) 이상**이고 **2표 이상**
+//   ②의 사람 수는 `팀만` 표가 서 있으면(`[20] == 1`) **같은 팀**만 센다
+//
+// ⛔ 안 옮긴 것 — 갈래 2·3(**퀘스트 전용**). 다시 시작은 `맵을 다시 읽는` 것이고
+//   내보내기는 `sub_4DCFB0` 인데 우리 서버엔 그 길이 없다. 갈래 0·1 **강퇴**만 옮긴다.
+//   그리고 글줄(`sub_416770`)은 묶음 10
+void Server::SendVoteGui(uint8_t val, std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::VOTE), 6, val };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+}
+
+void Server::SendVoteClose(Session& s, std::vector<OutPacket>& out) {
+    const uint8_t msg[2] = { static_cast<uint8_t>(Op::VOTE), 7 };
+    EmitSeq(s, msg, sizeof(msg), out);
+}
+
+Server::Vote* Server::FindVote(uint8_t kind, const std::string& target) {
+    for (auto& v : votes_) if (v.kind == kind && v.target == target) return &v;
+    return nullptr;
+}
+
+// `sub_5067B0` — 투표를 지운다. 갈래 2 면 **표를 던진 사람에게** `ee 07` 을 보낸다
+void Server::RemoveVote(size_t i, std::vector<OutPacket>& out) {
+    if (i >= votes_.size()) return;
+    if (votes_[i].kind == 2) {
+        for (const std::string& who : votes_[i].voters) {
+            auto it = sessions_.find(who);
+            if (it != sessions_.end() && it->second.inGame) SendVoteClose(it->second, out);
+        }
+    }
+    votes_.erase(votes_.begin() + static_cast<long>(i));
+    if (votes_.empty()) SendVoteGui(0, out);          // 목록이 비면 화면을 닫는다
+}
+
+// `sub_507000` — 통과했나
+bool Server::VotePasses(const Vote& v) const {
+    const uint8_t need = (v.kind == 2 || v.kind == 3) ? 6 : kVoteKickMinVotes;
+    if (v.voters.size() >= need) return true;
+    size_t n = 0;
+    for (const auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        if (v.teamOnly && kv.second.team != v.team) continue;
+        ++n;
+    }
+    return v.voters.size() + 1 >= n && v.voters.size() >= 2;
+}
+
+// `sub_5068E0`·`sub_506B00`·`sub_506B80` — 찬성 한 표
+void Server::VoteCast(Session& voter, uint8_t kind, const std::string& targetName,
+                      std::vector<OutPacket>& out) {
+    std::string target;                               // 겨눈 사람의 주소
+    if (kind != 2) {
+        if (targetName.empty()) return;
+        for (const auto& kv : sessions_) {
+            if (!kv.second.inGame || kv.second.name != targetName) continue;
+            target = kv.first;
+            break;
+        }
+        if (target.empty() || target == voter.addr) return;   // 없는 사람·자기 자신은 안 된다
+    }
+    Vote* v = FindVote(kind, target);
+    const bool wasEmpty = votes_.empty();
+    if (!v) {
+        Vote nv;
+        nv.kind = kind;
+        nv.target = target;
+        nv.team = voter.team;
+        nv.startFrame = frame_;
+        votes_.push_back(nv);
+        v = &votes_.back();
+        if (wasEmpty) SendVoteGui(1, out);            // 첫 투표가 서면 화면을 연다
+    }
+    for (const std::string& w : v->voters) if (w == voter.addr) return;   // 한 사람 한 표
+    v->voters.push_back(voter.addr);
+}
+
+// `sub_506D00`·`sub_506DE0`·`sub_506E50` — 표를 물린다. 표가 0 이 되면 투표가 사라진다
+void Server::VoteWithdraw(Session& voter, uint8_t kind, const std::string& targetName,
+                          std::vector<OutPacket>& out) {
+    std::string target;
+    if (kind != 2) {
+        if (targetName.empty()) return;
+        for (const auto& kv : sessions_) {
+            if (!kv.second.inGame || kv.second.name != targetName) continue;
+            target = kv.first;
+            break;
+        }
+        if (target.empty()) return;
+    }
+    for (size_t i = 0; i < votes_.size(); ++i) {
+        if (votes_[i].kind != kind || votes_[i].target != target) continue;
+        auto& vs = votes_[i].voters;
+        for (size_t k = 0; k < vs.size(); ++k) {
+            if (vs[k] != voter.addr) continue;
+            vs.erase(vs.begin() + static_cast<long>(k));
+            if (vs.empty()) RemoveVote(i, out);
+            return;
+        }
+        return;
+    }
+}
+
+// `sub_506740` — 사람이 나가면 그 사람의 표를 모두 지운다
+void Server::VoteDropPlayer(const std::string& who, std::vector<OutPacket>& out) {
+    for (size_t i = votes_.size(); i-- > 0;) {
+        auto& vs = votes_[i].voters;
+        for (size_t k = 0; k < vs.size(); ++k) {
+            if (vs[k] != who) continue;
+            vs.erase(vs.begin() + static_cast<long>(k));
+            break;
+        }
+        if (vs.empty()) RemoveVote(i, out);
+    }
+}
+
+// `nox_xxx_voteUptate_506F30` — 매 틱. 갈래 0·1 만 옮겼다
+void Server::VoteUpdate(std::vector<OutPacket>& out) {
+    for (size_t i = votes_.size(); i-- > 0;) {
+        if (i >= votes_.size()) continue;
+        const Vote& v = votes_[i];
+        if (v.kind != 0 && v.kind != 1) continue;     // 갈래 2·3 은 퀘스트 전용 — 안 옮겼다
+        auto t = sessions_.find(v.target);
+        if (t == sessions_.end() || !t->second.inGame) { RemoveVote(i, out); continue; }
+        if (!VotePasses(v)) continue;
+        const std::string target = v.target;
+        RemoveVote(i, out);
+        KickPlayer(target, out);                      // `playerCallDisconnect(대상, 4)`
+    }
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -11132,6 +11347,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
     UpdateFlags(out);
     UpdateBall(out);          // 8-d 플래그볼
+    VoteUpdate(out);          // 8-e 투표
+    VoteUpdate(out);          // 8-e 투표
     UpdateProps(out);   // 문·오벨리스크 (P5)
 
     // (4-a4) 무적 켜짐·꺼짐 비교 루프는 걷어냄 — 버프가 바뀌는 자리(setUnitBuffFlags)가 곧바로 `5a` 를 올린다

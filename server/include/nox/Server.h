@@ -383,6 +383,12 @@ struct Session {
     uint8_t   charLevel = kMaxLevel;
     // ★ 클라가 보낸 접속 정보 97바이트 그대로. **남에게 이 사람을 소개할 때** 쓴다
     //   (`2d NEW_PLAYER`). 독립 모드에는 녹음이 없어 이것 말고는 만들 재료가 없다.
+    // 묶음 8-e — 사람 이름. 투표가 이름으로 겸눈다(정답지 playerinfo +4704)
+    //   ⚠ **체우는 길이 아직 없다.** `NEW_PLAYER` 의 **+119** 가 이름 자리로 보이는데
+    //     (`netNewPlayerMakePacket_4DDA90` 이 `field_2096` 을 거기 싣는다)
+    //     우리 꼬리(`kNewPlayerTail`)는 그 자리가 **0** 이고 녹음 실측도 0 이었다.
+    //     ⇒ 지금은 시험이 손으로 넣어 쓴다. 채우는 것은 **따로** 할 일이다
+    std::string name;
     std::vector<uint8_t> info97;
     uint16_t  maxMana   = 0;
     // ★ **지금 마나.** 이 칸이 없어서 주문이 무한이었다 — `maxMana` 는 쓰기만 하고
@@ -718,6 +724,12 @@ constexpr uint16_t kCaptureLimit = 3;
 //   `GameBall` 241(COLLIDE BallCollide) · `GameBallStart` 243 · `Flag`(골대) 179.
 //   ⚠ CTF 깃발(176·177)과 **다른 것**이다 — 저건 깃발, 이건 골대다
 constexpr uint16_t kGameBallType = 241;
+
+// ── 묶음 8-e 투표 ⭕ blob_587000.dat ─────────────────────────────
+//   강퇴(갈래 0·1)에 필요한 표 = **4**(오프셋 229980).
+//   곁들여 229984 기본 4 · 229988 `resetQuestMinVotes` 6 · 229992 `kickQuestPlayerMinVotes` 5.
+//   갈래 2·3 은 `sub_506A20` 이 **숫자 6 을 그대로** 넣는다
+constexpr uint8_t kVoteKickMinVotes = 4;
 
 // ── 퀘스트 ──────────────────────────────────────────────────
 //
@@ -1874,6 +1886,26 @@ public:
     void SetGameFlags(uint32_t f) { gameSettings_.gameFlags = f; }
     void SetMaxPlayers(uint8_t n) { gameSettings_.maxPlayers = n; }
 
+    size_t PlayerCount() const { size_t n = 0; for (const auto& kv : sessions_) if (kv.second.inGame) ++n; return n; }
+    bool IsInGame(const std::string& x) const { auto i = sessions_.find(x); return i != sessions_.end() && i->second.inGame; }
+    void DebugKick(const std::string& x, std::vector<OutPacket>& out) { KickPlayer(x, out); }
+
+    // 시험용 — 투표
+    size_t DebugVoteCount() const { return votes_.size(); }
+    size_t DebugVoteVoters(size_t i) const { return i < votes_.size() ? votes_[i].voters.size() : 0; }
+    void DebugVoteCast(const std::string& who, uint8_t kind, const std::string& targetName,
+                       std::vector<OutPacket>& out) {
+        auto i = sessions_.find(who); if (i != sessions_.end()) VoteCast(i->second, kind, targetName, out);
+    }
+    void DebugVoteWithdraw(const std::string& who, uint8_t kind, const std::string& targetName,
+                           std::vector<OutPacket>& out) {
+        auto i = sessions_.find(who); if (i != sessions_.end()) VoteWithdraw(i->second, kind, targetName, out);
+    }
+    void DebugVoteUpdate(std::vector<OutPacket>& out) { VoteUpdate(out); }
+    void DebugRemoveVote(size_t i, std::vector<OutPacket>& out) { RemoveVote(i, out); }
+    void DebugSetName(const std::string& who, const std::string& n) {
+        auto i = sessions_.find(who); if (i != sessions_.end()) i->second.name = n;
+    }
     // 시험용 — 플래그볼
     void DebugUpdateBall(std::vector<OutPacket>& out) { UpdateBall(out); }
     uint8_t DebugTeamAfter(uint8_t id) const { return TeamAfter(id); }
@@ -2679,6 +2711,28 @@ private:
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
+    // 묶음 8-e — 투표(0xEE)
+    struct Vote {
+        uint8_t kind = 0;                 // [0] 0·1 강퇴 · 2 퀘스트 다시 시작 · 3 퀘스트에서 내보내기
+        std::string target;               // [28] 겨눈 사람(갈래 2 는 없음)
+        std::vector<std::string> voters;  // [8] 표를 던진 사람들 · [4] 는 그 개수
+        uint8_t team = 0;                 // [16] 낸 사람의 팀
+        bool teamOnly = false;            // [20] 같은 팀만 셀 것인가
+        uint32_t startFrame = 0;          // [24]
+    };
+    void SendVoteGui(uint8_t val, std::vector<OutPacket>& out);
+    void SendVoteClose(Session& s, std::vector<OutPacket>& out);
+    Vote* FindVote(uint8_t kind, const std::string& target);
+    void RemoveVote(size_t i, std::vector<OutPacket>& out);
+    bool VotePasses(const Vote& v) const;
+    void VoteCast(Session& voter, uint8_t kind, const std::string& targetName,
+                  std::vector<OutPacket>& out);
+    void VoteWithdraw(Session& voter, uint8_t kind, const std::string& targetName,
+                      std::vector<OutPacket>& out);
+    void VoteDropPlayer(const std::string& who, std::vector<OutPacket>& out);
+    void VoteUpdate(std::vector<OutPacket>& out);
+    void KickPlayer(const std::string& addr, std::vector<OutPacket>& out);
+
     // 묶음 8-d — 플래그볼
     void SendBallStatus(std::vector<OutPacket>& out);
     void SendFlagBallWinner(uint8_t teamId, std::vector<OutPacket>& out);
@@ -3129,6 +3183,7 @@ private:
     // 묶음 8-a — 이 판의 설정. 접속 묶음의 `af`·`b0` 가 여기서 나온다
     GameSettings gameSettings_;
     std::vector<Team> teams_;   // 묶음 8-b — 이 판의 팀들
+    std::vector<Vote> votes_;                         // 묶음 8-e
     std::vector<GameBall> ball_;                      // 묶음 8-d — 0 또는 1
     std::vector<BallGoal> goals_;
     std::vector<std::pair<double, double>> ballStarts_;

@@ -184,6 +184,23 @@ inline size_t MessageSize(const uint8_t* p, size_t n, bool fromClient) {
             }
             return bn + 1 < total ? 0 : total;
         }
+        // ── 묶음 8-e 투표(0xEE) — **갈래마다 길이가 다르다**
+        //   클라→서버(`sdecode.c:315`) — 갈래 `0~3` 은 이름(와이드 25자)이 붙어 **총 52** ·
+        //     갈래 `4`·`5` 는 이름이 없어 **총 2**
+        //   서버→클라(`cdecode.c:2871`) — `6` 은 **총 3** · `7` 은 **총 2**
+        //   ⚠ 이걸 표 하나로 못 적어 `MsgLen` 에는 -1 로 둔다. 안 가르치면 조각을 읽다 **멈춘다**
+        case static_cast<uint8_t>(Op::VOTE): {
+            if (bn < 1) return 0;
+            size_t total = 0;
+            if (fromClient) {
+                total = (b[0] <= 3) ? 52 : 2;
+            } else {
+                if (b[0] == 6) total = 3;
+                else if (b[0] == 7) total = 2;
+                else return 0;
+            }
+            return bn + 1 < total ? 0 : total;
+        }
         // XFER — 하위 코드마다 크기가 다르다 (noxnet/netxfer/message.go)
         case static_cast<uint8_t>(Op::XFER_MSG): {
             if (bn < 1) return 0;

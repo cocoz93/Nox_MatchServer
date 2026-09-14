@@ -335,6 +335,8 @@ int MsgBodyLenByDir(uint8_t op, bool fromClient) {
         //   **주문 튕김은 길이 탓이 아니다.** 아래 넷만 갈렸다.
         case 0x40: return fromClient ? 6 : kMsgBodyLen[op];   // PLAYER_SET_WAYPOINT (sdecode:94)
         case 0x78: return fromClient ? 3 : kMsgBodyLen[op];   // TRY_CREATURE_COMMAND (sdecode:193)
+        // ⚠ `0xEE VOTE` 는 **갈래에 따라 길이가 갈린다**(0~3 은 51 · 4·5 는 1) —
+        //   한 값으로 못 적으므로 여기서 -1(모름)로 두고 받는 자리가 직접 잰다
         case 0x7A: return fromClient ? 1 : kMsgBodyLen[op];   // TRY_ABILITY (network_server.go:91 — 몸 1바이트)
         case 0x7B: return fromClient ? 2 : kMsgBodyLen[op];   // TRY_COLLIDE (sdecode:256)
         // ⚠ `0xE0` 은 **방향마다 본문이 다르다** — 클라→서버 2, 서버→클라 3.

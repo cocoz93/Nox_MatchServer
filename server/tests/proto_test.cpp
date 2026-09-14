@@ -14400,6 +14400,259 @@ void TestFlagBall() {
     std::printf("  8-d — 플래그볼: 공 줍기·따라다님 · 남의 골대에 넣으면 사람+팀 +1 · d9 0/1/2/4 · 한도면 0x56\n");
 }
 
+// ── 묶음 8-e — 투표(0xEE) ────────────────────────────────────────────
+//
+// 정답지 `GAME4.c:5986~6640`(18함수) · 매 틱 `voteUptate_506F30` · 통과 규칙 `sub_507000`.
+//   · 받기 `ee <갈래 0~5> [이름 와이드 25자]` — 갈래 0~3 은 **52바이트**, 4·5 는 **2바이트**
+//   · 보내기 `ee 06 <값>` **3B**(목록이 차면 1 · 비면 0) · `ee 07` **2B**(갈래 2 가 사라질 때 표 던진 이에게)
+//   · 통과 — ① 표 ≥ 필요 수(강퇴 **4**) ② 또는 표 ≥ (사람 수 − 1) **이고** 표 ≥ 2
+//   · 통과하면 겨눈 사람을 **내보낸다**
+void TestVote() {
+    const std::string a = "10.8.5.1:8501";
+    const std::string b = "10.8.5.2:8502";
+    const std::string c = "10.8.5.3:8503";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugEnterGame(c, 730);
+        srv.DebugSetName(a, "Alice");
+        srv.DebugSetName(b, "Bob");
+        srv.DebugSetName(c, "Carl");
+    };
+    auto voteMsg = [&](const std::vector<nox::OutPacket>& out, const std::string& to,
+                       uint8_t sub, std::vector<uint8_t>& m) {
+        for (const auto& x : FlattenTo(out, to))
+            if (x.size() >= 2 && x[0] == static_cast<uint8_t>(nox::Op::VOTE) && x[1] == sub) { m = x; return true; }
+        return false;
+    };
+
+    // ① **첫 표에 투표가 서고 `ee 06 01` 이 모두에게 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        Check(srv.DebugVoteCount() == 1, "투표가 안 섰다");
+        Check(srv.DebugVoteVoters(0) == 1, "표가 하나가 아니다");
+        std::vector<uint8_t> m;
+        Check(voteMsg(out, a, 6, m), "`ee 06` 이 안 갔다");
+        Check(m.size() == 3 && m[2] == 1, "`ee 06 01` 이 아니다");
+        Check(voteMsg(out, c, 6, m), "`ee 06` 이 남에게 안 갔다");
+    }
+    // 두 번째 표에는 `ee 06` 이 또 안 간다(목록이 이미 차 있다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        out.clear();
+        srv.DebugVoteCast(c, 0, "Bob", out);
+        Check(srv.DebugVoteVoters(0) == 2, "둘째 표가 안 셌다");
+        std::vector<uint8_t> m;
+        Check(!voteMsg(out, a, 6, m), "목록이 이미 찼는데 `ee 06` 이 또 갔다");
+    }
+
+    // ② **한 사람 한 표** · **자기 자신·없는 사람은 안 된다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        Check(srv.DebugVoteVoters(0) == 1, "같은 사람이 두 표를 던졌다");
+        srv.DebugVoteCast(a, 0, "Alice", out);
+        Check(srv.DebugVoteCount() == 1, "자기 자신에게 투표가 섰다");
+        srv.DebugVoteCast(a, 0, "Nobody", out);
+        Check(srv.DebugVoteCount() == 1, "없는 사람에게 투표가 섰다");
+    }
+
+    // ③ **물리면 표가 줄고, 0 이 되면 투표가 사라지며 `ee 06 00` 이 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(c, 0, "Bob", out);
+        out.clear();
+        srv.DebugVoteWithdraw(c, 0, "Bob", out);
+        Check(srv.DebugVoteVoters(0) == 1, "물렸는데 표가 안 줄었다");
+        Check(srv.DebugVoteCount() == 1, "표가 남았는데 투표가 사라졌다");
+        out.clear();
+        srv.DebugVoteWithdraw(a, 0, "Bob", out);
+        Check(srv.DebugVoteCount() == 0, "표가 0 인데 투표가 안 사라졌다");
+        std::vector<uint8_t> m;
+        Check(voteMsg(out, a, 6, m) && m[2] == 0, "목록이 비었는데 `ee 06 00` 이 안 갔다");
+    }
+
+    // ④ **통과 규칙 ②** — 셋 중 둘이 찬성하면(사람 수 − 1 = 2, 그리고 2표 이상) 통과한다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteUpdate(out);
+        Check(srv.DebugVoteCount() == 1, "한 표인데 통과했다");
+        Check(srv.PlayerCount() == 3, "아직 아무도 안 나가야 한다");
+        srv.DebugVoteCast(c, 0, "Bob", out);
+        srv.DebugVoteUpdate(out);
+        Check(srv.DebugVoteCount() == 0, "두 표인데 통과가 안 됐다");
+        Check(srv.PlayerCount() == 2, "통과했는데 안 내보냈다");
+        Check(!srv.IsInGame(b), "내보낸 사람이 아직 판에 있다");
+    }
+
+    // ⑤ **겨눈 사람이 먼저 나가면 투표가 사라진다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugKick(b, out);
+        srv.DebugVoteUpdate(out);
+        Check(srv.DebugVoteCount() == 0, "겨눈 사람이 나갔는데 투표가 남았다");
+    }
+
+    // ⑥ **표를 던진 사람이 나가면 그 표가 빠진다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(c, 0, "Bob", out);
+        Check(srv.DebugVoteVoters(0) == 2, "두 표가 안 섰다(이 시험의 전제)");
+        srv.DebugKick(c, out);
+        Check(srv.DebugVoteVoters(0) == 1, "나간 사람 표가 안 빠졌다");
+        srv.DebugKick(a, out);
+        Check(srv.DebugVoteCount() == 0, "표가 0 인데 투표가 안 사라졌다");
+    }
+
+    // ⑦ **와이어로 들어온다** — `ee 00 <이름 와이드 25자>` 몸 51바이트
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 52, 0);
+        p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::VOTE);
+        p[nox::kWireHeaderSize + 1] = 0;                  // 찬성
+        const char* nm = "Bob";
+        for (int k = 0; nm[k]; ++k) p[nox::kWireHeaderSize + 2 + 2 * k] = static_cast<uint8_t>(nm[k]);
+        srv.OnPacket(a, p.data(), p.size(), out);
+        Check(srv.DebugVoteCount() == 1, "`ee 00` 으로 투표가 안 섰다");
+        Check(srv.DebugVoteVoters(0) == 1, "표가 안 셌다");
+    }
+    // 길이가 틀리면 무시한다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 10, 0);
+        p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::VOTE);
+        srv.OnPacket(a, p.data(), p.size(), out);
+        Check(srv.DebugVoteCount() == 0, "길이가 틀린 것을 받아 처리했다");
+    }
+    // 갈래 4(찬성, 이름 없음)는 몸이 1바이트다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 2, 0);
+        p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::VOTE);
+        p[nox::kWireHeaderSize + 1] = 4;
+        srv.OnPacket(a, p.data(), p.size(), out);
+        Check(srv.DebugVoteCount() == 1, "갈래 4 로 투표가 안 섰다");
+    }
+
+    // ⑨ **투표가 이미 서 있으면 새 투표가 서도 화면을 또 안 연다**
+    //   (열기는 「목록이 **비었다가** 찼을 때」 한 번뿐이다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        out.clear();
+        srv.DebugVoteCast(a, 0, "Carl", out);              // **다른 사람**을 겨눈 새 투표
+        Check(srv.DebugVoteCount() == 2, "새 투표가 안 섰다");
+        std::vector<uint8_t> m;
+        Check(!voteMsg(out, a, 6, m), "목록이 이미 찼는데 `ee 06` 이 또 갔다");
+    }
+
+    // ⑩ **필요 표 수 4** — 사람이 많아 규칙 ②가 못 미칠 때 드러난다.
+    //   여섯이면 규칙 ②는 **다섯 표**를 요구하므로, **네 표로 통과**하면 그것은 필요 수(4) 때문이다
+    {
+        nox::Server srv; mk(srv);
+        const std::string d = "10.8.5.4:8504", e = "10.8.5.5:8505", f = "10.8.5.6:8506";
+        srv.DebugEnterGame(d, 731); srv.DebugSetName(d, "Dan");
+        srv.DebugEnterGame(e, 732); srv.DebugSetName(e, "Eve");
+        srv.DebugEnterGame(f, 733); srv.DebugSetName(f, "Fay");
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(c, 0, "Bob", out);
+        srv.DebugVoteUpdate(out);
+        Check(srv.DebugVoteCount() == 1, "두 표인데 통과했다(필요 수는 4 다)");
+        srv.DebugVoteCast(d, 0, "Bob", out);
+        srv.DebugVoteUpdate(out);
+        Check(srv.DebugVoteCount() == 1, "세 표인데 통과했다");
+        srv.DebugVoteCast(e, 0, "Bob", out);
+        srv.DebugVoteUpdate(out);
+        Check(srv.DebugVoteCount() == 0, "네 표인데 통과가 안 됐다");
+        Check(!srv.IsInGame(b), "통과했는데 안 내보냈다");
+    }
+
+    // ⑪ **둘뿐이면 한 표로는 안 된다** — 규칙 ②에 「2표 이상」이 붙어 있다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728); srv.DebugSetName(a, "Alice");
+        srv.DebugEnterGame(b, 729); srv.DebugSetName(b, "Bob");
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteUpdate(out);
+        Check(srv.DebugVoteCount() == 1, "둘뿐인데 한 표로 통과했다");
+        Check(srv.IsInGame(b), "한 표로 내보냈다");
+    }
+
+    // ⑫ **갈래 2·3 은 매 틱 셈에서 건드리지 않는다**(퀘스트 전용이라 안 옮겼다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 2, std::string(), out);
+        srv.DebugVoteCast(c, 2, std::string(), out);
+        srv.DebugVoteUpdate(out);
+        Check(srv.DebugVoteCount() == 1, "갈래 2 투표가 강퇴 셈에 걸려 사라졌다");
+    }
+
+    // ⑬ **`ee 07` 은 갈래 2 에만** — 갈래 0 이 사라질 때는 안 간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 0, "Bob", out);
+        out.clear();
+        srv.DebugRemoveVote(0, out);
+        std::vector<uint8_t> m;
+        Check(!voteMsg(out, a, 7, m), "갈래 0 이 사라지는데 `ee 07` 이 갔다");
+    }
+
+    // ⑭ **갈래 3 도 이름이 붙어 52바이트다** — 경계가 3 이지 2 가 아니다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 1, "Bob", out);               // 갈래 1 로 한 표
+        Check(srv.DebugVoteVoters(0) == 1, "갈래 1 표가 안 섰다(이 시험의 전제)");
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 52, 0);
+        p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::VOTE);
+        p[nox::kWireHeaderSize + 1] = 3;                   // 물리기(갈래 1)
+        const char* nm = "Bob";
+        for (int k = 0; nm[k]; ++k) p[nox::kWireHeaderSize + 2 + 2 * k] = static_cast<uint8_t>(nm[k]);
+        srv.OnPacket(a, p.data(), p.size(), out);
+        Check(srv.DebugVoteCount() == 0, "`ee 03`(52바이트)이 안 먹었다");
+    }
+
+    // ⑧ **갈래 2 가 사라지면 표 던진 사람에게 `ee 07`** 이 간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugVoteCast(a, 2, std::string(), out);
+        srv.DebugVoteCast(c, 2, std::string(), out);
+        out.clear();
+        // ⚠ 정답지는 **비트를 먼저 지우고** 지우므로, 마지막 표를 물린 사람은 `ee 07` 을 못 받는다.
+        //   그래서 그 길 대신 **투표를 바로 지워** 알림만 재다(정답지에서는 갈래 2 가 통과할 때 그렇게 된다)
+        srv.DebugRemoveVote(0, out);
+        Check(srv.DebugVoteCount() == 0, "투표가 안 사라졌다");
+        std::vector<uint8_t> m;
+        Check(voteMsg(out, a, 7, m) && m.size() == 2, "`ee 07` 이 표 던진 이에게 안 갔다");
+        Check(voteMsg(out, c, 7, m), "`ee 07` 이 둘째 표 던진 이에게 안 갔다");
+        Check(!voteMsg(out, b, 7, m), "`ee 07` 이 표 안 던진 이에게도 갔다");
+    }
+    std::printf("  8-e — 투표: 첫 표에 ee 06 01 · 한 사람 한 표 · 물리면 줄고 0 이면 ee 06 00 · 통과하면 내보냄 · ee 07 은 갈래 2 만\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -16631,6 +16884,7 @@ int main() {
     TestTeamMsg();
     TestRoundEnd();
     TestFlagBall();
+    TestVote();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
