@@ -13832,6 +13832,109 @@ void TestGuideAward() {
     std::printf("  7-h — 안내서(d1 3바이트·순번 봉투) · 1~40 · 이미 있으면 조용히 실패 · 무리는 24 → 7·8·25·26 하나뿐\n");
 }
 
+// ── 묶음 8-a — 게임 설정(0xAF·0xB0) ──────────────────────────────────
+//
+// 정답지 `sendSettings`(`src/network.go:444~500`).
+//   · `af <프레임 u32> <클라 버전 u32> <게임 깃발 & 0x7FFF0 u32> <서브 깃발 u32>
+//        <정원 u8> <a u8> <b u8>` — **20바이트**
+//   · `b0 <방 이름 16B> <값 u32 ×5> <바이트 ×4> <u32> <남은 시간 u32>` — **49바이트**
+//
+// ★ 이 조각의 큰 뜻 — 두 메시지가 **녹음본에서 뗀 고정 배열**이었던 것을 **설정에서 짓게** 바꿨다.
+//   `TestJoinBundle` 이 녹음본과 **바이트로** 대조하므로, 그것이 통과하는 것 자체가
+//   「정답지 칸 배치가 녹음과 같다」의 증거다. 아래는 **값이 따라 바뀌는가**를 잰다.
+static uint32_t Rd32(const std::vector<uint8_t>& v, size_t i) {
+    return static_cast<uint32_t>(v[i]) | (static_cast<uint32_t>(v[i + 1]) << 8) |
+           (static_cast<uint32_t>(v[i + 2]) << 16) | (static_cast<uint32_t>(v[i + 3]) << 24);
+}
+
+void TestGameSettings() {
+    // ① **기본값이 실측과 같다**
+    {
+        nox::GameSettings g;
+        const std::vector<uint8_t> af = nox::BuildGameSettings(g, 0x1234);
+        Check(af.size() == 20, "`af` 가 20바이트가 아니다");
+        Check(af[0] == 0xaf, "머리가 `af` 가 아니다");
+        Check(Rd32(af, 1) == 0x1234u, "프레임이 안 실렸다");
+        Check(Rd32(af, 5) == 0x0001039au, "클라 버전이 실측과 다르다");
+        Check(Rd32(af, 9) == 0x00032100u, "게임 깃발이 실측과 다르다");
+        Check(Rd32(af, 13) == 2u, "서브 깃발이 실측과 다르다");
+        Check(af[17] == 32, "정원이 32 가 아니다");
+        Check(af[18] == 15, "18번 자리가 15 가 아니다");
+        Check(af[19] == 0, "19번 자리가 0 이 아니다");
+
+        const std::vector<uint8_t> b0 = nox::BuildGameSettings2(g);
+        Check(b0.size() == 49, "`b0` 가 49바이트가 아니다");
+        Check(b0[0] == 0xb0, "머리가 `b0` 가 아니다");
+        Check(std::string(reinterpret_cast<const char*>(b0.data() + 1)) == "User Game", "방 이름이 다르다");
+        Check(b0[16] == 0, "이름 칸 끝이 0 이 아니다");
+        for (int i = 0; i < 5; ++i) Check(Rd32(b0, 17 + 4 * i) == 0xFFFFFFFFu, "값 다섯이 0xFF.. 가 아니다");
+        for (int i = 0; i < 4; ++i) Check(b0[37 + i] == 0xFF, "바이트 넷이 0xFF 가 아니다");
+        Check(Rd32(b0, 41) == 0xFFFFFFFFu, "41 자리가 0xFF.. 가 아니다");
+        Check(Rd32(b0, 45) == 0u, "남은 시간이 0 이 아니다");
+    }
+
+    // ② **게임 깃발은 `0x7FFF0` 으로 가려 나간다** — 정답지가 보낼 때 가린다
+    {
+        nox::GameSettings g;
+        g.gameFlags = 0xFFFFFFFFu;
+        const std::vector<uint8_t> af = nox::BuildGameSettings(g, 0);
+        Check(Rd32(af, 9) == 0x7FFF0u, "깃발을 0x7FFF0 으로 안 가렸다");
+    }
+    // 가림 밖 비트(아레나 0x100 은 안, 호스트 0x1 은 밖)
+    {
+        nox::GameSettings g;
+        g.gameFlags = 0x100u | 0x1u;                       // 아레나 + 호스트
+        const std::vector<uint8_t> af = nox::BuildGameSettings(g, 0);
+        Check(Rd32(af, 9) == 0x100u, "아레나만 남아야 하는데 다르다");
+    }
+
+    // ③ **값이 바뀌면 바이트가 따라 바뀐다**
+    {
+        nox::GameSettings g;
+        g.maxPlayers = 8;
+        g.subFlags = 7;
+        g.limitValue = 3;
+        g.limitKind = 1;
+        const std::vector<uint8_t> af = nox::BuildGameSettings(g, 0);
+        Check(af[17] == 8 && Rd32(af, 13) == 7u && af[18] == 3 && af[19] == 1, "설정이 와이어에 안 따라왔다");
+    }
+
+    // ④ **방 이름** — 넣은 대로 가고, 15자를 넘으면 자르며, 16번 자리는 늘 0
+    {
+        nox::GameSettings g;
+        g.name = "Arena";
+        const std::vector<uint8_t> b0 = nox::BuildGameSettings2(g);
+        Check(std::string(reinterpret_cast<const char*>(b0.data() + 1)) == "Arena", "방 이름이 안 바뀌었다");
+        Check(b0[16] == 0, "이름 칸 끝이 0 이 아니다");
+    }
+    {
+        nox::GameSettings g;
+        g.name = "ABCDEFGHIJKLMNOPQRSTU";                  // 21자
+        const std::vector<uint8_t> b0 = nox::BuildGameSettings2(g);
+        Check(b0.size() == 49, "긴 이름에 길이가 틀어졌다");
+        Check(b0[16] == 0, "긴 이름인데 16번이 0 이 아니다");
+        Check(std::string(reinterpret_cast<const char*>(b0.data() + 1)).size() == 15, "15자로 안 잘렸다");
+    }
+
+    // ⑤ **서버 설정이 접속 묶음에 실린다**
+    {
+        nox::Server srv;
+        nox::GameSettings g;
+        g.name = "MyRoom";
+        g.maxPlayers = 4;
+        srv.SetGameSettings(g);
+        Check(srv.Settings().maxPlayers == 4, "서버가 설정을 안 물었다");
+        const std::vector<uint8_t> jb = nox::BuildJoinBundle(700, 1, nullptr, srv.Settings());
+        Check(jb.size() == nox::kJoinBundleSize, "접속 묶음 길이가 틀어졌다");
+        // `af` 는 묶음 안 6+5+7 = 18 바이트 뒤에 온다
+        Check(jb[18] == 0xaf, "묶음 안 `af` 자리가 틀렸다");
+        Check(jb[18 + 17] == 4, "묶음 안 정원이 안 따라왔다");
+        Check(jb[18 + 20] == 0xb0, "묶음 안 `b0` 자리가 틀렸다");
+        Check(std::string(reinterpret_cast<const char*>(jb.data() + 18 + 21)) == "MyRoom", "묶음 안 방 이름이 안 따라왔다");
+    }
+    std::printf("  8-a — 게임 설정: af 20B(깃발 0x7FFF0 가림)·b0 49B(이름 16칸) · 설정에서 지어 묶음에 실림\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -16059,6 +16162,7 @@ int main() {
     TestHarpoon();
     TestHarpoonPull();
     TestGuideAward();
+    TestGameSettings();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

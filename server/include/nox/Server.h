@@ -24,6 +24,7 @@
 
 #include "nox/Alias.h"
 #include "nox/GameBalance.h"   // 직업·레벨·정본 수치
+#include "nox/JoinBundle.h"   // 묶음 8-a GameSettings
 #include "nox/Messages.h"   // InformCode
 #include "nox/UpdateStream.h"
 #include "nox/Wire.h"
@@ -1841,6 +1842,13 @@ public:
         if (!assist.empty()) MarkAssist(assist, Target{ victim, -1 });
         PlayerUpdateScore(v->second, out);
     }
+    // 묶음 8-a — 판 설정(접속 묶음의 `af`·`b0` 가 이것을 싫는다)
+    const GameSettings& Settings() const { return gameSettings_; }
+    void SetGameSettings(const GameSettings& g) { gameSettings_ = g; }
+    void SetServerName(const std::string& n) { gameSettings_.name = n; }
+    void SetGameFlags(uint32_t f) { gameSettings_.gameFlags = f; }
+    void SetMaxPlayers(uint8_t n) { gameSettings_.maxPlayers = n; }
+
     // 시험용 — 안내서
     int DebugGuideLvl(const std::string& a, uint8_t g) const {
         auto i = sessions_.find(a); return i == sessions_.end() || g >= 41 ? -1 : i->second.guideLvl[g];
@@ -3051,6 +3059,8 @@ private:
     // 클라는 231번 보냈는데 성사가 15에서 멎었다 — 유실이 파싱이냐 조건이냐를 가른다.
     unsigned long long code6Seen_ = 0;
     unsigned long long petsKilled_ = 0;
+    // 묶음 8-a — 이 판의 설정. 접속 묶음의 `af`·`b0` 가 여기서 나온다
+    GameSettings gameSettings_;
     bool roundOver_ = false;
     uint32_t nextTimerFrame_ = 0;
     std::vector<Flag> flags_;

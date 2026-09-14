@@ -26,6 +26,41 @@
 
 namespace nox {
 
+// ── 묶음 8-a 게임 설정 ────────────────────────────────────────────
+//
+// 정답지 `sendSettings`(`src/network.go:444~500`).
+//   · `af <프레임 u32> <클라 버전 u32> <게임 깃발 & 0x7FFF0 u32> <서브 깃발 u32>
+//        <정원 u8> <a u8> <b u8>` — **20바이트**
+//   · `b0 <방 이름 16B> <값 u32 ×5> <바이트 ×4> <u32> <남은 시간 u32>` — **49바이트**
+//
+// ★ 전에는 두 메시지가 **녹음본에서 뗀 고정 배열**이었다. 그 바이트를 정답지 칸에
+//   하나씩 맞춰 보니 **전부 들어맞았다** — 아래 기본값이 그 실측이다.
+//   ⭕ 게임 깃발 `0x00032100` = 아레나(0x100) + 온라인(0x2000) + 퀘스트아님(0x10000) + 0x20000.
+//     `noxflags` 이름표와 한 칸씩 맞다(`common/flags/gameflags.go`)
+//   ⭕ 정원 32 · 서브 깃발 2 · `a` 15 · `b` 0 · 방 이름 "User Game"
+//   ⭕ `b0` 의 값 다섯과 바이트 넷과 u32 는 전부 **0xFF...**(안 정해짐) · 남은 시간 0
+//
+// ⛔ `UPDATE_GUI_GAME_SETTINGS`(0xB1)는 **안 옮긴다** — 몸이 `Settings2` **58바이트 통째**인데
+//   (`server/settings.go:9`) 그중 앞 24바이트와 꼬리 4바이트를 **우리가 잰 적이 없다**.
+//   접속 때가 아니라 **설정이 바뀔 때** 나가는 것이라 녹음에도 없다. 지어내지 않는다
+struct GameSettings {
+    uint32_t clientVersion = 0x0001039au;   // 클라 setVersion 이 읽는 값
+    uint32_t gameFlags     = 0x00032100u;   // `GetGame() & 0x7FFF0`
+    uint32_t subFlags      = 2;             // `getServerSubFlags_409E60`
+    uint8_t  maxPlayers    = 32;            // `getServerMaxPlayers`
+    uint8_t  limitValue    = 15;            // `servGamedataGet(Field52)`
+    uint8_t  limitKind     = 0;             // `Sub_40A180(Field52)`
+    std::string name       = "User Game";   // `getServerName` — 16바이트 칸(넘치면 자른다)
+    uint32_t vals[5]       = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };  // Field24.Vals
+    uint8_t  bytes4[4]     = { 0xFF, 0xFF, 0xFF, 0xFF };   // Field44
+    uint32_t field48       = 0xFFFFFFFFu;
+    uint32_t timeLeft      = 0;             // 시간 제한이 걸렸을 때만 `Sub_40A230()`
+};
+
+// `af` 20바이트 · `b0` 49바이트를 각각 짓는다
+std::vector<uint8_t> BuildGameSettings(const GameSettings& g, uint32_t frame);
+std::vector<uint8_t> BuildGameSettings2(const GameSettings& g);
+
 constexpr size_t kJoinBundleSize = 216;
 constexpr size_t kUseMapSize = 41;
 constexpr size_t kNewPlayerSize = 129;   // 2d + 번호2 + 정보97 + 꼬리29
@@ -34,7 +69,8 @@ constexpr size_t kNewPlayerSize = 129;   // 2d + 번호2 + 정보97 + 꼬리29
 // 접속 묶음 216B. info97 이 null 이면 그 97자리는 0 — **실전에서는 꼭 채울 것**
 // (이름·직업·외모가 전부 여기서 나온다).
 std::vector<uint8_t> BuildJoinBundle(uint16_t netCode, uint32_t frame,
-                                     const uint8_t* info97);
+                                     const uint8_t* info97,
+                                     const GameSettings& g = GameSettings{});
 
 // USE_MAP 41B. mapName 은 "estate.map" 꼴(32자 미만).
 std::vector<uint8_t> BuildUseMap(const std::string& mapName, uint32_t mapCrc,

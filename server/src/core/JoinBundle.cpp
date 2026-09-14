@@ -21,19 +21,6 @@ inline void PutU32(uint8_t* p, uint32_t v) {
     p[3] = static_cast<uint8_t>(v >> 24);
 }
 
-// af GAME_SETTINGS 의 불변부 (프레임 4바이트 뒤 15바이트).
-//   9a 03 01 00 = 버전 0x0001039a (클라 setVersion 이 읽는 값, cdecode 0xAF 절)
-//   나머지는 게임 깃발·정원 — 두 접속에서 같았다. 뜻이 갈리는 자리는 P6 에서 잰다.
-const uint8_t kAfTail[15] = { 0x9a, 0x03, 0x01, 0x00, 0x00, 0x21, 0x03, 0x00,
-                              0x02, 0x00, 0x00, 0x00, 0x20, 0x0f, 0x00 };
-
-// b0 GAME_SETTINGS_2 — 방 이름 "User Game"(16B 칸) + ff×28 + 0×4. 통째 불변.
-const uint8_t kB0Body[48] = {
-    'U', 's', 'e', 'r', ' ', 'G', 'a', 'm', 'e', 0, 0, 0, 0, 0, 0, 0,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-    0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00 };
-
 // 2d NEW_PLAYER 에서 정보 97B **뒤에 붙는 29B** — 실측 그대로 (join216.bin 187~215).
 //   12번 자리의 `01` 은 클라 쪽 2d 파싱의 116번(Field2152)에 닿는다 — 뜻은 미상.
 //   ⚠ 처음에 `01` 을 꼬리 맨 앞에 뒀다가 시험이 「187 에서 2자리 다름」으로 잡았다 —
@@ -45,8 +32,38 @@ const uint8_t kNewPlayerTail[29] = {
 
 }  // namespace
 
+// ── 묶음 8-a — `af` 20바이트(`network.go:468~479`) ────────────────
+std::vector<uint8_t> BuildGameSettings(const GameSettings& g, uint32_t frame) {
+    std::vector<uint8_t> m(20, 0);
+    m[0] = 0xaf;
+    PutU32(m.data() + 1, frame);
+    PutU32(m.data() + 5, g.clientVersion);
+    PutU32(m.data() + 9, g.gameFlags & 0x7FFF0u);          // ★ 정답지가 여기서 가린다
+    PutU32(m.data() + 13, g.subFlags);
+    m[17] = g.maxPlayers;
+    m[18] = g.limitValue;
+    m[19] = g.limitKind;
+    return m;
+}
+
+// ── 묶음 8-a — `b0` 49바이트(`network.go:480~500`) ────────────────
+std::vector<uint8_t> BuildGameSettings2(const GameSettings& g) {
+    std::vector<uint8_t> m(49, 0);
+    m[0] = 0xb0;
+    // 방 이름 — 정답지 `copy(buf[1:17], name)` 그대로 **16바이트까지** 보내고,
+    //   그 뒤에 **16번 자리를 0 으로** 못 박는다. ⇒ 쓸 수 있는 글자는 15자이고 끝은 항상 끝표다
+    const size_t n = g.name.size() < 16 ? g.name.size() : 16;
+    std::memcpy(m.data() + 1, g.name.data(), n);
+    m[16] = 0;
+    for (int i = 0; i < 5; ++i) PutU32(m.data() + 17 + 4 * i, g.vals[i]);
+    for (int i = 0; i < 4; ++i) m[37 + i] = g.bytes4[i];
+    PutU32(m.data() + 41, g.field48);
+    PutU32(m.data() + 45, g.timeLeft);
+    return m;
+}
+
 std::vector<uint8_t> BuildJoinBundle(uint16_t netCode, uint32_t frame,
-                                     const uint8_t* info97) {
+                                     const uint8_t* info97, const GameSettings& g) {
     std::vector<uint8_t> m;
     m.reserve(kJoinBundleSize);
 
@@ -65,15 +82,13 @@ std::vector<uint8_t> BuildJoinBundle(uint16_t netCode, uint32_t frame,
     PutU32(j2c + 3, 0);
     m.insert(m.end(), j2c, j2c + 7);
 
-    // af GAME_SETTINGS — 프레임 + 불변부
-    uint8_t af[20] = { 0xaf };
-    PutU32(af + 1, frame);
-    std::memcpy(af + 5, kAfTail, sizeof(kAfTail));
-    m.insert(m.end(), af, af + 20);
-
-    // b0 GAME_SETTINGS_2
-    m.push_back(0xb0);
-    m.insert(m.end(), kB0Body, kB0Body + sizeof(kB0Body));
+    // af GAME_SETTINGS · b0 GAME_SETTINGS_2 — 묶음 8-a 부터 **설정에서 짓는다**
+    {
+        const std::vector<uint8_t> af = BuildGameSettings(g, frame);
+        m.insert(m.end(), af.begin(), af.end());
+        const std::vector<uint8_t> b0 = BuildGameSettings2(g);
+        m.insert(m.end(), b0.begin(), b0.end());
+    }
 
     // 2d NEW_PLAYER — 번호 + 정보 97 + 꼬리 29
     const std::vector<uint8_t> np = BuildNewPlayer(netCode, info97);

@@ -2789,7 +2789,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     //   플레이어 정보 97B 는 방금 받은 CLIENT_ACCEPT 에서 그대로.
                     const uint8_t* info97 =
                         (it.bodyLen() >= 97) ? it.body() : nullptr;
-                    std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97);
+                    std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97, gameSettings_);
                     Emit(s, /*reliable=*/true, /*stream=*/0, jb.data(), jb.size(), out);
                     ++handled_;
                 }
