@@ -525,6 +525,8 @@ struct Session {
     uint32_t abilActiveUntil[kAbilityCount] = {};  // ExecAbilityClass.Frame — 이 프레임을 **넘으면** 끝
     bool     overweight = false;                   // +3656 짐 넘침 — 광전사 돌진을 막는다
     // 묶음 7-f 작살 — 사람 자료 +132(대상) +136(화살) +140(frame35) +144(대상 자리) +152(frame38)
+    // 묶음 7-h 안내서 — 사람 자료 +4244 `BeastScrollLvl[41]`. 레벨이 아니라 **있다/없다**다
+    uint8_t  guideLvl[41] = {};
     uint16_t harpoonBoltNc = 0;                    // 0 = 줄이 없다
     Target   harpoonTarget;                        // 꽂힌 상대(없으면 none)
     float    harpoonTargX = 0, harpoonTargY = 0;   // 마지막으로 본 상대 자리
@@ -1839,6 +1841,13 @@ public:
         if (!assist.empty()) MarkAssist(assist, Target{ victim, -1 });
         PlayerUpdateScore(v->second, out);
     }
+    // 시험용 — 안내서
+    int DebugGuideLvl(const std::string& a, uint8_t g) const {
+        auto i = sessions_.find(a); return i == sessions_.end() || g >= 41 ? -1 : i->second.guideLvl[g];
+    }
+    bool DebugGuideAward(const std::string& a, uint8_t g, bool announce, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); return i != sessions_.end() && GuideAward(i->second, g, announce, out);
+    }
     // 시험용 — 작살
     uint16_t DebugHarpoonBolt(const std::string& a) const {
         auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.harpoonBoltNc;
@@ -2623,6 +2632,9 @@ private:
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
+    // 묶음 7-h — 안내서(0xD1)
+    void SendGuideAward(Session& s, uint8_t guide, bool announce, std::vector<OutPacket>& out);
+    bool GuideAward(Session& s, uint8_t guide, bool announce, std::vector<OutPacket>& out);
     // 묶음 7-f — 작살
     void SendHarpoonFx(uint8_t code, uint16_t n1, uint16_t n2, std::vector<OutPacket>& out);
     MissileObj* HarpoonBoltOf(const Session& s);

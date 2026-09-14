@@ -7435,6 +7435,44 @@ void Server::HarpoonPull(const Session& owner, const Target& targ, float tx, flo
     }
 }
 
+// ── 묶음 7-h 안내서(짐승 두루마리) ────────────────────────────────────
+//
+// 정답지 `nox_xxx_awardBeastGuide_4FAE80`·`nox_xxx_netReportGuideAward_4D8000`
+//        (`legacy/server__magic__plyrgide.c`).
+//
+// ⭕ 와이어 — `d1 <안내서 번호> <알림>` **3바이트**. `netSendPacket1` 이라 **순번 봉투**.
+//   ★ 셋째 칸의 **0x80 은 이 길에서는 안 선다** — 부르는 자리가 넷째 인자를 늘 **0** 으로 넘긴다.
+//     클라도 `& 0x7F` 로 벗겨 읽는다(`cdecode.c:2576`)
+//
+// ⭕ 주기 — 번호는 **1~40**(벗어나면 "AwardGuideError" 글줄). 이미 있으면 **조용히 실패**한다
+//   (주문·능력과 달리 글줄도 안 보낸다). 없으면 **1** 로 세운다. 안내서는 레벨이 없고 **있다/없다**뿐이다
+//
+// ⭕⭕ **무리 안내서** — 정답지가 `0x587000 + 216292` 의 표를 훑는다.
+//   그 자리는 **포인터 배열**이고, 실측으로 **칸이 하나**뿐이다(둘째 칸이 0 이라 거기서 끝난다).
+//   그 하나가 가리키는 목록은 `24, 7, 8, 25, 26, 0` —
+//   ⇒ **24 번을 받으면 7·8·25·26 도 같이** 1 이 된다. `d1` 은 **받은 번호 하나만** 간다
+//   (⭕ `blob_587000.dat` 오프셋 216268 을 바이트로 읽어 확인했다)
+static const uint8_t kGuideGroupLead = 24;
+static const uint8_t kGuideGroupRest[] = { 7, 8, 25, 26 };
+
+void Server::SendGuideAward(Session& s, uint8_t guide, bool announce, std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::REPORT_GUIDE_AWARD), guide,
+                             static_cast<uint8_t>(announce ? 1 : 0) };
+    EmitSeq(s, msg, sizeof(msg), out);                   // Packet1 = 순번 봉투
+}
+
+bool Server::GuideAward(Session& s, uint8_t guide, bool announce, std::vector<OutPacket>& out) {
+    if (guide == 0 || guide >= 41) return false;         // "AwardGuideError"(글줄은 묶음 10)
+    if (s.guideLvl[guide] != 0) return false;            // 이미 있으면 조용히
+    s.guideLvl[guide] = 1;
+    // ⛔ 소리 227 과 보상 알림(나·남들)은 묶음 10
+    if (guide == kGuideGroupLead) {
+        for (uint8_t g : kGuideGroupRest) s.guideLvl[g] = 1;
+    }
+    SendGuideAward(s, guide, announce, out);
+    return true;
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).

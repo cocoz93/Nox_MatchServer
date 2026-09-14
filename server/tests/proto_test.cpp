@@ -13701,6 +13701,137 @@ void TestHarpoonPull() {
     std::printf("  7-g — 작살 끌기: 9e 07 첫 틱 · 끌려옴 · 20 안·375 밖·안 움직임·주인 죽음에 끊김 · 안 걸리면 300\n");
 }
 
+// ── 묶음 7-h — 안내서(0xD1) ──────────────────────────────────────────
+//
+// 정답지 `awardBeastGuide_4FAE80` · `netReportGuideAward_4D8000`(`server__magic__plyrgide.c`).
+//   · 와이어 `d1 <번호> <알림>` **3바이트** · `netSendPacket1` 이라 **순번 봉투**
+//   · 번호는 **1~40** · 이미 있으면 **조용히 실패**(글줄도 안 감) · 받으면 **1**(레벨 없음)
+//   · ⭕ 무리는 **하나뿐** — `24` 를 받으면 `7·8·25·26` 도 같이 1 이 된다
+//     (`blob_587000.dat` 오프셋 216268 의 목록 `24, 7, 8, 25, 26, 0`)
+void TestGuideAward() {
+    const std::string a = "10.7.8.1:7801";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+    auto find = [&](const std::vector<nox::OutPacket>& out, std::vector<uint8_t>& m) {
+        bool found = false;
+        for (const auto& x : FlattenTo(out, a))
+            if (!x.empty() && x[0] == static_cast<uint8_t>(nox::Op::REPORT_GUIDE_AWARD)) { m = x; found = true; }
+        return found;
+    };
+    auto count = [&](const std::vector<nox::OutPacket>& out) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, a))
+            if (!x.empty() && x[0] == static_cast<uint8_t>(nox::Op::REPORT_GUIDE_AWARD)) ++n;
+        return n;
+    };
+
+    // ① **받으면 1 이 되고 `d1` 이 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugGuideAward(a, 5, /*announce=*/true, out), "주기가 실패했다");
+        Check(srv.DebugGuideLvl(a, 5) == 1, "안내서가 1 이 안 됐다");
+        std::vector<uint8_t> m;
+        Check(find(out, m), "`d1` 이 안 갔다");
+        Check(m.size() == 3, "`d1` 이 3바이트가 아니다");
+        Check(m[1] == 5, "`d1` 이 번호를 안 실었다");
+        Check(m[2] == 1, "`d1` 셋째 칸이 알림 1 이 아니다");
+    }
+    // 조용히 주면 0
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGuideAward(a, 5, false, out);
+        std::vector<uint8_t> m;
+        Check(find(out, m) && m[2] == 0, "조용히 줬는데 셋째 칸이 0 이 아니다");
+    }
+
+    // ② **0x80 은 안 선다** — 부르는 자리가 넷째 인자를 늘 0 으로 넘긴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGuideAward(a, 5, true, out);
+        std::vector<uint8_t> m;
+        Check(find(out, m) && (m[2] & 0x80) == 0, "`d1` 에 0x80 이 섰다");
+    }
+
+    // ③ **순번 봉투(cc)로 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
+        std::vector<nox::OutPacket> out;
+        srv.DebugImportantReal(a, /*ready=*/true);
+        srv.DebugGuideAward(a, 5, true, out);
+        Check(out.empty(), "중요가 대기열에 안 쌓이고 곧바로 나갔다");
+        srv.Tick(34, out);
+        bool sequenced = false;
+        for (const auto& pk : out) {
+            if (pk.to != a) continue;
+            const std::vector<uint8_t> b = Body(pk);
+            if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
+                b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
+            size_t q = 4;
+            while (q + 4 <= b.size() && b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
+                const size_t inner = b[q + 3];
+                if (q + 4 + inner > b.size()) break;
+                if (inner == 3 && b[q + 4] == static_cast<uint8_t>(nox::Op::REPORT_GUIDE_AWARD)) sequenced = true;
+                q += 4 + inner;
+            }
+        }
+        Check(sequenced, "`d1` 이 순번 봉투로 안 갔다");
+    }
+
+    // ④ **이미 있으면 조용히 실패한다** — `d1` 도 안 간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGuideAward(a, 5, false, out);
+        out.clear();
+        Check(!srv.DebugGuideAward(a, 5, false, out), "이미 있는데 또 줬다");
+        Check(count(out) == 0, "이미 있는데 `d1` 이 갔다");
+    }
+
+    // ⑤ **번호 밖은 거른다** — 0 과 41. 40 은 된다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        Check(!srv.DebugGuideAward(a, 0, false, out), "0 번을 받아들였다");
+        Check(!srv.DebugGuideAward(a, 41, false, out), "41 번을 받아들였다");
+        Check(count(out) == 0, "번호 밖인데 `d1` 이 갔다");
+        Check(srv.DebugGuideAward(a, 40, false, out), "40 번(마지막)이 막혔다");
+    }
+
+    // ⑥ **무리는 24 하나뿐** — 24 를 받으면 7·8·25·26 도 같이 선다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugGuideAward(a, 24, false, out), "24 번 주기가 실패했다");
+        Check(srv.DebugGuideLvl(a, 24) == 1, "24 가 안 섰다");
+        for (uint8_t g : { 7, 8, 25, 26 })
+            Check(srv.DebugGuideLvl(a, g) == 1, "무리에 든 안내서가 같이 안 섰다");
+        // 무리 밖은 안 건드린다
+        for (uint8_t g : { 6, 9, 23, 27 })
+            Check(srv.DebugGuideLvl(a, g) == 0, "무리 밖 안내서까지 섰다");
+        // `d1` 은 **받은 번호 하나만** 간다
+        Check(count(out) == 1, "무리마다 `d1` 을 보냈다(하나여야 한다)");
+        std::vector<uint8_t> m;
+        Check(find(out, m) && m[1] == 24, "`d1` 이 24 가 아니다");
+    }
+    // 무리에 든 번호를 따로 받아도 무리는 안 퍼진다(24 만 대표다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGuideAward(a, 7, false, out);
+        Check(srv.DebugGuideLvl(a, 7) == 1, "7 이 안 섰다");
+        Check(srv.DebugGuideLvl(a, 24) == 0, "7 을 받았는데 24 까지 섰다");
+        Check(srv.DebugGuideLvl(a, 8) == 0, "7 을 받았는데 8 까지 섰다");
+    }
+    std::printf("  7-h — 안내서(d1 3바이트·순번 봉투) · 1~40 · 이미 있으면 조용히 실패 · 무리는 24 → 7·8·25·26 하나뿐\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -15927,6 +16058,7 @@ int main() {
     TestAbilityEffects();
     TestHarpoon();
     TestHarpoonPull();
+    TestGuideAward();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
