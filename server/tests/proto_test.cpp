@@ -5698,8 +5698,46 @@ void TestPoison() {
         srv.DebugSetPoisonDecay(b, 1);                       // 다음 틱에 0 이 된다
         ms += 34; srv.Tick(ms, out);
         Check(srv.DebugPoisonOf(b) == before - 1, "감쇠 계수기가 0 인데 독이 안 줄었다");
+        // ★ 줄인 뒤 **다시 1000 으로 채워야** 다음 감쇠가 온다 — 안 채우면 독이 영영 그대로 남는다
+        Check(srv.DebugPoisonDecayOf(b) == 1000, "감쇠 뒤 계수기를 1000 으로 다시 안 채웠다");
     }
-    std::printf("  4-c2a — 독 얹기·상태 비트 1024 · 60틱 유예 · 주기 피해 · 무적이면 안 걸림 · 해독이 풀기 · 감쇠\n");
+
+    // ⑦ 두 번 걸어도 **상한**을 넘지 않는다(activatePoison 의 cap)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        poisonB(srv, ms, out);
+        const int first = srv.DebugPoisonOf(b);
+        poisonB(srv, ms, out);                               // 한 번 더
+        Check(srv.DebugPoisonOf(b) == first, "독을 두 번 걸었더니 상한을 넘어 쌓였다");
+    }
+
+    // ⑧ **독 면역** 소환수는 독에 안 아프다 — 피해 종류가 5(독)여야 면역이 걸린다
+    //   ⚠ 종류를 1(불)로 잘못 보내면 면역이 안 걸려 아파진다 — 체력만 보면 이 실수가 안 잡힌다
+    {
+        const std::string c = "10.9.2.3:9203";
+        nox::Server srv; mk(srv);
+        nox::Server::PhysBody body;
+        body.shape = 2; body.r = 10.0f; body.cls = 0x2; body.mass = 10.0f;
+        body.subclass = 0x200;                               // 독 면역
+        srv.SetTypeBody(1328, body);                         // 커서가 집으려면 몸이 있어야 한다
+        std::vector<nox::OutPacket> out;
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(c, 3000, 3000);
+        SummonImp(srv, c, out);
+        double px = 0, py = 0;
+        Check(srv.DebugPetXY(0, px, py), "임프가 안 불려 나왔다(시험 전제)");
+        uint32_t ms = srv.DebugNowMs();
+        (void)px; (void)py;
+        srv.DebugPoisonPet(0, 3);                            // 커서로 집는 건 이 시험이 재려는 게 아니다(위 창구 주석)
+        Check(srv.DebugPetPoison(0) > 0, "소환수에 독이 안 걸렸다(시험 전제)");
+        const int hp0 = srv.DebugPetHealth(0);
+        for (int t = 0; t < 200; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugPetHealth(0) == hp0, "독 면역 소환수가 독에 아팠다(피해 종류가 5 가 아닌가)");
+    }
+    std::printf("  4-c2a — 독 얹기·상태 비트 1024 · 60틱 유예 · 주기 피해 · 무적 제외 · 해독 · 감쇠·재충전 · 상한 · 독 면역\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────

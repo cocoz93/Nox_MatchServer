@@ -1229,6 +1229,18 @@ public:
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.poisonDecay = static_cast<uint16_t>(v);
     }
+    int DebugPoisonDecayOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : static_cast<int>(it->second.poisonDecay);
+    }
+    int DebugPetPoison(size_t i) const { return i < pets_.size() ? static_cast<int>(pets_[i].poison) : 0; }
+    // 시험용 — 소환수에 독을 직접 얹는다. 커서로 소환수를 집으려면 **몸 반지름(10) 안**이라야 하는데
+    //   시전 9틱 동안 소환수가 그보다 멀리 걸어가 버린다 — 커서 맞히기는 이 시험이 재려는 것이 아니다
+    void DebugPoisonPet(size_t i, int amount) {
+        if (i >= pets_.size()) return;
+        std::vector<OutPacket> o;
+        ActivatePoison(Target{ std::string(), static_cast<int>(i) }, amount, amount, o);
+    }
     // 시험용 — 틱 밖에서 곧바로 되살린다(playerRespawn_4F7EF0). 「부활 직후 · 첫 갱신 전」 창을 여는 데 쓴다
     void DebugRespawn(const std::string& addr) { auto it = sessions_.find(addr); if (it == sessions_.end()) return; std::vector<OutPacket> o; PlayerRespawn(it->second, frame_, o); }
 
