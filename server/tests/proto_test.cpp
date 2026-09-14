@@ -12770,6 +12770,180 @@ void TestSpellAward() {
     std::printf("  7-b — 주문 받기(6f 4바이트·순번 봉투) · 올린 뒤 레벨 실음 · 천장 5 · forceLevel 덮기 · 무리 같이 오름\n");
 }
 
+// ── 묶음 7-c — 점수와 죽은 횟수(0x4E) ────────────────────────────────
+//
+// 정답지 `nox_xxx_netReportLesson_4D8EF0`(`GAME3_2.c:4471`) · `playerUpdateScore_54D980`(`GAME5.c:5221`).
+//   · 와이어 `4e <넷코드 u16> <점수 u32> <죽은 횟수 u32>` **11바이트** ·
+//     첫 인자 **255** 라 **모두에게** · Packet1 이라 **순번 봉투**
+//   · 아레나(깃발 256) 셈 — 자살·죽인이 없음이면 **점수 −1, 죽은 횟수 그대로** ·
+//     사람이 죽였으면 **죽인이 +1 · 죽은이 죽은 횟수 +1** · 같은 편이면 **죽인이 −1** ·
+//     도운이가 양쪽과 편이 다르면 **도운이 +1**
+void TestLessonScore() {
+    const std::string a = "10.7.3.1:7301";
+    const std::string b = "10.7.3.2:7302";
+    const std::string c = "10.7.3.3:7303";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+    };
+    auto kill = [&](nox::Server& srv, const std::string& victim, const std::string& by,
+                    std::vector<nox::OutPacket>& out) {
+        int guard = 0;
+        while (srv.IsAlive(victim) && guard++ < 40) srv.DebugHurt(victim, -1, 30, by, 0, out);
+    };
+    // `4e` 를 찾는다 — 누구에게 갔는지도 같이 센다
+    auto lessons = [&](const std::vector<nox::OutPacket>& out, const std::string& to) {
+        std::vector<std::vector<uint8_t>> v;
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() >= 11 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_LESSON)) v.push_back(m);
+        return v;
+    };
+    auto rd32 = [](const std::vector<uint8_t>& m, size_t i) {
+        return static_cast<uint32_t>(m[i]) | (static_cast<uint32_t>(m[i + 1]) << 8) |
+               (static_cast<uint32_t>(m[i + 2]) << 16) | (static_cast<uint32_t>(m[i + 3]) << 24);
+    };
+
+    // ① **남이 죽이면 죽인이 +1 · 죽은이 죽은 횟수 +1** · `4e` 는 11바이트로 **모두에게**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        kill(srv, b, a, out);
+        Check(!srv.IsAlive(b), "안 죽었다(이 시험의 전제)");
+        Check(srv.KillsOf(a) == 1, "죽인 쪽 점수가 1 이 아니다");
+        Check(srv.DeathsOf(b) == 1, "죽은 쪽 죽은 횟수가 1 이 아니다");
+        Check(srv.KillsOf(b) == 0, "죽은 쪽에 점수가 붙었다");
+        Check(srv.DeathsOf(a) == 0, "죽인 쪽 죽은 횟수가 올랐다");
+        const auto toA = lessons(out, a);
+        const auto toB = lessons(out, b);
+        Check(!toA.empty() && !toB.empty(), "`4e` 가 모두에게 안 갔다");
+        if (toA.size() != 2 || toB.size() != 2)
+            std::printf("  [실패] `4e` 가 바뀐 사람 수만큼 안 갔다 — a %zu · b %zu\n", toA.size(), toB.size());
+        if (toA.size() == 2) {
+            Check(toA[0].size() == 11, "`4e` 가 11바이트가 아니다");
+            // 첫 통은 죽인이 점수, 둘째 통은 죽은이 죽은 횟수
+            Check((toA[0][1] | (toA[0][2] << 8)) == 728, "첫 통이 죽인이 번호가 아니다");
+            Check(rd32(toA[0], 3) == 1, "첫 통의 점수가 1 이 아니다");
+            Check((toA[1][1] | (toA[1][2] << 8)) == 729, "둘째 통이 죽은이 번호가 아니다");
+            Check(rd32(toA[1], 7) == 1, "둘째 통의 죽은 횟수가 1 이 아니다");
+        }
+    }
+
+    // ② **순번 봉투(`cc`)로 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
+        srv.DebugImportantReal(a, /*ready=*/true);
+        std::vector<nox::OutPacket> out;
+        kill(srv, b, a, out);
+        srv.Tick(34, out);
+        bool sequenced = false;
+        for (const auto& pk : out) {
+            if (pk.to != a) continue;
+            const std::vector<uint8_t> bb = Body(pk);
+            if (bb.size() < 8 || bb[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
+                bb[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
+            size_t q = 4;
+            while (q + 4 <= bb.size() && bb[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
+                const size_t inner = bb[q + 3];
+                if (q + 4 + inner > bb.size()) break;
+                if (inner == 11 && bb[q + 4] == static_cast<uint8_t>(nox::Op::REPORT_LESSON)) sequenced = true;
+                q += 4 + inner;
+            }
+        }
+        Check(sequenced, "`4e` 가 순번 봉투(cc)로 안 갔다");
+    }
+
+    // ③ **자살은 점수 −1 · 죽은 횟수 그대로**(`LABEL_31`)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        kill(srv, a, a, out);
+        Check(srv.KillsOf(a) == -1, "자살인데 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(a) == 0, "자살인데 죽은 횟수가 올랐다");
+        Check(lessons(out, a).size() == 1, "자살에 `4e` 가 한 통이 아니다");
+    }
+
+    // ④ **같은 편을 죽이면 죽인이 −1** · 죽은이 죽은 횟수는 오른다
+    //   ⚠ 이 갈래는 **맨 피해로는 못 밟는다** — 같은 편끼리는 `OwnersEnemy` 가 피해 자리에서 미리 막는다.
+    //     그래서 셈만 곧바로 부른다(`DebugUpdateScore`)
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateScore(b, a, std::string(), out);
+        Check(srv.KillsOf(a) == -1, "팀킬인데 죽인이 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(b) == 1, "팀킬인데 죽은 횟수가 안 올랐다");
+    }
+    // 편이 다르면 그대로 +1
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateScore(b, a, std::string(), out);
+        Check(srv.KillsOf(a) == 1, "다른 편인데 점수가 1 이 아니다");
+        Check(srv.DeathsOf(b) == 1, "다른 편인데 죽은 횟수가 안 올랐다");
+    }
+    // 편이 **아무도 없으면** 남이므로 +1(정답지 `!v5 && !v14` 가지)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateScore(b, a, std::string(), out);
+        Check(srv.KillsOf(a) == 1, "편 없는 둘인데 점수가 1 이 아니다");
+    }
+
+    // ⑤ **죽인 이가 없으면 점수 −1 · 죽은 횟수 그대로**(LABEL_31)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateScore(b, std::string(), std::string(), out);
+        Check(srv.KillsOf(b) == -1, "죽인 이가 없는데 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(b) == 0, "죽인 이가 없는데 죽은 횟수가 올랐다");
+    }
+
+    // ⑥ **도운 사람도 +1** — 죽인이·죽은이와 편이 다를 때만
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugEnterGame(c, 730);
+        srv.DebugMoveTo(c, 1200, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateScore(b, a, c, out);
+        Check(srv.KillsOf(a) == 1, "죽인이 점수가 1 이 아니다");
+        Check(srv.KillsOf(c) == 1, "도운이 점수가 1 이 아니다");
+        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+        Check(lessons(out, a).size() == 3, "`4e` 가 세 통(죽인이·죽은이·도운이)이 아니다");
+    }
+    // 도운이가 죽인이와 같은 편이면 안 받는다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugEnterGame(c, 730);
+        srv.DebugMoveTo(c, 1200, 1000);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(c, 1);
+        srv.DebugSetTeam(b, 2);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateScore(b, a, c, out);
+        Check(srv.KillsOf(c) == 0, "같은 편 도운이가 점수를 받았다");
+    }
+    // 도운이가 죽은이와 같은 편이어도 안 받는다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugEnterGame(c, 730);
+        srv.DebugMoveTo(c, 1200, 1000);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+        srv.DebugSetTeam(c, 2);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUpdateScore(b, a, c, out);
+        Check(srv.KillsOf(c) == 0, "죽은이와 같은 편 도운이가 점수를 받았다");
+    }
+    std::printf("  7-c — 점수·죽은 횟수(4e 11바이트·모두에게·순번 봉투) · 자살 −1(죽은 수 그대로) · 팀킬 −1 · 도운이 +1\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -14403,7 +14577,10 @@ void TestArena() {
         Check(srv.KillsOf(b) == 0, "맞은 쪽에 점수가 붙음");
     }
 
-    // ★★ ② 자기에게 건 주문으로 죽어도 **점수는 안 준다**
+    // ★★ ② 자기에게 건 주문으로 죽으면 **점수가 내려가고, 죽은 횟수는 안 오른다**
+    //   ⚠ 2026-09-15 7-c 에서 **뒤집혔다.** 전에는 「점수 0 · 죽은 수 1」로 적혀 있었는데,
+    //     정답지 `playerUpdateScore_54D980`(`GAME5.c:5221`)은 자살이면 `LABEL_31` 로 뛰어
+    //     `playerSubLessons(죽은이, 1)` 만 하고 `playerIncrementElimDeath` 를 **건너뛴다**
     {
         nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
@@ -14414,8 +14591,8 @@ void TestArena() {
         int guard = 0;
         while (srv.IsAlive(a) && guard++ < 20) srv.DebugHurt(a, -1, 30, a, 0, out);
         Check(!srv.IsAlive(a), "자기 피해로 안 죽음");
-        Check(srv.KillsOf(a) == 0, "자기를 죽이고 점수를 얻음");
-        Check(srv.DeathsOf(a) == 1, "죽은 수가 안 오름");
+        Check(srv.KillsOf(a) == -1, "자살인데 점수가 −1 이 안 됐다");
+        Check(srv.DeathsOf(a) == 0, "자살인데 죽은 횟수가 올랐다(정답지는 안 올린다)");
     }
 
     // ③ 한도에 닿으면 판이 끝나고 **0x58 이 나간다**
@@ -14988,6 +15165,7 @@ int main() {
     TestAIGuardHunt();
     TestPlayerExp();
     TestSpellAward();
+    TestLessonScore();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

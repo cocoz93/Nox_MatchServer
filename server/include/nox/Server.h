@@ -519,6 +519,9 @@ struct Session {
     // ── 묶음 7 성장 — 경험치(오브젝트 +28 float)와 레벨(사람자료 +3684 바이트)
     //   레벨 첫값 **1** — 정답지가 글자파일을 열기 **전에** 1 로 되돌린다(`sub_4EFF10` `GAME3_3.c:8098`).
     //   우린 글자파일을 안 읽으므로 그 값이 그대로 남는다
+    // 묶음 7-c — 점수(+2136 `Lessons`)와 죽은 횟수(+2140). 둘 다 `4e` 한 통에 실린다
+    int32_t score = 0;
+    uint32_t deaths = 0;
     float experience = 0.0f;
     uint8_t level = 1;
     bool statsDirty = false;       // +2184 plrReadVals_4EEDC0 끝에 1 → `dd`·`de`·`48` 한 벌(접속 때는 스냅샷 꼬리가 그 몫)
@@ -558,8 +561,9 @@ struct Session {
     //   ⚠ `sessions_` 를 그냥 돌면 **주소 문자열 사전순**이라 들어온 차례가 아니다 —
     //     포트가 어떻게 뽑히느냐에 따라 A·B 팀이 뒤집혔다(2026-09-11 감사).
     uint32_t joinOrder = 0;
-    uint16_t kills = 0;            // 죽인 수 (아레나 점수)
-    uint16_t deaths = 0;           // 죽은 수
+    // ★ 7-c — 옛 임시 카운터(`kills`·`deaths`)를 **정답지 자리로 합쳤다**.
+    //   점수는 위의 `score`(+2136 `Lessons`), 죽은 횟수는 `deaths`(+2140).
+    //   옛것은 자살에도 죽은 횟수를 올렸는데 `playerUpdateScore_54D980` 은 **안 올린다**
 
     // ★★★ **이 사람에게 아직 못 보낸 「바뀐 것」 목록** (R4 — 정품 더티 비트 틀을 옮긴 것).
     //
@@ -1600,13 +1604,14 @@ public:
     bool Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
                 const std::string& by = std::string(), const Session::LastHit* hit = nullptr, bool ignoreInvuln = false);
 
-    uint16_t KillsOf(const std::string& addr) const {
+    // 점수 = 정답지 +2136(`Lessons`). 자살·팀킬이면 **내려간다**
+    int32_t KillsOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
-        return it == sessions_.end() ? 0 : it->second.kills;
+        return it == sessions_.end() ? 0 : it->second.score;
     }
-    uint16_t DeathsOf(const std::string& addr) const {
+    uint32_t DeathsOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
-        return it == sessions_.end() ? 0 : it->second.deaths;
+        return it == sessions_.end() ? 0u : it->second.deaths;
     }
     // 판이 끝났나 (점수 한도에 닿았나).
     bool RoundOver() const { return roundOver_; }
@@ -1793,6 +1798,22 @@ public:
     int DebugLevel(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? -1 : i->second.level; }
     void DebugGiveExp(const std::string& a, float v, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) PlayerGiveExp(i->second, v, out);
+    }
+    // 시험용 — 죽음 셈의 갈래를 **곧바로** 밟는다.
+    //   같은 편 때리기는 `OwnersEnemy` 가 피해 자리에서 **미리 막아** 팀킬 갈래까지 못 간다.
+    //   도운 이도 `MarkAssist`(주문 자리)가 세우는 것이라 맨 피해로는 안 선다.
+    //   그 둘을 재려면 셈만 따로 불러야 한다
+    void DebugUpdateScore(const std::string& victim, const std::string& killer,
+                          const std::string& assist, std::vector<OutPacket>& out) {
+        auto v = sessions_.find(victim);
+        if (v == sessions_.end()) return;
+        v->second.lastHit = Session::LastHit{};
+        if (!killer.empty()) { v->second.lastHit.cls = 1; v->second.lastHit.player = killer; }
+        if (!assist.empty()) MarkAssist(assist, Target{ victim, -1 });
+        PlayerUpdateScore(v->second, out);
+    }
+    int DebugScore(const std::string& a) const {
+        auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.score;
     }
     int DebugSpellLvl(const std::string& a, uint8_t sp) const {
         auto i = sessions_.find(a); return i == sessions_.end() || sp >= 137 ? -1 : i->second.spellLvl[sp];
@@ -2523,6 +2544,11 @@ private:
     bool CanInteractFrom(const Creature& k, const Target& t) const;
     void SendGold(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-a — 경험치 알림·주기·레벨 오름
+    // 묶음 7-c — 점수·죽은 횟수(0x4E)
+    void SendLesson(Session& s, std::vector<OutPacket>& out);
+    void ChangeScore(Session& s, int32_t delta, std::vector<OutPacket>& out);
+    void IncrementDeaths(Session& s, std::vector<OutPacket>& out);
+    void PlayerUpdateScore(Session& victim, std::vector<OutPacket>& out);
     // 묶음 7-b — 주문 받기(0x6F)
     void SendSpellAward(Session& s, uint8_t spell, uint8_t announce, bool extra,
                         std::vector<OutPacket>& out);

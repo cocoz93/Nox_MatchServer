@@ -1110,7 +1110,12 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
             hit.monsterType = src->byMonsterType;
             hit.player = by;
         }
-        Damage(t.addr, hp, out, by, &hit);                 // unitDamageClear_4EE5E0
+        // ★ 2026-09-15 7-c — `src` 가 없으면 **빈 hit 를 넘기지 않는다.**
+        //   전에는 빈 것을 넘겨 `Damage` 가 `if (hit)` 가지를 타면서
+        //   **때린 사람(`by`)이 통째로 사라졌다** — 죽음 알림의 죽인이도 늘 0 이었다.
+        //   정답지 `GAME3_2.c:7229~7233` 은 **a3 가 없으면 a2**(때린 이)를 넣는다 —
+        //   그 자리가 `Damage` 의 else 가지(`cls = 1 · player = by`)다
+        Damage(t.addr, hp, out, by, src ? &hit : nullptr);   // unitDamageClear_4EE5E0
         return;
     }
 
@@ -1208,6 +1213,10 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     // ★ 죽음 알림 `a9 0e` — diePlayer_54D2B0 가 소리·DEAD 깃발보다 먼저 보낸다(`GAME5.c:5051`, 묶음 3-d)
     SendKillInform(s, out);
 
+    // ★ 7-c — 알림 바로 뒤가 점수 셈 자리다(`GAME5.c:5051` 알림 → `:5078` 셈).
+    //   이 서버는 늘 아레나(깃발 256)라 `playerUpdateScore_54D980` 갈래만 탄다
+    PlayerUpdateScore(s, out);
+
     // ③ 죽음 — 껍데기 안. 실측 `e8 d8 02`.
     //    ★ **모두에게.** 남이 쓰러지는 것을 봐야 판이 판이 된다.
     {
@@ -1222,7 +1231,6 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     //   respawnAtFrame 은 이제 「죽은 프레임」(DEAD 깃발 겸) — 0 이면 산 것.
     s.respawnAtFrame = frame_ ? frame_ : 1;
     PlayerSetState(s, 3, frame_);
-    ++s.deaths;
     DropFlag(addr, out);   // 들고 있었으면 그 자리에 떨군다
     // `GAME5.c:5098~5104` — setUnitBuffFlags(0) · 능력 끄기(7) · +3600 = 0 · playerCancelSpells · unitClearBuffs
     SetBuffFlags(Target{ addr, -1 }, 0);
@@ -1237,8 +1245,9 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     if (!by.empty() && by != addr) {
         auto k = sessions_.find(by);
         if (k != sessions_.end()) {
-            ++k->second.kills;
-            if (!roundOver_ && k->second.kills >= kArenaKillLimit) {
+            // ★ 7-c — 점수 올리기는 `PlayerUpdateScore` 가 위에서 이미 했다(정답지 `playerUpdateScore_54D980`).
+            //   여기 남은 것은 **판 끝 판정**뿐이다
+            if (!roundOver_ && k->second.score >= static_cast<int32_t>(kArenaKillLimit)) {
                 roundOver_ = true;
                 restartAtFrame_ = frame_ + kRoundRestartTicks;
                 // `0x58 REPORT_DEATHMATCH_WINNER` — **짜임을 오픈녹스 원본에서 확정했다**
@@ -6889,6 +6898,91 @@ bool Server::SpellGrantToPlayer(Session& s, uint8_t spell, uint8_t announce, boo
     return true;
 }
 
+// ── 묶음 7-c 점수와 죽은 횟수 ─────────────────────────────────────────
+//
+// 정답지 `nox_xxx_netReportLesson_4D8EF0`(`GAME3_2.c:4471`) = `NetReportLesson`(`server/network.go:369`) ·
+//        `nox_xxx_playerUpdateScore_54D980`(`GAME5.c:5221`) · `changeScore_4D8E90` ·
+//        `playerSubLessons_4D8EC0` · `playerIncrementElimDeath_4D8D40`.
+//
+// ⭕ 와이어 — `4e <넷코드 u16> <점수 u32> <죽은 횟수 u32>` **11바이트**.
+//   ★ `netSendPacket1_4E5390(**255**, …, 0, 1)` — 첫 인자 255 라 **모두에게** 가고,
+//     Packet**1** 이라 `cc` **순번 봉투**에 든다. 남의 점수도 내 화면에 떠야 하므로 그렇다
+//   ★ 「Lessons」는 이름만 수업이고 실은 **점수**다(`ns.Player GetScore/ChangeScore` 가 이 자리를 읽고 쓴다).
+//     둘째 값 +2140 은 **죽은 횟수**(`playerIncrementElimDeath_4D8D40`)
+//
+// ⭕ 아레나 셈법 — 판 갈래로 셈이 갈린다(`GAME5.c:5078~5085`):
+//     **256 아레나 → `playerUpdateScore_54D980`**(우리 것) · 16 왕 → Kotr · 1024 탈락전 → ElimDeath
+//   `playerUpdateScore(죽은이, 죽인이, 도운이, a4)` 의 갈래 —
+//     · 죽인이가 **자기 자신**이거나 **아무도 없으면** → 죽은이 점수 **−1**. ⚠ **죽은 횟수는 안 올린다**
+//     · 죽인이가 **사람이 아니면**(몬스터·함정) → 죽은 횟수 **+1** 만. 점수는 그대로
+//     · 죽인이가 **사람**이고 **같은 편**이면 → 죽인이 점수 **−1** · 죽은 횟수 +1
+//     · 그 밖(남) → 죽인이 점수 **+1** · 죽은 횟수 +1
+//     · **도운이**가 죽인이와도 죽은이와도 편이 다르면 → 도운이 점수 **+1**(`LABEL_36`)
+//   바뀐 사람마다 `4e` 를 **따로** 보낸다(한 번 죽으면 최대 세 통 — 죽인이·죽은이·도운이)
+void Server::SendLesson(Session& s, std::vector<OutPacket>& out) {
+    uint8_t msg[11];
+    msg[0] = static_cast<uint8_t>(Op::REPORT_LESSON);
+    msg[1] = static_cast<uint8_t>(s.netCode);
+    msg[2] = static_cast<uint8_t>(s.netCode >> 8);
+    const uint32_t sc = static_cast<uint32_t>(s.score);
+    msg[3] = static_cast<uint8_t>(sc);
+    msg[4] = static_cast<uint8_t>(sc >> 8);
+    msg[5] = static_cast<uint8_t>(sc >> 16);
+    msg[6] = static_cast<uint8_t>(sc >> 24);
+    msg[7] = static_cast<uint8_t>(s.deaths);
+    msg[8] = static_cast<uint8_t>(s.deaths >> 8);
+    msg[9] = static_cast<uint8_t>(s.deaths >> 16);
+    msg[10] = static_cast<uint8_t>(s.deaths >> 24);
+    // 첫 인자 255 = 모두에게 · Packet1 = 순번 봉투
+    for (auto& kv : sessions_) {
+        if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+    }
+}
+
+void Server::ChangeScore(Session& s, int32_t delta, std::vector<OutPacket>& out) {
+    s.score += delta;                                      // +2136 (`changeScore_4D8E90` / `playerSubLessons_4D8EC0`)
+    SendLesson(s, out);
+}
+
+void Server::IncrementDeaths(Session& s, std::vector<OutPacket>& out) {
+    ++s.deaths;                                            // +2140 (`playerIncrementElimDeath_4D8D40`)
+    SendLesson(s, out);
+}
+
+// `playerUpdateScore_54D980` — 아레나(깃발 256)의 죽음 셈
+void Server::PlayerUpdateScore(Session& victim, std::vector<OutPacket>& out) {
+    Session* killer = nullptr;
+    if (!victim.lastHit.player.empty()) {
+        auto k = sessions_.find(victim.lastHit.player);
+        if (k != sessions_.end() && k->second.inGame) killer = &k->second;
+    }
+    Session* assist = nullptr;
+    if (victim.assistSet && frame_ - victim.assistFrame < 10u * kServerTickRate) {
+        auto h = sessions_.find(victim.assistBy);
+        if (h != sessions_.end() && h->second.inGame &&
+            h->second.addr != victim.lastHit.player && h->second.addr != victim.addr) assist = &h->second;
+    }
+    // 죽인 것이 사람이 아니었나 — +520 사슬이 몬스터면 `!(flags & 4)` 자리다
+    const bool byNonPlayer = killer == nullptr &&
+                             (victim.lastHit.cls == 2 || (victim.lastHit.cls == 3 && victim.lastHit.ownerCls == 2));
+
+    if (killer == &victim || (killer == nullptr && !byNonPlayer && assist == nullptr)) {
+        ChangeScore(victim, -1, out);                      // LABEL_31 — 죽은 횟수는 **안** 올린다
+        return;
+    }
+    if (killer != nullptr) {
+        const bool sameTeam = victim.team != 0 && killer->team == victim.team;
+        ChangeScore(*killer, sameTeam ? -1 : +1, out);
+    }
+    IncrementDeaths(victim, out);
+    // LABEL_36 — 도운 사람은 죽인이·죽은이와 **편이 다를 때만** 받는다
+    if (assist != nullptr) {
+        const bool sameAsKiller = killer != nullptr && killer->team != 0 && assist->team == killer->team;
+        const bool sameAsVictim = victim.team != 0 && assist->team == victim.team;
+        if (!sameAsKiller && !sameAsVictim) ChangeScore(*assist, +1, out);
+    }
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -9920,7 +10014,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         roundOver_ = false;
         // 점수를 지운다 — 셋 다.
         for (auto& kv : sessions_) {
-            kv.second.kills = 0;
+            kv.second.score = 0;
             kv.second.deaths = 0;
         }
         caps_[0] = caps_[1] = caps_[2] = 0;
