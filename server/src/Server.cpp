@@ -6296,6 +6296,29 @@ int Server::CreatureSetMovePath(Creature& k, float tx, float ty) {
     return 0;
 }
 
+// ── 묶음 6-f(3) 틱에 잇기 ─────────────────────────────────────────────
+//
+// ★★ 6-e·6-f(1)(2) 는 **함수만 있고 아무도 안 불렀다.** 이 조각이 **크리처 틱에 건다.**
+//
+// ⚠ 이것이 **임시 구현을 갈아 끼운다** — 그 전에는 목표를 향해 **곧장 직선으로** 갔다.
+//   곧장 가면 **벽에 붙어 버틴다.** 이제 길을 내어 **돌아간다**.
+//
+// ⭕ 한 틱에 하는 일
+//   1. `CreatureSetMovePath` — 다 왔으면 참 · 아니면 길을 내고 **속도를 세운다**
+//   2. 그 속도로 **자리를 옮긴다**. 벽은 **x·y 를 따로** 보아 한 축이 막혀도 다른 축으로 미끄러진다
+//   · 10프레임 관문에 걸려 길이 비면 **그 틱은 안 움직인다**(정답지도 그렇다)
+bool Server::CreatureTickMove(Creature& k, double tx, double ty) {
+    if (CreatureSetMovePath(k, static_cast<float>(tx), static_cast<float>(ty)) == 1) {
+        k.velX = 0; k.velY = 0;
+        return true;                                         // 다 왔다
+    }
+    if (k.path.empty()) { k.velX = 0; k.velY = 0; return false; }
+    const double nx = k.x + k.velX, ny = k.y + k.velY;
+    if (!WallAt(nx, k.y)) k.x = nx;
+    if (!WallAt(k.x, ny)) k.y = ny;
+    return false;
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -9190,13 +9213,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (d < 1e-6) continue;
             const PetTuning tune = TuningFor(k.type);
             if (d > tune.reach) {
-                // 아직 멀다 — 다가간다. 속도는 그 몬스터 것이다.
-                if (tune.speed > 0.0) {
-                    k.x += tune.speed * dx / d;
-                    k.y += tune.speed * dy / d;
-                }
-                k.facing = static_cast<uint8_t>(
-                    static_cast<int>(std::atan2(dy, dx) * 128.0 / 3.14159265358979) & 0xFF);
+                // 아직 멀다 — **길을 내어 다가간다**(6-f(3)). 속도는 그 몬스터 것이다.
+                //   ⚠ 2026-09-15 이전에는 여기서 **곧장 직선으로** 갔다. 벽에 붙어 버티던 자리다.
+                k.speedCur = static_cast<float>(tune.speed);
+                if (tune.speed > 0.0) CreatureTickMove(k, tx, ty);
             } else if (frame_ >= k.nextHitFrame) {
                 // 닿았다 — 때린다. 쉬는 시간도 그 몬스터 것이다(파일에 없으면 30).
                 k.nextHitFrame = frame_ + tune.delay;

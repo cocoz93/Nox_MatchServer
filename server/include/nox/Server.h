@@ -895,6 +895,7 @@ public:
             WallTile& w = wallTiles_[c.second * 256 + c.first];
             w.present = true; w.dir = 2; w.tile = 0;
         }
+        AIPathBakeWalls();   // 묶음 6-f(3) — 길 찾기 격자에도 같은 벽을 굽는다
     }
     // ★★ **벽 모양** (2026-09-13 묶음 2-b — 정답지 벽은 칸이 아니라 **칸 대각선 선분**이다).
     //   방향 0~10 이 어느 대각선(\ 왼쪽 · / 오른쪽)의 어느 구간(0~23 · 0~11.5 · 11.5~23)인지를
@@ -910,6 +911,7 @@ public:
             walls_[c.y * 256 + c.x] = 1;
         }
         wallsOn_ = !cells.empty();
+        AIPathBakeWalls();   // 묶음 6-f(3) — 길 찾기 격자에도 같은 벽을 굽는다
     }
     void SetWallDefFlags(std::vector<uint32_t> f) { wallDefFlags_ = std::move(f); }
 
@@ -1664,6 +1666,9 @@ public:
     }
     void DebugSetPetSpeed(size_t i, float v) { if (i < pets_.size()) pets_[i].speedCur = v; }
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
+    bool DebugCreatureTickMove(size_t i, double tx, double ty) {
+        return i < pets_.size() ? CreatureTickMove(pets_[i], tx, ty) : false;
+    }
     int  DebugCreatureSetMovePath(size_t i, float tx, float ty) {
         return i < pets_.size() ? CreatureSetMovePath(pets_[i], tx, ty) : -1;
     }
@@ -2380,6 +2385,8 @@ private:
     int  CreatureGenPath(Creature& k, float tx, float ty);
     void CreatureSetDetailedPath(Creature& k, float tx, float ty);
     int  CreatureSetMovePath(Creature& k, float tx, float ty);
+    // 묶음 6-f(3) — 한 틱: 길을 내고 그 속도로 자리를 옮긴다. 다 왔으면 참
+    bool CreatureTickMove(Creature& k, double tx, double ty);
     void AIPathResetIndex();
     AIIndexNode* AIPathIndexAt(int x, int y);
     uint16_t AIPathFlagsAt(int x, int y);

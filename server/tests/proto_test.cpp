@@ -10853,6 +10853,172 @@ void TestCreatureSetPath() {
     std::printf("  6-f(2) — 길 내기: 8 안이면 끝 · 10프레임 관문(걸리면 결과 1) · 뚫리면 50 넘게 움직여야 다시 · 점 31개\n");
 }
 
+// ── 묶음 6-f(3) — 틱에 잇기(벽을 돌아간다) ───────────────────────────
+//
+// ★★ 여기까지가 **화면에서 달라지는 자리**다. 6-e·6-f(1)(2) 는 함수만 있었고 아무도 안 불렀다.
+//   그전까지 소환수는 목표를 향해 **곧장 직선으로** 갔고, 벽을 만나면 **붙어서 버텼다**.
+//
+// 이 시험은 **벽 하나를 사이에 두고** 소환수를 풀어 놓고, 실제 틱을 돌려 **넘어가는지** 본다.
+void TestCreatureTickMove() {
+    const std::string a = "10.6.8.1:6801";
+    const std::string b = "10.6.8.2:6802";
+
+    // ① **벽을 돌아 적에게 간다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1150, 1000);
+        // x=45 세로 벽 — 둘 사이를 곧장 막는다(45+43=88 짝수라 줄 추적에도 걸린다)
+        srv.SetWalls({ { 45, 41 }, { 45, 42 }, { 45, 43 }, { 45, 44 }, { 45, 45 } });
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetPetPos(0, 1000, 1000);
+
+        double bestX = 1000, offY = 0;
+        for (int t = 0; t < 400; ++t) {
+            ms += 34;
+            srv.Tick(ms, out);
+            double px = 0, py = 0;
+            if (!srv.DebugPetXY(0, px, py)) break;            // 죽었거나 사라졌다
+            if (px > bestX) bestX = px;
+            offY = std::max(offY, std::fabs(py - 1000.0));
+        }
+        Check(bestX > 45 * 23.0 + 23.0, "벽을 못 넘었다 — 길을 따라 돌아가야 한다");
+        Check(offY > 23.0, "옆으로 안 비켰다 — 곧장 벽에 밀고 있나");
+    }
+
+    // ② **벽이 없으면 곧장 간다** — 돌아가기가 멀쩡한 길까지 흔들면 안 된다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        double offY = 0, px = 0, py = 0;
+        for (int t = 0; t < 120; ++t) {
+            ms += 34;
+            srv.Tick(ms, out);
+            if (!srv.DebugPetXY(0, px, py)) break;
+            offY = std::max(offY, std::fabs(py - 1000.0));
+        }
+        Check(px > 1100.0, "뚫린 데인데 못 갔다");
+        Check(offY < 40.0, "뚫린 데인데 크게 돌아갔다");
+    }
+
+    // ③ **한 틱 안에서 자리가 속도만큼 옮겨진다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetPetSpeed(0, 4.0f);
+        srv.DebugSetFrame(100);
+        srv.DebugPathBakeWalls();
+        double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        srv.DebugPetXY(0, x0, y0);
+        Check(!srv.DebugCreatureTickMove(0, 1300, 1000), "한 틱에 다 왔다고 한다");
+        srv.DebugPetXY(0, x1, y1);
+        const double moved = std::sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+        Check(std::fabs(moved - 4.0) < 0.1, "한 틱에 걷는 빠르기만큼 안 옮겨졌다");
+    }
+
+    // ④ **벽은 축을 따로 본다** — x 가 막혀도 y 로는 미끄러진다
+    //   ⚠ 길 찾기가 벽을 피하므로 **길을 손으로 박아** 벽 쪽을 가리켜야 이 자리를 볼 수 있다.
+    //     길이 이미 있으면 다시 안 내므로(6-f(2)) 박아 둔 길이 그대로 쓰인다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.SetWalls({ { 44, 43 } });                         // 바로 오른쪽 칸이 벽
+        srv.DebugSetPetPos(0, 1011, 1000);                    // 벽 칸 바로 앞
+        // ★ 한 걸음이 **벽 칸을 넘을 만큼** 커야 한다 — 작으면 같은 칸 안에서 끝나 벽을 안 건드린다
+        srv.DebugSetPetSpeed(0, 40.0f);
+        srv.DebugSetFrame(100);
+        srv.DebugCreatureDetailedPath(0, 1030, 1100);         // 목표를 적어 둔다(다시 안 내게)
+        srv.DebugSetPetPath(0, { { 1030, 1100 } });           // 벽 너머를 가리키는 길을 박는다
+        double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        srv.DebugPetXY(0, x0, y0);
+        srv.DebugCreatureTickMove(0, 1030, 1100);
+        srv.DebugPetXY(0, x1, y1);
+        Check(x1 <= 1012.0, "벽 칸으로 들어갔다");
+        Check(y1 > y0, "x 가 막혔다고 y 까지 멈췄다");
+    }
+
+    // ⑤ **길이 비면 그 틱은 안 움직인다** — 지난 틱 속도가 남아 밀면 안 된다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetPetSpeed(0, 4.0f);
+        srv.DebugSetFrame(100);
+        srv.DebugPathBakeWalls();
+        srv.DebugCreatureTickMove(0, 1300, 1000);             // 한 번 걸어 속도를 세운다
+        Check(srv.DebugPetVelX(0) > 0, "속도가 안 섰다(이 시험의 전제)");
+        srv.DebugSetPetPath(0, {});                           // 길을 없앤다
+        srv.DebugSetPetPathFrame(0, 100);                     // 10프레임 관문을 닫는다
+        double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        srv.DebugPetXY(0, x0, y0);
+        srv.DebugCreatureTickMove(0, 1300, 1000);
+        srv.DebugPetXY(0, x1, y1);
+        Check(x1 == x0 && y1 == y0, "길이 없는데 지난 속도로 밀었다");
+    }
+
+    // ⑥ **틱이 그 몬스터의 빠르기를 세운다** — 손으로 바꿔 둬도 틱이 되돌린다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1400, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetPetSpeed(0, 40.0f);                       // 터무니없이 빠르게 해 둔다
+        double px0 = 0, py0 = 0, px1 = 0, py1 = 0;
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        srv.DebugPetXY(0, px0, py0);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugPetXY(0, px1, py1);
+        const double step = std::sqrt((px1 - px0) * (px1 - px0) + (py1 - py0) * (py1 - py0));
+        Check(step < 10.0, "틱이 몬스터 빠르기로 안 되돌렸다(손으로 넣은 40 으로 간다)");
+    }
+
+    // ⑦ **다 오면 참** — 목표 앞에서 멈춘다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetFrame(100);
+        Check(srv.DebugCreatureTickMove(0, 1003, 1000), "코앞인데 다 왔다고 안 한다");
+    }
+    std::printf("  6-f(3) — 틱에 잇기: 벽을 돌아감 · 뚫린 데는 곧장 · 한 틱에 빠르기만큼 · 축 따로 미끄러짐\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -13055,6 +13221,7 @@ int main() {
     TestAIPathPoints();
     TestCreatureMove();
     TestCreatureSetPath();
+    TestCreatureTickMove();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
