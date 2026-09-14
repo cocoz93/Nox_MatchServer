@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <list>
 #include <map>
 #include <set>
@@ -1621,6 +1622,16 @@ public:
     void DebugAISetMorphReady(size_t i, bool v) { if (i < pets_.size()) pets_[i].aiMorphReady = v; }
     bool DebugAIMorphed(size_t i) const { return i < pets_.size() && pets_[i].morphed; }
     uint32_t DebugAIActionFrame(size_t i) const { return i < pets_.size() ? pets_[i].aiActionFrame : 0; }
+    // ── 묶음 6-e(1) 길 찾기 격자 색인 ──
+    //   칸마다 깃발과 **세대**를 둔다. 색인을 다시 뜰 때 세대를 올려 묵은 자국을 가른다.
+    struct AIIndexNode { uint32_t gen = 0; uint16_t flags = 0; uint32_t visit = 0; };   // visit = 정답지 `Index0`
+    static constexpr int kAIIndexSize = 256;   // 벽 격자와 같다(`WallGridSize`)
+    // ── 묶음 6-e(2) 길 훑기 ──
+    //   `AIVisitNode` — 물결 사슬(`next`=Field8)과 온 길(`parent`=Field4)
+    struct AIVisitNode { int16_t x = 0, y = 0; int parent = -1; int next = -1; uint8_t flags = 0; };
+    static constexpr size_t kAIVisitMax = 1024;   // alloc.NewClassT("VisitNodes", …, 1024)
+    struct PathActor { bool airborne = false; uint32_t subclass = 0; int obstacleSkip = -1; };
+    using PathFilter = std::function<bool(int, int)>;
     // 시험용 — 소환수의 보는 쪽·돌아가려는 쪽(6-d)
     int DebugPetFacing(size_t i) const { return i < pets_.size() ? pets_[i].facing : -1; }
     int DebugPetFacingWant(size_t i) const { return i < pets_.size() ? pets_[i].facingWant : -1; }
@@ -1643,6 +1654,22 @@ public:
     bool DebugPathBlockedFlags(bool air, int x, int y) { return AIPathBlockedFlags(air, x, y); }
     bool DebugPathBlockedByObj(bool air, uint32_t sub, int x, int y) { return AIPathBlockedByObj(air, sub, x, y); }
     bool DebugPathCanPass(bool air, uint32_t sub, int x, int y) { return AIPathCanPass(air, sub, x, y); }
+    int DebugPathFind(bool awayFrom, bool air, uint32_t sub, float fx, float fy, float tx, float ty, int maxDepth) {
+        return AIPathFind(awayFrom, PathActor{ air, sub, -1 }, fx, fy, tx, ty, PathFilter(), maxDepth);
+    }
+    int DebugPathFindF(bool awayFrom, bool air, uint32_t sub, float fx, float fy, float tx, float ty, int maxDepth,
+                       const PathFilter& f) {
+        return AIPathFind(awayFrom, PathActor{ air, sub, -1 }, fx, fy, tx, ty, f, maxDepth);
+    }
+    int DebugPathStatus() const { return aiPathStatus_; }
+    size_t DebugPathLen() const { return aiPathCells_.size(); }
+    int DebugPathCellX(size_t i) const { return i < aiPathCells_.size() ? aiPathCells_[i].first : -1; }
+    int DebugPathCellY(size_t i) const { return i < aiPathCells_.size() ? aiPathCells_[i].second : -1; }
+    size_t DebugPathPtCount() const { return aiPathPts_.size(); }
+    float DebugPathPtX(size_t i) const { return i < aiPathPts_.size() ? aiPathPts_[i].first : -1.0f; }
+    float DebugPathPtY(size_t i) const { return i < aiPathPts_.size() ? aiPathPts_[i].second : -1.0f; }
+    size_t DebugPathVisitCount() const { return aiVisit_.size(); }
+    uint32_t DebugPathLast() const { return aiIndexLast_; }
     uint32_t GoldOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.gold;
@@ -2302,10 +2329,6 @@ private:
     void AICancel(Creature& k, uint8_t act);
     // 묶음 6-d — 한 점을 바라보게 돌린다(`sub_545240`). 다 봤으면 참
     bool AIFacePoint(Creature& k, float tx, float ty);
-    // ── 묶음 6-e(1) 길 찾기 격자 색인 ──
-    //   칸마다 깃발과 **세대**를 둔다. 색인을 다시 뜰 때 세대를 올려 묵은 자국을 가른다.
-    struct AIIndexNode { uint32_t gen = 0; uint16_t flags = 0; };
-    static constexpr int kAIIndexSize = 256;   // 벽 격자와 같다(`WallGridSize`)
     void AIPathResetIndex();
     AIIndexNode* AIPathIndexAt(int x, int y);
     uint16_t AIPathFlagsAt(int x, int y);
@@ -2316,6 +2339,12 @@ private:
     void AIPathMaybeIndexObjects();
     void AIPathInvalidate(bool alsoFrame);
     void AIPathBakeWalls();
+    bool MapTraceObstacles(int skipObstacle, float x1, float y1, float x2, float y2) const;
+    void AIPathResetVisit();
+    int  AIPathNewVisit(int x, int y, int parent, int next);
+    void AIPathCollect(int node, bool hasExact, float ex, float ey);
+    int  AIPathFind(bool awayFrom, const PathActor& act, float fromX, float fromY,
+                    float toX, float toY, const PathFilter& fnc, int maxDepth);
     // 묶음 6-b — 쌓임에 붙은 **조건**을 위에서부터 본다. 틀리면 그 아래까지 빼 버린다
     void AIProcDeps(Creature& k, std::vector<OutPacket>& out);
     bool CanInteractFrom(const Creature& k, const Target& t) const;
@@ -2647,6 +2676,11 @@ private:
     uint32_t aiIndexGen_ = 0;
     uint32_t aiIndexFrame_ = 0;
     bool aiIndexCalc_ = false;   // `calculated` — 이번에 이미 떴나
+    uint32_t aiIndexLast_ = 0;   // `MapIndexLast` — **훑기마다** 하나 올려 「가 봤다」 자국으로 쓴다
+    std::vector<AIVisitNode> aiVisit_;
+    int aiPathStatus_ = 0;                          // 0 닿음 · 1 자리 다 씀 · 2 깊이·훑을 곳 없음
+    std::vector<std::pair<int, int>> aiPathCells_;  // 찾은 길(칸)
+    std::vector<std::pair<float, float>> aiPathPts_;
     bool wallsOn_ = false;
     struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; };
     std::vector<WallTile> wallTiles_;        // 256×256 벽 모양 (묶음 2-b)

@@ -5865,6 +5865,243 @@ void Server::AIPathBakeWalls() {
         }
 }
 
+// ── 묶음 6-e(2) 길 훑기 ───────────────────────────────────────────────
+//
+// 정답지 `src/unit_ai_path.go:19~330` `nox_xxx_pathFind_50BA00`.
+// ★ 이것은 **물결 훑기(너비 우선)** 다 — 한 물결을 다 보고 다음 물결로 간다.
+//
+// ⭕ 짜임새
+//   · `MapIndexLast` 를 **하나 올려** 「이번 훑기에 가 봤다」 자국으로 쓴다.
+//     칸의 `visit` 이 그 수와 같으면 이미 가 본 칸이다(6-e(1) 의 세대와 **다른 수다**).
+//   · 물결은 **외줄 사슬** — 칸마다 `next`(정답지 `Field8`)로 잇고, `parent`(`Field4`)로 온 길을 남긴다
+//   · 이웃 여덟은 blob `0x587000+234216` 표 — **0~3 이 직교, 4~7 이 대각**.
+//     시작 자리를 **난수로 돌려서**(`ioff`) 본다. 같은 거리면 늘 같은 쪽으로 쏠리지 않게 하는 장치다
+//   · `awayFrom=false` 면 **목표에 가장 가까운** 칸을, `true` 면 **가장 먼** 칸을 best 로 들고 간다
+//     (정답지 이름은 `far` 인데, `windows.h` 의 옛 매크로 `far` 와 부딪혀 이름을 바꿨다)
+//     (도망갈 때 쓰는 갈래다 — `Nox_xxx_generateRetreatPath_50CA00`)
+//   · 끝나는 갈래 셋 — **0** 목표에 닿음 · **1** 자국 자리를 다 씀 · **2** 깊이 한도·훑을 곳 없음.
+//     어느 갈래든 **best 에서 길을 만든다**(`Sub_50C320`)
+//
+// ★★ **시작 자리가 막혔을 때**(`v63`) — 훑기를 **느슨하게** 연다.
+//   막힌 칸에서 출발하면 아무 데도 못 가니, 「지날 수 있는 칸」 조건을 잠시 풀고
+//   한 칸이라도 빠져나오면(`v64`) **그 물결에서 못 빠져나온 칸을 쳐내고** 다시 조인다.
+//   거르개(`fnc`)에도 같은 장치가 따로 있다(`v61`/`v65`).
+//
+// ⚠ 아직 안 옮긴 곁가지 — **6-e(2b)** 로 미룬다
+//   · `preCheckWalls_50C8D0` 시작 칸 미리 열기
+//   · 대각선 **이음매** 검사(`Sub_57B500` 벽 모서리 번호 + 문 열쇠) — 지금은 **두 직교 칸이 뚫려야** 대각을 준다
+//   · `sub_50B870`(벽 모서리) · `sub_50C830`(물칸 6번 타일)
+//   · `Sub_50AC20` 나르는 칸(구멍·전송·승강기)을 자식으로 얹기
+//   · 사람·소환수·문은 아직 `obstacles_` 에 없다(묶음 9)
+
+// 이웃 여덟 (blob_587000.dat +234216, Point32 여덟 개를 그대로 읽음)
+static const int kAINb[8][2] = {
+    { 1, 0 }, { 0, -1 }, { -1, 0 }, { 0, 1 },       // 0~3 직교
+    { 1, 1 }, { -1, -1 }, { -1, 1 }, { 1, -1 },     // 4~7 대각
+};
+
+// MapTraceObstacles(`server/map.go:453`) — 두 점 사이를 **장애물**이 막는가. 안 막으면 참.
+//   ⚠ 정답지는 사람·소환수(적이면 지나침)·문도 본다. 우리 `obstacles_` 에는 아직 안 움직이는 것만 있다
+bool Server::MapTraceObstacles(int skipObstacle, float x1, float y1, float x2, float y2) const {
+    const float qx0 = std::min(x1, x2), qx1 = std::max(x1, x2);
+    const float qy0 = std::min(y1, y2), qy1 = std::max(y1, y2);
+    for (size_t i = 0; i < obstacles_.size(); ++i) {
+        if (static_cast<int>(i) == skipObstacle) continue;
+        const PhysBody& o = obstacles_[i];
+        if (!o.hasCollide) continue;                         // FlagNoCollide · AllowOverlap 자리
+        double ox0, oy0, ox1, oy1;
+        BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
+        if (ox1 < qx0 || ox0 > qx1 || oy1 < qy0 || oy0 > qy1) continue;   // EachObjInRect
+        if (o.shape == 2) {
+            float fx, fy;
+            if (PointOnTheLine(x1, y1, x2, y2, o.x, o.y, fx, fy)) {
+                const double dx = fx - o.x, dy = fy - o.y;
+                if (dy * dy + dx * dx <= static_cast<double>(o.r * o.r)) return false;
+            }
+        } else if (o.shape == 3) {
+            const float px = o.x, py = o.y;
+            if (LineTraceXxx(x1, y1, x2, y2, px + o.boxLT, py + o.boxLB, px + o.boxLB, py + o.boxLT)) return false;
+            if (LineTraceXxx(x1, y1, x2, y2, px + o.boxLT, py + o.boxLB, px + o.boxRT, py + o.boxRB)) return false;
+            if (LineTraceXxx(x1, y1, x2, y2, px + o.boxRB, py + o.boxRT, px + o.boxRT, py + o.boxRB)) return false;
+            if (LineTraceXxx(x1, y1, x2, y2, px + o.boxRB, py + o.boxRT, px + o.boxLB, py + o.boxLT)) return false;
+        }
+    }
+    return true;
+}
+
+void Server::AIPathResetVisit() { aiVisit_.clear(); }
+
+// NewVisitNode — 자국 자리는 **1024개**(`alloc.NewClassT("VisitNodes", …, 1024)`). 넘으면 −1.
+int Server::AIPathNewVisit(int x, int y, int parent, int next) {
+    if (aiVisit_.size() >= kAIVisitMax) return -1;
+    AIVisitNode n;
+    n.x = static_cast<int16_t>(x);
+    n.y = static_cast<int16_t>(y);
+    n.parent = parent;
+    n.next = next;
+    aiVisit_.push_back(n);
+    return static_cast<int>(aiVisit_.size()) - 1;
+}
+
+// ⚠ **자리지기** — 정답지 `Sub_50C320` 은 길을 **다듬는다**(6-e(3)).
+//   지금은 온 길을 거꾸로 되짚어 **칸 한가운데 점**을 그대로 늘어놓기만 한다.
+void Server::AIPathCollect(int node, bool hasExact, float ex, float ey) {
+    aiPathCells_.clear();
+    aiPathPts_.clear();
+    if (node < 0) return;
+    std::vector<int> rev;
+    for (int i = node; i >= 0; i = aiVisit_[static_cast<size_t>(i)].parent) rev.push_back(i);
+    for (size_t i = rev.size(); i-- > 0; ) {
+        const AIVisitNode& n = aiVisit_[static_cast<size_t>(rev[i])];
+        aiPathCells_.push_back({ n.x, n.y });
+        aiPathPts_.push_back({ n.x * 23.0f + 11.0f, n.y * 23.0f + 11.0f });
+    }
+    if (hasExact) aiPathPts_.push_back({ ex, ey });
+}
+
+int Server::AIPathFind(bool awayFrom, const PathActor& act, float fromX, float fromY,
+                       float toX, float toY, const PathFilter& fnc, int maxDepth) {
+    aiPathStatus_ = 0;
+    ++aiIndexLast_;
+    AIPathMaybeIndexObjects();
+
+    const int sx = static_cast<int>(static_cast<float>(fromX / kWallCell));
+    const int sy = static_cast<int>(static_cast<float>(fromY / kWallCell));
+    const int gx = static_cast<int>(toX / kWallCell);
+    const int gy = static_cast<int>(toY / kWallCell);
+
+    // ⚠ `preCheckWalls_50C8D0`(시작 칸 미리 열기)은 6-e(2b)
+    bool relaxWall = !AIPathCanPass(act.airborne, act.subclass, sx, sy);   // v63
+    bool relaxFn = (fnc && !fnc(sx, sy));                                  // v61
+
+    AIPathResetVisit();
+    const int root = AIPathNewVisit(sx, sy, -1, -1);
+    if (root < 0) { aiPathStatus_ = 2; AIPathCollect(-1, false, 0, 0); return 2; }
+    if (AIIndexNode* rp = AIPathIndexAt(sx, sy)) rp->visit = aiIndexLast_;
+
+    int cur = awayFrom ? 0 : 999999;
+    int best = -1;                                           // v67
+    int wave = root;                                         // vn2
+    int depth = 0;                                           // v66
+    bool escWall = false, escFn = false;                     // v64 · v65
+
+    for (;;) {
+        int scan = wave;                                     // vn3
+        wave = -1;
+        int nextWave = -1;                                   // v77
+        while (scan >= 0) {
+            const int x1 = aiVisit_[static_cast<size_t>(scan)].x;
+            const int y1 = aiVisit_[static_cast<size_t>(scan)].y;
+            const int dd = (x1 - gx) * (x1 - gx) + (y1 - gy) * (y1 - gy);
+            if (awayFrom) {
+                if (dd > cur) { best = scan; cur = dd; }
+            } else {
+                if (dd < cur) { best = scan; cur = dd; }
+                if (!relaxWall && !relaxFn && x1 == gx && y1 == gy) {
+                    aiPathStatus_ = 0;
+                    AIPathCollect(scan, true, toX, toY);
+                    return 0;
+                }
+            }
+            const int ioff = static_cast<int>(NextRandom(8));
+            for (int i = 0; i < 8; ++i) {
+                const int ii = (i + ioff) % 8;
+                const int x2 = x1 + kAINb[ii][0];
+                const int y2 = y1 + kAINb[ii][1];
+                AIIndexNode* ip = AIPathIndexAt(x2, y2);
+                if (!ip || ip->visit == aiIndexLast_) continue;
+                ip->visit = aiIndexLast_;                    // 가 봤다고 찍는다
+
+                bool accept = false;
+                // ★ 이웃이 **바로 목표 칸**이면, 칸 한가운데에서 **정확한 점까지 줄이 뚫리는지** 본다.
+                //   뚫리면 벽 검사를 **건너뛰고** 받아들인다(정답지 LABEL_32).
+                if (x2 == gx && y2 == gy) {
+                    const float ax = x1 * 23.0f + 11.0f, ay = y1 * 23.0f + 11.0f;
+                    if (MapTraceObstacles(act.obstacleSkip, ax, ay, toX, toY) &&
+                        MapTraceRay(ax, ay, toX, toY, act.airborne ? 5 : 1))
+                        accept = true;
+                }
+                if (!accept) {
+                    // ⚠ 대각선 **이음매** 검사는 아직 두 직교 칸만 본다(6-e(2b))
+                    if (ii >= 4) {
+                        if (AIPathBlockedFlags(act.airborne, x1, y2)) continue;
+                        if (AIPathBlockedFlags(act.airborne, x2, y1)) continue;
+                    }
+                    if (relaxWall) {
+                        if (AIPathCanPass(act.airborne, act.subclass, x2, y2)) {
+                            escWall = true;                  // 빠져나왔다
+                        } else if (!AIPathBlockedFlags(act.airborne, x1, y1) &&
+                                   AIPathBlockedFlags(act.airborne, x2, y2)) {
+                            continue;                        // 정답지 주석: 왜 한쪽만 보는지 모름
+                        }
+                    } else {
+                        if (!AIPathCanPass(act.airborne, act.subclass, x2, y2)) continue;
+                        if (fnc) {
+                            const bool ok = fnc(x2, y2);
+                            if (relaxFn) { if (ok) escFn = true; }
+                            else if (!ok) continue;
+                        }
+                    }
+                }
+                const int nn = AIPathNewVisit(x2, y2, scan, nextWave);
+                if (nn < 0) {                                // 자국 자리를 다 썼다
+                    aiPathStatus_ = 1;
+                    AIPathCollect(best, false, 0, 0);
+                    return 1;
+                }
+                nextWave = nn;
+            }
+            // ⚠ `Sub_50AC20` 나르는 칸(구멍·전송·승강기) 얹기는 6-e(2b)
+            scan = aiVisit_[static_cast<size_t>(scan)].next;
+        }
+        wave = nextWave;
+
+        // ★ 느슨하게 열었다가 **한 칸이라도 빠져나왔으면**, 못 빠져나온 칸을 물결에서 쳐낸다
+        if (escWall) {
+            int prev = -1;
+            for (int it = wave; it >= 0; ) {
+                const int nx = aiVisit_[static_cast<size_t>(it)].next;
+                if (AIPathCanPass(act.airborne, act.subclass,
+                                  aiVisit_[static_cast<size_t>(it)].x,
+                                  aiVisit_[static_cast<size_t>(it)].y)) {
+                    prev = it;
+                } else if (prev >= 0) {
+                    aiVisit_[static_cast<size_t>(prev)].next = nx;
+                } else {
+                    wave = nx;
+                }
+                it = nx;
+            }
+            relaxWall = false; escWall = false;
+        }
+        if (escFn) {
+            int prev = -1;
+            for (int it = wave; it >= 0; ) {
+                const int nx = aiVisit_[static_cast<size_t>(it)].next;
+                if (fnc(aiVisit_[static_cast<size_t>(it)].x, aiVisit_[static_cast<size_t>(it)].y)) {
+                    prev = it;
+                } else if (prev >= 0) {
+                    aiVisit_[static_cast<size_t>(prev)].next = nx;
+                } else {
+                    wave = nx;
+                }
+                it = nx;
+            }
+            relaxFn = false; escFn = false;
+        }
+        if (wave < 0) break;                                 // 훑을 곳이 없다
+        if (maxDepth != 0 && depth >= maxDepth) {            // 깊이 한도
+            aiPathStatus_ = 2;
+            AIPathCollect(best, false, 0, 0);
+            return 2;
+        }
+        ++depth;
+    }
+    aiPathStatus_ = 2;
+    AIPathCollect(best, false, 0, 0);
+    return 2;
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).

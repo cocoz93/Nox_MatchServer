@@ -10061,6 +10061,246 @@ void TestAIPathIndex() {
     std::printf("  6-e(1) — 격자 색인: 벽 0x1(땅)·구멍 0x10(날것) · 세대로 묵은 자국 거름 · 15틱 관문 · 밖은 막힘\n");
 }
 
+// ── 묶음 6-e(2) — 길 훑기(너비 우선) ──────────────────────────────────
+//
+// 정답지 `src/unit_ai_path.go:19~330` `nox_xxx_pathFind_50BA00`.
+//   · 물결 하나를 다 보고 다음 물결로 간다. 「가 봤다」는 `MapIndexLast` 로 찍는다
+//   · 이웃 여덟은 blob `0x587000+234216` — **0~3 직교 (1,0)(0,−1)(−1,0)(0,1) · 4~7 대각**
+//   · 끝나는 갈래 셋 — **0** 닿음 · **1** 자국 1024칸을 다 씀 · **2** 깊이 한도·훑을 곳 없음
+//   · 첫 인자가 참이면 목표에서 **가장 먼** 칸을 고른다(도망갈 때. 정답지 이름 `far` 는
+//     `windows.h` 의 옛 매크로와 부딪혀 `awayFrom` 으로 바꿨다)
+//   · 시작 칸이 막혀 있으면 **느슨하게** 열었다가 한 칸이라도 빠져나오면 조인다
+//
+// ⚠ 칸 좌표는 유닛÷23 이다 — (1000,1000)은 칸 (43,43).
+void TestAIPathFind() {
+    // ① **막힌 데 없이 곧장** — 닿고(0), 길이 시작에서 끝까지 이어진다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 1120, 1000, 0);
+        Check(st == 0, "뚫린 데인데 못 닿았다");
+        Check(srv.DebugPathLen() >= 2, "길이 너무 짧다");
+        Check(srv.DebugPathCellX(0) == 43 && srv.DebugPathCellY(0) == 43, "길이 시작 칸에서 안 떠났다");
+        const size_t last = srv.DebugPathLen() - 1;
+        Check(srv.DebugPathCellX(last) == 48 && srv.DebugPathCellY(last) == 43, "길이 목표 칸에서 안 끝났다");
+        // 이어진 길인가 — 이웃 여덟 중 하나씩만 움직여야 한다
+        for (size_t i = 1; i <= last; ++i) {
+            const int dx = std::abs(srv.DebugPathCellX(i) - srv.DebugPathCellX(i - 1));
+            const int dy = std::abs(srv.DebugPathCellY(i) - srv.DebugPathCellY(i - 1));
+            Check(dx <= 1 && dy <= 1 && (dx + dy) > 0, "길이 끊겼다(이웃 칸이 아니다)");
+        }
+        // 마지막 점은 **정확한 목표 자리** — 칸 한가운데가 아니다
+        const size_t pc = srv.DebugPathPtCount();
+        Check(pc == srv.DebugPathLen() + 1, "정확한 끝점이 안 붙었다");
+        Check(srv.DebugPathPtX(pc - 1) == 1120.0f, "끝점이 목표 자리가 아니다");
+        // 중간 점은 **칸 한가운데**(칸×23 + 11)
+        Check(srv.DebugPathPtX(0) == 43 * 23.0f + 11.0f, "중간 점이 칸 한가운데가 아니다");
+        Check(srv.DebugPathPtY(0) == 43 * 23.0f + 11.0f, "중간 점 y 가 칸 한가운데가 아니다");
+        // 같은 칸을 두 번 밟지 않는다 — **가 봤다 자국**이 서야 한다
+        for (size_t i = 0; i < srv.DebugPathLen(); ++i)
+            for (size_t j = i + 1; j < srv.DebugPathLen(); ++j)
+                Check(!(srv.DebugPathCellX(i) == srv.DebugPathCellX(j) &&
+                        srv.DebugPathCellY(i) == srv.DebugPathCellY(j)), "같은 칸을 두 번 밟았다");
+    }
+
+    // ①-2 **대각선으로 간다** — 이웃 표 4~7 이 진짜 대각이어야 칸 수가 준다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 48 * 23 + 11, 48 * 23 + 11, 0);
+        Check(st == 0, "대각으로 못 닿았다");
+        Check(srv.DebugPathLen() == 6, "대각이 아니라 직교로만 갔다(43→48 은 대각 다섯 걸음)");
+    }
+
+    // ①-3 **대각선은 이음매가 뚫려야 지나간다** — 두 직교 칸이 막히면 모서리를 못 뚫는다
+    {
+        nox::Server srv;
+        srv.SetWalls({ { 44, 43 }, { 43, 44 } });            // (43,43)→(44,44) 의 두 옆칸
+        srv.DebugPathBakeWalls();
+        srv.DebugPathFind(false, false, 0, 1000, 1000, 44 * 23 + 11, 44 * 23 + 11, 0);
+        bool corner = false;
+        for (size_t i = 1; i < srv.DebugPathLen(); ++i)
+            if (srv.DebugPathCellX(i - 1) == 43 && srv.DebugPathCellY(i - 1) == 43 &&
+                srv.DebugPathCellX(i) == 44 && srv.DebugPathCellY(i) == 44) corner = true;
+        Check(!corner, "두 옆칸이 막혔는데 모서리를 대각으로 뚫었다");
+    }
+    // 한쪽만 막히면 **그래도 못 지나간다** — 둘 다 봐야 한다
+    {
+        nox::Server srv;
+        srv.SetWalls({ { 44, 43 } });                        // 한쪽만
+        srv.DebugPathBakeWalls();
+        srv.DebugPathFind(false, false, 0, 1000, 1000, 44 * 23 + 11, 44 * 23 + 11, 0);
+        bool corner = false;
+        for (size_t i = 1; i < srv.DebugPathLen(); ++i)
+            if (srv.DebugPathCellX(i - 1) == 43 && srv.DebugPathCellY(i - 1) == 43 &&
+                srv.DebugPathCellX(i) == 44 && srv.DebugPathCellY(i) == 44) corner = true;
+        Check(!corner, "한쪽이 막혔는데 대각으로 뚫었다 — 두 옆칸을 다 봐야 한다");
+    }
+
+    // ② **제자리** — 시작이 곧 목표면 한 칸짜리 길
+    {
+        nox::Server srv;
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 1000, 1000, 0);
+        Check(st == 0, "제자리인데 못 닿았다");
+        Check(srv.DebugPathLen() == 1, "제자리인데 길이 한 칸이 아니다");
+    }
+
+    // ③ **벽을 돌아간다** — 한 줄 벽을 세우고 그 너머로 보낸다
+    {
+        nox::Server srv;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int y = 40; y <= 46; ++y) w.push_back({ 45, static_cast<uint8_t>(y) });   // x=45 세로 벽
+        srv.SetWalls(w);
+        srv.DebugPathBakeWalls();
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 1150, 1000, 0);
+        Check(st == 0, "벽 너머로 못 갔다");
+        bool onWall = false;
+        for (size_t i = 0; i < srv.DebugPathLen(); ++i)
+            if (srv.DebugPathCellX(i) == 45 && srv.DebugPathCellY(i) >= 40 && srv.DebugPathCellY(i) <= 46) onWall = true;
+        Check(!onWall, "길이 벽 칸을 밟았다");
+    }
+
+    // ④ **훑을 곳이 없다(2)** — 시작을 벽으로 빙 둘러싸고 목표를 밖에 둔다
+    //   ⚠ **목표 쪽을 가두면 안 된다** — 바깥이 뚫려 있으면 물결이 자국 1024칸을 먼저 다 써서
+    //     끝나는 갈래가 **1** 이 된다(⑥에서 따로 본다). 훑을 곳이 없어 끝나려면 **가둔 쪽에서 출발**해야 한다
+    {
+        nox::Server srv;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int y = 41; y <= 45; ++y)
+            for (int x = 41; x <= 45; ++x)
+                if (x == 41 || x == 45 || y == 41 || y == 45) w.push_back({ static_cast<uint8_t>(x), static_cast<uint8_t>(y) });
+        srv.SetWalls(w);
+        srv.DebugPathBakeWalls();
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 50 * 23 + 11, 43 * 23 + 11, 0);
+        Check(st == 2, "갇혔는데 그 갈래로 안 끝났다");
+        Check(srv.DebugPathLen() > 0, "못 닿아도 **가장 가까운 칸까지의 길**은 나와야 한다");
+        Check(srv.DebugPathVisitCount() < 1024, "갇혔는데 자국 자리를 다 썼다 — 그러면 끝나는 갈래가 1 이 된다");
+        // ★ 방 안의 **빈 칸이 꼭 아홉**(3×3)이다. 자국이 열이면 **시작 칸을 다시 밟은 것** —
+        //   시작 칸에도 「가 봤다」를 찍어야 한다
+        Check(srv.DebugPathVisitCount() == 9, "자국 수가 빈 칸 수와 다르다 — 시작 칸을 다시 밟았나");
+        // 가장 가까운 칸 = 방 안에서 목표(+x)에 가장 가까운 줄
+        const size_t last = srv.DebugPathLen() - 1;
+        Check(srv.DebugPathCellX(last) == 44, "가장 가까운 칸을 안 골랐다");
+    }
+
+    // ⑤ **깊이 한도** — 한 물결만 보고 멈춘다(2)
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 2000, 2000, 1);
+        Check(st == 2, "깊이 한도에 안 걸렸다");
+        // 한도 1 = 첫 물결(시작)을 훑고, 그다음 물결까지만 훑고 멈춘다 → 길은 **딱 두 칸**
+        Check(srv.DebugPathLen() == 2, "깊이 한도 경계가 하나 어긋났다(>= 가 맞다)");
+    }
+
+    // ⑥ **자국 자리를 다 씀(1)** — 한도 1024칸을 넘게 훑으면 그 갈래로 끝난다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 4000, 4000, 0);
+        Check(st == 1, "1024칸을 다 썼는데 그 갈래로 안 끝났다");
+        Check(srv.DebugPathVisitCount() == 1024, "자국 자리가 한도까지 안 찼다");
+    }
+
+    // ⑦ **도망** — 목표에서 **멀어지는** 쪽으로 길이 난다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        const int st = srv.DebugPathFind(true, false, 0, 1000, 1000, 1000, 1000, 4);
+        Check(st == 2, "도망은 닿을 목표가 없으니 2 로 끝나야 한다");
+        Check(srv.DebugPathLen() > 1, "도망 길이 아예 안 났다 — 먼 쪽을 고르고 있나");
+        const size_t last = srv.DebugPathLen() - 1;
+        const int dx = srv.DebugPathCellX(last) - 43, dy = srv.DebugPathCellY(last) - 43;
+        Check(dx * dx + dy * dy >= 16, "도망 길이 충분히 안 멀어졌다");
+    }
+
+    // ⑧ **거르개(fnc)** — 지나갈 칸을 더 좁힌다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        // y 가 43 인 줄만 지나가게 한다
+        const int st = srv.DebugPathFindF(false, false, 0, 1000, 1000, 1120, 1000, 0,
+                                          [](int, int y) { return y == 43; });
+        Check(st == 0, "거르개를 걸고도 곧장 갈 수 있는데 못 갔다");
+        for (size_t i = 0; i < srv.DebugPathLen(); ++i)
+            Check(srv.DebugPathCellY(i) == 43, "거르개가 막은 줄을 밟았다");
+    }
+
+    // ⑨ **시작이 막혀 있어도 빠져나온다** — 시작 칸을 벽으로 덮는다
+    {
+        nox::Server srv;
+        srv.SetWalls({ { 43, 43 } });                        // 시작 칸이 벽
+        srv.DebugPathBakeWalls();
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 1120, 1000, 0);
+        Check(st == 0, "시작이 막혔다고 길을 못 냈다 — 느슨하게 열어야 한다");
+        Check(srv.DebugPathLen() >= 2, "빠져나온 길이 없다");
+    }
+    // ⑨-2 **둘레까지 막혀도** 느슨한 갈래로 빠져나온다 — 이게 없으면 아예 못 움직인다
+    {
+        nox::Server srv;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int y = 42; y <= 44; ++y)
+            for (int x = 42; x <= 44; ++x) w.push_back({ static_cast<uint8_t>(x), static_cast<uint8_t>(y) });
+        srv.SetWalls(w);                                     // 3×3 을 통째로 벽으로
+        srv.DebugPathBakeWalls();
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 48 * 23 + 11, 43 * 23 + 11, 0);
+        Check(st == 0, "벽 속에 파묻혔는데 느슨한 갈래가 안 열렸다");
+    }
+    // ⑨-3 **거르개에도 같은 장치** — 시작 칸을 거르개가 막아도 빠져나온다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        // ⚠ **시작 줄만 막으면 안 걸린다** — 옆칸이 바로 통과해서 느슨한 갈래를 안 거친다.
+        //   시작 **둘레까지** 막아야 그 갈래로만 빠져나올 수 있다
+        const int st = srv.DebugPathFindF(false, false, 0, 1000, 1000, 48 * 23 + 11, 1000, 0,
+                                          [](int x, int) { return x >= 45; });
+        Check(st == 0, "거르개가 시작 둘레를 막았다고 못 갔다 — 느슨한 갈래가 있어야 한다");
+    }
+
+    // ⑩ **훑기마다 자국 수가 오른다** — 앞 훑기의 자국이 다음 훑기를 막으면 안 된다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        srv.DebugPathFind(false, false, 0, 1000, 1000, 1120, 1000, 0);
+        const uint32_t l1 = srv.DebugPathLast();
+        const int st = srv.DebugPathFind(false, false, 0, 1000, 1000, 1120, 1000, 0);
+        Check(srv.DebugPathLast() == l1 + 1, "훑기 자국 수가 안 올랐다");
+        Check(st == 0, "두 번째 훑기가 앞 자국에 막혔다");
+    }
+
+    // ⑪ **나는 것은 구멍에 걸리고 벽은 지나간다** — 6-e(1) 갈래가 훑기까지 이어지나
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        for (int y = 40; y <= 46; ++y) srv.DebugPathSetFlags(45, y, 0x10);   // 구멍 줄
+        const int walk = srv.DebugPathFind(false, /*air=*/false, 0, 1000, 1000, 1150, 1000, 0);
+        Check(walk == 0, "걷는 것이 구멍 줄에 막혔다");
+        bool walkedHole = false;
+        for (size_t i = 0; i < srv.DebugPathLen(); ++i)
+            if (srv.DebugPathCellX(i) == 45) walkedHole = true;
+        Check(walkedHole, "걷는 것은 구멍을 지나가야 한다");
+    }
+
+    // ⑫ **이웃 보는 자리를 난수로 돌린다** — 같은 자리를 여러 번 훑으면 길이 갈린다
+    //   (돌리지 않으면 늘 같은 쪽으로 쏠려 몬스터 떼가 한 줄로 선다)
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        std::vector<std::string> seen;
+        for (int t = 0; t < 8; ++t) {
+            srv.DebugPathFind(false, false, 0, 1000, 1000, 48 * 23 + 11, 46 * 23 + 11, 0);
+            std::string k;
+            for (size_t i = 0; i < srv.DebugPathLen(); ++i)
+                k += std::to_string(srv.DebugPathCellX(i)) + "," + std::to_string(srv.DebugPathCellY(i)) + ";";
+            seen.push_back(k);
+        }
+        bool differ = false;
+        for (size_t i = 1; i < seen.size(); ++i) if (seen[i] != seen[0]) differ = true;
+        Check(differ, "여덟 번 훑었는데 길이 늘 같다 — 이웃 보는 자리를 안 돌리고 있다");
+    }
+    std::printf("  6-e(2) — 길 훑기: 곧장·벽 돌기·둘러싸임 2 · 깊이 한도 · 자리 다 씀 1 · 도망 · 거르개 · 막힌 시작\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -12259,6 +12499,7 @@ int main() {
     TestAIActions();
     TestAIFace();
     TestAIPathIndex();
+    TestAIPathFind();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
