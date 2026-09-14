@@ -541,7 +541,11 @@ int main(int argc, char** argv) {
                 // ★ 묶음 5-b — 물약이 무엇을 하는지는 `SUBCLASS` 비트에 있다(`POTION+HEALTH_POTION` 꼴).
                 w2.foodBits = nox::FoodClassBitsOf(ti->subclassRaw);
                 // ★ 묶음 5-c — 줍는 순간 부르는 함수. 물약 갈래만 그 자리에서 마실 수 있다.
-                w2.potionPickup = (ti->pickupFn == "PotionPickup");
+                // ★ 묶음 5-h — 금 더미도 같은 표에서 갈린다.
+                //   ⚠ 금액은 맵 오브젝트 **초기자료**(GoldInitData.Amount)라 아직 못 읽는다(0 으로 둔다).
+                const nox::PickupFn pf = nox::PickupFnOf(ti->pickupFn);
+                w2.potionPickup = (pf == nox::PickupFn::Potion);
+                w2.goldPickup = (pf == nox::PickupFn::Gold);
                 st.push_back(w2);
             }
             nStat = st.size();

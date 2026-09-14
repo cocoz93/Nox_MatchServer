@@ -9273,6 +9273,118 @@ void TestChargedStaffCast() {
     std::printf("  5-g — 충전 지팡이: 완드 없으면 마나 · 들면 충전(마나 0 이어도 돎) · 다 쓰면 끝 · 도중에 말라도 끝 · 자세 22 대 10\n");
 }
 
+// ── 묶음 5-h — 금(`pickupGold_4F3A60`) ─────────────────────────────────
+//
+// 금은 **가방에 안 들어간다.** 숫자로 쌓이고 `4a REPORT_GOLD` 로 알린다.
+//   · `4a <금 u32>` **5바이트** · `netSendPacket0(…, 1)` 이라 **중요(cc)** 다
+//     ⚠ 충전 알림 `64` 와 다르다 — 그쪽은 마지막 인자가 0 이라 중요가 아니었다
+//   · 빼기는 **0 아래로 안 내려간다**(`playerSubGold_4FA5D0`)
+//
+// ⚠ 금액은 맵 오브젝트의 **초기자료**(`GoldInitData.Amount`)에서 온다 — 우리 맵 파서가
+//   아직 그걸 안 읽어 여기서는 시험이 직접 넣는다.
+//   ⭕ estate 맵에는 금이 **한 개도 없다**(기동 표시줄 물건 목록에 Gold 없음) → ④ 화면 확인 불가.
+void TestGold() {
+    const std::string a = "10.5.8.1:5801";
+    auto put = [&](nox::Server& srv, uint16_t nc, uint32_t amount) {
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = nc; w.type = 652; w.x = 1000; w.y = 1000;
+        w.weight = 1; w.goldPickup = true; w.goldAmount = amount;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+    };
+    auto get = [&](nox::Server& srv, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nc);
+        srv.OnPacket(a, g.data(), g.size(), out);
+    };
+    // `4a <금 u32>` 를 찾는다
+    auto goldMsg = [&](const std::vector<nox::OutPacket>& out, uint32_t& v) {
+        bool found = false;
+        for (const auto& m : FlattenTo(out, a))
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_GOLD)) {
+                v = static_cast<uint32_t>(m[1]) | (static_cast<uint32_t>(m[2]) << 8) |
+                    (static_cast<uint32_t>(m[3]) << 16) | (static_cast<uint32_t>(m[4]) << 24);
+                found = true;
+            }
+        return found;
+    };
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+
+    // ① **가방에 안 들어가고 숫자로 쌓인다** · `4a` 가 간다
+    {
+        nox::Server srv; mk(srv);
+        put(srv, 1000, 250);
+        std::vector<nox::OutPacket> out;
+        get(srv, 1000, out);
+        Check(srv.GoldOf(a) == 250, "금이 250 이 안 됐다");
+        Check(srv.CarriedCount(a) == 0, "금이 가방에 들어갔다");
+        Check(srv.WorldStaticCount() == 0, "주웠는데 바닥에 남았다");
+        Check(srv.goldPicked() == 1, "금 주운 횟수가 안 올랐다");
+        uint32_t v = 0;
+        Check(goldMsg(out, v), "`4a` 가 안 갔다");
+        Check(v == 250, "`4a` 가 실은 금이 250 이 아니다");
+    }
+
+    // ② **쌓인다** — 두 더미를 주우면 합이 된다
+    {
+        nox::Server srv; mk(srv);
+        put(srv, 1001, 100);
+        std::vector<nox::OutPacket> out;
+        get(srv, 1001, out);
+        put(srv, 1002, 70);
+        out.clear();
+        get(srv, 1002, out);
+        Check(srv.GoldOf(a) == 170, "금이 안 쌓였다");
+        uint32_t v = 0;
+        Check(goldMsg(out, v) && v == 170, "`4a` 가 합을 안 실었다");
+    }
+
+    // ③ **빼기는 0 아래로 안 내려간다**
+    {
+        nox::Server srv; mk(srv);
+        put(srv, 1003, 50);
+        std::vector<nox::OutPacket> out;
+        get(srv, 1003, out);
+        srv.DebugSubGold(a, 20, out);
+        Check(srv.GoldOf(a) == 30, "20 을 뺐는데 30 이 아니다");
+        out.clear();
+        srv.DebugSubGold(a, 1000, out);                           // 가진 것보다 많이
+        Check(srv.GoldOf(a) == 0, "모자란데 0 이 아니다 — 음수로 감겼나");
+        uint32_t v = 1;
+        Check(goldMsg(out, v) && v == 0, "뺀 뒤 `4a` 가 0 을 안 실었다");
+    }
+
+    // ④ **큰 값도 네 바이트로 그대로 간다**(u32)
+    {
+        nox::Server srv; mk(srv);
+        put(srv, 1004, 300000);                              // 두 바이트로는 못 담는 값
+        std::vector<nox::OutPacket> out;
+        get(srv, 1004, out);
+        Check(srv.GoldOf(a) == 300000, "큰 금액이 안 들어갔다");
+        uint32_t v = 0;
+        Check(goldMsg(out, v) && v == 300000, "`4a` 가 큰 값을 잘랐다 — u32 가 맞나");
+    }
+
+    // ⑤ **금이 아닌 물건은 예전대로 가방으로**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 1005; w.type = 653; w.x = 1000; w.y = 1000;
+        w.weight = 10;                                       // goldPickup 을 안 켠다
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> out;
+        get(srv, 1005, out);
+        Check(srv.CarriedCount(a) == 1, "보통 물건이 가방에 안 들어갔다");
+        Check(srv.GoldOf(a) == 0, "보통 물건인데 금이 늘었다");
+    }
+    std::printf("  5-h — 금: 가방에 안 들어감 · `4a` 5바이트 u32 · 쌓임 · 빼기는 0 바닥 · 큰 값 그대로\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -9622,6 +9734,17 @@ void TestThingDb() {
             const nox::ThingInfo* at = ap ? db.ByWire(ap) : nullptr;
             Check(at && at->pickupFn != "PotionPickup",
                   "RedApple 이 물약 갈래로 읽혔다");
+            // ★ 묶음 5-h — 금 더미도 같은 표에서 갈린다. 파일 이름과 표를 한자리에서 대조한다.
+            const uint16_t gp = db.WireByName("Gold");
+            const nox::ThingInfo* gt = gp ? db.ByWire(gp) : nullptr;
+            Check(gt && nox::PickupFnOf(gt->pickupFn) == nox::PickupFn::Gold,
+                  "Gold 의 PICKUP 이 금 갈래로 안 읽혔다");
+            Check(rt && nox::PickupFnOf(rt->pickupFn) == nox::PickupFn::Potion,
+                  "RedPotion 이 물약 갈래로 안 읽혔다");
+            Check(at && nox::PickupFnOf(at->pickupFn) == nox::PickupFn::Default,
+                  "RedApple 이 보통 줍기가 아니다");
+            Check(nox::PickupFnOf("ArmorPickup") == nox::PickupFn::Default,
+                  "아직 안 옮긴 갈래가 보통 줍기가 아니다");
         }
         // ★ 묶음 5-d — **쓸 때 부르는 함수**도 파일 값이다(`USE = ConsumeUse 10`).
         //   버섯·사이다는 값이 갈래를 정한다 — 이름이 비슷해 헷갈리기 쉬운 자리다.
@@ -11454,6 +11577,7 @@ int main() {
     TestWandCharges();
     TestPlasma();
     TestChargedStaffCast();
+    TestGold();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

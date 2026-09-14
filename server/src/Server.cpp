@@ -2172,6 +2172,25 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 }
                 if (s.inventory.size() >= kInventoryGuard) { ++handled_; break; }
 
+                // ── 묶음 5-h — **금은 가방에 안 들어간다**(`pickupGold_4F3A60`) ──
+                //
+                // 사람이면 **금액을 더하고 물건을 없앤다**. 사람이 아니면(몬스터) 보통 줍기로 간다.
+                // ⚠ 안 옮긴 것 — 줄글(`GoldPickup` 문자열 + 금액)과 소리 307 은 묶음 10.
+                if (w.goldPickup) {
+                    PlayerAddGold(s, w.goldAmount, out);
+                    {   // 모두에게 — 바닥에서 사라진다
+                        uint8_t msg[3];
+                        msg[0] = static_cast<uint8_t>(Op::DESTROY_OBJECT);
+                        msg[1] = static_cast<uint8_t>(w.netCode);
+                        msg[2] = static_cast<uint8_t>(w.netCode >> 8);
+                        Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);
+                    }
+                    TakeStatic(w.netCode);
+                    ++goldPicked_;
+                    ++handled_;
+                    break;
+                }
+
                 // ── 묶음 5-c — 물약은 **줍는 순간이 다르다**(`nox_xxx_pickupPotion_4F37D0`) ──
                 //
                 // `PICKUP = PotionPickup` 인 것만 이 길로 온다(thing.bin 실측 38종).
@@ -5739,6 +5758,32 @@ Target Server::PlasmaSearch(const Session& s, float range) const {
         consider(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(cr.x), static_cast<float>(cr.y));
     }
     return found;
+}
+
+// ── 묶음 5-h 금 ───────────────────────────────────────────────────────
+//
+// sub_4D8870(`GAME3_2.c:4150`) — `4a <금 u32>` **5바이트**. `netSendPacket0(…, 1)` 이라 **중요(cc)** 다.
+//   ⚠ 충전 알림(`64`)과 다르다 — 그쪽은 마지막 인자가 0 이라 중요가 아니었다.
+void Server::SendGold(Session& s, std::vector<OutPacket>& out) {
+    uint8_t msg[5];
+    msg[0] = static_cast<uint8_t>(Op::REPORT_GOLD);
+    msg[1] = static_cast<uint8_t>(s.gold);
+    msg[2] = static_cast<uint8_t>(s.gold >> 8);
+    msg[3] = static_cast<uint8_t>(s.gold >> 16);
+    msg[4] = static_cast<uint8_t>(s.gold >> 24);
+    EmitImportantRaw(s, msg, sizeof(msg), out);
+}
+
+// playerAddGold_4FA590(`GAME4.c:1862`) — 갱신자료 `+2164` 에 더하고 알린다.
+void Server::PlayerAddGold(Session& s, uint32_t v, std::vector<OutPacket>& out) {
+    s.gold += v;
+    SendGold(s, out);
+}
+
+// playerSubGold_4FA5D0(`GAME4.c:1870`) — 뺀다. ★ **모자라면 0 으로 내린다**(음수로 안 간다).
+void Server::PlayerSubGold(Session& s, uint32_t v, std::vector<OutPacket>& out) {
+    s.gold = (s.gold >= v) ? (s.gold - v) : 0;
+    SendGold(s, out);
 }
 
 // ── 묶음 5-e 충전 완드 ────────────────────────────────────────────────

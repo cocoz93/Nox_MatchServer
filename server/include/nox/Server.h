@@ -51,6 +51,17 @@ inline UseFn UseFnOf(const std::string& name) {
     return UseFn::None;
 }
 
+// ★ 묶음 5 — **줄을 때 부르는 함수**(`PICKUP = GoldPickup` 의 이름).
+//   갈래마다 「줄는 순간 무슨 일이 나는가」가 다르다 — 물약은 **그 자리에서 마실 수도** 있고,
+//   금은 **가방에 안 들어가고 숫자로 쌓인다**. 그 밖은 보통 줄기다.
+//   ⚠ 아직 안 옮긴 것 — Armor·Weapon·Food·SpellBook·Trap·Ammo·Crown·Treasure·Oblivion·AnkhTradable
+enum class PickupFn : uint8_t { Default = 0, Potion, Gold };
+inline PickupFn PickupFnOf(const std::string& name) {
+    if (name == "PotionPickup") return PickupFn::Potion;
+    if (name == "GoldPickup") return PickupFn::Gold;
+    return PickupFn::Default;
+}
+
 // ★★ 묶음 5-b — **먹을거리 갈래 비트**(`SUBCLASS = POTION+HEALTH_POTION` 의 뒷말).
 //   ⭕ 이름과 **차례**는 `blob_587000.dat` 0xf968~0xfa78 의 이름표에서 그대로 뽑았다
 //     (`SIMPLE` `APPLE` `JUG` `POTION` `HEALTH_POTION` … `VAMPIRISM_POTION`).
@@ -334,6 +345,9 @@ struct Session {
     //   줍기 한도는 이 값의 **두 배**다(`object_pickup.go:75`). 같은 `+490` 을 **짐 무거움 깃발**은
     //   두 배 없이 그대로 견준다(`GAME3_3.c:7714`) — 두 문턱이 다르다.
     uint16_t  carryCap  = 0;
+    // ★ 묶음 5-h — **금**(사람 갱신자료 `+2164`). 가방에 안 들어가고 숫자로 쌓인다.
+    //   `playerAddGold_4FA590` 이 더하고 `playerSubGold_4FA5D0` 이 뺀다(0 아래로는 안 내려간다).
+    uint32_t  gold      = 0;
 
     // `0x0a CLIENT_CLOSE` 를 받았다 — 다음 틱에 걷어낸다(30초 타임아웃을 안 기다린다).
     bool closing = false;
@@ -959,6 +973,12 @@ public:
         uint8_t charges = 0, chargesMax = 0;
         uint8_t wandSpell = 0;
         uint32_t wandCooldown = 0;
+        // ★ 묶음 5-h — **금 더미**(`PICKUP = GoldPickup`)와 그 안의 금액.
+        //   ⚠ 금액은 맵 오브젝트의 **초기자료**(`GoldInitData.Amount`, 오브젝트 `+692`)에서 온다.
+        //     우리 맵 파서는 아직 오브젝트별 초기자료를 안 읽는다 → 지금은 0 이고, 시험이 직접 넣는다.
+        //     ⭕ estate 맵에는 금이 **한 개도 없다**(기동 표시줄 물건 목록에 Gold 없음).
+        bool goldPickup = false;
+        uint32_t goldAmount = 0;
         // ★ 묶음 5-c — **줍는 순간 부르는 함수가 물약 갈래인가**(`PICKUP = PotionPickup`).
         //   참이면 줍는 그 자리에서 마실 수 있고, 마셨으면 가방에 안 들어간다.
         bool potionPickup = false;
@@ -1531,6 +1551,16 @@ public:
     // 묶음 5-c — 그 직업이 이 먹을거리를 쓸 수 있나(`sub_57B370` 의 먹을거리 갈래).
     //   셈만 하는 순수 함수라 시험이 셈 자체를 들여다본다.
     static bool ClassCanUseFood(CharClass cls, uint32_t foodBits);
+    // 시험용 — 금을 뺀다(`playerSubGold_4FA5D0`). 가게가 생기면 그쪽이 이 길을 쓴다.
+    void DebugSubGold(const std::string& addr, uint32_t v, std::vector<OutPacket>& out) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return;
+        PlayerSubGold(it->second, v, out);
+    }
+    uint32_t GoldOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.gold;
+    }
     uint16_t MaxHealthOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.maxHealth;
@@ -1691,6 +1721,7 @@ public:
     unsigned long long pickTooMany() const { return pickTooMany_; }
     unsigned long long pickClassFail() const { return pickClassFail_; }
     unsigned long long drankOnPickup() const { return drankOnPickup_; }
+    unsigned long long goldPicked() const { return goldPicked_; }
     unsigned long long dropped() const { return dropped_; }
 
     // ★ 묶음 5 — 그 사람의 **들 무게 밑천**(`+490`). 한도는 이 값의 **두 배**다.
@@ -2173,6 +2204,10 @@ private:
     // 묶음 5-e — 완드로 주문 걸기(`useWandCastSpell_53F4F0`). 충전을 깎으므로 **가리킴**을 받는다
     bool UseWandCast(Session& s, Session::Carried& c, std::vector<OutPacket>& out);
     void SendCharges(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);   // netReportCharges_4D82B0
+    // 묶음 5-h — `4a REPORT_GOLD` = `<금 u32>` 5바이트(중요). sub_4D8870(`GAME3_2.c:4150`)
+    void SendGold(Session& s, std::vector<OutPacket>& out);
+    void PlayerAddGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerAddGold_4FA590
+    void PlayerSubGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerSubGold_4FA5D0
     void PoisonTick(std::vector<OutPacket>& out);                                                        // server.go:175~201 감쇠 + 피해
     int CastPoison(const std::string& obj3, const Target& targ, int lvl, std::vector<OutPacket>& out);   // castPoison_52C720
     Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기
@@ -2411,6 +2446,7 @@ private:
     unsigned long long pickTooMany_ = 0;        // 묶음 5 — 같은 먹을거리를 너무 많이 들어 못 집은 것
     unsigned long long pickClassFail_ = 0;      // 묶음 5-c — 직업이 못 쓰는 것이라 못 집은 것
     unsigned long long drankOnPickup_ = 0;      // 묶음 5-c — 줍는 그 자리에서 마신 것
+    unsigned long long goldPicked_ = 0;         // 묶음 5-h — 주운 금 더미 수
     unsigned long long dropped_ = 0;            // 클라가 되돌려 도로 떨군 것
     unsigned long long used_ = 0;               // 실제로 효과가 난 쓰기
     unsigned long long useUnknown_ = 0;         // 갈래를 몰라 아무 일도 안 난 쓰기
