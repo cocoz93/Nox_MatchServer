@@ -1000,6 +1000,7 @@ const std::vector<TestSpellDef>& TestSpellDefs() {
         // ★ 7-b 무리 주문 — 대표 셋과 딸림 둘. 값은 thing.bin SPEL 실측이다.
         //   깃발 0x1000/0x4000/0x10000 = **대표**, 0x2000/0x8000/0x20000 = **딸림**.
         //   134 를 받으면 소환 주문 **47개 전부**가, 135 를 받으면 MARK_1~4 가 같이 오른다.
+        {  55, 10, 0x00000a84, { 7, 5, 3, 1, 3, 3, 3, 3, 7, 7 } },          // SPELL_NULLIFY(7-e 함성이 건다)
         { 134,  0, 0x04141a20, { 1, 1, 7, 7, 3, 5, 3, 5, 1, 7, 3, 5 } },   // SPELL_SUMMON_CREATURE(대표 A · 0x1000)
         { 135,  0, 0x02004d00, { 1, 1, 7, 7, 3, 5, 3, 5, 1, 7, 3, 8 } },   // SPELL_MARK_LOCATION(대표 B · 0x4000)
         {  46,  0, 0x02808500, { 1, 7, 1 } },                              // SPELL_MARK_1(딸림 B · 0x8000)
@@ -13213,6 +13214,179 @@ void TestAbilities() {
     std::printf("  7-d — 능력: 받으면 레벨 5(cd 순번 봉투) · 쉬는 시간 ce · 지속 끝 cf · 되돌림 eb(전부는 6) · 7a 입력\n");
 }
 
+// ── 묶음 7-e — 능력 효과 넷 ──────────────────────────────────────────
+//
+// 정답지 `spell_berserk.go:11` · `spell_warcry.go:13` · `spell_tread.go:10` · `spell_infra.go:16`.
+//   · 넷 다 **끝에서 `cf 1`(켜졌다)** 을 보낸다 — 7-d 의 `Do` 는 목록에만 얹었다
+//   · 광전사 — 걸던 주문 끊기 · 상태 1 · 투명(0)·무적(23) 끄기 · 타원 방패(51) 끊기
+//   · 함성 — 상태 1 · 둘레 300 안의 **적**에게 무효화(55)를 레벨 5 로. 워리어·관전자·같은 편·안 보이면 건너뜀
+//   · 살금살금 — 달리는 중(5)이면 상태 13 · 발소리 죽이기(31)를 능력 레벨로
+//   · 늑대의 눈 — 밤눈(21)을 능력 레벨로
+void TestAbilityEffects() {
+    const std::string a = "10.7.5.1:7501";
+    const std::string b = "10.7.5.2:7502";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        for (int k = 1; k < 6; ++k) srv.DebugSetSpellLvl(a, static_cast<uint8_t>(k), 0);
+    };
+    auto activeMsg = [&](const std::vector<nox::OutPacket>& out, uint8_t abil) {
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 3 && x[0] == static_cast<uint8_t>(nox::Op::REPORT_ACTIVE_ABILITIES) &&
+                x[1] == abil && x[2] == 1) return true;
+        return false;
+    };
+
+    // ① **넷 다 `cf 1` 을 보낸다** · 작살(3)은 아직 안 보낸다
+    {
+        for (uint8_t k : { 1, 2, 4, 5 }) {
+            nox::Server srv; mk(srv);
+            std::vector<nox::OutPacket> out;
+            srv.DebugAbilAward(a, k, false, out);
+            out.clear();
+            Check(srv.DebugAbilDo(a, k, out), "능력 쓰기가 실패했다");
+            Check(activeMsg(out, k), "`cf 1`(켜졌다)이 안 갔다");
+        }
+    }
+
+    // ★ **작살(3)은 아직 효과가 없다** — `cf 1` 도 안 나간다(다음 조각에서 붙는다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 3, false, out);
+        out.clear();
+        Check(srv.DebugAbilDo(a, 3, out), "작살 쓰기 자체는 되어야 한다(쉬는 시간은 걸린다)");
+        Check(!activeMsg(out, 3), "작살에 `cf 1` 이 나갔다(효과는 다음 조각이다)");
+    }
+
+    // ② **광전사** — 상태 1 · 투명·무적이 꺼진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 1, false, out);
+        // ⚠ 차례가 있다 — `ApplyEnchant` 는 **새 버프를 걸 때마다 투명(0)을 끈다.**
+        //   그래서 투명을 **나중에** 걸어야 둘 다 서 있다
+        srv.DebugApplyEnchant(a, 23, 300, 5);              // 무적
+        srv.DebugApplyEnchant(a, 0, 300, 5);               // 투명
+        Check(srv.DebugHasEnchant(a, 0) && srv.DebugHasEnchant(a, 23), "버프가 안 걸렸다(이 시험의 전제)");
+        srv.DebugAbilDo(a, 1, out);
+        Check(!srv.DebugHasEnchant(a, 0), "광전사인데 투명이 안 꺼졌다");
+        Check(!srv.DebugHasEnchant(a, 23), "광전사인데 무적이 안 꺼졌다");
+        Check(srv.DebugStateOf(a) == 1, "광전사인데 상태가 1 이 아니다");
+    }
+
+    // ③ **살금살금** — 발소리 죽이기(31)가 능력 레벨로 걸린다 · 달리는 중이면 상태 13
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 4, false, out);              // 레벨 5 가 된다
+        srv.DebugAbilDo(a, 4, out);
+        Check(srv.DebugHasEnchant(a, 31), "살금살금인데 31 이 안 걸렸다");
+        Check(srv.DebugEnchantPower(a, 31) == 5, "31 의 세기가 능력 레벨(5)이 아니다");
+    }
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 4, false, out);
+        srv.DebugSetState(a, 5);                       // 달리는 중
+        srv.DebugAbilDo(a, 4, out);
+        Check(srv.DebugStateOf(a) == 13, "달리는 중인데 상태 13 으로 안 내렸다");
+    }
+    // 걷는 중이면 상태를 안 건드린다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 4, false, out);
+        srv.DebugSetState(a, 0);
+        srv.DebugAbilDo(a, 4, out);
+        Check(srv.DebugStateOf(a) == 0, "걷는 중인데 상태를 건드렸다");
+    }
+
+    // ④ **늑대의 눈** — 밤눈(21)이 능력 레벨로 걸린다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 5, false, out);
+        srv.DebugAbilDo(a, 5, out);
+        Check(srv.DebugHasEnchant(a, 21), "늑대의 눈인데 21 이 안 걸렸다");
+        Check(srv.DebugEnchantPower(a, 21) == 5, "21 의 세기가 능력 레벨(5)이 아니다");
+    }
+
+    // ⑤ **함성** — 둘레 300 안의 적에게 무효화(29 반마법)가 걸린다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(b, 1200, 1000);                    // 200 — 안쪽
+        std::vector<nox::OutPacket> out;
+        RegSpell(srv, 55);                                 // 무효화 정의가 없으면 `SpellAccept` 가 곧바로 거절한다
+        // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
+        //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
+        { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
+        srv.DebugAbilAward(a, 2, false, out);
+        srv.DebugAbilDo(a, 2, out);
+        Check(srv.DebugHasEnchant(b, 29), "둘레 안 적에게 반마법이 안 걸렸다");
+        Check(srv.DebugEnchantPower(b, 29) == 5, "반마법 세기가 5 가 아니다(정답지는 레벨 5 로 건다)");
+        Check(srv.DebugStateOf(a) == 1, "함성인데 상태가 1 이 아니다");
+    }
+    // 둘레 밖은 안 걸린다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(b, 1400, 1000);                    // 400 — 바깥
+        std::vector<nox::OutPacket> out;
+        RegSpell(srv, 55);                                 // 무효화 정의가 없으면 `SpellAccept` 가 곧바로 거절한다
+        // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
+        //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
+        { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
+        srv.DebugAbilAward(a, 2, false, out);
+        srv.DebugAbilDo(a, 2, out);
+        Check(!srv.DebugHasEnchant(b, 29), "둘레 밖인데 반마법이 걸렸다");
+    }
+    // **워리어에게는 안 걸린다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(b, 1200, 1000);
+        std::vector<nox::OutPacket> out;
+        RegSpell(srv, 55);                                 // 무효화 정의가 없으면 `SpellAccept` 가 곧바로 거절한다
+        // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
+        //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
+        { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
+        srv.DebugAbilAward(a, 2, false, out);
+        srv.DebugAbilDo(a, 2, out);
+        Check(!srv.DebugHasEnchant(b, 29), "워리어인데 반마법이 걸렸다");
+    }
+    // **같은 편에게는 안 걸린다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(b, 1200, 1000);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);
+        std::vector<nox::OutPacket> out;
+        RegSpell(srv, 55);                                 // 무효화 정의가 없으면 `SpellAccept` 가 곧바로 거절한다
+        // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
+        //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
+        { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
+        srv.DebugAbilAward(a, 2, false, out);
+        srv.DebugAbilDo(a, 2, out);
+        Check(!srv.DebugHasEnchant(b, 29), "같은 편인데 반마법이 걸렸다");
+    }
+    // **자기 자신에게는 안 걸린다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        RegSpell(srv, 55);                                 // 무효화 정의가 없으면 `SpellAccept` 가 곧바로 거절한다
+        // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
+        //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
+        { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
+        srv.DebugAbilAward(a, 2, false, out);
+        srv.DebugAbilDo(a, 2, out);
+        Check(!srv.DebugHasEnchant(a, 29), "함성이 자기에게 걸렸다");
+    }
+    std::printf("  7-e — 능력 효과 넷: cf 1 은 효과에서 · 광전사 상태 1+투명·무적 끄기 · 살금살금 31 · 늑대의 눈 21 · 함성 300 안 적에게 29\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -15436,6 +15610,7 @@ int main() {
     TestSpellAward();
     TestLessonScore();
     TestAbilities();
+    TestAbilityEffects();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

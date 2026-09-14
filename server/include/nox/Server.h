@@ -2585,6 +2585,7 @@ private:
     bool AbilityAward(Session& s, uint8_t abil, bool announce, std::vector<OutPacket>& out);
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
+    void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
     void AbilityUpdate(Session& s, std::vector<OutPacket>& out);
     void AbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityCancelAll(Session& s, std::vector<OutPacket>& out);

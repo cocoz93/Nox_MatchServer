@@ -7090,7 +7090,7 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
         s.abilActive[abil] = true;
         s.abilActiveUntil[abil] = frame_ + kAbilityDuration[abil];
     }
-    // ⛔ 효과 내기(`do()`)와 소리는 다음 조각
+    AbilityEffect(s, abil, out);                          // 7-e — `do()`. ⛔ 소리는 묶음 10
     return true;
 }
 
@@ -7136,6 +7136,81 @@ void Server::AbilityCancelAll(Session& s, std::vector<OutPacket>& out) {
         s.abilActive[i] = false;
         s.abilActiveUntil[i] = 0;
     }
+}
+
+// ── 묶음 7-e 능력 효과 넷 ─────────────────────────────────────────────
+//
+// 정답지 `serverAbilities::do`(`spells_abil.go:346`) 가 부르는 다섯 중 **넷**.
+//   · 광전사 돌진 `nox_xxx_warriorBerserker_53FEB0`(`spell_berserk.go:11`)
+//   · 함성       `nox_xxx_warriorWarcry_53FF40`(`spell_warcry.go:13`)
+//   · 살금살금   `nox_xxx_warriorTreadLightly_5400B0`(`spell_tread.go:10`)
+//   · 늑대의 눈  `nox_xxx_warriorInfravis_540110`(`spell_infra.go:16`)
+//   ⛔ 작살(`harpoon.Do`)은 화살 오브젝트·걸림·끌기·끊김이 딸린 한 벌이라 **다음 조각**이다.
+//
+// ★★ **`cf 1`(켜졌다)은 여기서 나간다.** 7-d 의 `Do` 는 목록에 얹기만 하고 안 보냈다 —
+//   정답지도 넷 다 **끝에서** `netAbilReportActive(…, true)` 를 부른다.
+//
+// ⭕ 광전사 — 걸던 주문 전부 끊기 · (혼란이면 보는 쪽을 흔들기) · 상태 **1** ·
+//   투명(0)·무적(23) 끄기 · 타원 방패(주문 51) 끊기
+// ⭕ 함성 — 상태 **1** · 둘레 **300** 안의 **적**에게 무효화(주문 55)를 레벨 5 로 건다.
+//   거르기 — 워리어는 건너뜀 · 관전자는 건너뜀 · 몬스터는 주문을 쓸 줄 알아야 함 ·
+//   **편이 같으면 건너뜀** · 눈이 닿아야(`MapTraceVision`) 함. 끝에 투명·무적·타원 방패도 끈다
+// ⭕ 살금살금 — 달리는 중(상태 5)이면 상태 **13** 으로 내리고, 발소리 죽이기(31)를 **능력 레벨**로 건다
+// ⭕ 늑대의 눈 — 밤눈(21)을 **능력 레벨**로 건다
+void Server::AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
+    const Target self{ s.addr, -1 };
+    switch (abil) {
+        case 1: {   // 광전사 돌진
+            PlayerCancelSpells(s.addr, out);               // cancelAllSpells_4FEE90
+            if (s.buffs.Has(3)) {                          // ENCHANT_CONFUSED — 보는 쪽을 흔든다
+                //   `Direction2 = Dir16(Direction1 + 4 × IntClamp(-8, 8))` — 양끝 포함이라 **17가지**
+                //   ⚠ 정답지는 `RoundDir` 을 안 거쳐 u16 에 260 같은 값이 남을 수 있지만,
+                //     읽는 자리가 모두 한 바이트로 자르므로 우리 uint8 돌아감과 같다
+                const int k = static_cast<int>(NextRandom(17)) - 8;
+                s.facing = static_cast<uint8_t>(static_cast<int>(s.facingPrev) + 4 * k);
+            }
+            PlayerSetState(s, 1, frame_);
+            BuffOff(self, 0);                              // 투명
+            BuffOff(self, 23);                             // 무적
+            DurCancelFor(51, s.addr, out);                 // 타원 방패
+            break;
+        }
+        case 2: {   // 함성
+            PlayerSetState(s, 1, frame_);
+            const double dist = 300.0;
+            for (auto& kv : sessions_) {
+                Session& o = kv.second;
+                if (&o == &s || !o.inGame || o.respawnAtFrame != 0) continue;
+                if (o.charClass == CharClass::Warrior) continue;   // 워리어는 안 걸린다
+                if (o.observer) continue;                          // +3680 & 1
+                if (s.team != 0 && o.team == s.team) continue;      // 같은 편
+                const double dx = o.posX - s.posX, dy = o.posY - s.posY;
+                if (dx * dx + dy * dy > dist * dist) continue;
+                if (!MapTraceVision(static_cast<float>(o.posX), static_cast<float>(o.posY),
+                                    static_cast<float>(s.posX), static_cast<float>(s.posY))) continue;
+                SpellArg arg;
+                arg.obj = Target{ o.addr, -1 };
+                arg.x = static_cast<float>(o.posX);
+                arg.y = static_cast<float>(o.posY);
+                SpellAccept(55, s, s.addr, arg, 5, out);   // 무효화 · 레벨 5
+            }
+            BuffOff(self, 0);
+            BuffOff(self, 23);
+            DurCancelFor(51, s.addr, out);
+            break;
+        }
+        case 4: {   // 살금살금
+            if (s.moveState == 5) PlayerSetState(s, 13, frame_);   // 달리는 중이면 내린다
+            ApplyEnchant(self, 31, static_cast<int>(kAbilityDuration[4]), s.spellLvl[4]);
+            break;
+        }
+        case 5: {   // 늑대의 눈
+            ApplyEnchant(self, 21, static_cast<int>(kAbilityDuration[5]), s.spellLvl[5]);
+            break;
+        }
+        default: return;                                   // 3 작살은 다음 조각
+    }
+    SendAbilityActive(s, abil, true, out);                 // ★ 켜졌다는 여기서 나간다
 }
 
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
