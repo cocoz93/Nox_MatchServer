@@ -5594,6 +5594,114 @@ void TestPushPullQuake() {
     std::printf("  4-c1 — 밀기/당기기 방향·거리 비례 · 둘레 밖 안 밀림 · 땅흔들기 거리 반비례 피해·자기 제외·화면 흔들기 `97`\n");
 }
 
+// ── 묶음 4-c2a — 독 ───────────────────────────────────────────────────────
+//
+// 정답지: castPoison_52C720 · activatePoison_4EE7E0 · setSomePoisonData_4EEA90 ·
+//   updatePoison_4EE8F0 · removePoison_4EE9D0 · 독 틱(server.go:175~201)
+void TestPoison() {
+    const std::string a = "10.9.2.1:9201";
+    const std::string b = "10.9.2.2:9202";
+    auto mk = [&](nox::Server& srv) {
+        srv.SetSpellDef(60, 10, 0x1000000, { 1, 2 });        // 독
+        srv.SetSpellDef(14, 10, 0x1000000, { 1, 3 });        // 해독 — ⚠ 음소를 달리. 같은 음소를 주면 음소 나무가 덮여 앞 주문 시전이 아예 안 성립한다
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1080, 1000);
+    };
+    auto poisonB = [&](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        srv.DebugAimAt(a, 1080, 1000);
+        CastAndWait(srv, a, 60, false, ms, out);
+    };
+
+    // ① 독이 얹히고 **상태 비트 1024** 가 나간다(사람은 `da` 가 아니라 `6a` 로 알린다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        poisonB(srv, ms, out);
+        Check(srv.DebugPoisonOf(b) == 3, "독이 세기(3)만큼 안 얹혔다");
+        bool poisoned = false;
+        for (const auto& m : FlattenTo(out, a)) {
+            if (m.size() == 7 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_CLIENT_STATUS) &&
+                (m[1] | (m[2] << 8)) == 729 && (m[4] & 0x04) != 0) poisoned = true;   // 1024 = 0x400 → 상태 u32 의 **다섯째** 바이트 비트 2
+        }
+        Check(poisoned, "독 상태 비트 1024 가 `6a` 로 안 나갔다");
+    }
+
+    // ② 시작 뒤 60틱은 안 아프다(유예)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        poisonB(srv, ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 50; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "독 시작 60틱 안인데 벌써 아팠다");
+    }
+
+    // ③ 유예가 지나면 주기적으로 아프다(독 3 → 128>>2 = 32틱마다 1)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        poisonB(srv, ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 200; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        Check(lost >= 2, "유예가 지났는데 독이 안 아프다");
+        Check(lost <= 10, "독이 너무 자주 아프다(주기 128>>(양−1) 이 빠졌나)");
+    }
+
+    // ④ 무적(23)이면 안 걸린다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugApplyEnchant(b, 23, 0, 5);                  // 무적
+        poisonB(srv, ms, out);
+        Check(srv.DebugPoisonOf(b) == 0, "무적인데 독이 걸렸다");
+    }
+
+    // ⑤ 해독이 푼다 — 독이 0 이 되고 상태 비트가 꺼진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        poisonB(srv, ms, out);
+        Check(srv.DebugPoisonOf(b) > 0, "독이 안 걸렸다(시험 전제)");
+        std::vector<nox::OutPacket> o2;
+        srv.DebugAimAt(a, 1080, 1000);
+        CastAndWait(srv, a, 14, false, ms, o2);              // a 가 b 에게 해독
+        Check(srv.DebugPoisonOf(b) == 0, "해독했는데 독이 안 풀렸다");
+        bool cleared = false;
+        for (const auto& m : FlattenTo(o2, a)) {
+            if (m.size() == 7 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_CLIENT_STATUS) &&
+                (m[1] | (m[2] << 8)) == 729 && (m[4] & 0x04) == 0) cleared = true;
+        }
+        Check(cleared, "해독 뒤 독 상태 비트가 안 꺼졌다");
+    }
+
+    // ⑥ 감쇠 — 계수기가 0 이 되는 틱에 독이 1 줄어든다(한 칸이 1000틱이라 계수기를 줄여 흉내낸다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        poisonB(srv, ms, out);
+        const int before = srv.DebugPoisonOf(b);
+        srv.DebugSetPoisonDecay(b, 1);                       // 다음 틱에 0 이 된다
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugPoisonOf(b) == before - 1, "감쇠 계수기가 0 인데 독이 안 줄었다");
+    }
+    std::printf("  4-c2a — 독 얹기·상태 비트 1024 · 60틱 유예 · 주기 피해 · 무적이면 안 걸림 · 해독이 풀기 · 감쇠\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -7693,6 +7801,7 @@ int main() {
     TestGreaterHeal();
     TestDrainMana();
     TestPushPullQuake();
+    TestPoison();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

@@ -105,6 +105,9 @@ struct Creature {
     uint16_t health = 0;
     uint32_t nextHitFrame = 0;   // 이 프레임 전에는 못 때린다
     Buffs buffs;                 // 4-a4
+    uint8_t  poison = 0;                            // +540 독 남은 양(셀수록 자주 아프다)
+    uint32_t poisonStart = 0;                       // 체력자료 +16 독이 시작한 프레임(0 = 없음) — 60틱 유예에 쓴다
+    uint16_t poisonDecay = 0;                       // +542 감쇠 계수기 — 독을 걸 때 1000, 0 이 되면 독 1 줄고 다시 1000
     uint32_t lastDamageFrame = 0;                   // +536 — 마지막 피해 프레임(damageDefaultProc 끝 `GAME3_2.c:7236`)
     std::map<std::string, uint16_t> hpReportedTo;   // +412+2×i — 보는 사람마다 마지막으로 알린 체력(`42` 증감 기준 · netSendComplexObject_518960)
 };
@@ -367,6 +370,9 @@ struct Session {
     uint32_t lastDamageFrame = 0;  // +536  마지막 피해 프레임 — `42` 증감은 이 뒤 2틱 넘어야(netPlayerObjSend_518C30 `GAME4_1.c:4412`)
     std::map<std::string, uint16_t> hpReportedTo;   // +12+2×i 보는 사람마다 마지막으로 알린 체력 — 부활 때 서른둘 = 지금(`GAME3_3.c:7937`)
     Buffs buffs;                   // ★ 4-a4 버프 — 부활 무적(전 invulnUntil 자리표시)도 버프 23 으로
+    uint8_t  poison = 0;           // +540 독 남은 양(셀수록 자주 아프다 · 4-c2)
+    uint32_t poisonStart = 0;      // 체력자료 +16 독이 시작한 프레임(0 = 없음) — 60틱 유예에 쓴다
+    uint16_t poisonDecay = 0;      // +542 감쇠 계수기 — 독을 걸 때 1000, 0 이 되면 독 1 줄고 다시 1000
     float speedCur = 3.0f;         // +544 SpeedCur — CCC 가 매 틱 셈(느림·빠르게, 4-b3) · NewPlayer SPEED 96/32
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     // ★★★ **중요 메시지 대기열** (2026-09-13 — 정답지 `nox_xxx_netSendPacket_4E5030`·`netImportant_4E5770` 이식).
@@ -1214,6 +1220,15 @@ public:
     void DebugManaAdd(const std::string& addr, int v) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerManaAdd(it->second, v); }
     void DebugManaSub(const std::string& addr, int v) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerManaSub(it->second, v); }
     void DebugSetStatsDirty(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.statsDirty = true; }
+    // 시험용 — 독 남은 양(4-c2a) · 감쇠 계수기를 줄여 「오래 지난 것」을 흉내낸다(감쇠 한 칸이 1000틱이라 그냥은 못 잰다)
+    int DebugPoisonOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : static_cast<int>(it->second.poison);
+    }
+    void DebugSetPoisonDecay(const std::string& addr, int v) {
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) it->second.poisonDecay = static_cast<uint16_t>(v);
+    }
     // 시험용 — 틱 밖에서 곧바로 되살린다(playerRespawn_4F7EF0). 「부활 직후 · 첫 갱신 전」 창을 여는 데 쓴다
     void DebugRespawn(const std::string& addr) { auto it = sessions_.find(addr); if (it == sessions_.end()) return; std::vector<OutPacket> o; PlayerRespawn(it->second, frame_, o); }
 
@@ -1815,6 +1830,14 @@ private:
     int CastPushPull(const Session& caster, int lvl, bool pull);                                        // castPush_52C000 · castPull_52BFA0
     int CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out);                          // castEquake_52DE40 + equakeDamage_52DEC0
     void SendJiggle(float cx, float cy, int jiggle, std::vector<OutPacket>& out);                       // earthquakeSend_4D9110 → `97 <세기>` Kind1
+    // ── 묶음 4-c2a 독 ──
+    uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
+    bool ActivatePoison(const Target& t, int add, int cap, std::vector<OutPacket>& out);                 // activatePoison_4EE7E0
+    void SetPoisonAmount(const Target& t, int amount, std::vector<OutPacket>& out);                      // setSomePoisonData_4EEA90
+    void UpdatePoison(const Target& t, int amount, std::vector<OutPacket>& out);                         // updatePoison_4EE8F0
+    void RemovePoison(const Target& t, std::vector<OutPacket>& out);                                     // removePoison_4EE9D0
+    void PoisonTick(std::vector<OutPacket>& out);                                                        // server.go:175~201 감쇠 + 피해
+    int CastPoison(const std::string& obj3, const Target& targ, int lvl, std::vector<OutPacket>& out);   // castPoison_52C720
     Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기
     int DrainApply(Session& caster, const Target& t, int amount);                                        // sub_52E450
     int TargetMaxHealth(const Target& t) const;                                                          // unitGetMaxHP_4EE7A0

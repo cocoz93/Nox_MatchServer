@@ -4540,6 +4540,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 break;
             }
             case 23: fnc = CastEarthquake(s, fl5, out); break;                                 // castEquake_52DE40
+            case 60: fnc = CastPoison(obj3, targ, fl5, out); break;                            // castPoison_52C720
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
@@ -4625,8 +4626,11 @@ int Server::CastInversion(const Session& a4, const std::string& obj3) {
 int Server::CastCurePoison(uint8_t spell, Session& a2, const Target& targ, int lvl, std::vector<OutPacket>& out) {
     (void)lvl;
     if (!BuffsOf(targ)) return 0;
-    const int poison = 0;                                   // ⚠ +540 독 겹 — 독(4-c)이 오면 updatePoison·removePoison·PriMsg PoisonCure/PoisonClean
-    if (poison) return 1;
+    const uint8_t* pp = PoisonOf(targ);                     // 4-c2a — 이제 진짜 독을 본다
+    if (pp && *pp) {                                        // 독이 있으면 풀고 끝(글 PoisonCure/PoisonClean 은 10)
+        RemovePoison(targ, out);
+        return 1;
+    }
     if (targ.addr != a2.addr) return 1;                     // 소리 → 10
     SpellManaGive(a2, spellDefs_[spell].mana, out);          // sub_4FD030(대상, ManaCost(주문, 1))
     return 1;
@@ -5053,6 +5057,137 @@ int Server::CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out
     }
     const int jiggle = static_cast<int>(BalanceFloatInd("EarthquakeJiggle", lvl - 1));
     SendJiggle(cx, cy, jiggle, out);                         // 화면 흔들기 — 소리는 10
+    return 1;
+}
+
+// ── 묶음 4-c2a 독 ────────────────────────────────────────────────────
+//
+// 자료 — +540 남은 양 · 체력자료 +16 시작 프레임 · +542 감쇠 계수기
+uint8_t* Server::PoisonOf(const Target& t) {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        return (it != sessions_.end() && it->second.inGame) ? &it->second.poison : nullptr;
+    }
+    if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return nullptr;
+    return &pets_[static_cast<size_t>(t.pet)].poison;
+}
+
+// netReportObjectPoison_4D7F40(`GAME3_2.c:3771`) — `da <번호2> <켜짐>` 4바이트 Packet0.
+//   사람은 이 메시지가 아니라 **상태 비트 1024**(`6a`)로 알린다 — 소환수는 주인에게 이 메시지로.
+void Server::SetPoisonAmount(const Target& t, int amount, std::vector<OutPacket>& out) {
+    uint8_t* pp = PoisonOf(t);
+    if (!pp) return;
+    const bool wasZero = (*pp == 0);
+    if (wasZero && amount > 0) {                            // 0 에서 켜질 때 시작 프레임을 적는다
+        if (!t.addr.empty()) sessions_.at(t.addr).poisonStart = frame_;
+        else pets_[static_cast<size_t>(t.pet)].poisonStart = frame_;
+    }
+    *pp = static_cast<uint8_t>(amount);
+    if (!t.addr.empty()) {
+        Session& s = sessions_.at(t.addr);
+        // 상태 비트 1024 — 켜고 끔(관전 1 과 함께 싣는다)
+        const uint32_t bits = (s.observer ? 1u : 0u) | (amount != 0 ? 1024u : 0u);
+        BroadcastClientStatus(s.netCode, bits, out);
+        s.poisonDecay = (amount != 0) ? 1000 : 0;
+    } else {
+        Creature& k = pets_[static_cast<size_t>(t.pet)];
+        auto oi = sessions_.find(k.owner);                  // 주인에게만 알린다(+508)
+        if (oi != sessions_.end() && oi->second.inGame) {
+            const uint8_t msg[4] = { static_cast<uint8_t>(Op::REPORT_OBJECT_POISON),
+                                     static_cast<uint8_t>(k.netCode), static_cast<uint8_t>(k.netCode >> 8),
+                                     static_cast<uint8_t>(amount != 0 ? 1 : 0) };
+            EmitImportantRaw(oi->second, msg, sizeof(msg), out);
+        }
+        k.poisonDecay = (amount != 0) ? 1000 : 0;
+    }
+}
+
+// activatePoison_4EE7E0(`GAME3_3.c:7270`) — 독을 얹는다. 얹었으면 1
+//   거절: 대상 없음 · **무적(23)** · 관전 중인 사람 · 몬스터 특정 갈래(+12 & 0x200)
+//   ⚠ 저항 굴림(getPoisonDmg_4E0040 × 100)은 **입은 것에서 나온다** — 아이템 묶음. 지금은 저항 0 으로 둔다(지어내지 않는다)
+//   새 양 = 지금 + add 이고 cap 을 넘지 않는다 · 지금이 이미 cap 을 넘으면 그대로 둔다
+bool Server::ActivatePoison(const Target& t, int add, int cap, std::vector<OutPacket>& out) {
+    uint8_t* pp = PoisonOf(t);
+    if (!pp) return false;
+    const Buffs* b = BuffsOf(t);
+    if (b && b->Has(23)) return false;                      // 무적이면 안 걸린다
+    if (!t.addr.empty()) {
+        const Session& s = sessions_.at(t.addr);
+        if (s.observer || s.respawnAtFrame != 0) return false;
+    }
+    const int cur = static_cast<int>(*pp);
+    int next = cur;
+    if (cur + add <= cap)      next = cur + add;
+    else if (cur <= cap)       next = cap;
+    if (next != cur) SetPoisonAmount(t, next, out);          // 소리 100 은 10
+    return true;
+}
+
+// updatePoison_4EE8F0(`GAME3_3.c:7333`) — 양을 깎고, 0 이 되면 끈다(사람은 글 "PoisonFade")
+void Server::UpdatePoison(const Target& t, int amount, std::vector<OutPacket>& out) {
+    uint8_t* pp = PoisonOf(t);
+    if (!pp) return;
+    if (static_cast<int>(*pp) > amount) { *pp = static_cast<uint8_t>(*pp - amount); return; }
+    SetPoisonAmount(t, 0, out);
+    if (!t.addr.empty()) {
+        sessions_.at(t.addr).poisonStart = 0;
+        SendPriMsg(sessions_.at(t.addr), "Health.c:PoisonFade", out);
+    } else {
+        pets_[static_cast<size_t>(t.pet)].poisonStart = 0;
+    }
+}
+
+// removePoison_4EE9D0(`GAME3_3.c:7375`) — 통째로 없앤다(해독 주문·물약)
+void Server::RemovePoison(const Target& t, std::vector<OutPacket>& out) {
+    uint8_t* pp = PoisonOf(t);
+    if (!pp || *pp == 0) return;
+    SetPoisonAmount(t, 0, out);
+    if (!t.addr.empty()) sessions_.at(t.addr).poisonStart = 0;
+    else pets_[static_cast<size_t>(t.pet)].poisonStart = 0;
+}
+
+// 독 틱(`server.go:175~201`) — 감쇠와 피해가 한자리에 있다
+//   ① 감쇠 — +542 를 매 틱 줄이고 0 이 되면 **독 1 감소** 뒤 다시 1000(≈33초에 1)
+//   ② 피해 — 시작 뒤 **60틱 유예**를 지나면, 독이 8 을 넘으면 매 틱 · 아니면 `128 >> (양−1)` 틱마다 1(종류 5)
+void Server::PoisonTick(std::vector<OutPacket>& out) {
+    std::vector<Target> list;
+    for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.poison) list.push_back(Target{ kv.first, -1 });
+    for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].poison) list.push_back(Target{ std::string(), static_cast<int>(i) });
+    for (const Target& t : list) {
+        uint8_t* pp = PoisonOf(t);
+        if (!pp || *pp == 0) continue;
+        uint16_t* decay = nullptr;
+        uint32_t start = 0;
+        bool dead = false;
+        if (!t.addr.empty()) {
+            Session& s = sessions_.at(t.addr);
+            decay = &s.poisonDecay; start = s.poisonStart; dead = (s.respawnAtFrame != 0);
+        } else {
+            Creature& k = pets_[static_cast<size_t>(t.pet)];
+            decay = &k.poisonDecay; start = k.poisonStart;
+        }
+        if (decay && *decay > 0) {                          // ① 감쇠
+            if (--*decay == 0) {
+                if (!dead) UpdatePoison(t, 1, out);
+                if (PoisonOf(t) && *PoisonOf(t)) *decay = 1000;
+            }
+        }
+        uint8_t* pp2 = PoisonOf(t);
+        if (!pp2 || *pp2 == 0) continue;
+        const int amt = static_cast<int>(*pp2);
+        if (TargetHealth(t) <= 0) continue;
+        if (start != 0 && (frame_ - start) <= 60) continue;  // ② 시작 뒤 60틱은 안 아프다
+        const bool hit = (amt > 8) || (frame_ % static_cast<uint32_t>(128u >> (amt - 1)) == 0);
+        if (!hit) continue;
+        HurtTarget(t, 1, out, std::string(), 5, nullptr);    // 피해 1 · 종류 5(독) · ⚠ 퀘스트는 2
+    }
+}
+
+// castPoison_52C720(`GAME4_2.c:9567`) — 대상 없으면 0 · 독을 세기만큼(상한도 세기) 얹고 도운 사람 기록
+int Server::CastPoison(const std::string& obj3, const Target& targ, int lvl, std::vector<OutPacket>& out) {
+    if (!PoisonOf(targ)) return 0;
+    ActivatePoison(targ, lvl, lvl, out);
+    MarkAssist(obj3, targ);                                  // sub_4E7540
     return 1;
 }
 
@@ -6687,6 +6822,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     UpdateProps(out);   // 문·오벨리스크 (P5)
 
     // (4-a4) 무적 켜짐·꺼짐 비교 루프는 걷어냄 — 버프가 바뀌는 자리(setUnitBuffFlags)가 곧바로 `5a` 를 올린다
+
+    PoisonTick(out);                                       // 4-c2a 독 — 감쇠와 피해(server.go 의 유닛 갱신 자리)
 
     // ★ R4 — 이 틱에 바뀐 것들을 각자에게 보내고 목록을 비운다.
     //   정품의 「비트가 켜진 것만 보내고 곧바로 끈다」와 같은 자리다.
