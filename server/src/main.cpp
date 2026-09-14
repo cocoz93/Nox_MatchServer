@@ -531,17 +531,16 @@ int main(int argc, char** argv) {
             //   한도는 이것의 두 배다. 못 찾으면 그대로 두고(기본 100) 표시줄에 알린다.
             {
                 // ⭕ 사람 종류 이름은 **`NewPlayer`** 다(thing.bin `GNHT` 다음 이름 · `CLASS = PLAYER+COMPLEX+LIGHT`).
-                //   처음 `NoxPlayer` 로 찾다가 못 찾아 기본값으로 떨어졌다 — 이름을 짐작하면 조용히 빗나간다.
+                //   ⚠⚠ 다만 이 `CARRYCAPACITY = 100` 은 **사람의 들 무게가 아니다** — 오브젝트를 만들 때의
+                //     기본값일 뿐이고(`server/object.go:330`), 사람은 접속 때 `plrReadVals_4EEDC0` 가
+                //     **힘에서 다시 계산해 덮어쓴다**(`GAME3_3.c:7704` · 위저드 1650). 그래서 여기서는
+                //     **찍어 보이기만** 하고 서버에 넣지 않는다. 실제 값은 `Session::carryCap` 이다.
                 const uint16_t pw = tdb.WireByName("NewPlayer");
                 const nox::ThingInfo* pt = pw ? tdb.ByWire(pw) : nullptr;
-                if (pt && pt->carryCap > 0) {
-                    srv.SetPlayerCarryCap(pt->carryCap);
-                    std::printf("[들 무게] 밑천 %d · 한도 %d (thing.bin NoxPlayer CARRYCAPACITY)\n",
-                                pt->carryCap, pt->carryCap * 2);
-                } else {
-                    std::printf("[들 무게] ⚠ thing.bin 에서 사람 CARRYCAPACITY 를 못 찾음 — 밑천 %d 로 둔다\n",
-                                srv.PlayerCarryCap());
-                }
+                std::printf("[들 무게] thing.bin NewPlayer CARRYCAPACITY %d (오브젝트 기본값 — 사람은 힘에서 다시 셈: 위저드 %d → 한도 %d)\n",
+                            pt ? pt->carryCap : -1,
+                            nox::CarryCapacityOnline(nox::CharClass::Wizard),
+                            nox::CarryCapacityOnline(nox::CharClass::Wizard) * 2);
                 // 맵에 놓인 물건의 무게를 이름별로 한 줄 — 「몇 개나 들 수 있나」를 눈으로 재려고.
                 std::map<std::string, std::pair<int, int>> wsum;   // 이름 → {무게, 개수}
                 for (const auto& o : objs) {

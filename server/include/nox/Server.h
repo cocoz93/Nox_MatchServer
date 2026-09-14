@@ -257,6 +257,14 @@ struct Session {
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
+    // ★★ 묶음 5 — **들 무게의 밑천**(정답지 오브젝트 `+490` · `CarryCapacity`).
+    //   ⚠⚠ **thing.bin 의 `CARRYCAPACITY = 100` 이 아니다.** 그것은 오브젝트를 만들 때의 기본값이고
+    //     (`server/object.go:330`), 사람은 접속·레벨업 때 `plrReadVals_4EEDC0` 가 **힘에서 다시 계산해
+    //     `+490` 에 덮어쓴다**(`GAME3_3.c:7704`) — `(힘 ÷ 워리어 최대 힘 × 1250 + 750) × 1.5`.
+    //     ⭕ 위저드 1650 은 정품 녹음 `48 REPORT_STATS` 넷째 칸과 맞다.
+    //   줍기 한도는 이 값의 **두 배**다(`object_pickup.go:75`). 같은 `+490` 을 **짐 무거움 깃발**은
+    //   두 배 없이 그대로 견준다(`GAME3_3.c:7714`) — 두 문턱이 다르다.
+    uint16_t  carryCap  = 0;
 
     // `0x0a CLIENT_CLOSE` 를 받았다 — 다음 틱에 걷어낸다(30초 타임아웃을 안 기다린다).
     bool closing = false;
@@ -1189,6 +1197,7 @@ public:
         s.maxHealth = static_cast<uint16_t>(HealthOnline(cls));
         s.maxMana = static_cast<uint16_t>(ManaOnline(cls));
         s.strength = StrengthOnline(cls);
+        s.carryCap = static_cast<uint16_t>(CarryCapacityOnline(cls));   // +490(묶음 5)
         s.health = s.maxHealth;
         s.mana = s.maxMana;
         // 09-14 — 「접속 + 스냅샷 꼬리까지 끝난 사람」이다: 꼬리가 dd·de·48·43 을 실었고(+2184 = 0 · +10 = 지금), sub_4EFF10 이 +6 = +4
@@ -1583,11 +1592,18 @@ public:
     unsigned long long pickTooMany() const { return pickTooMany_; }
     unsigned long long dropped() const { return dropped_; }
 
-    // ★ 묶음 5 — 사람이 **들 수 있는 무게의 밑천**(thing.bin `CARRYCAPACITY`).
-    //   실제 한도는 이것의 **두 배**다(`object_pickup.go:75`).
-    //   `main.cpp` 가 thing.bin 의 사람 칸에서 읽어 넣는다. 0 이면 아무것도 못 든다.
-    void SetPlayerCarryCap(int c) { playerCarryCap_ = c; }
-    int PlayerCarryCap() const { return playerCarryCap_; }
+    // ★ 묶음 5 — 그 사람의 **들 무게 밑천**(`+490`). 한도는 이 값의 **두 배**다.
+    //   값이 어디서 오는지는 `Session::carryCap` 주석에 있다(thing.bin 이 아니라 힘에서 나온다).
+    uint16_t CarryCapOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.carryCap;
+    }
+    // 시험용 — 밑천을 직접 정한다. 「밑천 0 이면 아무것도 못 든다」 갈래를 여는 데 쓴다
+    //   (사람은 실제로 0 이 안 되지만, 정답지에 있는 문이라 그대로 옮겼다).
+    void DebugSetCarryCap(const std::string& addr, uint16_t v) {
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) it->second.carryCap = v;
+    }
     unsigned long long used() const { return used_; }
     // 쓰긴 했는데 **무슨 일이 나는지 모르는** 갈래(`ReadUse`·`WandUse`…). 지어내지 않은 자리의 수.
     unsigned long long useUnknown() const { return useUnknown_; }
@@ -2272,9 +2288,6 @@ private:
     unsigned long long tryGets_ = 0;            // `0x73` 을 받은 횟수
     unsigned long long picked_ = 0;             // 실제로 집어 든 것
     unsigned long long pickTooFar_ = 0;         // 손이 안 닿아 못 집은 것
-    // ★ 묶음 5 — 들 밑천. ⭕ thing.bin `INIT = PlayerInit` 칸의 `CARRYCAPACITY = 100` 을 파서로 읽었다.
-    //   `main.cpp` 가 파일에서 덮어쓴다. 여기 값은 thing.bin 이 없는 자리(시험)에서 쓰는 같은 실측값이다.
-    int playerCarryCap_ = 100;
     unsigned long long pickNoCap_ = 0;          // 묶음 5 — 들 밑천이 0 이라 못 집은 것
     unsigned long long pickTooHeavy_ = 0;       // 묶음 5 — 무게 한도를 넘겨 못 집은 것
     unsigned long long pickTooMany_ = 0;        // 묶음 5 — 같은 먹을거리를 너무 많이 들어 못 집은 것

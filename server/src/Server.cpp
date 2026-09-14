@@ -2175,15 +2175,18 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 // ── 묶음 5-a — 줍기 규칙(`nox_xxx_pickupDefault_4F31E0`) ──────────
                 //
                 // ① **들 밑천이 0 이면 아예 못 든다**(`object_pickup.go:23·68`).
-                //    밑천은 thing.bin `CARRYCAPACITY` — 사람 100(파서로 읽음).
-                if (PlayerCarryCap() == 0) { ++pickNoCap_; ++handled_; break; }
+                //    ⚠⚠ 밑천은 thing.bin 의 `CARRYCAPACITY = 100` 이 **아니다**. 그건 오브젝트를
+                //    만들 때의 기본값이고(`server/object.go:330`), 사람은 접속 때 `plrReadVals_4EEDC0` 가
+                //    **힘에서 다시 계산해 `+490` 에 덮어쓴다**(`GAME3_3.c:7704`) — 위저드 1650.
+                //    `Session::carryCap` 주석에 근거를 적어 두었다.
+                if (s.carryCap == 0) { ++pickNoCap_; ++handled_; break; }
 
                 // ② **무게 한도** — `무게 > 밑천 × 2 − 이미 든 무게` 면 거절하고 글을 낸다
                 //    (`object_pickup.go:70~79`). 한도가 밑천의 **두 배**인 것이 정답지 식이다.
                 {
                     int carried = 0;
                     for (const auto& c2 : s.inventory) carried += static_cast<int>(c2.weight);
-                    if (static_cast<int>(w.weight) > PlayerCarryCap() * 2 - carried) {
+                    if (static_cast<int>(w.weight) > static_cast<int>(s.carryCap) * 2 - carried) {
                         SendPriMsg(s, "pickup.c:CarryingTooMuch", out);
                         ++pickTooHeavy_;
                         ++handled_;
@@ -2669,6 +2672,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     // 온라인 = EngineAdmin → serverSetAllSpells(p, true, 0): 주문 1~136 전부 세기 3(spells.go:117) · 직업 거르기는 시전 때
                     for (int k = 1; k < 137; ++k) s.spellLvl[k] = 3;
                     s.strength  = StrengthOnline(s.charClass);
+                    s.carryCap  = static_cast<uint16_t>(CarryCapacityOnline(s.charClass));   // +490(묶음 5)
                     s.health = s.maxHealth;
                     s.mana   = s.maxMana;
                     s.manaPrev = s.mana;                   // sub_4EFF10 +4 = +6 = 최대(`GAME3_3.c:8103`)

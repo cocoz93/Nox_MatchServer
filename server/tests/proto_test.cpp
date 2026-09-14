@@ -7974,9 +7974,16 @@ void TestSummonSpell() {
 //   ② **무게 > 밑천 × 2 − 이미 든 무게** 면 거절하고 `pickup.c:CarryingTooMuch`(`:70~79`)
 //   ③ **먹는 것은 같은 종류 셋까지**(퀘스트·협동은 아홉) · 넘으면 `pickup.c:MaxSameItem`(`:81~92`)
 //
-// ⭕ 값은 전부 thing.bin 실측이다(서버 기동 표시줄 `[들 무게]`) —
-//    사람 밑천 **100**(`NewPlayer` 의 `CARRYCAPACITY`) → 한도 **200**.
-//    사과 2 · 파랑 물약 5 · 빨강 물약 8 · 롱소드 50 · 가슴판 150 · 전쟁망치 **200**.
+// ⚠⚠ **밑천이 어디서 오는지가 함정이다.** thing.bin 의 `CARRYCAPACITY = 100` 은
+//    오브젝트를 만들 때의 기본값일 뿐이고(`server/object.go:330`), 사람은 접속 때
+//    `plrReadVals_4EEDC0` 가 **힘에서 다시 계산해 `+490` 에 덮어쓴다**(`GAME3_3.c:7704`):
+//      `(힘 ÷ 워리어 최대 힘 125 × 1250 + 750) × 1.5`
+//      → 워리어 3000 · 컨저러 1950 · **위저드 1650**(⭕ 정품 녹음 `48` 넷째 칸과 일치)
+//    처음엔 thing.bin 값 100 을 그대로 썼다가 이 줄을 찾아 고쳤다.
+// ⭕ 물건 무게는 thing.bin 실측이다(기동 표시줄 `[들 무게]`) —
+//    사과 2 · 파랑 물약 5 · 빨강 물약 8 · 롱소드 50 · 가슴판 150 · 전쟁망치 200.
+// ★ 아래 ②부터는 **밑천을 100 으로 낮춰 놓고** 본다 — 경계 산수를 눈으로 읽으려는 것이지
+//    100 이 사람의 값이어서가 아니다.
 void TestPickupLimits() {
     const std::string a = "10.5.0.1:5001";
     // 놓을 물건을 모았다가 한 번에 세계로 — 번호·종류·무게·먹는 것인가
@@ -7998,10 +8005,23 @@ void TestPickupLimits() {
     };
     auto place = [&](nox::Server& srv) { srv.SetWorldStatics(st); };
 
-    // ① 밑천 100 → 한도 200. **전쟁망치 200 은 딱 들어간다**(> 가 아니라 ≥ 가 아니다)
+    // ① **밑천은 직업(힘)마다 다르다** — thing.bin 의 100 이 아니다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        Check(srv.CarryCapOf(a) == 1650, "위저드 밑천이 1650 이 아니다(힘 35 로 다시 센 값)");
+        const std::string wr = "10.5.0.2:5002", cj = "10.5.0.3:5003";
+        srv.DebugEnterGame(wr, 729, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(cj, 730, false, nox::CharClass::Conjurer);
+        Check(srv.CarryCapOf(wr) == 3000, "워리어 밑천이 3000 이 아니다(힘 125)");
+        Check(srv.CarryCapOf(cj) == 1950, "컨저러 밑천이 1950 이 아니다(힘 55)");
+        Check(srv.CarryCapOf(wr) > srv.CarryCapOf(a), "힘이 센 쪽이 더 못 든다 — 식이 뒤집혔나");
+    }
+
+    // ② 밑천 100 → 한도 **200**. **딱 200 은 들어간다**(경계가 `>` 이지 `>=` 가 아니다)
     {
         nox::Server srv; mk(srv);
-        Check(srv.PlayerCarryCap() == 100, "사람 밑천이 100 이 아니다(thing.bin 실측)");
+        srv.DebugSetCarryCap(a, 100);
         put(300, 1175, 200, false);                     // WarHammer
         place(srv);
         std::vector<nox::OutPacket> out;
@@ -8013,6 +8033,7 @@ void TestPickupLimits() {
     // ② **한 칸이라도 넘치면 거절**하고 글이 온다 — 가슴판 150 뒤에 롱소드 50 은 되고 사과 2 는 안 된다
     {
         nox::Server srv; mk(srv);
+        srv.DebugSetCarryCap(a, 100);
         put(301, 1176, 150, false);                     // Breastplate
         put(302, 1169, 50, false);                      // Longsword
         put(303, 1150, 2, true);                        // RedApple
@@ -8032,6 +8053,7 @@ void TestPickupLimits() {
     // ③ **버리면 자리가 난다** — 무게는 든 것의 합이지 누적이 아니다
     {
         nox::Server srv; mk(srv);
+        srv.DebugSetCarryCap(a, 100);
         put(304, 1176, 150, false);
         put(305, 1176, 150, false);
         place(srv);
@@ -8052,6 +8074,7 @@ void TestPickupLimits() {
     // ④ **먹는 것은 같은 종류 셋까지** — 넷째는 거절되고 글이 온다
     {
         nox::Server srv; mk(srv);
+        srv.DebugSetCarryCap(a, 100);
         for (uint16_t i = 0; i < 4; ++i) put(static_cast<uint16_t>(310 + i), 1150, 2, true);
         place(srv);
         std::vector<nox::OutPacket> out;
@@ -8067,6 +8090,7 @@ void TestPickupLimits() {
     // ⑤ **종류가 다르면 따로 센다** — 사과 셋 + 버섯 하나는 된다(무게는 넉넉하다)
     {
         nox::Server srv; mk(srv);
+        srv.DebugSetCarryCap(a, 100);
         for (uint16_t i = 0; i < 3; ++i) put(static_cast<uint16_t>(320 + i), 1150, 2, true);
         put(323, 1151, 1, true);                        // Mushroom — 다른 종류
         place(srv);
@@ -8081,6 +8105,7 @@ void TestPickupLimits() {
     // ⑥ **먹는 것이 아니면 개수 한도가 없다** — 무게만 본다
     {
         nox::Server srv; mk(srv);
+        srv.DebugSetCarryCap(a, 100);
         for (uint16_t i = 0; i < 4; ++i) put(static_cast<uint16_t>(330 + i), 1169, 50, false);
         place(srv);
         std::vector<nox::OutPacket> out;
@@ -8092,7 +8117,7 @@ void TestPickupLimits() {
     // ⑦ **밑천이 0 이면 아무것도 못 든다** — 무게가 1 이어도
     {
         nox::Server srv; mk(srv);
-        srv.SetPlayerCarryCap(0);
+        srv.DebugSetCarryCap(a, 0);
         put(340, 1151, 1, true);
         place(srv);
         std::vector<nox::OutPacket> out;
@@ -8105,6 +8130,7 @@ void TestPickupLimits() {
     //   되돌아온 물건이 **무게 없는 먹을거리 아닌 것**이 되어 한도를 빠져나간다.
     {
         nox::Server srv; mk(srv);
+        srv.DebugSetCarryCap(a, 100);
         for (uint16_t i = 0; i < 4; ++i) put(static_cast<uint16_t>(350 + i), 1150, 2, true);   // 사과 넷
         place(srv);
         std::vector<nox::OutPacket> out;
@@ -8128,6 +8154,7 @@ void TestPickupLimits() {
     //   즉 「무게를 모르는 것」은 「가벼운 것」이 아니다.
     {
         nox::Server srv; mk(srv);
+        srv.DebugSetCarryCap(a, 100);
         nox::Server::WorldStatic w;                          // 무게를 일부러 안 담는다
         w.netCode = 360; w.type = 1150; w.x = 1000; w.y = 1000;
         st.push_back(w);
@@ -8137,7 +8164,7 @@ void TestPickupLimits() {
         Check(srv.CarriedCount(a) == 0, "무게를 모르는 물건을 들었다 — 기본이 255 가 아닌가");
         Check(HasPriMsg(out, a, "pickup.c:CarryingTooMuch"), "무게를 모르는 물건인데 글이 안 왔다");
     }
-    std::printf("  5-a — 줍기 한도: 밑천 100 → 한도 200(경계 포함) · 넘치면 CarryingTooMuch · 먹을거리 같은 종류 셋 · 버리면 자리 남 · 되돌아온 것도 제 무게 · 무게 모르면 255 · 밑천 0\n");
+    std::printf("  5-a — 줍기 한도: 밑천은 힘에서(위저드 1650 · 워리어 3000) · 한도 = 밑천×2(경계 포함) · 넘치면 CarryingTooMuch · 먹을거리 같은 종류 셋 · 버리면 자리 남 · 되돌아온 것도 제 무게 · 무게 모르면 255 · 밑천 0\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
@@ -8468,14 +8495,16 @@ void TestThingDb() {
     }
 
     // ★ 묶음 5 — 들 무게. 사람 종류 이름은 **`NewPlayer`** 다(`NoxPlayer` 로 찾으면 조용히 빗나간다).
-    //   밑천 100 → 실제 한도는 그 **두 배인 200**(`object_pickup.go:75`).
-    //   ⭕ 물건 무게도 파일 값이다 — 사과 2 · 롱소드 50 · 전쟁망치 200.
+    //   ⚠⚠ 이 `CARRYCAPACITY = 100` 은 **오브젝트를 만들 때의 기본값**이다(`server/object.go:330`).
+    //     사람의 실제 밑천은 접속 때 **힘에서 다시 계산해** 덮어쓴다(`GAME3_3.c:7704` · 위저드 1650).
+    //     여기서는 **파서가 그 칸을 읽는가**만 본다 — 사람 값은 `TestPickupLimits` ①이 본다.
+    //   ⭕ 물건 무게는 그대로 쓰는 파일 값이다 — 사과 2 · 롱소드 50 · 전쟁망치 200.
     {
         const uint16_t pw = db.WireByName("NewPlayer");
         Check(pw != 0, "thing.bin 에서 사람 종류(NewPlayer)를 못 찾았다");
         const nox::ThingInfo* pt = pw ? db.ByWire(pw) : nullptr;
         Check(pt && pt->carryCap == 100,
-              "사람 CARRYCAPACITY 가 100 이 아니다 — 파서가 안 읽거나 칸이 바뀌었다");
+              "NewPlayer CARRYCAPACITY 가 100 이 아니다 — 파서가 안 읽거나 칸이 바뀌었다");
         struct { const char* nm; int w; } kWeights[] = {
             { "RedApple", 2 }, { "BluePotion", 5 }, { "RedPotion", 8 },
             { "Longsword", 50 }, { "Breastplate", 150 }, { "WarHammer", 200 },
@@ -8487,8 +8516,10 @@ void TestThingDb() {
                 std::printf("  [실패] %s 무게가 %d 이 아니다(읽은 값 %d)\n",
                             k.nm, k.w, ti ? ti->weight : -1);
         }
-        std::printf("  들 무게 — 사람 밑천 %d → 한도 %d · 사과 2 · 롱소드 50 · 전쟁망치 200\n",
-                    pt ? pt->carryCap : 0, pt ? pt->carryCap * 2 : 0);
+        std::printf("  들 무게 — NewPlayer CARRYCAPACITY %d(오브젝트 기본값) · 사람 밑천은 힘에서(위저드 %d → 한도 %d) · 사과 2 · 롱소드 50 · 전쟁망치 200\n",
+                    pt ? pt->carryCap : 0,
+                    nox::CarryCapacityOnline(nox::CharClass::Wizard),
+                    nox::CarryCapacityOnline(nox::CharClass::Wizard) * 2);
     }
 
     std::printf("  thing.bin 직접 읽기 — %zu종, 기존 표와 전수 일치\n", db.Count());
