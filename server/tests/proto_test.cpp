@@ -5740,6 +5740,88 @@ void TestPoison() {
     std::printf("  4-c2a — 독 얹기·상태 비트 1024 · 60틱 유예 · 주기 피해 · 무적 제외 · 해독 · 감쇠·재충전 · 상한 · 독 면역\n");
 }
 
+// ── 묶음 4-c3(1) — 독구름(ToxicCloud 128) · 주문이 놓는 오브젝트 틀 ──────────
+//
+// 정답지: castToxicCloud_52DB60(놓기) · updateToxicCloud_53D850 + sub_53D8C0(주기 판정)
+void TestToxicCloud() {
+    const std::string a = "10.9.3.1:9301";
+    const std::string b = "10.9.3.2:9302";
+    const uint16_t kCloudType = 900;                         // 시험용 종류 번호(실서버는 thing.bin 이름으로 찾는다)
+    auto mk = [&](nox::Server& srv, double life) {
+        nox::Gamedata g;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "ToxicCloudLifetime = %g;\n", life);
+        g.Parse(buf);
+        srv.SetGamedata(g);
+        srv.SetNamedType("ToxicCloud", kCloudType);
+        srv.SetSpellDef(128, 10, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1300, 1000);                      // 구름에서 멀리 떨어져 시작
+    };
+
+    // ① 커서 자리에 구름이 놓이고, 둘레(75) 안 사람이 피해 + 독을 받는다
+    {
+        nox::Server srv; mk(srv, 2.0);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1330, 1000);                       // b 곁에 놓는다(b 에서 30)
+        CastAndWait(srv, a, 128, false, ms, out);
+        Check(srv.PlacedCount() == 1, "독구름이 안 놓였다");
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) < bHp, "구름 둘레 안인데 안 아팠다");
+        Check(srv.DebugPoisonOf(b) > 0, "적인데 구름이 독을 안 얹었다");
+    }
+
+    // ② 둘레 밖 사람은 안 맞는다
+    {
+        nox::Server srv; mk(srv, 2.0);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1000, 1000);                       // 시전자 자리(= b 에서 300)
+        CastAndWait(srv, a, 128, false, ms, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "둘레 밖인데 구름에 맞았다");
+        Check(srv.DebugPoisonOf(b) == 0, "둘레 밖인데 독이 얹혔다");
+    }
+
+    // ③ 놓은 이도 **피해는 받지만 독은 안 받는다**(독은 적에게만)
+    {
+        nox::Server srv; mk(srv, 2.0);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1000, 1000);                       // 제 발밑에 놓는다
+        CastAndWait(srv, a, 128, false, ms, out);
+        const uint16_t aHp = srv.HealthOf(a);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(a) < aHp, "제 구름 안에 서 있는데 안 아팠다");
+        Check(srv.DebugPoisonOf(a) == 0, "제 구름이 자기에게 독을 얹었다(독은 적에게만)");
+    }
+
+    // ④ 수명이 다하면 사라지고 지움 알림이 나간다
+    {
+        nox::Server srv; mk(srv, 1.0);                       // 1초 = 30틱
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1000, 1000);
+        CastAndWait(srv, a, 128, false, ms, out);
+        Check(srv.PlacedCount() == 1, "구름이 안 놓였다(시험 전제)");
+        out.clear();
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlacedCount() == 0, "수명이 다했는데 구름이 안 사라졌다");
+        const auto toA = FlattenTo(out, a);
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::DESTROY_OBJECT)) != nullptr, "구름 지움 알림이 안 나갔다");
+    }
+    std::printf("  4-c3(1) — 독구름 놓기·둘레 75 피해+독(적에게만)·둘레 밖 제외·수명 뒤 사라짐\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -7840,6 +7922,7 @@ int main() {
     TestDrainMana();
     TestPushPullQuake();
     TestPoison();
+    TestToxicCloud();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

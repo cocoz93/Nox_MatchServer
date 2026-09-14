@@ -1450,6 +1450,13 @@ public:
     uint32_t SpellFlags(uint8_t spell) const { return spell < 137 && spellDefs_[spell].valid ? spellDefs_[spell].flags : 0u; }
     size_t CastPending() const { return castList_.size(); }
     // ★ 4-a2 — 겨눈 주문이 날리는 "Magic" 오브젝트(thing.bin). speedRaw = SPEED 원값(정답지 /32 · MISSILE ×2)
+    // 이름 → 와이어 종류. thing.bin 을 읽는 쪽(main)이 넣어 준다(ThingDb::WireByName) — 시험은 손으로 넣는다
+    void SetNamedType(const std::string& name, uint16_t wire) { namedTypes_[name] = wire; }
+    uint16_t NamedType(const std::string& name) const {
+        auto it = namedTypes_.find(name);
+        return it == namedTypes_.end() ? 0 : it->second;
+    }
+    size_t PlacedCount() const { return placed_.size(); }
     void SetMagicType(uint16_t type, int speedRaw, float mass, uint32_t flags) {
         magicType_.type = type;
         magicType_.flags = flags;                         // thing FLAGS(맞힘 거르기 sub_54E730)
@@ -1774,6 +1781,17 @@ private:
         int level = 0;                   // [4]
     };
     struct MagicTypeInfo { uint16_t type = 0; float speed = 0; float mass = 1.0f; uint32_t flags = 0; };
+    // ── 묶음 4-c3 — 주문이 **놓는** 오브젝트(불꽃·독구름 …). 안 움직이고 수명이 다하면 사라진다
+    //   정답지: newObjectWithTypeInd → createAt_4DAA50 → 수명(unitSetDecayTime_511660 또는 갱신자료 첫 칸)
+    struct PlacedObj {
+        uint16_t netCode = 0;
+        uint16_t type = 0;           // 와이어 종류(이름 → SetNamedType 으로 받는다)
+        float x = 0, y = 0;
+        std::string owner;           // 놓은 사람 — 피해 임자 사슬(findParentChainPlayer)
+        uint32_t life = 0;           // 갱신자료 첫 칸 — 매 틱 하나씩 줄고 0 이면 지운다
+        uint32_t nextHitFrame = 0;   // +136 다음 판정 프레임
+        uint8_t kind = 0;            // 주기 함수 갈래 — 1 = 독구름(ToxicCloudUpdate)
+    };
     bool CreateSpellFly(Session& s, Target target, uint8_t spell, std::vector<OutPacket>& out);   // createSpellFly_4FDDA0
     Target SpellFlySearchTarget(bool havePos, float px, float py, float mslX, float mslY, const std::string& mslOwner,
                                 const std::string& mslSelf, uint32_t sflags, float dist, const Session* self, const Buffs* mslBuffs) const;   // server/spells.go:360
@@ -1842,6 +1860,11 @@ private:
     int CastPushPull(const Session& caster, int lvl, bool pull);                                        // castPush_52C000 · castPull_52BFA0
     int CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out);                          // castEquake_52DE40 + equakeDamage_52DEC0
     void SendJiggle(float cx, float cy, int jiggle, std::vector<OutPacket>& out);                       // earthquakeSend_4D9110 → `97 <세기>` Kind1
+    // ── 묶음 4-c3 놓는 오브젝트 ──
+    void PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind);
+    void UpdatePlaced(std::vector<OutPacket>& out);                                                      // 놓인 것들의 주기 함수 + 수명
+    void DestroyPlaced(size_t i, std::vector<OutPacket>& out);
+    int CastToxicCloud(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);               // castToxicCloud_52DB60
     // ── 묶음 4-c2a 독 ──
     uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
     bool ActivatePoison(const Target& t, int add, int cap, std::vector<OutPacket>& out);                 // activatePoison_4EE7E0
@@ -2136,6 +2159,8 @@ private:
     std::vector<CastEntry> castList_;              // 묶음 4-a 시전 목록 — [0] 이 머리(가장 나중에 넣은 것)
     Target spellTarget_;                           // 묶음 4-a playerinfo +3640(Obj3640) — 시전이 끝난 순간 고른 대상
     std::vector<MissileObj> missiles_;             // 묶음 4-a2 날아가는 오브젝트
+    std::vector<PlacedObj> placed_;                // 묶음 4-c3 주문이 놓는 오브젝트(불꽃·독구름)
+    std::map<std::string, uint16_t> namedTypes_;   // 이름 → 와이어 종류(thing.bin 에서 받는다)
     std::list<DurSpell> durSpells_;                // 묶음 4-a3 지속 주문 목록 — 머리에 넣는다(Add)
     Gamedata gamedata_;                            // 묶음 4-a4 gamedata.bin
     bool hasGamedata_ = false;

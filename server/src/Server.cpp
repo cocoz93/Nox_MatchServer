@@ -4541,6 +4541,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             }
             case 23: fnc = CastEarthquake(s, fl5, out); break;                                 // castEquake_52DE40
             case 60: fnc = CastPoison(obj3, targ, fl5, out); break;                            // castPoison_52C720
+            case 128: fnc = CastToxicCloud(s, arg, out); break;                                // castToxicCloud_52DB60
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
@@ -5189,6 +5190,83 @@ int Server::CastPoison(const std::string& obj3, const Target& targ, int lvl, std
     ActivatePoison(targ, lvl, lvl, out);
     MarkAssist(obj3, targ);                                  // sub_4E7540
     return 1;
+}
+
+// ── 묶음 4-c3 — 주문이 놓는 오브젝트 ─────────────────────────────────
+//
+// 정답지는 `newObjectWithTypeInd(이름번호)` 로 만들고 `createAt_4DAA50` 로 자리에 놓은 뒤
+// 수명을 건다(불꽃은 unitSetDecayTime, 독구름은 갱신자료 첫 칸). 우리는 한 목록(placed_)에 담는다.
+void Server::PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind) {
+    if (type == 0 || life == 0) return;
+    PlacedObj o;
+    o.netCode = nextShotNetCode_++;
+    o.type = type;
+    o.x = x; o.y = y;
+    o.owner = owner;
+    o.life = life;
+    o.nextHitFrame = frame_;                                 // 놓자마자 한 번 판정한다(+136 초깃값 0)
+    o.kind = kind;
+    placed_.push_back(o);
+}
+
+void Server::DestroyPlaced(size_t i, std::vector<OutPacket>& out) {
+    if (i >= placed_.size()) return;
+    const uint16_t nc = placed_[i].netCode;
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::DESTROY_OBJECT), static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitImportantRaw(kv.second, msg, sizeof(msg), out);
+    placed_.erase(placed_.begin() + static_cast<long>(i));
+}
+
+// updateToxicCloud_53D850(`GAME4_3.c:6855`) + sub_53D8C0(`:6872`)
+//   · 판정 프레임(+136)이 지났으면 둘레 **75** 안을 훑어 사람·몬스터에게 **3~10 피해(종류 5)** ·
+//     놓은 이의 적이면 **독 1(상한 1)** 도 얹는다 · 벽 뒤(선 추적 5)는 건너뛴다
+//   · 다음 판정은 **5~10틱 뒤** 무작위 · 수명은 매 틱 하나씩 줄고 0 이면 지운다
+void Server::UpdatePlaced(std::vector<OutPacket>& out) {
+    for (size_t i = 0; i < placed_.size();) {
+        PlacedObj& o = placed_[i];
+        if (o.kind == 1 && frame_ >= o.nextHitFrame) {
+            const float r2 = 75.0f * 75.0f;
+            auto hit = [&](const Target& t, float tx, float ty) {
+                const float dx = tx - o.x, dy = ty - o.y;
+                if (dx * dx + dy * dy > r2) return;
+                if (!MapTraceRay(tx, ty, o.x, o.y, 0x5)) return;     // 벽 뒤는 안 닿는다
+                const int dmg = 3 + static_cast<int>(NextRandom(8));  // randomInt(3,10)
+                HurtTarget(t, dmg, out, o.owner, 5, nullptr);         // 피해 종류 5(독)
+                bool enemy = false;                                   // 놓은 이의 적이면 독도
+                auto oi = sessions_.find(o.owner);
+                if (oi != sessions_.end()) enemy = TargetIsEnemy(oi->second, t);
+                if (enemy) ActivatePoison(t, 1, 1, out);
+            };
+            std::vector<std::string> who;
+            for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
+            for (const auto& addr : who) {
+                auto it = sessions_.find(addr);
+                if (it == sessions_.end()) continue;
+                hit(Target{ addr, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
+            }
+            for (size_t k = 0; k < pets_.size(); ++k)
+                hit(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
+            o.nextHitFrame = frame_ + 5 + NextRandom(6);              // randomInt(5,10)
+        }
+        if (o.life > 0) --o.life;
+        if (o.life == 0) { DestroyPlaced(i, out); continue; }
+        ++i;
+    }
+}
+
+// castToxicCloud_52DB60(`GAME4_2.c:10279`) — 시전자→커서 **선 추적**이 통하면 그 자리에 독구름을 놓는다
+//   막히면 글(`a9` 코드 0 · 값 2 「거기엔 못 놓는다」)을 내고 **0**(받아들이지 않음)
+//   수명 = ToxicCloudLifetime × 초당 틱
+int Server::CastToxicCloud(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out) {
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    if (!MapTraceRay(cx, cy, arg.x, arg.y, 0x5)) {           // traceRay_5374B0
+        InformSpell(caster, 0, 2, out);                      // netInformTextMsg(0, 2)
+        return 0;
+    }
+    const uint16_t type = NamedType("ToxicCloud");
+    const uint32_t life = static_cast<uint32_t>(BalanceFloat("ToxicCloudLifetime") * static_cast<double>(kServerTickRate));
+    PlaceObject(type, arg.x, arg.y, caster.addr, life, /*kind=*/1);
+    return 1;                                                // 소리는 10
 }
 
 // changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)
@@ -6823,6 +6901,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
     // (4-a4) 무적 켜짐·꺼짐 비교 루프는 걷어냄 — 버프가 바뀌는 자리(setUnitBuffFlags)가 곧바로 `5a` 를 올린다
 
+    UpdatePlaced(out);                                     // 4-c3 놓인 오브젝트(독구름 …)의 주기 함수·수명
     PoisonTick(out);                                       // 4-c2a 독 — 감쇠와 피해(server.go 의 유닛 갱신 자리)
 
     // ★ R4 — 이 틱에 바뀐 것들을 각자에게 보내고 목록을 비운다.
@@ -7290,6 +7369,15 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                       /*complex=*/false);
             Relativize(e, mo.netCode, static_cast<int>(mo.posX), static_cast<int>(mo.posY),
                        baseX, baseY);
+            m.objects.push_back(e);
+        }
+
+        // 4-c3 놓인 오브젝트(독구름 …) — SIMPLE 이라 붙는 바이트가 없다
+        for (const auto& po : placed_) {
+            ObjEntry e;
+            FillEntry(s.aliases, po.netCode, po.type, s.tickFrame,
+                      static_cast<int>(po.x), static_cast<int>(po.y), 0, e, /*complex=*/false);
+            Relativize(e, po.netCode, static_cast<int>(po.x), static_cast<int>(po.y), baseX, baseY);
             m.objects.push_back(e);
         }
 
