@@ -9495,6 +9495,151 @@ void TestAIStack() {
     std::printf("  6-a — AI 쌓기: 바닥 놀기 덮어쓰기 · 쌓고 빼기 · 죽음 위엔 30 만 · 꽉 참 · 틱이 맨 위를 시작\n");
 }
 
+// ── 묶음 6-b — 행동에 붙는 조건 ────────────────────────────────────────
+//
+// 조건은 할 일에 **붙어 다니는 꼬리표**다. 틀리면 그 조건과 **그것이 붙은 할 일까지** 함께 빠진다 —
+// 「보이는 동안만 쫓아라」 같은 것을 이 한 줄로 만든다(`unit_ai.go:44~262`).
+//
+// ⭕ 조건 갈래는 **40~71** 이다(`ActionType.IsCondition()` · `monsterActionIsCondition_50A010`).
+//   0~38 은 할 일, 39 는 비어 있고, 40 `또는` 부터 71 `안 움직였나` 까지가 조건이다.
+//   6-a 에서 「못 찾았다」고 적어 둔 자리를 여기서 찾았다.
+void TestAIDeps() {
+    const std::string a = "10.6.1.1:6101";
+    const std::string b = "10.6.1.2:6102";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugSpawnPet(1328, 1040, 1000, a);
+        // ⚠ `DebugMoveTo` 는 옛 자리칸(x)만 바꾼다. **실수 자리(posX)는 틱이 맞춘다**
+        //   (`Server.cpp:3547` 「밖에서 x·y 를 바꿨으면 실수 자리를 거기에 맞추고 멈춘다」).
+        //   틱을 안 돌리면 대상이 (0,0) 에 있는 것으로 재어져 거리 조건이 늘 틀린다.
+        //   ⚠ 첫 틱은 **기준점만** 잡는다 — 한 번 더 돌려야 자리가 맞는다(다른 시험들의 버릇과 같다)
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.Tick(34, o);
+    };
+
+    // ① **조건 갈래는 40~71** — 할 일(0~38)과 갈린다
+    {
+        Check(!nox::Server::AIIsCondition(0), "놀기(0)가 조건으로 읽혔다");
+        Check(!nox::Server::AIIsCondition(38), "38 이 조건으로 읽혔다");
+        Check(!nox::Server::AIIsCondition(39), "39 는 빈 자리인데 조건으로 읽혔다");
+        Check(nox::Server::AIIsCondition(40), "40(또는)이 조건이 아니다");
+        Check(nox::Server::AIIsCondition(71), "71(안 움직였나)이 조건이 아니다");
+        Check(!nox::Server::AIIsCondition(72), "72 가 조건으로 읽혔다");
+    }
+
+    // ② **조건이 맞으면 아무것도 안 빠진다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        // ★ 조건은 할 일 **아래**에 쌓인다(`MonsterPopAction` 이 맨 위를 뺀 뒤 **그 아래 조건들**을
+        //   같이 내리는 짜임이다). 그래서 조건을 **먼저** 올리고 할 일을 그 위에 올린다.
+        srv.DebugAIPushDep(0, 42, b, -1, 0, 0);              // 조건 — b 가 살아 있나
+        srv.DebugAIPush(0, 7);                               // 할 일 — 가기
+        Check(srv.DebugAIStackInd(0) == 1, "조건이 안 쌓였다(이 시험의 전제)");
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 1, "조건이 맞는데 빠졌다");
+        Check(srv.DebugAIAction(0, 1) == 7, "할 일이 사라졌다");
+    }
+
+    // ③ **조건이 틀리면 그 아래 할 일까지 빠진다** — 바닥 놀기만 남는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 42, b, -1, 0, 0);
+        srv.DebugAIPush(0, 7);
+        srv.DebugHurt(b, -1, 9999, std::string(), 16, out);  // b 를 죽인다
+        Check(!srv.IsAlive(b), "안 죽었다(이 시험의 전제)");
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "조건이 틀렸는데 안 빠졌다");
+        Check(srv.DebugAIAction(0, 0) == 0, "다 빠진 뒤 바닥이 놀기(0)가 아니다");
+    }
+
+    // ④ **때(41)** — 그 프레임 전까지만 참이다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAIPushDep(0, 41, std::string(), -1, /*u=*/5, 0);   // 5프레임 전까지
+        srv.DebugAIPush(0, 7);
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 1, "아직 때가 안 됐는데 빠졌다");
+        for (int t = 0; t < 8; ++t) { ms += 34; srv.Tick(ms, out); }
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "때가 지났는데 안 빠졌다");
+    }
+
+    // ⑤ **거리(49·50)** — 대상까지 재서 가른다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 50, b, -1, 0, /*f=*/100.0f);   // b 까지 100 안인가
+        srv.DebugAIPush(0, 7);
+        srv.DebugAIProcDeps(0, out);                          // 소환수 1040 · b 1100 → 60
+        Check(srv.DebugAIStackInd(0) == 1, "100 안인데 빠졌다");
+        srv.DebugMoveTo(b, 1400, 1000);                       // 360 으로 멀어진다
+        srv.Tick(68, out);                                    // 자리를 맞춘다(x → posX)
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "멀어졌는데 안 빠졌다");
+    }
+
+    // ⑥ **또는(40)** — 묶은 조건 가운데 하나만 맞아도 산다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        // ★ `또는(40)` 은 묶을 조건들 **위**에 온다 — 훑기가 **위에서 아래로** 가면서
+        //   `또는` 을 만난 뒤 **그 아래** 조건들을 한 묶음으로 보기 때문이다.
+        //   즉 쌓는 차례는 **조건들 → 또는 → 할 일** 이다.
+        srv.DebugAIPushDep(0, 50, b, -1, 0, 1.0f);            // 틀림(1 안에 없다)
+        srv.DebugAIPushDep(0, 42, b, -1, 0, 0);               // 맞음(살아 있다)
+        srv.DebugAIPush(0, 40);                               // 또는
+        srv.DebugAIPush(0, 7);                                // 할 일은 맨 위
+        Check(srv.DebugAIStackInd(0) == 3, "또는 묶음이 안 쌓였다(이 시험의 전제)");
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 3, "하나가 맞는데 또는 묶음이 빠졌다");
+    }
+    // 또는 묶음이 **모두 틀리면** 빠진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 50, b, -1, 0, 1.0f);            // 틀림
+        srv.DebugAIPushDep(0, 50, b, -1, 0, 2.0f);            // 역시 틀림
+        srv.DebugAIPush(0, 40);
+        srv.DebugAIPush(0, 7);
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "또는 묶음이 다 틀렸는데 안 빠졌다");
+    }
+
+    // ⑦ **안 움직였나(71)**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAISetPrevPos(0);                             // 지난 자리 = 지금 자리
+        srv.DebugAIPushDep(0, 71, std::string(), -1, 0, 0);
+        srv.DebugAIPush(0, 7);
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 1, "안 움직였는데 빠졌다");
+        srv.DebugMovePet(0, 1200, 1000);                      // 움직인다
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 0, "움직였는데 안 빠졌다");
+    }
+
+    // ⑧ **안 옮긴 조건은 늘 참** — 없는 것을 거짓으로 만들어 멀쩡한 할 일을 지우지 않는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 64, std::string(), -1, 0, 0);   // 64 성치 않나 — 아직 안 옮김
+        srv.DebugAIPush(0, 7);
+        srv.DebugAIProcDeps(0, out);
+        Check(srv.DebugAIStackInd(0) == 1, "안 옮긴 조건이 할 일을 지웠다");
+    }
+    std::printf("  6-b — 조건: 갈래 40~71 · 맞으면 유지 · 틀리면 할 일까지 빠짐 · 때·거리·안 움직임 · 또는 묶음 · 안 옮긴 것은 참\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -11689,6 +11834,7 @@ int main() {
     TestChargedStaffCast();
     TestGold();
     TestAIStack();
+    TestAIDeps();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

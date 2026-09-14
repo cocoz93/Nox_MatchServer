@@ -5770,11 +5770,12 @@ Target Server::PlasmaSearch(const Session& s, float range) const {
 //   26 바라보기 · 29 아무 데나 걷기 · 30 죽어가는 중 · 31 죽음 · 38 없음
 //
 // ★ **조건(Condition)** 갈래가 따로 있다 — 빼기가 맨 위를 내린 뒤 **그 아래 조건들도 같이** 내린다.
-//   ⚠ 어느 번호가 조건인지는 `ActionType.IsCondition()` 에 있는데 그 함수를 **아직 못 찾았다**.
-//     지금은 **조건이 없다**로 두었다(늘 한 칸만 내린다) — 찾으면 여기만 고치면 된다.
+//   ⭕ `ActionType.IsCondition()`(`common/unit/ai/ai.go:22` · `monsterActionIsCondition_50A010`) —
+//     **40 `DEPENDENCY_OR` ~ 71 `DEPENDENCY_NOT_MOVED`** 가 조건이다.
+//     즉 **0~38 은 할 일**이고 **40~71 은 그 할 일에 붙는 조건**이다(39 는 비어 있다).
+//     보기 — 42 살아 있나 · 45 보이나 · 49 더 머나 · 53 보이는 적 · 64 성치 않나 · 70 안 답답한가
 bool Server::AIIsCondition(uint8_t act) {
-    (void)act;
-    return false;   // ⚠ 미확인 — `IsCondition()` 을 못 찾았다
+    return act >= 40 && act <= 71;
 }
 
 // monsterActionReset_50A0C0 — 행동을 바꿀 때 딸린 셈들을 0 으로.
@@ -5862,6 +5863,92 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
 }
 void Server::AIEnd(Creature& k, uint8_t act) { (void)k; (void)act; }
 void Server::AICancel(Creature& k, uint8_t act) { (void)k; (void)act; }
+
+// nox_xxx_mobActionDependency(`unit_ai.go:44~262`) — 쌓임에 붙은 **조건**을 **위에서부터** 본다.
+//
+// 조건은 할 일에 **붙어 다니는 꼬리표**다(갈래 40~71). 틀리면 그 조건과 **그것이 붙은 할 일까지**
+// 한꺼번에 빼 버린다 — 「보이는 동안만 쫓아라」 같은 것을 이 한 줄로 만든다.
+//
+//   · 조건이 아니면 지나간다(그때 `또는` 묶음이 끊긴다)
+//   · **40 `또는`** — 그 아래로 이어지는 조건들을 **하나만 맞아도** 되게 묶는다.
+//     묶음의 끝(아래가 조건이 아닌 자리)에서 **하나도 안 맞았으면** 뺀다
+//   · 틀리면 — `자리 < i` 가 되거나 쌓임이 **바닥 놀기**가 될 때까지 뺀다. 그러고 **맨 위부터 다시** 본다
+//
+// ⭕ 옮긴 조건(우리 상태로 충실히 잴 수 있는 것):
+//   41 때 · 42 살아 있나 · 45 보이나 · 46 안 보이나 · 49 더 머나 · 50 더 가까운가 ·
+//   51 자리가 더 머나 · 52 자리가 더 가까운가 · 61 안 끊기나(늘 참) · 62 마법이 걸렸나 · 71 안 움직였나
+// ⚠ 안 옮긴 조건 — 43·44 맞고 있나(피격 기록) · 47 사선이 막혔나 · 48 보이는 자리인가 ·
+//   53~58 보이는 적·친구·먹이(몬스터 시야 목록이 아직 없다) · 59 소리 · 60 새 적 ·
+//   63·66 적 거리 · 64 성치 않나 · 65 기력 · 67 커서 아래 · 68 몰렸나 · 69 안전한 자리 · 70 답답한가.
+//   **이들은 늘 참으로 둔다** — 없는 것을 거짓으로 만들면 멀쩡한 할 일이 사라진다.
+void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
+    bool isOR = false;
+    bool okPrev = false;
+    for (int i = k.aiStackInd; i >= 0; --i) {
+        bool ok = true;
+        Creature::AIStackItem& st = k.aiStack[i];
+        const uint8_t typ = st.action;
+        if (!AIIsCondition(typ)) { isOR = false; continue; }
+
+        const Target targ{ st.targetAddr, st.targetPet };
+        float tx = 0, ty = 0;
+        const bool hasT = TargetXY(targ, tx, ty);
+        const float dx = static_cast<float>(k.x) - st.argX;
+        const float dy = static_cast<float>(k.y) - st.argY;
+
+        switch (typ) {
+            case 40:                                         // 또는
+                isOR = true;
+                okPrev = false;
+                continue;
+            case 41: ok = st.argU32 > frame_; break;         // 때 — 그 프레임 전까지만
+            case 42: ok = hasT && TargetHealth(targ) > 0; break;               // 살아 있나
+            case 45: ok = hasT && CanInteractFrom(k, targ); break;             // 보이나
+            case 46: ok = !(hasT && CanInteractFrom(k, targ)); break;          // 안 보이나
+            case 49: {                                                          // 더 머나
+                if (!hasT) { ok = false; break; }
+                const float ex = static_cast<float>(k.x) - tx, ey = static_cast<float>(k.y) - ty;
+                ok = std::sqrt(ex * ex + ey * ey) > st.argF;
+                break;
+            }
+            case 50: {                                                          // 더 가까운가
+                if (!hasT) { ok = false; break; }
+                const float ex = static_cast<float>(k.x) - tx, ey = static_cast<float>(k.y) - ty;
+                ok = std::sqrt(ex * ex + ey * ey) <= st.argF;
+                break;
+            }
+            case 51: ok = std::sqrt(dx * dx + dy * dy) >= st.argF; break;      // 자리가 더 머나
+            case 52: ok = std::sqrt(dx * dx + dy * dy) <= st.argF; break;      // 자리가 더 가까운가
+            case 62: ok = k.buffs.Has(static_cast<int>(st.argU32)); break;     // 마법이 걸렸나
+            case 71: ok = (k.x == k.prevX && k.y == k.prevY); break;           // 안 움직였나
+            default: ok = true; break;   // ⚠ 안 옮긴 조건 — 늘 참(없는 것을 거짓으로 만들지 않는다)
+        }
+
+        if (!isOR) {
+            if (ok) continue;
+            // 틀렸다 — 아래에서 뺀다
+        } else {
+            if (ok) okPrev = true;
+            if (i > 0 && AIIsCondition(k.aiStack[i - 1].action)) continue;   // 묶음이 아직 안 끝났다
+            if (okPrev) continue;                                            // 하나라도 맞았다
+        }
+        for (;;) {
+            AIPop(k);
+            if (k.aiStackInd < i || (k.aiStackInd == 0 && k.aiStack[0].action == 0)) break;
+        }
+        i = k.aiStackInd + 1;   // 맨 위부터 다시 본다(다음 돎에서 −1 되어 맨 위가 된다)
+        AIActionReset(k);
+    }
+    (void)out;
+}
+
+// 소환수에서 대상까지 볼 수 있나. `CanInteract` 는 사람 기준이라 소환수 자리로 한 번 더 싸맨다.
+//   ⚠ 지금은 **주인의 눈**으로 갈음한다 — 소환수 눈으로 보는 시야 추적은 6-f 에서.
+bool Server::CanInteractFrom(const Creature& k, const Target& t) const {
+    auto o = sessions_.find(k.owner);
+    if (o == sessions_.end()) return true;
+    return CanInteract(o->second, t);
+}
 
 // ── 묶음 5-h 금 ───────────────────────────────────────────────────────
 //

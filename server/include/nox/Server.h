@@ -205,8 +205,11 @@ struct Creature {
         std::string targetAddr;
         int targetPet = -1;
         float argX = 0, argY = 0;
+        uint32_t argU32 = 0;                   // 때(41) 같은 셈 인자
+        float argF = 0;                        // 거리(49~52) 같은 자 인자
     };
     AIStackItem aiStack[kAIStackMax];
+    double prevX = 0, prevY = 0;               // 묶음 6-b — 지난 틱 자리(조건 71 「안 움직였나」)
     int aiStackInd = 0;                        // 맨 위 자리(−1 은 「비었다」로만 잠깐 쓴다)
 };
 
@@ -1583,6 +1586,8 @@ public:
         PlayerSubGold(it->second, v, out);
     }
     // 시험용 — 소환수 AI 쌓임 들여다보기·건드리기(6-a)
+    // 묶음 6-b — 그 갈래가 **조건**인가(40~71). 셈만 하는 순수 함수라 시험이 표 자체를 본다.
+    static bool AIIsCondition(uint8_t act);
     int DebugAIStackInd(size_t i) const { return i < pets_.size() ? pets_[i].aiStackInd : -1; }
     int DebugAIAction(size_t i, int at) const {
         if (i >= pets_.size() || at < 0 || at >= Creature::kAIStackMax) return -1;
@@ -1592,6 +1597,17 @@ public:
         return i < pets_.size() && at >= 0 && at < Creature::kAIStackMax && pets_[i].aiStack[at].started;
     }
     bool DebugAIPush(size_t i, uint8_t act) { return i < pets_.size() && AIPush(pets_[i], act); }
+    // 시험용 — 조건을 인자와 함께 올린다(6-b)
+    bool DebugAIPushDep(size_t i, uint8_t act, const std::string& addr, int pet, uint32_t u, float f,
+                        float x = 0, float y = 0) {
+        if (i >= pets_.size()) return false;
+        if (!AIPush(pets_[i], act, Target{ addr, pet }, x, y)) return false;
+        pets_[i].aiStack[pets_[i].aiStackInd].argU32 = u;
+        pets_[i].aiStack[pets_[i].aiStackInd].argF = f;
+        return true;
+    }
+    void DebugAIProcDeps(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AIProcDeps(pets_[i], out); }
+    void DebugAISetPrevPos(size_t i) { if (i < pets_.size()) { pets_[i].prevX = pets_[i].x; pets_[i].prevY = pets_[i].y; } }
     int  DebugAIPop(size_t i) { return i < pets_.size() ? AIPop(pets_[i]) : -1; }
     void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AITick(pets_[i], out); }
     uint32_t GoldOf(const std::string& addr) const {
@@ -2243,7 +2259,6 @@ private:
     void SendCharges(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);   // netReportCharges_4D82B0
     // 묶음 5-h — `4a REPORT_GOLD` = `<금 u32>` 5바이트(중요). sub_4D8870(`GAME3_2.c:4150`)
     // ── 묶음 6-a AI 행동 쌓기 ──
-    static bool AIIsCondition(uint8_t act);
     static void AIActionReset(Creature& k);
     bool AIPush(Creature& k, uint8_t act, const Target& targ = Target{}, float x = 0, float y = 0);
     int  AIPop(Creature& k);
@@ -2252,6 +2267,9 @@ private:
     void AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIEnd(Creature& k, uint8_t act);
     void AICancel(Creature& k, uint8_t act);
+    // 묶음 6-b — 쌓임에 붙은 **조건**을 위에서부터 본다. 틀리면 그 아래까지 빼 버린다
+    void AIProcDeps(Creature& k, std::vector<OutPacket>& out);
+    bool CanInteractFrom(const Creature& k, const Target& t) const;
     void SendGold(Session& s, std::vector<OutPacket>& out);
     void PlayerAddGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerAddGold_4FA590
     void PlayerSubGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerSubGold_4FA5D0
