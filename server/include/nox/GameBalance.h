@@ -318,6 +318,17 @@ inline double MeleeRangeFor(CharClass c) {
 //     9·0x11            전기     **방어를 안 탄다** — 에너지볼트·연쇄번개
 //     1·0xC·4·5·6·0xE~0x10       **방어를 안 탄다** — 파이어볼 직격이 종류 1 이다
 //   그래서 갈래를 「방어가 얼마나 먹나」로 셋만 둔다.
+//
+// ★ 번호 ↔ 이름 정본 (2026-09-14 실측, 묶음 4-c3). thing.bin 의 `COLLIDE = DamageCollide 2 DAMAGE_FLAME` 처럼
+//   게임 데이터는 **이름**으로 적고, 번호는 정답지 표의 자리다 — `parseDamageTypeByName_4E0A00`
+//   (`GAME3_2.c:6962`)가 0x587000+200728 부터 200800 까지(= 18칸) 이름을 훑어 **몇 번째인지**를 돌려준다.
+//   못 찾으면 18(= 칸 수)이고, `collideDamageLoad_536E10` 은 18 이면 실패로 본다.
+//   표는 `src/common/memmap/nox/blobdata/blob_587000.dat` 의 그 자리를 풀어 읽었다:
+//      0 BLADE   · 1 FLAME  · 2 CRUSH   · 3 IMPALE · 4 DRAIN  · 5 POISON
+//      6 DISPEL_UNDEAD · 7 EXPLOSION   · 8 BITE    · 9 ELECTRIC
+//     10 CLAW    · 11 IMPACT · 12 LAVA  · 13 DEATH_MAGIC · 14 PLASMA
+//     15 MANA_BOMB · 16 ZAP_RAY · 17 AIRBORNE_ELECTRIC
+//   ⚠ 위 「방어가 먹는 정도」 목록과 대조해 읽을 것 — 불(1)·용암(12)·독(5)이 방어를 안 타는 게 이 표로 설명된다.
 enum class DamageKind {
     Physical,    // 방어합만큼 깎인다 — 근접·타격
     HalfArmor,   // 방어가 절반만

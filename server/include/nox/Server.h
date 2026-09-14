@@ -1364,6 +1364,12 @@ public:
         x = pets_[i].x; y = pets_[i].y;
         return true;
     }
+    // ★ 시험용 — 소환수를 자리에 세운다. 소환수는 시전 9틱 사이에 걸어 나가 자리 시험이 흔들린다.
+    bool DebugMovePet(size_t i, double x, double y) {
+        if (i >= pets_.size()) return false;
+        pets_[i].x = x; pets_[i].y = y;
+        return true;
+    }
     uint8_t DebugAnimFrameOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.animFrame;
@@ -1458,6 +1464,11 @@ public:
     }
     size_t PlacedCount() const { return placed_.size(); }
     uint16_t DebugPlacedNetCode(size_t i) const { return i < placed_.size() ? placed_[i].netCode : 0; }
+    // 마지막으로 받은 피해 종류(+524) — 불꽃 1 · 독 5 처럼 **무엇에 맞았나**를 시험이 가른다
+    uint8_t DebugLastDamageType(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.lastDamageType;
+    }
     void SetMagicType(uint16_t type, int speedRaw, float mass, uint32_t flags) {
         magicType_.type = type;
         magicType_.flags = flags;                         // thing FLAGS(맞힘 거르기 sub_54E730)
@@ -1791,7 +1802,12 @@ private:
         std::string owner;           // 놓은 사람 — 피해 임자 사슬(findParentChainPlayer)
         uint32_t life = 0;           // 갱신자료 첫 칸 — 매 틱 하나씩 줄고 0 이면 지운다
         uint32_t nextHitFrame = 0;   // +136 다음 판정 프레임
-        uint8_t kind = 0;            // 주기 함수 갈래 — 1 = 독구름(ToxicCloudUpdate)
+        uint8_t kind = 0;            // 주기 함수 갈래 — 1 = 독구름(ToxicCloudUpdate) · 2 = 닿음 피해(DamageCollide)
+        // ★ kind 2 — thing.bin `COLLIDE = DamageCollide <양> <피해종류>` 를 그대로 담는다(collideDamageLoad_536E10).
+        //   불꽃(MediumFlame)은 `DamageCollide 2 DAMAGE_FLAME` → 양 2 · 종류 1.
+        uint8_t dmgAmount = 0;
+        uint8_t dmgType = 0;
+        float radius = 0.0f;         // EXTENT CIRCLE — 닿음 판정 반지름(불꽃 6)
     };
     bool CreateSpellFly(Session& s, Target target, uint8_t spell, std::vector<OutPacket>& out);   // createSpellFly_4FDDA0
     Target SpellFlySearchTarget(bool havePos, float px, float py, float mslX, float mslY, const std::string& mslOwner,
@@ -1862,10 +1878,12 @@ private:
     int CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out);                          // castEquake_52DE40 + equakeDamage_52DEC0
     void SendJiggle(float cx, float cy, int jiggle, std::vector<OutPacket>& out);                       // earthquakeSend_4D9110 → `97 <세기>` Kind1
     // ── 묶음 4-c3 놓는 오브젝트 ──
-    void PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind);
+    void PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind,
+                     uint8_t dmgAmount = 0, uint8_t dmgType = 0, float radius = 0.0f);
     void UpdatePlaced(std::vector<OutPacket>& out);                                                      // 놓인 것들의 주기 함수 + 수명
     void DestroyPlaced(size_t i, std::vector<OutPacket>& out);
     int CastToxicCloud(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);               // castToxicCloud_52DB60
+    int CastBurn(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);                     // castBurn_52C3E0
     // ── 묶음 4-c2a 독 ──
     uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
     bool ActivatePoison(const Target& t, int add, int cap, std::vector<OutPacket>& out);                 // activatePoison_4EE7E0

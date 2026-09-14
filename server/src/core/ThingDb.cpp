@@ -408,6 +408,10 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                 // 충돌 함수가 있나 — 정답지는 **두 오브젝트 다 있어야** 부딪힌다(`GAME5.c:1930` `!v4 || !v5 → 0`).
                 t.hasCollide = true;
                 t.collideRaw = val;
+                // 닿음 함수 이름 + 인자(묶음 4-c3) — `COLLIDE = DamageCollide 5 FIRE` 꼴
+                const size_t sp = val.find(' ');
+                t.collideFn = (sp == std::string::npos) ? val : Trim(val.substr(0, sp));
+                if (sp != std::string::npos) t.collideArgs = Trim(val.substr(sp + 1));
             } else if (key == "SPEED") {
                 // ★ 4-a2 — 속도. 정답지 SpeedBase = SPEED / 32 · MISSILE 이면 ×2(`server/object_type.go:230~345`)
                 t.hasSpeed = true;
@@ -445,6 +449,11 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                 // 피해 함수 이름(묶음 3-e) — 뒤에 숫자가 붙는 꼴이 있을 수 있어 첫 낱말만
                 const size_t sp = val.find(' ');
                 t.damageFn = (sp == std::string::npos) ? val : Trim(val.substr(0, sp));
+            } else if (key == "UPDATE") {
+                // 주기 함수 이름 + 인자(묶음 4-c3). `UPDATE = LifetimeUpdate 90` 꼴 — 이름과 인자를 가른다
+                const size_t sp = val.find(' ');
+                t.updateFn = (sp == std::string::npos) ? val : Trim(val.substr(0, sp));
+                if (sp != std::string::npos) t.updateArgs = Trim(val.substr(sp + 1));
             }
             // 그 밖의 키(HEALTH·SPEED·FLAGS…)는 값이 문자열 안에 들어 있어 걸음에 영향 없다
             if (c.bad) return false;

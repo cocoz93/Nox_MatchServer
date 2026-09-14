@@ -109,6 +109,13 @@ struct ThingInfo {
     //   정답지 `legacy/object_damage.go` 등록표: DefaultDamage · PlayerDamage · SkeletonDamage · StoneDamage ·
     //   MechGolemDamage · FlammableDamage · BlackPowderDamage · ArmorDamage · WeaponDamage · BallDamage · MonsterGeneratorDamage
     std::string damageFn;
+    // ★ 주기·닿음 함수 이름과 인자(묶음 4-c3). `UPDATE = LifetimeUpdate 90` · `COLLIDE = DamageCollide 5 FIRE` 꼴.
+    //   정답지는 이 이름으로 함수를 붙인다(`legacy/object_update.go`·`object_collide.go` 등록표).
+    //   불꽃·독구름 같은 「주문이 놓는 것」이 무슨 일을 하는지가 여기 적혀 있다 — **짐작하지 말고 이 값을 볼 것**.
+    std::string updateFn;
+    std::string updateArgs;
+    std::string collideFn;
+    std::string collideArgs;
 };
 
 // '+' 로 이은 이름 목록 → 비트 (2026-09-13 묶음 2-c). 이름 순서 = 비트 순서

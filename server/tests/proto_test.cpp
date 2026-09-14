@@ -5889,6 +5889,173 @@ void TestToxicCloud() {
     std::printf("  4-c3(1) — 독구름 놓기·둘레 75 피해+독(적만)·둘레 밖·수명·벽 뒤 못 놓음/못 닿음·판정 주기·갱신 실림\n");
 }
 
+// ── 묶음 4-c3(2) — 불태우기(Burn) ────────────────────────────────────
+//
+// 정답지 `castBurn_52C3E0`(GAME4_2.c:9471) — 시전자→커서 선 추적이 통하면 그 자리에 **MediumFlame** 을 놓는다.
+//   수명 = `BurnDuration`(300) **그대로 틱**(독구름과 달리 초당 틱을 안 곱한다 — unitSetDecayTime 은 프레임을 받는다).
+//   피해는 불꽃의 주기 함수가 아니라 **닿음 함수**에서 난다 — thing.bin 의 MediumFlame 은
+//   `UPDATE = NoUpdate` · `COLLIDE = DamageCollide 2 DAMAGE_FLAME` · `EXTENT = CIRCLE 6`.
+//   `collideDamage_4E9430` 은 피해를 **양 >> 1**(= 1) 로 주고 갈래·팀을 안 가린다.
+void TestBurn() {
+    const std::string a = "10.9.4.1:9401";
+    const std::string b = "10.9.4.2:9402";
+    const uint16_t kFlameType = 901;                         // 시험용 종류 번호(실서버는 thing.bin 이름으로 찾는다)
+    auto mk = [&](nox::Server& srv, double dur) {
+        nox::Gamedata g;
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "BurnDuration = %g;\n", dur);
+        g.Parse(buf);
+        srv.SetGamedata(g);
+        srv.SetNamedType("MediumFlame", kFlameType);
+        srv.SetSpellDef(5, 5, 0x1000000, { 3, 6 });
+        srv.DebugEnterGame(a, 740, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 741, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1300, 1000);                      // 불꽃에서 멀리 떨어져 시작
+    };
+
+    // ① 커서 자리에 불꽃이 놓이고, 그 안에 선 사람이 **틱마다 1** 씩 탄다
+    {
+        nox::Server srv; mk(srv, 300);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);                       // b 발밑
+        CastAndWait(srv, a, 5, false, ms, out);
+        Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다");
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        // ★ 양까지 잰다 — 「아프긴 했다」로는 2>>1 을 2 로 준 것도 통과한다
+        if (lost != 20) std::printf("  [불꽃] 20틱에 잃은 값 %d — 20 이어야 한다\n", lost);
+        Check(lost == 20, "불꽃 피해가 틱마다 1 이 아니다");
+        Check(srv.DebugLastDamageType(b) == 1, "피해 종류가 불꽃(1)이 아니다");
+        Check(srv.DebugPoisonOf(b) == 0, "불꽃이 독을 얹었다(불꽃은 독이 아니다)");
+    }
+
+    // ② 닿음 둘레는 **불꽃 6 + 몸 10 = 16** — 그 밖은 안 탄다
+    {
+        nox::Server srv; mk(srv, 300);
+        srv.DebugMoveTo(b, 1300, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1330, 1000);                       // b 에서 30 — 둘레 16 밖
+        CastAndWait(srv, a, 5, false, ms, out);
+        Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다(시험 전제)");
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) == bHp, "닿음 둘레(16) 밖인데 불에 탔다");
+    }
+
+    // ②b 둘레 **안쪽 경계**도 잰다 — 13 은 16 안이고 6(불꽃만)·10(몸만) 밖이다.
+    //   ⚠ 이 칸이 없으면 「반지름을 안 더함」·「반지름 0」 돌연변이가 둘 다 안 걸린다(BN2·BN10 실측).
+    {
+        nox::Server srv; mk(srv, 300);
+        srv.DebugMoveTo(b, 1300, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1313, 1000);                       // b 에서 13
+        CastAndWait(srv, a, 5, false, ms, out);
+        Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다(시험 전제)");
+        const uint16_t bHp = srv.HealthOf(b);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.HealthOf(b) < bHp, "13 은 닿음 둘레(불꽃 6 + 몸 10 = 16) 안인데 안 탔다");
+    }
+
+    // ③ **시전자도 탄다** — 불꽃에는 NO_COLLIDE_OWNER 가 없다(독구름과 다른 자리)
+    {
+        nox::Server srv; mk(srv, 300);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1000, 1000);                       // 제 발밑
+        CastAndWait(srv, a, 5, false, ms, out);
+        const uint16_t aHp = srv.HealthOf(a);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        if (lost != 20) std::printf("  [불꽃] 시전자가 20틱에 잃은 값 %d — 20 이어야 한다\n", lost);
+        Check(lost == 20, "제 불꽃 안인데 안 탔다(시전자도 타야 한다)");
+    }
+
+    // ④ 수명 = BurnDuration **그대로 틱** — 초당 틱을 곱하면 30배로 길어진다
+    {
+        nox::Server srv; mk(srv, 20);                        // 20 = 20틱(≈0.67초). 곱했다면 600틱
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1000, 1000);
+        CastAndWait(srv, a, 5, false, ms, out);
+        Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다(시험 전제)");
+        for (int t = 0; t < 15; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlacedCount() == 1, "15틱 만에 불꽃이 사라졌다(수명이 너무 짧다)");
+        out.clear();
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlacedCount() == 0, "25틱이 지났는데 불꽃이 남아 있다(초당 틱을 곱했나)");
+        const auto toA = FlattenTo(out, a);                  // ⚠ 이름을 붙여야 한다(임시값이면 포인터가 죽는다)
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::DESTROY_OBJECT)) != nullptr, "불꽃 지움 알림이 안 나갔다");
+    }
+
+    // ⑤ 벽 뒤에는 **못 놓는다** — 칸 46 이 1000 과 1150 사이
+    {
+        nox::Server srv; mk(srv, 300);
+        srv.SetWalls({ { 46, 43 } });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1150, 1000);
+        CastAndWait(srv, a, 5, false, ms, out);
+        Check(srv.PlacedCount() == 0, "벽 뒤인데 불꽃이 놓였다(선 추적이 빠졌나)");
+    }
+
+    // ⑥ 놓인 불꽃이 **갱신 스트림에 실린다**(안 실으면 화면에 안 보인다)
+    {
+        nox::Server srv; mk(srv, 300);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1000, 1000);
+        CastAndWait(srv, a, 5, false, ms, out);
+        const uint16_t nc = srv.DebugPlacedNetCode(0);
+        Check(nc != 0, "불꽃 번호가 없다(시험 전제)");
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        bool inStream = false;
+        for (const auto& p : out) {
+            if (p.to != a) continue;
+            const auto body = Body(p);
+            for (size_t i = 0; i + 1 < body.size(); ++i)
+                if (body[i] == static_cast<uint8_t>(nc) && body[i + 1] == static_cast<uint8_t>(nc >> 8)) inStream = true;
+        }
+        Check(inStream, "놓인 불꽃이 갱신에 안 실렸다(화면에 안 보인다)");
+    }
+
+    // ⑦ **소환수도 탄다** — 닿음 함수는 사람만 보는 게 아니다
+    {
+        const std::string c = "10.9.4.3:9403";
+        nox::Server srv; mk(srv, 300);
+        nox::Server::PhysBody body;
+        body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);                         // 임프
+        std::vector<nox::OutPacket> out;
+        srv.DebugEnterGame(c, 742, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(c, 3000, 3000);
+        SummonImp(srv, c, out);
+        Check(srv.pets() == 1, "임프가 안 불려 나옴(시험 전제)");
+        uint32_t ms = srv.DebugNowMs();
+        srv.DebugAimAt(a, 1000, 1000);
+        CastAndWait(srv, a, 5, false, ms, out);
+        Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다(시험 전제)");
+        // ⚠ 소환수는 시전 9틱 사이에 걸어 나간다 — 불꽃을 놓은 **뒤에** 자리에 세운다
+        Check(srv.DebugMovePet(0, 1000, 1000), "소환수를 못 옮겼다");
+        const uint16_t hp0 = srv.DebugPetHealth(0);
+        for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugPetHealth(0) < hp0, "불꽃 안에 선 소환수가 안 탔다");
+    }
+    std::printf("  4-c3(2) — 불태우기 놓기·닿음 피해 1/틱(종류 1)·둘레 16(안팎)·시전자도 탐·소환수도 탐·수명 그대로 틱·벽 뒤 못 놓음·갱신 실림\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -7990,6 +8157,7 @@ int main() {
     TestPushPullQuake();
     TestPoison();
     TestToxicCloud();
+    TestBurn();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

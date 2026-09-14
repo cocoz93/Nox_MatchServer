@@ -4542,6 +4542,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 23: fnc = CastEarthquake(s, fl5, out); break;                                 // castEquake_52DE40
             case 60: fnc = CastPoison(obj3, targ, fl5, out); break;                            // castPoison_52C720
             case 128: fnc = CastToxicCloud(s, arg, out); break;                                // castToxicCloud_52DB60
+            case 5: fnc = CastBurn(s, arg, out); break;                                       // castBurn_52C3E0
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
@@ -5196,7 +5197,8 @@ int Server::CastPoison(const std::string& obj3, const Target& targ, int lvl, std
 //
 // 정답지는 `newObjectWithTypeInd(이름번호)` 로 만들고 `createAt_4DAA50` 로 자리에 놓은 뒤
 // 수명을 건다(불꽃은 unitSetDecayTime, 독구름은 갱신자료 첫 칸). 우리는 한 목록(placed_)에 담는다.
-void Server::PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind) {
+void Server::PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind,
+                         uint8_t dmgAmount, uint8_t dmgType, float radius) {
     if (type == 0 || life == 0) return;
     PlacedObj o;
     o.netCode = nextShotNetCode_++;
@@ -5206,6 +5208,9 @@ void Server::PlaceObject(uint16_t type, float x, float y, const std::string& own
     o.life = life;
     o.nextHitFrame = frame_;                                 // 놓자마자 한 번 판정한다(+136 초깃값 0)
     o.kind = kind;
+    o.dmgAmount = dmgAmount;
+    o.dmgType = dmgType;
+    o.radius = radius;
     placed_.push_back(o);
 }
 
@@ -5248,6 +5253,29 @@ void Server::UpdatePlaced(std::vector<OutPacket>& out) {
                 hit(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
             o.nextHitFrame = frame_ + 5 + NextRandom(6);              // randomInt(5,10)
         }
+        // ── kind 2 — 닿음 피해(collideDamage_4E9430) ──────────────────
+        //   몸이 겹친 틱마다 부른다. 피해 = **양 >> 1** · 단 양이 1 이면 홀수 프레임에만 1(짝수 틱은 0).
+        //   ⚠ 갈래·팀을 안 가린다 — 불꽃 FLAGS 에 NO_COLLIDE_OWNER 가 없어 **시전자·같은 편도 탄다**
+        //     (sub_548360 `v11 & 0x400 && unitsHaveSameTeam` 가지를 안 탄다).
+        if (o.kind == 2 && o.dmgAmount > 0) {
+            const int dmg = (o.dmgAmount == 1 && (frame_ & 1u)) ? 1 : (o.dmgAmount >> 1);
+            const float reach = o.radius + static_cast<float>(kBodyRadius);
+            const float rr = reach * reach;
+            auto touch = [&](const Target& t, float tx, float ty) {
+                const float dx = tx - o.x, dy = ty - o.y;
+                if (dx * dx + dy * dy > rr) return;
+                HurtTarget(t, dmg, out, o.owner, o.dmgType, nullptr);
+            };
+            std::vector<std::string> who;
+            for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
+            for (const auto& addr : who) {
+                auto it = sessions_.find(addr);
+                if (it == sessions_.end()) continue;
+                touch(Target{ addr, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
+            }
+            for (size_t k = 0; k < pets_.size(); ++k)
+                touch(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
+        }
         if (o.life > 0) --o.life;
         if (o.life == 0) { DestroyPlaced(i, out); continue; }
         ++i;
@@ -5267,6 +5295,25 @@ int Server::CastToxicCloud(Session& caster, const SpellArg& arg, std::vector<Out
     const uint32_t life = static_cast<uint32_t>(BalanceFloat("ToxicCloudLifetime") * static_cast<double>(kServerTickRate));
     PlaceObject(type, arg.x, arg.y, caster.addr, life, /*kind=*/1);
     return 1;                                                // 소리는 10
+}
+
+// castBurn_52C3E0(`GAME4_2.c:9471`) — 시전자→커서 **선 추적**이 통하면 그 자리에 불꽃(MediumFlame)을 놓는다
+//   막히면 글(코드 0 · 값 2)을 내고 **0** · 통하면 불꽃 + 불똥 터짐(반지름 64) + 소리
+//   ★ 수명 = `BurnDuration`(= 300) **그대로가 틱이다** — 독구름과 달리 초당 틱을 **안 곱한다**
+//     (`unitSetDecayTime_511660` 은 +136 에 `지금 프레임 + a2` 를 넣는다. 다른 부르는 자리는 전부 `gameFPS() × N` 인데
+//      불꽃만 `float2int(BurnDuration)` 을 날로 넘긴다).
+//   ⚠ 아직 안 옮긴 갈래 — 대상이 **글리프**면 선 추적 없이 글리프 자리에 놓는다. 글리프가 아직 없다(묶음 5).
+int Server::CastBurn(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out) {
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    if (!MapTraceRay(cx, cy, arg.x, arg.y, 0x5)) {           // traceRay_5374B0
+        InformSpell(caster, 0, 2, out);                      // netInformTextMsg(0, 2)
+        return 0;
+    }
+    const uint16_t type = NamedType("MediumFlame");
+    const uint32_t life = static_cast<uint32_t>(BalanceFloat("BurnDuration"));
+    // thing.bin 의 MediumFlame — `COLLIDE = DamageCollide 2 DAMAGE_FLAME` · `EXTENT = CIRCLE 6`
+    PlaceObject(type, arg.x, arg.y, caster.addr, life, /*kind=*/2, /*dmgAmount=*/2, /*dmgType=*/1, /*radius=*/6.0f);
+    return 1;
 }
 
 // changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)
