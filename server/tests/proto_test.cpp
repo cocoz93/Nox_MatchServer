@@ -13522,6 +13522,185 @@ void TestHarpoon() {
     std::printf("  7-f — 작살 쏘기·걸림: 상태 32 · 적이면 꽂히고 피해 1 · 같은 편이면 끊김 · 9e 0e 7바이트 모두에게\n");
 }
 
+// ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
+//
+// 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
+//   · 꽂혀 있으면 매 틱 `applyForce(주인 자리, −10)` — 상대가 주인 쪽으로 끌려온다
+//   · 끊김 다섯 — 375 밖 · 20 안 · 150프레임 · 30틱 동안 안 움직임 · 시야 막힘
+//   · 안 걸린 채 300 넘게 날면 끊김 · 꽂힌 화살은 상대 자리에 붙어 다닌다
+//   · `9e 07`(걸림)은 **첫 갱신 틱**에 나간다
+void TestHarpoonPull() {
+    const std::string a = "10.7.7.1:7701";
+    const std::string b = "10.7.7.2:7702";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+        RegHarpoonBolt(srv);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w); srv.Tick(34, w);
+        std::vector<nox::OutPacket> o2;
+        srv.DebugAbilAward(a, 3, false, o2);
+        srv.DebugSetFacing(a, 0);
+    };
+    // 꽂힐 때까지 굴린다
+    auto stick = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        srv.DebugAbilDo(a, 3, out);
+        for (int t = 0; t < 30 && srv.DebugHarpoonTarget(a).empty(); ++t) { ms += 34; srv.Tick(ms, out); }
+        return !srv.DebugHarpoonTarget(a).empty();
+    };
+    auto fx = [&](const std::vector<nox::OutPacket>& out, uint8_t code) {
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 7 && x[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) && x[1] == code) return true;
+        return false;
+    };
+
+    // ① **걸림(`9e 07`)이 간다** — 꽂히고 나면
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        Check(fx(out, 7), "걸림(`9e 07`)이 안 갔다");
+    }
+
+    // ② **끌려온다** — 상대가 주인 쪽으로 다가온다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        const double d0 = srv.DebugDistance(a, b);
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        const double d1 = srv.DebugDistance(a, b);
+        Check(d1 < d0, "꽂혔는데 안 끌려온다");
+    }
+
+    // ③ **20 보다 가까워지면 끊긴다** — 관문만 따로 잰다.
+    //   ⚠ 온 틱으로 재면 이 관문에 **잘 안 걸린다.** 끄는 힘이 `10 × 10 / 무게 1` = **100** 이라
+    //     상대가 매 틱 주인을 **지나쳐 넘나든다**(실측: 1100 → 1047 → 935 → 891 → 948 → 1063 …).
+    //     그래서 온 틱 쪽은 수명(150)으로 끊긴다 — 아래 ④ 가 그것을 잰다.
+    //     ⚠ 이 넘나듦이 정품과 같은지는 **화면으로 봐야** 안다(④대기)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        srv.DebugSetPos(b, 1015, 1000);                    // 15 — 20 안
+        // ⚠ 거리는 **화살↔주인**이지 상대↔주인이 아니다.
+        //   화살은 갱신 **끝**에서 상대 자리로 옥겨 붙으므로 한 번 더 돌려야 관문에 닿는다
+        srv.DebugHarpoonUpdate(a, out);
+        srv.DebugHarpoonUpdate(a, out);
+        Check(srv.DebugHarpoonBolt(a) == 0, "20 안인데 줄이 안 끊겼다");
+    }
+    // 경계 — 딱 20 은 **안 끊긴다**(`dist < 20`)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        srv.DebugSetPos(b, 1020, 1000);
+        srv.DebugHarpoonUpdate(a, out);
+        srv.DebugHarpoonUpdate(a, out);
+        Check(srv.DebugHarpoonBolt(a) != 0, "딱 20 인데 끊겼다");
+    }
+
+    // ④ **꽂힌 지 150프레임이면 끊긴다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        srv.DebugHarpoonUpdate(a, out);                    // 첫 틱에 `9e 07` 과 시계가 선다
+        Check(srv.DebugHarpoonBolt(a) != 0, "첫 갱신에 끊겼다");
+        srv.DebugSetPos(b, 1200, 1000);                    // 20~375 사이에 세워 둔다
+        srv.DebugAdvanceFrame(150);
+        srv.DebugHarpoonUpdate(a, out);
+        Check(srv.DebugHarpoonBolt(a) != 0, "딱 150 인데 끊겼다(`> 150` 이어야 한다)");
+        srv.DebugAdvanceFrame(1);
+        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugHarpoonUpdate(a, out);
+        Check(srv.DebugHarpoonBolt(a) == 0, "151 인데 줄이 안 끊겼다");
+    }
+
+    // ⑤ **375 보다 멀어지면 끊긴다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        srv.DebugSetPos(b, 1500, 1000);                    // 500 — 375 밖
+        srv.DebugHarpoonUpdate(a, out);                    // 화살이 상대 자리로 옮겨 붙는다
+        srv.DebugHarpoonUpdate(a, out);                    // 그 다음 갱신이 거리를 재 끊는다
+        Check(srv.DebugHarpoonBolt(a) == 0, "375 밖인데 줄이 안 끊겼다");
+    }
+
+    // ⑥ **30틱마다 보아 상대가 안 움직였으면 끊긴다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugHarpoonUpdate(a, out);                    // 이때 자리를 기억한다
+        srv.DebugAdvanceFrame(31);
+        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugHarpoonUpdate(a, out);                    // 첫 본본 — 꿂힐 때 자리(1100)와 다르므로 1200 을 기억한다
+        srv.DebugAdvanceFrame(31);
+        srv.DebugSetPos(b, 1200, 1000);                    // 한 칸도 안 움직였다
+        srv.DebugHarpoonUpdate(a, out);
+        Check(srv.DebugHarpoonBolt(a) == 0, "31틱 동안 안 움직였는데 줄이 안 끊겼다");
+    }
+    // 움직였으면 안 끊긴다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugHarpoonUpdate(a, out);
+        srv.DebugAdvanceFrame(31);
+        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugHarpoonUpdate(a, out);                    // 본본 — 꿂힐 때 자리와 다르므로 1200 을 기억한다
+        srv.DebugAdvanceFrame(31);
+        // ⚠ **5 만** 움직인다 — 거리제곱 25 다. 자가 1 이면 「움직였다」이고,
+        //   자를 100 으로 넓히면 「안 움직였다」가 되어 끊긴다(그 자리가 이 시험이다)
+        srv.DebugSetPos(b, 1205, 1000);
+        srv.DebugHarpoonUpdate(a, out);
+        Check(srv.DebugHarpoonBolt(a) != 0, "5 움직였는데 줄이 끊겼다");
+    }
+
+    // ⑦ **주인과 상대 사이가 벽으로 막히면 끊긴다**(벽 추적 9)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugHarpoonUpdate(a, out);
+        Check(srv.DebugHarpoonBolt(a) != 0, "벽을 세우기 전에 끊겼다(이 시험의 전제)");
+        srv.SetWalls({ { 47, 43 } });                      // a(1000)와 b(1200) 사이 칸
+        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugHarpoonUpdate(a, out);
+        Check(srv.DebugHarpoonBolt(a) == 0, "벽이 가로막았는데 줄이 안 끊겼다");
+    }
+
+    // ⑧ **안 걸린 채 300 넘게 날면 끊긴다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 5000, 5000);                    // 맞을 것이 없다
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        srv.Tick(ms, out);
+        srv.DebugAbilDo(a, 3, out);
+        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugHarpoonBolt(a) == 0, "300 넘게 날았는데 줄이 안 끊겼다");
+    }
+
+    // ⑨ **주인이 죽으면 끊긴다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        int guard = 0;
+        while (srv.IsAlive(a) && guard++ < 40) srv.DebugHurt(a, -1, 30, b, 0, out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.DebugHarpoonBolt(a) == 0, "주인이 죽었는데 줄이 안 끊겼다");
+    }
+    std::printf("  7-g — 작살 끌기: 9e 07 첫 틱 · 끌려옴 · 20 안·375 밖·안 움직임·주인 죽음에 끊김 · 안 걸리면 300\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -15747,6 +15926,7 @@ int main() {
     TestAbilities();
     TestAbilityEffects();
     TestHarpoon();
+    TestHarpoonPull();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

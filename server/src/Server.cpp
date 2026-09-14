@@ -3823,6 +3823,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     for (size_t i = pets_.size(); i-- > 0;) UpdateUnitBuffs(Target{ std::string(), static_cast<int>(i) }, out);   // 몬스터도 CCC 목록에(죽으면 지워지니 뒤에서부터)
     // 묶음 7-d — `serverAbilities::Update` · 쉬는 시간 −1 · 지속이 다한 것 끄기
     for (auto& kv : sessions_) if (kv.second.inGame) AbilityUpdate(kv.second, out);
+    // 묶음 7-g — 작살 줄(`updateHarpoon_54F380` + `UpdatePlayer`)
+    for (auto& kv : sessions_) if (kv.second.inGame) HarpoonUpdate(kv.second, out);
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -7328,6 +7330,109 @@ bool Server::HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPa
     m.flags |= 0x40;                                         // FlagNoCollide(비트 6 · ThingDb kFlagNames) — 더는 안 부딪힌다
     MarkAssist(m.owner, targ);                               // sub_4E7540
     return true;
+}
+
+// ── 묶음 7-g 작살 끌기와 끊김 관문 ────────────────────────────────────
+//
+// 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
+//
+// ⭕ **끌기** — 꽂혀 있으면 매 틱 상대에게 `applyForce(주인 자리, **−10**)` 을 준다.
+//   `objectApplyForce_52DF80` 의 셈 그대로 —
+//     `dp = 상대자리 − 주인자리` · `r = |dp| + 0.1` · `f = 10 × 힘 / 무게` · `ForceVec += dp × f / r`
+//   힘이 **음수**라 상대는 주인 **쪽으로** 끌려온다. 그리고 매 틱 도운 사람으로 기록된다
+//
+// ⭕ **끊김 관문** — 꽂힌 뒤에는 다섯 가지로 끊긴다(하나라도 걸리면 그 자리에서 끝).
+//   ① 주인과 상대가 **375 보다 멀어짐** ② **20 보다 가까워짐**(다 끌어왔다)
+//   ③ 줄이 선 지 **150프레임**(`MaxHarpoonExistence`)
+//   ④ **30틱마다** 보아 상대가 거리제곱 **1 도 안 움직였으면**(빠져나갈 수 없는 자리에 낀 것)
+//   ⑤ 주인↔상대 **시야가 막히면**(벽 추적 9)  · 그리고 상대가 죽으면
+//   꽂히기 **전**에는 관문이 하나다 — 주인에게서 **300 보다 멀리 날면** 끊긴다
+//
+// ⭕ 꽂힌 화살은 **상대 자리에 붙어 다닌다**(자리·이전자리·새자리를 모두 상대에게 맞추고 속도·힘을 0 으로).
+//
+// ★ `9e 07`(걸림)은 **첫 갱신 틱**에 나간다(`frame35 == 0`) — 꽂혔는지와 상관없다.
+//   그래서 수명 150 도 **꽂힌 때가 아니라 그 첫 틱부터** 센다
+//
+// ⛔ 안 옮긴 것 — **겨눈 쪽으로 휘기**. 정답지는 살아 있는 커서 자리(`pl.CursorPos()`)로
+//   `spellFlySearchTarget` 을 돌려 화살을 그쪽으로 튼다. 우리는 **시전 순간 커서**(`castCursorX/Y`)만 있어
+//   같은 것이 아니다 — 커서를 매 틱 받게 될 때 같이 옮긴다. 소리 셋은 묶음 10
+void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
+    if (s.harpoonBoltNc == 0) return;
+    MissileObj* bolt = HarpoonBoltOf(s);
+    if (!bolt) { HarpoonBreak(s, /*emitSound=*/true, out); return; }
+    if (s.respawnAtFrame != 0) { HarpoonBreak(s, /*emitSound=*/true, out); return; }   // 주인이 죽었다
+
+    const double dx0 = static_cast<double>(bolt->posX) - s.posX;
+    const double dy0 = static_cast<double>(bolt->posY) - s.posY;
+    const double dist = std::sqrt(dx0 * dx0 + dy0 * dy0);
+
+    if (!s.harpoonTarget.none()) {
+        float tx = 0, ty = 0;
+        if (!TargetXY(s.harpoonTarget, tx, ty)) { HarpoonBreak(s, true, out); return; }   // 상대가 사라졌다
+        if (!s.harpoonTarget.addr.empty()) {
+            auto it = sessions_.find(s.harpoonTarget.addr);
+            if (it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0) {
+                HarpoonBreak(s, true, out); return;
+            }
+        }
+        if (dist > kHarpoonMaxDist) { HarpoonBreak(s, true, out); return; }               // ①
+        if (dist < kHarpoonMinDist) { HarpoonBreak(s, false, out); return; }              // ②
+        if (s.harpoonFrame35 != 0 && frame_ - s.harpoonFrame35 > kHarpoonLifetime) {      // ③
+            HarpoonBreak(s, true, out); return;
+        }
+        if (frame_ - s.harpoonFrame38 > 30u) {                                           // ④ 30틱마다 본다
+            s.harpoonFrame38 = frame_;
+            const double mx = static_cast<double>(s.harpoonTargX) - tx;
+            const double my = static_cast<double>(s.harpoonTargY) - ty;
+            if (mx * mx + my * my < 1.0) { HarpoonBreak(s, true, out); return; }
+            s.harpoonTargX = tx;
+            s.harpoonTargY = ty;
+        }
+        if (!MapTraceRay(static_cast<float>(s.posX), static_cast<float>(s.posY), tx, ty, 0x9)) {   // ⑤
+            HarpoonBreak(s, true, out); return;
+        }
+        // 화살을 상대 자리에 붙인다
+        bolt->newX = bolt->posX = bolt->prevX = tx;
+        bolt->newY = bolt->posY = bolt->prevY = ty;
+        bolt->velX = bolt->velY = 0.0f;
+        bolt->forceX = bolt->forceY = 0.0f;
+        // 끌어당기기 — `applyForce(주인 자리, −힘)`(`UpdatePlayer`)
+        MarkAssist(s.addr, s.harpoonTarget);                 // sub_4E7540 — 매 틱 도운 사람으로
+        HarpoonPull(s, s.harpoonTarget, tx, ty);
+    } else if (dist > kHarpoonMaxFlight) {
+        HarpoonBreak(s, true, out); return;                  // 안 걸린 채 너무 멀리 날았다
+    }
+    if (s.harpoonFrame35 == 0) {                             // 첫 틱에 「걸림」을 알린다
+        SendHarpoonFx(7, s.netCode, s.harpoonBoltNc, out);
+        s.harpoonFrame35 = frame_;
+    }
+}
+
+// `objectApplyForce_52DF80` — 힘이 음수면 `vec` 쪽으로 끌려온다
+void Server::HarpoonPull(const Session& owner, const Target& targ, float tx, float ty) {
+    const double dpx = static_cast<double>(tx) - owner.posX;
+    const double dpy = static_cast<double>(ty) - owner.posY;
+    const double r = std::sqrt(dpx * dpx + dpy * dpy) + 0.1;
+    double mass = kPlayerMass;
+    if (targ.addr.empty() && targ.pet >= 0 && static_cast<size_t>(targ.pet) < pets_.size()) {
+        const auto tb = typeBodies_.find(pets_[static_cast<size_t>(targ.pet)].type);
+        mass = (tb != typeBodies_.end() && tb->second.mass > 0.0f) ? tb->second.mass : 1.0;
+    }
+    if (mass <= 0.0) mass = 1.0;
+    const double f = 10.0 * (-kHarpoonForce) / mass;
+    const double fx = dpx * f / r;
+    const double fy = dpy * f / r;
+    if (!targ.addr.empty()) {
+        auto it = sessions_.find(targ.addr);
+        if (it == sessions_.end()) return;
+        if (it->second.respawnAtFrame != 0) return;          // 죽은 것은 안 밀린다(isObjectMovable)
+        it->second.forceX += fx;
+        it->second.forceY += fy;
+    } else if (targ.pet >= 0 && static_cast<size_t>(targ.pet) < pets_.size()) {
+        // ⚠ 소환수는 아직 ForceVec 적분이 없다(걸음을 AI 가 직접 옮긴다) — 자리로 바로 옮긴다
+        pets_[static_cast<size_t>(targ.pet)].x += fx;
+        pets_[static_cast<size_t>(targ.pet)].y += fy;
+    }
 }
 
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────

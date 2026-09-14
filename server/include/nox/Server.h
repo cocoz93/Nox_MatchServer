@@ -1452,6 +1452,22 @@ public:
         if (it != sessions_.end()) it->second.snapshotIn = 0;
     }
 
+    // ★ 시험용 — 실제 자리(`posX`/`posY`)와 그것을 통째로 옮기기.
+    //   `DebugMoveTo` 는 `x`/`y` 만 넣고 틱이 옮긴다 — 이쪽은 **둘 다** 넣는다
+    double DebugPosX(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.posX; }
+    double DebugPosY(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.posY; }
+    double DebugDistance(const std::string& p, const std::string& q) const {
+        const double dx = DebugPosX(p) - DebugPosX(q), dy = DebugPosY(p) - DebugPosY(q);
+        return std::sqrt(dx * dx + dy * dy);
+    }
+    void DebugSetPos(const std::string& a, double px, double py) {
+        auto i = sessions_.find(a);
+        if (i == sessions_.end()) return;
+        i->second.posX = px; i->second.posY = py;
+        i->second.x = static_cast<int>(px); i->second.y = static_cast<int>(py);
+        i->second.forceX = i->second.forceY = 0.0;
+    }
+
     // ★ 시험용 — 지금 자리. 벽 충돌 시험이 이걸로 잰다.
     int XOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -1830,6 +1846,11 @@ public:
     std::string DebugHarpoonTarget(const std::string& a) const {
         auto i = sessions_.find(a); return i == sessions_.end() ? std::string() : i->second.harpoonTarget.addr;
     }
+    // 작살 갱신만 따로 굴린다 — 움직임을 안 섞고 관문만 재려고
+    void DebugHarpoonUpdate(const std::string& a, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); if (i != sessions_.end()) HarpoonUpdate(i->second, out);
+    }
+    void DebugAdvanceFrame(uint32_t n) { frame_ += n; }
     void DebugHarpoonBreak(const std::string& a, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) HarpoonBreak(i->second, false, out);
     }
@@ -2608,6 +2629,8 @@ private:
     void HarpoonDo(Session& s, std::vector<OutPacket>& out);
     void HarpoonBreak(Session& s, bool emitSound, std::vector<OutPacket>& out);
     bool HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPacket>& out);
+    void HarpoonUpdate(Session& s, std::vector<OutPacket>& out);                 // 7-g
+    void HarpoonPull(const Session& owner, const Target& targ, float tx, float ty);
     void AbilityUpdate(Session& s, std::vector<OutPacket>& out);
     void AbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityCancelAll(Session& s, std::vector<OutPacket>& out);
