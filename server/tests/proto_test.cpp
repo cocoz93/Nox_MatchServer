@@ -5454,7 +5454,38 @@ void TestDrainMana() {
         ms += 34; srv.Tick(ms, out);
         Check(!srv.DebugDurActive(22, a), "시전자가 달리는데 안 끊겼다");
     }
-    std::printf("  4-b5b(3) — DrainMana 적 마나 빨기 광선 `9e 05` · 0.5/틱 이월 · 가득/맞음/움직임/대상없음/달리기면 끊김\n");
+
+    // ⑦ 곁에 **같은 편**만 있으면 못 빤다(적만 고른다) — 아군 마나는 그대로
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);                              // 같은 편 → 적이 아니다
+        srv.DebugManaSub(a, 60);
+        const uint16_t bMana = srv.ManaOf(b);
+        CastAndWait(srv, a, 22, false, ms, out);
+        for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(!srv.DebugDurActive(22, a), "같은 편만 곁에 있는데 안 끊겼다");
+        Check(srv.ManaOf(b) == bMana, "같은 편 마나를 빨았다");
+    }
+
+    // ⑧ 둘레(ManaDrainRange) 밖이면 못 빤다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugMoveTo(b, 1000 + 500, 1000);                // 둘레 300 밖
+        srv.DebugManaSub(a, 60);
+        const uint16_t bMana = srv.ManaOf(b);
+        CastAndWait(srv, a, 22, false, ms, out);
+        for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(!srv.DebugDurActive(22, a), "둘레 밖인데 안 끊겼다");
+        Check(srv.ManaOf(b) == bMana, "둘레 밖 사람의 마나를 빨았다");
+    }
+    std::printf("  4-b5b(3) — DrainMana 적 마나 빨기 광선 `9e 05` · 0.5/틱 이월 · 가득/맞음/움직임/대상없음/달리기/같은편/둘레밖\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
