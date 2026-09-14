@@ -1493,6 +1493,7 @@ public:
     }
     uint16_t DebugMissileType(size_t i) const { return i < missiles_.size() ? missiles_[i].type : 0; }
     float DebugMissileX(size_t i) const { return i < missiles_.size() ? missiles_[i].posX : 0.0f; }
+    uint16_t DebugMissileNetCode(size_t i) const { return i < missiles_.size() ? missiles_[i].netCode : 0; }
     void SetMagicType(uint16_t type, int speedRaw, float mass, uint32_t flags) {
         magicType_.type = type;
         magicType_.flags = flags;                         // thing FLAGS(맞힘 거르기 sub_54E730)
@@ -1902,6 +1903,9 @@ private:
         float posX = 0, posY = 0;        // +28 Pos
         Target field36;                  // +36 먼젓번 빔 대상 — 바뀌면 옛 빔을 끄고 새 빔을 켠다(마나 빨기 52E210)
         Target target;                   // +48 Target48(sa.Obj)
+        // ★ 연쇄 번개 하위 조각의 **시작 쪽**(+16 Caster16 이 유닛인 경우). 사람이 아닐 수도 있어 Target 으로 둔다.
+        //   비어 있으면 `caster`(사람 주소)를 쓴다.
+        Target fromUnit;
         float pos2X = 0, pos2Y = 0;      // +52 Pos2(sa.Pos)
         uint32_t frame60 = 0;            // +60 만든 프레임
         uint32_t frame64 = 0;            // +64
@@ -1971,6 +1975,12 @@ private:
     Target EnergyBoltSearch(const Session& caster, float range) const;                                   // spellEnergyBoltSetTarget_52EC60
     int DurEnergyBoltCreate(DurSpell& d, std::vector<OutPacket>& out);                                   // spellEnergyBoltStop_52E820
     int DurEnergyBoltTick(DurSpell& d, std::vector<OutPacket>& out);                                     // spellEnergyBoltTick_52E850
+    // lightningCanAttackCheck_52FF10 — `from` 자리에서 둘레 안 **가장 가까운 적**. 이미 고른 것(`taken`)은 건너뛴다.
+    //   ⚠ 에너지볼트와 달리 **앞쪽만 보는 검사가 없다** — 아무 쪽이나 걸린다.
+    Target LightningSearch(const Session& owner, const Target& from, float range,
+                           const std::vector<Target>& taken) const;
+    int DurChainLightningCreate(DurSpell& d, std::vector<OutPacket>& out);                               // onStartLightning_52F820
+    int DurChainLightningTick(DurSpell& d, std::vector<OutPacket>& out);                                 // onFrameLightning_52F8A0
     void SpawnCreature(uint16_t type, float x, float y, const std::string& owner);                       // newObjectWithTypeInd + createAt
     void PlacedCollide(PlacedObj& o, std::vector<OutPacket>& out);                                       // 놓인 것의 닿음 함수(피해·마나 빨기)
     // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.

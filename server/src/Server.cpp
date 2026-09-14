@@ -4543,6 +4543,13 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
                 break;
             }
+            case 43: {                                                                         // ChainLightning — 지속(사슬 번개) · dt 30
+                DurFns f;
+                f.create = &Server::DurChainLightningCreate;
+                f.update = &Server::DurChainLightningTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 30, out) ? 1 : 0;
+                break;
+            }
             case 24: {                                                                         // EnergyBolt — 지속(전기 광선) · dt 30
                 DurFns f;
                 f.create = &Server::DurEnergyBoltCreate;
@@ -4822,7 +4829,9 @@ void Server::NetStartRaySpell(const DurSpell& d, std::vector<OutPacket>& out) {
     auto c = sessions_.find(d.caster);
     if (d.caster.empty() || c == sessions_.end() || !c->second.inGame) return;
     uint8_t typ = 0, val = static_cast<uint8_t>(d.level);
-    uint16_t n1 = c->second.netCode, n2 = UnitNetCode(d.target);
+    // 하위 조각(연쇄 번개)은 **시작 쪽이 사람이 아닐 수도** 있다 — fromUnit 이 있으면 그쪽 번호를 쓴다
+    uint16_t n1 = d.fromUnit.none() ? c->second.netCode : UnitNetCode(d.fromUnit);
+    uint16_t n2 = UnitNetCode(d.target);
     switch (d.spell) {
         case 43:
             for (const auto& sub : d.sub108) NetStartRaySpell(sub, out);
@@ -5074,6 +5083,135 @@ int Server::DurEnergyBoltTick(DurSpell& d, std::vector<OutPacket>& out) {
     PlayerManaSub(caster, 1);
     // ★ 정답지는 깎은 **뒤에 「이전 마나」**(`unitGetOldMana_4EEC80` = +6)를 본다 —
     //   즉 **이미 0 이던 틱**에 끊긴다(그 틱의 피해는 이미 들어간 뒤다).
+    if (caster.manaPrev == 0) return 1;
+    return 0;
+}
+
+// ── 묶음 4-d(2) 연쇄 번개(43) ──────────────────────────────────────────
+//
+// lightningCanAttackCheck_52FF10(`GAME4_3.c:389`) — `from` 둘레에서 **가장 가까운** 하나.
+//   거른다: 주인의 적이 아닌 것 · 죽음·부서짐 · `from` 자신 · 주인 자신 · **이미 고른 것** ·
+//   상호작용 못 하는 것(CanInteract). ⚠ 에너지볼트와 달리 **앞쪽 검사가 없다**.
+Target Server::LightningSearch(const Session& owner, const Target& from, float range,
+                               const std::vector<Target>& taken) const {
+    float fx = 0, fy = 0;
+    if (!TargetXY(from, fx, fy)) return Target{};
+    const float range2 = range * range;
+    float best = range2;
+    Target found;
+    auto already = [&](const Target& t) {
+        for (const auto& k : taken) if (k.addr == t.addr && k.pet == t.pet) return true;
+        return false;
+    };
+    auto consider = [&](const Target& t, float tx, float ty) {
+        if (t.addr == from.addr && t.pet == from.pet) return;
+        if (!t.addr.empty() && t.addr == owner.addr) return;
+        if (already(t)) return;
+        if (!CanInteract(owner, t)) return;
+        const float dx = tx - fx, dy = ty - fy;
+        const float d2 = dx * dx + dy * dy;
+        if (d2 >= best) return;
+        best = d2;
+        found = t;
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.respawnAtFrame != 0) continue;
+        if (!IsEnemyTo(owner, o)) continue;
+        consider(Target{ o.addr, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY));
+    }
+    for (size_t k = 0; k < pets_.size(); ++k) {
+        const Creature& cr = pets_[k];
+        if (cr.health == 0) continue;
+        if (!OwnersEnemy(owner.addr, false, cr.owner, cr.owner.empty())) continue;
+        consider(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(cr.x), static_cast<float>(cr.y));
+    }
+    return found;
+}
+
+// onStartLightning_52F820(`GAME4_2.c:11660`) — 켤 때 **에너지볼트(24)를 끄고** 소수 이월을 0 으로. 0 = 살려 둔다
+//   ⚠ 안 옮긴 갈래 — 든 물건이 **충전 지팡이**면 마나 대신 충전을 쓴다(아이템 묶음 5)
+int Server::DurChainLightningCreate(DurSpell& d, std::vector<OutPacket>& out) {
+    d.field72 = 0.0f;
+    if (!d.caster.empty()) DurCancelFor(24, d.caster, out);
+    return 0;
+}
+
+// onFrameLightning_52F8A0(`GAME4_3.c:71`) — 매 틱
+//   끊기는 자리: **달리기(8)** · **이전 마나 0** · 만든 뒤 2틱 넘겨 **맞음**
+//   사슬: 세기가 곧 **가지 수**(표 `0x587000+260380` 이 1~5 를 그대로 돌려준다).
+//     ① 첫 대상 = 시전자 둘레 `LightningRange`(240) 안 가장 가까운 적
+//     ② 세기>1 : 첫 대상 둘레 **×0.95** 에서 하나 더 · ③ 세기>2 : 첫 대상 둘레 **×0.90** 에서 하나 더
+//     ④ 세기>3 : **둘째**(②) 둘레 ×0.85 · ⑤ 세기>4 : **셋째**(③) 둘레 ×0.80
+//   빔 조각: (시전자→①) · (①→②) · (①→③) · (②나 ③→④) · (③이나 ②→⑤). 조각마다 `9e` 갈래 3
+//   피해: `LightningDamage`(아레나 1.5) + 소수 이월 · 종류 **17** · 조각마다 **같은 값**
+int Server::DurChainLightningTick(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (d.caster.empty() || c == sessions_.end() || !c->second.inGame) return 1;
+    Session& caster = c->second;
+    if (caster.buffs.Has(8)) return 1;                        // 달리면 끊긴다
+    if (caster.manaPrev == 0) return 1;                       // unitGetOldMana — 이미 0 이면 시작도 못 한다
+    if (frame_ - d.frame60 > 2 && TargetJustDamaged(Target{ d.caster, -1 })) return 1;
+    const float range = static_cast<float>(BalanceFloat("LightningRange"));
+
+    // 지난 틱의 조각을 옆으로 밀어 둔다(+104) — 새 조각(+108)과 대조해 빔을 갈아 단다
+    std::vector<DurSpell> prev;
+    prev.swap(d.sub108);
+
+    const int lvl = (d.level < 1) ? 1 : (d.level > 5 ? 5 : d.level);
+    std::vector<Target> t;                                    // 고른 차례대로
+    t.push_back(LightningSearch(caster, Target{ d.caster, -1 }, range, t));
+    if (t[0].none()) {                                        // 맞힐 것이 없다 — 옛 빔만 끄고 살려 둔다
+        for (const auto& sub : prev) if (!sub.target.none()) NetStopRaySpell(sub, sub.target, out);
+        return 0;
+    }
+    Target t1, t2, t3, t4;
+    if (lvl > 1) { t1 = LightningSearch(caster, t[0], range * 0.94999999f, t); if (!t1.none()) t.push_back(t1); }
+    if (lvl > 2) { t2 = LightningSearch(caster, t[0], range * 0.89999998f, t); if (!t2.none()) t.push_back(t2); }
+    if (lvl > 3 && !t1.none()) { t3 = LightningSearch(caster, t1, range * 0.85000002f, t); if (!t3.none()) t.push_back(t3); }
+    if (lvl > 4 && !t2.none()) { t4 = LightningSearch(caster, t2, range * 0.80000001f, t); if (!t4.none()) t.push_back(t4); }
+
+    // 새 조각 목록 — 정답지 `NewLightningSub(원본, 시작, 끝)` 순서 그대로
+    auto addLink = [&](const Target& from, const Target& to) {
+        DurSpell sub;
+        sub.spell = 7;                                        // SPELL_CHAIN_LIGHTNING_BOLT — 빔 갈래 3
+        sub.level = d.level;
+        sub.caster = d.caster;                                // 알림을 보낼 때 쓸 사람
+        sub.fromUnit = from;
+        sub.target = to;
+        d.sub108.push_back(sub);
+    };
+    addLink(Target{ d.caster, -1 }, t[0]);
+    if (lvl > 1 && !t1.none()) addLink(t[0], t1);
+    if (lvl > 2 && !t2.none()) addLink(t[0], t2);
+    if (lvl > 3 && !t3.none()) addLink(t1.none() ? t2 : t1, t3);
+    if (lvl > 4 && !t4.none()) addLink(t2.none() ? t1 : t2, t4);
+
+    const float v = d.field72 + static_cast<float>(BalanceFloat("LightningDamage"));
+    const int dmg = static_cast<int>(v);
+    d.field72 = v - static_cast<float>(dmg);                  // 소수 이월
+
+    // 자리마다 옛 조각과 견줘 **끝이나 시작이 달라졌으면** 옛 빔을 끄고 새 빔을 켠다
+    for (size_t i = 0; i < d.sub108.size(); ++i) {
+        DurSpell& sub = d.sub108[i];
+        if (i < prev.size()) {
+            const DurSpell& old = prev[i];
+            const bool same = (old.target.addr == sub.target.addr && old.target.pet == sub.target.pet)
+                           && (old.fromUnit.addr == sub.fromUnit.addr && old.fromUnit.pet == sub.fromUnit.pet);
+            if (!same) {
+                if (!old.target.none()) NetStopRaySpell(old, old.target, out);
+                NetStartRaySpell(sub, out);
+            }
+        } else {
+            NetStartRaySpell(sub, out);
+        }
+        if (dmg > 0) HurtTarget(sub.target, dmg, out, d.caster, 17, nullptr);
+    }
+    for (size_t i = d.sub108.size(); i < prev.size(); ++i)     // 남은 옛 빔은 끈다
+        if (!prev[i].target.none()) NetStopRaySpell(prev[i], prev[i].target, out);
+
+    PlayerSetState(caster, 10, frame_);
+    PlayerManaSub(caster, 1);
     if (caster.manaPrev == 0) return 1;
     return 0;
 }
@@ -6398,7 +6536,8 @@ void Server::NetStopRaySpell(const DurSpell& d, const Target& who, std::vector<O
     };
     if (who.none() || netOf(who) == 0) return;
     uint8_t typ = 0, val = 0;
-    uint16_t n1 = c->second.netCode, n2 = netOf(who);
+    uint16_t n1 = d.fromUnit.none() ? c->second.netCode : netOf(d.fromUnit);
+    uint16_t n2 = netOf(who);
     switch (d.spell) {
         case 43:                                             // 연쇄 번개 — 하위마다
             for (const auto& sub : d.sub108) NetStopRaySpell(sub, sub.target, out);
