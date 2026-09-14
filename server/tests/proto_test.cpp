@@ -11302,18 +11302,22 @@ void TestAIRandomWalk() {
 void TestAIFight() {
     const std::string a = "10.6.11.1:7101";
     const std::string b = "10.6.11.2:7102";
-    auto mk = [&](nox::Server& srv) {
+    auto mkT = [&](nox::Server& srv, uint16_t type) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1400, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugSpawnPet(type, 1000, 1000, a);
         std::vector<nox::OutPacket> o;
+        // ⚠ **두 번 틱을 돌린다** — `DebugMoveTo` 는 `x` 만 세우고 `posX` 는 움직임 틱이 맞춘다.
+        //   한 번만 돌리면 `TargetXY` 가 **옛 자리**를 준다
         srv.Tick(0, o);
+        srv.Tick(34, o);
         srv.DebugSetPetPos(0, 1000, 1000);
         srv.DebugSetPetSpeed(0, 4.0f);
         srv.DebugSetFrame(1000);
     };
+    auto mk = [&](nox::Server& srv) { mkT(srv, 1328); };      // 임프 — **근접이 없다**
 
     // ① **10초 넘게 소식이 없으면 빠진다**
     {
@@ -11332,15 +11336,45 @@ void TestAIFight() {
         Check(srv.DebugAIAction(0, 0) == 15, "딱 300틱인데 빠졌다 — 경계가 > 다");
     }
 
-    // ② **대상이 있으면 근접 공격(16)을 올리고 소식 때를 적는다**
+    // ② **대상이 있으면 「쫓아가 때리는 사슬」을 쌓고 소식 때를 적는다**(6-g(2b))
+    //   ★ 근접이 되는 몬스터(GiantLeech) — 아래→위로
+    //     60 새 적 없음 · 42 살아 있나 · 45 보이나 · **16 때리기** · 26 바라보기 ·
+    //     49 **근접 사거리보다 머나** · **7 가기**
+    //   맨 위가 가기고 그 아래가 49 다 — **멀면 다가가고, 닿으면 49 가 깨져 때리기가 드러난다**
+    {
+        nox::Server srv; mkT(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
+        Check(srv.DebugAIAction(0, 2) == 42, "살아 있나(42)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 3) == 45, "보이나(45)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 4) == 16, "근접 공격(16)이 안 올라갔다");
+        Check(srv.DebugAIAction(0, 5) == 26, "바라보기(26)가 안 올라갔다");
+        Check(srv.DebugAIAction(0, 6) == 49, "더 머나(49)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 7) == 7, "가기(7)가 맨 위에 안 왔다");
+        Check(std::fabs(srv.DebugAIArgF(0, 6) - 15.0f) < 0.01f, "49 의 자가 근접 사거리가 아니다");
+        Check(srv.DebugAIArgU32(0, 0) == 1000, "소식 때를 안 적었다");
+        // 조건들이 **그 적을 가리켜야** 한다 — 안 그러면 늘 참이 되어 사슬이 안 깨진다
+        Check(srv.DebugAITargetAddr(0, 1) == b, "60 이 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetAddr(0, 3) == b, "45 가 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetAddr(0, 6) == b, "49 가 그 적을 안 가리킨다");
+        Check(srv.DebugAIArgX(0, 7) == 1400.0f, "맨 위 가기가 적 자리를 안 받았다");
+    }
+    // ★ **근접이 없는 몬스터(임프)** — 때릴 수단이 없어 **일단 그 자리로만 간다**(`sub_531C10`)
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetEnemy(0, b, -1);
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
-        Check(srv.DebugAIAction(0, 1) == 16, "근접 공격(16)이 안 올라갔다");
-        Check(srv.DebugAIArgU32(0, 0) == 1000, "소식 때를 안 적었다");
+        Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
+        Check(srv.DebugAIAction(0, 2) == 42, "살아 있나(42)가 안 깔렸다");
+        Check(srv.DebugAIAction(0, 3) == 7, "가기(7)가 안 올라갔다");
+        Check(srv.DebugAIStackInd(0) == 3, "근접이 없는데 때리기 사슬을 쌓았다");
+        Check(srv.DebugAIArgX(0, 3) == 1400.0f, "가기가 적 자리를 안 받았다");
+        Check(srv.DebugAITargetAddr(0, 2) == b, "42 가 그 적을 안 가리킨다");
     }
 
     // ③ **대상이 사라졌으면 빠진다**

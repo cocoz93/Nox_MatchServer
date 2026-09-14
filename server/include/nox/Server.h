@@ -1681,6 +1681,9 @@ public:
     void DebugSetPetNextHit(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].nextHitFrame = f; }
     uint32_t DebugPetNextHit(size_t i) const { return i < pets_.size() ? pets_[i].nextHitFrame : 0; }
     uint32_t DebugPetAttackStart(size_t i) const { return i < pets_.size() ? pets_[i].attackStartFrame : 0; }
+    float DebugAIArgX(size_t i, int j) const {
+        return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argX : 0.0f;
+    }
     float DebugAIArgF(size_t i, int j) const {
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argF : 0.0f;
     }
@@ -2412,6 +2415,8 @@ private:
     // 묶음 6-f(3) — 한 틱: 길을 내고 그 속도로 자리를 옮긴다. 다 왔으면 참
     bool CreatureTickMove(Creature& k, double tx, double ty);
     // 묶음 6-f(5) — 아무 데나 걷기(29)
+    // 묶음 6-g(2b) — 때릴 수 있나를 보고 조건 사슬을 쌓는다
+    void MonsterPushAttack(Creature& k, const Target& foe, float fx, float fy);
     uint8_t AIRandomWalkDir(Creature& k);
     void AIRandomWalk(Creature& k);
     void AIPathResetIndex();

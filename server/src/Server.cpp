@@ -6351,6 +6351,69 @@ void Server::AIRandomWalk(Creature& k) {
     k.velY = k.speedCur * DirVecY(d);
 }
 
+// ── 묶음 6-g(2b) 때릴 거리를 정하고 사슬을 쌓는다 ─────────────────────
+//
+// ★★ 6-g(1) 에서 **싸움(15)이 근접(16)을 바로 올린다**고 적었는데 **틀렸다.**
+//   싸움은 `nox_xxx_TODOsomeCallingMeleeAttack_531B40`(`legacy/GAME4_3.c:1623`)을 부르고,
+//   그것이 **때릴 수 있나**를 보아 갈래를 고른다. 그리고 고른 갈래가
+//   `nox_xxx_monsterAction_531C60`(1679행) 으로 **조건과 행동을 한 줄로 쌓는다**.
+//
+// ⭕ 쌓이는 차례 (아래 → 위) — `monsterAction_531C60`
+//     60 새 적 없음 · 42 살아 있나 · [50 쏠 수 있으면 사거리×0.6 안인가] ·
+//     45 보이나 · **16 근접 공격** · **26 그쪽 바라보기** · 49 **근접 사거리보다 머나** ·
+//     [사람이면 65·40] · **7 그 자리로 가기**
+//   ★ 읽는 법 — 맨 위가 **가기(7)** 이고 그 아래 **49(더 머나)** 가 조건이다.
+//     즉 **근접 사거리보다 멀면 다가가고**, 닿으면 49 가 깨져 7 과 49 가 빠지며
+//     **26(바라보기) → 16(때리기)** 이 드러난다. **이 한 줄이 「쫓아가 때린다」다**
+//
+// ⭕ 갈래 고르기(`531B40`) — 몬스터 기준
+//     `monsterCanMelee_534220` = **근접 사거리(+112) > 0** · `monsterCanShoot_534280` = 몬스터표 **+148**
+//   ⚠ **쏠 수 있나(+148)는 아직 못 읽는다** — thing.bin 그 칸을 안 파싱했다. **거짓으로 둔다**.
+//     그래서 지금은 「근접이 되면 근접 사슬 · 아니면 `sub_531C10`」 두 갈래만 돈다
+//   ⚠ 원거리 갈래(`sub_531D50`)와 주문 갈래(`monsterCanCast_534300`)는 **6-g(3)**
+void Server::MonsterPushAttack(Creature& k, const Target& foe, float fx, float fy) {
+    const MonsterStats* m = FindMonster(k.type);
+    const double reach = (m && m->meleeRange > 0.0) ? m->meleeRange : 0.0;
+    const bool canMelee = reach > 0.0;
+    // ⚠ 쏠 수 있나는 못 읽는다 — 거짓으로 둔다(위 주석)
+    const bool canShoot = false;
+
+    auto push = [&](uint8_t act) {
+        if (!AIPush(k, act)) return -1;
+        k.aiStack[k.aiStackInd].targetAddr = foe.addr;
+        k.aiStack[k.aiStackInd].targetPet = foe.pet;
+        return k.aiStackInd;
+    };
+
+    if (!canMelee) {
+        // sub_531C10 — 때릴 수단이 없으면 **일단 그 자리로 간다**
+        push(60);                                            // 새 적 없음
+        push(42);                                            // 살아 있나
+        if (push(7) >= 0) {
+            k.aiStack[k.aiStackInd].argX = fx;
+            k.aiStack[k.aiStackInd].argY = fy;
+        }
+        return;
+    }
+    // monsterAction_531C60
+    push(60);
+    push(42);
+    if (canShoot) {                                          // (지금은 안 탄다)
+        const int i = push(50);
+        if (i >= 0) k.aiStack[i].argF = 0.0f;                // 사거리×0.6 — 쏘기 사거리를 못 읽는다
+    }
+    push(45);                                                // 보이나
+    AIPush(k, 16);                                           // 근접 공격 — 대상을 안 받는다(정답지도 그렇다)
+    push(26);                                                // 그쪽 바라보기
+    const int i49 = push(49);                                // **근접 사거리보다 머나**
+    if (i49 >= 0) k.aiStack[i49].argF = static_cast<float>(reach);
+    // ⚠ 사람이면 65(기력 기다림)·40(또는) 을 더 쌓는다 — 크리처에는 안 쌓는다
+    if (push(7) >= 0) {
+        k.aiStack[k.aiStackInd].argX = fx;
+        k.aiStack[k.aiStackInd].argY = fy;
+    }
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -6590,7 +6653,7 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 st.argU32 = frame_;                          // 소식이 있었다고 적는다
                 // ⚠ `checkIsKillable_528190` 은 **있나**로만 대신한다 — 온전한 조건은 뒤 조각
                 if (!TargetXY(foe, fx, fy)) { AIPop(k); break; }
-                AIPush(k, 16);                               // 근접 공격
+                MonsterPushAttack(k, foe, fx, fy);           // 6-g(2b) — 조건 사슬 + 가기(7)
                 break;
             }
             // 대상이 없다 — **마지막으로 본 자리**로 가 본다
