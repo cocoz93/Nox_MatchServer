@@ -18,6 +18,7 @@
 #include "nox/UpdateStream.h"
 #include "nox/SpellNames.h"
 #include "nox/Opcode.h"
+#include "nox/DirVectors.h"
 #include "nox/ThingDb.h"
 #include "nox/ThingFlags.h"
 #include "nox/NoxCrypt.h"
@@ -11157,9 +11158,9 @@ void TestAIMoveTo() {
         srv.DebugSetPetPos(0, srv.DebugPetPathPtX(0, n - 1), srv.DebugPetPathPtY(0, n - 1));
         srv.DebugAITick(0, out);
         const uint32_t t41 = srv.DebugAIArgU32(0, 1);         // 때(41) — 2~4초
-        Check(t41 >= 1000 + 60 && t41 < 1000 + 120, "때(41)가 2~4초 뒤가 아니다");
+        Check(t41 >= 1000 + 60 && t41 <= 1000 + 120, "때(41)가 2~4초 뒤가 아니다(양끝 포함)");
         const uint32_t t1 = srv.DebugAIArgU32(0, 3);          // 기다리기(1) — 0.5~1초
-        Check(t1 >= 1000 + 15 && t1 < 1000 + 30, "기다리기(1)가 0.5~1초 뒤가 아니다");
+        Check(t1 >= 1000 + 15 && t1 <= 1000 + 30, "기다리기(1)가 0.5~1초 뒤가 아니다(양끝 포함)");
     }
 
     // ⑧ **결과 1 이 5초 안에 두 번이면 막힌 것으로 본다**
@@ -11193,6 +11194,101 @@ void TestAIMoveTo() {
         Check(srv.DebugAIAction(0, 2) == 29, "5초 안에 두 번인데 걷기(29)가 안 올라갔다");
     }
     std::printf("  6-f(4) — 가기(7): 못 움직이면 뺌 · 닿으면 보고 뺌 · 막히면 때(41)+걷기(29) · 아니면 기다리기(1)\n");
+}
+
+// ── 묶음 6-f(5) — 아무 데나 걷기(29) ──────────────────────────────────
+//
+// 정답지 `legacy/GAME5.c:68` `nox_xxx_mobActionRandomWalk_545020` + `sub_545090`.
+// 가기(7)가 **막혔을 때** 올리는 행동이다 — 길을 못 내니 **조금씩 틀며 걷는다**.
+//   · 갈 쪽 = **지금 보는 쪽 ± 20**(`randomInt(-20, 20)` 은 양끝을 다 넣어 41가지)
+//   · 고른 쪽을 **보는 쪽·돌아가려는 쪽에 같이** 놓는다 — 8씩 도는 게 아니다
+//   · 속도 = 빠르기 × 그 쪽 단위 벡터. **길 찾기를 안 쓴다**
+//   · **스스로 안 빠진다** — 아래 깔린 때(41) 조건이 뺀다
+void TestAIRandomWalk() {
+    const std::string a = "10.6.10.1:7001";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetPetSpeed(0, 4.0f);
+        srv.DebugSetFrame(1000);
+    };
+
+    // ① **보는 쪽에서 ±20 안으로만 튼다** — 한 번에 확 꺾지 않는다
+    {
+        nox::Server srv; mk(srv);
+        int maxOff = 0;
+        bool moved = false;
+        for (int t = 0; t < 200; ++t) {
+            srv.DebugSetPetFacing(0, 100);                    // 늘 같은 자리에서 시작
+            srv.DebugAIRandomWalk(0);
+            int d = srv.DebugPetFacing(0) - 100;
+            if (d > 128) d -= 256;
+            if (d < -128) d += 256;
+            if (d != 0) moved = true;
+            maxOff = std::max(maxOff, std::abs(d));
+        }
+        Check(maxOff <= 20, "20 을 넘게 꺾었다");
+        Check(maxOff == 20, "±20 끝까지 안 갔다 — 양끝을 다 넣어야 한다");
+        Check(moved, "한 번도 안 틀었다");
+    }
+
+    // ② **보는 쪽과 돌아가려는 쪽을 같이 놓는다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetFacing(0, 0);
+        srv.DebugAIRandomWalk(0);
+        Check(srv.DebugPetFacing(0) == srv.DebugPetFacingWant(0), "보는 쪽과 돌아가려는 쪽이 갈렸다");
+    }
+
+    // ③ **속도 크기가 걷는 빠르기와 같다** — 단위 벡터에 빠르기를 곱한다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetSpeed(0, 7.0f);
+        srv.DebugAIRandomWalk(0);
+        const double v = std::sqrt(srv.DebugPetVelX(0) * srv.DebugPetVelX(0) +
+                                   srv.DebugPetVelY(0) * srv.DebugPetVelY(0));
+        Check(std::fabs(v - 7.0) < 0.01, "속도 크기가 걷는 빠르기와 다르다");
+    }
+
+    // ④ **속도가 고른 쪽을 가리킨다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetFacing(0, 64);                         // +y 쪽
+        srv.DebugAIRandomWalk(0);
+        const int d = srv.DebugPetFacing(0);
+        Check(std::fabs(srv.DebugPetVelX(0) - 4.0 * nox::DirVecX(d)) < 0.01, "속도 x 가 고른 쪽이 아니다");
+        Check(std::fabs(srv.DebugPetVelY(0) - 4.0 * nox::DirVecY(d)) < 0.01, "속도 y 가 고른 쪽이 아니다");
+    }
+
+    // ⑤ **행동 29 는 스스로 안 빠진다** — 아래 깔린 때(41)가 뺄 몫이다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPush(0, 29);
+        for (int t = 0; t < 10; ++t) srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 29, "아무 데나 걷기가 스스로 빠졌다");
+        Check(srv.DebugPetVelX(0) != 0 || srv.DebugPetVelY(0) != 0, "걷는데 속도가 안 섰다");
+    }
+
+    // ⑥ **여러 틱을 돌리면 방향이 흘러간다** — 같은 쪽에 붙어 있지 않다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetFacing(0, 0);
+        srv.DebugAIPush(0, 29);
+        int seen = 0;
+        for (int t = 0; t < 40; ++t) {
+            const int before = srv.DebugPetFacing(0);
+            srv.DebugAITick(0, out);
+            if (srv.DebugPetFacing(0) != before) ++seen;
+        }
+        Check(seen > 20, "틱을 돌려도 방향이 거의 안 바뀐다");
+    }
+    std::printf("  6-f(5) — 아무 데나 걷기: 보는 쪽 ±20 · 보는 쪽·돌 쪽 같이 · 빠르기×단위벡터 · 스스로 안 빠짐\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
@@ -13399,6 +13495,7 @@ int main() {
     TestCreatureSetPath();
     TestCreatureTickMove();
     TestAIMoveTo();
+    TestAIRandomWalk();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

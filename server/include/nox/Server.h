@@ -1670,6 +1670,7 @@ public:
     }
     void DebugSetPetSpeed(size_t i, float v) { if (i < pets_.size()) pets_[i].speedCur = v; }
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
+    void DebugAIRandomWalk(size_t i) { if (i < pets_.size()) AIRandomWalk(pets_[i]); }
     bool DebugCreatureTickMove(size_t i, double tx, double ty) {
         return i < pets_.size() ? CreatureTickMove(pets_[i], tx, ty) : false;
     }
@@ -2391,6 +2392,9 @@ private:
     int  CreatureSetMovePath(Creature& k, float tx, float ty);
     // 묶음 6-f(3) — 한 틱: 길을 내고 그 속도로 자리를 옮긴다. 다 왔으면 참
     bool CreatureTickMove(Creature& k, double tx, double ty);
+    // 묶음 6-f(5) — 아무 데나 걷기(29)
+    uint8_t AIRandomWalkDir(Creature& k);
+    void AIRandomWalk(Creature& k);
     void AIPathResetIndex();
     AIIndexNode* AIPathIndexAt(int x, int y);
     uint16_t AIPathFlagsAt(int x, int y);

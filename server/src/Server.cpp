@@ -6319,6 +6319,38 @@ bool Server::CreatureTickMove(Creature& k, double tx, double ty) {
     return false;
 }
 
+// ── 묶음 6-f(5) 아무 데나 걷기(29) ────────────────────────────────────
+//
+// 정답지 `legacy/GAME5.c:68` `nox_xxx_mobActionRandomWalk_545020` + `sub_545090`.
+// 가기(7)가 **막혔을 때** 올리는 행동이다 — 길을 못 내니 **아무 쪽으로나 조금씩 틀며 걷는다**.
+//
+// ⭕ 갈 쪽 고르기(`sub_545090`)
+//   · **지금 보는 쪽에 ±20 을 더한다** — 한 번에 확 꺾지 않고 **조금씩** 튼다.
+//     `randomInt(-20, 20)` 은 **양끝을 다 넣으므로** 41가지다
+//   · 0~255 로 감싼다(정답지의 두 줄짜리 감싸기는 `& 0xFF` 과 같다)
+//
+// ⭕ 걷기(`545020`)
+//   · 고른 쪽을 **보는 쪽·돌아가려는 쪽에 같이** 놓는다 — ★ 8씩 도는 게 아니라 **곧바로** 튼다
+//   · 속도 = 빠르기 × 그 쪽의 단위 벡터. **길 찾기를 안 쓴다**
+//
+// ⚠ 안 옮긴 갈래 둘
+//   · **물칸(타일 6)을 만나면 90° 꺾기** — 타일 자료가 없다(6-e(2b) 의 `sub_50C830` 과 같은 자리)
+//   · 깃발 0x400 이 있으면 그 물칸 검사를 통째로 건너뛴다 · 깃발 0x4000 의 속도 배율은 6-g
+//   · `monsterMoveAudio` 는 소리라 안 옮긴다
+
+uint8_t Server::AIRandomWalkDir(Creature& k) {
+    const int jitter = static_cast<int>(NextRandom(41)) - 20;   // randomInt(-20, 20)
+    return static_cast<uint8_t>((static_cast<int>(k.facing) + jitter) & 0xFF);
+}
+
+void Server::AIRandomWalk(Creature& k) {
+    const uint8_t d = AIRandomWalkDir(k);
+    k.facing = d;
+    k.facingWant = d;                                          // ★ 둘을 같이 놓는다
+    k.velX = k.speedCur * DirVecX(d);
+    k.velY = k.speedCur * DirVecY(d);
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -6500,14 +6532,19 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             if (stuck) {
                 const int idx = AIPush(k, 41) ? k.aiStackInd : -1;
                 if (idx >= 0)
-                    k.aiStack[idx].argU32 = frame_ + 2 * 30 + NextRandom(2 * 30);
+                    // `randomInt(2*FPS, 4*FPS)` — ★ **양끝을 다 넣는다**(`IntClamp`).
+                    //   60~120 이니 값이 **61가지**다
+                    k.aiStack[idx].argU32 = frame_ + 60 + NextRandom(61);
                 AIPush(k, 29);
             }
             // ⑤ 결과가 0 이 아니면 **잠깐 기다린다**(0.5~1초)
             AIPush(k, 1);
-            k.aiStack[k.aiStackInd].argU32 = frame_ + 15 + NextRandom(15);
+            k.aiStack[k.aiStackInd].argU32 = frame_ + 15 + NextRandom(16);   // randomInt(FPS/2, FPS) = 15~30
             break;
         }
+        case 29:     // 아무 데나 걷기 — 6-f(5). **스스로 안 빠진다**(아래 깔린 때(41) 조건이 뺀다)
+            AIRandomWalk(k);
+            break;
         default: break;   // 12·13 은 아무 일도 안 한다 · 나머지는 아직 안 옮겼다
     }
 }
