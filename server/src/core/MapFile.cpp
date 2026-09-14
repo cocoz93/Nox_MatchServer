@@ -104,6 +104,67 @@ bool MapFile::Load(const std::string& path) {
 //   맞춰 읽으니 이미 경계면 채움 0 이다. 옛 규칙은 estate 161번째(ColorLight 가 딱 경계에서 끝남)에서 크기를 잘못 읽고
 //   **「object overrun」으로 조용히 멈췄다** — 오브젝트 640개 중 161개만 읽혀 PlayerStart 14개가 통째로 빠졌다.
 //   고친 규칙으로 640개가 섹션 끝 바이트에서 정확히 끝난다(`_evidence` 없이 scratchpad p31/mapobjs.py 로 전수 확인).
+// WayPoints 구역 — 정답지 `nox_server_mapRWWaypoints_506260`(GAME4.c) 그대로 읽는다.
+//   ⚠ `flags2` 는 **파일에 없다.** 오가는 이음깃발을 전부 OR 해서 만든다(`Sub_579A30`).
+std::vector<MapWaypoint> MapFile::ReadWaypoints() {
+    std::vector<MapWaypoint> out;
+    const MapSection* sec = Find("WayPoints");
+    if (!sec) return out;
+    const uint8_t* p = buf_.data() + sec->offset;
+    size_t off = 0;
+    const size_t n = sec->size;
+    bool bad = false;
+    auto need = [&](size_t k) { if (off + k > n) { bad = true; return false; } return true; };
+    auto u8v  = [&]() -> uint8_t  { if (!need(1)) return 0; return p[off++]; };
+    auto u16v = [&]() -> uint16_t { if (!need(2)) return 0; uint16_t v = static_cast<uint16_t>(p[off] | (p[off + 1] << 8)); off += 2; return v; };
+    auto u32v = [&]() -> uint32_t {
+        if (!need(4)) return 0;
+        uint32_t v = static_cast<uint32_t>(p[off]) | (static_cast<uint32_t>(p[off + 1]) << 8)
+                   | (static_cast<uint32_t>(p[off + 2]) << 16) | (static_cast<uint32_t>(p[off + 3]) << 24);
+        off += 4;
+        return v;
+    };
+    auto f32v = [&]() -> float { const uint32_t b = u32v(); float f; std::memcpy(&f, &b, 4); return f; };
+
+    const uint16_t vers = u16v();
+    if (bad || vers > 4) { error_ = "waypoint vers " + std::to_string(vers); return out; }
+    const uint32_t cnt = u32v();
+    if (bad) return out;
+    // 이음은 뒤에서 OR 해야 하니 한 번 담아 둔다
+    struct Link { uint32_t from; uint32_t to; uint8_t flag; };
+    std::vector<Link> links;
+    for (uint32_t i = 0; i < cnt && !bad; ++i) {
+        MapWaypoint w;
+        w.id = u32v();
+        if (vers < 4) { w.x = static_cast<float>(u32v()); w.y = static_cast<float>(u32v()); }
+        else          { w.x = f32v(); w.y = f32v(); }
+        if (vers >= 3) {                                     // 이름 — 서버는 안 쓴다
+            const uint8_t len = u8v();
+            if (!need(len)) break;
+            off += len;
+        }
+        w.flags = u32v();
+        const uint32_t nlink = (vers < 4) ? u32v() : u8v();
+        for (uint32_t k = 0; k < nlink && !bad; ++k) {
+            Link l;
+            l.from = w.id;
+            l.to = u32v();
+            l.flag = (vers >= 2) ? u8v() : static_cast<uint8_t>(2);
+            links.push_back(l);
+        }
+        if (bad) break;
+        out.push_back(w);
+    }
+    if (bad) { error_ = "waypoint underrun"; out.clear(); return out; }
+    // Sub_579A30 — 오가는 이음깃발을 전부 OR
+    for (const auto& l : links) {
+        for (auto& w : out) {
+            if (w.id == l.from || w.id == l.to) w.flags2 = static_cast<uint8_t>(w.flags2 | l.flag);
+        }
+    }
+    return out;
+}
+
 std::vector<MapObject> MapFile::ReadObjects() {
     std::vector<MapObject> out;
     const MapSection* toc = Find("ObjectTOC");

@@ -22,6 +22,24 @@ struct MapSection {
     size_t size = 0;
 };
 
+// 길목(WayPoint) 하나 — 점멸·순간이동이 「어디로 보낼까」를 여기서 고른다.
+//
+// 형식(정답지 `nox_server_mapRWWaypoints_506260` · GAME4.c) —
+//   u16 판 (≤ 4) · u32 개수 · 개수만큼 {
+//     u32 번호 · 판<4 면 u32 x·y, 아니면 **f32 x·y**
+//     판≥3 이면 u8 이름길이 + 이름
+//     u32 깃발 · 판<4 면 u32 이음수, 아니면 **u8 이음수**
+//     이음수만큼 { u32 상대번호 · 판≥2 면 u8 이음깃발(아니면 2) }
+//   }
+// ★ `flags2` 는 파일에 없다 — **오가는 이음깃발을 전부 OR** 한 값이다(`Sub_579A30`).
+//   점멸은 `flags2 & 0x80` 이고 `flags & 1` 인 길목만 고른다.
+struct MapWaypoint {
+    uint32_t id = 0;
+    float x = 0, y = 0;
+    uint32_t flags = 0;
+    uint8_t flags2 = 0;   // 오가는 이음깃발의 OR
+};
+
 // 맵에 놓인 오브젝트 하나 — 서버가 세계를 세우는 데 필요한 것만.
 //
 // ★ 항목의 짐(xfer)은 종류마다 다르지만 **머리 다섯은 공통**이다
@@ -55,6 +73,8 @@ public:
     // ObjectTOC + ObjectData 를 뜯어 맵의 오브젝트 목록을 돌려준다.
     // 실패면 빈 목록 — Error() 에 까닭.
     std::vector<MapObject> ReadObjects();
+    // WayPoints 구역을 읽는다. 없거나 판이 4 를 넘으면 빈 목록.
+    std::vector<MapWaypoint> ReadWaypoints();
 
     // ★ 진단 — 첫 항목 몇 개의 짐(원바이트)을 찍는다. 짐 머리 해석이 틀렸을 때
     //   **원바이트를 보고서** 자리표를 다시 잡는 용도다(2026-09-10 좌표 깨짐).

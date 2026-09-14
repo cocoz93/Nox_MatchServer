@@ -7512,6 +7512,101 @@ void TestShieldSpell() {
     std::printf("  4-d(4) — 방패 버프 26·피해 반감·주머니 소진·죽을 만큼이면 체력 2·독은 안 막음\n");
 }
 
+// ── 묶음 4-e(1) — 점멸(Blink 4) ───────────────────────────────────────
+//
+// 지속 주문이되 **한 박자 뒤 한 번** 옮기고 끝난다.
+//   · `spellBlink2_530310`(켤 때) — 협동이면 `TeleportDelay[세기-1]`(25·20·15·10·5) 틱 뒤,
+//     아니면 **다음 틱**에 터지도록 `+68` 을 잡는다. ⚠ 팀 모드에서 **글리프가 건 것**이면 아예 안 걸린다
+//   · `spellBlink1_530380`(매 틱) — 그 프레임이 아니면 그냥 이어 가고, 되면 옮기고 **끝낸다**
+//     대상이 없거나 죽었으면 취소 · **닻(버프 14)** 이면 못 옮긴 채 끝난다
+//   · 자리 = 맵 **길목** 가운데 무작위 하나 · 없으면 **시작 지점**
+void TestBlink() {
+    const std::string a = "10.9.15.1:9151";
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("TeleportDelay = 25, 20, 15, 10, 5;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(4, 0, 0x1000000, { 1, 2 });          // 어느 직업이나 · 겨누지 않음
+        srv.DebugEnterGame(a, 860, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+
+    // ① 길목이 있으면 그중 한 곳으로 옮겨진다
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWaypoints({ { 3000.0f, 3000.0f } });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 4, /*onSelf=*/true, ms, out);
+        ms += 34; srv.Tick(ms, out);                         // 다음 틱에 터진다
+        Check(srv.XOf(a) > 2900 && srv.XOf(a) < 3100, "길목으로 안 옮겨졌다");
+        Check(srv.DurCount() == 0, "옮기고도 주문이 안 끝났다");
+    }
+
+    // ② 길목이 없으면 **시작 지점**으로 간다
+    {
+        nox::Server srv; mk(srv);
+        srv.SetPlayerStarts({ { 2500.0f, 2500.0f } });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 4, true, ms, out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.XOf(a) > 2400 && srv.XOf(a) < 2600, "길목이 없는데 시작 지점으로 안 갔다");
+    }
+
+    // ③ **닻(버프 14)** 이면 못 옮긴다
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWaypoints({ { 3000.0f, 3000.0f } });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugApplyEnchant(a, 14, 300, 3);                // 닻
+        CastAndWait(srv, a, 4, true, ms, out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.XOf(a) > 900 && srv.XOf(a) < 1100, "닻이 걸렸는데 옮겨졌다");
+        Check(srv.DurCount() == 0, "닻이면 그 자리에서 끝나야 한다");
+    }
+
+    // ④ ★ **아레나에서는 시전이 끝나는 그 틱에 바로 옮긴다.**
+    //   켤 때 `+68 = 지금 + 1` 을 잡고, 같은 틱의 갱신이 `+68 − 1 == 지금` 을 보고 곧바로 터뜨린다.
+    //   ⚠ `TeleportDelay`(25·20·15·10·5)는 **협동 모드에서만** 걸린다 — 여기서는 못 본다(미결)
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWaypoints({ { 3000.0f, 3000.0f } });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 4, true, ms, out);
+        Check(srv.XOf(a) > 2900 && srv.XOf(a) < 3100, "아레나인데 시전이 끝나는 틱에 안 옮겨졌다");
+        // ⚠ 취소는 **깃발만** 세운다 — 실제로 지우는 것은 다음 틱이다(①이 그 자리를 본다)
+    }
+
+    // ⑤ 옮길 때 **점 효과(`89`)** 가 두 번 나간다 — 떠난 자리와 닿은 자리
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWaypoints({ { 1200.0f, 1000.0f } });          // 화면 안이라 둘 다 받는다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        out.clear();
+        CastAndWait(srv, a, 4, true, ms, out);            // ⚠ 효과는 **시전이 끝나는 그 틱**에 나간다
+        int fx = 0;
+        for (const auto& m : FlattenTo(out, a))
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::FX_TELEPORT)) ++fx;
+        if (fx != 2) std::printf("  [점멸] 점 효과 %d번 — 두 번이어야 한다\n", fx);
+        Check(fx == 2, "점멸 점 효과가 두 번 안 나갔다");
+    }
+    std::printf("  4-e(1) — 점멸 길목/시작지점·닻이면 못 감·한 박자 뒤·점 효과 두 번\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -9626,6 +9721,7 @@ int main() {
     TestChainLightning();
     TestDeathRay();
     TestShieldSpell();
+    TestBlink();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

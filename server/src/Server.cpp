@@ -4488,6 +4488,13 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 30, out) ? 1 : 0;
                 break;
             }
+            case 4: {                                                                          // Blink — 지속(한 박자 뒤 자리 옮김)
+                DurFns f;
+                f.create = &Server::DurBlinkCreate;
+                f.update = &Server::DurBlinkTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
+                break;
+            }
             case 51: {                                                                         // Shield — 지속(마법 방패 26)
                 DurFns f;
                 f.create = &Server::DurShieldCreate;
@@ -5272,6 +5279,73 @@ void Server::ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const 
         dmg = 0;
     }
     ShieldDrain(t, 999999, out);
+}
+
+// ── 묶음 4-e(1) 점멸(Blink 4) ──────────────────────────────────────────
+//
+// teleportToMB_4E7190 — 그 자리로 옮긴다. 우리 서버는 물리 자리(posX)와 옛 자리칸(x)을 **둘 다** 맞춰야 한다.
+void Server::TeleportTarget(const Target& t, float x, float y) {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        if (it == sessions_.end()) return;
+        Session& o = it->second;
+        o.posX = x; o.posY = y;
+        o.x = static_cast<int>(x); o.y = static_cast<int>(y);
+        o.velX = o.velY = 0.0;                               // 옮기면 속도는 죽는다
+        return;
+    }
+    if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return;
+    pets_[static_cast<size_t>(t.pet)].x = x;
+    pets_[static_cast<size_t>(t.pet)].y = y;
+}
+
+// spellBlink2_530310(`GAME4_3.c:600`) — 켤 때 **언제 터질지**만 정한다.
+//   협동(2048)이면 `TeleportDelay[세기-1]`(25·20·15·10·5) 틱 뒤, 아니면 **다음 틱**.
+//   ⚠ 팀 모드(4096)에서 **글리프가 건 것**이면 아예 안 걸린다.
+int Server::DurBlinkCreate(DurSpell& d, std::vector<OutPacket>& out) {
+    (void)out;
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    if (!quest && d.flag20) return 1;                        // 팀 모드 + 글리프 → 취소
+    if (quest) d.frame68 = frame_ + static_cast<uint32_t>(BalanceFloatInd("TeleportDelay", d.level - 1));
+    else       d.frame68 = frame_ + 1;
+    return 0;
+}
+
+// spellBlink1_530380(`GAME4_3.c:620`) — 정해 둔 프레임이 되면 **한 번** 옮기고 끝난다.
+//   · 대상이 없거나 죽었으면 취소 · 아직이면 그냥 이어 간다
+//   · **닻(버프 14)** 이 걸려 있으면 소리 231 을 내고 못 옮긴 채 끝난다
+//   · 자리 = 맵 **길목** 가운데 무작위 하나(`waypoint_579F00`) · 없으면 **시작 지점**
+//   · 옮기기 전후로 점 효과 137
+int Server::DurBlinkTick(DurSpell& d, std::vector<OutPacket>& out) {
+    if (d.target.none()) return 1;
+    if (TargetHealth(d.target) <= 0) return 1;
+    if (d.frame68 - 1 != frame_) return 0;                   // 아직 때가 아니다
+    if (const Buffs* b = BuffsOf(d.target)) {
+        if (b->Has(14)) return 1;                            // 닻 — 소리 231(10)
+    }
+    float tx = 0, ty = 0;
+    if (!waypoints_.empty()) {
+        const auto& w = waypoints_[NextRandom(static_cast<uint32_t>(waypoints_.size()))];
+        tx = w.first; ty = w.second;
+    } else if (!playerStarts_.empty()) {                     // mapFindPlayerStart_4F7AB0
+        const auto& ps = playerStarts_[NextRandom(static_cast<uint32_t>(playerStarts_.size()))];
+        tx = ps.first; ty = ps.second;
+    } else {
+        return 1;                                            // 갈 데가 없다
+    }
+    float ox = 0, oy = 0;
+    TargetXY(d.target, ox, oy);
+    auto pointFx = [&](float px, float py) {              // netSendPointFx_522FF0
+        const uint16_t ix = static_cast<uint16_t>(static_cast<int>(px)), iy = static_cast<uint16_t>(static_cast<int>(py));
+        const uint8_t msg[5] = { static_cast<uint8_t>(Op::FX_TELEPORT),
+                                 static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                 static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+        SendFxAllCli(px, py, msg, sizeof(msg), out);
+    };
+    pointFx(ox, oy);
+    TeleportTarget(d.target, tx, ty);
+    pointFx(tx, ty);
+    return 1;                                                // 한 번 옮기면 끝
 }
 
 // ── 묶음 4-c1 밀기·당기기·땅흔들기 ─────────────────────────────────────

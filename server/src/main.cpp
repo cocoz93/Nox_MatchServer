@@ -453,6 +453,15 @@ int main(int argc, char** argv) {
                 std::printf("[부활 자리] PlayerStart %zu곳\n", starts.size());
                 srv.SetPlayerStarts(std::move(starts));
             }
+            // ★ 4-e — 맵 길목(WayPoints). 점멸이 여기서 목적지를 고른다.
+            //   `flags2 & 0x80`(오가는 이음이 있음) 이고 `flags & 1`(켜짐)인 것만.
+            {
+                std::vector<std::pair<float, float>> wps;
+                for (const auto& w : mf.ReadWaypoints())
+                    if ((w.flags2 & 0x80) && (w.flags & 1)) wps.push_back({ w.x, w.y });
+                std::printf("[길목] 점멸이 고를 수 있는 곳 %zu곳\n", wps.size());
+                srv.SetWaypoints(std::move(wps));
+            }
             for (size_t i = 0; i < objs.size(); ++i) {
                 const uint16_t wire = tdb.WireByName(objs[i].type);
                 const nox::ThingInfo* ti = wire ? tdb.ByWire(wire) : nullptr;

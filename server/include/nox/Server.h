@@ -903,6 +903,9 @@ public:
     void SetDebugHurtEvery(uint32_t ticks, bool front = false) { debugHurtEvery_ = ticks; debugHurtFront_ = front; }
     // ★ 묶음 3-c — 맵의 PlayerStart 자리(부활 자리 고르기 mapFindPlayerStart_4F7AB0). main.cpp 가 맵 오브젝트에서 채운다.
     void SetPlayerStarts(std::vector<std::pair<float, float>> v) { playerStarts_ = std::move(v); }
+    // ★ 맵 길목 — 점멸이 여기서 목적지를 고른다(`waypoint_579F00`). 비었으면 시작 지점으로 되돌아간다.
+    void SetWaypoints(std::vector<std::pair<float, float>> v) { waypoints_ = std::move(v); }
+    size_t WaypointCount() const { return waypoints_.size(); }
     size_t PlayerStartCount() const { return playerStarts_.size(); }
     // 자동 부활 서버 설정(nox_server_doPlayersAutoRespawn_40A5F0 · 0x5D4594+3584). 정답지 기본 0 — 클릭해야 살아난다.
     void SetAutoRespawn(bool on) { autoRespawn_ = on; }
@@ -1938,6 +1941,10 @@ private:
     int CastArachnaphobia(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);            // spellArachna_52DC80
     int CastPixieSwarm(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out);            // castPixies_540440
     int CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);                // castDeathRay(spell_death_ray.go:19)
+    int DurBlinkCreate(DurSpell& d, std::vector<OutPacket>& out);                                      // spellBlink2_530310
+    int DurBlinkTick(DurSpell& d, std::vector<OutPacket>& out);                                        // spellBlink1_530380
+    // teleportToMB_4E7190 — 그 자리로 옮긴다(물리 자리·옛 자리칸 둘 다).
+    void TeleportTarget(const Target& t, float x, float y);
     int DurShieldCreate(DurSpell& d, std::vector<OutPacket>& out);                                     // castShield1_52F5A0
     int DurShieldTick(DurSpell& d, std::vector<OutPacket>& out);                                       // sub_52F650
     void DurShieldDestroy(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_52F670
@@ -2262,7 +2269,8 @@ private:
     bool debugEnchantDone_ = false;
     uint32_t debugHurtEvery_ = 0;      // 진단 --debug-hurt-every (0 끔)
     bool debugHurtFront_ = false;      // 진단 --debug-hurt-front — 앞 30 에서 때린 것으로
-    std::vector<std::pair<float, float>> playerStarts_;   // 묶음 3-c PlayerStart 자리
+    std::vector<std::pair<float, float>> playerStarts_;
+    std::vector<std::pair<float, float>> waypoints_;   // 맵 길목(점멸 목적지)   // 묶음 3-c PlayerStart 자리
     bool autoRespawn_ = false;         // 묶음 3-c 자동 부활(정답지 기본 꺼짐)
     SpellDef spellDefs_[137];                      // 묶음 4-a 주문 정의
     std::vector<PhonemeNode> phonemeTree_ = std::vector<PhonemeNode>(1);   // [0] = 뿌리
