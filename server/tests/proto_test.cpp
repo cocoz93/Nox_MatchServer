@@ -6880,6 +6880,110 @@ void TestArachnaphobia() {
     std::printf("  4-c4(4) — 거미공포 자리표·1~5틱마다 거미·자리표 자리에 나옴·3초 수명·벽 뒤 못 놓음\n");
 }
 
+// ── 묶음 4-c4(5) — 픽시떼(PixieSwarm) ─────────────────────────────────
+//
+// `castPixies_540440` — 시전자 둘레에 픽시를 `PixieCount[세기-1]`(2·3·4·5·6) **마리까지 채운다**.
+//   이미 제 픽시가 그만큼 있으면 아무것도 안 만든다. 자리 = 시전자 + (몸 10 + 4) × 무작위 방향,
+//   선 추적(5)이 막히면 그 마리는 거른다. 수명 = 무작위(30, 90)초.
+// `collidePixie_4EA080` — **적에게만** 닿음 인자(8)만큼 피해(종류 11 충격)를 주고 제가 사라진다.
+// ⚠ 날아다니는 AI(`updatePixie_53CD20` — 적 찾기·떼 짓기·주인 따라가기·되돌아오기)는 **아직 없다**.
+//   유닛 움직임 묶음(6·7)이다. 여기 시험은 **나오는 것·수를 채우는 것·수명**까지만 본다.
+void TestPixieSwarm() {
+    const std::string a = "10.9.10.1:9011";
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("PixieCount = 2, 3, 4, 5, 6;\n");
+        srv.SetGamedata(g);
+        srv.SetNamedType("Pixie", 672);
+        srv.SetSpellDef(58, 10, 0x1000000, { 1, 2 });        // 어느 직업이나 · 겨누지 않음
+        srv.DebugEnterGame(a, 810, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+
+    // ① 온라인 세기 3 → **네 마리**가 나온다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        if (srv.missiles() != 4) std::printf("  [픽시] 나온 수 %zu — 세기 3 이면 4 여야 한다\n", srv.missiles());
+        Check(srv.missiles() == 4, "픽시가 PixieCount[세기-1] 만큼 안 나왔다");
+        Check(srv.DebugMissileType(0) == 672, "픽시 종류가 672 가 아니다");
+    }
+
+    // ② **채우기**다 — 이미 있으면 더 안 만든다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        const size_t n0 = srv.missiles();
+        Check(n0 == 4, "첫 시전에 네 마리가 아니다(시험 전제)");
+        CastAndWait(srv, a, 58, true, ms, out);
+        Check(srv.missiles() == n0, "두 번째 시전에 픽시가 더 나왔다(채우기여야 한다)");
+    }
+
+    // ②b **모자란 만큼만** 채운다 — 두 마리 있을 때 네 마리짜리를 걸면 **넷**이지 여섯이 아니다.
+    //   ⚠ 이 칸이 없으면 「늘 새로 만들기」 돌연변이가 안 걸린다(이미 찬 검사에 가려진다).
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugSpellAccept(a, 58, 1, out);                 // 세기 1 → 두 마리
+        Check(srv.missiles() == 2, "세기 1 에 두 마리가 아니다(시험 전제)");
+        srv.DebugSpellAccept(a, 58, 3, out);                 // 세기 3 → 넷까지 채운다
+        if (srv.missiles() != 4) std::printf("  [픽시] 채운 뒤 수 %zu — 4 여야 한다\n", srv.missiles());
+        Check(srv.missiles() == 4, "모자란 만큼만 채우지 않았다");
+    }
+
+    // ③ 세기 1 이면 **두 마리**다 — 표가 세기를 타는지 가른다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugSpellAccept(a, 58, 1, out);
+        if (srv.missiles() != 2) std::printf("  [픽시] 세기 1 에 나온 수 %zu — 2 여야 한다\n", srv.missiles());
+        Check(srv.missiles() == 2, "세기 1 인데 두 마리가 아니다");
+    }
+
+    // ④ 나온 자리는 시전자 둘레(몸 10 + 4 = 14)다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        Check(srv.missiles() > 0, "픽시가 없다(시험 전제)");
+        const float px = srv.DebugMissileX(0);
+        Check(std::abs(px - 1000.0f) <= 15.0f, "픽시 첫 자리가 시전자 둘레(14)가 아니다");
+    }
+
+    // ⑤ 수명(30~90초)이 다하면 사라진다 — 90초는 2,700틱
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        Check(srv.missiles() > 0, "픽시가 없다(시험 전제)");
+        for (int t = 0; t < 900; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.missiles() > 0, "30초도 안 됐는데 픽시가 다 사라졌다");
+        for (int t = 0; t < 2000; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.missiles() == 0, "90초가 지났는데 픽시가 남아 있다(수명이 빠졌나)");
+    }
+    std::printf("  4-c4(5) — 픽시떼 수 채우기·세기별 수·시전자 둘레·수명 (날아다니는 AI 는 묶음 6·7)\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -8987,6 +9091,7 @@ int main() {
     TestFist();
     TestCleansingFlame();
     TestArachnaphobia();
+    TestPixieSwarm();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

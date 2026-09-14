@@ -423,7 +423,7 @@ int main(int argc, char** argv) {
                                     "SmallFist", "MediumFist", "LargeFist",
                                     "SmallFlameCleanse", "MediumFlameCleanse", "FlameCleanse", "LargeFlameCleanse",
                                     "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse",
-                                    "ArachnaphobiaFocus", "SmallSpider" }) {
+                                    "ArachnaphobiaFocus", "SmallSpider", "Pixie" }) {
                 const uint16_t w = tdb.WireByName(nm);
                 srv.SetNamedType(nm, w);
                 std::printf("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");

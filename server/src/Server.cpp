@@ -4553,6 +4553,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
             case 29: fnc = CastFist(s, arg, lvl, out); break;                                 // castFist_52D3C0
             case 10: case 11: fnc = CastCleansingFlame(spell, s, lvl, out); break;            // spellCastCleansingFlame_52D5C0
             case 2: fnc = CastArachnaphobia(s, arg, out); break;                              // spellArachna_52DC80
+            case 58: fnc = CastPixieSwarm(spell, s, lvl, out); break;                        // castPixies_540440
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
@@ -5522,6 +5523,49 @@ int Server::CastArachnaphobia(Session& caster, const SpellArg& arg, std::vector<
     return 1;
 }
 
+// castPixies_540440(`GAME4_3.c:8299`) — 시전자 둘레에 **픽시**를 `PixieCount[세기-1]`(2·3·4·5·6) 마리까지 채운다.
+//   · 이미 제 픽시가 그만큼 있으면 **아무것도 안 만든다**(모자란 만큼만 채운다)
+//   · 자리 = 시전자 + (시전자 반지름 + 4) × 무작위 방향 · 선 추적(5)이 막히면 그 마리는 거른다
+//   · 속도 0 으로 나오고, 수명 = 지금 + 초당틱 × 무작위(30, 90)
+//   ⚠ **날아다니는 AI 는 아직 없다**(`updatePixie_53CD20` — 적 찾기·떼 짓기·주인 따라가기·되돌아오기).
+//     그건 유닛 움직임 묶음(6·7)이다. 여기서는 **나오는 것·수명·닿음 피해**까지가 산출물이다.
+int Server::CastPixieSwarm(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out) {
+    (void)out;
+    const uint16_t type = NamedType("Pixie");
+    if (type == 0) return 1;
+    int have = 0;
+    for (const auto& m : missiles_) if (m.type == type && m.owner == caster.addr) ++have;
+    const int want = static_cast<int>(BalanceFloatInd("PixieCount", lvl - 1));
+    if (have >= want) return 1;                              // 이미 다 차 있으면 소리만
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    const float dist = static_cast<float>(kBodyRadius) + 4.0f;   // +176 반지름 + 4
+    for (int n = have; n < want; ++n) {
+        const int dir = static_cast<int>(NextRandom(256));
+        const float px = cx + dist * DirVecX(dir);
+        const float py = cy + dist * DirVecY(dir);
+        if (!MapTraceRay(cx, cy, px, py, 0x5)) continue;
+        MissileObj m;
+        m.netCode = nextShotNetCode_++;
+        if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+        m.type = type;
+        m.flags = 0x4000;                                    // thing FLAGS = AIRBORNE
+        m.posX = m.newX = m.prevX = px;
+        m.posY = m.newY = m.prevY = py;
+        m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
+        m.createdFrame = m.frame136 = frame_;
+        m.speed = 0.0f;                                      // 속도 0 으로 나온다(움직임은 AI 몫 — 묶음 6·7)
+        m.owner = caster.addr;
+        m.ud0 = m.ud2 = caster.addr;
+        m.spell = spell;
+        m.level = lvl;
+        m.collideKind = 2;                                   // PixieCollide
+        m.collideAmount = 8;                                 // thing.bin `COLLIDE = PixieCollide 8`
+        m.expireFrame = frame_ + static_cast<uint32_t>(kServerTickRate) * (30u + NextRandom(61u));   // randomInt(30,90) 초
+        missiles_.push_back(m);
+    }
+    return 1;
+}
+
 // 놓인 것의 **닿음 함수** — 몸이 겹친 것에 한 틱마다 한 번.
 //   · `collideDamage_4E9430` — 피해 = **양 >> 1**, 단 양이 1 이면 홀수 프레임만 1. 갈래·팀을 안 가린다
 //   · `collideManadrain_4E9490` — **사람에게만**, 마나를 **양만큼** 깎는다(피해가 아니다)
@@ -6327,6 +6371,10 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                 DestroyMissile(i, out);
                 continue;
             }
+        } else if (m.collideKind == 2) {
+            // ①-c updatePixie_53CD20 — 여기서는 **수명만** 본다.
+            //   ⚠ 적 찾기·떼 짓기·주인 따라가기·되돌아오기는 유닛 움직임 묶음(6·7)이다.
+            if (m.expireFrame != 0 && frame > m.expireFrame) { DestroyMissile(i, out); continue; }
         } else
         // ①-b SpellProjectileUpdate 53B940(`GAME4_3.c:5764`)
         {
@@ -6536,6 +6584,18 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                             }
                             handled = true;
                         }
+                    }
+                    // collidePixie_4EA080 — **적일 때만** 인자만큼 피해(종류 11 충격)를 주고 제가 사라진다
+                    if (!handled && m.collideKind == 2) {
+                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        auto ownIt = sessions_.find(m.owner);
+                        const bool enemy = (ownIt != sessions_.end()) && TargetIsEnemy(ownIt->second, tgt);
+                        if (enemy) {
+                            HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, nullptr);
+                            DestroyMissile(i, out);
+                            erased = true;
+                        }
+                        handled = true;
                     }
                     if (!handled && m.collideKind == 1) {
                         // 불덩이 — 대상을 안 가린다(맞는 것마다 터진다). 되받아치기 방패(27)는 위에서 이미 handled

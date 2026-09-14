@@ -1832,6 +1832,8 @@ private:
         //   0 = SpellProjectileCollide(Magic — 대상에 닿으면 주문 효과) · 1 = SparkExplosionCollide(불덩이 — 터진다)
         uint8_t collideKind = 0;
         uint8_t collideAmount = 0;       // SparkExplosionCollide 의 인자(불덩이 192 · 센 불덩이·거인 불덩이 255)
+        // ★ 2 = PixieCollide — 적에게 닿으면 인자만큼 피해(종류 11 충격)를 주고 **제가 사라진다**
+        uint32_t expireFrame = 0;        // 0 이 아니면 이 프레임에 사라진다(픽시 — 30~90초)
     };
     struct MagicTypeInfo { uint16_t type = 0; float speed = 0; float mass = 1.0f; uint32_t flags = 0; };
     // ── 묶음 4-c3 — 주문이 **놓는** 오브젝트(불꽃·독구름 …). 안 움직이고 수명이 다하면 사라진다
@@ -1951,6 +1953,7 @@ private:
     int CastFist(Session& caster, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);            // castFist_52D3C0
     int CastCleansingFlame(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out);        // spellCastCleansingFlame_52D5C0
     int CastArachnaphobia(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);            // spellArachna_52DC80
+    int CastPixieSwarm(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out);            // castPixies_540440
     void SpawnCreature(uint16_t type, float x, float y, const std::string& owner);                       // newObjectWithTypeInd + createAt
     void PlacedCollide(PlacedObj& o, std::vector<OutPacket>& out);                                       // 놓인 것의 닿음 함수(피해·마나 빨기)
     // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.
