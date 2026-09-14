@@ -247,6 +247,7 @@ struct Creature {
     float aggression = 0.83f;   // +1304 Aggression (가만히·지켜 0.5 · 따라와·사냥 0.83)
     float sightRange = 0.0f;    // +1312 SightRange (지켜가 250 으로 놓는다)
     bool ordered = false;       // 사람이 명령을 준 적이 있나 — 틱의 기본 호위를 멈춘다
+    bool deadDone = false;      // 묶음 6-j — 죽음(31) 갱신이 한 번 돌았나(치울 표시)
 };
 
 // 깃발 하나.
@@ -1687,6 +1688,7 @@ public:
     float DebugPetAggression(size_t i) const { return i < pets_.size() ? pets_[i].aggression : 0.0f; }
     float DebugPetSight(size_t i) const { return i < pets_.size() ? pets_[i].sightRange : 0.0f; }
     bool DebugPetOrdered(size_t i) const { return i < pets_.size() && pets_[i].ordered; }
+    bool DebugPetDeadDone(size_t i) const { return i < pets_.size() && pets_[i].deadDone; }
     void DebugSetPetAggression(size_t i, float v) { if (i < pets_.size()) pets_[i].aggression = v; }
     void DebugSetPetRunning(size_t i, bool v) { if (i < pets_.size()) pets_[i].running = v; }
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }

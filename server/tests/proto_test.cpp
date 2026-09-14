@@ -12232,6 +12232,26 @@ void TestAIGuardHunt() {
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 15, "떠돌기 중에 싸움(15)을 안 올렸다");
     }
+    // ⑦ **죽어가는 중(30)·죽음(31)** — 6-j
+    //   밀기 규칙이 「죽음 위에는 죽어가는 중만 올라간다」라, 죽음을 먼저 깔고 그 위에 올린다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        // 먼저 **속도를 세워 둔다** — 죽음 시작이 그것을 끄는지 보려고
+        srv.DebugSetPetPath(0, { { 1200, 1000 } });
+        srv.DebugCreatureMove(0);
+        Check(srv.DebugPetVelX(0) != 0, "속도가 안 섰다(이 시험의 전제)");
+        Check(srv.DebugAIPush(0, 31), "죽음(31)이 안 올라갔다");
+        Check(!srv.DebugAIPush(0, 7), "죽음 위에 가기가 올라갔다");
+        Check(srv.DebugAIPush(0, 30), "죽음 위에 죽어가는 중(30)이 안 올라갔다");
+        srv.DebugSetPetPos(0, 1100, 1000);
+        srv.DebugAITick(0, out);                              // 죽어가는 중은 곧바로 빠진다
+        Check(srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 31, "죽어가는 중이 안 빠져 죽음이 안 드러났다");
+        srv.DebugAITick(0, out);                              // 죽음이 시작되며 속도를 끈다
+        Check(srv.DebugPetVelX(0) == 0 && srv.DebugPetVelY(0) == 0, "죽음 시작이 속도를 안 껐다");
+        Check(srv.DebugPetPathCount(0) == 0, "죽음 시작이 길을 안 버렸다");
+        Check(srv.DebugPetDeadDone(0), "죽음 갱신이 치울 표시를 안 세웠다");
+    }
     std::printf("  6-i(2)(3) — 지키기: 16틱마다 8 넘으면 복귀 · 사냥→떠돌기 · 떠돌기는 길목 없어 1~2초 기다림\n");
 }
 

@@ -6717,6 +6717,13 @@ void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             }
             break;
         }
+        case 31: {   // ── 묶음 6-j 죽음 시작 — `mobActionDead1_544D80`
+            // **속도·힘을 0 으로** 두고 오브젝트 깃발에 `0x18` 을 얹는다(시체는 안 움직인다)
+            //   ⚠ 풀려난 넋(`createReleasedSoul_544E60`)·좀비 시간표는 안 옮겼다
+            k.velX = 0; k.velY = 0;
+            k.path.clear();
+            break;
+        }
         case 16: {   // ── 묶음 6-g(2) 근접 공격 시작 — `mobActionMelee1_532130`(`legacy/GAME4_3.c:1943`)
             //
             // ⭕ **쉬는 시간이 끝났나**(`+512`)로 갈린다.
@@ -6883,6 +6890,17 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             }
             break;
         }
+        case 30:     // ── 묶음 6-j 죽어가는 중 — `sub_544D60`(`legacy/GAME4_3.c:9846`)
+            // 하는 일이 하나뿐이다 — **죽는 애니가 끝나면 빠진다**(`+483`).
+            //   빠지면 아래에 깔아 둔 **죽음(31)** 이 드러난다
+            // ⚠ 크리처 애니 칸이 없어 **첫 갱신에 바로 빠진다**(근접 16·쏘기 17 과 같은 자리)
+            AIPop(k);
+            break;
+        case 31:     // ── 묶음 6-j 죽음 — `mobActionDead2_544EC0`
+            // 갱신 목록에서 빼고, 종류표가 그러라고 하면 **치운다**.
+            //   ⚠ 좀비의 되살아나기(`mobRaiseZombie_534AB0`)와 불타 사라지기는 안 옮겼다
+            k.deadDone = true;
+            break;
         case 4: {    // ── 묶음 6-i(2) 지키기 — `nox_xxx_mobActionGuard_546010`(`legacy/GAME5.c:738`)
             //
             // ⭕ 「이 자리를 지켜라」다. 쌓임 항목의 `+4·+8` 이 **지킬 자리**, `+12` 가 **볼 쪽**이다.
