@@ -593,6 +593,10 @@ struct Session {
     //   ⚠ `sessions_` 를 그냥 돌면 **주소 문자열 사전순**이라 들어온 차례가 아니다 —
     //     포트가 어떻게 뽑히느냐에 따라 A·B 팀이 뒤집혔다(2026-09-11 감사).
     uint32_t joinOrder = 0;
+    // ★ 9-a — 「이 비밀벽을 열린 것으로 알고 있나」. 정답지는 마디 `+28` 에 **사람 번호 비트맵**을
+    //   두지만(사람 32칸), 우리 서버는 사람을 주소로 잡아 번호가 없다 — 그래서 **사람 쪽에** 둔다.
+    //   담는 값도 하는 일도 같다(비밀벽 자리표 → 0/1)
+    std::vector<uint8_t> secretSeen;
     // ★ 7-c — 옛 임시 카운터(`kills`·`deaths`)를 **정답지 자리로 합쳤다**.
     //   점수는 위의 `score`(+2136 `Lessons`), 죽은 횟수는 `deaths`(+2140).
     //   옛것은 자살에도 죽은 횟수를 올렸는데 `playerUpdateScore_54D980` 은 **안 올린다**
@@ -991,6 +995,15 @@ public:
     }
     void SetWallDefFlags(std::vector<uint32_t> f) { wallDefFlags_ = std::move(f); }
 
+    // ── 묶음 9-a 비밀벽 ────────────────────────────────────────────────
+    //
+    // 맵의 `SecretWalls` 칸(`MapFile::ReadSecretWalls`)을 받아 세운다.
+    // **번호는 읽은 차례대로 0,1,2…** — 정답지 `GAME1_2.c:1130` 이 벽 `+10` 에 매기는 그 값이다
+    // (`wallSecretCounterClear_4297B0` 이 맵마다 0 으로 되돌린다).
+    // ⚠ 벽이 **실제로 있는 칸**에만 달린다 — 정답지도 `getWallAtGrid` 가 없으면 마디를 안 건다
+    struct SecretWallIn { uint8_t gx = 0, gy = 0, flags = 0, state = 0, anim = 0; uint32_t waitSecs = 0; };
+    void SetSecretWalls(const std::vector<SecretWallIn>& list);
+
     // ★★ **오브젝트끼리 충돌** (2026-09-13 묶음 2-c — 정답지 이식).
     //   장애물 = 맵 오브젝트 중 COLLIDE 가 있고 NO_COLLIDE 가 아니며 IMMOBILE 인 것(나무·오벨리스크…).
     //   ⚠ 문(DoorCollide — 밀면 도는 문)은 묶음 9, 아이템(PickupCollide — 차여 굴러감)은 묶음 5.
@@ -1054,6 +1067,7 @@ public:
     }
     // 시험용 — 선 추적(Flag1, 걸음과 같은 깃발)
     bool DebugTraceRay(float x1, float y1, float x2, float y2) const { return MapTraceRay(x1, y1, x2, y2, 0x1); }
+    bool DebugTraceRayFlags(float x1, float y1, float x2, float y2, uint8_t f) const { return MapTraceRay(x1, y1, x2, y2, f); }
     // 진단 — 가장 가까운 벽 선분까지 거리(±3칸). 벽 없으면 −1. 칸·방향도 돌려준다.
     double DebugWallDistance(double x, double y, int* outGx = nullptr, int* outGy = nullptr, int* outDir = nullptr) const;
     bool WallAt(double x, double y) const {
@@ -1902,6 +1916,32 @@ public:
     void DebugRoundTimeUp(std::vector<OutPacket>& out) { RoundTimeUp(out); }
     void DebugCheckVictory(std::vector<OutPacket>& out) { CheckVictorySurvivors(out); }
     void DebugRoundCheckLimit(std::vector<OutPacket>& out) { RoundCheckLimit(out); }
+
+    // 묶음 9-a — 비밀벽 여닫기. 정답지는 **노스스크립트**(`WallOpen`·`WallClose`·`WallToggle`)가
+    //   부르는 자리다 — 우리 서버엔 스크립트가 없어 같은 몫을 여기에 낸다
+    void WallOpen(int gx, int gy) { if (SecretWall* w = SecretWallAt(gx, gy)) SecretWallSetState(*w, 4); }
+    void WallClose(int gx, int gy) { if (SecretWall* w = SecretWallAt(gx, gy)) SecretWallSetState(*w, 2); }
+    void WallToggle(int gx, int gy) {
+        SecretWall* w = SecretWallAt(gx, gy);
+        if (!w) return;
+        // `Wall.toggle` — **닫힌 것(1·2)이면 열고** 아니면 닫는다
+        SecretWallSetState(*w, (w->state == 1 || w->state == 2) ? 4 : 2);
+    }
+    // 시험용 — 비밀벽
+    size_t SecretWallCount() const { return secretWalls_.size(); }
+    int SecretWallState(int gx, int gy) {
+        const SecretWall* w = SecretWallAt(gx, gy);
+        return w ? static_cast<int>(w->state) : -1;
+    }
+    int SecretWallAnim(int gx, int gy) {
+        const SecretWall* w = SecretWallAt(gx, gy);
+        return w ? static_cast<int>(w->anim) : -1;
+    }
+    void DebugSecretWallUpdate(std::vector<OutPacket>& out) { SecretWallUpdate(out); }
+    void DebugSecretWallSync(const std::string& addr, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(addr);
+        if (i != sessions_.end()) SecretWallSync(i->second, out);
+    }
     void DebugSetDeaths(const std::string& x, uint32_t v) {
         auto i = sessions_.find(x); if (i != sessions_.end()) i->second.deaths = v;
     }
@@ -2756,6 +2796,37 @@ private:
     void ElimDeath(Session& victim, Session* killer, std::vector<OutPacket>& out);
     void DeathScoring(Session& victim, std::vector<OutPacket>& out);
 
+    // ── 묶음 9-a 비밀벽 여닫기 ────────────────────────────────────────
+    //
+    // 정답지 — 마디 짜임 `mapRWSecretWalls_4297C0`(`GAME1_2.c:1064`) ·
+    //   상태 기계 `nox_xxx_updateUnits_51B100_D`(`server__system__server.c:913`) ·
+    //   사람별 알림 `sub_519660`(`server.go:598`) · 보내기 `sub_4DF120`·`sub_4DF180`(`GAME3_2.c:6108·6127`) ·
+    //   여닫기 명령 `Wall.open`·`close`·`toggle`(`src/wall.go:152~202`, 스크립트 `WallOpen` 따위).
+    //
+    // 상태 — **1 닫힘 · 2 닫는 중 · 3 열림 · 4 여는 중**.
+    //   · 여는 명령: 상태가 3·4 가 아니면 **4**(여는 중)로 · 닫는 명령: 1·2 가 아니면 **2**(닫는 중)로
+    //   · 4 는 애니 칸을 **올려** 23 에 닿으면 3 · 2 는 **내려** 0 에 닿으면 1.
+    //     둘 다 도착할 때 남은 프레임을 `기다릴 초 × 30` 으로 채운다
+    //   · 1 에서 깃발 **4 와 8 이 둘 다** 있으면 남은 프레임을 세어 0 에서 스스로 4 로
+    //   · 3 에서 깃발 **4 는 있고 8 은 없으면** 마찬가지로 스스로 2 로
+    // 알림 — **1·4 는 닫힘 · 2·3 은 열림**. 즉 애니가 **끝난 뒤에야** 반대쪽이 나간다
+    struct SecretWall {
+        uint8_t  gx = 0, gy = 0;
+        uint16_t id = 0;              // 벽 `+10` — 읽은 차례
+        uint32_t waitSecs = 0;        // +16
+        uint8_t  flags = 0;           // +20 — 2 선 추적 통과 · 4 저절로 · 8 열린 상태
+        uint8_t  state = 1;           // +21
+        uint8_t  anim = 0;            // +22 (0~23)
+        uint32_t countdown = 0;       // +24 — 남은 프레임
+    };
+    std::vector<SecretWall> secretWalls_;
+    void SendOpenWall(Session& to, uint16_t id, std::vector<OutPacket>& out);
+    void SendCloseWall(Session& to, uint16_t id, std::vector<OutPacket>& out);
+    void SecretWallUpdate(std::vector<OutPacket>& out);
+    void SecretWallSync(Session& s, std::vector<OutPacket>& out);
+    void SecretWallSetState(SecretWall& w, uint8_t st);
+    SecretWall* SecretWallAt(int gx, int gy);
+
     // 묶음 8-e — 투표(0xEE)
     struct Vote {
         uint8_t kind = 0;                 // [0] 0·1 강퇴 · 2 퀘스트 다시 시작 · 3 퀘스트에서 내보내기
@@ -3167,7 +3238,9 @@ private:
     std::vector<std::pair<int, int>> aiPathCells_;  // 찾은 길(칸)
     std::vector<std::pair<float, float>> aiPathPts_;
     bool wallsOn_ = false;
-    struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; };
+    // ★ 묶음 9-a — `secret` 은 `secretWalls_` 자리표(없으면 −1). 정답지 벽 구조의 `+28`(비밀벽 마디)과
+    //   `Flags4 & 4`(비밀벽 깃발)를 한 칸으로 합친 것이다
+    struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; int16_t secret = -1; };
     std::vector<WallTile> wallTiles_;        // 256×256 벽 모양 (묶음 2-b)
     std::vector<uint32_t> wallDefFlags_;     // thing.bin WALL 순번 → 깃발
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물

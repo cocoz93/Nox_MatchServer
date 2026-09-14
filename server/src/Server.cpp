@@ -2846,7 +2846,13 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     ++handled_;
                 }
                 // 여기서부터 게임에 들어온 것으로 본다 — 매 틱 상태를 받는다.
-                if (!s.inGame) s.joinOrder = ++nextJoinOrder_;
+                if (!s.inGame) {
+                    s.joinOrder = ++nextJoinOrder_;
+                    // 9-a — 비밀벽 「아는 상태」를 비운다. 다음 알림 때 깃발 8 대로 다시 채워진다
+                    //   (`sub_4DF2A0` 이 접속 때 그 사람 비트를 미리 켜는 자리와 같은 몫).
+                    //   ⚠ 안 비우면 **주소를 다시 쓰는 접속**이 옛 사람의 기억을 물려받는다
+                    s.secretSeen.clear();
+                }
                 s.inGame = true;
 
                 // ★ 깃발 판이 이미 서 있으면 **새로 온 사람에게도 팀을 준다.**
@@ -3229,11 +3235,17 @@ inline bool PushOut(double r, double mass, double px, double py, float cx, float
 }
 }  // namespace
 
-// sub_57B500 의 문·창·비밀 벽 없는 판 — 벽이 있으면 방향, 없으면 −1.
+// sub_57B500(`server/wall.go:839`) — 벽이 있으면 방향, 없으면 −1.
+// ★ 9-a — **반 넘게 열린 비밀벽은 −1**(막지 않는다). 정답지 `server/wall.go:848` 의
+//   `wl.Flags4.Has(FlagSecret) && *(uint8)(wl.Data+22) > 11` 갈래다. 칸은 0~23 이니 **11 초과**가 절반이다.
+// ⛔ 창(`FlagWindow`)·문(`FlagDoor`) 갈래는 아직 없다(묶음 9 의 남은 몫)
 int Server::WallShapeAt(int gx, int gy) const {
     if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256 || wallTiles_.empty()) return -1;
     const WallTile& w = wallTiles_[gy * 256 + gx];
-    return w.present ? w.dir : -1;
+    if (!w.present) return -1;
+    if (w.secret >= 0 && static_cast<size_t>(w.secret) < secretWalls_.size() &&
+        secretWalls_[static_cast<size_t>(w.secret)].anim > 11) return -1;
+    return w.dir;
 }
 
 // mapTraceRayImpl(`server/wall.go:1055`) — 이 칸의 벽 선분을 p1→p2 가 가로지르나.
@@ -3248,6 +3260,10 @@ bool Server::MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float
     // GetWallAtGrid(Flag1 없음)은 칸 짝홀((x+y)&1)이 홀이면 벽이 없다고 본다(`server/wall.go:238`)
     if (!(flags & 0x1) && ((gx + gy) & 1)) return false;
     const WallTile& w = wallTiles_[gy * 256 + gx];
+    // ★ 9-a — **깃발 8(0x80)로 쏜 추적은 「통과」 비밀벽을 안 본다**(`server/wall.go:1080`) —
+    //   마디 깃발 **2** 가 그 표다. 우리 추적 깃발은 `MapTraceFlag<N>` = 비트 `1 << (N−1)` 이다
+    if ((flags & 0x80) && w.secret >= 0 && static_cast<size_t>(w.secret) < secretWalls_.size() &&
+        (secretWalls_[static_cast<size_t>(w.secret)].flags & 0x2)) return false;
     const uint32_t f2 = (w.tile < wallDefFlags_.size()) ? wallDefFlags_[w.tile] : 0;
     if ((f2 & 0x2) || ((flags & 0x40) && !(f2 & 0x1))) return false;
     const float xl = std::min(x1, x2), xh = std::max(x1, x2);
@@ -6727,12 +6743,15 @@ bool Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY) {
 //
 // 정답지 `Sub_57B500`(`server/wall.go:839`) — 그 칸 벽의 **방향 번호**(0~10)를 준다.
 //   벽이 없거나 격자 밖이면 **−1**. 창·비밀벽·못 여는 문도 −1 이다
-//   ⚠ 문·창·비밀벽 깃발(`Flags4`)은 아직 없다(묶음 9) — 지금은 **벽이 있나/없나**로만 줄어든다
+//   ★ 9-a — **반 넘게 열린 비밀벽(칸 > 11)은 −1** 로 들어갔다. 창·문 깃발은 아직 없다
 int Server::WallDirAt(int x, int y) const {
     if (x < 0 || x >= 256 || y < 0 || y >= 256) return -1;
     if (wallTiles_.empty()) return -1;
     const WallTile& w = wallTiles_[static_cast<size_t>(y) * 256 + static_cast<size_t>(x)];
-    return w.present ? static_cast<int>(w.dir) : -1;
+    if (!w.present) return -1;
+    if (w.secret >= 0 && static_cast<size_t>(w.secret) < secretWalls_.size() &&
+        secretWalls_[static_cast<size_t>(w.secret)].anim > 11) return -1;
+    return static_cast<int>(w.dir);
 }
 
 // 길 훑기 cases 4~7 — **대각으로 갈 때 두 옆칸의 벽 방향이 그 대각을 막는가**.
@@ -8077,6 +8096,133 @@ void Server::ElimDeath(Session& victim, Session* killer, std::vector<OutPacket>&
     if (victim.team != 0)                              // 죽은 이의 팀이 **오른다**(적을수록 좋으니 벌점이다)
         if (const Team* t = TeamById(victim.team))
             TeamChangeScore(victim.team, t->score + 1, out);
+}
+
+// ── 묶음 9-a 비밀벽 여닫기 ───────────────────────────────────────────
+//
+// 정답지 — 마디 읽기 `mapRWSecretWalls_4297C0`(`GAME1_2.c:1064`) ·
+//   상태 기계 `nox_xxx_updateUnits_51B100_D`(`server__system__server.c:913`) ·
+//   사람별 알림 `sub_519660`(`server.go:598`) ·
+//   보내기 `sub_4DF120`(열림 59) · `sub_4DF180`(닫힘 60)(`GAME3_2.c:6108·6127`).
+//
+// ⭕ **와이어는 3바이트다** — `3b/3c | 번호 u16`. `netSendPacket0` 이라 **봉투(cc) 없이**
+//   중요 대기열에 맨 메시지로 실린다(확인이 올 때까지 다시 실린다).
+// ⭕ **번호는 맵을 읽은 차례**다(0,1,2…). 벽 구조 `+10` 에 매겨지고,
+//   벽이 **실제로 있는 칸**에만 매겨진다(`GAME1_2.c:1125~1131`).
+// ⭕ **받는 쪽은 애니를 안 돌린다** — 열림이면 칸을 23, 닫힘이면 0 으로 **툭 놓는다**
+//   (`cdecode.c:651·665`). 그래서 서버도 애니가 **끝난 뒤에야** 반대쪽을 보낸다.
+
+void Server::SetSecretWalls(const std::vector<SecretWallIn>& list) {
+    secretWalls_.clear();
+    for (auto& kv : sessions_) kv.second.secretSeen.clear();
+    if (wallTiles_.empty()) return;
+    for (const SecretWallIn& in : list) {
+        WallTile& t = wallTiles_[static_cast<size_t>(in.gy) * 256 + in.gx];
+        if (!t.present) continue;                 // 벽이 없는 칸엔 안 단다(정답지도 그렇다)
+        SecretWall w;
+        w.gx = in.gx;
+        w.gy = in.gy;
+        w.id = static_cast<uint16_t>(secretWalls_.size());
+        w.waitSecs = in.waitSecs;
+        w.flags = in.flags;
+        w.state = in.state;
+        w.anim = in.anim;
+        // 맵이 상태를 안 적어 두었으면 깃발 8 로 정한다(`GAME1_2.c:1132~1141`)
+        if (w.state == 0) {
+            if (w.flags & 8) { w.state = 3; w.anim = 23; }
+            else             { w.state = 1; w.anim = 0; }
+        }
+        t.secret = static_cast<int16_t>(secretWalls_.size());
+        secretWalls_.push_back(w);
+    }
+}
+
+Server::SecretWall* Server::SecretWallAt(int gx, int gy) {
+    if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256 || wallTiles_.empty()) return nullptr;
+    const int16_t i = wallTiles_[static_cast<size_t>(gy) * 256 + static_cast<size_t>(gx)].secret;
+    if (i < 0 || static_cast<size_t>(i) >= secretWalls_.size()) return nullptr;
+    return &secretWalls_[static_cast<size_t>(i)];
+}
+
+// `Wall.open`·`Wall.close`(`src/wall.go:152·172`) — **이미 그쪽으로 가고 있으면 아무것도 안 한다**
+void Server::SecretWallSetState(SecretWall& w, uint8_t st) {
+    if (st == 4) { if (w.state == 3 || w.state == 4) return; }
+    else if (st == 2) { if (w.state == 1 || w.state == 2) return; }
+    else return;
+    w.state = st;
+    // ⛔ 여닫는 소리(`wallFindOpenSound_410EE0`)는 묶음 10 이다
+}
+
+void Server::SendOpenWall(Session& to, uint16_t id, std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::OPEN_WALL),
+                             static_cast<uint8_t>(id), static_cast<uint8_t>(id >> 8) };
+    EmitImportantRaw(to, msg, sizeof(msg), out);
+}
+
+void Server::SendCloseWall(Session& to, uint16_t id, std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::CLOSE_WALL),
+                             static_cast<uint8_t>(id), static_cast<uint8_t>(id >> 8) };
+    EmitImportantRaw(to, msg, sizeof(msg), out);
+}
+
+// `nox_xxx_updateUnits_51B100_D` 의 비밀벽 고리 — 매 프레임 상태를 한 칸씩 민다
+void Server::SecretWallUpdate(std::vector<OutPacket>& out) {
+    (void)out;
+    for (SecretWall& w : secretWalls_) {
+        switch (w.state) {
+            case 1:                                   // 닫힘 — 깃발 4 와 8 이 **둘 다** 있어야 스스로 연다
+                if (!((w.flags & 4) && (w.flags & 8))) break;
+                // ⚠ 정답지엔 **0 검사가 없다**(`v48 = +24 − 1; +24 = v48; if (v48) break;`).
+                //   0 에서 빼면 0xFFFFFFFF 로 돌아 사실상 안 열린다 — 그 손버릇까지 그대로 둔다
+                if (--w.countdown == 0) w.state = 4;
+                break;
+            case 2:                                   // 닫는 중 — 칸을 내린다
+                if (w.anim > 0) --w.anim;
+                if (w.anim == 0) {
+                    w.state = 1;
+                    w.countdown = w.waitSecs * kServerTickRate;
+                }
+                break;
+            case 3:                                   // 열림 — 깃발 4 는 있고 **8 은 없어야** 스스로 닫는다
+                if (!(w.flags & 4) || (w.flags & 8)) break;
+                if (--w.countdown == 0) w.state = 2;   // ⚠ 여기도 0 검사가 없다(위와 같다)
+                break;
+            case 4:                                   // 여는 중 — 칸을 올린다
+                if (w.anim < 23) ++w.anim;
+                if (w.anim == 23) {
+                    w.state = 3;
+                    w.countdown = w.waitSecs * kServerTickRate;
+                }
+                break;
+            default: break;
+        }
+    }
+    // ⛔ 움직이는 칸 둘레 ±42.5 의 사람 밀어내기(`getUnitsInRect_517C10` + `sub_51B860`)는 안 옮겼다 —
+    //   무엇을 하는 함수인지 정답지에서 아직 못 짚었다
+}
+
+// `sub_519660` — 이 사람이 **아는 상태**와 **지금 상태**가 다르면 알린다.
+//   ⚠ 상태 **1·4 는 닫힘 · 2·3 은 열림**이다(여는 중은 아직 닫힌 것으로 친다).
+//   ⚠ 정답지는 사람 화면(반쪽 + 128) 네모 안 비밀벽만 본다 — 우리는 시야 반경(`kAoiRadius`)으로 대신한다
+void Server::SecretWallSync(Session& s, std::vector<OutPacket>& out) {
+    if (!s.inGame || secretWalls_.empty()) return;
+    if (s.secretSeen.size() != secretWalls_.size()) {
+        // 처음 보는 사람 — 깃발 8 대로 미리 켜 둔다(`sub_4DF2A0` · `wall.go:378`).
+        //   ⇒ **처음부터 열린 벽은 접속 때 알림이 안 간다**(클라가 맵에서 이미 안다)
+        s.secretSeen.assign(secretWalls_.size(), 0);
+        for (size_t i = 0; i < secretWalls_.size(); ++i)
+            s.secretSeen[i] = (secretWalls_[i].flags & 8) ? 1 : 0;
+    }
+    for (size_t i = 0; i < secretWalls_.size(); ++i) {
+        const SecretWall& w = secretWalls_[i];
+        const double wx = w.gx * kWallCell, wy = w.gy * kWallCell;
+        const double dx = wx - s.posX, dy = wy - s.posY;
+        if (dx * dx + dy * dy > kAoiRadius * kAoiRadius) continue;
+        const bool open = (w.state == 2 || w.state == 3);
+        if ((s.secretSeen[i] != 0) == open) continue;
+        if (open) { SendOpenWall(s, w.id, out); s.secretSeen[i] = 1; }
+        else      { SendCloseWall(s, w.id, out); s.secretSeen[i] = 0; }
+    }
 }
 
 // ── 묶음 8-g 판이 끝나는 나머지 길 ───────────────────────────────────
@@ -11569,6 +11715,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     UpdateFlags(out);
     UpdateBall(out);          // 8-d 플래그볼
     VoteUpdate(out);          // 8-e 투표
+    SecretWallUpdate(out);        // 9-a 비밀벅 상태 기계
     CheckVictorySurvivors(out);   // 8-g — 탈락전에서 하나만 남았나(`server.go:143`)
     if (gameSettings_.timeLimitFrames != 0 && frame_ >= gameSettings_.timeLimitFrames) RoundTimeUp(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
@@ -12173,6 +12320,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   크리처가 화면에서 **똑같이 사라졌다** — 클라가 갱신에서 빠진 동적 오브젝트를 스스로 지운다.
         //   (실험군·돌연변이 옮김 순간 사람 옆 자리 픽셀 차 457 대 445, 두 사진 모두 원뿔 없음)
         //   정답지(`GAME4_1.c:4488`)가 보내므로 남긴다. 효과가 드러나는 조건(정적 오브젝트? 즉시 대 지연?)은 관측대기.
+        // 9-a — 비밀벽 여닫힘을 이 사람에게 맞춘다(`sub_519660` 이 분배자에서 도는 자리)
+        SecretWallSync(s, out);
+
         std::vector<uint16_t> outOfSight(creatureExits);
         if (aoiOn_) {
             AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,

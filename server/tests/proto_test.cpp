@@ -15173,6 +15173,277 @@ void TestRoundTimeUp() {
                 "탈락전 생존 하나 까닭 0 · 빈 팀도 셈 · 혼자면 안 끝남 · 탈락전은 한도 판정 안 탐\n");
 }
 
+// ── 묶음 9-a — 비밀벽 여닫기 ──────────────────────────────────────────
+//
+// 정답지 마디 `mapRWSecretWalls_4297C0`(`GAME1_2.c:1064`) ·
+//   상태 기계 `nox_xxx_updateUnits_51B100_D`(`server__system__server.c:913`) ·
+//   사람별 알림 `sub_519660`(`server.go:598`) · 보내기 `sub_4DF120`·`sub_4DF180`.
+void TestSecretWall() {
+    const std::string a = "10.9.1.1:9101";
+    const std::string b = "10.9.1.2:9102";
+    // 격자 (44,43)·(46,43) 두 칸에 벽을 놓고 그중 하나(또는 둘)를 비밀벽으로 만든다
+    auto mk = [&](nox::Server& srv, const std::vector<nox::Server::SecretWallIn>& sw) {
+        srv.SetWallTiles({ nox::Server::WallTileIn{ 44, 43, 1, 0, false },
+                           nox::Server::WallTileIn{ 46, 43, 1, 0, false } });
+        srv.SetSecretWalls(sw);
+        srv.DebugEnterGame(a, 901);
+        srv.DebugSetPos(a, 44 * 23, 43 * 23);              // 벽 바로 옆 — 시야 안
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+    };
+    auto sw1 = [](uint8_t gx, uint8_t gy, uint8_t flags, uint8_t state, uint8_t anim, uint32_t secs) {
+        nox::Server::SecretWallIn t;
+        t.gx = gx; t.gy = gy; t.flags = flags; t.state = state; t.anim = anim; t.waitSecs = secs;
+        return t;
+    };
+    auto count = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint8_t op,
+                     uint16_t* id) {
+        size_t n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 3 && x[0] == op) { ++n; if (id) *id = static_cast<uint16_t>(x[1] | (x[2] << 8)); }
+        return n;
+    };
+
+    // ① **번호는 읽은 차례** · **벽이 없는 칸은 안 달린다**
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 0, 1, 0, 3), sw1(99, 99, 0, 1, 0, 3), sw1(46, 43, 0, 1, 0, 3) });
+        Check(srv.SecretWallCount() == 2, "벽 없는 칸까지 달렸다");
+        Check(srv.SecretWallState(44, 43) == 1, "첫 비밀벽 상태가 1 이 아니다");
+        Check(srv.SecretWallState(46, 43) == 1, "둘째 비밀벽 상태가 1 이 아니다");
+        Check(srv.SecretWallState(45, 43) == -1, "비밀벽 아닌 칸이 비밀벽이다");
+    }
+
+    // ② **맵이 상태를 안 적었으면 깃발 8 로 정한다**(`GAME1_2.c:1132~1141`)
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 8, 0, 0, 3), sw1(46, 43, 0, 0, 0, 3) });
+        Check(srv.SecretWallState(44, 43) == 3, "깃발 8 인데 열림(3)이 아니다");
+        Check(srv.SecretWallAnim(44, 43) == 23, "열린 벽인데 칸이 23 이 아니다");
+        Check(srv.SecretWallState(46, 43) == 1, "깃발 8 이 없는데 닫힘(1)이 아니다");
+        Check(srv.SecretWallAnim(46, 43) == 0, "닫힌 벽인데 칸이 0 이 아니다");
+    }
+
+    // ③ **여는 명령 → 상태 4 → 칸이 23 까지 올라가고 3 이 된다**
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 0, 1, 0, 2) });
+        srv.WallOpen(44, 43);
+        Check(srv.SecretWallState(44, 43) == 4, "여는 중(4)이 아니다");
+        std::vector<nox::OutPacket> out;
+        for (int t = 0; t < 22; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallAnim(44, 43) == 22, "22틱 뒤 칸이 22 가 아니다");
+        Check(srv.SecretWallState(44, 43) == 4, "칸이 23 이 아닌데 벌써 열렸다");
+        srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallAnim(44, 43) == 23, "23틱 뒤 칸이 23 이 아니다");
+        Check(srv.SecretWallState(44, 43) == 3, "칸이 23 인데 열림(3)이 아니다");
+        // 이미 열렸으면 여는 명령이 아무것도 안 한다
+        srv.WallOpen(44, 43);
+        Check(srv.SecretWallState(44, 43) == 3, "열린 벽에 여는 명령이 먹었다");
+    }
+
+    // ④ **닫는 명령 → 상태 2 → 칸이 0 까지 내려가고 1 이 된다**
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 8, 3, 23, 2) });
+        srv.WallClose(44, 43);
+        Check(srv.SecretWallState(44, 43) == 2, "닫는 중(2)이 아니다");
+        std::vector<nox::OutPacket> out;
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallAnim(44, 43) == 0, "23틱 뒤 칸이 0 이 아니다");
+        Check(srv.SecretWallState(44, 43) == 1, "칸이 0 인데 닫힘(1)이 아니다");
+        srv.WallClose(44, 43);
+        Check(srv.SecretWallState(44, 43) == 1, "닫힌 벽에 닫는 명령이 먹었다");
+    }
+
+    // ⑤ **뒤집기는 닫힌 것(1·2)이면 열고 아니면 닫는다**(`Wall.toggle`)
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 0, 1, 0, 2) });
+        srv.WallToggle(44, 43);
+        Check(srv.SecretWallState(44, 43) == 4, "닫힌 벽을 뒤집었는데 안 열린다");
+        std::vector<nox::OutPacket> out;
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
+        srv.WallToggle(44, 43);
+        Check(srv.SecretWallState(44, 43) == 2, "열린 벽을 뒤집었는데 안 닫힌다");
+        // ★ **닫는 중(2)도 「닫힌 것」이라 뒤집으면 열린다**(`IsEnabled` 가 1·2 를 닫힘으로 본다)
+        srv.WallToggle(44, 43);
+        Check(srv.SecretWallState(44, 43) == 4, "닫는 중을 뒤집었는데 안 열린다");
+    }
+
+    // ⑥ **저절로 — 닫힘에서 열리려면 깃발 4 와 8 이 둘 다** 있어야 한다
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 4 | 8, 1, 0, 1), sw1(46, 43, 4, 1, 0, 1) });
+        std::vector<nox::OutPacket> out;
+        // 남은 프레임은 도착할 때 채워진다 — 처음엔 0 이라 아무 일도 안 난다
+        for (int t = 0; t < 40; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(44, 43) == 1, "남은 프레임 0 인데 스스로 열렸다");
+        // 닫는 길로 한 번 굴려 남은 프레임(1초 = 30틱)을 채운다
+        srv.WallOpen(44, 43);
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);   // 3 열림 · 남은 30
+        srv.WallClose(44, 43);
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);   // 1 닫힘 · 남은 30
+        Check(srv.SecretWallState(44, 43) == 1, "닫힘(1)이 아니다");
+        for (int t = 0; t < 29; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(44, 43) == 1, "29틱인데 벌써 스스로 열렸다");
+        srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(44, 43) == 4, "30틱인데 스스로 안 열렸다");
+        Check(srv.SecretWallState(46, 43) == 1, "깃발 8 이 없는데 스스로 열렸다");
+        // ★ **깃발 4 만 있는 벽은 남은 프레임을 채워 줘도 안 열린다** — 8 이 있어야 한다
+        srv.WallOpen(46, 43);
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);   // 3 열림 · 남은 30
+        srv.WallClose(46, 43);
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);   // 1 닫힘 · 남은 30
+        Check(srv.SecretWallState(46, 43) == 1, "닫힘(1)이 아니다");
+        for (int t = 0; t < 40; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(46, 43) == 1, "깃발 4 만 있는데 스스로 열렸다");
+    }
+    // ⑥-2 ★ **닫는 길이 남은 프레임을 다시 채운다** — 안 채우면 그다음 「저절로 열기」가 안 돈다
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 4 | 8, 3, 23, 1) });     // 열린 채로 시작 · 남은 프레임 0
+        std::vector<nox::OutPacket> out;
+        srv.WallClose(44, 43);
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(44, 43) == 1, "닫힘(1)이 아니다");
+        for (int t = 0; t < 29; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(44, 43) == 1, "29틱인데 벌써 열렸다");
+        srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(44, 43) == 4, "닫는 길이 남은 프레임을 안 채웠다");
+    }
+
+    // ⑦ **저절로 — 열림에서 닫히려면 깃발 4 는 있고 8 은 없어야** 한다
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 4, 1, 0, 1), sw1(46, 43, 4 | 8, 1, 0, 1) });
+        std::vector<nox::OutPacket> out;
+        srv.WallOpen(44, 43);
+        srv.WallOpen(46, 43);
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(44, 43) == 3 && srv.SecretWallState(46, 43) == 3, "둘 다 안 열렸다");
+        for (int t = 0; t < 29; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(44, 43) == 3, "29틱인데 벌써 스스로 닫혔다");
+        srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallState(44, 43) == 2, "30틱인데 스스로 안 닫혔다");
+        Check(srv.SecretWallState(46, 43) == 3, "깃발 8 이 있는데 스스로 닫혔다");
+    }
+
+    // ⑧ **알림은 애니가 끝난 뒤에야 나간다** — 1·4 는 닫힘 · 2·3 은 열림
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 0, 1, 0, 2) });
+        std::vector<nox::OutPacket> out;
+        srv.DebugSecretWallSync(a, out);
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0 &&
+              count(out, a, static_cast<uint8_t>(nox::Op::CLOSE_WALL), nullptr) == 0,
+              "닫힌 채로 있는데 알림이 갔다");
+        srv.WallOpen(44, 43);
+        out.clear();
+        for (int t = 0; t < 22; ++t) { srv.DebugSecretWallUpdate(out); srv.DebugSecretWallSync(a, out); }
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0,
+              "여는 중(4)인데 벌써 열림 알림이 갔다");
+        srv.DebugSecretWallUpdate(out);                    // 여기서 3 이 된다
+        out.clear();
+        srv.DebugSecretWallSync(a, out);
+        uint16_t id = 0xffff;
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), &id) == 1, "열림 알림이 한 번이 아니다");
+        Check(id == 0, "번호가 0 이 아니다");
+        out.clear();
+        srv.DebugSecretWallSync(a, out);
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0, "같은 알림이 또 갔다");
+        // 닫는 중(2)은 **열린 것으로 친다** — 다 닫히고서야 닫힘 알림이 간다
+        srv.WallClose(44, 43);
+        out.clear();
+        for (int t = 0; t < 22; ++t) { srv.DebugSecretWallUpdate(out); srv.DebugSecretWallSync(a, out); }
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::CLOSE_WALL), nullptr) == 0,
+              "닫는 중(2)인데 벌써 닫힘 알림이 갔다");
+        srv.DebugSecretWallUpdate(out);
+        out.clear();
+        srv.DebugSecretWallSync(a, out);
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::CLOSE_WALL), &id) == 1, "닫힘 알림이 한 번이 아니다");
+        Check(id == 0, "닫힘 번호가 0 이 아니다");
+    }
+    // ⑧-2 ★ **둘째 벽은 번호 1 로 나간다** — 번호가 진짜 실리는지 보려면 0 이 아닌 것을 봐야 한다
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 0, 1, 0, 2), sw1(46, 43, 0, 1, 0, 2) });
+        srv.WallOpen(46, 43);
+        std::vector<nox::OutPacket> out;
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
+        srv.DebugSecretWallSync(a, out);
+        uint16_t id = 0xffff;
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), &id) == 1, "열림 알림이 한 번이 아니다");
+        Check(id == 1, "둘째 벽 번호가 1 이 아니다");
+    }
+
+    // ⑨ **처음부터 열린 벽은 접속 때 알림이 안 간다**(`sub_4DF2A0` — 비트를 미리 켜 둔다)
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 8, 3, 23, 2) });
+        std::vector<nox::OutPacket> out;
+        srv.DebugSecretWallSync(a, out);
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0,
+              "처음부터 열린 벽에 알림이 갔다");
+        // 그 벽을 닫으면 그때는 간다
+        srv.WallClose(44, 43);
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
+        out.clear();
+        srv.DebugSecretWallSync(a, out);
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::CLOSE_WALL), nullptr) == 1, "닫힘 알림이 안 갔다");
+    }
+
+    // ⑩ **멀리 있는 사람에겐 안 간다**
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 0, 1, 0, 2) });
+        srv.DebugEnterGame(b, 902);
+        srv.DebugSetPos(b, 44 * 23 + 3000, 43 * 23);
+        srv.WallOpen(44, 43);
+        std::vector<nox::OutPacket> out;
+        for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
+        srv.DebugSecretWallSync(a, out);
+        srv.DebugSecretWallSync(b, out);
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 1, "가까운 사람이 못 받았다");
+        Check(count(out, b, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0, "먼 사람이 받았다");
+    }
+
+    // ⑪ **반 넘게 열린 비밀벽은 안 막는다**(칸 > 11 → 방향 −1 · `server/wall.go:848`)
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 0, 1, 0, 2) });
+        Check(srv.DebugWallDirAt(44, 43) == 1, "닫힌 비밀벽인데 안 막는다");
+        srv.WallOpen(44, 43);
+        std::vector<nox::OutPacket> out;
+        for (int t = 0; t < 11; ++t) srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallAnim(44, 43) == 11, "칸이 11 이 아니다");
+        Check(srv.DebugWallDirAt(44, 43) == 1, "칸 11 은 아직 막아야 한다");
+        srv.DebugSecretWallUpdate(out);
+        Check(srv.SecretWallAnim(44, 43) == 12, "칸이 12 가 아니다");
+        Check(srv.DebugWallDirAt(44, 43) == -1, "칸 12 인데 아직 막는다");
+        // 비밀벽이 아닌 벽은 그대로 막는다
+        Check(srv.DebugWallDirAt(46, 43) == 1, "보통 벽이 안 막는다");
+    }
+
+    // ⑫ **깃발 2(통과) 비밀벽은 추적 깃발 0x80 을 통과시킨다**(`server/wall.go:1080`)
+    {
+        nox::Server srv;
+        mk(srv, { sw1(44, 43, 2, 1, 0, 2) });
+        // ⚠ 추적은 **안 막혔을 때 참**이다. 좌표는 이미 닫혀 있는 벽 추적 시험(①)의 것을 쓴다 —
+        //   (1000,1000)→(1030,1000) 은 칸 (44,43) 의 대각선을 가로지른다
+        const float x1 = 1000.0f, y1 = 1000.0f, x2 = 1030.0f, y2 = 1000.0f;
+        Check(srv.DebugTraceRayFlags(x1, y1, x2, y2, 0x1) == false, "보통 추적이 안 막혔다");
+        Check(srv.DebugTraceRayFlags(x1, y1, x2, y2, 0x81) == true, "통과 깃발인데 막혔다");
+        // 깃발 2 가 없으면 0x80 이어도 막힌다
+        nox::Server s2;
+        mk(s2, { sw1(44, 43, 0, 1, 0, 2) });
+        Check(s2.DebugTraceRayFlags(x1, y1, x2, y2, 0x81) == false, "깃발 2 가 없는데 통과했다");
+    }
+
+    std::printf("  9-a — 비밀벽: 번호는 읽은 차례 · 1닫힘 2닫는중 3열림 4여는중 · 칸 23 · "
+                "알림은 끝난 뒤(3b/3c 3B) · 깃발 4+8 저절로 · 칸>11 안 막음 · 깃발 2 는 추적 통과\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -15591,6 +15862,20 @@ void TestMapSections() {
     Check(mf.Find("ObjectData") != nullptr, "ObjectData 섹션이 없다");
     Check(mf.Find("WallMap") != nullptr, "WallMap 섹션이 없다");
     Check(mf.Find("MapInfo") != nullptr, "MapInfo 섹션이 없다");
+    // ★ 묶음 9-a — `SecretWalls` 칸. **157개 맵 전부에 있다**(전수 확인 · 어긋남 0).
+    //   estate 는 비밀벽 **한 개**: 격자 (135,123) · 기다릴 초 3 · 깃발 0x06 · 상태 1(닫힘) · 칸 0
+    Check(mf.Find("SecretWalls") != nullptr, "SecretWalls 섹션이 없다");
+    {
+        const auto sw = mf.ReadSecretWalls();
+        Check(mf.Error().empty(), "SecretWalls 를 읽다 어긋났다");
+        Check(sw.size() == 1, "estate 비밀벽이 한 개가 아니다");
+        if (sw.size() == 1) {
+            Check(sw[0].gx == 135 && sw[0].gy == 123, "estate 비밀벽 격자가 (135,123)이 아니다");
+            Check(sw[0].waitSecs == 3, "기다릴 초가 3 이 아니다");
+            Check(sw[0].flags == 0x06, "깃발이 0x06 이 아니다");
+            Check(sw[0].state == 1 && sw[0].anim == 0, "상태가 닫힘(1·칸 0)이 아니다");
+        }
+    }
 
     std::printf("  .map 섹션 워커 — %zu섹션: ", mf.Sections().size());
     for (const auto& s : mf.Sections()) std::printf("%s(%zu) ", s.name.c_str(), s.size);
@@ -17407,6 +17692,7 @@ int main() {
     TestVote();
     TestModeScoring();
     TestRoundTimeUp();
+    TestSecretWall();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

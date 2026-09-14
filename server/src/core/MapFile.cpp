@@ -286,6 +286,40 @@ std::vector<MapFile::WallCell> MapFile::ReadWalls() {
     }
 }
 
+// SecretWalls = 판 u16 + 개수 u16 + [비밀벽 23B]*  (판 1 이면 13B — 실측에는 없다)
+std::vector<MapFile::SecretWall> MapFile::ReadSecretWalls() {
+    std::vector<SecretWall> out;
+    const MapSection* ss = Find("SecretWalls");
+    if (!ss) return out;                       // 없는 맵도 오류가 아니다(다만 실측 157/157 은 다 있다)
+    const uint8_t* p = buf_.data() + ss->offset;
+    const size_t n = ss->size;
+    if (n < 4) { error_ = "SecretWalls too short"; return out; }
+    const uint16_t ver = static_cast<uint16_t>(p[0] | (p[1] << 8));
+    const uint16_t cnt = static_cast<uint16_t>(p[2] | (p[3] << 8));
+    if (ver > 2) { error_ = "SecretWalls version " + std::to_string(ver); return out; }
+    const size_t stride = (ver >= 2) ? 23u : 13u;
+    if (4 + static_cast<size_t>(cnt) * stride != n) {
+        error_ = "SecretWalls size mismatch";
+        return out;
+    }
+    auto u32 = [](const uint8_t* q) {
+        return static_cast<uint32_t>(q[0]) | (static_cast<uint32_t>(q[1]) << 8) |
+               (static_cast<uint32_t>(q[2]) << 16) | (static_cast<uint32_t>(q[3]) << 24);
+    };
+    out.reserve(cnt);
+    for (uint16_t k = 0; k < cnt; ++k) {
+        const uint8_t* e = p + 4 + static_cast<size_t>(k) * stride;
+        SecretWall w;
+        w.gx = static_cast<uint8_t>(u32(e));
+        w.gy = static_cast<uint8_t>(u32(e + 4));
+        w.waitSecs = u32(e + 8);
+        w.flags = e[12];
+        if (ver >= 2) { w.state = e[13]; w.anim = e[14]; }
+        out.push_back(w);
+    }
+    return out;
+}
+
 void MapFile::DumpFirstObjects(size_t count) const {
     const MapSection* toc = Find("ObjectTOC");
     const MapSection* dat = Find("ObjectData");

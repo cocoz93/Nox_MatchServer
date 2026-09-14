@@ -390,6 +390,20 @@ int main(int argc, char** argv) {
         }
         srv.SetWallTiles(ws);
         {
+            // ★ 2026-09-15 묶음 9-a — 비밀벽. 157개 맵 전부에 `SecretWalls` 칸이 있다(전수 확인)
+            const auto sec = mf.ReadSecretWalls();
+            std::vector<nox::Server::SecretWallIn> sw;
+            sw.reserve(sec.size());
+            for (const auto& w : sec) {
+                nox::Server::SecretWallIn t;
+                t.gx = w.gx; t.gy = w.gy; t.flags = w.flags;
+                t.state = w.state; t.anim = w.anim; t.waitSecs = w.waitSecs;
+                sw.push_back(t);
+            }
+            srv.SetSecretWalls(sw);
+            std::printf("[맵] 비밀벽 %zu개 중 벽이 있는 칸 %zu개\n", sec.size(), srv.SecretWallCount());
+        }
+        {
             // 벽 재질 깃발 — thing.bin WALL 섹션(0x2 = 막지 않음). 방향이 표(0~10) 밖인 벽 수도 찍는다.
             nox::ThingDb wdb;
             size_t badDir = 0;

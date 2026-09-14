@@ -89,6 +89,25 @@ public:
     struct WallCell { uint8_t x = 0, y = 0, dir = 0, tile = 0, variation = 0; bool flag80 = false; };
     std::vector<WallCell> ReadWalls();
 
+    // ★ 2026-09-15 묶음 9-a — SecretWalls 칸. **157개 맵 전부에 있다**(전수 확인 · 어긋남 0).
+    //   정답지 `nox_server_mapRWSecretWalls_4297C0`(`GAME1_2.c:1064`) —
+    //     u16 판(≤2) · u16 개수 · 개수만큼 {
+    //       u32 격자x · u32 격자y · u32 기다릴 초 · u8 깃발 ·
+    //       판≥2 면 u8 상태 · u8 애니칸 · u32 남은프레임 · u32 「본 사람」
+    //     }
+    //   실측 — 157개 맵 모두 **판 2**(한 칸 23바이트) · 비밀벽 합계 **4,903** ·
+    //          저절로 여닫히는 것(깃발 4) **138** · 처음부터 열린 것(깃발 8) **399**
+    //   깃발 — **2 = 선 추적이 통과**(`server/wall.go:1080`) · **4 = 저절로 여닫힘** ·
+    //          **8 = 열린 상태**. 1 은 쓰는 자리를 못 찾았다(미확인)
+    struct SecretWall {
+        uint8_t  gx = 0, gy = 0;
+        uint32_t waitSecs = 0;      // +16 — 여닫고 나서 기다릴 초
+        uint8_t  flags = 0;         // +20
+        uint8_t  state = 0;         // +21 — 1 닫힘 · 2 닫는 중 · 3 열림 · 4 여는 중
+        uint8_t  anim = 0;          // +22 — 0~23
+    };
+    std::vector<SecretWall> ReadSecretWalls();
+
 private:
     std::vector<uint8_t> buf_;
     std::vector<MapSection> sections_;
