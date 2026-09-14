@@ -6313,9 +6313,7 @@ bool Server::CreatureTickMove(Creature& k, double tx, double ty) {
         return true;                                         // 다 왔다
     }
     if (k.path.empty()) { k.velX = 0; k.velY = 0; return false; }
-    const double nx = k.x + k.velX, ny = k.y + k.velY;
-    if (!WallAt(nx, k.y)) k.x = nx;
-    if (!WallAt(k.x, ny)) k.y = ny;
+    CreatureApplyVelocity(k);
     return false;
 }
 
@@ -6545,6 +6543,20 @@ void Server::AITick(Creature& k, std::vector<OutPacket>& out) {
 //   나머지(가기 7 · 싸움 15 · 바라보기 26 …)는 아직 **C 안에** 있다 — 다음 조각이다.
 //
 // 시작은 넷 다 **아무 일도 안 한다**(정답지 `Start(_ *Object) {}`).
+// nox_xxx_monsterIsActionScheduled_50A090 — 그 행동이 **쌓임 어딘가에** 있나
+bool Server::AIHasAction(const Creature& k, uint8_t act) {
+    for (int i = 0; i <= k.aiStackInd && i < Creature::kAIStackMax; ++i)
+        if (k.aiStack[i].action == act) return true;
+    return false;
+}
+
+// 세워 둔 속도로 자리를 옮긴다. 벽은 **x·y 를 따로** 보아 한 축이 막혀도 미끄러진다
+void Server::CreatureApplyVelocity(Creature& k) {
+    const double nx = k.x + k.velX, ny = k.y + k.velY;
+    if (!WallAt(nx, k.y)) k.x = nx;
+    if (!WallAt(k.x, ny)) k.y = ny;
+}
+
 void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
     (void)out;
     switch (act) {
@@ -6718,6 +6730,10 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             const MonsterStats* m = FindMonster(k.type);
             const Target foe{ k.enemyAddr, k.enemyPet };
             if (!m || m->missileName == nullptr || foe.none()) { AIPop(k); break; }
+            // ★ **휘두르기를 시작한 그 틱에만 맞힌다** — 애니를 접었으므로 이 막이 없으면
+            //   쉬는 시간이 안 지켜져 **매 틱 쏜다**(2026-09-15 소환수 죽음 시험에서 잡혔다).
+            //   정답지는 애니의 **쏘는 칸**에서 한 번만 나가므로 같은 뜻이 된다
+            if (k.attackStartFrame != frame_) { AIPop(k); break; }
             // 발사체 피해는 아직 임프 것만 안다(`kImpShotDamage`)
             const int dmg = (k.type == 1328) ? kImpShotDamage : 0;
             if (dmg > 0) {
@@ -6741,6 +6757,8 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             const int dmg = (m && m->meleeDamage > 0) ? m->meleeDamage : 0;
             const Target foe{ k.enemyAddr, k.enemyPet };
             if (dmg == 0 || foe.none()) { AIPop(k); break; }   // 때릴 수 없다(정답지도 뺀다)
+            // ★ 쏘기(17)와 같은 막 — 휘두르기를 시작한 틱에만 맞힌다
+            if (k.attackStartFrame != frame_) { AIPop(k); break; }
             AttackSrc src;
             src.x = static_cast<float>(k.x);
             src.y = static_cast<float>(k.y);
@@ -9468,45 +9486,80 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         SpellCastByPlayer(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);   // 4-a3 지속 주문(spellBookReact_4FCB70)
     }
 
-    // ── 불려 나온 것들을 움직인다 ──
-    // 부른 사람 편이다 — **부른 사람은 안 때린다.** 그게 없으면 부르자마자 자기가 맞는다.
+    // ── 묶음 6-f(6) 불려 나온 것들을 **쌓임으로** 움직인다 ────────────────
+    //
+    // ★★ 2026-09-15 이전에는 이 자리가 **임시 구현**이었다 — 가장 가까운 적에게
+    //   곧장 다가가 사거리에서 때렸다. 이제 **AI 행동 쌓기**(6-a~6-g)가 그 일을 한다.
+    //
+    // ⭕ 한 틱에 하는 일
+    //   1. 그 몬스터의 **빠르기**를 세운다(thing/monster.bin 값)
+    //   2. **가장 가까운 적**을 골라 `enemyAddr` 에 적는다 — 싸움(15)이 이것을 본다
+    //      ⚠ 정답지의 「본 것」 갱신(`unitUpdateSightMB_5281F0` 따위)은 아직 안 옮겼다.
+    //        지금은 **아주 멀리까지 보는** 임시 규칙이다(전과 같다)
+    //   3. **싸움(15)이 쌓임에 없으면 쌓는다** — 그 안에서 쫓기·때리기·쏘기가 갈린다
+    //   4. **조건을 훑고**(`AIProcDeps`) **쌓임을 굴린다**(`AITick`)
+    //   5. 행동이 세워 둔 **속도로 자리를 옮긴다**
+    //
+    // ⚠ 속도는 **틱마다 0 으로 되돌린다** — 정답지는 물리가 깎지만 우리는 그 자리가 없다.
+    //   안 되돌리면 때리는 동안에도 지난 속도로 밀려간다
+    // ⚠ 때리다 상대가 죽으면 **목록이 바뀐다** — 크기가 바뀌면 그 걸음을 접는다
     for (int step = 0; step < ticks && !pets_.empty(); ++step) {
-        for (auto& k : pets_) {
+        const size_t before = pets_.size();
+        for (size_t pi = 0; pi < pets_.size(); ++pi) {
+            Creature& k = pets_[pi];
             if (debugOwnPetNetCode_ != 0 && k.netCode == debugOwnPetNetCode_) continue;   // 진단 임프 — 고정
-            // 가장 가까운 적을 고른다 — **남의 소환수도 문다.**
-            // 아주 멀리까지 보게 해서 「가장 가까운 적을 쫓는다」가 되게 한다.
-            const Target t = NearestTarget(k.owner, k.x, k.y, 1e9);
-            if (t.none()) continue;
-
-            double tx = 0, ty = 0;
-            if (t.pet >= 0) {
-                tx = pets_[static_cast<size_t>(t.pet)].x;
-                ty = pets_[static_cast<size_t>(t.pet)].y;
-            } else {
-                tx = sessions_.at(t.addr).x;
-                ty = sessions_.at(t.addr).y;
-            }
-            const double dx = tx - k.x, dy = ty - k.y;
-            const double d = std::sqrt(dx * dx + dy * dy);
-            if (d < 1e-6) continue;
             const PetTuning tune = TuningFor(k.type);
-            if (d > tune.reach) {
-                // 아직 멀다 — **길을 내어 다가간다**(6-f(3)). 속도는 그 몬스터 것이다.
-                //   ⚠ 2026-09-15 이전에는 여기서 **곧장 직선으로** 갔다. 벽에 붙어 버티던 자리다.
-                k.speedCur = static_cast<float>(tune.speed);
-                if (tune.speed > 0.0) CreatureTickMove(k, tx, ty);
-            } else if (frame_ >= k.nextHitFrame) {
-                // 닿았다 — 때린다. 쉬는 시간도 그 몬스터 것이다(파일에 없으면 30).
-                k.nextHitFrame = frame_ + tune.delay;
-                AttackSrc src;                              // 막기 판정(3-e2) — 소환수 자리(소환수는 지난 자리를 아직 안 둔다)
-                src.x = static_cast<float>(k.x);
-                src.y = static_cast<float>(k.y);
-                src.byMonsterType = k.type;                 // a2 = 몬스터 — 죽음 알림은 그 몬스터 그림(3-d)
-                src.byPet = static_cast<int>(&k - pets_.data());   // 4-b1 흡혈·감전 되갚기의 a2
-                HurtTarget(t, tune.damage, out, k.owner, 0, &src);   // 부른 사람의 점수다
-                break;   // 목록이 바뀔 수 있다 — 이번 걸음은 여기서 접는다
+            k.speedCur = static_cast<float>(tune.speed);
+            // ★★ **보는 쪽은 매 프레임 「돌아가려는 쪽」을 그대로 옮겨 쓴다**
+            //   (`server_update.go:81` · `server.go:167` — `obj.Direction1 = obj.Direction2`).
+            //   점진 회전은 **want 를 8씩 돌려서** 생기고, 보는 쪽은 한 프레임 뒤따라온다.
+            //   ⚠ 이 한 줄이 없으면 바라보기(26)의 「다 봤나」가 **영영 안 참이 되어** 제자리에 선다
+            //     (2026-09-15 틱 교체에서 잡혔다 — 6-d 는 want 쪽만 옮겼었다)
+            k.facing = k.facingWant;
+
+            // ★ **보이는 적만 「지금 상대」로 삼는다** — 조건 45(보이나)가 같은 것을 보기 때문이다.
+            //   안 보이는 것을 상대로 잡아 두면, 45 가 깨져 사슬이 빠지고 싸움이 다시 쌓기를
+            //   **매 틱 되풀이**해 제자리에 선다(2026-09-15 벽 시험에서 잡혔다).
+            //   정답지도 **알아본 적**만 `+1196` 에 넣는다
+            //   ⚠ 잣대는 **크리처 자리에서 보는 선 추적**이다. `CanInteractFrom` 은 **주인 시점**이라
+            //     크리처 시야로는 틀린다(주인이 보면 소환수도 본다는 셈이 된다)
+            const Target t = debugNoAutoFight_ ? Target{} : NearestTarget(k.owner, k.x, k.y, 1e9);
+            float sx = 0, sy = 0;
+            const bool sees = !t.none() && TargetXY(t, sx, sy) &&
+                              MapTraceVision(static_cast<float>(k.x), static_cast<float>(k.y), sx, sy);
+            if (sees) {
+                k.enemyAddr = t.addr;
+                k.enemyPet = t.pet;
+                // ★ **할 일이 아예 없을 때만** 싸움을 쌓는다(바닥이 놀기 하나).
+                //   ⚠ 정답지는 **적을 알아본 순간**(`unitUpdateSightMB_5281F0` 둘레)에 한 번 쌓는다.
+                //     그 「알아보기」를 아직 안 옮겨서, **놀고 있으면 쌓는다**로 대신한다.
+                //     이렇게 두면 이미 굴러가는 사슬을 매 틱 덮어쓰지 않는다
+                if (k.aiStackInd == 0 && k.aiStack[0].action == 0) {
+                    if (AIPush(k, 15)) {
+                        k.aiStack[k.aiStackInd].argX = sx;          // 마지막으로 본 자리
+                        k.aiStack[k.aiStackInd].argY = sy;
+                        k.aiStack[k.aiStackInd].argU32 = frame_;    // 마지막 소식 때
+                    }
+                } else {
+                    // ★ **보이는 동안에는 「마지막으로 본 자리」를 계속 고쳐 적는다.**
+                    //   정답지는 알아보기 쪽이 이 자리를 갱신한다. 안 고치면 적이 옮겨가도
+                    //   **처음 본 자리로만 달려간다**(2026-09-15 소환수 죽음 시험에서 잡혔다)
+                    for (int i = 0; i <= k.aiStackInd && i < Creature::kAIStackMax; ++i)
+                        if (k.aiStack[i].action == 15) { k.aiStack[i].argX = sx; k.aiStack[i].argY = sy; }
+                }
+            } else if (!debugNoAutoFight_) {
+                k.enemyAddr.clear();
+                k.enemyPet = -1;
             }
+
+            k.velX = 0; k.velY = 0;
+            AIProcDeps(k, out);
+            if (pets_.size() != before) break;
+            AITick(k, out);
+            if (pets_.size() != before) break;
+            if (k.velX != 0.0 || k.velY != 0.0) CreatureApplyVelocity(k);
         }
+        if (pets_.size() != before) break;
     }
 
     // ★★ **걷고 있나를 정한다** — 갱신 항목의 애니 번호(IDLE/WALK)를 가르는 데 썼다.

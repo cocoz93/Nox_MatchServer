@@ -1692,6 +1692,20 @@ public:
     std::string DebugAITargetAddr(size_t i, int j) const {
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].targetAddr : std::string();
     }
+    // 시험용 — 틱이 **스스로 싸움(15)을 쌓는 것**을 끈다.
+    //   행동 하나만 떼어 보는 시험은 쌓임을 손으로 세우므로 이것이 필요하다
+    //   끌 때는 **이미 굴러가던 쌓임도 비운다** — 안 그러면 앞 틱에 쌓인 사슬이 계속 돈다
+    void DebugSetAutoFight(bool v) {
+        debugNoAutoFight_ = !v;
+        if (!v) for (auto& k : pets_) {
+            for (int i = 0; i < Creature::kAIStackMax; ++i) k.aiStack[i] = Creature::AIStackItem{};
+            k.aiStackInd = 0;
+            k.path.clear();
+            k.velX = 0; k.velY = 0;
+            k.enemyAddr.clear(); k.enemyPet = -1;
+        }
+    }
+    std::string DebugPetEnemy(size_t i) const { return i < pets_.size() ? pets_[i].enemyAddr : std::string(); }
     void DebugSetPetEnemy(size_t i, const std::string& addr, int pet) {
         if (i < pets_.size()) { pets_[i].enemyAddr = addr; pets_[i].enemyPet = pet; }
     }
@@ -2401,6 +2415,8 @@ private:
     bool AIPush(Creature& k, uint8_t act, const Target& targ = Target{}, float x = 0, float y = 0);
     int  AIPop(Creature& k);
     void AITick(Creature& k, std::vector<OutPacket>& out);
+    static bool AIHasAction(const Creature& k, uint8_t act);
+    void CreatureApplyVelocity(Creature& k);
     void AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIEnd(Creature& k, uint8_t act);
@@ -2759,6 +2775,7 @@ private:
     std::map<uint32_t, uint16_t> weaponWire_;      // 묶음 3-d 무기 클래스 비트 → 종류 번호
     unsigned long long tryCollides_ = 0;           // `0x7B` 를 받아 대상을 찾은 횟수
     unsigned long long tryCollideDeferred_ = 0;    // 그 가운데 충돌 함수를 아직 안 옮긴 것
+    bool debugNoAutoFight_ = false;   // 시험용 — 틱의 자동 싸움 쌓기를 끔
     uint16_t debugOwnPetNetCode_ = 0; // 만든 임프의 번호 — 이동 루프가 이것만 건너뛴다(고정)
     bool standalone_ = false;
     std::string saMapName_;

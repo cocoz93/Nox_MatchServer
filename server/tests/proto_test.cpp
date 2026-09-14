@@ -9402,6 +9402,7 @@ void TestAIStack() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugSpawnPet(1328, 1040, 1000, a);
+        srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
     };
 
     // ① **처음은 바닥에 놀기(0) 하나**
@@ -9515,6 +9516,7 @@ void TestAIDeps() {
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1100, 1000);
         srv.DebugSpawnPet(1328, 1040, 1000, a);
+        srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         // ⚠ `DebugMoveTo` 는 옛 자리칸(x)만 바꾼다. **실수 자리(posX)는 틱이 맞춘다**
         //   (`Server.cpp:3547` 「밖에서 x·y 를 바꿨으면 실수 자리를 거기에 맞추고 멈춘다」).
         //   틱을 안 돌리면 대상이 (0,0) 에 있는 것으로 재어져 거리 조건이 늘 틀린다.
@@ -9657,6 +9659,7 @@ void TestAIActions() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugSpawnPet(1328, 1040, 1000, a);
+        srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.Tick(34, o);
@@ -9801,6 +9804,7 @@ void TestAIFace() {
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1000, 1400);                      // 소환수 기준 **아래쪽**(+y)
         srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.Tick(34, o);
@@ -10873,12 +10877,16 @@ void TestCreatureTickMove() {
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1150, 1000);
-        // x=45 세로 벽 — 둘 사이를 곧장 막는다(45+43=88 짝수라 줄 추적에도 걸린다)
-        srv.SetWalls({ { 45, 41 }, { 45, 42 }, { 45, 43 }, { 45, 44 }, { 45, 45 } });
         srv.DebugSpawnPet(1328, 1000, 1000, a);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
-        srv.Tick(ms, out);
+        // ★ **먼저 보게 한 뒤 벽을 세운다** — 틱은 **보이는 적만** 상대로 삼는다(정답지도 그렇다).
+        //   처음부터 벽이 있으면 아예 **알아보지 못해** 쫓지 않는다. 「보고 나서 가려진」 꼴이라야
+        //   싸움이 **마지막으로 본 자리**로 가기를 밀어 벽을 돌아간다
+        ms += 34; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        // x=45 세로 벽 — 둘 사이를 곧장 막는다(45+43=88 짝수라 줄 추적에도 걸린다)
+        srv.SetWalls({ { 45, 41 }, { 45, 42 }, { 45, 43 }, { 45, 44 }, { 45, 45 } });
         srv.DebugSetPetPos(0, 1000, 1000);
 
         double bestX = 1000, offY = 0;
@@ -11042,6 +11050,7 @@ void TestAIMoveTo() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetPetPos(0, 1000, 1000);
@@ -11212,6 +11221,7 @@ void TestAIRandomWalk() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetPetPos(0, 1000, 1000);
@@ -11310,6 +11320,7 @@ void TestAIFight() {
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1400, 1000);
         srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         // ⚠ **두 번 틱을 돌린다** — `DebugMoveTo` 는 `x` 만 세우고 `posX` 는 움직임 틱이 맞춘다.
         //   한 번만 돌리면 `TargetXY` 가 **옛 자리**를 준다
@@ -11518,6 +11529,7 @@ void TestAIMelee() {
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1010, 1000);
         srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetPetPos(0, 1000, 1000);
@@ -13279,6 +13291,9 @@ void TestPetDies() {
         nox::Server::PhysBody body;
         body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);      // 4-a — 임프. 몸이 있어야 날아가는 것이 맞힌다
+        // ⚠ 이 시험은 **날아가는 것이 몸에 맞나**를 본다 — 소환수가 AI 로 움직이면 줄에서 비켜 빗나간다.
+        //   그래서 틱의 자동 싸움을 끈다(2026-09-15 묶음 6-f(6) 틱 교체에서 드러남)
+        srv.DebugSetAutoFight(false);
         double petX = 0, petY = 0;
         srv.DebugPetXY(0, petX, petY);
         // b 를 소환수 서쪽에 세우고 소환수 쪽(+x)으로 쏘게 한다
