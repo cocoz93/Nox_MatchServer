@@ -4629,8 +4629,10 @@ int Server::CastLesserHeal(uint8_t spell, Session& caster, const Target& targ, s
         SpellManaGive(caster, spellDefs_[spell].mana, out);   // sub_4FD030(a3, ManaCost(spell, 1))
         return 1;
     }
-    double amount = BalanceFloat("LesserHealAmount");       // ARENA LesserHealAmount
-    amount *= static_cast<double>(HealthOnline(caster.charClass));   // 시전자 직업 최대 체력(사람 시전 기준)
+    double amount = BalanceFloat("LesserHealAmount");       // ARENA LesserHealAmount = 15(절대 HP)
+    // ⚠⚠ 여기 곱하는 것은 **직업 배수**(온라인 1.0)다 — 최대 체력이 아니다.
+    //   정답지 전역 이름이 `warriorMaxHealth_587000_*` 라 최대 체력으로 읽었다가 회복량을 100배 부풀렸다(ClassHealthMult 주석).
+    amount *= static_cast<double>(ClassHealthMult(caster.charClass));
     UnitAdjustHP(targ, static_cast<int>(amount), out);     // unitAdjustHP(최대 아래일 때만·최대에서 자름) · 알림은 갱신 틱(PlayerReportAnything)
     return 1;
 }

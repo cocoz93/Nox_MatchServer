@@ -102,6 +102,14 @@ inline int HealthOnline(CharClass c)   { return MaxStatsOf(c).maxHealth; }
 inline int ManaOnline(CharClass c)     { return MaxStatsOf(c).maxMana; }
 inline int StrengthOnline(CharClass c) { return MaxStatsOf(c).maxStrength; }
 inline int SpeedOnline(CharClass c)    { return MaxStatsOf(c).maxSpeed; }
+
+// ★★ **직업 스탯 배수** ◑ (`server/player.go:167` serverPlayers::init) — 온라인(아레나)은 **전부 1.0**.
+//   접속 준비 때 `ef STAT_MULTIPLIERS` 로 클라에 보내는 그 값이다.
+//   ⚠⚠ **2026-09-14 정정** — 정답지 전역 `warriorMaxHealth_587000_312784` 따위는 이름과 달리
+//     **최대 체력이 아니라 이 배수**다(`legacy/player.go:58` → `Players.Mult.Warrior.Health`).
+//     이름만 보고 최대 체력으로 읽어 LesserHeal 회복량을 75~150배 부풀렸다(c4b017b 결함).
+//   ⚠ 퀘스트는 `DefaultStatMult` 로 체력 3배(`server/player.go:101`) — 그 모드를 붙이면 여기가 갈린다.
+inline float ClassHealthMult(CharClass) { return 1.0f; }
 // +490 짐 한계 ◑ plrReadVals_4EEDC0(`GAME3_3.c:7708`) — (힘 ÷ 워리어(직업 0) 최대 힘 × 1250 + 750) × blob(0x581450+10216).
 //   blob 은 못 읽었다 — 위저드 녹음 `48` 의 1650 = (35/125 × 1250 + 750) × **1.5** 로 역산한 값이다.
 //   `48 REPORT_STATS` 의 넷째 칸이 이것이다(servSendStats_4D8990 `GAME3_2.c:4209`).

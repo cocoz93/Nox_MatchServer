@@ -4997,7 +4997,7 @@ void TestHealSpells() {
     // LesserHealAmount 0.25 → 위저드 75 × 0.25 = 18.75 → 버림 18
     auto mk = [&](nox::Server& srv, uint8_t spell) {
         nox::Gamedata g;
-        g.Parse("LesserHealAmount = 0.25;\n");
+        g.Parse("LesserHealAmount = 15;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });    // 어느 직업이나 · 음소 둘(9틱)
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
@@ -5013,7 +5013,7 @@ void TestHealSpells() {
         srv.Damage(a, 40, out);                              // 75 → 35
         Check(srv.HealthOf(a) == full - 40, "다침 전제(35)가 아니다");
         CastAndWait(srv, a, 41, true, ms, out);
-        Check(srv.HealthOf(a) == full - 40 + 18, "LesserHeal 이 18(0.25×75 버림) 안 채웠다");
+        Check(srv.HealthOf(a) == full - 40 + 15, "LesserHeal 이 15(LesserHealAmount × 직업배수 1.0) 안 채웠다");
     }
 
     // ② LesserHeal 자기 · 최대 체력 — 마나를 되돌려 공짜(cast 에서 뗀 마나가 다시 참)
@@ -5087,7 +5087,7 @@ void TestHealSpells() {
     {
         const std::string b = "10.7.0.2:7002";
         nox::Server srv;
-        nox::Gamedata g; g.Parse("LesserHealAmount = 0.25;\n"); srv.SetGamedata(g);
+        nox::Gamedata g; g.Parse("LesserHealAmount = 15;\n"); srv.SetGamedata(g);
         srv.SetSpellDef(41, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
@@ -5101,7 +5101,7 @@ void TestHealSpells() {
         Check(srv.HealthOf(b) == full, "b 가 최대 체력이 아니다(전제)");
         Check(srv.ManaOf(a) == manaFull - 10, "자기가 아닌 최대 체력 대상 LesserHeal 인데 마나가 되돌아왔다(자기검사 빠짐)");
     }
-    std::printf("  4-b5a — LesserHeal 18(0.25×75)·자기 최대 마나 되돌림·남에게는 안 되돌림 · RestoreHealth·Wink 가득 · RestoreMana 가득 · 대상 없음 마나 되돌림\n");
+    std::printf("  4-b5a — LesserHeal 15(기획값×배수 1.0)·자기 최대 마나 되돌림·남에게는 안 되돌림 · RestoreHealth·Wink 가득 · RestoreMana 가득 · 대상 없음 마나 되돌림\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
