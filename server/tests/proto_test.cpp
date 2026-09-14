@@ -4483,12 +4483,14 @@ void TestBuffSpells() {
         { 40, 23, 306, false, "Invulnerability" }, { 42, 15, 307, false, "Light" }, { 55, 29, 308, false, "Nullify" },
         { 61, 20, 309, false, "ProtectElectricity" }, { 62, 17, 310, false, "ProtectFire" }, { 64, 18, 311, false, "ProtectPoison" },
         { 70, 8, 312, false, "Run" }, { 72, 4, 313, false, "Slow" }, { 130, 13, 314, false, "Vampirism" }, { 131, 10, 1080, false, "Villain" },
+        // 4-c4 — 충격(useShock_52C5A0). 글리프에 걸면 피해 갈래지만 글리프는 아직 없다(묶음 4-e)
+        { 20, 22, 315, false, "Shock" },
     };
     const char* kGd =
         "AnchorEnchantDuration = 301;\nFearEnchantDuration = 302;\nHasteEnchantDuration = 303;\nInfravisionEnchantDuration = 304;\n"
         "InvisibilityEnchantDuration = 305;\nInvulnerabilityEnchantDuration = 306;\nLightEnchantDuration = 307;\nWarCryDuration = 308;\n"
         "ProtectElectricityEnchantDuration = 309;\nProtectFireEnchantDuration = 310;\nProtectPoisonEnchantDuration = 311;\n"
-        "RunEnchantDuration = 312;\nSlowEnchantDuration = 313;\nVampirismEnchantDuration = 314;\n";
+        "RunEnchantDuration = 312;\nSlowEnchantDuration = 313;\nVampirismEnchantDuration = 314;\nShockEnchantDuration = 315;\n";
     auto mk = [&](nox::Server& srv, uint8_t spell) {
         nox::Gamedata g;
         g.Parse(kGd);
@@ -4530,7 +4532,7 @@ void TestBuffSpells() {
         CastAndWait(s2, a, 36, false, m3, o3);
         Check(!s2.DebugHasEnchant(a, 9) && s2.ManaOf(a) == full2, "대상 없는 Haste 가 걸렸거나 마나를 가져갔다(castBuffSpell 대상 없음 0)");
     }
-    std::printf("  4-b2 — 버프 주문 19 함수 길이·세기·연기 · Death 한 번만 · 대상 없음 실패\n");
+    std::printf("  4-b2 — 버프 주문 20 함수 길이·세기·연기 · Death 한 번만 · 대상 없음 실패 · 4-c4 충격(22)\n");
 }
 
 // ── 묶음 4-b3 — 움직임 버프 ─────────────────────────────────────────
