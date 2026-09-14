@@ -12232,6 +12232,60 @@ void TestAIGuardHunt() {
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 15, "떠돌기 중에 싸움(15)을 안 올렸다");
     }
+    // ⑥-2 **길목이 있으면 떠돌기가 그리로 걸어간다**(6-j(2))
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.SetWaypoints({ { 1500.0f, 1000.0f } });           // 칸 (65,43)
+        srv.DebugSetFrame(1000);
+        srv.DebugAIPush(0, 10);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 7, "길목이 있는데 가기(7)를 안 밀었다");
+        // 길목 칸 한가운데로 간다
+        Check(std::fabs(srv.DebugAIArgX(0, 1) - (65 * 23.0f + 11.0f)) < 0.01f,
+              "가기가 길목 칸 한가운데를 안 받았다");
+        Check(srv.DebugAIAction(0, 0) == 10, "떠돌기가 빠졌다 — 길목이 있으면 안 빠진다");
+    }
+    // ★ **네 쪽을 다 본다** — 옆이 아니라 아래에 있어도 찾는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        // ⚠ **너무 멀리 두면 안 된다** — 자국 자리가 1024칸뿐이라 물결이 스물몇 칸에서 끊긴다.
+        //   먼저 보는 쪽(+x)은 닿고 늦게 보는 쪽은 안 닿아, 거리만으로는 「넷을 다 보나」를 못 가른다
+        srv.SetWaypoints({ { 1000.0f, 48 * 23 + 11.0f } });   // 칸 (43,48) — 다섯 칸 아래
+        srv.DebugSetFrame(1000);
+        srv.DebugAIPush(0, 10);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 7, "아래쪽 길목을 못 찾았다 — 이웃 넷을 다 봐야 한다");
+        Check(std::fabs(srv.DebugAIArgY(0, 1) - (48 * 23.0f + 11.0f)) < 0.01f,
+              "가기가 아래쪽 길목 자리를 안 받았다");
+    }
+    // 길목이 하나도 없으면 옛 갈래(빠지고 기다리기)로 간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.SetWaypoints({});
+        srv.DebugSetFrame(1000);
+        srv.DebugAIPush(0, 10);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 1, "길목이 없는데 기다리기로 안 갔다");
+    }
+    // 벽으로 막힌 길목은 못 찾는다 — 물결이 못 닿는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int y = 41; y <= 45; ++y)
+            for (int x = 41; x <= 45; ++x)
+                if (x == 41 || x == 45 || y == 41 || y == 45) w.push_back({ static_cast<uint8_t>(x), static_cast<uint8_t>(y) });
+        srv.SetWalls(w);                                      // 소환수를 가둔다
+        srv.SetWaypoints({ { 1500.0f, 1000.0f } });           // 담 밖 길목
+        srv.DebugSetFrame(1000);
+        srv.DebugAIPush(0, 10);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 1, "막힌 길목을 찾아냈다 — 물결이 벽을 넘었나");
+    }
+
     // ⑦ **죽어가는 중(30)·죽음(31)** — 6-j
     //   밀기 규칙이 「죽음 위에는 죽어가는 중만 올라간다」라, 죽음을 먼저 깔고 그 위에 올린다
     {

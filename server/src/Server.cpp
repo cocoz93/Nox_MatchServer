@@ -5874,6 +5874,7 @@ void Server::AIPathBakeWalls() {
             const bool wall = wallsOn_ && walls_[static_cast<size_t>(y) * 256 + static_cast<size_t>(x)] != 0;
             if (wall) n->flags |= 0x1; else n->flags &= static_cast<uint16_t>(~0x1);
         }
+    AIPathBakeWaypoints();   // 묶음 6-j(2) — 길목 칸(0x40)도 같이 찍는다
 }
 
 // ── 묶음 6-e(2) 길 훑기 ───────────────────────────────────────────────
@@ -6575,6 +6576,66 @@ void Server::OrderUnit(Session& src, uint16_t netCode, uint8_t order) {
         if (k.owner == src.addr) EnactUnitOrder(src, k, order);
 }
 
+// ── 묶음 6-j(2) 길목 찾기 ─────────────────────────────────────────────
+//
+// ★★ **앞 기록 정정** — 6-i(3) 에 「우리 맵 자료에 길목이 없다」고 적었는데 **틀렸다**.
+//   길목은 `main.cpp:462` 에서 이미 읽어 `SetWaypoints` 로 서버에 실린다.
+//   없었던 것은 **고르는 함수**였다.
+//
+// ⭕ 정답지 `Sub50AFA0`(`server/object_ai_path.go:596`)이 격자에 길목 칸을 **깃발 0x40** 으로 찍고,
+//   `Sub_50CB20`(`src/unit_ai_path.go:336`)이 **거기서부터 물결로 훑어** 가장 먼저 닿는
+//   길목 칸을 돌려준다. 이웃은 blob `0x587000+234284` 의 **직교 넷**이다(대각 없음).
+//
+// ⚠ `sub_50B870`(벽 모서리)·`sub_50C830`(물칸)은 아직 안 옮겨 **지날 수 있는 것으로** 본다
+// ⚠ 우리 `waypoints_` 는 점멸(4-e)이 쓰려고 `flags2 & 0x80` 에 더해 `flags & 1`(켜짐)까지 걸러 담았다.
+//   정답지의 격자 찍기는 **0x80 만** 본다 — 꺼진 길목이 있으면 우리가 덜 찍는다
+void Server::AIPathBakeWaypoints() {
+    for (const auto& w : waypoints_) {
+        const int gx = static_cast<int>(w.first / kWallCell);
+        const int gy = static_cast<int>(w.second / kWallCell);
+        if (AIIndexNode* n = AIPathIndexAt(gx, gy)) n->flags |= 0x40;
+    }
+}
+
+bool Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY) {
+    if (waypoints_.empty()) return false;
+    ++aiIndexLast_;
+    AIPathResetVisit();
+    const int sx = static_cast<int>(k.x / kWallCell);
+    const int sy = static_cast<int>(k.y / kWallCell);
+    int wave = AIPathNewVisit(sx, sy, -1, -1);
+    if (wave < 0) return false;
+    if (AIIndexNode* rp = AIPathIndexAt(sx, sy)) rp->visit = aiIndexLast_;
+    static const int kNb4[4][2] = { { 1, 0 }, { 0, -1 }, { -1, 0 }, { 0, 1 } };
+    while (wave >= 0) {
+        int next = -1;
+        for (int it = wave; it >= 0; it = aiVisit_[static_cast<size_t>(it)].next) {
+            const int x1 = aiVisit_[static_cast<size_t>(it)].x;
+            const int y1 = aiVisit_[static_cast<size_t>(it)].y;
+            if (AIPathFlagsAt(x1, y1) & 0x40) {              // 길목 칸이다
+                outX = x1 * 23.0f + 11.0f;
+                outY = y1 * 23.0f + 11.0f;
+                return true;
+            }
+            for (int i = 0; i < 4; ++i) {
+                const int x2 = x1 + kNb4[i][0], y2 = y1 + kNb4[i][1];
+                AIIndexNode* p = AIPathIndexAt(x2, y2);
+                if (!p || p->visit == aiIndexLast_) continue;
+                p->visit = aiIndexLast_;
+                // ★ 정답지의 막힘 관문은 `sub_50B870`(벽 모서리 번호)·`sub_50C830`(물칸)인데
+                //   둘 다 아직 안 옮겼다. **우리가 가진 벽 깃발**로 대신 막는다 —
+                //   안 막으면 물결이 벽을 넘어가 **담 밖 길목까지 찾아낸다**(시험이 잡았다)
+                if (AIPathBlockedFlags(false, x2, y2)) continue;
+                const int nn = AIPathNewVisit(x2, y2, it, next);
+                if (nn < 0) return false;                    // 자국 자리를 다 썼다
+                next = nn;
+            }
+        }
+        wave = next;
+    }
+    return false;
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -6963,6 +7024,16 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                     k.aiStack[k.aiStackInd].argX = ex;
                     k.aiStack[k.aiStackInd].argY = ey;
                     k.aiStack[k.aiStackInd].argU32 = frame_;
+                }
+                break;
+            }
+            // ★ 묶음 6-j(2) — **길목을 물결로 찾아** 그리로 걸어간다(`Sub_50CB20`)
+            float wx = 0, wy = 0;
+            if (AIPathFindWaypoint(k, wx, wy)) {
+                if (AIPush(k, 7)) {
+                    k.aiStack[k.aiStackInd].argX = wx;
+                    k.aiStack[k.aiStackInd].argY = wy;
+                    k.aiStack[k.aiStackInd].argU32 = 0;
                 }
                 break;
             }

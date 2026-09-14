@@ -1093,7 +1093,7 @@ public:
     // ★ 묶음 3-c — 맵의 PlayerStart 자리(부활 자리 고르기 mapFindPlayerStart_4F7AB0). main.cpp 가 맵 오브젝트에서 채운다.
     void SetPlayerStarts(std::vector<std::pair<float, float>> v) { playerStarts_ = std::move(v); }
     // ★ 맵 길목 — 점멸이 여기서 목적지를 고른다(`waypoint_579F00`). 비었으면 시작 지점으로 되돌아간다.
-    void SetWaypoints(std::vector<std::pair<float, float>> v) { waypoints_ = std::move(v); }
+    void SetWaypoints(std::vector<std::pair<float, float>> v) { waypoints_ = std::move(v); AIPathBakeWaypoints(); }
     size_t WaypointCount() const { return waypoints_.size(); }
     size_t PlayerStartCount() const { return playerStarts_.size(); }
     // 자동 부활 서버 설정(nox_server_doPlayersAutoRespawn_40A5F0 · 0x5D4594+3584). 정답지 기본 0 — 클릭해야 살아난다.
@@ -1698,6 +1698,9 @@ public:
     void DebugSetPetNextHit(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].nextHitFrame = f; }
     uint32_t DebugPetNextHit(size_t i) const { return i < pets_.size() ? pets_[i].nextHitFrame : 0; }
     uint32_t DebugPetAttackStart(size_t i) const { return i < pets_.size() ? pets_[i].attackStartFrame : 0; }
+    float DebugAIArgY(size_t i, int j) const {
+        return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argY : 0.0f;
+    }
     float DebugAIArgX(size_t i, int j) const {
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argX : 0.0f;
     }
@@ -2471,6 +2474,9 @@ private:
     void AIPathMaybeIndexObjects();
     void AIPathInvalidate(bool alsoFrame);
     void AIPathBakeWalls();
+    // 묶음 6-j(2) — 길목 칸을 격자에 찍고(0x40), 거기서부터 물결로 찾는다
+    void AIPathBakeWaypoints();
+    bool AIPathFindWaypoint(const Creature& k, float& outX, float& outY);
     bool MapTraceObstacles(int skipObstacle, float x1, float y1, float x2, float y2) const;
     void AIPathResetVisit();
     int  AIPathNewVisit(int x, int y, int parent, int next);
