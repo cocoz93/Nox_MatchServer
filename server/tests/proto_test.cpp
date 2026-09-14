@@ -5221,6 +5221,127 @@ void TestChannelLife() {
     std::printf("  4-b5b(1) — ChannelLife 생명→마나(0.5/틱 이월) · 대상 마나 가득/달리기/체력 1 이하/소환수 목줄 5 면 끊김\n");
 }
 
+// ── 묶음 4-b5b(2) — 치료 광선(GreaterHeal 35) ─────────────────────────────
+//
+// 정답지: spells.go:277 → duration.New(sub_52F220, sub_52F2E0, nil, 0)
+//   create 52F220(GAME4_2.c:11329) — 둘레 400 에서 받을 이를 찾아 **적이 아니면** 빔을 켜고 이어 간다
+//   tick   52F2E0(:11376) — blob 회복률(레벨 3 → 1.0) × 직업배수 만큼 채우고 **시전자 마나 1**
+void TestGreaterHeal() {
+    const std::string a = "10.8.1.1:8101";
+    const std::string b = "10.8.1.2:8102";
+    auto mk = [&](nox::Server& srv, bool sameTeam) {
+        srv.SetSpellDef(35, 10, 0x1000000, { 1, 2 });        // 어느 직업이나 · 음소 둘
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1080, 1000);                      // 둘레 400 안
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, sameTeam ? 1 : 2);               // 같은 편이라야 고쳐 준다
+    };
+    const uint8_t k9e = static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL);
+
+    // ① 아군을 고친다 — 빔 `9e 06`(받는 쪽이 앞) · 대상 체력 오름 · 시전자 마나 줄어듦
+    {
+        nox::Server srv; mk(srv, true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(b, 30, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t aMana = srv.ManaOf(a);
+        out.clear();
+        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        CastAndWait(srv, a, 35, false, ms, out);
+        Check(srv.DebugDurActive(35, a), "아군에게 건 GreaterHeal 이 안 걸렸다");
+        // 빔 시작 — 갈래 6 · 받는 쪽(b 729) 이 앞, 시전자(a 728) 가 뒤
+        // ⚠ `FindMsg(FlattenTo(...))` 로 쓰면 임시 벡터를 가리키는 **매달린 포인터**가 된다 — 이름을 붙여 살려 둔다
+        const auto toB = FlattenTo(out, b);
+        const auto* ray = FindMsg(toB, k9e);
+        Check(ray != nullptr && ray->size() == 7 && (*ray)[1] == 6 &&
+              ((*ray)[3] | ((*ray)[4] << 8)) == 729 && ((*ray)[5] | ((*ray)[6] << 8)) == 728,
+              "치료 광선 `9e 06`(받는 쪽 앞)이 안 나갔다");
+        for (int t = 0; t < 8; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int healed = static_cast<int>(srv.HealthOf(b)) - static_cast<int>(bHp);
+        const int spent = static_cast<int>(aMana) - static_cast<int>(srv.ManaOf(a));
+        Check(healed >= 6 && healed <= 10, "대상 체력이 틱마다 1(레벨 3 → 1.0) 안 찼다");
+        Check(spent >= 6, "시전자 마나가 틱마다 1 안 줄었다");
+    }
+
+    // ② 적은 못 고친다 — create 가 취소한다
+    {
+        nox::Server srv; mk(srv, false);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(b, 30, out);
+        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        CastAndWait(srv, a, 35, false, ms, out);
+        for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(!srv.DebugDurActive(35, a), "적인데 GreaterHeal 이 걸렸다");
+        Check(srv.HealthOf(b) == bHp, "적을 고쳤다");
+    }
+
+    // ③ 시전자가 맞으면 끊긴다(sub_4E6BD0 — 지난 1틱 안에 맞음)
+    {
+        nox::Server srv; mk(srv, true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(b, 30, out);
+        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        CastAndWait(srv, a, 35, false, ms, out);
+        Check(srv.DebugDurActive(35, a), "걸리지도 않았다(시험 전제)");
+        srv.Damage(a, 5, out);                               // 시전자가 맞는다
+        ms += 34; srv.Tick(ms, out);
+        Check(!srv.DebugDurActive(35, a), "시전자가 맞았는데 치료 광선이 안 끊겼다");
+    }
+
+    // ④ 대상 체력이 가득이면 첫 틱에 끊긴다
+    {
+        nox::Server srv; mk(srv, true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const uint16_t aMana = srv.ManaOf(a);
+        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        CastAndWait(srv, a, 35, false, ms, out);             // b 는 안 다쳤다
+        for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(!srv.DebugDurActive(35, a), "대상이 멀쩡한데 치료 광선이 안 끊겼다");
+        Check(srv.ManaOf(a) >= aMana - 10, "안 고쳐도 되는데 마나를 계속 썼다");
+    }
+
+    // ⑤ 시전자 마나가 바닥이면 끊긴다
+    {
+        nox::Server srv; mk(srv, true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(b, 60, out);
+        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        CastAndWait(srv, a, 35, false, ms, out);
+        Check(srv.DebugDurActive(35, a), "걸리지도 않았다(시험 전제)");
+        srv.DebugManaSub(a, srv.ManaOf(a));                  // 마나 0
+        ms += 34; srv.Tick(ms, out);
+        Check(!srv.DebugDurActive(35, a), "시전자 마나가 0 인데 치료 광선이 안 끊겼다");
+    }
+    // ⑥ 시전자가 달리면 끕긴다(버프 8)
+    {
+        nox::Server srv; mk(srv, true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(b, 40, out);
+        srv.DebugAimAt(a, 1080, 1000);
+        CastAndWait(srv, a, 35, false, ms, out);
+        Check(srv.DebugDurActive(35, a), "걸리지도 않았다(시험 전제)");
+        srv.DebugApplyEnchant(a, 8, 0, 1);                   // 달리기
+        ms += 34; srv.Tick(ms, out);
+        Check(!srv.DebugDurActive(35, a), "시전자가 달리는데 치료 광선이 안 끕겼다");
+    }
+    std::printf("  4-b5b(2) — GreaterHeal 아군 치료 광선 `9e 06` · 틱마다 체력 1/마나 1 · 적·가득·맞음·마나 0 이면 끊김\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -7317,6 +7438,7 @@ int main() {
     TestReportFramework();
     TestHealSpells();
     TestChannelLife();
+    TestGreaterHeal();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

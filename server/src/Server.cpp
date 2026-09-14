@@ -4526,6 +4526,13 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
                 break;
             }
+            case 35: {                                                                         // GreaterHeal — 지속(치료 광선)
+                DurFns f;
+                f.create = &Server::DurGreaterHealCreate;
+                f.update = &Server::DurGreaterHealTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
+                break;
+            }
             case 41: fnc = CastLesserHeal(spell, s, targ, out); break;                            // sub_52DD50 LesserHeal
             case 68: case 133: fnc = CastRestoreHealth(targ, out); break;                         // castSpellWinkORrestoreHealth_52BF20 RestoreHealth·Wink
             case 69: fnc = CastRestoreMana(targ); break;                                          // sub_52BF50 RestoreMana
@@ -4733,6 +4740,126 @@ int Server::DurChannelLife(DurSpell& d, std::vector<OutPacket>& out) {
     }
     Damage(d.caster, 1, out, std::string(), nullptr, /*ignoreInvuln=*/true);            // unitDamageClear(시전자, 1)
     return 0;                                               // 이어 간다
+}
+
+// unitGetMaxHP_4EE7A0
+int Server::TargetMaxHealth(const Target& t) const {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        return (it != sessions_.end() && it->second.inGame) ? static_cast<int>(it->second.maxHealth) : 0;
+    }
+    return (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) ? TuningFor(pets_[static_cast<size_t>(t.pet)].type).health : 0;
+}
+
+// unitCanInteractWith_5370E0(`legacy/game.go:296` → `server/object.go:105`) = **CanSee + 벽 시야추적**
+bool Server::CanInteract(const Session& obj, const Target& t) const {
+    const Buffs* tb = BuffsOf(t);
+    if (!tb) return false;
+    float tx = 0, ty = 0;
+    double tvx = 0, tvy = 0;
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        if (it == sessions_.end() || !it->second.inGame) return false;
+        tx = static_cast<float>(it->second.posX); ty = static_cast<float>(it->second.posY);
+        tvx = it->second.velX; tvy = it->second.velY;
+    } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+        tx = static_cast<float>(pets_[static_cast<size_t>(t.pet)].x); ty = static_cast<float>(pets_[static_cast<size_t>(t.pet)].y);
+    } else {
+        return false;
+    }
+    if (!CanSeeBuffs(&obj.buffs, tb, tvx, tvy, 0)) return false;
+    return MapTraceVision(tx, ty, static_cast<float>(obj.posX), static_cast<float>(obj.posY));
+}
+
+// sub_4E6BD0(`GAME3_3.c:2372`) — 체력이 있고 **지난 1틱 안에** 맞았나(+536). 치료 광선은 맞는 순간 끊긴다
+bool Server::TargetJustDamaged(const Target& t) const {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        return it != sessions_.end() && it->second.inGame && (frame_ - it->second.lastDamageFrame) <= 1;
+    }
+    if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return false;
+    return (frame_ - pets_[static_cast<size_t>(t.pet)].lastDamageFrame) <= 1;
+}
+
+// netStartDurationRaySpell_4FF130(`GAME4.c:3429`) — `9e <갈래> <값> <번호2> <번호2>` 7바이트 Packet1 **모두에게**
+//   갈래는 멈춤(NetStopRaySpell)과 **다른 표**다: 7→3 · 9→2 · 22→5 · 24→4 · 35→6 · 59→1(값 자리에 시전자 방향) · 43→하위 조각마다
+//   그 밖(8 ChannelLife 등)은 **빔이 없다** — switch 의 default 가 아무것도 안 보낸다
+//   ⚠ 미니맵 표시(netMarkMinimapForAll 2)는 미니맵 묶음에서
+void Server::NetStartRaySpell(const DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (d.caster.empty() || c == sessions_.end() || !c->second.inGame) return;
+    uint8_t typ = 0, val = static_cast<uint8_t>(d.level);
+    uint16_t n1 = c->second.netCode, n2 = UnitNetCode(d.target);
+    switch (d.spell) {
+        case 43:
+            for (const auto& sub : d.sub108) NetStartRaySpell(sub, out);
+            return;
+        case 7:  typ = 3; break;
+        case 9:  typ = 2; break;
+        case 22: typ = 5; break;
+        case 24: typ = 4; break;
+        case 59: typ = 1; val = c->second.facingPrev; break;
+        case 35:                                             // 큰 치유 — 받는 쪽이 앞 · 자기에게면 안 보냄
+            if (!d.target.addr.empty() && d.target.addr == d.caster) return;
+            typ = 6;
+            std::swap(n1, n2);
+            break;
+        default: return;                                     // 빔 없는 주문
+    }
+    if (d.target.none() || n2 == 0) return;                  // 정답지도 `result = +48` 이 있어야 보낸다
+    const uint8_t msg[7] = { static_cast<uint8_t>(Op::FX_DURATION_SPELL), typ, val, static_cast<uint8_t>(n1), static_cast<uint8_t>(n1 >> 8),
+                             static_cast<uint8_t>(n2), static_cast<uint8_t>(n2 >> 8) };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+}
+
+// sub_52F220(`GAME4_2.c:11329`) GreaterHeal 만들기 — 시전자 둘레 400 에서 받을 이를 찾는다
+//   글리프(+20)거나 시전자가 없으면: 찾아서 20 회복하고 **한 방으로 끝**(1) · 아니면 대상을 잡아 두고
+//   **적이 아니면** 빔을 켜고 이어 간다(0) · 적이면 취소 · 못 찾으면 글 "GreaterHealNoTarget" 뒤 취소
+int Server::DurGreaterHealCreate(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    const bool noCaster = d.caster.empty() || c == sessions_.end() || !c->second.inGame;
+    if (noCaster || d.flag20) {
+        if (noCaster && !d.flag20) return 1;
+        const Target found = SpellFlySearchTarget(true, d.pos2X, d.pos2Y, d.posX, d.posY, std::string(), std::string(),
+                                                  SpellFlags(d.spell), 400.0f, nullptr, nullptr);
+        if (!found.none()) UnitAdjustHP(found, 20, out);
+        return 1;                                            // 글리프는 한 방
+    }
+    Session& caster = c->second;
+    const Target found = SpellFlySearchTarget(true, d.pos2X, d.pos2Y, static_cast<float>(caster.posX), static_cast<float>(caster.posY),
+                                              d.caster, d.caster, SpellFlags(d.spell), 400.0f, &caster, &caster.buffs);
+    d.target = found;
+    if (found.none()) {
+        SendPriMsg(caster, "ExecDur.c:GreaterHealNoTarget", out);
+        return 1;
+    }
+    if (TargetIsEnemy(caster, found)) return 1;              // 적은 못 고친다
+    NetStartRaySpell(d, out);                                // 치료 광선 켜기
+    return 0;
+}
+
+// sub_52F2E0(`GAME4_2.c:11376`) GreaterHeal 틱 — 대상 체력을 GreaterHealRate(레벨) × 직업배수 만큼(소수 이월) 채우고 **시전자 마나 1**
+//   끊김: 대상 없음·죽음 · 시전자 달리기(8) · **못 닿음**(CanInteract) · 시전자 마나 0 · 시전자가 **지난 1틱 안에 맞음** · 대상 체력 가득
+int Server::DurGreaterHealTick(DurSpell& d, std::vector<OutPacket>& out) {
+    if (!BuffsOf(d.target)) return 1;
+    if (!d.target.addr.empty()) {
+        auto it = sessions_.find(d.target.addr);
+        if (it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0) return 1;   // DEAD|DESTROYED
+    }
+    auto c = sessions_.find(d.caster);
+    if (d.caster.empty() || c == sessions_.end() || !c->second.inGame) return 1;
+    Session& caster = c->second;
+    if (caster.buffs.Has(8)) return 1;                       // 달리면 채널이 끊긴다
+    if (!CanInteract(caster, d.target)) return 1;            // 안 보이거나 벽 뒤
+    if (caster.mana == 0) return 1;                          // 시전자 마나 바닥
+    if (TargetJustDamaged(Target{ d.caster, -1 })) return 1; // 시전자가 방금 맞았다
+    if (TargetMaxHealth(d.target) == TargetHealth(d.target)) return 1;   // 다 나았다
+    const float v = d.field72 + GreaterHealRate(d.level) * ClassHealthMult(caster.charClass);
+    const int heal = static_cast<int>(v);
+    d.field72 = v - static_cast<float>(heal);                // 소수 이월
+    UnitAdjustHP(d.target, heal, out);
+    PlayerManaSub(caster, 1);
+    return 0;
 }
 
 // changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)

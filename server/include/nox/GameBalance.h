@@ -110,6 +110,15 @@ inline int SpeedOnline(CharClass c)    { return MaxStatsOf(c).maxSpeed; }
 //     이름만 보고 최대 체력으로 읽어 LesserHeal 회복량을 75~150배 부풀렸다(c4b017b 결함).
 //   ⚠ 퀘스트는 `DefaultStatMult` 로 체력 3배(`server/player.go:101`) — 그 모드를 붙이면 여기가 갈린다.
 inline float ClassHealthMult(CharClass) { return 1.0f; }
+
+// GreaterHeal 틱 회복량 ◑ — **gamedata 가 아니라** `blob_587000.dat` 의 `+260360 + 4×레벨` 에 있다
+//   (`GreaterHealCoeff` 키는 정품 gamedata 에 **0칸** — 찾다 없으면 여기를 볼 것).
+//   실측(2026-09-14 · 그 blob 을 직접 떠서): 레벨 1 0.5 · 2 0.75 · 3 1.0 · 4 1.25 · 5 1.5. 여기에 직업 배수를 곱한다.
+//   ⚠ 정답지는 레벨을 **그대로** 색인한다(−1 이 아니다).
+inline float GreaterHealRate(int level) {
+    static const float kRate[6] = { 0.0f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f };
+    return (level >= 1 && level <= 5) ? kRate[level] : 0.0f;
+}
 // +490 짐 한계 ◑ plrReadVals_4EEDC0(`GAME3_3.c:7708`) — (힘 ÷ 워리어(직업 0) 최대 힘 × 1250 + 750) × blob(0x581450+10216).
 //   blob 은 못 읽었다 — 위저드 녹음 `48` 의 1650 = (35/125 × 1250 + 750) × **1.5** 로 역산한 값이다.
 //   `48 REPORT_STATS` 의 넷째 칸이 이것이다(servSendStats_4D8990 `GAME3_2.c:4209`).

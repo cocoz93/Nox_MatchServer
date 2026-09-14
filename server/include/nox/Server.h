@@ -1806,6 +1806,12 @@ private:
     void SpellCastByPlayer(uint32_t frame, std::vector<OutPacket>& out);                                // spellCastByPlayer(틱)
     // ── 묶음 4-b5b 지속 회복·흡수 ──
     int DurChannelLife(DurSpell& d, std::vector<OutPacket>& out);                                       // sub_52F460
+    void NetStartRaySpell(const DurSpell& d, std::vector<OutPacket>& out);                              // netStartDurationRaySpell_4FF130
+    int DurGreaterHealCreate(DurSpell& d, std::vector<OutPacket>& out);                                 // sub_52F220
+    int DurGreaterHealTick(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_52F2E0
+    int TargetMaxHealth(const Target& t) const;                                                          // unitGetMaxHP_4EE7A0
+    bool CanInteract(const Session& obj, const Target& t) const;                                         // unitCanInteractWith_5370E0 = CanSee + 벽 시야추적
+    bool TargetJustDamaged(const Target& t) const;                                                       // sub_4E6BD0 — 지난 1틱 안에 맞았나
     int TargetManaCur(const Target& t) const;                                                            // unitGetOldMana_4EEC80(이름과 달리 **지금** 마나 · 소환수 1000)
     int TargetManaMax(const Target& t) const;                                                            // playerGetMaxMana_4EECB0(사람만 · 아니면 0)
     int TargetHealth(const Target& t) const;                                                             // unitGetHP_4EE780
