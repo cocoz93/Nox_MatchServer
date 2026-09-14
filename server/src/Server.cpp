@@ -6150,6 +6150,80 @@ int Server::AIPathFind(bool awayFrom, const PathActor& act, float fromX, float f
     return 2;
 }
 
+// ── 묶음 6-f(1) 길 따라 걷기 ──────────────────────────────────────────
+//
+// 정답지 `legacy/GAME4_1.c:774` `nox_xxx_creatureActuallyMove_50D3B0`.
+// 6-e(3) 이 뽑아 둔 점들 가운데 **하나를 골라 그쪽으로 속도를 준다.**
+//
+// ⭕ 고르는 법 — 지금 자리에서 **줄이 뚫리는**(`mapTraceRay` 깃발 **132**) 점만 본다.
+//   · **8 보다 먼** 점 중에서는 **가장 가까운 것**을 고른다 — 너무 멀리 질러가지 않게
+//   · **8 안**으로 들어온 점이 **마지막 점**이면 **다 온 것**이다(참을 돌려준다)
+//   · 8 안인데 마지막이 아니면 「지나친 점」으로 적어 둔다 —
+//     멀리 보이는 점이 하나도 없을 때만 그리로 간다
+//   · 그것마저 없으면 길을 버린다(막혔다)
+//
+// ★ **보는 쪽은 8씩 안 돌린다** — `facing` 과 `facingWant` 를 **같이** 놓는다(정답지 `+62`·`+63`).
+//   바라보기 행동(6-d)과 다른 자리다. 걸을 때는 곧바로 그쪽을 본다.
+// ★ 보는 쪽은 **가는 점이 아니라 그 점으로 들어오는 토막**의 방향이다
+//   (`pt[i] − pt[i−1]`, 첫 점이면 `pt[1] − pt[0]`).
+//
+// ⚠ 속도에 곱하는 **깃발 0x4000 갈래**(`*(v1+484)+96` 배)는 아직 안 옮겼다 — 6-g 에서 본다.
+bool Server::CreatureActuallyMove(Creature& k) {
+    if (k.path.empty()) return false;
+    const int n = static_cast<int>(k.path.size());
+    if (k.pathInd >= n) { k.path.clear(); return false; }
+
+    int farIdx = -1;                 // v16 — 8 보다 먼 것 중 **가장 가까운** 점
+    double farD2 = 10000000.0;       // v17
+    int nearIdx = -1;                // v18 — 8 안으로 들어온 마지막 점
+    for (int i = k.pathInd; i < n; ++i) {
+        const float px = k.path[static_cast<size_t>(i)].first;
+        const float py = k.path[static_cast<size_t>(i)].second;
+        if (!MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), px, py, 132)) continue;
+        const double dx = px - k.x, dy = py - k.y;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 > 64.0) {
+            if (farIdx < 0 || farD2 > d2) { farD2 = d2; farIdx = i; }
+        } else {
+            if (i == n - 1) { k.path.clear(); return true; }   // 다 왔다
+            nearIdx = i;
+        }
+    }
+    int pick = farIdx;
+    if (farIdx < 0) {
+        if (nearIdx < 0) { k.path.clear(); return false; }     // 아무 점도 안 보인다
+        pick = nearIdx;
+    }
+    k.pathInd = pick;
+
+    const double dx = k.path[static_cast<size_t>(pick)].first - k.x;
+    const double dy = k.path[static_cast<size_t>(pick)].second - k.y;
+    const double len = std::sqrt(dx * dx + dy * dy) + 0.01;    // blob 0x581450+10288 = 0.01
+
+    // 보는 쪽 — 그 점으로 **들어오는 토막**의 방향
+    double fx, fy;
+    if (pick <= 0) {
+        // ⚠ 정답지는 여기서 `pt[1]` 을 읽는다 — 점이 하나뿐이면 없는 자리를 읽는다.
+        //   우리는 그때 **그 점 쪽**을 본다(길이 하나면 방향이 그것밖에 없다).
+        if (n >= 2) {
+            fx = k.path[1].first - k.path[0].first;
+            fy = k.path[1].second - k.path[0].second;
+        } else {
+            fx = dx; fy = dy;
+        }
+    } else {
+        fx = k.path[static_cast<size_t>(pick)].first - k.path[static_cast<size_t>(pick - 1)].first;
+        fy = k.path[static_cast<size_t>(pick)].second - k.path[static_cast<size_t>(pick - 1)].second;
+    }
+    const uint8_t dir = DirFromVec(fx, fy);
+    k.facing = dir;
+    k.facingWant = dir;                                        // ★ 둘을 같이 놓는다
+
+    k.velX = k.speedCur * dx / len;
+    k.velY = k.speedCur * dy / len;
+    return false;
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).

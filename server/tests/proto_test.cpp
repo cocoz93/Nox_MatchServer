@@ -10455,6 +10455,189 @@ void TestAIPathPoints() {
     std::printf("  6-e(3) — 점 뽑기: 왔던 쪽으로 붙여 모서리 지르기(+2.3·+11.5·+20.7) · 닿으면 정확한 자리 · 차례는 시작→목표\n");
 }
 
+// ── 묶음 6-f(1) — 길 따라 걷기 ────────────────────────────────────────
+//
+// 정답지 `legacy/GAME4_1.c:774` `nox_xxx_creatureActuallyMove_50D3B0`.
+// 뽑아 둔 점들 가운데 **줄이 뚫리는** 것만 보고 하나를 골라 그쪽으로 속도를 준다.
+//   · **8 보다 먼** 점 중에서는 **가장 가까운 것**(너무 멀리 질러가지 않게)
+//   · **8 안**인 점이 **마지막**이면 다 온 것 · 마지막이 아니면 「지나친 점」으로만 적어 둠
+//   · 보는 쪽은 **8씩 안 돌리고** `facing`·`facingWant` 를 **같이** 놓는다
+//   · 보는 쪽 방향은 **그 점으로 들어오는 토막**(`pt[i] − pt[i−1]`)
+void TestCreatureMove() {
+    const std::string a = "10.6.6.1:6601";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.Tick(34, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+    };
+
+    // ① **멀리 있는 점 중 가장 가까운 것**을 고른다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPath(0, { { 1030, 1000 }, { 1060, 1000 }, { 1090, 1000 } });
+        Check(!srv.DebugCreatureMove(0), "아직 안 왔는데 다 왔다고 한다");
+        Check(srv.DebugPetPathInd(0) == 0, "멀리 있는 것 중 가장 가까운 점을 안 골랐다");
+        Check(srv.DebugPetVelX(0) > 0 && std::fabs(srv.DebugPetVelY(0)) < 0.001,
+              "+x 로 가는데 속도가 그쪽이 아니다");
+    }
+
+    // ② **속도 크기가 걷는 빠르기와 같다** — 방향만 바뀌고 크기는 그대로
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetSpeed(0, 5.0f);
+        srv.DebugSetPetPath(0, { { 1030, 1040 } });           // 비스듬히
+        srv.DebugCreatureMove(0);
+        const double v = std::sqrt(srv.DebugPetVelX(0) * srv.DebugPetVelX(0) +
+                                   srv.DebugPetVelY(0) * srv.DebugPetVelY(0));
+        Check(std::fabs(v - 5.0) < 0.05, "속도 크기가 걷는 빠르기와 다르다");
+    }
+
+    // ③ **8 안에 든 마지막 점** — 다 온 것이고 길을 버린다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPath(0, { { 1005, 1000 } });           // 5 만큼 떨어짐
+        Check(srv.DebugCreatureMove(0), "마지막 점 8 안인데 다 왔다고 안 한다");
+        Check(srv.DebugPetPathCount(0) == 0, "다 왔는데 길을 안 버렸다");
+    }
+    // 경계 — **8 은 「안」이 아니다**(정답지는 거리제곱 > 64 를 「멀다」로 본다)
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPath(0, { { 1008, 1000 } });           // 딱 8
+        Check(srv.DebugCreatureMove(0), "딱 8 이면 다 온 것이어야 한다(> 64 가 멀다)");
+    }
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPath(0, { { 1009, 1000 } });           // 9
+        Check(!srv.DebugCreatureMove(0), "9 인데 다 왔다고 한다");
+    }
+
+    // ④ **8 안인데 마지막이 아니면** 다 온 게 아니다 — 멀리 보이는 점으로 간다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPath(0, { { 1005, 1000 }, { 1060, 1000 } });
+        Check(!srv.DebugCreatureMove(0), "중간 점이 8 안이라고 다 왔다고 한다");
+        Check(srv.DebugPetPathInd(0) == 1, "멀리 있는 다음 점으로 안 갔다");
+    }
+    // 멀리 보이는 점이 없으면 **지나친 점**으로 간다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPath(0, { { 1003, 1000 }, { 1005, 1000 }, { 1400, 1000 } });
+        // ⚠ **칸 짝홀** — 줄 추적 깃발 132 에는 Flag1 이 없어, `(x+y)` 가 **홀수인 칸의 벽은 없는 셈**이다
+        //   (`server/wall.go:238` GetWallAtGrid). 그래서 벽은 **짝수 칸**에 놓아야 가린다
+        srv.SetWalls({ { 51, 43 } });                         // 51+43=94 짝수 — 먼 점을 가린다
+        Check(!srv.DebugCreatureMove(0), "다 왔다고 한다");
+        Check(srv.DebugPetPathInd(0) == 1, "지나친 점 가운데 **마지막 것**을 안 골랐다");
+    }
+
+    // ⑤ **아무 점도 안 보이면 길을 버린다**
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWalls({ { 45, 43 } });                         // 45+43=88 짝수 — 바로 앞을 막는다
+        srv.DebugSetPetPath(0, { { 1100, 1000 } });
+        Check(!srv.DebugCreatureMove(0), "다 왔다고 한다");
+        Check(srv.DebugPetPathCount(0) == 0, "아무 점도 안 보이는데 길을 안 버렸다");
+    }
+
+    // ⑥ **보는 쪽을 곧바로 놓는다** — `facing` 과 `facingWant` 가 같다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetFacing(0, 0);                          // +x 를 보고 서 있다
+        srv.DebugSetPetPath(0, { { 1000, 1100 } });           // 아래(+y)
+        srv.DebugCreatureMove(0);
+        Check(srv.DebugPetFacing(0) == srv.DebugPetFacingWant(0), "보는 쪽과 돌아가려는 쪽이 갈렸다");
+        Check(srv.DebugPetFacing(0) == 64, "+y 쪽(64)을 안 본다");
+    }
+
+    // ⑦ **보는 쪽은 들어오는 토막의 방향** — 가는 점 쪽이 아니다
+    //   점 0(1000,1000) → 점 1(1000,1100) 로 들어오므로 **아래쪽(64)** 을 본다.
+    //   소환수는 (1000,1050) 에 서 있어 가는 쪽도 아래지만, 점 2 를 고를 때 갈린다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetPetPath(0, { { 1000, 1000 }, { 1100, 1000 }, { 1100, 1100 } });
+        srv.DebugCreatureMove(0);
+        Check(srv.DebugPetPathInd(0) == 1, "가장 가까운 먼 점(1번)을 안 골랐다");
+        Check(srv.DebugPetFacing(0) == 0, "1번 점으로 들어오는 토막은 +x(0) 인데 다른 쪽을 본다");
+    }
+
+    // ⑧ **다 본 길은 더 안 본다** — 지금 보는 점보다 앞은 건너뛴다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPath(0, { { 900, 1000 }, { 1100, 1000 } });
+        srv.DebugCreatureMove(0);
+        const int i1 = srv.DebugPetPathInd(0);
+        srv.DebugCreatureMove(0);
+        Check(srv.DebugPetPathInd(0) >= i1, "보던 점보다 뒤로 되돌아갔다");
+    }
+
+    // ⑨ **6-e 가 낸 길을 그대로 걷는다** — 세 조각이 이어지나
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFind(false, false, 0, 1000, 1000, 1200, 1000, 0) == 0, "길을 못 냈다");
+        srv.DebugSetPetPathFromFind(0);
+        Check(srv.DebugPetPathCount(0) > 1, "낸 길이 안 옮겨졌다");
+        Check(!srv.DebugCreatureMove(0), "첫 걸음에 다 왔다고 한다");
+        Check(srv.DebugPetVelX(0) > 0, "낸 길을 따라 +x 로 안 간다");
+    }
+    // ⑩ **줄 추적 깃발은 132** — Flag1 이 없어 **(x+y) 가 홀수인 칸의 벽은 없는 셈**이다
+    //   (`server/wall.go:238` GetWallAtGrid). 깃발을 1 로 바꾸면 이 벽이 가려서 못 간다
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWalls({ { 44, 43 } });                         // 44+43=87 홀수 — 132 로는 안 가린다
+        srv.DebugSetPetPath(0, { { 1100, 1000 } });
+        Check(!srv.DebugCreatureMove(0), "다 왔다고 한다");
+        Check(srv.DebugPetPathCount(0) == 1, "홀수 칸 벽이 가렸다 — 깃발이 132 가 맞나");
+        Check(srv.DebugPetVelX(0) > 0, "홀수 칸 벽 너머로 안 간다");
+    }
+
+    // ⑪ **보던 점보다 앞은 다시 안 본다** — 뒤로 돌아가는 길을 고르지 않는다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPath(0, { { 1100, 1000 }, { 1030, 1000 } });
+        srv.DebugCreatureMove(0);
+        Check(srv.DebugPetPathInd(0) == 1, "가장 가까운 먼 점을 안 골랐다(이 시험의 전제)");
+        srv.DebugSetPetPos(0, 1200, 1000);                    // 지나쳐 버렸다
+        srv.DebugCreatureMove(0);
+        Check(srv.DebugPetPathInd(0) == 1, "보던 점보다 앞(0번)으로 되돌아갔다");
+    }
+
+    // ⑫ **제자리 점을 골라도 0 으로 안 나눈다** — 0.01 을 더해 막는다
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWalls({ { 51, 43 } });                         // 51+43=94 짝수 — 먼 점을 가린다
+        srv.DebugSetPetPath(0, { { 1000, 1000 }, { 1400, 1000 } });   // 첫 점이 **선 자리 그대로**
+        Check(!srv.DebugCreatureMove(0), "다 왔다고 한다");
+        Check(srv.DebugPetVelX(0) == 0.0 && srv.DebugPetVelY(0) == 0.0,
+              "제자리 점인데 속도가 0 이 아니다(0 으로 나눴나)");
+    }
+
+    // ⑬ **보는 쪽은 들어오는 토막** — 가는 쪽과 갈리는 자리에서 본다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPos(0, 1090, 1090);
+        srv.DebugSetPetPath(0, { { 1000, 1000 }, { 1100, 1000 }, { 1100, 1100 } });
+        srv.DebugCreatureMove(0);
+        Check(srv.DebugPetPathInd(0) == 2, "가장 가까운 먼 점(2번)을 안 골랐다(이 시험의 전제)");
+        Check(srv.DebugPetFacing(0) == 64, "1→2 토막은 +y(64) 인데 가는 쪽(대각)을 보고 있다");
+    }
+
+    // ⑭ **첫 점을 고르면 0→1 방향** — 거꾸로면 정반대를 본다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetPetPos(0, 900, 1000);                     // 첫 점 뒤에 선다
+        srv.DebugSetPetPath(0, { { 1000, 1000 }, { 1100, 1000 } });
+        srv.DebugCreatureMove(0);
+        Check(srv.DebugPetPathInd(0) == 0, "첫 점을 안 골랐다(이 시험의 전제)");
+        Check(srv.DebugPetFacing(0) == 0, "0→1 은 +x(0) 인데 반대(128)를 본다");
+    }
+    std::printf("  6-f(1) — 걷기: 보이는 점만 · 먼 것 중 가장 가까운 것 · 8 안 마지막이면 도착 · 보는 쪽 곧바로\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -12655,6 +12838,7 @@ int main() {
     TestAIPathIndex();
     TestAIPathFind();
     TestAIPathPoints();
+    TestCreatureMove();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

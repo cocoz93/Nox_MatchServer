@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 
 namespace nox {
@@ -74,6 +75,14 @@ inline constexpr uint32_t kDirVectorBits[512] = {
     0x3f7b14be, 0xbe47c5c2, 0x3f7c3b28, 0xbe2f10a2, 0x3f7d3aac, 0xbe164083, 0x3f7e1323, 0xbdfab273,
     0x3f7ec46d, 0xbdc8bd36, 0x3f7f4e6d, 0xbd96a904, 0x3f7fb10f, 0xbd48fb2e, 0x3f7fec43, 0xbcc90ab1,
 };
+
+// 벡터 → 방향 번호(0~255). 정답지 `nox_xxx_math_509ED0`(`legacy/GAME4_1.c:341`) ·
+//   `server/math.go:35 DirFromVec` — `(atan2(y,x) + 6.2831855) * 40.743664 + 0.5` 을 잘라 8비트로.
+//   ⚠ 상수를 줄이지 말 것 — 6.2831855 는 2π 의 float 값이고 40.743664 는 256/2π 다.
+inline uint8_t DirFromVec(double x, double y) {
+    const double v = (std::atan2(y, x) + 6.2831855) * 40.743664 + 0.5;
+    return static_cast<uint8_t>(static_cast<int32_t>(v));
+}
 
 inline float DirVecX(int dir) { float f; std::memcpy(&f, &kDirVectorBits[2 * (dir & 0xFF)], 4); return f; }
 inline float DirVecY(int dir) { float f; std::memcpy(&f, &kDirVectorBits[2 * (dir & 0xFF) + 1], 4); return f; }

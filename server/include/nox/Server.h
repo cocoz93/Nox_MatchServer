@@ -221,6 +221,17 @@ struct Creature {
     bool aiMorphReady = false;
     bool morphed = false;                      // 상자로 변신해 있나(`MonStatusMorphed`)
     int aiStackInd = 0;                        // 맨 위 자리(−1 은 「비었다」로만 잠깐 쓴다)
+
+    // ── 묶음 6-f — **길 따라 걷기** ──────────────────────────────────
+    //   `nox_xxx_creatureActuallyMove_50D3B0`(`legacy/GAME4_1.c:774`)가 이 자료를 쓴다.
+    //   점 목록은 6-e(3) 이 뽑아 준다(`ud.Path`).
+    std::vector<std::pair<float, float>> path;   // +12 부터 8바이트씩 — 갈 점들
+    int pathInd = 0;                             // +268 지금 보고 있는 점
+    uint8_t pathStatus = 0;                      // +284 길 찾기가 어떻게 끝났나
+    uint32_t pathFrame = 0;                      // +70 마지막으로 길을 낸 프레임
+    float pathGoalX = 0, pathGoalY = 0;          // +68 그때 잡았던 목표
+    float speedCur = 3.0f;                       // +544 SpeedCur
+    double velX = 0, velY = 0;                   // 이번 틱에 갈 속도
 };
 
 // 깃발 하나.
@@ -1641,6 +1652,22 @@ public:
     void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AITick(pets_[i], out); }
     // 시험용 — 길 찾기 격자 색인(6-e(1))
     void DebugPathReset() { AIPathResetIndex(); }
+    // 시험용 — 길 따라 걷기(6-f(1))
+    void DebugSetPetPath(size_t i, const std::vector<std::pair<float, float>>& pts) {
+        if (i < pets_.size()) { pets_[i].path = pts; pets_[i].pathInd = 0; }
+    }
+    void DebugSetPetPathFromFind(size_t i) {
+        if (i < pets_.size()) { pets_[i].path = aiPathPts_; pets_[i].pathInd = 0; }
+    }
+    void DebugSetPetPos(size_t i, double x, double y) {
+        if (i < pets_.size()) { pets_[i].x = x; pets_[i].y = y; }
+    }
+    void DebugSetPetSpeed(size_t i, float v) { if (i < pets_.size()) pets_[i].speedCur = v; }
+    bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
+    int  DebugPetPathInd(size_t i) const { return i < pets_.size() ? pets_[i].pathInd : -1; }
+    size_t DebugPetPathCount(size_t i) const { return i < pets_.size() ? pets_[i].path.size() : 0; }
+    double DebugPetVelX(size_t i) const { return i < pets_.size() ? pets_[i].velX : 0.0; }
+    double DebugPetVelY(size_t i) const { return i < pets_.size() ? pets_[i].velY : 0.0; }
     void DebugPathBakeWalls() { AIPathBakeWalls(); }
     void DebugPathIndexObjects() { AIPathIndexObjects(); }
     void DebugPathMaybeIndex() { AIPathMaybeIndexObjects(); }
@@ -2330,6 +2357,8 @@ private:
     void AICancel(Creature& k, uint8_t act);
     // 묶음 6-d — 한 점을 바라보게 돌린다(`sub_545240`). 다 봤으면 참
     bool AIFacePoint(Creature& k, float tx, float ty);
+    // 묶음 6-f(1) — 길 위의 점 하나를 골라 그쪽으로 속도를 준다. 다 왔으면 참
+    bool CreatureActuallyMove(Creature& k);
     void AIPathResetIndex();
     AIIndexNode* AIPathIndexAt(int x, int y);
     uint16_t AIPathFlagsAt(int x, int y);
