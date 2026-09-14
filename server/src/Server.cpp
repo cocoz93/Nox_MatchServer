@@ -6749,6 +6749,66 @@ void Server::AIPathBakeObstacles() {
     }
 }
 
+// ── 묶음 7-a 경험치와 레벨 ────────────────────────────────────────────
+//
+// 정답지 `NetReportExperience`(`server/network.go:724` = `sub_4D81A0`) ·
+//        `nox_xxx_plyrGiveExp_4EF3A0`·`sub_4EF2E0_exp_level`(`legacy/server__gamemech__explevel.c`).
+//
+// ⭕ 와이어 — `6e <경험치 u32>` **5바이트** · `NetSendPacketXxx0(…, 0, 1)` 이라 **중요**.
+//   ★ 경험치는 오브젝트 안에서 **float** 인데 와이어에는 **u32 로 잘라** 싣는다
+//   ★ **순번(`cc`)은 안 붙는다.** `NetSendPacketXxx0` 은 여섯째 인자를 **0** 으로 넘기고
+//     (`server/network.go:101`), `netImportant_4E5770` 이 그 자리(+184)를 보고 갈라
+//     0 이면 `27 <시각> aa` 봉투에 **본문 그대로**, 1 이면 `cc <순번> <길이>` 를 씌운다(`GAME3_3.c:2024`).
+//     그래서 우리도 `EmitSeq` 가 아니라 `EmitImportantRaw` 다 — 확인(`ab`)을 안 기다리고,
+//     다시 실려도 경험치는 **더하기가 아니라 절댓값**이라 같은 값이 한 번 더 들어올 뿐이다
+//
+// ⭕ 레벨 — `XPTable` 의 **다음 칸 값 이하**로 경험치가 차면 한 단계 오른다.
+//   ⚠ **한 번에 한 단계만** 오른다(정답지가 `while` 이 아니라 `if` 다) — 크게 한 번 받아도 한 칸이다
+//   ⚠ 천장은 **10**(`legacy/defs.h:26`)
+//   ⚠ 칸 번호는 **0부터**고 gamedata.bin 이 스스로 `First entry is for level "0"` 이라 적어 두었다.
+//     그런데 코드가 보는 것은 `XPTable[레벨 + 1]` 이라, **레벨 1 이 다음으로 가려면 셋째 칸(18200)** 이다.
+//     ⭕ 표의 뜻과 코드가 한 칸 어긋나 보이지만 **코드 쪽을 그대로 옮긴다**(`sub_4EF2E0` 원문)
+//
+// ⛔ 정답지가 더 하는데 **여기서는 안 옮기는 것** 넷 —
+//   ① `sub_56FA40`·`sub_56F980` — 경험치·레벨의 **XOR 그림자 사본**(`GAME5_2.c:616`). 메모리 조작 잡는 장치라 서버 규칙이 아니다
+//   ② `gameGet_4DB1B0() && sub_4DB1C0()` 관문 — **혼자 하기 맵 갈아타는 중**이면 레벨을 안 올린다.
+//      두 값은 글자 고르는 화면이 세운다(`gui_selchar.go:1000`) — 붙어 있는 서버엔 없는 상태라 관문이 늘 열려 있다
+//   ③ 글줄 "health.c:gainpoints"·"LevelUP" — 문자열표를 타는 글이라 묶음 10 으로
+//   ④ 소리 902 — 묶음 10 으로
+//
+// ⚠ **죽여서 받는 경험치는 없다.** `plyrGiveExp` 를 부르는 곳은 **스크립트**(`builtin.c:355`)뿐이다 —
+//   퀘스트가 주는 것이지 몬스터를 잡아서 저절로 오르지 않는다. 그래서 여기서는 **주는 길만** 옮긴다
+void Server::SendExperience(Session& s, std::vector<OutPacket>& out) {
+    const uint32_t xp = static_cast<uint32_t>(s.experience);
+    uint8_t msg[5];
+    msg[0] = static_cast<uint8_t>(Op::REPORT_EXPERIENCE);
+    msg[1] = static_cast<uint8_t>(xp);
+    msg[2] = static_cast<uint8_t>(xp >> 8);
+    msg[3] = static_cast<uint8_t>(xp >> 16);
+    msg[4] = static_cast<uint8_t>(xp >> 24);
+    EmitImportantRaw(s, msg, sizeof(msg), out);
+}
+
+// sub_4EF2E0_exp_level — 한 단계 올릴 수 있으면 올린다(**한 단계만**)
+bool Server::PlayerCheckLevel(Session& s) {
+    if (s.level >= kPlayerMaxLevel) return false;
+    const size_t next = static_cast<size_t>(s.level) + 1;
+    if (next >= sizeof(kXPTable) / sizeof(kXPTable[0])) return false;
+    if (kXPTable[next] > s.experience) return false;
+    ++s.level;
+    // `plrReadVals_4EEDC0(a1, 1)` — 딸린 값 다시 셈.
+    //   ⚠ 우리 온라인 값은 **직업으로 고정**이라(접속 때 `HealthOnline` 따위) 레벨로 바뀌는 것이 없다.
+    //     그래서 다시 셀 것이 없고 **「바뀌었다」 표시만** 세운다(스냅샷 꼬리가 싣고 끈다)
+    s.statsDirty = true;
+    return true;
+}
+
+void Server::PlayerGiveExp(Session& s, float amount, std::vector<OutPacket>& out) {
+    s.experience += amount;
+    SendExperience(s, out);
+    PlayerCheckLevel(s);
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).

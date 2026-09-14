@@ -516,6 +516,11 @@ struct Session {
     //   전에는 `42`·`43`·`45` 를 피해·주문·물약·오벨리스크 자리에서 곧바로, HUD 는 접속 뒤 다섯 번 되풀이해 보냈다.
     uint16_t healthReported = 0;   // +10   마지막으로 알린 체력 — 다르면 `43 <체력2>`(Packet1 · netSendPlrHealthToTeam_4D86E0)
     uint16_t manaPrev = 0;         // +6    이전 마나 — playerManaAdd/Sub/Refresh 가 남긴다 · +4 와 다르면 `45`(sub_4E5450 · 워리어 제외)
+    // ── 묶음 7 성장 — 경험치(오브젝트 +28 float)와 레벨(사람자료 +3684 바이트)
+    //   레벨 첫값 **1** — 정답지가 글자파일을 열기 **전에** 1 로 되돌린다(`sub_4EFF10` `GAME3_3.c:8098`).
+    //   우린 글자파일을 안 읽으므로 그 값이 그대로 남는다
+    float experience = 0.0f;
+    uint8_t level = 1;
     bool statsDirty = false;       // +2184 plrReadVals_4EEDC0 끝에 1 → `dd`·`de`·`48` 한 벌(접속 때는 스냅샷 꼬리가 그 몫)
     uint32_t lastDamageFrame = 0;  // +536  마지막 피해 프레임 — `42` 증감은 이 뒤 2틱 넘어야(netPlayerObjSend_518C30 `GAME4_1.c:4412`)
     std::map<std::string, uint16_t> hpReportedTo;   // +12+2×i 보는 사람마다 마지막으로 알린 체력 — 부활 때 서른둘 = 지금(`GAME3_3.c:7937`)
@@ -1783,6 +1788,18 @@ public:
     float DebugPathPtY(size_t i) const { return i < aiPathPts_.size() ? aiPathPts_[i].second : -1.0f; }
     size_t DebugPathVisitCount() const { return aiVisit_.size(); }
     uint32_t DebugPathLast() const { return aiIndexLast_; }
+    // 시험용 — 경험치·레벨
+    float DebugExp(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0f : i->second.experience; }
+    int DebugLevel(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? -1 : i->second.level; }
+    void DebugGiveExp(const std::string& a, float v, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); if (i != sessions_.end()) PlayerGiveExp(i->second, v, out);
+    }
+    bool DebugStatsDirty(const std::string& a) const {
+        auto i = sessions_.find(a); return i != sessions_.end() && i->second.statsDirty;
+    }
+    void DebugClearStatsDirty(const std::string& a) {
+        auto i = sessions_.find(a); if (i != sessions_.end()) i->second.statsDirty = false;
+    }
     uint32_t GoldOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.gold;
@@ -2494,6 +2511,10 @@ private:
     void AIProcDeps(Creature& k, std::vector<OutPacket>& out);
     bool CanInteractFrom(const Creature& k, const Target& t) const;
     void SendGold(Session& s, std::vector<OutPacket>& out);
+    // 묶음 7-a — 경험치 알림·주기·레벨 오름
+    void SendExperience(Session& s, std::vector<OutPacket>& out);
+    bool PlayerCheckLevel(Session& s);
+    void PlayerGiveExp(Session& s, float amount, std::vector<OutPacket>& out);
     void PlayerAddGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerAddGold_4FA590
     void PlayerSubGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerSubGold_4FA5D0
     void PoisonTick(std::vector<OutPacket>& out);                                                        // server.go:175~201 감쇠 + 피해

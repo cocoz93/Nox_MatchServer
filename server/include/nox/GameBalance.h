@@ -417,6 +417,19 @@ constexpr int    kTargetedSpellFrames   = 45;
 constexpr int    kUnTargetedSpellFrames = 15;
 constexpr double kProjectileMaxTravel   = kFireballPerFrame * kUnTargetedSpellFrames;
 
+// ── 묶음 7 성장 ⭕ gamedata.bin `XPTable` ─────────────────────────
+//
+// 「첫 칸이 레벨 **0**, 그다음이 1」이라고 파일에 적혀 있다(주석 그대로).
+// 레벨 올림은 `sub_4EF2E0_exp_level` — **다음 레벨의 칸 값 이하**로 경험치가 차면 한 단계 오른다.
+// ⚠ 한 번 부를 때 **한 단계만** 오른다(정답지가 `while` 이 아니라 `if` 다).
+// ⚠ 레벨 천장은 **10**(`legacy/defs.h:26` `NOX_PLAYER_MAX_LEVEL`) — 표는 30칸이지만 거기까지 안 간다.
+constexpr int kPlayerMaxLevel = 10;
+constexpr float kXPTable[] = {
+    5000, 11000, 18200, 26840, 37208, 49650, 64580, 82495, 103995, 126891,
+    151276, 177246, 204903, 234359, 265729, 299139, 334720, 372613, 412970, 455950,
+    501723, 550472, 602390, 657682, 716568, 779282, 846072, 917204, 992959, 2000000000.0f,
+};
+
 // ── 몬스터 ⭕ monster.bin (아레나 값) ─────────────────────────────
 //
 // 소환수·퀘스트 몬스터가 쓰는 표. `SPEED` 는 thing.bin 과 같은 눈금이다
@@ -442,6 +455,8 @@ struct MonsterStats {
     // ── 묶음 6-h — **뛰기 배율** ⭕ monster.bin `ARENA RUN_MULTIPLIER` (몬스터표 **+96**)
     //   `creatureActuallyMove_50D3B0` 이 **깃발 0x4000(뛰는 중)** 이면 빠르기에 이것을 곱한다
     double      runMul;
+    // ── 묶음 7 — 잡았을 때 주는 경험치 ⭕ monster.bin `EXPERIENCE`
+    int         experience;
 };
 
 // `SummonType()` 이 부를 수 있는 열셋 전부. **전부 monster.bin 에서 뽑은 값**이다.
@@ -449,19 +464,19 @@ struct MonsterStats {
 //   원거리형(Imp·EvilCherub·Beholder·Bomber·EmberDemon)은 근접 칸이 비어 있다.
 constexpr MonsterStats kMonsters[] = {
     //  이름                 번호   체력   피해   사거리    속도  최소 최대
-    { "EvilCherub",         1317,    40,    0,    0.0,   100,   0,  0,  "CherubArrow", 150.0, 15, 25, 1.2 },
-    { "Ghost",              1325,    40,   10,   10.0,    60,   0,  0,  nullptr,         0.0,  0,  0, 1.1 },
-    { "Imp",                1328,    25,    0,    0.0,   120,   0,  0,  "ImpShot",     150.0, 15, 30, 1.3 },   // 발사체 피해 5
-    { "EmberDemon",         1337,    30,    0,   15.0,    85,   0,  0,  "Fireball",    200.0, 30, 60, 1.3 },   // ★ 근접 15.0 정정
-    { "Bomber",             1348,     1,    0,    0.0,   120,   0,  0,  nullptr,         0.0,  0,  0, 1.0 },   // 자폭형
-    { "AlbinoSpider",       1355,    60,   15,   15.0,    80,   0,  0,  nullptr,         0.0,  0,  0, 1.5 },   // ★ 근접 15.0 정정
-    { "SmallAlbinoSpider",  1356,    25,    6,   15.0,   100,   0,  0,  nullptr,         0.0,  0,  0, 1.5 },
-    { "Bat",                1357,    35,    4,   15.0,   105,   0,  0,  nullptr,         0.0,  0,  0, 1.3 },
-    { "GiantLeech",         1358,    60,   20,   15.0,    50,  30, 40,  nullptr,         0.0,  0,  0, 1.3 },
-    { "Bear",               1365,   120,   45,   20.0,    50,  30, 45,  nullptr,         0.0,  0,  0, 1.5 },
-    { "BlackBear",          1366,    90,   18,   20.0,    60,  30, 45,  nullptr,         0.0,  0,  0, 1.5 },
-    { "CarnivorousPlant",   1371,   100,  100,   40.0,     0,   0,  0,  nullptr,         0.0,  0,  0, 1.0 },   // 못 움직인다
-    { "Beholder",           1382,   250,    0,    0.0,    60,   0,  0,  nullptr,       200.0,  0,  0, 1.3 },   // ⚠ 사거리는 있는데 이름이 NULL
+    { "EvilCherub",         1317,    40,    0,    0.0,   100,   0,  0,  "CherubArrow", 150.0, 15, 25, 1.2, 110000 },
+    { "Ghost",              1325,    40,   10,   10.0,    60,   0,  0,  nullptr,         0.0,  0,  0, 1.1,  20000 },
+    { "Imp",                1328,    25,    0,    0.0,   120,   0,  0,  "ImpShot",     150.0, 15, 30, 1.3,  13000 },   // 발사체 피해 5
+    { "EmberDemon",         1337,    30,    0,   15.0,    85,   0,  0,  "Fireball",    200.0, 30, 60, 1.3,  60000 },   // ★ 근접 15.0 정정
+    { "Bomber",             1348,     1,    0,    0.0,   120,   0,  0,  nullptr,         0.0,  0,  0, 1.0,  10000 },   // 자폭형
+    { "AlbinoSpider",       1355,    60,   15,   15.0,    80,   0,  0,  nullptr,         0.0,  0,  0, 1.5,  20000 },   // ★ 근접 15.0 정정
+    { "SmallAlbinoSpider",  1356,    25,    6,   15.0,   100,   0,  0,  nullptr,         0.0,  0,  0, 1.5,   5000 },
+    { "Bat",                1357,    35,    4,   15.0,   105,   0,  0,  nullptr,         0.0,  0,  0, 1.3,   8000 },
+    { "GiantLeech",         1358,    60,   20,   15.0,    50,  30, 40,  nullptr,         0.0,  0,  0, 1.3,  12000 },
+    { "Bear",               1365,   120,   45,   20.0,    50,  30, 45,  nullptr,         0.0,  0,  0, 1.5,  70000 },
+    { "BlackBear",          1366,    90,   18,   20.0,    60,  30, 45,  nullptr,         0.0,  0,  0, 1.5,  36000 },
+    { "CarnivorousPlant",   1371,   100,  100,   40.0,     0,   0,  0,  nullptr,         0.0,  0,  0, 1.0,  80000 },   // 못 움직인다
+    { "Beholder",           1382,   250,    0,    0.0,    60,   0,  0,  nullptr,       200.0,  0,  0, 1.3,  85000 },   // ⚠ 사거리는 있는데 이름이 NULL
 };
 
 // 원거리 소환수의 발사체 피해 ⭕ gamedata.bin. 아직 Imp 만 확인했다.

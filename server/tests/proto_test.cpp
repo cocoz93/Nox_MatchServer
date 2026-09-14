@@ -12441,6 +12441,161 @@ void TestAIGuardHunt() {
     std::printf("  6-i(2)(3) — 지키기: 16틱마다 8 넘으면 복귀 · 사냥→떠돌기 · 떠돌기는 길목 없어 1~2초 기다림\n");
 }
 
+// ── 묶음 7-a — 경험치와 레벨 ──────────────────────────────────────────
+//
+// 정답지 `sub_4D81A0`(`GAME3_2.c:3782`) = `NetReportExperience`(`server/network.go:724`) ·
+//        `nox_xxx_plyrGiveExp_4EF3A0` · `sub_4EF2E0_exp_level`(`legacy/server__gamemech__explevel.c`).
+//   · 와이어 `6e <경험치 u32>` **5바이트** · `NetSendPacketXxx0(…, 0, 1)` 이라 **중요**
+//     → 우리 길에서는 대기열에 쌓였다가 틱에서 `27`+`aa` 봉투에 실려 나간다. 그래서 **틱을 한 번 돌려야** 보인다
+//   · 경험치는 안에서 **float** 인데 와이어에는 **u32 로 잘라** 싣는다
+//   · 레벨 — `XPTable[레벨 + 1] <= 경험치` 면 한 단계. **한 번 부를 때 한 단계만**(`while` 아니라 `if`)
+//   · 천장 **10**(`legacy/defs.h:26` `NOX_PLAYER_MAX_LEVEL`)
+void TestPlayerExp() {
+    const std::string a = "10.7.1.1:7101";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+    // 내용 보기 — `DebugEnterGame` 은 시험용 **즉시 보내기**를 켜 두므로 나간 조각을 그냥 펴면 된다.
+    //   중요 경로(봉투)로 정말 가는지는 ⑨ 에서 따로 잰다.
+    auto expMsg = [&](const std::vector<nox::OutPacket>& out, uint32_t& v, size_t& len) {
+        bool found = false;
+        for (const auto& m : FlattenTo(out, a))
+            if (m.size() >= 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_EXPERIENCE)) {
+                len = m.size();
+                v = static_cast<uint32_t>(m[1]) | (static_cast<uint32_t>(m[2]) << 8) |
+                    (static_cast<uint32_t>(m[3]) << 16) | (static_cast<uint32_t>(m[4]) << 24);
+                found = true;
+            }
+        return found;
+    };
+
+    // ① **주면 `6e` 가 중요 봉투로 간다** — 머리까지 5바이트
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGiveExp(a, 250.0f, out);
+        Check(srv.DebugExp(a) == 250.0f, "경험치가 250 이 안 됐다");
+        uint32_t v = 0; size_t len = 0;
+        Check(expMsg(out, v, len), "`6e` 가 중요 봉투로 안 갔다");
+        Check(len == 5, "`6e` 가 5바이트가 아니다");
+        Check(v == 250, "`6e` 가 실은 값이 250 이 아니다");
+    }
+
+    // ② **float 을 u32 로 잘라 싣는다** — 반올림이 아니라 버림
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGiveExp(a, 1234.9f, out);
+        uint32_t v = 0; size_t len = 0;
+        Check(expMsg(out, v, len) && v == 1234, "1234.9 를 1234 로 안 잘랐다");
+    }
+
+    // ③ **쌓인다** — 두 번 주면 합이 실린다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGiveExp(a, 100.0f, out);
+        out.clear();
+        srv.DebugGiveExp(a, 70.0f, out);
+        uint32_t v = 0; size_t len = 0;
+        Check(expMsg(out, v, len) && v == 170, "`6e` 가 합을 안 실었다");
+        Check(srv.DebugExp(a) == 170.0f, "경험치가 안 쌓였다");
+    }
+
+    // ④ **레벨 첫값은 1** — 글자파일을 안 읽으므로 `sub_4EFF10` 의 1 이 그대로다
+    {
+        nox::Server srv; mk(srv);
+        Check(srv.DebugLevel(a) == 1, "레벨 첫값이 1 이 아니다");
+    }
+
+    // ⑤ **`XPTable[레벨+1]` 이 관문이다** — 레벨 1 은 셋째 칸 18200 을 봐야 오른다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGiveExp(a, 18199.0f, out);
+        Check(srv.DebugLevel(a) == 1, "18199 인데 레벨이 올랐다");
+        srv.DebugGiveExp(a, 1.0f, out);
+        Check(srv.DebugLevel(a) == 2, "18200 인데 레벨이 안 올랐다");
+    }
+
+    // ⑥ **한 번에 한 단계만** — 크게 한 번 받아도 한 칸이다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGiveExp(a, 2000000.0f, out);          // 표 전체를 넘는 값
+        Check(srv.DebugLevel(a) == 2, "한 번에 두 단계 넘게 올랐다");
+        srv.DebugGiveExp(a, 0.0f, out);
+        Check(srv.DebugLevel(a) == 3, "다시 불렀는데 한 단계가 안 올랐다");
+    }
+
+    // ⑦ **천장 10** — 아무리 불러도 10 을 안 넘는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGiveExp(a, 2000000.0f, out);
+        for (int i = 0; i < 30; ++i) srv.DebugGiveExp(a, 0.0f, out);
+        Check(srv.DebugLevel(a) == 10, "레벨 천장이 10 이 아니다");
+    }
+
+    // ⑧ **레벨이 오르면 「바뀌었다」 표시가 선다**(`plrReadVals_4EEDC0(a1, 1)` 자리)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugClearStatsDirty(a);
+        srv.DebugGiveExp(a, 100.0f, out);
+        Check(!srv.DebugStatsDirty(a), "레벨이 안 올랐는데 표시가 섰다");
+        srv.DebugGiveExp(a, 18100.0f, out);
+        Check(srv.DebugStatsDirty(a), "레벨이 올랐는데 표시가 안 섰다");
+    }
+    // ⑨ **중요로 가되 순번은 안 붙는다** — 정답지 `NetSendPacketXxx0(…, 0, 1)` 의 **여섯째 인자가 0** 이다.
+    //   `netImportant_4E5770`(`GAME3_3.c:2024`) 가 그 자리(+184)를 보고 갈라 —
+    //   0 이면 `27 <시각> aa` 봉투에 **본문 그대로**, 1 이면 `cc <순번> <길이>` 를 씌운다.
+    //   순번이 없으니 다시 실리면 클라가 또 처리하지만, 경험치는 **더하기가 아니라 절댓값**이라 같은 값이 다시 들어올 뿐이다.
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);                                    // 첫 부름은 시계만 잡는다
+        std::vector<nox::OutPacket> out;
+        srv.DebugImportantReal(a, /*ready=*/true);
+        srv.DebugGiveExp(a, 250.0f, out);
+        Check(out.empty(), "중요가 대기열에 안 쌓이고 곧바로 나갔다");
+        srv.Tick(34, out);
+        bool inEnvelope = false;
+        bool sequenced = false;
+        for (const auto& pk : out) {
+            if (pk.to != a) continue;
+            const std::vector<uint8_t> b = Body(pk);
+            if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
+                b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
+            size_t q = 4;
+            while (q < b.size()) {
+                if (b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && q + 4 <= b.size()) {
+                    if (b[q + 3] >= 1 && q + 4 + b[q + 3] <= b.size() &&
+                        b[q + 4] == static_cast<uint8_t>(nox::Op::REPORT_EXPERIENCE)) sequenced = true;
+                    q += 4 + b[q + 3];
+                    continue;
+                }
+                const int l = nox::MsgBodyLenByDir(b[q], /*fromClient=*/false);
+                if (l < 0) break;
+                if (b[q] == static_cast<uint8_t>(nox::Op::REPORT_EXPERIENCE) && q + 5 <= b.size()) {
+                    inEnvelope = true;
+                    Check(l == 4, "`6e` 몸이 4바이트가 아니다(머리까지 5)");
+                    const uint32_t v = static_cast<uint32_t>(b[q + 1]) |
+                                       (static_cast<uint32_t>(b[q + 2]) << 8) |
+                                       (static_cast<uint32_t>(b[q + 3]) << 16) |
+                                       (static_cast<uint32_t>(b[q + 4]) << 24);
+                    Check(v == 250, "봉투 속 `6e` 값이 250 이 아니다");
+                }
+                q += 1 + static_cast<size_t>(l);
+            }
+        }
+        Check(inEnvelope, "`6e` 가 중요 봉투(27+aa)로 안 갔다");
+        Check(!sequenced, "`6e` 에 순번 봉투(cc)가 씌워졌다 — 정답지 여섯째 인자는 0 이다");
+    }
+    std::printf("  7-a — 경험치(6e 5바이트·중요·u32 버림) · 레벨은 XPTable[레벨+1] · 한 번에 한 단계 · 천장 10\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -14657,6 +14812,7 @@ int main() {
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();
+    TestPlayerExp();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
