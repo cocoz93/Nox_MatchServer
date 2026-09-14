@@ -6455,7 +6455,38 @@ void Server::AITick(Creature& k, std::vector<OutPacket>& out) {
 //
 // 시작은 넷 다 **아무 일도 안 한다**(정답지 `Start(_ *Object) {}`).
 void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
-    (void)k; (void)act; (void)out;
+    (void)out;
+    switch (act) {
+        case 16: {   // ── 묶음 6-g(2) 근접 공격 시작 — `mobActionMelee1_532130`(`legacy/GAME4_3.c:1943`)
+            //
+            // ⭕ **쉬는 시간이 끝났나**(`+512`)로 갈린다.
+            //   · 끝났으면 — **휘두르기를 시작**하고 다음 쉬는 시간을 `randomInt(최소, 최대)` 로 잡는다
+            //   · 아직이면 — **「대상이 가까이 있으면」 조건(50)** 을 깔고 **그때까지 기다리기(1)** 를 올린다.
+            //     조건의 자는 **근접 사거리 × 1.2** 다(`monsterDef+112 * 1.2`)
+            //
+            // ⚠ **앞에 아군이 있나** 검사(`sub_532390` — 앞 60° 안에서 가장 가까운 것)와
+            //   그때 미는 **각도 바라보기(27)·때(41)·도망(24)** 갈래는 아직 안 옮겼다 — 6-g(2b)
+            // ⚠ 사람의 기력 깎기(깃발 0x10)와 소리는 안 옮긴다
+            const MonsterStats* m = FindMonster(k.type);
+            if (frame_ >= k.nextHitFrame) {
+                k.attackStartFrame = frame_;                 // +136 휘두르기 시작 프레임
+                const int lo = (m && m->minDelay > 0) ? m->minDelay : 30;
+                const int hi = (m && m->maxDelay > 0) ? m->maxDelay : lo;
+                const int span = (hi >= lo) ? (hi - lo + 1) : 1;   // randomInt 는 양끝 포함
+                k.nextHitFrame = frame_ + static_cast<uint32_t>(lo) + NextRandom(static_cast<uint32_t>(span));
+            } else {
+                const double reach = (m && m->meleeRange > 0.0) ? m->meleeRange : 0.0;
+                if (AIPush(k, 50)) {
+                    k.aiStack[k.aiStackInd].argF = static_cast<float>(reach * 1.2);
+                    k.aiStack[k.aiStackInd].targetAddr = k.enemyAddr;
+                    k.aiStack[k.aiStackInd].targetPet = k.enemyPet;
+                }
+                if (AIPush(k, 1)) k.aiStack[k.aiStackInd].argU32 = k.nextHitFrame;
+            }
+            break;
+        }
+        default: break;
+    }
 }
 
 // sub_545240(`GAME5.c:154`) — **한 점을 바라보게 돌린다**. 다 돌았으면 참(그러면 부르는 쪽이 뺀다).
@@ -6475,7 +6506,6 @@ bool Server::AIFacePoint(Creature& k, float tx, float ty) {
 
 // 갱신 — 여기가 알맹이다.
 void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
-    (void)out;
     Creature::AIStackItem& st = k.aiStack[k.aiStackInd];
     switch (act) {
         case 25:     // 자리를 바라보기(`sub_545210`) — 인자로 받은 점
@@ -6573,6 +6603,25 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 k.aiStack[k.aiStackInd].argY = lastY;
                 k.aiStack[k.aiStackInd].argU32 = 0;          // 정답지 `v3[3] = 0`
             }
+            break;
+        }
+        case 16: {   // 근접 공격 — `mobActionMeleeAtt_532440`
+            // ⚠⚠ **여기가 정답지와 갈리는 자리다.** 정답지는 애니 칸으로 굴린다 —
+            //   「**때리는 칸**(`monsterDef+108`)에 닿으면 한 번 때리고, **애니가 끝나면**(+483) 뺀다」.
+            //   우리는 **크리처 애니 칸이 없다**(thing.bin 몬스터 애니를 아직 안 읽는다).
+            //   그래서 **한 틱에 때리고 뺀다**. ★ 때리는 **간격**은 Start 가 쉬는 시간으로 이미 맞춘다 —
+            //   달라지는 것은 「휘두르는 동안 몇 틱 붙들려 있나」뿐이다
+            const MonsterStats* m = FindMonster(k.type);
+            const int dmg = (m && m->meleeDamage > 0) ? m->meleeDamage : 0;
+            const Target foe{ k.enemyAddr, k.enemyPet };
+            if (dmg == 0 || foe.none()) { AIPop(k); break; }   // 때릴 수 없다(정답지도 뺀다)
+            AttackSrc src;
+            src.x = static_cast<float>(k.x);
+            src.y = static_cast<float>(k.y);
+            src.byMonsterType = k.type;
+            src.byPet = static_cast<int>(&k - pets_.data());
+            HurtTarget(foe, dmg, out, k.owner, 0, &src);
+            AIPop(k);
             break;
         }
         case 29:     // 아무 데나 걷기 — 6-f(5). **스스로 안 빠진다**(아래 깔린 때(41) 조건이 뺀다)

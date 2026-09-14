@@ -11398,6 +11398,156 @@ void TestAIFight() {
     std::printf("  6-g(1) — 싸움(15): 10초 끊김 · 대상 있으면 근접(16) · 없으면 마지막 자리로 56+가기(7)\n");
 }
 
+// ── 묶음 6-g(2) — 근접 공격(16) ───────────────────────────────────────
+//
+// 정답지 `legacy/GAME4_3.c:1943` `mobActionMelee1_532130`(Start) + `532440`(Update).
+//   · Start — **쉬는 시간(+512)이 끝났나**로 갈린다.
+//     끝났으면 휘두르기를 시작하고 다음 쉬는 시간을 `randomInt(최소, 최대)` 로 잡는다.
+//     아직이면 **「대상이 가까이 있으면」 조건(50)** 을 깔고 **그때까지 기다리기(1)** 를 올린다
+//   · 조건(50)의 자는 **근접 사거리 × 1.2**
+//   · Update — 때릴 수 없으면 뺀다
+//
+// ⚠ 시험에 쓰는 몬스터 — **GiantLeech(1358)**: 피해 20 · 사거리 15 · 쉬는 시간 30~40.
+//   임프(1328)는 **근접이 없어**(피해 0) 「때릴 수 없다」 갈래를 본다.
+void TestAIMelee() {
+    const std::string a = "10.6.12.1:7201";
+    const std::string b = "10.6.12.2:7202";
+    auto mk = [&](nox::Server& srv, uint16_t type) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1010, 1000);
+        srv.DebugSpawnPet(type, 1000, 1000, a);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetFrame(1000);
+    };
+
+    // ① **쉬는 시간이 끝났으면 휘두르고, 다음 때를 최소~최대 안으로 잡는다**
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, 0);                         // 쉬는 시간 없음
+        srv.DebugAIPush(0, 16);
+        srv.DebugAIStart(0, 16, out);
+        Check(srv.DebugPetAttackStart(0) == 1000, "휘두르기 시작 프레임을 안 적었다");
+        const uint32_t nh = srv.DebugPetNextHit(0);
+        Check(nh >= 1000 + 30 && nh <= 1000 + 40, "다음 쉬는 시간이 30~40 안이 아니다");
+        Check(srv.DebugAIStackInd(0) == 0, "쉬는 시간이 끝났는데 뭘 더 올렸다");
+    }
+    // 여러 번 돌리면 **값이 흔들린다**(난수다)
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPush(0, 16);
+        uint32_t first = 0;
+        bool differ = false;
+        for (int t = 0; t < 40; ++t) {
+            srv.DebugSetPetNextHit(0, 0);
+            srv.DebugAIStart(0, 16, out);
+            const uint32_t nh = srv.DebugPetNextHit(0);
+            if (t == 0) first = nh; else if (nh != first) differ = true;
+            Check(nh >= 1000 + 30 && nh <= 1000 + 40, "다음 때가 30~40 밖으로 나갔다");
+        }
+        Check(differ, "다음 때가 늘 같다 — 난수가 아니다");
+    }
+
+    // ② **아직 쉬는 중이면 조건(50) + 기다리기(1)를 올린다**
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, 1100);                      // 아직 100틱 남았다
+        srv.DebugAIPush(0, 16);
+        srv.DebugAIStart(0, 16, out);
+        Check(srv.DebugAIAction(0, 1) == 50, "「가까이 있으면(50)」 조건이 안 깔렸다");
+        Check(srv.DebugAIAction(0, 2) == 1, "기다리기(1)가 안 올라갔다");
+        Check(srv.DebugAIArgU32(0, 2) == 1100, "기다리기 때가 다음 때와 다르다");
+        Check(srv.DebugPetNextHit(0) == 1100, "쉬는 중인데 다음 때를 바꿨다");
+    }
+
+    // ③ **조건(50)의 자는 사거리 × 1.2 이고 대상은 그 적이다**
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, 1100);
+        srv.DebugAIPush(0, 16);
+        srv.DebugAIStart(0, 16, out);
+        Check(std::fabs(srv.DebugAIArgF(0, 1) - 15.0f * 1.2f) < 0.01f, "조건의 자가 사거리×1.2 가 아니다");
+        Check(srv.DebugAITargetAddr(0, 1) == b, "조건이 그 적을 안 가리킨다");
+    }
+
+    // ③-2 **쉬는 시간 경계는 「같으면 친다」** — 딱 그 프레임이면 휘두른다
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, 1000);                      // 지금이 딱 그 프레임
+        srv.DebugAIPush(0, 16);
+        srv.DebugAIStart(0, 16, out);
+        Check(srv.DebugAIStackInd(0) == 0, "딱 그 프레임인데 기다리기를 올렸다(경계가 >= 다)");
+        Check(srv.DebugPetAttackStart(0) == 1000, "딱 그 프레임인데 안 휘둘렀다");
+    }
+
+    // ③-3 **다음 때의 폭이 최대까지 닿는다** — 양끝을 다 넣어야 40 이 나온다
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPush(0, 16);
+        uint32_t lo = 99999, hi = 0;
+        for (int t = 0; t < 400; ++t) {
+            srv.DebugSetPetNextHit(0, 0);
+            srv.DebugAIStart(0, 16, out);
+            const uint32_t nh = srv.DebugPetNextHit(0);
+            lo = std::min(lo, nh);
+            hi = std::max(hi, nh);
+        }
+        Check(lo == 1000 + 30, "최소 30 이 안 나왔다");
+        Check(hi == 1000 + 40, "최대 40 이 안 나왔다 — 양끝을 다 넣어야 한다");
+    }
+
+    // ④ **때릴 수 없으면 뺀다** — 임프는 근접이 없다. ★ **아무것도 안 내보낸다**
+    {
+        nox::Server srv; mk(srv, 1328);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPush(0, 16);
+        const size_t n0 = out.size();
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "근접이 없는데 안 빠졌다");
+        Check(out.size() == n0, "때릴 수 없는데 뭔가 내보냈다 — 때리기를 아예 안 불러야 한다");
+    }
+    // 대상이 없어도 뺀다 — 이때도 아무것도 안 내보낸다
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPush(0, 16);
+        const size_t n0 = out.size();
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "대상이 없는데 안 빠졌다");
+        Check(out.size() == n0, "대상이 없는데 뭔가 내보냈다");
+    }
+
+    // ⑤ **때리고 뺀다** — 상대 체력이 준다
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, 0);
+        const int hp0 = srv.HealthOf(b);
+        srv.DebugAIPush(0, 16);
+        srv.DebugAITick(0, out);
+        Check(srv.HealthOf(b) < hp0, "때렸는데 상대 체력이 안 줄었다");
+        Check(srv.DebugAIAction(0, 0) == 0, "때린 뒤 안 빠졌다");
+    }
+    std::printf("  6-g(2) — 근접(16): 쉬는 시간 끝나면 휘두름(다음 때 30~40) · 아니면 50+1 · 못 때리면 뺌\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -13604,6 +13754,7 @@ int main() {
     TestAIMoveTo();
     TestAIRandomWalk();
     TestAIFight();
+    TestAIMelee();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

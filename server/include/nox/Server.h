@@ -237,6 +237,7 @@ struct Creature {
     //   비어 있으면 「마지막으로 본 자리」로 가 보는 갈래로 빠진다.
     std::string enemyAddr;
     int enemyPet = -1;
+    uint32_t attackStartFrame = 0;               // +136 휘두르기를 시작한 프레임
 };
 
 // 깃발 하나.
@@ -1675,6 +1676,17 @@ public:
     void DebugSetPetSpeed(size_t i, float v) { if (i < pets_.size()) pets_[i].speedCur = v; }
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
     void DebugAIRandomWalk(size_t i) { if (i < pets_.size()) AIRandomWalk(pets_[i]); }
+    // 시험용 — 근접 공격(6-g(2))
+    void DebugAIStart(size_t i, uint8_t act, std::vector<OutPacket>& out) { if (i < pets_.size()) AIStart(pets_[i], act, out); }
+    void DebugSetPetNextHit(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].nextHitFrame = f; }
+    uint32_t DebugPetNextHit(size_t i) const { return i < pets_.size() ? pets_[i].nextHitFrame : 0; }
+    uint32_t DebugPetAttackStart(size_t i) const { return i < pets_.size() ? pets_[i].attackStartFrame : 0; }
+    float DebugAIArgF(size_t i, int j) const {
+        return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argF : 0.0f;
+    }
+    std::string DebugAITargetAddr(size_t i, int j) const {
+        return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].targetAddr : std::string();
+    }
     void DebugSetPetEnemy(size_t i, const std::string& addr, int pet) {
         if (i < pets_.size()) { pets_[i].enemyAddr = addr; pets_[i].enemyPet = pet; }
     }
