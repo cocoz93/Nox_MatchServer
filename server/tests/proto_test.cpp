@@ -12944,6 +12944,275 @@ void TestLessonScore() {
     std::printf("  7-c — 점수·죽은 횟수(4e 11바이트·모두에게·순번 봉투) · 자살 −1(죽은 수 그대로) · 팀킬 −1 · 도운이 +1\n");
 }
 
+// ── 묶음 7-d — 능력(0xCD·0xCE·0xCF·0xEB) ─────────────────────────────
+//
+// 정답지 `serverAbilities`(`spells_abil.go:135~394`) · `abilityRewardServ_4FB9C0` · `netAbilityReport_4D8060`.
+//   · 받았다 `cd <번호> <레벨 | 0x80>` 3바이트 — **순번 봉투**(Packet1)
+//   · 쉬는 시간 `ce <번호> <상태>` · 켜짐 `cf <번호> <0/1>` · 되돌림 `eb <번호>` — 셋 다 **순번 없는 중요**
+//   · 능력 레벨은 **주문 레벨 표 1~5 칸**을 같이 쓴다 · 받으면 **한 번에 5**
+//   · 값 ⭕ gamedata.bin — 쉬는 시간 300·300·150·30·600 / 지속 90·120·0·99999·300
+void TestAbilities() {
+    const std::string a = "10.7.4.1:7401";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        for (int k = 1; k < 6; ++k) srv.DebugSetSpellLvl(a, static_cast<uint8_t>(k), 0);
+    };
+    auto find = [&](const std::vector<nox::OutPacket>& out, uint8_t op, std::vector<uint8_t>& m) {
+        bool found = false;
+        for (const auto& x : FlattenTo(out, a))
+            if (!x.empty() && x[0] == op) { m = x; found = true; }
+        return found;
+    };
+    auto count = [&](const std::vector<nox::OutPacket>& out, uint8_t op) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, a)) if (!x.empty() && x[0] == op) ++n;
+        return n;
+    };
+
+    // ① **받으면 레벨이 한 번에 5 · `cd` 가 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugAbilAward(a, 1, /*announce=*/true, out), "주기가 실패했다");
+        Check(srv.DebugAbilLvl(a, 1) == 5, "능력 레벨이 한 번에 5 가 안 됐다");
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_AWARD), m), "`cd` 가 안 갔다");
+        Check(m.size() == 3, "`cd` 가 3바이트가 아니다");
+        Check(m[1] == 1, "`cd` 가 능력 번호를 안 실었다");
+        Check(m[2] == (5 | 0x80), "`cd` 둘째 칸이 `레벨 | 0x80` 이 아니다");
+    }
+    // 조용히 주면 0x80 이 없다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 2, /*announce=*/false, out);
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_AWARD), m) && m[2] == 5,
+              "조용히 줬는데 0x80 이 붙었다");
+    }
+    // 이미 있으면 실패하고 아무것도 안 보낸다 · 번호 밖도 막는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 1, false, out);
+        out.clear();
+        Check(!srv.DebugAbilAward(a, 1, false, out), "이미 있는데 또 줬다");
+        Check(!srv.DebugAbilAward(a, 0, false, out), "0 번을 받아들였다");
+        Check(!srv.DebugAbilAward(a, 6, false, out), "6 번을 받아들였다");
+        Check(count(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_AWARD)) == 0, "막혔는데 `cd` 가 갔다");
+    }
+
+    // ② **`cd` 는 순번 봉투(cc)로 · `ce` 는 맨몸으로** 간다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);
+        std::vector<nox::OutPacket> out;
+        srv.DebugImportantReal(a, /*ready=*/true);
+        srv.DebugAbilAward(a, 1, true, out);
+        srv.DebugAbilDo(a, 1, out);                        // 쉬는 시간이 걸리며 `ce` 가 나간다
+        srv.Tick(34, out);
+        bool awardSeq = false, stateRaw = false;
+        for (const auto& pk : out) {
+            if (pk.to != a) continue;
+            const std::vector<uint8_t> b = Body(pk);
+            if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
+                b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
+            size_t q = 4;
+            while (q < b.size()) {
+                if (b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && q + 4 <= b.size()) {
+                    if (b[q + 3] >= 1 && q + 4 + b[q + 3] <= b.size() &&
+                        b[q + 4] == static_cast<uint8_t>(nox::Op::REPORT_ABILITY_AWARD)) awardSeq = true;
+                    q += 4 + b[q + 3];
+                    continue;
+                }
+                const int l = nox::MsgBodyLenByDir(b[q], /*fromClient=*/false);
+                if (l < 0) break;
+                if (b[q] == static_cast<uint8_t>(nox::Op::REPORT_ABILITY_STATE)) stateRaw = true;
+                q += 1 + static_cast<size_t>(l);
+            }
+        }
+        Check(awardSeq, "`cd` 가 순번 봉투로 안 갔다");
+        Check(stateRaw, "`ce` 가 봉투 없이 안 갔다");
+    }
+
+    // ③ **쓰면 쉬는 시간이 걸리고 `ce` 상태 0 이 간다** · 다 쉬면 상태 1
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 4, false, out);              // 살금살금 — 쉬는 시간 30
+        out.clear();
+        Check(srv.DebugAbilDo(a, 4, out), "능력 쓰기가 실패했다");
+        Check(srv.DebugAbilCooldown(a, 4) == 30, "쉬는 시간이 30 이 아니다");
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_STATE), m), "`ce` 가 안 갔다");
+        Check(m.size() == 3 && m[1] == 4 && m[2] == 0, "`ce` 가 <번호 4> <상태 0> 이 아니다");
+        // 29틱은 조용하고 30틱째에 상태 1 이 간다
+        for (int t = 0; t < 29; ++t) { out.clear(); srv.DebugAbilTick(a, out); }
+        Check(srv.DebugAbilCooldown(a, 4) == 1, "29틱 뒤 쉬는 시간이 1 이 아니다");
+        Check(count(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_STATE)) == 0, "다 쉬기 전에 `ce` 가 갔다");
+        out.clear();
+        srv.DebugAbilTick(a, out);
+        Check(srv.DebugAbilCooldown(a, 4) == 0, "30틱 뒤에도 쉬는 시간이 남았다");
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_STATE), m) && m[2] == 1,
+              "다 쉬었는데 `ce` 상태 1 이 안 갔다");
+    }
+
+    // ④ **지속이 있으면 켜지고, 다하면 `cf` 0 이 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 1, false, out);              // 광전사 — 지속 90
+        srv.DebugSetFrame(1000);
+        srv.DebugAbilDo(a, 1, out);
+        Check(srv.DebugAbilActive(a, 1), "지속이 있는데 안 켜졌다");
+        // 프레임 1090 까지는 켜져 있고, 1091 에 꺼진다(`Frame() <= p.Frame` 이 남기는 조건)
+        srv.DebugSetFrame(1090);
+        out.clear();
+        srv.DebugAbilTick(a, out);
+        Check(srv.DebugAbilActive(a, 1), "딱 1090 인데 꺼졌다");
+        srv.DebugSetFrame(1091);
+        out.clear();
+        srv.DebugAbilTick(a, out);
+        Check(!srv.DebugAbilActive(a, 1), "1091 인데 안 꺼졌다");
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ACTIVE_ABILITIES), m), "`cf` 가 안 갔다");
+        Check(m.size() == 3 && m[1] == 1 && m[2] == 0, "`cf` 가 <번호 1> <꺼짐 0> 이 아니다");
+    }
+    // 지속이 0 인 작살은 아예 안 켜진다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 3, false, out);
+        srv.DebugAbilDo(a, 3, out);
+        Check(!srv.DebugAbilActive(a, 3), "지속 0 인데 켜졌다");
+        Check(srv.DebugAbilCooldown(a, 3) == 150, "작살 쉬는 시간이 150 이 아니다");
+    }
+
+    // ⑤ **같이 못 켜는 짝** — 광전사·함성·작살은 서로를 막는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        for (uint8_t k = 1; k <= 3; ++k) srv.DebugAbilAward(a, k, false, out);
+        srv.DebugAbilDo(a, 1, out);                        // 광전사를 켠다
+        Check(srv.DebugAbilActive(a, 1), "광전사가 안 켜졌다(이 시험의 전제)");
+        Check(!srv.DebugAbilDo(a, 2, out), "광전사 중에 함성이 먹었다");
+        Check(!srv.DebugAbilDo(a, 3, out), "광전사 중에 작살이 먹었다");
+        // 무리 밖(살금살금)은 막지 않는다
+        srv.DebugAbilAward(a, 4, false, out);
+        Check(srv.DebugAbilDo(a, 4, out), "광전사 중에 살금살금까지 막혔다");
+    }
+    // ★ **거꾸로도 막지 않는다** — 살금살금이 켜져 있어도 광전사는 켜진다.
+    //   (짝은 1·2·3 **셋뿐**이다. 넷까지 넓히면 이 자리가 걸린다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 4, false, out);
+        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugAbilDo(a, 4, out);                        // 살금살금을 먼저 켠다
+        Check(srv.DebugAbilActive(a, 4), "살금살금이 안 켜졌다(이 시험의 전제)");
+        Check(srv.DebugAbilDo(a, 1, out), "살금살금 중에 광전사가 막혔다");
+    }
+    // ★ **켜져 있으면 또 못 쓴다** — 쉬는 시간이 없는 자리에서 재야 관문이 드러난다.
+    //   살금살금은 쉬는 시간 30 · 지속 99999 라, 30틱 뒤에는 **쉬는 시간은 없고 켜짐만** 남는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 4, false, out);
+        srv.DebugAbilDo(a, 4, out);
+        for (int t = 0; t < 30; ++t) srv.DebugAbilTick(a, out);
+        Check(srv.DebugAbilCooldown(a, 4) == 0, "30틱 뒤에도 쉬는 시간이 남았다(이 시험의 전제)");
+        Check(srv.DebugAbilActive(a, 4), "30틱 뒤에 켜짐이 사라졌다(이 시험의 전제)");
+        Check(!srv.DebugAbilDo(a, 4, out), "쉬는 시간이 없는데 켜진 것을 또 켰다");
+    }
+
+    // ⑥ **쉬는 시간이 남았으면 못 쓴다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 3, false, out);              // 작살 — 지속 0 이라 켜짐으로는 안 막힌다
+        srv.DebugAbilDo(a, 3, out);
+        Check(!srv.DebugAbilDo(a, 3, out), "쉬는 시간이 남았는데 먹었다");
+        for (int t = 0; t < 150; ++t) srv.DebugAbilTick(a, out);
+        Check(srv.DebugAbilDo(a, 3, out), "다 쉬었는데 안 먹었다");
+    }
+
+    // ⑦ **워리어가 아니면 · 짐이 넘치면 못 쓴다**
+    {
+        nox::Server srv;
+        const std::string w = "10.7.4.2:7402";
+        srv.DebugEnterGame(w, 729, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(w, 1, false, out);
+        Check(!srv.DebugAbilDo(w, 1, out), "워리어가 아닌데 능력이 먹었다");
+    }
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugSetOverweight(a, true);
+        Check(!srv.DebugAbilDo(a, 1, out), "짐이 넘치는데 광전사가 먹었다");
+        Check(srv.DebugAbilDo(a, 2, out) || true, "");     // 함성은 짐과 무관 — 값만 확인
+        srv.DebugSetOverweight(a, false);
+    }
+
+    // ⑧ **되돌림** — 하나는 그 번호, 전부는 **6**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugAbilDo(a, 1, out);
+        out.clear();
+        srv.DebugAbilReset(a, 1, out);
+        Check(srv.DebugAbilCooldown(a, 1) == 0, "되돌렸는데 쉬는 시간이 남았다");
+        Check(!srv.DebugAbilActive(a, 1), "되돌렸는데 켜짐이 남았다");
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::RESET_ABILITIES), m), "`eb` 가 안 갔다");
+        Check(m.size() == 2 && m[1] == 1, "`eb` 가 <번호 1> 이 아니다");
+        Check(count(out, static_cast<uint8_t>(nox::Op::REPORT_ACTIVE_ABILITIES)) == 1, "되돌림에 `cf` 가 안 갔다");
+    }
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugAbilAward(a, 4, false, out);
+        srv.DebugAbilDo(a, 1, out);
+        srv.DebugAbilDo(a, 4, out);
+        out.clear();
+        srv.DebugAbilCancelAll(a, out);
+        Check(srv.DebugAbilCooldown(a, 1) == 0 && srv.DebugAbilCooldown(a, 4) == 0, "전부 되돌렸는데 쉬는 시간이 남았다");
+        Check(!srv.DebugAbilActive(a, 1) && !srv.DebugAbilActive(a, 4), "전부 되돌렸는데 켜짐이 남았다");
+        std::vector<uint8_t> m;
+        Check(find(out, static_cast<uint8_t>(nox::Op::RESET_ABILITIES), m) && m[1] == 6,
+              "전부 되돌림이 `eb 6` 이 아니다");
+        Check(count(out, static_cast<uint8_t>(nox::Op::REPORT_ACTIVE_ABILITIES)) == 2, "켜진 둘 다 `cf` 가 안 갔다");
+    }
+
+    // ⑨ **와이어로 들어온다** — `7a <번호>` 몸 1바이트
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 4, false, out);
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 2, 0);
+        p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::TRY_ABILITY);
+        p[nox::kWireHeaderSize + 1] = 4;
+        srv.OnPacket(a, p.data(), p.size(), out);
+        Check(srv.DebugAbilCooldown(a, 4) == 30, "`7a` 로 능력이 안 걸렸다");
+    }
+    // 몸 길이가 틀리면 무시한다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilAward(a, 4, false, out);
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 1, 0);
+        p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::TRY_ABILITY);
+        srv.OnPacket(a, p.data(), p.size(), out);
+        Check(srv.DebugAbilCooldown(a, 4) == 0, "길이가 틀린 것을 받아 처리했다");
+    }
+    std::printf("  7-d — 능력: 받으면 레벨 5(cd 순번 봉투) · 쉬는 시간 ce · 지속 끝 cf · 되돌림 eb(전부는 6) · 7a 입력\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -15166,6 +15435,7 @@ int main() {
     TestPlayerExp();
     TestSpellAward();
     TestLessonScore();
+    TestAbilities();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

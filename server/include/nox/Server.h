@@ -519,6 +519,11 @@ struct Session {
     // ── 묶음 7 성장 — 경험치(오브젝트 +28 float)와 레벨(사람자료 +3684 바이트)
     //   레벨 첫값 **1** — 정답지가 글자파일을 열기 **전에** 1 로 되돌린다(`sub_4EFF10` `GAME3_3.c:8098`).
     //   우린 글자파일을 안 읽으므로 그 값이 그대로 남는다
+    // 묶음 7-d — 능력 다섯. 레벨은 `spellLvl[1..5]` 를 같이 쓰고, 여기엔 쉬는 시간과 켜짐만 둔다
+    uint32_t abilCooldown[kAbilityCount] = {};     // unitAbilities.Cooldowns
+    bool     abilActive[kAbilityCount] = {};       // ExecList 에 얹혀 있나
+    uint32_t abilActiveUntil[kAbilityCount] = {};  // ExecAbilityClass.Frame — 이 프레임을 **넘으면** 끝
+    bool     overweight = false;                   // +3656 짐 넘침 — 광전사 돌진을 막는다
     // 묶음 7-c — 점수(+2136 `Lessons`)와 죽은 횟수(+2140). 둘 다 `4e` 한 통에 실린다
     int32_t score = 0;
     uint32_t deaths = 0;
@@ -1812,6 +1817,34 @@ public:
         if (!assist.empty()) MarkAssist(assist, Target{ victim, -1 });
         PlayerUpdateScore(v->second, out);
     }
+    // 시험용 — 능력
+    int DebugAbilLvl(const std::string& a, uint8_t k) const {
+        auto i = sessions_.find(a); return i == sessions_.end() || k >= 137 ? -1 : i->second.spellLvl[k];
+    }
+    uint32_t DebugAbilCooldown(const std::string& a, uint8_t k) const {
+        auto i = sessions_.find(a); return i == sessions_.end() || k >= kAbilityCount ? 0u : i->second.abilCooldown[k];
+    }
+    bool DebugAbilActive(const std::string& a, uint8_t k) const {
+        auto i = sessions_.find(a); return i != sessions_.end() && k < kAbilityCount && i->second.abilActive[k];
+    }
+    bool DebugAbilAward(const std::string& a, uint8_t k, bool announce, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); return i != sessions_.end() && AbilityAward(i->second, k, announce, out);
+    }
+    bool DebugAbilDo(const std::string& a, uint8_t k, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); return i != sessions_.end() && AbilityDo(i->second, k, out);
+    }
+    void DebugAbilTick(const std::string& a, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); if (i != sessions_.end()) AbilityUpdate(i->second, out);
+    }
+    void DebugAbilReset(const std::string& a, uint8_t k, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); if (i != sessions_.end()) AbilityReset(i->second, k, out);
+    }
+    void DebugAbilCancelAll(const std::string& a, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); if (i != sessions_.end()) AbilityCancelAll(i->second, out);
+    }
+    void DebugSetOverweight(const std::string& a, bool v) {
+        auto i = sessions_.find(a); if (i != sessions_.end()) i->second.overweight = v;
+    }
     int DebugScore(const std::string& a) const {
         auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.score;
     }
@@ -2544,6 +2577,17 @@ private:
     bool CanInteractFrom(const Creature& k, const Target& t) const;
     void SendGold(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-a — 경험치 알림·주기·레벨 오름
+    // 묶음 7-d — 능력(0xCD·0xCE·0xCF·0xEB)
+    void SendAbilityAward(Session& s, uint8_t abil, bool announce, std::vector<OutPacket>& out);
+    void SendAbilityState(Session& s, uint8_t abil, uint8_t state, std::vector<OutPacket>& out);
+    void SendAbilityActive(Session& s, uint8_t abil, bool active, std::vector<OutPacket>& out);
+    void SendAbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out);
+    bool AbilityAward(Session& s, uint8_t abil, bool announce, std::vector<OutPacket>& out);
+    bool AbilityIsActive(const Session& s, uint8_t abil) const;
+    bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
+    void AbilityUpdate(Session& s, std::vector<OutPacket>& out);
+    void AbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out);
+    void AbilityCancelAll(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-c — 점수·죽은 횟수(0x4E)
     void SendLesson(Session& s, std::vector<OutPacket>& out);
     void ChangeScore(Session& s, int32_t delta, std::vector<OutPacket>& out);

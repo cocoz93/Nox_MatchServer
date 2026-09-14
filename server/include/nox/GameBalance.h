@@ -417,6 +417,26 @@ constexpr int    kTargetedSpellFrames   = 45;
 constexpr int    kUnTargetedSpellFrames = 15;
 constexpr double kProjectileMaxTravel   = kFireballPerFrame * kUnTargetedSpellFrames;
 
+// ── 묶음 7-d 능력 ⭕ gamedata.bin ────────────────────────────────
+//
+// 워리어 능력 **다섯**. 번호는 1부터고(`server/spells_abil.go:186~193`),
+// **주문 레벨 표의 1~5 칸을 같이 쓴다**(`serverSetAllWarriorAbilities` 가 `SpellLvl[1..5]` 를 만진다).
+//   1 광전사 돌진 · 2 함성 · 3 작살 · 4 살금살금 · 5 늑대의 눈
+// ⭕ 값은 gamedata.bin 의 「Ability durations/usage delay in frames ( 30 fps assumed )」 토막 그대로다.
+// ⚠ 지속 **99999**(살금살금)는 「스스로 안 꺼진다」는 뜻이다 — 다시 눌러 끄거나 죽어야 꺼진다.
+// ⚠ 작살은 지속 **0** 이라 아예 지속 목록에 안 올라간다(`getDuration(abil) > 0` 관문).
+// ⚠ 정답지 Go 는 함성 지속을 `Balance.Float("WarCryDuration")`(가운데 C 대문자)로 찾는데
+//   파일의 이름은 `WarcryDuration` 이다 — 이름표가 대소문자를 안 가리거나 정답지 쪽 오타다.
+//   ⭕ 어느 쪽이든 파일에 적힌 값은 **120** 하나뿐이라 셈에는 차이가 없다.
+constexpr int kAbilityCount = 6;                  // 0 = 없음 · 1~5 · (6 = 「전부」 자리)
+constexpr uint32_t kAbilityDelay[kAbilityCount]    = { 0, 300, 300, 150, 30, 600 };
+constexpr uint32_t kAbilityDuration[kAbilityCount] = { 0,  90, 120,   0, 99999, 300 };
+// 이름 — 클라 문자열표 열쇠가 아니라 우리 기록·시험용
+constexpr const char* kAbilityNames[kAbilityCount] = {
+    "ABILITY_INVALID", "ABILITY_BERSERKER_CHARGE", "ABILITY_WARCRY",
+    "ABILITY_HARPOON", "ABILITY_TREAD_LIGHTLY", "ABILITY_EYE_OF_THE_WOLF",
+};
+
 // ── 묶음 7 성장 ⭕ gamedata.bin `XPTable` ─────────────────────────
 //
 // 「첫 칸이 레벨 **0**, 그다음이 1」이라고 파일에 적혀 있다(주석 그대로).

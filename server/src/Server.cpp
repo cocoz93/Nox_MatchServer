@@ -1232,9 +1232,10 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     s.respawnAtFrame = frame_ ? frame_ : 1;
     PlayerSetState(s, 3, frame_);
     DropFlag(addr, out);   // 들고 있었으면 그 자리에 떨군다
-    // `GAME5.c:5098~5104` — setUnitBuffFlags(0) · 능력 끄기(7) · +3600 = 0 · playerCancelSpells · unitClearBuffs
+    // `GAME5.c:5098~5104` — setUnitBuffFlags(0) · 능력 끄기(7-d 에서 옮김) · +3600 = 0 · playerCancelSpells · unitClearBuffs
     SetBuffFlags(Target{ addr, -1 }, 0);
     s.assistSet = false;
+    AbilityCancelAll(s, out);                              // 7-d — `GAME5.c:5100` 능력 끄기(`playerCancelAbils_4FC180`)
     PlayerCancelSpells(addr, out);                         // playerCancelSpells_4FEAE0(`GAME5.c:5103`, 4-a3)
     ClearBuffs(Target{ addr, -1 });
     // ⚠ 옮기지 않은 것 — 죽는 소리(10) · 가진 것 전부 떨구기(퀘스트 아니면 · 아이템 5)
@@ -2156,6 +2157,15 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             case Op::TRY_COLLIDE: {
                 if (!s.inGame || it.bodyLen() != 2) break;
                 TryCollide(s, static_cast<uint16_t>(it.body()[0] | (it.body()[1] << 8)), out);
+                ++handled_;
+                break;
+            }
+
+            case Op::TRY_ABILITY: {
+                // ── 묶음 7-d 능력 쓰기 — `network_server.go:91`(`0x7A`)
+                //   **몸 1바이트** — `<능력 번호>`. 채팅 모드가 아니고 `+3680 & 3`(관전)이 아니어야 한다
+                if (!s.inGame || it.bodyLen() != 1) break;
+                if (!s.observer) AbilityDo(s, it.body()[0], out);
                 ++handled_;
                 break;
             }
@@ -3811,6 +3821,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     for (auto& m : movers) buffUnits.push_back(m.s->addr);
     for (const auto& a : buffUnits) UpdateUnitBuffs(Target{ a, -1 }, out);
     for (size_t i = pets_.size(); i-- > 0;) UpdateUnitBuffs(Target{ std::string(), static_cast<int>(i) }, out);   // 몬스터도 CCC 목록에(죽으면 지워지니 뒤에서부터)
+    // 묶음 7-d — `serverAbilities::Update` · 쉬는 시간 −1 · 지속이 다한 것 끄기
+    for (auto& kv : sessions_) if (kv.second.inGame) AbilityUpdate(kv.second, out);
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -6980,6 +6992,149 @@ void Server::PlayerUpdateScore(Session& victim, std::vector<OutPacket>& out) {
         const bool sameAsKiller = killer != nullptr && killer->team != 0 && assist->team == killer->team;
         const bool sameAsVictim = victim.team != 0 && assist->team == victim.team;
         if (!sameAsKiller && !sameAsVictim) ChangeScore(*assist, +1, out);
+    }
+}
+
+// ── 묶음 7-d 능력 ─────────────────────────────────────────────────────
+//
+// 정답지 `serverAbilities`(`src/spells_abil.go:135~394`) ·
+//        `nox_xxx_abilityRewardServ_4FB9C0`·`nox_xxx_netAbilityReport_4D8060`(`legacy`).
+//
+// ⭕ 와이어 넷 — 앞 셋은 **본인에게만**.
+//   · `cd <능력 번호> <레벨 | 0x80(알림)>` **3바이트** — 받았다. `netSendPacket1` 이라 **순번 봉투**
+//   · `ce <능력 번호> <상태>` **3바이트** — 쉬는 시간 상태. `NetSendPacketXxx0` 이라 **순번 없는 중요**
+//   · `cf <능력 번호> <켜짐 0/1>` **3바이트** — 지속이 끝났다. 같이 순번 없는 중요
+//   · `eb <능력 번호>` **2바이트** — 되돌림. **6 이면 전부**. 같이 순번 없는 중요
+//   ★ 받았다(`cd`)만 순번이 붙는다 — **놓치면 능력이 사라지는** 값이라서다.
+//     쉬는 시간·켜짐은 다음 틱이면 또 오므로 맨몸으로 간다
+//
+// ⭕ 능력 레벨은 **주문 레벨 표의 1~5 칸**이다(`SpellLvl[번호]`) — 따로 두지 않는다.
+//   받으면 **한 번에 5** 로 올라간다(`*v6 = 5`) · 이미 있으면 "use.c:HadAbility" 만 보내고 실패
+//
+// ⭕ 쓰기(`Do`)의 관문 차례 — 하나라도 걸리면 그 자리에서 끝난다.
+//   ① 번호 1~5 · 죽었거나 사라졌으면 · 사람이 아니면 · **워리어가 아니면** 조용히 끝
+//   ② **같이 못 켜는 짝** — 광전사↔함성·작살 / 함성↔광전사·작살 / 작살↔함성·광전사 → 알림(2,2)
+//   ③ 그 능력이 **이미 켜져 있으면** → 알림(2,2)
+//   ④ 상태 12 이거나 (협동이 아닌데) **떠 있으면** → 알림(2,6)
+//   ⑤ (온라인이 아니거나 퀘스트면) 레벨 0 이면 → 알림(2,3). ⚠ 우리는 늘 온라인이라 안 탄다
+//   ⑥ 광전사인데 **짐이 넘치면**(+3656) → 알림(2,7)
+//   ⑦ **쉬는 시간이 남았으면** → 알림(2,2)
+//   그 뒤 쉬는 시간을 걸고(`ce` 상태 0), 지속이 0보다 크면 지속 목록에 얹고, 효과를 낸다
+//
+// ⛔ 효과 다섯(`do()` — 광전사·함성·작살·살금살금·늑대의 눈)은 **다음 조각(7-e)**.
+//   소리(226 따위)와 문자열 글줄은 묶음 10.
+void Server::SendAbilityAward(Session& s, uint8_t abil, bool announce, std::vector<OutPacket>& out) {
+    uint8_t msg[3];
+    msg[0] = static_cast<uint8_t>(Op::REPORT_ABILITY_AWARD);
+    msg[1] = abil;
+    msg[2] = static_cast<uint8_t>(announce ? (s.spellLvl[abil] | 0x80) : s.spellLvl[abil]);
+    EmitSeq(s, msg, sizeof(msg), out);                   // Packet1 = 순번 봉투
+}
+
+void Server::SendAbilityState(Session& s, uint8_t abil, uint8_t state, std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::REPORT_ABILITY_STATE), abil, state };
+    EmitImportantRaw(s, msg, sizeof(msg), out);
+}
+
+void Server::SendAbilityActive(Session& s, uint8_t abil, bool active, std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::REPORT_ACTIVE_ABILITIES), abil,
+                             static_cast<uint8_t>(active ? 1 : 0) };
+    EmitImportantRaw(s, msg, sizeof(msg), out);
+}
+
+void Server::SendAbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
+    const uint8_t msg[2] = { static_cast<uint8_t>(Op::RESET_ABILITIES), abil };
+    EmitImportantRaw(s, msg, sizeof(msg), out);
+}
+
+// `nox_xxx_abilityRewardServ_4FB9C0` — 능력 하나를 준다
+bool Server::AbilityAward(Session& s, uint8_t abil, bool announce, std::vector<OutPacket>& out) {
+    if (abil == 0 || abil >= 6) return false;            // "AwardAbilityError"(글줄은 묶음 10)
+    if (s.spellLvl[abil] != 0) return false;             // "use.c:HadAbility"
+    s.spellLvl[abil] = 5;                                // `*v6 = 5` — 한 번에 천장까지
+    SendAbilityAward(s, abil, announce, out);
+    return true;
+}
+
+bool Server::AbilityIsActive(const Session& s, uint8_t abil) const {
+    return abil < kAbilityCount && s.abilActive[abil];
+}
+
+// `serverAbilities::Do` — 능력을 쓴다
+bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
+    if (abil == 0 || abil >= 6) return false;
+    if (s.respawnAtFrame != 0) return false;             // 죽었거나 사라진 것
+    if (s.charClass != CharClass::Warrior) return false; // 워리어만
+    // ② 같이 못 켜는 짝 — 광전사·함성·작살 셋은 서로를 막는다
+    //   ⚠ 정답지는 `IsActiveVal`(켜짐 값까지) 과 `IsActive`(있기만) 를 섞어 쓰는데,
+    //     목록에 얹는 자리가 늘 `Active: 1` 이라 **둘이 같다**. 그래서 하나로 본다
+    const bool exclusive = (abil == 1 || abil == 2 || abil == 3);
+    if (exclusive) {
+        for (uint8_t o = 1; o <= 3; ++o)
+            if (o != abil && AbilityIsActive(s, o)) { InformSpell(s, 2, 2, out); return false; }
+    }
+    if (AbilityIsActive(s, abil)) { InformSpell(s, 2, 2, out); return false; }   // ③
+    // ④ 상태 12 이거나 (협동이 아닌데) **떠 있으면**
+    //   ⚠ 떠 있는 것(`FlagAirborne`)은 **사람에게는 아직 안 올겼다** —
+    //     날아가는 것의 깃발이지 사람 깃발이 아니다. 사람을 띄우는 길(작살 끌림 따위)을 옮길 때 같이 넣는다
+    if (s.moveState == 12) { InformSpell(s, 2, 6, out); return false; }
+    // ⑤ (온라인이 아니거나 퀘스트면) 레벨 0 은 못 쓴다 — ⚠ 우리는 늘 온라인이라 이 관문을 안 탄다
+    const bool quest = questTotal_ > 0 || questStage_ > 0;
+    if (quest && s.spellLvl[abil] == 0) { InformSpell(s, 2, 3, out); return false; }
+    if (abil == 1 && s.overweight) { InformSpell(s, 2, 7, out); return false; }   // ⑥ 짐 넘침(+3656)
+    if (s.abilCooldown[abil] != 0) { InformSpell(s, 2, 2, out); return false; }   // ⑦
+
+    s.abilCooldown[abil] = kAbilityDelay[abil];
+    if (kAbilityDelay[abil] != 0) SendAbilityState(s, abil, 0, out);
+    if (kAbilityDuration[abil] > 0) {
+        s.abilActive[abil] = true;
+        s.abilActiveUntil[abil] = frame_ + kAbilityDuration[abil];
+    }
+    // ⛔ 효과 내기(`do()`)와 소리는 다음 조각
+    return true;
+}
+
+// `serverAbilities::Update` — 틱마다 쉬는 시간을 줄이고, 지속이 다한 것을 끈다
+void Server::AbilityUpdate(Session& s, std::vector<OutPacket>& out) {
+    for (uint8_t i = 1; i < kAbilityCount; ++i) {
+        if (s.abilCooldown[i] == 0) continue;
+        if (--s.abilCooldown[i] == 0) SendAbilityState(s, i, 1, out);   // 다 쉬었다
+    }
+    const bool gone = s.respawnAtFrame != 0;
+    for (uint8_t i = 1; i < kAbilityCount; ++i) {
+        if (!s.abilActive[i]) continue;
+        // ⚠ 죽었거나 사라졌으면 **알리지 않고** 목록에서만 뺀다(정답지 `if (!obj.Flags().HasAny(...))`)
+        if (!gone) {
+            if (frame_ <= s.abilActiveUntil[i]) continue;               // 아직 남았다
+            SendAbilityActive(s, i, false, out);
+            if (i == 1) PlayerSetState(s, 13, frame_);                  // 광전사는 끝나면 상태 13
+        }
+        s.abilActive[i] = false;
+        s.abilActiveUntil[i] = 0;
+    }
+}
+
+// `serverAbilities::ResetAbility` — 하나를 되돌린다
+void Server::AbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
+    if (abil >= kAbilityCount) return;
+    s.abilCooldown[abil] = 0;
+    SendAbilityReset(s, abil, out);
+    if (s.abilActive[abil]) {
+        SendAbilityActive(s, abil, false, out);
+        s.abilActive[abil] = false;
+        s.abilActiveUntil[abil] = 0;
+    }
+}
+
+// `serverAbilities::CancelAbilities` — 전부 되돌린다. ★ `eb` 에 **6**(전부)을 싣는다
+void Server::AbilityCancelAll(Session& s, std::vector<OutPacket>& out) {
+    for (uint8_t i = 0; i < kAbilityCount; ++i) s.abilCooldown[i] = 0;
+    SendAbilityReset(s, 6, out);
+    for (uint8_t i = 1; i < kAbilityCount; ++i) {
+        if (!s.abilActive[i]) continue;
+        SendAbilityActive(s, i, false, out);
+        s.abilActive[i] = false;
+        s.abilActiveUntil[i] = 0;
     }
 }
 
