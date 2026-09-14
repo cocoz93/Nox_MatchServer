@@ -6542,6 +6542,39 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             k.aiStack[k.aiStackInd].argU32 = frame_ + 15 + NextRandom(16);   // randomInt(FPS/2, FPS) = 15~30
             break;
         }
+        case 15: {   // ── 묶음 6-g(1) 싸움 — `nox_xxx_mobActionFight_531EC0`(`legacy/GAME4_3.c:1823`)
+            //
+            // ⭕ 싸움은 **대상을 쫓는 행동이 아니라, 대상이 없으면 마지막 자리로 가 보는 행동**이다.
+            //   · **10초 넘게 대상 소식이 없으면** 스스로 빠진다(쌓임 항목 `+12` 가 마지막 소식 때다)
+            //   · 대상이 있으면 그때를 적고 **근접 공격(16)** 을 올린다
+            //   · 대상이 없으면 **마지막으로 본 자리**(`+4`·`+8`)로 **가기(7)** 를 민다.
+            //     이미 그 자리(8 안)면 그냥 빠진다
+            //
+            // ⚠ 아직 안 옮긴 갈래 — 스스로 버프 걸기(`monsterBuffSelf_540B90`)·
+            //   공격 주문(`monsterCastOffensive_540F20`)은 **6-g(3)** · `sub_534710`(깃발 0x40·아래 행동 4) ·
+            //   마지막 자리 둘레 30 안에 그 적이 보이나(`unitsGetInCircle` + `sub_532040`)
+            if (frame_ - st.argU32 > static_cast<uint32_t>(10 * 30)) { AIPop(k); break; }
+            const Target foe{ k.enemyAddr, k.enemyPet };
+            float fx = 0, fy = 0;
+            if (!foe.none()) {
+                st.argU32 = frame_;                          // 소식이 있었다고 적는다
+                // ⚠ `checkIsKillable_528190` 은 **있나**로만 대신한다 — 온전한 조건은 뒤 조각
+                if (!TargetXY(foe, fx, fy)) { AIPop(k); break; }
+                AIPush(k, 16);                               // 근접 공격
+                break;
+            }
+            // 대상이 없다 — **마지막으로 본 자리**로 가 본다
+            const float lastX = st.argX, lastY = st.argY;
+            const double dx = lastX - k.x, dy = lastY - k.y;
+            if (dx * dx + dy * dy < 64.0) { AIPop(k); break; }   // 이미 그 자리다
+            AIPush(k, 56);                                   // 「보이는 적이 없으면」 조건을 깐다
+            if (AIPush(k, 7)) {
+                k.aiStack[k.aiStackInd].argX = lastX;
+                k.aiStack[k.aiStackInd].argY = lastY;
+                k.aiStack[k.aiStackInd].argU32 = 0;          // 정답지 `v3[3] = 0`
+            }
+            break;
+        }
         case 29:     // 아무 데나 걷기 — 6-f(5). **스스로 안 빠진다**(아래 깔린 때(41) 조건이 뺀다)
             AIRandomWalk(k);
             break;

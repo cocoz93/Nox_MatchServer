@@ -11291,6 +11291,113 @@ void TestAIRandomWalk() {
     std::printf("  6-f(5) — 아무 데나 걷기: 보는 쪽 ±20 · 보는 쪽·돌 쪽 같이 · 빠르기×단위벡터 · 스스로 안 빠짐\n");
 }
 
+// ── 묶음 6-g(1) — 싸움(15) 뼈대 ───────────────────────────────────────
+//
+// 정답지 `legacy/GAME4_3.c:1823` `nox_xxx_mobActionFight_531EC0`.
+// ★ 싸움은 **대상을 쫓는 행동이 아니다** — 대상이 있으면 때리고, **없으면 마지막으로 본 자리로 가 본다**.
+//   · 쌓임 항목 `+12` 가 **마지막 소식 때**다. **10초(300틱)를 넘기면** 스스로 빠진다
+//   · 대상이 있으면 그때를 적고 **근접 공격(16)** 을 올린다
+//   · 없으면 마지막 자리로 **가기(7)** 를 밀되, 아래에 **「보이는 적 없음(56)」** 조건을 깐다
+//   · 이미 그 자리(8 안)면 그냥 빠진다
+void TestAIFight() {
+    const std::string a = "10.6.11.1:7101";
+    const std::string b = "10.6.11.2:7102";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1400, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetPetSpeed(0, 4.0f);
+        srv.DebugSetFrame(1000);
+    };
+
+    // ① **10초 넘게 소식이 없으면 빠진다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/699, 0, 1400, 1000);   // 1000−699 = 301 > 300
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "10초를 넘겼는데 안 빠졌다");
+    }
+    // 경계 — 딱 300틱이면 아직 안 빠진다(정답지가 `>` 다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/700, 0, 1400, 1000);   // 1000−700 = 300
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 15, "딱 300틱인데 빠졌다 — 경계가 > 다");
+    }
+
+    // ② **대상이 있으면 근접 공격(16)을 올리고 소식 때를 적는다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 1) == 16, "근접 공격(16)이 안 올라갔다");
+        Check(srv.DebugAIArgU32(0, 0) == 1000, "소식 때를 안 적었다");
+    }
+
+    // ③ **대상이 사라졌으면 빠진다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, "10.6.11.9:9999", -1);        // 없는 사람
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "대상이 사라졌는데 안 빠졌다");
+    }
+
+    // ④ **대상이 없으면 마지막 자리로 가기(7)를 민다** — 아래에 조건 56 을 깐다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 15, "싸움이 바닥에 안 남았다");
+        Check(srv.DebugAIAction(0, 1) == 56, "「보이는 적 없음(56)」 조건이 안 깔렸다");
+        Check(srv.DebugAIAction(0, 2) == 7, "가기(7)가 안 올라갔다");
+        Check(srv.DebugAIStackInd(0) == 2, "쌓임 맨 위가 가기가 아니다");
+    }
+
+    // ⑤ **이미 그 자리면 그냥 빠진다**(8 안)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetPos(0, 1400, 1000);                    // 마지막 자리에 서 있다
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 0, "이미 그 자리인데 안 빠졌다");
+    }
+    // 경계 — 딱 8 이면 「그 자리」가 아니다(거리제곱 < 64)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetPos(0, 1392, 1000);                    // 8 만큼 떨어짐
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 0) == 15, "딱 8 인데 그 자리로 봤다");
+    }
+
+    // ⑥ **민 가기(7)가 마지막 자리를 그대로 받는다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1234, 1567);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIAction(0, 2) == 7, "가기(7)가 안 올라갔다(이 시험의 전제)");
+        // 그 가기를 굴려 보면 그 자리로 길을 낸다
+        srv.DebugAITick(0, out);
+        Check(srv.DebugPetPathGoalX(0) == 1234.0f, "가기가 마지막 자리를 안 받았다");
+    }
+    std::printf("  6-g(1) — 싸움(15): 10초 끊김 · 대상 있으면 근접(16) · 없으면 마지막 자리로 56+가기(7)\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -13496,6 +13603,7 @@ int main() {
     TestCreatureTickMove();
     TestAIMoveTo();
     TestAIRandomWalk();
+    TestAIFight();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

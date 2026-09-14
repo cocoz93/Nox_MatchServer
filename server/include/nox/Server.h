@@ -233,6 +233,10 @@ struct Creature {
     float speedCur = 3.0f;                       // +544 SpeedCur
     double velX = 0, velY = 0;                   // 이번 틱에 갈 속도
     uint32_t pathStuckFrame = 0;                 // +540 길 찾기 결과가 1 이었던 마지막 프레임
+    // ★ 묶음 6-g — **지금 싸우는 상대**(`+1196`). 싸움(15)이 이것을 본다.
+    //   비어 있으면 「마지막으로 본 자리」로 가 보는 갈래로 빠진다.
+    std::string enemyAddr;
+    int enemyPet = -1;
 };
 
 // 깃발 하나.
@@ -1671,6 +1675,9 @@ public:
     void DebugSetPetSpeed(size_t i, float v) { if (i < pets_.size()) pets_[i].speedCur = v; }
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
     void DebugAIRandomWalk(size_t i) { if (i < pets_.size()) AIRandomWalk(pets_[i]); }
+    void DebugSetPetEnemy(size_t i, const std::string& addr, int pet) {
+        if (i < pets_.size()) { pets_[i].enemyAddr = addr; pets_[i].enemyPet = pet; }
+    }
     bool DebugCreatureTickMove(size_t i, double tx, double ty) {
         return i < pets_.size() ? CreatureTickMove(pets_[i], tx, ty) : false;
     }
