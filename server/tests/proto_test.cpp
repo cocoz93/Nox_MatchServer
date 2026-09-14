@@ -8735,10 +8735,230 @@ void TestEatAndMushroom() {
         Check(nox::UseFnOf("ConsumeConfuseUse") == nox::UseFn::ConsumeConfuse,
               "ConsumeConfuseUse 가 안 옮겨졌다 — 앞 세 글자가 같아 Consume 으로 새기 쉽다");
         Check(nox::UseFnOf("MushroomUse") == nox::UseFn::Mushroom, "MushroomUse 가 안 옮겨졌다");
+        Check(nox::UseFnOf("WandCastUse") == nox::UseFn::WandCast, "WandCastUse 가 안 옮겨졌다");
+        Check(nox::UseFnOf("WandUse") == nox::UseFn::None, "WandUse 는 아직 안 옮겼다 — None 이어야 한다");
         Check(nox::UseFnOf("ReadUse") == nox::UseFn::None, "아직 안 옮긴 갈래가 None 이 아니다");
         Check(nox::UseFnOf("") == nox::UseFn::None, "빈 이름이 None 이 아니다");
     }
     std::printf("  5-d — 먹기: 가득이면 안 먹음 · 음수 음식은 깎음 · 물약 갈래는 빠짐 · 먹을거리 아니면 안 먹음 · 버섯 10초 혼란(세기 5)·독 풀기 · 사이다 5초(세기 4)·가득이어도 없어짐 · USE 앞말 표\n");
+}
+
+// ── 묶음 5-e — 충전 완드(`useWandCastSpell_53F4F0`) ─────────────────────
+//
+// ★ 이것이 묶음 4 에서 「**충전 지팡이로 걸면 마나 대신 충전을 쓴다**」로 미뤄 둔 그 길이다.
+//   완드는 `spellAccept` 를 **곧장** 부른다 — 마나를 아예 안 본다(세기 4 고정).
+//
+// ⭕ thing.bin 실측 — `USE = WandCastUse <충전> <초> <주문이름>`:
+//     `250 1.0 SPELL_PLASMA` · `60 1.0 SPELL_CHAIN_LIGHTNING` ·
+//     `5 1.0 SPELL_DEATH_RAY` · `3 0.2 SPELL_FORCE_OF_NATURE`
+//
+// 규칙 — 최대 != 0 이고 지금 == 0 이면 못 쓴다 · 재사용 대기가 지나야 한다 ·
+//   주문이 받아들여져야 깎는다 · **완드 자체는 안 없어진다** ·
+//   깎을 때마다 `64 <번호 2> <지금> <최대>` 를 보낸다
+void TestWandCharges() {
+    const std::string a = "10.5.5.1:5501";
+    auto giveWand = [&](nox::Server& srv, uint8_t spell, uint8_t maxCh, uint32_t cool) {
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 700; w.type = 650; w.x = 1000; w.y = 1000;
+        w.weight = 20; w.useFn = nox::UseFn::WandCast;
+        w.wandSpell = spell; w.chargesMax = maxCh; w.charges = maxCh; w.wandCooldown = cool;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> o;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 700);
+        srv.OnPacket(a, g.data(), g.size(), o);
+    };
+    auto use = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> u = CodePacket(nox::Op::TRY_USE, 700);
+        srv.OnPacket(a, u.data(), u.size(), out);
+    };
+    // `64 <번호 2> <지금> <최대>` 를 찾는다
+    auto charges = [&](const std::vector<nox::OutPacket>& out, const std::string& to, int& now, int& max) {
+        bool found = false;
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_CHARGES) &&
+                m[1] == 700 - 256 * (700 / 256) && m[2] == 700 / 256) {
+                now = m[3]; max = m[4]; found = true;
+            }
+        return found;
+    };
+    auto mk = [&](nox::Server& srv) {
+        RegSpell(srv, 24, 0);                                // 번개 — 지속 주문이라 걸리는지 보기 쉽다
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugAimAt(a, 1100, 1000);
+    };
+
+    // ① **마나를 안 쓴다** — 완드는 `spellAccept` 를 곧장 부른다
+    {
+        nox::Server srv; mk(srv);
+        giveWand(srv, 24, 5, 0);
+        const uint16_t m0 = srv.ManaOf(a);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        use(srv, out);
+        Check(srv.ManaOf(a) == m0, "완드가 마나를 가져갔다 — 충전으로 써야 한다");
+        Check(srv.DurCount() == 1, "완드가 주문을 안 걸었다");
+    }
+
+    // ② **충전이 하나씩 깎이고 `64` 가 간다** · 완드는 안 없어진다
+    {
+        nox::Server srv; mk(srv);
+        giveWand(srv, 24, 3, 0);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        out.clear();
+        use(srv, out);
+        int now = -1, max = -1;
+        Check(charges(out, a, now, max), "충전 알림 `64` 가 안 왔다");
+        Check(now == 2 && max == 3, "충전 알림 값이 2/3 이 아니다");
+        Check(srv.CarriedCount(a) == 1, "완드가 없어졌다 — 충전만 깎여야 한다");
+    }
+
+    // ③ **다 쓰면 안 걸린다** — 충전이 0 이면 주문도 안 나간다
+    {
+        nox::Server srv; mk(srv);
+        giveWand(srv, 24, 2, 0);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        // ⚠ 같은 주문을 거듭 걸면 `DurNew` 가 앞의 것을 갈아치우므로 **개수는 안 는다**.
+        //   그래서 「걸렸나」는 **충전 알림이 왔나**로 센다 — 그게 곧 「주문이 받아들여졌나」다.
+        int fired = 0, now = -1, max = -1;
+        for (int k = 0; k < 3; ++k) {
+            out.clear();
+            use(srv, out);
+            if (charges(out, a, now, max)) ++fired;
+        }
+        Check(fired == 2, "충전 2 짜리인데 나간 횟수가 2 가 아니다");
+        Check(now == 0, "마지막 충전 알림이 0 이 아니다");
+        Check(srv.CarriedCount(a) == 1, "다 쓴 완드가 없어졌다");
+    }
+
+    // ④ **최대가 0 이면 무한** — 깎지도 않고 알림도 안 간다
+    {
+        nox::Server srv; mk(srv);
+        giveWand(srv, 24, 0, 0);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        out.clear();
+        use(srv, out);
+        Check(srv.DurCount() == 1, "무한 완드가 주문을 안 걸었다");
+        int now = -1, max = -1;
+        Check(!charges(out, a, now, max), "무한 완드인데 충전 알림이 갔다");
+    }
+
+    // ⑤ **재사용 대기** — 대기가 안 지나면 안 나간다
+    {
+        nox::Server srv; mk(srv);
+        giveWand(srv, 24, 5, 30);                            // 1초
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }   // 첫 발도 대기를 기다린다
+        int now = -1, max = -1;
+        out.clear();
+        use(srv, out);
+        Check(charges(out, a, now, max), "첫 발이 안 나갔다(이 시험의 전제)");
+        ms += 34 * 10; srv.Tick(ms, out);                    // 10틱 — 아직 대기 중
+        out.clear();
+        use(srv, out);
+        Check(!charges(out, a, now, max), "대기 중인데 나갔다");
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        out.clear();
+        use(srv, out);
+        Check(charges(out, a, now, max), "대기가 지났는데 안 나갔다");
+    }
+    // ⑥ **대기 경계** — 딱 대기만큼 지나면 나간다(`<` 이지 `<=` 가 아니다)
+    {
+        nox::Server srv; mk(srv);
+        giveWand(srv, 24, 5, 10);                            // 10틱
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        // ⚠ 정답지는 「아직 안 썼다」를 따로 안 둔다 — 판이 시작하고 **대기만큼 지나야** 첫 발이 나간다
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        int now = -1, max = -1;
+        out.clear();
+        use(srv, out);
+        Check(charges(out, a, now, max), "대기가 지났는데 첫 발이 안 나갔다");
+        for (int t = 0; t < 9; ++t) { ms += 34; srv.Tick(ms, out); }   // 9틱 — 아직
+        out.clear();
+        use(srv, out);
+        Check(!charges(out, a, now, max), "9틱인데 나갔다");
+        ms += 34; srv.Tick(ms, out);                         // 딱 10틱
+        out.clear();
+        use(srv, out);
+        Check(charges(out, a, now, max), "딱 10틱인데 안 나갔다 — 경계가 <= 인가");
+    }
+
+    // ⑦ **주문이 안 걸리면 충전도 안 깎인다** — 정의 없는 주문은 거절된다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugAimAt(a, 1100, 1000);
+        giveWand(srv, 43, 5, 0);                             // 43 은 이 시험이 정의를 안 넣었다
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        out.clear();
+        use(srv, out);
+        int now = -1, max = -1;
+        Check(!charges(out, a, now, max), "주문이 거절됐는데 충전을 깎았다");
+    }
+
+    // ⑧ **주문 번호가 0 이면 아무 일도 안 난다**
+    {
+        nox::Server srv; mk(srv);
+        giveWand(srv, 0, 5, 0);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        out.clear();
+        use(srv, out);
+        int now = -1, max = -1;
+        Check(!charges(out, a, now, max), "주문 번호 0 인데 충전을 깎았다");
+        Check(srv.DurCount() == 0, "주문 번호 0 인데 뭔가 걸렸다");
+    }
+
+    // ⑨ **세기는 4 로 고정이다** — 완드는 늘 세기 4 로 건다(`spellAccept(…, 4)`)
+    {
+        nox::Server srv;
+        RegSpell(srv, 51, 0);
+        nox::Gamedata g;
+        g.Parse("ShieldHealth = 20, 35, 50, 75, 100;\nShieldDuration = 30, 60, 90, 120, 150;\n");
+        srv.SetGamedata(g);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugAimAt(a, 1000, 1000);
+        giveWand(srv, 51, 5, 0);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        use(srv, out);
+        Check(srv.DebugHasEnchant(a, 26), "완드로 방패가 안 걸렸다(이 시험의 전제)");
+        Check(srv.DebugEnchantPower(a, 26) == 4, "완드가 건 주문 세기가 4 가 아니다");
+    }
+
+    // ⑩ **버려 되돌아온 완드도 충전을 지닌다**
+    {
+        nox::Server srv; mk(srv);
+        giveWand(srv, 24, 3, 0);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        use(srv, out);                                       // 3 → 2
+        {   // 바닥에 되돌렸다가 다시 줍는다
+            const std::vector<uint8_t> f = CodePacket(nox::Op::INVENTORY_FAIL, 700);
+            srv.OnPacket(a, f.data(), f.size(), out);
+            const std::vector<uint8_t> g2 = CodePacket(nox::Op::TRY_GET, 700);
+            srv.OnPacket(a, g2.data(), g2.size(), out);
+        }
+        Check(srv.CarriedCount(a) == 1, "되돌아온 완드를 다시 못 들었다(이 시험의 전제)");
+        out.clear();
+        use(srv, out);
+        int now = -1, max = -1;
+        Check(charges(out, a, now, max), "되돌아온 완드가 안 나갔다");
+        Check(max == 3, "되돌아온 완드의 최대 충전이 3 이 아니다 — 오다 빠졌나");
+    }
+    std::printf("  5-e — 완드: 마나 안 씀 · 충전 깎고 `64` 알림 · 다 쓰면 안 걸림 · 최대 0 은 무한 · 대기 경계 · 거절되면 안 깎음 · 세기 4 · 되돌아와도 충전 지님\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
@@ -10919,6 +11139,7 @@ int main() {
     TestUsePotion();
     TestPickupPotion();
     TestEatAndMushroom();
+    TestWandCharges();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

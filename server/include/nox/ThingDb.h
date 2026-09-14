@@ -119,6 +119,11 @@ struct ThingInfo {
     //     `PotionUse`·`ConsumeUse` 뿐**이고, `WandUse 20` 의 20 은 회복이 아니다.
     std::string useHandler;
     int useArg = 0;
+    // ★ 묶음 5-e — `USE` 의 **뒷말 전체**(처리기 이름을 뺀 나머지). 갈래마다 칸 수가 다르다:
+    //     `WandCastUse 250 1.0 SPELL_PLASMA`      — 충전 250 · 재사용 1.0초 · 걸 주문
+    //     `WandUse 10 Fireball 1.0 MULTI_SHOT SmallFireballWand 6`
+    //   `useArg` 는 그 중 **첫 숫자**다(완드는 충전 수). 나머지는 여기서 갈래별로 읽는다.
+    std::string useArgsRaw;
     // ★ 맞았을 때 부르는 피해 함수 이름(DAMAGE = DefaultDamage 꼴 · 묶음 3-e). 없으면 빈 문자열.
     //   정답지 `legacy/object_damage.go` 등록표: DefaultDamage · PlayerDamage · SkeletonDamage · StoneDamage ·
     //   MechGolemDamage · FlammableDamage · BlackPowderDamage · ArmorDamage · WeaponDamage · BallDamage · MonsterGeneratorDamage

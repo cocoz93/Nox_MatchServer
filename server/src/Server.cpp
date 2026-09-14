@@ -2280,6 +2280,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.isFood = w.isFood;
                 c.foodBits = w.foodBits;
                 c.useFn = w.useFn;
+                c.charges = w.charges; c.chargesMax = w.chargesMax;
+                c.wandSpell = w.wandSpell; c.wandCooldown = w.wandCooldown;
                 s.inventory.push_back(c);
                 ++picked_;
                 ++handled_;
@@ -2311,6 +2313,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     case UseFn::Consume:        spent = UseConsume(s, c, out); break;
                     case UseFn::Mushroom:       spent = UseMushroom(s, out); break;
                     case UseFn::ConsumeConfuse: spent = UseCiderConfuse(s, c, out); break;
+                    case UseFn::WandCast:       spent = UseWandCast(s, s.inventory[at], out); break;   // 5-e — 충전만 깎고 안 없어짐
                     default: break;             // 아직 안 옮긴 갈래(책·완드·활) — 아무 일도 안 난다
                 }
                 if (spent) {
@@ -2411,6 +2414,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.isFood = s.inventory[i].isFood;
                     back.foodBits = s.inventory[i].foodBits;
                     back.useFn = s.inventory[i].useFn;
+                    back.charges = s.inventory[i].charges; back.chargesMax = s.inventory[i].chargesMax;
+                    back.wandSpell = s.inventory[i].wandSpell; back.wandCooldown = s.inventory[i].wandCooldown;
                     back.x = s.x;
                     back.y = s.y;
                     statics_.push_back(back);
@@ -5533,6 +5538,54 @@ int Server::DurTelePopTick(DurSpell& d, std::vector<OutPacket>& out) {
     TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
     return 1;
+}
+
+// ── 묶음 5-e 충전 완드 ────────────────────────────────────────────────
+//
+// netReportCharges_4D82B0(`GAME3_2.c:3830`) — `64 <번호 2> <지금> <최대>` **5바이트**.
+//   ⭕ 짜임은 디컴파일 그대로다. `netSendPacket1(…, 0, 0)` 이라 **중요(cc)가 아니다**.
+void Server::SendCharges(Session& s, const Session::Carried& c, std::vector<OutPacket>& out) {
+    uint8_t msg[5];
+    msg[0] = static_cast<uint8_t>(Op::REPORT_CHARGES);
+    msg[1] = static_cast<uint8_t>(c.netCode);
+    msg[2] = static_cast<uint8_t>(c.netCode >> 8);
+    msg[3] = c.charges;
+    msg[4] = c.chargesMax;
+    Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+}
+
+// useWandCastSpell_53F4F0(`GAME4_3.c:7934`) — 완드로 주문을 건다.
+//   ★ 이것이 묶음 4 에서 「충전 지팡이로 걸면 마나 대신 충전을 쓴다」로 미뤄 둔 바로 그 길이다.
+//     **마나를 아예 안 본다** — 주문을 곧장 `spellAccept` 로 넣는다(세기 4 고정).
+//   · **최대 != 0 이고 지금 == 0** 이면 못 쓴다(소리 222 — 묶음 10)
+//   · 재사용 대기 — `지금 프레임 − 마지막 − (대기 − 2×준비효과)`. ⚠ 준비효과(아이템 수식)는 아직 없어 0
+//   · 주문이 받아들여져야 **마지막 프레임을 갱신하고 충전을 깎는다**(실패하면 안 깎는다)
+//   · 최대 != 0 일 때만 깎고 `REPORT_CHARGES` 를 보낸다(= 0 은 무한 완드)
+// ⚠ 안 옮긴 갈래 — 정답지는 `a2[2] & 0x1000 && a2[3] & 0x4040000` 이면 **안 깎는다**.
+//   그 두 비트가 무엇인지 못 짚어(오브젝트 깃발·클래스로 보이나 확증 없음) 늘 깎는 쪽으로 두었다.
+bool Server::UseWandCast(Session& s, Session::Carried& c, std::vector<OutPacket>& out) {
+    if (c.wandSpell == 0) return false;
+    if (c.chargesMax != 0 && c.charges == 0) return false;    // 다 썼다
+    // ⚠ 「아직 안 썼다」를 따로 안 둔다 — 정답지도 `+104` 가 0 인 채로 `지금 − 0 >= 대기` 를 본다.
+    //   즉 **판이 시작하고 대기만큼 지나야 첫 발이 나간다.** 그게 원본 버릇이다.
+    if (frame_ - c.wandLastFrame < c.wandCooldown) return false;
+
+    SpellArg arg;
+    // ★ 겨눈 자리는 커서, **대상은 커서가 집은 것**. 집은 것이 없으면 **시전자 자신**이다
+    //   (`GAME4_3.c:7967~7972` — `+288` 이 0 이면 `v11[0] = a1`). 이걸 빼면 방패처럼
+    //   대상이 있어야 도는 주문이 완드로는 영영 안 걸린다.
+    arg.obj = FindObjectAtCursor(s);
+    if (arg.obj.none()) arg.obj = Target{ s.addr, -1 };
+    arg.x = static_cast<float>(s.aimX);
+    arg.y = static_cast<float>(s.aimY);
+    if (!SpellAccept(c.wandSpell, s, s.addr, arg, /*lvl=*/4, out)) return false;
+
+    c.wandLastFrame = frame_;
+    if (c.chargesMax != 0) {
+        --c.charges;
+        SendCharges(s, c, out);
+    }
+    return false;   // ★ 완드는 **안 없어진다** — 충전만 준다
 }
 
 // ── 묶음 5-d 먹을거리·버섯·사이다 ─────────────────────────────────────

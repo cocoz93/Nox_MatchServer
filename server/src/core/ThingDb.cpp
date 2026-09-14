@@ -449,7 +449,8 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                     t.useHandler = val;
                 } else {
                     t.useHandler = Trim(val.substr(0, sp));
-                    t.useArg = std::atoi(Trim(val.substr(sp + 1)).c_str());
+                    t.useArgsRaw = Trim(val.substr(sp + 1));
+                    t.useArg = std::atoi(t.useArgsRaw.c_str());
                 }
             } else if (key == "DAMAGE") {
                 // 피해 함수 이름(묶음 3-e) — 뒤에 숫자가 붙는 꼴이 있을 수 있어 첫 낱말만

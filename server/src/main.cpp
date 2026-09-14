@@ -517,6 +517,22 @@ int main(int argc, char** argv) {
                 //   ⚠ `ConsumeUse` 값은 **음수일 수 있다**(실측 −15) — 먹으면 깎이는 음식이다.
                 w2.useFn = nox::UseFnOf(ti->useHandler);
                 if (w2.useFn != nox::UseFn::None) w2.useAmount = ti->useArg;
+                // ★ 묶음 5-e — `WandCastUse <충전> <초> <주문이름>` 을 갈라 담는다.
+                //   ⭕ 실측 — `250 1.0 SPELL_PLASMA` · `5 1.0 SPELL_DEATH_RAY` ·
+                //     `60 1.0 SPELL_CHAIN_LIGHTNING` · `3 0.2 SPELL_FORCE_OF_NATURE`.
+                //   주문 번호는 **SPEL 섹션의 순번**이다(우리 주문 번호와 같은 셈).
+                if (w2.useFn == nox::UseFn::WandCast) {
+                    int ch = 0; float sec = 0.0f; char nm[64] = { 0 };
+                    if (std::sscanf(ti->useArgsRaw.c_str(), "%d %f %63s", &ch, &sec, nm) == 3) {
+                        w2.chargesMax = static_cast<uint8_t>(ch < 0 ? 0 : (ch > 255 ? 255 : ch));
+                        w2.charges = w2.chargesMax;
+                        w2.wandCooldown = static_cast<uint32_t>(sec * nox::kServerTickRate);
+                        for (size_t si = 0; si < tdb.Spells().size(); ++si)
+                            if (tdb.Spells()[si].name == nm) { w2.wandSpell = static_cast<uint8_t>(si); break; }
+                        if (w2.wandSpell == 0)
+                            std::printf("[완드] ⚠ %s 의 주문 %s 을 못 찾음\n", objs[i].type.c_str(), nm);
+                    }
+                }
                 w2.equipBit = ebit;
                 w2.isWeapon = isW;
                 // ★ 묶음 5 — 줍기 한도를 재는 두 값. 여기까지 온 물건은 `hasWeight` 가 참이다.

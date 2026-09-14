@@ -41,12 +41,13 @@ namespace nox {
 //   WandCastUse 8 · WarpReadUse 4 · BowUse 4 · AmmoUse 4 · **MushroomUse 2** ·
 //   FireWandUse 2 · FieldGuideUse 2 · **ConsumeConfuseUse 2** · AbilityRewardUse 2.
 //   ⚠ 여기 넣은 넷 말고는 아직 안 옮겼다 — 책(Read)·완드(Wand)·활(Bow)은 뒤 조각이다.
-enum class UseFn : uint8_t { None = 0, Potion, Consume, ConsumeConfuse, Mushroom };
+enum class UseFn : uint8_t { None = 0, Potion, Consume, ConsumeConfuse, Mushroom, WandCast };
 inline UseFn UseFnOf(const std::string& name) {
     if (name == "PotionUse") return UseFn::Potion;
     if (name == "ConsumeUse") return UseFn::Consume;
     if (name == "ConsumeConfuseUse") return UseFn::ConsumeConfuse;
     if (name == "MushroomUse") return UseFn::Mushroom;
+    if (name == "WandCastUse") return UseFn::WandCast;
     return UseFn::None;
 }
 
@@ -316,6 +317,12 @@ struct Session {
         bool isFood = false;    // 묶음 5 — 같은 종류 개수 한도(셋)를 재는 갈래
         uint32_t foodBits = 0;  // 묶음 5-b — SUBCLASS 먹을거리 갈래 비트(FoodClassBits)
         UseFn useFn = UseFn::None;   // 묶음 5-d — 쓸 때 부르는 함수 갈래
+        // ★ 묶음 5-e — **충전**. `USE = WandCastUse 250 1.0 SPELL_PLASMA` 의 250 이 최대다.
+        //   0 이면 **무한**이다(정답지가 `최대 != 0` 일 때만 깎고 알린다).
+        uint8_t charges = 0, chargesMax = 0;
+        uint8_t wandSpell = 0;         // 걸 주문 번호(0 = 없음)
+        uint32_t wandCooldown = 0;     // 재사용 대기 프레임(초 × 30)
+        uint32_t wandLastFrame = 0;    // 마지막으로 쓴 프레임(`+104`)
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
@@ -948,6 +955,10 @@ public:
         uint32_t foodBits = 0;
         // ★ 묶음 5-d — **쓸 때 부르는 함수**(`USE = ConsumeUse 10` 의 앞말).
         UseFn useFn = UseFn::None;
+        // ★ 묶음 5-e — 충전·완드 주문·재사용 대기(`USE = WandCastUse 250 1.0 SPELL_PLASMA`)
+        uint8_t charges = 0, chargesMax = 0;
+        uint8_t wandSpell = 0;
+        uint32_t wandCooldown = 0;
         // ★ 묶음 5-c — **줍는 순간 부르는 함수가 물약 갈래인가**(`PICKUP = PotionPickup`).
         //   참이면 줍는 그 자리에서 마실 수 있고, 마셨으면 가방에 안 들어간다.
         bool potionPickup = false;
@@ -2146,6 +2157,9 @@ private:
     bool UseConsume(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);
     bool UseMushroom(Session& s, std::vector<OutPacket>& out);
     bool UseCiderConfuse(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);
+    // 묶음 5-e — 완드로 주문 걸기(`useWandCastSpell_53F4F0`). 충전을 깎으므로 **가리킴**을 받는다
+    bool UseWandCast(Session& s, Session::Carried& c, std::vector<OutPacket>& out);
+    void SendCharges(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);   // netReportCharges_4D82B0
     void PoisonTick(std::vector<OutPacket>& out);                                                        // server.go:175~201 감쇠 + 피해
     int CastPoison(const std::string& obj3, const Target& targ, int lvl, std::vector<OutPacket>& out);   // castPoison_52C720
     Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기
