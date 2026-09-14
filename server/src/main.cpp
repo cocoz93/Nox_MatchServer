@@ -519,10 +519,44 @@ int main(int argc, char** argv) {
                 }
                 w2.equipBit = ebit;
                 w2.isWeapon = isW;
+                // ★ 묶음 5 — 줍기 한도를 재는 두 값. 여기까지 온 물건은 `hasWeight` 가 참이다.
+                w2.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
+                w2.isFood = ti->classRaw.find("FOOD") != std::string::npos;
                 st.push_back(w2);
             }
             nStat = st.size();
             srv.SetWorldStatics(std::move(st));
+
+            // ★ 묶음 5 — 사람이 들 수 있는 무게의 **밑천**. thing.bin 의 사람 칸에서 읽는다.
+            //   한도는 이것의 두 배다. 못 찾으면 그대로 두고(기본 100) 표시줄에 알린다.
+            {
+                // ⭕ 사람 종류 이름은 **`NewPlayer`** 다(thing.bin `GNHT` 다음 이름 · `CLASS = PLAYER+COMPLEX+LIGHT`).
+                //   처음 `NoxPlayer` 로 찾다가 못 찾아 기본값으로 떨어졌다 — 이름을 짐작하면 조용히 빗나간다.
+                const uint16_t pw = tdb.WireByName("NewPlayer");
+                const nox::ThingInfo* pt = pw ? tdb.ByWire(pw) : nullptr;
+                if (pt && pt->carryCap > 0) {
+                    srv.SetPlayerCarryCap(pt->carryCap);
+                    std::printf("[들 무게] 밑천 %d · 한도 %d (thing.bin NoxPlayer CARRYCAPACITY)\n",
+                                pt->carryCap, pt->carryCap * 2);
+                } else {
+                    std::printf("[들 무게] ⚠ thing.bin 에서 사람 CARRYCAPACITY 를 못 찾음 — 밑천 %d 로 둔다\n",
+                                srv.PlayerCarryCap());
+                }
+                // 맵에 놓인 물건의 무게를 이름별로 한 줄 — 「몇 개나 들 수 있나」를 눈으로 재려고.
+                std::map<std::string, std::pair<int, int>> wsum;   // 이름 → {무게, 개수}
+                for (const auto& o : objs) {
+                    const uint16_t w3 = tdb.WireByName(o.type);
+                    const nox::ThingInfo* t3 = w3 ? tdb.ByWire(w3) : nullptr;
+                    if (!t3 || !t3->isPickup || !t3->hasWeight) continue;
+                    auto& e = wsum[o.type];
+                    e.first = t3->weight;
+                    ++e.second;
+                }
+                std::printf("[들 무게] 맵 물건 무게 —");
+                for (const auto& kv : wsum)
+                    std::printf(" %s %d(×%d)", kv.first.c_str(), kv.second.first, kv.second.second);
+                std::printf("\n");
+            }
 
             // ★ 2026-09-13 묶음 2-c — **장애물**(오브젝트끼리 충돌). COLLIDE 가 있고 NO_COLLIDE 가 아닌
             //   IMMOBILE(질량 1e10, `server/object_type.go:337`) 오브젝트. 문·아이템은 뺀다(묶음 9·5 — Server.h 주석).

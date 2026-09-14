@@ -252,6 +252,8 @@ struct Session {
         //   `EquipBitFor(이름)` 가 채운다. **0 이면 겉모습을 안 보낸다**(모르는 것은 안 지어냄).
         uint32_t equipBit = 0;
         bool isWeapon = false;
+        uint8_t weight = 255;   // 묶음 5 — 줍기 한도를 재는 무게. 세계에 있을 때 값을 그대로 들고 온다
+        bool isFood = false;    // 묶음 5 — 같은 종류 개수 한도(셋)를 재는 갈래
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
@@ -865,6 +867,13 @@ public:
         //   `EquipBitFor(이름)` 가 채운다. **0 이면 겉모습을 안 보낸다**(모르는 것은 안 지어냄).
         uint32_t equipBit = 0;
         bool isWeapon = false;
+        // ★ 묶음 5 — **무게**(thing.bin `WEIGHT`). 줍기 한도가 이것의 합으로 걸린다
+        //   (`object_pickup.go:70~79`). 정답지 기본은 255 이고 파일 값이 있으면 그것으로 덮는다
+        //   (`server/object_type.go:202·212`).
+        uint8_t weight = 255;
+        // ★ 묶음 5 — **먹는 것인가**(CLASS 에 FOOD). 같은 종류를 셋(퀘스트·협동은 아홉)까지만 든다
+        //   (`object_pickup.go:81~92`).
+        bool isFood = false;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
 
@@ -1569,7 +1578,16 @@ public:
     unsigned long long tryGets() const { return tryGets_; }
     unsigned long long picked() const { return picked_; }
     unsigned long long pickTooFar() const { return pickTooFar_; }
+    unsigned long long pickNoCap() const { return pickNoCap_; }
+    unsigned long long pickTooHeavy() const { return pickTooHeavy_; }
+    unsigned long long pickTooMany() const { return pickTooMany_; }
     unsigned long long dropped() const { return dropped_; }
+
+    // ★ 묶음 5 — 사람이 **들 수 있는 무게의 밑천**(thing.bin `CARRYCAPACITY`).
+    //   실제 한도는 이것의 **두 배**다(`object_pickup.go:75`).
+    //   `main.cpp` 가 thing.bin 의 사람 칸에서 읽어 넣는다. 0 이면 아무것도 못 든다.
+    void SetPlayerCarryCap(int c) { playerCarryCap_ = c; }
+    int PlayerCarryCap() const { return playerCarryCap_; }
     unsigned long long used() const { return used_; }
     // 쓰긴 했는데 **무슨 일이 나는지 모르는** 갈래(`ReadUse`·`WandUse`…). 지어내지 않은 자리의 수.
     unsigned long long useUnknown() const { return useUnknown_; }
@@ -2254,6 +2272,12 @@ private:
     unsigned long long tryGets_ = 0;            // `0x73` 을 받은 횟수
     unsigned long long picked_ = 0;             // 실제로 집어 든 것
     unsigned long long pickTooFar_ = 0;         // 손이 안 닿아 못 집은 것
+    // ★ 묶음 5 — 들 밑천. ⭕ thing.bin `INIT = PlayerInit` 칸의 `CARRYCAPACITY = 100` 을 파서로 읽었다.
+    //   `main.cpp` 가 파일에서 덮어쓴다. 여기 값은 thing.bin 이 없는 자리(시험)에서 쓰는 같은 실측값이다.
+    int playerCarryCap_ = 100;
+    unsigned long long pickNoCap_ = 0;          // 묶음 5 — 들 밑천이 0 이라 못 집은 것
+    unsigned long long pickTooHeavy_ = 0;       // 묶음 5 — 무게 한도를 넘겨 못 집은 것
+    unsigned long long pickTooMany_ = 0;        // 묶음 5 — 같은 먹을거리를 너무 많이 들어 못 집은 것
     unsigned long long dropped_ = 0;            // 클라가 되돌려 도로 떨군 것
     unsigned long long used_ = 0;               // 실제로 효과가 난 쓰기
     unsigned long long useUnknown_ = 0;         // 갈래를 몰라 아무 일도 안 난 쓰기

@@ -95,6 +95,13 @@ struct ThingInfo {
     //   ⚠ 우리 `isPickup` 은 CLASS 로 거른다. 기준이 다르므로 어긋날 수 있다.
     bool hasWeight = false;
     int weight = 0;
+    // ★ 묶음 5 — **들 수 있는 무게의 바탕값**(`CARRYCAPACITY`).
+    //   `server/object.go:330` 이 `obj.CarryCapacity = t.CarryCap` 로 그대로 옮긴다.
+    //   실제 한도는 이 값의 **두 배**다 — `pickup.c` 가 `무게 > 밑천×2 − 이미 든 무게` 로 막는다
+    //   (`object_pickup.go:75` · `script_ns_object.go:530` 도 `×2` 를 「최대」로 돌려준다).
+    //   ⭕ 사람은 100(= 한도 200) — thing.bin `INIT = PlayerInit` 칸에서 파서로 읽었다.
+    //   0 이면 아예 못 든다(`object_pickup.go:23·68`).
+    int carryCap = 0;
     // CLASS 원문 — 필터 설계·진단용. '+' 로 이어진 값 그대로.
     std::string classRaw;
     // SUBCLASS 원문 — 물약이 체력인지 마나인지가 여기 있다(`POTION+HEALTH_POTION`).

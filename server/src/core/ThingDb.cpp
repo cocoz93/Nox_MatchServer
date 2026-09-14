@@ -429,6 +429,9 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                 //   기준이 다르다 — 어긋나는지 재려고 값을 따로 담는다.
                 t.weight = std::atoi(val.c_str());
                 t.hasWeight = true;
+            } else if (key == "CARRYCAPACITY") {
+                // ★ 묶음 5 — 들 수 있는 무게의 **밑천**. 한도는 이것의 두 배다(`object_pickup.go:75`).
+                t.carryCap = std::atoi(val.c_str());
             } else if (key == "SUBCLASS") {
                 // 물약이 체력인지 마나인지가 여기 있다 — `POTION+HEALTH_POTION`.
                 if (!t.subclassRaw.empty()) t.subclassRaw += "+";

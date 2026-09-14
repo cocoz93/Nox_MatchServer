@@ -389,6 +389,15 @@ std::vector<std::vector<uint8_t>> Flatten(const std::vector<nox::OutPacket>& out
 }
 
 // 받는 쪽을 가려서 푼다 — **누구에게 갔는지**를 봐야 하는 시험용.
+// ★ 묶음 5 — 세계 물건에 **진짜 무게**를 담는다.
+//   ⭕ thing.bin 실측(서버 기동 표시줄 `[들 무게]`) — 사과 2 · 파랑 물약 5 · 빨강 물약 8 ·
+//      롱소드 50 · 가슴판 150 · 전쟁망치 200. 사람 밑천 100 → **한도 200**.
+//   ⚠ 안 담으면 기본 **255** 라 아무것도 못 든다. 그게 정답지 기본값이다
+//     (`server/object_type.go:202` Weight: 255 → 파일에 WEIGHT 가 있으면 덮어씀).
+void SetWeights(std::vector<nox::Server::WorldStatic>& st, uint8_t w) {
+    for (auto& z : st) z.weight = w;
+}
+
 std::vector<std::vector<uint8_t>> FlattenTo(const std::vector<nox::OutPacket>& out,
                                             const std::string& to) {
     std::vector<nox::OutPacket> mine;
@@ -764,6 +773,7 @@ void TestAoiSightExit() {
     const uint16_t kCode = 0x4321;
     std::vector<nox::Server::WorldStatic> st;
     st.push_back({ kCode, 1234, 1000, 1000 });
+    SetWeights(st, 8);
     srv.SetWorldStatics(st);
 
     const std::string a = "10.9.1.1:41011";
@@ -1213,6 +1223,7 @@ void TestAppearanceAndFx() {
         nox::Server::WorldStatic unk;            // 표에 없는 것 — 겉모습을 안 보내야 한다
         unk.netCode = 501; unk.type = 700; unk.x = 1000; unk.y = 1000;
         st.push_back(unk);
+        SetWeights(st, 8);
         srv.SetWorldStatics(st);
 
         for (uint16_t nc : { (uint16_t)500, (uint16_t)501 }) {
@@ -1681,6 +1692,7 @@ void TestPickup() {
     st.push_back({ kPotion, 638, 1000, 1000, false });
     st.push_back({ kSword, 1133, 1005, 1000, true });
     st.push_back({ kFar,    638, 9000, 9000, false });
+    SetWeights(st, 8);
     srv.SetWorldStatics(st);
     Check(srv.WorldStaticCount() == 3, "정적 셋을 안 넣었다");
 
@@ -1769,6 +1781,7 @@ void TestUseAndEquip() {
     st.push_back({ kBlue,  639, 1000, 1000, false, nox::UseKind::Mana,   50 });
     st.push_back({ kSword, 1133, 1000, 1000, true,  nox::UseKind::None,   0 });
     st.push_back({ kBook,  700, 1000, 1000, false, nox::UseKind::None,   0 });
+    SetWeights(st, 8);
     srv.SetWorldStatics(st);
     for (uint16_t nc : { kRed, kBlue, kSword, kBook }) {
         std::vector<nox::OutPacket> out;
@@ -2967,6 +2980,7 @@ void TestImportantQueue() {
         s2.SetAoi(true);
         std::vector<nox::Server::WorldStatic> st;
         st.push_back({ 0x4321, 1234, 1000, 1000 });
+        SetWeights(st, 8);
         s2.SetWorldStatics(st);
         const std::string b = "10.9.9.2:49002";
         s2.DebugEnterGame(b, 741);
@@ -7953,6 +7967,179 @@ void TestSummonSpell() {
     std::printf("  4-f — 소환 시전 시간 60·210·375 · 크기 합 한도 4(머릿수 아님) · 큰 것은 넷 · 죽으면 자리 빔 · 끝낼 때 다시 셈 · 몸 없으면 작은 것 · 남의 것 안 셈 · 시전자 죽으면 취소\n");
 }
 
+// ── 묶음 5-a — 줍기 한도(`nox_xxx_pickupDefault_4F31E0`) ────────────────
+//
+// 여태 서버는 **64개 울타리**만 두고 아무거나 다 들게 했다. 정답지 규칙은 셋이다.
+//   ① 들 **밑천**이 0 이면 아예 못 든다(`object_pickup.go:23·68`)
+//   ② **무게 > 밑천 × 2 − 이미 든 무게** 면 거절하고 `pickup.c:CarryingTooMuch`(`:70~79`)
+//   ③ **먹는 것은 같은 종류 셋까지**(퀘스트·협동은 아홉) · 넘으면 `pickup.c:MaxSameItem`(`:81~92`)
+//
+// ⭕ 값은 전부 thing.bin 실측이다(서버 기동 표시줄 `[들 무게]`) —
+//    사람 밑천 **100**(`NewPlayer` 의 `CARRYCAPACITY`) → 한도 **200**.
+//    사과 2 · 파랑 물약 5 · 빨강 물약 8 · 롱소드 50 · 가슴판 150 · 전쟁망치 **200**.
+void TestPickupLimits() {
+    const std::string a = "10.5.0.1:5001";
+    // 놓을 물건을 모았다가 한 번에 세계로 — 번호·종류·무게·먹는 것인가
+    std::vector<nox::Server::WorldStatic> st;
+    auto put = [&](uint16_t nc, uint16_t type, uint8_t weight, bool food) {
+        nox::Server::WorldStatic w;
+        w.netCode = nc; w.type = type; w.x = 1000; w.y = 1000;
+        w.weight = weight; w.isFood = food;
+        st.push_back(w);
+    };
+    auto get = [&](nox::Server& srv, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nc);
+        srv.OnPacket(a, g.data(), g.size(), out);
+    };
+    auto mk = [&](nox::Server& srv) {
+        st.clear();
+        srv.DebugEnterGame(a, 728);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+    auto place = [&](nox::Server& srv) { srv.SetWorldStatics(st); };
+
+    // ① 밑천 100 → 한도 200. **전쟁망치 200 은 딱 들어간다**(> 가 아니라 ≥ 가 아니다)
+    {
+        nox::Server srv; mk(srv);
+        Check(srv.PlayerCarryCap() == 100, "사람 밑천이 100 이 아니다(thing.bin 실측)");
+        put(300, 1175, 200, false);                     // WarHammer
+        place(srv);
+        std::vector<nox::OutPacket> out;
+        get(srv, 300, out);
+        Check(srv.CarriedCount(a) == 1, "한도와 똑같은 무게(200)를 못 들었다 — 경계가 > 가 아닌가");
+        Check(!HasPriMsg(out, a, "pickup.c:CarryingTooMuch"), "딱 맞는데 무겁다고 글이 왔다");
+    }
+
+    // ② **한 칸이라도 넘치면 거절**하고 글이 온다 — 가슴판 150 뒤에 롱소드 50 은 되고 사과 2 는 안 된다
+    {
+        nox::Server srv; mk(srv);
+        put(301, 1176, 150, false);                     // Breastplate
+        put(302, 1169, 50, false);                      // Longsword
+        put(303, 1150, 2, true);                        // RedApple
+        place(srv);
+        std::vector<nox::OutPacket> out;
+        get(srv, 301, out);
+        get(srv, 302, out);
+        Check(srv.CarriedCount(a) == 2, "150 + 50 = 200 인데 둘째를 못 들었다");
+        out.clear();
+        get(srv, 303, out);                                  // 200 + 2 > 200
+        Check(srv.CarriedCount(a) == 2, "한도를 넘겼는데 들어갔다");
+        Check(HasPriMsg(out, a, "pickup.c:CarryingTooMuch"), "무거워서 거절했는데 글이 안 왔다");
+        Check(srv.pickTooHeavy() == 1, "무게로 막은 횟수가 안 올랐다");
+        Check(srv.WorldStaticCount() == 1, "못 들었는데 세계에서 없어졌다");
+    }
+
+    // ③ **버리면 자리가 난다** — 무게는 든 것의 합이지 누적이 아니다
+    {
+        nox::Server srv; mk(srv);
+        put(304, 1176, 150, false);
+        put(305, 1176, 150, false);
+        place(srv);
+        std::vector<nox::OutPacket> out;
+        get(srv, 304, out);
+        get(srv, 305, out);
+        Check(srv.CarriedCount(a) == 1, "150 둘은 300 이라 둘째가 들어가면 안 된다");
+        {   // 클라가 못 받겠다고 되돌린다 — 든 것이 바닥으로 간다
+            const std::vector<uint8_t> f = CodePacket(nox::Op::INVENTORY_FAIL, 304);
+            srv.OnPacket(a, f.data(), f.size(), out);
+        }
+        Check(srv.CarriedCount(a) == 0, "되돌렸는데 아직 들고 있다");
+        out.clear();
+        get(srv, 305, out);
+        Check(srv.CarriedCount(a) == 1, "자리가 났는데 못 들었다");
+    }
+
+    // ④ **먹는 것은 같은 종류 셋까지** — 넷째는 거절되고 글이 온다
+    {
+        nox::Server srv; mk(srv);
+        for (uint16_t i = 0; i < 4; ++i) put(static_cast<uint16_t>(310 + i), 1150, 2, true);
+        place(srv);
+        std::vector<nox::OutPacket> out;
+        for (uint16_t i = 0; i < 3; ++i) get(srv, static_cast<uint16_t>(310 + i), out);
+        Check(srv.CarriedCount(a) == 3, "사과 셋을 못 들었다");
+        out.clear();
+        get(srv, 313, out);
+        Check(srv.CarriedCount(a) == 3, "같은 먹을거리를 넷째까지 들었다");
+        Check(HasPriMsg(out, a, "pickup.c:MaxSameItem"), "개수로 거절했는데 글이 안 왔다");
+        Check(srv.pickTooMany() == 1, "개수로 막은 횟수가 안 올랐다");
+    }
+
+    // ⑤ **종류가 다르면 따로 센다** — 사과 셋 + 버섯 하나는 된다(무게는 넉넉하다)
+    {
+        nox::Server srv; mk(srv);
+        for (uint16_t i = 0; i < 3; ++i) put(static_cast<uint16_t>(320 + i), 1150, 2, true);
+        put(323, 1151, 1, true);                        // Mushroom — 다른 종류
+        place(srv);
+        std::vector<nox::OutPacket> out;
+        for (uint16_t i = 0; i < 3; ++i) get(srv, static_cast<uint16_t>(320 + i), out);
+        out.clear();
+        get(srv, 323, out);
+        Check(srv.CarriedCount(a) == 4, "종류가 다른 먹을거리를 개수 한도로 막았다");
+        Check(!HasPriMsg(out, a, "pickup.c:MaxSameItem"), "종류가 다른데 개수 글이 왔다");
+    }
+
+    // ⑥ **먹는 것이 아니면 개수 한도가 없다** — 무게만 본다
+    {
+        nox::Server srv; mk(srv);
+        for (uint16_t i = 0; i < 4; ++i) put(static_cast<uint16_t>(330 + i), 1169, 50, false);
+        place(srv);
+        std::vector<nox::OutPacket> out;
+        for (uint16_t i = 0; i < 4; ++i) get(srv, static_cast<uint16_t>(330 + i), out);
+        Check(srv.CarriedCount(a) == 4, "먹는 게 아닌데 넷째에서 막혔다(50 × 4 = 200)");
+        Check(srv.pickTooMany() == 0, "먹는 게 아닌데 개수로 막았다");
+    }
+
+    // ⑦ **밑천이 0 이면 아무것도 못 든다** — 무게가 1 이어도
+    {
+        nox::Server srv; mk(srv);
+        srv.SetPlayerCarryCap(0);
+        put(340, 1151, 1, true);
+        place(srv);
+        std::vector<nox::OutPacket> out;
+        get(srv, 340, out);
+        Check(srv.CarriedCount(a) == 0, "밑천이 0 인데 들었다");
+        Check(srv.pickNoCap() == 1, "밑천 0 으로 막은 횟수가 안 올랐다");
+    }
+    // ⑧ **버려 되돌아온 물건도 제 무게·갈래를 그대로 지닌다**
+    //   든 것(`Carried`)을 거쳐 바닥으로 가므로, 그 길에서 칸이 하나라도 빠지면
+    //   되돌아온 물건이 **무게 없는 먹을거리 아닌 것**이 되어 한도를 빠져나간다.
+    {
+        nox::Server srv; mk(srv);
+        for (uint16_t i = 0; i < 4; ++i) put(static_cast<uint16_t>(350 + i), 1150, 2, true);   // 사과 넷
+        place(srv);
+        std::vector<nox::OutPacket> out;
+        for (uint16_t i = 0; i < 3; ++i) get(srv, static_cast<uint16_t>(350 + i), out);
+        Check(srv.CarriedCount(a) == 3, "사과 셋을 못 들었다(이 시험의 전제)");
+        {   // 첫째를 바닥에 되돌린다 — 든 것은 둘, 바닥에는 350 과 353
+            const std::vector<uint8_t> f = CodePacket(nox::Op::INVENTORY_FAIL, 350);
+            srv.OnPacket(a, f.data(), f.size(), out);
+        }
+        Check(srv.CarriedCount(a) == 2, "되돌렸는데 아직 셋이다(이 시험의 전제)");
+        get(srv, 353, out);                                  // 새 사과 — 셋째
+        Check(srv.CarriedCount(a) == 3, "새 사과를 못 들었다(이 시험의 전제)");
+        out.clear();
+        get(srv, 350, out);                                  // 되돌아온 사과 — 넷째라 안 된다
+        Check(srv.CarriedCount(a) == 3, "되돌아온 사과가 넷째로 들어갔다 — 먹을거리 갈래가 오다 빠졌나");
+        Check(HasPriMsg(out, a, "pickup.c:MaxSameItem"), "되돌아온 사과를 거절하면서 글이 안 왔다");
+    }
+
+    // ⑨ **무게를 안 담은 물건은 못 든다** — 정답지 기본이 **255** 다
+    //   (`server/object_type.go:202` Weight: 255 → 파일에 WEIGHT 가 있어야 덮인다).
+    //   즉 「무게를 모르는 것」은 「가벼운 것」이 아니다.
+    {
+        nox::Server srv; mk(srv);
+        nox::Server::WorldStatic w;                          // 무게를 일부러 안 담는다
+        w.netCode = 360; w.type = 1150; w.x = 1000; w.y = 1000;
+        st.push_back(w);
+        place(srv);
+        std::vector<nox::OutPacket> out;
+        get(srv, 360, out);
+        Check(srv.CarriedCount(a) == 0, "무게를 모르는 물건을 들었다 — 기본이 255 가 아닌가");
+        Check(HasPriMsg(out, a, "pickup.c:CarryingTooMuch"), "무게를 모르는 물건인데 글이 안 왔다");
+    }
+    std::printf("  5-a — 줍기 한도: 밑천 100 → 한도 200(경계 포함) · 넘치면 CarryingTooMuch · 먹을거리 같은 종류 셋 · 버리면 자리 남 · 되돌아온 것도 제 무게 · 무게 모르면 255 · 밑천 0\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -8278,6 +8465,30 @@ void TestThingDb() {
         bool fireSound = false;
         for (const auto& sr : db.Spells()) if (sr.name == "SPELL_FIREBALL" && !sr.castSound.empty()) fireSound = true;
         Check(fireSound, "파이어볼 시전 소리 이름이 비었다 — 칸 끝을 못 읽었다");
+    }
+
+    // ★ 묶음 5 — 들 무게. 사람 종류 이름은 **`NewPlayer`** 다(`NoxPlayer` 로 찾으면 조용히 빗나간다).
+    //   밑천 100 → 실제 한도는 그 **두 배인 200**(`object_pickup.go:75`).
+    //   ⭕ 물건 무게도 파일 값이다 — 사과 2 · 롱소드 50 · 전쟁망치 200.
+    {
+        const uint16_t pw = db.WireByName("NewPlayer");
+        Check(pw != 0, "thing.bin 에서 사람 종류(NewPlayer)를 못 찾았다");
+        const nox::ThingInfo* pt = pw ? db.ByWire(pw) : nullptr;
+        Check(pt && pt->carryCap == 100,
+              "사람 CARRYCAPACITY 가 100 이 아니다 — 파서가 안 읽거나 칸이 바뀌었다");
+        struct { const char* nm; int w; } kWeights[] = {
+            { "RedApple", 2 }, { "BluePotion", 5 }, { "RedPotion", 8 },
+            { "Longsword", 50 }, { "Breastplate", 150 }, { "WarHammer", 200 },
+        };
+        for (const auto& k : kWeights) {
+            const uint16_t wc = db.WireByName(k.nm);
+            const nox::ThingInfo* ti = wc ? db.ByWire(wc) : nullptr;
+            if (!ti || ti->weight != k.w)
+                std::printf("  [실패] %s 무게가 %d 이 아니다(읽은 값 %d)\n",
+                            k.nm, k.w, ti ? ti->weight : -1);
+        }
+        std::printf("  들 무게 — 사람 밑천 %d → 한도 %d · 사과 2 · 롱소드 50 · 전쟁망치 200\n",
+                    pt ? pt->carryCap : 0, pt ? pt->carryCap * 2 : 0);
     }
 
     std::printf("  thing.bin 직접 읽기 — %zu종, 기존 표와 전수 일치\n", db.Count());
@@ -10070,6 +10281,7 @@ int main() {
     TestBlink();
     TestMarkTeleport();
     TestSummonSpell();
+    TestPickupLimits();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

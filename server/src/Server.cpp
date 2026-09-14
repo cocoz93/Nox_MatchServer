@@ -2172,6 +2172,41 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 }
                 if (s.inventory.size() >= kInventoryGuard) { ++handled_; break; }
 
+                // ── 묶음 5-a — 줍기 규칙(`nox_xxx_pickupDefault_4F31E0`) ──────────
+                //
+                // ① **들 밑천이 0 이면 아예 못 든다**(`object_pickup.go:23·68`).
+                //    밑천은 thing.bin `CARRYCAPACITY` — 사람 100(파서로 읽음).
+                if (PlayerCarryCap() == 0) { ++pickNoCap_; ++handled_; break; }
+
+                // ② **무게 한도** — `무게 > 밑천 × 2 − 이미 든 무게` 면 거절하고 글을 낸다
+                //    (`object_pickup.go:70~79`). 한도가 밑천의 **두 배**인 것이 정답지 식이다.
+                {
+                    int carried = 0;
+                    for (const auto& c2 : s.inventory) carried += static_cast<int>(c2.weight);
+                    if (static_cast<int>(w.weight) > PlayerCarryCap() * 2 - carried) {
+                        SendPriMsg(s, "pickup.c:CarryingTooMuch", out);
+                        ++pickTooHeavy_;
+                        ++handled_;
+                        break;
+                    }
+                }
+
+                // ③ **먹는 것은 같은 종류를 셋까지**(퀘스트·협동은 아홉 — `object_pickup.go:81~92`).
+                if (w.isFood) {
+                    int same = 0;
+                    for (const auto& c2 : s.inventory) if (c2.type == w.type) ++same;
+                    const bool quest = (questTotal_ > 0 || questStage_ > 0);   // gameFlags 4096|8192
+                    if (same >= (quest ? 9 : 3)) {
+                        SendPriMsg(s, "pickup.c:MaxSameItem", out);
+                        ++pickTooMany_;
+                        ++handled_;
+                        break;
+                    }
+                }
+                // ⚠ 안 옮긴 갈래 — 물건에 **편**이 붙어 있으면 남의 편은 못 줍고 알림글 16 이 간다
+                //   (`object_pickup.go:54~64`). 우리 `WorldStatic` 에는 편 칸이 없다(맵 물건은 편이 없다).
+                //   깃발·편 물건이 생기는 묶음 8 에서 붙인다.
+
                 // ① 집는 이에게 — 무엇을 들었는지
                 if (w.modifiable) {
                     uint8_t msg[9];
@@ -2215,6 +2250,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.useAmount = w.useAmount;
                 c.equipBit = w.equipBit;
                 c.isWeapon = w.isWeapon;
+                c.weight = w.weight;
+                c.isFood = w.isFood;
                 s.inventory.push_back(c);
                 ++picked_;
                 ++handled_;
@@ -2339,6 +2376,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.useAmount = s.inventory[i].useAmount;
                     back.equipBit = s.inventory[i].equipBit;
                     back.isWeapon = s.inventory[i].isWeapon;
+                    back.weight = s.inventory[i].weight;
+                    back.isFood = s.inventory[i].isFood;
                     back.x = s.x;
                     back.y = s.y;
                     statics_.push_back(back);
