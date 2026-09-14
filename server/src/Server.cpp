@@ -5943,20 +5943,68 @@ int Server::AIPathNewVisit(int x, int y, int parent, int next) {
     return static_cast<int>(aiVisit_.size()) - 1;
 }
 
-// ⚠ **자리지기** — 정답지 `Sub_50C320` 은 길을 **다듬는다**(6-e(3)).
-//   지금은 온 길을 거꾸로 되짚어 **칸 한가운데 점**을 그대로 늘어놓기만 한다.
+// ── 묶음 6-e(3) 길에서 점 뽑기 ────────────────────────────────────────
+//
+// 정답지 `server/object_ai_path.go:353` `Sub_50C320`.
+// ★ 이름과 달리 **길을 다듬는 게 아니라, 칸마다 점을 하나씩 찍는다.**
+//   찍는 자리가 **왔던 쪽으로 붙어** 있어서, 걸어가면 저절로 **모서리를 질러간다**.
+//
+// ⭕ 짜임새
+//   · 찾은 칸에서 **온 길을 거꾸로** 되짚으며 점을 쌓고, 끝에 **통째로 뒤집는다**(`swapPoints`)
+//   · 첫 점 — 목표에 닿았으면 **정확한 목표 자리**, 아니면 그 칸의 **한가운데(+11.5)**
+//   · 그다음부터 칸마다 — 「그 칸에서 **앞 칸 쪽으로** 붙은 점」.
+//     `dx`·`dy` 는 **앞 칸에서 이 칸을 뺀 값**(되짚는 방향)이고,
+//     음수면 칸의 **오른쪽·아래 끝(+23−2.3)**, 양수면 **왼쪽·위 끝(+2.3)**, 0 이면 **가운데(+11.5)**
+//   · ⚠ `dx` 와 `dy` 가 **둘 다 0 이면 점을 안 넣는다** — 정답지 `dx == 0` 갈래에 `else` 가 없다
+//   · 점은 **1024개**까지(`alloc.Make([]types.Pointf{}, 1024)`)
+//
+// ⚠ 나르는 칸(`Flags12 & 2` · `sub50AEA0` · 넷코드를 몬스터 자료에 적기)은 **6-e(2b)**.
+//   훑기가 아직 나르는 칸을 자식으로 안 얹으므로 이 갈래가 설 자리가 없다.
+// ⚠ `MaybeAppendWorkPath`(점이 담을 곳보다 많으면 상태를 1 로)는 **6-f 가기**에서 붙인다.
 void Server::AIPathCollect(int node, bool hasExact, float ex, float ey) {
     aiPathCells_.clear();
     aiPathPts_.clear();
     if (node < 0) return;
+    // 칸 목록 — 눈으로 보려고 따로 둔다(정답지에는 없다)
     std::vector<int> rev;
     for (int i = node; i >= 0; i = aiVisit_[static_cast<size_t>(i)].parent) rev.push_back(i);
     for (size_t i = rev.size(); i-- > 0; ) {
         const AIVisitNode& n = aiVisit_[static_cast<size_t>(rev[i])];
         aiPathCells_.push_back({ n.x, n.y });
-        aiPathPts_.push_back({ n.x * 23.0f + 11.0f, n.y * 23.0f + 11.0f });
     }
-    if (hasExact) aiPathPts_.push_back({ ex, ey });
+
+    auto put = [&](double x, double y) {
+        if (aiPathPts_.size() >= kAIPointMax) return;
+        aiPathPts_.push_back({ static_cast<float>(x), static_cast<float>(y) });
+    };
+    if (hasExact) {
+        put(ex, ey);
+    } else {
+        put(aiVisit_[static_cast<size_t>(node)].x * 23.0 + 11.5,
+            aiVisit_[static_cast<size_t>(node)].y * 23.0 + 11.5);
+    }
+    int prev = node;
+    for (int it = aiVisit_[static_cast<size_t>(node)].parent; it >= 0;
+         prev = it, it = aiVisit_[static_cast<size_t>(it)].parent) {
+        const int dx = aiVisit_[static_cast<size_t>(it)].x - aiVisit_[static_cast<size_t>(prev)].x;
+        const int dy = aiVisit_[static_cast<size_t>(it)].y - aiVisit_[static_cast<size_t>(prev)].y;
+        const double bx = aiVisit_[static_cast<size_t>(it)].x * 23.0;
+        const double by = aiVisit_[static_cast<size_t>(it)].y * 23.0;
+        if (dx < 0) {
+            if (dy > 0)       put(bx + 23.0 - 2.3, by + 2.3);
+            else if (dy < 0)  put(bx + 23.0 - 2.3, by + 23.0 - 2.3);
+            else              put(bx + 23.0 - 2.3, by + 11.5);
+        } else if (dx == 0) {
+            if (dy > 0)       put(bx + 11.5, by + 2.3);
+            else if (dy < 0)  put(bx + 11.5, by + 23.0 - 2.3);
+            // ★ 둘 다 0 이면 **점이 없다** — 정답지에 else 가 없다
+        } else {
+            if (dy < 0)       put(bx + 2.3, by + 23.0 - 2.3);
+            else if (dy == 0) put(bx + 2.3, by + 11.5);
+            else              put(bx + 2.3, by + 2.3);
+        }
+    }
+    std::reverse(aiPathPts_.begin(), aiPathPts_.end());      // swapPoints
 }
 
 int Server::AIPathFind(bool awayFrom, const PathActor& act, float fromX, float fromY,

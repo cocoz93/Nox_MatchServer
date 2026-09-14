@@ -10091,11 +10091,13 @@ void TestAIPathFind() {
         }
         // 마지막 점은 **정확한 목표 자리** — 칸 한가운데가 아니다
         const size_t pc = srv.DebugPathPtCount();
-        Check(pc == srv.DebugPathLen() + 1, "정확한 끝점이 안 붙었다");
+        Check(pc == srv.DebugPathLen(), "점 수가 칸 수와 다르다(마지막 칸은 정확한 자리가 대신한다)");
         Check(srv.DebugPathPtX(pc - 1) == 1120.0f, "끝점이 목표 자리가 아니다");
-        // 중간 점은 **칸 한가운데**(칸×23 + 11)
-        Check(srv.DebugPathPtX(0) == 43 * 23.0f + 11.0f, "중간 점이 칸 한가운데가 아니다");
-        Check(srv.DebugPathPtY(0) == 43 * 23.0f + 11.0f, "중간 점 y 가 칸 한가운데가 아니다");
+        // 첫 점은 **시작 칸 안에서 가는 쪽으로 붙은 자리** — 한가운데가 아니다(6-e(3))
+        Check(std::fabs(srv.DebugPathPtX(0) - (43 * 23.0f + 23.0f - 2.3f)) < 0.01f,
+              "첫 점이 가는 쪽 끝에 안 붙었다");
+        Check(std::fabs(srv.DebugPathPtY(0) - (43 * 23.0f + 11.5f)) < 0.01f,
+              "곧게 가는데 첫 점 y 가 한가운데가 아니다");
         // 같은 칸을 두 번 밟지 않는다 — **가 봤다 자국**이 서야 한다
         for (size_t i = 0; i < srv.DebugPathLen(); ++i)
             for (size_t j = i + 1; j < srv.DebugPathLen(); ++j)
@@ -10299,6 +10301,158 @@ void TestAIPathFind() {
         Check(differ, "여덟 번 훑었는데 길이 늘 같다 — 이웃 보는 자리를 안 돌리고 있다");
     }
     std::printf("  6-e(2) — 길 훑기: 곧장·벽 돌기·둘러싸임 2 · 깊이 한도 · 자리 다 씀 1 · 도망 · 거르개 · 막힌 시작\n");
+}
+
+// ── 묶음 6-e(3) — 길에서 점 뽑기 ──────────────────────────────────────
+//
+// 정답지 `server/object_ai_path.go:353` `Sub_50C320`. **이름과 달리 다듬는 게 아니다** —
+// 칸마다 점을 하나씩 찍되, **왔던 쪽으로 붙여** 찍어서 걸어가면 저절로 모서리를 질러간다.
+//   · 되짚으며 쌓고 끝에 **통째로 뒤집는다**(`swapPoints`)
+//   · 붙는 자리 — 되짚는 방향이 음수면 칸의 **끝(+23−2.3 = +20.7)**, 양수면 **앞(+2.3)**, 0 이면 **가운데(+11.5)**
+//   · ⚠ `dx`·`dy` 가 **둘 다 0 이면 점을 안 넣는다**(정답지 `dx == 0` 갈래에 else 가 없다)
+//
+// ★ 셈이 헷갈리기 쉬운 자리 — `dx`·`dy` 는 **앞 칸에서 이 칸을 뺀 값**이다.
+//   +x 로 걸어가면 되짚는 방향은 −x 라 `dx < 0` 이고, 점은 칸의 **오른쪽 끝**에 붙는다.
+void TestAIPathPoints() {
+    const float E = 0.01f;
+    auto near = [&](float a, float b) { return std::fabs(a - b) < E; };
+
+    // ★ **모든 점에 통하는 규칙** — 점 i 는 칸 i 안에서 **칸 i+1 을 뺀 방향**으로 붙는다.
+    //   음수면 끝(+20.7) · 0 이면 가운데(+11.5) · 양수면 앞(+2.3).
+    //   ⚠ 훑기가 이웃 보는 자리를 **난수로 돌리므로** 길이 곧다고 가정하면 안 된다 — 규칙으로 본다.
+    auto checkRule = [&](nox::Server& srv) {
+        const size_t pc = srv.DebugPathPtCount();
+        Check(pc == srv.DebugPathLen(), "점 수가 칸 수와 다르다");
+        for (size_t i = 0; i + 1 < pc; ++i) {
+            const int dx = srv.DebugPathCellX(i) - srv.DebugPathCellX(i + 1);
+            const int dy = srv.DebugPathCellY(i) - srv.DebugPathCellY(i + 1);
+            const float ox = dx < 0 ? 20.7f : (dx == 0 ? 11.5f : 2.3f);
+            const float oy = dy < 0 ? 20.7f : (dy == 0 ? 11.5f : 2.3f);
+            Check(near(srv.DebugPathPtX(i), srv.DebugPathCellX(i) * 23.0f + ox),
+                  "점 x 가 왔던 쪽으로 안 붙었다");
+            Check(near(srv.DebugPathPtY(i), srv.DebugPathCellY(i) * 23.0f + oy),
+                  "점 y 가 왔던 쪽으로 안 붙었다");
+        }
+    };
+
+    // ① **+x 로 가기** — 규칙이 서고, 마지막 점은 정확한 목표 자리
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFind(false, false, 0, 1000, 1000, 1120, 1000, 0) == 0, "못 닿았다");
+        checkRule(srv);
+        const size_t pc = srv.DebugPathPtCount();
+        Check(near(srv.DebugPathPtX(pc - 1), 1120.0f) && near(srv.DebugPathPtY(pc - 1), 1000.0f),
+              "마지막 점이 정확한 목표 자리가 아니다");
+    }
+
+    // ② **곧게 +x 로만** — 거르개로 한 줄에 가둬 자리를 **글자로 박는다**
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFindF(false, false, 0, 1000, 1000, 1120, 1000, 0,
+                                 [](int, int y) { return y == 43; }) == 0, "못 닿았다");
+        const size_t pc = srv.DebugPathPtCount();
+        for (size_t i = 0; i + 1 < pc; ++i) {
+            Check(near(srv.DebugPathPtX(i), srv.DebugPathCellX(i) * 23.0f + 20.7f),
+                  "오른쪽으로 가는데 점이 칸의 오른쪽 끝에 안 붙었다");
+            Check(near(srv.DebugPathPtY(i), 43 * 23.0f + 11.5f), "곧게 가는데 y 가 한가운데가 아니다");
+        }
+    }
+
+    // ③ **곧게 −x 로만** — 되짚는 방향이 +x 라 칸의 **왼쪽 앞(+2.3)** 에 붙는다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFindF(false, false, 0, 1120, 1000, 1000, 1000, 0,
+                                 [](int, int y) { return y == 43; }) == 0, "못 닿았다");
+        const size_t pc = srv.DebugPathPtCount();
+        for (size_t i = 0; i + 1 < pc; ++i)
+            Check(near(srv.DebugPathPtX(i), srv.DebugPathCellX(i) * 23.0f + 2.3f),
+                  "왼쪽으로 가는데 점이 칸의 앞쪽에 안 붙었다");
+    }
+
+    // ④ **곧게 아래로** — x 가 한가운데(+11.5) · y 는 아래 끝(+20.7)
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFindF(false, false, 0, 1000, 1000, 1000, 1120, 0,
+                                 [](int x, int) { return x == 43; }) == 0, "못 닿았다");
+        const size_t pc = srv.DebugPathPtCount();
+        for (size_t i = 0; i + 1 < pc; ++i) {
+            Check(near(srv.DebugPathPtX(i), 43 * 23.0f + 11.5f), "세로로 가는데 x 가 한가운데가 아니다");
+            Check(near(srv.DebugPathPtY(i), srv.DebugPathCellY(i) * 23.0f + 20.7f),
+                  "아래로 가는데 점이 칸의 아래 끝에 안 붙었다");
+        }
+    }
+
+    // ④-2 **대각선** — x·y 가 **둘 다** 끝에 붙는다(모서리를 질러간다)
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFindF(false, false, 0, 1000, 1000, 48 * 23 + 11, 48 * 23 + 11, 0,
+                                 [](int x, int y) { return x == y; }) == 0, "대각으로 못 닿았다");
+        const size_t pc = srv.DebugPathPtCount();
+        Check(pc == 6, "대각 다섯 걸음이 아니다");
+        for (size_t i = 0; i + 1 < pc; ++i) {
+            Check(near(srv.DebugPathPtX(i), srv.DebugPathCellX(i) * 23.0f + 20.7f),
+                  "대각인데 x 가 끝에 안 붙었다");
+            Check(near(srv.DebugPathPtY(i), srv.DebugPathCellY(i) * 23.0f + 20.7f),
+                  "대각인데 y 가 끝에 안 붙었다");
+        }
+    }
+
+    // ⑤ **못 닿았을 때는 첫 점이 칸 한가운데(+11.5)** — 정확한 자리가 없다
+    {
+        nox::Server srv;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int y = 41; y <= 45; ++y)
+            for (int x = 41; x <= 45; ++x)
+                if (x == 41 || x == 45 || y == 41 || y == 45) w.push_back({ static_cast<uint8_t>(x), static_cast<uint8_t>(y) });
+        srv.SetWalls(w);
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFind(false, false, 0, 1000, 1000, 50 * 23 + 11, 43 * 23 + 11, 0) == 2, "갇힌 갈래가 아니다");
+        const size_t pc = srv.DebugPathPtCount();
+        Check(pc >= 2, "갇혀도 점은 나와야 한다");
+        const size_t last = pc - 1;
+        Check(near(srv.DebugPathPtX(last), srv.DebugPathCellX(last) * 23.0f + 11.5f),
+              "못 닿았는데 마지막 점이 칸 한가운데가 아니다");
+        Check(near(srv.DebugPathPtY(last), srv.DebugPathCellY(last) * 23.0f + 11.5f),
+              "못 닿았는데 마지막 점 y 가 칸 한가운데가 아니다");
+    }
+
+    // ⑥ **한 칸짜리 길에는 점이 하나** — 되짚을 앞 칸이 없다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFind(false, false, 0, 1000, 1000, 1000, 1000, 0) == 0, "제자리인데 못 닿았다");
+        Check(srv.DebugPathPtCount() == 1, "제자리인데 점이 하나가 아니다");
+        Check(near(srv.DebugPathPtX(0), 1000.0f), "제자리 점이 정확한 자리가 아니다");
+    }
+
+    // ⑦ **점 차례가 시작 → 목표** — 뒤집기가 빠지면 거꾸로 난다
+    {
+        nox::Server srv;
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFind(false, false, 0, 1000, 1000, 1120, 1000, 0) == 0, "못 닿았다");
+        const size_t pc = srv.DebugPathPtCount();
+        for (size_t i = 1; i < pc; ++i)
+            Check(srv.DebugPathPtX(i) > srv.DebugPathPtX(i - 1), "점이 가는 쪽으로 안 늘어섰다");
+    }
+    // ⑧ **고를 칸이 아예 없으면 점도 없다** — 한 칸짜리 방에서 도망가려 하면 best 가 안 선다
+    {
+        nox::Server srv;
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int y = 42; y <= 44; ++y)
+            for (int x = 42; x <= 44; ++x)
+                if (x != 43 || y != 43) w.push_back({ static_cast<uint8_t>(x), static_cast<uint8_t>(y) });
+        srv.SetWalls(w);                                     // 한 칸만 빼고 다 벽
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugPathFind(true, false, 0, 1000, 1000, 1000, 1000, 0) == 2, "갇힌 갈래가 아니다");
+        Check(srv.DebugPathPtCount() == 0, "고를 칸이 없는데 점이 나왔다");
+        Check(srv.DebugPathLen() == 0, "고를 칸이 없는데 길이 나왔다");
+    }
+    std::printf("  6-e(3) — 점 뽑기: 왔던 쪽으로 붙여 모서리 지르기(+2.3·+11.5·+20.7) · 닿으면 정확한 자리 · 차례는 시작→목표\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
@@ -12500,6 +12654,7 @@ int main() {
     TestAIFace();
     TestAIPathIndex();
     TestAIPathFind();
+    TestAIPathPoints();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

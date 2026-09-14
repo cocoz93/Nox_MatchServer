@@ -1630,6 +1630,7 @@ public:
     //   `AIVisitNode` — 물결 사슬(`next`=Field8)과 온 길(`parent`=Field4)
     struct AIVisitNode { int16_t x = 0, y = 0; int parent = -1; int next = -1; uint8_t flags = 0; };
     static constexpr size_t kAIVisitMax = 1024;   // alloc.NewClassT("VisitNodes", …, 1024)
+    static constexpr size_t kAIPointMax = 1024;   // alloc.Make([]types.Pointf{}, 1024)
     struct PathActor { bool airborne = false; uint32_t subclass = 0; int obstacleSkip = -1; };
     using PathFilter = std::function<bool(int, int)>;
     // 시험용 — 소환수의 보는 쪽·돌아가려는 쪽(6-d)
