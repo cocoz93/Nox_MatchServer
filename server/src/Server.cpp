@@ -894,24 +894,19 @@ void Server::DamageVampirism(const Target& attacker, const Target& victim, int a
     SendFxAllCli(vx, vy, msg, sizeof(msg), out);           // netSendVampFx_523270 — 자리 = 맞은 이
 }
 
-// nox_xxx_unitAdjustHP_4EE460 — 최대 아래일 때만 채움(최대로 자름) · 사람은 `42` 증감(모두) + `43` 절대(본인) · 소환수는 주인 체력 알림
+// nox_xxx_unitAdjustHP_4EE460(`GAME3_3.c:7097`) — 최대 아래일 때만 채움(최대로 자름) · **알림은 없다**(unitSetHP 는 동기 비트만).
+//   사람 `43` 은 다음 틱 PlayerReportAnything(+10 ≠) 이, `42` 는 갱신이 음수만 보낸다 — 회복은 `42` 로 안 나간다 · 소환수는 주인 체력 알림 41
 void Server::UnitAdjustHP(const Target& t, int dv, std::vector<OutPacket>& out) {
     if (!t.addr.empty()) {
         auto it = sessions_.find(t.addr);
         if (it == sessions_.end() || !it->second.inGame) return;
         Session& s = it->second;
         if (s.health >= s.maxHealth) return;
-        const int before = s.health;
-        int after = before + dv;
+        int after = s.health + dv;
         if (after > s.maxHealth) after = s.maxHealth;
         s.health = static_cast<uint16_t>(after);
         MarkDirty(s.netCode, PendingReport::What::UnitHealth);
-        const uint16_t raw = static_cast<uint16_t>(static_cast<int16_t>(after - before));
-        const uint8_t d[5] = { static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA), static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
-                               static_cast<uint8_t>(raw), static_cast<uint8_t>(raw >> 8) };
-        Broadcast(/*viaSeq=*/false, d, sizeof(d), out);
-        const uint8_t abs[3] = { static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH), static_cast<uint8_t>(s.health), static_cast<uint8_t>(s.health >> 8) };
-        EmitSeq(s, abs, sizeof(abs), out);
+        (void)out;
         return;
     }
     if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return;
@@ -1175,6 +1170,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
     if (!attacker.none() || v15 == 12) BuffOff(t, 0);      // 맞으면 투명 풀림
     DamageVampirism(attacker, t, amount, out);             // 흡혈(13)
     // ⚠ 마법 방패(26) 줄이기(4-d) · 맞는 소리(10) · 몬스터 원한(7)
+    k.lastDamageFrame = frame_;                            // +536(`GAME3_2.c:7236` — 몬스터도 같은 자리)
     // unitDamageClear_4EE5E0
     if (k.health > amount) {
         k.health = static_cast<uint16_t>(k.health - amount);
@@ -1219,30 +1215,10 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     // ★ R4 — 체력이 바뀌었다. 「알려야 할 것」에 올린다(보낼지는 틱 끝에서 가른다).
     if (after != before) MarkDirty(s.netCode, PendingReport::What::UnitHealth);
 
-    // ① 얼마나 깎였나 — 겉에 그냥 실어 보낸다.
-    //    실측 `42 d8 02 81 ff` = 번호 728 · −127. 증감은 **부호 있는 16비트**다.
-    //    ★ 번호가 실려 있으니 **모두에게** 보낸다 — 그래야 남이 맞는 것이 보인다.
-    {
-        const int16_t delta = static_cast<int16_t>(after - before);
-        const uint16_t raw = static_cast<uint16_t>(delta);
-        uint8_t msg[5];
-        msg[0] = static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA);
-        msg[1] = static_cast<uint8_t>(s.netCode);
-        msg[2] = static_cast<uint8_t>(s.netCode >> 8);
-        msg[3] = static_cast<uint8_t>(raw);
-        msg[4] = static_cast<uint8_t>(raw >> 8);
-        Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);
-    }
-
-    // ② 내 체력의 절대값 — 껍데기 안이다. 실측 `43 4a 00`.
-    //    ⚠ **이것만은 본인에게만** — 번호가 안 실려서 받는 쪽이 제 것으로 읽는다.
-    {
-        uint8_t msg[3];
-        msg[0] = static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH);
-        msg[1] = static_cast<uint8_t>(s.health);
-        msg[2] = static_cast<uint8_t>(s.health >> 8);
-        EmitSeq(s, msg, sizeof(msg), out);
-    }
+    // ①② 09-14 갱신 알림 정답지화 — `42` 증감·`43` 절대값을 여기서 곧바로 보내던 것을 걷어냈다.
+    //    `42` 는 갱신 스트림이 **보는 사람마다** 마지막 피해(+536) 뒤 2틱 넘어 **음수만** 보낸다(ReportHealthDeltaTo · Packet0)
+    //    `43` 은 다음 틱 PlayerReportAnything 이 +10 과 다를 때 보낸다(netSendPlrHealthToTeam_4D86E0 · Packet1 · 본인만)
+    s.lastDamageFrame = frame_;                            // +536 = gameFrame()(`GAME3_2.c:7236`)
 
     if (s.health > 0) return false;
 
@@ -1741,18 +1717,8 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             if (frame_ < p.nextManaFrame) continue;
             p.nextManaFrame = frame_ + kObeliskEveryTicks;
             if (nearest->mana >= nearest->maxMana) continue;
-            const int after = nearest->mana + kObeliskManaPerTick;
-            nearest->mana = static_cast<uint16_t>(
-                after > nearest->maxMana ? nearest->maxMana : after);
+            PlayerManaAdd(*nearest, kObeliskManaPerTick);   // playerManaAdd_4EEB80 — `45` 는 다음 틱 PlayerReportAnything(+4 ≠ +6)
             ++obeliskMana_;
-            uint8_t m[5] = {
-                static_cast<uint8_t>(Op::REPORT_MANA),
-                static_cast<uint8_t>(nearest->netCode),
-                static_cast<uint8_t>(nearest->netCode >> 8),
-                static_cast<uint8_t>(nearest->mana),
-                static_cast<uint8_t>(nearest->mana >> 8),
-            };
-            EmitSeq(*nearest, m, sizeof(m), out);   // 홀로 — 제 마나다
             uint8_t ob[4] = {
                 static_cast<uint8_t>(Op::OBELISK_CHARGE),
                 static_cast<uint8_t>(p.netCode),
@@ -2332,42 +2298,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 const Session::Carried c = s.inventory[at];
                 if (c.useKind == UseKind::None) { ++useUnknown_; ++handled_; break; }
 
+                // object_use.go:121~145 — 체력 물약 unitAdjustHP(최대 아래일 때만) · 마나 물약 playerManaAdd. 알림은 다음 틱 PlayerReportAnything
+                //   ⚠ 정답지는 가득 차 있으면 안 마신다(consumed false) — 그 갈래·직업 배수·소리(RestoreHealth/Mana)는 아이템(5)
                 if (c.useKind == UseKind::Health) {
-                    const int before = s.health;
-                    int after = before + c.useAmount;
-                    if (after > s.maxHealth) after = s.maxHealth;
-                    s.health = static_cast<uint16_t>(after);
-                    // 늘어난 만큼을 `42` 로 — **증감은 부호 있는 16비트**라 양수도 실린다.
-                    //   번호가 실리므로 모두에게 보낸다(남이 회복하는 것도 보여야 한다).
-                    const uint16_t raw = static_cast<uint16_t>(
-                        static_cast<int16_t>(after - before));
-                    uint8_t d[5] = {
-                        static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA),
-                        static_cast<uint8_t>(s.netCode),
-                        static_cast<uint8_t>(s.netCode >> 8),
-                        static_cast<uint8_t>(raw),
-                        static_cast<uint8_t>(raw >> 8),
-                    };
-                    Broadcast(/*viaSeq=*/false, d, sizeof(d), out);
-                    // 절대값은 번호가 없어 **본인에게만**
-                    uint8_t abs[3] = {
-                        static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH),
-                        static_cast<uint8_t>(s.health),
-                        static_cast<uint8_t>(s.health >> 8),
-                    };
-                    EmitSeq(s, abs, sizeof(abs), out);
+                    UnitAdjustHP(Target{ s.addr, -1 }, c.useAmount, out);
                 } else {
-                    int after = s.mana + c.useAmount;
-                    if (after > s.maxMana) after = s.maxMana;
-                    s.mana = static_cast<uint16_t>(after);
-                    uint8_t m[5] = {
-                        static_cast<uint8_t>(Op::REPORT_MANA),
-                        static_cast<uint8_t>(s.netCode),
-                        static_cast<uint8_t>(s.netCode >> 8),
-                        static_cast<uint8_t>(s.mana),
-                        static_cast<uint8_t>(s.mana >> 8),
-                    };
-                    EmitSeq(s, m, sizeof(m), out);   // 홀로
+                    PlayerManaAdd(s, c.useAmount);
                 }
 
                 // 쓴 것은 없어진다. 세계에 되돌려 놓지 않는다.
@@ -2754,6 +2690,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     s.strength  = StrengthOnline(s.charClass);
                     s.health = s.maxHealth;
                     s.mana   = s.maxMana;
+                    s.manaPrev = s.mana;                   // sub_4EFF10 +4 = +6 = 최대(`GAME3_3.c:8103`)
+                    s.statsDirty = true;                   // plrReadVals_4EEDC0 끝 +2184 = 1(`GAME3_3.c:7723`) — 스냅샷 꼬리가 싣고 끈다
                     // ★ 진단 — 들어올 때 체력을 낮춰 둔다(`--start-health N`).
                     //   ⚠ **최대 체력은 안 건드린다** — 그래야 부활 뒤 「최대로 돌아왔나」를 잰다.
                     //   왜 필요한가: 실클라 졸업시험이 90초 동안 안 죽어 「죽음·부활」을 못 쟀다
@@ -4002,8 +3940,9 @@ void Server::ForgetDrawables(Session& s, std::vector<OutPacket>& out) {
 //   ⚠ 옮기지 않은 것 — 기본 장비 다시 만들기(playerRespawnItem · 아이템 5 — 클라는 E9 의 무기 깃발로 겉모습을 되살린다) ·
 //     부활 소리 148(10) · 부활 이펙트 respawnPlayerImpl_53FBC0(4) · 능력·주문 끄기(7·4) · 퀘스트 목숨·되살림 자리(8)
 void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& out) {
-    s.health = s.maxHealth;                                // unitHPsetOnMax · 체력 기록도 같은 값(델타 알림 없음)
-    s.mana = s.maxMana;                                    // playerManaRefresh
+    s.health = s.maxHealth;                                // unitHPsetOnMax
+    for (auto& kv : sessions_) if (kv.second.inGame) s.hpReportedTo[kv.first] = s.health;   // +12+2×i 서른둘 = 지금 체력(`GAME3_3.c:7937`) — 그 뒤 피해만 `42`
+    PlayerManaRefresh(s);                                  // playerManaRefresh_4EECF0 — +6 = 이전 · +4 = 최대 → 다음 틱 `45`
     s.dmgRemainder = 0.0f;                                 // +84
     s.respawnAtFrame = 0;                                  // 깃발 &= 0xFFEB3FE7 — DEAD 끔
     PlayerSetState(s, kPlayerStateIdle, frame);
@@ -4023,7 +3962,7 @@ void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& o
                                     static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(s.mana),
                                     static_cast<uint8_t>(s.mana >> 8), static_cast<uint8_t>(s.maxMana),
                                     static_cast<uint8_t>(s.maxMana >> 8) };
-            EmitSeq(s, de, sizeof(de), out);
+            EmitImportantRawSupersede(s, de, sizeof(de), out);   // netReportTotalMana_4D88C0 → sub_4E5450(Packet0)
         }
     }
     // 모두에게 — `e9 <번호2> <프레임4> <무기 깃발> 01`(netSendPlayerRespawn_4EFC30 · 끝 1 = 클라가 기본 장비 겉모습을 다시 세움)
@@ -4101,7 +4040,9 @@ void Server::SendKillInform(Session& s, std::vector<OutPacket>& out) {
 //   옮긴 갈래 — 방어값: +228(지금) 과 +232(알린 값)를 float 로 견줘 다르면 `49 <float 4>` 를 Packet0(중요 · 봉투 없음) · 알린 값을 맞춘다
 //   ⚠ 나머지 갈래 — 금 `4a`(+2164, 아이템 5) · 마법부여 표시 `5b`(+440, 아이템 5) · 퀘스트 목숨·은/금 열쇠 `f0 04~06`(8) ·
 //     총량 다시 알림 깃발 2184(dd·de·스탯) · 팀 체력(netSendPlrHealthToTeam) · 마나 +4≠+6(netReportMana — 지금은 쓰는 자리마다 우리 식)
+// playerReportAnything_4D9900(`GAME3_2.c:4855~4970`) — 자기 갱신(a1 == a2 · netUpdate_518EE0 → netPlayerObjSend) 때 매 틱 「바뀐 것만」
 void Server::PlayerReportAnything(Session& s, std::vector<OutPacket>& out) {
+    // ① 방어 +228 ≠ +232 → `49 <f32>`(Packet0)
     const float armor = ArmorValueFloat(s.charClass);
     if (s.armorReported != armor) {
         uint32_t bits = 0;
@@ -4111,6 +4052,49 @@ void Server::PlayerReportAnything(Session& s, std::vector<OutPacket>& out) {
                                  static_cast<uint8_t>(bits >> 24) };
         EmitImportantRaw(s, msg, sizeof(msg), out);        // netReportArmorVal_4D8A30 — netSendPacket0
         s.armorReported = armor;
+    }
+    // ② 금 +2164 ≠ +2168 → `4a` · ③ 마법부여 표시 +440 ≠ +2172 → `5b` → 아이템(5) · 퀘스트(4096) 목숨·열쇠 → 모드(8)
+    // ④ +2184(plrReadVals) → `dd` 총 체력(Packet1) · `de` 총 마나(sub_4E5450 · +2251 직업 0 = 워리어면 안 보냄) · `48` 능력치 14B(Packet0)
+    if (s.statsDirty) {
+        const uint8_t dd[7] = { static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH), static_cast<uint8_t>(s.netCode),
+                                static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(s.health),
+                                static_cast<uint8_t>(s.health >> 8), static_cast<uint8_t>(s.maxHealth),
+                                static_cast<uint8_t>(s.maxHealth >> 8) };
+        EmitSeq(s, dd, sizeof(dd), out);                   // netReportTotalHealth_4D85C0
+        if (s.charClass != CharClass::Warrior) {
+            const uint8_t de[7] = { static_cast<uint8_t>(Op::REPORT_TOTAL_MANA), static_cast<uint8_t>(s.netCode),
+                                    static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(s.mana),
+                                    static_cast<uint8_t>(s.mana >> 8), static_cast<uint8_t>(s.maxMana),
+                                    static_cast<uint8_t>(s.maxMana >> 8) };
+            EmitImportantRawSupersede(s, de, sizeof(de), out);   // netReportTotalMana_4D88C0
+        }
+        // servSendStats_4D8990(`GAME3_2.c:4201`) — 번호 · 최대 체력(+556+4) · 최대 마나(+8) · 짐 한계(+490) · 속도(+2235) · 힘(+2239) · 레벨(+3684)
+        const uint16_t carry = static_cast<uint16_t>(CarryCapacityOnline(s.charClass));
+        const uint16_t spd = static_cast<uint16_t>(SpeedOnline(s.charClass));
+        const uint16_t str = static_cast<uint16_t>(s.strength);
+        const uint8_t st[14] = { static_cast<uint8_t>(Op::REPORT_STATS), static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
+                                 static_cast<uint8_t>(s.maxHealth), static_cast<uint8_t>(s.maxHealth >> 8),
+                                 static_cast<uint8_t>(s.maxMana), static_cast<uint8_t>(s.maxMana >> 8),
+                                 static_cast<uint8_t>(carry), static_cast<uint8_t>(carry >> 8),
+                                 static_cast<uint8_t>(spd), static_cast<uint8_t>(spd >> 8),
+                                 static_cast<uint8_t>(str), static_cast<uint8_t>(str >> 8), s.charLevel };
+        EmitImportantRaw(s, st, sizeof(st), out);
+        s.statsDirty = false;
+    }
+    // ⑤ 체력 +10 ≠ 지금 → `43 <체력2>`(Packet1 · 본인만 — 번호가 안 실린다) · 퀘스트면 팀에 `c4 0c`(8) · +10 = 지금
+    if (s.health != s.healthReported) {
+        const uint8_t hp[3] = { static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH), static_cast<uint8_t>(s.health), static_cast<uint8_t>(s.health >> 8) };
+        EmitSeq(s, hp, sizeof(hp), out);                   // netSendPlrHealthToTeam_4D86E0
+        s.healthReported = s.health;
+    }
+    // ⑥ 마나 +4 ≠ +6 → `45 <번호2> <마나2>`(sub_4E5450 · 워리어는 안 보냄) · +6 = +4
+    if (s.mana != s.manaPrev) {
+        if (s.charClass != CharClass::Warrior) {
+            const uint8_t mp[5] = { static_cast<uint8_t>(Op::REPORT_MANA), static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
+                                    static_cast<uint8_t>(s.mana), static_cast<uint8_t>(s.mana >> 8) };
+            EmitImportantRawSupersede(s, mp, sizeof(mp), out);   // netReportMana_4D8930
+        }
+        s.manaPrev = s.mana;
     }
 }
 
@@ -4241,21 +4225,66 @@ int Server::SpellManaTake(Session& s, uint8_t spell, int costKind, std::vector<O
     }
     (void)costKind;
     if (s.mana < cost) return -1;
-    s.mana = static_cast<uint16_t>(s.mana - cost);
-    const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_MANA), static_cast<uint8_t>(s.netCode),
-                             static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(s.mana),
-                             static_cast<uint8_t>(s.mana >> 8) };
-    EmitSeq(s, msg, sizeof(msg), out);                     // ⚠ 정답지는 playerReportAnything 의 +4≠+6 갈래 — 알리는 틀은 우리 식 그대로
+    PlayerManaSub(s, cost);                                // playerManaSub_4EEBF0(`GAME4.c:2663`) — `45` 는 다음 틱 PlayerReportAnything(+4 ≠ +6)
+    (void)out;
     return cost;
 }
 
 void Server::SpellManaGive(Session& s, int mana, std::vector<OutPacket>& out) {
     if (mana <= 0) return;
-    s.mana = static_cast<uint16_t>(std::min<int>(s.mana + mana, s.maxMana));
-    const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_MANA), static_cast<uint8_t>(s.netCode),
-                             static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(s.mana),
-                             static_cast<uint8_t>(s.mana >> 8) };
-    EmitSeq(s, msg, sizeof(msg), out);
+    PlayerManaAdd(s, mana);                                // sub_4FD030 → playerManaAdd_4EEB80
+    (void)out;
+}
+
+// ── 갱신 알림 정답지화(09-14) — 마나는 「이전 값(+6)」을 남기고, 알림은 PlayerReportAnything 이 한다 ──
+// playerManaAdd_4EEB80(`GAME3_3.c:7466`) — +6 = 지금 · +4 += v · 최대로 자름(보호 CRC 는 안 옮김)
+void Server::PlayerManaAdd(Session& s, int v) {
+    s.manaPrev = s.mana;
+    int after = static_cast<int>(s.mana) + v;
+    if (after > s.maxMana) after = s.maxMana;
+    if (after < 0) after = 0;
+    s.mana = static_cast<uint16_t>(after);
+}
+// playerManaSub_4EEBF0(`GAME3_3.c:7502`) — +6 = 지금 · 모자라면 0(GODMODE 는 안 옮김)
+void Server::PlayerManaSub(Session& s, int v) {
+    s.manaPrev = s.mana;
+    s.mana = static_cast<uint16_t>(s.mana > v ? s.mana - v : 0);
+}
+// playerManaRefresh_4EECF0(`GAME3_3.c:7573`) — +6 = 지금 · +4 = 최대
+void Server::PlayerManaRefresh(Session& s) {
+    s.manaPrev = s.mana;
+    s.mana = s.maxMana;
+}
+
+// sub_4E5450(`GAME3_3.c:1767`) — 이 사람 대기열에서 **첫 바이트(옵)가 같은 것**을 지우고 Packet0 으로 싣는다.
+//   정답지 저장본은 맨 메시지라 Packet1 것도 지워지지만, 우리가 이 길로 보내는 것(`45`·`de`)은 다 Packet0 이라 맨 항목만 본다.
+void Server::EmitImportantRawSupersede(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
+    if (n == 0) return;
+    const uint8_t op = msg[0];
+    s.importantQ.erase(std::remove_if(s.importantQ.begin(), s.importantQ.end(),
+                                      [op](const Session::PendingImportant& q) { return !q.wire.empty() && q.wire[0] == op; }),
+                       s.importantQ.end());
+    EmitImportantRaw(s, msg, n, out);
+}
+
+// netPlayerObjSend_518C30(`GAME4_1.c:4405~4425`) · netSendComplexObject_518960(`:4270~4280`) 의 a4/a3 갈래 —
+//   오브젝트가 **보는 사람마다** 「마지막으로 알린 체력」을 든다(사람 +12+2×i · 몬스터 +412+2×i). 마지막 피해(+536) 뒤 2틱 넘으면 견줘
+//   다르면 netReportHealthDelta_4D8760(보는 이, 번호, 지금 − 알린 것) → **음수만** `42 <번호2> <증감2>` Packet0. 그러고 알린 것 = 지금.
+//   ⚠ 처음 보는 오브젝트는 정답지도 0 과 견준다(양수 → 안 보냄 · 기록) — 우리는 「없으면 지금 값을 적고 안 보냄」으로 같다
+void Server::ReportHealthDeltaTo(Session& viewer, uint16_t netCode, uint16_t hp, uint32_t lastDamageFrame,
+                                 std::map<std::string, uint16_t>& seen, std::vector<OutPacket>& out) {
+    if (frame_ - lastDamageFrame <= 2) return;
+    auto it = seen.find(viewer.addr);
+    if (it == seen.end()) { seen.emplace(viewer.addr, hp); return; }
+    if (it->second == hp) return;
+    const int delta = static_cast<int>(hp) - static_cast<int>(it->second);
+    if (delta < 0) {
+        const uint16_t raw = static_cast<uint16_t>(static_cast<int16_t>(delta));
+        const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA), static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8),
+                                 static_cast<uint8_t>(raw), static_cast<uint8_t>(raw >> 8) };
+        EmitImportantRaw(viewer, msg, sizeof(msg), out);
+    }
+    it->second = hp;
 }
 
 // netInformTextMsg(server/network.go:206) — `a9 <갈래> <u32>` Kind1(틱 목록) · 갈래 0 = 주문 실패 코드 · 1 = 시전 성공 주문 번호
@@ -6200,73 +6229,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     //     오브젝트」 더티 비트 `0x10000`** 이 켜졌을 때만 나간다(`GAME4_2.c:7148`).
     //     우리가 그 비트를 세울 일이 생기면 그때 되살린다. 지금은 세울 일이 없다.
 
-    // ★★ **들어온 사람에게 마나를 한 번 알린다** (2026-09-11 화면으로 확인).
-    //   서버는 `ManaOnline` 으로 마나를 제대로 채워 놓고 **클라에게 말을 안 했다.**
-    //   `0x45` 가 나가는 데가 주문·부활·오벨리스크 셋뿐인데 **갓 들어온 사람은 그 셋 다
-    //   안 겪는다.** 그래서 `g1_A_join.png` 에서 체력 막대는 가득한데 마나 막대는
-    //   **테두리만** 있었다 — 사용자가 「마나칸 0」이라 한 그것이다.
-    //
-    // ⚠ 접속 묶음 **바로 뒤**에 보내면 안 된다 — 정품 덤프와 바이트가 밀려
-    //   `replay_connect` 가 깨진다(그렇게 넣었다가 실패로 확인했다). 첫 틱이 안전한 자리다.
-    for (auto& kv : sessions_) {
-        Session& s = kv.second;
-        if (!s.inGame || s.netCode == 0) continue;
-        // ★ 처음 얼마 동안 **여러 번** 보낸다 — 한 번만 보내면 클라가 아직 채비 전이라 놓친다.
-        //   30틱(≈1초) 간격으로 `kHudTellTimes` 번. 그 뒤로는 값이 바뀔 때만 나간다.
-        if (s.hudToldCount >= kHudTellTimes) continue;
-        if (s.hudNextFrame != 0 && frame_ < s.hudNextFrame) continue;
-        ++s.hudToldCount;
-        s.hudNextFrame = frame_ + 30;
-        uint8_t mp[5] = {
-            static_cast<uint8_t>(Op::REPORT_MANA),
-            static_cast<uint8_t>(s.netCode),
-            static_cast<uint8_t>(s.netCode >> 8),
-            static_cast<uint8_t>(s.mana),
-            static_cast<uint8_t>(s.mana >> 8),
-        };
-        EmitSeq(s, mp, sizeof(mp), out);   // 홀로 — 제 마나다
-
-        // ★★ **체력도 같이 알린다** (2026-09-11, 사용자 플레이로 드러남).
-        //   `0x43` 은 **맞을 때만** 나갔다 — 마나와 **똑같은 빠뜨림**이다.
-        //   그래서 갓 들어온 사람은 체력바가 비어 보였다.
-        //   ⚠ 나는 캡처에서 빨간 막대가 얇은 것을 보고 **「컨저러라 체력이 적어서」**로
-        //     넘겼다. 마나만 보고 **바로 옆의 체력은 안 봤다.** HUD 는 하나씩 대조해야 한다.
-        //   ⚠ 번호가 안 실리는 메시지라 **본인에게만** 보낸다(`Damage` 쪽 주석과 같은 까닭).
-        uint8_t hp[3] = {
-            static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH),
-            static_cast<uint8_t>(s.health),
-            static_cast<uint8_t>(s.health >> 8),
-        };
-        EmitSeq(s, hp, sizeof(hp), out);
-
-        // ★★★ **막대가 그려지려면 「최대치」가 있어야 한다** (2026-09-11, 클라 원본 확정).
-        //   `0x43` 은 **현재값만** 세운다 — `sub_470CB0` → `windows[0].field_1`.
-        //   **최대값은 `field_2` 이고 그것을 세우는 것은 `0xdd` 다**
-        //   (`cdecode.c:2723` → `cliSetTotalHealth_470C80(현재, 최대)`).
-        //   **최대가 0 이면 막대가 안 그려진다.** 우리는 `0xdd` 를 **부활 때만** 보냈다.
-        //
-        //   ⚠ 나는 캡처에서 빨간 막대가 얇은 것을 보고 **「컨저러라 체력이 적어서」**라고
-        //     설명을 지어 붙였다. 관측은 「얇다」까지였는데 거기에 까닭을 달아 `⭕` 로 적었고,
-        //     그 한 줄이 이 결함을 오래 가렸다. **모르면 모른다고 적을 것.**
-        //
-        //   짜임 ⭕ — `op | 번호2 | 현재2 | 최대2`(총 7바이트). 마나는 `0xde` 로 같은 꼴이다.
-        {
-            uint8_t th[7] = {
-                static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH),
-                static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
-                static_cast<uint8_t>(s.health),  static_cast<uint8_t>(s.health >> 8),
-                static_cast<uint8_t>(s.maxHealth), static_cast<uint8_t>(s.maxHealth >> 8),
-            };
-            EmitSeq(s, th, sizeof(th), out);
-            uint8_t tm[7] = {
-                static_cast<uint8_t>(Op::REPORT_TOTAL_MANA),
-                static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
-                static_cast<uint8_t>(s.mana),    static_cast<uint8_t>(s.mana >> 8),
-                static_cast<uint8_t>(s.maxMana), static_cast<uint8_t>(s.maxMana >> 8),
-            };
-            EmitSeq(s, tm, sizeof(tm), out);
-        }
-    }
+    // ★ 09-14 갱신 알림 정답지화 — 접속 직후 HUD(`45`·`43`·`dd`·`de`)를 다섯 번 되풀이하던 자리표시를 걷어냈다.
+    //   정답지는 스냅샷 꼬리(첫 playerReportAnything 몫 dd·de·48·43 — SnapshotTail.cpp #21·#22)뿐이고, 그 뒤는 바뀔 때만(PlayerReportAnything).
+    //   되풀이가 필요했던 까닭(cc 가 접속 직후 막힘)은 7821fc7 대기열로 해소됐다.
 
     UpdateFlags(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
@@ -6366,6 +6331,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             // 스냅샷 꼬리에 방어값 `49` 가 들어 있다 — 그것이 첫 playerReportAnything 몫이다(+232 = +228).
             //   녹음 서두는 위저드 녹음이라 그 값(0x3e6b8520)이다
             s.armorReported = ArmorValueFloat(firstSnapshot_.empty() ? s.charClass : CharClass::Wizard);
+            // +2184·+10 도 같은 자리 — 꼬리의 dd·de·48(#21) 과 43(#22) 이 첫 playerReportAnything 몫이다
+            s.statsDirty = false;
+            s.healthReported = s.health;
             continue;
         }
 
@@ -6551,6 +6519,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         for (Session* op : order) {
             Session& o = *op;
             ++lastLoopSeen_;
+            // netPlayerObjSend_518C30 a4 갈래 — 보는 사람 s 에게 o 의 `42` 증감(마지막 피해 뒤 2틱 · 음수만 · Packet0)
+            ReportHealthDeltaTo(s, o.netCode, o.health, o.lastDamageFrame, o.hpReportedTo, out);
 
             ObjEntry e;
             // 별칭은 **클라와 똑같은 규칙**으로 잡는다. 한 칸만 어긋나면
@@ -6753,7 +6723,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //     멎는다(Session::staticIntroAt 주석의 사고). 그 사이는 이전 상태를 유지한다.
         //   ⚠ **별칭은 건드리지 않는다** — Alias.h 의 「잊지 말 것」 주석.
         std::vector<uint16_t> creatureExits;
-        for (const auto& k : pets_) {
+        for (auto& k : pets_) {
             if (creatureAoiHalfX_ > 0.0) {
                 const double dx = std::fabs(k.x - s.x);
                 const double dy = std::fabs(k.y - s.y);
@@ -6767,6 +6737,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 }
                 if (s.visibleCreatures.count(k.netCode) == 0) continue;   // 안 보이는 것은 안 싣는다
             }
+            ReportHealthDeltaTo(s, k.netCode, k.health, k.lastDamageFrame, k.hpReportedTo, out);   // netSendComplexObject_518960 a3 갈래(+412+2×i)
             ObjEntry e;
             FillEntry(s.aliases, k.netCode, k.type, s.tickFrame,
                       static_cast<int>(k.x), static_cast<int>(k.y), k.facing, e);

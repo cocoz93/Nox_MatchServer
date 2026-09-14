@@ -405,25 +405,25 @@ void TestDeathFlow() {
     Check(srv.IsAlive(who), "들어오자마자 살아 있지 않음");
     Check(srv.HealthOf(who) == nox::kDefaultMaxHealth, "처음 체력이 최대가 아님");
 
-    // ① 안 죽을 만큼 때린다 — 증감과 절대값이 둘 다 나가야 한다
+    // ① 안 죽을 만큼 때린다 — ★ 09-14 정답지화: `42` 증감·`43` 절대값은 피해 자리가 아니라 **갱신 틱**이 보낸다
+    //    `43` 은 다음 틱 PlayerReportAnything(+10 ≠ 지금 · Packet1) · `42` 는 마지막 피해(+536) 뒤 2틱 넘은 갱신(보는 사람별 · 음수만 · Packet0)
     {
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);                                   // 첫 호출은 기준점만
+        for (int t = 1; t <= 3; ++t) srv.Tick(33 * t, warm); // 봐 둔다 — 처음 보는 오브젝트는 지금 값을 적을 뿐 42 를 안 보낸다(정답지 0 과 견줌 · +536 뒤 2틱)
         std::vector<nox::OutPacket> out;
         const bool died = srv.Damage(who, 30, out);
         Check(!died, "30 맞고 죽으면 안 됨");
         Check(srv.HealthOf(who) == 45, "75-30 이 45 가 아님");
-
+        Check(FindMsg(Flatten(out), static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA)) == nullptr &&
+              FindMsg(Flatten(out), static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH)) == nullptr,
+              "피해 자리에서 42·43 을 곧바로 보냈다(정답지는 갱신 틱)");
+        srv.Tick(33 * 4, out);                               // 1틱 뒤 — 43 은 나가고 42 는 아직(2틱 안)
         auto msgs = Flatten(out);
-        const auto* d = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
-        Check(d != nullptr, "0x42 가 안 나감");
-        if (d) {
-            Check(d->size() == 5, "0x42 가 5바이트가 아님");
-            Check((*d)[1] == 0xd8 && (*d)[2] == 0x02, "0x42 의 번호가 728 이 아님");
-            const int16_t delta = static_cast<int16_t>((*d)[3] | ((*d)[4] << 8));
-            Check(delta == -30, "0x42 의 증감이 -30 이 아님");
-        }
         const auto* h = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH));
-        Check(h != nullptr, "0x43 이 안 나감 (껍데기 안에 있어야 한다)");
+        Check(h != nullptr, "0x43 이 다음 틱에 안 나감 (껍데기 안에 있어야 한다)");
         if (h) Check(((*h)[1] | ((*h)[2] << 8)) == 45, "0x43 값이 45 가 아님");
+        Check(FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA)) == nullptr, "마지막 피해 뒤 2틱 안인데 0x42 가 나갔다");
 
         // 0x43 은 **껍데기 안**에 있어야 한다 — 겉으로 나가면 틀린 것이다
         bool wrapped = false;
@@ -432,6 +432,23 @@ void TestDeathFlow() {
             if (!b.empty() && b[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) wrapped = true;
         }
         Check(wrapped, "0xcc 껍데기가 안 쓰임");
+
+        out.clear();
+        for (int t = 5; t <= 7; ++t) srv.Tick(33 * t, out);  // 2·3·4틱 — 3틱째 갱신이 42
+        msgs = Flatten(out);
+        const auto* d = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
+        Check(d != nullptr, "0x42 가 안 나감");
+        if (d) {
+            Check(d->size() == 5, "0x42 가 5바이트가 아님");
+            Check((*d)[1] == 0xd8 && (*d)[2] == 0x02, "0x42 의 번호가 728 이 아님");
+            const int16_t delta = static_cast<int16_t>((*d)[3] | ((*d)[4] << 8));
+            Check(delta == -30, "0x42 의 증감이 -30 이 아님");
+        }
+        Check(FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH)) == nullptr, "값이 안 바뀌었는데 0x43 을 또 보냈다");
+        // 0x42 는 껍데기 **밖**(Packet0) 이다
+        bool bare42 = false;
+        for (const auto& p : out) { auto b = Body(p); if (!b.empty() && b[0] == static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA)) bare42 = true; }
+        Check(bare42, "0x42 가 껍데기 안에 들어갔다(정답지 netSendPacket0)");
     }
 
     // ② 죽인다
@@ -449,12 +466,7 @@ void TestDeathFlow() {
             Check(e->size() == 3, "0xe8 이 3바이트가 아님");
             Check((*e)[1] == 0xd8 && (*e)[2] == 0x02, "0xe8 의 번호가 728 이 아님");
         }
-        // 체력이 0 밑으로 안 내려가야 한다 — 증감은 남은 만큼만
-        const auto* d = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
-        if (d) {
-            const int16_t delta = static_cast<int16_t>((*d)[3] | ((*d)[4] << 8));
-            Check(delta == -45, "남은 45 만 깎여야 하는데 아님");
-        }
+        // 체력이 0 밑으로 안 내려가야 한다 — 증감(−45)은 ④ 의 갱신 틱에서 잰다(09-14)
     }
 
     // ③ 죽어 있는 동안 또 때려도 아무 일 없어야 한다
@@ -471,6 +483,12 @@ void TestDeathFlow() {
         out.clear();
         Check(srv.DebugStateOf(who) == 3, "죽은 순간 상태가 3(DIE) 이 아니다");
         srv.Tick(33 * 60, out);              // 60틱 — 3→4(30) · 15 도 넘김
+        {   // 죽음의 `42` 도 갱신 틱이 보낸다 — 남은 45 만 깎여야 한다
+            const auto msgs4 = Flatten(out);
+            const auto* d = FindMsg(msgs4, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
+            Check(d != nullptr, "죽음의 0x42 가 갱신 틱에 안 나감");
+            if (d) Check(static_cast<int16_t>((*d)[3] | ((*d)[4] << 8)) == -45, "남은 45 만 깎여야 하는데 아님");
+        }
         Check(!srv.IsAlive(who), "클릭 없이 되살아났다 — 자동 부활은 정답지 기본 꺼짐");
         Check(srv.DebugStateOf(who) == 4, "죽고 30틱이 지났는데 상태 4(DEAD) 가 아니다");
         out.clear();
@@ -636,9 +654,13 @@ void TestBroadcastToOthers() {
     srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
 
     // ① 피해 — a 가 맞으면 **b 에게도** a 의 번호로 `0x42` 가 가야 한다
+    //   ★ 09-14 정답지화 — 갱신 틱이 **보는 사람마다** 마지막 피해 뒤 2틱 넘어 보낸다(netPlayerObjSend_518C30 a4 갈래)
     {
         std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);                                        // 기준점
+        for (int t = 1; t <= 3; ++t) srv.Tick(33 * t, out);      // 봐 둔다(처음 보는 오브젝트는 42 를 안 보낸다 · +536 뒤 2틱)
         srv.Damage(a, 30, out);
+        for (int t = 4; t <= 7; ++t) srv.Tick(33 * t, out);
         const auto toB = FlattenTo(out, b);
         const auto* d = FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
         Check(d != nullptr, "남이 맞은 0x42 가 옆 사람에게 안 감");
@@ -1025,6 +1047,12 @@ void TestManaSpend() {
         const auto toB = FlattenTo(out, b);
         Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MANA)) == nullptr,
               "0x45 가 남에게도 감");
+        // ★ 09-14 — `45` 는 맨 메시지(netReportMana_4D8930 → sub_4E5450 → netSendPacket0)다. 껍데기(cc) 안에 든 45 는 옛 길
+        for (const auto& p : out) {
+            const auto body = Body(p);
+            if (p.to == a && body.size() > 4 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && body[4] == static_cast<uint8_t>(nox::Op::REPORT_MANA))
+                Check(false, "0x45 가 껍데기 안에 들어갔다(정답지 Packet0)");
+        }
         // 성공 알림 — inform 1 <주문>(Kind1) · REPORT_SPELL_STAT <주문> 15(Unk21 깃발이 없는 주문)
         bool okInform = false, okStat = false;
         for (const auto& mm : toA) {
@@ -1735,6 +1763,8 @@ void TestUseAndEquip() {
     {
         std::vector<nox::OutPacket> hurt;
         srv.Damage(a, 40, hurt);
+        srv.Tick(srv.DebugNowMs(), hurt);                       // 기준점
+        srv.Tick(srv.DebugNowMs() + 33, hurt);                  // 다친 체력 43 이 나간 뒤(09-14 — 알림은 갱신 틱)
         const uint16_t low = srv.HealthOf(a);
         Check(low < srv.HealthOf(a) + 40, "안 다쳤다");
 
@@ -1746,15 +1776,14 @@ void TestUseAndEquip() {
               "물약을 마셨는데 최대치까지 안 참");
         Check(!srv.Carries(a, kRed), "마신 물약이 아직 인벤토리에 있다");
 
-        const auto toA = FlattenTo(out, a);
-        const auto* d = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
-        Check(d != nullptr, "회복 0x42 가 안 나감");
-        if (d) {
-            const int16_t delta = static_cast<int16_t>((*d)[3] | ((*d)[4] << 8));
-            Check(delta > 0, "회복인데 증감이 양수가 아님");
-            Check(delta == nox::HealthOnline(nox::CharClass::Wizard) - low,
-                  "회복량이 실제로 찬 만큼이 아님");
-        }
+        // ★ 09-14 정답지화 — 회복은 `42` 로 안 나간다(netReportHealthDelta_4D8760 은 음수만) · `43` 절대값이 다음 틱에 간다
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA)) == nullptr, "회복(양수)을 0x42 로 보냈다");
+        srv.Tick(srv.DebugNowMs() + 33, out);
+        const auto toA1 = FlattenTo(out, a);
+        const auto* h = FindMsg(toA1, static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH));
+        Check(h != nullptr && ((*h)[1] | ((*h)[2] << 8)) == nox::HealthOnline(nox::CharClass::Wizard),
+              "회복 뒤 다음 틱 0x43 이 최대치가 아님");
+        (void)low;
     }
 
     // ② 파란 물약 — 마나를 채우고 `0x45` 로 알린다
@@ -1771,9 +1800,13 @@ void TestUseAndEquip() {
         const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_USE, kBlue);
         srv.OnPacket(a, p.data(), p.size(), out);
         Check(srv.ManaOf(a) == low + 50, "파란 물약이 50 을 안 채웠다");
-        const auto toA = FlattenTo(out, a);
-        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_MANA)) != nullptr,
-              "마나 0x45 가 안 나감");
+        // ★ 09-14 — `45` 는 물약 자리가 아니라 다음 틱 PlayerReportAnything(+4 ≠ +6 · playerManaAdd 가 +6 을 남긴다)
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_MANA)) == nullptr, "물약 자리에서 0x45 를 곧바로 보냈다");
+        srv.Tick(srv.DebugNowMs() + 33, out);
+        const auto toA2 = FlattenTo(out, a);
+        const auto* m = FindMsg(toA2, static_cast<uint8_t>(nox::Op::REPORT_MANA));
+        Check(m != nullptr && m->size() == 5 && ((*m)[3] | ((*m)[4] << 8)) == low + 50,
+              "다음 틱 0x45 가 물약 뒤 마나가 아님");
     }
 
     // ③ 갈래를 모르는 것(책) — **아무 일도 안 일어나고 없어지지도 않는다.**
@@ -2892,6 +2925,7 @@ void TestImportantQueue() {
     {
         std::vector<nox::OutPacket> out;
         srv.Damage(a, 10, out);
+        ms += 34; srv.Tick(ms, out);                          // 09-14 — 43 은 피해 자리가 아니라 다음 틱 PlayerReportAnything 이 싣는다
         const size_t pend = srv.DebugImportantPending(a);
         Check(pend > 0, "준비 전 중요 메시지가 대기열에 안 쌓임");
         for (int i = 0; i < 3; ++i) { ms += 34; srv.Tick(ms, out); }
@@ -4699,6 +4733,259 @@ void TestDebuffSpells() {
         Check(srv.ManaOf(a) == full - 10, "남에게 건 CurePoison 이 마나를 안 썼다");
     }
     std::printf("  4-b4 — Confuse 90·도운 사람 · Stun 직업·질량 갈래 · Fumble 대상 · Inversion 되돌림 · CurePoison 자기 공짜\n");
+}
+
+// ── 갱신 알림 정답지화(09-14) — 42 · 43 · 45 · dd/de/48 ─────────────────────
+//
+// 정답지: netPlayerObjSend_518C30(GAME4_1.c:4405~4425) — `42` 보는 사람별 · +536 뒤 2틱 · 음수만 · Packet0
+//   playerReportAnything_4D9900(GAME3_2.c:4855~4970) — `43`(+10 ≠ · Packet1) · `45`(+4 ≠ +6 · sub_4E5450 · 워리어 제외) · +2184 → dd·de·48
+//   playerManaAdd/Sub/Refresh(GAME3_3.c:7466·7502·7573 — +6 = 이전) · unitAdjustHP_4EE460(알림 없음) · playerMakeDefItems(:7937 서른둘 = 지금)
+void TestReportFramework() {
+    const std::string a = "10.6.0.1:6001";
+    const std::string b = "10.6.0.2:6002";
+    auto delta = [](const std::vector<uint8_t>* d) { return static_cast<int>(static_cast<int16_t>((*d)[3] | ((*d)[4] << 8))); };
+    auto count = [](const std::vector<std::vector<uint8_t>>& msgs, uint8_t op) { size_t n = 0; for (const auto& m : msgs) if (!m.empty() && m[0] == op) ++n; return n; };
+    auto tick4 = [](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) { for (int t = 0; t < 4; ++t) { ms += 33; srv.Tick(ms, out); } };
+    const uint8_t k42 = static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA);
+    const uint8_t k43 = static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH);
+    const uint8_t k45 = static_cast<uint8_t>(nox::Op::REPORT_MANA);
+
+    // ① 42 는 보는 사람마다 따로 — 늦게 들어온 b 는 a 의 옛 피해를 못 받고(처음 봄 = 지금 값), 그 뒤 피해는 a·b 둘 다 받는다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }   // 봐 둔다 — 처음 보는 오브젝트는 지금 값을 적을 뿐(정답지 0 과 견줘 양수 → 안 보냄 · +536 뒤 2틱)
+        srv.Damage(a, 10, out);
+        tick4(srv, ms, out);
+        Check(count(FlattenTo(out, a), k42) == 1, "a 가 자기 피해 42 를 한 번 안 받았다");
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        out.clear();
+        tick4(srv, ms, out);
+        Check(count(FlattenTo(out, b), k42) == 0, "늦게 들어온 b 가 a 의 옛 피해 42 를 받았다(처음 보면 지금 값을 적을 뿐)");
+        out.clear();
+        srv.Damage(a, 7, out);
+        tick4(srv, ms, out);
+        const auto toA1 = FlattenTo(out, a), toB1 = FlattenTo(out, b);
+        const auto* da = FindMsg(toA1, k42);
+        const auto* db = FindMsg(toB1, k42);
+        Check(da && db && delta(da) == -7 && delta(db) == -7 && (*db)[1] == 0xd8 && (*db)[2] == 0x02,
+              "a 의 새 피해 42(−7 · 번호 728)가 a·b 둘 다에게 안 갔다");
+    }
+    // ② 마지막 피해 뒤 2틱 안에는 안 나가고, 두 번 맞은 것은 지나서 **합쳐 한 번**(−10 −5 → −15) · 껍데기 밖(Packet0)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
+        srv.Damage(a, 10, out);
+        ms += 33; srv.Tick(ms, out);
+        srv.Damage(a, 5, out);
+        ms += 33; srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        Check(count(FlattenTo(out, a), k42) == 0, "마지막 피해 뒤 2틱 안인데 42 가 나갔다");
+        out.clear();
+        tick4(srv, ms, out);
+        const auto toA = FlattenTo(out, a);
+        const auto* d = FindMsg(toA, k42);
+        Check(d && delta(d) == -15 && count(toA, k42) == 1, "두 피해가 합쳐진 42(−15) 한 번이 아니다");
+        bool bare = false;
+        for (const auto& p : out) { const auto body = Body(p); if (!body.empty() && body[0] == k42) bare = true; }
+        Check(bare, "42 가 껍데기 안에 들어갔다(정답지 netSendPacket0)");
+    }
+    // ③ 회복(unitAdjustHP)은 42 없음 — 43 만 다음 틱, 값이 바뀔 때만 · 껍데기 안(Packet1) · 최대로 자름
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.Damage(a, 20, out);
+        tick4(srv, ms, out);
+        out.clear();
+        srv.DebugAdjustHP(a, 5);
+        ms += 33; srv.Tick(ms, out);
+        const auto toA = FlattenTo(out, a);
+        Check(count(toA, k42) == 0, "회복(양수)이 42 로 나갔다");
+        const auto* h = FindMsg(toA, k43);
+        Check(h && h->size() == 3 && ((*h)[1] | ((*h)[2] << 8)) == 60, "회복 뒤 다음 틱 43 이 60 이 아니다");
+        bool wrapped = false;
+        for (const auto& p : out) { const auto body = Body(p); if (body.size() > 4 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && body[4] == k43) wrapped = true; }
+        Check(wrapped, "43 이 껍데기 밖으로 나갔다(정답지 netSendPacket1)");
+        out.clear();
+        tick4(srv, ms, out);
+        Check(count(FlattenTo(out, a), k43) == 0, "값이 안 바뀌었는데 43 을 또 보냈다");
+        srv.DebugAdjustHP(a, 100);
+        Check(srv.HealthOf(a) == nox::HealthOnline(nox::CharClass::Wizard), "unitAdjustHP 가 최대로 안 잘랐다");
+        srv.DebugAdjustHP(a, 5);
+        Check(srv.HealthOf(a) == nox::HealthOnline(nox::CharClass::Wizard), "가득한데 unitAdjustHP 가 넘겼다");
+    }
+    // ④ 마나 — 빼고·더하면 다음 틱 45(맨 메시지) 한 번 · 같은 틱에 두 번 바뀌면 마지막 값 하나 · 대기열에서는 앞의 45 를 지운다(sub_4E5450) · 워리어 없음
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const uint16_t full = srv.ManaOf(a);
+        srv.DebugManaSub(a, 30);
+        srv.DebugManaAdd(a, 10);
+        Check(srv.ManaOf(a) == full - 20, "빼고 더한 마나가 다르다");
+        ms += 33; srv.Tick(ms, out);
+        const auto toA = FlattenTo(out, a);
+        const auto* m = FindMsg(toA, k45);
+        Check(m && m->size() == 5 && (*m)[1] == 0xd8 && (*m)[2] == 0x02 && ((*m)[3] | ((*m)[4] << 8)) == full - 20 && count(toA, k45) == 1,
+              "마나가 바뀐 다음 틱 45(마지막 값 · 한 번)가 아니다");
+        bool bare = false;
+        for (const auto& p : out) { const auto body = Body(p); if (!body.empty() && body[0] == k45) bare = true; }
+        Check(bare, "45 가 껍데기 안에 들어갔다(정답지 sub_4E5450 → netSendPacket0)");
+        out.clear();
+        tick4(srv, ms, out);
+        Check(count(FlattenTo(out, a), k45) == 0, "마나가 안 바뀌었는데 45 를 또 보냈다");
+        srv.DebugImportantReal(a, true);
+        srv.DebugManaSub(a, 5);
+        ms += 33; srv.Tick(ms, out);
+        srv.DebugManaSub(a, 5);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.DebugImportantPendingOp(a, k45) == 1, "대기열에 45 가 둘 남았다(sub_4E5450 은 같은 옵을 지운다)");
+        nox::Server s2;
+        s2.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> o2;
+        uint32_t m2 = 0;
+        s2.Tick(m2, o2);
+        s2.DebugManaSub(b, -5);                                        // 최대 0 이라 더하기는 0 — playerManaSub 산수(현재 > 양 → 현재 − 양)로 5 를 만든다
+        m2 += 33; s2.Tick(m2, o2);
+        Check(s2.ManaOf(b) == 5 && count(FlattenTo(o2, b), k45) == 0, "워리어에게 45 가 나갔다(+2251 직업 0 은 netReportMana 가 안 보냄)");
+    }
+    // ⑤ +2184 → dd(껍데기 안) · de(맨 · 워리어 제외) · 48 14B(번호·최대 체력·최대 마나·짐 한계·속도·힘·레벨) 한 번만 · 스냅샷 꼬리도 직업 값
+    {
+        for (int k = 0; k < 2; ++k) {
+            const nox::CharClass cls = k == 0 ? nox::CharClass::Wizard : nox::CharClass::Warrior;
+            nox::Server srv;
+            srv.DebugEnterGame(a, 728, false, cls);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            srv.DebugSetStatsDirty(a);
+            ms += 33; srv.Tick(ms, out);
+            const auto toA = FlattenTo(out, a);
+            const auto* dd = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
+            const auto* de = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_MANA));
+            const auto* st = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_STATS));
+            const int hp = nox::HealthOnline(cls), mp = nox::ManaOnline(cls);
+            Check(dd && dd->size() == 7 && ((*dd)[3] | ((*dd)[4] << 8)) == hp && ((*dd)[5] | ((*dd)[6] << 8)) == hp,
+                  k == 0 ? "위저드 dd 가 75/75 가 아니다" : "워리어 dd 가 150/150 이 아니다");
+            if (k == 0) Check(de && de->size() == 7 && ((*de)[3] | ((*de)[4] << 8)) == mp && ((*de)[5] | ((*de)[6] << 8)) == mp, "위저드 de 가 150/150 이 아니다");
+            else Check(de == nullptr, "워리어인데 de 가 나갔다(+2251 직업 0)");
+            const int carry = nox::CarryCapacityOnline(cls), spd = nox::SpeedOnline(cls), str = nox::StrengthOnline(cls);
+            Check(st && st->size() == 14 && (*st)[1] == 0xd8 && (*st)[2] == 0x02 &&
+                  ((*st)[3] | ((*st)[4] << 8)) == hp && ((*st)[5] | ((*st)[6] << 8)) == mp &&
+                  ((*st)[7] | ((*st)[8] << 8)) == carry && ((*st)[9] | ((*st)[10] << 8)) == spd &&
+                  ((*st)[11] | ((*st)[12] << 8)) == str && (*st)[13] == nox::kMaxLevel,
+                  k == 0 ? "위저드 48 이 75·150·1650·17500·35·10 이 아니다" : "워리어 48 이 150·0·3000·21000·125·10 이 아니다");
+            out.clear();
+            ms += 33; srv.Tick(ms, out);
+            Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_STATS)) == nullptr, "+2184 를 안 껐다(48 이 또 나감)");
+        }
+        Check(nox::CarryCapacityOnline(nox::CharClass::Wizard) == 1650, "위저드 짐 한계가 녹음 1650 과 다르다");
+        const auto tail = nox::BuildSnapshotTail(728, nox::CharClass::Warrior, 0, 0);
+        bool ok = false;
+        for (size_t i = 0; i + 14 <= tail.size(); ++i) {
+            if (tail[i] == 0x48 && tail[i + 1] == 0xd8 && tail[i + 2] == 0x02 && tail[i + 7] == 0xb8 && tail[i + 8] == 0x0b &&
+                tail[i + 9] == 0x08 && tail[i + 10] == 0x52 && tail[i + 11] == 125 && tail[i + 12] == 0 && tail[i + 13] == 10) ok = true;
+        }
+        Check(ok, "워리어 스냅샷 꼬리 48 이 3000·21000·125·10 이 아니다(녹음 상수가 남았다)");
+    }
+    // ⑥ 부활 — 서른둘 기록 = 지금(되살아난 같은 틱에 맞은 것도 42) · 마나 +6 = 이전 → 다음 틱 45 최대 · 43 지금 체력
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
+        srv.DebugManaSub(a, 30);
+        srv.Damage(a, 1000, out);
+        Check(!srv.IsAlive(a), "안 죽었다(시험 전제)");
+        for (int t = 0; t < 60; ++t) { ms += 33; srv.Tick(ms, out); }
+        out.clear();
+        auto click = InputPacket(6);
+        srv.OnPacket(a, click.data(), click.size(), out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv.IsAlive(a), "클릭했는데 안 되살아났다(시험 전제)");
+        srv.DebugBuffOff(a, 23);                                       // 부활 무적(4-a4)을 끄고 때린다
+        srv.Damage(a, 5, out);
+        ms += 33; srv.Tick(ms, out);
+        const auto toA = FlattenTo(out, a);
+        const auto* h = FindLastMsg(toA, k43);
+        const auto* m = FindMsg(toA, k45);
+        Check(h && ((*h)[1] | ((*h)[2] << 8)) == nox::HealthOnline(nox::CharClass::Wizard) - 5, "부활 뒤 43 이 지금 체력(70)이 아니다");
+        Check(m && ((*m)[3] | ((*m)[4] << 8)) == nox::ManaOnline(nox::CharClass::Wizard), "부활 뒤 45 가 최대 마나가 아니다(playerManaRefresh +6)");
+        bool bareDe = false;
+        for (const auto& p : out) { const auto body = Body(p); if (!body.empty() && body[0] == static_cast<uint8_t>(nox::Op::REPORT_TOTAL_MANA)) bareDe = true; }
+        Check(bareDe, "부활 de 가 껍데기 안에 들어갔다(netReportTotalMana_4D88C0 → sub_4E5450 Packet0)");
+        out.clear();
+        tick4(srv, ms, out);
+        const auto toB6 = FlattenTo(out, b);
+        const auto* db = FindMsg(toB6, k42);
+        Check(db && delta(db) == -5, "부활 직후 피해 42 가 −5 가 아니다(서른둘 기록 = 지금 체력)");
+    }
+    // ⑥b 부활이 서른둘 기록을 「지금 체력」으로 맞추는 것 — 되살아난 **같은 틱 안**(첫 갱신 전)에 맞으면 그 차이(−5)가 나가야 한다.
+    //    (되살린 뒤 갱신이 한 번 돌면 기록은 어차피 지금 값이 되므로, 틱 밖에서 되살리고 곧바로 때려 그 창을 연다)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
+        srv.Damage(a, 1000, out);
+        tick4(srv, ms, out);                                           // 죽음의 42(−75)가 나가고 기록 = 0
+        out.clear();
+        srv.DebugRespawn(a);                                           // playerMakeDefItems — 서른둘 = 지금(최대)
+        srv.DebugBuffOff(a, 23);
+        srv.Damage(a, 5, out);                                         // 첫 갱신 전에 맞음
+        for (int t = 0; t < 6; ++t) { ms += 33; srv.Tick(ms, out); }
+        const auto toB6b = FlattenTo(out, b);
+        const auto* db = FindMsg(toB6b, k42);
+        Check(db && delta(db) == -5, "부활 직후(첫 갱신 전) 피해 42 가 −5 가 아니다(부활이 서른둘 기록을 지금 체력으로 안 맞춤)");
+    }
+    // ⑦ 소환수도 — netSendComplexObject_518960 a3 갈래: 보는 사람마다(+412+2×i) · +536 뒤 2틱 · 음수만 · 번호는 소환수 것
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(b, 1300, 1000);
+        std::vector<nox::OutPacket> out;
+        SummonImp(srv, b, out);
+        const uint16_t pnc = srv.DebugPetNetCode(0);
+        Check(pnc != 0, "임프가 안 불려 나왔다(시험 전제)");
+        uint32_t ms = srv.DebugNowMs();
+        for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
+        out.clear();
+        srv.DebugHurt("", 0, 10, a, 1, out);                           // a 가 b 의 임프를 때린다(주인이 달라 적)
+        ms += 33; srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        auto petDelta = [&](const std::vector<std::vector<uint8_t>>& msgs) -> const std::vector<uint8_t>* {
+            for (const auto& mm : msgs) if (mm.size() == 5 && mm[0] == k42 && (mm[1] | (mm[2] << 8)) == pnc) return &mm;
+            return nullptr;
+        };
+        const auto toA0 = FlattenTo(out, a);
+        Check(petDelta(toA0) == nullptr, "소환수 마지막 피해 뒤 2틱 안인데 42 가 나갔다");
+        out.clear();
+        tick4(srv, ms, out);
+        const auto toA7 = FlattenTo(out, a), toB7 = FlattenTo(out, b);
+        const auto* da = petDelta(toA7);
+        const auto* db = petDelta(toB7);
+        Check(da && db && delta(da) == -10 && delta(db) == -10, "소환수 피해 42(−10 · 소환수 번호)가 a·b 둘 다에게 안 갔다");
+    }
+    std::printf("  갱신 알림 정답지화 — 42 보는 사람별·2틱·음수만·합침·소환수 · 43 바뀔 때만 · 45 다음 틱·겹침 지움·워리어 없음 · +2184 dd/de/48 · 부활 기록\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
@@ -6794,6 +7081,7 @@ int main() {
     TestMoveBuffs();
     TestDebuffSpells();
     TestGameServerReady();
+    TestReportFramework();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

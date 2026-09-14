@@ -101,6 +101,13 @@ inline const ClassStats& MaxStatsOf(CharClass c) {
 inline int HealthOnline(CharClass c)   { return MaxStatsOf(c).maxHealth; }
 inline int ManaOnline(CharClass c)     { return MaxStatsOf(c).maxMana; }
 inline int StrengthOnline(CharClass c) { return MaxStatsOf(c).maxStrength; }
+inline int SpeedOnline(CharClass c)    { return MaxStatsOf(c).maxSpeed; }
+// +490 짐 한계 ◑ plrReadVals_4EEDC0(`GAME3_3.c:7708`) — (힘 ÷ 워리어(직업 0) 최대 힘 × 1250 + 750) × blob(0x581450+10216).
+//   blob 은 못 읽었다 — 위저드 녹음 `48` 의 1650 = (35/125 × 1250 + 750) × **1.5** 로 역산한 값이다.
+//   `48 REPORT_STATS` 의 넷째 칸이 이것이다(servSendStats_4D8990 `GAME3_2.c:4209`).
+inline int CarryCapacityOnline(CharClass c) {
+    return static_cast<int>((static_cast<double>(StrengthOnline(c)) / static_cast<double>(kClassMax[0].maxStrength) * 1250.0 + 750.0) * 1.5);
+}
 
 // 캠페인(솔로·퀘스트)용 보간 ◑ — **레벨 1 이 기본값, 레벨 10 이 최대값**이다.
 //   `stat(L) = base + (max − base) × (L−1) / 9`

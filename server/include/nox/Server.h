@@ -105,6 +105,8 @@ struct Creature {
     uint16_t health = 0;
     uint32_t nextHitFrame = 0;   // 이 프레임 전에는 못 때린다
     Buffs buffs;                 // 4-a4
+    uint32_t lastDamageFrame = 0;                   // +536 — 마지막 피해 프레임(damageDefaultProc 끝 `GAME3_2.c:7236`)
+    std::map<std::string, uint16_t> hpReportedTo;   // +412+2×i — 보는 사람마다 마지막으로 알린 체력(`42` 증감 기준 · netSendComplexObject_518960)
 };
 
 // 깃발 하나.
@@ -357,13 +359,13 @@ struct Session {
     //   ⚠ **우리는 이 경로가 통째로 없었다.** 갱신 스트림의 `0x40` 은 bit7=0 이라
     //     프레임 바이트도 안 따라간다 → **프레임이 0 에 고정**돼 자세가 안 바뀌었다.
     //   ⚠ 프레임 값의 범위는 **모른다**(스프라이트마다 다르다). 작게 굴려 보고 화면으로 확인한다.
-    // ★★ **HUD(체력·마나)를 몇 번 되풀이해 보낸다** (2026-09-11).
-    //   한 번만 보냈더니 안 떴다 — 접속 직후라 클라가 아직 안 받을 채비였던 것으로 보인다.
-    //   ★ 왜 마나만 떴었나 — 마나는 **주문 쓸 때마다 다시** 나가서 결국 떴고,
-    //     체력은 **맞아야만** 나가므로 안 맞으면 그 한 번이 전부였다.
-    //   그래서 처음 얼마 동안 **여러 번** 보낸다. 값이 안 바뀌어도 몇 조각 더 태울 뿐이다.
-    int hudToldCount = 0;
-    uint32_t hudNextFrame = 0;
+    // ★ 갱신 알림 정답지화(09-14) — playerReportAnything_4D9900(`GAME3_2.c:4855`)이 매 틱 「바뀐 것만」 알린다.
+    //   전에는 `42`·`43`·`45` 를 피해·주문·물약·오벨리스크 자리에서 곧바로, HUD 는 접속 뒤 다섯 번 되풀이해 보냈다.
+    uint16_t healthReported = 0;   // +10   마지막으로 알린 체력 — 다르면 `43 <체력2>`(Packet1 · netSendPlrHealthToTeam_4D86E0)
+    uint16_t manaPrev = 0;         // +6    이전 마나 — playerManaAdd/Sub/Refresh 가 남긴다 · +4 와 다르면 `45`(sub_4E5450 · 워리어 제외)
+    bool statsDirty = false;       // +2184 plrReadVals_4EEDC0 끝에 1 → `dd`·`de`·`48` 한 벌(접속 때는 스냅샷 꼬리가 그 몫)
+    uint32_t lastDamageFrame = 0;  // +536  마지막 피해 프레임 — `42` 증감은 이 뒤 2틱 넘어야(netPlayerObjSend_518C30 `GAME4_1.c:4412`)
+    std::map<std::string, uint16_t> hpReportedTo;   // +12+2×i 보는 사람마다 마지막으로 알린 체력 — 부활 때 서른둘 = 지금(`GAME3_3.c:7937`)
     Buffs buffs;                   // ★ 4-a4 버프 — 부활 무적(전 invulnUntil 자리표시)도 버프 23 으로
     float speedCur = 3.0f;         // +544 SpeedCur — CCC 가 매 틱 셈(느림·빠르게, 4-b3) · NewPlayer SPEED 96/32
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
@@ -622,9 +624,6 @@ constexpr uint32_t kAimStaleTicks = 30;
 // ★ 사람 자세 번호 ⭕ 소스 확증(`opennox/src/draw_debug.go:294` debugStates) —
 //   0 IDLE · 1 DIE · 2 DEAD · 3 JUMP · **4 WALK** · 5 WALK_AND_DRAG · **6 RUN** · 8 PICKUP
 //   갱신 항목 덧붙이 바이트의 **하위 4비트**가 이 번호다.
-// HUD(체력·마나)를 접속 직후 몇 번 되풀이해 보낼까. ➖ 우리 값 — 한 번은 놓친다.
-constexpr int kHudTellTimes = 5;
-
 // ★ **그림 칸 간격·칸 수는 서버가 안 정한다**(2026-09-11 화면으로 확정).
 //   클라가 `AnimLoop` 로 `Frame()` 에서 칸을 뽑는다(`opennox/src/drawable_vector.go:119`).
 //   서버가 굴려 `0x6B` 로 보내 봤지만 화면이 한 점도 안 바뀌었다.
@@ -1180,6 +1179,10 @@ public:
         s.strength = StrengthOnline(cls);
         s.health = s.maxHealth;
         s.mana = s.maxMana;
+        // 09-14 — 「접속 + 스냅샷 꼬리까지 끝난 사람」이다: 꼬리가 dd·de·48·43 을 실었고(+2184 = 0 · +10 = 지금), sub_4EFF10 이 +6 = +4
+        s.manaPrev = s.mana;
+        s.healthReported = s.health;
+        s.statsDirty = false;
         for (int k = 1; k < 137; ++k) s.spellLvl[k] = 3;   // 4-a — 온라인 serverSetAllSpells
         s.x = 1000;
         s.y = 1000;
@@ -1198,6 +1201,21 @@ public:
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.importantQ.size();
     }
+    // 시험용 — 대기열에 맨 메시지(Packet0)로 실린 옵 op 가 몇 개인가(sub_4E5450 겹침 지우기를 잰다)
+    size_t DebugImportantPendingOp(const std::string& addr, uint8_t op) const {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return 0;
+        size_t n = 0;
+        for (const auto& q : it->second.importantQ) if (!q.wire.empty() && q.wire[0] == op) ++n;
+        return n;
+    }
+    // 시험용 — 갱신 알림 정답지화(09-14): 체력 채움(unitAdjustHP) · 마나 더하기/빼기(playerManaAdd/Sub) · +2184 세우기
+    void DebugAdjustHP(const std::string& addr, int dv) { std::vector<OutPacket> o; UnitAdjustHP(Target{ addr, -1 }, dv, o); }
+    void DebugManaAdd(const std::string& addr, int v) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerManaAdd(it->second, v); }
+    void DebugManaSub(const std::string& addr, int v) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerManaSub(it->second, v); }
+    void DebugSetStatsDirty(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.statsDirty = true; }
+    // 시험용 — 틱 밖에서 곧바로 되살린다(playerRespawn_4F7EF0). 「부활 직후 · 첫 갱신 전」 창을 여는 데 쓴다
+    void DebugRespawn(const std::string& addr) { auto it = sessions_.find(addr); if (it == sessions_.end()) return; std::vector<OutPacket> o; PlayerRespawn(it->second, frame_, o); }
 
     // ★ 시험용 — 첫 세계 스냅샷을 **다음 틱에** 이 사람에게 보내도록 예약한다.
     void DebugArmSnapshot(const std::string& addr) {
@@ -1652,7 +1670,12 @@ private:
     void ForgetDrawables(Session& s, std::vector<OutPacket>& out);                // unitMove 의 플레이어 몫 `ea <프레임4>`
     // ── 알림 (묶음 3-d) ──
     void SendKillInform(Session& s, std::vector<OutPacket>& out);                 // diePlayer_54D2B0 의 `a9 0e`
-    void PlayerReportAnything(Session& s, std::vector<OutPacket>& out);           // playerReportAnything_4D9900 — 방어값 갈래
+    void PlayerReportAnything(Session& s, std::vector<OutPacket>& out);           // playerReportAnything_4D9900 — 방어 49 · +2184 dd/de/48 · 체력 43 · 마나 45
+    void PlayerManaAdd(Session& s, int v);                                       // playerManaAdd_4EEB80 — +6 = 이전 · 최대로 자름
+    void PlayerManaSub(Session& s, int v);                                       // playerManaSub_4EEBF0 — +6 = 이전 · 0 아래 안 감
+    void PlayerManaRefresh(Session& s);                                          // playerManaRefresh_4EECF0 — +6 = 이전 · +4 = 최대
+    void ReportHealthDeltaTo(Session& viewer, uint16_t netCode, uint16_t hp, uint32_t lastDamageFrame,
+                             std::map<std::string, uint16_t>& seen, std::vector<OutPacket>& out);   // netPlayerObjSend_518C30 a4 갈래 → netReportHealthDelta_4D8760
     void TryCollide(Session& s, uint16_t code, std::vector<OutPacket>& out);      // sdecode `0x7B` MSG_TRY_COLLIDE
     uint16_t WeaponWireOf(const Session& s) const;
     // ── 시전 틀 (묶음 4-a) ──
@@ -1851,6 +1874,7 @@ private:
     void EmitSeq(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
     // 중요 대기열에 봉투 없이(Packet0) 싣는다 — 사라짐(32)·그늘(33) 등.
     void EmitImportantRaw(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
+    void EmitImportantRawSupersede(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);   // sub_4E5450 — 같은 옵 대기 지우고 Packet0
     // 틱마다 부른다. 준비(CLIENT_READY) 뒤에만 `[27 시각][aa][cc·맨 메시지…]` 한 조각을 낸다.
     void FlushImportant(Session& s, std::vector<OutPacket>& out);
     // 사람 한 틱(묶음 2-a 걷기 · 3-a 공격) — 상태·힘·적분. Server.cpp 정의 머리 주석 참조.

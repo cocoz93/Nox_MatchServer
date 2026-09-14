@@ -203,9 +203,16 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t
     {
         uint8_t dd[7] = { 0xdd, lo, hi, hpLo, hpHi, hpLo, hpHi };
         PushSeq(m, seq, dd, 7);       // #21
+        // `48` 능력치 14B — servSendStats_4D8990(`GAME3_2.c:4201`): 번호 · 최대 체력 · 최대 마나 · 짐 한계(+490) · 속도(+2235) · 힘(+2239) · 레벨(+3684)
+        //   ★ 09-14 정정 — 뒤 셋을 녹음 상수(1650·17500·35 = 위저드)로 박아 두었다. 직업 값으로(워리어 3000·21000·125 · 컨저러 1950·18500·55)
+        const uint16_t carry = static_cast<uint16_t>(CarryCapacityOnline(cls));
+        const uint16_t spd = static_cast<uint16_t>(SpeedOnline(cls));
+        const uint16_t str = static_cast<uint16_t>(StrengthOnline(cls));
         uint8_t de48[21] = { 0xde, lo, hi, mpLo, mpHi, mpLo, mpHi,
                              0x48, lo, hi, hpLo, hpHi, mpLo, mpHi,
-                             0x72, 0x06, 0x5c, 0x44, 0x23, 0x00, 0x0a };
+                             static_cast<uint8_t>(carry), static_cast<uint8_t>(carry >> 8),
+                             static_cast<uint8_t>(spd), static_cast<uint8_t>(spd >> 8),
+                             static_cast<uint8_t>(str), static_cast<uint8_t>(str >> 8), kMaxLevel };
         PushRaw(m, de48, 21);
         const uint8_t cur[3] = { 0x43, hpLo, hpHi };
         PushSeq(m, seq, cur, 3);      // #22
