@@ -1627,6 +1627,22 @@ public:
     void DebugSetPetFacing(size_t i, uint8_t f) { if (i < pets_.size()) { pets_[i].facing = f; pets_[i].facingWant = f; } }
     int  DebugAIPop(size_t i) { return i < pets_.size() ? AIPop(pets_[i]) : -1; }
     void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AITick(pets_[i], out); }
+    // 시험용 — 길 찾기 격자 색인(6-e(1))
+    void DebugPathReset() { AIPathResetIndex(); }
+    void DebugPathBakeWalls() { AIPathBakeWalls(); }
+    void DebugPathIndexObjects() { AIPathIndexObjects(); }
+    void DebugPathMaybeIndex() { AIPathMaybeIndexObjects(); }
+    void DebugPathInvalidate(bool alsoFrame) { AIPathInvalidate(alsoFrame); }
+    bool DebugPathCalculated() const { return aiIndexCalc_; }
+    void DebugSetFrame(uint32_t f) { frame_ = f; }
+    uint16_t DebugPathFlags(int x, int y) { return AIPathFlagsAt(x, y); }
+    void DebugPathSetFlags(int x, int y, uint16_t f) { if (AIIndexNode* n = AIPathIndexAt(x, y)) n->flags |= f; }
+    void DebugPathStamp(int x, int y) { if (AIIndexNode* n = AIPathIndexAt(x, y)) n->gen = aiIndexGen_; }
+    uint32_t DebugPathGen() const { return aiIndexGen_; }
+    uint32_t DebugPathFrame() const { return aiIndexFrame_; }
+    bool DebugPathBlockedFlags(bool air, int x, int y) { return AIPathBlockedFlags(air, x, y); }
+    bool DebugPathBlockedByObj(bool air, uint32_t sub, int x, int y) { return AIPathBlockedByObj(air, sub, x, y); }
+    bool DebugPathCanPass(bool air, uint32_t sub, int x, int y) { return AIPathCanPass(air, sub, x, y); }
     uint32_t GoldOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.gold;
@@ -2286,6 +2302,20 @@ private:
     void AICancel(Creature& k, uint8_t act);
     // 묶음 6-d — 한 점을 바라보게 돌린다(`sub_545240`). 다 봤으면 참
     bool AIFacePoint(Creature& k, float tx, float ty);
+    // ── 묶음 6-e(1) 길 찾기 격자 색인 ──
+    //   칸마다 깃발과 **세대**를 둔다. 색인을 다시 뜰 때 세대를 올려 묵은 자국을 가른다.
+    struct AIIndexNode { uint32_t gen = 0; uint16_t flags = 0; };
+    static constexpr int kAIIndexSize = 256;   // 벽 격자와 같다(`WallGridSize`)
+    void AIPathResetIndex();
+    AIIndexNode* AIPathIndexAt(int x, int y);
+    uint16_t AIPathFlagsAt(int x, int y);
+    bool AIPathBlockedFlags(bool airborne, int x, int y);
+    bool AIPathBlockedByObj(bool airborne, uint32_t subclass, int x, int y);
+    bool AIPathCanPass(bool airborne, uint32_t subclass, int x, int y);
+    void AIPathIndexObjects();
+    void AIPathMaybeIndexObjects();
+    void AIPathInvalidate(bool alsoFrame);
+    void AIPathBakeWalls();
     // 묶음 6-b — 쌓임에 붙은 **조건**을 위에서부터 본다. 틀리면 그 아래까지 빼 버린다
     void AIProcDeps(Creature& k, std::vector<OutPacket>& out);
     bool CanInteractFrom(const Creature& k, const Target& t) const;
@@ -2613,6 +2643,10 @@ private:
     std::string saMapName_;
     uint32_t saMapCrc_ = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
     std::vector<uint8_t> walls_;   // 256×256 벽 격자 (P3)
+    std::vector<AIIndexNode> aiIndex_ = std::vector<AIIndexNode>(kAIIndexSize * kAIIndexSize);
+    uint32_t aiIndexGen_ = 0;
+    uint32_t aiIndexFrame_ = 0;
+    bool aiIndexCalc_ = false;   // `calculated` — 이번에 이미 떴나
     bool wallsOn_ = false;
     struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; };
     std::vector<WallTile> wallTiles_;        // 256×256 벽 모양 (묶음 2-b)

@@ -9912,6 +9912,155 @@ void TestAIFace() {
     std::printf("  6-d — 바라보기: 한 틱 8씩 돎 · 내적 0.9 넘으면 끝(8칸 끝·32칸 아직) · 대상 없으면 곧 빠짐 · 각도 번호 · 제자리 겨눔 · 취소도 빠짐\n");
 }
 
+// ── 묶음 6-e(1) — 길 찾기 격자 색인 ───────────────────────────────────
+//
+// 정답지 `server/object_ai_path.go:81~224`. 길 찾기는 **벽 격자(256×256)** 위에서 돈다.
+//   · `CheckIndexFlags`(96행) — 날아가는 것은 **구멍(0x10)**, 땅을 걷는 것은 **벽(0x1)** 에 걸린다
+//   · `sub50B8E0`(180행) — **세대가 다르면 묵은 자국**이라 0. 날것은 `0x200` 만 본다.
+//     땅것은 `0x100` 이면 막히고, 그 다음은 **갈래 비트 10 이 없을 때만** `0x400` 에 걸린다
+//   · `IndexObjects`(212행) — `Frame() - lastFrame < 15` 면 그냥 돌아간다. 뜰 때 **세대를 올린다**
+//
+// ⚠ 정답지 `MapIndex` 는 격자 밖에 **널**을 주고 `CheckIndexFlags` 가 그걸 그냥 읽는다(터진다).
+//   우리는 밖을 **막힌 것**으로 본다 — 길 찾기가 맵 밖으로 새면 안 되기 때문.
+void TestAIPathIndex() {
+    // ① **벽을 굽는다** — 벽 칸에만 `0x1` 이 선다
+    {
+        nox::Server srv;
+        srv.SetWalls({ { 40, 30 }, { 41, 30 } });
+        srv.DebugPathBakeWalls();
+        Check((srv.DebugPathFlags(40, 30) & 0x1) != 0, "벽 칸에 벽 깃발이 안 섰다");
+        Check((srv.DebugPathFlags(41, 30) & 0x1) != 0, "둘째 벽 칸에 벽 깃발이 안 섰다");
+        Check((srv.DebugPathFlags(42, 30) & 0x1) == 0, "빈 칸에 벽 깃발이 섰다");
+        // ★ **다시 구우면 옛 자국이 지워진다** — 굽기는 `|=` 만이 아니라 **없는 칸을 내려야** 한다
+        srv.SetWalls({ { 42, 30 } });
+        srv.DebugPathBakeWalls();
+        Check((srv.DebugPathFlags(42, 30) & 0x1) != 0, "새 벽 칸에 깃발이 안 섰다");
+        Check((srv.DebugPathFlags(40, 30) & 0x1) == 0, "옛 벽 자국이 안 지워졌다");
+    }
+
+    // ② **격자 밖은 막힌 것** — 정답지와 갈리는 자리라 글로 박아 둔다
+    {
+        nox::Server srv;
+        Check(srv.DebugPathBlockedFlags(false, -1, 30), "왼쪽 밖이 안 막혔다");
+        Check(srv.DebugPathBlockedFlags(false, 256, 30), "오른쪽 밖이 안 막혔다");
+        Check(srv.DebugPathBlockedFlags(true, 30, -1), "위쪽 밖이 날것에게 안 막혔다");
+        Check(srv.DebugPathBlockedByObj(false, 0, 30, 256), "아래쪽 밖이 오브젝트 판정에서 안 막혔다");
+    }
+
+    // ③ **벽은 땅만, 구멍은 날것만** 막는다 — 서로 안 바뀐다
+    {
+        nox::Server srv;
+        srv.SetWalls({ { 40, 30 } });
+        srv.DebugPathBakeWalls();
+        srv.DebugPathSetFlags(41, 30, 0x10);                 // 구멍
+        Check(srv.DebugPathBlockedFlags(false, 40, 30), "벽이 걷는 것을 안 막았다");
+        Check(!srv.DebugPathBlockedFlags(true, 40, 30), "벽이 나는 것까지 막았다");
+        Check(!srv.DebugPathBlockedFlags(false, 41, 30), "구멍이 걷는 것을 막았다");
+        Check(srv.DebugPathBlockedFlags(true, 41, 30), "구멍이 나는 것을 안 막았다");
+    }
+
+    // ★ 아래 시험들은 **세대를 한 번 올려 놓고** 본다 —
+    //   갓 만든 서버는 세대도 칸도 0 이라 「묵은 자국」과 「이번 자국」이 안 갈린다.
+    //   정답지도 같다 — `IndexObjects` 가 **세대를 올린 뒤에** 찍으므로 0 세대 자국은 실제로 안 생긴다.
+    auto bump = [](nox::Server& srv) { srv.DebugSetFrame(15); srv.DebugPathIndexObjects(); };
+
+    // ④ **세대** — 자국을 찍어도 세대가 다르면 없는 셈이 된다
+    {
+        nox::Server srv; bump(srv);
+        srv.DebugPathSetFlags(50, 50, 0x100);                // 무엇이 차지함 — 세대는 안 찍는다
+        Check(!srv.DebugPathBlockedByObj(false, 0, 50, 50),
+              "세대가 묵었는데 막혔다 — 묵은 자국을 걸러야 한다");
+        srv.DebugPathStamp(50, 50);                          // 지금 세대로 찍는다
+        Check(srv.DebugPathBlockedByObj(false, 0, 50, 50), "이번 세대 자국인데 안 막혔다");
+    }
+
+    // ⑤ **날것은 `0x200` 만 본다** — `0x100` 이 찍혀 있어도 지나간다
+    {
+        nox::Server srv; bump(srv);
+        srv.DebugPathSetFlags(50, 50, 0x100);
+        srv.DebugPathStamp(50, 50);
+        Check(!srv.DebugPathBlockedByObj(true, 0, 50, 50), "나는 것이 `0x100` 에 걸렸다");
+        srv.DebugPathSetFlags(51, 50, 0x200);
+        srv.DebugPathStamp(51, 50);
+        Check(srv.DebugPathBlockedByObj(true, 0, 51, 50), "나는 것이 `0x200` 에 안 걸렸다");
+        Check(!srv.DebugPathBlockedByObj(false, 0, 51, 50), "걷는 것이 날것 자리에 걸렸다");
+    }
+
+    // ⑥ **갈래 비트 10** — 있는 것만 `0x400` 자리를 지나간다
+    {
+        nox::Server srv; bump(srv);
+        srv.DebugPathSetFlags(60, 60, 0x400);
+        srv.DebugPathStamp(60, 60);
+        Check(srv.DebugPathBlockedByObj(false, 0, 60, 60), "비트 10 이 없는데 안 막혔다");
+        Check(!srv.DebugPathBlockedByObj(false, 1u << 10, 60, 60), "비트 10 이 있는데 막혔다");
+    }
+
+    // ⑦ **지날 수 있나 = 둘 다 아니어야** (`preCheckWalls2_50B8A0`)
+    {
+        nox::Server srv; bump(srv);
+        srv.SetWalls({ { 40, 30 } });
+        srv.DebugPathBakeWalls();
+        Check(!srv.DebugPathCanPass(false, 0, 40, 30), "벽을 지나갔다");
+        Check(srv.DebugPathCanPass(false, 0, 42, 30), "빈 칸을 못 지나갔다");
+        srv.DebugPathSetFlags(42, 30, 0x100);
+        srv.DebugPathStamp(42, 30);
+        Check(!srv.DebugPathCanPass(false, 0, 42, 30), "오브젝트가 막은 칸을 지나갔다");
+    }
+
+    // ⑧ **15틱 관문** — 정답지 그대로 **처음(0프레임)에도 안 돈다**
+    {
+        nox::Server srv;
+        nox::Server::PhysBody ob;
+        ob.x = 40 * 23.0f + 5; ob.y = 30 * 23.0f + 5;        // 격자 (40,30)
+        srv.SetObstacles({ ob });
+        const uint32_t g0 = srv.DebugPathGen();
+        srv.DebugPathIndexObjects();
+        Check(srv.DebugPathGen() == g0, "0프레임인데 색인이 돌았다 — 관문이 `< 15` 가 맞나");
+        srv.DebugSetFrame(14);
+        srv.DebugPathIndexObjects();
+        Check(srv.DebugPathGen() == g0, "14프레임인데 돌았다 — 경계가 하나 어긋났다");
+        srv.DebugSetFrame(15);
+        srv.DebugPathIndexObjects();
+        Check(srv.DebugPathGen() == g0 + 1, "15프레임인데 안 돌았다");
+        Check(srv.DebugPathBlockedByObj(false, 0, 40, 30), "장애물이 칸에 안 찍혔다");
+        // 바로 또 부르면 15틱이 안 지나 그대로다
+        srv.DebugPathIndexObjects();
+        Check(srv.DebugPathGen() == g0 + 1, "15틱이 안 지났는데 또 돌았다");
+    }
+
+    // ⑨ **자국은 세대로 사라진다** — 장애물을 치우고 다시 뜨면 그 칸이 열린다
+    {
+        nox::Server srv;
+        nox::Server::PhysBody ob;
+        ob.x = 40 * 23.0f + 5; ob.y = 30 * 23.0f + 5;
+        srv.SetObstacles({ ob });
+        srv.DebugSetFrame(15);
+        srv.DebugPathIndexObjects();
+        Check(srv.DebugPathBlockedByObj(false, 0, 40, 30), "장애물이 안 찍혔다(이 시험의 전제)");
+        srv.SetObstacles({});                                // 치운다
+        srv.DebugSetFrame(30);
+        srv.DebugPathIndexObjects();
+        Check(!srv.DebugPathBlockedByObj(false, 0, 40, 30),
+              "치웠는데 자국이 남았다 — 세대로 갈라야 한다");
+    }
+
+    // ⑩ **`MaybeIndexObjects`** — 이미 떴으면 건너뛴다. 표시를 풀면 다시 뜬다
+    {
+        nox::Server srv;
+        srv.DebugSetFrame(15);
+        srv.DebugPathMaybeIndex();
+        Check(srv.DebugPathCalculated(), "한 번 떴는데 표시가 안 섰다");
+        const uint32_t g1 = srv.DebugPathGen();
+        srv.DebugSetFrame(60);
+        srv.DebugPathMaybeIndex();
+        Check(srv.DebugPathGen() == g1, "표시가 섰는데 또 떴다");
+        srv.DebugPathInvalidate(false);                      // Sub_50B500
+        srv.DebugPathMaybeIndex();
+        Check(srv.DebugPathGen() == g1 + 1, "표시를 풀었는데 안 떴다");
+    }
+    std::printf("  6-e(1) — 격자 색인: 벽 0x1(땅)·구멍 0x10(날것) · 세대로 묵은 자국 거름 · 15틱 관문 · 밖은 막힘\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -12109,6 +12258,7 @@ int main() {
     TestAIDeps();
     TestAIActions();
     TestAIFace();
+    TestAIPathIndex();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

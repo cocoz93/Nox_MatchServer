@@ -5760,6 +5760,111 @@ Target Server::PlasmaSearch(const Session& s, float range) const {
     return found;
 }
 
+// ── 묶음 6-e(1) 길 찾기 격자 색인 ─────────────────────────────────────
+//
+// 정답지 `server/object_ai_path.go:16~224`. 길 찾기는 **벽 격자(256×256) 위에서** 돈다.
+// 칸마다 깃발을 세워 두고 「여기를 지날 수 있나」를 묻는다.
+//
+// ⭕ 깃발(같은 파일 31~36행 + `sub50B8E0`) —
+//     `0x1`   벽 — **땅으로 걷는 것**을 막는다
+//     `0x4`   승강기 · `0x8` 승강기 통로 · `0x20` 나르는 것
+//     `0x10`  구멍 — ★ **날아가는 것**을 막는다(땅으로 걷는 것은 지나간다)
+//     `0x100` 오브젝트가 차지함
+//     `0x200` 날아가는 것(오브젝트 깃발 `0x4000`)에만 걸리는 자리
+//     `0x400` 갈래 비트 10 이 없는 것만 막는 자리
+//
+// ★ **세대(generation)** 로 묵은 자국을 가른다 — 색인을 다시 뜰 때 세대를 하나 올리고,
+//   칸의 세대가 지금 세대와 다르면 **오브젝트 자국이 없는 것으로** 본다.
+//   그래서 칸을 일일이 지우지 않고도 매번 새로 뜰 수 있다.
+// ★ 색인은 **15틱에 한 번**만 다시 뜬다(`IndexObjects`).
+//
+// ⚠ 정답지 `CheckIndexFlags` 는 격자 밖을 **안 막는다**(널 포인터를 그냥 읽는다).
+//   우리는 밖이면 **막힌 것으로** 본다 — 길 찾기가 맵 밖으로 새면 안 된다.
+
+void Server::AIPathResetIndex() {
+    aiIndexGen_ = 0;
+    aiIndexFrame_ = 0;                                       // `Init`: lastFrame = 0
+    aiIndexCalc_ = false;
+    for (auto& n : aiIndex_) { n.gen = 0; n.flags = 0; }
+}
+
+Server::AIIndexNode* Server::AIPathIndexAt(int x, int y) {
+    if (x < 0 || x >= kAIIndexSize || y < 0 || y >= kAIIndexSize) return nullptr;
+    return &aiIndex_[static_cast<size_t>(y) * kAIIndexSize + static_cast<size_t>(x)];
+}
+
+uint16_t Server::AIPathFlagsAt(int x, int y) {
+    const AIIndexNode* n = AIPathIndexAt(x, y);
+    return n ? n->flags : 0;
+}
+
+// CheckIndexFlags — **막혔나**. 날아가는 것은 **구멍(0x10)** 에, 땅을 걷는 것은 **벽(0x1)** 에 걸린다.
+bool Server::AIPathBlockedFlags(bool airborne, int x, int y) {
+    const AIIndexNode* n = AIPathIndexAt(x, y);
+    if (!n) return true;                                     // 격자 밖은 막힌 것으로 본다
+    return airborne ? (n->flags & 0x10) != 0 : (n->flags & 0x1) != 0;
+}
+
+// sub50B8E0 — **오브젝트가 막고 있나**. ★ 칸의 **세대가 지금 세대와 다르면 묵은 자국**이라 0.
+bool Server::AIPathBlockedByObj(bool airborne, uint32_t subclass, int x, int y) {
+    const AIIndexNode* n = AIPathIndexAt(x, y);
+    if (!n) return true;
+    if (n->gen != aiIndexGen_) return false;                 // 묵은 자국 — 없는 셈
+    if (airborne) return (n->flags & 0x200) != 0;            // 날아가는 것은 이 자리만 본다
+    if (n->flags & 0x100) return true;                       // 무엇이 차지하고 있다
+    if ((subclass >> 10) & 1) return false;                  // 갈래 비트 10 은 이 자리를 지나간다
+    return (n->flags & 0x400) != 0;
+}
+
+// Nox_xxx_pathfind_preCheckWalls2_50B8A0 — 둘 다 아니어야 지날 수 있다.
+bool Server::AIPathCanPass(bool airborne, uint32_t subclass, int x, int y) {
+    if (AIPathBlockedFlags(airborne, x, y)) return false;
+    return !AIPathBlockedByObj(airborne, subclass, x, y);
+}
+
+// IndexObjects — **15틱에 한 번**만 다시 뜬다. 뜰 때 **세대를 하나 올린다**.
+//   ⚠ 오브젝트를 칸에 찍는 `IndexObject`(정답지 100줄)는 아직 안 옮겼다 —
+//     지금은 **장애물(움직이지 않는 것)만** 찍는다. 소환수·사람이 서로 길을 막는 갈래는 다음 조각.
+void Server::AIPathIndexObjects() {
+    // ⚠ 정답지 그대로 — **처음(둘 다 0)에도 안 돈다**(`0 - 0 = 0 < 15`).
+    //   길 찾기를 처음 쓰는 자리에서 15틱이 지나야 처음 뜬다.
+    if (frame_ - aiIndexFrame_ < 15) return;
+    aiIndexFrame_ = frame_;
+    ++aiIndexGen_;
+    for (const auto& o : obstacles_) {
+        const int gx = static_cast<int>(o.x / kWallCell);
+        const int gy = static_cast<int>(o.y / kWallCell);
+        AIIndexNode* n = AIPathIndexAt(gx, gy);
+        if (!n) continue;
+        n->gen = aiIndexGen_;
+        n->flags |= 0x100;                                   // 무엇이 차지하고 있다
+    }
+    aiIndexCalc_ = true;
+}
+
+// MaybeIndexObjects — 이번 프레임에 이미 떴으면 건너뛴다.
+void Server::AIPathMaybeIndexObjects() {
+    if (aiIndexCalc_) return;
+    AIPathIndexObjects();
+}
+
+// Sub_50B500 / Sub_50B510 — 「다시 떠야 한다」고 표시한다. 뒤엣것은 틱 관문까지 푼다.
+void Server::AIPathInvalidate(bool alsoFrame) {
+    aiIndexCalc_ = false;
+    if (alsoFrame) aiIndexFrame_ = 0;
+}
+
+// 맵 벽을 격자 깃발 `0x1` 로 굽는다. 벽은 안 바뀌므로 **한 번만** 하면 된다.
+void Server::AIPathBakeWalls() {
+    for (int y = 0; y < kAIIndexSize; ++y)
+        for (int x = 0; x < kAIIndexSize; ++x) {
+            AIIndexNode* n = AIPathIndexAt(x, y);
+            if (!n) continue;
+            const bool wall = wallsOn_ && walls_[static_cast<size_t>(y) * 256 + static_cast<size_t>(x)] != 0;
+            if (wall) n->flags |= 0x1; else n->flags &= static_cast<uint16_t>(~0x1);
+        }
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
