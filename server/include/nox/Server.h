@@ -2203,6 +2203,7 @@ private:
         //   0 = SpellProjectileCollide(Magic — 대상에 닿으면 주문 효과) · 1 = SparkExplosionCollide(불덩이 — 터진다)
         uint8_t collideKind = 0;
         uint8_t collideAmount = 0;       // SparkExplosionCollide 의 인자(불덩이 192 · 센 불덩이·거인 불덩이 255)
+        int fromPet = -1;                // 묶음 6-g(3b) — 이것을 쏜 소환수(제 몸에는 안 맞는다)
         // ★ 2 = PixieCollide — 적에게 닿으면 인자만큼 피해(종류 11 충격)를 주고 **제가 사라진다**
         uint32_t expireFrame = 0;        // 0 이 아니면 이 프레임에 사라진다(픽시 — 30~90초)
     };
@@ -2417,6 +2418,8 @@ private:
     void AITick(Creature& k, std::vector<OutPacket>& out);
     static bool AIHasAction(const Creature& k, uint8_t act);
     void CreatureApplyVelocity(Creature& k);
+    // 묶음 6-g(3b) — 크리처가 `MISSILE_NAME` 오브젝트를 만들어 날린다
+    void SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty, std::vector<OutPacket>& out);
     void AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIEnd(Creature& k, uint8_t act);

@@ -6440,6 +6440,40 @@ void Server::MonsterPushAttack(Creature& k, const Target& foe, float fx, float f
     }
 }
 
+// ── 묶음 6-g(3b) 크리처가 쏘는 것 ────────────────────────────────────
+//
+// 정답지 `mobActionMissileAtt_532610` 가 `newObjectByTypeID(monsterDef+148)` 로
+// **`MISSILE_NAME` 오브젝트를 만들어** 그 쪽으로 속도를 준다.
+//   · 피해는 날아가서 **맞을 때** 들어간다(`collideProjectileGeneric_4E87B0`, 종류 **11**)
+//   · 그 함수는 **적·아군을 안 가린다** — 맞는 것에 그냥 준다
+//   · 양은 `ImpShot` 이면 gamedata **`ImpShotDamage`**, 아니면 `COLLIDE` 의 인자다(둘 다 5)
+// ⚠ **앞질러 겨눔**(`projAddVelocitySmth_533080`)은 아직 안 옮겼다 — 곧장 겨눈다
+void Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty,
+                                  std::vector<OutPacket>& out) {
+    (void)out;
+    const ProjTypeInfo* pt = ProjType(name);
+    if (!pt || pt->type == 0) return;                        // 종류를 모르면 안 만든다(지어내지 않는다)
+    const double dx = tx - k.x, dy = ty - k.y;
+    const uint8_t dir = DirFromVec(dx, dy);
+    MissileObj m;
+    m.netCode = nextShotNetCode_++;
+    m.type = pt->type;
+    m.flags = pt->flags;
+    m.posX = m.newX = m.prevX = static_cast<float>(k.x);
+    m.posY = m.newY = m.prevY = static_cast<float>(k.y);
+    m.dir1 = m.dir2 = dir;
+    m.createdFrame = m.frame136 = frame_;
+    m.speed = pt->speed;
+    m.owner = k.owner;                                       // 점수는 부른 사람 것이다
+    m.ud0 = m.ud2 = k.owner;
+    m.collideKind = 3;                                       // ProjectileCollide
+    m.fromPet = static_cast<int>(&k - pets_.data());         // 제 몸에 안 맞게
+    m.collideAmount = pt->collideAmount;
+    m.velX = DirVecX(dir) * m.speed;
+    m.velY = DirVecY(dir) * m.speed;
+    missiles_.push_back(m);
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
@@ -6722,28 +6756,19 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             }
             break;
         }
-        case 17: {   // 쏘기 — `mobActionMissileAtt_532610`
-            // ⚠⚠ **여기가 정답지와 갈리는 자리다.** 정답지는 애니의 **쏘는 칸**(`monsterDef+216`)에서
-            //   `MISSILE_NAME` 오브젝트를 **만들어 날린다**(앞질러 겨눔까지 한다).
-            //   우리는 **크리처 애니 칸이 없고** 그 발사체를 아직 안 만든다 —
-            //   지금은 **한 틱에 피해만 주고 뺀다**(임시 구현이 하던 것과 같다). 진짜 발사체는 **6-g(3b)**
+        case 17: {   // 쏘기 — `mobActionMissileAtt_532610` (묶음 6-g(3b))
+            // ⭕ 정답지는 애니의 **쏘는 칸**(`monsterDef+216`)에서 `MISSILE_NAME` 오브젝트를
+            //   **만들어 날린다**. 이제 우리도 **진짜로 만든다** — 피해는 그것이 맞을 때 들어간다
+            // ⚠ **애니 칸이 없어** 「휘두르기를 시작한 그 틱」을 그 자리로 삼는다.
+            //   이 막이 없으면 쉬는 시간이 안 지켜져 매 틱 쏜다
+            // ⚠ **앞질러 겨눔**(`projAddVelocitySmth_533080`)은 아직 안 옮겼다 — 지금은 곧장 겨눈다
             const MonsterStats* m = FindMonster(k.type);
             const Target foe{ k.enemyAddr, k.enemyPet };
             if (!m || m->missileName == nullptr || foe.none()) { AIPop(k); break; }
-            // ★ **휘두르기를 시작한 그 틱에만 맞힌다** — 애니를 접었으므로 이 막이 없으면
-            //   쉬는 시간이 안 지켜져 **매 틱 쏜다**(2026-09-15 소환수 죽음 시험에서 잡혔다).
-            //   정답지는 애니의 **쏘는 칸**에서 한 번만 나가므로 같은 뜻이 된다
             if (k.attackStartFrame != frame_) { AIPop(k); break; }
-            // 발사체 피해는 아직 임프 것만 안다(`kImpShotDamage`)
-            const int dmg = (k.type == 1328) ? kImpShotDamage : 0;
-            if (dmg > 0) {
-                AttackSrc src;
-                src.x = static_cast<float>(k.x);
-                src.y = static_cast<float>(k.y);
-                src.byMonsterType = k.type;
-                src.byPet = static_cast<int>(&k - pets_.data());
-                HurtTarget(foe, dmg, out, k.owner, 0, &src);
-            }
+            float tx = 0, ty = 0;
+            if (!TargetXY(foe, tx, ty)) { AIPop(k); break; }
+            SpawnCreatureMissile(k, m->missileName, tx, ty, out);
             AIPop(k);
             break;
         }
@@ -6827,6 +6852,15 @@ void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
             case 42: ok = hasT && TargetHealth(targ) > 0; break;               // 살아 있나
             case 45: ok = hasT && CanInteractFrom(k, targ); break;             // 보이나
             case 46: ok = !(hasT && CanInteractFrom(k, targ)); break;          // 안 보이나
+            case 47: {                                                          // 쏠 줄이 막혔나
+                // DEPENDENCY_BLOCKED_LINE_OF_FIRE — **막혀 있는 동안 참**이다.
+                //   원거리 사슬에서 49(더 머나)와 **또는(40)** 으로 묶여 「멀거나 막혔으면 다가간다」가 된다.
+                //   ⚠ 안 옮겼을 때는 `default: 늘 참`이라 **그 묶음이 절대 안 깨져** 임프가
+                //     사거리를 지나쳐 몸에 붙을 때까지 걸어갔다(2026-09-15 6-g(3b) 에서 잡힘)
+                if (!hasT) { ok = false; break; }
+                ok = !MapTraceVision(static_cast<float>(k.x), static_cast<float>(k.y), tx, ty);
+                break;
+            }
             case 49: {                                                          // 더 머나
                 if (!hasT) { ok = false; break; }
                 const float ex = static_cast<float>(k.x) - tx, ey = static_cast<float>(k.y) - ty;
@@ -8570,6 +8604,11 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                 DestroyMissile(i, out);
                 continue;
             }
+        } else if (m.collideKind == 3) {
+            // ①-d 묶음 6-g(3b) — `ImpShot` 도 `UPDATE = ProjectileUpdate` 다(불덩이와 같은 40틱).
+            //   때가 되면 **대상 없이** 제 닿음 함수를 부르는데, 그쪽은 맵에 피해를 주고 사라진다.
+            //   ⚠ 맵 피해(`damageToMap_534BC0`)는 아직 안 옮겼다 — 지금은 그냥 지운다
+            if (frame - m.createdFrame > 40u) { DestroyMissile(i, out); continue; }
         } else if (m.collideKind == 2) {
             // ①-c updatePixie_53CD20 — 여기서는 **수명만** 본다.
             //   ⚠ 적 찾기·떼 짓기·주인 따라가기·되돌아오기는 유닛 움직임 묶음(6·7)이다.
@@ -8666,6 +8705,10 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     hk = HitPlayer; hAddr = o.addr; hx = static_cast<float>(o.posX); hy = static_cast<float>(o.posY); any = true;
                 }
                 for (size_t k = 0; k < pets_.size(); ++k) {
+                    // ★ **쏜 것 자신은 건너뛴다** — 발사체는 그 자리에서 생기므로 안 그러면
+                    //   나가자마자 제 몸에 맞는다. 정답지는 부모 사슬을 타고 올라가 가른다
+                    //   (`findParentChainPlayer_4EC580`)
+                    if (m.fromPet >= 0 && static_cast<int>(k) == m.fromPet) continue;
                     const auto tb = typeBodies_.find(pets_[k].type);
                     if (tb == typeBodies_.end() || !tb->second.hasCollide || tb->second.shape != 2) continue;
                     if (!passFlags(tb->second.flags, !pets_[k].owner.empty() && pets_[k].owner == m.owner)) continue;
@@ -8794,6 +8837,21 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                             DestroyMissile(i, out);
                             erased = true;
                         }
+                        handled = true;
+                    }
+                    // collideProjectileGeneric_4E87B0 — ★ **적·아군을 안 가린다**(픽시와 다르다).
+                    //   맞는 것에 **종류 11** 피해. 양은 `ImpShot` 이면 gamedata `ImpShotDamage`,
+                    //   아니면 `COLLIDE` 의 인자다(둘 다 5 라 값은 같다)
+                    if (!handled && m.collideKind == 3) {
+                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        // ⭕ 정답지는 피해를 줄 때 **a2 로 발사체 자신**을 넘긴다
+                        //   (`(*(a2+716))(a2, 부모사람, **발사체**, 피해, 11)`) — 죽음 알림 그림이 그것이다
+                        AttackSrc src;
+                        src.x = m.posX; src.y = m.posY;
+                        src.byMonsterType = m.type;
+                        HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, &src);
+                        DestroyMissile(i, out);
+                        erased = true;
                         handled = true;
                     }
                     if (!handled && m.collideKind == 1) {

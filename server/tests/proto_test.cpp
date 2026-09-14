@@ -19,6 +19,15 @@
 #include "nox/SpellNames.h"
 #include "nox/Opcode.h"
 #include "nox/DirVectors.h"
+
+// 묶음 6-g(3b) — 임프가 쏘는 `ImpShot` 종류를 시험 서버에 넣는다.
+//   ⚠ 시험 서버는 thing.bin 을 안 읽으므로 이것이 없으면 **발사체가 아예 안 생긴다**
+//     (지어내지 않으려고 `SpawnCreatureMissile` 이 조용히 돌아간다).
+//   값은 thing.bin 그대로 — `SPEED = 400` · `COLLIDE = ProjectileCollide 5` · AIRBORNE
+static void RegImpShot(nox::Server& srv) {
+    srv.SetProjType("ImpShot", 1329, 400, 0x4000, 5);
+}
+
 #include "nox/ThingDb.h"
 #include "nox/ThingFlags.h"
 #include "nox/NoxCrypt.h"
@@ -3162,6 +3171,7 @@ void TestKillArmorCollide() {
         srv.DebugMoveTo(b, 1400, 1000);
         std::vector<nox::OutPacket> out;
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
+        RegImpShot(srv);
         Check(srv.pets() == 1, "소환수가 안 불려 나옴(시험 전제)");
         srv.Damage(b, nox::HealthOnline(nox::CharClass::Wizard) - 1, out, "");
         srv.Tick(0, out);
@@ -11697,12 +11707,13 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1328);
         std::vector<nox::OutPacket> out;
+        RegImpShot(srv);
         srv.DebugSetPetEnemy(0, b, -1);
-        const int hp0 = srv.HealthOf(b);
+        const size_t n0 = srv.missiles();
         srv.DebugAIPush(0, 17);
         srv.DebugAITick(0, out);
-        // ⚠ 딱 5 가 아니다 — 갑옷이 깎는다(그건 묶음 3 에서 따로 본다). **줄었나**만 본다
-        Check(srv.HealthOf(b) < hp0, "임프 발사체 피해가 안 들어갔다");
+        // ★ 이제 **피해를 바로 주지 않는다** — `ImpShot` 오브젝트를 만들어 날린다(6-g(3b))
+        Check(srv.missiles() == n0 + 1, "발사체가 안 생겼다");
         Check(srv.DebugAIAction(0, 0) == 0, "쏜 뒤 안 빠졌다");
     }
     std::printf("  6-g(2) — 근접(16): 쉬는 시간 끝나면 휘두름(다음 때 30~40) · 아니면 50+1 · 못 때리면 뺌\n");
@@ -13178,9 +13189,12 @@ void TestSummon() {
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         srv.Tick(0, out);
         srv.Tick(33, out);
+        RegImpShot(srv);
         Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "부르자마자 멀리 있는 사람이 맞음");
-        srv.Tick(33 * 300, out);          // 걸어가 때릴 시간을 준다
-        Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "다가가서 안 때림");
+        // ⚠ **한 번에 크게 건너뛰면 안 된다** — 임프는 이제 **날아가는 것**을 쏘고(6-g(3b)),
+        //   날아가는 것은 틱마다 한 걸음씩 나아간다. 한 번에 300틱을 주면 걸음이 안 쌓인다
+        { uint32_t t2 = 33; for (int q = 0; q < 300; ++q) { t2 += 33; srv.Tick(t2, out); } }
+        Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "다가가서 안 때림(임프는 사거리에서 쏜다)");
         Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "부른 사람이 맞음");
     }
 

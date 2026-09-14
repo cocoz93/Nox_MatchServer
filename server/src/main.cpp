@@ -430,7 +430,9 @@ int main(int argc, char** argv) {
             }
             // ★ 4-c3 — 주문이 **날리는** 것(불덩이 셋). 빠르기·깃발·닿음 인자를 전부 thing.bin 에서 읽는다.
             //   `COLLIDE = SparkExplosionCollide 192` 의 숫자가 터짐 크기를 다 정하므로 **짐작하지 않는다**.
-            for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball" }) {
+            //   ★ 묶음 6-g(3b) — **크리처가 쏘는 것**도 같은 자리에서 읽는다.
+            //     `ImpShot` 은 `SPEED = 400` · `COLLIDE = ProjectileCollide 5` 다
+            for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot" }) {
                 const uint16_t w = tdb.WireByName(nm);
                 const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
                 int amount = 0;
