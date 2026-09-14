@@ -1849,6 +1849,10 @@ public:
     void SetGameFlags(uint32_t f) { gameSettings_.gameFlags = f; }
     void SetMaxPlayers(uint8_t n) { gameSettings_.maxPlayers = n; }
 
+    // 시험용 — 판 끝
+    void DebugSetScore(const std::string& x, int32_t v) { auto i = sessions_.find(x); if (i != sessions_.end()) i->second.score = v; }
+    void DebugRoundCheck(std::vector<OutPacket>& out) { RoundCheckLimit(out); }
+
     // 시험용 — 팀
     void DebugSendTeamState(std::vector<OutPacket>& out) { SendTeamState(out); }
     int DebugTeamScore(uint8_t id) { const Team* t = TeamById(id); return t ? t->score : -999; }
@@ -2646,6 +2650,10 @@ private:
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
+    // 묶음 8-c — 판 끝 알림(0x58 혼자 · 0x59 팀)
+    void SendRoundWinner(uint8_t op, uint16_t who, uint8_t reason, std::vector<OutPacket>& out);
+    void RoundCheckLimit(std::vector<OutPacket>& out);
+
     // 묶음 8-b — 팀 메시지(0xC4). 팀 기록은 정답지 팀 오브젝트의 칸을 그대로 옮긴 것
     struct Team {
         uint8_t  id = 0;          // +57 팀 번호

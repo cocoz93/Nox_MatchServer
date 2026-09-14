@@ -1241,49 +1241,64 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     // ⚠ 옮기지 않은 것 — 죽는 소리(10) · 가진 것 전부 떨구기(퀘스트 아니면 · 아이템 5)
     //   · 모드별 점수 정답지(8 — 지금은 아래 우리 점수) · 능력 끄기(7)
 
-    // ④ 점수 — 때린 쪽이 있고 자기 자신이 아니면 그쪽이 하나 얻는다.
-    //    자기가 자기를 죽인 것(자기에게 건 주문)은 점수가 아니다.
-    if (!by.empty() && by != addr) {
-        auto k = sessions_.find(by);
-        if (k != sessions_.end()) {
-            // ★ 7-c — 점수 올리기는 `PlayerUpdateScore` 가 위에서 이미 했다(정답지 `playerUpdateScore_54D980`).
-            //   여기 남은 것은 **판 끝 판정**뿐이다
-            if (!roundOver_ && k->second.score >= static_cast<int32_t>(kArenaKillLimit)) {
-                roundOver_ = true;
-                restartAtFrame_ = frame_ + kRoundRestartTicks;
-                // `0x58 REPORT_DEATHMATCH_WINNER` — **짜임을 오픈녹스 원본에서 확정했다**
-                //   (2026-09-09, `client__network__cdecode.c` case 88. 우리 덤프 표본은 여전히 0건).
-                //
-                //     58 | 승자 번호 2 | 끝난 까닭 1 | 프레임 4        모두 8바이트
-                //
-                //   · **승자 번호** — 0 이면 무승부("DM_Tie"). 클라는 이 번호로
-                //     `playerInfoGetByID` 를 찾고 **빈손이면 글이 없이 지나간다.**
-                //   · **끝난 까닭** — 1 이면 「시간 초과」를 앞에 붙인다. 0 이 보통 승리이고,
-                //     0 일 때만 `sub_4947E0`(승자를 점수판에 올리는 것)이 돈다.
-                //     ⚠ 전에는 여기에 **죽인 수(10)** 를 실었다. 그래서 시간초과도 아니고
-                //       점수판에도 안 올라가는 어정쩡한 값이 됐다.
-                //   · **프레임** — ★★★ **맵을 받은 프레임보다 커야 한다.**
-                //     클라는 `if (프레임 <= 저장값) return;` 으로 **통째로 버린다.**
-                //     그 저장값은 `USE_MAP` 의 프레임에서 온다(`network_client.go`).
-                //     우리는 `USE_MAP` 에 `s.frame` 을 실으므로 지금 세고 있는 `s.tickFrame`
-                //     을 실으면 늘 그보다 크다.
-                //     ⚠ 전에는 0 을 실었다 — 저장값도 0 이라 `0 <= 0` 으로 **매번 버려졌다.**
-                //       화면에 승자가 안 뜨던 것이 이것이다.
-                for (auto& kv : sessions_) {
-                    Session& o = kv.second;
-                    if (!o.inGame) continue;
-                    uint8_t msg[8];
-                    msg[0] = static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER);
-                    msg[1] = static_cast<uint8_t>(k->second.netCode);
-                    msg[2] = static_cast<uint8_t>(k->second.netCode >> 8);
-                    msg[3] = 0;   // 보통 승리 (1 이면 시간 초과)
-                    PutU32(msg + 4, o.tickFrame);
-                    EmitSeq(o, msg, sizeof(msg), out);
-                }
-            }
-        }
-    }
+    // ④ 판 끝 판정 — 묶음 8-c 가 정답지 규칙으로 옮겼다(아래 `RoundCheckLimit`)
+    RoundCheckLimit(out);
     return true;
+}
+
+// ── 묶음 8-c 판 끝 알림 ───────────────────────────────────────────────
+//
+// 정답지 `GAME4_1.c:198~221`(점수 한도로 끝나는 자리) ·
+//        `nox_xxx_netSendDMWinner_4D8B90`·`netSendDMTeamWinner_4D8BF0`(`GAME3_2.c:4293·4313`).
+//
+// ⭕ 규칙(정답지 그대로) —
+//   ① **협동팀(깃발 512)이면 판이 안 끝난다**
+//   ② 한도는 `servGamedataGet(모드 번호)` — ⭕ 우리는 접속 때 그 값을 **와이어로 보내고 있었다**
+//      (묶음 8-a 의 `af[18] = 15`). 그래서 `GameSettings::limitValue` 를 쓴다.
+//      ⚠ 전에는 **우리가 지어낸 `kArenaKillLimit`(10)** 이었다 — 실측값으로 바꿨다
+//   ③ 한도가 0 이면 안 끝난다
+//   ④ **팀을 먼저 본다.** 한 팀이라도 한도에 닿으면 `0x59`(팀 승자)를 보내고 끝
+//   ⑤ 아니면 사람을 본다. 관전자는 빼고, 닿은 **첫 사람**에게 `0x58`(혼자 승자)
+//
+// ⭕ 두 와이어의 짜임은 같다 — `<머리> <승자 번호 u16> <까닭 u8> <프레임 u32>` **8바이트**.
+//   · 승자 번호 0 이면 무승부(팀 쪽은 "HL_Tie", 사람 쪽은 "DM_Tie")
+//   · 까닭 1 이면 「시간 초과」를 앞에 붙인다. **점수 한도로 끝날 때는 0**(정답지가 0 을 넘긴다)
+//   · 프레임은 **맵을 받은 프레임보다 커야** 클라가 안 버린다(`받은 값 <= 저장값`이면 통째로 버림)
+void Server::SendRoundWinner(uint8_t op, uint16_t who, uint8_t reason, std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame) continue;
+        uint8_t msg[8];
+        msg[0] = op;
+        msg[1] = static_cast<uint8_t>(who);
+        msg[2] = static_cast<uint8_t>(who >> 8);
+        msg[3] = reason;
+        PutU32(msg + 4, o.tickFrame);   // 받는 사람마다 그 사람의 시계
+        EmitSeq(o, msg, sizeof(msg), out);
+    }
+}
+
+void Server::RoundCheckLimit(std::vector<OutPacket>& out) {
+    if (roundOver_) return;
+    if (gameSettings_.gameFlags & 0x200u) return;        // ① 협동팀(512)
+    const int32_t limit = static_cast<int32_t>(gameSettings_.limitValue);
+    if (limit == 0) return;                              // ③
+    for (const Team& t : teams_) {                       // ④ 팀이 먼저다
+        if (t.score < limit) continue;
+        roundOver_ = true;
+        restartAtFrame_ = frame_ + kRoundRestartTicks;
+        SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_TEAM_WINNER), t.id, 0, out);
+        return;
+    }
+    for (auto& kv : sessions_) {                         // ⑤ 그다음 사람
+        Session& o = kv.second;
+        if (!o.inGame || o.observer) continue;           // +3680 & 1
+        if (o.score < limit) continue;
+        roundOver_ = true;
+        restartAtFrame_ = frame_ + kRoundRestartTicks;
+        SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER), o.netCode, 0, out);
+        return;
+    }
 }
 
 // 판 시계 — 짜임은 실측이다(PROTOCOL.md 「판 시계」 절).
