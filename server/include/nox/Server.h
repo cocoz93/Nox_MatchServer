@@ -183,6 +183,31 @@ struct Creature {
     uint16_t poisonDecay = 0;                       // +542 감쇠 계수기 — 독을 걸 때 1000, 0 이 되면 독 1 줄고 다시 1000
     uint32_t lastDamageFrame = 0;                   // +536 — 마지막 피해 프레임(damageDefaultProc 끝 `GAME3_2.c:7236`)
     std::map<std::string, uint16_t> hpReportedTo;   // +412+2×i — 보는 사람마다 마지막으로 알린 체력(`42` 증감 기준 · netSendComplexObject_518960)
+
+
+    // ── 묶음 6-a — **AI 행동 쌓기(AIStack)** ──────────────────────────
+    //
+    // 정답지 `server/object_ai.go` — 몬스터는 **할 일을 쌓아 두고 맨 위를 한다.**
+    //   · 밀기(`MonsterPushAction`) — 맨 위를 **취소**하고 새 것을 올린다
+    //     ⚠ 맨 위가 `죽음(31)` 이면 `죽어가는 중(30)` 말고는 **아예 안 올라간다**
+    //     ⚠ 맨 위가 `놀기(0)` 이고 바닥이면 **덮어쓴다**(쌓지 않는다)
+    //   · 빼기(`MonsterPopAction`) — 맨 위를 **끝내고**(End) 내린 뒤,
+    //     그 아래 **조건 항목들도 같이** 내린다. 다 내려가면 바닥에 `놀기(0)` 가 남는다
+    //   · 매 틱 — 맨 위가 아직 **시작 안 했으면 시작(Start)**, 쌓임이 바뀌었으면 다시 맨 위를 본다.
+    //     그리고 **마지막 맨 위를 갱신(Update)** 한다(`unit_ai.go:581~603`)
+    //
+    // ⭕ 행동 갈래는 **0~38** 이다(`common/unit/ai` ActionType — 0 놀기 … 30 죽어가는 중 · 31 죽음 · 38 없음).
+    static constexpr int kAIStackMax = 8;      // 정답지 AIStack 길이(넘치면 안 쌓는다)
+    struct AIStackItem {
+        uint8_t action = 0;                    // ActionType
+        bool started = false;                  // +5 Field5 — Start 를 했나
+        // 행동마다 쓰는 인자. 지금은 대상 하나와 자리 하나만 담는다(늘 때 넓힌다).
+        std::string targetAddr;
+        int targetPet = -1;
+        float argX = 0, argY = 0;
+    };
+    AIStackItem aiStack[kAIStackMax];
+    int aiStackInd = 0;                        // 맨 위 자리(−1 은 「비었다」로만 잠깐 쓴다)
 };
 
 // 깃발 하나.
@@ -1557,6 +1582,18 @@ public:
         if (it == sessions_.end()) return;
         PlayerSubGold(it->second, v, out);
     }
+    // 시험용 — 소환수 AI 쌓임 들여다보기·건드리기(6-a)
+    int DebugAIStackInd(size_t i) const { return i < pets_.size() ? pets_[i].aiStackInd : -1; }
+    int DebugAIAction(size_t i, int at) const {
+        if (i >= pets_.size() || at < 0 || at >= Creature::kAIStackMax) return -1;
+        return pets_[i].aiStack[at].action;
+    }
+    bool DebugAIStarted(size_t i, int at) const {
+        return i < pets_.size() && at >= 0 && at < Creature::kAIStackMax && pets_[i].aiStack[at].started;
+    }
+    bool DebugAIPush(size_t i, uint8_t act) { return i < pets_.size() && AIPush(pets_[i], act); }
+    int  DebugAIPop(size_t i) { return i < pets_.size() ? AIPop(pets_[i]) : -1; }
+    void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AITick(pets_[i], out); }
     uint32_t GoldOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.gold;
@@ -2205,6 +2242,16 @@ private:
     bool UseWandCast(Session& s, Session::Carried& c, std::vector<OutPacket>& out);
     void SendCharges(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);   // netReportCharges_4D82B0
     // 묶음 5-h — `4a REPORT_GOLD` = `<금 u32>` 5바이트(중요). sub_4D8870(`GAME3_2.c:4150`)
+    // ── 묶음 6-a AI 행동 쌓기 ──
+    static bool AIIsCondition(uint8_t act);
+    static void AIActionReset(Creature& k);
+    bool AIPush(Creature& k, uint8_t act, const Target& targ = Target{}, float x = 0, float y = 0);
+    int  AIPop(Creature& k);
+    void AITick(Creature& k, std::vector<OutPacket>& out);
+    void AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out);
+    void AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out);
+    void AIEnd(Creature& k, uint8_t act);
+    void AICancel(Creature& k, uint8_t act);
     void SendGold(Session& s, std::vector<OutPacket>& out);
     void PlayerAddGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerAddGold_4FA590
     void PlayerSubGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerSubGold_4FA5D0
@@ -2447,6 +2494,7 @@ private:
     unsigned long long pickClassFail_ = 0;      // 묶음 5-c — 직업이 못 쓰는 것이라 못 집은 것
     unsigned long long drankOnPickup_ = 0;      // 묶음 5-c — 줍는 그 자리에서 마신 것
     unsigned long long goldPicked_ = 0;         // 묶음 5-h — 주운 금 더미 수
+    bool aiStackChanged_ = false;               // 묶음 6-a — 이번 굴림에서 쌓임이 바뀌었나
     unsigned long long dropped_ = 0;            // 클라가 되돌려 도로 떨군 것
     unsigned long long used_ = 0;               // 실제로 효과가 난 쓰기
     unsigned long long useUnknown_ = 0;         // 갈래를 몰라 아무 일도 안 난 쓰기

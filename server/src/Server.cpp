@@ -5760,6 +5760,109 @@ Target Server::PlasmaSearch(const Session& s, float range) const {
     return found;
 }
 
+// ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
+//
+// 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
+// 몬스터는 **할 일을 쌓아 두고 맨 위를 한다.** 여기까지가 틀이고, 행동 하나하나는 다음 조각이다.
+//
+// ⭕ 행동 갈래는 **0~38**(`common/unit/ai` ActionType).
+//   0 놀기 · 4 지키기 · 5 사냥 · 7 가기 · 14 주인에게 · 15 싸움 · 16 근접 · 24 달아나기 ·
+//   26 바라보기 · 29 아무 데나 걷기 · 30 죽어가는 중 · 31 죽음 · 38 없음
+//
+// ★ **조건(Condition)** 갈래가 따로 있다 — 빼기가 맨 위를 내린 뒤 **그 아래 조건들도 같이** 내린다.
+//   ⚠ 어느 번호가 조건인지는 `ActionType.IsCondition()` 에 있는데 그 함수를 **아직 못 찾았다**.
+//     지금은 **조건이 없다**로 두었다(늘 한 칸만 내린다) — 찾으면 여기만 고치면 된다.
+bool Server::AIIsCondition(uint8_t act) {
+    (void)act;
+    return false;   // ⚠ 미확인 — `IsCondition()` 을 못 찾았다
+}
+
+// monsterActionReset_50A0C0 — 행동을 바꿀 때 딸린 셈들을 0 으로.
+//   ⚠ 지금 우리 `Creature` 에는 그 셈 칸(Field2·67·74·91·120…)이 없다. 생기면 여기서 0 으로 둔다.
+void Server::AIActionReset(Creature& k) {
+    (void)k;
+}
+
+// monsterPushAction_50A260 — 할 일을 하나 올린다. 못 올리면 거짓.
+//   · 쌓임이 꽉 차면 안 올린다
+//   · 맨 위가 **죽음(31)** 이면 **죽어가는 중(30)** 말고는 안 올린다
+//   · 맨 위가 **놀기(0)** 이고 바닥이면 **덮어쓴다**(쌓지 않는다)
+//   · 그 밖에는 맨 위를 **취소(Cancel)** 하고 그 위에 올린다
+bool Server::AIPush(Creature& k, uint8_t act, const Target& targ, float x, float y) {
+    if (k.aiStackInd >= Creature::kAIStackMax - 1) return false;
+    int ind = k.aiStackInd;
+    const uint8_t cur = k.aiStack[ind].action;
+    if (cur == 31 && act != 30) return false;                // 죽은 것에는 안 올린다
+    if (cur == 0 && ind == 0) {
+        ind = -1;                                            // 바닥의 놀기는 덮어쓴다
+    } else if (!AIIsCondition(cur) && k.aiStack[ind].started) {
+        AICancel(k, cur);
+    }
+    ++ind;
+    k.aiStack[ind] = Creature::AIStackItem{};
+    k.aiStack[ind].action = act;
+    k.aiStack[ind].targetAddr = targ.addr;
+    k.aiStack[ind].targetPet = targ.pet;
+    k.aiStack[ind].argX = x;
+    k.aiStack[ind].argY = y;
+    k.aiStackInd = ind;
+    AIActionReset(k);
+    aiStackChanged_ = true;
+    return true;
+}
+
+// monsterPopAction_50A3A0 — 맨 위를 끝내고 내린다.
+//   내린 뒤 **그 아래 조건 항목들도 같이** 내린다. 다 내려가면 바닥에 **놀기(0)** 가 남는다.
+int Server::AIPop(Creature& k) {
+    const uint8_t cur = k.aiStack[k.aiStackInd].action;
+    if (!AIIsCondition(cur) && k.aiStack[k.aiStackInd].started) AIEnd(k, cur);
+    aiStackChanged_ = true;
+    --k.aiStackInd;
+    for (; k.aiStackInd >= 0; --k.aiStackInd)
+        if (!AIIsCondition(k.aiStack[k.aiStackInd].action)) break;
+    AIActionReset(k);
+    const int si = k.aiStackInd;
+    if (si < 0) {
+        k.aiStackInd = 0;
+        k.aiStack[0] = Creature::AIStackItem{};              // 바닥은 놀기(0)
+    }
+    return si;
+}
+
+// `unit_ai.go:581~603` — 매 틱. 맨 위가 아직 **안 시작했으면 시작**하고,
+//   시작이 쌓임을 바꿨으면 **다시 맨 위를 본다**. 그러고 **마지막 맨 위를 갱신**한다.
+//   ⚠ 앞에 붙는 것(체력 회복·시야 갱신·`monsterMainAIFn_547210` 두뇌·애니)은 다음 조각이다.
+void Server::AITick(Creature& k, std::vector<OutPacket>& out) {
+    const bool changedPrev = aiStackChanged_;
+    uint8_t curAct = 0;
+    for (;;) {
+        Creature::AIStackItem& cur = k.aiStack[k.aiStackInd];
+        curAct = cur.action;
+        if (cur.started) {
+            if (!aiStackChanged_) aiStackChanged_ = changedPrev;
+            break;
+        }
+        cur.started = true;
+        aiStackChanged_ = false;
+        AIStart(k, curAct, out);
+        if (!aiStackChanged_) {
+            aiStackChanged_ = changedPrev;
+            break;
+        }
+    }
+    AIUpdate(k, curAct, out);
+}
+
+// 행동 하나하나 — **아직 놀기(0) 뿐이다.** 다음 조각에서 채운다.
+void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
+    (void)k; (void)act; (void)out;
+}
+void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
+    (void)k; (void)act; (void)out;
+}
+void Server::AIEnd(Creature& k, uint8_t act) { (void)k; (void)act; }
+void Server::AICancel(Creature& k, uint8_t act) { (void)k; (void)act; }
+
 // ── 묶음 5-h 금 ───────────────────────────────────────────────────────
 //
 // sub_4D8870(`GAME3_2.c:4150`) — `4a <금 u32>` **5바이트**. `netSendPacket0(…, 1)` 이라 **중요(cc)** 다.

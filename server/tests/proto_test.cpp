@@ -9385,6 +9385,116 @@ void TestGold() {
     std::printf("  5-h — 금: 가방에 안 들어감 · `4a` 5바이트 u32 · 쌓임 · 빼기는 0 바닥 · 큰 값 그대로\n");
 }
 
+// ── 묶음 6-a — AI 행동 쌓기 ────────────────────────────────────────────
+//
+// 몬스터는 **할 일을 쌓아 두고 맨 위를 한다**(`server/object_ai.go` + `unit_ai.go:575~610`).
+//   · 밀기 — 맨 위를 **취소**하고 그 위에 올린다
+//     ★ 맨 위가 **놀기(0)** 이고 바닥이면 **덮어쓴다**(쌓지 않는다) — 바닥에 놀기가 겹치지 않게
+//     ★ 맨 위가 **죽음(31)** 이면 **죽어가는 중(30)** 말고는 **아예 안 올라간다**
+//   · 빼기 — 맨 위를 **끝내고** 내린다. 다 내려가면 바닥에 **놀기(0)** 가 남는다
+//   · 매 틱 — 맨 위가 아직 **안 시작했으면 시작**, 그 시작이 쌓임을 바꿨으면 **다시 맨 위를** 본다
+//
+// ⭕ 행동 갈래 0~38(`common/unit/ai` ActionType). 행동 하나하나는 다음 조각이다 — 여기는 **틀**만 본다.
+void TestAIStack() {
+    const std::string a = "10.6.0.1:6001";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1040, 1000, a);
+    };
+
+    // ① **처음은 바닥에 놀기(0) 하나**
+    {
+        nox::Server srv; mk(srv);
+        Check(srv.pets() == 1, "소환수가 안 섰다(이 시험의 전제)");
+        Check(srv.DebugAIStackInd(0) == 0, "처음 쌓임이 바닥이 아니다");
+        Check(srv.DebugAIAction(0, 0) == 0, "바닥이 놀기(0)가 아니다");
+    }
+
+    // ② **바닥의 놀기는 덮어쓴다** — 쌓이지 않는다
+    {
+        nox::Server srv; mk(srv);
+        Check(srv.DebugAIPush(0, 7), "가기(7)를 못 올렸다");
+        Check(srv.DebugAIStackInd(0) == 0, "바닥의 놀기를 덮어쓰지 않고 쌓았다");
+        Check(srv.DebugAIAction(0, 0) == 7, "맨 위가 가기(7)가 아니다");
+    }
+
+    // ②b **덮어쓰기는 「바닥의 놀기」에만** — 위에 얹힌 놀기는 보통처럼 쌓인다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugAIPush(0, 7);                               // 바닥을 덮어씀 → 자리 0
+        Check(srv.DebugAIPush(0, 0), "놀기(0)를 못 올렸다");  // 자리 1 — 바닥이 아니다
+        Check(srv.DebugAIStackInd(0) == 1, "바닥이 아닌 놀기가 안 쌓였다");
+        Check(srv.DebugAIPush(0, 15), "싸움(15)을 못 올렸다");
+        Check(srv.DebugAIStackInd(0) == 2, "위에 얹힌 놀기를 덮어썼다 — 바닥만 덮어야 한다");
+    }
+
+    // ③ **그 위로는 쌓인다** · 빼면 아래가 드러난다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugAIPush(0, 7);
+        Check(srv.DebugAIPush(0, 15), "싸움(15)을 못 올렸다");
+        Check(srv.DebugAIStackInd(0) == 1, "둘째가 안 쌓였다");
+        Check(srv.DebugAIAction(0, 1) == 15, "맨 위가 싸움(15)이 아니다");
+        Check(srv.DebugAIPop(0) == 0, "빼기가 0 을 안 돌려줬다");
+        Check(srv.DebugAIAction(0, 0) == 7, "빼고 나니 가기(7)가 아니다");
+    }
+
+    // ④ **다 빼면 바닥에 놀기(0)** 가 남는다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugAIPush(0, 7);
+        Check(srv.DebugAIPop(0) == -1, "마지막을 뺐는데 −1 이 아니다");
+        Check(srv.DebugAIStackInd(0) == 0, "다 뺐는데 바닥이 아니다");
+        Check(srv.DebugAIAction(0, 0) == 0, "다 뺐는데 놀기(0)가 아니다");
+    }
+
+    // ⑤ **죽음(31) 위에는 죽어가는 중(30) 말고 안 올라간다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugAIPush(0, 31);
+        Check(!srv.DebugAIPush(0, 7), "죽은 것에 가기(7)가 올라갔다");
+        Check(srv.DebugAIPush(0, 30), "죽은 것에 죽어가는 중(30)이 안 올라갔다");
+    }
+
+    // ⑥ **쌓임이 꽉 차면 안 올라간다**
+    {
+        nox::Server srv; mk(srv);
+        int pushed = 0;
+        for (int i = 0; i < 20; ++i) if (srv.DebugAIPush(0, 7)) ++pushed;
+        // 쌓임 칸은 여덟(`kAIStackMax`)이고 문은 `자리 >= 8 − 1` 이다.
+        //   바닥의 놀기를 덮어쓰는 첫 번째까지 세면 **여덟 번** 올라가고 맨 위 자리는 **7** 이다.
+        Check(pushed == 8, "꽉 찰 때까지 올라간 수가 8 이 아니다");
+        Check(srv.DebugAIStackInd(0) == 7, "맨 위 자리가 7 이 아니다");
+        Check(!srv.DebugAIPush(0, 7), "꽉 찼는데 더 올라갔다");
+    }
+
+    // ⑦ **틱이 맨 위를 시작한다** — 한 번 시작하면 다시 안 한다
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugAIPush(0, 7);
+        Check(!srv.DebugAIStarted(0, 0), "올리자마자 시작됐다");
+        std::vector<nox::OutPacket> out;
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStarted(0, 0), "틱을 돌렸는데 시작이 안 됐다");
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStarted(0, 0), "두 번째 틱에 시작이 풀렸다");
+    }
+
+    // ⑧ **새로 올리면 시작이 안 된 채**로 시작한다(다음 틱에 시작)
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugAIPush(0, 7);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAITick(0, out);
+        srv.DebugAIPush(0, 15);
+        Check(!srv.DebugAIStarted(0, 1), "새로 올린 것이 이미 시작돼 있다");
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStarted(0, 1), "새로 올린 것이 틱에 시작 안 됐다");
+    }
+    std::printf("  6-a — AI 쌓기: 바닥 놀기 덮어쓰기 · 쌓고 빼기 · 죽음 위엔 30 만 · 꽉 참 · 틱이 맨 위를 시작\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -11578,6 +11688,7 @@ int main() {
     TestPlasma();
     TestChargedStaffCast();
     TestGold();
+    TestAIStack();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
