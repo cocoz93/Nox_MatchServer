@@ -1481,6 +1481,13 @@ public:
     //   진짜 값은 클라가 `PLAYER_INPUT` 코드 1 로 보낸다(`Server.cpp:1592`).
     //   ⚠ 이것 없이는 시험에서 방향을 못 바꾼다 — 2026-09-12 배선 때 돌연변이가
     //     안 잡혀(시험 5개가 이 자리를 안 봤다) 시험을 새로 쓰면서 같이 넣었다.
+    // 시험용 — 든 물건의 충전을 직접 정한다(5-e·5-f).
+    void DebugSetCharges(const std::string& addr, uint16_t netCode, uint8_t v) {
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return;
+        for (auto& c : it->second.inventory)
+            if (c.netCode == netCode) { c.charges = v; if (c.chargesMax < v) c.chargesMax = v; return; }
+    }
     void DebugSetFacing(const std::string& addr, uint8_t facing) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
@@ -2060,6 +2067,12 @@ private:
     // ── 묶음 4-b5b 지속 회복·흡수 ──
     int DurChannelLife(DurSpell& d, std::vector<OutPacket>& out);                                       // sub_52F460
     void NetStartRaySpell(const DurSpell& d, std::vector<OutPacket>& out);                              // netStartDurationRaySpell_4FF130
+    // 묶음 5-f 플라스마(59) — 완드를 들고 있어야 돌고, 틱마다 충전을 하나 먹는다
+    int DurPlasmaCreate(DurSpell& d, std::vector<OutPacket>& out);
+    int DurPlasmaTick(DurSpell& d, std::vector<OutPacket>& out);
+    void DurPlasmaDestroy(DurSpell& d, std::vector<OutPacket>& out);
+    static int HeldWandIndex(const Session& s);
+    Target PlasmaSearch(const Session& s, float range) const;
     int DurGreaterHealCreate(DurSpell& d, std::vector<OutPacket>& out);                                 // sub_52F220
     int DurGreaterHealTick(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_52F2E0
     int DurDrainMana(DurSpell& d, std::vector<OutPacket>& out);                                         // nox_xxx_spellDrainMana_52E210

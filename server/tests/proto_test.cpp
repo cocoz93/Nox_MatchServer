@@ -986,6 +986,7 @@ const std::vector<TestSpellDef>& TestSpellDefs() {
         { 53, 60, 0x40200038, { 1, 6, 6 } },                // SPELL_METEOR_SHOWER(thing.bin 실측)
         { 87,  0, 0x44542438, { 0, 8, 2, 6, 5, 6 } },       // SPELL_SUMMON_IMP
         { 51, 80, 0x12500214, { 1, 3, 7, 5, 1, 3, 7, 5 } }, // SPELL_SHIELD(5-b 방패 물약이 건다 · thing.bin 실측)
+        { 59, 30, 0x40100822, { 7, 5, 3, 1, 3, 3, 3, 3, 5, 7 } },   // SPELL_PLASMA(5-f · thing.bin 실측)
     };
     return kDefs;
 }
@@ -8961,6 +8962,177 @@ void TestWandCharges() {
     std::printf("  5-e — 완드: 마나 안 씀 · 충전 깎고 `64` 알림 · 다 쓰면 안 걸림 · 최대 0 은 무한 · 대기 경계 · 거절되면 안 깎음 · 세기 4 · 되돌아와도 충전 지님\n");
 }
 
+// ── 묶음 5-f — 플라스마(59) ────────────────────────────────────────────
+//
+// ★ **이 주문이 「아이템 묶음 대기」였던 까닭** — 켤 때 **완드를 들고 있나**를 본다.
+//   안 들고 있으면 곧바로 취소된다. 그리고 **틱마다 완드 충전을 하나씩 먹는다** —
+//   `WandCastUse 250 1.0 SPELL_PLASMA` 의 250 이 곧 「몇 틱 쏘나」다.
+//
+// 규칙 — 둘레 **400** 안 **앞쪽**의 가장 가까운 적을 문다 · 종류 **14(플라스마)** 로 `PlasmaDamage` ·
+//   대상이 **뒤로 돌면 3초를 세고** 그 안에 다시 앞에 오면 유지 · 대상이 있는 동안 **끝을 미룬다**
+void TestPlasma() {
+    const std::string a = "10.5.6.1:5601";
+    const std::string b = "10.5.6.2:5602";
+    auto mk = [&](nox::Server& srv, bool withWand) {
+        RegSpell(srv, 59, 0);
+        nox::Gamedata g;
+        g.Parse("PlasmaDamage = 5;\nPlasmaSearchTime = 30;\n");
+        srv.SetGamedata(g);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);                      // 앞쪽 100 — 400 안
+        srv.DebugSetFacing(a, 0);                                 // +x 쪽을 본다
+        if (!withWand) return;
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 800; w.type = 650; w.x = 1000; w.y = 1000;
+        w.weight = 20; w.useFn = nox::UseFn::WandCast;
+        w.wandSpell = 59; w.chargesMax = 10; w.charges = 10;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> o;
+        const std::vector<uint8_t> g2 = CodePacket(nox::Op::TRY_GET, 800);
+        srv.OnPacket(a, g2.data(), g2.size(), o);
+    };
+    auto cast = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+        srv.DebugSpellAccept(a, 59, 1, out);
+    };
+
+    // ① **완드가 없으면 곧바로 취소된다** — 이것이 묶음 4 에서 막혀 있던 자리다
+    {
+        nox::Server srv; mk(srv, /*withWand=*/false);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        cast(srv, out);
+        srv.Tick(34, out);                                   // ⚠ 취소는 깃발만 — 지우는 건 다음 틱이다
+        Check(srv.DurCount() == 0, "완드가 없는데 플라스마가 걸렸다");
+    }
+
+    // ② **완드가 있으면 걸리고, 앞쪽 적을 문다** — 종류 14 로 깎는다
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        Check(srv.DurCount() == 1, "완드가 있는데 플라스마가 안 걸렸다");
+        const uint16_t h0 = srv.HealthOf(b);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.HealthOf(b) < h0, "플라스마가 앞쪽 적을 안 깎았다");
+        Check(srv.DebugLastDamageType(b) == 14, "플라스마 피해 종류가 14 가 아니다");
+    }
+
+    // ③ **400 밖은 안 문다**
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        srv.DebugMoveTo(b, 1500, 1000);                      // 500 — 밖
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        const uint16_t h0 = srv.HealthOf(b);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.HealthOf(b) == h0, "400 밖인데 깎았다");
+    }
+
+    // ④ **뒤쪽은 안 문다** — 찾기 잣대가 앞쪽(`& 1`)이다
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        srv.DebugMoveTo(b, 900, 1000);                       // 뒤쪽 100
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        const uint16_t h0 = srv.HealthOf(b);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.HealthOf(b) == h0, "뒤쪽인데 물었다");
+    }
+
+    // ⑤ **틱마다 충전을 하나 먹는다** — 10 충전이면 열 틱 뒤에 끝난다
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        cast(srv, out);
+        Check(srv.DurCount() == 1, "플라스마가 안 걸렸다(이 시험의 전제)");
+        for (int t = 0; t < 9; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DurCount() == 1, "9틱 만에 끝났다 — 충전 10 이어야 한다");
+        ms += 34; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);                         // 취소 깃발이 여기서 치워진다
+        Check(srv.DurCount() == 0, "충전을 다 썼는데 안 끝났다");
+    }
+
+    // ⑥ **대상이 있는 동안 끝을 미룬다** — `PlasmaSearchTime`(30틱)보다 오래 간다
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        srv.DebugSetCarryCap(a, 3000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        // 충전을 넉넉히 — 40틱을 버텨야 「미룬다」가 보인다
+        srv.DebugSetCharges(a, 800, 200);
+        cast(srv, out);
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DurCount() == 1, "대상이 있는데 30틱에 끝났다 — 끝을 안 미뤘나");
+    }
+
+    // ⑦ **대상이 사라지면 찾기 시간이 지나 끝난다**
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetCharges(a, 800, 200);
+        cast(srv, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugMoveTo(b, 5000, 5000);                      // 멀리 보낸다
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DurCount() == 0, "대상이 없어졌는데 안 끝났다");
+    }
+    // ⑧ **뒤로 돌아도 곧바로 안 끊긴다** — 3초 유예를 센다
+    //   ★★ 여기가 이 조각에서 **측정이 짐작을 뒤집은** 자리다.
+    //     「뒤로 돌면 90틱 동안 계속 문다」로 지레짐작했는데, 정답지는 **유예를 세는 동안
+    //     끝 프레임을 안 미룬다**(`if (!+76) +68 = 지금 + PlasmaSearchTime`).
+    //     그래서 아레나에서는 **찾기 시간 30틱**이 먼저 와 주문이 끝난다 —
+    //     3초 유예는 그 30틱 **안에서** 「잠깐 몸을 돌려도 대상을 안 놓는다」로만 보인다.
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetCharges(a, 800, 200);
+        cast(srv, out);
+        ms += 34; srv.Tick(ms, out);
+        const uint16_t h1 = srv.HealthOf(b);
+        Check(h1 < srv.MaxHealthOf(b), "처음에 안 물었다(이 시험의 전제)");
+        srv.DebugAdjustHP(b, 200);
+        srv.DebugSetFacing(a, 128);                          // 몸을 돌린다 — 대상이 뒤가 된다
+        // ⚠ 대상을 **계속 살려 둔다**. 안 그러면 대상이 죽어서 끝난 것을
+        //   「유예가 끝나서」로 잘못 읽는다 — 처음에 그렇게 재서 돌연변이를 놓쳤다.
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAdjustHP(b, 200); }
+        Check(srv.HealthOf(b) < srv.MaxHealthOf(b) || srv.DurCount() == 1,
+              "뒤로 돌리자마자 끊겼다 — 잠깐은 물고 있어야 한다");
+        for (int t = 0; t < 50; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAdjustHP(b, 200); }
+        Check(srv.DurCount() == 0, "뒤로 돈 채 60틱이 지났는데 안 끝났다 — 유예 중에 끝을 미뤘나");
+    }
+
+    // ⑨ **충전이 이미 0 인 완드면 곧바로 끝난다** — 0 에서 빼면 255 로 감긴다
+    {
+        nox::Server srv; mk(srv, /*withWand=*/true);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetCharges(a, 800, 0);
+        cast(srv, out);
+        ms += 34; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.DurCount() == 0, "충전이 0 인데 계속 돈다 — 0 에서 빼 255 로 감겼나");
+    }
+    std::printf("  5-f — 플라스마: 완드 없으면 취소 · 앞쪽 400 안 적을 뭄 · 종류 14 · 틱마다 충전 하나 · 뒤로 돌면 잠깐 유예 · 대상 있으면 끝을 미룸\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -11140,6 +11312,7 @@ int main() {
     TestPickupPotion();
     TestEatAndMushroom();
     TestWandCharges();
+    TestPlasma();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

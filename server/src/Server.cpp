@@ -4613,6 +4613,15 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 30, out) ? 1 : 0;
                 break;
             }
+            case 59: {                                                                        // Plasma — 지속(완드가 있어야 돈다 · 5-f)
+                DurFns f;
+                f.create = &Server::DurPlasmaCreate;
+                f.update = &Server::DurPlasmaTick;
+                f.destroy = &Server::DurPlasmaDestroy;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f,
+                             static_cast<uint32_t>(BalanceFloat("PlasmaSearchTime")), out) ? 1 : 0;
+                break;
+            }
             case 23: fnc = CastEarthquake(s, fl5, out); break;                                 // castEquake_52DE40
             case 60: fnc = CastPoison(obj3, targ, fl5, out); break;                            // castPoison_52C720
             case 128: fnc = CastToxicCloud(s, arg, out); break;                                // castToxicCloud_52DB60
@@ -5538,6 +5547,169 @@ int Server::DurTelePopTick(DurSpell& d, std::vector<OutPacket>& out) {
     TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
     return 1;
+}
+
+// ── 묶음 5-f 플라스마(59) ─────────────────────────────────────────────
+//
+// 지속 주문 셋 — `plasmaSmth_531580`(켤 때) · `plasmaShot_531600`(틱) · `sub_5319E0`(끌 때).
+// dt = `PlasmaSearchTime`(기획자료).
+//
+// ★ **이 주문이 「아이템 묶음 대기」였던 까닭** — 켤 때 **완드를 들고 있나**를 본다.
+//   사람이 완드 갈래 물건을 안 들고 있으면 **곧바로 취소**된다(`return 1`).
+//   그리고 틱마다 그 완드의 **충전을 하나씩 먹는다** — 완드가 250 충전인 까닭이 이것이다.
+//
+// ⚠ 안 옮긴 갈래 — 헤큐바(`PlasmaDamageHecubah`)는 그 몬스터가 없어 못 옮겼다 ·
+//   빔 그림(`netStartDurationRaySpell`)은 4-a3 틀의 것을 쓴다 · 소리 98 은 묶음 10.
+
+// plasmaSmth_531580 — 켤 때
+int Server::DurPlasmaCreate(DurSpell& d, std::vector<OutPacket>& out) {
+    d.field80 = 0;                                           // +72 든 완드(우리는 아래 wandIdx 로 쓴다)
+    d.field84 = 0;                                           // +76 뒤로 돌았을 때의 3초 유예
+    d.target = Target{};                                     // +48
+    {   // netSendPointFx_522FF0(131) — 화면 안 사람에게 점 효과
+        const uint16_t ix = static_cast<uint16_t>(static_cast<int>(d.posX)), iy = static_cast<uint16_t>(static_cast<int>(d.posY));
+        const uint8_t fx[5] = { 131, static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+        SendFxAllCli(d.posX, d.posY, fx, sizeof(fx), out);
+    }
+    auto c = sessions_.find(d.caster);
+    if (c == sessions_.end() || !c->second.inGame) return 0;  // 사람이 아니면 그냥 둔다(정답지도 0)
+    // 든 것이 **완드 갈래**인가 — 아니면 취소한다. 이게 「완드가 있어야 도는 주문」의 정체다.
+    const int wi = HeldWandIndex(c->second);
+    if (wi < 0) return 1;
+    d.field80 = static_cast<uint32_t>(wi + 1);               // 0 은 「없음」이라 +1 해 담는다
+    return 0;
+}
+
+// sub_5319E0 — 끌 때. 정답지는 완드 자료의 「지금 쓰는 중」 비트를 내린다. 우리는 그 비트를 안 두어 할 일이 없다.
+void Server::DurPlasmaDestroy(DurSpell& d, std::vector<OutPacket>& out) {
+    (void)d; (void)out;
+}
+
+// plasmaShot_531600 — 매 틱
+//   ① 대상이 아직 쓸 만한가 — 죽었거나 **400 밖**이거나 안 보이면 버린다
+//      · 대상이 **뒤로 돌아가면** 곧바로 버리지 않고 **3초를 센다**(그 안에 다시 앞에 오면 유지)
+//   ② 없으면 둘레 **400** 안에서 **앞쪽에 있는 가장 가까운 적**을 찾는다
+//   ③ 있으면 **종류 14(플라스마)** 로 `PlasmaDamage` 만큼 때리고, 빔을 켜고, 자세 22(집중)
+//      · 대상이 있는 동안 **끝 프레임을 계속 미룬다**(`+68 = 지금 + PlasmaSearchTime`)
+//      · **완드 충전을 하나 먹는다.** 0 이 되면 끝난다
+int Server::DurPlasmaTick(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (c == sessions_.end() || !c->second.inGame) return 1;
+    Session& s = c->second;
+    if (s.respawnAtFrame != 0) return 1;
+
+    const float px = static_cast<float>(s.posX), py = static_cast<float>(s.posY);
+    const float kRange = 400.0f;
+
+    // ① 들고 있던 대상을 다시 본다
+    bool keep = false;
+    if (!d.target.none()) {
+        float tx = 0, ty = 0;
+        if (TargetXY(d.target, tx, ty) && TargetHealth(d.target) > 0) {
+            // 뒤로 돌았나 — `& 2` 면 뒤다. 그러면 3초를 센다(앞이면 셈을 지운다)
+            const uint8_t dir = TestTwoPointsAndDirection(px, py, s.facingPrev, tx, ty);
+            if (dir & 2) {
+                if (d.field84 == 0) d.field84 = 3 * kServerTickRate;
+            } else {
+                d.field84 = 0;
+            }
+            const float dx = tx - px, dy = ty - py;
+            if (dx * dx + dy * dy <= kRange * kRange && CanInteract(s, d.target)) keep = true;
+        }
+        if (!keep) d.target = Target{};
+    }
+    // ② 없으면 찾는다 — 앞쪽 · 400 안 · 가장 가까운 적
+    if (!keep) {
+        d.target = PlasmaSearch(s, kRange);
+        d.field84 = 0;
+    }
+    // 유예 셈 — 0 이 되면 대상을 버린다
+    if (d.field84 != 0) {
+        --d.field84;
+        if (d.field84 == 0) d.target = Target{};
+    }
+
+    // ③ 대상이 있으면 쏜다
+    if (d.target.none()) {
+        if (!d.field36.none()) {
+            NetStopRaySpell(d, d.field36, out);
+            d.field36 = Target{};
+        }
+        return 0;
+    }
+    if (!(d.field36.addr == d.target.addr && d.field36.pet == d.target.pet)) {
+        if (!d.field36.none()) NetStopRaySpell(d, d.field36, out);
+        NetStartRaySpell(d, out);
+    }
+    const int dmg = static_cast<int>(BalanceFloat("PlasmaDamage"));
+    HurtTarget(d.target, dmg, out, d.caster, /*dtype=*/14);   // 14 = PLASMA
+    if (TargetHealth(d.target) <= 0) {
+        float tx = 0, ty = 0;
+        if (TargetXY(d.target, tx, ty)) {
+            const uint16_t ix = static_cast<uint16_t>(static_cast<int>(tx)), iy = static_cast<uint16_t>(static_cast<int>(ty));
+            const uint8_t fx[5] = { 131, static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                    static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+            SendFxAllCli(tx, ty, fx, sizeof(fx), out);
+        }
+    }
+    d.field36 = d.target;
+    PlayerSetState(s, 22, frame_);                           // CONCENTRATE
+    // 대상이 있는 동안 끝을 미룬다 — 유예를 세는 중이면 안 미룬다(정답지 그대로)
+    if (d.field84 == 0)
+        d.frame68 = frame_ + static_cast<uint32_t>(BalanceFloat("PlasmaSearchTime"));
+
+    // ④ 완드 충전 — 틱마다 하나
+    if (d.field80 != 0) {
+        const size_t wi = static_cast<size_t>(d.field80 - 1);
+        if (wi >= s.inventory.size()) return 1;
+        Session::Carried& w = s.inventory[wi];
+        if (w.chargesMax != 0) {
+            if (w.charges == 0) return 1;
+            --w.charges;
+            SendCharges(s, w, out);
+            if (w.charges == 0) return 1;
+        }
+    }
+    return 0;
+}
+
+// 든 것 가운데 **완드 갈래**의 자리(없으면 −1). 완드 = `USE = WandCastUse` 로 읽힌 것.
+//   ⚠ 정답지는 오브젝트 클래스 비트 `0x4000000`(WAND)을 본다. 우리는 아직 그 비트를 안 담아
+//     **쓸 때 부르는 함수**로 갈음한다 — 같은 집합이다(완드만 `WandCastUse` 를 쓴다).
+int Server::HeldWandIndex(const Session& s) {
+    for (size_t i = 0; i < s.inventory.size(); ++i)
+        if (s.inventory[i].useFn == UseFn::WandCast) return static_cast<int>(i);
+    return -1;
+}
+
+// sub_531920 — 둘레에서 고르는 잣대: **앞쪽**(`& 1`) · 볼 수 있고 · 가장 가까운 **적**.
+Target Server::PlasmaSearch(const Session& s, float range) const {
+    const float px = static_cast<float>(s.posX), py = static_cast<float>(s.posY);
+    float best = range * range;
+    Target found;
+    auto consider = [&](const Target& t, float tx, float ty) {
+        if (!(TestTwoPointsAndDirection(px, py, s.facingPrev, tx, ty) & 1)) return;   // 앞쪽만
+        if (!CanInteract(s, t)) return;
+        const float dx = tx - px, dy = ty - py;
+        const float d2 = dx * dx + dy * dy;
+        if (d2 >= best) return;
+        best = d2;
+        found = t;
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.respawnAtFrame != 0 || o.addr == s.addr) continue;
+        if (!IsEnemyTo(s, o)) continue;
+        consider(Target{ o.addr, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY));
+    }
+    for (size_t k = 0; k < pets_.size(); ++k) {
+        const Creature& cr = pets_[k];
+        if (cr.health == 0) continue;
+        if (!OwnersEnemy(s.addr, false, cr.owner, cr.owner.empty())) continue;
+        consider(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(cr.x), static_cast<float>(cr.y));
+    }
+    return found;
 }
 
 // ── 묶음 5-e 충전 완드 ────────────────────────────────────────────────
