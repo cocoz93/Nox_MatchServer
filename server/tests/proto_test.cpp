@@ -985,6 +985,7 @@ const std::vector<TestSpellDef>& TestSpellDefs() {
         { 52, 30, 0x44200038, { 6, 6 } },                   // SPELL_METEOR(thing.bin 실측)
         { 53, 60, 0x40200038, { 1, 6, 6 } },                // SPELL_METEOR_SHOWER(thing.bin 실측)
         { 87,  0, 0x44542438, { 0, 8, 2, 6, 5, 6 } },       // SPELL_SUMMON_IMP
+        { 51, 80, 0x12500214, { 1, 3, 7, 5, 1, 3, 7, 5 } }, // SPELL_SHIELD(5-b 방패 물약이 건다 · thing.bin 실측)
     };
     return kDefs;
 }
@@ -1777,11 +1778,15 @@ void TestUseAndEquip() {
 
     const uint16_t kRed = 176, kBlue = 177, kSword = 180, kBook = 181;
     std::vector<nox::Server::WorldStatic> st;
-    st.push_back({ kRed,   638, 1000, 1000, false, nox::UseKind::Health, 50 });
-    st.push_back({ kBlue,  639, 1000, 1000, false, nox::UseKind::Mana,   50 });
-    st.push_back({ kSword, 1133, 1000, 1000, true,  nox::UseKind::None,   0 });
-    st.push_back({ kBook,  700, 1000, 1000, false, nox::UseKind::None,   0 });
+    // ★ 5-b — 물약이 무엇을 하는지는 **`SUBCLASS` 갈래 비트**가 정한다(`POTION+HEALTH_POTION`).
+    //   ⭕ 이름표는 `blob_587000.dat` 0xf968~ 에 있다. `USE = PotionUse 50` 의 50 이 양이다.
+    st.push_back({ kRed,   638, 1000, 1000, false, 50 });
+    st.push_back({ kBlue,  639, 1000, 1000, false, 50 });
+    st.push_back({ kSword, 1133, 1000, 1000, true,   0 });
+    st.push_back({ kBook,  700, 1000, 1000, false,  0 });
     SetWeights(st, 8);
+    st[0].foodBits = nox::kFoodPotion | nox::kFoodHealthPotion;
+    st[1].foodBits = nox::kFoodPotion | nox::kFoodManaPotion;
     srv.SetWorldStatics(st);
     for (uint16_t nc : { kRed, kBlue, kSword, kBook }) {
         std::vector<nox::OutPacket> out;
@@ -8167,6 +8172,206 @@ void TestPickupLimits() {
     std::printf("  5-a — 줍기 한도: 밑천은 힘에서(위저드 1650 · 워리어 3000) · 한도 = 밑천×2(경계 포함) · 넘치면 CarryingTooMuch · 먹을거리 같은 종류 셋 · 버리면 자리 남 · 되돌아온 것도 제 무게 · 무게 모르면 255 · 밑천 0\n");
 }
 
+// ── 묶음 5-b — 물약 쓰기(`usePotion_53EF70`) ────────────────────────────
+//
+// 여태 물약은 **체력이냐 마나냐** 둘뿐이었고, 가득 차 있어도 그냥 마셨다.
+// 정답지는 `SUBCLASS` 갈래 비트로 갈래 **열일곱**을 가르고, 겹치면 **다 적용**한다.
+//   · 죽었으면 아무 일도 안 난다
+//   · 체력·마나는 **지금 값 < 최대**일 때만. 안 마셨으면 물약이 **그대로 남는다**
+//   · 독 해제는 **독이 있을 때만**
+//   · 버프 여덟 — 빠르게 9 · 투명 0 · 불 보호 17 · 전기 보호 20 · 독 보호 18 ·
+//     무적 23 · 어둠보기 21 · 흡혈 13. 전부 **120초 · 세기 3**
+//   · 방패 물약은 **주문 51** 을 `USE` 값을 세기로 건다(26 은 버프 번호지 주문 번호가 아니다)
+//
+// ⭕ 갈래 이름·차례는 `blob_587000.dat` 0xf968~0xfa78 실측이다.
+void TestUsePotion() {
+    const std::string a = "10.5.2.1:5201";
+    uint16_t nextNc = 400;
+    // 물약 하나를 들려 준다 — 갈래 비트와 `USE` 값
+    auto give = [&](nox::Server& srv, uint32_t bits, int amount) {
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = nextNc; w.type = 638; w.x = 1000; w.y = 1000;
+        w.weight = 5; w.isFood = true; w.foodBits = bits; w.useAmount = amount;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> o;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nextNc);
+        srv.OnPacket(a, g.data(), g.size(), o);
+        return nextNc++;
+    };
+    auto use = [&](nox::Server& srv, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> u = CodePacket(nox::Op::TRY_USE, nc);
+        srv.OnPacket(a, u.data(), u.size(), out);
+    };
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+
+    // ① **가득 차 있으면 안 마신다** — 물약이 그대로 남는다
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t red = give(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50);
+        Check(srv.CarriedCount(a) == 1, "물약을 못 들었다(이 시험의 전제)");
+        Check(srv.HealthOf(a) == srv.MaxHealthOf(a), "체력이 가득이 아니다(이 시험의 전제)");
+        std::vector<nox::OutPacket> out;
+        use(srv, red, out);
+        Check(srv.CarriedCount(a) == 1, "가득 찼는데 물약이 없어졌다");
+
+        // 다치면 그때는 마신다
+        srv.Damage(a, 40, out);
+        use(srv, red, out);
+        Check(srv.CarriedCount(a) == 0, "다쳤는데 안 마셨다");
+        Check(srv.HealthOf(a) == srv.MaxHealthOf(a), "50 짜리로 40 을 못 채웠다");
+    }
+
+    // ② 마나도 같은 꼴 — 가득이면 안 마시고, 줄었으면 마신다
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t blue = give(srv, nox::kFoodPotion | nox::kFoodManaPotion, 50);
+        std::vector<nox::OutPacket> out;
+        use(srv, blue, out);
+        Check(srv.CarriedCount(a) == 1, "마나가 가득인데 물약이 없어졌다");
+        srv.DebugManaAdd(a, -60);
+        const uint16_t low = srv.ManaOf(a);
+        use(srv, blue, out);
+        Check(srv.CarriedCount(a) == 0, "마나가 줄었는데 안 마셨다");
+        Check(srv.ManaOf(a) == low + 50, "마나가 50 안 찼다");
+    }
+
+    // ③ **독 해제는 독이 있을 때만** — 없으면 물약이 남는다
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t cure = give(srv, nox::kFoodPotion | nox::kFoodCurePoisonPotion, 0);
+        std::vector<nox::OutPacket> out;
+        use(srv, cure, out);
+        Check(srv.CarriedCount(a) == 1, "독이 없는데 해독제가 없어졌다");
+        srv.DebugPoisonPlayer(a, 5);
+        Check(srv.DebugPoisonOf(a) == 5, "독을 못 얹었다(이 시험의 전제)");
+        use(srv, cure, out);
+        Check(srv.CarriedCount(a) == 0, "독이 있는데 안 썼다");
+        Check(srv.DebugPoisonOf(a) == 0, "해독제를 썼는데 독이 남았다");
+    }
+
+    // ④ **버프 물약 여덟** — 각각 제 버프가 걸린다
+    {
+        struct { uint32_t bit; int buff; const char* nm; } kCase[] = {
+            { nox::kFoodHastePotion,            9, "빠르게" },
+            { nox::kFoodInvisibilityPotion,     0, "투명" },
+            { nox::kFoodFireProtectPotion,     17, "불 보호" },
+            { nox::kFoodShockProtectPotion,    20, "전기 보호" },
+            { nox::kFoodPoisonProtectPotion,   18, "독 보호" },
+            { nox::kFoodInvulnerabilityPotion, 23, "무적" },
+            { nox::kFoodInfravisionPotion,     21, "어둠보기" },
+            { nox::kFoodVampirismPotion,       13, "흡혈" },
+        };
+        for (const auto& k : kCase) {
+            nox::Server srv; mk(srv);
+            const uint16_t nc = give(srv, nox::kFoodPotion | k.bit, 0);
+            std::vector<nox::OutPacket> out;
+            use(srv, nc, out);
+            if (!srv.DebugHasEnchant(a, k.buff))
+                std::printf("  [실패] %s 물약인데 버프 %d 가 안 걸렸다\n", k.nm, k.buff);
+            // ★ 세기는 **3** 이다(`object_use.go:160` buffApplyTo(…, 3)) — 세기를 안 보면
+            //   「걸리긴 걸렸다」로 0 짜리 버프도 통과한다
+            if (srv.DebugEnchantPower(a, k.buff) != 3)
+                std::printf("  [실패] %s 물약 버프 세기가 3 이 아니다(%d)\n",
+                            k.nm, srv.DebugEnchantPower(a, k.buff));
+            if (srv.CarriedCount(a) != 0)
+                std::printf("  [실패] %s 물약이 안 없어졌다\n", k.nm);
+        }
+    }
+
+    // ⑤ **겹치면 다 적용된다** — 체력 + 마나 한 병
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t both = give(srv, nox::kFoodPotion | nox::kFoodHealthPotion | nox::kFoodManaPotion, 30);
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 40, out);
+        srv.DebugManaAdd(a, -60);
+        const uint16_t h0 = srv.HealthOf(a), m0 = srv.ManaOf(a);
+        use(srv, both, out);
+        Check(srv.HealthOf(a) == h0 + 30, "겹친 물약이 체력을 안 채웠다");
+        Check(srv.ManaOf(a) == m0 + 30, "겹친 물약이 마나를 안 채웠다");
+        Check(srv.CarriedCount(a) == 0, "겹친 물약이 안 없어졌다");
+    }
+
+    // ⑥ **아무 갈래도 아니면 아무 일도 안 난다** — 물약이 남는다
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t plain = give(srv, nox::kFoodPotion, 50);   // POTION 만
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 40, out);
+        const uint16_t h0 = srv.HealthOf(a);
+        use(srv, plain, out);
+        Check(srv.HealthOf(a) == h0, "갈래가 없는 물약이 체력을 채웠다");
+        Check(srv.CarriedCount(a) == 1, "갈래가 없는 물약이 없어졌다");
+    }
+
+    // ⑦ **죽었으면 못 쓴다**
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t red = give(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50);
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(a, -1, 9999, std::string(), 16, out);
+        Check(!srv.IsAlive(a), "안 죽었다(이 시험의 전제)");
+        use(srv, red, out);
+        Check(srv.CarriedCount(a) == 1, "죽었는데 물약을 썼다");
+    }
+
+    // ⑧ **방패 물약은 주문 51 을 건다** — `USE` 값이 세기다
+    {
+        nox::Server srv; mk(srv);
+        RegSpell(srv, 51, 0);
+        nox::Gamedata g;
+        g.Parse("ShieldHealth = 20, 35, 50, 75, 100;\n");
+        srv.SetGamedata(g);
+        const uint16_t sh = give(srv, nox::kFoodPotion | nox::kFoodShieldPotion, 3);
+        std::vector<nox::OutPacket> out;
+        use(srv, sh, out);
+        Check(srv.DebugHasEnchant(a, 26), "방패 물약인데 버프 26 이 안 걸렸다");
+        Check(srv.CarriedCount(a) == 0, "방패 물약이 안 없어졌다");
+    }
+    // ⑨ **버려 되돌아온 물약도 제 갈래를 지닌다** — 든 것(`Carried`)을 거쳐 바닥으로 가므로
+    //   그 길에서 갈래 비트가 빠지면 다시 주워도 **아무 일도 안 나는 물약**이 된다
+    {
+        nox::Server srv; mk(srv);
+        const uint16_t red = give(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50);
+        std::vector<nox::OutPacket> out;
+        {   // 클라가 못 받겠다고 되돌린다 — 바닥으로
+            const std::vector<uint8_t> f = CodePacket(nox::Op::INVENTORY_FAIL, red);
+            srv.OnPacket(a, f.data(), f.size(), out);
+        }
+        Check(srv.CarriedCount(a) == 0, "되돌렸는데 아직 들고 있다(이 시험의 전제)");
+        {   // 다시 줍는다
+            const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, red);
+            srv.OnPacket(a, g.data(), g.size(), out);
+        }
+        Check(srv.CarriedCount(a) == 1, "되돌아온 물약을 다시 못 들었다(이 시험의 전제)");
+        srv.Damage(a, 40, out);
+        const uint16_t h0 = srv.HealthOf(a);
+        use(srv, red, out);
+        Check(srv.HealthOf(a) > h0, "되돌아온 물약이 아무 일도 안 했다 — 갈래가 오다 빠졌나");
+        Check(srv.CarriedCount(a) == 0, "되돌아온 물약이 안 없어졌다");
+    }
+
+    // ⑩ **`SUBCLASS` 글자를 비트로 옮기는 표** — 차례가 밀리면 갈래가 통째로 어긋난다
+    //   ⭕ 이름·차례는 `blob_587000.dat` 0xf968~ 실측이다.
+    {
+        Check(nox::FoodClassBitsOf("POTION+HEALTH_POTION") == (nox::kFoodPotion | nox::kFoodHealthPotion),
+              "POTION+HEALTH_POTION 이 제 비트로 안 옮겨졌다");
+        Check(nox::FoodClassBitsOf("POTION+MANA_POTION") == (nox::kFoodPotion | nox::kFoodManaPotion),
+              "POTION+MANA_POTION 이 제 비트로 안 옮겨졌다");
+        Check(nox::FoodClassBitsOf("LIGHT+SIMPLE+FOOD") == nox::kFoodSimple,
+              "SIMPLE 하나만 걸러지지 않았다(모르는 말은 무시해야 한다)");
+        Check(nox::FoodClassBitsOf("POTION+VAMPIRISM_POTION") == (nox::kFoodPotion | nox::kFoodVampirismPotion),
+              "표 끝(VAMPIRISM_POTION)이 어긋났다");
+        Check(nox::FoodClassBitsOf("") == 0, "빈 글자가 비트를 만들었다");
+    }
+    std::printf("  5-b — 물약: 가득이면 안 마심 · 독 있을 때만 해독 · 버프 여덟(120초·세기 3) · 겹치면 다 적용 · 갈래 없으면 그대로 · 죽으면 못 씀 · 방패는 주문 51 · 되돌아온 것도 제 갈래 · SUBCLASS 표\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -10313,6 +10518,7 @@ int main() {
     TestMarkTeleport();
     TestSummonSpell();
     TestPickupLimits();
+    TestUsePotion();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

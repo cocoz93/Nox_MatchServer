@@ -511,17 +511,17 @@ int main(int argc, char** argv) {
                     ti->classRaw.find("FLAG")   != std::string::npos;
                 // 쓰면 무슨 일이 나는가 — `USE = PotionUse 50` 을 그대로 옮긴다.
                 // ⚠ 숫자를 회복량으로 읽어도 되는 갈래는 둘뿐이다(ThingDb.h 주석).
-                if (ti->useHandler == "PotionUse" || ti->useHandler == "ConsumeUse") {
-                    const bool mana =
-                        ti->subclassRaw.find("MANA") != std::string::npos;
-                    w2.useKind = mana ? nox::UseKind::Mana : nox::UseKind::Health;
+                //   ⚠ 「무엇을 하는가」는 이제 `SUBCLASS` 비트가 정한다(아래 `foodBits`) —
+                //     예전엔 SUBCLASS 글자에 "MANA" 가 들었나로 갈랐는데, 그러면 갈래 열일곱을 못 가른다.
+                if (ti->useHandler == "PotionUse" || ti->useHandler == "ConsumeUse")
                     w2.useAmount = ti->useArg;
-                }
                 w2.equipBit = ebit;
                 w2.isWeapon = isW;
                 // ★ 묶음 5 — 줍기 한도를 재는 두 값. 여기까지 온 물건은 `hasWeight` 가 참이다.
                 w2.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
                 w2.isFood = ti->classRaw.find("FOOD") != std::string::npos;
+                // ★ 묶음 5-b — 물약이 무엇을 하는지는 `SUBCLASS` 비트에 있다(`POTION+HEALTH_POTION` 꼴).
+                w2.foodBits = nox::FoodClassBitsOf(ti->subclassRaw);
                 st.push_back(w2);
             }
             nStat = st.size();

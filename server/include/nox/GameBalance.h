@@ -110,6 +110,9 @@ inline int SpeedOnline(CharClass c)    { return MaxStatsOf(c).maxSpeed; }
 //     이름만 보고 최대 체력으로 읽어 LesserHeal 회복량을 75~150배 부풀렸다(c4b017b 결함).
 //   ⚠ 퀘스트는 `DefaultStatMult` 로 체력 3배(`server/player.go:101`) — 그 모드를 붙이면 여기가 갈린다.
 inline float ClassHealthMult(CharClass) { return 1.0f; }
+// 마나 쪽 배수 — 같은 표의 다른 칸(`Players.Mult.<직업>.Mana`). 아레나는 마찬가지로 1.0.
+//   물약(`usePotion_53EF70`)과 마나 회복 주문이 이것을 곱한다.
+inline float ClassManaMult(CharClass) { return 1.0f; }
 
 // GreaterHeal 틱 회복량 ◑ — **gamedata 가 아니라** `blob_587000.dat` 의 `+260360 + 4×레벨` 에 있다
 //   (`GreaterHealCoeff` 키는 정품 gamedata 에 **0칸** — 찾다 없으면 여기를 볼 것).

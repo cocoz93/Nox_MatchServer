@@ -35,7 +35,53 @@ namespace nox {
 // ⚠ **숫자를 회복량으로 읽어도 되는 갈래는 둘뿐이다** — `PotionUse`(물약)·`ConsumeUse`(음식).
 //   `WandUse 20` 의 20 은 회복이 아니라 완드 충전이고, `ReadUse`(책 70종)는 숫자가 없다.
 //   그래서 「모르는 갈래」를 None 으로 두고 **아무 일도 안 일어나게** 한다 — 지어내지 않는다.
-enum class UseKind : uint8_t { None = 0, Health, Mana };
+// ★★ 묶음 5-b — **먹을거리 갈래 비트**(`SUBCLASS = POTION+HEALTH_POTION` 의 뒷말).
+//   ⭕ 이름과 **차례**는 `blob_587000.dat` 0xf968~0xfa78 의 이름표에서 그대로 뽑았다
+//     (`SIMPLE` `APPLE` `JUG` `POTION` `HEALTH_POTION` … `VAMPIRISM_POTION`).
+//     몬스터 갈래표(`MonsterClassBitsOf`)가 바로 앞 0xf874 에 같은 짜임으로 있다.
+//   ⭕ `JUG` 은 길이가 3 이라 문자열 뽑기에 안 걸렸다 — 날바이트로 확인했다:
+//     0xf968 `SIMPLE\0\0APPLE\0\0\0JUG\0POTION\0\0HEALTH_POTIO…`
+enum FoodClassBits : uint32_t {
+    kFoodSimple            = 1u << 0,
+    kFoodApple             = 1u << 1,
+    kFoodJug               = 1u << 2,
+    kFoodPotion            = 1u << 3,
+    kFoodHealthPotion      = 1u << 4,
+    kFoodManaPotion        = 1u << 5,
+    kFoodCurePoisonPotion  = 1u << 6,
+    kFoodMushroom          = 1u << 7,
+    kFoodHastePotion       = 1u << 8,
+    kFoodInvisibilityPotion= 1u << 9,
+    kFoodShieldPotion      = 1u << 10,
+    kFoodFireProtectPotion = 1u << 11,
+    kFoodShockProtectPotion= 1u << 12,
+    kFoodPoisonProtectPotion=1u << 13,
+    kFoodInvulnerabilityPotion=1u << 14,
+    kFoodInfravisionPotion = 1u << 15,
+    kFoodVampirismPotion   = 1u << 16,
+};
+inline uint32_t FoodClassBitsOf(const std::string& raw) {
+    static const char* const kNames[] = {
+        "SIMPLE", "APPLE", "JUG", "POTION", "HEALTH_POTION", "MANA_POTION",
+        "CURE_POISON_POTION", "MUSHROOM", "HASTE_POTION", "INVISIBILITY_POTION",
+        "SHIELD_POTION", "FIRE_PROTECT_POTION", "SHOCK_PROTECT_POTION",
+        "POISON_PROTECT_POTION", "INVULNERABILITY_POTION", "INFRAVISION_POTION",
+        "VAMPIRISM_POTION",
+    };
+    uint32_t bits = 0;
+    size_t start = 0;
+    while (start <= raw.size()) {
+        size_t e = raw.find('+', start);
+        if (e == std::string::npos) e = raw.size();
+        std::string tok = raw.substr(start, e - start);
+        while (!tok.empty() && tok.back() == ' ') tok.pop_back();
+        while (!tok.empty() && tok.front() == ' ') tok.erase(tok.begin());
+        for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); ++i)
+            if (tok == kNames[i]) bits |= (1u << i);
+        start = e + 1;
+    }
+    return bits;
+}
 
 // 세계에서 **다루는** 것 — 집는 게 아니다.
 enum class PropKind : uint8_t { Door = 0, Obelisk };
@@ -246,7 +292,6 @@ struct Session {
         bool modifiable = false;
         bool equipped = false;
         // 쓰면 무슨 일이 나는가 — 세계에 있을 때 정해진 것을 그대로 들고 온다.
-        UseKind useKind = UseKind::None;
         int useAmount = 0;
         // ★ 겉모습(P7) — 입으면 남들에게 `0x4f`~`0x52` 로 알릴 때 실을 **장비 비트**.
         //   `EquipBitFor(이름)` 가 채운다. **0 이면 겉모습을 안 보낸다**(모르는 것은 안 지어냄).
@@ -254,6 +299,7 @@ struct Session {
         bool isWeapon = false;
         uint8_t weight = 255;   // 묶음 5 — 줍기 한도를 재는 무게. 세계에 있을 때 값을 그대로 들고 온다
         bool isFood = false;    // 묶음 5 — 같은 종류 개수 한도(셋)를 재는 갈래
+        uint32_t foodBits = 0;  // 묶음 5-b — SUBCLASS 먹을거리 갈래 비트(FoodClassBits)
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
@@ -869,7 +915,6 @@ public:
         bool modifiable = false;
         // ★ 쓰면 무슨 일이 나는가 — `thing.bin` 의 `USE = PotionUse 50` 에서 온다.
         //   ⭕ 값이 파일에 있다. 지어낸 숫자가 아니다.
-        UseKind useKind = UseKind::None;
         int useAmount = 0;
         // ★ 겉모습(P7) — 입으면 남들에게 `0x4f`~`0x52` 로 알릴 때 실을 **장비 비트**.
         //   `EquipBitFor(이름)` 가 채운다. **0 이면 겉모습을 안 보낸다**(모르는 것은 안 지어냄).
@@ -882,6 +927,9 @@ public:
         // ★ 묶음 5 — **먹는 것인가**(CLASS 에 FOOD). 같은 종류를 셋(퀘스트·협동은 아홉)까지만 든다
         //   (`object_pickup.go:81~92`).
         bool isFood = false;
+        // ★ 묶음 5-b — `SUBCLASS` 의 먹을거리 갈래 비트(`FoodClassBits`).
+        //   물약이 무엇을 하는지가 여기 있다 — 체력·마나·독 해제·버프 여덟·방패.
+        uint32_t foodBits = 0;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
 
@@ -1440,6 +1488,15 @@ public:
     uint16_t HealthOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.health;
+    }
+    uint16_t MaxHealthOf(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : it->second.maxHealth;
+    }
+    // 시험용 — 사람에게 독을 직접 얹는다(소환수용 `DebugPoisonPet` 의 짝).
+    void DebugPoisonPlayer(const std::string& addr, int amount) {
+        std::vector<OutPacket> o;
+        ActivatePoison(Target{ addr, -1 }, amount, amount, o);
     }
     uint16_t ManaOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -2055,6 +2112,8 @@ private:
     void SetPoisonAmount(const Target& t, int amount, std::vector<OutPacket>& out);                      // setSomePoisonData_4EEA90
     void UpdatePoison(const Target& t, int amount, std::vector<OutPacket>& out);                         // updatePoison_4EE8F0
     void RemovePoison(const Target& t, std::vector<OutPacket>& out);                                     // removePoison_4EE9D0
+    // 묶음 5-b — 가방에서 물약 쓰기(`usePotion_53EF70`). 하나라도 걸렸으면 참(= 물약이 없어진다)
+    bool UsePotion(Session& s, const Session::Carried& c, std::vector<OutPacket>& out);
     void PoisonTick(std::vector<OutPacket>& out);                                                        // server.go:175~201 감쇠 + 피해
     int CastPoison(const std::string& obj3, const Target& targ, int lvl, std::vector<OutPacket>& out);   // castPoison_52C720
     Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기

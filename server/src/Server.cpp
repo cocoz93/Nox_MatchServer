@@ -2249,12 +2249,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.netCode = w.netCode;
                 c.type = w.type;
                 c.modifiable = w.modifiable;
-                c.useKind = w.useKind;
                 c.useAmount = w.useAmount;
                 c.equipBit = w.equipBit;
                 c.isWeapon = w.isWeapon;
                 c.weight = w.weight;
                 c.isFood = w.isFood;
+                c.foodBits = w.foodBits;
                 s.inventory.push_back(c);
                 ++picked_;
                 ++handled_;
@@ -2278,19 +2278,13 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 if (at == s.inventory.size()) { ++handled_; break; }
 
                 const Session::Carried c = s.inventory[at];
-                if (c.useKind == UseKind::None) { ++useUnknown_; ++handled_; break; }
-
-                // object_use.go:121~145 — 체력 물약 unitAdjustHP(최대 아래일 때만) · 마나 물약 playerManaAdd. 알림은 다음 틱 PlayerReportAnything
-                //   ⚠ 정답지는 가득 차 있으면 안 마신다(consumed false) — 그 갈래·직업 배수·소리(RestoreHealth/Mana)는 아이템(5)
-                if (c.useKind == UseKind::Health) {
-                    UnitAdjustHP(Target{ s.addr, -1 }, c.useAmount, out);
+                if (UsePotion(s, c, out)) {
+                    // 쓴 것은 없어진다. 세계에 되돌려 놓지 않는다.
+                    s.inventory.erase(s.inventory.begin() + static_cast<long>(at));
+                    ++used_;
                 } else {
-                    PlayerManaAdd(s, c.useAmount);
+                    ++useUnknown_;
                 }
-
-                // 쓴 것은 없어진다. 세계에 되돌려 놓지 않는다.
-                s.inventory.erase(s.inventory.begin() + static_cast<long>(at));
-                ++used_;
                 ++handled_;
                 break;
             }
@@ -2375,12 +2369,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.netCode = nc;
                     back.type = s.inventory[i].type;
                     back.modifiable = s.inventory[i].modifiable;
-                    back.useKind = s.inventory[i].useKind;
                     back.useAmount = s.inventory[i].useAmount;
                     back.equipBit = s.inventory[i].equipBit;
                     back.isWeapon = s.inventory[i].isWeapon;
                     back.weight = s.inventory[i].weight;
                     back.isFood = s.inventory[i].isFood;
+                    back.foodBits = s.inventory[i].foodBits;
                     back.x = s.x;
                     back.y = s.y;
                     statics_.push_back(back);
@@ -5503,6 +5497,74 @@ int Server::DurTelePopTick(DurSpell& d, std::vector<OutPacket>& out) {
     TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
     return 1;
+}
+
+// ── 묶음 5-b 물약 쓰기 ────────────────────────────────────────────────
+//
+// usePotion_53EF70(`object_use.go:115~180`) — 가방에서 물약을 쓸 때.
+//   ★ 갈래는 **`SUBCLASS` 비트**가 정한다(`FoodClassBits`). 한 물약이 여러 갈래를 겸할 수 있고
+//     정답지도 `if` 를 줄줄이 늘어놓아 **겹치면 다 적용한다**.
+//   · 죽었으면 아무 일도 안 난다
+//   · 체력 물약 — **지금 체력 < 최대**일 때만. 양 = `USE` 값 × **직업 배수**
+//   · 마나 물약 — **지금 마나 < 최대**일 때만. 양 = `USE` 값 × **직업 배수**
+//   · 독 해제 물약 — 독이 있을 때만 푼다
+//   · 버프 물약 **여덟** — 빠르게(9) · 투명(0) · 불 보호(17) · 전기 보호(20) · 독 보호(18) ·
+//     무적(23) · 어둠보기(21) · 흡혈(13). 전부 **120초 · 세기 3**
+//   · 방패 물약 — **주문 51**(SPELL_SHIELD)을 `USE` 값을 세기로 걸음
+//     ⚠ 26 은 **버프 번호**(ENCHANT_SHIELD)지 주문 번호가 아니다 — 둘을 헷갈리면 엉뚱한 주문이 나간다
+//   · 하나라도 걸렸으면 물약이 없어진다. 아무것도 안 걸렸으면 **그대로 남는다**
+//
+// ⚠ 안 옮긴 것 — 소리(RestoreHealth·RestoreMana·CurePoison) 는 묶음 10.
+bool Server::UsePotion(Session& s, const Session::Carried& c, std::vector<OutPacket>& out) {
+    if (s.respawnAtFrame != 0) return false;                 // 죽은 사람은 못 쓴다
+    const uint32_t fb = c.foodBits;
+    bool consumed = false;
+
+    // 체력 — 가득 차 있으면 **안 마신다**(정답지가 여기서 `consumed` 를 안 켠다)
+    if ((fb & kFoodHealthPotion) && c.useAmount > 0 && s.health < s.maxHealth) {
+        const int dhp = static_cast<int>(c.useAmount * ClassHealthMult(s.charClass));
+        UnitAdjustHP(Target{ s.addr, -1 }, dhp, out);
+        consumed = true;
+    }
+    // 마나 — 같은 꼴
+    if ((fb & kFoodManaPotion) && c.useAmount > 0 && s.mana < s.maxMana) {
+        const int dmp = static_cast<int>(c.useAmount * ClassManaMult(s.charClass));
+        PlayerManaAdd(s, dmp);
+        consumed = true;
+    }
+    // 독 해제 — **독이 있을 때만**
+    if ((fb & kFoodCurePoisonPotion) && s.poison != 0) {
+        RemovePoison(Target{ s.addr, -1 }, out);
+        consumed = true;
+    }
+    // 버프 여덟 — 전부 120초 · 세기 3(`object_use.go:147~163`)
+    {
+        static const struct { uint32_t bit; int buff; } kBuffs[] = {
+            { kFoodHastePotion,           9 },               // ENCHANT_HASTED
+            { kFoodInvisibilityPotion,    0 },               // ENCHANT_INVISIBLE
+            { kFoodFireProtectPotion,    17 },               // ENCHANT_PROTECT_FROM_FIRE
+            { kFoodShockProtectPotion,   20 },               // ENCHANT_PROTECT_FROM_ELECTRICITY
+            { kFoodPoisonProtectPotion,  18 },               // ENCHANT_PROTECT_FROM_POISON
+            { kFoodInvulnerabilityPotion,23 },               // ENCHANT_INVULNERABLE
+            { kFoodInfravisionPotion,    21 },               // ENCHANT_INFRAVISION
+            { kFoodVampirismPotion,      13 },               // ENCHANT_VAMPIRISM
+        };
+        for (const auto& b : kBuffs) {
+            if (!(fb & b.bit)) continue;
+            ApplyEnchant(Target{ s.addr, -1 }, b.buff, 120 * static_cast<int>(kServerTickRate), 3);
+            consumed = true;
+        }
+    }
+    // 방패 물약 — `USE` 값이 **세기**다
+    if ((fb & kFoodShieldPotion) && c.useAmount > 0) {
+        SpellArg arg;
+        arg.obj = Target{ s.addr, -1 };
+        arg.x = static_cast<float>(s.posX);
+        arg.y = static_cast<float>(s.posY);
+        SpellAccept(/*SPELL_SHIELD=*/51, s, s.addr, arg, c.useAmount, out);
+        consumed = true;
+    }
+    return consumed;
 }
 
 // ── 묶음 4-f 소환 ──────────────────────────────────────────────────────
