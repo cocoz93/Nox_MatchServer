@@ -10638,6 +10638,221 @@ void TestCreatureMove() {
     std::printf("  6-f(1) — 걷기: 보이는 점만 · 먼 것 중 가장 가까운 것 · 8 안 마지막이면 도착 · 보는 쪽 곧바로\n");
 }
 
+// ── 묶음 6-f(2) — 길 내기·다시 내기 ───────────────────────────────────
+//
+// 정답지 `src/unit_ai_path.go:520~544` + `legacy/GAME4_1.c:877`.
+//   · 목표까지 **8 안이면 곧바로 끝(1)** — 길을 아예 안 낸다
+//   · `creatureSetDetailedPath` 는 **10프레임 관문** — 걸리면 길을 **비우고** 결과를 **1** 로
+//   · `creatureSetMovePath` 는 **줄이 뚫리는** 갈래에서 목표가 **50 넘게**(제곱 2500) 움직여야 다시 낸다
+//   · 점은 **31개**까지만 담는다(`ud.Path` 32칸 중 마지막은 안 씀). 넘치면 결과 0 → **1**
+void TestCreatureSetPath() {
+    const std::string a = "10.6.7.1:6701";
+    auto mk = [&](nox::Server& srv, uint32_t ms) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.Tick(ms, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugPathBakeWalls();
+        // ★ 10프레임 관문을 열어 둔다 — 갓 켠 서버는 프레임이 2 라 관문이 **처음부터 닫혀 있다**
+        //   (정답지도 같다: `ud.Field70` 이 0 이고 `Frame()` 도 작아 게임 시작 직후엔 길을 못 낸다)
+        srv.DebugSetFrame(100);
+    };
+
+    // ① **8 안이면 곧바로 끝** — 길을 안 낸다
+    {
+        nox::Server srv; mk(srv, 34);
+        Check(srv.DebugCreatureSetMovePath(0, 1005, 1000) == 1, "8 안인데 안 끝났다");
+        Check(srv.DebugPetPathCount(0) == 0, "8 안인데 길을 냈다");
+    }
+    // ★ 경계 — **0.01 을 더해서 8 이하**인지 본다. 그래서 **딱 8 은 끝이 아니다**(8.01 > 8).
+    //   ⚠ 걷기(6-f(1))의 도착 판정은 **거리제곱 ≤ 64** 라 딱 8 이 「안」이다 — **두 자리가 다르다**
+    {
+        nox::Server srv; mk(srv, 34);
+        Check(srv.DebugCreatureSetMovePath(0, 1007, 1000) == 1, "7 인데 안 끝났다");
+    }
+    {
+        nox::Server srv; mk(srv, 34);
+        // ⚠ **돌려주는 값으로는 안 갈린다** — 8 이면 길을 낸 뒤 걷기가 「다 왔다」로 끝내 똑같이 1 이다.
+        //   갈리는 자리는 **길을 냈느냐** — 길을 내면 낸 프레임이 적힌다
+        Check(srv.DebugPetPathFrame(0) == 0, "아직 길을 낸 적이 없어야 한다(이 시험의 전제)");
+        srv.DebugCreatureSetMovePath(0, 1008, 1000);
+        Check(srv.DebugPetPathFrame(0) == 100, "딱 8 인데 길을 안 냈다 — 0.01 을 더해 재면 8.01 > 8 이다");
+    }
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.DebugCreatureSetMovePath(0, 1007, 1000);
+        Check(srv.DebugPetPathFrame(0) == 0, "7 인데 길을 냈다 — 곧바로 끝나야 한다");
+    }
+
+    // ② **멀면 길을 내고 걷는다**
+    {
+        nox::Server srv; mk(srv, 34);
+        Check(srv.DebugCreatureSetMovePath(0, 1200, 1000) == 0, "먼데 끝났다고 한다");
+        Check(srv.DebugPetPathCount(0) > 1, "길을 안 냈다");
+        Check(srv.DebugPetVelX(0) > 0, "길을 냈는데 안 걷는다");
+        Check(srv.DebugPetPathStatus(0) == 0, "닿는 길인데 결과가 0 이 아니다");
+    }
+
+    // ③ **10프레임 관문** — 곧바로 다시 내려 하면 길을 **비우고** 결과를 1 로 둔다
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.DebugCreatureDetailedPath(0, 1200, 1000);
+        Check(srv.DebugPetPathCount(0) > 1, "첫 길을 안 냈다(이 시험의 전제)");
+        srv.DebugCreatureDetailedPath(0, 1200, 1000);         // 같은 프레임에 또
+        Check(srv.DebugPetPathCount(0) == 0, "관문에 걸렸는데 길이 남았다");
+        Check(srv.DebugPetPathStatus(0) == 1, "관문에 걸렸는데 결과가 1 이 아니다");
+    }
+    // 10프레임이 지나면 다시 낸다
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.DebugCreatureDetailedPath(0, 1200, 1000);
+        srv.DebugSetPetPathFrame(0, 0);                       // 10프레임 지난 셈
+        srv.DebugCreatureDetailedPath(0, 1200, 1000);
+        Check(srv.DebugPetPathCount(0) > 1, "10프레임이 지났는데 길을 안 냈다");
+    }
+
+    // ④ **목표를 적어 둔다** — 다시 낼지 재는 잣대다
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.DebugCreatureDetailedPath(0, 1200, 1000);
+        Check(srv.DebugPetPathGoalX(0) == 1200.0f, "이때 잡은 목표를 안 적었다");
+    }
+
+    // ⑤ **줄이 뚫리면 목표가 50 넘게 움직여야 다시 낸다**
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.DebugCreatureSetMovePath(0, 1200, 1000);
+        srv.DebugSetPetPathFrame(0, 0);                       // 10프레임 관문은 열어 둔다
+        const uint32_t f0 = srv.DebugPetPathFrame(0);
+        srv.DebugCreatureSetMovePath(0, 1210, 1000);          // 10 만 움직였다
+        Check(srv.DebugPetPathFrame(0) == f0, "10 밖에 안 움직였는데 길을 다시 냈다");
+        srv.DebugCreatureSetMovePath(0, 1300, 1000);          // 100 움직였다
+        Check(srv.DebugPetPathFrame(0) != f0, "100 움직였는데 길을 안 다시 냈다");
+    }
+
+    // ⑥ **줄이 막히면** 목표가 얼마나 움직였든 **길이 있는 동안은 안 다시 낸다**
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.SetWalls({ { 45, 43 } });                         // 45+43=88 짝수 — 앞을 막는다
+        srv.DebugPathBakeWalls();
+        srv.DebugCreatureSetMovePath(0, 1200, 1000);
+        Check(srv.DebugPetPathCount(0) > 0, "막혔는데 길을 안 냈다");
+        srv.DebugSetPetPathFrame(0, 0);
+        const uint32_t f0 = srv.DebugPetPathFrame(0);
+        srv.DebugCreatureSetMovePath(0, 1400, 1000);          // 200 움직여도
+        Check(srv.DebugPetPathFrame(0) == f0, "막힌 갈래인데 목표가 움직였다고 다시 냈다");
+    }
+
+    // ⑦ **점은 31개까지** — 길이 길면 잘리고 결과가 0 → 1 로 내려앉는다
+    //   ⚠ 뻥 뚫린 데서는 **자국 1024칸**이 먼저 차서 길이 짧게 끝난다.
+    //     **한 칸짜리 복도**로 가둬야 물결이 멀리까지 뻗는다
+    {
+        nox::Server srv; mk(srv, 34);
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int x = 41; x <= 95; ++x) {
+            w.push_back({ static_cast<uint8_t>(x), 42 });
+            w.push_back({ static_cast<uint8_t>(x), 44 });
+        }
+        w.push_back({ 41, 43 });
+        srv.SetWalls(w);
+        srv.DebugPathBakeWalls();
+        Check(srv.DebugCreatureSetMovePath(0, 91 * 23 + 11, 1000) == 0, "먼데 끝났다고 한다");
+        Check(srv.DebugPetPathCount(0) == 31, "점을 31개까지 안 담았다");
+        Check(srv.DebugPetPathStatus(0) == 1, "넘쳤는데 결과가 1 로 안 내려앉았다");
+    }
+
+    // ⑧ **다 걸어가면 1** — 목표 앞까지 가면 끝난다
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.DebugCreatureSetMovePath(0, 1200, 1000);
+        Check(srv.DebugPetPathCount(0) > 1, "길을 안 냈다(이 시험의 전제)");
+        srv.DebugSetPetPos(0, 1200, 1000);                    // 다 갔다 치고
+        Check(srv.DebugCreatureSetMovePath(0, 1200, 1000) == 1, "다 갔는데 안 끝났다");
+    }
+    // ⑨ **관문 경계는 「10 이상」** — 딱 10프레임이 지나면 다시 낸다
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.DebugSetPetPathFrame(0, 91);                      // 100 − 91 = 9
+        srv.DebugCreatureDetailedPath(0, 1200, 1000);
+        Check(srv.DebugPetPathCount(0) == 0, "9프레임인데 길을 냈다");
+        srv.DebugSetPetPathFrame(0, 90);                      // 100 − 90 = 10
+        srv.DebugCreatureDetailedPath(0, 1200, 1000);
+        Check(srv.DebugPetPathCount(0) > 1, "딱 10프레임인데 길을 안 냈다(>= 가 맞다)");
+    }
+
+    // ⑩ **다시 낼 때 보던 점을 0 으로 되돌린다** — 안 그러면 새 길의 엉뚱한 자리부터 본다
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.DebugCreatureSetMovePath(0, 1300, 1000);
+        // 실제로 앞으로 걸어가야 보던 점이 앞으로 간다(속도만 주고 자리는 안 옮기므로 직접 옮긴다)
+        srv.DebugSetPetPos(0, 1200, 1000);
+        srv.DebugCreatureMove(0);
+        Check(srv.DebugPetPathInd(0) > 0, "보던 점이 앞으로 안 갔다(이 시험의 전제)");
+        srv.DebugSetPetPathFrame(0, 0);
+        srv.DebugCreatureDetailedPath(0, 1300, 1000);
+        Check(srv.DebugPetPathInd(0) == 0, "새 길을 냈는데 보던 점이 안 되돌아갔다");
+    }
+
+    // ⑪ **뚫린 갈래도 10프레임 관문을 함께 본다** — 목표가 멀리 움직여도 곧바로는 안 낸다
+    {
+        nox::Server srv; mk(srv, 34);
+        srv.DebugCreatureSetMovePath(0, 1200, 1000);
+        const size_t n0 = srv.DebugPetPathCount(0);
+        const float end0 = srv.DebugPetPathPtX(0, n0 - 1);
+        Check(std::fabs(end0 - 1200.0f) < 0.01f, "첫 길이 1200 에서 안 끝났다(이 시험의 전제)");
+        srv.DebugCreatureSetMovePath(0, 1400, 1000);          // 200 움직였지만 같은 프레임
+        // ⚠ **낸 프레임으로는 안 갈린다** — 다시 내도 같은 프레임이라 값이 그대로다. **길 끝**으로 본다
+        Check(std::fabs(srv.DebugPetPathPtX(0, srv.DebugPetPathCount(0) - 1) - 1200.0f) < 0.01f,
+              "같은 프레임인데 목표가 움직였다고 길을 다시 냈다");
+    }
+
+    // ⑫ **넘침 잣대는 담는 수(31)가 아니라 칸 수(32)** — 딱 31개면 안 내려앉는다
+    {
+        nox::Server srv; mk(srv, 34);
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int x = 41; x <= 95; ++x) {
+            w.push_back({ static_cast<uint8_t>(x), 42 });
+            w.push_back({ static_cast<uint8_t>(x), 44 });
+        }
+        w.push_back({ 41, 43 });
+        w.push_back({ 75, 43 });                              // 43~74 = **딱 32칸**짜리 복도
+        srv.SetWalls(w);
+        srv.DebugPathBakeWalls();
+        srv.DebugCreatureSetMovePath(0, 74 * 23 + 11, 1000);
+        // 점은 32개 나오지만 담는 곳은 31칸 — **잘리기는 해도 「넘쳤다」는 아니다**(잣대가 32다)
+        Check(srv.DebugPetPathCount(0) == 31, "31개까지 안 담겼다");
+        Check(srv.DebugPetPathStatus(0) == 0, "딱 32개면 안 넘친 것인데 결과를 1 로 내렸다");
+    }
+
+    // ⑬ **길을 다 걸으면 1 이 나온다** — 목표가 아직 먼데도 끝난다
+    //   ⚠ 목표까지의 길이 **안 잘렸으면** 마지막 점이 곧 목표라 **앞의 8 판정이 먼저** 걸린다.
+    //     그래서 이 갈래는 **길이 31개로 잘린** 자리에서만 볼 수 있다
+    {
+        nox::Server srv; mk(srv, 34);
+        std::vector<std::pair<uint8_t, uint8_t>> w;
+        for (int x = 41; x <= 95; ++x) {
+            w.push_back({ static_cast<uint8_t>(x), 42 });
+            w.push_back({ static_cast<uint8_t>(x), 44 });
+        }
+        w.push_back({ 41, 43 });
+        srv.SetWalls(w);
+        srv.DebugPathBakeWalls();
+        const float goalX = 91 * 23 + 11.0f;
+        srv.DebugCreatureSetMovePath(0, goalX, 1000);
+        Check(srv.DebugPetPathCount(0) == 31, "길이 31개로 안 잘렸다(이 시험의 전제)");
+        const size_t last = srv.DebugPetPathCount(0) - 1;
+        srv.DebugSetPetPos(0, srv.DebugPetPathPtX(0, last), srv.DebugPetPathPtY(0, last));
+        Check(std::fabs(goalX - srv.DebugPetPathPtX(0, last)) > 8.0f,
+              "잘린 끝이 목표에서 8 넘게 떨어져 있어야 한다(이 시험의 전제)");
+        Check(srv.DebugCreatureSetMovePath(0, goalX, 1000) == 1, "길을 다 걸었는데 1 이 안 나온다");
+    }
+
+    std::printf("  6-f(2) — 길 내기: 8 안이면 끝 · 10프레임 관문(걸리면 결과 1) · 뚫리면 50 넘게 움직여야 다시 · 점 31개\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -12839,6 +13054,7 @@ int main() {
     TestAIPathFind();
     TestAIPathPoints();
     TestCreatureMove();
+    TestCreatureSetPath();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

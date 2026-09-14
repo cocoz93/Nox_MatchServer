@@ -1664,6 +1664,22 @@ public:
     }
     void DebugSetPetSpeed(size_t i, float v) { if (i < pets_.size()) pets_[i].speedCur = v; }
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
+    int  DebugCreatureSetMovePath(size_t i, float tx, float ty) {
+        return i < pets_.size() ? CreatureSetMovePath(pets_[i], tx, ty) : -1;
+    }
+    void DebugCreatureDetailedPath(size_t i, float tx, float ty) {
+        if (i < pets_.size()) CreatureSetDetailedPath(pets_[i], tx, ty);
+    }
+    int  DebugPetPathStatus(size_t i) const { return i < pets_.size() ? pets_[i].pathStatus : -1; }
+    uint32_t DebugPetPathFrame(size_t i) const { return i < pets_.size() ? pets_[i].pathFrame : 0; }
+    void DebugSetPetPathFrame(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].pathFrame = f; }
+    float DebugPetPathGoalX(size_t i) const { return i < pets_.size() ? pets_[i].pathGoalX : 0.0f; }
+    float DebugPetPathPtX(size_t i, size_t j) const {
+        return (i < pets_.size() && j < pets_[i].path.size()) ? pets_[i].path[j].first : 0.0f;
+    }
+    float DebugPetPathPtY(size_t i, size_t j) const {
+        return (i < pets_.size() && j < pets_[i].path.size()) ? pets_[i].path[j].second : 0.0f;
+    }
     int  DebugPetPathInd(size_t i) const { return i < pets_.size() ? pets_[i].pathInd : -1; }
     size_t DebugPetPathCount(size_t i) const { return i < pets_.size() ? pets_[i].path.size() : 0; }
     double DebugPetVelX(size_t i) const { return i < pets_.size() ? pets_[i].velX : 0.0; }
@@ -2359,6 +2375,11 @@ private:
     bool AIFacePoint(Creature& k, float tx, float ty);
     // 묶음 6-f(1) — 길 위의 점 하나를 골라 그쪽으로 속도를 준다. 다 왔으면 참
     bool CreatureActuallyMove(Creature& k);
+    // 묶음 6-f(2) — 길 내기·다시 내기
+    static constexpr size_t kCreaturePathMax = 32;   // `MonsterUpdateData.Path [32]` — 실제로는 31개만 담긴다
+    int  CreatureGenPath(Creature& k, float tx, float ty);
+    void CreatureSetDetailedPath(Creature& k, float tx, float ty);
+    int  CreatureSetMovePath(Creature& k, float tx, float ty);
     void AIPathResetIndex();
     AIIndexNode* AIPathIndexAt(int x, int y);
     uint16_t AIPathFlagsAt(int x, int y);

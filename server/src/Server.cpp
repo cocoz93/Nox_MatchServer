@@ -6224,6 +6224,78 @@ bool Server::CreatureActuallyMove(Creature& k) {
     return false;
 }
 
+// ── 묶음 6-f(2) 길 내기·다시 내기 ─────────────────────────────────────
+//
+// 정답지 `src/unit_ai_path.go:520~544` + `legacy/GAME4_1.c:877`.
+//
+// ⭕ **길은 아무 때나 다시 내지 않는다** — 매 틱 새로 내면 256×256 을 매 틱 훑는다.
+//   · `creatureSetDetailedPath` 는 **10프레임 관문**을 둔다. 관문에 걸리면 길을 **비우고**
+//     결과를 **1**(자리 다 씀)로 적는다 — 그 틱에는 아예 안 움직인다
+//   · `creatureSetMovePath` 는 그 위에 **「목표가 얼마나 움직였나」** 를 더 본다 —
+//     줄이 뚫리는 갈래에서는 **50 유닛(제곱 2500)** 을 넘게 움직여야 다시 낸다
+//
+// ⭕ 점은 **31개까지**만 옮겨 담는다(`ud.Path` 가 32칸인데 `appendWorkPath` 가 마지막 칸을 안 쓴다).
+//   넘치면 길 찾기 결과가 **0(닿음) → 1** 로 내려앉는다(`MaybeAppendWorkPath`).
+//
+// ⚠ **길목 길**(`sub_50D2A0` · `sub_50D2E0` · `sub_547F20`)은 미뤘다 —
+//   길목(Waypoint)이 우리 맵 자료에 아직 없다. 정답지에서 길목 길이 **실패했을 때와 같은 길**을 탄다.
+
+// nox_xxx_genPathToPoint_50B9A0 + MaybeAppendWorkPath — 낸 점을 크리처의 길로 옮겨 담는다
+int Server::CreatureGenPath(Creature& k, float tx, float ty) {
+    uint32_t oflags = 0;
+    auto tb = typeBodies_.find(k.type);
+    if (tb != typeBodies_.end()) oflags = tb->second.flags;
+    const bool airborne = (oflags & 0x4000) != 0;
+    AIPathFind(false, PathActor{ airborne, 0, -1 },
+               static_cast<float>(k.x), static_cast<float>(k.y), tx, ty, PathFilter(), 0);
+    // MaybeAppendWorkPath — 담을 곳보다 점이 많으면 **닿았다(0)를 1 로 내린다**
+    if (aiPathPts_.size() > kCreaturePathMax && aiPathStatus_ == 0) aiPathStatus_ = 1;
+    k.path.clear();
+    for (size_t i = 0; i < aiPathPts_.size(); ++i) {
+        if (k.path.size() >= kCreaturePathMax - 1) break;   // 마지막 칸은 안 쓴다
+        k.path.push_back(aiPathPts_[i]);
+    }
+    return static_cast<int>(k.path.size());
+}
+
+// Nox_xxx_creatureSetDetailedPath_50D220 — **10프레임 관문**을 넘어야 새로 낸다
+void Server::CreatureSetDetailedPath(Creature& k, float tx, float ty) {
+    k.pathInd = 0;                                   // ud.Field67 = 0
+    if (frame_ - k.pathFrame >= 10) {
+        k.pathGoalX = tx; k.pathGoalY = ty;          // ud.Field68 — 이때 잡은 목표를 적어 둔다
+        CreatureGenPath(k, tx, ty);
+        k.pathStatus = static_cast<uint8_t>(aiPathStatus_);
+        k.pathFrame = frame_;
+    } else {
+        k.path.clear();                              // ud.Field2 = 0 — 길이 없는 셈
+        k.pathStatus = 1;
+    }
+}
+
+// nox_xxx_creatureSetMovePath_50D5A0 — **1 이면 다 왔다**
+int Server::CreatureSetMovePath(Creature& k, float tx, float ty) {
+    const double ddx = tx - k.x, ddy = ty - k.y;
+    if (std::sqrt(ddx * ddx + ddy * ddy) + 0.01 <= 8.0) return 1;   // 목표까지 8 안이면 끝
+
+    uint32_t oflags = 0;
+    auto tb = typeBodies_.find(k.type);
+    if (tb != typeBodies_.end()) oflags = tb->second.flags;
+    const uint8_t rayFlags = static_cast<uint8_t>((oflags >> 12) & 4);   // 깃발 0x4000 이면 4
+    const bool clear = MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), tx, ty, rayFlags);
+
+    if (!clear) {
+        // ⚠ 여기서 정답지는 **길목 길**을 먼저 본다. 길목이 없으므로 곧바로 자세한 길로 간다
+        if (k.path.empty()) CreatureSetDetailedPath(k, tx, ty);
+    } else if (k.path.empty() ||
+               ((frame_ - k.pathFrame) > 10 &&
+                (static_cast<double>(k.pathGoalX - tx) * (k.pathGoalX - tx) +
+                 static_cast<double>(k.pathGoalY - ty) * (k.pathGoalY - ty)) > 2500.0)) {
+        CreatureSetDetailedPath(k, tx, ty);
+    }
+    if (!k.path.empty() && CreatureActuallyMove(k)) { k.path.clear(); return 1; }
+    return 0;
+}
+
 // ── 묶음 6-a AI 행동 쌓기 ─────────────────────────────────────────────
 //
 // 정답지 `server/object_ai.go`(밀기·빼기) + `unit_ai.go:575~610`(매 틱 굴리기).
