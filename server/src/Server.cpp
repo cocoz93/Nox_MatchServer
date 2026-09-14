@@ -4505,6 +4505,14 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
                 break;
             }
+            case 75: case 76: case 77: case 78: case 79: case 80: case 81: case 82: case 83:
+            case 84: case 85: case 86: case 87: {                                              // Summon — 지속(크기별 시전 시간)
+                DurFns f;
+                f.create = &Server::DurSummonCreate;
+                f.update = &Server::DurSummonTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
+                break;
+            }
             case 4: {                                                                          // Blink — 지속(한 박자 뒤 자리 옮김)
                 DurFns f;
                 f.create = &Server::DurBlinkCreate;
@@ -5451,6 +5459,75 @@ int Server::DurTelePopTick(DurSpell& d, std::vector<OutPacket>& out) {
     TargetXY(d.target, ox, oy);
     TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
+    return 1;
+}
+
+// ── 묶음 4-f 소환 ──────────────────────────────────────────────────────
+//
+// SummonSize(`object_monster.go:652`) — thing.bin 몬스터 갈래로 정한다.
+//   `SMALL_MONSTER` 1 · `MEDIUM_MONSTER` 2 · `LARGE_MONSTER` 4. 모르면 1.
+int Server::SummonSizeOf(uint16_t type) const {
+    const auto tb = typeBodies_.find(type);
+    if (tb == typeBodies_.end()) return 1;
+    const uint32_t sub = tb->second.subclass;
+    if (sub & 0x4) return 4;                                 // LARGE_MONSTER
+    if (sub & 0x2) return 2;                                 // MEDIUM_MONSTER
+    return 1;                                                // SMALL_MONSTER(또는 모름)
+}
+
+// countControlledCreatures_500D10 — 그 사람이 거느린 것들의 **크기 합**.
+int Server::CountControlledCreatures(const std::string& owner) const {
+    int n = 0;
+    for (const auto& k : pets_) {
+        if (k.owner != owner) continue;
+        if (k.health == 0) continue;
+        n += SummonSizeOf(k.type);
+    }
+    return n;
+}
+
+// summonStart_500DA0(`GAME4.c:4060`) — 켤 때
+//   · 시전자가 없거나 죽었으면, 또는 **글리프가 건 것**이면 취소
+//   · **거느린 크기 합 + 이번 크기 > 4** 면 글(`Summon.c:CreatureControlFailed`)을 내고 취소
+//   · 걸리면 **크기별 시전 시간**을 잡는다 — `SummonDuration`(아레나 60·210·375) 을
+//     작은 것 [0] · 중간 [1] · 큰 것 [2] 로 쓴다
+//   ⚠ 안 옮긴 것 — 퀘스트의 「길잡이(Guide)가 있어야 부른다」 검사 · 부르는 자리 고르기(sub_500F40)는 앞 자리로 갈음
+int Server::DurSummonCreate(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (c == sessions_.end() || !c->second.inGame) return 1;
+    if (c->second.respawnAtFrame != 0) return 1;
+    if (d.flag20) return 1;                                  // 글리프가 건 것은 안 된다
+    const uint16_t type = SummonType(d.spell);
+    if (type == 0) return 1;
+    const int size = SummonSizeOf(type);
+    if (CountControlledCreatures(d.caster) + size > kSummonLimit) {
+        SendPriMsg(c->second, "Summon.c:CreatureControlFailed", out);
+        return 1;
+    }
+    const int idx = (size >= 4) ? 2 : (size >= 2 ? 1 : 0);
+    d.frame68 = frame_ + static_cast<uint32_t>(BalanceFloatInd("SummonDuration", idx));
+    return 0;
+}
+
+// summonFinish_5010D0(`GAME4.c:4230`) — 그 프레임이 되면 **한 마리** 세우고 끝난다.
+//   ★ 한도를 **여기서 다시 본다** — 부르는 동안 다른 것을 부르면 넘칠 수 있다.
+int Server::DurSummonTick(DurSpell& d, std::vector<OutPacket>& out) {
+    auto c = sessions_.find(d.caster);
+    if (c == sessions_.end() || !c->second.inGame) return 1;
+    if (c->second.respawnAtFrame != 0) return 1;
+    if (d.frame68 - 1 != frame_) return 0;                   // 아직 부르는 중
+    const uint16_t type = SummonType(d.spell);
+    if (type == 0) return 1;
+    const int size = SummonSizeOf(type);
+    if (CountControlledCreatures(d.caster) + size > kSummonLimit) {
+        SendPriMsg(c->second, "Summon.c:CreatureControlFailed", out);
+        return 1;
+    }
+    Session& s = c->second;
+    const double rad = s.facing * 3.14159265358979 / 128.0;  // 시전자 앞
+    SpawnCreature(type, static_cast<float>(s.posX + kPetReach * std::cos(rad)),
+                  static_cast<float>(s.posY + kPetReach * std::sin(rad)), d.caster);
+    if (!pets_.empty()) pets_.back().facing = s.facing;
     return 1;
 }
 

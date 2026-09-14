@@ -396,6 +396,15 @@ std::vector<std::vector<uint8_t>> FlattenTo(const std::vector<nox::OutPacket>& o
     return Flatten(mine);
 }
 
+// 그 사람에게 간 「글 한 줄」(`SendPriMsg` — `a9 0f 00 <열쇠글>\0`)이 있나.
+//   ⚠ 갱신 줄기는 첫 목격 뒤로 **별명**을 쓰지만 이건 INFORM 이라 늘 통째로 온다.
+bool HasPriMsg(const std::vector<nox::OutPacket>& out, const std::string& to, const std::string& key) {
+    for (const auto& m : FlattenTo(out, to))
+        if (m.size() == 3 + key.size() + 1 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 15 &&
+            std::string(m.begin() + 3, m.end() - 1) == key) return true;
+    return false;
+}
+
 std::vector<uint8_t> InputPacket(uint8_t code);   // 아래(조작 한 조각) — 3-c 부활 클릭에 앞에서도 쓴다
 
 void TestDeathFlow() {
@@ -992,7 +1001,7 @@ void RegFireballTypes(nox::Server& srv) {
     // 없으면 0 이 되어 불덩이가 제자리에 멈춘다 — 제 기획자료를 이미 넣은 시험은 건드리지 않는다.
     if (!srv.HasGamedata()) {
         nox::Gamedata g;
-        g.Parse("FireballSpeedCoeff = 1.6, 2.0, 2.4, 2.5, 2.6;\n");
+        g.Parse("FireballSpeedCoeff = 1.6, 2.0, 2.4, 2.5, 2.6;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
     }
 }
@@ -1012,8 +1021,24 @@ void CastAndWait(nox::Server& srv, const std::string& who, uint8_t spell, bool o
 void SummonImp(nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out) {
     RegSpell(srv, 87);
     srv.DebugSetClass(who, nox::CharClass::Conjurer);
+    // 소환 시간은 기획자료 값이다(아레나 실측 60·210·375). 없으면 0 이 되어 **영영 안 나온다**
+    //   — `+68 − 1 == 지금` 으로 터지는데 0 이면 그 프레임이 과거가 된다.
+    //   제 기획자료를 이미 넣은 시험은 안 건드린다(그쪽은 SummonDuration 을 직접 담았다).
+    if (!srv.HasGamedata()) {
+        nox::Gamedata g;
+        g.Parse("SummonDuration = 60, 210, 375;\n");
+        srv.SetGamedata(g);
+    }
+    // ★ 4-f — 소환은 **크기별 시전 시간**이 있다(작은 것 `SummonDuration[0]`).
+    //   기획자료가 없으면 0 틱이라 바로 나오고, 있으면 그만큼 기다려야 한다.
+    // ⚠ 이미 있던 소환수·몬스터를 세면 안 된다 — **늘어났나**로 기다린다(퀘스트 몬스터가 먼저 서 있는 시험이 있다)
+    const size_t before = srv.pets();
     uint32_t ms = srv.DebugNowMs();
     CastAndWait(srv, who, 87, false, ms, out);
+    for (int t = 0; t < 400 && srv.pets() == before && srv.DurCount() > 0; ++t) {
+        ms += 34;
+        srv.Tick(ms, out);
+    }
 }
 
 // ── 마나가 실제로 깎이는가 · 모자라면 못 쓰는가 ─────────────────────────
@@ -1285,7 +1310,7 @@ void TestAppearanceAndFx() {
     {
         nox::Server srv;
         nox::Gamedata g;
-        g.Parse("LightningDamage = 1.5;\nLightningRange = 240;\n");
+        g.Parse("LightningDamage = 1.5;\nLightningRange = 240;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
@@ -4104,7 +4129,7 @@ void TestBuffs() {
         for (int kase = 0; kase < 3; ++kase) {
             nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
             nox::Gamedata g;
-            g.Parse("ConfuseEnchantDuration = 90;\n");
+            g.Parse("ConfuseEnchantDuration = 90;\n" "SummonDuration = 60, 210, 375;\n");
             srv.SetGamedata(g);
             srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
             srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
@@ -4212,7 +4237,7 @@ void TestDamageBuffs() {
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
         g.Parse("ARENA FireSpellProtection = 0.5f, 0.5f, 0.5f, 0.5f, 0.5f;\nARENA ElectricitySpellProtection = 0.5f, 0.5f, 0.5f, 0.5f, 0.5f;\n"
-                "ShockDamage = 15, 30, 45, 60, 75;\nVampirismCoeff = 0.1, 0.2, 0.3, 0.4, 0.5;\n");
+                "ShockDamage = 15, 30, 45, 60, 75;\nVampirismCoeff = 0.1, 0.2, 0.3, 0.4, 0.5;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
@@ -4243,7 +4268,7 @@ void TestDamageBuffs() {
         Check(srv.HealthOf(b) == h3 - 15, "전기 보호인데 전기 피해가 절반이 아니다");
         nox::Server s2; mk(s2);
         nox::Gamedata g;
-        g.Parse("ARENA FireSpellProtection = 0.9, 0.9, 0.9, 0.9, 0.9;\n");
+        g.Parse("ARENA FireSpellProtection = 0.9, 0.9, 0.9, 0.9, 0.9;\n" "SummonDuration = 60, 210, 375;\n");
         s2.SetGamedata(g);
         s2.DebugApplyEnchant(b, 17, 0, 1);
         const uint16_t h4 = s2.HealthOf(b);
@@ -4582,7 +4607,7 @@ void TestDebuffSpells() {
     const std::string c = "10.5.1.3:5103";
     auto mk = [&](nox::Server& srv, uint8_t spell, nox::CharClass bClass) {
         nox::Gamedata g;
-        g.Parse("ConfuseEnchantDuration = 90;\nStunEnchantDuration = 60;\nInversionRange = 240.0f;\n");
+        g.Parse("ConfuseEnchantDuration = 90;\nStunEnchantDuration = 60;\nInversionRange = 240.0f;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
@@ -4660,7 +4685,7 @@ void TestDebuffSpells() {
         srv.SetSpellDef(12, 10, 0x1000000 | 0x4, { 5, 3, 5 });
         srv.SetMagicType(1237, 50, 10.0f, 0x4000);
         nox::Gamedata g;
-        g.Parse("ConfuseEnchantDuration = 90;\nInversionRange = 240.0f;\n");
+        g.Parse("ConfuseEnchantDuration = 90;\nInversionRange = 240.0f;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
@@ -4954,7 +4979,7 @@ void TestHealSpells() {
     // LesserHealAmount 0.25 → 위저드 75 × 0.25 = 18.75 → 버림 18
     auto mk = [&](nox::Server& srv, uint8_t spell) {
         nox::Gamedata g;
-        g.Parse("LesserHealAmount = 15;\n");
+        g.Parse("LesserHealAmount = 15;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });    // 어느 직업이나 · 음소 둘(9틱)
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
@@ -5044,7 +5069,7 @@ void TestHealSpells() {
     {
         const std::string b = "10.7.0.2:7002";
         nox::Server srv;
-        nox::Gamedata g; g.Parse("LesserHealAmount = 15;\n"); srv.SetGamedata(g);
+        nox::Gamedata g; g.Parse("LesserHealAmount = 15;\n" "SummonDuration = 60, 210, 375;\n"); srv.SetGamedata(g);
         srv.SetSpellDef(41, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
@@ -5071,7 +5096,7 @@ void TestChannelLife() {
     // 세기 3(온라인) → ChannelLifeCoeff[2]. 이월을 재려고 전 칸을 0.5 로 둔다 — 두 틱에 1 씩 오른다
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("ChannelLifeCoeff = 0.5, 0.5, 0.5, 0.5, 0.5;\n");
+        g.Parse("ChannelLifeCoeff = 0.5, 0.5, 0.5, 0.5, 0.5;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(8, 10, 0x1000000, { 1, 2 });        // 어느 직업이나 · 겨눔 아님(자기 아닌 대상도 곧바로 SpellAccept)
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
@@ -5310,7 +5335,7 @@ void TestDrainMana() {
     // 계수 0.5 로 두어 이월을 잰다(두 틱에 1) · 둘레는 넉넉히
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("ManaDrainCoeff = 0.5, 0.5, 0.5, 0.5, 0.5;\nManaDrainRange = 300.0f;\n");
+        g.Parse("ManaDrainCoeff = 0.5, 0.5, 0.5, 0.5, 0.5;\nManaDrainRange = 300.0f;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(22, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
@@ -5456,7 +5481,7 @@ void TestPushPullQuake() {
     auto mk = [&](nox::Server& srv, uint8_t spell) {
         nox::Gamedata g;
         g.Parse("PushPowerCoeff = 1.0;\nPullPowerCoeff = 1.0;\n"
-                "EarthquakeRange = 200.0f;\nEarthquakeDamage = 30, 30, 30, 30, 30;\nEarthquakeJiggle = 50, 50, 50, 50, 50;\n");
+                "EarthquakeRange = 200.0f;\nEarthquakeDamage = 30, 30, 30, 30, 30;\nEarthquakeJiggle = 50, 50, 50, 50, 50;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
@@ -5707,7 +5732,7 @@ void TestToxicCloud() {
     auto mk = [&](nox::Server& srv, double life) {
         nox::Gamedata g;
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "ToxicCloudLifetime = %g;\n", life);
+        std::snprintf(buf, sizeof(buf), "ToxicCloudLifetime = %g;\nSummonDuration = 60, 210, 375;\n", life);
         g.Parse(buf);
         srv.SetGamedata(g);
         srv.SetNamedType("ToxicCloud", kCloudType);
@@ -5860,7 +5885,7 @@ void TestBurn() {
     auto mk = [&](nox::Server& srv, double dur) {
         nox::Gamedata g;
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "BurnDuration = %g;\n", dur);
+        std::snprintf(buf, sizeof(buf), "BurnDuration = %g;\nSummonDuration = 60, 210, 375;\n", dur);
         g.Parse(buf);
         srv.SetGamedata(g);
         srv.SetNamedType("MediumFlame", kFlameType);
@@ -6230,7 +6255,7 @@ void TestMeteor() {
     const std::string b = "10.9.6.2:9602";
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("MeteorDamage = 45, 65, 85, 105, 125;\nMeteorSpeed = 8;\n");
+        g.Parse("MeteorDamage = 45, 65, 85, 105, 125;\nMeteorSpeed = 8;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetNamedType("Meteor", 910);
         srv.SetNamedType("MeteorShower", 911);
@@ -6410,7 +6435,7 @@ void TestFist() {
     const std::string b = "10.9.7.2:9702";
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("FistOfVengeanceDamage = 50, 100, 200, 300, 400;\nFistSpeed = 10;\n");
+        g.Parse("FistOfVengeanceDamage = 50, 100, 200, 300, 400;\nFistSpeed = 10;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetNamedType("SmallFist", 920);
         srv.SetNamedType("MediumFist", 921);
@@ -6817,7 +6842,7 @@ void TestPixieSwarm() {
     const std::string a = "10.9.10.1:9011";
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("PixieCount = 2, 3, 4, 5, 6;\n");
+        g.Parse("PixieCount = 2, 3, 4, 5, 6;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetNamedType("Pixie", 672);
         srv.SetSpellDef(58, 10, 0x1000000, { 1, 2 });        // 어느 직업이나 · 겨누지 않음
@@ -6922,7 +6947,7 @@ void TestEnergyBolt() {
     const std::string b = "10.9.11.2:9112";
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningRange = 300;\n");
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningRange = 300;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(24, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음 · 마나 0(끊김을 따로 본다)
         srv.DebugEnterGame(a, 820, false, nox::CharClass::Wizard);
@@ -7111,7 +7136,7 @@ void TestChainLightning() {
     const std::string c = "10.9.12.3:9123";
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("LightningDamage = 1.5;\nLightningRange = 240;\n");
+        g.Parse("LightningDamage = 1.5;\nLightningRange = 240;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(43, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
         srv.SetSpellDef(24, 0, 0x1000000, { 3, 4 });         // 에너지볼트 — 끄는지 보려고
@@ -7319,7 +7344,7 @@ void TestDeathRay() {
     const std::string b = "10.9.13.2:9132";
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("DeathRayDamage = 100;\nDeathRayOutRadius = 15;\nDeathRayInRadius = 10;\n");
+        g.Parse("DeathRayDamage = 100;\nDeathRayOutRadius = 15;\nDeathRayInRadius = 10;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(16, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
         srv.DebugEnterGame(a, 840, false, nox::CharClass::Wizard);
@@ -7411,7 +7436,7 @@ void TestShieldSpell() {
     const std::string b = "10.9.14.2:9142";
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("ShieldDuration = 0, 0, 0, 0, 0;\nShieldHealth = 20, 35, 50, 75, 100;\n");
+        g.Parse("ShieldDuration = 0, 0, 0, 0, 0;\nShieldHealth = 20, 35, 50, 75, 100;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(51, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
         // ⚠ **워리어는 주문을 못 쓴다**(직업 거르기 9) — 시전자는 위저드여야 한다.
@@ -7524,7 +7549,7 @@ void TestBlink() {
     const std::string a = "10.9.15.1:9151";
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("TeleportDelay = 25, 20, 15, 10, 5;\n");
+        g.Parse("TeleportDelay = 25, 20, 15, 10, 5;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         srv.SetSpellDef(4, 0, 0x1000000, { 1, 2 });          // 어느 직업이나 · 겨누지 않음
         srv.DebugEnterGame(a, 860, false, nox::CharClass::Wizard);
@@ -7618,7 +7643,7 @@ void TestMarkTeleport() {
     const std::string a = "10.9.16.1:9161";
     auto mk = [&](nox::Server& srv) {
         nox::Gamedata g;
-        g.Parse("TeleportDelay = 25, 20, 15, 10, 5;\n");
+        g.Parse("TeleportDelay = 25, 20, 15, 10, 5;\n" "SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
         for (uint8_t sp : { (uint8_t)46, (uint8_t)47, (uint8_t)121, (uint8_t)122, (uint8_t)123 })
             srv.SetSpellDef(sp, 0, 0x1000000, { static_cast<uint8_t>(sp % 8), static_cast<uint8_t>((sp / 8) % 8), 2 });
@@ -7711,6 +7736,221 @@ void TestMarkTeleport() {
         Check(srv.XOf(a) > 2950 && srv.XOf(a) < 3050, "닻이 걸렸는데 옮겨졌다");
     }
     std::printf("  4-e(2) — 표식 걸기·칸별로 따로·표식으로 가기·무작위 표식·표식 없음·닻\n");
+}
+
+// ── 묶음 4-f — 소환(Summon 75~114) ───────────────────────────────────
+//
+// 지속 주문 셋이다(`summonStart_500DA0` · `summonFinish_5010D0` · `summonCancel_5011C0`).
+//   · 켤 때 — 글리프가 건 것이면 취소 · **거느린 크기 합 + 이번 크기 > 4** 면 글을 내고 취소
+//   · **크기별 시전 시간** — `SummonDuration`(아레나 60·210·375)을 작은 것[0]·중간[1]·큰 것[2] 로
+//   · `+68 − 1 == 지금` 인 프레임에 한 마리 세우고 끝난다. ★ 한도는 **끝날 때 다시 본다**
+//   · 크기는 thing.bin 몬스터 갈래 — 작은 것 1 · 중간 2 · 큰 것 4
+//
+// ⚠ 거절된 지속 주문은 **그 자리에서 목록을 안 떠난다** — `DurCancel` 은 깃발(88&1)만 세우고
+//   실제로 지우는 건 다음 틱이다. 그래서 「안 걸렸나」는 **한 틱 돌린 뒤** 센다.
+void TestSummonSpell() {
+    const std::string a = "10.9.17.1:9171";
+    // 소환수 몸 — 크기(갈래 비트)만 바꿔 가며 쓴다
+    auto mkBody = [](const char* cls) {
+        nox::Server::PhysBody b;
+        b.shape = 2; b.r = 10.0f; b.cls = 0x2;
+        b.subclass = nox::Server::MonsterClassBitsOf(cls);
+        return b;
+    };
+    auto mk = [&](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("SummonDuration = 60, 210, 375;\n");
+        srv.SetGamedata(g);
+        RegSpell(srv, 87, 0);                                // 임프(마나 0 — 이 시험은 마나를 안 잰다)
+        srv.DebugEnterGame(a, 880, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+    // 「불려 나올 때까지」 기다린다(늘어났나로 본다)
+    auto waitSpawn = [](nox::Server& srv, size_t before, int ticks, uint32_t& ms,
+                        std::vector<nox::OutPacket>& out) {
+        for (int t = 0; t < ticks && srv.pets() == before; ++t) { ms += 34; srv.Tick(ms, out); }
+    };
+
+    // ① 부르면 **바로 안 나온다** — 작은 것은 `SummonDuration[0]` = 60틱 뒤다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+        Check(srv.pets() == 0, "시전이 끝나자마자 나왔다 — 소환 시간이 빠졌나");
+        Check(srv.DurCount() == 1, "소환이 지속 주문으로 안 걸렸다");
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() == 0, "40틱 만에 나왔다 — 60틱이어야 한다");
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() == 1, "70틱이 지났는데 안 나왔다");
+        Check(srv.DurCount() == 0, "한 마리 세우고도 지속 주문이 안 끝났다");
+    }
+
+    // ② **큰 것은 시전 시간이 다르다** — `SummonDuration[2]` = 375틱
+    {
+        nox::Server srv; mk(srv);
+        srv.SetTypeBody(1328, mkBody("LARGE_MONSTER"));      // 임프를 큰 것으로 둔다(크기 셈만 본다)
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+        for (int t = 0; t < 100; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() == 0, "큰 것인데 100틱에 나왔다 — 375틱이어야 한다");
+        waitSpawn(srv, 0, 300, ms, out);
+        Check(srv.pets() == 1, "400틱이 지났는데 큰 것이 안 나왔다");
+    }
+
+    // ③ **크기 합 한도 4** — 작은 것은 넷까지, 다섯째는 거절된다
+    {
+        nox::Server srv; mk(srv);
+        srv.SetTypeBody(1328, mkBody("SMALL_MONSTER"));      // 크기 1
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int n = 0; n < 4; ++n) {
+            srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+            waitSpawn(srv, static_cast<size_t>(n), 120, ms, out);
+        }
+        Check(srv.pets() == 4, "넷까지 안 불려 나왔다");
+        out.clear();
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);             // 다섯째 — 1+1+1+1+1 > 4
+        Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "한도를 넘겼는데 글이 안 왔다");
+        ms += 34; srv.Tick(ms, out);                         // 취소 깃발이 여기서 치워진다
+        Check(srv.DurCount() == 0, "한도를 넘겼는데 소환이 걸렸다");
+        for (int t = 0; t < 120; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() == 4, "한도를 넘겼는데 다섯째가 나왔다");
+    }
+
+    // ④ **큰 것 하나가 자리를 다 먹는다** — 4 + 1 > 4 라 하나도 더 못 부른다
+    {
+        nox::Server srv; mk(srv);
+        srv.SetTypeBody(1328, mkBody("LARGE_MONSTER"));
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+        waitSpawn(srv, 0, 400, ms, out);
+        Check(srv.pets() == 1, "큰 것이 안 나왔다(이 시험의 전제)");
+        out.clear();
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);             // 둘째
+        Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "큰 것이 하나 있는데 글이 안 왔다");
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.DurCount() == 0, "큰 것이 하나 있는데 또 걸렸다");
+
+        // ★ 자리는 **죽으면 빈다** — `CountControlledCreatures` 가 체력 0 을 안 센다
+        srv.DebugSetOwnedPetHealth(a, 0);
+        out.clear();
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+        Check(!HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "죽어서 자리가 났는데 거절됐다");
+        Check(srv.DurCount() == 1, "죽어서 자리가 났는데 못 걸었다");
+    }
+
+    // ⑤ **한도는 끝날 때 다시 본다** — 부르는 도중에 남이 자리를 채우면 나오지 못한다
+    //   (`summonFinish_5010D0` 가 한도를 한 번 더 보는 까닭이다)
+    {
+        nox::Server srv; mk(srv);
+        srv.SetTypeBody(1328, mkBody("SMALL_MONSTER"));
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);             // 큰 것 아님 — 60틱 걸린다
+        Check(srv.DurCount() == 1, "소환이 안 걸렸다(이 시험의 전제)");
+        // 부르는 동안 자리를 네 칸 채운다(주인만 맞으면 어디서 왔든 센다)
+        for (int n = 0; n < 4; ++n) srv.DebugSpawnPet(1328, 1000, 1000, a);
+        Check(srv.pets() == 4, "자리 채우기가 안 됐다(이 시험의 전제)");
+        out.clear();
+        for (int t = 0; t < 120; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() == 4, "한도가 다 찼는데 부르던 것이 나왔다 — 끝낼 때 안 세나");
+        Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "끝낼 때 거절하면서 글이 안 왔다");
+        Check(srv.DurCount() == 0, "거절된 소환이 안 치워졌다");
+    }
+    // ⑥ **중간 크기** — 시전 시간은 `SummonDuration[1]` = 210틱이고 크기는 2 다.
+    //   ★ 둘이면 4 라 셋째는 안 된다 — **머릿수가 아니라 크기 합**이라는 증거다.
+    {
+        nox::Server srv; mk(srv);
+        srv.SetTypeBody(1328, mkBody("MEDIUM_MONSTER"));
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+        for (int t = 0; t < 150; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() == 0, "중간인데 150틱에 나왔다 — 210틱이어야 한다");
+        waitSpawn(srv, 0, 120, ms, out);
+        Check(srv.pets() == 1, "270틱이 지났는데 중간이 안 나왔다");
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+        waitSpawn(srv, 1, 300, ms, out);
+        Check(srv.pets() == 2, "중간 둘째가 안 나왔다(2+2 = 4 라 되어야 한다)");
+        out.clear();
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);             // 셋째 — 4 + 2 > 4
+        Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "중간 셋째가 거절 안 됐다 — 머릿수로 세나");
+    }
+
+    // ⑦ **몸을 안 정한 종류는 작은 것으로 친다** — 그래도 넷에서 막힌다
+    //   (크기를 0 으로 보면 한도가 영영 안 걸린다)
+    {
+        nox::Server srv; mk(srv);                            // SetTypeBody 를 일부러 안 한다
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int n = 0; n < 4; ++n) {
+            srv.DebugFillMana(a);
+            CastAndWait(srv, a, 87, false, ms, out);
+            waitSpawn(srv, static_cast<size_t>(n), 120, ms, out);
+        }
+        Check(srv.pets() == 4, "몸을 안 정했더니 넷이 안 나왔다");
+        out.clear();
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+        Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "몸을 안 정했더니 한도가 안 걸린다");
+    }
+
+    // ⑧ **남의 소환수는 안 센다** — 자리는 주인별이다
+    {
+        nox::Server srv; mk(srv);
+        const std::string b = "10.9.17.2:9172";
+        srv.DebugEnterGame(b, 881, false, nox::CharClass::Conjurer);
+        srv.SetTypeBody(1328, mkBody("SMALL_MONSTER"));
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int n = 0; n < 4; ++n) srv.DebugSpawnPet(1328, 1200, 1200, b);   // ★ 전부 b 것이다
+        Check(srv.pets() == 4, "남의 소환수 채우기가 안 됐다(이 시험의 전제)");
+        out.clear();
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+        Check(!HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "남의 소환수를 내 자리로 셌다");
+        waitSpawn(srv, 4, 120, ms, out);
+        Check(srv.pets() == 5, "남이 넷을 거느렸다고 내가 못 불렀다");
+    }
+
+    // ⑨ **부르는 도중에 시전자가 죽으면 안 나온다**(`summonFinish` 의 죽음 검사)
+    {
+        nox::Server srv; mk(srv);
+        srv.SetTypeBody(1328, mkBody("SMALL_MONSTER"));
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugFillMana(a);
+        CastAndWait(srv, a, 87, false, ms, out);
+        Check(srv.DurCount() == 1, "소환이 안 걸렸다(이 시험의 전제)");
+        srv.DebugHurt(a, -1, 9999, std::string(), 16, out);  // 부르는 도중에 죽인다
+        Check(!srv.IsAlive(a), "안 죽었다(이 시험의 전제)");
+        for (int t = 0; t < 80; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.pets() == 0, "죽었는데 소환수가 나왔다");
+    }
+    std::printf("  4-f — 소환 시전 시간 60·210·375 · 크기 합 한도 4(머릿수 아님) · 큰 것은 넷 · 죽으면 자리 빔 · 끝낼 때 다시 셈 · 몸 없으면 작은 것 · 남의 것 안 셈 · 시전자 죽으면 취소\n");
 }
 
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
@@ -9829,6 +10069,7 @@ int main() {
     TestShieldSpell();
     TestBlink();
     TestMarkTeleport();
+    TestSummonSpell();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

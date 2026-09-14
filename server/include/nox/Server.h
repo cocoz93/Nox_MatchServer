@@ -1137,6 +1137,11 @@ public:
         }
         return 0;
     }
+    // 시험용 — 불려 나온 것 하나를 그 자리에 바로 세운다(시전 시간을 안 거친다).
+    //   소환 한도처럼 「자리가 이미 차 있을 때」를 만들어야 하는 시험에 쓴다.
+    void DebugSpawnPet(uint16_t type, float x, float y, const std::string& owner) {
+        SpawnCreature(type, x, y, owner);
+    }
     // 시험용 — 그 사람의 소환수 체력(없으면 0). 위 손잡이가 왜 실패했는지 가르는 데 쓴다.
     uint16_t DebugOwnedPetHealth(const std::string& owner) const {
         for (const auto& k : pets_) if (k.owner == owner) return k.health;
@@ -1421,6 +1426,14 @@ public:
     uint16_t ManaOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.mana;
+    }
+    // 시험용 — 마나를 가득 채운다.
+    //   ⚠ 소환(75~114)은 **주문 정의의 마나를 안 쓴다** — blob_587000 217668 표(임프 30)다.
+    //     그래서 `RegSpell(…, 0)` 으로도 공짜가 안 되고, 여러 번 부르면 마나가 말라
+    //     「한도에 걸린 것」과 「마나가 없는 것」이 구별이 안 된다.
+    void DebugFillMana(const std::string& addr) {
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) it->second.mana = it->second.maxMana;
     }
     size_t CarriedCount(const std::string& addr) const {
         auto it = sessions_.find(addr);
@@ -1946,6 +1959,15 @@ private:
     int CastArachnaphobia(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);            // spellArachna_52DC80
     int CastPixieSwarm(uint8_t spell, Session& caster, int lvl, std::vector<OutPacket>& out);            // castPixies_540440
     int CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);                // castDeathRay(spell_death_ray.go:19)
+    // ── 묶음 4-f 소환 ──
+    // SummonSize — thing.bin 몬스터 갈래로 정한다: 작은 것 1 · 중간 2 · 큰 것 4(`object_monster.go:652`).
+    //   모르는 종류는 1 로 본다.
+    static constexpr int kSummonLimit = 4;   // summonLimit(`spell_summon.go:13`) — 크기 합 상한
+    int SummonSizeOf(uint16_t type) const;
+    // countControlledCreatures_500D10 — 그 사람이 **거느린** 것들의 크기 합.
+    int CountControlledCreatures(const std::string& owner) const;
+    int DurSummonCreate(DurSpell& d, std::vector<OutPacket>& out);                                     // summonStart_500DA0
+    int DurSummonTick(DurSpell& d, std::vector<OutPacket>& out);                                       // summonFinish_5010D0
     int CastMark(uint8_t spell, Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);    // sub_52CBD0
     int DurTeleMarkCreate(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_5305D0
     int DurTeleMarkTick(DurSpell& d, std::vector<OutPacket>& out);                                     // sub_530650
