@@ -5248,7 +5248,6 @@ void TestGreaterHeal() {
         srv.Tick(ms, out);
         srv.Damage(b, 30, out);
         const uint16_t bHp = srv.HealthOf(b);
-        const uint16_t aMana = srv.ManaOf(a);
         out.clear();
         srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
         CastAndWait(srv, a, 35, false, ms, out);
@@ -5260,11 +5259,13 @@ void TestGreaterHeal() {
         Check(ray != nullptr && ray->size() == 7 && (*ray)[1] == 6 &&
               ((*ray)[3] | ((*ray)[4] << 8)) == 729 && ((*ray)[5] | ((*ray)[6] << 8)) == 728,
               "치료 광선 `9e 06`(받는 쪽 앞)이 안 나갔다");
+        // ★ 마나는 **시전 뒤부터** 재야 틱 소모만 보인다 — 시전 비용(10)이 섮이면 「틱마다 1 안 씁」 돌연변이를 가린다
+        const uint16_t aManaAfterCast = srv.ManaOf(a);
         for (int t = 0; t < 8; ++t) { ms += 34; srv.Tick(ms, out); }
         const int healed = static_cast<int>(srv.HealthOf(b)) - static_cast<int>(bHp);
-        const int spent = static_cast<int>(aMana) - static_cast<int>(srv.ManaOf(a));
+        const int spent = static_cast<int>(aManaAfterCast) - static_cast<int>(srv.ManaOf(a));
         Check(healed >= 6 && healed <= 10, "대상 체력이 틱마다 1(레벨 3 → 1.0) 안 찼다");
-        Check(spent >= 6, "시전자 마나가 틱마다 1 안 줄었다");
+        Check(spent >= 6 && spent <= 10, "시전자 마나가 틱마다 1 안 줄었다(시전 비용 제외)");
     }
 
     // ② 적은 못 고친다 — create 가 취소한다
