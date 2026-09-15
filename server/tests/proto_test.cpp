@@ -15450,6 +15450,38 @@ void TestSecretWall() {
 // 정답지 `nox_xxx_updateShootingTrap_54F9A0`(`GAME5.c:6352`) ·
 //   `sub_54FBF0`·`sub_54FBB0`(살피기) · `createArrowTrapProjectile_54FA80`(쏘기) ·
 //   `sendArrowTrapFX_5238A0`(FX) · `collideMonsterArrow_4EB800`(닿음).
+// 묶음 11-c 전수조사 ⓓ — **길이표가 형제끼리 갈리지 않는다** (2026-09-16)
+//
+// 정답지 클라 디코더는 여러 오프코드가 **한 본문을 함께 쓴다**(`case A: case B: … { 본문 }`).
+// 한 본문이면 클라가 먹는 바이트 수도 같으므로 **우리 표의 값도 같아야 한다.**
+// E1 전수 대조(`scratchpad/p31/e1_cmp.py` · 최상위 case 145개)에서 셋이 **우리만 `-1`** 이었다.
+// `-1` 은 조각을 **통째로 버리게** 하므로 그대로 두면 그 FX 가 든 묶음이 전부 사라진다.
+void TestMsgLenSiblings() {
+    // ⭕ `cdecode.c:1561` — `case 125(0x7D) / 140(0x8C) / 141(0x8D) / 142(0x8E)` 가 한 본문 · `return 9`
+    {
+        const int plasma = nox::kMsgBodyLen[0x7D];
+        Check(plasma == 8, "0x7D FX_PLASMA 본문이 8 이 아니다");
+        Check(nox::kMsgBodyLen[0x8C] == plasma, "0x8C 가 0x7D 와 다르다(같은 본문인데)");
+        Check(nox::kMsgBodyLen[0x8D] == plasma, "0x8D 가 0x7D 와 다르다");
+        Check(nox::kMsgBodyLen[0x8E] == plasma, "0x8E 가 0x7D 와 다르다");
+    }
+    // ⭕ `cdecode.c:1921` — `case 0x9B / 0x9C / 0x9D` 가 한 본문 · `return 3`
+    {
+        const int gen = nox::kMsgBodyLen[0x9B];
+        Check(gen == 2, "0x9B FX_GENERATING_MAP 본문이 2 가 아니다");
+        Check(nox::kMsgBodyLen[0x9C] == gen, "0x9C 가 0x9B 와 다르다(같은 본문인데)");
+        Check(nox::kMsgBodyLen[0x9D] == gen, "0x9D 가 0x9B 와 다르다");
+    }
+    // ⚠ **가변이 맞는 것들은 -1 로 남아 있어야 한다** — 정답지도 갈래마다 길이가 다르다.
+    //   여기까지 값을 채우면 오히려 틀린다(지어내는 것이다).
+    {
+        const uint8_t vary[] = { 0xA4, 0xA9, 0xC4, 0xC9, 0xCC, 0xEE, 0xF0 };
+        for (uint8_t op : vary)
+            Check(nox::kMsgBodyLen[op] == -1, "갈래마다 길이가 다른 오프코드에 값이 박혔다");
+    }
+    std::printf("  11-c 길이표 — 한 본문을 쓰는 형제끼리 값이 같음 · 진짜 가변 7개는 -1 유지\n");
+}
+
 // 묶음 11-b 전수조사 ⓐ — **날아가는 것이 복합이면 덧붙이 한 바이트가 붙는다** (2026-09-16)
 //
 // 왜 — 여태 `missiles_` 를 **전부 SIMPLE 로 못 박아** 보냈다. `Magic`(955) 하나만 보고
@@ -19452,6 +19484,7 @@ int main() {
     TestSoundWire();
     TestSoundDebts();
     TestMusicWire();
+    TestMsgLenSiblings();
     TestMissileComplexWire();
     TestDebugXpAndSpell();
     TestLeaveNotify();

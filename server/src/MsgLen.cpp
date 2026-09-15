@@ -19,6 +19,16 @@
 //     **noxnet 표가 클라 코드와 다른 자리가 있다**(`0xae` 에서 이미 겪었다).
 //     다시 생성하면 이 33자리가 되돌아간다. **생성 전에 이 주석을 볼 것.**
 //
+// ★★ **2026-09-16 전수조사 E1 — 세 자리를 더 채웠다(33 → 36).**
+//   정답지 클라 디코더의 최상위 `case` **145개를 전수로** 뽑아 이 표와 맞댔다
+//   (도구 `scratchpad/p31/e1_cmp.py`). **어긋남 0 · 일치 135 · 가변 10.**
+//   가변 10 중 셋은 **형제와 같은 본문을 쓰는데 우리만 `-1`** 이었다 —
+//     `0x7D` 는 `0x8C·0x8D·0x8E` 와 한 본문(`return 9`) ⇒ 8
+//     `0x9B`·`0x9C` 는 `0x9D` 와 한 본문(`return 3`) ⇒ 2
+//   `-1` 은 조각을 **통째로 버리게** 하므로 이건 실제 손해였다.
+//   나머지 일곱(`0xA4`·`0xA9`·`0xC4`·`0xC9`·`0xCC`·`0xEE`·`0xF0`)은 **정답지도 갈래마다 길이가 달라**
+//   `-1` 이 맞다 — 표로 못 정하는 것들이다.
+//
 // 길이는 **오프코드를 뺀 본문**이다. 패킷 안에서 한 메시지가 차지하는 자리는
 // 1 + 이 값이다. -1 은 가변이라 표로 못 정하는 것 (Nox::MsgBodyLen 참조).
 #include "nox/MsgLen.h"
@@ -156,7 +166,7 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x7A */   -1,   // MSG_TRY_ABILITY
     /* 0x7B */   -1,   // MSG_TRY_COLLIDE
     /* 0x7C */   -1,   // MSG_FX_PARTICLEFX
-    /* 0x7D */   -1,   // MSG_FX_PLASMA
+    /* 0x7D */    8,   // MSG_FX_PLASMA          ← 09-16 E1: 0x8C·0x8D·0x8E 와 **같은 본문**(c:1561 `return 9`)
     /* 0x7E */   11,   // MSG_FX_SUMMON
     /* 0x7F */    2,   // MSG_FX_SUMMON_CANCEL
     /* 0x80 */    3,   // MSG_FX_SHIELD
@@ -186,8 +196,8 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x98 */   10,   // MSG_FX_GREEN_BOLT
     /* 0x99 */   -1,   // MSG_FX_GREEN_EXPLOSION
     /* 0x9A */    4,   // MSG_FX_WHITE_FLASH
-    /* 0x9B */   -1,   // MSG_FX_GENERATING_MAP
-    /* 0x9C */   -1,   // MSG_FX_ASSEMBLING_MAP
+    /* 0x9B */    2,   // MSG_FX_GENERATING_MAP  ← 09-16 E1: 0x9D 와 **같은 본문**(c:1921 `return 3`)
+    /* 0x9C */    2,   // MSG_FX_ASSEMBLING_MAP  ← 09-16 E1: 같은 본문
     /* 0x9D */    2,   // MSG_FX_POPULATING_MAP
     /* 0x9E */    6,   // MSG_FX_DURATION_SPELL
     /* 0x9F */    5,   // MSG_FX_DELTAZ_SPELL_START
