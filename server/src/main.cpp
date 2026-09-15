@@ -446,7 +446,10 @@ int main(int argc, char** argv) {
             //   `COLLIDE = SparkExplosionCollide 192` 의 숫자가 터짐 크기를 다 정하므로 **짐작하지 않는다**.
             //   ★ 묶음 6-g(3b) — **크리처가 쏘는 것**도 같은 자리에서 읽는다.
             //     `ImpShot` 은 `SPEED = 400` · `COLLIDE = ProjectileCollide 5` 다
-            for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "HarpoonBolt" }) {
+            //     ★ 묶음 9-b — **쏘는 덫이 쏘는 것**도 여기서 읽는다.
+            //       `MercArcherArrow` 는 `SPEED = 800` · `COLLIDE = MonsterArrowCollide 10 10` 이다
+            for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "HarpoonBolt",
+                                    "MercArcherArrow" }) {
                 const uint16_t w = tdb.WireByName(nm);
                 const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
                 int amount = 0;
@@ -468,6 +471,44 @@ int main(int argc, char** argv) {
                     if (o.type == "PlayerStart") starts.push_back({ o.x, o.y });
                 std::printf("[부활 자리] PlayerStart %zu곳\n", starts.size());
                 srv.SetPlayerStarts(std::move(starts));
+            }
+            // ★ 2026-09-15 묶음 9-b — **쏘는 덫 여섯 종류**(전부 `UPDATE = SkullUpdate`).
+            //   보는 쪽은 **맵이 아니라 `thing.bin` 의 `INIT = SkullInit <dx> <dy>`** 에 있다
+            //   (오브젝트 초기자료는 종류의 것을 복사한 것 · `server/object.go:343~346`).
+            //   (dx,dy) → 각도 표는 blob `0x587000 + 230072` 를 **직접 떠서** 읽은 값이다.
+            {
+                auto dirAngle = [](int dx, int dy) -> int {
+                    if (dy < 0) return dx < 0 ? 160 : (dx == 0 ? 192 : 224);
+                    if (dy == 0) return dx < 0 ? 128 : 0;
+                    return dx < 0 ? 96 : (dx == 0 ? 64 : 32);
+                };
+                // ⭕ `ArrowTrapDamage` 는 gamedata.bin 실측 **25**(ARENA·SOLO 둘 다). 못 읽으면 0 — 지어내지 않는다
+                int arrowDmg = 0;
+                {
+                    nox::Gamedata gdTrap;
+                    if (gdTrap.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\gamedata.bin"))
+                        arrowDmg = static_cast<int>(gdTrap.Float("ARENA", "ArrowTrapDamage", 0.0));
+                }
+                std::vector<nox::Server::ShootingTrapIn> traps;
+                for (const auto& o : objs) {
+                    const uint16_t w = tdb.WireByName(o.type);
+                    const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
+                    if (!t2 || t2->updateFn != "SkullUpdate" || t2->initArgs.empty()) continue;
+                    int dx = 0, dy = 0;
+                    if (std::sscanf(t2->initArgs.c_str(), "%d %d", &dx, &dy) != 2) continue;
+                    nox::Server::ShootingTrapIn tr;
+                    tr.x = o.x;
+                    tr.y = o.y;
+                    tr.facing = static_cast<uint8_t>(dirAngle(dx, dy));
+                    tr.proj = t2->updateArgs;
+                    // FX 와 피해 덮어쓰기는 **화살 덫에만** 붙는다(`GAME5.c:6377~6382·6432~6435`)
+                    if (o.type == "ArrowTrap1") { tr.fxKind = 1; tr.damage = arrowDmg; }
+                    else if (o.type == "ArrowTrap2") { tr.fxKind = 2; tr.damage = arrowDmg; }
+                    traps.push_back(tr);
+                }
+                if (!traps.empty())
+                    std::printf("[맵] 쏘는 덫 %zu개 · 화살 피해 %d\n", traps.size(), arrowDmg);
+                srv.SetShootingTraps(traps);
             }
             // ★ 4-e — 맵 길목(WayPoints). 점멸이 여기서 목적지를 고른다.
             //   `flags2 & 0x80`(오가는 이음이 있음) 이고 `flags & 1`(켜짐)인 것만.

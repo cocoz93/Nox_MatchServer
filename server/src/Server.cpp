@@ -8112,6 +8112,106 @@ void Server::ElimDeath(Session& victim, Session* killer, std::vector<OutPacket>&
 // ⭕ **받는 쪽은 애니를 안 돌린다** — 열림이면 칸을 23, 닫힘이면 0 으로 **툭 놓는다**
 //   (`cdecode.c:651·665`). 그래서 서버도 애니가 **끝난 뒤에야** 반대쪽을 보낸다.
 
+// ── 묶음 9-b 쏘는 덫 ─────────────────────────────────────────────────
+//
+// ⭕ 맵 실측 — `ArrowTrap1` 477(26맵) · `ArrowTrap2` 326(29맵) ·
+//   `Skull1` 9 · `Skull2` 8 · `Skull3` 30 · `Skull4` 36 → **합계 886**.
+// ⭕ gamedata `ArrowTrapDamage` = **25** · `MercArcherArrow` 속도 800 · 닿음 `MonsterArrowCollide 10 10`.
+//
+// 주기 `nox_xxx_updateShootingTrap_54F9A0` 를 그대로 옮긴다 —
+//   · 깃발에 **ENABLED**(0x1000000)가 없으면 아무것도 안 하고 「켜져 있었나」를 끈다
+//   · 켜진 첫 프레임이면 세는 값 둘을 0 으로
+//   · 살피는 값이 0 이면 **다시 살피고** 30프레임을 채운다
+//   · **겨눈 것이 있고 재는 값이 0**이면 쏘고 30프레임을 잰다
+//   · 두 값을 각각 1 씩 내린다
+void Server::SetShootingTraps(const std::vector<ShootingTrapIn>& list) {
+    traps_.clear();
+    traps_.reserve(list.size());
+    for (const ShootingTrapIn& in : list) {
+        ShootingTrap t;
+        t.x = in.x; t.y = in.y; t.facing = in.facing;
+        t.proj = in.proj; t.fxKind = in.fxKind; t.damage = in.damage;
+        traps_.push_back(t);
+    }
+}
+
+// `sub_54FBF0` — 덫 둘레 ±350 네모 안에 **겨눌 것**이 있나.
+//   ① 사람·소환수 ② 죽지 않았음 ③ 적 ④ 시야가 통함 ⑤ **덫이 보는 쪽**
+bool Server::TrapSeesEnemy(const ShootingTrap& t) const {
+    auto ok = [&](double ox, double oy) {
+        if (std::fabs(ox - t.x) > 350.0 || std::fabs(oy - t.y) > 350.0) return false;
+        // ⑤ `testTwoPointsAndDirection_4E6E50(덫자리, 덫방향, 상대자리) & 1`
+        if (!(TestTwoPointsAndDirection(t.x, t.y, t.facing, static_cast<float>(ox), static_cast<float>(oy)) & 1))
+            return false;
+        // ④ `mapCheck_537110` — 벽 시야선
+        return MapTraceRay(t.x, t.y, static_cast<float>(ox), static_cast<float>(oy), 0x9);
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.observer) continue;
+        if (o.moveState == 3 || o.moveState == 4) continue;   // 죽었으면 안 본다(+16 & 0x8020)
+        if (ok(o.posX, o.posY)) return true;
+    }
+    for (const auto& k : pets_) {
+        if (k.health == 0) continue;                      // 죽었으면 안 본다
+        if (ok(k.x, k.y)) return true;
+    }
+    return false;
+}
+
+// `nox_xxx_sendArrowTrapFX_5238A0` — **6바이트** `a1 | x i16 | y i16 | 갈래 u8`
+void Server::SendArrowTrapFx(float x, float y, uint8_t kind, std::vector<OutPacket>& out) {
+    const int16_t ix = static_cast<int16_t>(x), iy = static_cast<int16_t>(y);
+    const uint8_t msg[6] = { static_cast<uint8_t>(Op::FX_ARROW_TRAP),
+                             static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                             static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8), kind };
+    SendFxAllCli(x, y, msg, sizeof(msg), out);
+}
+
+// `nox_xxx_createArrowTrapProjectile_54FA80` — 덫 앞에 쏘는 것을 놓는다
+void Server::TrapShoot(ShootingTrap& t, std::vector<OutPacket>& out) {
+    const ProjTypeInfo* pt = ProjType(t.proj);
+    if (!pt || pt->type == 0) return;                        // 종류를 모르면 안 만든다(지어내지 않는다)
+    MissileObj m;
+    m.netCode = nextShotNetCode_++;
+    m.type = pt->type;
+    m.flags = pt->flags;
+    // 자리 = 덫 자리 + (반지름 + 4) × 방향단위벡터. 덫 반지름은 thing.bin EXTENT CIRCLE 8
+    const double r = 8.0 + 4.0;
+    m.posX = m.newX = m.prevX = static_cast<float>(t.x + DirVecX(t.facing) * r);
+    m.posY = m.newY = m.prevY = static_cast<float>(t.y + DirVecY(t.facing) * r);
+    m.dir1 = m.dir2 = t.facing;
+    m.createdFrame = m.frame136 = frame_;
+    m.speed = pt->speed;
+    m.velX = DirVecX(m.dir1) * m.speed;
+    m.velY = DirVecY(m.dir1) * m.speed;
+    // 닿음 갈래 — 화살은 `MonsterArrowCollide`(5), 불덩이는 `SparkExplosionCollide`(1)
+    m.collideKind = (t.damage != 0) ? 5 : 1;
+    m.collideAmount = (t.damage != 0) ? static_cast<uint8_t>(t.damage) : pt->collideAmount;
+    missiles_.push_back(m);
+    if (t.fxKind != 0) SendArrowTrapFx(t.x, t.y, t.fxKind, out);
+}
+
+void Server::ShootingTrapUpdate(std::vector<OutPacket>& out) {
+    for (ShootingTrap& t : traps_) {
+        if (!t.enabled) { t.wasEnabled = false; continue; }   // 깃발 0x1000000 이 없으면 아무것도 안 한다
+        if (!t.wasEnabled) { t.scanCountdown = 0; t.fireCountdown = 0; }
+        t.wasEnabled = true;
+        if (t.scanCountdown == 0) {                           // `sub_54FBB0` — 다시 살핀다
+            const bool sees = TrapSeesEnemy(t);
+            if (sees) { if (!t.armed) { t.armed = true; t.fireCountdown = 0; } }
+            else t.armed = false;
+            t.scanCountdown = kServerTickRate;                // `*v2 = gameFPS()`
+        }
+        if (t.armed && t.fireCountdown == 0) {
+            TrapShoot(t, out);
+            t.fireCountdown = kServerTickRate;                // `v2[1] = 30`
+        }
+        if (t.scanCountdown) --t.scanCountdown;
+        if (t.fireCountdown) --t.fireCountdown;
+    }
+}
+
 void Server::SetSecretWalls(const std::vector<SecretWallIn>& list) {
     secretWalls_.clear();
     for (auto& kv : sessions_) kv.second.secretSeen.clear();
@@ -10639,6 +10739,11 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                 DestroyMissile(i, out);
                 continue;
             }
+        } else if (m.collideKind == 5) {
+            // ①-f 묶음 9-b 화살 — `MercArcherArrow` 도 `UPDATE = ProjectileUpdate` 다(40틱).
+            //   정답지는 때가 되면 대상 없이 닿음 함수를 부르고, 그쪽은 맵에 피해를 주고 사라진다.
+            //   ⚠ 맵 피해(`damageToMap_534BC0`)는 아직 안 옷겼다 — 지금은 그냥 지운다
+            if (frame - m.createdFrame > 40u) { DestroyMissile(i, out); continue; }
         } else if (m.collideKind == 3) {
             // ①-d 묶음 6-g(3b) — `ImpShot` 도 `UPDATE = ProjectileUpdate` 다(불덩이와 같은 40틱).
             //   때가 되면 **대상 없이** 제 닿음 함수를 부르는데, 그쪽은 맵에 피해를 주고 사라진다.
@@ -10819,6 +10924,11 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     erased = true;
                     continue;
                 }
+                if (m.collideKind == 5) {                    // 9-b 화살 — 벽에 닿으면 사라진다
+                    DestroyMissile(i, out);
+                    erased = true;
+                    continue;
+                }
                 if (m.collideKind == 1) {                    // 불덩이는 벽에서도 터진다(fireballCollide 의 a2 == 0 갈래)
                     FireballExplode(m, Target{}, out);
                     DestroyMissile(i, out);
@@ -10892,6 +11002,19 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         handled = true;
                     }
                     // 7-f — 작살. 꽂히면 화살을 **살려 둔다**(줄이 된다)
+                    // `collideMonsterArrow_4EB800` — 맞는 것에 **종류 3**(꺿림) 피해를 주고 사라진다.
+                    //   ★ **적·아군을 안 가린다**(갈래 3 과 같다). 양은 `COLLIDE` 의 둘째 인자인데
+                    //   화살 덧은 그걸 `ArrowTrapDamage`(25)로 덮어 버린다(`GAME5.c:6432~6435`)
+                    if (!handled && m.collideKind == 5) {
+                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        AttackSrc src;
+                        src.x = m.posX; src.y = m.posY;
+                        src.byMonsterType = m.type;
+                        HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 3, &src);
+                        DestroyMissile(i, out);
+                        erased = true;
+                        handled = true;
+                    }
                     if (!handled && m.collideKind == 4) {
                         const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
                         if (!HarpoonCollide(m, tgt, out)) { erased = true; }
@@ -11715,6 +11838,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     UpdateFlags(out);
     UpdateBall(out);          // 8-d 플래그볼
     VoteUpdate(out);          // 8-e 투표
+    ShootingTrapUpdate(out);      // 9-b 쏘는 덫(화살 덫·해골)
     SecretWallUpdate(out);        // 9-a 비밀벅 상태 기계
     CheckVictorySurvivors(out);   // 8-g — 탈락전에서 하나만 남았나(`server.go:143`)
     if (gameSettings_.timeLimitFrames != 0 && frame_ >= gameSettings_.timeLimitFrames) RoundTimeUp(out);

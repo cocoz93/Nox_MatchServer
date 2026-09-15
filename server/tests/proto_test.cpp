@@ -15444,6 +15444,232 @@ void TestSecretWall() {
                 "알림은 끝난 뒤(3b/3c 3B) · 깃발 4+8 저절로 · 칸>11 안 막음 · 깃발 2 는 추적 통과\n");
 }
 
+// ── 묶음 9-b — 쏘는 덫(화살 덫·해골) ─────────────────────────────────
+//
+// 정답지 `nox_xxx_updateShootingTrap_54F9A0`(`GAME5.c:6352`) ·
+//   `sub_54FBF0`·`sub_54FBB0`(살피기) · `createArrowTrapProjectile_54FA80`(쏘기) ·
+//   `sendArrowTrapFX_5238A0`(FX) · `collideMonsterArrow_4EB800`(닿음).
+void TestShootingTrap() {
+    const std::string a = "10.9.2.1:9201";
+    // 덫은 (1000,1000) 에 두고 **동쪽(각 0)** 을 본다 — 사람을 동쪽에 두면 겨눈다
+    auto mk = [&](nox::Server& srv, uint8_t facing, const char* proj, uint8_t fx, int dmg) {
+        srv.SetProjType("MercArcherArrow", 528, 800, 0x4000u, 10);   // thing.bin 실측 SPEED 800
+        srv.SetProjType("StrongFireball", 700, 400, 0x4000u, 255);
+        nox::Server::ShootingTrapIn t;
+        t.x = 1000; t.y = 1000; t.facing = facing; t.proj = proj; t.fxKind = fx; t.damage = dmg;
+        srv.SetShootingTraps({ t });
+        srv.DebugEnterGame(a, 921);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+    };
+    auto fxCount = [&](const std::vector<nox::OutPacket>& out, uint8_t* kind, int16_t* fx, int16_t* fy) {
+        size_t n = 0;
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 6 && x[0] == static_cast<uint8_t>(nox::Op::FX_ARROW_TRAP)) {
+                ++n;
+                if (kind) *kind = x[5];
+                if (fx) *fx = static_cast<int16_t>(x[1] | (x[2] << 8));
+                if (fy) *fy = static_cast<int16_t>(x[3] | (x[4] << 8));
+            }
+        return n;
+    };
+
+    // ① **보는 쪽에 적이 있으면 쏜다** — 30틱마다 한 번
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1200, 1000);                   // 동쪽 200 — ±350 안이고 각 0 쪽
+        std::vector<nox::OutPacket> out;
+        Check(srv.MissileCount() == 0, "아직 안 쐈어야 한다");
+        srv.DebugShootingTrapUpdate(out);                 // 첫 틱에 살피고 곧바로 쏜다
+        Check(srv.DebugTrapArmed(0), "겨누지 않았다");
+        Check(srv.MissileCount() == 1, "한 발이 안 나갔다");
+        uint8_t kind = 0; int16_t fx = 0, fy = 0;
+        Check(fxCount(out, &kind, &fx, &fy) == 1, "FX 가 한 번이 아니다");
+        Check(kind == 1, "갈래가 1 이 아니다");
+        Check(fx == 1000 && fy == 1000, "FX 자리가 덫 자리가 아니다");
+        // 다음 29틱은 안 쏜다
+        for (int t = 0; t < 29; ++t) srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 1, "쉬는 동안 또 쐈다");
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 2, "30틱 뒤에 안 쐈다");
+    }
+
+    // ② **보는 쪽이 아니면 안 쏜다**
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 800, 1000);                    // 서쪽 — 각 0 의 뒤쪽
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(!srv.DebugTrapArmed(0), "뒤쪽인데 겨눴다");
+        Check(srv.MissileCount() == 0, "뒤쪽인데 쐈다");
+    }
+
+    // ③ **±350 밖이면 안 쏜다**
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1400, 1000);                   // 400 — 350 밖
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(!srv.DebugTrapArmed(0), "350 밖인데 겨눴다");
+        Check(srv.MissileCount() == 0, "350 밖인데 쐈다");
+    }
+
+    // ④ **관전자는 안 센다**
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugEnterGame("10.9.2.9:9209", 929, /*observer=*/true);
+        srv.DebugSetPos("10.9.2.9:9209", 1200, 1000);
+        srv.DebugSetPos(a, 1000, 1400);                   // 본인은 남쪽(각 0 이 아니다)
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(!srv.DebugTrapArmed(0), "관전자를 겨눴다");
+    }
+
+    // ⑤ **꺼진 덫은 아무것도 안 한다**(오브젝트 깃발 ENABLED)
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugTrapEnable(0, false);
+        std::vector<nox::OutPacket> out;
+        for (int t = 0; t < 40; ++t) srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 0, "꺼졌는데 쐈다");
+        Check(!srv.DebugTrapArmed(0), "꺼졌는데 겨눴다");
+        // 다시 켜면 **그 프레임에 바로** 살피고 쏜다(세는 값을 0 으로 되돌린다)
+        srv.DebugTrapEnable(0, true);
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 1, "다시 켰는데 안 쐈다");
+    }
+
+    // ⑥ **화살은 덫 앞(반지름 8 + 4)에 나고 방향 속도를 가진다**
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 1, "안 쐈다");
+        Check(srv.DebugMissileType(0) == 528, "화살 종류가 아니다");
+        Check(std::fabs(srv.DebugMissileX(0) - 1012.0f) < 0.5f, "덫 앞 12 에 안 났다");
+        Check(srv.DebugMissileDir(0) == 0, "화살 방향이 덫 방향이 아니다");
+        // ★ **피해는 `ArrowTrapDamage`(25)로 덮어쓴다** — thing.bin 의 닿음 인자(10)가 아니다
+        Check(srv.DebugMissileCollideAmount(0) == 25, "피해가 25 로 안 덮였다");
+    }
+    // ⑥-2 ★ **덫이 남쪽(각 64)을 보면 화살도 남쪽으로 난다**
+    {
+        nox::Server srv; mk(srv, 64, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1000, 1200);                   // 남쪽
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 1, "남쪽을 보는데 안 쐈다");
+        Check(srv.DebugMissileDir(0) == 64, "화살 방향이 64 가 아니다");
+        Check(std::fabs(srv.DebugMissileY(0) - 1012.0f) < 0.5f, "남쪽 앞 12 에 안 났다");
+        Check(std::fabs(srv.DebugMissileX(0) - 1000.0f) < 0.5f, "x 가 덫 자리가 아니다");
+    }
+    // ⑥-3 ★ **아무것도 안 맞으면 40틱에 사라진다**(`ProjectileUpdate`)
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 1, "안 쐈다");
+        srv.DebugSetPos(a, 4000, 4000);                   // 비켜 준다 — 화살이 아무것도 안 맞는다
+        uint32_t ms = 34;
+        for (int t = 0; t < 39; ++t) { srv.Tick(ms, out); ms += 34; }
+        Check(srv.MissileCount() == 1, "39틱인데 벌써 사라졌다");
+        srv.Tick(ms, out);
+        Check(srv.MissileCount() == 0, "40틱이 넘었는데 안 사라졌다");
+    }
+    // ⑥-4 ★ **벽이 가리면 안 겨눈다**(`mapCheck_537110` 시야선)
+    {
+        nox::Server srv;
+        srv.SetWallTiles({ nox::Server::WallTileIn{ 48, 43, 1, 0, false } });   // (1104,989) 근처
+        mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1200, 1000);                   // 벽 너머
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(!srv.DebugTrapArmed(0), "벽 너머인데 겨눴다");
+        Check(srv.MissileCount() == 0, "벽 너머인데 쐈다");
+    }
+    // ⑥-5 ★ **살피기는 30틱마다다** — 그 사이에 적이 들어와도 다음 살피기까지 안 겨눈다
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 800, 1000);                    // 처음엔 뒤쪽
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(!srv.DebugTrapArmed(0), "뒤쪽인데 겨눴다");
+        srv.DebugSetPos(a, 1200, 1000);                   // 앞으로 옮겨 온다
+        for (int t = 0; t < 29; ++t) srv.DebugShootingTrapUpdate(out);
+        Check(!srv.DebugTrapArmed(0), "29틱인데 벌써 다시 살폈다");
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.DebugTrapArmed(0), "30틱인데 다시 안 살폈다");
+    }
+    // ⑥-6 ★ **적이 사라지면 겨눔이 풀린다**
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.DebugTrapArmed(0), "안 겨눴다");
+        srv.DebugSetPos(a, 800, 1000);                    // 뒤로 간다
+        for (int t = 0; t < 30; ++t) srv.DebugShootingTrapUpdate(out);
+        Check(!srv.DebugTrapArmed(0), "적이 갔는데 겨눔이 안 풀렸다");
+        const size_t n = srv.MissileCount();
+        for (int t = 0; t < 40; ++t) srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == n, "겨눔이 풀렸는데 또 쐈다");
+    }
+    // ⑥-7 ★ **껐다 켜면 세는 값이 0 으로 돌아간다** — 쉬는 시간을 물려받지 않는다
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);                 // 한 발 쏜다 — 재는 값이 30 이 된다
+        Check(srv.MissileCount() == 1, "안 쐈다");
+        Check(srv.DebugTrapFireIn(0) > 0, "쉬는 시간이 안 잡혔다");
+        srv.DebugTrapEnable(0, false);
+        srv.DebugShootingTrapUpdate(out);
+        srv.DebugTrapEnable(0, true);
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 2, "껐다 켰는데 곧바로 안 쐈다");
+    }
+
+    // ⑦ **해골은 FX 를 안 보내고 불덩이를 쏜다**
+    {
+        nox::Server srv; mk(srv, 0, "StrongFireball", 0, 0);
+        srv.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 1, "해골이 안 쐈다");
+        Check(srv.DebugMissileType(0) == 700, "불덩이 종류가 아니다");
+        Check(fxCount(out, nullptr, nullptr, nullptr) == 0, "해골인데 FX 가 갔다");
+    }
+
+    // ⑧ **모르는 종류면 안 만든다**(지어내지 않는다)
+    {
+        nox::Server srv; mk(srv, 0, "NoSuchArrow", 1, 25);
+        srv.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        Check(srv.MissileCount() == 0, "모르는 종류인데 만들었다");
+        Check(fxCount(out, nullptr, nullptr, nullptr) == 0, "못 만들었는데 FX 가 갔다");
+    }
+
+    // ⑨ **화살이 맞으면 종류 3 피해를 주고 사라진다**
+    {
+        nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
+        srv.DebugSetPos(a, 1060, 1000);                   // 가까이 — 한두 틱에 닿는다
+        const int before = static_cast<int>(srv.HealthOf(a));
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        uint32_t ms = 34;
+        for (int t = 0; t < 6 && srv.MissileCount() > 0; ++t) { srv.Tick(ms, out); ms += 34; }
+        Check(srv.MissileCount() == 0, "화살이 안 사라졌다");
+        Check(static_cast<int>(srv.HealthOf(a)) < before, "피해가 안 들어갔다");
+        Check(srv.DebugLastDamageType(a) == 3, "피해 종류가 3 이 아니다");
+    }
+
+    std::printf("  9-b — 쏘는 덫: 30틱마다 살피고 겨누면 30틱마다 한 발 · ±350 · 보는 쪽만 · "
+                "앞 12 에 남 · a1 6바이트(화살만) · 해골은 조용히 불덩이 · 맞으면 종류 3\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -17693,6 +17919,7 @@ int main() {
     TestModeScoring();
     TestRoundTimeUp();
     TestSecretWall();
+    TestShootingTrap();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

@@ -135,6 +135,12 @@ struct ThingInfo {
     std::string updateArgs;
     std::string collideFn;
     std::string collideArgs;
+    // ★ 묶음 9-b — `INIT = SkullInit 0 -1` 꼴. **덫이 보는 쪽이 맵이 아니라 여기 있다.**
+    //   정답지에서 오브젝트의 초기자료(`+692`)는 **그 종류의 초기자료를 그대로 복사한 것**이고
+    //   (`server/object.go:343~346`), 맵의 기본 짐(`DefaultXfer`)은 그 값을 안 싣는다.
+    //   ⇒ 같은 종류의 덫은 **전부 같은 쪽**을 본다
+    std::string initFn;
+    std::string initArgs;
 };
 
 // '+' 로 이은 이름 목록 → 비트 (2026-09-13 묶음 2-c). 이름 순서 = 비트 순서

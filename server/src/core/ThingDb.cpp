@@ -461,6 +461,13 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                 const size_t sp = val.find(' ');
                 t.updateFn = (sp == std::string::npos) ? val : Trim(val.substr(0, sp));
                 if (sp != std::string::npos) t.updateArgs = Trim(val.substr(sp + 1));
+            } else if (key == "INIT") {
+                // ★ 묶음 9-b — `INIT = SkullInit 0 -1` 꼴. **덫이 보는 쪽이 여기 있다**(맵이 아니다).
+                //   정답지 `objectDirectionInitParse`(`server/object_type.go:836`)가 int32 둘로 읽고,
+                //   오브젝트는 만들어질 때 그 값을 **그대로 복사**한다(`server/object.go:343~346`)
+                const size_t sp = val.find(' ');
+                t.initFn = (sp == std::string::npos) ? val : Trim(val.substr(0, sp));
+                if (sp != std::string::npos) t.initArgs = Trim(val.substr(sp + 1));
             }
             // 그 밖의 키(HEALTH·SPEED·FLAGS…)는 값이 문자열 안에 들어 있어 걸음에 영향 없다
             if (c.bad) return false;

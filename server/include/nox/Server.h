@@ -1003,6 +1003,29 @@ public:
     // ⚠ 벽이 **실제로 있는 칸**에만 달린다 — 정답지도 `getWallAtGrid` 가 없으면 마디를 안 건다
     struct SecretWallIn { uint8_t gx = 0, gy = 0, flags = 0, state = 0, anim = 0; uint32_t waitSecs = 0; };
     void SetSecretWalls(const std::vector<SecretWallIn>& list);
+    // ── 묶음 9-b 쏘는 덫 ──────────────────────────────────────────────
+    //
+    // 정답지 — 주기 `nox_xxx_updateShootingTrap_54F9A0`(`GAME5.c:6352`) ·
+    //   살피기 `sub_54FBF0`·`sub_54FBB0`(`GAME5.c:6443·6456`) ·
+    //   화살 만들기 `nox_xxx_createArrowTrapProjectile_54FA80`(`GAME5.c:6399`) ·
+    //   FX `nox_xxx_sendArrowTrapFX_5238A0`(`GAME4_2.c:3966`).
+    //
+    // ⭕ **덫은 여섯 종류다**(thing.bin `INIT` 실측 · 전부 `UPDATE = SkullUpdate`) —
+    //   `ArrowTrap1`[1 1] · `ArrowTrap2`[-1 1] 은 `MercArcherArrow` 를,
+    //   `Skull1`[-1 -1] · `Skull2`[1 -1] · `Skull3`[-1 1] · `Skull4`[1 1] 은 `StrongFireball` 을 쏜다.
+    // ⭕ **보는 쪽은 맵이 아니라 종류에 붙어 있다** — 오브젝트 초기자료는 종류의 것을 **복사**한 것이고
+    //   (`server/object.go:343~346`) 맵의 기본 짐은 그 값을 안 싣는다. ⇒ 같은 종류는 전부 같은 쪽
+    struct ShootingTrapIn {
+        float x = 0, y = 0;
+        uint8_t facing = 0;            // 방향표(blob 0x587000+230072)로 옮긴 각도 0~255
+        std::string proj;              // 쏘는 것 이름(`UPDATE` 인자)
+        uint8_t fxKind = 0;            // 0 = FX 없음(해골) · 1 = ArrowTrap1 · 2 = ArrowTrap2
+        int damage = 0;                // 0 이 아니면 닿음 피해를 이 값으로 덮는다(화살 덫 = ArrowTrapDamage)
+    };
+    void SetShootingTraps(const std::vector<ShootingTrapIn>& list);
+    size_t ShootingTrapCount() const { return traps_.size(); }
+
+
 
     // ★★ **오브젝트끼리 충돌** (2026-09-13 묶음 2-c — 정답지 이식).
     //   장애물 = 맵 오브젝트 중 COLLIDE 가 있고 NO_COLLIDE 가 아니며 IMMOBILE 인 것(나무·오벨리스크…).
@@ -1937,6 +1960,14 @@ public:
         const SecretWall* w = SecretWallAt(gx, gy);
         return w ? static_cast<int>(w->anim) : -1;
     }
+    // 시험용 — 쏘는 덫
+    void DebugShootingTrapUpdate(std::vector<OutPacket>& out) { ShootingTrapUpdate(out); }
+    bool DebugTrapArmed(size_t i) const { return i < traps_.size() && traps_[i].armed; }
+    uint32_t DebugTrapFireIn(size_t i) const { return i < traps_.size() ? traps_[i].fireCountdown : 0u; }
+    void DebugTrapEnable(size_t i, bool on) { if (i < traps_.size()) traps_[i].enabled = on; }
+    uint8_t DebugMissileCollideAmount(size_t i) const { return i < missiles_.size() ? missiles_[i].collideAmount : 0; }
+    uint8_t DebugMissileDir(size_t i) const { return i < missiles_.size() ? missiles_[i].dir1 : 0; }
+    float DebugMissileY(size_t i) const { return i < missiles_.size() ? missiles_[i].posY : 0.0f; }
     void DebugSecretWallUpdate(std::vector<OutPacket>& out) { SecretWallUpdate(out); }
     void DebugSecretWallSync(const std::string& addr, std::vector<OutPacket>& out) {
         auto i = sessions_.find(addr);
@@ -2826,6 +2857,25 @@ private:
     void SecretWallSync(Session& s, std::vector<OutPacket>& out);
     void SecretWallSetState(SecretWall& w, uint8_t st);
     SecretWall* SecretWallAt(int gx, int gy);
+
+    // 묶음 9-b — 쏘는 덫(화살 덫·해골)
+    struct ShootingTrap {
+        float x = 0, y = 0;
+        uint8_t facing = 0;
+        std::string proj;
+        uint8_t fxKind = 0;
+        int damage = 0;
+        uint32_t scanCountdown = 0;    // +0 — 0 이면 다시 살핀다(살핀 뒤 30 프레임)
+        uint32_t fireCountdown = 0;    // +4 — 쏜 뒤 30 프레임
+        bool armed = false;            // +8 — 지금 겨눈 것이 있나
+        bool wasEnabled = false;       // +48 — 지난 프레임에 켜져 있었나
+        bool enabled = true;           // 오브젝트 깃발 ENABLED(0x1000000 · 비트 24)
+    };
+    std::vector<ShootingTrap> traps_;
+    void ShootingTrapUpdate(std::vector<OutPacket>& out);
+    bool TrapSeesEnemy(const ShootingTrap& t) const;
+    void TrapShoot(ShootingTrap& t, std::vector<OutPacket>& out);
+    void SendArrowTrapFx(float x, float y, uint8_t kind, std::vector<OutPacket>& out);
 
     // 묶음 8-e — 투표(0xEE)
     struct Vote {
