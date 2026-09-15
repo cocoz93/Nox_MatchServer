@@ -12,6 +12,7 @@ add_library(nox_proto STATIC
   server/src/Opcode.cpp
   server/src/MsgLen.cpp
   server/src/SpellNames.cpp
+  server/src/core/SoundNames.cpp
   server/src/ThingFlags.cpp
   server/src/Server.cpp
   server/src/DumpSniff.cpp

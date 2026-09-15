@@ -47,6 +47,20 @@ struct SpellRaw {
 // WALL 섹션 한 칸 — 벽 재질 정의 (2026-09-13 묶음 2-b).
 //   ⭕ 깃발 0x2 면 **막지 않는 벽**이다(`server/wall.go:1083` mapTraceRayImpl `flags2&0x2 != 0 → nil`).
 //   0x1 은 시야선용(Flag7) — 묶음 1 ⓓ3 에서 쓴다.
+// ★ 묶음 10-a — thing.bin `AUD ` 칸 한 항목. 소리마다 **얼마나 멀리 들리나**와
+//   **소리조각이 있나**가 여기 있다(`server/audio_event.go:300~322`).
+//   ⚠ `samples` 가 0 이면 정답지는 그 소리를 **아예 안 만든다**
+struct SoundDefRaw {
+    std::string name;
+    uint16_t flags = 0;       // 몬스터가 듣는 갈래를 가르는 깃발(0x20 걷기 · 0x40 달리기)
+    int      maxDist = 600;   // 15 × i16 — 파일 값이 0 이하면 정답지 기본 600
+    // ★ 0 이면 **그때그때 다 보낸다**. 0 이 아니면 그 소리는 **가장 큰 것 N개까지만** 간다
+    //   (`addToList` 가 세기 내림차순으로 줄을 세우고 `EachEventBitmap` 이 N개에서 끊는다).
+    //   실측 — `SecretWallOpen` 1 · `TriggerPressed` 5
+    uint8_t  merged = 0;      // = 정답지 `Field20`
+    int      samples = 0;     // 소리조각 수(= 정답지 `Field12`)
+};
+
 struct WallDefRaw {
     std::string name;
     uint32_t flags = 0;
@@ -174,6 +188,7 @@ public:
     const std::vector<SpellRaw>& Spells() const { return spells_; }
     // ── 벽 재질 (WALL 섹션) ── 맵 벽 재질 바이트 = 이 순번
     const std::vector<WallDefRaw>& Walls() const { return walls_; }
+    const std::vector<SoundDefRaw>& Sounds() const { return sounds_; }
     // ── 사람 애니 (THNG 의 DRAW = PlayerDraw) ── 없는 순번은 {0,0}(정답지도 0,0)
     const PlayerAnimFrames& PlayerAnim(int i) const {
         static const PlayerAnimFrames kNone;
@@ -197,6 +212,7 @@ private:
     std::vector<ThingInfo> things_;
     std::vector<SpellRaw> spells_;
     std::vector<WallDefRaw> walls_;
+    std::vector<SoundDefRaw> sounds_;
     PlayerAnimFrames playerAnims_[kPlayerAnimTypeCount];
     int playerAnimSeen_ = 0;   // 표에 담긴 STAT 수(진단)
     std::string error_;

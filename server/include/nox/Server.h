@@ -24,7 +24,8 @@
 
 #include "nox/Alias.h"
 #include "nox/GameBalance.h"   // 직업·레벨·정본 수치
-#include "nox/JoinBundle.h"   // 묶음 8-a GameSettings
+#include "nox/JoinBundle.h"
+#include "nox/SoundNames.h"   // 묶음 8-a GameSettings
 #include "nox/Messages.h"   // InformCode
 #include "nox/UpdateStream.h"
 #include "nox/Wire.h"
@@ -121,6 +122,10 @@ enum class PropKind : uint8_t { Door = 0, Obelisk, Plate };
 constexpr double kDoorOpenDist = 70.0;
 // ⭕ 묶음 9-c — 밟는 판의 반쪽 크기. thing.bin `PressurePlate` 의 `EXTENT BOX 45 45` 실측값 45 의 절반이다
 constexpr double kPlateHalf = 22.5;
+// ➖ 묶음 10-a — 소리 좌우 치우침을 재는 기준 폭(창너비/2).
+//   정답지는 **host 자신의 창**을 보는데 전용 서버엔 창이 없다 — 녹스 기본 640 의 절반.
+//   이 값은 **치우침에만** 쓰이고 들림 여부는 안 가른다
+constexpr int kSoundPanHalfWidth = 320;
 constexpr double kObeliskDist = 50.0;
 // 오벨리스크가 한 틱에 채우는 마나. ➖ 우리 값 — gamedata 에 오벨리스크 항목이 없고
 // 주석이 가리키는 `OblivionStaffRechargeRate = 2` 하나가 지팡이 쪽에서 겸한다.
@@ -997,6 +1002,22 @@ public:
     }
     void SetWallDefFlags(std::vector<uint32_t> f) { wallDefFlags_ = std::move(f); }
 
+    // ── 묶음 10-a 소리 ────────────────────────────────────────────────
+    //
+    // thing.bin `AUD ` 칸을 그대로 받는다(`ThingDb::Sounds`). 색인 = **소리 번호**.
+    // ⭕ 실측 — AUD 항목 **927개가 이름표 1,023개에 100% 맞물린다**(빗나감 0).
+    //   소리조각이 있는 것은 **810개**. 들리는 거리는 150~1500(기본 600)
+    struct SoundDefIn { uint16_t id = 0; int maxDist = 600; uint8_t merged = 0; int samples = 0; uint16_t flags = 0; };
+    void SetSoundDefs(const std::vector<SoundDefIn>& list);
+    size_t SoundDefCount() const { return soundDefs_.size(); }
+
+    // 소리 하나를 이 틱에 울린다 — `nox_xxx_audCreate_501A30`(자리) · `nox_xxx_aud_501960`(임자).
+    //   `kind` 0 = 볼 수 있는 모두 · **1 = 같은 팀만**(code = 팀 번호) · **2 = 그 한 사람만**(code = 번호).
+    //   `owner` 가 받는 사람 자신이면 오프코드가 `0xA7` 로 바뀐다
+    void PlaySoundAt(uint16_t id, float x, float y, uint8_t kind = 0, uint32_t code = 0,
+                     const std::string& owner = std::string());
+
+
     // ── 묶음 9-a 비밀벽 ────────────────────────────────────────────────
     //
     // 맵의 `SecretWalls` 칸(`MapFile::ReadSecretWalls`)을 받아 세운다.
@@ -1197,6 +1218,9 @@ public:
     void DebugPlateOneShot(uint16_t netCode, bool on) {
         for (auto& p : props_) if (p.netCode == netCode && p.kind == PropKind::Plate) p.trigOneShot = on;
     }
+    // 시험용 — 소리
+    size_t DebugAudioQueued() const { return audioEvents_.size(); }
+    void DebugFlushAudio(std::vector<OutPacket>& out) { FlushAudioEvents(out); }
     void DebugUpdateProps(std::vector<OutPacket>& out) { UpdateProps(out); }
     unsigned long long doorsOpened() const { return doorsOpened_; }
     unsigned long long obeliskMana() const { return obeliskMana_; }
@@ -2906,6 +2930,20 @@ private:
     bool TrapSeesEnemy(const ShootingTrap& t) const;
     void TrapShoot(ShootingTrap& t, std::vector<OutPacket>& out);
     void SendArrowTrapFx(float x, float y, uint8_t kind, std::vector<OutPacket>& out);
+
+    // 묶음 10-a — 소리
+    struct SoundDef { int maxDist = 0; uint8_t merged = 0; int samples = 0; uint16_t flags = 0; };
+    std::vector<SoundDef> soundDefs_;          // 색인 = 소리 번호(0 은 NULL)
+    struct AudioEvent {
+        uint16_t sound = 0;
+        float x = 0, y = 0;
+        uint8_t kind = 0;
+        uint32_t code = 0;
+        std::string owner;                     // 이 소리의 임자(사람 주소) — 있으면 그 사람에게는 0xA7
+    };
+    std::vector<AudioEvent> audioEvents_;
+    int SoundFadePerc(uint16_t id, float sx, float sy, double px, double py) const;
+    void FlushAudioEvents(std::vector<OutPacket>& out);
 
     // 묶음 8-e — 투표(0xEE)
     struct Vote {

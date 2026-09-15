@@ -140,16 +140,32 @@ void SkipWALL(Cur& c, std::vector<WallDefRaw>* out) {
 }
 
 // audio.go — ⚠ END 가 없다
-void SkipAUD(Cur& c) {
+//
+// ★ 2026-09-15 묶음 10-a — **건너뛰기만 하던 것을 담는다.** 걸음은 그대로다(맞았다).
+//   정답지 `serverAudio.ReadAUD`(`server/audio_event.go:300~322`) —
+//     이름(len8) · u16 깃발 · u8 · **i16 → 최대거리 = 15 × 그 값**(0 이하면 기본 600) ·
+//     u8(0 이 아니면 **한 소리로 묶어** 보낸다) · 건너뛰기 3 ·
+//     그다음 `u8 길이`+이름 을 0 이 나올 때까지 — **그 개수가 소리조각 수**
+//   ⚠ **소리조각 수가 0 이면 소리가 아예 안 난다**(`newAudioEventObj` 첫 문).
+//     기본값이 0 이라 이 칸을 안 읽으면 **한 개도 안 나간다**
+void SkipAUD(Cur& c, std::vector<SoundDefRaw>* out) {
     const int32_t n = static_cast<int32_t>(c.U32());
     for (int i = 0; i < n && !c.bad; ++i) {
-        c.SkipBytes8();
-        c.Skip(9);
+        SoundDefRaw d;
+        d.name = c.Str8();
+        d.flags = c.U16();
+        c.Skip(1);
+        const int16_t dist = static_cast<int16_t>(c.U16());
+        if (dist > 0) d.maxDist = 15 * static_cast<int>(dist);
+        d.merged = c.U8();
+        c.Skip(3);
         for (;;) {
             const uint8_t sz = c.U8();
             if (c.bad || sz == 0) break;
             c.Skip(sz);
+            ++d.samples;
         }
+        if (out && !c.bad) out->push_back(std::move(d));
     }
 }
 
@@ -528,6 +544,7 @@ uint32_t ParseObjectClass(const std::string& raw) { return ParseNameBits(raw, kC
 bool ThingDb::Load(const std::string& path) {
     things_.clear();
     walls_.clear();
+    sounds_.clear();
     error_.clear();
     for (auto& a : playerAnims_) a = PlayerAnimFrames{};
     playerAnimSeen_ = 0;
@@ -547,7 +564,7 @@ bool ThingDb::Load(const std::string& path) {
         if (sect == "FLOR") SkipFLOR(c);
         else if (sect == "EDGE") SkipEDGE(c);
         else if (sect == "WALL") SkipWALL(c, &walls_);
-        else if (sect == "AUD ") SkipAUD(c);
+        else if (sect == "AUD ") SkipAUD(c, &sounds_);
         else if (sect == "AVNT") SkipAVNT(c);
         else if (sect == "SPEL") SkipSPEL(c, &spells_);
         else if (sect == "ABIL") SkipABIL(c);

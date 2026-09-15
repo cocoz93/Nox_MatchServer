@@ -8263,6 +8263,9 @@ void Server::TrapShoot(ShootingTrap& t, std::vector<OutPacket>& out) {
     m.collideAmount = (t.damage != 0) ? static_cast<uint8_t>(t.damage) : pt->collideAmount;
     missiles_.push_back(m);
     if (t.fxKind != 0) SendArrowTrapFx(t.x, t.y, t.fxKind, out);
+    // 10-a — 쏘는 소리. 정답지 `createArrowTrapProjectile_54FA80` 이 `aud_501960(889, …)` 를 부른다.
+    //   ⭕ 889 = **`ArrowTrapShoot`**(이름표로 확인). 쏘는 것이 화살일 때만 울린다
+    if (t.proj == "MercArcherArrow") PlaySoundAt(889, t.x, t.y);
 }
 
 void Server::ShootingTrapUpdate(std::vector<OutPacket>& out) {
@@ -8283,6 +8286,104 @@ void Server::ShootingTrapUpdate(std::vector<OutPacket>& out) {
         if (t.scanCountdown) --t.scanCountdown;
         if (t.fireCountdown) --t.fireCountdown;
     }
+}
+
+// ── 묶음 10-a 소리 ───────────────────────────────────────────────────
+//
+// 정답지 — 담기 `newAudioEventObj`·`newAudioEventPos`(`server/audio_event.go:137·162`) ·
+//   고르기·보내기 `NetUpdateRemotePlrAudioEvents`(`src/audio_event.go:13`) ·
+//   와이어 `netSendAudioEvent`(`src/network.go:557`) · 거리 `soundFadePerc`(`src/unit_ai.go:386`).
+//
+// ⭕ **와이어는 4바이트다** —
+//   `[0]` 이 소리 임자가 **받는 사람 자신이면 `0xA7`**, 아니면 **`0xA6`**
+//   `[1]` = 좌우 치우침 `int8(50 × (소리x − 사람x) / (창너비/2))`
+//   `[2..3]` = u16 **`소리번호 | (세기 << 10)`**
+// ⭕ **소리 이름이 정확히 1,023개**라 아래 10비트에 딱 들어맞는다(`SoundNames.h`).
+// ⚠ **창너비는 우리 값이다**(➖). 정답지는 **host 자신의 창**을 보는데 전용 서버엔 창이 없다.
+//   녹스 기본 640 의 절반인 320 을 쓴다 — 이 값은 좌우 치우침에만 쓰이고 들림 여부는 안 가른다
+void Server::SetSoundDefs(const std::vector<SoundDefIn>& list) {
+    soundDefs_.assign(kSoundCount, SoundDef{});
+    for (const SoundDefIn& in : list) {
+        if (in.id == 0 || in.id >= kSoundCount) continue;
+        SoundDef& d = soundDefs_[in.id];
+        d.maxDist = in.maxDist;
+        d.merged = in.merged;
+        d.samples = in.samples;
+        d.flags = in.flags;
+    }
+}
+
+// `soundFadePerc` — 0~100. 최대거리 밖이면 0(= 안 보낸다)
+int Server::SoundFadePerc(uint16_t id, float sx, float sy, double px, double py) const {
+    if (id == 0 || id >= soundDefs_.size()) return 0;
+    const int max = soundDefs_[id].maxDist;
+    if (max <= 0) return 0;
+    const double dx = static_cast<double>(sx) - px;
+    const double dy = static_cast<double>(sy) - py;
+    if (std::fabs(dx) >= max || std::fabs(dy) >= max) return 0;
+    const int dist = static_cast<int>(std::sqrt(dy * dy + dx * dx + 0.1));
+    if (dist >= max) return 0;
+    int v = 100 * (max - dist) / max;
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;
+    return v;
+}
+
+void Server::PlaySoundAt(uint16_t id, float x, float y, uint8_t kind, uint32_t code,
+                         const std::string& owner) {
+    // ⚠ **소리조각이 0 이면 아예 안 만든다** — `newAudioEventPos` 의 `Field12 <= 0` 문.
+    //   thing.bin 을 안 읽었으면 표가 비어 있어 **한 개도 안 나간다**(정답지와 같다)
+    if (id == 0 || id >= soundDefs_.size() || soundDefs_[id].samples <= 0) return;
+    AudioEvent e;
+    e.sound = id;
+    e.x = x;
+    e.y = y;
+    e.kind = kind;
+    e.code = code;
+    e.owner = owner;
+    audioEvents_.push_back(std::move(e));
+}
+
+void Server::FlushAudioEvents(std::vector<OutPacket>& out) {
+    if (audioEvents_.empty()) return;
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) continue;
+        // 이 사람이 들을 것만 고른다
+        struct Cand { const AudioEvent* ev; int perc; };
+        std::vector<Cand> cand;
+        for (const AudioEvent& e : audioEvents_) {
+            if (e.kind == 1 && s.team != static_cast<uint8_t>(e.code)) continue;   // 같은 팀만
+            if (e.kind == 2 && s.netCode != static_cast<uint16_t>(e.code)) continue;  // 그 한 사람만
+            // ★ 세기는 **반으로 나눠** 싣는다(`fade / 2`) — 그래서 실리는 값은 0~50 이고 6비트에 든다
+            const int perc = SoundFadePerc(e.sound, e.x, e.y, s.posX, s.posY) / 2;
+            if (perc <= 0) continue;
+            cand.push_back(Cand{ &e, perc });
+        }
+        if (cand.empty()) continue;
+        // ★ `merged`(정답지 `Field20`)가 0 이 아닌 소리는 **가장 큰 것 N개까지만** 간다
+        //   (`addToList` 가 세기 내림차순 줄을 세우고 `EachEventBitmap` 이 N개에서 끊는다)
+        std::vector<size_t> order(cand.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) { return cand[a].perc > cand[b].perc; });
+        std::map<uint16_t, int> sent;
+        for (size_t i : order) {
+            const Cand& c = cand[i];
+            const uint8_t cap = soundDefs_[c.ev->sound].merged;
+            if (cap != 0 && ++sent[c.ev->sound] > cap) continue;
+            const double dx = static_cast<double>(c.ev->x) - s.posX;
+            const int8_t mv = static_cast<int8_t>(50 * static_cast<int>(dx) / kSoundPanHalfWidth);
+            const uint16_t packed = static_cast<uint16_t>(c.ev->sound | (c.perc << 10));
+            const uint8_t msg[4] = {
+                static_cast<uint8_t>((!c.ev->owner.empty() && c.ev->owner == s.addr)
+                                         ? Op::AUDIO_PLAYER_EVENT : Op::AUDIO_EVENT),
+                static_cast<uint8_t>(mv),
+                static_cast<uint8_t>(packed), static_cast<uint8_t>(packed >> 8) };
+            Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+        }
+    }
+    audioEvents_.clear();
 }
 
 void Server::SetSecretWalls(const std::vector<SecretWallIn>& list) {
@@ -8323,7 +8424,13 @@ void Server::SecretWallSetState(SecretWall& w, uint8_t st) {
     else if (st == 2) { if (w.state == 1 || w.state == 2) return; }
     else return;
     w.state = st;
-    // ⛔ 여닫는 소리(`wallFindOpenSound_410EE0`)는 묶음 10 이다
+    // 10-a — 여닫는 소리. 정답지 `Wall.open`·`close`(`src/wall.go:152·172`)가 그 자리에서 울린다.
+    //   ⚠ 정답지는 **벽 재질마다 소리가 다르다**(`wallFindOpenSound_410EE0`) —
+    //     재질별 이름표를 아직 안 읽었으므로 **맨밑 이름**(`SecretWallOpen`·`Close`)을 쓴다.
+    //     둘 다 thing.bin 에 있다(실측 — 들리는 거리 1500 · 한 번에 하나)
+    const float wx = static_cast<float>(w.gx * kWallCell + 11.5);
+    const float wy = static_cast<float>(w.gy * kWallCell + 11.5);
+    PlaySoundAt(SoundByName(st == 4 ? "SecretWallOpen" : "SecretWallClose"), wx, wy);
 }
 
 void Server::SendOpenWall(Session& to, uint16_t id, std::vector<OutPacket>& out) {
@@ -11911,6 +12018,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     UpdateFlags(out);
     UpdateBall(out);          // 8-d 플래그볼
     VoteUpdate(out);          // 8-e 투표
+    FlushAudioEvents(out);        // 10-a 이 틱에 울린 소리를 보낸다
     ShootingTrapUpdate(out);      // 9-b 쏘는 덫(화살 덫·해골)
     SecretWallUpdate(out);        // 9-a 비밀벅 상태 기계
     CheckVictorySurvivors(out);   // 8-g — 탈락전에서 하나만 남았나(`server.go:143`)

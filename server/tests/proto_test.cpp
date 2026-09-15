@@ -38,6 +38,7 @@ static void RegHarpoonBolt(nox::Server& srv) {
 #include "nox/NoxCrypt.h"
 #include "nox/BlowfishTables.h"
 #include "nox/MapFile.h"
+#include "nox/SoundNames.h"
 #include "nox/JoinBundle.h"
 
 namespace {
@@ -15841,6 +15842,222 @@ void TestPressurePlate() {
                 "바뀔 때만 · 소환수도 누름 · 꺼지면 멈춤 · 한 번 쓰고 끝은 5\n");
 }
 
+// ── 묶음 10-a — 소리 ─────────────────────────────────────────────────
+//
+// 정답지 — 담기 `newAudioEventPos`(`server/audio_event.go:162`) ·
+//   고르기 `NetUpdateRemotePlrAudioEvents`(`src/audio_event.go:13`) ·
+//   와이어 `netSendAudioEvent`(`src/network.go:557`) · 거리 `soundFadePerc`(`src/unit_ai.go:386`).
+void TestSoundWire() {
+    const std::string a = "10.10.1.1:1011";
+    const std::string b = "10.10.1.2:1012";
+    const uint16_t kSnd = 100, kFar = 101, kCap = 102;
+    auto mk = [&](nox::Server& srv) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        nox::Server::SoundDefIn d;
+        d.id = kSnd; d.maxDist = 600; d.merged = 0; d.samples = 1; sd.push_back(d);
+        d.id = kFar; d.maxDist = 600; d.merged = 0; d.samples = 0; sd.push_back(d);   // 소리조각 0
+        d.id = kCap; d.maxDist = 600; d.merged = 2; d.samples = 1; sd.push_back(d);   // 가장 큰 둘만
+        srv.SetSoundDefs(sd);
+        srv.DebugEnterGame(a, 1001);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+    };
+    auto grab = [&](const std::vector<nox::OutPacket>& out, const std::string& who,
+                    std::vector<std::vector<uint8_t>>& got) {
+        got.clear();
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && (x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) ||
+                                  x[0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)))
+                got.push_back(x);
+        return got.size();
+    };
+
+    // ① **번호와 세기가 한 u16 에 실린다** — 아래 10비트 번호 · 위 6비트 세기
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.PlaySoundAt(kSnd, 1000, 1000);            // 바로 그 자리 — 거리 0
+        srv.DebugFlushAudio(out);
+        std::vector<std::vector<uint8_t>> got;
+        Check(grab(out, a, got) == 1, "소리가 한 번이 아니다");
+        if (got.size() == 1) {
+            const uint16_t packed = static_cast<uint16_t>(got[0][2] | (got[0][3] << 8));
+            Check((packed & 0x3ff) == kSnd, "아래 10비트가 소리 번호가 아니다");
+            // 거리 0 → 세기 100 → 실리는 값은 **반인 50**
+            Check((packed >> 10) == 50, "세기가 50(=100/2)이 아니다");
+            Check(got[0][0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT), "임자가 없는데 0xA7 이 갔다");
+            Check(got[0][1] == 0, "같은 자리인데 좌우 치우침이 0 이 아니다");
+        }
+    }
+
+    // ② **임자가 받는 사람 자신이면 `0xA7`**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.PlaySoundAt(kSnd, 1000, 1000, 0, 0, a);
+        srv.DebugFlushAudio(out);
+        std::vector<std::vector<uint8_t>> got;
+        Check(grab(out, a, got) == 1, "소리가 안 갔다");
+        if (got.size() == 1) Check(got[0][0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT),
+                                   "제 소리인데 0xA6 이 갔다");
+        // 남에게는 0xA6
+        srv.DebugEnterGame(b, 1002);
+        srv.DebugSetPos(b, 1000, 1000);
+        out.clear();
+        srv.PlaySoundAt(kSnd, 1000, 1000, 0, 0, a);
+        srv.DebugFlushAudio(out);
+        Check(grab(out, b, got) == 1, "남에게 소리가 안 갔다");
+        if (got.size() == 1) Check(got[0][0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT),
+                                   "남의 소리인데 0xA7 이 갔다");
+    }
+
+    // ③ **세기는 거리로 준다** — 멀수록 작고, 최대거리 밖이면 **안 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.PlaySoundAt(kSnd, 1300, 1000);            // 300 — 최대 600 의 절반
+        srv.DebugFlushAudio(out);
+        std::vector<std::vector<uint8_t>> got;
+        Check(grab(out, a, got) == 1, "300 에서 소리가 안 갔다");
+        if (got.size() == 1) {
+            const uint16_t packed = static_cast<uint16_t>(got[0][2] | (got[0][3] << 8));
+            Check((packed >> 10) == 25, "300 에서 세기가 25 가 아니다");
+        }
+        out.clear();
+        srv.PlaySoundAt(kSnd, 1700, 1000);            // 700 — 최대 밖
+        srv.DebugFlushAudio(out);
+        Check(grab(out, a, got) == 0, "최대거리 밖인데 소리가 갔다");
+    }
+
+    // ④ **좌우 치우침** — `int8(50 × 떨어짐 / 320)`
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.PlaySoundAt(kSnd, 1320, 1000);            // 오른쪽 320 → 50
+        srv.DebugFlushAudio(out);
+        std::vector<std::vector<uint8_t>> got;
+        Check(grab(out, a, got) == 1, "소리가 안 갔다");
+        if (got.size() == 1) Check(static_cast<int8_t>(got[0][1]) == 50, "오른쪽 치우침이 50 이 아니다");
+        out.clear();
+        srv.PlaySoundAt(kSnd, 680, 1000);             // 왼쪽 320 → −50
+        srv.DebugFlushAudio(out);
+        Check(grab(out, a, got) == 1, "왼쪽 소리가 안 갔다");
+        if (got.size() == 1) Check(static_cast<int8_t>(got[0][1]) == -50, "왼쪽 치우침이 −50 이 아니다");
+    }
+
+    // ⑤ **소리조각이 0 이면 아예 안 만든다**(정답지 첫 문)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.PlaySoundAt(kFar, 1000, 1000);
+        Check(srv.DebugAudioQueued() == 0, "소리조각 0 인데 담겼다");
+        srv.DebugFlushAudio(out);
+        std::vector<std::vector<uint8_t>> got;
+        Check(grab(out, a, got) == 0, "소리조각 0 인데 갔다");
+        // 표에 아예 없는 번호도 마찬가지
+        srv.PlaySoundAt(999, 1000, 1000);
+        Check(srv.DebugAudioQueued() == 0, "표에 없는 번호가 담겼다");
+    }
+
+    // ⑥ **같은 팀만·그 한 사람만** 갈래
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugEnterGame(b, 1002);
+        srv.DebugSetPos(b, 1000, 1000);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 2);
+        std::vector<nox::OutPacket> out;
+        srv.PlaySoundAt(kSnd, 1000, 1000, /*kind=*/1, /*code=*/1);
+        srv.DebugFlushAudio(out);
+        std::vector<std::vector<uint8_t>> got;
+        Check(grab(out, a, got) == 1, "같은 팀인데 소리가 안 갔다");
+        Check(grab(out, b, got) == 0, "다른 팀인데 소리가 갔다");
+        out.clear();
+        srv.PlaySoundAt(kSnd, 1000, 1000, /*kind=*/2, /*code=*/1002);
+        srv.DebugFlushAudio(out);
+        Check(grab(out, a, got) == 0, "겨눈 사람이 아닌데 소리가 갔다");
+        Check(grab(out, b, got) == 1, "겨눈 사람에게 소리가 안 갔다");
+    }
+
+    // ⑦ **`merged` 가 N 이면 가장 큰 N개까지만 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.PlaySoundAt(kCap, 1000, 1000);            // 세기 50
+        srv.PlaySoundAt(kCap, 1300, 1000);            // 25
+        srv.PlaySoundAt(kCap, 1400, 1000);            // 약 16
+        srv.PlaySoundAt(kCap, 1500, 1000);            // 약 8
+        srv.DebugFlushAudio(out);
+        std::vector<std::vector<uint8_t>> got;
+        Check(grab(out, a, got) == 2, "가장 큰 둘만 가야 한다");
+        if (got.size() == 2) {
+            const uint16_t p0 = static_cast<uint16_t>(got[0][2] | (got[0][3] << 8));
+            const uint16_t p1 = static_cast<uint16_t>(got[1][2] | (got[1][3] << 8));
+            Check((p0 >> 10) == 50 && (p1 >> 10) == 25, "간 둘이 가장 큰 둘이 아니다");
+        }
+        // `merged` 가 0 인 소리는 넷 다 간다
+        out.clear();
+        srv.PlaySoundAt(kSnd, 1000, 1000);
+        srv.PlaySoundAt(kSnd, 1300, 1000);
+        srv.PlaySoundAt(kSnd, 1400, 1000);
+        srv.DebugFlushAudio(out);
+        Check(grab(out, a, got) == 3, "merged 0 인데 셋이 안 갔다");
+    }
+
+    // ⑧ **틱이 돌면 대기열이 비워진다**(같은 소리가 다음 틱에 또 안 간다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.PlaySoundAt(kSnd, 1000, 1000);
+        srv.Tick(34, out);
+        std::vector<std::vector<uint8_t>> got;
+        Check(grab(out, a, got) == 1, "틱에서 소리가 안 갔다");
+        out.clear();
+        srv.Tick(68, out);
+        Check(grab(out, a, got) == 0, "대기열이 안 비워졌다");
+    }
+
+    // ⑨ **thing.bin `AUD ` 칸을 실제로 읽는다** — 이름표와 맞물리는지가 걸음이 맞았다는 증거다
+    {
+        const char* kThing = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin";
+        FILE* probe = std::fopen(kThing, "rb");
+        if (!probe) {
+            std::printf("    소리 표 — 건너뜀 (thing.bin 없음)\n");
+        } else {
+            std::fclose(probe);
+            nox::ThingDb db;
+            Check(db.Load(kThing), "thing.bin 읽기 실패");
+            const auto& snd = db.Sounds();
+            // ⭕ 실측 — 항목 927개가 이름표 1,023개에 **100% 맞물린다**(빗나감 0)
+            Check(snd.size() == 927, "AUD 항목이 927개가 아니다");
+            size_t hit = 0, withSamples = 0;
+            for (const auto& d : snd) {
+                if (nox::SoundByName(d.name.c_str()) != 0) ++hit;
+                if (d.samples > 0) ++withSamples;
+            }
+            Check(hit == snd.size(), "이름표에 없는 소리가 있다 — 걸음이 밀렸나");
+            Check(withSamples == 810, "소리조각 있는 것이 810개가 아니다");
+            // 앞 묶음들이 쓴 번호가 뜻대로 풀리나
+            Check(std::strcmp(nox::SoundName(889), "ArrowTrapShoot") == 0, "889 가 ArrowTrapShoot 이 아니다");
+            Check(nox::kSoundCount == 1023, "이름표가 1,023개가 아니다");
+            // 실측 값 둘 — 비밀벽 여는 소리는 멀리(1500) 들리고 한 번에 하나만 간다
+            bool found = false;
+            for (const auto& d : snd)
+                if (d.name == "SecretWallOpen") {
+                    found = true;
+                    Check(d.maxDist == 1500, "SecretWallOpen 들리는 거리가 1500 이 아니다");
+                    Check(d.merged == 1, "SecretWallOpen 이 한 번에 하나가 아니다");
+                    Check(d.samples == 1, "SecretWallOpen 소리조각이 1 이 아니다");
+                }
+            Check(found, "SecretWallOpen 이 AUD 에 없다");
+        }
+    }
+
+    std::printf("  10-a — 소리: a6/a7 4바이트(치우침·번호|세기<<10) · 세기는 거리/2 · "
+                "최대거리 밖이면 안 감 · 조각 0 이면 안 만듦 · 팀·한 사람 갈래 · merged 는 큰 N개만\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -18092,6 +18309,7 @@ int main() {
     TestSecretWall();
     TestShootingTrap();
     TestPressurePlate();
+    TestSoundWire();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

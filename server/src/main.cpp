@@ -472,6 +472,29 @@ int main(int argc, char** argv) {
                 std::printf("[부활 자리] PlayerStart %zu곳\n", starts.size());
                 srv.SetPlayerStarts(std::move(starts));
             }
+            // ★ 2026-09-15 묶음 10-a — **소리 표**. thing.bin `AUD ` 칸 927개가
+            //   이름표 1,023개에 **100% 맞물린다**(빗나감 0 · 전수 확인).
+            //   ⚠ 이 표가 없으면 **소리가 한 개도 안 나간다**(소리조각 수 0 이 정답지의 첫 문이다)
+            {
+                std::vector<nox::Server::SoundDefIn> sd;
+                size_t miss = 0, withSamples = 0;
+                for (const auto& d : tdb.Sounds()) {
+                    const uint16_t id = nox::SoundByName(d.name.c_str());
+                    if (id == 0) { ++miss; continue; }
+                    nox::Server::SoundDefIn in;
+                    in.id = id;
+                    in.maxDist = d.maxDist;
+                    in.merged = d.merged;
+                    in.samples = d.samples;
+                    in.flags = d.flags;
+                    if (d.samples > 0) ++withSamples;
+                    sd.push_back(in);
+                }
+                srv.SetSoundDefs(sd);
+                std::printf("[소리] AUD %zu개 · 이름표에 맞물림 %zu · 소리조각 있는 것 %zu%s\n",
+                            tdb.Sounds().size(), sd.size(), withSamples,
+                            miss ? " ⚠ 이름표에 없는 것 있음" : "");
+            }
             // ★ 2026-09-15 묶음 9-b — **쏘는 덫 여섯 종류**(전부 `UPDATE = SkullUpdate`).
             //   보는 쪽은 **맵이 아니라 `thing.bin` 의 `INIT = SkullInit <dx> <dy>`** 에 있다
             //   (오브젝트 초기자료는 종류의 것을 복사한 것 · `server/object.go:343~346`).
