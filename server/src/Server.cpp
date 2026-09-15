@@ -1709,12 +1709,16 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 if (p.trigState == 1 && frame_ > p.trigReleaseFrame && !p.trigPressed) {
                     p.animFrame = 0;                                  // 뗐다
                     p.trigState = p.trigOneShot ? 5 : 0;
+                    // 10-b PlaySound: release sound from thing.bin UPDATE arg 2 (v1[10])
+                    if (p.sndReleased) PlaySoundAt(p.sndReleased, static_cast<float>(p.x), static_cast<float>(p.y));
                     // ⛔ 스크립트 9(`scriptCallByEventBlock`)·떼는 소리는 안 옮겼다
                 }
             } else if (p.trigPressed) {
                 p.animFrame = 1;                                      // 눌렸다
                 p.trigState = 1;
-                p.trigReleaseFrame = frame_;                          // v3 = 0
+                p.trigReleaseFrame = frame_;
+                // 10-b PlaySound: press sound from thing.bin UPDATE arg 1 (v1[9])
+                if (p.sndPressed) PlaySoundAt(p.sndPressed, static_cast<float>(p.x), static_cast<float>(p.y));                          // v3 = 0
                 // ⛔ 스크립트 8·누르는 소리는 안 옮겼다
             }
             p.trigPressed = false;                                    // `[0] &= 0xFE`
@@ -5586,6 +5590,15 @@ void Server::ShieldDrain(const Target& t, int amount, std::vector<OutPacket>& ou
 //   ⚠ 아직 안 옮긴 것 — 소리 131 · 방패 그림(netSendShieldFx_523670)
 void Server::ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const AttackSrc* src, std::vector<OutPacket>& out) {
     (void)dtype;
+    // 10-b PlaySound 131 ShieldRepelled — GAME4_2.c:11593 rings it first thing
+    if (!t.addr.empty()) {
+        auto si = sessions_.find(t.addr);
+        if (si != sessions_.end())
+            PlaySoundAt(131, static_cast<float>(si->second.posX), static_cast<float>(si->second.posY), 0, 0, t.addr);
+    } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+        const Creature& k = pets_[static_cast<size_t>(t.pet)];
+        PlaySoundAt(131, static_cast<float>(k.x), static_cast<float>(k.y));
+    }
     const int hp = TargetHealth(t);
     if (hp > dmg) {
         int half = dmg / 2;
@@ -6963,6 +6976,9 @@ bool Server::PlayerCheckLevel(Session& s) {
     if (next >= sizeof(kXPTable) / sizeof(kXPTable[0])) return false;
     if (kXPTable[next] > s.experience) return false;
     ++s.level;
+    // 10-b PlaySound 902 LevelUp — pausefx.c:59 uses kind 2 (only that player hears it)
+    //   ★ `aud_501960` 은 **오브젝트**를 받는다 — 그 오브젝트가 받는 사람이면 와이어가 **0xA7** 로 바뀜다
+    PlaySoundAt(902, static_cast<float>(s.posX), static_cast<float>(s.posY), /*kind=*/2, s.netCode, s.addr);
     // `plrReadVals_4EEDC0(a1, 1)` — 딸린 값 다시 셈.
     //   ⚠ 우리 온라인 값은 **직업으로 고정**이라(접속 때 `HealthOnline` 따위) 레벨로 바뀌는 것이 없다.
     //     그래서 다시 셀 것이 없고 **「바뀌었다」 표시만** 세운다(스냅샷 꼬리가 싣고 끈다)
@@ -7031,6 +7047,8 @@ bool Server::SpellGrantToPlayer(Session& s, uint8_t spell, uint8_t announce, boo
     // 퀘스트면 목록의 17종은 한 번만
     if (coopOrQuest && SpellQuestOnce(spell) && s.spellLvl[spell] != 0) return false;
 
+    // 10-b PlaySound 226 AwardSpell — plyrspel.c:142 rings it only when announce is set
+    if (announce) PlaySoundAt(226, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
     ++s.spellLvl[spell];
     if (s.spellLvl[spell] > 5) s.spellLvl[spell] = 5;
     if (coopOrQuest && s.spellLvl[spell] > 3) s.spellLvl[spell] = 3;
@@ -7632,7 +7650,9 @@ bool Server::GuideAward(Session& s, uint8_t guide, bool announce, std::vector<Ou
     if (guide == 0 || guide >= 41) return false;         // "AwardGuideError"(글줄은 묶음 10)
     if (s.guideLvl[guide] != 0) return false;            // 이미 있으면 조용히
     s.guideLvl[guide] = 1;
-    // ⛔ 소리 227 과 보상 알림(나·남들)은 묶음 10
+    // 10-b PlaySound 227 AwardGuide — plyrgide.c:65, kind 0 (everyone nearby)
+    PlaySoundAt(227, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
+    // ⛔ 보상 알림(나·남들)은 글줄이라 아직이다
     if (guide == kGuideGroupLead) {
         for (uint8_t g : kGuideGroupRest) s.guideLvl[g] = 1;
     }
@@ -7860,7 +7880,9 @@ void Server::UpdateBall(std::vector<OutPacket>& out) {
         if (!s.inGame || s.respawnAtFrame != 0 || s.team == 0) continue;
         const double dx = b.x - s.x, dy = b.y - s.y;
         if (b.carrier.empty() && dx * dx + dy * dy <= kFlagTouchRange * kFlagTouchRange) {
-            b.carrier = kv.first;                        // 줍는다
+            b.carrier = kv.first;
+            // 10-b PlaySound 927 BallGrab — GAME3_3.c:5446, kind 0
+            PlaySoundAt(927, static_cast<float>(b.x), static_cast<float>(b.y));                        // 줍는다
             b.atHome = false;
             SendBallStatus(out);
         }
@@ -7871,6 +7893,8 @@ void Server::UpdateBall(std::vector<OutPacket>& out) {
             if (TeamAfter(g.team) != s.team) continue;   // **다음 팀**만 넣을 수 있다
             const double gx = g.x - s.x, gy = g.y - s.y;
             if (gx * gx + gy * gy > kFlagTouchRange * kFlagTouchRange) continue;
+            // 10-b PlaySound 929 BallHitGoal — GAME3_3.c:4727, kind 0
+            PlaySoundAt(929, static_cast<float>(g.x), static_cast<float>(g.y));
             ChangeScore(s, +1, out);                     // 사람 점수
             if (const Team* t = TeamById(s.team))        // 팀 점수
                 TeamChangeScore(s.team, t->score + 1, out);
@@ -12018,12 +12042,15 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     UpdateFlags(out);
     UpdateBall(out);          // 8-d 플래그볼
     VoteUpdate(out);          // 8-e 투표
-    FlushAudioEvents(out);        // 10-a 이 틱에 울린 소리를 보낸다
     ShootingTrapUpdate(out);      // 9-b 쏘는 덫(화살 덫·해골)
     SecretWallUpdate(out);        // 9-a 비밀벅 상태 기계
     CheckVictorySurvivors(out);   // 8-g — 탈락전에서 하나만 남았나(`server.go:143`)
     if (gameSettings_.timeLimitFrames != 0 && frame_ >= gameSettings_.timeLimitFrames) RoundTimeUp(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
+    // 10-a — 이 틱에 울린 소리를 보낸다.
+    //   ★ **모든 갱신이 끝난 뒤에야** 한다 — 정답지도 분배자에서 모아 보낸다
+    //   (`NetUpdateRemotePlrAudioEvents`). 앞에 두면 그 틱에 울린 소리가 **한 틱 늦는다**
+    FlushAudioEvents(out);
 
     // (4-a4) 무적 켜짐·꺼짐 비교 루프는 걷어냄 — 버프가 바뀌는 자리(setUnitBuffFlags)가 곧바로 `5a` 를 올린다
 

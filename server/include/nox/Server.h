@@ -1193,6 +1193,10 @@ public:
         bool     trigWasEnabled = false;  // [0] & 8
         bool     enabled = true;      // 오브젝트 깃발 ENABLED(0x1000000)
         uint8_t  animFrame = 0;       // +132 — `servMarkObjAnimFrame` 이 넣는 칸(0 놓임 · 1 눌림)
+        // ★ 묶음 10-b — 누르고 떼는 소리 번호. thing.bin `UPDATE = TriggerUpdate <누름> <뗌>` 의
+        //   두 이름을 `SoundByName` 으로 바꾼 것이다(정답지 `v1[9]`·`v1[10]`).
+        //   실측 — `PressurePlate` 는 `TriggerPressed`(750) · `TriggerReleased`(751)
+        uint16_t sndPressed = 0, sndReleased = 0;
     };
     void SetWorldProps(std::vector<WorldProp> v) { props_ = std::move(v); }
     size_t WorldPropCount() const { return props_.size(); }

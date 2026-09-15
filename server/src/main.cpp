@@ -567,6 +567,16 @@ int main(int argc, char** argv) {
                         wp.y = static_cast<int>(objs[i].y);
                         wp.kind = isPlate ? nox::PropKind::Plate
                                           : (isDoor ? nox::PropKind::Door : nox::PropKind::Obelisk);
+                        // ★ 묶음 10-b — 누르고 떼는 소리는 `UPDATE = TriggerUpdate <누름> <뗌>` 에 있다.
+                        //   ⭕ 실측 — `PressurePlate` 는 `TriggerPressed`(750) · `TriggerReleased`(751)
+                        if (isPlate && ti) {
+                            const std::string& ua = ti->updateArgs;
+                            const size_t sp = ua.find(' ');
+                            if (sp != std::string::npos) {
+                                wp.sndPressed = nox::SoundByName(ua.substr(0, sp).c_str());
+                                wp.sndReleased = nox::SoundByName(ua.substr(sp + 1).c_str());
+                            }
+                        }
                         props.push_back(wp);
                         continue;
                     }

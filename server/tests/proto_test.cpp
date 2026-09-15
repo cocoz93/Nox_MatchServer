@@ -16058,6 +16058,253 @@ void TestSoundWire() {
                 "최대거리 밖이면 안 감 · 조각 0 이면 안 만듦 · 팀·한 사람 갈래 · merged 는 큰 N개만\n");
 }
 
+// ── 묶음 10-b — 미뤄 둔 소리 갚기 ────────────────────────────────────
+//
+// 앞 묶음들이 「소리는 묶음 10」이라 적고 넘어간 자리에 소리를 붙였다.
+// ⭕ 번호는 전부 **정답지 C 에 적힌 그대로**이고, 이름표로 뜻이 맞는지 확인했다 —
+//   902 `LevelUp` · 226 `AwardSpell` · 227 `AwardGuide` · 131 `ShieldRepelled` ·
+//   927 `BallGrab` · 929 `BallHitGoal` · 889 `ArrowTrapShoot` · 750·751 `Trigger*`
+void TestSoundDebts() {
+    const std::string a = "10.10.2.1:1021";
+    // 쓰는 소리를 전부 「있는 것」으로 세워 둔다(소리조각 0 이면 안 나가는 것이 규칙이라)
+    auto defs = [&](nox::Server& srv) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id : { 902, 226, 227, 131, 927, 929, 889, 750, 751 }) {
+            nox::Server::SoundDefIn d;
+            d.id = id; d.maxDist = 600; d.merged = 0; d.samples = 1;
+            sd.push_back(d);
+        }
+        srv.SetSoundDefs(sd);
+    };
+    auto rang = [&](const std::vector<nox::OutPacket>& out, uint16_t want, uint8_t* op) {
+        for (const auto& x : FlattenTo(out, a)) {
+            if (x.size() != 4) continue;
+            if (x[0] != static_cast<uint8_t>(nox::Op::AUDIO_EVENT) &&
+                x[0] != static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) continue;
+            const uint16_t packed = static_cast<uint16_t>(x[2] | (x[3] << 8));
+            if ((packed & 0x3ff) == want) { if (op) *op = x[0]; return true; }
+        }
+        return false;
+    };
+
+    // ① **이름표가 뜻대로 풀린다** — 번호를 지어내지 않았다는 증거
+    Check(std::strcmp(nox::SoundName(902), "LevelUp") == 0, "902 가 LevelUp 이 아니다");
+    Check(std::strcmp(nox::SoundName(226), "AwardSpell") == 0, "226 이 AwardSpell 이 아니다");
+    Check(std::strcmp(nox::SoundName(227), "AwardGuide") == 0, "227 이 AwardGuide 가 아니다");
+    Check(std::strcmp(nox::SoundName(131), "ShieldRepelled") == 0, "131 이 ShieldRepelled 가 아니다");
+    Check(std::strcmp(nox::SoundName(927), "BallGrab") == 0, "927 이 BallGrab 이 아니다");
+    Check(std::strcmp(nox::SoundName(929), "BallHitGoal") == 0, "929 가 BallHitGoal 이 아니다");
+    Check(std::strcmp(nox::SoundName(750), "TriggerPressed") == 0, "750 이 TriggerPressed 가 아니다");
+    Check(std::strcmp(nox::SoundName(751), "TriggerReleased") == 0, "751 이 TriggerReleased 가 아니다");
+
+    // ② **레벨이 오르면 902 가 「그 사람에게만」 간다**(정답지 `pausefx.c:59` 가 갈래 2)
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1021);
+        srv.DebugSetPos(a, 1000, 1000);
+        const std::string b = "10.10.2.2:1022";
+        srv.DebugEnterGame(b, 1022);
+        srv.DebugSetPos(b, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGiveExp(a, 100000.0f, out);           // 한 단계는 확실히 오른다
+        srv.Tick(34, out);                             // ← 소리는 **틱 끝**에 나간다
+        uint8_t op = 0;
+        Check(rang(out, 902, &op), "레벨이 올랐는데 902 가 안 울렸다");
+        Check(op == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT), "제 레벨업인데 0xA6 이 갔다");
+        // 옆 사람에게는 안 간다(갈래 2)
+        size_t n = 0;
+        for (const auto& x : FlattenTo(out, b))
+            if (x.size() == 4 && (x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) ||
+                                  x[0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) &&
+                ((x[2] | (x[3] << 8)) & 0x3ff) == 902) ++n;
+        Check(n == 0, "갈래 2 인데 옆 사람도 들었다");
+    }
+
+    // ③ **주문을 알리며 받으면 226** — 조용히 받으면 안 울린다(`plyrspel.c:142` 는 `a3` 일 때만)
+    {
+        nox::Server srv; defs(srv);
+        RegSpell(srv, 27);
+        srv.DebugEnterGame(a, 1021);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGrantSpell(a, 27, /*announce=*/0, false, 0, out);
+        srv.Tick(34, out);
+        Check(!rang(out, 226, nullptr), "조용히 받았는데 226 이 울렸다");
+        out.clear();
+        srv.DebugGrantSpell(a, 27, /*announce=*/1, false, 0, out);
+        srv.Tick(68, out);
+        Check(rang(out, 226, nullptr), "알리며 받았는데 226 이 안 울렸다");
+    }
+
+    // ④ **안내서를 받으면 227**
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1021);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugGuideAward(a, 3, true, out);
+        srv.Tick(34, out);
+        Check(rang(out, 227, nullptr), "안내서를 받았는데 227 이 안 울렸다");
+        // 이미 있으면 조용히 실패 — 소리도 안 난다
+        out.clear();
+        srv.DebugGuideAward(a, 3, true, out);
+        srv.Tick(68, out);
+        Check(!rang(out, 227, nullptr), "이미 있는데 227 이 또 울렸다");
+    }
+
+    // ⑤ **밟는 판이 누르고 뗄 때 750·751**
+    {
+        nox::Server srv; defs(srv);
+        nox::Server::WorldProp wp;
+        wp.netCode = 600; wp.type = 734; wp.x = 1000; wp.y = 1000;
+        wp.kind = nox::PropKind::Plate;
+        wp.sndPressed = 750; wp.sndReleased = 751;
+        srv.SetWorldProps({ wp });
+        srv.DebugEnterGame(a, 1021);
+        srv.DebugSetPos(a, 1500, 1500);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 34;
+        srv.DebugSetPos(a, 1000, 1000);
+        srv.Tick(ms, out); ms += 34;
+        Check(rang(out, 750, nullptr), "밟았는데 750 이 안 울렸다");
+        out.clear();
+        srv.DebugSetPos(a, 1100, 1000);                // 판에서 내려온다(소리는 들리는 거리 안)
+        srv.Tick(ms, out); ms += 34;
+        Check(rang(out, 751, nullptr), "내려왔는데 751 이 안 울렸다");
+    }
+
+    // ⑥ **방패로 막으면 131** — 마법 방패(26)가 걸린 사람이 맞을 때
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1021);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugApplyEnchant(a, 26, 600, 50);
+        srv.DebugHurt(a, -1, 10, std::string(), 0, out);
+        srv.Tick(34, out);
+        Check(rang(out, 131, nullptr), "방패로 막았는데 131 이 안 울렸다");
+    }
+
+    // ⑦ **화살 덫이 쏘면 889** — 해골(불덩이)은 안 울린다
+    {
+        nox::Server srv; defs(srv);
+        srv.SetProjType("MercArcherArrow", 528, 800, 0x4000u, 10);
+        nox::Server::ShootingTrapIn t;
+        t.x = 1000; t.y = 1000; t.facing = 0; t.proj = "MercArcherArrow"; t.fxKind = 1; t.damage = 25;
+        srv.SetShootingTraps({ t });
+        srv.DebugEnterGame(a, 1021);
+        srv.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);
+        srv.Tick(34, out);
+        Check(rang(out, 889, nullptr), "화살 덫이 쐈는데 889 가 안 울렸다");
+
+        nox::Server s2; defs(s2);
+        s2.SetProjType("StrongFireball", 700, 400, 0x4000u, 255);
+        nox::Server::ShootingTrapIn t2;
+        t2.x = 1000; t2.y = 1000; t2.facing = 0; t2.proj = "StrongFireball"; t2.fxKind = 0; t2.damage = 0;
+        s2.SetShootingTraps({ t2 });
+        s2.DebugEnterGame(a, 1021);
+        s2.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> w2; s2.Tick(0, w2);
+        std::vector<nox::OutPacket> o2;
+        s2.DebugShootingTrapUpdate(o2);
+        s2.Tick(34, o2);
+        Check(!rang(o2, 889, nullptr), "해골인데 889 가 울렸다");
+    }
+
+    // ⑧ **비밀벽을 열 때와 닫을 때 소리가 다르다**
+    {
+        nox::Server srv;
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (const char* nm : { "SecretWallOpen", "SecretWallClose" }) {
+            nox::Server::SoundDefIn d;
+            d.id = nox::SoundByName(nm); d.maxDist = 1500; d.merged = 0; d.samples = 1;
+            sd.push_back(d);
+        }
+        srv.SetSoundDefs(sd);
+        srv.SetWallTiles({ nox::Server::WallTileIn{ 44, 43, 1, 0, false } });
+        nox::Server::SecretWallIn sw;
+        sw.gx = 44; sw.gy = 43; sw.flags = 0; sw.state = 1; sw.anim = 0; sw.waitSecs = 2;
+        srv.SetSecretWalls({ sw });
+        srv.DebugEnterGame(a, 1021);
+        srv.DebugSetPos(a, 44 * 23, 43 * 23);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.WallOpen(44, 43);
+        srv.Tick(34, out);
+        Check(rang(out, nox::SoundByName("SecretWallOpen"), nullptr), "여는데 소리가 안 울렸다");
+        Check(!rang(out, nox::SoundByName("SecretWallClose"), nullptr), "여는데 닫는 소리가 울렸다");
+        for (int k = 0; k < 24; ++k) srv.DebugSecretWallUpdate(out);
+        out.clear();
+        srv.WallClose(44, 43);
+        srv.Tick(68, out);
+        Check(rang(out, nox::SoundByName("SecretWallClose"), nullptr), "닫는데 소리가 안 울렸다");
+    }
+
+    // ⑨ **공을 줍고 넣으면 927·929**
+    {
+        nox::Server srv; defs(srv);
+        const std::string b2 = "10.10.2.3:1023";
+        srv.DebugEnterGame(a, 1021);
+        srv.DebugEnterGame(b2, 1023);
+        srv.DebugSetPos(a, 5000, 5000);
+        srv.DebugSetPos(b2, 5200, 5200);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+        srv.DebugSendTeamState(w);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b2, 2);
+        // 공 하나와 골대 하나(2팀 골대 — 1팀이 넣는다)
+        srv.StartFlagBall(1000, 1000, 900, 1000, 1100, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPos(a, 1000, 1000);                   // 공 위로
+        srv.Tick(34, out);
+        Check(rang(out, 927, nullptr), "공을 주웠는데 927 이 안 울렸다");
+        out.clear();
+        srv.DebugSetPos(a, 1100, 1000);                   // 골대로
+        srv.Tick(68, out);
+        Check(rang(out, 929, nullptr), "골을 넣었는데 929 가 안 울렸다");
+    }
+
+    // ⑩ **밟는 판 소리 이름은 thing.bin `UPDATE` 인자에서 온다**
+    {
+        const char* kThing = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin";
+        FILE* probe = std::fopen(kThing, "rb");
+        if (!probe) {
+            std::printf("    판 소리 이름 — 건너뜀 (thing.bin 없음)\n");
+        } else {
+            std::fclose(probe);
+            nox::ThingDb db;
+            Check(db.Load(kThing), "thing.bin 읽기 실패");
+            const uint16_t wire = db.WireByName("PressurePlate");
+            const nox::ThingInfo* ti = wire ? db.ByWire(wire) : nullptr;
+            Check(ti != nullptr, "PressurePlate 가 없다");
+            if (ti) {
+                // ⭕ 실측 — `UPDATE = TriggerUpdate TriggerPressed TriggerReleased`
+                const std::string& ua = ti->updateArgs;
+                const size_t sp = ua.find(' ');
+                Check(sp != std::string::npos, "UPDATE 인자가 둘이 아니다");
+                if (sp != std::string::npos) {
+                    Check(nox::SoundByName(ua.substr(0, sp).c_str()) == 750,
+                          "첫 인자가 TriggerPressed(750)가 아니다");
+                    Check(nox::SoundByName(ua.substr(sp + 1).c_str()) == 751,
+                          "둘째 인자가 TriggerReleased(751)가 아니다");
+                }
+            }
+        }
+    }
+
+    std::printf("  10-b — 소리 빚: 902 레벨업(그 사람만) · 226 주문(알릴 때만) · 227 안내서 · "
+                "131 방패 · 927/929 공 · 889 화살 덫 · 750/751 밟는 판\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -18310,6 +18557,7 @@ int main() {
     TestShootingTrap();
     TestPressurePlate();
     TestSoundWire();
+    TestSoundDebts();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
