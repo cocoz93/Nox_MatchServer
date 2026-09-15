@@ -12250,7 +12250,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     UpdateBall(out);          // 8-d 플래그볼
     VoteUpdate(out);          // 8-e 투표
     ShootingTrapUpdate(out);      // 9-b 쏘는 덫(화살 덫·해골)
-    SecretWallUpdate(out);        // 9-a 비밀벅 상태 기계
+    SecretWallUpdate(out);        // 9-a 비밀벽 상태 기계
     CheckVictorySurvivors(out);   // 8-g — 탈락전에서 하나만 남았나(`server.go:143`)
     if (gameSettings_.timeLimitFrames != 0 && frame_ >= gameSettings_.timeLimitFrames) RoundTimeUp(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)

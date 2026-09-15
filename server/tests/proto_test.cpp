@@ -15666,6 +15666,57 @@ void TestMissileComplexWire() {
     std::printf("  11-b 날아가는 것 — 복합이면 덧붙이 1바이트(하위 4비트 0) · 단순이면 0바이트\n");
 }
 
+// 묶음 11-d 전수조사 — **덫은 켜진 채로 시작한다. 이건 결함이 아니다** (2026-09-16)
+//
+// ⚠⚠ **정정.** 09-15 정품 플레이에서 「밟고 지나가도 화살이 계속 나온다」가 나왔고,
+//   `thing.bin` 의 `ArrowTrap1/2 FLAGS = NULL` 만 보고 **「정답지는 꺼진 채 시작하는데
+//   우리만 켜져 있다」고 두 번 적었다. 틀렸다.** 근거 사슬을 끝까지 안 따라갔다.
+//
+// ⭕ 끝까지 따라간 사슬 —
+//   ⑴ 덫 주기 `nox_xxx_updateShootingTrap_54F9A0`(`GAME5.c:6352~6358`) 은
+//      `*(uint32_t*)(a1 + 16) & 0x1000000` 을 본다 — **+16 은 오브젝트 깃발**이지
+//      `thing.bin` 의 종류 깃발이 아니다(+8 은 클래스다).
+//   ⑵ 오브젝트를 만들 때 `ObjFlags: t.Flags()`(`server/object.go:314`) 로 **종류 깃발을 물려받는다**.
+//   ⑶ 종류를 읽을 때 `typ.flags |= object.FlagEnabled`(`server/object_type.go:335`) 를
+//      **조건 없이** 켠다 — `thing.bin` FLAGS 가 `NULL` 이든 말든.
+//   ⇒ **모든 덫은 켜진 채로 시작한다.** 우리 `enabled = true` 기본값이 맞다.
+//
+// ⭕ 그럼 무엇이 끄나 — `nox_xxx_unitSetOnOff_4E4670`(`GAME3_3.c:1184~1199`) 이
+//   `+16` 의 비트를 켜고 끄고, 그것을 부르는 것은 **맵 스크립트**(noxscript)다.
+//   우리는 맵 스크립트를 안 돌린다 ⇒ **「판이 덫을 켠다」는 배선은 애초에 없는 게 맞다.**
+//   (맵 스크립트는 통째로 안 옮긴 영역이다 — 미결로 따로 적어 둔다)
+//
+// ⇒ 「계속 나온다」는 **정답지대로**다. ±350 안에서 덫이 보는 쪽에 있으면 **1초에 한 발**씩 쏜다.
+//   G_Castle 은 덫이 32개라 돌아다니면 거의 끊임없이 날아온다.
+void TestTrapStartsEnabled() {
+    const std::string a = "10.9.12.1:9121";
+    nox::Server srv;
+    srv.SetProjType("MercArcherArrow", 528, 800, 0x4000u, 10);
+    nox::Server::ShootingTrapIn t;
+    t.x = 1000; t.y = 1000; t.facing = 0; t.proj = "MercArcherArrow"; t.fxKind = 1; t.damage = 25;
+    srv.SetShootingTraps({ t });
+    srv.DebugEnterGame(a, 912);
+    srv.DebugSetPos(a, 1200, 1000);
+    std::vector<nox::OutPacket> w; srv.Tick(0, w);
+
+    // ★ **켜는 호출을 한 번도 안 했는데** 곧바로 쏴야 한다
+    std::vector<nox::OutPacket> out;
+    srv.DebugShootingTrapUpdate(out);
+    Check(srv.MissileCount() == 1, "켜는 호출 없이도 쏴야 한다(정답지는 종류 읽을 때 ENABLED 를 켠다)");
+
+    // ★ 끄면 멈춘다 — 맵 스크립트가 할 일을 우리 고리로 대신해 본다
+    srv.DebugTrapEnable(0, false);
+    for (int i = 0; i < 40; ++i) srv.DebugShootingTrapUpdate(out);
+    Check(srv.MissileCount() == 1, "껐는데도 더 쐈다");
+
+    // ★ 다시 켜면 다시 쏜다
+    srv.DebugTrapEnable(0, true);
+    for (int i = 0; i < 40; ++i) srv.DebugShootingTrapUpdate(out);
+    Check(srv.MissileCount() > 1, "다시 켰는데 안 쏜다");
+
+    std::printf("  11-d 덫 — 켠 적 없어도 쏨(정답지대로) · 끄면 멈춤 · 다시 켜면 쏨\n");
+}
+
 void TestShootingTrap() {
     const std::string a = "10.9.2.1:9201";
     // 덫은 (1000,1000) 에 두고 **동쪽(각 0)** 을 본다 — 사람을 동쪽에 두면 겨눈다
@@ -19484,6 +19535,7 @@ int main() {
     TestSoundWire();
     TestSoundDebts();
     TestMusicWire();
+    TestTrapStartsEnabled();
     TestMsgLenSiblings();
     TestMissileComplexWire();
     TestDebugXpAndSpell();
