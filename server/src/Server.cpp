@@ -8325,6 +8325,31 @@ void Server::ShootingTrapUpdate(std::vector<OutPacket>& out) {
 // ⭕ **소리 이름이 정확히 1,023개**라 아래 10비트에 딱 들어맞는다(`SoundNames.h`).
 // ⚠ **창너비는 우리 값이다**(➖). 정답지는 **host 자신의 창**을 보는데 전용 서버엔 창이 없다.
 //   녹스 기본 640 의 절반인 320 을 쓴다 — 이 값은 좌우 치우침에만 쓰이고 들림 여부는 안 가른다
+// ── 묶음 10-c 음악 ───────────────────────────────────────────────────
+//
+// 정답지 `server/network.go:290~313` — 넷 다 **3바이트**·**모두에게**·**순번 봉투**다.
+// ⚠ `Push`·`Pop`·`Event` 는 **뒤 두 바이트를 안 채운다**(`var buf [3]byte` 뒤 `buf[0]` 만 쓴다) —
+//   즉 **0 0** 이 그대로 나간다. 지어내지 말고 그대로 0 을 보낸다.
+void Server::MusicPlay(uint8_t music, uint8_t volume, std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::MUSIC_EVENT), music, volume };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+}
+
+void Server::MusicPush(std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::MUSIC_PUSH_EVENT), 0, 0 };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+}
+
+void Server::MusicPop(std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::MUSIC_POP_EVENT), 0, 0 };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+}
+
+// `NetMusicEvent` — `e5` 인데 **곡도 소리크기도 0** 이다(`Music(0, 0)` 과 같은 줄기)
+void Server::MusicEvent(std::vector<OutPacket>& out) {
+    MusicPlay(0, 0, out);
+}
+
 void Server::SetSoundDefs(const std::vector<SoundDefIn>& list) {
     soundDefs_.assign(kSoundCount, SoundDef{});
     for (const SoundDefIn& in : list) {

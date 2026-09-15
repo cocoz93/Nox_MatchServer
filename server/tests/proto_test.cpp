@@ -16305,6 +16305,93 @@ void TestSoundDebts() {
                 "131 방패 · 927/929 공 · 889 화살 덫 · 750/751 밟는 판\n");
 }
 
+// ── 묶음 10-c — 음악 ─────────────────────────────────────────────────
+//
+// 정답지 `NetMusic`·`NetMusicPushEvent`·`NetMusicPopEvent`·`NetMusicEvent`
+//   (`server/network.go:290~313`). 넷 다 **3바이트**·**모두에게**·**순번 봉투**다.
+// ⚠ 방아쇠는 **노스스크립트뿐**이라(`script_ns_audio.go`) 우리는 서버 API 로 냈다.
+void TestMusicWire() {
+    const std::string a = "10.10.3.1:1031";
+    const std::string b = "10.10.3.2:1032";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 1031);
+        srv.DebugEnterGame(b, 1032);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+    };
+    auto grab = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint8_t op,
+                    std::vector<uint8_t>& m) {
+        size_t n = 0;
+        m.assign(3, 0);
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 3 && x[0] == op) { ++n; m = x; }
+        return n;
+    };
+
+    // ① **`e5 <곡> <소리크기>` 가 모두에게 간다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.MusicPlay(7, 42, out);
+        std::vector<uint8_t> m;
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::MUSIC_EVENT), m) == 1, "`e5` 가 한 번이 아니다");
+        Check(m[1] == 7, "곡 번호가 안 실렸다");
+        Check(m[2] == 42, "소리 크기가 안 실렸다");
+        Check(grab(out, b, static_cast<uint8_t>(nox::Op::MUSIC_EVENT), m) == 1, "남에게 안 갔다");
+    }
+
+    // ② **밀기·빼기는 뒤 두 바이트가 0 이다**(정답지가 안 채운다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.MusicPush(out);
+        std::vector<uint8_t> m;
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::MUSIC_PUSH_EVENT), m) == 1, "`e6` 가 안 갔다");
+        Check(m[1] == 0 && m[2] == 0, "`e6` 뒤 두 바이트가 0 이 아니다");
+        out.clear();
+        srv.MusicPop(out);
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::MUSIC_POP_EVENT), m) == 1, "`e7` 이 안 갔다");
+        Check(m[1] == 0 && m[2] == 0, "`e7` 뒤 두 바이트가 0 이 아니다");
+    }
+
+    // ③ **`MusicEvent` 는 `e5` 인데 곡도 크기도 0 이다**(`Music(0, 0)` 과 같은 줄기)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.MusicEvent(out);
+        std::vector<uint8_t> m;
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::MUSIC_EVENT), m) == 1, "`e5` 가 안 갔다");
+        Check(m[1] == 0 && m[2] == 0, "`MusicEvent` 인데 0 이 아니다");
+    }
+
+    // ④ **순번 봉투(cc)에 실린다** — `NetSendPacketXxx1` 이라서
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.MusicPlay(1, 2, out);
+        bool wrapped = false;
+        for (const auto& pkt : out) {
+            if (pkt.to != a) continue;
+            for (size_t i = 0; i + 1 < pkt.data.size(); ++i)
+                if (pkt.data[i] == 0xcc) { wrapped = true; break; }
+        }
+        Check(wrapped, "음악이 순번 봉투에 안 실렸다");
+    }
+
+    // ⑤ **판에 안 든 사람에겐 안 간다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugLeave(b);                                 // 자리는 남고 판에서만 빠진다
+        std::vector<nox::OutPacket> out;
+        srv.MusicPlay(3, 4, out);
+        std::vector<uint8_t> m;
+        Check(grab(out, b, static_cast<uint8_t>(nox::Op::MUSIC_EVENT), m) == 0, "판에 없는 사람에게 갔다");
+    }
+
+    std::printf("  10-c — 음악: e5 3바이트(곡·크기) · e6 밀기 · e7 빼기 · 뒤 두 바이트는 0 · "
+                "모두에게 · 순번 봉투 · 방아쇠는 스크립트뿐이라 서버 API 로\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -18558,6 +18645,7 @@ int main() {
     TestPressurePlate();
     TestSoundWire();
     TestSoundDebts();
+    TestMusicWire();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

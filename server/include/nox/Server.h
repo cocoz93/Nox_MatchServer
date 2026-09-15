@@ -1014,6 +1014,22 @@ public:
     // 소리 하나를 이 틱에 울린다 — `nox_xxx_audCreate_501A30`(자리) · `nox_xxx_aud_501960`(임자).
     //   `kind` 0 = 볼 수 있는 모두 · **1 = 같은 팀만**(code = 팀 번호) · **2 = 그 한 사람만**(code = 번호).
     //   `owner` 가 받는 사람 자신이면 오프코드가 `0xA7` 로 바뀐다
+
+    // ── 묶음 10-c 음악 ────────────────────────────────────────────────
+    //
+    // 정답지 `NetMusic`·`NetMusicPushEvent`·`NetMusicPopEvent`·`NetMusicEvent`
+    //   (`server/network.go:290~313`) — 넷 다 **3바이트**이고 **모두에게(255)** ·
+    //   `NetSendPacketXxx1` 이라 **순번 봉투(cc)** 에 실린다.
+    //     `e5 <곡 u8> <소리크기 u8>` · `e6 00 00` · `e7 00 00` · `e5 00 00`
+    //
+    // ⚠ **방아쇠는 노스스크립트뿐이다** — `ns.Music`·`MusicPushEvent`·`MusicPopEvent`·`MusicEvent`
+    //   (`src/script_ns_audio.go`)가 유일한 부르는 자리다. 서버 안에서 저절로 울리는 데가 없다.
+    //   우리 서버엔 스크립트가 없으므로 **9-a 비밀벽처럼 서버 API 로** 낸다.
+    // ⚠ 협동(2048)이면 정답지는 **보내지 않고 host 가 제자리에서 튼다** — 전용 서버엔 그 자리가 없다
+    void MusicPlay(uint8_t music, uint8_t volume, std::vector<OutPacket>& out);
+    void MusicPush(std::vector<OutPacket>& out);
+    void MusicPop(std::vector<OutPacket>& out);
+    void MusicEvent(std::vector<OutPacket>& out);
     void PlaySoundAt(uint16_t id, float x, float y, uint8_t kind = 0, uint32_t code = 0,
                      const std::string& owner = std::string());
 
