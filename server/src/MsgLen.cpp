@@ -221,7 +221,7 @@ const int16_t kMsgBodyLen[256] = {
     /* 0xB9 */   -1,   // MSG_MAP_SEND_PACKET
     /* 0xBA */    1,   // MSG_MAP_SEND_ABORT
     /* 0xBB */   -1,   // MSG_SERVER_CMD
-    /* 0xBC */   -1,   // MSG_SYSOP_PW
+    /* 0xBC */   20,   // MSG_SYSOP_PW  (10-e: 20바이트 UTF-16 비밀번호 — network_server.go:192)
     /* 0xBD */    1,   // MSG_SYSOP_RESULT
     /* 0xBE */    0,   // MSG_KEEP_ALIVE
     /* 0xBF */    1,   // MSG_RECEIVED_MAP

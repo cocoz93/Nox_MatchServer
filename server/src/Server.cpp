@@ -2735,6 +2735,25 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 break;
             }
 
+            // 10-e SYSOP_PW 0xBC -> SYSOP_RESULT 0xBD (network_server.go:191~205)
+            //   body is a 20-byte UTF-16 password; empty server password always fails.
+            case Op::SYSOP_PW: {
+                if (it.bodyLen() < 20) break;
+                std::string got;
+                for (size_t k = 0; k + 1 < 20; k += 2) {
+                    const uint16_t c = static_cast<uint16_t>(it.body()[k] | (it.body()[k + 1] << 8));
+                    if (c == 0) break;
+                    if (c < 0x80) got.push_back(static_cast<char>(c));
+                }
+                const bool okPw = !sysopPassword_.empty() && sysopPassword_ == got;
+                if (okPw) s.sysop = true;
+                const uint8_t res[2] = { static_cast<uint8_t>(Op::SYSOP_RESULT),
+                                         static_cast<uint8_t>(okPw ? 1 : 0) };
+                EmitImportantRaw(s, res, sizeof(res), out);
+                ++handled_;
+                break;
+            }
+
             case Op::SERVER_DISCOVER: {
                 // 이미 붙은 상대가 다시 찾을 리 없다. 상태를 지켜야 밀린 바이트에
                 // 속지 않는다.
@@ -8355,6 +8374,38 @@ void Server::SendOutgoingClient(uint16_t netCode, const std::string& except,
         if (!kv.second.inGame) continue;
         Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
     }
+}
+
+// ── 묶음 10-e 일지·장 끝 ─────────────────────────────────────────────
+//
+// `d5 <갈래> <이름 64바이트> <u16>` **68바이트**.
+// ⚠ 정답지는 `char v3[68]` 을 **안 비우고** `strcpy` 만 한다 — 이름 뒤에 쓰레기가 남는다.
+//   받는 쪽은 NUL 까지만 읽으므로 뜻은 같다. 우리는 **0 으로 채운다**(같은 값을 두 번 보내면 같은 바이트가 나오게).
+void Server::SendJournal(Session& to, JournalKind kind, const std::string& name, uint16_t value,
+                         std::vector<OutPacket>& out) {
+    uint8_t msg[68] = {};
+    msg[0] = static_cast<uint8_t>(Op::JOURNAL_MSG);
+    msg[1] = static_cast<uint8_t>(kind);
+    const size_t n = name.size() < 63 ? name.size() : 63;   // [2..65] 예순넷 · 끝은 NUL
+    std::memcpy(msg + 2, name.data(), n);
+    // ⚠ 빼기(2)는 뒤 u16 을 **안 싣는다** — 정답지가 그 줄기에만 안 쓴다
+    if (kind != JournalKind::Remove) {
+        msg[66] = static_cast<uint8_t>(value);
+        msg[67] = static_cast<uint8_t>(value >> 8);
+    }
+    EmitImportantRaw(to, msg, sizeof(msg), out);
+}
+
+void Server::SendJournalAll(JournalKind kind, const std::string& name, uint16_t value,
+                            std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) if (kv.second.inGame) SendJournal(kv.second, kind, name, value, out);
+}
+
+// `netSendChapterEnd_4D9560` — `d6 <장> <끝인가>` **3바이트**
+void Server::SendChapterEnd(Session& to, uint8_t chapter, bool ended, std::vector<OutPacket>& out) {
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::CHAPTER_END), chapter,
+                             static_cast<uint8_t>(ended ? 1 : 0) };
+    EmitImportantRaw(to, msg, sizeof(msg), out);
 }
 
 void Server::MusicPlay(uint8_t music, uint8_t volume, std::vector<OutPacket>& out) {

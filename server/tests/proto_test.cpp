@@ -16502,6 +16502,128 @@ void TestLeaveNotify() {
                 "c6 1바이트 · 시간 초과는 판에 들면 90초 아니면 30초\n");
 }
 
+// ── 묶음 10-e — 일지·장 끝·관리자 답 ─────────────────────────────────
+//
+// 정답지 `netSendJournalAdd/Remove/Update_4D9440·4A0·500`(`GAME3_2.c:4731~4761`) ·
+//   `netSendChapterEnd_4D9560` · 관리자 답 `network_server.go:191~205`.
+void TestJournalAndSysop() {
+    const std::string a = "10.10.5.1:1051";
+    const std::string b = "10.10.5.2:1052";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 1051);
+        srv.DebugEnterGame(b, 1052);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+    };
+    auto grab = [&](const std::vector<nox::OutPacket>& out, const std::string& who,
+                    uint8_t op, size_t len, std::vector<uint8_t>& m) {
+        size_t n = 0;
+        m.assign(len, 0);
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == len && x[0] == op) { ++n; m = x; }
+        return n;
+    };
+
+    // ① **일지 더하기 — 68바이트 · 갈래 1 · 이름 · 뒤 u16**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.SendJournalAll(nox::Server::JournalKind::Add, "QuestStart", 0x1234, out);
+        std::vector<uint8_t> m;
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::JOURNAL_MSG), 68, m) == 1,
+              "`d5` 가 68바이트로 한 번 안 갔다");
+        if (m.size() == 68) {
+            Check(m[1] == 1, "갈래가 1(더하기)이 아니다");
+            Check(std::memcmp(m.data() + 2, "QuestStart", 10) == 0, "이름이 안 실렸다");
+            Check(m[12] == 0, "이름 뒤가 NUL 이 아니다");
+            Check((m[66] | (m[67] << 8)) == 0x1234, "뒤 u16 이 안 실렸다");
+        }
+        Check(grab(out, b, static_cast<uint8_t>(nox::Op::JOURNAL_MSG), 68, m) == 1, "남에게 안 갔다");
+        // 판에 안 든 자리에는 안 간다
+        srv.DebugLeave(b);
+        out.clear();
+        srv.SendJournalAll(nox::Server::JournalKind::Add, "Q2", 1, out);
+        Check(grab(out, b, static_cast<uint8_t>(nox::Op::JOURNAL_MSG), 68, m) == 0,
+              "판에 없는 사람에게 일지가 갔다");
+    }
+
+    // ② **빼기(2)는 뒤 u16 을 안 싣는다**(정답지가 그 줄기에만 안 쓴다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.SendJournalAll(nox::Server::JournalKind::Remove, "QuestStart", 0xBEEF, out);
+        std::vector<uint8_t> m;
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::JOURNAL_MSG), 68, m) == 1, "`d5` 가 안 갔다");
+        if (m.size() == 68) {
+            Check(m[1] == 2, "갈래가 2(빼기)가 아니다");
+            Check(m[66] == 0 && m[67] == 0, "빼기인데 뒤 u16 이 실렸다");
+        }
+    }
+
+    // ③ **고치기는 3** · **긴 이름은 잘린다**(63바이트 + NUL)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        const std::string longName(100, 'x');
+        srv.SendJournalAll(nox::Server::JournalKind::Update, longName, 7, out);
+        std::vector<uint8_t> m;
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::JOURNAL_MSG), 68, m) == 1, "`d5` 가 안 갔다");
+        if (m.size() == 68) {
+            Check(m[1] == 3, "갈래가 3(고치기)이 아니다");
+            Check(m[64] == 'x', "63번째 글자가 안 실렸다");
+            Check(m[65] == 0, "끝이 NUL 이 아니다");
+            Check((m[66] | (m[67] << 8)) == 7, "뒤 u16 이 안 실렸다");
+        }
+    }
+
+    // ④ **장 끝 — 3바이트 `d6 <장> <끝인가>`**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSendChapterEnd(a, 4, true, out);
+        std::vector<uint8_t> m;
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::CHAPTER_END), 3, m) == 1, "`d6` 가 안 갔다");
+        if (m.size() == 3) {
+            Check(m[1] == 4, "장 번호가 안 실렸다");
+            Check(m[2] == 1, "끝 표시가 1 이 아니다");
+        }
+        out.clear();
+        srv.DebugSendChapterEnd(a, 4, false, out);
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::CHAPTER_END), 3, m) == 1, "`d6` 가 안 갔다");
+        if (m.size() == 3) Check(m[2] == 0, "끝이 아닌데 1 이 갔다");
+    }
+
+    // ⑤ **관리자 비밀번호 — 맞으면 `bd 01`, 틀리면 `bd 00`**
+    {
+        nox::Server srv; mk(srv);
+        srv.SetSysopPassword("hunter2");
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugSysopTry(a, "hunter2", out), "맞는 비밀번호인데 거절했다");
+        std::vector<uint8_t> m;
+        Check(grab(out, a, static_cast<uint8_t>(nox::Op::SYSOP_RESULT), 2, m) == 1, "`bd` 가 안 갔다");
+        if (m.size() == 2) Check(m[1] == 1, "맞는데 0 이 갔다");
+        Check(srv.SysopOf(a), "맞았는데 관리자가 안 됐다");
+
+        out.clear();
+        Check(!srv.DebugSysopTry(b, "wrong", out), "틀린 비밀번호를 받아들였다");
+        Check(grab(out, b, static_cast<uint8_t>(nox::Op::SYSOP_RESULT), 2, m) == 1, "`bd` 가 안 갔다");
+        if (m.size() == 2) Check(m[1] == 0, "틀렸는데 1 이 갔다");
+        Check(!srv.SysopOf(b), "틀렸는데 관리자가 됐다");
+    }
+
+    // ⑥ **서버 비밀번호가 비어 있으면 무엇을 보내도 틀린 것이다**
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        Check(!srv.DebugSysopTry(a, "", out), "빈 비밀번호가 통했다");
+        Check(!srv.SysopOf(a), "빈 비밀번호로 관리자가 됐다");
+        Check(!srv.DebugSysopTry(a, "anything", out), "비어 있는데 통했다");
+    }
+
+    std::printf("  10-e — 일지 d5 68바이트(1 더하기·2 빼기·3 고치기, 빼기는 뒤 u16 없음) · "
+                "d6 3바이트 · 관리자 bd 2바이트(빈 비밀번호는 늘 거절)\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -18757,6 +18879,7 @@ int main() {
     TestSoundDebts();
     TestMusicWire();
     TestLeaveNotify();
+    TestJournalAndSysop();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

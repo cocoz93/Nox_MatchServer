@@ -604,6 +604,8 @@ struct Session {
     //   두지만(사람 32칸), 우리 서버는 사람을 주소로 잡아 번호가 없다 — 그래서 **사람 쪽에** 둔다.
     //   담는 값도 하는 일도 같다(비밀벽 자리표 → 0/1)
     std::vector<uint8_t> secretSeen;
+    // ★ 10-e — 관리자 비밀번호를 맞혔나(`Sub_4D1210` 자리)
+    bool sysop = false;
     // ★ 7-c — 옛 임시 카운터(`kills`·`deaths`)를 **정답지 자리로 합쳤다**.
     //   점수는 위의 `score`(+2136 `Lessons`), 죽은 횟수는 `deaths`(+2140).
     //   옛것은 자살에도 죽은 횟수를 올렸는데 `playerUpdateScore_54D980` 은 **안 올린다**
@@ -1042,6 +1044,29 @@ public:
     // ⚠ `SERVER_QUIT_ACK`(0xC8)은 **서버가 보내는 것이 아니다** — 클라가 `SERVER_QUIT` 에 되보내는 답이다
     //   (`network_client.go:140`). 서버는 **받아서** 끊는다(`network_server.go:104`)
     void SendOutgoingClient(uint16_t netCode, const std::string& except, std::vector<OutPacket>& out);
+
+    // ── 묶음 10-e 일지·장 끝·관리자 답 ────────────────────────────────
+    //
+    // ⭕ `JOURNAL_MSG` **0xD5** — `netSendJournalAdd/Remove/Update_4D9440·4A0·500`(`GAME3_2.c:4731~4761`).
+    //   **68바이트** `d5 <갈래> <이름 64바이트> <u16>` · 갈래 **1 더하기 · 2 빼기 · 3 고치기** ·
+    //   `netSendPacket0`(봉투 없음 · 중요). ⚠ 빼기(2)에는 뒤 u16 을 **안 싣는다**(정답지가 안 쓴다)
+    // ⭕ `CHAPTER_END` **0xD6** — `netSendChapterEnd_4D9560`. **3바이트** `d6 <장> <끝인가>`
+    // ⚠ 둘 다 방아쇠가 **노스스크립트·싱글 캠페인**이라 음악처럼 **서버 API** 로 낸다
+    enum class JournalKind : uint8_t { Add = 1, Remove = 2, Update = 3 };
+    void SendJournal(Session& to, JournalKind kind, const std::string& name, uint16_t value,
+                     std::vector<OutPacket>& out);
+    void SendJournalAll(JournalKind kind, const std::string& name, uint16_t value,
+                        std::vector<OutPacket>& out);
+    void SendChapterEnd(Session& to, uint8_t chapter, bool ended, std::vector<OutPacket>& out);
+
+    // ⭕ `SYSOP_RESULT` **0xBD** — `network_server.go:191~205`. 클라가 `SYSOP_PW`(0xBC · 비밀번호 20바이트)를
+    //   보내면 **2바이트** `bd <맞으면 1, 아니면 0>` 으로 답한다.
+    //   ⚠ **비밀번호가 비어 있으면 늘 틀린 것으로 본다**(`pass == "" || pass != got`)
+    void SetSysopPassword(const std::string& pw) { sysopPassword_ = pw; }
+    bool SysopOf(const std::string& addr) const {
+        auto i = sessions_.find(addr);
+        return i != sessions_.end() && i->second.sysop;
+    }
     void MusicPlay(uint8_t music, uint8_t volume, std::vector<OutPacket>& out);
     void MusicPush(std::vector<OutPacket>& out);
     void MusicPop(std::vector<OutPacket>& out);
@@ -2310,6 +2335,21 @@ public:
     }
     // 시험용 — 게임에서 빠진 것으로(오브젝트 지워짐 · inGame 끔)
     void DebugKickPlayer(const std::string& addr, std::vector<OutPacket>& out) { KickPlayer(addr, out); }
+    void DebugSendChapterEnd(const std::string& addr, uint8_t ch, bool ended, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(addr);
+        if (i != sessions_.end()) SendChapterEnd(i->second, ch, ended, out);
+    }
+    // 10-e — 시험용. 진짜 경로는 `0xBC` 조각을 받는 자리다
+    bool DebugSysopTry(const std::string& addr, const std::string& pw, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(addr);
+        if (i == sessions_.end()) return false;
+        const bool okPw = !sysopPassword_.empty() && sysopPassword_ == pw;
+        if (okPw) i->second.sysop = true;
+        const uint8_t res[2] = { static_cast<uint8_t>(Op::SYSOP_RESULT),
+                                 static_cast<uint8_t>(okPw ? 1 : 0) };
+        EmitImportantRaw(i->second, res, sizeof(res), out);
+        return okPw;
+    }
     void DebugSetClosing(const std::string& addr) {
         auto i = sessions_.find(addr);
         if (i != sessions_.end()) i->second.closing = true;
@@ -2990,6 +3030,8 @@ private:
     std::vector<AudioEvent> audioEvents_;
     int SoundFadePerc(uint16_t id, float sx, float sy, double px, double py) const;
     void FlushAudioEvents(std::vector<OutPacket>& out);
+
+    std::string sysopPassword_;          // 10-e — 비어 있으면 늘 틀린 것으로 본다
 
     // 묶음 8-e — 투표(0xEE)
     struct Vote {
