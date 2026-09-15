@@ -584,6 +584,26 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
 // ⚠ 별칭 임대 연장(Alias.h)을 넣기 전에는 임대가 2초에 끝나 다들 `ff` 로 나갔기
 //   때문에 이 지뢰가 안 밟혔다 — 연장 뒤로는 별칭이 유지되므로 **별칭을 쓰는 모든
 //   항목**(투사체·깃발·소환수·정적)이 이 길을 지나야 한다.
+// ★★ 2026-09-16 전수조사 ⓒ — **좌표 관문 0~6000.**
+//
+//   ⭕ 정답지 빌더 `sub_4DF9B0`(`network_lists.go:276~279`) — 절대 좌표 항목의 x·y 가
+//     6000 을 넘으면 **`return 0`** 으로 그 항목을 통째로 버린다.
+//   ⭕ 정답지 클라 디코더(`GAME2_3.c:1653~1665`) — 쌓인 좌표가 음수이거나 6000 을 넘으면
+//     **그 자리에서 실패로 되돌아간다**(`return &a1[-v14]`). 즉 **항목 하나가 갱신 한 통을 죽인다.**
+//
+//   ⚠ 맵 오브젝트는 안전하다 — 157개 맵 전수 확인(`scratchpad/p31/coordrange.cpp`),
+//     관문 밖 0개 · 최대 x 5808 · y 5827. **위험한 것은 움직이는 것**이다(화살·놓인 것).
+//     덫이 맵 가장자리에서 바깥으로 쏘면 화살이 6000 을 넘을 수 있다.
+//
+//   ⚠ **정답지와 두 자리 다르다 — 일부러 그렇게 했다.**
+//     ⑴ 정답지 빌더는 **절대 좌표일 때만** 보는데 우리는 **상대일 때도** 본다 —
+//        클라의 관문은 「쌓인 좌표」에 걸리므로 두 갈래 다 위험하다. 정답지 서버가 느슨해도
+//        되는 까닭은 그쪽 오브젝트가 맵을 안 벗어나기 때문이다
+//     ⑵ 정답지는 `uint16` 이라 음수를 못 보지만 우리는 `int` 라 **음수도 막는다**
+static bool CoordInRange(int x, int y) {
+    return x >= 0 && x <= 6000 && y >= 0 && y <= 6000;
+}
+
 static void Relativize(ObjEntry& e, uint16_t netCode, int wx, int wy,
                        int& baseX, int& baseY) {
     if (e.alias != 0xff) {
@@ -12695,6 +12715,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   그 뒤 스트림이 통째로 밀린다 — 09-15 정품 플레이에서 화살이 기울고 72초에 클라가 죽었다.
         //   ⇒ 종류표로 가른다. 하위 4비트는 **0**(셋째 갈래 `netSendPhantomPlrMb`).
         for (const auto& mo : missiles_) {
+            if (!CoordInRange(static_cast<int>(mo.posX), static_cast<int>(mo.posY))) continue;   // ⓒ 관문 — 한 항목이 갱신 한 통을 죽인다
             ObjEntry e;
             FillEntry(s.aliases, mo.netCode, mo.type, s.tickFrame,
                       static_cast<int>(mo.posX), static_cast<int>(mo.posY), mo.dir1, e,
@@ -12708,6 +12729,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
         // 4-c3 놓인 오브젝트(독구름 …) — ⓐ 와 같은 부류라 종류표로 가른다(2026-09-16)
         for (const auto& po : placed_) {
+            if (!CoordInRange(static_cast<int>(po.x), static_cast<int>(po.y))) continue;   // ⓒ 관문 — 한 항목이 갱신 한 통을 죽인다
             ObjEntry e;
             FillEntry(s.aliases, po.netCode, po.type, s.tickFrame,
                       static_cast<int>(po.x), static_cast<int>(po.y), 0, e,
@@ -12722,6 +12744,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   ⓐ 와 같은 부류라 **못 박지 않고 종류표로 가른다**(2026-09-16).
         for (const auto& f : flags_) {
             if (!f.carrier.empty()) continue;
+            if (!CoordInRange(static_cast<int>(f.x), static_cast<int>(f.y))) continue;   // ⓒ 관문 — 한 항목이 갱신 한 통을 죽인다
             ObjEntry e;
             FillEntry(s.aliases, f.netCode, f.type, s.tickFrame,
                       static_cast<int>(f.x), static_cast<int>(f.y), 0, e,
@@ -12736,6 +12759,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         // 8-d — 공도 싣는다(깃발과 같은 꼴). 들고 있는 것은 안 싣는다
         for (const auto& bb : ball_) {
             if (!bb.carrier.empty()) continue;
+            if (!CoordInRange(static_cast<int>(bb.x), static_cast<int>(bb.y))) continue;   // ⓒ 관문 — 한 항목이 갱신 한 통을 죽인다
             ObjEntry e;
             FillEntry(s.aliases, bb.netCode, bb.type, s.tickFrame,
                       static_cast<int>(bb.x), static_cast<int>(bb.y), 0, e,
@@ -12771,6 +12795,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 }
                 if (s.visibleCreatures.count(k.netCode) == 0) continue;   // 안 보이는 것은 안 싣는다
             }
+            if (!CoordInRange(static_cast<int>(k.x), static_cast<int>(k.y))) continue;   // ⓒ 관문
             ReportHealthDeltaTo(s, k.netCode, k.health, k.lastDamageFrame, k.hpReportedTo, out);   // netSendComplexObject_518960 a3 갈래(+412+2×i)
             ObjEntry e;
             FillEntry(s.aliases, k.netCode, k.type, s.tickFrame,

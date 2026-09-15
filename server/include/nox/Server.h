@@ -2423,6 +2423,15 @@ public:
         for (const auto& d : durSpells_) if (k++ == i) return d.spell;
         return 0;
     }
+    // 시험용 — 날아가는 것을 손으로 옮긴다(좌표 관문 ⓒ 시험에 쓴다).
+    //   ⚠ `posX`·`posY` 와 `newX`·`newY` 를 **함께** 맞춘다 — 갱신은 `posX` 를 싣고
+    //     다음 틱의 움직임은 `newX` 에서 이어지므로 한쪽만 바꾸면 곧바로 되돌아온다.
+    bool DebugSetMissileXY(size_t i, float x, float y) {
+        if (i >= missiles_.size()) return false;
+        missiles_[i].posX = missiles_[i].newX = missiles_[i].prevX = x;
+        missiles_[i].posY = missiles_[i].newY = missiles_[i].prevY = y;
+        return true;
+    }
     bool DebugMissileXY(size_t i, float& x, float& y) const {
         if (i >= missiles_.size()) return false;
         x = missiles_[i].posX; y = missiles_[i].posY;

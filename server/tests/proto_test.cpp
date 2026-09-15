@@ -15483,9 +15483,12 @@ void TestMissileComplexWire() {
         Check(srv.MissileCount() == 1, "화살이 안 나갔다");
     };
     // 갱신 스트림에서 그 종류의 항목을 찾아 덧붙이 길이를 돌려준다. 못 찾으면 -1.
-    auto entryExtra = [&](nox::Server& srv, uint16_t wire, uint8_t* b0) {
-        std::vector<nox::OutPacket> out;
-        srv.Tick(34, out);
+    //
+    // ⚠⚠ **틱과 뒤지기를 갈라 놓았다.** 처음엔 이 안에서 `Tick` 을 돌렸는데,
+    //   그러면 「관문이 걸렀다」와 「틱 중에 화살이 죽었다」를 **구별하지 못한다.**
+    //   돌연변이 MC9(관문 통째로 없앰)·MC10·MC12 가 **셋 다 안 잡혀서** 드러났다 —
+    //   관문을 없애도 시험이 통과했다는 뜻이고, 그건 시험이 다른 이유로 통과했다는 뜻이다.
+    auto findEntry = [&](const std::vector<nox::OutPacket>& out, uint16_t wire, uint8_t* b0) {
         for (const auto& pk : out) {
             if (pk.to != a) continue;
             auto body = Body(pk);
@@ -15498,6 +15501,40 @@ void TestMissileComplexWire() {
             }
         }
         return -1;
+    };
+    // ★★ **원바이트로 뒤진다.** `DecodeUpdate` 를 쓰면 안 되는 자리가 있다 —
+    //   우리 디코더에도 같은 관문이 있어서(`UpdateStream.cpp:97` `kMaxCoord = 6000`)
+    //   **인코더가 걸렀는지 디코더가 걸렀는지 구별을 못 한다.**
+    //   돌연변이 MC9(관문 통째로 없앰)이 **그래도 안 잡혀서** 드러났다.
+    //   ⇒ 전체번호 항목의 지문 `ff <번호2> <종류2> <x2> <y2>` 를 바이트로 찾는다.
+    auto rawHasAbs = [&](const std::vector<nox::OutPacket>& out,
+                         uint16_t netCode, uint16_t wire, uint16_t wx, uint16_t wy) {
+        const uint8_t sig[9] = {
+            0xff,
+            static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8),
+            static_cast<uint8_t>(wire),    static_cast<uint8_t>(wire >> 8),
+            static_cast<uint8_t>(wx),      static_cast<uint8_t>(wx >> 8),
+            static_cast<uint8_t>(wy),      static_cast<uint8_t>(wy >> 8),
+        };
+        for (const auto& pk : out) {
+            if (pk.to != a) continue;
+            auto body = Body(pk);
+            if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+            if (body.size() < sizeof(sig)) continue;
+            for (size_t i = 0; i + sizeof(sig) <= body.size(); ++i)
+                if (std::memcmp(body.data() + i, sig, sizeof(sig)) == 0) return true;
+        }
+        return false;
+    };
+    // 한 틱 돌리고 그 통을 돌려준다 — 화살이 살아남았는지는 **부르는 쪽이** 따로 본다
+    auto tick1 = [&](nox::Server& srv) {
+        std::vector<nox::OutPacket> out;
+        srv.Tick(34, out);
+        return out;
+    };
+    auto entryExtra = [&](nox::Server& srv, uint16_t wire, uint8_t* b0) {
+        const std::vector<nox::OutPacket> out = tick1(srv);
+        return findEntry(out, wire, b0);
     };
 
     // ① **복합(MercArcherArrow 528) — 덧붙이 1바이트 · 하위 4비트 0**
@@ -15542,6 +15579,56 @@ void TestMissileComplexWire() {
         Check(nox::ThingIsComplex(694), "StrongFireball 이 표에서 복합이 아니다");
         Check(nox::ThingIsComplex(695), "Fireball 이 표에서 복합이 아니다");
         Check(!nox::ThingIsComplex(955), "Magic 이 표에서 복합이다");
+    }
+
+    // ⑤ **좌표 관문 0~6000** (전수조사 ⓒ) — 관문 밖 항목은 **갱신에 안 실린다**
+    //
+    //   ⭕ 정답지 빌더 `sub_4DF9B0`(`network_lists.go:276~279`)이 `f5 > 6000 || f7 > 6000` 이면
+    //     `return 0` 으로 그 항목을 버린다. 클라 디코더(`GAME2_3.c:1653~1665`)도 같은 관문을 두는데,
+    //     거기 걸리면 **그 자리에서 실패로 되돌아가 그 뒤 스트림을 통째로 버린다** —
+    //     항목 하나가 갱신 한 통을 죽인다.
+    //   ⚠ 맵 오브젝트는 안전하다(157개 맵 전수 — 최대 5808·5827). **움직이는 것**이 위험하다.
+    {
+        nox::Server srv;
+        fire(srv, "MercArcherArrow", 528);
+        // 화살을 관문 밖으로 밀어 놓는다 — 덫이 가장자리에서 바깥으로 쏘면 실제로 이렇게 된다
+        srv.DebugSetMissileXY(0, 6500.0f, 1000.0f);
+        uint8_t b0 = 0xFF;
+        const uint16_t nc5 = srv.DebugMissileNetCode(0);
+        const std::vector<nox::OutPacket> o5 = tick1(srv);
+        Check(srv.MissileCount() == 1, "화살이 사라져 관문을 시험하지 못했다");
+        Check(!rawHasAbs(o5, nc5, 528, 6500, 1000), "관문 밖(6500) 화살이 갱신 바이트에 실렸다");
+        Check(findEntry(o5, 528, &b0) == -1, "관문 밖(6500) 화살이 갱신에 실렸다");
+    }
+
+    // ⑥ **음수도 막는다** — 정답지는 uint16 이라 음수를 못 보지만 우리는 int 다
+    {
+        nox::Server srv;
+        fire(srv, "MercArcherArrow", 528);
+        // ⚠ **-20 으로는 안 된다** — 화살이 동쪽으로 초당 800 이라 한 틱(약 27)만에
+        //   범위 안으로 되돌아온다. 첫 시도가 그래서 헛통과할 뻔했다. 넉넉히 밀어 둔다.
+        srv.DebugSetMissileXY(0, -2000.0f, 1000.0f);
+        uint8_t b0 = 0xFF;
+        const uint16_t nc6 = srv.DebugMissileNetCode(0);
+        const std::vector<nox::OutPacket> o6 = tick1(srv);
+        Check(srv.MissileCount() == 1, "화살이 사라져 관문을 시험하지 못했다");
+        // -2000 을 u16 으로 실으면 0xF830 이다 — 그 지문이 나오면 안 된다
+        Check(!rawHasAbs(o6, nc6, 528, static_cast<uint16_t>(-2000), 1000),
+              "음수 좌표 화살이 갱신 바이트에 실렸다");
+        Check(findEntry(o6, 528, &b0) == -1, "음수 좌표 화살이 갱신에 실렸다");
+    }
+
+    // ⑦ **관문 안이면 그대로 실린다** — 관문이 멀쩡한 것까지 버리면 안 된다
+    {
+        nox::Server srv;
+        fire(srv, "MercArcherArrow", 528);
+        srv.DebugSetMissileXY(0, 5900.0f, 5900.0f);
+        uint8_t b0 = 0xFF;
+        const uint16_t nc7 = srv.DebugMissileNetCode(0);
+        const std::vector<nox::OutPacket> o7 = tick1(srv);
+        Check(srv.MissileCount() == 1, "화살이 사라져 관문을 시험하지 못했다");
+        Check(rawHasAbs(o7, nc7, 528, 5900, 5900), "관문 안(5900) 화살이 갱신 바이트에서 빠졌다");
+        Check(findEntry(o7, 528, &b0) == 1, "관문 안(5900) 화살이 갱신에서 빠졌다");
     }
 
     std::printf("  11-b 날아가는 것 — 복합이면 덧붙이 1바이트(하위 4비트 0) · 단순이면 0바이트\n");
