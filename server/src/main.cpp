@@ -137,6 +137,39 @@ int SelfTest() {
     return 0;
 }
 
+// `--mode` 이름 → `gameFlags`. 모르는 이름이면 **0**(그래서 0 이 「모름」 표시로 쓰인다).
+//
+// ★ 2026-09-15 신설 — **여기가 비어 있어서 묶음 8 규칙이 실행 파일에서 도달 불가였다.**
+//   `main` 이 `SetGameFlags` 를 한 번도 안 불러 `gameFlags` 가 기본값(아레나)에 머물렀고,
+//   `RoundTimeUp`·`DeathScoring`·`CheckVictorySurvivors` 의 탈락전·왕죽이기·깃발 갈래가
+//   시험에서만 켜지고 정품 클라로는 못 밟혔다.
+//
+// 비트는 정답지 `common/flags/gameflags.go:31~62` 정본 —
+//   KOTR 0x10 · CTF 0x20 · FlagBall 0x40 · Chat 0x80 · Arena 0x100 ·
+//   CoopTeam 0x200 · Elimination 0x400 · Coop 0x800 · Quest 0x1000 ·
+//   Online 0x2000 · NotQuest 0x10000 · Flag18 0x20000
+//
+// ★ 바탕 둘은 정답지 `game.go:277~283 startServer` 가 늘 세우는 것이다 —
+//   `GameOnline` 을 켜고, **퀘스트가 아니면** `GameNotQuest` 를 켠다(퀘스트면 끈다).
+//   `Flag18`(0x20000)은 우리 기본값 `0x00032100`(`JoinBundle.h:48`)에 원래 있던 것이라 그대로 둔다.
+// ⚠ `GameModeCoop`(0x800)은 정답지의 **모드 가면(`GameModeMask` 0x17F0)에 없다** — 딸림 값이고,
+//   `startServer` 는 그것을 오히려 **끈다**. 그래도 `--mode coop` 을 받는 이유는
+//   그 비트를 켠 판에서 규칙이 어떻게 갈리는지 화면으로 보기 위해서다.
+uint32_t ModeGameFlags(const std::string& mode) {
+    const uint32_t kOnline = 0x2000u, kNotQuest = 0x10000u, kFlag18 = 0x20000u;
+    const uint32_t base = kOnline | kFlag18;
+    if (mode == "quest")       return base | 0x1000u;              // 퀘스트만 NotQuest 를 뺀다
+    if (mode == "arena")       return base | kNotQuest | 0x100u;
+    if (mode == "ctf")         return base | kNotQuest | 0x20u;
+    if (mode == "kotr")        return base | kNotQuest | 0x10u;
+    if (mode == "flagball")    return base | kNotQuest | 0x40u;
+    if (mode == "chat")        return base | kNotQuest | 0x80u;
+    if (mode == "coopteam")    return base | kNotQuest | 0x200u;
+    if (mode == "elimination") return base | kNotQuest | 0x400u;
+    if (mode == "coop")        return base | kNotQuest | 0x800u;
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -195,6 +228,10 @@ int main(int argc, char** argv) {
     bool autoRespawn = false;       // 자동 부활(정답지 기본 꺼짐)
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
+    int debugXpAfter = 0;           // 진단 --debug-xp N 양 — N 틱 뒤 경험치 한 번 (0 끔)
+    double debugXpAmount = 0.0;
+    int debugSpellAfter = 0;        // 진단 --debug-give-spell N 주문 — N 틱 뒤 주문 하나 (0 끔)
+    int debugSpellId = 0;
     bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
     bool itemAtSpawn = false;
     int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
@@ -257,8 +294,10 @@ int main(int argc, char** argv) {
             mirrorLimit = std::atoi(argv[++i]);
         } else if (a == "--mode" && i + 1 < argc) {
             mode = argv[++i];
-            if (mode != "arena" && mode != "ctf" && mode != "quest") {
-                std::printf("모르는 모드: %s (arena · ctf · quest)\n", mode.c_str());
+            if (ModeGameFlags(mode) == 0) {
+                std::printf("모르는 모드: %s\n", mode.c_str());
+                std::printf("  판이 도는 것   arena · ctf · quest\n");
+                std::printf("  규칙만 선 것   elimination · kotr · flagball · chat · coop · coopteam\n");
                 return 2;
             }
         } else if (a == "--quest-count" && i + 1 < argc) {
@@ -318,6 +357,14 @@ int main(int argc, char** argv) {
             debugEnchantB = std::atoi(argv[++i]);
             debugEnchantP = std::atoi(argv[++i]);
             debugEnchantN = std::atoi(argv[++i]);
+        } else if (a == "--debug-xp" && i + 2 < argc) {
+            // 진단 — ④대기 ⑨. 첫 사람에게 N 틱 뒤 경험치를 한 번 준다(HUD 막대가 차는지).
+            debugXpAfter = std::atoi(argv[++i]);
+            debugXpAmount = std::atof(argv[++i]);
+        } else if (a == "--debug-give-spell" && i + 2 < argc) {
+            // 진단 — ④대기 ⑨. 첫 사람에게 N 틱 뒤 주문 하나를 준다(주문책이 느는지).
+            debugSpellAfter = std::atoi(argv[++i]);
+            debugSpellId = std::atoi(argv[++i]);
         } else if (a == "--debug-team-after" && i + 1 < argc) {
             // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
             debugTeamAfter = std::atoi(argv[++i]);
@@ -823,6 +870,18 @@ int main(int argc, char** argv) {
                 std::printf("[기획값] ⚠ gamedata.bin 못 읽음 — %s\n", gd.Error().c_str());
             }
         }
+        // ★★ 2026-09-15 — **모드 깃발을 서버에 실제로 걸어 준다.**
+        //   여기가 없어서 묶음 8 규칙(탈락전·왕죽이기·깃발 판 끝)이 시험에서만 켜졌다.
+        //   `gameSettings_.gameFlags` 하나가 **두 군데**로 간다 —
+        //     ㉮ 판정: `DeathScoring`(0x100·0x10·0x400) · `RoundTimeUp`(0x60·0x400) ·
+        //        `CheckVictorySurvivors`(0x400) · `RoundCheckLimit`(0x400·0x200)
+        //     ㉯ 와이어: `BuildJoinBundle` 이 `& 0x7FFF0` 으로 가려 클라에 알린다(`JoinBundle.cpp:41`)
+        {
+            const uint32_t gf = ModeGameFlags(mode);
+            srv.SetGameFlags(gf);
+            std::printf("[모드] %s — gameFlags 0x%05X (클라에 가는 값 0x%05X)\n",
+                        mode.c_str(), gf, gf & 0x7FFF0u);
+        }
         // ★ 아이템이 아니라 걸러진 것 — **맵에 무엇이 있는지 한 번은 봐야 한다.**
         //   문·오벨리스크·레버가 여기 있으면 그것이 다음에 살릴 것이다.
         // ★ 아이템인데 클라가 못 집는 것 — 있으면 이름을 찍는다(조용히 버리지 않는다)
@@ -905,6 +964,18 @@ int main(int argc, char** argv) {
         if (debugTeamAfter > 0) {
             srv.SetDebugTeamAfter(static_cast<uint32_t>(debugTeamAfter));
             std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 팀을 한 번 바꿈\n", debugTeamAfter);
+            std::fflush(stdout);
+        }
+        if (debugXpAfter > 0) {
+            srv.SetDebugXpAfter(static_cast<uint32_t>(debugXpAfter), static_cast<float>(debugXpAmount));
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 경험치 %.0f 한 번\n", debugXpAfter, debugXpAmount);
+            std::fflush(stdout);
+        }
+        if (debugSpellAfter > 0 && debugSpellId > 0) {
+            srv.SetDebugGiveSpellAfter(static_cast<uint32_t>(debugSpellAfter),
+                                       static_cast<uint8_t>(debugSpellId));
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주문 %d(%s) 한 번\n", debugSpellAfter,
+                        debugSpellId, nox::SpellName(static_cast<uint8_t>(debugSpellId)));
             std::fflush(stdout);
         }
         if (creatureAwayAfter > 0) {

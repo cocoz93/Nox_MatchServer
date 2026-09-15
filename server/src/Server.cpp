@@ -12052,6 +12052,39 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         debugTeamDone_ = true;
     }
 
+    // ★ 진단 — 첫 사람 N틱 뒤 **경험치를 한 번 준다**(`--debug-xp N 양`, 2026-09-15).
+    //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
+    //   ④대기 ⑨ 「HUD 경험치 막대가 차오르나」를 정품 화면으로 가르려면 줄 길이 필요하다.
+    if (debugXpAfter_ > 0 && !debugXpDone_ && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugXpAfter_) {
+        for (auto& kv : sessions_) {
+            if (!kv.second.inGame) continue;
+            const int before = kv.second.level;
+            PlayerGiveExp(kv.second, debugXpAmount_, out);
+            std::printf("[진단] 프레임 %u 에 %s 경험치 +%.0f (레벨 %d → %d)\n", frame_,
+                        kv.second.addr.c_str(), debugXpAmount_, before, kv.second.level);
+            std::fflush(stdout);
+            break;
+        }
+        debugXpDone_ = true;
+    }
+
+    // ★ 진단 — 첫 사람 N틱 뒤 **주문 하나를 준다**(`--debug-give-spell N 주문`, 2026-09-15).
+    //   ④대기 ⑨ 「주문책에 주문이 느나」용. `announce=1` 이라 받는 소리(226)도 같이 난다.
+    if (debugSpellAfter_ > 0 && debugSpellId_ != 0 && !debugSpellDone_ && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugSpellAfter_) {
+        for (auto& kv : sessions_) {
+            if (!kv.second.inGame) continue;
+            const bool ok = SpellGrantToPlayer(kv.second, debugSpellId_, 1, false, 0, out);
+            std::printf("[진단] 프레임 %u 에 %s 주문 %u 주기 %s (칸 %u)\n", frame_,
+                        kv.second.addr.c_str(), static_cast<unsigned>(debugSpellId_),
+                        ok ? "됨" : "거절", static_cast<unsigned>(kv.second.spellLvl[debugSpellId_]));
+            std::fflush(stdout);
+            break;
+        }
+        debugSpellDone_ = true;
+    }
+
     // ── 사람을 걷게 하고 때리게 한다 (묶음 2-a · 3-a) — 걸음마다 제 프레임으로 ──
     //    그 틱의 시전 목록도 함께(spellBookReact_4FCB70 — 정답지는 유닛 갱신 뒤 · server.go:341)
     for (int step = 0; step < ticks; ++step) {

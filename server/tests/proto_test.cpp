@@ -16395,6 +16395,93 @@ void TestMusicWire() {
 // ── 묶음 10-d — 떠남·강퇴 알림 ───────────────────────────────────────
 //
 // 정답지 `PlayerDisconnect`(`src/player.go:630~643`) · 시간 초과(`src/server.go:440~452`).
+// 묶음 11-a — **정품 화면으로 경험치·주문책을 보려는 진단 고리 둘** (2026-09-15)
+//   왜 필요한가 — 경험치도 주문 받기도 **스크립트·퀘스트가 주는 것**이라 아레나에서는
+//   저절로 안 생긴다. ④대기 ⑨ 「HUD 막대가 차나 · 주문책이 느나」를 정품으로 가르려면
+//   서버가 한 번 줘야 한다. 그 고리가 `main.cpp` 에 없어서 시험에서만 켜졌던 자리다.
+//
+// ⚠⚠ **이 시험이 내 전제 둘을 깨뜨렸다. 적어 둔다** —
+//   ⑴ **「첫 사람이 들어온 프레임」은 `Tick` 호출마다 한 번 잡힌다**(`Server.cpp:11967`),
+//      그것도 **첫 `Tick` 은 시계만 맞추고 안 도므로** 두 번째 `Tick` 의 끝 프레임이 그 값이 된다.
+//      그래서 「N 틱 뒤」를 재려면 **그 값보다 N 만큼 더 간 프레임까지** 돌려야 한다.
+//      처음엔 `Tick(34*40)` 이면 40틱이니 30틱 문턱을 넘겼다고 여겼는데, 실제 문턱은 20+30=50 이었다.
+//   ⑵ **온라인이면 주문책이 이미 꽉 차 있다** — 접속 자리(`Server.cpp:2906`)가
+//      `serverSetAllSpells`(`spells.go:117`) 대로 **주문 1~136 을 전부 세기 3** 으로 준다.
+//      그러니 ④대기 ⑨ 의 「주문책에 주문이 **늘어나나**」는 아레나에서 성립하지 않는다 —
+//      실제로 볼 것은 **세기가 3 → 4 로 오르나**와 **받는 소리(226)가 나나**다.
+void TestDebugXpAndSpell() {
+    const std::string a = "10.11.1.1:1101";
+
+    // ① **문턱을 넘겨야 경험치가 들어간다 — 그 전에는 안 들어간다**
+    {
+        nox::Server srv;
+        srv.SetDebugXpAfter(30, 500.0f);
+        srv.DebugEnterGame(a, 1101);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);                                  // 첫 틱은 시계만 맞춘다
+        srv.Tick(34 * 5, out);                             // 여기서 「첫 사람 프레임」이 잡힌다
+        Check(srv.DebugExp(a) == 0.0f, "문턱 전인데 경험치가 들어갔다");
+        srv.Tick(34 * 200, out);                           // 넉넉히 넘긴다
+        Check(srv.DebugExp(a) > 0.0f, "문턱을 넘겼는데 경험치가 안 들어갔다");
+    }
+
+    // ② **한 번만 준다** — 그 뒤로 또 늘면 안 된다
+    {
+        nox::Server srv;
+        srv.SetDebugXpAfter(10, 300.0f);
+        srv.DebugEnterGame(a, 1101);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.Tick(34 * 5, out);
+        srv.Tick(34 * 200, out);
+        const float once = srv.DebugExp(a);
+        Check(once > 0.0f, "경험치가 한 번도 안 들어갔다");
+        srv.Tick(34 * 400, out);
+        Check(srv.DebugExp(a) == once, "경험치를 두 번 줬다");
+    }
+
+    // ③ **0 이면 끈다** — 스위치를 안 주면 아무 일도 없다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 1101);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.Tick(34 * 200, out);
+        Check(srv.DebugExp(a) == 0.0f, "스위치를 안 줬는데 경험치가 들어갔다");
+    }
+
+    // ④ **주문 세기가 3 → 4 로 오른다** (온라인 기본이 3 — 위 ⑵ 참조)
+    {
+        const uint8_t kSpell = 30;                         // SPELL_FORCE_FIELD
+        nox::Server srv;
+        srv.SetSpellDef(kSpell, 10, 0, { 0, 4 }, 0, 0, 0);
+        srv.SetDebugGiveSpellAfter(20, kSpell);
+        srv.DebugEnterGame(a, 1101);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.Tick(34 * 5, out);
+        Check(srv.DebugSpellLvl(a, kSpell) == 3, "온라인 기본 세기가 3 이 아니다");
+        srv.Tick(34 * 200, out);
+        Check(srv.DebugSpellLvl(a, kSpell) == 4, "주문 세기가 3 → 4 로 안 올랐다");
+        srv.Tick(34 * 400, out);
+        Check(srv.DebugSpellLvl(a, kSpell) == 4, "주문을 두 번 줬다");
+    }
+
+    // ⑤ **주문 0 이면 끈다** — 기본 세기 3 에서 꿈쩍 않아야 한다
+    {
+        nox::Server srv;
+        srv.SetSpellDef(30, 10, 0, { 0, 4 }, 0, 0, 0);
+        srv.SetDebugGiveSpellAfter(20, 0);
+        srv.DebugEnterGame(a, 1101);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.Tick(34 * 200, out);
+        Check(srv.DebugSpellLvl(a, 30) == 3, "주문 0 인데 뭔가 줬다");
+    }
+
+    std::printf("  11-a 진단 고리 — 경험치 문턱 뒤 한 번 · 주문 세기 3→4 한 번 · 0 이면 끔\n");
+}
+
 void TestLeaveNotify() {
     const std::string a = "10.10.4.1:1041";
     const std::string b = "10.10.4.2:1042";
@@ -19181,6 +19268,7 @@ int main() {
     TestSoundWire();
     TestSoundDebts();
     TestMusicWire();
+    TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();
     TestSpellSounds();

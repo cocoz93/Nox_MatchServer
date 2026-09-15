@@ -1324,6 +1324,13 @@ public:
     unsigned long long tryCollideDeferred() const { return tryCollideDeferred_; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꾼다(RESET_FRIENDS 판정용). 0 이면 끔.
     void SetDebugTeamAfter(uint32_t ticks) { debugTeamAfter_ = ticks; }
+    // 진단 — 첫 사람이 들어오고 N 틱 뒤 경험치를 한 번 준다. 0 이면 끔.
+    //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
+    //   ④대기 ⑨ 「HUD 경험치 막대가 차오르나」를 정품 화면으로 보려면 줄 길이 있어야 한다.
+    void SetDebugXpAfter(uint32_t ticks, float amount) { debugXpAfter_ = ticks; debugXpAmount_ = amount; }
+    // 진단 — 첫 사람이 들어오고 N 틱 뒤 주문 하나를 준다. 주문 0 이면 끔.
+    //   ④대기 ⑨ 「주문책에 주문이 느나」용. announce=1 이라 받는 소리(226)도 함께 난다.
+    void SetDebugGiveSpellAfter(uint32_t ticks, uint8_t spell) { debugSpellAfter_ = ticks; debugSpellId_ = spell; }
 
     // ── 독립 모드 (P5-c-2) ──────────────────────
     //
@@ -3438,6 +3445,12 @@ private:
     bool debugAwayDone_ = false;
     uint32_t debugTeamAfter_ = 0;     // 진단 --debug-team-after (0 끔)
     bool debugTeamDone_ = false;
+    uint32_t debugXpAfter_ = 0;       // 진단 --debug-xp (0 끔)
+    float debugXpAmount_ = 0.0f;
+    bool debugXpDone_ = false;
+    uint32_t debugSpellAfter_ = 0;    // 진단 --debug-give-spell (주문 0 이면 끔)
+    uint8_t debugSpellId_ = 0;
+    bool debugSpellDone_ = false;
     bool friendsOn_ = false;
     uint32_t debugOwnPetAfter_ = 0;   // 진단 --debug-own-pet (0 끔)
     bool debugPetWild_ = false;        // 진단 --debug-dummy — 주인 없음 · 맞음
