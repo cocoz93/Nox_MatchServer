@@ -1460,6 +1460,12 @@ public:
     // 서두(녹음본)에서 읽어 낸 스폰 자리. 모드를 차릴 때 기준으로 쓴다.
     int spawnX() const { return spawnX_; }
     int spawnY() const { return spawnY_; }
+    // ★ 2026-09-15 — **시작 자리를 손으로 지정한다**(`--spawn-at X Y`).
+    //   왜 — ④ 화면 확인은 「볼 것이 있는 자리」까지 가야 하는데, 맵의 `PlayerStart` 가
+    //   그 자리와 멀면 매번 한참을 걸어야 한다. G_Castle 은 시작이 (1244,645)이고
+    //   발판·덫·상자·문이 다 모인 자리는 (2493,2532)라 **2,200 넘게 떨어져 있다.**
+    //   ⚠ 부활 자리는 `playerStarts_` 가 따로 고르므로 **첫 접속 자리만** 바뀐다.
+    void SetSpawn(int x, int y) { spawnX_ = x; spawnY_ = y; }
 
     // ★ 시험용 — **스폰 자리를 아이템 자리로** 옮긴다. 없으면 false.
     //

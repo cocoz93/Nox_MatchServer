@@ -228,6 +228,7 @@ int main(int argc, char** argv) {
     bool autoRespawn = false;       // 자동 부활(정답지 기본 꺼짐)
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
+    int spawnAtX = -1, spawnAtY = -1;   // --spawn-at X Y — 시작·부활 자리를 손으로 지정 (음수면 끔)
     int debugXpAfter = 0;           // 진단 --debug-xp N 양 — N 틱 뒤 경험치 한 번 (0 끔)
     double debugXpAmount = 0.0;
     int debugSpellAfter = 0;        // 진단 --debug-give-spell N 주문 — N 틱 뒤 주문 하나 (0 끔)
@@ -357,6 +358,10 @@ int main(int argc, char** argv) {
             debugEnchantB = std::atoi(argv[++i]);
             debugEnchantP = std::atoi(argv[++i]);
             debugEnchantN = std::atoi(argv[++i]);
+        } else if (a == "--spawn-at" && i + 2 < argc) {
+            // ④ 화면 확인용 — 볼 것이 있는 자리에서 바로 시작한다(걸어가는 시간을 없앤다).
+            spawnAtX = std::atoi(argv[++i]);
+            spawnAtY = std::atoi(argv[++i]);
         } else if (a == "--debug-xp" && i + 2 < argc) {
             // 진단 — ④대기 ⑨. 첫 사람에게 N 틱 뒤 경험치를 한 번 준다(HUD 막대가 차는지).
             debugXpAfter = std::atoi(argv[++i]);
@@ -964,6 +969,13 @@ int main(int argc, char** argv) {
         if (debugTeamAfter > 0) {
             srv.SetDebugTeamAfter(static_cast<uint32_t>(debugTeamAfter));
             std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 팀을 한 번 바꿈\n", debugTeamAfter);
+            std::fflush(stdout);
+        }
+        if (spawnAtX >= 0 && spawnAtY >= 0) {
+            // 첫 접속 자리와 **부활 자리를 함께** 옮긴다 — 죽어도 그 자리로 돌아와야 판정을 이어간다.
+            srv.SetSpawn(spawnAtX, spawnAtY);
+            srv.SetPlayerStarts({ { static_cast<float>(spawnAtX), static_cast<float>(spawnAtY) } });
+            std::printf("[시작 자리] 손으로 지정 — (%d, %d) · 부활도 같은 자리\n", spawnAtX, spawnAtY);
             std::fflush(stdout);
         }
         if (debugXpAfter > 0) {
