@@ -2095,6 +2095,26 @@ public:
     bool DebugIsCrown(const std::string& x) const {
         auto i = sessions_.find(x); return i != sessions_.end() && IsCrown(i->second);
     }
+    // 10-f — 시험용 완드. 충전이 0 이면 쓰려 할 때 222 가 울려야 한다
+    void DebugGiveWand(const std::string& x, uint8_t spell, uint8_t charges,
+                       uint8_t chargesMax, uint32_t cooldown) {
+        auto i = sessions_.find(x);
+        if (i == sessions_.end()) return;
+        Session::Carried c;
+        c.netCode = 60001;
+        c.wandSpell = spell;
+        c.charges = charges;
+        c.chargesMax = chargesMax;
+        c.wandCooldown = cooldown;
+        i->second.inventory.push_back(c);
+    }
+    bool DebugUseWand(const std::string& x, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(x);
+        if (i == sessions_.end()) return false;
+        for (auto& c : i->second.inventory)
+            if (c.wandSpell != 0) return UseWandCast(i->second, c, out);
+        return false;
+    }
     void DebugGiveCrown(const std::string& x) {
         auto i = sessions_.find(x);
         if (i == sessions_.end()) return;
@@ -2258,7 +2278,19 @@ public:
     //   기동 로그가 0 을 찍으면 파일을 못 읽은 것이다.
     // ★ 묶음 4-a — 주문 정의(thing.bin SPEL 한 칸). 음소 나무도 여기서 자란다(server/spells.go createSpellFrom).
     //   ⚠ SetSpellCost 만 부른 주문은 정의가 없어 **시전이 안 된다**(정답지도 DefByInd nil → 코드 10).
-    void SetSpellDef(uint8_t spell, uint8_t mana, uint32_t flags, const std::vector<uint8_t>& phonemes);
+    void SetSpellDef(uint8_t spell, uint8_t mana, uint32_t flags, const std::vector<uint8_t>& phonemes,
+                     uint16_t castSound = 0, uint16_t onSound = 0, uint16_t offSound = 0);
+    // ★ 묶음 10-f — 지속 주문의 소리. 정답지 `spells_dur.go:131~138`·`:39~43` —
+    //   **걸 때**는 겨눈 주문(TARGETED 0x4)이면 `켜짐`, 아니면 `시전` 소리를 **대상 자리**에서,
+    //   **끝날 때**는 `꺼짐` 소리를 **시전한 사람 자리**에서 울린다
+    uint16_t SpellSoundOn(uint8_t spell) const {
+        if (spell >= 137 || !spellDefs_[spell].valid) return 0;
+        const SpellDef& d = spellDefs_[spell];
+        return (d.flags & 0x4) ? d.onSound : d.castSound;   // things.SpellTargeted
+    }
+    uint16_t SpellSoundOff(uint8_t spell) const {
+        return (spell < 137 && spellDefs_[spell].valid) ? spellDefs_[spell].offSound : 0;
+    }
     uint32_t SpellFlags(uint8_t spell) const { return spell < 137 && spellDefs_[spell].valid ? spellDefs_[spell].flags : 0u; }
     size_t CastPending() const { return castList_.size(); }
     // ★ 4-a2 — 겨눈 주문이 날리는 "Magic" 오브젝트(thing.bin). speedRaw = SPEED 원값(정답지 /32 · MISSILE ×2)
@@ -2613,6 +2645,9 @@ private:
         uint8_t mana = 0;
         uint32_t flags = 0;
         std::vector<uint8_t> phonemes;   // 파일 음소 + End(4)
+        // ★ 묶음 10-f — 주문 소리 셋(thing.bin `SPEL` 칸에 **이름**으로 있다).
+        //   정답지 `spellGetAud44_424800` — 0 시전 · 1 켜짐 · 2 꺼짐
+        uint16_t castSound = 0, onSound = 0, offSound = 0;
     };
     struct PhonemeNode {                 // server.PhonemeLeaf
         int ind = 0;                     // 끝이면 주문 번호

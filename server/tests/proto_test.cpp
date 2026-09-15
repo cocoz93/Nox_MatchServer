@@ -16624,6 +16624,115 @@ void TestJournalAndSysop() {
                 "d6 3바이트 · 관리자 bd 2바이트(빈 비밀번호는 늘 거절)\n");
 }
 
+// ── 묶음 10-f — 남은 소리 빚 ─────────────────────────────────────────
+//
+// 정답지 지속 주문 `spells_dur.go:131~138`(걸 때)·`:39~43`(끝날 때) ·
+//   완드 다 씀 `GAME4_3.c:7907`.
+void TestSpellSounds() {
+    const std::string a = "10.10.6.1:1061";
+    const uint16_t kOn = 300, kCast = 301, kOff = 302;
+    auto defs = [&](nox::Server& srv) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id : { kOn, kCast, kOff, uint16_t(222) }) {
+            nox::Server::SoundDefIn d;
+            d.id = id; d.maxDist = 600; d.merged = 0; d.samples = 1;
+            sd.push_back(d);
+        }
+        srv.SetSoundDefs(sd);
+    };
+    auto rang = [&](const std::vector<nox::OutPacket>& out, uint16_t want) {
+        for (const auto& x : FlattenTo(out, a)) {
+            if (x.size() != 4) continue;
+            if (x[0] != static_cast<uint8_t>(nox::Op::AUDIO_EVENT) &&
+                x[0] != static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) continue;
+            if (((x[2] | (x[3] << 8)) & 0x3ff) == want) return true;
+        }
+        return false;
+    };
+
+    // ① **소리 셋이 주문 정의에 담긴다** — 겨눔(0x4)이면 `켜짐`, 아니면 `시전`
+    {
+        nox::Server srv; defs(srv);
+        srv.SetSpellDef(51, 10, /*flags=*/0x4, { 0, 4 }, kCast, kOn, kOff);   // 겨눔 주문
+        srv.SetSpellDef(52, 10, /*flags=*/0x0, { 1, 4 }, kCast, kOn, kOff);   // 겨눔 아님
+        Check(srv.SpellSoundOn(51) == kOn, "겨눔 주문인데 켜짐 소리가 아니다");
+        Check(srv.SpellSoundOn(52) == kCast, "겨눔이 아닌데 시전 소리가 아니다");
+        Check(srv.SpellSoundOff(51) == kOff, "꺼짐 소리가 안 담겼다");
+        Check(srv.SpellSoundOn(99) == 0, "없는 주문인데 소리가 나온다");
+    }
+
+    // ② **완드를 다 쓰면 222 가 그 사람에게** — 정답지 `GAME4_3.c:7907`
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1061);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        // 충전이 0 인 완드를 들려 준다
+        srv.DebugGiveWand(a, /*spell=*/27, /*charges=*/0, /*chargesMax=*/10, /*cooldown=*/0);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUseWand(a, out);
+        srv.Tick(34, out);
+        Check(rang(out, 222), "완드를 다 썼는데 222 가 안 울렸다");
+    }
+
+    // 3 wand with charges left must NOT ring 222
+    {
+        nox::Server srv; defs(srv);
+        RegSpell(srv, 27);
+        srv.DebugEnterGame(a, 1061);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        srv.DebugGiveWand(a, 27, /*charges=*/5, /*chargesMax=*/10, /*cooldown=*/0);
+        std::vector<nox::OutPacket> out;
+        srv.DebugUseWand(a, out);
+        srv.Tick(34, out);
+        Check(!rang(out, 222), "충전이 남았는데 222 가 울렸다");
+    }
+
+    // ④ **지속 주문을 걸면 대상 자리에서, 끝나면 시전자 자리에서 운다**
+    {
+        nox::Server srv; defs(srv);
+        // 겨눔(0x4)이 아닌 주문 4 — 걸 때 **시전** 소리
+        srv.SetSpellDef(4, 10, /*flags=*/0x0, { 0, 4 }, kCast, kOn, kOff);
+        srv.DebugEnterGame(a, 1061);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        out.clear();
+        const nox::Target none;
+        Check(srv.DebugDurNew(a, 4, 5, -1, -1, true, none, out), "지속 주문 New 가 false");
+        srv.Tick(ms += 34, out);
+        Check(rang(out, kCast), "겨눔이 아닌 주문인데 시전 소리가 안 울렸다");
+        Check(!rang(out, kOn), "겨눔이 아닌데 켜짐 소리가 울렸다");
+        // dt 5 라 여섯 틱 안에 끝난다 — 그때 꺼짐 소리
+        out.clear();
+        for (int t = 0; t < 10 && srv.DurCount() > 0; ++t) srv.Tick(ms += 34, out);
+        srv.Tick(ms += 34, out);
+        Check(rang(out, kOff), "끝났는데 꺼짐 소리가 안 울렸다");
+    }
+
+    // ⑤ **겨눔 주문(0x4)은 걸 때 켜짐 소리다**
+    {
+        nox::Server srv; defs(srv);
+        srv.SetSpellDef(4, 10, /*flags=*/0x4, { 0, 4 }, kCast, kOn, kOff);
+        srv.DebugEnterGame(a, 1061);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        out.clear();
+        const nox::Target none;
+        Check(srv.DebugDurNew(a, 4, 5, -1, -1, true, none, out), "지속 주문 New 가 false");
+        srv.Tick(ms += 34, out);
+        Check(rang(out, kOn), "겨눔 주문인데 켜짐 소리가 안 울렸다");
+        Check(!rang(out, kCast), "겨눔 주문인데 시전 소리가 울렸다");
+    }
+
+    std::printf("  10-f — 주문 소리: 겨눔이면 켜짐·아니면 시전(대상 자리) · 끝나면 꺼짐(시전자 자리) · "
+                "완드 다 씀 222\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -18880,6 +18989,7 @@ int main() {
     TestMusicWire();
     TestLeaveNotify();
     TestJournalAndSysop();
+    TestSpellSounds();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

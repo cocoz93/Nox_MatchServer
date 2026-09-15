@@ -4380,13 +4380,17 @@ void Server::TryCollide(Session& s, uint16_t code, std::vector<OutPacket>& out) 
 //   → spellAccept(spells.go:193 — 효과 함수 갈래)
 
 // server/spells.go createSpellFrom — 정의를 넣고 음소 나무를 자라게 한다(끝 자리 Ind = 주문 번호 · 음소 끝에 End 4)
-void Server::SetSpellDef(uint8_t spell, uint8_t mana, uint32_t flags, const std::vector<uint8_t>& phonemes) {
+void Server::SetSpellDef(uint8_t spell, uint8_t mana, uint32_t flags, const std::vector<uint8_t>& phonemes,
+                         uint16_t castSound, uint16_t onSound, uint16_t offSound) {
     if (spell == 0 || spell >= 137) return;
     SpellDef& d = spellDefs_[spell];
     d.valid = true;
     d.enabled = true;
     d.mana = mana;
     d.flags = flags;
+    d.castSound = castSound;   // 10-f — thing.bin SPEL 칸의 소리 셋
+    d.onSound = onSound;
+    d.offSound = offSound;
     d.phonemes.clear();
     spellCost_[spell] = mana;
     if (phonemes.empty()) return;
@@ -9399,7 +9403,11 @@ void Server::SendCharges(Session& s, const Session::Carried& c, std::vector<OutP
 //   그 두 비트가 무엇인지 못 짚어(오브젝트 깃발·클래스로 보이나 확증 없음) 늘 깎는 쪽으로 두었다.
 bool Server::UseWandCast(Session& s, Session::Carried& c, std::vector<OutPacket>& out) {
     if (c.wandSpell == 0) return false;
-    if (c.chargesMax != 0 && c.charges == 0) return false;    // 다 썼다
+    if (c.chargesMax != 0 && c.charges == 0) {                // 다 썼다
+        // 10-f PlaySound 222 DepletedWand (GAME4_3.c:7907, kind 0 at the player)
+        PlaySoundAt(222, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
+        return false;
+    }
     // ⚠ 「아직 안 썼다」를 따로 안 둔다 — 정답지도 `+104` 가 0 인 채로 `지금 − 0 >= 대기` 를 본다.
     //   즉 **판이 시작하고 대기만큼 지나야 첫 발이 나간다.** 그게 원본 버릇이다.
     if (frame_ - c.wandLastFrame < c.wandCooldown) return false;
@@ -10871,6 +10879,8 @@ bool Server::DurNew(uint8_t spell, const std::string& a2, const std::string& obj
     d.fns = fns;
     durSpells_.push_front(d);                                // Add — 머리에
     // 소리 — 겨눔(0x4)이면 On · 아니면 Cast(10)
+    // 10-f PlaySound: on apply, TARGETED(0x4) -> OnSound else CastSound, at the target (spells_dur.go:131~138)
+    PlaySoundAt(SpellSoundOn(spell), static_cast<float>(u2.posX), static_cast<float>(u2.posY));
     DurSpell& p = durSpells_.front();
     if (fns.create == nullptr || (this->*fns.create)(p, out) == 0) return true;
     DurCancel(p, out);
@@ -10888,7 +10898,13 @@ void Server::DurOnNewSpell(std::vector<OutPacket>& out) {
 
 // destroyDurSpell(spells_dur.go:39)
 void Server::DurDestroy(std::list<DurSpell>::iterator it, std::vector<OutPacket>& out) {
-    // 소리 Off(10)
+    // 10-f PlaySound: on expiry, OffSound at the caster (spells_dur.go:39~43)
+    {
+        auto ci = sessions_.find(it->caster);
+        if (!it->caster.empty() && ci != sessions_.end())
+            PlaySoundAt(SpellSoundOff(it->spell), static_cast<float>(ci->second.posX),
+                        static_cast<float>(ci->second.posY));
+    }
     if (it->fns.destroy) (this->*(it->fns.destroy))(*it, out);
     auto c = sessions_.find(it->caster);
     if (!it->caster.empty() && c != sessions_.end() && c->second.inGame) {

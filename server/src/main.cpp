@@ -799,7 +799,11 @@ int main(int argc, char** argv) {
                 if (!nm2 || !*nm2) continue;
                 for (const auto& sr : tdb.Spells()) {
                     if (sr.name != nm2) continue;
-                    srv.SetSpellDef(static_cast<uint8_t>(id), sr.mana, sr.flags, sr.phonemes);
+                    // ★ 10-f — 소리 셋도 같이 넣는다(이름 → 번호)
+                    srv.SetSpellDef(static_cast<uint8_t>(id), sr.mana, sr.flags, sr.phonemes,
+                                    nox::SoundByName(sr.castSound.c_str()),
+                                    nox::SoundByName(sr.onSound.c_str()),
+                                    nox::SoundByName(sr.offSound.c_str()));
                     break;
                 }
             }
