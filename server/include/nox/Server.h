@@ -1623,6 +1623,10 @@ public:
     void DebugManaSub(const std::string& addr, int v) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerManaSub(it->second, v); }
     void DebugSetStatsDirty(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.statsDirty = true; }
     // 시험용 — 독 남은 양(4-c2a) · 감쇠 계수기를 줄여 「오래 지난 것」을 흉내낸다(감쇠 한 칸이 1000틱이라 그냥은 못 잰다)
+    void DebugSetPoison(const std::string& addr, uint8_t v) {
+        auto i = sessions_.find(addr);
+        if (i != sessions_.end()) i->second.poison = v;
+    }
     int DebugPoisonOf(const std::string& addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : static_cast<int>(it->second.poison);
@@ -2367,6 +2371,14 @@ public:
     }
     // 시험용 — 게임에서 빠진 것으로(오브젝트 지워짐 · inGame 끔)
     void DebugKickPlayer(const std::string& addr, std::vector<OutPacket>& out) { KickPlayer(addr, out); }
+    void DebugSetMana(const std::string& addr, uint16_t v) {
+        auto i = sessions_.find(addr);
+        if (i != sessions_.end()) { i->second.mana = v; i->second.manaPrev = v; }
+    }
+    bool DebugAbilityDo(const std::string& addr, uint8_t abil, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(addr);
+        return i != sessions_.end() && AbilityDo(i->second, abil, out);
+    }
     void DebugSendChapterEnd(const std::string& addr, uint8_t ch, bool ended, std::vector<OutPacket>& out) {
         auto i = sessions_.find(addr);
         if (i != sessions_.end()) SendChapterEnd(i->second, ch, ended, out);

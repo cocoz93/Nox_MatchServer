@@ -2336,6 +2336,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 // 사람이면 **금액을 더하고 물건을 없앤다**. 사람이 아니면(몬스터) 보통 줍기로 간다.
                 // ⚠ 안 옮긴 것 — 줄글(`GoldPickup` 문자열 + 금액)과 소리 307 은 묶음 10.
                 if (w.goldPickup) {
+                    // 10-g PlaySound 307 TreasurePickup — pickupGold_4F3A60 rings it on both paths
+                    PlaySoundAt(307, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
                     PlayerAddGold(s, w.goldAmount, out);
                     {   // 모두에게 — 바닥에서 사라진다
                         uint8_t msg[3];
@@ -7272,6 +7274,11 @@ bool Server::AbilityIsActive(const Session& s, uint8_t abil) const {
 
 // `serverAbilities::Do` — 능력을 쓴다
 bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
+    // 10-g PlaySound 231 PermanentFizzle — spells_abil.go rings it on EVERY rejection path
+    //   (never on success). InformSpell(2, …) marks exactly those paths, so ring it there.
+    auto refuse = [&](uint8_t why) { InformSpell(s, 2, why, out);
+                                     PlaySoundAt(231, static_cast<float>(s.posX),
+                                                 static_cast<float>(s.posY), 0, 0, s.addr); };
     if (abil == 0 || abil >= 6) return false;
     if (s.respawnAtFrame != 0) return false;             // 죽었거나 사라진 것
     if (s.charClass != CharClass::Warrior) return false; // 워리어만
@@ -7281,18 +7288,18 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
     const bool exclusive = (abil == 1 || abil == 2 || abil == 3);
     if (exclusive) {
         for (uint8_t o = 1; o <= 3; ++o)
-            if (o != abil && AbilityIsActive(s, o)) { InformSpell(s, 2, 2, out); return false; }
+            if (o != abil && AbilityIsActive(s, o)) { refuse(2); return false; }
     }
-    if (AbilityIsActive(s, abil)) { InformSpell(s, 2, 2, out); return false; }   // ③
+    if (AbilityIsActive(s, abil)) { refuse(2); return false; }   // ③
     // ④ 상태 12 이거나 (협동이 아닌데) **떠 있으면**
     //   ⚠ 떠 있는 것(`FlagAirborne`)은 **사람에게는 아직 안 올겼다** —
     //     날아가는 것의 깃발이지 사람 깃발이 아니다. 사람을 띄우는 길(작살 끌림 따위)을 옮길 때 같이 넣는다
-    if (s.moveState == 12) { InformSpell(s, 2, 6, out); return false; }
+    if (s.moveState == 12) { refuse(6); return false; }
     // ⑤ (온라인이 아니거나 퀘스트면) 레벨 0 은 못 쓴다 — ⚠ 우리는 늘 온라인이라 이 관문을 안 탄다
     const bool quest = questTotal_ > 0 || questStage_ > 0;
-    if (quest && s.spellLvl[abil] == 0) { InformSpell(s, 2, 3, out); return false; }
+    if (quest && s.spellLvl[abil] == 0) { refuse(3); return false; }
     if (abil == 1 && s.overweight) { InformSpell(s, 2, 7, out); return false; }   // ⑥ 짐 넘침(+3656)
-    if (s.abilCooldown[abil] != 0) { InformSpell(s, 2, 2, out); return false; }   // ⑦
+    if (s.abilCooldown[abil] != 0) { refuse(2); return false; }   // ⑦
 
     s.abilCooldown[abil] = kAbilityDelay[abil];
     if (kAbilityDelay[abil] != 0) SendAbilityState(s, abil, 0, out);
@@ -9518,6 +9525,8 @@ int Server::PickupPotion(Session& s, const WorldStatic& w, std::vector<OutPacket
         const int dhp = static_cast<int>(w.useAmount * ClassHealthMult(s.charClass));
         if (dhp + static_cast<int>(s.health) < static_cast<int>(s.maxHealth)) {
             UnitAdjustHP(Target{ s.addr, -1 }, dhp, out);
+            // 10-g PlaySound 754 RestoreHealth (object_pickup.go:160)
+            PlaySoundAt(754, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
             consumed = true;
         }
     }
@@ -9526,12 +9535,17 @@ int Server::PickupPotion(Session& s, const WorldStatic& w, std::vector<OutPacket
         const int dmp = static_cast<int>(w.useAmount * ClassManaMult(s.charClass));
         if (dmp + static_cast<int>(s.mana) < static_cast<int>(s.maxMana)) {
             PlayerManaAdd(s, dmp);
+            // 10-g PlaySound 755 RestoreMana (object_pickup.go:172)
+            PlaySoundAt(755, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
             consumed = true;
         }
     }
     // ④ 독 해제 — 독이 있으면 **바로 풀고 끝난다**(정답지가 여기서 곧장 돌아간다)
     if ((w.foodBits & kFoodCurePoisonPotion) && s.poison != 0) {
         RemovePoison(Target{ s.addr, -1 }, out);
+        // 10-g PlaySound: CurePoison spell OnSound (object_pickup.go:178)
+        PlaySoundAt(SpellSoundOn(14)   /* SPELL_CURE_POISON */, static_cast<float>(s.posX),
+                    static_cast<float>(s.posY), 0, 0, s.addr);
         return 1;
     }
     return consumed ? 1 : 0;

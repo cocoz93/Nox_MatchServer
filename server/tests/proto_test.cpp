@@ -16733,6 +16733,200 @@ void TestSpellSounds() {
                 "완드 다 씀 222\n");
 }
 
+// ── 묶음 10-g — 금·능력·물약 소리 ────────────────────────────────────
+//
+// 정답지 금 `pickupGold_4F3A60`(`pickup.c:24·29`) · 능력 거절 `spells_abil.go:150~205` ·
+//   물약 `object_pickup.go:160·172·178`.
+void TestPickupAndAbilSounds() {
+    const std::string a = "10.10.7.1:1071";
+    auto defs = [&](nox::Server& srv) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id : { 307, 231, 754, 755 }) {
+            nox::Server::SoundDefIn d;
+            d.id = id; d.maxDist = 600; d.merged = 0; d.samples = 1;
+            sd.push_back(d);
+        }
+        srv.SetSoundDefs(sd);
+    };
+    auto rang = [&](const std::vector<nox::OutPacket>& out, uint16_t want) {
+        for (const auto& x : FlattenTo(out, a)) {
+            if (x.size() != 4) continue;
+            if (x[0] != static_cast<uint8_t>(nox::Op::AUDIO_EVENT) &&
+                x[0] != static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) continue;
+            if (((x[2] | (x[3] << 8)) & 0x3ff) == want) return true;
+        }
+        return false;
+    };
+
+    // ① **이름표가 뜻대로 풀린다**
+    Check(std::strcmp(nox::SoundName(307), "TreasurePickup") == 0, "307 이 TreasurePickup 이 아니다");
+    Check(std::strcmp(nox::SoundName(231), "PermanentFizzle") == 0, "231 이 PermanentFizzle 이 아니다");
+    Check(std::strcmp(nox::SoundName(754), "RestoreHealth") == 0, "754 가 RestoreHealth 가 아니다");
+    Check(std::strcmp(nox::SoundName(755), "RestoreMana") == 0, "755 가 RestoreMana 가 아니다");
+
+    // ② **능력을 못 쓰면 231** — 워리어가 쉬는 시간에 또 누를 때
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1071, false, nox::CharClass::Warrior);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugAbilityDo(a, 4, out), "능력이 처음부터 안 먹었다");   // 4 = 살금살금
+        srv.Tick(34, out);
+        out.clear();
+        Check(!srv.DebugAbilityDo(a, 4, out), "쉬는 시간인데 또 먹었다");
+        srv.Tick(68, out);
+        Check(rang(out, 231), "거절했는데 231 이 안 울렸다");
+    }
+
+    // ③ **성공에는 231 이 안 운다**
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1071, false, nox::CharClass::Warrior);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugAbilityDo(a, 4, out), "능력이 안 먹었다");
+        srv.Tick(34, out);
+        Check(!rang(out, 231), "성공했는데 231 이 울렸다");
+    }
+
+    // ④ **워리어가 아니면 231 이 안 운다**(정답지가 그 자리에서 곧장 돌아간다)
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1071, false, nox::CharClass::Wizard);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        Check(!srv.DebugAbilityDo(a, 4, out), "워리어가 아닌데 먹었다");
+        srv.Tick(34, out);
+        Check(!rang(out, 231), "워리어가 아닌데 231 이 울렸다");
+    }
+
+    // ⑤ **금을 주우면 307** — `pickupGold_4F3A60` 이 두 갈래 다 울린다
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1071);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSetPos(a, 1000, 1000);
+        { std::vector<nox::OutPacket> w0; srv.Tick(0, w0); }   // ⚠ 첫 Tick 은 시계만 맞추고 안 돌아 소리가 안 빠진다
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 700; w.type = 652; w.x = 1000; w.y = 1000;
+        w.weight = 1; w.goldPickup = true; w.goldAmount = 25;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 700);
+        srv.OnPacket(a, g.data(), g.size(), out);
+        srv.Tick(34, out);
+        Check(srv.goldPicked() == 1, "금을 아예 안 주웠다(이 시험의 전제)");
+        Check(rang(out, 307), "금을 주웠는데 307 이 안 울렸다");
+    }
+
+    // ⑥ **물약을 줍는 자리에서 마시면 754·755** · 독을 풀면 독 해제 주문의 켜짐 소리
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1071);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSetPos(a, 1000, 1000);
+        { std::vector<nox::OutPacket> w0; srv.Tick(0, w0); }   // ⚠ 첫 Tick 은 시계만 맞추고 안 돌아 소리가 안 빠진다
+        std::vector<nox::OutPacket> out;
+        srv.Damage(a, 40, out);                              // 넉넉히 모자라게 만든다
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 701; w.type = 638; w.x = 1000; w.y = 1000;
+        w.weight = 5; w.isFood = true;
+        w.foodBits = nox::kFoodPotion | nox::kFoodHealthPotion;
+        w.useAmount = 20; w.useFn = nox::UseFn::Potion; w.potionPickup = true;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        out.clear();
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 701);
+        srv.OnPacket(a, g.data(), g.size(), out);
+        srv.Tick(34, out);
+        Check(rang(out, 754), "체력 물약을 마셨는데 754 가 안 울렸다");
+        Check(!rang(out, 755), "체력 물약인데 755 가 울렸다");
+    }
+
+    // ⑦ **마나 물약은 755**
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1071);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSetPos(a, 1000, 1000);
+        { std::vector<nox::OutPacket> w0; srv.Tick(0, w0); }   // ⚠ 첫 Tick 은 시계만 맞추고 안 돌아 소리가 안 빠진다
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetMana(a, 5);                              // 넉넉히 모자라게
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 702; w.type = 638; w.x = 1000; w.y = 1000;
+        w.weight = 5; w.isFood = true;
+        w.foodBits = nox::kFoodPotion | nox::kFoodManaPotion;
+        w.useAmount = 20; w.useFn = nox::UseFn::Potion; w.potionPickup = true;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        out.clear();
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 702);
+        srv.OnPacket(a, g.data(), g.size(), out);
+        srv.Tick(34, out);
+        Check(rang(out, 755), "마나 물약을 마셨는데 755 가 안 울렸다");
+        Check(!rang(out, 754), "마나 물약인데 754 가 울렸다");
+    }
+
+    // ⑧ **쉬는 시간 거절도 231** — 지속이 0 인 능력(작살 3)이라 「이미 켜짐」이 아니라 쉬는 시간에 걸린다
+    {
+        nox::Server srv; defs(srv);
+        srv.DebugEnterGame(a, 1071, false, nox::CharClass::Warrior);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugAbilityDo(a, 3, out), "작살이 처음부터 안 먹었다");
+        srv.Tick(34, out);
+        out.clear();
+        Check(!srv.DebugAbilityDo(a, 3, out), "쉬는 시간인데 또 먹었다");
+        srv.Tick(68, out);
+        Check(rang(out, 231), "쉬는 시간 거절인데 231 이 안 울렸다");
+    }
+
+    // ⑨ **독을 풀면 독 해제 주문의 켜짐 소리**(`object_pickup.go:178`)
+    {
+        const uint16_t kCure = 400;
+        nox::Server srv;
+        {
+            std::vector<nox::Server::SoundDefIn> sd;
+            for (uint16_t id : { uint16_t(307), uint16_t(231), uint16_t(754), uint16_t(755), kCure }) {
+                nox::Server::SoundDefIn d;
+                d.id = id; d.maxDist = 600; d.merged = 0; d.samples = 1;
+                sd.push_back(d);
+            }
+            srv.SetSoundDefs(sd);
+        }
+        // 독 해제 주문(14)의 **켜짐** 소리를 kCure 로 — 겨눔(0x4)이라 켜짐이 쓰인다
+        srv.SetSpellDef(14, 10, /*flags=*/0x4, { 0, 4 }, 0, kCure, 0);
+        srv.DebugEnterGame(a, 1071);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSetPos(a, 1000, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        srv.DebugSetPoison(a, 5);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic wp;
+        wp.netCode = 703; wp.type = 638; wp.x = 1000; wp.y = 1000;
+        wp.weight = 5; wp.isFood = true;
+        wp.foodBits = nox::kFoodPotion | nox::kFoodCurePoisonPotion;
+        wp.useAmount = 0; wp.useFn = nox::UseFn::Potion; wp.potionPickup = true;
+        st.push_back(wp);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 703);
+        srv.OnPacket(a, g.data(), g.size(), out);
+        srv.Tick(34, out);
+        Check(rang(out, kCure), "독을 풀었는데 해제 주문 소리가 안 울렸다");
+    }
+
+    std::printf("  10-g — 금 307 · 능력 거절 231(성공·비워리어는 안 울림) · 물약 754·755\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -18990,6 +19184,7 @@ int main() {
     TestLeaveNotify();
     TestJournalAndSysop();
     TestSpellSounds();
+    TestPickupAndAbilSounds();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
