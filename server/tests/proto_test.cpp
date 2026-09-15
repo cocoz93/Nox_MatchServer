@@ -15670,6 +15670,177 @@ void TestShootingTrap() {
                 "앞 12 에 남 · a1 6바이트(화살만) · 해골은 조용히 불덩이 · 맞으면 종류 3\n");
 }
 
+// ── 묶음 9-c — 밟는 판(PressurePlate) ────────────────────────────────
+//
+// ★★ **오프코드 이름과 실제가 다르다.** `0xB4`(`PENTAGRAM_ACTIVATE`)를 보내는 자리는
+//   정답지 전체에 하나뿐이고(`GAME4_1.c:4350~4353`) 조건은 **종류 == `PressurePlate`** 다.
+//   오각별은 같은 함수의 다른 갈래로 `0x39` 를 보낸다.
+// 정답지 — 닿음 `collideTrigger_54FCD0` · 주기 `updateTrigger_53B1B0`.
+void TestPressurePlate() {
+    const std::string a = "10.9.3.1:9301";
+    const uint16_t kPlate = 500;
+    auto mk = [&](nox::Server& srv) {
+        nox::Server::WorldProp wp;
+        wp.netCode = kPlate;
+        wp.type = 734;                                 // thing.bin 실측 와이어
+        wp.x = 2000; wp.y = 2000;
+        wp.kind = nox::PropKind::Plate;
+        srv.SetWorldProps({ wp });
+        srv.DebugEnterGame(a, 931);
+        srv.DebugSetPos(a, 2500, 2500);                // 처음엔 판 밖
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+    };
+    // ⚠ **판정에는 프레임이 흘러야 한다** — 떼는 갈래가 `지금 > +136` 을 보기 때문이다
+    //   (정답지 `updateTrigger_53B1B0` · `PressurePlate` 는 기다리는 값이 0 이라 **한 틱**이면 된다)
+    uint32_t ms = 0;
+    auto step = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) { ms += 34; srv.Tick(ms, out); };
+    auto find = [&](const std::vector<nox::OutPacket>& out, uint8_t* val) {
+        size_t n = 0;
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 4 && x[0] == static_cast<uint8_t>(nox::Op::PENTAGRAM_ACTIVATE) &&
+                (x[1] | (x[2] << 8)) == kPlate) {
+                ++n;
+                if (val) *val = x[3];
+            }
+        return n;
+    };
+
+    // ① **밟으면 1 이 가고, 내려오면 0 이 간다** — 바뀔 때만
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        step(srv, out);
+        Check(find(out, nullptr) == 0, "안 밟았는데 알림이 갔다");
+        Check(srv.PlateAnim(kPlate) == 0, "처음 칸이 0 이 아니다");
+
+        srv.DebugSetPos(a, 2000, 2000);                // 판 한가운데
+        out.clear();
+        step(srv, out);
+        uint8_t v = 0xff;
+        Check(find(out, &v) == 1, "밟았는데 알림이 한 번이 아니다");
+        Check(v == 1, "누른 값이 1 이 아니다");
+        Check(srv.PlateState(kPlate) == 1, "상태가 눌림(1)이 아니다");
+        out.clear();
+        step(srv, out);
+        Check(find(out, nullptr) == 0, "계속 밟고 있는데 또 갔다");
+
+        srv.DebugSetPos(a, 2500, 2500);                // 내려온다
+        out.clear();
+        step(srv, out);
+        Check(find(out, &v) == 1, "내려왔는데 알림이 한 번이 아니다");
+        Check(v == 0, "뗀 값이 0 이 아니다");
+        Check(srv.PlateState(kPlate) == 0, "상태가 놓임(0)이 아니다");
+    }
+
+    // ② **판 상자는 45×45다** — 반쪽 22.5 에 몸 반지름을 더한 데까지 닿는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPos(a, 2000 + 60, 2000);           // 멀리
+        step(srv, out);
+        Check(srv.PlateAnim(kPlate) == 0, "60 밖인데 눌렸다");
+        srv.DebugSetPos(a, 2000 + 25, 2000);           // 22.5 + 몸반지름 안
+        out.clear();
+        step(srv, out);
+        Check(srv.PlateAnim(kPlate) == 1, "판 가장자리인데 안 눌렸다");
+    }
+
+    // ③ **모서리는 가장 가까운 점으로 잰다**(상자 대 원) — 대각으로 45 는 안 닿는다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPos(a, 2000 + 45, 2000 + 45);
+        step(srv, out);
+        Check(srv.PlateAnim(kPlate) == 0, "모서리 밖인데 눌렸다");
+        // ★ **네모로만 재면 걸리는 자리** — (30,30) 은 네모로는 안이지만
+        //   가장 가까운 점 (22.5,22.5) 까지가 √(7.5²+7.5²) ≈ 10.6 이라 몸 반지름 밖이다
+        srv.DebugSetPos(a, 2000 + 30, 2000 + 30);
+        step(srv, out);
+        Check(srv.PlateAnim(kPlate) == 0, "모서리를 네모로 쟀다");
+        // 같은 거리라도 곧은 쪽이면 닿는다
+        srv.DebugSetPos(a, 2000 + 30, 2000);
+        step(srv, out);
+        Check(srv.PlateAnim(kPlate) == 1, "곧은 쪽 30 이 안 닿는다");
+    }
+
+    // ④ **소환수도 판을 누른다**(질량이 있는 것이면 된다)
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSpawnPet(1, 2000.0f, 2000.0f, a);
+        // ⚠ 틱이 돌면 소환수가 주인 쪽으로 걸어가 판에서 내려간다 — 판정 직전에 자리를 붙든다
+        srv.DebugSetPetPos(0, 2000.0, 2000.0);
+        step(srv, out);
+        srv.DebugSetPetPos(0, 2000.0, 2000.0);
+        step(srv, out);
+        Check(srv.PlateAnim(kPlate) == 1, "소환수가 밟았는데 안 눌렸다");
+    }
+
+    // ⑤ **꺼진 판은 아무것도 안 한다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugPlateEnable(kPlate, false);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPos(a, 2000, 2000);
+        step(srv, out);
+        Check(find(out, nullptr) == 0, "꺼졌는데 알림이 갔다");
+        Check(srv.PlateAnim(kPlate) == 0, "꺼졌는데 눌렸다");
+        // 다시 켜면 그 프레임에 판정이 돈다
+        srv.DebugPlateEnable(kPlate, true);
+        out.clear();
+        step(srv, out);
+        Check(srv.PlateAnim(kPlate) == 1, "다시 켰는데 안 눌렸다");
+    }
+
+    // ⑥ **한 번 쓰고 끝(one-shot)이면 뗀 뒤 다시 안 눌린다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugPlateOneShot(kPlate, true);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPos(a, 2000, 2000);
+        step(srv, out);
+        Check(srv.PlateState(kPlate) == 1, "안 눌렸다");
+        srv.DebugSetPos(a, 2500, 2500);
+        step(srv, out);
+        Check(srv.PlateState(kPlate) == 5, "한 번 쓰고 끝(5)이 아니다");
+        // ★ **값 칸에는 상태(5)가 아니라 애니 칸(0)이 실린다**
+        uint8_t v = 0xff;
+        Check(find(out, &v) >= 1, "뗀 알림이 안 갔다");
+        Check(v == 0, "뗀 값이 0 이 아니다(상태를 실었나)");
+        out.clear();
+        srv.DebugSetPos(a, 2000, 2000);
+        step(srv, out);
+        Check(srv.PlateAnim(kPlate) == 0, "끝난 판인데 다시 눌렸다");
+        Check(find(out, nullptr) == 0, "끝난 판인데 알림이 갔다");
+        // ★ **껐다 켜면 한 번 쓰고 끝도 풀린다**(`[0] & 8` 이 없으면 상태를 0 으로 되돌린다).
+        //   ⚠ 되돌리는 그 틱에는 **닿음을 이미 건너뛴 뒤**라(상태가 아직 5였다) 한 틱 더 걸린다 —
+        //     정답지도 닿음이 주기보다 먼저 도는 차례라 같다
+        srv.DebugPlateEnable(kPlate, false);
+        step(srv, out);
+        srv.DebugPlateEnable(kPlate, true);
+        step(srv, out);
+        Check(srv.PlateState(kPlate) == 0, "껐다 켰는데 끝난 상태가 안 풀렸다");
+        out.clear();
+        step(srv, out);
+        Check(srv.PlateState(kPlate) == 1, "풀린 뒤 다시 안 눌렸다");
+        Check(srv.PlateAnim(kPlate) == 1, "풀린 뒤 칸이 1 이 아니다");
+    }
+
+    // ⑦ **관전자는 안 누른다**
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugEnterGame("10.9.3.9:9309", 939, /*observer=*/true);
+        srv.DebugSetPos("10.9.3.9:9309", 2000, 2000);
+        std::vector<nox::OutPacket> out;
+        step(srv, out);
+        Check(srv.PlateAnim(kPlate) == 0, "관전자가 눌렀다");
+    }
+
+    std::printf("  9-c — 밟는 판: b4 4바이트(번호·칸) · 상자 45×45 · 밟으면 1 · 떼면 0 · "
+                "바뀔 때만 · 소환수도 누름 · 꺼지면 멈춤 · 한 번 쓰고 끝은 5\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -17920,6 +18091,7 @@ int main() {
     TestRoundTimeUp();
     TestSecretWall();
     TestShootingTrap();
+    TestPressurePlate();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();

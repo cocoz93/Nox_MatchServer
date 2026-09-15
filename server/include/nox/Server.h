@@ -113,12 +113,14 @@ inline uint32_t FoodClassBitsOf(const std::string& raw) {
 }
 
 // 세계에서 **다루는** 것 — 집는 게 아니다.
-enum class PropKind : uint8_t { Door = 0, Obelisk };
+enum class PropKind : uint8_t { Door = 0, Obelisk, Plate };
 
 // 문이 다가가면 열리는 거리 · 오벨리스크가 마나를 채워 주는 거리.
 // ➖ **우리 값이다.** 정품 수치는 파일에도 캡처에도 없다.
 // 문은 벽 한 칸(23)의 세 배쯤, 오벨리스크는 「옆에 선다」니 그보다 가깝게 잡았다.
 constexpr double kDoorOpenDist = 70.0;
+// ⭕ 묶음 9-c — 밟는 판의 반쪽 크기. thing.bin `PressurePlate` 의 `EXTENT BOX 45 45` 실측값 45 의 절반이다
+constexpr double kPlateHalf = 22.5;
 constexpr double kObeliskDist = 50.0;
 // 오벨리스크가 한 틱에 채우는 마나. ➖ 우리 값 — gamedata 에 오벨리스크 항목이 없고
 // 주석이 가리키는 `OblivionStaffRechargeRate = 2` 하나가 지팡이 쪽에서 겸한다.
@@ -1160,6 +1162,16 @@ public:
         PropKind kind = PropKind::Door;
         bool open = false;          // 문만 쓴다
         uint32_t nextManaFrame = 0; // 오벨리스크만 쓴다
+        // ── 묶음 9-c 밟는 판(`PressurePlate`)만 쓴다 ──────────────────
+        //   정답지 `nox_xxx_updateTrigger_53B1B0`(`GAME4_3.c:5415`) 의 갱신자료를 옮긴 것이다.
+        //   **0 놓임 · 1 눌림 · 5 한 번 쓰고 끝**(`[0] & 2` 면 떼는 순간 5 로 간다)
+        uint8_t  trigState = 0;       // +8
+        uint32_t trigReleaseFrame = 0;// +136 — 이 프레임을 **넘겨야** 뗀 것으로 본다
+        bool     trigPressed = false; // [0] & 1 — 이번 프레임에 뭐가 올라와 있나(주기 끝에 지운다)
+        bool     trigOneShot = false; // [0] & 2 — ⚠ 맵 초기자료라 우리는 못 읽는다(늘 거짓)
+        bool     trigWasEnabled = false;  // [0] & 8
+        bool     enabled = true;      // 오브젝트 깃발 ENABLED(0x1000000)
+        uint8_t  animFrame = 0;       // +132 — `servMarkObjAnimFrame` 이 넣는 칸(0 놓임 · 1 눌림)
     };
     void SetWorldProps(std::vector<WorldProp> v) { props_ = std::move(v); }
     size_t WorldPropCount() const { return props_.size(); }
@@ -1168,6 +1180,24 @@ public:
         for (const auto& p : props_) if (p.netCode == netCode) return p.open;
         return false;
     }
+    // 시험용 — 밟는 판(9-c)
+    int PlateAnim(uint16_t netCode) const {
+        for (const auto& p : props_)
+            if (p.netCode == netCode && p.kind == PropKind::Plate) return static_cast<int>(p.animFrame);
+        return -1;
+    }
+    int PlateState(uint16_t netCode) const {
+        for (const auto& p : props_)
+            if (p.netCode == netCode && p.kind == PropKind::Plate) return static_cast<int>(p.trigState);
+        return -1;
+    }
+    void DebugPlateEnable(uint16_t netCode, bool on) {
+        for (auto& p : props_) if (p.netCode == netCode && p.kind == PropKind::Plate) p.enabled = on;
+    }
+    void DebugPlateOneShot(uint16_t netCode, bool on) {
+        for (auto& p : props_) if (p.netCode == netCode && p.kind == PropKind::Plate) p.trigOneShot = on;
+    }
+    void DebugUpdateProps(std::vector<OutPacket>& out) { UpdateProps(out); }
     unsigned long long doorsOpened() const { return doorsOpened_; }
     unsigned long long obeliskMana() const { return obeliskMana_; }
     void SetAoi(bool on) { aoiOn_ = on; }

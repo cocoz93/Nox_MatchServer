@@ -533,13 +533,17 @@ int main(int argc, char** argv) {
                 {
                     const bool isDoor = objs[i].type.find("Door") != std::string::npos;
                     const bool isObelisk = objs[i].type.find("Obelisk") != std::string::npos;
-                    if (isDoor || isObelisk) {
+                    // ★ 2026-09-15 묶음 9-c — **밟는 판**(`PressurePlate`).
+                    //   ⚠ 보이지 않는 `Trigger`(735)는 정답지도 **아무것도 안 보내므로** 안 싣는다
+                    const bool isPlate = (objs[i].type == "PressurePlate");
+                    if (isDoor || isObelisk || isPlate) {
                         nox::Server::WorldProp wp;
                         wp.netCode = static_cast<uint16_t>(i + 75);
                         wp.type = wire;
                         wp.x = static_cast<int>(objs[i].x);
                         wp.y = static_cast<int>(objs[i].y);
-                        wp.kind = isDoor ? nox::PropKind::Door : nox::PropKind::Obelisk;
+                        wp.kind = isPlate ? nox::PropKind::Plate
+                                          : (isDoor ? nox::PropKind::Door : nox::PropKind::Obelisk);
                         props.push_back(wp);
                         continue;
                     }

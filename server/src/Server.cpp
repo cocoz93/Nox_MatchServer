@@ -1661,6 +1661,79 @@ void Server::AssignTeams() {
 void Server::UpdateProps(std::vector<OutPacket>& out) {
     if (props_.empty()) return;
     for (auto& p : props_) {
+        // ── 묶음 9-c 밟는 판 ─────────────────────────────────────────
+        //
+        // 정답지 — 닿음 `nox_xxx_collideTrigger_54FCD0`(`GAME5.c:6481`) ·
+        //   주기 `nox_xxx_updateTrigger_53B1B0`(`GAME4_3.c:5415`) ·
+        //   보내기 `nox_xxx_netSpriteUpdate_518AE0`(`GAME4_1.c:4350~4353`).
+        //
+        // ★★ **오프코드 이름과 실제가 다르다.** `0xB4`(`PENTAGRAM_ACTIVATE`)를 보내는 자리는
+        //   정답지 전체에 하나뿐이고 그 조건은 **종류 == `PressurePlate`** 다.
+        //   오각별(`TeleportPentagram`)은 같은 함수의 **다른 갈래**로 `0x39` 를 보낸다.
+        // ⭕ thing.bin 실측 — `PressurePlate` 와이어 **734** · **상자 45×45** ·
+        //   `CLASS = TRIGGER+IMMOBILE` · `FLAGS = BELOW+ALLOW_OVERLAP`(그래서 **밟고 지나간다**).
+        //   맵 실측 **1,849개**(58맵). 보이지 않는 `Trigger`(735)는 **아무것도 안 보낸다**
+        if (p.kind == PropKind::Plate) {
+            if (!p.enabled) {                          // `[0] &= 0xF6`
+                p.trigPressed = false;
+                p.trigWasEnabled = false;
+                continue;
+            }
+            // 닿음 — 질량이 있는 것이 판 상자(45×45) 위에 올라와 있나.
+            //   ⚠ 갈래·편 마스크(`[11]`·`[12]`·`+52`·`+53`)는 **맵 초기자료**라 우리는 못 읽는다
+            if (p.trigState != 5) {
+                const double half = kPlateHalf;
+                auto on = [&](double ox, double oy, double r) {
+                    const double dx = ox - p.x, dy = oy - p.y;
+                    const double cx = std::max(-half, std::min(half, dx));
+                    const double cy = std::max(-half, std::min(half, dy));
+                    const double ex = dx - cx, ey = dy - cy;
+                    return ex * ex + ey * ey <= r * r;
+                };
+                for (auto& kv : sessions_) {
+                    const Session& o = kv.second;
+                    if (!o.inGame || o.observer) continue;
+                    if (o.moveState == 3 || o.moveState == 4) continue;   // 죽은 것은 질량이 없다
+                    if (on(o.posX, o.posY, kPlayerRadius)) { p.trigPressed = true; break; }
+                }
+                if (!p.trigPressed)
+                    for (const auto& k : pets_) {
+                        if (k.health == 0) continue;
+                        if (on(k.x, k.y, kPlayerRadius)) { p.trigPressed = true; break; }
+                    }
+            }
+            // 주기 — `updateTrigger_53B1B0`. `PressurePlate` 는 뗄 때까지 기다리는 값이 **0** 이다
+            const uint8_t before = p.animFrame;
+            if (!p.trigWasEnabled) { p.trigState = 0; p.trigReleaseFrame = frame_; p.animFrame = 0; }
+            if (p.trigState != 0) {
+                if (p.trigState == 1 && frame_ > p.trigReleaseFrame && !p.trigPressed) {
+                    p.animFrame = 0;                                  // 뗐다
+                    p.trigState = p.trigOneShot ? 5 : 0;
+                    // ⛔ 스크립트 9(`scriptCallByEventBlock`)·떼는 소리는 안 옮겼다
+                }
+            } else if (p.trigPressed) {
+                p.animFrame = 1;                                      // 눌렸다
+                p.trigState = 1;
+                p.trigReleaseFrame = frame_;                          // v3 = 0
+                // ⛔ 스크립트 8·누르는 소리는 안 옮겼다
+            }
+            p.trigPressed = false;                                    // `[0] &= 0xFE`
+            p.trigWasEnabled = true;                                  // `[0] |= 8`
+            // ⚠ **정답지는 `갱신자료[0] & 1`(눌림 비트)를 싣는데** 그 비트는 주기 끝에 지워진다 —
+            //   분배자가 닿음과 주기 사이 어느 자리에서 도는지에 달려 있다. 우리 틀에서는
+            //   **애니 칸(0·1)** 을 싣는다. 클라가 쓰는 값이 같다(빛 켜기 + 그림 칸).
+            //   ⇒ 정품 화면(④)에서 판이 깜빡이지 않는지 볼 것
+            // ⚠ 문 갈래와 같이 **바뀔 때만** 보낸다(정답지는 더러움 비트라 같은 값도 다시 간다)
+            if (p.animFrame != before) {
+                const uint8_t msg[4] = { static_cast<uint8_t>(Op::PENTAGRAM_ACTIVATE),
+                                         static_cast<uint8_t>(p.netCode),
+                                         static_cast<uint8_t>(p.netCode >> 8),
+                                         p.animFrame };
+                Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);
+            }
+            continue;
+        }
+
         double best = 1e18;
         Session* nearest = nullptr;
         for (auto& kv : sessions_) {
