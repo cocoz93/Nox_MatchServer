@@ -7955,6 +7955,16 @@ void Server::KickPlayer(const std::string& addr, std::vector<OutPacket>& out) {
         PlayerCancelSpells(addr, out);
     }
     VoteDropPlayer(addr, out);                          // 나간 사람의 표를 지운다(`sub_506740`)
+    // 10-d — 지우기 **전에** 알린다. 정답지 `player.go:630~643` 순서 —
+    //   먼저 `0xAE` 를 **나머지 사람들에게**, 그다음 `0xC5` 를 **나가는 그 사람에게**
+    SendOutgoingClient(netCode, addr, out);
+    {
+        auto g = sessions_.find(addr);
+        if (g != sessions_.end()) {
+            const uint8_t kick[1] = { static_cast<uint8_t>(Op::KICK_NOTIFICATION) };
+            Emit(g->second, /*reliable=*/true, /*stream=*/0, kick, sizeof(kick), out);
+        }
+    }
     sessions_.erase(addr);
     if (!wasInGame || netCode == 0) return;
     uint8_t quit[3] = { static_cast<uint8_t>(Op::PLAYER_QUIT),
@@ -8330,6 +8340,23 @@ void Server::ShootingTrapUpdate(std::vector<OutPacket>& out) {
 // 정답지 `server/network.go:290~313` — 넷 다 **3바이트**·**모두에게**·**순번 봉투**다.
 // ⚠ `Push`·`Pop`·`Event` 는 **뒤 두 바이트를 안 채운다**(`var buf [3]byte` 뒤 `buf[0]` 만 쓴다) —
 //   즉 **0 0** 이 그대로 나간다. 지어내지 말고 그대로 0 을 보낸다.
+// ── 묶음 10-d 떠남·강퇴 알림 ─────────────────────────────────────────
+//
+// `ae <번호 u16>` **3바이트** — 받는 이가 `pli | 0x80` 이라 **그 사람만 빼고 모두**다.
+// ⚠ 봉투가 없다(`NetSendPacketXxx0(…, 0, 0)`) — 중요 대기열에도 안 들어간다.
+//   떠나는 사람 본인에게는 안 간다(자기 자리는 자기가 안다)
+void Server::SendOutgoingClient(uint16_t netCode, const std::string& except,
+                                std::vector<OutPacket>& out) {
+    if (netCode == 0) return;
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::OUTGOING_CLIENT),
+                             static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8) };
+    for (auto& kv : sessions_) {
+        if (kv.first == except) continue;
+        if (!kv.second.inGame) continue;
+        Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+    }
+}
+
 void Server::MusicPlay(uint8_t music, uint8_t volume, std::vector<OutPacket>& out) {
     const uint8_t msg[3] = { static_cast<uint8_t>(Op::MUSIC_EVENT), music, volume };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
@@ -11792,7 +11819,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (o.closing) { gone.push_back(kv.first); continue; }
             // 아직 한 번도 못 받은 세션(이제 막 만든 것)은 건드리지 않는다.
             if (o.lastSeenFrame == 0) continue;
-            if (frame_ - o.lastSeenFrame > kSessionTimeoutTicks) gone.push_back(kv.first);
+            // ★ 10-d — 정답지(`server.go:440`)는 **입력을 받는 중**이면 90초, 아니면 30초이다
+            const uint32_t limit = o.inGame ? kSessionTimeoutTicksInGame : kSessionTimeoutTicks;
+            if (frame_ - o.lastSeenFrame > limit) gone.push_back(kv.first);
         }
         for (const std::string& addr : gone) {
             // ★ 나갔다고 **알린다.** 전에는 조용히 지우기만 해서 남은 사람들 화면에
@@ -11814,6 +11843,17 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             }
             std::printf("조용해서 내보냄: %s\n", addr.c_str());
             if (wasInGame) PlayerCancelSpells(addr, out);   // 오브젝트 지움 → playerCancelSpells(object.go:70, 4-a3)
+                        // 10-d PlayerDisconnect: notify BEFORE erasing.
+            //   timeout (reason 3): 0xC6 to that player, then 0xAE to the rest.
+            //   a player that announced a clean quit (closing) is not a timeout.
+            {
+                auto g = sessions_.find(addr);
+                if (g != sessions_.end() && !g->second.closing) {
+                    const uint8_t to[1] = { static_cast<uint8_t>(Op::TIMEOUT_NOTIFICATION) };
+                    Emit(g->second, /*reliable=*/true, /*stream=*/0, to, sizeof(to), out);
+                }
+            }
+            SendOutgoingClient(netCode, addr, out);
             sessions_.erase(addr);
 
             if (wasInGame && netCode != 0) {

@@ -708,7 +708,11 @@ constexpr uint16_t kArenaKillLimit = 10;
 // ★ 이 프레임 수만큼 아무것도 안 오면 세션을 걷어낸다. 30Hz 기준 30초. 8초로 뒀더니 **진짜 클라도 걸렸다**(2026-09-09).
 //   정품 클라는 조용해도 핑을 계속 보내므로 살아 있으면 걸리지 않는다
 //   (실측: 접속당 `0x06 CLIENT_PING` 이 꾸준히 온다).
-constexpr uint32_t kSessionTimeoutTicks = 900;
+// ⭕ 묶음 10-d — 정답지 `server.go:440` 은 **입력을 받는 중**(상태 비트 0x10)이면 **90초**,
+//   아직 아니면 **30초**를 준다. 우리는 그 비트를 `inGame` 으로 대신한다
+//   (`netOnPlayerInput` 이 그 비트가 없으면 입력을 버린다 — `server/network.go:178`).
+constexpr uint32_t kSessionTimeoutTicks = 900;          // 30초 — 아직 판에 안 든 사람
+constexpr uint32_t kSessionTimeoutTicksInGame = 2700;   // 90초 — 판에 든 사람
 
 // 판 시계를 얼마마다 뿌리나. 실측 표본은 **2초 남짓 간격**이었다
 // (15:05:08.299 · 10.538 · 12.709 · 14.867 — 2.2초씩). 30Hz 기준 그만큼으로 둔다.
@@ -1026,6 +1030,18 @@ public:
     //   (`src/script_ns_audio.go`)가 유일한 부르는 자리다. 서버 안에서 저절로 울리는 데가 없다.
     //   우리 서버엔 스크립트가 없으므로 **9-a 비밀벽처럼 서버 API 로** 낸다.
     // ⚠ 협동(2048)이면 정답지는 **보내지 않고 host 가 제자리에서 튼다** — 전용 서버엔 그 자리가 없다
+
+    // ── 묶음 10-d 떠남·강퇴 알림 ──────────────────────────────────────
+    //
+    // 정답지 `PlayerDisconnect`(`src/player.go:630~643`) · 시간 초과(`src/server.go:440~452`).
+    //   · `OUTGOING_CLIENT` **0xAE** — **3바이트** `ae <번호 u16>` ·
+    //     받는 이가 `pli | 0x80` 이라 **그 사람만 빼고 모두** · 봉투 없음(`NetSendPacketXxx0`, 중요도 0)
+    //   · `KICK_NOTIFICATION` **0xC5** — **1바이트** · **쫓겨나는 그 사람에게만** ·
+    //     대기열이 아니라 **연결에 바로**(`SendReliable`) · **까닭이 4 일 때만**
+    //   · `TIMEOUT_NOTIFICATION` **0xC6** — **1바이트** · 그 사람에게 `SendReliable` · 그 뒤 까닭 3 으로 끊는다
+    // ⚠ `SERVER_QUIT_ACK`(0xC8)은 **서버가 보내는 것이 아니다** — 클라가 `SERVER_QUIT` 에 되보내는 답이다
+    //   (`network_client.go:140`). 서버는 **받아서** 끊는다(`network_server.go:104`)
+    void SendOutgoingClient(uint16_t netCode, const std::string& except, std::vector<OutPacket>& out);
     void MusicPlay(uint8_t music, uint8_t volume, std::vector<OutPacket>& out);
     void MusicPush(std::vector<OutPacket>& out);
     void MusicPop(std::vector<OutPacket>& out);
@@ -2293,6 +2309,16 @@ public:
         return SpellAccept(spell, it->second, addr, arg, lvl, out);
     }
     // 시험용 — 게임에서 빠진 것으로(오브젝트 지워짐 · inGame 끔)
+    void DebugKickPlayer(const std::string& addr, std::vector<OutPacket>& out) { KickPlayer(addr, out); }
+    void DebugSetClosing(const std::string& addr) {
+        auto i = sessions_.find(addr);
+        if (i != sessions_.end()) i->second.closing = true;
+    }
+    // 10-d — 시험용. 진짜 경로에서는 조각을 받을 때마다 새로 적혀 시간 초과가 안 난다
+    void DebugTouch(const std::string& addr) {
+        auto i = sessions_.find(addr);
+        if (i != sessions_.end()) i->second.lastSeenFrame = frame_;
+    }
     void DebugLeave(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.inGame = false; }
     int DebugDurUpdates() const { return debugDurUpdates_; }
     uint8_t DebugDurSpellAt(size_t i) const {

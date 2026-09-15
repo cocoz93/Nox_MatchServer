@@ -16392,6 +16392,116 @@ void TestMusicWire() {
                 "모두에게 · 순번 봉투 · 방아쇠는 스크립트뿐이라 서버 API 로\n");
 }
 
+// ── 묶음 10-d — 떠남·강퇴 알림 ───────────────────────────────────────
+//
+// 정답지 `PlayerDisconnect`(`src/player.go:630~643`) · 시간 초과(`src/server.go:440~452`).
+void TestLeaveNotify() {
+    const std::string a = "10.10.4.1:1041";
+    const std::string b = "10.10.4.2:1042";
+    auto count = [&](const std::vector<nox::OutPacket>& out, const std::string& who,
+                     uint8_t op, size_t len) {
+        size_t n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == len && x[0] == op) ++n;
+        return n;
+    };
+
+    // ① **강퇴 — 나가는 사람에게 `c5` 한 바이트, 나머지에게 `ae` 세 바이트**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 1041);
+        srv.DebugEnterGame(b, 1042);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugKickPlayer(a, out);
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::KICK_NOTIFICATION), 1) == 1,
+              "쫓겨나는 사람에게 `c5` 가 안 갔다");
+        Check(count(out, b, static_cast<uint8_t>(nox::Op::KICK_NOTIFICATION), 1) == 0,
+              "남에게 `c5` 가 갔다");
+        // `ae <번호>` 는 나머지에게만
+        size_t n = 0;
+        uint16_t got = 0;
+        for (const auto& x : FlattenTo(out, b))
+            if (x.size() == 3 && x[0] == static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT)) {
+                ++n;
+                got = static_cast<uint16_t>(x[1] | (x[2] << 8));
+            }
+        Check(n == 1, "남에게 `ae` 가 한 번이 아니다");
+        Check(got == 1041, "`ae` 에 나간 사람 번호가 안 실렸다");
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT), 3) == 0,
+              "나가는 본인에게 `ae` 가 갔다");
+    }
+
+    // ② **시간 초과 — 판에 든 사람은 90초, 아직 아니면 30초**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 1041);
+        srv.DebugEnterGame(b, 1042);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 34;
+        for (int t = 0; t < 10; ++t) { srv.Tick(ms, out); ms += 34; }
+        // ⚠ 프레임 0 에서 적으면 「한 번도 못 받은 세션」으로 걸려 **영영 안 걸린다**
+        srv.DebugTouch(a);
+        srv.DebugTouch(b);
+        // 30초(900틱)가 지나도 **판에 든 사람은** 안 나간다
+        for (int t = 0; t < 1000; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlayerCount() == 2, "판에 든 사람이 30초에 나갔다");
+        // 90초(2700틱)를 넘기면 나간다
+        out.clear();
+        for (int t = 0; t < 1800; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.PlayerCount() == 0, "90초가 넘었는데 안 나갔다");
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::TIMEOUT_NOTIFICATION), 1) >= 1,
+              "시간 초과인데 `c6` 가 안 갔다");
+    }
+
+    // ③ **판에 안 든 사람에게는 `ae` 가 안 간다**
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 1041);
+        srv.DebugEnterGame(b, 1042);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        srv.DebugLeave(b);                                 // 자리는 남고 판에서만 빠진다
+        std::vector<nox::OutPacket> out;
+        srv.DebugKickPlayer(a, out);
+        Check(count(out, b, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT), 3) == 0,
+              "판에 없는 사람에게 `ae` 가 갔다");
+    }
+
+    // ④ **정상 종료를 알린 사람에게는 `c6` 를 안 보낸다**(시간 초과가 아니다)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 1041);
+        srv.DebugEnterGame(b, 1042);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 34;
+        for (int t = 0; t < 10; ++t) { srv.Tick(ms, out); ms += 34; }
+        srv.DebugTouch(a);
+        srv.DebugTouch(b);
+        srv.DebugSetClosing(a);                            // 스스로 나간다고 알렸다
+        out.clear();
+        ms += 34; srv.Tick(ms, out);                       // `closing` 은 그 틱에 바로 걷힌다
+        Check(count(out, a, static_cast<uint8_t>(nox::Op::TIMEOUT_NOTIFICATION), 1) == 0,
+              "정상 종료인데 `c6` 가 갔다");
+        Check(count(out, b, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT), 3) == 1,
+              "정상 종료인데 남에게 `ae` 가 안 갔다");
+    }
+
+    // ⑤ **번호가 0 이면 `ae` 를 아예 안 보낸다**(정답지도 `PutUint16` 을 건너뛴다)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 0);                          // 번호가 없는 자리
+        srv.DebugEnterGame(b, 1042);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugKickPlayer(a, out);
+        Check(count(out, b, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT), 3) == 0,
+              "번호가 0 인데 `ae` 가 갔다");
+    }
+
+    std::printf("  10-d — 떠남 알림: c5 1바이트(쫓겨나는 그 사람만) · ae 3바이트(나머지에게) · "
+                "c6 1바이트 · 시간 초과는 판에 들면 90초 아니면 30초\n");
+}
+
 // ── 접속 준비(gameServerReadyMB_4DD180) ─────────────────────────────
 //
 // 정답지: network_server.go:99 MSG_CLIENT_READY → GAME3_2.c:5592 — 무적 23(5×FPS · 세기 5) · `ef` 직업 배수(아레나 1.0 넷)
@@ -18646,6 +18756,7 @@ int main() {
     TestSoundWire();
     TestSoundDebts();
     TestMusicWire();
+    TestLeaveNotify();
     TestResetFriends();
     TestProjectile();
     TestProjectileVisible();
