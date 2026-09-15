@@ -15450,6 +15450,103 @@ void TestSecretWall() {
 // 정답지 `nox_xxx_updateShootingTrap_54F9A0`(`GAME5.c:6352`) ·
 //   `sub_54FBF0`·`sub_54FBB0`(살피기) · `createArrowTrapProjectile_54FA80`(쏘기) ·
 //   `sendArrowTrapFX_5238A0`(FX) · `collideMonsterArrow_4EB800`(닿음).
+// 묶음 11-b 전수조사 ⓐ — **날아가는 것이 복합이면 덧붙이 한 바이트가 붙는다** (2026-09-16)
+//
+// 왜 — 여태 `missiles_` 를 **전부 SIMPLE 로 못 박아** 보냈다. `Magic`(955) 하나만 보고
+//   내린 판단이었는데 `MercArcherArrow`(528)·`Fireball`(695)·`StrongFireball`(694) 은
+//   thing.bin CLASS 에 **COMPLEX** 가 있다. 복합인데 덧붙이를 빼면 클라는
+//   **다음 항목의 첫 바이트를 덧붙이로 먹어** 그 뒤 스트림이 통째로 밀린다.
+//   09-15 정품 플레이에서 화살이 기울고 72초 만에 클라가 죽은 것이 이것이다.
+//
+// ⭕ 정답지 — 클래스 비트로 셋으로 가른다(`GAME4_1.c:4539~4548`).
+//   화살은 MONSTER(2)도 PLAYER(4)도 아니라 **`netSendPhantomPlrMb_5187E0`**(`GAME4_1.c:4178`)로 가고,
+//   거기서 `v10[9] = 16 * 방향니블` 이라 **하위 4비트가 0** 이다(크리처의 `kCreatureAnimIdle` 8 이 아니다).
+// ⭕ 칸 바이트(`v10[10] = dir>>3`)는 **`클래스&1 && 깃발&0x30`** 일 때만 붙는데,
+//   thing.bin 실측으로 화살·불덩이 셋 다 깃발이 `AIRBORNE`(0x4000)뿐이라 **0x30 이 없다** → 안 붙는다.
+void TestMissileComplexWire() {
+    const std::string a = "10.9.11.1:9111";
+
+    // ⚠ 덫은 **보는 쪽에 있는 적**만 겨눈다. 각을 바꾸면 사람 자리도 같이 옮겨야 한다
+    //   (첫 시도에서 각 64(남쪽) 덫 앞에 사람을 동쪽에 두어 「화살이 안 나갔다」로 걸렸다).
+    auto fire = [&](nox::Server& srv, const char* name, uint16_t wire, uint8_t facing = 0,
+                    int px = 1200, int py = 1000) {
+        srv.SetProjType(name, wire, 800, 0x4000u, 10);
+        nox::Server::ShootingTrapIn t;
+        t.x = 1000; t.y = 1000; t.facing = facing; t.proj = name; t.fxKind = 0; t.damage = 25;
+        srv.SetShootingTraps({ t });
+        srv.DebugEnterGame(a, 911);
+        srv.DebugSetPos(a, px, py);                     // 덫이 보는 쪽에 둔다
+        srv.DebugMoveTo(a, px, py);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        std::vector<nox::OutPacket> out;
+        srv.DebugShootingTrapUpdate(out);               // 한 발
+        Check(srv.MissileCount() == 1, "화살이 안 나갔다");
+    };
+    // 갱신 스트림에서 그 종류의 항목을 찾아 덧붙이 길이를 돌려준다. 못 찾으면 -1.
+    auto entryExtra = [&](nox::Server& srv, uint16_t wire, uint8_t* b0) {
+        std::vector<nox::OutPacket> out;
+        srv.Tick(34, out);
+        for (const auto& pk : out) {
+            if (pk.to != a) continue;
+            auto body = Body(pk);
+            if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+            nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
+            for (const auto& e : m.objects) {
+                if (e.type != wire) continue;
+                if (b0) *b0 = e.extraBytes[0];
+                return static_cast<int>(e.extra);
+            }
+        }
+        return -1;
+    };
+
+    // ① **복합(MercArcherArrow 528) — 덧붙이 1바이트 · 하위 4비트 0**
+    {
+        nox::Server srv;
+        fire(srv, "MercArcherArrow", 528);
+        uint8_t b0 = 0xFF;
+        const int extra = entryExtra(srv, 528, &b0);
+        Check(extra == 1, "복합 화살인데 덧붙이가 1바이트가 아니다");
+        Check((b0 & 0x0F) == 0, "복합 화살의 하위 4비트가 0 이 아니다(크리처 애니 8 을 넣으면 안 된다)");
+        Check((b0 & 0x80) == 0, "칸 바이트 신호(0x80)가 켜졌다 — 깃발 0x30 이 없으니 꺼져야 한다");
+        // ★ 방향 니블 — 덫이 각 0(동쪽)을 보므로 **4** 여야 한다.
+        //   정답지 `netSendPhantomPlrMb`(`GAME4_1.c:4203~4209`) —
+        //     `xferIndexedDirection(0)` → (dx,dy)=(1,0) · `t = dx + 3*dy + 4 = 5` · `t>3` 이라 `t-1 = 4`
+        //   클라는 `(값>>4)&7 = 4` 를 읽고 **4 이상이면 +1** 해 5(동쪽)로 그린다(`GAME2_3.c:1677~1679`).
+        Check(((b0 >> 4) & 7) == 4, "각 0(동쪽) 인데 방향 니블이 4 가 아니다");
+    }
+
+    // ④ **방향이 바뀌면 니블도 바뀐다** — 못 박혀 있지 않은지 본다
+    {
+        nox::Server srv;
+        fire(srv, "MercArcherArrow", 528, 64, 1000, 1200);   // 각 64 = (0,1) 남쪽 — 사람도 남쪽으로
+        uint8_t b0 = 0xFF;
+        const int extra = entryExtra(srv, 528, &b0);
+        Check(extra == 1, "각 64 인데 덧붙이가 1바이트가 아니다");
+        // `t = 0 + 3*1 + 4 = 7` · `t>3` 이라 `7-1 = 6`
+        Check(((b0 >> 4) & 7) == 6, "각 64(남쪽) 인데 방향 니블이 6 이 아니다");
+    }
+
+    // ② **단순(Magic 955) — 덧붙이 0바이트**
+    {
+        nox::Server srv;
+        fire(srv, "Magic", 955);
+        uint8_t b0 = 0xFF;
+        const int extra = entryExtra(srv, 955, &b0);
+        Check(extra == 0, "단순 주문탄인데 덧붙이가 붙었다");
+    }
+
+    // ③ **불덩이 둘도 복합이다** — 종류표가 그렇게 말한다(지어내지 않고 표를 믿는다)
+    {
+        Check(nox::ThingIsComplex(528), "MercArcherArrow 가 표에서 복합이 아니다");
+        Check(nox::ThingIsComplex(694), "StrongFireball 이 표에서 복합이 아니다");
+        Check(nox::ThingIsComplex(695), "Fireball 이 표에서 복합이 아니다");
+        Check(!nox::ThingIsComplex(955), "Magic 이 표에서 복합이다");
+    }
+
+    std::printf("  11-b 날아가는 것 — 복합이면 덧붙이 1바이트(하위 4비트 0) · 단순이면 0바이트\n");
+}
+
 void TestShootingTrap() {
     const std::string a = "10.9.2.1:9201";
     // 덫은 (1000,1000) 에 두고 **동쪽(각 0)** 을 본다 — 사람을 동쪽에 두면 겨눈다
@@ -19268,6 +19365,7 @@ int main() {
     TestSoundWire();
     TestSoundDebts();
     TestMusicWire();
+    TestMissileComplexWire();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();

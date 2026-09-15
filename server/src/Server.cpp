@@ -409,10 +409,18 @@ uint8_t TestTwoPointsAndDirection(float fx, float fy, uint8_t dir, float tx, flo
 
 // ★ `playerAnim` — 사람 항목의 **자세 번호**(0 IDLE · 4 WALK). 사람이 아니면 안 쓴다.
 //   ⭕ 번호표는 소스 확증(`draw_debug.go:294`). 걸을 때 4 를 보내야 다리가 움직인다.
+// ★★ 2026-09-16 전수조사 ⓐ — `complexAnim` 인자를 더했다.
+//   정답지는 **복합 안에서 다시 셋으로** 가른다(`GAME4_1.c:4539~4548`, 클래스 비트로) —
+//     `& 2`(MONSTER) → `netSendComplexObject_518960`   덧붙이 하위 4비트 = **애니 칸**
+//     `& 4`(PLAYER)  → `netPlayerObjSend_518C30`       자세는 **둘째 바이트**
+//     그 밖          → `netSendPhantomPlrMb_5187E0`    덧붙이 = `16 * 방향니블` → **하위 4비트 0**
+//   화살(`MISSILE+COMPLEX`, MONSTER 아님)은 셋째 갈래다. 여기에 `kCreatureAnimIdle`(8)을
+//   넣으면 안 된다 — 그래서 크리처 기본값은 그대로 두고 **부르는 쪽이 0 을 주게** 했다.
 static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
                       uint32_t frame, int x, int y, uint8_t facing, ObjEntry& e,
                       bool complex = true, uint8_t playerAnim = 0,
-                      int forceDir = -1, int playerFrame = -1) {
+                      int forceDir = -1, int playerFrame = -1,
+                      uint8_t complexAnim = kCreatureAnimIdle) {
     // ★★★ **정정(2026-09-09) — 따라 굴리지 않고 클라가 알려 준 것만 쓴다.**
     //   전에는 `Generate`/`Assign` 으로 클라와 같은 규칙을 흉내 냈는데 어긋났다.
     //   별칭으로 보내면 아무것도 안 그려졌고, 그래서 매 틱 전체번호로 다시 소개하다가
@@ -450,7 +458,7 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
         //     몬스터(0x40000)   8 IDLE · 9 DIE · 10 DEAD · 11 HURT · 12 MOVE …
         //   몬스터 쪽 8=IDLE 은 `drawable_monster.go:144` 의 `if dr.AnimInd != 8 { // IDLE` 로 재확인.
         e.extraBytes[0] = static_cast<uint8_t>(
-            (WireDirNibble(facing) << 4) | kCreatureAnimIdle);
+            (WireDirNibble(facing) << 4) | (complexAnim & 0x0F));
         // ★ 최상위 비트(0x80)는 값이 아니라 **신호**다 — 서 있으면 클라가
         //   「스프라이트 프레임이 한 바이트 더 온다」로 읽는다(같은 자리).
         //   위 식은 방향을 **위 4비트 중 3비트**에만 넣으므로 이 비트가 늘 0 이다.
@@ -12678,34 +12686,48 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             m.objects.push_back(e);
         }
 
-        // ★ 4-a2 날아가는 오브젝트(Magic 등) — SIMPLE 이라 붙는 바이트가 없다
+        // ★ 4-a2 날아가는 오브젝트.
+        // ★★★ **정정(2026-09-16 전수조사 ⓐ) — 「SIMPLE 이라 붙는 바이트가 없다」는 틀렸다.**
+        //   `Magic`(955) 하나만 보고 내린 판단을 **날아가는 것 전부에** 못 박아 두었다.
+        //   thing.bin 실측 — `Magic`·`MagicMissile`·`Pixie` 는 SIMPLE 이지만
+        //   **`MercArcherArrow`(528)·`Fireball`(695)·`StrongFireball`(694) 은 COMPLEX** 다.
+        //   복합인데 덧붙이를 안 붙이면 클라가 **다음 항목의 첫 바이트를 덧붙이로 먹어**
+        //   그 뒤 스트림이 통째로 밀린다 — 09-15 정품 플레이에서 화살이 기울고 72초에 클라가 죽었다.
+        //   ⇒ 종류표로 가른다. 하위 4비트는 **0**(셋째 갈래 `netSendPhantomPlrMb`).
         for (const auto& mo : missiles_) {
             ObjEntry e;
             FillEntry(s.aliases, mo.netCode, mo.type, s.tickFrame,
                       static_cast<int>(mo.posX), static_cast<int>(mo.posY), mo.dir1, e,
-                      /*complex=*/false);
+                      /*complex=*/ThingIsComplex(mo.type),
+                      /*playerAnim=*/0, /*forceDir=*/-1, /*playerFrame=*/-1,
+                      /*complexAnim=*/0);
             Relativize(e, mo.netCode, static_cast<int>(mo.posX), static_cast<int>(mo.posY),
                        baseX, baseY);
             m.objects.push_back(e);
         }
 
-        // 4-c3 놓인 오브젝트(독구름 …) — SIMPLE 이라 붙는 바이트가 없다
+        // 4-c3 놓인 오브젝트(독구름 …) — ⓐ 와 같은 부류라 종류표로 가른다(2026-09-16)
         for (const auto& po : placed_) {
             ObjEntry e;
             FillEntry(s.aliases, po.netCode, po.type, s.tickFrame,
-                      static_cast<int>(po.x), static_cast<int>(po.y), 0, e, /*complex=*/false);
+                      static_cast<int>(po.x), static_cast<int>(po.y), 0, e,
+                      /*complex=*/ThingIsComplex(po.type),
+                      /*playerAnim=*/0, /*forceDir=*/-1, /*playerFrame=*/-1,
+                      /*complexAnim=*/0);
             Relativize(e, po.netCode, static_cast<int>(po.x), static_cast<int>(po.y), baseX, baseY);
             m.objects.push_back(e);
         }
 
-        // 깃발도 싣는다. **복합이 아니라 붙는 바이트가 없다**(종류표 확인).
-        //   들고 있는 것은 안 싣는다 — 든 사람에 겹쳐 보이면 어지럽다.
+        // 깃발도 싣는다. 들고 있는 것은 안 싣는다 — 든 사람에 겹쳐 보이면 어지럽다.
+        //   ⓐ 와 같은 부류라 **못 박지 않고 종류표로 가른다**(2026-09-16).
         for (const auto& f : flags_) {
             if (!f.carrier.empty()) continue;
             ObjEntry e;
             FillEntry(s.aliases, f.netCode, f.type, s.tickFrame,
                       static_cast<int>(f.x), static_cast<int>(f.y), 0, e,
-                      /*complex=*/false);
+                      /*complex=*/ThingIsComplex(f.type),
+                      /*playerAnim=*/0, /*forceDir=*/-1, /*playerFrame=*/-1,
+                      /*complexAnim=*/0);
             Relativize(e, f.netCode, static_cast<int>(f.x), static_cast<int>(f.y),
                        baseX, baseY);
             m.objects.push_back(e);
@@ -12717,7 +12739,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             ObjEntry e;
             FillEntry(s.aliases, bb.netCode, bb.type, s.tickFrame,
                       static_cast<int>(bb.x), static_cast<int>(bb.y), 0, e,
-                      /*complex=*/false);
+                      /*complex=*/ThingIsComplex(bb.type),
+                      /*playerAnim=*/0, /*forceDir=*/-1, /*playerFrame=*/-1,
+                      /*complexAnim=*/0);
             Relativize(e, bb.netCode, static_cast<int>(bb.x), static_cast<int>(bb.y), baseX, baseY);
             m.objects.push_back(e);
         }
