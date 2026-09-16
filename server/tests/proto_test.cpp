@@ -9,9 +9,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "nox/ModeRules.h"
 #include "nox/Messages.h"
 #include "nox/Server.h"
 #include "nox/Gamedata.h"
@@ -15533,6 +15535,119 @@ void TestCounterCoverage() {
                 srv.fxSent(), srv.soundsDropped());
 }
 
+// ── 조각 G(09-16) 실행 파일 판단 시험 ────────────────────────────────
+//
+// ★ 왜 — `main.cpp` 는 `proto_test` 가 링크하지 않는다. 그래서 그 안의 판단
+//   **234줄 중 시험이 닿는 것이 4줄**(1.7%)뿐이었고, 그 사각지대에서 같은 자리를
+//   두 번 밟았다: 묶음 8 규칙이 도달 불가 · 모드 갈래의 `else` 가 여섯 모드를 삼킴.
+//   판단을 `nox/ModeRules.h` 로 뽑았으니 **여기서 전수로 훑는다.**
+//
+// ★ 무엇을 보나 — 값이 맞나보다 **「하나가 여럿을 삼키지 않나」**가 먼저다.
+//   삼킴은 값을 하나씩 확인해서는 안 보이고 **전수로 세어야** 보인다.
+void TestModeRules() {
+    size_t n = 0;
+    const char* const* names = nox::ModeNames(n);
+    Check(n == 9, "모드 이름표가 아홉이 아니다");
+
+    // ① **아홉이 서로 다른 값을 낸다** — 하나라도 겹치면 그 둘은 화면에서 구별이 안 된다
+    std::set<uint32_t> seen;
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t gf = nox::ModeGameFlags(names[i]);
+        Check(gf != 0, "아는 모드인데 gameFlags 가 0(모름)이다");
+        Check(seen.insert(gf).second, "모드 둘이 같은 gameFlags 를 낸다");
+    }
+    Check(seen.size() == 9, "서로 다른 gameFlags 가 아홉이 아니다");
+
+    // ② 모르는 이름은 **0**. 이 0 이 `main` 의 「모르는 모드」 판정에 쓰인다
+    Check(nox::ModeGameFlags("nosuchmode") == 0, "모르는 모드가 0 을 안 낸다");
+    Check(nox::ModeGameFlags("") == 0, "빈 이름이 0 을 안 낸다");
+
+    // ③ **온라인·Flag18 은 아홉 다** 켠다(정답지 `startServer` 가 늘 세운다)
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t gf = nox::ModeGameFlags(names[i]);
+        Check((gf & 0x2000u) != 0, "Online 비트가 빠진 모드가 있다");
+        Check((gf & 0x20000u) != 0, "Flag18 비트가 빠진 모드가 있다");
+    }
+
+    // ④ **퀘스트 비트(0x1000)를 켜는 것은 `quest` 하나뿐**이고,
+    //   나머지 여덟은 전부 NotQuest(0x10000)를 켠다 — 둘은 서로 배타다
+    int questBit = 0, notQuestBit = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t gf = nox::ModeGameFlags(names[i]);
+        const bool q = (gf & 0x1000u) != 0, nq = (gf & 0x10000u) != 0;
+        Check(q != nq, "한 모드가 퀘스트와 NotQuest 를 같이 켜거나 둘 다 껐다");
+        if (q) ++questBit;
+        if (nq) ++notQuestBit;
+    }
+    Check(questBit == 1, "퀘스트 비트를 켜는 모드가 하나가 아니다");
+    Check(notQuestBit == 8, "NotQuest 를 켜는 모드가 여덟이 아니다");
+
+    // ⑤ ★★ **삼킴 검사** — 판 시작에 무엇을 놓나.
+    //   조각 E 가 잡은 결함이 정확히 여기였다: `else` 하나가 여섯 모드를 퀘스트로 떨궜다.
+    //   그래서 **갈래별 개수를 센다** — 값 하나를 확인해서는 삼킴이 안 보인다.
+    int nCtf = 0, nBall = 0, nQuest = 0, nNone = 0;
+    for (size_t i = 0; i < n; ++i) {
+        switch (nox::ModeStartKind(names[i])) {
+            case nox::ModeSetup::Ctf:      ++nCtf;   break;
+            case nox::ModeSetup::FlagBall: ++nBall;  break;
+            case nox::ModeSetup::Quest:    ++nQuest; break;
+            case nox::ModeSetup::None:     ++nNone;  break;
+        }
+    }
+    Check(nCtf == 1, "깃발을 놓는 모드가 하나가 아니다");
+    Check(nBall == 1, "공을 놓는 모드가 하나가 아니다");
+    Check(nQuest == 3, "웨이브를 놓는 모드가 셋(quest·coop·coopteam)이 아니다");
+    Check(nNone == 4, "아무것도 안 놓는 모드가 넷(arena·kotr·chat·elimination)이 아니다");
+
+    // ⑥ 이름으로도 한 번 못 박는다 — 개수만 맞고 자리가 뒤바뀌는 것을 막는다
+    Check(nox::ModeStartKind("elimination") == nox::ModeSetup::None,
+          "탈락전이 무언가를 놓는다 — 09-16 에 여기서 퀘스트 몬스터가 나왔다");
+    Check(nox::ModeStartKind("kotr") == nox::ModeSetup::None, "왕죽이기가 무언가를 놓는다");
+    Check(nox::ModeStartKind("chat") == nox::ModeSetup::None, "채팅방이 무언가를 놓는다");
+    Check(nox::ModeStartKind("quest") == nox::ModeSetup::Quest, "퀘스트가 웨이브를 안 놓는다");
+    Check(nox::ModeStartKind("ctf") == nox::ModeSetup::Ctf, "깃발이 깃발을 안 놓는다");
+    Check(nox::ModeStartKind("flagball") == nox::ModeSetup::FlagBall, "플래그볼이 공을 안 놓는다");
+
+    // ⑦ 사람 수 관문 — 깃발만 둘, 나머지는 하나
+    int need2 = 0;
+    for (size_t i = 0; i < n; ++i) if (nox::ModeNeedPlayers(names[i]) == 2) ++need2;
+    Check(need2 == 1, "두 사람을 기다리는 모드가 하나가 아니다");
+    Check(nox::ModeNeedPlayers("ctf") == 2, "깃발이 두 사람을 안 기다린다");
+    Check(nox::ModeNeedPlayers("quest") == 1, "퀘스트가 혼자 시작을 안 한다");
+
+    std::printf("  11-f 모드 규칙 — 아홉이 서로 다른 값 · 웨이브는 셋 · 안 놓는 것 넷\n");
+}
+
+// 봇 세우기 셈 — 번호·편·시작 자리가 몇 번째냐에 따라 갈린다.
+//   ★ 이 셈이 `main.cpp` 안에 있을 때는 **시험이 한 번도 못 불렀다.**
+void TestPlanBot() {
+    // ① `0 0` = 맵 시작 자리. 여럿이면 자리를 **하나씩 옮겨 가며** 쓴다
+    const nox::BotPlan a = nox::PlanBot(0, 0, 0, 6);
+    Check(a.place && a.useStart && a.startIndex == 0, "첫 봇이 첫 시작 자리를 안 쓴다");
+    Check(a.netCode == 900 && a.team == 1, "첫 봇의 번호·편이 900·1 이 아니다");
+    const nox::BotPlan b = nox::PlanBot(1, 0, 0, 6);
+    Check(b.startIndex == 1, "둘째 봇이 같은 자리에 겹친다");
+    Check(b.netCode == 901 && b.team == 2, "둘째 봇의 번호·편이 901·2 가 아니다");
+    // 편은 **번갈아** — 깃발·플래그볼이 두 편을 요구한다
+    Check(nox::PlanBot(2, 0, 0, 6).team == 1, "셋째 봇의 편이 1 로 안 돌아온다");
+
+    // ② 시작 자리보다 봇이 많으면 **되돌아 쓴다**(자리 밖을 읽으면 안 세워진다)
+    Check(nox::PlanBot(7, 0, 0, 6).startIndex == 1, "자리 수를 넘겼는데 되돌아 안 쓴다");
+
+    // ③ 시작 자리가 **없는 맵**이면 안 세운다 — 0 으로 나눔·자리 밖 읽기 둘 다 막는다
+    Check(!nox::PlanBot(0, 0, 0, 0).place, "시작 자리가 없는데 봇을 세운다");
+
+    // ④ 음수면 끔 · 손으로 준 자리는 그대로
+    Check(!nox::PlanBot(0, -1, -1, 6).place, "음수 자리인데 봇을 세운다");
+    const nox::BotPlan c = nox::PlanBot(0, 2493, 2532, 6);
+    Check(c.place && !c.useStart && c.x == 2493 && c.y == 2532, "손으로 준 자리가 안 지켜진다");
+
+    // ⑤ 주소는 번호와 따로 간다 — `DebugEnterGame` 이 주소로 사람을 가른다
+    Check(nox::BotAddr(0) == "bot0" && nox::BotAddr(1) == "bot1", "봇 주소가 다르게 매겨진다");
+
+    std::printf("  11-g 봇 세우기 — 자리 돌려쓰기 · 편 번갈이 · 시작 자리 0 이면 안 세움\n");
+}
+
 void TestMsgLenSiblings() {
     // ⭕ `cdecode.c:1561` — `case 125(0x7D) / 140(0x8C) / 141(0x8D) / 142(0x8E)` 가 한 본문 · `return 9`
     {
@@ -19614,6 +19729,8 @@ int main() {
     TestMusicWire();
     TestTrapStartsEnabled();
     TestCounterCoverage();
+    TestModeRules();
+    TestPlanBot();
     TestMsgLenSiblings();
     TestMissileComplexWire();
     TestDebugXpAndSpell();

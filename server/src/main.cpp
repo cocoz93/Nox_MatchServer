@@ -28,6 +28,7 @@
 #include "nox/DumpSniff.h"
 #include "nox/MsgLen.h"
 #include "nox/Recording.h"
+#include "nox/ModeRules.h"
 #include "nox/Server.h"
 #include "nox/MapFile.h"
 #include "nox/ThingDb.h"
@@ -137,38 +138,9 @@ int SelfTest() {
     return 0;
 }
 
-// `--mode` 이름 → `gameFlags`. 모르는 이름이면 **0**(그래서 0 이 「모름」 표시로 쓰인다).
-//
-// ★ 2026-09-15 신설 — **여기가 비어 있어서 묶음 8 규칙이 실행 파일에서 도달 불가였다.**
-//   `main` 이 `SetGameFlags` 를 한 번도 안 불러 `gameFlags` 가 기본값(아레나)에 머물렀고,
-//   `RoundTimeUp`·`DeathScoring`·`CheckVictorySurvivors` 의 탈락전·왕죽이기·깃발 갈래가
-//   시험에서만 켜지고 정품 클라로는 못 밟혔다.
-//
-// 비트는 정답지 `common/flags/gameflags.go:31~62` 정본 —
-//   KOTR 0x10 · CTF 0x20 · FlagBall 0x40 · Chat 0x80 · Arena 0x100 ·
-//   CoopTeam 0x200 · Elimination 0x400 · Coop 0x800 · Quest 0x1000 ·
-//   Online 0x2000 · NotQuest 0x10000 · Flag18 0x20000
-//
-// ★ 바탕 둘은 정답지 `game.go:277~283 startServer` 가 늘 세우는 것이다 —
-//   `GameOnline` 을 켜고, **퀘스트가 아니면** `GameNotQuest` 를 켠다(퀘스트면 끈다).
-//   `Flag18`(0x20000)은 우리 기본값 `0x00032100`(`JoinBundle.h:48`)에 원래 있던 것이라 그대로 둔다.
-// ⚠ `GameModeCoop`(0x800)은 정답지의 **모드 가면(`GameModeMask` 0x17F0)에 없다** — 딸림 값이고,
-//   `startServer` 는 그것을 오히려 **끈다**. 그래도 `--mode coop` 을 받는 이유는
-//   그 비트를 켠 판에서 규칙이 어떻게 갈리는지 화면으로 보기 위해서다.
-uint32_t ModeGameFlags(const std::string& mode) {
-    const uint32_t kOnline = 0x2000u, kNotQuest = 0x10000u, kFlag18 = 0x20000u;
-    const uint32_t base = kOnline | kFlag18;
-    if (mode == "quest")       return base | 0x1000u;              // 퀘스트만 NotQuest 를 뺀다
-    if (mode == "arena")       return base | kNotQuest | 0x100u;
-    if (mode == "ctf")         return base | kNotQuest | 0x20u;
-    if (mode == "kotr")        return base | kNotQuest | 0x10u;
-    if (mode == "flagball")    return base | kNotQuest | 0x40u;
-    if (mode == "chat")        return base | kNotQuest | 0x80u;
-    if (mode == "coopteam")    return base | kNotQuest | 0x200u;
-    if (mode == "elimination") return base | kNotQuest | 0x400u;
-    if (mode == "coop")        return base | kNotQuest | 0x800u;
-    return 0;
-}
+// ★ 2026-09-16 조각 G — `ModeGameFlags` 는 **`nox/ModeRules.h` 로 옮겼다.**
+//   여기 있는 동안은 시험이 한 번도 못 불렀다(`proto_test` 는 `main.cpp` 를 안 링크한다).
+//   그 사각지대에서 묶음 8 규칙이 도달 불가였고, 모드 갈래의 `else` 가 여섯 모드를 삼켰다.
 
 }  // namespace
 
@@ -299,7 +271,7 @@ int main(int argc, char** argv) {
             mirrorLimit = std::atoi(argv[++i]);
         } else if (a == "--mode" && i + 1 < argc) {
             mode = argv[++i];
-            if (ModeGameFlags(mode) == 0) {
+            if (nox::ModeGameFlags(mode) == 0) {
                 std::printf("모르는 모드: %s\n", mode.c_str());
                 std::printf("  판이 도는 것   arena · ctf · quest\n");
                 std::printf("  규칙만 선 것   elimination · kotr · flagball · chat · coop · coopteam\n");
@@ -898,7 +870,7 @@ int main(int argc, char** argv) {
         //        `CheckVictorySurvivors`(0x400) · `RoundCheckLimit`(0x400·0x200)
         //     ㉯ 와이어: `BuildJoinBundle` 이 `& 0x7FFF0` 으로 가려 클라에 알린다(`JoinBundle.cpp:41`)
         {
-            const uint32_t gf = ModeGameFlags(mode);
+            const uint32_t gf = nox::ModeGameFlags(mode);
             srv.SetGameFlags(gf);
             std::printf("[모드] %s — gameFlags 0x%05X (클라에 가는 값 0x%05X)\n",
                         mode.c_str(), gf, gf & 0x7FFF0u);
@@ -999,35 +971,35 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
         }
         for (size_t bi = 0; bi < bots.size(); ++bi) {
-            BotWant bw = bots[bi];
-            if (bw.x < 0 || bw.y < 0) continue;
-            // ★ `--debug-bot 0 0` = **맵의 시작 자리에 세워라**. 판을 여럿 돌릴 때
-            //   맵마다 좌표를 손으로 찾는 비용이 판정보다 커진다(조각 E).
-            //   여러 마리면 **시작 자리를 하나씩 옮겨 가며** 쓴다 — 겹쳐 세우면 서로 밀어낸다.
-            if (bw.x == 0 && bw.y == 0) {
-                float sx = 0.0f, sy = 0.0f;
-                if (srv.PlayerStartAt(bi % (srv.PlayerStartCount() ? srv.PlayerStartCount() : 1), sx, sy)) {
-                    bw.x = static_cast<int>(sx); bw.y = static_cast<int>(sy);
-                } else {
+            // ★ 자리·번호·편을 정하는 **셈은 `ModeRules.h` 가 한다**(시험이 닿는 자리).
+            //   여기 남는 것은 그 값을 서버에 **꽂는 배선**뿐이다.
+            const nox::BotPlan plan =
+                nox::PlanBot(bi, bots[bi].x, bots[bi].y, srv.PlayerStartCount());
+            if (!plan.place) {
+                if (bots[bi].x == 0 && bots[bi].y == 0) {
                     std::printf("[진단스위치] 봇 자리 자동 — 이 맵엔 PlayerStart 가 없다. 봇 안 세움\n");
                     std::fflush(stdout);
-                    continue;
                 }
+                continue;
+            }
+            int bx = plan.x, by = plan.y;
+            if (plan.useStart) {
+                float sx = 0.0f, sy = 0.0f;
+                if (!srv.PlayerStartAt(plan.startIndex, sx, sy)) continue;
+                bx = static_cast<int>(sx); by = static_cast<int>(sy);
             }
             nox::CharClass bc = nox::CharClass::Warrior;
-            if (bw.cls == "wizard")        bc = nox::CharClass::Wizard;
-            else if (bw.cls == "conjurer") bc = nox::CharClass::Conjurer;
-            const std::string bot = "bot" + std::to_string(bi);
-            const uint16_t nc = static_cast<uint16_t>(900 + bi);
-            srv.DebugEnterGame(bot, nc, /*observer=*/false, bc);
+            if (bots[bi].cls == "wizard")        bc = nox::CharClass::Wizard;
+            else if (bots[bi].cls == "conjurer") bc = nox::CharClass::Conjurer;
+            const std::string bot = nox::BotAddr(bi);
+            srv.DebugEnterGame(bot, plan.netCode, /*observer=*/false, bc);
             // ⚠ 자리는 **둘 다** 맞춰야 한다 — `DebugMoveTo` 는 `x`·`y` 만, `DebugSetPos` 는 `posX`·`posY` 만 옮긴다.
             //   덫 겨눔·소리 거리는 `posX`·`posY` 로 재고, 걸음·갱신은 `x`·`y` 를 본다(09-15 에 한 번 데었다)
-            srv.DebugMoveTo(bot, bw.x, bw.y);
-            srv.DebugSetPos(bot, bw.x, bw.y);
-            // ★ 편을 갈라 준다 — 깃발·플래그볼은 **두 편**이 있어야 규칙이 돈다.
-            srv.DebugSetTeam(bot, static_cast<uint8_t>(1 + (bi % 2)));
+            srv.DebugMoveTo(bot, bx, by);
+            srv.DebugSetPos(bot, bx, by);
+            srv.DebugSetTeam(bot, plan.team);
             std::printf("[진단스위치] 가짜 사람 세움 — (%d, %d) · 직업 %s · 번호 %u · 편 %d\n",
-                        bw.x, bw.y, bw.cls.c_str(), (unsigned)nc, 1 + (int)(bi % 2));
+                        bx, by, bots[bi].cls.c_str(), (unsigned)plan.netCode, (int)plan.team);
             std::fflush(stdout);
         }
         if (debugXpAfter > 0) {
@@ -1308,11 +1280,14 @@ int main(int argc, char** argv) {
         //   지문은 **`이 웨이브 남음 0(잡음 0)`** 과 `[스테이지]` 줄 0건이었다.
         //   ⭕ 정품 NoxQuest 는 **1~4인 협동**이라 혼자 시작이 정상이다.
         //   깃발(CTF)은 두 편이 있어야 하므로 둘 이상을 그대로 기다린다.
-        const int needPlayers = (mode == "ctf") ? 2 : 1;
+        const int needPlayers = nox::ModeNeedPlayers(mode);
         if (!modeStarted && mode != "arena" && srv.inGameCount() >= needPlayers) {
             modeStarted = true;
             const int mx = srv.spawnX() + 20, my = srv.spawnY();   // 두 사람 사이
-            if (mode == "ctf") {
+            // ★ 갈래는 `ModeRules.h` 가 **값으로** 정한다. 여기 `if/else` 로 두었을 때
+            //   `else` 하나가 여섯 모드를 삼켰고 시험이 그것을 못 봤다(조각 E·G).
+            const nox::ModeSetup setup = nox::ModeStartKind(mode);
+            if (setup == nox::ModeSetup::Ctf) {
                 // ★ **정상 배치** — 두 진영을 갈라 놓는다. 사람이 **걸어가 뺏어 와야** 득점이다.
                 //   ⚠ 전에는 둘 다 닿는 자리(사람 사이)에 뒀다. 걸어가는 조종이 없어서였는데,
                 //     그러면 줍자마자 득점이 되어 **판이 아니라 배선 확인**밖에 안 된다.
@@ -1344,12 +1319,12 @@ int main(int argc, char** argv) {
                             redX, my, blueX, my, (unsigned)nox::kCaptureLimit,
                             (redX != mx - ctfSpan || blueX != mx + ctfSpan)
                                 ? "  ← 벽을 피해 당김" : "");
-            } else if (mode == "flagball") {
+            } else if (setup == nox::ModeSetup::FlagBall) {
                 // 공은 가운데, 골대는 깃발과 같은 간격으로 양옆
                 srv.StartFlagBall(mx, my, mx - ctfSpan, my, mx + ctfSpan, my);
                 std::printf("[모드] 플래그볼 — 공 (%d,%d) · 골대 (%d,%d)·(%d,%d)\n",
                             mx, my, mx - ctfSpan, my, mx + ctfSpan, my);
-            } else if (mode == "quest" || mode == "coop" || mode == "coopteam") {
+            } else if (setup == nox::ModeSetup::Quest) {
                 srv.StartQuest(questCount, mx, my, questSpread);
                 // ⚠ **`questCount` 는 이제 안 쓰는 값이다** — 웨이브 마릿수는 스테이지 표가
                 //   정한다(`StartQuest` 주석 참조). 전에는 여기서 그 값을 「몬스터 N마리」로
