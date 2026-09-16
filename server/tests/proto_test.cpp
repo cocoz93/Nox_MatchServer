@@ -15768,6 +15768,49 @@ void TestPetDamageStops() {
     std::printf("  11-i 피해 셈 — 크리처 3 = 칸밖1+편아님1+깎임1 · 사람 2 = 세션없음1+깎임1 (양쪽 닫힘)\n");
 }
 
+// ── 조각 L(09-16) 알림 갈래가 원본과 같은 수인가 ─────────────────────
+//
+// ★ 왜 개수를 세나 — 이 표가 **원본보다 짧았다.** 정답지
+//   `nox_xxx_netUpdateObjectSpecial_527E50`(`GAME4_2.c:7136~7183`)은 비트를 **여덟** 보는데
+//   우리 enum 은 **다섯**이었고 주석은 여섯이었다. 빠진 둘(`0x80000` 아이템 속성 ·
+//   `0x4000000` NPC)은 **「빠졌다」고 물을 수조차 없었다** — 목록에 칸이 없으니까.
+//   ⇒ 09-16 에 잡은 결함 셋과 **같은 모양**이다: 하나가 여럿을 대표하거나, 목록이 짧거나.
+void TestReportKindsMatchSource() {
+    // ① **여덟이다** — 정답지 비트와 하나씩 짝
+    Check(static_cast<int>(nox::PendingReport::What::kCount) == 8,
+          "알림 갈래가 여덟이 아니다 — 정답지 비트는 여덟이다(GAME4_2.c:7136~7183)");
+
+    // ② 순서가 **비트 오름차순**과 같다 — 표를 읽을 때 눈이 미끄러지지 않게
+    Check(static_cast<int>(nox::PendingReport::What::AnimFrame) == 0, "그림 칸이 첫째가 아니다");
+    Check(static_cast<int>(nox::PendingReport::What::UnitHealth) == 1, "체력이 둘째가 아니다");
+    Check(static_cast<int>(nox::PendingReport::What::TeamBase) == 6, "팀 기지가 일곱째가 아니다");
+    Check(static_cast<int>(nox::PendingReport::What::ReportNPC) == 7, "NPC 가 여덟째가 아니다");
+
+    // ③ **거는 것과 보내는 것이 짝이 맞나** — 지금 거는 것은 체력·마법부여 둘뿐이고
+    //   나머지 여섯은 거는 쪽도 없다. 그래서 「안 걸고 안 보낸다」로 앞뒤가 맞는다.
+    //   여기서 보는 것은 **안 거는 값을 걸면 조용히 사라지지 않나**이다.
+    const std::string a = "10.9.20.1:9201";
+    nox::Server srv;
+    srv.DebugEnterGame(a, 920);
+    srv.DebugSetPos(a, 1000, 1000);
+    std::vector<nox::OutPacket> w; srv.Tick(0, w);
+    const unsigned long long h0 = srv.unitHealthSent();
+
+    // 체력은 걸면 나간다(자기 자신은 적이 아니라 받는다)
+    srv.DebugMarkDirty(920, nox::PendingReport::What::UnitHealth);
+    std::vector<nox::OutPacket> out;
+    srv.Tick(34, out);
+    Check(srv.unitHealthSent() > h0, "체력을 걸었는데 안 나갔다");
+
+    // 아직 안 옮긴 갈래를 걸어도 **체력 셈이 안 늘어야** 한다(엉뚱한 것이 나가면 안 된다)
+    const unsigned long long h1 = srv.unitHealthSent();
+    srv.DebugMarkDirty(920, nox::PendingReport::What::Height);
+    srv.Tick(68, out);
+    Check(srv.unitHealthSent() == h1, "높이를 걸었는데 체력이 나갔다 — 갈래가 섞인다");
+
+    std::printf("  11-j 알림 갈래 — 여덟(정답지와 같음) · 체력만 나가고 미이식 갈래는 조용하다\n");
+}
+
 void TestMsgLenSiblings() {
     // ⭕ `cdecode.c:1561` — `case 125(0x7D) / 140(0x8C) / 141(0x8D) / 142(0x8E)` 가 한 본문 · `return 9`
     {
@@ -19853,6 +19896,7 @@ int main() {
     TestPlanBot();
     TestObstacleIsNotAPet();
     TestPetDamageStops();
+    TestReportKindsMatchSource();
     TestMsgLenSiblings();
     TestMissileComplexWire();
     TestDebugXpAndSpell();

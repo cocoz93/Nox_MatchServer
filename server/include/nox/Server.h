@@ -151,15 +151,31 @@ struct OutPacket {
 //   정품의 비트 하나하나가 여기 `What` 하나에 해당한다
 //   (`GAME4_2.c:7136-7181` — 비트가 켜진 것만 보내고 곧바로 끈다).
 //
-//     비트         | 보내는 것        | 오프코드 | 우리
-//     `0x10000`    | 그림 칸          | `0x6B`   | ❌ 안 쓴다(클라가 굴린다 — 2026-09-11 실측)
-//     `0x20000`    | 유닛 현재 체력   | `0x41`   | `UnitHealth`  ← 먼저 붙인다
-//     `0x40000`    | 숨김             | `0x38`   | `Hidden`   (아직)
-//     `0x400000`   | 높이             | `0x9F`   | `Height`   (아직)
-//     `0x800000`   | 마법부여         | `0x5A`   | `Enchant`  (아직)
-//     `0x2000000`  | 팀 기지          | `0x67`   | `TeamBase` (아직)
+//   ★ 2026-09-16 조각 L — **표가 원본보다 짧았다.** 정답지는 비트를 **여덟** 보는데
+//     여기 여섯만 적혀 있었고 enum 은 **다섯**이었다. 빠진 둘(`0x80000`·`0x4000000`)은
+//     「빠졌다」고 물을 수조차 없었다. 여덟로 맞추고 **왜 안 보내나**를 칸마다 적는다.
+//     ⚠ 목록이 원본보다 짧으면 그 차이는 **영영 안 보인다** — 09-16 에 잡은 결함 셋과 같은 모양이다.
+//
+//     비트         | 보내는 것        | 세우는 곳(정답지)                | 오프코드 | 우리
+//     `0x10000`    | 그림 칸          | `servMarkObjAnimFrame_4E4880`   | `0x6B`   | ❌ **안 보내도 된다** — 클라가 굴린다(2026-09-11 실측)
+//     `0x20000`    | 유닛 현재 체력   | `unitSetHP_4E4560`              | `0x41`   | ⭕ `UnitHealth`
+//     `0x40000`    | 숨김(켜고 끄기)  | `unitSetOnOff_4E4670`           | `0x38`   | ❌ `Hidden` — **안 옮김**. 켜고 끄는 주체가 **맵 스크립트**인데
+//                  |                  |                                 |          |    스크립트가 통째로 미이식이라 **지금은 바뀌지 않는다**(우리 쪽 대입 자리 2곳:
+//                  |                  |                                 |          |    `DebugTrapEnable`(진단) · 발판 `p.enabled`). 스크립트를 옮길 때 **같이** 옮길 것
+//     `0x80000`    | 아이템 속성      | `modifSetItemAttrs_4E4990`      | —        | ❌ **표에 아예 없던 칸.** 아이템 속성이 바뀌면 알린다 — 우리는 안 알린다
+//     `0x400000`   | 높이(들어올림)   | `unitRaise_4E46F0`              | `0x9F`   | ❌ `Height` — **안 옮김.** 우리 `z` 는 실제로 바뀐다(복수의 주먹 `kind 5`,
+//                  |                  |                                 |          |    `Server.cpp` 떨어짐 논리). 화면에서 떨어지는 것이 보이는지는 **④대기**
+//     `0x800000`   | 마법부여         | `setUnitBuffFlags_4E48F0`       | `0x5A`   | ⭕ `Enchant`
+//     `0x2000000`  | 팀 기지          | (CTF 기지)                      | `0x67`   | ❌ `TeamBase` — **안 옮김.** 우리에겐 팀 기지 개념 자체가 없다(참조 0건)
+//     `0x4000000`  | NPC 알림         | `netSendReportNPC_4D93A0`       | —        | ❌ **표에 아예 없던 칸.** 상인·NPC 를 안 옮겼다
 struct PendingReport {
-    enum class What : uint8_t { UnitHealth, Hidden, Height, Enchant, TeamBase };
+    // ⚠ **여덟이다.** 정답지 비트와 하나씩 짝이 맞아야 「빠진 것」을 셀 수 있다.
+    //   지금 거는 것은 `UnitHealth`·`Enchant` 둘뿐이고, 나머지 여섯은 **거는 쪽도 없다**
+    //   (그래서 앞뒤가 맞는다 — 안 걸고 안 보낸다). 시험 11-j 가 이 개수를 지킨다.
+    enum class What : uint8_t {
+        AnimFrame, UnitHealth, Hidden, ItemAttrs, Height, Enchant, TeamBase, ReportNPC,
+        kCount,
+    };
     uint16_t netCode = 0;   // 무엇이 바뀌었나 (오브젝트 번호)
     What what = What::UnitHealth;
 
@@ -2111,6 +2127,8 @@ public:
     bool DebugTrapArmed(size_t i) const { return i < traps_.size() && traps_[i].armed; }
     uint32_t DebugTrapFireIn(size_t i) const { return i < traps_.size() ? traps_[i].fireCountdown : 0u; }
     void DebugTrapEnable(size_t i, bool on) { if (i < traps_.size()) traps_[i].enabled = on; }
+    // 조각 L — 알림 갈래를 손으로 걸어 본다(시험 11-j). 「안 옮긴 갈래를 걸면 조용한가」용.
+    void DebugMarkDirty(uint16_t netCode, PendingReport::What what) { MarkDirty(netCode, what); }
     uint8_t DebugMissileCollideAmount(size_t i) const { return i < missiles_.size() ? missiles_[i].collideAmount : 0; }
     uint8_t DebugMissileDir(size_t i) const { return i < missiles_.size() ? missiles_[i].dir1 : 0; }
     float DebugMissileY(size_t i) const { return i < missiles_.size() ? missiles_[i].posY : 0.0f; }
