@@ -15748,7 +15748,24 @@ void TestPetDamageStops() {
         if (kv.first.find("(소환수)") != std::string::npos) petSum += kv.second;
     Check(petSum == 3, "크리처 갈래를 3번 탔는데 이탈구 합이 3 이 아니다 — 이름 없는 자리가 남았다");
 
-    std::printf("  11-i 크리처 피해 — 칸밖 1 · 편아님 1 · 깎임 1 · 합 3 (셈이 닫힌다)\n");
+    // ⑤ **사람 쪽도 닫히나** — 교차 대조(I × J)에서 나온 갭이다.
+    //   크리처 쪽만 닫힘 검사가 있었고 사람 쪽은 **실물로만** 봤다(피해 5 = 방패막기 1 + 깎임 4).
+    //   시험에 없으면 되돌이가 안 막힌다.
+    const unsigned long long before = srv.hurts();
+    srv.DebugHurt("없는주소", -1, 10, a, 3, out);            // 세션없음
+    srv.DebugHurt(a, -1, 10, std::string(), 3, out);         // 사람이 맞는다(주인 없는 것에게)
+    unsigned long long manSum = 0;
+    for (const auto& kv : srv.damageStops()) {
+        if (kv.first.find("(→") == 0) continue;
+        if (kv.first.find("(소환수)") != std::string::npos) continue;
+        if (kv.first == "→사람갈래" || kv.first == "→크리처갈래") continue;
+        if (kv.first == "사람갈래끝→Damage" || kv.first == "편검사통과") continue;
+        manSum += kv.second;
+    }
+    Check(srv.hurts() - before == 2, "사람 갈래를 두 번 안 탔다(시험 전제)");
+    Check(manSum == 2, "사람 갈래 두 번인데 이탈구 합이 2 가 아니다 — 이름 없는 자리가 남았다");
+
+    std::printf("  11-i 피해 셈 — 크리처 3 = 칸밖1+편아님1+깎임1 · 사람 2 = 세션없음1+깎임1 (양쪽 닫힘)\n");
 }
 
 void TestMsgLenSiblings() {
