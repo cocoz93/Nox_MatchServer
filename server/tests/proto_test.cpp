@@ -15701,6 +15701,56 @@ void TestObstacleIsNotAPet() {
                 srv.missilesMade(), (unsigned)hp0);
 }
 
+// ── 조각 J(09-16) 크리처 피해 경로의 셈 ──────────────────────────────
+//
+// ★ 사람 경로는 어제 이탈구에 이름을 붙여 셈을 닫았는데 **크리처 경로는 여덟이 전부 침묵**이었다.
+//   지문 — `buffs.Has(23)` 무적 관문이 **4곳**인데 `++invulnBlocked_` 는 **3곳**. 빠진 하나가 크리처였다.
+//   ⇒ 이름을 붙이고, **하나를 물으면 하나가 답하는지**를 여기서 못 박는다.
+void TestPetDamageStops() {
+    const std::string a = "10.9.19.1:9191";
+    auto count = [](nox::Server& s, const char* key) -> unsigned long long {
+        for (const auto& kv : s.damageStops()) if (kv.first == key) return kv.second;
+        return 0;
+    };
+
+    nox::Server srv;
+    srv.DebugEnterGame(a, 919);
+    srv.DebugSetPos(a, 1000, 1000);
+    std::vector<nox::OutPacket> out;
+    srv.Tick(0, out);
+
+    // 주인 없는 **맵 몬스터**를 하나 — `owner` 가 비면 맵 것이다
+    srv.DebugSpawnPet(1354, 1100, 1000, std::string());
+    Check(srv.petCount() == 1, "맵 몬스터가 안 섰다(시험 전제)");
+    const uint16_t hp0 = srv.DebugPetHealth(0);
+    Check(hp0 > 0, "몬스터 체력이 0 이다(시험 전제)");
+
+    // ① **칸 밖** — 없는 자리를 때리면 그 이름으로 세야 한다.
+    //   ★ 09-16 에 잡은 결함이 바로 이 자리로 샜다(장애물 색인이 소환수 색인으로).
+    //     그때는 **이름이 없어 조용히 사라졌다.**
+    srv.DebugHurt(std::string(), 99, 10, a, 3, out);
+    Check(count(srv, "칸밖(소환수)") == 1, "없는 자리를 때렸는데 「칸밖」으로 안 센다");
+
+    // ② **편 아님** — 주인 없는 것(덫 화살)이 주인 없는 것(맵 몬스터)을 때리면
+    //   둘 다 맵 것이라 적이 아니다(`OwnersEnemy` — `server/object.go:1667~1741`).
+    srv.DebugHurt(std::string(), 0, 10, std::string(), 3, out);
+    Check(count(srv, "편아님(소환수)") == 1, "맵끼리 때렸는데 「편아님」으로 안 센다");
+    Check(srv.DebugPetHealth(0) == hp0, "적이 아닌데 체력이 깎였다");
+
+    // ③ **깎임** — 사람이 때리면 들어간다. 여기까지 와야 셈이 닫힌다
+    srv.DebugHurt(std::string(), 0, 10, a, 3, out);
+    Check(count(srv, "깎임(소환수)") == 1, "사람이 때렸는데 「깎임」으로 안 센다");
+    Check(srv.DebugPetHealth(0) < hp0, "사람이 때렸는데 체력이 안 깎였다");
+
+    // ④ **셈이 닫히나** — 부른 횟수 = 이탈구 합. 안 닫히면 아직 이름 없는 자리가 있다는 뜻이다
+    unsigned long long petSum = 0;
+    for (const auto& kv : srv.damageStops())
+        if (kv.first.find("(소환수)") != std::string::npos) petSum += kv.second;
+    Check(petSum == 3, "크리처 갈래를 3번 탔는데 이탈구 합이 3 이 아니다 — 이름 없는 자리가 남았다");
+
+    std::printf("  11-i 크리처 피해 — 칸밖 1 · 편아님 1 · 깎임 1 · 합 3 (셈이 닫힌다)\n");
+}
+
 void TestMsgLenSiblings() {
     // ⭕ `cdecode.c:1561` — `case 125(0x7D) / 140(0x8C) / 141(0x8D) / 142(0x8E)` 가 한 본문 · `return 9`
     {
@@ -19785,6 +19835,7 @@ int main() {
     TestModeRules();
     TestPlanBot();
     TestObstacleIsNotAPet();
+    TestPetDamageStops();
     TestMsgLenSiblings();
     TestMissileComplexWire();
     TestDebugXpAndSpell();

@@ -1151,7 +1151,10 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
     }
 
     const size_t i = static_cast<size_t>(t.pet);
-    if (i >= pets_.size()) return;
+    // ★ 조각 J — 크리처 경로도 사람 경로와 **짝을 맞춰** 이탈구에 이름을 붙인다.
+    //   무적 관문이 4곳인데 계수기는 3곳이었다 — 빠진 하나가 여기였고,
+    //   그 옆 일곱도 전부 침묵이었다. 「소환수가 왜 안 맞나」를 물을 눈이 없었다.
+    if (i >= pets_.size()) { ++damageStops_["칸밖(소환수)"]; return; };
     Creature& k = pets_[i];
     const auto tb = typeBodies_.find(k.type);
     const PhysBody* body = (tb != typeBodies_.end()) ? &tb->second : nullptr;
@@ -1162,27 +1165,27 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
             case kDmgMechGolem: if (dtype == 9 || dtype == 17) amount = 2 * dmg; break;   // sub_4E24E0
             case kDmgFlammable: if (dtype == 1 || dtype == 12 || dtype == 7) amount = 9999999; break;   // 4E2520
             case kDmgBlackPowder:                                                          // 4E2560
-                if (dtype != 1 && dtype != 12 && dtype != 2 && dtype != 0) return;
+                if (dtype != 1 && dtype != 12 && dtype != 2 && dtype != 0) { ++damageStops_["화약아님(소환수)"]; return; }
                 amount = 999999;
                 break;
             default: break;                                // Default · Stone · Skeleton(막기는 AI 6) · Player
         }
     }
     // ── nox_xxx_damageDefaultProc_4E0B30 ──
-    if (k.buffs.Has(23)) return;                           // 무적(소리 71 → 10)
+    if (k.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적(소환수)"]; return; }   // 무적(소리 71 → 10)
     // ⚠ 몬스터 +2188·불 종류 +1440 깃발 · 죽은 좀비 갈래는 몬스터 AI(7)
-    if (!OwnersEnemy(k.owner, k.owner.empty(), by, byWild)) return;   // 편 거르기(자기가 자기를 때리는 경우는 없음)
+    if (!OwnersEnemy(k.owner, k.owner.empty(), by, byWild)) { ++damageStops_["편아님(소환수)"]; return; }   // 편 거르기(자기가 자기를 때리는 경우는 없음)
     const Target attacker = DamageAttacker(by, src);
     DamageShockBack(t, k.buffs, attacker, src, out);       // 감전(22) 되갚기 — 되갚는 이는 사람(무기)이라 소환수 목록은 안 바뀐다
     int v15 = dtype;
     if (body) {
         const uint32_t sub = body->subclass;
-        if ((sub & 0x200) && v15 == 5) return;             // 독 면역
+        if ((sub & 0x200) && v15 == 5) { ++damageStops_["독면역(소환수)"]; return; }  // 독 면역
         if (sub & 0x400) {                                 // 불 면역 — 1·12 무시 · 7 은 절반
-            if (v15 == 1 || v15 == 12) return;
+            if (v15 == 1 || v15 == 12) { ++damageStops_["불면역(소환수)"]; return; }
             if (v15 == 7) amount /= 2;
         } else if (sub & 0x800) {                          // 전기 면역
-            if (v15 == 9 || v15 == 17) return;
+            if (v15 == 9 || v15 == 17) { ++damageStops_["전기면역(소환수)"]; return; }
         }
     }
     amount = DamageProtect(pets_[i].buffs, static_cast<uint8_t>(v15), amount);   // 불·전기 보호(버프 17·20 + 아이템 5)
@@ -1196,6 +1199,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         // ★ R4 — 불려 나온 것의 체력이 바뀌었다. **주인에게만** 흘러간다
         //   (`FlushPending` 이 `IsEnemyTo` 로 거른다 — 남의 소환수는 적이라 안 간다).
         MarkDirty(k.netCode, PendingReport::What::UnitHealth);
+        ++damageStops_["깎임(소환수)"];
         return;
     }
     KillPet(i, out);
