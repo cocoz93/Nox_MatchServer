@@ -8514,7 +8514,7 @@ void Server::PlaySoundAt(uint16_t id, float x, float y, uint8_t kind, uint32_t c
                          const std::string& owner) {
     // ⚠ **소리조각이 0 이면 아예 안 만든다** — `newAudioEventPos` 의 `Field12 <= 0` 문.
     //   thing.bin 을 안 읽었으면 표가 비어 있어 **한 개도 안 나간다**(정답지와 같다)
-    if (id == 0 || id >= soundDefs_.size() || soundDefs_[id].samples <= 0) { ++soundsDropped_; return; }
+    if (id == 0 || id >= soundDefs_.size() || soundDefs_[id].samples <= 0) { ++soundsDropped_; ++soundsDroppedIds_[id]; return; }
     AudioEvent e;
     e.sound = id;
     e.x = x;

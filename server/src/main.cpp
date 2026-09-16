@@ -229,8 +229,10 @@ int main(int argc, char** argv) {
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     int spawnAtX = -1, spawnAtY = -1;   // --spawn-at X Y — 시작·부활 자리를 손으로 지정 (음수면 끔)
-    int botX = -1, botY = -1;           // --debug-bot X Y [직업] — 가짜 사람을 세운다 (음수면 끔)
-    std::string botClass = "warrior";
+    // --debug-bot X Y [직업] — 가짜 사람을 세운다 (음수면 끔 · **여러 번 쓸 수 있다**).
+    //   0 0 은 「맵의 시작 자리에 세워라」다. 여러 번 쓰면 시작 자리를 하나씩 옮겨 가며 쓴다.
+    struct BotWant { int x = -1, y = -1; std::string cls = "warrior"; };
+    std::vector<BotWant> bots;
     int debugXpAfter = 0;           // 진단 --debug-xp N 양 — N 틱 뒤 경험치 한 번 (0 끔)
     double debugXpAmount = 0.0;
     int debugSpellAfter = 0;        // 진단 --debug-give-spell N 주문 — N 틱 뒤 주문 하나 (0 끔)
@@ -367,9 +369,11 @@ int main(int argc, char** argv) {
             //   봇을 세우면 덫이 겨누고 갱신이 돌아 계수기가 살아난다 — 무인으로 판정할 수 있게 된다.
             //   ⚠ 봇 주소는 `addrOf` 에 없으므로 나가는 조각은 `flush` 에서 **조용히 버려진다**(main.cpp 의 `continue`).
             //     즉 망으로는 아무것도 안 나간다. 서버 안 상태와 계수기만 움직인다.
-            botX = std::atoi(argv[++i]);
-            botY = std::atoi(argv[++i]);
-            if (i + 1 < argc && argv[i + 1][0] != '-') botClass = argv[++i];
+            BotWant bw;
+            bw.x = std::atoi(argv[++i]);
+            bw.y = std::atoi(argv[++i]);
+            if (i + 1 < argc && argv[i + 1][0] != '-') bw.cls = argv[++i];
+            bots.push_back(bw);
         } else if (a == "--spawn-at" && i + 2 < argc) {
             // ④ 화면 확인용 — 볼 것이 있는 자리에서 바로 시작한다(걸어가는 시간을 없앤다).
             spawnAtX = std::atoi(argv[++i]);
@@ -994,18 +998,36 @@ int main(int argc, char** argv) {
                         spawnAtX, spawnAtY, standOk ? "예" : "**아니오**");
             std::fflush(stdout);
         }
-        if (botX >= 0 && botY >= 0) {
+        for (size_t bi = 0; bi < bots.size(); ++bi) {
+            BotWant bw = bots[bi];
+            if (bw.x < 0 || bw.y < 0) continue;
+            // ★ `--debug-bot 0 0` = **맵의 시작 자리에 세워라**. 판을 여럿 돌릴 때
+            //   맵마다 좌표를 손으로 찾는 비용이 판정보다 커진다(조각 E).
+            //   여러 마리면 **시작 자리를 하나씩 옮겨 가며** 쓴다 — 겹쳐 세우면 서로 밀어낸다.
+            if (bw.x == 0 && bw.y == 0) {
+                float sx = 0.0f, sy = 0.0f;
+                if (srv.PlayerStartAt(bi % (srv.PlayerStartCount() ? srv.PlayerStartCount() : 1), sx, sy)) {
+                    bw.x = static_cast<int>(sx); bw.y = static_cast<int>(sy);
+                } else {
+                    std::printf("[진단스위치] 봇 자리 자동 — 이 맵엔 PlayerStart 가 없다. 봇 안 세움\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+            }
             nox::CharClass bc = nox::CharClass::Warrior;
-            if (botClass == "wizard")        bc = nox::CharClass::Wizard;
-            else if (botClass == "conjurer") bc = nox::CharClass::Conjurer;
-            const std::string bot = "bot";
-            srv.DebugEnterGame(bot, 900, /*observer=*/false, bc);
+            if (bw.cls == "wizard")        bc = nox::CharClass::Wizard;
+            else if (bw.cls == "conjurer") bc = nox::CharClass::Conjurer;
+            const std::string bot = "bot" + std::to_string(bi);
+            const uint16_t nc = static_cast<uint16_t>(900 + bi);
+            srv.DebugEnterGame(bot, nc, /*observer=*/false, bc);
             // ⚠ 자리는 **둘 다** 맞춰야 한다 — `DebugMoveTo` 는 `x`·`y` 만, `DebugSetPos` 는 `posX`·`posY` 만 옮긴다.
             //   덫 겨눔·소리 거리는 `posX`·`posY` 로 재고, 걸음·갱신은 `x`·`y` 를 본다(09-15 에 한 번 데었다)
-            srv.DebugMoveTo(bot, botX, botY);
-            srv.DebugSetPos(bot, botX, botY);
-            std::printf("[진단스위치] 가짜 사람 세움 — (%d, %d) · 직업 %s · 번호 900\n",
-                        botX, botY, botClass.c_str());
+            srv.DebugMoveTo(bot, bw.x, bw.y);
+            srv.DebugSetPos(bot, bw.x, bw.y);
+            // ★ 편을 갈라 준다 — 깃발·플래그볼은 **두 편**이 있어야 규칙이 돈다.
+            srv.DebugSetTeam(bot, static_cast<uint8_t>(1 + (bi % 2)));
+            std::printf("[진단스위치] 가짜 사람 세움 — (%d, %d) · 직업 %s · 번호 %u · 편 %d\n",
+                        bw.x, bw.y, bw.cls.c_str(), (unsigned)nc, 1 + (int)(bi % 2));
             std::fflush(stdout);
         }
         if (debugXpAfter > 0) {
@@ -1322,7 +1344,12 @@ int main(int argc, char** argv) {
                             redX, my, blueX, my, (unsigned)nox::kCaptureLimit,
                             (redX != mx - ctfSpan || blueX != mx + ctfSpan)
                                 ? "  ← 벽을 피해 당김" : "");
-            } else {
+            } else if (mode == "flagball") {
+                // 공은 가운데, 골대는 깃발과 같은 간격으로 양옆
+                srv.StartFlagBall(mx, my, mx - ctfSpan, my, mx + ctfSpan, my);
+                std::printf("[모드] 플래그볼 — 공 (%d,%d) · 골대 (%d,%d)·(%d,%d)\n",
+                            mx, my, mx - ctfSpan, my, mx + ctfSpan, my);
+            } else if (mode == "quest" || mode == "coop" || mode == "coopteam") {
                 srv.StartQuest(questCount, mx, my, questSpread);
                 // ⚠ **`questCount` 는 이제 안 쓰는 값이다** — 웨이브 마릿수는 스테이지 표가
                 //   정한다(`StartQuest` 주석 참조). 전에는 여기서 그 값을 「몬스터 N마리」로
@@ -1330,6 +1357,14 @@ int main(int argc, char** argv) {
                 //   ★ 실제로 몇 마리가 섰는지는 바로 위 `[스테이지]` 줄이 말한다.
                 std::printf("[모드] 퀘스트 — (%d,%d) 반경 %.0f · 마릿수는 위 [스테이지] 줄 참조\n",
                             mx, my, questSpread);
+            } else {
+                // ★★ 여기가 비어 있어야 하는 모드들이다 — `elimination`·`kotr`·`chat`.
+                //   전에는 이 갈래가 없어서 **`else` 가 전부 `StartQuest` 로 떨어졌고**,
+                //   `--mode elimination` 을 켜면 퀘스트 몬스터 두 마리가 나와 사람을 때렸다
+                //   (조각 E 실측 — `[스테이지] 1/5` · 크리처 2마리 · 피해 4).
+                //   판 규칙은 게임플래그로 이미 켜져 있고, 여기서 더 놓을 것이 없다.
+                std::printf("[모드] %s — 판에 따로 놓는 것 없음(규칙은 gameFlags 로 이미 켜짐)\n",
+                            mode.c_str());
             }
             std::fflush(stdout);
         }
@@ -1424,8 +1459,29 @@ int main(int argc, char** argv) {
                 //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.
                 //   ⚠ 소리 셋은 합치지 말 것 — 「안 불렀다」·「불렀는데 표가 비어 버렸다」·
                 //     「담겼는데 거리에서 잘렸다」가 한 숫자면 묶음 10 이 통째로 판정 불능이 된다.
-                std::printf("[소리] 담김 %llu(표없어버림 %llu) · 나감 %llu · 음악 %llu\n",
+                std::printf("[소리] 담김 %llu(표없어버림 %llu) · 나감 %llu · 음악 %llu",
                             srv.soundsQueued(), srv.soundsDropped(), srv.soundsSent(), srv.musicSent());
+                // ★ **버린 소리는 번호까지 찍는다.** 수만 알면 「정답지대로 버린 것」(소리조각 0)과
+                //   「우리가 엉뚱한 번호를 부른 것」이 안 갈린다. 조각 E 에서 진단 판 하나만
+                //   「표없어버림 1」이 떴는데 **무엇인지 알 길이 없었다**.
+                if (!srv.soundsDroppedIds().empty()) {
+                    std::printf(" — 버린 번호");
+                    for (const auto& kv : srv.soundsDroppedIds())
+                        std::printf(" %u(%s)x%llu", (unsigned)kv.first, nox::SoundName(kv.first), kv.second);
+                }
+                std::printf("\n");
+                // ★ **성장 한 줄** — 진단 스위치(`--debug-xp`·`--debug-give-spell`)가 먹었는지
+                //   보는 유일한 자리다. 없을 때는 판 G 가 통째로 판정 불능이었다(조각 C 13·14번).
+                if (!bots.empty()) {
+                    const std::string b0 = "bot0";
+                    std::printf("[성장] 레벨 %d · 경험치 %.0f",
+                                srv.DebugLevel(b0), (double)srv.DebugExperience(b0));
+                    if (debugSpellId > 0)
+                        std::printf(" · 준 주문 %d(%s) 레벨 %d", debugSpellId,
+                                    nox::SpellName(static_cast<uint8_t>(debugSpellId)),
+                                    srv.DebugSpellLvl(b0, static_cast<uint8_t>(debugSpellId)));
+                    std::printf("\n");
+                }
                 std::printf("[싸움] 겨눔 %llu · 부딪힘 %llu(미룸 %llu) · 무적막힘 %llu"
                             " · 체력알림 %llu · 마법알림 %llu · 소환수죽음 %llu\n",
                             srv.aims(), srv.tryCollides(), srv.tryCollideDeferred(),

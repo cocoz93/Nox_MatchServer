@@ -1308,6 +1308,11 @@ public:
     void SetWaypoints(std::vector<std::pair<float, float>> v) { waypoints_ = std::move(v); AIPathBakeWaypoints(); }
     size_t WaypointCount() const { return waypoints_.size(); }
     size_t PlayerStartCount() const { return playerStarts_.size(); }
+    // 조각 E — 판을 아홉 개 돌리려면 맵마다 봇 자리를 알아야 한다. i 번째 시작 자리를 그대로 준다.
+    bool PlayerStartAt(size_t i, float& x, float& y) const {
+        if (i >= playerStarts_.size()) return false;
+        x = playerStarts_[i].first; y = playerStarts_[i].second; return true;
+    }
     // 자동 부활 서버 설정(nox_server_doPlayersAutoRespawn_40A5F0 · 0x5D4594+3584). 정답지 기본 0 — 클릭해야 살아난다.
     void SetAutoRespawn(bool on) { autoRespawn_ = on; }
     // ★ 묶음 3-d — TRY_COLLIDE 가 번호(또는 extent)로 오브젝트를 찾고, 그 종류의 충돌 함수(thing.bin COLLIDE 첫 낱말)를 고른다.
@@ -2615,6 +2620,14 @@ public:
     unsigned long long soundsSent() const { return soundsSent_; }        // 실제로 와이어에 나간 수
     unsigned long long musicSent() const { return musicSent_; }
     size_t trapsArmed() const { return trapsArmed_; }      // 지금 적을 보고 있는 쏘는 덫 수
+    // 버린 소리를 **번호별로** — 수만 알면 「정답지대로 버림」과 「엉뚱한 번호를 부름」이 안 갈린다
+    const std::map<uint16_t, unsigned long long>& soundsDroppedIds() const { return soundsDroppedIds_; }
+    // 성장 — 레벨·경험치·지금 든 주문 칸 수. 진단 스위치가 먹었는지 보는 유일한 자리다
+    float DebugExperience(const std::string& a) const {
+        auto i = sessions_.find(a); return i == sessions_.end() ? -1.0f : i->second.experience;
+    }
+    // ⚠ 주문 **칸 수**로는 못 가른다 — 온라인은 들어올 때 137 칸을 전부 3 으로 채운다
+    //   (`serverSetAllSpells`). 「받았나」는 **그 번호의 레벨**로만 갈린다 → `DebugSpellLvl`.
     size_t petCount() const { return pets_.size(); }
     size_t petsWithPath() const;                           // 길을 들고 있는 크리처 수
     void SetTickMs(uint32_t ms) { tickMs_ = ms; }
@@ -3607,6 +3620,7 @@ private:
     unsigned long long soundsSent_ = 0;
     unsigned long long musicSent_ = 0;
     size_t trapsArmed_ = 0;
+    std::map<uint16_t, unsigned long long> soundsDroppedIds_;
     // 묶음 8-a — 이 판의 설정. 접속 묶음의 `af`·`b0` 가 여기서 나온다
     GameSettings gameSettings_;
     std::vector<Team> teams_;   // 묶음 8-b — 이 판의 팀들
