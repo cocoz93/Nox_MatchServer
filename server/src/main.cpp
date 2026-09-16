@@ -229,6 +229,8 @@ int main(int argc, char** argv) {
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     int spawnAtX = -1, spawnAtY = -1;   // --spawn-at X Y — 시작·부활 자리를 손으로 지정 (음수면 끔)
+    int botX = -1, botY = -1;           // --debug-bot X Y [직업] — 가짜 사람을 세운다 (음수면 끔)
+    std::string botClass = "warrior";
     int debugXpAfter = 0;           // 진단 --debug-xp N 양 — N 틱 뒤 경험치 한 번 (0 끔)
     double debugXpAmount = 0.0;
     int debugSpellAfter = 0;        // 진단 --debug-give-spell N 주문 — N 틱 뒤 주문 하나 (0 끔)
@@ -358,6 +360,16 @@ int main(int argc, char** argv) {
             debugEnchantB = std::atoi(argv[++i]);
             debugEnchantP = std::atoi(argv[++i]);
             debugEnchantN = std::atoi(argv[++i]);
+        } else if (a == "--debug-bot" && i + 2 < argc) {
+            // ★★ 2026-09-16 신설 — **가짜 사람**을 세운다.
+            //   왜 — 계수기가 `made > 0` 일 때만 찍히는데, 사람이 없으면 내보낼 게 없어
+            //   **틱 줄이 아예 안 나온다**(실측). 그래서 ③.5 「실물로 닫기」가 **사람 없이는 성립을 안 한다.**
+            //   봇을 세우면 덫이 겨누고 갱신이 돌아 계수기가 살아난다 — 무인으로 판정할 수 있게 된다.
+            //   ⚠ 봇 주소는 `addrOf` 에 없으므로 나가는 조각은 `flush` 에서 **조용히 버려진다**(main.cpp 의 `continue`).
+            //     즉 망으로는 아무것도 안 나간다. 서버 안 상태와 계수기만 움직인다.
+            botX = std::atoi(argv[++i]);
+            botY = std::atoi(argv[++i]);
+            if (i + 1 < argc && argv[i + 1][0] != '-') botClass = argv[++i];
         } else if (a == "--spawn-at" && i + 2 < argc) {
             // ④ 화면 확인용 — 볼 것이 있는 자리에서 바로 시작한다(걸어가는 시간을 없앤다).
             spawnAtX = std::atoi(argv[++i]);
@@ -976,6 +988,20 @@ int main(int argc, char** argv) {
             srv.SetSpawn(spawnAtX, spawnAtY);
             srv.SetPlayerStarts({ { static_cast<float>(spawnAtX), static_cast<float>(spawnAtY) } });
             std::printf("[시작 자리] 손으로 지정 — (%d, %d) · 부활도 같은 자리\n", spawnAtX, spawnAtY);
+            std::fflush(stdout);
+        }
+        if (botX >= 0 && botY >= 0) {
+            nox::CharClass bc = nox::CharClass::Warrior;
+            if (botClass == "wizard")        bc = nox::CharClass::Wizard;
+            else if (botClass == "conjurer") bc = nox::CharClass::Conjurer;
+            const std::string bot = "bot";
+            srv.DebugEnterGame(bot, 900, /*observer=*/false, bc);
+            // ⚠ 자리는 **둘 다** 맞춰야 한다 — `DebugMoveTo` 는 `x`·`y` 만, `DebugSetPos` 는 `posX`·`posY` 만 옮긴다.
+            //   덫 겨눔·소리 거리는 `posX`·`posY` 로 재고, 걸음·갱신은 `x`·`y` 를 본다(09-15 에 한 번 데었다)
+            srv.DebugMoveTo(bot, botX, botY);
+            srv.DebugSetPos(bot, botX, botY);
+            std::printf("[진단스위치] 가짜 사람 세움 — (%d, %d) · 직업 %s · 번호 900\n",
+                        botX, botY, botClass.c_str());
             std::fflush(stdout);
         }
         if (debugXpAfter > 0) {
