@@ -1457,11 +1457,22 @@ int main(int argc, char** argv) {
                                     srv.DebugSpellLvl(b0, static_cast<uint8_t>(debugSpellId)));
                     std::printf("\n");
                 }
+                // ★ 조각 I — 체력은 **세 길**로 간다. 「41 남의 체력」만 찍던 때는
+                //   `피해 14 · 체력알림 1` 이 「안 보낸다」인지 「딴 길로 간다」인지 안 갈렸다.
                 std::printf("[싸움] 겨눔 %llu · 부딪힘 %llu(미룸 %llu) · 무적막힘 %llu"
-                            " · 체력알림 %llu · 마법알림 %llu · 소환수죽음 %llu\n",
+                            " · 체력 41남 %llu·42줄어듦 %llu(막힘 %llu)·43내것 %llu"
+                            " · 마법알림 %llu · 소환수죽음 %llu\n",
                             srv.aims(), srv.tryCollides(), srv.tryCollideDeferred(),
-                            srv.invulnBlocked(), srv.unitHealthSent(), srv.enchantSent(),
-                            srv.petsKilled());
+                            srv.invulnBlocked(), srv.unitHealthSent(),
+                            srv.healthDeltaSent(), srv.healthDeltaHeld(), srv.healthAbsSent(),
+                            srv.enchantSent(), srv.petsKilled());
+                // ★ 조각 I — **피해가 어디서 사라지나.** 합이 `피해` 와 맞아야 셈이 닫힌다.
+                if (!srv.damageStops().empty()) {
+                    std::printf("[피해] 막힌 곳 —");
+                    for (const auto& kv : srv.damageStops())
+                        std::printf(" %s %llu", kv.first.c_str(), kv.second);
+                    std::printf("\n");
+                }
                 std::printf("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu\n",
                             srv.petCount(), srv.petsWithPath(),
                             srv.DebugPathCalculated() ? "예" : "아니오", srv.DebugPathStatus(),

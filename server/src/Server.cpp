@@ -984,17 +984,18 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
     //   실클라 런이 「맞음 0」으로 나와 **싸움이 안 붙은 것으로 오판**했다(09-10).
     //   갈라 세야 「안 맞았다」와 「투사체만 안 맞았다」가 구분된다.
     ++hurts_;
+    ++damageStops_[t.pet < 0 ? "→사람갈래" : "→크리처갈래"];
     const bool byWild = by.empty();                        // 주인 없는 것이 때림
     const bool quest = (questTotal_ > 0 || questStage_ > 0);   // gameFlags 4096
 
     if (t.pet < 0) {
         auto vi = sessions_.find(t.addr);
-        if (vi == sessions_.end()) return;
+        if (vi == sessions_.end()) { ++damageStops_["세션없음"]; return; };
         Session& s = vi->second;
         // ── nox_server_handler_PlayerDamage_4E17B0 ──
-        if (!s.inGame || s.respawnAtFrame != 0) return;    // +16 & 2 · DEAD
-        if (s.buffs.Has(23)) { ++invulnBlocked_; return; }   // 버프 23
-        if (s.observer) return;                            // 3680 & 1
+        if (!s.inGame || s.respawnAtFrame != 0) { ++damageStops_["죽음·미입장"]; return; }   // +16 & 2 · DEAD
+        if (s.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적"]; return; }   // 버프 23
+        if (s.observer) { ++damageStops_["관전"]; return; }              // 3680 & 1
         // ── 죽음 알림 기록(+304 갈래 · +300 종류, 묶음 3-d · `GAME3_3.c:164~246`) — 부를 때마다 0 에서 다시 ──
         //   때린 이(a2)가 있으면: 무기·투사체(a3)가 있고 때린 이와 다르면 갈래 1·그 종류 /
         //   없고 피해 종류가 10(맨손)·2(망치)면 갈래 1·때린 이의 종류(사람 713 · 몬스터 그 종류). 막혀도 이 기록은 남는다
@@ -1016,7 +1017,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                                              static_cast<uint8_t>(fy), static_cast<uint8_t>(fy >> 8) };
                     SendFxAllCli(static_cast<float>(s.posX), static_cast<float>(s.posY), msg, sizeof(msg), out);
                 }
-                return;                                    // 소리 122 → 10
+                { ++damageStops_["정면막기"]; return; }                  // 소리 122 → 10
             }
         }
         if (src) {
@@ -1042,7 +1043,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                 if (dtype != 9 && dtype != 17) {
                     std::printf("[막기] 프레임 %u %s 방패로 막음(종류 %u · 피해 %d)\n", frame_, s.addr.c_str(), dtype, dmg);
                     std::fflush(stdout);
-                    return;
+                    { ++damageStops_["방패막기"]; return; }
                 }
             } else {
                 const uint32_t weap = WeaponEquipOf(s);
@@ -1055,7 +1056,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                             PlayerSetState(s, static_cast<uint8_t>(18 + NextRandom(3)), frame_);   // randomInt(18, 20)
                             std::printf("[막기] 프레임 %u %s 대검으로 막음 → 상태 %u\n", frame_, s.addr.c_str(), s.moveState);
                             std::fflush(stdout);
-                            return;
+                            { ++damageStops_["대검막기"]; return; }
                         }
                     }
                 }
@@ -1063,7 +1064,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                     PlayerSetState(s, 21, frame_);
                     std::printf("[막기] 프레임 %u %s 지팡이로 막음\n", frame_, s.addr.c_str());
                     std::fflush(stdout);
-                    return;
+                    { ++damageStops_["지팡이막기"]; return; }
                 }
             }
         }
@@ -1103,10 +1104,11 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
             if (v44 > 0 && hp < 1) hp = 1;
         }
         // ── nox_xxx_damageDefaultProc_4E0B30(`GAME3_2.c:7017`) ──
-        if (s.buffs.Has(23)) { ++invulnBlocked_; return; }   // 무적(소리 71 → 10)
+        if (s.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적2"]; return; }   // 무적(소리 71 → 10)
         // 편 거르기 — 친선 피해 설정(게임플레이 깃발 1, 기본 꺼짐)이 꺼져 있으면 때린 쪽 주인이 적이 아닐 때 무시.
         //   단 자기가 자기를 때린 것은 퀘스트가 아니면 들어간다(`a1 != v12 || gameFlags 4096`).
-        if (!OwnersEnemy(s.addr, false, by, byWild) && (by != s.addr || quest)) return;
+        if (!OwnersEnemy(s.addr, false, by, byWild) && (by != s.addr || quest)) { ++damageStops_["편아님"]; return; };
+        ++damageStops_["편검사통과"];
         const Target attacker = DamageAttacker(by, src);
         DamageShockBack(Target{ s.addr, -1 }, s.buffs, attacker, src, out);   // 감전(22) 되갚기
         hp = DamageProtect(s.buffs, dtype, hp);            // 불·전기 보호(버프 17·20 + 아이템 5)
@@ -1122,7 +1124,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         //   독(5)은 안 막고, 죽음(15)을 자기가 자기에게 건 것도 안 막는다.
         if (s.buffs.Has(26) && dtype != 5 && !(dtype == 15 && by == s.addr)) {
             ShieldReduceDamage(Target{ s.addr, -1 }, hp, dtype, src, out);
-            if (hp == 0) return;                           // 막았다 — 아예 안 맞은 것이 된다
+            if (hp == 0) { ++damageStops_["마법방패"]; return; }          // 막았다 — 아예 안 맞은 것이 된다
         }
         // +520 마지막으로 때린 것(`GAME3_2.c:7229~7233`) — a3 가 있으면 그것(주인 = a2), 없으면 a2. 사슬의 사람 = `by`(소환수면 주인)
         Session::LastHit hit;
@@ -1143,6 +1145,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         //   **때린 사람(`by`)이 통째로 사라졌다** — 죽음 알림의 죽인이도 늘 0 이었다.
         //   정답지 `GAME3_2.c:7229~7233` 은 **a3 가 없으면 a2**(때린 이)를 넣는다 —
         //   그 자리가 `Damage` 의 else 가지(`cls = 1 · player = by`)다
+        ++damageStops_["사람갈래끝→Damage"];
         Damage(t.addr, hp, out, by, src ? &hit : nullptr);   // unitDamageClear_4EE5E0
         return;
     }
@@ -1201,9 +1204,12 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
 bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
                     const std::string& by, const Session::LastHit* hit, bool ignoreInvuln) {
     auto it = sessions_.find(addr);
-    if (it == sessions_.end()) return false;
+    if (it == sessions_.end()) { ++damageStops_["세션없음2"]; return false; }
     Session& s = it->second;
-    if (!s.inGame || s.respawnAtFrame != 0 || amount <= 0) return false;
+    // ★ 조각 I — **여기가 빠져 있던 이탈구다.** `amount <= 0` 은 「방어가 다 깎았다」는 뜻인데
+    //   세지 않아 「안 맞았다」와 구별이 안 됐다. 실측에서 화살 14대 중 13대가 여기로 샜다.
+    if (!s.inGame || s.respawnAtFrame != 0) { ++damageStops_["죽음·미입장2"]; return false; }
+    if (amount <= 0) { ++damageStops_["방어로0"]; return false; }
     // ★ **부활 직후 무적** — 살아나자마자 또 죽는 것을 막는다.
     //
     //   `kRespawnInvulnTicks`(150 = 5초)는 ◑ 오픈녹스 `playerRespawn` 재구현 값이다.
@@ -1214,6 +1220,7 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     //     되살아난 사람이 영영 무적이 된다. 오늘 이 함정을 두 번 밟았다(`closing`·`hasAim`).
     if (!ignoreInvuln && s.buffs.Has(23)) {                // 버프 23(4-a4) · unitDamageClear(DEATH 버프)는 안 본다
         ++invulnBlocked_;
+        ++damageStops_["무적3"];
         return false;
     }
     // +520 마지막으로 때린 것(3-d) — 피해 함수가 넘긴 것, 없으면 `by`(사람 · 무기 없음)로
@@ -1230,6 +1237,9 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     s.health = static_cast<uint16_t>(after);
     // ★ R4 — 체력이 바뀌었다. 「알려야 할 것」에 올린다(보낼지는 틱 끝에서 가른다).
     if (after != before) MarkDirty(s.netCode, PendingReport::What::UnitHealth);
+    // ★ 조각 I — 깎인 것도 센다. **이탈구 합 + 깎임 = 피해** 가 되어야 셈이 닫힌다.
+    //   안 닫히면 내가 이탈구를 빠뜨린 것이다(= 계측이 아직 반쪽이라는 지문).
+    ++damageStops_[after != before ? "깎임" : "0으로깎임"];
 
     // ①② 09-14 갱신 알림 정답지화 — `42` 증감·`43` 절대값을 여기서 곧바로 보내던 것을 걷어냈다.
     //    `42` 는 갱신 스트림이 **보는 사람마다** 마지막 피해(+536) 뒤 2틱 넘어 **음수만** 보낸다(ReportHealthDeltaTo · Packet0)
@@ -4348,6 +4358,7 @@ void Server::PlayerReportAnything(Session& s, std::vector<OutPacket>& out) {
     if (s.health != s.healthReported) {
         const uint8_t hp[3] = { static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH), static_cast<uint8_t>(s.health), static_cast<uint8_t>(s.health >> 8) };
         EmitSeq(s, hp, sizeof(hp), out);                   // netSendPlrHealthToTeam_4D86E0
+        ++healthAbsSent_;
         s.healthReported = s.health;
     }
     // ⑥ 마나 +4 ≠ +6 → `45 <번호2> <마나2>`(sub_4E5450 · 워리어는 안 보냄) · +6 = +4
@@ -4540,9 +4551,11 @@ void Server::EmitImportantRawSupersede(Session& s, const uint8_t* msg, size_t n,
 //   ⚠ 처음 보는 오브젝트는 정답지도 0 과 견준다(양수 → 안 보냄 · 기록) — 우리는 「없으면 지금 값을 적고 안 보냄」으로 같다
 void Server::ReportHealthDeltaTo(Session& viewer, uint16_t netCode, uint16_t hp, uint32_t lastDamageFrame,
                                  std::map<std::string, uint16_t>& seen, std::vector<OutPacket>& out) {
-    if (frame_ - lastDamageFrame <= 2) return;
+    // ★ 조각 I — **막힌 것도 센다.** 아래 관문 셋 중 어디서 걸려도 42 는 안 나가는데,
+    //   나간 것만 세면 그 0 이 「일이 없었다」인지 「관문에 걸렸다」인지 안 갈린다.
+    if (frame_ - lastDamageFrame <= 2) { ++healthDeltaHeld_; return; }
     auto it = seen.find(viewer.addr);
-    if (it == seen.end()) { seen.emplace(viewer.addr, hp); return; }
+    if (it == seen.end()) { seen.emplace(viewer.addr, hp); ++healthDeltaHeld_; return; }
     if (it->second == hp) return;
     const int delta = static_cast<int>(hp) - static_cast<int>(it->second);
     if (delta < 0) {
@@ -4550,6 +4563,9 @@ void Server::ReportHealthDeltaTo(Session& viewer, uint16_t netCode, uint16_t hp,
         const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA), static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8),
                                  static_cast<uint8_t>(raw), static_cast<uint8_t>(raw >> 8) };
         EmitImportantRaw(viewer, msg, sizeof(msg), out);
+        ++healthDeltaSent_;
+    } else {
+        ++healthDeltaHeld_;                            // 늘어난 것은 42 로 안 보낸다(음수만)
     }
     it->second = hp;
 }
@@ -11219,6 +11235,19 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
         {
             enum { HitNone, HitPlayer, HitPet, HitObstacle } hk = HitNone;
             std::string hAddr; int hIdx = -1;
+            // ★★ 2026-09-16 — **닿은 것을 셋으로 가른다.** 전에는 `HitPlayer` 인가 아닌가로만
+            //   갈라서, `HitObstacle` 의 **장애물 색인이 소환수 색인 자리로** 들어갔다
+            //   (`hIdx` 는 `obstacles_` 의 자리인데 `Target::pet` 은 `pets_` 의 자리다).
+            //   기둥에 맞은 화살이 **소환수 N번을 때렸다.** 실측 — 신전 판에서
+            //   피해 14건 중 **13건이 크리처 갈래로 갔는데 크리처는 0마리**였다.
+            //   소환수가 있는 판(퀘스트·코옵)이면 **엉뚱한 놈이 맞는다.**
+            //   ⚠ 장애물은 유닛이 아니므로 **빈 대상**을 준다 — `HurtTarget` 이 그 자리에서 되돌아가고,
+            //     `HarpoonCollide`·`FireballExplode` 는 빈 대상을 이미 「벽에 맞음」으로 다룬다.
+            auto HitTargetOf = [](int kind, const std::string& a, int idx) -> Target {
+                if (kind == HitPlayer) return Target{ a, -1 };
+                if (kind == HitPet)    return Target{ std::string(), idx };
+                return Target{};                     // 장애물·없음 — 유닛이 아니다
+            };
             float hx = 0, hy = 0;                            // 맞은 것 자리
             float onx = 0, ony = 0;                          // 오브젝트 법선(점 − 그 자리)
             // sub_54E730(날아가는 것, 대상) — 깃발 거르기. 대상 NO_COLLIDE(0x40) 는 안 맞음 · MISSILE_HIT(0x80) 는 늘 맞음 ·
@@ -11373,7 +11402,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     }
                     // collidePixie_4EA080 — **적일 때만** 인자만큼 피해(종류 11 충격)를 주고 제가 사라진다
                     if (!handled && m.collideKind == 2) {
-                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        const Target tgt = HitTargetOf(hk, hAddr, hIdx);
                         auto ownIt = sessions_.find(m.owner);
                         const bool enemy = (ownIt != sessions_.end()) && TargetIsEnemy(ownIt->second, tgt);
                         if (enemy) {
@@ -11387,7 +11416,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     //   맞는 것에 **종류 11** 피해. 양은 `ImpShot` 이면 gamedata `ImpShotDamage`,
                     //   아니면 `COLLIDE` 의 인자다(둘 다 5 라 값은 같다)
                     if (!handled && m.collideKind == 3) {
-                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        const Target tgt = HitTargetOf(hk, hAddr, hIdx);
                         // ⭕ 정답지는 피해를 줄 때 **a2 로 발사체 자신**을 넘긴다
                         //   (`(*(a2+716))(a2, 부모사람, **발사체**, 피해, 11)`) — 죽음 알림 그림이 그것이다
                         AttackSrc src;
@@ -11403,7 +11432,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     //   ★ **적·아군을 안 가린다**(갈래 3 과 같다). 양은 `COLLIDE` 의 둘째 인자인데
                     //   화살 덧은 그걸 `ArrowTrapDamage`(25)로 덮어 버린다(`GAME5.c:6432~6435`)
                     if (!handled && m.collideKind == 5) {
-                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        const Target tgt = HitTargetOf(hk, hAddr, hIdx);
                         AttackSrc src;
                         src.x = m.posX; src.y = m.posY;
                         src.byMonsterType = m.type;
@@ -11413,13 +11442,13 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         handled = true;
                     }
                     if (!handled && m.collideKind == 4) {
-                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        const Target tgt = HitTargetOf(hk, hAddr, hIdx);
                         if (!HarpoonCollide(m, tgt, out)) { erased = true; }
                         handled = true;
                     }
                     if (!handled && m.collideKind == 1) {
                         // 불덩이 — 대상을 안 가린다(맞는 것마다 터진다). 되받아치기 방패(27)는 위에서 이미 handled
-                        const Target tgt = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                        const Target tgt = HitTargetOf(hk, hAddr, hIdx);
                         FireballExplode(m, tgt, out);
                         DestroyMissile(i, out);
                         erased = true;
@@ -11431,7 +11460,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                             auto casterIt = sessions_.find(m.ud2);
                             if (casterIt != sessions_.end()) {
                                 SpellArg arg;
-                                arg.obj = (hk == HitPlayer) ? Target{ hAddr, -1 } : Target{ std::string(), hIdx };
+                                arg.obj = HitTargetOf(hk, hAddr, hIdx);
                                 SpellAccept(m.spell, casterIt->second, m.ud0, arg, m.level, out);   // (ud[3], ud[2], ud[0], 날아가는 것, 대상)
                             }
                             DestroyMissile(i, out);

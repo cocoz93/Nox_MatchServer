@@ -15648,6 +15648,59 @@ void TestPlanBot() {
     std::printf("  11-g 봇 세우기 — 자리 돌려쓰기 · 편 번갈이 · 시작 자리 0 이면 안 세움\n");
 }
 
+// ── 조각 I(09-16) 장애물이 소환수로 둔갑하던 것 ──────────────────────
+//
+// ★ 날아가는 것이 닿는 것은 **셋**이다 — 사람 · 소환수 · 장애물.
+//   대상을 만드는 자리 여섯이 전부 「사람인가 아닌가」로만 갈라,
+//   **장애물 색인(`obstacles_` 자리)이 소환수 색인(`pets_` 자리)으로** 넘어갔다.
+//   ⇒ 기둥에 맞은 화살이 **소환수 N번을 때렸다.**
+//   실측 — 신전 판 피해 14건 중 **13건이 크리처 갈래인데 크리처는 0마리**였다.
+void TestObstacleIsNotAPet() {
+    const std::string a = "10.9.18.1:9181";
+    nox::Server srv;
+    srv.SetProjType("MercArcherArrow", 528, 800, 0x4000u, 10);
+    srv.DebugEnterGame(a, 918);
+    // 사람은 덫의 **쏘는 선 위**에 둔다 — 안 그러면 덫이 겨누지 않아 한 발도 안 나간다
+    srv.DebugSetPos(a, 1200, 1200);
+    srv.DebugMoveTo(a, 1200, 1200);
+    std::vector<nox::OutPacket> w; srv.Tick(0, w);
+
+    // 소환수 하나 — **자리 0**. 쏘는 선(대각) **밖**에 둔다(직접 맞으면 시험이 무의미해진다)
+    srv.DebugSpawnPet(1354, 1000, 3000, a);                  // SmallSpider
+    Check(srv.petCount() == 1, "소환수가 안 섰다(시험 전제)");
+    const uint16_t hp0 = srv.DebugPetHealth(0);
+    Check(hp0 > 0, "소환수 체력이 0 이다(시험 전제)");
+
+    // 장애물 하나 — **자리 0**. 덫 바로 앞에 둬서 화살이 여기 맞게 한다
+    nox::Server::PhysBody ob;
+    ob.shape = 2; ob.r = 20.0f; ob.x = 1080.0f; ob.y = 1080.0f;
+    srv.SetObstacles({ ob });
+
+    // 덫은 (1000,1000) 에서 대각(1,1) 로 쏜다 — 장애물이 그 선 위에 있다
+    nox::Server::ShootingTrapIn tr;
+    tr.x = 1000; tr.y = 1000; tr.facing = 32; tr.proj = "MercArcherArrow";
+    tr.fxKind = 1; tr.damage = 25;
+    srv.SetShootingTraps({ tr });
+
+    std::vector<nox::OutPacket> out;
+    uint32_t ms = 0;
+    for (int i = 0; i < 90; ++i) { ms += 34; srv.Tick(ms, out); }
+
+    // ① 화살이 실제로 날았나 — 안 날았으면 아무것도 못 가른다(빈 시험 방지)
+    Check(srv.missilesMade() > 0, "화살이 한 발도 안 나갔다 — 시험이 비어 있다");
+
+    // ② **소환수가 안 맞았다**
+    Check(srv.DebugPetHealth(0) == hp0, "장애물에 맞은 화살이 소환수를 깎았다");
+
+    // ③ 피해가 **크리처 갈래로 한 번도 안 갔다** — ②만으로는 「맞고 0 깎임」과 안 갈린다
+    unsigned long long toPet = 0;
+    for (const auto& kv : srv.damageStops()) if (kv.first == "→크리처갈래") toPet = kv.second;
+    Check(toPet == 0, "장애물에 맞았는데 피해가 크리처 갈래로 갔다");
+
+    std::printf("  11-h 장애물 — 화살 %llu발이 장애물에 맞아도 소환수 체력 %u 그대로\n",
+                srv.missilesMade(), (unsigned)hp0);
+}
+
 void TestMsgLenSiblings() {
     // ⭕ `cdecode.c:1561` — `case 125(0x7D) / 140(0x8C) / 141(0x8D) / 142(0x8E)` 가 한 본문 · `return 9`
     {
@@ -19731,6 +19784,7 @@ int main() {
     TestCounterCoverage();
     TestModeRules();
     TestPlanBot();
+    TestObstacleIsNotAPet();
     TestMsgLenSiblings();
     TestMissileComplexWire();
     TestDebugXpAndSpell();

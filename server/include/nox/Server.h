@@ -1517,6 +1517,15 @@ public:
     void FlushPending(std::vector<OutPacket>& out);
     // 시험·로그용 —  x41 을 몇 번 보냈나.
     unsigned long long unitHealthSent() const { return unitHealthSent_; }
+    // 조각 I — 체력이 가는 길은 **셋**이다. 하나만 세면 「안 갔다」와 「딴 길로 갔다」가 안 갈린다.
+    unsigned long long healthDeltaSent() const { return healthDeltaSent_; }  // 42 줄어든 만큼(보는 사람마다)
+    unsigned long long healthAbsSent() const { return healthAbsSent_; }      // 43 내 체력 절대값(본인만)
+    // 42 가 **막힌** 횟수도 센다 — 0 이 「일이 없었다」인지 「관문에 걸렸다」인지 가른다
+    unsigned long long healthDeltaHeld() const { return healthDeltaHeld_; }
+    // ★ 조각 I — **피해가 어디서 사라지나.** `HurtTarget` 은 이탈구가 열한 개인데
+    //   계수기는 무적 하나뿐이었다. 그래서 「안 맞았다」와 「막았다」와 「편이 아니다」가
+    //   전부 같은 침묵으로 보였다. 이유별로 세어 그 침묵을 가른다.
+    const std::map<std::string, unsigned long long>& damageStops() const { return damageStops_; }
     // 시험·로그용 — 0x5A 를 몇 번 보냈나.
     unsigned long long enchantSent() const { return enchantSent_; }
 
@@ -3567,6 +3576,10 @@ private:
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
     // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
     unsigned long long unitHealthSent_ = 0;
+    unsigned long long healthDeltaSent_ = 0;
+    unsigned long long healthAbsSent_ = 0;
+    unsigned long long healthDeltaHeld_ = 0;
+    std::map<std::string, unsigned long long> damageStops_;
     unsigned long long enchantSent_ = 0;      // 0x5A 를 보낸 횟수 (R4)   //  x41 을 보낸 횟수 (R4)
     int peerPose_ = -1;   // ⭕ 2026-09-13 — 기본은 덮지 않음(0x30 은 그때 상대의 방향이었다 · Server.cpp 남 항목 주석)
     // 갱신 항목 순서를 뒤집는다(남 먼저). 「자리 탓인가 누구냐 탓인가」를 가르는 시험용.
