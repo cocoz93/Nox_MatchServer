@@ -7108,6 +7108,14 @@ bool Server::SpellGrantToPlayer(Session& s, uint8_t spell, uint8_t announce, boo
     if (coopOrQuest && SpellQuestOnce(spell) && s.spellLvl[spell] != 0) return false;
 
     // 10-b PlaySound 226 AwardSpell — plyrspel.c:142 rings it only when announce is set
+    // ★ 2026-09-16 실측 — **이 소리는 실제로는 한 번도 안 나간다.** 그래도 맞는 코드다.
+    //   `thing.bin` 의 `AUD ` 칸 **927개에 `AwardSpell` 이라는 이름이 아예 없다**
+    //   (도구 `scratchpad/p31/aud.cpp`. 이름표는 1,023개인데 AUD 는 927개이고,
+    //    `AwardSpell`·`AwardGuide`·`PlasmaSustain` 따위 96개는 **클라가 제 손으로 내는 소리**다).
+    //   정답지도 표를 같은 파일에서 만드니 그쪽에서도 안 울린다 ⇒ **어긋남 아님.**
+    //   ⚠ 진행 기록의 「묶음 7-b ⛔ 안 옮긴 것 — 소리 226」은 **두 겹으로 틀린 메모**였다:
+    //     우리는 부르고 있고, 부르는 것이 맞고, 다만 표에 없어 버려진다.
+    //   ⇒ 로그의 `[소리] … 표없어버림 N — 버린 번호 226(AwardSpell)` 은 **정상 지문**이다
     if (announce) PlaySoundAt(226, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
     ++s.spellLvl[spell];
     if (s.spellLvl[spell] > 5) s.spellLvl[spell] = 5;
