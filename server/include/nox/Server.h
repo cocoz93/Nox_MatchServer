@@ -2593,6 +2593,16 @@ public:
     // 지금 날아가고 있는 것의 수.
     // 지금 날아가고 있는 오브젝트(Magic·불덩이 …)의 수.
     size_t missiles() const { return missiles_.size(); }
+    // ★★ 2026-09-16 — **만든 누계 · 사라진 누계**를 같이 센다.
+    //   `missiles()`(지금 살아 있는 수)만으로는 「안 만들어졌다」와 「만들자마자 사라졌다」를 **못 가른다.**
+    //   09-16 에 `나는것 0` 이 174틱 표본 전부에 찍혔는데 그게 어느 쪽인지 몰라 헛다리를 짚었다.
+    //   셋을 나란히 놓으면 갈린다 — 만든 0 이면 안 쏜 것, 만든 N·사라진 N·지금 0 이면 즉사다.
+    unsigned long long missilesMade() const { return missilesMade_; }
+    unsigned long long missilesGone() const { return missilesGone_; }
+    // ★★ **갱신에 실린 누계.** 「지금 살아 있는 수」는 30프레임 표본이라
+    //   덫이 쏘는 박자와 어긋나면 **살아 있어도 0 으로 보인다**(09-16 에 이걸로 헛짚었다).
+    //   「클라에 갔나」는 반드시 **누계**로 물어야 한다.
+    unsigned long long missileEntriesSent() const { return missileEntriesSent_; }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
     // 불려 나온 것이 죽은 횟수.
@@ -3389,6 +3399,9 @@ private:
     unsigned long long roundsPlayed_ = 0;
     unsigned long long flagStatusSent_ = 0;   // 깃발 HUD 를 보낸 횟수 (과잉 감시용)
     unsigned long long invulnBlocked_ = 0;    // 부활 무적으로 막은 피해 횟수
+    unsigned long long missilesMade_ = 0;     // 날아가는 것을 만든 누계
+    unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
+    unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수

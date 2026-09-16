@@ -6731,7 +6731,7 @@ void Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float
     m.collideAmount = pt->collideAmount;
     m.velX = DirVecX(dir) * m.speed;
     m.velY = DirVecY(dir) * m.speed;
-    missiles_.push_back(m);
+    missiles_.push_back(m); ++missilesMade_;
 }
 
 // ── 묶음 6-i 소환수 명령 ──────────────────────────────────────────────
@@ -7520,7 +7520,7 @@ void Server::HarpoonDo(Session& s, std::vector<OutPacket>& out) {
     m.collideAmount = static_cast<uint8_t>(kHarpoonDamage);
     m.velX = DirVecX(m.dir1) * m.speed;
     m.velY = DirVecY(m.dir1) * m.speed;
-    missiles_.push_back(m);
+    missiles_.push_back(m); ++missilesMade_;
     s.harpoonBoltNc = m.netCode;
     s.harpoonTarget = Target{};
     s.harpoonFrame35 = 0;                                    // 아직 걸림을 안 알렸다
@@ -8353,7 +8353,7 @@ void Server::TrapShoot(ShootingTrap& t, std::vector<OutPacket>& out) {
     // 닿음 갈래 — 화살은 `MonsterArrowCollide`(5), 불덩이는 `SparkExplosionCollide`(1)
     m.collideKind = (t.damage != 0) ? 5 : 1;
     m.collideAmount = (t.damage != 0) ? static_cast<uint8_t>(t.damage) : pt->collideAmount;
-    missiles_.push_back(m);
+    missiles_.push_back(m); ++missilesMade_;
     if (t.fxKind != 0) SendArrowTrapFx(t.x, t.y, t.fxKind, out);
     // 10-a — 쏘는 소리. 정답지 `createArrowTrapProjectile_54FA80` 이 `aud_501960(889, …)` 를 부른다.
     //   ⭕ 889 = **`ArrowTrapShoot`**(이름표로 확인). 쏘는 것이 화살일 때만 울린다
@@ -10195,7 +10195,7 @@ int Server::CastFireball(Session& caster, int lvl, std::vector<OutPacket>& out) 
     m.collideAmount = pt->collideAmount;
     m.velX = DirVecX(dir) * m.speed + static_cast<float>(caster.velX);
     m.velY = DirVecY(dir) * m.speed + static_cast<float>(caster.velY);
-    missiles_.push_back(m);
+    missiles_.push_back(m); ++missilesMade_;
     return 1;
 }
 
@@ -10303,7 +10303,7 @@ int Server::CastPixieSwarm(uint8_t spell, Session& caster, int lvl, std::vector<
         m.collideKind = 2;                                   // PixieCollide
         m.collideAmount = 8;                                 // thing.bin `COLLIDE = PixieCollide 8`
         m.expireFrame = frame_ + static_cast<uint32_t>(kServerTickRate) * (30u + NextRandom(61u));   // randomInt(30,90) 초
-        missiles_.push_back(m);
+        missiles_.push_back(m); ++missilesMade_;
     }
     return 1;
 }
@@ -10700,7 +10700,7 @@ bool Server::CreateSpellFly(Session& s, Target target, uint8_t spell, std::vecto
                 SpellName(spell) ? SpellName(spell) : "?", m.netCode, sx, sy,
                 target.none() ? "없음" : (!target.addr.empty() ? target.addr.c_str() : "소환수"));
     std::fflush(stdout);
-    missiles_.push_back(m);
+    missiles_.push_back(m); ++missilesMade_;
     return true;
 }
 
@@ -10711,6 +10711,7 @@ void Server::DestroyMissile(size_t i, std::vector<OutPacket>& out) {
     const uint8_t msg[3] = { static_cast<uint8_t>(Op::DESTROY_OBJECT), static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitImportantRaw(kv.second, msg, sizeof(msg), out);
     missiles_.erase(missiles_.begin() + static_cast<long>(i));
+    ++missilesGone_;
 }
 
 // ── 묶음 4-a4 버프 틀 ─────────────────────────────────────────────────
@@ -12725,6 +12726,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             Relativize(e, mo.netCode, static_cast<int>(mo.posX), static_cast<int>(mo.posY),
                        baseX, baseY);
             m.objects.push_back(e);
+            ++missileEntriesSent_;   // ★ 갱신에 실린 누계 — 「지금 몇 개」로는 못 답한다(표본이 어긋난다)
         }
 
         // 4-c3 놓인 오브젝트(독구름 …) — ⓐ 와 같은 부류라 종류표로 가른다(2026-09-16)
