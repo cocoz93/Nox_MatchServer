@@ -2607,6 +2607,16 @@ public:
     size_t pets() const { return pets_.size(); }
     // 불려 나온 것이 죽은 횟수.
     unsigned long long petsKilled() const { return petsKilled_; }
+    // ── 조각 D(09-16) 신설 계수기 — 「눈이 없어 못 재던 것」을 재는 자리 ──
+    //   ★ 소리는 **셋으로 갈라 센다.** 합치면 「안 불렀다」와 「불렀는데 표가 비어 버렸다」와
+    //     「담겼는데 거리에서 잘렸다」가 한 숫자로 뭉개져 묶음 10 전체가 판정 불능이 된다.
+    unsigned long long soundsQueued() const { return soundsQueued_; }    // PlaySoundAt 이 받아 담은 수
+    unsigned long long soundsDropped() const { return soundsDropped_; }  // 표가 비어 그 자리에서 버린 수
+    unsigned long long soundsSent() const { return soundsSent_; }        // 실제로 와이어에 나간 수
+    unsigned long long musicSent() const { return musicSent_; }
+    size_t trapsArmed() const { return trapsArmed_; }      // 지금 적을 보고 있는 쏘는 덫 수
+    size_t petCount() const { return pets_.size(); }
+    size_t petsWithPath() const;                           // 길을 들고 있는 크리처 수
     void SetTickMs(uint32_t ms) { tickMs_ = ms; }
 
     // 읽었지만 아직 답을 안 만드는 오프코드의 집계.
@@ -3592,6 +3602,11 @@ private:
     // 클라는 231번 보냈는데 성사가 15에서 멎었다 — 유실이 파싱이냐 조건이냐를 가른다.
     unsigned long long code6Seen_ = 0;
     unsigned long long petsKilled_ = 0;
+    unsigned long long soundsQueued_ = 0;
+    unsigned long long soundsDropped_ = 0;
+    unsigned long long soundsSent_ = 0;
+    unsigned long long musicSent_ = 0;
+    size_t trapsArmed_ = 0;
     // 묶음 8-a — 이 판의 설정. 접속 묶음의 `af`·`b0` 가 여기서 나온다
     GameSettings gameSettings_;
     std::vector<Team> teams_;   // 묶음 8-b — 이 판의 팀들

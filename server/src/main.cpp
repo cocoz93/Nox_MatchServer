@@ -1407,11 +1407,41 @@ int main(int argc, char** argv) {
                 //   그런데 바로 위 주석이 말하는 판정이 **「요청이 0 이면 조작을 못 찾은 것」**이다.
                 //   즉 **가장 알고 싶은 0 을 안 찍고 있었다.** 줄이 아예 없으면
                 //   「0 이었나」와 「안 쟀나」를 못 가른다(2026-09-11에 이 자리에서 걸렸다).
+                // ★★ 조각 D(09-16) — **거절 갈래 넷을 갈라 찍는다.** 앞서 이 줄은
+                //   「요청 − 성공 − 멂」의 나머지를 **한 덩어리로 삼켜** 「왜 안 주워졌나」가
+                //   한도인지 무게인지 개수인지 직업인지 하나도 안 보였다(조각 C 2번).
                 std::printf("[물건] 줍기요청 %llu(성공 %llu·멂 %llu) · 쓰기 %llu(모르는갈래 %llu)"
-                            " · 입기 %llu · 벗기 %llu · 되돌림 %llu\n",
+                            " · 입기 %llu · 벗기 %llu · 되돌림 %llu"
+                            " · 거절(한도 %llu·무거움 %llu·개수 %llu·직업 %llu)"
+                            " · 즉시마심 %llu · 금 %llu\n",
                             srv.tryGets(), srv.picked(), srv.pickTooFar(),
                             srv.used(), srv.useUnknown(),
-                            srv.equipped(), srv.dequipped(), srv.dropped());
+                            srv.equipped(), srv.dequipped(), srv.dropped(),
+                            srv.pickNoCap(), srv.pickTooHeavy(), srv.pickTooMany(), srv.pickClassFail(),
+                            srv.drankOnPickup(), srv.goldPicked());
+                // ★★ 조각 D — **여기서부터 넉 줄이 「눈이 없던 자리」다.**
+                //   계수기 41개 중 24개가 한 번도 안 찍히고 있었다(조각 C). 아래가 그 24개를
+                //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.
+                //   ⚠ 소리 셋은 합치지 말 것 — 「안 불렀다」·「불렀는데 표가 비어 버렸다」·
+                //     「담겼는데 거리에서 잘렸다」가 한 숫자면 묶음 10 이 통째로 판정 불능이 된다.
+                std::printf("[소리] 담김 %llu(표없어버림 %llu) · 나감 %llu · 음악 %llu\n",
+                            srv.soundsQueued(), srv.soundsDropped(), srv.soundsSent(), srv.musicSent());
+                std::printf("[싸움] 겨눔 %llu · 부딪힘 %llu(미룸 %llu) · 무적막힘 %llu"
+                            " · 체력알림 %llu · 마법알림 %llu · 소환수죽음 %llu\n",
+                            srv.aims(), srv.tryCollides(), srv.tryCollideDeferred(),
+                            srv.invulnBlocked(), srv.unitHealthSent(), srv.enchantSent(),
+                            srv.petsKilled());
+                std::printf("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu\n",
+                            srv.petCount(), srv.petsWithPath(),
+                            srv.DebugPathCalculated() ? "예" : "아니오", srv.DebugPathStatus(),
+                            srv.trapsArmed());
+                std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
+                            " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
+                            " · 문 %llu · 오벨리스크 %llu · 자기주문 %llu · 미룬주문효과 %llu\n",
+                            srv.roundsPlayed(), srv.flagStatusSent(), srv.chats(), srv.timerAsks(),
+                            srv.fxSent(), srv.appearanceSent(), srv.appearanceUnknown(),
+                            srv.doorsOpened(), srv.obeliskMana(), srv.spellsOnSelf(),
+                            srv.spellEffectDeferred());
                 if (!srv.stoppedByOp().empty()) {
                     std::printf("[버림] 조각 %llu개 —", srv.stopped());
                     for (const auto& kv : srv.stoppedByOp()) {

@@ -15456,6 +15456,83 @@ void TestSecretWall() {
 // 한 본문이면 클라가 먹는 바이트 수도 같으므로 **우리 표의 값도 같아야 한다.**
 // E1 전수 대조(`scratchpad/p31/e1_cmp.py` · 최상위 case 145개)에서 셋이 **우리만 `-1`** 이었다.
 // `-1` 은 조각을 **통째로 버리게** 하므로 그대로 두면 그 FX 가 든 묶음이 전부 사라진다.
+// ── 조각 D(09-16) 계수기 시험 ─────────────────────────────────────────
+//
+// ★ 왜 시험이 필요한가 — **반쪽 계수기는 없는 것보다 나쁘다.**
+//   `fxSent_` 가 FX 를 보내는 열 자리 중 **둘**에만 붙어 있었다. 그래서 덫 연기가
+//   56건 나갔는데도 로그가 「FX 0」으로 읽혔고, 나는 그것을 「FX 를 안 보낸다」로
+//   읽을 뻔했다. 계측이 틀리면 **없는 결함이 보이고 있는 결함이 안 보인다.**
+//
+// ★ 소리를 셋으로 가르는 까닭 — 표(thing.bin)가 없는 이 시험 판에서는
+//   `PlaySoundAt` 이 그 자리에서 **버린다**. 셋을 합쳐 놨으면 「안 불렀다」와
+//   「불렀는데 버렸다」가 같은 0 으로 보였을 것이다.
+void TestCounterCoverage() {
+    const std::string a = "10.9.16.1:9161";
+    nox::Server srv;
+    srv.SetProjType("MercArcherArrow", 528, 800, 0x4000u, 10);
+    nox::Server::ShootingTrapIn t;
+    t.x = 1000; t.y = 1000; t.facing = 0; t.proj = "MercArcherArrow"; t.fxKind = 1; t.damage = 25;
+    // ★ **멀리 있는 덫을 하나 더 둔다.** 덫이 하나뿐이면 「켜진 덫」과 「겨눈 덫」이
+    //   늘 같은 수라 둘을 구별하는 힘이 없다(돌연변이 CTR3 이 안 잡혔다).
+    nox::Server::ShootingTrapIn far = t;
+    far.x = 9000; far.y = 9000;
+    srv.SetShootingTraps({ t, far });
+    srv.DebugEnterGame(a, 916);
+    srv.DebugSetPos(a, 1200, 1000);
+    std::vector<nox::OutPacket> w; srv.Tick(0, w);
+
+    std::vector<nox::OutPacket> out;
+    srv.DebugShootingTrapUpdate(out);
+
+    // ① 겨눈 덫 — 켠 덫은 **둘**인데 사람을 보는 것은 **하나**다
+    Check(srv.trapsArmed() == 1, "켠 덫 둘 중 하나만 사람을 보는데 겨눔이 1 이 아니다");
+
+    // ② FX — 연기(fxKind 1)를 보냈으니 0 이면 안 된다. **반쪽 계수기 되돌이 방지**
+    Check(srv.fxSent() >= 1, "덫 연기를 보냈는데 FX 셈이 0 이다 — 세는 자리가 빠졌다");
+
+    // ③ 소리 — 이 판엔 thing.bin 표가 없다. 그러면 **담기지 않고 버려져야** 한다
+    Check(srv.soundsQueued() == 0, "표가 없는데 소리가 담겼다");
+    Check(srv.soundsDropped() >= 1, "표가 없으면 버림으로 세야 하는데 0 이다");
+    Check(srv.soundsSent() == 0, "담긴 것이 없는데 소리가 나갔다");
+
+    // ④ 끄면 겨눔이 0 으로 내려간다 — 값이 **살아 움직이나**를 본다(굳은 값이면 못 쓴다)
+    srv.DebugTrapEnable(0, false);
+    srv.DebugShootingTrapUpdate(out);
+    Check(srv.trapsArmed() == 0, "덫을 껐는데 겨눔이 안 내려간다");
+
+    // ⑤ 크리처 — 없을 때 0, **길을 쥐여 주면 1**. 한쪽만 보면 굳은 0 과 구별이 안 된다
+    Check(srv.petCount() == 0 && srv.petsWithPath() == 0, "크리처가 없는데 셈이 0 이 아니다");
+    srv.DebugSpawnPet(1354, 1100, 1000, a);                 // SmallSpider
+    Check(srv.petCount() == 1, "소환했는데 크리처 수가 1 이 아니다");
+    Check(srv.petsWithPath() == 0, "길을 안 줬는데 길 든 것이 있다");
+    srv.DebugSetPetPath(0, { { 1150.0f, 1000.0f }, { 1200.0f, 1000.0f } });
+    Check(srv.petsWithPath() == 1, "길을 쥐여 줬는데 길 든 것이 0 이다");
+
+    // ⑥ **소리가 실제로 나가는 판** — 위까지는 표가 비어 있어 「나감 0」이 거저 맞았다.
+    //   표를 채운 판을 따로 돌려야 「안 셌다」와 「안 나갔다」가 갈린다(돌연변이 CTR6).
+    {
+        nox::Server s2;
+        std::vector<nox::Server::SoundDefIn> sd;
+        nox::Server::SoundDefIn d;
+        d.id = 889; d.maxDist = 600; d.merged = 0; d.samples = 1; sd.push_back(d);   // ArrowTrapShoot
+        s2.SetSoundDefs(sd);
+        s2.SetProjType("MercArcherArrow", 528, 800, 0x4000u, 10);
+        s2.SetShootingTraps({ t });
+        s2.DebugEnterGame(a, 917);
+        s2.DebugSetPos(a, 1200, 1000);
+        std::vector<nox::OutPacket> w2; s2.Tick(0, w2);
+        std::vector<nox::OutPacket> o2;
+        s2.DebugShootingTrapUpdate(o2);
+        s2.DebugFlushAudio(o2);
+        Check(s2.soundsQueued() >= 1, "표가 있는데 쏘는 소리가 안 담겼다");
+        Check(s2.soundsDropped() == 0, "표가 있는데 버렸다");
+        Check(s2.soundsSent() >= 1, "담긴 소리가 있는데 한 개도 안 나갔다");
+    }
+
+    std::printf("  11-e 계수기 — 겨눈 덫 1/2→0 · FX %llu · 길 든 크리처 1 · 소리 버림 %llu\n",
+                srv.fxSent(), srv.soundsDropped());
+}
+
 void TestMsgLenSiblings() {
     // ⭕ `cdecode.c:1561` — `case 125(0x7D) / 140(0x8C) / 141(0x8D) / 142(0x8E)` 가 한 본문 · `return 9`
     {
@@ -19536,6 +19613,7 @@ int main() {
     TestSoundDebts();
     TestMusicWire();
     TestTrapStartsEnabled();
+    TestCounterCoverage();
     TestMsgLenSiblings();
     TestMissileComplexWire();
     TestDebugXpAndSpell();

@@ -5169,6 +5169,7 @@ void Server::NetStartRaySpell(const DurSpell& d, std::vector<OutPacket>& out) {
     const uint8_t msg[7] = { static_cast<uint8_t>(Op::FX_DURATION_SPELL), typ, val, static_cast<uint8_t>(n1), static_cast<uint8_t>(n1 >> 8),
                              static_cast<uint8_t>(n2), static_cast<uint8_t>(n2 >> 8) };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+    ++fxSent_;                                             // 조각 D — FX 는 건수로 센다
 }
 
 // sub_52F220(`GAME4_2.c:11329`) GreaterHeal 만들기 — 시전자 둘레 400 에서 받을 이를 찾는다
@@ -5586,7 +5587,6 @@ int Server::CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPa
                             static_cast<uint8_t>(x2), static_cast<uint8_t>(x2 >> 8),
                             static_cast<uint8_t>(y2), static_cast<uint8_t>(y2 >> 8) };
     SendFxAllCli(arg.x, arg.y, fx, sizeof(fx), out);
-    ++fxSent_;
     return 1;
 }
 
@@ -6482,6 +6482,13 @@ bool Server::CreatureActuallyMove(Creature& k) {
     k.velX = spd * dx / len;
     k.velY = spd * dy / len;
     return false;
+}
+
+// 조각 D — 길을 들고 있는 크리처 수. 「N마리인데 길 가진 것 0」이면 길찾기가 안 도는 것이다.
+size_t Server::petsWithPath() const {
+    size_t n = 0;
+    for (const Creature& k : pets_) if (!k.path.empty()) ++n;
+    return n;
 }
 
 // ── 묶음 6-f(2) 길 내기·다시 내기 ─────────────────────────────────────
@@ -7490,6 +7497,7 @@ void Server::SendHarpoonFx(uint8_t code, uint16_t n1, uint16_t n2, std::vector<O
                              static_cast<uint8_t>(n1), static_cast<uint8_t>(n1 >> 8),
                              static_cast<uint8_t>(n2), static_cast<uint8_t>(n2 >> 8) };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+    ++fxSent_;                                             // 조각 D — FX 는 건수로 센다
 }
 
 // 지금 그 사람의 작살 화살을 찾는다 — 없으면 nullptr
@@ -8361,6 +8369,9 @@ void Server::TrapShoot(ShootingTrap& t, std::vector<OutPacket>& out) {
 }
 
 void Server::ShootingTrapUpdate(std::vector<OutPacket>& out) {
+    // ★ 조각 D — **겨눈 덫 수를 매 틱 다시 센다.** 맵에 덫이 32개인데 초당 화살이 4발이면
+    //   「28개가 고장났나」와 「28개는 봇을 못 보는 게 맞나」가 안 갈린다. 이 값이 그 자리다.
+    trapsArmed_ = 0;
     for (ShootingTrap& t : traps_) {
         if (!t.enabled) { t.wasEnabled = false; continue; }   // 깃발 0x1000000 이 없으면 아무것도 안 한다
         if (!t.wasEnabled) { t.scanCountdown = 0; t.fireCountdown = 0; }
@@ -8375,6 +8386,7 @@ void Server::ShootingTrapUpdate(std::vector<OutPacket>& out) {
             TrapShoot(t, out);
             t.fireCountdown = kServerTickRate;                // `v2[1] = 30`
         }
+        if (t.armed) ++trapsArmed_;
         if (t.scanCountdown) --t.scanCountdown;
         if (t.fireCountdown) --t.fireCountdown;
     }
@@ -8450,16 +8462,19 @@ void Server::SendChapterEnd(Session& to, uint8_t chapter, bool ended, std::vecto
 void Server::MusicPlay(uint8_t music, uint8_t volume, std::vector<OutPacket>& out) {
     const uint8_t msg[3] = { static_cast<uint8_t>(Op::MUSIC_EVENT), music, volume };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+    ++musicSent_;
 }
 
 void Server::MusicPush(std::vector<OutPacket>& out) {
     const uint8_t msg[3] = { static_cast<uint8_t>(Op::MUSIC_PUSH_EVENT), 0, 0 };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+    ++musicSent_;
 }
 
 void Server::MusicPop(std::vector<OutPacket>& out) {
     const uint8_t msg[3] = { static_cast<uint8_t>(Op::MUSIC_POP_EVENT), 0, 0 };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+    ++musicSent_;
 }
 
 // `NetMusicEvent` — `e5` 인데 **곡도 소리크기도 0** 이다(`Music(0, 0)` 과 같은 줄기)
@@ -8499,7 +8514,7 @@ void Server::PlaySoundAt(uint16_t id, float x, float y, uint8_t kind, uint32_t c
                          const std::string& owner) {
     // ⚠ **소리조각이 0 이면 아예 안 만든다** — `newAudioEventPos` 의 `Field12 <= 0` 문.
     //   thing.bin 을 안 읽었으면 표가 비어 있어 **한 개도 안 나간다**(정답지와 같다)
-    if (id == 0 || id >= soundDefs_.size() || soundDefs_[id].samples <= 0) return;
+    if (id == 0 || id >= soundDefs_.size() || soundDefs_[id].samples <= 0) { ++soundsDropped_; return; }
     AudioEvent e;
     e.sound = id;
     e.x = x;
@@ -8508,6 +8523,7 @@ void Server::PlaySoundAt(uint16_t id, float x, float y, uint8_t kind, uint32_t c
     e.code = code;
     e.owner = owner;
     audioEvents_.push_back(std::move(e));
+    ++soundsQueued_;
 }
 
 void Server::FlushAudioEvents(std::vector<OutPacket>& out) {
@@ -8547,6 +8563,7 @@ void Server::FlushAudioEvents(std::vector<OutPacket>& out) {
                 static_cast<uint8_t>(mv),
                 static_cast<uint8_t>(packed), static_cast<uint8_t>(packed >> 8) };
             Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+            ++soundsSent_;
         }
     }
     audioEvents_.clear();
@@ -9767,6 +9784,7 @@ int Server::CastPushPull(const Session& caster, int lvl, bool pull) {
 // earthquakeSend_4D9110(`GAME3_2.c:4579`) — 가운데에서 **300 안**(거리² < 90000)에 있는 사람마다
 //   `97 <세기>` 2바이트를 Kind1(틱 목록)로. 세기는 `(1 − 거리²/90000) × jiggle` 로 멀수록 약해진다
 void Server::SendJiggle(float cx, float cy, int jiggle, std::vector<OutPacket>& out) {
+    ++fxSent_;                                             // 조각 D — FX 는 건수로 센다
     for (auto& kv : sessions_) {
         Session& o = kv.second;
         if (!o.inGame) continue;
@@ -10487,7 +10505,6 @@ void Server::FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPa
         static_cast<uint8_t>(amount),
     };
     SendFxAllCli(m.posX, m.posY, fx, sizeof(fx), out);
-    ++fxSent_;
 }
 
 // changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)
@@ -10841,7 +10858,12 @@ bool Server::CanSeeBuffs(const Buffs* obj, const Buffs* targ, double targVelX, d
 }
 
 // netSendFxAllCli_523030 — 자리가 화면(반폭 640·반높이 480 + 50) 안인 사람에게 Kind1
+// ★ 조각 D 정정(09-16) — **여기가 FX 를 세는 유일한 자리다.**
+//   전에는 `++fxSent_` 가 부르는 쪽 **열 곳 중 둘**에만 붙어 있어, 덫 연기 56건이
+//   나갔는데도 로그가 「FX 0」으로 읽혔다. 반쪽 계수기는 **없는 것보다 나쁘다** —
+//   0 을 「안 보냈다」로 읽게 만든다. 세는 것은 **받는 사람 수가 아니라 보낸 건수**다.
 void Server::SendFxAllCli(float x, float y, const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
+    ++fxSent_;
     for (auto& kv : sessions_) {
         const Session& o = kv.second;
         if (!o.inGame) continue;
@@ -11048,6 +11070,7 @@ void Server::NetStopRaySpell(const DurSpell& d, const Target& who, std::vector<O
     const uint8_t msg[7] = { static_cast<uint8_t>(Op::FX_DURATION_SPELL), typ, val, static_cast<uint8_t>(n1), static_cast<uint8_t>(n1 >> 8),
                              static_cast<uint8_t>(n2), static_cast<uint8_t>(n2 >> 8) };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+    ++fxSent_;                                             // 조각 D — FX 는 건수로 센다
     // 미니맵 표시 풀기(Nox_xxx_netUnmarkMinimapSpec_417470 · 2) — 미니맵 표시 묶음
 }
 
@@ -11466,6 +11489,7 @@ void Server::ReportStamina(Session& s, std::vector<OutPacket>& out) {
 
 // `server/network.go:629~645` earthquakeSend — 자리에서 300 안의 사람마다 `97 <흔들림>`(비신뢰 · 목록 Kind1)
 void Server::EarthquakeSend(float x, float y, int jiggle, std::vector<OutPacket>& out) {
+    ++fxSent_;                                             // 조각 D — FX 는 건수로 센다
     for (auto& kv : sessions_) {
         Session& o = kv.second;
         if (!o.inGame) continue;
