@@ -987,7 +987,11 @@ int main(int argc, char** argv) {
             // 첫 접속 자리와 **부활 자리를 함께** 옮긴다 — 죽어도 그 자리로 돌아와야 판정을 이어간다.
             srv.SetSpawn(spawnAtX, spawnAtY);
             srv.SetPlayerStarts({ { static_cast<float>(spawnAtX), static_cast<float>(spawnAtY) } });
-            std::printf("[시작 자리] 손으로 지정 — (%d, %d) · 부활도 같은 자리\n", spawnAtX, spawnAtY);
+            // ★ ①.5 — **걸을 수 있는 자리인지 같이 찍는다.** 09-16 에 발판 무리 한가운데를
+            //   `CanStand` 확인 없이 골랐다가 「못 움직인다」를 불렀다. 값이 안 보이면 또 그런다.
+            const bool standOk = srv.CanStand(spawnAtX, spawnAtY, nox::kPlayerRadius);
+            std::printf("[시작 자리] 손으로 지정 — (%d, %d) · 부활도 같은 자리 · 설 수 있나 %s\n",
+                        spawnAtX, spawnAtY, standOk ? "예" : "**아니오**");
             std::fflush(stdout);
         }
         if (botX >= 0 && botY >= 0) {
