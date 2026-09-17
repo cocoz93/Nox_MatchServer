@@ -1384,6 +1384,10 @@ public:
     void SetIntroEveryTick(bool v) { introEveryTick_ = v; }
     // 클라에게서 받은 별칭 알림 수. 틱 로그에 찍어 「받고 있나」를 바로 본다.
     unsigned long long aliasHeard() const { return aliasHeard_; }
+    // 접속 악수 계수기 셋 — 무적 사슬의 어느 고리가 되풀이되는지 가른다(페이즈 B 1-a).
+    unsigned long long readyHeard() const { return readyHeard_; }
+    unsigned long long useMapSent() const { return useMapSent_; }
+    unsigned long long acceptHeard() const { return acceptHeard_; }
 
     // 서버의 현재 프레임. 진짜 서버는 30Hz 틱이 올리고,
     // 덤프를 재생할 때는 그때 나간 값을 넣어 준다(시점에 달린 값이라 재현이 안 된다).
@@ -3625,6 +3629,18 @@ private:
     bool introEveryTick_ = true;
     // 클라가 알려 준 별칭을 몇 번 받았나. 0 이면 NEW_ALIAS 를 못 받고 있는 것이다.
     unsigned long long aliasHeard_ = 0;
+
+    // ── 접속 악수 계수기 셋 (2026-09-18, 페이즈 B 1-a) ─────────────────
+    //
+    // ★ 왜 **셋을 따로** 세나 — 무적이 안 풀리는 사슬이 이렇게 걸려 있다:
+    //     USE_MAP 보냄 → 클라가 맵을 다시 읽음 → CLIENT_READY 다시 보냄
+    //       → 받을 때마다 5초 무적을 다시 검 → 사실상 영구
+    //   어느 고리가 되풀이되는지 갈라야 하는데, 한 계수기로는 **하나가 나머지를 삼킨다.**
+    //   09-07 실측 = 정품 클라가 CLIENT_READY 를 **71번**(정품 서버엔 2번) 보냈다.
+    //   09-18 opennox 클라 = 로그상 **1번**. 클라마다 다르므로 둘 다 세어 대조한다.
+    unsigned long long readyHeard_ = 0;    // CLIENT_READY 받은 수 (기대: 정품 2)
+    unsigned long long useMapSent_ = 0;    // USE_MAP 보낸 수     (기대: 접속당 1)
+    unsigned long long acceptHeard_ = 0;   // CLIENT_ACCEPT 받은 수(기대: 접속당 1)
     size_t lastUpdateObjects_ = 0;   // 마지막 갱신에 실은 사람 수
     // ★ 갱신을 만드는 세션 루프가 **실제로 몇 번 돌았나**. 「사람 1(갱신에 0)」이
     //   코드로 설명이 안 돼서 박은 계수기다 — 읽어서 두 번 못 찾았다(2026-09-08).

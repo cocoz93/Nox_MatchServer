@@ -1403,11 +1403,13 @@ int main(int argc, char** argv) {
                 std::printf("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
                             "걸음 %llu · 근접 %llu(클릭 %llu) · "
                             "주문 %llu(마나막힘 %llu) · 나는것 %zu(만든 %llu · 사라짐 %llu · 갱신에 %llu) · 피해 %llu · 별칭받음 %llu%s"
+                            " · 악수(수락 %llu·맵지정 %llu·준비 %llu)"
                             " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
                             srv.moves(), srv.melees(), srv.code6Seen(),
                             nSpell, srv.spellsNoMana(), srv.missiles(), srv.missilesMade(), srv.missilesGone(), srv.missileEntriesSent(), srv.hurts(), srv.aliasHeard(), modeInfo,
+                            srv.acceptHeard(), srv.useMapSent(), srv.readyHeard(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());

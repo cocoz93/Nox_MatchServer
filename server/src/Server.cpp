@@ -2130,6 +2130,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             // ★ 준비 — 이때부터 중요 메시지를 싣는다(정답지 `GAME3_2.c:5602` 상태 비트 0x10).
             //   클라는 이걸 되풀이해 보낸다(09-13 로그: 약 62틱마다 · 까닭 미상, 관측대기).
             case Op::CLIENT_READY:
+                ++readyHeard_;                             // 1-a — 갈래 셋 중 하나(삼키지 않게 따로)
                 if (!s.importantReady) {
                     s.importantReady = true;
                     std::printf("[중요] 프레임 %u %s 준비 — 대기 %zu 개를 싣기 시작\n",
@@ -2883,6 +2884,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             // 클라가 「받았다」고 알려오면, 서버가 게임에 필요한 것을 한꺼번에 내려준다.
             // 216바이트 묶음(메시지 여섯) → USE_MAP 순서다. 순서를 바꾸면 순번이 어긋난다.
             case Op::CLIENT_ACCEPT: {
+                ++acceptHeard_;                            // 1-a — 갈래 셋 중 하나
                 // ★★ 기본값을 **묶음을 만들기 전에** 채운다.
                 //    예전에는 Emit 뒤에 채워서 접속 묶음의 오브젝트 번호가 0 으로 나갔다.
                 //    클라는 「네 캐릭터 번호는 0」을 받으니 카메라를 붙일 대상이 없어
@@ -3003,6 +3005,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 if (standalone_ && useMapBody_.empty()) {
                     std::vector<uint8_t> um = BuildUseMap(saMapName_, saMapCrc_, s.frame);
                     Emit(s, /*reliable=*/true, /*stream=*/0, um.data(), um.size(), out);
+                    ++useMapSent_;                         // 1-a — 갈래 셋 중 하나(조립 쪽)
                     ++handled_;
                     // 스냅샷도 예약 — 발송 자리에서 조립본을 보낸다
                     s.snapshotIn = kSnapshotDelayTicks;
@@ -3013,6 +3016,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     if (msg.size() > kUseMapFrame + 3)
                         PutU32(msg.data() + kUseMapFrame, s.frame);
                     Emit(s, /*reliable=*/true, /*stream=*/0, msg.data(), msg.size(), out);
+                    ++useMapSent_;                         // 1-a — 녹음 쪽도 같이 센다(자리가 둘이다)
                     ++handled_;
                 }
                 // ★ 맵 지정 뒤에 정품이 더 보내는 것들을 그대로 이어 보낸다.
