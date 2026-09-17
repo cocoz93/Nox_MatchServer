@@ -188,6 +188,10 @@ int main(int argc, char** argv) {
     // ★ 독립 서버 P3 — .map 을 직접 읽어 벽 충돌을 켤다. 비면 종전처럼 벽 없음.
     std::string mapPath;
     bool standalone = false;
+    // 진단 — 맵 섹션 목록(이름·크기)만 찍고 **서버를 안 띄우고 끝낸다**. 157개를 배치로 돌리려고.
+    //   왜 서버가 해야 하나 — .map 은 Blowfish 로 암호화돼 있어 바깥 도구로는 못 읽고,
+    //   복호와 섹션 워커가 이미 여기 있다(MapFile::Load 가 **모든 섹션**을 담는다. 쓰는 건 5개뿐).
+    bool dumpSections = false;
     bool aoi = false;
     double creatureAoiHalf = 0.0;   // 크리처 시야 판정 반폭 — 0 꺼짐 · <0 정답지 기본(740×580) · >0 판정용 정사각형
     int creatureAwayAfter = 0;      // 진단 — 첫 사람 들어오고 N 틱 뒤 크리처를 ±300 으로 옮김 (0 끔)
@@ -286,6 +290,9 @@ int main(int argc, char** argv) {
         } else if (a == "--standalone") {
             // 독립 모드 — 녹음 없이 접속 묶음·USE_MAP·스냅샷을 조립(P5-c-2). --map 필수.
             standalone = true;
+        } else if (a == "--dump-sections") {
+            // 진단 — 맵 섹션 목록만 찍고 끝낸다(--map 필수). 서버를 안 띄운다.
+            dumpSections = true;
         } else if (a == "--start-health" && i + 1 < argc) {
             // 진단 — 들어올 때 체력을 낮춘다. 죽음·부활을 재려고.
             startHealth = std::atoi(argv[++i]);
@@ -413,11 +420,28 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    if (dumpSections && mapPath.empty()) {
+        std::printf("[멈춤] --dump-sections 에는 --map 이 있어야 한다.\n");
+        return 2;
+    }
+
     if (!mapPath.empty()) {
         nox::MapFile mf;
         if (!mf.Load(mapPath)) {
             std::printf("맵을 못 읽음: %s (%s)\n", mapPath.c_str(), mf.Error().c_str());
             return 1;
+        }
+        // ★ 진단 --dump-sections — 섹션 목록만 찍고 **여기서 끝낸다**(서버를 안 띄운다).
+        //   한 줄에 하나, 탭으로 갈라 찍는다 — 157개를 돌려 표로 합치려고.
+        //     SEC <맵이름> <섹션이름> <크기>
+        if (dumpSections) {
+            std::string base = mapPath;
+            const size_t sl = base.find_last_of("\\/");
+            if (sl != std::string::npos) base = base.substr(sl + 1);
+            for (const auto& s : mf.Sections())
+                std::printf("SEC\t%s\t%s\t%zu\n", base.c_str(), s.name.c_str(), s.size);
+            std::fflush(stdout);
+            return 0;
         }
         const auto cells = mf.ReadWalls();
         // ★ 2026-09-13 묶음 2-b — 벽 **모양**(방향·재질)까지 넘긴다. 칸 좌표만 넘기던 SetWalls 는 시험용으로 남는다.
