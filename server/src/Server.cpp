@@ -11230,7 +11230,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
             // ①-f 묶음 9-b 화살 — `MercArcherArrow` 도 `UPDATE = ProjectileUpdate` 다(40틱).
             //   정답지는 때가 되면 대상 없이 닿음 함수를 부르고, 그쪽은 맵에 피해를 주고 사라진다.
             //   ⚠ 맵 피해(`damageToMap_534BC0`)는 아직 안 옷겼다 — 지금은 그냥 지운다
-            if (frame - m.createdFrame > 40u) { DestroyMissile(i, out); continue; }
+            if (frame - m.createdFrame > 40u) { ++arrowGoneAge_; DestroyMissile(i, out); continue; }
         } else if (m.collideKind == 3) {
             // ①-d 묶음 6-g(3b) — `ImpShot` 도 `UPDATE = ProjectileUpdate` 다(불덩이와 같은 40틱).
             //   때가 되면 **대상 없이** 제 닿음 함수를 부르는데, 그쪽은 맵에 피해를 주고 사라진다.
@@ -11425,6 +11425,11 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     continue;
                 }
                 if (m.collideKind == 5) {                    // 9-b 화살 — 벽에 닿으면 사라진다
+                    // ★ 2026-09-18 ⑫ — **왜 사라지는지 갈래를 센다.**
+                    //   덫 화살이 「만든 704 · 사라짐 704 · 현재 늘 0」이라 화면에 한 번도 안 그려진다.
+                    //   수명은 40틱인데 그 전에 사라지니, 벽인지 다른 것인지 갈라야 한다.
+                    ++arrowGoneWall_;
+                    if (frame - m.createdFrame <= 1u) ++arrowGoneWallAtBirth_;   // 태어난 자리가 벽 속인가
                     DestroyMissile(i, out);
                     erased = true;
                     continue;

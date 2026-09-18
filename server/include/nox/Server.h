@@ -1411,6 +1411,9 @@ public:
     unsigned long long castRejCant() const { return castRejCant_; }
     unsigned long long castAccepted() const { return castAccepted_; }
     unsigned long long priMsgSent() const { return priMsgSent_; }
+    unsigned long long arrowGoneWall() const { return arrowGoneWall_; }
+    unsigned long long arrowGoneWallAtBirth() const { return arrowGoneWallAtBirth_; }
+    unsigned long long arrowGoneAge() const { return arrowGoneAge_; }
     unsigned long long trapFailRange() const { return trapFailRange_; }
     unsigned long long trapFailFacing() const { return trapFailFacing_; }
     unsigned long long trapFailWall() const { return trapFailWall_; }
@@ -3701,6 +3704,10 @@ private:
     std::set<std::string> priMsgShown_;
     unsigned long long priMsgSent_ = 0;
     std::set<uint32_t> informShown_;   // 알림(code,val) 쌍 — 처음 한 번만 찍으려고
+    // ★ ⑫ 덫 화살이 왜 사라지나 — 화면에 한 번도 안 그려지는 까닭을 가른다
+    unsigned long long arrowGoneWall_ = 0;        // 벽에 닿아서
+    unsigned long long arrowGoneWallAtBirth_ = 0; // 그중 태어나자마자(1틱 이내)
+    unsigned long long arrowGoneAge_ = 0;         // 수명 40틱을 채워서
     // ★ ⑫ 덫이 겨누기에 실패한 **까닭별** 계수기. 하나로 세면 어느 문에서 막히는지 못 가른다.
     mutable unsigned long long trapFailRange_ = 0;   // ±350 밖
     mutable unsigned long long trapFailFacing_ = 0;  // 덫이 보는 쪽이 아님
