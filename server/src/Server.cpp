@@ -4631,10 +4631,12 @@ void Server::SendPriMsg(Session& s, const char* key, std::vector<OutPacket>& out
 // spellByBookInsert_4FE340(`GAME4.c:3090~3265`)
 bool Server::SpellByBookInsert(Session& s, const uint32_t spells[5], int count, uint32_t gap, bool targetSelf,
                                std::vector<OutPacket>& out) {
-    if (s.respawnAtFrame != 0) return false;               // +16 & 0x8022 — 죽음(0x8000)
-    for (int i = 0; i < 5; ++i) if (spells[i] >= 137) return false;
-    for (int i = 0; i < 5; ++i) if (spells[i] && s.spellLvl[spells[i]] == 0) return false;   // 안 배움
-    if (s.castFrame != 0) return false;                    // 시전 중
+    // ★ 2026-09-18 ⑰ — **거절 갈래를 따로 센다.** 「주문 0」만으로는 어느 문에서
+    //   막히는지 못 가른다(무인 시전이 여기서 세 번 튕겼다: 직업 → ? → ?).
+    if (s.respawnAtFrame != 0) { ++castRejDead_; return false; }   // +16 & 0x8022 — 죽음(0x8000)
+    for (int i = 0; i < 5; ++i) if (spells[i] >= 137) { ++castRejRange_; return false; }
+    for (int i = 0; i < 5; ++i) if (spells[i] && s.spellLvl[spells[i]] == 0) { ++castRejUnknown_; return false; }   // 안 배움
+    if (s.castFrame != 0) { ++castRejBusy_; return false; }         // 시전 중
     bool glyph = false;
     for (int i = 0; i < count; ++i) if (spells[i] == 34) glyph = true;
     if (glyph) {
@@ -4642,11 +4644,16 @@ bool Server::SpellByBookInsert(Session& s, const uint32_t spells[5], int count, 
         return false;
     }
     int err = SpellCheckClass(s, static_cast<uint8_t>(spells[0]));
-    if (!err) err = CheckPlrCantCastSpell(s, static_cast<uint8_t>(spells[0]), false);
+    if (err) ++castRejClass_;
+    if (!err) {
+        err = CheckPlrCantCastSpell(s, static_cast<uint8_t>(spells[0]), false);
+        if (err) ++castRejCant_;
+    }
     if (err) {
         InformSpell(s, 0, static_cast<uint32_t>(err), out);   // + 소리 231(10)
         return false;
     }
+    ++castAccepted_;
     // 받은 조작은 다음 틱(frame_ + 1)의 것이다 — 정답지는 같은 틱 안에서 받기 → 유닛 → 시전 순으로 돈다
     const uint32_t now = frame_ + 1;
     PlayerSetState(s, 2, now);

@@ -1403,6 +1403,13 @@ public:
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
+    unsigned long long castRejDead() const { return castRejDead_; }
+    unsigned long long castRejRange() const { return castRejRange_; }
+    unsigned long long castRejUnknown() const { return castRejUnknown_; }
+    unsigned long long castRejBusy() const { return castRejBusy_; }
+    unsigned long long castRejClass() const { return castRejClass_; }
+    unsigned long long castRejCant() const { return castRejCant_; }
+    unsigned long long castAccepted() const { return castAccepted_; }
     unsigned long long trapFailRange() const { return trapFailRange_; }
     unsigned long long trapFailFacing() const { return trapFailFacing_; }
     unsigned long long trapFailWall() const { return trapFailWall_; }
@@ -3681,6 +3688,14 @@ private:
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.
     bool noSpawnInvuln_ = false;
     unsigned long long spawnInvulnApplied_ = 0;  // 부활 무적을 실제로 건 횟수(스위치 판정용)
+    // ★ ⑰ 주문 거절 갈래 — 「주문 0」만으로는 어느 문에서 막히는지 못 가른다
+    unsigned long long castRejDead_ = 0;     // 죽어 있음
+    unsigned long long castRejRange_ = 0;    // 주문 번호가 범위 밖
+    unsigned long long castRejUnknown_ = 0;  // 안 배운 주문
+    unsigned long long castRejBusy_ = 0;     // 이미 시전 중
+    unsigned long long castRejClass_ = 0;    // 직업이 못 씀
+    unsigned long long castRejCant_ = 0;     // CheckPlrCantCastSpell
+    unsigned long long castAccepted_ = 0;    // 대기열에 들어감
     // ★ ⑫ 덫이 겨누기에 실패한 **까닭별** 계수기. 하나로 세면 어느 문에서 막히는지 못 가른다.
     mutable unsigned long long trapFailRange_ = 0;   // ±350 밖
     mutable unsigned long long trapFailFacing_ = 0;  // 덫이 보는 쪽이 아님
