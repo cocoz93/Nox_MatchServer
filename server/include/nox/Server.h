@@ -1410,6 +1410,7 @@ public:
     unsigned long long castRejClass() const { return castRejClass_; }
     unsigned long long castRejCant() const { return castRejCant_; }
     unsigned long long castAccepted() const { return castAccepted_; }
+    unsigned long long priMsgSent() const { return priMsgSent_; }
     unsigned long long trapFailRange() const { return trapFailRange_; }
     unsigned long long trapFailFacing() const { return trapFailFacing_; }
     unsigned long long trapFailWall() const { return trapFailWall_; }
@@ -3696,6 +3697,10 @@ private:
     unsigned long long castRejClass_ = 0;    // 직업이 못 씀
     unsigned long long castRejCant_ = 0;     // CheckPlrCantCastSpell
     unsigned long long castAccepted_ = 0;    // 대기열에 들어감
+    // ★ 화면에 뜨는 글씨 — 사진에만 남아 놓치기 쉬워 로그에도 찍는다(키마다 처음 한 번)
+    std::set<std::string> priMsgShown_;
+    unsigned long long priMsgSent_ = 0;
+    std::set<uint32_t> informShown_;   // 알림(code,val) 쌍 — 처음 한 번만 찍으려고
     // ★ ⑫ 덫이 겨누기에 실패한 **까닭별** 계수기. 하나로 세면 어느 문에서 막히는지 못 가른다.
     mutable unsigned long long trapFailRange_ = 0;   // ±350 밖
     mutable unsigned long long trapFailFacing_ = 0;  // 덫이 보는 쪽이 아님

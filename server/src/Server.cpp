@@ -4603,6 +4603,13 @@ void Server::ReportHealthDeltaTo(Session& viewer, uint16_t netCode, uint16_t hp,
 
 // netInformTextMsg(server/network.go:206) — `a9 <갈래> <u32>` Kind1(틱 목록) · 갈래 0 = 주문 실패 코드 · 1 = 시전 성공 주문 번호
 void Server::InformSpell(Session& s, uint8_t code, uint32_t val, std::vector<OutPacket>& out) {
+    // ★ 2026-09-18 — **무엇을 알렸는지 찍는다.** 클라는 이 값을 글씨로 바꿔 화면에 띄우는데
+    //   (`You cannot see that spot.` 따위), 서버 로그만 보면 왜 그 글씨가 떴는지 못 가른다.
+    //   같은 (code,val) 쌍은 처음 한 번만 찍는다.
+    if (informShown_.insert((static_cast<uint32_t>(code) << 24) | (val & 0xFFFFFF)).second) {
+        std::printf("[알림] %s code=%u val=%u\n", s.addr.c_str(), code, val);
+        std::fflush(stdout);
+    }
     const uint8_t msg[6] = { static_cast<uint8_t>(Op::INFORM), code, static_cast<uint8_t>(val),
                              static_cast<uint8_t>(val >> 8), static_cast<uint8_t>(val >> 16), static_cast<uint8_t>(val >> 24) };
     Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
@@ -4620,6 +4627,14 @@ void Server::ReportSpellStat(Session& s, uint32_t spell, uint8_t stat, std::vect
 void Server::SendPriMsg(Session& s, const char* key, std::vector<OutPacket>& out) {
     const size_t n = std::strlen(key);
     if (n == 0 || n > 0x30) return;
+    // ★ 2026-09-18 — **화면에 뜨는 글씨를 로그에도 남긴다.**
+    //   클라 화면 글씨(`You cannot see that spot.` 따위)는 **로그보다 직접적인 단서**인데
+    //   사진에만 있어 놓치기 쉽다. 같은 키가 쏟아지면 로그가 묻히므로 **키마다 처음 한 번만** 찍는다.
+    if (priMsgShown_.insert(key).second) {
+        std::printf("[화면글씨] %s → %s\n", s.addr.c_str(), key);
+        std::fflush(stdout);
+    }
+    ++priMsgSent_;
     std::vector<uint8_t> msg;
     msg.push_back(static_cast<uint8_t>(Op::INFORM));
     msg.push_back(15);
