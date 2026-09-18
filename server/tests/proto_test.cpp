@@ -15848,16 +15848,29 @@ void TestMsgLenSiblings() {
 // ⭕ 정답지 — 클래스 비트로 셋으로 가른다(`GAME4_1.c:4539~4548`).
 //   화살은 MONSTER(2)도 PLAYER(4)도 아니라 **`netSendPhantomPlrMb_5187E0`**(`GAME4_1.c:4178`)로 가고,
 //   거기서 `v10[9] = 16 * 방향니블` 이라 **하위 4비트가 0** 이다(크리처의 `kCreatureAnimIdle` 8 이 아니다).
-// ⭕ 칸 바이트(`v10[10] = dir>>3`)는 **`클래스&1 && 깃발&0x30`** 일 때만 붙는데,
-//   thing.bin 실측으로 화살·불덩이 셋 다 깃발이 `AIRBORNE`(0x4000)뿐이라 **0x30 이 없다** → 안 붙는다.
+// ★★★ **정정(2026-09-18 ⑬) — 위 조건을 「깃발」로 읽은 것이 틀렸다.**
+//   여기 적혀 있던 말 — 「칸 바이트는 `클래스&1 && **깃발**&0x30` 일 때만 붙는데
+//   화살·불덩이 셋 다 깃발이 `AIRBORNE`(0x4000)뿐이라 0x30 이 없다 → 안 붙는다」.
+//   ⇒ **오프셋을 잘못 짚었다.** 정답지는 `*(uint8_t*)(a2 + 12) & 0x30` 이고
+//     `+12` 는 **서브클래스**다(`opennox/src/server/object.go:575` — `ObjSubClass // 3, 12`).
+//     깃발은 `+16` 이다(우리 missile 구조 주석도 `flags // +16`).
+//   ⭕ 서브클래스로 다시 보면 `0x30` = 무기 서브클래스 **`ARROW`(0x10) | `BOLT`(0x20)**
+//     (`libs/object/subclass_weapon.go` 이름 순서). `--dump-thing` 실측 —
+//       `MercArcherArrow` 서브클래스 = **`ARROW`**          ⇒ 붙는다 (덧붙이 **2**바이트)
+//       `Fireball`        서브클래스 = `MISSILE_COUNTERSPELL` ⇒ 안 붙는다 (덧붙이 **1**바이트)
+//   ⚠ 이 시험이 그 틀린 근거로 **옳은 수정을 한 번 막았다.** 그래서 아래를
+//     「화살은 2바이트 · 화살 아닌 복합 투사체는 1바이트」로 **두 방향 다** 튼다.
 void TestMissileComplexWire() {
     const std::string a = "10.9.11.1:9111";
 
     // ⚠ 덫은 **보는 쪽에 있는 적**만 겨눈다. 각을 바꾸면 사람 자리도 같이 옮겨야 한다
     //   (첫 시도에서 각 64(남쪽) 덫 앞에 사람을 동쪽에 두어 「화살이 안 나갔다」로 걸렸다).
+    // ★ `isArrow` — thing.bin 을 읽는 쪽(main)이 서브클래스로 골라 넣는 것을 시험에선 손으로 넣는다.
+    //   화살이면 갱신에 **프레임 바이트**가 하나 더 붙는다(Server.h `AddArrowType`).
     auto fire = [&](nox::Server& srv, const char* name, uint16_t wire, uint8_t facing = 0,
-                    int px = 1200, int py = 1000) {
+                    int px = 1200, int py = 1000, bool isArrow = true) {
         srv.SetProjType(name, wire, 800, 0x4000u, 10);
+        if (isArrow) srv.AddArrowType(wire);
         nox::Server::ShootingTrapIn t;
         t.x = 1000; t.y = 1000; t.facing = facing; t.proj = name; t.fxKind = 0; t.damage = 25;
         srv.SetShootingTraps({ t });
@@ -15875,7 +15888,8 @@ void TestMissileComplexWire() {
     //   그러면 「관문이 걸렀다」와 「틱 중에 화살이 죽었다」를 **구별하지 못한다.**
     //   돌연변이 MC9(관문 통째로 없앰)·MC10·MC12 가 **셋 다 안 잡혀서** 드러났다 —
     //   관문을 없애도 시험이 통과했다는 뜻이고, 그건 시험이 다른 이유로 통과했다는 뜻이다.
-    auto findEntry = [&](const std::vector<nox::OutPacket>& out, uint16_t wire, uint8_t* b0) {
+    auto findEntry = [&](const std::vector<nox::OutPacket>& out, uint16_t wire, uint8_t* b0,
+                         uint8_t* b1 = nullptr) {
         for (const auto& pk : out) {
             if (pk.to != a) continue;
             auto body = Body(pk);
@@ -15884,6 +15898,7 @@ void TestMissileComplexWire() {
             for (const auto& e : m.objects) {
                 if (e.type != wire) continue;
                 if (b0) *b0 = e.extraBytes[0];
+                if (b1) *b1 = e.extraBytes[1];
                 return static_cast<int>(e.extra);
             }
         }
@@ -15919,20 +15934,21 @@ void TestMissileComplexWire() {
         srv.Tick(34, out);
         return out;
     };
-    auto entryExtra = [&](nox::Server& srv, uint16_t wire, uint8_t* b0) {
+    auto entryExtra = [&](nox::Server& srv, uint16_t wire, uint8_t* b0, uint8_t* b1 = nullptr) {
         const std::vector<nox::OutPacket> out = tick1(srv);
-        return findEntry(out, wire, b0);
+        return findEntry(out, wire, b0, b1);
     };
 
-    // ① **복합(MercArcherArrow 528) — 덧붙이 1바이트 · 하위 4비트 0**
+    // ① **복합(MercArcherArrow 528) — 덧붙이 2바이트 · 하위 4비트 0 · 프레임 = 각>>3**
     {
         nox::Server srv;
         fire(srv, "MercArcherArrow", 528);
-        uint8_t b0 = 0xFF;
-        const int extra = entryExtra(srv, 528, &b0);
-        Check(extra == 1, "복합 화살인데 덧붙이가 1바이트가 아니다");
+        uint8_t b0 = 0xFF, b1 = 0xFF;
+        const int extra = entryExtra(srv, 528, &b0, &b1);
+        Check(extra == 2, "화살인데 덧붙이가 2바이트가 아니다(프레임 바이트가 빠졌다)");
         Check((b0 & 0x0F) == 0, "복합 화살의 하위 4비트가 0 이 아니다(크리처 애니 8 을 넣으면 안 된다)");
-        Check((b0 & 0x80) == 0, "칸 바이트 신호(0x80)가 켜졌다 — 깃발 0x30 이 없으니 꺼져야 한다");
+        Check((b0 & 0x80) != 0, "칸 바이트 신호(0x80)가 꺼졌다 — 서브클래스가 ARROW 면 켜져야 한다");
+        Check(b1 == 0, "각 0 인데 프레임이 0 이 아니다(0 >> 3 = 0)");
         // ★ 방향 니블 — 덫이 각 0(동쪽)을 보므로 **4** 여야 한다.
         //   정답지 `netSendPhantomPlrMb`(`GAME4_1.c:4203~4209`) —
         //     `xferIndexedDirection(0)` → (dx,dy)=(1,0) · `t = dx + 3*dy + 4 = 5` · `t>3` 이라 `t-1 = 4`
@@ -15940,15 +15956,29 @@ void TestMissileComplexWire() {
         Check(((b0 >> 4) & 7) == 4, "각 0(동쪽) 인데 방향 니블이 4 가 아니다");
     }
 
-    // ④ **방향이 바뀌면 니블도 바뀐다** — 못 박혀 있지 않은지 본다
+    // ④ **방향이 바뀌면 니블도 프레임도 바뀐다** — 못 박혀 있지 않은지 본다
     {
         nox::Server srv;
         fire(srv, "MercArcherArrow", 528, 64, 1000, 1200);   // 각 64 = (0,1) 남쪽 — 사람도 남쪽으로
-        uint8_t b0 = 0xFF;
-        const int extra = entryExtra(srv, 528, &b0);
-        Check(extra == 1, "각 64 인데 덧붙이가 1바이트가 아니다");
+        uint8_t b0 = 0xFF, b1 = 0xFF;
+        const int extra = entryExtra(srv, 528, &b0, &b1);
+        Check(extra == 2, "각 64 인데 덧붙이가 2바이트가 아니다");
         // `t = 0 + 3*1 + 4 = 7` · `t>3` 이라 `7-1 = 6`
         Check(((b0 >> 4) & 7) == 6, "각 64(남쪽) 인데 방향 니블이 6 이 아니다");
+        // ★ 프레임은 니블(8칸)보다 **잘다** — 32칸이라 각이 달라지면 여기가 먼저 움직인다
+        Check(b1 == 8, "각 64 인데 프레임이 8 이 아니다(64 >> 3 = 8)");
+    }
+
+    // ④-b **화살이 아닌 복합 투사체는 1바이트로 남는다** — 반대 방향 대조군
+    //   `Fireball`(695) 서브클래스는 `MISSILE_COUNTERSPELL`(0x01) 이라 `& 0x30` 이 거짓이다.
+    //   이게 없으면 「전부 2바이트로 만들기」라는 오답도 위 둘을 통과한다.
+    {
+        nox::Server srv;
+        fire(srv, "Fireball", 695, 0, 1200, 1000, /*isArrow=*/false);
+        uint8_t b0 = 0xFF, b1 = 0xFF;
+        const int extra = entryExtra(srv, 695, &b0, &b1);
+        Check(extra == 1, "화살이 아닌 복합 투사체인데 덧붙이가 1바이트가 아니다");
+        Check((b0 & 0x80) == 0, "화살이 아닌데 칸 바이트 신호(0x80)가 켜졌다");
     }
 
     // ② **단순(Magic 955) — 덧붙이 0바이트**
@@ -16015,10 +16045,12 @@ void TestMissileComplexWire() {
         const std::vector<nox::OutPacket> o7 = tick1(srv);
         Check(srv.MissileCount() == 1, "화살이 사라져 관문을 시험하지 못했다");
         Check(rawHasAbs(o7, nc7, 528, 5900, 5900), "관문 안(5900) 화살이 갱신 바이트에서 빠졌다");
-        Check(findEntry(o7, 528, &b0) == 1, "관문 안(5900) 화살이 갱신에서 빠졌다");
+        // ★ 여기서 보는 것은 **실렸나 아닌가**다 — 덧붙이 길이는 ①·④ 가 따로 본다.
+        //   길이를 못 박아 두었다가(`== 1`) ⑬ 에서 2바이트가 되자 이 시험이 같이 걸렸다.
+        Check(findEntry(o7, 528, &b0) != -1, "관문 안(5900) 화살이 갱신에서 빠졌다");
     }
 
-    std::printf("  11-b 날아가는 것 — 복합이면 덧붙이 1바이트(하위 4비트 0) · 단순이면 0바이트\n");
+    std::printf("  11-b 날아가는 것 — 화살이면 덧붙이 2바이트(방향+프레임) · 그 밖 복합이면 1 · 단순이면 0\n");
 }
 
 // 묶음 11-d 전수조사 — **덫은 켜진 채로 시작한다. 이건 결함이 아니다** (2026-09-16)

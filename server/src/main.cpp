@@ -199,6 +199,7 @@ int main(int argc, char** argv) {
     //   왜 서버가 해야 하나 — .map 은 Blowfish 로 암호화돼 있어 바깥 도구로는 못 읽고,
     //   복호와 섹션 워커가 이미 여기 있다(MapFile::Load 가 **모든 섹션**을 담는다. 쓰는 건 5개뿐).
     bool dumpSections = false;
+    std::string dumpThing;      // 진단 --dump-thing — 종류 하나의 클래스·서브클래스를 찍는다
     bool aoi = false;
     double creatureAoiHalf = 0.0;   // 크리처 시야 판정 반폭 — 0 꺼짐 · <0 정답지 기본(740×580) · >0 판정용 정사각형
     int creatureAwayAfter = 0;      // 진단 — 첫 사람 들어오고 N 틱 뒤 크리처를 ±300 으로 옮김 (0 끔)
@@ -308,6 +309,13 @@ int main(int argc, char** argv) {
         } else if (a == "--dump-sections") {
             // 진단 — 맵 섹션 목록만 찍고 끝낸다(--map 필수). 서버를 안 띄운다.
             dumpSections = true;
+        } else if (a == "--dump-thing" && i + 1 < argc) {
+            // 진단 — 종류 하나의 **클래스·서브클래스·플래그 원문**을 찍고 끝낸다.
+            //   ⚠ 이름 대신 `#<와이어번호>` 도 받는다(`--dump-thing #528`).
+            //   만든 까닭 — 「화살이 정답지의 어느 갈래를 타나」를 따질 때마다
+            //   thing.bin 을 눈으로 뒤지고 있었다. 갈래는 **클래스 비트가 정한다**
+            //   (`GAME4_1.c:4539~4550` — 0x400000 / 0x200000 → 2·4·그밖 / 0x100000).
+            dumpThing = argv[++i];
         } else if (a == "--start-health" && i + 1 < argc) {
             // 진단 — 들어올 때 체력을 낮춘다. 죽음·부활을 재려고.
             startHealth = std::atoi(argv[++i]);
@@ -440,6 +448,43 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // ★ 진단 --dump-thing — 맵 없이 돌아야 하므로 맵 처리보다 **앞**에 둔다.
+    //   찍는 것 = 클래스 원문·비트 · 서브클래스 원문 · 플래그 원문 · 복합 여부 · 그리기 함수.
+    //   갈래를 정하는 것은 클래스 비트다(`GAME4_1.c:4539~4550`) —
+    //     0x400000 → netSpriteUpdate · 0x200000 → (2 몬스터 / 4 사람 / 그밖 팬텀) · 0x100000 → 단순
+    if (!dumpThing.empty()) {
+        nox::ThingDb tdb;
+        if (!tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            std::printf("[멈춤] thing.bin 을 못 읽었다.\n");
+            return 1;
+        }
+        uint16_t wire = 0;
+        if (dumpThing[0] == '#') wire = static_cast<uint16_t>(std::atoi(dumpThing.c_str() + 1));
+        else                     wire = tdb.WireByName(dumpThing);
+        const nox::ThingInfo* ti = wire ? tdb.ByWire(wire) : nullptr;
+        if (!ti) {
+            std::printf("[멈춤] 그런 종류가 없다: %s\n", dumpThing.c_str());
+            return 1;
+        }
+        const uint32_t cl = nox::ParseObjectClass(ti->classRaw);
+        std::printf("종류  %s  (와이어 %u)\n", ti->name.c_str(), wire);
+        std::printf("  클래스     %s\n             = 0x%08X\n", ti->classRaw.c_str(), cl);
+        std::printf("  서브클래스 %s\n", ti->subclassRaw.empty() ? "(없음)" : ti->subclassRaw.c_str());
+        std::printf("  플래그     %s\n", ti->flagsRaw.empty() ? "(없음)" : ti->flagsRaw.c_str());
+        std::printf("  그리기     %s\n", ti->drawFn.empty() ? "(없음)" : ti->drawFn.c_str());
+        std::printf("  복합표     %s\n", nox::ThingIsComplex(wire) ? "복합(덧붙이 붙음)" : "단순(덧붙이 없음)");
+        // 갈래를 말로 적어 준다 — 매번 비트를 손으로 풀지 않으려고
+        const char* lane = (cl & 0x400000) ? "netSpriteUpdate (정적·문·레버)"
+                         : (cl & 0x200000) ? ((cl & 2) ? "netSendComplexObject (몬스터)"
+                                           : (cl & 4) ? "netPlayerObjSend (사람)"
+                                                      : "netSendPhantomPlrMb (그 밖 — 화살이 여기)")
+                         : (cl & 0x100000) ? "netSendSimpleObj (단순)"
+                                           : "(갱신 안 보냄)";
+        std::printf("  정답지 갈래 %s\n", lane);
+        std::fflush(stdout);
+        return 0;
+    }
+
     if (!mapPath.empty()) {
         nox::MapFile mf;
         if (!mf.Load(mapPath)) {
@@ -545,6 +590,26 @@ int main(int argc, char** argv) {
                             //   비어 있거나 모르는 이름이면 클라가 **아무것도 안 그린다**
                             (t2 && !t2->drawFn.empty()) ? t2->drawFn.c_str() : "(없음)",
                             t2 ? "" : " ⚠ 못 찾음");
+            }
+            // ★ 2026-09-18 ⑬ — **화살·쇠뇌살을 전수로 골라 서버에 알린다.**
+            //   이 종류만 갱신에 스프라이트 프레임이 한 바이트 더 붙는다(Server.h `AddArrowType`).
+            //   조건은 정답지 그대로 — `MISSILE`(클래스 0x1) **그리고** `ARROW|BOLT`(서브 0x30).
+            //   ⚠ 이름으로 못 박지 않는다 — 맵마다 다른 화살이 나올 수 있고,
+            //     「이름 여섯 개」로 박아 두었다가 빠뜨린 전례가 이 리포에 이미 있다.
+            {
+                size_t nArrow = 0;
+                std::string names;
+                for (uint16_t w = 1; w < nox::kThingCount; ++w) {
+                    const nox::ThingInfo* t3 = tdb.ByWire(w);
+                    if (!t3) continue;
+                    if (!(nox::ParseObjectClass(t3->classRaw) & 0x1)) continue;          // MISSILE 아님
+                    if (!(nox::WeaponClassBitsOf(t3->subclassRaw) & 0x30)) continue;     // ARROW|BOLT 아님
+                    srv.AddArrowType(w);
+                    ++nArrow;
+                    if (nArrow <= 8) { if (!names.empty()) names += " "; names += t3->name; }
+                }
+                std::printf("[화살 종류] %zu가지 (프레임 바이트가 붙는다)%s%s\n", nArrow,
+                            names.empty() ? "" : " — ", names.c_str());
             }
             std::vector<nox::Server::WorldStatic> st;
             std::vector<nox::Server::WorldProp> props;

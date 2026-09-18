@@ -2386,6 +2386,15 @@ public:
         auto it = namedTypes_.find(name);
         return it == namedTypes_.end() ? 0 : it->second;
     }
+    // ★ 2026-09-18 ⑬ — **화살·쇠뇌살 종류.** 이 종류만 갱신에 「스프라이트 프레임」이 붙는다.
+    //   정답지 `netSendPhantomPlrMb_5187E0`(GAME4_1.c:4198~4203) —
+    //     `Class & 1`(MISSILE) **그리고** `SubClass & 0x30` 이면 `Direction1 >> 3` 을 싣고,
+    //     아니면 `-1`. 그 `0x30` 은 무기 서브클래스의 **`ARROW`(0x10) | `BOLT`(0x20)** 다
+    //     (`libs/object/subclass_weapon.go` 이름 순서 · 우리 `WeaponClassBitsOf` 와 같은 표).
+    //   ⭕ 실측(`--dump-thing`) — `MercArcherArrow` = `ARROW` ⇒ 참 · `Fireball` = `MISSILE_COUNTERSPELL` ⇒ 거짓
+    //   thing.bin 을 읽는 쪽(main)이 채운다. 시험은 손으로 넣는다.
+    void AddArrowType(uint16_t wire) { if (wire) arrowTypes_.insert(wire); }
+    bool IsArrowType(uint16_t wire) const { return arrowTypes_.count(wire) != 0; }
     size_t PlacedCount() const { return placed_.size(); }
     uint16_t DebugPlacedNetCode(size_t i) const { return i < placed_.size() ? placed_[i].netCode : 0; }
     bool DebugPlacedXY(size_t i, float& x, float& y) const {
@@ -3585,6 +3594,7 @@ private:
     std::vector<MissileObj> missiles_;             // 묶음 4-a2 날아가는 오브젝트
     std::vector<PlacedObj> placed_;                // 묶음 4-c3 주문이 놓는 오브젝트(불꽃·독구름)
     std::map<std::string, uint16_t> namedTypes_;   // 이름 → 와이어 종류(thing.bin 에서 받는다)
+    std::set<uint16_t> arrowTypes_;                // 화살·쇠뇌살 — 이 종류만 갱신에 프레임이 붙는다(AddArrowType 주석)
     std::list<DurSpell> durSpells_;                // 묶음 4-a3 지속 주문 목록 — 머리에 넣는다(Add)
     Gamedata gamedata_;                            // 묶음 4-a4 gamedata.bin
     bool hasGamedata_ = false;
