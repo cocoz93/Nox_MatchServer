@@ -893,6 +893,13 @@ int main(int argc, char** argv) {
                         tdb.PlayerAnim(25).frames, tdb.PlayerAnim(25).hold);
             if (!props.empty()) {
                 std::printf("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());
+                // ★ 2026-09-18 ② — **자리를 찍는다.** 무인 걷기가 「문 0」으로 끝났을 때
+                //   「문이 안 열리는 것」과 「문 근처에 못 간 것」을 못 가른다.
+                //   이 좌표를 `--spawn-at` 에 넣으면 문 앞에서 시작할 수 있다.
+                std::printf("[문 자리] 앞 6개 —");
+                for (size_t k = 0; k < props.size() && k < 6; ++k)
+                    std::printf(" (%d,%d)", static_cast<int>(props[k].x), static_cast<int>(props[k].y));
+                std::printf("\n");
                 srv.SetWorldProps(std::move(props));
             }
 
