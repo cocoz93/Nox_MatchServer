@@ -3742,8 +3742,8 @@ private:
     //     즉 정품도 몇 번은 재전송한다. 18~25 가 과한 것이지 2 가 정답이라는 근거는 없다.
     //   ⚠ 「켬」은 `ackAnyStream_` 과 **짝으로** 켜야 한다. 되받기를 스트림 1 에만 실으면
     //     클라가 그 패킷의 seq 를 안 읽어(09-18 실측: 받은 seq 분포에 4 가 0 건) 효과가 없다.
-    bool ackRecvSeq_ = false;
-    bool ackAnyStream_ = false;  // 되받기를 스트림 가리지 않고 싣는가(위 주석 — 기본 끔)
+    bool ackRecvSeq_ = true;
+    bool ackAnyStream_ = true;   // 되받기를 **스트림 0 비신뢰**에 싣는가(기본 켬 · Emit 주석의 정품 근거)
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.

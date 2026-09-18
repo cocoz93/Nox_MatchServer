@@ -165,8 +165,8 @@ int main(int argc, char** argv) {
     bool noNewGear = false;
     // 첫 세계 스냅샷을 아예 안 보낸다. HUD 실종이 이 배선 탓인지 가르는 시험용.
     bool noSnapshot = false;
-    bool ackSeq = false;       // B-1b — 신뢰 순번 되받기(**기본 끔** — 켜면 정품 바이트와 어긋난다)
-    bool ackAnyStream = false; // B-1b — 되받기를 스트림 가리지 않고(**기본 끔**)
+    bool ackSeq = true;        // B-1b — 신뢰 순번 되받기(**기본 켬** — 정품 녹음 근거는 Server::Emit 주석)
+    bool ackAnyStream = true;  // B-1b — 되받기를 스트림 0 비신뢰에(**기본 켬**)
     bool noSpawnInvuln = false;  // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인 우회로
     // 서두 안 cc(6a … 01) 의 상태를 0 으로 뒤집는 것을 **끈다**(녹음본 값 그대로).
     // 기본은 뒤집는 쪽이다 — Server.h 의 SetForceHudOn 주석 참조.
