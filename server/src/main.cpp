@@ -189,6 +189,11 @@ int main(int argc, char** argv) {
     std::string mode = "arena";
     // ★ 독립 서버 P3 — .map 을 직접 읽어 벽 충돌을 켤다. 비면 종전처럼 벽 없음.
     std::string mapPath;
+    // ★ 2026-09-18 ④⑯ — 맵에 그려진 **깃발 자리**(`Flag` 오브젝트). 둘 이상이면
+    //   CTF 를 거기에 차린다. 전에는 늘 스폰 옆에 손으로 놓아 **그림과 실물이 전혀
+    //   다른 자리**였다(CapFlag 실측 — 맵 1058,931·3841,3714 ↔ 우리 3828,2534·4104,2534).
+    //   맵 로드 블록 밖에서도 봐야 해서 여기에 둔다.
+    std::vector<std::pair<int, int>> mapFlagPos;
     bool standalone = false;
     // 진단 — 맵 섹션 목록(이름·크기)만 찍고 **서버를 안 띄우고 끝낸다**. 157개를 배치로 돌리려고.
     //   왜 서버가 해야 하나 — .map 은 Blowfish 로 암호화돼 있어 바깥 도구로는 못 읽고,
@@ -503,6 +508,10 @@ int main(int argc, char** argv) {
         nox::ThingDb tdb;
         size_t nStat = 0, nSkip = 0;
         std::map<std::string, int> notPickup;   // 아이템이 아니라 걸러진 것 — 이름별로
+        // ★ 2026-09-18 ④⑯ — 맵에 **그려진** 판 물건(깃발·왕관·공)의 자리.
+        //   우리 서버는 맵 깃발을 안 읽고 제 자리에 놓으므로, 그림과 실물이 얼마나
+        //   어긋나는지 보려면 맵 쪽 좌표가 있어야 한다.
+        std::vector<std::string> mapMatchObjs;
         std::map<std::string, int> noWeight;    // 아이템인데 WEIGHT 가 없어 걸러진 것
         if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
             // ★ 4-c3 — 주문이 **이름으로** 놓는 오브젝트의 와이어 종류를 넘겨준다
@@ -545,6 +554,20 @@ int main(int argc, char** argv) {
                     if (o.type == "PlayerStart") starts.push_back({ o.x, o.y });
                 std::printf("[부활 자리] PlayerStart %zu곳\n", starts.size());
                 srv.SetPlayerStarts(std::move(starts));
+            }
+            // ★ ④⑯ — 맵에 그려진 판 물건의 자리를 모아 둔다(출력은 아래 「맵 판물건」).
+            for (const auto& o : objs) {
+                if (o.type.find("Flag") == std::string::npos &&
+                    o.type.find("Crown") == std::string::npos &&
+                    o.type.find("GameBall") == std::string::npos) continue;
+                char b[96];
+                std::snprintf(b, sizeof(b), "%s=%d,%d", o.type.c_str(),
+                              static_cast<int>(o.x), static_cast<int>(o.y));
+                mapMatchObjs.push_back(b);
+                // ⚠ `FlagMarker`(표시)는 빼고 **`Flag`(진짜 깃발)만** 모은다 —
+                //   둘이 같은 자리에 겹쳐 있어 안 가르면 네 개로 센다.
+                if (o.type == "Flag")
+                    mapFlagPos.push_back({ static_cast<int>(o.x), static_cast<int>(o.y) });
             }
             // ★ 2026-09-15 묶음 10-a — **소리 표**. thing.bin `AUD ` 칸 927개가
             //   이름표 1,023개에 **100% 맞물린다**(빗나감 0 · 전수 확인).
@@ -922,6 +945,15 @@ int main(int argc, char** argv) {
             for (const auto& kv : notPickup) total += static_cast<size_t>(kv.second);
             std::printf("[맵 밖] 아이템 아닌 것 %zu개 / %zu종 —", total, notPickup.size());
             for (const auto& kv : notPickup) std::printf(" %sx%d", kv.first.c_str(), kv.second);
+            std::printf("\n");
+        }
+        // ★ 2026-09-18 ④⑯ — **맵에 그려진 판 물건의 자리**를 찍는다.
+        //   우리 서버는 맵의 깃발을 **안 읽고** 제 자리에 놓으므로, 그림과 실물이
+        //   얼마나 어긋나는지 보려면 **맵 쪽 좌표**가 있어야 한다.
+        //   (확인표 ⑯ 은 「맵 깃발 4개」라고 적고 있었는데 실측은 2개였다 — 09-18 정정)
+        if (!mapMatchObjs.empty()) {
+            std::printf("[맵 판물건] %zu개 —", mapMatchObjs.size());
+            for (const auto& t : mapMatchObjs) std::printf(" %s", t.c_str());
             std::printf("\n");
         }
         if (standalone) {
@@ -1348,6 +1380,19 @@ int main(int argc, char** argv) {
                     if (good != wantX) good -= dir * static_cast<int>(nox::kPlayerRadius * 2);
                     return good;
                 };
+                // ★★ 2026-09-18 ④⑯ — **맵에 깃발이 그려져 있으면 그 자리를 쓴다.**
+                //   전에는 늘 스폰 옆에 손으로 놓아, 클라 화면의 깃발 그림과
+                //   서버가 아는 자리가 **전혀 달랐다**(CapFlag 실측 —
+                //   맵 1058,931 · 3841,3714 ↔ 우리 3828,2534 · 4104,2534).
+                //   맵에 없으면(Estate 등) 종전대로 손으로 놓는다 — 아무 맵에서나
+                //   판정하려는 하네스이므로 그 길은 남긴다(`ModeRules.h` 주석).
+                if (mapFlagPos.size() >= 2) {
+                    srv.StartCtf(mapFlagPos[0].first, mapFlagPos[0].second,
+                                 mapFlagPos[1].first, mapFlagPos[1].second);
+                    std::printf("[모드] 깃발 자리 = **맵에 그려진 것**을 씀 (%d,%d)·(%d,%d)\n",
+                                mapFlagPos[0].first, mapFlagPos[0].second,
+                                mapFlagPos[1].first, mapFlagPos[1].second);
+                } else {
                 const int redX  = placeFlag(mx - ctfSpan, my, mx);
                 const int blueX = placeFlag(mx + ctfSpan, my, mx);
                 srv.StartCtf(redX, my, blueX, my);
@@ -1355,6 +1400,7 @@ int main(int argc, char** argv) {
                             redX, my, blueX, my, (unsigned)nox::kCaptureLimit,
                             (redX != mx - ctfSpan || blueX != mx + ctfSpan)
                                 ? "  ← 벽을 피해 당김" : "");
+                }
             } else if (setup == nox::ModeSetup::FlagBall) {
                 // 공은 가운데, 골대는 깃발과 같은 간격으로 양옆
                 srv.StartFlagBall(mx, my, mx - ctfSpan, my, mx + ctfSpan, my);
