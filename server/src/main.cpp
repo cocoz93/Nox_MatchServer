@@ -225,6 +225,7 @@ int main(int argc, char** argv) {
     bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
     bool itemAtSpawn = false;
     int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
+    int startMana = 0;         // 진단 — 들어올 때 마나(0 이면 안 건드림)
     int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
     int forceArrowFrame = -1;  // 진단 ⑬ — 화살 스프라이트 프레임 고정
     bool arrowFreeze = false;  // 진단 ⑬ — 화살을 난 자리에 세워 둔다
@@ -330,6 +331,9 @@ int main(int argc, char** argv) {
             //   thing.bin 을 눈으로 뒤지고 있었다. 갈래는 **클래스 비트가 정한다**
             //   (`GAME4_1.c:4539~4550` — 0x400000 / 0x200000 → 2·4·그밖 / 0x100000).
             dumpThing = argv[++i];
+        } else if (a == "--start-mana" && i + 1 < argc) {
+            // 진단 — 들어올 때 마나를 채운다. 비싼 주문을 무인으로 쏘려면 필요하다.
+            startMana = std::atoi(argv[++i]);
         } else if (a == "--start-health" && i + 1 < argc) {
             // 진단 — 들어올 때 체력을 낮춘다. 죽음·부활을 재려고.
             startHealth = std::atoi(argv[++i]);
@@ -1235,6 +1239,7 @@ int main(int argc, char** argv) {
             std::printf("[진단] 화살 프레임을 %d 틱마다 0↔16 으로 번갈아 보낸다\n", arrowFrameAlt);
         }
         if (startHealth > 0) srv.SetStartHealth(startHealth);
+        if (startMana > 0) srv.SetStartMana(startMana);
         if (itemAtSpawn) {
             // 스폰 자리를 아이템 자리로. 걷기를 빼고 **조작만** 재려는 것이다.
             // ⚠ **아이템을 옮기는 것이 아니다** — 클라가 맵대로 만든 실체와 어긋난다.

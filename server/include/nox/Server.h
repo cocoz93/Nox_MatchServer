@@ -2613,6 +2613,9 @@ public:
     void SetArrowFrameAlt(int ticks) { arrowFrameAlt_ = ticks; }
     // ★ 진단 — 들어올 때 체력(0 이면 안 건드림). **최대 체력은 그대로** 둔다.
     void SetStartHealth(int v) { startHealth_ = v; }
+    // 진단 — 들어올 때 마나를 채운다(`--start-mana N`). 주먹(29) 같은 비싼 주문을
+    //   무인으로 쏘려면 필요하다(09-18 실측 — 마나 5/125 라 6번 막혔다)
+    void SetStartMana(int v) { startMana_ = v; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
     void DebugCapture(const std::string& addr, int n) {
         auto it = sessions_.find(addr);
@@ -3535,6 +3538,7 @@ private:
     bool noSpellStart_ = false;
     std::set<uint8_t> stopSampleShown_;   // 진단 — 멈춤 표본을 오프코드마다 한 번만
     int startHealth_ = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
+    int startMana_ = 0;         // 진단 — 들어올 때 마나(0 이면 안 건드림)
     int forceAnimDir_ = -1;     // 진단 — 덧붙이 방향 3비트 고정(-1 이면 안 함)
     int forceArrowFrame_ = -1;  // 진단 — 화살 스프라이트 프레임 고정(-1 이면 안 함)
     bool arrowFreeze_ = false;  // 진단 — 화살을 난 자리에 세워 둔다

@@ -3060,6 +3060,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     //   (거머리 2마리가 38 밖에 못 깎았다, 2026-09-11). 낮춰 두면 금방 죽는다.
                     if (startHealth_ > 0 && startHealth_ < s.maxHealth)
                         s.health = static_cast<uint16_t>(startHealth_);
+                    // ★ 진단 — 들어올 때 마나를 채운다(`--start-mana N`).
+                    //   주먹(29) 같은 비싼 주문을 무인으로 쏘려면 필요하다
+                    //   (09-18 실측 — 마나 5/125 로 시작해 여섯 번 막혔다).
+                    //   ⚠ 최대 마나를 넘겨 채우지는 않는다.
+                    if (startMana_ > 0)
+                        s.mana = static_cast<uint16_t>(startMana_ > s.maxMana ? s.maxMana : startMana_);
                 }
                 if (!joinBody_.empty()) {
                     std::vector<uint8_t> msg = joinBody_;
