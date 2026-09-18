@@ -626,8 +626,17 @@ int main(int argc, char** argv) {
                     else if (o.type == "ArrowTrap2") { tr.fxKind = 2; tr.damage = arrowDmg; }
                     traps.push_back(tr);
                 }
-                if (!traps.empty())
+                if (!traps.empty()) {
                     std::printf("[맵] 쏘는 덫 %zu개 · 화살 피해 %d\n", traps.size(), arrowDmg);
+                    // ★ 2026-09-18 ⑫ — **덫이 어디 있는지** 한 줄로 찍는다.
+                    //   「겨눈 덫 0」이 나왔을 때 「덫이 안 도는 것」과 「사람이 사정거리
+                    //   밖인 것」을 못 가른다. 좌표가 있어야 갈린다(덫 사정 ±350).
+                    //   앞 여덟만 — 100개를 다 찍으면 로그가 읽히지 않는다.
+                    std::printf("[덫 자리]");
+                    for (const auto& tr : traps)
+                        std::printf(" %d,%d", static_cast<int>(tr.x), static_cast<int>(tr.y));
+                    std::printf("\n");
+                }
                 srv.SetShootingTraps(traps);
             }
             // ★ 4-e — 맵 길목(WayPoints). 점멸이 여기서 목적지를 고른다.
@@ -1558,10 +1567,12 @@ int main(int argc, char** argv) {
                         std::printf(" %s %llu", kv.first.c_str(), kv.second);
                     std::printf("\n");
                 }
-                std::printf("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu\n",
+                std::printf("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu"
+                            " · 덫판정(통과 %llu·멂 %llu·방향 %llu·벽 %llu)\n",
                             srv.petCount(), srv.petsWithPath(),
                             srv.DebugPathCalculated() ? "예" : "아니오", srv.DebugPathStatus(),
-                            srv.trapsArmed());
+                            srv.trapsArmed(),
+                            srv.trapSeeOk(), srv.trapFailRange(), srv.trapFailFacing(), srv.trapFailWall());
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
                             " · 문 %llu · 오벨리스크 %llu · 자기주문 %llu · 미룬주문효과 %llu\n",

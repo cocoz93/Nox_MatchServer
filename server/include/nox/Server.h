@@ -1403,6 +1403,10 @@ public:
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
+    unsigned long long trapFailRange() const { return trapFailRange_; }
+    unsigned long long trapFailFacing() const { return trapFailFacing_; }
+    unsigned long long trapFailWall() const { return trapFailWall_; }
+    unsigned long long trapSeeOk() const { return trapSeeOk_; }
 
     // 서버의 현재 프레임. 진짜 서버는 30Hz 틱이 올리고,
     // 덤프를 재생할 때는 그때 나간 값을 넣어 준다(시점에 달린 값이라 재현이 안 된다).
@@ -3677,6 +3681,11 @@ private:
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.
     bool noSpawnInvuln_ = false;
     unsigned long long spawnInvulnApplied_ = 0;  // 부활 무적을 실제로 건 횟수(스위치 판정용)
+    // ★ ⑫ 덫이 겨누기에 실패한 **까닭별** 계수기. 하나로 세면 어느 문에서 막히는지 못 가른다.
+    mutable unsigned long long trapFailRange_ = 0;   // ±350 밖
+    mutable unsigned long long trapFailFacing_ = 0;  // 덫이 보는 쪽이 아님
+    mutable unsigned long long trapFailWall_ = 0;    // 벽에 막힘
+    mutable unsigned long long trapSeeOk_ = 0;       // 셋을 다 통과
     size_t lastUpdateObjects_ = 0;   // 마지막 갱신에 실은 사람 수
     // ★ 갱신을 만드는 세션 루프가 **실제로 몇 번 돌았나**. 「사람 1(갱신에 0)」이
     //   코드로 설명이 안 돼서 박은 계수기다 — 읽어서 두 번 못 찾았다(2026-09-08).

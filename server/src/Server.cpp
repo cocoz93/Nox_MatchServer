@@ -8377,13 +8377,23 @@ void Server::SetShootingTraps(const std::vector<ShootingTrapIn>& list) {
 // `sub_54FBF0` — 덫 둘레 ±350 네모 안에 **겨눌 것**이 있나.
 //   ① 사람·소환수 ② 죽지 않았음 ③ 적 ④ 시야가 통함 ⑤ **덫이 보는 쪽**
 bool Server::TrapSeesEnemy(const ShootingTrap& t) const {
+    // ★ 2026-09-18 ⑫ — **어느 문에서 걸리는지 갈래를 센다.**
+    //   「겨눈 덫 0」만으로는 사정거리·방향·벽 셋 중 어디서 막히는지 못 가른다.
+    //   실측(G_Temple, 사람 5206,1239)에서 덫 100개 중 **44개가 350 안**인데 겨눈 덫이 0이었다.
     auto ok = [&](double ox, double oy) {
-        if (std::fabs(ox - t.x) > 350.0 || std::fabs(oy - t.y) > 350.0) return false;
+        if (std::fabs(ox - t.x) > 350.0 || std::fabs(oy - t.y) > 350.0) { ++trapFailRange_; return false; }
         // ⑤ `testTwoPointsAndDirection_4E6E50(덫자리, 덫방향, 상대자리) & 1`
-        if (!(TestTwoPointsAndDirection(t.x, t.y, t.facing, static_cast<float>(ox), static_cast<float>(oy)) & 1))
+        if (!(TestTwoPointsAndDirection(t.x, t.y, t.facing, static_cast<float>(ox), static_cast<float>(oy)) & 1)) {
+            ++trapFailFacing_;
             return false;
+        }
         // ④ `mapCheck_537110` — 벽 시야선
-        return MapTraceRay(t.x, t.y, static_cast<float>(ox), static_cast<float>(oy), 0x9);
+        if (!MapTraceRay(t.x, t.y, static_cast<float>(ox), static_cast<float>(oy), 0x9)) {
+            ++trapFailWall_;
+            return false;
+        }
+        ++trapSeeOk_;
+        return true;
     };
     for (const auto& kv : sessions_) {
         const Session& o = kv.second;
