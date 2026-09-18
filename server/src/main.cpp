@@ -929,6 +929,12 @@ int main(int argc, char** argv) {
                                     nox::SoundByName(sr.castSound.c_str()),
                                     nox::SoundByName(sr.onSound.c_str()),
                                     nox::SoundByName(sr.offSound.c_str()));
+                    // ★ 2026-09-18 ⑰ — **음소가 없는 주문**을 찍는다.
+                    //   음소 나무를 못 따라가면 시전이 「모름」으로 끝난다(`Server.cpp:4731`).
+                    //   컨저러 주먹(29)이 「받음 7 · 주문 0」 으로 끝난 까닭 후보다.
+                    if (sr.phonemes.empty()) {
+                        std::printf("[주문 음소없음] %d(%s)\n", id, nm2);
+                    }
                     break;
                 }
             }
