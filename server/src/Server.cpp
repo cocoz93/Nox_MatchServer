@@ -478,6 +478,23 @@ static void FillEntry(AliasTable& tbl, uint16_t netCode, uint16_t type,
         //   위 식은 방향을 **위 4비트 중 3비트**에만 넣으므로 이 비트가 늘 0 이다.
         //   그래서 전에 있던 `if (facing & 0x80) extra = 2` 는 필요 없어졌다 —
         //   방향값을 통째로 싣던 시절의 뒷수습이었다.
+        //
+        // ★★★ 2026-09-18 — **날아가는 것에 프레임을 실어 봤다가 되돌렸다.** 기록만 남긴다.
+        //
+        //   본 것 — 클라에 계수기를 심어 재니 화살이 쓰는 **프레임 번호가 늘 0** 인데
+        //          화살 그림 표는 **32장**이다(`client__draw__arrowdraw.c` 로컬 계수기).
+        //          ⚠ 처음엔 표의 첫 워드를 장수로 읽어 「12장」이 나왔는데 그 자리는
+        //            **늘 12 인 상수**였다(`parse.c:21` `*v2 = 12;`). 장수는 `base+8` 의 1바이트(:23)
+        //   해 본 것 — 정답지 `netSendPhantomPlrMb_5187E0`(GAME4_1.c:4198~4203)이 싣는
+        //          `Direction1 >> 3`(0~31)이 32장과 맞아떨어져, 0x80 을 켜고 실어 봤다
+        //   ✖ 되돌린 까닭 — **그 갈래의 조건이 화살에서는 늘 거짓이다.**
+        //          정답지 조건은 `Class & 1`(MISSILE) **그리고** `SubClass & 0x30` 인데,
+        //          미사일 서브클래스는 **`MISSILE_COUNTERSPELL`(0x1)·`MAGIC`(0x2) 둘뿐**이다
+        //          (`libs/object/subclass_missile.go`). 0x30 비트가 아예 없다
+        //          ⇒ 정답지도 화살에는 프레임을 안 싣는다(`v10[10] = -1`).
+        //          `proto_test` 의 「깃발 0x30 이 없으니 꺼져야 한다」가 이 자리를 지키고 있었다
+        //   ⇒ 화살이 방향대로 기우는지(⑬)는 **`+297` 방향 바이트**가 쓰이는 자리에서 봐야 한다.
+        //     프레임 쪽이 아니다.
         // ★★★ 사람 항목 — 정품 **원바이트**로 확정했다(2026-09-08):
         //
         //     [첫 소개·전체번호]  … ff <번호2> <종류2> <좌표4> │ 40 00 │ …   덧붙이 **2**
@@ -12867,6 +12884,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         for (const auto& mo : missiles_) {
             if (!CoordInRange(static_cast<int>(mo.posX), static_cast<int>(mo.posY))) continue;   // ⓒ 관문 — 한 항목이 갱신 한 통을 죽인다
             ObjEntry e;
+            // ⚠ `playerFrame` 을 여기에 실어 봤다가 되돌렸다 — 까닭은 `FillEntry` 주석에.
+            //   한 줄로 — **미사일 서브클래스에 `0x30` 비트가 없어 정답지도 안 싣는다.**
             FillEntry(s.aliases, mo.netCode, mo.type, s.tickFrame,
                       static_cast<int>(mo.posX), static_cast<int>(mo.posY), mo.dir1, e,
                       /*complex=*/ThingIsComplex(mo.type),
