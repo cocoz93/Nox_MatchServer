@@ -1604,6 +1604,35 @@ int main(int argc, char** argv) {
                             srv.castRejBusy(), srv.castRejClass(), srv.castRejCant(), srv.castAccepted(),
                             srv.arrowGoneWall(), srv.arrowGoneWallAtBirth(), srv.arrowGoneAge(), srv.arrowLifeAvg(), srv.missilesPeak(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
+                // ★★ B-1b — **신뢰 순번을 스트림별로 갈라 찍는다** (2026-09-18).
+                //   합계만 보면 「클라가 보낸 스트림」과 「서버가 답한 스트림」이 어긋나도
+                //   드러나지 않는다. 되받기는 **같은 스트림에 실려야** 뜻이 있다
+                //   (StreamSeq 가 스트림마다 따로다 — `Server::Emit`).
+                //   읽는 법 — 클라가 신뢰를 보낸 스트림에 서버 **비신뢰** 답이 없으면
+                //   되받기를 실을 자리가 아예 없다는 뜻이다.
+                {
+                    std::string sl = "[순번·스트림] 받은신뢰";
+                    char sb[48];
+                    for (uint8_t st = 0; st < 8; ++st) {
+                        if (!srv.recvReliableOn(st)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.recvReliableOn(st));
+                        sl += sb;
+                    }
+                    sl += " · 보낸신뢰";
+                    for (uint8_t st = 0; st < 8; ++st) {
+                        if (!srv.sendReliableOn(st)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.sendReliableOn(st));
+                        sl += sb;
+                    }
+                    sl += " · 보낸비신뢰";
+                    for (uint8_t st = 0; st < 8; ++st) {
+                        if (!srv.sendPlainOn(st)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.sendPlainOn(st));
+                        sl += sb;
+                    }
+                    std::printf("%s\n", sl.c_str());
+                }
+
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());
 

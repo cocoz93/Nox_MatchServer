@@ -94,6 +94,10 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
 
     // 순번 규칙 — StreamSeq 주석 참조. 신뢰는 쓰고 올리고, 비신뢰는 직전 값을 싣는다.
     StreamSeq& q = s.seq[stream & 0x7F];
+    {   // 스트림별로 갈라 센다 — 합계만으로는 「보낸 스트림 ↔ 답한 스트림」 어긋남을 못 본다
+        const uint8_t st = static_cast<uint8_t>(stream & 0x7F);
+        if (st < 8) { if (reliable) ++sendRelStream_[st]; else ++sendPlainStream_[st]; }
+    }
     if (reliable) {
         h.seq = q.next;
         q.last = q.next;
@@ -2096,6 +2100,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
         rq.recvSeq = head.seq;
         rq.recvSeqSeen = true;
         ++reliableHeard_;
+        if ((head.stream & 0x7F) < 8) ++recvRelStream_[head.stream & 0x7F];
     }
 
     const uint8_t* body = buf.data() + kWireHeaderSize;

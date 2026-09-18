@@ -1398,6 +1398,12 @@ public:
     unsigned long long reliableHeard() const { return reliableHeard_; }
     unsigned long long ackSeqApplied() const { return ackSeqApplied_; }
     unsigned long long ackSeqDiffer() const { return ackSeqDiffer_; }
+    // ★ 2026-09-18 B-1b — **스트림별로 갈라 센다.** 합계만 보면
+    //   「클라가 보낸 스트림」과 「서버가 답한 스트림」이 어긋나도 안 드러난다.
+    //   되받기는 **같은 스트림에 실려야** 뜻이 있다(StreamSeq 가 스트림마다 따로다).
+    unsigned long long recvReliableOn(uint8_t st) const { return st < 8 ? recvRelStream_[st] : 0; }
+    unsigned long long sendReliableOn(uint8_t st) const { return st < 8 ? sendRelStream_[st] : 0; }
+    unsigned long long sendPlainOn(uint8_t st) const { return st < 8 ? sendPlainStream_[st] : 0; }
     // B-1b 되받기 끄기(대조군) — `--no-ack-seq`
     void SetAckRecvSeq(bool v) { ackRecvSeq_ = v; }
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
@@ -3700,6 +3706,10 @@ private:
     unsigned long long useMapSent_ = 0;    // USE_MAP 보낸 수     (기대: 접속당 1)
     unsigned long long acceptHeard_ = 0;   // CLIENT_ACCEPT 받은 수(기대: 접속당 1)
     unsigned long long reliableHeard_ = 0; // 신뢰 비트가 선 조각을 받은 수 (B-1b)
+    // 스트림 0~7 만 센다 — 그 위는 실제로 안 쓰인다(넘으면 안 센다는 뜻이니 로그에서 합이 안 맞으면 그것도 단서다)
+    unsigned long long recvRelStream_[8] = {};   // 클라 → 서버 **신뢰**, 스트림별
+    unsigned long long sendRelStream_[8] = {};   // 서버 → 클라 **신뢰**, 스트림별
+    unsigned long long sendPlainStream_[8] = {}; // 서버 → 클라 **비신뢰**, 스트림별(되받기가 실리는 자리)
     unsigned long long ackSeqApplied_ = 0; // 되받기 가지를 탄 횟수 (0 이면 분기가 안 도는 것)
     unsigned long long ackSeqDiffer_ = 0;  // 그중 값이 실제로 달라진 횟수
     // B-1b 되받기 — ⚠ **기본 끔.** 09-18 실측에서 **효과가 없었다**(아래).
