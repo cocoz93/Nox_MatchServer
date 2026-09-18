@@ -1414,6 +1414,9 @@ public:
     unsigned long long arrowGoneWall() const { return arrowGoneWall_; }
     unsigned long long arrowGoneWallAtBirth() const { return arrowGoneWallAtBirth_; }
     unsigned long long arrowGoneAge() const { return arrowGoneAge_; }
+    // 벽에 닿은 화살의 **평균 수명(틱)** — 0 이면 잰 것이 없다
+    double arrowLifeAvg() const { return arrowLifeCnt_ ? double(arrowLifeSum_) / double(arrowLifeCnt_) : 0.0; }
+    size_t missilesPeak() const { return missilesPeak_; }
     unsigned long long trapFailRange() const { return trapFailRange_; }
     unsigned long long trapFailFacing() const { return trapFailFacing_; }
     unsigned long long trapFailWall() const { return trapFailWall_; }
@@ -3708,6 +3711,9 @@ private:
     unsigned long long arrowGoneWall_ = 0;        // 벽에 닿아서
     unsigned long long arrowGoneWallAtBirth_ = 0; // 그중 태어나자마자(1틱 이내)
     unsigned long long arrowGoneAge_ = 0;         // 수명 40틱을 채워서
+    unsigned long long arrowLifeSum_ = 0;         // 벽에 닿은 화살들의 수명 합(틱)
+    unsigned long long arrowLifeCnt_ = 0;         // 그 개수 — 평균을 내려고
+    size_t missilesPeak_ = 0;                     // 동시에 떠 있던 **최대** 수(로그 주기와 무관)
     // ★ ⑫ 덫이 겨누기에 실패한 **까닭별** 계수기. 하나로 세면 어느 문에서 막히는지 못 가른다.
     mutable unsigned long long trapFailRange_ = 0;   // ±350 밖
     mutable unsigned long long trapFailFacing_ = 0;  // 덫이 보는 쪽이 아님

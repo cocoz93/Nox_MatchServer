@@ -1497,7 +1497,7 @@ int main(int argc, char** argv) {
                             "주문 %llu(마나막힘 %llu) · 나는것 %zu(만든 %llu · 사라짐 %llu · 갱신에 %llu) · 피해 %llu · 별칭받음 %llu%s"
                             " · 악수(수락 %llu·맵지정 %llu·준비 %llu·신뢰받음 %llu·되받기 %llu/다름 %llu·무적건 %llu)"
                             " · 시전거절(죽음 %llu·범위 %llu·안배움 %llu·시전중 %llu·직업 %llu·못씀 %llu→받음 %llu)"
-                            " · 화살사라짐(벽 %llu[태어나자마자 %llu]·수명 %llu)"
+                            " · 화살사라짐(벽 %llu[태어나자마자 %llu]·수명 %llu·평균 %.1f틱·**동시최대 %zu**)"
                             " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
@@ -1507,7 +1507,7 @@ int main(int argc, char** argv) {
                             srv.ackSeqApplied(), srv.ackSeqDiffer(), srv.spawnInvulnApplied(),
                             srv.castRejDead(), srv.castRejRange(), srv.castRejUnknown(),
                             srv.castRejBusy(), srv.castRejClass(), srv.castRejCant(), srv.castAccepted(),
-                            srv.arrowGoneWall(), srv.arrowGoneWallAtBirth(), srv.arrowGoneAge(),
+                            srv.arrowGoneWall(), srv.arrowGoneWallAtBirth(), srv.arrowGoneAge(), srv.arrowLifeAvg(), srv.missilesPeak(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());

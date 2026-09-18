@@ -8460,6 +8460,11 @@ void Server::TrapShoot(ShootingTrap& t, std::vector<OutPacket>& out) {
     m.collideKind = (t.damage != 0) ? 5 : 1;
     m.collideAmount = (t.damage != 0) ? static_cast<uint8_t>(t.damage) : pt->collideAmount;
     missiles_.push_back(m); ++missilesMade_;
+    // ★ 2026-09-18 ⑫ — **동시에 떠 있는 최대 수**를 센다.
+    //   틱 로그의 「나는것」은 `frame % 30 == 0` 일 때만 찍는데 **덫 발사 주기도 30틱**이라
+    //   늘 같은 위상만 본다(화살이 이미 사라진 순간). 그래서 31틱 전부 0 으로 보였다.
+    //   이 값은 주기와 무관하므로 「정말 안 나는가」를 가른다.
+    if (missiles_.size() > missilesPeak_) missilesPeak_ = missiles_.size();
     if (t.fxKind != 0) SendArrowTrapFx(t.x, t.y, t.fxKind, out);
     // 10-a — 쏘는 소리. 정답지 `createArrowTrapProjectile_54FA80` 이 `aud_501960(889, …)` 를 부른다.
     //   ⭕ 889 = **`ArrowTrapShoot`**(이름표로 확인). 쏘는 것이 화살일 때만 울린다
@@ -11430,6 +11435,10 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     //   수명은 40틱인데 그 전에 사라지니, 벽인지 다른 것인지 갈라야 한다.
                     ++arrowGoneWall_;
                     if (frame - m.createdFrame <= 1u) ++arrowGoneWallAtBirth_;   // 태어난 자리가 벽 속인가
+                    // ★ 수명을 모아 **평균 몇 틱 사나**를 낸다. 「벽이 가까운 게 정상」인지
+                    //   「방향이 틀려 바로 처박히는지」를 사람이 가르려면 이 숫자가 있어야 한다.
+                    arrowLifeSum_ += (frame - m.createdFrame);
+                    ++arrowLifeCnt_;
                     DestroyMissile(i, out);
                     erased = true;
                     continue;
