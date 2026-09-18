@@ -337,6 +337,13 @@ struct Target {
 struct StreamSeq {
     uint8_t next = 0;   // 다음 신뢰 전송이 쓸 값
     uint8_t last = 0;   // 직전 신뢰 전송이 쓴 값 — 비신뢰가 싣는다
+    // ★ 2026-09-18 페이즈 B-1b — **클라가 보낸 마지막 신뢰 순번**.
+    //   정답지에서 되받기는 별도 메시지가 아니라 **답 패킷 머리의 seq 필드**다
+    //   (`internal/netstr/conn.go:643~650` — 비신뢰 패킷을 받으면 그 seq 로 송신 큐를 지운다).
+    //   이 값을 안 실으면 클라는 답을 못 받았다고 보고 **1초마다 영원히 재전송**한다
+    //   (`send_reliable.go:135 Resend`). CLIENT_READY 가 23번 온 까닭.
+    uint8_t recvSeq = 0;
+    bool    recvSeqSeen = false;   // 한 번이라도 신뢰 패킷을 받았나
 };
 
 // 상대 하나. 주소:포트로 가른다.
@@ -1388,6 +1395,11 @@ public:
     unsigned long long readyHeard() const { return readyHeard_; }
     unsigned long long useMapSent() const { return useMapSent_; }
     unsigned long long acceptHeard() const { return acceptHeard_; }
+    unsigned long long reliableHeard() const { return reliableHeard_; }
+    unsigned long long ackSeqApplied() const { return ackSeqApplied_; }
+    unsigned long long ackSeqDiffer() const { return ackSeqDiffer_; }
+    // B-1b 되받기 끄기(대조군) — `--no-ack-seq`
+    void SetAckRecvSeq(bool v) { ackRecvSeq_ = v; }
 
     // 서버의 현재 프레임. 진짜 서버는 30Hz 틱이 올리고,
     // 덤프를 재생할 때는 그때 나간 값을 넣어 준다(시점에 달린 값이라 재현이 안 된다).
@@ -3641,6 +3653,22 @@ private:
     unsigned long long readyHeard_ = 0;    // CLIENT_READY 받은 수 (기대: 정품 2)
     unsigned long long useMapSent_ = 0;    // USE_MAP 보낸 수     (기대: 접속당 1)
     unsigned long long acceptHeard_ = 0;   // CLIENT_ACCEPT 받은 수(기대: 접속당 1)
+    unsigned long long reliableHeard_ = 0; // 신뢰 비트가 선 조각을 받은 수 (B-1b)
+    unsigned long long ackSeqApplied_ = 0; // 되받기 가지를 탄 횟수 (0 이면 분기가 안 도는 것)
+    unsigned long long ackSeqDiffer_ = 0;  // 그중 값이 실제로 달라진 횟수
+    // B-1b 되받기 — ⚠ **기본 끔.** 09-18 실측에서 **효과가 없었다**(아래).
+    //   켜려면 `--ack-seq`. 분기 자체는 도는 것을 계수기로 확인했으므로
+    //   (되받기 37/다름 37) 배선이 아니라 **방식**이 틀린 것이다.
+    //
+    //   실측 표 — 세 회차가 **완전히 같은 숫자**였다(exe 는 소스보다 최신, 빌드 지문 확인함):
+    //     끔(--no-ack-seq)   준비 20 · 신뢰받음 25
+    //     켬(N 그대로)        준비 20 · 신뢰받음 25 · 되받기 37/다름 37
+    //     켬(N+1)            준비 20 · 신뢰받음 25 · 되받기 37/다름 37
+    //
+    //   ⇒ 다음에 볼 것 = **스트림 번호**. 클라가 CLIENT_READY 를 보내는 스트림과
+    //     우리가 답하는 스트림이 다르면 `s.seq[…]` 칸이 어긋나 되받기가 엉뚱한 데 실린다.
+    //     계수기를 **스트림별로 갈라서** 세야 갈린다(「갈래를 세라」).
+    bool ackRecvSeq_ = false;
     size_t lastUpdateObjects_ = 0;   // 마지막 갱신에 실은 사람 수
     // ★ 갱신을 만드는 세션 루프가 **실제로 몇 번 돌았나**. 「사람 1(갱신에 0)」이
     //   코드로 설명이 안 돼서 박은 계수기다 — 읽어서 두 번 못 찾았다(2026-09-08).

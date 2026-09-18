@@ -98,6 +98,20 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
         h.seq = q.next;
         q.last = q.next;
         ++q.next;
+    } else if (ackRecvSeq_ && q.recvSeqSeen) {
+        // ★ B-1b (스위치 `--no-ack-seq` 로 끔) — 비신뢰 답에 **클라가 보낸 마지막 신뢰 순번**을
+        //   싣는다. 정답지에서 이것이 되받기 노릇을 한다(StreamSeq::recvSeq 주석).
+        // ★★ **받은 순번 + 1** 을 싣는다. 그대로 실으면 안 된다 —
+        //   정답지 `SetCurrent(seq)` 는 `retry(seq)` + `ackOlder(seq)` 인데
+        //   `retry` 가 **그 순번을 다시 보내라고 표시**하고, `ackOlder` 는
+        //   `it.seq >= seq` 를 **남긴다**(send_reliable.go:165~199).
+        //   즉 N 을 돌려주면 N 번 패킷이 지워지기는커녕 재전송 예약된다.
+        //   N+1 을 주어야 N 이하가 전부 지워진다.
+        //   09-18 실측 — N 으로 37번 답했는데 준비 20 그대로였다(대조군과 동일).
+        const uint8_t ack = static_cast<uint8_t>(q.recvSeq + 1);
+        if (ack != q.last) ++ackSeqDiffer_;
+        ++ackSeqApplied_;
+        h.seq = ack;
     } else {
         h.seq = q.last;
     }
@@ -2049,6 +2063,15 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
 
     WireHeader head;
     if (!ReadWireHeader(buf.data(), buf.size(), head)) return 0;
+
+    // ★ B-1b — 클라가 **신뢰**로 보냈으면 그 순번을 적어 둔다. 답할 때 실어 주는 것이
+    //   정답지의 되받기다(StreamSeq::recvSeq 주석). 안 실으면 클라가 영원히 재전송한다.
+    if (head.reliable) {
+        StreamSeq& rq = s.seq[head.stream & 0x7F];
+        rq.recvSeq = head.seq;
+        rq.recvSeqSeen = true;
+        ++reliableHeard_;
+    }
 
     const uint8_t* body = buf.data() + kWireHeaderSize;
     const size_t bodyLen = buf.size() - kWireHeaderSize;
