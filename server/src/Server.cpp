@@ -11333,6 +11333,17 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
         m.posX = m.newX; m.posY = m.newY;
         m.velX = (m.forceX + m.velX) * m.damping;
         m.velY = (m.forceY + m.velY) * m.damping;
+        // ★ 진단 `--arrow-freeze` — 화살을 **난 자리에 세워 둔다**(안 움직이고 안 부딪힌다).
+        //   까닭 — 「프레임이 그림을 바꾸나」를 화면으로 닫으려면 **같은 자리에서 프레임만**
+        //   달라진 두 장이 있어야 한다. 날아가면 배경이 달라져 픽셀 대조가 안 된다.
+        //   ⚠ 진단 전용이다.
+        //   ⚠⚠ **한계 — 이걸로 「프레임이 화면을 바꾸나」를 못 닫는다**(09-18 실측).
+        //     멈추는 것은 **속도뿐**이고 수명은 그대로 흘러서, 덫이 30틱마다 새로 쏘고
+        //     40틱이면 사라지는 순환이 계속된다 ⇒ 화면이 프레임과 **무관하게** 계속 바뀐다.
+        //     연속 캡처의 인접 차이를 재 보면 프레임을 번갈아 보낸 판(중앙 656)과
+        //     0 으로 못 박은 대조군(중앙 605)이 **구별되지 않는다.**
+        //     닫으려면 수명도 멈추거나, 덫을 한 번만 쏘게 해야 한다.
+        if (arrowFreeze_ && IsArrowType(m.type)) { m.velX = m.velY = 0.0f; }
         m.newX += m.velX; m.newY += m.velY;
         // ④ 선 추적 맞힘 projectileTraceHit_537850(`GAME4_3.c:3386`) → 충돌 함수 둘(sub_537770)
         bool erased = false;
@@ -12899,7 +12910,11 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                       static_cast<int>(mo.posX), static_cast<int>(mo.posY), mo.dir1, e,
                       /*complex=*/ThingIsComplex(mo.type),
                       /*playerAnim=*/0, /*forceDir=*/-1,
-                      /*playerFrame=*/IsArrowType(mo.type) ? static_cast<int>(mo.dir1 >> 3) : -1,
+                      /*playerFrame=*/!IsArrowType(mo.type) ? -1
+                                    : (arrowFrameAlt_ > 0
+                                           ? (((s.tickFrame / arrowFrameAlt_) % 2) ? 16 : 0)
+                                       : forceArrowFrame_ >= 0 ? forceArrowFrame_
+                                                               : static_cast<int>(mo.dir1 >> 3)),
                       /*complexAnim=*/0);
             Relativize(e, mo.netCode, static_cast<int>(mo.posX), static_cast<int>(mo.posY),
                        baseX, baseY);

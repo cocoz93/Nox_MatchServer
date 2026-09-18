@@ -2589,6 +2589,18 @@ public:
     //   **덧붙이 바이트가 클라에 닿기는 하나?** 방향이 바뀌면 캐릭터가 다른 쪽을 보므로
     //   눈에 확 띈다. 방향도 안 먹으면 덧붙이 자체가 안 읽히는 것이다.
     void SetForceAnimDir(int v) { forceAnimDir_ = v; }
+    // ★ 2026-09-18 ⑬ — 화살 **스프라이트 프레임을 못 박는다**(0~31, -1 이면 안 함).
+    //   까닭 — 「프레임이 방향대로 바뀌나」를 정지 사진으로 판정하려면 **같은 자리에서
+    //   프레임만 바꿔 찍어 픽셀을 대조**해야 한다(`--anim-dir` 로 사람 방향을 닫은 것과 같은 방식).
+    void SetForceArrowFrame(int v) { forceArrowFrame_ = v; }
+    int ForceArrowFrame() const { return forceArrowFrame_; }
+    // 진단 — 화살을 난 자리에 세워 둔다(같은 자리에서 프레임만 바꿔 찍으려고)
+    void SetArrowFreeze(bool v) { arrowFreeze_ = v; }
+    // 진단 — N 틱마다 프레임을 0 ↔ 16 으로 번갈아 보낸다.
+    //   ⚠ **판을 두 번 띄워 비교하면 안 된다** — 어느 덫이 언제 쐈는지가 판마다 달라
+    //   화살 자리가 어긋나고, 그 어긋남이 잡음 바닥을 1,335 픽셀까지 올린다(09-18 실측).
+    //   한 판 안에서 프레임만 바꿔야 배경도 화살 자리도 그대로다.
+    void SetArrowFrameAlt(int ticks) { arrowFrameAlt_ = ticks; }
     // ★ 진단 — 들어올 때 체력(0 이면 안 건드림). **최대 체력은 그대로** 둔다.
     void SetStartHealth(int v) { startHealth_ = v; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
@@ -3514,6 +3526,9 @@ private:
     std::set<uint8_t> stopSampleShown_;   // 진단 — 멈춤 표본을 오프코드마다 한 번만
     int startHealth_ = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
     int forceAnimDir_ = -1;     // 진단 — 덧붙이 방향 3비트 고정(-1 이면 안 함)
+    int forceArrowFrame_ = -1;  // 진단 — 화살 스프라이트 프레임 고정(-1 이면 안 함)
+    bool arrowFreeze_ = false;  // 진단 — 화살을 난 자리에 세워 둔다
+    int arrowFrameAlt_ = 0;     // 진단 — N 틱마다 프레임 0↔16 번갈기(0 이면 안 함)
     int forceAnimPose_ = -1;    // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;

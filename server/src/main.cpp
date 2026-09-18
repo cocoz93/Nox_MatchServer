@@ -225,6 +225,9 @@ int main(int argc, char** argv) {
     bool itemAtSpawn = false;
     int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
     int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
+    int forceArrowFrame = -1;  // 진단 ⑬ — 화살 스프라이트 프레임 고정
+    bool arrowFreeze = false;  // 진단 ⑬ — 화살을 난 자리에 세워 둔다
+    int arrowFrameAlt = 0;     // 진단 ⑬ — N 틱마다 프레임 0↔16 번갈기
     int forcePose = -1;        // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
     bool spellStart = false;   // 시전 알림 0x70 을 켜는 손잡이 (기본 끔)   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
     int questCount = 4;
@@ -319,6 +322,17 @@ int main(int argc, char** argv) {
         } else if (a == "--start-health" && i + 1 < argc) {
             // 진단 — 들어올 때 체력을 낮춘다. 죽음·부활을 재려고.
             startHealth = std::atoi(argv[++i]);
+        } else if (a == "--arrow-frame-alt" && i + 1 < argc) {
+            // 진단 ⑬ — N 틱마다 화살 프레임을 0↔16 으로 번갈아 보낸다.
+            //   한 판 안에서 바꿔야 배경·화살 자리가 그대로라 픽셀 대조가 깨끗하다.
+            arrowFrameAlt = std::atoi(argv[++i]);
+        } else if (a == "--arrow-freeze") {
+            // 진단 ⑬ — 화살을 난 자리에 세워 둔다. `--arrow-frame` 과 짝으로 쓴다.
+            arrowFreeze = true;
+        } else if (a == "--arrow-frame" && i + 1 < argc) {
+            // 진단 ⑬ — 화살 스프라이트 프레임을 못 박는다(0~31). 같은 자리에서
+            //   프레임만 바꿔 찍어 화면이 실제로 달라지는지 픽셀로 대조하려고.
+            forceArrowFrame = std::atoi(argv[++i]);
         } else if (a == "--anim-dir" && i + 1 < argc) {
             // 진단 — 사람 항목 덧붙이의 방향 3비트를 못 박는다(0~7).
             forceDir = std::atoi(argv[++i]);
@@ -1197,6 +1211,18 @@ int main(int argc, char** argv) {
         }
         if (forcePose >= 0) srv.SetForceAnimPose(forcePose);
         if (forceDir  >= 0) srv.SetForceAnimDir(forceDir);
+        if (forceArrowFrame >= 0) {
+            srv.SetForceArrowFrame(forceArrowFrame);
+            std::printf("[진단] 화살 프레임을 %d 로 못 박는다\n", forceArrowFrame);
+        }
+        if (arrowFreeze) {
+            srv.SetArrowFreeze(true);
+            std::printf("[진단] 화살을 난 자리에 세워 둔다 (--arrow-freeze)\n");
+        }
+        if (arrowFrameAlt > 0) {
+            srv.SetArrowFrameAlt(arrowFrameAlt);
+            std::printf("[진단] 화살 프레임을 %d 틱마다 0↔16 으로 번갈아 보낸다\n", arrowFrameAlt);
+        }
         if (startHealth > 0) srv.SetStartHealth(startHealth);
         if (itemAtSpawn) {
             // 스폰 자리를 아이템 자리로. 걷기를 빼고 **조작만** 재려는 것이다.
