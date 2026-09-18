@@ -398,6 +398,7 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                 //   Go 는 이름별 구조 skip 을 두지만 default 가 skip(sectSz)다.
                 //   크기가 짐과 안 맞으면 다음 이름들이 깨져 전수 대조에서 바로 걸린다.
                 const std::string dname = c.Str8();
+                t.drawFn = dname;   // ⑫ — 클라가 이 이름으로 그리는 함수를 고른다
                 const uint64_t sz = c.U64Align();
                 // ★ 2026-09-13 묶음 3-a — PlayerDraw 만은 STAT(애니 칸 수)을 읽는다. 공격 시각이 애니 길이다.
                 //   정답지도 PlayerDraw 가 나올 때마다 표를 덮어쓴다(`server/object_type.go:1065`) — 같게 둔다.

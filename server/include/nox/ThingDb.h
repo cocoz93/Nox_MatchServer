@@ -123,6 +123,10 @@ struct ThingInfo {
     //   TrapPickup 6 · GoldPickup 6 · AmmoPickup 4 · CrownPickup 2.
     //   갈래마다 「줍는 순간 무슨 일이 나는가」가 다르다 — 물약은 **그 자리에서 마실 수도** 있다.
     std::string pickupFn;
+    // ★ 2026-09-18 ⑫ — **그리기 함수 이름**(`DRAW = VectorAnimateDraw` 꼴).
+    //   클라는 이 이름으로 그리는 함수를 고른다(`client/drawable_draw.go:47` `drawFuncs[name]`).
+    //   화살이 화면에 안 그려지는 까닭을 가르려면 **어느 함수를 타는지**부터 알아야 한다.
+    std::string drawFn;
     // CLASS 원문 — 필터 설계·진단용. '+' 로 이어진 값 그대로.
     std::string classRaw;
     // SUBCLASS 원문 — 물약이 체력인지 마나인지가 여기 있다(`POTION+HEALTH_POTION`).

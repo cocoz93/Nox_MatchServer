@@ -539,8 +539,12 @@ int main(int argc, char** argv) {
                 if (t2 && !t2->collideArgs.empty()) amount = std::atoi(t2->collideArgs.c_str());
                 if (t2) srv.SetProjType(nm, w, t2->speed, nox::ParseObjectFlags(t2->flagsRaw),
                                         static_cast<uint8_t>(amount < 0 ? 0 : (amount > 255 ? 255 : amount)));
-                std::printf("[날리기 종류] %s = %u · SPEED %d · 닿음 %s %d%s\n", nm, static_cast<unsigned>(w),
-                            t2 ? t2->speed : 0, t2 ? t2->collideFn.c_str() : "?", amount, t2 ? "" : " ⚠ 못 찾음");
+                std::printf("[날리기 종류] %s = %u · SPEED %d · 닿음 %s %d · 그리기 %s%s\n", nm, static_cast<unsigned>(w),
+                            t2 ? t2->speed : 0, t2 ? t2->collideFn.c_str() : "?", amount,
+                            // ⑫ — 클라는 이 이름으로 그리는 함수를 고른다(`drawFuncs[name]`).
+                            //   비어 있거나 모르는 이름이면 클라가 **아무것도 안 그린다**
+                            (t2 && !t2->drawFn.empty()) ? t2->drawFn.c_str() : "(없음)",
+                            t2 ? "" : " ⚠ 못 찾음");
             }
             std::vector<nox::Server::WorldStatic> st;
             std::vector<nox::Server::WorldProp> props;
