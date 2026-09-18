@@ -4958,7 +4958,18 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
 void Server::GameServerReadyMB(Session& s, std::vector<OutPacket>& out) {
     if (!s.inGame) return;
     BuffOff(Target{ s.addr, -1 }, 23);
-    ApplyEnchant(Target{ s.addr, -1 }, 23, 5 * static_cast<int>(kServerTickRate), 5);
+    // ★ 2026-09-18 — `--no-spawn-invuln` 이면 **부활 무적을 다시 걸지 않는다.**
+    //
+    //   왜 필요한가 — 클라가 CLIENT_READY 를 2초마다 되풀이 보내는데(실측 20~23회)
+    //   그때마다 5초 무적을 다시 걸어 **사실상 영영 무적**이 된다. 그러면 못 움직이고
+    //   맞아도 반응이 없어 **화면 확인 17건이 통째로 막힌다**(09-15 에 실제로 막혔다).
+    //   되풀이의 까닭은 아직 못 닫았으므로(B-1b 미결), 확인을 진행하려고 **무적만 끈다.**
+    //   ⚠ 이건 우회로다 — 정품 동작이 아니므로 ④ 판정에서 「무적」 항목은 이 스위치를
+    //     **끄고** 따로 봐야 한다.
+    if (!noSpawnInvuln_) {
+        ApplyEnchant(Target{ s.addr, -1 }, 23, 5 * static_cast<int>(kServerTickRate), 5);
+        ++spawnInvulnApplied_;     // 스위치가 실제로 먹는지 가르는 계수기
+    }
     const float mult[4] = { 1.0f, 1.0f, 1.0f, 1.0f };     // Health · Mana · Strength · Speed(server/player.go:167 init)
     uint8_t msg[17] = { static_cast<uint8_t>(Op::STAT_MULTIPLIERS) };
     for (int i = 0; i < 4; ++i) std::memcpy(msg + 1 + 4 * i, &mult[i], 4);
