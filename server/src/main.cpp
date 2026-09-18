@@ -900,6 +900,18 @@ int main(int argc, char** argv) {
                 for (size_t k = 0; k < props.size() && k < 6; ++k)
                     std::printf(" (%d,%d)", static_cast<int>(props[k].x), static_cast<int>(props[k].y));
                 std::printf("\n");
+                // ★ ④⑩ — **밟는 판**만 따로 찍는다. 그 위를 왕복해야 보는 항목이라
+                //   `--spawn-at` 에 넣을 좌표가 필요하다(문 자리에 섞이면 못 고른다).
+                {
+                    size_t nPlate = 0;
+                    for (const auto& w : props) {
+                        if (w.kind != nox::PropKind::Plate) continue;
+                        if (nPlate == 0) std::printf("[밟는 판 자리]");
+                        if (nPlate < 8) std::printf(" (%d,%d)", static_cast<int>(w.x), static_cast<int>(w.y));
+                        ++nPlate;
+                    }
+                    if (nPlate) std::printf("  — 모두 %zu개\n", nPlate);
+                }
                 srv.SetWorldProps(std::move(props));
             }
 
