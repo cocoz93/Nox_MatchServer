@@ -19729,6 +19729,56 @@ void TestQuest() {
 //      함부로 바뀌면 안 되는데, 바꿔도 아무도 안 짖었다. 그래서 여기서 못 박는다.
 //
 //    ⚠ 이 시험이 깨지면 「시험을 고칠 것」이 아니라 **「왜 실측값을 바꿨나」를 물을 것.**
+// 묶음 B-1b — **신뢰 순번 되받기는 클라가 읽는 스트림에 실려야 한다** (2026-09-18)
+//
+// 왜 — 클라가 `CLIENT_READY` 를 **한 번**만 부르는데 서버는 **18~25 번** 받고 있었다.
+//   맵 다시 읽기가 되풀이되는 줄 알았는데, 클라에 호출 계수기를 넣어 보니 호출은 1 번.
+//   원인은 **클라의 신뢰 재전송**(`netstr/send_reliable.go` 2초 주기)이고,
+//   그걸 멈추는 유일한 상시 경로가 `SetCurrent(seq)` 의 `ackOlder` 다.
+//
+// ⭕ 갈라 낸 것 — 우리는 되받기를 **클라가 신뢰를 보낸 스트림(1)** 에 실었는데,
+//   클라가 그 seq 를 읽는 자리(`netstr/conn.go:643~650`)에는 **스트림 1 패킷이 안 온다.**
+//   실측 — 서버가 스트림 1 에 `ack=4` 를 2,743 번 실었으나 클라가 본 seq 분포는 `2:12 3:9389`,
+//   **4 가 0 건**이었다. 스트림 0 비신뢰(24,305개)는 그 경로를 지난다.
+//   ⇒ 되받기는 **모든 스트림의 비신뢰**에 싣는다(`Server::Emit` 의 `ackAnyStream_`).
+//
+// ⭕ 실물 대조(45~75초 주행) — 끔 `준비 18~25` · 켬 **`준비 2`**(정품과 같다) · 클라 큐 0
+void TestReliableAckStream() {
+    const std::string a = "10.9.12.1:9121";
+    nox::Server srv;
+    // ⚠ 되받기는 **기본 꺼져 있다** — 켜면 `replay_connect`(정품 녹음 바이트 대조)가 깨진다
+    //   (정품은 비신뢰 머리 순번이 늘 `00`. Server.h `ackRecvSeq_` 주석).
+    //   이 시험은 「켰을 때 **제대로 실리는가**」만 본다.
+    srv.SetAckRecvSeq(true);
+    srv.SetAckAnyStream(true);
+    srv.DebugEnterGame(a, 921);
+
+    // 클라가 **스트림 1** 로 신뢰를 보낸 것처럼 만든다(실측에서 클라는 스트림 1 만 쓴다).
+    //   머리 = `(신뢰<<7) | 스트림`, 둘째 바이트가 순번. 뒤에 아무 메시지나 하나.
+    const uint8_t pkt[] = { 0x80 | 1, 7, static_cast<uint8_t>(nox::Op::CLIENT_READY) };
+    std::vector<nox::OutPacket> out;
+    srv.OnPacket(a, pkt, sizeof(pkt), out);
+
+    // 그 뒤 나가는 **비신뢰** 조각의 머리 순번이 「받은 순번 + 1」이어야 한다.
+    //   ⚠ 스트림 0 까지 봐야 한다 — 스트림 1 만 보면 이 결함을 못 잡는다(그게 원래 상태였다).
+    int nPlain = 0, nAcked = 0, nStream0 = 0;
+    for (const auto& pk : out) {
+        if (pk.to != a || pk.data.size() < 2) continue;
+        const uint8_t b0 = pk.data[0];
+        if (b0 & 0x80) continue;                 // 신뢰는 자기 순번을 쓴다
+        ++nPlain;
+        if ((b0 & 0x7F) == 0) ++nStream0;
+        if (pk.data[1] == 8) ++nAcked;           // 7 + 1
+    }
+    Check(nPlain > 0, "비신뢰 조각이 하나도 안 나갔다 — 되받기를 실을 자리가 없다");
+    Check(nStream0 > 0, "스트림 0 비신뢰가 없다 — 클라가 읽는 자리가 비었다");
+    Check(nAcked == nPlain,
+          "비신뢰 머리에 「받은 순번 + 1」이 안 실렸다(스트림 1 에만 싣던 결함)");
+
+    std::printf("  B-1b 되받기 — 스트림 가리지 않고 「받은 순번+1」 · 비신뢰 %d개(스트림0 %d개)\n",
+                nPlain, nStream0);
+}
+
 void TestMeasuredConstants() {
     // 접속할 때 주는 최대 체력 — 실측 `dd d0 02 4b 00 4b 00` (번호 720 · 75/75)
     Check(nox::kDefaultMaxHealth == 75, "최대 체력 실측값(75)이 바뀌었다");
@@ -19802,6 +19852,7 @@ int main() {
     TestTryJoin();
 
     std::printf("\n[표·경계]\n");
+    TestReliableAckStream();
     TestMeasuredConstants();
     TestGameplayMessages();
     TestDeathFlow();

@@ -102,6 +102,24 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
         h.seq = q.next;
         q.last = q.next;
         ++q.next;
+    } else if (ackRecvSeq_ && ackAnyStream_ && s.lastRelStream >= 0 &&
+               s.seq[s.lastRelStream].recvSeqSeen) {
+        // ★★★ 2026-09-18 — **되받기를 「클라가 읽는 스트림」에 싣는다** (스위치 `--ack-any-stream`).
+        //
+        //   실측으로 갈린 것 — 서버가 스트림 1 비신뢰에 `ack=4` 를 2,743 번 실었는데
+        //   **클라가 본 비신뢰 seq 분포에는 4 가 하나도 없다**(2:12 · 3:9389).
+        //   클라의 수신 루프(`netstr/conn.go:643~650`)에 **스트림 1 패킷이 안 온다**는 뜻이다.
+        //   반면 스트림 0 비신뢰(24,305개)는 그 경로를 지난다.
+        //   ⇒ 되받기는 **스트림 0**(클라가 실제로 읽는 쪽)에 실어야 뜻이 있다.
+        //
+        //   값은 그대로 「클라가 신뢰를 보낸 스트림의 `recvSeq + 1`」이다 —
+        //   `ackOlder(N+1)` 이 N 이하를 지우는 규칙(`send_reliable.go:178~199`)은 그대로다.
+        const StreamSeq& rq = s.seq[s.lastRelStream];
+        const uint8_t ack = static_cast<uint8_t>(rq.recvSeq + 1);
+        if (ack != q.last) ++ackSeqDiffer_;
+        ++ackSeqApplied_;
+        if (ack < 32) ++ackValueHist_[ack];
+        h.seq = ack;
     } else if (ackRecvSeq_ && q.recvSeqSeen) {
         // ★ B-1b (스위치 `--no-ack-seq` 로 끔) — 비신뢰 답에 **클라가 보낸 마지막 신뢰 순번**을
         //   싣는다. 정답지에서 이것이 되받기 노릇을 한다(StreamSeq::recvSeq 주석).
@@ -115,6 +133,10 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
         const uint8_t ack = static_cast<uint8_t>(q.recvSeq + 1);
         if (ack != q.last) ++ackSeqDiffer_;
         ++ackSeqApplied_;
+        // ★ 2026-09-18 — **보낸 ack 값 자체를 센다.** 클라 쪽 로그에 0·2·3 만 찍히고
+        //   4 가 안 보여서, 「우리가 4 를 안 보내나」와 「보내는데 클라가 안 읽나」를 갈라야 한다.
+        //   값이 한두 개뿐이면 `recvSeq` 가 안 올라가는 것이다.
+        if (ack < 32) ++ackValueHist_[ack];
         h.seq = ack;
     } else {
         h.seq = q.last;
@@ -2099,6 +2121,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
         StreamSeq& rq = s.seq[head.stream & 0x7F];
         rq.recvSeq = head.seq;
         rq.recvSeqSeen = true;
+        s.lastRelStream = static_cast<int>(head.stream & 0x7F);   // 되받기를 그 스트림 기준으로 만든다
         ++reliableHeard_;
         if ((head.stream & 0x7F) < 8) ++recvRelStream_[head.stream & 0x7F];
     }

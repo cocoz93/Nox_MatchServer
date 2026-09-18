@@ -165,7 +165,8 @@ int main(int argc, char** argv) {
     bool noNewGear = false;
     // 첫 세계 스냅샷을 아예 안 보낸다. HUD 실종이 이 배선 탓인지 가르는 시험용.
     bool noSnapshot = false;
-    bool ackSeq = false;     // B-1b — 신뢰 순번 되받기(`--ack-seq`). 기본 끔(효과 미확인)
+    bool ackSeq = false;       // B-1b — 신뢰 순번 되받기(**기본 끔** — 켜면 정품 바이트와 어긋난다)
+    bool ackAnyStream = false; // B-1b — 되받기를 스트림 가리지 않고(**기본 끔**)
     bool noSpawnInvuln = false;  // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인 우회로
     // 서두 안 cc(6a … 01) 의 상태를 0 으로 뒤집는 것을 **끈다**(녹음본 값 그대로).
     // 기본은 뒤집는 쪽이다 — Server.h 의 SetForceHudOn 주석 참조.
@@ -280,6 +281,16 @@ int main(int argc, char** argv) {
             // 부활 무적을 아예 안 건다. CLIENT_READY 되풀이로 무적이 안 풀려
             // 화면 확인이 막히는 것을 **원인 규명과 따로** 우회한다(Server.h 주석).
             noSpawnInvuln = true;
+        } else if (a == "--ack-any-stream") {
+            // B-1b — 되받기를 **스트림 가리지 않고** 비신뢰에 싣는다.
+            //   까닭 — 클라는 스트림 0 패킷의 seq 만 읽는다(09-18 실측. Server::Emit 주석).
+            //   `--ack-seq` 와 같이 켠다.
+            ackAnyStream = true;
+        } else if (a == "--no-ack-seq") {
+            // 대조군 — 되받기를 끈다. 켜고 끈 차이를 재려고 남겨 둔 스위치다
+            //   (09-18 실측 — 끄면 CLIENT_READY 를 18~25 번 받는다).
+            ackSeq = false;
+            ackAnyStream = false;
         } else if (a == "--ack-seq") {
             // B-1b — 클라가 보낸 신뢰 순번 +1 을 답 머리에 싣는다.
             // ⚠ **기본 끔** — 09-18 실측에서 효과가 없었다(Server.h ackRecvSeq_ 주석의 표).
@@ -1321,6 +1332,7 @@ int main(int argc, char** argv) {
         srv.SetSendUpdates(!noUpdate);
         srv.SetNotifyNewGear(!noNewGear);
         srv.SetAckRecvSeq(ackSeq);      // B-1b — 신뢰 순번 되받기(기본 끔 · `--ack-seq` 로 켬)
+        srv.SetAckAnyStream(ackAnyStream);
         srv.SetNoSpawnInvuln(noSpawnInvuln);   // 화면 확인 우회 — 부활 무적 안 걸기
         srv.SetForceHudOn(!hudOff);
         if (spawnSpread > 0) srv.SetSpawnSpread(spawnSpread);
@@ -1630,6 +1642,16 @@ int main(int argc, char** argv) {
                         std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.sendPlainOn(st));
                         sl += sb;
                     }
+                    // ★ 되받기로 **어떤 값**을 실었나. 값이 한두 개뿐이면 `recvSeq` 가 안 올라가는 것이다
+                    sl += " · 되받기값";
+                    bool any = false;
+                    for (uint8_t v = 0; v < 32; ++v) {
+                        if (!srv.ackValueCount(v)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)v, srv.ackValueCount(v));
+                        sl += sb;
+                        any = true;
+                    }
+                    if (!any) sl += " (없음)";
                     std::printf("%s\n", sl.c_str());
                 }
 

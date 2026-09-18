@@ -356,6 +356,7 @@ struct Session {
     std::string addr;
     uint8_t xorKey = 0;      // 0이면 아직 평문
     bool keyed = false;      // 키를 준 뒤인가
+    int lastRelStream = -1;  // 클라가 마지막으로 **신뢰**를 보낸 스트림(되받기 기준). -1 이면 아직 없음
     uint32_t connectId = 0;  // SERVER_ACCEPT 에 실어 보낸 번호
     uint32_t frame = 0;      // 이 사람에게 실어 보낼 프레임
     uint16_t netCode = 0;    // 이 사람에게 준 오브젝트 번호
@@ -1404,8 +1405,11 @@ public:
     unsigned long long recvReliableOn(uint8_t st) const { return st < 8 ? recvRelStream_[st] : 0; }
     unsigned long long sendReliableOn(uint8_t st) const { return st < 8 ? sendRelStream_[st] : 0; }
     unsigned long long sendPlainOn(uint8_t st) const { return st < 8 ? sendPlainStream_[st] : 0; }
+    unsigned long long ackValueCount(uint8_t v) const { return v < 32 ? ackValueHist_[v] : 0; }
     // B-1b 되받기 끄기(대조군) — `--no-ack-seq`
     void SetAckRecvSeq(bool v) { ackRecvSeq_ = v; }
+    // 되받기를 **모든 스트림의 비신뢰**에 싣는다 — 클라가 읽는 쪽이 스트림 0 이라서(Emit 주석)
+    void SetAckAnyStream(bool v) { ackAnyStream_ = v; }
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
@@ -3707,6 +3711,7 @@ private:
     unsigned long long acceptHeard_ = 0;   // CLIENT_ACCEPT 받은 수(기대: 접속당 1)
     unsigned long long reliableHeard_ = 0; // 신뢰 비트가 선 조각을 받은 수 (B-1b)
     // 스트림 0~7 만 센다 — 그 위는 실제로 안 쓰인다(넘으면 안 센다는 뜻이니 로그에서 합이 안 맞으면 그것도 단서다)
+    unsigned long long ackValueHist_[32] = {};   // 되받기로 실어 보낸 **값**의 분포(0~31)
     unsigned long long recvRelStream_[8] = {};   // 클라 → 서버 **신뢰**, 스트림별
     unsigned long long sendRelStream_[8] = {};   // 서버 → 클라 **신뢰**, 스트림별
     unsigned long long sendPlainStream_[8] = {}; // 서버 → 클라 **비신뢰**, 스트림별(되받기가 실리는 자리)
@@ -3724,7 +3729,21 @@ private:
     //   ⇒ 다음에 볼 것 = **스트림 번호**. 클라가 CLIENT_READY 를 보내는 스트림과
     //     우리가 답하는 스트림이 다르면 `s.seq[…]` 칸이 어긋나 되받기가 엉뚱한 데 실린다.
     //     계수기를 **스트림별로 갈라서** 세야 갈린다(「갈래를 세라」).
+    // ★★★ 2026-09-18 — **증상은 없앨 수 있는데 정품 바이트와 어긋난다. 기본은 끔이다.**
+    //
+    //   켜면(`--ack-seq --ack-any-stream`) — `CLIENT_READY` 수신이 **18~25 → 2** 로 떨어지고
+    //     클라 신뢰 큐가 0 으로 빈다(09-18 실측 · 재현 2회). 클라 재전송이 멈춘 것이다.
+    //   ⚠ 그런데 **`replay_connect` 가 깨진다** — 정품 녹음에서 비신뢰 머리의 순번 바이트는
+    //     **늘 `00`** 인데(XOR 0x70 을 풀면 `70` 이 `00`) 우리는 되받기 값을 싣게 된다.
+    //     정품 녹음은 우리 최고 등급 근거이므로 **기본은 끔**으로 둔다.
+    //   ⇒ 아직 모르는 것 — **정품은 무엇으로 클라 재전송을 멈추나.**
+    //     녹음에 `0xab MSG_IMPORTANT_ACK` 가 8 건 있는데 그건 `0xcc SEQ_IMPORTANT` 전용이다.
+    //     참고 — 그 녹음에서 클라는 `CLIENT_READY` 를 **4 번** 보냈다(2 번이 아니다).
+    //     즉 정품도 몇 번은 재전송한다. 18~25 가 과한 것이지 2 가 정답이라는 근거는 없다.
+    //   ⚠ 「켬」은 `ackAnyStream_` 과 **짝으로** 켜야 한다. 되받기를 스트림 1 에만 실으면
+    //     클라가 그 패킷의 seq 를 안 읽어(09-18 실측: 받은 seq 분포에 4 가 0 건) 효과가 없다.
     bool ackRecvSeq_ = false;
+    bool ackAnyStream_ = false;  // 되받기를 스트림 가리지 않고 싣는가(위 주석 — 기본 끔)
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.
