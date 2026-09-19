@@ -2724,6 +2724,20 @@ public:
     unsigned long long updateDroppedTicks() const { return updateDroppedTicks_; }
     size_t updateDroppedMax() const { return updateDroppedMax_; }
     unsigned long long updateDroppedSnap() const { return updateDroppedSnap_; }
+    unsigned long long abilHeard() const { return abilHeard_; }
+    unsigned long long abilBadPacket() const { return abilBadPacket_; }
+    unsigned long long abilObserver() const { return abilObserver_; }
+    unsigned long long abilCalls() const { return abilCalls_; }
+    unsigned long long abilBadNum() const { return abilBadNum_; }
+    unsigned long long abilDead() const { return abilDead_; }
+    unsigned long long abilNotWarrior() const { return abilNotWarrior_; }
+    unsigned long long abilExclusive() const { return abilExclusive_; }
+    unsigned long long abilAlready() const { return abilAlready_; }
+    unsigned long long abilMoveState() const { return abilMoveState_; }
+    unsigned long long abilNotLearned() const { return abilNotLearned_; }
+    unsigned long long abilOverweight() const { return abilOverweight_; }
+    unsigned long long abilCooldown2() const { return abilCooldown2_; }
+    unsigned long long abilOk() const { return abilOk_; }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
     // 불려 나온 것이 죽은 횟수.
@@ -3568,6 +3582,22 @@ private:
     //     · 갈아끼우기 `buf[1024]`  — **안 센다.** 그 함수가 Server 멤버가 아니고
     //       입력이 정품 녹음본(480B 안쪽)이라 통이 두 배다. 근거가 생기면 인자로 뺄 것
     unsigned long long updateDroppedSnap_ = 0;
+    // ★ 09-19 — ⑧ 워리어 능력. 「보냈는데 아무 일도 안 난다」를 가를 수가 없었다
+    //   (서버 로그에 능력 흔적이 한 줄도 없었다). 받은 것 → 갈래별 거절 → 실행 순으로 센다
+    unsigned long long abilHeard_ = 0;        // `7a TRY_ABILITY` 를 받은 횟수
+    unsigned long long abilBadPacket_ = 0;    // 게임 밖이거나 본문 길이가 1 이 아님
+    unsigned long long abilObserver_ = 0;     // 관전이라 무시
+    unsigned long long abilCalls_ = 0;        // AbilityDo 까지 들어옴
+    unsigned long long abilBadNum_ = 0;       // 번호가 1~5 밖
+    unsigned long long abilDead_ = 0;         // 죽었거나 사라짐
+    unsigned long long abilNotWarrior_ = 0;   // 워리어가 아님
+    unsigned long long abilExclusive_ = 0;    // 같이 못 켜는 짝이 켜져 있음
+    unsigned long long abilAlready_ = 0;      // 이미 켜져 있음
+    unsigned long long abilMoveState_ = 0;    // 움직임 상태 12
+    unsigned long long abilNotLearned_ = 0;   // 퀘스트인데 레벨 0
+    unsigned long long abilOverweight_ = 0;   // 짐 넘침(광전사만)
+    unsigned long long abilCooldown2_ = 0;    // 아직 쉬는 중
+    unsigned long long abilOk_ = 0;           // **실행했다**
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수

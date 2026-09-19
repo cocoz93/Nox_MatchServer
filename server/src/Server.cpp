@@ -2435,8 +2435,10 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             case Op::TRY_ABILITY: {
                 // ── 묶음 7-d 능력 쓰기 — `network_server.go:91`(`0x7A`)
                 //   **몸 1바이트** — `<능력 번호>`. 채팅 모드가 아니고 `+3680 & 3`(관전)이 아니어야 한다
-                if (!s.inGame || it.bodyLen() != 1) break;
-                if (!s.observer) AbilityDo(s, it.body()[0], out);
+                ++abilHeard_;                      // ★ 받은 것 자체를 먼저 센다
+                if (!s.inGame || it.bodyLen() != 1) { ++abilBadPacket_; break; }
+                if (s.observer) { ++abilObserver_; }
+                else AbilityDo(s, it.body()[0], out);
                 ++handled_;
                 break;
             }
@@ -7500,28 +7502,32 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
     auto refuse = [&](uint8_t why) { InformSpell(s, 2, why, out);
                                      PlaySoundAt(231, static_cast<float>(s.posX),
                                                  static_cast<float>(s.posY), 0, 0, s.addr); };
-    if (abil == 0 || abil >= 6) return false;
-    if (s.respawnAtFrame != 0) return false;             // 죽었거나 사라진 것
-    if (s.charClass != CharClass::Warrior) return false; // 워리어만
+    // ★ 09-19 — **갈래를 갈라 센다.** 능력이 안 먹을 때 「받긴 했나 / 어디서 막혔나」가
+    //   한 줄도 안 남아 있었다(로그에 능력 흔적 0). 반쪽 계수기는 없는 것보다 나쁘다
+    ++abilCalls_;
+    if (abil == 0 || abil >= 6) { ++abilBadNum_; return false; }
+    if (s.respawnAtFrame != 0) { ++abilDead_; return false; }             // 죽었거나 사라진 것
+    if (s.charClass != CharClass::Warrior) { ++abilNotWarrior_; return false; } // 워리어만
     // ② 같이 못 켜는 짝 — 광전사·함성·작살 셋은 서로를 막는다
     //   ⚠ 정답지는 `IsActiveVal`(켜짐 값까지) 과 `IsActive`(있기만) 를 섞어 쓰는데,
     //     목록에 얹는 자리가 늘 `Active: 1` 이라 **둘이 같다**. 그래서 하나로 본다
     const bool exclusive = (abil == 1 || abil == 2 || abil == 3);
     if (exclusive) {
         for (uint8_t o = 1; o <= 3; ++o)
-            if (o != abil && AbilityIsActive(s, o)) { refuse(2); return false; }
+            if (o != abil && AbilityIsActive(s, o)) { ++abilExclusive_; refuse(2); return false; }
     }
-    if (AbilityIsActive(s, abil)) { refuse(2); return false; }   // ③
+    if (AbilityIsActive(s, abil)) { ++abilAlready_; refuse(2); return false; }   // ③
     // ④ 상태 12 이거나 (협동이 아닌데) **떠 있으면**
     //   ⚠ 떠 있는 것(`FlagAirborne`)은 **사람에게는 아직 안 올겼다** —
     //     날아가는 것의 깃발이지 사람 깃발이 아니다. 사람을 띄우는 길(작살 끌림 따위)을 옮길 때 같이 넣는다
-    if (s.moveState == 12) { refuse(6); return false; }
+    if (s.moveState == 12) { ++abilMoveState_; refuse(6); return false; }
     // ⑤ (온라인이 아니거나 퀘스트면) 레벨 0 은 못 쓴다 — ⚠ 우리는 늘 온라인이라 이 관문을 안 탄다
     const bool quest = questTotal_ > 0 || questStage_ > 0;
-    if (quest && s.spellLvl[abil] == 0) { refuse(3); return false; }
-    if (abil == 1 && s.overweight) { InformSpell(s, 2, 7, out); return false; }   // ⑥ 짐 넘침(+3656)
-    if (s.abilCooldown[abil] != 0) { refuse(2); return false; }   // ⑦
+    if (quest && s.spellLvl[abil] == 0) { ++abilNotLearned_; refuse(3); return false; }
+    if (abil == 1 && s.overweight) { ++abilOverweight_; InformSpell(s, 2, 7, out); return false; }   // ⑥ 짐 넘침(+3656)
+    if (s.abilCooldown[abil] != 0) { ++abilCooldown2_; refuse(2); return false; }   // ⑦
 
+    ++abilOk_;
     s.abilCooldown[abil] = kAbilityDelay[abil];
     if (kAbilityDelay[abil] != 0) SendAbilityState(s, abil, 0, out);
     if (kAbilityDuration[abil] > 0) {

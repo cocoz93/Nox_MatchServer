@@ -1622,6 +1622,10 @@ int main(int argc, char** argv) {
                             //   512B 를 넘기면 EncodeUpdate 가 0 을 돌려주고 그 틱은 통째로 안 나간다
                             " · 갱신와이어(나감 %llu·**무산 %llu**[그때 항목 최대 %zu]·나간 것 항목 최대 %zu"
                             "·잘린 항목 %llu[%llu틱·한통최대 %zu]·스냅샷쪽 잘림 %llu)"
+                            // ★ 09-19 ⑧ 능력 — 받은 것부터 실행까지 갈래를 갈라 센다
+                            " · 능력(받음 %llu[꼴틀림 %llu·관전 %llu] · 들어옴 %llu · **실행 %llu**"
+                            " · 거절[번호 %llu·죽음 %llu·워리어아님 %llu·겹침 %llu·이미켜짐 %llu"
+                            "·상태12 %llu·안배움 %llu·짐넘침 %llu·쉬는중 %llu])"
                             " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
@@ -1638,6 +1642,11 @@ int main(int argc, char** argv) {
                             srv.updateEncOk(), srv.updateEncFail(), srv.updateEncFailObjsMax(), srv.updateEncOkObjsMax(),
                             srv.updateDroppedObjs(), srv.updateDroppedTicks(), srv.updateDroppedMax(),
                             srv.updateDroppedSnap(),
+                            srv.abilHeard(), srv.abilBadPacket(), srv.abilObserver(),
+                            srv.abilCalls(), srv.abilOk(),
+                            srv.abilBadNum(), srv.abilDead(), srv.abilNotWarrior(),
+                            srv.abilExclusive(), srv.abilAlready(), srv.abilMoveState(),
+                            srv.abilNotLearned(), srv.abilOverweight(), srv.abilCooldown2(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★ 09-19 진단 ⑬ — 화살 목록과 **실은 프레임의 분포**.
                 //   화면 캡처의 기울기와 1:1 로 맞대는 자리다. 분포가 한 칸뿐이면
