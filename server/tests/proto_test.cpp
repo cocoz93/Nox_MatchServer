@@ -19844,6 +19844,44 @@ void TestUpdatePartialEncode() {
                 nSmall, back.objects.size(), dropSmall);
 }
 
+// ★★★ 2026-09-19 — 캐릭터가 **검은 실루엣**으로 그려지던 것을 막는 시험.
+//   무인 접속은 색 선택 화면을 건너뛰어 클라가 플레이어 정보 97B 를 **전부 0** 으로 보낸다.
+//   그대로 실으면 색이 전부 검정이 된다(실측 — 같은 클라로 opennox 서버에 붙으면 색이 보인다).
+void TestJoinColorsFill() {
+    // ⑴ 전부 0 이면 메운다
+    uint8_t blank[97] = {};
+    nox::FillDefaultColorsIfBlank(blank);
+    Check(blank[68] == 0x73 && blank[69] == 0x4d && blank[70] == 0x22,
+          "빈 정보인데 머리색을 안 메웠다");
+    Check(blank[71] == 0xda && blank[72] == 0x9a && blank[73] == 0x6e,
+          "빈 정보인데 피부색을 안 메웠다");
+    Check(blank[83] == 0x0c && blank[84] == 0x07, "빈 정보인데 옷 색을 안 메웠다");
+    // ⚠ 색 **밖**은 건드리면 안 된다 — 이름(+0)·직업(+66)·여성(+67)·이름꼬리(+89)
+    Check(blank[66] == 0 && blank[67] == 0, "색 자리 밖(직업·여성)을 건드렸다");
+    Check(blank[0] == 0 && blank[89] == 0, "색 자리 밖(이름·이름꼬리)을 건드렸다");
+
+    // ⑵ 색이 **하나라도** 있으면 통째로 그대로 둔다 — 사람이 고른 색을 덮으면 안 된다
+    uint8_t chosen[97] = {};
+    chosen[84] = 0x2a;                      // 윗옷만 골랐다고 하자
+    nox::FillDefaultColorsIfBlank(chosen);
+    Check(chosen[84] == 0x2a, "사람이 고른 색을 덮었다");
+    Check(chosen[68] == 0 && chosen[71] == 0,
+          "색이 있는데도 메웠다 — 「전부 0 일 때만」이 깨졌다");
+
+    // ⑶ nullptr 에 죽지 않는다
+    nox::FillDefaultColorsIfBlank(nullptr);
+
+    // ⑷ 실제로 와이어에 실린다 — `BuildNewPlayer` 를 거친 뒤에도 값이 남아야 한다
+    uint8_t zero97[97] = {};
+    const std::vector<uint8_t> np = nox::BuildNewPlayer(0x02c9, zero97);
+    Check(np.size() >= 3 + 97, "2d NEW_PLAYER 가 너무 짧다");
+    Check(np[3 + 68] == 0x73 && np[3 + 83] == 0x0c,
+          "와이어에 실린 97B 에 색이 없다 — 메우는 자리가 조립 뒤에 있나");
+
+    std::printf("  접속 색 메우기 — 빈 정보에 머리 %02x%02x%02x · 피부 %02x%02x%02x · 바지 %02x\n",
+                blank[68], blank[69], blank[70], blank[71], blank[72], blank[73], blank[83]);
+}
+
 void TestMeasuredConstants() {
     // 접속할 때 주는 최대 체력 — 실측 `dd d0 02 4b 00 4b 00` (번호 720 · 75/75)
     Check(nox::kDefaultMaxHealth == 75, "최대 체력 실측값(75)이 바뀌었다");
@@ -19919,6 +19957,7 @@ int main() {
     std::printf("\n[표·경계]\n");
     TestReliableAckStream();
     TestUpdatePartialEncode();
+    TestJoinColorsFill();
     TestMeasuredConstants();
     TestGameplayMessages();
     TestDeathFlow();

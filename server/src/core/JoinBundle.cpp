@@ -102,6 +102,42 @@ std::vector<uint8_t> BuildJoinBundle(uint16_t netCode, uint32_t frame,
 // ★ 왜 따로 필요한가 — 독립 모드에는 녹음(`joinBody_`)이 없어서 `EmitNewPlayer` 가
 //   조기 return 하고 있었다(2026-09-10 감사). 그래서 접속 묶음 안 자기 소개 하나만
 //   나가고 **남을 소개하는 2d 가 한 번도 안 나갔다.**
+// ★★★ 2026-09-19 — **캐릭터가 검은 실루엣으로 그려지던 것을 여기서 막는다.**
+//
+// 무인 접속(`NOX_JOIN_ADDR`)은 직업·색 선택 화면을 건너뛰므로, 클라가 보내는
+// `CLIENT_ACCEPT` 의 **플레이어 정보 97B 가 통째로 0** 이다(09-19 실측 — 0 이 아닌 것은
+// `opennox.yml` 의 시리얼 문자열뿐). 그 0 을 그대로 실으면 **색이 전부 검정**이 된다.
+// 같은 클라로 opennox 서버에 붙으면 붉은 바지·방패가 보이니, 정답지는 어떻게든 메운다.
+//
+// 짜임은 `server/player.go:984~995` `PlayerInfo`(정확히 97B, `unsafe.Sizeof` 단언이 있다) —
+//   +0 이름 50 · +66 직업 · +67 여성 · +68 머리RGB · +71 피부RGB · +74 콧수염 · +77 염소수염
+//   · +80 턱수염 · +83 바지 · +84 윗옷1 · +85 윗옷2 · +86 신발1 · +87 신발2 · +89 이름꼬리 8
+//
+// 값의 근거 = **정품 녹음 실측**(`proto_test.cpp` 의 `kRec[216]`, 97B 시작 = 그 배열 90번).
+//   머리 `73 4d 22`(갈색) · 피부 `da 9a 6e`(살색) · 바지 `0c` · 윗옷 `07 13` · 신발 `17 06`.
+//   ⚠ 「정품 **기본값**」이 아니라 **그 녹음 속 캐릭터(Jack)의 색**이다. 검정보다 낫다는 뜻이지
+//     정품이 새 캐릭터에 주는 값이라고 읽지 말 것
+//
+// **색 자리(+68~+87)가 전부 0 일 때만** 메운다 — 사람이 고른 색이 있으면 건드리지 않는다.
+void FillDefaultColorsIfBlank(uint8_t* info97) {
+    if (!info97) return;
+    for (int q = 68; q < 88; ++q) {
+        if (info97[q] != 0) return;      // 이미 색이 있다 — 그대로 둔다
+    }
+    static const uint8_t kHair[3] = { 0x73, 0x4d, 0x22 };
+    static const uint8_t kSkin[3] = { 0xda, 0x9a, 0x6e };
+    std::memcpy(info97 + 68, kHair, 3);   // 머리
+    std::memcpy(info97 + 71, kSkin, 3);   // 피부
+    std::memcpy(info97 + 74, kSkin, 3);   // 콧수염 — 녹음도 피부와 같은 값이다
+    std::memcpy(info97 + 77, kSkin, 3);   // 염소수염
+    std::memcpy(info97 + 80, kSkin, 3);   // 턱수염
+    info97[83] = 0x0c;   // 바지
+    info97[84] = 0x07;   // 윗옷 1
+    info97[85] = 0x13;   // 윗옷 2
+    info97[86] = 0x17;   // 신발 1
+    info97[87] = 0x06;   // 신발 2
+}
+
 std::vector<uint8_t> BuildNewPlayer(uint16_t netCode, const uint8_t* info97) {
     std::vector<uint8_t> m;
     m.reserve(kNewPlayerSize);
@@ -110,6 +146,7 @@ std::vector<uint8_t> BuildNewPlayer(uint16_t netCode, const uint8_t* info97) {
     m.insert(m.end(), head2d, head2d + 3);
     if (info97) m.insert(m.end(), info97, info97 + 97);
     else m.insert(m.end(), 97, 0);
+    FillDefaultColorsIfBlank(m.data() + (m.size() - 97));
     m.insert(m.end(), kNewPlayerTail, kNewPlayerTail + sizeof(kNewPlayerTail));
     return m;
 }

@@ -82,6 +82,11 @@ std::vector<uint8_t> BuildUseMap(const std::string& mapName, uint32_t mapCrc,
 // 2d NEW_PLAYER 하나만 — **남을 소개할 때**. 독립 모드에는 녹음이 없어 이것으로 만든다.
 std::vector<uint8_t> BuildNewPlayer(uint16_t netCode, const uint8_t* info97);
 
+// 플레이어 정보 97B 의 **색 자리(+68~+87)가 전부 0 이면** 정품 녹음 실측값으로 메운다.
+// 무인 접속은 색 선택 화면을 건너뛰어 클라가 0 만 보내고, 그대로 실으면 캐릭터가 검게 그려진다.
+// 까닭과 값의 근거는 구현부 주석에 있다(`JoinBundle.cpp`).
+void FillDefaultColorsIfBlank(uint8_t* info97);
+
 // 첫 스냅샷의 cc 꼬리부(381B) — 사람 하나를 세우는 고정 절차.
 // ⚠ 장비 색·오벨리스크 대상 등 낱값은 estate 실측 그대로다(뜻 미상).
 // ★ 2026-09-13 묶음 3-c — `ea FORGET_DRAWABLES` 와 `e9 PLAYER_RESPAWN` 의 4바이트는 **프레임**이다
