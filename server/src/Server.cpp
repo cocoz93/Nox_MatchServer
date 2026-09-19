@@ -12396,6 +12396,21 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
         debugTeamDone_ = true;
     }
+    // ★ 09-19 `--debug-team-every N` — **N틱마다 첫 사람의 팀을 1↔2 로 오간다.**
+    //   `--debug-team-after` 는 한 번만 바꿔서 「다른 팀 → 같은 팀」(친구 ADD)만 보였다.
+    //   확인표 ④ 가 보는 것은 **REMOVE**(같은 팀 → 다른 팀)라 한 번 더 옮길 수단이 필요하다
+    if (debugTeamEvery_ > 0 && firstInGameFrame_ != 0 && frame_ > firstInGameFrame_ &&
+        ((frame_ - firstInGameFrame_) % debugTeamEvery_) == 0) {
+        for (auto& kv : sessions_) {
+            if (!kv.second.inGame) continue;
+            const uint8_t before = kv.second.team;
+            kv.second.team = (before == 1) ? 2 : 1;
+            std::printf("[진단] 프레임 %u 에 %s 팀 %u → %u (되풀이)\n", frame_, kv.second.addr.c_str(),
+                        static_cast<unsigned>(before), static_cast<unsigned>(kv.second.team));
+            std::fflush(stdout);
+            break;
+        }
+    }
 
     // ★ 진단 — 첫 사람 N틱 뒤 **경험치를 한 번 준다**(`--debug-xp N 양`, 2026-09-15).
     //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
