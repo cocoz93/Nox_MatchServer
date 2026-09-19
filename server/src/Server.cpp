@@ -3009,9 +3009,25 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //     바로 싸움이 붙지만, **가려서 안 보이는 것**과 **안 그려지는 것**을
                 //     가르려면 크게 벌려 봐야 한다(2026-09-09).
                 if (s.x == 0 && s.y == 0) {
-                    const int n = static_cast<int>(inGameCount());
-                    s.x = spawnX_ + (n % 4) * spawnSpread_;
-                    s.y = spawnY_ + (n / 4) * spawnSpread_;
+                    // ★★ 09-19 — **새 사람은 맵의 PlayerStart 에 선다**(정답지 `newPlayer`,
+                    //   `player.go:416~426` — `mapFindPlayerStart_4F7AB0`). 전에는 아래 고정값만 써서
+                    //   Estate·CapFlag·FlagWar **세 맵 모두 3864,2534** 에 섰다(09-19 실측).
+                    //   ⚠ 깃발 맵이 어두운 것은 이 탓이 아니었다 — 고친 뒤에도 CapFlag 평균 밝기가 같다(R 19.7 → 19.0). 맵 조명이다.
+                    //   ⚠ `--spawn-at` 으로 못 박았으면 그 값이 먼저다 — 진단·시험이 거기에 기댄다
+                    float fx = 0.0f, fy = 0.0f;
+                    if (!spawnForced_ && FindPlayerStart(s, fx, fy)) {
+                        s.x = static_cast<int>(fx);
+                        s.y = static_cast<int>(fy);
+                        ++spawnFromMap_;
+                        std::printf("[첫자리] 맵 시작점 %d,%d (시작점 %zu곳 중)\n", s.x, s.y, playerStarts_.size());
+                    } else {
+                        const int n = static_cast<int>(inGameCount());
+                        s.x = spawnX_ + (n % 4) * spawnSpread_;
+                        s.y = spawnY_ + (n / 4) * spawnSpread_;
+                        ++spawnFromDefault_;
+                        std::printf("[첫자리] 고정값 %d,%d (%s)\n", s.x, s.y,
+                                    spawnForced_ ? "--spawn-at" : "맵에 시작점 없음");
+                    }
                 }
                 // ★ 오브젝트 번호는 **접속마다 달라야 한다**. 전에는 모두 713 이라
                 //   둘째 클라가 첫째와 같은 번호를 받아 화면이 검었다(2026-09-08).

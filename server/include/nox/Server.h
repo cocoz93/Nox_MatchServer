@@ -1546,7 +1546,7 @@ public:
     //   그 자리와 멀면 매번 한참을 걸어야 한다. G_Castle 은 시작이 (1244,645)이고
     //   발판·덫·상자·문이 다 모인 자리는 (2493,2532)라 **2,200 넘게 떨어져 있다.**
     //   ⚠ 부활 자리는 `playerStarts_` 가 따로 고르므로 **첫 접속 자리만** 바뀐다.
-    void SetSpawn(int x, int y) { spawnX_ = x; spawnY_ = y; }
+    void SetSpawn(int x, int y) { spawnX_ = x; spawnY_ = y; spawnForced_ = true; }
 
     // ★ 시험용 — **스폰 자리를 아이템 자리로** 옮긴다. 없으면 false.
     //
@@ -1591,7 +1591,7 @@ public:
     void MarkDirty(uint16_t netCode, PendingReport::What what);
     // 쌓인 것을 보내고 비운다 (틱 끝에서 한 번).
     void FlushPending(std::vector<OutPacket>& out);
-    // 시험·로그용 —  x41 을 몇 번 보냈나.
+    // 시험·로그용 — 0x41 을 몇 번 보냈나.
     unsigned long long unitHealthSent() const { return unitHealthSent_; }
     // 조각 I — 체력이 가는 길은 **셋**이다. 하나만 세면 「안 갔다」와 「딴 길로 갔다」가 안 갈린다.
     unsigned long long healthDeltaSent() const { return healthDeltaSent_; }  // 42 줄어든 만큼(보는 사람마다)
@@ -2749,6 +2749,8 @@ public:
     unsigned long long harpoonShot() const { return harpoonShot_; }
     unsigned long long harpoonAttached() const { return harpoonAttached_; }
     unsigned long long harpoonPullTicks() const { return harpoonPullTicks_; }
+    unsigned long long spawnFromMap() const { return spawnFromMap_; }
+    unsigned long long spawnFromDefault() const { return spawnFromDefault_; }
     unsigned long long joinInfo97Ok() const { return joinInfo97Ok_; }
     unsigned long long joinInfo97Null() const { return joinInfo97Null_; }
     size_t acceptBodyLenLast() const { return acceptBodyLenLast_; }
@@ -3612,6 +3614,12 @@ private:
     unsigned long long abilOverweight_ = 0;   // 짐 넘침(광전사만)
     unsigned long long abilCooldown2_ = 0;    // 아직 쉬는 중
     unsigned long long abilOk_ = 0;           // **실행했다**
+    // ★ 09-19 — 첫 접속 자리. `--spawn-at` 으로 못 박았으면 그 값을 쓰고, 아니면
+    //   **맵의 PlayerStart** 에 세운다(정답지 `newPlayer` · `player.go:416~426`).
+    //   전에는 늘 덤프에서 온 고정값(bludeath 의 3864,2534)이라 **맵마다 엉뚱한 자리**였다
+    bool spawnForced_ = false;
+    unsigned long long spawnFromMap_ = 0;      // PlayerStart 에서 골랐다
+    unsigned long long spawnFromDefault_ = 0;  // 고정값(또는 --spawn-at)을 썼다
     // ★ 09-19 — 검은 실루엣. 접속 묶음에 실을 **플레이어 정보 97B** 가 있었나
     // ★ 09-19 시험 스위치 — 관전 풀 때 `2d NEW_PLAYER` 를 **다시 안 보낸다**(`--no-2nd-newplayer`).
     //   그 두 번째 통은 `Field3680`(112번)을 갈아 끼우려고 우리가 넣은 우회인데,
@@ -3804,7 +3812,7 @@ private:
     unsigned long long healthAbsSent_ = 0;
     unsigned long long healthDeltaHeld_ = 0;
     std::map<std::string, unsigned long long> damageStops_;
-    unsigned long long enchantSent_ = 0;      // 0x5A 를 보낸 횟수 (R4)   //  x41 을 보낸 횟수 (R4)
+    unsigned long long enchantSent_ = 0;      // 0x5A 를 보낸 횟수 (R4)   // 0x41 을 보낸 횟수 (R4)
     int peerPose_ = -1;   // ⭕ 2026-09-13 — 기본은 덮지 않음(0x30 은 그때 상대의 방향이었다 · Server.cpp 남 항목 주석)
     // 갱신 항목 순서를 뒤집는다(남 먼저). 「자리 탓인가 누구냐 탓인가」를 가르는 시험용.
     bool peerFirst_ = false;
@@ -3813,7 +3821,7 @@ private:
     bool peerSnapshot_ = false;
     // 남을 사람 아닌 종류로 보내 본다(0 이면 사람 그대로). 가르는 시험용.
     uint16_t peerType_ = 0;
-    // 사람 둘 이상일 때 매 틱 f 로 다시 소개할지. 기본 꺼짐 — 켜면 클라가
+    // 사람 둘 이상일 때 매 틱 0xff 로 다시 소개할지. 기본 꺼짐 — 켜면 클라가
     // 갱신마다 별칭을 새로 만든다(2026-09-09 실측: 정품의 30배).
     // ★★ 기본이 **켜짐**이다. 끄면(별칭으로 보내면) **아무도 안 그려진다**(2026-09-09 사람 눈).
     //   내 별칭표가 클라 것과 어긋나서, 클라가 그 별칭을 엉뚱한 것으로 풀거나 못 푼다.
