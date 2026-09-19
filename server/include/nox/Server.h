@@ -1355,6 +1355,7 @@ public:
     void SetDebugTeamAfter(uint32_t ticks) { debugTeamAfter_ = ticks; }
     void SetDebugTeamEvery(uint32_t ticks) { debugTeamEvery_ = ticks; }
     void SetDebugScore(uint32_t ticks, uint32_t val) { debugScoreAfter_ = ticks; debugScoreVal_ = val; }
+    void SetDebugKill(uint32_t ticks) { debugKillAfter_ = ticks; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 경험치를 한 번 준다. 0 이면 끔.
     //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
     //   ④대기 ⑨ 「HUD 경험치 막대가 차오르나」를 정품 화면으로 보려면 줄 길이 있어야 한다.
@@ -3720,6 +3721,9 @@ private:
     uint32_t debugTeamAfter_ = 0;     // 진단 --debug-team-after (0 끔)
     uint32_t debugTeamEvery_ = 0;     // 진단 --debug-team-every — N틱마다 팀을 1↔2 로 오간다 (0 끔)
     // ★ 09-19 `--debug-score N 점수` — 판 끝 사슬을 보려고 점수를 직접 준다(까닭은 구현부 주석)
+    // ★ 09-19 `--debug-kill N` — N틱 뒤 첫 사람이 둘째를 죽인 것으로 친다(까닭은 구현부 주석)
+    uint32_t debugKillAfter_ = 0;
+    bool     debugKillDone_ = false;
     uint32_t debugScoreAfter_ = 0;
     uint32_t debugScoreVal_ = 0;
     bool     debugScoreDone_ = false;

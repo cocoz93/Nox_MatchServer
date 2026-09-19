@@ -214,6 +214,7 @@ int main(int argc, char** argv) {
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     int debugTeamEvery = 0;         // 진단 — N틱마다 팀을 1↔2 로 오간다 (0 끔)
+    int debugKillAfter = 0;         // 진단 — N틱 뒤 첫 사람이 둘째를 죽인다 (0 끔)
     int debugScoreAfter = 0;        // 진단 — N틱 뒤 첫 사람 점수를 올린다 (0 끔)
     int debugScoreVal = 0;
     int spawnAtX = -1, spawnAtY = -1;   // --spawn-at X Y — 시작·부활 자리를 손으로 지정 (음수면 끔)
@@ -444,6 +445,9 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-team-after" && i + 1 < argc) {
             // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
             debugTeamAfter = std::atoi(argv[++i]);
+        } else if (a == "--debug-kill" && i + 1 < argc) {
+            // 진단 — N틱 뒤 첫 사람이 둘째를 죽인 것으로 친다(킬→점수→판끝 사슬 확인용)
+            debugKillAfter = std::atoi(argv[++i]);
         } else if (a == "--debug-score" && i + 2 < argc) {
             // 진단 — N틱 뒤 첫 사람의 점수를 <점수> 로 만든다(판 끝 사슬 확인용)
             debugScoreAfter = std::atoi(argv[++i]);
@@ -1182,6 +1186,10 @@ int main(int argc, char** argv) {
             srv.SetDebugOwnPetAfter(static_cast<uint32_t>(debugOwnPet));
             std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 소유 임프를 사람 자리에 고정\n", debugOwnPet);
             std::fflush(stdout);
+        }
+        if (debugKillAfter > 0) {
+            srv.SetDebugKill(static_cast<uint32_t>(debugKillAfter));
+            std::printf("[진단스위치] %d 틱 뒤 첫 사람이 둘째를 죽인다\n", debugKillAfter);
         }
         if (debugScoreAfter > 0) {
             srv.SetDebugScore(static_cast<uint32_t>(debugScoreAfter), static_cast<uint32_t>(debugScoreVal));

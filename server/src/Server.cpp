@@ -12412,6 +12412,28 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
     }
 
+    // ★★★ 09-19 진단 `--debug-kill N` — **N틱 뒤 첫 사람이 둘째를 죽인 것으로 친다.**
+    //   왜 — 「킬 → 점수 → 판 끝」 사슬의 앞머리를 무인으로 못 일으킨다.
+    //   같은 자리에 세우고 `NOX_AUTO_ATTACK` 으로 때려도 **근접 146 에 피해 5**,
+    //   체력을 5 로 낮춰도 **피해 1** 이었다(09-19). 무인은 **상대를 안 바라본다**.
+    //   그래서 `Damage` 를 직접 불러 죽인다 — 그 함수가 킬 처리·점수·`RoundCheckLimit` 까지 한다
+    if (debugKillAfter_ > 0 && !debugKillDone_ && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugKillAfter_) {
+        std::string killer, victim;
+        for (auto& kv : sessions_) {
+            if (!kv.second.inGame || kv.second.observer) continue;
+            if (killer.empty()) killer = kv.first;
+            else if (victim.empty()) { victim = kv.first; break; }
+        }
+        if (!killer.empty() && !victim.empty()) {
+            std::printf("[진단] 프레임 %u — %s 가 %s 를 죽인다(진단)\n",
+                        frame_, killer.c_str(), victim.c_str());
+            std::fflush(stdout);
+            Damage(victim, 9999, out, killer, nullptr, /*ignoreInvuln=*/true);
+            debugKillDone_ = true;
+        }
+    }
+
     // ★★★ 09-19 진단 `--debug-score N 점수` — **첫 사람의 점수를 한 번 올린다.**
     //   왜 — 판 끝은 점수가 `limitValue`(기본 **15** 킬)에 닿아야 서는데(`Server.cpp:1405`),
     //   무인으로는 15킬을 못 낸다(조준이 안 되고, 덫에 죽는 것은 점수가 아니다).
