@@ -3,7 +3,10 @@ param(
   [Parameter(Mandatory=$true)][string]$Dir,
   [int]$X0=0,[int]$Y0=0,[int]$X1=1919,[int]$Y1=1079,
   [int]$From=1,[int]$To=999,
-  [switch]$Probe, [int]$PX=0, [int]$PY=0
+  [switch]$Probe, [int]$PX=0, [int]$PY=0,
+  # 색 갈래 — 'orange' 는 처음 쓰던 주황(UI 글자도 걸린다),
+  #           'green' 은 G_Temple 덫 화살의 밝은 연두(실측 R153 G228 B167).
+  [ValidateSet('orange','green')][string]$Hue = 'orange'
 )
 Add-Type -AssemblyName System.Drawing
 Add-Type -TypeDefinition @"
@@ -15,12 +18,15 @@ public class TR {
       BitmapData d=bm.LockBits(new Rectangle(0,0,w,h),ImageLockMode.ReadOnly,PixelFormat.Format32bppArgb);
       st=d.Stride;byte[] b=new byte[st*h];Marshal.Copy(d.Scan0,b,0,b.Length);bm.UnlockBits(d);return b;}}
   // BGRA order
-  public static double[] Cent(byte[] b,int st,int x0,int y0,int x1,int y1){
+  public static double[] Cent(byte[] b,int st,int x0,int y0,int x1,int y1,bool green){
     long n=0;double sx=0,sy=0;
     for(int y=y0;y<=y1;y++){int row=y*st;
       for(int x=x0;x<=x1;x++){int i=row+x*4;
         int bl=b[i],g=b[i+1],r=b[i+2];
-        if(r>165 && r-g>45 && g-bl>25){n++;sx+=x;sy+=y;}}}
+        bool hit = green
+          ? (g>190 && g-r>45 && g-bl>35)
+          : (r>165 && r-g>45 && g-bl>25);
+        if(hit){n++;sx+=x;sy+=y;}}}
     if(n==0) return new double[]{0,-1,-1};
     return new double[]{n,sx/n,sy/n};}
   public static string Px(byte[] b,int st,int x,int y){int i=y*st+x*4;
@@ -34,6 +40,6 @@ foreach($f in $files){
   if($num -lt $From -or $num -gt $To){continue}
   $b = [TR]::Load($f.FullName,[ref]$w,[ref]$h,[ref]$st)
   if($Probe){ "{0} ({1},{2}) {3}" -f $f.Name,$PX,$PY,[TR]::Px($b,$st,$PX,$PY); continue }
-  $c = [TR]::Cent($b,$st,$X0,$Y0,$X1,$Y1)
+  $c = [TR]::Cent($b,$st,$X0,$Y0,$X1,$Y1,($Hue -eq 'green'))
   "{0} n={1} cx={2:F1} cy={3:F1}" -f $f.Name,$c[0],$c[1],$c[2]
 }
