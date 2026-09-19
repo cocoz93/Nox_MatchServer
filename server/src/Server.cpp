@@ -4825,12 +4825,22 @@ void Server::PlayerSpell(Session& s, std::vector<OutPacket>& out) {
     const int leaf = s.castLeaf;
     const uint8_t spell = (leaf > 0) ? static_cast<uint8_t>(phonemeTree_[static_cast<size_t>(leaf)].ind) : 0;
     const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    // ★ 2026-09-18 — **여기 갈래가 계수기 없이 새고 있었다.** 클라가 주문 29 를 5번 보내고
+    //   서버도 5번 받았는데(`castAccepted_` = 5) 발사가 **0** 이고 거절 갈래도 **전부 0** 이었다.
+    //   조용히 빠지는 자리가 셋 — ⑴ 잎 0(음소를 못 따라감) ⑵ 잎의 주문 번호가 0 ⑶ **안 배움**.
+    //   ⑶ 은 `if (spellLvl != 0 || spell == 34)` 가 거짓일 때 `unknown` 인 채로 그냥 나간다.
+    ++spellPlayerCalls_;
     if (leaf == 0) {
         unknown = true;
-    } else if (spell != 0) {
+        ++spellLeafZero_;
+    } else if (spell == 0) {
+        ++spellIndZero_;
+    } else {
+        if (s.spellLvl[spell] == 0 && spell != 34) ++spellNotLearned_;
         if (!quest && (SpellFlags(spell) & 0x20)) {
             const Target cur = FindObjectAtCursor(s);      // ud.CursorObj(+288)
             if (!cur.none() && !TargetIsEnemy(s, cur)) {
+                ++spellFriendAtCursor_;                    // ★ 조용히 나가던 자리 — 계수기를 달았다
                 return;                                    // ⚠ 정답지 그대로 — 상태 2·STAT 를 안 건드리고 나간다
             }
         }
@@ -4839,6 +4849,7 @@ void Server::PlayerSpell(Session& s, std::vector<OutPacket>& out) {
             err = SpellCheckClass(s, spell);
             if (err == 0) err = CheckPlrCantCastSpell(s, spell, false);
             if (err != 0) {
+                ++spellErrInform_;                         // ★ 직업·못씀 따위로 막힌 수(갈래)
                 InformSpell(s, 0, static_cast<uint32_t>(err), out);   // + 소리 PermanentFizzle(10)
             } else {
                 const int mana = SpellManaTake(s, spell, 1, out);
@@ -4857,6 +4868,7 @@ void Server::PlayerSpell(Session& s, std::vector<OutPacket>& out) {
                         InformSpell(s, 1, spell, out);
                         ++spells_[spell];
                     } else {
+                        ++spellCastFailed_;                // ★ 시전 함수가 거짓을 돌려준 수(갈래)
                         SpellManaGive(s, mana, out);
                         err = 8;
                     }
@@ -10604,12 +10616,14 @@ int Server::CastFist(Session& caster, const SpellArg& arg, int lvl, std::vector<
     if (lvl > 5) lvl = 5;
     for (const auto& p : placed_) {
         if (p.kind == 5 && p.owner == caster.addr) {
+            ++fistTooMany_;          // ★ 갈래 — 이미 자기 주먹이 떠 있다
             SendPriMsg(caster, "ExecSpel.c:TooManyFists", out);
             return 0;
         }
     }
     const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
     if (!MapTraceRay(cx, cy, arg.x, arg.y, 73)) {
+        ++fistNoLos_;                // ★ 갈래 — 커서 자리가 안 보인다(「You cannot see that spot」)
         InformSpell(caster, 0, 2, out);
         return 0;
     }

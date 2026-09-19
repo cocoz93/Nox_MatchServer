@@ -1609,6 +1609,8 @@ int main(int argc, char** argv) {
                             "주문 %llu(마나막힘 %llu) · 나는것 %zu(만든 %llu · 사라짐 %llu · 갱신에 %llu) · 피해 %llu · 별칭받음 %llu%s"
                             " · 악수(수락 %llu·맵지정 %llu·준비 %llu·신뢰받음 %llu·되받기 %llu/다름 %llu·무적건 %llu)"
                             " · 시전거절(죽음 %llu·범위 %llu·안배움 %llu·시전중 %llu·직업 %llu·못씀 %llu→받음 %llu)"
+                            // ★ 시전 뒷단 갈래 — 「받음은 있는데 발사가 0」일 때 어디서 새는지 가른다
+                            " · 시전뒷단(부름 %llu·잎0 %llu·번호0 %llu·안배움 %llu·커서아군 %llu·막힘 %llu·시전실패 %llu[주먹 중복 %llu·안보임 %llu])"
                             " · 화살사라짐(벽 %llu[태어나자마자 %llu]·수명 %llu·평균 %.1f틱·**동시최대 %zu**)"
                             " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
@@ -1619,6 +1621,9 @@ int main(int argc, char** argv) {
                             srv.ackSeqApplied(), srv.ackSeqDiffer(), srv.spawnInvulnApplied(),
                             srv.castRejDead(), srv.castRejRange(), srv.castRejUnknown(),
                             srv.castRejBusy(), srv.castRejClass(), srv.castRejCant(), srv.castAccepted(),
+                            srv.spellPlayerCalls(), srv.spellLeafZero(), srv.spellIndZero(), srv.spellNotLearned(),
+                            srv.spellFriendAtCursor(), srv.spellErrInform(), srv.spellCastFailed(),
+                            srv.fistTooMany(), srv.fistNoLos(),
                             srv.arrowGoneWall(), srv.arrowGoneWallAtBirth(), srv.arrowGoneAge(), srv.arrowLifeAvg(), srv.missilesPeak(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★★ B-1b — **신뢰 순번을 스트림별로 갈라 찍는다** (2026-09-18).

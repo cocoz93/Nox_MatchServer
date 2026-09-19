@@ -1396,6 +1396,16 @@ public:
     unsigned long long readyHeard() const { return readyHeard_; }
     unsigned long long useMapSent() const { return useMapSent_; }
     unsigned long long acceptHeard() const { return acceptHeard_; }
+    // ★ 시전 갈래 — `PlayerSpell` 안에서 **조용히 빠지던** 자리들(2026-09-18)
+    unsigned long long spellPlayerCalls() const { return spellPlayerCalls_; }
+    unsigned long long spellLeafZero()    const { return spellLeafZero_; }
+    unsigned long long spellIndZero()     const { return spellIndZero_; }
+    unsigned long long spellNotLearned()  const { return spellNotLearned_; }
+    unsigned long long spellFriendAtCursor() const { return spellFriendAtCursor_; }
+    unsigned long long spellErrInform()  const { return spellErrInform_; }
+    unsigned long long spellCastFailed() const { return spellCastFailed_; }
+    unsigned long long fistTooMany() const { return fistTooMany_; }
+    unsigned long long fistNoLos()   const { return fistNoLos_; }
     unsigned long long reliableHeard() const { return reliableHeard_; }
     unsigned long long ackSeqApplied() const { return ackSeqApplied_; }
     unsigned long long ackSeqDiffer() const { return ackSeqDiffer_; }
@@ -3713,6 +3723,15 @@ private:
     unsigned long long readyHeard_ = 0;    // CLIENT_READY 받은 수 (기대: 정품 2)
     unsigned long long useMapSent_ = 0;    // USE_MAP 보낸 수     (기대: 접속당 1)
     unsigned long long acceptHeard_ = 0;   // CLIENT_ACCEPT 받은 수(기대: 접속당 1)
+    unsigned long long spellPlayerCalls_ = 0;  // PlayerSpell 이 불린 수
+    unsigned long long spellLeafZero_ = 0;     // 음소 잎이 0 (나무를 못 따라감)
+    unsigned long long spellIndZero_ = 0;      // 잎은 있는데 주문 번호가 0
+    unsigned long long spellNotLearned_ = 0;   // 그 주문을 안 배웠다
+    unsigned long long spellFriendAtCursor_ = 0; // 커서에 아군이 잡혀 조용히 나갔다
+    unsigned long long spellErrInform_ = 0;      // 직업·못씀 따위로 막혔다
+    unsigned long long spellCastFailed_ = 0;     // 시전 함수가 거짓을 돌려줬다
+    unsigned long long fistTooMany_ = 0;         // 주먹 — 이미 자기 것이 떠 있다
+    unsigned long long fistNoLos_ = 0;           // 주먹 — 커서 자리가 안 보인다
     unsigned long long reliableHeard_ = 0; // 신뢰 비트가 선 조각을 받은 수 (B-1b)
     // 스트림 0~7 만 센다 — 그 위는 실제로 안 쓰인다(넘으면 안 센다는 뜻이니 로그에서 합이 안 맞으면 그것도 단서다)
     unsigned long long ackValueHist_[32] = {};   // 되받기로 실어 보낸 **값**의 분포(0~31)
