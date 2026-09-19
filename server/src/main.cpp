@@ -1636,6 +1636,8 @@ int main(int argc, char** argv) {
                             "·상태12 %llu·안배움 %llu·짐넘침 %llu·쉬는중 %llu])"
                             // ★ 09-19 검은 실루엣 — 접속 묶음에 플레이어 정보 97B 가 실렸나
                             " · 접속정보(실음 %llu·**0으로채움 %llu**·마지막 ACCEPT 본문 %zuB)"
+                            // ★ 09-19 ⑦ 작살 — 뒷단 갈래
+                            " · 작살(들어옴 %llu·종류모름 %llu·**쏨 %llu**·걸림 %llu·끄는틱 %llu)"
                             " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
@@ -1658,6 +1660,8 @@ int main(int argc, char** argv) {
                             srv.abilExclusive(), srv.abilAlready(), srv.abilMoveState(),
                             srv.abilNotLearned(), srv.abilOverweight(), srv.abilCooldown2(),
                             srv.joinInfo97Ok(), srv.joinInfo97Null(), srv.acceptBodyLenLast(),
+                            srv.harpoonDoCalls(), srv.harpoonNoType(), srv.harpoonShot(),
+                            srv.harpoonAttached(), srv.harpoonPullTicks(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★ 09-19 진단 ⑬ — 화살 목록과 **실은 프레임의 분포**.
                 //   화면 캡처의 기울기와 1:1 로 맞대는 자리다. 분포가 한 칸뿐이면

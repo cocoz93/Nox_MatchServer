@@ -7720,8 +7720,9 @@ Server::MissileObj* Server::HarpoonBoltOf(const Session& s) {
 // `abilityHarpoon::Do` — 화살을 만들어 쏜다
 void Server::HarpoonDo(Session& s, std::vector<OutPacket>& out) {
     PlayerSetState(s, 32, frame_);                           // PlayerState32
+    ++harpoonDoCalls_;
     const ProjTypeInfo* pt = ProjType("HarpoonBolt");
-    if (!pt || pt->type == 0) return;                        // 종류를 모르면 안 만든다
+    if (!pt || pt->type == 0) { ++harpoonNoType_; return; }  // 종류를 모르면 안 만든다
     HarpoonBreak(s, /*emitSound=*/false, out);               // 남은 것이 있으면 먼저 치운다
     MissileObj m;
     m.netCode = nextShotNetCode_++;
@@ -7739,6 +7740,7 @@ void Server::HarpoonDo(Session& s, std::vector<OutPacket>& out) {
     m.velX = DirVecX(m.dir1) * m.speed;
     m.velY = DirVecY(m.dir1) * m.speed;
     missiles_.push_back(m); ++missilesMade_;
+    ++harpoonShot_;                                          // ★ 09-19 — 갈래를 갈라 센다
     s.harpoonBoltNc = m.netCode;
     s.harpoonTarget = Target{};
     s.harpoonFrame35 = 0;                                    // 아직 걸림을 안 알렸다
@@ -7786,6 +7788,7 @@ bool Server::HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPa
         return false;
     }
     own.harpoonTarget = targ;
+    ++harpoonAttached_;                                      // ★ 상대에 걸렸다
     TargetXY(targ, own.harpoonTargX, own.harpoonTargY);
     own.harpoonFrame38 = frame_;
     m.flags |= 0x40;                                         // FlagNoCollide(비트 6 · ThingDb kFlagNames) — 더는 안 부딪힌다
@@ -7828,6 +7831,7 @@ void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
     const double dist = std::sqrt(dx0 * dx0 + dy0 * dy0);
 
     if (!s.harpoonTarget.none()) {
+        ++harpoonPullTicks_;
         float tx = 0, ty = 0;
         if (!TargetXY(s.harpoonTarget, tx, ty)) { HarpoonBreak(s, true, out); return; }   // 상대가 사라졌다
         if (!s.harpoonTarget.addr.empty()) {

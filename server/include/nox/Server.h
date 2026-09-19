@@ -2739,6 +2739,11 @@ public:
     unsigned long long abilCooldown2() const { return abilCooldown2_; }
     unsigned long long abilOk() const { return abilOk_; }
     void SetNoSecondNewPlayer(bool v) { noSecondNewPlayer_ = v; }
+    unsigned long long harpoonDoCalls() const { return harpoonDoCalls_; }
+    unsigned long long harpoonNoType() const { return harpoonNoType_; }
+    unsigned long long harpoonShot() const { return harpoonShot_; }
+    unsigned long long harpoonAttached() const { return harpoonAttached_; }
+    unsigned long long harpoonPullTicks() const { return harpoonPullTicks_; }
     unsigned long long joinInfo97Ok() const { return joinInfo97Ok_; }
     unsigned long long joinInfo97Null() const { return joinInfo97Null_; }
     size_t acceptBodyLenLast() const { return acceptBodyLenLast_; }
@@ -3614,6 +3619,14 @@ private:
     //   ⚠ 그래도 기본값은 아직 `false`(우회 켬)로 둔다 — HUD 상태가 바뀌면 ⑧ 칸 판정 등
     //     다른 자리에 영향이 간다. 그쪽을 함께 볼 때 기본값을 뒤집을 것
     bool noSecondNewPlayer_ = false;
+    // ★ 09-19 ⑦ 작살 — 「쐈나 / 걸렸나 / 끌고 있나」를 갈라 센다.
+    //   확인표는 이 자리를 「셋 중 가장 의심스럽다」고 적어 두었다(끌려오는 쪽이
+    //   주인을 지나쳐 넘나드는지 = 우리 셈, 부드럽게 오면 우리가 틀린 것)
+    unsigned long long harpoonDoCalls_ = 0;   // 능력 3번이 뒷단까지 들어옴
+    unsigned long long harpoonNoType_ = 0;    // HarpoonBolt 종류를 못 찾음
+    unsigned long long harpoonShot_ = 0;      // 작살을 실제로 쐈다
+    unsigned long long harpoonAttached_ = 0;  // 상대에 걸렸다
+    unsigned long long harpoonPullTicks_ = 0; // 걸린 채로 지난 틱
     unsigned long long joinInfo97Ok_ = 0;     // 97B 를 그대로 실었다
     unsigned long long joinInfo97Null_ = 0;   // **없어서 0 으로 채웠다**(색이 검정이 된다)
     size_t acceptBodyLenLast_ = 0;            // 마지막 CLIENT_ACCEPT 본문 길이
