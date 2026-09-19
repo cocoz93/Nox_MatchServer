@@ -2720,6 +2720,9 @@ public:
     unsigned long long updateEncFail() const { return updateEncFail_; }
     size_t updateEncFailObjsMax() const { return updateEncFailObjsMax_; }
     size_t updateEncOkObjsMax() const { return updateEncOkObjsMax_; }
+    unsigned long long updateDroppedObjs() const { return updateDroppedObjs_; }
+    unsigned long long updateDroppedTicks() const { return updateDroppedTicks_; }
+    size_t updateDroppedMax() const { return updateDroppedMax_; }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
     // 불려 나온 것이 죽은 횟수.
@@ -3552,6 +3555,11 @@ private:
     unsigned long long updateEncFail_ = 0;    // 용량을 넘겨 0 이 나온 횟수
     size_t updateEncFailObjsMax_ = 0;         // 실패했을 때 항목 수의 최대
     size_t updateEncOkObjsMax_ = 0;           // 성공했을 때 항목 수의 최대
+    // ★ 부분 인코딩으로 **이번 통에 안 실린** 항목. 무산은 사라졌지만 이쪽이 크면
+    //   그 오브젝트는 그 틱에 클라로 안 가고 **깜빡일 수** 있다.
+    unsigned long long updateDroppedObjs_ = 0;   // 잘린 항목 누계
+    unsigned long long updateDroppedTicks_ = 0;  // 한 개라도 잘린 틱 수
+    size_t updateDroppedMax_ = 0;                // 한 통에서 잘린 항목 최대
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수

@@ -13158,9 +13158,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             CollectAoiExits(s.staticIntroAt, statics_, s.x, s.y, outOfSight);
         }
 
-        uint8_t body[512];
+        // ★★★ 2026-09-19 — **512 → 2048.** 정답지가 쓰는 크기다(`gameloop.go:487`
+        //   `BufferSize: 2048` · netstr 기본값은 1024).
+        //   512 로는 덫밭에서 항목 89개 중 **한 통 최대 47개가 잘렸다**(654틱 중 250틱).
+        //   부분 인코딩으로 갱신이 죽지는 않게 됐지만, 잘린 오브젝트는 그 틱에 안 가서
+        //   화면에서 깜빡인다. 통을 정답지 크기로 맞춰 잘림 자체를 없앤다.
+        uint8_t body[2048];
         body[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
-        size_t n = EncodeUpdate(m, body + 1, sizeof(body) - 1);
+        size_t droppedObjs = 0;
+        size_t n = EncodeUpdate(m, body + 1, sizeof(body) - 1, &droppedObjs);
+        if (droppedObjs) {
+            updateDroppedObjs_ += droppedObjs;
+            ++updateDroppedTicks_;
+            if (droppedObjs > updateDroppedMax_) updateDroppedMax_ = droppedObjs;
+        }
         // ⚠ **이 대입이 없어서 「갱신에 0」이 나왔다**(2026-09-08). `git checkout` 으로
         //   이분법을 하다가 잃었고, 초기값 0 을 관측으로 읽어 한참을 헤맸다.
         //   ★ 계측을 고칠 때는 **그 계측이 실제로 갱신되는지부터** 볼 것.
