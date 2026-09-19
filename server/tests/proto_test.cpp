@@ -18519,6 +18519,9 @@ void TestAoiBudget() {
 
     // 갱신 조립 — 사람 하나 + 정적 N 개를 절대 소개로. 상한 없이(전부) vs 상한.
     // ★ 자리는 **가장 몰린 스폰**으로 — 널널한 자리로 조립하면 넘침이 재현 안 된다.
+    // ★ 09-19 — `EncodeUpdate` 가 **부분 인코딩**으로 바뀌었다(넘쳐도 0 이 아니라 담은 데까지).
+    //   그래서 「넘쳤나」의 판정이 **돌려준 길이 0** 에서 **잘린 항목 수**로 옮겨간다.
+    size_t lastDropped = 0;
     auto build = [&](const double* sp, size_t cap) {
         nox::UpdateMsg m;
         m.headAlias = 0xff; m.headNetCode = 0; m.headType = 0;
@@ -18542,7 +18545,7 @@ void TestAoiBudget() {
         }
         uint8_t buf[480];
         buf[0] = 0xa4;
-        return nox::EncodeUpdate(m, buf + 1, sizeof(buf) - 1);
+        return nox::EncodeUpdate(m, buf + 1, sizeof(buf) - 1, &lastDropped);
     };
     const double* dense = spawns[0];
     {
@@ -18556,11 +18559,16 @@ void TestAoiBudget() {
             if (n > best) { best = n; dense = sp; }
         }
     }
-    const size_t unAll = build(dense, st.size());              // 상한 없음 — 결함 재현
+    const size_t unAll = build(dense, st.size());              // 상한 없음 — 넘침 재현
+    const size_t dropAll = lastDropped;
     const size_t unCap = build(dense, nox::kAoiMaxPerUpdate);  // 상한 — 방어
-    std::printf("  시야 예산 — 전부 실으면 %zuB · 상한이면 %zuB\n", unAll, unCap);
-    Check(unAll == 0, "전부 실었는데 넘치지 않았다 — 예산 계산이 달라졌다(상한 상향 검토)");
+    const size_t dropCap = lastDropped;
+    std::printf("  시야 예산 — 전부 실으면 %zuB(잘림 %zu개) · 상한이면 %zuB(잘림 %zu개)\n",
+                unAll, dropAll, unCap, dropCap);
+    Check(unAll > 0, "전부 실었더니 0 이 나왔다 — 부분 인코딩이 안 돈다(갱신이 통째로 무산된다)");
+    Check(dropAll > 0, "전부 실었는데 잘린 항목이 없다 — 예산 계산이 달라졌다(상한 상향 검토)");
     Check(unCap > 0, "상한을 걸어도 a4 가 비어 나온다 — 상한이 예산보다 크다");
+    Check(dropCap == 0, "상한을 걸었는데도 항목이 잘린다 — 상한이 예산보다 크다");
 }
 
 void TestJoinBundle() {
@@ -19779,6 +19787,63 @@ void TestReliableAckStream() {
                 nPlain, nStream0);
 }
 
+// ★★★ 2026-09-19 — 갱신이 **통째로 무산되던** 결함을 막는 시험.
+//   덫밭(G_Temple 5206,1239)에서 덫 44개가 한꺼번에 쏘면 항목이 45개로 뛰는데,
+//   `EncodeUpdate` 가 512B 버퍼에 못 담으면 `0` 을 돌려주고 호출부가 전송을 건너뛰어
+//   **갱신의 73%가 와이어에 한 바이트도 안 나갔다**(나감 175 · 무산 480 실측).
+//   정답지는 그렇게 하지 않는다 — `network_lists.go:196~202` 가 담을 수 있는 만큼만
+//   담고 멈춘 뒤 끝 표식을 붙인다.
+void TestUpdatePartialEncode() {
+    nox::UpdateMsg m;
+    m.headAlias = 0x01;
+    m.x = 100;
+    m.y = 200;
+    // 항목 40개를 **처음 소개**(0xff·절대좌표·덧붙이 2)로 — 가장 큰 항목 모양이다
+    for (int i = 0; i < 40; ++i) {
+        nox::ObjEntry e;
+        e.alias = 0xff;
+        e.netCode = static_cast<uint16_t>(1000 + i);
+        e.type = 528;                     // MercArcherArrow
+        e.absolute = true;
+        e.x = 300 + i;
+        e.y = 400 + i;
+        e.extra = 2;
+        e.extraBytes[0] = 0x80;
+        e.extraBytes[1] = 4;
+        m.objects.push_back(e);
+    }
+
+    // ⑴ 넉넉한 통 — 전부 담긴다
+    uint8_t big[2048];
+    size_t dropBig = 999;
+    const size_t nBig = nox::EncodeUpdate(m, big, sizeof(big), &dropBig);
+    Check(nBig > 0, "넉넉한 통인데 0 이 나왔다");
+    Check(dropBig == 0, "넉넉한 통인데 항목을 버렸다");
+
+    // ⑵ 작은 통 — **0 이 아니라 담은 데까지**
+    uint8_t small[128];
+    size_t dropSmall = 0;
+    const size_t nSmall = nox::EncodeUpdate(m, small, sizeof(small), &dropSmall);
+    Check(nSmall > 0, "작은 통에서 0 이 나왔다 — 갱신이 통째로 무산된다(09-19 결함)");
+    Check(nSmall <= sizeof(small), "통을 넘겨 썼다");
+    Check(dropSmall > 0, "작은 통인데 버린 항목이 0 이다 — 세는 자리가 안 돈다");
+    Check(dropSmall < m.objects.size(), "한 항목도 못 담았다");
+
+    // ⑶ 되읽어 짜임이 성한지 — 반쯤 쓰다 멈췄으면 여기서 걸린다
+    nox::UpdateMsg back = nox::DecodeUpdate(small, nSmall, nullptr);
+    Check(back.ok, "부분 인코딩 결과를 되읽지 못했다 — 끝 표식이 빠졌다");
+    Check(back.objects.size() == m.objects.size() - dropSmall,
+          "되읽은 항목 수가 담은 수와 다르다");
+
+    // ⑷ 머리말도 못 담는 통에서**만** 0
+    uint8_t tiny[4];
+    const size_t nTiny = nox::EncodeUpdate(m, tiny, sizeof(tiny), nullptr);
+    Check(nTiny == 0, "머리말도 못 담는데 0 이 아니다");
+
+    std::printf("  갱신 부분 인코딩 — 128B 에 %zu 바이트·항목 %zu개(버린 %zu개) · 되읽기 성함\n",
+                nSmall, back.objects.size(), dropSmall);
+}
+
 void TestMeasuredConstants() {
     // 접속할 때 주는 최대 체력 — 실측 `dd d0 02 4b 00 4b 00` (번호 720 · 75/75)
     Check(nox::kDefaultMaxHealth == 75, "최대 체력 실측값(75)이 바뀌었다");
@@ -19853,6 +19918,7 @@ int main() {
 
     std::printf("\n[표·경계]\n");
     TestReliableAckStream();
+    TestUpdatePartialEncode();
     TestMeasuredConstants();
     TestGameplayMessages();
     TestDeathFlow();

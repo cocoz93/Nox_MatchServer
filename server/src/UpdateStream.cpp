@@ -194,8 +194,9 @@ UpdateMsg DecodeUpdate(const uint8_t* data, size_t n, const AliasTable* aliases)
 // ── 다시 짜기 ────────────────────────────────────────────
 //
 // 뜯을 때와 **정확히 거울**이어야 한다. 한 자리라도 어긋나면 왕복 검사에서 걸린다.
-size_t EncodeUpdate(const UpdateMsg& m, uint8_t* out, size_t cap) {
+size_t EncodeUpdate(const UpdateMsg& m, uint8_t* out, size_t cap, size_t* droppedOut) {
     size_t k = 0;
+    if (droppedOut) *droppedOut = 0;
     auto need = [&](size_t n) { return k + n <= cap; };
     auto putU16 = [&](uint16_t v) {
         out[k++] = static_cast<uint8_t>(v);
@@ -224,34 +225,40 @@ size_t EncodeUpdate(const UpdateMsg& m, uint8_t* out, size_t cap) {
     out[k++] = m.headAnim;
 
     // ── 항목
-    for (const auto& e : m.objects) {
-        if (e.absolute) {
-            if (!need(1)) return 0;
-            out[k++] = 0;               // 절대 좌표 모드 표시
+    //   ★ 항목은 **통째로 들어가야** 담는다. 반쯤 쓰다 멈추면 클라가 다음 바이트를
+    //     그 항목의 일부로 먹어 스트림이 통째로 밀린다(09-15 에 화살에서 그 꼴을 봤다).
+    //     그래서 쓰기 **전에** 이 항목의 크기를 세고, 끝 표식 3바이트까지 남겨 둔다.
+    size_t dropped = 0;
+    for (size_t i = 0; i < m.objects.size(); ++i) {
+        const auto& e = m.objects[i];
+        const int extraN = e.extra > 3 ? 3 : (e.extra < 0 ? 0 : e.extra);
+        size_t sz = 0;
+        if (e.absolute) sz += 1;                       // 절대 좌표 모드 표시
+        sz += (e.alias == 0xff) ? 5u : 1u;             // 전체번호+종류 / 별칭
+        sz += e.absolute ? 4u : 2u;                    // 좌표
+        sz += static_cast<size_t>(extraN);             // 덧붙이
+        if (k + sz + 3 > cap) {                        // 3 = 끝 표식 자리
+            dropped = m.objects.size() - i;            // 나머지는 이번 통에 안 싣는다
+            break;
         }
+        if (e.absolute) out[k++] = 0;
         if (e.alias == 0xff) {
-            if (!need(5)) return 0;
             out[k++] = 0xff;
             putU16(e.netCode);
             putU16(e.type);
         } else {
-            if (!need(1)) return 0;
             out[k++] = e.alias;
         }
         if (e.absolute) {
-            if (!need(4)) return 0;
             putU16(static_cast<uint16_t>(e.x));
             putU16(static_cast<uint16_t>(e.y));
         } else {
-            if (!need(2)) return 0;
             out[k++] = static_cast<uint8_t>(e.dx);
             out[k++] = static_cast<uint8_t>(e.dy);
         }
-        if (e.extra > 0) {
-            if (!need(static_cast<size_t>(e.extra))) return 0;
-            for (int j = 0; j < e.extra && j < 3; ++j) out[k++] = e.extraBytes[j];
-        }
+        for (int j = 0; j < extraN; ++j) out[k++] = e.extraBytes[j];
     }
+    if (droppedOut) *droppedOut = dropped;
 
     // ── 끝 표식
     if (!need(3)) return 0;

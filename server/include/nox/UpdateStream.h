@@ -75,6 +75,12 @@ UpdateMsg DecodeUpdate(const uint8_t* data, size_t n, const AliasTable* aliases)
 //
 // ★ 왜 필요한가 — 뜯기만 해서는 「읽을 줄 안다」까지다. 서버는 **만들어 보내야** 한다.
 //   그리고 원본을 뜯어 다시 짠 것이 **바이트까지 같으면** 짜임을 다 안다는 증명이 된다.
-size_t EncodeUpdate(const UpdateMsg& m, uint8_t* out, size_t cap);
+// ★★★ 2026-09-19 — **용량이 모자라면 「담은 데까지」 짠다.** 예전에는 어디서 막히든
+//   `0` 을 돌려주어 그 틱 갱신이 **통째로 안 나갔다**(덫밭에서 갱신의 73%가 그렇게 죽었다).
+//   정답지도 그렇게 하지 않는다 — `network_lists.go:196~202` 가 항목을 하나씩 담다가
+//   안 들어가면 **거기서 멈추고** 끝 표식을 붙여 지금까지 담은 것을 보낸다.
+//   머리말조차 안 들어가면 그때만 `0`(정답지 `sub_4DF810` 도 16B 미만이면 0).
+//   `droppedOut` 에는 **이번에 못 담은 항목 수**가 담긴다(nullptr 이면 안 쓴다).
+size_t EncodeUpdate(const UpdateMsg& m, uint8_t* out, size_t cap, size_t* droppedOut = nullptr);
 
 }  // namespace nox
