@@ -2716,6 +2716,10 @@ public:
     //   덫이 쏘는 박자와 어긋나면 **살아 있어도 0 으로 보인다**(09-16 에 이걸로 헛짚었다).
     //   「클라에 갔나」는 반드시 **누계**로 물어야 한다.
     unsigned long long missileEntriesSent() const { return missileEntriesSent_; }
+    unsigned long long updateEncOk() const { return updateEncOk_; }
+    unsigned long long updateEncFail() const { return updateEncFail_; }
+    size_t updateEncFailObjsMax() const { return updateEncFailObjsMax_; }
+    size_t updateEncOkObjsMax() const { return updateEncOkObjsMax_; }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
     // 불려 나온 것이 죽은 횟수.
@@ -3533,6 +3537,14 @@ private:
     unsigned long long missilesMade_ = 0;     // 날아가는 것을 만든 누계
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
     unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계
+    // ★ 09-19 — 「항목에 담았다」와 「와이어에 나갔다」를 가른다.
+    //   `EncodeUpdate` 는 512B 버퍼에 못 담으면 **0 을 돌려주고**, 그러면 그 틱 갱신이
+    //   통째로 안 나간다(`Server.cpp` 의 `if (n && sendUpdates_)`).
+    //   화살 44발이 한꺼번에 뜨는 덫밭에서 이 둘이 갈리는지 보려고 심는다.
+    unsigned long long updateEncOk_ = 0;      // 인코딩 성공(= 와이어에 나감)
+    unsigned long long updateEncFail_ = 0;    // 용량을 넘겨 0 이 나온 횟수
+    size_t updateEncFailObjsMax_ = 0;         // 실패했을 때 항목 수의 최대
+    size_t updateEncOkObjsMax_ = 0;           // 성공했을 때 항목 수의 최대
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수

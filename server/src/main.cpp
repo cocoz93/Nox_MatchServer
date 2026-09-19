@@ -1612,6 +1612,9 @@ int main(int argc, char** argv) {
                             // ★ 시전 뒷단 갈래 — 「받음은 있는데 발사가 0」일 때 어디서 새는지 가른다
                             " · 시전뒷단(부름 %llu·잎0 %llu·번호0 %llu·안배움 %llu·커서아군 %llu·막힘 %llu·시전실패 %llu[주먹 중복 %llu·안보임 %llu])"
                             " · 화살사라짐(벽 %llu[태어나자마자 %llu]·수명 %llu·평균 %.1f틱·**동시최대 %zu**)"
+                            // ★ 09-19 — 「항목에 담았다」 ≠ 「와이어에 나갔다」.
+                            //   512B 를 넘기면 EncodeUpdate 가 0 을 돌려주고 그 틱은 통째로 안 나간다
+                            " · 갱신와이어(나감 %llu·**무산 %llu**[그때 항목 최대 %zu]·나간 것 항목 최대 %zu)"
                             " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
@@ -1625,6 +1628,7 @@ int main(int argc, char** argv) {
                             srv.spellFriendAtCursor(), srv.spellErrInform(), srv.spellCastFailed(),
                             srv.fistTooMany(), srv.fistNoLos(),
                             srv.arrowGoneWall(), srv.arrowGoneWallAtBirth(), srv.arrowGoneAge(), srv.arrowLifeAvg(), srv.missilesPeak(),
+                            srv.updateEncOk(), srv.updateEncFail(), srv.updateEncFailObjsMax(), srv.updateEncOkObjsMax(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★★ B-1b — **신뢰 순번을 스트림별로 갈라 찍는다** (2026-09-18).
                 //   합계만 보면 「클라가 보낸 스트림」과 「서버가 답한 스트림」이 어긋나도

@@ -13165,6 +13165,16 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         //   이분법을 하다가 잃었고, 초기값 0 을 관측으로 읽어 한참을 헤맸다.
         //   ★ 계측을 고칠 때는 **그 계측이 실제로 갱신되는지부터** 볼 것.
         lastUpdateObjects_ = m.objects.size();
+        // ★ 09-19 — 여기서 갈린다. `n == 0` 이면 아래 `if (n && sendUpdates_)` 가
+        //   통째로 건너뛰어 **그 틱 갱신이 한 바이트도 안 나간다.**
+        //   「갱신에 실었다」(항목을 만든 수)와 「와이어에 나갔다」는 다른 말이다.
+        if (n) {
+            ++updateEncOk_;
+            if (m.objects.size() > updateEncOkObjsMax_) updateEncOkObjsMax_ = m.objects.size();
+        } else {
+            ++updateEncFail_;
+            if (m.objects.size() > updateEncFailObjsMax_) updateEncFailObjsMax_ = m.objects.size();
+        }
         // ★★ 갱신 **바로 뒤에** 사람마다 높이(Z)를 붙인다 — `5e | 번호 2 | z 1`.
         //   정품은 한 조각 안에서 `27 TIMESTAMP` → `a4 UPDATE_STREAM` → `5e` 순으로 보낸다
         //   (2026-09-08 실측: `… a4 cb 42 0a f6 0e 30 00 00 00 00 | 5e cb 02 00`).
