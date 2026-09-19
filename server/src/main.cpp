@@ -229,6 +229,7 @@ int main(int argc, char** argv) {
     int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
     int forceArrowFrame = -1;  // 진단 ⑬ — 화살 스프라이트 프레임 고정
     bool arrowFreeze = false;  // 진단 ⑬ — 화살을 난 자리에 세워 둔다
+    bool dumpArrows = false;   // 진단 ⑬ — 화살 목록·프레임 분포를 틱마다 찍는다
     int arrowFrameAlt = 0;     // 진단 ⑬ — N 틱마다 프레임 0↔16 번갈기
     int forcePose = -1;        // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
     bool spellStart = false;   // 시전 알림 0x70 을 켜는 손잡이 (기본 끔)   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
@@ -344,6 +345,11 @@ int main(int argc, char** argv) {
         } else if (a == "--arrow-freeze") {
             // 진단 ⑬ — 화살을 난 자리에 세워 둔다. `--arrow-frame` 과 짝으로 쓴다.
             arrowFreeze = true;
+        } else if (a == "--dump-arrows") {
+            // 진단 ⑬ — 틱 로그마다 화살 목록(번호·자리·방향·실은 프레임)과
+            //   **프레임 분포**를 찍는다. 화면 기울기와 1:1 로 맞대려는 것이고,
+            //   「각도가 하나뿐인가」는 분포 한 줄로 갈린다.
+            dumpArrows = true;
         } else if (a == "--arrow-frame" && i + 1 < argc) {
             // 진단 ⑬ — 화살 스프라이트 프레임을 못 박는다(0~31). 같은 자리에서
             //   프레임만 바꿔 찍어 화면이 실제로 달라지는지 픽셀로 대조하려고.
@@ -1630,6 +1636,29 @@ int main(int argc, char** argv) {
                             srv.arrowGoneWall(), srv.arrowGoneWallAtBirth(), srv.arrowGoneAge(), srv.arrowLifeAvg(), srv.missilesPeak(),
                             srv.updateEncOk(), srv.updateEncFail(), srv.updateEncFailObjsMax(), srv.updateEncOkObjsMax(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
+                // ★ 09-19 진단 ⑬ — 화살 목록과 **실은 프레임의 분포**.
+                //   화면 캡처의 기울기와 1:1 로 맞대는 자리다. 분포가 한 칸뿐이면
+                //   「모든 화살이 같은 각도로 그려진다」가 서버 쪽에서 이미 정해진 것이다.
+                if (dumpArrows) {
+                    const auto& ms = srv.missileList();
+                    std::map<unsigned, unsigned> byFrame;
+                    for (const auto& mo : ms) ++byFrame[static_cast<unsigned>(mo.dir1 >> 3)];
+                    std::printf("[화살목록] %zu개 · 본디프레임 분포", ms.size());
+                    for (const auto& kv : byFrame) std::printf(" %u:%u", kv.first, kv.second);
+                    size_t shown = 0;
+                    for (const auto& mo : ms) {
+                        if (shown++ >= 8) break;
+                        // ⚠ 이 값은 **원래 방향에서 나온 프레임**이다. `--arrow-frame` 으로
+                        //   못 박으면 와이어에는 그 값이 실리지만 여기 숫자는 안 바뀐다
+                        //   (덮어쓰기는 보낼 때 `FillEntry` 호출부에서 한다).
+                        std::printf(" | %u (%d,%d) dir1=%u→본디프레임 %u",
+                                    static_cast<unsigned>(mo.netCode),
+                                    static_cast<int>(mo.posX), static_cast<int>(mo.posY),
+                                    static_cast<unsigned>(mo.dir1),
+                                    static_cast<unsigned>(mo.dir1 >> 3));
+                    }
+                    std::printf("\n");
+                }
                 // ★★ B-1b — **신뢰 순번을 스트림별로 갈라 찍는다** (2026-09-18).
                 //   합계만 보면 「클라가 보낸 스트림」과 「서버가 답한 스트림」이 어긋나도
                 //   드러나지 않는다. 되받기는 **같은 스트림에 실려야** 뜻이 있다

@@ -2895,6 +2895,13 @@ private:
         // ★ 2 = PixieCollide — 적에게 닿으면 인자만큼 피해(종류 11 충격)를 주고 **제가 사라진다**
         uint32_t expireFrame = 0;        // 0 이 아니면 이 프레임에 사라진다(픽시 — 30~90초)
     };
+public:
+    // ★ 09-19 — ⑬(화살이 진행 방향으로 기울어 보이나)을 **표로** 가르려고 연다.
+    //   눈대중 두 프레임으로는 「같은 화살인가」가 안 갈렸다(33ms 에 100px 넘게 간다).
+    //   서버가 아는 `dir1` 과 화면의 기울기를 1:1 로 맞대는 것이 유일하게 싼 길이다.
+    //   ⚠ 자리가 여기인 까닭 — `MissileObj` 선언 **뒤**여야 반환형이 잡힌다.
+    const std::vector<MissileObj>& missileList() const { return missiles_; }
+private:
     struct MagicTypeInfo { uint16_t type = 0; float speed = 0; float mass = 1.0f; uint32_t flags = 0; };
     // ── 묶음 4-c3 — 주문이 **놓는** 오브젝트(불꽃·독구름 …). 안 움직이고 수명이 다하면 사라진다
     //   정답지: newObjectWithTypeInd → createAt_4DAA50 → 수명(unitSetDecayTime_511660 또는 갱신자료 첫 칸)
