@@ -230,6 +230,7 @@ int main(int argc, char** argv) {
     int forceArrowFrame = -1;  // 진단 ⑬ — 화살 스프라이트 프레임 고정
     bool arrowFreeze = false;  // 진단 ⑬ — 화살을 난 자리에 세워 둔다
     bool dumpArrows = false;   // 진단 ⑬ — 화살 목록·프레임 분포를 틱마다 찍는다
+    bool noSecondNewPlayer = false;  // 진단 — 관전 풀 때 2d 를 다시 안 보낸다
     int arrowFrameAlt = 0;     // 진단 ⑬ — N 틱마다 프레임 0↔16 번갈기
     int forcePose = -1;        // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
     bool spellStart = false;   // 시전 알림 0x70 을 켜는 손잡이 (기본 끔)   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
@@ -345,6 +346,9 @@ int main(int argc, char** argv) {
         } else if (a == "--arrow-freeze") {
             // 진단 ⑬ — 화살을 난 자리에 세워 둔다. `--arrow-frame` 과 짝으로 쓴다.
             arrowFreeze = true;
+        } else if (a == "--no-2nd-newplayer") {
+            // 진단 — 관전 풀 때 `2d NEW_PLAYER` 를 다시 안 보낸다(정답지는 안 보낸다)
+            noSecondNewPlayer = true;
         } else if (a == "--dump-arrows") {
             // 진단 ⑬ — 틱 로그마다 화살 목록(번호·자리·방향·실은 프레임)과
             //   **프레임 분포**를 찍는다. 화면 기울기와 1:1 로 맞대려는 것이고,
@@ -1235,6 +1239,10 @@ int main(int argc, char** argv) {
         if (forceArrowFrame >= 0) {
             srv.SetForceArrowFrame(forceArrowFrame);
             std::printf("[진단] 화살 프레임을 %d 로 못 박는다\n", forceArrowFrame);
+        }
+        if (noSecondNewPlayer) {
+            srv.SetNoSecondNewPlayer(true);
+            std::printf("[진단] 관전 풀 때 2d NEW_PLAYER 를 다시 안 보낸다 (--no-2nd-newplayer)\n");
         }
         if (arrowFreeze) {
             srv.SetArrowFreeze(true);

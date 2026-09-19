@@ -2340,7 +2340,8 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                             //   즉 `6a` 는 **저장돼 있는 값을 읽어** GUI 를 켤지 정한다.
                             //   내가 서두에서 베껴 쓰던 값이 `01`(= HUD 숨김)이라,
                             //   `6a` 를 먼저 보내면 옛 값을 읽어 그대로 숨긴 채로 끝났다.
-                            EmitNewPlayer(s, s, 0, out);
+                            // ⚠ 09-19 시험 — 이 한 줄이 아직 필요한지 본다(정답지는 안 보낸다)
+                            if (!noSecondNewPlayer_) EmitNewPlayer(s, s, 0, out);
                             for (auto& kv2 : sessions_) {
                                 Session& o = kv2.second;
                                 if (!o.inGame || o.addr == s.addr) continue;

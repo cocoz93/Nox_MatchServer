@@ -2738,6 +2738,7 @@ public:
     unsigned long long abilOverweight() const { return abilOverweight_; }
     unsigned long long abilCooldown2() const { return abilCooldown2_; }
     unsigned long long abilOk() const { return abilOk_; }
+    void SetNoSecondNewPlayer(bool v) { noSecondNewPlayer_ = v; }
     unsigned long long joinInfo97Ok() const { return joinInfo97Ok_; }
     unsigned long long joinInfo97Null() const { return joinInfo97Null_; }
     size_t acceptBodyLenLast() const { return acceptBodyLenLast_; }
@@ -3602,6 +3603,10 @@ private:
     unsigned long long abilCooldown2_ = 0;    // 아직 쉬는 중
     unsigned long long abilOk_ = 0;           // **실행했다**
     // ★ 09-19 — 검은 실루엣. 접속 묶음에 실을 **플레이어 정보 97B** 가 있었나
+    // ★ 09-19 시험 스위치 — 관전 풀 때 `2d NEW_PLAYER` 를 **다시 안 보낸다**(`--no-2nd-newplayer`).
+    //   그 두 번째 통은 `Field3680`(112번)을 갈아 끼우려고 우리가 넣은 우회인데,
+    //   정답지는 보내지 않는다. 빼도 HUD 가 뜨면 우회를 없앨 수 있다
+    bool noSecondNewPlayer_ = false;
     unsigned long long joinInfo97Ok_ = 0;     // 97B 를 그대로 실었다
     unsigned long long joinInfo97Null_ = 0;   // **없어서 0 으로 채웠다**(색이 검정이 된다)
     size_t acceptBodyLenLast_ = 0;            // 마지막 CLIENT_ACCEPT 본문 길이
