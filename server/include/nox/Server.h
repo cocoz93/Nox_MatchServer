@@ -2739,6 +2739,8 @@ public:
     unsigned long long abilCooldown2() const { return abilCooldown2_; }
     unsigned long long abilOk() const { return abilOk_; }
     void SetNoSecondNewPlayer(bool v) { noSecondNewPlayer_ = v; }
+    void SetForceHarpoon(bool v) { forceHarpoon_ = v; }
+    void SetDumpHarpoon(bool v) { dumpHarpoon_ = v; }
     unsigned long long harpoonDoCalls() const { return harpoonDoCalls_; }
     unsigned long long harpoonNoType() const { return harpoonNoType_; }
     unsigned long long harpoonShot() const { return harpoonShot_; }
@@ -3622,6 +3624,10 @@ private:
     // ★ 09-19 ⑦ 작살 — 「쐈나 / 걸렸나 / 끌고 있나」를 갈라 센다.
     //   확인표는 이 자리를 「셋 중 가장 의심스럽다」고 적어 두었다(끌려오는 쪽이
     //   주인을 지나쳐 넘나드는지 = 우리 셈, 부드럽게 오면 우리가 틀린 것)
+    // ★ 09-19 진단 스위치 — `--harpoon-force`(맞히지 않고 바로 건다) ·
+    //   `--dump-harpoon`(걸린 동안 매 틱 두 사람 자리를 찍는다)
+    bool forceHarpoon_ = false;
+    bool dumpHarpoon_ = false;
     unsigned long long harpoonDoCalls_ = 0;   // 능력 3번이 뒷단까지 들어옴
     unsigned long long harpoonNoType_ = 0;    // HarpoonBolt 종류를 못 찾음
     unsigned long long harpoonShot_ = 0;      // 작살을 실제로 쐈다

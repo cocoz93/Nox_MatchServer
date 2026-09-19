@@ -231,6 +231,8 @@ int main(int argc, char** argv) {
     bool arrowFreeze = false;  // 진단 ⑬ — 화살을 난 자리에 세워 둔다
     bool dumpArrows = false;   // 진단 ⑬ — 화살 목록·프레임 분포를 틱마다 찍는다
     bool noSecondNewPlayer = false;  // 진단 — 관전 풀 때 2d 를 다시 안 보낸다
+    bool forceHarpoon = false;       // 진단 ⑦ — 작살을 맞히지 않고 바로 건다
+    bool dumpHarpoon = false;        // 진단 ⑦ — 걸린 동안 매 틱 자리를 찍는다
     int arrowFrameAlt = 0;     // 진단 ⑬ — N 틱마다 프레임 0↔16 번갈기
     int forcePose = -1;        // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
     bool spellStart = false;   // 시전 알림 0x70 을 켜는 손잡이 (기본 끔)   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
@@ -346,6 +348,10 @@ int main(int argc, char** argv) {
         } else if (a == "--arrow-freeze") {
             // 진단 ⑬ — 화살을 난 자리에 세워 둔다. `--arrow-frame` 과 짝으로 쓴다.
             arrowFreeze = true;
+        } else if (a == "--harpoon-force") {
+            forceHarpoon = true;
+        } else if (a == "--dump-harpoon") {
+            dumpHarpoon = true;
         } else if (a == "--no-2nd-newplayer") {
             // 진단 — 관전 풀 때 `2d NEW_PLAYER` 를 다시 안 보낸다(정답지는 안 보낸다)
             noSecondNewPlayer = true;
@@ -1240,6 +1246,8 @@ int main(int argc, char** argv) {
             srv.SetForceArrowFrame(forceArrowFrame);
             std::printf("[진단] 화살 프레임을 %d 로 못 박는다\n", forceArrowFrame);
         }
+        if (forceHarpoon) srv.SetForceHarpoon(true);
+        if (dumpHarpoon) srv.SetDumpHarpoon(true);
         if (noSecondNewPlayer) {
             srv.SetNoSecondNewPlayer(true);
             std::printf("[진단] 관전 풀 때 2d NEW_PLAYER 를 다시 안 보낸다 (--no-2nd-newplayer)\n");

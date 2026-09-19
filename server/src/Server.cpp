@@ -7745,6 +7745,23 @@ void Server::HarpoonDo(Session& s, std::vector<OutPacket>& out) {
     s.harpoonTarget = Target{};
     s.harpoonFrame35 = 0;                                    // 아직 걸림을 안 알렸다
     s.harpoonFrame38 = 0;
+    // ★ 09-19 진단 `--harpoon-force` — **맞히지 않고 바로 건다.**
+    //   ⑦ 의 물음은 「끌려오는 **모양**」이지 「잘 맞나」가 아니다. 그런데 무인은 조준을
+    //   못 해서(작살은 바라보는 방향으로 나간다) 75초에 16발을 쏴도 **걸림 0** 이었다.
+    //   그래서 다른 사람 하나를 골라 걸린 것으로 친다. `--arrow-freeze` 와 같은 부류다
+    if (forceHarpoon_) {
+        for (auto& kv : sessions_) {
+            Session& o = kv.second;
+            if (!o.inGame || o.addr == s.addr) continue;
+            Target t{};
+            t.addr = o.addr;
+            s.harpoonTarget = t;
+            ++harpoonAttached_;
+            TargetXY(t, s.harpoonTargX, s.harpoonTargY);
+            s.harpoonFrame38 = frame_;
+            break;
+        }
+    }
 }
 
 // `abilityHarpoon::breakForOwner` — 줄을 끊는다
@@ -7832,6 +7849,17 @@ void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
 
     if (!s.harpoonTarget.none()) {
         ++harpoonPullTicks_;
+        // ★ 진단 — 걸린 동안 **매 틱** 두 사람 자리를 찍는다. 확인표의 판정 기준이
+        //   「끌려오는 쪽이 주인을 **지나쳐 넘나드는가**」라서 좌표가 곧 판정이다
+        if (dumpHarpoon_) {
+            float dx0 = 0, dy0 = 0;
+            if (TargetXY(s.harpoonTarget, dx0, dy0)) {
+                std::printf("[작살추적] 프레임 %u 주인 %.0f,%.0f 상대 %.0f,%.0f 거리 %.0f\n",
+                            frame_, s.posX, s.posY, dx0, dy0,
+                            std::sqrt((dx0 - s.posX) * (dx0 - s.posX) +
+                                      (dy0 - s.posY) * (dy0 - s.posY)));
+            }
+        }
         float tx = 0, ty = 0;
         if (!TargetXY(s.harpoonTarget, tx, ty)) { HarpoonBreak(s, true, out); return; }   // 상대가 사라졌다
         if (!s.harpoonTarget.addr.empty()) {
