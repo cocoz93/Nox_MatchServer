@@ -138,6 +138,9 @@ void FillDefaultColorsIfBlank(uint8_t* info97) {
     info97[87] = 0x06;   // 신발 2
 }
 
+// ★ 09-19 — 빈 색 메우기를 켜고 끄는 깃발(기본 **끔**). 까닭은 아래 호출부 주석
+bool fillColorsOn = false;
+
 std::vector<uint8_t> BuildNewPlayer(uint16_t netCode, const uint8_t* info97) {
     std::vector<uint8_t> m;
     m.reserve(kNewPlayerSize);
@@ -146,7 +149,13 @@ std::vector<uint8_t> BuildNewPlayer(uint16_t netCode, const uint8_t* info97) {
     m.insert(m.end(), head2d, head2d + 3);
     if (info97) m.insert(m.end(), info97, info97 + 97);
     else m.insert(m.end(), 97, 0);
-    FillDefaultColorsIfBlank(m.data() + (m.size() - 97));
+    // ⚠⚠ 09-19 **기본으로 안 부른다.** 아래 함수 주석의 「검은 실루엣」 진단이 **틀렸다** —
+    //   그 검은 것은 색이 없어서가 아니라 **장비가 안 그려져서** 맨몸 실루엣이었다.
+    //   뿌리는 **두 번째 `2d NEW_PLAYER`** 하나였고, 그것을 안 보내니
+    //   색을 안 메워도 **검은 상의·붉은 바지·방패**가 나온다(정답지와 같다).
+    //   메우면 오히려 **살색 피부가 드러나 정답지와 달라진다.**
+    //   함수와 시험은 남겨 둔다 — `--fill-colors` 로 켜서 그때 화면을 다시 볼 수 있게
+    if (fillColorsOn) FillDefaultColorsIfBlank(m.data() + (m.size() - 97));
     m.insert(m.end(), kNewPlayerTail, kNewPlayerTail + sizeof(kNewPlayerTail));
     return m;
 }

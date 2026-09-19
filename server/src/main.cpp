@@ -445,6 +445,10 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-team-after" && i + 1 < argc) {
             // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
             debugTeamAfter = std::atoi(argv[++i]);
+        } else if (a == "--fill-colors") {
+            // 진단 — 빈 캐릭터 색을 정품 녹음 실측값으로 메운다(기본 끔).
+            //   ⚠ 켜면 **살색 피부가 드러나 정답지와 달라진다**(09-19 화면 대조)
+            nox::fillColorsOn = true;
         } else if (a == "--debug-kill" && i + 1 < argc) {
             // 진단 — N틱 뒤 첫 사람이 둘째를 죽인 것으로 친다(킬→점수→판끝 사슬 확인용)
             debugKillAfter = std::atoi(argv[++i]);

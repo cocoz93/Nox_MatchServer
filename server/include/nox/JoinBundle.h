@@ -87,6 +87,10 @@ std::vector<uint8_t> BuildNewPlayer(uint16_t netCode, const uint8_t* info97);
 // 까닭과 값의 근거는 구현부 주석에 있다(`JoinBundle.cpp`).
 void FillDefaultColorsIfBlank(uint8_t* info97);
 
+// 위 메우기를 켤지(기본 **끔**). 09-19 — 메우면 살색 피부가 드러나 **정답지와 달라진다**.
+// 「검은 실루엣」의 뿌리는 색이 아니라 **두 번째 `2d NEW_PLAYER`** 였다(`--2nd-newplayer` 참조).
+extern bool fillColorsOn;
+
 // 첫 스냅샷의 cc 꼬리부(381B) — 사람 하나를 세우는 고정 절차.
 // ⚠ 장비 색·오벨리스크 대상 등 낱값은 estate 실측 그대로다(뜻 미상).
 // ★ 2026-09-13 묶음 3-c — `ea FORGET_DRAWABLES` 와 `e9 PLAYER_RESPAWN` 의 4바이트는 **프레임**이다

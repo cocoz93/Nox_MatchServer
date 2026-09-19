@@ -19873,7 +19873,9 @@ void TestJoinColorsFill() {
 
     // ⑷ 실제로 와이어에 실린다 — `BuildNewPlayer` 를 거친 뒤에도 값이 남아야 한다
     uint8_t zero97[97] = {};
+    nox::fillColorsOn = true;          // ⚠ 09-19 — 기본이 꺼졌으므로 이 시험에서만 켠다
     const std::vector<uint8_t> np = nox::BuildNewPlayer(0x02c9, zero97);
+    nox::fillColorsOn = false;
     Check(np.size() >= 3 + 97, "2d NEW_PLAYER 가 너무 짧다");
     Check(np[3 + 68] == 0x73 && np[3 + 83] == 0x0c,
           "와이어에 실린 97B 에 색이 없다 — 메우는 자리가 조립 뒤에 있나");
