@@ -2738,6 +2738,9 @@ public:
     unsigned long long abilOverweight() const { return abilOverweight_; }
     unsigned long long abilCooldown2() const { return abilCooldown2_; }
     unsigned long long abilOk() const { return abilOk_; }
+    unsigned long long joinInfo97Ok() const { return joinInfo97Ok_; }
+    unsigned long long joinInfo97Null() const { return joinInfo97Null_; }
+    size_t acceptBodyLenLast() const { return acceptBodyLenLast_; }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
     // 불려 나온 것이 죽은 횟수.
@@ -3598,6 +3601,10 @@ private:
     unsigned long long abilOverweight_ = 0;   // 짐 넘침(광전사만)
     unsigned long long abilCooldown2_ = 0;    // 아직 쉬는 중
     unsigned long long abilOk_ = 0;           // **실행했다**
+    // ★ 09-19 — 검은 실루엣. 접속 묶음에 실을 **플레이어 정보 97B** 가 있었나
+    unsigned long long joinInfo97Ok_ = 0;     // 97B 를 그대로 실었다
+    unsigned long long joinInfo97Null_ = 0;   // **없어서 0 으로 채웠다**(색이 검정이 된다)
+    size_t acceptBodyLenLast_ = 0;            // 마지막 CLIENT_ACCEPT 본문 길이
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수

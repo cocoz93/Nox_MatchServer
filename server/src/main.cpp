@@ -1626,6 +1626,8 @@ int main(int argc, char** argv) {
                             " · 능력(받음 %llu[꼴틀림 %llu·관전 %llu] · 들어옴 %llu · **실행 %llu**"
                             " · 거절[번호 %llu·죽음 %llu·워리어아님 %llu·겹침 %llu·이미켜짐 %llu"
                             "·상태12 %llu·안배움 %llu·짐넘침 %llu·쉬는중 %llu])"
+                            // ★ 09-19 검은 실루엣 — 접속 묶음에 플레이어 정보 97B 가 실렸나
+                            " · 접속정보(실음 %llu·**0으로채움 %llu**·마지막 ACCEPT 본문 %zuB)"
                             " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
@@ -1647,6 +1649,7 @@ int main(int argc, char** argv) {
                             srv.abilBadNum(), srv.abilDead(), srv.abilNotWarrior(),
                             srv.abilExclusive(), srv.abilAlready(), srv.abilMoveState(),
                             srv.abilNotLearned(), srv.abilOverweight(), srv.abilCooldown2(),
+                            srv.joinInfo97Ok(), srv.joinInfo97Null(), srv.acceptBodyLenLast(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★ 09-19 진단 ⑬ — 화살 목록과 **실은 프레임의 분포**.
                 //   화면 캡처의 기울기와 1:1 로 맞대는 자리다. 분포가 한 칸뿐이면

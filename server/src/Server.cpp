@@ -3088,8 +3088,25 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 } else if (standalone_) {
                     // ★ 독립 모드 — 녹음 없이 조립해 보낸다 (P5-c-2).
                     //   플레이어 정보 97B 는 방금 받은 CLIENT_ACCEPT 에서 그대로.
+                    // ★ 09-19 — **캐릭터가 검은 실루엣**인 것의 첫 의심 자리.
+                    //   `BuildNewPlayer`(JoinBundle.cpp:111~112)는 이 포인터가 nullptr 이면
+                    //   **97바이트를 전부 0 으로** 채운다. 색도 0 = 검정이 된다.
+                    //   클라는 `CLIENT_ACCEPT` 에 피부·머리·바지·윗옷 색을 담아 보낸다
+                    //   (`gameloop.go:424~430` `info.Colors.*`)
+                    acceptBodyLenLast_ = it.bodyLen();
                     const uint8_t* info97 =
                         (it.bodyLen() >= 97) ? it.body() : nullptr;
+                    if (!info97) ++joinInfo97Null_; else ++joinInfo97Ok_;
+                    // ★ 09-19 — 97B **내용**을 한 번 찍는다. 「실었다」와 「값이 들어 있다」는 다르다.
+                    //   클라가 색을 0 으로 보내는 것이라면 우리 서버는 죄가 없다
+                    if (info97 && joinInfo97Ok_ == 1) {
+                        // ⚠ 09-19 — 앞 97B 가 **전부 0** 이었다. 자리가 틀린 것이니 본문을 통째로 본다
+                        std::printf("[접속정보97] len=%zu | ", it.bodyLen());
+                        for (size_t q = 0; q < it.bodyLen() && q < 200; ++q)
+                            std::printf("%02x ", it.body()[q]);
+                        std::printf("\n");
+                        std::fflush(stdout);
+                    }
                     std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97, gameSettings_);
                     Emit(s, /*reliable=*/true, /*stream=*/0, jb.data(), jb.size(), out);
                     ++handled_;
