@@ -3378,6 +3378,10 @@ static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCod
         }
         uint8_t buf[1024];
         buf[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
+        // ⚠ 09-19 — 여기도 **잘릴 수 있다**(`EncodeUpdate` 가 부분 인코딩으로 바뀌었다).
+        //   다만 입력이 **정품 녹음본**이라 480B 안쪽이고, 통이 1024 라 여유가 두 배다.
+        //   이 함수는 Server 멤버가 아니라 계수기를 바로 못 붙인다 — 세야 할 근거가
+        //   생기면 `droppedOut` 을 인자로 빼서 호출부(스냅샷 만드는 자리)에서 더할 것.
         const size_t n = EncodeUpdate(um, buf + 1, sizeof(buf) - 1);
         if (n == 0) break;                   // 다시 못 짜면 손대지 않는다
         out.insert(out.end(), buf, buf + 1 + n);
@@ -12582,7 +12586,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                                  s.tickFrame, s.x, s.y, snBaseX, snBaseY, m);
                 uint8_t ub[480];
                 ub[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
-                const size_t un = EncodeUpdate(m, ub + 1, sizeof(ub) - 1);
+                size_t droppedSnap = 0;
+                const size_t un = EncodeUpdate(m, ub + 1, sizeof(ub) - 1, &droppedSnap);
+                updateDroppedSnap_ += droppedSnap;   // 자리를 갈라 센다(위 주석)
                 patched.insert(patched.end(), ub, ub + 1 + un);
                 const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode, s.charClass, s.tickFrame, s.tickFrame);   // 3-c: 받는 사람의 지금 프레임
                 patched.insert(patched.end(), tail.begin(), tail.end());

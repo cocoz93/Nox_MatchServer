@@ -2723,6 +2723,7 @@ public:
     unsigned long long updateDroppedObjs() const { return updateDroppedObjs_; }
     unsigned long long updateDroppedTicks() const { return updateDroppedTicks_; }
     size_t updateDroppedMax() const { return updateDroppedMax_; }
+    unsigned long long updateDroppedSnap() const { return updateDroppedSnap_; }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
     // 불려 나온 것이 죽은 횟수.
@@ -3560,6 +3561,13 @@ private:
     unsigned long long updateDroppedObjs_ = 0;   // 잘린 항목 누계
     unsigned long long updateDroppedTicks_ = 0;  // 한 개라도 잘린 틱 수
     size_t updateDroppedMax_ = 0;                // 한 통에서 잘린 항목 최대
+    // ★ `EncodeUpdate` 를 부르는 자리는 셋이다. **자리를 갈라 센다** — 합계만 보면
+    //   어디서 잘렸는지 못 가른다.
+    //     · 매 틱 갱신 `body[2048]` — 위 `updateDropped*`
+    //     · 스냅샷     `ub[480]`    — 아래(접속 스냅샷 안 갱신 · 정적 소개는 상한과 짝)
+    //     · 갈아끼우기 `buf[1024]`  — **안 센다.** 그 함수가 Server 멤버가 아니고
+    //       입력이 정품 녹음본(480B 안쪽)이라 통이 두 배다. 근거가 생기면 인자로 뺄 것
+    unsigned long long updateDroppedSnap_ = 0;
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수

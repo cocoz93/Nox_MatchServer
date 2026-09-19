@@ -1621,7 +1621,7 @@ int main(int argc, char** argv) {
                             // ★ 09-19 — 「항목에 담았다」 ≠ 「와이어에 나갔다」.
                             //   512B 를 넘기면 EncodeUpdate 가 0 을 돌려주고 그 틱은 통째로 안 나간다
                             " · 갱신와이어(나감 %llu·**무산 %llu**[그때 항목 최대 %zu]·나간 것 항목 최대 %zu"
-                            "·잘린 항목 %llu[%llu틱·한통최대 %zu])"
+                            "·잘린 항목 %llu[%llu틱·한통최대 %zu]·스냅샷쪽 잘림 %llu)"
                             " · 판끝 %s (누적 틱 %llu)\n",
                             srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
@@ -1637,6 +1637,7 @@ int main(int argc, char** argv) {
                             srv.arrowGoneWall(), srv.arrowGoneWallAtBirth(), srv.arrowGoneAge(), srv.arrowLifeAvg(), srv.missilesPeak(),
                             srv.updateEncOk(), srv.updateEncFail(), srv.updateEncFailObjsMax(), srv.updateEncOkObjsMax(),
                             srv.updateDroppedObjs(), srv.updateDroppedTicks(), srv.updateDroppedMax(),
+                            srv.updateDroppedSnap(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
                 // ★ 09-19 진단 ⑬ — 화살 목록과 **실은 프레임의 분포**.
                 //   화면 캡처의 기울기와 1:1 로 맞대는 자리다. 분포가 한 칸뿐이면
