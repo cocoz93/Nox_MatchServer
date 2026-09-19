@@ -12412,6 +12412,25 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
     }
 
+    // ★★★ 09-19 진단 `--debug-score N 점수` — **첫 사람의 점수를 한 번 올린다.**
+    //   왜 — 판 끝은 점수가 `limitValue`(기본 **15** 킬)에 닿아야 서는데(`Server.cpp:1405`),
+    //   무인으로는 15킬을 못 낸다(조준이 안 되고, 덫에 죽는 것은 점수가 아니다).
+    //   그래서 점수를 직접 주어 **「판 끝 → 승자 알림 → 재시작」 사슬이 도는지**를 본다.
+    //   플랜 v6 의 목표가 「한 판이 **처음부터 끝까지** 돈다」라서 이 사슬이 마지막 관문이다
+    if (debugScoreAfter_ > 0 && !debugScoreDone_ && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugScoreAfter_) {
+        for (auto& kv : sessions_) {
+            Session& o = kv.second;
+            if (!o.inGame || o.observer) continue;
+            o.score = static_cast<int>(debugScoreVal_);
+            std::printf("[진단] 프레임 %u 에 %s 점수를 %d 로 (한도 %d)\n", frame_, o.addr.c_str(),
+                        o.score, static_cast<int>(gameSettings_.limitValue));
+            std::fflush(stdout);
+            break;
+        }
+        debugScoreDone_ = true;
+    }
+
     // ★ 진단 — 첫 사람 N틱 뒤 **경험치를 한 번 준다**(`--debug-xp N 양`, 2026-09-15).
     //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
     //   ④대기 ⑨ 「HUD 경험치 막대가 차오르나」를 정품 화면으로 가르려면 줄 길이 필요하다.
