@@ -1558,7 +1558,11 @@ int main(int argc, char** argv) {
         const int needPlayers = nox::ModeNeedPlayers(mode);
         if (!modeStarted && mode != "arena" && srv.inGameCount() >= needPlayers) {
             modeStarted = true;
-            const int mx = srv.spawnX() + 20, my = srv.spawnY();   // 두 사람 사이
+            // ★ 09-19 — 전에는 `spawnX() + 20`(두 사람 사이)였다. 사람이 그 고정값에 서던 때의 셈이라,
+            //   첫자리가 맵 PlayerStart 로 바뀐 뒤로는 **사람들의 실제 가운데**를 쓴다
+            int mx = 0, my = 0;
+            srv.PlayersCenter(mx, my);
+            std::printf("[모드] 판 자리 = 사람들 가운데 %d,%d\n", mx, my);
             // ★ 갈래는 `ModeRules.h` 가 **값으로** 정한다. 여기 `if/else` 로 두었을 때
             //   `else` 하나가 여섯 모드를 삼켰고 시험이 그것을 못 봤다(조각 E·G).
             const nox::ModeSetup setup = nox::ModeStartKind(mode);

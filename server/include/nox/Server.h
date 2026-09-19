@@ -1541,6 +1541,10 @@ public:
     // 서두(녹음본)에서 읽어 낸 스폰 자리. 모드를 차릴 때 기준으로 쓴다.
     int spawnX() const { return spawnX_; }
     int spawnY() const { return spawnY_; }
+    // 모드 판을 세울 자리 — 들어와 있는 사람들의 **가운데**(없으면 위 고정값).
+    //   ★ 09-19 — 첫자리가 맵 PlayerStart 로 바뀐 뒤로 `spawnX_` 는 **사람이 선 자리가 아니다**.
+    //   깃발(맵에 없을 때)·공·퀘스트 웨이브를 사람 곁에 놓던 하네스(`main.cpp`)가 이 값을 쓴다
+    void PlayersCenter(int& x, int& y) const;
     // ★ 2026-09-15 — **시작 자리를 손으로 지정한다**(`--spawn-at X Y`).
     //   왜 — ④ 화면 확인은 「볼 것이 있는 자리」까지 가야 하는데, 맵의 `PlayerStart` 가
     //   그 자리와 멀면 매번 한참을 걸어야 한다. G_Castle 은 시작이 (1244,645)이고
@@ -1561,6 +1565,7 @@ public:
         if (statics_.empty()) return false;
         spawnX_ = statics_[0].x;
         spawnY_ = statics_[0].y;
+        spawnForced_ = true;   // 09-19 — 안 걸면 첫자리가 맵 PlayerStart 로 가서 이 진단이 조용히 무시된다
         return true;
     }
     size_t FlagCount() const { return flags_.size(); }
@@ -3614,7 +3619,7 @@ private:
     unsigned long long abilOverweight_ = 0;   // 짐 넘침(광전사만)
     unsigned long long abilCooldown2_ = 0;    // 아직 쉬는 중
     unsigned long long abilOk_ = 0;           // **실행했다**
-    // ★ 09-19 — 첫 접속 자리. `--spawn-at` 으로 못 박았으면 그 값을 쓰고, 아니면
+    // ★ 09-19 — 첫 접속 자리. `--spawn-at`·`--item-at-spawn` 으로 못 박았으면 그 값을 쓰고, 아니면
     //   **맵의 PlayerStart** 에 세운다(정답지 `newPlayer` · `player.go:416~426`).
     //   전에는 늘 덤프에서 온 고정값(bludeath 의 3864,2534)이라 **맵마다 엉뚱한 자리**였다
     bool spawnForced_ = false;

@@ -3013,7 +3013,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     //   `player.go:416~426` — `mapFindPlayerStart_4F7AB0`). 전에는 아래 고정값만 써서
                     //   Estate·CapFlag·FlagWar **세 맵 모두 3864,2534** 에 섰다(09-19 실측).
                     //   ⚠ 깃발 맵이 어두운 것은 이 탓이 아니었다 — 고친 뒤에도 CapFlag 평균 밝기가 같다(R 19.7 → 19.0). 맵 조명이다.
-                    //   ⚠ `--spawn-at` 으로 못 박았으면 그 값이 먼저다 — 진단·시험이 거기에 기댄다
+                    //   ⚠ `--spawn-at`·`--item-at-spawn` 으로 못 박았으면 그 값이 먼저다 — 진단·시험이 거기에 기댄다
                     float fx = 0.0f, fy = 0.0f;
                     if (!spawnForced_ && FindPlayerStart(s, fx, fy)) {
                         s.x = static_cast<int>(fx);
@@ -3026,7 +3026,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         s.y = spawnY_ + (n / 4) * spawnSpread_;
                         ++spawnFromDefault_;
                         std::printf("[첫자리] 고정값 %d,%d (%s)\n", s.x, s.y,
-                                    spawnForced_ ? "--spawn-at" : "맵에 시작점 없음");
+                                    spawnForced_ ? "못 박음 — --spawn-at 또는 --item-at-spawn" : "맵에 시작점 없음");
                     }
                 }
                 // ★ 오브젝트 번호는 **접속마다 달라야 한다**. 전에는 모두 713 이라
@@ -4350,6 +4350,18 @@ bool Server::FindPlayerStart(const Session& s, float& x, float& y) {
     x = playerStarts_[best].first;
     y = playerStarts_[best].second;
     return true;
+}
+
+void Server::PlayersCenter(int& x, int& y) const {
+    long long sx = 0, sy = 0;
+    int n = 0;
+    for (const auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        sx += kv.second.x; sy += kv.second.y; ++n;
+    }
+    if (n == 0) { x = spawnX_; y = spawnY_; return; }
+    x = static_cast<int>(sx / n);
+    y = static_cast<int>(sy / n);
 }
 
 // `object.go:722~731` unitMove 의 플레이어 몫 — 온라인이면 `ea <프레임4>` 를 그 사람에게(오래된 정적 그림을 지우라는 뜻,
