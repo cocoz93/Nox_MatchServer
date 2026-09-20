@@ -2762,6 +2762,16 @@ public:
     unsigned long long harpoonAttached() const { return harpoonAttached_; }
     unsigned long long harpoonPullTicks() const { return harpoonPullTicks_; }
     // 주인 없는 둘의 갈래(⑮) — 둘 다 몬스터 / 한쪽이 몬스터가 아님(덫 화살·환경)
+    // ★ 09-20 묶음 10 — **능력 소리**. thing.bin `ABIL` 칸에서 읽어 넣는다(`main.cpp`).
+    //   정답지 `spells_abil.go:225~226` 는 쓸 때 `getSound(능력,0)`, 꺼질 때 `getSound(능력,2)` 를 낸다.
+    //   전에는 아예 안 보내서 ⑧ 「능력 소리」가 사람 몫으로 남아 있었다(들을 것이 없었다)
+    void SetAbilitySound(uint8_t abil, uint16_t useSnd, uint16_t offSnd) {
+        if (abil == 0 || abil >= 6) return;
+        abilSoundUse_[abil] = useSnd;
+        abilSoundOff_[abil] = offSnd;
+    }
+    uint16_t AbilitySoundUse(uint8_t abil) const { return abil < 6 ? abilSoundUse_[abil] : 0; }
+    unsigned long long abilSoundSent() const { return abilSoundSent_; }
     unsigned long long wildBothMonster() const { return wildBothMonster_; }
     unsigned long long wildRootNotMonster() const { return wildRootNotMonster_; }
     unsigned long long spawnFromMap() const { return spawnFromMap_; }
@@ -3641,6 +3651,9 @@ private:
     //   전에는 늘 덤프에서 온 고정값(bludeath 의 3864,2534)이라 **맵마다 엉뚱한 자리**였다
     bool spawnForced_ = false;
     // 주인 없는 둘의 갈래 — 둘 다 몬스터(적 아님) / 한쪽이 몬스터가 아님(적)
+    uint16_t abilSoundUse_[6] = {0, 0, 0, 0, 0, 0};
+    uint16_t abilSoundOff_[6] = {0, 0, 0, 0, 0, 0};
+    unsigned long long abilSoundSent_ = 0;
     mutable unsigned long long wildBothMonster_ = 0;
     mutable unsigned long long wildRootNotMonster_ = 0;
     unsigned long long spawnFromMap_ = 0;      // PlayerStart 에서 골랐다

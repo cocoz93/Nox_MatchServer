@@ -1076,6 +1076,27 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // ★ 2026-09-20 묶음 10 — **능력 소리**를 thing.bin `ABIL` 칸에서 넣는다.
+        //   이름은 정답지 `server/spells_abil.go:196~199 AbilityNames` 차례 그대로(1~5).
+        //   전에는 이 칸을 통째로 건너뛰어 능력을 써도 소리가 한 건도 안 나갔다(⑧)
+        {
+            static const char* const kAbilNames[6] = {
+                "", "ABILITY_BERSERKER_CHARGE", "ABILITY_WARCRY",
+                "ABILITY_HARPOON", "ABILITY_TREAD_LIGHTLY", "ABILITY_EYE_OF_THE_WOLF",
+            };
+            int wired = 0;
+            for (uint8_t n = 1; n <= 5; ++n) {
+                for (const auto& ar : tdb.Abilities()) {
+                    if (ar.name != kAbilNames[n]) continue;
+                    srv.SetAbilitySound(n, nox::SoundByName(ar.useSound.c_str()),
+                                        nox::SoundByName(ar.offSound.c_str()));
+                    if (nox::SoundByName(ar.useSound.c_str()) != 0) ++wired;
+                    break;
+                }
+            }
+            std::printf("[능력 소리] thing.bin ABIL %zu칸 · 다섯 중 %d개에 쓸 때 소리가 붙었다\n",
+                        tdb.Abilities().size(), wired);
+        }
         std::printf("[맵] %s — 벽 %zu칸 · 정적 %zu개(변환 실패 %zu) · 충돌 켜짐\n",
                     mapPath.c_str(), ws.size(), nStat, nSkip);
         std::printf("[주문] 마나 표 %zu개 — 0 이면 thing.bin 을 못 읽은 것이고 주문이 공짜가 된다\n",

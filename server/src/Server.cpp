@@ -7591,7 +7591,13 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
         s.abilActive[abil] = true;
         s.abilActiveUntil[abil] = frame_ + kAbilityDuration[abil];
     }
-    AbilityEffect(s, abil, out);                          // 7-e — `do()`. ⛔ 소리는 묶음 10
+    AbilityEffect(s, abil, out);                          // 7-e — `do()`
+    // ★ 09-20 묶음 10 — **쓸 때 소리**(정답지 `spells_abil.go:225~226` — `getSound(능력,0)`).
+    //   소리 번호는 thing.bin `ABIL` 칸에서 읽어 넣는다(`SetAbilitySound`) — 지어내지 않는다
+    if (abilSoundUse_[abil] != 0) {
+        PlaySoundAt(abilSoundUse_[abil], static_cast<float>(s.posX), static_cast<float>(s.posY));
+        ++abilSoundSent_;
+    }
     return true;
 }
 
@@ -7608,6 +7614,11 @@ void Server::AbilityUpdate(Session& s, std::vector<OutPacket>& out) {
         if (!gone) {
             if (frame_ <= s.abilActiveUntil[i]) continue;               // 아직 남았다
             SendAbilityActive(s, i, false, out);
+            // ★ 09-20 묶음 10 — **꺼질 때 소리**(정답지 `spells_abil.go:249~250` — `getSound(능력,2)`)
+            if (abilSoundOff_[i] != 0) {
+                PlaySoundAt(abilSoundOff_[i], static_cast<float>(s.posX), static_cast<float>(s.posY));
+                ++abilSoundSent_;
+            }
             if (i == 1) PlayerSetState(s, 13, frame_);                  // 광전사는 끝나면 상태 13
         }
         s.abilActive[i] = false;

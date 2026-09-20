@@ -61,6 +61,14 @@ struct SoundDefRaw {
     int      samples = 0;     // 소리조각 수(= 정답지 `Field12`)
 };
 
+// ★ 2026-09-20 묶음 10 — thing.bin `ABIL` 칸 한 항목(능력 다섯).
+//   ⭕ 정답지 `spells_abil.go:424~482 thingsRead` 가 읽는 차례 그대로다 —
+//     속이름 · 값1 · 그림 셋 · 이름표 · 설명 · **소리 셋**(쓸 때 · 켜질 때 · 꺼질 때).
+//   ⚠ 전에는 이 칸을 통째로 건너뛰어(`SkipABIL`) **능력 소리를 아예 못 보냈다**(⑧, 09-20 실측 「담김 0」)
+struct AbilityRaw {
+    std::string name;                        // `ABILITY_BERSERKER_CHARGE` 꼴
+    std::string useSound, onSound, offSound; // 소리 이름(NULL 이면 빈 문자열)
+};
 struct WallDefRaw {
     std::string name;
     uint32_t flags = 0;
@@ -193,6 +201,8 @@ public:
     // ── 벽 재질 (WALL 섹션) ── 맵 벽 재질 바이트 = 이 순번
     const std::vector<WallDefRaw>& Walls() const { return walls_; }
     const std::vector<SoundDefRaw>& Sounds() const { return sounds_; }
+    // ── 능력 (ABIL 섹션) ── 능력 소리 셋
+    const std::vector<AbilityRaw>& Abilities() const { return abilities_; }
     // ── 사람 애니 (THNG 의 DRAW = PlayerDraw) ── 없는 순번은 {0,0}(정답지도 0,0)
     const PlayerAnimFrames& PlayerAnim(int i) const {
         static const PlayerAnimFrames kNone;
@@ -217,6 +227,7 @@ private:
     std::vector<SpellRaw> spells_;
     std::vector<WallDefRaw> walls_;
     std::vector<SoundDefRaw> sounds_;
+    std::vector<AbilityRaw> abilities_;
     PlayerAnimFrames playerAnims_[kPlayerAnimTypeCount];
     int playerAnimSeen_ = 0;   // 표에 담긴 STAT 수(진단)
     std::string error_;

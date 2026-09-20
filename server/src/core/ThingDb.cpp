@@ -227,17 +227,27 @@ void SkipSPEL(Cur& c, std::vector<SpellRaw>* outSpells) {
 }
 
 // ability.go
-void SkipABIL(Cur& c) {
+//
+// ★ 2026-09-20 — **건너뛰지 않고 읽는다.** 차례는 정답지 `spells_abil.go:424~482` 그대로:
+//   속이름(str8) · 값1 · 그림 셋 · 이름표(str8) · 설명(str16) · **소리 셋**(str8 ×3).
+//   소리를 안 읽어서 ⑧ 능력 소리가 한 건도 안 나갔다(09-20 실측 — 서버 로그 「소리 담김 0」)
+void SkipABIL(Cur& c, std::vector<AbilityRaw>* outAbils) {
     const uint32_t n = c.U32();
+    auto soundName = [&c]() {
+        std::string s = c.Str8();
+        return s == "NULL" ? std::string() : s;
+    };
     for (uint32_t i = 0; i < n && !c.bad; ++i) {
-        c.SkipBytes8();
+        AbilityRaw ar;
+        ar.name = c.Str8();
         c.Skip(1);
         for (int j = 0; j < 3; ++j) SkipImageRef(c);
-        c.SkipBytes8();
-        c.SkipBytes16();
-        c.SkipBytes8();
-        c.SkipBytes8();
-        c.SkipBytes8();
+        c.SkipBytes8();                    // 이름표
+        c.SkipBytes16();                   // 설명
+        ar.useSound = soundName();
+        ar.onSound  = soundName();
+        ar.offSound = soundName();
+        if (outAbils && !c.bad) outAbils->push_back(std::move(ar));
     }
 }
 
@@ -568,7 +578,7 @@ bool ThingDb::Load(const std::string& path) {
         else if (sect == "AUD ") SkipAUD(c, &sounds_);
         else if (sect == "AVNT") SkipAVNT(c);
         else if (sect == "SPEL") SkipSPEL(c, &spells_);
-        else if (sect == "ABIL") SkipABIL(c);
+        else if (sect == "ABIL") SkipABIL(c, &abilities_);
         else if (sect == "IMAG") SkipIMAG(c);
         else if (sect == "THNG") {
             ThingInfo t;
