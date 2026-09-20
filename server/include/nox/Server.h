@@ -1388,6 +1388,11 @@ public:
     //   각본은 플랜 v6 범위 밖이다. 그래서 「무엇이 여는가」와 「클라가 그려 주나」를 갈라,
     //   뒤엣것만 서버가 직접 열어 본다(⑰ 주먹·②⑩ 순간이동과 같은 수법)
     void SetDebugWall(uint32_t ticks, int gx, int gy) { debugWallAfter_ = ticks; debugWallGx_ = gx; debugWallGy_ = gy; }
+    // ★ 09-20 진단 `--debug-pet-order <명령>` — `--debug-own-pet` 으로 만든 소환수에게 **명령을 준다.**
+    //   왜 — 주인 있는 크리처는 **명령을 받아야** 움직인다(`EnactUnitOrder`). 명령이 없으면
+    //   적이 15 까지 다가와도 **한 칸도 안 움직인다**(09-20 실측 50표본). ⑥ 「벽을 돌아가나」를
+    //   보려면 **사냥(5)** 을 줘야 한다. 2 가만히 · 3 지켜 · 4 따라와 · 5 사냥
+    void SetDebugPetOrder(uint8_t order) { debugPetOrder_ = order; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 경험치를 한 번 준다. 0 이면 끔.
     //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
     //   ④대기 ⑨ 「HUD 경험치 막대가 차오르나」를 정품 화면으로 보려면 줄 길이 있어야 한다.
@@ -3829,6 +3834,7 @@ private:
     uint32_t debugWallAfter_ = 0;               // 진단 --debug-wall (0 끔)
     int debugWallGx_ = 0, debugWallGy_ = 0;
     bool debugWallDone_ = false;
+    uint8_t debugPetOrder_ = 0;                 // 진단 --debug-pet-order (0 끔)
     uint32_t debugKillAfter_ = 0;
     bool     debugKillDone_ = false;
     uint32_t debugScoreAfter_ = 0;

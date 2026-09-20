@@ -12512,6 +12512,16 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             k.health = static_cast<uint16_t>(TuningFor(k.type).health);
             pets_.push_back(k);
             debugOwnPetNetCode_ = k.netCode;
+            // ★ 09-20 ⑥ — 명령을 안 주면 **한 칸도 안 움직인다**(주인 있는 크리처는 명령 대기).
+            //   `--debug-pet-order 5`(사냥)를 주면 스스로 적을 찾아간다
+            if (debugPetOrder_ != 0 && !debugPetWild_) {
+                auto si = sessions_.find(kv.first);
+                if (si != sessions_.end()) {
+                    EnactUnitOrder(si->second, pets_.back(), debugPetOrder_);
+                    std::printf("[진단] 소환수에게 명령 %u(2가만히·3지켜·4따라와·5사냥)\n",
+                                static_cast<unsigned>(debugPetOrder_));
+                }
+            }
             std::printf("[진단] 프레임 %u 에 %s %s 임프(번호 %u · 체력 %u)를 사람(%d,%d) 오른쪽 +%d 에 고정\n",
                         frame_, kv.second.addr.c_str(), debugPetWild_ ? "옆에 주인 없는" : "소유",
                         static_cast<unsigned>(k.netCode), static_cast<unsigned>(k.health),
@@ -12728,7 +12738,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         const size_t before = pets_.size();
         for (size_t pi = 0; pi < pets_.size(); ++pi) {
             Creature& k = pets_[pi];
-            if (debugOwnPetNetCode_ != 0 && k.netCode == debugOwnPetNetCode_) continue;   // 진단 임프 — 고정
+            // 진단 임프는 **틱에서 뺀다**(고정) — 조준·친구 판정용이라 움직이면 곤란하다.
+            // ★ 09-20 ⑥ — 다만 **명령을 준 경우엔 풀어 준다**(`--debug-pet-order`).
+            //   안 풀면 「사냥」을 줘도 한 칸도 안 움직인다 — **계측이 대상을 안 돌리고 있던 것**이다
+            if (debugOwnPetNetCode_ != 0 && k.netCode == debugOwnPetNetCode_ && debugPetOrder_ == 0) continue;
             const PetTuning tune = TuningFor(k.type);
             k.speedCur = static_cast<float>(tune.speed);
             // ★★ **보는 쪽은 매 프레임 「돌아가려는 쪽」을 그대로 옮겨 쓴다**

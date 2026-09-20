@@ -214,6 +214,7 @@ int main(int argc, char** argv) {
     bool debugHurtFront = false;    // 진단 — 그 피해를 앞 30 에서 때린 것으로
     bool autoRespawn = false;       // 자동 부활(정답지 기본 꺼짐)
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
+    int debugPetOrder = 0;          // 진단 --debug-pet-order (0 끔 · 5 사냥)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     int debugTeamEvery = 0;         // 진단 — N틱마다 팀을 1↔2 로 오간다 (0 끔)
     int debugFistAfter = 0, debugFistDx = 40, debugFistDy = 0;
@@ -415,6 +416,10 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-dummy" && i + 1 < argc) {
             // 진단 — 주먹 판정용(묶음 3-a). 첫 사람 N 틱 뒤 주인 없는 임프를 오른쪽 +25 에 고정(맞으면 깎이고 죽는다).
             debugDummy = std::atoi(argv[++i]);
+        } else if (a == "--debug-pet-order" && i + 1 < argc) {
+            // 진단 — `--debug-own-pet` 소환수에게 명령을 준다(2 가만히·3 지켜·4 따라와·**5 사냥**).
+            //   ⚠ 명령이 없으면 주인 있는 크리처는 **한 칸도 안 움직인다**(09-20 실측)
+            debugPetOrder = std::atoi(argv[++i]);
         } else if (a == "--debug-dummy-dx" && i + 1 < argc) {
             // 진단 — 허수아비 오른쪽 거리(기본 25). 묶음 4-a2 날리기 화면 — 멀리 두면 Magic 이 날아가는 게 보인다.
             debugDummyDx = std::atoi(argv[++i]);
@@ -1332,6 +1337,11 @@ int main(int argc, char** argv) {
         if (debugOwnPet > 0) {
             srv.SetDebugOwnPetAfter(static_cast<uint32_t>(debugOwnPet));
             std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 소유 임프를 사람 자리에 고정\n", debugOwnPet);
+            std::fflush(stdout);
+        }
+        if (debugPetOrder > 0) {
+            srv.SetDebugPetOrder(static_cast<uint8_t>(debugPetOrder));
+            std::printf("[진단스위치] 소환수에게 명령 %d 를 준다(2가만히·3지켜·4따라와·5사냥)\n", debugPetOrder);
             std::fflush(stdout);
         }
         if (debugKillAfter > 0) {
