@@ -12605,6 +12605,24 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             break;
         }
     }
+    // ★★★ 09-20 진단 `--debug-warp N x y` — **첫 사람을 그 자리로 한 번 옮긴다.**
+    //   문·밟는 판은 「다가가야」 알림이 나는데, 시작 자리에 세워 두면 알림이 접속 직후에 나가
+    //   클라가 준비 전이라 버린다. 서버가 시각을 정하면 **다 들어온 뒤 다가가기**를 만들 수 있다
+    if (debugWarpAfter_ > 0 && !debugWarpDone_ && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugWarpAfter_) {
+        for (auto& kv : sessions_) {
+            Session& o = kv.second;
+            if (!o.inGame || o.observer || o.respawnAtFrame != 0) continue;
+            std::printf("[진단] 프레임 %u 순간이동 — %.0f,%.0f → %d,%d\n",
+                        frame_, o.posX, o.posY, debugWarpX_, debugWarpY_);
+            std::fflush(stdout);
+            o.posX = debugWarpX_; o.posY = debugWarpY_;
+            o.x = debugWarpX_;    o.y = debugWarpY_;
+            o.forceX = o.forceY = 0.0;
+            debugWarpDone_ = true;
+            break;
+        }
+    }
     // ★★★ 09-19 진단 `--debug-score N 점수` — **첫 사람의 점수를 한 번 올린다.**
     //   왜 — 판 끝은 점수가 `limitValue`(기본 **15** 킬)에 닿아야 서는데(`Server.cpp:1405`),
     //   무인으로는 15킬을 못 낸다(조준이 안 되고, 덫에 죽는 것은 점수가 아니다).

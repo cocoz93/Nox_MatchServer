@@ -1373,6 +1373,12 @@ public:
     //   주먹을 떨어뜨린다. 클라로 시키면 시전 시각(접속 뒤 25초 + 주기)·벽·자기 피해 때문에 헛돈다(09-20 여덟 번).
     //   서버가 틱을 정해 쏘면 **녹화 시각을 그 틱에 맞출 수 있다**
     void SetDebugFist(uint32_t ticks, int dx, int dy) { debugFistAfter_ = ticks; debugFistDx_ = dx; debugFistDy_ = dy; }
+    // ★ 09-20 진단 `--debug-warp N x y` — **첫 사람을 N 틱 뒤 그 자리로 한 번 옮긴다.**
+    //   왜 — 문·밟는 판처럼 **다가가야** 알림이 나는 것들은, 시작 자리에 세워 두면 알림이
+    //   **접속 0.2초 만에** 나가 클라가 준비 전이라 버린다(09-20 클라 덤프로 확인).
+    //   그리고 우리는 **바뀔 때만** 보내므로 그 창에서 놓친 상태는 영영 다시 안 간다.
+    //   서버가 시각을 정하면 「다 들어온 뒤에 다가가기」를 만들 수 있다(⑰ 주먹과 같은 수법).
+    void SetDebugWarp(uint32_t ticks, int x, int y) { debugWarpAfter_ = ticks; debugWarpX_ = x; debugWarpY_ = y; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 경험치를 한 번 준다. 0 이면 끔.
     //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
     //   ④대기 ⑨ 「HUD 경험치 막대가 차오르나」를 정품 화면으로 보려면 줄 길이 있어야 한다.
@@ -3804,6 +3810,9 @@ private:
     uint32_t debugFistAfter_ = 0;
     int debugFistDx_ = 40, debugFistDy_ = 0;
     bool debugFistDone_ = false;
+    uint32_t debugWarpAfter_ = 0;               // 진단 --debug-warp (0 끔)
+    int debugWarpX_ = 0, debugWarpY_ = 0;
+    bool debugWarpDone_ = false;
     uint32_t debugKillAfter_ = 0;
     bool     debugKillDone_ = false;
     uint32_t debugScoreAfter_ = 0;

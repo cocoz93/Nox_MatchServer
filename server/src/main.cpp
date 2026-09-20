@@ -215,6 +215,7 @@ int main(int argc, char** argv) {
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     int debugTeamEvery = 0;         // 진단 — N틱마다 팀을 1↔2 로 오간다 (0 끔)
     int debugFistAfter = 0, debugFistDx = 40, debugFistDy = 0;
+    int debugWarpAfter = 0, debugWarpX = 0, debugWarpY = 0;
     int debugKillAfter = 0;         // 진단 — N틱 뒤 첫 사람이 둘째를 죽인다 (0 끔)
     int debugScoreAfter = 0;        // 진단 — N틱 뒤 첫 사람 점수를 올린다 (0 끔)
     int debugScoreVal = 0;
@@ -455,6 +456,11 @@ int main(int argc, char** argv) {
             debugFistAfter = std::atoi(argv[++i]);
             debugFistDx = std::atoi(argv[++i]);
             debugFistDy = std::atoi(argv[++i]);
+        } else if (a == "--debug-warp" && i + 3 < argc) {
+            // 진단 — N틱 뒤 첫 사람을 그 자리로 한 번 옮긴다(문·밟는 판처럼 「다가가야」 보는 것용)
+            debugWarpAfter = std::atoi(argv[++i]);
+            debugWarpX = std::atoi(argv[++i]);
+            debugWarpY = std::atoi(argv[++i]);
         } else if (a == "--debug-kill" && i + 1 < argc) {
             // 진단 — N틱 뒤 첫 사람이 둘째를 죽인 것으로 친다(킬→점수→판끝 사슬 확인용)
             debugKillAfter = std::atoi(argv[++i]);
@@ -1247,6 +1253,12 @@ int main(int argc, char** argv) {
             srv.SetDebugFist(static_cast<uint32_t>(debugFistAfter), debugFistDx, debugFistDy);
             std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주먹을 그 사람 +(%d,%d) 에 떨어뜨린다\n",
                         debugFistAfter, debugFistDx, debugFistDy);
+            std::fflush(stdout);
+        }
+        if (debugWarpAfter > 0) {
+            srv.SetDebugWarp(static_cast<uint32_t>(debugWarpAfter), debugWarpX, debugWarpY);
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 %d,%d 로 옮긴다\n",
+                        debugWarpAfter, debugWarpX, debugWarpY);
             std::fflush(stdout);
         }
         if (debugScoreAfter > 0) {
