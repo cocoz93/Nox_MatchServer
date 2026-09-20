@@ -1263,6 +1263,11 @@ public:
     // WoodenDoor 3 · ArchedHalfDoor 2 · ObeliskPrimitive 2.
     struct WorldProp {
         uint16_t netCode = 0;
+        // ★ 09-20 ⑩ — **클라가 어느 목록에서 찾나.** 클라는 번호의 윗비트(0x8000)로
+        //   «맵에서 제가 만든 정적 그림»과 «서버가 소개한 동적 그림»을 가른다
+        //   (`client/drawable.go:378~403`). 판·문처럼 `CLASS` 에 `IMMOBILE` 이 있으면 정적 쪽이다.
+        //   안 세우면 동적 목록을 뒤지다 못 찾고 **조용히 버린다**(실측 — 클라 「그림 못 찾음」)
+        bool staticLookup = false;
         uint16_t type = 0;
         int x = 0, y = 0;
         PropKind kind = PropKind::Door;
@@ -3497,6 +3502,7 @@ private:
     //   **4바이트 갈래**만 옮긴다 — `5e/5f | 번호 u16 | 높이 u8`. 6바이트 갈래(`9f`)는 칸 하나(+116)가
     //   뜻 미상이라 안 쓴다(지어내지 않는다). 클라는 이 값을 그림의 높이(+104)에 그대로 넣는다
     // 낙하 시작 알림(`9f`) — 주문 물체(주먹·운석)는 이쪽이다. 세 칸 모두 우리가 아는 값
+    uint16_t PropWireCode(const WorldProp& p) const;
     void SendDeltaZStart(uint16_t netCode, float z, float zVel, float bounce, std::vector<OutPacket>& out);
     // ★ 09-20 ⑰ — **만든 틱에 보내면 클라가 버린다.** 오브젝트를 알리는 `a4 UPDATE_STREAM` 은
     //   틱 끝에서 조립되는데 `9f` 는 주문 처리 중(틱 앞쪽)에 나가, 클라가 아직 없는 그림을 찾다 만다

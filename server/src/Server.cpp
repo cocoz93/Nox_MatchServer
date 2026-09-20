@@ -1796,6 +1796,12 @@ void Server::AssignTeams() {
 // ★ **오벨리스크는 옆에 서면 마나를 채운다** — gamedata 에 Regen 키가 0개이고
 //   오벨리스크 항목도 없다. 정품 온라인의 마나 회복 수단이 이것으로 보인다.
 //   ⚠ 채우는 속도는 ➖ 우리 값. P4 캠페인에서 정품 시계열이 잡히면 그 값으로 고친다.
+// ★ 09-20 ⑩ — 판·문·오벨리스크를 와이어에 실을 때 쓰는 번호. 정적 그림이면 윗비트를 세운다.
+//   ⚠ 문·오벨리스크는 **화면으로 확인 못 했다** — 판만 갈렸다(확인표 ⑩ 절 「아직 못 본 것」).
+uint16_t Server::PropWireCode(const WorldProp& p) const {
+    return static_cast<uint16_t>(p.staticLookup ? (p.netCode | 0x8000u) : p.netCode);
+}
+
 void Server::UpdateProps(std::vector<OutPacket>& out) {
     if (props_.empty()) return;
     for (auto& p : props_) {
@@ -1867,12 +1873,10 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             //   ⇒ 정품 화면(④)에서 판이 깜빡이지 않는지 볼 것
             // ⚠ 문 갈래와 같이 **바뀔 때만** 보낸다(정답지는 더러움 비트라 같은 값도 다시 간다)
             if (p.animFrame != before) {
-                // ★★ 09-20 ⑩ — **윗비트(0x8000)를 세운다.** 클라는 이 비트로 «맵에서 제가 만든
-                //   정적 그림»(`ByNetCodeStatic`)과 «서버가 소개한 동적 그림»을 가른다
-                //   (`client/drawable.go:378~403` — 가르는 값은 `Class() & 0x20400000`).
-                //   밟는 판은 `CLASS = TRIGGER+IMMOBILE` 이라 **정적** 쪽이다.
-                //   안 세우면 동적 쪽을 뒤지다 못 찾고 **조용히 버린다**(실측 — 클라 로그 「그림 못 찾음」)
-                const uint16_t nc = static_cast<uint16_t>(p.netCode | 0x8000u);
+                // ★★ 09-20 ⑩ — **윗비트(0x8000)를 세운다.** 근거는 `WorldProp::staticLookup` 주석.
+                //   밟는 판은 `CLASS = TRIGGER+IMMOBILE` 이라 정적 쪽이고, 실측으로 갈렸다
+                //   (안 세움 → 「그림 못 찾음」 · 세움 → 「그림 찾음」)
+                const uint16_t nc = PropWireCode(p);
                 const uint8_t msg[4] = { static_cast<uint8_t>(Op::PENTAGRAM_ACTIVATE),
                                          static_cast<uint8_t>(nc),
                                          static_cast<uint8_t>(nc >> 8),
@@ -1899,10 +1903,11 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             if (want == p.open) continue;          // 안 바뀌면 안 보낸다
             p.open = want;
             if (want) ++doorsOpened_;
+            const uint16_t dnc = PropWireCode(p);
             uint8_t full[4] = {
                 static_cast<uint8_t>(Op::DOOR_ANGLE),
-                static_cast<uint8_t>(p.netCode),
-                static_cast<uint8_t>(p.netCode >> 8),
+                static_cast<uint8_t>(dnc),
+                static_cast<uint8_t>(dnc >> 8),
                 static_cast<uint8_t>(want ? kDoorOpen : kDoorClosed),
             };
             Broadcast(/*viaSeq=*/false, full, sizeof(full), out);
@@ -1913,10 +1918,11 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             if (nearest->mana >= nearest->maxMana) continue;
             PlayerManaAdd(*nearest, kObeliskManaPerTick);   // playerManaAdd_4EEB80 — `45` 는 다음 틱 PlayerReportAnything(+4 ≠ +6)
             ++obeliskMana_;
+            const uint16_t onc = PropWireCode(p);
             uint8_t ob[4] = {
                 static_cast<uint8_t>(Op::OBELISK_CHARGE),
-                static_cast<uint8_t>(p.netCode),
-                static_cast<uint8_t>(p.netCode >> 8),
+                static_cast<uint8_t>(onc),
+                static_cast<uint8_t>(onc >> 8),
                 0x32,                               // 표본 전수가 0x32 였다
             };
             Broadcast(/*viaSeq=*/true, ob, sizeof(ob), out);

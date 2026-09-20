@@ -16412,6 +16412,9 @@ void TestPressurePlate() {
         wp.type = 734;                                 // thing.bin 실측 와이어
         wp.x = 2000; wp.y = 2000;
         wp.kind = nox::PropKind::Plate;
+        // ⭕ thing.bin 실측 — `PressurePlate` 는 `CLASS = TRIGGER+IMMOBILE` 이라 **정적 조회**다
+        //   (G_Castle 기동 로그 `[판·문 조회] 정적(윗비트) 307개 / 모두 307개`)
+        wp.staticLookup = true;
         srv.SetWorldProps({ wp });
         srv.DebugEnterGame(a, 931);
         srv.DebugSetPos(a, 2500, 2500);                // 처음엔 판 밖
