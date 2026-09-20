@@ -731,7 +731,13 @@ int main(int argc, char** argv) {
                 std::vector<std::pair<float, float>> starts;
                 for (const auto& o : objs)
                     if (o.type == "PlayerStart") starts.push_back({ o.x, o.y });
-                std::printf("[부활 자리] PlayerStart %zu곳\n", starts.size());
+                std::printf("[부활 자리] PlayerStart %zu곳 —", starts.size());
+                // ★ 09-20 — **좌표도 찍는다.** 화면 판정에서 「방 안에 선 자리」가 늘 필요한데
+                //   아무 데나 `--spawn-at` 하면 **바닥이 없는 암반**에 서서 화면이 통째로 검다(실측).
+                //   PlayerStart 는 맵이 보증하는 「설 수 있는 자리」다
+                for (size_t k = 0; k < starts.size() && k < 14; ++k)
+                    std::printf(" (%d,%d)", static_cast<int>(starts[k].first), static_cast<int>(starts[k].second));
+                std::printf("\n");
                 srv.SetPlayerStarts(std::move(starts));
             }
             // ★ ④⑯ — 맵에 그려진 판 물건의 자리를 모아 둔다(출력은 아래 「맵 판물건」).
