@@ -217,6 +217,8 @@ int main(int argc, char** argv) {
     int debugPetOrder = 0;          // 진단 --debug-pet-order (0 끔 · 5 사냥)
     int debugMobAfter = 0, debugMobType = 0, debugMobX = 0, debugMobY = 0;   // 진단 --debug-mob
     int tracePets = 0;              // 진단 --trace-pets N (0 끔) — N틱마다 크리처 자리·행동·길목
+    unsigned long long tracePetsInWall = 0;   // ③ 크리처가 **벽 칸 안**에 있던 표본 수
+    unsigned long long tracePetsSamples = 0;  // 그 분모 — 0 옆에 늘 지나간 양을 같이 읽는다
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     int debugTeamEvery = 0;         // 진단 — N틱마다 팀을 1↔2 로 오간다 (0 끔)
     int debugFistAfter = 0, debugFistDx = 40, debugFistDy = 0;
@@ -1912,10 +1914,25 @@ int main(int argc, char** argv) {
                     uint32_t wp = 0;
                     for (int j = top; j >= 0; --j)
                         if (srv.DebugAIAction(pi, j) == 10) { wp = srv.DebugAIArgWp(pi, j); break; }
+                    // ★ 09-21 ③ — **벽 칸 안에 있나**를 같이 센다.
+                    //   ③ 의 남은 물음이 「벽을 뚫지 않나」인데, 자리만 찍어서는 **벽을 지나갔는지**
+                    //   눈으로 세야 한다. 칸을 직접 물으면 **기계가 센다** — 0 이면 한 번도 안 들어갔다.
+                    //   ⚠ 이건 「벽 칸을 밟았나」지 「벽을 넘어갔나」가 아니다.
+                    //     한 틱에 벽을 통째로 건너뛰면 이 셈은 0 으로 남는다 — 그래서
+                    //     **표본 사이 최대 이동**도 같이 찍는다(한 칸 23 보다 크면 의심)
+                    const bool inWall = srv.WallAt(px, py);
+                    if (inWall) ++tracePetsInWall;
+                    ++tracePetsSamples;
+                    // ⚠ 「벽칸」은 정상이면 **늘 0** 이라, 그것만 찍으면 「계측이 안 도는 것」과 구별이 안 된다.
+                    //   그래서 **가장 가까운 벽까지 거리**를 옆에 같이 찍는다 — 이 값이 표본마다 변하면
+                    //   벽 자료가 실려 있고 질의가 살아 있다는 뜻이다(0 옆에 지나간 양을 같이 읽는다).
+                    const double wallDist = srv.DebugWallDistance(px, py);
                     std::printf("[소환수길] 틱 %u · %zu번 (%d,%d) 맨위행동 %d 길목 %u"
+                                " · 벽칸 %s(누적 %llu/%llu · 가장가까운벽 %.0f)"
                                 " · 이음탐 %llu 막다른길 %llu\n",
                                 srv.frame(), pi, static_cast<int>(px), static_cast<int>(py),
                                 top >= 0 ? srv.DebugAIAction(pi, top) : -1, wp,
+                                inWall ? "예" : "아니오", tracePetsInWall, tracePetsSamples, wallDist,
                                 srv.roamAdvance(), srv.roamDeadEnd());
                 }
             }
