@@ -195,6 +195,8 @@ int main(int argc, char** argv) {
     //   다른 자리**였다(CapFlag 실측 — 맵 1058,931·3841,3714 ↔ 우리 3828,2534·4104,2534).
     //   맵 로드 블록 밖에서도 봐야 해서 여기에 둔다.
     std::vector<std::pair<int, int>> mapFlagPos;
+    // ★ 09-20 9-b — 덫 자리를 바깥에 둔다. 길목을 읽은 **뒤**에 「덫 옆 설 자리」를 찍기 위함
+    std::vector<std::pair<float, float>> trapPos;
     bool standalone = false;
     // 진단 — 맵 섹션 목록(이름·크기)만 찍고 **서버를 안 띄우고 끝낸다**. 157개를 배치로 돌리려고.
     //   왜 서버가 해야 하나 — .map 은 Blowfish 로 암호화돼 있어 바깥 도구로는 못 읽고,
@@ -812,6 +814,7 @@ int main(int argc, char** argv) {
                     if (o.type == "ArrowTrap1") { tr.fxKind = 1; tr.damage = arrowDmg; }
                     else if (o.type == "ArrowTrap2") { tr.fxKind = 2; tr.damage = arrowDmg; }
                     traps.push_back(tr);
+                    trapPos.push_back({ tr.x, tr.y });
                 }
                 if (!traps.empty()) {
                     std::printf("[맵] 쏘는 덫 %zu개 · 화살 피해 %d\n", traps.size(), arrowDmg);
@@ -857,6 +860,27 @@ int main(int argc, char** argv) {
                                     static_cast<int>(wx), static_cast<int>(wy),
                                     static_cast<int>(wps[bi].first), static_cast<int>(wps[bi].second),
                                     static_cast<int>(std::sqrt(best)));
+                        ++shown;
+                    }
+                    std::fflush(stdout);
+                }
+                // ★ 09-20 9-b — 덫도 같은 셈. **덫 옆에 설 자리**가 있어야 화살이 오는 걸 본다
+                //   (덫 사정 ±350 이라 너무 멀면 안 쏘고, 너무 가까우면 화살 궤적이 안 보인다)
+                if (!wps.empty() && !trapPos.empty()) {
+                    size_t shown = 0;
+                    for (const auto& t : trapPos) {
+                        if (shown >= 4) break;
+                        double best = 1e18; size_t bi = 0;
+                        for (size_t k = 0; k < wps.size(); ++k) {
+                            const double dx = wps[k].first - t.first, dy = wps[k].second - t.second;
+                            const double d2 = dx * dx + dy * dy;
+                            if (d2 < best) { best = d2; bi = k; }
+                        }
+                        const int dist = static_cast<int>(std::sqrt(best));
+                        if (dist > 350) continue;          // 덫 사정 밖이면 볼 수 없다
+                        std::printf("[덫 설자리] 덫 (%d,%d) ← 가장 가까운 길목 (%d,%d) 거리 %d\n",
+                                    static_cast<int>(t.first), static_cast<int>(t.second),
+                                    static_cast<int>(wps[bi].first), static_cast<int>(wps[bi].second), dist);
                         ++shown;
                     }
                     std::fflush(stdout);
