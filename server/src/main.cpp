@@ -216,6 +216,7 @@ int main(int argc, char** argv) {
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugPetOrder = 0;          // 진단 --debug-pet-order (0 끔 · 5 사냥)
     int debugMobAfter = 0, debugMobType = 0, debugMobX = 0, debugMobY = 0;   // 진단 --debug-mob
+    int tracePets = 0;              // 진단 --trace-pets N (0 끔) — N틱마다 크리처 자리·행동·길목
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     int debugTeamEvery = 0;         // 진단 — N틱마다 팀을 1↔2 로 오간다 (0 끔)
     int debugFistAfter = 0, debugFistDx = 40, debugFistDy = 0;
@@ -472,6 +473,11 @@ int main(int argc, char** argv) {
             debugMobType = std::atoi(argv[++i]);
             debugMobX = std::atoi(argv[++i]);
             debugMobY = std::atoi(argv[++i]);
+        } else if (a == "--trace-pets" && i + 1 < argc) {
+            // 진단 — N틱마다 크리처의 **자리·맨 위 행동·고른 길목**을 찍는다(⑥ 6-j(3) 주행용).
+            //   ⚠ 「안 움직인다」를 보려면 **자리와 고른 길목을 같이** 봐야 한다.
+            //     자리만 보면 「길이 막혔나」와 「같은 곳을 또 골랐나」가 안 갈린다(09-20 에 그 함정에 빠졌다)
+            tracePets = std::atoi(argv[++i]);
         } else if (a == "--debug-wall" && i + 3 < argc) {
             // 진단 — N틱 뒤 그 **칸**(gx,gy)의 비밀벽을 연다(9-a — 클라가 그려 주나만 본다)
             debugWallAfter = std::atoi(argv[++i]);
@@ -1895,6 +1901,24 @@ int main(int argc, char** argv) {
             nTicks += static_cast<unsigned long long>(ticks);
             const size_t made = outs.size();
             flush();
+            // ★ 09-20 6-j(3) — 크리처 추적. **조용한 주행에서도 찍는다**(판정에 쓰는 줄이라)
+            if (tracePets > 0 && (srv.frame() % static_cast<uint32_t>(tracePets)) == 0) {
+                for (size_t pi = 0; pi < srv.petCount(); ++pi) {
+                    double px = 0, py = 0;
+                    if (!srv.DebugPetXY(pi, px, py)) continue;
+                    const int top = srv.DebugAIStackInd(pi);
+                    // ⚠ 길목 번호는 **떠돌기(10) 항목**에 있다 — 맨 위는 그 위에 얹힌 가기(7)다.
+                    //   맨 위만 읽으면 늘 0 이 나와 「안 고른다」로 오독한다
+                    uint32_t wp = 0;
+                    for (int j = top; j >= 0; --j)
+                        if (srv.DebugAIAction(pi, j) == 10) { wp = srv.DebugAIArgWp(pi, j); break; }
+                    std::printf("[소환수길] 틱 %u · %zu번 (%d,%d) 맨위행동 %d 길목 %u"
+                                " · 이음탐 %llu 막다른길 %llu\n",
+                                srv.frame(), pi, static_cast<int>(px), static_cast<int>(py),
+                                top >= 0 ? srv.DebugAIAction(pi, top) : -1, wp,
+                                srv.roamAdvance(), srv.roamDeadEnd());
+                }
+            }
             // 매 틱 찍으면 화면이 흐르니 1초에 한 번만.
             if (!quiet && made > 0 && (srv.frame() % 30) == 0) {
                 // ★ 걸음·근접 누계를 같이 찍는다 — 클라가 보낸 조작이 **실제로 반영됐나**를
