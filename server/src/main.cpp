@@ -1861,7 +1861,10 @@ int main(int argc, char** argv) {
                             srv.enchantSent(), srv.petsKilled());
                 // ★ 조각 I — **피해가 어디서 사라지나.** 합이 `피해` 와 맞아야 셈이 닫힌다.
                 if (!srv.damageStops().empty()) {
-                    std::printf("[피해] 막힌 곳 —");
+                    // ★ 09-20 — 주인 없는 둘의 갈래도 같이 찍는다(⑮ 덫 화살 ↔ 맵 몬스터).
+                    //   둘 다 몬스터면 적이 아니고, 한쪽이 몬스터가 아니면(덫 화살) 적이다
+                    std::printf("[피해] 주인없음갈래(둘다몬스터 %llu·뿌리가몬스터아님 %llu) 막힌 곳 —",
+                                srv.wildBothMonster(), srv.wildRootNotMonster());
                     for (const auto& kv : srv.damageStops())
                         std::printf(" %s %llu", kv.first.c_str(), kv.second);
                     std::printf("\n");

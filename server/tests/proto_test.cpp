@@ -2095,6 +2095,27 @@ void TestEnemyTo() {
         Check(!srv.IsEnemyTo(a, b), "퀘스트인데 사람끼리 적이라고 나온다");
     }
 
+    // ⑤ 09-20 — **주인 없는 둘**은 뿌리의 종류로 갈린다(정답지 `object.go:1737·1740`).
+    //   전에는 「주인 없음 = 맵 몬스터」로 뭉쳐서 **덫 화살이 몬스터를 못 때렸다**(⑮ 45건 전부 막힘).
+    //   값 하나가 아니라 **네 갈래를 전수로** 보고, 적이 몇인지 **개수**도 센다
+    {
+        nox::Server srv;
+        struct Case { bool aMon; bool bMon; bool want; const char* name; };
+        const Case cs[] = {
+            { true,  true,  false, "맵 몬스터끼리가 적이라고 나온다" },
+            { true,  false, true,  "몬스터 ↔ 덫 화살이 아군이라고 나온다" },
+            { false, true,  true,  "덫 화살 ↔ 몬스터가 아군이라고 나온다" },
+            { false, false, true,  "주인 없는 둘(몬스터 아님)이 아군이라고 나온다" },
+        };
+        int enemies = 0;
+        for (const auto& c : cs) {
+            const bool got = srv.DebugOwnersEnemy(std::string(), c.aMon, std::string(), c.bMon);
+            Check(got == c.want, c.name);
+            if (got) ++enemies;
+        }
+        Check(enemies == 3, "주인 없는 네 갈래 가운데 적이 셋이 아니다");
+    }
+
     // ④ 없는 사람은 적이 아니다 (문지기)
     {
         nox::Server srv;
@@ -15731,22 +15752,31 @@ void TestPetDamageStops() {
     srv.DebugHurt(std::string(), 99, 10, a, 3, out);
     Check(count(srv, "칸밖(소환수)") == 1, "없는 자리를 때렸는데 「칸밖」으로 안 센다");
 
-    // ② **편 아님** — 주인 없는 것(덫 화살)이 주인 없는 것(맵 몬스터)을 때리면
-    //   둘 다 맵 것이라 적이 아니다(`OwnersEnemy` — `server/object.go:1667~1741`).
-    srv.DebugHurt(std::string(), 0, 10, std::string(), 3, out);
-    Check(count(srv, "편아님(소환수)") == 1, "맵끼리 때렸는데 「편아님」으로 안 센다");
+    // ② **편 아님** — **맵 몬스터끼리**는 적이 아니다(`OwnersEnemy` — `server/object.go:1737`).
+    //   ⚠ 09-20 정정 — 전에는 이 자리를 「덫 화살 ↔ 맵 몬스터」로 적어 두고 막혔다고 했는데,
+    //     정답지에서 **덫 화살의 뿌리는 몬스터가 아니라 화살 자신**이라 `1740` 에서 적이 된다.
+    //     그래서 이 검사는 **뿌리가 몬스터인 때림**(맵 몬스터의 공격)으로 바꾼다
+    nox::Server::AttackSrc mon;
+    mon.rootIsMonster = true;
+    srv.DebugHurt(std::string(), 0, 10, std::string(), 3, out, &mon);
+    Check(count(srv, "편아님(소환수)") == 1, "맵 몬스터끼리 때렸는데 「편아님」으로 안 센다");
     Check(srv.DebugPetHealth(0) == hp0, "적이 아닌데 체력이 깎였다");
+
+    // 09-20 — **덫 화살**(주인 없음 · 뿌리가 몬스터 아님)은 맵 몬스터를 **때린다**
+    const uint16_t hpTrap = srv.DebugPetHealth(0);
+    srv.DebugHurt(std::string(), 0, 10, std::string(), 3, out);   // src 없음 = 덫 화살
+    Check(srv.DebugPetHealth(0) < hpTrap, "덫 화살이 맵 몬스터를 못 때린다(⑮ 결함)");
 
     // ③ **깎임** — 사람이 때리면 들어간다. 여기까지 와야 셈이 닫힌다
     srv.DebugHurt(std::string(), 0, 10, a, 3, out);
-    Check(count(srv, "깎임(소환수)") == 1, "사람이 때렸는데 「깎임」으로 안 센다");
+    Check(count(srv, "깎임(소환수)") == 2, "사람이 때렸는데 「깎임」이 2(덫 화살 + 사람)가 아니다");
     Check(srv.DebugPetHealth(0) < hp0, "사람이 때렸는데 체력이 안 깎였다");
 
     // ④ **셈이 닫히나** — 부른 횟수 = 이탈구 합. 안 닫히면 아직 이름 없는 자리가 있다는 뜻이다
     unsigned long long petSum = 0;
     for (const auto& kv : srv.damageStops())
         if (kv.first.find("(소환수)") != std::string::npos) petSum += kv.second;
-    Check(petSum == 3, "크리처 갈래를 3번 탔는데 이탈구 합이 3 이 아니다 — 이름 없는 자리가 남았다");
+    Check(petSum == 4, "크리처 갈래를 4번 탔는데 이탈구 합이 4 가 아니다 — 이름 없는 자리가 남았다");
 
     // ⑤ **사람 쪽도 닫히나** — 교차 대조(I × J)에서 나온 갭이다.
     //   크리처 쪽만 닫힘 검사가 있었고 사람 쪽은 **실물로만** 봤다(피해 5 = 방패막기 1 + 깎임 4).
@@ -15765,7 +15795,7 @@ void TestPetDamageStops() {
     Check(srv.hurts() - before == 2, "사람 갈래를 두 번 안 탔다(시험 전제)");
     Check(manSum == 2, "사람 갈래 두 번인데 이탈구 합이 2 가 아니다 — 이름 없는 자리가 남았다");
 
-    std::printf("  11-i 피해 셈 — 크리처 3 = 칸밖1+편아님1+깎임1 · 사람 2 = 세션없음1+깎임1 (양쪽 닫힘)\n");
+    std::printf("  11-i 피해 셈 — 크리처 4 = 칸밖1+편아님1+깎임2(덫 화살) · 사람 2 = 세션없음1+깎임1 (양쪽 닫힘)\n");
 }
 
 // ── 조각 L(09-16) 알림 갈래가 원본과 같은 수인가 ─────────────────────

@@ -1193,6 +1193,10 @@ public:
         if (i >= 0 && i < kPlayerAnimSlots) { playerAnimFrames_[i][0] = frames; playerAnimFrames_[i][1] = hold; }
     }
     // 시험용 — 선 추적(Flag1, 걸음과 같은 깃발)
+    // 시험용 — 편 거르기(`OwnersEnemy`)를 그대로 부른다. 둘째·넷째는 **뿌리가 몬스터인가**
+    bool DebugOwnersEnemy(const std::string& a, bool aMonsterRoot, const std::string& b, bool bMonsterRoot) const {
+        return OwnersEnemy(a, aMonsterRoot, b, bMonsterRoot);
+    }
     bool DebugTraceRay(float x1, float y1, float x2, float y2) const { return MapTraceRay(x1, y1, x2, y2, 0x1); }
     bool DebugTraceRayFlags(float x1, float y1, float x2, float y2, uint8_t f) const { return MapTraceRay(x1, y1, x2, y2, f); }
     // 진단 — 가장 가까운 벽 선분까지 거리(±3칸). 벽 없으면 −1. 칸·방향도 돌려준다.
@@ -1816,6 +1820,9 @@ public:
         // 3-d 죽음 알림 — a2(때린 이)가 몬스터면 그 종류 번호(+4, 사람이면 0) · a3(무기·투사체 오브젝트)가 있나와 그 종류 번호
         uint16_t byMonsterType = 0;
         int byPet = -1;           // 4-b1 — 때린 이가 소환수면 그 자리 번호(흡혈·감전 되갚기)
+        // ★ 09-20 — **주인 사슬의 뿌리가 몬스터인가**(정답지 `object.go:1737`).
+        //   덫 화살·환경 피해는 false — 그래서 맵 몬스터에게 적이 된다(`1740`)
+        bool rootIsMonster = false;
         bool obj = false;
         uint16_t objType = 0;
     };
@@ -2754,6 +2761,9 @@ public:
     unsigned long long harpoonShot() const { return harpoonShot_; }
     unsigned long long harpoonAttached() const { return harpoonAttached_; }
     unsigned long long harpoonPullTicks() const { return harpoonPullTicks_; }
+    // 주인 없는 둘의 갈래(⑮) — 둘 다 몬스터 / 한쪽이 몬스터가 아님(덫 화살·환경)
+    unsigned long long wildBothMonster() const { return wildBothMonster_; }
+    unsigned long long wildRootNotMonster() const { return wildRootNotMonster_; }
     unsigned long long spawnFromMap() const { return spawnFromMap_; }
     unsigned long long spawnFromDefault() const { return spawnFromDefault_; }
     unsigned long long joinInfo97Ok() const { return joinInfo97Ok_; }
@@ -2920,6 +2930,9 @@ private:
         uint32_t flags = 0;              // +16 오브젝트 깃발(thing FLAGS — Magic 은 AIRBORNE)
         Buffs buffs;                     // 시전자 적외선(21) 복사 — CanSee(4-a4)
         std::string owner;               // +508 주인(사람 주소)
+        // ★ 09-20 — **쏜 크리처**의 자리 번호(사람이 쏘면 −1). 주인 사슬의 뿌리를 가리는 데 쓴다 —
+        //   덫 화살과 **몬스터가 쏜 화살**은 둘 다 `owner` 가 비어 있어 이것 없이는 못 가른다
+        int ownerPet = -1;
         // SpellProjectileUpdateData(server/object_spell.go:5)
         std::string ud0;                 // [0] 시전자(되받아치면 바뀐다)
         Target ud1;                      // [1] 대상
@@ -3409,7 +3422,11 @@ private:
     static uint32_t ArmorEquipOf(const Session& s) { return nox::ArmorEquipOf(s.charClass); }
     // 두 쪽(주인 기준)이 적인가 — `server/object.go:1667` IsEnemyTo 를 사람·소환수·맵 몬스터에 맞춘 판.
     //   wild = 주인 없는 몬스터(자기 자신이 주인)
-    bool OwnersEnemy(const std::string& a, bool aWild, const std::string& b, bool bWild) const;
+    // ★ 09-20 — 둘째·넷째 인자는 「주인 사슬의 **뿌리가 몬스터인가**」다(전에는 「주인이 없나」였다).
+    //   정답지 `object.go:1737` 는 **둘 다 몬스터일 때만** 적이 아니라고 하고, 그 밖(덫 화살·환경 피해처럼
+    //   주인도 없고 몬스터도 아닌 것)은 `1740` 에서 **적**이 된다. 유닛은 「주인 없음 = 맵 몬스터」라 같은 값이지만,
+    //   **때린 것이 투사체면 다르다** — 그 자리에서 `src->byMonsterType` 으로 가른다
+    bool OwnersEnemy(const std::string& a, bool aMonsterRoot, const std::string& b, bool bMonsterRoot) const;
 
     // 판 시계를 뿌린다 — `0xd3 TIMER_STATUS`. 짜임은 실측이다(PROTOCOL.md 「판 시계」).
     void SendTimer(std::vector<OutPacket>& out);
@@ -3623,6 +3640,9 @@ private:
     //   **맵의 PlayerStart** 에 세운다(정답지 `newPlayer` · `player.go:416~426`).
     //   전에는 늘 덤프에서 온 고정값(bludeath 의 3864,2534)이라 **맵마다 엉뚱한 자리**였다
     bool spawnForced_ = false;
+    // 주인 없는 둘의 갈래 — 둘 다 몬스터(적 아님) / 한쪽이 몬스터가 아님(적)
+    mutable unsigned long long wildBothMonster_ = 0;
+    mutable unsigned long long wildRootNotMonster_ = 0;
     unsigned long long spawnFromMap_ = 0;      // PlayerStart 에서 골랐다
     unsigned long long spawnFromDefault_ = 0;  // 고정값(또는 --spawn-at)을 썼다
     // ★ 09-19 — 검은 실루엣. 접속 묶음에 실을 **플레이어 정보 97B** 가 있었나
