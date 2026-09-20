@@ -7685,6 +7685,30 @@ void TestBlink() {
         Check(srv.DurCount() == 0, "옮기고도 주문이 안 끝났다");
     }
 
+    // ①b ★ **옮기면 `ea FORGET_DRAWABLES` 가 그 사람에게 간다** ← 09-20 실측으로 들어온 시험
+    //
+    // 왜 — 정답지 `SetPos` 의 플레이어 갈래(`object.go:722~731`)가 온라인이면 `ea <프레임>` 을 보내고
+    // 「이 사람이 본 것」 표를 비운다(`Sub4DE4D0`). 우리는 **부활에만** 있었고 순간이동에는 빠져 있었다.
+    // ⚠ 증상이 엉뚱하다 — **방은 그려지는데 제 캐릭터만 안 그려진다**(09-20 `--debug-warp` 캡처).
+    //   그래서 「옮겨졌나」(자리 값)만 보는 시험으로는 **절대 안 잡힌다.** 나가는 메시지를 본다
+    {
+        nox::Server srv; mk(srv);
+        srv.SetWaypoints({ { 3000.0f, 3000.0f } });
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        // ⚠ **여기서 `out` 을 비우면 안 된다** — 아레나는 **시전이 끝나는 그 틱에 바로** 옮긴다(④ 참조).
+        //   비우면 그 틱에 나간 `ea` 가 같이 지워져 시험이 거짓으로 걸린다(09-20 에 실제로 당함)
+        out.clear();
+        CastAndWait(srv, a, 4, /*onSelf=*/true, ms, out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv.XOf(a) > 2900 && srv.XOf(a) < 3100, "길목으로 안 옮겨졌다(시험 전제)");
+        const auto toA = FlattenTo(out, a);
+        Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::FORGET_DRAWABLES)) != nullptr,
+              "옮겼는데 ea FORGET_DRAWABLES 가 안 갔다 — 클라에 제 캐릭터가 안 그려진다");
+    }
+
     // ② 길목이 없으면 **시작 지점**으로 간다
     {
         nox::Server srv; mk(srv);

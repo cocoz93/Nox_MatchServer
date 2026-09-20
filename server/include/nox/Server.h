@@ -3139,7 +3139,9 @@ private:
     int DurBlinkCreate(DurSpell& d, std::vector<OutPacket>& out);                                      // spellBlink2_530310
     int DurBlinkTick(DurSpell& d, std::vector<OutPacket>& out);                                        // spellBlink1_530380
     // teleportToMB_4E7190 — 그 자리로 옮긴다(물리 자리·옛 자리칸 둘 다).
-    void TeleportTarget(const Target& t, float x, float y);
+    // ⚠ 사람을 옮기면 `out` 을 꼭 넘길 것 — `ea FORGET_DRAWABLES` 가 나가야 **제 캐릭터가 그려진다**
+    //   (09-20 실측 · 구현부 주석). 펫만 옮기는 자리는 null 이어도 된다
+    void TeleportTarget(const Target& t, float x, float y, std::vector<OutPacket>* out = nullptr);
     int DurShieldCreate(DurSpell& d, std::vector<OutPacket>& out);                                     // castShield1_52F5A0
     int DurShieldTick(DurSpell& d, std::vector<OutPacket>& out);                                       // sub_52F650
     void DurShieldDestroy(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_52F670

@@ -5946,14 +5946,22 @@ void Server::ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const 
 // ── 묶음 4-e(1) 점멸(Blink 4) ──────────────────────────────────────────
 //
 // teleportToMB_4E7190 — 그 자리로 옮긴다. 우리 서버는 물리 자리(posX)와 옛 자리칸(x)을 **둘 다** 맞춰야 한다.
-void Server::TeleportTarget(const Target& t, float x, float y) {
+void Server::TeleportTarget(const Target& t, float x, float y, std::vector<OutPacket>* out) {
     if (!t.addr.empty()) {
         auto it = sessions_.find(t.addr);
         if (it == sessions_.end()) return;
         Session& o = it->second;
         o.posX = x; o.posY = y;
         o.x = static_cast<int>(x); o.y = static_cast<int>(y);
+        o.prevX = x; o.prevY = y;
         o.velX = o.velY = 0.0;                               // 옮기면 속도는 죽는다
+        // ★★ 09-20 — **사람을 옮기면 `ea FORGET_DRAWABLES` 를 보내야 한다.**
+        //   정답지 `SetPos` 의 플레이어 갈래(`object.go:722~731`) — 온라인이면 `ea <프레임>` 을 보내고
+        //   `Sub4DE4D0` 으로 **「이 사람이 본 것」 표를 비운다**(그래야 새 자리 것들이 다시 소개된다).
+        //   ⚠ 안 보내면 **화면에 제 캐릭터가 안 그려진다**(09-20 `--debug-warp` 실측 — 방은 그려지는데
+        //     사람만 없었다). 부활은 이미 부르고 있었는데 순간이동 갈래가 빠져 있었다.
+        //   ⇒ 블링크·표식 이동도 같은 결함이었다(주문 121~125 · 아래 호출자 셋)
+        if (out) ForgetDrawables(o, *out);
         return;
     }
     if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return;
@@ -6005,7 +6013,7 @@ int Server::DurBlinkTick(DurSpell& d, std::vector<OutPacket>& out) {
         SendFxAllCli(px, py, msg, sizeof(msg), out);
     };
     pointFx(ox, oy);
-    TeleportTarget(d.target, tx, ty);
+    TeleportTarget(d.target, tx, ty, &out);
     pointFx(tx, ty);
     return 1;                                                // 한 번 옮기면 끝
 }
@@ -6065,7 +6073,7 @@ int Server::DurTeleMarkTick(DurSpell& d, std::vector<OutPacket>& out) {
     if (slot < 0 || slot > 3 || !c->second.markSet[slot]) return 1;
     float ox = 0, oy = 0;
     TargetXY(d.target, ox, oy);
-    TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
+    TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot], &out);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
     return 1;
 }
@@ -6094,7 +6102,7 @@ int Server::DurTelePopTick(DurSpell& d, std::vector<OutPacket>& out) {
     do { slot = static_cast<int>(NextRandom(4)); } while (!c->second.markSet[slot]);
     float ox = 0, oy = 0;
     TargetXY(d.target, ox, oy);
-    TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot]);
+    TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot], &out);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot], out);
     return 1;
 }
@@ -12616,9 +12624,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             std::printf("[진단] 프레임 %u 순간이동 — %.0f,%.0f → %d,%d\n",
                         frame_, o.posX, o.posY, debugWarpX_, debugWarpY_);
             std::fflush(stdout);
-            o.posX = debugWarpX_; o.posY = debugWarpY_;
-            o.x = debugWarpX_;    o.y = debugWarpY_;
             o.forceX = o.forceY = 0.0;
+            // 진짜 순간이동 경로를 그대로 쓴다 — `ea FORGET_DRAWABLES` 까지 나가야 화면이 맞는다
+            TeleportTarget(Target{ o.addr, -1 }, static_cast<float>(debugWarpX_),
+                           static_cast<float>(debugWarpY_), &out);
             debugWarpDone_ = true;
             break;
         }
