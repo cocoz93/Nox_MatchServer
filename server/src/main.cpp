@@ -1220,8 +1220,13 @@ int main(int argc, char** argv) {
         }
         if (debugKillAfter > 0) {
             srv.SetDebugKill(static_cast<uint32_t>(debugKillAfter));
-            if (debugFistAfter > 0) srv.SetDebugFist(static_cast<uint32_t>(debugFistAfter), debugFistDx, debugFistDy);
             std::printf("[진단스위치] %d 틱 뒤 첫 사람이 둘째를 죽인다\n", debugKillAfter);
+        }
+        if (debugFistAfter > 0) {
+            srv.SetDebugFist(static_cast<uint32_t>(debugFistAfter), debugFistDx, debugFistDy);
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주먹을 그 사람 +(%d,%d) 에 떨어뜨린다\n",
+                        debugFistAfter, debugFistDx, debugFistDy);
+            std::fflush(stdout);
         }
         if (debugScoreAfter > 0) {
             srv.SetDebugScore(static_cast<uint32_t>(debugScoreAfter), static_cast<uint32_t>(debugScoreVal));
