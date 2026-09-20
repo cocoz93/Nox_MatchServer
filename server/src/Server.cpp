@@ -1918,6 +1918,18 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 static_cast<uint8_t>(want ? kDoorOpen : kDoorClosed),
             };
             Broadcast(/*viaSeq=*/false, full, sizeof(full), out);
+            // ★ 09-21 — 방금 받은 사람은 「이 상태를 안다」고 적는다(아래 되맞춤이 또 보내지 않게).
+            //   ⚠ **세계를 받은 지 1초가 안 된 사람은 안 적는다** — 그 창에서는 클라가 알림을 버린다
+            //   (09-20 실측 `RECV … b2 8e 0f 18` 뒤 무반응). 그런 사람은 되맞춤이 한 번 더 보낸다
+            {
+                const size_t pi = static_cast<size_t>(&p - props_.data());
+                for (auto& kv : sessions_) {
+                    Session& o = kv.second;
+                    if (!o.inGame || o.doorSyncFrom == 0 || frame_ < o.doorSyncFrom) continue;
+                    if (o.doorTold.size() != props_.size()) o.doorTold.assign(props_.size(), 0);
+                    o.doorTold[pi] = want ? 1 : 0;
+                }
+            }
         } else {
             if (best > kObeliskDist * kObeliskDist) continue;
             if (frame_ < p.nextManaFrame) continue;
@@ -1933,6 +1945,41 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 0x32,                               // 표본 전수가 0x32 였다
             };
             Broadcast(/*viaSeq=*/true, ob, sizeof(ob), out);
+        }
+    }
+
+    // ── 09-21 문 되맞춤 — **나중에 들어온 사람에게도 문 상태가 간다** ─────────────
+    //
+    // 위 갈래는 문이 **바뀔 때만** 알린다. 그래서 A 가 문 앞에 서서 문이 열린 **뒤에** 들어온 B 는
+    // 그 문을 **닫힌 것으로** 본다(서버는 열렸다고 알아 지나가지는데 그림은 닫혀 있다).
+    // 접속 직후 0.2초 만에 나간 알림을 클라가 버리는 것도 같은 구멍이다(확인표 ② 의 ⚠).
+    // ⭕ 대조군이 갈랐다 — 같은 클라로 opennox 서버에 붙으면 접속 15초 안에 `b2` 가 **한 번 온다**
+    //   (우리는 0). 정답지는 더러움 비트로 **사람마다** 보낸다.
+    // 방식 — 사람마다 「이 문을 어떤 상태로 아나」(`doorTold` · 기본 닫힘 = 클라의 기본)를 들고,
+    //   **세계를 받은 지 1초 뒤부터** 지금 상태와 다르면 **한 번** 보낸다. 같으면 안 보낸다 —
+    //   「안 바뀌면 다시 안 보낸다」는 그대로다(매 틱 보내면 클라가 죽는다).
+    if ((frame_ % kDoorSyncEveryTicks) != 0) return;
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame || o.snapshotIn >= 0) continue;          // 아직 세계를 안 받았다
+        if (o.doorSyncFrom == 0) o.doorSyncFrom = frame_ + kDoorSyncGraceTicks;
+        if (frame_ < o.doorSyncFrom) continue;
+        if (o.doorTold.size() != props_.size()) o.doorTold.assign(props_.size(), 0);
+        for (size_t i = 0; i < props_.size(); ++i) {
+            const WorldProp& p = props_[i];
+            if (p.kind != PropKind::Door) continue;
+            const uint8_t cur = p.open ? 1 : 0;
+            if (o.doorTold[i] == cur) continue;
+            const uint16_t dnc = PropWireCode(p);
+            const uint8_t full[4] = {
+                static_cast<uint8_t>(Op::DOOR_ANGLE),
+                static_cast<uint8_t>(dnc),
+                static_cast<uint8_t>(dnc >> 8),
+                static_cast<uint8_t>(p.open ? kDoorOpen : kDoorClosed),
+            };
+            Emit(o, /*reliable=*/false, /*stream=*/0, full, sizeof(full), out);
+            o.doorTold[i] = cur;
+            ++doorResync_;
         }
     }
 }

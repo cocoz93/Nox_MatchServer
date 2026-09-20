@@ -1453,6 +1453,57 @@ void TestPropsAndInvuln() {
               "안 바뀌었는데 0xb2 를 또 보냈다");
     }
 
+    // ★★ 문 — **나중에 들어온 사람도 열린 문을 열린 것으로 안다** ← 09-21 대조군 실측으로 들어온 시험
+    //
+    // 왜 — 우리는 문이 **바뀔 때만** 알렸다. A 가 문 앞에 서서 문이 열린 **뒤에** 들어온 B 는
+    // 그 알림을 못 받아 **닫힌 문**을 본다(서버는 열렸다고 알아 지나가지는데 그림은 닫혀 있다).
+    // 같은 클라로 opennox 서버에 붙으면 접속 15초 안에 `b2` 가 **한 번 온다**(우리는 0 이었다).
+    // ⚠ 한 명으로는 못 보는 결함이다 — 그래서 **둘**을 세운다
+    {
+        const std::string b2addr = "10.9.4.2:41042";
+        nox::Server s4;
+        s4.DebugEnterGame(a, 728);
+        s4.DebugMoveTo(a, 5000, 5000);
+        std::vector<nox::Server::WorldProp> ps;
+        nox::Server::WorldProp door;
+        door.netCode = 300; door.type = 306;
+        door.x = 1000; door.y = 1000;
+        door.kind = nox::PropKind::Door;
+        ps.push_back(door);
+        s4.SetWorldProps(ps);
+        auto countDoor = [&](const std::vector<nox::OutPacket>& o, const std::string& who, uint8_t angle) {
+            int n = 0;
+            for (const auto& m : FlattenTo(o, who))
+                if (m.size() == 4 && m[0] == static_cast<uint8_t>(nox::Op::DOOR_ANGLE) && m[3] == angle) ++n;
+            return n;
+        };
+        uint32_t ms = 0;
+        std::vector<nox::OutPacket> sink;
+        for (int i = 0; i < 60; ++i) { ms += 34; s4.Tick(ms, sink); }      // A 가 자리 잡는다(1초 넘게)
+        Check(countDoor(sink, a, nox::kDoorOpen) == 0, "멀리 있는데 열림 알림이 갔다(시험 전제)");
+
+        s4.DebugMoveTo(a, 1010, 1000);                                     // A 가 문 앞으로
+        std::vector<nox::OutPacket> opened;
+        for (int i = 0; i < 5; ++i) { ms += 34; s4.Tick(ms, opened); }
+        Check(s4.PropOpen(300), "문이 안 열렸다(시험 전제)");
+        Check(countDoor(opened, a, nox::kDoorOpen) == 1, "A 가 열림 알림을 딱 한 번 받아야 한다");
+
+        s4.DebugEnterGame(b2addr, 729);                                    // ★ B 는 **그 뒤에** 들어온다
+        s4.DebugMoveTo(b2addr, 5000, 5000);
+        std::vector<nox::OutPacket> late;
+        for (int i = 0; i < 75; ++i) { ms += 34; s4.Tick(ms, late); }
+        Check(countDoor(late, b2addr, nox::kDoorOpen) == 1,
+              "나중에 들어온 B 가 열린 문을 못 알았다 — 되맞춤이 안 돈다");
+        Check(countDoor(late, a, nox::kDoorOpen) == 0, "이미 아는 A 에게 또 보냈다 — 같은 상태는 다시 안 보낸다");
+        Check(s4.doorResync() == 1, "되맞춤 건수가 1 이 아니다");
+
+        s4.DebugMoveTo(a, 5000, 5000);                                     // A 가 떠나 문이 닫힌다
+        std::vector<nox::OutPacket> closed;
+        for (int i = 0; i < 30; ++i) { ms += 34; s4.Tick(ms, closed); }
+        Check(countDoor(closed, a, nox::kDoorClosed) == 1, "닫힘 알림이 A 에게 한 번 가야 한다");
+        Check(countDoor(closed, b2addr, nox::kDoorClosed) == 1, "닫힘 알림이 B 에게 한 번 가야 한다");
+    }
+
     // 오벨리스크 — 옆에 서면 마나가 찬다
     {
         nox::Server s3;

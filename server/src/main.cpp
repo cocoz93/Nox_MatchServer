@@ -2186,12 +2186,12 @@ int main(int argc, char** argv) {
                             srv.roamAdvance(), srv.roamDeadEnd());
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
-                            " · 문 %llu · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"
+                            " · 문 %llu(되맞춤 %llu) · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"
                             " · **비밀벽(열림 %llu·닫힘 %llu)**"
                             " · 자기주문 %llu · 미룬주문효과 %llu\n",
                             srv.roundsPlayed(), srv.flagStatusSent(), srv.chats(), srv.timerAsks(),
                             srv.fxSent(), srv.appearanceSent(), srv.appearanceUnknown(),
-                            srv.doorsOpened(), srv.obeliskMana(), srv.plateOn(), srv.plateOff(),
+                            srv.doorsOpened(), srv.doorResync(), srv.obeliskMana(), srv.plateOn(), srv.plateOff(),
                             srv.wallOpenSent(), srv.wallCloseSent(),
                             srv.spellsOnSelf(), srv.spellEffectDeferred());
                 if (!srv.stoppedByOp().empty()) {

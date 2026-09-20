@@ -136,6 +136,10 @@ constexpr int kObeliskManaPerTick = 1;
 // ◑ 값의 뜻(각도 단위)은 모른다. **닫힘 0 · 열림 0x18** 두 값만 쓴다.
 constexpr uint8_t kDoorClosed = 0x00;
 constexpr uint8_t kDoorOpen = 0x18;
+// ★ 09-21 문 되맞춤(`UpdateProps` 끝) — 몇 틱마다 보나 · 세계를 받은 뒤 몇 틱을 기다리나.
+//   기다리는 까닭 — 접속 직후의 알림은 클라가 버린다(09-20 실측). 1초면 넉넉했다
+constexpr uint32_t kDoorSyncEveryTicks = 15;
+constexpr uint32_t kDoorSyncGraceTicks = 30;
 // 주운 아이템이 되살아나기까지. ➖ 우리 값 — `thing.bin` 의 `FLAGS = RESPAWN` 이
 // 「되살아난다」는 것만 말하고 **얼마 뒤인지는 안 적혀 있다**. 30Hz 기준 30초.
 constexpr uint32_t kItemRespawnTicks = 900;
@@ -424,6 +428,10 @@ struct Session {
     //   별칭표(aliases)도 접속마다 따로이므로, 그 수명을 재는 프레임도 여기 것을 쓴다.
     uint32_t tickFrame = 0;
     bool tickFrameSet = false;
+    // ★ 09-21 문 되맞춤 — 이 사람이 **문마다 어떤 상태로 알고 있나**(0 닫힘 = 클라의 기본 · 1 열림).
+    //   `props_` 와 같은 길이. 나중에 들어온 사람이 이미 열린 문을 닫힌 것으로 보던 구멍을 막는다
+    std::vector<uint8_t> doorTold;
+    uint32_t doorSyncFrom = 0;          // 이 프레임부터 되맞춘다(세계를 받은 뒤 1초) · 0 = 아직 안 정함
     // 09-21 진단 — 시계 요청이 올 때 (그 사람 시계 − 서버 도장). 바뀔 때만 찍으려고 들고 있다
     long long dbgTimerDiff = 0;
     bool dbgTimerDiffSet = false;
@@ -1345,6 +1353,7 @@ public:
     void DebugFlushAudio(std::vector<OutPacket>& out) { FlushAudioEvents(out); }
     void DebugUpdateProps(std::vector<OutPacket>& out) { UpdateProps(out); }
     unsigned long long doorsOpened() const { return doorsOpened_; }
+    unsigned long long doorResync() const { return doorResync_; }
     unsigned long long obeliskMana() const { return obeliskMana_; }
     // ⑩ 밟는 판 — **0 을 「안 눌렸다」와 「안 셌다」로 가르려고** 09-20 에 넣었다.
     //   깜빡임을 보려면 먼저 「눌리긴 했나」가 서야 한다. 보낸 건수를 눌림·뗌으로 나눠 센다
@@ -3894,6 +3903,7 @@ private:
     std::vector<WorldStatic> statics_;
     std::vector<WorldProp> props_;
     unsigned long long doorsOpened_ = 0;
+    unsigned long long doorResync_ = 0;   // 09-21 — 되맞춤으로 **따로 보낸** 문 알림 수(나중에 들어온 사람 몫)
     unsigned long long obeliskMana_ = 0;
     unsigned long long plateOn_ = 0;    // ⑩ 판이 **눌렸다**고 보낸 건수(`0xb4` 칸 1)
     unsigned long long plateOff_ = 0;   // ⑩ 판을 **뗐다**고 보낸 건수(`0xb4` 칸 0)
