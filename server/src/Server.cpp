@@ -10103,6 +10103,67 @@ int Server::CastPushPull(const Session& caster, int lvl, bool pull) {
 
 // earthquakeSend_4D9110(`GAME3_2.c:4579`) — 가운데에서 **300 안**(거리² < 90000)에 있는 사람마다
 //   `97 <세기>` 2바이트를 Kind1(틱 목록)로. 세기는 `(1 − 거리²/90000) × jiggle` 로 멀수록 약해진다
+// ★ 09-20 묶음 10 — 높이 알림(`5e REPORT_Z_PLUS` · `5f REPORT_Z_MINUS`).
+//   ⚠ 이걸 안 보내서 **주먹이 바닥에 붙어 나타났다**(⑰ · 09-20 캡처로 확인).
+//   정답지는 더티 비트 `0x400000` 으로 «바뀌었을 때» 보낸다(`GAME4_2.c:7166`). 우리는 떨어지는 동안
+//   **값이 바뀐 틱에만** 보낸다 — 효과는 같고 메시지 수도 같다(정수로 바뀔 때만).
+// ★ 09-20 묶음 10 — **낙하 시작 알림**(`9f FX_DELTAZ_SPELL_START`, 6바이트).
+//   짜임은 정답지 `netReportUnitHeight_4D9020` 의 **6바이트 갈래**(`GAME3_2.c:4536~4548`):
+//     `9f | 번호 u16 | 높이(+104) u8 | z속도(+108) i8 | 되튐(+116) u8`
+//   ⭕ 세 칸이 다 **우리가 아는 값**이다 — 높이 255 · z속도 −FistSpeed · 되튐 9.0(`Server.cpp` 낙하 논리).
+//   클라는 이 값을 그림의 +432 묶음에 넣고 **스스로 떨어뜨려 그린다**(`cdecode.c:1957~1977`).
+//   ⚠ 높이만 보내는 `5e/5f` 는 사람·몬스터용 칸(ZVal)이라 **주문 물체에는 안 먹는다**(09-20 실측:
+//     90건을 보내고 클라가 그림도 찾았는데 화면은 그대로였다)
+void Server::SendDeltaZStart(uint16_t netCode, float z, float zVel, float bounce,
+                             std::vector<OutPacket>& out) {
+    if (netCode == 0) return;
+    auto clampU8 = [](float v) -> uint8_t {
+        if (v < 0.0f) v = 0.0f;
+        if (v > 255.0f) v = 255.0f;
+        return static_cast<uint8_t>(v);
+    };
+    auto clampI8 = [](float v) -> uint8_t {
+        if (v < -128.0f) v = -128.0f;
+        if (v > 127.0f) v = 127.0f;
+        return static_cast<uint8_t>(static_cast<int8_t>(v));
+    };
+    const uint8_t msg[6] = {
+        static_cast<uint8_t>(Op::FX_DELTAZ_SPELL_START),
+        static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8),
+        clampU8(z), clampI8(zVel), clampU8(bounce),
+    };
+    for (auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        EmitSeq(kv.second, msg, sizeof(msg), out);
+    }
+    ++unitHeightSent_;
+}
+// ★ 09-20 ⑰ — 만든 틱에 보내면 **클라가 버린다**(아직 그림이 없다). 다음 틱 머리에서 낸다.
+void Server::QueueDeltaZStart(uint16_t netCode, float z, float zVel, float bounce) {
+    if (netCode == 0) return;
+    pendingDeltaZ_.push_back(PendingZ{ netCode, z, zVel, bounce });
+}
+void Server::FlushDeltaZStart(std::vector<OutPacket>& out) {
+    if (pendingDeltaZ_.empty()) return;
+    std::vector<PendingZ> q;
+    q.swap(pendingDeltaZ_);
+    for (const auto& p : q) SendDeltaZStart(p.netCode, p.z, p.zVel, p.bounce, out);
+}
+void Server::SendUnitHeight(uint16_t netCode, float z, std::vector<OutPacket>& out) {
+    if (netCode == 0) return;
+    float az = (z < 0.0f) ? -z : z;
+    if (az > 255.0f) az = 255.0f;
+    const uint8_t msg[4] = {
+        static_cast<uint8_t>(z < 0.0f ? Op::REPORT_Z_MINUS : Op::REPORT_Z_PLUS),
+        static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8),
+        static_cast<uint8_t>(az),
+    };
+    for (auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        EmitSeq(kv.second, msg, sizeof(msg), out);
+    }
+    ++unitHeightSent_;
+}
 void Server::SendJiggle(float cx, float cy, int jiggle, std::vector<OutPacket>& out) {
     ++fxSent_;                                             // 조각 D — FX 는 건수로 센다
     for (auto& kv : sessions_) {
@@ -10449,6 +10510,7 @@ void Server::UpdatePlaced(std::vector<OutPacket>& out) {
                     if (PlacedObj* mo = PlaceObject(NamedType("Meteor"), mx, my, owner, kPlacedNoLife, /*kind=*/3)) {
                         mo->z = 255.0f;                                  // unitRaise_4E46F0(255)
                         mo->zVel = -static_cast<float>(BalanceFloat("MeteorSpeed"));
+                        QueueDeltaZStart(mo->netCode, mo->z, mo->zVel, 0.0f);   // 09-20 ⑰ — 운석도 같은 알림(되튐 없음)
                         mo->damage = dmg;                                // 뿌리개가 든 값을 그대로
                     }
                 }
@@ -10556,6 +10618,7 @@ int Server::CastMeteor(Session& caster, const SpellArg& arg, int lvl, std::vecto
     if (PlacedObj* mo = PlaceObject(NamedType("Meteor"), arg.x, arg.y, caster.addr, kPlacedNoLife, /*kind=*/3)) {
         mo->z = 255.0f;                                      // unitRaise_4E46F0(255)
         mo->zVel = -static_cast<float>(BalanceFloat("MeteorSpeed"));
+        QueueDeltaZStart(mo->netCode, mo->z, mo->zVel, 0.0f);   // 09-20 ⑰
         mo->damage = static_cast<int>(BalanceFloatInd("MeteorDamage", lvl - 1));
     }
     return 1;
@@ -10757,6 +10820,9 @@ int Server::CastFist(Session& caster, const SpellArg& arg, int lvl, std::vector<
         fo->z = 255.0f;                                      // unitRaise_4E46F0(255)
         fo->zVel = -static_cast<float>(BalanceFloat("FistSpeed"));
         fo->damage = static_cast<int>(BalanceFloatInd("FistOfVengeanceDamage", lvl - 1));
+        // ★ 09-20 ⑰ — **떨어지는 모습**은 이 알림으로 간다(안 보내면 바닥에 붙어 나타난다).
+        //   ⚠ 이 틱에 보내면 클라가 버린다 — 다음 틱 머리로 미룬다(`QueueDeltaZStart` 주석)
+        QueueDeltaZStart(fo->netCode, fo->z, fo->zVel, 9.0f);
     }
     return 1;
 }
@@ -12264,6 +12330,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         ++ticks;
     }
     if (ticks == 0) return 0;
+
+    // ★ 09-20 ⑰ — 지난 틱에 만든 물체의 **낙하 시작 알림**을 여기서 낸다.
+    //   지난 틱 끝의 `a4 UPDATE_STREAM` 이 그 물체를 이미 소개했으므로 클라가 그림을 찾는다.
+    FlushDeltaZStart(out);
 
     // ── 판 다시 열기 ────────────────────────────────────────────────
     //

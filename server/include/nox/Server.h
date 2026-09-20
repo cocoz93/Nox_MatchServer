@@ -1605,6 +1605,7 @@ public:
     // 쌓인 것을 보내고 비운다 (틱 끝에서 한 번).
     void FlushPending(std::vector<OutPacket>& out);
     // 시험·로그용 — 0x41 을 몇 번 보냈나.
+    unsigned long long unitHeightSent() const { return unitHeightSent_; }
     unsigned long long unitHealthSent() const { return unitHealthSent_; }
     // 조각 I — 체력이 가는 길은 **셋**이다. 하나만 세면 「안 갔다」와 「딴 길로 갔다」가 안 갈린다.
     unsigned long long healthDeltaSent() const { return healthDeltaSent_; }  // 42 줄어든 만큼(보는 사람마다)
@@ -2983,6 +2984,7 @@ private:
                                      //                 5 = 떨어지는 주먹(FistUpdate + FistCollide)
                                      //                 6 = 바깥으로 나가는 불꽃(FlameCleanse)
                                      //                 7 = 거미 낳는 자리(ArachnaphobiaUpdate)
+        int lastZSent = -1000;   // 09-20 — 마지막으로 알린 높이(같으면 안 보낸다)
         bool landed = false;         // +16 비트 31 — 주먹이 한 번 땅에 닿았나(닿음 피해는 그 뒤에만)
         // ★ kind 6 — 바깥으로 나가는 불꽃(정화의 불꽃). 놓인 것 가운데 **처음으로 움직인다**.
         float velX = 0.0f, velY = 0.0f;      // +80 — 매 틱 자리에 더한다(감쇠 0)
@@ -3487,6 +3489,19 @@ private:
     double AimRadians(const Session& s) const;
 
     // ⚠ 2026-09-13 부터 **바로 안 보낸다** — 세션의 importantQ 에 쌓고 FlushImportant 가 싣는다.
+    // ★ 09-20 묶음 10 — **높이 알림**. 정답지 `netReportUnitHeight_4D9020`(`GAME3_2.c:4518~4566`) 의
+    //   **4바이트 갈래**만 옮긴다 — `5e/5f | 번호 u16 | 높이 u8`. 6바이트 갈래(`9f`)는 칸 하나(+116)가
+    //   뜻 미상이라 안 쓴다(지어내지 않는다). 클라는 이 값을 그림의 높이(+104)에 그대로 넣는다
+    // 낙하 시작 알림(`9f`) — 주문 물체(주먹·운석)는 이쪽이다. 세 칸 모두 우리가 아는 값
+    void SendDeltaZStart(uint16_t netCode, float z, float zVel, float bounce, std::vector<OutPacket>& out);
+    // ★ 09-20 ⑰ — **만든 틱에 보내면 클라가 버린다.** 오브젝트를 알리는 `a4 UPDATE_STREAM` 은
+    //   틱 끝에서 조립되는데 `9f` 는 주문 처리 중(틱 앞쪽)에 나가, 클라가 아직 없는 그림을 찾다 만다
+    //   (`cdecode.c:1972` `if (v5)` — 못 찾으면 조용히 버린다). 그래서 **다음 틱 머리로 미룬다.**
+    struct PendingZ { uint16_t netCode; float z, zVel, bounce; };
+    std::vector<PendingZ> pendingDeltaZ_;
+    void QueueDeltaZStart(uint16_t netCode, float z, float zVel, float bounce);
+    void FlushDeltaZStart(std::vector<OutPacket>& out);
+    void SendUnitHeight(uint16_t netCode, float z, std::vector<OutPacket>& out);
     void EmitSeq(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
     // 중요 대기열에 봉투 없이(Packet0) 싣는다 — 사라짐(32)·그늘(33) 등.
     void EmitImportantRaw(Session& s, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
@@ -3859,6 +3874,7 @@ private:
     unsigned long long healthAbsSent_ = 0;
     unsigned long long healthDeltaHeld_ = 0;
     std::map<std::string, unsigned long long> damageStops_;
+    unsigned long long unitHeightSent_ = 0;   // 5e/5f 를 몇 번 보냈나(⑰)
     unsigned long long enchantSent_ = 0;      // 0x5A 를 보낸 횟수 (R4)   // 0x41 을 보낸 횟수 (R4)
     int peerPose_ = -1;   // ⭕ 2026-09-13 — 기본은 덮지 않음(0x30 은 그때 상대의 방향이었다 · Server.cpp 남 항목 주석)
     // 갱신 항목 순서를 뒤집는다(남 먼저). 「자리 탓인가 누구냐 탓인가」를 가르는 시험용.

@@ -6581,6 +6581,48 @@ void TestFist() {
         Check(srv.HealthOf(b) < bHp, "40 은 세기 3 둘레(35+10=45) 안인데 안 맞았다");
     }
 
+    // ①d **낙하 알림(`9f`)은 만든 틱이 아니라 다음 틱에 나간다** ← 09-20 실측으로 들어온 시험
+    //
+    // 왜 갈리나 — 오브젝트를 소개하는 `a4 UPDATE_STREAM` 은 **틱 끝**에서 조립되는데
+    // 주문 처리는 틱 앞쪽이다. 만든 자리에서 바로 보내면 클라가 **아직 없는 그림**을 찾다 조용히 버린다
+    // (`cdecode.c:1972` `if (v5)`). 실제로 그래서 주먹이 바닥에 붙어 나타났고, 클라 진단 로그가
+    // 「그림 못 찾음」이었다. 한 틱 미루자 「찾음」으로 바뀌고 화면에서 떨어졌다.
+    // ⚠ 이 시험이 보는 것은 **값이 아니라 나가는 틱**이다 — 같은 틱에 보내도 값은 똑같이 맞다.
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugMoveTo(b, 5000, 5000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        out.clear();
+        CastAndWait(srv, a, 29, false, ms, out);            // 마지막 틱이 **주먹을 만든 틱**이다
+        Check(srv.PlacedCount() == 1, "주먹이 안 떴다(시험 전제)");
+        // ⚠ `FlattenTo` 는 값을 돌려준다 — **이름을 붙여 살려 두고** 그 안을 가리킬 것
+        //   (임시에 대고 `FindMsg` 하면 포인터가 그 줄 끝에서 죽는다 · 09-20 에 실제로 터졌다)
+        const auto toA1 = FlattenTo(out, a);
+        Check(FindMsg(toA1, static_cast<uint8_t>(nox::Op::FX_DELTAZ_SPELL_START)) == nullptr,
+              "주먹을 만든 그 틱에 9f 가 나갔다 — 클라가 그림을 못 찾아 버린다");
+        std::vector<nox::OutPacket> out2;
+        ms += 34; srv.Tick(ms, out2);
+        const auto toA2 = FlattenTo(out2, a);
+        const auto* d = FindMsg(toA2, static_cast<uint8_t>(nox::Op::FX_DELTAZ_SPELL_START));
+        Check(d != nullptr, "다음 틱에도 9f 가 안 나갔다");
+        if (d) {
+            Check(d->size() == 6, "9f 가 6바이트가 아님");
+            Check((*d)[3] == 255, "9f 의 높이가 255(unitRaise 255)가 아님");
+            Check(static_cast<int8_t>((*d)[4]) == -10, "9f 의 z속도가 −FistSpeed(−10)가 아님");
+            Check((*d)[5] == 9, "9f 의 되튐이 9 가 아님(정답지 GAME4_2.c:10026 = 9.0f)");
+        }
+        // 한 번 낸 뒤에는 **다시 안 낸다** — 대기열이 비워졌나
+        std::vector<nox::OutPacket> out3;
+        ms += 34; srv.Tick(ms, out3);
+        const auto toA3 = FlattenTo(out3, a);
+        Check(FindMsg(toA3, static_cast<uint8_t>(nox::Op::FX_DELTAZ_SPELL_START)) == nullptr,
+              "9f 가 그다음 틱에도 또 나갔다 — 대기열이 안 비워졌다");
+    }
+
     // ② **한 사람에 하나뿐**
     {
         nox::Server srv; mk(srv);

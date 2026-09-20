@@ -1721,6 +1721,7 @@ int main(int argc, char** argv) {
                             // ★ 09-19 검은 실루엣 — 접속 묶음에 플레이어 정보 97B 가 실렸나
                             " · 접속정보(실음 %llu·**0으로채움 %llu**·마지막 ACCEPT 본문 %zuB)"
                             " · 첫자리(맵 시작점 %llu·고정값 %llu)"
+                            " · 높이알림 %llu"
                             // ★ 09-19 ⑦ 작살 — 뒷단 갈래
                             " · 작살(들어옴 %llu·종류모름 %llu·**쏨 %llu**·걸림 %llu·끄는틱 %llu)"
                             " · 판끝 %s (누적 틱 %llu)\n",
@@ -1746,6 +1747,7 @@ int main(int argc, char** argv) {
                             srv.abilNotLearned(), srv.abilOverweight(), srv.abilCooldown2(),
                             srv.joinInfo97Ok(), srv.joinInfo97Null(), srv.acceptBodyLenLast(),
                             srv.spawnFromMap(), srv.spawnFromDefault(),
+                            srv.unitHeightSent(),
                             srv.harpoonDoCalls(), srv.harpoonNoType(), srv.harpoonShot(),
                             srv.harpoonAttached(), srv.harpoonPullTicks(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
