@@ -1678,6 +1678,48 @@ void TestTimerAskAndClose() {
               "0xd4 즉답이 남에게도 감");
     }
 
+    // ②b ★★ **`0xd3` 의 도장은 「받는 사람의 시계」다** ← 09-21 실측으로 들어온 시험
+    //
+    // 왜 — 클라는 `d3` 을 받으면 `(unsigned)(제 시계 − 도장) >= 30` 이면 낡았다며 `d4` 를 다시 보낸다
+    // (`cdecode.c:2638`). **부호 없는 뺄셈**이라 도장이 제 시계보다 **1 만 앞서도** 낡은 것이 된다.
+    // 우리는 전역 `frame_` 을 찍고 있었는데 클라 시계는 **접속마다 따로 세는 `tickFrame`** 이라,
+    // 시계가 2 뒤인 사람에게 **무한 되풀이**가 났다(둘이 붙은 한 판에 시계요청 9,979).
+    // ⚠ 두 값을 **일부러 다르게** 세운다 — 같으면 어느 쪽을 찍어도 통과해 시험이 아무것도 못 본다.
+    //   그리고 **두 사람의 시계도 서로 다르게** 둔다(주기 발송이 한 메시지를 돌려쓰면 걸리게)
+    {
+        auto stampOf = [](const std::vector<uint8_t>& m) -> uint32_t {
+            return static_cast<uint32_t>(m[9]) | (static_cast<uint32_t>(m[10]) << 8)
+                 | (static_cast<uint32_t>(m[11]) << 16) | (static_cast<uint32_t>(m[12]) << 24);
+        };
+        srv.DebugSetFrame(2000);                 // 서버 전역
+        srv.DebugSetTickFrame(a, 1990);          // a 의 시계는 10 뒤
+        srv.DebugSetTickFrame(b, 1975);          // b 의 시계는 25 뒤
+        // 물음에 대한 즉답
+        {
+            std::vector<uint8_t> pkt(nox::kWireHeaderSize + 1, 0);
+            pkt[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::REQUEST_TIMER_STATUS);
+            std::vector<nox::OutPacket> out;
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            const auto toA = FlattenTo(out, a);
+            const auto* t = FindMsg(toA, static_cast<uint8_t>(nox::Op::TIMER_STATUS));
+            Check(t != nullptr && t->size() == 13, "즉답 0xd3 가 없다(시험 전제)");
+            if (t && t->size() == 13)
+                Check(stampOf(*t) == 1990, "즉답의 도장이 그 사람 시계가 아니다 — 전역 프레임을 찍었나");
+        }
+        // 주기 발송 — 사람마다 제 시계
+        {
+            std::vector<nox::OutPacket> out;
+            srv.DebugSendTimer(out);
+            const auto toA = FlattenTo(out, a);
+            const auto toB = FlattenTo(out, b);
+            const auto* ta = FindMsg(toA, static_cast<uint8_t>(nox::Op::TIMER_STATUS));
+            const auto* tb = FindMsg(toB, static_cast<uint8_t>(nox::Op::TIMER_STATUS));
+            Check(ta != nullptr && tb != nullptr, "주기 0xd3 가 둘에게 안 갔다(시험 전제)");
+            if (ta && ta->size() == 13) Check(stampOf(*ta) == 1990, "주기 발송 — a 의 도장이 a 의 시계가 아니다");
+            if (tb && tb->size() == 13) Check(stampOf(*tb) == 1975, "주기 발송 — b 의 도장이 b 의 시계가 아니다");
+        }
+    }
+
     // ③ 정상 종료 — 30초를 안 기다리고 다음 틱에 나간다
     {
         std::vector<uint8_t> pkt(nox::kWireHeaderSize + 1, 0);

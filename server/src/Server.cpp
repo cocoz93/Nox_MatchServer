@@ -2118,8 +2118,24 @@ void Server::UpdateFlags(std::vector<OutPacket>& out) {
 
 // 판 시계 한 통을 만든다. 보내는 곳이 둘이라 따로 뺐다 —
 // 주기 발송(`SendTimer`)과 **클라가 `0xd4` 로 물어봤을 때의 즉답**.
-void Server::BuildTimerStatus(uint8_t msg[13]) const {
-    const int32_t remain = -static_cast<int32_t>(frame_ * tickMs_);
+// ★★ 2026-09-21 — **도장은 「받는 사람의 시계」로 찍는다.**
+//
+// 전에는 전역 `frame_` 을 찍었다. 그런데 클라의 시계는 우리가 `27 TIMESTAMP` 로 보내는
+// **접속마다 따로 세는 `tickFrame`** 을 따른다(Session::tickFrame 주석). 둘은 같지 않다 —
+// 실측: 요청한 클라의 시계 **1847**, 우리 도장 **1849**(차 −2).
+//
+// 클라는 `d3` 을 받으면 도장이 낡았는지 본다(`cdecode.c:2638`):
+//     if ((unsigned)(gameFrame() - 도장) >= 30)  →  `d4` 로 다시 달라고 한다
+// **부호 없는 뺄셈**이라 도장이 클라 시계보다 **1 만 앞서도**(1847−1849 = 0xFFFFFFFE) 낡은 것이 된다.
+// 우리 답이 또 앞서 있으니 **무한 되풀이** — 둘이 붙은 한 판에 `시계요청 9979` · `5525`.
+// 주기 발송(`SendTimer`)의 `d3` 하나하나가 그런 사슬을 새로 낳아 **초당 30 → 150 으로 가속**했다.
+//
+// ⚠ 단일 클라 주행에서는 안 보였다(그 사람 시계가 마침 도장보다 뒤가 아니었다) —
+//   「한 명으로 돌려 본 것」은 이 결함을 못 잡는다.
+void Server::BuildTimerStatus(uint8_t msg[13], uint32_t recipientFrame) const {
+    // 남은 시간도 **같은 도장에서** 낸다 — 정품은 시계가 하나라 (남은시간 ÷ 도장) 이 늘 같은 비다
+    // (실측 −35.6). 도장만 그 사람 시계로 바꾸고 남은 시간을 전역으로 두면 그 짝이 어긋난다.
+    const int32_t remain = -static_cast<int32_t>(recipientFrame * tickMs_);
     msg[0] = static_cast<uint8_t>(Op::TIMER_STATUS);
     msg[1] = msg[2] = msg[3] = msg[4] = 0;      // 표본 전수가 0 이었다
     const uint32_t r = static_cast<uint32_t>(remain);
@@ -2127,28 +2143,21 @@ void Server::BuildTimerStatus(uint8_t msg[13]) const {
     msg[6] = static_cast<uint8_t>(r >> 8);
     msg[7] = static_cast<uint8_t>(r >> 16);
     msg[8] = static_cast<uint8_t>(r >> 24);
-    msg[9]  = static_cast<uint8_t>(frame_);
-    msg[10] = static_cast<uint8_t>(frame_ >> 8);
-    msg[11] = static_cast<uint8_t>(frame_ >> 16);
-    msg[12] = static_cast<uint8_t>(frame_ >> 24);
+    msg[9]  = static_cast<uint8_t>(recipientFrame);
+    msg[10] = static_cast<uint8_t>(recipientFrame >> 8);
+    msg[11] = static_cast<uint8_t>(recipientFrame >> 16);
+    msg[12] = static_cast<uint8_t>(recipientFrame >> 24);
 }
 
 void Server::SendTimer(std::vector<OutPacket>& out) {
-    const int32_t remain = -static_cast<int32_t>(frame_ * tickMs_);
-    uint8_t msg[13];
-    msg[0] = static_cast<uint8_t>(Op::TIMER_STATUS);
-    msg[1] = msg[2] = msg[3] = msg[4] = 0;      // 표본 전수가 0 이었다
-    const uint32_t r = static_cast<uint32_t>(remain);
-    msg[5] = static_cast<uint8_t>(r);
-    msg[6] = static_cast<uint8_t>(r >> 8);
-    msg[7] = static_cast<uint8_t>(r >> 16);
-    msg[8] = static_cast<uint8_t>(r >> 24);
-    msg[9]  = static_cast<uint8_t>(frame_);
-    msg[10] = static_cast<uint8_t>(frame_ >> 8);
-    msg[11] = static_cast<uint8_t>(frame_ >> 16);
-    msg[12] = static_cast<uint8_t>(frame_ >> 24);
+    // ★ 09-21 — 사람마다 **그 사람의 시계**로 도장을 찍는다(`BuildTimerStatus` 주석).
+    //   전에는 메시지를 한 번 짓고 모두에게 같은 것을 보냈다 — 전역 `frame_` 도장이라
+    //   시계가 뒤인 사람에게는 늘 「낡은」 것으로 읽혔다
     for (auto& kv : sessions_) {
-        if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg), out);
+        if (!kv.second.inGame) continue;
+        uint8_t msg[13];
+        BuildTimerStatus(msg, ClockOf(kv.second));
+        EmitSeq(kv.second, msg, sizeof(msg), out);
     }
 }
 
@@ -2855,8 +2864,23 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
             // 답은 주기 발송과 **같은 내용을 그 사람에게만** 보낸다.
             case Op::REQUEST_TIMER_STATUS: {
                 if (!s.inGame) break;
+                // ★ 09-21 진단 — 클라는 `d3` 의 프레임 도장이 **제 시계보다 30 이상 어긋나면**
+                //   「낡았다」며 이 요청을 다시 보낸다(`cdecode.c:2638` — **부호 없는 뺄셈**이라
+                //   도장이 클라 시계보다 **앞서도** 낡은 것으로 친다). 답이 또 어긋나면 **무한 되풀이**다.
+                //   실측 — 한 판에 `시계요청 9979`. 도장(`frame_`)과 클라 시계(`tickFrame`)의 차를
+                //   **값이 바뀔 때만** 찍는다(횟수로 자르면 사건 전에 예산이 바닥난다).
+                {
+                    const long long diff = static_cast<long long>(s.tickFrame) - static_cast<long long>(frame_);
+                    if (!s.dbgTimerDiffSet || diff != s.dbgTimerDiff) {
+                        std::printf("[시계요청] %s 프레임 %u · 그 사람 시계 %u · 차(시계−도장) %lld\n",
+                                    s.addr.c_str(), frame_, s.tickFrame, diff);
+                        std::fflush(stdout);
+                        s.dbgTimerDiff = diff;
+                        s.dbgTimerDiffSet = true;
+                    }
+                }
                 uint8_t msg[13];
-                BuildTimerStatus(msg);
+                BuildTimerStatus(msg, ClockOf(s));
                 EmitSeq(s, msg, sizeof(msg), out);
                 ++timerAsks_;
                 ++handled_;

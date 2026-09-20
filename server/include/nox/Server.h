@@ -424,6 +424,9 @@ struct Session {
     //   별칭표(aliases)도 접속마다 따로이므로, 그 수명을 재는 프레임도 여기 것을 쓴다.
     uint32_t tickFrame = 0;
     bool tickFrameSet = false;
+    // 09-21 진단 — 시계 요청이 올 때 (그 사람 시계 − 서버 도장). 바뀔 때만 찍으려고 들고 있다
+    long long dbgTimerDiff = 0;
+    bool dbgTimerDiffSet = false;
     int x = 0, y = 0;        // 맵 위 자리
     uint8_t facing = 0;      // 바라보는 쪽. 한 바퀴를 256으로 나눈 값
 
@@ -2119,6 +2122,13 @@ public:
     uint32_t DebugAIArgU32(size_t i, int j) const {
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argU32 : 0;
     }
+    // 09-21 — **그 사람의 시계**를 시험이 직접 세운다. 전역 `frame_` 과 **다르게** 둬야
+    //   「도장을 누구 시계로 찍나」가 갈린다(같으면 어느 쪽을 찍어도 시험이 통과한다)
+    void DebugSetTickFrame(const std::string& addr, uint32_t v) {
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) { it->second.tickFrame = v; it->second.tickFrameSet = true; }
+    }
+    void DebugSendTimer(std::vector<OutPacket>& out) { SendTimer(out); }
     // 묶음 6-j(2) — 떠돌기가 **지금 고른 길목 번호**. 기억이 서는지 시험이 직접 본다
     uint32_t DebugAIArgWp(size_t i, int j) const {
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argWp : 0;
@@ -3580,7 +3590,11 @@ private:
     //   09-06 덤프에서 `0xcc` 581건이 **전수 비신뢰 패킷**에 실려 있었다.
     //   (머리의 신뢰 비트는 접속 절차에서만 쓴다)
     // 판 시계 한 통(13바이트)을 만든다. 주기 발송과 `0xd4` 즉답이 같은 내용을 쓴다.
-    void BuildTimerStatus(uint8_t msg[13]) const;
+    void BuildTimerStatus(uint8_t msg[13], uint32_t recipientFrame) const;   // 도장 = **받는 사람의 시계**(09-21)
+    // ★ 09-21 — **그 사람이 믿고 있는 지금 프레임.** 클라 시계는 우리가 `27 TIMESTAMP` 로 보내는
+    //   `tickFrame` 을 따른다. 그 시계가 **아직 안 섰으면**(첫 `27` 전) 전역 `frame_` 이 맞다.
+    //   프레임을 와이어에 찍는 자리는 **전역이 아니라 이것**을 써야 한다(`BuildTimerStatus` 주석)
+    uint32_t ClockOf(const Session& s) const { return s.tickFrameSet ? s.tickFrame : frame_; }
 
     // 한 사람이 한 말을 모두에게. 머리는 **서버가 새로 짓는다**(남의 번호로 말하기 방지).
     void BroadcastChat(const Session& who, const uint8_t* text, size_t n,
