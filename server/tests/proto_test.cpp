@@ -18836,7 +18836,11 @@ void TestSnapshotTail() {
 
         0x06, 0x5c, 0x44, 0x23, 0x00, 0x0a, 0xcc, 0x16, 0x00, 0x03, 0x43, 0x4b, 0x00,
     };
-    const std::vector<uint8_t> built = nox::BuildSnapshotTail(713, nox::CharClass::Wizard, 0x4b17, 0x4b1f);   // 녹음 그 판의 프레임(3-c 정정)
+    // ★ 09-20 — 버프 비트를 **인자로 넘긴다.** 녹음 그 판에는 `0x00800000`(비트 23 무적)이 실려 있었다 —
+    //   그때 그 사람이 **스폰 보호 중**이었기 때문이다. 전에는 이 값을 코드에 박아 두어
+    //   **접속하는 사람마다 영영 무적**이 됐다(클라가 파란 보호막을 계속 돌렸다).
+    const std::vector<uint8_t> built = nox::BuildSnapshotTail(713, nox::CharClass::Wizard, 0x4b17, 0x4b1f,
+                                                              0x00800000u);   // 녹음 그 판의 프레임(3-c 정정)
     Check(built.size() == 381, "꼬리 크기가 381 이 아니다");
     size_t diff = 0, first = 0;
     for (size_t i = 0; i < 381 && i < built.size(); ++i)
@@ -18845,6 +18849,19 @@ void TestSnapshotTail() {
     if (diff) std::printf("    다른 자리 %zu개, 첫 자리 %zu (%02x != %02x)\n",
                           diff, first, built[first], kTail[first]);
     else std::printf("  스냅샷 꼬리 조립 — 381B 전수 일치\n");
+
+    // ★★ 09-20 — **버프 비트가 인자대로 간다**(박아 둔 값이 아니다).
+    //   ⚠ 이걸 안 보면 「녹음과 같다」만 지키느라 **모두가 무적이 되는 결함**을 영영 못 잡는다 —
+    //     실제로 그렇게 지나갔다(사용자가 「처음 들어가면 파랗게 번쩍거린다」고 화면으로 짚었다).
+    {
+        const std::vector<uint8_t> zero = nox::BuildSnapshotTail(713, nox::CharClass::Wizard, 0x4b17, 0x4b1f, 0);
+        Check(zero.size() == built.size(), "버프 0 일 때 꼬리 크기가 달라졌다");
+        size_t d2 = 0, at = 0;
+        for (size_t i = 0; i < zero.size() && i < built.size(); ++i)
+            if (zero[i] != built[i]) { ++d2; if (!at) at = i; }
+        Check(d2 == 1, "버프만 0 으로 바꿨는데 다른 자리가 1개가 아니다(꼬리가 버프를 안 싣나)");
+        if (d2 == 1) Check(built[at] == 0x80 && zero[at] == 0x00, "다른 한 자리가 버프 비트 자리가 아니다");
+    }
 }
 
 void TestWallCollision() {

@@ -107,6 +107,9 @@ extern bool fillColorsOn;
 //   (정답지 object.go:728 · GAME3_3.c:8065). 녹음 값 0x4b17 · 0x4b1f 는 그 판의 프레임이었고
 //   e9 의 `1f 4b` 를 「체력 자리」로 읽은 것은 위저드 체력 75(0x4b) 와 우연히 겹친 오독이었다.
 //   클라는 이 프레임보다 오래 안 본 정적 그림을 지운다(sub_45A670) — 받는 사람의 지금 프레임을 넣을 것.
-std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame);
+// ⚠ `enchantBits` 는 **그 사람의 지금 버프 비트**다. 전에는 녹음본 값 `0x00800000`(비트 23 무적)을
+//   박아 두어, 클라가 **접속 내내 사람을 무적으로 보고 파란 보호막을 돌렸다**(09-20 실측·고침).
+std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame,
+                                       uint32_t enchantBits = 0);
 
 }  // namespace nox

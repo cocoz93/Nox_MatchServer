@@ -12928,7 +12928,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 const size_t un = EncodeUpdate(m, ub + 1, sizeof(ub) - 1, &droppedSnap);
                 updateDroppedSnap_ += droppedSnap;   // 자리를 갈라 센다(위 주석)
                 patched.insert(patched.end(), ub, ub + 1 + un);
-                const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode, s.charClass, s.tickFrame, s.tickFrame);   // 3-c: 받는 사람의 지금 프레임
+                // 3-c: 받는 사람의 지금 프레임 · ★ 09-20 — 버프 비트는 **지금 값**을 싣는다
+                //   (박아 둔 `0x00800000` 때문에 클라가 접속 내내 무적으로 봤다 — `JoinBundle.h` 주석)
+                const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode, s.charClass, s.tickFrame, s.tickFrame,
+                                                                    s.buffs.bits);
                 patched.insert(patched.end(), tail.begin(), tail.end());
             } else if (!(patchSnapshot_ &&
                   PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_))) {

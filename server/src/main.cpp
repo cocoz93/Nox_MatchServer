@@ -1091,6 +1091,18 @@ int main(int argc, char** argv) {
                 std::printf("[장애물] %zu개 / %zu종 —", obs.size(), obsNames.size());
                 for (const auto& kv : obsNames) std::printf(" %sx%d", kv.first.c_str(), kv.second);
                 std::printf("\n");
+                // ★ 09-20 ② — **상자 자리**를 따로 찍는다. 「몸이 막히나」를 보려면 좌표가 있어야 한다
+                {
+                    size_t nChest = 0;
+                    for (const auto& o : objs) {
+                        if (o.type.find("Chest") == std::string::npos) continue;
+                        if (nChest == 0) std::printf("[상자 자리]");
+                        if (nChest < 6) std::printf(" %s(%d,%d)", o.type.c_str(),
+                                                    static_cast<int>(o.x), static_cast<int>(o.y));
+                        ++nChest;
+                    }
+                    if (nChest) { std::printf("  — 모두 %zu개\n", nChest); std::fflush(stdout); }
+                }
                 if (noObstacles) {
                     std::printf("[진단스위치] --no-obstacles — 장애물 %zu개를 싣지 않음(대조군)\n", obs.size());
                     obs.clear();

@@ -44,7 +44,8 @@ void PushRaw(std::vector<uint8_t>& m, const uint8_t* body, size_t n) {
 
 }  // namespace
 
-std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame) {
+std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame,
+                                       uint32_t enchantBits) {
     std::vector<uint8_t> m;
     m.reserve(400);
     uint16_t seq = 0;
@@ -188,7 +189,16 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t
         const uint8_t m67[7] = { 0x67, 0x8b, 0x02, 0xff, 0xff, 0x9c, 0xff };
         PushRaw(m, m67, 7);
         PushSeq(m, seq, b3s[4], 4);   // #19
-        uint8_t en[7] = { 0x5a, lo, hi, 0x00, 0x00, 0x80, 0x00 };
+        // ★★ 09-20 — **여기에 녹음본 값 `00 00 80 00`(= 비트 23 무적)을 박아 두고 있었다.**
+        //   그 한 줄 때문에 클라가 **접속 내내 사람을 무적으로 보고** 파란 보호막(색 128,128,255)을
+        //   계속 그렸다 — 사용자가 「처음 들어가면 파랗게 번쩍거린다」고 짚은 그것이다.
+        //   ⚠ 녹음본의 그 값은 **그 판 그 순간의 스폰 보호**였고, 정품은 5초 뒤 `5a` 로 **푼다**.
+        //     우리는 바이트만 베끼고 푸는 알림을 안 보내 **영영 무적으로 남았다**
+        //     (실측 — `--no-spawn-invuln` 을 켜고 `마법알림 0` 인 판에서도 클라 진단이 `무적 true`).
+        //   ⇒ **지금 버프 값을 싣는다.** 무적이 실제로 걸려 있으면 그대로 가고, 아니면 0 이 간다
+        uint8_t en[7] = { 0x5a, lo, hi,
+                          static_cast<uint8_t>(enchantBits), static_cast<uint8_t>(enchantBits >> 8),
+                          static_cast<uint8_t>(enchantBits >> 16), static_cast<uint8_t>(enchantBits >> 24) };
         PushSeq(m, seq, en, 7);       // #20
         // 방어값 `49 <float 4>` — 첫 playerReportAnything 몫(+232 = 0 → +228). ★ 3-d: 직업 값으로 —
         //   녹음 `20 85 6b 3e` 는 위저드 방어값을 **들어온 순서 거꾸로** float 로 더한 값과 한 비트까지 같다(ArmorValueFloat 주석)
