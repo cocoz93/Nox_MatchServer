@@ -7672,16 +7672,21 @@ void TestBlink() {
     };
 
     // ① 길목이 있으면 그중 한 곳으로 옮겨진다
+    //
+    // ⚠ **길목을 (3000,3000) 같은 대칭 자리로 두지 말 것** — 전에 그랬는데, 그러면 x·y 를
+    //   맞바꿔 실어도 시험이 통과한다(09-20 에 길목 그릇을 `pair` → `Waypoint` 로 갈면서
+    //   이 구멍을 봤다). 자리 시험은 **가로세로가 다른 자리**로 하고 **둘 다** 본다
     {
         nox::Server srv; mk(srv);
-        srv.SetWaypoints({ { 3000.0f, 3000.0f } });
+        srv.SetWaypoints({ { 3000.0f, 2400.0f } });
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 4, /*onSelf=*/true, ms, out);
         ms += 34; srv.Tick(ms, out);                         // 다음 틱에 터진다
-        Check(srv.XOf(a) > 2900 && srv.XOf(a) < 3100, "길목으로 안 옮겨졌다");
+        Check(srv.XOf(a) > 2900 && srv.XOf(a) < 3100, "길목으로 안 옮겨졌다(가로)");
+        Check(srv.YOf(a) > 2300 && srv.YOf(a) < 2500, "길목의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
         Check(srv.DurCount() == 0, "옮기고도 주문이 안 끝났다");
     }
 
