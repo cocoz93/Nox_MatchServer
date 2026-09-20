@@ -3436,6 +3436,8 @@ private:
     //   정답지 `object.go:1737` 는 **둘 다 몬스터일 때만** 적이 아니라고 하고, 그 밖(덫 화살·환경 피해처럼
     //   주인도 없고 몬스터도 아닌 것)은 `1740` 에서 **적**이 된다. 유닛은 「주인 없음 = 맵 몬스터」라 같은 값이지만,
     //   **때린 것이 투사체면 다르다** — 그 자리에서 `src->byMonsterType` 으로 가른다
+    // 투사체의 주인 사슬 뿌리가 몬스터인가(크리처가 쏜 것만 참 · 덫 화살은 거짓)
+    bool MissileRootIsMonster(const MissileObj& m) const;
     bool OwnersEnemy(const std::string& a, bool aMonsterRoot, const std::string& b, bool bMonsterRoot) const;
 
     // 판 시계를 뿌린다 — `0xd3 TIMER_STATUS`. 짜임은 실측이다(PROTOCOL.md 「판 시계」).

@@ -892,6 +892,13 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
     }
 }
 
+// ★ 09-20 — 투사체의 **주인 사슬 뿌리가 몬스터인가**. 한 곳에서만 센다(두 갈래가 같은 셈을 쓴다).
+//   크리처가 쏜 것만 참이다 — 덫 화살은 `ownerPet` 이 −1 이라 거짓이고, 그래서 맵 몬스터에게 적이 된다(⑮)
+bool Server::MissileRootIsMonster(const MissileObj& m) const {
+    if (!m.owner.empty()) return false;                    // 사람이 쏜 것
+    if (m.ownerPet < 0 || static_cast<size_t>(m.ownerPet) >= pets_.size()) return false;
+    return pets_[static_cast<size_t>(m.ownerPet)].owner.empty();   // 맵 몬스터가 쏜 것
+}
 bool Server::OwnersEnemy(const std::string& a, bool aMonsterRoot, const std::string& b, bool bMonsterRoot) const {
     // `server/object.go:1667~1741` 가운데 지금 있는 것들 — 같은 주인 → 적 아님 · 같은 팀 → 적 아님 ·
     //   한쪽이라도 팀 있음 → 적 · **둘 다 몬스터** → 적 아님 · 그 밖 → 적
@@ -927,7 +934,11 @@ void Server::DamageShockBack(const Target& victim, const Buffs& vb, const Target
     BuffOff(victim, 22);
     const int back = static_cast<int>(static_cast<float>(BalanceFloatInd("ShockDamage", 4)));
     const std::string victimOwner = !victim.addr.empty() ? victim.addr : pets_[static_cast<size_t>(victim.pet)].owner;
-    HurtTarget(attacker, back, out, victimOwner, 9, nullptr);   // (a2+716)(a2, a1, 0, 피해, 9)
+    // ★ 09-20 — 되갚는 쪽(맞은 이)이 **맵 몬스터면 뿌리가 몬스터**라고 알려야
+    //   몬스터끼리 서로 때리지 않는다(편 거르기 `OwnersEnemy`)
+    AttackSrc backSrc;
+    backSrc.rootIsMonster = victimOwner.empty();
+    HurtTarget(attacker, back, out, victimOwner, 9, &backSrc);   // (a2+716)(a2, a1, 0, 피해, 9)
     if (!attacker.addr.empty()) {
         auto it = sessions_.find(attacker.addr);
         if (it != sessions_.end()) PlayerSetState(it->second, 23, frame_);
@@ -1038,6 +1049,7 @@ void Server::CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vecto
             AttackSrc src;
             if (a1.kind == 1) { src.x = static_cast<float>(sessions_.at(a1.addr).posX); src.y = static_cast<float>(sessions_.at(a1.addr).posY); }
             else { src.x = static_cast<float>(pets_[static_cast<size_t>(a1.idx)].x); src.y = static_cast<float>(pets_[static_cast<size_t>(a1.idx)].y); src.byPet = a1.idx; }
+            src.rootIsMonster = own1.empty();                  // 09-20 — 되갚는 쪽이 맵 몬스터면 뿌리가 몬스터
             HurtTarget(t2, dmg, out, own1, 9, &src);           // (a2+716)(a2, a1, a1, 피해, 9)
             if (!BuffsOf(t1)) return;                          // 되갚다 사라진 소환수
         }
@@ -11730,9 +11742,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         src.byMonsterType = m.type;
                         // ★ 09-20 — 뿌리가 몬스터인가: **크리처가 쏜 화살**만 그렇다.
                         //   덫 화살은 `ownerPet` 이 −1 이라 뿌리가 몬스터가 아니다
-                        src.rootIsMonster = m.owner.empty() && m.ownerPet >= 0 &&
-                                            static_cast<size_t>(m.ownerPet) < pets_.size() &&
-                                            pets_[static_cast<size_t>(m.ownerPet)].owner.empty();
+                        src.rootIsMonster = MissileRootIsMonster(m);
                         HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, &src);
                         DestroyMissile(i, out);
                         erased = true;
@@ -11747,6 +11757,9 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         AttackSrc src;
                         src.x = m.posX; src.y = m.posY;
                         src.byMonsterType = m.type;
+                        // ★ 09-20 — **크리처가 쏜 화살**만 뿌리가 몬스터다. 덫 화살은 `ownerPet` 이 −1 이라
+                        //   몬스터에게 적이 된다(⑮). 위 갈래 11 과 같은 셈
+                        src.rootIsMonster = MissileRootIsMonster(m);
                         HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 3, &src);
                         DestroyMissile(i, out);
                         erased = true;
