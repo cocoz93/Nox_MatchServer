@@ -8956,16 +8956,19 @@ void Server::SecretWallSetState(SecretWall& w, uint8_t st) {
     PlaySoundAt(SoundByName(st == 4 ? "SecretWallOpen" : "SecretWallClose"), wx, wy);
 }
 
+// ⚠ 09-20 — 계수기를 뒤늦게 달았다. **0 을 「안 열렸다」와 「안 셌다」로 못 가르고 있었다**
 void Server::SendOpenWall(Session& to, uint16_t id, std::vector<OutPacket>& out) {
     const uint8_t msg[3] = { static_cast<uint8_t>(Op::OPEN_WALL),
                              static_cast<uint8_t>(id), static_cast<uint8_t>(id >> 8) };
     EmitImportantRaw(to, msg, sizeof(msg), out);
+    ++wallOpenSent_;
 }
 
 void Server::SendCloseWall(Session& to, uint16_t id, std::vector<OutPacket>& out) {
     const uint8_t msg[3] = { static_cast<uint8_t>(Op::CLOSE_WALL),
                              static_cast<uint8_t>(id), static_cast<uint8_t>(id >> 8) };
     EmitImportantRaw(to, msg, sizeof(msg), out);
+    ++wallCloseSent_;
 }
 
 // `nox_xxx_updateUnits_51B100_D` 의 비밀벽 고리 — 매 프레임 상태를 한 칸씩 민다

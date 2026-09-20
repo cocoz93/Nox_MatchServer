@@ -633,6 +633,8 @@ int main(int argc, char** argv) {
                 }
                 std::printf("[비밀벽 깃발] 4(스스로 움직임) %zu · 8(열린 채 시작) %zu · 둘 다 %zu · 지금 열림 %zu\n",
                             f4, f8, both, openNow);
+                // ⚠ 「설 자리」는 여기서 안 찾는다 — `CanStand` 는 **벽만** 보고 바닥은 못 봐서
+                //   **바닥 없는 암반**을 골랐다(09-20 에 세 번 당함). 길목(WayPoints)을 읽은 뒤에 찾는다
                 std::fflush(stdout);
             }
         }
@@ -830,7 +832,35 @@ int main(int argc, char** argv) {
                 std::vector<std::pair<float, float>> wps;
                 for (const auto& w : mf.ReadWaypoints())
                     if ((w.flags2 & 0x80) && (w.flags & 1)) wps.push_back({ w.x, w.y });
-                std::printf("[길목] 점멸이 고를 수 있는 곳 %zu곳\n", wps.size());
+                std::printf("[길목] 점멸이 고를 수 있는 곳 %zu곳 —", wps.size());
+                // ★ 09-20 — **좌표도 찍는다.** 길목은 맵 제작자가 「걸을 수 있다」고 찍어 둔 자리라
+                //   화면 판정에서 **설 자리**로 쓸 수 있다(`CanStand` 는 벽만 보고 바닥은 못 본다)
+                for (size_t k = 0; k < wps.size() && k < 12; ++k)
+                    std::printf(" (%d,%d)", static_cast<int>(wps[k].first), static_cast<int>(wps[k].second));
+                std::printf("\n");
+                // ★ 09-20 9-a — 비밀벽마다 **가장 가까운 길목**을 찍는다. 그게 「거기서 보려면 어디에 설까」의 답이다.
+                //   ⚠ `CanStand` 로 찾으면 안 된다 — 그건 **벽만** 보고 바닥은 못 봐서 암반을 고른다(세 번 당함)
+                if (!wps.empty()) {
+                    const auto sec2 = mf.ReadSecretWalls();
+                    size_t shown = 0;
+                    for (const auto& w : sec2) {
+                        if (shown >= 4) break;
+                        const double wx = w.gx * 23.0 + 11.5, wy = w.gy * 23.0 + 11.5;
+                        double best = 1e18; size_t bi = 0;
+                        for (size_t k = 0; k < wps.size(); ++k) {
+                            const double dx = wps[k].first - wx, dy = wps[k].second - wy;
+                            const double d2 = dx * dx + dy * dy;
+                            if (d2 < best) { best = d2; bi = k; }
+                        }
+                        std::printf("[비밀벽 설자리] 벽 칸%d,%d (%d,%d) ← 가장 가까운 길목 (%d,%d) 거리 %d\n",
+                                    static_cast<int>(w.gx), static_cast<int>(w.gy),
+                                    static_cast<int>(wx), static_cast<int>(wy),
+                                    static_cast<int>(wps[bi].first), static_cast<int>(wps[bi].second),
+                                    static_cast<int>(std::sqrt(best)));
+                        ++shown;
+                    }
+                    std::fflush(stdout);
+                }
                 srv.SetWaypoints(std::move(wps));
             }
             for (size_t i = 0; i < objs.size(); ++i) {
@@ -1987,10 +2017,12 @@ int main(int argc, char** argv) {
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
                             " · 문 %llu · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"
+                            " · **비밀벽(열림 %llu·닫힘 %llu)**"
                             " · 자기주문 %llu · 미룬주문효과 %llu\n",
                             srv.roundsPlayed(), srv.flagStatusSent(), srv.chats(), srv.timerAsks(),
                             srv.fxSent(), srv.appearanceSent(), srv.appearanceUnknown(),
                             srv.doorsOpened(), srv.obeliskMana(), srv.plateOn(), srv.plateOff(),
+                            srv.wallOpenSent(), srv.wallCloseSent(),
                             srv.spellsOnSelf(), srv.spellEffectDeferred());
                 if (!srv.stoppedByOp().empty()) {
                     std::printf("[버림] 조각 %llu개 —", srv.stopped());

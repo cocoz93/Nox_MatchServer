@@ -1322,6 +1322,9 @@ public:
     //   깜빡임을 보려면 먼저 「눌리긴 했나」가 서야 한다. 보낸 건수를 눌림·뗌으로 나눠 센다
     unsigned long long plateOn() const { return plateOn_; }
     unsigned long long plateOff() const { return plateOff_; }
+    // 9-a 비밀벽 — 여닫음을 **몇 번 알렸나**. 없으면 화면이 안 바뀔 때 까닭을 못 가른다
+    unsigned long long wallOpenSent() const { return wallOpenSent_; }
+    unsigned long long wallCloseSent() const { return wallCloseSent_; }
     void SetAoi(bool on) { aoiOn_ = on; }
     // 크리처 시야 판정 — 사각형 반폭. 0 이면 꺼짐(모두 싣는 옛 동작).
     // 정답지 기본은 화면절반 + 100 (1280×960 이면 740 × 580, `player.go:325` · `server.go:533`).
@@ -3805,6 +3808,8 @@ private:
     unsigned long long obeliskMana_ = 0;
     unsigned long long plateOn_ = 0;    // ⑩ 판이 **눌렸다**고 보낸 건수(`0xb4` 칸 1)
     unsigned long long plateOff_ = 0;   // ⑩ 판을 **뗐다**고 보낸 건수(`0xb4` 칸 0)
+    unsigned long long wallOpenSent_ = 0;    // 9-a 비밀벽 열림 알림 건수
+    unsigned long long wallCloseSent_ = 0;   // 9-a 비밀벽 닫힘 알림 건수
     bool aoiOn_ = false;
     double creatureAoiHalfX_ = 0.0;   // 0 이면 크리처 시야 판정 꺼짐 (SetCreatureAoi)
     double creatureAoiHalfY_ = 0.0;
