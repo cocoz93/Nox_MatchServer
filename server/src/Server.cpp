@@ -1872,6 +1872,7 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                                          static_cast<uint8_t>(p.netCode >> 8),
                                          p.animFrame };
                 Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);
+                if (p.animFrame) ++plateOn_; else ++plateOff_;
             }
             continue;
         }

@@ -1912,11 +1912,12 @@ int main(int argc, char** argv) {
                             srv.trapSeeOk(), srv.trapFailRange(), srv.trapFailFacing(), srv.trapFailWall());
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
-                            " · 문 %llu · 오벨리스크 %llu · 자기주문 %llu · 미룬주문효과 %llu\n",
+                            " · 문 %llu · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"
+                            " · 자기주문 %llu · 미룬주문효과 %llu\n",
                             srv.roundsPlayed(), srv.flagStatusSent(), srv.chats(), srv.timerAsks(),
                             srv.fxSent(), srv.appearanceSent(), srv.appearanceUnknown(),
-                            srv.doorsOpened(), srv.obeliskMana(), srv.spellsOnSelf(),
-                            srv.spellEffectDeferred());
+                            srv.doorsOpened(), srv.obeliskMana(), srv.plateOn(), srv.plateOff(),
+                            srv.spellsOnSelf(), srv.spellEffectDeferred());
                 if (!srv.stoppedByOp().empty()) {
                     std::printf("[버림] 조각 %llu개 —", srv.stopped());
                     for (const auto& kv : srv.stoppedByOp()) {
