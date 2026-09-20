@@ -17936,6 +17936,36 @@ void TestThingDb() {
     if (const nox::ThingInfo* pl = db.ByWire(713))
         Check(pl->radius > 0.0f, "NewPlayer 의 충돌 반지름이 0 이다 — EXTENT 가 안 읽혔다");
 
+    // ③-b ABIL 섹션(2026-09-20 묶음 10) — **능력 소리**를 읽었는가.
+    //   전에는 이 칸을 통째로 건너뛰어(`SkipABIL`) 능력 소리가 한 건도 안 나갔다(⑧).
+    //   값 하나가 아니라 **다섯 갈래를 전수로** 보고, 소리 이름이 표에서 번호로 풀리는지까지 본다.
+    {
+        const auto& abils = db.Abilities();
+        Check(abils.size() == 5, "ABIL 칸이 다섯이 아니다 — 섹션 걸음이 밀렸거나 안 읽었다");
+        static const char* const kNames[5] = {
+            "ABILITY_BERSERKER_CHARGE", "ABILITY_WARCRY", "ABILITY_HARPOON",
+            "ABILITY_TREAD_LIGHTLY", "ABILITY_EYE_OF_THE_WOLF",
+        };
+        int found = 0, withSound = 0;
+        for (const char* nm : kNames) {
+            for (const auto& ar : abils) {
+                if (ar.name != nm) continue;
+                ++found;
+                if (!ar.useSound.empty() && nox::SoundByName(ar.useSound.c_str()) != 0) ++withSound;
+                break;
+            }
+        }
+        Check(found == 5, "다섯 능력 이름을 다 못 찾았다");
+        Check(withSound == 5, "다섯 중 쓸 때 소리가 없는 것이 있다(이름이 소리표에서 안 풀린다)");
+        // 못박기 — 실측(09-20 클라 로그)에서 광전사 돌진은 소리 **170 BerserkerChargeInvoke** 였다
+        for (const auto& ar : abils) {
+            if (ar.name != kNames[0]) continue;
+            Check(ar.useSound == "BerserkerChargeInvoke", "광전사 돌진의 쓸 때 소리 이름이 다르다");
+            Check(nox::SoundByName(ar.useSound.c_str()) == 170, "그 소리 번호가 170 이 아니다");
+        }
+        std::printf("  능력 소리 — 칸 %zu개 · 이름 맞음 %d · 쓸 때 소리 있음 %d\n",
+                    abils.size(), found, withSound);
+    }
     // ④ 벽 재질(WALL 섹션, 2026-09-13 묶음 2-b) — 읽혔고, 섹션 걸음이 안 밀렸는가.
     //   걸음이 밀렸으면 뒤따르는 THNG 이름 대조(②③)가 먼저 깨진다. 여기선 개수와 막지 않는 재질 수를 찍는다.
     {
