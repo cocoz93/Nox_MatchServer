@@ -869,6 +869,26 @@ int main(int argc, char** argv) {
                     }
                     std::fflush(stdout);
                 }
+                // ★ 09-20 ⑥ — **벽이 낀 길목 짝**을 찾아 찍는다. 소환수가 「벽을 돌아가나」를 보려면
+                //   서로 **안 보이는**(선 추적이 막히는) 두 자리가 있어야 한다.
+                //   ⚠ 너무 멀면 적을 못 찾고, 너무 가까우면 돌아갈 것도 없다 — 200~500 만 본다
+                {
+                    size_t shown = 0;
+                    for (size_t i = 0; i < wps.size() && shown < 3; ++i) {
+                        for (size_t j = i + 1; j < wps.size() && shown < 3; ++j) {
+                            const double dx = wps[j].first - wps[i].first, dy = wps[j].second - wps[i].second;
+                            const double dist = std::sqrt(dx * dx + dy * dy);
+                            if (dist < 200.0 || dist > 500.0) continue;
+                            if (srv.DebugTraceRay(wps[i].first, wps[i].second, wps[j].first, wps[j].second)) continue;  // 보이면 벽이 안 낀 것
+                            std::printf("[벽낀 짝] (%d,%d) ↔ (%d,%d) 거리 %d — 서로 안 보인다\n",
+                                        static_cast<int>(wps[i].first), static_cast<int>(wps[i].second),
+                                        static_cast<int>(wps[j].first), static_cast<int>(wps[j].second),
+                                        static_cast<int>(dist));
+                            ++shown;
+                        }
+                    }
+                    std::fflush(stdout);
+                }
                 // ★ 09-20 9-b — 덫도 같은 셈. **덫 옆에 설 자리**가 있어야 화살이 오는 걸 본다
                 //   (덫 사정 ±350 이라 너무 멀면 안 쏘고, 너무 가까우면 화살 궤적이 안 보인다)
                 if (!wps.empty() && !trapPos.empty()) {
