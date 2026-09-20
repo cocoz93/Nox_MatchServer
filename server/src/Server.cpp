@@ -5234,7 +5234,11 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
 // nox_xxx_gameServerReadyMB_4DD180(`GAME3_2.c:5592`) — CLIENT_READY 마다(정품 클라는 두 번 보낸다)
 //   ① +3680 |= 16(준비 — importantReady) ② 온라인·채팅 모드 아니면 무적 23 끄고 다시 5×FPS·세기 5
 //   ③ ⚠ 깃발 오브젝트(클래스 0x10000000) 미니맵 표시(미니맵) ④ ⚠ 관전이면 +908/+909 = 몸 자리 · 협동 팀(512)이면 관전 풀기(8)
-//   ⑤ ⚠ nox_xxx_wall_4DF1E0 — 부서진 벽·비밀 벽·마법 벽·퀘스트 문 알림(9·4-d) ⑥ ⚠ 퀘스트 건틀릿(8)
+//   ⑤ nox_xxx_wall_4DF1E0(`wall.go:354`) — 갈래가 넷이다(09-21 에 따로 셌다):
+//        ⭕ 비밀 벽(`sub_4DF2A0`) — `SecretWallSync` 가 사람마다 `secretSeen` 으로 이미 한다
+//        ⭕ 문 — 09-21 `UpdateProps` 끝의 **문 되맞춤**(`doorTold`)이 같은 일을 한다
+//        ⚠ 부서진 벽(`wallSendDestroyed`) · ⚠ 퀘스트 문(`Sub_4D6A20`) — 아직 안 옮겼다
+//      ⑥ ⚠ 퀘스트 건틀릿(8)
 //   ⑦ netStatsMultiplier_4D9C20 — `ef <f32 체력> <f32 마나> <f32 힘> <f32 속도>` Packet0 · 직업 배수(아레나는 초기값 1 · 퀘스트 DefaultStatMult 는 8)
 void Server::GameServerReadyMB(Session& s, std::vector<OutPacket>& out) {
     if (!s.inGame) return;
