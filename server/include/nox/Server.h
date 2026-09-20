@@ -194,6 +194,21 @@ struct Buffs {
     bool Has(int b) const { return b >= 0 && b < 32 && (bits & (1u << b)) != 0; }
 };
 
+// ── 묶음 6-j(2) 길목 하나 ────────────────────────────────────────────────
+//
+// 맵 제작자가 「여기는 걸을 수 있다」고 찍어 둔 자리와, 그 자리에서 **갈 수 있는 이웃**들.
+// 점멸(4-e)은 자리만 보고 고르지만, 떠돌기는 **이음을 타고** 다음 길목으로 넘어간다.
+//
+// ⚠ 이음은 **단방향**이다 — 파일에도 정답지 메모리에도 「나가는 것」만 담긴다
+//   (`server/waypoint.go:47 Sub_579A30` 은 깃발만 양쪽으로 OR 한다).
+//   그래서 나가는 이음이 없는 길목은 **막다른 길**이고, 정답지도 거기서 떠돌기를 접는다.
+struct Waypoint {
+    uint32_t id = 0;
+    float x = 0, y = 0;
+    // {상대 길목 **번호**, 이음깃발} — 자리 번호가 아니다
+    std::vector<std::pair<uint32_t, uint8_t>> links;
+};
+
 struct Creature {
     std::string owner;     // 부른 사람의 주소
     uint16_t netCode = 0;
@@ -237,8 +252,18 @@ struct Creature {
         float argX = 0, argY = 0;
         uint32_t argU32 = 0;                   // 때(41) 같은 셈 인자
         float argF = 0;                        // 거리(49~52) 같은 자 인자
+        // ★ 묶음 6-j(2) — 떠돌기가 **지금 고른 길목 번호**(정답지 쌓임 항목의 `+4`). 0 = 아직 없다.
+        //   이걸 안 적어 두면 매 틱 「가장 가까운 길목」을 다시 골라, 길목 위에 선 순간
+        //   **제자리를 목적지로 찍고 영영 안 움직인다**(⑥ 이 막혀 있던 그 증상)
+        uint32_t argWp = 0;
     };
     AIStackItem aiStack[kAIStackMax];
+    // ★ 묶음 6-j(2) — **최근에 들른 길목 16곳**(정답지 `sub_545B00` 의 `+300` 고리, 머리는 `+364`).
+    //   다음 길목을 고를 때 여기 있는 것은 뺀다 — 안 그러면 두 길목 사이를 오간다.
+    //   ⚠ 고리는 **덮어쓰기**다. 같은 번호가 다시 들어오면 정답지는 **옛 자리를 0 으로 지운다**
+    static constexpr int kRoamRecent = 16;
+    uint32_t roamRecent[kRoamRecent] = {};
+    int roamRecentHead = 0;
     double prevX = 0, prevY = 0;               // 묶음 6-b — 지난 틱 자리(조건 71 「안 움직였나」)
     // ★ 묶음 6-c — **행동을 바꾼 프레임**(`monsterActionReset` 의 `+124`·`+137`).
     //   정답지는 둘을 **같은 값**으로 둔다 — `상대 기다리기(2)` 가 이것에 인자를 더해 잰다.
@@ -1325,6 +1350,12 @@ public:
     // 9-a 비밀벽 — 여닫음을 **몇 번 알렸나**. 없으면 화면이 안 바뀔 때 까닭을 못 가른다
     unsigned long long wallOpenSent() const { return wallOpenSent_; }
     unsigned long long wallCloseSent() const { return wallCloseSent_; }
+    // ⑥ 떠돌기 — **갈래 둘을 따로 센다**(「갈래를 세라」). 하나만 세면 0 의 뜻이 안 갈린다:
+    //   · roamAdvance = 도착해서 **이음을 타고 다음 길목으로** 넘어간 횟수
+    //   · roamDeadEnd = 갈 이음이 없어 **떠돌기를 접은** 횟수("Reached dead end")
+    //   둘 다 0 이면 애초에 **도착을 못 한 것**이다 — 셋을 같이 읽어야 뜻이 선다
+    unsigned long long roamAdvance() const { return roamAdvance_; }
+    unsigned long long roamDeadEnd() const { return roamDeadEnd_; }
     void SetAoi(bool on) { aoiOn_ = on; }
     // 크리처 시야 판정 — 사각형 반폭. 0 이면 꺼짐(모두 싣는 옛 동작).
     // 정답지 기본은 화면절반 + 100 (1280×960 이면 740 × 580, `player.go:325` · `server.go:533`).
@@ -1345,7 +1376,24 @@ public:
     // ★ 묶음 3-c — 맵의 PlayerStart 자리(부활 자리 고르기 mapFindPlayerStart_4F7AB0). main.cpp 가 맵 오브젝트에서 채운다.
     void SetPlayerStarts(std::vector<std::pair<float, float>> v) { playerStarts_ = std::move(v); }
     // ★ 맵 길목 — 점멸이 여기서 목적지를 고른다(`waypoint_579F00`). 비었으면 시작 지점으로 되돌아간다.
-    void SetWaypoints(std::vector<std::pair<float, float>> v) { waypoints_ = std::move(v); AIPathBakeWaypoints(); }
+    //   자리만 주면 번호를 1부터 매기고 **이음은 없는** 길목이 된다(시험용).
+    void SetWaypoints(std::vector<std::pair<float, float>> v) {
+        waypoints_.clear();
+        waypoints_.reserve(v.size());
+        for (size_t i = 0; i < v.size(); ++i) {
+            Waypoint w;
+            w.id = static_cast<uint32_t>(i + 1);
+            w.x = v[i].first;
+            w.y = v[i].second;
+            waypoints_.push_back(std::move(w));
+        }
+        AIPathBakeWaypoints();
+    }
+    // ★ 09-20 묶음 6-j(2) — **이음까지** 실어 준다. main.cpp 가 맵에서 읽어 넘긴다.
+    //   ⚠ 넘기기 전에 `flags & 1`·`flags2 & 0x80` 으로 걸러 둘 것 —
+    //     우리가 쓰는 가면(mask)은 어디서나 0x80 이라 **목록에 있다 = 쓸 수 있다**가 된다.
+    //     이음이 걸러진 길목을 가리키면 찾기가 실패하는데, 그게 곧 정답지의 `sub_547EE0` 거짓이다
+    void SetWaypointsFull(std::vector<Waypoint> v) { waypoints_ = std::move(v); AIPathBakeWaypoints(); }
     size_t WaypointCount() const { return waypoints_.size(); }
     size_t PlayerStartCount() const { return playerStarts_.size(); }
     // 조각 E — 판을 아홉 개 돌리려면 맵마다 봇 자리를 알아야 한다. i 번째 시작 자리를 그대로 준다.
@@ -2066,6 +2114,10 @@ public:
     void DebugSetPetFacing(size_t i, uint8_t f) { if (i < pets_.size()) { pets_[i].facing = f; pets_[i].facingWant = f; } }
     uint32_t DebugAIArgU32(size_t i, int j) const {
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argU32 : 0;
+    }
+    // 묶음 6-j(2) — 떠돌기가 **지금 고른 길목 번호**. 기억이 서는지 시험이 직접 본다
+    uint32_t DebugAIArgWp(size_t i, int j) const {
+        return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argWp : 0;
     }
     int  DebugAIPop(size_t i) { return i < pets_.size() ? AIPop(pets_[i]) : -1; }
     void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AITick(pets_[i], out); }
@@ -3261,7 +3313,13 @@ private:
     bool BodyContains(const PhysBody& o, float qx, float qy) const;   // sub_547DB0
     void AIPathBakeObstacles();   // 묶음 6-e(2b·3) — 오브젝트 모양이 깃발 0x1(·0x2)을 찍는다
     void AIPathBakeWaypoints();
-    bool AIPathFindWaypoint(const Creature& k, float& outX, float& outY);
+    // ★ 09-20 — **자리가 아니라 길목 번호**를 돌려준다(0 = 못 찾음).
+    //   전에는 물결이 닿은 **칸 한가운데**를 줬는데, 길목의 진짜 자리와 최대 16 어긋나
+    //   도착 판정(거리² ≤ 64 = 8)이 영영 안 선다. 정답지도 `wp+8`(길목의 자리)을 쓴다
+    uint32_t AIPathFindWaypoint(const Creature& k, float& outX, float& outY);
+    const Waypoint* WaypointById(uint32_t id) const;               // sub_547EE0 의 「있나」
+    void RoamRemember(Creature& k, uint32_t id);                   // sub_545B00
+    uint32_t RoamNextWaypoint(const Creature& k, uint32_t cur);    // sub_545C60
     // 묶음 6-e(2b) — 그 칸 벽의 방향 번호(0~10, 없으면 −1) · 대각 이음매 판정
     int  WallDirAt(int x, int y) const;
     bool AIPathDiagOk(int ii, int x1, int y1) const;
@@ -3821,6 +3879,8 @@ private:
     unsigned long long obeliskMana_ = 0;
     unsigned long long plateOn_ = 0;    // ⑩ 판이 **눌렸다**고 보낸 건수(`0xb4` 칸 1)
     unsigned long long plateOff_ = 0;   // ⑩ 판을 **뗐다**고 보낸 건수(`0xb4` 칸 0)
+    unsigned long long roamAdvance_ = 0;     // ⑥ 이음을 타고 다음 길목으로 넘어간 횟수
+    unsigned long long roamDeadEnd_ = 0;     // ⑥ 갈 이음이 없어 떠돌기를 접은 횟수
     unsigned long long wallOpenSent_ = 0;    // 9-a 비밀벽 열림 알림 건수
     unsigned long long wallCloseSent_ = 0;   // 9-a 비밀벽 닫힘 알림 건수
     bool aoiOn_ = false;
@@ -3869,7 +3929,7 @@ private:
     uint32_t debugHurtEvery_ = 0;      // 진단 --debug-hurt-every (0 끔)
     bool debugHurtFront_ = false;      // 진단 --debug-hurt-front — 앞 30 에서 때린 것으로
     std::vector<std::pair<float, float>> playerStarts_;
-    std::vector<std::pair<float, float>> waypoints_;   // 맵 길목(점멸 목적지)   // 묶음 3-c PlayerStart 자리
+    std::vector<Waypoint> waypoints_;   // 맵 길목(점멸 목적지 · 떠돌기 길)   // 묶음 3-c PlayerStart 자리
     bool autoRespawn_ = false;         // 묶음 3-c 자동 부활(정답지 기본 꺼짐)
     SpellDef spellDefs_[137];                      // 묶음 4-a 주문 정의
     std::vector<PhonemeNode> phonemeTree_ = std::vector<PhonemeNode>(1);   // [0] = 뿌리

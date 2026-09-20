@@ -937,7 +937,23 @@ int main(int argc, char** argv) {
                     }
                     std::fflush(stdout);
                 }
-                srv.SetWaypoints(std::move(wps));
+                // ★ 09-20 묶음 6-j(2) — **이음까지 실어 준다.** 거르는 눈은 위 `wps` 와 같다
+                //   (`flags&1` 켜짐 · `flags2&0x80` 오가는 이음 있음) — 걸러진 길목을 가리키는
+                //   이음은 서버에서 못 찾게 되는데, 그게 정답지 `sub_547EE0` 의 거짓과 같은 뜻이다
+                {
+                    std::vector<nox::Waypoint> full;
+                    full.reserve(wps.size());
+                    for (const auto& w : allWps) {
+                        if (!((w.flags2 & 0x80) && (w.flags & 1))) continue;
+                        nox::Waypoint sw;
+                        sw.id = w.id;
+                        sw.x = w.x;
+                        sw.y = w.y;
+                        for (const auto& l : w.links) sw.links.push_back({ l.to, l.flag });
+                        full.push_back(std::move(sw));
+                    }
+                    srv.SetWaypointsFull(std::move(full));
+                }
             }
             for (size_t i = 0; i < objs.size(); ++i) {
                 const uint16_t wire = tdb.WireByName(objs[i].type);
@@ -2109,11 +2125,13 @@ int main(int argc, char** argv) {
                     std::printf("\n");
                 }
                 std::printf("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu"
-                            " · 덫판정(통과 %llu·멂 %llu·방향 %llu·벽 %llu)\n",
+                            " · 덫판정(통과 %llu·멂 %llu·방향 %llu·벽 %llu)"
+                            " · **떠돌기(이음탐 %llu·막다른길 %llu)**\n",
                             srv.petCount(), srv.petsWithPath(),
                             srv.DebugPathCalculated() ? "예" : "아니오", srv.DebugPathStatus(),
                             srv.trapsArmed(),
-                            srv.trapSeeOk(), srv.trapFailRange(), srv.trapFailFacing(), srv.trapFailWall());
+                            srv.trapSeeOk(), srv.trapFailRange(), srv.trapFailFacing(), srv.trapFailWall(),
+                            srv.roamAdvance(), srv.roamDeadEnd());
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
                             " · 문 %llu · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"

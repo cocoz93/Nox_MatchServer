@@ -5996,7 +5996,7 @@ int Server::DurBlinkTick(DurSpell& d, std::vector<OutPacket>& out) {
     float tx = 0, ty = 0;
     if (!waypoints_.empty()) {
         const auto& w = waypoints_[NextRandom(static_cast<uint32_t>(waypoints_.size()))];
-        tx = w.first; ty = w.second;
+        tx = w.x; ty = w.y;
     } else if (!playerStarts_.empty()) {                     // mapFindPlayerStart_4F7AB0
         const auto& ps = playerStarts_[NextRandom(static_cast<uint32_t>(playerStarts_.size()))];
         tx = ps.first; ty = ps.second;
@@ -7110,20 +7110,72 @@ void Server::OrderUnit(Session& src, uint16_t netCode, uint8_t order) {
 //   정답지의 격자 찍기는 **0x80 만** 본다 — 꺼진 길목이 있으면 우리가 덜 찍는다
 void Server::AIPathBakeWaypoints() {
     for (const auto& w : waypoints_) {
-        const int gx = static_cast<int>(w.first / kWallCell);
-        const int gy = static_cast<int>(w.second / kWallCell);
+        const int gx = static_cast<int>(w.x / kWallCell);
+        const int gy = static_cast<int>(w.y / kWallCell);
         if (AIIndexNode* n = AIPathIndexAt(gx, gy)) n->flags |= 0x40;
     }
 }
 
-bool Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY) {
-    if (waypoints_.empty()) return false;
+// ── 묶음 6-j(2) 길목 이음 따라가기 ───────────────────────────────────
+//
+// 정답지 셋을 그대로 옮긴다:
+//   `sub_547EE0`  — 쓸 수 있는 길목인가 (있나 + `flags&1` + `가면 & flags2`)
+//   `sub_545B00`  — 들른 길목을 **16칸 고리**에 적는다
+//   `sub_545C60`  — 지금 길목의 **이음** 중 최근에 안 들른 것을 **무작위로** 하나
+//
+// ⚠ 가면(mask)은 우리가 쓰는 자리에서 늘 0x80 이라 `waypoints_` 에 **있다 = 쓸 수 있다**로 둔다
+//   (넣기 전에 main.cpp 가 `flags&1`·`flags2&0x80` 으로 거른다). 걸러진 길목을 가리키는 이음은
+//   여기서 못 찾게 되는데, 그게 곧 정답지의 `sub_547EE0` 거짓이다
+const Waypoint* Server::WaypointById(uint32_t id) const {
+    if (id == 0) return nullptr;
+    for (const auto& w : waypoints_) if (w.id == id) return &w;
+    return nullptr;
+}
+
+void Server::RoamRemember(Creature& k, uint32_t id) {
+    if (++k.roamRecentHead >= Creature::kRoamRecent) k.roamRecentHead = 0;
+    k.roamRecent[k.roamRecentHead] = id;
+    // ★ 같은 번호가 고리 안에 또 있으면 **옛 자리를 지운다**(정답지 `545B00` 의 뒷루프).
+    //   안 지우면 한 길목이 고리를 두 칸 잡아먹어 「최근 16곳」이 실제로는 15곳이 된다
+    for (int i = 0; i < Creature::kRoamRecent; ++i)
+        if (k.roamRecent[i] == id && i != k.roamRecentHead) k.roamRecent[i] = 0;
+}
+
+uint32_t Server::RoamNextWaypoint(const Creature& k, uint32_t cur) {
+    const Waypoint* w = WaypointById(cur);
+    if (!w) return 0;
+    // ① 이음 중 **최근에 안 들른 것**들을 모아 무작위로 하나
+    uint32_t cand[32];
+    size_t n = 0;
+    for (const auto& l : w->links) {
+        if (n >= 32) break;
+        if (!WaypointById(l.first)) continue;                // sub_547EE0 거짓
+        bool seen = false;
+        for (int i = 0; i < Creature::kRoamRecent; ++i)
+            if (k.roamRecent[i] == l.first) { seen = true; break; }
+        if (!seen) cand[n++] = l.first;
+    }
+    if (n > 0) return cand[NextRandom(static_cast<uint32_t>(n))];
+    // ② 다 들렀으면 **고리에서 가장 오래된 것부터** 되짚는다 — 단, 지금 길목의 이음인 것만
+    //   (정답지 LABEL_27 — 머리 다음 칸부터 한 바퀴)
+    for (int i = 0; i < Creature::kRoamRecent; ++i) {
+        int at = k.roamRecentHead + i + 1;
+        while (at >= Creature::kRoamRecent) at -= Creature::kRoamRecent;
+        const uint32_t id = k.roamRecent[at];
+        if (id == 0 || !WaypointById(id)) continue;
+        for (const auto& l : w->links) if (l.first == id) return id;
+    }
+    return 0;                                                 // 막다른 길
+}
+
+uint32_t Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY) {
+    if (waypoints_.empty()) return 0;
     ++aiIndexLast_;
     AIPathResetVisit();
     const int sx = static_cast<int>(k.x / kWallCell);
     const int sy = static_cast<int>(k.y / kWallCell);
     int wave = AIPathNewVisit(sx, sy, -1, -1);
-    if (wave < 0) return false;
+    if (wave < 0) return 0;
     if (AIIndexNode* rp = AIPathIndexAt(sx, sy)) rp->visit = aiIndexLast_;
     static const int kNb4[4][2] = { { 1, 0 }, { 0, -1 }, { -1, 0 }, { 0, 1 } };
     while (wave >= 0) {
@@ -7132,9 +7184,17 @@ bool Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY) {
             const int x1 = aiVisit_[static_cast<size_t>(it)].x;
             const int y1 = aiVisit_[static_cast<size_t>(it)].y;
             if (AIPathFlagsAt(x1, y1) & 0x40) {              // 길목 칸이다
-                outX = x1 * 23.0f + 11.0f;
-                outY = y1 * 23.0f + 11.0f;
-                return true;
+                // ★ 09-20 — **칸 한가운데가 아니라 길목의 진짜 자리**를 준다.
+                //   한 칸은 23 이라 한가운데와 길목이 최대 16 어긋나는데, 도착 판정이 **8**(거리² 64)이다.
+                //   한가운데로 걸어가면 영영 도착이 안 서서 다음 길목으로 못 넘어간다
+                for (const auto& w : waypoints_) {
+                    if (static_cast<int>(w.x / kWallCell) != x1) continue;
+                    if (static_cast<int>(w.y / kWallCell) != y1) continue;
+                    outX = w.x;
+                    outY = w.y;
+                    return w.id;
+                }
+                // 칸은 찍혔는데 길목이 없다 — 있을 수 없지만, 있으면 물결을 계속 돌린다
             }
             for (int i = 0; i < 4; ++i) {
                 const int x2 = x1 + kNb4[i][0], y2 = y1 + kNb4[i][1];
@@ -7146,13 +7206,13 @@ bool Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY) {
                 //   안 막으면 물결이 벽을 넘어가 **담 밖 길목까지 찾아낸다**(시험이 잡았다)
                 if (WallDirAt(x2, y2) != -1) continue;       // sub_50B870 — 벽
                 const int nn = AIPathNewVisit(x2, y2, it, next);
-                if (nn < 0) return false;                    // 자국 자리를 다 썼다
+                if (nn < 0) return 0;                        // 자국 자리를 다 썼다
                 next = nn;
             }
         }
         wave = next;
     }
-    return false;
+    return 0;
 }
 
 // ── 묶음 6-e(2b) 대각 이음매 ──────────────────────────────────────────
@@ -9536,9 +9596,16 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             //   · 길목을 **하나도 못 찾으면** — 「Cannot find any waypoints」를 찍고
             //     **스스로 빠진 뒤 1~2초 기다리기(1)** 를 올린다
             //
-            // ⚠ **우리 맵 자료에는 길목이 없다**(6-e(2b) 의 길목 길과 같은 구멍).
-            //   그래서 늘 위의 **「길목 없음」 갈래**를 탄다 — 정답지가 같은 자리에서 하는 것 그대로다.
-            //   길목을 읽게 되면 그때 고르기·걸어가기가 살아난다
+            // ✖ **정정 09-20** — 위에 「우리 맵 자료에는 길목이 없다」고 적어 뒀는데 **틀렸다.**
+            //   길목은 `main.cpp` 가 읽어 `SetWaypoints` 로 싣는다. 없던 것은 **고르는 함수**였고,
+            //   그건 6-j(2) 에서 채웠다.
+            //
+            // ★★ 09-20 묶음 6-j(2) — **고른 길목을 기억한다.** 전에는 매 틱 「가장 가까운 길목」을
+            //   다시 골랐는데, 물결이 **제 칸부터** 훑으니 길목 위에 선 순간 **제자리**를 답으로 준다.
+            //   그래서 소환수가 첫 길목까지만 가고 거기 붙박였다(⑥ 벽 우회가 막혀 있던 뿌리 ·
+            //   실측 — estate 에서 71 움직이고 길목 (3463,2358) 에서 **5 떨어진 자리**에 섬).
+            //   정답지는 고른 길목을 쌓임 항목 `+4` 에 적어 두고, **거리² ≤ 64** 면 이음을 타고
+            //   다음 길목으로 넘어간다(`GAME5.c:519~528` · `monsterRoamDeadEnd_545BB0`)
             const Target foe{ k.enemyAddr, k.enemyPet };
             float ex = 0, ey = 0;
             if (!foe.none() && TargetXY(foe, ex, ey)) {
@@ -9549,12 +9616,33 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 }
                 break;
             }
-            // ★ 묶음 6-j(2) — **길목을 물결로 찾아** 그리로 걸어간다(`Sub_50CB20`)
+            // ★ 묶음 6-j(2) — 고른 길목이 아직 쓸 만한가(`sub_547EE0`). 아니면 잊는다
+            if (!WaypointById(st.argWp)) st.argWp = 0;
             float wx = 0, wy = 0;
-            if (AIPathFindWaypoint(k, wx, wy)) {
+            if (st.argWp == 0) {                             // 아직 없다 — 물결로 찾는다(`Sub_50CB20`)
+                st.argWp = AIPathFindWaypoint(k, wx, wy);
+                if (st.argWp != 0) RoamRemember(k, st.argWp);
+            }
+            if (st.argWp != 0) {
+                const Waypoint* w = WaypointById(st.argWp);
+                // 도착했나 — 거리² ≤ 64(=8). 정답지가 쓰는 바로 그 눈금이다
+                const float dx = w->x - static_cast<float>(k.x);
+                const float dy = w->y - static_cast<float>(k.y);
+                if (dx * dx + dy * dy <= 64.0f) {
+                    const uint32_t nx = RoamNextWaypoint(k, st.argWp);
+                    if (nx == 0) {                           // "Reached dead end, giving up"
+                        ++roamDeadEnd_;
+                        AIPop(k);
+                        break;
+                    }
+                    RoamRemember(k, nx);
+                    st.argWp = nx;
+                    w = WaypointById(nx);
+                    ++roamAdvance_;                          // 이음을 타고 넘어간 횟수
+                }
                 if (AIPush(k, 7)) {
-                    k.aiStack[k.aiStackInd].argX = wx;
-                    k.aiStack[k.aiStackInd].argY = wy;
+                    k.aiStack[k.aiStackInd].argX = w->x;
+                    k.aiStack[k.aiStackInd].argY = w->y;
                     k.aiStack[k.aiStackInd].argU32 = 0;
                 }
                 break;

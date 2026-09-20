@@ -12477,9 +12477,12 @@ void TestAIGuardHunt() {
         srv.DebugAIPush(0, 10);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 7, "길목이 있는데 가기(7)를 안 밀었다");
-        // 길목 칸 한가운데로 간다
-        Check(std::fabs(srv.DebugAIArgX(0, 1) - (65 * 23.0f + 11.0f)) < 0.01f,
-              "가기가 길목 칸 한가운데를 안 받았다");
+        // ✖ **정정 09-20 (6-j(2))** — 전에는 **칸 한가운데**(65*23+11 = 1506)를 기대했다.
+        //   한 칸이 23 이라 한가운데와 길목이 최대 16 어긋나는데 **도착 눈금은 8**(거리² 64)이라,
+        //   한가운데로 걸어가면 영영 도착이 안 서서 다음 길목으로 못 넘어간다.
+        //   ⇒ 이제 **길목의 진짜 자리**를 준다(정답지도 `wp+8` 을 쓴다)
+        Check(std::fabs(srv.DebugAIArgX(0, 1) - 1500.0f) < 0.01f,
+              "가기가 길목의 진짜 자리를 안 받았다");
         Check(srv.DebugAIAction(0, 0) == 10, "떠돌기가 빠졌다 — 길목이 있으면 안 빠진다");
     }
     // ★ **네 쪽을 다 본다** — 옆이 아니라 아래에 있어도 찾는다
@@ -12520,6 +12523,82 @@ void TestAIGuardHunt() {
         srv.DebugAIPush(0, 10);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 1, "막힌 길목을 찾아냈다 — 물결이 벽을 넘었나");
+    }
+    // ★★ ⑥-3 **길목에 닿으면 이음을 타고 다음 길목으로 넘어간다**(6-j(2))
+    //
+    // 이게 ⑥ 이 막혀 있던 자리다 — 전에는 매 틱 「가장 가까운 길목」을 다시 골랐는데
+    // 물결이 **제 칸부터** 훑으니, 길목 위에 선 순간 **제자리**가 답이 돼 영영 안 움직였다.
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<nox::Waypoint> wps(2);
+        wps[0].id = 1; wps[0].x = 1000.0f; wps[0].y = 1000.0f;   // 소환수가 선 자리
+        wps[0].links.push_back({ 2, 0x80 });
+        wps[1].id = 2; wps[1].x = 1200.0f; wps[1].y = 1000.0f;
+        srv.SetWaypointsFull(wps);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetFrame(1000);
+        srv.DebugAIPush(0, 10);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIArgWp(0, 0) == 2, "길목 위에 섰는데 다음 길목으로 안 넘어갔다");
+        Check(srv.roamAdvance() == 1, "이음을 탄 횟수가 1 이 아니다");
+        Check(srv.roamDeadEnd() == 0, "막다른 길로 잘못 샜다");
+        Check(srv.DebugAIAction(0, 1) == 7, "다음 길목으로 가기(7)를 안 밀었다");
+        Check(std::fabs(srv.DebugAIArgX(0, 1) - 1200.0f) < 0.01f, "가기가 **다음** 길목을 안 받았다");
+    }
+    // ⑥-4 **나가는 이음이 없으면 막다른 길** — 떠돌기를 접는다("Reached dead end, giving up")
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        std::vector<nox::Waypoint> wps(1);
+        wps[0].id = 1; wps[0].x = 1000.0f; wps[0].y = 1000.0f;   // 이음 없음
+        srv.SetWaypointsFull(wps);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetFrame(1000);
+        srv.DebugAIPush(0, 10);
+        srv.DebugAITick(0, out);
+        Check(srv.roamDeadEnd() == 1, "막다른 길을 안 셌다");
+        Check(srv.roamAdvance() == 0, "갈 데가 없는데 이음을 탔다고 셌다");
+        Check(srv.DebugAIAction(0, 1) != 7, "막다른 길인데 가기(7)를 밀었다");
+    }
+    // ⑥-5 **최근에 들른 길목은 다시 안 고른다**(`sub_545B00` 16칸 고리 · `sub_545C60` 거르기)
+    //
+    // ⚠ **한 번만 넘어가 보는 시험으로는 못 잡는다.** 처음엔 「제자리 이음 넷 + 다른 곳 하나」로
+    //   짰는데, 고리 거르기를 빼도 난수가 우연히 다른 곳을 골라 **시험이 통과했다**(돌연변이 M2).
+    //   그래서 **되돌아가기가 늘 후보**인 다섯 길목 고리에서 **여덟 번** 넘어가며 센다 —
+    //   거르기가 없으면 되돌아가기가 절반쯤 나오므로 여덟 번 내내 안 나올 수는 없다.
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        const int N = 5;
+        std::vector<nox::Waypoint> wps(N);
+        for (int i = 0; i < N; ++i) {                            // 다섯을 고리로, **양방향**으로 잇는다
+            wps[i].id = static_cast<uint32_t>(i + 1);
+            wps[i].x = 1000.0f + i * 100.0f;
+            wps[i].y = 1000.0f;
+            wps[i].links.push_back({ static_cast<uint32_t>((i + 1) % N + 1), 0x80 });
+            wps[i].links.push_back({ static_cast<uint32_t>((i + N - 1) % N + 1), 0x80 });
+        }
+        srv.SetWaypointsFull(wps);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetFrame(1000);
+        srv.DebugAIPush(0, 10);
+        uint32_t at = 1, prevAt = 0;
+        int back = 0, hops = 0;
+        for (int h = 0; h < 8; ++h) {
+            srv.DebugAITick(0, out);
+            const uint32_t now = srv.DebugAIArgWp(0, 0);
+            if (now < 1 || now > static_cast<uint32_t>(N)) break;
+            if (now == prevAt) ++back;                           // 한 홉 전 자리로 되돌아갔다
+            ++hops;
+            prevAt = at;
+            at = now;
+            srv.DebugSetPetPos(0, wps[at - 1].x, wps[at - 1].y);  // 그리로 걸어간 셈
+            if (srv.DebugAIAction(0, 1) == 7) srv.DebugAIPop(0);
+        }
+        Check(hops == 8, "여덟 번을 다 못 넘어갔다 — 이 시험의 전제");
+        Check(back == 0, "방금 들른 길목으로 되돌아갔다 — 16칸 고리를 안 본다");
+        Check(srv.roamAdvance() == 8, "이음을 탄 횟수가 여덟이 아니다");
     }
 
     // ⑦ **죽어가는 중(30)·죽음(31)** — 6-j
