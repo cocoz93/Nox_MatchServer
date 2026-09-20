@@ -17853,6 +17853,42 @@ void TestSnapshotSeqRenumber() {
 // ★ 검증 셋 — ① 복호 왕복(내가 만든 Blowfish 가 스스로 맞는가)
 //   ② 기존 표(ThingFlags, Go 로 구운 것)와 **복합 여부 전수 대조** — 걸음이 한 바이트만
 //     밀려도 이름이 깨져 여기서 걸린다  ③ 실측 다섯 종의 이름·복합 못박기.
+// ── 모드 판을 세울 자리 (2026-09-20) ─────────────────────────────
+//
+// ★ 왜 시험이 필요한가 — 09-20 에 첫 접속 자리를 **맵의 PlayerStart** 로 바꾸면서
+//   「두 사람 사이」를 옛 고정값(`spawnX()+20`)으로 세던 자리가 틀어졌다.
+//   깃발(맵에 없을 때)·공·퀘스트 웨이브가 **사람과 동떨어진 곳**에 설 수 있었다.
+//   값 하나가 아니라 **아무도 없을 때 / 하나 / 둘 / 셋** 을 전수로 본다.
+void TestPlayersCenter() {
+    const std::string a = "10.5.0.1:1", b2 = "10.5.0.2:2", c = "10.5.0.3:3";
+    nox::Server srv;
+    int x = -1, y = -1;
+
+    // ① 아무도 없으면 고정값(스폰 자리)
+    srv.PlayersCenter(x, y);
+    Check(x == srv.spawnX() && y == srv.spawnY(), "아무도 없는데 고정값이 아니다");
+
+    // ② 하나면 그 사람 자리
+    srv.DebugEnterGame(a, 728);
+    srv.DebugSetPos(a, 1000, 2000);
+    srv.PlayersCenter(x, y);
+    Check(x == 1000 && y == 2000, "사람 하나인데 그 자리가 아니다");
+
+    // ③ 둘이면 가운데
+    srv.DebugEnterGame(b2, 729);
+    srv.DebugSetPos(b2, 2000, 3000);
+    srv.PlayersCenter(x, y);
+    Check(x == 1500 && y == 2500, "둘의 가운데가 아니다");
+
+    // ④ 셋이면 셋의 평균 — **개수로도 본다**(둘만 세면 여기서 걸린다)
+    srv.DebugEnterGame(c, 730);
+    srv.DebugSetPos(c, 3000, 4000);
+    srv.PlayersCenter(x, y);
+    Check(x == 2000 && y == 3000, "셋의 평균이 아니다 — 세는 자리가 빠졌다");
+
+    std::printf("  모드 판 자리 — 없음(고정값)·하나·둘·셋 전부 맞음\n");
+}
+
 void TestThingDb() {
     const char* kThingBin = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin";
     FILE* probe = std::fopen(kThingBin, "rb");
@@ -20046,6 +20082,7 @@ int main() {
     TestWeaponAttack();
     TestDamageHandler();
     TestShieldBlock();
+    TestPlayersCenter();
     TestThingDb();
     TestMapSections();
     TestWallCollision();
