@@ -1512,6 +1512,10 @@ public:
     unsigned long long sendReliableOn(uint8_t st) const { return st < 8 ? sendRelStream_[st] : 0; }
     unsigned long long sendPlainOn(uint8_t st) const { return st < 8 ? sendPlainStream_[st] : 0; }
     unsigned long long ackValueCount(uint8_t v) const { return v < 32 ? ackValueHist_[v] : 0; }
+    // ★ 09-21 — **되받기 값이 올라가나**. 옛 `ackSeqDiffer` 는 서로 다른 둘을 견주던 숫자라 뜻이 없었다
+    //   (`Server.cpp` 되받기 가지 주석). 이것이 0 이면 클라의 신뢰 순번이 **멈춘** 것이다.
+    unsigned long long ackSeqChanged() const { return ackSeqChanged_; }
+    uint8_t ackLastSent() const { return ackLastSent_; }
     // B-1b 되받기 끄기(대조군) — `--no-ack-seq`
     void SetAckRecvSeq(bool v) { ackRecvSeq_ = v; }
     // 되받기를 **모든 스트림의 비신뢰**에 싣는다 — 클라가 읽는 쪽이 스트림 0 이라서(Emit 주석)
@@ -4045,7 +4049,9 @@ private:
     unsigned long long sendRelStream_[8] = {};   // 서버 → 클라 **신뢰**, 스트림별
     unsigned long long sendPlainStream_[8] = {}; // 서버 → 클라 **비신뢰**, 스트림별(되받기가 실리는 자리)
     unsigned long long ackSeqApplied_ = 0; // 되받기 가지를 탄 횟수 (0 이면 분기가 안 도는 것)
-    unsigned long long ackSeqDiffer_ = 0;  // 그중 값이 실제로 달라진 횟수
+    unsigned long long ackSeqDiffer_ = 0;  // ✖ 09-21 폐기 — 뜻 없는 견줌이었다(되받기 가지 주석)
+    unsigned long long ackSeqChanged_ = 0; // 되받기 **값이 직전과 달라진** 횟수 — 0 이면 클라 순번이 멈춤
+    uint8_t ackLastSent_ = 0;              // 마지막으로 실어 보낸 되받기 값
     // B-1b 되받기 — ⚠ **기본 끔.** 09-18 실측에서 **효과가 없었다**(아래).
     //   켜려면 `--ack-seq`. 분기 자체는 도는 것을 계수기로 확인했으므로
     //   (되받기 37/다름 37) 배선이 아니라 **방식**이 틀린 것이다.

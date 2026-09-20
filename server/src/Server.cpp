@@ -123,7 +123,14 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
         //   값 규칙 — `ackOlder(N+1)` 이 N 이하를 지운다(`send_reliable.go:178~199`).
         const StreamSeq& rq = s.seq[s.lastRelStream];
         const uint8_t ack = static_cast<uint8_t>(rq.recvSeq + 1);
-        if (ack != q.last) ++ackSeqDiffer_;
+        // ✖ **정정 09-21 — 여기서 재던 「다름」은 뜻이 없었다.**
+        //   `ack`(클라가 보낸 신뢰 순번 +1)과 `q.last`(우리가 스트림 0 에 마지막으로 쓴 순번)는
+        //   **서로 다른 것**이라 거의 늘 다르다. 실측 `되받기 7874 · 다름 7866` 은 결함이 아니라
+        //   **엉뚱한 둘을 견준 숫자**였고, 그게 「B-1b 가 아직 안 됐다」로 읽혔다(B-1b 는 09-18 에 닫혔다).
+        // ⭕ 뜻이 있는 것은 **되받기 값이 올라가나**다 — 안 올라가면 클라의 신뢰 순번이 멈춘 것이고,
+        //   그러면 클라의 재전송 줄이 안 비워진다. 그래서 **직전에 보낸 되받기 값과** 견준다.
+        if (ackSeqApplied_ != 0 && ack != ackLastSent_) ++ackSeqChanged_;
+        ackLastSent_ = ack;
         ++ackSeqApplied_;
         if (ack < 32) ++ackValueHist_[ack];
         h.seq = ack;

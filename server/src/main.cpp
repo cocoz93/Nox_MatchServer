@@ -1949,7 +1949,14 @@ int main(int argc, char** argv) {
                 std::printf("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
                             "걸음 %llu · 근접 %llu(클릭 %llu) · "
                             "주문 %llu(마나막힘 %llu) · 나는것 %zu(만든 %llu · 사라짐 %llu · 갱신에 %llu) · 피해 %llu · 별칭받음 %llu%s"
-                            " · 악수(수락 %llu·맵지정 %llu·준비 %llu·신뢰받음 %llu·되받기 %llu/다름 %llu·무적건 %llu)"
+                            // ★ 09-21 — 되받기는 「몇 번 실었나」보다 **값이 올라가나**가 뜻이 있다.
+                            //   옛 「다름」은 `ack`(클라 순번+1)과 `q.last`(우리 스트림0 순번)를 견주던
+                            //   숫자라 거의 늘 달랐다 — 결함이 아닌데 결함처럼 읽혔다(09-21 정정).
+                            //   그리고 **스트림별로 갈라** 찍는다 — 되받기는 같은 스트림에 실려야 뜻이 있다
+                            " · 악수(수락 %llu·맵지정 %llu·준비 %llu·신뢰받음 %llu"
+                            "·되받기 %llu[값바뀜 %llu·마지막 %u]·무적건 %llu)"
+                            " · 스트림별(받은신뢰 0:%llu 1:%llu 2:%llu · 보낸신뢰 0:%llu 1:%llu 2:%llu"
+                            " · 보낸비신뢰 0:%llu 1:%llu 2:%llu)"
                             " · 시전거절(죽음 %llu·범위 %llu·안배움 %llu·시전중 %llu·직업 %llu·못씀 %llu→받음 %llu)"
                             // ★ 시전 뒷단 갈래 — 「받음은 있는데 발사가 0」일 때 어디서 새는지 가른다
                             " · 시전뒷단(부름 %llu·잎0 %llu·번호0 %llu·안배움 %llu·커서아군 %llu·막힘 %llu·시전실패 %llu[주먹 중복 %llu·안보임 %llu])"
@@ -1974,7 +1981,11 @@ int main(int argc, char** argv) {
                             srv.moves(), srv.melees(), srv.code6Seen(),
                             nSpell, srv.spellsNoMana(), srv.missiles(), srv.missilesMade(), srv.missilesGone(), srv.missileEntriesSent(), srv.hurts(), srv.aliasHeard(), modeInfo,
                             srv.acceptHeard(), srv.useMapSent(), srv.readyHeard(), srv.reliableHeard(),
-                            srv.ackSeqApplied(), srv.ackSeqDiffer(), srv.spawnInvulnApplied(),
+                            srv.ackSeqApplied(), srv.ackSeqChanged(),
+                            static_cast<unsigned>(srv.ackLastSent()), srv.spawnInvulnApplied(),
+                            srv.recvReliableOn(0), srv.recvReliableOn(1), srv.recvReliableOn(2),
+                            srv.sendReliableOn(0), srv.sendReliableOn(1), srv.sendReliableOn(2),
+                            srv.sendPlainOn(0), srv.sendPlainOn(1), srv.sendPlainOn(2),
                             srv.castRejDead(), srv.castRejRange(), srv.castRejUnknown(),
                             srv.castRejBusy(), srv.castRejClass(), srv.castRejCant(), srv.castAccepted(),
                             srv.spellPlayerCalls(), srv.spellLeafZero(), srv.spellIndZero(), srv.spellNotLearned(),
