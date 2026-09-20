@@ -7715,16 +7715,18 @@ void TestBlink() {
     }
 
     // ② 길목이 없으면 **시작 지점**으로 간다
+    //   (여기도 ① 과 같은 까닭으로 **비대칭 자리**를 쓴다 — 시작 지점 갈래는 그릇이 따로라 따로 본다)
     {
         nox::Server srv; mk(srv);
-        srv.SetPlayerStarts({ { 2500.0f, 2500.0f } });
+        srv.SetPlayerStarts({ { 2500.0f, 2100.0f } });
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 4, true, ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.XOf(a) > 2400 && srv.XOf(a) < 2600, "길목이 없는데 시작 지점으로 안 갔다");
+        Check(srv.XOf(a) > 2400 && srv.XOf(a) < 2600, "길목이 없는데 시작 지점으로 안 갔다(가로)");
+        Check(srv.YOf(a) > 2000 && srv.YOf(a) < 2200, "시작 지점의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
     }
 
     // ③ **닻(버프 14)** 이면 못 옮긴다
