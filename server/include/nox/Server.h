@@ -1360,6 +1360,10 @@ public:
     void SetDebugTeamEvery(uint32_t ticks) { debugTeamEvery_ = ticks; }
     void SetDebugScore(uint32_t ticks, uint32_t val) { debugScoreAfter_ = ticks; debugScoreVal_ = val; }
     void SetDebugKill(uint32_t ticks) { debugKillAfter_ = ticks; }
+    // ★ 09-20 진단 `--debug-fist N dx dy` — **서버가 직접** 첫 사람 자리에서 (dx,dy) 만큼 떨어진 곳에
+    //   주먹을 떨어뜨린다. 클라로 시키면 시전 시각(접속 뒤 25초 + 주기)·벽·자기 피해 때문에 헛돈다(09-20 여덟 번).
+    //   서버가 틱을 정해 쏘면 **녹화 시각을 그 틱에 맞출 수 있다**
+    void SetDebugFist(uint32_t ticks, int dx, int dy) { debugFistAfter_ = ticks; debugFistDx_ = dx; debugFistDy_ = dy; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 경험치를 한 번 준다. 0 이면 끔.
     //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
     //   ④대기 ⑨ 「HUD 경험치 막대가 차오르나」를 정품 화면으로 보려면 줄 길이 있어야 한다.
@@ -3770,6 +3774,9 @@ private:
     uint32_t debugTeamEvery_ = 0;     // 진단 --debug-team-every — N틱마다 팀을 1↔2 로 오간다 (0 끔)
     // ★ 09-19 `--debug-score N 점수` — 판 끝 사슬을 보려고 점수를 직접 준다(까닭은 구현부 주석)
     // ★ 09-19 `--debug-kill N` — N틱 뒤 첫 사람이 둘째를 죽인 것으로 친다(까닭은 구현부 주석)
+    uint32_t debugFistAfter_ = 0;
+    int debugFistDx_ = 40, debugFistDy_ = 0;
+    bool debugFistDone_ = false;
     uint32_t debugKillAfter_ = 0;
     bool     debugKillDone_ = false;
     uint32_t debugScoreAfter_ = 0;

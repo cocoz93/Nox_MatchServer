@@ -214,6 +214,7 @@ int main(int argc, char** argv) {
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     int debugTeamEvery = 0;         // 진단 — N틱마다 팀을 1↔2 로 오간다 (0 끔)
+    int debugFistAfter = 0, debugFistDx = 40, debugFistDy = 0;
     int debugKillAfter = 0;         // 진단 — N틱 뒤 첫 사람이 둘째를 죽인다 (0 끔)
     int debugScoreAfter = 0;        // 진단 — N틱 뒤 첫 사람 점수를 올린다 (0 끔)
     int debugScoreVal = 0;
@@ -449,6 +450,11 @@ int main(int argc, char** argv) {
             // 진단 — 빈 캐릭터 색을 정품 녹음 실측값으로 메운다(기본 끔).
             //   ⚠ 켜면 **살색 피부가 드러나 정답지와 달라진다**(09-19 화면 대조)
             nox::fillColorsOn = true;
+        } else if (a == "--debug-fist" && i + 3 < argc) {
+            // 진단 — N틱 뒤 **서버가 직접** 첫 사람 자리 + (dx,dy) 에 주먹을 떨어뜨린다(⑰ 촬영용)
+            debugFistAfter = std::atoi(argv[++i]);
+            debugFistDx = std::atoi(argv[++i]);
+            debugFistDy = std::atoi(argv[++i]);
         } else if (a == "--debug-kill" && i + 1 < argc) {
             // 진단 — N틱 뒤 첫 사람이 둘째를 죽인 것으로 친다(킬→점수→판끝 사슬 확인용)
             debugKillAfter = std::atoi(argv[++i]);
@@ -1214,6 +1220,7 @@ int main(int argc, char** argv) {
         }
         if (debugKillAfter > 0) {
             srv.SetDebugKill(static_cast<uint32_t>(debugKillAfter));
+            if (debugFistAfter > 0) srv.SetDebugFist(static_cast<uint32_t>(debugFistAfter), debugFistDx, debugFistDy);
             std::printf("[진단스위치] %d 틱 뒤 첫 사람이 둘째를 죽인다\n", debugKillAfter);
         }
         if (debugScoreAfter > 0) {

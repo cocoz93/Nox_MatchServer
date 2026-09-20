@@ -12503,6 +12503,25 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
     }
 
+    // ★★★ 09-20 진단 `--debug-fist N dx dy` — **서버가 직접 주먹을 떨어뜨린다**(⑰).
+    //   클라로 시키면 시전 시각(접속 뒤 25초+주기)·벽·자기 피해 때문에 여덟 번 헛돌았다.
+    //   여기서 쏘면 **틱이 정해져 있어** 녹화를 그 시각에 맞출 수 있다
+    if (debugFistAfter_ > 0 && !debugFistDone_ && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugFistAfter_) {
+        for (auto& kv : sessions_) {
+            Session& o = kv.second;
+            if (!o.inGame || o.observer || o.respawnAtFrame != 0) continue;
+            SpellArg arg{};
+            arg.x = static_cast<float>(o.posX) + static_cast<float>(debugFistDx_);
+            arg.y = static_cast<float>(o.posY) + static_cast<float>(debugFistDy_);
+            const int r = CastFist(o, arg, /*lvl=*/3, out);
+            std::printf("[진단] 프레임 %u 주먹 — 사람 %.0f,%.0f → 자리 %.0f,%.0f · 결과 %d(1이면 떴다)\n",
+                        frame_, o.posX, o.posY, arg.x, arg.y, r);
+            std::fflush(stdout);
+            debugFistDone_ = true;
+            break;
+        }
+    }
     // ★★★ 09-19 진단 `--debug-score N 점수` — **첫 사람의 점수를 한 번 올린다.**
     //   왜 — 판 끝은 점수가 `limitValue`(기본 **15** 킬)에 닿아야 서는데(`Server.cpp:1405`),
     //   무인으로는 15킬을 못 낸다(조준이 안 되고, 덫에 죽는 것은 점수가 아니다).
