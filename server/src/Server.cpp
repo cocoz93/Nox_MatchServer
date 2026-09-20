@@ -12645,6 +12645,17 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             break;
         }
     }
+    // ★★★ 09-20 진단 `--debug-mob N <종류> <x> <y>` — **그 자리에 맵 몬스터 하나를 세운다.**
+    //   퀘스트 스폰은 사람 자리 기준이라 ⑮ 를 화면으로 못 봤다(세 번 실패). 자리를 못 박는다
+    if (debugMobAfter_ > 0 && !debugMobDone_ && debugMobType_ != 0 && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugMobAfter_) {
+        const size_t before = pets_.size();
+        SpawnCreature(debugMobType_, static_cast<float>(debugMobX_), static_cast<float>(debugMobY_), std::string());
+        std::printf("[진단] 프레임 %u 몬스터 %u 를 %d,%d 에 세움 — 크리처 %zu → %zu\n",
+                    frame_, static_cast<unsigned>(debugMobType_), debugMobX_, debugMobY_, before, pets_.size());
+        std::fflush(stdout);
+        debugMobDone_ = true;
+    }
     // ★★★ 09-20 진단 `--debug-wall N gx gy` — **그 칸의 비밀벽을 연다.**
     //   비밀벽은 다가가서 열리는 것이 아니다(깃발 4·8 이 0 이면 각본만 연다). 「클라가 그려 주나」만 본다
     if (debugWallAfter_ > 0 && !debugWallDone_ && firstInGameFrame_ != 0 &&

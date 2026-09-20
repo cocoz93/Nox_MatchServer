@@ -1393,6 +1393,14 @@ public:
     //   적이 15 까지 다가와도 **한 칸도 안 움직인다**(09-20 실측 50표본). ⑥ 「벽을 돌아가나」를
     //   보려면 **사냥(5)** 을 줘야 한다. 2 가만히 · 3 지켜 · 4 따라와 · 5 사냥
     void SetDebugPetOrder(uint8_t order) { debugPetOrder_ = order; }
+    // ★ 09-20 진단 `--debug-mob N <종류> <x> <y>` — **N 틱 뒤 그 자리에 맵 몬스터 하나를 세운다.**
+    //   왜 — ⑮ 「덫이 몬스터를 죽이나」를 **화면으로** 보려면 몬스터가 **덫 선 위**에 있어야 하는데,
+    //   퀘스트 스폰은 **사람 자리를 기준**으로 잡혀서 늘 사람 옆에 나온다. 그러면 몬스터가 사람에게
+    //   달라붙어 화면이 사람을 따라 흔들리고, 죽는 순간을 못 찍는다(09-20 에 **세 번** 실패).
+    //   ⚠ 주인을 비워 만든다 — 그래야 **맵 몬스터**로 취급되어 덫 화살이 적으로 본다(⑮ 편 거르기)
+    void SetDebugMob(uint32_t ticks, uint16_t type, int x, int y) {
+        debugMobAfter_ = ticks; debugMobType_ = type; debugMobX_ = x; debugMobY_ = y;
+    }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 경험치를 한 번 준다. 0 이면 끔.
     //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
     //   ④대기 ⑨ 「HUD 경험치 막대가 차오르나」를 정품 화면으로 보려면 줄 길이 있어야 한다.
@@ -3835,6 +3843,10 @@ private:
     int debugWallGx_ = 0, debugWallGy_ = 0;
     bool debugWallDone_ = false;
     uint8_t debugPetOrder_ = 0;                 // 진단 --debug-pet-order (0 끔)
+    uint32_t debugMobAfter_ = 0;                // 진단 --debug-mob (0 끔)
+    uint16_t debugMobType_ = 0;
+    int debugMobX_ = 0, debugMobY_ = 0;
+    bool debugMobDone_ = false;
     uint32_t debugKillAfter_ = 0;
     bool     debugKillDone_ = false;
     uint32_t debugScoreAfter_ = 0;

@@ -215,6 +215,7 @@ int main(int argc, char** argv) {
     bool autoRespawn = false;       // 자동 부활(정답지 기본 꺼짐)
     int debugOwnPet = 0;            // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 소유 임프를 사람 자리에 고정 (0 끔)
     int debugPetOrder = 0;          // 진단 --debug-pet-order (0 끔 · 5 사냥)
+    int debugMobAfter = 0, debugMobType = 0, debugMobX = 0, debugMobY = 0;   // 진단 --debug-mob
     int debugTeamAfter = 0;         // 진단 — 첫 사람 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꿈 (0 끔)
     int debugTeamEvery = 0;         // 진단 — N틱마다 팀을 1↔2 로 오간다 (0 끔)
     int debugFistAfter = 0, debugFistDx = 40, debugFistDy = 0;
@@ -464,6 +465,13 @@ int main(int argc, char** argv) {
             debugFistAfter = std::atoi(argv[++i]);
             debugFistDx = std::atoi(argv[++i]);
             debugFistDy = std::atoi(argv[++i]);
+        } else if (a == "--debug-mob" && i + 4 < argc) {
+            // 진단 — N틱 뒤 그 자리에 맵 몬스터 하나(종류 와이어 · 예 1358 거머리)를 세운다(⑮ 촬영용).
+            //   ⚠ 퀘스트 스폰은 **사람 자리 기준**이라 몬스터가 사람에게 붙는다 — 이건 자리를 못 박는다
+            debugMobAfter = std::atoi(argv[++i]);
+            debugMobType = std::atoi(argv[++i]);
+            debugMobX = std::atoi(argv[++i]);
+            debugMobY = std::atoi(argv[++i]);
         } else if (a == "--debug-wall" && i + 3 < argc) {
             // 진단 — N틱 뒤 그 **칸**(gx,gy)의 비밀벽을 연다(9-a — 클라가 그려 주나만 본다)
             debugWallAfter = std::atoi(argv[++i]);
@@ -827,9 +835,19 @@ int main(int argc, char** argv) {
                     //   「겨눈 덫 0」이 나왔을 때 「덫이 안 도는 것」과 「사람이 사정거리
                     //   밖인 것」을 못 가른다. 좌표가 있어야 갈린다(덫 사정 ±350).
                     //   앞 여덟만 — 100개를 다 찍으면 로그가 읽히지 않는다.
+                    // ★ 09-20 ⑮ — **방향도 찍는다.** 덫은 겨눈 뒤 **제 방향으로만** 쏜다
+                    //   (`TrapShoot` — 대상 쪽이 아니다). 화살 선 위에 세우려면 방향이 있어야 한다.
+                    //   앞 여덟만 — 100개를 다 찍으면 로그가 안 읽힌다
                     std::printf("[덫 자리]");
-                    for (const auto& tr : traps)
-                        std::printf(" %d,%d", static_cast<int>(tr.x), static_cast<int>(tr.y));
+                    {
+                        size_t k = 0;
+                        for (const auto& tr : traps) {
+                            if (k < 8) std::printf(" %d,%d(방향%u)", static_cast<int>(tr.x), static_cast<int>(tr.y),
+                                                   static_cast<unsigned>(tr.facing));
+                            else std::printf(" %d,%d", static_cast<int>(tr.x), static_cast<int>(tr.y));
+                            ++k;
+                        }
+                    }
                     std::printf("\n");
                 }
                 srv.SetShootingTraps(traps);
@@ -1384,6 +1402,13 @@ int main(int argc, char** argv) {
             srv.SetDebugFist(static_cast<uint32_t>(debugFistAfter), debugFistDx, debugFistDy);
             std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주먹을 그 사람 +(%d,%d) 에 떨어뜨린다\n",
                         debugFistAfter, debugFistDx, debugFistDy);
+            std::fflush(stdout);
+        }
+        if (debugMobAfter > 0 && debugMobType > 0) {
+            srv.SetDebugMob(static_cast<uint32_t>(debugMobAfter), static_cast<uint16_t>(debugMobType),
+                            debugMobX, debugMobY);
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 몬스터 %d 를 %d,%d 에 세운다\n",
+                        debugMobAfter, debugMobType, debugMobX, debugMobY);
             std::fflush(stdout);
         }
         if (debugWallAfter > 0) {
