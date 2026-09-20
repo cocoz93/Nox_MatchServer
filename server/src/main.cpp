@@ -855,9 +855,18 @@ int main(int argc, char** argv) {
             // ★ 4-e — 맵 길목(WayPoints). 점멸이 여기서 목적지를 고른다.
             //   `flags2 & 0x80`(오가는 이음이 있음) 이고 `flags & 1`(켜짐)인 것만.
             {
+                const auto allWps = mf.ReadWaypoints();
                 std::vector<std::pair<float, float>> wps;
-                for (const auto& w : mf.ReadWaypoints())
+                for (const auto& w : allWps)
                     if ((w.flags2 & 0x80) && (w.flags & 1)) wps.push_back({ w.x, w.y });
+                // ★ 09-20 묶음 6-j(1) — **이음을 세어 찍는다.** 떠돌기가 다음 길목을 고르는 밑천이라
+                //   「0 이면 못 고른다」가 바로 보여야 한다. 막다른 길(나가는 이음 0)도 같이 센다
+                {
+                    size_t linkN = 0, deadEnd = 0;
+                    for (const auto& w : allWps) { linkN += w.links.size(); if (w.links.empty()) ++deadEnd; }
+                    std::printf("[길목 이음] 길목 %zu개 · 나가는 이음 %zu개 · 막다른 길 %zu개\n",
+                                allWps.size(), linkN, deadEnd);
+                }
                 std::printf("[길목] 점멸이 고를 수 있는 곳 %zu곳 —", wps.size());
                 // ★ 09-20 — **좌표도 찍는다.** 길목은 맵 제작자가 「걸을 수 있다」고 찍어 둔 자리라
                 //   화면 판정에서 **설 자리**로 쓸 수 있다(`CanStand` 는 벽만 보고 바닥은 못 본다)

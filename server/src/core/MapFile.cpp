@@ -130,9 +130,8 @@ std::vector<MapWaypoint> MapFile::ReadWaypoints() {
     if (bad || vers > 4) { error_ = "waypoint vers " + std::to_string(vers); return out; }
     const uint32_t cnt = u32v();
     if (bad) return out;
-    // 이음은 뒤에서 OR 해야 하니 한 번 담아 둔다
-    struct Link { uint32_t from; uint32_t to; uint8_t flag; };
-    std::vector<Link> links;
+    // ★ 09-20 묶음 6-j(1) — 이음을 **길목마다 남긴다**(전에는 OR 만 하고 버렸다).
+    //   떠돌기가 「다음 길목」을 고르는 데 쓴다(`sub_545C60`).
     for (uint32_t i = 0; i < cnt && !bad; ++i) {
         MapWaypoint w;
         w.id = u32v();
@@ -146,20 +145,22 @@ std::vector<MapWaypoint> MapFile::ReadWaypoints() {
         w.flags = u32v();
         const uint32_t nlink = (vers < 4) ? u32v() : u8v();
         for (uint32_t k = 0; k < nlink && !bad; ++k) {
-            Link l;
-            l.from = w.id;
+            MapWaypointLink l;
             l.to = u32v();
             l.flag = (vers >= 2) ? u8v() : static_cast<uint8_t>(2);
-            links.push_back(l);
+            w.links.push_back(l);
         }
         if (bad) break;
-        out.push_back(w);
+        out.push_back(std::move(w));
     }
     if (bad) { error_ = "waypoint underrun"; out.clear(); return out; }
-    // Sub_579A30 — 오가는 이음깃발을 전부 OR
-    for (const auto& l : links) {
-        for (auto& w : out) {
-            if (w.id == l.from || w.id == l.to) w.flags2 = static_cast<uint8_t>(w.flags2 | l.flag);
+    // Sub_579A30 — 오가는 이음깃발을 전부 OR (`server/waypoint.go:47`)
+    //   나가는 쪽(`wp.Points`)과 **나를 가리키는 쪽**을 둘 다 센다. 이음 자체는 단방향으로 남는다
+    for (const auto& src : out) {
+        for (const auto& l : src.links) {
+            for (auto& w : out) {
+                if (w.id == src.id || w.id == l.to) w.flags2 = static_cast<uint8_t>(w.flags2 | l.flag);
+            }
         }
     }
     return out;

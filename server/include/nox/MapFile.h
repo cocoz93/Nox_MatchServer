@@ -33,11 +33,25 @@ struct MapSection {
 //   }
 // ★ `flags2` 는 파일에 없다 — **오가는 이음깃발을 전부 OR** 한 값이다(`Sub_579A30`).
 //   점멸은 `flags2 & 0x80` 이고 `flags & 1` 인 길목만 고른다.
+//
+// ★★ 09-20 묶음 6-j(1) — **이음 목록을 버리지 않고 남긴다.**
+//   전에는 `flags2` 를 OR 하려고 훑기만 하고 버렸다. 그래서 떠돌기가 **다음 길목을 못 골라**
+//   첫 길목에 갇혔다(⑥ 벽 우회가 막힌 뿌리 · 확인표 판 E).
+// ⚠ 이음은 **단방향**이다 — 파일에도, 정답지 메모리에도 「나가는 것」만 담긴다
+//   (`server/waypoint.go:47 Sub_579A30` 은 **깃발만** 양쪽으로 OR 하고 `Points` 는 안 건드린다).
+//   그러니 이음이 없는 길목은 **막다른 길**이고, 정답지도 거기서 떠돌기를 접는다
+//   (`monsterRoamDeadEnd_545BB0` 의 "Reached dead end, giving up").
+struct MapWaypointLink {
+    uint32_t to = 0;      // 상대 길목 **번호**(자리 번호가 아니다)
+    uint8_t flag = 0;     // 이음깃발 — 판<2 면 2
+};
+
 struct MapWaypoint {
     uint32_t id = 0;
     float x = 0, y = 0;
     uint32_t flags = 0;
     uint8_t flags2 = 0;   // 오가는 이음깃발의 OR
+    std::vector<MapWaypointLink> links;   // **나가는** 이음만
 };
 
 // 맵에 놓인 오브젝트 하나 — 서버가 세계를 세우는 데 필요한 것만.
