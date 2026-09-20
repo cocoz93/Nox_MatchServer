@@ -16422,11 +16422,14 @@ void TestPressurePlate() {
     //   (정답지 `updateTrigger_53B1B0` · `PressurePlate` 는 기다리는 값이 0 이라 **한 틱**이면 된다)
     uint32_t ms = 0;
     auto step = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) { ms += 34; srv.Tick(ms, out); };
+    // ★ 09-20 ⑩ — 번호에 **윗비트(0x8000)** 가 서 있어야 한다. 안 서면 클라가 동적 목록을
+    //   뒤지다 못 찾고 조용히 버린다(실측 — 클라 진단 「그림 못 찾음」). 밟는 판은 IMMOBILE 이라 정적이다
+    const uint16_t kPlateWire = static_cast<uint16_t>(kPlate | 0x8000u);
     auto find = [&](const std::vector<nox::OutPacket>& out, uint8_t* val) {
         size_t n = 0;
         for (const auto& x : FlattenTo(out, a))
             if (x.size() == 4 && x[0] == static_cast<uint8_t>(nox::Op::PENTAGRAM_ACTIVATE) &&
-                (x[1] | (x[2] << 8)) == kPlate) {
+                (x[1] | (x[2] << 8)) == kPlateWire) {
                 ++n;
                 if (val) *val = x[3];
             }

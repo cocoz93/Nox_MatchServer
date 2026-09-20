@@ -687,6 +687,7 @@ int main(int argc, char** argv) {
             }
             std::vector<nox::Server::WorldStatic> st;
             std::vector<nox::Server::WorldProp> props;
+            size_t propExtentTooBig = 0;   // ⑩ extent 가 15비트를 넘는 것(정적 조회로 못 가리킨다)
             const auto objs = mf.ReadObjects();
             if (!mf.Error().empty())
                 std::printf("[맵] ⚠ 오브젝트 읽기가 도중에 멈춤: %s — 읽은 %zu개만 쓴다\n", mf.Error().c_str(), objs.size());
@@ -810,7 +811,14 @@ int main(int argc, char** argv) {
                     const bool isPlate = (objs[i].type == "PressurePlate");
                     if (isDoor || isObelisk || isPlate) {
                         nox::Server::WorldProp wp;
-                        wp.netCode = static_cast<uint16_t>(i + 75);
+                        // ★★ 09-20 ⑩ — **번호는 맵의 `extent` 다.** 지어내면 클라가 못 찾는다.
+                        //   클라는 이 물건들을 **맵 파일에서 제가 만들고**(`GAME3.c:3516`
+                        //   `clientLoadSomeObject_4AC6E0`), 그때 `Drawable+128`(= `NetCode32`) 에
+                        //   **오브젝트 기록의 첫 u32 = extent** 를 넣는다(`GAME3.c:3370~3380`).
+                        //   전에는 `i + 75` 를 썼다 — 실측으로 클라가 **「그림 못 찾음」** 이었다.
+                        //   ⚠ 정적 조회는 **15비트**(`code & 0x7FFF`)라 그 위는 못 가리킨다
+                        if (objs[i].extent > 0x7FFFu) ++propExtentTooBig;
+                        wp.netCode = static_cast<uint16_t>(objs[i].extent & 0x7FFFu);
                         wp.type = wire;
                         wp.x = static_cast<int>(objs[i].x);
                         wp.y = static_cast<int>(objs[i].y);
@@ -1050,11 +1058,16 @@ int main(int argc, char** argv) {
                     for (const auto& w : props) {
                         if (w.kind != nox::PropKind::Plate) continue;
                         if (nPlate == 0) std::printf("[밟는 판 자리]");
-                        if (nPlate < 8) std::printf(" (%d,%d)", static_cast<int>(w.x), static_cast<int>(w.y));
+                        if (nPlate < 8) std::printf(" (%d,%d 번호%u)", static_cast<int>(w.x), static_cast<int>(w.y),
+                                                    static_cast<unsigned>(w.netCode));
                         ++nPlate;
                     }
                     if (nPlate) std::printf("  — 모두 %zu개\n", nPlate);
                 }
+                // ⑩ — 번호가 15비트를 넘으면 클라 정적 조회로 못 가리킨다. **0 이 아니면 알린다**
+                if (propExtentTooBig)
+                    std::printf("[판·문 번호] ⚠ extent 가 15비트를 넘는 것 %zu개 — 그것들은 클라가 못 찾는다\n",
+                                propExtentTooBig);
                 srv.SetWorldProps(std::move(props));
             }
 

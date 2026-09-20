@@ -1867,9 +1867,15 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             //   ⇒ 정품 화면(④)에서 판이 깜빡이지 않는지 볼 것
             // ⚠ 문 갈래와 같이 **바뀔 때만** 보낸다(정답지는 더러움 비트라 같은 값도 다시 간다)
             if (p.animFrame != before) {
+                // ★★ 09-20 ⑩ — **윗비트(0x8000)를 세운다.** 클라는 이 비트로 «맵에서 제가 만든
+                //   정적 그림»(`ByNetCodeStatic`)과 «서버가 소개한 동적 그림»을 가른다
+                //   (`client/drawable.go:378~403` — 가르는 값은 `Class() & 0x20400000`).
+                //   밟는 판은 `CLASS = TRIGGER+IMMOBILE` 이라 **정적** 쪽이다.
+                //   안 세우면 동적 쪽을 뒤지다 못 찾고 **조용히 버린다**(실측 — 클라 로그 「그림 못 찾음」)
+                const uint16_t nc = static_cast<uint16_t>(p.netCode | 0x8000u);
                 const uint8_t msg[4] = { static_cast<uint8_t>(Op::PENTAGRAM_ACTIVATE),
-                                         static_cast<uint8_t>(p.netCode),
-                                         static_cast<uint8_t>(p.netCode >> 8),
+                                         static_cast<uint8_t>(nc),
+                                         static_cast<uint8_t>(nc >> 8),
                                          p.animFrame };
                 Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);
                 if (p.animFrame) ++plateOn_; else ++plateOff_;
