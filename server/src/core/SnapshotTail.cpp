@@ -45,7 +45,7 @@ void PushRaw(std::vector<uint8_t>& m, const uint8_t* body, size_t n) {
 }  // namespace
 
 std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame,
-                                       uint32_t enchantBits) {
+                                       uint32_t enchantBits, const std::string& mapName) {
     std::vector<uint8_t> m;
     m.reserve(400);
     uint16_t seq = 0;
@@ -76,15 +76,25 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t
         const uint8_t ea[5] = { 0xea, static_cast<uint8_t>(eaFrame), static_cast<uint8_t>(eaFrame >> 8),
                                 static_cast<uint8_t>(eaFrame >> 16), static_cast<uint8_t>(eaFrame >> 24) };
         PushSeq(m, seq, ea, 5);
-        // b1 — 새 판 알림. 01 + 맵이름 "estate"(13B 칸) + 방이름 "r Game"? …
-        //   실측 원바이트 그대로. "estate" 뒤 채움과 "r Game" 의 정체는 미상 —
-        //   (b0 의 "User Game" 에서 앞 셋이 잘려 보이는 꼴이지만 확증 없음)
-        const uint8_t b1[60] = {
+        // b1 — 새 판 알림. 01 + 맵이름(12B 칸) + 방이름 "r Game"? …
+        //   클라는 `data+2` 부터 **58바이트를 게임설정 칸에 통째로 복사**한다
+        //   (`cdecode.c:2180` `memcpy(v39, data+2, 0x3A)`) — 로비·GUI 가 그걸 읽는다.
+        // ★★ 09-20 — **맵 이름이 `"estate"` 로 박혀 있었다.** 녹음이 estate 판이었을 뿐인데
+        //   G_Castle·G_Temple 에서도 클라에 「estate」라고 말하고 있었다.
+        //   무적 비트(`5a`)와 **같은 꼴의 결함**이다 — 녹음본 값을 사람·판 상태 칸에 박아 둔 것.
+        //   ⇒ **지금 맵 이름**을 싣는다. 12바이트 칸이고 남는 자리는 0 이다
+        //   ⚠ "r Game" 과 뒤쪽 `ff…`·`07 21 0f` 는 **여전히 뜻 미상**이라 실측 그대로 둔다
+        uint8_t b1[60] = {
             0xb1, 0x01, 0x65, 0x73, 0x74, 0x61, 0x74, 0x65, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x72, 0x20, 0x47, 0x61, 0x6d, 0x65, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
             0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x07, 0x21, 0x0f, 0x00, 0x00, 0x00 };
+        if (!mapName.empty()) {
+            std::memset(b1 + 2, 0, 12);
+            const size_t n = mapName.size() < 12 ? mapName.size() : 12;
+            std::memcpy(b1 + 2, mapName.data(), n);
+        }
         PushSeq(m, seq, b1, 60);
     }
     // 페이드 인 — 낱으로 하나, cc(#0)로 하나. 실측 순서 그대로.

@@ -109,7 +109,9 @@ extern bool fillColorsOn;
 //   클라는 이 프레임보다 오래 안 본 정적 그림을 지운다(sub_45A670) — 받는 사람의 지금 프레임을 넣을 것.
 // ⚠ `enchantBits` 는 **그 사람의 지금 버프 비트**다. 전에는 녹음본 값 `0x00800000`(비트 23 무적)을
 //   박아 두어, 클라가 **접속 내내 사람을 무적으로 보고 파란 보호막을 돌렸다**(09-20 실측·고침).
+// ⚠ `mapName` 도 같은 까닭이다 — `b1` 에 녹음본 `"estate"` 가 박혀 있어 **어느 맵에서든 estate 라고**
+//   말하고 있었다(09-20 고침). 비우면 녹음본 값 그대로 간다(바이트 대조 시험용).
 std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame,
-                                       uint32_t enchantBits = 0);
+                                       uint32_t enchantBits = 0, const std::string& mapName = std::string());
 
 }  // namespace nox

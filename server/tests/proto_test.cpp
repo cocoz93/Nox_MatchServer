@@ -18862,6 +18862,23 @@ void TestSnapshotTail() {
         Check(d2 == 1, "버프만 0 으로 바꿨는데 다른 자리가 1개가 아니다(꼬리가 버프를 안 싣나)");
         if (d2 == 1) Check(built[at] == 0x80 && zero[at] == 0x00, "다른 한 자리가 버프 비트 자리가 아니다");
     }
+
+    // ★★ 09-20 — **맵 이름이 인자대로 간다**(`b1` 에 `"estate"` 가 박혀 있었다).
+    //   녹음이 estate 판이었을 뿐인데 **어느 맵에서든 estate 라고** 말하고 있었다 — `5a` 무적과 같은 꼴이다.
+    {
+        const std::vector<uint8_t> other = nox::BuildSnapshotTail(713, nox::CharClass::Wizard, 0x4b17, 0x4b1f,
+                                                                  0x00800000u, "g_castle");
+        Check(other.size() == built.size(), "맵 이름을 바꿨는데 꼬리 크기가 달라졌다");
+        // "estate" 가 있던 자리를 찾아 그 12바이트가 "g_castle" 로 바뀌었나
+        size_t at = 0;
+        for (size_t i = 0; i + 6 <= built.size(); ++i)
+            if (std::memcmp(&built[i], "estate", 6) == 0) { at = i; break; }
+        Check(at != 0, "녹음 꼬리에서 \"estate\" 를 못 찾았다(시험 전제)");
+        if (at) {
+            Check(std::memcmp(&other[at], "g_castle", 8) == 0, "맵 이름이 안 실렸다");
+            Check(other[at + 8] == 0 && other[at + 11] == 0, "맵 이름 뒤 남는 자리가 0 이 아니다");
+        }
+    }
 }
 
 void TestWallCollision() {
