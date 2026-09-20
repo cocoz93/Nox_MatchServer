@@ -216,6 +216,7 @@ int main(int argc, char** argv) {
     int debugTeamEvery = 0;         // 진단 — N틱마다 팀을 1↔2 로 오간다 (0 끔)
     int debugFistAfter = 0, debugFistDx = 40, debugFistDy = 0;
     int debugWarpAfter = 0, debugWarpX = 0, debugWarpY = 0;
+    int debugWallAfter = 0, debugWallGx = 0, debugWallGy = 0;
     int debugKillAfter = 0;         // 진단 — N틱 뒤 첫 사람이 둘째를 죽인다 (0 끔)
     int debugScoreAfter = 0;        // 진단 — N틱 뒤 첫 사람 점수를 올린다 (0 끔)
     int debugScoreVal = 0;
@@ -456,6 +457,11 @@ int main(int argc, char** argv) {
             debugFistAfter = std::atoi(argv[++i]);
             debugFistDx = std::atoi(argv[++i]);
             debugFistDy = std::atoi(argv[++i]);
+        } else if (a == "--debug-wall" && i + 3 < argc) {
+            // 진단 — N틱 뒤 그 **칸**(gx,gy)의 비밀벽을 연다(9-a — 클라가 그려 주나만 본다)
+            debugWallAfter = std::atoi(argv[++i]);
+            debugWallGx = std::atoi(argv[++i]);
+            debugWallGy = std::atoi(argv[++i]);
         } else if (a == "--debug-warp" && i + 3 < argc) {
             // 진단 — N틱 뒤 첫 사람을 그 자리로 한 번 옮긴다(문·밟는 판처럼 「다가가야」 보는 것용)
             debugWarpAfter = std::atoi(argv[++i]);
@@ -606,6 +612,29 @@ int main(int argc, char** argv) {
             }
             srv.SetSecretWalls(sw);
             std::printf("[맵] 비밀벽 %zu개 중 벽이 있는 칸 %zu개\n", sec.size(), srv.SecretWallCount());
+            // ★ 09-20 9-a — **세상 좌표**로 앞 8곳을 찍는다. `--spawn-at`·`--debug-warp` 에 넣을 값이다
+            //   (칸 → 세상 = 칸 × 23 + 11.5 · `Server.cpp:8946` 과 같은 셈)
+            if (!sec.empty()) {
+                std::printf("[비밀벽 자리]");
+                for (size_t k = 0; k < sec.size() && k < 8; ++k)
+                    std::printf(" (%d,%d 칸%d,%d)", static_cast<int>(sec[k].gx * 23 + 11),
+                                static_cast<int>(sec[k].gy * 23 + 11),
+                                static_cast<int>(sec[k].gx), static_cast<int>(sec[k].gy));
+                std::printf("  — 모두 %zu곳\n", sec.size());
+                // ★ 09-20 9-a — **스스로 여닫는 벽이 몇이나 되나.** 상태 기계는 깃발 4·8 이 정한다
+                //   (`Server.cpp:8968·8982`). 둘 다 0 이면 **맵 각본이 열어 주기 전엔 아무 일도 안 난다** —
+                //   각본은 플랜 v6 범위 밖이므로 그 맵에서는 9-a 를 걷기로 못 본다
+                size_t f4 = 0, f8 = 0, both = 0, openNow = 0;
+                for (const auto& w : sec) {
+                    if (w.flags & 4) ++f4;
+                    if (w.flags & 8) ++f8;
+                    if ((w.flags & 4) && (w.flags & 8)) ++both;
+                    if (w.state == 2 || w.state == 3) ++openNow;
+                }
+                std::printf("[비밀벽 깃발] 4(스스로 움직임) %zu · 8(열린 채 시작) %zu · 둘 다 %zu · 지금 열림 %zu\n",
+                            f4, f8, both, openNow);
+                std::fflush(stdout);
+            }
         }
         {
             // 벽 재질 깃발 — thing.bin WALL 섹션(0x2 = 막지 않음). 방향이 표(0~10) 밖인 벽 수도 찍는다.
@@ -1253,6 +1282,12 @@ int main(int argc, char** argv) {
             srv.SetDebugFist(static_cast<uint32_t>(debugFistAfter), debugFistDx, debugFistDy);
             std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주먹을 그 사람 +(%d,%d) 에 떨어뜨린다\n",
                         debugFistAfter, debugFistDx, debugFistDy);
+            std::fflush(stdout);
+        }
+        if (debugWallAfter > 0) {
+            srv.SetDebugWall(static_cast<uint32_t>(debugWallAfter), debugWallGx, debugWallGy);
+            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 비밀벽 칸 %d,%d 을 연다\n",
+                        debugWallAfter, debugWallGx, debugWallGy);
             std::fflush(stdout);
         }
         if (debugWarpAfter > 0) {

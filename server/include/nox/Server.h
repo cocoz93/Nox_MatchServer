@@ -1379,6 +1379,12 @@ public:
     //   그리고 우리는 **바뀔 때만** 보내므로 그 창에서 놓친 상태는 영영 다시 안 간다.
     //   서버가 시각을 정하면 「다 들어온 뒤에 다가가기」를 만들 수 있다(⑰ 주먹과 같은 수법).
     void SetDebugWarp(uint32_t ticks, int x, int y) { debugWarpAfter_ = ticks; debugWarpX_ = x; debugWarpY_ = y; }
+    // ★ 09-20 진단 `--debug-wall N gx gy` — **N 틱 뒤 그 칸의 비밀벽을 연다.**
+    //   왜 — 비밀벽은 **다가가서 열리는 것이 아니다.** 상태 기계는 깃발 4·8 이 돌리는데
+    //   G_Castle 254개·G_Temple 73개가 **전부 0** 이다(09-20 실측) — 여는 것은 **맵 각본**이고
+    //   각본은 플랜 v6 범위 밖이다. 그래서 「무엇이 여는가」와 「클라가 그려 주나」를 갈라,
+    //   뒤엣것만 서버가 직접 열어 본다(⑰ 주먹·②⑩ 순간이동과 같은 수법)
+    void SetDebugWall(uint32_t ticks, int gx, int gy) { debugWallAfter_ = ticks; debugWallGx_ = gx; debugWallGy_ = gy; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 경험치를 한 번 준다. 0 이면 끔.
     //   왜 — 경험치는 스크립트·퀘스트가 주는 것이라 아레나에서는 저절로 안 생긴다.
     //   ④대기 ⑨ 「HUD 경험치 막대가 차오르나」를 정품 화면으로 보려면 줄 길이 있어야 한다.
@@ -3813,6 +3819,9 @@ private:
     uint32_t debugWarpAfter_ = 0;               // 진단 --debug-warp (0 끔)
     int debugWarpX_ = 0, debugWarpY_ = 0;
     bool debugWarpDone_ = false;
+    uint32_t debugWallAfter_ = 0;               // 진단 --debug-wall (0 끔)
+    int debugWallGx_ = 0, debugWallGy_ = 0;
+    bool debugWallDone_ = false;
     uint32_t debugKillAfter_ = 0;
     bool     debugKillDone_ = false;
     uint32_t debugScoreAfter_ = 0;

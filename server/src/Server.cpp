@@ -12623,6 +12623,18 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             break;
         }
     }
+    // ★★★ 09-20 진단 `--debug-wall N gx gy` — **그 칸의 비밀벽을 연다.**
+    //   비밀벽은 다가가서 열리는 것이 아니다(깃발 4·8 이 0 이면 각본만 연다). 「클라가 그려 주나」만 본다
+    if (debugWallAfter_ > 0 && !debugWallDone_ && firstInGameFrame_ != 0 &&
+        frame_ >= firstInGameFrame_ + debugWallAfter_) {
+        const int before = SecretWallState(debugWallGx_, debugWallGy_);
+        WallOpen(debugWallGx_, debugWallGy_);
+        const int after = SecretWallState(debugWallGx_, debugWallGy_);
+        std::printf("[진단] 프레임 %u 비밀벽 %d,%d — 상태 %d → %d(4면 여는 중)\n",
+                    frame_, debugWallGx_, debugWallGy_, before, after);
+        std::fflush(stdout);
+        debugWallDone_ = true;
+    }
     // ★★★ 09-19 진단 `--debug-score N 점수` — **첫 사람의 점수를 한 번 올린다.**
     //   왜 — 판 끝은 점수가 `limitValue`(기본 **15** 킬)에 닿아야 서는데(`Server.cpp:1405`),
     //   무인으로는 15킬을 못 낸다(조준이 안 되고, 덫에 죽는 것은 점수가 아니다).
