@@ -778,7 +778,8 @@ constexpr uint32_t kSessionTimeoutTicksInGame = 2700;   // 90초 — 판에 든 
 
 // 판 시계를 얼마마다 뿌리나. 실측 표본은 **2초 남짓 간격**이었다
 // (15:05:08.299 · 10.538 · 12.709 · 14.867 — 2.2초씩). 30Hz 기준 그만큼으로 둔다.
-constexpr uint32_t kTimerEveryTicks = 66;
+// ✖ 09-21 폐기 — 판 시계를 **주기로 보내지 않는다**(정품 덤프·정답지 둘 다 「바뀔 때만」).
+//   근거와 수치는 `Server.cpp` 의 「판 시계」 자리와 `Docs/PROTOCOL.md` 의 09-21 절.
 
 // ── 깃발 (CTF) ──────────────────────────────────────────────
 //
@@ -2138,6 +2139,13 @@ public:
         if (it != sessions_.end()) { it->second.tickFrame = v; it->second.tickFrameSet = true; }
     }
     void DebugSendTimer(std::vector<OutPacket>& out) { SendTimer(out); }
+    // 09-21 — 판 끝 상태를 시험이 직접 뒤집는다(시계가 **바뀔 때만** 나가는지 보려고)
+    void DebugSetRoundOver(bool v) { roundOver_ = v; }
+    // 09-21 — 그 사람이 믿고 있는 시계(와이어 도장과 견주려고)
+    uint32_t DebugTickFrame(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? 0 : ClockOf(it->second);
+    }
     // 묶음 6-j(2) — 떠돌기가 **지금 고른 길목 번호**. 기억이 서는지 시험이 직접 본다
     uint32_t DebugAIArgWp(size_t i, int j) const {
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argWp : 0;
@@ -4167,7 +4175,7 @@ private:
     std::vector<BallGoal> goals_;
     std::vector<std::pair<double, double>> ballStarts_;
     bool roundOver_ = false;
-    uint32_t nextTimerFrame_ = 0;
+    bool timerLastRoundOver_ = false;   // 09-21 — 판 끝 상태가 **바뀐 틱**에만 시계를 보낸다
     std::vector<Flag> flags_;
     uint16_t caps_[3] = {0, 0, 0};   // 팀별 득점 (1·2 만 쓴다)
     int questTotal_ = 0;

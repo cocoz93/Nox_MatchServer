@@ -19772,13 +19772,33 @@ void TestArena() {
     }
 
     // ④ 판 시계 — 짜임이 실측 표본과 같은가
+    //
+    // ★★ 09-21 — **주기로 보내지 않는다.** 정품 덤프 31분에 46건이고 그중 44가 마지막 2분에 몰려 있다
+    // (`Docs/PROTOCOL.md` 09-21 절). 정답지도 「시계 상태가 바뀔 때」 한 번이다(`GAME1.c:257`).
+    // 그래서 이 시험은 **판 끝 상태를 뒤집어** 한 번 나오게 한 뒤 짜임을 본다.
     {
         nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
+        // ⚠ 시각은 **늘 앞으로만** 준다 — 뒤로 주면 틱이 0 개라 아무 일도 안 일어난다(09-21 에 당함)
+        uint32_t ms = 33;
+        // ⓐ 가만히 두면 **한 건도 안 나간다** — 주기 발송이 살아 있으면 여기서 걸린다
+        {
+            std::vector<nox::OutPacket> quiet;
+            for (int i = 0; i < 200; ++i) { ms += 33; srv.Tick(ms, quiet); }   // 200틱 ≈ 6.6초
+            int n = 0;
+            for (const auto& q : quiet) {
+                auto body = Body(q);
+                if (body.size() >= 5 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) &&
+                    body[4] == static_cast<uint8_t>(nox::Op::TIMER_STATUS)) ++n;
+            }
+            Check(n == 0, "아무 일도 없는데 판 시계가 나갔다 — 주기 발송이 아직 산다");
+        }
         out.clear();
-        srv.Tick(33 * 100, out);
+        srv.DebugSetRoundOver(true);           // ⓑ 판이 끝났다 — 이 틱에 한 번 나가야 한다
+        ms += 33;
+        srv.Tick(ms, out);
 
         const std::vector<uint8_t>* timer = nullptr;
         std::vector<uint8_t> inner;
@@ -19801,7 +19821,21 @@ void TestArena() {
                 (static_cast<uint32_t>((*timer)[8]) << 24));
             const uint32_t tick = (*timer)[9] | ((*timer)[10] << 8) | ((*timer)[11] << 16) |
                                   (static_cast<uint32_t>((*timer)[12]) << 24);
-            Check(tick == srv.frame(), "0xd3 의 틱이 지금 틱이 아님");
+            // ✖ 09-21 정정 — 전에는 **전역 프레임**과 견줬다. 도장은 **받는 사람의 시계** 쪽이어야 한다.
+            //
+            // ★ 다만 「딱 같아야 한다」도 틀리다 — 보내는 자리가 시계 증가(`++s.tickFrame`)보다
+            //   **앞**이라 도장은 늘 **1 뒤**다. 그래서 **클라가 실제로 보는 규칙**을 그대로 시험한다:
+            //       클라 (`cdecode.c:2638`)  if ((unsigned)(제 시계 − 도장) >= 30) → 다시 묻는다
+            //   **부호 없는 뺄셈**이라 도장이 **앞서면**(음수 → 40억) 곧바로 「낡았다」가 되어 무한 되풀이.
+            //   ⇒ 봐야 할 것은 ① 앞서지 않는가 ② 30 틱 넘게 뒤처지지 않는가, 둘이다.
+            const uint32_t clock = srv.DebugTickFrame(a);
+            const uint32_t gap = clock - tick;              // 클라와 같은 셈(부호 없음)
+            if (gap >= 30)
+                std::printf("  [시계] 도장 %u · 그 사람 시계 %u · 차 %u · 전역 %u\n",
+                            tick, clock, gap, srv.frame());
+            Check(gap < 30, "0xd3 의 도장이 클라 기준으로 낡았다 — 앞서 있거나 30틱 넘게 뒤처졌다");
+            Check(tick != srv.frame() || clock == srv.frame(),
+                  "도장이 전역 프레임을 찍고 있다 — 그 사람 시계여야 한다");
             Check(remain < 0, "한도가 없는데 남은 시간이 음수가 아님");
             // 실측에서 (남은시간 / 틱) 이 −35.6 근처였다. 우리 것도 그 언저리여야 한다
             const double ratio = static_cast<double>(remain) / static_cast<double>(tick ? tick : 1);

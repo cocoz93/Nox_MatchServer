@@ -13053,9 +13053,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         if (questStage_ < kQuestStageCount) SendNotice(kQuestStages[questStage_].label, out);
     }
 
-    // 판 시계 — 실측 간격이 2초 남짓이었다.
-    if (frame_ >= nextTimerFrame_) {
-        nextTimerFrame_ = frame_ + kTimerEveryTicks;
+    // ── 판 시계 `d3` — **주기가 아니라 「바뀔 때」 보낸다** (09-21 정정) ──────────
+    //
+    // ✖ 전에는 66틱(2.2초)마다 보냈고 주석에 「실측 간격이 2초 남짓」이라고 적어 뒀는데 **근거가 없었다.**
+    //   `nox_opcount` 로 09-06 정품 덤프(31분)를 시간 창으로 갈라 세니 —
+    //       14:36~14:41  d3 2 · 14:46~14:51  d3 1(클라 요청 d4 는 254) · 중간 14분 내내 0 ·
+    //       15:05~15:07(끝)  d3 **44**
+    //   합계 46건인데 **그중 44가 마지막 2분**에 몰려 있다. 주기로 보내는 게 아니다.
+    //   우리 방식이면 같은 31분에 850건이 나간다.
+    // ⭕ 정답지도 같다 — `sub_40A1F0`(`GAME1.c:257`)이 **시계 상태가 바뀔 때** 모두에게 한 번 보내고,
+    //   그 밖에는 `d4` 물음에 답하는 자리뿐이다(`network_server.go:115`). **주기 호출자가 없다.**
+    // ⇒ 여기서는 **판이 끝났나**가 바뀐 틱에만 보낸다. 나머지는 물음(`d4`)에 답하는 것으로 족하다 —
+    //   클라는 제 시계와 어긋나면 스스로 묻는다(그 도장은 09-21 에 받는 사람 시계로 고쳤다).
+    if (roundOver_ != timerLastRoundOver_) {
+        timerLastRoundOver_ = roundOver_;
         SendTimer(out);
     }
 
