@@ -2181,7 +2181,14 @@ int main(int argc, char** argv) {
                             " · **떠돌기(이음탐 %llu·막다른길 %llu)**"
                             // ★ 09-21 — 벽 튕김 재기(사용자가 화면으로 짚음). 걷기 힘은 3.0 · 걷기 속도 6 이 정상
                             " · **벽밀림(걸음 %llu·최대가속 %.0f·속도최대 %.1f"
-                            "·벽까지최소 %.1f·동시조각최대 %llu·벽칸 %llu/%llu)**\n",
+                            "·벽까지최소 %.1f·동시조각최대 %llu·벽칸 %llu/%llu)**"
+                            // ★ 09-21 — **오브젝트가 민 것**은 벽과 따로 센다. 벽만 세면 0 을
+                            //   「튕김 없음」으로 읽는다(속도 54.8 을 만든 것이 이쪽이었다)
+                            " · **몸밀림(놓인것 %llu·사람 %llu·소환수 %llu·최대가속 %.0f"
+                            " | 그때 반지름 %.0f+%.0f=%.0f·거리 %.1f·겹침 %.1f·사람(%.0f,%.0f)·물건(%.0f,%.0f))**"
+                            // ★ 09-21 — 가장 세게 민 **벽 칸**의 정체. 문·창·재질 깃발을 가르는 자리다
+                            " · **최악벽(가속 %.0f·거리 %.1f·칸 %d,%d·방향 %d·재질 %d[깃발 0x%X·secret %d]·사람(%.0f,%.0f))**"
+                            " · **추적막음 %llu/%llu걸음**\n",
                             srv.petCount(), srv.petsWithPath(),
                             srv.DebugPathCalculated() ? "예" : "아니오", srv.DebugPathStatus(),
                             srv.trapsArmed(),
@@ -2189,7 +2196,21 @@ int main(int argc, char** argv) {
                             srv.roamAdvance(), srv.roamDeadEnd(),
                             srv.wallPushSteps(), srv.wallPushMax(), srv.playerSpeedMax(),
                             srv.wallNearestLen(), srv.wallPushPerStepMax(),
-                            srv.playerInWallSteps(), srv.playerSteps());
+                            srv.playerInWallSteps(), srv.playerSteps(),
+                            srv.bodyPushSteps(0), srv.bodyPushSteps(1), srv.bodyPushSteps(2),
+                            srv.bodyPushMax(),
+                            srv.bodyPushWorst().r1, srv.bodyPushWorst().r2,
+                            srv.bodyPushWorst().r1 + srv.bodyPushWorst().r2,
+                            srv.bodyPushWorst().len,
+                            srv.bodyPushWorst().r1 + srv.bodyPushWorst().r2 - srv.bodyPushWorst().len,
+                            srv.bodyPushWorst().px, srv.bodyPushWorst().py,
+                            srv.bodyPushWorst().ox, srv.bodyPushWorst().oy,
+                            srv.wallPushWorst().mag, srv.wallPushWorst().len,
+                            srv.wallPushWorst().gx, srv.wallPushWorst().gy,
+                            srv.wallPushWorst().dir, srv.wallPushWorst().tile,
+                            srv.wallPushWorst().f2, srv.wallPushWorst().flag80 ? 1 : 0,
+                            srv.wallPushWorst().px, srv.wallPushWorst().py,
+                            srv.traceBlocked(), srv.playerSteps());
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
                             " · 문 %llu(되맞춤 %llu) · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"

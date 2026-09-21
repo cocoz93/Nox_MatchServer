@@ -10478,6 +10478,51 @@ void TestAIPathFind() {
             Check(srv.DebugDiagOk(ii, 43, 43), "벽이 없는데 대각이 막혔다");
     }
 
+    // ★★ ⑱-1 **선 추적이 벽을 가로지르는 걸음을 막나** (2026-09-21 밤)
+    //   왜 — 실물 주행에서 `추적막음 0 / 12,475걸음` 이 나왔다. 같은 판에 벽 칸 안 913걸음 ·
+    //   벽밀림 216회였으니 벽은 거기 있었다. 「한 번도 안 막았다」가 **정상인지 결함인지**를
+    //   말로 가르지 말고 시험으로 가른다. 방향 0 = 오른쪽 대각선(칸 안에서 x+y = 23 인 선).
+    {
+        nox::Server srv;
+        const int gx = 116, gy = 74;
+        srv.SetWallTiles({ { static_cast<uint8_t>(gx), static_cast<uint8_t>(gy), 0, 0, false } });
+        const float ox = gx * 23.0f, oy = gy * 23.0f;
+        auto P = [&](float dx, float dy) { return std::pair<float, float>{ ox + dx, oy + dy }; };
+
+        // (가) 곧게 가로지름 — 칸 안 합이 21 → 25 로 선(23)을 넘는다. **막혀야 한다**
+        {
+            auto a = P(5, 16), b = P(5, 22);
+            Check(!srv.DebugTraceRay(a.first, a.second, b.first, b.second),
+                  "벽을 곧게 가로지르는 걸음이 안 막혔다");
+        }
+        // (나) 같은 쪽 안에서만 움직임(합 21 → 22) — **막히면 안 된다**
+        {
+            auto a = P(5, 16), b = P(5, 17);
+            Check(srv.DebugTraceRay(a.first, a.second, b.first, b.second),
+                  "선을 안 넘는 걸음이 막혔다");
+        }
+        // (다) 45도로 가로지름 — 주행기가 쓰는 방향이다(합 4 → 28). **막혀야 한다**
+        {
+            auto a = P(2, 2), b = P(14, 14);
+            Check(!srv.DebugTraceRay(a.first, a.second, b.first, b.second),
+                  "45도로 벽을 가로지르는 걸음이 안 막혔다");
+        }
+        // (라) 선과 **나란히** 감(합이 내내 23 근처, 넘지 않음) — 넘는 게 없으니 막히면 안 된다
+        {
+            auto a = P(2, 20), b = P(14, 8);
+            Check(srv.DebugTraceRay(a.first, a.second, b.first, b.second),
+                  "선과 나란히 가는 걸음이 막혔다");
+        }
+        // ★ 일부러 틀려 보기 — 벽을 치우면 (가)가 **안 막혀야** 한다.
+        //   이게 뒤집히지 않으면 위 네 개는 아무것도 안 보고 있는 것이다
+        {
+            nox::Server bare;
+            auto a = P(5, 16), b = P(5, 22);
+            Check(bare.DebugTraceRay(a.first, a.second, b.first, b.second),
+                  "벽이 없는데도 막혔다 — 이 시험은 벽을 안 보고 있다");
+        }
+    }
+
     // ⑤ **깊이 한도** — 한 물결만 보고 멈춘다(2)
     {
         nox::Server srv;

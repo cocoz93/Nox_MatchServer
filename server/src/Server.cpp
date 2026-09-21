@@ -3820,7 +3820,9 @@ bool Server::CircleVsWalls(double bx, double by, double r, double mass,
                     if (d == 7 || d == 10) a5 = true;
                     got = NearestOnLeft(ox, oy, s.lmin, s.lmax, a4, a5, px, py, cx, cy);
                 }
+                const double wa0 = ax, wb0 = ay;
                 if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay)) any = true;
+                NoteWallPushWorst(ax - wa0, ay - wb0, gx, gy, d, nx, ny, cx, cy);
             }
             if (s.r) {
                 if ((nb & 8) && WallShapeAt(gx - 1, gy + 1) == -1) a4 = true;
@@ -3832,7 +3834,9 @@ bool Server::CircleVsWalls(double bx, double by, double r, double mass,
                     if (d == 7 || d == 8) a4 = true;
                     got = NearestOnRight(ox, oy, s.rmin, s.rmax, a4, a5, px, py, cx, cy);
                 }
+                const double wa0 = ax, wb0 = ay;
                 if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay)) any = true;
+                NoteWallPushWorst(ax - wa0, ay - wb0, gx, gy, d, nx, ny, cx, cy);
             }
         }
     }
@@ -4246,8 +4250,20 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
                 const ContactRef other{ 3, std::string(), static_cast<int>(&o - obstacles_.data()) };
+                // ★ 09-21 — 갈래마다 따로 센다(아래 둘도 같다). 벽만 세다가 「0 = 튕김 없음」으로
+                //   읽을 뻔했다 — 사람 속도 54.8 을 만든 것은 벽이 아니라 이쪽이었다
+                const double bx0 = m.ax, by0 = m.ay;
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            o, o.x, o.y, o.x, o.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
+                CountBodyPush(0, m.ax - bx0, m.ay - by0);
+                {   // 가장 센 밀림의 자세한 값 — 반지름·거리를 같이 봐야 원인이 갈린다
+                    const double ddx = m.ax - bx0, ddy = m.ay - by0;
+                    if (ddx != 0.0 || ddy != 0.0) {
+                        const double ex = o.x - s.posX, ey = o.y - s.posY;
+                        NoteBodyPushWorst(0, std::sqrt(ddx * ddx + ddy * ddy), kBodyRadius, o.r,
+                                          std::sqrt(ex * ex + ey * ey), s.posX, s.posY, o.x, o.y);
+                    }
+                }
             }
             for (const auto& m2 : movers) {
                 if (m2.s == m.s || !m2.collide) continue;
@@ -4255,8 +4271,10 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyRect(playerBody, m2.bx, m2.by, ox0, oy0, ox1, oy1);
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
                 const ContactRef other{ 1, m2.s->addr, -1 };
+                const double bx0 = m.ax, by0 = m.ay;
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            playerBody, m2.s->posX, m2.s->posY, m2.bx, m2.by, m2.s->velX, m2.s->velY, m.ax, m.ay, &me, &other);
+                CountBodyPush(1, m.ax - bx0, m.ay - by0);
             }
             for (const auto& k : pets_) {
                 auto tb = typeBodies_.find(k.type);
@@ -4266,8 +4284,10 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyRect(tb->second, k.x, k.y, ox0, oy0, ox1, oy1);
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
                 const ContactRef other{ 2, std::string(), static_cast<int>(&k - pets_.data()) };
+                const double bx0 = m.ax, by0 = m.ay;
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            tb->second, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
+                CountBodyPush(2, m.ax - bx0, m.ay - by0);
             }
             // 벽 — 오브젝트 다음(sub_5481C0 순서)
             {
@@ -4301,9 +4321,14 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             if (ny < 0) ny = 0;
             if (nx > kMaxCoord) nx = kMaxCoord;
             if (ny > kMaxCoord) ny = kMaxCoord;
+            // ★ 09-21 — **추적이 걸음을 막은 횟수**를 센다. 벽 칸 안에서 5.5% 를 보내는데
+            //   막은 적이 없다면 「벽을 뚫고 들어갔다 사출되는 것」이고, 잘 막고 있다면
+            //   「벽에 바짝 붙어 선 것」이다 — 고칠 자리가 전혀 다르다
             if (MapTraceRay(static_cast<float>(s.posX), static_cast<float>(s.posY),
                             static_cast<float>(nx), static_cast<float>(ny), 0x1)) {
                 s.posX = nx; s.posY = ny;
+            } else {
+                ++traceBlocked_;
             }
         }
     }

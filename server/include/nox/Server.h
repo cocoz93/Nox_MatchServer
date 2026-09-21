@@ -1364,6 +1364,52 @@ public:
     //   가속 100 은 걷기 힘(3.0)의 33배다. 그게 실제로 얼마나 자주·얼마나 크게 나오나를 본다
     unsigned long long wallPushSteps() const { return wallPushSteps_; }
     double wallPushMax() const { return wallPushMax_; }
+    // ★★ 09-21 — **오브젝트가 민 것**을 벽과 따로 센다. 왜 갈라야 하나:
+    //   맵을 붙이고 재니 사람 속도가 54.8(걷기 6·달리기 12)까지 갔는데 **벽 계수기는 0** 이었다.
+    //   벽 하나만 세고 있으면 그 0 을 「튕김 없음」으로 읽는다 — 실제로는 가구·울타리가 민 것이다.
+    //   갈래 셋(놓인 것·다른 사람·소환수)을 **따로** 센다 — 하나가 나머지를 삼키지 않게.
+    unsigned long long bodyPushSteps(int k) const { return bodyPushSteps_[k]; }
+    double bodyPushMax() const { return bodyPushMax_; }
+    void CountBodyPush(int k, double dax, double day) {
+        if (dax == 0.0 && day == 0.0) return;
+        ++bodyPushSteps_[k];
+        const double mag = std::sqrt(dax * dax + day * day);
+        if (mag > bodyPushMax_) bodyPushMax_ = mag;
+    }
+    // ★ 09-21 — **가장 세게 민 짝**을 통째로 적어 둔다. 가속 284 만 보면 「겹쳤다」까지밖에 모르고
+    //   **무엇에 · 얼마나 · 어느 반지름으로** 겹쳤는지를 알아야 「반지름이 크다」와
+    //   「깊이 들어갔다」가 갈린다(둘의 고칠 자리가 전혀 다르다)
+    // ★ 09-21 — **가장 세게 민 벽 칸**을 통째로 적어 둔다. 어떤 칸이 튕기는지 알아야
+    //   「문이냐 · 창이냐 · 재질 깃발 0x2 냐」가 갈린다(정답지는 셋을 다르게 다룬다).
+    struct WallPushWorst {
+        double mag = 0, len = 0, px = 0, py = 0, cx = 0, cy = 0;
+        int gx = -1, gy = -1, dir = -1, tile = -1;
+        uint32_t f2 = 0; bool flag80 = false;
+    };
+    const WallPushWorst& wallPushWorst() const { return wallPushWorst_; }
+    void NoteWallPushWorst(double dax, double day, int gx, int gy, int dir,
+                           double px, double py, double cx, double cy) const {
+        if (dax == 0.0 && day == 0.0) return;
+        const double mag = std::sqrt(dax * dax + day * day);
+        if (mag <= wallPushWorst_.mag) return;
+        const double ex = px - cx, ey = py - cy;
+        wallPushWorst_.mag = mag;
+        wallPushWorst_.len = std::sqrt(ex * ex + ey * ey);
+        wallPushWorst_.px = px; wallPushWorst_.py = py;
+        wallPushWorst_.cx = cx; wallPushWorst_.cy = cy;
+        wallPushWorst_.gx = gx; wallPushWorst_.gy = gy; wallPushWorst_.dir = dir;
+        const WallTile& w = wallTiles_[gy * 256 + gx];
+        wallPushWorst_.tile = w.tile;
+        wallPushWorst_.f2 = (w.tile < wallDefFlags_.size()) ? wallDefFlags_[w.tile] : 0;
+        wallPushWorst_.flag80 = w.flag80;
+    }
+    struct BodyPushWorst { double mag = 0, r1 = 0, r2 = 0, len = 0, px = 0, py = 0, ox = 0, oy = 0; int kind = -1; };
+    const BodyPushWorst& bodyPushWorst() const { return bodyPushWorst_; }
+    void NoteBodyPushWorst(int k, double mag, double r1, double r2, double len,
+                           double px, double py, double ox, double oy) {
+        if (mag <= bodyPushWorst_.mag) return;
+        bodyPushWorst_ = BodyPushWorst{ mag, r1, r2, len, px, py, ox, oy, k };
+    }
     double playerSpeedMax() const { return playerSpeedMax_; }
     // ★ 09-21 — 사람이 **벽 칸 안**에 있던 걸음 수 / 전체 걸음. 튕김의 뿌리를 가른다:
     //   0 이면 「밖에서 여러 조각이 동시에 미는 것」이고, 0 이 아니면 「들어갔다 쫓겨나는 것」이다
@@ -3936,6 +3982,15 @@ private:
     unsigned long long obeliskTold_ = 0;  // 09-21 — 접속한 사람에게 마나석 밝기를 알려 준 건수
     unsigned long long wallPushSteps_ = 0;   // 09-21 — 벽이 사람을 밀어낸 걸음 수
     double wallPushMax_ = 0.0;               // 그때 더해진 가속의 최대(걷기 힘 3.0 과 견줄 것)
+    // 09-21 — 오브젝트가 민 걸음 수, 갈래별: [0]=놓인 것 [1]=다른 사람 [2]=소환수
+    unsigned long long bodyPushSteps_[3] = { 0, 0, 0 };
+    double bodyPushMax_ = 0.0;               // 그때 더해진 가속의 최대(벽과 같은 잣대)
+    BodyPushWorst bodyPushWorst_;            // 그 최대를 만든 짝의 자세한 값
+    mutable WallPushWorst wallPushWorst_;    // 가장 세게 민 벽 칸(CircleVsWalls 가 const 라 mutable)
+public:
+    unsigned long long traceBlocked() const { return traceBlocked_; }
+private:
+    unsigned long long traceBlocked_ = 0;    // 09-21 — 선 추적이 사람 걸음을 막은 횟수
     double playerSpeedMax_ = 0.0;            // 사람의 틱당 속도 최대(걷기 6 · 달리기 12 가 정상)
     unsigned long long playerInWallSteps_ = 0;  // 사람이 벽 칸 안에 있던 걸음
     unsigned long long playerSteps_ = 0;        // 그 분모 — 0 옆에 지나간 양을 같이 읽는다
