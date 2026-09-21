@@ -1504,6 +1504,42 @@ void TestPropsAndInvuln() {
         Check(countDoor(closed, b2addr, nox::kDoorClosed) == 1, "닫힘 알림이 B 에게 한 번 가야 한다");
     }
 
+    // ★★ 마나석 — **아무도 안 써도 밝기가 한 번 간다** ← 09-21 사용자가 화면으로 짚음
+    //
+    // 왜 — 클라는 마나석 밝기를 `b3` 로만 정한다(`cdecode.c:2236` — 밝기 16×값/10 · 그림칸 8×값/50).
+    // 우리는 **마나를 줄 때만** 보냈으니, 아무도 안 쓴 마나석은 **영영 어두운 채**였다.
+    // 사용자 말 — 「마나를 안 채웠는데도 불이 꺼져 있다」. 대조군은 접속 직후 한 번 준다.
+    {
+        nox::Server s5;
+        s5.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        s5.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::Server::WorldProp> ps;
+        nox::Server::WorldProp far1;                       // **멀리** 둔다 — 마나를 줄 수 없는 자리
+        far1.netCode = 500; far1.type = 121;
+        far1.x = 5000; far1.y = 5000;
+        far1.kind = nox::PropKind::Obelisk;
+        ps.push_back(far1);
+        s5.SetWorldProps(ps);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        for (int i = 0; i < 80; ++i) { ms += 34; s5.Tick(ms, out); }
+        int lit = 0, dark = 0;
+        for (const auto& m : FlattenTo(out, a)) {
+            if (m.size() != 4 || m[0] != static_cast<uint8_t>(nox::Op::OBELISK_CHARGE)) continue;
+            if (m[3] == nox::kObeliskFullCharge) ++lit; else ++dark;
+        }
+        Check(s5.ManaOf(a) == s5.ManaOf(a), "");           // (마나는 안 본다 — 멀어서 안 찬다)
+        Check(lit == 1, "멀리 있는 마나석의 밝기를 한 번 안 알려 줬다 — 클라에선 꺼진 채로 남는다");
+        Check(dark == 0, "밝기 0 을 보냈다 — 잔량을 모형으로 안 가지니 가득이어야 한다");
+        // 같은 것을 또 보내지 않는다 — 매 틱 보내면 클라가 죽는다
+        std::vector<nox::OutPacket> again;
+        for (int i = 0; i < 80; ++i) { ms += 34; s5.Tick(ms, again); }
+        int more = 0;
+        for (const auto& m : FlattenTo(again, a))
+            if (m.size() == 4 && m[0] == static_cast<uint8_t>(nox::Op::OBELISK_CHARGE)) ++more;
+        Check(more == 0, "이미 알려 준 마나석을 또 보냈다");
+    }
+
     // 오벨리스크 — 옆에 서면 마나가 찬다
     {
         nox::Server s3;

@@ -138,7 +138,9 @@ constexpr uint8_t kDoorClosed = 0x00;
 constexpr uint8_t kDoorOpen = 0x18;
 // ★ 09-21 문 되맞춤(`UpdateProps` 끝) — 몇 틱마다 보나 · 세계를 받은 뒤 몇 틱을 기다리나.
 //   기다리는 까닭 — 접속 직후의 알림은 클라가 버린다(09-20 실측). 1초면 넉넉했다
-constexpr uint32_t kDoorSyncEveryTicks = 15;
+// 마나석 잔량 — 정품 표본 전수가 0x32(=50)였다. 클라는 밝기 16×값/10 · 그림칸 8×값/50 으로 쓴다
+//   (`cdecode.c:2236`). 값 0 이면 **꺼진다** — 그래서 한 번도 안 알려 주면 어두운 채로 남는다
+constexpr uint8_t kObeliskFullCharge = 0x32;constexpr uint32_t kDoorSyncEveryTicks = 15;
 constexpr uint32_t kDoorSyncGraceTicks = 30;
 // 주운 아이템이 되살아나기까지. ➖ 우리 값 — `thing.bin` 의 `FLAGS = RESPAWN` 이
 // 「되살아난다」는 것만 말하고 **얼마 뒤인지는 안 적혀 있다**. 30Hz 기준 30초.
@@ -1355,6 +1357,7 @@ public:
     void DebugUpdateProps(std::vector<OutPacket>& out) { UpdateProps(out); }
     unsigned long long doorsOpened() const { return doorsOpened_; }
     unsigned long long doorResync() const { return doorResync_; }
+    unsigned long long obeliskTold() const { return obeliskTold_; }
     unsigned long long obeliskMana() const { return obeliskMana_; }
     // ⑩ 밟는 판 — **0 을 「안 눌렸다」와 「안 셌다」로 가르려고** 09-20 에 넣었다.
     //   깜빡임을 보려면 먼저 「눌리긴 했나」가 서야 한다. 보낸 건수를 눌림·뗌으로 나눠 센다
@@ -3912,6 +3915,7 @@ private:
     std::vector<WorldProp> props_;
     unsigned long long doorsOpened_ = 0;
     unsigned long long doorResync_ = 0;   // 09-21 — 되맞춤으로 **따로 보낸** 문 알림 수(나중에 들어온 사람 몫)
+    unsigned long long obeliskTold_ = 0;  // 09-21 — 접속한 사람에게 마나석 밝기를 알려 준 건수
     unsigned long long obeliskMana_ = 0;
     unsigned long long plateOn_ = 0;    // ⑩ 판이 **눌렸다**고 보낸 건수(`0xb4` 칸 1)
     unsigned long long plateOff_ = 0;   // ⑩ 판을 **뗐다**고 보낸 건수(`0xb4` 칸 0)

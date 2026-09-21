@@ -1942,7 +1942,7 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 static_cast<uint8_t>(Op::OBELISK_CHARGE),
                 static_cast<uint8_t>(onc),
                 static_cast<uint8_t>(onc >> 8),
-                0x32,                               // 표본 전수가 0x32 였다
+                kObeliskFullCharge,                 // 표본 전수가 0x32 였다(= 가득)
             };
             Broadcast(/*viaSeq=*/true, ob, sizeof(ob), out);
         }
@@ -1967,6 +1967,24 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
         if (o.doorTold.size() != props_.size()) o.doorTold.assign(props_.size(), 0);
         for (size_t i = 0; i < props_.size(); ++i) {
             const WorldProp& p = props_[i];
+            // ★★ 09-21 — **마나석도 같은 결함이었다**(사용자가 화면으로 짚음):
+            //   「마나를 안 뽑았는데 불이 꺼져 있다」. 클라는 마나석 밝기를 `b3` 로만 정하는데
+            //   (`cdecode.c:2236` — 밝기 = 16×값/10 · 그림칸 = 8×값/50), 우리는 **마나를 줄 때만** 보냈다.
+            //   ⇒ **아무도 안 쓴 마나석은 영영 어두운 채**로 남는다. 대조군은 접속 직후 한 번 준다
+            //   (같은 15초에 `b3` 우리 5 : 대조군 1 — 우리가 더 많이 보내는데 **필요한 때를 놓쳤다**).
+            // ⚠ 우리는 마나석 잔량을 모형으로 안 갖고 있다(뽑아도 안 줄어든다). 그러니 **가득(0x32)**
+            //   한 번만 알려 주는 것이 지금 모형과 맞는 최선이다 — 잔량을 넣으면 그때 여기도 같이 고칠 것
+            if (p.kind == PropKind::Obelisk) {
+                if (o.doorTold[i] != 0) continue;              // 이미 알려 줬다
+                const uint16_t onc = PropWireCode(p);
+                const uint8_t ob[4] = { static_cast<uint8_t>(Op::OBELISK_CHARGE),
+                                        static_cast<uint8_t>(onc), static_cast<uint8_t>(onc >> 8),
+                                        kObeliskFullCharge };
+                EmitSeq(o, ob, sizeof(ob), out);
+                o.doorTold[i] = 1;
+                ++obeliskTold_;
+                continue;
+            }
             if (p.kind != PropKind::Door) continue;
             const uint8_t cur = p.open ? 1 : 0;
             if (o.doorTold[i] == cur) continue;
