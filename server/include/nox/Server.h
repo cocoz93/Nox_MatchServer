@@ -1358,6 +1358,24 @@ public:
     unsigned long long doorsOpened() const { return doorsOpened_; }
     unsigned long long doorResync() const { return doorResync_; }
     unsigned long long obeliskTold() const { return obeliskTold_; }
+    // ★ 09-21 벽 튕김 재기 — 사람이 벽에 밀려난 걸음 수와 **그때 더해진 가속의 최대**.
+    //   사용자가 화면으로 짚었다(「벽에 부딪힐 때 원래 저렇게 튕기지 않았던 것 같다」).
+    //   벽 밀어내기 식·상수(100)·감쇠·반지름은 전수로 정답지와 맞다 — 그래서 **세서** 가른다.
+    //   가속 100 은 걷기 힘(3.0)의 33배다. 그게 실제로 얼마나 자주·얼마나 크게 나오나를 본다
+    unsigned long long wallPushSteps() const { return wallPushSteps_; }
+    double wallPushMax() const { return wallPushMax_; }
+    double playerSpeedMax() const { return playerSpeedMax_; }
+    // ★ 09-21 — 사람이 **벽 칸 안**에 있던 걸음 수 / 전체 걸음. 튕김의 뿌리를 가른다:
+    //   0 이면 「밖에서 여러 조각이 동시에 미는 것」이고, 0 이 아니면 「들어갔다 쫓겨나는 것」이다
+    // ✖ 09-21 정정 — `playerInWallSteps` 는 **「벽 칸」 안**을 센다. 벽 칸은 23×23 이고 실제 벽은
+    //   그 안의 **대각선 한 줄**이라, 칸 안이어도 벽 바깥일 수 있다. **튕김의 증거가 못 된다.**
+    //   가르는 것은 아래 둘 — 벽까지 **실제 거리**의 최소, 그리고 **한 걸음에 민 조각 수**의 최대.
+    unsigned long long playerInWallSteps() const { return playerInWallSteps_; }
+    unsigned long long playerSteps() const { return playerSteps_; }
+    // 벽 선까지 가장 가까웠던 거리(몸 반지름 10 보다 한참 작으면 **깊이 박힌 것**)
+    double wallNearestLen() const { return wallNearestLen_; }
+    // 한 걸음에 **동시에** 민 벽 조각 수의 최대(1 이면 깊이 문제 · 여럿이면 모서리에서 겹쳐 미는 것)
+    unsigned long long wallPushPerStepMax() const { return wallPushPerStepMax_; }
     unsigned long long obeliskMana() const { return obeliskMana_; }
     // ⑩ 밟는 판 — **0 을 「안 눌렸다」와 「안 셌다」로 가르려고** 09-20 에 넣었다.
     //   깜빡임을 보려면 먼저 「눌리긴 했나」가 서야 한다. 보낸 건수를 눌림·뗌으로 나눠 센다
@@ -3916,6 +3934,15 @@ private:
     unsigned long long doorsOpened_ = 0;
     unsigned long long doorResync_ = 0;   // 09-21 — 되맞춤으로 **따로 보낸** 문 알림 수(나중에 들어온 사람 몫)
     unsigned long long obeliskTold_ = 0;  // 09-21 — 접속한 사람에게 마나석 밝기를 알려 준 건수
+    unsigned long long wallPushSteps_ = 0;   // 09-21 — 벽이 사람을 밀어낸 걸음 수
+    double wallPushMax_ = 0.0;               // 그때 더해진 가속의 최대(걷기 힘 3.0 과 견줄 것)
+    double playerSpeedMax_ = 0.0;            // 사람의 틱당 속도 최대(걷기 6 · 달리기 12 가 정상)
+    unsigned long long playerInWallSteps_ = 0;  // 사람이 벽 칸 안에 있던 걸음
+    unsigned long long playerSteps_ = 0;        // 그 분모 — 0 옆에 지나간 양을 같이 읽는다
+    // ⚠ `CircleVsWalls` 가 const 라 계측 셋은 mutable 이다 — 물리는 안 건드리고 세기만 한다
+    mutable double wallNearestLen_ = 1e18;              // 벽 선까지 최소 거리(반지름 10 과 견줄 것)
+    mutable unsigned long long wallPushPerStepCur_ = 0; // 이번 걸음에 민 조각 수
+    mutable unsigned long long wallPushPerStepMax_ = 0; // 그 최대
     unsigned long long obeliskMana_ = 0;
     unsigned long long plateOn_ = 0;    // ⑩ 판이 **눌렸다**고 보낸 건수(`0xb4` 칸 1)
     unsigned long long plateOff_ = 0;   // ⑩ 판을 **뗐다**고 보낸 건수(`0xb4` 칸 0)

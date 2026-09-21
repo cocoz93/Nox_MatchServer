@@ -2178,12 +2178,18 @@ int main(int argc, char** argv) {
                 }
                 std::printf("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu"
                             " · 덫판정(통과 %llu·멂 %llu·방향 %llu·벽 %llu)"
-                            " · **떠돌기(이음탐 %llu·막다른길 %llu)**\n",
+                            " · **떠돌기(이음탐 %llu·막다른길 %llu)**"
+                            // ★ 09-21 — 벽 튕김 재기(사용자가 화면으로 짚음). 걷기 힘은 3.0 · 걷기 속도 6 이 정상
+                            " · **벽밀림(걸음 %llu·최대가속 %.0f·속도최대 %.1f"
+                            "·벽까지최소 %.1f·동시조각최대 %llu·벽칸 %llu/%llu)**\n",
                             srv.petCount(), srv.petsWithPath(),
                             srv.DebugPathCalculated() ? "예" : "아니오", srv.DebugPathStatus(),
                             srv.trapsArmed(),
                             srv.trapSeeOk(), srv.trapFailRange(), srv.trapFailFacing(), srv.trapFailWall(),
-                            srv.roamAdvance(), srv.roamDeadEnd());
+                            srv.roamAdvance(), srv.roamDeadEnd(),
+                            srv.wallPushSteps(), srv.wallPushMax(), srv.playerSpeedMax(),
+                            srv.wallNearestLen(), srv.wallPushPerStepMax(),
+                            srv.playerInWallSteps(), srv.playerSteps());
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
                             " · 문 %llu(되맞춤 %llu) · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"

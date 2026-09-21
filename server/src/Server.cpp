@@ -3639,12 +3639,17 @@ inline bool NearestOnRight(float ox, float oy, float lo, float hi, bool a4, bool
 // sub_550380 — 가까운 점까지가 반지름보다 가까우면 밀어낸다: 벽 쪽 속도 성분을 없애고
 //   (반지름 − 거리) × 100 ÷ 질량 을 가속(+96 Pos24 = Sub548600)에 더한다.
 //   ⚠ 공(GameBall) 예외·충돌 기록(collSysAddCollision)은 사람에게 안 쓰여 뺐다.
+// 09-21 계측용 — 재는 동안만 가리킨다(계측이 물리 식을 안 건드리게 밖에 둔다)
+double* gWallNearestLen = nullptr;
+unsigned long long* gWallPushCount = nullptr;
 inline bool PushOut(double r, double mass, double px, double py, float cx, float cy,
                     double& vx, double& vy, double& ax, double& ay) {
     const float dx = static_cast<float>(px) - cx, dy = static_cast<float>(py) - cy;
     float len = std::sqrt(dx * dx + dy * dy);
     if (len == 0.0f) len = 0.0099999998f;
     if (len >= static_cast<float>(r)) return false;
+    if (gWallNearestLen && len < *gWallNearestLen) *gWallNearestLen = len;   // 09-21 계측
+    if (gWallPushCount) ++*gWallPushCount;
     const float nx = dx / len, ny = dy / len;
     const double into = -ny * vy + -nx * vx;
     if (into > 0.0) { vx += into * nx; vy += into * ny; }
@@ -3786,6 +3791,9 @@ bool Server::MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags, 
 bool Server::CircleVsWalls(double bx, double by, double r, double mass,
                            double nx, double ny, double& vx, double& vy, double& ax, double& ay) const {
     if (!wallsOn_ || wallTiles_.empty()) return false;
+    gWallNearestLen = &wallNearestLen_;          // ★ 09-21 계측 시작(아래 끝에서 되돌린다)
+    gWallPushCount = &wallPushPerStepCur_;
+    wallPushPerStepCur_ = 0;
     const int x0 = static_cast<int>(static_cast<float>(bx - r) * kInvGrid);
     const int y0 = static_cast<int>(static_cast<float>(by - r) * kInvGrid);
     const int x1 = static_cast<int>(static_cast<float>(bx + r) * kInvGrid);
@@ -3828,6 +3836,10 @@ bool Server::CircleVsWalls(double bx, double by, double r, double mass,
             }
         }
     }
+    // ★ 09-21 계측 — 이번 걸음에 **동시에** 민 조각 수의 최대(모서리에서 겹쳐 미는지 가른다)
+    if (wallPushPerStepCur_ > wallPushPerStepMax_) wallPushPerStepMax_ = wallPushPerStepCur_;
+    gWallNearestLen = nullptr;
+    gWallPushCount = nullptr;
     return any;
 }
 
@@ -4258,7 +4270,17 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                            tb->second, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
             }
             // 벽 — 오브젝트 다음(sub_5481C0 순서)
-            CircleVsWalls(m.bx, m.by, kBodyRadius, kPlayerMass, s.posX, s.posY, s.velX, s.velY, m.ax, m.ay);
+            {
+                const double ax0 = m.ax, ay0 = m.ay;
+                CircleVsWalls(m.bx, m.by, kBodyRadius, kPlayerMass, s.posX, s.posY, s.velX, s.velY, m.ax, m.ay);
+                // ★ 09-21 — 벽이 민 걸음과 그 세기를 센다(위 `wallPushSteps()` 주석)
+                const double dax = m.ax - ax0, day = m.ay - ay0;
+                if (dax != 0.0 || day != 0.0) {
+                    ++wallPushSteps_;
+                    const double mag = std::sqrt(dax * dax + day * day);
+                    if (mag > wallPushMax_) wallPushMax_ = mag;
+                }
+            }
         }
         for (auto& m : movers) {
             Session& s = *m.s;
@@ -4267,6 +4289,12 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             const double pfx = pinned ? 0.0 : m.fx, pfy = pinned ? 0.0 : m.fy;
             s.velX += ((m.ax + pfx) - s.velX * kPlayerDamping) * kMoveSubStep;
             s.velY += ((m.ay + pfy) - s.velY * kPlayerDamping) * kMoveSubStep;
+            {   // ★ 09-21 — 사람의 **틱당 속도** 최대(걷기 6 · 달리기 12 가 정상. 튕기면 훌쩍 넘는다)
+                const double sp = std::sqrt(s.velX * s.velX + s.velY * s.velY);
+                if (sp > playerSpeedMax_) playerSpeedMax_ = sp;
+                ++playerSteps_;
+                if (WallAt(s.posX, s.posY)) ++playerInWallSteps_;   // 벽 안에 들어가 있나
+            }
             double nx = s.posX + s.velX * kMoveSubStep;
             double ny = s.posY + s.velY * kMoveSubStep;
             if (nx < 0) nx = 0;
