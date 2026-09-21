@@ -4260,8 +4260,11 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                     const double ddx = m.ax - bx0, ddy = m.ay - by0;
                     if (ddx != 0.0 || ddy != 0.0) {
                         const double ex = o.x - s.posX, ey = o.y - s.posY;
-                        NoteBodyPushWorst(0, std::sqrt(ddx * ddx + ddy * ddy), kBodyRadius, o.r,
+                        const double mag = std::sqrt(ddx * ddx + ddy * ddy);
+                        NoteBodyPushWorst(0, mag, kBodyRadius, o.r,
                                           std::sqrt(ex * ex + ey * ey), s.posX, s.posY, o.x, o.y);
+                        // 40 = 오브젝트 밀기 상수 → 가속 ÷ 40 이 겹친 깊이
+                        NoteFirstKick(0, mag, 40.0, s.velX, s.velY, s.posX, s.posY, -1, -1, -1, frame);
                     }
                 }
             }
@@ -4275,6 +4278,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            playerBody, m2.s->posX, m2.s->posY, m2.bx, m2.by, m2.s->velX, m2.s->velY, m.ax, m.ay, &me, &other);
                 CountBodyPush(1, m.ax - bx0, m.ay - by0);
+                NoteFirstKick(1, std::hypot(m.ax - bx0, m.ay - by0), 40.0, s.velX, s.velY,
+                              s.posX, s.posY, -1, -1, -1, frame);
             }
             for (const auto& k : pets_) {
                 auto tb = typeBodies_.find(k.type);
@@ -4288,6 +4293,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            tb->second, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
                 CountBodyPush(2, m.ax - bx0, m.ay - by0);
+                NoteFirstKick(2, std::hypot(m.ax - bx0, m.ay - by0), 40.0, s.velX, s.velY,
+                              s.posX, s.posY, -1, -1, -1, frame);
             }
             // 벽 — 오브젝트 다음(sub_5481C0 순서)
             {
@@ -4299,6 +4306,9 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                     ++wallPushSteps_;
                     const double mag = std::sqrt(dax * dax + day * day);
                     if (mag > wallPushMax_) wallPushMax_ = mag;
+                    // 100 = 벽 밀기 상수 → 가속 ÷ 100 이 파고든 깊이. 칸은 방금 적힌 최악벽에서 가져온다
+                    NoteFirstKick(3, mag, 100.0, s.velX, s.velY, s.posX, s.posY,
+                                  wallPushWorst_.gx, wallPushWorst_.gy, wallPushWorst_.dir, frame);
                 }
             }
         }

@@ -1403,6 +1403,31 @@ public:
         wallPushWorst_.f2 = (w.tile < wallDefFlags_.size()) ? wallDefFlags_[w.tile] : 0;
         wallPushWorst_.flag80 = w.flag80;
     }
+    // ★★ 09-21 밤 — **맨 처음 크게 밀린 순간**을 딱 한 번만 적는다.
+    //   왜 최대값이 아니라 첫 번째인가 — 튕김은 되먹임이다(세게 밀림 → 빨라짐 → 더 깊이 박힘 → 더 세게).
+    //   최대값은 **사슬의 끝**이라 늘 벽이 범인처럼 보인다. 사슬의 **첫 고리**를 알아야 고칠 자리가 나온다.
+    //   가르는 잣대 = 그 직전 속도. 걷기 6 · 달리기 12 이하인데 크게 밀렸다면 **거기가 시작**이다.
+    struct FirstKick {
+        bool have = false; int kind = -1;      // 0 놓인것 · 1 사람 · 2 소환수 · 3 벽
+        double accel = 0, depth = 0, speedBefore = 0, px = 0, py = 0;
+        int gx = -1, gy = -1, dir = -1;
+        unsigned long long frame = 0;
+    };
+    const FirstKick& firstKick() const { return firstKick_; }
+    // ★ 09-21 밤 — 첫 발길질부터 **차례대로** 12개. 되먹임은 「한 장면」이 아니라 **수열**이라
+    //   깊이가 1.5 → 4.8 → 19 로 불어나는지, 아니면 한 번 크고 마는지는 순서로만 보인다.
+    size_t kickSeqCount() const { return kickSeqN_ < 12 ? kickSeqN_ : 12; }
+    size_t kickSeqTotal() const { return kickSeqN_; }   // 분모 — 「12회뿐」과 「12회만 적었다」를 가른다
+    const FirstKick& kickSeq(size_t i) const { return kickSeq_[i]; }
+    void NoteFirstKick(int kind, double accel, double perUnit, double vx, double vy,
+                       double px, double py, int gx, int gy, int dir, unsigned long long frame) {
+        if (accel < 100.0) return;   // 100 = 걷기 힘 3.0 의 33배부터 「크게」로 본다
+        const FirstKick k{ true, kind, accel, accel / perUnit,
+                           std::sqrt(vx * vx + vy * vy), px, py, gx, gy, dir, frame };
+        if (!firstKick_.have) firstKick_ = k;
+        if (kickSeqN_ < 12) kickSeq_[kickSeqN_] = k;
+        ++kickSeqN_;
+    }
     struct BodyPushWorst { double mag = 0, r1 = 0, r2 = 0, len = 0, px = 0, py = 0, ox = 0, oy = 0; int kind = -1; };
     const BodyPushWorst& bodyPushWorst() const { return bodyPushWorst_; }
     void NoteBodyPushWorst(int k, double mag, double r1, double r2, double len,
@@ -3986,6 +4011,9 @@ private:
     unsigned long long bodyPushSteps_[3] = { 0, 0, 0 };
     double bodyPushMax_ = 0.0;               // 그때 더해진 가속의 최대(벽과 같은 잣대)
     BodyPushWorst bodyPushWorst_;            // 그 최대를 만든 짝의 자세한 값
+    FirstKick firstKick_;                    // 사슬의 첫 고리(한 번만 적는다)
+    FirstKick kickSeq_[12];                  // 그 뒤 차례대로 11개 더 — 증폭을 수열로 본다
+    size_t kickSeqN_ = 0;                    // 분모 — 12 를 넘었는지 알아야 「12개뿐」을 안 믿는다
     mutable WallPushWorst wallPushWorst_;    // 가장 세게 민 벽 칸(CircleVsWalls 가 const 라 mutable)
 public:
     unsigned long long traceBlocked() const { return traceBlocked_; }

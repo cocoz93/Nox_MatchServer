@@ -2188,7 +2188,9 @@ int main(int argc, char** argv) {
                             " | 그때 반지름 %.0f+%.0f=%.0f·거리 %.1f·겹침 %.1f·사람(%.0f,%.0f)·물건(%.0f,%.0f))**"
                             // ★ 09-21 — 가장 세게 민 **벽 칸**의 정체. 문·창·재질 깃발을 가르는 자리다
                             " · **최악벽(가속 %.0f·거리 %.1f·칸 %d,%d·방향 %d·재질 %d[깃발 0x%X·secret %d]·사람(%.0f,%.0f))**"
-                            " · **추적막음 %llu/%llu걸음**\n",
+                            " · **추적막음 %llu/%llu걸음**"
+                            // ★ 09-21 밤 — 되먹임 사슬의 **첫 고리**. 직전 속도가 12 이하면 거기가 시작이다
+                            " · **첫발길질(%s·가속 %.0f·깊이 %.1f·**직전속도 %.1f**·프레임 %llu·칸 %d,%d 방향 %d·자리(%.0f,%.0f))**\n",
                             srv.petCount(), srv.petsWithPath(),
                             srv.DebugPathCalculated() ? "예" : "아니오", srv.DebugPathStatus(),
                             srv.trapsArmed(),
@@ -2210,7 +2212,25 @@ int main(int argc, char** argv) {
                             srv.wallPushWorst().dir, srv.wallPushWorst().tile,
                             srv.wallPushWorst().f2, srv.wallPushWorst().flag80 ? 1 : 0,
                             srv.wallPushWorst().px, srv.wallPushWorst().py,
-                            srv.traceBlocked(), srv.playerSteps());
+                            srv.traceBlocked(), srv.playerSteps(),
+                            !srv.firstKick().have ? "없음"
+                              : (srv.firstKick().kind == 3 ? "벽"
+                              : (srv.firstKick().kind == 0 ? "놓인것"
+                              : (srv.firstKick().kind == 1 ? "사람" : "소환수"))),
+                            srv.firstKick().accel, srv.firstKick().depth,
+                            srv.firstKick().speedBefore, srv.firstKick().frame,
+                            srv.firstKick().gx, srv.firstKick().gy, srv.firstKick().dir,
+                            srv.firstKick().px, srv.firstKick().py);
+                // ★ 09-21 밤 — 발길질을 **차례대로**. 깊이가 불어나면 되먹임이고, 안 불어나면 딴 원인이다
+                if (srv.kickSeqCount()) {
+                    std::printf("[발길질 차례] 모두 %zu회 중 앞 %zu회 —", srv.kickSeqTotal(), srv.kickSeqCount());
+                    for (size_t k = 0; k < srv.kickSeqCount(); ++k) {
+                        const auto& q = srv.kickSeq(k);
+                        std::printf(" %zu)%s 깊이%.1f 속도%.1f 프레임%llu", k + 1,
+                                    q.kind == 3 ? "벽" : "물건", q.depth, q.speedBefore, q.frame);
+                    }
+                    std::printf("\n");
+                }
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
                             " · 문 %llu(되맞춤 %llu) · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"
