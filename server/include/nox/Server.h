@@ -138,8 +138,21 @@ constexpr uint32_t kObeliskEveryTicks = 1;
 constexpr int kObeliskManaPerTick = 1;
 // 문 각도 — `0xb2` 의 셋째 바이트. 정품 표본에 `00`·`10`·`18` 이 보였다(`CAP_server_0906`).
 // ◑ 값의 뜻(각도 단위)은 모른다. **닫힘 0 · 열림 0x18** 두 값만 쓴다.
-constexpr uint8_t kDoorClosed = 0x00;
-constexpr uint8_t kDoorOpen = 0x18;
+// ✖ **2026-09-22 정정 — `kDoorOpen = 0x18` 은 「열림」이 아니었다.**
+//   0x18 은 **어느 문의 닫힘 각도**였다. 문 각도는 **문마다 다르고 맵에 적혀 있다.**
+//   ⭕ 근거 둘이 맞물린다:
+//     ① 맵 짐 꼬리의 **둘째 바이트**가 그 각도다(`MapObject::tail[1]`).
+//        Estate 문 여섯을 정품 와이어와 맞대니 **6/6 일치** —
+//          맵 8be3=08 8be2=18 8be1=18 8be0=10 8bdf=00 803d=18
+//          정품 8be3 08 8be2 18 8be1 18 8be0 10 8bdf 00 803d 18
+//        꼬리 `[1]` 과 `[9]` 가 같다 — 정답지의 **닫힘 각도(`ud+4`)와 지금 각도(`ud+12`)**다
+//     ② 정답지 `nox_xxx_collideDoor_4E8AC0`(`GAME3_3.c:3477`)의 `switch` 갈래가
+//        **0 · 8 · 16 · 24** 넷뿐이다 — 맵에서 읽은 네 값과 같다
+constexpr uint8_t kDoorClosedFallback = 0x00;   // 맵에 없을 때만
+// ➖ **여는 각도는 아직 근거가 없다.** 가진 캡처에서는 문이 한 번도 안 열려 열림 값이 안 찍혔다.
+//   닫힘 각도의 눈금이 8(=네 방향)이니 **한 눈금(90도)** 을 연 것으로 둔다. 근거가 생기면 바로 고친다
+constexpr uint8_t kDoorOpenDelta = 8;
+inline uint8_t DoorOpenAngle(uint8_t closed) { return static_cast<uint8_t>((closed + kDoorOpenDelta) & 31); }
 // ★ 09-21 문 되맞춤(`UpdateProps` 끝) — 몇 틱마다 보나 · 세계를 받은 뒤 몇 틱을 기다리나.
 //   기다리는 까닭 — 접속 직후의 알림은 클라가 버린다(09-20 실측). 1초면 넉넉했다
 // 마나석 잔량 — 정품 표본 전수가 0x32(=50)였다. 클라는 밝기 16×값/10 · 그림칸 8×값/50 으로 쓴다
@@ -1315,6 +1328,9 @@ public:
         int x = 0, y = 0;
         PropKind kind = PropKind::Door;
         bool open = false;          // 문만 쓴다
+        // ★ 09-22 — 문의 **닫힘 각도**(0·8·16·24). 맵 짐 꼬리의 둘째 바이트다.
+        //   전에는 모든 문을 0 으로 보내 **문 방향이 전부 틀렸다**
+        uint8_t angle = kDoorClosedFallback;
         uint32_t nextManaFrame = 0; // 오벨리스크만 쓴다
         // ★ 09-22 — 소리는 **마나 주는 주기와 다른 주기**다(정답지는 `fps/2`). 따로 센다
         uint32_t nextManaSndFrame = 0;

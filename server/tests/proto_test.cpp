@@ -1444,7 +1444,7 @@ void TestPropsAndInvuln() {
         Check(d != nullptr, "0xb2 가 안 나감");
         if (d) {
             Check(d->size() == 4, "0xb2 가 4바이트가 아님");
-            Check((*d)[3] == nox::kDoorOpen, "열림 각이 안 실렸다");
+            Check((*d)[3] == nox::DoorOpenAngle(0), "열림 각이 안 실렸다");
         }
         // 안 바뀌면 다시 안 보낸다 — 매 틱 보내면 클라가 죽는다
         std::vector<nox::OutPacket> again;
@@ -1480,28 +1480,28 @@ void TestPropsAndInvuln() {
         uint32_t ms = 0;
         std::vector<nox::OutPacket> sink;
         for (int i = 0; i < 60; ++i) { ms += 34; s4.Tick(ms, sink); }      // A 가 자리 잡는다(1초 넘게)
-        Check(countDoor(sink, a, nox::kDoorOpen) == 0, "멀리 있는데 열림 알림이 갔다(시험 전제)");
+        Check(countDoor(sink, a, nox::DoorOpenAngle(0)) == 0, "멀리 있는데 열림 알림이 갔다(시험 전제)");
 
         s4.DebugMoveTo(a, 1010, 1000);                                     // A 가 문 앞으로
         std::vector<nox::OutPacket> opened;
         for (int i = 0; i < 5; ++i) { ms += 34; s4.Tick(ms, opened); }
         Check(s4.PropOpen(300), "문이 안 열렸다(시험 전제)");
-        Check(countDoor(opened, a, nox::kDoorOpen) == 1, "A 가 열림 알림을 딱 한 번 받아야 한다");
+        Check(countDoor(opened, a, nox::DoorOpenAngle(0)) == 1, "A 가 열림 알림을 딱 한 번 받아야 한다");
 
         s4.DebugEnterGame(b2addr, 729);                                    // ★ B 는 **그 뒤에** 들어온다
         s4.DebugMoveTo(b2addr, 5000, 5000);
         std::vector<nox::OutPacket> late;
         for (int i = 0; i < 75; ++i) { ms += 34; s4.Tick(ms, late); }
-        Check(countDoor(late, b2addr, nox::kDoorOpen) == 1,
+        Check(countDoor(late, b2addr, nox::DoorOpenAngle(0)) == 1,
               "나중에 들어온 B 가 열린 문을 못 알았다 — 되맞춤이 안 돈다");
-        Check(countDoor(late, a, nox::kDoorOpen) == 0, "이미 아는 A 에게 또 보냈다 — 같은 상태는 다시 안 보낸다");
+        Check(countDoor(late, a, nox::DoorOpenAngle(0)) == 0, "이미 아는 A 에게 또 보냈다 — 같은 상태는 다시 안 보낸다");
         Check(s4.doorResync() == 1, "되맞춤 건수가 1 이 아니다");
 
         s4.DebugMoveTo(a, 5000, 5000);                                     // A 가 떠나 문이 닫힌다
         std::vector<nox::OutPacket> closed;
         for (int i = 0; i < 30; ++i) { ms += 34; s4.Tick(ms, closed); }
-        Check(countDoor(closed, a, nox::kDoorClosed) == 1, "닫힘 알림이 A 에게 한 번 가야 한다");
-        Check(countDoor(closed, b2addr, nox::kDoorClosed) == 1, "닫힘 알림이 B 에게 한 번 가야 한다");
+        Check(countDoor(closed, a, nox::kDoorClosedFallback) == 1, "닫힘 알림이 A 에게 한 번 가야 한다");
+        Check(countDoor(closed, b2addr, nox::kDoorClosedFallback) == 1, "닫힘 알림이 B 에게 한 번 가야 한다");
     }
 
     // ★★ 마나석 — **아무도 안 써도 밝기가 한 번 간다** ← 09-21 사용자가 화면으로 짚음
@@ -10478,6 +10478,31 @@ void TestAIPathFind() {
         nox::Server srv;   // 벽이 아예 없으면 어느 대각이든 열린다
         for (int ii = 4; ii <= 7; ++ii)
             Check(srv.DebugDiagOk(ii, 43, 43), "벽이 없는데 대각이 막혔다");
+    }
+
+    // ★★ ⑱-5 **문마다의 각도** (2026-09-22) — 사용자가 「문이 휙 열린다」고 짚어서 판 자리.
+    //   전에는 모든 문에 닫힘 0 · 열림 0x18 하나였다. 0x18 은 **어느 문의 닫힘 각도**였다.
+    //   ⭕ 정본 = 맵 짐 꼬리의 둘째 바이트. Estate 문 여섯을 정품 와이어와 맞대 **6/6 일치**.
+    //   ⭕ 갈래가 넷뿐인 것도 정답지 `GAME3_3.c:3477` switch(0·8·16·24) 와 같다
+    {
+        // 닫힘 각도가 다른 문 둘을 세우고 **각자의 각도로** 나가는지 본다
+        for (uint8_t closed : { (uint8_t)0, (uint8_t)8, (uint8_t)16, (uint8_t)24 }) {
+            nox::Server srv;
+            nox::Server::WorldProp d;
+            d.kind = nox::PropKind::Door; d.netCode = 1000; d.x = 500; d.y = 500;
+            d.angle = closed;
+            srv.SetWorldProps({ d });
+            srv.AttachDoorWalls();
+            // 막는 대각선도 그 각도에서 나온다(0·8·16·24 → 1·0·1·0)
+            const int want = nox::DoorWallDir(closed);
+            Check(srv.DebugWallDirAt(500 / 23, 500 / 23) == want,
+                  "문이 막는 대각선이 제 각도에서 안 나온다");
+        }
+        // ★ 일부러 틀려 보기 — 네 각도가 **다 같은 답**이면 각도를 안 보고 있는 것이다
+        Check(nox::DoorWallDir(0) != nox::DoorWallDir(8), "각도 0 과 8 이 같은 대각선이다 — 각도를 안 본다");
+        // 열림은 닫힘에서 한 눈금 — 값이 각도마다 **달라야** 한다(상수 하나로 돌아가면 안 된다)
+        Check(nox::DoorOpenAngle(0) != nox::DoorOpenAngle(8), "열림 각도가 문마다 안 갈린다");
+        Check(nox::DoorOpenAngle(24) == 0, "열림 각도가 32 에서 안 돌아간다(24+8)");
     }
 
     // ★★ ⑱-4 **문** (2026-09-22 묶음 9) — 정답지 `Sub_57B500` 의 세 갈래를 따로 본다:

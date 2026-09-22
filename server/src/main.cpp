@@ -1047,6 +1047,15 @@ int main(int argc, char** argv) {
                         // ★ 09-22 — 문 종류 이름을 찍는다(문의 **몸**을 thing.bin 에서 찾으려면 이름이 있어야 한다)
                         // ⭕ Estate 의 문 두 종류 — `WoodenDoor`(306) · `ArchedHalfDoor`(309).
                         //   둘 다 `DOOR+IMMOBILE` · 몸은 **원 반지름 32** · thing.bin 에 MASS 없음(기본 1)
+                        // ★ 09-22 — **문 짐을 찍는다.** 정품 캡처가 문 번호별 각도를 주므로
+                        //   (`8bdf 00 · 8be0 10 · 8be1 18 · 8be2 18 · 8be3 08`) 어느 바이트가 각도인지 맞댈 수 있다
+                        if (isDoor && objs[i].tail.size() >= 2) {
+                            wp.angle = objs[i].tail[1];
+                            std::printf("[문각도] 번호 %04x (%d,%d) — 닫힘 %u · 열림 %u\n",
+                                        (unsigned)((objs[i].extent & 0x7FFFu) | 0x8000u),
+                                        static_cast<int>(objs[i].x), static_cast<int>(objs[i].y),
+                                        (unsigned)wp.angle, (unsigned)nox::DoorOpenAngle(wp.angle));
+                        }
                         // ★ 묶음 10-b — 누르고 떼는 소리는 `UPDATE = TriggerUpdate <누름> <뗌>` 에 있다.
                         //   ⭕ 실측 — `PressurePlate` 는 `TriggerPressed`(750) · `TriggerReleased`(751)
                         if (isPlate && ti) {

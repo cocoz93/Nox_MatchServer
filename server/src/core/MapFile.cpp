@@ -248,6 +248,8 @@ std::vector<MapObject> MapFile::ReadObjects() {
                 std::memcpy(&fy, q + h + 14, 4);
                 o.x = fx;
                 o.y = fy;
+                // ★ 09-22 — 머리(h+18) 뒤를 그대로 남긴다. 뜻은 종류마다 다르다
+                if (sz > h + 18) o.tail.assign(q + h + 18, q + sz);
                 out.push_back(std::move(o));
             }
         }

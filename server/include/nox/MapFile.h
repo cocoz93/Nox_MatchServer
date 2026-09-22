@@ -64,6 +64,9 @@ struct MapObject {
     std::string type;    // 종류 이름 ("NewPlayer", "Tree" …)
     uint32_t extent = 0; // 맵 안 고유 번호
     float x = 0, y = 0;
+    // ★ 09-22 — **머리 뒤에 남는 짐.** 종류마다 뜻이 다르다(문은 각도가 여기 있을 것이다).
+    //   전에는 크기로 건너뛰고 버렸다 — 「문이 휙 열린다」를 파다가 필요해져 남긴다
+    std::vector<uint8_t> tail;
 };
 
 class MapFile {

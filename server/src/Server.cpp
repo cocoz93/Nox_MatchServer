@@ -1920,7 +1920,7 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 static_cast<uint8_t>(Op::DOOR_ANGLE),
                 static_cast<uint8_t>(dnc),
                 static_cast<uint8_t>(dnc >> 8),
-                static_cast<uint8_t>(want ? kDoorOpen : kDoorClosed),
+                static_cast<uint8_t>(want ? DoorOpenAngle(p.angle) : p.angle),
             };
             Broadcast(/*viaSeq=*/false, full, sizeof(full), out);
             // ★ 09-21 — 방금 받은 사람은 「이 상태를 안다」고 적는다(아래 되맞춤이 또 보내지 않게).
@@ -2006,7 +2006,7 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 static_cast<uint8_t>(Op::DOOR_ANGLE),
                 static_cast<uint8_t>(dnc),
                 static_cast<uint8_t>(dnc >> 8),
-                static_cast<uint8_t>(p.open ? kDoorOpen : kDoorClosed),
+                static_cast<uint8_t>(p.open ? DoorOpenAngle(p.angle) : p.angle),
             };
             Emit(o, /*reliable=*/false, /*stream=*/0, full, sizeof(full), out);
             o.doorTold[i] = cur;
@@ -3680,7 +3680,10 @@ inline bool PushOut(double r, double mass, double px, double py, float cx, float
 //   (`GAME1.c:692`)은 맵을 읽을 때 `nox_xxx_wallCreateAt_410250(gx, gy)` 로 **없던 벽을 만들고**
 //   `Flags4 |= 0x10` 을 켠 뒤 벽의 `Data` 에 문을 건다. 그래서 파일의 WallMap 에는 문 칸이 없다.
 void Server::AttachDoorWalls() {
+    // ⚠ 09-22 — **둘 다** 크기를 맞춰야 한다. `wallTiles_` 만 맞추고 `walls_` 를 뒀다가
+    //   벽 없는 맵에서 `walls_[...]` 가 범위를 넘어 **죽었다**(시험 ⑱-5 가 SEGFAULT 로 잡았다)
     if (wallTiles_.empty()) wallTiles_.assign(256 * 256, WallTile{});
+    if (walls_.size() != 256 * 256) walls_.assign(256 * 256, 0);
     for (size_t i = 0; i < props_.size(); ++i) {
         if (props_[i].kind != PropKind::Door) continue;
         const int gx = props_[i].x / 23, gy = props_[i].y / 23;
@@ -3689,7 +3692,7 @@ void Server::AttachDoorWalls() {
         w.door = static_cast<int16_t>(i);
         // 이미 벽이 있으면 방향은 그대로 두고 문만 건다(정답지도 `wallCreateAt` 이 있는 벽을 돌려준다)
         if (!w.present) {
-            const int d = DoorWallDir(kDoorClosed);
+            const int d = DoorWallDir(props_[i].angle);
             if (d < 0) continue;                         // 그 각도는 아예 안 막는다
             w.present = true;
             w.dir = static_cast<uint8_t>(d);
