@@ -1312,6 +1312,8 @@ public:
         PropKind kind = PropKind::Door;
         bool open = false;          // 문만 쓴다
         uint32_t nextManaFrame = 0; // 오벨리스크만 쓴다
+        // ★ 09-22 — 소리는 **마나 주는 주기와 다른 주기**다(정답지는 `fps/2`). 따로 센다
+        uint32_t nextManaSndFrame = 0;
         // ── 묶음 9-c 밟는 판(`PressurePlate`)만 쓴다 ──────────────────
         //   정답지 `nox_xxx_updateTrigger_53B1B0`(`GAME4_3.c:5415`) 의 갱신자료를 옮긴 것이다.
         //   **0 놓임 · 1 눌림 · 5 한 번 쓰고 끝**(`[0] & 2` 면 떼는 순간 5 로 간다)

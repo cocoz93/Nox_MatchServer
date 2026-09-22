@@ -1910,6 +1910,11 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             if (want == p.open) continue;          // 안 바뀌면 안 보낸다
             p.open = want;
             if (want) ++doorsOpened_;
+            // ★★ 09-22 사용자 보고 — **끼익 소리가 없다**(정품 기억과 대조). 실제로 안 보내고 있었다.
+            //   정답지 `nox_xxx_updateDoor_53AC50`(`GAME4_3.c:5236·5257`) — 재질로 갈리고 기본은
+            //   **열 때 237 · 닫힐 때 239**(쇠 241/243 · 열쇠문 247/248 · 창살 1014/1015).
+            //   ⚠ 우리는 아직 재질을 안 읽어 나무 기본만 낸다 — Estate 의 문 둘은 둘 다 나무다
+            PlaySoundAt(want ? 237 : 239, static_cast<float>(p.x), static_cast<float>(p.y));
             const uint16_t dnc = PropWireCode(p);
             uint8_t full[4] = {
                 static_cast<uint8_t>(Op::DOOR_ANGLE),
@@ -1937,6 +1942,14 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             if (nearest->mana >= nearest->maxMana) continue;
             PlayerManaAdd(*nearest, kObeliskManaPerTick);   // playerManaAdd_4EEB80 — `45` 는 다음 틱 PlayerReportAnything(+4 ≠ +6)
             ++obeliskMana_;
+            // ★★ 09-22 사용자 보고 — **마나 찰 때 소리가 없다**. 실제로 안 보내고 있었다.
+            //   정답지 `nox_xxx_updateObelisk_53C580`(`GAME4_3.c:6461~6464`) — 소리 **230** 을
+            //   **`fps/2` 프레임에 한 번**(30틱이면 15프레임 = 0.5초) 마나석 자리에서 낸다.
+            //   ⚠ 마나를 주는 주기(`kObeliskEveryTicks`)와 **다른 주기**다 — 그래서 따로 센다
+            if (frame_ >= p.nextManaSndFrame) {
+                p.nextManaSndFrame = frame_ + (kServerTickRate / 2);
+                PlaySoundAt(230, static_cast<float>(p.x), static_cast<float>(p.y));
+            }
             const uint16_t onc = PropWireCode(p);
             uint8_t ob[4] = {
                 static_cast<uint8_t>(Op::OBELISK_CHARGE),
