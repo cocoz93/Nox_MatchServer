@@ -129,6 +129,21 @@ inline int CarryCapacityOnline(CharClass c) {
     return static_cast<int>((static_cast<double>(StrengthOnline(c)) / static_cast<double>(kClassMax[0].maxStrength) * 1250.0 + 750.0) * 1.5);
 }
 
+// ★★★ +120 **사람 무게** ⭕ plrReadVals_4EEDC0(`GAME3_3.c:7701`) — **바로 윗줄 짐 한계와 같은 분모**다:
+//       무게 = 힘 ÷ 워리어(직업 0) 최대 힘 × 20 + 10        → 10 ~ 30
+//
+//   ⚠⚠ **thing.bin `NewPlayer MASS` 는 1 이 맞지만 그게 실제 무게가 아니다.**
+//     정답지도 처음엔 1 을 넣고(`server/object_type.go:209`) **사람이 생길 때 이 식으로 덮어쓴다.**
+//     우리는 덮어쓰는 자리가 없어 1 로 남아 있었고, 밀어내기 가속은 **힘 ÷ 무게** 라
+//     같은 접촉에서 우리만 **15배** 튕겨 나갔다(2026-09-22 벽 튕김의 뿌리).
+//
+//   ⭕ 검산 — 대조군(정답지 서버)의 `Sub548600` 에서 무게를 직접 읽어 **15.60** 을 봤다(위저드).
+//     이 식도 35 ÷ 125 × 20 + 10 = **15.6**. 컨저러 18.8 · 워리어 30.0
+inline double PlayerMassFromStrength(int strength) {
+    return static_cast<double>(strength) / static_cast<double>(kClassMax[0].maxStrength) * 20.0 + 10.0;
+}
+inline double PlayerMassOnline(CharClass c) { return PlayerMassFromStrength(StrengthOnline(c)); }
+
 // 캠페인(솔로·퀘스트)용 보간 ◑ — **레벨 1 이 기본값, 레벨 10 이 최대값**이다.
 //   `stat(L) = base + (max − base) × (L−1) / 9`
 //   ⚠ 0 이 아니라 **1 부터**다. `NOX_PLAYER_MAX_LEVEL − 1 = 9` 로 나눈다(GAME3_3.c:7678).

@@ -489,7 +489,7 @@ struct Session {
         uint32_t wandLastFrame = 0;    // 마지막으로 쓴 프레임(`+104`)
     };
     std::vector<Carried> inventory;
-    int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다
+    int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다 · **무게**도 여기서 나온다(아래 PlayerMassOf)
     // ★★ 묶음 5 — **들 무게의 밑천**(정답지 오브젝트 `+490` · `CarryCapacity`).
     //   ⚠⚠ **thing.bin 의 `CARRYCAPACITY = 100` 이 아니다.** 그것은 오브젝트를 만들 때의 기본값이고
     //     (`server/object.go:330`), 사람은 접속·레벨업 때 `plrReadVals_4EEDC0` 가 **힘에서 다시 계산해
@@ -1394,6 +1394,9 @@ public:
     // ★★ 09-22 — 대조군과 **똑같은 네 숫자**. 정답지는 벽·오브젝트 밀기가 전부 `Sub548600` 한 곳으로
     //   모이므로 거기서 잰다(`server/object.go`, `NOX_DBG_PUSH=1`). 우리도 사람에게 더해지는 밀기를
     //   전부 여기로 모아 같은 잣대로 낸다 — 아니면 「식은 같은데 값이 다르다」를 숫자로 못 말한다.
+    // ★★ 09-22 — 사람 **무게**. 정답지 `GAME3_3.c:7701` 대로 힘에서 셈한다(위저드 15.6·컨저러 18.8·워리어 30).
+    //   ⚠ 상수로 두면 안 된다 — 직업마다 다르다. 힘이 아직 안 들어왔으면(0) 정답지와 같은 바닥값 10 이 된다
+    double PlayerMassOf(const Session& s) const { return PlayerMassFromStrength(s.strength); }
     unsigned long long pushN() const { return pushN_; }
     double pushAvg() const { return pushN_ ? pushSum_ / pushN_ : 0.0; }
     double pushMax() const { return pushMax_; }
@@ -4399,7 +4402,10 @@ constexpr double kStepPerTick = 7.0;   // ⚠ 2026-09-13 부터 걷기에 안 �
 constexpr int    kMoveSubSteps     = 5;
 constexpr double kMoveSubStep      = 0.2;
 constexpr double kPlayerDamping    = 0.5;
-constexpr double kPlayerMass       = 1.0;   // ⭕ thing.bin NewPlayer MASS 1 (proto_test TestThingDb 가 찍는다)
+// ✖ 2026-09-22 폐기 — `kPlayerMass = 1.0` 은 **틀렸다.** thing.bin `NewPlayer MASS` 는 1 이 맞지만
+//   정답지는 사람이 생길 때 `GAME3_3.c:7701` 로 **덮어쓴다**(10~30). 밀어내기 가속은 힘 ÷ 무게라
+//   1 로 두면 같은 접촉에서 **15배** 튕겨 나간다. 무게는 이제 `PlayerMassOf(s)` 로 사람마다 셈한다
+//   (식·검산은 `GameBalance.h` 의 `PlayerMassFromStrength`).
 constexpr double kRunCursorDist    = 100.0;
 constexpr uint8_t kPlayerStateWalk = 0;
 constexpr uint8_t kPlayerStateRun  = 5;

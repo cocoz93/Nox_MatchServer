@@ -4068,7 +4068,7 @@ bool Server::PlayerAnimFrameSent(const Session& s) {
 //   ③ 적분(`server.go:146` · `GAME4_1.c:3218~3238`)  0.2 씩 5번 — 속도 += (힘 − 속도×0.5)×0.2, 자리 += 속도×0.2
 //
 //   ★ 벽 — 묶음 2-b(2026-09-13)에서 정답지로 바꿨다: 걸음마다 원 대 벽 밀어내기 + 선 추적(아래 ③).
-//     반지름 kBodyRadius(thing.bin NewPlayer EXTENT 10) · 질량 kPlayerMass(MASS 1).
+//     반지름 kBodyRadius(thing.bin NewPlayer EXTENT 10) · 무게 `PlayerMassOf(s)`(힘에서 셈 · 10~30).
 //   ⚠ 죽었거나(정답지 상태 3·4 는 ImplB 를 건너뜀) 관전(Field3680&3)이면 힘도 상태 변경도 없다 — 속도만 잦아든다.
 //   ★ 2026-09-13 묶음 3-a — ① 에 상태 1(공격: PlayerAttack), ② 에 CCAction(PlayerInputAttack)이 더해졌다.
 //     바라보는 쪽(CCOrientation)도 ② 에서 갈아 끼운다 — 전에는 받자마자 바꿔 ① 힘이 한 틱 일찍 새 방향을 썼다.
@@ -4235,13 +4235,16 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     // ③ 적분 — 걸음(0.2)마다 [모두 충돌] → [모두 적분]. 사각형 칸 범위는 **프레임 시작 자리**(정답지 +232 는 +56 PosVec).
     PhysBody playerBody;
     playerBody.shape = 2; playerBody.r = static_cast<float>(kBodyRadius);
-    playerBody.cls = kClsPlayer; playerBody.flags = 0; playerBody.mass = static_cast<float>(kPlayerMass);   // NewPlayer FLAGS NULL
+    // ⚠ 무게는 여기서 못 정한다 — **사람마다 다르다**(직업별 힘에서 나온다). 걸음마다 그 사람 것으로 채운다
+    playerBody.cls = kClsPlayer; playerBody.flags = 0; playerBody.mass = 1.0f;   // NewPlayer FLAGS NULL
     contacts_.clear();                                     // nox_xxx_allocHitArray_5486D0
     for (int i = 0; i < kMoveSubSteps; ++i) {
         for (auto& m : movers) {
             Session& s = *m.s;
             m.ax = m.ay = 0.0;
             if (!m.collide) continue;
+            // ★ 09-22 — **이 사람의 무게**로 채운다(직업별 힘에서 · 정답지 `GAME3_3.c:7701`)
+            playerBody.mass = static_cast<float>(PlayerMassOf(s));
             const ContactRef me{ 1, s.addr, -1 };
             double qx0, qy0, qx1, qy1;
             BodyRect(playerBody, m.bx, m.by, qx0, qy0, qx1, qy1);
@@ -4257,7 +4260,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            o, o.x, o.y, o.x, o.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
                 CountBodyPush(0, m.ax - bx0, m.ay - by0);
-                NotePush(std::hypot(m.ax - bx0, m.ay - by0));
+                NotePush(std::hypot(m.ax - bx0, m.ay - by0) * PlayerMassOf(s));
                 {   // 가장 센 밀림의 자세한 값 — 반지름·거리를 같이 봐야 원인이 갈린다
                     const double ddx = m.ax - bx0, ddy = m.ay - by0;
                     if (ddx != 0.0 || ddy != 0.0) {
@@ -4266,7 +4269,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                         NoteBodyPushWorst(0, mag, kBodyRadius, o.r,
                                           std::sqrt(ex * ex + ey * ey), s.posX, s.posY, o.x, o.y);
                         // 40 = 오브젝트 밀기 상수 → 가속 ÷ 40 이 겹친 깊이
-                        NoteFirstKick(0, mag, 40.0, s.velX, s.velY, s.posX, s.posY, -1, -1, -1, frame);
+                        NoteFirstKick(0, mag, 40.0 / PlayerMassOf(s), s.velX, s.velY, s.posX, s.posY, -1, -1, -1, frame);
                     }
                 }
             }
@@ -4277,11 +4280,14 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
                 const ContactRef other{ 1, m2.s->addr, -1 };
                 const double bx0 = m.ax, by0 = m.ay;
+                // ★ 09-22 — **상대의 무게**도 그 사람 것이어야 한다(옆으로 미끄러지는 항이 min(둘) 을 쓴다)
+                PhysBody otherBody = playerBody;
+                otherBody.mass = static_cast<float>(PlayerMassOf(*m2.s));
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
-                           playerBody, m2.s->posX, m2.s->posY, m2.bx, m2.by, m2.s->velX, m2.s->velY, m.ax, m.ay, &me, &other);
+                           otherBody, m2.s->posX, m2.s->posY, m2.bx, m2.by, m2.s->velX, m2.s->velY, m.ax, m.ay, &me, &other);
                 CountBodyPush(1, m.ax - bx0, m.ay - by0);
-                NotePush(std::hypot(m.ax - bx0, m.ay - by0));
-                NoteFirstKick(1, std::hypot(m.ax - bx0, m.ay - by0), 40.0, s.velX, s.velY,
+                NotePush(std::hypot(m.ax - bx0, m.ay - by0) * PlayerMassOf(s));
+                NoteFirstKick(1, std::hypot(m.ax - bx0, m.ay - by0), 40.0 / PlayerMassOf(s), s.velX, s.velY,
                               s.posX, s.posY, -1, -1, -1, frame);
             }
             for (const auto& k : pets_) {
@@ -4296,27 +4302,27 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            tb->second, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
                 CountBodyPush(2, m.ax - bx0, m.ay - by0);
-                NotePush(std::hypot(m.ax - bx0, m.ay - by0));
-                NoteFirstKick(2, std::hypot(m.ax - bx0, m.ay - by0), 40.0, s.velX, s.velY,
+                NotePush(std::hypot(m.ax - bx0, m.ay - by0) * PlayerMassOf(s));
+                NoteFirstKick(2, std::hypot(m.ax - bx0, m.ay - by0), 40.0 / PlayerMassOf(s), s.velX, s.velY,
                               s.posX, s.posY, -1, -1, -1, frame);
             }
             // 벽 — 오브젝트 다음(sub_5481C0 순서)
             {
                 const double ax0 = m.ax, ay0 = m.ay;
-                CircleVsWalls(m.bx, m.by, kBodyRadius, kPlayerMass, s.posX, s.posY, s.velX, s.velY, m.ax, m.ay);
+                CircleVsWalls(m.bx, m.by, kBodyRadius, PlayerMassOf(s), s.posX, s.posY, s.velX, s.velY, m.ax, m.ay);
                 // ★ 09-21 — 벽이 민 걸음과 그 세기를 센다(위 `wallPushSteps()` 주석)
                 const double dax = m.ax - ax0, day = m.ay - ay0;
                 if (dax != 0.0 || day != 0.0) {
                     ++wallPushSteps_;
                     const double mag = std::sqrt(dax * dax + day * day);
                     if (mag > wallPushMax_) wallPushMax_ = mag;
-                    NotePush(mag);
+                    NotePush(mag * PlayerMassOf(s));
                     // ★ 09-22 — **닿는 첫 걸음**만 골라 깊이를 본다(직전 걸음엔 안 밀렸던 경우).
                     //   규칙대로면 0.03 근처여야 한다 — 크면 벽을 늦게 발견한 것이다
-                    if (!m.wallTouchedLastStep) NoteWallFirstTouch(mag / kWallPush);
+                    if (!m.wallTouchedLastStep) NoteWallFirstTouch(mag * PlayerMassOf(s) / kWallPush);
                     m.wallTouchedLastStep = true;
                     // 100 = 벽 밀기 상수 → 가속 ÷ 100 이 파고든 깊이. 칸은 방금 적힌 최악벽에서 가져온다
-                    NoteFirstKick(3, mag, 100.0, s.velX, s.velY, s.posX, s.posY,
+                    NoteFirstKick(3, mag, 100.0 / PlayerMassOf(s), s.velX, s.velY, s.posX, s.posY,
                                   wallPushWorst_.gx, wallPushWorst_.gy, wallPushWorst_.dir, frame);
                 } else {
                     m.wallTouchedLastStep = false;
@@ -8223,8 +8229,13 @@ void Server::HarpoonPull(const Session& owner, const Target& targ, float tx, flo
     const double dpx = static_cast<double>(tx) - owner.posX;
     const double dpy = static_cast<double>(ty) - owner.posY;
     const double r = std::sqrt(dpx * dpx + dpy * dpy) + 0.1;
-    double mass = kPlayerMass;
-    if (targ.addr.empty() && targ.pet >= 0 && static_cast<size_t>(targ.pet) < pets_.size()) {
+    // ★ 09-22 — 끌리는 쪽이 **사람이면 그 사람의 무게**다(직업별 10~30). 전에는 1 로 두어
+    //   끌기 세기가 15배였고, 그래서 상대가 주인을 지나쳐 왕복했다(⑦ 의 「튕긴다」)
+    double mass = 10.0;   // 힘을 모르는 사람의 바닥값(정답지 식의 최소)
+    if (!targ.addr.empty()) {
+        const auto ts = sessions_.find(targ.addr);
+        if (ts != sessions_.end()) mass = PlayerMassOf(ts->second);
+    } else if (targ.pet >= 0 && static_cast<size_t>(targ.pet) < pets_.size()) {
         const auto tb = typeBodies_.find(pets_[static_cast<size_t>(targ.pet)].type);
         mass = (tb != typeBodies_.end() && tb->second.mass > 0.0f) ? tb->second.mass : 1.0;
     }
@@ -10366,7 +10377,7 @@ void Server::PushUnitsAround(float cx, float cy, float outer, float inner, float
     for (auto& kv : sessions_) {
         Session& o = kv.second;
         if (!o.inGame || o.respawnAtFrame != 0) continue;    // 죽은 것은 안 밀린다(isObjectMovable 깃발 갈래)
-        apply(static_cast<float>(o.posX), static_cast<float>(o.posY), static_cast<float>(kPlayerMass), o.forceX, o.forceY);
+        apply(static_cast<float>(o.posX), static_cast<float>(o.posY), static_cast<float>(PlayerMassOf(o)), o.forceX, o.forceY);
     }
     for (auto& k : pets_) {
         const auto tb = typeBodies_.find(k.type);
@@ -12494,7 +12505,7 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
                 Session& o = it->second;
                 const float dpx = static_cast<float>(o.posX) - ax, dpy = static_cast<float>(o.posY) - ay;
                 const float r = static_cast<float>(std::sqrt(static_cast<double>(dpx * dpx + dpy * dpy)) + 0.1);
-                const float f = 10.0f * kHookForce / static_cast<float>(kPlayerMass);
+                const float f = 10.0f * kHookForce / static_cast<float>(PlayerMassOf(o));
                 o.forceX += static_cast<float>(static_cast<double>(dpx) * f / r);
                 o.forceY += static_cast<float>(static_cast<double>(dpy) * f / r);
             }
