@@ -1906,7 +1906,15 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
         if (!nearest) continue;
 
         if (p.kind == PropKind::Door) {
-            const bool want = best <= kDoorOpenDist * kDoorOpenDist;
+            // ★ 09-22 — **부딪히면 연다**(정답지 `DoorCollide`). 부딪힘 = 두 몸이 겹침이라
+            //   거리는 **사람 반지름 + 그 문 종류의 반지름**이다. 종류를 모르면 42(10+32)
+            double openAt = kDoorOpenDist;
+            {
+                const auto tb = typeBodies_.find(p.type);
+                if (tb != typeBodies_.end() && tb->second.r > 0.0f)
+                    openAt = kBodyRadius + static_cast<double>(tb->second.r);
+            }
+            const bool want = best <= openAt * openAt;
             if (want == p.open) continue;          // 안 바뀌면 안 보낸다
             p.open = want;
             if (want) ++doorsOpened_;

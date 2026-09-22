@@ -1051,10 +1051,16 @@ int main(int argc, char** argv) {
                         //   (`8bdf 00 · 8be0 10 · 8be1 18 · 8be2 18 · 8be3 08`) 어느 바이트가 각도인지 맞댈 수 있다
                         if (isDoor && objs[i].tail.size() >= 2) {
                             wp.angle = objs[i].tail[1];
-                            std::printf("[문각도] 번호 %04x (%d,%d) — 닫힘 %u · 열림 %u\n",
+                            // ⚠ 여는 거리는 **반지름을 같이 찍는다** — 진짜로 문 몸에서 나온 42 와
+                            //   못 찾아 떨어진 기본값 42 가 숫자로는 똑같아서 구분이 안 된다
+                            std::printf("[문각도] 번호 %04x (%d,%d) — 닫힘 %u · 열림 %u · 여는거리 %.0f(문반지름 %s)\n",
                                         (unsigned)((objs[i].extent & 0x7FFFu) | 0x8000u),
                                         static_cast<int>(objs[i].x), static_cast<int>(objs[i].y),
-                                        (unsigned)wp.angle, (unsigned)nox::DoorOpenAngle(wp.angle));
+                                        (unsigned)wp.angle, (unsigned)nox::DoorOpenAngle(wp.angle),
+                                        ti && ti->radius > 0.0f ? nox::kBodyRadius + ti->radius : nox::kDoorOpenDist,
+                                        ti && ti->radius > 0.0f
+                                            ? (std::to_string(static_cast<int>(ti->radius))).c_str()
+                                            : "못 찾음 → 기본값");
                         }
                         // ★ 묶음 10-b — 누르고 떼는 소리는 `UPDATE = TriggerUpdate <누름> <뗌>` 에 있다.
                         //   ⭕ 실측 — `PressurePlate` 는 `TriggerPressed`(750) · `TriggerReleased`(751)
@@ -1223,7 +1229,11 @@ int main(int argc, char** argv) {
                     const nox::ThingInfo* t2 = tdb.ByWire(w);
                     // ★ 2026-09-13 묶음 3-e — COLLIDE 없는 몬스터·상자 몸도 싣는다. 공격 고르기(sub_5180B0)와 피해 함수는
                     //   충돌 함수와 무관하다. 걷기 충돌은 hasCollide 로 따로 거른다(`GAME5.c:1930` 둘 다 있어야 부딪힘).
-                    if (!t2 || !t2->isMonster) continue;
+                    // ★ 09-22 — **문 종류도 싣는다.** 문 여는 거리가 「사람 반지름 + 문 반지름」이라
+                    //   그 몸이 필요하다. 전에는 몬스터만 실어 조회가 조용히 헛돌았다(기본값으로 떨어짐)
+                    if (!t2) continue;
+                    const bool isDoorType = (nox::ParseObjectClass(t2->classRaw) & 0x80) != 0;
+                    if (!t2->isMonster && !isDoorType) continue;
                     nox::Server::PhysBody b;
                     b.shape = static_cast<uint8_t>((t2->shapeKind == 2 || t2->shapeKind == 3) ? t2->shapeKind : 0);
                     b.r = t2->radius;

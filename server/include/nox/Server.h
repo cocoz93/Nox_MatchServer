@@ -116,10 +116,14 @@ inline uint32_t FoodClassBitsOf(const std::string& raw) {
 // 세계에서 **다루는** 것 — 집는 게 아니다.
 enum class PropKind : uint8_t { Door = 0, Obelisk, Plate };
 
-// 문이 다가가면 열리는 거리 · 오벨리스크가 마나를 채워 주는 거리.
-// ➖ **우리 값이다.** 정품 수치는 파일에도 캡처에도 없다.
-// 문은 벽 한 칸(23)의 세 배쯤, 오벨리스크는 「옆에 선다」니 그보다 가깝게 잡았다.
-constexpr double kDoorOpenDist = 70.0;
+// ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
+//   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
+//   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
+//   ⭕ 정답지는 거리가 아니라 **부딪히면 연다** — `nox_xxx_collideDoor_4E8AC0`(`GAME3_3.c:3384`)는
+//     문의 **collide 함수**다. 부딪힘 조건은 두 몸이 겹치는 것이고, 둘 다 thing.bin 의 원이다:
+//       사람 `NewPlayer CIRCLE 10` + 문 `WoodenDoor·ArchedHalfDoor CIRCLE 32` = **42**
+//   그래서 기본값을 42 로 둔다(문 종류의 반지름을 알면 그것을 쓴다).
+constexpr double kDoorOpenDist = 42.0;
 // ⭕ 묶음 9-c — 밟는 판의 반쪽 크기. thing.bin `PressurePlate` 의 `EXTENT BOX 45 45` 실측값 45 의 절반이다
 constexpr double kPlateHalf = 22.5;
 // ➖ 묶음 10-a — 소리 좌우 치우침을 재는 기준 폭(창너비/2).
