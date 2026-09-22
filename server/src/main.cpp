@@ -590,6 +590,11 @@ int main(int argc, char** argv) {
                          : (cl & 0x100000) ? "netSendSimpleObj (단순)"
                                            : "(갱신 안 보냄)";
         std::printf("  정답지 갈래 %s\n", lane);
+        // ★ 09-22 — **무게·몸**을 같이 찍는다. 사람 무게를 상수 1 로 박아 둔 것이 튕김의 뿌리였다
+        //   (정답지 실측 15.60 · `NOX_DBG_PUSH=1` 로 대조군에서 읽었다). 0 이면 파일에 없다는 뜻이다
+        std::printf("  무게(MASS) %.2f%s · 몸 모양 %d · 반지름 %.1f\n",
+                    ti->mass, ti->mass == 0.0f ? "  ⚠ 파일에 없음 → 정답지 기본 1" : "",
+                    ti->shapeKind, ti->radius);
         std::fflush(stdout);
         return 0;
     }
@@ -2189,6 +2194,10 @@ int main(int argc, char** argv) {
                             // ★ 09-21 — 가장 세게 민 **벽 칸**의 정체. 문·창·재질 깃발을 가르는 자리다
                             " · **최악벽(가속 %.0f·거리 %.1f·칸 %d,%d·방향 %d·재질 %d[깃발 0x%X·secret %d]·사람(%.0f,%.0f))**"
                             " · **추적막음 %llu/%llu걸음**"
+                            // ★ 09-22 — 닿는 **첫 걸음**의 깊이. 규칙대로면 0.03 근처여야 한다
+                            " · **첫닿음깊이(평균 %.2f·최대 %.2f·건수 %llu)**"
+                            // ★ 09-22 — 대조군(`NOX_DBG_PUSH=1` 의 [밀기])과 **똑같은 네 숫자**
+                            " · **[밀기] 건수 %llu · 평균 %.1f · 최대 %.1f · 100넘음 %llu**"
                             // ★ 09-21 밤 — 되먹임 사슬의 **첫 고리**. 직전 속도가 12 이하면 거기가 시작이다
                             " · **첫발길질(%s·가속 %.0f·깊이 %.1f·**직전속도 %.1f**·프레임 %llu·칸 %d,%d 방향 %d·자리(%.0f,%.0f))**\n",
                             srv.petCount(), srv.petsWithPath(),
@@ -2213,6 +2222,9 @@ int main(int argc, char** argv) {
                             srv.wallPushWorst().f2, srv.wallPushWorst().flag80 ? 1 : 0,
                             srv.wallPushWorst().px, srv.wallPushWorst().py,
                             srv.traceBlocked(), srv.playerSteps(),
+                            srv.wallFirstTouchN() ? srv.wallFirstTouchSum() / srv.wallFirstTouchN() : 0.0,
+                            srv.wallFirstTouchMax(), srv.wallFirstTouchN(),
+                            srv.pushN(), srv.pushAvg(), srv.pushMax(), srv.pushBig(),
                             !srv.firstKick().have ? "없음"
                               : (srv.firstKick().kind == 3 ? "벽"
                               : (srv.firstKick().kind == 0 ? "놓인것"

@@ -1387,6 +1387,30 @@ public:
         uint32_t f2 = 0; bool flag80 = false;
     };
     const WallPushWorst& wallPushWorst() const { return wallPushWorst_; }
+    // ★★ 09-22 — **닿는 첫 걸음의 깊이.** 규칙대로면 걷기 힘 3.0 과 밀기 100×깊이 가 균형을 이뤄
+    //   깊이는 **0.03** 에서 멈춰야 한다. 그런데 실측 첫 발길질이 1.9 였다.
+    //   「직전 걸음엔 아무 벽도 안 밀었는데 이번 걸음에 갑자기 밀린」 순간만 골라 그 깊이를 본다 —
+    //   그 값이 크면 **벽을 늦게 발견한 것**(칸 사각형이 틱 시작 자리 기준이라서)이 원인이다.
+    // ★★ 09-22 — 대조군과 **똑같은 네 숫자**. 정답지는 벽·오브젝트 밀기가 전부 `Sub548600` 한 곳으로
+    //   모이므로 거기서 잰다(`server/object.go`, `NOX_DBG_PUSH=1`). 우리도 사람에게 더해지는 밀기를
+    //   전부 여기로 모아 같은 잣대로 낸다 — 아니면 「식은 같은데 값이 다르다」를 숫자로 못 말한다.
+    unsigned long long pushN() const { return pushN_; }
+    double pushAvg() const { return pushN_ ? pushSum_ / pushN_ : 0.0; }
+    double pushMax() const { return pushMax_; }
+    unsigned long long pushBig() const { return pushBig_; }
+    void NotePush(double mag) {
+        if (mag <= 0.0) return;
+        ++pushN_; pushSum_ += mag;
+        if (mag > pushMax_) pushMax_ = mag;
+        if (mag > 100.0) ++pushBig_;
+    }
+    double wallFirstTouchMax() const { return wallFirstTouchMax_; }
+    double wallFirstTouchSum() const { return wallFirstTouchSum_; }
+    unsigned long long wallFirstTouchN() const { return wallFirstTouchN_; }
+    void NoteWallFirstTouch(double depth) {
+        wallFirstTouchSum_ += depth; ++wallFirstTouchN_;
+        if (depth > wallFirstTouchMax_) wallFirstTouchMax_ = depth;
+    }
     void NoteWallPushWorst(double dax, double day, int gx, int gy, int dir,
                            double px, double py, double cx, double cy) const {
         if (dax == 0.0 && day == 0.0) return;
@@ -4012,6 +4036,13 @@ private:
     double bodyPushMax_ = 0.0;               // 그때 더해진 가속의 최대(벽과 같은 잣대)
     BodyPushWorst bodyPushWorst_;            // 그 최대를 만든 짝의 자세한 값
     FirstKick firstKick_;                    // 사슬의 첫 고리(한 번만 적는다)
+    unsigned long long pushN_ = 0;           // 대조군과 맞댈 네 숫자 — 건수
+    double pushSum_ = 0.0;                   //                      합(평균용)
+    double pushMax_ = 0.0;                   //                      최대
+    unsigned long long pushBig_ = 0;         //                      100 을 넘은 건수
+    double wallFirstTouchMax_ = 0.0;         // 닿는 첫 걸음의 깊이 — 최대
+    double wallFirstTouchSum_ = 0.0;         // 같은 것의 합(평균을 내려고)
+    unsigned long long wallFirstTouchN_ = 0; // 분모 — 0 을 「없었다」로 읽지 않으려고 같이 찍는다
     FirstKick kickSeq_[12];                  // 그 뒤 차례대로 11개 더 — 증폭을 수열로 본다
     size_t kickSeqN_ = 0;                    // 분모 — 12 를 넘었는지 알아야 「12개뿐」을 안 믿는다
     mutable WallPushWorst wallPushWorst_;    // 가장 세게 민 벽 칸(CircleVsWalls 가 const 라 mutable)

@@ -4076,7 +4076,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     // ★ 2026-09-13 묶음 2-c — 두 단계로 나눴다. 정답지는 한 걸음(0.2)마다 **움직이는 모두의 충돌을 먼저** 돌리고
     //   (`GAME4_1.c:3195` sub_5481C0 루프) **그다음 모두를 적분**한다(`:3200` 루프). 사람 하나씩 5걸음을 다 돌리면
     //   뒤에 도는 사람이 앞사람의 **끝난 자리**와 부딪혀 순서가 결과를 바꾼다.
-    struct Mover { Session* s; double fx, fy, bx, by, ax, ay; bool collide; };
+    // wallTouchedLastStep — 09-22 계측용. 「닿는 첫 걸음」만 고르려면 직전 걸음의 상태가 있어야 한다
+    struct Mover { Session* s; double fx, fy, bx, by, ax, ay; bool collide; bool wallTouchedLastStep = false; };
     std::vector<Mover> movers;
     // 밖에서 x·y 를 바꿨으면(접속·부활·진단 옮기기) 실수 자리를 거기에 맞추고 멈춘다.
     //   ★ 3-a — **모두 먼저** 맞춘다. 앞사람의 공격 판정이 뒷사람의 옛 실수 자리를 보면 안 된다.
@@ -4256,6 +4257,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            o, o.x, o.y, o.x, o.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
                 CountBodyPush(0, m.ax - bx0, m.ay - by0);
+                NotePush(std::hypot(m.ax - bx0, m.ay - by0));
                 {   // 가장 센 밀림의 자세한 값 — 반지름·거리를 같이 봐야 원인이 갈린다
                     const double ddx = m.ax - bx0, ddy = m.ay - by0;
                     if (ddx != 0.0 || ddy != 0.0) {
@@ -4278,6 +4280,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            playerBody, m2.s->posX, m2.s->posY, m2.bx, m2.by, m2.s->velX, m2.s->velY, m.ax, m.ay, &me, &other);
                 CountBodyPush(1, m.ax - bx0, m.ay - by0);
+                NotePush(std::hypot(m.ax - bx0, m.ay - by0));
                 NoteFirstKick(1, std::hypot(m.ax - bx0, m.ay - by0), 40.0, s.velX, s.velY,
                               s.posX, s.posY, -1, -1, -1, frame);
             }
@@ -4293,6 +4296,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            tb->second, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
                 CountBodyPush(2, m.ax - bx0, m.ay - by0);
+                NotePush(std::hypot(m.ax - bx0, m.ay - by0));
                 NoteFirstKick(2, std::hypot(m.ax - bx0, m.ay - by0), 40.0, s.velX, s.velY,
                               s.posX, s.posY, -1, -1, -1, frame);
             }
@@ -4306,9 +4310,16 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                     ++wallPushSteps_;
                     const double mag = std::sqrt(dax * dax + day * day);
                     if (mag > wallPushMax_) wallPushMax_ = mag;
+                    NotePush(mag);
+                    // ★ 09-22 — **닿는 첫 걸음**만 골라 깊이를 본다(직전 걸음엔 안 밀렸던 경우).
+                    //   규칙대로면 0.03 근처여야 한다 — 크면 벽을 늦게 발견한 것이다
+                    if (!m.wallTouchedLastStep) NoteWallFirstTouch(mag / kWallPush);
+                    m.wallTouchedLastStep = true;
                     // 100 = 벽 밀기 상수 → 가속 ÷ 100 이 파고든 깊이. 칸은 방금 적힌 최악벽에서 가져온다
                     NoteFirstKick(3, mag, 100.0, s.velX, s.velY, s.posX, s.posY,
                                   wallPushWorst_.gx, wallPushWorst_.gy, wallPushWorst_.dir, frame);
+                } else {
+                    m.wallTouchedLastStep = false;
                 }
             }
         }
