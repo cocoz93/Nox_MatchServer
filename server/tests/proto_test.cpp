@@ -1454,6 +1454,27 @@ void TestPropsAndInvuln() {
             Check(seq[15] == seq[14], "문이 안 선다 — 문짝이 비켜도 밀림이 안 끝난다");
             Check(seq[15] < 96, "문이 경첩 끝까지 밀렸다 — 문짝 선분이 아니라 중심 거리로 밀고 있다");
         }
+        // ★★ **경첩 한계(±12 눈금)** — 위 판은 문짝이 먼저 비켜서 이 가지를 못 건드렸다.
+        //   **경첩 자리에 서면** 문이 돌아도 사람이 계속 선분 끝에 붙어 있어 밀림이 안 끝나고,
+        //   그때 비로소 `sub_548B60`(`GAME5.c:2248`)의 한계가 일한다.
+        //   이 가지가 없으면 **회전문처럼 끝없이 돈다**(실제로 그랬다)
+        {
+            nox::Server s3;
+            s3.DebugEnterGame(a, 728);
+            nox::Server::WorldProp d2;
+            d2.netCode = 301; d2.type = 306; d2.x = 1000; d2.y = 1000;
+            d2.kind = nox::PropKind::Door;
+            s3.SetWorldProps({ d2 });
+            s3.DebugMoveTo(a, 1000, 1000);                 // ★ 경첩 자리에 선다
+            uint32_t m3 = 0;
+            for (int t = 0; t < 60; ++t) { m3 += 33; std::vector<nox::OutPacket> z; s3.Tick(m3, z); }
+            const int fine = s3.DebugPropFine(301);
+            const int coarse = (32 * fine / 256) & 31;
+            std::printf("  [재기] 경첩에 서서 60틱 — 미세각 %d · 거친각 %d (한계는 닫힘 0 에서 ±12)\n", fine, coarse);
+            // 한계가 일하면 **거친각이 12 를 안 넘는다**(없으면 한 바퀴 돌아 아무 값이나 된다)
+            Check(coarse <= 12 || coarse >= 20, "문이 경첩 한계를 넘어 돌았다 — 회전문이다");
+            Check(fine != 0, "경첩에 섰는데 문이 아예 안 돈다(시험 전제)");
+        }
         Check(s2.PropOpen(300), "다가갔는데 문이 안 열렸다");
         const auto msgs = FlattenTo(nearOut, a);
         const auto* d = FindMsg(msgs, static_cast<uint8_t>(nox::Op::DOOR_ANGLE));
