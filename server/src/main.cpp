@@ -1241,6 +1241,28 @@ int main(int argc, char** argv) {
                 for (size_t k = 0; k < props.size() && k < 6; ++k)
                     std::printf(" (%d,%d)", static_cast<int>(props[k].x), static_cast<int>(props[k].y));
                 std::printf("\n");
+                // ★ 09-22 — **문 자리에 벽 칸이 있나.** 정답지 `Sub_57B500` 은 충돌에서 문을 무시하고(0x10 미설정)
+                //   추적에서는 열렸으면 통과시킨다. 그 갈래를 우리도 만들지 정하려고 **먼저 셌다.**
+                //   ⭕ Estate 실측 — 문 6개 중 **그 칸에 벽은 1개**, 둘레 한 칸까지는 6개.
+                //     ⇒ 문은 대개 **벽의 빈틈에 놓인 물건**이지 벽 칸이 아니다. 그 갈래는 여기선 1건뿐이라
+                //       **만들 값이 없다.** 진짜 구멍은 따로다 — `BodyVsBody`(`Server.cpp`)가 문 충돌을
+                //       통째로 건너뛰고 장애물 목록도 문을 빼서 **닫힌 문을 그냥 통과한다**(묶음 9).
+                //   0 옆에 **분모**(문 개수)를 같이 찍는다
+                {
+                    size_t onWall = 0, near1 = 0, nDoor = 0;
+                    for (const auto& p : props) {
+                        if (p.kind != nox::PropKind::Door) continue;
+                        ++nDoor;
+                        const int cx = static_cast<int>(p.x) / 23, cy = static_cast<int>(p.y) / 23;
+                        if (srv.DebugWallDirAt(cx, cy) >= 0) ++onWall;
+                        bool n = false;
+                        for (int dy = -1; dy <= 1 && !n; ++dy)
+                            for (int dx = -1; dx <= 1 && !n; ++dx)
+                                if (srv.DebugWallDirAt(cx + dx, cy + dy) >= 0) n = true;
+                        if (n) ++near1;
+                    }
+                    std::printf("[문·벽] 문 %zu개 중 **그 칸에 벽 %zu개 · 둘레 한 칸까지 %zu개**\n", nDoor, onWall, near1);
+                }
                 // ⑩ — 정적 조회(윗비트)를 쓰는 것이 몇이나 되나. **0 이면 뭔가 틀린 것**이다
                 {
                     size_t nStat = 0;
