@@ -595,6 +595,9 @@ int main(int argc, char** argv) {
         std::printf("  무게(MASS) %.2f%s · 몸 모양 %d · 반지름 %.1f\n",
                     ti->mass, ti->mass == 0.0f ? "  ⚠ 파일에 없음 → 정답지 기본 1" : "",
                     ti->shapeKind, ti->radius);
+        // ★ 09-22 — UPDATE·INIT 인자. **소리 이름이 여기 적혀 있는 종류가 있다**(밟는 판이 그랬다)
+        std::printf("  UPDATE     %s\n", ti->updateFn.empty() ? "(없음)" : ti->updateFn.c_str());
+        std::printf("  UPDATE 인자 %s\n", ti->updateArgs.empty() ? "(없음)" : ti->updateArgs.c_str());
         std::fflush(stdout);
         return 0;
     }
@@ -806,6 +809,45 @@ int main(int argc, char** argv) {
                 std::printf("[소리] AUD %zu개 · 이름표에 맞물림 %zu · 소리조각 있는 것 %zu%s\n",
                             tdb.Sounds().size(), sd.size(), withSamples,
                             miss ? " ⚠ 이름표에 없는 것 있음" : "");
+                // ★ 09-22 — **정품이 실제로 보낸 번호** 중 우리 표에 없는 것을 센다.
+                //   `_evidence/CAP_server_0906.txt` 의 `a6`·`a7` 610건을 풀어 얻은 번호들이다.
+                //   우리 표에 없으면 `PlaySoundAt` 이 조용히 버린다 — 「소리가 안 들린다」의 뿌리
+                {
+                    const uint16_t seen[] = { 276,131,270,322,879,190,186,301,188,192,300,302,230,41,319,232,231,69 };
+                    std::string missing;
+                    for (uint16_t q : seen) {
+                        bool ok = false;
+                        for (const auto& in : sd) if (in.id == q && in.samples > 0) { ok = true; break; }
+                        if (!ok) { missing += " "; missing += std::to_string(q); missing += "("; missing += nox::SoundName(q); missing += ")"; }
+                    }
+                    std::printf("[소리·정품이쓴것] %zu개 중 우리 표에 **없는 것**:%s\n",
+                                sizeof(seen) / sizeof(seen[0]), missing.empty() ? " (none)" : missing.c_str());
+                }
+                // ★ 09-22 사용자 보고(「소리가 안 들린다」) — **우리가 부르는 번호가 표에 있나**를 찍는다.
+                //   `PlaySoundAt` 은 소리조각이 0 이면 조용히 버리고, `maxDist` 가 0 이면 **거리에서 잘린다**.
+                //   둘은 증상이 같아서(안 들림) 숫자로 갈라야 한다
+                for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307 }) {
+                    bool found = false;
+                    for (const auto& in : sd)
+                        if (in.id == q) {
+                            std::printf("[소리·쓰는것] %u(%s) — 조각 %d · 들리는거리 %d%s\n",
+                                        (unsigned)q, nox::SoundName(q), in.samples, in.maxDist,
+                                        (in.samples <= 0 || in.maxDist <= 0) ? "  ⚠ 이래서 안 들린다" : "");
+                            found = true; break;
+                        }
+                    if (!found) {
+                        std::printf("[소리·쓰는것] %u(%s) — ⚠ **표에 아예 없다**\n", (unsigned)q, nox::SoundName(q));
+                        // 이름이 다를 뿐일 수 있다 — 비슷한 이름을 같이 찍어 고를 수 있게 한다
+                        std::printf("[소리·비슷한이름]");
+                        for (const auto& d : tdb.Sounds())
+                            if (d.name.find("Mana") != std::string::npos ||
+                                d.name.find("Recharge") != std::string::npos ||
+                                d.name.find("Obelisk") != std::string::npos)
+                                std::printf(" %s(%u·조각%d)", d.name.c_str(),
+                                            (unsigned)nox::SoundByName(d.name.c_str()), d.samples);
+                        std::printf("\n");
+                    }
+                }
             }
             // ★ 2026-09-15 묶음 9-b — **쏘는 덫 여섯 종류**(전부 `UPDATE = SkullUpdate`).
             //   보는 쪽은 **맵이 아니라 `thing.bin` 의 `INIT = SkullInit <dx> <dy>`** 에 있다

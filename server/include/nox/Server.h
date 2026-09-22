@@ -127,10 +127,14 @@ constexpr double kPlateHalf = 22.5;
 //   이 값은 **치우침에만** 쓰이고 들림 여부는 안 가른다
 constexpr int kSoundPanHalfWidth = 320;
 constexpr double kObeliskDist = 50.0;
-// 오벨리스크가 한 틱에 채우는 마나. ➖ 우리 값 — gamedata 에 오벨리스크 항목이 없고
-// 주석이 가리키는 `OblivionStaffRechargeRate = 2` 하나가 지팡이 쪽에서 겸한다.
-// 30Hz 에 2 면 초당 60 이라 너무 빠르다. 여섯 틱에 1 로 둔다(초당 5).
-constexpr uint32_t kObeliskEveryTicks = 6;
+// 오벨리스크가 한 틱에 채우는 마나.
+// ✖ **2026-09-22 정정 — 「여섯 틱에 1」은 우리가 지어낸 값이었고 6배 느렸다.**
+//   사용자가 화면에서 「마나 차는 속도가 너무 느리다」고 짚었다.
+//   ⭕ 정답지 `nox_xxx_updateObelisk_53C580`(`GAME4_3.c:6418`) — 온라인에서는 `v12 = 1` 이고
+//     오벨리스크 갱신은 **틱마다** 돈다. 즉 **틱당 1 · 초당 30** 이다
+//     (깃발 4096 인 모드에서만 그 직업 최대 마나를 한 번에 채운다 — 우리 모드가 아니다).
+//   ⚠ 정답지는 마나석의 **잔량도 틱마다 줄인다**(`:6454` `--*v24`) — 우리는 아직 안 줄인다(별개 묶음)
+constexpr uint32_t kObeliskEveryTicks = 1;
 constexpr int kObeliskManaPerTick = 1;
 // 문 각도 — `0xb2` 의 셋째 바이트. 정품 표본에 `00`·`10`·`18` 이 보였다(`CAP_server_0906`).
 // ◑ 값의 뜻(각도 단위)은 모른다. **닫힘 0 · 열림 0x18** 두 값만 쓴다.
