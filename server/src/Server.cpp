@@ -3663,11 +3663,46 @@ inline bool PushOut(double r, double mass, double px, double py, float cx, float
 // sub_57B500(`server/wall.go:839`) — 벽이 있으면 방향, 없으면 −1.
 // ★ 9-a — **반 넘게 열린 비밀벽은 −1**(막지 않는다). 정답지 `server/wall.go:848` 의
 //   `wl.Flags4.Has(FlagSecret) && *(uint8)(wl.Data+22) > 11` 갈래다. 칸은 0~23 이니 **11 초과**가 절반이다.
-// ⛔ 창(`FlagWindow`)·문(`FlagDoor`) 갈래는 아직 없다(묶음 9 의 남은 몫)
-int Server::WallShapeAt(int gx, int gy) const {
+// ★★ 09-22 묶음 9 — 문을 **제 칸의 벽으로** 만들어 붙인다. 정답지 `nox_xxx_doorAttachWall_410360`
+//   (`GAME1.c:692`)은 맵을 읽을 때 `nox_xxx_wallCreateAt_410250(gx, gy)` 로 **없던 벽을 만들고**
+//   `Flags4 |= 0x10` 을 켠 뒤 벽의 `Data` 에 문을 건다. 그래서 파일의 WallMap 에는 문 칸이 없다.
+void Server::AttachDoorWalls() {
+    if (wallTiles_.empty()) wallTiles_.assign(256 * 256, WallTile{});
+    for (size_t i = 0; i < props_.size(); ++i) {
+        if (props_[i].kind != PropKind::Door) continue;
+        const int gx = props_[i].x / 23, gy = props_[i].y / 23;
+        if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256) continue;
+        WallTile& w = wallTiles_[gy * 256 + gx];
+        w.door = static_cast<int16_t>(i);
+        // 이미 벽이 있으면 방향은 그대로 두고 문만 건다(정답지도 `wallCreateAt` 이 있는 벽을 돌려준다)
+        if (!w.present) {
+            const int d = DoorWallDir(kDoorClosed);
+            if (d < 0) continue;                         // 그 각도는 아예 안 막는다
+            w.present = true;
+            w.dir = static_cast<uint8_t>(d);
+        }
+        walls_[gy * 256 + gx] = 1;
+    }
+    AIPathBakeWalls();   // 길찾기 격자에도 같은 벽을 굽는다
+}
+
+// ★★ 09-22 묶음 9 — **문 갈래를 넣었다.** 정답지 `Sub_57B500(pos, flags)` 그대로:
+//     · 문 칸인데 `flags & 0x10` 이 없으면 **−1** — 즉 **밀어내기(충돌)는 문을 아예 안 본다**
+//       (`sub_54FFC0` 는 64 로만 부른다). 그래서 문에 밀려 튕기는 일이 없다
+//     · 있으면(=걸음 추적) **열려 있으면 −1**(지나간다) · 닫혀 있으면 문 각도가 정하는 대각선
+//   ⚠ 아직 **문마다의 각도를 안 읽는다** — 맵 짐에서 그 자리를 못 찾아 `kDoorClosed`(0) 로 모두 같다.
+//     각도 0 은 표에서 (−23,−23) → 부호가 같으니 **방향 1**(왼쪽 대각 `\`)이다.
+//     문 방향이 반대인 문이 있으면 막는 대각선이 틀린다 — 각도를 읽게 되면 그때 바로잡는다
+// ⛔ 창(`FlagWindow`) 갈래는 아직 없다
+int Server::WallShapeAt(int gx, int gy, uint8_t sflags) const {
     if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256 || wallTiles_.empty()) return -1;
     const WallTile& w = wallTiles_[gy * 256 + gx];
     if (!w.present) return -1;
+    if (w.door >= 0 && static_cast<size_t>(w.door) < props_.size()) {
+        if (!(sflags & 0x10)) return -1;                 // 충돌은 문을 무시한다
+        if (props_[static_cast<size_t>(w.door)].open) return -1;   // 열렸으면 지나간다
+        return w.dir;
+    }
     if (w.secret >= 0 && static_cast<size_t>(w.secret) < secretWalls_.size() &&
         secretWalls_[static_cast<size_t>(w.secret)].anim > 11) return -1;
     return w.dir;
@@ -3680,7 +3715,10 @@ bool Server::MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float
         const float v7 = gx * kGrid + 11.5f - x1, v8 = gy * kGrid + 11.5f - y1;
         if (v8 * v8 + v7 * v7 < 3600.0f) flags |= 0x4;
     }
-    const int t = WallShapeAt(gx, gy);
+    // ★ 09-22 — 정답지 `mapTraceRayImpl`(`server/wall.go:1066~1070`)은 `Sub_57B500` 에
+    //   `0x40 | (Flag1 이면 0x10)` 을 준다. **0x10 이 켜져야 문을 본다**(닫힌 문이 걸음을 막는다).
+    //   우리 걸음 추적은 깃발 0x1(=Flag1)로 부르므로 여기서 0x10 이 붙는다
+    const int t = WallShapeAt(gx, gy, static_cast<uint8_t>(0x40 | ((flags & 0x1) ? 0x10 : 0)));
     if (t < 0 || t > 10) return false;
     // GetWallAtGrid(Flag1 없음)은 칸 짝홀((x+y)&1)이 홀이면 벽이 없다고 본다(`server/wall.go:238`)
     if (!(flags & 0x1) && ((gx + gy) & 1)) return false;

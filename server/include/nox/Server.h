@@ -1328,6 +1328,9 @@ public:
         uint16_t sndPressed = 0, sndReleased = 0;
     };
     void SetWorldProps(std::vector<WorldProp> v) { props_ = std::move(v); }
+    // 문 칸을 벽 표에 만들어 붙인다 — 정답지 `nox_xxx_doorAttachWall_410360`.
+    //   맵을 읽은 뒤(벽·문 둘 다 들어온 뒤) 부른다. 두 번 불러도 같은 결과다
+    void AttachDoorWalls();
     size_t WorldPropCount() const { return props_.size(); }
     // 시험용 — 그 문이 열려 있나
     bool PropOpen(uint16_t netCode) const {
@@ -2366,6 +2369,12 @@ public:
     bool DebugPathBlockedByObj(bool air, uint32_t sub, int x, int y) { return AIPathBlockedByObj(air, sub, x, y); }
     bool DebugPathCanPass(bool air, uint32_t sub, int x, int y) { return AIPathCanPass(air, sub, x, y); }
     int  DebugWallDirAt(int x, int y) const { return WallDirAt(x, y); }
+    // ★ 09-22 묶음 9 — 문 갈래를 시험에서 가르는 손잡이 둘.
+    //   `DebugWallShapeCollide` 는 **밀어내기 쪽 조회**(0x40 만)다 — 문이면 −1 이 나와야 한다
+    int  DebugWallShapeCollide(int x, int y) const { return WallShapeAt(x, y, 0x40); }
+    void DebugSetPropOpen(uint16_t netCode, bool open) {
+        for (auto& p : props_) if (p.netCode == netCode) p.open = open;
+    }
     bool DebugDiagOk(int ii, int x, int y) const { return AIPathDiagOk(ii, x, y); }
     int DebugPathFind(bool awayFrom, bool air, uint32_t sub, float fx, float fy, float tx, float ty, int maxDepth) {
         return AIPathFind(awayFrom, PathActor{ air, sub, -1 }, fx, fy, tx, ty, PathFilter(), maxDepth);
@@ -3788,7 +3797,9 @@ private:
     static uint8_t PlayerAnimByte(const Session& s);                          // mapPlrActionToStateId_4FA2B0
     static bool PlayerAnimFrameSent(const Session& s);                        // netPlayerObjSend_518C30 의 +236 싣는 상태
     // ── 벽 충돌 (묶음 2-b) — 정답지 이식. Server.cpp 정의 머리 주석 참조 ──
-    int WallShapeAt(int gx, int gy) const;                                   // sub_57B500 (문·창·비밀 없음)
+    // sub_57B500 — `sflags` 는 정답지의 셋째 인자다. **0x40 = 충돌**(문을 무시) · **0x10 = 걸음 추적**(문을 본다).
+    //   기본값을 0x40 으로 둔 것은 부르는 자리 대부분이 밀어내기라서다(`sub_54FFC0` 도 64 로만 부른다).
+    int WallShapeAt(int gx, int gy, uint8_t sflags = 0x40) const;
     struct TraceHit { float x = 0, y = 0; int gx = 0, gy = 0; };   // 4-a2 — 막힌 점과 칸(MapTraceRayAt outPos·outGrid)
     bool MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags, TraceHit* hit = nullptr) const;   // MapTraceRayAt
     bool MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float y2, uint8_t flags, float* hx = nullptr, float* hy = nullptr) const;
@@ -4159,7 +4170,11 @@ private:
     bool wallsOn_ = false;
     // ★ 묶음 9-a — `secret` 은 `secretWalls_` 자리표(없으면 −1). 정답지 벽 구조의 `+28`(비밀벽 마디)과
     //   `Flags4 & 4`(비밀벽 깃발)를 한 칸으로 합친 것이다
-    struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; int16_t secret = -1; };
+    // ★ 09-22 — `door` 는 이 칸에 붙은 **문의 순번**(`props_` 색인). 정답지는 맵을 읽을 때
+    //   `nox_xxx_doorAttachWall_410360`(`GAME1.c:692`)으로 문 자리에 **벽을 만들어** 붙이고
+    //   `Flags4 |= 0x10`(FlagDoor)을 켠다. 그래서 정적 WallMap 에는 문 칸이 없다
+    //   (Estate 실측 — 문 6개 중 그 칸에 벽이 있는 것은 1개뿐이었다)
+    struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; int16_t secret = -1; int16_t door = -1; };
     std::vector<WallTile> wallTiles_;        // 256×256 벽 모양 (묶음 2-b)
     std::vector<uint32_t> wallDefFlags_;     // thing.bin WALL 순번 → 깃발
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물

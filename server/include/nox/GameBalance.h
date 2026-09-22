@@ -144,6 +144,29 @@ inline double PlayerMassFromStrength(int strength) {
 }
 inline double PlayerMassOnline(CharClass c) { return PlayerMassFromStrength(StrengthOnline(c)); }
 
+// ★★ **문이 막는 대각선** ⭕ `server/math.go:74` doorWallTable + `server/wall.go:877~887`.
+//   문은 제 칸에 벽을 만들어 붙고(`GAME1.c:692`), 그 벽의 **방향**은 문 각도(0~31)로 정해진다:
+//       표에서 (x,y) 를 꺼내 — 부호가 같으면 **1**(왼쪽 대각 `\`) · 다르면 **0**(오른쪽 대각 `/`)
+//       한쪽이 0 이면 **−1**(그 각도에서는 아예 안 막는다)
+constexpr int kDoorWallTable[32][2] = {
+    { -23, -23 }, { -18, -27 }, { -12, -30 }, {  -6, -31 },
+    {   0, -32 }, {   6, -31 }, {  12, -30 }, {  18, -27 },
+    {  23, -23 }, {  27, -18 }, {  30, -12 }, {  31,  -6 },
+    {  32,   0 }, {  31,   6 }, {  30,  12 }, {  27,  18 },
+    {  23,  23 }, {  18,  27 }, {  12,  30 }, {   6,  31 },
+    {   0,  32 }, {  -6,  31 }, { -12,  30 }, { -18,  27 },
+    { -23,  23 }, { -27,  18 }, { -30,  12 }, { -31,   6 },
+    { -32,   0 }, { -31,  -6 }, { -30, -12 }, { -27, -18 },
+};
+inline int DoorWallDir(uint8_t angle) {
+    const int x = kDoorWallTable[angle & 31][0], y = kDoorWallTable[angle & 31][1];
+    if (x > 0 && y > 0) return 1;
+    if (x < 0 && y < 0) return 1;
+    if (x < 0 && y > 0) return 0;
+    if (x > 0 && y < 0) return 0;
+    return -1;
+}
+
 // 캠페인(솔로·퀘스트)용 보간 ◑ — **레벨 1 이 기본값, 레벨 10 이 최대값**이다.
 //   `stat(L) = base + (max − base) × (L−1) / 9`
 //   ⚠ 0 이 아니라 **1 부터**다. `NOX_PLAYER_MAX_LEVEL − 1 = 9` 로 나눈다(GAME3_3.c:7678).

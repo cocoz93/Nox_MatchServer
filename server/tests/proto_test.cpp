@@ -10480,6 +10480,38 @@ void TestAIPathFind() {
             Check(srv.DebugDiagOk(ii, 43, 43), "벽이 없는데 대각이 막혔다");
     }
 
+    // ★★ ⑱-4 **문** (2026-09-22 묶음 9) — 정답지 `Sub_57B500` 의 세 갈래를 따로 본다:
+    //   ① 닫힌 문은 **걸음을 막는다**  ② 열린 문은 **지나간다**  ③ **밀어내기는 문을 아예 안 본다**
+    //   문은 제 칸에 벽을 만들어 붙는다(`doorAttachWall`) — 파일의 WallMap 에는 문 칸이 없다
+    {
+        const int gx = 100, gy = 100;
+        const int ox = gx * 23, oy = gy * 23;
+        nox::Server srv;
+        srv.SetWallTiles({});                                   // 파일에는 벽이 없다
+        nox::Server::WorldProp d;
+        d.kind = nox::PropKind::Door;
+        d.netCode = 4242;
+        d.x = ox + 11; d.y = oy + 11;                           // 그 칸 안
+        srv.SetWorldProps({ d });
+        srv.AttachDoorWalls();
+        // 각도 0 → 표 (−23,−23) → 부호 같음 → 방향 1(왼쪽 대각 `\`, 칸 안에서 x−y = 0 인 선)
+        Check(srv.DebugWallDirAt(gx, gy) == 1, "문 칸에 벽이 안 붙었다(방향 1 이어야 한다)");
+        // ① 닫힌 문 — 왼쪽 대각을 가로지르면 막혀야 한다
+        auto across = [&](nox::Server& s) {
+            return s.DebugTraceRay(static_cast<float>(ox + 16), static_cast<float>(oy + 4),
+                                   static_cast<float>(ox + 4),  static_cast<float>(oy + 16));
+        };
+        Check(!across(srv), "닫힌 문을 그냥 지나갔다");
+        // ② 열린 문 — 같은 걸음이 통과해야 한다
+        srv.DebugSetPropOpen(4242, true);
+        Check(across(srv), "열린 문이 걸음을 막았다");
+        // ③ **밀어내기는 문을 안 본다** — 닫아 놓고 봐도 충돌 쪽 조회는 −1 이어야 한다
+        srv.DebugSetPropOpen(4242, false);
+        Check(srv.DebugWallShapeCollide(gx, gy) == -1, "밀어내기가 문을 밀고 있다(정답지는 무시한다)");
+        // ★ 일부러 틀려 보기 — 문이 없는 칸은 셋 다 영향이 없어야 한다
+        Check(srv.DebugWallDirAt(gx + 5, gy) == -1, "문도 벽도 없는 칸이 벽으로 나온다");
+    }
+
     // ★★ ⑱-3 **사람 무게** (2026-09-22) — 정답지 `GAME3_3.c:7701` 무게 = 힘 ÷ 125 × 20 + 10.
     //   왜 시험까지 두나 — 이 한 값이 1 이었던 탓에 벽·오브젝트 밀림이 **15배**가 돼 튕겼다.
     //   ⭕ 검산의 정본은 대조군 서버에서 **직접 읽은 15.60**(위저드)이다.

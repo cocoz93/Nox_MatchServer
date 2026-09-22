@@ -1002,6 +1002,9 @@ int main(int argc, char** argv) {
                         wp.y = static_cast<int>(objs[i].y);
                         wp.kind = isPlate ? nox::PropKind::Plate
                                           : (isDoor ? nox::PropKind::Door : nox::PropKind::Obelisk);
+                        // ★ 09-22 — 문 종류 이름을 찍는다(문의 **몸**을 thing.bin 에서 찾으려면 이름이 있어야 한다)
+                        // ⭕ Estate 의 문 두 종류 — `WoodenDoor`(306) · `ArchedHalfDoor`(309).
+                        //   둘 다 `DOOR+IMMOBILE` · 몸은 **원 반지름 32** · thing.bin 에 MASS 없음(기본 1)
                         // ★ 묶음 10-b — 누르고 떼는 소리는 `UPDATE = TriggerUpdate <누름> <뗌>` 에 있다.
                         //   ⭕ 실측 — `PressurePlate` 는 `TriggerPressed`(750) · `TriggerReleased`(751)
                         if (isPlate && ti) {
@@ -1287,6 +1290,10 @@ int main(int argc, char** argv) {
                     std::printf("[판·문 번호] ⚠ extent 가 15비트를 넘는 것 %zu개 — 그것들은 클라가 못 찾는다\n",
                                 propExtentTooBig);
                 srv.SetWorldProps(std::move(props));
+                // ★ 09-22 묶음 9 — 문을 **제 칸의 벽으로** 붙인다(정답지 `doorAttachWall`).
+                //   벽과 문이 **둘 다 들어온 뒤**에 불러야 한다
+                srv.AttachDoorWalls();
+                std::printf("[문·벽] 문 칸에 벽을 붙였다 — 닫힌 문이 걸음을 막는다(밀어내기는 안 한다)\n");
             }
 
             // ★ 주문 마나 비용 — 같은 파일의 SPEL 섹션에서 온다.
