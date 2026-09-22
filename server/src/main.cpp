@@ -1072,6 +1072,8 @@ int main(int argc, char** argv) {
                         //   (`8bdf 00 · 8be0 10 · 8be1 18 · 8be2 18 · 8be3 08`) 어느 바이트가 각도인지 맞댈 수 있다
                         if (isDoor && objs[i].tail.size() >= 2) {
                             wp.angle = objs[i].tail[1];
+                            // 미세각은 거친각 × 8 에서 시작한다(거친각 = 32 × 미세 / 256)
+                            wp.fine = static_cast<uint8_t>((static_cast<int>(wp.angle) * 8) & 255);
                             // ⚠ 여는 거리는 **반지름을 같이 찍는다** — 진짜로 문 몸에서 나온 42 와
                             //   못 찾아 떨어진 기본값 42 가 숫자로는 똑같아서 구분이 안 된다
                             std::printf("[문각도] 번호 %04x (%d,%d) — 닫힘 %u · 열림 %u · 여는거리 %.0f(문반지름 %s)\n",

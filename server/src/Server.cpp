@@ -1923,21 +1923,97 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 const double d = std::sqrt(best);
                 if (d < doorNearestDist_) doorNearestDist_ = d;
             }
-            const bool want = best <= openAt * openAt;
-            if (want == p.open) continue;          // 안 바뀌면 안 보낸다
+            // ★★★ 09-22 묶음 9 — **문은 사람이 밀어서 돈다**(정답지 `GAME5.c:2193~2207`):
+            //       각속도 += (사람 반지름 − 거리) × **사람 무게**(+120) · 부호는 문선의 어느 쪽인가
+            //       그 뒤 용수철 목록(`sub_548B60`)이 걸음마다 각도를 돌린다
+            //   ⇒ 「휙 열린다」가 아니라 **밀린 만큼 돈다.** 사용자가 짚은 자리다
+            // ⚠⚠ **문 중심이 아니라 「문짝 선분」까지의 거리다.** 여기를 틀리면 문이 떤다 —
+            //   중심은 문이 돌아도 안 움직이니 밀림이 **영영 안 끝나고**, 미는 부호가 뒤집혀
+            //   각도가 오르내린다(실측: 미세각 216 ↔ 236 왕복).
+            //   정답지 `GAME5.c:2143~2166` — 문짝은 문 자리에서 방향표 값 **×2**(길이 32)만큼 뻗은 선분이고,
+            //   부딪힘은 **사람 원(반지름 10) 대 그 선분**이다. 문이 비키면 거리가 멀어져 저절로 멈춘다
+            {
+                const int idx = (static_cast<int>(p.fine) + 160) & 255;
+                const double th = idx * (2.0 * 3.14159265358979323846 / 256.0);
+                const double dirx = std::floor(std::cos(th) * 16.0 + 0.5);   // 반지름 16 표
+                const double diry = std::floor(std::sin(th) * 16.0 + 0.5);
+                const double ex = 2.0 * dirx, ey = 2.0 * diry;               // 문짝 끝(×2)
+                // 선분 [문자리 → 문짝끝] 위에서 사람에게 가장 가까운 점
+                const double px = nearest->posX - p.x, py = nearest->posY - p.y;
+                const double len2 = ex * ex + ey * ey;
+                double t = (len2 > 0.0) ? (px * ex + py * ey) / len2 : 0.0;
+                if (t < 0.0) t = 0.0;
+                if (t > 1.0) t = 1.0;
+                const double qx = px - t * ex, qy = py - t * ey;
+                const double dist = std::sqrt(qx * qx + qy * qy);
+                const double depth = kBodyRadius - dist;                     // 사람 반지름 − 거리
+                if (depth > 0.0) {
+                    const double cross = dirx * py - diry * px;
+                    const double push = depth * PlayerMassOf(*nearest);
+                    p.spin += (cross <= 0.0) ? push : -push;
+                    p.lastPushFrame = frame_;
+                }
+            }
+            // 용수철 — 각속도로 미세각(0~255)을 돌린다. 한 걸음에 최대 4(정답지 `sub_548B60`),
+            //   걸음이 다섯이니 틱당 최대 20. 속도는 걸음마다 0 으로 지운다(정답지도 `+32` 를 지운다)
+            const uint8_t coarseBefore = static_cast<uint8_t>((32 * static_cast<int>(p.fine) / 256) & 31);
+            const int closedFineI = (static_cast<int>(p.angle) * 8) & 255;
+            // ★★ **경첩 한계** — 정답지 `sub_548B60`(`GAME5.c:2248·2258`):
+            //     거친각이 `(닫힘 + 12) % 32` 면 **더 안 돈다** · 반대쪽은 `닫힘 − 12`
+            //   ⇒ 문은 닫힘에서 **±12 눈금**까지만 열린다. 이 한계가 떨림도 같이 막는다 —
+            //     한계에서 서니 미는 부호가 뒤집히는 구간까지 안 들어간다
+            //   속도 제한(걸음당 최대 4 · `2×속도+0.5`)도 정답지 그대로다
+            //   ⚠ **이 한계는 시험이 아직 안 본다** — 문짝이 먼저 비켜 그 앞에서 서기 때문이다
+            //     (돌연변이로 빼 봐도 결과가 안 바뀐다). 정답지에 있으니 넣어 두되 미검증으로 적는다
+            const int limPlus  = (static_cast<int>(p.angle) + 12) & 31;
+            const int limMinus = (static_cast<int>(p.angle) - 12 + 32) & 31;
+            for (int st = 0; st < kMoveSubSteps && p.spin != 0.0; ++st) {
+                int step = static_cast<int>(2.0 * p.spin + 0.5);
+                int mag = step < 0 ? -step : step;
+                if (mag > 4) mag = 4;
+                const int coarseCur = (32 * static_cast<int>(p.fine) / 256) & 31;
+                if (p.spin > 0.01) {
+                    if (coarseCur == limPlus) break;                 // 경첩 끝
+                    p.fine = static_cast<uint8_t>((p.fine + mag) & 255);
+                } else if (p.spin < -0.01) {
+                    if (coarseCur == limMinus) break;                // 반대쪽 끝
+                    p.fine = static_cast<uint8_t>((p.fine - mag) & 255);
+                } else {
+                    break;
+                }
+            }
+            p.spin = 0.0;
+            // 저절로 닫힘 — 민 지 0.5초가 지나면 닫힘 각도 쪽으로 2씩(정답지 `updateDoor` + `sub_548860`)
+            {
+                const uint8_t closedFine = static_cast<uint8_t>((static_cast<int>(p.angle) * 8) & 255);
+                if (p.fine != closedFine && frame_ > p.lastPushFrame + kServerTickRate / 2) {
+                    const int diff = (static_cast<int>(p.fine) - static_cast<int>(closedFine) + 256) & 255;
+                    p.fine = static_cast<uint8_t>((p.fine + (diff >= 128 ? 2 : -2)) & 255);
+                    if (((static_cast<int>(p.fine) - static_cast<int>(closedFine) + 256) & 255) < 2)
+                        p.fine = closedFine;                       // 지나치지 않게 딱 맞춘다
+                }
+            }
+            const uint8_t coarseNow = static_cast<uint8_t>((32 * static_cast<int>(p.fine) / 256) & 31);
+            const bool want = (coarseNow != p.angle);
+            if (coarseNow == coarseBefore) continue;   // 거친각이 안 바뀌면 안 보낸다
+            if (want && !p.open) ++doorsOpened_;
             p.open = want;
-            if (want) ++doorsOpened_;
             // ★★ 09-22 사용자 보고 — **끼익 소리가 없다**(정품 기억과 대조). 실제로 안 보내고 있었다.
             //   정답지 `nox_xxx_updateDoor_53AC50`(`GAME4_3.c:5236·5257`) — 재질로 갈리고 기본은
             //   **열 때 237 · 닫힐 때 239**(쇠 241/243 · 열쇠문 247/248 · 창살 1014/1015).
             //   ⚠ 우리는 아직 재질을 안 읽어 나무 기본만 낸다 — Estate 의 문 둘은 둘 다 나무다
-            PlaySoundAt(want ? 237 : 239, static_cast<float>(p.x), static_cast<float>(p.y));
+            //   ⚠ 소리는 **닫힘을 떠날 때**와 **닫힘에 닿을 때** 한 번씩이다(정답지 `updateDoor` 의 두 갈래).
+            //     각도가 도는 내내 내면 안 된다
+            if (coarseBefore == p.angle && coarseNow != p.angle)
+                PlaySoundAt(237, static_cast<float>(p.x), static_cast<float>(p.y));
+            else if (coarseBefore != p.angle && coarseNow == p.angle)
+                PlaySoundAt(239, static_cast<float>(p.x), static_cast<float>(p.y));
             const uint16_t dnc = PropWireCode(p);
             uint8_t full[4] = {
                 static_cast<uint8_t>(Op::DOOR_ANGLE),
                 static_cast<uint8_t>(dnc),
                 static_cast<uint8_t>(dnc >> 8),
-                static_cast<uint8_t>(want ? DoorOpenAngle(p.angle) : p.angle),
+                coarseNow,                             // **지금 각도**를 그대로 보낸다
             };
             Broadcast(/*viaSeq=*/false, full, sizeof(full), out);
             // ★ 09-21 — 방금 받은 사람은 「이 상태를 안다」고 적는다(아래 되맞춤이 또 보내지 않게).

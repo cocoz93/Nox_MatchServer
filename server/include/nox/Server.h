@@ -1335,6 +1335,12 @@ public:
         // ★ 09-22 — 문의 **닫힘 각도**(0·8·16·24). 맵 짐 꼬리의 둘째 바이트다.
         //   전에는 모든 문을 0 으로 보내 **문 방향이 전부 틀렸다**
         uint8_t angle = kDoorClosedFallback;
+        // ★★ 09-22 — 문이 **도는** 얼개(정답지 `GAME5.c:2193` + `sub_548B60`).
+        //   `fine` 은 미세각 0~255, 클라에 보내는 거친각은 `32 × fine / 256`(0~31)이다.
+        //   `spin` 은 사람이 민 각속도 — 걸음마다 미세각을 돌리고 그 자리에서 지운다
+        uint8_t fine = 0;
+        double spin = 0.0;
+        uint32_t lastPushFrame = 0;
         uint32_t nextManaFrame = 0; // 오벨리스크만 쓴다
         // ★ 09-22 — 소리는 **마나 주는 주기와 다른 주기**다(정답지는 `fps/2`). 따로 센다
         uint32_t nextManaSndFrame = 0;
@@ -2401,6 +2407,11 @@ public:
     // ★ 09-22 묶음 9 — 문 갈래를 시험에서 가르는 손잡이 둘.
     //   `DebugWallShapeCollide` 는 **밀어내기 쪽 조회**(0x40 만)다 — 문이면 −1 이 나와야 한다
     int  DebugWallShapeCollide(int x, int y) const { return WallShapeAt(x, y, 0x40); }
+    // ★ 09-22 — 문의 미세각·거친각을 시험에서 읽는다(도는 모양을 수열로 보려고)
+    int DebugPropFine(uint16_t netCode) const {
+        for (const auto& q : props_) if (q.netCode == netCode) return q.fine;
+        return -1;
+    }
     // ★ 09-22 — 마나석 잔량을 시험에서 읽는다(0~50). 없으면 −1
     int DebugPropCharge(uint16_t netCode) const {
         for (const auto& p : props_) if (p.netCode == netCode) return p.charge;

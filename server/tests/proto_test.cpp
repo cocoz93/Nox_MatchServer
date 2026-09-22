@@ -1435,22 +1435,43 @@ void TestPropsAndInvuln() {
         s2.Tick(33, far);
         Check(!s2.PropOpen(300), "멀리 있는데 문이 열렸다");
 
-        s2.DebugMoveTo(a, 1010, 1000);
+        s2.DebugMoveTo(a, 990, 990);   // 문짝 선분 위(닫힘각 0 → 문짝은 \ 대각선)
         std::vector<nox::OutPacket> nearOut;
         s2.Tick(66, nearOut);
+        {   // ★★ **도는 모양**을 본다 — 이 셋이 오늘 두 번 무너진 자리다:
+            //   ① 오르다 **선다**(문짝이 비키면 밀림이 끝난다)  ② 오르내리며 **떨지 않는다**
+            //   ③ **경첩 끝(±96)까지 안 간다** — 끝까지 가면 문짝이 아니라 **중심 거리**로 밀고 있는 것이다
+            std::printf("  [재기] 문 미세각:");
+            uint32_t mm = 66;
+            int seq[16];
+            for (int t = 0; t < 16; ++t) { mm += 33; std::vector<nox::OutPacket> z; s2.Tick(mm, z);
+                seq[t] = s2.DebugPropFine(300); std::printf(" %d", seq[t]); }
+            std::printf("  (닫힘 0 · 경첩 끝 ±96)\n");
+            int downs = 0;
+            for (int t = 1; t < 16; ++t) if (seq[t] < seq[t - 1]) ++downs;
+            Check(seq[15] != 0, "밀었는데 문이 안 돈다");
+            Check(downs == 0, "문 각도가 오르내린다 — 떨고 있다(문짝이 아니라 중심으로 밀고 있나)");
+            Check(seq[15] == seq[14], "문이 안 선다 — 문짝이 비켜도 밀림이 안 끝난다");
+            Check(seq[15] < 96, "문이 경첩 끝까지 밀렸다 — 문짝 선분이 아니라 중심 거리로 밀고 있다");
+        }
         Check(s2.PropOpen(300), "다가갔는데 문이 안 열렸다");
         const auto msgs = FlattenTo(nearOut, a);
         const auto* d = FindMsg(msgs, static_cast<uint8_t>(nox::Op::DOOR_ANGLE));
         Check(d != nullptr, "0xb2 가 안 나감");
         if (d) {
             Check(d->size() == 4, "0xb2 가 4바이트가 아님");
-            Check((*d)[3] == nox::DoorOpenAngle(0), "열림 각이 안 실렸다");
+            // ✖ 09-22 — 옛 시험은 **한 번에 열림 각이 실린다**고 못 박고 있었다. 그건 틀린 모형이다.
+            //   정답지에서 문은 사람이 민 만큼 **돈다**(`GAME5.c:2193`) — 그래서 여기서 볼 것은
+            //   「닫힘 각도를 **떠났나**」다. 얼마나 돌았는지는 민 세기에 달렸다
+            Check((*d)[3] != 0, "문이 닫힘 각도를 안 떠났다 — 밀어도 안 돈다");
         }
-        // 안 바뀌면 다시 안 보낸다 — 매 틱 보내면 클라가 죽는다
-        std::vector<nox::OutPacket> again;
-        s2.Tick(99, again);
-        Check(FindMsg(FlattenTo(again, a), static_cast<uint8_t>(nox::Op::DOOR_ANGLE)) == nullptr,
-              "안 바뀌었는데 0xb2 를 또 보냈다");
+        // 사람이 계속 밀고 있으면 **더 돈다** — 옛 시험은 「또 보내면 안 된다」고 못 박았는데,
+        //   그건 각도가 한 값뿐일 때 이야기다. 지금은 도는 동안 각도가 바뀌니 보내는 게 맞다.
+        //   대신 **사람이 떠나면 멈추고 닫힌다**를 본다(그게 지금 모형의 불변식이다)
+        s2.DebugMoveTo(a, 4000, 4000);
+        uint32_t ms2 = 99;
+        for (int t = 0; t < 120; ++t) { ms2 += 33; std::vector<nox::OutPacket> o; s2.Tick(ms2, o); }
+        Check(!s2.PropOpen(300), "사람이 떠났는데 문이 안 닫힌다");
     }
 
     // ★★ 문 — **나중에 들어온 사람도 열린 문을 열린 것으로 안다** ← 09-21 대조군 실측으로 들어온 시험
@@ -1471,37 +1492,47 @@ void TestPropsAndInvuln() {
         door.kind = nox::PropKind::Door;
         ps.push_back(door);
         s4.SetWorldProps(ps);
-        auto countDoor = [&](const std::vector<nox::OutPacket>& o, const std::string& who, uint8_t angle) {
+        // ✖ 09-22 — 옛 시험은 **정해진 열림 각 하나**를 세고 있었다. 문이 이제 **도니까**
+        //   각도가 여러 값을 거친다. 그래서 「열림(닫힘 각도가 아님)」과 「닫힘」으로 센다
+        auto countDoor = [&](const std::vector<nox::OutPacket>& o, const std::string& who, bool openOnes) {
             int n = 0;
             for (const auto& m : FlattenTo(o, who))
-                if (m.size() == 4 && m[0] == static_cast<uint8_t>(nox::Op::DOOR_ANGLE) && m[3] == angle) ++n;
+                if (m.size() == 4 && m[0] == static_cast<uint8_t>(nox::Op::DOOR_ANGLE) &&
+                    ((m[3] != nox::kDoorClosedFallback) == openOnes)) ++n;
             return n;
         };
         uint32_t ms = 0;
         std::vector<nox::OutPacket> sink;
         for (int i = 0; i < 60; ++i) { ms += 34; s4.Tick(ms, sink); }      // A 가 자리 잡는다(1초 넘게)
-        Check(countDoor(sink, a, nox::DoorOpenAngle(0)) == 0, "멀리 있는데 열림 알림이 갔다(시험 전제)");
+        Check(countDoor(sink, a, /*openOnes=*/true) == 0, "멀리 있는데 열림 알림이 갔다(시험 전제)");
 
-        s4.DebugMoveTo(a, 1010, 1000);                                     // A 가 문 앞으로
+        s4.DebugMoveTo(a, 990, 990);   // 문짝 선분 위                                     // A 가 문 앞으로
         std::vector<nox::OutPacket> opened;
         for (int i = 0; i < 5; ++i) { ms += 34; s4.Tick(ms, opened); }
         Check(s4.PropOpen(300), "문이 안 열렸다(시험 전제)");
-        Check(countDoor(opened, a, nox::DoorOpenAngle(0)) == 1, "A 가 열림 알림을 딱 한 번 받아야 한다");
+        Check(countDoor(opened, a, true) >= 1, "A 가 열림 알림을 못 받았다");
 
+        // ⚠ **A 는 문 앞에 그대로 둔다** — 물러나면 0.5초 뒤부터 저절로 닫혀
+        //   B 의 1초 유예가 끝나기 전에 문이 닫혀 버린다(되맞춤이 돌 일이 없어진다).
+        //   실제로 그렇게 짰다가 「되맞춤이 한 번도 안 돌았다」로 걸렸다
         s4.DebugEnterGame(b2addr, 729);                                    // ★ B 는 **그 뒤에** 들어온다
         s4.DebugMoveTo(b2addr, 5000, 5000);
         std::vector<nox::OutPacket> late;
         for (int i = 0; i < 75; ++i) { ms += 34; s4.Tick(ms, late); }
-        Check(countDoor(late, b2addr, nox::DoorOpenAngle(0)) == 1,
-              "나중에 들어온 B 가 열린 문을 못 알았다 — 되맞춤이 안 돈다");
-        Check(countDoor(late, a, nox::DoorOpenAngle(0)) == 0, "이미 아는 A 에게 또 보냈다 — 같은 상태는 다시 안 보낸다");
-        Check(s4.doorResync() == 1, "되맞춤 건수가 1 이 아니다");
+        Check(countDoor(late, b2addr, true) >= 1,
+              "나중에 들어온 B 가 열린 문을 못 알았다");
+        // ✖ 09-22 — 옛 시험은 **되맞춤 건수가 1**이라고 못 박았다. 그 전제가 사라졌다:
+        //   문이 이제 **물리적으로** 돌아서 「아무도 안 미는데 열린 채 가만히 있는 문」이 없다
+        //   (0.5초 뒤부터 저절로 닫힌다). 사람이 붙어 있으면 각도가 계속 바뀌어 **보통 방송**으로 간다.
+        //   ⇒ 여기서 지킬 것은 **「B 가 문이 열린 것을 안다」** 하나다.
+        //   ⏸ 되맞춤 경로 자체를 보는 시험은 따로 만들어야 한다(레버로 붙잡아 두는 문이 생기면 그때)
 
-        s4.DebugMoveTo(a, 5000, 5000);                                     // A 가 떠나 문이 닫힌다
+        s4.DebugMoveTo(a, 5000, 5000);                                     // 이제 A 도 물러난다
         std::vector<nox::OutPacket> closed;
-        for (int i = 0; i < 30; ++i) { ms += 34; s4.Tick(ms, closed); }
-        Check(countDoor(closed, a, nox::kDoorClosedFallback) == 1, "닫힘 알림이 A 에게 한 번 가야 한다");
-        Check(countDoor(closed, b2addr, nox::kDoorClosedFallback) == 1, "닫힘 알림이 B 에게 한 번 가야 한다");
+        for (int i = 0; i < 400; ++i) { ms += 34; s4.Tick(ms, closed); }
+        Check(!s4.PropOpen(300), "아무도 안 미는데 문이 안 닫힌다");
+        Check(countDoor(closed, a, /*openOnes=*/false) >= 1, "닫힘 알림이 A 에게 안 갔다");
+        Check(countDoor(closed, b2addr, false) >= 1, "닫힘 알림이 B 에게 안 갔다");
     }
 
     // ★★ 마나석 **잔량** (2026-09-22) — 사용자가 「마나 차는 속도가 너무 느리다」고 짚어서 판 자리.
