@@ -13342,6 +13342,25 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         SendTimer(out);
     }
 
+    // ★★ 09-22 `0xd7` 지연 보고 — **주기와 뽑는 방식을 둘 다 고쳤다.**
+    //   ✖ 옛 우리 규칙 = 6틱마다 **접속자 전원**. 주석의 「6틱에 한 번」은 정품에서
+    //     「갱신 1,287건 대 d7 217건」을 나눈 값이라 분모가 **틱이 아니라 갱신**이었다.
+    //   ⭕ 정답지 둘 —
+    //     ① 주기(`server.go:259`) : `지금 − 마지막 > 0x1F4` = **500밀리초마다 한 번**(30틱이면 15틱)
+    //     ② 뽑기(`GAME3_2.c:1444~1470`) : 커서를 하나 들고 **돌아가며 한 명만** 골라
+    //        그 한 건을 **모두에게** 보낸다(전원을 매번 보내지 않는다)
+    //   ⇒ 실측 비율(우리 106 : 대조군 40)이 이 둘로 설명된다
+    uint16_t latencyPick = 0;
+    if (frame_ >= lastLatencyFrame_ + kServerTickRate / 2) {
+        lastLatencyFrame_ = frame_;
+        std::vector<uint16_t> alive;
+        for (const auto& kv2 : sessions_) if (kv2.second.inGame) alive.push_back(kv2.second.netCode);
+        if (!alive.empty()) {
+            latencyCursor_ = (latencyCursor_ + 1) % alive.size();
+            latencyPick = alive[latencyCursor_];
+        }
+    }
+
     // 게임에 들어와 있는 사람에게만 보낸다.
     for (auto& kv : sessions_) {
         Session& s = kv.second;
@@ -14037,24 +14056,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             EmitImportantRaw(s, msg, sizeof(msg), out);
         }
         // ★★★ **지연 보고 `0xd7`** — 갱신 조각 끝에 `d7 <번호2> <지연2>` 로 붙는다.
-        //   정품 실측(2026-09-08): 본문 `cb 02 00 00`, 갱신 1,287건 대 217건이니
-        //   **약 6틱에 한 번**이다. 내가 이걸 **0건** 보내고 있었다.
-        //   클라 화면에 「network timeout ... removed from the game」이 반복해서 뜨는데,
-        //   이 신호가 없어 클라가 상대를 죽은 것으로 보는 것일 수 있다 → 관측대기에서 시험으로.
-        //   ⚠ `0x5e` 처럼 **매 틱 보내면 클라가 죽는다.** 정품 비율을 지킬 것.
-        if (n && (frame_ % 6) == 0) {
-            for (const auto& kv2 : sessions_) {
-                const Session& o = kv2.second;
-                if (!o.inGame) continue;
-                if (1 + n + 5 > sizeof(body)) break;
-                uint8_t* p = body + 1 + n;
-                p[0] = static_cast<uint8_t>(Op::REPORT_ALL_LATENCY);
-                p[1] = static_cast<uint8_t>(o.netCode);
-                p[2] = static_cast<uint8_t>(o.netCode >> 8);
-                p[3] = 0;      // 지연 — 정품 표본이 전부 0 이라 0 으로 둔다
-                p[4] = 0;
-                n += 5;
-            }
+        // ✖ **09-22 정정 — 옛 주석의 「약 6틱에 한 번」은 틀린 셈이었다.**
+        //   그건 정품에서 「갱신 1,287건 대 d7 217건」을 나눈 값이라 분모가 **틱이 아니라 갱신**인데,
+        //   그걸 `frame_ % 6` 으로 옮겨 놓고 **접속자 전원**을 매번 보냈다. 대조군의 2.65배였다.
+        //   ⭕ 고친 뒤 같은 60초·같은 도구로 재니 **우리 1:15.1 ↔ 대조군 1:14.7**(갱신 대 d7) 로 붙었다.
+        //   ⚠ `0x5e` 처럼 **매 틱 보내면 클라가 죽는다.** 대조군 비율을 지킬 것.
+        // ★ 09-22 — 위에서 **한 명만** 뽑아 뒀다(500ms마다 돌아가며). 그 한 건을 모두에게 싣는다
+        if (n && latencyPick != 0 && 1 + n + 5 <= sizeof(body)) {
+            uint8_t* p = body + 1 + n;
+            p[0] = static_cast<uint8_t>(Op::REPORT_ALL_LATENCY);
+            p[1] = static_cast<uint8_t>(latencyPick);
+            p[2] = static_cast<uint8_t>(latencyPick >> 8);
+            p[3] = 0;      // 지연 — 정품 표본이 전부 0 이라 0 으로 둔다
+            p[4] = 0;
+            n += 5;
         }
         if (n && sendUpdates_) Emit(s, /*reliable=*/false, /*stream=*/0, body, 1 + n, out);
     }
