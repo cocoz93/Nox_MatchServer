@@ -805,6 +805,27 @@ int main(int argc, char** argv) {
                     if (d.samples > 0) ++withSamples;
                     sd.push_back(in);
                 }
+                // ★★ 09-22 — **정품이 보내는데 thing.bin 에 없는 소리**를 손으로 채운다. 지금은 하나다.
+                //   사슬 — 사용자가 「마나석 소리가 안 난다」고 짚었다 → 정답지는 소리 **230**(ManaRecharge)을
+                //   낸다(`GAME4_3.c:6461`) → 그런데 thing.bin AUD **927개에 그 이름이 없다** →
+                //   그러면 조각 0 이라 `PlaySoundAt` 이 버린다 →
+                //   **대조군 서버에 계수기를 붙여 보니 정답지도 똑같이 0 으로 읽는다**
+                //   (`[AUD] 선언 927개 · 230 조각 0 · 237 조각 3`) →
+                //   **그런데 정품 와이어에는 230 이 10번 나간다**(`CAP_server_0906` 의 a6·a7 610건을 풀어 셈).
+                //   ⇒ 대전제상 **④ 정품이 ③ C 대조보다 위**다. 정품을 따른다.
+                //   거리 600 은 지어낸 값이 아니라 **정답지가 모든 소리에 주는 기본값**이다
+                //   (`server/audio_event.go:75` `p.MaxDist = 600`).
+                {
+                    bool has230 = false;
+                    for (const auto& in : sd) if (in.id == 230) { has230 = true; break; }
+                    if (!has230) {
+                        nox::Server::SoundDefIn in;
+                        in.id = 230; in.maxDist = 600; in.merged = 0; in.samples = 1; in.flags = 0;
+                        sd.push_back(in);
+                        std::printf("[소리·메움] 230(ManaRecharge) — thing.bin 에 없어 손으로 채움"
+                                    "(정품 와이어 근거 · 거리 600 은 정답지 기본값)\n");
+                    }
+                }
                 srv.SetSoundDefs(sd);
                 std::printf("[소리] AUD %zu개 · 이름표에 맞물림 %zu · 소리조각 있는 것 %zu%s\n",
                             tdb.Sounds().size(), sd.size(), withSamples,
