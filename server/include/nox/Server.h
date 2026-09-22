@@ -1338,6 +1338,8 @@ public:
         uint32_t nextManaFrame = 0; // 오벨리스크만 쓴다
         // ★ 09-22 — 소리는 **마나 주는 주기와 다른 주기**다(정답지는 `fps/2`). 따로 센다
         uint32_t nextManaSndFrame = 0;
+        // ★ 09-22 — 마나석 **잔량**(0~50). 쓰면 틱마다 1 줄고, 안 쓰면 0.5초마다 1 찬다
+        uint8_t charge = 50;
         // ── 묶음 9-c 밟는 판(`PressurePlate`)만 쓴다 ──────────────────
         //   정답지 `nox_xxx_updateTrigger_53B1B0`(`GAME4_3.c:5415`) 의 갱신자료를 옮긴 것이다.
         //   **0 놓임 · 1 눌림 · 5 한 번 쓰고 끝**(`[0] & 2` 면 떼는 순간 5 로 간다)
@@ -2398,6 +2400,11 @@ public:
     // ★ 09-22 묶음 9 — 문 갈래를 시험에서 가르는 손잡이 둘.
     //   `DebugWallShapeCollide` 는 **밀어내기 쪽 조회**(0x40 만)다 — 문이면 −1 이 나와야 한다
     int  DebugWallShapeCollide(int x, int y) const { return WallShapeAt(x, y, 0x40); }
+    // ★ 09-22 — 마나석 잔량을 시험에서 읽는다(0~50). 없으면 −1
+    int DebugPropCharge(uint16_t netCode) const {
+        for (const auto& p : props_) if (p.netCode == netCode) return p.charge;
+        return -1;
+    }
     void DebugSetPropOpen(uint16_t netCode, bool open) {
         for (auto& p : props_) if (p.netCode == netCode) p.open = open;
     }

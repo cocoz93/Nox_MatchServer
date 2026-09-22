@@ -1504,6 +1504,40 @@ void TestPropsAndInvuln() {
         Check(countDoor(closed, b2addr, nox::kDoorClosedFallback) == 1, "닫힘 알림이 B 에게 한 번 가야 한다");
     }
 
+    // ★★ 마나석 **잔량** (2026-09-22) — 사용자가 「마나 차는 속도가 너무 느리다」고 짚어서 판 자리.
+    //   고치면서 정답지 `nox_xxx_updateObelisk_53C580` 의 잔량 사슬이 통째로 드러났다:
+    //     쓸 때   (`:6454`) 틱마다 잔량 1 감소 · 마나 1 증가 · 1 아래면 멈춤(`:6412`)
+    //     안 쓸 때(`:6477~6489`) **fps/2 프레임마다** 1 회복 · 최대 50
+    //   ⚠ **한쪽만 넣으면 마나석이 영영 죽는다** — 그래서 둘을 한 시험에서 본다
+    {
+        const std::string w = "10.5.9.1:5901";
+        nox::Server s6;
+        s6.DebugEnterGame(w, 728, false, nox::CharClass::Wizard);
+        s6.DebugMoveTo(w, 1000, 1000);
+        nox::Server::WorldProp ob;
+        ob.netCode = 600; ob.type = 121; ob.x = 1010; ob.y = 1000;   // 바로 옆
+        ob.kind = nox::PropKind::Obelisk;
+        s6.SetWorldProps({ ob });
+        std::vector<nox::OutPacket> out6;
+        uint32_t ms6 = 0;
+        Check(s6.DebugPropCharge(600) == 50, "마나석이 가득(50)에서 시작 안 한다");
+        // ① 쓰면 **준다** — 마나를 비워 두고 굴린다
+        s6.DebugSetMana(w, 0);
+        for (int i = 0; i < 20; ++i) { ms6 += 34; s6.Tick(ms6, out6); }
+        const int after = s6.DebugPropCharge(600);
+        Check(after < 50, "옆에 섰는데 마나석 잔량이 안 줄었다");
+        Check(s6.ManaOf(w) > 0, "잔량이 줄었는데 마나가 안 찼다 — 한쪽만 도는 것이다");
+        // ② **바닥나면 멈춘다** — 계속 굴려도 0 아래로 안 간다
+        for (int i = 0; i < 120; ++i) { ms6 += 34; s6.Tick(ms6, out6); }
+        Check(s6.DebugPropCharge(600) >= 0, "잔량이 0 아래로 내려갔다");
+        // ③ **떨어지면 회복한다** — 멀리 보내고 굴리면 다시 찬다
+        const int bottom = s6.DebugPropCharge(600);
+        s6.DebugMoveTo(w, 4000, 4000);
+        for (int i = 0; i < 120; ++i) { ms6 += 34; s6.Tick(ms6, out6); }
+        Check(s6.DebugPropCharge(600) > bottom, "아무도 안 쓰는데 마나석이 안 차오른다");
+        Check(s6.DebugPropCharge(600) <= 50, "마나석이 가득을 넘어 찼다");
+    }
+
     // ★★ 마나석 — **아무도 안 써도 밝기가 한 번 간다** ← 09-21 사용자가 화면으로 짚음
     //
     // 왜 — 클라는 마나석 밝기를 `b3` 로만 정한다(`cdecode.c:2236` — 밝기 16×값/10 · 그림칸 8×값/50).
@@ -1530,7 +1564,7 @@ void TestPropsAndInvuln() {
         }
         Check(s5.ManaOf(a) == s5.ManaOf(a), "");           // (마나는 안 본다 — 멀어서 안 찬다)
         Check(lit == 1, "멀리 있는 마나석의 밝기를 한 번 안 알려 줬다 — 클라에선 꺼진 채로 남는다");
-        Check(dark == 0, "밝기 0 을 보냈다 — 잔량을 모형으로 안 가지니 가득이어야 한다");
+        Check(dark == 0, "밝기 0 을 보냈다 — 아무도 안 쓴 마나석은 가득이어야 한다");
         // 같은 것을 또 보내지 않는다 — 매 틱 보내면 클라가 죽는다
         std::vector<nox::OutPacket> again;
         for (int i = 0; i < 80; ++i) { ms += 34; s5.Tick(ms, again); }

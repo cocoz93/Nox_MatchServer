@@ -1944,10 +1944,28 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 }
             }
         } else {
-            if (best > kObeliskDist * kObeliskDist) continue;
+            // ★★ 09-22 — **마나석은 잔량이 있다.** 정답지 `nox_xxx_updateObelisk_53C580` —
+            //     쓸 때   (`:6454`) 틱마다 잔량 1 감소 · 마나 1 증가. 잔량이 1 아래면 더 안 준다(`:6412`)
+            //     안 쓸 때(`:6477~6489`) **fps/2 프레임마다** 잔량 1 회복, **최대 50**
+            //   ⇒ 가득(50)이면 1.7초 만에 바닥나고, 다시 차는 데 25초.
+            //   ⚠ **한쪽만 넣으면 안 된다** — 회복 없이 소모만 넣으면 마나석이 영영 죽는다
+            const bool inUse = (best <= kObeliskDist * kObeliskDist) &&
+                               nearest->mana < nearest->maxMana && p.charge >= 1;
+            const uint8_t before = p.charge;
+            if (!inUse) {
+                // 회복 — 0.5초마다 1
+                if ((frame_ % (kServerTickRate / 2)) == 0 && p.charge < kObeliskFullCharge) ++p.charge;
+                if (p.charge != before && (p.charge % 8) == 0) {
+                    const uint16_t onc2 = PropWireCode(p);
+                    uint8_t ob2[4] = { static_cast<uint8_t>(Op::OBELISK_CHARGE),
+                                       static_cast<uint8_t>(onc2), static_cast<uint8_t>(onc2 >> 8), p.charge };
+                    Broadcast(/*viaSeq=*/true, ob2, sizeof(ob2), out);
+                }
+                continue;
+            }
             if (frame_ < p.nextManaFrame) continue;
             p.nextManaFrame = frame_ + kObeliskEveryTicks;
-            if (nearest->mana >= nearest->maxMana) continue;
+            --p.charge;
             PlayerManaAdd(*nearest, kObeliskManaPerTick);   // playerManaAdd_4EEB80 — `45` 는 다음 틱 PlayerReportAnything(+4 ≠ +6)
             ++obeliskMana_;
             // ★★ 09-22 사용자 보고 — **마나 찰 때 소리가 없다**. 실제로 안 보내고 있었다.
@@ -1958,14 +1976,18 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 p.nextManaSndFrame = frame_ + (kServerTickRate / 2);
                 PlaySoundAt(230, static_cast<float>(p.x), static_cast<float>(p.y));
             }
-            const uint16_t onc = PropWireCode(p);
-            uint8_t ob[4] = {
-                static_cast<uint8_t>(Op::OBELISK_CHARGE),
-                static_cast<uint8_t>(onc),
-                static_cast<uint8_t>(onc >> 8),
-                kObeliskFullCharge,                 // 표본 전수가 0x32 였다(= 가득)
-            };
-            Broadcast(/*viaSeq=*/true, ob, sizeof(ob), out);
+            // ★ 09-22 — 이제 **지금 잔량**을 보낸다(전에는 늘 가득 0x32). 정답지는 잔량이 8 의
+            //   배수가 될 때만 알린다(`:6456` `if (!(*v24 % 8))`) — 매 틱 보내면 와이어가 넘친다
+            if ((p.charge % 8) == 0) {
+                const uint16_t onc = PropWireCode(p);
+                uint8_t ob[4] = {
+                    static_cast<uint8_t>(Op::OBELISK_CHARGE),
+                    static_cast<uint8_t>(onc),
+                    static_cast<uint8_t>(onc >> 8),
+                    p.charge,
+                };
+                Broadcast(/*viaSeq=*/true, ob, sizeof(ob), out);
+            }
         }
     }
 
@@ -1993,14 +2015,14 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             //   (`cdecode.c:2236` — 밝기 = 16×값/10 · 그림칸 = 8×값/50), 우리는 **마나를 줄 때만** 보냈다.
             //   ⇒ **아무도 안 쓴 마나석은 영영 어두운 채**로 남는다. 대조군은 접속 직후 한 번 준다
             //   (같은 15초에 `b3` 우리 5 : 대조군 1 — 우리가 더 많이 보내는데 **필요한 때를 놓쳤다**).
-            // ⚠ 우리는 마나석 잔량을 모형으로 안 갖고 있다(뽑아도 안 줄어든다). 그러니 **가득(0x32)**
-            //   한 번만 알려 주는 것이 지금 모형과 맞는 최선이다 — 잔량을 넣으면 그때 여기도 같이 고칠 것
+            // ⭕ 09-22 — 잔량을 넣었으니 여기도 **지금 잔량**을 보낸다
+            //   (옛 주석의 「잔량을 넣으면 그때 여기도 같이 고칠 것」을 지금 지킨 자리다)
             if (p.kind == PropKind::Obelisk) {
                 if (o.doorTold[i] != 0) continue;              // 이미 알려 줬다
                 const uint16_t onc = PropWireCode(p);
                 const uint8_t ob[4] = { static_cast<uint8_t>(Op::OBELISK_CHARGE),
                                         static_cast<uint8_t>(onc), static_cast<uint8_t>(onc >> 8),
-                                        kObeliskFullCharge };
+                                        p.charge };
                 EmitSeq(o, ob, sizeof(ob), out);
                 o.doorTold[i] = 1;
                 ++obeliskTold_;
