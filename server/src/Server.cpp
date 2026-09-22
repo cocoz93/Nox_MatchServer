@@ -37,7 +37,10 @@ void Server::SetFirstSnapshot(const std::vector<uint8_t>& v) {
         if (op == static_cast<uint8_t>(Op::UPDATE_STREAM)) {
             const UpdateMsg um =
                 DecodeUpdate(firstSnapshot_.data() + pos + 1, firstSnapshot_.size() - pos - 1, nullptr);
-            if (um.ok && um.consumed > 0) { spawnX_ = um.x; spawnY_ = um.y; }
+            // ⚠ 09-22 — **`--spawn-at` 으로 못 박았으면 덮어쓰지 않는다.**
+            //   전에는 녹음 조각의 자리가 이겨서 그 스위치가 **조용히 무시됐다**
+            //   (「손으로 지정 — (2930,2668)」이라 찍어 놓고 실제로는 2782,3504 에 섰다)
+            if (um.ok && um.consumed > 0 && !spawnForced_) { spawnX_ = um.x; spawnY_ = um.y; }
             return;
         }
         const size_t msz = MessageSize(firstSnapshot_.data() + pos, firstSnapshot_.size() - pos,
@@ -1913,6 +1916,12 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 const auto tb = typeBodies_.find(p.type);
                 if (tb != typeBodies_.end() && tb->second.r > 0.0f)
                     openAt = kBodyRadius + static_cast<double>(tb->second.r);
+            }
+            // ★ 09-22 — 「문 0」이 **안 열린 것**인지 **근처에 간 적이 없는 것**인지 갈라야 한다.
+            //   0 옆에 지나간 양을 같이 읽는다 — 사람이 문에 가장 가까이 간 거리
+            {
+                const double d = std::sqrt(best);
+                if (d < doorNearestDist_) doorNearestDist_ = d;
             }
             const bool want = best <= openAt * openAt;
             if (want == p.open) continue;          // 안 바뀌면 안 보낸다

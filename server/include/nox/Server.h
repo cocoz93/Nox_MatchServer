@@ -1387,6 +1387,7 @@ public:
     void DebugFlushAudio(std::vector<OutPacket>& out) { FlushAudioEvents(out); }
     void DebugUpdateProps(std::vector<OutPacket>& out) { UpdateProps(out); }
     unsigned long long doorsOpened() const { return doorsOpened_; }
+    double doorNearestDist() const { return doorNearestDist_; }
     unsigned long long doorResync() const { return doorResync_; }
     unsigned long long obeliskTold() const { return obeliskTold_; }
     // ★ 09-21 벽 튕김 재기 — 사람이 벽에 밀려난 걸음 수와 **그때 더해진 가속의 최대**.
@@ -4073,6 +4074,8 @@ private:
     int spawnSpread_ = 40;
     std::vector<WorldStatic> statics_;
     std::vector<WorldProp> props_;
+    // ★ 09-22 — 사람이 문에 **가장 가까이 간 거리**. 「문 0」의 분모다
+    double doorNearestDist_ = 1e18;
     unsigned long long doorsOpened_ = 0;
     unsigned long long doorResync_ = 0;   // 09-21 — 되맞춤으로 **따로 보낸** 문 알림 수(나중에 들어온 사람 몫)
     unsigned long long obeliskTold_ = 0;  // 09-21 — 접속한 사람에게 마나석 밝기를 알려 준 건수

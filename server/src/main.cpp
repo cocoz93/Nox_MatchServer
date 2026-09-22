@@ -1353,7 +1353,7 @@ int main(int argc, char** argv) {
                 srv.SetWorldProps(std::move(props));
                 // ★ 09-22 묶음 9 — 문을 **제 칸의 벽으로** 붙인다(정답지 `doorAttachWall`).
                 //   벽과 문이 **둘 다 들어온 뒤**에 불러야 한다
-                srv.AttachDoorWalls();
+                if (!getenv("NOX_NO_DOOR_WALLS")) srv.AttachDoorWalls();   // A/B 스위치(09-22)
                 std::printf("[문·벽] 문 칸에 벽을 붙였다 — 닫힌 문이 걸음을 막는다(밀어내기는 안 한다)\n");
             }
 
@@ -2335,12 +2335,12 @@ int main(int argc, char** argv) {
                 }
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
-                            " · 문 %llu(되맞춤 %llu) · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"
+                            " · 문 %llu(되맞춤 %llu·가장가까이 %.0f) · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"
                             " · **비밀벽(열림 %llu·닫힘 %llu)**"
                             " · 자기주문 %llu · 미룬주문효과 %llu\n",
                             srv.roundsPlayed(), srv.flagStatusSent(), srv.chats(), srv.timerAsks(),
                             srv.fxSent(), srv.appearanceSent(), srv.appearanceUnknown(),
-                            srv.doorsOpened(), srv.doorResync(), srv.obeliskMana(), srv.plateOn(), srv.plateOff(),
+                            srv.doorsOpened(), srv.doorResync(), srv.doorNearestDist(), srv.obeliskMana(), srv.plateOn(), srv.plateOff(),
                             srv.wallOpenSent(), srv.wallCloseSent(),
                             srv.spellsOnSelf(), srv.spellEffectDeferred());
                 if (!srv.stoppedByOp().empty()) {
