@@ -4224,6 +4224,9 @@ uint8_t Server::PlayerAnimByte(const Session& s) {
         case kPlayerStateWalk: return kAnimWalk;
         case kPlayerStateRun: return kAnimRun;
         case kPlayerStateAttack: case 14: case 22: {
+            // ★ 09-23 2-a1 — `:1723~1724` 함성이 켜져 있고 값이 서 있으면 **46 WARCRY** — 무기보다 먼저.
+            //   (정적 함수라 `AbilityIsActiveVal` 대신 칸을 바로 읽는다) ⚠ 광전사 45(`:1725~1726`)는 2-b 에서
+            if (s.abilActive[2] && s.abilActiveVal[2]) return 46;
             // `:1720~1737` — 마법 지팡이(0x47F0000)는 29/31 · 무기(0·1 아님)거나 Field8 이 0 이면 sub_4FA280 표 · 맨손은 Field8
             if (equip & 0x47F0000) return 31;   // ⚠ +96&2(충전 휘두르기) 면 29 — 마법 지팡이는 묶음 4
             if ((equip && equip != 1) || s.attackAnim == 0) {
@@ -4731,6 +4734,10 @@ bool Server::MapTraceVisionSkip(float x1, float y1, float x2, float y2, int skip
 bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame, std::vector<OutPacket>* out) {
     bool res = true;
     if (s.respawnAtFrame != 0 && st != 3 && st != 4) return false;   // DEAD 면 3·4 만(`:1398`)
+    // ★ 09-23 2-a1 — 공격(1) 중 **함성 애니가 도는 동안**(켜짐 값)에는 죽음(3·4) 말고는 다른 상태로 못 바꾼다(`:1417~1424`).
+    //   (1 → 1 은 정답지도 LABEL_26 으로 곧장 간다 — 아래 갈래와 같다)
+    if (s.moveState == kPlayerStateAttack && st != kPlayerStateAttack && AbilityIsActiveVal(s, 2) && st != 4 && st != 3)
+        return false;
     if (st != kPlayerStateAttack) {
         s.attackAnim = 0;                                   // Field8 = 0(`:1426`)
     } else {
@@ -8065,17 +8072,23 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
     auto gate = [&](AbilGate g) { ++abilGate_[abil][static_cast<size_t>(g)]; };
     if (s.respawnAtFrame != 0) { gate(AbilGate::Dead); return false; }             // 죽었거나 사라진 것
     if (s.charClass != CharClass::Warrior) { gate(AbilGate::NotWarrior); return false; } // 워리어만
-    // ② 같이 못 켜는 짝 — 광전사·함성·작살 셋은 서로를 막는다
-    //   ⚠ 정답지는 `IsActiveVal`(켜짐 값까지) 과 `IsActive`(있기만) 를 섞어 쓰는데,
-    //     목록에 얹는 자리가 늘 `Active: 1` 이라 **둘이 같다**. 그래서 하나로 본다
-    const bool exclusive = (abil == 1 || abil == 2 || abil == 3);
-    if (exclusive) {
-        for (uint8_t o = 1; o <= 3; ++o)
-            if (o != abil && AbilityIsActive(s, o)) {
-                gate(AbilGate::Exclusive);
-                ++abilBlockedBy_[abil][o];                   // ★ 0-b — **누가** 막았나
-                refuse(2); return false;
-            }
+    // ② 같이 못 켜는 짝 — 광전사·함성·작살 셋은 서로를 막는다(`spells_abil.go:154~181`)
+    //   ✖ 09-23 2-a1 정정 — 전에는 「정답지가 `IsActiveVal`·`IsActive` 를 섞어 쓰지만 얹을 때 늘 `Active: 1` 이라 둘이 같다」고
+    //     보고 하나로 합쳤다. 그런데 함성 애니가 끝나면 `Sub4FC440` 이 값만 0 으로 내린다(목록엔 남는다) — 둘은 **다르다**.
+    //     그래서 정답지대로 가른다: 광전사는 함성 **값**·작살 켜짐 · 함성은 광전사·작살 켜짐 · 작살은 함성 **값**·광전사 켜짐.
+    //     ⇒ 함성 애니가 끝난 뒤(값 0)에는 광전사·작살을 **안 막는다**(함성 지속 120 전부를 막던 전과 다르다)
+    //   ⚠ 광전사의 CTF 깃발 검사(`:155~163`)는 아직 없다
+    uint8_t blocker = 0;
+    switch (abil) {
+        case 1: blocker = AbilityIsActiveVal(s, 2) ? 2 : (AbilityIsActive(s, 3) ? 3 : 0); break;
+        case 2: blocker = AbilityIsActive(s, 1) ? 1 : (AbilityIsActive(s, 3) ? 3 : 0); break;
+        case 3: blocker = AbilityIsActiveVal(s, 2) ? 2 : (AbilityIsActive(s, 1) ? 1 : 0); break;
+        default: break;                                      // 살금살금·늑대의 눈 — 짝이 없다
+    }
+    if (blocker != 0) {
+        gate(AbilGate::Exclusive);
+        ++abilBlockedBy_[abil][blocker];                     // ★ 0-b — **누가** 막았나
+        refuse(2); return false;
     }
     if (AbilityIsActive(s, abil)) { gate(AbilGate::Already); refuse(2); return false; }   // ③
     // ④ 상태 12 이거나 (협동이 아닌데) **떠 있으면**
@@ -8093,6 +8106,7 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
     if (kAbilityDelay[abil] != 0) SendAbilityState(s, abil, 0, out);
     if (kAbilityDuration[abil] > 0) {
         s.abilActive[abil] = true;
+        s.abilActiveVal[abil] = true;                     // ★ 2-a1 — 얹을 때 `Active: 1`
         s.abilActiveUntil[abil] = frame_ + kAbilityDuration[abil];
     }
     AbilityEffect(s, abil, out);                          // 7-e — `do()`
@@ -8127,6 +8141,7 @@ void Server::AbilityUpdate(Session& s, std::vector<OutPacket>& out) {
         }
         ++abilEnded_[i][static_cast<size_t>(gone ? AbilEnd::Gone : AbilEnd::Expired)];   // ★ 0-b
         s.abilActive[i] = false;
+        s.abilActiveVal[i] = false;
         s.abilActiveUntil[i] = 0;
     }
 }
@@ -8140,6 +8155,7 @@ void Server::AbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out)
         ++abilEnded_[abil][static_cast<size_t>(AbilEnd::Reset)];   // ★ 0-b
         SendAbilityActive(s, abil, false, out);
         s.abilActive[abil] = false;
+        s.abilActiveVal[abil] = false;
         s.abilActiveUntil[abil] = 0;
     }
 }
@@ -8153,6 +8169,7 @@ void Server::AbilityCancelAll(Session& s, std::vector<OutPacket>& out) {
         ++abilEnded_[i][static_cast<size_t>(AbilEnd::CancelAll)];  // ★ 0-b
         SendAbilityActive(s, i, false, out);
         s.abilActive[i] = false;
+        s.abilActiveVal[i] = false;
         s.abilActiveUntil[i] = 0;
     }
 }
@@ -8177,6 +8194,7 @@ void Server::AbilityDisable(Session& s, uint8_t abil, std::vector<OutPacket>& ou
     SendAbilityActive(s, abil, false, out);
     if (s.abilActive[abil]) ++abilEnded_[abil][static_cast<size_t>(AbilEnd::Disabled)];
     s.abilActive[abil] = false;
+    s.abilActiveVal[abil] = false;
     s.abilActiveUntil[abil] = 0;
 }
 
@@ -8218,6 +8236,7 @@ void Server::AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out
             break;
         }
         case 2: {   // 함성
+            s.animFrame = 0;                               // ★ 2-a1 — `ud.Field59_0 = 0`(`spell_warcry.go:20~22`) · 애니 칸을 0 부터
             PlayerSetState(s, 1, frame_);
             const double dist = 300.0;
             for (auto& kv : sessions_) {
@@ -8355,6 +8374,7 @@ void Server::HarpoonBreak(Session& s, bool emitSound, HarpoonEnd why, std::vecto
         ++abilEnded_[3][static_cast<size_t>(AbilEnd::HarpoonBreak)];   // ★ 0-b
         SendAbilityActive(s, 3, false, out);
         s.abilActive[3] = false;
+        s.abilActiveVal[3] = false;
         s.abilActiveUntil[3] = 0;
     }
     for (size_t i = missiles_.size(); i-- > 0;) {
@@ -12673,6 +12693,22 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
         if (s.attackReadyFrame == 0) s.attackReadyFrame = frame + static_cast<uint32_t>(frames * (hold + 1));
     };
     auto midHit = [&]() { return idx == frames / 2 && idx > prevFrame; };
+
+    // ★ 09-23 nine-defects 2-a1 — **함성 갈래**(`GAME4_3.c:3988~4005`) — 맨손·무기 갈래보다 먼저 본다.
+    //   함성이 켜져 있고 켜짐 값이 서 있으면(외치는 애니가 도는 중) 애니 46(WARCRY) 칸을 센다.
+    //   · 칸이 2 → 3 으로 넘어가는 틱(정답지 `v76 == 770` — 아래 바이트 = 지난 칸 2 · 위 바이트 = 이 칸 3)에
+    //     외침 효과(땅울림 15 · 둘레 300 몬스터 기절 · 반주문 13)가 난다 — ⛔ 효과는 2-a2·2-a3 에서 옮긴다. 지금은 센다
+    //   · 칸이 다 차면 켜짐 **값**만 내린다(`sub_4FC440`) → 이 틱에 거짓을 돌려주므로 상태 13(ImplA)
+    //   전에는 이 갈래가 없어 함성을 쓰면 상태 1 로 **보통 주먹질**이 나갔다(사람 판 「S 발동 안 함」)
+    //   ⚠ 광전사 갈래(`:4006~4023`)는 2-b 에서 — 순서상 이 아래에 들어간다
+    if (AbilityIsActiveVal(s, 2)) {                          // `IsActive(2) && IsActiveVal(2)` — 값은 켜짐을 품는다
+        range(46);
+        calcIdx();
+        if (prevFrame == 2 && idx == 3) ++warcryShouts_;
+        if (idx >= frames) AbilityValOff(s, 2);
+        s.animFrame = static_cast<uint8_t>(idx >= frames ? frames - 1 : idx);   // LABEL_159
+        return idx < frames;
+    }
 
     if (equip == 0) {
         if (s.attackAnim == 0) {

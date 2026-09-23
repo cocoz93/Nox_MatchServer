@@ -692,6 +692,9 @@ struct Session {
     // 묶음 7-d — 능력 다섯. 레벨은 `spellLvl[1..5]` 를 같이 쓰고, 여기엔 쉬는 시간과 켜짐만 둔다
     uint32_t abilCooldown[kAbilityCount] = {};     // unitAbilities.Cooldowns
     bool     abilActive[kAbilityCount] = {};       // ExecList 에 얹혀 있나
+    // ★ 09-23 nine-defects 2-a1 — 목록 칸의 **켜짐 값**(`ExecAbilityClass.Active`). 얹을 때 1 이고,
+    //   함성 애니가 끝나면 `Sub4FC440` 이 0 으로만 내린다(목록에는 남는다). `IsActiveVal` 이 이것을 본다
+    bool     abilActiveVal[kAbilityCount] = {};
     uint32_t abilActiveUntil[kAbilityCount] = {};  // ExecAbilityClass.Frame — 이 프레임을 **넘으면** 끝
     bool     overweight = false;                   // +3656 짐 넘침 — 광전사 돌진을 막는다
     // 묶음 7-f 작살 — 사람 자료 +132(대상) +136(화살) +140(frame35) +144(대상 자리) +152(frame38)
@@ -3143,6 +3146,14 @@ public:
     unsigned long long harpoonEnd(HarpoonEnd e) const {
         return e < HarpoonEnd::Count ? harpoonEnd_[static_cast<size_t>(e)] : 0;
     }
+    unsigned long long abilValOff() const { return abilValOff_; }               // ★ 2-a1 — 켜짐 값 내림(함성 애니 끝)
+    unsigned long long warcryShouts() const { return warcryShouts_; }           // ★ 2-a1 — 함성 칸 2→3
+    bool DebugAbilActiveVal(const std::string& a, uint8_t k) const {            // ★ 2-a1 시험용
+        auto i = sessions_.find(a); return i != sessions_.end() && AbilityIsActiveVal(i->second, k);
+    }
+    bool DebugPlayerSetState(const std::string& a, uint8_t st) {                // ★ 2-a1 시험용 — 규칙을 거치는 상태 바꾸기
+        auto i = sessions_.find(a); return i != sessions_.end() && PlayerSetState(i->second, st, frame_);
+    }
     unsigned long long harpoonAimFound() const { return harpoonAimFound_; }     // ★ 1-b
     unsigned long long harpoonSteerTicks() const { return harpoonSteerTicks_; } // ★ 1-b
     // ★ 09-23 0-b — 능력이 꺼진 까닭 · 겹침을 **누가** 막았나(누른 것 × 켜져 있던 것, 1~3) · 능력 소리 부름
@@ -3647,6 +3658,15 @@ private:
     void SendAbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     bool AbilityAward(Session& s, uint8_t abil, bool announce, std::vector<OutPacket>& out);
     bool AbilityIsActive(const Session& s, uint8_t abil) const;
+    // ★ 2-a1 — `IsActiveVal`(목록에 있고 켜짐 값이 서 있나) · `Sub4FC440`(값만 내린다)
+    bool AbilityIsActiveVal(const Session& s, uint8_t abil) const {
+        return abil < kAbilityCount && s.abilActive[abil] && s.abilActiveVal[abil];
+    }
+    void AbilityValOff(Session& s, uint8_t abil) {
+        if (abil < kAbilityCount && s.abilActive[abil] && s.abilActiveVal[abil]) { s.abilActiveVal[abil] = false; ++abilValOff_; }
+    }
+    unsigned long long abilValOff_ = 0;        // ★ 2-a1 — 켜짐 값을 내린 횟수(함성 애니 끝)
+    unsigned long long warcryShouts_ = 0;      // ★ 2-a1 — 함성 애니가 칸 2 → 3 을 넘은 틱(외침 효과가 붙을 자리)
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
     // 묶음 8-g — 판이 끝나는 나머지 길

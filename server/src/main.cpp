@@ -176,6 +176,8 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.abilEnded(a, E::CancelAll), srv.abilEnded(a, E::HarpoonBreak), srv.abilEnded(a, E::Disabled),
                     srv.abilSoundUseCalls(a), srv.abilSoundOffCalls(a));
         if (a == 4) std::printf(" 달리기막음 %llu", srv.treadBlockedRun());   // ★ 1-a — 살금살금이 걷기로 누른 틱
+        // ★ 2-a1 — 함성 애니가 외치는 칸(2→3)을 넘은 수 · 애니가 끝나 켜짐 값을 내린 수
+        if (a == 2) std::printf(" 외침칸 %llu·애니끝 %llu", srv.warcryShouts(), srv.abilValOff());
     }
     std::printf("\n");
     using T = nox::HarpoonTouch;
@@ -199,7 +201,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
 unsigned long long AbilityFingerprint(const nox::Server& srv) {
     unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun() + srv.harpoonAimFound() +
-                           srv.contactDamageHits();
+                           srv.contactDamageHits() + srv.warcryShouts() + srv.abilValOff();
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));
@@ -1419,9 +1421,14 @@ int main(int argc, char** argv) {
             // ★ 2026-09-13 묶음 3-a — 사람 애니 칸 수(PlayerDraw STAT). 맨손 공격이 끝나는 틱이 이 값이다.
             for (int i = 0; i < nox::kPlayerAnimTypeCount; ++i)
                 srv.SetPlayerAnimFrames(i, tdb.PlayerAnim(i).frames, tdb.PlayerAnim(i).hold);
-            std::printf("[애니] 사람 STAT %d개 — 주먹 %d칸/붙듦 %d · 훅 %d칸/붙듦 %d\n", tdb.PlayerAnimCount(),
+            // ★ 09-23 2-a1 — 함성(46)·광전사(45) 애니 길이도 찍는다. 함성 애니가 끝나면 켜짐 값이 내려가 광전사·작살을 더는 안 막으므로
+            //   「함성 지속 120 중 얼마 동안 막나」가 이 값으로 정해진다(플랜 v2 에서 미확인이던 것)
+            std::printf("[애니] 사람 STAT %d개 — 주먹 %d칸/붙듦 %d · 훅 %d칸/붙듦 %d · 함성(46) %d칸/붙듦 %d · 광전사(45) %d칸/붙듦 %d\n",
+                        tdb.PlayerAnimCount(),
                         tdb.PlayerAnim(23).frames, tdb.PlayerAnim(23).hold,
-                        tdb.PlayerAnim(25).frames, tdb.PlayerAnim(25).hold);
+                        tdb.PlayerAnim(25).frames, tdb.PlayerAnim(25).hold,
+                        tdb.PlayerAnim(46).frames, tdb.PlayerAnim(46).hold,
+                        tdb.PlayerAnim(45).frames, tdb.PlayerAnim(45).hold);
             if (!props.empty()) {
                 std::printf("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());
                 // ★ 2026-09-18 ② — **자리를 찍는다.** 무인 걷기가 「문 0」으로 끝났을 때

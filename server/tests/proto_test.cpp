@@ -14565,6 +14565,88 @@ void TestMapHazard() {
     std::printf("  nine-defects 1-d — 맵 불 닿음 피해: 멀면 0 · 양 3 은 틱당 1 · 양 1 은 홀수 틱만 · 양 0 은 안 부름 · 종류 이름표\n");
 }
 
+// ── nine-defects 2-a1 — 함성: 외치는 애니(46) · 켜짐 값 · 상태 규칙 · 겹침 ───────────
+//
+// 정답지 `GAME4_3.c:3988~4005`(공격 처리의 함성 갈래) · `server/spells_abil.go:108~119`(`Sub4FC440` — 값만 내림) ·
+// `object.go:1417~1424`(공격 중 함성 값이면 죽음 말고 상태를 못 바꿈) · `GAME4.c:1723`(몸짓 46) · `spells_abil.go:164·176`(겹침은 값을 봄).
+// 시험은 애니 길이를 **10칸 · 붙듦 1**(한 칸 = 2틱)로 못 박는다 — 규칙은 길이와 무관하게 같아야 한다.
+void TestWarcryAnim() {
+    const std::string a = "10.7.13.1:7131";
+    const int kFrames = 10, kHold = 1;
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 780, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.SetPlayerAnimFrames(46, kFrames, kHold);
+        std::vector<nox::OutPacket> o;
+        for (uint8_t k = 1; k <= 3; ++k) srv.DebugAbilAward(a, k, false, o);
+        srv.Tick(0, o);
+    };
+    uint32_t ms = 0;
+    auto tick = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) { ms += 34; srv.Tick(ms, out); };
+
+    // ① **쓰면 상태 1 · 몸짓 46 · 켜짐과 값이 선다**
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugAbilDo(a, 2, out), "① 함성이 안 먹었다");
+        Check(srv.DebugStateOf(a) == 1, "① 함성인데 상태가 1(공격)이 아니다");
+        Check(srv.DebugAnimByteOf(a) == 46, "① 함성인데 몸짓이 46(WARCRY)이 아니다");
+        Check(srv.DebugAbilActive(a, 2) && srv.DebugAbilActiveVal(a, 2), "① 함성 켜짐·값이 안 섰다");
+    }
+    // ② **외침 칸(2→3)은 한 번 · 애니가 다 돌면 값만 내리고 상태 13 · 몸짓도 돌아간다 · 목록엔 남는다**
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 2, out);
+        int endTick = -1, shoutTick = -1;
+        for (int t = 1; t <= 3 * kFrames * (kHold + 1) && endTick < 0; ++t) {
+            tick(srv, out);
+            if (shoutTick < 0 && srv.warcryShouts() == 1) shoutTick = t;
+            if (!srv.DebugAbilActiveVal(a, 2)) endTick = t;
+        }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "② 외침 칸 틱 %d(칸 3 = 3×2=6틱째여야) · 외침 수 %llu(1 이어야)",
+                      shoutTick, srv.warcryShouts());
+        Check(shoutTick == 3 * (kHold + 1) && srv.warcryShouts() == 1, msg);
+        std::snprintf(msg, sizeof(msg), "② 애니 끝 틱 %d(칸 10 = 20틱째여야)", endTick);
+        Check(endTick == kFrames * (kHold + 1), msg);
+        Check(srv.abilValOff() == 1, "② 켜짐 값을 한 번 내리지 않았다");
+        Check(srv.DebugAbilActive(a, 2), "② 애니가 끝났는데 목록에서까지 빠졌다(정답지는 값만 내린다)");
+        Check(srv.DebugStateOf(a) == 13, "② 애니가 끝났는데 가만(13)으로 안 돌아갔다");
+        Check(srv.DebugAnimByteOf(a) != 46, "② 애니가 끝났는데 몸짓이 여전히 46 이다");
+    }
+    // ③ **겹침은 값을 본다** — 외치는 동안 광전사·작살은 막히고, 애니가 끝나면(값 0) 함성 지속 중이어도 **안 막힌다**
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 2, out);
+        tick(srv, out);
+        Check(!srv.DebugAbilDo(a, 1, out) && srv.abilBlockedBy(1, 2) == 1, "③ 외치는 중인데 광전사가 함성에 안 막혔다");
+        for (int t = 0; t < 2 * kFrames * (kHold + 1) && srv.DebugAbilActiveVal(a, 2); ++t) tick(srv, out);
+        Check(srv.DebugAbilActive(a, 2) && !srv.DebugAbilActiveVal(a, 2), "③ 전제 — 함성이 목록에 남고 값만 내려가야 한다");
+        Check(srv.DebugAbilDo(a, 1, out), "③ 함성 애니가 끝났는데(값 0) 광전사가 아직 막힌다");
+    }
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 2, out);
+        for (int t = 0; t < 2 * kFrames * (kHold + 1) && srv.DebugAbilActiveVal(a, 2); ++t) tick(srv, out);
+        Check(srv.DebugAbilDo(a, 3, out), "③ 함성 애니가 끝났는데(값 0) 작살이 아직 막힌다");
+        // 함성 자신은 목록에 남아 있으니 다시 누르면 「이미 켜짐」
+        Check(!srv.DebugAbilDo(a, 2, out) && srv.abilGate(2, nox::AbilGate::Already) == 1, "③ 애니 뒤 함성을 또 눌렀는데 「이미 켜짐」이 아니다");
+    }
+    // ④ **외치는 동안에는 죽음 말고 상태를 못 바꾼다**
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 2, out);
+        tick(srv, out);
+        Check(!srv.DebugPlayerSetState(a, 13) && srv.DebugStateOf(a) == 1, "④ 외치는 중인데 가만(13)으로 바뀌었다");
+        Check(srv.DebugPlayerSetState(a, 3) && srv.DebugStateOf(a) == 3, "④ 외치는 중이어도 죽음(3)으로는 바뀌어야 한다");
+    }
+    std::printf("  nine-defects 2-a1 — 함성: 상태 1·몸짓 46 · 외침 칸 한 번 · 애니 끝에 값만 내리고 13 · 겹침은 값 · 외치는 동안 상태 고정\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -21301,6 +21383,7 @@ int main() {
     TestTreadLightlyOff();
     TestHarpoonHoming();
     TestMapHazard();
+    TestWarcryAnim();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();
