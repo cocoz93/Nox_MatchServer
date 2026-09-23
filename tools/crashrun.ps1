@@ -62,6 +62,14 @@ $env:NOX_NET_NAT = 'false'
 # 커서를 몸에서 100 밖으로 알리면 서버가 달리기로 친다(Server.cpp:4296) — 걷기와 갈라 재려고
 if ($Cursor -ne '') { $env:NOX_AUTO_CURSOR = $Cursor } else { [Environment]::SetEnvironmentVariable('NOX_AUTO_CURSOR', $null) }
 
+# ★ 09-23 저녁 — **정품 설정을 지킨다**(companion.ps1 과 같은 수). OpenNox 는 같은 `nox.cfg` 를 자기 꼴(65540)로
+#   덮어쓰고, 그 설정이 남으면 정품이 캐릭터 로드에서 꺼진다. 이 주행기는 되돌리지 않아서
+#   nine-defects 0-c 판 둘이 정품 설정을 덮었다(16:19 — 사본 `nox.cfg.keep` 으로 손으로 되돌림)
+$cfg  = Join-Path $game 'nox.cfg'
+$지킴 = Join-Path $game 'nox.cfg.crashrun-keep'
+Copy-Item $cfg $지킴 -Force
+$cfgHash = (Get-FileHash $cfg).Hash
+
 $cli = Start-Process -FilePath (Join-Path $bld 'opennox.exe') -WorkingDirectory $bld `
   -ArgumentList '-data',"`"$game`"" -PassThru -RedirectStandardError $cliErr
 "클라 pid=$($cli.Id) · $Secs 초 주행"
@@ -81,6 +89,10 @@ if (-not $cli.HasExited) { $cli | Stop-Process -Force }
 Start-Sleep -Seconds 2
 $srv.Refresh()
 if (-not $srv.HasExited) { $srv | Stop-Process -Force }
+if ((Get-FileHash $cfg).Hash -ne $cfgHash) {
+  Copy-Item $지킴 $cfg -Force
+  "클라가 nox.cfg 를 덮었다 — 주행 전 것으로 되돌림"
+}
 
 "===== 클라 로그: 깜빡임 =====" 
 if (Test-Path $cliLog) { (Select-String -Path $cliLog -Pattern '깜빡임' | Select-Object -Last 2).Line } else { '(클라 로그 없음)' }
