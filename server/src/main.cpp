@@ -237,13 +237,23 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.DefHitSoundWaySum() == srv.defHitSoundCalls() ? "" : " ⚠칸합불일치",
                 srv.defHitSoundWay(DW::Played), srv.defHitSoundWay(DW::Breakable), srv.defHitSoundWay(DW::Filtered),
                 srv.defHitSoundWay(DW::TableEmpty), srv.defHitSoundWay(DW::MonsterSound), srv.defHitSoundWay(DW::NotPorted));
+    // ★ 09-23 nine-defects 4-d4 — 발소리(달리기 RUN 2·8칸 · 걷기 WALK 3·9칸 × 발밑 바닥 종류). 「바닥없음」 = 칸 찾기 −1·정의 밖
+    using FK = nox::FootKind;
+    std::printf("[발소리] 달리기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu}"
+                " · 걷기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu} · 살금살금으로 안냄 %llu · 달릴때힘쓰는소리 %llu\n",
+                srv.FootRunSum(), srv.footRun(FK::Silent), srv.footRun(FK::Wood), srv.footRun(FK::Dirt), srv.footRun(FK::Water),
+                srv.footRun(FK::Snow), srv.footRun(FK::Mud), srv.footRun(FK::Stone), srv.footRun(FK::NoTile),
+                srv.FootWalkSum(), srv.footWalk(FK::Silent), srv.footWalk(FK::Wood), srv.footWalk(FK::Dirt), srv.footWalk(FK::Water),
+                srv.footWalk(FK::Snow), srv.footWalk(FK::Mud), srv.footWalk(FK::Stone), srv.footWalk(FK::NoTile),
+                srv.footTreadSilent(), srv.exertionLight());
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
 unsigned long long AbilityFingerprint(const nox::Server& srv) {
     unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun() + srv.harpoonAimFound() +
                            srv.contactDamageHits() + srv.warcryShouts() + srv.abilValOff() + srv.berserkChargeTicks() +
-                           srv.berserkCollideCalls() + srv.jumpCodes() + srv.jumpLanded() + srv.melees();
+                           srv.berserkCollideCalls() + srv.jumpCodes() + srv.jumpLanded() + srv.melees() +
+                           srv.FootRunSum() + srv.FootWalkSum() + srv.footTreadSilent();   // ★ 4-d4
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));
@@ -1176,6 +1186,10 @@ int main(int argc, char** argv) {
                                 edefs.size(), wps.size(), why[0], why[1], why[2], why[3]);
                     for (const auto& kv : wpMat) std::printf(" 0x%x×%zu", static_cast<unsigned>(kv.first), kv.second);
                     std::printf("\n");
+                    // ★ 4-d4 — 발소리가 쓰도록 서버에 넣는다
+                    std::vector<int32_t> mats;
+                    for (const auto& f : tdb.Floors()) mats.push_back(f.material);
+                    srv.SetFloor(std::move(grid), std::move(edefs), std::move(mats));
                 }
                 // ★ 09-20 9-a — 비밀벽마다 **가장 가까운 길목**을 찍는다. 그게 「거기서 보려면 어디에 설까」의 답이다.
                 //   ⚠ `CanStand` 로 찾으면 안 된다 — 그건 **벽만** 보고 바닥은 못 봐서 암반을 고른다(세 번 당함)

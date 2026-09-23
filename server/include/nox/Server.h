@@ -29,6 +29,7 @@
 #include "nox/Messages.h"   // InformCode
 #include "nox/UpdateStream.h"
 #include "nox/Wire.h"
+#include "nox/MapFile.h"   // ★ 4-d4 — 발밑 바닥(FloorGrid)
 
 namespace nox {
 
@@ -228,6 +229,10 @@ enum class DefHitSoundWay : uint8_t {
     Count
 };
 constexpr size_t kDefHitSoundWayCount = static_cast<size_t>(DefHitSoundWay::Count);
+
+// ★ 09-23 nine-defects 4-d4 — 발소리의 바닥 종류(`object_update.go:164~220` 의 switch). 소리 없음 = 재질 2·0x4000 · 바닥 없음 = 칸 찾기 −1 또는 정의 밖
+enum class FootKind : uint8_t { Silent = 0, Wood, Dirt, Water, Snow, Mud, Stone, NoTile, Count };
+constexpr size_t kFootKindCount = static_cast<size_t>(FootKind::Count);
 
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
@@ -3324,6 +3329,39 @@ public:
     // `Sub_532930`(`server/sound.go:31~161`) — 맞는 쪽 재질 × 때린 것 재질 → 소리 번호(없으면 0). 값이 **딱 그 비트**일 때만 맞는다
     static uint16_t HitSoundFor(uint32_t victimMat, uint32_t hitterMat);
     // ★ 4-c2 — thing.bin 재질(와이어 번호 색인) · 가슴갑옷(ARMOR + SUBCLASS BREASTPLATE)인가 · 사람 몸 종류(NewPlayer) 번호. main 이 넣는다
+    // ★ 4-d4 — 발밑 바닥(맵 FloorMap + thing.bin EDGE·FLOR 재질). main 이 맵을 읽고 넣는다 — 비어 있으면 발소리 없음(바닥 없음으로 셈)
+    void SetFloor(FloorGrid grid, std::vector<FloorGrid::EdgeDef> edges, std::vector<int32_t> materials) {
+        floorGrid_ = std::move(grid); floorEdges_ = std::move(edges); floorMaterial_ = std::move(materials);
+    }
+    // 재질 → 바닥 종류(`object_update.go:164~220` switch — 2·0x4000 소리 없음 · 8 나무 · 64 흙 · 128 물 · 0x400 눈 · 0x800 진흙 · 그 밖 돌)
+    static FootKind FootKindOf(int32_t mat) {
+        switch (mat) {
+            case 2: case 0x4000: return FootKind::Silent;
+            case 8:     return FootKind::Wood;
+            case 64:    return FootKind::Dirt;
+            case 128:   return FootKind::Water;
+            case 0x400: return FootKind::Snow;
+            case 0x800: return FootKind::Mud;
+            default:    return FootKind::Stone;
+        }
+    }
+    static const char* FootSoundName(FootKind k, bool run) {
+        switch (k) {
+            case FootKind::Wood:  return run ? "RunOnWood" : "WalkOnWood";
+            case FootKind::Dirt:  return run ? "RunOnDirt" : "WalkOnDirt";
+            case FootKind::Water: return run ? "RunOnWater" : "WalkOnWater";
+            case FootKind::Snow:  return run ? "RunOnSnow" : "WalkOnSnow";
+            case FootKind::Mud:   return run ? "RunOnMud" : "WalkOnMud";
+            case FootKind::Stone: return run ? "RunOnStone" : "WalkOnStone";
+            default:              return nullptr;
+        }
+    }
+    unsigned long long footRun(FootKind k) const { return footRun_[static_cast<size_t>(k)]; }
+    unsigned long long footWalk(FootKind k) const { return footWalk_[static_cast<size_t>(k)]; }
+    unsigned long long FootRunSum() const { unsigned long long n = 0; for (auto v : footRun_) n += v; return n; }
+    unsigned long long FootWalkSum() const { unsigned long long n = 0; for (auto v : footWalk_) n += v; return n; }
+    unsigned long long footTreadSilent() const { return footTreadSilent_; }
+    unsigned long long exertionLight() const { return exertionLight_; }
     // ★ 4-c3b3b — 종류 번호별 「그 종류 이름의 소리 모음에 맞히는 소리가 있고 조각이 1 이상」(main 이 soundset.bin 으로 채운다)
     void SetMonsterHitSounds(std::vector<uint8_t> byWire) { monsterHitSound_ = std::move(byWire); }
     void SetMaterialTables(std::vector<uint32_t> matByWire, std::vector<uint8_t> breastplateByWire, uint16_t newPlayerWire) {
@@ -3898,6 +3936,13 @@ private:
     std::vector<uint32_t> matByWire_;
     std::vector<uint8_t> breastByWire_;
     std::vector<uint8_t> monsterHitSound_;   // ★ 4-c3b3b
+    // ★ 4-d4 — 발밑 바닥과 발소리 계수기(달리기·걷기 × 바닥 종류) · 살금살금으로 안 낸 걷기 소리 · 달릴 때 힘쓰는 소리
+    FloorGrid floorGrid_;
+    std::vector<FloorGrid::EdgeDef> floorEdges_;
+    std::vector<int32_t> floorMaterial_;
+    unsigned long long footRun_[kFootKindCount] = {}, footWalk_[kFootKindCount] = {};
+    unsigned long long footTreadSilent_ = 0, exertionLight_ = 0;
+    void Footstep(const Session& s, bool run);
     uint16_t newPlayerWire_ = 0;
     // ★ 4-c2 — `nox_xxx_soundPlayerDamageSound_5328B0` — 맞는 사람의 가슴갑옷 재질(없으면 FLESH) × 때린 것(무기, 없으면 때린 이) 재질
     void PlayerDamageSound(const Session& victim, HitterRef hitter);

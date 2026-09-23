@@ -15805,6 +15805,112 @@ void TestFloorLookup() {
     std::printf("  nine-defects 4-d3 — 칸 찾기: 가장자리 판정 24 · 모양 번호 12 · 네 삼각형·가장자리(뒤 것)·범위 밖·빈 쪽 · Estate 길목 33\n");
 }
 
+// ── nine-defects 4-d4 — 발소리(`object_update.go:157~187·195~223`) ─────────
+//   달리면 RUN(6) 칸이 올라가며 2·8 일 때 RunOn* · 걷기 상태(0)면 WALK(4) 칸이 바뀌며 3·9 일 때 WalkOn*(살금살금이면 달릴 때만) · 바닥 재질로 소리가 갈린다
+void TestFootsteps() {
+    const std::string a = "10.7.27.1:7271";
+    // ⑤ 재질 → 바닥 종류 → 소리 — 정답지 switch 그대로(2·0x4000 없음 · 그 밖은 돌 — 0x20·0x2000 도 돌)
+    {
+        using FK = nox::FootKind;
+        Check(nox::Server::FootKindOf(2) == FK::Silent && nox::Server::FootKindOf(0x4000) == FK::Silent &&
+              nox::Server::FootKindOf(8) == FK::Wood && nox::Server::FootKindOf(64) == FK::Dirt && nox::Server::FootKindOf(128) == FK::Water &&
+              nox::Server::FootKindOf(0x400) == FK::Snow && nox::Server::FootKindOf(0x800) == FK::Mud &&
+              nox::Server::FootKindOf(0x20) == FK::Stone && nox::Server::FootKindOf(0x2000) == FK::Stone,
+              "⑤ 바닥 재질 → 종류가 정답지 switch 와 다르다");
+        int ok = 0;
+        for (int k = static_cast<int>(FK::Wood); k <= static_cast<int>(FK::Stone); ++k)
+            for (int r = 0; r < 2; ++r) {
+                const char* nm = nox::Server::FootSoundName(static_cast<FK>(k), r != 0);
+                if (nm && nox::SoundByName(nm) != 0) ++ok;
+            }
+        Check(ok == 12 && nox::Server::FootSoundName(FK::Silent, true) == nullptr && nox::Server::FootSoundName(FK::NoTile, false) == nullptr &&
+              std::strcmp(nox::Server::FootSoundName(FK::Dirt, false), "WalkOnDirt") == 0 && nox::SoundByName("WalkOnDirt") == 270,
+              "⑤ 발소리 이름이 소리 표에 없다(또는 WalkOnDirt 가 270 이 아니다)");
+    }
+    // 판: 온 바닥이 흙(번호 0 · 재질 0x40) · WALK·RUN 칸 **9** · 칸당 1틱 → 칸이 틱마다 하나씩 간다.
+    //   칸 9 로 둔 까닭 — 달리기 2·8 은 한 바퀴(9틱)에 두 번, 걷기 3·9 는 9 가 없어 **한 번**이라 칸 번호를 잘못 옮기면 개수가 갈린다
+    auto mk = [&](nox::Server& srv, bool floor) {
+        srv.DebugEnterGame(a, 750, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSetFacing(a, 0);
+        srv.SetPlayerAnimFrames(4, 9, 0);
+        srv.SetPlayerAnimFrames(6, 9, 0);
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (const char* nm : { "WalkOnDirt", "RunOnDirt" }) { nox::Server::SoundDefIn d; d.id = nox::SoundByName(nm); d.samples = 1; sd.push_back(d); }
+        srv.SetSoundDefs(sd);
+        std::vector<nox::MapFile::FloorCell> cells;
+        if (floor)
+            for (int x = 0; x < 128; ++x)
+                for (int y = 0; y < 128; ++y) {
+                    nox::MapFile::FloorCell c; c.x = static_cast<uint8_t>(x); c.y = static_cast<uint8_t>(y);
+                    c.first.present = c.second.present = true;
+                    cells.push_back(c);
+                }
+        // ⚠ 「바닥 없음」은 표를 **안 만든** 것(맵에 FloorMap 이 없을 때와 같다) — 빈 목록으로 Build 하면 빈 칸 표가 생기고
+        //   빈 쪽은 엔진처럼 번호 0 으로 읽혀 흙이 된다
+        nox::FloorGrid g;
+        if (floor) g.Build(cells);
+        srv.SetFloor(g, {}, { 0x40 });
+        std::vector<nox::OutPacket> o;
+        srv.DebugAbilAward(a, 4, false, o);
+        srv.Tick(0, o);
+    };
+    uint32_t ms = 0;
+    auto move = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+        std::vector<uint8_t> p = InputPacket(2);
+        p[nox::kWireHeaderSize + 1] = 5;
+        p.push_back(0);
+        srv.OnPacket(a, p.data(), p.size(), out);
+    };
+    // kind: 0 달리기(커서 500) · 1 살금살금 걷기 · 2 그냥 걷기(커서 50 — 달리기 거리 안) · 3 바닥 없음(달리기)
+    for (int kind = 0; kind < 4; ++kind) {
+        nox::Server srv; mk(srv, kind != 3); ms = 0;
+        std::vector<nox::OutPacket> out;
+        if (kind == 1) Check(srv.DebugAbilDo(a, 4, out), "살금살금이 안 켜졌다(시험 전제)");
+        const unsigned long long q0 = srv.soundsQueued();
+        int runTicks = 0, walkTicks = 0;
+        for (int t = 0; t < 30; ++t) {
+            srv.DebugAimAt(a, static_cast<int>(srv.DebugPosX(a)) + ((kind == 2) ? 50 : 500), 1000);
+            move(srv, out);
+            ms += 34; srv.Tick(ms, out);
+            if (srv.DebugStateOf(a) == 5) ++runTicks; else if (srv.DebugStateOf(a) == 0) ++walkTicks;
+        }
+        using FK = nox::FootKind;
+        char msg[320];
+        std::snprintf(msg, sizeof(msg), "판 %d — 달림틱 %d · 걸음틱 %d · 달리기소리 %llu(흙 %llu·바닥없음 %llu) · 걷기소리 %llu(흙 %llu) · 살금살금안냄 %llu · 담긴 소리 %llu",
+                      kind, runTicks, walkTicks, srv.FootRunSum(), srv.footRun(FK::Dirt), srv.footRun(FK::NoTile),
+                      srv.FootWalkSum(), srv.footWalk(FK::Dirt), srv.footTreadSilent(), srv.soundsQueued() - q0);
+        const unsigned long long queued = srv.soundsQueued() - q0;
+        if (kind == 0)        // 칸 9 · 30틱이면 2·8 이 여섯~일곱 번 · 첫 틱만 걷기 상태
+            Check(runTicks >= 28 && srv.FootRunSum() >= 6 && srv.FootRunSum() <= 7 && srv.footRun(FK::Dirt) == srv.FootRunSum() &&
+                  srv.FootWalkSum() <= 1 && queued == srv.FootRunSum() + srv.FootWalkSum(), msg);
+        else if (kind == 1)   // 살금살금 — 걷기 상태로 머물고 걷기 소리는 안 낸다(3 이 서너 번 — 「안냄」으로 센다)
+            Check(walkTicks == 30 && srv.FootWalkSum() == 0 && srv.FootRunSum() == 0 && srv.footTreadSilent() >= 3 &&
+                  srv.footTreadSilent() <= 4 && queued == 0, msg);
+        else if (kind == 2)   // 그냥 걷기 — 칸 3 에 흙 걷기 소리(9 는 칸 9 개라 없다) — 서너 번
+            Check(walkTicks == 30 && srv.FootRunSum() == 0 && srv.FootWalkSum() >= 3 && srv.FootWalkSum() <= 4 &&
+                  srv.footWalk(FK::Dirt) == srv.FootWalkSum() && srv.footTreadSilent() == 0 && queued == srv.FootWalkSum(), msg);
+        else                  // 바닥 없음 — 칸 찾기가 −1 이라 소리 없이 「바닥없음」으로만 센다
+            Check(srv.FootRunSum() >= 6 && srv.footRun(FK::NoTile) == srv.FootRunSum() && queued == 0, msg);
+    }
+    // ⑥ 달릴 때 힘쓰는 소리 — 달리는 틱마다 IntClamp(0,100) ≤ 1(101 중 2 ≈ 2%) · 1000틱이면 약 20(8~35 로 본다 — 난수라 폭을 둔다)
+    {
+        nox::Server srv; mk(srv, false); ms = 0;
+        std::vector<nox::OutPacket> out;
+        int runTicks = 0;
+        for (int t = 0; t < 1000; ++t) {
+            srv.DebugAimAt(a, static_cast<int>(srv.DebugPosX(a)) + 500, static_cast<int>(srv.DebugPosY(a)));
+            move(srv, out);
+            ms += 34; srv.Tick(ms, out);
+            if (srv.DebugStateOf(a) == 5) ++runTicks;
+        }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "⑥ 달림틱 %d · 힘쓰는 소리 %llu(8~35 여야 — 101 중 2)", runTicks, srv.exertionLight());
+        Check(runTicks >= 990 && srv.exertionLight() >= 8 && srv.exertionLight() <= 35, msg);
+    }
+    std::printf("  nine-defects 4-d4 — 발소리: 재질 표 · 달리기(RUN 2·8) · 살금살금 걷기 안 냄 · 걷기(WALK 3·9) · 바닥 없음 · 힘쓰는 소리 비율\n");
+}
+
 // ── nine-defects 4-c3b3a — soundset.bin 읽기(`nox_xxx_parseSoundSetBin_424170` · `nox_xxx_parseString_409470`) ─────────
 void TestSoundSetParse() {
     auto bytes = [](const char* s) { return std::vector<uint8_t>(s, s + std::strlen(s)); };
@@ -23007,6 +23113,7 @@ int main() {
     TestSoundSetParse();
     TestFloorDefs();
     TestFloorLookup();
+    TestFootsteps();
     TestPlayerHitSound();
     TestPetHitSound();
     TestMissileHitterRoot();

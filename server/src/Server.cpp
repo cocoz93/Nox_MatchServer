@@ -4376,6 +4376,34 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             run = wantRun && !AbilityIsActive(s, 4);
             if (wantRun && !run) ++treadBlockedRun_;
             const double speed = static_cast<double>(s.speedCur) * (run ? 2.0 : 1.0);
+            // ★ 09-23 nine-defects 4-d4 — 발소리(`object_update.go:157~187·195~223`). 칸 = (넷코드 + 프레임) ÷ (칸당틱+1) % 칸수 — 한 틱 전 값과 비교
+            //   ① 달리면 RUN(6) 칸이 **올라가며** 2 또는 8 이 될 때 RunOn* · 같은 달리기 안에서 IntClamp(0,100) ≤ 1 이면 힘쓰는 소리(남자 것)
+            //   ② 걷기 상태(0)면 WALK(4) 칸이 **바뀌며** 3 또는 9 가 될 때 WalkOn* — 살금살금이면 달릴 때만(`!살금살금 || a1`)
+            //   ⚠ 정답지는 이 자리를 힘 계산 **앞**(①)·**뒤**(②)에서 본다 — 같은 틱 안이라 결과는 같다
+            {
+                const int a = static_cast<int>(s.netCode) + static_cast<int>(frame);
+                if (run) {
+                    const int frames = playerAnimFrames_[6][0], hold = playerAnimFrames_[6][1];
+                    if (frames > 0) {
+                        const int cur = a / (hold + 1) % frames, prev = (a - 1) / (hold + 1) % frames;
+                        if (cur > prev && (cur == 2 || cur == 8)) Footstep(s, true);
+                    }
+                    if (NextRandom(101) <= 1) {
+                        PlaySoundAt(SoundByName("HumanMaleExertionLight"), static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
+                        ++exertionLight_;
+                    }
+                }
+                if (s.moveState == kPlayerStateWalk) {
+                    const int frames = playerAnimFrames_[4][0], hold = playerAnimFrames_[4][1];
+                    if (frames > 0) {
+                        const int cur = a / (hold + 1) % frames, prev = (a - 1) / (hold + 1) % frames;
+                        if (cur != prev && (cur == 3 || cur == 9)) {
+                            if (!AbilityIsActive(s, 4) || run) Footstep(s, false);
+                            else ++footTreadSilent_;
+                        }
+                    }
+                }
+            }
             if (s.buffs.Has(3)) s.facing = ConfusedDirection(s, frame);
             fx += DirVecX(s.facing) * speed;
             fy += DirVecY(s.facing) * speed;
@@ -13361,6 +13389,18 @@ void Server::HarpoonDefaultHitSound(const Target& t, uint16_t boltType) {
     if (!addr.empty()) PlaySoundAt(id, x, y, 0, 0, addr);
     else PlaySoundAt(id, x, y);
     lastHitSound_ = id;
+}
+
+// ★ 09-23 nine-defects 4-d4 — 발밑 바닥(`tileNFromPoint_411160`) → 재질(FLOR field_36) → 소리. 그 사람 자리에서(`EventObj(snd, u)`)
+//   칸 찾기가 −1 이거나 번호가 정의 밖이면 소리 없음(`object_update.go:162·202` 의 `ti >= 0 && ti < len(tiles)`)
+void Server::Footstep(const Session& s, bool run) {
+    const FloorGrid::Hit hit = floorGrid_.TileAt(static_cast<float>(s.posX), static_cast<float>(s.posY), floorEdges_);
+    FootKind k = FootKind::NoTile;
+    if (hit.tile >= 0 && static_cast<size_t>(hit.tile) < floorMaterial_.size()) k = FootKindOf(floorMaterial_[static_cast<size_t>(hit.tile)]);
+    ++(run ? footRun_ : footWalk_)[static_cast<size_t>(k)];
+    const char* nm = FootSoundName(k, run);
+    if (!nm) return;
+    PlaySoundAt(SoundByName(nm), static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
 }
 
 // `532E20` 판단부 — 위 주석 ②~④
