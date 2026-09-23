@@ -1252,8 +1252,10 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         hp = DamageProtect(s.buffs, dtype, hp);            // 불·전기 보호(버프 17·20 + 아이템 5)
         // 맞으면 투명(0)이 풀린다 — 때린 이가 없으면 종류 12 일 때만(+528/+532 때린 자리는 몬스터 AI 7)
         if (!attacker.none() || dtype == 12) BuffOff(Target{ s.addr, -1 }, 0);
-        // ⚠ 입은 것 방어 효과 itemApplyDefendEffect2 · 무기 앞 피해 효과 itemApplyPreDamageEffect(아이템 5) · 맞는 소리(10)
+        // ⚠ 입은 것 방어 효과 itemApplyDefendEffect2 · 무기 앞 피해 효과 itemApplyPreDamageEffect(아이템 5)
         s.lastDamageType = dtype;                          // +524(`GAME3_2.c:7234`)
+        // ★ 09-23 nine-defects 4-c2 — 맞는 소리(`:7251~7267` → 사람은 thing.bin `DAMAGESOUND = PlayerDamageSound`) — +524·+536 뒤 · 흡혈 앞
+        PlayerDamageSound(s, by, src);
         DamageVampirism(attacker, Target{ s.addr, -1 }, hp, out);   // 흡혈(13)
         // ⚠ 공 들고 맞음(gameballOnPlayerDamage 8) · 퀘스트/코옵 sub_4FB050(8) · 몬스터 원한 sub_532880(7)
         // 한 대에 20 넘게 맞으면 움찔(상태 30 · 공격 중 1 · 방패 올리는 중 15 는 아님)
@@ -13245,6 +13247,66 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
     return idx < frames;
 }
 
+// ★ 09-23 nine-defects 4-c2 — `Sub_532930`(`server/sound.go:31~161`) 그대로. 소리 이름이 `<때린 것>Hit<맞는 쪽>` 이라
+//   (862 MetalHitFlesh = 맞는 쪽 FLESH × 때린 것 METAL) 표를 이름으로 다시 셀 수 있다 — 시험이 그렇게 본다.
+//   ⚠ 맞는 쪽 DIAMOND(0x2000) 줄만 이름과 어긋난다(돌에 맞으면 868 DiamondHitStone) — 정답지 그대로 둔다
+uint16_t Server::HitSoundFor(uint32_t a2, uint32_t a3) {
+    // 때린 것 한 칸 → 번호 — 맞는 쪽 줄마다 (돌 32 · 다이아 0x2000 · 쇠 16 · 살 1/2/4 · 나무 8) 다섯 값
+    auto pick = [&](uint16_t stone, uint16_t diamond, uint16_t metal, uint16_t flesh, uint16_t wood) -> uint16_t {
+        switch (a3) {
+            case 32: return stone;
+            case 0x2000: return diamond;
+            case 16: return metal;
+            case 1: case 2: case 4: return flesh;
+            case 8: return wood;
+            default: return 0;
+        }
+    };
+    switch (a2) {
+        case 32:              return pick(848, 868, 858, 863, 853);   // 맞는 쪽 돌
+        case 1: case 2: case 4: return pick(852, 872, 862, 867, 857); // 살·천·가죽
+        case 8:               return pick(850, 870, 860, 865, 855);   // 나무
+        case 16:              return pick(851, 871, 861, 866, 856);   // 쇠
+        case 64: case 1024:   return pick(849, 869, 859, 864, 854);   // 흙·눈
+        case 0x2000:          return pick(868, 871, 871, 872, 870);   // 다이아(`:117~141` — 0x2000·16 은 둘 다 871)
+        default:              return 0;
+    }
+}
+
+// ★ 09-23 nine-defects 4-c2 — `nox_xxx_soundPlayerDamageSound_5328B0`(`sound.go:15~32`).
+//   맞는 쪽 재질 = FLESH(1)에서 시작해 **소지품 중 가슴갑옷**(ARMOR + BREASTPLATE — 입었든 말든, 정답지가 입음을 안 본다)의
+//   재질이 더 크면 그 값(수 비교) · 재질 수식이 「Material7」 인 것이면 0x2000(`Sub_4133D0` — ⚠ 우리 물건엔 수식이 없어 늘 아님)
+//   때린 것 = 때린 물건(a3 — 든 무기)이 있으면 그 재질, 없으면 때린 이(a2 — 사람이면 NewPlayer) 재질. 둘 다 없으면 소리 없음
+//   소리 자리 = 맞는 사람(`aud_501960(번호, 맞는 쪽, 0, 0)`)
+void Server::PlayerDamageSound(const Session& victim, const std::string& by, const AttackSrc* src) {
+    ++hitSoundCalls_;
+    auto way = [&](HitSoundWay w) { ++hitSoundWay_[static_cast<size_t>(w)]; };
+    if (!src || !src->melee) { way(HitSoundWay::NotPorted); return; }   // 4-c3
+    uint32_t hitter = 0;
+    if (src->obj) {
+        hitter = MaterialOfWire(src->objType);                            // 든 무기(a3)
+    } else if (sessions_.count(by)) {
+        hitter = MaterialOfWire(newPlayerWire_);                          // 맨손 — 때린 이(a2)가 사람
+    } else {
+        way(HitSoundWay::NoHitter);
+        return;
+    }
+    uint32_t mat = 1;                                                     // FLESH
+    auto consider = [&](uint16_t wire) {
+        if (wire == 0 || wire >= breastByWire_.size() || !breastByWire_[wire]) return;
+        const uint32_t m = MaterialOfWire(wire);
+        if (static_cast<int32_t>(m) > static_cast<int32_t>(mat)) mat = m;
+    };
+    const Loadout l = LoadoutFor(victim.charClass);
+    for (int k = 0; k < l.count && k < 4; ++k) consider(l.items[k]);
+    for (const auto& c : victim.inventory) consider(c.type);
+    const uint16_t id = HitSoundFor(mat, hitter);
+    if (id == 0) { way(HitSoundWay::TableEmpty); return; }
+    PlaySoundAt(id, static_cast<float>(victim.posX), static_cast<float>(victim.posY), 0, 0, victim.addr);
+    lastHitSound_ = id;
+    way(HitSoundWay::Played);
+}
+
 // `GAME4_3.c:3624` playerTraceAttack — 참 = 무엇에든 닿음(빗나감 소리 879~884 를 가른다 — ★ 4-a 부터 `PlayerAttack` 의 judge 가 낸다).
 //   망치(무기 SUBCLASS 0x4000)는 판정 중심 둘레 **모두**에 sub_538510 을 부르고, 그 밖은 하나를 고른다(sub_5386A0).
 bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<OutPacket>& out) {
@@ -13294,6 +13356,7 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
         src.x = static_cast<float>(s.prevX);
         src.y = static_cast<float>(s.prevY);
         src.obj = ai.weapon;                                // +28 무기 오브젝트 — 죽음 알림의 무기 그림(3-d)
+        src.melee = true;                                   // ★ 4-c2 — 타격 소리가 옮겨진 갈래
         src.objType = ai.weapon ? WeaponWireOf(s) : 0;
         if (kind == Player) {
             HurtTarget(Target{ addr, -1 }, ai.dmg, out, s.addr, ai.type, &src);

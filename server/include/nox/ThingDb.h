@@ -178,6 +178,9 @@ uint32_t ParseObjectClass(const std::string& raw);
 //   METAL 0x10 · STONE 0x20 · EARTH 0x40 · LIQUID 0x80 · GLASS 0x100 · PAPER 0x200 · SNOW 0x400 · MUD 0x800 · MAGIC 0x1000 ·
 //   DIAMOND 0x2000 · NONE 0x4000). **MATERIAL 줄이 없으면 NONE**(`server/object_type.go:196`), 있으면 0 에서 OR(`:256~264`)
 uint32_t ParseMaterial(const std::string& raw);
+// ★ 09-23 4-c2 — 갑옷 SUBCLASS(libs `object/subclass_armor.go` — HELMET 1 · SHIELD 2 · BREASTPLATE 4 · ARM_ARMOR 8 · PANTS 0x10 ·
+//   BOOTS 0x20 · SHIRT 0x40 · LEG_ARMOR 0x80 · BACK 0x100). ARMOR 클래스 물건의 SUBCLASS 원문에만 쓴다
+uint32_t ParseArmorClass(const std::string& raw);
 
 class ThingDb {
 public:

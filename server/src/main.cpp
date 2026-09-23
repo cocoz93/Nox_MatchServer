@@ -216,9 +216,14 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.jumpForceTicks(), srv.jumpHeldTicks(), srv.jumpLanded(), srv.airborneOffIdle(), srv.recoilBlockedAirborne(),
                 srv.equakeSkipAirborne(), srv.spellRefusedAirborne());   // ★ 3-b
     // ★ 4-a — 휘두르기 소리. 판정 수(근접)가 분모 — 빗나간 판정마다 그 갈래 소리 하나(망치는 판정마다 882)
-    std::printf("[휘두름] 판정 %llu · 소리부름{879주먹 %llu·880롱소드 %llu·881칼 %llu·882망치 %llu·883도끼 %llu·884철퇴 %llu}\n",
+    // ★ 4-c2 — 사람이 맞을 때 소리 갈래(부름 = 합 · 「안옮김」 = 근접 아닌 피해, 4-c3 몫)
+    using HW = nox::HitSoundWay;
+    std::printf("[휘두름] 판정 %llu · 소리부름{879주먹 %llu·880롱소드 %llu·881칼 %llu·882망치 %llu·883도끼 %llu·884철퇴 %llu}"
+                " · 사람맞는소리 %llu%s = {냄 %llu·표없음 %llu·때린것없음 %llu·안옮김 %llu}\n",
                 srv.melees(), srv.swingSound(879), srv.swingSound(880), srv.swingSound(881), srv.swingSound(882),
-                srv.swingSound(883), srv.swingSound(884));
+                srv.swingSound(883), srv.swingSound(884), srv.hitSoundCalls(),
+                srv.HitSoundWaySum() == srv.hitSoundCalls() ? "" : " ⚠칸합불일치",
+                srv.hitSoundWay(HW::Played), srv.hitSoundWay(HW::TableEmpty), srv.hitSoundWay(HW::NoHitter), srv.hitSoundWay(HW::NotPorted));
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
@@ -955,6 +960,17 @@ int main(int argc, char** argv) {
                     }
                     std::printf("\n");
                 }
+                // ★ 09-23 nine-defects 4-c2 — 타격 소리 848~872(`<때린 것>Hit<맞는 쪽>`)의 조각 수 — 0 이면 불러도 버려진다
+                {
+                    std::printf("[소리·타격]");
+                    size_t zero = 0;
+                    for (uint16_t q = 848; q <= 872; ++q) {
+                        int samples = -1;
+                        for (const auto& in : sd) if (in.id == q) { samples = in.samples; break; }
+                        if (samples <= 0) { ++zero; std::printf(" %u(%s)%s", (unsigned)q, nox::SoundName(q), samples < 0 ? "-" : "0"); }
+                    }
+                    std::printf(" · 조각 0 또는 없음 %zu / 25\n", zero);
+                }
                 // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
                 for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,
                                     nox::SoundByName("HumanMaleExertionHeavy"), nox::SoundByName("HumanFemaleExertionHeavy"),
@@ -1521,6 +1537,33 @@ int main(int argc, char** argv) {
                 }
                 const nox::ThingInfo* np = tdb.ByWire(tdb.WireByName("NewPlayer"));
                 std::printf(" · NewPlayer=%s\n", np ? (np->materialRaw.empty() ? "(없음→NONE)" : np->materialRaw.c_str()) : "?");
+                // ★ 4-c2 — 타격 소리 표: 와이어 번호별 재질 · 가슴갑옷(ARMOR + BREASTPLATE)인가 · 사람 몸(NewPlayer) 번호
+                std::vector<uint32_t> matByWire(static_cast<size_t>(tdb.Count()) + 1, 0u);
+                std::vector<uint8_t> breastByWire(static_cast<size_t>(tdb.Count()) + 1, 0);
+                size_t nBreast = 0;
+                for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                    const nox::ThingInfo* t2 = tdb.ByWire(w);
+                    if (!t2) continue;
+                    matByWire[w] = nox::ParseMaterial(t2->materialRaw);
+                    if ((nox::ParseObjectClass(t2->classRaw) & 0x2000000) && (nox::ParseArmorClass(t2->subclassRaw) & 0x4)) {
+                        breastByWire[w] = 1;
+                        ++nBreast;
+                    }
+                }
+                const uint16_t npWire = tdb.WireByName("NewPlayer");
+                // 직업 기본 장비 여섯이 무엇으로 읽히나 — 와이어 번호가 thing.bin 색인과 같다는 것도 같이 본다(이름 → 번호 대조)
+                std::printf("[타격소리표] 가슴갑옷 %zu종 · NewPlayer 번호 %u · 기본 장비:", nBreast, (unsigned)npWire);
+                const std::pair<const char*, uint16_t> kLoad[] = {
+                    { "StreetShirt", nox::kItemStreetShirt }, { "StreetPants", nox::kItemStreetPants },
+                    { "StreetSneakers", nox::kItemStreetSneakers }, { "WizardRobe", nox::kItemWizardRobe },
+                    { "WoodenShield", nox::kItemWoodenShield }, { "Longsword", nox::kItemLongsword } };
+                for (const auto& ld : kLoad) {
+                    const uint16_t w = tdb.WireByName(ld.first);
+                    std::printf(" %s(번호 %u%s·재질 0x%x%s)", ld.first, (unsigned)w, w == ld.second ? "" : " ⚠표와다름",
+                                w < matByWire.size() ? matByWire[w] : 0u, (w < breastByWire.size() && breastByWire[w]) ? "·가슴갑옷" : "");
+                }
+                std::printf("\n");
+                srv.SetMaterialTables(std::move(matByWire), std::move(breastByWire), npWire);
             }
             if (!props.empty()) {
                 std::printf("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());

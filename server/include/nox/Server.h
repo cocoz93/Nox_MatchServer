@@ -204,6 +204,16 @@ enum class JumpGate : uint8_t {
 };
 constexpr size_t kJumpGateCount = static_cast<size_t>(JumpGate::Count);
 
+// ★ 09-23 4-c2 — 사람이 맞을 때 타격 소리(`damageDefaultProc` `GAME3_2.c:7251~7267` → `PlayerDamageSound` `sound.go:15~32`)가 어떻게 끝났나
+enum class HitSoundWay : uint8_t {
+    Played = 0,    // 표에 번호가 있어 냈다
+    TableEmpty,    // 맞는 쪽 × 때린 것 재질 조합이 표에 없다(`Sub_532930` 이 그냥 돌아감)
+    NoHitter,      // 때린 물건도 때린 이도 없다(`obj2 == nil`)
+    NotPorted,     // 사람 근접 판정이 아닌 피해 — 4-c3 에서 옮긴다(세기만)
+    Count
+};
+constexpr size_t kHitSoundWayCount = static_cast<size_t>(HitSoundWay::Count);
+
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
 //   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
@@ -2212,6 +2222,9 @@ public:
         bool rootIsMonster = false;
         bool obj = false;
         uint16_t objType = 0;
+        // ★ 09-23 nine-defects 4-c2 — **사람 근접 판정**(PlayerTraceAttack)에서 온 피해인가. 타격 소리는 지금 이 갈래만 옮겼다 —
+        //   다른 자리(날아가는 것·주문·몬스터)는 정답지의 「때린 물건」(a3)을 다르게 싣고 있어 4-c3 에서 본다
+        bool melee = false;
     };
     // ★ 시험용 — 피해 함수(3-e)를 바로 부른다. pet < 0 이면 사람(addr), 아니면 소환수 자리 번호
     void DebugHurt(const std::string& addr, int pet, int dmg, const std::string& by, uint8_t dtype,
@@ -3254,6 +3267,28 @@ public:
     unsigned long long spellRefusedAirborne() const { return spellRefusedAirborne_; }   // ★ 3-b 떠 있어 거절한 시전
     // ★ 4-a — 휘두르기 소리(879 PunchMissing ~ 884 MaceMissing)를 부른 수. ⚠ 표에 소리조각이 없으면 `PlaySoundAt` 이 버린다 — 부름 ≠ 나감
     unsigned long long swingSound(uint16_t id) const { return (id >= 879 && id <= 884) ? swingSound_[id - 879] : 0; }
+    // ★ 4-c2 — 사람이 맞을 때 타격 소리 갈래(부름 = 합)
+    unsigned long long hitSoundCalls() const { return hitSoundCalls_; }
+    uint16_t lastHitSound() const { return lastHitSound_; }                     // 마지막으로 낸 타격 소리 번호(시험용)
+    unsigned long long hitSoundWay(HitSoundWay w) const { return w < HitSoundWay::Count ? hitSoundWay_[static_cast<size_t>(w)] : 0; }
+    unsigned long long HitSoundWaySum() const {
+        unsigned long long n = 0;
+        for (size_t i = 0; i < kHitSoundWayCount; ++i) n += hitSoundWay_[i];
+        return n;
+    }
+    // `Sub_532930`(`server/sound.go:31~161`) — 맞는 쪽 재질 × 때린 것 재질 → 소리 번호(없으면 0). 값이 **딱 그 비트**일 때만 맞는다
+    static uint16_t HitSoundFor(uint32_t victimMat, uint32_t hitterMat);
+    // ★ 4-c2 — thing.bin 재질(와이어 번호 색인) · 가슴갑옷(ARMOR + SUBCLASS BREASTPLATE)인가 · 사람 몸 종류(NewPlayer) 번호. main 이 넣는다
+    void SetMaterialTables(std::vector<uint32_t> matByWire, std::vector<uint8_t> breastplateByWire, uint16_t newPlayerWire) {
+        matByWire_ = std::move(matByWire); breastByWire_ = std::move(breastplateByWire); newPlayerWire_ = newPlayerWire;
+    }
+    uint32_t MaterialOfWire(uint16_t w) const { return w < matByWire_.size() ? matByWire_[w] : 0u; }
+    void DebugGiveItemType(const std::string& x, uint16_t type) {   // ★ 4-c2 시험용 — 종류만 있는 물건 하나를 쥐여 준다
+        auto i = sessions_.find(x);
+        if (i == sessions_.end()) return;
+        Session::Carried c; c.netCode = 60002; c.type = type;
+        i->second.inventory.push_back(c);
+    }
     bool DebugAirborne(const std::string& a) const { auto i = sessions_.find(a); return i != sessions_.end() && i->second.airborne; }
     bool DebugAbilActiveVal(const std::string& a, uint8_t k) const {            // ★ 2-a1 시험용
         auto i = sessions_.find(a); return i != sessions_.end() && AbilityIsActiveVal(i->second, k);
@@ -3781,6 +3816,13 @@ private:
     unsigned long long jumpForceTicks_ = 0, jumpHeldTicks_ = 0, jumpLanded_ = 0, airborneOffIdle_ = 0, recoilBlockedAirborne_ = 0;
     unsigned long long equakeSkipAirborne_ = 0, spellRefusedAirborne_ = 0;   // ★ 3-b
     unsigned long long swingSound_[6] = {};   // ★ 4-a — 휘두르기 소리 879~884 부른 수(번호 − 879)
+    unsigned long long hitSoundCalls_ = 0, hitSoundWay_[kHitSoundWayCount] = {};   // ★ 4-c2
+    uint16_t lastHitSound_ = 0;
+    std::vector<uint32_t> matByWire_;
+    std::vector<uint8_t> breastByWire_;
+    uint16_t newPlayerWire_ = 0;
+    // ★ 4-c2 — `nox_xxx_soundPlayerDamageSound_5328B0` — 맞는 사람의 가슴갑옷 재질(없으면 FLESH) × 때린 것(무기, 없으면 때린 이) 재질
+    void PlayerDamageSound(const Session& victim, const std::string& by, const AttackSrc* src);
     // ★ 3-a — 사람의 오브젝트 깃발(+16). NewPlayer 는 FLAGS NULL 이고 지금 켜는 것은 AIRBORNE(0x4000) 하나다
     static uint32_t PlayerObjFlags(const Session& s) { return s.airborne ? 0x4000u : 0u; }
     uint32_t moveFrame_ = 0;                      // ★ 2-b2 — UpdatePlayerMovement 의 이 틱 프레임

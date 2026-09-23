@@ -15571,6 +15571,93 @@ void TestMaterialParse() {
     }
 }
 
+// ── nine-defects 4-c2 — 사람이 맞을 때 타격 소리(`sound.go:15~32` · `server/sound.go:31~161`) ─────────
+void TestPlayerHitSound() {
+    // ① 표 — 소리 이름 `<때린 것>Hit<맞는 쪽>` 으로 **따로** 센 번호와 전수 대조(다이아 줄은 정답지가 이름과 어긋나 따로)
+    {
+        struct G { uint32_t bit; const char* name; };
+        const G victims[] = { { 32, "Stone" }, { 1, "Flesh" }, { 2, "Flesh" }, { 4, "Flesh" }, { 8, "Wood" }, { 16, "Metal" },
+                              { 64, "Earth" }, { 1024, "Earth" } };
+        const G hitters[] = { { 32, "Stone" }, { 0x2000, "Diamond" }, { 16, "Metal" }, { 1, "Flesh" }, { 2, "Flesh" },
+                              { 4, "Flesh" }, { 8, "Wood" } };
+        int ok = 0, n = 0;
+        for (const auto& v : victims)
+            for (const auto& h : hitters) {
+                ++n;
+                const std::string nm = std::string(h.name) + "Hit" + v.name;
+                if (nox::Server::HitSoundFor(v.bit, h.bit) == nox::SoundByName(nm.c_str())) ++ok;
+            }
+        char msg[120];
+        std::snprintf(msg, sizeof(msg), "① 표 %d/%d 칸이 소리 이름과 맞는다(전부여야)", ok, n);
+        Check(ok == n && n == 56, msg);
+        // 다이아 줄(`:117~141`) · 표에 없는 값(합친 비트·흙으로 때림·0·NONE)
+        Check(nox::Server::HitSoundFor(0x2000, 32) == 868 && nox::Server::HitSoundFor(0x2000, 0x2000) == 871 &&
+              nox::Server::HitSoundFor(0x2000, 16) == 871 && nox::Server::HitSoundFor(0x2000, 1) == 872 &&
+              nox::Server::HitSoundFor(0x2000, 8) == 870, "① 다이아 줄이 정답지와 다르다");
+        Check(nox::Server::HitSoundFor(1, 0x18) == 0 && nox::Server::HitSoundFor(1, 64) == 0 && nox::Server::HitSoundFor(0, 16) == 0 &&
+              nox::Server::HitSoundFor(0x4000, 16) == 0 && nox::Server::HitSoundFor(16, 0x4000) == 0, "① 표에 없는 조합에 번호를 냈다");
+    }
+    // ② 실제 판 — a(워리어·롱소드 METAL)가 앞의 b 를 친다 · b 가 무엇을 가졌나에 따라 소리가 갈린다
+    const std::string a = "10.7.22.1:7221";
+    const std::string b = "10.7.22.2:7222";
+    auto tick = [](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) { ms += 34; srv.Tick(ms, out); };
+    struct R { unsigned long long played, calls, sum; unsigned long long soundsQ; };
+    auto hitOnce = [&](int64_t aWeapon, uint16_t bItem, uint16_t expectId, const char* what) {
+        nox::Server srv;
+        std::vector<uint32_t> mat(1400, 0u); std::vector<uint8_t> breast(1400, 0);
+        mat[713] = 0x1;                                        // NewPlayer FLESH(실측)
+        mat[1169] = 0x10;                                      // Longsword METAL(실측)
+        mat[1145] = 0x2; breast[1145] = 1;                     // WizardRobe CLOTH · 가슴갑옷(실측)
+        mat[1300] = 0x10; breast[1300] = 1;                    // 시험용 쇠 가슴갑옷
+        mat[1301] = 0x20; breast[1301] = 0;                    // 시험용 돌 — 가슴갑옷 아님(안 쳐야)
+        srv.SetMaterialTables(mat, breast, 713);
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id = 848; id <= 884; ++id) { nox::Server::SoundDefIn d; d.id = id; d.samples = 1; sd.push_back(d); }
+        srv.SetSoundDefs(sd);
+        for (int anim : { 23, 24, 25, 28 }) srv.SetPlayerAnimFrames(anim, 8, 0);
+        srv.DebugEnterGame(a, 870, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 871, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1030, 1000);
+        if (aWeapon >= 0) srv.DebugSetWeapon(a, aWeapon);
+        if (bItem) srv.DebugGiveItemType(b, bItem);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetFacing(a, 0);
+        for (int t = 0; t < 35; ++t) tick(srv, out, ms);
+        const unsigned long long q0 = srv.soundsQueued();
+        const auto click = InputPacket(6);
+        srv.OnPacket(a, click.data(), click.size(), out);
+        for (int t = 0; t < 12; ++t) tick(srv, out, ms);
+        char msg[240];
+        std::snprintf(msg, sizeof(msg), "② %s — b 체력 %u · 부름 %llu · 냄 %llu · 합 %llu · 담긴 소리 %llu · 번호 %u(기대 %u 번 하나)", what,
+                      srv.HealthOf(b), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played), srv.HitSoundWaySum(),
+                      srv.soundsQueued() - q0, srv.lastHitSound(), expectId);
+        // 담긴 소리 = 타격 소리 하나(닿았으니 휘두르기 소리는 없다)
+        Check(srv.HealthOf(b) < srv.MaxHealthOf(b) && srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::Played) == 1 &&
+              srv.HitSoundWaySum() == 1 && srv.soundsQueued() - q0 == 1 && srv.lastHitSound() == expectId, msg);
+        return srv.hitSoundCalls();
+    };
+    (void)hitOnce(-1, 0, 862, "롱소드 → 맨몸(FLESH) 862 MetalHitFlesh");
+    (void)hitOnce(0, 0, 867, "맨손(NewPlayer FLESH) → 맨몸 867 FleshHitFlesh");
+    (void)hitOnce(-1, 1300, 861, "롱소드 → 쇠 가슴갑옷 861 MetalHitMetal");
+    (void)hitOnce(-1, 1145, 862, "롱소드 → 로브(CLOTH 2 — 살 줄) 862");
+    (void)hitOnce(-1, 1301, 862, "롱소드 → 돌이지만 가슴갑옷 아님 → 살 862");
+    // ③ 근접 판정이 아닌 피해는 아직 안 낸다(4-c3) — 세기만
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 872, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 873, false, nox::CharClass::Warrior);
+        std::vector<nox::OutPacket> out;
+        nox::Server::AttackSrc notMelee;                        // 때린 이(b · 사람)는 있지만 근접 판정이 아니다(날아가는 것·주문 자리 꼴)
+        notMelee.x = 900.0f; notMelee.y = 1000.0f;
+        srv.DebugHurt(a, -1, 10, b, 0, out, &notMelee);
+        Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::NotPorted) == 1 && srv.HitSoundWaySum() == 1,
+              "③ 근접이 아닌 피해가 「아직 안 옮김」 칸으로 안 갔다");
+    }
+    std::printf("  nine-defects 4-c2 — 사람 맞는 소리: 표 56칸 이름 대조·다이아 줄 · 롱소드/맨손 × 맨몸·쇠 가슴갑옷·로브·가슴갑옷 아닌 돌 · 근접 아님은 세기만\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -22317,6 +22404,7 @@ int main() {
     TestAirborneReaders();
     TestSwingSounds();
     TestMaterialParse();
+    TestPlayerHitSound();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

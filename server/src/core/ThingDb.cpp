@@ -533,6 +533,9 @@ const char* const kMaterialNames[15] = {
     "FLESH", "CLOTH", "ANIMAL_HIDE", "WOOD", "METAL", "STONE", "EARTH", "LIQUID",
     "GLASS", "PAPER", "SNOW", "MUD", "MAGIC", "DIAMOND", "NONE",
 };
+const char* const kArmorNames[9] = {
+    "HELMET", "SHIELD", "BREASTPLATE", "ARM_ARMOR", "PANTS", "BOOTS", "SHIRT", "LEG_ARMOR", "BACK",
+};
 const char* const kClassNames[32] = {
     "MISSILE", "MONSTER", "PLAYER", "OBSTACLE", "FOOD", "EXIT", "KEY", "DOOR",
     "INFO_BOOK", "TRIGGER", "TRANSPORTER", "HOLE", "WAND", "FIRE", "ELEVATOR", "ELEVATOR_SHAFT",
@@ -560,6 +563,7 @@ const char* PlayerAnimTypeName(int i) {
 uint32_t ParseObjectFlags(const std::string& raw) { return ParseNameBits(raw, kFlagNames, 32); }
 uint32_t ParseObjectClass(const std::string& raw) { return ParseNameBits(raw, kClassNames, 32); }
 uint32_t ParseMaterial(const std::string& raw) { return raw.empty() ? 0x4000u : ParseNameBits(raw, kMaterialNames, 15); }
+uint32_t ParseArmorClass(const std::string& raw) { return ParseNameBits(raw, kArmorNames, 9); }
 
 bool ThingDb::Load(const std::string& path) {
     things_.clear();
