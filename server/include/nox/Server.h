@@ -2822,6 +2822,10 @@ public:
     // ★ 09-23 nine-defects 2-a3 — 반주문에 지워지는 날아가는 것(thing.bin 서브클래스 `MISSILE_COUNTERSPELL`)의 종류.
     //   main 이 thing.bin 에서 넣고, 시험은 손으로 넣는다. Estate 기준 `Magic`·불덩이 셋·`Pixie` 다(`--dump-thing` 실측)
     void SetCounterMissileType(uint16_t wire) { counterMissileTypes_.insert(wire); }
+    // ★ 2-a4 — 주문 쓰는 몬스터 종류(monster.bin `CAN_CAST_SPELLS`). main 이 `kMonstersCanCastSpells` 이름을 와이어 번호로 바꿔 넣는다
+    void SetCastingMonsterType(uint16_t wire) { castingMonsterTypes_.insert(wire); }
+    unsigned long long warcryCastsBroken() const { return warcryCastsBroken_; }    // ★ 2-a4 — 함성이 끊은 남의 시전
+    unsigned long long warcryNullifiedMonsters() const { return warcryNullMon_; }  // ★ 2-a4 — 함성이 무효화를 건 몬스터
     size_t CounterMissileTypeCount() const { return counterMissileTypes_.size(); }
     unsigned long long counterCasts() const { return counterCasts_; }         // 반주문을 부른 수
     unsigned long long counterMissiles() const { return counterMissiles_; }   // 지운 날아가는 것
@@ -3689,6 +3693,9 @@ private:
     void WarcryShout(Session& s, std::vector<OutPacket>& out);   // ★ 2-a2 — 외침 효과(땅울림 · 몬스터 기절)
     int CastCounterSpell(Session& caster, std::vector<OutPacket>& out);   // ★ 2-a3 — castCounterSpell_52BBB0
     std::set<uint16_t> counterMissileTypes_;
+    std::set<uint16_t> castingMonsterTypes_;   // ★ 2-a4
+    unsigned long long warcryCastsBroken_ = 0, warcryNullMon_ = 0;
+    void WarcryBreakCasts(Session& s, double dist, std::vector<OutPacket>& out);   // ★ 2-a4 — nox_xxx_spell_4FE680
     unsigned long long counterCasts_ = 0, counterMissiles_ = 0, counterDurs_ = 0, counterEnchants_ = 0;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`

@@ -14799,6 +14799,89 @@ void TestCounterSpell() {
     std::printf("  nine-defects 2-a3 — 반주문: 불덩이 지움 · CAN_COUNTER 지속 주문만 끊음 · 버프(시전자·밖·영구 제외) · 소리 · 함성이 부름\n");
 }
 
+// ── nine-defects 2-a4 — 함성 do() 에서 빠졌던 것: 둘레 적의 시전 끊기 · 주문 쓰는 몬스터 무효화 · 타원 방패 67 ──────
+//
+// 정답지 `spell_warcry.go:13~69` · `GAME4.c:3267~3318`(`spell_4FE680` — 책 시전 목록에서 둘레 적의 시전을 뺀다:
+// 같은 편 아님 · 거리+0.1 < 300 · 시야 → +216·+188 을 0 · 알림(0,15) · 231 · 상태 13) · monster.bin `CAN_CAST_SPELLS`.
+void TestWarcryDo() {
+    const std::string a = "10.7.16.1:7161";   // 워리어
+    const std::string b = "10.7.16.2:7162";   // 시전하는 위저드
+    auto mk = [&](nox::Server& srv, int bx, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        RegSpell(srv, 27);
+        RegSpell(srv, 55);                                     // 무효화 정의가 없으면 `SpellAccept` 가 거절한다
+        srv.DebugEnterGame(a, 810, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 811, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, bx, 1000);
+        ms = 0; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAbilAward(a, 2, false, out);
+    };
+    auto startCast = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        const std::vector<uint8_t> pkt = SpellPacket(27, false);
+        srv.OnPacket(b, pkt.data(), pkt.size(), out);
+        ms += 34; srv.Tick(ms, out);
+    };
+    auto informTo = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint8_t code, uint32_t val) {
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 6 && x[0] == static_cast<uint8_t>(nox::Op::INFORM) && x[1] == code &&
+                (x[2] | (x[3] << 8) | (x[4] << 16) | (x[5] << 24)) == static_cast<int>(val)) return true;
+        return false;
+    };
+
+    // ① **둘레 안 적의 시전은 끊긴다** — 목록에서 빠지고 · 시전 중 표시가 내려가고 · 상태 13 · 알림(0,15)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, 1100, out, ms);
+        startCast(srv, out, ms);
+        Check(srv.CastPending() == 1 && srv.DebugCasting(b), "① 전제 — b 가 시전 중이 아니다");
+        out.clear();
+        srv.DebugAbilDo(a, 2, out);
+        Check(srv.CastPending() == 0 && !srv.DebugCasting(b), "① 함성이 둘레 안 적의 시전을 안 끊었다");
+        Check(srv.DebugStateOf(b) == 13, "① 끊긴 시전자가 가만(13)으로 안 돌아갔다");
+        Check(informTo(out, b, 0, 15), "① 끊긴 시전자에게 알림(0, 15)이 안 갔다");
+        Check(srv.warcryCastsBroken() == 1, "① 끊은 수가 1 이 아니다");
+    }
+    // ② **같은 편이면 안 끊는다**
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, 1100, out, ms);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);
+        startCast(srv, out, ms);
+        srv.DebugAbilDo(a, 2, out);
+        Check(srv.CastPending() == 1 && srv.warcryCastsBroken() == 0, "② 같은 편의 시전을 끊었다");
+    }
+    // ③ **300 밖이면 안 끊는다**
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, 1400, out, ms);
+        startCast(srv, out, ms);
+        srv.DebugAbilDo(a, 2, out);
+        Check(srv.CastPending() == 1 && srv.warcryCastsBroken() == 0, "③ 300 밖 적의 시전을 끊었다");
+    }
+    // ④ **주문 쓰는 몬스터에게도 무효화**(monster.bin CAN_CAST_SPELLS) — 못 쓰는 몬스터는 안 걸린다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, 1400, out, ms);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.mass = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1382, body);                             // Beholder
+        srv.SetTypeBody(1365, body);                             // Bear
+        srv.SetCastingMonsterType(1382);
+        srv.DebugSpawnPet(1382, 1100, 1000, std::string());     // 0 — 주문 쓰는 몬스터
+        srv.DebugSpawnPet(1365, 1050, 1000, std::string());     // 1 — 못 쓰는 몬스터
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugAbilDo(a, 2, out);
+        Check(srv.DebugPetHasEnchant(0, 29) && !srv.DebugPetHasEnchant(1, 29) && srv.warcryNullifiedMonsters() == 1,
+              "④ 무효화가 「주문 쓰는 몬스터」 하나에만 걸리지 않았다");
+    }
+    // ⑤ **타원 방패(67)를 끊고, 보호막(51)은 안 끊는다** — 전에는 51 을 끊고 있었다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, 1400, out, ms);
+        srv.DebugDurNew(a, 51, 0, -1, -1, false, nox::Target{}, out);   // 1 — 보호막
+        srv.DebugDurNew(a, 67, 0, -1, -1, false, nox::Target{}, out);   // 0 — 타원 방패
+        srv.DebugAbilDo(a, 2, out);
+        Check(srv.DebugDurCanceled(0) && !srv.DebugDurCanceled(1), "⑤ 함성이 타원 방패(67)를 끊고 보호막(51)을 남기지 않았다");
+    }
+    std::printf("  nine-defects 2-a4 — 함성 do: 둘레 적 시전 끊기(같은 편·300 밖 제외) · 주문 쓰는 몬스터 무효화 · 타원 방패 67\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -21538,6 +21621,7 @@ int main() {
     TestWarcryAnim();
     TestWarcryShout();
     TestCounterSpell();
+    TestWarcryDo();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

@@ -564,6 +564,14 @@ constexpr MonsterStats kMonsters[] = {
     { "Beholder",           1382,   250,    0,    0.0,    60,   0,  0,  nullptr,       200.0,  0,  0, 1.3,  85000 },   // ⚠ 사거리는 있는데 이름이 NULL
 };
 
+// ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
+//   몬스터를 만들 때 `ud.StatusFlags = def.StatusFlags92` 로 실린다 `unit_monster.go:117`). 함성의 무효화는 이런 몬스터에게만 간다
+//   (`spell_warcry.go:45~50`). ⭕ `nox_datadump monster.bin` 으로 73종 전수에서 뽑은 11종(09-23). 위 소환 표 중에는 Beholder 하나다
+constexpr const char* kMonstersCanCastSpells[] = {
+    "UrchinShaman", "Demon", "Wizard", "WizardWhite", "Beholder", "Lich",
+    "LichLord", "Hecubah", "WizardGreen", "WillOWisp", "Necromancer",
+};
+
 // 원거리 소환수의 발사체 피해 ⭕ gamedata.bin. 아직 Imp 만 확인했다.
 //   `ARENA ImpShotDamage = 5`
 constexpr int kImpShotDamage = 5;

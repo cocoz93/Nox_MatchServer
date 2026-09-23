@@ -1583,6 +1583,16 @@ int main(int argc, char** argv) {
             }
             std::printf("[반주문] 둘레 %.0f · 지워지는 날아가는 것 %zu종(앞 8:%s) · 끄는 주문 %d개 —%s\n",
                         srv.BalanceFloat("CounterspellRange"), srv.CounterMissileTypeCount(), mis.c_str(), nSp, spells.c_str());
+            // ★ 2-a4 — 주문 쓰는 몬스터(monster.bin `CAN_CAST_SPELLS`, `GameBalance.h` 표) → 와이어 번호. 함성 무효화가 이것만 본다
+            int nCast = 0;
+            std::string miss;
+            for (const char* nm : nox::kMonstersCanCastSpells) {
+                const uint16_t w = tdb.WireByName(nm);
+                if (w) { srv.SetCastingMonsterType(w); ++nCast; }
+                else { miss += " "; miss += nm; }
+            }
+            std::printf("[주문쓰는몬스터] %d / %zu종%s%s\n", nCast, sizeof(nox::kMonstersCanCastSpells) / sizeof(nox::kMonstersCanCastSpells[0]),
+                        miss.empty() ? "" : " · ⚠ thing.bin 에 없음:", miss.c_str());
         }
         // ★★ 2026-09-15 — **모드 깃발을 서버에 실제로 걸어 준다.**
         //   여기가 없어서 묶음 8 규칙(탈락전·왕죽이기·깃발 판 끝)이 시험에서만 켜졌다.

@@ -8239,6 +8239,7 @@ void Server::AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out
             s.animFrame = 0;                               // ★ 2-a1 — `ud.Field59_0 = 0`(`spell_warcry.go:20~22`) · 애니 칸을 0 부터
             PlayerSetState(s, 1, frame_);
             const double dist = 300.0;
+            WarcryBreakCasts(s, dist, out);                // ★ 2-a4 — `Nox_xxx_spell_4FE680(u, dist)`(`spell_warcry.go:25`) 둘레 적의 시전을 끊는다
             for (auto& kv : sessions_) {
                 Session& o = kv.second;
                 if (&o == &s || !o.inGame || o.respawnAtFrame != 0) continue;
@@ -8255,9 +8256,35 @@ void Server::AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out
                 arg.y = static_cast<float>(o.posY);
                 SpellAccept(55, s, s.addr, arg, 5, out);   // 무효화 · 레벨 5
             }
+            // ★ 09-23 nine-defects 2-a4 — **몬스터도** 같은 둘레에서 본다(`spell_warcry.go:45~50`) — 단 **주문을 쓸 줄 알아야**
+            //   (`MonStatusCanCastSpells` = monster.bin `CAN_CAST_SPELLS`, 우리 `castingMonsterTypes_`). 전에는 사람만 봤다.
+            //   편 — 소환수의 편은 주인의 편이다(주인 없는 들짐승은 편 0). 정답지 `SameAs` 도 둘 다 0 이 아니고 같을 때만 같은 편이다
+            for (size_t k = 0; k < pets_.size(); ++k) {
+                const Creature& c = pets_[k];
+                if (c.health == 0) continue;                       // 0x8000
+                if (castingMonsterTypes_.find(c.type) == castingMonsterTypes_.end()) continue;
+                uint8_t team = 0;
+                if (!c.owner.empty()) {
+                    auto oi = sessions_.find(c.owner);
+                    if (oi != sessions_.end()) team = oi->second.team;
+                }
+                if (s.team != 0 && team == s.team) continue;
+                const double dx = c.x - s.posX, dy = c.y - s.posY;
+                if (dx * dx + dy * dy > dist * dist) continue;
+                if (!MapTraceVision(static_cast<float>(c.x), static_cast<float>(c.y),
+                                    static_cast<float>(s.posX), static_cast<float>(s.posY))) continue;
+                SpellArg arg;
+                arg.obj = Target{ std::string(), static_cast<int>(k) };
+                arg.x = static_cast<float>(c.x);
+                arg.y = static_cast<float>(c.y);
+                SpellAccept(55, s, s.addr, arg, 5, out);
+                ++warcryNullMon_;
+            }
             BuffOff(self, 0);
             BuffOff(self, 23);
-            DurCancelFor(51, s.addr, out);
+            // ✖ 09-23 2-a4 정정 — 전에는 `DurCancelFor(51, …)` 였다. **51 은 SHIELD** 고 타원 방패(`SPELL_OVAL_SHIELD`)는 **67** 이다
+            //   (`SpellNames.cpp` · 정답지 `spell_warcry.go:67`). 공격 처리(`PlayerSetState`)는 67 을 쓰고 있었다
+            DurCancelFor(67, s.addr, out);
             break;
         }
         case 4: {   // 살금살금
@@ -12674,6 +12701,31 @@ void Server::WarcryShout(Session& s, std::vector<OutPacket>& out) {
         ++warcryStunned_;
     }
     CastCounterSpell(s, out);                                // ★ 2-a3 — ③ 반주문 13(`castCounterSpell(13, a1, a1, a1)`)
+}
+
+// ★ 09-23 nine-defects 2-a4 — `nox_xxx_spell_4FE680`(`GAME4.c:3267~3318`) — 함성이 **둘레 적의 시전을 끊는다**.
+//   책 시전 목록(`castList_` = magicEnt)을 돌며 — 시전자가 사람이 아니거나 **같은 편이 아니면**(`servCompareTeams` — 둘 다 0 아니고 같아야 같은 편)
+//   거리+0.1 < dist 이고 워리어→시전자 시야(`mapCheck` = `MapTraceVision`)가 트이면 그 칸을 빼고,
+//   시전자가 사람이면 +216(`castFrame`)·+188(`castFlag`) 을 0 · 알림(0, 15) · 소리 231 · 상태 13
+void Server::WarcryBreakCasts(Session& s, double dist, std::vector<OutPacket>& out) {
+    for (size_t i = castList_.size(); i-- > 0;) {
+        auto ci = sessions_.find(castList_[i].caster);
+        if (ci == sessions_.end()) continue;
+        Session& c = ci->second;
+        const bool sameTeam = (s.team != 0 && c.team != 0 && s.team == c.team);
+        if (sameTeam) continue;                              // 목록의 시전자는 늘 사람이다(몬스터 시전은 묶음 6)
+        const double dx = c.posX - s.posX, dy = c.posY - s.posY;
+        if (!(std::sqrt(dx * dx + dy * dy) + 0.1 < dist)) continue;
+        if (!MapTraceVision(static_cast<float>(s.posX), static_cast<float>(s.posY),
+                            static_cast<float>(c.posX), static_cast<float>(c.posY))) continue;
+        c.castFrame = 0;
+        c.castFlag = 0;
+        InformSpell(c, 0, 15, out);
+        PlaySoundAt(231, static_cast<float>(c.posX), static_cast<float>(c.posY));
+        PlayerSetState(c, kPlayerStateIdle, frame_);
+        castList_.erase(castList_.begin() + static_cast<std::ptrdiff_t>(i));
+        ++warcryCastsBroken_;
+    }
 }
 
 // ★ 09-23 nine-defects 2-a3 — `nox_xxx_castCounterSpell_52BBB0`(`spell_counter.go:37~80`) — **반주문**.
