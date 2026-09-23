@@ -8007,28 +8007,31 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
     //   한 줄도 안 남아 있었다(로그에 능력 흔적 0). 반쪽 계수기는 없는 것보다 나쁘다
     ++abilCalls_;
     if (abil == 0 || abil >= 6) { ++abilBadNum_; return false; }
-    if (s.respawnAtFrame != 0) { ++abilDead_; return false; }             // 죽었거나 사라진 것
-    if (s.charClass != CharClass::Warrior) { ++abilNotWarrior_; return false; } // 워리어만
+    // ★ 09-23 — 여기부터는 **능력별 칸**에 센다(`AbilGate`). 번호가 1~5 로 보장된 뒤라 칸 번호로 쓸 수 있다
+    ++abilIn_[abil];
+    auto gate = [&](AbilGate g) { ++abilGate_[abil][static_cast<size_t>(g)]; };
+    if (s.respawnAtFrame != 0) { gate(AbilGate::Dead); return false; }             // 죽었거나 사라진 것
+    if (s.charClass != CharClass::Warrior) { gate(AbilGate::NotWarrior); return false; } // 워리어만
     // ② 같이 못 켜는 짝 — 광전사·함성·작살 셋은 서로를 막는다
     //   ⚠ 정답지는 `IsActiveVal`(켜짐 값까지) 과 `IsActive`(있기만) 를 섞어 쓰는데,
     //     목록에 얹는 자리가 늘 `Active: 1` 이라 **둘이 같다**. 그래서 하나로 본다
     const bool exclusive = (abil == 1 || abil == 2 || abil == 3);
     if (exclusive) {
         for (uint8_t o = 1; o <= 3; ++o)
-            if (o != abil && AbilityIsActive(s, o)) { ++abilExclusive_; refuse(2); return false; }
+            if (o != abil && AbilityIsActive(s, o)) { gate(AbilGate::Exclusive); refuse(2); return false; }
     }
-    if (AbilityIsActive(s, abil)) { ++abilAlready_; refuse(2); return false; }   // ③
+    if (AbilityIsActive(s, abil)) { gate(AbilGate::Already); refuse(2); return false; }   // ③
     // ④ 상태 12 이거나 (협동이 아닌데) **떠 있으면**
     //   ⚠ 떠 있는 것(`FlagAirborne`)은 **사람에게는 아직 안 올겼다** —
     //     날아가는 것의 깃발이지 사람 깃발이 아니다. 사람을 띄우는 길(작살 끌림 따위)을 옮길 때 같이 넣는다
-    if (s.moveState == 12) { ++abilMoveState_; refuse(6); return false; }
+    if (s.moveState == 12) { gate(AbilGate::MoveState); refuse(6); return false; }
     // ⑤ (온라인이 아니거나 퀘스트면) 레벨 0 은 못 쓴다 — ⚠ 우리는 늘 온라인이라 이 관문을 안 탄다
     const bool quest = questTotal_ > 0 || questStage_ > 0;
-    if (quest && s.spellLvl[abil] == 0) { ++abilNotLearned_; refuse(3); return false; }
-    if (abil == 1 && s.overweight) { ++abilOverweight_; InformSpell(s, 2, 7, out); return false; }   // ⑥ 짐 넘침(+3656)
-    if (s.abilCooldown[abil] != 0) { ++abilCooldown2_; refuse(2); return false; }   // ⑦
+    if (quest && s.spellLvl[abil] == 0) { gate(AbilGate::NotLearned); refuse(3); return false; }
+    if (abil == 1 && s.overweight) { gate(AbilGate::Overweight); InformSpell(s, 2, 7, out); return false; }   // ⑥ 짐 넘침(+3656)
+    if (s.abilCooldown[abil] != 0) { gate(AbilGate::Cooldown); refuse(2); return false; }   // ⑦
 
-    ++abilOk_;
+    gate(AbilGate::Ok);
     s.abilCooldown[abil] = kAbilityDelay[abil];
     if (kAbilityDelay[abil] != 0) SendAbilityState(s, abil, 0, out);
     if (kAbilityDuration[abil] > 0) {

@@ -116,6 +116,23 @@ inline uint32_t FoodClassBitsOf(const std::string& raw) {
 // 세계에서 **다루는** 것 — 집는 게 아니다.
 enum class PropKind : uint8_t { Door = 0, Obelisk, Plate };
 
+// ★ 09-23 nine-defects 0단계 — 능력(`AbilityDo`)이 **어디로 나갔나**. 번호 검사를 지난 뒤의 나가는 길 아홉 개다.
+//   합계만 세던 때는 사람 판의 「실행 11 · 겹침 12」가 **어느 능력인지** 몰라서
+//   「A 가 겹침에 막혔나 / 실행됐는데 동작이 없나」를 못 갈랐다. 그래서 능력별로 센다
+enum class AbilGate : uint8_t {
+    Dead = 0,      // 죽었거나 사라짐
+    NotWarrior,    // 워리어가 아님
+    Exclusive,     // 같이 못 켜는 짝이 켜져 있음
+    Already,       // 이미 켜져 있음
+    MoveState,     // 움직임 상태 12
+    NotLearned,    // 퀘스트인데 레벨 0
+    Overweight,    // 짐 넘침(광전사만)
+    Cooldown,      // 아직 쉬는 중
+    Ok,            // **실행했다**
+    Count
+};
+constexpr size_t kAbilGateCount = static_cast<size_t>(AbilGate::Count);
+
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
 //   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
@@ -3042,15 +3059,26 @@ public:
     unsigned long long abilObserver() const { return abilObserver_; }
     unsigned long long abilCalls() const { return abilCalls_; }
     unsigned long long abilBadNum() const { return abilBadNum_; }
-    unsigned long long abilDead() const { return abilDead_; }
-    unsigned long long abilNotWarrior() const { return abilNotWarrior_; }
-    unsigned long long abilExclusive() const { return abilExclusive_; }
-    unsigned long long abilAlready() const { return abilAlready_; }
-    unsigned long long abilMoveState() const { return abilMoveState_; }
-    unsigned long long abilNotLearned() const { return abilNotLearned_; }
-    unsigned long long abilOverweight() const { return abilOverweight_; }
-    unsigned long long abilCooldown2() const { return abilCooldown2_; }
-    unsigned long long abilOk() const { return abilOk_; }
+    // ★ 09-23 — 합계는 **능력별 칸의 합**이다(따로 세지 않는다 — 두 벌이면 어긋나도 모른다)
+    unsigned long long abilDead() const { return AbilGateSum(AbilGate::Dead); }
+    unsigned long long abilNotWarrior() const { return AbilGateSum(AbilGate::NotWarrior); }
+    unsigned long long abilExclusive() const { return AbilGateSum(AbilGate::Exclusive); }
+    unsigned long long abilAlready() const { return AbilGateSum(AbilGate::Already); }
+    unsigned long long abilMoveState() const { return AbilGateSum(AbilGate::MoveState); }
+    unsigned long long abilNotLearned() const { return AbilGateSum(AbilGate::NotLearned); }
+    unsigned long long abilOverweight() const { return AbilGateSum(AbilGate::Overweight); }
+    unsigned long long abilCooldown2() const { return AbilGateSum(AbilGate::Cooldown); }
+    unsigned long long abilOk() const { return AbilGateSum(AbilGate::Ok); }
+    // 능력 하나(1~5)의 칸 · 번호 검사를 지나 들어온 수(= 그 능력 칸 아홉의 합이어야 한다)
+    unsigned long long abilGate(uint8_t abil, AbilGate g) const {
+        return abil < kAbilityCount && g < AbilGate::Count ? abilGate_[abil][static_cast<size_t>(g)] : 0;
+    }
+    unsigned long long abilIn(uint8_t abil) const { return abil < kAbilityCount ? abilIn_[abil] : 0; }
+    unsigned long long AbilGateSum(AbilGate g) const {
+        unsigned long long n = 0;
+        for (int a = 0; a < kAbilityCount; ++a) n += abilGate_[a][static_cast<size_t>(g)];
+        return n;
+    }
     void SetNoSecondNewPlayer(bool v) { noSecondNewPlayer_ = v; }
     void SetForceHarpoon(bool v) { forceHarpoon_ = v; }
     void SetDumpHarpoon(bool v) { dumpHarpoon_ = v; }
@@ -3966,15 +3994,10 @@ private:
     unsigned long long abilObserver_ = 0;     // 관전이라 무시
     unsigned long long abilCalls_ = 0;        // AbilityDo 까지 들어옴
     unsigned long long abilBadNum_ = 0;       // 번호가 1~5 밖
-    unsigned long long abilDead_ = 0;         // 죽었거나 사라짐
-    unsigned long long abilNotWarrior_ = 0;   // 워리어가 아님
-    unsigned long long abilExclusive_ = 0;    // 같이 못 켜는 짝이 켜져 있음
-    unsigned long long abilAlready_ = 0;      // 이미 켜져 있음
-    unsigned long long abilMoveState_ = 0;    // 움직임 상태 12
-    unsigned long long abilNotLearned_ = 0;   // 퀘스트인데 레벨 0
-    unsigned long long abilOverweight_ = 0;   // 짐 넘침(광전사만)
-    unsigned long long abilCooldown2_ = 0;    // 아직 쉬는 중
-    unsigned long long abilOk_ = 0;           // **실행했다**
+    // ★ 09-23 — 나머지 갈래는 **능력별 칸**이다(`AbilGate`). 등식 두 개로 빠진 자리를 잡는다 —
+    //   ① Σ abilIn_ + abilBadNum_ = abilCalls_   ② 능력마다 abilIn_[a] = 그 능력 칸 아홉의 합
+    unsigned long long abilIn_[kAbilityCount] = {};                       // 번호 검사를 지나 들어옴
+    unsigned long long abilGate_[kAbilityCount][kAbilGateCount] = {};     // 어디로 나갔나
     // ★ 09-19 — 첫 접속 자리. `--spawn-at`·`--item-at-spawn` 으로 못 박았으면 그 값을 쓰고, 아니면
     //   **맵의 PlayerStart** 에 세운다(정답지 `newPlayer` · `player.go:416~426`).
     //   전에는 늘 덤프에서 온 고정값(bludeath 의 3864,2534)이라 **맵마다 엉뚱한 자리**였다
