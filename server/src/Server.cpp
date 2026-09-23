@@ -12673,6 +12673,87 @@ void Server::WarcryShout(Session& s, std::vector<OutPacket>& out) {
         ApplyEnchant(Target{ std::string(), static_cast<int>(i) }, 5, 90, 3);
         ++warcryStunned_;
     }
+    CastCounterSpell(s, out);                                // ★ 2-a3 — ③ 반주문 13(`castCounterSpell(13, a1, a1, a1)`)
+}
+
+// ★ 09-23 nine-defects 2-a3 — `nox_xxx_castCounterSpell_52BBB0`(`spell_counter.go:37~80`) — **반주문**.
+//   함성 외침이 `(13, a1, a1, a1)` 로 부른다 — 둘레의 가운데이자 빼는 것(a4)이 시전자다. 둘레 = gamedata `CounterspellRange`.
+//   ① 둘레 안(중심 거리 · `EachMissileInCircle`)의 날아가는 것 중 서브클래스 `MISSILE_COUNTERSPELL` 인 것(`cspellRemoveSpell_52BC90` `:13~35`) —
+//      반주문 폭발 FX(0x87)를 그 자리에 내고, `Magic` 은 그냥 지우고, 나머지는 **대상 없이 닿음 함수를 부른 뒤** 지운다
+//      (불덩이 = 그 자리에서 터짐 · 픽시 = 대상도 벽도 없으면 지워짐 `GAME3_3.c:4390~4392`).
+//      ⚠ 죽음의 공(DeathBall → 조각 뿌리기) 갈래는 우리에게 그 오브젝트가 없어 없다
+//   ② 지속 주문 중 `CAN_COUNTER`(0x40000)이고 (+88 & 2 가 없거나 연쇄 번개(43)면) 자리(+28)가 둘레 안인 것을 끊는다
+//   ③ 둘레 안 오브젝트(시전자 빼고 · 안 죽은 것)의 버프 0~31 중 **지속이 0 이 아니고**(0 = 영구) 그 버프의 주문이 `CAN_COUNTER` 면 끈다.
+//      한 오브젝트에서 하나라도 끄면 그 자리에 FX(0x87) 한 번
+//   ④ 반주문(13) 시전 소리를 시전자 자리에서
+int Server::CastCounterSpell(Session& caster, std::vector<OutPacket>& out) {
+    ++counterCasts_;
+    const double r = BalanceFloat("CounterspellRange");
+    const double r2 = r * r;
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    auto fx = [&](float px, float py) {                      // netSendPointFx_522FF0(MSG_FX_COUNTERSPELL_EXPLOSION)
+        const uint16_t ix = static_cast<uint16_t>(static_cast<int>(px)), iy = static_cast<uint16_t>(static_cast<int>(py));
+        const uint8_t msg[5] = { static_cast<uint8_t>(Op::FX_COUNTERSPELL_EXPLOSION),
+                                 static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                 static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+        SendFxAllCli(px, py, msg, sizeof(msg), out);
+    };
+    auto inRange = [&](double x, double y) { const double dx = x - cx, dy = y - cy; return dx * dx + dy * dy <= r2; };
+    constexpr uint32_t kCanCounter = 0x40000;               // things.SpellCanCounter
+
+    // ① 날아가는 것 — 지우면 색인이 밀리므로 뒤에서부터
+    for (size_t i = missiles_.size(); i-- > 0;) {
+        if (i >= missiles_.size()) continue;                 // 불덩이가 터지며 목록이 줄었을 수 있다
+        MissileObj& m = missiles_[i];
+        if (counterMissileTypes_.find(m.type) == counterMissileTypes_.end()) continue;
+        if (!inRange(m.posX, m.posY)) continue;
+        fx(m.posX, m.posY);
+        ++counterMissiles_;
+        const uint16_t nc = m.netCode;
+        if (m.type != magicType_.type && m.collideKind == 1) FireballExplode(m, Target{}, out);   // SparkExplosionCollide(0,0)
+        // 픽시(2)·Magic·그 밖 — 대상 없는 닿음이 아무 일도 안 하거나 지우기뿐이다. 아직 남아 있으면 지운다
+        if (i < missiles_.size() && missiles_[i].netCode == nc) DestroyMissile(i, out);
+    }
+    // ② 지속 주문 — `DurCancel` 은 표시만 하고 지우기는 뒤에 한다(돌면서 불러도 된다)
+    //   ⚠ 이미 끊긴 것(+88 & 1)도 거르지 않는다 — 정답지 반주문·`CancelSpell`(`server/spells_dur.go:177~198`) 둘 다 그 검사가 없다
+    for (auto& d : durSpells_) {
+        if (!(SpellFlags(d.spell) & kCanCounter)) continue;
+        if ((d.flags88 & 2) && d.spell != 43) continue;
+        if (!inRange(d.posX, d.posY)) continue;
+        DurCancel(d, out);
+        ++counterDurs_;
+    }
+    // ③ 버프 — 버프 번호 → 그 버프를 거는 주문(`spells_enchant.go:71~104`, 0 = 주문 없음)
+    static const uint8_t kEnchantSpell[32] = {
+        39, 54, 3, 12, 72, 74, 0, 0, 70, 36, 131, 26, 0, 130, 1, 42,
+        15, 62, 64, 63, 61, 37, 71, 40, 127, 32, 51, 67, 9, 55, 0, 0,
+    };
+    auto strip = [&](const Target& t, float tx, float ty) {
+        Buffs* b = BuffsOf(t);
+        if (!b) return;
+        bool shown = false;
+        for (int e = 0; e < 32; ++e) {
+            if (!b->Has(e) || b->dur[e] == 0) continue;
+            const uint8_t sp = kEnchantSpell[e];
+            if (sp == 0 || !(SpellFlags(sp) & kCanCounter)) continue;
+            if (!shown) { fx(tx, ty); shown = true; }
+            BuffOff(t, e);
+            ++counterEnchants_;
+        }
+    };
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (&o == &caster || !o.inGame || o.respawnAtFrame != 0) continue;   // a4 빼고 · 0x8020
+        if (!inRange(o.posX, o.posY)) continue;
+        strip(Target{ o.addr, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY));
+    }
+    for (size_t k = 0; k < pets_.size(); ++k) {
+        if (pets_[k].health == 0 || !inRange(pets_[k].x, pets_[k].y)) continue;
+        strip(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
+    }
+    // ④ 시전 소리
+    if (spellDefs_[13].valid && spellDefs_[13].castSound != 0) PlaySoundAt(spellDefs_[13].castSound, cx, cy);
+    return 1;
 }
 
 // `GAME4_3.c:3855` playerAttack — 맨손(`:4020~4066`) · 무기(`:4067~4419`) · 끝(LABEL_159 `:4420~4439`). 참 = 아직 공격 중.

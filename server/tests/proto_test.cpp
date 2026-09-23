@@ -14698,6 +14698,107 @@ void TestWarcryShout() {
     std::printf("  nine-defects 2-a2 — 함성 외침: 땅울림 15 · 300 안 WARCRY_STUN 몬스터만 붙잡힘 90틱·세기 3\n");
 }
 
+// ── nine-defects 2-a3 — 반주문(주문 13, `castCounterSpell_52BBB0`) ──────────────────────
+//
+// 정답지 `spell_counter.go:37~80`. 둘레 = `CounterspellRange`(실 gamedata 600). 가운데·빼는 것 = 시전자.
+// ① `MISSILE_COUNTERSPELL` 날아가는 것 → FX 0x87 · 불덩이는 터지고 지워짐 ② `CAN_COUNTER` 지속 주문 끊음
+// ③ 버프 — 지속이 0 이 아니고 그 주문이 `CAN_COUNTER` 면 끔(시전자 제외) · 오브젝트마다 FX 한 번 ④ 반주문 시전 소리
+void TestCounterSpell() {
+    const std::string a = "10.7.15.1:7151";   // 시전자(워리어)
+    const std::string b = "10.7.15.2:7152";   // 둘레 안
+    const std::string c = "10.7.15.3:7153";   // 둘레 밖
+    const std::string d = "10.7.15.4:7154";   // 둘레 안 — 영구 버프만
+    auto mk = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        nox::Gamedata g;
+        g.Parse("FireballSpeedCoeff = 1.6, 2.0, 2.4, 2.5, 2.6;\n" "SummonDuration = 60, 210, 375;\n" "CounterspellRange = 600;\n");
+        srv.SetGamedata(g);
+        RegSpell(srv, 27, 0);                                  // 불덩이 주문 정의(없으면 불덩이가 안 난다)
+        RegFireballTypes(srv);
+        srv.SetCounterMissileType(695);                        // Fireball — thing.bin `MISSILE_COUNTERSPELL`
+        srv.SetSpellDef(71, 10, 0x40000, {});                  // SHOCK — 반주문에 꺼진다(실 thing.bin 도 CAN_COUNTER)
+        srv.SetSpellDef(36, 10, 0, {});                        // HASTE — 안 꺼진다
+        srv.SetSpellDef(31, 10, 0x40000, {});                  // FORCE_OF_NATURE — 지속 주문, 끊긴다
+        srv.SetSpellDef(51, 10, 0, {});                        // SHIELD — 지속 주문, 안 끊긴다
+        srv.SetSpellDef(13, 0, 0, {}, /*castSound=*/42);
+        srv.SetSoundDefs({ nox::Server::SoundDefIn{ 42, 600, 0, 1, 0 } });
+        srv.DebugEnterGame(a, 800, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 801, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(c, 802, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(d, 803, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(c, 2000, 2000);                        // 약 1414 — 600 밖
+        srv.DebugMoveTo(d, 1000, 1200);
+        ms = 0; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);                           // 물리 자리(posX)는 틱이 돌아야 맞춰진다
+    };
+    auto fxCount = [&](const std::vector<nox::OutPacket>& out) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, a))
+            if (!x.empty() && x[0] == static_cast<uint8_t>(nox::Op::FX_COUNTERSPELL_EXPLOSION)) ++n;
+        return n;
+    };
+
+    // ① **날아가는 것** — 둘레 안 불덩이는 터지고 지워진다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugAimAt(b, 1100, 1500);
+        srv.DebugSpellAccept(b, 27, 1, out);
+        Check(srv.missiles() == 1, "① 전제 — 불덩이가 안 생겼다");
+        out.clear();
+        srv.DebugCastCounterSpell(a, out);
+        Check(srv.missiles() == 0 && srv.counterMissiles() == 1, "① 둘레 안 불덩이가 안 지워졌다");
+        Check(fxCount(out) >= 1, "① 지운 자리에 반주문 FX(0x87)가 안 갔다");
+    }
+    // ② **지속 주문** — CAN_COUNTER 이고 둘레 안인 것만 끊긴다(목록 머리에 넣으므로 색인 0 이 마지막에 넣은 것)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugDurNew(c, 31, 0, -1, -1, false, nox::Target{}, out);   // 2 — 둘레 밖
+        srv.DebugDurNew(b, 51, 0, -1, -1, false, nox::Target{}, out);   // 1 — CAN_COUNTER 아님
+        srv.DebugDurNew(b, 31, 0, -1, -1, false, nox::Target{}, out);   // 0 — 끊겨야 한다
+        Check(srv.DurCount() == 3, "② 전제 — 지속 주문이 셋이 아니다");
+        srv.DebugCastCounterSpell(a, out);
+        Check(srv.DebugDurCanceled(0) && !srv.DebugDurCanceled(1) && !srv.DebugDurCanceled(2) && srv.counterDurs() == 1,
+              "② 끊긴 지속 주문이 「둘레 안·CAN_COUNTER」 하나가 아니다");
+    }
+    // ③ **버프** — 끄는 것은 b 의 충격(22, 지속 100)뿐. b 의 가속(9)·a(시전자)의 충격·c(둘레 밖)의 충격·d 의 영구(지속 0) 충격은 남는다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugApplyEnchant(b, 22, 100, 1);
+        srv.DebugApplyEnchant(b, 9, 100, 1);
+        srv.DebugApplyEnchant(a, 22, 100, 1);
+        srv.DebugApplyEnchant(c, 22, 100, 1);
+        srv.DebugApplyEnchant(d, 22, 0, 1);
+        Check(srv.DebugHasEnchant(d, 22) && srv.DebugEnchantDur(d, 22) == 0, "③ 전제 — 영구(지속 0) 충격이 안 걸렸다");
+        out.clear();
+        srv.DebugCastCounterSpell(a, out);
+        Check(!srv.DebugHasEnchant(b, 22), "③ 둘레 안 b 의 충격(CAN_COUNTER)이 안 꺼졌다");
+        Check(srv.DebugHasEnchant(b, 9), "③ b 의 가속(CAN_COUNTER 아님)이 꺼졌다");
+        Check(srv.DebugHasEnchant(a, 22), "③ 시전자 자신의 충격이 꺼졌다(a4 는 뺀다)");
+        Check(srv.DebugHasEnchant(c, 22), "③ 둘레 밖 c 의 충격이 꺼졌다");
+        Check(srv.DebugHasEnchant(d, 22), "③ 영구(지속 0) 충격이 꺼졌다");
+        Check(srv.counterEnchants() == 1 && fxCount(out) == 1, "③ 끈 버프 1 · FX 한 번이 아니다");
+    }
+    // ④ **시전 소리** — 반주문(13)의 시전 소리가 담긴다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        const size_t q0 = srv.DebugAudioQueued();
+        srv.DebugCastCounterSpell(a, out);
+        Check(srv.DebugAudioQueued() == q0 + 1 && srv.counterCasts() == 1, "④ 반주문 시전 소리가 한 번 담기지 않았다");
+    }
+    // ⑤ **함성이 부른다** — 외침 칸에서 반주문 한 번
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.SetPlayerAnimFrames(46, 10, 1);
+        srv.DebugAbilAward(a, 2, false, out);
+        srv.DebugApplyEnchant(b, 22, 100, 1);
+        srv.DebugAbilDo(a, 2, out);
+        for (int t = 0; t < 20 && srv.warcryShouts() == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.counterCasts() == 1 && !srv.DebugHasEnchant(b, 22), "⑤ 함성 외침이 반주문을 안 불렀다(b 의 충격이 남음)");
+    }
+    std::printf("  nine-defects 2-a3 — 반주문: 불덩이 지움 · CAN_COUNTER 지속 주문만 끊음 · 버프(시전자·밖·영구 제외) · 소리 · 함성이 부름\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -21436,6 +21537,7 @@ int main() {
     TestMapHazard();
     TestWarcryAnim();
     TestWarcryShout();
+    TestCounterSpell();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

@@ -1550,6 +1550,40 @@ int main(int argc, char** argv) {
                 std::printf("[기획값] ⚠ gamedata.bin 못 읽음 — %s\n", gd.Error().c_str());
             }
         }
+        // ★ 09-23 nine-defects 2-a3 — **반주문 재료.** ① 지워지는 날아가는 것 = 클래스 `MISSILE` · 서브클래스 `MISSILE_COUNTERSPELL`
+        //   (정답지 `obj.SubClass().AsMissile().Has(MissileMissileCounterSpell)`) ② 반주문이 끄는 주문 = SPEL 깃발 `CAN_COUNTER`(0x40000).
+        //   ②를 이름으로 찍는다 — 함성 외침은 같은 틱에 기절(STUN)을 걸고 반주문을 부르므로, STUN 이 여기 있으면 기절이 도로 풀린다
+        {
+            auto hasTok = [](const std::string& raw, const char* tok) {
+                size_t st = 0;
+                while (st <= raw.size()) {
+                    size_t e = raw.find('+', st);
+                    if (e == std::string::npos) e = raw.size();
+                    std::string t = raw.substr(st, e - st);
+                    while (!t.empty() && t.back() == ' ') t.pop_back();
+                    while (!t.empty() && t.front() == ' ') t.erase(t.begin());
+                    if (t == tok) return true;
+                    st = e + 1;
+                }
+                return false;
+            };
+            std::string mis;
+            for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                const nox::ThingInfo* t2 = tdb.ByWire(w);
+                if (!t2 || !hasTok(t2->classRaw, "MISSILE") || !hasTok(t2->subclassRaw, "MISSILE_COUNTERSPELL")) continue;
+                srv.SetCounterMissileType(w);
+                if (srv.CounterMissileTypeCount() <= 8) { mis += " "; mis += t2->name; }
+            }
+            std::string spells;
+            int nSp = 0;
+            for (int id = 1; id < nox::kSpellCount; ++id) {
+                if (!(srv.SpellFlags(static_cast<uint8_t>(id)) & 0x40000)) continue;
+                ++nSp;
+                spells += " "; spells += nox::SpellName(id);
+            }
+            std::printf("[반주문] 둘레 %.0f · 지워지는 날아가는 것 %zu종(앞 8:%s) · 끄는 주문 %d개 —%s\n",
+                        srv.BalanceFloat("CounterspellRange"), srv.CounterMissileTypeCount(), mis.c_str(), nSp, spells.c_str());
+        }
         // ★★ 2026-09-15 — **모드 깃발을 서버에 실제로 걸어 준다.**
         //   여기가 없어서 묶음 8 규칙(탈락전·왕죽이기·깃발 판 끝)이 시험에서만 켜졌다.
         //   `gameSettings_.gameFlags` 하나가 **두 군데**로 간다 —

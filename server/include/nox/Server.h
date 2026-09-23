@@ -2819,6 +2819,17 @@ public:
     }
     // 날아가는 종류 하나 — thing.bin 에서 읽어 main 이 넣는다(이름으로 찾는다).
     struct ProjTypeInfo { uint16_t type = 0; float speed = 0; uint32_t flags = 0; uint8_t collideAmount = 0; };
+    // ★ 09-23 nine-defects 2-a3 — 반주문에 지워지는 날아가는 것(thing.bin 서브클래스 `MISSILE_COUNTERSPELL`)의 종류.
+    //   main 이 thing.bin 에서 넣고, 시험은 손으로 넣는다. Estate 기준 `Magic`·불덩이 셋·`Pixie` 다(`--dump-thing` 실측)
+    void SetCounterMissileType(uint16_t wire) { counterMissileTypes_.insert(wire); }
+    size_t CounterMissileTypeCount() const { return counterMissileTypes_.size(); }
+    unsigned long long counterCasts() const { return counterCasts_; }         // 반주문을 부른 수
+    unsigned long long counterMissiles() const { return counterMissiles_; }   // 지운 날아가는 것
+    unsigned long long counterDurs() const { return counterDurs_; }           // 끊은 지속 주문
+    unsigned long long counterEnchants() const { return counterEnchants_; }   // 끈 버프
+    int DebugCastCounterSpell(const std::string& a, std::vector<OutPacket>& out) {
+        auto i = sessions_.find(a); return i == sessions_.end() ? 0 : CastCounterSpell(i->second, out);
+    }
     void SetProjType(const std::string& name, uint16_t type, int speedRaw, uint32_t flags, uint8_t collideAmount) {
         ProjTypeInfo p;
         p.type = type;
@@ -3676,6 +3687,9 @@ private:
     unsigned long long warcryShouts_ = 0;      // ★ 2-a1 — 함성 애니가 칸 2 → 3 을 넘은 틱(외침 효과가 붙을 자리)
     unsigned long long warcryStunned_ = 0;     // ★ 2-a2 — 외침에 붙잡힘(5)이 걸린 몬스터 수
     void WarcryShout(Session& s, std::vector<OutPacket>& out);   // ★ 2-a2 — 외침 효과(땅울림 · 몬스터 기절)
+    int CastCounterSpell(Session& caster, std::vector<OutPacket>& out);   // ★ 2-a3 — castCounterSpell_52BBB0
+    std::set<uint16_t> counterMissileTypes_;
+    unsigned long long counterCasts_ = 0, counterMissiles_ = 0, counterDurs_ = 0, counterEnchants_ = 0;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
     // 묶음 8-g — 판이 끝나는 나머지 길
