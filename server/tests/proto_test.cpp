@@ -14293,6 +14293,12 @@ void TestHarpoonPull() {
             if (x.size() == 7 && x[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) && x[1] == code) return true;
         return false;
     };
+    // ★ 09-23 nine-defects 0-e — 끊긴 판마다 **그 까닭 칸 하나만 1** 인지(`HarpoonEnd`). 줄은 한 번만 끊긴다
+    auto onlyEnd = [&](const nox::Server& srv, nox::HarpoonEnd want, const char* what) {
+        unsigned long long sum = 0;
+        for (size_t h = 0; h < nox::kHarpoonEndCount; ++h) sum += srv.harpoonEnd(static_cast<nox::HarpoonEnd>(h));
+        Check(srv.harpoonEnd(want) == 1 && sum == 1, what);
+    };
 
     // ① **걸림(`9e 07`)이 간다** — 꽂히고 나면
     {
@@ -14352,6 +14358,7 @@ void TestHarpoonPull() {
         srv.DebugHarpoonUpdate(a, out);
         srv.DebugHarpoonUpdate(a, out);
         Check(srv.DebugHarpoonBolt(a) == 0, "20 안인데 줄이 안 끊겼다");
+        onlyEnd(srv, nox::HarpoonEnd::Arrived, "③ 끊김 까닭이 「다 끌어옴」 하나가 아니다");
     }
     // 경계 — 딱 20 은 **안 끊긴다**(`dist < 20`)
     {
@@ -14379,6 +14386,7 @@ void TestHarpoonPull() {
         srv.DebugSetPos(b, 1200, 1000);
         srv.DebugHarpoonUpdate(a, out);
         Check(srv.DebugHarpoonBolt(a) == 0, "151 인데 줄이 안 끊겼다");
+        onlyEnd(srv, nox::HarpoonEnd::Lifetime, "④ 끊김 까닭이 「수명」 하나가 아니다");
     }
 
     // ⑤ **375 보다 멀어지면 끊긴다**
@@ -14390,6 +14398,7 @@ void TestHarpoonPull() {
         srv.DebugHarpoonUpdate(a, out);                    // 화살이 상대 자리로 옮겨 붙는다
         srv.DebugHarpoonUpdate(a, out);                    // 그 다음 갱신이 거리를 재 끊는다
         Check(srv.DebugHarpoonBolt(a) == 0, "375 밖인데 줄이 안 끊겼다");
+        onlyEnd(srv, nox::HarpoonEnd::TooFar, "⑤ 끊김 까닭이 「멀어짐」 하나가 아니다");
     }
 
     // ⑥ **30틱마다 보아 상대가 안 움직였으면 끊긴다**
@@ -14406,6 +14415,7 @@ void TestHarpoonPull() {
         srv.DebugSetPos(b, 1200, 1000);                    // 한 칸도 안 움직였다
         srv.DebugHarpoonUpdate(a, out);
         Check(srv.DebugHarpoonBolt(a) == 0, "31틱 동안 안 움직였는데 줄이 안 끊겼다");
+        onlyEnd(srv, nox::HarpoonEnd::Stuck, "⑥ 끊김 까닭이 「안 움직임」 하나가 아니다");
     }
     // 움직였으면 안 끊긴다
     {
@@ -14437,6 +14447,7 @@ void TestHarpoonPull() {
         srv.DebugSetPos(b, 1200, 1000);
         srv.DebugHarpoonUpdate(a, out);
         Check(srv.DebugHarpoonBolt(a) == 0, "벽이 가로막았는데 줄이 안 끊겼다");
+        onlyEnd(srv, nox::HarpoonEnd::NoSight, "⑦ 끊김 까닭이 「시야 막힘」 하나가 아니다");
     }
 
     // ⑧ **안 걸린 채 300 넘게 날면 끊긴다**
@@ -14448,6 +14459,7 @@ void TestHarpoonPull() {
         srv.DebugAbilDo(a, 3, out);
         for (int t = 0; t < 30 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.DebugHarpoonBolt(a) == 0, "300 넘게 날았는데 줄이 안 끊겼다");
+        onlyEnd(srv, nox::HarpoonEnd::OverFlight, "⑧ 끊김 까닭이 「너무 멀리 날아감」 하나가 아니다");
     }
 
     // ⑨ **주인이 죽으면 끊긴다**
@@ -14459,6 +14471,7 @@ void TestHarpoonPull() {
         while (srv.IsAlive(a) && guard++ < 40) srv.DebugHurt(a, -1, 30, b, 0, out);
         ms += 34; srv.Tick(ms, out);
         Check(srv.DebugHarpoonBolt(a) == 0, "주인이 죽었는데 줄이 안 끊겼다");
+        onlyEnd(srv, nox::HarpoonEnd::OwnerDead, "⑨ 끊김 까닭이 「주인 죽음」 하나가 아니다");
     }
     std::printf("  7-g — 작살 끌기: 9e 07 첫 틱 · 끌려옴 · 20 안·375 밖·안 움직임·주인 죽음에 끊김 · 안 걸리면 300\n");
 }
