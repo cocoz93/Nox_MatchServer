@@ -15658,6 +15658,85 @@ void TestPlayerHitSound() {
     std::printf("  nine-defects 4-c2 — 사람 맞는 소리: 표 56칸 이름 대조·다이아 줄 · 롱소드/맨손 × 맨몸·쇠 가슴갑옷·로브·가슴갑옷 아닌 돌 · 근접 아님은 세기만\n");
 }
 
+// ── nine-defects 4-c3a — 소환수가 맞을 때 기본 타격 소리(`soundDefaultDamageSound_532E20` · `server/sound.go:169~202`) ─────────
+void TestPetHitSound() {
+    // ① 부서지는 재질 소리 표(`Sub_532EC0`) — 이름으로 대조
+    Check(nox::Server::BreakableHitSound(8) == nox::SoundByName("HitWoodBreakable") &&
+          nox::Server::BreakableHitSound(0x10) == nox::SoundByName("HitMetalBreakable") &&
+          nox::Server::BreakableHitSound(0x20) == nox::SoundByName("HitStoneBreakable") &&
+          nox::Server::BreakableHitSound(0x40) == nox::SoundByName("HitEarthBreakable") &&
+          nox::Server::BreakableHitSound(0x400) == nox::SoundByName("HitEarthBreakable") &&
+          nox::Server::BreakableHitSound(0x1000) == nox::SoundByName("HitMagicBreakable") &&
+          nox::Server::BreakableHitSound(1) == 0 && nox::Server::BreakableHitSound(0x4000) == 0,
+          "① 부서지는 재질 소리 표가 이름과 다르다");
+    // ①' 판단부 — 피해 종류 0~17 전수: 0·2·3·10·11 만 통과(`sub_532F70`) · 체력 없으면 돌이어도 부서지는 소리 아님 · 때린 것 없음·NONE 거름
+    {
+        int passed = 0;
+        for (int d = 0; d <= 17; ++d) {
+            nox::DefHitSoundWay w = nox::DefHitSoundWay::Count;
+            if (nox::Server::DefaultHitSound(1, true, static_cast<uint8_t>(d), true, 16, w) != 0) ++passed;
+        }
+        nox::DefHitSoundWay w1 = nox::DefHitSoundWay::Count, w2 = w1, w3 = w1, w4 = w1;
+        const uint16_t noHpStone = nox::Server::DefaultHitSound(32, false, 0, true, 16, w1);   // 체력 없음 → 표(858)
+        const uint16_t hpStone = nox::Server::DefaultHitSound(32, true, 0, true, 16, w2);      // 체력 있음 → 부서짐(873)
+        nox::Server::DefaultHitSound(1, true, 0, false, 16, w3);                               // 때린 것 없음
+        nox::Server::DefaultHitSound(1, true, 0, true, 0x4000, w4);                            // 때린 것 NONE
+        Check(passed == 5 && noHpStone == 858 && w1 == nox::DefHitSoundWay::Played && hpStone == 873 &&
+              w2 == nox::DefHitSoundWay::Breakable && w3 == nox::DefHitSoundWay::Filtered && w4 == nox::DefHitSoundWay::Filtered,
+              "①' 판단부 — 피해 종류 다섯만 · 체력 없는 돌은 표 · 때린 것 없음/NONE 거름 이 아니다");
+    }
+    // ② 실제 판 — a(워리어)가 앞의 소환수를 친다 · 소환수 재질 · 무기 재질에 따라 갈린다
+    const std::string a = "10.7.23.1:7231";
+    auto tick = [](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) { ms += 34; srv.Tick(ms, out); };
+    auto hitPet = [&](uint32_t petMat, uint32_t swordMat, nox::DefHitSoundWay want, uint16_t wantId, const char* what) {
+        nox::Server srv;
+        std::vector<uint32_t> mat(1400, 0u); std::vector<uint8_t> breast(1400, 0);
+        mat[713] = 0x1; mat[1169] = swordMat; mat[1328] = petMat;
+        srv.SetMaterialTables(mat, breast, 713);
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id = 848; id <= 884; ++id) { nox::Server::SoundDefIn d; d.id = id; d.samples = 1; sd.push_back(d); }
+        srv.SetSoundDefs(sd);
+        for (int anim : { 23, 24, 25, 28 }) srv.SetPlayerAnimFrames(anim, 8, 0);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        srv.DebugEnterGame(a, 880, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetFacing(a, 0);
+        for (int t = 0; t < 35; ++t) tick(srv, out, ms);
+        srv.DebugSpawnPet(1328, 1030.0f, 1000.0f, std::string());
+        const uint16_t hp0 = srv.DebugPetHealth(0);
+        const auto click = InputPacket(6);
+        srv.OnPacket(a, click.data(), click.size(), out);
+        for (int t = 0; t < 12; ++t) tick(srv, out, ms);
+        char msg[240];
+        std::snprintf(msg, sizeof(msg), "② %s — 소환수 체력 %u→%u · 부름 %llu · 합 %llu · 그 칸 %llu · 번호 %u(기대 %u)", what, hp0,
+                      srv.pets() ? srv.DebugPetHealth(0) : 0, srv.defHitSoundCalls(), srv.DefHitSoundWaySum(), srv.defHitSoundWay(want),
+                      srv.lastHitSound(), wantId);
+        Check((srv.pets() == 0 || srv.DebugPetHealth(0) < hp0) && srv.defHitSoundCalls() == 1 && srv.DefHitSoundWaySum() == 1 &&
+              srv.defHitSoundWay(want) == 1 && srv.lastHitSound() == wantId, msg);
+    };
+    hitPet(0x1, 0x10, nox::DefHitSoundWay::Played, 862, "살 소환수 · 쇠 칼 → 862 MetalHitFlesh");
+    hitPet(0x20, 0x10, nox::DefHitSoundWay::Breakable, 873, "돌 소환수 → 부서지는 소리 873 HitStoneBreakable");
+    hitPet(0x8, 0x10, nox::DefHitSoundWay::Breakable, 875, "나무 소환수 → 875 HitWoodBreakable");
+    hitPet(0x10, 0x10, nox::DefHitSoundWay::Played, 861, "쇠 소환수(부서지는 재질 아님) → 861 MetalHitMetal");
+    hitPet(0x4000, 0x10, nox::DefHitSoundWay::TableEmpty, 0, "재질 NONE 소환수(Ghost·Bomber 꼴) → 표에 없음");
+    hitPet(0x1, 0x4000, nox::DefHitSoundWay::Filtered, 0, "때린 것 재질 NONE → 안 냄");
+    // ③ 근접 아닌 피해는 세기만(4-c3b)
+    {
+        nox::Server srv;
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        srv.DebugSpawnPet(1328, 1000.0f, 1000.0f, std::string());
+        std::vector<nox::OutPacket> out;
+        nox::Server::AttackSrc notMelee; notMelee.x = 900.0f; notMelee.y = 1000.0f;
+        srv.DebugHurt(std::string(), 0, 5, std::string(), 0, out, &notMelee);
+        Check(srv.defHitSoundCalls() == 1 && srv.defHitSoundWay(nox::DefHitSoundWay::NotPorted) == 1, "③ 근접 아닌 피해가 「안옮김」 칸으로 안 갔다");
+    }
+    std::printf("  nine-defects 4-c3a — 소환수 맞는 소리: 부서지는 재질 표 · 살 862 · 돌·나무 부서짐 · 쇠 861 · NONE 없음 · 때린 것 NONE 거름 · 근접 아님 세기만\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -22405,6 +22484,7 @@ int main() {
     TestSwingSounds();
     TestMaterialParse();
     TestPlayerHitSound();
+    TestPetHitSound();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

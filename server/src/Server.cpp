@@ -1333,8 +1333,11 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
     }
     amount = DamageProtect(pets_[i].buffs, static_cast<uint8_t>(v15), amount);   // 불·전기 보호(버프 17·20 + 아이템 5)
     if (!attacker.none() || v15 == 12) BuffOff(t, 0);      // 맞으면 투명 풀림
+    // ★ 09-23 nine-defects 4-c3a — 맞는 소리(`GAME3_2.c:7251~7267`) — 몬스터는 DAMAGESOUND 가 없어 기본 `532E20`(thing.bin 에
+    //   `DAMAGESOUND` 를 적은 종류는 NewPlayer 하나뿐 — 실측). 흡혈(`:7269`) 앞
+    PetDamageSound(k, static_cast<uint8_t>(v15), by, src);
     DamageVampirism(attacker, t, amount, out);             // 흡혈(13)
-    // ⚠ 마법 방패(26) 줄이기(4-d) · 맞는 소리(10) · 몬스터 원한(7)
+    // ⚠ 마법 방패(26) 줄이기(4-d) · 몬스터 원한(7)
     k.lastDamageFrame = frame_;                            // +536(`GAME3_2.c:7236` — 몬스터도 같은 자리)
     // unitDamageClear_4EE5E0
     if (k.health > amount) {
@@ -13271,6 +13274,55 @@ uint16_t Server::HitSoundFor(uint32_t a2, uint32_t a3) {
         case 0x2000:          return pick(868, 871, 871, 872, 870);   // 다이아(`:117~141` — 0x2000·16 은 둘 다 871)
         default:              return 0;
     }
+}
+
+// ★ 09-23 nine-defects 4-c3a — `Sub_532EC0`(`server/sound.go:9~24`) 부서지는 재질 소리
+uint16_t Server::BreakableHitSound(uint32_t mat) {
+    switch (mat) {
+        case 0x8:    return 875;                           // HitWoodBreakable
+        case 0x10:   return 876;                           // HitMetalBreakable
+        case 0x20:   return 873;                           // HitStoneBreakable
+        case 0x40:   return 874;                           // HitEarthBreakable
+        case 0x400:  return 874;                           // (눈도 흙 소리)
+        case 0x1000: return 877;                           // HitMagicBreakable
+        default:     return 0;
+    }
+}
+
+// ★ 09-23 nine-defects 4-c3a — `nox_xxx_soundDefaultDamageSound_532E20`(`server/sound.go:169~202`)를 **소환수**에.
+//   ① 맞는 쪽이 들린 무기·지팡이면 안 냄(소환수는 해당 없음)
+//   ② 때린 것(a3, 없으면 a2)이 없거나 그 재질이 NONE(0x4000)이거나 피해 종류(+524)가 0·2·3·10·11 이 아니면 안 냄(`sub_532F70`)
+//   ③ 맞는 쪽에 체력이 있고(최대 ≠ 0) 재질이 나무·돌·흙(8·32·64 — `sub_532FB0`)이면 **부서지는 소리**(`Sub_532EC0`)
+//   ④ 아니면 표(`Sub_532930`)를 맞는 쪽 재질 × 때린 것 재질로
+//   ⚠ 지금은 사람 근접 판정에 맞을 때만(4-c2 와 같은 관문) — 날아가는 것·주문 등은 4-c3b
+void Server::PetDamageSound(const Creature& k, uint8_t dtype, const std::string& by, const AttackSrc* src) {
+    ++defHitSoundCalls_;
+    auto way = [&](DefHitSoundWay w) { ++defHitSoundWay_[static_cast<size_t>(w)]; };
+    if (!src || !src->melee) { way(DefHitSoundWay::NotPorted); return; }
+    bool hitterPresent = true;
+    uint32_t hitter = 0;
+    if (src->obj) hitter = MaterialOfWire(src->objType);
+    else if (sessions_.count(by)) hitter = MaterialOfWire(newPlayerWire_);
+    else hitterPresent = false;
+    DefHitSoundWay w = DefHitSoundWay::Count;
+    const uint16_t id = DefaultHitSound(MaterialOfWire(k.type), TuningFor(k.type).health != 0, dtype, hitterPresent, hitter, w);
+    way(w);
+    if (id == 0) return;
+    PlaySoundAt(id, static_cast<float>(k.x), static_cast<float>(k.y));
+    lastHitSound_ = id;
+}
+
+// `532E20` 판단부 — 위 주석 ②~④
+uint16_t Server::DefaultHitSound(uint32_t mat, bool hasHp, uint8_t dtype, bool hitterPresent, uint32_t hitter, DefHitSoundWay& way) {
+    const bool typeOk = dtype == 0 || dtype == 2 || dtype == 3 || dtype == 10 || dtype == 11;   // sub_532F70
+    if (!hitterPresent || hitter == 0x4000u || !typeOk) { way = DefHitSoundWay::Filtered; return 0; }
+    if (hasHp && (mat == 8 || mat == 32 || mat == 64)) {                                          // sub_532FB0
+        way = DefHitSoundWay::Breakable;
+        return BreakableHitSound(mat);
+    }
+    const uint16_t id = HitSoundFor(mat, hitter);
+    way = id ? DefHitSoundWay::Played : DefHitSoundWay::TableEmpty;
+    return id;
 }
 
 // ★ 09-23 nine-defects 4-c2 — `nox_xxx_soundPlayerDamageSound_5328B0`(`sound.go:15~32`).

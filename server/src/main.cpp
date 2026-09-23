@@ -224,6 +224,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.swingSound(883), srv.swingSound(884), srv.hitSoundCalls(),
                 srv.HitSoundWaySum() == srv.hitSoundCalls() ? "" : " ⚠칸합불일치",
                 srv.hitSoundWay(HW::Played), srv.hitSoundWay(HW::TableEmpty), srv.hitSoundWay(HW::NoHitter), srv.hitSoundWay(HW::NotPorted));
+    // ★ 4-c3a — 소환수가 맞을 때 기본 타격 소리 갈래(부름 = 합)
+    using DW = nox::DefHitSoundWay;
+    std::printf("[소환수맞는소리] 부름 %llu%s = {냄 %llu·부서짐 %llu·거름 %llu·표없음 %llu·안옮김 %llu}\n", srv.defHitSoundCalls(),
+                srv.DefHitSoundWaySum() == srv.defHitSoundCalls() ? "" : " ⚠칸합불일치",
+                srv.defHitSoundWay(DW::Played), srv.defHitSoundWay(DW::Breakable), srv.defHitSoundWay(DW::Filtered),
+                srv.defHitSoundWay(DW::TableEmpty), srv.defHitSoundWay(DW::NotPorted));
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
@@ -1561,6 +1567,12 @@ int main(int argc, char** argv) {
                     const uint16_t w = tdb.WireByName(ld.first);
                     std::printf(" %s(번호 %u%s·재질 0x%x%s)", ld.first, (unsigned)w, w == ld.second ? "" : " ⚠표와다름",
                                 w < matByWire.size() ? matByWire[w] : 0u, (w < breastByWire.size() && breastByWire[w]) ? "·가슴갑옷" : "");
+                }
+                // ★ 4-c3a — 부를 수 있는 소환수 열셋의 재질(맞으면 기본 타격 소리 `532E20` 가 이 재질로 간다 · 나무·돌·흙이면 부서지는 소리)
+                std::printf(" · 소환수:");
+                for (const auto& ms : nox::kMonsters) {
+                    const uint16_t w = tdb.WireByName(ms.name);
+                    std::printf(" %s=0x%x", ms.name, w < matByWire.size() ? matByWire[w] : 0u);
                 }
                 std::printf("\n");
                 srv.SetMaterialTables(std::move(matByWire), std::move(breastByWire), npWire);

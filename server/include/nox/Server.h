@@ -214,6 +214,17 @@ enum class HitSoundWay : uint8_t {
 };
 constexpr size_t kHitSoundWayCount = static_cast<size_t>(HitSoundWay::Count);
 
+// ★ 09-23 4-c3a — 사람 아닌 것이 맞을 때 기본 타격 소리(`nox_xxx_soundDefaultDamageSound_532E20` · `server/sound.go:169~202`) 갈래
+enum class DefHitSoundWay : uint8_t {
+    Played = 0,    // 표(`Sub_532930`)로 냄
+    Breakable,     // 맞는 쪽이 나무·돌·흙(8·32·64)이고 체력이 있어 「부서지는 소리」(`Sub_532EC0`)
+    Filtered,      // 때린 것이 없거나 재질 NONE(0x4000)이거나, 피해 종류가 0·2·3·10·11 이 아님
+    TableEmpty,    // 표에 그 조합이 없다
+    NotPorted,     // 사람 근접 판정이 아닌 피해 — 4-c3b
+    Count
+};
+constexpr size_t kDefHitSoundWayCount = static_cast<size_t>(DefHitSoundWay::Count);
+
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
 //   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
@@ -3270,6 +3281,21 @@ public:
     // ★ 4-c2 — 사람이 맞을 때 타격 소리 갈래(부름 = 합)
     unsigned long long hitSoundCalls() const { return hitSoundCalls_; }
     uint16_t lastHitSound() const { return lastHitSound_; }                     // 마지막으로 낸 타격 소리 번호(시험용)
+    // ★ 4-c3a — 사람 아닌 것(소환수·몬스터)이 맞을 때 기본 타격 소리 갈래(부름 = 합)
+    unsigned long long defHitSoundCalls() const { return defHitSoundCalls_; }
+    unsigned long long defHitSoundWay(DefHitSoundWay w) const {
+        return w < DefHitSoundWay::Count ? defHitSoundWay_[static_cast<size_t>(w)] : 0;
+    }
+    unsigned long long DefHitSoundWaySum() const {
+        unsigned long long n = 0;
+        for (size_t i = 0; i < kDefHitSoundWayCount; ++i) n += defHitSoundWay_[i];
+        return n;
+    }
+    // `Sub_532EC0` — 부서지는 재질 소리(8 나무 · 0x10 쇠 · 0x20 돌 · 0x40·0x400 흙 · 0x1000 마법 — 없으면 0)
+    static uint16_t BreakableHitSound(uint32_t mat);
+    // `532E20` 의 판단부(소리 번호 · 갈래) — 맞는 쪽 재질 · 체력 있나 · 피해 종류(+524) · 때린 것 있나 · 그 재질. 부르는 자리와 떼어 전수로 본다
+    static uint16_t DefaultHitSound(uint32_t victimMat, bool hasHp, uint8_t dtype, bool hitterPresent, uint32_t hitterMat,
+                                    DefHitSoundWay& way);
     unsigned long long hitSoundWay(HitSoundWay w) const { return w < HitSoundWay::Count ? hitSoundWay_[static_cast<size_t>(w)] : 0; }
     unsigned long long HitSoundWaySum() const {
         unsigned long long n = 0;
@@ -3818,6 +3844,9 @@ private:
     unsigned long long swingSound_[6] = {};   // ★ 4-a — 휘두르기 소리 879~884 부른 수(번호 − 879)
     unsigned long long hitSoundCalls_ = 0, hitSoundWay_[kHitSoundWayCount] = {};   // ★ 4-c2
     uint16_t lastHitSound_ = 0;
+    unsigned long long defHitSoundCalls_ = 0, defHitSoundWay_[kDefHitSoundWayCount] = {};   // ★ 4-c3a
+    // ★ 4-c3a — `soundDefaultDamageSound_532E20` 를 소환수에 — 맞는 쪽 = 소환수 종류 재질 · 피해 종류(+524) · 때린 것(무기, 없으면 사람 몸)
+    void PetDamageSound(const Creature& k, uint8_t dtype, const std::string& by, const AttackSrc* src);
     std::vector<uint32_t> matByWire_;
     std::vector<uint8_t> breastByWire_;
     uint16_t newPlayerWire_ = 0;
