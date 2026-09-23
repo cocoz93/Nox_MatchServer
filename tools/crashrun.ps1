@@ -1,4 +1,7 @@
-﻿param([int]$Secs = 120, [string]$Tag = 'run1', [switch]$Judge, [switch]$Ref, [string]$Cursor = '', [switch]$NoWalk)
+﻿param([int]$Secs = 120, [string]$Tag = 'run1', [switch]$Judge, [switch]$Ref, [string]$Cursor = '', [switch]$NoWalk,
+      [string]$SrvExtra = '')
+# -SrvExtra — 우리 서버에 덧붙일 인자(공백으로 가름). 예: -SrvExtra '--spawn-at 3000 2500'
+#   (09-23 nine-defects 1-d — 불 자리에 태어나게 해 닿음 피해를 실물로 보려고 넣음)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $bld  = Join-Path $root 'third_party\opennox-build'
@@ -28,6 +31,7 @@ if ($Ref) {
 } else {
   if ($Judge) { $srvArgs = @('--port','18590','--standalone','--map',$mapArg,'--mode','arena') }
   else        { $srvArgs = @('--no-spawn-invuln','--port','18590','--map',$mapArg) }
+  if ($SrvExtra -ne '') { $srvArgs += ($SrvExtra -split '\s+' | Where-Object { $_ -ne '' }) }
   $srv = Start-Process -FilePath (Join-Path $root 'build\Release\nox_server.exe') -ArgumentList $srvArgs `
     -PassThru -WindowStyle Minimized -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr
   $wait = 6
