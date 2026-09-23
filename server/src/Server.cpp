@@ -2643,6 +2643,13 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         else {
                             s.actionThisTick = true;
                         }
+                    } else if (code == 7) {
+                        // ★ 09-23 nine-defects 3-a — `CCJump` · 데이터 없음. 「이번 틱에 왔다」만 적고 틱의 ImplB 가 뛴다(`object_update.go:550~571`)
+                        //   ⚠ **7 은 미실측이다.** 번호표 원본(opennox-lib 조작 코드 표)은 이 리포에 없어 못 열었다 —
+                        //     이웃 번호(6 CCAction · 19 Inventory · 21·22 몸짓 · 28~30, 위 주석)와 이어지는 자리로 본 것.
+                        //     사람 판에서 휠(점프)을 눌렀는데 판끝 `[점프] 코드7 받음` 이 0 이면 이 가정부터 틀린 것이다
+                        ++jumpCodes_;
+                        s.jumpThisTick = true;
                     }
                     q += dataLen; qn -= dataLen;
                 }
@@ -4249,6 +4256,7 @@ uint8_t Server::PlayerAnimByte(const Session& s) {
         }
         case 2: case 10: return 21;                                          // 시전 CAST_SPELL(`:1740~1743`, 4-a)
         case kPlayerStateIdle: return (equip & 0x400) ? 0x26 : kAnimIdle;   // 대검이면 GREAT_SWORD_IDLE(`:1756~1758`)
+        case 12: return 3;                                                   // ★ 3-a 점프 JUMP(`:1753~1754`)
         case 30: return 52;                                                  // 움찔 RECOIL(`:1793`)
         case 3: case 4:                                                      // 죽음 DIE 1 · 죽어 있음 DEAD 2
             return (s.lastDamageType == 16) ? 51 : (s.moveState == 3 ? 1 : 2);   // 종류 16 이면 DUST(`GAME4_1.c:4457~4461`)
@@ -4318,7 +4326,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 s.forceX = s.forceY = 0.0;
             } else if (s.moveState == 4 && (frame - s.stateFrame) > kServerTickRate / 2 && !s.observer &&
                        (s.actionThisTick || autoRespawn_)) {
-                s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
+                s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = s.jumpThisTick = false;
                 PlayerRespawn(s, frame, out);
                 respawnedNow = true;
             }
@@ -4335,6 +4343,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         //   아래 살금살금 끄기(LABEL_247)가 이 값을 본다. 정답지는 짐이 넘치면(+3656) 그 앞에서 돌아가 이 값이 거짓이다
         //   — 우리는 짐 넘침의 이동 막기를 아직 안 옮겼지만(⚠ 아래) 이 값만은 정답지대로 거짓으로 둔다
         bool walkBranch = false;
+        bool jumpedImplA = false;   // ★ 3-a — 이번 틱 ImplA 가 점프(12) 갈래였다 → ImplB 를 건너뛴다(`object_update.go:118` ok=false)
         if (canMove && (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun) && !s.buffs.Has(25) && !s.buffs.Has(5)) {
             // `object_update.go:132~191` — playerCanMove(얼림 25·붙잡힘 5) · 달리기면 SpeedCur × 2(그 틱만) ·
             //   혼란(3)이면 Direction2 를 흔든다(playerConfusedGetDirection_4F7A40) · 힘 = Direction2 방향 표 × SpeedCur
@@ -4371,9 +4380,36 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             const int frames = playerAnimFrames_[52][0], hold = playerAnimFrames_[52][1];
             s.animFrame = static_cast<uint8_t>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
             if (s.animFrame >= frames) PlayerSetState(s, kPlayerStateIdle, frame);
+        } else if (canMove && s.moveState == 12) {
+            // ★ 09-23 nine-defects 3-a — 점프(12) `object_update.go:305~327`.
+            //   칸 = (프레임 − Field34) ÷ (붙듦+1) · 애니 3(JUMP) · **작살에 안 걸렸으면** 힘 = Direction1 × 2·SpeedCur(`=` — 덮어씀)
+            //   칸 수에 닿으면 상태 0 · 떠 있음 끔 · Field34 = 프레임. **이 갈래는 ImplB 를 안 부른다**(`return …, false`)
+            //   ⚠ 칸 번호(+236)는 안 적는다 — 상태 12 는 칸을 싣는 목록 밖이다(`PlayerAnimFrameSent`)
+            const int frames = playerAnimFrames_[3][0], hold = playerAnimFrames_[3][1];
+            const int idx = static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
+            bool harpooned = false;
+            for (const auto& kv2 : sessions_)
+                if (kv2.second.inGame && kv2.second.harpoonTarget.pet < 0 && kv2.second.harpoonTarget.addr == s.addr) { harpooned = true; break; }
+            if (!harpooned) {
+                const double speed = 2.0 * static_cast<double>(s.speedCur);
+                fx = DirVecX(s.facingPrev) * speed;
+                fy = DirVecY(s.facingPrev) * speed;
+                ++jumpForceTicks_;
+            } else {
+                ++jumpHeldTicks_;
+            }
+            if (idx >= frames) {
+                PlayerSetState(s, kPlayerStateWalk, frame);
+                s.airborne = false;
+                s.stateFrame = frame;
+                ++jumpLanded_;
+            }
+            jumpedImplA = true;
         } else if (canMove && s.moveState == kPlayerStateIdle) {
             // 가만(13) — `object_update.go:327~338` 방패를 들었으면 들어오는 투사체가 있거나 가만히 30/4 틱을 넘기면 올리기(15)
             //   ⚠ 웨이포인트(sub_4F9A80)는 묶음 6 · 채팅 모드는 없음
+            // ★ 3-a — 머리에서 깃발 &= 0xFFFFBFFE(`:329`) — 떠 있음(0x4000)을 끈다(0x1 BELOW 는 사람에게 안 켜진다)
+            if (s.airborne) { s.airborne = false; ++airborneOffIdle_; }
             if ((ArmorEquipOf(s) & 0x3000000) &&
                 !(!IncomingMissile(s) && (frame - s.stateFrame) <= kServerTickRate / 4)) {
                 PlayerSetState(s, 15, frame);
@@ -4411,7 +4447,9 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             if (s.animFrame >= frames) PlayerSetState(s, kPlayerStateIdle, frame);
         }
         // ② 조작(ImplB) — 목록이 비었으면 아무것도 안 한다(`object_update.go:485`)
-        if (canMove && s.inputThisTick) {
+        //   ★ 3-a — ImplA 가 점프 갈래였으면 ImplB 를 **통째로** 안 부른다(`:118` · 아래 살금살금 끄기 LABEL_247 도 안 돈다)
+        bool jumpedImplB = false;   // 이번 틱 ImplB 에서 뛰었다 → 목록 나머지(공격)와 LABEL_247 을 건너뛴다(`:570` return)
+        if (canMove && s.inputThisTick && !jumpedImplA) {
             if (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun) {
                 PlayerSetState(s, kPlayerStateIdle, frame);
                 s.stateFrame = frame;
@@ -4436,18 +4474,56 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                     }
                 }
             }
+            // ★ 09-23 nine-defects 3-a — CCJump(`:550~571`).
+            //   움직일 수 없음·광전사 켜짐·함성 켜짐 값이면 무시 → 붙든 주문 취소 → 짐 넘침이면 힘쓰는 소리 + 알림(13,3) →
+            //   아니면 기력 90 을 깎을 수 있을 때만(`playerSubStamina_4F7D30` — 모자라면 아무것도 안 함) 혼란이면 방향 흔들기 ·
+            //   떠 있음 켬 · 상태 12 · Field34 = 프레임 · **return**(목록 나머지와 LABEL_247 을 안 돈다)
+            //   ⚠ 정답지는 목록 **차례대로** 돈다. 우리는 코드별로 적어 두었다가 「보는 쪽 → 걷기 → 점프 → 공격」 차례로 돈다 —
+            //     같은 틱에 공격이 점프보다 **먼저** 온 목록이면 정답지는 공격 뒤 점프, 우리는 점프만 한다(한 틱 안의 차례 · 짜임 한계)
+            if (s.jumpThisTick && !orientationOnly) {
+                ++jumpIn_;
+                auto jg = [&](JumpGate g) { ++jumpGate_[static_cast<size_t>(g)]; };
+                if (!playerCanMove) {
+                    jg(JumpGate::CantMove);
+                } else if (AbilityIsActive(s, 1)) {
+                    jg(JumpGate::Berserk);
+                } else if (AbilityIsActiveVal(s, 2)) {
+                    jg(JumpGate::Warcry);
+                } else {
+                    CancelChannelSpells(s.addr, out);                // cancelAllSpells_4FEE90
+                    if (s.overweight) {
+                        // 성별 = 사람 정보 97바이트의 67번 칸 IsFemale(`GameBalance.h:43` 이 옮겨 적은 짜임 · 원본은 이 리포 밖) — 미실측
+                        const bool female = s.info97.size() > 67 && s.info97[67] != 0;
+                        PlaySoundAt(SoundByName(female ? "HumanFemaleExertionHeavy" : "HumanMaleExertionHeavy"),
+                                    static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
+                        InformSpell(s, 13, 3, out);                   // NetInformTextMsg(13, 3)
+                        jg(JumpGate::Overweight);
+                    } else if (s.stamina >= 90) {
+                        s.stamina = static_cast<uint8_t>(s.stamina - 90);
+                        ReportStamina(s, out);                        // netReportStamina_4D8800
+                        if (s.buffs.Has(3)) s.facing = ConfusedDirection(s, frame);   // Direction2
+                        s.airborne = true;                            // ObjFlags |= 0x4000
+                        PlayerSetState(s, 12, frame, &out);
+                        s.stateFrame = frame;
+                        jg(JumpGate::Ok);
+                        jumpedImplB = true;
+                    } else {
+                        jg(JumpGate::NoStamina);
+                    }
+                }
+            }
             // CCAction(`:536~544`) — playerCanAttack(버프 25 없음 · 상태 23 아님) → 공 차기 아니면 playerInputAttack
-            if (s.actionThisTick && !orientationOnly && !s.buffs.Has(25) && s.moveState != 23) PlayerInputAttack(s, frame, out);
+            if (!jumpedImplB && s.actionThisTick && !orientationOnly && !s.buffs.Has(25) && s.moveState != 23) PlayerInputAttack(s, frame, out);
         }
         // ★ 09-23 nine-defects 1-a — **살금살금 끄기**(`object_update.go:616~621` LABEL_247).
         //   이번 틱 ImplA 가 걷기·달리기 갈래를 탔는데(`v68`) 조작을 거친 뒤 상태가 걷기·달리기가 아니면 끈다 —
         //   걷다가 멈추거나 · 치거나 · 주문을 걸면 풀린다. 조작 목록이 비어도 이 자리는 돈다(정답지 `goto LABEL_247`).
         //   전에는 이 길이 없어 지속 99999 가 사실상 안 꺼졌고, 다시 누르면 「이미 켜짐」 거절(231)만 났다
-        if (walkBranch && s.moveState != kPlayerStateWalk && s.moveState != kPlayerStateRun && AbilityIsActive(s, 4))
+        if (!jumpedImplB && walkBranch && s.moveState != kPlayerStateWalk && s.moveState != kPlayerStateRun && AbilityIsActive(s, 4))
             AbilityDisable(s, 4, out);
         // 달리기(8) 버프 — 공격 중(1)이 아니면 상태 5(달림)로 묶는다(`object_update.go:120~122`)
         if (canMove && s.buffs.Has(8) && s.moveState != kPlayerStateAttack) PlayerSetState(s, kPlayerStateRun, frame);
-        s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
+        s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = s.jumpThisTick = false;
 
         // ⚠ 죽으면 정답지는 ALLOW_OVERLAP 을 켜고(상태 3→4, `object_update.go:247`) 관전은 NO_COLLIDE 를 켠다
         //   (`player.go:156`) — 둘 다 벽·오브젝트 충돌을 안 받는다(sub_5481C0 의 0x60 · 0x8 검사).
@@ -4478,6 +4554,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             if (!m.collide) continue;
             // ★ 09-22 — **이 사람의 무게**로 채운다(직업별 힘에서 · 정답지 `GAME3_3.c:7701`)
             playerBody.mass = static_cast<float>(PlayerMassOf(s));
+            playerBody.flags = PlayerObjFlags(s);             // ★ 3-a — 떠 있으면 0x4000(밑에 깔린·낮은 것과 안 부딪힌다 — `BodyVsBody` 거르기)
             const ContactRef me{ 1, s.addr, -1 };
             double qx0, qy0, qx1, qy1;
             BodyRect(playerBody, m.bx, m.by, qx0, qy0, qx1, qy1);
@@ -4516,6 +4593,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 // ★ 09-22 — **상대의 무게**도 그 사람 것이어야 한다(옆으로 미끄러지는 항이 min(둘) 을 쓴다)
                 PhysBody otherBody = playerBody;
                 otherBody.mass = static_cast<float>(PlayerMassOf(*m2.s));
+                otherBody.flags = PlayerObjFlags(*m2.s);      // ★ 3-a
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
                            otherBody, m2.s->posX, m2.s->posY, m2.bx, m2.by, m2.s->velX, m2.s->velY, m.ax, m.ay, &me, &other);
                 CountBodyPush(1, m.ax - bx0, m.ay - by0);
@@ -4763,6 +4841,8 @@ bool Server::MapTraceVisionSkip(float x1, float y1, float x2, float y2, int skip
 bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame, std::vector<OutPacket>* out) {
     bool res = true;
     if (s.respawnAtFrame != 0 && st != 3 && st != 4) return false;   // DEAD 면 3·4 만(`:1398`)
+    // ★ 3-a — 협동(2048)이 아니면 **떠 있는 동안 움찔(30)을 안 받는다**(`:1401~1407`)
+    if (!(gameSettings_.gameFlags & 0x800u) && s.airborne && st == 30) { ++recoilBlockedAirborne_; return false; }
     // ★ 09-23 2-a1 — 공격(1) 중 **함성 애니가 도는 동안**(켜짐 값)에는 죽음(3·4) 말고는 다른 상태로 못 바꾼다(`:1417~1424`).
     //   (1 → 1 은 정답지도 LABEL_26 으로 곧장 간다 — 아래 갈래와 같다)
     if (s.moveState == kPlayerStateAttack && st != kPlayerStateAttack && AbilityIsActiveVal(s, 2) && st != 4 && st != 3)
@@ -4854,6 +4934,7 @@ void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& o
     PlayerManaRefresh(s);                                  // playerManaRefresh_4EECF0 — +6 = 이전 · +4 = 최대 → 다음 틱 `45`
     s.dmgRemainder = 0.0f;                                 // +84
     s.respawnAtFrame = 0;                                  // 깃발 &= 0xFFEB3FE7 — DEAD 끔
+    s.airborne = false;                                    // ★ 3-a — 같은 마스크가 0x4000(AIRBORNE)도 끈다
     PlayerSetState(s, kPlayerStateIdle, frame);
     ClearBuffs(Target{ s.addr, -1 });                      // unitClearBuffs_4FF580(아래에서 23 을 다시 켠다)
     PlayerCancelSpells(s.addr, out);                       // playerCancelSpells_4FEAE0(`GAME3_3.c:8119`, 4-a3)
@@ -8123,10 +8204,9 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
         refuse(2); return false;
     }
     if (AbilityIsActive(s, abil)) { gate(AbilGate::Already); refuse(2); return false; }   // ③
-    // ④ 상태 12 이거나 (협동이 아닌데) **떠 있으면**
-    //   ⚠ 떠 있는 것(`FlagAirborne`)은 **사람에게는 아직 안 올겼다** —
-    //     날아가는 것의 깃발이지 사람 깃발이 아니다. 사람을 띄우는 길(작살 끌림 따위)을 옮길 때 같이 넣는다
-    if (s.moveState == 12) { gate(AbilGate::MoveState); refuse(6); return false; }
+    // ④ 상태 12 이거나 (협동이 아닌데) **떠 있으면**(`spells_abil.go:187`)
+    //   ★ 3-a — 떠 있음은 점프가 켠다. 상태가 12 가 아닌데 떠 있는 때 = 점프 중 달리기(8) 버프가 상태를 5 로 바꾼 틱 따위
+    if (s.moveState == 12 || (!(gameSettings_.gameFlags & 0x800u) && s.airborne)) { gate(AbilGate::MoveState); refuse(6); return false; }
     // ⑤ (온라인이 아니거나 퀘스트면) 레벨 0 은 못 쓴다 — ⚠ 우리는 늘 온라인이라 이 관문을 안 탄다
     const bool quest = questTotal_ > 0 || questStage_ > 0;
     if (quest && s.spellLvl[abil] == 0) { gate(AbilGate::NotLearned); refuse(3); return false; }
@@ -8270,7 +8350,7 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other, std::vect
             auto it = sessions_.find(other->addr);
             if (it == sessions_.end() || !it->second.inGame) return;
             os = &it->second;
-            cls = kClsPlayer; flags = 0;                     // NewPlayer FLAGS NULL
+            cls = kClsPlayer; flags = PlayerObjFlags(*os);   // NewPlayer FLAGS NULL · ★ 3-a 떠 있음(아래 갈래는 0x80·0x9 만 본다)
             mass = PlayerMassOf(*os);
             deadUnit = os->health == 0;                      // `!*v3 && v3[2]` — 이번 틱 앞 짝에서 죽었을 수 있다
         } else if (other->kind == 2) {
@@ -12449,7 +12529,8 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                 for (const auto& kv : sessions_) {
                     const Session& o = kv.second;
                     if (!o.inGame || o.observer) continue;   // 관전 NO_COLLIDE(0x40)
-                    if (!passFlags(0, o.addr == m.owner || (ownTeam != 0 && o.team == ownTeam))) continue;   // NewPlayer FLAGS NULL
+                    // NewPlayer FLAGS NULL · ★ 3-a — 떠 있으면 0x4000(밑에 깔린·낮은 날아가는 것에 안 맞는다)
+                    if (!passFlags(PlayerObjFlags(o), o.addr == m.owner || (ownTeam != 0 && o.team == ownTeam))) continue;
                     const float dx = static_cast<float>(o.posX) - qx, dy = static_cast<float>(o.posY) - qy;
                     if (dy * dy + dx * dx > static_cast<float>(kBodyRadius * kBodyRadius)) continue;
                     hk = HitPlayer; hAddr = o.addr; hx = static_cast<float>(o.posX); hy = static_cast<float>(o.posY); any = true;

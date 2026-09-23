@@ -192,6 +192,18 @@ enum class BerserkHit : uint8_t {
 };
 constexpr size_t kBerserkHitCount = static_cast<size_t>(BerserkHit::Count);
 
+// ★ 09-23 3-a — 점프(CCJump 7)가 **어떻게 끝났나**(`object_update.go:550~571`). 들어옴 = 갈래 합
+enum class JumpGate : uint8_t {
+    Ok = 0,        // 뛰었다 — 기력 90 · 떠 있음 · 상태 12
+    CantMove,      // 움직일 수 없음(얼림 25 · 붙잡힘 5 — `playerCanMove_4F9BC0`)
+    Berserk,       // 광전사 켜짐
+    Warcry,        // 함성 켜짐 값
+    Overweight,    // 짐 넘침 — 힘쓰는 소리 · 알림(13,3)
+    NoStamina,     // 기력 90 모자람 — 아무것도 안 함
+    Count
+};
+constexpr size_t kJumpGateCount = static_cast<size_t>(JumpGate::Count);
+
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
 //   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
@@ -622,6 +634,10 @@ struct Session {
     //   전에는 왼클릭 한 통에 **바로** 때리고 15틱 쉬었다(kMeleeCooldownTicks, 우리 값).
     //   정답지는 클릭이 상태만 1로 바꾸고, 틱마다 애니 칸을 세다가 **애니가 끝나는 틱**에 판정한다.
     bool actionThisTick = false;   // 이번 틱에 CCAction(코드 6)이 왔나
+    bool jumpThisTick = false;     // ★ 3-a — 이번 틱에 CCJump(코드 7 — 미실측, `Server.cpp` 받는 자리 주석)가 왔나
+    // ★ 3-a — 오브젝트 깃발 0x4000 AIRBORNE(떠 있음). 점프가 켜고(`object_update.go:567`) 점프 끝·가만(13)·부활이 끈다
+    //   (`:323` · `:329` · 부활 `&= 0xFFEB3FE7`). 사람의 오브젝트 깃발 중 **지금 켜는 것은 이것 하나**다(`PlayerObjFlags`)
+    bool airborne = false;
     uint8_t attackAnim = 0;        // 플레이어 +8 (Field8) — 공격 애니 번호(23·24 주먹 · 25 훅). 0 이면 새로 뽑는다
     uint32_t attackReadyFrame = 0; // 갱신 데이터 +0 (Field0) — 이 프레임 전에는 상태 1 로 못 들어간다. 0 이면 바로 가능
     uint32_t stateFrame = 0;       // 오브젝트 +136 (Field34) — 상태가 바뀐 프레임
@@ -3220,6 +3236,21 @@ public:
         return n;
     }
     unsigned long long wallContacts() const { return wallContacts_; }           // ★ 2-b2 — 벽 닿음 짝(사람 · 틱마다 한 번)
+    // ★ 3-a — 점프
+    unsigned long long jumpCodes() const { return jumpCodes_; }                 // 받은 코드 7(분모 — 죽음·관전 중 것도 센다)
+    unsigned long long jumpIn() const { return jumpIn_; }                       // 조작 처리까지 온 것 = 갈래 합
+    unsigned long long jumpGate(JumpGate g) const { return g < JumpGate::Count ? jumpGate_[static_cast<size_t>(g)] : 0; }
+    unsigned long long JumpGateSum() const {
+        unsigned long long n = 0;
+        for (size_t i = 0; i < kJumpGateCount; ++i) n += jumpGate_[i];
+        return n;
+    }
+    unsigned long long jumpForceTicks() const { return jumpForceTicks_; }       // 점프 중 앞으로 민 틱
+    unsigned long long jumpHeldTicks() const { return jumpHeldTicks_; }         // 작살에 걸려 안 민 틱
+    unsigned long long jumpLanded() const { return jumpLanded_; }               // 애니가 끝나 내려옴(상태 0)
+    unsigned long long airborneOffIdle() const { return airborneOffIdle_; }     // 가만(13)이 떠 있음을 끔
+    unsigned long long recoilBlockedAirborne() const { return recoilBlockedAirborne_; }   // 떠 있어 움찔(30)을 안 받음
+    bool DebugAirborne(const std::string& a) const { auto i = sessions_.find(a); return i != sessions_.end() && i->second.airborne; }
     bool DebugAbilActiveVal(const std::string& a, uint8_t k) const {            // ★ 2-a1 시험용
         auto i = sessions_.find(a); return i != sessions_.end() && AbilityIsActiveVal(i->second, k);
     }
@@ -3742,6 +3773,10 @@ private:
     unsigned long long warcryStunned_ = 0;     // ★ 2-a2 — 외침에 붙잡힘(5)이 걸린 몬스터 수
     unsigned long long berserkChargeTicks_ = 0;   // ★ 2-b1 — 광전사가 앞으로 민 틱
     unsigned long long berserkCollideCalls_ = 0;  // ★ 2-b2
+    unsigned long long jumpCodes_ = 0, jumpIn_ = 0, jumpGate_[kJumpGateCount] = {};   // ★ 3-a
+    unsigned long long jumpForceTicks_ = 0, jumpHeldTicks_ = 0, jumpLanded_ = 0, airborneOffIdle_ = 0, recoilBlockedAirborne_ = 0;
+    // ★ 3-a — 사람의 오브젝트 깃발(+16). NewPlayer 는 FLAGS NULL 이고 지금 켜는 것은 AIRBORNE(0x4000) 하나다
+    static uint32_t PlayerObjFlags(const Session& s) { return s.airborne ? 0x4000u : 0u; }
     uint32_t moveFrame_ = 0;                      // ★ 2-b2 — UpdatePlayerMovement 의 이 틱 프레임
     unsigned long long berserkHit_[kBerserkHitCount] = {};
     mutable unsigned long long wallContacts_ = 0;

@@ -15169,6 +15169,240 @@ void TestBerserkCrash() {
     std::printf("  nine-defects 2-b2 — 광전사 부딪힘: 벽 세게(171·기절 44·20%%·옛 자리)·살짝 · 사람(속도 맞바꿈)·소환수 · 장애물 · 지나감 둘 · 광전사 없이 벽\n");
 }
 
+// ── nine-defects 3-a — 점프(CCJump 7 · `object_update.go:550~571` 입력 · `:305~327` 매 틱) ─────────
+//
+//   판마다 「들어옴 = 갈래 합」과 **그 갈래 칸만** 오르는지를 본다. 점프 애니(3)는 시험값(칸 10 · 붙듦 1 = 20틱)
+void TestJump() {
+    const std::string a = "10.7.19.1:7191";
+    const std::string b = "10.7.19.2:7192";
+    auto tick = [](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) { ms += 34; srv.Tick(ms, out); };
+    // 기력 90 이 차도록 35틱(틱마다 +3) 굴리고 +x 를 본다
+    auto mk = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, nox::CharClass cls = nox::CharClass::Warrior) {
+        srv.SetPlayerAnimFrames(3, 10, 1);
+        srv.DebugEnterGame(a, 840, false, cls);
+        srv.DebugMoveTo(a, 1000, 1000);
+        ms = 0; srv.Tick(ms, out);
+        srv.DebugSetFacing(a, 0);
+        for (int t = 0; t < 35; ++t) tick(srv, out, ms);
+    };
+    auto jump = [&](nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        const auto p = InputPacket(7);
+        srv.OnPacket(who, p.data(), p.size(), out);
+        tick(srv, out, ms);
+    };
+    auto only = [](const nox::Server& srv, nox::JumpGate g) {
+        return srv.jumpGate(g) == 1 && srv.JumpGateSum() == 1 && srv.jumpIn() == 1;
+    };
+
+    // ① **뛴다** — 상태 12 · 몸짓 3 · 떠 있음 · 기력 −90(`47`) · 앞(+x)으로 · 20틱째 상태 0 으로 내려옴
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        const int st0 = srv.DebugStaminaOf(a);
+        const double x0 = srv.DebugPosX(a), y0 = srv.DebugPosY(a);
+        std::vector<nox::OutPacket> o1;
+        jump(srv, a, o1, ms);
+        Check(srv.jumpCodes() == 1 && only(srv, nox::JumpGate::Ok), "① 코드 7 이 「뜀」 하나로 안 갔다");
+        Check(srv.DebugStateOf(a) == 12 && srv.DebugAnimByteOf(a) == 3 && srv.DebugAirborne(a), "① 상태 12 · 몸짓 3 · 떠 있음이 아니다");
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "① 기력 %d → %d (90 깎여야)", st0, srv.DebugStaminaOf(a));
+        Check(srv.DebugStaminaOf(a) == st0 + (st0 < 100 ? 3 : 0) - 90, msg);
+        Check(FindMsg(FlattenTo(o1, a), static_cast<uint8_t>(nox::Op::REPORT_STAMINA)) != nullptr, "① 기력 알림 47 이 안 갔다");
+        // 뛴 틱이 Field34 = T. 칸 = (f − T) ÷ 2 ≥ 10 → f = T+20 에 내려온다(그 틱까지 20번 민다)
+        for (int t = 0; t < 19; ++t) tick(srv, out, ms);
+        Check(srv.DebugStateOf(a) == 12 && srv.DebugAirborne(a), "① 뛴 뒤 19틱째에 벌써 내려왔다(20틱째여야)");
+        tick(srv, out, ms);
+        Check(srv.DebugStateOf(a) == 0 && !srv.DebugAirborne(a) && srv.jumpLanded() == 1, "① 20틱째에 상태 0 · 떠 있음 끔이 아니다");
+        // 힘의 크기까지 본다 — 정지에서 20틱(걸음 100) 동안 F = 2·SpeedCur 로 민 거리를 적분식 그대로 셈해 견준다.
+        //   (전에는 「40 넘게」만 봐서 힘을 반으로 줄인 돌연변이가 통과했다 — 거리는 F 에 정비례)
+        double ev = 0.0, ex = 0.0;
+        const double F = 2.0 * static_cast<double>(srv.DebugSpeedCur(a));
+        for (int t = 0; t < 20 * nox::kMoveSubSteps; ++t) { ev += (F - ev * nox::kPlayerDamping) * nox::kMoveSubStep; ex += ev * nox::kMoveSubStep; }
+        std::snprintf(msg, sizeof(msg), "① 점프 동안 x 로 %.3f(기대 %.3f · F %.2f) · y 로 %.3f", srv.DebugPosX(a) - x0, ex, F,
+                      srv.DebugPosY(a) - y0);
+        Check(std::fabs((srv.DebugPosX(a) - x0) - ex) < 0.01 * ex && std::fabs(srv.DebugPosY(a) - y0) < 1.0 &&
+              srv.jumpForceTicks() == 20, msg);
+    }
+    // ② **못 뛰는 다섯** — 얼림 · 광전사 · 함성 값 · 짐 넘침(힘쓰는 소리·알림 13,3) · 기력 모자람 — 상태는 12 가 아니다
+    for (int k = 0; k < 5; ++k) {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        const uint16_t snd = nox::SoundByName("HumanMaleExertionHeavy");
+        { std::vector<nox::Server::SoundDefIn> sd; nox::Server::SoundDefIn d; d.id = snd; d.samples = 1; sd.push_back(d); srv.SetSoundDefs(sd); }
+        srv.SetPlayerAnimFrames(46, 16, 1);
+        if (k == 4) {                                            // 기력이 안 찬 판
+            srv.SetPlayerAnimFrames(3, 10, 1);
+            srv.DebugEnterGame(a, 840, false, nox::CharClass::Warrior);
+            srv.DebugMoveTo(a, 1000, 1000);
+            ms = 0; srv.Tick(ms, out); tick(srv, out, ms);
+        } else {
+            mk(srv, out, ms);
+        }
+        nox::JumpGate want = nox::JumpGate::Ok;
+        if (k == 0) { srv.DebugApplyEnchant(a, 25, 100, 1); want = nox::JumpGate::CantMove; }
+        if (k == 1) { srv.DebugAbilAward(a, 1, false, out); srv.DebugAbilDo(a, 1, out); want = nox::JumpGate::Berserk; }
+        if (k == 2) { srv.DebugAbilAward(a, 2, false, out); srv.DebugAbilDo(a, 2, out); want = nox::JumpGate::Warcry; }
+        if (k == 3) { srv.DebugSetOverweight(a, true); want = nox::JumpGate::Overweight; }
+        if (k == 4) want = nox::JumpGate::NoStamina;
+        const int st0 = srv.DebugStaminaOf(a);
+        const unsigned long long snd0 = srv.soundsQueued();
+        std::vector<nox::OutPacket> o1;
+        jump(srv, a, o1, ms);
+        static const char* const kName[5] = { "얼림", "광전사", "함성", "짐 넘침", "기력 모자람" };
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "② %s — 그 갈래 하나가 아니거나 뛰었다(상태 %u)", kName[k], srv.DebugStateOf(a));
+        Check(only(srv, want) && srv.DebugStateOf(a) != 12 && !srv.DebugAirborne(a), msg);
+        if (k == 3) {
+            const auto flat = FlattenTo(o1, a);                  // ⚠ 담아 둔다 — 임시 벡터 안을 가리키면 식이 끝나자마자 사라진다
+            const auto* inf = FindMsg(flat, static_cast<uint8_t>(nox::Op::INFORM));
+            std::snprintf(msg, sizeof(msg), "② 짐 넘침인데 힘쓰는 소리(%u번 · 담김 %llu→%llu) · 알림(13,3)(%zu바이트 %02x %02x %02x)이 없다", snd, snd0,
+                          srv.soundsQueued(), inf ? inf->size() : 0, inf && inf->size() > 0 ? (*inf)[0] : 0,
+                          inf && inf->size() > 1 ? (*inf)[1] : 0, inf && inf->size() > 2 ? (*inf)[2] : 0);
+            Check(srv.soundsQueued() == snd0 + 1 && inf && inf->size() == 6 && (*inf)[1] == 13 && (*inf)[2] == 3, msg);
+        }
+        if (k == 4) {
+            std::snprintf(msg, sizeof(msg), "② 기력 모자람 — 기력 %d → %d(깎이면 안 됨)", st0, srv.DebugStaminaOf(a));
+            Check(srv.DebugStaminaOf(a) == st0 + 3, msg);
+        }
+    }
+    // ③ **뛰는 동안 조작을 안 받는다**(ImplB 를 안 부름) — 방향·공격이 먹지 않는다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        jump(srv, a, out, ms);
+        std::vector<uint8_t> p = InputPacket(1);
+        p[nox::kWireHeaderSize + 1] = 5;
+        p.push_back(64);                                        // 바라보기 64
+        srv.OnPacket(a, p.data(), p.size(), out);
+        const auto atk = InputPacket(6);
+        srv.OnPacket(a, atk.data(), atk.size(), out);
+        tick(srv, out, ms);
+        Check(srv.DebugFacingOf(a) == 0 && srv.DebugStateOf(a) == 12, "③ 뛰는 중인데 방향·공격 입력이 먹었다");
+    }
+    // ③' **뛴 틱에는 목록 나머지(공격)를 안 돈다**(`:570` return) — 맨손이라 기력 없이도 칠 수 있는 판
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugSetWeapon(a, 0);
+        const auto j = InputPacket(7);
+        const auto atk = InputPacket(6);
+        srv.OnPacket(a, j.data(), j.size(), out);
+        srv.OnPacket(a, atk.data(), atk.size(), out);
+        tick(srv, out, ms);
+        Check(srv.DebugStateOf(a) == 12, "③' 뛴 틱에 공격까지 들어갔다");
+    }
+    // ③'' **뛴 틱에는 살금살금 끄기(LABEL_247)도 안 돈다** — 걷던 중(v68) 뛰어 상태가 12 가 돼도 살금살금이 남는다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugAbilAward(a, 4, false, out);
+        srv.DebugAbilDo(a, 4, out);
+        std::vector<uint8_t> mv = InputPacket(2);
+        mv[nox::kWireHeaderSize + 1] = 5;
+        mv.push_back(0);
+        // 35틱 서 있는 동안 방패를 올렸다(16) — 걷기 입력이 먼저 내리고(17) 가만(13)을 거쳐 걷기(0)가 된다
+        for (int t = 0; t < 20 && srv.DebugStateOf(a) != 0; ++t) { srv.OnPacket(a, mv.data(), mv.size(), out); tick(srv, out, ms); }
+        char pre[160];
+        std::snprintf(pre, sizeof(pre), "③'' 전제 — 걷기 · 살금살금 켜짐이 아니다(상태 %u · 켜짐 %d)", srv.DebugStateOf(a),
+                      static_cast<int>(srv.DebugAbilActive(a, 4)));
+        Check(srv.DebugStateOf(a) == 0 && srv.DebugAbilActive(a, 4), pre);
+        jump(srv, a, out, ms);                                  // 이 틱 ImplA 는 걷기 갈래(v68) → ImplB 에서 뜀
+        Check(srv.DebugStateOf(a) == 12 && srv.DebugAbilActive(a, 4), "③'' 뛴 틱에 살금살금이 꺼졌다");
+    }
+    // ④ **떠 있으면 움찔(30)을 안 받는다** — 대조: 가만히 있을 때는 30
+    for (int jumped = 0; jumped < 2; ++jumped) {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        if (jumped) jump(srv, a, out, ms);
+        srv.DebugHurt(a, -1, 40, std::string(), 0, out);
+        if (jumped) Check(srv.DebugStateOf(a) == 12 && srv.recoilBlockedAirborne() == 1, "④ 떠 있는데 움찔(30)로 바뀌었다");
+        else        Check(srv.DebugStateOf(a) == 30 && srv.recoilBlockedAirborne() == 0, "④ 대조 — 서 있는데 움찔이 안 났다(시험 전제)");
+    }
+    // ⑤ **떠 있으면 낮은 것(SHORT 0x10)을 넘는다** — 같은 점프로 보통 장애물은 막힌다
+    for (uint32_t obFlags : { 0x0u, 0x10u }) {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        nox::Server::PhysBody ob; ob.shape = 2; ob.r = 10.0f; ob.x = 1060.0f; ob.y = 1000.0f; ob.cls = 0x400000; ob.mass = 1e10f; ob.flags = obFlags;
+        srv.SetObstacles({ ob });
+        mk(srv, out, ms);
+        jump(srv, a, out, ms);
+        for (int t = 0; t < 19; ++t) tick(srv, out, ms);
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "⑤ 깃발 0x%x 장애물(1060) — 점프 끝 x %.1f", obFlags, srv.DebugPosX(a));
+        if (obFlags) Check(srv.DebugPosX(a) > 1080.0, msg);
+        else         Check(srv.DebugPosX(a) < 1045.0, msg);
+    }
+    // ⑤' **떠 있으면 낮은 날아가는 것(SHORT)에 안 맞는다** — 길목의 c 가 뛰어 얼어 있으면 Magic 이 넘어가 b 에 닿는다
+    for (int jumped = 0; jumped < 2; ++jumped) {
+        const std::string c = "10.7.19.3:7193";
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        RegSpell(srv, 12);
+        srv.SetMagicType(1237, 50, 10.0f, 0x10);               // 시험용 — SHORT Magic
+        srv.SetPlayerAnimFrames(3, 40, 1);                      // 80틱 — 날아가는 동안 떠 있게
+        srv.DebugEnterGame(a, 841, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 842, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(c, 843, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(b, 1150, 1000);
+        srv.DebugMoveTo(c, 1080, 1000);
+        srv.Tick(ms, out);
+        for (int t = 0; t < 35; ++t) tick(srv, out, ms);
+        if (jumped) jump(srv, c, out, ms);
+        srv.DebugApplyEnchant(c, 25, 300, 1);                   // 얼려 제자리에(떠 있음은 그대로)
+        srv.DebugAimAt(a, 1150, 1000);
+        CastAndWait(srv, a, 12, false, ms, out);
+        float maxX = 0;
+        for (int t = 1; t <= 60 && srv.MissileCount() > 0; ++t) {
+            float x = 0, y = 0;
+            if (srv.DebugMissileXY(0, x, y) && x > maxX) maxX = x;
+            tick(srv, out, ms);
+        }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "⑤' c %s — Magic 최대 x %.1f · 받은 쪽 %s", jumped ? "떠 있음" : "서 있음", maxX,
+                      srv.DebugLastAcceptTarget().addr.c_str());
+        if (jumped) Check(srv.DebugAirborne(c) && maxX > 1100.0f && srv.DebugLastAcceptTarget().addr == b, msg);
+        else        Check(maxX < 1080.0f, msg);
+    }
+    // ⑥ **떠 있으면 능력을 못 쓴다**(상태가 12 가 아니어도) · **가만(13)이 떠 있음을 끈다**
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugAbilAward(a, 1, false, out);
+        jump(srv, a, out, ms);
+        srv.DebugApplyEnchant(a, 8, 100, 1);                    // 달리기 버프 — 틱 끝에 상태를 5 로 묶는다(떠 있음은 남음)
+        tick(srv, out, ms);
+        Check(srv.DebugStateOf(a) == 5 && srv.DebugAirborne(a), "⑥ 전제 — 상태 5 · 떠 있음이 아니다");
+        Check(!srv.DebugAbilDo(a, 1, out) && srv.abilGate(1, nox::AbilGate::MoveState) == 1, "⑥ 떠 있는데 광전사가 먹었다");
+        srv.DebugBuffOff(a, 8);
+        srv.DebugPlayerSetState(a, 13);
+        tick(srv, out, ms);
+        Check(!srv.DebugAirborne(a) && srv.airborneOffIdle() == 1, "⑥ 가만(13)이 떠 있음을 안 껐다");
+    }
+    // ⑦ **작살에 걸려 있으면 앞으로 안 민다**(`:309~319`) — b 가 a 에게 걸린 채 뛴다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.SetPlayerAnimFrames(3, 10, 1);
+        srv.DebugEnterGame(a, 844, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 845, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+        RegHarpoonBolt(srv);
+        srv.Tick(ms, out);
+        for (int t = 0; t < 35; ++t) tick(srv, out, ms);
+        srv.DebugAbilAward(a, 3, false, out);
+        srv.DebugSetFacing(a, 0);
+        tick(srv, out, ms);
+        srv.DebugAbilDo(a, 3, out);
+        for (int t = 0; t < 30 && srv.DebugHarpoonTarget(a).empty(); ++t) tick(srv, out, ms);
+        Check(srv.DebugHarpoonTarget(a) == b, "⑦ 전제 — 작살이 b 에 안 꽂혔다");
+        jump(srv, b, out, ms);
+        tick(srv, out, ms);
+        Check(srv.DebugStateOf(b) == 12 && srv.jumpHeldTicks() >= 1 && srv.jumpForceTicks() == 0, "⑦ 작살에 걸렸는데 앞으로 밀었다");
+    }
+    // ⑧ **떠 있는 채 죽어도 부활하면 끈다**(`GAME3_3.c:7943` `&= 0xFFEB3FE7`)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        jump(srv, a, out, ms);
+        srv.DebugHurt(a, -1, 9999, std::string(), 0, out);
+        Check(!srv.IsAlive(a) && srv.DebugAirborne(a), "⑧ 전제 — 떠 있는 채 죽지 않았다");
+        const auto click = InputPacket(6);
+        for (int t = 0; t < 80 && !srv.IsAlive(a); ++t) { srv.OnPacket(a, click.data(), click.size(), out); tick(srv, out, ms); }
+        Check(srv.IsAlive(a) && !srv.DebugAirborne(a), "⑧ 부활했는데 떠 있음이 남았다");
+    }
+    std::printf("  nine-defects 3-a — 점프: 12·몸짓 3·떠 있음·기력 90·20틱에 내려옴 · 못 뛰는 다섯 · 뛰는 중 조작 없음 · 움찔 막힘 · 낮은 것·낮은 Magic 넘음 · 능력 막힘·13 이 끔 · 작살 걸림이면 안 밂\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -21911,6 +22145,7 @@ int main() {
     TestWarcryDo();
     TestBerserkCharge();
     TestBerserkCrash();
+    TestJump();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();
