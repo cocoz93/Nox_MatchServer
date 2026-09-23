@@ -427,6 +427,10 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                 ParseClasses(val, t);
             } else if (key == "EXTENT") {
                 ParseExtent(val, t);
+            } else if (key == "MATERIAL") {
+                // ★ 09-23 nine-defects 4-c1 — 재질. 타격 소리(맞는 쪽 × 때린 것)를 가른다(`server/sound.go:31~161`)
+                if (!t.materialRaw.empty()) t.materialRaw += "+";
+                t.materialRaw += val;
             } else if (key == "FLAGS") {
                 // 오브젝트 깃발 원문 — '+' 로 이어짐(`NO_COLLIDE+ALLOW_OVERLAP` 꼴). 충돌 거르기(sub_548360)에 쓴다.
                 if (!t.flagsRaw.empty()) t.flagsRaw += "+";
@@ -525,6 +529,10 @@ const char* const kFlagNames[32] = {
     "SHADOW", "FALLING", "IN_HOLE", "RESPAWN", "ON_OBJECT", "SIGHT_DESTROY", "TRANSIENT", "BOUNCY",
     "ENABLED", "PENDING", "TRANSLUCENT", "STILL", "NO_AUTO_DROP", "FLICKER", "SELECTED", "MARKED",
 };
+const char* const kMaterialNames[15] = {
+    "FLESH", "CLOTH", "ANIMAL_HIDE", "WOOD", "METAL", "STONE", "EARTH", "LIQUID",
+    "GLASS", "PAPER", "SNOW", "MUD", "MAGIC", "DIAMOND", "NONE",
+};
 const char* const kClassNames[32] = {
     "MISSILE", "MONSTER", "PLAYER", "OBSTACLE", "FOOD", "EXIT", "KEY", "DOOR",
     "INFO_BOOK", "TRIGGER", "TRANSPORTER", "HOLE", "WAND", "FIRE", "ELEVATOR", "ELEVATOR_SHAFT",
@@ -551,6 +559,7 @@ const char* PlayerAnimTypeName(int i) {
 
 uint32_t ParseObjectFlags(const std::string& raw) { return ParseNameBits(raw, kFlagNames, 32); }
 uint32_t ParseObjectClass(const std::string& raw) { return ParseNameBits(raw, kClassNames, 32); }
+uint32_t ParseMaterial(const std::string& raw) { return raw.empty() ? 0x4000u : ParseNameBits(raw, kMaterialNames, 15); }
 
 bool ThingDb::Load(const std::string& path) {
     things_.clear();

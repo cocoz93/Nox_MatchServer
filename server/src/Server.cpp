@@ -2645,9 +2645,9 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         }
                     } else if (code == 7) {
                         // ★ 09-23 nine-defects 3-a — `CCJump` · 데이터 없음. 「이번 틱에 왔다」만 적고 틱의 ImplB 가 뛴다(`object_update.go:550~571`)
-                        //   ⚠ **7 은 미실측이다.** 번호표 원본(opennox-lib 조작 코드 표)은 이 리포에 없어 못 열었다 —
-                        //     이웃 번호(6 CCAction · 19 Inventory · 21·22 몸짓 · 28~30, 위 주석)와 이어지는 자리로 본 것.
-                        //     사람 판에서 휠(점프)을 눌렀는데 판끝 `[점프] 코드7 받음` 이 0 이면 이 가정부터 틀린 것이다
+                        //   ⭕ 7 은 **원본 기준** — opennox libs `noxnet/msg_player_input.go:211` · `player/ctrlevent_codes.go:12`
+                        //     `CCJump = CtrlCode(7)`(Go 모듈 저장소 `~/go/pkg/mod/github.com/opennox/libs@…` — 이 리포 밖이라 3-a 때는 못 찾았다).
+                        //   ⚠ **와이어 실측은 아직** — 사람 판에서 휠(점프)을 눌러 판끝 `[점프] 코드7 받음` 이 오르면 확정
                         ++jumpCodes_;
                         s.jumpThisTick = true;
                     }

@@ -634,7 +634,7 @@ struct Session {
     //   전에는 왼클릭 한 통에 **바로** 때리고 15틱 쉬었다(kMeleeCooldownTicks, 우리 값).
     //   정답지는 클릭이 상태만 1로 바꾸고, 틱마다 애니 칸을 세다가 **애니가 끝나는 틱**에 판정한다.
     bool actionThisTick = false;   // 이번 틱에 CCAction(코드 6)이 왔나
-    bool jumpThisTick = false;     // ★ 3-a — 이번 틱에 CCJump(코드 7 — 미실측, `Server.cpp` 받는 자리 주석)가 왔나
+    bool jumpThisTick = false;     // ★ 3-a — 이번 틱에 CCJump(코드 7 — 원본 기준 · 와이어 미실측, `Server.cpp` 받는 자리 주석)가 왔나
     // ★ 3-a — 오브젝트 깃발 0x4000 AIRBORNE(떠 있음). 점프가 켜고(`object_update.go:567`) 점프 끝·가만(13)·부활이 끈다
     //   (`:323` · `:329` · 부활 `&= 0xFFEB3FE7`). 사람의 오브젝트 깃발 중 **지금 켜는 것은 이것 하나**다(`PlayerObjFlags`)
     bool airborne = false;

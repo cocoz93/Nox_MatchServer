@@ -15545,6 +15545,32 @@ void TestSwingSounds() {
     std::printf("  nine-defects 4-a — 휘두르기 소리: 맨손·지팡이 879 · 롱소드 880 · 칼·대검 881 · 망치 882(늘) · 철퇴 884 · 도끼 883 · 닿으면 없음\n");
 }
 
+// ── nine-defects 4-c1 — 재질(MATERIAL) 읽기 ─────────
+//   이름 15개 = 비트 1<<i(libs `object/material.go`) · 없으면 NONE(0x4000) · NULL 은 0(libs `enum/enum.go:66`) · 모르는 이름 0 · '+' 는 OR
+void TestMaterialParse() {
+    static const char* const kNames[15] = { "FLESH", "CLOTH", "ANIMAL_HIDE", "WOOD", "METAL", "STONE", "EARTH", "LIQUID",
+                                            "GLASS", "PAPER", "SNOW", "MUD", "MAGIC", "DIAMOND", "NONE" };
+    int ok = 0;
+    for (int i = 0; i < 15; ++i) if (nox::ParseMaterial(kNames[i]) == (1u << i)) ++ok;
+    Check(ok == 15, "재질 이름 15개 중 비트가 1<<i 가 아닌 것이 있다");
+    Check(nox::ParseMaterial("") == 0x4000u, "MATERIAL 이 없으면 NONE(0x4000) 이어야 한다(`server/object_type.go:196`)");
+    Check(nox::ParseMaterial("NULL") == 0u && nox::ParseMaterial("BOGUS") == 0u, "NULL·모르는 이름은 0 이어야 한다");
+    Check(nox::ParseMaterial("METAL+WOOD") == 0x18u, "'+' 로 이은 재질을 OR 하지 않았다");
+    nox::ThingDb tdb;
+    if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+        auto mat = [&](const char* name) {
+            const nox::ThingInfo* t = tdb.ByWire(tdb.WireByName(name));
+            return t ? nox::ParseMaterial(t->materialRaw) : 0xFFFFFFFFu;
+        };
+        // 실물(09-23 부팅 `[재질]` 줄과 같은 값) — 무기는 지팡이만 나무 · 사람 몸은 살
+        Check(mat("Longsword") == 0x10u && mat("WarHammer") == 0x10u && mat("StaffWooden") == 0x8u && mat("NewPlayer") == 0x1u,
+              "thing.bin 재질이 롱소드·망치 METAL · 나무 지팡이 WOOD · NewPlayer FLESH 가 아니다");
+        std::printf("  nine-defects 4-c1 — 재질: 이름 15 · 빈 칸 NONE · NULL 0 · OR · thing.bin 무기·사람 재질\n");
+    } else {
+        std::printf("  nine-defects 4-c1 — 재질: 이름 15 · 빈 칸 NONE · NULL 0 · OR (thing.bin 대조 건너뜀)\n");
+    }
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -22290,6 +22316,7 @@ int main() {
     TestJump();
     TestAirborneReaders();
     TestSwingSounds();
+    TestMaterialParse();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

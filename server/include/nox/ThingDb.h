@@ -95,6 +95,7 @@ struct ThingInfo {
     int shapeKind = 0;          // EXTENT — 0 없음 · 1 CENTER · 2 CIRCLE · 3 BOX (`server/object_type.go:599`)
     float boxW = 0.0f, boxH = 0.0f;
     std::string flagsRaw;       // FLAGS 원문 ('+' 로 이음)
+    std::string materialRaw;    // ★ 09-23 nine-defects 4-c1 — MATERIAL 원문('+' 로 이음) · 없으면 빈 칸 → 재질 NONE(0x4000)
     bool hasCollide = false;    // COLLIDE 속성이 있나
     std::string collideRaw;
     bool complex = false;
@@ -173,6 +174,10 @@ struct ThingInfo {
 //   (opennox libs `object/flags.go` FlagsNames · `object/class.go` ClassNames). 모르는 이름·NULL 은 0.
 uint32_t ParseObjectFlags(const std::string& raw);
 uint32_t ParseObjectClass(const std::string& raw);
+// ★ 09-23 nine-defects 4-c1 — 재질(opennox libs `object/material.go` MaterialNames — FLESH 1 · CLOTH 2 · ANIMAL_HIDE 4 · WOOD 8 ·
+//   METAL 0x10 · STONE 0x20 · EARTH 0x40 · LIQUID 0x80 · GLASS 0x100 · PAPER 0x200 · SNOW 0x400 · MUD 0x800 · MAGIC 0x1000 ·
+//   DIAMOND 0x2000 · NONE 0x4000). **MATERIAL 줄이 없으면 NONE**(`server/object_type.go:196`), 있으면 0 에서 OR(`:256~264`)
+uint32_t ParseMaterial(const std::string& raw);
 
 class ThingDb {
 public:

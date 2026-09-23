@@ -1487,6 +1487,41 @@ int main(int argc, char** argv) {
                         tdb.PlayerAnim(46).frames, tdb.PlayerAnim(46).hold,
                         tdb.PlayerAnim(45).frames, tdb.PlayerAnim(45).hold,
                         tdb.PlayerAnim(3).frames, tdb.PlayerAnim(3).hold);
+            // ★ 09-23 nine-defects 4-c1 — 재질(MATERIAL). 타격 소리가 「맞는 쪽 재질 × 때린 것 재질」로 갈린다(`server/sound.go:31~161`).
+            //   재질별 종류 수 + 우리 무기 표 여덟의 재질 + 갑옷(ARMOR) 재질 분포를 찍는다 — 읽혔다는 근거다
+            {
+                static const char* const kMat[15] = { "FLESH", "CLOTH", "ANIMAL_HIDE", "WOOD", "METAL", "STONE", "EARTH", "LIQUID",
+                                                      "GLASS", "PAPER", "SNOW", "MUD", "MAGIC", "DIAMOND", "NONE" };
+                size_t perBit[15] = {}, declared = 0, armorPerBit[15] = {}, armors = 0, unknown = 0, nullDecl = 0;
+                std::string unknownRaw;
+                for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                    const nox::ThingInfo* t2 = tdb.ByWire(w);
+                    if (!t2) continue;
+                    if (!t2->materialRaw.empty()) ++declared;
+                    const uint32_t m = nox::ParseMaterial(t2->materialRaw);
+                    // 선언했는데 이름을 하나도 못 알아본 것 — 조용히 0 이 되면 「재질 없음」과 안 갈린다.
+                    //   `NULL` 은 정답지가 **정상 값 0** 으로 받는다(libs `enum/enum.go:66`) — 따로 센다
+                    if (!t2->materialRaw.empty() && m == 0) {
+                        if (t2->materialRaw == "NULL") ++nullDecl;
+                        else if (++unknown <= 3) unknownRaw += " " + t2->materialRaw;
+                    }
+                    const bool armor = (nox::ParseObjectClass(t2->classRaw) & 0x2000000) != 0;
+                    if (armor) ++armors;
+                    for (int b = 0; b < 15; ++b) if (m & (1u << b)) { ++perBit[b]; if (armor) ++armorPerBit[b]; }
+                }
+                std::printf("[재질] MATERIAL 선언 %zu종 / %zu · NULL(재질 0) %zu · 못 읽은 이름 %zu%s —", declared, tdb.Count(), nullDecl,
+                            unknown, unknownRaw.c_str());
+                for (int b = 0; b < 15; ++b) if (perBit[b]) std::printf(" %s %zu", kMat[b], perBit[b]);
+                std::printf(" · 갑옷 %zu종:", armors);
+                for (int b = 0; b < 15; ++b) if (armorPerBit[b]) std::printf(" %s %zu", kMat[b], armorPerBit[b]);
+                std::printf(" · 무기:");
+                for (const auto& wp : nox::kWeapons) {
+                    const nox::ThingInfo* t2 = tdb.ByWire(tdb.WireByName(wp.name));
+                    std::printf(" %s=%s", wp.name, t2 ? (t2->materialRaw.empty() ? "(없음→NONE)" : t2->materialRaw.c_str()) : "?");
+                }
+                const nox::ThingInfo* np = tdb.ByWire(tdb.WireByName("NewPlayer"));
+                std::printf(" · NewPlayer=%s\n", np ? (np->materialRaw.empty() ? "(없음→NONE)" : np->materialRaw.c_str()) : "?");
+            }
             if (!props.empty()) {
                 std::printf("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());
                 // ★ 2026-09-18 ② — **자리를 찍는다.** 무인 걷기가 「문 0」으로 끝났을 때
