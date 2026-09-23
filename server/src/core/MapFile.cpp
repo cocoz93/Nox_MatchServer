@@ -289,6 +289,53 @@ std::vector<MapFile::WallCell> MapFile::ReadWalls() {
     }
 }
 
+// ★ 09-23 nine-defects 4-d2 — FloorMap(선언 주석 참고)
+std::vector<MapFile::FloorCell> MapFile::ReadFloor() {
+    std::vector<FloorCell> out;
+    const MapSection* fs = Find("FloorMap");
+    if (!fs) { error_ = "FloorMap missing"; return out; }
+    const uint8_t* p = buf_.data() + fs->offset;
+    const size_t n = fs->size;
+    size_t off = 0;
+    auto need = [&](size_t k) { return off + k <= n; };
+    auto u8 = [&]() { return p[off++]; };
+    auto u16 = [&]() { const uint16_t v = static_cast<uint16_t>(p[off] | (p[off + 1] << 8)); off += 2; return v; };
+    if (!need(2 + 16)) { error_ = "FloorMap too short"; return out; }
+    const uint16_t ver = u16();
+    if (ver != 4) { error_ = "FloorMap version " + std::to_string(ver); return out; }
+    off += 16;                                            // u32×4(격자 범위 — 읽기만 하고 안 씀)
+    auto readSide = [&](FloorSide& s) {
+        if (!need(6)) return false;
+        s.present = true;
+        s.image = u8();
+        s.variant = u16();
+        s.a = u8();
+        s.b = u8();
+        const uint8_t ne = u8();
+        for (uint8_t k = 0; k < ne; ++k) {
+            if (!need(5)) return false;
+            FloorEdge e;
+            e.image = u8(); e.variant = u16(); e.a = u8(); e.b = u8();
+            s.edges.push_back(e);
+        }
+        return true;
+    };
+    for (;;) {
+        if (!need(2)) { error_ = "FloorMap unterminated"; out.clear(); return out; }
+        const uint16_t k = u16();
+        if (k == 0xFFFF) {
+            if (off != n) { error_ = "trailing floor data " + std::to_string(n - off); out.clear(); }
+            return out;
+        }
+        FloorCell c;
+        c.x = static_cast<uint8_t>((k >> 8) & 0x7F);
+        c.y = static_cast<uint8_t>(k & 0x7F);
+        if ((k & 0x8000u) && !readSide(c.first)) { error_ = "floor tile underrun"; out.clear(); return out; }
+        if ((k & 0x80u) && !readSide(c.second)) { error_ = "floor tile underrun"; out.clear(); return out; }
+        out.push_back(std::move(c));
+    }
+}
+
 // SecretWalls = 판 u16 + 개수 u16 + [비밀벽 23B]*  (판 1 이면 13B — 실측에는 없다)
 std::vector<MapFile::SecretWall> MapFile::ReadSecretWalls() {
     std::vector<SecretWall> out;

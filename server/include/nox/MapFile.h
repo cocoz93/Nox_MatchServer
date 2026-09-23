@@ -125,6 +125,23 @@ public:
     };
     std::vector<SecretWall> ReadSecretWalls();
 
+    // ★ 09-23 nine-defects 4-d2 — FloorMap(바닥 칸). 정답지 `nox_server_mapRWFloorMap_422230`(`GAME1_1.c:3869~3954`) 읽기 전용 갈래 ·
+    //   칸 하나 `nox_xxx_tileReadOne_422A40`(`:4174~4233`).
+    //   u16 판(**4 만** — 3 이하는 옛 꼴 `nox_xxx_tile_422C10`, 5 이상은 실패) · u32×4 · [u16 칸 머리 …]* · 끝 0xFFFF
+    //   칸 머리 k(작은 끝 u16) — 가로 = (k>>8)&0x7F · 세로 = k&0x7F · **k&0x8000 이면 첫 쪽(field_1~5)**, **k&0x80 이면 둘째 쪽(field_6~10)** 을
+    //   그 순서로 읽는다. 쪽 하나 = u8 바닥 번호(thing.bin FLOR 순번) · u16 변형 · u8 · u8 · u8 가장자리 수 · 가장자리마다 {u8 바닥 번호 · u16 변형 · u8 · u8}.
+    //   ⚠ libs `maps/map_floor.go` 는 머리 두 바이트를 반대로(첫 바이트 = 가로) 읽고 가로를 &0x7c 로 자른다 — 엔진 쪽을 따른다
+    struct FloorEdge { uint8_t image = 0; uint16_t variant = 0; uint8_t a = 0, b = 0; };
+    struct FloorSide {
+        bool present = false;
+        uint8_t image = 0;                   // 바닥 번호 — 칸 찾기(`tileNFromPoint_411160`)가 돌려주는 값
+        uint16_t variant = 0;
+        uint8_t a = 0, b = 0;
+        std::vector<FloorEdge> edges;        // 가장자리 덧칸(`sub_411350` 이 본다 — 4-d3)
+    };
+    struct FloorCell { uint8_t x = 0, y = 0; FloorSide first, second; };
+    std::vector<FloorCell> ReadFloor();      // 실패면 빈 목록 · Error() 에 까닭
+
 private:
     std::vector<uint8_t> buf_;
     std::vector<MapSection> sections_;

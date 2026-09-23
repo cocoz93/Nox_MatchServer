@@ -20847,6 +20847,29 @@ void TestMapSections() {
         }
     }
 
+    // ★ nine-defects 4-d2 — FloorMap(바닥 칸)
+    {
+        const auto fl = mf.ReadFloor();
+        size_t first = 0, second = 0, edges = 0, maxX = 0, maxY = 0, badImg = 0;
+        for (const auto& c : fl) {
+            if (c.first.present) { ++first; edges += c.first.edges.size(); if (c.first.image >= 145) ++badImg; }
+            if (c.second.present) { ++second; edges += c.second.edges.size(); if (c.second.image >= 145) ++badImg; }
+            if (c.x > maxX) maxX = c.x;
+            if (c.y > maxY) maxY = c.y;
+        }
+        std::printf("  [바닥칸 시험] 칸 %zu · 첫 쪽 %zu · 둘째 쪽 %zu · 가장자리 %zu · 가로 최대 %zu · 세로 최대 %zu · 번호 145 이상 %zu · 오류 `%s`\n",
+                    fl.size(), first, second, edges, maxX, maxY, badImg, mf.Error().c_str());
+        // 실측(09-23) — 끝 표시 뒤 남는 바이트 0 · 번호가 전부 FLOR 145 안 → 걸음이 안 밀렸다는 근거
+        Check(mf.Error().empty() && fl.size() == 1535 && first == 1496 && second == 1503 && edges == 1431 &&
+              maxX == 87 && maxY == 85 && badImg == 0, "① estate 바닥 칸 개수·범위가 실측과 다르다");
+        // 두 쪽 읽는 순서(엔진은 k&0x8000 쪽 먼저) — 개수로는 안 갈리므로 두 쪽이 다른 칸 하나로 본다
+        const nox::MapFile::FloorCell* c6535 = nullptr;
+        for (const auto& c : fl) if (c.x == 65 && c.y == 35) { c6535 = &c; break; }
+        Check(c6535 && c6535->first.present && c6535->first.image == 56 && c6535->first.edges.size() == 1 &&
+              c6535->second.present && c6535->second.image == 58 && c6535->second.edges.empty(),
+              "② 칸 (65,35) 이 첫 쪽 56(가장자리 1) · 둘째 쪽 58(가장자리 0) 이 아니다(두 쪽 순서·가로세로 뒤바뀜)");
+    }
+
     std::printf("  .map 섹션 워커 — %zu섹션: ", mf.Sections().size());
     for (const auto& s : mf.Sections()) std::printf("%s(%zu) ", s.name.c_str(), s.size);
     std::printf("\n");

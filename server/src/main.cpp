@@ -1138,6 +1138,23 @@ int main(int argc, char** argv) {
                 for (size_t k = 0; k < wps.size() && k < 12; ++k)
                     std::printf(" (%d,%d)", static_cast<int>(wps[k].first), static_cast<int>(wps[k].second));
                 std::printf("\n");
+                // ★ 09-23 nine-defects 4-d2 — 맵 바닥 칸(FloorMap)과 그 재질 분포(4-d1 바닥 정의로). 발소리가 이 재질로 갈린다
+                {
+                    const auto floor = mf.ReadFloor();
+                    std::map<int32_t, size_t> byMat;
+                    size_t sides = 0, badImg = 0;
+                    for (const auto& c : floor)
+                        for (const auto* s : { &c.first, &c.second }) {
+                            if (!s->present) continue;
+                            ++sides;
+                            if (s->image < tdb.Floors().size()) ++byMat[tdb.Floors()[s->image].material];
+                            else ++badImg;
+                        }
+                    std::printf("[바닥칸] %s · 칸 %zu · 쪽 %zu(번호가 정의 밖 %zu) · 재질별:", mf.Error().empty() ? "읽음" : ("⚠ " + mf.Error()).c_str(),
+                                floor.size(), sides, badImg);
+                    for (const auto& kv : byMat) std::printf(" 0x%x×%zu", static_cast<unsigned>(kv.first), kv.second);
+                    std::printf("\n");
+                }
                 // ★ 09-20 9-a — 비밀벽마다 **가장 가까운 길목**을 찍는다. 그게 「거기서 보려면 어디에 설까」의 답이다.
                 //   ⚠ `CanStand` 로 찾으면 안 된다 — 그건 **벽만** 보고 바닥은 못 봐서 암반을 고른다(세 번 당함)
                 if (!wps.empty()) {
