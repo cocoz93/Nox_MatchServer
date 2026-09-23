@@ -4288,12 +4288,21 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         // ① 힘 · 공격(ImplA)
         double fx = 0.0, fy = 0.0;
         bool run = false;
+        // ★ 09-23 1-a — 정답지 ImplA 의 `v68`: 이번 틱에 **걷기·달리기 갈래를 끝까지 탔나**(`object_update.go:147`).
+        //   아래 살금살금 끄기(LABEL_247)가 이 값을 본다. 정답지는 짐이 넘치면(+3656) 그 앞에서 돌아가 이 값이 거짓이다
+        //   — 우리는 짐 넘침의 이동 막기를 아직 안 옮겼지만(⚠ 아래) 이 값만은 정답지대로 거짓으로 둔다
+        bool walkBranch = false;
         if (canMove && (s.moveState == kPlayerStateWalk || s.moveState == kPlayerStateRun) && !s.buffs.Has(25) && !s.buffs.Has(5)) {
             // `object_update.go:132~191` — playerCanMove(얼림 25·붙잡힘 5) · 달리기면 SpeedCur × 2(그 틱만) ·
             //   혼란(3)이면 Direction2 를 흔든다(playerConfusedGetDirection_4F7A40) · 힘 = Direction2 방향 표 × SpeedCur
-            //   ⚠ 무게 넘침(+3656 → inform 13 3)·살금살금 능력·발소리는 아이템 5·능력 7·소리 10 · 작살 끌림 sub_4F9AB0 은 7
+            //   ⚠ 무게 넘침(+3656 → inform 13 3)·발소리는 아이템 5·소리 10 · 작살 끌림 sub_4F9AB0 은 7
+            walkBranch = !s.overweight;
             const double cdx = s.aimX - s.posX, cdy = s.aimY - s.posY;
-            run = !(s.moveState != kPlayerStateRun && cdx * cdx + cdy * cdy <= kRunCursorDist * kRunCursorDist);
+            // ★ 09-23 1-a — **살금살금 중에는 안 달린다**(`:153` 의 `|| s.Abils.IsActive(u, AbilityTreadLightly)`).
+            //   전에는 이 조건이 빠져 살금살금을 켜도 그대로 달렸다 — 사람 판 「F 발동 안 함」의 한 몫
+            const bool wantRun = !(s.moveState != kPlayerStateRun && cdx * cdx + cdy * cdy <= kRunCursorDist * kRunCursorDist);
+            run = wantRun && !AbilityIsActive(s, 4);
+            if (wantRun && !run) ++treadBlockedRun_;
             const double speed = static_cast<double>(s.speedCur) * (run ? 2.0 : 1.0);
             if (s.buffs.Has(3)) s.facing = ConfusedDirection(s, frame);
             fx += DirVecX(s.facing) * speed;
@@ -4385,6 +4394,12 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             // CCAction(`:536~544`) — playerCanAttack(버프 25 없음 · 상태 23 아님) → 공 차기 아니면 playerInputAttack
             if (s.actionThisTick && !orientationOnly && !s.buffs.Has(25) && s.moveState != 23) PlayerInputAttack(s, frame, out);
         }
+        // ★ 09-23 nine-defects 1-a — **살금살금 끄기**(`object_update.go:616~621` LABEL_247).
+        //   이번 틱 ImplA 가 걷기·달리기 갈래를 탔는데(`v68`) 조작을 거친 뒤 상태가 걷기·달리기가 아니면 끈다 —
+        //   걷다가 멈추거나 · 치거나 · 주문을 걸면 풀린다. 조작 목록이 비어도 이 자리는 돈다(정답지 `goto LABEL_247`).
+        //   전에는 이 길이 없어 지속 99999 가 사실상 안 꺼졌고, 다시 누르면 「이미 켜짐」 거절(231)만 났다
+        if (walkBranch && s.moveState != kPlayerStateWalk && s.moveState != kPlayerStateRun && AbilityIsActive(s, 4))
+            AbilityDisable(s, 4, out);
         // 달리기(8) 버프 — 공격 중(1)이 아니면 상태 5(달림)로 묶는다(`object_update.go:120~122`)
         if (canMove && s.buffs.Has(8) && s.moveState != kPlayerStateAttack) PlayerSetState(s, kPlayerStateRun, frame);
         s.inputThisTick = s.moveInputThisTick = s.actionThisTick = s.hasFacingInput = false;
@@ -8102,6 +8117,29 @@ void Server::AbilityCancelAll(Session& s, std::vector<OutPacket>& out) {
         s.abilActive[i] = false;
         s.abilActiveUntil[i] = 0;
     }
+}
+
+// ★ 09-23 nine-defects 1-a — `serverAbilities::DisableAbility`(`spells_abil.go:325~344`) — **동작이** 능력을 끈다.
+//   정답지 순서 — ① 능력별 뒷정리(작살: 끊김 와이어 · 살금살금: 발소리 죽이기(31) 끄기 · 늑대의 눈: **아무것도 안 하고 돌아감**)
+//   ② `cf <번호> 0`(`netAbilReportActive`) ③ 켜짐 목록에서 뺀다(`DisableAbilityAaa`).
+//   ⚠ 꺼질 때 소리(`getSound(능력,2)`)는 **안 낸다** — 그건 지속이 다할 때(`Update`)만 낸다. 쉬는 시간도 안 건드린다
+//   ⚠ 작살은 `HarpoonBreak` 가 이 일(끊김 와이어 + 켜짐 끄기)을 이미 한다 — 작살 줄을 끊을 때는 그쪽을 부른다
+//     (정답지도 `breakForOwner` → `DisableAbility(작살)` 순이다). 지금 이 함수를 부르는 자리는 살금살금 하나다
+void Server::AbilityDisable(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
+    if (abil == 0 || abil >= kAbilityCount) return;          // `abil.Valid()`
+    switch (abil) {
+        case 4:                                              // 살금살금 — `DisableEnchant(ENCHANT_SNEAK)`
+            BuffOff(Target{ s.addr, -1 }, 31);
+            break;
+        case 5:                                              // 늑대의 눈 — 정답지가 여기서 **돌아간다**(알림도 목록 빼기도 없음)
+            return;
+        default:                                             // 광전사·함성·작살 — 뒷정리 없음(작살은 위 ⚠)
+            break;
+    }
+    SendAbilityActive(s, abil, false, out);
+    if (s.abilActive[abil]) ++abilEnded_[abil][static_cast<size_t>(AbilEnd::Disabled)];
+    s.abilActive[abil] = false;
+    s.abilActiveUntil[abil] = 0;
 }
 
 // ── 묶음 7-e 능력 효과 넷 ─────────────────────────────────────────────

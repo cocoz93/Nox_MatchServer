@@ -140,6 +140,7 @@ enum class AbilEnd : uint8_t {
     Reset,         // 하나 되돌림(`AbilityReset`)
     CancelAll,     // 전부 되돌림(`AbilityCancelAll`)
     HarpoonBreak,  // 작살 줄 끊김(`HarpoonBreak`)
+    Disabled,      // ★ 1-a — 동작이 끔(`AbilityDisable` · 정답지 `DisableAbility`) — 살금살금이 걷다 멈추거나 칠 때
     Count
 };
 constexpr size_t kAbilEndCount = static_cast<size_t>(AbilEnd::Count);
@@ -3143,6 +3144,8 @@ public:
     unsigned long long abilBlockedBy(uint8_t abil, uint8_t by) const {
         return abil < 4 && by < 4 ? abilBlockedBy_[abil][by] : 0;
     }
+    // ★ 1-a — 달리려던 틱을 살금살금이 걷기로 눌렀다(`object_update.go:153` 의 `|| IsActive(TreadLightly)`)
+    unsigned long long treadBlockedRun() const { return treadBlockedRun_; }
     unsigned long long abilSoundUseCalls(uint8_t abil) const { return abil < kAbilityCount ? abilSoundUseCalls_[abil] : 0; }
     unsigned long long abilSoundOffCalls(uint8_t abil) const { return abil < kAbilityCount ? abilSoundOffCalls_[abil] : 0; }
     // 주인 없는 둘의 갈래(⑮) — 둘 다 몬스터 / 한쪽이 몬스터가 아님(덫 화살·환경)
@@ -3778,6 +3781,7 @@ private:
     void AbilityUpdate(Session& s, std::vector<OutPacket>& out);
     void AbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityCancelAll(Session& s, std::vector<OutPacket>& out);
+    void AbilityDisable(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // ★ 1-a `serverAbilities::DisableAbility`
     // 묶음 7-c — 점수·죽은 횟수(0x4E)
     void SendLesson(Session& s, std::vector<OutPacket>& out);
     void ChangeScore(Session& s, int32_t delta, std::vector<OutPacket>& out);
@@ -4073,6 +4077,7 @@ private:
     unsigned long long abilSoundOffCalls_[kAbilityCount] = {};
     unsigned long long abilEnded_[kAbilityCount][kAbilEndCount] = {};   // 켜진 능력이 어떻게 꺼졌나
     unsigned long long abilBlockedBy_[4][4] = {};                       // [누른 것][켜져 있던 것] — 겹침 거절
+    unsigned long long treadBlockedRun_ = 0;                            // ★ 1-a — 살금살금이 달리기를 막은 틱
     mutable unsigned long long wildBothMonster_ = 0;
     mutable unsigned long long wildRootNotMonster_ = 0;
     unsigned long long spawnFromMap_ = 0;      // PlayerStart 에서 골랐다

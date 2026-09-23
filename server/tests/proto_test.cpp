@@ -14260,6 +14260,130 @@ void TestAbilityCounters() {
     std::printf("  nine-defects 0-d — 능력 갈래 9 칸마다 하나씩 · 번호밖 · 등식 셋 · 꺼짐 까닭 · 작살 닿음·끊김\n");
 }
 
+// ── nine-defects 1-a — 살금살금: 달리기 막기 · 걷다 멈추면 끄기 ───────────────
+//
+// 정답지 `object_update.go:153`(살금살금 중에는 안 달림) · `:616~621`(걷기·달리기 갈래를 탄 틱에
+// 조작 뒤 상태가 걷기·달리기가 아니면 `DisableAbility`). 전에는 둘 다 없어 켜도 그대로 달렸고,
+// 지속 99999 라 안 꺼져 다시 누르면 거절(231)만 났다 — 사람 판 「F 소리는 나는데 발동 안 함」.
+// ⚠ 한 틱 안의 순서 — ImplA(힘·달릴지)가 ImplB(조작)보다 먼저라, 가만에서 걷기를 누른 **첫 틱은 늘 걷기**다.
+//   달리기는 **둘째 틱**부터 나타난다(정답지 `a1` 도 ImplA 에서만 정해진다)
+void TestTreadLightlyOff() {
+    const std::string a = "10.7.10.1:7101";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 750, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSetFacing(a, 0);
+        srv.DebugAimAt(a, 1500, 1000);                      // 커서가 몸에서 500 — 달리기 거리(100) 밖
+        std::vector<nox::OutPacket> o;
+        srv.DebugAbilAward(a, 4, false, o);
+        srv.SetAbilitySound(4, 180, 182);                   // 꺼질 때 소리를 **안** 부르는지 보려고 번호를 넣어 둔다
+        srv.Tick(0, o);
+    };
+    uint32_t ms = 0;
+    auto tick = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) { ms += 34; srv.Tick(ms, out); };
+    auto move = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {   // 앞으로(2) 한 조각
+        std::vector<uint8_t> p = InputPacket(2);
+        p[nox::kWireHeaderSize + 1] = 5;
+        p.push_back(0);
+        srv.OnPacket(a, p.data(), p.size(), out);
+    };
+    auto face = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {   // 바라보기(1)만 — 걷기 입력 없음
+        std::vector<uint8_t> p = InputPacket(1);
+        p[nox::kWireHeaderSize + 1] = 5;
+        p.push_back(0);
+        srv.OnPacket(a, p.data(), p.size(), out);
+    };
+    auto cfOff = [&](const std::vector<nox::OutPacket>& out) {
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 3 && x[0] == static_cast<uint8_t>(nox::Op::REPORT_ACTIVE_ABILITIES) && x[1] == 4 && x[2] == 0)
+                return true;
+        return false;
+    };
+
+    // ① **대조 — 살금살금 없이는 둘째 틱에 달린다**(이 시험이 달리기를 실제로 만들 수 있다는 전제)
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        move(srv, out); tick(srv, out);
+        move(srv, out); tick(srv, out);
+        Check(srv.DebugStateOf(a) == 5, "① 전제 — 살금살금 없이 두 틱 걸었는데 달리기(5)가 아니다");
+        Check(srv.treadBlockedRun() == 0, "① 살금살금이 없는데 달리기막음이 셌다");
+    }
+    // ① **살금살금 중에는 안 달린다** — 같은 입력인데 걷기(0)에 머물고 「달리기막음」이 는다
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugAbilDo(a, 4, out), "① 전제 — 살금살금이 안 켜졌다");
+        move(srv, out); tick(srv, out);
+        move(srv, out); tick(srv, out);
+        Check(srv.DebugStateOf(a) == 0, "① 살금살금 중인데 달린다(걷기 0 이어야 한다)");
+        Check(srv.treadBlockedRun() >= 1, "① 살금살금이 달리기를 막았는데 「달리기막음」이 0 이다");
+        Check(srv.DebugAbilActive(a, 4), "① 계속 걷는 중인데 살금살금이 꺼졌다");
+    }
+    // ② **걷다가 멈추면 꺼진다** — 걷기 입력 없이 다른 조작(바라보기)이 오면 ImplB 가 상태를 가만(13)으로 내리고,
+    //   그 틱의 ImplA 는 걷기 갈래를 탔으므로 끈다. 알림 `cf 04 00` · 발소리 죽이기(31) 끔 · 꺼질 때 소리는 **없음** · 쉬는 시간 그대로
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 4, out);
+        Check(srv.DebugHasEnchant(a, 31), "② 전제 — 발소리 죽이기(31)가 안 걸렸다");
+        move(srv, out); tick(srv, out);
+        move(srv, out); tick(srv, out);
+        Check(srv.DebugAbilActive(a, 4), "② 전제 — 걷는 동안 이미 꺼졌다");
+        const uint32_t cd = srv.DebugAbilCooldown(a, 4);
+        out.clear();
+        face(srv, out); tick(srv, out);
+        Check(srv.DebugStateOf(a) == 13, "② 전제 — 걷기 입력이 끊겼는데 가만(13)이 아니다");
+        Check(!srv.DebugAbilActive(a, 4), "② 걷다 멈췄는데 살금살금이 안 꺼졌다");
+        Check(!srv.DebugHasEnchant(a, 31), "② 꺼졌는데 발소리 죽이기(31)가 남았다");
+        Check(cfOff(out), "② 꺼졌는데 `cf 04 00` 이 안 갔다");
+        Check(srv.abilEnded(4, nox::AbilEnd::Disabled) == 1, "② 꺼짐 까닭 「동작이 끔」이 1 이 아니다");
+        Check(srv.abilSoundOffCalls(4) == 0, "② 동작이 끈 것인데 꺼질 때 소리를 불렀다(정답지 `DisableAbility` 는 안 부른다)");
+        Check(srv.DebugAbilCooldown(a, 4) + 1 >= cd && srv.DebugAbilCooldown(a, 4) <= cd,
+              "② 끄면서 쉬는 시간을 건드렸다");
+    }
+    // ③ **가만히 선 채로는 안 꺼진다** — 걷기 갈래를 안 탔다(`v68` 거짓)
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 4, out);
+        face(srv, out); tick(srv, out);
+        face(srv, out); tick(srv, out);
+        Check(srv.DebugAbilActive(a, 4), "③ 가만히 서서 바라보기만 했는데 살금살금이 꺼졌다");
+    }
+    // ④ **걷는 중 조작이 없는 틱에도 안 꺼진다** — 상태가 걷기에 그대로다
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 4, out);
+        move(srv, out); tick(srv, out);
+        tick(srv, out);
+        Check(srv.DebugAbilActive(a, 4), "④ 조작 없는 틱에 살금살금이 꺼졌다");
+    }
+    // ⑤ **끈 뒤에는 다시 쓸 수 있다**(쉬는 시간 30 이 지나면) — 사람 판 증상의 뒷면
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 4, out);
+        move(srv, out); tick(srv, out);
+        face(srv, out); tick(srv, out);
+        Check(!srv.DebugAbilActive(a, 4), "⑤ 전제 — 안 꺼졌다");
+        for (int t = 0; t < 30; ++t) srv.DebugAbilTick(a, out);
+        Check(srv.DebugAbilDo(a, 4, out), "⑤ 꺼지고 쉰 뒤인데 살금살금을 다시 못 쓴다");
+    }
+    // ⑥ **짐이 넘치면 안 꺼진다** — 정답지는 짐 넘침에서 걷기 갈래를 `v68` 전에 빠져나간다
+    {
+        nox::Server srv; mk(srv); ms = 0;
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 4, out);
+        move(srv, out); tick(srv, out);
+        srv.DebugSetOverweight(a, true);
+        face(srv, out); tick(srv, out);
+        Check(srv.DebugAbilActive(a, 4), "⑥ 짐이 넘치는데 살금살금이 꺼졌다(정답지는 `v68` 이 거짓)");
+    }
+    std::printf("  nine-defects 1-a — 살금살금: 달리기 막기 · 걷다 멈추면 끔(cf 0·31 끔·소리 없음) · 가만/무입력/짐넘침은 유지 · 다시 쓰기\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -20993,6 +21117,7 @@ int main() {
     TestAbilityEffects();
     TestHarpoon();
     TestAbilityCounters();
+    TestTreadLightlyOff();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

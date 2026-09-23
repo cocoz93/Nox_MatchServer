@@ -461,7 +461,9 @@ constexpr double kProjectileMaxTravel   = kFireballPerFrame * kUnTargetedSpellFr
 // **주문 레벨 표의 1~5 칸을 같이 쓴다**(`serverSetAllWarriorAbilities` 가 `SpellLvl[1..5]` 를 만진다).
 //   1 광전사 돌진 · 2 함성 · 3 작살 · 4 살금살금 · 5 늑대의 눈
 // ⭕ 값은 gamedata.bin 의 「Ability durations/usage delay in frames ( 30 fps assumed )」 토막 그대로다.
-// ⚠ 지속 **99999**(살금살금)는 「스스로 안 꺼진다」는 뜻이다 — 다시 눌러 끄거나 죽어야 꺼진다.
+// ⚠ 지속 **99999**(살금살금)는 「시간으로는 안 꺼진다」는 뜻이다 — **걷다가 다른 동작으로 넘어가거나**
+//   (`object_update.go:616~621`, 09-23 1-a 에서 옮김) 죽어야 꺼진다.
+//   ✖ 09-23 정정 — 전에는 「다시 눌러 끄거나」라고 적혀 있었다. 다시 누르면 **거절**된다(`spells_abil.go:182~186`).
 // ⚠ 작살은 지속 **0** 이라 아예 지속 목록에 안 올라간다(`getDuration(abil) > 0` 관문).
 // ⚠ 정답지 Go 는 함성 지속을 `Balance.Float("WarCryDuration")`(가운데 C 대문자)로 찾는데
 //   파일의 이름은 `WarcryDuration` 이다 — 이름표가 대소문자를 안 가리거나 정답지 쪽 오타다.

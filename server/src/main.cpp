@@ -168,13 +168,14 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
             std::printf(")");
         }
         std::printf("·이미켜짐 %llu·상태12 %llu·안배움 %llu·짐넘침 %llu·쉬는중 %llu}"
-                    " 꺼짐{시간 %llu·사라짐 %llu·되돌림 %llu·전부 %llu·작살끊김 %llu}"
+                    " 꺼짐{시간 %llu·사라짐 %llu·되돌림 %llu·전부 %llu·작살끊김 %llu·동작이끔 %llu}"
                     " 소리부름{쓸때 %llu·꺼질때 %llu}",
                     srv.abilGate(a, G::Already), srv.abilGate(a, G::MoveState), srv.abilGate(a, G::NotLearned),
                     srv.abilGate(a, G::Overweight), srv.abilGate(a, G::Cooldown),
                     srv.abilEnded(a, E::Expired), srv.abilEnded(a, E::Gone), srv.abilEnded(a, E::Reset),
-                    srv.abilEnded(a, E::CancelAll), srv.abilEnded(a, E::HarpoonBreak),
+                    srv.abilEnded(a, E::CancelAll), srv.abilEnded(a, E::HarpoonBreak), srv.abilEnded(a, E::Disabled),
                     srv.abilSoundUseCalls(a), srv.abilSoundOffCalls(a));
+        if (a == 4) std::printf(" 달리기막음 %llu", srv.treadBlockedRun());   // ★ 1-a — 살금살금이 걷기로 누른 틱
     }
     std::printf("\n");
     using T = nox::HarpoonTouch;
@@ -194,7 +195,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
 unsigned long long AbilityFingerprint(const nox::Server& srv) {
-    unsigned long long n = srv.abilCalls() + srv.harpoonShot();
+    unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun();
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));
