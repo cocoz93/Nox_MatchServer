@@ -4225,8 +4225,9 @@ uint8_t Server::PlayerAnimByte(const Session& s) {
         case kPlayerStateRun: return kAnimRun;
         case kPlayerStateAttack: case 14: case 22: {
             // ★ 09-23 2-a1 — `:1723~1724` 함성이 켜져 있고 값이 서 있으면 **46 WARCRY** — 무기보다 먼저.
-            //   (정적 함수라 `AbilityIsActiveVal` 대신 칸을 바로 읽는다) ⚠ 광전사 45(`:1725~1726`)는 2-b 에서
+            //   (정적 함수라 `AbilityIsActiveVal` 대신 칸을 바로 읽는다)
             if (s.abilActive[2] && s.abilActiveVal[2]) return 46;
+            if (s.abilActive[1]) return 45;                  // ★ 2-b1 — `:1725~1726` 광전사 켜짐이면 BERSERKER_CHARGE
             // `:1720~1737` — 마법 지팡이(0x47F0000)는 29/31 · 무기(0·1 아님)거나 Field8 이 0 이면 sub_4FA280 표 · 맨손은 Field8
             if (equip & 0x47F0000) return 31;   // ⚠ +96&2(충전 휘두르기) 면 29 — 마법 지팡이는 묶음 4
             if ((equip && equip != 1) || s.attackAnim == 0) {
@@ -4406,7 +4407,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 PlayerSetState(s, kPlayerStateIdle, frame);
                 s.stateFrame = frame;
             }
-            if (s.hasFacingInput && !s.buffs.Has(25)) s.facing = s.facingInput;   // CCOrientation(`:497~502`) — 얼림(25)이면 안 돔 · ⚠ 퀘스트 거래·광전사는 5·7
+            // CCOrientation(`:503~508`) — 얼림(25)이면 안 돔 · ★ 2-b1 광전사 켜져 있어도 안 돔(돌진 방향이 고정된다) · ⚠ 퀘스트 거래는 5
+            if (s.hasFacingInput && !s.buffs.Has(25) && !AbilityIsActive(s, 1)) s.facing = s.facingInput;
             // 자연의 힘(31) 지속 중이면 방향 입력만 받는다(`:496` orientationOnly = Sub4FEE50 · 4-a3)
             const bool orientationOnly = DurActive(31, s.addr);
             // 이동 — playerCanMove 면 붙들고 있는 주문 취소(cancelAllSpells_4FEE90, `:509~510`) ·
@@ -4415,7 +4417,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             const bool playerCanMove = !s.buffs.Has(25) && !s.buffs.Has(5);
             if (s.moveInputThisTick && !orientationOnly && playerCanMove) {
                 CancelChannelSpells(s.addr, out);
-                if (s.moveState != kPlayerStateAttack) {
+                // ★ 2-b1 — 광전사가 켜져 있으면 걷기 입력은 **상태를 안 바꾼다**(`:512` `!IsActive(Berserk) && …`)
+                if (s.moveState != kPlayerStateAttack && !AbilityIsActive(s, 1)) {
                     if (s.moveState == 16) {
                         PlayerSetState(s, 17, frame);
                     } else {
@@ -8078,6 +8081,9 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
     //     그래서 정답지대로 가른다: 광전사는 함성 **값**·작살 켜짐 · 함성은 광전사·작살 켜짐 · 작살은 함성 **값**·광전사 켜짐.
     //     ⇒ 함성 애니가 끝난 뒤(값 0)에는 광전사·작살을 **안 막는다**(함성 지속 120 전부를 막던 전과 다르다)
     //   ⚠ 광전사의 CTF 깃발 검사(`:155~163`)는 아직 없다
+    // ★ 09-23 2-b1 — **깃발을 든 채로는 광전사를 못 쓴다**(`spells_abil.go:155~163` — 깃발 판 · 가진 것 중 FLAG 클래스) → 알림(2,5) · 231.
+    //   우리는 깃발을 가방이 아니라 `flags_[].carrier` 로 든다 — 같은 뜻이다(`Carrying`). 겹침보다 **먼저** 본다(정답지 순서)
+    if (abil == 1 && (gameSettings_.gameFlags & 0x20u) && Carrying(s.addr)) { gate(AbilGate::CtfFlag); refuse(5); return false; }
     uint8_t blocker = 0;
     switch (abil) {
         case 1: blocker = AbilityIsActiveVal(s, 2) ? 2 : (AbilityIsActive(s, 3) ? 3 : 0); break;
@@ -8221,7 +8227,10 @@ void Server::AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out
     const Target self{ s.addr, -1 };
     switch (abil) {
         case 1: {   // 광전사 돌진
-            PlayerCancelSpells(s.addr, out);               // cancelAllSpells_4FEE90
+            // ✖ 09-23 2-b1 정정 — `PlayerCancelSpells`(= `playerCancelSpells_4FEAE0`, 그 사람의 지속 주문 **전부**)를 부르고 있었다.
+            //   정답지는 `cancelAllSpells_4FEE90` — **붙들고 있는 주문 일곱**(24·43·35·8·22·59·67)만 끊는다(`GAME4.c:3405~3426`).
+            //   우리 쪽 짝은 `CancelChannelSpells` 다(시험 `TestBerserkCharge` ⑥ 이 보호막(51)까지 끊기는 것으로 드러냄)
+            CancelChannelSpells(s.addr, out);              // cancelAllSpells_4FEE90
             if (s.buffs.Has(3)) {                          // ENCHANT_CONFUSED — 보는 쪽을 흔든다
                 //   `Direction2 = Dir16(Direction1 + 4 × IntClamp(-8, 8))` — 양끝 포함이라 **17가지**
                 //   ⚠ 정답지는 `RoundDir` 을 안 거쳐 u16 에 260 같은 값이 남을 수 있지만,
@@ -8229,10 +8238,12 @@ void Server::AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out
                 const int k = static_cast<int>(NextRandom(17)) - 8;
                 s.facing = static_cast<uint8_t>(static_cast<int>(s.facingPrev) + 4 * k);
             }
+            s.animFrame = 0;                               // ★ 2-b1 — `ud.Field59_0 = 0`(`spell_berserk.go:20~24`)
             PlayerSetState(s, 1, frame_);
             BuffOff(self, 0);                              // 투명
             BuffOff(self, 23);                             // 무적
-            DurCancelFor(51, s.addr, out);                 // 타원 방패
+            // ✖ 09-23 2-b1 정정 — 51(SHIELD) 이었다. 타원 방패(`SPELL_OVAL_SHIELD`)는 **67**(`spell_berserk.go:28`) — 함성 쪽은 2-a4 에서 고침
+            DurCancelFor(67, s.addr, out);                 // 타원 방패
             break;
         }
         case 2: {   // 함성
@@ -12865,6 +12876,26 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
             WarcryShout(s, out);                             // ★ 2-a2 — 땅울림 · 몬스터 기절(반주문은 2-a3)
         }
         if (idx >= frames) AbilityValOff(s, 2);
+        s.animFrame = static_cast<uint8_t>(idx >= frames ? frames - 1 : idx);   // LABEL_159
+        return idx < frames;
+    }
+    // ★ 09-23 nine-defects 2-b1 — **광전사 갈래**(`GAME4_3.c:4006~4023`) — 함성 갈래 다음, 맨손·무기 갈래보다 먼저.
+    //   켜져 있으면(목록에 있기만 하면 — `IsActive`) 얼림(25)·붙잡힘(5)이 아닌 한 **돌진한다** —
+    //   · SpeedCur = SpeedBase × 6 · 힘(ForceVec) += 바라보는 쪽(Direction1) × 그 빠르기 — 매 틱
+    //   · 애니 45(BERSERKER_CHARGE) 칸 = (프레임 − 상태 시작) ÷ (붙듦+1) · **칸 수−1 이상이면 0**(애니를 되돌린다 — 그래서 늘 「아직 공격 중」)
+    //   · 얼림·붙잡힘이면 거짓(공격 끝 → 상태 13)
+    //   끝은 지속(90)이 다할 때 `AbilityUpdate` 가 상태 13 으로 내리거나(`spells_abil.go:252~254`), 부딪혀 멈출 때(2-b2)다.
+    //   전에는 이 갈래가 없어 광전사를 쓰면 상태 1 로 **보통 주먹질**이 나갔다(사람 판 「A 발동 안 함」)
+    if (AbilityIsActive(s, 1)) {
+        if (s.buffs.Has(25) || s.buffs.Has(5)) return false;
+        range(45);
+        idx = static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
+        const double speed = static_cast<double>(kPlayerWalkPerFrame) * 6.0;   // SpeedBase(+548) × 6 — 우리 SpeedBase 는 걷기 기본값
+        s.speedCur = static_cast<float>(speed);
+        s.forceX += DirVecX(s.facingPrev) * speed;            // Direction1(+124) — 이 틱 시작 때의 바라보는 쪽
+        s.forceY += DirVecY(s.facingPrev) * speed;
+        ++berserkChargeTicks_;
+        if (idx >= frames - 1) idx = 0;
         s.animFrame = static_cast<uint8_t>(idx >= frames ? frames - 1 : idx);   // LABEL_159
         return idx < frames;
     }

@@ -129,6 +129,7 @@ enum class AbilGate : uint8_t {
     Overweight,    // 짐 넘침(광전사만)
     Cooldown,      // 아직 쉬는 중
     Ok,            // **실행했다**
+    CtfFlag,       // ★ 2-b1 — 깃발 판에서 깃발을 든 채 광전사(`spells_abil.go:155~163`)
     Count
 };
 constexpr size_t kAbilGateCount = static_cast<size_t>(AbilGate::Count);
@@ -3170,6 +3171,7 @@ public:
     unsigned long long abilValOff() const { return abilValOff_; }               // ★ 2-a1 — 켜짐 값 내림(함성 애니 끝)
     unsigned long long warcryShouts() const { return warcryShouts_; }           // ★ 2-a1 — 함성 칸 2→3
     unsigned long long warcryStunned() const { return warcryStunned_; }         // ★ 2-a2 — 외침에 기절한 몬스터
+    unsigned long long berserkChargeTicks() const { return berserkChargeTicks_; } // ★ 2-b1 — 광전사가 민 틱
     bool DebugAbilActiveVal(const std::string& a, uint8_t k) const {            // ★ 2-a1 시험용
         auto i = sessions_.find(a); return i != sessions_.end() && AbilityIsActiveVal(i->second, k);
     }
@@ -3690,6 +3692,7 @@ private:
     unsigned long long abilValOff_ = 0;        // ★ 2-a1 — 켜짐 값을 내린 횟수(함성 애니 끝)
     unsigned long long warcryShouts_ = 0;      // ★ 2-a1 — 함성 애니가 칸 2 → 3 을 넘은 틱(외침 효과가 붙을 자리)
     unsigned long long warcryStunned_ = 0;     // ★ 2-a2 — 외침에 붙잡힘(5)이 걸린 몬스터 수
+    unsigned long long berserkChargeTicks_ = 0;   // ★ 2-b1 — 광전사가 앞으로 민 틱
     void WarcryShout(Session& s, std::vector<OutPacket>& out);   // ★ 2-a2 — 외침 효과(땅울림 · 몬스터 기절)
     int CastCounterSpell(Session& caster, std::vector<OutPacket>& out);   // ★ 2-a3 — castCounterSpell_52BBB0
     std::set<uint16_t> counterMissileTypes_;

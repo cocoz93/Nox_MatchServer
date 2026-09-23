@@ -167,6 +167,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
             }
             std::printf(")");
         }
+        std::printf("·깃발 %llu", srv.abilGate(a, G::CtfFlag));   // ★ 2-b1
         std::printf("·이미켜짐 %llu·상태12 %llu·안배움 %llu·짐넘침 %llu·쉬는중 %llu}"
                     " 꺼짐{시간 %llu·사라짐 %llu·되돌림 %llu·전부 %llu·작살끊김 %llu·동작이끔 %llu}"
                     " 소리부름{쓸때 %llu·꺼질때 %llu}",
@@ -178,6 +179,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
         if (a == 4) std::printf(" 달리기막음 %llu", srv.treadBlockedRun());   // ★ 1-a — 살금살금이 걷기로 누른 틱
         // ★ 2-a1 — 함성 애니가 외치는 칸(2→3)을 넘은 수 · 애니가 끝나 켜짐 값을 내린 수
         if (a == 2) std::printf(" 외침칸 %llu·애니끝 %llu·기절몬스터 %llu", srv.warcryShouts(), srv.abilValOff(), srv.warcryStunned());
+        if (a == 1) std::printf(" 돌진틱 %llu", srv.berserkChargeTicks());   // ★ 2-b1 — 광전사가 앞으로 민 틱
     }
     std::printf("\n");
     using T = nox::HarpoonTouch;
@@ -201,7 +203,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
 unsigned long long AbilityFingerprint(const nox::Server& srv) {
     unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun() + srv.harpoonAimFound() +
-                           srv.contactDamageHits() + srv.warcryShouts() + srv.abilValOff();
+                           srv.contactDamageHits() + srv.warcryShouts() + srv.abilValOff() + srv.berserkChargeTicks();
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));

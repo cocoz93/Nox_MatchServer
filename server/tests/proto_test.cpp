@@ -14882,6 +14882,103 @@ void TestWarcryDo() {
     std::printf("  nine-defects 2-a4 — 함성 do: 둘레 적 시전 끊기(같은 편·300 밖 제외) · 주문 쓰는 몬스터 무효화 · 타원 방패 67\n");
 }
 
+// ── nine-defects 2-b1 — 광전사 돌진: 공격 처리 갈래 · 몸짓 45 · 방향·걷기 잠금 · 깃발 관문 · 타원 방패 67 ─────────
+//
+// 정답지 `GAME4_3.c:4006~4023`(켜져 있으면 얼림·붙잡힘이 아닌 한 SpeedBase×6 로 Direction1 쪽 힘 · 애니 45 칸은 칸수−1 이상이면 0) ·
+// `GAME4.c:1725~1726`(몸짓 45) · `object_update.go:503~513`(방향·걷기 입력 무시) · `spells_abil.go:155~163`(깃발 든 채 금지) ·
+// `spell_berserk.go:11~30`(do). 애니 길이는 실 thing.bin 값(12칸 · 붙듦 0)으로 둔다.
+void TestBerserkCharge() {
+    const std::string a = "10.7.17.1:7171";
+    auto mk = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        srv.DebugEnterGame(a, 820, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.SetPlayerAnimFrames(45, 12, 0);
+        srv.DebugAbilAward(a, 1, false, out);
+        ms = 0; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);                           // 물리 자리 맞추기
+        srv.DebugSetFacing(a, 0);                              // +x
+        ms += 34; srv.Tick(ms, out);                           // Direction1 = Direction2
+    };
+    auto tick = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) { ms += 34; srv.Tick(ms, out); };
+
+    // ① **쓰면 상태 1 · 몸짓 45 · 앞(+x)으로 달려간다** — 10틱에 걷기(틱당 3)·달리기(6)로는 못 가는 거리
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        const double x0 = srv.DebugPosX(a), y0 = srv.DebugPosY(a);
+        Check(srv.DebugAbilDo(a, 1, out), "① 광전사가 안 먹었다");
+        Check(srv.DebugStateOf(a) == 1 && srv.DebugAnimByteOf(a) == 45, "① 상태 1 · 몸짓 45 가 아니다");
+        for (int t = 0; t < 10; ++t) tick(srv, out, ms);
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "① 10틱 돌진 — x 로 %.1f · y 로 %.1f 움직였다(x 60 넘게 · y 거의 0 이어야)",
+                      srv.DebugPosX(a) - x0, srv.DebugPosY(a) - y0);
+        Check(srv.DebugPosX(a) - x0 > 60.0 && std::fabs(srv.DebugPosY(a) - y0) < 1.0, msg);
+        Check(srv.berserkChargeTicks() == 10, "① 민 틱이 10 이 아니다");
+        Check(srv.DebugAnimFrameOf(a) < 11, "① 애니 칸이 칸수−1(11) 에 닿았다(되돌아가야 한다)");
+    }
+    // ② **돌진 중에는 방향 입력을 안 받는다**
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugAbilDo(a, 1, out);
+        std::vector<uint8_t> p = InputPacket(1);
+        p[nox::kWireHeaderSize + 1] = 5;
+        p.push_back(64);                                       // 바라보기 64
+        srv.OnPacket(a, p.data(), p.size(), out);
+        tick(srv, out, ms);
+        Check(srv.DebugFacingOf(a) == 0, "② 돌진 중인데 방향이 바뀌었다");
+    }
+    // ③ **얼리면 돌진이 멈추고 공격이 끝난다**(상태 13)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugAbilDo(a, 1, out);
+        tick(srv, out, ms);
+        srv.DebugApplyEnchant(a, 25, 100, 1);
+        const unsigned long long n0 = srv.berserkChargeTicks();
+        tick(srv, out, ms);
+        Check(srv.berserkChargeTicks() == n0 && srv.DebugStateOf(a) == 13, "③ 얼었는데 계속 밀었거나 공격이 안 끝났다");
+        // 광전사는 아직 켜져 있다 — 이때 걷기 입력은 상태를 안 바꾼다(`:512` `!IsActive(Berserk)`)
+        srv.DebugBuffOff(a, 25);
+        std::vector<uint8_t> mv = InputPacket(2);
+        mv[nox::kWireHeaderSize + 1] = 5;
+        mv.push_back(0);
+        srv.OnPacket(a, mv.data(), mv.size(), out);
+        tick(srv, out, ms);
+        Check(srv.DebugAbilActive(a, 1) && srv.DebugStateOf(a) == 13, "③ 광전사가 켜져 있는데 걷기 입력이 상태를 바꿨다");
+    }
+    // ④ **지속(90)이 다하면 멈춘다** — `AbilityUpdate` 가 상태 13
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugAbilDo(a, 1, out);
+        for (int t = 0; t < 95; ++t) tick(srv, out, ms);
+        const unsigned long long n0 = srv.berserkChargeTicks();
+        tick(srv, out, ms);
+        Check(!srv.DebugAbilActive(a, 1) && srv.DebugStateOf(a) == 13 && srv.berserkChargeTicks() == n0,
+              "④ 지속이 다했는데 계속 민다");
+        Check(n0 >= 89 && n0 <= 91, "④ 민 틱이 지속(90) 언저리가 아니다");
+    }
+    // ⑤ **깃발을 든 채로는 못 쓴다**(깃발 판) — 알림(2,5)·231 · 칸 「깃발」
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 820, false, nox::CharClass::Warrior);
+        srv.DebugAbilAward(a, 1, false, out);
+        srv.StartCtf(1000, 1000, 2000, 1000);
+        srv.SetGameFlags(0x20);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugMoveTo(a, 2000, 1000);                        // 적(파랑) 깃발 위
+        srv.Tick(0, out); srv.Tick(34, out); srv.Tick(68, out);
+        Check(srv.Carrying(a), "⑤ 전제 — 깃발을 안 들었다");
+        Check(!srv.DebugAbilDo(a, 1, out) && srv.abilGate(1, nox::AbilGate::CtfFlag) == 1, "⑤ 깃발을 든 채 광전사가 먹었다");
+    }
+    // ⑥ **타원 방패(67)를 끊는다** — 전에는 51(SHIELD)을 끊었다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugDurNew(a, 51, 0, -1, -1, false, nox::Target{}, out);   // 1
+        srv.DebugDurNew(a, 67, 0, -1, -1, false, nox::Target{}, out);   // 0
+        srv.DebugAbilDo(a, 1, out);
+        Check(srv.DebugDurCanceled(0) && !srv.DebugDurCanceled(1), "⑥ 광전사가 타원 방패(67)를 끊고 보호막(51)을 남기지 않았다");
+    }
+    std::printf("  nine-defects 2-b1 — 광전사: 상태 1·몸짓 45·+x 로 돌진(방향 잠김) · 얼면 멈춤 · 지속 끝에 멈춤 · 깃발 들면 못 씀 · 타원 방패 67\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -21622,6 +21719,7 @@ int main() {
     TestWarcryShout();
     TestCounterSpell();
     TestWarcryDo();
+    TestBerserkCharge();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();
