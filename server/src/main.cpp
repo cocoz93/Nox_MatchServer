@@ -246,6 +246,10 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.FootWalkSum(), srv.footWalk(FK::Silent), srv.footWalk(FK::Wood), srv.footWalk(FK::Dirt), srv.footWalk(FK::Water),
                 srv.footWalk(FK::Snow), srv.footWalk(FK::Mud), srv.footWalk(FK::Stone), srv.footWalk(FK::NoTile),
                 srv.footTreadSilent(), srv.exertionLight());
+    // ★ 09-24 — 맞은 사람의 「윽」(`object_update.go:80~107`)
+    std::printf("[신음] %llu = {가벼움 %llu·중간 %llu·심함 %llu·독 %llu}\n", srv.HurtVoiceSum(),
+                srv.hurtVoice(nox::HurtVoice::Light), srv.hurtVoice(nox::HurtVoice::Medium), srv.hurtVoice(nox::HurtVoice::Heavy),
+                srv.hurtVoice(nox::HurtVoice::Poison));
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
@@ -253,7 +257,8 @@ unsigned long long AbilityFingerprint(const nox::Server& srv) {
     unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun() + srv.harpoonAimFound() +
                            srv.contactDamageHits() + srv.warcryShouts() + srv.abilValOff() + srv.berserkChargeTicks() +
                            srv.berserkCollideCalls() + srv.jumpCodes() + srv.jumpLanded() + srv.melees() +
-                           srv.FootRunSum() + srv.FootWalkSum() + srv.footTreadSilent();   // ★ 4-d4
+                           srv.FootRunSum() + srv.FootWalkSum() + srv.footTreadSilent() +   // ★ 4-d4
+                           srv.HurtVoiceSum();                                                 // ★ 09-24
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));

@@ -4354,6 +4354,33 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         const bool dead = (s.respawnAtFrame != 0);
         const bool canMove = !dead && !s.observer && !respawnedNow;
 
+        // ★ 09-24 사람 판(「맞으면 윽 소리가 나야 하지 않나」) — 맞은 사람의 신음(`object_update.go:51~62·80~107`).
+        //   쉬는 틱(Field19_1)이 남았으면 하나 줄이고, 아니면 지난 체력 대비 준 비율(천분율)을 재고 지난 체력을 지금 값으로 · 줄었으면 7틱 쉰다.
+        //   살아 있고 줄었으면 — 마지막 피해 종류(+524)가 독(5)이면 HurtPoison · 70 이하 Light · 450 이하 Medium · 넘으면 Heavy(여자면 Female 것) · 그 사람 자리
+        //   ⚠ 정답지는 이 자리가 기력 회복(`:109~111`) 바로 앞이다 — 우리도 같은 자리
+        {
+            int v2 = 0;
+            if (s.hurtCooldown != 0) {
+                --s.hurtCooldown;
+            } else {
+                if (s.hurtPrevHp != 0) v2 = 1000 * (static_cast<int>(s.hurtPrevHp) - static_cast<int>(s.health)) / static_cast<int>(s.hurtPrevHp);
+                s.hurtPrevHp = s.health;
+                if (v2 > 0) s.hurtCooldown = 7;
+            }
+            if (!dead && v2 > 0) {
+                const bool female = s.info97.size() > 67 && s.info97[67] != 0;
+                HurtVoice k;
+                if (s.lastDamageType == 5) k = HurtVoice::Poison;
+                else if (v2 <= 450) k = (v2 <= 70) ? HurtVoice::Light : HurtVoice::Medium;
+                else k = HurtVoice::Heavy;
+                static const char* const kMale[] = { "HumanMaleHurtLight", "HumanMaleHurtMedium", "HumanMaleHurtHeavy", "HumanMaleHurtPoison" };
+                static const char* const kFemale[] = { "HumanFemaleHurtLight", "HumanFemaleHurtMedium", "HumanFemaleHurtHeavy", "HumanFemaleHurtPoison" };
+                PlaySoundAt(SoundByName((female ? kFemale : kMale)[static_cast<size_t>(k)]),
+                            static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
+                ++hurtVoice_[static_cast<size_t>(k)];
+            }
+        }
+
         // ⓪ 기력 회복(`object_update.go:108` — 죽지 않았으면 100 아래일 때 100/30 씩, ImplA 보다 먼저)
         if (!dead && s.stamina < 100) s.stamina = static_cast<uint8_t>(s.stamina + 100 / kServerTickRate);
         // ① 힘 · 공격(ImplA)
@@ -12568,7 +12595,10 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
         m.newX += m.velX; m.newY += m.velY;
         // ④ 선 추적 맞힘 projectileTraceHit_537850(`GAME4_3.c:3386`) → 충돌 함수 둘(sub_537770)
         bool erased = false;
-        {
+        // ★ 09-24 사람 판 — 「더는 안 부딪힘」(FlagNoCollide 0x40)이 선 것은 맞힘을 **통째로 건너뛴다**(움직임·넘김은 한다).
+        //   꽂힌 작살 화살이 이 깃발을 켜는데(`HarpoonCollide`) 거르는 자리가 대상 쪽(`passFlags`)뿐이라 **매 틱 다시 맞았다** —
+        //   사람 판 hj1: 5발에 「걸림」 91 · 그때마다 피해 1 과 맞는 소리. 정답지는 NO_COLLIDE 인 것을 충돌 짝에서 아예 뺀다(`sub_5481C0`)
+        if (!(m.flags & 0x40)) {
             enum { HitNone, HitPlayer, HitPet, HitObstacle } hk = HitNone;
             std::string hAddr; int hIdx = -1;
             // ★★ 2026-09-16 — **닿은 것을 셋으로 가른다.** 전에는 `HitPlayer` 인가 아닌가로만

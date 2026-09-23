@@ -14085,6 +14085,13 @@ void TestHarpoon() {
         // ★ 4-c3b2 — 재질표가 없는 판이라 때린 것(작살 화살)은 「표없음」으로 드러난다(안옮김·없음이 아니다)
         Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1, "② 4-c3b2 작살에 때린 것(화살)이 안 넘어갔다");
         Check(srv.missiles() >= 1, "꽂혔는데 화살이 사라졌다");
+        // ★ 09-24 사람 판 hj1(5발에 「걸림」 91) — 꽂힌 화살은 NO_COLLIDE(0x40)라 **다시 안 맞는다**.
+        //   더 돌려도 꽂힘은 한 번 · 피해도 1 에서 안 는다(전에는 매 틱 피해 1 과 맞는 소리를 되풀이했다)
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "② 꽂힌 뒤 20틱 — 걸림 %llu(1 이어야) · b 체력 %d→%d(1 만 줄어야) · 맞는 소리 %llu",
+                      srv.harpoonTouch(nox::HarpoonTouch::Attached), hp0, srv.HealthOf(b), srv.hitSoundCalls());
+        Check(srv.harpoonTouch(nox::HarpoonTouch::Attached) == 1 && srv.HealthOf(b) == hp0 - 1 && srv.hitSoundCalls() == 1, msg);
     }
 
     // ③ **같은 편이면 피해만 주고 끊긴다**
@@ -15909,6 +15916,76 @@ void TestFootsteps() {
         Check(runTicks >= 990 && srv.exertionLight() >= 8 && srv.exertionLight() <= 35, msg);
     }
     std::printf("  nine-defects 4-d4 — 발소리: 재질 표 · 달리기(RUN 2·8) · 살금살금 걷기 안 냄 · 걷기(WALK 3·9) · 바닥 없음 · 힘쓰는 소리 비율\n");
+}
+
+// ── 09-24 사람 판 — 맞은 사람의 「윽」(`object_update.go:51~62·80~107`) ─────────
+//   쉬는 틱이 없으면 지난 체력 대비 준 비율(천분율 v2)을 재고, 줄었으면 7틱 쉰다 · 살아 있으면 독이면 Poison · 70 이하 Light · 450 이하 Medium · 넘으면 Heavy
+void TestHurtVoice() {
+    const std::string a = "10.7.28.1:7281";
+    using HV = nox::HurtVoice;
+    const char* names[] = { "HumanMaleHurtLight", "HumanMaleHurtMedium", "HumanMaleHurtHeavy", "HumanMaleHurtPoison",
+                            "HumanFemaleHurtLight", "HumanFemaleHurtMedium", "HumanFemaleHurtHeavy", "HumanFemaleHurtPoison" };
+    auto mk = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (const char* nm : names) { nox::Server::SoundDefIn d; d.id = nox::SoundByName(nm); d.samples = 1; sd.push_back(d); }
+        srv.SetSoundDefs(sd);
+        srv.DebugEnterGame(a, 750, false, nox::CharClass::Warrior);   // 체력 150
+        ms = 0; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);                                    // 지난 체력 = 150
+    };
+    auto tick = [](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) { ms += 34; srv.Tick(ms, out); };
+    auto heard = [&](const std::vector<nox::OutPacket>& out, const char* nm) {
+        const uint16_t want = nox::SoundByName(nm);
+        for (const auto& x : FlattenTo(out, a)) {
+            if (x.size() != 4) continue;
+            if (x[0] != static_cast<uint8_t>(nox::Op::AUDIO_EVENT) && x[0] != static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) continue;
+            if ((static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == want) return true;
+        }
+        return false;
+    };
+    // ① 10 준다(불 1 은 방어를 안 탄다) → 다음 틱 v2 = 1000×10/150 = 66 → Light · 실제로 그 번호가 나간다
+    //   그 틱에 다시 10 → 쉬는 7틱 동안은 안 나고, 끝나면 140→130 = 71 → **Medium**(70 을 넘는다)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugHurt(a, -1, 10, std::string(), 1, out);
+        out.clear(); tick(srv, out, ms);
+        const bool light = heard(out, "HumanMaleHurtLight");
+        srv.DebugHurt(a, -1, 10, std::string(), 1, out);
+        unsigned long long during = 0;
+        for (int t = 0; t < 7; ++t) { tick(srv, out, ms); during = srv.HurtVoiceSum(); }
+        out.clear(); tick(srv, out, ms);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "① 가벼움 %llu · 쉬는 7틱 동안 합 %llu(1) · 그 뒤 중간 %llu · 전선 Light %d · Medium %d",
+                      srv.hurtVoice(HV::Light), during, srv.hurtVoice(HV::Medium), light, heard(out, "HumanMaleHurtMedium"));
+        Check(light && srv.hurtVoice(HV::Light) == 1 && during == 1 && srv.hurtVoice(HV::Medium) == 1 && heard(out, "HumanMaleHurtMedium"), msg);
+    }
+    // ② 100 → 666 → Heavy · ③ 독(종류 5) → Poison · ④ 여자면 Female 것 · ⑤ 죽으면 안 낸다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugHurt(a, -1, 100, std::string(), 1, out);
+        out.clear(); tick(srv, out, ms);
+        Check(srv.hurtVoice(HV::Heavy) == 1 && srv.HurtVoiceSum() == 1 && heard(out, "HumanMaleHurtHeavy"), "② 100/150 이 심함(Heavy)이 아니다");
+    }
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugHurt(a, -1, 3, std::string(), 5, out);
+        out.clear(); tick(srv, out, ms);
+        Check(srv.hurtVoice(HV::Poison) == 1 && srv.HurtVoiceSum() == 1 && heard(out, "HumanMaleHurtPoison"), "③ 독 피해가 독 신음이 아니다");
+    }
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugSetFemale(a, true);
+        srv.DebugHurt(a, -1, 10, std::string(), 1, out);
+        out.clear(); tick(srv, out, ms);
+        Check(srv.hurtVoice(HV::Light) == 1 && heard(out, "HumanFemaleHurtLight") && !heard(out, "HumanMaleHurtLight"), "④ 여자인데 여자 신음이 아니다");
+    }
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.DebugHurt(a, -1, 9999, std::string(), 1, out);
+        for (int t = 0; t < 3; ++t) tick(srv, out, ms);
+        Check(srv.HurtVoiceSum() == 0, "⑤ 죽었는데 신음을 냈다");
+    }
+    std::printf("  09-24 「윽」 — 가벼움·쉬는 7틱·중간(71) · 심함 · 독 · 여자 · 죽으면 없음(전선 번호까지)\n");
 }
 
 // ── nine-defects 4-c3b3a — soundset.bin 읽기(`nox_xxx_parseSoundSetBin_424170` · `nox_xxx_parseString_409470`) ─────────
@@ -23114,6 +23191,7 @@ int main() {
     TestFloorDefs();
     TestFloorLookup();
     TestFootsteps();
+    TestHurtVoice();
     TestPlayerHitSound();
     TestPetHitSound();
     TestMissileHitterRoot();

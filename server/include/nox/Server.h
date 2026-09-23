@@ -234,6 +234,10 @@ constexpr size_t kDefHitSoundWayCount = static_cast<size_t>(DefHitSoundWay::Coun
 enum class FootKind : uint8_t { Silent = 0, Wood, Dirt, Water, Snow, Mud, Stone, NoTile, Count };
 constexpr size_t kFootKindCount = static_cast<size_t>(FootKind::Count);
 
+// ★ 09-24 사람 판 — 맞은 사람의 「윽」(`object_update.go:80~107`). 독(+524 = 5)이면 Poison · 준 비율(천분율) 70 이하 Light · 450 이하 Medium · 넘으면 Heavy
+enum class HurtVoice : uint8_t { Light = 0, Medium, Heavy, Poison, Count };
+constexpr size_t kHurtVoiceCount = static_cast<size_t>(HurtVoice::Count);
+
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
 //   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
@@ -697,6 +701,8 @@ struct Session {
     bool markSet[4] = { false, false, false, false };
     float markX[4] = { 0, 0, 0, 0 }, markY[4] = { 0, 0, 0, 0 };
     uint8_t lastDamageType = 0;    // +524 — 마지막 피해 종류(damageDefaultProc). 16 에 죽으면 먼지 자세 51(`GAME4_1.c:4459`)
+    uint16_t hurtPrevHp = 0;       // ★ 09-24 — 「윽」 재기의 지난 체력(`ud.Field19_0`)
+    uint8_t hurtCooldown = 0;      // ★ 09-24 — 「윽」 뒤 쉬는 틱(`ud.Field19_1` — 줄었으면 7)
     // ★ 죽음 알림(`a9 0e`, 3-d)에 실을 것 — 플레이어 +304 갈래 · +300 종류(`GAME3_3.c:164~246 · 344~437`).
     //   피해 함수가 부를 때마다 0 에서 다시 적는다: 갈래 1 = 종류 번호(무기·투사체 · 없으면 맨손 10·망치 2 때 때린 이) · 2 = 피해 종류
     uint8_t killKind = 0;
@@ -3361,6 +3367,14 @@ public:
     unsigned long long FootRunSum() const { unsigned long long n = 0; for (auto v : footRun_) n += v; return n; }
     unsigned long long FootWalkSum() const { unsigned long long n = 0; for (auto v : footWalk_) n += v; return n; }
     unsigned long long footTreadSilent() const { return footTreadSilent_; }
+    unsigned long long hurtVoice(HurtVoice k) const { return hurtVoice_[static_cast<size_t>(k)]; }   // ★ 09-24
+    unsigned long long HurtVoiceSum() const { unsigned long long n = 0; for (auto v : hurtVoice_) n += v; return n; }
+    void DebugSetFemale(const std::string& addr, bool female) {   // ★ 09-24 시험용 — 사람 정보 97바이트의 67번 칸(IsFemale)
+        auto it = sessions_.find(addr);
+        if (it == sessions_.end()) return;
+        if (it->second.info97.size() < 68) it->second.info97.resize(97, 0);
+        it->second.info97[67] = female ? 1 : 0;
+    }
     unsigned long long exertionLight() const { return exertionLight_; }
     // ★ 4-c3b3b — 종류 번호별 「그 종류 이름의 소리 모음에 맞히는 소리가 있고 조각이 1 이상」(main 이 soundset.bin 으로 채운다)
     void SetMonsterHitSounds(std::vector<uint8_t> byWire) { monsterHitSound_ = std::move(byWire); }
@@ -3942,6 +3956,7 @@ private:
     std::vector<int32_t> floorMaterial_;
     unsigned long long footRun_[kFootKindCount] = {}, footWalk_[kFootKindCount] = {};
     unsigned long long footTreadSilent_ = 0, exertionLight_ = 0;
+    unsigned long long hurtVoice_[kHurtVoiceCount] = {};   // ★ 09-24 「윽」
     void Footstep(const Session& s, bool run);
     uint16_t newPlayerWire_ = 0;
     // ★ 4-c2 — `nox_xxx_soundPlayerDamageSound_5328B0` — 맞는 사람의 가슴갑옷 재질(없으면 FLESH) × 때린 것(무기, 없으면 때린 이) 재질
