@@ -209,11 +209,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
     // ★ 3-a — 점프. 「코드7 받음」이 분모다 — 사람이 휠을 눌렀는데 0 이면 **7 이 점프라는 가정부터** 틀린 것이다
     using J = nox::JumpGate;
     std::printf("[점프] 코드7 받음 %llu · 들어옴 %llu%s = {뜀 %llu·못움직임 %llu·광전사 %llu·함성 %llu·짐넘침 %llu·기력모자람 %llu}"
-                " · 민틱 %llu · 작살에잡혀안민틱 %llu · 내려옴 %llu · 가만이끔 %llu · 움찔막음 %llu\n",
+                " · 민틱 %llu · 작살에잡혀안민틱 %llu · 내려옴 %llu · 가만이끔 %llu · 움찔막음 %llu · 지진뺌 %llu · 시전막음 %llu\n",
                 srv.jumpCodes(), srv.jumpIn(), srv.JumpGateSum() == srv.jumpIn() ? "" : " ⚠칸합불일치",
                 srv.jumpGate(J::Ok), srv.jumpGate(J::CantMove), srv.jumpGate(J::Berserk), srv.jumpGate(J::Warcry),
                 srv.jumpGate(J::Overweight), srv.jumpGate(J::NoStamina),
-                srv.jumpForceTicks(), srv.jumpHeldTicks(), srv.jumpLanded(), srv.airborneOffIdle(), srv.recoilBlockedAirborne());
+                srv.jumpForceTicks(), srv.jumpHeldTicks(), srv.jumpLanded(), srv.airborneOffIdle(), srv.recoilBlockedAirborne(),
+                srv.equakeSkipAirborne(), srv.spellRefusedAirborne());   // ★ 3-b
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
@@ -1397,6 +1398,18 @@ int main(int argc, char** argv) {
                     b.damageFn = nox::Server::DamageFnOf(t2->damageFn);
                     b.hasCollide = t2->hasCollide;
                     srv.SetTypeBody(w, b);
+                }
+                // ★ 3-b — 날아다니는 몬스터(FLAGS AIRBORNE 0x4000) — 지진이 빼는 종류다. 이름 앞 몇 개를 같이 찍는다
+                {
+                    size_t nFly = 0;
+                    std::string names;
+                    for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                        const nox::ThingInfo* t2 = tdb.ByWire(w);
+                        if (!t2 || !t2->isMonster || !(nox::ParseObjectFlags(t2->flagsRaw) & 0x4000)) continue;
+                        if (nFly < 12) names += " " + t2->name;
+                        ++nFly;
+                    }
+                    std::printf("[나는몬스터] AIRBORNE 몬스터 %zu종 —%s%s\n", nFly, names.c_str(), nFly > 12 ? " …" : "");
                 }
             }
             // ★ 2026-09-13 묶음 3-d — TRY_COLLIDE 가 찾을 것(맵 오브젝트 번호·extent·종류 · 종류별 충돌 함수 이름)

@@ -15403,6 +15403,87 @@ void TestJump() {
     std::printf("  nine-defects 3-a — 점프: 12·몸짓 3·떠 있음·기력 90·20틱에 내려옴 · 못 뛰는 다섯 · 뛰는 중 조작 없음 · 움찔 막힘 · 낮은 것·낮은 Magic 넘음 · 능력 막힘·13 이 끔 · 작살 걸림이면 안 밂\n");
 }
 
+// ── nine-defects 3-b — 떠 있음(0x4000)을 읽는 나머지 자리: 지진(`GAME4_2.c:10450`) · 주문 시전(`sdecode.c:221~226`) ─────────
+void TestAirborneReaders() {
+    const std::string a = "10.7.20.1:7201";
+    const std::string b = "10.7.20.2:7202";
+    const std::string c = "10.7.20.3:7203";
+    auto tick = [](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) { ms += 34; srv.Tick(ms, out); };
+    auto mk = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        nox::Gamedata g;
+        g.Parse("EarthquakeRange = 200.0f;\nEarthquakeDamage = 30, 30, 30, 30, 30;\nEarthquakeJiggle = 50, 50, 50, 50, 50;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(23, 10, 0x1000000, { 1, 2 });
+        srv.SetPlayerAnimFrames(3, 40, 1);                      // 80틱 — 시전 동안 떠 있게
+        srv.DebugEnterGame(a, 850, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 851, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(c, 852, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1080, 1000);                         // 시전자 오른쪽 80
+        srv.DebugMoveTo(c, 920, 1000);                          // 시전자 왼쪽 80(같은 거리)
+        ms = 0; srv.Tick(ms, out);
+        srv.DebugSetFacing(c, 128);                             // 시전자를 등지게 — 서 있으면 방패를 올려 **정면** 지진을 막는다(b 는 이미 등짐)
+        for (int t = 0; t < 35; ++t) tick(srv, out, ms);       // 기력 90
+    };
+    auto jump = [&](nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        const auto p = InputPacket(7);
+        srv.OnPacket(who, p.data(), p.size(), out);
+        tick(srv, out, ms);
+    };
+
+    // ① **지진은 떠 있는 것을 뺀다** — 같은 거리의 b(뛰어 떠 있음)·c(서 있음) 중 c 만 맞는다 ·
+    //   소환수도 날아다니는 종류(FLAGS AIRBORNE)는 빠진다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        nox::Server::PhysBody fly; fly.shape = 2; fly.r = 10.0f; fly.cls = 0x2; fly.flags = 0x4000;
+        nox::Server::PhysBody walk; walk.shape = 2; walk.r = 10.0f; walk.cls = 0x2; walk.flags = 0;
+        srv.SetTypeBody(1328, fly);
+        srv.SetTypeBody(1329, walk);
+        mk(srv, out, ms);
+        srv.DebugSpawnPet(1328, 1000.0f, 1080.0f, std::string());   // 아래 80 — 날아다님
+        srv.DebugSpawnPet(1329, 1000.0f, 920.0f, std::string());    // 위 80 — 걸어다님
+        srv.DebugSpawnPet(1328, 1000.0f, 1400.0f, std::string());   // 아래 400 — 날아다님 · **둘레 밖**(계수기가 세면 안 됨)
+        jump(srv, b, out, ms);
+        srv.DebugApplyEnchant(b, 25, 300, 1);                   // 얼려 제자리에(떠 있음은 그대로)
+        srv.DebugApplyEnchant(c, 25, 300, 1);                   // 대조도 같게
+        Check(srv.DebugAirborne(b) && !srv.DebugAirborne(c), "① 전제 — b 만 떠 있어야 한다");
+        const uint16_t bHp = srv.HealthOf(b), cHp = srv.HealthOf(c);
+        const uint16_t flyHp = srv.DebugPetHealth(0), walkHp = srv.DebugPetHealth(1);
+        Check(flyHp > 0 && walkHp > 0, "① 전제 — 소환수 체력이 0 이다");
+        CastAndWait(srv, a, 23, false, ms, out);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "① 지진 — 떠 있는 b %u→%u · 서 있는 c %u→%u · 나는 것 %u→%u · 걷는 것 %u→%u · 뺌 %llu",
+                      bHp, srv.HealthOf(b), cHp, srv.HealthOf(c), flyHp, srv.DebugPetHealth(0), walkHp, srv.DebugPetHealth(1),
+                      srv.equakeSkipAirborne());
+        Check(srv.HealthOf(b) == bHp && srv.HealthOf(c) < cHp && srv.DebugPetHealth(0) == flyHp && srv.DebugPetHealth(1) < walkHp &&
+              srv.equakeSkipAirborne() == 2, msg);
+    }
+    // ② **떠 있으면 주문을 못 건다**(협동 아님 · 알림 없음) — 대조: 서 있으면 걸린다(b 가 맞는다)
+    for (int jumped = 0; jumped < 2; ++jumped) {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        if (jumped) jump(srv, a, out, ms);
+        const uint16_t bHp = srv.HealthOf(b);
+        std::vector<nox::OutPacket> o;
+        CastAndWait(srv, a, 23, false, ms, o);
+        if (jumped) {
+            Check(srv.DebugAirborne(a) && srv.HealthOf(b) == bHp && srv.spellRefusedAirborne() == 1, "② 떠 있는데 주문이 걸렸다");
+            Check(FindMsg(FlattenTo(o, a), static_cast<uint8_t>(nox::Op::INFORM)) == nullptr, "② 떠 있어 거절했는데 알림을 보냈다(정답지는 안 보냄)");
+        } else {
+            Check(srv.HealthOf(b) < bHp && srv.spellRefusedAirborne() == 0, "② 대조 — 서 있는데 지진이 안 걸렸다(시험 전제)");
+        }
+    }
+    // ③ **협동(2048)이면 떠 있어도 건다**
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        srv.SetGameFlags(0x800);
+        jump(srv, a, out, ms);
+        const uint16_t bHp = srv.HealthOf(b);
+        CastAndWait(srv, a, 23, false, ms, out);
+        Check(srv.DebugAirborne(a) && srv.HealthOf(b) < bHp && srv.spellRefusedAirborne() == 0, "③ 협동인데 떠 있다고 시전을 막았다");
+    }
+    std::printf("  nine-defects 3-b — 떠 있음: 지진이 뛰는 사람·나는 소환수를 뺌 · 떠 있으면 시전 거절(알림 없음) · 협동이면 걸림\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -22146,6 +22227,7 @@ int main() {
     TestBerserkCharge();
     TestBerserkCrash();
     TestJump();
+    TestAirborneReaders();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

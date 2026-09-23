@@ -3250,6 +3250,8 @@ public:
     unsigned long long jumpLanded() const { return jumpLanded_; }               // 애니가 끝나 내려옴(상태 0)
     unsigned long long airborneOffIdle() const { return airborneOffIdle_; }     // 가만(13)이 떠 있음을 끔
     unsigned long long recoilBlockedAirborne() const { return recoilBlockedAirborne_; }   // 떠 있어 움찔(30)을 안 받음
+    unsigned long long equakeSkipAirborne() const { return equakeSkipAirborne_; }       // ★ 3-b 지진이 뺀 떠 있는 것(사람·소환수)
+    unsigned long long spellRefusedAirborne() const { return spellRefusedAirborne_; }   // ★ 3-b 떠 있어 거절한 시전
     bool DebugAirborne(const std::string& a) const { auto i = sessions_.find(a); return i != sessions_.end() && i->second.airborne; }
     bool DebugAbilActiveVal(const std::string& a, uint8_t k) const {            // ★ 2-a1 시험용
         auto i = sessions_.find(a); return i != sessions_.end() && AbilityIsActiveVal(i->second, k);
@@ -3775,6 +3777,7 @@ private:
     unsigned long long berserkCollideCalls_ = 0;  // ★ 2-b2
     unsigned long long jumpCodes_ = 0, jumpIn_ = 0, jumpGate_[kJumpGateCount] = {};   // ★ 3-a
     unsigned long long jumpForceTicks_ = 0, jumpHeldTicks_ = 0, jumpLanded_ = 0, airborneOffIdle_ = 0, recoilBlockedAirborne_ = 0;
+    unsigned long long equakeSkipAirborne_ = 0, spellRefusedAirborne_ = 0;   // ★ 3-b
     // ★ 3-a — 사람의 오브젝트 깃발(+16). NewPlayer 는 FLAGS NULL 이고 지금 켜는 것은 AIRBORNE(0x4000) 하나다
     static uint32_t PlayerObjFlags(const Session& s) { return s.airborne ? 0x4000u : 0u; }
     uint32_t moveFrame_ = 0;                      // ★ 2-b2 — UpdatePlayerMovement 의 이 틱 프레임

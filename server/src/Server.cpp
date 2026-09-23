@@ -3167,7 +3167,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     SendPriMsg(s, "GeneralPrint:NoSpellWarningGeneral", out);   // 3680 & 1
                     ok = false;
                 }
-                // 3680 & 2(몬스터 지켜보기 — "ConjureNoSpellWarning1") 는 관전 기능(8) · +16 & 0x4000 은 아직 켜는 곳 없음
+                // 3680 & 2(몬스터 지켜보기 — "ConjureNoSpellWarning1") 는 관전 기능(8)
+                // ★ 09-23 nine-defects 3-b — 협동(2048)이 아니면 **떠 있는 동안(+16 & 0x4000) 시전 거절** · 알림 없음(`sdecode.c:221~226`)
+                if (!(gameSettings_.gameFlags & 0x800u) && (PlayerObjFlags(s) & 0x4000)) {
+                    if (ok) ++spellRefusedAirborne_;
+                    ok = false;
+                }
                 if (ok) {                                  // 게임 깃발 128(Chat 모드) 아님
                     int count = 0;
                     for (int k = 0; k < 5; ++k) if (sp[k]) ++count;
@@ -3893,7 +3898,10 @@ bool Server::MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float
     // ★ 09-22 — 정답지 `mapTraceRayImpl`(`server/wall.go:1066~1070`)은 `Sub_57B500` 에
     //   `0x40 | (Flag1 이면 0x10)` 을 준다. **0x10 이 켜져야 문을 본다**(닫힌 문이 걸음을 막는다).
     //   우리 걸음 추적은 깃발 0x1(=Flag1)로 부르므로 여기서 0x10 이 붙는다
-    const int t = WallShapeAt(gx, gy, static_cast<uint8_t>(0x40 | ((flags & 0x1) ? 0x10 : 0)));
+    // ✖ 09-23 3-b 정정 — **0x40 은 늘 붙지 않는다.** `v30 := byte(^flags & Flag3) << 4` 라 **Flag3(0x4)가 없을 때만** 0x40 이다.
+    //   0x40 이 없으면 `Sub_57B500` 이 **창문을 벽으로 안 본다**(`:848`) — 떠 있는 것의 걸음 추적(0x1|0x4)·가까운 칸(Flag4→Flag3)이 창을 지나가는 길.
+    //   ⚠ 우리 `WallShapeAt` 에는 창문이 없어(묶음 9) 지금은 0x40 이 있든 없든 결과가 같다 — 창을 넣을 때 틀리지 않게 정답지대로 둔다
+    const int t = WallShapeAt(gx, gy, static_cast<uint8_t>(((flags & 0x4) ? 0 : 0x40) | ((flags & 0x1) ? 0x10 : 0)));
     if (t < 0 || t > 10) return false;
     // GetWallAtGrid(Flag1 없음)은 칸 짝홀((x+y)&1)이 홀이면 벽이 없다고 본다(`server/wall.go:238`)
     if (!(flags & 0x1) && ((gx + gy) & 1)) return false;
@@ -4671,8 +4679,10 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             // ★ 09-21 — **추적이 걸음을 막은 횟수**를 센다. 벽 칸 안에서 5.5% 를 보내는데
             //   막은 적이 없다면 「벽을 뚫고 들어갔다 사출되는 것」이고, 잘 막고 있다면
             //   「벽에 바짝 붙어 선 것」이다 — 고칠 자리가 전혀 다르다
+            // ★ 3-b — 정답지 걸음 추적 깃발 = `(오브젝트 깃발 >> 12) & 4 | 1`(`GAME4_1.c:3226`) — 떠 있으면 5(창문을 지나간다 · 위 MapTraceRayTile 주석)
             if (MapTraceRay(static_cast<float>(s.posX), static_cast<float>(s.posY),
-                            static_cast<float>(nx), static_cast<float>(ny), 0x1)) {
+                            static_cast<float>(nx), static_cast<float>(ny),
+                            static_cast<uint8_t>(0x1 | ((PlayerObjFlags(s) >> 12) & 0x4)))) {
                 s.posX = nx; s.posY = ny;
             } else {
                 ++traceBlocked_;
@@ -11079,9 +11089,20 @@ int Server::CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out
         src.x = cx; src.y = cy;
         HurtTarget(t, static_cast<int>(dmg), out, caster.addr, 11, &src);   // 피해 종류 11
     };
+    // ★ 09-23 nine-defects 3-b — 정답지 차례 `:10448~10452`: 자기 아님 → **떠 있음(0x4000) 아님** → 체력 있음.
+    //   전에는 주석에만 「공중은 뺀다」가 있고 코드가 없었다(사람은 떠 있음 칸이 없었고, 소환수는 종류 깃발을 안 봤다)
+    //   (계수기는 둘레 안의 것만 센다 — 정답지는 `unitsGetInCircle` 로 추린 것에만 이 검사를 한다)
+    auto inRange = [&](double ox, double oy) {
+        const float dx = static_cast<float>(ox) - cx, dy = static_cast<float>(oy) - cy;
+        return std::sqrt(dx * dx + dy * dy) <= range;
+    };
     std::vector<std::string> who;
     for (const auto& kv : sessions_) {
         if (!kv.second.inGame || kv.first == caster.addr) continue;         // 자기 자신은 뺀다
+        if (PlayerObjFlags(kv.second) & 0x4000) {                           // 뛰는 중
+            if (inRange(kv.second.posX, kv.second.posY)) ++equakeSkipAirborne_;
+            continue;
+        }
         if (kv.second.respawnAtFrame != 0 || kv.second.health == 0) continue;
         who.push_back(kv.first);
     }
@@ -11091,6 +11112,12 @@ int Server::CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out
         hurtAt(Target{ addr, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
     }
     for (size_t i = 0; i < pets_.size(); ++i) {
+        // 날아다니는 종류(thing.bin FLAGS AIRBORNE — 박쥐·임프 따위). 몸 모르는 종류는 깃발도 모른다 → 안 뺀다
+        const auto tb = typeBodies_.find(pets_[i].type);
+        if (tb != typeBodies_.end() && (tb->second.flags & 0x4000)) {
+            if (inRange(pets_[i].x, pets_[i].y)) ++equakeSkipAirborne_;
+            continue;
+        }
         if (pets_[i].health == 0) continue;
         hurtAt(Target{ std::string(), static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y));
     }
