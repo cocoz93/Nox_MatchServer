@@ -943,6 +943,18 @@ int main(int argc, char** argv) {
                 // ★ 09-22 사용자 보고(「소리가 안 들린다」) — **우리가 부르는 번호가 표에 있나**를 찍는다.
                 //   `PlaySoundAt` 은 소리조각이 0 이면 조용히 버리고, `maxDist` 가 0 이면 **거리에서 잘린다**.
                 //   둘은 증상이 같아서(안 들림) 숫자로 갈라야 한다
+                // ★ 09-23 nine-defects 4-b — **능력 소리 170~185**(쓸 때·켜짐·꺼질 때 × 다섯)를 한 줄로. 「조각 0 으로 선언」과
+                //   「표에 아예 없음」(230 같은 경우 — 정품이 따로 보낼 수 있다)을 가른다. `-` = 표에 없음
+                {
+                    std::printf("[소리·능력]");
+                    for (uint16_t q = 170; q <= 185; ++q) {
+                        int samples = -1;
+                        for (const auto& in : sd) if (in.id == q) { samples = in.samples; break; }
+                        if (samples < 0) std::printf(" %u(%s)-", (unsigned)q, nox::SoundName(q));
+                        else std::printf(" %u(%s)%d", (unsigned)q, nox::SoundName(q), samples);
+                    }
+                    std::printf("\n");
+                }
                 // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
                 for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,
                                     nox::SoundByName("HumanMaleExertionHeavy"), nox::SoundByName("HumanFemaleExertionHeavy"),
