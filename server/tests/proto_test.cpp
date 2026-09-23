@@ -9,6 +9,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -15685,6 +15687,37 @@ void TestSwingSounds() {
 
 // ── nine-defects 4-c1 — 재질(MATERIAL) 읽기 ─────────
 //   이름 15개 = 비트 1<<i(libs `object/material.go`) · 없으면 NONE(0x4000) · NULL 은 0(libs `enum/enum.go:66`) · 모르는 이름 0 · '+' 는 OR
+// ── nine-defects 4-d1 — thing.bin 바닥 정의(FLOR)의 이름·재질(`nox_thing_read_FLOR_411540` `GAME1.c:1060~1108`) ─────────
+void TestFloorDefs() {
+    const char* path = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin";
+    if (!std::ifstream(path, std::ios::binary)) return;   // 파일이 없으면 건너뜀
+    nox::ThingDb tdb;
+    // 파일이 있는데 못 읽으면 실패다 — 바닥 칸을 한 바이트라도 잘못 넘기면 뒤 섹션이 통째로 깨진다
+    Check(tdb.Load(path), "⓪ thing.bin 이 있는데 못 읽었다(바닥 정의 읽는 자리가 어긋났나)");
+    const auto& fl = tdb.Floors();
+    std::map<int32_t, int> byMat;
+    for (const auto& f : fl) ++byMat[f.material];
+    std::printf("  [바닥 시험] 정의 %zu개 · 재질별:", fl.size());
+    for (const auto& kv : byMat) std::printf(" 0x%x×%d", static_cast<unsigned>(kv.first), kv.second);
+    std::printf("\n");
+    // 실물(09-23 부팅 `[바닥]` 줄과 같은 값) — 이름과 재질이 뜻대로 맞는지로 **읽는 자리**를 확인한다
+    //   (재질 자리를 한 칸 밀려 읽으면 이 분포가 통째로 무너진다)
+    const std::map<int32_t, int> want = { { 0x2, 10 }, { 0x8, 18 }, { 0x20, 78 }, { 0x40, 22 }, { 0x80, 11 },
+                                          { 0x400, 4 }, { 0x800, 1 }, { 0x2000, 1 } };
+    Check(fl.size() == 145 && byMat == want, "① 바닥 정의 145개의 재질 분포가 실측과 다르다");
+    int wood = 0, woodOk = 0, water = 0, waterOk = 0, mud = 0;
+    for (const auto& f : fl) {
+        if (f.name.find("Wood") != std::string::npos) { ++wood; if (f.material == 0x8) ++woodOk; }
+        if (f.name.find("Water") != std::string::npos) { ++water; if (f.material == 0x80) ++waterOk; }
+        if (f.name == "Mud" && f.material == 0x800) ++mud;
+    }
+    char msg[160];
+    std::snprintf(msg, sizeof(msg), "② 이름과 재질 — Wood %d/%d 나무 · Water %d/%d 물 · Mud 진흙 %d", woodOk, wood, waterOk, water, mud);
+    // 이름에 Wood 가 든 것 17(OakWoodFloor 포함) · Water 가 든 것 10 — 재질 쪽 18·11 에는 이름에 그 낱말이 없는 것이 하나씩 더 있다
+    Check(wood == 17 && woodOk == wood && water == 10 && waterOk == water && mud == 1, msg);
+    std::printf("  nine-defects 4-d1 — 바닥 정의: 145개 재질 분포 · 이름(Wood·Water·Mud)과 재질 대조\n");
+}
+
 // ── nine-defects 4-c3b3a — soundset.bin 읽기(`nox_xxx_parseSoundSetBin_424170` · `nox_xxx_parseString_409470`) ─────────
 void TestSoundSetParse() {
     auto bytes = [](const char* s) { return std::vector<uint8_t>(s, s + std::strlen(s)); };
@@ -22862,6 +22895,7 @@ int main() {
     TestSwingSounds();
     TestMaterialParse();
     TestSoundSetParse();
+    TestFloorDefs();
     TestPlayerHitSound();
     TestPetHitSound();
     TestMissileHitterRoot();

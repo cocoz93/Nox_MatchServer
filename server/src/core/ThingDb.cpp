@@ -90,10 +90,15 @@ void SkipImageRefs8(Cur& c) {
 }
 
 // floor.go
-void SkipFLOR(Cur& c) {
+// ★ 09-23 nine-defects 4-d1 — 이름과 재질(field_36)을 담는다(`GAME1.c:1067~1093`: 4 건너뜀 · 이름 · 색 3바이트 · field_36 i32 · field_40 i32 · field_57)
+void SkipFLOR(Cur& c, std::vector<FloorDefRaw>* out) {
     c.Skip(4);
-    c.SkipBytes8();
-    c.Skip(3 * 1 + 2 * 4 + 1);
+    FloorDefRaw d;
+    d.name = c.Str8();
+    c.Skip(3 * 1);
+    d.material = static_cast<int32_t>(c.U32());
+    c.Skip(4 + 1);
+    if (out && !c.bad) out->push_back(d);
     const int n1 = c.U8(), n2 = c.U8(), n3 = c.U8();
     c.Skip(1);
     const int n = n1 * n2 * n3;
@@ -641,6 +646,7 @@ const SoundSet* FindSoundSet(const std::vector<SoundSet>& sets, const std::strin
 bool ThingDb::Load(const std::string& path) {
     things_.clear();
     walls_.clear();
+    floors_.clear();
     sounds_.clear();
     error_.clear();
     for (auto& a : playerAnims_) a = PlayerAnimFrames{};
@@ -658,7 +664,7 @@ bool ThingDb::Load(const std::string& path) {
         if (c.Eof()) break;
         const std::string sect = c.Sect();
         if (c.bad) break;
-        if (sect == "FLOR") SkipFLOR(c);
+        if (sect == "FLOR") SkipFLOR(c, &floors_);
         else if (sect == "EDGE") SkipEDGE(c);
         else if (sect == "WALL") SkipWALL(c, &walls_);
         else if (sect == "AUD ") SkipAUD(c, &sounds_);

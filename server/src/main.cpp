@@ -826,6 +826,14 @@ int main(int argc, char** argv) {
                 srv.SetNamedType(nm, w);
                 std::printf("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");
             }
+            // ★ 09-23 nine-defects 4-d1 — 바닥 정의(FLOR)의 재질 분포. 발소리가 이 값으로 갈린다(`object_update.go:164~220`)
+            {
+                std::map<int32_t, int> byMat;
+                for (const auto& f : tdb.Floors()) ++byMat[f.material];
+                std::printf("[바닥] 정의 %zu개 · 재질별:", tdb.Floors().size());
+                for (const auto& kv : byMat) std::printf(" 0x%x×%d", static_cast<unsigned>(kv.first), kv.second);
+                std::printf("\n");
+            }
             // ★ 4-c3 — 주문이 **날리는** 것(불덩이 셋). 빠르기·깃발·닿음 인자를 전부 thing.bin 에서 읽는다.
             //   `COLLIDE = SparkExplosionCollide 192` 의 숫자가 터짐 크기를 다 정하므로 **짐작하지 않는다**.
             //   ★ 묶음 6-g(3b) — **크리처가 쏘는 것**도 같은 자리에서 읽는다.

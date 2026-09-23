@@ -73,6 +73,12 @@ struct WallDefRaw {
     std::string name;
     uint32_t flags = 0;
 };
+// ★ 09-23 nine-defects 4-d1 — 바닥 정의(thing.bin FLOR · `nox_thing_read_FLOR_411540` `GAME1.c:1060~1108`). 순번 = 바닥 번호(최대 176).
+//   `material` = `field_36` — 발소리가 이 값으로 갈린다(`object_update.go:164~220` — 2·0x4000 소리 없음 · 8 나무 · 64 흙 · 128 물 · 0x400 눈 · 0x800 진흙 · 그 밖 돌)
+struct FloorDefRaw {
+    std::string name;
+    int32_t material = 0;
+};
 
 // 사람 애니 한 칸 — PlayerDraw STAT 섹션(2026-09-13 묶음 3-a).
 //   ⭕ 정답지 `server/object_type.go:1065~1080` — 이름을 playerAnimTypes 순번으로 바꿔
@@ -226,6 +232,7 @@ public:
     const std::vector<SpellRaw>& Spells() const { return spells_; }
     // ── 벽 재질 (WALL 섹션) ── 맵 벽 재질 바이트 = 이 순번
     const std::vector<WallDefRaw>& Walls() const { return walls_; }
+    const std::vector<FloorDefRaw>& Floors() const { return floors_; }   // ★ 4-d1
     const std::vector<SoundDefRaw>& Sounds() const { return sounds_; }
     // ── 능력 (ABIL 섹션) ── 능력 소리 셋
     const std::vector<AbilityRaw>& Abilities() const { return abilities_; }
@@ -252,6 +259,7 @@ private:
     std::vector<ThingInfo> things_;
     std::vector<SpellRaw> spells_;
     std::vector<WallDefRaw> walls_;
+    std::vector<FloorDefRaw> floors_;   // ★ 4-d1
     std::vector<SoundDefRaw> sounds_;
     std::vector<AbilityRaw> abilities_;
     PlayerAnimFrames playerAnims_[kPlayerAnimTypeCount];
