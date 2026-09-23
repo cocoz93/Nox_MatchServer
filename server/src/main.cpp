@@ -1104,7 +1104,14 @@ int main(int argc, char** argv) {
                 //   아이템이 아니라 여태 조용히 버려졌다. 이것들은 집는 게 아니라
                 //   **다루는** 것이다 — 문은 다가가면 열리고, 오벨리스크는 옆에 서면 마나가 찬다.
                 {
-                    const bool isDoor = objs[i].type.find("Door") != std::string::npos;
+                    // ★ 09-23 nine-defects 1-c — 문은 **이름이 아니라 클래스 DOOR(0x80)** 로 가른다.
+                    //   이름에 "Door" 가 든 것만 실었더니 Estate 의 `Dilapidated`(DOOR+IMMOBILE · DoorDraw/DoorUpdate)가
+                    //   빠졌다 — 맵의 `DoorCollide` 7 · 실은 문 6(09-23 부팅 로그). 사람 판 「문을 그냥 통과」
+                    //   (우리가 아는 문에 142 안으로 간 적 없음)의 후보다. 문 몸 싣기(아래 「문 종류도 싣는다」)도 같은 기준이다
+                    const bool isDoor = (nox::ParseObjectClass(ti->classRaw) & 0x80) != 0;
+                    if (!isDoor && objs[i].type.find("Door") != std::string::npos)   // 옛 기준과 갈리는 것은 드러낸다
+                        std::printf("[문아님] 이름에 Door 가 있지만 클래스 DOOR 가 아니다 — %s (%d,%d)\n",
+                                    objs[i].type.c_str(), static_cast<int>(objs[i].x), static_cast<int>(objs[i].y));
                     const bool isObelisk = objs[i].type.find("Obelisk") != std::string::npos;
                     // ★ 2026-09-15 묶음 9-c — **밟는 판**(`PressurePlate`).
                     //   ⚠ 보이지 않는 `Trigger`(735)는 정답지도 **아무것도 안 보내므로** 안 싣는다
@@ -1137,8 +1144,8 @@ int main(int argc, char** argv) {
                             wp.fine = static_cast<uint8_t>((static_cast<int>(wp.angle) * 8) & 255);
                             // ⚠ 여는 거리는 **반지름을 같이 찍는다** — 진짜로 문 몸에서 나온 42 와
                             //   못 찾아 떨어진 기본값 42 가 숫자로는 똑같아서 구분이 안 된다
-                            std::printf("[문각도] 번호 %04x (%d,%d) — 닫힘 %u · 열림 %u · 여는거리 %.0f(문반지름 %s)\n",
-                                        (unsigned)((objs[i].extent & 0x7FFFu) | 0x8000u),
+                            std::printf("[문각도] 번호 %04x %s (%d,%d) — 닫힘 %u · 열림 %u · 여는거리 %.0f(문반지름 %s)\n",
+                                        (unsigned)((objs[i].extent & 0x7FFFu) | 0x8000u), objs[i].type.c_str(),
                                         static_cast<int>(objs[i].x), static_cast<int>(objs[i].y),
                                         (unsigned)wp.angle, (unsigned)nox::DoorOpenAngle(wp.angle),
                                         ti && ti->radius > 0.0f ? nox::kBodyRadius + ti->radius : nox::kDoorOpenDist,
