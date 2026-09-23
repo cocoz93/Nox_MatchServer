@@ -1055,6 +1055,27 @@ void CastAndWait(nox::Server& srv, const std::string& who, uint8_t spell, bool o
         srv.Tick(ms, out);
     }
 }
+// ★ nine-defects 4-c3b2 — 재질표를 「모두 쇠(0x10) · NewPlayer(713)만 살(0x1)」로 넣는다.
+//   사람이 맞으면 오브젝트가 때린 것 = 862(MetalHitFlesh) · 사람 몸이 때린 것 = 867(FleshHitFlesh)이라
+//   「무엇이 때렸나」까지 가른다(재질표가 없으면 둘 다 「표없음」이라 못 가른다)
+void AllMetalButPlayer(nox::Server& srv) {
+    std::vector<uint32_t> mat(4096, 0x10u); std::vector<uint8_t> breast(4096, 0);
+    mat[713] = 0x1;
+    srv.SetMaterialTables(mat, breast, 713);
+}
+// 사람이 맞는 소리가 전부 「냄」이고, 마지막 것이 오브젝트가 때린 소리(862)인가
+bool PlayerHitByObject(const nox::Server& srv) {
+    return srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::Played) == srv.hitSoundCalls() && srv.lastHitSound() == 862;
+}
+// 실패 글에 사람 맞는 소리 칸을 붙인다(무엇이 어긋났는지 바로 보이게)
+const char* HitSoundMsg(const nox::Server& srv, const char* what) {
+    static char buf[320];
+    std::snprintf(buf, sizeof(buf), "%s — 부름 %llu · 냄 %llu · 표없음 %llu · 없음 %llu · 안옮김 %llu · 마지막 %u", what, srv.hitSoundCalls(),
+                  srv.hitSoundWay(nox::HitSoundWay::Played), srv.hitSoundWay(nox::HitSoundWay::TableEmpty),
+                  srv.hitSoundWay(nox::HitSoundWay::NoHitter), srv.hitSoundWay(nox::HitSoundWay::NotPorted),
+                  static_cast<unsigned>(srv.lastHitSound()));
+    return buf;
+}
 // ★ 4-a — 소환 한 번. 소환은 컨저러 주문(깃발 0x4000000)이고 thing.bin 에 SUMMON_BOMBER(79) 정의가 없어 임프(87)를 부른다.
 //   시전 틀(음소 7개 × 3틱)을 거치므로 서버 시계를 이어서 틱을 돌린다.
 void SummonImp(nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out) {
@@ -3426,6 +3447,7 @@ void TestKillArmorCollide() {
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         RegImpShot(srv);
         Check(srv.pets() == 1, "소환수가 안 불려 나옴(시험 전제)");
+        AllMetalButPlayer(srv);
         srv.Damage(b, nox::HealthOnline(nox::CharClass::Wizard) - 1, out, "");
         srv.Tick(0, out);
         uint32_t ms = 0;
@@ -3438,6 +3460,12 @@ void TestKillArmorCollide() {
         Check(!srv.IsAlive(b), "소환수가 체력 1 짜리를 못 죽였다(시험 전제)");
         Check(mb.size() == 11 && u16(mb, 2) == 728 && mb[10] == 1 && u16(mb, 8) != 0 && u16(mb, 8) != nox::kPlayerType,
               "소환수가 죽였는데 알림이 주인·갈래 1·소환수 종류가 아님");
+        // ★ 4-c3b2 — 사람의 임프가 쏜 ImpShot 은 뿌리가 사람이라 때린 것 = ImpShot(862)
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "⑥-2 4-c3b2 임프 쏜 것 — 부름 %llu · 냄 %llu · 안옮김 %llu · 마지막 %u(862 여야)",
+                      srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played), srv.hitSoundWay(nox::HitSoundWay::NotPorted),
+                      static_cast<unsigned>(srv.lastHitSound()));
+        Check(srv.hitSoundWay(nox::HitSoundWay::Played) >= 1 && srv.lastHitSound() == 862, msg);
     }
 
     // ⑦ 방어값 — 녹음 값과 한 비트까지 · 첫 갱신에 본인에게만 한 번 · 다음 틱엔 안 보냄
@@ -6046,12 +6074,14 @@ void TestToxicCloud() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         srv.DebugAimAt(a, 1330, 1000);                       // b 곁에 놓는다(b 에서 30)
+        AllMetalButPlayer(srv);                              // ★ 4-c3b2 — 시전 전에(놓자마자 한 번 맞는다)
         CastAndWait(srv, a, 128, false, ms, out);
         Check(srv.PlacedCount() == 1, "독구름이 안 놓였다");
         const uint16_t bHp = srv.HealthOf(b);
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.HealthOf(b) < bHp, "구름 둘레 안인데 안 아팠다");
         Check(srv.DebugPoisonOf(b) > 0, "적인데 구름이 독을 안 얹었다");
+        Check(PlayerHitByObject(srv), HitSoundMsg(srv, "① 4-c3b2 독구름에 맞는 소리의 때린 것이 구름(862)이 아니다"));
     }
 
     // ② 둘레 밖 사람은 안 맞는다
@@ -6199,6 +6229,7 @@ void TestBurn() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         srv.DebugAimAt(a, 1300, 1000);                       // b 발밑
+        AllMetalButPlayer(srv);                              // ★ 4-c3b2 — 시전 전에(놓자마자 한 번 맞는다)
         CastAndWait(srv, a, 5, false, ms, out);
         Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다");
         const uint16_t bHp = srv.HealthOf(b);
@@ -6209,6 +6240,7 @@ void TestBurn() {
         Check(lost == 20, "불꽃 피해가 틱마다 1 이 아니다");
         Check(srv.DebugLastDamageType(b) == 1, "피해 종류가 불꽃(1)이 아니다");
         Check(srv.DebugPoisonOf(b) == 0, "불꽃이 독을 얹었다(불꽃은 독이 아니다)");
+        Check(PlayerHitByObject(srv) && srv.hitSoundCalls() >= 20, HitSoundMsg(srv, "① 4-c3b2 놓인 불꽃에 맞는 소리의 때린 것이 불꽃(862)이 아니다"));
     }
 
     // ② 닿음 둘레는 **불꽃 6 + 몸 10 = 16** — 그 밖은 안 탄다
@@ -6361,6 +6393,7 @@ void TestFireball() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
+        AllMetalButPlayer(srv);
         const uint16_t bHp = srv.HealthOf(b);
         CastAndWait(srv, a, 27, false, ms, out);
         Check(srv.missiles() == 1, "불덩이가 안 날았다");
@@ -6371,6 +6404,7 @@ void TestFireball() {
         const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
         if (lost != 127) std::printf("  [불덩이] 직격에 잃은 값 %d — 127(255>>1) 이어야 한다\n", lost);
         Check(lost == 127, "직격 피해가 양>>1 이 아니다");
+        Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 1, "① 4-c3b2 불덩이 직격의 때린 것이 불덩이(862)가 아니다");
     }
 
     // ② **세기 1 은 Fireball(695)·양 128 → 64** — 종류표가 세기를 타는지 가른다
@@ -6399,6 +6433,7 @@ void TestFireball() {
         const std::string c = "10.9.5.3:9503";
         srv.DebugEnterGame(c, 762, false, nox::CharClass::Warrior);
         srv.DebugMoveTo(c, 1300, 1040);                      // 터지는 자리에서 40
+        AllMetalButPlayer(srv);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
@@ -6408,6 +6443,8 @@ void TestFireball() {
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
         const int lost = static_cast<int>(cHp) - static_cast<int>(srv.HealthOf(c));
         Check(lost > 0, "둘레 안인데 안 깎였다");
+        // b 직격 하나 + c 둘레 하나 — 둘 다 때린 것 = 불덩이(둘레는 who = 불덩이 자신)
+        Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 2, "③ 4-c3b2 불덩이 둘레 피해의 때린 것이 불덩이(862)가 아니다");
         // ★ **양까지 잰다.** 터진 자리는 틱마다 달라지므로 `93` 이 실어 보낸 좌표를 그대로 읽어
         //   기대값을 그 자리에서 셈한다 — 이렇게 해야 안쪽 15·바깥 85·감쇠식이 각각 걸린다.
         const auto toC = FlattenTo(out, c);
@@ -6753,6 +6790,7 @@ void TestFist() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         srv.DebugAimAt(a, 1300, 1000);
+        AllMetalButPlayer(srv);
         const uint16_t bHp = srv.HealthOf(b);
         CastAndWait(srv, a, 29, false, ms, out);
         Check(srv.PlacedCount() == 1, "주먹이 안 떴다");
@@ -6769,6 +6807,7 @@ void TestFist() {
         Check(hitTick >= 0, "주먹이 22틱 안에 안 닿았다(중력·떨어지는 속도가 빠졌나)");
         // 세기 3 → LargeFist · 피해 200. 워리어 체력 150 이라 **한 대에 죽는다**
         Check(srv.HealthOf(b) == 0, "세기 3 주먹 한 대에 안 죽었다(피해 표가 세기를 안 타나)");
+        Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 1, "① 4-c3b2 주먹에 맞는 소리의 때린 것이 주먹(862)이 아니다");
     }
 
     // ①b **되튄다** — 땅에 닿은 뒤 다시 떠오른다(되튐 9.0 × 0.1)
@@ -6994,10 +7033,12 @@ void TestCleansingFlame() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
+        AllMetalButPlayer(srv);
         const uint16_t bHp = srv.HealthOf(b);
         CastAndWait(srv, a, 10, true, ms, out);
         for (int t = 0; t < 15; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.HealthOf(b) < bHp, "붉은 정화의 불꽃이 닿았는데 안 아팠다");
+        Check(PlayerHitByObject(srv), "② 4-c3b2 정화의 불꽃에 맞는 소리의 때린 것이 불꽃(862)이 아니다");
     }
 
     // ③ **파란 불꽃은 마나를 깎는다 — 체력은 안 깎는다**
@@ -7257,6 +7298,28 @@ void TestPixieSwarm() {
         Check(srv.missiles() > 0, "픽시가 없다(시험 전제)");
         const float px = srv.DebugMissileX(0);
         Check(std::abs(px - 1000.0f) <= 15.0f, "픽시 첫 자리가 시전자 둘레(14)가 아니다");
+    }
+
+    // ④b ★ nine-defects 4-c3b2 — 픽시가 적에 닿으면 종류 11 피해 · 맞는 소리의 때린 것 = 픽시(`GAME3_3.c:4349` a3 = a1)
+    {
+        nox::Server srv; mk(srv);
+        const std::string b = "10.9.10.2:9012";
+        srv.DebugEnterGame(b, 811, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(b, 1300, 1000);
+        AllMetalButPlayer(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        Check(srv.missiles() > 0, "④b 픽시가 없다(시험 전제)");
+        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugMoveTo(b, static_cast<int>(srv.DebugMissileX(0)), static_cast<int>(srv.DebugMissileY(0)));
+        for (int t = 0; t < 10 && srv.HealthOf(b) == bHp; ++t) { ms += 34; srv.Tick(ms, out); }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "④b 픽시 닿음 — b 체력 %u→%u · 부름 %llu · 냄 %llu · 마지막 %u(862 여야)", bHp, srv.HealthOf(b),
+                      srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played), static_cast<unsigned>(srv.lastHitSound()));
+        Check(srv.HealthOf(b) < bHp && PlayerHitByObject(srv), msg);
     }
 
     // ⑤ 수명(30~90초)이 다하면 사라진다 — 90초는 2,700틱
@@ -13975,6 +14038,8 @@ void TestHarpoon() {
         for (int t = 0; t < 30 && srv.DebugHarpoonTarget(a).empty(); ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.DebugHarpoonTarget(a) == b, "적에게 안 꽂혔다");
         Check(srv.HealthOf(b) == hp0 - 1, "꽂히며 피해 1 을 안 줬다");
+        // ★ 4-c3b2 — 재질표가 없는 판이라 때린 것(작살 화살)은 「표없음」으로 드러난다(안옮김·없음이 아니다)
+        Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1, "② 4-c3b2 작살에 때린 것(화살)이 안 넘어갔다");
         Check(srv.missiles() >= 1, "꽂혔는데 화살이 사라졌다");
     }
 
@@ -14525,6 +14590,7 @@ void TestMapHazard() {
         b.mass = 1e10f;
         b.contactDmgAmount = amount;
         b.contactDmgType = 1;                                // DAMAGE_FLAME
+        b.wireType = 950;                                    // ★ 4-c3b2 — 시험용 종류 번호(맞는 소리의 때린 것)
         return b;
     };
     auto mk = [&](nox::Server& srv, float fx, float fy, uint8_t amount) {
@@ -14546,6 +14612,7 @@ void TestMapHazard() {
     // ② **불 위에 서 있으면 틱마다 양>>1 씩 탄다**(양 3 → 1)
     {
         nox::Server srv; mk(srv, 1003, 1000, 3);
+        AllMetalButPlayer(srv);
         std::vector<nox::OutPacket> out;
         const int hp0 = srv.HealthOf(a);
         uint32_t ms = 0;
@@ -14554,6 +14621,7 @@ void TestMapHazard() {
         std::snprintf(msg, sizeof(msg), "② 불 위 6틱 — 닿음 부름 %llu(6 이어야) · 줄어든 체력 %d(6 이어야)",
                       srv.contactDamageHits(), hp0 - srv.HealthOf(a));
         Check(srv.contactDamageHits() == 6 && hp0 - srv.HealthOf(a) == 6, msg);
+        Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 6, "② 4-c3b2 맵 불에 맞는 소리의 때린 것이 불(862)이 아니다");
     }
     // ③ **양 1 짜리(SmallFlameImmobile)는 홀수 프레임에만 1** — 부름은 틱마다, 피해는 절반
     {
@@ -15774,6 +15842,40 @@ void TestPetHitSound() {
               srv.defHitSoundWay(nox::DefHitSoundWay::TableEmpty) == 1, msg);
     }
     std::printf("  nine-defects 4-c3a — 소환수 맞는 소리: 부서지는 재질 표 · 살 862 · 돌·나무 부서짐 · 쇠 861 · NONE 없음 · 때린 것 NONE 거름 · 근접 아님 세기만\n");
+}
+
+// ── nine-defects 4-c3b2 — 날아가는 것이 맞힐 때, 때린 이(주인 사슬 뿌리)가 몬스터면 아직 안 옮김(4-c3b3) ─────────
+//   정답지는 그때 몬스터의 소리 모음(+488 · +32)을 먼저 본다(`GAME3_2.c:7252~7254`). 사람의 소환수가 쏜 것은 뿌리가 사람이라
+//   때린 것 = 발사체. 같은 판에서 주인만 바꿔 두 경우를 대조한다
+void TestMissileHitterRoot() {
+    const std::string a = "10.7.24.1:7241";
+    const std::string b = "10.7.24.2:7242";
+    for (int owned = 0; owned < 2; ++owned) {
+        nox::Server srv;
+        RegImpShot(srv);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        srv.DebugEnterGame(a, 890, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 891, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+        AllMetalButPlayer(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugSpawnPet(1328, 1000.0f, 1100.0f, owned ? a : std::string());   // a 아래 100 — 맵 몬스터 또는 a 의 소환수
+        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugCreatureShoot(0, "ImpShot", 1100.0f, 1000.0f, out);
+        Check(srv.missiles() == 1, owned ? "소환수가 안 쐈다(시험 전제)" : "맵 몬스터가 안 쐈다(시험 전제)");
+        for (int t = 0; t < 20 && srv.HealthOf(b) == bHp; ++t) { ms += 34; srv.Tick(ms, out); }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "%s — b 체력 %u→%u · 부름 %llu · 냄 %llu · 안옮김 %llu · 마지막 %u", owned ? "사람의 소환수" : "맵 몬스터",
+                      bHp, srv.HealthOf(b), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
+                      srv.hitSoundWay(nox::HitSoundWay::NotPorted), static_cast<unsigned>(srv.lastHitSound()));
+        if (owned) Check(srv.HealthOf(b) < bHp && PlayerHitByObject(srv), msg);
+        else Check(srv.HealthOf(b) < bHp && srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::NotPorted) == srv.hitSoundCalls(), msg);
+    }
+    std::printf("  nine-defects 4-c3b2 — 날아가는 것: 맵 몬스터가 쏜 것은 안옮김 · 사람의 소환수가 쏜 것은 발사체 재질(862)\n");
 }
 
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
@@ -18608,6 +18710,7 @@ void TestShootingTrap() {
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
         srv.DebugSetPos(a, 1060, 1000);                   // 가까이 — 한두 틱에 닿는다
+        AllMetalButPlayer(srv);
         const int before = static_cast<int>(srv.HealthOf(a));
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
@@ -18616,6 +18719,8 @@ void TestShootingTrap() {
         Check(srv.MissileCount() == 0, "화살이 안 사라졌다");
         Check(static_cast<int>(srv.HealthOf(a)) < before, "피해가 안 들어갔다");
         Check(srv.DebugLastDamageType(a) == 3, "피해 종류가 3 이 아니다");
+        // ★ 4-c3b2 — 덫 화살은 주인 사슬 뿌리가 몬스터가 아니다 → 때린 것 = 화살
+        Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 1, "⑨ 4-c3b2 덫 화살의 때린 것이 화살(862)이 아니다");
     }
 
     std::printf("  9-b — 쏘는 덫: 30틱마다 살피고 겨누면 30틱마다 한 발 · ±350 · 보는 쪽만 · "
@@ -22524,6 +22629,7 @@ int main() {
     TestMaterialParse();
     TestPlayerHitSound();
     TestPetHitSound();
+    TestMissileHitterRoot();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

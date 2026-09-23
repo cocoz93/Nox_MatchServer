@@ -216,7 +216,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.jumpForceTicks(), srv.jumpHeldTicks(), srv.jumpLanded(), srv.airborneOffIdle(), srv.recoilBlockedAirborne(),
                 srv.equakeSkipAirborne(), srv.spellRefusedAirborne());   // ★ 3-b
     // ★ 4-a — 휘두르기 소리. 판정 수(근접)가 분모 — 빗나간 판정마다 그 갈래 소리 하나(망치는 판정마다 882)
-    // ★ 4-c2 — 사람이 맞을 때 소리 갈래(부름 = 합 · 「안옮김」 = 때린 것을 아직 안 넘기는 자리 — 날아가는 것·몬스터, 4-c3b2·b3 몫)
+    // ★ 4-c2 — 사람이 맞을 때 소리 갈래(부름 = 합 · 「안옮김」 = 때린 것을 아직 안 넘기는 자리 — 때린 이가 몬스터(4-c3b3 몫) · 종류 모르는 오브젝트)
     using HW = nox::HitSoundWay;
     std::printf("[휘두름] 판정 %llu · 소리부름{879주먹 %llu·880롱소드 %llu·881칼 %llu·882망치 %llu·883도끼 %llu·884철퇴 %llu}"
                 " · 사람맞는소리 %llu%s = {냄 %llu·표없음 %llu·때린것없음 %llu·안옮김 %llu}\n",
@@ -1366,6 +1366,7 @@ int main(int argc, char** argv) {
                     if (b.shape == 3) nox::Server::CalcBox(b, t2->boxW, t2->boxH);
                     b.flags = fl; b.cls = cl;
                     b.mass = 1e10f;
+                    b.wireType = w;                                // ★ 4-c3b2 — 맵 불에 맞을 때 「때린 것」 재질
                     // ★ 09-23 nine-defects 1-d — 닿음 피해(`collideDamageLoad_536E10`): 첫 칸 = 양(u8 로 자름) · 둘째 칸 = 종류 이름.
                     //   이름을 못 찾으면(18) 정답지는 읽기 실패로 본다 — 우리는 피해를 안 싣고 드러낸다
                     if (t2->collideFn == "DamageCollide") {
@@ -1573,6 +1574,14 @@ int main(int argc, char** argv) {
                 for (const auto& ms : nox::kMonsters) {
                     const uint16_t w = tdb.WireByName(ms.name);
                     std::printf(" %s=0x%x", ms.name, w < matByWire.size() ? matByWire[w] : 0u);
+                }
+                // ★ 4-c3b2 — 날아가는 것·놓인 것·맵 불이 맞히면 이 재질이 「때린 것」이다. NONE(0x4000)이면 사람은 표에 조합이 없어 소리 없음 · 소환수는 거름
+                std::printf(" · 때린 물건:");
+                for (const char* nm : { "HarpoonBolt", "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "MercArcherArrow", "Pixie",
+                                        "ToxicCloud", "SmallFist", "MediumFist", "LargeFist", "MediumFlame", "FlameCleanse", "BlueFlameCleanse",
+                                        "SmallFlameImmobile", "MediumFlameImmobile", "FlameImmobile" }) {
+                    const uint16_t w = tdb.WireByName(nm);
+                    std::printf(" %s=%s0x%x", nm, w ? "" : "⚠없음 ", w < matByWire.size() ? matByWire[w] : 0u);
                 }
                 std::printf("\n");
                 srv.SetMaterialTables(std::move(matByWire), std::move(breastByWire), npWire);

@@ -1072,7 +1072,8 @@ void Server::ContactCollide(const ContactRef& a1, const ContactRef& a2, std::vec
     }
     const int dmg = (o.contactDmgAmount == 1 && (frame_ & 1u)) ? 1 : (o.contactDmgAmount >> 1);
     ++contactDamageHits_;
-    HurtTarget(t, dmg, out, std::string(), o.contactDmgType, nullptr);   // 주인 없는 불 — 피해 임자 없음
+    // ★ 4-c3b2 — 때린 것 = 불 자신(a3 = a1 · `GAME3_3.c:3820`)
+    HurtTarget(t, dmg, out, std::string(), o.contactDmgType, nullptr, HitterObj(o.wireType));   // 주인 없는 불 — 피해 임자 없음
 }
 
 void Server::CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out) {
@@ -8686,7 +8687,8 @@ bool Server::HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPa
     AttackSrc src;
     src.x = m.posX; src.y = m.posY;
     src.byMonsterType = m.type;
-    HurtTarget(targ, kHarpoonDamage, out, m.owner, 11, &src);      // DamageImpact = 11
+    // ★ 4-c3b2 — 때린 것 = 작살 화살(Go `spell_harpoon.go:172` CallDamage(u5, bolt, …))
+    HurtTarget(targ, kHarpoonDamage, out, m.owner, 11, &src, HitterMissile(m));      // DamageImpact = 11
     if (!TargetIsEnemy(own, targ)) {                         // 적이 아니면 피해만 주고 끊긴다
         touch(HarpoonTouch::NotEnemy);
         HarpoonBreak(own, /*emitSound=*/false, HarpoonEnd::NotEnemy, out);
@@ -11310,7 +11312,7 @@ void Server::UpdatePlaced(std::vector<OutPacket>& out) {
                 if (dx * dx + dy * dy > r2) return;
                 if (!MapTraceRay(tx, ty, o.x, o.y, 0x5)) return;     // 벽 뒤는 안 닿는다
                 const int dmg = 3 + static_cast<int>(NextRandom(8));  // randomInt(3,10)
-                HurtTarget(t, dmg, out, o.owner, 5, nullptr);         // 피해 종류 5(독)
+                HurtTarget(t, dmg, out, o.owner, 5, nullptr, HitterObj(o.type));   // 피해 종류 5(독) · ★ 4-c3b2 a3 = 구름(`GAME4_3.c:6892`)
                 bool enemy = false;                                   // 놓은 이의 적이면 독도
                 auto oi = sessions_.find(o.owner);
                 if (oi != sessions_.end()) enemy = TargetIsEnemy(oi->second, t);
@@ -11380,7 +11382,7 @@ void Server::UpdatePlaced(std::vector<OutPacket>& out) {
                 auto touch = [&](const Target& t, float tx, float ty) {
                     const float dx = tx - o.x, dy = ty - o.y;
                     if (dx * dx + dy * dy > rr) return;
-                    HurtTarget(t, o.damage, out, o.owner, 2, nullptr);   // 종류 2 = 짓눌림
+                    HurtTarget(t, o.damage, out, o.owner, 2, nullptr, HitterObj(o.type));   // 종류 2 = 짓눌림 · ★ 4-c3b2 a3 = 주먹(`GAME3_3.c:4922`)
                 };
                 std::vector<std::string> who;
                 for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
@@ -11647,7 +11649,7 @@ void Server::PlacedCollide(PlacedObj& o, std::vector<OutPacket>& out) {
             PlayerManaSub(it->second, static_cast<int>(o.dmgAmount));
             return;
         }
-        HurtTarget(t, dmg, out, o.owner, o.dmgType, nullptr);
+        HurtTarget(t, dmg, out, o.owner, o.dmgType, nullptr, HitterObj(o.type));   // ★ 4-c3b2 a3 = 놓인 것(`GAME3_3.c:3820`)
     };
     std::vector<std::string> who;
     for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
@@ -11802,9 +11804,11 @@ void Server::FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPa
     if (amount <= 0) return;
     PushUnitsAround(m.posX, m.posY, static_cast<float>(static_cast<double>(amount) * 0.66666669), 0.0f, 50.0f);
     const int dmg = amount >> 1;
-    if (!hit.none()) HurtTarget(hit, dmg, out, m.owner, 1, nullptr);
+    // ★ 4-c3b2 — 직격의 때린 것 = 불덩이(a3 = a1 · `GAME3_3.c:4181`) · 둘레 피해는 who = 불덩이 자신(`:4185·4191` v12 = a1)이라
+    //   때린 이도 불덩이다 — 몬스터가 쏜 불덩이여도 둘레 쪽은 몬스터 소리 모음을 안 본다
+    if (!hit.none()) HurtTarget(hit, dmg, out, m.owner, 1, nullptr, HitterMissile(m));
     DamageUnitsAround(m.posX, m.posY, static_cast<float>(static_cast<double>(amount) * 0.33333334), 15.0f,
-                      dmg, 1, m.owner, hit, out);
+                      dmg, 1, m.owner, hit, out, HitterObj(m.type));
     const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
     const uint8_t fx[6] = {
         static_cast<uint8_t>(Op::FX_SPARK_EXPLOSION),
@@ -12711,7 +12715,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         auto ownIt = sessions_.find(m.owner);
                         const bool enemy = (ownIt != sessions_.end()) && TargetIsEnemy(ownIt->second, tgt);
                         if (enemy) {
-                            HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, nullptr);
+                            HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, nullptr, HitterMissile(m));   // ★ 4-c3b2 a3 = 픽시(`GAME3_3.c:4349`)
                             DestroyMissile(i, out);
                             erased = true;
                         }
@@ -12730,7 +12734,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         // ★ 09-20 — 뿌리가 몬스터인가: **크리처가 쏜 화살**만 그렇다.
                         //   덫 화살은 `ownerPet` 이 −1 이라 뿌리가 몬스터가 아니다
                         src.rootIsMonster = MissileRootIsMonster(m);
-                        HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, &src);
+                        HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, &src, HitterMissile(m));   // ★ 4-c3b2 a3 = 발사체(`GAME3_3.c:3340`)
                         DestroyMissile(i, out);
                         erased = true;
                         handled = true;
@@ -12747,7 +12751,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         // ★ 09-20 — **크리처가 쏜 화살**만 뿌리가 몬스터다. 덫 화살은 `ownerPet` 이 −1 이라
                         //   몬스터에게 적이 된다(⑮). 위 갈래 11 과 같은 셈
                         src.rootIsMonster = MissileRootIsMonster(m);
-                        HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 3, &src);
+                        HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 3, &src, HitterMissile(m));   // ★ 4-c3b2 a3 = 화살(`GAME3_3.c:5329`) · 몬스터가 쏜 것은 b3
                         DestroyMissile(i, out);
                         erased = true;
                         handled = true;

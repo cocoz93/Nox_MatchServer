@@ -209,7 +209,7 @@ enum class HitSoundWay : uint8_t {
     Played = 0,    // 표에 번호가 있어 냈다
     TableEmpty,    // 맞는 쪽 × 때린 것 재질 조합이 표에 없다(`Sub_532930` 이 그냥 돌아감)
     NoHitter,      // 때린 물건도 때린 이도 없다(`obj2 == nil`)
-    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리(4-c3b 표 ㉡ 날아가는 것 · ㉢ 몬스터) — 세기만
+    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리(4-c3b 표 ㉢ — 때린 이가 몬스터) · 종류를 모르는 오브젝트 — 세기만
     Count
 };
 constexpr size_t kHitSoundWayCount = static_cast<size_t>(HitSoundWay::Count);
@@ -220,7 +220,7 @@ enum class DefHitSoundWay : uint8_t {
     Breakable,     // 맞는 쪽이 나무·돌·흙(8·32·64)이고 체력이 있어 「부서지는 소리」(`Sub_532EC0`)
     Filtered,      // 때린 것이 없거나 재질 NONE(0x4000)이거나, 피해 종류가 0·2·3·10·11 이 아님
     TableEmpty,    // 표에 그 조합이 없다
-    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리(4-c3b 표 ㉡·㉢) — 세기만
+    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리(4-c3b 표 ㉢) · 종류를 모르는 오브젝트 — 세기만
     Count
 };
 constexpr size_t kDefHitSoundWayCount = static_cast<size_t>(DefHitSoundWay::Count);
@@ -1333,6 +1333,7 @@ public:
         //   양 0 이면 닿음 피해가 없다. 맵에 놓인 불(`FlameImmobile` 류)이 이것이다
         uint8_t contactDmgAmount = 0;
         uint8_t contactDmgType = 0;
+        uint16_t wireType = 0;      // ★ 4-c3b2 — 장애물의 와이어 종류. 맵 불에 맞을 때 「때린 것」 재질을 이 번호로 찾는다(0 = 모름)
     };
     enum DamageFnKind : uint8_t { kDmgDefault = 0, kDmgPlayer, kDmgSkeleton, kDmgStone, kDmgMechGolem, kDmgFlammable, kDmgBlackPowder, kDmgOther };
     static uint8_t DamageFnOf(const std::string& name) {
@@ -2052,6 +2053,10 @@ public:
     //   소환 한도처럼 「자리가 이미 차 있을 때」를 만들어야 하는 시험에 쓴다.
     void DebugSpawnPet(uint16_t type, float x, float y, const std::string& owner) {
         SpawnCreature(type, x, y, owner);
+    }
+    // ★ 4-c3b2 시험용 — 그 소환수가 `name` 발사체를 그 자리로 쏜다(AI 를 안 거친다)
+    void DebugCreatureShoot(size_t i, const char* name, float tx, float ty, std::vector<OutPacket>& out) {
+        if (i < pets_.size()) SpawnCreatureMissile(pets_[i], name, tx, ty, out);
     }
     // 시험용 — 그 사람의 소환수 체력(없으면 0). 위 손잡이가 왜 실패했는지 가르는 데 쓴다.
     uint16_t DebugOwnedPetHealth(const std::string& owner) const {
@@ -3450,6 +3455,8 @@ private:
     HitterRef HitterByAddr(const std::string& addr) const { return sessions_.count(addr) ? HitterPlayerBody() : HitterRef{}; }
     HitterRef HitterUnit(const Target& t) const { return t.addr.empty() ? HitterRef{} : HitterByAddr(t.addr); }
     static HitterRef HitterNone() { HitterRef h; h.kind = HitterRef::None; return h; }
+    // ★ 4-c3b2 — 때린 것 = 그 오브젝트 자신(날아가는 것·놓인 것·맵 불 — 정답지 a3 = a1). 종류를 모르면(0) 안 옮김으로 센다
+    static HitterRef HitterObj(uint16_t type) { HitterRef h; if (type) { h.kind = HitterRef::Type; h.type = type; } return h; }
     // 방패를 올릴 까닭(들어오는 투사체) — `GAME4_3.c:2586` monsterTestBlockShield_533E70
     bool IncomingMissile(const Session& s) const;
     // ── 죽음·부활 (묶음 3-c) ──
@@ -4079,6 +4086,9 @@ private:
     //   **때린 것이 투사체면 다르다** — 그 자리에서 `src->byMonsterType` 으로 가른다
     // 투사체의 주인 사슬 뿌리가 몬스터인가(크리처가 쏜 것만 참 · 덫 화살은 거짓)
     bool MissileRootIsMonster(const MissileObj& m) const;
+    // ★ 4-c3b2 — 날아가는 것이 맞힐 때의 「때린 것」. 때린 이(a2 = 주인 사슬 뿌리)가 몬스터면 정답지는 그 몬스터의 소리 모음을
+    //   먼저 보고 소리를 안 낼 수도 있다(`GAME3_2.c:7252~7254`) — 그건 4-c3b3 에서 옮기므로 그때까지 안 옮김으로 센다
+    HitterRef HitterMissile(const MissileObj& m) const { return MissileRootIsMonster(m) ? HitterRef{} : HitterObj(m.type); }
     bool OwnersEnemy(const std::string& a, bool aMonsterRoot, const std::string& b, bool bMonsterRoot) const;
 
     // 판 시계를 뿌린다 — `0xd3 TIMER_STATUS`. 짜임은 실측이다(PROTOCOL.md 「판 시계」).
