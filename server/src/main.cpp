@@ -191,11 +191,15 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.harpoonEnd(H::TargetDead), srv.harpoonEnd(H::TooFar), srv.harpoonEnd(H::Arrived),
                 srv.harpoonEnd(H::Lifetime), srv.harpoonEnd(H::Stuck), srv.harpoonEnd(H::NoSight),
                 srv.harpoonEnd(H::OverFlight), srv.harpoonEnd(H::AimDead), srv.harpoonEnd(H::Debug));
+    // ★ 1-d — 맵 불 같은 장애물의 닿음 피해. 옆에 전체 피해(`hurts`)를 같이 찍는다 — 0 이 「안 닿았다」인지 「못 셌다」인지 가르려고
+    //   ⚠ 「부름」은 양 1 짜리 불의 짝수 프레임(피해 0)까지 센다 — 정답지도 피해 함수를 0 으로 부른다
+    std::printf("[맵닿음] 장애물 닿음 피해 부름 %llu회 · 전체 피해 %llu회\n", srv.contactDamageHits(), srv.hurts());
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
 unsigned long long AbilityFingerprint(const nox::Server& srv) {
-    unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun() + srv.harpoonAimFound();
+    unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun() + srv.harpoonAimFound() +
+                           srv.contactDamageHits();
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));
@@ -1275,6 +1279,8 @@ int main(int argc, char** argv) {
             {
                 std::vector<nox::Server::PhysBody> obs;
                 std::map<std::string, int> obsNames;
+                std::map<std::string, int> hazardNames;   // ★ 1-d — 닿음 피해가 실린 장애물(종류(양 종류번호) 별)
+                std::vector<std::string> hazardSpots;     // ★ 1-d — 그 자리 앞 몇 개
                 for (const auto& o : objs) {
                     const uint16_t w = tdb.WireByName(o.type);
                     const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
@@ -1292,8 +1298,37 @@ int main(int argc, char** argv) {
                     if (b.shape == 3) nox::Server::CalcBox(b, t2->boxW, t2->boxH);
                     b.flags = fl; b.cls = cl;
                     b.mass = 1e10f;
+                    // ★ 09-23 nine-defects 1-d — 닿음 피해(`collideDamageLoad_536E10`): 첫 칸 = 양(u8 로 자름) · 둘째 칸 = 종류 이름.
+                    //   이름을 못 찾으면(18) 정답지는 읽기 실패로 본다 — 우리는 피해를 안 싣고 드러낸다
+                    if (t2->collideFn == "DamageCollide") {
+                        const std::string& args = t2->collideArgs;
+                        const size_t sp = args.find(' ');
+                        const int amount = std::atoi(args.c_str());
+                        const int kind = nox::DamageTypeByName(sp == std::string::npos ? std::string() : args.substr(sp + 1));
+                        if (kind >= nox::kDamageTypeCount) {
+                            std::printf("[닿음피해] ⚠ %s — 종류 이름을 못 읽음(`%s`) · 피해를 안 싣는다\n", o.type.c_str(), args.c_str());
+                        } else {
+                            b.contactDmgAmount = static_cast<uint8_t>(amount);
+                            b.contactDmgType = static_cast<uint8_t>(kind);
+                            ++hazardNames[o.type + "(" + std::to_string(static_cast<unsigned>(b.contactDmgAmount)) +
+                                          " 종류" + std::to_string(kind) + ")"];
+                            // 자리도 몇 개 적는다 — 사람이 「어느 불」인지 찾고, `--spawn-at` 으로 실물 시험을 하려면 좌표가 있어야 한다
+                            if (hazardSpots.size() < 8)
+                                hazardSpots.push_back(o.type + "(" + std::to_string(static_cast<int>(o.x)) + "," +
+                                                      std::to_string(static_cast<int>(o.y)) + ")");
+                        }
+                    }
                     obs.push_back(b);
                     ++obsNames[o.type];
+                }
+                if (!hazardNames.empty()) {
+                    size_t n = 0;
+                    for (const auto& kv : hazardNames) n += static_cast<size_t>(kv.second);
+                    std::printf("[닿음피해] 장애물 %zu개 —", n);
+                    for (const auto& kv : hazardNames) std::printf(" %sx%d", kv.first.c_str(), kv.second);
+                    std::printf(" · 자리(앞 %zu개)", hazardSpots.size());
+                    for (const auto& sp : hazardSpots) std::printf(" %s", sp.c_str());
+                    std::printf("\n");
                 }
                 std::printf("[장애물] %zu개 / %zu종 —", obs.size(), obsNames.size());
                 for (const auto& kv : obsNames) std::printf(" %sx%d", kv.first.c_str(), kv.second);

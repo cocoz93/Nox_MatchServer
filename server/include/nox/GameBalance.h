@@ -370,6 +370,21 @@ inline double MeleeRangeFor(CharClass c) {
 //     10 CLAW    · 11 IMPACT · 12 LAVA  · 13 DEATH_MAGIC · 14 PLASMA
 //     15 MANA_BOMB · 16 ZAP_RAY · 17 AIRBORNE_ELECTRIC
 //   ⚠ 위 「방어가 먹는 정도」 목록과 대조해 읽을 것 — 불(1)·용암(12)·독(5)이 방어를 안 타는 게 이 표로 설명된다.
+// ★ 09-23 nine-defects 1-d — 위 표를 **코드로** 옮긴다(`parseDamageTypeByName_4E0A00`). 전에는 주석뿐이라
+//   thing.bin 의 `DamageCollide <양> <이름>` 을 읽을 길이 없어 주문 불꽃은 값을 손으로 박았다(양 2 · 종류 1).
+//   이름은 blob 그대로 **`DAMAGE_` 가 붙는다**(`blob_587000.dat` 을 풀어 18칸 순서 확인). 못 찾으면 18
+constexpr int kDamageTypeCount = 18;
+inline int DamageTypeByName(const std::string& name) {
+    static const char* const kNames[kDamageTypeCount] = {
+        "DAMAGE_BLADE", "DAMAGE_FLAME", "DAMAGE_CRUSH", "DAMAGE_IMPALE", "DAMAGE_DRAIN", "DAMAGE_POISON",
+        "DAMAGE_DISPEL_UNDEAD", "DAMAGE_EXPLOSION", "DAMAGE_BITE", "DAMAGE_ELECTRIC", "DAMAGE_CLAW", "DAMAGE_IMPACT",
+        "DAMAGE_LAVA", "DAMAGE_DEATH_MAGIC", "DAMAGE_PLASMA", "DAMAGE_MANA_BOMB", "DAMAGE_ZAP_RAY", "DAMAGE_AIRBORNE_ELECTRIC",
+    };
+    for (int i = 0; i < kDamageTypeCount; ++i)
+        if (name == kNames[i]) return i;
+    return kDamageTypeCount;
+}
+
 enum class DamageKind {
     Physical,    // 방어합만큼 깎인다 — 근접·타격
     HalfArmor,   // 방어가 절반만

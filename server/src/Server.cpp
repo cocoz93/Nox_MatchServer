@@ -1039,6 +1039,36 @@ void Server::AddContact(const ContactRef& a, const ContactRef& b) const {
 //   ① a1 감전(22) · a2 가 DEAD|ALLOW_OVERLAP 아닌 유닛 · 적 → 버프 끄고(소리 135 → 10) ShockDamage[세기−1] 전기(9)를 a2 에(때린 이 = a1)
 //   ② a2 가 유닛·몬스터 생성기(0x20006)이고 DEAD|DESTROYED 아니고 같은 편 아니면 a1 투명(0) 끔
 //   ③ a1 사람 · a2 몬스터 생성기(0x20000) → a1 투명 끔(생성기는 8 — 지금 없음)
+// ★ 09-23 nine-defects 1-d — `nox_xxx_collideDamage_4E9430`(`GAME3_3.c:3803~3822`) — **장애물의 닿음 피해**.
+//   정답지 `nox_xxx_collide_548740` 은 부딪힌 짝마다 a.collide(b) 를 부른다. 맵에 놓인 불(`FlameImmobile` 류)의 닿음 함수가
+//   `DamageCollide <양> <종류>` 이고, 그 몫은 —
+//     · 맞는 쪽이 **체력이 있으면**(+556) · 피해 = 양 >> 1, 단 양이 1 이면 **홀수 프레임에만 1**
+//     · 때린 이 = `findParentChainPlayer(불)` — 주인 없는 불은 **자기 자신**(우리 말로 주인 없음) · 종류는 thing.bin 그대로
+//   전에는 부딪힘 짝에서 버프 몫(4FDF90)만 불러 **맵 불의 피해가 한 번도 없었다**(사람 판 「불에 들어가도 안 죽음 · 피해 0」)
+//   ⚠ 겹쳐도 되는(ALLOW_OVERLAP) 불도 짝으로 적힌다 — `BodyVsBody` 가 밀기 판단보다 먼저 `AddContact` 한다
+//   ⚠ 사람·소환수의 닿음 함수(PlayerCollide 광전사 · MonsterCollide)는 아직 없다 — 여기서는 장애물 쪽 하나다
+void Server::ContactCollide(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out) {
+    if (a1.kind != 3 || a1.idx < 0 || static_cast<size_t>(a1.idx) >= obstacles_.size()) return;
+    const PhysBody& o = obstacles_[static_cast<size_t>(a1.idx)];
+    if (o.contactDmgAmount == 0) return;
+    Target t;
+    if (a2.kind == 1) {
+        auto it = sessions_.find(a2.addr);
+        // 죽은 사람은 부르지 않는다. ⚠ 정답지는 체력 자료(+556)만 보므로 죽은 것도 부를 수 있다 — 다만 우리는
+        //   죽은 사람을 부딪힘에서 이미 뺀다(`movers` 의 collide = 살아 있음)라 이 줄로 갈리는 경우는 없다
+        if (it == sessions_.end() || it->second.respawnAtFrame != 0) return;
+        t = Target{ a2.addr, -1 };
+    } else if (a2.kind == 2) {
+        if (a2.idx < 0 || static_cast<size_t>(a2.idx) >= pets_.size()) return;
+        t = Target{ std::string(), a2.idx };
+    } else {
+        return;                                              // 장애물끼리 — 체력이 없다
+    }
+    const int dmg = (o.contactDmgAmount == 1 && (frame_ & 1u)) ? 1 : (o.contactDmgAmount >> 1);
+    ++contactDamageHits_;
+    HurtTarget(t, dmg, out, std::string(), o.contactDmgType, nullptr);   // 주인 없는 불 — 피해 임자 없음
+}
+
 void Server::CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out) {
     if (a1.kind == 3) return;                              // 장애물은 버프가 없다
     const Target t1 = (a1.kind == 1) ? Target{ a1.addr, -1 } : Target{ std::string(), a1.idx };
@@ -4553,7 +4583,15 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         for (const auto& pr : pairs) {
             // 되갚기로 소환수가 죽으면 자리 번호가 밀린다 — 그 뒤 소환수 짝은 건너뛴다(정답지는 지우기가 틱 끝이라 안 밀림)
             if (pets_.size() != petCount && (pr.first.kind == 2 || pr.second.kind == 2)) continue;
+            // ★ 09-23 1-d — 정답지 순서 그대로: a.collide(b) → 4FDF90(a,b) → b.collide(a) → 4FDF90(b,a).
+            //   닿음 피해나 버프 몫(감전 되갚기)으로 소환수가 죽으면 자리 번호가 밀리므로 그 뒤 이 짝은 그만둔다(위 줄과 같은 까닭).
+            //   ⚠ 둘째 검사는 전에 없던 것이다 — 전에는 첫 버프 몫이 소환수를 죽여도 밀린 번호로 둘째 버프 몫을 불렀다
+            auto shifted = [&] { return pets_.size() != petCount && (pr.first.kind == 2 || pr.second.kind == 2); };
+            ContactCollide(pr.first, pr.second, out);
+            if (shifted()) continue;
             CollideBuffs(pr.first, pr.second, out);
+            ContactCollide(pr.second, pr.first, out);
+            if (shifted()) continue;
             CollideBuffs(pr.second, pr.first, out);
         }
     }

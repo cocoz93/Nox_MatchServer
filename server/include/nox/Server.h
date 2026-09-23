@@ -1267,6 +1267,10 @@ public:
         uint32_t subclass = 0;
         uint8_t damageFn = 0;       // DamageFnKind
         bool hasCollide = true;     // COLLIDE 속성 — 없으면 걷기 충돌에서 빠진다(공격·피해는 받는다)
+        // ★ 09-23 nine-defects 1-d — 장애물의 **닿음 피해**(`COLLIDE = DamageCollide <양> <이름>` · `collideDamageLoad_536E10`).
+        //   양 0 이면 닿음 피해가 없다. 맵에 놓인 불(`FlameImmobile` 류)이 이것이다
+        uint8_t contactDmgAmount = 0;
+        uint8_t contactDmgType = 0;
     };
     enum DamageFnKind : uint8_t { kDmgDefault = 0, kDmgPlayer, kDmgSkeleton, kDmgStone, kDmgMechGolem, kDmgFlammable, kDmgBlackPowder, kDmgOther };
     static uint8_t DamageFnOf(const std::string& name) {
@@ -3028,6 +3032,7 @@ public:
     //   `hits()` 는 **투사체 명중만** 센다. 둘을 갈라야 「싸움이 안 붙었다」와
     //   「투사체만 안 맞았다」가 구분된다(09-10 오판의 자리).
     unsigned long long hurts() const { return hurts_; }
+    unsigned long long contactDamageHits() const { return contactDamageHits_; }   // ★ 1-d — 맵 불 같은 장애물 닿음 피해
     bool IsEquipped(const std::string& addr, uint16_t netCode) const {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return false;
@@ -3963,6 +3968,9 @@ private:
                     double& ax, double& ay, const ContactRef* ra = nullptr, const ContactRef* rb = nullptr) const;
     void AddContact(const ContactRef& a, const ContactRef& b) const;               // collSysAddCollision_548630(겹 없이)
     void CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out);   // nox_xxx_collide_4FDF90
+    // ★ 09-23 nine-defects 1-d — a1 의 **닿음 함수**(+696)를 (a1, a2) 로. 지금은 장애물의 `DamageCollide` 만 옮겼다
+    void ContactCollide(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out);
+    unsigned long long contactDamageHits_ = 0;   // 장애물 닿음 피해를 준 횟수(맵 불)
     mutable std::vector<std::pair<ContactRef, ContactRef>> contacts_;              // 이 틱 부딪힘(allocHitArray 가 비움)
     // `2d NEW_PLAYER` 한 통. 묶음 안 129바이트를 떼어 **번호와 상태만** 갈아 끼운다.
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.

@@ -14491,6 +14491,80 @@ void TestHarpoonHoming() {
     std::printf("  nine-defects 1-b — 작살 휘기: 커서 둘레 적을 잡고 다음 틱부터 튼다 · 뒤쪽은 안 잡음 · 휘던 상대 죽으면 끊김 · 잡은 뒤엔 커서 무관\n");
 }
 
+// ── nine-defects 1-d — 맵 불(장애물 `DamageCollide`)의 닿음 피해 ─────────────
+//
+// 정답지 `nox_xxx_collideDamage_4E9430`(`GAME3_3.c:3803~3822`) — 겹친 틱마다 피해 = 양 >> 1, 양이 1 이면 홀수 프레임에만 1.
+// Estate 의 불 — FlameImmobile 양 3 · Medium 2 · Small 1, 전부 종류 1(불). 사람 판 「불에 들어가도 안 죽음 · 피해 0」.
+// 불은 겹쳐도 되는 장애물(ALLOW_OVERLAP)이라 밀지는 않고 짝만 적힌다.
+void TestMapHazard() {
+    const std::string a = "10.7.12.1:7121";
+    auto flame = [](float x, float y, uint8_t amount) {
+        nox::Server::PhysBody b;
+        b.x = x; b.y = y; b.shape = 2; b.r = 8.0f;
+        b.flags = 0x8 | 0x10;                                // ALLOW_OVERLAP + SHORT(thing.bin 그대로)
+        b.cls = 0x400000;                                    // IMMOBILE
+        b.mass = 1e10f;
+        b.contactDmgAmount = amount;
+        b.contactDmgType = 1;                                // DAMAGE_FLAME
+        return b;
+    };
+    auto mk = [&](nox::Server& srv, float fx, float fy, uint8_t amount) {
+        srv.DebugEnterGame(a, 770, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.SetObstacles({ flame(fx, fy, amount) });
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+    };
+    // ① **대조 — 멀리 있는 불은 안 탄다**
+    {
+        nox::Server srv; mk(srv, 2000, 2000, 3);
+        std::vector<nox::OutPacket> out;
+        const int hp0 = srv.HealthOf(a);
+        uint32_t ms = 0;
+        for (int t = 0; t < 6; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.contactDamageHits() == 0 && srv.HealthOf(a) == hp0, "① 멀리 있는 불에 탔다");
+    }
+    // ② **불 위에 서 있으면 틱마다 양>>1 씩 탄다**(양 3 → 1)
+    {
+        nox::Server srv; mk(srv, 1003, 1000, 3);
+        std::vector<nox::OutPacket> out;
+        const int hp0 = srv.HealthOf(a);
+        uint32_t ms = 0;
+        for (int t = 0; t < 6; ++t) { ms += 34; srv.Tick(ms, out); }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "② 불 위 6틱 — 닿음 부름 %llu(6 이어야) · 줄어든 체력 %d(6 이어야)",
+                      srv.contactDamageHits(), hp0 - srv.HealthOf(a));
+        Check(srv.contactDamageHits() == 6 && hp0 - srv.HealthOf(a) == 6, msg);
+    }
+    // ③ **양 1 짜리(SmallFlameImmobile)는 홀수 프레임에만 1** — 부름은 틱마다, 피해는 절반
+    {
+        nox::Server srv; mk(srv, 1003, 1000, 1);
+        std::vector<nox::OutPacket> out;
+        const int hp0 = srv.HealthOf(a);
+        uint32_t ms = 0;
+        for (int t = 0; t < 6; ++t) { ms += 34; srv.Tick(ms, out); }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "③ 양 1 불 위 6틱 — 닿음 부름 %llu(6) · 줄어든 체력 %d(3 이어야)",
+                      srv.contactDamageHits(), hp0 - srv.HealthOf(a));
+        Check(srv.contactDamageHits() == 6 && hp0 - srv.HealthOf(a) == 3, msg);
+    }
+    // ④ **닿음 피해가 없는 장애물(양 0)은 부르지도 않는다** — 나무·덤불
+    {
+        nox::Server srv; mk(srv, 1003, 1000, 0);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        for (int t = 0; t < 6; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.contactDamageHits() == 0, "④ 양 0 장애물에 닿음 피해를 불렀다");
+    }
+    // ⑤ **피해 종류 이름표** — thing.bin 이름을 정답지 18칸 순서로
+    Check(nox::DamageTypeByName("DAMAGE_BLADE") == 0 && nox::DamageTypeByName("DAMAGE_FLAME") == 1 &&
+          nox::DamageTypeByName("DAMAGE_IMPACT") == 11 && nox::DamageTypeByName("DAMAGE_AIRBORNE_ELECTRIC") == 17,
+          "⑤ 피해 종류 이름이 정답지 칸 번호와 다르다");
+    Check(nox::DamageTypeByName("FLAME") == nox::kDamageTypeCount && nox::DamageTypeByName("") == nox::kDamageTypeCount,
+          "⑤ 없는 이름이 18(못 찾음)이 아니다");
+    std::printf("  nine-defects 1-d — 맵 불 닿음 피해: 멀면 0 · 양 3 은 틱당 1 · 양 1 은 홀수 틱만 · 양 0 은 안 부름 · 종류 이름표\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -21226,6 +21300,7 @@ int main() {
     TestAbilityCounters();
     TestTreadLightlyOff();
     TestHarpoonHoming();
+    TestMapHazard();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();
