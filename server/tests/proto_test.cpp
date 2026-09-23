@@ -14035,6 +14035,231 @@ void TestHarpoon() {
     std::printf("  7-f — 작살 쏘기·걸림: 상태 32 · 적이면 꽂히고 피해 1 · 같은 편이면 끊김 · 9e 0e 7바이트 모두에게\n");
 }
 
+// ── nine-defects 0-d — 능력·작살 계수기가 **맞는 칸에 하나씩** 세는가 ─────────
+//
+// 0-a~0-c 는 합계뿐이던 계수기를 능력별 칸으로 갈랐다(사람 판 「실행 11 · 겹침 12」가 어느 능력인지 몰라
+// A·S·F 판정이 한 번 뒤집혔다). 여기서는 **갈래마다 한 번 타게 만들고 바뀐 칸이 정확히 하나**인지 센다 —
+// 값이 아니라 개수다. 「거절됐다」만 보면 다른 관문에서 거절돼도 통과한다(기존 시험 하나가 그랬다 — 아래 ④).
+void TestAbilityCounters() {
+    const std::string a = "10.7.9.1:7901";
+    const std::string b = "10.7.9.2:7902";
+    using G = nox::AbilGate;
+    using E = nox::AbilEnd;
+    using T = nox::HarpoonTouch;
+    using H = nox::HarpoonEnd;
+    auto mk = [&](nox::Server& srv, nox::CharClass cls = nox::CharClass::Warrior) {
+        srv.DebugEnterGame(a, 740, false, cls);
+        srv.DebugMoveTo(a, 1000, 1000);
+        for (int k = 1; k < 6; ++k) srv.DebugSetSpellLvl(a, static_cast<uint8_t>(k), 0);
+        std::vector<nox::OutPacket> o;
+        for (uint8_t k = 1; k < 6; ++k) srv.DebugAbilAward(a, k, false, o);
+    };
+    // 능력 × 갈래 칸 전부를 한 줄로 떠 둔다
+    auto snap = [&](const nox::Server& srv) {
+        std::vector<unsigned long long> v;
+        for (uint8_t k = 0; k < nox::kAbilityCount; ++k)
+            for (size_t g = 0; g < nox::kAbilGateCount; ++g) v.push_back(srv.abilGate(k, static_cast<G>(g)));
+        return v;
+    };
+    // 한 번 누르고 **그 능력의 그 갈래만 +1** · 들어옴도 그 능력만 +1 인지 본다
+    auto expectOne = [&](nox::Server& srv, const std::string& who, uint8_t abil, G g, const char* what) {
+        std::vector<nox::OutPacket> out;
+        const auto before = snap(srv);
+        unsigned long long in0[nox::kAbilityCount];
+        for (uint8_t k = 0; k < nox::kAbilityCount; ++k) in0[k] = srv.abilIn(k);
+        srv.DebugAbilDo(who, abil, out);
+        const auto after = snap(srv);
+        size_t changed = 0, at = 0;
+        for (size_t i = 0; i < after.size(); ++i)
+            if (after[i] != before[i]) { ++changed; at = i; }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "%s — 바뀐 칸이 %zu개다(하나여야 한다)", what, changed);
+        Check(changed == 1, msg);
+        const size_t want = static_cast<size_t>(abil) * nox::kAbilGateCount + static_cast<size_t>(g);
+        std::snprintf(msg, sizeof(msg), "%s — 능력 %zu 갈래 %zu 칸이 늘었다(능력 %u 갈래 %zu 여야 한다)", what,
+                      at / nox::kAbilGateCount, at % nox::kAbilGateCount, (unsigned)abil, static_cast<size_t>(g));
+        Check(changed == 1 && at == want && after[at] == before[at] + 1, msg);
+        for (uint8_t k = 0; k < nox::kAbilityCount; ++k) {
+            std::snprintf(msg, sizeof(msg), "%s — 능력 %u 의 들어옴이 %llu 늘었다", what, (unsigned)k,
+                          srv.abilIn(k) - in0[k]);
+            Check(srv.abilIn(k) - in0[k] == (k == abil ? 1ull : 0ull), msg);
+        }
+    };
+    // 등식 셋 — ① Σ들어옴 + 번호밖 = abilCalls ② 능력마다 들어옴 = 칸 아홉의 합 ③ 합계 접근자 = 칸 합
+    auto equations = [&](const nox::Server& srv, const char* what) {
+        unsigned long long inSum = 0;
+        char msg[200];
+        for (uint8_t k = 0; k < nox::kAbilityCount; ++k) {
+            inSum += srv.abilIn(k);
+            unsigned long long cells = 0;
+            for (size_t g = 0; g < nox::kAbilGateCount; ++g) cells += srv.abilGate(k, static_cast<G>(g));
+            std::snprintf(msg, sizeof(msg), "%s — 능력 %u 들어옴 %llu ≠ 칸 합 %llu", what, (unsigned)k, srv.abilIn(k), cells);
+            Check(srv.abilIn(k) == cells, msg);
+        }
+        std::snprintf(msg, sizeof(msg), "%s — Σ들어옴 %llu + 번호밖 %llu ≠ abilCalls %llu", what, inSum,
+                      srv.abilBadNum(), srv.abilCalls());
+        Check(inSum + srv.abilBadNum() == srv.abilCalls(), msg);
+        Check(srv.abilOk() == srv.AbilGateSum(G::Ok) && srv.abilExclusive() == srv.AbilGateSum(G::Exclusive),
+              "합계 접근자가 칸 합이 아니다");
+    };
+
+    // ① 갈래 아홉 — 한 번에 하나씩, 그 칸만 +1
+    {
+        nox::Server srv; mk(srv);
+        expectOne(srv, a, 4, G::Ok, "① 실행(살금살금 첫 사용)");
+        // ② **이미 켜짐** — 살금살금(지속 99999)을 곧바로 또 누른다. 쉬는 시간(30)도 남아 있지만
+        //   관문 순서상 「이미 켜짐」(`Server.cpp` ③)이 「쉬는 중」(⑦)보다 먼저다
+        expectOne(srv, a, 4, G::Already, "② 이미 켜짐(살금살금 두 번째)");
+        // ③ **겹침** — 광전사를 켜 놓고 함성 · 누가 막았나는 [함성][광전사]
+        expectOne(srv, a, 1, G::Ok, "③-전제 광전사 실행");
+        expectOne(srv, a, 2, G::Exclusive, "③ 겹침(광전사 중 함성)");
+        Check(srv.abilBlockedBy(2, 1) == 1 && srv.abilBlockedBy(2, 3) == 0 && srv.abilBlockedBy(1, 2) == 0,
+              "③ 겹침 상대표가 [함성][광전사] 한 칸이 아니다");
+        // ④ **짐 넘침**은 광전사만 — 켜진 광전사가 먼저 걸리지 않게 새 판에서
+        equations(srv, "①~③ 뒤");
+    }
+    {
+        nox::Server srv; mk(srv);
+        srv.DebugSetOverweight(a, true);
+        expectOne(srv, a, 1, G::Overweight, "④ 짐 넘침(광전사)");
+        expectOne(srv, a, 2, G::Ok, "④ 짐이 넘쳐도 함성은 실행");
+        srv.DebugSetOverweight(a, false);
+        equations(srv, "④ 뒤");
+    }
+    {
+        // ⑤ **쉬는 중** — 광전사(지속 90 < 쉬는 시간 300)가 꺼진 뒤 다시 누른다 → 켜짐은 없고 쉬는 시간만 남는다
+        nox::Server srv; mk(srv);
+        srv.SetAbilitySound(1, 170, 173);                    // 쓸 때·꺼질 때 소리를 부르는지 같이 센다
+        srv.DebugSetFrame(1000);
+        expectOne(srv, a, 1, G::Ok, "⑤-전제 광전사 실행");
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetFrame(1091);
+        srv.DebugAbilTick(a, out);                           // 1091 에 꺼진다(④ 시험과 같은 경계)
+        Check(!srv.DebugAbilActive(a, 1), "⑤ 전제 — 1091 인데 광전사가 안 꺼졌다");
+        Check(srv.abilEnded(1, E::Expired) == 1, "⑤ 꺼짐 까닭 「시간 다함」이 1 이 아니다");
+        Check(srv.abilSoundUseCalls(1) == 1 && srv.abilSoundOffCalls(1) == 1, "⑤ 광전사 소리 부름이 쓸 때 1 · 꺼질 때 1 이 아니다");
+        expectOne(srv, a, 1, G::Cooldown, "⑤ 쉬는 중(꺼진 광전사)");
+        equations(srv, "⑤ 뒤");
+    }
+    {
+        // ⑥ **워리어 아님**
+        nox::Server srv; mk(srv, nox::CharClass::Wizard);
+        expectOne(srv, a, 1, G::NotWarrior, "⑥ 워리어 아님");
+    }
+    {
+        // ⑦ **상태 12**
+        nox::Server srv; mk(srv);
+        srv.DebugSetState(a, 12);
+        expectOne(srv, a, 2, G::MoveState, "⑦ 상태 12(함성)");
+    }
+    {
+        // ⑧ **안 배움** — 퀘스트에서만 레벨 0 을 막는다. 늑대의 눈만 레벨 0 으로
+        nox::Server srv; mk(srv);
+        srv.DebugSetSpellLvl(a, 5, 0);
+        srv.StartQuest(2, 5000, 5000, 100.0);                // 사람에게서 멀리
+        expectOne(srv, a, 5, G::NotLearned, "⑧ 안 배움(퀘스트 · 늑대의 눈 레벨 0)");
+    }
+    {
+        // ⑨ **죽음** — 켜 둔 살금살금은 죽을 때 「전부 되돌림」으로 꺼진다(`Server.cpp` 죽음 → `AbilityCancelAll`)
+        nox::Server srv; mk(srv);
+        expectOne(srv, a, 4, G::Ok, "⑨-전제 살금살금 실행");
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(a, -1, 9999, std::string(), 16, out);
+        Check(srv.abilEnded(4, E::CancelAll) == 1 && srv.abilEnded(4, E::Gone) == 0,
+              "⑨ 죽으며 꺼진 살금살금이 「전부 되돌림」 1 이 아니다");
+        expectOne(srv, a, 5, G::Dead, "⑨ 죽음(늑대의 눈)");
+        equations(srv, "⑨ 뒤");
+    }
+    {
+        // ⑩ **번호 밖** — 어느 칸도 안 늘고 번호밖만 늘어난다
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        const auto before = snap(srv);
+        srv.DebugAbilDo(a, 0, out);
+        srv.DebugAbilDo(a, 6, out);
+        Check(snap(srv) == before && srv.abilBadNum() == 2, "⑩ 번호 밖(0·6)이 칸을 건드렸거나 번호밖이 2 가 아니다");
+        equations(srv, "⑩ 뒤");
+    }
+    {
+        // ⑪ **꺼짐 까닭 — 되돌림 둘** · 켜져 있지 않은 것을 되돌리면 안 센다
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 1, out);
+        srv.DebugAbilDo(a, 4, out);
+        srv.DebugAbilReset(a, 1, out);
+        srv.DebugAbilReset(a, 2, out);                       // 함성은 안 켜져 있었다
+        Check(srv.abilEnded(1, E::Reset) == 1 && srv.abilEnded(2, E::Reset) == 0, "⑪ 하나 되돌림이 켜진 것만 세지 않는다");
+        srv.DebugAbilCancelAll(a, out);
+        Check(srv.abilEnded(4, E::CancelAll) == 1 && srv.abilEnded(1, E::CancelAll) == 0,
+              "⑪ 전부 되돌림이 그때 켜진 것(살금살금)만 세지 않는다");
+    }
+
+    // ⑫ 작살 — 닿음 갈래 · 끊김 까닭. 판마다 **끊김 칸 합이 정확히 1** 인지도 본다(한 줄은 한 번만 끊긴다)
+    auto mkH = [&](nox::Server& srv) {
+        mk(srv);
+        srv.DebugEnterGame(b, 741, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(b, 1100, 1000);
+        RegHarpoonBolt(srv);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w); srv.Tick(34, w);
+        srv.DebugSetFacing(a, 0);                          // +x 쪽 — b 를 겨눈다
+    };
+    auto endSum = [&](const nox::Server& srv) {
+        unsigned long long n = 0;
+        for (size_t h = 0; h < nox::kHarpoonEndCount; ++h) n += srv.harpoonEnd(static_cast<H>(h));
+        return n;
+    };
+    auto flyUntil = [&](nox::Server& srv, bool wantTarget) {
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 68;
+        for (int t = 0; t < 40; ++t) {
+            if (wantTarget ? !srv.DebugHarpoonTarget(a).empty() : srv.DebugHarpoonBolt(a) == 0) break;
+            ms += 34; srv.Tick(ms, out);
+        }
+    };
+    {
+        nox::Server srv; mkH(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        flyUntil(srv, true);
+        Check(srv.harpoonTouch(T::Attached) == 1 && srv.harpoonTouch(T::Wall) == 0 && srv.harpoonTouch(T::NotEnemy) == 0,
+              "⑫ 적에게 꽂혔는데 닿음 칸이 「걸림 1」 하나가 아니다");
+        Check(endSum(srv) == 0, "⑫ 꽂혔을 뿐인데 끊김이 셌다");
+    }
+    {
+        nox::Server srv; mkH(srv);
+        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(b, 1);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        flyUntil(srv, false);
+        Check(srv.harpoonTouch(T::NotEnemy) == 1 && srv.harpoonEnd(H::NotEnemy) == 1 && endSum(srv) == 1,
+              "⑫ 같은 편에 닿았는데 「적 아님」 닿음 1 · 끊김 1 이 아니다");
+    }
+    {
+        nox::Server srv; mkH(srv);
+        srv.DebugMoveTo(b, 5000, 5000);
+        srv.SetWalls({ { 47, 43 } });                      // 앞 +x 쪽 칸(`TestHarpoon` ⑥ 과 같은 자리)
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        flyUntil(srv, false);
+        Check(srv.harpoonTouch(T::Wall) == 1 && srv.harpoonEnd(H::Wall) == 1 && endSum(srv) == 1,
+              "⑫ 벽에 닿았는데 「벽」 닿음 1 · 끊김 1 이 아니다");
+    }
+    {
+        nox::Server srv; mkH(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilReset(a, 3, out);                     // 쉬는 시간만 지운다(줄은 그대로)
+        srv.DebugAbilDo(a, 3, out);
+        Check(srv.harpoonEnd(H::Replaced) == 1 && endSum(srv) == 1, "⑫ 다시 쏘며 앞 줄을 치웠는데 「새로 쏨」 1 이 아니다");
+        srv.DebugHarpoonBreak(a, out);
+        srv.DebugHarpoonBreak(a, out);                     // 줄이 없으면 안 센다
+        Check(srv.harpoonEnd(H::Debug) == 1 && endSum(srv) == 2, "⑫ 시험용 끊김이 한 번만 세지지 않았다");
+    }
+    std::printf("  nine-defects 0-d — 능력 갈래 9 칸마다 하나씩 · 번호밖 · 등식 셋 · 꺼짐 까닭 · 작살 닿음·끊김\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -18054,7 +18279,10 @@ void TestPickupAndAbilSounds() {
     Check(std::strcmp(nox::SoundName(754), "RestoreHealth") == 0, "754 가 RestoreHealth 가 아니다");
     Check(std::strcmp(nox::SoundName(755), "RestoreMana") == 0, "755 가 RestoreMana 가 아니다");
 
-    // ② **능력을 못 쓰면 231** — 워리어가 쉬는 시간에 또 누를 때
+    // ② **능력을 못 쓰면 231** — 워리어가 켜진 능력을 또 누를 때
+    //   ✖ 09-23 정정 — 전에는 「쉬는 시간에 또 누를 때」라고 적혀 있었다. 그런데 `Tick(34)` 는 1프레임만 밀고,
+    //     살금살금은 지속 99999 라 **「이미 켜짐」 관문이 「쉬는 중」보다 먼저** 걸린다 — 막은 것은 쉬는 시간이 아니었다.
+    //     231 을 보는 이 시험의 뜻에는 지장이 없어 이름표만 바로잡고, 어느 관문인지는 칸으로 못 박는다
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1071, false, nox::CharClass::Warrior);
@@ -18064,7 +18292,9 @@ void TestPickupAndAbilSounds() {
         Check(srv.DebugAbilityDo(a, 4, out), "능력이 처음부터 안 먹었다");   // 4 = 살금살금
         srv.Tick(34, out);
         out.clear();
-        Check(!srv.DebugAbilityDo(a, 4, out), "쉬는 시간인데 또 먹었다");
+        Check(!srv.DebugAbilityDo(a, 4, out), "켜진 살금살금을 또 눌렀는데 먹었다");
+        Check(srv.abilGate(4, nox::AbilGate::Already) == 1 && srv.abilGate(4, nox::AbilGate::Cooldown) == 0,
+              "② 막은 관문이 「이미 켜짐」이 아니다");
         srv.Tick(68, out);
         Check(rang(out, 231), "거절했는데 231 이 안 울렸다");
     }
@@ -20749,6 +20979,7 @@ int main() {
     TestAbilities();
     TestAbilityEffects();
     TestHarpoon();
+    TestAbilityCounters();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();
