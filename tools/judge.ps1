@@ -91,8 +91,11 @@ if ($상대필요 -and -not $짝없이) {
     $env:NOX_JOIN_ADDR='127.0.0.1:18590'; $env:NOX_JOIN_CLASS='1'
     $env:NOX_OBSERVER_CLICKS='1'; $env:NOX_XWIS='false'; $env:NOX_NET_NAT='false'
     [Environment]::SetEnvironmentVariable('NOX_AUTO_WALK', $null)
+    # ★ 2026-09-23 — 동행 클라의 stderr 를 **받아 둔다.** 09-22 판에서 이 클라가 판 도중 죽었는데
+    #   stderr 를 안 받아 놓아 **까닭을 적을 근거가 한 줄도 없었다**(Go 패닉은 stderr 로만 나간다).
+    $동행오류 = Join-Path $빌드 'logs\companion.err.txt'
     $c = Start-Process -FilePath (Join-Path $빌드 'opennox.exe') -WorkingDirectory $빌드 `
-         -ArgumentList '-data',"`"$게임`"" -PassThru
+         -ArgumentList '-data',"`"$게임`"" -PassThru -RedirectStandardError $동행오류
     Write-Host "상대(자동 클라) 켜는 중 — 25초쯤 뒤 맵에 선다 (프로세스 $($c.Id))" -ForegroundColor Green
 }
 
