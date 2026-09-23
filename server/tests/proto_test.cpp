@@ -15718,6 +15718,93 @@ void TestFloorDefs() {
     std::printf("  nine-defects 4-d1 — 바닥 정의: 145개 재질 분포 · 이름(Wood·Water·Mud)과 재질 대조\n");
 }
 
+// ── nine-defects 4-d3 — 발밑 바닥 번호 찾기(`tileNFromPoint_411160` · `sub_411350` · `sub_4113A0` · `sub_411490`) ─────────
+void TestFloorLookup() {
+    using G = nox::FloorGrid;
+    // ① `sub_4113A0` — 정답지 식에서 손으로 뽑은 값. (10,30): v4=F v5=T · 10 < 46−30 → v6=F v7=T / (40,30): v4=T v5=F · 40 > 16 → v6=T v7=F
+    {
+        const int wantA[12] = { 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0 };
+        const int wantB[12] = { 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1 };
+        int ok = 0;
+        for (int c = 0; c < 12; ++c) {
+            if (G::EdgeCovers(10, 30, c) == (wantA[c] != 0)) ++ok;
+            if (G::EdgeCovers(40, 30, c) == (wantB[c] != 0)) ++ok;
+        }
+        char msg[120];
+        std::snprintf(msg, sizeof(msg), "① 가장자리 판정 %d/24 이 정답지 식과 맞는다(전부여야) · 모양 12 밖은 거짓", ok);
+        Check(ok == 24 && !G::EdgeCovers(10, 30, 12) && G::EdgeCovers(23, 23, 0) && G::EdgeCovers(23, 23, 7), msg);
+    }
+    // ② `sub_411490` — w=h=3 이면 방향 그대로 · w=5,h=4: 0→0 · 1~3→1 · 4→2 · 5→3(홀짝 같음) · 6→4 · 9→5 · 10~12→6 · 13→7 · 14→14+2(6−9)=8
+    {
+        const int dirs[] = { 0, 1, 3, 4, 5, 6, 8, 9, 10, 12, 13, 14 };
+        const int want[] = { 0, 1, 1, 2, 3, 4, 4, 5, 6, 6, 7, 8 };
+        int ok = 0;
+        for (size_t k = 0; k < sizeof(dirs) / sizeof(dirs[0]); ++k) if (G::EdgeCode(5, 4, dirs[k]) == want[k]) ++ok;
+        Check(ok == 12 && G::EdgeCode(3, 3, 9) == 9 && G::EdgeCode(3, 3, 0) == 0, "② 가장자리 모양 번호가 정답지 식과 다르다");
+    }
+    // ③ 칸 찾기 — (5,5) 첫 쪽 11 · 둘째 쪽 22(가장자리 둘) · (4,5) 첫 쪽 33 · (5,4) 둘째 쪽 44. 칸 안 자리(v4,v5)로 네 삼각형을 가른다
+    {
+        std::vector<nox::MapFile::FloorCell> cells(3);
+        cells[0].x = 5; cells[0].y = 5;
+        cells[0].first.present = true;  cells[0].first.image = 11;
+        cells[0].second.present = true; cells[0].second.image = 22;
+        // 가장자리 정의 0 = w·h 3 → 모양 = 방향. e1 방향 1 = 「v5」(px ≤ py) · e2 방향 8 = 「v5 || v6」(v6 = px ≥ 46−py) — 둘 다 맞으면 **뒤 것**이 남는다
+        nox::MapFile::FloorEdge e1; e1.image = 77; e1.a = 0; e1.b = 1;
+        nox::MapFile::FloorEdge e2; e2.image = 88; e2.a = 0; e2.b = 8;
+        cells[0].second.edges = { e1, e2 };
+        cells[1].x = 4; cells[1].y = 5; cells[1].first.present = true; cells[1].first.image = 33;
+        cells[2].x = 5; cells[2].y = 4; cells[2].second.present = true; cells[2].second.image = 44;
+        G g; g.Build(cells);
+        std::vector<G::EdgeDef> ed(1); ed[0].w = 3; ed[0].h = 3;
+        auto at = [&](int v4, int v5) { return g.TileAt(static_cast<float>(5 * 46 + v4 - 11.5 + 0.25), static_cast<float>(5 * 46 + v5 - 11.5 + 0.25), ed); };
+        // 네 삼각형(가장자리 없는 쪽)
+        const G::Hit h2 = at(10, 20);   // v4 ≤ v5 · 46−10 > 20 → (4,5) 첫 쪽 → 33
+        const G::Hit h3 = at(40, 30);   // v4 > v5 · 46−40 ≤ 30 → (5,5) 첫 쪽 → 11
+        const G::Hit h4 = at(30, 5);    // v4 > v5 · 46−30 > 5 → (5,4) 둘째 쪽 → 44
+        // (5,5) 둘째 쪽(v4 ≤ v5 · 46−v4 ≤ v5 · px = v4 · py = v5−23) — 가장자리 둘
+        const G::Hit hA = at(20, 45);   // px 20 py 22 → e1 참(20 ≤ 22) · e2 참 → **뒤 것 88**(앞 것이 이기면 77)
+        const G::Hit hB = at(30, 43);   // px 30 py 20 → e1 거짓 · e2: 30 ≥ 26 참 → 88
+        const G::Hit hC = at(23, 45);   // px 23 py 22 → e1 거짓(23 > 22) · e2: 23 ≥ 24 거짓 → 쪽 번호 22
+        char msg[240];
+        std::snprintf(msg, sizeof(msg), "③ 칸 찾기 — %d · %d · %d · %d/%d · %d/%d · %d/%d (33·11·44·88/가장자리·88/가장자리·22/쪽 이어야)",
+                      h2.tile, h3.tile, h4.tile, hA.tile, static_cast<int>(hA.why), hB.tile, static_cast<int>(hB.why),
+                      hC.tile, static_cast<int>(hC.why));
+        Check(h2.tile == 33 && h2.why == G::Why::Side && h3.tile == 11 && h4.tile == 44 &&
+              hA.tile == 88 && hA.why == G::Why::Edge && hB.tile == 88 && hB.why == G::Why::Edge &&
+              hC.tile == 22 && hC.why == G::Why::Side, msg);
+        // 범위 밖(i−1 ≤ 0) · 빈 쪽((7,7) 은 자료가 없다 — 첫 쪽 자리)
+        const G::Hit out = g.TileAt(10.0f, 3000.0f, ed);
+        const G::Hit none = g.TileAt(static_cast<float>(7 * 46 + 40 - 11.5 + 0.25), static_cast<float>(7 * 46 + 30 - 11.5 + 0.25), ed);
+        Check(out.tile == -1 && out.why == G::Why::OutOfRange && none.tile == 0 && none.why == G::Why::Absent,
+              "③ 범위 밖은 −1 · 빈 쪽은 0(엔진처럼) 이어야");
+    }
+    // ④ 실물 Estate — 길목(점멸이 고를 수 있는 곳 — 걸을 수 있는 자리) 33곳이 전부 바닥을 가진다
+    {
+        const char* thing = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin";
+        const char* mapPath = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\maps\\Estate\\Estate.map";
+        if (!std::ifstream(thing, std::ios::binary) || !std::ifstream(mapPath, std::ios::binary)) return;
+        nox::ThingDb tdb;
+        nox::MapFile mf;
+        Check(tdb.Load(thing) && mf.Load(mapPath), "④ thing.bin·Estate.map 을 못 읽었다");
+        G g; g.Build(mf.ReadFloor());
+        std::vector<G::EdgeDef> ed;
+        for (const auto& e : tdb.Edges()) { G::EdgeDef d; d.w = e.w; d.h = e.h; ed.push_back(d); }
+        size_t why[4] = {}, dirt = 0, n = 0;
+        for (const auto& w : mf.ReadWaypoints()) {
+            if (!((w.flags2 & 0x80) && (w.flags & 1))) continue;
+            ++n;
+            const G::Hit h = g.TileAt(static_cast<float>(w.x), static_cast<float>(w.y), ed);
+            ++why[static_cast<size_t>(h.why)];
+            if (h.tile >= 0 && static_cast<size_t>(h.tile) < tdb.Floors().size() && tdb.Floors()[static_cast<size_t>(h.tile)].material == 0x40) ++dirt;
+        }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "④ Estate 길목 %zu곳 → 범위밖 %zu · 쪽빔 %zu · 쪽 %zu · 가장자리 %zu · 흙 %zu(33·0·0·18·15·24 여야) · 가장자리 정의 %zu",
+                      n, why[0], why[1], why[2], why[3], dirt, ed.size());
+        Check(n == 33 && why[0] == 0 && why[1] == 0 && why[2] == 18 && why[3] == 15 && dirt == 24 && ed.size() == 39, msg);
+    }
+    std::printf("  nine-defects 4-d3 — 칸 찾기: 가장자리 판정 24 · 모양 번호 12 · 네 삼각형·가장자리(뒤 것)·범위 밖·빈 쪽 · Estate 길목 33\n");
+}
+
 // ── nine-defects 4-c3b3a — soundset.bin 읽기(`nox_xxx_parseSoundSetBin_424170` · `nox_xxx_parseString_409470`) ─────────
 void TestSoundSetParse() {
     auto bytes = [](const char* s) { return std::vector<uint8_t>(s, s + std::strlen(s)); };
@@ -22919,6 +23006,7 @@ int main() {
     TestMaterialParse();
     TestSoundSetParse();
     TestFloorDefs();
+    TestFloorLookup();
     TestPlayerHitSound();
     TestPetHitSound();
     TestMissileHitterRoot();

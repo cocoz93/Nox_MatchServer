@@ -107,13 +107,18 @@ void SkipFLOR(Cur& c, std::vector<FloorDefRaw>* out) {
 }
 
 // edge.go
-void SkipEDGE(Cur& c) {
+// ★ 09-23 4-d3 — 이름과 칸 찾기가 읽는 두 바이트를 담는다(`GAME1.c:1172~1201`: 4 · 이름 · i32 · i32 · u8 · u8(v28) · u8 · u8(1 이면 실패) · u8 v17(+28697) · u8 v19(+28696))
+void SkipEDGE(Cur& c, std::vector<EdgeDefRaw>* out) {
     c.Skip(4);
-    c.SkipBytes8();
+    EdgeDefRaw d;
+    d.name = c.Str8();
     c.Skip(2 * 4 + 1);
     const int n1 = c.U8();
     c.Skip(2);
     const int n2 = c.U8(), n3 = c.U8();
+    d.h = static_cast<uint8_t>(n2);
+    d.w = static_cast<uint8_t>(n3);
+    if (out && !c.bad) out->push_back(d);
     const int n = 2 * n1 * (n2 + n3);
     for (int i = 0; i < n && !c.bad; ++i) SkipImageRef(c);
     c.CheckEnd();
@@ -647,6 +652,7 @@ bool ThingDb::Load(const std::string& path) {
     things_.clear();
     walls_.clear();
     floors_.clear();
+    edges_.clear();
     sounds_.clear();
     error_.clear();
     for (auto& a : playerAnims_) a = PlayerAnimFrames{};
@@ -665,7 +671,7 @@ bool ThingDb::Load(const std::string& path) {
         const std::string sect = c.Sect();
         if (c.bad) break;
         if (sect == "FLOR") SkipFLOR(c, &floors_);
-        else if (sect == "EDGE") SkipEDGE(c);
+        else if (sect == "EDGE") SkipEDGE(c, &edges_);
         else if (sect == "WALL") SkipWALL(c, &walls_);
         else if (sect == "AUD ") SkipAUD(c, &sounds_);
         else if (sect == "AVNT") SkipAVNT(c);

@@ -336,6 +336,81 @@ std::vector<MapFile::FloorCell> MapFile::ReadFloor() {
     }
 }
 
+// ★ 09-23 nine-defects 4-d3 — 칸 찾기(선언 주석 참고)
+void FloorGrid::Build(const std::vector<MapFile::FloorCell>& cells) {
+    grid_.assign(128 * 128, MapFile::FloorCell{});
+    for (const auto& c : cells) grid_[static_cast<size_t>(c.x) * 128 + c.y] = c;   // 엔진 [가로][세로] — 가로·세로 둘 다 0x7F 안
+}
+
+bool FloorGrid::EdgeCovers(int px, int py, int code) {
+    const int v2 = px, v3 = py;
+    bool v4, v5, v6, v7;
+    if (v2 == v3) { v4 = true; v5 = true; } else if (v2 >= v3) { v4 = true; v5 = false; } else { v4 = false; v5 = true; }
+    if (v2 == 46 - v3) { v6 = true; v7 = true; } else if (v2 >= 46 - v3) { v6 = true; v7 = false; } else { v6 = false; v7 = true; }
+    switch (code) {
+        case 0:  return v5 && v6;
+        case 1:  return v5;
+        case 2:  return v5 && v7;
+        case 3:  return v6;
+        case 4:  return v7;
+        case 5:  return v6 && v4;
+        case 6:  return v4;
+        case 7:  return v4 && v7;
+        case 8:  return v5 || v6;
+        case 9:  return v5 || v7;
+        case 10: return v4 || v7;
+        case 11: return v4 || v6;
+        default: return false;
+    }
+}
+
+int FloorGrid::EdgeCode(int w, int h, int dir) {
+    const int v2 = w, v3 = h, a2 = dir;
+    if (v2 == 3 && v3 == 3) return a2;
+    if (!a2) return 0;
+    if (a2 <= v2 - 2) return 1;
+    if (a2 == v2 - 1) return 2;
+    const int v5 = v2 + 2 * v3 - 4;
+    if (a2 < v5) return (((static_cast<unsigned char>(v2) ^ static_cast<unsigned char>(a2)) & 1) != 0) + 3;
+    if (a2 == v5) return 5;
+    if (a2 > 2 * (v3 + v2) - 6) {
+        if (a2 == 2 * (v3 + v2) - 5) return 7;
+        return a2 + 2 * (6 - v3 - v2);
+    }
+    return 6;
+}
+
+FloorGrid::Hit FloorGrid::TileAt(float x, float y, const std::vector<EdgeDef>& edges) const {
+    Hit h;
+    if (grid_.empty()) return h;
+    const float v12 = static_cast<float>((static_cast<double>(x) + 11.5) * 0.021739131);
+    const float v13 = static_cast<float>((static_cast<double>(y) + 11.5) * 0.021739131);
+    const int i = static_cast<int>(v12);
+    const int j = static_cast<int>(v13);
+    const float v14 = static_cast<float>(static_cast<double>(x) + 11.5);
+    const float v15 = static_cast<float>(static_cast<double>(y) + 11.5);
+    const int v4 = static_cast<int>(v14) % 46;
+    const int v5 = static_cast<int>(v15) % 46;
+    if (i - 1 <= 0 || i >= 127 || j - 1 <= 0 || j >= 127) return h;   // -1
+    // 마름모 네 삼각형 — 쪽 하나를 고르고, 가장자리가 있으면 `sub_411350` 이 덧칸 번호로 바꿀 수 있다
+    const MapFile::FloorSide* side = nullptr;
+    int px = 0, py = 0;
+    if (v4 <= v5) {
+        if (46 - v4 <= v5) { side = &grid_[static_cast<size_t>(i) * 128 + j].second;     px = v4;      py = v5 - 23; }
+        else               { side = &grid_[static_cast<size_t>(i - 1) * 128 + j].first; px = v4 + 23; py = v5; }
+    } else if (46 - v4 <= v5) { side = &grid_[static_cast<size_t>(i) * 128 + j].first;  px = v4 - 23; py = v5; }
+    else                      { side = &grid_[static_cast<size_t>(i) * 128 + (j - 1)].second; px = v4; py = v5 + 23; }
+    h.tile = side->image;                                  // 비었으면 0(엔진도 그 칸을 0 으로 둔다)
+    h.why = side->present ? Why::Side : Why::Absent;
+    // `sub_411350` — 목록을 차례로 보며 모양 안이면 그 가장자리 번호(마지막에 맞은 것이 남는다)
+    for (const auto& e : side->edges) {
+        if (e.a >= edges.size()) continue;                 // ⚠ 정의 밖 가장자리 번호 — 엔진은 다른 메모리를 읽는다. 우리는 건너뜀
+        const int code = EdgeCode(edges[e.a].w, edges[e.a].h, e.b);
+        if (EdgeCovers(px, py, code)) { h.tile = e.image; h.why = Why::Edge; }
+    }
+    return h;
+}
+
 // SecretWalls = 판 u16 + 개수 u16 + [비밀벽 23B]*  (판 1 이면 13B — 실측에는 없다)
 std::vector<MapFile::SecretWall> MapFile::ReadSecretWalls() {
     std::vector<SecretWall> out;

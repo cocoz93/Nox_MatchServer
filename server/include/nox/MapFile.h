@@ -152,4 +152,25 @@ private:
     std::string error_;
 };
 
+// ★ 09-23 nine-defects 4-d3 — 발밑 바닥 번호 찾기(`nox_xxx_tileNFromPoint_411160` `GAME1.c:844~899` · 가장자리 `sub_411350` `:902~920` ·
+//   `sub_4113A0` `:923~1022` · `sub_411490` `:1025~1057`). 표는 128×128 칸(엔진 `ptr_5D4594_2650668`).
+//   ⚠ `nox_float2int` 는 이 리포 관례대로 **버림**((int)) — 칸 경계에서만 갈린다
+class FloorGrid {
+public:
+    // 가장자리 정의 한 칸 — `sub_411490` 이 읽는 두 바이트(ThingDb `EdgeDefRaw` 의 w·h)
+    struct EdgeDef { uint8_t w = 0, h = 0; };
+    // 어떻게 끝났나 — 범위 밖(-1) · 그 쪽이 비었음(엔진은 0 을 돌려준다 — 빈 칸도 번호 0 으로 읽힌다) · 쪽 번호 · 가장자리 번호
+    enum class Why : uint8_t { OutOfRange = 0, Absent, Side, Edge, Count };
+    struct Hit { int tile = -1; Why why = Why::OutOfRange; };
+    void Build(const std::vector<MapFile::FloorCell>& cells);
+    Hit TileAt(float x, float y, const std::vector<EdgeDef>& edges) const;
+    // `sub_4113A0` — 칸 안 자리(px,py)가 가장자리 모양 code(0~11) 안인가
+    static bool EdgeCovers(int px, int py, int code);
+    // `sub_411490` — 가장자리 정의(w,h)와 방향 값 dir 로 모양 번호
+    static int EdgeCode(int w, int h, int dir);
+    bool Empty() const { return grid_.empty(); }
+private:
+    std::vector<MapFile::FloorCell> grid_;   // 128*128 — [x*128+y]
+};
+
 }  // namespace nox

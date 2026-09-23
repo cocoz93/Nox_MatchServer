@@ -79,6 +79,12 @@ struct FloorDefRaw {
     std::string name;
     int32_t material = 0;
 };
+// ★ 09-23 4-d3 — 바닥 가장자리 정의(thing.bin EDGE · `nox_thing_read_EDGE_411850` `GAME1.c:1152~1202`). 순번 = 가장자리 번호(최대 64).
+//   칸 찾기의 `sub_411490` 이 읽는 두 바이트 — `w` = +28696(파일에서 마지막 u8 · v19) · `h` = +28697(그 앞 u8 · v17)
+struct EdgeDefRaw {
+    std::string name;
+    uint8_t w = 0, h = 0;
+};
 
 // 사람 애니 한 칸 — PlayerDraw STAT 섹션(2026-09-13 묶음 3-a).
 //   ⭕ 정답지 `server/object_type.go:1065~1080` — 이름을 playerAnimTypes 순번으로 바꿔
@@ -233,6 +239,7 @@ public:
     // ── 벽 재질 (WALL 섹션) ── 맵 벽 재질 바이트 = 이 순번
     const std::vector<WallDefRaw>& Walls() const { return walls_; }
     const std::vector<FloorDefRaw>& Floors() const { return floors_; }   // ★ 4-d1
+    const std::vector<EdgeDefRaw>& Edges() const { return edges_; }      // ★ 4-d3
     const std::vector<SoundDefRaw>& Sounds() const { return sounds_; }
     // ── 능력 (ABIL 섹션) ── 능력 소리 셋
     const std::vector<AbilityRaw>& Abilities() const { return abilities_; }
@@ -260,6 +267,7 @@ private:
     std::vector<SpellRaw> spells_;
     std::vector<WallDefRaw> walls_;
     std::vector<FloorDefRaw> floors_;   // ★ 4-d1
+    std::vector<EdgeDefRaw> edges_;     // ★ 4-d3
     std::vector<SoundDefRaw> sounds_;
     std::vector<AbilityRaw> abilities_;
     PlayerAnimFrames playerAnims_[kPlayerAnimTypeCount];

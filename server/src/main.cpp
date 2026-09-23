@@ -1153,6 +1153,28 @@ int main(int argc, char** argv) {
                     std::printf("[바닥칸] %s · 칸 %zu · 쪽 %zu(번호가 정의 밖 %zu) · 재질별:", mf.Error().empty() ? "읽음" : ("⚠ " + mf.Error()).c_str(),
                                 floor.size(), sides, badImg);
                     for (const auto& kv : byMat) std::printf(" 0x%x×%zu", static_cast<unsigned>(kv.first), kv.second);
+                    // 두 쪽이 다 찼는데 재질이 다른 칸 — 두 쪽 읽는 순서가 틀렸다면 **소리가 바뀌는 칸**은 이것뿐이다
+                    size_t bothDiff = 0;
+                    for (const auto& c : floor)
+                        if (c.first.present && c.second.present && c.first.image < tdb.Floors().size() && c.second.image < tdb.Floors().size() &&
+                            tdb.Floors()[c.first.image].material != tdb.Floors()[c.second.image].material) ++bothDiff;
+                    std::printf(" · 두 쪽 재질이 다른 칸 %zu\n", bothDiff);
+                    // ★ 4-d3 — 칸 찾기를 **길목**(맵 제작자가 걸을 수 있다고 찍은 자리)마다 돌린다. 쪽이 빈 칸이 나오면
+                    //   두 쪽 순서(4-d2)나 칸 찾기가 틀린 것이다 — 걸을 수 있는 자리는 바닥이 있어야 한다
+                    nox::FloorGrid grid;
+                    grid.Build(floor);
+                    std::vector<nox::FloorGrid::EdgeDef> edefs;
+                    for (const auto& e : tdb.Edges()) { nox::FloorGrid::EdgeDef d; d.w = e.w; d.h = e.h; edefs.push_back(d); }
+                    size_t why[static_cast<size_t>(nox::FloorGrid::Why::Count)] = {};
+                    std::map<int32_t, size_t> wpMat;
+                    for (const auto& wp : wps) {
+                        const auto hit = grid.TileAt(static_cast<float>(wp.first), static_cast<float>(wp.second), edefs);
+                        ++why[static_cast<size_t>(hit.why)];
+                        if (hit.tile >= 0 && static_cast<size_t>(hit.tile) < tdb.Floors().size()) ++wpMat[tdb.Floors()[static_cast<size_t>(hit.tile)].material];
+                    }
+                    std::printf("[바닥칸·길목] 가장자리 정의 %zu개 · 길목 %zu곳 → 범위밖 %zu · 쪽빔 %zu · 쪽 %zu · 가장자리 %zu · 재질별:",
+                                edefs.size(), wps.size(), why[0], why[1], why[2], why[3]);
+                    for (const auto& kv : wpMat) std::printf(" 0x%x×%zu", static_cast<unsigned>(kv.first), kv.second);
                     std::printf("\n");
                 }
                 // ★ 09-20 9-a — 비밀벽마다 **가장 가까운 길목**을 찍는다. 그게 「거기서 보려면 어디에 설까」의 답이다.
