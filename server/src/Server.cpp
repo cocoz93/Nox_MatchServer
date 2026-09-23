@@ -1046,8 +1046,13 @@ void Server::AddContact(const ContactRef& a, const ContactRef& b) const {
 //     · 때린 이 = `findParentChainPlayer(불)` — 주인 없는 불은 **자기 자신**(우리 말로 주인 없음) · 종류는 thing.bin 그대로
 //   전에는 부딪힘 짝에서 버프 몫(4FDF90)만 불러 **맵 불의 피해가 한 번도 없었다**(사람 판 「불에 들어가도 안 죽음 · 피해 0」)
 //   ⚠ 겹쳐도 되는(ALLOW_OVERLAP) 불도 짝으로 적힌다 — `BodyVsBody` 가 밀기 판단보다 먼저 `AddContact` 한다
-//   ⚠ 사람·소환수의 닿음 함수(PlayerCollide 광전사 · MonsterCollide)는 아직 없다 — 여기서는 장애물 쪽 하나다
+//   ⚠ 소환수의 닿음 함수(MonsterCollide)는 아직 없다. 사람의 것(PlayerCollide)은 ★ 2-b2 에서 광전사 갈래만 넣었다
 void Server::ContactCollide(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out) {
+    if (a1.kind == 1) {                                      // ★ 2-b2 — 사람의 닿음 함수 `PlayerCollide`
+        auto it = sessions_.find(a1.addr);
+        if (it != sessions_.end() && it->second.inGame) PlayerBerserkCollide(it->second, a2.kind == 0 ? nullptr : &a2, out);
+        return;
+    }
     if (a1.kind != 3 || a1.idx < 0 || static_cast<size_t>(a1.idx) >= obstacles_.size()) return;
     const PhysBody& o = obstacles_[static_cast<size_t>(a1.idx)];
     if (o.contactDmgAmount == 0) return;
@@ -3988,9 +3993,10 @@ bool Server::MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags, 
 // sub_54FEF0 + sub_54FFC0 — 원 대 벽. 사각형(프레임 시작 자리 ± 반지름)이 덮는 칸마다
 //   왼쪽·오른쪽 대각선에서 가장 가까운 점을 찾아 밀어낸다.
 //   ⚠ a4·a5(선분 끝을 붙들까)는 **두 대각선 사이에서 이어진다** — 정답지가 두 번째 블록에서 되돌리지 않는다.
-//   ⚠ 벽 소리·비밀 벽 열기(sub_548100)와 「닿은 벽」 기록(+296)은 뺐다 — 묶음 9·10.
+//   ⚠ 벽 소리·비밀 벽 열기(sub_548100)는 뺐다 — 묶음 9·10. 「닿은 벽」 기록(+296)은 ★ 2-b2 에서 넣었다(lastGx·lastGy).
 bool Server::CircleVsWalls(double bx, double by, double r, double mass,
-                           double nx, double ny, double& vx, double& vy, double& ax, double& ay) const {
+                           double nx, double ny, double& vx, double& vy, double& ax, double& ay,
+                           int* lastGx, int* lastGy) const {
     if (!wallsOn_ || wallTiles_.empty()) return false;
     gWallNearestLen = &wallNearestLen_;          // ★ 09-21 계측 시작(아래 끝에서 되돌린다)
     gWallPushCount = &wallPushPerStepCur_;
@@ -4022,6 +4028,7 @@ bool Server::CircleVsWalls(double bx, double by, double r, double mass,
                     got = NearestOnLeft(ox, oy, s.lmin, s.lmax, a4, a5, px, py, cx, cy);
                 }
                 const double wa0 = ax, wb0 = ay;
+                if (got && lastGx) { *lastGx = gx; *lastGy = gy; }   // ★ 2-b2 — +296(밀기 판단 전에 적는다)
                 if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay)) any = true;
                 NoteWallPushWorst(ax - wa0, ay - wb0, gx, gy, d, nx, ny, cx, cy);
             }
@@ -4036,6 +4043,7 @@ bool Server::CircleVsWalls(double bx, double by, double r, double mass,
                     got = NearestOnRight(ox, oy, s.rmin, s.rmax, a4, a5, px, py, cx, cy);
                 }
                 const double wa0 = ax, wb0 = ay;
+                if (got && lastGx) { *lastGx = gx; *lastGy = gy; }   // ★ 2-b2 — +296(밀기 판단 전에 적는다)
                 if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay)) any = true;
                 NoteWallPushWorst(ax - wa0, ay - wb0, gx, gy, d, nx, ny, cx, cy);
             }
@@ -4278,6 +4286,7 @@ bool Server::PlayerAnimFrameSent(const Session& s) {
 //   ★ 2026-09-13 묶음 3-a — ① 에 상태 1(공격: PlayerAttack), ② 에 CCAction(PlayerInputAttack)이 더해졌다.
 //     바라보는 쪽(CCOrientation)도 ② 에서 갈아 끼운다 — 전에는 받자마자 바꿔 ① 힘이 한 틱 일찍 새 방향을 썼다.
 void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
+    moveFrame_ = frame;   // ★ 2-b2 — 부딪힘 처리(짝 루프)가 쓰는 이 틱 프레임(따라잡기 틱이면 frame_ 와 다르다)
     // ★ 2026-09-13 묶음 2-c — 두 단계로 나눴다. 정답지는 한 걸음(0.2)마다 **움직이는 모두의 충돌을 먼저** 돌리고
     //   (`GAME4_1.c:3195` sub_5481C0 루프) **그다음 모두를 적분**한다(`:3200` 루프). 사람 하나씩 5걸음을 다 돌리면
     //   뒤에 도는 사람이 앞사람의 **끝난 자리**와 부딪혀 순서가 결과를 바꾼다.
@@ -4443,6 +4452,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         // ⚠ 죽으면 정답지는 ALLOW_OVERLAP 을 켜고(상태 3→4, `object_update.go:247`) 관전은 NO_COLLIDE 를 켠다
         //   (`player.go:156`) — 둘 다 벽·오브젝트 충돌을 안 받는다(sub_5481C0 의 0x60 · 0x8 검사).
         movers.push_back({ &s, fx, fy, s.posX, s.posY, 0.0, 0.0, !dead && !s.observer });
+        s.tickStartX = s.posX; s.tickStartY = s.posY;   // ★ 2-b2 — +56(적분 중엔 안 바뀐다)
+        s.setPosThisTick = false;
     }
     // 남이 이번 틱에 준 힘(훅 20 — objectApplyForce_52DF80 → ForceVec)은 **모두의 갱신이 끝난 뒤** 적분에 들어간다
     //   (`server.go:135` updateUnits: BBB 갱신 → updateCollide 적분 → CCC 에서 ForceVec 지움). 순서가 결과를 안 바꾸게 여기서 더한다.
@@ -4531,7 +4542,16 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             // 벽 — 오브젝트 다음(sub_5481C0 순서)
             {
                 const double ax0 = m.ax, ay0 = m.ay;
-                CircleVsWalls(m.bx, m.by, kBodyRadius, PlayerMassOf(s), s.posX, s.posY, s.velX, s.velY, m.ax, m.ay);
+                int lgx = -1, lgy = -1;
+                const bool wallPushed = CircleVsWalls(m.bx, m.by, kBodyRadius, PlayerMassOf(s), s.posX, s.posY, s.velX, s.velY,
+                                                      m.ax, m.ay, &lgx, &lgy);
+                // ★ 2-b2 — +296(사람만 · `GAME5.c:6689`) · 민 벽은 짝 (나, 0) 으로 적는다(`GAME5.c:6817` 류 — 사람마다 틱에 한 번)
+                if (lgx >= 0) { s.lastWallGx = static_cast<int16_t>(lgx); s.lastWallGy = static_cast<int16_t>(lgy); }
+                if (wallPushed) {
+                    const size_t n0 = contacts_.size();
+                    AddContact(me, ContactRef{ 0, std::string(), -1 });
+                    if (contacts_.size() != n0) ++wallContacts_;
+                }
                 // ★ 09-21 — 벽이 민 걸음과 그 세기를 센다(위 `wallPushSteps()` 주석)
                 const double dax = m.ax - ax0, day = m.ay - ay0;
                 if (dax != 0.0 || day != 0.0) {
@@ -4593,6 +4613,10 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             //   닿음 피해나 버프 몫(감전 되갚기)으로 소환수가 죽으면 자리 번호가 밀리므로 그 뒤 이 짝은 그만둔다(위 줄과 같은 까닭).
             //   ⚠ 둘째 검사는 전에 없던 것이다 — 전에는 첫 버프 몫이 소환수를 죽여도 밀린 번호로 둘째 버프 몫을 불렀다
             auto shifted = [&] { return pets_.size() != petCount && (pr.first.kind == 2 || pr.second.kind == 2); };
+            // ★ 2-b2 — 벽 짝(둘째 0)은 a.collide(0) 하나뿐(`GAME5.c:2055~2066` — 버프 몫은 둘째가 있을 때만 · 되부르기 없음)
+            //   ⚠ 정답지 목록은 **머리에 끼운다**(`:2020~2024` — 나중 것이 먼저 돈다). 우리는 넣는 순서부터 정답지와 달라
+            //     돌리는 순서만 뒤집어도 같아지지 않는다 — 맞추지 않았다
+            if (pr.second.kind == 0) { ContactCollide(pr.first, pr.second, out); continue; }
             ContactCollide(pr.first, pr.second, out);
             if (shifted()) continue;
             CollideBuffs(pr.first, pr.second, out);
@@ -4606,6 +4630,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
         m.s->y = static_cast<int>(std::lround(m.s->posY));
         m.s->facingPrev = m.s->facing;   // CCC: Direction1 = Direction2(`server.go:167`)
         m.s->prevX = m.bx; m.s->prevY = m.by;   // CCC: PrevPos(+72) = 이번 틱 시작 자리(movers 는 게임 안 모두 — 관전·죽음 포함)
+        // ★ 2-b2 — 부딪힘 처리 중 SetPos 로 옮겼으면 PosVec 이 그 자리이므로 PrevPos 도 그 자리다(`server.go:163`)
+        if (m.s->setPosThisTick) { m.s->prevX = m.s->posX; m.s->prevY = m.s->posY; m.s->setPosThisTick = false; }
     }
     // CCC: SpeedCur = (SpeedBonus + SpeedBase) × (1 − 0.2 × +541) · 느림(4)이면 × 0.5(`server.go:171~174`) — 빠르게(9) × 1.25 는 updateUnitBuffs 끝
     //   ⚠ SpeedBonus(아이템 무게·마법부여 5) · +541 느려짐 겹수(독·5) 는 0
@@ -8202,6 +8228,125 @@ void Server::AbilityDisable(Session& s, uint8_t abil, std::vector<OutPacket>& ou
     s.abilActive[abil] = false;
     s.abilActiveVal[abil] = false;
     s.abilActiveUntil[abil] = 0;
+}
+
+// ★ 09-23 nine-defects 2-b2 — `nox_xxx_unitMove_4E7010` 의 사람 몫(`object.go:693~731` SetPos).
+//   NewPos·PosVec·PrevPos 를 모두 그 자리로 · 온라인이면 `ea FORGET_DRAWABLES`(`:722~731`).
+//   ⚠ `TeleportTarget`(teleportToMB)과 달리 **속도를 안 지운다** — SetPos 에 속도 줄이 없다
+void Server::PlayerSetPos(Session& s, double x, double y, std::vector<OutPacket>& out) {
+    s.posX = x; s.posY = y;
+    s.x = static_cast<int>(std::lround(x)); s.y = static_cast<int>(std::lround(y));
+    s.prevX = x; s.prevY = y;
+    s.setPosThisTick = true;                                 // 틱 끝 PrevPos 도 이 자리(부딪힘 틱 끝 줄)
+    ForgetDrawables(s, out);
+}
+
+// ★ 09-23 nine-defects 2-b2 — `PlayerCollide`(`GAME3_3.c:3165`)의 **광전사 갈래**(`:3188~3253`).
+//   부딪힌 짝마다(`nox_xxx_collide_548740`) 사람 쪽에서 부른다. other 가 null 이면 벽이다.
+//   ① 켜짐 목록에 광전사(1)가 없으면 아무것도 안 한다(`:3188`).
+//      ⚠ 그 뒤 `LABEL_26`(`:3254~3268` — 닿은 사람에게 죽음(버프 16) 넘기기)은 이 조각 밖이다
+//   ② 상대가 있으면 지나갈지 부딪힐지 가른다(`:3194~3211`) —
+//        유닛 아님·죽은 유닛 + IMMOBILE 아님 + 깃발 0x80 아님 + 무게 ≤ 나  → 지나감(가벼운 것)
+//        문 아님 → 밑에 깔림·겹쳐도 됨(0x9)·투사체(클래스 1)면 지나감, 아니면 부딪힘
+//        문 → 잠겼으면 부딪힘, 아니면 지나감
+//   ③ 부딪힘(`LABEL_14` `:3212~3253`) — 상태 13 · 땅울림 10(+56 자리) · 광전사 끄기(`sub_4FC300` = DisableAbility)
+//        상대: IMMOBILE 아니면 **탄성 충돌**(`sub_4E86E0`) · 상대 피해 함수(때린 이 = 나 · 피해 BerserkerDamage · 종류 2)
+//              상대가 유닛·생성기(0x20006)면 **되돌아가고 끝**(기절·자기 피해 없음) · 아니면 나를 기절(5) BerserkerStunDuration · 세기 5
+//        벽:   마지막 닿은 벽(+296)이 있고 그 재질 깃발 &5 가 0 이면 **되돌아가고 끝**
+//              아니면 소리 171 · 기절 · 벽 피해(⚠ `damageToMap` 은 묶음 9 — 안 한다)
+//        그다음 자기 피해 = BerserkerPainRatio × 지금 체력(최소 1 · `unitDamageClear` — 무적 안 봄) → 되돌아감(+72 PrevPos)
+//   ⚠ 옮기지 않은 것 — 장애물 피해(우리 장애물엔 체력이 없다) · 장애물·소환수 밀려남(장애물은 전부 IMMOBILE 이고,
+//     소환수 속도는 AI 가 매 틱 새로 세운다 — 나만 튕긴다) · 벽 피해(9)
+void Server::PlayerBerserkCollide(Session& s, const ContactRef* other, std::vector<OutPacket>& out) {
+    if (!AbilityIsActive(s, 1)) return;
+    // 상대의 클래스·깃발·무게·죽음 — 사라진 상대(밀린 소환수 자리)는 부르지 않는다(세기 전에 거른다)
+    uint32_t cls = 0, flags = 0;
+    double mass = 0.0;
+    bool deadUnit = false;
+    Session* os = nullptr;
+    int petIdx = -1;
+    if (other) {
+        if (other->kind == 1) {
+            auto it = sessions_.find(other->addr);
+            if (it == sessions_.end() || !it->second.inGame) return;
+            os = &it->second;
+            cls = kClsPlayer; flags = 0;                     // NewPlayer FLAGS NULL
+            mass = PlayerMassOf(*os);
+            deadUnit = os->health == 0;                      // `!*v3 && v3[2]` — 이번 틱 앞 짝에서 죽었을 수 있다
+        } else if (other->kind == 2) {
+            if (other->idx < 0 || static_cast<size_t>(other->idx) >= pets_.size()) return;
+            petIdx = other->idx;
+            const Creature& k = pets_[static_cast<size_t>(petIdx)];
+            auto tb = typeBodies_.find(k.type);
+            if (tb == typeBodies_.end()) return;             // 몸 모르는 종류는 짝이 안 생긴다(위 적분)
+            cls = tb->second.cls; flags = tb->second.flags; mass = tb->second.mass;
+            deadUnit = k.health == 0;
+        } else if (other->kind == 3) {
+            if (other->idx < 0 || static_cast<size_t>(other->idx) >= obstacles_.size()) return;
+            const PhysBody& o = obstacles_[static_cast<size_t>(other->idx)];
+            cls = o.cls; flags = o.flags; mass = o.mass;
+        } else {
+            return;
+        }
+    }
+    ++berserkCollideCalls_;
+    auto hit = [&](BerserkHit h) { ++berserkHit_[static_cast<size_t>(h)]; };
+    const double myMass = PlayerMassOf(s);
+    if (other) {
+        const bool unit = (cls & 0x6) != 0;
+        if ((!unit || deadUnit) && !(cls & 0x400000) && !(flags & 0x80) && mass <= myMass) { hit(BerserkHit::Light); return; }
+        // 문 — 잠겼으면 부딪힘이다. ⚠ 지금은 닿을 수 없는 갈래다: main 이 문을 장애물에서 빼고 `BodyVsBody` 도 문 짝을 거른다(묶음 9).
+        //   잠김 상태를 모르므로 지나감으로 둔다 — 문이 오브젝트가 되면 여기에 잠김 검사를 넣는다
+        if (cls & kClsDoor) { hit(BerserkHit::Door); return; }
+        if ((flags & (kFlBelow | kFlAllowOverlap)) || (cls & 0x1)) { hit(BerserkHit::Overlap); return; }
+    }
+    // ── LABEL_14 부딪힘 ──
+    PlayerSetState(s, kPlayerStateIdle, moveFrame_, &out);
+    EarthquakeSend(static_cast<float>(s.tickStartX), static_cast<float>(s.tickStartY), 10, out);
+    AbilityDisable(s, 1, out);
+    const int stunDur = static_cast<int>(static_cast<float>(BalanceFloat("BerserkerStunDuration")));
+    if (other) {
+        const int dmg = static_cast<int>(static_cast<float>(BalanceFloat("BerserkerDamage")));
+        if (!(cls & 0x400000)) {
+            // sub_4E86E0 — 무게를 실은 탄성 충돌(`ElasticExchange`)
+            double ovx = 0.0, ovy = 0.0;
+            if (os) { ovx = os->velX; ovy = os->velY; }
+            else if (petIdx >= 0) { ovx = pets_[static_cast<size_t>(petIdx)].velX; ovy = pets_[static_cast<size_t>(petIdx)].velY; }
+            ElasticExchange(static_cast<float>(myMass), s.velX, s.velY, static_cast<float>(mass), ovx, ovy);
+            if (os) { os->velX = ovx; os->velY = ovy; }      // 소환수는 적지 않는다 — 위 ⚠
+        }
+        AttackSrc src;
+        src.x = static_cast<float>(s.prevX); src.y = static_cast<float>(s.prevY);   // a3 = 나 → +72
+        if (os) HurtTarget(Target{ other->addr, -1 }, dmg, out, s.addr, 2, &src);
+        else if (petIdx >= 0) HurtTarget(Target{ std::string(), petIdx }, dmg, out, s.addr, 2, &src);
+        if (cls & 0x20006) {
+            hit(BerserkHit::Unit);
+            PlayerSetPos(s, s.prevX, s.prevY, out);
+            return;
+        }
+        hit(BerserkHit::Object);
+        ApplyEnchant(Target{ s.addr, -1 }, 5, stunDur, 5);
+    } else {
+        const WallTile* w = nullptr;
+        if (s.lastWallGx >= 0 && s.lastWallGy >= 0 && !wallTiles_.empty()) {
+            const WallTile& t = wallTiles_[static_cast<size_t>(s.lastWallGy) * 256 + static_cast<size_t>(s.lastWallGx)];
+            if (t.present) w = &t;
+        }
+        const uint32_t wf = (w && w->tile < wallDefFlags_.size()) ? wallDefFlags_[w->tile] : 0;
+        if (w && !(wf & 0x5)) {
+            hit(BerserkHit::WallSoft);
+            PlayerSetPos(s, s.prevX, s.prevY, out);
+            return;
+        }
+        hit(BerserkHit::WallHard);
+        PlaySoundAt(171, static_cast<float>(s.tickStartX), static_cast<float>(s.tickStartY), 0, 0, s.addr);   // BerserkerCrash
+        ApplyEnchant(Target{ s.addr, -1 }, 5, stunDur, 5);
+        // ⚠ nox_xxx_damageToMap_534BC0(칸, 100, 2) — 벽 부수기는 묶음 9
+    }
+    int pain = static_cast<int>(static_cast<float>(BalanceFloat("BerserkerPainRatio") * static_cast<double>(s.health)));
+    if (pain < 1) pain = 1;
+    Damage(s.addr, pain, out, std::string(), nullptr, /*ignoreInvuln=*/true);   // unitDamageClear_4EE5E0
+    PlayerSetPos(s, s.prevX, s.prevY, out);
 }
 
 // ── 묶음 7-e 능력 효과 넷 ─────────────────────────────────────────────

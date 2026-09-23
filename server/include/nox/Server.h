@@ -178,6 +178,20 @@ enum class HarpoonEnd : uint8_t {
 };
 constexpr size_t kHarpoonEndCount = static_cast<size_t>(HarpoonEnd::Count);
 
+// ★ 09-23 2-b2 — 광전사가 **무엇에 어떻게 부딪혔나**(`PlayerCollide` 광전사 갈래 · `GAME3_3.c:3188~3253`).
+//   켜진 채 부른 횟수 = 아래 갈래 합 — 이 등식이 「세는 자리가 빠졌나」를 잡는다
+enum class BerserkHit : uint8_t {
+    Unit = 0,      // 산 유닛·몬스터 생성기(0x20006) — 밀고 150 피해 · **기절·자기 피해 없이** 되돌아감
+    Object,        // 유닛 아닌 것 — 150 피해(우리 장애물엔 체력이 없다) · 기절 45 · 자기 피해 · 되돌아감
+    WallHard,      // 벽(마지막 닿은 벽의 깃발 &5, 또는 닿은 벽 기록 없음) — 소리 171 · 기절 · 자기 피해 · 되돌아감
+    WallSoft,      // 벽(깃발 &5 가 0) — 되돌아가기만
+    Light,         // 가볍고 움직이는 것(IMMOBILE·0x80 없음 · 무게 ≤ 나) — 그냥 지나감
+    Overlap,       // 밑에 깔림·겹쳐도 됨(0x9)·투사체 — 그냥 지나감
+    Door,          // 문 — 잠겼으면 부딪힘. ⚠ 지금은 닿을 수 없다(main 이 문을 장애물에서 빼고 BodyVsBody 가 문 짝을 거른다 · 묶음 9)
+    Count
+};
+constexpr size_t kBerserkHitCount = static_cast<size_t>(BerserkHit::Count);
+
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
 //   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
@@ -617,6 +631,13 @@ struct Session {
     bool hasFacingInput = false;
     double forceX = 0, forceY = 0; // 남이 준 힘(+88 ForceVec 몫) — 적분 때 더하고 지운다
     double prevX = 0, prevY = 0;   // +72 PrevPos — 지난 틱 시작 자리(막기 판정이 때린 쪽의 이 자리를 본다, 3-e2)
+    // ★ 2-b2 — `unitMove`(SetPos)가 이번 틱에 옮겼나. 옮겼으면 틱 끝 PrevPos 가 **옮긴 자리**다
+    //   (SetPos 가 PosVec·PrevPos 를 둘 다 그 자리로 적고 CCC 가 PrevPos = PosVec 을 하므로 · `object.go:705~707` · `server.go:163`)
+    bool setPosThisTick = false;
+    double tickStartX = 0, tickStartY = 0;   // ★ 2-b2 — 이번 틱 시작 자리(+56 PosVec — 적분 중에는 안 바뀐다). 땅울림 자리가 이것이다
+    // ★ 2-b2 — 마지막으로 닿은 벽 칸(+748 → +296 · `GAME5.c:6692` · `:6720`). 벽 선분에 가장 가까운 점을 찾을 때마다 덮어쓴다 —
+    //   **지우는 자리는 정답지에 없다.** 광전사가 벽에 부딪히면 이 칸의 재질 깃발로 「세게 · 살짝」을 가른다
+    int16_t lastWallGx = -1, lastWallGy = -1;
     int64_t debugWeapon = -1;      // 시험용 바꿔 들기 — −1 기본 장비 · 0 맨손 · 그 밖 kWeapons 클래스 비트(주워 들기는 묶음 5)
     // ★ 기력(+91 Field22_3, 3-b) — 만들 때 0(`GAME4_1.c:732`), 살아 있으면 틱마다 100 아래일 때 100/30 = 3 씩(`object_update.go:108`).
     //   무기 공격이 무기별로 깎는다(weaponGetStaminaByType_4F7E80 — 롱소드 70). 깎을 때 `47 <기력>` 을 중요로 알린다.
@@ -1504,6 +1525,18 @@ public:
     // ★★ 09-22 — 사람 **무게**. 정답지 `GAME3_3.c:7701` 대로 힘에서 셈한다(위저드 15.6·컨저러 18.8·워리어 30).
     //   ⚠ 상수로 두면 안 된다 — 직업마다 다르다. 힘이 아직 안 들어왔으면(0) 정답지와 같은 바닥값 10 이 된다
     double PlayerMassOf(const Session& s) const { return PlayerMassFromStrength(s.strength); }
+    // ★ 2-b2 — `sub_4E86E0`(`GAME3_3.c:3272~3306`) 무게를 실은 탄성 충돌. 둘 다 **옛 속도로** 새 속도를 셈한다.
+    //   무게는 float(+120), 둘째 몫 계수(v9 = 2·m2/합)도 float 칸에 담긴다 — 그대로 옮겼다
+    static void ElasticExchange(float m1, double& v1x, double& v1y, float m2, double& v2x, double& v2y) {
+        const float sum = m2 + m1;
+        const double k11 = (m1 - m2) / static_cast<double>(sum);
+        const float k12 = (m2 + m2) / sum;
+        const double k21 = (m2 - m1) / static_cast<double>(sum);
+        const double k22 = (m1 + m1) / static_cast<double>(sum);
+        const double n1x = v1x * k11 + k12 * v2x, n1y = v1y * k11 + k12 * v2y;
+        const double n2x = k21 * v2x + k22 * v1x, n2y = k21 * v2y + k22 * v1y;
+        v1x = n1x; v1y = n1y; v2x = n2x; v2y = n2y;
+    }
     unsigned long long pushN() const { return pushN_; }
     double pushAvg() const { return pushN_ ? pushSum_ / pushN_ : 0.0; }
     double pushMax() const { return pushMax_; }
@@ -2105,6 +2138,11 @@ public:
     //   `DebugMoveTo` 는 `x`/`y` 만 넣고 틱이 옮긴다 — 이쪽은 **둘 다** 넣는다
     double DebugPosX(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.posX; }
     double DebugPosY(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.posY; }
+    // ★ 2-b2 시험용 — 속도(+80) · 옛 자리(+72)
+    double DebugVelX(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.velX; }
+    double DebugVelY(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.velY; }
+    double DebugPrevX(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.prevX; }
+    double DebugPrevY(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.prevY; }
     double DebugDistance(const std::string& p, const std::string& q) const {
         const double dx = DebugPosX(p) - DebugPosX(q), dy = DebugPosY(p) - DebugPosY(q);
         return std::sqrt(dx * dx + dy * dy);
@@ -3172,6 +3210,16 @@ public:
     unsigned long long warcryShouts() const { return warcryShouts_; }           // ★ 2-a1 — 함성 칸 2→3
     unsigned long long warcryStunned() const { return warcryStunned_; }         // ★ 2-a2 — 외침에 기절한 몬스터
     unsigned long long berserkChargeTicks() const { return berserkChargeTicks_; } // ★ 2-b1 — 광전사가 민 틱
+    unsigned long long berserkCollideCalls() const { return berserkCollideCalls_; } // ★ 2-b2 — 광전사 켜진 채 부딪힘 함수를 부른 횟수
+    unsigned long long berserkHit(BerserkHit h) const {                          // ★ 2-b2 — 그 갈래별
+        return h < BerserkHit::Count ? berserkHit_[static_cast<size_t>(h)] : 0;
+    }
+    unsigned long long BerserkHitSum() const {
+        unsigned long long n = 0;
+        for (size_t i = 0; i < kBerserkHitCount; ++i) n += berserkHit_[i];
+        return n;
+    }
+    unsigned long long wallContacts() const { return wallContacts_; }           // ★ 2-b2 — 벽 닿음 짝(사람 · 틱마다 한 번)
     bool DebugAbilActiveVal(const std::string& a, uint8_t k) const {            // ★ 2-a1 시험용
         auto i = sessions_.find(a); return i != sessions_.end() && AbilityIsActiveVal(i->second, k);
     }
@@ -3693,6 +3741,12 @@ private:
     unsigned long long warcryShouts_ = 0;      // ★ 2-a1 — 함성 애니가 칸 2 → 3 을 넘은 틱(외침 효과가 붙을 자리)
     unsigned long long warcryStunned_ = 0;     // ★ 2-a2 — 외침에 붙잡힘(5)이 걸린 몬스터 수
     unsigned long long berserkChargeTicks_ = 0;   // ★ 2-b1 — 광전사가 앞으로 민 틱
+    unsigned long long berserkCollideCalls_ = 0;  // ★ 2-b2
+    uint32_t moveFrame_ = 0;                      // ★ 2-b2 — UpdatePlayerMovement 의 이 틱 프레임
+    unsigned long long berserkHit_[kBerserkHitCount] = {};
+    mutable unsigned long long wallContacts_ = 0;
+    // ★ 2-b2 — `nox_xxx_unitMove_4E7010` 의 사람 몫(`object.go:693~731` SetPos) — 속도는 **그대로 둔다**
+    void PlayerSetPos(Session& s, double x, double y, std::vector<OutPacket>& out);
     void WarcryShout(Session& s, std::vector<OutPacket>& out);   // ★ 2-a2 — 외침 효과(땅울림 · 몬스터 기절)
     int CastCounterSpell(Session& caster, std::vector<OutPacket>& out);   // ★ 2-a3 — castCounterSpell_52BBB0
     std::set<uint16_t> counterMissileTypes_;
@@ -4006,22 +4060,28 @@ private:
     bool MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float y2, uint8_t flags, float* hx = nullptr, float* hy = nullptr) const;
     // 원 대 벽(sub_54FEF0) — 사각형은 프레임 시작 자리(bx,by)로, 거리는 지금 자리(nx,ny)로 잰다.
     //   밀어낸 힘을 (ax,ay) 에 더하고 벽 쪽으로 가던 속도를 깎는다. 닿았으면 참.
+    //   ★ 2-b2 — lastGx·lastGy 를 주면 **가장 가까운 점을 찾은 마지막 칸**을 적는다(정답지 +296 — 밀기 전에 적는다)
     bool CircleVsWalls(double bx, double by, double r, double mass,
-                       double nx, double ny, double& vx, double& vy, double& ax, double& ay) const;
+                       double nx, double ny, double& vx, double& vy, double& ax, double& ay,
+                       int* lastGx = nullptr, int* lastGy = nullptr) const;
     // 오브젝트끼리(sub_548220 거르기·나누기 → 원 대 원 550D00 · 원 대 상자 54AD50). 자기(a1)만 민다.
     //   a1 = 움직이는 사람(지금 자리 nx,ny · 프레임 시작 bx,by · 속도 vx,vy), a2 = 상대(자리·속도).
     // 4-b1 — 부딪힘 기록(collSysAddCollision_548630)의 임자. kind 1 사람 · 2 소환수 · 3 장애물
+    //   ★ 2-b2 — kind 0 = **벽**(정답지 짝의 둘째가 0). 벽 짝은 a.collide(0) 만 부르고 버프 몫·되부르기가 없다(`GAME5.c:2055~2066`)
     struct ContactRef {
         uint8_t kind = 0;
         std::string addr;
         int idx = -1;
     };
+    // ★ 2-b2 — `PlayerCollide`(`GAME3_3.c:3188~3253`)의 광전사 갈래. other 가 null 이면 벽
+    void PlayerBerserkCollide(Session& s, const ContactRef* other, std::vector<OutPacket>& out);
     void BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, double by, double vx, double vy,
                     const PhysBody& a2, double ox, double oy, double obx, double oby, double ovx, double ovy,
                     double& ax, double& ay, const ContactRef* ra = nullptr, const ContactRef* rb = nullptr) const;
     void AddContact(const ContactRef& a, const ContactRef& b) const;               // collSysAddCollision_548630(겹 없이)
     void CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out);   // nox_xxx_collide_4FDF90
     // ★ 09-23 nine-defects 1-d — a1 의 **닿음 함수**(+696)를 (a1, a2) 로. 지금은 장애물의 `DamageCollide` 만 옮겼다
+    //   ★ 2-b2 — a1 이 사람이면 `PlayerCollide` 의 광전사 갈래
     void ContactCollide(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out);
     unsigned long long contactDamageHits_ = 0;   // 장애물 닿음 피해를 준 횟수(맵 불)
     mutable std::vector<std::pair<ContactRef, ContactRef>> contacts_;              // 이 틱 부딪힘(allocHitArray 가 비움)

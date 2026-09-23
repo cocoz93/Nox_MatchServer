@@ -180,6 +180,13 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
         // ★ 2-a1 — 함성 애니가 외치는 칸(2→3)을 넘은 수 · 애니가 끝나 켜짐 값을 내린 수
         if (a == 2) std::printf(" 외침칸 %llu·애니끝 %llu·기절몬스터 %llu", srv.warcryShouts(), srv.abilValOff(), srv.warcryStunned());
         if (a == 1) std::printf(" 돌진틱 %llu", srv.berserkChargeTicks());   // ★ 2-b1 — 광전사가 앞으로 민 틱
+        if (a == 1) {                                        // ★ 2-b2 — 켜진 채 부딪힘 함수를 부른 수 = 갈래 합
+            using B = nox::BerserkHit;
+            std::printf(" 부딪힘 %llu%s = {유닛 %llu·물체 %llu·벽세게 %llu·벽살짝 %llu·가벼워지나감 %llu·겹쳐지나감 %llu·문 %llu}",
+                        srv.berserkCollideCalls(), srv.BerserkHitSum() == srv.berserkCollideCalls() ? "" : " ⚠칸합불일치",
+                        srv.berserkHit(B::Unit), srv.berserkHit(B::Object), srv.berserkHit(B::WallHard),
+                        srv.berserkHit(B::WallSoft), srv.berserkHit(B::Light), srv.berserkHit(B::Overlap), srv.berserkHit(B::Door));
+        }
     }
     std::printf("\n");
     using T = nox::HarpoonTouch;
@@ -197,13 +204,15 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.harpoonEnd(H::OverFlight), srv.harpoonEnd(H::AimDead), srv.harpoonEnd(H::Debug));
     // ★ 1-d — 맵 불 같은 장애물의 닿음 피해. 옆에 전체 피해(`hurts`)를 같이 찍는다 — 0 이 「안 닿았다」인지 「못 셌다」인지 가르려고
     //   ⚠ 「부름」은 양 1 짜리 불의 짝수 프레임(피해 0)까지 센다 — 정답지도 피해 함수를 0 으로 부른다
-    std::printf("[맵닿음] 장애물 닿음 피해 부름 %llu회 · 전체 피해 %llu회\n", srv.contactDamageHits(), srv.hurts());
+    std::printf("[맵닿음] 장애물 닿음 피해 부름 %llu회 · 전체 피해 %llu회 · 사람 벽 짝 %llu회\n", srv.contactDamageHits(), srv.hurts(),
+                srv.wallContacts());   // ★ 2-b2 — 벽 짝은 광전사 벽 갈래의 분모
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
 unsigned long long AbilityFingerprint(const nox::Server& srv) {
     unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun() + srv.harpoonAimFound() +
-                           srv.contactDamageHits() + srv.warcryShouts() + srv.abilValOff() + srv.berserkChargeTicks();
+                           srv.contactDamageHits() + srv.warcryShouts() + srv.abilValOff() + srv.berserkChargeTicks() +
+                           srv.berserkCollideCalls();
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));
@@ -747,7 +756,12 @@ int main(int argc, char** argv) {
                 std::vector<uint32_t> flags;
                 for (const auto& d : wdb.Walls()) flags.push_back(d.flags);
                 srv.SetWallDefFlags(flags);
-                std::printf("[벽] 모양 %zu칸 · 재질 %zu종 · 방향 표 밖 %zu칸\n", cells.size(), flags.size(), badDir);
+                // ★ 2-b2 — 광전사가 **세게** 부딪히는 재질(깃발 &5)이 몇 종이고, 그런 칸이 이 맵에 몇 개인가
+                size_t hardDefs = 0, hardCells = 0;
+                for (uint32_t f : flags) if (f & 0x5) ++hardDefs;
+                for (const auto& w : cells) if (w.tile < flags.size() && (flags[w.tile] & 0x5)) ++hardCells;
+                std::printf("[벽] 모양 %zu칸 · 재질 %zu종 · 방향 표 밖 %zu칸 · 광전사 세게(깃발&5) 재질 %zu종·%zu칸\n",
+                            cells.size(), flags.size(), badDir, hardDefs, hardCells);
             } else {
                 std::printf("[벽] 모양 %zu칸 · ⚠ thing.bin 을 못 읽어 재질 깃발 없음(모두 막는 벽으로 봄)\n", cells.size());
             }

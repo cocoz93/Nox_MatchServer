@@ -14979,6 +14979,196 @@ void TestBerserkCharge() {
     std::printf("  nine-defects 2-b1 — 광전사: 상태 1·몸짓 45·+x 로 돌진(방향 잠김) · 얼면 멈춤 · 지속 끝에 멈춤 · 깃발 들면 못 씀 · 타원 방패 67\n");
 }
 
+// ── nine-defects 2-b2 — 광전사 부딪힘(`PlayerCollide` · `GAME3_3.c:3188~3253`) ─────────
+//
+//   벽(깃발 &5 있음/없음) · 사람 · 소환수 · 장애물(막는 것 · 겹쳐도 됨 · 가벼운 것) · 광전사 없이 벽.
+//   판마다 **갈래 칸 하나만** 오르는지와 「켜진 채 부른 횟수 = 갈래 합」을 본다.
+//   ⚠ 기절 남은 틱은 45 가 아니라 **44** — 부딪힘 짝 루프가 CCC 버프 줄이기(`server.go:189`)보다 먼저 돈다(2-a 의 89 와 같은 까닭)
+void TestBerserkCrash() {
+    const std::string a = "10.7.18.1:7181";
+    const std::string b = "10.7.18.2:7182";
+    auto gd = [](nox::Server& srv) {
+        nox::Gamedata g;
+        g.Parse("BerserkerPainRatio = 0.2;\nSOLO BerserkerDamage = 100;\nARENA BerserkerDamage = 150;\nBerserkerStunDuration = 45;\n");
+        srv.SetGamedata(g);
+        std::vector<nox::Server::SoundDefIn> sd;
+        nox::Server::SoundDefIn d; d.id = 171; d.maxDist = 600; d.samples = 1; sd.push_back(d);   // BerserkerCrash
+        srv.SetSoundDefs(sd);
+    };
+    auto mk = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        gd(srv);
+        srv.DebugEnterGame(a, 830, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.SetPlayerAnimFrames(45, 12, 0);
+        srv.DebugAbilAward(a, 1, false, out);
+        ms = 0; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.DebugSetFacing(a, 0);                              // +x
+        ms += 34; srv.Tick(ms, out);
+    };
+    // 광전사를 켜고 부딪힐 때까지 민다. 부딪힌 틱 직전의 옛 자리(+72)를 돌려준다 — 되돌아갈 자리다
+    struct Hit { bool ok = false; double px = 0, py = 0; std::vector<nox::OutPacket> out; };
+    auto charge = [&](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        Hit h;
+        srv.DebugAbilDo(a, 1, out);
+        for (int t = 0; t < 40; ++t) {
+            h.px = srv.DebugPrevX(a); h.py = srv.DebugPrevY(a);
+            h.out.clear();
+            ms += 34; srv.Tick(ms, h.out);
+            if (!srv.DebugAbilActive(a, 1)) { h.ok = true; break; }
+        }
+        return h;
+    };
+    auto only = [](const nox::Server& srv, nox::BerserkHit want) {
+        return srv.berserkHit(want) >= 1 && srv.berserkHit(want) == srv.BerserkHitSum() &&
+               srv.BerserkHitSum() == srv.berserkCollideCalls();
+    };
+    auto has = [&](const std::vector<nox::OutPacket>& out, nox::Op op) {
+        return FindMsg(FlattenTo(out, a), static_cast<uint8_t>(op)) != nullptr;
+    };
+    auto wallCol = [](nox::Server& srv) {                      // x 칸 47(1081~1104) 세로 한 줄 — X 자 벽
+        std::vector<std::pair<uint8_t, uint8_t>> cells;
+        for (uint8_t gy = 38; gy <= 48; ++gy) cells.push_back({ 47, gy });
+        srv.SetWalls(cells);
+    };
+
+    // ⓪ gamedata.bin 실물 — ARENA 가 SOLO 를 이긴다(150) · 기절 45 · 비율 0.2
+    {
+        nox::Gamedata real;
+        if (real.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\gamedata.bin")) {
+            Check(real.Float("ARENA", "BerserkerDamage") == 150.0 && real.Float("ARENA", "BerserkerStunDuration") == 45.0 &&
+                  std::fabs(real.Float("ARENA", "BerserkerPainRatio") - 0.2) < 1e-9, "⓪ gamedata 광전사 값이 150·45·0.2 가 아니다");
+        } else {
+            std::printf("  ⓪ gamedata.bin 대조 — 건너뜀(%s)\n", real.Error().c_str());
+        }
+        nox::Server srv; gd(srv);
+        Check(srv.BalanceFloat("BerserkerDamage") == 150.0, "⓪ 서버가 ARENA 광전사 피해(150)를 안 골랐다");
+    }
+    // ① **벽(깃발 1 — &5 있음)** — 세게: 소리 171 · 기절 · 자기 피해 20% · 상태 13 · 광전사 꺼짐 · 옛 자리로
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        wallCol(srv); srv.SetWallDefFlags({ 1 });
+        mk(srv, out, ms);
+        const int h0 = srv.HealthOf(a);
+        const unsigned long long snd0 = srv.soundsQueued();
+        Hit h = charge(srv, ms, out);
+        Check(h.ok, "① 벽에 닿았는데 광전사가 안 꺼졌다");
+        Check(only(srv, nox::BerserkHit::WallHard), "① 갈래가 「벽 세게」 하나가 아니다");
+        Check(srv.wallContacts() >= 1, "① 벽 짝이 안 적혔다");
+        Check(srv.DebugStateOf(a) == 13, "① 상태가 13 이 아니다");
+        Check(srv.DebugHasEnchant(a, 5) && srv.DebugEnchantDur(a, 5) == 44 && srv.DebugEnchantPower(a, 5) == 5,
+              "① 기절(5) 44틱·세기 5 가 아니다");
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "① 자기 피해 — 체력 %d → %d (%d 이어야)", h0, srv.HealthOf(a), h0 - h0 / 5);
+        Check(srv.HealthOf(a) == h0 - static_cast<int>(static_cast<float>(0.2 * h0)), msg);
+        Check(srv.soundsQueued() == snd0 + 1, "① 부딪힘 소리 171 이 한 번이 아니다");
+        std::snprintf(msg, sizeof(msg), "① 되돌아감 — (%.2f,%.2f) · 옛 자리 (%.2f,%.2f)", srv.DebugPosX(a), srv.DebugPosY(a), h.px, h.py);
+        Check(srv.DebugPosX(a) == h.px && srv.DebugPosY(a) == h.py, msg);
+        Check(srv.DebugPrevX(a) == h.px && srv.DebugPrevY(a) == h.py, "① 옮긴 틱 끝 PrevPos 가 옮긴 자리가 아니다");
+        Check(has(h.out, nox::Op::FX_JIGGLE) && has(h.out, nox::Op::FORGET_DRAWABLES), "① 땅울림(97)·ea 가 안 갔다");
+        Check(srv.abilEnded(1, nox::AbilEnd::Disabled) == 1, "① 광전사가 DisableAbility 로 안 꺼졌다");
+    }
+    // ② **벽(깃발 0 — &5 없음)** — 살짝: 되돌아가기만(기절·피해·소리 없음)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        wallCol(srv); srv.SetWallDefFlags({ 0 });
+        mk(srv, out, ms);
+        const int h0 = srv.HealthOf(a);
+        const unsigned long long snd0 = srv.soundsQueued();
+        Hit h = charge(srv, ms, out);
+        Check(h.ok && only(srv, nox::BerserkHit::WallSoft), "② 갈래가 「벽 살짝」 하나가 아니다");
+        Check(!srv.DebugHasEnchant(a, 5) && srv.HealthOf(a) == h0 && srv.soundsQueued() == snd0, "② 살짝인데 기절·피해·소리가 났다");
+        Check(srv.DebugPosX(a) == h.px && srv.DebugStateOf(a) == 13, "② 되돌아가지 않았거나 상태 13 이 아니다");
+    }
+    // ③ **사람** — 밀고(무게가 같으면 속도를 맞바꾼다) 상대에 피해 · 나는 기절·자기 피해 없음
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        gd(srv);
+        srv.DebugEnterGame(b, 831, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(b, 1045, 1000);
+        mk(srv, out, ms);
+        const int ha = srv.HealthOf(a), hb = srv.HealthOf(b);
+        Hit h = charge(srv, ms, out);
+        Check(h.ok && only(srv, nox::BerserkHit::Unit), "③ 갈래가 「유닛」 하나가 아니다");
+        Check(srv.HealthOf(b) < hb, "③ 부딪힌 사람이 피해를 안 입었다");
+        Check(srv.HealthOf(a) == ha && !srv.DebugHasEnchant(a, 5), "③ 사람에 부딪혔는데 내가 기절하거나 다쳤다");
+        // 둘 다 몸끼리 밀려 이미 +x 로 움직이는데(상대는 밀려난 만큼) 무게가 같으면 **속도를 맞바꾼다** — 그래서 상대가 더 빠르다.
+        //   (맞바꿈이 빠지면 거꾸로 내가 더 빠르다 — 돌연변이로 확인)
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "③ 속도 맞바꿈 — 나 %.2f · 상대 %.2f(상대가 빨라야)", srv.DebugVelX(a), srv.DebugVelX(b));
+        Check(srv.DebugVelX(b) > 5.0 && srv.DebugVelX(b) > srv.DebugVelX(a), msg);
+        Check(srv.DebugPosX(a) == h.px, "③ 되돌아가지 않았다");
+    }
+    // ③' `sub_4E86E0` 식 — 무게 1 이 (4,0) 으로 무게 3 의 서 있는 것에 부딪히면 (−2,0) · (2,0). 무게가 같으면 맞바꿈
+    {
+        double v1x = 4.0, v1y = 0.0, v2x = 0.0, v2y = 0.0;
+        nox::Server::ElasticExchange(1.0f, v1x, v1y, 3.0f, v2x, v2y);
+        Check(std::fabs(v1x + 2.0) < 1e-9 && std::fabs(v2x - 2.0) < 1e-9 && v1y == 0.0 && v2y == 0.0, "③' 무게 1·3 탄성 충돌 값이 다르다");
+        double a1x = 3.0, a1y = -1.0, a2x = -2.0, a2y = 5.0;
+        nox::Server::ElasticExchange(2.0f, a1x, a1y, 2.0f, a2x, a2y);
+        Check(a1x == -2.0 && a1y == 5.0 && a2x == 3.0 && a2y == -1.0, "③' 무게가 같은데 속도를 안 맞바꿨다");
+    }
+    // ④ **소환수** — 유닛 갈래 · 소환수 피해
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        mk(srv, out, ms);
+        srv.DebugSpawnPet(1328, 1040.0f, 1000.0f, std::string());
+        const uint16_t hp0 = srv.DebugPetHealth(0);
+        Hit h = charge(srv, ms, out);
+        Check(h.ok && only(srv, nox::BerserkHit::Unit), "④ 갈래가 「유닛」 하나가 아니다");
+        Check(srv.pets() == 0 || srv.DebugPetHealth(0) < hp0, "④ 소환수가 피해를 안 입었다");
+        Check(!srv.DebugHasEnchant(a, 5), "④ 소환수에 부딪혔는데 내가 기절했다");
+    }
+    // ⑤ **장애물(IMMOBILE · 막는 것)** — 물체 갈래: 기절 · 자기 피해 · 되돌아감
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        nox::Server::PhysBody ob; ob.shape = 2; ob.r = 10.0f; ob.x = 1045.0f; ob.y = 1000.0f; ob.cls = 0x400000; ob.mass = 1e10f;
+        srv.SetObstacles({ ob });
+        mk(srv, out, ms);
+        const int h0 = srv.HealthOf(a);
+        Hit h = charge(srv, ms, out);
+        Check(h.ok && only(srv, nox::BerserkHit::Object), "⑤ 갈래가 「물체」 하나가 아니다");
+        Check(srv.DebugHasEnchant(a, 5) && srv.HealthOf(a) == h0 - static_cast<int>(static_cast<float>(0.2 * h0)),
+              "⑤ 장애물에 부딪혔는데 기절·자기 피해가 없다");
+        Check(srv.DebugPosX(a) == h.px, "⑤ 되돌아가지 않았다");
+    }
+    // ⑥ **지나가는 둘** — 겹쳐도 됨(0x8) · 가벼운 것(IMMOBILE 없음 · 무게 1) — 광전사가 **안 꺼진다**
+    //   ⚠ 문 갈래는 여기서 못 만든다 — `BodyVsBody` 가 문 짝을 걸러 짝이 안 생긴다(묶음 9)
+    {
+        struct V { uint32_t cls, flags; float mass; nox::BerserkHit want; const char* name; };
+        const V vs[] = {
+            { 0x400000, 0x8, 1e10f, nox::BerserkHit::Overlap, "겹쳐도 됨" },
+            { 0x0,      0x0, 1.0f,  nox::BerserkHit::Light,   "가벼운 것" },
+        };
+        for (const V& v : vs) {
+            nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+            nox::Server::PhysBody ob; ob.shape = 2; ob.r = 10.0f; ob.x = 1045.0f; ob.y = 1000.0f;
+            ob.cls = v.cls; ob.flags = v.flags; ob.mass = v.mass;
+            srv.SetObstacles({ ob });
+            mk(srv, out, ms);
+            srv.DebugAbilDo(a, 1, out);
+            for (int t = 0; t < 12; ++t) { ms += 34; srv.Tick(ms, out); }
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "⑥ %s — 갈래가 그것 하나가 아니거나(합 %llu · 부름 %llu) 광전사가 꺼졌다", v.name,
+                          srv.BerserkHitSum(), srv.berserkCollideCalls());
+            Check(only(srv, v.want) && srv.DebugAbilActive(a, 1) && !srv.DebugHasEnchant(a, 5), msg);
+        }
+    }
+    // ⑦ **광전사 없이 벽** — 벽 짝은 적히지만(분모) 광전사 갈래는 0
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        wallCol(srv); srv.SetWallDefFlags({ 1 });
+        mk(srv, out, ms);
+        srv.DebugMoveTo(a, 1080, 1000);                        // 벽 대각선(x−y=92)까지 8.5 — 반지름 10 안이라 밀려난다
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.wallContacts() >= 1 && srv.berserkCollideCalls() == 0 && srv.BerserkHitSum() == 0,
+              "⑦ 광전사 없이 벽에 닿았는데 벽 짝이 없거나 광전사 갈래가 올랐다");
+    }
+    std::printf("  nine-defects 2-b2 — 광전사 부딪힘: 벽 세게(171·기절 44·20%%·옛 자리)·살짝 · 사람(속도 맞바꿈)·소환수 · 장애물 · 지나감 둘 · 광전사 없이 벽\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -21720,6 +21910,7 @@ int main() {
     TestCounterSpell();
     TestWarcryDo();
     TestBerserkCharge();
+    TestBerserkCrash();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();
