@@ -10521,7 +10521,7 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             src.byMonsterType = k.type;
             src.byPet = static_cast<int>(&k - pets_.data());
             src.rootIsMonster = k.owner.empty();          // 09-20 — 맵 몬스터가 때리면 뿌리가 몬스터
-            HurtTarget(foe, dmg, out, k.owner, 0, &src);
+            HurtTarget(foe, dmg, out, k.owner, 0, &src, HitterMonster(k));   // ★ 4-c3b3b a2 = a3 = 그 몬스터(`GAME5.c:2529~2531`)
             AIPop(k);
             break;
         }
@@ -13314,6 +13314,7 @@ uint16_t Server::BreakableHitSound(uint32_t mat) {
 void Server::PetDamageSound(const Creature& k, uint8_t dtype, HitterRef hitter) {
     ++defHitSoundCalls_;
     auto way = [&](DefHitSoundWay w) { ++defHitSoundWay_[static_cast<size_t>(w)]; };
+    if (MonsterHitSoundOwns(hitter)) { way(DefHitSoundWay::MonsterSound); return; }   // ★ 4-c3b3b `GAME3_2.c:7252~7254`
     if (hitter.kind == HitterRef::NotPorted) { way(DefHitSoundWay::NotPorted); return; }
     const bool hitterPresent = hitter.kind == HitterRef::Type;
     const uint32_t hitterMat = hitterPresent ? MaterialOfWire(hitter.type) : 0u;
@@ -13383,6 +13384,7 @@ uint16_t Server::DefaultHitSound(uint32_t mat, bool hasHp, uint8_t dtype, bool h
 void Server::PlayerDamageSound(const Session& victim, HitterRef h) {
     ++hitSoundCalls_;
     auto way = [&](HitSoundWay w) { ++hitSoundWay_[static_cast<size_t>(w)]; };
+    if (MonsterHitSoundOwns(h)) { way(HitSoundWay::MonsterSound); return; }        // ★ 4-c3b3b — 몬스터 맞히는 소리가 대신(`GAME3_2.c:7252~7254`)
     if (h.kind == HitterRef::NotPorted) { way(HitSoundWay::NotPorted); return; }   // 아직 안 옮긴 자리(4-c3b 표)
     if (h.kind == HitterRef::None) { way(HitSoundWay::NoHitter); return; }         // obj2 == nil
     const uint32_t hitter = MaterialOfWire(h.type);

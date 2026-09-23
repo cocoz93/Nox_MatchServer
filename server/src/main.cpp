@@ -221,20 +221,22 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.jumpForceTicks(), srv.jumpHeldTicks(), srv.jumpLanded(), srv.airborneOffIdle(), srv.recoilBlockedAirborne(),
                 srv.equakeSkipAirborne(), srv.spellRefusedAirborne());   // ★ 3-b
     // ★ 4-a — 휘두르기 소리. 판정 수(근접)가 분모 — 빗나간 판정마다 그 갈래 소리 하나(망치는 판정마다 882)
-    // ★ 4-c2 — 사람이 맞을 때 소리 갈래(부름 = 합 · 「안옮김」 = 때린 것을 아직 안 넘기는 자리 — 때린 이가 몬스터(4-c3b3 몫) · 종류 모르는 오브젝트)
+    // ★ 4-c2 — 사람이 맞을 때 소리 갈래(부름 = 합 · 「안옮김」 = 때린 것을 안 넘기는 자리 — 진단용 때리기 · 종류 모르는 오브젝트)
+    // ★ 4-c3b3b — 「몬스터소리」 = 때린 이가 몬스터이고 그 소리 모음의 맞히는 소리에 조각이 있어 맞는 쪽 소리를 안 냄
     using HW = nox::HitSoundWay;
     std::printf("[휘두름] 판정 %llu · 소리부름{879주먹 %llu·880롱소드 %llu·881칼 %llu·882망치 %llu·883도끼 %llu·884철퇴 %llu}"
-                " · 사람맞는소리 %llu%s = {냄 %llu·표없음 %llu·때린것없음 %llu·안옮김 %llu}\n",
+                " · 사람맞는소리 %llu%s = {냄 %llu·표없음 %llu·때린것없음 %llu·몬스터소리 %llu·안옮김 %llu}\n",
                 srv.melees(), srv.swingSound(879), srv.swingSound(880), srv.swingSound(881), srv.swingSound(882),
                 srv.swingSound(883), srv.swingSound(884), srv.hitSoundCalls(),
                 srv.HitSoundWaySum() == srv.hitSoundCalls() ? "" : " ⚠칸합불일치",
-                srv.hitSoundWay(HW::Played), srv.hitSoundWay(HW::TableEmpty), srv.hitSoundWay(HW::NoHitter), srv.hitSoundWay(HW::NotPorted));
+                srv.hitSoundWay(HW::Played), srv.hitSoundWay(HW::TableEmpty), srv.hitSoundWay(HW::NoHitter),
+                srv.hitSoundWay(HW::MonsterSound), srv.hitSoundWay(HW::NotPorted));
     // ★ 4-c3a — 소환수가 맞을 때 기본 타격 소리 갈래(부름 = 합)
     using DW = nox::DefHitSoundWay;
-    std::printf("[소환수맞는소리] 부름 %llu%s = {냄 %llu·부서짐 %llu·거름 %llu·표없음 %llu·안옮김 %llu}\n", srv.defHitSoundCalls(),
+    std::printf("[소환수맞는소리] 부름 %llu%s = {냄 %llu·부서짐 %llu·거름 %llu·표없음 %llu·몬스터소리 %llu·안옮김 %llu}\n", srv.defHitSoundCalls(),
                 srv.DefHitSoundWaySum() == srv.defHitSoundCalls() ? "" : " ⚠칸합불일치",
                 srv.defHitSoundWay(DW::Played), srv.defHitSoundWay(DW::Breakable), srv.defHitSoundWay(DW::Filtered),
-                srv.defHitSoundWay(DW::TableEmpty), srv.defHitSoundWay(DW::NotPorted));
+                srv.defHitSoundWay(DW::TableEmpty), srv.defHitSoundWay(DW::MonsterSound), srv.defHitSoundWay(DW::NotPorted));
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
@@ -1012,7 +1014,16 @@ int main(int argc, char** argv) {
                         const std::string& h = s->sound[nox::kSoundSetMeleeHitting];
                         std::printf(" %s=%s(%d)", ms.name, h.empty() ? "(안 적힘)" : h.c_str(), samplesOf(h));
                     }
-                    std::printf("\n");
+                    // ★ 4-c3b3b — 종류 번호별 「그 이름의 모음에 맞히는 소리가 있고 조각 1 이상」 표 → 서버(몬스터가 때릴 때 맞는 쪽 소리를 가른다)
+                    std::vector<uint8_t> owns(tdb.Count() + 1, 0);
+                    size_t nOwn = 0;
+                    for (size_t w = 1; w <= tdb.Count(); ++w) {
+                        const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                        const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
+                        if (s && samplesOf(s->sound[nox::kSoundSetMeleeHitting]) > 0) { owns[w] = 1; ++nOwn; }
+                    }
+                    std::printf(" · 종류 %zu개가 맞히는 소리를 가짐\n", nOwn);
+                    srv.SetMonsterHitSounds(std::move(owns));
                 }
                 // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
                 for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,

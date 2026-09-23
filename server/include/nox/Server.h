@@ -211,7 +211,8 @@ enum class HitSoundWay : uint8_t {
     Played = 0,    // 표에 번호가 있어 냈다
     TableEmpty,    // 맞는 쪽 × 때린 것 재질 조합이 표에 없다(`Sub_532930` 이 그냥 돌아감)
     NoHitter,      // 때린 물건도 때린 이도 없다(`obj2 == nil`)
-    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리(4-c3b 표 ㉢ — 때린 이가 몬스터) · 종류를 모르는 오브젝트 — 세기만
+    MonsterSound,  // ★ 4-c3b3b — 때린 이가 몬스터이고 그 소리 모음의 맞히는 소리에 조각이 있다 → 맞는 쪽 소리 안 냄(`GAME3_2.c:7252~7254`)
+    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리(시험용 DebugHurt · 진단용 때리기) · 종류를 모르는 오브젝트 — 세기만
     Count
 };
 constexpr size_t kHitSoundWayCount = static_cast<size_t>(HitSoundWay::Count);
@@ -222,7 +223,8 @@ enum class DefHitSoundWay : uint8_t {
     Breakable,     // 맞는 쪽이 나무·돌·흙(8·32·64)이고 체력이 있어 「부서지는 소리」(`Sub_532EC0`)
     Filtered,      // 때린 것이 없거나 재질 NONE(0x4000)이거나, 피해 종류가 0·2·3·10·11 이 아님
     TableEmpty,    // 표에 그 조합이 없다
-    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리(4-c3b 표 ㉢) · 종류를 모르는 오브젝트 — 세기만
+    MonsterSound,  // ★ 4-c3b3b — 때린 이가 몬스터이고 그 소리 모음의 맞히는 소리에 조각이 있다 → 안 냄
+    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리 · 종류를 모르는 오브젝트 — 세기만
     Count
 };
 constexpr size_t kDefHitSoundWayCount = static_cast<size_t>(DefHitSoundWay::Count);
@@ -2249,6 +2251,8 @@ public:
         enum Kind : uint8_t { NotPorted = 0, None, Type };
         Kind kind = NotPorted;
         uint16_t type = 0;     // Type 이면 그 종류 번호 — 재질을 이 번호로 찾는다(사람 몸은 NewPlayer 번호)
+        // ★ 4-c3b3b — 때린 이(a2)가 **몬스터**면 그 종류(아니면 0). 맞는 소리 맨 앞에서 그 몬스터 소리 모음의 맞히는 소리를 본다(`GAME3_2.c:7252~7254`)
+        uint16_t monsterA2 = 0;
     };
     // ★ 시험용 — 피해 함수(3-e)를 바로 부른다. pet < 0 이면 사람(addr), 아니면 소환수 자리 번호
     bool DebugHurt(const std::string& addr, int pet, int dmg, const std::string& by, uint8_t dtype,
@@ -3320,6 +3324,8 @@ public:
     // `Sub_532930`(`server/sound.go:31~161`) — 맞는 쪽 재질 × 때린 것 재질 → 소리 번호(없으면 0). 값이 **딱 그 비트**일 때만 맞는다
     static uint16_t HitSoundFor(uint32_t victimMat, uint32_t hitterMat);
     // ★ 4-c2 — thing.bin 재질(와이어 번호 색인) · 가슴갑옷(ARMOR + SUBCLASS BREASTPLATE)인가 · 사람 몸 종류(NewPlayer) 번호. main 이 넣는다
+    // ★ 4-c3b3b — 종류 번호별 「그 종류 이름의 소리 모음에 맞히는 소리가 있고 조각이 1 이상」(main 이 soundset.bin 으로 채운다)
+    void SetMonsterHitSounds(std::vector<uint8_t> byWire) { monsterHitSound_ = std::move(byWire); }
     void SetMaterialTables(std::vector<uint32_t> matByWire, std::vector<uint8_t> breastplateByWire, uint16_t newPlayerWire) {
         matByWire_ = std::move(matByWire); breastByWire_ = std::move(breastplateByWire); newPlayerWire_ = newPlayerWire;
     }
@@ -3461,7 +3467,18 @@ private:
     // ★ 4-c3b1 — 「때린 것」 도우미. 사람 몸 = NewPlayer 번호 · 주소가 사람이 아니면(몬스터가 때린 이 등) 아직 안 옮김(4-c3b3)
     HitterRef HitterPlayerBody() const { HitterRef h; h.kind = HitterRef::Type; h.type = newPlayerWire_; return h; }
     HitterRef HitterByAddr(const std::string& addr) const { return sessions_.count(addr) ? HitterPlayerBody() : HitterRef{}; }
-    HitterRef HitterUnit(const Target& t) const { return t.addr.empty() ? HitterRef{} : HitterByAddr(t.addr); }
+    // ★ 4-c3b3b — 소환수(몬스터)면 때린 것·때린 이 둘 다 그 몸(감전 되갚기 a2 = a1 · 닿음 감전 a2 = a3 = a1)
+    HitterRef HitterUnit(const Target& t) const {
+        if (!t.addr.empty()) return HitterByAddr(t.addr);
+        if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) return HitterMonster(pets_[static_cast<size_t>(t.pet)]);
+        return HitterRef{};
+    }
+    // ★ 4-c3b3b — 몬스터가 제 몸으로 때림(소환수 근접 `GAME5.c:2529~2531` — a2 = a3 = 그 몬스터 · 주인 있는 소환수도 몬스터다)
+    static HitterRef HitterMonster(const Creature& k) { HitterRef h; h.kind = HitterRef::Type; h.type = k.type; h.monsterA2 = k.type; return h; }
+    // ★ 4-c3b3b — 때린 이가 몬스터이고 그 소리 모음의 맞히는 소리에 조각이 있나(맞으면 맞는 쪽 소리를 안 낸다)
+    bool MonsterHitSoundOwns(const HitterRef& h) const {
+        return h.monsterA2 != 0 && h.monsterA2 < monsterHitSound_.size() && monsterHitSound_[h.monsterA2] != 0;
+    }
     static HitterRef HitterNone() { HitterRef h; h.kind = HitterRef::None; return h; }
     // ★ 4-c3b2 — 때린 것 = 그 오브젝트 자신(날아가는 것·놓인 것·맵 불 — 정답지 a3 = a1). 종류를 모르면(0) 안 옮김으로 센다
     static HitterRef HitterObj(uint16_t type) { HitterRef h; if (type) { h.kind = HitterRef::Type; h.type = type; } return h; }
@@ -3880,6 +3897,7 @@ private:
     unsigned long long harpoonHitSoundCalls_ = 0, harpoonHitSoundWay_[kDefHitSoundWayCount] = {};
     std::vector<uint32_t> matByWire_;
     std::vector<uint8_t> breastByWire_;
+    std::vector<uint8_t> monsterHitSound_;   // ★ 4-c3b3b
     uint16_t newPlayerWire_ = 0;
     // ★ 4-c2 — `nox_xxx_soundPlayerDamageSound_5328B0` — 맞는 사람의 가슴갑옷 재질(없으면 FLESH) × 때린 것(무기, 없으면 때린 이) 재질
     void PlayerDamageSound(const Session& victim, HitterRef hitter);
@@ -4100,7 +4118,12 @@ private:
     bool MissileRootIsMonster(const MissileObj& m) const;
     // ★ 4-c3b2 — 날아가는 것이 맞힐 때의 「때린 것」. 때린 이(a2 = 주인 사슬 뿌리)가 몬스터면 정답지는 그 몬스터의 소리 모음을
     //   먼저 보고 소리를 안 낼 수도 있다(`GAME3_2.c:7252~7254`) — 그건 4-c3b3 에서 옮기므로 그때까지 안 옮김으로 센다
-    HitterRef HitterMissile(const MissileObj& m) const { return MissileRootIsMonster(m) ? HitterRef{} : HitterObj(m.type); }
+    //   ★ 4-c3b3b — 이제 옮김: 뿌리가 맵 몬스터면 때린 것 = 발사체 · 때린 이 = 그 몬스터(`FindOwnerChainPlayer` — 사람이 없으면 사슬 끝)
+    HitterRef HitterMissile(const MissileObj& m) const {
+        HitterRef h = HitterObj(m.type);
+        if (MissileRootIsMonster(m)) h.monsterA2 = pets_[static_cast<size_t>(m.ownerPet)].type;
+        return h;
+    }
     bool OwnersEnemy(const std::string& a, bool aMonsterRoot, const std::string& b, bool bMonsterRoot) const;
 
     // 판 시계를 뿌린다 — `0xd3 TIMER_STATUS`. 짜임은 실측이다(PROTOCOL.md 「판 시계」).

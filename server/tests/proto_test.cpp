@@ -12331,6 +12331,48 @@ void TestAIMelee() {
         Check(srv.HealthOf(b) < hp0, "때렸는데 상대 체력이 안 줄었다");
         Check(srv.DebugAIAction(0, 0) == 0, "때린 뒤 안 빠졌다");
     }
+    // ⑤b ★ nine-defects 4-c3b3b — 소환수가 물 때 맞는 소리: 때린 이 = 때린 것 = 그 몬스터(`GAME5.c:2529~2531`).
+    //   그 종류가 맞히는 소리를 가지면 **맞는 쪽 소리를 안 낸다**(주인 있는 소환수도 몬스터라 검사를 받는다) · 없으면 몬스터 몸 재질로(쇠 × 살 862)
+    for (int hitSnd = 0; hitSnd < 2; ++hitSnd) {
+        nox::Server srv; mk(srv, 1358);
+        AllMetalButPlayer(srv);
+        if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1358] = 1; srv.SetMonsterHitSounds(t); }
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, 0);
+        const int hp0 = srv.HealthOf(b);
+        srv.DebugAIPush(0, 16);
+        srv.DebugAITick(0, out);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "⑤b 소환수 물기 · 맞히는 소리 %s — b 체력 %d→%d · 부름 %llu · 냄 %llu · 몬스터소리 %llu · 마지막 %u",
+                      hitSnd ? "있음" : "없음", hp0, srv.HealthOf(b), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
+                      srv.hitSoundWay(nox::HitSoundWay::MonsterSound), static_cast<unsigned>(srv.lastHitSound()));
+        if (hitSnd) Check(srv.HealthOf(b) < hp0 && srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::MonsterSound) == 1, msg);
+        else Check(srv.HealthOf(b) < hp0 && srv.hitSoundCalls() == 1 && PlayerHitByObject(srv), msg);
+    }
+    // ⑤c ★ 4-c3b3b — 맞는 쪽이 **소환수**여도 같다(기본 타격 소리 `532E20` 앞에서 가른다) — 쇠 몬스터 × 쇠 몬스터 861
+    for (int hitSnd = 0; hitSnd < 2; ++hitSnd) {
+        nox::Server srv; mk(srv, 1358);
+        AllMetalButPlayer(srv);
+        if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1358] = 1; srv.SetMonsterHitSounds(t); }
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        srv.DebugSpawnPet(1328, 1010.0f, 1000.0f, std::string());   // 1 — 맵 몬스터(물릴 쪽)
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, std::string(), 1);
+        srv.DebugSetPetNextHit(0, 0);
+        const uint16_t hp0 = srv.DebugPetHealth(1);
+        srv.DebugAIPush(0, 16);
+        srv.DebugAITick(0, out);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "⑤c 소환수가 소환수를 묾 · 맞히는 소리 %s — 체력 %u→%u · 부름 %llu · 냄 %llu · 몬스터소리 %llu · 마지막 %u",
+                      hitSnd ? "있음" : "없음", hp0, srv.DebugPetHealth(1), srv.defHitSoundCalls(),
+                      srv.defHitSoundWay(nox::DefHitSoundWay::Played), srv.defHitSoundWay(nox::DefHitSoundWay::MonsterSound),
+                      static_cast<unsigned>(srv.lastHitSound()));
+        const bool hurt = srv.pets() < 2 || srv.DebugPetHealth(1) < hp0;
+        if (hitSnd) Check(hurt && srv.defHitSoundCalls() == 1 && srv.defHitSoundWay(nox::DefHitSoundWay::MonsterSound) == 1, msg);
+        else Check(hurt && srv.defHitSoundCalls() == 1 && srv.defHitSoundWay(nox::DefHitSoundWay::Played) == 1 && srv.lastHitSound() == 861, msg);
+    }
     // ⑥ **쏘기(17) 시작** — 쉬는 시간을 **쏘기 간격**(임프 15~30)으로 잡는다
     {
         nox::Server srv; mk(srv, 1328);
@@ -15890,13 +15932,15 @@ void TestPetHitSound() {
     std::printf("  nine-defects 4-c3a — 소환수 맞는 소리: 부서지는 재질 표 · 살 862 · 돌·나무 부서짐 · 쇠 861 · NONE 없음 · 때린 것 NONE 거름 · 근접 아님 세기만\n");
 }
 
-// ── nine-defects 4-c3b2 — 날아가는 것이 맞힐 때, 때린 이(주인 사슬 뿌리)가 몬스터면 아직 안 옮김(4-c3b3) ─────────
-//   정답지는 그때 몬스터의 소리 모음(+488 · +32)을 먼저 본다(`GAME3_2.c:7252~7254`). 사람의 소환수가 쏜 것은 뿌리가 사람이라
-//   때린 것 = 발사체. 같은 판에서 주인만 바꿔 두 경우를 대조한다
+// ── nine-defects 4-c3b2·4-c3b3b — 날아가는 것이 맞힐 때, 때린 이(주인 사슬 뿌리)가 몬스터면 그 소리 모음을 먼저 본다 ─────────
+//   정답지 `GAME3_2.c:7252~7254` — 뿌리가 몬스터이고 그 모음의 맞히는 소리(+32)에 조각이 있으면 맞는 쪽 소리를 안 낸다.
+//   사람의 소환수가 쏜 것은 뿌리가 사람이라 모음을 안 본다(때린 것 = 발사체). 주인 × 「맞히는 소리 있음」 네 경우를 대조한다
 void TestMissileHitterRoot() {
     const std::string a = "10.7.24.1:7241";
     const std::string b = "10.7.24.2:7242";
-    for (int owned = 0; owned < 2; ++owned) {
+    for (int k = 0; k < 4; ++k) {
+        const bool owned = (k & 1) != 0;
+        const bool hitSnd = (k & 2) != 0;                       // 1328 이 맞히는 소리를 가진 종류인가
         nox::Server srv;
         RegImpShot(srv);
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
@@ -15906,6 +15950,7 @@ void TestMissileHitterRoot() {
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1100, 1000);
         AllMetalButPlayer(srv);
+        if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1328] = 1; srv.SetMonsterHitSounds(t); }
         std::vector<nox::OutPacket> out; uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
@@ -15914,14 +15959,51 @@ void TestMissileHitterRoot() {
         srv.DebugCreatureShoot(0, "ImpShot", 1100.0f, 1000.0f, out);
         Check(srv.missiles() == 1, owned ? "소환수가 안 쐈다(시험 전제)" : "맵 몬스터가 안 쐈다(시험 전제)");
         for (int t = 0; t < 20 && srv.HealthOf(b) == bHp; ++t) { ms += 34; srv.Tick(ms, out); }
-        char msg[200];
-        std::snprintf(msg, sizeof(msg), "%s — b 체력 %u→%u · 부름 %llu · 냄 %llu · 안옮김 %llu · 마지막 %u", owned ? "사람의 소환수" : "맵 몬스터",
+        char msg[240];
+        std::snprintf(msg, sizeof(msg), "%s · 맞히는 소리 %s — b 체력 %u→%u · 부름 %llu · 냄 %llu · 몬스터소리 %llu · 안옮김 %llu · 마지막 %u",
+                      owned ? "사람의 소환수" : "맵 몬스터", hitSnd ? "있음" : "없음",
                       bHp, srv.HealthOf(b), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
-                      srv.hitSoundWay(nox::HitSoundWay::NotPorted), static_cast<unsigned>(srv.lastHitSound()));
-        if (owned) Check(srv.HealthOf(b) < bHp && PlayerHitByObject(srv), msg);
-        else Check(srv.HealthOf(b) < bHp && srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::NotPorted) == srv.hitSoundCalls(), msg);
+                      srv.hitSoundWay(nox::HitSoundWay::MonsterSound), srv.hitSoundWay(nox::HitSoundWay::NotPorted),
+                      static_cast<unsigned>(srv.lastHitSound()));
+        // 맵 몬스터 + 맞히는 소리 있음 → 몬스터소리(맞는 쪽 소리 없음) · 그 밖 셋 → 발사체 재질(862)
+        if (!owned && hitSnd)
+            Check(srv.HealthOf(b) < bHp && srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::MonsterSound) == srv.hitSoundCalls(), msg);
+        else
+            Check(srv.HealthOf(b) < bHp && PlayerHitByObject(srv), msg);
     }
-    std::printf("  nine-defects 4-c3b2 — 날아가는 것: 맵 몬스터가 쏜 것은 안옮김 · 사람의 소환수가 쏜 것은 발사체 재질(862)\n");
+    std::printf("  nine-defects 4-c3b2·b3b — 날아가는 것: 맵 몬스터가 쏜 것은 그 맞히는 소리가 있으면 몬스터소리 · 없거나 사람의 소환수면 발사체 재질(862)\n");
+}
+
+// ── nine-defects 4-c3b3b — 감전(22) 건 소환수를 사람이 칼로 치면 되갚는 전기의 맞는 소리 ─────────
+//   되갚기는 (a2+716)(a2, a1, 0, …) — 때린 이 = 감전 건 소환수(a1) · 때린 것 없음 → obj2 = 그 소환수(`GAME3_2.c:7118`).
+//   소환수는 몬스터라 그 종류가 맞히는 소리를 가지면 맞는 쪽(칼 든 사람) 소리를 안 낸다
+void TestMonsterShockBackSound() {
+    const std::string a = "10.7.26.1:7261";
+    for (int hitSnd = 0; hitSnd < 2; ++hitSnd) {
+        nox::Server srv;
+        nox::Gamedata g;
+        g.Parse("ShockDamage = 15, 30, 45, 60, 75;\n");
+        srv.SetGamedata(g);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        srv.DebugEnterGame(a, 895, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugSpawnPet(1328, 1030.0f, 1000.0f, std::string());   // 맵 몬스터
+        AllMetalButPlayer(srv);
+        if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1328] = 1; srv.SetMonsterHitSounds(t); }
+        srv.DebugApplyEnchantPet(0, 22, 0, 1);
+        std::vector<nox::OutPacket> out;
+        const uint16_t ha = srv.HealthOf(a);
+        nox::Server::AttackSrc src; src.x = 1000; src.y = 1000; src.obj = true;   // 칼(무기 오브젝트)
+        srv.DebugHurt(std::string(), 0, 5, a, 0, out, &src);
+        char msg[220];
+        std::snprintf(msg, sizeof(msg), "감전 되갚기 · 맞히는 소리 %s — a 체력 %u→%u · 부름 %llu · 냄 %llu · 몬스터소리 %llu · 마지막 %u",
+                      hitSnd ? "있음" : "없음", ha, srv.HealthOf(a), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
+                      srv.hitSoundWay(nox::HitSoundWay::MonsterSound), static_cast<unsigned>(srv.lastHitSound()));
+        if (hitSnd) Check(srv.HealthOf(a) < ha && srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::MonsterSound) == 1, msg);
+        else Check(srv.HealthOf(a) < ha && srv.hitSoundCalls() == 1 && PlayerHitByObject(srv), msg);
+    }
+    std::printf("  nine-defects 4-c3b3b — 감전 건 소환수의 되갚기: 맞히는 소리가 있으면 몬스터소리 · 없으면 소환수 몸 재질(862)\n");
 }
 
 // ── nine-defects 4-c3b2b — 피해 함수의 참/거짓(`CallDamage`) · 작살이 끊길 때 따로 내는 기본 타격 소리(`spell_harpoon.go:172~176`) ─────────
@@ -22783,6 +22865,7 @@ int main() {
     TestPlayerHitSound();
     TestPetHitSound();
     TestMissileHitterRoot();
+    TestMonsterShockBackSound();
     TestHarpoonRefused();
     TestHarpoonPull();
     TestGuideAward();
