@@ -182,6 +182,24 @@ uint32_t ParseMaterial(const std::string& raw);
 //   BOOTS 0x20 · SHIRT 0x40 · LEG_ARMOR 0x80 · BACK 0x100). ARMOR 클래스 물건의 SUBCLASS 원문에만 쓴다
 uint32_t ParseArmorClass(const std::string& raw);
 
+// ★ 09-23 nine-defects 4-c3b3a — soundset.bin(암호 5) — 몬스터 소리 모음(`nox_xxx_parseSoundSetBin_424170` · `GAME1_1.c:4741~4773`).
+//   꼴 = 모음 이름 → (칸 이름 · 소리 이름) 짝 … → `END`. 모르는 칸 이름이면 정답지도 읽기 실패(`:4766~4768`).
+//   칸 18 가지와 자리(+4 부터 4씩)는 정답지 이름표(`blob_587000.dat` 0x587000+64704 — 파일을 열어 읽음)의 순서 그대로다.
+//   몬스터는 **자기 종류 이름과 같은 이름의 모음**을 받는다(`unit_monster.go:100~101` · 같은 이름이 둘이면 **뒤에 적힌 것** — 목록 앞에 붙여 앞에서 찾는다 `:4757~4760·4818`)
+constexpr int kSoundSetFields = 18;
+extern const char* const kSoundSetFieldNames[kSoundSetFields];
+constexpr int kSoundSetMeleeHitting = 7;   // +32 MELEE_ATTACK_HITTING_SOUND — 때린 이가 몬스터일 때 맞는 쪽 소리를 가르는 칸(`GAME3_2.c:7252~7254`)
+struct SoundSet {
+    std::string name;
+    std::string sound[kSoundSetFields];    // 소리 이름 그대로("NULL" 포함) · 안 적힌 칸은 빈 글
+};
+// 풀린 바이트를 읽는다. 실패면 false · err 에 까닭
+bool ParseSoundSets(const std::vector<uint8_t>& plain, std::vector<SoundSet>& out, std::string* err);
+// 이름으로 찾기 — 같은 이름이 여럿이면 뒤에 적힌 것(정답지 목록 순서). 없으면 nullptr
+const SoundSet* FindSoundSet(const std::vector<SoundSet>& sets, const std::string& name);
+// 파일을 풀어(암호 5) 읽는다 — main 은 `windows.h` 가 `DecryptFile` 이름을 바꿔치기하므로 이것을 부른다
+bool LoadSoundSets(const std::string& path, std::vector<SoundSet>& out, std::string* err);
+
 class ThingDb {
 public:
     // thing.bin 을 읽는다. 실패면 false — reasons_ 에 까닭이 남는다.

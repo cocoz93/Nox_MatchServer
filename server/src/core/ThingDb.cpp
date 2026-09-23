@@ -565,6 +565,79 @@ uint32_t ParseObjectClass(const std::string& raw) { return ParseNameBits(raw, kC
 uint32_t ParseMaterial(const std::string& raw) { return raw.empty() ? 0x4000u : ParseNameBits(raw, kMaterialNames, 15); }
 uint32_t ParseArmorClass(const std::string& raw) { return ParseNameBits(raw, kArmorNames, 9); }
 
+// ★ 4-c3b3a — 정답지 이름표 순서(자리 +4·+8·…·+72)
+const char* const kSoundSetFieldNames[kSoundSetFields] = {
+    "LISTEN_SOUND", "TAUNT_SOUND", "THREATEN_SOUND", "IDLE_SOUND", "ENGAGE_SOUND", "MELEE_ATTACK_INIT_SOUND",
+    "MELEE_ATTACK_SOUND", "MELEE_ATTACK_HITTING_SOUND", "MELEE_ATTACK_MISSING_SOUND", "MISSILE_ATTACK_INIT_SOUND",
+    "MISSILE_ATTACK_SOUND", "FLEE_SOUND", "RETREAT_SOUND", "SPELL_INIT_SOUND", "DIE_SOUND", "INJURED_SOUND",
+    "RECOGNIZE_SOUND", "MOVE_SOUND",
+};
+
+namespace {
+// `nox_xxx_parseString_409470`(`GAME1.c:58~95`) — 앞 공백을 건너뛰고 다음 공백까지 한 줄기. 끝(EOF)에 닿으면 **줄기가 있어도 실패**(0).
+//   줄기 안에서 「//」 를 만나면 줄을 건너뛰고 새로 시작한다 — 건너뛰기(`nox_binfile_skipLine_409520` → Go `binfile.go:244~258`)는
+//   줄 끝까지가 아니라 **줄바꿈이 아닌 글자 하나를 먹을 때까지**다(정답지 그대로 · 실제 soundset.bin 에는 「//」 가 0건이라 결과는 같다)
+bool NextBinToken(const std::vector<uint8_t>& b, size_t& i, std::string& tok) {
+    tok.clear();
+    bool lead = true;                                    // v4 — 앞 공백을 건너뛰는 중
+    int prev = 0;                                        // v5 — 바로 앞 글자
+    for (;;) {
+        if (i >= b.size()) return false;
+        const int c = b[i++];
+        if (std::isspace(c)) {
+            if (!lead) return true;
+            prev = c;
+            continue;
+        }
+        lead = false;
+        if (c == '/' && prev == '/') {
+            while (i < b.size()) { const uint8_t x = b[i++]; if (x != '\n') break; }
+            tok.clear();
+            lead = true;
+            prev = c;
+            continue;
+        }
+        tok.push_back(static_cast<char>(c));
+        prev = c;
+    }
+}
+}  // namespace
+
+bool ParseSoundSets(const std::vector<uint8_t>& plain, std::vector<SoundSet>& out, std::string* err) {
+    out.clear();
+    size_t i = 0;
+    std::string tok, val;
+    while (NextBinToken(plain, i, tok)) {                // 모음 이름
+        SoundSet s;
+        s.name = tok;
+        // 짝 읽기 — `while (parseString(칸) && 칸 != "END" && parseString(소리))`
+        while (NextBinToken(plain, i, tok) && tok != "END" && NextBinToken(plain, i, val)) {
+            int f = -1;
+            for (int k = 0; k < kSoundSetFields; ++k)
+                if (tok == kSoundSetFieldNames[k]) { f = k; break; }
+            if (f < 0) {
+                if (err) *err = "모르는 칸 이름 `" + tok + "`(모음 " + s.name + ")";
+                return false;
+            }
+            s.sound[f] = val;
+        }
+        out.push_back(std::move(s));
+    }
+    return true;
+}
+
+bool LoadSoundSets(const std::string& path, std::vector<SoundSet>& out, std::string* err) {
+    const std::vector<uint8_t> plain = DecryptFile(path, kKeySoundSet);
+    if (plain.empty()) { out.clear(); if (err) *err = "못 읽음/못 풂 " + path; return false; }
+    return ParseSoundSets(plain, out, err);
+}
+
+const SoundSet* FindSoundSet(const std::vector<SoundSet>& sets, const std::string& name) {
+    for (size_t k = sets.size(); k-- > 0;)
+        if (sets[k].name == name) return &sets[k];
+    return nullptr;
+}
+
 bool ThingDb::Load(const std::string& path) {
     things_.clear();
     walls_.clear();

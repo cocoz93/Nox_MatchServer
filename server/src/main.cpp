@@ -982,6 +982,38 @@ int main(int argc, char** argv) {
                     }
                     std::printf(" · 조각 0 또는 없음 %zu / 25\n", zero);
                 }
+                // ★ 09-23 nine-defects 4-c3b3a — soundset.bin(암호 5)의 몬스터 소리 모음. 때린 이가 몬스터면 그 모음의 「맞히는 소리」
+                //   (MELEE_ATTACK_HITTING_SOUND · +32)에 조각이 있을 때 맞는 쪽 소리를 안 낸다(`GAME3_2.c:7252~7254` — 4-c3b3b 에서 쓴다).
+                //   여기서는 읽히는지·몇 벌인지·부를 수 있는 소환수 열셋의 그 소리와 조각 수를 찍는다
+                {
+                    std::vector<nox::SoundSet> sets;
+                    std::string err;
+                    const bool ok = nox::LoadSoundSets("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\soundset.bin", sets, &err);
+                    auto samplesOf = [&](const std::string& nm) {
+                        const uint16_t id = nm.empty() ? 0 : nox::SoundByName(nm.c_str());
+                        if (id == 0) return -1;
+                        for (const auto& in : sd) if (in.id == id) return in.samples;
+                        return -1;
+                    };
+                    size_t written = 0, withSamples2 = 0, nameless = 0;
+                    for (const auto& s : sets) {
+                        const std::string& h = s.sound[nox::kSoundSetMeleeHitting];
+                        if (h.empty() || h == "NULL") continue;
+                        ++written;
+                        if (nox::SoundByName(h.c_str()) == 0) ++nameless;
+                        if (samplesOf(h) > 0) ++withSamples2;
+                    }
+                    std::printf("[소리모음] %s · %zu벌 · 맞히는 소리 적힌 것 %zu(조각 있음 %zu · 이름표에 없음 %zu)",
+                                ok ? "읽음" : ("⚠ 못 읽음 " + err).c_str(), sets.size(), written, withSamples2, nameless);
+                    std::printf(" · 소환수:");
+                    for (const auto& ms : nox::kMonsters) {
+                        const nox::SoundSet* s = nox::FindSoundSet(sets, ms.name);
+                        if (!s) { std::printf(" %s=모음없음", ms.name); continue; }
+                        const std::string& h = s->sound[nox::kSoundSetMeleeHitting];
+                        std::printf(" %s=%s(%d)", ms.name, h.empty() ? "(안 적힘)" : h.c_str(), samplesOf(h));
+                    }
+                    std::printf("\n");
+                }
                 // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
                 for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,
                                     nox::SoundByName("HumanMaleExertionHeavy"), nox::SoundByName("HumanFemaleExertionHeavy"),

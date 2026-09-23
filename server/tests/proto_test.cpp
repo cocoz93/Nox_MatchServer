@@ -15643,6 +15643,52 @@ void TestSwingSounds() {
 
 // ── nine-defects 4-c1 — 재질(MATERIAL) 읽기 ─────────
 //   이름 15개 = 비트 1<<i(libs `object/material.go`) · 없으면 NONE(0x4000) · NULL 은 0(libs `enum/enum.go:66`) · 모르는 이름 0 · '+' 는 OR
+// ── nine-defects 4-c3b3a — soundset.bin 읽기(`nox_xxx_parseSoundSetBin_424170` · `nox_xxx_parseString_409470`) ─────────
+void TestSoundSetParse() {
+    auto bytes = [](const char* s) { return std::vector<uint8_t>(s, s + std::strlen(s)); };
+    // ① 꼴 — 모음 이름 → 짝 … → END · 칸은 정답지 자리 순서 · 같은 이름이 둘이면 뒤에 적힌 것
+    {
+        std::vector<nox::SoundSet> sets; std::string err;
+        const bool ok = nox::ParseSoundSets(bytes("Imp\r\n  LISTEN_SOUND   NULL\r\n  MELEE_ATTACK_HITTING_SOUND  ImpHit\r\nEND\r\n"
+                                                  "Bat MELEE_ATTACK_HITTING_SOUND A END\tBat MELEE_ATTACK_HITTING_SOUND B MOVE_SOUND M END\n"), sets, &err);
+        const nox::SoundSet* imp = nox::FindSoundSet(sets, "Imp");
+        const nox::SoundSet* bat = nox::FindSoundSet(sets, "Bat");
+        Check(ok && sets.size() == 3 && imp && bat, "① 모음 셋이 안 읽혔다");
+        Check(imp && imp->sound[nox::kSoundSetMeleeHitting] == "ImpHit" && imp->sound[0] == "NULL" && imp->sound[17].empty(),
+              "① Imp 칸이 제자리가 아니다(맞히는 소리 = 7번 칸 · LISTEN = 0번)");
+        Check(bat && bat->sound[nox::kSoundSetMeleeHitting] == "B" && bat->sound[17] == "M", "① 같은 이름이면 뒤에 적힌 모음이어야 한다");
+        // +32 = 7번 칸(+4 부터 4씩) — 정답지 `GAME3_2.c:7254` 가 읽는 자리
+        Check(std::strcmp(nox::kSoundSetFieldNames[nox::kSoundSetMeleeHitting], "MELEE_ATTACK_HITTING_SOUND") == 0 &&
+              (nox::kSoundSetMeleeHitting + 1) * 4 == 32, "① +32 칸 이름이 MELEE_ATTACK_HITTING_SOUND 가 아니다");
+    }
+    // ② 모르는 칸 이름이면 실패(정답지도 0 을 돌려준다)
+    {
+        std::vector<nox::SoundSet> sets; std::string err;
+        const bool ok = nox::ParseSoundSets(bytes("Imp HIT_SOUND X END "), sets, &err);
+        Check(!ok && err.find("HIT_SOUND") != std::string::npos, "② 모르는 칸 이름을 받아들였다");
+    }
+    // ③ 끝(EOF)에 붙은 마지막 줄기는 **버린다** — 정답지 줄기 읽기가 파일 끝을 실패로 본다
+    {
+        std::vector<nox::SoundSet> sets; std::string err;
+        const bool ok = nox::ParseSoundSets(bytes("X MOVE_SOUND Y"), sets, &err);
+        Check(ok && sets.size() == 1 && sets[0].sound[17].empty(), "③ 파일 끝에 붙은 줄기를 받아들였다");
+    }
+    // ④ 실물 — soundset.bin(있을 때만)
+    {
+        std::vector<nox::SoundSet> sets; std::string err;
+        const bool ok = nox::LoadSoundSets("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\soundset.bin", sets, &err);
+        if (ok || err.find("못 읽음") == std::string::npos) {   // 파일이 없으면 건너뜀
+            const nox::SoundSet* g = nox::FindSoundSet(sets, "GruntAxe");
+            const nox::SoundSet* sc = nox::FindSoundSet(sets, "Scorpion");
+            char msg[200];
+            std::snprintf(msg, sizeof(msg), "④ 실물 soundset.bin — 읽음 %d · %zu벌 · %s", ok, sets.size(), err.c_str());
+            Check(ok && sets.size() >= 70 && g && sc && g->sound[nox::kSoundSetMeleeHitting] == "GruntHitting" &&
+                  sc->sound[nox::kSoundSetMeleeHitting] == "ScorpionStingHit" && g->sound[15] == "GruntHurt", msg);
+        }
+    }
+    std::printf("  nine-defects 4-c3b3a — 소리 모음 읽기: 꼴·칸 자리·같은 이름은 뒤 것 · 모르는 칸 실패 · 파일 끝 줄기 버림 · 실물 soundset.bin\n");
+}
+
 void TestMaterialParse() {
     static const char* const kNames[15] = { "FLESH", "CLOTH", "ANIMAL_HIDE", "WOOD", "METAL", "STONE", "EARTH", "LIQUID",
                                             "GLASS", "PAPER", "SNOW", "MUD", "MAGIC", "DIAMOND", "NONE" };
@@ -22733,6 +22779,7 @@ int main() {
     TestAirborneReaders();
     TestSwingSounds();
     TestMaterialParse();
+    TestSoundSetParse();
     TestPlayerHitSound();
     TestPetHitSound();
     TestMissileHitterRoot();
