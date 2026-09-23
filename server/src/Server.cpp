@@ -8384,14 +8384,54 @@ bool Server::HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPa
 // ★ `9e 07`(걸림)은 **첫 갱신 틱**에 나간다(`frame35 == 0`) — 꽂혔는지와 상관없다.
 //   그래서 수명 150 도 **꽂힌 때가 아니라 그 첫 틱부터** 센다
 //
-// ⛔ 안 옮긴 것 — **겨눈 쪽으로 휘기**. 정답지는 살아 있는 커서 자리(`pl.CursorPos()`)로
-//   `spellFlySearchTarget` 을 돌려 화살을 그쪽으로 튼다. 우리는 **시전 순간 커서**(`castCursorX/Y`)만 있어
-//   같은 것이 아니다 — 커서를 매 틱 받게 될 때 같이 옮긴다. 소리 셋은 묶음 10
+// ✖ 09-23 정정 — 「⛔ 안 옮긴 것 — 겨눈 쪽으로 휘기(시전 순간 커서만 있어서)」라고 적혀 있었다.
+//   커서는 그 뒤 `Op::MOUSE` 로 매 틱 받게 됐고(`aimX/aimY`), 휘기는 **nine-defects 1-b 에서 옮겼다**(아래 ⓐ~ⓒ). 소리 셋은 묶음 10
 void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
     if (s.harpoonBoltNc == 0) return;
     MissileObj* bolt = HarpoonBoltOf(s);
     if (!bolt) { HarpoonBreak(s, /*emitSound=*/true, HarpoonEnd::BoltGone, out); return; }
     if (s.respawnAtFrame != 0) { HarpoonBreak(s, /*emitSound=*/true, HarpoonEnd::OwnerDead, out); return; }   // 주인이 죽었다
+
+    // ★ 09-23 nine-defects 1-b — **겨눈 쪽으로 휘기**(`spell_harpoon.go:211~235`).
+    //   정답지 화살의 `UpdateData[0]` = 휘어 가는 상대 → 우리 `bolt->ud1`(작살은 이 칸을 달리 안 쓴다).
+    //   ⓐ 휘어 가던 상대가 죽었거나 사라졌으면 끊는다(`:212~216` — 꽂힌 뒤에도 본다)
+    //   ⓑ 아직 안 꽂혔고 상대가 없으면 — **살아 있는 커서**(`pl.CursorPos()` = 우리 `aimX/aimY`, `Op::MOUSE`) 둘레
+    //      375(`MaxHarpoonDistance`)에서 공격 주문 깃발(0x20)로 찾는다 · 화살의 **처음 방향**(Direction1) 앞쪽이어야 잡는다
+    //   ⓒ 잡은 뒤로는 틱마다 속도를 그쪽으로 튼다(크기는 빠르기 그대로) — **잡은 틱에는 안 튼다**(정답지 `else` 갈래)
+    //   전에는 「시전 순간 커서만 있다」는 까닭으로 안 옮겼는데(아래 7-g 머리 주석), 커서를 매 틱 받게 된 뒤로 그 전제가 없어졌다.
+    //   그동안 작살은 **바라보는 쪽으로 곧게만** 날아 사람 판에서 「쏨 3 · 걸림 0」이었다
+    auto aimAlive = [&](const Target& t) {
+        if (!t.addr.empty()) {
+            auto it = sessions_.find(t.addr);
+            return it != sessions_.end() && it->second.inGame && it->second.respawnAtFrame == 0;
+        }
+        return t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size();
+    };
+    if (!bolt->ud1.none() && !aimAlive(bolt->ud1)) { HarpoonBreak(s, /*emitSound=*/true, HarpoonEnd::AimDead, out); return; }
+    if (s.harpoonTarget.none()) {
+        if (bolt->ud1.none()) {
+            const Target found = SpellFlySearchTarget(true, static_cast<float>(s.aimX), static_cast<float>(s.aimY),
+                                                      bolt->posX, bolt->posY, s.addr, std::string(), 0x20,
+                                                      static_cast<float>(kHarpoonMaxDist), &s, &bolt->buffs);
+            float fx = 0, fy = 0;
+            if (!found.none() && TargetXY(found, fx, fy) &&
+                (TestTwoPointsAndDirection(bolt->posX, bolt->posY, bolt->dir1, fx, fy) & 1)) {
+                bolt->ud1 = found;
+                ++harpoonAimFound_;
+            }
+        } else {
+            float tx = 0, ty = 0;
+            if (TargetXY(bolt->ud1, tx, ty)) {
+                const double vx = static_cast<double>(tx) - bolt->posX, vy = static_cast<double>(ty) - bolt->posY;
+                const double len = std::sqrt(vx * vx + vy * vy);
+                if (len > 0.0) {                             // 겹친 자리(0)면 방향이 없다 — 그대로 둔다
+                    bolt->velX = static_cast<float>(vx / len * bolt->speed);
+                    bolt->velY = static_cast<float>(vy / len * bolt->speed);
+                    ++harpoonSteerTicks_;
+                }
+            }
+        }
+    }
 
     const double dx0 = static_cast<double>(bolt->posX) - s.posX;
     const double dy0 = static_cast<double>(bolt->posY) - s.posY;

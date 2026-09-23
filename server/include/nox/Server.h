@@ -171,6 +171,7 @@ enum class HarpoonEnd : uint8_t {
     Stuck,         // ④ 30틱 동안 상대가 안 움직임
     NoSight,       // ⑤ 시야가 막힘
     OverFlight,    // 안 걸린 채 너무 멀리 날았다
+    AimDead,       // ★ 1-b — 휘어 가던 상대가 죽었거나 사라짐(`spell_harpoon.go:212~216`)
     Debug,         // 시험용 `DebugHarpoonBreak`
     Count
 };
@@ -3137,6 +3138,8 @@ public:
     unsigned long long harpoonEnd(HarpoonEnd e) const {
         return e < HarpoonEnd::Count ? harpoonEnd_[static_cast<size_t>(e)] : 0;
     }
+    unsigned long long harpoonAimFound() const { return harpoonAimFound_; }     // ★ 1-b
+    unsigned long long harpoonSteerTicks() const { return harpoonSteerTicks_; } // ★ 1-b
     // ★ 09-23 0-b — 능력이 꺼진 까닭 · 겹침을 **누가** 막았나(누른 것 × 켜져 있던 것, 1~3) · 능력 소리 부름
     unsigned long long abilEnded(uint8_t abil, AbilEnd e) const {
         return abil < kAbilityCount && e < AbilEnd::Count ? abilEnded_[abil][static_cast<size_t>(e)] : 0;
@@ -4114,6 +4117,8 @@ private:
     unsigned long long harpoonPullTicks_ = 0; // 걸린 채로 지난 틱
     unsigned long long harpoonTouch_[kHarpoonTouchCount] = {};   // ★ 09-23 0-b — 무엇에 닿았나
     unsigned long long harpoonEnd_[kHarpoonEndCount] = {};       // ★ 09-23 0-b — 줄이 왜 끊겼나
+    unsigned long long harpoonAimFound_ = 0;                     // ★ 1-b — 휘어 갈 상대를 잡았다
+    unsigned long long harpoonSteerTicks_ = 0;                   // ★ 1-b — 그쪽으로 튼 틱
     unsigned long long joinInfo97Ok_ = 0;     // 97B 를 그대로 실었다
     unsigned long long joinInfo97Null_ = 0;   // **없어서 0 으로 채웠다**(색이 검정이 된다)
     size_t acceptBodyLenLast_ = 0;            // 마지막 CLIENT_ACCEPT 본문 길이

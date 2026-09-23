@@ -180,22 +180,22 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
     std::printf("\n");
     using T = nox::HarpoonTouch;
     using H = nox::HarpoonEnd;
-    std::printf("[작살갈래] 쏨 %llu · 닿음{주인없음 %llu·벽 %llu·자기 %llu·적아님 %llu·걸림 %llu}"
+    std::printf("[작살갈래] 쏨 %llu · 휘기{잡음 %llu·튼틱 %llu} · 닿음{주인없음 %llu·벽 %llu·자기 %llu·적아님 %llu·걸림 %llu}"
                 " · 끊김{새로쏨 %llu·벽 %llu·적아님 %llu·화살없음 %llu·주인죽음 %llu·상대사라짐 %llu·상대죽음 %llu"
-                "·멀어짐 %llu·다끌어옴 %llu·수명 %llu·안움직임 %llu·시야막힘 %llu·너무멀리날아감 %llu·시험 %llu}\n",
-                srv.harpoonShot(),
+                "·멀어짐 %llu·다끌어옴 %llu·수명 %llu·안움직임 %llu·시야막힘 %llu·너무멀리날아감 %llu·휘던상대죽음 %llu·시험 %llu}\n",
+                srv.harpoonShot(), srv.harpoonAimFound(), srv.harpoonSteerTicks(),
                 srv.harpoonTouch(T::NoOwner), srv.harpoonTouch(T::Wall), srv.harpoonTouch(T::Self),
                 srv.harpoonTouch(T::NotEnemy), srv.harpoonTouch(T::Attached),
                 srv.harpoonEnd(H::Replaced), srv.harpoonEnd(H::Wall), srv.harpoonEnd(H::NotEnemy),
                 srv.harpoonEnd(H::BoltGone), srv.harpoonEnd(H::OwnerDead), srv.harpoonEnd(H::TargetGone),
                 srv.harpoonEnd(H::TargetDead), srv.harpoonEnd(H::TooFar), srv.harpoonEnd(H::Arrived),
                 srv.harpoonEnd(H::Lifetime), srv.harpoonEnd(H::Stuck), srv.harpoonEnd(H::NoSight),
-                srv.harpoonEnd(H::OverFlight), srv.harpoonEnd(H::Debug));
+                srv.harpoonEnd(H::OverFlight), srv.harpoonEnd(H::AimDead), srv.harpoonEnd(H::Debug));
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
 unsigned long long AbilityFingerprint(const nox::Server& srv) {
-    unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun();
+    unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun() + srv.harpoonAimFound();
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));

@@ -14384,6 +14384,113 @@ void TestTreadLightlyOff() {
     std::printf("  nine-defects 1-a — 살금살금: 달리기 막기 · 걷다 멈추면 끔(cf 0·31 끔·소리 없음) · 가만/무입력/짐넘침은 유지 · 다시 쓰기\n");
 }
 
+// ── nine-defects 1-b — 작살이 겨눈 쪽으로 휜다 ─────────────────────────────
+//
+// 정답지 `spell_harpoon.go:211~235`. 안 꽂힌 화살은 **살아 있는 커서** 둘레 375 에서 적을 찾아(공격 주문 깃발 0x20)
+// 화살의 처음 방향 앞쪽이면 잡고, 다음 틱부터 속도를 그쪽으로 튼다. 휘어 가던 상대가 죽으면 끊긴다.
+// 사람 판 「작살 쏨 3 · 걸림 0」의 후보 — 전에는 바라보는 쪽으로 곧게만 날았다.
+// 빠르기 = 800/32×2 = 틱당 50. 상대는 **곧은 길에서 60 비켜** 세운다(곧게 날면 못 맞힌다).
+void TestHarpoonHoming() {
+    const std::string a = "10.7.11.1:7111";
+    const std::string b = "10.7.11.2:7112";
+    auto mk = [&](nox::Server& srv, int bx, int by) {
+        srv.DebugEnterGame(a, 760, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 761, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, bx, by);
+        RegHarpoonBolt(srv);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w); srv.Tick(34, w);
+        srv.DebugAbilAward(a, 3, false, w);
+        srv.DebugSetFacing(a, 0);                          // +x 쪽
+    };
+    uint32_t ms = 34;
+    auto tick = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) { ms += 34; srv.Tick(ms, out); };
+
+    // ① **대조 — 커서가 상대에서 멀면 곧게 날아 빗나간다**(이 배치가 곧은 길로는 못 맞힌다는 전제)
+    {
+        nox::Server srv; mk(srv, 1250, 1060); ms = 34;
+        srv.DebugAimAt(a, 1000, 3000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        for (int t = 0; t < 12 && srv.DebugHarpoonBolt(a) != 0; ++t) tick(srv, out);
+        Check(srv.DebugHarpoonTarget(a).empty(), "① 전제 — 커서가 먼데도 꽂혔다(곧은 길로 맞는 배치다)");
+        Check(srv.harpoonAimFound() == 0, "① 커서 둘레에 아무도 없는데 휘기 상대를 잡았다");
+    }
+    // ② **커서를 상대에 두면 휘어 꽂힌다** — 잡은 틱에는 안 틀고(정답지 `else`) 그다음 틱부터 튼다
+    {
+        nox::Server srv; mk(srv, 1250, 1060); ms = 34;
+        srv.DebugAimAt(a, 1250, 1060);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        int foundAt = -1;
+        bool vecChecked = false;
+        for (int t = 0; t < 12 && srv.DebugHarpoonTarget(a).empty(); ++t) {
+            tick(srv, out);
+            if (foundAt < 0 && srv.harpoonAimFound() == 1) {
+                foundAt = t;
+                Check(srv.harpoonSteerTicks() == 0, "② 잡은 그 틱에 이미 틀었다(정답지는 다음 틱부터)");
+            }
+            // ★ 처음 튼 틱 — 속도가 **크기는 빠르기 그대로(50)**, 방향은 **상대 쪽**이어야 한다.
+            //   (한 축만 트는 반쪽 구현도 꽂히기는 해서, 꽂혔나만 보면 못 가른다 — 돌연변이로 드러남)
+            if (!vecChecked && srv.harpoonSteerTicks() == 1) {
+                vecChecked = true;
+                const uint16_t nc = srv.DebugHarpoonBolt(a);
+                for (const auto& m : srv.missileList()) {
+                    if (m.netCode != nc) continue;
+                    const double sp = std::sqrt(static_cast<double>(m.velX) * m.velX + static_cast<double>(m.velY) * m.velY);
+                    const double tx = 1250.0 - m.posX, ty = 1060.0 - m.posY;
+                    const double tl = std::sqrt(tx * tx + ty * ty);
+                    const double cosv = tl > 0 ? (m.velX * tx + m.velY * ty) / (sp * tl) : 0.0;
+                    char msg[160];
+                    std::snprintf(msg, sizeof(msg), "② 튼 속도가 크기 %.2f(50 이어야) · 상대 쪽 코사인 %.4f(1 이어야)", sp, cosv);
+                    Check(std::fabs(sp - 50.0) < 0.01 && cosv > 0.9999, msg);
+                }
+            }
+        }
+        Check(vecChecked, "② 튼 틱을 못 봤다(이 시험의 전제)");
+        Check(foundAt >= 0, "② 커서가 상대 위인데 휘기 상대를 못 잡았다");
+        Check(srv.harpoonSteerTicks() >= 1, "② 잡았는데 한 번도 안 틀었다");
+        Check(srv.DebugHarpoonTarget(a) == b, "② 휘어 가서 꽂히지 않았다");
+    }
+    // ③ **뒤쪽 상대는 안 잡는다** — 화살의 처음 방향(+x) 뒤(−x)에 선 상대
+    {
+        nox::Server srv; mk(srv, 800, 1000); ms = 34;
+        srv.DebugAimAt(a, 800, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        for (int t = 0; t < 12 && srv.DebugHarpoonBolt(a) != 0; ++t) tick(srv, out);
+        Check(srv.harpoonAimFound() == 0, "③ 화살 뒤쪽 상대를 휘기 상대로 잡았다");
+        Check(srv.DebugHarpoonTarget(a).empty(), "③ 뒤쪽 상대에 꽂혔다");
+    }
+    // ④ **휘어 가던 상대가 죽으면 끊긴다**(`:212~216`) — 닿기 전에 죽인다
+    {
+        nox::Server srv; mk(srv, 1250, 1060); ms = 34;
+        srv.DebugAimAt(a, 1250, 1060);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        for (int t = 0; t < 12 && srv.harpoonAimFound() == 0; ++t) tick(srv, out);
+        Check(srv.harpoonAimFound() == 1 && srv.DebugHarpoonBolt(a) != 0, "④ 전제 — 상대를 잡고 화살이 날고 있어야 한다");
+        srv.DebugHurt(b, -1, 9999, std::string(), 16, out);
+        tick(srv, out);
+        Check(srv.DebugHarpoonBolt(a) == 0, "④ 휘어 가던 상대가 죽었는데 줄이 안 끊겼다");
+        Check(srv.harpoonEnd(nox::HarpoonEnd::AimDead) == 1, "④ 끊김 까닭이 「휘던 상대 죽음」이 아니다");
+    }
+    // ⑤ **잡은 뒤에 커서를 옮겨도 그 상대를 따라간다** — 정답지는 잡은 상대가 있으면 다시 안 찾는다
+    {
+        nox::Server srv; mk(srv, 1250, 1060); ms = 34;
+        srv.DebugAimAt(a, 1250, 1060);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAbilDo(a, 3, out);
+        for (int t = 0; t < 12 && srv.harpoonAimFound() == 0; ++t) tick(srv, out);
+        srv.DebugAimAt(a, 1000, 3000);                     // 커서를 치운다
+        for (int t = 0; t < 12 && srv.DebugHarpoonTarget(a).empty(); ++t) tick(srv, out);
+        Check(srv.harpoonAimFound() == 1, "⑤ 커서를 옮기자 다시 찾았다");
+        Check(srv.DebugHarpoonTarget(a) == b, "⑤ 커서를 옮기자 잡았던 상대를 놓쳤다");
+    }
+    std::printf("  nine-defects 1-b — 작살 휘기: 커서 둘레 적을 잡고 다음 틱부터 튼다 · 뒤쪽은 안 잡음 · 휘던 상대 죽으면 끊김 · 잡은 뒤엔 커서 무관\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -21118,6 +21225,7 @@ int main() {
     TestHarpoon();
     TestAbilityCounters();
     TestTreadLightlyOff();
+    TestHarpoonHoming();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();
