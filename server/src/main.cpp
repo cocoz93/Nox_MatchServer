@@ -191,17 +191,22 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
     std::printf("\n");
     using T = nox::HarpoonTouch;
     using H = nox::HarpoonEnd;
-    std::printf("[작살갈래] 쏨 %llu · 휘기{잡음 %llu·튼틱 %llu} · 닿음{주인없음 %llu·벽 %llu·자기 %llu·적아님 %llu·걸림 %llu}"
-                " · 끊김{새로쏨 %llu·벽 %llu·적아님 %llu·화살없음 %llu·주인죽음 %llu·상대사라짐 %llu·상대죽음 %llu"
-                "·멀어짐 %llu·다끌어옴 %llu·수명 %llu·안움직임 %llu·시야막힘 %llu·너무멀리날아감 %llu·휘던상대죽음 %llu·시험 %llu}\n",
+    // ★ 4-c3b2b — 닿음·끊김에 「피해안들어감」 · 끊길 때 따로 내는 기본 타격 소리(`532E20`) 칸
+    std::printf("[작살갈래] 쏨 %llu · 휘기{잡음 %llu·튼틱 %llu} · 닿음{주인없음 %llu·벽 %llu·자기 %llu·적아님 %llu·피해안들어감 %llu·걸림 %llu}"
+                " · 끊김{새로쏨 %llu·벽 %llu·적아님 %llu·피해안들어감 %llu·화살없음 %llu·주인죽음 %llu·상대사라짐 %llu·상대죽음 %llu"
+                "·멀어짐 %llu·다끌어옴 %llu·수명 %llu·안움직임 %llu·시야막힘 %llu·너무멀리날아감 %llu·휘던상대죽음 %llu·시험 %llu}"
+                " · 끊길때소리 %llu = {냄 %llu·부서짐 %llu·거름 %llu·표없음 %llu·안옮김 %llu}\n",
                 srv.harpoonShot(), srv.harpoonAimFound(), srv.harpoonSteerTicks(),
                 srv.harpoonTouch(T::NoOwner), srv.harpoonTouch(T::Wall), srv.harpoonTouch(T::Self),
-                srv.harpoonTouch(T::NotEnemy), srv.harpoonTouch(T::Attached),
-                srv.harpoonEnd(H::Replaced), srv.harpoonEnd(H::Wall), srv.harpoonEnd(H::NotEnemy),
+                srv.harpoonTouch(T::NotEnemy), srv.harpoonTouch(T::Refused), srv.harpoonTouch(T::Attached),
+                srv.harpoonEnd(H::Replaced), srv.harpoonEnd(H::Wall), srv.harpoonEnd(H::NotEnemy), srv.harpoonEnd(H::Refused),
                 srv.harpoonEnd(H::BoltGone), srv.harpoonEnd(H::OwnerDead), srv.harpoonEnd(H::TargetGone),
                 srv.harpoonEnd(H::TargetDead), srv.harpoonEnd(H::TooFar), srv.harpoonEnd(H::Arrived),
                 srv.harpoonEnd(H::Lifetime), srv.harpoonEnd(H::Stuck), srv.harpoonEnd(H::NoSight),
-                srv.harpoonEnd(H::OverFlight), srv.harpoonEnd(H::AimDead), srv.harpoonEnd(H::Debug));
+                srv.harpoonEnd(H::OverFlight), srv.harpoonEnd(H::AimDead), srv.harpoonEnd(H::Debug),
+                srv.harpoonHitSoundCalls(), srv.harpoonHitSoundWay(nox::DefHitSoundWay::Played),
+                srv.harpoonHitSoundWay(nox::DefHitSoundWay::Breakable), srv.harpoonHitSoundWay(nox::DefHitSoundWay::Filtered),
+                srv.harpoonHitSoundWay(nox::DefHitSoundWay::TableEmpty), srv.harpoonHitSoundWay(nox::DefHitSoundWay::NotPorted));
     // ★ 1-d — 맵 불 같은 장애물의 닿음 피해. 옆에 전체 피해(`hurts`)를 같이 찍는다 — 0 이 「안 닿았다」인지 「못 셌다」인지 가르려고
     //   ⚠ 「부름」은 양 1 짜리 불의 짝수 프레임(피해 0)까지 센다 — 정답지도 피해 함수를 0 으로 부른다
     std::printf("[맵닿음] 장애물 닿음 피해 부름 %llu회 · 전체 피해 %llu회 · 사람 벽 짝 %llu회\n", srv.contactDamageHits(), srv.hurts(),

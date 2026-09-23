@@ -1113,12 +1113,15 @@ void Server::CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vecto
 // 피해 함수(+716) — 정답지 이식(묶음 3-e, 2026-09-13).
 //   ⚠ 옮기지 않은 갈래(다른 조각): 방패·대검·지팡이 막기(3-e2 — 상태 15/16 · 18~21) · 되받아치기 버프 27 · 불/전기 보호 · 흡혈 ·
 //     전기 방패 22 · 마법 방패 26(주문 4) · 입은 것 닳기·방어 마법 효과(아이템 5) · 스켈레톤 막기(몬스터 행동 21 · AI 6)
-void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
+// ★ 4-c3b2b — 돌려주는 값은 Server.h 선언 주석(정답지 피해 함수의 참/거짓 · 줄마다 대조)
+bool Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                         const std::string& by, uint8_t dtype, const AttackSrc* src, HitterRef hitter) {
-    if (t.none() || dmg <= 0) return;
+    if (t.none()) return false;
+    // ⚠ 정답지는 0 피해도 피해 함수를 끝까지 부르고 대개 참이다(맵 불 짝수 프레임 — 위 1-d). 우리는 여기서 멈추므로 참으로 둔다
+    if (dmg <= 0) return true;
     // 진단 임프(`--debug-own-pet`)는 맞지 않는다 — 판정 사진을 찍기 전에 몬스터에게 죽었다(09-13, 갱신에 프레임 1920~2010 만 실림 — 약 3초).
     if (debugOwnPetNetCode_ != 0 && !debugPetWild_ && t.pet >= 0 &&
-        pets_[static_cast<size_t>(t.pet)].netCode == debugOwnPetNetCode_) return;
+        pets_[static_cast<size_t>(t.pet)].netCode == debugOwnPetNetCode_) return true;   // 진단 — 무적처럼 참
     // ★ **닿은 피해를 여기서 센다.** `hits_` 는 「투사체가 명중한 횟수」만 세는데,
     //   판정 요약이 그것을 「맞음」이라 찍어 왔다. 그래서 근접으로 피해가 122건 오간
     //   실클라 런이 「맞음 0」으로 나와 **싸움이 안 붙은 것으로 오판**했다(09-10).
@@ -1130,12 +1133,12 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
 
     if (t.pet < 0) {
         auto vi = sessions_.find(t.addr);
-        if (vi == sessions_.end()) { ++damageStops_["세션없음"]; return; };
+        if (vi == sessions_.end()) { ++damageStops_["세션없음"]; return false; };
         Session& s = vi->second;
         // ── nox_server_handler_PlayerDamage_4E17B0 ──
-        if (!s.inGame || s.respawnAtFrame != 0) { ++damageStops_["죽음·미입장"]; return; }   // +16 & 2 · DEAD
-        if (s.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적"]; return; }   // 버프 23
-        if (s.observer) { ++damageStops_["관전"]; return; }              // 3680 & 1
+        if (!s.inGame || s.respawnAtFrame != 0) { ++damageStops_["죽음·미입장"]; return false; }   // +16 & 2 · DEAD(`GAME3_3.c:122~124` 0)
+        if (s.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적"]; return true; }   // 버프 23(`:125~129` 1)
+        if (s.observer) { ++damageStops_["관전"]; return false; }        // 3680 & 1(`:161~163` 0)
         // ── 죽음 알림 기록(+304 갈래 · +300 종류, 묶음 3-d · `GAME3_3.c:164~246`) — 부를 때마다 0 에서 다시 ──
         //   때린 이(a2)가 있으면: 무기·투사체(a3)가 있고 때린 이와 다르면 갈래 1·그 종류 /
         //   없고 피해 종류가 10(맨손)·2(망치)면 갈래 1·때린 이의 종류(사람 713 · 몬스터 그 종류). 막혀도 이 기록은 남는다
@@ -1157,7 +1160,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                                              static_cast<uint8_t>(fy), static_cast<uint8_t>(fy >> 8) };
                     SendFxAllCli(static_cast<float>(s.posX), static_cast<float>(s.posY), msg, sizeof(msg), out);
                 }
-                { ++damageStops_["정면막기"]; return; }                  // 소리 122 → 10
+                { ++damageStops_["정면막기"]; return false; }            // 소리 122 → 10(`:191·202` 0)
             }
         }
         if (src) {
@@ -1183,7 +1186,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                 if (dtype != 9 && dtype != 17) {
                     std::printf("[막기] 프레임 %u %s 방패로 막음(종류 %u · 피해 %d)\n", frame_, s.addr.c_str(), dtype, dmg);
                     std::fflush(stdout);
-                    { ++damageStops_["방패막기"]; return; }
+                    { ++damageStops_["방패막기"]; return false; }        // `:338` 0
                 }
             } else {
                 const uint32_t weap = WeaponEquipOf(s);
@@ -1196,7 +1199,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                             PlayerSetState(s, static_cast<uint8_t>(18 + NextRandom(3)), frame_);   // randomInt(18, 20)
                             std::printf("[막기] 프레임 %u %s 대검으로 막음 → 상태 %u\n", frame_, s.addr.c_str(), s.moveState);
                             std::fflush(stdout);
-                            { ++damageStops_["대검막기"]; return; }
+                            { ++damageStops_["대검막기"]; return false; }   // `:288` 0
                         }
                     }
                 }
@@ -1204,7 +1207,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                     PlayerSetState(s, 21, frame_);
                     std::printf("[막기] 프레임 %u %s 지팡이로 막음\n", frame_, s.addr.c_str());
                     std::fflush(stdout);
-                    { ++damageStops_["지팡이막기"]; return; }
+                    { ++damageStops_["지팡이막기"]; return false; }      // `:322` 0
                 }
             }
         }
@@ -1244,10 +1247,10 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
             if (v44 > 0 && hp < 1) hp = 1;
         }
         // ── nox_xxx_damageDefaultProc_4E0B30(`GAME3_2.c:7017`) ──
-        if (s.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적2"]; return; }   // 무적(소리 71 → 10)
+        if (s.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적2"]; return true; }   // 무적(소리 71 → 10 · `GAME3_2.c:7064~7069` 1)
         // 편 거르기 — 친선 피해 설정(게임플레이 깃발 1, 기본 꺼짐)이 꺼져 있으면 때린 쪽 주인이 적이 아닐 때 무시.
         //   단 자기가 자기를 때린 것은 퀘스트가 아니면 들어간다(`a1 != v12 || gameFlags 4096`).
-        if (!OwnersEnemy(s.addr, false, by, byWild && src && src->rootIsMonster) && (by != s.addr || quest)) { ++damageStops_["편아님"]; return; };
+        if (!OwnersEnemy(s.addr, false, by, byWild && src && src->rootIsMonster) && (by != s.addr || quest)) { ++damageStops_["편아님"]; return true; };   // `:7100` 1
         ++damageStops_["편검사통과"];
         const Target attacker = DamageAttacker(by, src);
         DamageShockBack(Target{ s.addr, -1 }, s.buffs, attacker, src, out);   // 감전(22) 되갚기
@@ -1266,7 +1269,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         //   독(5)은 안 막고, 죽음(15)을 자기가 자기에게 건 것도 안 막는다.
         if (s.buffs.Has(26) && dtype != 5 && !(dtype == 15 && by == s.addr)) {
             ShieldReduceDamage(Target{ s.addr, -1 }, hp, dtype, src, out);
-            if (hp == 0) { ++damageStops_["마법방패"]; return; }          // 막았다 — 아예 안 맞은 것이 된다
+            if (hp == 0) { ++damageStops_["마법방패"]; return false; }    // 막았다 — 아예 안 맞은 것이 된다(`:7325~7326` 0)
         }
         // +520 마지막으로 때린 것(`GAME3_2.c:7229~7233`) — a3 가 있으면 그것(주인 = a2), 없으면 a2. 사슬의 사람 = `by`(소환수면 주인)
         Session::LastHit hit;
@@ -1289,14 +1292,14 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         //   그 자리가 `Damage` 의 else 가지(`cls = 1 · player = by`)다
         ++damageStops_["사람갈래끝→Damage"];
         Damage(t.addr, hp, out, by, src ? &hit : nullptr);   // unitDamageClear_4EE5E0
-        return;
+        return true;                                       // `:7330` 1
     }
 
     const size_t i = static_cast<size_t>(t.pet);
     // ★ 조각 J — 크리처 경로도 사람 경로와 **짝을 맞춰** 이탈구에 이름을 붙인다.
     //   무적 관문이 4곳인데 계수기는 3곳이었다 — 빠진 하나가 여기였고,
     //   그 옆 일곱도 전부 침묵이었다. 「소환수가 왜 안 맞나」를 물을 눈이 없었다.
-    if (i >= pets_.size()) { ++damageStops_["칸밖(소환수)"]; return; };
+    if (i >= pets_.size()) { ++damageStops_["칸밖(소환수)"]; return false; };
     Creature& k = pets_[i];
     const auto tb = typeBodies_.find(k.type);
     const PhysBody* body = (tb != typeBodies_.end()) ? &tb->second : nullptr;
@@ -1307,34 +1310,35 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
             case kDmgMechGolem: if (dtype == 9 || dtype == 17) amount = 2 * dmg; break;   // sub_4E24E0
             case kDmgFlammable: if (dtype == 1 || dtype == 12 || dtype == 7) amount = 9999999; break;   // 4E2520
             case kDmgBlackPowder:                                                          // 4E2560
-                if (dtype != 1 && dtype != 12 && dtype != 2 && dtype != 0) { ++damageStops_["화약아님(소환수)"]; return; }
+                if (dtype != 1 && dtype != 12 && dtype != 2 && dtype != 0) { ++damageStops_["화약아님(소환수)"]; return false; }   // `GAME3_3.c:680~681` 0
                 amount = 999999;
                 break;
             default: break;                                // Default · Stone · Skeleton(막기는 AI 6) · Player
         }
     }
     // ── nox_xxx_damageDefaultProc_4E0B30 ──
-    if (k.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적(소환수)"]; return; }   // 무적(소리 71 → 10)
+    if (k.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적(소환수)"]; return true; }   // 무적(소리 71 → 10 · `:7064~7069` 1)
     // ⚠ 몬스터 +2188·불 종류 +1440 깃발 · 죽은 좀비 갈래는 몬스터 AI(7)
     // ★ 09-20 — 때린 쪽 **뿌리가 몬스터인가**를 `src->byMonsterType` 으로 가른다.
     //   주인 없는 덫 화살은 몬스터가 아니므로 맵 몬스터에게 **적**이다(정답지 `object.go:1740`)
     const bool byMonsterRoot = byWild && src && src->rootIsMonster;
-    if (!OwnersEnemy(k.owner, k.owner.empty(), by, byMonsterRoot)) { ++damageStops_["편아님(소환수)"]; return; }   // 편 거르기(자기가 자기를 때리는 경우는 없음)
+    if (!OwnersEnemy(k.owner, k.owner.empty(), by, byMonsterRoot)) { ++damageStops_["편아님(소환수)"]; return true; }   // 편 거르기(자기가 자기를 때리는 경우는 없음 · `:7100` 1)
     const Target attacker = DamageAttacker(by, src);
     DamageShockBack(t, k.buffs, attacker, src, out);       // 감전(22) 되갚기 — 되갚는 이는 사람(무기)이라 소환수 목록은 안 바뀐다
     int v15 = dtype;
     if (body) {
         const uint32_t sub = body->subclass;
-        if ((sub & 0x200) && v15 == 5) { ++damageStops_["독면역(소환수)"]; return; }  // 독 면역
+        if ((sub & 0x200) && v15 == 5) { ++damageStops_["독면역(소환수)"]; return true; }  // 독 면역(`:7130~7131` 1)
         if (sub & 0x400) {                                 // 불 면역 — 1·12 무시 · 7 은 절반
-            if (v15 == 1 || v15 == 12) { ++damageStops_["불면역(소환수)"]; return; }
+            if (v15 == 1 || v15 == 12) { ++damageStops_["불면역(소환수)"]; return true; }   // `:7134~7135` 1
             if (v15 == 7) amount /= 2;
         } else if (sub & 0x800) {                          // 전기 면역
-            if (v15 == 9 || v15 == 17) { ++damageStops_["전기면역(소환수)"]; return; }
+            if (v15 == 9 || v15 == 17) { ++damageStops_["전기면역(소환수)"]; return true; }   // `:7142~7146` 1
         }
     }
     amount = DamageProtect(pets_[i].buffs, static_cast<uint8_t>(v15), amount);   // 불·전기 보호(버프 17·20 + 아이템 5)
     if (!attacker.none() || v15 == 12) BuffOff(t, 0);      // 맞으면 투명 풀림
+    k.lastDamageType = static_cast<uint8_t>(v15);          // ★ 4-c3b2b — +524(`GAME3_2.c:7234` — 면역 관문 뒤 · 맞는 소리 앞)
     // ★ 09-23 nine-defects 4-c3a — 맞는 소리(`GAME3_2.c:7251~7267`) — 몬스터는 DAMAGESOUND 가 없어 기본 `532E20`(thing.bin 에
     //   `DAMAGESOUND` 를 적은 종류는 NewPlayer 하나뿐 — 실측). 흡혈(`:7269`) 앞
     PetDamageSound(k, static_cast<uint8_t>(v15), hitter);
@@ -1348,9 +1352,10 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         //   (`FlushPending` 이 `IsEnemyTo` 로 거른다 — 남의 소환수는 적이라 안 간다).
         MarkDirty(k.netCode, PendingReport::What::UnitHealth);
         ++damageStops_["깎임(소환수)"];
-        return;
+        return true;
     }
     KillPet(i, out);
+    return true;                                           // `:7330` 1
 }
 
 bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
@@ -8688,10 +8693,14 @@ bool Server::HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPa
     src.x = m.posX; src.y = m.posY;
     src.byMonsterType = m.type;
     // ★ 4-c3b2 — 때린 것 = 작살 화살(Go `spell_harpoon.go:172` CallDamage(u5, bolt, …))
-    HurtTarget(targ, kHarpoonDamage, out, m.owner, 11, &src, HitterMissile(m));      // DamageImpact = 11
-    if (!TargetIsEnemy(own, targ)) {                         // 적이 아니면 피해만 주고 끊긴다
-        touch(HarpoonTouch::NotEnemy);
-        HarpoonBreak(own, /*emitSound=*/false, HarpoonEnd::NotEnemy, out);
+    const bool took = HurtTarget(targ, kHarpoonDamage, out, m.owner, 11, &src, HitterMissile(m));      // DamageImpact = 11
+    // ★ 4-c3b2b — 정답지(`spell_harpoon.go:172~176`): 피해가 안 들어갔거나(피해 함수 거짓) 적이 아니면 **대상에 기본 타격 소리
+    //   (`532E20`, 때린 것 = 작살 화살)를 한 번** 내고 끊는다. 뒤쪽 「아군 피해 켜기(GameplayFlag1 — `guiserv.c:716`)면 유닛에는 꽂힘」은
+    //   우리 서버에 그 설정이 없어(늘 꺼짐) 뺀다
+    if (!took || !TargetIsEnemy(own, targ)) {
+        touch(took ? HarpoonTouch::NotEnemy : HarpoonTouch::Refused);
+        HarpoonDefaultHitSound(targ, m.type);
+        HarpoonBreak(own, /*emitSound=*/false, took ? HarpoonEnd::NotEnemy : HarpoonEnd::Refused, out);
         return false;
     }
     touch(HarpoonTouch::Attached);
@@ -13313,6 +13322,43 @@ void Server::PetDamageSound(const Creature& k, uint8_t dtype, HitterRef hitter) 
     way(w);
     if (id == 0) return;
     PlaySoundAt(id, static_cast<float>(k.x), static_cast<float>(k.y));
+    lastHitSound_ = id;
+}
+
+// ★ 09-23 nine-defects 4-c3b2b — 작살이 끊길 때의 `532E20(대상, 작살 화살)`(`spell_harpoon.go:173`).
+//   피해 함수 밖에서 부르므로 맞는 쪽은 **대상 오브젝트 그대로**다 — 사람이면 NewPlayer 재질(가슴갑옷 안 봄 · `PlayerDamageSound` 와 다르다) ·
+//   피해 종류는 대상의 +524(`obj1.Field131`) — 막혀서 이번 피해가 안 들어갔으면 **그 전 값**이 남아 있다
+void Server::HarpoonDefaultHitSound(const Target& t, uint16_t boltType) {
+    ++harpoonHitSoundCalls_;
+    uint32_t mat = 0;
+    bool hasHp = false;
+    uint8_t dtype = 0;
+    float x = 0, y = 0;
+    std::string addr;
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        if (it == sessions_.end()) { ++harpoonHitSoundWay_[static_cast<size_t>(DefHitSoundWay::NotPorted)]; return; }
+        mat = MaterialOfWire(newPlayerWire_);
+        hasHp = true;
+        dtype = it->second.lastDamageType;
+        x = static_cast<float>(it->second.posX); y = static_cast<float>(it->second.posY);
+        addr = t.addr;
+    } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+        const Creature& k = pets_[static_cast<size_t>(t.pet)];
+        mat = MaterialOfWire(k.type);
+        hasHp = TuningFor(k.type).health != 0;
+        dtype = k.lastDamageType;
+        x = static_cast<float>(k.x); y = static_cast<float>(k.y);
+    } else {
+        ++harpoonHitSoundWay_[static_cast<size_t>(DefHitSoundWay::NotPorted)];
+        return;
+    }
+    DefHitSoundWay w = DefHitSoundWay::Count;
+    const uint16_t id = DefaultHitSound(mat, hasHp, dtype, boltType != 0, MaterialOfWire(boltType), w);
+    ++harpoonHitSoundWay_[static_cast<size_t>(w)];
+    if (id == 0) return;
+    if (!addr.empty()) PlaySoundAt(id, x, y, 0, 0, addr);
+    else PlaySoundAt(id, x, y);
     lastHitSound_ = id;
 }
 

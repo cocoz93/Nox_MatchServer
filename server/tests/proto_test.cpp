@@ -15878,6 +15878,112 @@ void TestMissileHitterRoot() {
     std::printf("  nine-defects 4-c3b2 — 날아가는 것: 맵 몬스터가 쏜 것은 안옮김 · 사람의 소환수가 쏜 것은 발사체 재질(862)\n");
 }
 
+// ── nine-defects 4-c3b2b — 피해 함수의 참/거짓(`CallDamage`) · 작살이 끊길 때 따로 내는 기본 타격 소리(`spell_harpoon.go:172~176`) ─────────
+void TestHarpoonRefused() {
+    const std::string a = "10.7.25.1:7251";
+    const std::string b = "10.7.25.2:7252";
+    // ① 피해 함수가 돌려주는 값 — 들어감·무적·같은 편은 참, 대상 없음·죽음은 거짓(정답지 줄은 Server.h 선언 주석)
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        srv.DebugSpawnPet(1328, 1500.0f, 1500.0f, a);            // a 의 소환수
+        std::vector<nox::OutPacket> out;
+        int ok = 0, n = 0;
+        auto want = [&](bool got, bool w, const char* what) { ++n; if (got == w) ++ok; else std::printf("  [피해 참거짓] %s — %d(기대 %d)\n", what, got, w); };
+        want(srv.DebugHurt(b, -1, 5, a, 0, out), true, "보통 피해");
+        want(srv.DebugHurt(std::string("9.9.9.9:1"), -1, 5, a, 0, out), false, "없는 사람");
+        want(srv.DebugHurt(std::string(), 7, 5, b, 0, out), false, "없는 소환수 칸");
+        want(srv.DebugHurt(std::string(), 0, 1, b, 0, out), true, "소환수 보통 피해");
+        want(srv.DebugHurt(std::string(), 0, 1, a, 0, out), true, "소환수 — 주인이 때림(편 아님도 참)");
+        srv.DebugSetTeam(a, 1); srv.DebugSetTeam(b, 1);
+        want(srv.DebugHurt(b, -1, 5, a, 0, out), true, "같은 편(편 아님도 참)");
+        srv.DebugSetTeam(b, 2);
+        srv.DebugApplyEnchant(b, 23, 300, 1);
+        want(srv.DebugHurt(b, -1, 5, a, 0, out), true, "무적(참)");
+        srv.DebugApplyEnchant(b, 23, 0, 0);
+        nox::Server s2;
+        s2.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        s2.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        s2.DebugHurt(b, -1, 9999, a, 0, out);                    // 죽인다
+        want(s2.DebugHurt(b, -1, 5, a, 0, out), false, "죽은 사람");
+        char msg[120];
+        std::snprintf(msg, sizeof(msg), "① 피해 함수 참/거짓 %d/%d 이 정답지와 맞는다(전부여야)", ok, n);
+        Check(ok == n && n == 8, msg);
+    }
+    // ② 작살 — 0 마법 방패가 다 흡수 · 1 무적 적 · 2 같은 편(직전에 불) · 3 보통 적 · 4 내 소환수(직전에 불)
+    //   ⚠ 「방패를 올린 채(16) 앞에서 맞음」은 피해 함수까지 안 간다 — 발사체 닿음 처리가 먼저 되받아친다(`Server.cpp` UpdateMissiles 의 16 앞쪽).
+    //     그래서 거짓 판은 마법 방패(26)가 죽을 만큼의 피해를 0 으로 만드는 경우(`unitShieldReduceDamage_52F710` → `GAME3_2.c:7326`)로 만든다
+    struct Want { bool attached; unsigned long long refused, notEnemy, sndCalls, played, filtered; uint16_t last; const char* name; };
+    const Want ws[] = {
+        { false, 1, 0, 1, 1, 0, 862, "마법 방패가 다 흡수 → 끊기고 소리(살 × 쇠 862)" },
+        { true,  0, 0, 0, 0, 0, 0,   "무적 적 → 참이라 꽂힘 · 따로 내는 소리 없음" },
+        { false, 0, 1, 1, 0, 1, 0,   "같은 편 → 끊기고 소리는 직전 피해 종류(불 1) 로 거름" },
+        { true,  0, 0, 0, 0, 0, 0,   "보통 적 → 꽂힘(대조)" },
+        { false, 0, 1, 1, 0, 1, 0,   "내 소환수 → 끊기고 소리는 소환수 직전 피해 종류(불 1) 로 거름" },
+    };
+    for (int kind = 0; kind < 5; ++kind) {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        // b 는 위저드 — 워리어는 가만히 서 있으면 방패를 올려(16) 앞에서 오는 작살을 되받아친다(피해 함수까지 안 감)
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, kind == 4 ? 1500 : 1100, 1000);
+        RegHarpoonBolt(srv);
+        AllMetalButPlayer(srv);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        srv.DebugAbilAward(a, 3, false, out);
+        srv.DebugSetFacing(a, 0);
+        srv.DebugSetFacing(b, 128);                              // a 쪽(−x)을 본다
+        if (kind == 0) {
+            srv.Damage(b, nox::HealthOnline(nox::CharClass::Wizard) - 1, out, "");   // 체력 1 — 작살 1 이 죽을 만큼
+            srv.DebugApplyEnchant(b, 26, 300, 1);                // 마법 방패
+            Check(srv.HealthOf(b) == 1, "② 마법 방패 판 전제 — b 체력이 1 이 아니다");
+        }
+        if (kind == 1) srv.DebugApplyEnchant(b, 23, 300, 1);
+        if (kind == 2) {
+            srv.DebugHurt(b, -1, 1, std::string(), 1, out);      // 주인 없는 불 1 — +524 = 1
+            srv.DebugSetTeam(a, 1); srv.DebugSetTeam(b, 1);
+        }
+        if (kind == 4) {
+            srv.DebugSpawnPet(1328, 1100.0f, 1000.0f, a);
+            srv.DebugHurt(std::string(), 0, 1, std::string(), 1, out);   // 주인 없는 불 1 — 소환수 +524 = 1
+        }
+        const unsigned long long hs0 = srv.hitSoundCalls();
+        const bool fired = srv.DebugAbilDo(a, 3, out);
+        if (!fired) std::printf("  [작살 판 %d] 쏘기 실패 — a 상태 %u · b 상태 %u\n", kind, static_cast<unsigned>(srv.DebugStateOf(a)), static_cast<unsigned>(srv.DebugStateOf(b)));
+        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(a) != 0 && srv.DebugHarpoonTarget(a).empty(); ++t) { ms += 34; srv.Tick(ms, out); }
+        const Want& w = ws[kind];
+        const bool attached = !srv.DebugHarpoonTarget(a).empty();
+        char msg[320];
+        std::snprintf(msg, sizeof(msg), "② %s — 꽂힘 %d · 닿음{피해안들어감 %llu·적아님 %llu·걸림 %llu} · 끊길때소리 %llu{냄 %llu·거름 %llu} · 마지막 %u · 사람맞는소리 +%llu",
+                      w.name, attached, srv.harpoonTouch(nox::HarpoonTouch::Refused), srv.harpoonTouch(nox::HarpoonTouch::NotEnemy),
+                      srv.harpoonTouch(nox::HarpoonTouch::Attached), srv.harpoonHitSoundCalls(),
+                      srv.harpoonHitSoundWay(nox::DefHitSoundWay::Played), srv.harpoonHitSoundWay(nox::DefHitSoundWay::Filtered),
+                      static_cast<unsigned>(srv.lastHitSound()), srv.hitSoundCalls() - hs0);
+        bool ok = attached == w.attached && srv.harpoonTouch(nox::HarpoonTouch::Refused) == w.refused &&
+                  srv.harpoonTouch(nox::HarpoonTouch::NotEnemy) == w.notEnemy && srv.harpoonHitSoundCalls() == w.sndCalls &&
+                  srv.harpoonHitSoundWay(nox::DefHitSoundWay::Played) == w.played &&
+                  srv.harpoonHitSoundWay(nox::DefHitSoundWay::Filtered) == w.filtered &&
+                  srv.harpoonEnd(nox::HarpoonEnd::Refused) == w.refused;
+        if (w.played) ok = ok && srv.lastHitSound() == w.last;
+        if (!ok) {   // 실패하면 작살 칸 전부를 찍는다(어디서 끊겼는지 — 방패 되받아침은 「자기 1 · 너무멀리날아감 1」로 보인다)
+            std::printf("  [작살 판 %d 진단] 닿음:", kind);
+            for (size_t k = 0; k < nox::kHarpoonTouchCount; ++k) std::printf(" %llu", srv.harpoonTouch(static_cast<nox::HarpoonTouch>(k)));
+            std::printf(" · 끊김:");
+            for (size_t k = 0; k < nox::kHarpoonEndCount; ++k) std::printf(" %llu", srv.harpoonEnd(static_cast<nox::HarpoonEnd>(k)));
+            std::printf(" · 날것 %zu · 쏨 %llu · a 상태 %u · b 체력 %u\n", srv.missiles(), srv.harpoonShot(), static_cast<unsigned>(srv.DebugStateOf(a)), static_cast<unsigned>(srv.HealthOf(b)));
+        }
+        Check(ok, msg);
+    }
+    std::printf("  nine-defects 4-c3b2b — 피해 함수 참/거짓 8 · 작살 다섯 판(마법 방패 흡수 끊김+소리 · 무적 꽂힘 · 같은 편·내 소환수 끊김+거름 · 보통 꽂힘)\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -22630,6 +22736,7 @@ int main() {
     TestPlayerHitSound();
     TestPetHitSound();
     TestMissileHitterRoot();
+    TestHarpoonRefused();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

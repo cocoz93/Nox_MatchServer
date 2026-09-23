@@ -152,6 +152,7 @@ enum class HarpoonTouch : uint8_t {
     Wall,          // 벽 — 끊긴다
     Self,          // 자기 몸 — 그냥 지나간다(끊기지 않음)
     NotEnemy,      // 적이 아님 — 피해만 주고 끊긴다
+    Refused,       // ★ 4-c3b2b — 피해가 안 들어감(막기·되받아치기·마법 방패 흡수 등 — 피해 함수가 거짓) — 끊긴다
     Attached,      // 적 — 꽂혔다
     Count
 };
@@ -162,6 +163,7 @@ enum class HarpoonEnd : uint8_t {
     Replaced = 0,  // 새로 쏘기 전에 남은 것을 치움(`HarpoonDo`)
     Wall,          // 벽에 닿음(`HarpoonCollide`)
     NotEnemy,      // 적 아닌 것에 닿음(`HarpoonCollide`)
+    Refused,       // ★ 4-c3b2b — 닿았는데 피해가 안 들어감(`HarpoonCollide` · `spell_harpoon.go:172`)
     BoltGone,      // 화살이 이미 없다(수명·일반 벽 처리로 지워짐)
     OwnerDead,     // 주인이 죽었다
     TargetGone,    // 걸린 상대가 사라졌다
@@ -361,6 +363,7 @@ struct Creature {
     uint32_t poisonStart = 0;                       // 체력자료 +16 독이 시작한 프레임(0 = 없음) — 60틱 유예에 쓴다
     uint16_t poisonDecay = 0;                       // +542 감쇠 계수기 — 독을 걸 때 1000, 0 이 되면 독 1 줄고 다시 1000
     uint32_t lastDamageFrame = 0;                   // +536 — 마지막 피해 프레임(damageDefaultProc 끝 `GAME3_2.c:7236`)
+    uint8_t lastDamageType = 0;                     // ★ 4-c3b2b — +524 마지막 피해 종류(`GAME3_2.c:7234`) — 작살이 끊길 때의 기본 타격 소리가 읽는다
     std::map<std::string, uint16_t> hpReportedTo;   // +412+2×i — 보는 사람마다 마지막으로 알린 체력(`42` 증감 기준 · netSendComplexObject_518960)
 
 
@@ -2248,9 +2251,9 @@ public:
         uint16_t type = 0;     // Type 이면 그 종류 번호 — 재질을 이 번호로 찾는다(사람 몸은 NewPlayer 번호)
     };
     // ★ 시험용 — 피해 함수(3-e)를 바로 부른다. pet < 0 이면 사람(addr), 아니면 소환수 자리 번호
-    void DebugHurt(const std::string& addr, int pet, int dmg, const std::string& by, uint8_t dtype,
+    bool DebugHurt(const std::string& addr, int pet, int dmg, const std::string& by, uint8_t dtype,
                    std::vector<OutPacket>& out, const AttackSrc* src = nullptr, HitterRef hitter = HitterRef{}) {
-        HurtTarget(Target{ pet < 0 ? addr : std::string(), pet }, dmg, out, by, dtype, src, hitter);
+        return HurtTarget(Target{ pet < 0 ? addr : std::string(), pet }, dmg, out, by, dtype, src, hitter);
     }
     uint16_t DebugPetHealth(size_t i) const { return i < pets_.size() ? pets_[i].health : 0; }
     void DebugSetWeapon(const std::string& addr, int64_t classBits) {
@@ -3293,6 +3296,8 @@ public:
     uint16_t lastHitSound() const { return lastHitSound_; }                     // 마지막으로 낸 타격 소리 번호(시험용)
     // ★ 4-c3a — 사람 아닌 것(소환수·몬스터)이 맞을 때 기본 타격 소리 갈래(부름 = 합)
     unsigned long long defHitSoundCalls() const { return defHitSoundCalls_; }
+    unsigned long long harpoonHitSoundCalls() const { return harpoonHitSoundCalls_; }   // ★ 4-c3b2b
+    unsigned long long harpoonHitSoundWay(DefHitSoundWay w) const { return harpoonHitSoundWay_[static_cast<size_t>(w)]; }
     unsigned long long defHitSoundWay(DefHitSoundWay w) const {
         return w < DefHitSoundWay::Count ? defHitSoundWay_[static_cast<size_t>(w)] : 0;
     }
@@ -3447,7 +3452,10 @@ private:
     //   `by` = 때린 쪽의 **주인 사람 주소**. 비었으면 주인 없는 것(맵 몬스터)이 때린 것으로 본다.
     //   `dtype` = 정답지 피해 종류 번호(0 칼 · 1 불 · 2 망치·철퇴 · 9 전기 · 10 맨손 …).
     //   `Damage()` 는 그대로 **날 피해**를 적용한다(시험이 정확한 값을 넣는 자리다).
-    void HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
+    // ★ 4-c3b2b — 돌려주는 값 = 정답지 피해 함수의 돌려주는 값(`CallDamage` — `server/object.go:1503`). **거짓 = 피해가 안 들어감**:
+    //   죽음·관전·되받아치기·방패/대검/지팡이 막기(`GAME3_3.c:122·161·191·202·288·322·338`) · 마법 방패가 다 흡수(`GAME3_2.c:7326`) ·
+    //   화약 피해 함수의 종류 아님(`GAME3_3.c:680`). **무적·같은 편·면역은 참**이다(`GAME3_3.c:129` · `GAME3_2.c:7069·7100·7131~7146`)
+    bool HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
                     const std::string& by = std::string(), uint8_t dtype = 0, const AttackSrc* src = nullptr,
                     HitterRef hitter = HitterRef{});
     // ★ 4-c3b1 — 「때린 것」 도우미. 사람 몸 = NewPlayer 번호 · 주소가 사람이 아니면(몬스터가 때린 이 등) 아직 안 옮김(4-c3b3)
@@ -3866,6 +3874,10 @@ private:
     unsigned long long defHitSoundCalls_ = 0, defHitSoundWay_[kDefHitSoundWayCount] = {};   // ★ 4-c3a
     // ★ 4-c3a — `soundDefaultDamageSound_532E20` 를 소환수에 — 맞는 쪽 = 소환수 종류 재질 · 피해 종류(+524) · 때린 것(무기, 없으면 사람 몸)
     void PetDamageSound(const Creature& k, uint8_t dtype, HitterRef hitter);
+    // ★ 4-c3b2b — 작살이 끊길 때 따로 내는 기본 타격 소리 `532E20(대상, 작살 화살)`. 맞는 쪽 재질 = 대상 오브젝트의 재질(사람은 NewPlayer ·
+    //   가슴갑옷을 안 본다) · 피해 종류 = 대상의 +524(마지막 피해 종류 — 이번에 피해가 안 들어갔으면 **그 전 값**)
+    void HarpoonDefaultHitSound(const Target& t, uint16_t boltType);
+    unsigned long long harpoonHitSoundCalls_ = 0, harpoonHitSoundWay_[kDefHitSoundWayCount] = {};
     std::vector<uint32_t> matByWire_;
     std::vector<uint8_t> breastByWire_;
     uint16_t newPlayerWire_ = 0;
