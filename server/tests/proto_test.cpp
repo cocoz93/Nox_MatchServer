@@ -15484,6 +15484,67 @@ void TestAirborneReaders() {
     std::printf("  nine-defects 3-b — 떠 있음: 지진이 뛰는 사람·나는 소환수를 뺌 · 떠 있으면 시전 거절(알림 없음) · 협동이면 걸림\n");
 }
 
+// ── nine-defects 4-a — 휘두르기 소리(`GAME4_3.c:4061~4285` 아홉 자리) ─────────
+//
+//   무기마다 허공에 한 번 휘둘러 **그 갈래 소리 칸 하나만 1** 인지(판정 수 = 1) · 닿으면 안 남(망치만 늘 남)
+//   ⚠ 창 갈래(0x7800000 → 879)는 우리 무기 표(`kWeapons`)에 없어 휘두를 수 없다 — 이 시험 밖
+void TestSwingSounds() {
+    const std::string a = "10.7.21.1:7211";
+    const std::string b = "10.7.21.2:7212";
+    auto tick = [](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) { ms += 34; srv.Tick(ms, out); };
+    // 휘두르고 판정까지 굴린다. b 를 두면 앞 30 에 선다(닿는 판)
+    auto swing = [&](nox::Server& srv, uint32_t weapon, bool withTarget) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id = 879; id <= 884; ++id) { nox::Server::SoundDefIn d; d.id = id; d.samples = 1; sd.push_back(d); }
+        srv.SetSoundDefs(sd);
+        for (int anim : { 23, 24, 25, 26, 27, 28, 29, 35, 37, 39 }) srv.SetPlayerAnimFrames(anim, 8, 0);
+        srv.DebugEnterGame(a, 860, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugEnterGame(b, 861, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(b, withTarget ? 1030 : 5000, 1000);
+        srv.DebugSetWeapon(a, weapon);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugSetFacing(a, 0);
+        for (int t = 0; t < 35; ++t) tick(srv, out, ms);       // 기력(망치 100)
+        const auto click = InputPacket(6);
+        srv.OnPacket(a, click.data(), click.size(), out);
+        for (int t = 0; t < 12; ++t) tick(srv, out, ms);
+    };
+    auto sum = [](const nox::Server& srv) {
+        unsigned long long n = 0;
+        for (uint16_t id = 879; id <= 884; ++id) n += srv.swingSound(id);
+        return n;
+    };
+    struct C { uint32_t weapon; uint16_t sound; const char* name; };
+    const C cases[] = {
+        { 0x0,    879, "맨손" },   { 0x8000, 879, "지팡이" }, { 0x200, 880, "롱소드" }, { 0x100, 881, "칼" },
+        { 0x400,  881, "대검" },   { 0x4000, 882, "망치" },   { 0x800, 884, "철퇴" },   { 0x1000, 883, "도끼" },
+        { 0x2000, 883, "오우거도끼" },
+    };
+    // ① 허공 — 그 갈래 소리 하나 · 판정 하나 · 담긴 소리 하나
+    for (const C& c : cases) {
+        nox::Server srv;
+        swing(srv, c.weapon, false);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "① %s 허공 — 판정 %llu · %u번 %llu · 소리 합 %llu · 담김 %llu(판정 1 · 그 번호 1 · 합 1 · 담김 1 이어야)",
+                      c.name, srv.melees(), c.sound, srv.swingSound(c.sound), sum(srv), srv.soundsQueued());
+        Check(srv.melees() == 1 && srv.swingSound(c.sound) == 1 && sum(srv) == 1 && srv.soundsQueued() == 1, msg);
+    }
+    // ② 앞에 사람 — 닿으면 빗나감 소리가 없다. 망치만 닿아도 882
+    for (const C& c : { cases[2], cases[5] }) {
+        nox::Server srv;
+        swing(srv, c.weapon, true);
+        const bool hammer = (c.weapon == 0x4000);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "② %s 닿음 — 판정 %llu · b 체력 %u · 소리 합 %llu(%s)", c.name, srv.melees(), srv.HealthOf(b), sum(srv),
+                      hammer ? "망치는 1" : "0 이어야");
+        Check(srv.melees() == 1 && srv.HealthOf(b) < srv.MaxHealthOf(b) && sum(srv) == (hammer ? 1u : 0u) &&
+              (!hammer || srv.swingSound(882) == 1), msg);
+    }
+    std::printf("  nine-defects 4-a — 휘두르기 소리: 맨손·지팡이 879 · 롱소드 880 · 칼·대검 881 · 망치 882(늘) · 철퇴 884 · 도끼 883 · 닿으면 없음\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -22228,6 +22289,7 @@ int main() {
     TestBerserkCrash();
     TestJump();
     TestAirborneReaders();
+    TestSwingSounds();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

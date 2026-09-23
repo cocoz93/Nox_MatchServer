@@ -215,13 +215,17 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.jumpGate(J::Overweight), srv.jumpGate(J::NoStamina),
                 srv.jumpForceTicks(), srv.jumpHeldTicks(), srv.jumpLanded(), srv.airborneOffIdle(), srv.recoilBlockedAirborne(),
                 srv.equakeSkipAirborne(), srv.spellRefusedAirborne());   // ★ 3-b
+    // ★ 4-a — 휘두르기 소리. 판정 수(근접)가 분모 — 빗나간 판정마다 그 갈래 소리 하나(망치는 판정마다 882)
+    std::printf("[휘두름] 판정 %llu · 소리부름{879주먹 %llu·880롱소드 %llu·881칼 %llu·882망치 %llu·883도끼 %llu·884철퇴 %llu}\n",
+                srv.melees(), srv.swingSound(879), srv.swingSound(880), srv.swingSound(881), srv.swingSound(882),
+                srv.swingSound(883), srv.swingSound(884));
 }
 
 // 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
 unsigned long long AbilityFingerprint(const nox::Server& srv) {
     unsigned long long n = srv.abilCalls() + srv.harpoonShot() + srv.treadBlockedRun() + srv.harpoonAimFound() +
                            srv.contactDamageHits() + srv.warcryShouts() + srv.abilValOff() + srv.berserkChargeTicks() +
-                           srv.berserkCollideCalls() + srv.jumpCodes() + srv.jumpLanded();
+                           srv.berserkCollideCalls() + srv.jumpCodes() + srv.jumpLanded() + srv.melees();
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));
@@ -939,7 +943,10 @@ int main(int argc, char** argv) {
                 // ★ 09-22 사용자 보고(「소리가 안 들린다」) — **우리가 부르는 번호가 표에 있나**를 찍는다.
                 //   `PlaySoundAt` 은 소리조각이 0 이면 조용히 버리고, `maxDist` 가 0 이면 **거리에서 잘린다**.
                 //   둘은 증상이 같아서(안 들림) 숫자로 갈라야 한다
-                for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307 }) {
+                // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
+                for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,
+                                    nox::SoundByName("HumanMaleExertionHeavy"), nox::SoundByName("HumanFemaleExertionHeavy"),
+                                    (uint16_t)879, (uint16_t)880, (uint16_t)881, (uint16_t)882, (uint16_t)883, (uint16_t)884 }) {
                     bool found = false;
                     for (const auto& in : sd)
                         if (in.id == q) {

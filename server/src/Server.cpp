@@ -4748,7 +4748,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
 //   판정  sub_518040 사각형 후보(`GAME4_1.c:4091` · 거리 조건 sub_5180B0) → sub_5386A0 앞쪽 가장 가까운 것(몬스터 우선)
 //         → sub_538510 방향 표 · 깃발 · 선 추적(벽 0x5) → 피해 함수(+716) · 훅이면 힘 20
 //   ⚠ 빠진 것(다른 조각)  무기 갈래 전부(3-b) · 피해 함수 정답지(3-e: 지금은 HurtTarget) · 벽 부수기 mapDamageToWalls(9)
-//     · 빗나감 소리 879(10) · 소환수 밀기(몬스터 물리 6) · 버프(4) · 공 차기 checkWinkFlags(깃발공 모드 없음)
+//     · 소환수 밀기(몬스터 물리 6) · 버프(4) · 공 차기 checkWinkFlags(깃발공 모드 없음) · (빗나감 소리 879~884 는 ★ 4-a 에서 넣음)
 //     · 커서 아래 물건(아이템 몸 표 없음)
 // ════════════════════════════════════════════════════════════════════════
 namespace {
@@ -13113,6 +13113,19 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
         if (s.attackReadyFrame == 0) s.attackReadyFrame = frame + static_cast<uint32_t>(frames * (hold + 1));
     };
     auto midHit = [&]() { return idx == frames / 2 && idx > prevFrame; };
+    // ★ 09-23 nine-defects 4-a — **휘두르기 소리**(`GAME4_3.c:4061~4285` 아홉 자리). 판정(playerTraceAttack)이 **아무것에도 안 닿으면**
+    //   그 갈래의 빗나감 소리를 낸다 — 맨손·지팡이·창 879 PunchMissing · 0x200 880 Longsword · 0x100·0x400 881 Sword ·
+    //   0x800 884 Mace · 0x3000 883 Axe. 망치(0x4000)만 **닿든 말든** 882 Hammer(땅울림 뒤 · `:4236~4240`).
+    //   `aud_501960(번호, 사람, 0, 0)` — 사람 자리에서 모두에게. 전에는 판정만 하고 소리 자리가 「묶음 10」 으로 비어 있었다
+    auto swingSound = [&](uint16_t id) {
+        PlaySoundAt(id, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
+        if (id >= 879 && id <= 884) ++swingSound_[id - 879];
+    };
+    auto judge = [&](const AttackInfo& ai, int anim, uint16_t missSound) {
+        const bool hit = PlayerTraceAttack(s, ai, out);
+        logJudge(ai, hit, anim);
+        if (!hit) swingSound(missSound);
+    };
 
     // ★ 09-23 nine-defects 2-a1 — **함성 갈래**(`GAME4_3.c:3988~4005`) — 맨손·무기 갈래보다 먼저 본다.
     //   함성이 켜져 있고 켜짐 값이 서 있으면(외치는 애니가 도는 중) 애니 46(WARCRY) 칸을 센다.
@@ -13174,7 +13187,7 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
             ai.range = static_cast<float>(kBodyRadius) + kUnarmedReachExtra;
             ai.px = static_cast<float>(s.posX); ai.py = static_cast<float>(s.posY);
             ai.anim = static_cast<uint8_t>(anim);
-            logJudge(ai, PlayerTraceAttack(s, ai, out), anim);
+            judge(ai, anim, 879);                            // `:4061~4064` PunchMissing
         }
     } else if (equip & 0x47F8000) {
         // 지팡이 — 막대(0x8000) 면 29 휘두르기. 마법 지팡이는 +96&2 가 아니면 31(주문 4)
@@ -13184,7 +13197,7 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
         calcIdx();
         if (idx < frames && midHit()) {
             AttackInfo ai = meleeInfo(0, false);
-            logJudge(ai, PlayerTraceAttack(s, ai, out), anim);
+            judge(ai, anim, 879);                            // `:4114~4117`
         }
     } else if (equip & 0x7800000) {
         const int anim = (equip & 0x3800000) ? 32 : 31;    // 32 찌르기만 판정
@@ -13193,14 +13206,14 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
         calcIdx();
         if (anim == 32 && midHit()) {
             AttackInfo ai = meleeInfo(0, false);
-            logJudge(ai, PlayerTraceAttack(s, ai, out), anim);
+            judge(ai, anim, 879);                            // `:4142~4145`
         }
     } else if (!(equip & 0xC0)) {
-        struct Branch { uint32_t bits; int anim; uint8_t type; bool overlap; };
-        // `:4149~4288` 순서 그대로 — 롱소드 · 칼 · 대검 · 망치 · 철퇴 · 도끼
+        struct Branch { uint32_t bits; int anim; uint8_t type; bool overlap; uint16_t sound; };
+        // `:4149~4288` 순서 그대로 — 롱소드 · 칼 · 대검 · 망치 · 철퇴 · 도끼 · ★ 4-a 끝 칸 = 그 갈래의 휘두르기 소리
         static const Branch kBranches[] = {
-            { 0x200, 28, 0, false }, { 0x100, 27, 0, false }, { 0x400, 37, 0, false },
-            { 0x4000, 39, 2, true }, { 0x800, 26, 2, true }, { 0x3000, 35, 0, true },
+            { 0x200, 28, 0, false, 880 }, { 0x100, 27, 0, false, 881 }, { 0x400, 37, 0, false, 881 },
+            { 0x4000, 39, 2, true, 882 }, { 0x800, 26, 2, true, 884 }, { 0x3000, 35, 0, true, 883 },
         };
         const Branch* br = nullptr;
         for (const auto& b : kBranches) if (equip & b.bits) { br = &b; break; }
@@ -13219,8 +13232,9 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
                     logJudge(ai, PlayerTraceAttack(s, ai, out), br->anim);
                     EarthquakeSend(static_cast<float>(s.posX), static_cast<float>(s.posY),
                                    static_cast<int>(std::lround(static_cast<double>(s.strength) * 0.1)), out);   // nox_float2int
+                    swingSound(br->sound);                           // ★ 4-a — 망치는 닿든 말든 882(`:4240`)
                 } else {
-                    logJudge(ai, PlayerTraceAttack(s, ai, out), br->anim);
+                    judge(ai, br->anim, br->sound);
                 }
             }
         }
@@ -13231,7 +13245,7 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
     return idx < frames;
 }
 
-// `GAME4_3.c:3624` playerTraceAttack — 참 = 무엇에든 닿음(빗나감 소리 879~884 를 가른다, 소리는 묶음 10).
+// `GAME4_3.c:3624` playerTraceAttack — 참 = 무엇에든 닿음(빗나감 소리 879~884 를 가른다 — ★ 4-a 부터 `PlayerAttack` 의 judge 가 낸다).
 //   망치(무기 SUBCLASS 0x4000)는 판정 중심 둘레 **모두**에 sub_538510 을 부르고, 그 밖은 하나를 고른다(sub_5386A0).
 bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<OutPacket>& out) {
     const float ax = static_cast<float>(s.posX), ay = static_cast<float>(s.posY);
