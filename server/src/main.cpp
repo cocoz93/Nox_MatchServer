@@ -142,6 +142,66 @@ int SelfTest() {
 //   여기 있는 동안은 시험이 한 번도 못 불렀다(`proto_test` 는 `main.cpp` 를 안 링크한다).
 //   그 사각지대에서 묶음 8 규칙이 도달 불가였고, 모드 갈래의 `else` 가 여섯 모드를 삼켰다.
 
+// ★ 09-23 nine-defects 0-c — **능력별·작살 갈래 줄.** 사람 판의 「실행 11 · 겹침 12」가 어느 능력인지
+//   몰라서 A·S·F 판정이 한 번 뒤집혔다. 능력마다 「들어옴 = 거절 칸 합 + 실행」 등식을 같이 찍고,
+//   어긋나면 ⚠ 를 붙인다(세는 자리가 빠졌다는 뜻). 0 인 칸도 다 찍는다 — 「들어옴」이 분모다
+void PrintAbilityBreakdown(const nox::Server& srv) {
+    static const char* const kName[nox::kAbilityCount] = { "", "광전사", "함성", "작살", "살금살금", "늑대눈" };
+    using G = nox::AbilGate;
+    using E = nox::AbilEnd;
+    std::printf("[능력별] 번호밖 %llu", srv.abilBadNum());
+    for (uint8_t a = 1; a < nox::kAbilityCount; ++a) {
+        unsigned long long sum = 0;
+        for (size_t g = 0; g < nox::kAbilGateCount; ++g) sum += srv.abilGate(a, static_cast<G>(g));
+        std::printf(" | %u%s 들어옴 %llu%s = 실행 %llu + 거절{죽음 %llu·워리어아님 %llu·겹침 %llu",
+                    (unsigned)a, kName[a], srv.abilIn(a), sum == srv.abilIn(a) ? "" : " ⚠칸합불일치",
+                    srv.abilGate(a, G::Ok), srv.abilGate(a, G::Dead), srv.abilGate(a, G::NotWarrior),
+                    srv.abilGate(a, G::Exclusive));
+        if (a <= 3) {                                        // 같이 못 켜는 셋만 「누가 막았나」가 있다
+            std::printf("(");
+            bool first = true;
+            for (uint8_t o = 1; o <= 3; ++o) {
+                if (o == a) continue;
+                std::printf("%s%s %llu", first ? "" : "·", kName[o], srv.abilBlockedBy(a, o));
+                first = false;
+            }
+            std::printf(")");
+        }
+        std::printf("·이미켜짐 %llu·상태12 %llu·안배움 %llu·짐넘침 %llu·쉬는중 %llu}"
+                    " 꺼짐{시간 %llu·사라짐 %llu·되돌림 %llu·전부 %llu·작살끊김 %llu}"
+                    " 소리부름{쓸때 %llu·꺼질때 %llu}",
+                    srv.abilGate(a, G::Already), srv.abilGate(a, G::MoveState), srv.abilGate(a, G::NotLearned),
+                    srv.abilGate(a, G::Overweight), srv.abilGate(a, G::Cooldown),
+                    srv.abilEnded(a, E::Expired), srv.abilEnded(a, E::Gone), srv.abilEnded(a, E::Reset),
+                    srv.abilEnded(a, E::CancelAll), srv.abilEnded(a, E::HarpoonBreak),
+                    srv.abilSoundUseCalls(a), srv.abilSoundOffCalls(a));
+    }
+    std::printf("\n");
+    using T = nox::HarpoonTouch;
+    using H = nox::HarpoonEnd;
+    std::printf("[작살갈래] 쏨 %llu · 닿음{주인없음 %llu·벽 %llu·자기 %llu·적아님 %llu·걸림 %llu}"
+                " · 끊김{새로쏨 %llu·벽 %llu·적아님 %llu·화살없음 %llu·주인죽음 %llu·상대사라짐 %llu·상대죽음 %llu"
+                "·멀어짐 %llu·다끌어옴 %llu·수명 %llu·안움직임 %llu·시야막힘 %llu·너무멀리날아감 %llu·시험 %llu}\n",
+                srv.harpoonShot(),
+                srv.harpoonTouch(T::NoOwner), srv.harpoonTouch(T::Wall), srv.harpoonTouch(T::Self),
+                srv.harpoonTouch(T::NotEnemy), srv.harpoonTouch(T::Attached),
+                srv.harpoonEnd(H::Replaced), srv.harpoonEnd(H::Wall), srv.harpoonEnd(H::NotEnemy),
+                srv.harpoonEnd(H::BoltGone), srv.harpoonEnd(H::OwnerDead), srv.harpoonEnd(H::TargetGone),
+                srv.harpoonEnd(H::TargetDead), srv.harpoonEnd(H::TooFar), srv.harpoonEnd(H::Arrived),
+                srv.harpoonEnd(H::Lifetime), srv.harpoonEnd(H::Stuck), srv.harpoonEnd(H::NoSight),
+                srv.harpoonEnd(H::OverFlight), srv.harpoonEnd(H::Debug));
+}
+
+// 능력·작살 계수기가 바뀌었나를 보는 지문 — `--quiet` 에서도 **바뀐 때만** 위 두 줄을 찍으려고 쓴다
+unsigned long long AbilityFingerprint(const nox::Server& srv) {
+    unsigned long long n = srv.abilCalls() + srv.harpoonShot();
+    for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
+        for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
+    for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));
+    for (size_t h = 0; h < nox::kHarpoonEndCount; ++h) n += srv.harpoonEnd(static_cast<nox::HarpoonEnd>(h));
+    return n;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2054,6 +2114,18 @@ int main(int argc, char** argv) {
                                 srv.roamAdvance(), srv.roamDeadEnd());
                 }
             }
+            // ★ 09-23 nine-defects 0-c — `--quiet`(판정 하네스 `judge.ps1`)에서도 능력·작살 갈래 두 줄은
+            //   **바뀐 때만** 10초에 한 번 찍는다. 판정 판은 늘 `--quiet` 라 아래 1초 줄이 꺼져 있어,
+            //   다음 사람 판에서 능력별 숫자가 안 나올 뻔했다
+            if (quiet && made > 0 && (srv.frame() % 300) == 0) {
+                static unsigned long long lastAbilFp = 0;
+                const unsigned long long fp = AbilityFingerprint(srv);
+                if (fp != lastAbilFp) {
+                    PrintAbilityBreakdown(srv);
+                    std::fflush(stdout);
+                    lastAbilFp = fp;
+                }
+            }
             // 매 틱 찍으면 화면이 흐르니 1초에 한 번만.
             if (!quiet && made > 0 && (srv.frame() % 30) == 0) {
                 // ★ 걸음·근접 누계를 같이 찍는다 — 클라가 보낸 조작이 **실제로 반영됐나**를
@@ -2141,6 +2213,11 @@ int main(int argc, char** argv) {
                             srv.harpoonDoCalls(), srv.harpoonNoType(), srv.harpoonShot(),
                             srv.harpoonAttached(), srv.harpoonPullTicks(),
                             srv.RoundOver() ? "예" : "아니오", nTicks);
+                PrintAbilityBreakdown(srv);                  // ★ 09-23 0-c — 위 합계의 능력별·작살 갈래
+                // ★ 09-23 0-c — **1초에 한 번 비운다.** 하네스(`crashrun.ps1`)는 stdout 을 파일로 돌리고
+                //   끝에 서버를 강제로 끈다 — C 런타임이 4KB 씩 모아 쓰므로 그때 남은 것이 통째로 사라졌다
+                //   (nd0c 판: 30초 판에 파일이 `[받음 1]` 에서 끝나고 `[틱]` 줄 0). 이 블록의 나머지 줄은 다음 초에 나간다
+                std::fflush(stdout);
                 // ★ 09-19 진단 ⑬ — 화살 목록과 **실은 프레임의 분포**.
                 //   화면 캡처의 기울기와 1:1 로 맞대는 자리다. 분포가 한 칸뿐이면
                 //   「모든 화살이 같은 각도로 그려진다」가 서버 쪽에서 이미 정해진 것이다.
