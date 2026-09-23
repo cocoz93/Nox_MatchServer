@@ -8018,7 +8018,11 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
     const bool exclusive = (abil == 1 || abil == 2 || abil == 3);
     if (exclusive) {
         for (uint8_t o = 1; o <= 3; ++o)
-            if (o != abil && AbilityIsActive(s, o)) { gate(AbilGate::Exclusive); refuse(2); return false; }
+            if (o != abil && AbilityIsActive(s, o)) {
+                gate(AbilGate::Exclusive);
+                ++abilBlockedBy_[abil][o];                   // ★ 0-b — **누가** 막았나
+                refuse(2); return false;
+            }
     }
     if (AbilityIsActive(s, abil)) { gate(AbilGate::Already); refuse(2); return false; }   // ③
     // ④ 상태 12 이거나 (협동이 아닌데) **떠 있으면**
@@ -8043,7 +8047,7 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
     //   소리 번호는 thing.bin `ABIL` 칸에서 읽어 넣는다(`SetAbilitySound`) — 지어내지 않는다
     if (abilSoundUse_[abil] != 0) {
         PlaySoundAt(abilSoundUse_[abil], static_cast<float>(s.posX), static_cast<float>(s.posY));
-        ++abilSoundSent_;
+        ++abilSoundUseCalls_[abil];
     }
     return true;
 }
@@ -8064,10 +8068,11 @@ void Server::AbilityUpdate(Session& s, std::vector<OutPacket>& out) {
             // ★ 09-20 묶음 10 — **꺼질 때 소리**(정답지 `spells_abil.go:249~250` — `getSound(능력,2)`)
             if (abilSoundOff_[i] != 0) {
                 PlaySoundAt(abilSoundOff_[i], static_cast<float>(s.posX), static_cast<float>(s.posY));
-                ++abilSoundSent_;
+                ++abilSoundOffCalls_[i];
             }
             if (i == 1) PlayerSetState(s, 13, frame_);                  // 광전사는 끝나면 상태 13
         }
+        ++abilEnded_[i][static_cast<size_t>(gone ? AbilEnd::Gone : AbilEnd::Expired)];   // ★ 0-b
         s.abilActive[i] = false;
         s.abilActiveUntil[i] = 0;
     }
@@ -8079,6 +8084,7 @@ void Server::AbilityReset(Session& s, uint8_t abil, std::vector<OutPacket>& out)
     s.abilCooldown[abil] = 0;
     SendAbilityReset(s, abil, out);
     if (s.abilActive[abil]) {
+        ++abilEnded_[abil][static_cast<size_t>(AbilEnd::Reset)];   // ★ 0-b
         SendAbilityActive(s, abil, false, out);
         s.abilActive[abil] = false;
         s.abilActiveUntil[abil] = 0;
@@ -8091,6 +8097,7 @@ void Server::AbilityCancelAll(Session& s, std::vector<OutPacket>& out) {
     SendAbilityReset(s, 6, out);
     for (uint8_t i = 1; i < kAbilityCount; ++i) {
         if (!s.abilActive[i]) continue;
+        ++abilEnded_[i][static_cast<size_t>(AbilEnd::CancelAll)];  // ★ 0-b
         SendAbilityActive(s, i, false, out);
         s.abilActive[i] = false;
         s.abilActiveUntil[i] = 0;
@@ -8220,7 +8227,7 @@ void Server::HarpoonDo(Session& s, std::vector<OutPacket>& out) {
     ++harpoonDoCalls_;
     const ProjTypeInfo* pt = ProjType("HarpoonBolt");
     if (!pt || pt->type == 0) { ++harpoonNoType_; return; }  // 종류를 모르면 안 만든다
-    HarpoonBreak(s, /*emitSound=*/false, out);               // 남은 것이 있으면 먼저 치운다
+    HarpoonBreak(s, /*emitSound=*/false, HarpoonEnd::Replaced, out);   // 남은 것이 있으면 먼저 치운다
     MissileObj m;
     m.netCode = nextShotNetCode_++;
     m.type = pt->type;
@@ -8262,12 +8269,14 @@ void Server::HarpoonDo(Session& s, std::vector<OutPacket>& out) {
 }
 
 // `abilityHarpoon::breakForOwner` — 줄을 끊는다
-void Server::HarpoonBreak(Session& s, bool emitSound, std::vector<OutPacket>& out) {
+void Server::HarpoonBreak(Session& s, bool emitSound, HarpoonEnd why, std::vector<OutPacket>& out) {
     (void)emitSound;                                         // 소리 `SoundHarpoonBroken` 은 묶음 10
     if (s.harpoonBoltNc == 0) return;
+    ++harpoonEnd_[static_cast<size_t>(why)];                 // ★ 0-b — 끊긴 것만 센다(화살이 없으면 위에서 돌아감)
     // `DisableAbility` — 끊김 와이어 + 켜짐 끄기
     SendHarpoonFx(14, s.netCode, s.harpoonBoltNc, out);
     if (s.abilActive[3]) {
+        ++abilEnded_[3][static_cast<size_t>(AbilEnd::HarpoonBreak)];   // ★ 0-b
         SendAbilityActive(s, 3, false, out);
         s.abilActive[3] = false;
         s.abilActiveUntil[3] = 0;
@@ -8285,22 +8294,28 @@ void Server::HarpoonBreak(Session& s, bool emitSound, std::vector<OutPacket>& ou
 
 // `abilityHarpoon::Collide` — 화살이 무엇엔가 닿았다. 꽂히면 true(화살을 살려 둔다)
 bool Server::HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPacket>& out) {
+    // ★ 09-23 0-b — 나가는 길 다섯을 다 센다(`HarpoonTouch`). 사람 판에서 「쏨 3 · 걸림 0」만 남아
+    //   빗맞혔는지(아무것도 안 닿음) · 벽에 닿았는지 · 편이 같았는지를 못 갈랐다
+    auto touch = [&](HarpoonTouch t) { ++harpoonTouch_[static_cast<size_t>(t)]; };
     auto oit = sessions_.find(m.owner);
-    if (oit == sessions_.end()) return false;
+    if (oit == sessions_.end()) { touch(HarpoonTouch::NoOwner); return false; }
     Session& own = oit->second;
     if (targ.none()) {                                       // 벽 — 그 칸에 피해를 주고 조용히 끊는다
-        HarpoonBreak(own, /*emitSound=*/false, out);
+        touch(HarpoonTouch::Wall);
+        HarpoonBreak(own, /*emitSound=*/false, HarpoonEnd::Wall, out);
         return false;
     }
-    if (!targ.addr.empty() && targ.addr == m.owner) return true;   // 자기에게는 안 꽂힌다
+    if (!targ.addr.empty() && targ.addr == m.owner) { touch(HarpoonTouch::Self); return true; }   // 자기에게는 안 꽂힌다
     AttackSrc src;
     src.x = m.posX; src.y = m.posY;
     src.byMonsterType = m.type;
     HurtTarget(targ, kHarpoonDamage, out, m.owner, 11, &src);      // DamageImpact = 11
     if (!TargetIsEnemy(own, targ)) {                         // 적이 아니면 피해만 주고 끊긴다
-        HarpoonBreak(own, /*emitSound=*/false, out);
+        touch(HarpoonTouch::NotEnemy);
+        HarpoonBreak(own, /*emitSound=*/false, HarpoonEnd::NotEnemy, out);
         return false;
     }
+    touch(HarpoonTouch::Attached);
     own.harpoonTarget = targ;
     ++harpoonAttached_;                                      // ★ 상대에 걸렸다
     TargetXY(targ, own.harpoonTargX, own.harpoonTargY);
@@ -8337,8 +8352,8 @@ bool Server::HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPa
 void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
     if (s.harpoonBoltNc == 0) return;
     MissileObj* bolt = HarpoonBoltOf(s);
-    if (!bolt) { HarpoonBreak(s, /*emitSound=*/true, out); return; }
-    if (s.respawnAtFrame != 0) { HarpoonBreak(s, /*emitSound=*/true, out); return; }   // 주인이 죽었다
+    if (!bolt) { HarpoonBreak(s, /*emitSound=*/true, HarpoonEnd::BoltGone, out); return; }
+    if (s.respawnAtFrame != 0) { HarpoonBreak(s, /*emitSound=*/true, HarpoonEnd::OwnerDead, out); return; }   // 주인이 죽었다
 
     const double dx0 = static_cast<double>(bolt->posX) - s.posX;
     const double dy0 = static_cast<double>(bolt->posY) - s.posY;
@@ -8358,28 +8373,28 @@ void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
             }
         }
         float tx = 0, ty = 0;
-        if (!TargetXY(s.harpoonTarget, tx, ty)) { HarpoonBreak(s, true, out); return; }   // 상대가 사라졌다
+        if (!TargetXY(s.harpoonTarget, tx, ty)) { HarpoonBreak(s, true, HarpoonEnd::TargetGone, out); return; }   // 상대가 사라졌다
         if (!s.harpoonTarget.addr.empty()) {
             auto it = sessions_.find(s.harpoonTarget.addr);
             if (it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0) {
-                HarpoonBreak(s, true, out); return;
+                HarpoonBreak(s, true, HarpoonEnd::TargetDead, out); return;
             }
         }
-        if (dist > kHarpoonMaxDist) { HarpoonBreak(s, true, out); return; }               // ①
-        if (dist < kHarpoonMinDist) { HarpoonBreak(s, false, out); return; }              // ②
+        if (dist > kHarpoonMaxDist) { HarpoonBreak(s, true, HarpoonEnd::TooFar, out); return; }     // ①
+        if (dist < kHarpoonMinDist) { HarpoonBreak(s, false, HarpoonEnd::Arrived, out); return; }   // ②
         if (s.harpoonFrame35 != 0 && frame_ - s.harpoonFrame35 > kHarpoonLifetime) {      // ③
-            HarpoonBreak(s, true, out); return;
+            HarpoonBreak(s, true, HarpoonEnd::Lifetime, out); return;
         }
         if (frame_ - s.harpoonFrame38 > 30u) {                                           // ④ 30틱마다 본다
             s.harpoonFrame38 = frame_;
             const double mx = static_cast<double>(s.harpoonTargX) - tx;
             const double my = static_cast<double>(s.harpoonTargY) - ty;
-            if (mx * mx + my * my < 1.0) { HarpoonBreak(s, true, out); return; }
+            if (mx * mx + my * my < 1.0) { HarpoonBreak(s, true, HarpoonEnd::Stuck, out); return; }
             s.harpoonTargX = tx;
             s.harpoonTargY = ty;
         }
         if (!MapTraceRay(static_cast<float>(s.posX), static_cast<float>(s.posY), tx, ty, 0x9)) {   // ⑤
-            HarpoonBreak(s, true, out); return;
+            HarpoonBreak(s, true, HarpoonEnd::NoSight, out); return;
         }
         // 화살을 상대 자리에 붙인다
         bolt->newX = bolt->posX = bolt->prevX = tx;
@@ -8390,7 +8405,7 @@ void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
         MarkAssist(s.addr, s.harpoonTarget);                 // sub_4E7540 — 매 틱 도운 사람으로
         HarpoonPull(s, s.harpoonTarget, tx, ty);
     } else if (dist > kHarpoonMaxFlight) {
-        HarpoonBreak(s, true, out); return;                  // 안 걸린 채 너무 멀리 날았다
+        HarpoonBreak(s, true, HarpoonEnd::OverFlight, out); return;   // 안 걸린 채 너무 멀리 날았다
     }
     if (s.harpoonFrame35 == 0) {                             // 첫 틱에 「걸림」을 알린다
         SendHarpoonFx(7, s.netCode, s.harpoonBoltNc, out);

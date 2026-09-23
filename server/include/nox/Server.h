@@ -133,6 +133,48 @@ enum class AbilGate : uint8_t {
 };
 constexpr size_t kAbilGateCount = static_cast<size_t>(AbilGate::Count);
 
+// ★ 09-23 0-b — 켜진 능력이 **어떻게 꺼졌나**. `abilActive[]` 를 내리는 자리 하나하나다
+enum class AbilEnd : uint8_t {
+    Expired = 0,   // 지속이 다함(`AbilityUpdate` — 꺼짐 알림·소리가 나가는 길)
+    Gone,          // 주인이 죽었거나 사라짐(`AbilityUpdate` — 알리지 않고 뺀다)
+    Reset,         // 하나 되돌림(`AbilityReset`)
+    CancelAll,     // 전부 되돌림(`AbilityCancelAll`)
+    HarpoonBreak,  // 작살 줄 끊김(`HarpoonBreak`)
+    Count
+};
+constexpr size_t kAbilEndCount = static_cast<size_t>(AbilEnd::Count);
+
+// ★ 09-23 0-b — 작살 화살이 **무엇에 닿았나**(`HarpoonCollide` 의 나가는 길)
+enum class HarpoonTouch : uint8_t {
+    NoOwner = 0,   // 주인이 없다(화살만 지운다)
+    Wall,          // 벽 — 끊긴다
+    Self,          // 자기 몸 — 그냥 지나간다(끊기지 않음)
+    NotEnemy,      // 적이 아님 — 피해만 주고 끊긴다
+    Attached,      // 적 — 꽂혔다
+    Count
+};
+constexpr size_t kHarpoonTouchCount = static_cast<size_t>(HarpoonTouch::Count);
+
+// ★ 09-23 0-b — 작살 줄이 **왜 끊겼나**(`HarpoonBreak` 를 부르는 자리 하나하나)
+enum class HarpoonEnd : uint8_t {
+    Replaced = 0,  // 새로 쏘기 전에 남은 것을 치움(`HarpoonDo`)
+    Wall,          // 벽에 닿음(`HarpoonCollide`)
+    NotEnemy,      // 적 아닌 것에 닿음(`HarpoonCollide`)
+    BoltGone,      // 화살이 이미 없다(수명·일반 벽 처리로 지워짐)
+    OwnerDead,     // 주인이 죽었다
+    TargetGone,    // 걸린 상대가 사라졌다
+    TargetDead,    // 걸린 상대가 죽었거나 나갔다
+    TooFar,        // ① 375 보다 멀어짐
+    Arrived,       // ② 20 보다 가까워짐 — 다 끌어왔다
+    Lifetime,      // ③ 150프레임
+    Stuck,         // ④ 30틱 동안 상대가 안 움직임
+    NoSight,       // ⑤ 시야가 막힘
+    OverFlight,    // 안 걸린 채 너무 멀리 날았다
+    Debug,         // 시험용 `DebugHarpoonBreak`
+    Count
+};
+constexpr size_t kHarpoonEndCount = static_cast<size_t>(HarpoonEnd::Count);
+
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
 //   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
@@ -2617,7 +2659,7 @@ public:
     }
     void DebugAdvanceFrame(uint32_t n) { frame_ += n; }
     void DebugHarpoonBreak(const std::string& a, std::vector<OutPacket>& out) {
-        auto i = sessions_.find(a); if (i != sessions_.end()) HarpoonBreak(i->second, false, out);
+        auto i = sessions_.find(a); if (i != sessions_.end()) HarpoonBreak(i->second, false, HarpoonEnd::Debug, out);
     }
     // 시험용 — 능력
     int DebugAbilLvl(const std::string& a, uint8_t k) const {
@@ -3087,6 +3129,22 @@ public:
     unsigned long long harpoonShot() const { return harpoonShot_; }
     unsigned long long harpoonAttached() const { return harpoonAttached_; }
     unsigned long long harpoonPullTicks() const { return harpoonPullTicks_; }
+    // ★ 09-23 0-b — 작살이 무엇에 닿았나 · 줄이 왜 끊겼나(끊긴 것만 센다 — 화살이 없을 때 부른 것은 안 셈)
+    unsigned long long harpoonTouch(HarpoonTouch t) const {
+        return t < HarpoonTouch::Count ? harpoonTouch_[static_cast<size_t>(t)] : 0;
+    }
+    unsigned long long harpoonEnd(HarpoonEnd e) const {
+        return e < HarpoonEnd::Count ? harpoonEnd_[static_cast<size_t>(e)] : 0;
+    }
+    // ★ 09-23 0-b — 능력이 꺼진 까닭 · 겹침을 **누가** 막았나(누른 것 × 켜져 있던 것, 1~3) · 능력 소리 부름
+    unsigned long long abilEnded(uint8_t abil, AbilEnd e) const {
+        return abil < kAbilityCount && e < AbilEnd::Count ? abilEnded_[abil][static_cast<size_t>(e)] : 0;
+    }
+    unsigned long long abilBlockedBy(uint8_t abil, uint8_t by) const {
+        return abil < 4 && by < 4 ? abilBlockedBy_[abil][by] : 0;
+    }
+    unsigned long long abilSoundUseCalls(uint8_t abil) const { return abil < kAbilityCount ? abilSoundUseCalls_[abil] : 0; }
+    unsigned long long abilSoundOffCalls(uint8_t abil) const { return abil < kAbilityCount ? abilSoundOffCalls_[abil] : 0; }
     // 주인 없는 둘의 갈래(⑮) — 둘 다 몬스터 / 한쪽이 몬스터가 아님(덫 화살·환경)
     // ★ 09-20 묶음 10 — **능력 소리**. thing.bin `ABIL` 칸에서 읽어 넣는다(`main.cpp`).
     //   정답지 `spells_abil.go:225~226` 는 쓸 때 `getSound(능력,0)`, 꺼질 때 `getSound(능력,2)` 를 낸다.
@@ -3097,7 +3155,12 @@ public:
         abilSoundOff_[abil] = offSnd;
     }
     uint16_t AbilitySoundUse(uint8_t abil) const { return abil < 6 ? abilSoundUse_[abil] : 0; }
-    unsigned long long abilSoundSent() const { return abilSoundSent_; }
+    // ★ 09-23 — 합계는 능력별 부름의 합(쓸 때 + 꺼질 때)
+    unsigned long long abilSoundSent() const {
+        unsigned long long n = 0;
+        for (int a = 0; a < kAbilityCount; ++a) n += abilSoundUseCalls_[a] + abilSoundOffCalls_[a];
+        return n;
+    }
     unsigned long long wildBothMonster() const { return wildBothMonster_; }
     unsigned long long wildRootNotMonster() const { return wildRootNotMonster_; }
     unsigned long long spawnFromMap() const { return spawnFromMap_; }
@@ -3708,7 +3771,7 @@ private:
     void SendHarpoonFx(uint8_t code, uint16_t n1, uint16_t n2, std::vector<OutPacket>& out);
     MissileObj* HarpoonBoltOf(const Session& s);
     void HarpoonDo(Session& s, std::vector<OutPacket>& out);
-    void HarpoonBreak(Session& s, bool emitSound, std::vector<OutPacket>& out);
+    void HarpoonBreak(Session& s, bool emitSound, HarpoonEnd why, std::vector<OutPacket>& out);
     bool HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPacket>& out);
     void HarpoonUpdate(Session& s, std::vector<OutPacket>& out);                 // 7-g
     void HarpoonPull(const Session& owner, const Target& targ, float tx, float ty);
@@ -4005,7 +4068,11 @@ private:
     // 주인 없는 둘의 갈래 — 둘 다 몬스터(적 아님) / 한쪽이 몬스터가 아님(적)
     uint16_t abilSoundUse_[6] = {0, 0, 0, 0, 0, 0};
     uint16_t abilSoundOff_[6] = {0, 0, 0, 0, 0, 0};
-    unsigned long long abilSoundSent_ = 0;
+    // ★ 09-23 0-b — 능력 소리를 **부른** 횟수(버려졌는지는 `soundsDroppedIds_` 가 번호로 센다)
+    unsigned long long abilSoundUseCalls_[kAbilityCount] = {};
+    unsigned long long abilSoundOffCalls_[kAbilityCount] = {};
+    unsigned long long abilEnded_[kAbilityCount][kAbilEndCount] = {};   // 켜진 능력이 어떻게 꺼졌나
+    unsigned long long abilBlockedBy_[4][4] = {};                       // [누른 것][켜져 있던 것] — 겹침 거절
     mutable unsigned long long wildBothMonster_ = 0;
     mutable unsigned long long wildRootNotMonster_ = 0;
     unsigned long long spawnFromMap_ = 0;      // PlayerStart 에서 골랐다
@@ -4040,6 +4107,8 @@ private:
     unsigned long long harpoonShot_ = 0;      // 작살을 실제로 쐈다
     unsigned long long harpoonAttached_ = 0;  // 상대에 걸렸다
     unsigned long long harpoonPullTicks_ = 0; // 걸린 채로 지난 틱
+    unsigned long long harpoonTouch_[kHarpoonTouchCount] = {};   // ★ 09-23 0-b — 무엇에 닿았나
+    unsigned long long harpoonEnd_[kHarpoonEndCount] = {};       // ★ 09-23 0-b — 줄이 왜 끊겼나
     unsigned long long joinInfo97Ok_ = 0;     // 97B 를 그대로 실었다
     unsigned long long joinInfo97Null_ = 0;   // **없어서 0 으로 채웠다**(색이 검정이 된다)
     size_t acceptBodyLenLast_ = 0;            // 마지막 CLIENT_ACCEPT 본문 길이
