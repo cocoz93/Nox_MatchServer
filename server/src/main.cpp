@@ -216,7 +216,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.jumpForceTicks(), srv.jumpHeldTicks(), srv.jumpLanded(), srv.airborneOffIdle(), srv.recoilBlockedAirborne(),
                 srv.equakeSkipAirborne(), srv.spellRefusedAirborne());   // ★ 3-b
     // ★ 4-a — 휘두르기 소리. 판정 수(근접)가 분모 — 빗나간 판정마다 그 갈래 소리 하나(망치는 판정마다 882)
-    // ★ 4-c2 — 사람이 맞을 때 소리 갈래(부름 = 합 · 「안옮김」 = 근접 아닌 피해, 4-c3 몫)
+    // ★ 4-c2 — 사람이 맞을 때 소리 갈래(부름 = 합 · 「안옮김」 = 때린 것을 아직 안 넘기는 자리 — 날아가는 것·몬스터, 4-c3b2·b3 몫)
     using HW = nox::HitSoundWay;
     std::printf("[휘두름] 판정 %llu · 소리부름{879주먹 %llu·880롱소드 %llu·881칼 %llu·882망치 %llu·883도끼 %llu·884철퇴 %llu}"
                 " · 사람맞는소리 %llu%s = {냄 %llu·표없음 %llu·때린것없음 %llu·안옮김 %llu}\n",

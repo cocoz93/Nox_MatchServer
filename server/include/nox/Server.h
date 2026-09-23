@@ -209,7 +209,7 @@ enum class HitSoundWay : uint8_t {
     Played = 0,    // 표에 번호가 있어 냈다
     TableEmpty,    // 맞는 쪽 × 때린 것 재질 조합이 표에 없다(`Sub_532930` 이 그냥 돌아감)
     NoHitter,      // 때린 물건도 때린 이도 없다(`obj2 == nil`)
-    NotPorted,     // 사람 근접 판정이 아닌 피해 — 4-c3 에서 옮긴다(세기만)
+    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리(4-c3b 표 ㉡ 날아가는 것 · ㉢ 몬스터) — 세기만
     Count
 };
 constexpr size_t kHitSoundWayCount = static_cast<size_t>(HitSoundWay::Count);
@@ -220,7 +220,7 @@ enum class DefHitSoundWay : uint8_t {
     Breakable,     // 맞는 쪽이 나무·돌·흙(8·32·64)이고 체력이 있어 「부서지는 소리」(`Sub_532EC0`)
     Filtered,      // 때린 것이 없거나 재질 NONE(0x4000)이거나, 피해 종류가 0·2·3·10·11 이 아님
     TableEmpty,    // 표에 그 조합이 없다
-    NotPorted,     // 사람 근접 판정이 아닌 피해 — 4-c3b
+    NotPorted,     // 「때린 것」을 아직 안 넘기는 자리(4-c3b 표 ㉡·㉢) — 세기만
     Count
 };
 constexpr size_t kDefHitSoundWayCount = static_cast<size_t>(DefHitSoundWay::Count);
@@ -2233,14 +2233,19 @@ public:
         bool rootIsMonster = false;
         bool obj = false;
         uint16_t objType = 0;
-        // ★ 09-23 nine-defects 4-c2 — **사람 근접 판정**(PlayerTraceAttack)에서 온 피해인가. 타격 소리는 지금 이 갈래만 옮겼다 —
-        //   다른 자리(날아가는 것·주문·몬스터)는 정답지의 「때린 물건」(a3)을 다르게 싣고 있어 4-c3 에서 본다
-        bool melee = false;
+    };
+    // ★ 09-23 nine-defects 4-c3b1 — 맞는 소리의 **「때린 것」**(정답지 obj2 = a3 가 있으면 a3, 없으면 a2 · `GAME3_2.c:7257~7261`).
+    //   `AttackSrc` 와 따로 둔다 — `AttackSrc` 는 막기 판정·마지막 때린 것(+520)에도 쓰여, 없던 자리에 새로 넘기면 그쪽 동작까지 바뀐다.
+    //   부르는 자리마다 정답지 인자를 대조해 채운다(진행 파일 4-c3b 표) · 기본값 = 안 옮긴 자리(소리 없이 세기만)
+    struct HitterRef {
+        enum Kind : uint8_t { NotPorted = 0, None, Type };
+        Kind kind = NotPorted;
+        uint16_t type = 0;     // Type 이면 그 종류 번호 — 재질을 이 번호로 찾는다(사람 몸은 NewPlayer 번호)
     };
     // ★ 시험용 — 피해 함수(3-e)를 바로 부른다. pet < 0 이면 사람(addr), 아니면 소환수 자리 번호
     void DebugHurt(const std::string& addr, int pet, int dmg, const std::string& by, uint8_t dtype,
-                   std::vector<OutPacket>& out, const AttackSrc* src = nullptr) {
-        HurtTarget(Target{ pet < 0 ? addr : std::string(), pet }, dmg, out, by, dtype, src);
+                   std::vector<OutPacket>& out, const AttackSrc* src = nullptr, HitterRef hitter = HitterRef{}) {
+        HurtTarget(Target{ pet < 0 ? addr : std::string(), pet }, dmg, out, by, dtype, src, hitter);
     }
     uint16_t DebugPetHealth(size_t i) const { return i < pets_.size() ? pets_[i].health : 0; }
     void DebugSetWeapon(const std::string& addr, int64_t classBits) {
@@ -3438,7 +3443,13 @@ private:
     //   `dtype` = 정답지 피해 종류 번호(0 칼 · 1 불 · 2 망치·철퇴 · 9 전기 · 10 맨손 …).
     //   `Damage()` 는 그대로 **날 피해**를 적용한다(시험이 정확한 값을 넣는 자리다).
     void HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
-                    const std::string& by = std::string(), uint8_t dtype = 0, const AttackSrc* src = nullptr);
+                    const std::string& by = std::string(), uint8_t dtype = 0, const AttackSrc* src = nullptr,
+                    HitterRef hitter = HitterRef{});
+    // ★ 4-c3b1 — 「때린 것」 도우미. 사람 몸 = NewPlayer 번호 · 주소가 사람이 아니면(몬스터가 때린 이 등) 아직 안 옮김(4-c3b3)
+    HitterRef HitterPlayerBody() const { HitterRef h; h.kind = HitterRef::Type; h.type = newPlayerWire_; return h; }
+    HitterRef HitterByAddr(const std::string& addr) const { return sessions_.count(addr) ? HitterPlayerBody() : HitterRef{}; }
+    HitterRef HitterUnit(const Target& t) const { return t.addr.empty() ? HitterRef{} : HitterByAddr(t.addr); }
+    static HitterRef HitterNone() { HitterRef h; h.kind = HitterRef::None; return h; }
     // 방패를 올릴 까닭(들어오는 투사체) — `GAME4_3.c:2586` monsterTestBlockShield_533E70
     bool IncomingMissile(const Session& s) const;
     // ── 죽음·부활 (묶음 3-c) ──
@@ -3730,7 +3741,8 @@ private:
     // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.
     //   skip 은 이미 직접 맞은 것(두 번 때리지 않는다). 벽 너머(선 추적 1)는 안 닿는다.
     void DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,
-                           const std::string& by, const Target& skip, std::vector<OutPacket>& out);
+                           const std::string& by, const Target& skip, std::vector<OutPacket>& out,
+                           HitterRef hitter = HitterRef{});   // ★ 4-c3b1 — 정답지 `who`(부르는 쪽마다 다르다 — 표)
     void FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPacket>& out);                 // fireballCollide_4E9AC0
     // ── 묶음 4-c2a 독 ──
     uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
@@ -3846,12 +3858,12 @@ private:
     uint16_t lastHitSound_ = 0;
     unsigned long long defHitSoundCalls_ = 0, defHitSoundWay_[kDefHitSoundWayCount] = {};   // ★ 4-c3a
     // ★ 4-c3a — `soundDefaultDamageSound_532E20` 를 소환수에 — 맞는 쪽 = 소환수 종류 재질 · 피해 종류(+524) · 때린 것(무기, 없으면 사람 몸)
-    void PetDamageSound(const Creature& k, uint8_t dtype, const std::string& by, const AttackSrc* src);
+    void PetDamageSound(const Creature& k, uint8_t dtype, HitterRef hitter);
     std::vector<uint32_t> matByWire_;
     std::vector<uint8_t> breastByWire_;
     uint16_t newPlayerWire_ = 0;
     // ★ 4-c2 — `nox_xxx_soundPlayerDamageSound_5328B0` — 맞는 사람의 가슴갑옷 재질(없으면 FLESH) × 때린 것(무기, 없으면 때린 이) 재질
-    void PlayerDamageSound(const Session& victim, const std::string& by, const AttackSrc* src);
+    void PlayerDamageSound(const Session& victim, HitterRef hitter);
     // ★ 3-a — 사람의 오브젝트 깃발(+16). NewPlayer 는 FLAGS NULL 이고 지금 켜는 것은 AIRBORNE(0x4000) 하나다
     static uint32_t PlayerObjFlags(const Session& s) { return s.airborne ? 0x4000u : 0u; }
     uint32_t moveFrame_ = 0;                      // ★ 2-b2 — UpdatePlayerMovement 의 이 틱 프레임

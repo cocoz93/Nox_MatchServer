@@ -4577,6 +4577,9 @@ void TestDamageBuffs() {
             srv.DebugHurt(b, -1, 10, a, 0, out, &src);
             if (kase == 0) {
                 Check(srv.HealthOf(a) == ha - 75 && srv.DebugStateOf(a) == 23 && !srv.DebugHasEnchant(b, 22), "감전 되갚기(75 · 상태 23 · 버프 끔)가 아니다");
+                // ★ nine-defects 4-c3b1 — 되갚기의 맞는 소리: 때린 것 = 감전 건 b(사람 몸 · 재질표가 없어 「표에 없음」) · b 쪽은 DebugHurt 라 「안 옮김」
+                Check(srv.hitSoundCalls() == 2 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1 &&
+                      srv.hitSoundWay(nox::HitSoundWay::NotPorted) == 1, "4-c3b1 감전 되갚기에 때린 것(b)이 안 넘어갔다");
             } else {
                 Check(srv.HealthOf(a) == ha && srv.DebugHasEnchant(b, 22), kase == 1 ? "무기 오브젝트 없이 감전을 되갚았다" : "투사체에 감전을 되갚았다");
             }
@@ -4676,6 +4679,8 @@ void TestDamageBuffs() {
         const uint16_t hb = srv.HealthOf(b);
         ms += 34; srv.Tick(ms, out);
         Check(srv.HealthOf(b) == hb - 30 && !srv.DebugHasEnchant(a, 22), "감전 몸닿기로 적이 ShockDamage[1]=30 을 안 받았다");
+        Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1,
+              "4-c3b1 몸닿기 감전에 때린 것(감전 건 a)이 안 넘어갔다");
         Check(!srv.DebugHasEnchant(a, 0), "적에 닿았는데 투명이 안 풀렸다");
         nox::Server s2; mk(s2);
         std::vector<nox::OutPacket> o2;
@@ -5924,6 +5929,9 @@ void TestPoison() {
         const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
         Check(lost >= 2, "유예가 지났는데 독이 안 아프다");
         Check(lost <= 10, "독이 너무 자주 아프다(주기 128>>(양−1) 이 빠졌나)");
+        // ★ nine-defects 4-c3b1 — 독 주기 피해는 때린 이·때린 것 둘 다 nil(Go `server.go:198`) → 맞는 소리 없음
+        Check(srv.hitSoundCalls() >= 2 && srv.hitSoundWay(nox::HitSoundWay::NoHitter) == srv.hitSoundCalls(),
+              "4-c3b1 독 피해가 「때린 것 없음」 갈래로 안 갔다");
     }
 
     // ④ 무적(23)이면 안 걸린다
@@ -6579,6 +6587,8 @@ void TestMeteor() {
         const int want = nox::ApplyArmor(85, nox::ArmorValueFloat(nox::CharClass::Warrior), nox::DamageKind::Physical);
         if (lost != want) std::printf("  [운석] 잃은 값 %d — %d(세기 3 · 방어 먹힘) 여야 한다\n", lost, want);
         Check(lost == want, "운석 피해가 MeteorDamage[세기-1] 이 아니다");
+        Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1,
+              "4-c3b1 운석(둘레 피해)에 때린 것(주인)이 안 넘어갔다");
     }
 
     // ② **한 사람에 하나뿐** — 둘째는 거절되고 글이 간다
@@ -7304,6 +7314,9 @@ void TestEnergyBolt() {
         if (lost != 10) std::printf("  [에너지볼트] 다섯 틱에 잃은 값 %d — 10 이어야 한다\n", lost);
         Check(lost == 10, "에너지볼트가 틱마다 EnergyBoltDamage 만큼 안 깎았다");
         Check(srv.DebugLastDamageType(b) == 17, "피해 종류가 공중 전기(17)가 아니다");
+        // ★ nine-defects 4-c3b1 — 맞는 소리의 때린 것 = 시전자(사람 몸) — 여섯 번 다 「표에 없음」(재질표 없음)이지 「안 옮김」·「없음」이 아니다
+        Check(srv.hitSoundCalls() >= 6 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == srv.hitSoundCalls(),
+              "4-c3b1 에너지볼트에 때린 것(시전자)이 안 넘어갔다");
     }
 
     // ①b **소수 이월** — 세기 1 은 1.3/틱이다. 열 틱이면 13 이지, 1 씩 잘라 10 이 아니다.
@@ -7494,6 +7507,8 @@ void TestChainLightning() {
         if (lost != 8) std::printf("  [연쇄번개] 다섯 틱에 잃은 값 %d — 8 이어야 한다\n", lost);
         Check(lost == 8, "연쇄 번개가 LightningDamage 만큼 안 깎았다");
         Check(srv.DebugLastDamageType(b) == 17, "피해 종류가 공중 전기(17)가 아니다");
+        Check(srv.hitSoundCalls() >= 6 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == srv.hitSoundCalls(),
+              "4-c3b1 연쇄 번개에 때린 것(시전자)이 안 넘어갔다");
     }
 
     // ② **뒤쪽도 맞는다** — 에너지볼트와 달리 앞쪽 검사가 없다
@@ -7700,6 +7715,8 @@ void TestDeathRay() {
         if (lost != 100) std::printf("  [죽음광선] 잃은 값 %d — 100 이어야 한다\n", lost);
         Check(lost == 100, "죽음광선이 DeathRayDamage 만큼 안 깎았다");
         Check(srv.DebugLastDamageType(b) == 16, "피해 종류가 죽음광선(16)이 아니다");
+        Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1,
+              "4-c3b1 죽음광선(둘레 피해)에 때린 것(시전자)이 안 넘어갔다");
     }
 
     // ② **한 방이다** — 다음 틱에 또 깎이지 않는다
@@ -9362,6 +9379,8 @@ void TestPlasma() {
         ms += 34; srv.Tick(ms, out);
         Check(srv.HealthOf(b) < h0, "플라스마가 앞쪽 적을 안 깎았다");
         Check(srv.DebugLastDamageType(b) == 14, "플라스마 피해 종류가 14 가 아니다");
+        Check(srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == srv.hitSoundCalls(),
+              "4-c3b1 플라스마에 때린 것(시전자)이 안 넘어갔다");
     }
 
     // ③ **400 밖은 안 문다**
@@ -15092,6 +15111,8 @@ void TestBerserkCrash() {
         Check(h.ok && only(srv, nox::BerserkHit::Unit), "③ 갈래가 「유닛」 하나가 아니다");
         Check(srv.HealthOf(b) < hb, "③ 부딪힌 사람이 피해를 안 입었다");
         Check(srv.HealthOf(a) == ha && !srv.DebugHasEnchant(a, 5), "③ 사람에 부딪혔는데 내가 기절하거나 다쳤다");
+        Check(srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == srv.hitSoundCalls(),
+              "③ 4-c3b1 광전사 피해에 때린 것(광전사 몸)이 안 넘어갔다");
         // 둘 다 몸끼리 밀려 이미 +x 로 움직이는데(상대는 밀려난 만큼) 무게가 같으면 **속도를 맞바꾼다** — 그래서 상대가 더 빠르다.
         //   (맞바꿈이 빠지면 거꾸로 내가 더 빠르다 — 돌연변이로 확인)
         char msg[160];
@@ -15120,6 +15141,9 @@ void TestBerserkCrash() {
         Check(h.ok && only(srv, nox::BerserkHit::Unit), "④ 갈래가 「유닛」 하나가 아니다");
         Check(srv.pets() == 0 || srv.DebugPetHealth(0) < hp0, "④ 소환수가 피해를 안 입었다");
         Check(!srv.DebugHasEnchant(a, 5), "④ 소환수에 부딪혔는데 내가 기절했다");
+        // 소환수 쪽(532E20) — 종류 2 는 통과 · 때린 것이 있으면 「표에 없음」, 없으면 「거름」 · 안 넘기면 「안 옮김」
+        Check(srv.defHitSoundCalls() >= 1 && srv.defHitSoundWay(nox::DefHitSoundWay::TableEmpty) == srv.defHitSoundCalls(),
+              "④ 4-c3b1 광전사가 소환수를 칠 때 때린 것(광전사 몸)이 안 넘어갔다");
     }
     // ⑤ **장애물(IMMOBILE · 막는 것)** — 물체 갈래: 기절 · 자기 피해 · 되돌아감
     {
@@ -15457,6 +15481,10 @@ void TestAirborneReaders() {
                       srv.equakeSkipAirborne());
         Check(srv.HealthOf(b) == bHp && srv.HealthOf(c) < cHp && srv.DebugPetHealth(0) == flyHp && srv.DebugPetHealth(1) < walkHp &&
               srv.equakeSkipAirborne() == 2, msg);
+        // ★ nine-defects 4-c3b1 — 맞은 c(사람)·걷는 소환수 둘 다 때린 것 = 시전자(종류 11 은 소환수 쪽 거름을 통과)
+        Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1 &&
+              srv.defHitSoundCalls() == 1 && srv.defHitSoundWay(nox::DefHitSoundWay::TableEmpty) == 1,
+              "① 4-c3b1 지진에 때린 것(시전자)이 안 넘어갔다");
     }
     // ② **떠 있으면 주문을 못 건다**(협동 아님 · 알림 없음) — 대조: 서 있으면 걸린다(b 가 맞는다)
     for (int jumped = 0; jumped < 2; ++jumped) {
@@ -15733,6 +15761,17 @@ void TestPetHitSound() {
         nox::Server::AttackSrc notMelee; notMelee.x = 900.0f; notMelee.y = 1000.0f;
         srv.DebugHurt(std::string(), 0, 5, std::string(), 0, out, &notMelee);
         Check(srv.defHitSoundCalls() == 1 && srv.defHitSoundWay(nox::DefHitSoundWay::NotPorted) == 1, "③ 근접 아닌 피해가 「안옮김」 칸으로 안 갔다");
+        // ★ nine-defects 4-c3b1 — 「때린 것 없음」(nil)은 거름 · 종류가 있으면 표로 간다(재질표가 없어 「표없음」) — 피해 종류 0 이라 종류 관문은 둘 다 통과.
+        //   ⚠ 실제 판으로는 못 가른다 — 지금 「없음」을 넘기는 자리는 독(종류 5)뿐이고 종류 5 는 어차피 거름이다
+        nox::Server::HitterRef none; none.kind = nox::Server::HitterRef::None;
+        nox::Server::HitterRef man; man.kind = nox::Server::HitterRef::Type; man.type = 713;
+        srv.DebugHurt(std::string(), 0, 1, std::string(), 0, out, nullptr, none);
+        srv.DebugHurt(std::string(), 0, 1, std::string(), 0, out, nullptr, man);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "③ 4-c3b1 소환수 — 부름 %llu · 거름 %llu · 표없음 %llu(3·1·1 이어야) · 소환수 %zu", srv.defHitSoundCalls(),
+                      srv.defHitSoundWay(nox::DefHitSoundWay::Filtered), srv.defHitSoundWay(nox::DefHitSoundWay::TableEmpty), static_cast<size_t>(srv.pets()));
+        Check(srv.defHitSoundCalls() == 3 && srv.defHitSoundWay(nox::DefHitSoundWay::Filtered) == 1 &&
+              srv.defHitSoundWay(nox::DefHitSoundWay::TableEmpty) == 1, msg);
     }
     std::printf("  nine-defects 4-c3a — 소환수 맞는 소리: 부서지는 재질 표 · 살 862 · 돌·나무 부서짐 · 쇠 861 · NONE 없음 · 때린 것 NONE 거름 · 근접 아님 세기만\n");
 }

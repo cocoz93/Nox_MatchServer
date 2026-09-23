@@ -948,7 +948,8 @@ void Server::DamageShockBack(const Target& victim, const Buffs& vb, const Target
     //   몬스터끼리 서로 때리지 않는다(편 거르기 `OwnersEnemy`)
     AttackSrc backSrc;
     backSrc.rootIsMonster = victimOwner.empty();
-    HurtTarget(attacker, back, out, victimOwner, 9, &backSrc);   // (a2+716)(a2, a1, 0, 피해, 9)
+    // ★ 4-c3b1 — 때린 것 = a1(감전 건 쪽) 자신(a3 = 0 · `GAME3_2.c:7118`) · 그쪽이 소환수(몬스터)면 소리 모음 갈래라 4-c3b3
+    HurtTarget(attacker, back, out, victimOwner, 9, &backSrc, HitterUnit(victim));   // (a2+716)(a2, a1, 0, 피해, 9)
     if (!attacker.addr.empty()) {
         auto it = sessions_.find(attacker.addr);
         if (it != sessions_.end()) PlayerSetState(it->second, 23, frame_);
@@ -1095,7 +1096,7 @@ void Server::CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vecto
             if (a1.kind == 1) { src.x = static_cast<float>(sessions_.at(a1.addr).posX); src.y = static_cast<float>(sessions_.at(a1.addr).posY); }
             else { src.x = static_cast<float>(pets_[static_cast<size_t>(a1.idx)].x); src.y = static_cast<float>(pets_[static_cast<size_t>(a1.idx)].y); src.byPet = a1.idx; }
             src.rootIsMonster = own1.empty();                  // 09-20 — 되갚는 쪽이 맵 몬스터면 뿌리가 몬스터
-            HurtTarget(t2, dmg, out, own1, 9, &src);           // (a2+716)(a2, a1, a1, 피해, 9)
+            HurtTarget(t2, dmg, out, own1, 9, &src, HitterUnit(t1));   // (a2+716)(a2, a1, a1, 피해, 9) · ★ 4-c3b1 때린 것 = a1
             if (!BuffsOf(t1)) return;                          // 되갚다 사라진 소환수
         }
     }
@@ -1112,7 +1113,7 @@ void Server::CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vecto
 //   ⚠ 옮기지 않은 갈래(다른 조각): 방패·대검·지팡이 막기(3-e2 — 상태 15/16 · 18~21) · 되받아치기 버프 27 · 불/전기 보호 · 흡혈 ·
 //     전기 방패 22 · 마법 방패 26(주문 4) · 입은 것 닳기·방어 마법 효과(아이템 5) · 스켈레톤 막기(몬스터 행동 21 · AI 6)
 void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
-                        const std::string& by, uint8_t dtype, const AttackSrc* src) {
+                        const std::string& by, uint8_t dtype, const AttackSrc* src, HitterRef hitter) {
     if (t.none() || dmg <= 0) return;
     // 진단 임프(`--debug-own-pet`)는 맞지 않는다 — 판정 사진을 찍기 전에 몬스터에게 죽었다(09-13, 갱신에 프레임 1920~2010 만 실림 — 약 3초).
     if (debugOwnPetNetCode_ != 0 && !debugPetWild_ && t.pet >= 0 &&
@@ -1255,7 +1256,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         // ⚠ 입은 것 방어 효과 itemApplyDefendEffect2 · 무기 앞 피해 효과 itemApplyPreDamageEffect(아이템 5)
         s.lastDamageType = dtype;                          // +524(`GAME3_2.c:7234`)
         // ★ 09-23 nine-defects 4-c2 — 맞는 소리(`:7251~7267` → 사람은 thing.bin `DAMAGESOUND = PlayerDamageSound`) — +524·+536 뒤 · 흡혈 앞
-        PlayerDamageSound(s, by, src);
+        PlayerDamageSound(s, hitter);
         DamageVampirism(attacker, Target{ s.addr, -1 }, hp, out);   // 흡혈(13)
         // ⚠ 공 들고 맞음(gameballOnPlayerDamage 8) · 퀘스트/코옵 sub_4FB050(8) · 몬스터 원한 sub_532880(7)
         // 한 대에 20 넘게 맞으면 움찔(상태 30 · 공격 중 1 · 방패 올리는 중 15 는 아님)
@@ -1335,7 +1336,7 @@ void Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
     if (!attacker.none() || v15 == 12) BuffOff(t, 0);      // 맞으면 투명 풀림
     // ★ 09-23 nine-defects 4-c3a — 맞는 소리(`GAME3_2.c:7251~7267`) — 몬스터는 DAMAGESOUND 가 없어 기본 `532E20`(thing.bin 에
     //   `DAMAGESOUND` 를 적은 종류는 NewPlayer 하나뿐 — 실측). 흡혈(`:7269`) 앞
-    PetDamageSound(k, static_cast<uint8_t>(v15), by, src);
+    PetDamageSound(k, static_cast<uint8_t>(v15), hitter);
     DamageVampirism(attacker, t, amount, out);             // 흡혈(13)
     // ⚠ 마법 방패(26) 줄이기(4-d) · 몬스터 원한(7)
     k.lastDamageFrame = frame_;                            // +536(`GAME3_2.c:7236` — 몬스터도 같은 자리)
@@ -6192,7 +6193,8 @@ int Server::DurEnergyBoltTick(DurSpell& d, std::vector<OutPacket>& out) {
         if (!d.field36.none()) NetStopRaySpell(d, d.field36, out);
         NetStartRaySpell(d, out);
     }
-    HurtTarget(d.target, dmg, out, d.caster, 17, nullptr);   // 종류 17 = 공중 전기(방어를 안 탄다)
+    // ★ 4-c3b1 — 때린 것 = 시전자(a2 · a3 = 0 · `GAME4_2.c:10990`)
+    HurtTarget(d.target, dmg, out, d.caster, 17, nullptr, HitterByAddr(d.caster));   // 종류 17 = 공중 전기(방어를 안 탄다)
     d.field36 = d.target;
     PlayerSetState(caster, 10, frame_);                      // 시전 자세
     PlayerManaSub(caster, 1);
@@ -6332,7 +6334,7 @@ int Server::DurChainLightningTick(DurSpell& d, std::vector<OutPacket>& out) {
         } else {
             NetStartRaySpell(sub, out);
         }
-        if (dmg > 0) HurtTarget(sub.target, dmg, out, d.caster, 17, nullptr);
+        if (dmg > 0) HurtTarget(sub.target, dmg, out, d.caster, 17, nullptr, HitterByAddr(d.caster));   // ★ 4-c3b1 시전자(`GAME4_3.c:333` a3 = 0)
     }
     for (size_t i = d.sub108.size(); i < prev.size(); ++i)     // 남은 옛 빔은 끈다
         if (!prev[i].target.none()) NetStopRaySpell(prev[i], prev[i].target, out);
@@ -6375,7 +6377,7 @@ int Server::CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPa
     const int dmg = static_cast<int>(BalanceFloat("DeathRayDamage"));
     const float rout = static_cast<float>(BalanceFloat("DeathRayOutRadius"));
     const float rin = static_cast<float>(BalanceFloat("DeathRayInRadius"));
-    DamageUnitsAround(arg.x, arg.y, rout, rin, dmg, 16, caster.addr, Target{}, out);
+    DamageUnitsAround(arg.x, arg.y, rout, rin, dmg, 16, caster.addr, Target{}, out, HitterByAddr(caster.addr));   // ★ 4-c3b1 who = 시전자(`spell_death_ray.go:35`)
     const uint16_t x1 = static_cast<uint16_t>(static_cast<int>(cx)), y1 = static_cast<uint16_t>(static_cast<int>(cy));
     const uint16_t x2 = static_cast<uint16_t>(static_cast<int>(arg.x)), y2 = static_cast<uint16_t>(static_cast<int>(arg.y));
     const uint8_t fx[9] = { static_cast<uint8_t>(Op::FX_DEATH_RAY),
@@ -6737,7 +6739,7 @@ int Server::DurPlasmaTick(DurSpell& d, std::vector<OutPacket>& out) {
         NetStartRaySpell(d, out);
     }
     const int dmg = static_cast<int>(BalanceFloat("PlasmaDamage"));
-    HurtTarget(d.target, dmg, out, d.caster, /*dtype=*/14);   // 14 = PLASMA
+    HurtTarget(d.target, dmg, out, d.caster, /*dtype=*/14, nullptr, HitterByAddr(d.caster));   // 14 = PLASMA · ★ 4-c3b1 시전자(`GAME4_3.c:1472` a3 = 0)
     if (TargetHealth(d.target) <= 0) {
         float tx = 0, ty = 0;
         if (TargetXY(d.target, tx, ty)) {
@@ -8412,8 +8414,9 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other, std::vect
         }
         AttackSrc src;
         src.x = static_cast<float>(s.prevX); src.y = static_cast<float>(s.prevY);   // a3 = 나 → +72
-        if (os) HurtTarget(Target{ other->addr, -1 }, dmg, out, s.addr, 2, &src);
-        else if (petIdx >= 0) HurtTarget(Target{ std::string(), petIdx }, dmg, out, s.addr, 2, &src);
+        // ★ 4-c3b1 — 때린 것 = 광전사 자신(a3 = a1 · `GAME3_3.c:3223`) — 사람 몸
+        if (os) HurtTarget(Target{ other->addr, -1 }, dmg, out, s.addr, 2, &src, HitterPlayerBody());
+        else if (petIdx >= 0) HurtTarget(Target{ std::string(), petIdx }, dmg, out, s.addr, 2, &src, HitterPlayerBody());
         if (cls & 0x20006) {
             hit(BerserkHit::Unit);
             PlayerSetPos(s, s.prevX, s.prevY, out);
@@ -11092,7 +11095,7 @@ int Server::CastEarthquake(Session& caster, int lvl, std::vector<OutPacket>& out
         if (dmg <= 0.0) return;
         AttackSrc src;
         src.x = cx; src.y = cy;
-        HurtTarget(t, static_cast<int>(dmg), out, caster.addr, 11, &src);   // 피해 종류 11
+        HurtTarget(t, static_cast<int>(dmg), out, caster.addr, 11, &src, HitterByAddr(caster.addr));   // 피해 종류 11 · ★ 4-c3b1 a3 = 시전자(`GAME4_2.c:10457`)
     };
     // ★ 09-23 nine-defects 3-b — 정답지 차례 `:10448~10452`: 자기 아님 → **떠 있음(0x4000) 아님** → 체력 있음.
     //   전에는 주석에만 「공중은 뺀다」가 있고 코드가 없었다(사람은 떠 있음 칸이 없었고, 소환수는 종류 깃발을 안 봤다)
@@ -11250,7 +11253,7 @@ void Server::PoisonTick(std::vector<OutPacket>& out) {
         if (start != 0 && (frame_ - start) <= 60) continue;  // ② 시작 뒤 60틱은 안 아프다
         const bool hit = (amt > 8) || (frame_ % static_cast<uint32_t>(128u >> (amt - 1)) == 0);
         if (!hit) continue;
-        HurtTarget(t, 1, out, std::string(), 5, nullptr);    // 피해 1 · 종류 5(독) · ⚠ 퀘스트는 2
+        HurtTarget(t, 1, out, std::string(), 5, nullptr, HitterNone());    // 피해 1 · 종류 5(독) · ⚠ 퀘스트는 2 · ★ 4-c3b1 nil·nil(Go `server.go:198`) → 소리 없음
     }
 }
 
@@ -11753,7 +11756,7 @@ void Server::MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out) {
     const int dmg = o.damage;
     const std::string owner = o.owner;
     SendJiggle(x, y, 10, out);                               // earthquakeSend_4D9110(자리, 10)
-    DamageUnitsAround(x, y, 80.0f, 30.0f, dmg, 7, owner, Target{}, out);
+    DamageUnitsAround(x, y, 80.0f, 30.0f, dmg, 7, owner, Target{}, out, HitterByAddr(owner));   // ★ 4-c3b1 who = 주인 사람(`GAME4_3.c:6839~6840`)
     // 터짐 그림은 **1초 뒤 스스로 사라지는**(OneSecondDieUpdate) 장식 오브젝트다
     PlaceObject(NamedType("MeteorExplode"), x, y, owner, static_cast<uint32_t>(kServerTickRate), /*kind=*/0);
 }
@@ -11763,7 +11766,7 @@ void Server::MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out) {
 //   · 안쪽 r2 까지는 온전, 그 밖은 `1 − (거리 − r2) / (rr − r2)` 로 줄어든다
 //   ⚠ 벽 피해(mapDamageToWalls_534FC0)는 아직 안 옮김 — 벽이 부서지는 묶음(9)에서
 void Server::DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,
-                               const std::string& by, const Target& skip, std::vector<OutPacket>& out) {
+                               const std::string& by, const Target& skip, std::vector<OutPacket>& out, HitterRef hitter) {
     const float rr = (r1 < r2) ? r2 : r1;
     if (rr <= 0.0f || dmg <= 0) return;
     auto hit = [&](const Target& t, float tx, float ty) {
@@ -11774,7 +11777,7 @@ void Server::DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, 
         if (!MapTraceRay(cx, cy, tx, ty, 0x1)) return;
         float rdmg = static_cast<float>(dmg);
         if (dist >= r2 && rr > r2) rdmg *= 1.0f - (dist - r2) / (rr - r2);
-        HurtTarget(t, static_cast<int>(rdmg), out, by, dtype, nullptr);
+        HurtTarget(t, static_cast<int>(rdmg), out, by, dtype, nullptr, hitter);   // Go `game.go:1438` CallDamage(who, nil, ...)
     };
     std::vector<std::string> who;
     for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
@@ -13294,18 +13297,15 @@ uint16_t Server::BreakableHitSound(uint32_t mat) {
 //   ② 때린 것(a3, 없으면 a2)이 없거나 그 재질이 NONE(0x4000)이거나 피해 종류(+524)가 0·2·3·10·11 이 아니면 안 냄(`sub_532F70`)
 //   ③ 맞는 쪽에 체력이 있고(최대 ≠ 0) 재질이 나무·돌·흙(8·32·64 — `sub_532FB0`)이면 **부서지는 소리**(`Sub_532EC0`)
 //   ④ 아니면 표(`Sub_532930`)를 맞는 쪽 재질 × 때린 것 재질로
-//   ⚠ 지금은 사람 근접 판정에 맞을 때만(4-c2 와 같은 관문) — 날아가는 것·주문 등은 4-c3b
-void Server::PetDamageSound(const Creature& k, uint8_t dtype, const std::string& by, const AttackSrc* src) {
+//   ★ 4-c3b1 — 「때린 것」은 부르는 자리가 `HitterRef` 로 넘긴다(안 옮긴 자리는 세기만)
+void Server::PetDamageSound(const Creature& k, uint8_t dtype, HitterRef hitter) {
     ++defHitSoundCalls_;
     auto way = [&](DefHitSoundWay w) { ++defHitSoundWay_[static_cast<size_t>(w)]; };
-    if (!src || !src->melee) { way(DefHitSoundWay::NotPorted); return; }
-    bool hitterPresent = true;
-    uint32_t hitter = 0;
-    if (src->obj) hitter = MaterialOfWire(src->objType);
-    else if (sessions_.count(by)) hitter = MaterialOfWire(newPlayerWire_);
-    else hitterPresent = false;
+    if (hitter.kind == HitterRef::NotPorted) { way(DefHitSoundWay::NotPorted); return; }
+    const bool hitterPresent = hitter.kind == HitterRef::Type;
+    const uint32_t hitterMat = hitterPresent ? MaterialOfWire(hitter.type) : 0u;
     DefHitSoundWay w = DefHitSoundWay::Count;
-    const uint16_t id = DefaultHitSound(MaterialOfWire(k.type), TuningFor(k.type).health != 0, dtype, hitterPresent, hitter, w);
+    const uint16_t id = DefaultHitSound(MaterialOfWire(k.type), TuningFor(k.type).health != 0, dtype, hitterPresent, hitterMat, w);
     way(w);
     if (id == 0) return;
     PlaySoundAt(id, static_cast<float>(k.x), static_cast<float>(k.y));
@@ -13330,19 +13330,12 @@ uint16_t Server::DefaultHitSound(uint32_t mat, bool hasHp, uint8_t dtype, bool h
 //   재질이 더 크면 그 값(수 비교) · 재질 수식이 「Material7」 인 것이면 0x2000(`Sub_4133D0` — ⚠ 우리 물건엔 수식이 없어 늘 아님)
 //   때린 것 = 때린 물건(a3 — 든 무기)이 있으면 그 재질, 없으면 때린 이(a2 — 사람이면 NewPlayer) 재질. 둘 다 없으면 소리 없음
 //   소리 자리 = 맞는 사람(`aud_501960(번호, 맞는 쪽, 0, 0)`)
-void Server::PlayerDamageSound(const Session& victim, const std::string& by, const AttackSrc* src) {
+void Server::PlayerDamageSound(const Session& victim, HitterRef h) {
     ++hitSoundCalls_;
     auto way = [&](HitSoundWay w) { ++hitSoundWay_[static_cast<size_t>(w)]; };
-    if (!src || !src->melee) { way(HitSoundWay::NotPorted); return; }   // 4-c3
-    uint32_t hitter = 0;
-    if (src->obj) {
-        hitter = MaterialOfWire(src->objType);                            // 든 무기(a3)
-    } else if (sessions_.count(by)) {
-        hitter = MaterialOfWire(newPlayerWire_);                          // 맨손 — 때린 이(a2)가 사람
-    } else {
-        way(HitSoundWay::NoHitter);
-        return;
-    }
+    if (h.kind == HitterRef::NotPorted) { way(HitSoundWay::NotPorted); return; }   // 아직 안 옮긴 자리(4-c3b 표)
+    if (h.kind == HitterRef::None) { way(HitSoundWay::NoHitter); return; }         // obj2 == nil
+    const uint32_t hitter = MaterialOfWire(h.type);
     uint32_t mat = 1;                                                     // FLESH
     auto consider = [&](uint16_t wire) {
         if (wire == 0 || wire >= breastByWire_.size() || !breastByWire_[wire]) return;
@@ -13408,10 +13401,12 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
         src.x = static_cast<float>(s.prevX);
         src.y = static_cast<float>(s.prevY);
         src.obj = ai.weapon;                                // +28 무기 오브젝트 — 죽음 알림의 무기 그림(3-d)
-        src.melee = true;                                   // ★ 4-c2 — 타격 소리가 옮겨진 갈래
         src.objType = ai.weapon ? WeaponWireOf(s) : 0;
+        // ★ 4-c2 — 맞는 소리의 때린 것 = 든 무기(a3 · `GAME4_3.c:3986`), 맨손이면 때린 사람 몸(a2 · a3 = 0 `:4060`)
+        HitterRef hr = HitterPlayerBody();
+        if (ai.weapon) hr.type = WeaponWireOf(s);
         if (kind == Player) {
-            HurtTarget(Target{ addr, -1 }, ai.dmg, out, s.addr, ai.type, &src);
+            HurtTarget(Target{ addr, -1 }, ai.dmg, out, s.addr, ai.type, &src, hr);
             auto it = sessions_.find(addr);
             if (!ai.weapon && ai.anim == kAnimPunchHook && it != sessions_.end()) {
                 // 훅 — 맞은 쪽 ForceVec += (맞은 자리 − 때린 자리) × (10 × 20 ÷ 질량) ÷ (거리 + 0.1)
@@ -13423,7 +13418,7 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
                 o.forceY += static_cast<float>(static_cast<double>(dpy) * f / r);
             }
         } else if (kind == Pet) {
-            HurtTarget(Target{ std::string(), idx }, ai.dmg, out, s.addr, ai.type, &src);
+            HurtTarget(Target{ std::string(), idx }, ai.dmg, out, s.addr, ai.type, &src, hr);
             // ⚠ 훅 힘 — 소환수는 아직 물리가 없다(묶음 6)
         }
         // 장애물 — 피해 함수가 없는 것(나무·바위). 부서지는 것은 묶음 5·9.
