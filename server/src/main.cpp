@@ -177,7 +177,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.abilSoundUseCalls(a), srv.abilSoundOffCalls(a));
         if (a == 4) std::printf(" 달리기막음 %llu", srv.treadBlockedRun());   // ★ 1-a — 살금살금이 걷기로 누른 틱
         // ★ 2-a1 — 함성 애니가 외치는 칸(2→3)을 넘은 수 · 애니가 끝나 켜짐 값을 내린 수
-        if (a == 2) std::printf(" 외침칸 %llu·애니끝 %llu", srv.warcryShouts(), srv.abilValOff());
+        if (a == 2) std::printf(" 외침칸 %llu·애니끝 %llu·기절몬스터 %llu", srv.warcryShouts(), srv.abilValOff(), srv.warcryStunned());
     }
     std::printf("\n");
     using T = nox::HarpoonTouch;

@@ -12653,10 +12653,33 @@ bool Server::TargetIsEnemy(const Session& s, const Target& t) const {
     return IsEnemyTo(s.addr, k.owner);
 }
 
+// ★ 09-23 nine-defects 2-a2 — **함성 외침 효과**(`GAME4_3.c:3991~4000` — 함성 애니가 칸 2 → 3 을 넘는 틱).
+//   ① 땅울림 15(`earthquakeSend_4D9110`)
+//   ② 둘레 300 안(중심 거리 · `EachObjInCircle`)의 **몬스터** 중 서브클래스 `WARCRY_STUN`(0x20000)이고
+//      죽거나 사라지지 않은 것(+16 & 0x8020)에 붙잡힘(버프 5)을 90틱 · 세기 3(`warcryStunMonsters_539B90` `GAME4_3.c:4444~4457`).
+//      편은 안 가린다 — 정답지 콜백에 편 검사가 없다(내 소환수도 걸린다). 사람은 몬스터 클래스가 아니라 빠진다
+//   ⛔ ③ 반주문 13(`castCounterSpell_52BBB0`)은 2-a3
+void Server::WarcryShout(Session& s, std::vector<OutPacket>& out) {
+    EarthquakeSend(static_cast<float>(s.posX), static_cast<float>(s.posY), 15, out);
+    constexpr uint32_t kWarcryStunBit = 1u << 17;          // MonsterClassBitsOf 표의 17번째 = WARCRY_STUN
+    const double r2 = 300.0 * 300.0;
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        const Creature& k = pets_[i];
+        if (k.health == 0) continue;                         // 죽은 것(0x8000)
+        const double dx = k.x - s.posX, dy = k.y - s.posY;
+        if (dx * dx + dy * dy > r2) continue;
+        const auto tb = typeBodies_.find(k.type);
+        if (tb == typeBodies_.end() || !(tb->second.subclass & kWarcryStunBit)) continue;
+        ApplyEnchant(Target{ std::string(), static_cast<int>(i) }, 5, 90, 3);
+        ++warcryStunned_;
+    }
+}
+
 // `GAME4_3.c:3855` playerAttack — 맨손(`:4020~4066`) · 무기(`:4067~4419`) · 끝(LABEL_159 `:4420~4439`). 참 = 아직 공격 중.
 //   무기 갈래는 **애니 한가운데 칸(frames/2)** 에 한 번 판정한다(지난 틱 칸보다 클 때만 — 같은 칸 두 번 방지).
 //   ⚠ 옮기지 않은 갈래(다른 묶음): 활·석궁(0x4·0x8 화살 오브젝트 5) · 차크람·수리검(0x40·0x80 날아가는 오브젝트 5)
-//     · 마법 지팡이 0x47F0000(주문 4) · 무기 마법 효과 itemApplyAttackEffect(5) · 광전사 돌진·함성(능력 4)
+//     · 마법 지팡이 0x47F0000(주문 4) · 무기 마법 효과 itemApplyAttackEffect(5) · 광전사 돌진(nine-defects 2-b)
+//   ✖ 09-23 정정 — 「함성(능력 4)」도 안 옮긴 갈래로 적혀 있었다. 함성은 nine-defects 2-a1·2-a2 에서 옮겼다(아래 함성 갈래)
 bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& out) {
     const uint32_t equip = WeaponEquipOf(s);
     const WeaponStats* w = WeaponStatsOf(s);
@@ -12704,7 +12727,10 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
     if (AbilityIsActiveVal(s, 2)) {                          // `IsActive(2) && IsActiveVal(2)` — 값은 켜짐을 품는다
         range(46);
         calcIdx();
-        if (prevFrame == 2 && idx == 3) ++warcryShouts_;
+        if (prevFrame == 2 && idx == 3) {
+            ++warcryShouts_;
+            WarcryShout(s, out);                             // ★ 2-a2 — 땅울림 · 몬스터 기절(반주문은 2-a3)
+        }
         if (idx >= frames) AbilityValOff(s, 2);
         s.animFrame = static_cast<uint8_t>(idx >= frames ? frames - 1 : idx);   // LABEL_159
         return idx < frames;

@@ -14647,6 +14647,57 @@ void TestWarcryAnim() {
     std::printf("  nine-defects 2-a1 — 함성: 상태 1·몸짓 46 · 외침 칸 한 번 · 애니 끝에 값만 내리고 13 · 겹침은 값 · 외치는 동안 상태 고정\n");
 }
 
+// ── nine-defects 2-a2 — 함성 외침 효과: 땅울림 15 · 둘레 300 `WARCRY_STUN` 몬스터 기절 ──────
+//
+// 정답지 `GAME4_3.c:3991~4000`(칸 2→3 에서) · `warcryStunMonsters_539B90`(`:4444~4457` — 몬스터 · 서브클래스 0x20000 ·
+// 안 죽음 → 버프 5 를 90틱 · 세기 3). 몬스터 셋을 세운다 — 비트 있고 300 안 · 비트 있고 300 밖 · 비트 없고 300 안.
+void TestWarcryShout() {
+    const std::string a = "10.7.14.1:7141";
+    const uint16_t kStun = 1401, kPlain = 1402;
+    auto body = [](const char* cls) {
+        nox::Server::PhysBody b;
+        b.shape = 2; b.r = 10.0f; b.mass = 10.0f; b.cls = 0x2;   // MONSTER
+        b.subclass = nox::Server::MonsterClassBitsOf(cls);
+        return b;
+    };
+    nox::Server srv;
+    srv.DebugEnterGame(a, 790, false, nox::CharClass::Warrior);
+    srv.DebugMoveTo(a, 1000, 1000);
+    srv.SetPlayerAnimFrames(46, 10, 1);
+    srv.SetTypeBody(kStun, body("MEDIUM_MONSTER+WARCRY_STUN"));
+    srv.SetTypeBody(kPlain, body("MEDIUM_MONSTER"));
+    srv.DebugSpawnPet(kStun, 1100, 1000, std::string());     // 0 — 걸려야 한다
+    srv.DebugSpawnPet(kStun, 1400, 1000, std::string());     // 1 — 300 밖(400)
+    srv.DebugSpawnPet(kPlain, 1050, 1000, std::string());    // 2 — 비트 없음
+    std::vector<nox::OutPacket> out;
+    srv.Tick(0, out);
+    srv.DebugAbilAward(a, 2, false, out);
+    Check(srv.DebugAbilDo(a, 2, out), "전제 — 함성이 안 먹었다");
+    Check(srv.warcryStunned() == 0 && !srv.DebugPetHasEnchant(0, 5), "전제 — 외치기 전에 이미 기절이 걸렸다");
+    uint32_t ms = 0;
+    bool jiggle15 = false;
+    for (int t = 0; t < 20 && srv.warcryShouts() == 0; ++t) {
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 2 && x[0] == static_cast<uint8_t>(nox::Op::FX_JIGGLE) && x[1] == 15) jiggle15 = true;
+    }
+    Check(srv.warcryShouts() == 1, "전제 — 외침 칸에 안 닿았다");
+    Check(jiggle15, "① 외치는 틱에 땅울림 15(`FX_JIGGLE 0f`)가 안 갔다");
+    {
+        // 남은 틱은 **89** 다 — 90 은 틱 가운데(BBB 사람 갱신 → 공격 처리)에서 걸고, 같은 틱 끝(CCC `updateUnitBuffs`)에서 한 번 준다.
+        //   정답지도 같은 차례다(`server.go` BBB → CCC). 처음엔 90 을 기대했다가 실측 89 를 보고 차례를 따져 고쳤다
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "② 300 안 WARCRY_STUN 몬스터 — 붙잡힘 %d · 남은 틱 %d · 세기 %d(1 · 89 · 3 이어야)",
+                      srv.DebugPetHasEnchant(0, 5) ? 1 : 0, srv.DebugPetEnchantDur(0, 5), srv.DebugPetEnchantPower(0, 5));
+        Check(srv.DebugPetHasEnchant(0, 5) && srv.DebugPetEnchantDur(0, 5) == 89 && srv.DebugPetEnchantPower(0, 5) == 3, msg);
+    }
+    Check(!srv.DebugPetHasEnchant(1, 5), "③ 300 밖 몬스터가 기절했다");
+    Check(!srv.DebugPetHasEnchant(2, 5), "④ WARCRY_STUN 이 없는 몬스터가 기절했다");
+    Check(srv.warcryStunned() == 1, "⑤ 기절 수가 1 이 아니다");
+    std::printf("  nine-defects 2-a2 — 함성 외침: 땅울림 15 · 300 안 WARCRY_STUN 몬스터만 붙잡힘 90틱·세기 3\n");
+}
+
 // ── 묶음 7-g — 작살 끌기와 끊김 관문 ─────────────────────────────────
 //
 // 정답지 `abilityHarpoon::Update`(`spell_harpoon.go:193`) · `UpdatePlayer`(`:186`).
@@ -21384,6 +21435,7 @@ int main() {
     TestHarpoonHoming();
     TestMapHazard();
     TestWarcryAnim();
+    TestWarcryShout();
     TestHarpoonPull();
     TestGuideAward();
     TestGameSettings();

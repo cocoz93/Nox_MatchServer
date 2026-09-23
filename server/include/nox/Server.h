@@ -2192,6 +2192,12 @@ public:
     void DebugApplyEnchant(const std::string& addr, int buff, int dur, int power) { ApplyEnchant(Target{ addr, -1 }, buff, dur, power); }
     void DebugBuffOff(const std::string& addr, int buff) { BuffOff(Target{ addr, -1 }, buff); }
     bool DebugPetHasEnchant(size_t i, int buff) const { return i < pets_.size() && pets_[i].buffs.Has(buff); }
+    int DebugPetEnchantDur(size_t i, int buff) const {       // ★ 2-a2 시험용
+        return (i < pets_.size() && buff >= 0 && buff < 32) ? pets_[i].buffs.dur[buff] : -1;
+    }
+    int DebugPetEnchantPower(size_t i, int buff) const {     // ★ 2-a2 시험용
+        return (i < pets_.size() && buff >= 0 && buff < 32) ? pets_[i].buffs.power[buff] : -1;
+    }
     uint16_t DebugPetNetCode(size_t i) const { return i < pets_.size() ? pets_[i].netCode : 0; }
     void DebugApplyEnchantPet(size_t i, int buff, int dur, int power) { ApplyEnchant(Target{ std::string(), static_cast<int>(i) }, buff, dur, power); }
     struct BuffConf {                    // spellBuffConf(spells_buffs.go:11)
@@ -3148,6 +3154,7 @@ public:
     }
     unsigned long long abilValOff() const { return abilValOff_; }               // ★ 2-a1 — 켜짐 값 내림(함성 애니 끝)
     unsigned long long warcryShouts() const { return warcryShouts_; }           // ★ 2-a1 — 함성 칸 2→3
+    unsigned long long warcryStunned() const { return warcryStunned_; }         // ★ 2-a2 — 외침에 기절한 몬스터
     bool DebugAbilActiveVal(const std::string& a, uint8_t k) const {            // ★ 2-a1 시험용
         auto i = sessions_.find(a); return i != sessions_.end() && AbilityIsActiveVal(i->second, k);
     }
@@ -3667,6 +3674,8 @@ private:
     }
     unsigned long long abilValOff_ = 0;        // ★ 2-a1 — 켜짐 값을 내린 횟수(함성 애니 끝)
     unsigned long long warcryShouts_ = 0;      // ★ 2-a1 — 함성 애니가 칸 2 → 3 을 넘은 틱(외침 효과가 붙을 자리)
+    unsigned long long warcryStunned_ = 0;     // ★ 2-a2 — 외침에 붙잡힘(5)이 걸린 몬스터 수
+    void WarcryShout(Session& s, std::vector<OutPacket>& out);   // ★ 2-a2 — 외침 효과(땅울림 · 몬스터 기절)
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);
     void AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out);   // 7-e `do()`
     // 묶음 8-g — 판이 끝나는 나머지 길
