@@ -703,6 +703,7 @@ struct Session {
     uint8_t lastDamageType = 0;    // +524 — 마지막 피해 종류(damageDefaultProc). 16 에 죽으면 먼지 자세 51(`GAME4_1.c:4459`)
     uint16_t hurtPrevHp = 0;       // ★ 09-24 — 「윽」 재기의 지난 체력(`ud.Field19_0`)
     uint8_t hurtCooldown = 0;      // ★ 09-24 — 「윽」 뒤 쉬는 틱(`ud.Field19_1` — 줄었으면 7)
+    uint32_t debugGuideAt = 0;     // 진단 --debug-conjurer-guides — 안내서를 줄 프레임(0 = 아직 못 봄)
     // ★ 죽음 알림(`a9 0e`, 3-d)에 실을 것 — 플레이어 +304 갈래 · +300 종류(`GAME3_3.c:164~246 · 344~437`).
     //   피해 함수가 부를 때마다 0 에서 다시 적는다: 갈래 1 = 종류 번호(무기·투사체 · 없으면 맨손 10·망치 2 때 때린 이) · 2 = 피해 종류
     uint8_t killKind = 0;
@@ -1782,6 +1783,9 @@ public:
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 주문 하나를 준다. 주문 0 이면 끔.
     //   ④대기 ⑨ 「주문책에 주문이 느나」용. announce=1 이라 받는 소리(226)도 함께 난다.
     void SetDebugGiveSpellAfter(uint32_t ticks, uint8_t spell) { debugSpellAfter_ = ticks; debugSpellId_ = spell; }
+    // 진단 — 들어온 컨저러마다 60틱 뒤 박쥐·흰거미 둘·거미 안내서를 준다(09-24 사람 판 「물릴 때 맞는 소리」용).
+    //   아레나에서 안내서는 맵 두루마리를 줍거나 저장 캐릭터에서만 오는데 우리는 둘 다 없어 부를 짐승이 없다
+    void SetDebugConjurerGuides(bool on) { debugConjurerGuides_ = on; }
 
     // ── 독립 모드 (P5-c-2) ──────────────────────
     //
@@ -4616,6 +4620,7 @@ private:
     uint32_t debugSpellAfter_ = 0;    // 진단 --debug-give-spell (주문 0 이면 끔)
     uint8_t debugSpellId_ = 0;
     bool debugSpellDone_ = false;
+    bool debugConjurerGuides_ = false;   // 진단 --debug-conjurer-guides
     bool friendsOn_ = false;
     uint32_t debugOwnPetAfter_ = 0;   // 진단 --debug-own-pet (0 끔)
     bool debugPetWild_ = false;        // 진단 --debug-dummy — 주인 없음 · 맞음

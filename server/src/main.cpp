@@ -360,6 +360,7 @@ int main(int argc, char** argv) {
     double debugXpAmount = 0.0;
     int debugSpellAfter = 0;        // 진단 --debug-give-spell N 주문 — N 틱 뒤 주문 하나 (0 끔)
     int debugSpellId = 0;
+    bool debugConjurerGuides = false;   // 진단 --debug-conjurer-guides (09-24)
     bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
     bool itemAtSpawn = false;
     int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
@@ -580,6 +581,9 @@ int main(int argc, char** argv) {
             // 진단 — ④대기 ⑨. 첫 사람에게 N 틱 뒤 주문 하나를 준다(주문책이 느는지).
             debugSpellAfter = std::atoi(argv[++i]);
             debugSpellId = std::atoi(argv[++i]);
+        } else if (a == "--debug-conjurer-guides") {
+            // 진단 — 09-24 사람 판. 들어온 컨저러에게 박쥐·흰거미 둘·거미 안내서를 준다(부를 짐승이 있어야 「물릴 때 소리」를 본다).
+            debugConjurerGuides = true;
         } else if (a == "--debug-team-after" && i + 1 < argc) {
             // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
             debugTeamAfter = std::atoi(argv[++i]);
@@ -2065,6 +2069,11 @@ int main(int argc, char** argv) {
                                        static_cast<uint8_t>(debugSpellId));
             std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주문 %d(%s) 한 번\n", debugSpellAfter,
                         debugSpellId, nox::SpellName(static_cast<uint8_t>(debugSpellId)));
+            std::fflush(stdout);
+        }
+        if (debugConjurerGuides) {
+            srv.SetDebugConjurerGuides(true);
+            std::printf("[진단스위치] 들어온 컨저러에게 60틱 뒤 안내서 넷(1 박쥐·7·8 흰거미·24 거미)\n");
             std::fflush(stdout);
         }
         if (creatureAwayAfter > 0) {

@@ -14023,6 +14023,23 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         debugSpellDone_ = true;
     }
 
+    // ★ 진단 — 컨저러에게 박쥐·흰거미 둘·거미 안내서(`--debug-conjurer-guides`, 09-24 사람 판).
+    //   정답지에서 안내서는 맵 두루마리 줍기(`GAME4_3.c:8104~8120`)나 저장 캐릭터 읽기(`GAME1_1.c:1543~1568`)로만 온다 —
+    //   우리는 둘 다 없어 컨저러가 부를 짐승이 없다. 들어온 것을 본 뒤 60틱 뒤에 1 Bat · 7 AlbinoSpider · 8 SmallAlbinoSpider · 24 Spider
+    //   (번호 = `blob_587000.dat` 70500 의 이름 표 · 24 는 무리라 7·8·25·26 도 같이 서지만 7·8 은 d1 을 따로 보내려고 먼저 준다)
+    if (debugConjurerGuides_) {
+        static const uint8_t kDebugGuides[] = { 1, 7, 8, 24 };
+        for (auto& kv : sessions_) {
+            Session& s = kv.second;
+            if (!s.inGame || s.charClass != CharClass::Conjurer) continue;
+            if (s.debugGuideAt == 0) { s.debugGuideAt = frame_ + 60; continue; }
+            if (frame_ < s.debugGuideAt || s.guideLvl[1] != 0) continue;
+            for (uint8_t g : kDebugGuides) GuideAward(s, g, false, out);
+            std::printf("[진단] 프레임 %u 에 %s 컨저러 안내서 넷(박쥐·흰거미 둘·거미) 줌\n", frame_, s.addr.c_str());
+            std::fflush(stdout);
+        }
+    }
+
     // ── 사람을 걷게 하고 때리게 한다 (묶음 2-a · 3-a) — 걸음마다 제 프레임으로 ──
     //    그 틱의 시전 목록도 함께(spellBookReact_4FCB70 — 정답지는 유닛 갱신 뒤 · server.go:341)
     for (int step = 0; step < ticks; ++step) {
