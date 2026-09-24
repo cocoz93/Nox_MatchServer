@@ -14085,6 +14085,35 @@ void TestAbilityEffects() {
 //   · 걸림 `9e 07 00 <주인> <화살>` · 끊김 `9e 0e 00 <주인> <화살>` — 둘 다 7바이트, 모두에게, 순번 봉투
 //   · 닿음 — 적이면 피해 1(종류 11) 주고 **꽂힘** · 적이 아니면 피해만 주고 끊김 · 벽이면 조용히 끊김
 //   · ⭕ gamedata.bin — 피해 1 · 힘 10 · 최대 375 · 최소 20 · 안 걸린 비행 300 · 수명 150
+// ── 09-24 H4 — 작살에 끌려온 상대가 주인을 계속 밀지 않는다(사람 판 hj2·hj3) ─────────
+//   정답지 끊김 거리는 몸 크기를 뺀 거리(`nox_xxx_calcDistance_4E6C00`) — 중심 30 안이면 「다 끌어옴」.
+//   중심 거리로 재던 때는 거리 200 에서 몸이 맞닿은 채 안 끊기고 50틱 동안 주인을 227 밀었다
+void TestHarpoonDrift() {
+    const std::string a = "10.7.9.1:7901";
+    const std::string b = "10.7.9.2:7902";
+    for (int dist : { 100, 200, 300 }) {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1000 + dist, 1000);
+        RegHarpoonBolt(srv);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w); srv.Tick(34, w);
+        srv.DebugAbilAward(a, 3, false, w);
+        srv.DebugSetFacing(a, 0);
+        srv.DebugAbilDo(a, 3, w);
+        uint32_t ms = 68;
+        for (int t = 0; t < 70; ++t) { ms += 34; srv.Tick(ms, w); w.clear(); }
+        const double pushed = 1000.0 - srv.DebugPosX(a);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "H4 거리 %d — 70틱 뒤 주인 밀림 %.1f(40 미만) · 다끌어옴 %llu(1) · 아직 걸림 %s",
+                      dist, pushed, srv.harpoonEnd(nox::HarpoonEnd::Arrived), srv.DebugHarpoonTarget(a).empty() ? "아니오" : "예");
+        Check(pushed < 40.0 && srv.harpoonEnd(nox::HarpoonEnd::Arrived) == 1 && srv.DebugHarpoonTarget(a).empty(), msg);
+    }
+    std::printf("  09-24 H4 — 작살 끌기: 거리 100·200·300 모두 「다 끌어옴」으로 끊기고 주인이 계속 밀리지 않음(몸 크기 뺀 거리)\n");
+}
+
 void TestHarpoon() {
     const std::string a = "10.7.6.1:7601";
     const std::string b = "10.7.6.2:7602";
@@ -16562,15 +16591,19 @@ void TestHarpoonPull() {
         Check(srv.DebugHarpoonBolt(a) == 0, "20 안인데 줄이 안 끊겼다");
         onlyEnd(srv, nox::HarpoonEnd::Arrived, "③ 끊김 까닭이 「다 끌어옴」 하나가 아니다");
     }
-    // 경계 — 딱 20 은 **안 끊긴다**(`dist < 20`)
-    {
+    // 경계 — ★ 09-24 H4: 거리는 **몸 크기를 뺀 거리**다(`nox_xxx_calcDistance_4E6C00` `GAME3_3.c:2377~2420` —
+    //   화살 HarpoonBolt 는 몸 모양 1 이라 0 · 주인 사람은 원 반지름 10). 그래서 가장자리 딱 20(중심 30)은 **안 끊기고**(`dist < 20`)
+    //   중심 25(가장자리 15)는 **끊긴다** — 전에는 중심 거리로 재 25 에서 안 끊겨, 몸이 맞닿은 채 주인을 계속 밀었다(사람 판 hj2·hj3)
+    for (int cx : { 1030, 1025 }) {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        srv.DebugSetPos(b, 1020, 1000);
+        srv.DebugSetPos(b, cx, 1000);
         srv.DebugHarpoonUpdate(a, out);
         srv.DebugHarpoonUpdate(a, out);
-        Check(srv.DebugHarpoonBolt(a) != 0, "딱 20 인데 끊겼다");
+        if (cx == 1030) Check(srv.DebugHarpoonBolt(a) != 0, "가장자리 딱 20(중심 30)인데 끊겼다");
+        else { Check(srv.DebugHarpoonBolt(a) == 0, "H4 가장자리 15(중심 25)인데 안 끊겼다 — 중심 거리로 재고 있다");
+               onlyEnd(srv, nox::HarpoonEnd::Arrived, "H4 중심 25 끊김 까닭이 「다 끌어옴」 하나가 아니다"); }
     }
 
     // ④ **꽂힌 지 150프레임이면 끊긴다**
@@ -16601,6 +16634,18 @@ void TestHarpoonPull() {
         srv.DebugHarpoonUpdate(a, out);                    // 그 다음 갱신이 거리를 재 끊는다
         Check(srv.DebugHarpoonBolt(a) == 0, "375 밖인데 줄이 안 끊겼다");
         onlyEnd(srv, nox::HarpoonEnd::TooFar, "⑤ 끊김 까닭이 「멀어짐」 하나가 아니다");
+    }
+    // ★ 09-24 H4 — 먼 쪽 경계도 몸 크기를 뺀 거리다: 중심 385(가장자리 375)는 안 끊기고 386 은 끊긴다(`dist > 375`)
+    for (int cx : { 1385, 1386 }) {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 68;
+        Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
+        srv.DebugSetPos(b, cx, 1000);
+        srv.DebugHarpoonUpdate(a, out);
+        srv.DebugHarpoonUpdate(a, out);
+        if (cx == 1385) Check(srv.DebugHarpoonBolt(a) != 0, "H4 가장자리 딱 375(중심 385)인데 끊겼다");
+        else { Check(srv.DebugHarpoonBolt(a) == 0, "H4 가장자리 376(중심 386)인데 안 끊겼다");
+               onlyEnd(srv, nox::HarpoonEnd::TooFar, "H4 중심 386 끊김 까닭이 「멀어짐」 하나가 아니다"); }
     }
 
     // ⑥ **30틱마다 보아 상대가 안 움직였으면 끊긴다**
@@ -23239,6 +23284,7 @@ int main() {
     TestFloorLookup();
     TestFootsteps();
     TestHurtVoice();
+    TestHarpoonDrift();
     TestPlayerHitSound();
     TestPetHitSound();
     TestMissileHitterRoot();

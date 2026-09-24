@@ -8845,7 +8845,14 @@ void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
 
     const double dx0 = static_cast<double>(bolt->posX) - s.posX;
     const double dy0 = static_cast<double>(bolt->posY) - s.posY;
-    const double dist = std::sqrt(dx0 * dx0 + dy0 * dy0);
+    // ★ 09-24 H4(사람 판 hj2·hj3 「끌어온 상대가 주인 뒤로 계속 간다」) — 정답지 거리 `nox_xxx_calcDistance_4E6C00`
+    //   (`GAME3_3.c:2377~2420`)은 **중심 거리에서 두 몸의 크기를 뺀다**(원 = 반지름 · 상자 = 가로세로 중 큰 쪽 절반 · 0.01 아래면 0.01).
+    //   화살(HarpoonBolt)은 몸 모양 1 이라 안 빼고, 주인(사람 NewPlayer)은 원 반지름 10 을 뺀다(실측 `--dump-thing`).
+    //   전에는 중심 거리를 써서 「20 안 = 다 끌어옴」이 중심 30 이 아니라 20 에서야 걸렸다 — 두 몸(10+10)이 이미 맞닿은 자리라
+    //   서로 밀어내는 사이 화살 자리(한 틱 전 상대 자리)와 물러난 주인의 거리가 늘 20 을 넘어 끊기지 않고 주인을 계속 밀었다
+    //   (재현 `TestHarpoonDrift` — 거리 200 에서 50틱 동안 주인이 227 밀림)
+    double dist = std::sqrt(dx0 * dx0 + dy0 * dy0) - kPlayerRadius;
+    if (dist < 0.0099999998) dist = 0.0099999998;
 
     if (!s.harpoonTarget.none()) {
         ++harpoonPullTicks_;
