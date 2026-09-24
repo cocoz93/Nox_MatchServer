@@ -240,6 +240,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
     // ★ 09-24 H1 — 몬스터가 근접으로 때린 뒤 그 모음의 맞히는 소리(`GAME4_3.c:2087~2094`) · 「모음에없음」 = 번호 0(모음 없음·NULL)
     std::printf("[몬스터근접소리] 때림 %llu = {맞히는소리 냄 %llu·모음에없음 %llu}\n",
                 srv.monsterMeleeHitSnd(true) + srv.monsterMeleeHitSnd(false), srv.monsterMeleeHitSnd(true), srv.monsterMeleeHitSnd(false));
+    // ★ 09-24 H3 — 함성이 둘레 사람을 본 경우(시전자 제외) · 「걸림」 = 반마법(29)이 섰다 · 알림 = 29 비트가 실린 0x5A 수(받는 사람마다 1)
+    using WP = nox::WarcryPeer;
+    std::printf("[함성둘레] 사람 %llu = {밖·죽음 %llu·워리어 %llu·관전 %llu·같은편 %llu·멀리 %llu·안보임 %llu·거절 %llu·걸림 %llu} · 반마법 알림 %llu\n",
+                srv.WarcryPeerSum(), srv.warcryPeer(WP::NotInGame), srv.warcryPeer(WP::Warrior), srv.warcryPeer(WP::Observer),
+                srv.warcryPeer(WP::SameTeam), srv.warcryPeer(WP::OutOfRange), srv.warcryPeer(WP::NoSight), srv.warcryPeer(WP::Rejected),
+                srv.warcryPeer(WP::Applied), srv.enchantSentAntiMagic());
     // ★ 09-23 nine-defects 4-d4 — 발소리(달리기 RUN 2·8칸 · 걷기 WALK 3·9칸 × 발밑 바닥 종류). 「바닥없음」 = 칸 찾기 −1·정의 밖
     using FK = nox::FootKind;
     std::printf("[발소리] 달리기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu}"
@@ -262,7 +268,8 @@ unsigned long long AbilityFingerprint(const nox::Server& srv) {
                            srv.berserkCollideCalls() + srv.jumpCodes() + srv.jumpLanded() + srv.melees() +
                            srv.FootRunSum() + srv.FootWalkSum() + srv.footTreadSilent() +   // ★ 4-d4
                            srv.HurtVoiceSum() +                                                // ★ 09-24
-                           srv.monsterMeleeHitSnd(true) + srv.monsterMeleeHitSnd(false);       // ★ 09-24 H1
+                           srv.monsterMeleeHitSnd(true) + srv.monsterMeleeHitSnd(false) +      // ★ 09-24 H1
+                           srv.WarcryPeerSum() + srv.enchantSentAntiMagic();                   // ★ 09-24 H3
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));

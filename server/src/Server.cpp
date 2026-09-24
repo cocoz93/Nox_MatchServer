@@ -1640,6 +1640,7 @@ void Server::FlushPending(std::vector<OutPacket>& out) {
                 };
                 EmitSeq(s, msg, sizeof(msg), out);
                 ++enchantSent_;
+                if (bits & (1u << 29)) ++enchantSentAnti_;   // ★ 09-24 H3 — 반마법 비트가 실린 알림
                 continue;
             }
             if (pr.what != PendingReport::What::UnitHealth) continue;   // 나머지는 아직
@@ -8555,21 +8556,25 @@ void Server::AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out
             PlayerSetState(s, 1, frame_);
             const double dist = 300.0;
             WarcryBreakCasts(s, dist, out);                // ★ 2-a4 — `Nox_xxx_spell_4FE680(u, dist)`(`spell_warcry.go:25`) 둘레 적의 시전을 끊는다
+            // ★ 09-24 H3 — 사람마다 어느 경우로 갔나를 센다(시전자 자신은 안 셈 · 합 = 본 사람 수)
+            auto wp = [&](WarcryPeer k) { ++warcryPeer_[static_cast<size_t>(k)]; };
             for (auto& kv : sessions_) {
                 Session& o = kv.second;
-                if (&o == &s || !o.inGame || o.respawnAtFrame != 0) continue;
-                if (o.charClass == CharClass::Warrior) continue;   // 워리어는 안 걸린다
-                if (o.observer) continue;                          // +3680 & 1
-                if (s.team != 0 && o.team == s.team) continue;      // 같은 편
+                if (&o == &s) continue;
+                if (!o.inGame || o.respawnAtFrame != 0) { wp(WarcryPeer::NotInGame); continue; }
+                if (o.charClass == CharClass::Warrior) { wp(WarcryPeer::Warrior); continue; }   // 워리어는 안 걸린다
+                if (o.observer) { wp(WarcryPeer::Observer); continue; }                          // +3680 & 1
+                if (s.team != 0 && o.team == s.team) { wp(WarcryPeer::SameTeam); continue; }      // 같은 편
                 const double dx = o.posX - s.posX, dy = o.posY - s.posY;
-                if (dx * dx + dy * dy > dist * dist) continue;
+                if (dx * dx + dy * dy > dist * dist) { wp(WarcryPeer::OutOfRange); continue; }
                 if (!MapTraceVision(static_cast<float>(o.posX), static_cast<float>(o.posY),
-                                    static_cast<float>(s.posX), static_cast<float>(s.posY))) continue;
+                                    static_cast<float>(s.posX), static_cast<float>(s.posY))) { wp(WarcryPeer::NoSight); continue; }
                 SpellArg arg;
                 arg.obj = Target{ o.addr, -1 };
                 arg.x = static_cast<float>(o.posX);
                 arg.y = static_cast<float>(o.posY);
-                SpellAccept(55, s, s.addr, arg, 5, out);   // 무효화 · 레벨 5
+                const bool ok = SpellAccept(55, s, s.addr, arg, 5, out);   // 무효화 · 레벨 5
+                wp(ok && o.buffs.Has(29) ? WarcryPeer::Applied : WarcryPeer::Rejected);
             }
             // ★ 09-23 nine-defects 2-a4 — **몬스터도** 같은 둘레에서 본다(`spell_warcry.go:45~50`) — 단 **주문을 쓸 줄 알아야**
             //   (`MonStatusCanCastSpells` = monster.bin `CAN_CAST_SPELLS`, 우리 `castingMonsterTypes_`). 전에는 사람만 봤다.

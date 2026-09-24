@@ -238,6 +238,11 @@ constexpr size_t kFootKindCount = static_cast<size_t>(FootKind::Count);
 enum class HurtVoice : uint8_t { Light = 0, Medium, Heavy, Poison, Count };
 constexpr size_t kHurtVoiceCount = static_cast<size_t>(HurtVoice::Count);
 
+// ★ 09-24 H3(사람 판 「함성 맞은 표시가 안 나온다」) — 함성이 둘레 사람을 볼 때 어느 경우로 갔나(`spell_warcry.go:26~64`).
+//   시전자 자신은 안 센다 · 합 = 본 사람 수 · 「걸림」 = 무효화(55)를 받아들이고 반마법(29)이 실제로 섰다
+enum class WarcryPeer : uint8_t { NotInGame = 0, Warrior, Observer, SameTeam, OutOfRange, NoSight, Rejected, Applied, Count };
+constexpr size_t kWarcryPeerCount = static_cast<size_t>(WarcryPeer::Count);
+
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
 //   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
@@ -2937,6 +2942,9 @@ public:
     void SetCastingMonsterType(uint16_t wire) { castingMonsterTypes_.insert(wire); }
     unsigned long long warcryCastsBroken() const { return warcryCastsBroken_; }    // ★ 2-a4 — 함성이 끊은 남의 시전
     unsigned long long warcryNullifiedMonsters() const { return warcryNullMon_; }  // ★ 2-a4 — 함성이 무효화를 건 몬스터
+    unsigned long long warcryPeer(WarcryPeer k) const { return warcryPeer_[static_cast<size_t>(k)]; }   // ★ 09-24 H3
+    unsigned long long WarcryPeerSum() const { unsigned long long n = 0; for (auto v : warcryPeer_) n += v; return n; }
+    unsigned long long enchantSentAntiMagic() const { return enchantSentAnti_; }   // ★ 09-24 H3 — 반마법(29) 비트가 선 알림(0x5A) 수
     size_t CounterMissileTypeCount() const { return counterMissileTypes_.size(); }
     unsigned long long counterCasts() const { return counterCasts_; }         // 반주문을 부른 수
     unsigned long long counterMissiles() const { return counterMissiles_; }   // 지운 날아가는 것
@@ -3983,6 +3991,8 @@ private:
     std::set<uint16_t> counterMissileTypes_;
     std::set<uint16_t> castingMonsterTypes_;   // ★ 2-a4
     unsigned long long warcryCastsBroken_ = 0, warcryNullMon_ = 0;
+    unsigned long long warcryPeer_[kWarcryPeerCount] = {};   // ★ 09-24 H3
+    unsigned long long enchantSentAnti_ = 0;                  // ★ 09-24 H3
     void WarcryBreakCasts(Session& s, double dist, std::vector<OutPacket>& out);   // ★ 2-a4 — nox_xxx_spell_4FE680
     unsigned long long counterCasts_ = 0, counterMissiles_ = 0, counterDurs_ = 0, counterEnchants_ = 0;
     bool AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out);

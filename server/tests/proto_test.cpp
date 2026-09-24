@@ -14004,6 +14004,16 @@ void TestAbilityEffects() {
         Check(srv.DebugHasEnchant(b, 29), "둘레 안 적에게 반마법이 안 걸렸다");
         Check(srv.DebugEnchantPower(b, 29) == 5, "반마법 세기가 5 가 아니다(정답지는 레벨 5 로 건다)");
         Check(srv.DebugStateOf(a) == 1, "함성인데 상태가 1 이 아니다");
+        // ★ 09-24 H3 — 계수기: 본 사람 1(b) = 걸림 1 · 다음 틱에 29 비트가 선 알림(0x5A)이 a·b 둘에게
+        Check(srv.WarcryPeerSum() == 1 && srv.warcryPeer(nox::WarcryPeer::Applied) == 1, "⑤ H3 함성 둘레 계수기가 「걸림 1」이 아니다");
+        { std::vector<nox::OutPacket> w; srv.Tick(68, w);
+          int n29 = 0;
+          for (const auto& who : { a, b })
+              for (const auto& x : FlattenTo(w, who))
+                  if (x.size() == 7 && x[0] == static_cast<uint8_t>(nox::Op::REPORT_ENCHANTMENT) && (x[6] & 0x20)) ++n29;
+          char m[160];
+          std::snprintf(m, sizeof(m), "⑤ H3 반마법 비트 알림 — 전선 %d(2 여야) · 계수기 %llu", n29, srv.enchantSentAntiMagic());
+          Check(n29 == 2 && srv.enchantSentAntiMagic() == 2, m); }
     }
     // 둘레 밖은 안 걸린다
     {
@@ -14018,6 +14028,7 @@ void TestAbilityEffects() {
         srv.DebugAbilAward(a, 2, false, out);
         srv.DebugAbilDo(a, 2, out);
         Check(!srv.DebugHasEnchant(b, 29), "둘레 밖인데 반마법이 걸렸다");
+        Check(srv.WarcryPeerSum() == 1 && srv.warcryPeer(nox::WarcryPeer::OutOfRange) == 1, "H3 둘레 밖이 「멀리」로 안 셌다");
     }
     // **워리어에게는 안 걸린다**
     {
@@ -14032,6 +14043,7 @@ void TestAbilityEffects() {
         srv.DebugAbilAward(a, 2, false, out);
         srv.DebugAbilDo(a, 2, out);
         Check(!srv.DebugHasEnchant(b, 29), "워리어인데 반마법이 걸렸다");
+        Check(srv.WarcryPeerSum() == 1 && srv.warcryPeer(nox::WarcryPeer::Warrior) == 1, "H3 워리어가 「워리어」로 안 셌다");
     }
     // **같은 편에게는 안 걸린다**
     {
@@ -14048,6 +14060,7 @@ void TestAbilityEffects() {
         srv.DebugAbilAward(a, 2, false, out);
         srv.DebugAbilDo(a, 2, out);
         Check(!srv.DebugHasEnchant(b, 29), "같은 편인데 반마법이 걸렸다");
+        Check(srv.WarcryPeerSum() == 1 && srv.warcryPeer(nox::WarcryPeer::SameTeam) == 1, "H3 같은 편이 「같은편」으로 안 셌다");
     }
     // **자기 자신에게는 안 걸린다**
     {
@@ -14060,6 +14073,7 @@ void TestAbilityEffects() {
         srv.DebugAbilAward(a, 2, false, out);
         srv.DebugAbilDo(a, 2, out);
         Check(!srv.DebugHasEnchant(a, 29), "함성이 자기에게 걸렸다");
+        Check(srv.WarcryPeerSum() == 0, "H3 시전자 자신을 셌다");
     }
     std::printf("  7-e — 능력 효과 넷: cf 1 은 효과에서 · 광전사 상태 1+투명·무적 끄기 · 살금살금 31 · 늑대의 눈 21 · 함성 300 안 적에게 29\n");
 }
