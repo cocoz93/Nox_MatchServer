@@ -10577,6 +10577,21 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             src.byPet = static_cast<int>(&k - pets_.data());
             src.rootIsMonster = k.owner.empty();          // 09-20 — 맵 몬스터가 때리면 뿌리가 몬스터
             HurtTarget(foe, dmg, out, k.owner, 0, &src, HitterMonster(k));   // ★ 4-c3b3b a2 = a3 = 그 몬스터(`GAME5.c:2529~2531`)
+            // ★ 09-24 H1(사람 판 「박쥐가 물 때 원작은 박쥐 소리」) — 때리기 함수 뒤 그 종류 소리 모음의 **맞히는 소리**(+32)를
+            //   몬스터 자리에서 모두에게(`GAME4_3.c:2087~2094` · `aud_501960(…, a1, 0, 0)`). 4-c3b3b 가 맞는 쪽 소리를 끈 것의 짝이다.
+            //   ⚠ 정답지는 때리기 함수가 0 이면 **빗나가는 소리**(+36)다 — 기본 함수(`strikeMonsterDefault_549380` `GAME5.c:2503~2538`)는
+            //   대상을 찾았는데 시야가 막힌 때만 0 · 거미 함수(`strikeSpider_549BC0` `:2866~2903`)는 대상이 없어도 0.
+            //   우리 근접은 대상을 다시 고르지도 시야를 보지도 않고 **늘 때리므로** 여기선 늘 맞힘 쪽이다(빗나감은 미결).
+            //   방패에 막혀도 정답지 함수는 1 이다(피해 함수만 부르고 결과를 안 본다) — 그래서 `HurtTarget` 결과를 안 본다
+            {
+                const uint16_t snd = (k.type < monsterMeleeHitId_.size()) ? monsterMeleeHitId_[k.type] : 0;
+                if (snd != 0) {
+                    PlaySoundAt(snd, static_cast<float>(k.x), static_cast<float>(k.y));
+                    ++monsterMeleeHitPlayed_;
+                } else {
+                    ++monsterMeleeHitNone_;
+                }
+            }
             AIPop(k);
             break;
         }

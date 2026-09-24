@@ -237,6 +237,9 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.DefHitSoundWaySum() == srv.defHitSoundCalls() ? "" : " ⚠칸합불일치",
                 srv.defHitSoundWay(DW::Played), srv.defHitSoundWay(DW::Breakable), srv.defHitSoundWay(DW::Filtered),
                 srv.defHitSoundWay(DW::TableEmpty), srv.defHitSoundWay(DW::MonsterSound), srv.defHitSoundWay(DW::NotPorted));
+    // ★ 09-24 H1 — 몬스터가 근접으로 때린 뒤 그 모음의 맞히는 소리(`GAME4_3.c:2087~2094`) · 「모음에없음」 = 번호 0(모음 없음·NULL)
+    std::printf("[몬스터근접소리] 때림 %llu = {맞히는소리 냄 %llu·모음에없음 %llu}\n",
+                srv.monsterMeleeHitSnd(true) + srv.monsterMeleeHitSnd(false), srv.monsterMeleeHitSnd(true), srv.monsterMeleeHitSnd(false));
     // ★ 09-23 nine-defects 4-d4 — 발소리(달리기 RUN 2·8칸 · 걷기 WALK 3·9칸 × 발밑 바닥 종류). 「바닥없음」 = 칸 찾기 −1·정의 밖
     using FK = nox::FootKind;
     std::printf("[발소리] 달리기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu}"
@@ -258,7 +261,8 @@ unsigned long long AbilityFingerprint(const nox::Server& srv) {
                            srv.contactDamageHits() + srv.warcryShouts() + srv.abilValOff() + srv.berserkChargeTicks() +
                            srv.berserkCollideCalls() + srv.jumpCodes() + srv.jumpLanded() + srv.melees() +
                            srv.FootRunSum() + srv.FootWalkSum() + srv.footTreadSilent() +   // ★ 4-d4
-                           srv.HurtVoiceSum();                                                 // ★ 09-24
+                           srv.HurtVoiceSum() +                                                // ★ 09-24
+                           srv.monsterMeleeHitSnd(true) + srv.monsterMeleeHitSnd(false);       // ★ 09-24 H1
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));
@@ -1051,6 +1055,21 @@ int main(int argc, char** argv) {
                     }
                     std::printf(" · 종류 %zu개가 맞히는 소리를 가짐\n", nOwn);
                     srv.SetMonsterHitSounds(std::move(owns));
+                    // ★ 09-24 H1 — 같은 칸의 **번호** 표(몬스터가 근접으로 때린 뒤 그 소리를 낸다 · `GAME4_3.c:2087~2094`)
+                    std::vector<uint16_t> hitIds(tdb.Count() + 1, 0);
+                    size_t nId = 0;
+                    for (size_t w = 1; w <= tdb.Count(); ++w) {
+                        const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                        const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
+                        const std::string& h = s ? s->sound[nox::kSoundSetMeleeHitting] : std::string();
+                        if (h.empty() || h == "NULL") continue;
+                        hitIds[w] = nox::SoundByName(h.c_str());
+                        if (hitIds[w] != 0) ++nId;
+                    }
+                    std::printf("[소리모음] 근접 맞히는 소리 번호 있는 종류 %zu개 · Bat=%u AlbinoSpider=%u SmallSpider=%u\n", nId,
+                                (unsigned)hitIds[tdb.WireByName("Bat")], (unsigned)hitIds[tdb.WireByName("AlbinoSpider")],
+                                (unsigned)hitIds[tdb.WireByName("SmallSpider")]);
+                    srv.SetMonsterMeleeHitSoundIds(std::move(hitIds));
                 }
                 // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
                 for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,

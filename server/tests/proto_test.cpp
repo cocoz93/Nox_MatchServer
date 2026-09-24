@@ -12375,6 +12375,39 @@ void TestAIMelee() {
         if (hitSnd) Check(hurt && srv.defHitSoundCalls() == 1 && srv.defHitSoundWay(nox::DefHitSoundWay::MonsterSound) == 1, msg);
         else Check(hurt && srv.defHitSoundCalls() == 1 && srv.defHitSoundWay(nox::DefHitSoundWay::Played) == 1 && srv.lastHitSound() == 861, msg);
     }
+    // ⑤d ★ 09-24 H1 — 때린 뒤 **몬스터의 맞히는 소리**(+32)를 몬스터 자리에서 **모두에게**(`GAME4_3.c:2087~2094` · `aud_501960(…, 0, 0)`).
+    //   번호가 있으면 냄(주인 a 에게도 남 b 에게도 `AUDIO_EVENT` 로 그 번호) · 0 이면 「모음에없음」으로 세고 안 낸다
+    for (int has = 0; has < 2; ++has) {
+        nox::Server srv; mk(srv, 1358);
+        const uint16_t bite = nox::SoundByName("BatBite");
+        { std::vector<nox::Server::SoundDefIn> sd(1); sd[0].id = bite; sd[0].samples = 1; sd[0].maxDist = 600; srv.SetSoundDefs(sd); }
+        if (has) { std::vector<uint16_t> t(4096, 0); t[1358] = bite; srv.SetMonsterMeleeHitSoundIds(t); }
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPush(0, 16);
+        srv.DebugAITick(0, out);
+        out.clear();
+        std::vector<nox::OutPacket> o2;
+        srv.Tick(34, o2);                                      // 소리는 틱 끝에 사람마다 나간다
+        auto heard = [&](const std::string& who, uint8_t wantOp) {
+            int n = 0;
+            for (const auto& x : FlattenTo(o2, who)) {
+                if (x.size() != 4 || x[0] != wantOp) continue;
+                if ((static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == bite) ++n;
+            }
+            return n;
+        };
+        const uint8_t ev = static_cast<uint8_t>(nox::Op::AUDIO_EVENT), pev = static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT);
+        char msg[220];
+        std::snprintf(msg, sizeof(msg), "⑤d H1 번호 %s — 냄 %llu · 모음에없음 %llu · a 들음 %d(주인꼴 %d) · b 들음 %d(주인꼴 %d)",
+                      has ? "있음" : "없음", srv.monsterMeleeHitSnd(true), srv.monsterMeleeHitSnd(false),
+                      heard(a, ev), heard(a, pev), heard(b, ev), heard(b, pev));
+        if (has) Check(srv.monsterMeleeHitSnd(true) == 1 && srv.monsterMeleeHitSnd(false) == 0 &&
+                       heard(a, ev) == 1 && heard(b, ev) == 1 && heard(a, pev) == 0 && heard(b, pev) == 0, msg);
+        else Check(srv.monsterMeleeHitSnd(true) == 0 && srv.monsterMeleeHitSnd(false) == 1 &&
+                   heard(a, ev) + heard(b, ev) + heard(a, pev) + heard(b, pev) == 0, msg);
+    }
     // ⑥ **쏘기(17) 시작** — 쉬는 시간을 **쏘기 간격**(임프 15~30)으로 잡는다
     {
         nox::Server srv; mk(srv, 1328);
