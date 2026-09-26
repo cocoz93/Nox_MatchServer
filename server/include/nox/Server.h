@@ -3293,6 +3293,7 @@ public:
     unsigned long long berserkCollideCalls() const { return berserkCollideCalls_; } // ★ 2-b2 — 광전사 켜진 채 부딪힘 함수를 부른 횟수
     // ★ 09-26 M2 — 죽음(16) 걸린 사람이 산 사람에게 닿았을 때: [0] 남은 시간이 14초 이상이라 안 넘김 · [1] 넘김
     unsigned long long deathPass(bool passed) const { return deathPass_[passed ? 1 : 0]; }
+    unsigned long long lavaHurts() const { return lavaHurts_; }   // ★ 09-26 M3 — 바닥 칸 6(용암) 피해 부름(사람 · 틱에 한 번)
     unsigned long long berserkHit(BerserkHit h) const {                          // ★ 2-b2 — 그 갈래별
         return h < BerserkHit::Count ? berserkHit_[static_cast<size_t>(h)] : 0;
     }
@@ -3953,6 +3954,7 @@ private:
     unsigned long long berserkChargeTicks_ = 0;   // ★ 2-b1 — 광전사가 앞으로 민 틱
     unsigned long long berserkCollideCalls_ = 0;  // ★ 2-b2
     unsigned long long deathPass_[2] = {};        // ★ 09-26 M2 — 안 넘김(시간 남음) · 넘김
+    unsigned long long lavaHurts_ = 0;            // ★ 09-26 M3 — 바닥 칸 6(용암) 짝으로 피해 함수를 부른 수
     unsigned long long jumpCodes_ = 0, jumpIn_ = 0, jumpGate_[kJumpGateCount] = {};   // ★ 3-a
     unsigned long long jumpForceTicks_ = 0, jumpHeldTicks_ = 0, jumpLanded_ = 0, airborneOffIdle_ = 0, recoilBlockedAirborne_ = 0;
     unsigned long long equakeSkipAirborne_ = 0, spellRefusedAirborne_ = 0;   // ★ 3-b

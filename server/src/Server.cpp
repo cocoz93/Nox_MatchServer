@@ -4755,6 +4755,14 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             } else {
                 ++traceBlocked_;
             }
+            // ★ 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245`) — 떠 있지 않고(+16 & 0x4000 없음) 체력이 있으면(+556)
+            //   새 자리(+64)의 바닥 번호(`tileNFromPoint_411160`)가 **6**(thing.bin FLOR 순번 6 = `Lava` · 실측 `TestFloorDefs`)이면 짝 (나, 6)을 적는다.
+            //   짝은 같은 틱에 한 번만(`collSysAddCollision_548630` 겹 거름 `GAME5.c:1983~2011`) — 걸음 다섯 중 한 번이라도 밟으면 틱에 한 번.
+            //   피해는 아래 닿음 처리에서(`:2062~2065`). ⚠ 소환수는 이 적분을 안 탄다(AI 가 자리를 옮긴다) — 소환수 몫은 미결
+            if (!(PlayerObjFlags(s) & 0x4000) && !s.observer && s.respawnAtFrame == 0 &&
+                floorGrid_.TileAt(static_cast<float>(s.posX), static_cast<float>(s.posY), floorEdges_).tile == 6) {
+                AddContact(ContactRef{ 1, s.addr, -1 }, ContactRef{ 6, std::string(), -1 });
+            }
         }
     }
     // nox_xxx_collide_548740 — 부딪힌 짝마다 a.collide(b)·4FDF90(a, b) → b.collide(a)·4FDF90(b, a)
@@ -4772,6 +4780,15 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
             // ★ 2-b2 — 벽 짝(둘째 0)은 a.collide(0) 하나뿐(`GAME5.c:2055~2066` — 버프 몫은 둘째가 있을 때만 · 되부르기 없음)
             //   ⚠ 정답지 목록은 **머리에 끼운다**(`:2020~2024` — 나중 것이 먼저 돈다). 우리는 넣는 순서부터 정답지와 달라
             //     돌리는 순서만 뒤집어도 같아지지 않는다 — 맞추지 않았다
+            // ★ 09-26 M3 — 짝 (나, 6) = 바닥 칸 6(용암). 정답지는 둘째가 1~6 이면 a.collide 도 버프 몫도 안 부르고(`:2055` `v1 > 6 || !v1`)
+            //   **피해 함수만** (a, 0, 0, 2, 12) — 때린 이·때린 것 없음 · 피해 2 · 종류 12(`:2062~2065`)
+            if (pr.second.kind == 6) {
+                if (pr.first.kind == 1) {
+                    ++lavaHurts_;
+                    HurtTarget(Target{ pr.first.addr, -1 }, 2, out, std::string(), 12, nullptr, HitterNone());
+                }
+                continue;
+            }
             if (pr.second.kind == 0) { ContactCollide(pr.first, pr.second, out); continue; }
             ContactCollide(pr.first, pr.second, out);
             if (shifted()) continue;

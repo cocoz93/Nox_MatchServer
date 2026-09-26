@@ -246,6 +246,8 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.WarcryPeerSum(), srv.warcryPeer(WP::NotInGame), srv.warcryPeer(WP::Warrior), srv.warcryPeer(WP::Observer),
                 srv.warcryPeer(WP::SameTeam), srv.warcryPeer(WP::OutOfRange), srv.warcryPeer(WP::NoSight), srv.warcryPeer(WP::Rejected),
                 srv.warcryPeer(WP::Applied), srv.enchantSentAntiMagic());
+    // ★ 09-26 M2·M3 — 닿으면 죽음 넘기기(넘김 · 시간이 남아 안 넘김) · 바닥 칸 6(용암) 피해 부름
+    std::printf("[닿음·바닥] 죽음 넘김 %llu · 안넘김 %llu · 용암 피해 %llu\n", srv.deathPass(true), srv.deathPass(false), srv.lavaHurts());
     // ★ 09-23 nine-defects 4-d4 — 발소리(달리기 RUN 2·8칸 · 걷기 WALK 3·9칸 × 발밑 바닥 종류). 「바닥없음」 = 칸 찾기 −1·정의 밖
     using FK = nox::FootKind;
     std::printf("[발소리] 달리기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu}"
@@ -269,7 +271,8 @@ unsigned long long AbilityFingerprint(const nox::Server& srv) {
                            srv.FootRunSum() + srv.FootWalkSum() + srv.footTreadSilent() +   // ★ 4-d4
                            srv.HurtVoiceSum() +                                                // ★ 09-24
                            srv.monsterMeleeHitSnd(true) + srv.monsterMeleeHitSnd(false) +      // ★ 09-24 H1
-                           srv.WarcryPeerSum() + srv.enchantSentAntiMagic();                   // ★ 09-24 H3
+                           srv.WarcryPeerSum() + srv.enchantSentAntiMagic() +                  // ★ 09-24 H3
+                           srv.deathPass(true) + srv.deathPass(false) + srv.lavaHurts();      // ★ 09-26 M2·M3
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));

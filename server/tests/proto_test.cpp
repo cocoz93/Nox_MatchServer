@@ -15783,6 +15783,9 @@ void TestFloorDefs() {
     std::printf("  [바닥 시험] 정의 %zu개 · 재질별:", fl.size());
     for (const auto& kv : byMat) std::printf(" 0x%x×%d", static_cast<unsigned>(kv.first), kv.second);
     std::printf("\n");
+    // ★ 09-26 M3 — 바닥 번호 6 이 무슨 바닥인가(정답지 이동 적분이 번호 6 위의 유닛에 짝 6 → 피해 2 · 종류 12)
+    if (fl.size() > 6) std::printf("  [바닥 시험] 번호 5·6·7 = %s · %s · %s (6 의 재질 0x%x)\n", fl[5].name.c_str(), fl[6].name.c_str(),
+                                   fl[7].name.c_str(), static_cast<unsigned>(fl[6].material));
     // 실물(09-23 부팅 `[바닥]` 줄과 같은 값) — 이름과 재질이 뜻대로 맞는지로 **읽는 자리**를 확인한다
     //   (재질 자리를 한 칸 밀려 읽으면 이 분포가 통째로 무너진다)
     const std::map<int32_t, int> want = { { 0x2, 10 }, { 0x8, 18 }, { 0x20, 78 }, { 0x40, 22 }, { 0x80, 11 },
@@ -18888,6 +18891,68 @@ void TestMsgLenSiblings() {
 //       `Fireball`        서브클래스 = `MISSILE_COUNTERSPELL` ⇒ 안 붙는다 (덧붙이 **1**바이트)
 //   ⚠ 이 시험이 그 틀린 근거로 **옳은 수정을 한 번 막았다.** 그래서 아래를
 //     「화살은 2바이트 · 화살 아닌 복합 투사체는 1바이트」로 **두 방향 다** 튼다.
+// ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
+//   떠 있지 않은 사람이 바닥 번호 6(FLOR 순번 6 = Lava) 위면 틱마다 짝 (나, 6) 하나 → 피해 2 · 종류 12 · 때린 이 없음
+void TestLavaFloor() {
+    const std::string a = "10.9.26.21:9281";
+    auto mk = [&](nox::Server& srv, int tile) {
+        srv.SetPlayerAnimFrames(3, 10, 1);
+        srv.DebugEnterGame(a, 750, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::MapFile::FloorCell> cells;
+        for (int x = 0; x < 128; ++x)
+            for (int y = 0; y < 128; ++y) {
+                nox::MapFile::FloorCell c; c.x = static_cast<uint8_t>(x); c.y = static_cast<uint8_t>(y);
+                c.first.present = c.second.present = true;
+                c.first.image = c.second.image = static_cast<uint8_t>(tile);
+                cells.push_back(c);
+            }
+        nox::FloorGrid g; g.Build(cells);
+        srv.SetFloor(g, {}, std::vector<int32_t>(8, 0x80));
+        std::vector<nox::OutPacket> o; srv.Tick(0, o);
+    };
+    // ① 용암(6) 위 10틱 — 틱마다 한 번 · 체력이 준다
+    {
+        nox::Server srv; mk(srv, 6);
+        const int hp0 = srv.HealthOf(a);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        const unsigned long long h0 = srv.lavaHurts();
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, o); }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "M3 ① 용암 10틱 — 피해 부름 %llu(10) · 체력 %d→%d · 마지막 피해 종류 %u(12)", srv.lavaHurts() - h0, hp0,
+                      srv.HealthOf(a), static_cast<unsigned>(srv.DebugLastDamageType(a)));
+        Check(srv.lavaHurts() - h0 == 10 && srv.HealthOf(a) < hp0 && srv.DebugLastDamageType(a) == 12, msg);
+    }
+    // ② 다른 바닥(5 = DirtLight)은 아무 일 없음
+    {
+        nox::Server srv; mk(srv, 5);
+        const int hp0 = srv.HealthOf(a);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, o); }
+        Check(srv.lavaHurts() == 0 && srv.HealthOf(a) == hp0, "M3 ② 용암이 아닌 바닥(5)에서 바닥 피해를 받았다");
+    }
+    // ③ 떠 있는 동안(점프)은 안 받는다 — 기력 90 이 차도록 35틱 굴린 뒤 뛰고 떠 있는 틱만 센다
+    {
+        nox::Server srv; mk(srv, 6);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        srv.DebugSetFacing(a, 0);
+        for (int t = 0; t < 35; ++t) { ms += 34; srv.Tick(ms, o); }
+        const auto p = InputPacket(7);
+        srv.OnPacket(a, p.data(), p.size(), o);
+        unsigned long long airTicks = 0, airHurts = 0;
+        for (int t = 0; t < 10; ++t) {
+            const bool air = srv.DebugAirborne(a);
+            const unsigned long long h = srv.lavaHurts();
+            ms += 34; srv.Tick(ms, o);
+            if (air && srv.DebugAirborne(a)) { ++airTicks; airHurts += srv.lavaHurts() - h; }
+        }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "M3 ③ 점프 — 떠 있던 틱 %llu(≥1) 동안 바닥 피해 %llu(0)", airTicks, airHurts);
+        Check(airTicks >= 1 && airHurts == 0, msg);
+    }
+    std::printf("  09-26 M3 — 바닥 칸 피해: 용암(6) 위 틱마다 피해 2·종류 12 · 다른 바닥 없음 · 떠 있으면 없음\n");
+}
+
 // ── 09-26 M2 — 닿으면 죽음 넘기기(`PlayerCollide` `LABEL_26` · `GAME3_3.c:3254~3268`) ─────────
 //   죽음(16) 걸린 a 가 산 사람 b 에 닿으면 — a 의 남은 시간이 14 × 30 = 420 미만일 때만 b 에게 15 × 30 = 450 · a 의 세기로 걸고 a 것은 끈다
 void TestDeathPass() {
@@ -23454,6 +23519,7 @@ int main() {
     TestMissileComplexWire();
     TestMissileSrcBlock();
     TestDeathPass();
+    TestLavaFloor();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();
