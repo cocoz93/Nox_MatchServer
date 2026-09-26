@@ -3331,6 +3331,7 @@ public:
     // ★ 09-26 M2 — 죽음(16) 걸린 사람이 산 사람에게 닿았을 때: [0] 남은 시간이 14초 이상이라 안 넘김 · [1] 넘김
     unsigned long long deathPass(bool passed) const { return deathPass_[passed ? 1 : 0]; }
     unsigned long long lavaHurts() const { return lavaHurts_; }   // ★ 09-26 M3 — 바닥 칸 6(용암) 피해 부름(사람 · 틱에 한 번)
+    unsigned long long lavaHurtsPet() const { return lavaHurtsPet_; }   // ★ 09-27 S2 — 같은 것(소환수·맵 몬스터)
     // ★ 09-27 B1 — 접속 때 직업 기본 장비를 가방에: [0] 종류 틀이 없어 못 실음 · [1] 실음
     unsigned long long gearGiven(bool ok) const { return gearGiven_[ok ? 1 : 0]; }
     unsigned long long weaponNoStats() const { return weaponNoStats_; }   // ★ 09-27 B2
@@ -4029,6 +4030,7 @@ private:
     unsigned long long berserkCollideCalls_ = 0;  // ★ 2-b2
     unsigned long long deathPass_[2] = {};        // ★ 09-26 M2 — 안 넘김(시간 남음) · 넘김
     unsigned long long lavaHurts_ = 0;            // ★ 09-26 M3 — 바닥 칸 6(용암) 짝으로 피해 함수를 부른 수
+    unsigned long long lavaHurtsPet_ = 0;         // ★ 09-27 S2 — 소환수·맵 몬스터 몫
     unsigned long long gearGiven_[2] = {};        // ★ 09-27 B1 — [틀 없어 못 실음, 실음]
     unsigned long long weaponNoStats_ = 0;        // ★ 09-27 B2 — 수치 표에 없는 무기로 판정 칸에 닿아 판정 없이 넘긴 수
     unsigned long long equipGate_[kEquipGateCount] = {};   // ★ 09-27 B3 — 무기 들기 관문별

@@ -14422,6 +14422,22 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         if (pets_.size() != before) break;
     }
 
+    // ★ 09-27 S2 — 소환수·맵 몬스터 바닥 칸 피해(`GAME4_1.c:3240~3245` — 사람 몫은 09-26 M3). 정답지는 이동 적분 목록의 오브젝트마다
+    //   **서 있어도** 새 자리(+64)의 바닥 번호가 6(Lava)이고 떠 있지 않고(+16 & 0x4000 — thing.bin FLAGS AIRBORNE) 체력 자료(+556)가 있으면 짝 (나, 6) →
+    //   닿음 처리가 피해 함수 (a, 0, 0, 2, 12)(`GAME5.c:2062~2065`). 짝은 틱에 한 번(겹 거름) — 우리 소환수는 적분 대신 AI 가 자리를 옮기므로 옮긴 뒤 한 번 본다.
+    //   몸 모르는 종류는 깃발도 모른다 → 안 떠 있는 것으로 본다(지진과 같은 규칙).
+    //   ⚠ 안 옮긴 것 — 적분을 건너뛰는 두 경우(`:3201` 오브젝트 깃발 0x2 · 몬스터 행동 67) · 짝 목록 대신 바로 피해 함수(순서만 다르다)
+    //   뒤에서부터 돈다 — 피해로 죽으면 자리 번호가 당겨지기 때문
+    for (size_t i = pets_.size(); i-- > 0;) {
+        const Creature& k = pets_[i];
+        if (k.health == 0) continue;
+        const auto tb = typeBodies_.find(k.type);
+        if (tb != typeBodies_.end() && (tb->second.flags & 0x4000)) continue;
+        if (floorGrid_.TileAt(static_cast<float>(k.x), static_cast<float>(k.y), floorEdges_).tile != 6) continue;
+        ++lavaHurtsPet_;
+        HurtTarget(Target{ std::string(), static_cast<int>(i) }, 2, out, std::string(), 12, nullptr, HitterNone());
+    }
+
     // ★★ **걷고 있나를 정한다** — 갱신 항목의 애니 번호(IDLE/WALK)를 가르는 데 썼다.
     //   ⚠ 2026-09-13 부터 자세는 상태에서 뽑는다(PlayerAnimByte). 이 값은 더 안 쓰인다 — 진단용으로만 남는다.
     //   지난 틱 자리와 견줘 움직였으면 걷는 것으로 본다.

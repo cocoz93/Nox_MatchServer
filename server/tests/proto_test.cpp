@@ -19605,6 +19605,66 @@ void TestSplashWhoSrc() {
     std::printf("  09-27 S1 — 둘레 피해 v9 = who: 불덩이 둘레를 대검(정면)이 · 죽음 광선·운석을 방패(정면)가 막음 · 등지면 깎임\n");
 }
 
+// ── 09-27 S2 — 소환수·맵 몬스터의 바닥 칸 피해(`GAME4_1.c:3240~3245` — 사람 몫은 TestLavaFloor) ─────────
+//   서 있어도 틱마다 한 번 · 떠 있는 종류(FLAGS AIRBORNE 0x4000)는 안 받음 · 죽으면 목록에서 빠져도 안 넘어짐
+void TestLavaPets() {
+    const std::string a = "10.9.27.61:9331";
+    auto mk = [&](nox::Server& srv, int tile, bool airborne, uint16_t hp) {
+        srv.DebugEnterGame(a, 760, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::MapFile::FloorCell> cells;
+        for (int x = 0; x < 128; ++x)
+            for (int y = 0; y < 128; ++y) {
+                nox::MapFile::FloorCell c; c.x = static_cast<uint8_t>(x); c.y = static_cast<uint8_t>(y);
+                c.first.present = c.second.present = true;
+                c.first.image = c.second.image = static_cast<uint8_t>(tile);
+                cells.push_back(c);
+            }
+        nox::FloorGrid g; g.Build(cells);
+        srv.SetFloor(g, {}, std::vector<int32_t>(8, 0x80));
+        nox::Server::PhysBody body;
+        body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        body.flags = airborne ? 0x4000u : 0u;
+        srv.SetTypeBody(1328, body);                           // 임프 자리(시험에선 깃발만 바꿔 걷는 것·나는 것 둘 다 잰다)
+        srv.DebugSpawnPet(1328, 1040, 1000, a);
+        srv.DebugSetOwnedPetHealth(a, hp);
+        std::vector<nox::OutPacket> o; srv.Tick(0, o);
+    };
+    auto run = [&](nox::Server& srv, int ticks) {
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        for (int t = 0; t < ticks; ++t) { ms += 34; srv.Tick(ms, o); }
+    };
+    // ① 용암 위 걷는 소환수 — 10틱에 10번 · 체력 100 → 80(몬스터는 방어 없음 · 2씩)
+    {
+        nox::Server srv; mk(srv, 6, false, 100);
+        run(srv, 10);
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "S2 ① 용암 소환수 10틱 — 부름 %llu(10) · 체력 %u(80)", srv.lavaHurtsPet(), (unsigned)srv.DebugPetHealth(0));
+        Check(srv.lavaHurtsPet() == 10 && srv.DebugPetHealth(0) == 80, msg);
+    }
+    // ② 다른 바닥(5) — 없음
+    {
+        nox::Server srv; mk(srv, 5, false, 100);
+        run(srv, 10);
+        Check(srv.lavaHurtsPet() == 0 && srv.DebugPetHealth(0) == 100, "S2 ② 용암 아닌 바닥에서 소환수가 바닥 피해를 받았다");
+    }
+    // ③ 나는 종류(AIRBORNE) — 용암 위여도 없음
+    {
+        nox::Server srv; mk(srv, 6, true, 100);
+        run(srv, 10);
+        Check(srv.lavaHurtsPet() == 0 && srv.DebugPetHealth(0) == 100, "S2 ③ 나는 소환수가 용암 피해를 받았다");
+    }
+    // ④ 체력 3 — 두 번째 틱에 죽어 목록에서 빠진다 · 그 뒤로는 안 부른다(뒤에서부터 돌아 번호가 안 밀림)
+    {
+        nox::Server srv; mk(srv, 6, false, 3);
+        run(srv, 10);
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "S2 ④ 체력 3 소환수 — 부름 %llu(2) · 남은 소환수 %zu(0)", srv.lavaHurtsPet(), srv.pets());
+        Check(srv.lavaHurtsPet() == 2 && srv.pets() == 0, msg);
+    }
+    std::printf("  09-27 S2 — 소환수 용암: 틱마다 2 · 다른 바닥 없음 · 나는 종류 없음 · 죽으면 그만\n");
+}
+
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
 //   떠 있지 않은 사람이 바닥 번호 6(FLOR 순번 6 = Lava) 위면 틱마다 짝 (나, 6) 하나 → 피해 2 · 종류 12 · 때린 이 없음
 void TestLavaFloor() {
@@ -24241,6 +24301,7 @@ int main() {
     TestDequipWeapon();
     TestWeaponEffects();
     TestSplashWhoSrc();
+    TestLavaPets();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();

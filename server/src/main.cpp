@@ -251,7 +251,8 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.warcryPeer(WP::SameTeam), srv.warcryPeer(WP::OutOfRange), srv.warcryPeer(WP::NoSight), srv.warcryPeer(WP::Rejected),
                 srv.warcryPeer(WP::Applied), srv.enchantSentAntiMagic());
     // ★ 09-26 M2·M3 — 닿으면 죽음 넘기기(넘김 · 시간이 남아 안 넘김) · 바닥 칸 6(용암) 피해 부름
-    std::printf("[닿음·바닥] 죽음 넘김 %llu · 안넘김 %llu · 용암 피해 %llu\n", srv.deathPass(true), srv.deathPass(false), srv.lavaHurts());
+    std::printf("[닿음·바닥] 죽음 넘김 %llu · 안넘김 %llu · 용암 피해 %llu · 용암 피해(소환수) %llu\n", srv.deathPass(true), srv.deathPass(false),
+                srv.lavaHurts(), srv.lavaHurtsPet());   // ★ 09-27 S2 — 소환수·맵 몬스터 몫
     // ★ 09-26 M4a — 몬스터 소리 모음 칸별 냄/모음에없음
     std::printf("[몬스터소리] 근접시작 %llu/%llu · 쏘기시작 %llu/%llu · 쏘기 %llu/%llu · 죽음 %llu/%llu · 명령대답 %llu/%llu (냄/모음에없음)\n",
                 srv.monsterSnd(5, true), srv.monsterSnd(5, false), srv.monsterSnd(9, true), srv.monsterSnd(9, false),
@@ -281,7 +282,7 @@ unsigned long long AbilityFingerprint(const nox::Server& srv) {
                            srv.HurtVoiceSum() +                                                // ★ 09-24
                            srv.monsterMeleeHitSnd(true) + srv.monsterMeleeHitSnd(false) +      // ★ 09-24 H1
                            srv.WarcryPeerSum() + srv.enchantSentAntiMagic() +                  // ★ 09-24 H3
-                           srv.deathPass(true) + srv.deathPass(false) + srv.lavaHurts() +     // ★ 09-26 M2·M3
+                           srv.deathPass(true) + srv.deathPass(false) + srv.lavaHurts() + srv.lavaHurtsPet() +   // ★ 09-26 M2·M3 · 09-27 S2
                            srv.monsterSnd(5, true) + srv.monsterSnd(9, true) + srv.monsterSnd(10, true) + srv.monsterSnd(14, true) + srv.monsterSnd(16, true);   // ★ M4a·M4b
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
