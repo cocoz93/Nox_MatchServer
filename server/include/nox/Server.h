@@ -248,6 +248,11 @@ constexpr size_t kWarcryPeerCount = static_cast<size_t>(WarcryPeer::Count);
 //   「가방에 없음」(`:4941~4950`)은 뺐다 — 우리 입기 요청은 늘 가방에서 찾은 물건을 넘긴다(구조상 0)
 enum class EquipGate : uint8_t { NotWeapon = 0, Already, Ability, ClassFail, StrengthFail, QuiverLater, DequipFail, Equipped, Count };
 constexpr size_t kEquipGateCount = static_cast<size_t>(EquipGate::Count);
+// ★ 09-27 B4 — 무기 내려놓기(`nox_xxx_playerDequipWeapon_53A140` `GAME4_3.c:4755~4816`)가 어디로 나갔나 —
+//   무기 아님(`:4760`) · 든 무기가 아님(`:4767~4770`) · 화살통(B5 전까지 없음 — 들 수가 없다) · 내려놓음 ·
+//   공격 중 석궁 벗기 요청 무시(해독 쪽 `server__network__sdecode.c:185~186` — 내려놓기 함수 앞에서 걸림)
+enum class DequipGate : uint8_t { NotWeapon = 0, NotHeld, QuiverLater, Dequipped, CrossbowAttacking, Count };
+constexpr size_t kDequipGateCount = static_cast<size_t>(DequipGate::Count);
 
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
@@ -3317,6 +3322,7 @@ public:
     unsigned long long gearGiven(bool ok) const { return gearGiven_[ok ? 1 : 0]; }
     unsigned long long weaponNoStats() const { return weaponNoStats_; }   // ★ 09-27 B2
     unsigned long long equipGate(EquipGate g) const { return g < EquipGate::Count ? equipGate_[static_cast<size_t>(g)] : 0; }   // ★ 09-27 B3
+    unsigned long long dequipGate(DequipGate g) const { return g < DequipGate::Count ? dequipGate_[static_cast<size_t>(g)] : 0; }   // ★ 09-27 B4
     // ★ 09-27 B3 — modifier.bin `WEAPON_DEFINITIONS` 한 칸(종류 번호별): 쓸 수 있는 직업 비트(CLASSUSE — 워리어 1 · 위저드 2 · 컨저러 4) · 요구 힘.
     //   정답지 `server/modifiers.go:314~320`(Classes62 · ReqStrength60). main 이 복호본을 읽어 채운다 — 없는 종류는 직업 검사에서 거절(`object_pickup.go:113~118`)
     void SetWeaponDef(uint16_t wire, uint8_t classes, uint16_t reqStrength) { weaponDef_[wire] = WeaponDef{ classes, reqStrength }; }
@@ -3923,7 +3929,7 @@ private:
     bool SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty, std::vector<OutPacket>& out);   // ★ 09-26 M4a — 만들었나
     bool MonsterSound(const Creature& k, int field);   // ★ 09-26 M4a — 소리 모음 칸 하나를 몬스터 자리에서 모두에게 · 냈으면 참
     void GiveDefaultGear(Session& s);   // ★ 09-27 B1 — 직업 기본 장비를 가방에(스냅샷 꼬리가 보내는 번호·순서 그대로)
-    // ★ 09-27 B3 — 무기 들기 `53A420`(a3 = 알림 · a4 = 거절 소리) · 내려놓기(B3 은 옛 벗기 그대로 — B4 가 `53A140` 으로) · 입기·벗기 알림(본인 0x60/0x61 + 남에게 겉모습)
+    // ★ 09-27 B3 — 무기 들기 `53A420`(a3 = 알림 · a4 = 거절 소리) · 내려놓기(B4 — `53A140`) · 입기·벗기 알림(본인 0x60/0x61 + 남에게 겉모습)
     bool PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vector<OutPacket>& out);
     bool PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out);
     void ReportEquipChange(Session& s, const Session::Carried& c, bool wear, std::vector<OutPacket>& out);
@@ -4006,6 +4012,7 @@ private:
     unsigned long long gearGiven_[2] = {};        // ★ 09-27 B1 — [틀 없어 못 실음, 실음]
     unsigned long long weaponNoStats_ = 0;        // ★ 09-27 B2 — 수치 표에 없는 무기로 판정 칸에 닿아 판정 없이 넘긴 수
     unsigned long long equipGate_[kEquipGateCount] = {};   // ★ 09-27 B3 — 무기 들기 관문별
+    unsigned long long dequipGate_[kDequipGateCount] = {}; // ★ 09-27 B4 — 무기 내려놓기 나간 길별
     struct WeaponDef { uint8_t classes = 0; uint16_t reqStrength = 0; };
     std::map<uint16_t, WeaponDef> weaponDef_;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
     std::map<uint16_t, Session::Carried> itemTemplate_;   // ★ 09-27 B1 — 기본 장비 종류 틀

@@ -19339,6 +19339,90 @@ void TestEquipWeaponGates() {
     std::printf("  09-27 B3 — 무기 들기 관문: 직업·힘(글+925 본인만) · 함성 값(조용히) · 바꿔 들기(내려놓고 듦) · 이미 듦 · 공격 중 13 · 화살통 B5 전 거절 · 관전 무시\n");
 }
 
+// ── 09-27 B4 — 무기 내려놓기(`nox_xxx_playerDequipWeapon_53A140` `GAME4_3.c:4755~4816`) + 공격 중 석궁 벗기 버림(`sdecode.c:185~186`) ─────────
+void TestDequipWeapon() {
+    using nox::CharClass;
+    using nox::DequipGate;
+    const std::string a = "10.9.27.31:9301", b = "10.9.27.32:9302";
+    const uint16_t kSword = 728 + 4;
+    auto make = [&](nox::Server& srv) {
+        GearTemplates(srv);
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        std::vector<nox::Server::WorldStatic> st;
+        auto put = [&](uint16_t nc, uint16_t type, uint32_t bit) {
+            nox::Server::WorldStatic w;
+            w.netCode = nc; w.type = type; w.x = 1000; w.y = 1000;
+            w.modifiable = true; w.equipBit = bit; w.isWeapon = true; w.weaponClass = true;
+            st.push_back(w);
+            srv.SetWeaponDef(type, 1, 0);
+        };
+        put(500, 1170, 0x400);   // 대검
+        put(503, 1168, 0x8);     // 석궁(장비 비트 = 무기 SUBCLASS CROSSBOW 비트 3)
+        SetWeights(st, 8);
+        srv.SetWorldStatics(st);
+        srv.DebugMoveTo(a, 1000, 1000);
+    };
+    auto send = [&](nox::Server& srv, nox::Op op, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> p = CodePacket(op, nc);
+        srv.OnPacket(a, p.data(), p.size(), out);
+    };
+    auto dq = [&](nox::Server& srv) {
+        std::vector<unsigned long long> v;
+        for (size_t g = 0; g < nox::kDequipGateCount; ++g) v.push_back(srv.dequipGate(static_cast<DequipGate>(g)));
+        return v;
+    };
+    auto onlyDq = [&](const std::vector<unsigned long long>& before, nox::Server& srv, DequipGate want) {
+        const auto after = dq(srv);
+        for (size_t g = 0; g < after.size(); ++g)
+            if (after[g] - before[g] != (g == static_cast<size_t>(want) ? 1u : 0u)) return false;
+        return true;
+    };
+
+    // ① 든 롱소드를 벗으면 내려놓음 — 본인 0x61 · 남에게 0x54 · 칸 비움
+    {
+        nox::Server srv; make(srv);
+        const auto g0 = dq(srv);
+        std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_DEQUIP, kSword, out);
+        Check(onlyDq(g0, srv, DequipGate::Dequipped), "① 내려놓음 칸 하나만 오르지 않았다");
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) &&
+              FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)), "① 벗음 알림(0x61·0x54)이 안 갔다");
+        Check(srv.DebugWeaponNet(a) == 0, "① 벗었는데 무기 칸이 남았다");
+    }
+    // ② 공격 중(상태 1)에 롱소드를 벗으면 상태 13 으로(`:4764~4766`) — 석궁이 아니라 요청은 받는다
+    {
+        nox::Server srv; make(srv);
+        srv.DebugSetState(a, nox::kPlayerStateAttack);
+        std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_DEQUIP, kSword, out);
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle && srv.DebugWeaponNet(a) == 0, "② 공격 중에 벗었는데 13 이 아니거나 못 벗었다");
+    }
+    // ③ 안 든 무기(주웠지만 안 든 대검)를 벗으려 하면 0 — 든 무기만 내려놓는다(`:4767~4770`)
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0; send(srv, nox::Op::TRY_GET, 500, o0);
+        const auto g0 = dq(srv);
+        std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_DEQUIP, 500, out);
+        Check(onlyDq(g0, srv, DequipGate::NotHeld), "③ 든것아님 칸 하나만 오르지 않았다");
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) == nullptr && srv.DebugWeaponNet(a) == kSword,
+              "③ 안 든 무기인데 벗음 알림이 갔거나 롱소드를 놓았다");
+    }
+    // ④ 석궁을 들고 공격 중에 벗기 요청 → 요청을 버린다(내려놓기 함수까지 안 감) · ⑤ 가만히면 벗겨진다(대조)
+    for (int attacking = 1; attacking >= 0; --attacking) {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0;
+        send(srv, nox::Op::TRY_GET, 503, o0);
+        send(srv, nox::Op::TRY_EQUIP, 503, o0);
+        Check(srv.DebugWeaponNet(a) == 503, "④ 석궁을 못 들었다 — 이 시험이 무의미해진다");
+        if (attacking) srv.DebugSetState(a, nox::kPlayerStateAttack);
+        const auto g0 = dq(srv);
+        std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_DEQUIP, 503, out);
+        if (attacking) Check(onlyDq(g0, srv, DequipGate::CrossbowAttacking) && srv.DebugWeaponNet(a) == 503 &&
+                             srv.DebugStateOf(a) == nox::kPlayerStateAttack, "④ 공격 중 석궁 벗기 요청을 안 버렸다");
+        else Check(onlyDq(g0, srv, DequipGate::Dequipped) && srv.DebugWeaponNet(a) == 0, "⑤ 가만히 있는데 석궁이 안 벗겨졌다");
+    }
+    std::printf("  09-27 B4 — 무기 내려놓기: 든 것만 · 공격 중이면 13 · 0x61·0x54 · 공격 중 석궁 벗기 요청은 버림(가만히면 벗겨짐)\n");
+}
+
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
 //   떠 있지 않은 사람이 바닥 번호 6(FLOR 순번 6 = Lava) 위면 틱마다 짝 (나, 6) 하나 → 피해 2 · 종류 12 · 때린 이 없음
 void TestLavaFloor() {
@@ -23972,6 +24056,7 @@ int main() {
     TestDefaultGear();
     TestWeaponSlot();
     TestEquipWeaponGates();
+    TestDequipWeapon();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();

@@ -2855,6 +2855,11 @@ int main(int argc, char** argv) {
                             srv.equipGate(nox::EquipGate::Ability), srv.equipGate(nox::EquipGate::ClassFail),
                             srv.equipGate(nox::EquipGate::StrengthFail), srv.equipGate(nox::EquipGate::QuiverLater),
                             srv.equipGate(nox::EquipGate::DequipFail), srv.equipGate(nox::EquipGate::Equipped));
+                // ★ 09-27 B4 — 무기 내려놓기(`53A140`) 나간 길별 + 공격 중 석궁 벗기 요청 버림
+                std::printf("[무기내려놓기] 무기아님 %llu · 든것아님 %llu · 화살통 %llu · 내려놓음 %llu · 공격중석궁 %llu\n",
+                            srv.dequipGate(nox::DequipGate::NotWeapon), srv.dequipGate(nox::DequipGate::NotHeld),
+                            srv.dequipGate(nox::DequipGate::QuiverLater), srv.dequipGate(nox::DequipGate::Dequipped),
+                            srv.dequipGate(nox::DequipGate::CrossbowAttacking));
                 // ★★ 조각 D — **여기서부터 넉 줄이 「눈이 없던 자리」다.**
                 //   계수기 41개 중 24개가 한 번도 안 찍히고 있었다(조각 C). 아래가 그 24개를
                 //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.

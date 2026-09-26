@@ -2982,7 +2982,9 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 if (!c) { ++handled_; break; }
                 if (c->weaponClass) {
                     if (wear) PlayerEquipWeapon(s, nc, /*failSound=*/true, out);   // `playerTryEquip_4F2F70` → 53A420(a1, it, 1, 1)
-                    else PlayerDequipWeapon(s, nc, out);                           // ⚠ 공격 중 석궁 벗기 거절(`sdecode.c:185~186`)은 B4
+                    // ★ 09-27 B4 — 공격 중(상태 1)에 석궁(무기 SUBCLASS 8 — 우리 장비 비트도 CrossBow = 8)을 벗기려 하면 요청을 버린다(`sdecode.c:185~186`)
+                    else if (s.moveState == kPlayerStateAttack && (c->equipBit & 0x8)) ++dequipGate_[static_cast<size_t>(DequipGate::CrossbowAttacking)];
+                    else PlayerDequipWeapon(s, nc, out);                           // `playerTryDequip_4F2FB0` → 53A140(a1, it, 1, 1)
                     ++handled_;
                     break;
                 }
@@ -13055,17 +13057,26 @@ bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vec
     return gate(EquipGate::Equipped);
 }
 
-// ★ 09-27 B3 — 무기 내려놓기. ⚠ 지금은 옛 벗기 그대로(입음 끔 · 알림 · 무기 칸 비움) — B4 가 `nox_xxx_playerDequipWeapon_53A140` 을 옮겨 바꾼다
+// ★ 09-27 B4 — 무기 내려놓기 `nox_xxx_playerDequipWeapon_53A140`(`GAME4_3.c:4755~4816`) — 사람 갈래.
+//   무기 클래스 아님 → 0(`:4760`) · 공격 중이면 상태 13(`:4764~4766`) · **든 무기가 아니면 0**(`:4767~4770` — 화살통만 예외) ·
+//   든 것의 듦 깃발 끔 · 본인 알림(a3 `4D8590`)·모두 알림(a4 `4D84C0`) · +104 = 0(`:4784~4795`)
+//   ⚠ 안 옮긴 것(B5) — 활·석궁이면 화살통 내려놓기 `53A0F0`(`:4771~4773`) · 번개 지팡이·오블리비언 오브의 지속 주문 끊기 `4FEB60`(`:4774`) ·
+//     화살통 갈래(`:4775~4783`) · 마법부여 끄기 `4F3030`(`:4796`). `:4797~4814` 는 원본 exe 에 없는 GameEx 확장이라 안 옮긴다(소스 주석)
+//   부르는 자리는 모두 (a3, a4) = (1, 1) 이다 — 무기 들기(`:4965`) · 벗기 요청(`playerTryDequip_4F2FB0` `GAME3_3.c:10571`)
 bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out) {
-    for (auto& c : s.inventory) {
-        if (c.netCode != nc) continue;
-        if (!c.equipped) return false;
-        c.equipped = false;
-        ReportEquipChange(s, c, false, out);
-        if (s.weaponNet == nc) s.weaponNet = 0;
-        return true;
-    }
-    return false;
+    auto gate = [&](DequipGate g) { ++dequipGate_[static_cast<size_t>(g)]; return g == DequipGate::Dequipped; };
+    Session::Carried* item = nullptr;
+    for (auto& c : s.inventory) if (c.netCode == nc) { item = &c; break; }
+    if (!item || !item->weaponClass) return gate(DequipGate::NotWeapon);
+    if (s.moveState == kPlayerStateAttack) PlayerSetState(s, kPlayerStateIdle, frame_, &out);
+    if (item->equipBit == 2) return gate(DequipGate::QuiverLater);             // ⚠ 화살통 — B5(지금은 들 수도 없다)
+    Session::Carried* held = nullptr;
+    for (auto& c : s.inventory) if (s.weaponNet != 0 && c.netCode == s.weaponNet) { held = &c; break; }
+    if (!held || held != item) return gate(DequipGate::NotHeld);
+    held->equipped = false;
+    ReportEquipChange(s, *held, false, out);
+    s.weaponNet = 0;
+    return gate(DequipGate::Dequipped);
 }
 
 // ★ 09-27 B2 — 무기 칸이 가리키는 가방 항목. 칸은 번호로 들고 여기서 가방을 뒤진다 —
