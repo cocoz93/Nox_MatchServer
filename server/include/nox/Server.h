@@ -2021,6 +2021,15 @@ public:
         spawnForced_ = true;   // 09-19 — 안 걸면 첫자리가 맵 PlayerStart 로 가서 이 진단이 조용히 무시된다
         return true;
     }
+    // ★ 09-27 B6 — 그 종류의 첫 바닥 물건 자리로 스폰(`--spawn-at-item <이름>`) · 번호를 돌려준다(자동 클라가 줍기·입기 코드로 쓴다)
+    bool DebugSpawnAtStaticType(uint16_t wire, uint16_t& ncOut) {
+        for (const auto& w : statics_) {
+            if (w.type != wire) continue;
+            spawnX_ = w.x; spawnY_ = w.y; spawnForced_ = true; ncOut = w.netCode;
+            return true;
+        }
+        return false;
+    }
     size_t FlagCount() const { return flags_.size(); }
 
     // ★ 지금 누가 어디 있나 — **하네스가 걸어가게 하려면 이게 있어야 한다.**

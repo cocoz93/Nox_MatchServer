@@ -387,6 +387,7 @@ int main(int argc, char** argv) {
     bool debugConjurerGuides = false;   // 진단 --debug-conjurer-guides (09-24)
     bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
     bool itemAtSpawn = false;
+    std::string spawnAtItem;   // ★ 09-27 B6 — `--spawn-at-item <이름>`
     int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
     int startMana = 0;         // 진단 — 들어올 때 마나(0 이면 안 건드림)
     int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
@@ -658,6 +659,10 @@ int main(int argc, char** argv) {
         } else if (a == "--aoi") {
             // 시야 반경(P4-b) — 갱신 스트림에 맵 정적 오브젝트를 반경 안만 싣는다. --map 필수.
             aoi = true;
+        } else if (a == "--spawn-at-item" && i + 1 < argc) {
+            // ★ 09-27 B6 — 이름으로 고른 바닥 물건(첫 것) 자리로 스폰하고 그 번호를 찍는다.
+            //   자동 클라(`NOX_AUTO_CODES`)가 그 번호로 줍기·입기를 보내 무기 들기 관문을 **진짜 와이어로** 탄다
+            spawnAtItem = argv[++i];
         } else if (a == "--item-at-spawn") {
             // ★ 시험용 — 아이템 하나를 **스폰 자리로 옮긴다.**
             //
@@ -1491,6 +1496,16 @@ int main(int argc, char** argv) {
             }
             nStat = st.size();
             srv.SetWorldStatics(std::move(st));
+            if (!spawnAtItem.empty()) {   // ★ 09-27 B6
+                uint16_t nc = 0;
+                const uint16_t wire = tdb.WireByName(spawnAtItem);
+                if (wire != 0 && srv.DebugSpawnAtStaticType(wire, nc))
+                    std::printf("[시험] 스폰 자리를 %s(종류 %u · 번호 %u) 자리 (%d,%d) 로\n", spawnAtItem.c_str(),
+                                (unsigned)wire, (unsigned)nc, srv.spawnX(), srv.spawnY());
+                else
+                    std::printf("[시험] ⚠ 바닥에 %s 가 없다(종류 %u) — 이 판은 무효다\n", spawnAtItem.c_str(), (unsigned)wire);
+                std::fflush(stdout);
+            }
 
             // ★ 09-27 B1 — 직업 기본 장비의 가방 항목 틀. 맵 물건(위)과 같은 칸 규칙으로 thing.bin 에서 채운다
             //   (수식 갈래 · 장비 비트 · 무게). 서버는 접속 때 이 틀로 기본 장비를 가방에 싣는다(`Server::GiveDefaultGear`)
