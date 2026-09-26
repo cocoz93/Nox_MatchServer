@@ -1257,6 +1257,20 @@ int main(int argc, char** argv) {
                                 edefs.size(), wps.size(), why[0], why[1], why[2], why[3]);
                     for (const auto& kv : wpMat) std::printf(" 0x%x×%zu", static_cast<unsigned>(kv.first), kv.second);
                     std::printf("\n");
+                    // ★ 09-27 V4 — 용암(바닥 **번호 6** — 서버 바닥 피해가 보는 값 · 재질 0x80 은 다른 바닥도 쓸 수 있다) 쪽 수와
+                    //   그 위에 있는 길목(걸을 수 있다고 찍힌 자리)을 찍는다 — 용암 판에서 사람을 세울 자리
+                    {
+                        size_t lavaSides = 0;
+                        for (const auto& c : floor)
+                            for (const auto* s : { &c.first, &c.second }) if (s->present && s->image == 6) ++lavaSides;
+                        std::vector<std::pair<int, int>> onLava;
+                        for (const auto& wp : wps)
+                            if (grid.TileAt(static_cast<float>(wp.first), static_cast<float>(wp.second), edefs).tile == 6)
+                                onLava.push_back({ static_cast<int>(wp.first), static_cast<int>(wp.second) });
+                        std::printf("[용암칸] 바닥 번호 6 쪽 %zu · 그 위 길목 %zu곳 —", lavaSides, onLava.size());
+                        for (size_t k = 0; k < onLava.size() && k < 8; ++k) std::printf(" (%d,%d)", onLava[k].first, onLava[k].second);
+                        std::printf("\n");
+                    }
                     // ★ 4-d4 — 발소리가 쓰도록 서버에 넣는다
                     std::vector<int32_t> mats;
                     for (const auto& f : tdb.Floors()) mats.push_back(f.material);
