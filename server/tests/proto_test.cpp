@@ -19665,6 +19665,54 @@ void TestLavaPets() {
     std::printf("  09-27 S2 — 소환수 용암: 틱마다 2 · 다른 바닥 없음 · 나는 종류 없음 · 죽으면 그만\n");
 }
 
+// ── 09-27 S3 — M1 에서 시험 틀이 없던 발사체의 막기 — 픽시 직격 ─────────
+//   픽시 직격(종류 11) → 대검 든 워리어가 막기 자세(18)로 정면 — **막는다**(`GAME3_3.c:258~260`)
+//   ✖ 때린 것이 비면(nullptr) 막기 판정 자체를 안 타 깎인다 — M1 돌연변이 「픽시 nullptr」 을 잡는 자리
+//   ⚠ 임프 쏘기(일반 발사체 깃발) 쪽은 시험 판을 세 번 못 세워 미결(진행 파일 S3 기록) — 주인이 길에 있으면 주인이 맞고 ·
+//     방향을 안 정하면 북서로 날고 · 임프 방향을 +x 로 정해도 위저드를 안 맞혔다
+void TestMissileBlockMore() {
+    auto stops = [](nox::Server& srv, const char* key) {
+        const auto& st = srv.damageStops();
+        auto it = st.find(key);
+        return it == st.end() ? 0ull : it->second;
+    };
+    // ② 픽시 직격 → 대검 워리어(정면 · 막기 자세 18)
+    {
+        const std::string a = "10.9.27.73:9343", b = "10.9.27.74:9344";
+        nox::Server srv;
+        nox::Gamedata g;
+        g.Parse("PixieCount = 2, 3, 4, 5, 6;\n" "SummonDuration = 60, 210, 375;\n");
+        srv.SetGamedata(g);
+        srv.SetNamedType("Pixie", 672);
+        srv.SetSpellDef(58, 10, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 810, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 811, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1300, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        Check(srv.missiles() > 0, "S3 ② 픽시가 없다(이 시험의 전제)");
+        srv.DebugSetWeapon(b, 0x400);                            // GreatSword
+        srv.DebugSetFacing(b, 128);                              // −x(픽시 쪽)
+        const int hp0 = srv.HealthOf(b);
+        const size_t n0 = srv.missiles();
+        for (int k = 0; k < 10 && srv.missiles() == n0; ++k) {
+            // 픽시 바로 오른쪽 8 — 몸(10)이 겹쳐 닿되 자리가 겹치지 않게(같은 점이면 방향 판정이 안 선다)
+            srv.DebugMoveTo(b, static_cast<int>(srv.DebugMissileX(0)) + 8, static_cast<int>(srv.DebugMissileY(0)));
+            srv.DebugSetState(b, 18);
+            ms += 34; srv.Tick(ms, out);
+        }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "S3 ② 픽시 → 대검 정면 — 대검막기 %llu(닿은 수와 같아야) · 체력 %d→%d(그대로여야) · 픽시 %zu→%zu",
+                      stops(srv, "대검막기"), hp0, srv.HealthOf(b), n0, srv.missiles());
+        // 픽시는 몇 마리가 한 틱에 같이 닿을 수 있다 — 닿아 사라진 수만큼 막았나를 본다
+        Check(srv.missiles() < n0 && stops(srv, "대검막기") == n0 - srv.missiles() && srv.HealthOf(b) == hp0, msg);
+    }
+    std::printf("  09-27 S3 — 픽시 직격은 대검이 막음(때린 것 있음 · 닿은 수만큼) — 임프 쏘기 틀은 미결\n");
+}
+
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
 //   떠 있지 않은 사람이 바닥 번호 6(FLOR 순번 6 = Lava) 위면 틱마다 짝 (나, 6) 하나 → 피해 2 · 종류 12 · 때린 이 없음
 void TestLavaFloor() {
@@ -24302,6 +24350,7 @@ int main() {
     TestWeaponEffects();
     TestSplashWhoSrc();
     TestLavaPets();
+    TestMissileBlockMore();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();
