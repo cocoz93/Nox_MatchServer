@@ -2773,13 +2773,13 @@ int main(int argc, char** argv) {
                 std::printf("[물건] 줍기요청 %llu(성공 %llu·멂 %llu) · 쓰기 %llu(모르는갈래 %llu)"
                             " · 입기 %llu · 벗기 %llu · 되돌림 %llu"
                             " · 거절(한도 %llu·무거움 %llu·개수 %llu·직업 %llu)"
-                            " · 즉시마심 %llu · 금 %llu · 기본장비(실음 %llu·틀없음 %llu)\n",
+                            " · 즉시마심 %llu · 금 %llu · 기본장비(실음 %llu·틀없음 %llu) · 표없는무기판정 %llu\n",
                             srv.tryGets(), srv.picked(), srv.pickTooFar(),
                             srv.used(), srv.useUnknown(),
                             srv.equipped(), srv.dequipped(), srv.dropped(),
                             srv.pickNoCap(), srv.pickTooHeavy(), srv.pickTooMany(), srv.pickClassFail(),
                             srv.drankOnPickup(), srv.goldPicked(),
-                            srv.gearGiven(true), srv.gearGiven(false));
+                            srv.gearGiven(true), srv.gearGiven(false), srv.weaponNoStats());
                 // ★★ 조각 D — **여기서부터 넉 줄이 「눈이 없던 자리」다.**
                 //   계수기 41개 중 24개가 한 번도 안 찍히고 있었다(조각 C). 아래가 그 24개를
                 //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.

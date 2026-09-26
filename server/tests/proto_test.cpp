@@ -18995,21 +18995,24 @@ void TestMonsterSounds() {
 
 // ── 09-27 B1 — 기본 장비를 서버 가방에(`playerMakeDefItems_4EF7D0` → `playerRespawnItem_4EF750`) ─────────
 //   번호·종류·순서가 스냅샷 꼬리(`0x4c <번호2> <종류2>`)와 같나 · 틀이 없으면 안 싣나 · 이제 벗기가 그 번호를 찾나
+// 기본 장비 종류 틀 여섯(main 이 thing.bin 으로 채우는 것을 시험에서 흉내 — 무게는 아무 값)
+static void GearTemplates(nox::Server& srv) {
+    for (uint16_t gw : { nox::kItemStreetShirt, nox::kItemStreetPants, nox::kItemStreetSneakers,
+                         nox::kItemWizardRobe, nox::kItemWoodenShield, nox::kItemLongsword }) {
+        nox::Session::Carried c;
+        bool w = false;
+        c.equipBit = nox::EquipBitFor(nox::LoadoutItemName(gw), &w);
+        c.isWeapon = w;
+        c.modifiable = true;
+        c.weight = 7;
+        srv.SetItemTemplate(gw, c);
+    }
+}
+
 void TestDefaultGear() {
     using nox::CharClass;
     const std::string a = "10.9.27.1:9271", b = "10.9.27.2:9272";
-    auto tmpl = [](nox::Server& srv) {
-        for (uint16_t gw : { nox::kItemStreetShirt, nox::kItemStreetPants, nox::kItemStreetSneakers,
-                             nox::kItemWizardRobe, nox::kItemWoodenShield, nox::kItemLongsword }) {
-            nox::Session::Carried c;
-            bool w = false;
-            c.equipBit = nox::EquipBitFor(nox::LoadoutItemName(gw), &w);
-            c.isWeapon = w;
-            c.modifiable = true;
-            c.weight = 7;
-            srv.SetItemTemplate(gw, c);
-        }
-    };
+    auto tmpl = [](nox::Server& srv) { GearTemplates(srv); };
     // 스냅샷 꼬리의 장비 알림을 차례대로 — 사람 번호 +1~+4 이고 종류가 기본 장비인 `0x4c` 만
     auto tailGear = [](uint16_t nc, CharClass cls) {
         const auto t = nox::BuildSnapshotTail(nc, cls, 0, 0);
@@ -19070,6 +19073,104 @@ void TestDefaultGear() {
         Check(srv.dequipped() == 1, "③ 벗기를 안 셌다");
     }
     std::printf("  09-27 B1 — 기본 장비가 서버 가방에(스냅샷 꼬리와 번호·종류·순서 같음) · 틀 없으면 안 실음 · 기본 롱소드 벗기가 번호를 찾음\n");
+}
+
+// ── 09-27 B2 — 무기 칸(플레이어 +104). 든 무기 = 가방 항목 · 비트·종류·수치가 그 칸에서 나오나 ─────────
+void TestWeaponSlot() {
+    using nox::CharClass;
+    const std::string a = "10.9.27.11:9281", b = "10.9.27.12:9282";
+    const uint16_t kSword = 728 + 4;                          // 워리어 기본 롱소드 번호(스냅샷 꼬리 차례)
+    auto code = [&](nox::Server& srv, nox::Op op, uint16_t nc) {
+        std::vector<nox::OutPacket> o;
+        const std::vector<uint8_t> p = CodePacket(op, nc);
+        srv.OnPacket(a, p.data(), p.size(), o);
+    };
+    auto make = [&](nox::Server& srv) {
+        GearTemplates(srv);
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1050, 1000);                       // a 가 보는 +x 쪽 · 대검 사거리(10 + 50) 안
+    };
+    // 바닥에 무기 하나 놓고 줍고 든다
+    auto pickEquip = [&](nox::Server& srv, uint16_t nc, uint16_t type, uint32_t bit) {
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = nc; w.type = type; w.x = 1000; w.y = 1000;
+        w.modifiable = true; w.equipBit = bit; w.isWeapon = true;
+        st.push_back(w);
+        SetWeights(st, 8);
+        srv.SetWorldStatics(st);
+        code(srv, nox::Op::TRY_GET, nc);
+        code(srv, nox::Op::TRY_EQUIP, nc);
+    };
+    // 기력이 찰 때까지 기다렸다 한 번 휘두르고 판정 칸을 지난다
+    auto swing = [&](nox::Server& srv, uint32_t& ms, uint8_t* animSeen) {
+        std::vector<nox::OutPacket> out;
+        for (int t = 0; t < 40; ++t) { ms += 33; srv.Tick(ms, out); }
+        const auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        ms += 33; srv.Tick(ms, out);
+        if (animSeen) *animSeen = srv.DebugAnimByteOf(a);
+        for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+    };
+
+    // ① 기본 — 워리어는 롱소드가 무기 칸에 · 위저드는 빈 손
+    {
+        nox::Server srv; make(srv);
+        Check(srv.DebugWeaponNet(a) == kSword && srv.DebugWeaponEquip(a) == 0x200 && srv.DebugWeaponWire(a) == nox::kItemLongsword,
+              "① 워리어 무기 칸이 기본 롱소드가 아니다");
+        Check(srv.DebugWeaponNet(b) == 0 && srv.DebugWeaponEquip(b) == 0 && srv.DebugWeaponWire(b) == 0, "① 위저드가 무기를 들었다");
+    }
+    // ② 롱소드를 벗으면 맨손 · 다시 들면 롱소드
+    {
+        nox::Server srv; make(srv);
+        code(srv, nox::Op::TRY_DEQUIP, kSword);
+        Check(srv.DebugWeaponEquip(a) == 0 && srv.DebugWeaponWire(a) == 0 && srv.DebugWeaponNet(a) == 0, "② 벗었는데 무기를 들고 있다");
+        code(srv, nox::Op::TRY_EQUIP, kSword);
+        Check(srv.DebugWeaponEquip(a) == 0x200 && srv.DebugWeaponNet(a) == kSword, "② 다시 들었는데 롱소드가 아니다");
+    }
+    // ③ 든 롱소드가 가방에서 빠지면(되돌림) 칸 번호가 남아도 맨손 — 칸은 읽을 때마다 가방을 뒤진다
+    {
+        nox::Server srv; make(srv);
+        code(srv, nox::Op::INVENTORY_FAIL, kSword);
+        Check(!srv.Carries(a, kSword), "③ 되돌렸는데 가방에 남았다 — 이 시험이 무의미해진다");
+        Check(srv.DebugWeaponEquip(a) == 0 && srv.DebugWeaponWire(a) == 0, "③ 가방에 없는 롱소드를 들고 있다");
+    }
+    // ④ 주운 대검(0x400)을 들면 비트·종류·공격 자세·피해가 대검 것
+    {
+        nox::Server srv; make(srv);
+        srv.SetPlayerAnimFrames(37, 8, 0);
+        pickEquip(srv, 500, 1170, 0x400);
+        Check(srv.DebugWeaponEquip(a) == 0x400 && srv.DebugWeaponWire(a) == 1170 && srv.DebugWeaponNet(a) == 500,
+              "④ 주운 대검을 들었는데 무기 칸이 대검이 아니다");
+        uint32_t ms = 0; uint8_t anim = 0;
+        const uint16_t hp0 = srv.HealthOf(b);
+        swing(srv, ms, &anim);
+        Check(anim == 37, "④ 대검 공격 자세가 37(GREAT_SWORD_STRIKE) 이 아니다");
+        const int dmg = nox::WeaponDamage(nox::kWeapons[5], nox::StrengthOnline(CharClass::Warrior));   // GreatSword
+        const int want = static_cast<int>(static_cast<float>((1.0 - static_cast<double>(nox::ArmorValueFloat(CharClass::Wizard))) * dmg));
+        Check(srv.melees() == 1 && hp0 - srv.HealthOf(b) == want, "④ 대검 한 대 피해가 대검 식과 다르다");
+    }
+    // ⑤ 수치 표에 없는 무기(ForceWand 0x40000 — 지팡이 갈래)로 휘둘러도 서버가 안 죽고 판정 없이 센다
+    {
+        nox::Server srv; make(srv);
+        srv.SetPlayerAnimFrames(29, 8, 0);
+        pickEquip(srv, 501, 1171, 0x40000);
+        Check(srv.DebugWeaponEquip(a) == 0x40000, "⑤ 지팡이를 들었는데 비트가 0x40000 이 아니다");
+        uint32_t ms = 0;
+        const uint16_t hp0 = srv.HealthOf(b);
+        swing(srv, ms, nullptr);
+        Check(srv.weaponNoStats() == 1 && srv.melees() == 0 && srv.HealthOf(b) == hp0, "⑤ 표에 없는 무기인데 판정했거나 안 셌다");
+    }
+    // ⑥ 틀 없는 서버(기본 장비를 못 실음)는 옛 방식 — 직업 표의 롱소드
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        Check(srv.DebugWeaponEquip(a) == 0x200 && srv.DebugWeaponWire(a) == nox::kItemLongsword && srv.DebugWeaponNet(a) == 0,
+              "⑥ 틀 없는 서버에서 워리어가 직업 표 롱소드를 안 들었다");
+    }
+    std::printf("  09-27 B2 — 무기 칸: 기본 롱소드 · 벗으면 맨손 · 가방에서 빠지면 맨손 · 주운 대검 자세 37·피해 · 표 없는 지팡이는 판정 없이 셈 · 틀 없는 서버는 직업 표\n");
 }
 
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
@@ -23703,6 +23804,7 @@ int main() {
     TestLavaFloor();
     TestMonsterSounds();
     TestDefaultGear();
+    TestWeaponSlot();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();

@@ -695,6 +695,10 @@ struct Session {
     //   **지우는 자리는 정답지에 없다.** 광전사가 벽에 부딪히면 이 칸의 재질 깃발로 「세게 · 살짝」을 가른다
     int16_t lastWallGx = -1, lastWallGy = -1;
     int64_t debugWeapon = -1;      // 시험용 바꿔 들기 — −1 기본 장비 · 0 맨손 · 그 밖 kWeapons 클래스 비트(주워 들기는 묶음 5)
+    // ★ 09-27 B2 — 든 무기(플레이어 +748 → +104). 가방 항목 번호로 들고, 읽을 때마다 가방에서 찾는다(버리거나 되돌려 없어지면 맨손).
+    //   0 = 없음. `gearInBag` 은 기본 장비를 가방에 실었나 — 못 실은 사람(종류 틀이 없는 서버 = 시험)은 옛 방식대로 직업 표에서 읽는다
+    uint16_t weaponNet = 0;
+    bool     gearInBag = false;
     // ★ 기력(+91 Field22_3, 3-b) — 만들 때 0(`GAME4_1.c:732`), 살아 있으면 틱마다 100 아래일 때 100/30 = 3 씩(`object_update.go:108`).
     //   무기 공격이 무기별로 깎는다(weaponGetStaminaByType_4F7E80 — 롱소드 70). 깎을 때 `47 <기력>` 을 중요로 알린다.
     uint8_t stamina = 0;
@@ -3303,6 +3307,17 @@ public:
     unsigned long long lavaHurts() const { return lavaHurts_; }   // ★ 09-26 M3 — 바닥 칸 6(용암) 피해 부름(사람 · 틱에 한 번)
     // ★ 09-27 B1 — 접속 때 직업 기본 장비를 가방에: [0] 종류 틀이 없어 못 실음 · [1] 실음
     unsigned long long gearGiven(bool ok) const { return gearGiven_[ok ? 1 : 0]; }
+    unsigned long long weaponNoStats() const { return weaponNoStats_; }   // ★ 09-27 B2
+    // 시험용 — 든 무기(09-27 B2): 비트 · 종류 번호 · 무기 칸 번호
+    uint32_t DebugWeaponEquip(const std::string& addr) const {
+        auto it = sessions_.find(addr); return it == sessions_.end() ? 0u : WeaponEquipOf(it->second);
+    }
+    uint16_t DebugWeaponWire(const std::string& addr) const {
+        auto it = sessions_.find(addr); return it == sessions_.end() ? 0 : WeaponWireOf(it->second);
+    }
+    uint16_t DebugWeaponNet(const std::string& addr) const {
+        auto it = sessions_.find(addr); return it == sessions_.end() ? 0 : it->second.weaponNet;
+    }
     unsigned long long berserkHit(BerserkHit h) const {                          // ★ 2-b2 — 그 갈래별
         return h < BerserkHit::Count ? berserkHit_[static_cast<size_t>(h)] : 0;
     }
@@ -3972,6 +3987,7 @@ private:
     unsigned long long deathPass_[2] = {};        // ★ 09-26 M2 — 안 넘김(시간 남음) · 넘김
     unsigned long long lavaHurts_ = 0;            // ★ 09-26 M3 — 바닥 칸 6(용암) 짝으로 피해 함수를 부른 수
     unsigned long long gearGiven_[2] = {};        // ★ 09-27 B1 — [틀 없어 못 실음, 실음]
+    unsigned long long weaponNoStats_ = 0;        // ★ 09-27 B2 — 수치 표에 없는 무기로 판정 칸에 닿아 판정 없이 넘긴 수
     std::map<uint16_t, Session::Carried> itemTemplate_;   // ★ 09-27 B1 — 기본 장비 종류 틀
     unsigned long long jumpCodes_ = 0, jumpIn_ = 0, jumpGate_[kJumpGateCount] = {};   // ★ 3-a
     unsigned long long jumpForceTicks_ = 0, jumpHeldTicks_ = 0, jumpLanded_ = 0, airborneOffIdle_ = 0, recoilBlockedAirborne_ = 0;
@@ -4319,7 +4335,8 @@ private:
     bool PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<OutPacket>& out);   // 538330
     void ReportStamina(Session& s, std::vector<OutPacket>& out);             // netReportStamina_4D8800 `47 <기력>`
     void EarthquakeSend(float x, float y, int jiggle, std::vector<OutPacket>& out);   // earthquakeSend_4D9110 `97 <흔들림>`
-    static uint32_t WeaponEquipOf(const Session& s);                          // 플레이어 +4 WeaponEquip (지금은 직업 기본 장비)
+    static uint32_t WeaponEquipOf(const Session& s);                          // 플레이어 +4 WeaponEquip (09-27 B2 — 든 무기 칸에서)
+    static const Session::Carried* HeldWeapon(const Session& s);             // ★ 09-27 B2 — 무기 칸이 가리키는 가방 항목(없으면 nullptr)
     static const WeaponStats* WeaponStatsOf(const Session& s);
     bool CursorOnFriend(const Session& s) const;                             // playerAimsAtEnemy_4F9DC0 의 거꾸로
     bool MapTraceVision(float x1, float y1, float x2, float y2) const;       // `server/map.go:522` (장애물 그늘 · 벽 9)

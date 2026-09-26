@@ -2975,6 +2975,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     if (c.netCode != nc) continue;
                     if (c.equipped == wear) break;    // 이미 그 상태다
                     c.equipped = wear;
+                    // ★ 09-27 B2 — 무기 칸 잇기(들면 칸에 · 든 것을 벗으면 비움). ⚠ 임시 — 정답지 들기 `53A420`(검사 · 먼저 든 것 내려놓기)과
+                    //   내려놓기 `53A140` 은 B3·B4 에서 이 자리를 바꾼다. 그전까지 둘째 무기를 들면 첫째는 「입음」 표시만 남는다
+                    if (c.isWeapon) {
+                        if (wear) s.weaponNet = nc;
+                        else if (s.weaponNet == nc) s.weaponNet = 0;
+                    }
                     uint8_t msg[3] = {
                         static_cast<uint8_t>(wear ? Op::REPORT_EQUIP : Op::REPORT_DEQUIP),
                         static_cast<uint8_t>(nc),
@@ -12992,22 +12998,47 @@ void Server::GiveDefaultGear(Session& s) {
         c.equipped = true;                     // 스냅샷 꼬리가 `60 REPORT_EQUIP` 을 같이 보낸다
         s.inventory.push_back(c);
         ++gearGiven_[1];
+        s.gearInBag = true;
+        // ★ 09-27 B2 — 무기면 무기 칸에. 정답지는 기본 장비를 넣는 길(`inventoryServPlace_4F36F0` → 무기 줍기 `53A720`)에서
+        //   손이 비었으면 무기 들기 `53A420` 을 불러 +104 에 둔다(`GAME4_3.c:5102~5104`)
+        if (c.isWeapon && s.weaponNet == 0) s.weaponNet = c.netCode;
     }
 }
 
-// 든 무기의 종류 번호 — 죽음 알림의 무기 그림(3-d). 기본 장비는 직업 표, 시험용 바꿔 들기는 main 이 채운 이름 표
-uint16_t Server::WeaponWireOf(const Session& s) const {
-    if (s.debugWeapon < 0) return LoadoutFor(s.charClass).weapon;
-    const auto it = weaponWire_.find(static_cast<uint32_t>(s.debugWeapon));
-    return it == weaponWire_.end() ? 0 : it->second;
+// ★ 09-27 B2 — 무기 칸이 가리키는 가방 항목. 칸은 번호로 들고 여기서 가방을 뒤진다 —
+//   버리기·되돌리기로 가방에서 빠지면 저절로 맨손이 된다(칸을 지우는 자리를 빠뜨려도 없는 물건을 안 든다)
+const Session::Carried* Server::HeldWeapon(const Session& s) {
+    if (s.weaponNet == 0) return nullptr;
+    for (const auto& c : s.inventory)
+        if (c.netCode == s.weaponNet) return &c;
+    return nullptr;
 }
 
-// 플레이어 +4 WeaponEquip — 든 무기의 클래스 비트. ⚠ 지금은 직업 기본 장비에서 온다(주워 들기·바꿔 들기는 묶음 5).
-uint32_t Server::WeaponEquipOf(const Session& s) {
-    const WeaponStats* w = WeaponStatsOf(s);
-    return w ? w->classBits : 0u;
+// 든 무기의 종류 번호 — 죽음 알림의 무기 그림(3-d). 시험용 바꿔 들기는 main 이 채운 이름 표
+//   ★ 09-27 B2 — 그 밖엔 무기 칸의 물건 종류(기본 장비를 못 실은 시험 서버만 직업 표)
+uint16_t Server::WeaponWireOf(const Session& s) const {
+    if (s.debugWeapon >= 0) {
+        const auto it = weaponWire_.find(static_cast<uint32_t>(s.debugWeapon));
+        return it == weaponWire_.end() ? 0 : it->second;
+    }
+    if (!s.gearInBag) return LoadoutFor(s.charClass).weapon;
+    const Session::Carried* h = HeldWeapon(s);
+    return h ? h->type : 0;
 }
-// 든 무기의 modifier 값 — 시험용 바꿔 들기(DebugSetWeapon)가 있으면 그 이름, 없으면 직업 기본 장비
+
+// 플레이어 +4 WeaponEquip — 든 무기의 클래스 비트.
+//   ★ 09-27 B2 — 무기 칸 물건의 비트(= 정답지 `weaponInventoryEquipFlags_415820` — 같은 표 `object_weapon.go:108~135`).
+//   수치 표(kWeapons)에 없는 무기(활·지팡이류·차크람)도 비트는 선다 — 전에는 표에 없으면 0(맨손)이었다
+uint32_t Server::WeaponEquipOf(const Session& s) {
+    if (s.debugWeapon >= 0 || !s.gearInBag) {
+        const WeaponStats* w = WeaponStatsOf(s);
+        return w ? w->classBits : 0u;
+    }
+    const Session::Carried* h = HeldWeapon(s);
+    return h ? h->equipBit : 0u;
+}
+// 든 무기의 modifier 값 — 시험용 바꿔 들기(DebugSetWeapon)가 있으면 그 이름, 없으면 무기 칸(09-27 B2 · 시험 서버는 직업 기본 장비)
+//   ⚠ 수치 표에 없는 무기면 nullptr — 부르는 자리가 비트(WeaponEquipOf)로 먼저 가른다
 const WeaponStats* Server::WeaponStatsOf(const Session& s) {
     if (s.debugWeapon >= 0) {
         if (s.debugWeapon == 0) return nullptr;             // 맨손
@@ -13015,7 +13046,12 @@ const WeaponStats* Server::WeaponStatsOf(const Session& s) {
             if (static_cast<uint32_t>(s.debugWeapon) == w.classBits) return &w;
         return nullptr;
     }
-    return WeaponOf(s.charClass);
+    if (!s.gearInBag) return WeaponOf(s.charClass);
+    const Session::Carried* h = HeldWeapon(s);
+    if (!h) return nullptr;
+    for (const auto& w : kWeapons)
+        if (h->equipBit == w.classBits) return &w;
+    return nullptr;
 }
 
 // `GAME4.c:1395` weaponGetStaminaByType_4F7E80 — 무기 비트 → 깎는 기력
@@ -13405,8 +13441,13 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
         setReady();                                         // 29 면 길이만큼 · 31 이면 지금(`:4075~4079`)
         calcIdx();
         if (idx < frames && midHit()) {
+            // ★ 09-27 B2 — 수치 표에 없는 지팡이(마법 지팡이 — 정답지는 31 로 주문을 건다 · 안 옮김)는 판정 없이 센다.
+            //   무기 칸이 생기기 전엔 표에 있는 무기만 들 수 있어 이 막이가 필요 없었다(없으면 w 가 비어 죽는다)
+            if (!w) { ++weaponNoStats_; }
+            else {
             AttackInfo ai = meleeInfo(0, false);
             judge(ai, anim, 879);                            // `:4114~4117`
+            }
         }
     } else if (equip & 0x7800000) {
         const int anim = (equip & 0x3800000) ? 32 : 31;    // 32 찌르기만 판정
@@ -13414,8 +13455,11 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
         setReady();
         calcIdx();
         if (anim == 32 && midHit()) {
+            if (!w) { ++weaponNoStats_; }                   // ★ 09-27 B2 — 오블리비언 넷은 수치 표에 없다(위와 같은 막이)
+            else {
             AttackInfo ai = meleeInfo(0, false);
             judge(ai, anim, 879);                            // `:4142~4145`
+            }
         }
     } else if (!(equip & 0xC0)) {
         struct Branch { uint32_t bits; int anim; uint8_t type; bool overlap; uint16_t sound; };
