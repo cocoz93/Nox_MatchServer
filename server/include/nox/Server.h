@@ -3395,7 +3395,10 @@ public:
     void SetMonsterHitSounds(std::vector<uint8_t> byWire) { monsterHitSound_ = std::move(byWire); }
     // ★ 09-24 H1 — 종류 번호별 근접 「맞히는 소리」(+32 MELEE_ATTACK_HITTING_SOUND) 번호. 0 = 모음이 없거나 NULL(main 이 soundset.bin 으로 채운다)
     //   조각이 0 인 번호도 싣는다 — 그런 것은 `PlaySoundAt` 이 버린다(정답지 `aud_501960` 도 조각 0 이면 안 만든다)
-    void SetMonsterMeleeHitSoundIds(std::vector<uint16_t> byWire) { monsterMeleeHitId_ = std::move(byWire); }
+    void SetMonsterMeleeHitSoundIds(std::vector<uint16_t> byWire) { monsterSnd_[7] = std::move(byWire); }
+    // ★ 09-26 M4a — 다른 칸도 같은 꼴로(근접 시작 5 · 쏘기 시작 9 · 쏘기 10 · 죽음 14 — 정답지 `aud_501960(모음+칸, 몬스터, 0, 0)`)
+    void SetMonsterSoundIds(int field, std::vector<uint16_t> byWire) { if (field >= 0 && field < 18) monsterSnd_[field] = std::move(byWire); }
+    unsigned long long monsterSnd(int field, bool played) const { return (field >= 0 && field < 18) ? monsterSndCount_[field][played ? 1 : 0] : 0; }
     unsigned long long monsterMeleeHitSnd(bool played) const { return played ? monsterMeleeHitPlayed_ : monsterMeleeHitNone_; }
     void SetMaterialTables(std::vector<uint32_t> matByWire, std::vector<uint8_t> breastplateByWire, uint16_t newPlayerWire) {
         matByWire_ = std::move(matByWire); breastByWire_ = std::move(breastplateByWire); newPlayerWire_ = newPlayerWire;
@@ -3878,7 +3881,8 @@ private:
     void EnactUnitOrder(Session& src, Creature& k, uint8_t order);
     void AIClearStack(Creature& k);
     // 묶음 6-g(3b) — 크리처가 `MISSILE_NAME` 오브젝트를 만들어 날린다
-    void SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty, std::vector<OutPacket>& out);
+    bool SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty, std::vector<OutPacket>& out);   // ★ 09-26 M4a — 만들었나
+    bool MonsterSound(const Creature& k, int field);   // ★ 09-26 M4a — 소리 모음 칸 하나를 몬스터 자리에서 모두에게 · 냈으면 참
     void AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIEnd(Creature& k, uint8_t act);
@@ -3971,7 +3975,10 @@ private:
     std::vector<uint32_t> matByWire_;
     std::vector<uint8_t> breastByWire_;
     std::vector<uint8_t> monsterHitSound_;   // ★ 4-c3b3b
-    std::vector<uint16_t> monsterMeleeHitId_;   // ★ 09-24 H1 — 종류별 근접 「맞히는 소리」 번호(0 = 없음)
+    // ★ 09-26 M4a — 소리 모음 칸(0~17 · ThingDb `kSoundSetFieldNames` 순서)별 「종류 번호 → 소리 번호」(0 = 없음).
+    //   칸 7(맞히는 소리)은 09-24 H1 의 표다(전에는 `monsterMeleeHitId_` 따로)
+    std::vector<uint16_t> monsterSnd_[18];
+    unsigned long long monsterSndCount_[18][2] = {};   // ★ 09-26 M4a — 칸별 [모음에없음, 냄]
     unsigned long long monsterMeleeHitPlayed_ = 0, monsterMeleeHitNone_ = 0;   // ★ 09-24 H1 — 냄 · 모음에 없음
     // ★ 4-d4 — 발밑 바닥과 발소리 계수기(달리기·걷기 × 바닥 종류) · 살금살금으로 안 낸 걷기 소리 · 달릴 때 힘쓰는 소리
     FloorGrid floorGrid_;

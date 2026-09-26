@@ -18891,6 +18891,81 @@ void TestMsgLenSiblings() {
 //       `Fireball`        서브클래스 = `MISSILE_COUNTERSPELL` ⇒ 안 붙는다 (덧붙이 **1**바이트)
 //   ⚠ 이 시험이 그 틀린 근거로 **옳은 수정을 한 번 막았다.** 그래서 아래를
 //     「화살은 2바이트 · 화살 아닌 복합 투사체는 1바이트」로 **두 방향 다** 튼다.
+// ── 09-26 M4a — 몬스터 소리 모음 칸 넷(근접 시작 5 · 쏘기 시작 9 · 쏘기 10 · 죽음 14) ─────────
+//   정답지 `aud_501960(모음+칸, 몬스터, 0, 0)` — 몬스터 자리에서 모두에게 · 번호 0 이면 안 냄
+void TestMonsterSounds() {
+    const std::string a = "10.9.26.31:9291";
+    const std::string b = "10.9.26.32:9292";
+    const uint16_t kId[4] = { 300, 301, 302, 303 };        // 근접 시작 · 쏘기 시작 · 쏘기 · 죽음 — 시험용 번호
+    const int kField[4] = { 5, 9, 10, 14 };
+    auto mk = [&](nox::Server& srv, uint16_t type) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id : kId) { nox::Server::SoundDefIn d; d.id = id; d.samples = 1; d.maxDist = 600; sd.push_back(d); }
+        srv.SetSoundDefs(sd);
+        for (int i = 0; i < 4; ++i) { std::vector<uint16_t> t(4096, 0); t[type] = kId[i]; srv.SetMonsterSoundIds(kField[i], t); }
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1010, 1000);
+        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetFrame(1000);
+    };
+    auto heard = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) && (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;
+        return n;
+    };
+    // ① 근접 시작 — 쉬는 시간이 끝났으면 휘두르기 시작과 함께 · 아직이면 안 낸다
+    for (int rested = 0; rested < 2; ++rested) {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, rested ? 0 : 5000);
+        srv.DebugAIPush(0, 16);
+        srv.DebugAIStart(0, 16, out);
+        std::vector<nox::OutPacket> o2; srv.Tick(34, o2);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "M4a ① 근접 시작(쉬는 시간 %s) — 냄 %llu · a 들음 %d · b 들음 %d", rested ? "끝" : "남음",
+                      srv.monsterSnd(5, true), heard(o2, a, kId[0]), heard(o2, b, kId[0]));
+        if (rested) Check(srv.monsterSnd(5, true) == 1 && heard(o2, a, kId[0]) == 1 && heard(o2, b, kId[0]) == 1, msg);
+        else Check(srv.monsterSnd(5, true) == 0 && heard(o2, a, kId[0]) == 0, msg);
+    }
+    // ② 쏘기 시작(9) · 쏘기(10) — 쏘기 소리는 발사체를 **만들었을 때만**(종류를 모르면 안 만들고 소리도 없다)
+    for (int known = 0; known < 2; ++known) {
+        nox::Server srv; mk(srv, 1328);
+        if (known) RegImpShot(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPush(0, 17);
+        srv.DebugAIStart(0, 17, out);
+        srv.DebugAITick(0, out);
+        std::vector<nox::OutPacket> o2; srv.Tick(34, o2);
+        char msg[220];
+        std::snprintf(msg, sizeof(msg), "M4a ② 쏘기(종류 %s) — 쏘기시작 냄 %llu · 쏘기 냄 %llu · 발사체 %zu · a 들음 %d/%d",
+                      known ? "앎" : "모름", srv.monsterSnd(9, true), srv.monsterSnd(10, true), srv.missiles(), heard(o2, a, kId[1]), heard(o2, a, kId[2]));
+        if (known) Check(srv.monsterSnd(9, true) == 1 && srv.monsterSnd(10, true) == 1 && heard(o2, a, kId[1]) == 1 && heard(o2, a, kId[2]) == 1, msg);
+        else Check(srv.monsterSnd(9, true) == 1 && srv.monsterSnd(10, true) == 0 && heard(o2, a, kId[2]) == 0, msg);
+    }
+    // ③ 죽음(14) — 체력이 다하면 죽은 자리에서
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(std::string(), 0, 9999, b, 0, out);
+        std::vector<nox::OutPacket> o2; srv.Tick(34, o2);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "M4a ③ 죽음 — 소환수 %zu(0) · 냄 %llu · a 들음 %d · b 들음 %d", srv.pets(), srv.monsterSnd(14, true),
+                      heard(o2, a, kId[3]), heard(o2, b, kId[3]));
+        Check(srv.pets() == 0 && srv.monsterSnd(14, true) == 1 && heard(o2, a, kId[3]) == 1 && heard(o2, b, kId[3]) == 1, msg);
+    }
+    std::printf("  09-26 M4a — 몬스터 소리: 근접 시작(쉬는 시간 끝) · 쏘기 시작 · 쏘기(만들었을 때만) · 죽음 — 모두에게\n");
+}
+
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
 //   떠 있지 않은 사람이 바닥 번호 6(FLOR 순번 6 = Lava) 위면 틱마다 짝 (나, 6) 하나 → 피해 2 · 종류 12 · 때린 이 없음
 void TestLavaFloor() {
@@ -23520,6 +23595,7 @@ int main() {
     TestMissileSrcBlock();
     TestDeathPass();
     TestLavaFloor();
+    TestMonsterSounds();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();

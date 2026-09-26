@@ -248,6 +248,10 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.warcryPeer(WP::Applied), srv.enchantSentAntiMagic());
     // ★ 09-26 M2·M3 — 닿으면 죽음 넘기기(넘김 · 시간이 남아 안 넘김) · 바닥 칸 6(용암) 피해 부름
     std::printf("[닿음·바닥] 죽음 넘김 %llu · 안넘김 %llu · 용암 피해 %llu\n", srv.deathPass(true), srv.deathPass(false), srv.lavaHurts());
+    // ★ 09-26 M4a — 몬스터 소리 모음 칸별 냄/모음에없음
+    std::printf("[몬스터소리] 근접시작 %llu/%llu · 쏘기시작 %llu/%llu · 쏘기 %llu/%llu · 죽음 %llu/%llu (냄/모음에없음)\n",
+                srv.monsterSnd(5, true), srv.monsterSnd(5, false), srv.monsterSnd(9, true), srv.monsterSnd(9, false),
+                srv.monsterSnd(10, true), srv.monsterSnd(10, false), srv.monsterSnd(14, true), srv.monsterSnd(14, false));
     // ★ 09-23 nine-defects 4-d4 — 발소리(달리기 RUN 2·8칸 · 걷기 WALK 3·9칸 × 발밑 바닥 종류). 「바닥없음」 = 칸 찾기 −1·정의 밖
     using FK = nox::FootKind;
     std::printf("[발소리] 달리기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu}"
@@ -272,7 +276,8 @@ unsigned long long AbilityFingerprint(const nox::Server& srv) {
                            srv.HurtVoiceSum() +                                                // ★ 09-24
                            srv.monsterMeleeHitSnd(true) + srv.monsterMeleeHitSnd(false) +      // ★ 09-24 H1
                            srv.WarcryPeerSum() + srv.enchantSentAntiMagic() +                  // ★ 09-24 H3
-                           srv.deathPass(true) + srv.deathPass(false) + srv.lavaHurts();      // ★ 09-26 M2·M3
+                           srv.deathPass(true) + srv.deathPass(false) + srv.lavaHurts() +     // ★ 09-26 M2·M3
+                           srv.monsterSnd(5, true) + srv.monsterSnd(9, true) + srv.monsterSnd(10, true) + srv.monsterSnd(14, true);   // ★ M4a
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a)
         for (size_t e = 0; e < nox::kAbilEndCount; ++e) n += srv.abilEnded(a, static_cast<nox::AbilEnd>(e));
     for (size_t t = 0; t < nox::kHarpoonTouchCount; ++t) n += srv.harpoonTouch(static_cast<nox::HarpoonTouch>(t));
@@ -1080,6 +1085,23 @@ int main(int argc, char** argv) {
                                 (unsigned)hitIds[tdb.WireByName("Bat")], (unsigned)hitIds[tdb.WireByName("AlbinoSpider")],
                                 (unsigned)hitIds[tdb.WireByName("SmallSpider")]);
                     srv.SetMonsterMeleeHitSoundIds(std::move(hitIds));
+                    // ★ 09-26 M4a — 같은 꼴로 칸 넷 더: 근접 시작 5 · 쏘기 시작 9 · 쏘기 10 · 죽음 14(`kSoundSetFieldNames` 순서)
+                    std::printf("[소리모음] 칸별 번호 있는 종류 —");
+                    for (int field : { 5, 9, 10, 14 }) {
+                        std::vector<uint16_t> ids(tdb.Count() + 1, 0);
+                        size_t n = 0;
+                        for (size_t w = 1; w <= tdb.Count(); ++w) {
+                            const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                            const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
+                            const std::string& h = s ? s->sound[field] : std::string();
+                            if (h.empty() || h == "NULL") continue;
+                            ids[w] = nox::SoundByName(h.c_str());
+                            if (ids[w] != 0) ++n;
+                        }
+                        std::printf(" %s %zu", nox::kSoundSetFieldNames[field], n);
+                        srv.SetMonsterSoundIds(field, std::move(ids));
+                    }
+                    std::printf("\n");
                 }
                 // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
                 for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,

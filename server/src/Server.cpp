@@ -872,6 +872,9 @@ Target Server::NearestTarget(const std::string& friendOwner, double x, double y,
 //   09-06 덤프에 54건 있었다. **이걸 안 보내면 화면에 시체가 영원히 남는다.**
 void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
     if (idx >= pets_.size()) return;
+    // ★ 09-26 M4a — DIE(+60 · `nox_xxx_mobGenericDeath_544C40` `GAME4_3.c:9801~9804`) — 죽은 자리에서 모두에게.
+    //   부르는 자리 둘(체력 0 · 죽음 버프 끝) 모두 죽음이라 여기서 낸다 · 지우기 전에(자리·종류가 필요)
+    MonsterSound(pets_[idx], 14);
     const uint16_t netCode = pets_[idx].netCode;
     const bool wild = pets_[idx].owner.empty();   // 주인 없는 것 = 맵의 몬스터
     pets_.erase(pets_.begin() + static_cast<long>(idx));
@@ -7601,11 +7604,11 @@ void Server::MonsterPushAttack(Creature& k, const Target& foe, float fx, float f
 //   · 그 함수는 **적·아군을 안 가린다** — 맞는 것에 그냥 준다
 //   · 양은 `ImpShot` 이면 gamedata **`ImpShotDamage`**, 아니면 `COLLIDE` 의 인자다(둘 다 5)
 // ⚠ **앞질러 겨눔**(`projAddVelocitySmth_533080`)은 아직 안 옮겼다 — 곧장 겨눈다
-void Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty,
+bool Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty,
                                   std::vector<OutPacket>& out) {
     (void)out;
     const ProjTypeInfo* pt = ProjType(name);
-    if (!pt || pt->type == 0) return;                        // 종류를 모르면 안 만든다(지어내지 않는다)
+    if (!pt || pt->type == 0) return false;                  // 종류를 모르면 안 만든다(지어내지 않는다)
     const double dx = tx - k.x, dy = ty - k.y;
     const uint8_t dir = DirFromVec(dx, dy);
     MissileObj m;
@@ -7626,6 +7629,19 @@ void Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float
     m.velX = DirVecX(dir) * m.speed;
     m.velY = DirVecY(dir) * m.speed;
     missiles_.push_back(m); ++missilesMade_;
+    return true;
+}
+
+// ★ 09-26 M4a — 몬스터 소리 모음의 칸 하나(`nox_xxx_monsterGetSoundSet_424300` + `aud_501960(모음+4+4×칸, 몬스터, 0, 0)` — 모두에게 · 몬스터 자리).
+//   번호가 0(모음 없음·NULL)이면 안 내고 「모음에없음」으로 센다 · 조각 0 인 번호는 `PlaySoundAt` 이 버린다(정답지도 조각 0 이면 안 만든다)
+bool Server::MonsterSound(const Creature& k, int field) {
+    if (field < 0 || field >= 18) return false;
+    const auto& tbl = monsterSnd_[field];
+    const uint16_t snd = (k.type < tbl.size()) ? tbl[k.type] : 0;
+    ++monsterSndCount_[field][snd != 0 ? 1 : 0];
+    if (snd == 0) return false;
+    PlaySoundAt(snd, static_cast<float>(k.x), static_cast<float>(k.y));
+    return true;
 }
 
 // ── 묶음 6-i 소환수 명령 ──────────────────────────────────────────────
@@ -10266,6 +10282,7 @@ void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 const int hi = (m && m->missileMax > 0) ? m->missileMax : lo;
                 const int span = (hi >= lo) ? (hi - lo + 1) : 1;
                 k.nextHitFrame = frame_ + static_cast<uint32_t>(lo) + NextRandom(static_cast<uint32_t>(span));
+                MonsterSound(k, 9);                          // ★ 09-26 M4a — MISSILE_ATTACK_INIT(+40 · `GAME4_3.c:2124~2127` result[10])
             }
             break;
         }
@@ -10293,6 +10310,7 @@ void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 const int hi = (m && m->maxDelay > 0) ? m->maxDelay : lo;
                 const int span = (hi >= lo) ? (hi - lo + 1) : 1;   // randomInt 는 양끝 포함
                 k.nextHitFrame = frame_ + static_cast<uint32_t>(lo) + NextRandom(static_cast<uint32_t>(span));
+                MonsterSound(k, 5);                          // ★ 09-26 M4a — MELEE_ATTACK_INIT(+24 · `GAME4_3.c:2007~2010` result[6])
             } else {
                 const double reach = (m && m->meleeRange > 0.0) ? m->meleeRange : 0.0;
                 if (AIPush(k, 50)) {
@@ -10606,7 +10624,9 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             if (k.attackStartFrame != frame_) { AIPop(k); break; }
             float tx = 0, ty = 0;
             if (!TargetXY(foe, tx, ty)) { AIPop(k); break; }
-            SpawnCreatureMissile(k, m->missileName, tx, ty, out);
+            // ★ 09-26 M4a — MISSILE_ATTACK(+44 · `GAME4_3.c:2215~2218`) — 정답지는 발사체 오브젝트를 **만들었을 때만**(`if (v6)` 안 ·
+            //   선 추적이 막혀 곧 지워져도 소리는 난다)
+            if (SpawnCreatureMissile(k, m->missileName, tx, ty, out)) MonsterSound(k, 10);
             AIPop(k);
             break;
         }
@@ -10636,7 +10656,7 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             //   우리 근접은 대상을 다시 고르지도 시야를 보지도 않고 **늘 때리므로** 여기선 늘 맞힘 쪽이다(빗나감은 미결).
             //   방패에 막혀도 정답지 함수는 1 이다(피해 함수만 부르고 결과를 안 본다) — 그래서 `HurtTarget` 결과를 안 본다
             {
-                const uint16_t snd = (k.type < monsterMeleeHitId_.size()) ? monsterMeleeHitId_[k.type] : 0;
+                const uint16_t snd = (k.type < monsterSnd_[7].size()) ? monsterSnd_[7][k.type] : 0;   // ★ 09-26 M4a — 칸 7 표로 합침
                 if (snd != 0) {
                     PlaySoundAt(snd, static_cast<float>(k.x), static_cast<float>(k.y));
                     ++monsterMeleeHitPlayed_;
