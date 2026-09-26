@@ -8752,6 +8752,7 @@ bool Server::HarpoonCollide(MissileObj& m, const Target& targ, std::vector<OutPa
     AttackSrc src;
     src.x = m.posX; src.y = m.posY;
     src.byMonsterType = m.type;
+    src.missile = true;   // ★ 09-26 M1 — a3 = 작살 화살(클래스 MISSILE) — 지팡이는 발사체를 못 막는다(`GAME3_3.c:301`)
     // ★ 4-c3b2 — 때린 것 = 작살 화살(Go `spell_harpoon.go:172` CallDamage(u5, bolt, …))
     const bool took = HurtTarget(targ, kHarpoonDamage, out, m.owner, 11, &src, HitterMissile(m));      // DamageImpact = 11
     // ★ 4-c3b2b — 정답지(`spell_harpoon.go:172~176`): 피해가 안 들어갔거나(피해 함수 거짓) 적이 아니면 **대상에 기본 타격 소리
@@ -11897,7 +11898,14 @@ void Server::FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPa
     const int dmg = amount >> 1;
     // ★ 4-c3b2 — 직격의 때린 것 = 불덩이(a3 = a1 · `GAME3_3.c:4181`) · 둘레 피해는 who = 불덩이 자신(`:4185·4191` v12 = a1)이라
     //   때린 이도 불덩이다 — 몬스터가 쏜 불덩이여도 둘레 쪽은 몬스터 소리 모음을 안 본다
-    if (!hit.none()) HurtTarget(hit, dmg, out, m.owner, 1, nullptr, HitterMissile(m));
+    // ★ 09-26 M1 — 직격의 a3 = 불덩이(클래스 MISSILE · `:4181`) · 전에는 때린 것 없이(nullptr) 넘겨 막기 판정을 안 탔다.
+    //   ⚠ 둘레 피해(아래)는 정답지가 who = 불덩이 · a3 = 없음이라 v9 = 불덩이인데, 우리 `DamageUnitsAround` 는 by = 주인으로 두는 설계라 미결
+    AttackSrc src;
+    src.x = m.posX; src.y = m.posY;
+    src.byMonsterType = m.type;
+    src.rootIsMonster = MissileRootIsMonster(m);
+    src.missile = true;
+    if (!hit.none()) HurtTarget(hit, dmg, out, m.owner, 1, &src, HitterMissile(m));
     DamageUnitsAround(m.posX, m.posY, static_cast<float>(static_cast<double>(amount) * 0.33333334), 15.0f,
                       dmg, 1, m.owner, hit, out, HitterObj(m.type));
     const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
@@ -12809,7 +12817,13 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         auto ownIt = sessions_.find(m.owner);
                         const bool enemy = (ownIt != sessions_.end()) && TargetIsEnemy(ownIt->second, tgt);
                         if (enemy) {
-                            HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, nullptr, HitterMissile(m));   // ★ 4-c3b2 a3 = 픽시(`GAME3_3.c:4349`)
+                            // ★ 09-26 M1 — a3 = 픽시(클래스 MISSILE) · 전에는 때린 것 없이(nullptr) 넘겨 막기 판정을 아예 안 탔다
+                            AttackSrc src;
+                            src.x = m.posX; src.y = m.posY;
+                            src.byMonsterType = m.type;
+                            src.rootIsMonster = MissileRootIsMonster(m);
+                            src.missile = true;
+                            HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, &src, HitterMissile(m));   // ★ 4-c3b2 a3 = 픽시(`GAME3_3.c:4349`)
                             DestroyMissile(i, out);
                             erased = true;
                         }
@@ -12828,6 +12842,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         // ★ 09-20 — 뿌리가 몬스터인가: **크리처가 쏜 화살**만 그렇다.
                         //   덫 화살은 `ownerPet` 이 −1 이라 뿌리가 몬스터가 아니다
                         src.rootIsMonster = MissileRootIsMonster(m);
+                        src.missile = true;                    // ★ 09-26 M1 — a3 = 발사체(클래스 MISSILE) → 막기·되받아치기가 `*(v9+8) & 1` 로 가른다
                         HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 11, &src, HitterMissile(m));   // ★ 4-c3b2 a3 = 발사체(`GAME3_3.c:3340`)
                         DestroyMissile(i, out);
                         erased = true;
@@ -12845,6 +12860,7 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         // ★ 09-20 — **크리처가 쏜 화살**만 뿌리가 몬스터다. 덫 화살은 `ownerPet` 이 −1 이라
                         //   몬스터에게 적이 된다(⑮). 위 갈래 11 과 같은 셈
                         src.rootIsMonster = MissileRootIsMonster(m);
+                        src.missile = true;                    // ★ 09-26 M1 — a3 = 화살(클래스 MISSILE) — 대검이 종류 3 화살도 막는다(`GAME3_3.c:260`)
                         HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 3, &src, HitterMissile(m));   // ★ 4-c3b2 a3 = 화살(`GAME3_3.c:5329`) · 몬스터가 쏜 것은 b3
                         DestroyMissile(i, out);
                         erased = true;

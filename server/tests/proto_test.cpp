@@ -18888,6 +18888,104 @@ void TestMsgLenSiblings() {
 //       `Fireball`        서브클래스 = `MISSILE_COUNTERSPELL` ⇒ 안 붙는다 (덧붙이 **1**바이트)
 //   ⚠ 이 시험이 그 틀린 근거로 **옳은 수정을 한 번 막았다.** 그래서 아래를
 //     「화살은 2바이트 · 화살 아닌 복합 투사체는 1바이트」로 **두 방향 다** 튼다.
+// ── 09-26 M1 — 발사체가 때리면 「때린 것 = 발사체(클래스 MISSILE)」(`GAME3_3.c:3340·4181·4349·5329` · 작살 `spell_harpoon.go:172`) ─────────
+//   피해 함수의 막기가 그걸로 가른다 — 대검(0x400)은 발사체·종류 0·11 을 막고(`:258~260`) · 지팡이(0x7FF8000)는 발사체를 **못** 막는다(`:301`).
+//   전에는 발사체 자리 어디서도 켜지 않아 ① 지팡이가 종류 11 작살을 막았고 ② 대검이 종류 3 화살을 못 막았다
+void TestMissileSrcBlock() {
+    // ① 작살(종류 11) → 지팡이 든 위저드가 막기 자세(13)로 정면 — 안 막는다 · 꽂힌다
+    {
+        const std::string a = "10.9.26.1:9261";
+        const std::string b = "10.9.26.2:9262";
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+        RegHarpoonBolt(srv);
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w); srv.Tick(34, w);
+        srv.DebugAbilAward(a, 3, false, w);
+        srv.DebugSetFacing(a, 0);                          // a 는 +x(b 쪽)
+        srv.DebugSetWeapon(b, 0x8000);                     // StaffWooden
+        srv.DebugSetFacing(b, 128);                        // b 는 −x(a 쪽) — 정면
+        srv.DebugSetState(b, 13);
+        const int hp0 = srv.HealthOf(b);
+        srv.DebugAbilDo(a, 3, w);
+        uint32_t ms = 68;
+        for (int t = 0; t < 30 && srv.DebugHarpoonTarget(a).empty() && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, w); }
+        const auto& st = srv.damageStops();
+        auto stop = [&](const char* k) { auto it = st.find(k); return it == st.end() ? 0ull : it->second; };
+        char msg[220];
+        std::snprintf(msg, sizeof(msg), "M1 ① 지팡이 정면 작살 — 걸림 %llu(1) · 피해안들어감 %llu(0) · 지팡이막기 %llu(0) · 체력 %d→%d",
+                      srv.harpoonTouch(nox::HarpoonTouch::Attached), srv.harpoonTouch(nox::HarpoonTouch::Refused), stop("지팡이막기"),
+                      hp0, srv.HealthOf(b));
+        Check(srv.harpoonTouch(nox::HarpoonTouch::Attached) == 1 && srv.harpoonTouch(nox::HarpoonTouch::Refused) == 0 &&
+              stop("지팡이막기") == 0 && srv.HealthOf(b) == hp0 - 1, msg);
+    }
+    // ② 덫 화살(종류 3) → 대검 든 워리어가 막기 자세(18)로 정면 — 막는다 · 체력 그대로
+    {
+        const std::string a = "10.9.26.3:9263";
+        nox::Server srv;
+        srv.SetProjType("ArrowTrapArrow", 900, 800, 0x4000u, 25);
+        srv.AddArrowType(900);
+        nox::Server::ShootingTrapIn t;
+        t.x = 1000; t.y = 1000; t.facing = 0; t.proj = "ArrowTrapArrow"; t.fxKind = 0; t.damage = 25;
+        srv.SetShootingTraps({ t });
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugMoveTo(a, 1200, 1000);
+        std::vector<nox::OutPacket> w; srv.Tick(0, w);
+        srv.DebugSetWeapon(a, 0x400);                      // GreatSword
+        srv.DebugSetFacing(a, 128);                        // 덫 쪽(−x) — 정면
+        const int hp0 = srv.HealthOf(a);
+        srv.DebugShootingTrapUpdate(w);
+        Check(srv.MissileCount() == 1, "M1 ② 화살이 안 나갔다(이 시험의 전제)");
+        uint32_t ms = 34;
+        for (int k = 0; k < 20 && srv.MissileCount() > 0; ++k) {
+            srv.DebugSetState(a, 18);                      // 막기 자세를 붙들어 둔다(대검 막기는 13·18~20 에서)
+            ms += 34; srv.Tick(ms, w);
+        }
+        const auto& st = srv.damageStops();
+        auto it = st.find("대검막기");
+        const unsigned long long blocked = it == st.end() ? 0ull : it->second;
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "M1 ② 대검 정면 덫 화살 — 대검막기 %llu(1) · 체력 %d→%d(그대로여야) · 남은 화살 %zu",
+                      blocked, hp0, srv.HealthOf(a), srv.MissileCount());
+        Check(blocked == 1 && srv.HealthOf(a) == hp0, msg);
+    }
+    // ③ 불덩이 직격(종류 1) → 대검 든 워리어가 막기 자세(18)로 정면 — 막는다(`:4181` a3 = 불덩이)
+    //   전에는 때린 것 없이(nullptr) 넘겨 막기 판정 자체를 안 탔다 · 둘레 피해는 직격 대상을 건너뛴다
+    {
+        const std::string a = "10.9.26.4:9264";
+        const std::string b = "10.9.26.5:9265";
+        nox::Server srv; RegAllSpells(srv);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        RegFireballTypes(srv);
+        srv.DebugSetFacing(a, 0);                          // a 는 +x(b 쪽)
+        srv.DebugSetWeapon(b, 0x400);                      // GreatSword
+        srv.DebugSetFacing(b, 128);                        // b 는 −x(a 쪽) — 정면
+        srv.DebugSetState(b, 18);
+        const int hp0 = srv.HealthOf(b);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); ms = castMs; }
+        Check(srv.missiles() == 1, "M1 ③ 불덩이가 안 날았다(이 시험의 전제)");
+        for (int k = 0; k < 40 && srv.missiles() > 0; ++k) { srv.DebugSetState(b, 18); ms += 34; srv.Tick(ms, out); }
+        const auto& st = srv.damageStops();
+        auto it = st.find("대검막기");
+        const unsigned long long blocked = it == st.end() ? 0ull : it->second;
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "M1 ③ 대검 정면 불덩이 직격 — 대검막기 %llu(1) · 체력 %d→%d(그대로여야) · 남은 불덩이 %zu",
+                      blocked, hp0, srv.HealthOf(b), srv.missiles());
+        Check(blocked == 1 && srv.HealthOf(b) == hp0, msg);
+    }
+    std::printf("  09-26 M1 — 발사체가 때린 것: 지팡이는 작살을 못 막고 꽂힘 · 대검은 덫 화살·불덩이 직격을 막음\n");
+}
+
 void TestMissileComplexWire() {
     const std::string a = "10.9.11.1:9111";
 
@@ -23314,6 +23412,7 @@ int main() {
     TestReportKindsMatchSource();
     TestMsgLenSiblings();
     TestMissileComplexWire();
+    TestMissileSrcBlock();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();
