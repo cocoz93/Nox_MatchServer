@@ -7658,13 +7658,16 @@ bool Server::MonsterSound(const Creature& k, int field) {
 //   · 지켜는 **보는 거리**(`SightRange` +1312)를 **250** 으로 놓고, 쏘는 것이면 뛰기 깃발을 켠다
 //
 // ⚠ 안 옮긴 것 — 추방(`banishUnit_5017F0`)·관찰(`playerObserveMonster_4DDE80`)은 묶음 6-j·10 ·
-//   말풍선(`monsterCmdSend_528BD0`)과 소리 · 「고른 것」 깃발(0x80)
+//   말풍선(`monsterCmdSend_528BD0`) · 「고른 것」 깃발(0x80)
+// ★ 09-26 M4b — 소리는 옮겼다: 2·3·4·5 가 **먹힐 때** 소리 모음 칸 16(RECOGNIZE · +68 · `GAME4_3.c:2430~2433·2445~2448·2471~2474·2490~2493`)
+//   — 3·4·5 는 움직일 수 있을 때만(그 갈래 안) · 몬스터 자리에서 모두에게
 void Server::EnactUnitOrder(Session& src, Creature& k, uint8_t order) {
     if (k.health == 0) return;                               // 죽은 것에는 안 먹는다(깃발 0x8000)
     // `monsterIsMoveing_534320` 그대로 — **지금 빠르기**만 본다(종류표로 눅이지 않는다)
     const bool canMove = k.speedCur >= 0.0099999998f;
     switch (order) {
         case 2:                                              // 가만히
+            MonsterSound(k, 16);                             // ★ 09-26 M4b
             k.aggression = 0.5f;
             k.running = false;
             AIClearStack(k);
@@ -7673,6 +7676,7 @@ void Server::EnactUnitOrder(Session& src, Creature& k, uint8_t order) {
             break;
         case 3: {                                            // 지켜 — **선 자리를 지킨다**
             if (!canMove) break;
+            MonsterSound(k, 16);                             // ★ 09-26 M4b
             k.aggression = 0.5f;
             const MonsterStats* m = FindMonster(k.type);
             if (m && m->missileName != nullptr) k.running = true;   // 쏘는 것이면 뛰기 깃발
@@ -7688,6 +7692,7 @@ void Server::EnactUnitOrder(Session& src, Creature& k, uint8_t order) {
         }
         case 4:                                              // 따라와
             if (!canMove) break;
+            MonsterSound(k, 16);                             // ★ 09-26 M4b
             k.aggression = 0.83f;
             k.running = false;
             AIClearStack(k);
@@ -7700,6 +7705,7 @@ void Server::EnactUnitOrder(Session& src, Creature& k, uint8_t order) {
             break;
         case 5:                                              // 사냥
             if (!canMove) break;
+            MonsterSound(k, 16);                             // ★ 09-26 M4b
             k.aggression = 0.83f;
             k.running = false;
             AIClearStack(k);

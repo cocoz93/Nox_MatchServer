@@ -18896,13 +18896,13 @@ void TestMsgLenSiblings() {
 void TestMonsterSounds() {
     const std::string a = "10.9.26.31:9291";
     const std::string b = "10.9.26.32:9292";
-    const uint16_t kId[4] = { 300, 301, 302, 303 };        // 근접 시작 · 쏘기 시작 · 쏘기 · 죽음 — 시험용 번호
-    const int kField[4] = { 5, 9, 10, 14 };
+    const uint16_t kId[5] = { 300, 301, 302, 303, 304 };   // 근접 시작 · 쏘기 시작 · 쏘기 · 죽음 · 명령 대답 — 시험용 번호
+    const int kField[5] = { 5, 9, 10, 14, 16 };
     auto mk = [&](nox::Server& srv, uint16_t type) {
         std::vector<nox::Server::SoundDefIn> sd;
         for (uint16_t id : kId) { nox::Server::SoundDefIn d; d.id = id; d.samples = 1; d.maxDist = 600; sd.push_back(d); }
         srv.SetSoundDefs(sd);
-        for (int i = 0; i < 4; ++i) { std::vector<uint16_t> t(4096, 0); t[type] = kId[i]; srv.SetMonsterSoundIds(kField[i], t); }
+        for (int i = 0; i < 5; ++i) { std::vector<uint16_t> t(4096, 0); t[type] = kId[i]; srv.SetMonsterSoundIds(kField[i], t); }
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         srv.DebugMoveTo(a, 1000, 1000);
@@ -18963,7 +18963,34 @@ void TestMonsterSounds() {
                       heard(o2, a, kId[3]), heard(o2, b, kId[3]));
         Check(srv.pets() == 0 && srv.monsterSnd(14, true) == 1 && heard(o2, a, kId[3]) == 1 && heard(o2, b, kId[3]) == 1, msg);
     }
-    std::printf("  09-26 M4a — 몬스터 소리: 근접 시작(쉬는 시간 끝) · 쏘기 시작 · 쏘기(만들었을 때만) · 죽음 — 모두에게\n");
+    // ④ ★ M4b 명령 대답(16 RECOGNIZE · `GAME4_3.c:2430~2493`) — 가만히·지켜·따라와·사냥이 먹히면 · 지켜·따라와·사냥은 움직일 수 있을 때만
+    auto order = [&](nox::Server& srv, uint8_t cmd, std::vector<nox::OutPacket>& out) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 4, 0);
+        p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::TRY_CREATURE_COMMAND);
+        const uint16_t nc = srv.DebugPetNetCode(0);
+        p[nox::kWireHeaderSize + 1] = static_cast<uint8_t>(nc);
+        p[nox::kWireHeaderSize + 2] = static_cast<uint8_t>(nc >> 8);
+        p[nox::kWireHeaderSize + 3] = cmd;
+        srv.OnPacket(a, p.data(), p.size(), out);
+    };
+    for (int still = 0; still < 2; ++still) {
+        nox::Server srv; mk(srv, 1358);
+        if (still) srv.DebugSetPetSpeed(0, 0.0f);            // 못 움직임(`monsterIsMoveing` 빠르기 < 0.01)
+        std::vector<nox::OutPacket> out;
+        unsigned long long per[6] = {};
+        for (uint8_t cmd : { 2, 3, 4, 5 }) {
+            const unsigned long long before = srv.monsterSnd(16, true);
+            order(srv, cmd, out);
+            per[cmd] = srv.monsterSnd(16, true) - before;
+        }
+        std::vector<nox::OutPacket> o2; srv.Tick(34, o2);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "M4b ④ 명령 대답(%s) — 가만히 %llu · 지켜 %llu · 따라와 %llu · 사냥 %llu · b 들음 %d", still ? "못 움직임" : "움직임",
+                      per[2], per[3], per[4], per[5], heard(o2, b, kId[4]));
+        if (still) Check(per[2] == 1 && per[3] == 0 && per[4] == 0 && per[5] == 0 && heard(o2, b, kId[4]) == 1, msg);
+        else Check(per[2] == 1 && per[3] == 1 && per[4] == 1 && per[5] == 1 && heard(o2, b, kId[4]) == 4, msg);
+    }
+    std::printf("  09-26 M4a·M4b — 몬스터 소리: 근접 시작(쉬는 시간 끝) · 쏘기 시작 · 쏘기(만들었을 때만) · 죽음 · 명령 대답 — 모두에게\n");
 }
 
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
