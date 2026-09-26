@@ -18888,6 +18888,46 @@ void TestMsgLenSiblings() {
 //       `Fireball`        서브클래스 = `MISSILE_COUNTERSPELL` ⇒ 안 붙는다 (덧붙이 **1**바이트)
 //   ⚠ 이 시험이 그 틀린 근거로 **옳은 수정을 한 번 막았다.** 그래서 아래를
 //     「화살은 2바이트 · 화살 아닌 복합 투사체는 1바이트」로 **두 방향 다** 튼다.
+// ── 09-26 M2 — 닿으면 죽음 넘기기(`PlayerCollide` `LABEL_26` · `GAME3_3.c:3254~3268`) ─────────
+//   죽음(16) 걸린 a 가 산 사람 b 에 닿으면 — a 의 남은 시간이 14 × 30 = 420 미만일 때만 b 에게 15 × 30 = 450 · a 의 세기로 걸고 a 것은 끈다
+void TestDeathPass() {
+    const std::string a = "10.9.26.11:9271";
+    const std::string b = "10.9.26.12:9272";
+    auto mk = [&](nox::Server& srv, int dur) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1300, 1000);                    // 처음엔 떨어뜨려 둔다
+        std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w);
+        srv.DebugApplyEnchant(a, 16, dur, 3);
+    };
+    auto touch = [&](nox::Server& srv) {
+        srv.DebugMoveTo(b, 1012, 1000);                    // 몸 반지름 합 20 안 — 겹침
+        std::vector<nox::OutPacket> w; srv.Tick(68, w);
+    };
+    // ① 남은 300(< 420) → 넘긴다 · b 는 450 근처 · 세기 3 · a 는 풀림 · b 가 되넘기지 않는다
+    {
+        nox::Server srv; mk(srv, 300); touch(srv);
+        char msg[220];
+        std::snprintf(msg, sizeof(msg), "M2 ① 남은 300 — 넘김 %llu(1) · 안넘김 %llu · b 죽음 %d(시간 %d · 세기 %d) · a 죽음 %d",
+                      srv.deathPass(true), srv.deathPass(false), srv.DebugHasEnchant(b, 16), srv.DebugEnchantDur(b, 16),
+                      srv.DebugEnchantPower(b, 16), srv.DebugHasEnchant(a, 16));
+        Check(srv.deathPass(true) == 1 && srv.DebugHasEnchant(b, 16) && !srv.DebugHasEnchant(a, 16) &&
+              srv.DebugEnchantDur(b, 16) > 420 && srv.DebugEnchantDur(b, 16) <= 450 && srv.DebugEnchantPower(b, 16) == 3, msg);
+    }
+    // ② 남은 425(420 = 14초 이상) → 안 넘긴다(`< 14 × FPS` 가 아니다)
+    {
+        nox::Server srv; mk(srv, 425); touch(srv);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "M2 ② 남은 425 — 넘김 %llu(0) · 안넘김 %llu(≥1) · b 죽음 %d · a 죽음 %d",
+                      srv.deathPass(true), srv.deathPass(false), srv.DebugHasEnchant(b, 16), srv.DebugHasEnchant(a, 16));
+        Check(srv.deathPass(true) == 0 && srv.deathPass(false) >= 1 && !srv.DebugHasEnchant(b, 16) && srv.DebugHasEnchant(a, 16), msg);
+    }
+    // ⚠ 「닿은 쪽이 사람이 아니면 안 넘긴다」는 따로 시험하지 않는다 — 소환수·장애물은 주소가 비어 다음 줄(주소로 찾기)에서도 빠져
+    //   그 줄을 빼는 돌연변이가 동등이다(09-26 돌연변이 Z6). 죽은 상대 거르기(Z7)는 광전사가 같은 부름에서 막 죽인 때만 닿는다 — 미확인
+    std::printf("  09-26 M2 — 닿으면 죽음 넘기기: 남은 420 미만만 · 450 · 세기 그대로 · 되넘김 없음\n");
+}
+
 // ── 09-26 M1 — 발사체가 때리면 「때린 것 = 발사체(클래스 MISSILE)」(`GAME3_3.c:3340·4181·4349·5329` · 작살 `spell_harpoon.go:172`) ─────────
 //   피해 함수의 막기가 그걸로 가른다 — 대검(0x400)은 발사체·종류 0·11 을 막고(`:258~260`) · 지팡이(0x7FF8000)는 발사체를 **못** 막는다(`:301`).
 //   전에는 발사체 자리 어디서도 켜지 않아 ① 지팡이가 종류 11 작살을 막았고 ② 대검이 종류 3 화살을 못 막았다
@@ -23413,6 +23453,7 @@ int main() {
     TestMsgLenSiblings();
     TestMissileComplexWire();
     TestMissileSrcBlock();
+    TestDeathPass();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();

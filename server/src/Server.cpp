@@ -1047,11 +1047,11 @@ void Server::AddContact(const ContactRef& a, const ContactRef& b) const {
 //     · 때린 이 = `findParentChainPlayer(불)` — 주인 없는 불은 **자기 자신**(우리 말로 주인 없음) · 종류는 thing.bin 그대로
 //   전에는 부딪힘 짝에서 버프 몫(4FDF90)만 불러 **맵 불의 피해가 한 번도 없었다**(사람 판 「불에 들어가도 안 죽음 · 피해 0」)
 //   ⚠ 겹쳐도 되는(ALLOW_OVERLAP) 불도 짝으로 적힌다 — `BodyVsBody` 가 밀기 판단보다 먼저 `AddContact` 한다
-//   ⚠ 소환수의 닿음 함수(MonsterCollide)는 아직 없다. 사람의 것(PlayerCollide)은 ★ 2-b2 에서 광전사 갈래만 넣었다
+//   ⚠ 소환수의 닿음 함수(MonsterCollide)는 아직 없다. 사람의 것(PlayerCollide)은 ★ 2-b2 에서 광전사 갈래 · ★ 09-26 M2 에서 죽음 넘기기(LABEL_26)
 void Server::ContactCollide(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out) {
     if (a1.kind == 1) {                                      // ★ 2-b2 — 사람의 닿음 함수 `PlayerCollide`
         auto it = sessions_.find(a1.addr);
-        if (it != sessions_.end() && it->second.inGame) PlayerBerserkCollide(it->second, a2.kind == 0 ? nullptr : &a2, out);
+        if (it != sessions_.end() && it->second.inGame) PlayerCollide(it->second, a2.kind == 0 ? nullptr : &a2, out);   // ★ 09-26 M2
         return;
     }
     if (a1.kind != 3 || a1.idx < 0 || static_cast<size_t>(a1.idx) >= obstacles_.size()) return;
@@ -8403,7 +8403,7 @@ void Server::PlayerSetPos(Session& s, double x, double y, std::vector<OutPacket>
 // ★ 09-23 nine-defects 2-b2 — `PlayerCollide`(`GAME3_3.c:3165`)의 **광전사 갈래**(`:3188~3253`).
 //   부딪힌 짝마다(`nox_xxx_collide_548740`) 사람 쪽에서 부른다. other 가 null 이면 벽이다.
 //   ① 켜짐 목록에 광전사(1)가 없으면 아무것도 안 한다(`:3188`).
-//      ⚠ 그 뒤 `LABEL_26`(`:3254~3268` — 닿은 사람에게 죽음(버프 16) 넘기기)은 이 조각 밖이다
+//      ✖ 09-26 정정 — 「그 뒤 `LABEL_26`(죽음 넘기기)은 이 조각 밖」이었다. M2 에서 옮겼다 — 이 함수를 감싸는 `PlayerCollide`(아래) 끝
 //   ② 상대가 있으면 지나갈지 부딪힐지 가른다(`:3194~3211`) —
 //        유닛 아님·죽은 유닛 + IMMOBILE 아님 + 깃발 0x80 아님 + 무게 ≤ 나  → 지나감(가벼운 것)
 //        문 아님 → 밑에 깔림·겹쳐도 됨(0x9)·투사체(클래스 1)면 지나감, 아니면 부딪힘
@@ -8507,6 +8507,28 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other, std::vect
     if (pain < 1) pain = 1;
     Damage(s.addr, pain, out, std::string(), nullptr, /*ignoreInvuln=*/true);   // unitDamageClear_4EE5E0
     PlayerSetPos(s, s.prevX, s.prevY, out);
+}
+
+// ★ 09-26 M2 — `PlayerCollide`(`GAME3_3.c:3168~3269`) 전체 = 광전사 갈래(`:3188~3253` → `PlayerBerserkCollide`) + 끝의 `LABEL_26`(`:3254~3268`).
+//   정답지는 광전사 갈래의 **어느 길로 나가든**(광전사가 꺼져 있어도 `:3188` 에서 곧장) 끝에 LABEL_26 을 지난다 —
+//   닿은 것이 사람(클래스 4)이고 · 죽지 않았고(+16 & 0x8000 없음) · 내게 죽음(16)이 걸려 있고 · 그 남은 시간(`unitGetBuffTimer`)이 14 × FPS 미만이면
+//   상대에게 죽음을 **15 × FPS · 내 세기로** 걸고(`buffApplyTo`) 내 것은 끈다(`spellBuffOff`).
+//   ⇒ 넘겨받은 쪽은 15초라 14 미만 조건에 안 걸려 **곧바로 되넘기지 않는다**(짝마다 양쪽이 부른다)
+//   전에는 이 몫이 없어 죽음이 걸린 사람이 몸을 비벼도 그대로 죽었다(미결 「닿으면 죽음 넘기기」)
+void Server::PlayerCollide(Session& s, const ContactRef* other, std::vector<OutPacket>& out) {
+    PlayerBerserkCollide(s, other, out);
+    // ── LABEL_26 ──
+    if (!other || other->kind != 1) return;                  // a2 & 클래스 4(사람) — 소환수·장애물·벽은 아니다
+    auto it = sessions_.find(other->addr);
+    if (it == sessions_.end() || !it->second.inGame) return;
+    Session& o = it->second;
+    if (o.respawnAtFrame != 0 || o.health == 0) return;       // +16 & 0x8000(DEAD) — 광전사 갈래가 방금 죽였을 수 있다
+    if (!s.buffs.Has(16)) return;
+    if (s.buffs.dur[16] >= 14 * kServerTickRate) { ++deathPass_[0]; return; }   // `< 14 * gameFPS()` 가 아니면 안 넘긴다
+    const int power = s.buffs.power[16];
+    ApplyEnchant(Target{ o.addr, -1 }, 16, static_cast<int>(15 * kServerTickRate), power);
+    BuffOff(Target{ s.addr, -1 }, 16);
+    ++deathPass_[1];
 }
 
 // ── 묶음 7-e 능력 효과 넷 ─────────────────────────────────────────────

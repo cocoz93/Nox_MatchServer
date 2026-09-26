@@ -3291,6 +3291,8 @@ public:
     unsigned long long warcryStunned() const { return warcryStunned_; }         // ★ 2-a2 — 외침에 기절한 몬스터
     unsigned long long berserkChargeTicks() const { return berserkChargeTicks_; } // ★ 2-b1 — 광전사가 민 틱
     unsigned long long berserkCollideCalls() const { return berserkCollideCalls_; } // ★ 2-b2 — 광전사 켜진 채 부딪힘 함수를 부른 횟수
+    // ★ 09-26 M2 — 죽음(16) 걸린 사람이 산 사람에게 닿았을 때: [0] 남은 시간이 14초 이상이라 안 넘김 · [1] 넘김
+    unsigned long long deathPass(bool passed) const { return deathPass_[passed ? 1 : 0]; }
     unsigned long long berserkHit(BerserkHit h) const {                          // ★ 2-b2 — 그 갈래별
         return h < BerserkHit::Count ? berserkHit_[static_cast<size_t>(h)] : 0;
     }
@@ -3950,6 +3952,7 @@ private:
     unsigned long long warcryStunned_ = 0;     // ★ 2-a2 — 외침에 붙잡힘(5)이 걸린 몬스터 수
     unsigned long long berserkChargeTicks_ = 0;   // ★ 2-b1 — 광전사가 앞으로 민 틱
     unsigned long long berserkCollideCalls_ = 0;  // ★ 2-b2
+    unsigned long long deathPass_[2] = {};        // ★ 09-26 M2 — 안 넘김(시간 남음) · 넘김
     unsigned long long jumpCodes_ = 0, jumpIn_ = 0, jumpGate_[kJumpGateCount] = {};   // ★ 3-a
     unsigned long long jumpForceTicks_ = 0, jumpHeldTicks_ = 0, jumpLanded_ = 0, airborneOffIdle_ = 0, recoilBlockedAirborne_ = 0;
     unsigned long long equakeSkipAirborne_ = 0, spellRefusedAirborne_ = 0;   // ★ 3-b
@@ -4324,6 +4327,7 @@ private:
     };
     // ★ 2-b2 — `PlayerCollide`(`GAME3_3.c:3188~3253`)의 광전사 갈래. other 가 null 이면 벽
     void PlayerBerserkCollide(Session& s, const ContactRef* other, std::vector<OutPacket>& out);
+    void PlayerCollide(Session& s, const ContactRef* other, std::vector<OutPacket>& out);   // ★ 09-26 M2 — 광전사 갈래 + LABEL_26(죽음 넘기기)
     void BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, double by, double vx, double vy,
                     const PhysBody& a2, double ox, double oy, double obx, double oby, double ovx, double ovy,
                     double& ax, double& ay, const ContactRef* ra = nullptr, const ContactRef* rb = nullptr) const;
