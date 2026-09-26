@@ -2905,6 +2905,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.useAmount = w.useAmount;
                 c.equipBit = w.equipBit;
                 c.isWeapon = w.isWeapon;
+                c.weaponClass = w.weaponClass;         // ★ 09-27 B3
                 c.weight = w.weight;
                 c.isFood = w.isFood;
                 c.foodBits = w.foodBits;
@@ -2971,58 +2972,23 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 const bool wear = (static_cast<Op>(it.op()) == Op::TRY_EQUIP);
                 const uint16_t nc = static_cast<uint16_t>(
                     it.body()[0] | (it.body()[1] << 8));
-                for (auto& c : s.inventory) {
-                    if (c.netCode != nc) continue;
-                    if (c.equipped == wear) break;    // 이미 그 상태다
-                    c.equipped = wear;
-                    // ★ 09-27 B2 — 무기 칸 잇기(들면 칸에 · 든 것을 벗으면 비움). ⚠ 임시 — 정답지 들기 `53A420`(검사 · 먼저 든 것 내려놓기)과
-                    //   내려놓기 `53A140` 은 B3·B4 에서 이 자리를 바꾼다. 그전까지 둘째 무기를 들면 첫째는 「입음」 표시만 남는다
-                    if (c.isWeapon) {
-                        if (wear) s.weaponNet = nc;
-                        else if (s.weaponNet == nc) s.weaponNet = 0;
-                    }
-                    uint8_t msg[3] = {
-                        static_cast<uint8_t>(wear ? Op::REPORT_EQUIP : Op::REPORT_DEQUIP),
-                        static_cast<uint8_t>(nc),
-                        static_cast<uint8_t>(nc >> 8),
-                    };
-                    EmitSeq(s, msg, sizeof(msg), out);   // 본인에게
-                    if (wear) ++equipped_; else ++dequipped_;
-
-                    // ★★ **남들에게 겉모습을 알린다** (P7). 그동안 본인 표시(0x60/0x61)만
-                    //   있어서 옆 사람 화면의 몸이 안 바뀌었다.
-                    //   짜임은 클라 원본 확정(2026-09-11) —
-                    //     입기: op | 번호2(**bit15=사람**) | 장비비트4 | (수식4, 빈 칸 ff)
-                    //     벗기: op | 번호2(**bit15 안 봄** — 클라가 사람 전용으로 처리) | 장비비트4
-                    //   장비비트가 0 이면(표에 없는 이름) **안 보낸다** — 짐작으로 안 채운다.
-                    if (c.equipBit != 0) {
-                        uint8_t am[11];
-                        size_t an = 7;
-                        if (wear) {
-                            am[0] = static_cast<uint8_t>(c.modifiable
-                                ? (c.isWeapon ? Op::REPORT_MODIFIABLE_WEAPON_EQUIP
-                                              : Op::REPORT_MODIFIABLE_ARMOR_EQUIP)
-                                : (c.isWeapon ? Op::REPORT_MUNDANE_WEAPON_EQUIP
-                                              : Op::REPORT_MUNDANE_ARMOR_EQUIP));
-                        } else {
-                            am[0] = static_cast<uint8_t>(
-                                c.isWeapon ? Op::REPORT_WEAPON_DEQUIP : Op::REPORT_ARMOR_DEQUIP);
-                        }
-                        const uint16_t who = static_cast<uint16_t>(
-                            s.netCode | (wear ? 0x8000u : 0u));
-                        am[1] = static_cast<uint8_t>(who);
-                        am[2] = static_cast<uint8_t>(who >> 8);
-                        PutU32(am + 3, c.equipBit);
-                        if (wear && c.modifiable) {
-                            am[7] = am[8] = am[9] = am[10] = 0xFF;   // 수식 없음 = -1
-                            an = 11;
-                        }
-                        Broadcast(/*viaSeq=*/true, am, an, out);
-                        ++appearanceSent_;
-                    } else {
-                        ++appearanceUnknown_;
-                    }
+                // ★ 09-27 B3 — 정답지 해독(`server__network__sdecode.c:160~192`): 관전(+3680 & 3 — 우리는 &1 관전만 들고 있다)이면 안 받는다 ·
+                //   가방에서 번호로 찾는다(`equipedItemByCode_4F7920`) · 입기 = 무기 들기 `53A420` 또는 갑옷 입기 `53E650`(`GAME3_3.c:10557~10565`).
+                //   무기 클래스(WEAPON·WAND)면 무기 쪽만 탄다 — 갑옷 입기는 제 클래스 관문(ARMOR)에서 거절하므로 결과가 같다.
+                //   ⚠ 갑옷·그 밖은 아직 옛 켜고 끄기(갑옷 입기 `53E650`·벗기 `53E430` 이식은 계획 밖 — 미결)
+                if (s.observer) { ++handled_; break; }
+                Session::Carried* c = nullptr;
+                for (auto& x : s.inventory) if (x.netCode == nc) { c = &x; break; }
+                if (!c) { ++handled_; break; }
+                if (c->weaponClass) {
+                    if (wear) PlayerEquipWeapon(s, nc, /*failSound=*/true, out);   // `playerTryEquip_4F2F70` → 53A420(a1, it, 1, 1)
+                    else PlayerDequipWeapon(s, nc, out);                           // ⚠ 공격 중 석궁 벗기 거절(`sdecode.c:185~186`)은 B4
+                    ++handled_;
                     break;
+                }
+                if (c->equipped != wear) {                                         // 이미 그 상태면 아무것도 안 한다
+                    c->equipped = wear;
+                    ReportEquipChange(s, *c, wear, out);
                 }
                 ++handled_;
                 break;
@@ -3045,6 +3011,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.useAmount = s.inventory[i].useAmount;
                     back.equipBit = s.inventory[i].equipBit;
                     back.isWeapon = s.inventory[i].isWeapon;
+                    back.weaponClass = s.inventory[i].weaponClass;   // ★ 09-27 B3
                     back.weight = s.inventory[i].weight;
                     back.isFood = s.inventory[i].isFood;
                     back.foodBits = s.inventory[i].foodBits;
@@ -13003,6 +12970,102 @@ void Server::GiveDefaultGear(Session& s) {
         //   손이 비었으면 무기 들기 `53A420` 을 불러 +104 에 둔다(`GAME4_3.c:5102~5104`)
         if (c.isWeapon && s.weaponNet == 0) s.weaponNet = c.netCode;
     }
+}
+
+// ★ 09-27 B3 — 입기·벗기 알림(09-27 전에는 입기 처리 안에 있던 것을 그대로 옮김) — 본인에게 `0x60/0x61` · 남에게 겉모습
+void Server::ReportEquipChange(Session& s, const Session::Carried& c, bool wear, std::vector<OutPacket>& out) {
+    const uint16_t nc = c.netCode;
+    uint8_t msg[3] = {
+        static_cast<uint8_t>(wear ? Op::REPORT_EQUIP : Op::REPORT_DEQUIP),
+        static_cast<uint8_t>(nc),
+        static_cast<uint8_t>(nc >> 8),
+    };
+    EmitSeq(s, msg, sizeof(msg), out);   // 본인에게
+    if (wear) ++equipped_; else ++dequipped_;
+
+    // ★★ **남들에게 겉모습을 알린다** (P7). 그동안 본인 표시(0x60/0x61)만
+    //   있어서 옆 사람 화면의 몸이 안 바뀌었다.
+    //   짜임은 클라 원본 확정(2026-09-11) —
+    //     입기: op | 번호2(**bit15=사람**) | 장비비트4 | (수식4, 빈 칸 ff)
+    //     벗기: op | 번호2(**bit15 안 봄** — 클라가 사람 전용으로 처리) | 장비비트4
+    //   장비비트가 0 이면(표에 없는 이름) **안 보낸다** — 짐작으로 안 채운다.
+    if (c.equipBit != 0) {
+        uint8_t am[11];
+        size_t an = 7;
+        if (wear) {
+            am[0] = static_cast<uint8_t>(c.modifiable
+                ? (c.isWeapon ? Op::REPORT_MODIFIABLE_WEAPON_EQUIP
+                              : Op::REPORT_MODIFIABLE_ARMOR_EQUIP)
+                : (c.isWeapon ? Op::REPORT_MUNDANE_WEAPON_EQUIP
+                              : Op::REPORT_MUNDANE_ARMOR_EQUIP));
+        } else {
+            am[0] = static_cast<uint8_t>(
+                c.isWeapon ? Op::REPORT_WEAPON_DEQUIP : Op::REPORT_ARMOR_DEQUIP);
+        }
+        const uint16_t who = static_cast<uint16_t>(
+            s.netCode | (wear ? 0x8000u : 0u));
+        am[1] = static_cast<uint8_t>(who);
+        am[2] = static_cast<uint8_t>(who >> 8);
+        PutU32(am + 3, c.equipBit);
+        if (wear && c.modifiable) {
+            am[7] = am[8] = am[9] = am[10] = 0xFF;   // 수식 없음 = -1
+            an = 11;
+        }
+        Broadcast(/*viaSeq=*/true, am, an, out);
+        ++appearanceSent_;
+    } else {
+        ++appearanceUnknown_;
+    }
+}
+
+// ★ 09-27 B3 — 무기 들기 `nox_xxx_playerEquipWeapon_53A420`(`GAME4_3.c:4906~4993`) — 관문 순서 그대로.
+//   옮긴 것: 무기 클래스 `:4908` · 이미 듦 `:4911~4914` · 함성·광전사 켜짐 값 `:4923` · 직업 `:4926~4932`(modifier.bin CLASSUSE) ·
+//     힘 `:4933~4940`(REQUIRED_STRENGTH) · 공격 중이면 상태 13 `:4951~4953` · 먼저 든 무기 내려놓기 `:4964~4967` · 듦 깃발·알림·무기 칸 `:4968~4975`
+//   ⚠ 안 옮긴 것 — 화살통(무기 비트 2 · 활 찾기 `53A680`·`53A0F0` `:4954~4963`) · 충전 알림 `:4976~4987` · 마법부여 켜기 `:4988` · `53A3D0` `:4989~4991` → B5
+//     NPC 갈래 `:4916~4918` · 사람 아님 `:4919~4921` 은 우리 부름이 늘 사람이라 없음 · 가방에 있음 `:4941~4950` 은 부르는 쪽이 가방에서 찾아 넘김
+//   거절 글·소리 — `netPriMsgToPlayer` + `aud_501960(925, 사람, 2, 사람 번호)`(a4 가 참일 때만 소리 · 입기 요청은 참)
+bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vector<OutPacket>& out) {
+    auto gate = [&](EquipGate g) { ++equipGate_[static_cast<size_t>(g)]; return g == EquipGate::Equipped; };
+    Session::Carried* item = nullptr;
+    for (auto& c : s.inventory) if (c.netCode == nc) { item = &c; break; }
+    if (!item || !item->weaponClass) return gate(EquipGate::NotWeapon);
+    if (item->equipped) return gate(EquipGate::Already);
+    if (AbilityIsActiveVal(s, 2) || AbilityIsActiveVal(s, 1)) return gate(EquipGate::Ability);   // probablyWarcryCheck_4FC3E0 = IsActiveVal
+    auto refuse = [&](const char* key, EquipGate g) {
+        SendPriMsg(s, key, out);
+        if (failSound)
+            PlaySoundAt(925, static_cast<float>(s.posX), static_cast<float>(s.posY), /*kind=*/2, s.netCode, s.addr);
+        return gate(g);
+    };
+    // 직업 — `57B3D0` = (1 << 직업) & Classes62 · 무기 정의가 없으면 0(`object_pickup.go:113~118`)
+    const auto d = weaponDef_.find(item->type);
+    const uint8_t classes = (d == weaponDef_.end()) ? 0 : d->second.classes;
+    if (!(classes & (1u << static_cast<uint8_t>(s.charClass))))
+        return refuse("weapon.c:WeaponEquipClassFail", EquipGate::ClassFail);
+    // 힘 — `4F3180` = 힘 ≥ ReqStrength60(정의가 없으면 거짓 — 위에서 이미 걸러짐)
+    if (s.strength < static_cast<int>(d->second.reqStrength))
+        return refuse("weapon.c:WeaponEquipStrengthFail", EquipGate::StrengthFail);
+    if (s.moveState == kPlayerStateAttack) PlayerSetState(s, kPlayerStateIdle, frame_, &out);
+    if (item->equipBit == 2) return gate(EquipGate::QuiverLater);                 // ⚠ 화살통 — B5 전까지 거절
+    const Session::Carried* prev = HeldWeapon(s);
+    if (prev && !PlayerDequipWeapon(s, prev->netCode, out)) return gate(EquipGate::DequipFail);
+    item->equipped = true;
+    ReportEquipChange(s, *item, true, out);                                     // netReportEquip_4D8540(+ 겉모습 — 우리 옛 입기 그대로)
+    s.weaponNet = item->netCode;                                                // +104
+    return gate(EquipGate::Equipped);
+}
+
+// ★ 09-27 B3 — 무기 내려놓기. ⚠ 지금은 옛 벗기 그대로(입음 끔 · 알림 · 무기 칸 비움) — B4 가 `nox_xxx_playerDequipWeapon_53A140` 을 옮겨 바꾼다
+bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out) {
+    for (auto& c : s.inventory) {
+        if (c.netCode != nc) continue;
+        if (!c.equipped) return false;
+        c.equipped = false;
+        ReportEquipChange(s, c, false, out);
+        if (s.weaponNet == nc) s.weaponNet = 0;
+        return true;
+    }
+    return false;
 }
 
 // ★ 09-27 B2 — 무기 칸이 가리키는 가방 항목. 칸은 번호로 들고 여기서 가방을 뒤진다 —

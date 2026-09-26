@@ -33,6 +33,10 @@
 #include "nox/MapFile.h"
 #include "nox/ThingDb.h"
 #include "nox/SpellNames.h"
+#ifdef DecryptFile          // windows.h 가 DecryptFile → DecryptFileA 로 바꾼다(링크 오류 LNK2019)
+#undef DecryptFile
+#endif
+#include "nox/NoxCrypt.h"   // ★ 09-27 B3 — modifier.bin 복호
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -1466,6 +1470,9 @@ int main(int argc, char** argv) {
                 }
                 w2.equipBit = ebit;
                 w2.isWeapon = isW;
+                // ★ 09-27 B3 — 무기 들기 첫 관문(`obj_class & 0x1001000` = WEAPON|WAND)
+                w2.weaponClass = ti->classRaw.find("WEAPON") != std::string::npos ||
+                                 ti->classRaw.find("WAND")   != std::string::npos;
                 // ★ 묶음 5 — 줍기 한도를 재는 두 값. 여기까지 온 물건은 `hasWeight` 가 참이다.
                 w2.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
                 w2.isFood = ti->classRaw.find("FOOD") != std::string::npos;
@@ -1504,11 +1511,73 @@ int main(int argc, char** argv) {
                         ti->classRaw.find("WAND")   != std::string::npos ||
                         ti->classRaw.find("FLAG")   != std::string::npos;
                     c.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
+                    c.weaponClass = ti->classRaw.find("WEAPON") != std::string::npos ||   // ★ 09-27 B3
+                                    ti->classRaw.find("WAND")   != std::string::npos;
                     std::printf(" %s(무게 %d%s · 비트 %#x%s)", nm, (int)c.weight, ti->hasWeight ? "" : "·WEIGHT없음",
-                                (unsigned)c.equipBit, c.isWeapon ? " · 무기" : "");
+                                (unsigned)c.equipBit, c.isWeapon ? (c.weaponClass ? " · 무기" : " · 무기(클래스 아님)") : "");
                     srv.SetItemTemplate(gw, c);
                 }
                 std::printf("\n");
+            }
+
+            // ★ 09-27 B3 — modifier.bin(암호 13) `WEAPON_DEFINITIONS` → 무기 들기의 직업(CLASSUSE)·힘(REQUIRED_STRENGTH) 관문.
+            //   복호본은 글자다 — `<이름>` 줄 · `KEY = VALUE;` 줄들 · `END` 줄(실측 — `nox_datadump modifier.bin --out`).
+            //   정답지 `server/modifiers.go:273~331` 이 같은 두 칸을 읽는다(CLASSUSE 는 `+` 로 이은 Warrior·Wizard·Conjurer → 비트 0·1·2 `:314`).
+            //   이름 → 종류 번호는 정답지처럼 이름으로(`ClientTypeByID` `:122`) · `ARMOR_DEFINITIONS` 부터는 갑옷이라 여기서 끊는다
+            {
+                const std::vector<uint8_t> mb = nox::DecryptFile("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\modifier.bin", nox::kKeyModifier);
+                const std::string txt(mb.begin(), mb.end());
+                const size_t armorAt = txt.find("ARMOR_DEFINITIONS");
+                const std::string wsec = txt.substr(0, armorAt == std::string::npos ? txt.size() : armorAt);
+                auto trim = [](std::string v) {
+                    while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r' || v.back() == ';')) v.pop_back();
+                    size_t i = 0;
+                    while (i < v.size() && (v[i] == ' ' || v[i] == '\t')) ++i;
+                    return v.substr(i);
+                };
+                std::string cur;
+                uint8_t classes = 0;
+                int reqStr = 0;
+                size_t nDef = 0, nNoWire = 0, nBadClass = 0;
+                size_t pos = 0;
+                while (pos < wsec.size()) {
+                    size_t e = wsec.find('\n', pos);
+                    if (e == std::string::npos) e = wsec.size();
+                    const std::string line = trim(wsec.substr(pos, e - pos));
+                    pos = e + 1;
+                    if (line.empty() || line == "WEAPON_DEFINITIONS") continue;
+                    if (line == "END") {
+                        if (!cur.empty()) {
+                            const uint16_t wire = tdb.WireByName(cur);
+                            if (wire == 0) ++nNoWire;
+                            else { srv.SetWeaponDef(wire, classes, static_cast<uint16_t>(reqStr < 0 ? 0 : reqStr)); ++nDef; }
+                            if (cur == "Longsword" || cur == "GreatSword" || cur == "StaffWooden" || cur == "ForceWand" || cur == "Bow")
+                                std::printf("[무기정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d\n", cur.c_str(), (unsigned)wire, (unsigned)classes, reqStr);
+                        }
+                        cur.clear();
+                        continue;
+                    }
+                    const size_t eq = line.find('=');
+                    if (eq == std::string::npos) { cur = line; classes = 0; reqStr = 0; continue; }   // 새 정의의 이름 줄
+                    const std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
+                    if (key == "CLASSUSE") {
+                        size_t s0 = 0;
+                        while (s0 <= val.size()) {
+                            size_t s1 = val.find('+', s0);
+                            if (s1 == std::string::npos) s1 = val.size();
+                            const std::string tok = trim(val.substr(s0, s1 - s0));
+                            if (tok == "WARRIOR") classes |= 1;
+                            else if (tok == "WIZARD") classes |= 2;
+                            else if (tok == "CONJURER") classes |= 4;
+                            else ++nBadClass;   // 정답지는 모르는 이름이면 오류(`modParseBitList`)
+                            s0 = s1 + 1;
+                        }
+                    } else if (key == "REQUIRED_STRENGTH") {
+                        reqStr = std::atoi(val.c_str());
+                    }
+                }
+                std::printf("[무기정의] modifier.bin %zu바이트 · 무기 %zu개 실음 · 종류표에 없음 %zu · 모르는 직업 이름 %zu\n",
+                            mb.size(), nDef, nNoWire, nBadClass);
             }
 
             // ★ 묶음 5 — 사람이 들 수 있는 무게의 **밑천**. thing.bin 의 사람 칸에서 읽는다.
@@ -2780,6 +2849,12 @@ int main(int argc, char** argv) {
                             srv.pickNoCap(), srv.pickTooHeavy(), srv.pickTooMany(), srv.pickClassFail(),
                             srv.drankOnPickup(), srv.goldPicked(),
                             srv.gearGiven(true), srv.gearGiven(false), srv.weaponNoStats());
+                // ★ 09-27 B3 — 무기 들기 관문별(정답지 `53A420` 순서)
+                std::printf("[무기들기] 무기아님 %llu · 이미 %llu · 함성광전사 %llu · 직업 %llu · 힘 %llu · 화살통 %llu · 내려놓기실패 %llu · 듦 %llu\n",
+                            srv.equipGate(nox::EquipGate::NotWeapon), srv.equipGate(nox::EquipGate::Already),
+                            srv.equipGate(nox::EquipGate::Ability), srv.equipGate(nox::EquipGate::ClassFail),
+                            srv.equipGate(nox::EquipGate::StrengthFail), srv.equipGate(nox::EquipGate::QuiverLater),
+                            srv.equipGate(nox::EquipGate::DequipFail), srv.equipGate(nox::EquipGate::Equipped));
                 // ★★ 조각 D — **여기서부터 넉 줄이 「눈이 없던 자리」다.**
                 //   계수기 41개 중 24개가 한 번도 안 찍히고 있었다(조각 C). 아래가 그 24개를
                 //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.

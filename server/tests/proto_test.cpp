@@ -19003,10 +19003,12 @@ static void GearTemplates(nox::Server& srv) {
         bool w = false;
         c.equipBit = nox::EquipBitFor(nox::LoadoutItemName(gw), &w);
         c.isWeapon = w;
+        c.weaponClass = w;               // ★ B3 — 기본 장비 중 무기는 롱소드 하나(CLASS WEAPON)
         c.modifiable = true;
         c.weight = 7;
         srv.SetItemTemplate(gw, c);
     }
+    srv.SetWeaponDef(nox::kItemLongsword, 1, 30);   // ⭕ modifier.bin Longsword — CLASSUSE = WARRIOR · REQUIRED_STRENGTH = 30
 }
 
 void TestDefaultGear() {
@@ -19092,12 +19094,13 @@ void TestWeaponSlot() {
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1050, 1000);                       // a 가 보는 +x 쪽 · 대검 사거리(10 + 50) 안
     };
-    // 바닥에 무기 하나 놓고 줍고 든다
+    // 바닥에 무기 하나 놓고 줍고 든다(B3 부터 무기 정의가 있어야 들린다 — 워리어만 · 요구 힘 0)
     auto pickEquip = [&](nox::Server& srv, uint16_t nc, uint16_t type, uint32_t bit) {
+        srv.SetWeaponDef(type, 1, 0);
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic w;
         w.netCode = nc; w.type = type; w.x = 1000; w.y = 1000;
-        w.modifiable = true; w.equipBit = bit; w.isWeapon = true;
+        w.modifiable = true; w.equipBit = bit; w.isWeapon = true; w.weaponClass = true;
         st.push_back(w);
         SetWeights(st, 8);
         srv.SetWorldStatics(st);
@@ -19171,6 +19174,169 @@ void TestWeaponSlot() {
               "⑥ 틀 없는 서버에서 워리어가 직업 표 롱소드를 안 들었다");
     }
     std::printf("  09-27 B2 — 무기 칸: 기본 롱소드 · 벗으면 맨손 · 가방에서 빠지면 맨손 · 주운 대검 자세 37·피해 · 표 없는 지팡이는 판정 없이 셈 · 틀 없는 서버는 직업 표\n");
+}
+
+// ── 09-27 B3 — 무기 들기 관문(`nox_xxx_playerEquipWeapon_53A420` `GAME4_3.c:4906~4993`) ─────────
+//   관문마다 그 칸 하나만 오르나 · 거절이면 글(`a9 0f`)·소리 925(본인만) · 들면 먼저 든 무기를 내려놓나
+void TestEquipWeaponGates() {
+    using nox::CharClass;
+    using nox::EquipGate;
+    const std::string a = "10.9.27.21:9291", b = "10.9.27.22:9292";
+    const uint16_t kSword = 728 + 4;
+    auto make = [&](nox::Server& srv, bool bObserver = false) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        nox::Server::SoundDefIn d; d.id = 925; d.maxDist = 600; d.merged = 0; d.samples = 1;
+        sd.push_back(d);
+        srv.SetSoundDefs(sd);
+        GearTemplates(srv);
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugEnterGame(b, 733, bObserver, CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1000, 1000);
+        // 바닥 무기 둘 — 500 대검(워리어만 · 힘 70) · 501 무거운 것(워리어만 · 힘 200) · 502 화살통(워리어만 · 비트 2)
+        std::vector<nox::Server::WorldStatic> st;
+        auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, uint8_t classes, uint16_t str) {
+            nox::Server::WorldStatic w;
+            w.netCode = nc; w.type = type; w.x = 1000; w.y = 1000;
+            w.modifiable = true; w.equipBit = bit; w.isWeapon = true; w.weaponClass = true;
+            st.push_back(w);
+            srv.SetWeaponDef(type, classes, str);
+        };
+        put(500, 1170, 0x400, 1, 70);
+        put(501, 1172, 0x4000, 1, 200);
+        put(502, 1173, 0x2, 1, 0);
+        SetWeights(st, 8);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> warm;
+        srv.Tick(0, warm);                                    // 시계를 세운다 — 첫 Tick 은 기준만 잡는다(TestWeaponAttack 과 같게)
+    };
+    auto send = [&](nox::Server& srv, const std::string& who, nox::Op op, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> p = CodePacket(op, nc);
+        srv.OnPacket(who, p.data(), p.size(), out);
+    };
+    auto gates = [&](nox::Server& srv) {
+        std::vector<unsigned long long> v;
+        for (size_t g = 0; g < nox::kEquipGateCount; ++g) v.push_back(srv.equipGate(static_cast<EquipGate>(g)));
+        return v;
+    };
+    // 그 관문 칸 하나만 +1 인가
+    auto onlyGate = [&](const std::vector<unsigned long long>& before, nox::Server& srv, EquipGate want) {
+        const auto after = gates(srv);
+        for (size_t g = 0; g < after.size(); ++g)
+            if (after[g] - before[g] != (g == static_cast<size_t>(want) ? 1u : 0u)) return false;
+        return true;
+    };
+    auto heard925 = [&](const std::vector<nox::OutPacket>& out, const std::string& who) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && (x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) || x[0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) &&
+                (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == 925) ++n;
+        return n;
+    };
+    // 한 번 입기 요청 → 틱 하나(소리는 틱 끝에 나간다)
+    auto tryEquip = [&](nox::Server& srv, const std::string& who, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        send(srv, who, nox::Op::TRY_EQUIP, nc, out);
+        srv.DebugFlushAudio(out);                             // 소리는 틱 끝에 사람마다 나간다 — 그 자리만 바로 부른다(TestSoundDebts 와 같게)
+        // ⚠ 틱으로 돌리면 안 들린다 — DebugMoveTo 는 x·y 만 바꾸고 posX·posY(소리 자리)는 0 으로 둬서 소리가 (0,0)에서 나고,
+        //   틱이 돌며 듣는 쪽 posX 가 1000 으로 맞춰져 거리 600 밖이 된다(09-27 계수기 「담김 1 · 나감 0」 으로 확인 · 시험 도구 쪽 사정)
+    };
+
+    // ① 직업 — 위저드가 워리어 전용 대검을 들려 하면 거절 · 글 · 925 는 본인만
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0; send(srv, b, nox::Op::TRY_GET, 500, o0);
+        Check(srv.Carries(b, 500), "① 위저드가 대검을 못 주웠다 — 이 시험이 무의미해진다");
+        const auto g0 = gates(srv);
+        std::vector<nox::OutPacket> out; tryEquip(srv, b, 500, out);
+        Check(onlyGate(g0, srv, EquipGate::ClassFail), "① 직업 관문 칸 하나만 오르지 않았다");
+        Check(HasPriMsg(out, b, "weapon.c:WeaponEquipClassFail"), "① 직업 거절 글이 안 갔다");
+        {
+            char m[200];
+            std::snprintf(m, sizeof(m), "① 거절 소리 925 가 본인에게만 한 번이 아니다(b %d · a %d · 담김 %llu 버림 %llu 나감 %llu)", heard925(out, b), heard925(out, a),
+                          srv.soundsQueued(), srv.soundsDropped(), srv.soundsSent());
+            Check(heard925(out, b) == 1 && heard925(out, a) == 0, m);
+        }
+        Check(srv.DebugWeaponNet(b) == 0 && srv.DebugWeaponEquip(b) == 0, "① 거절됐는데 무기를 들었다");
+    }
+    // ② 힘 — 워리어(힘 125)가 요구 힘 200 인 것을 들려 하면 거절 · 롱소드는 그대로
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0; send(srv, a, nox::Op::TRY_GET, 501, o0);
+        const auto g0 = gates(srv);
+        std::vector<nox::OutPacket> out; tryEquip(srv, a, 501, out);
+        Check(onlyGate(g0, srv, EquipGate::StrengthFail), "② 힘 관문 칸 하나만 오르지 않았다");
+        Check(HasPriMsg(out, a, "weapon.c:WeaponEquipStrengthFail"), "② 힘 거절 글이 안 갔다");
+        Check(heard925(out, a) == 1 && heard925(out, b) == 0, "② 거절 소리 925 가 본인에게만 한 번이 아니다");
+        Check(srv.DebugWeaponNet(a) == kSword, "② 거절됐는데 롱소드를 내려놓았다");
+    }
+    // ③ 함성 켜짐 값 — 글·소리 없이 거절(`:4923` 은 그냥 0)
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0; send(srv, a, nox::Op::TRY_GET, 500, o0);
+        std::vector<nox::OutPacket> o1;
+        Check(srv.DebugAbilityDo(a, 2, o1), "③ 함성이 안 켜졌다 — 이 시험이 무의미해진다");
+        const auto g0 = gates(srv);
+        std::vector<nox::OutPacket> out; tryEquip(srv, a, 500, out);
+        Check(onlyGate(g0, srv, EquipGate::Ability), "③ 함성 관문 칸 하나만 오르지 않았다");
+        Check(heard925(out, a) == 0 && !HasPriMsg(out, a, "weapon.c:WeaponEquipClassFail") &&
+              !HasPriMsg(out, a, "weapon.c:WeaponEquipStrengthFail"), "③ 함성 거절인데 글이나 소리가 났다");
+        Check(srv.DebugWeaponNet(a) == kSword, "③ 함성 중인데 무기를 바꿨다");
+    }
+    // ④ 바꿔 들기 — 롱소드를 내려놓고(본인 0x61 · 남 0x54) 대검을 든다(본인 0x60 · 남 0x51) · 칸 = 대검
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0; send(srv, a, nox::Op::TRY_GET, 500, o0);
+        const auto g0 = gates(srv);
+        std::vector<nox::OutPacket> out; send(srv, a, nox::Op::TRY_EQUIP, 500, out);
+        Check(onlyGate(g0, srv, EquipGate::Equipped), "④ 들음 칸 하나만 오르지 않았다");
+        const auto toA = FlattenTo(out, a);
+        const auto toB = FlattenTo(out, b);
+        const auto* de = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_DEQUIP));
+        const auto* eq = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_EQUIP));
+        Check(de && de->size() >= 3 && ((*de)[1] | ((*de)[2] << 8)) == kSword, "④ 롱소드 내려놓음(0x61)이 안 갔다");
+        Check(eq && eq->size() >= 3 && ((*eq)[1] | ((*eq)[2] << 8)) == 500, "④ 대검 듦(0x60)이 안 갔다");
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)) &&
+              FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MODIFIABLE_WEAPON_EQUIP)), "④ 남에게 무기 겉모습(0x54·0x51)이 안 갔다");
+        Check(srv.DebugWeaponNet(a) == 500 && srv.DebugWeaponEquip(a) == 0x400, "④ 무기 칸이 대검이 아니다");
+        bool swordOff = false;
+        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == kSword) swordOff = !c.equipped;
+        Check(swordOff, "④ 롱소드가 「입음」 으로 남았다");
+    }
+    // ⑤ 이미 든 것 — 롱소드를 또 들라 하면 이미 듦 · 아무 알림 없음
+    {
+        nox::Server srv; make(srv);
+        const auto g0 = gates(srv);
+        std::vector<nox::OutPacket> out; send(srv, a, nox::Op::TRY_EQUIP, kSword, out);
+        Check(onlyGate(g0, srv, EquipGate::Already), "⑤ 이미 듦 칸 하나만 오르지 않았다");
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_EQUIP)) == nullptr, "⑤ 이미 든 것을 또 알렸다");
+    }
+    // ⑥ 공격 중(상태 1)에 들면 상태 13 으로
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0; send(srv, a, nox::Op::TRY_GET, 500, o0);
+        srv.DebugSetState(a, nox::kPlayerStateAttack);
+        std::vector<nox::OutPacket> out; send(srv, a, nox::Op::TRY_EQUIP, 500, out);
+        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle && srv.DebugWeaponNet(a) == 500, "⑥ 공격 중에 들었는데 상태 13 이 아니거나 못 들었다");
+    }
+    // ⑦ 화살통(비트 2) — B5 전까지 거절(칸 QuiverLater) · 롱소드 그대로
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0; send(srv, a, nox::Op::TRY_GET, 502, o0);
+        const auto g0 = gates(srv);
+        std::vector<nox::OutPacket> out; send(srv, a, nox::Op::TRY_EQUIP, 502, out);
+        Check(onlyGate(g0, srv, EquipGate::QuiverLater) && srv.DebugWeaponNet(a) == kSword, "⑦ 화살통이 B5 전인데 들렸거나 안 셌다");
+    }
+    // ⑧ 관전 중이면 입기·벗기 요청을 안 받는다(`sdecode.c:167·181` +3680 & 3) — 입은 셔츠를 벗기려 해도 아무 일 없음
+    //   (✖ 처음엔 입은 셔츠를 「또 입기」로 쟀다 — 막이가 없어도 「이미 그 상태」라 조용해 돌연변이를 못 잡았다)
+    {
+        nox::Server srv; make(srv, /*bObserver=*/true);
+        std::vector<nox::OutPacket> out; send(srv, b, nox::Op::TRY_DEQUIP, 733 + 1, out);
+        bool worn = false;
+        for (const auto& c : srv.DebugInventory(b)) if (c.netCode == 733 + 1) worn = c.equipped;
+        Check(worn && FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) == nullptr,
+              "⑧ 관전 중인데 벗기 요청을 받았다");
+    }
+    std::printf("  09-27 B3 — 무기 들기 관문: 직업·힘(글+925 본인만) · 함성 값(조용히) · 바꿔 들기(내려놓고 듦) · 이미 듦 · 공격 중 13 · 화살통 B5 전 거절 · 관전 무시\n");
 }
 
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
@@ -23805,6 +23971,7 @@ int main() {
     TestMonsterSounds();
     TestDefaultGear();
     TestWeaponSlot();
+    TestEquipWeaponGates();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();
