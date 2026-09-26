@@ -19511,6 +19511,100 @@ void TestWeaponEffects() {
     std::printf("  09-27 B5 — 두 손 무기는 방패를 벗김(갑옷 비트도) · 한 손은 그대로 · 지팡이 들면 충전 알림(본인만) · 번개 지팡이 43 · 오브 59 끊기\n");
 }
 
+// ── 09-27 S1 — 둘레 피해의 v9 = who(`game.go:1438` `CallDamage(who, nil, …)`) — 막기 판정을 탄다 ─────────
+//   불덩이 둘레 = who 불덩이(발사체) → 대검 막기 자세가 정면이면 막음 · 죽음 광선 = who 시전자 → 방패 올린 채 정면이면 막음
+//   전에는 둘레 피해가 때린 것 없이(nullptr) 넘어가 두 경우 다 막기 판정을 안 탔다
+void TestSplashWhoSrc() {
+    auto stops = [](nox::Server& srv, const char* key) {
+        const auto& st = srv.damageStops();
+        auto it = st.find(key);
+        return it == st.end() ? 0ull : it->second;
+    };
+    // ① 불덩이 둘레 — c(대검 · 막기 자세 18)가 직격 선 밖·둘레 안에서 폭발 쪽을 보면 막고, 등지면 깎인다
+    for (int facingBlast = 1; facingBlast >= 0; --facingBlast) {
+        const std::string a = "10.9.27.51:9321", b = "10.9.27.52:9322", c = "10.9.27.53:9323";
+        nox::Server srv; RegAllSpells(srv);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1100, 1000);                        // 직격 대상(둘레 피해는 건너뜀)
+        srv.DebugMoveTo(c, 1100, 1030);                        // 불덩이 길(y 1000)에서 30 — 안 부딪힘 · 폭발(≈1080~1085)에서 33~36 < 둘레 42.7
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        RegFireballTypes(srv);
+        srv.DebugSetFacing(a, 0);
+        srv.DebugSetWeapon(c, 0x400);                          // GreatSword
+        srv.DebugSetFacing(c, facingBlast ? 173 : 45);         // 173 ≈ 폭발 쪽(−15,−30) · 45 = 등짐
+        srv.DebugSetState(c, 18);
+        const int hp0 = srv.HealthOf(c);
+        { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); ms = castMs; }
+        Check(srv.missiles() == 1, "S1 ① 불덩이가 안 날았다(이 시험의 전제)");
+        for (int k = 0; k < 40 && srv.missiles() > 0; ++k) { srv.DebugSetState(c, 18); ms += 34; srv.Tick(ms, out); }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "S1 ① 불덩이 둘레(%s) — 대검막기 %llu · c 체력 %d→%d",
+                      facingBlast ? "정면" : "등짐", stops(srv, "대검막기"), hp0, srv.HealthOf(c));
+        if (facingBlast) Check(stops(srv, "대검막기") == 1 && srv.HealthOf(c) == hp0, msg);
+        else Check(stops(srv, "대검막기") == 0 && srv.HealthOf(c) < hp0, msg);
+    }
+    // ② 죽음 광선 — c(방패 · 올린 채 16)가 시전자 쪽을 보면 막고(v9 = 시전자 자리), 등지면 100 깎인다
+    for (int facingCaster = 1; facingCaster >= 0; --facingCaster) {
+        const std::string a = "10.9.27.54:9324", c = "10.9.27.55:9325";
+        nox::Server srv;
+        nox::Gamedata g;
+        g.Parse("DeathRayDamage = 100;\nDeathRayOutRadius = 15;\nDeathRayInRadius = 10;\n" "SummonDuration = 60, 210, 375;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(16, 0, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 840, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(c, 841, false, nox::CharClass::Warrior);   // 직업 표 방패(0x1000000)
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(c, 1300, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugSetFacing(c, facingCaster ? 128 : 0);         // 128 = −x(시전자 쪽)
+        srv.DebugSetState(c, 16);
+        const int hp0 = srv.HealthOf(c);
+        CastAndWait(srv, a, 16, false, ms, out);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "S1 ② 죽음 광선(%s) — 방패막기 %llu · c 체력 %d→%d · 상태 %u",
+                      facingCaster ? "정면" : "등짐", stops(srv, "방패막기"), hp0, srv.HealthOf(c), (unsigned)srv.DebugStateOf(c));
+        if (facingCaster) Check(stops(srv, "방패막기") == 1 && srv.HealthOf(c) == hp0, msg);
+        else Check(stops(srv, "방패막기") == 0 && hp0 - srv.HealthOf(c) == 100, msg);
+    }
+    // ③ 운석 — who = 주인 사람(`GAME4_3.c:6839~6840`) · c(방패 올린 채 16)가 시전자 쪽을 보면 막고, 등지면 깎인다(TestMeteor 틀)
+    for (int facingCaster = 1; facingCaster >= 0; --facingCaster) {
+        const std::string a = "10.9.27.56:9326", c = "10.9.27.57:9327";
+        nox::Server srv;
+        nox::Gamedata g;
+        g.Parse("MeteorDamage = 45, 65, 85, 105, 125;\nMeteorSpeed = 8;\n" "SummonDuration = 60, 210, 375;\n");
+        srv.SetGamedata(g);
+        srv.SetNamedType("Meteor", 910);
+        srv.SetNamedType("MeteorExplode", 912);
+        RegSpell(srv, 52, 0);
+        srv.DebugEnterGame(a, 770, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(c, 771, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(c, 1300, 1000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugSetFacing(c, facingCaster ? 128 : 0);
+        const int hp0 = srv.HealthOf(c);
+        CastAndWait(srv, a, 52, false, ms, out);
+        for (int t = 0; t < 45 && srv.PlacedCount() > 0; ++t) { srv.DebugSetState(c, 16); ms += 34; srv.Tick(ms, out); }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "S1 ③ 운석(%s) — 방패막기 %llu · c 체력 %d→%d",
+                      facingCaster ? "정면" : "등짐", stops(srv, "방패막기"), hp0, srv.HealthOf(c));
+        if (facingCaster) Check(stops(srv, "방패막기") == 1 && srv.HealthOf(c) == hp0, msg);
+        else Check(stops(srv, "방패막기") == 0 && srv.HealthOf(c) < hp0, msg);
+    }
+    std::printf("  09-27 S1 — 둘레 피해 v9 = who: 불덩이 둘레를 대검(정면)이 · 죽음 광선·운석을 방패(정면)가 막음 · 등지면 깎임\n");
+}
+
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
 //   떠 있지 않은 사람이 바닥 번호 6(FLOR 순번 6 = Lava) 위면 틱마다 짝 (나, 6) 하나 → 피해 2 · 종류 12 · 때린 이 없음
 void TestLavaFloor() {
@@ -24146,6 +24240,7 @@ int main() {
     TestEquipWeaponGates();
     TestDequipWeapon();
     TestWeaponEffects();
+    TestSplashWhoSrc();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();

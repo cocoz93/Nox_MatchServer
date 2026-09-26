@@ -6437,7 +6437,9 @@ int Server::CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPa
     const int dmg = static_cast<int>(BalanceFloat("DeathRayDamage"));
     const float rout = static_cast<float>(BalanceFloat("DeathRayOutRadius"));
     const float rin = static_cast<float>(BalanceFloat("DeathRayInRadius"));
-    DamageUnitsAround(arg.x, arg.y, rout, rin, dmg, 16, caster.addr, Target{}, out, HitterByAddr(caster.addr));   // ★ 4-c3b1 who = 시전자(`spell_death_ray.go:35`)
+    AttackSrc ws;                                            // ★ 09-27 S1 — v9 = who = 시전자 사람(+72 지난 자리) · 발사체 아님
+    ws.x = static_cast<float>(caster.prevX); ws.y = static_cast<float>(caster.prevY);
+    DamageUnitsAround(arg.x, arg.y, rout, rin, dmg, 16, caster.addr, Target{}, out, HitterByAddr(caster.addr), &ws);   // ★ 4-c3b1 who = 시전자(`spell_death_ray.go:35`)
     const uint16_t x1 = static_cast<uint16_t>(static_cast<int>(cx)), y1 = static_cast<uint16_t>(static_cast<int>(cy));
     const uint16_t x2 = static_cast<uint16_t>(static_cast<int>(arg.x)), y2 = static_cast<uint16_t>(static_cast<int>(arg.y));
     const uint8_t fx[9] = { static_cast<uint8_t>(Op::FX_DEATH_RAY),
@@ -11893,7 +11895,14 @@ void Server::MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out) {
     const int dmg = o.damage;
     const std::string owner = o.owner;
     SendJiggle(x, y, 10, out);                               // earthquakeSend_4D9110(자리, 10)
-    DamageUnitsAround(x, y, 80.0f, 30.0f, dmg, 7, owner, Target{}, out, HitterByAddr(owner));   // ★ 4-c3b1 who = 주인 사람(`GAME4_3.c:6839~6840`)
+    // ★ 09-27 S1 — v9 = who = 주인 사람(+72 지난 자리) · 주인이 사람이 아니면(없으면) 옛 방식(막기 없음)
+    AttackSrc ws;
+    const AttackSrc* wsp = nullptr;
+    if (auto oi = sessions_.find(owner); oi != sessions_.end()) {
+        ws.x = static_cast<float>(oi->second.prevX); ws.y = static_cast<float>(oi->second.prevY);
+        wsp = &ws;
+    }
+    DamageUnitsAround(x, y, 80.0f, 30.0f, dmg, 7, owner, Target{}, out, HitterByAddr(owner), wsp);   // ★ 4-c3b1 who = 주인 사람(`GAME4_3.c:6839~6840`)
     // 터짐 그림은 **1초 뒤 스스로 사라지는**(OneSecondDieUpdate) 장식 오브젝트다
     PlaceObject(NamedType("MeteorExplode"), x, y, owner, static_cast<uint32_t>(kServerTickRate), /*kind=*/0);
 }
@@ -11902,8 +11911,13 @@ void Server::MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out) {
 //   · 자기(날아간 것)와 **이미 직접 맞은 것**은 건너뛴다 · 벽 너머(선 추적 1)는 안 닿는다
 //   · 안쪽 r2 까지는 온전, 그 밖은 `1 − (거리 − r2) / (rr − r2)` 로 줄어든다
 //   ⚠ 벽 피해(mapDamageToWalls_534FC0)는 아직 안 옮김 — 벽이 부서지는 묶음(9)에서
+//   ★ 09-27 S1 — 정답지는 `CallDamage(who, nil, …)`(`game.go:1438`) — a3 가 없으니 피해 함수의 v9 = who 다(방패·대검·지팡이 막기·되받아치기가 이것을 본다).
+//     전에는 여기서 때린 것 없이(nullptr) 넘겨 **둘레 피해는 막기 판정을 아예 안 탔다**. 부르는 쪽이 who 로 채운 `whoSrc` 를 넘긴다
+//     (불덩이 = 불덩이 자신 · 죽음 광선·운석 = 시전자 사람). 못 넘기면 옛 방식(막기 없음)
+//   ⚠ who 자신 건너뛰기(`:1418` `u == who && !damageWalls`)는 옮기지 않는다 — damageWalls 가 늘 참으로 돌아와(`:1401·1448`) 실제로 안 걸린다
 void Server::DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,
-                               const std::string& by, const Target& skip, std::vector<OutPacket>& out, HitterRef hitter) {
+                               const std::string& by, const Target& skip, std::vector<OutPacket>& out, HitterRef hitter,
+                               const AttackSrc* whoSrc) {
     const float rr = (r1 < r2) ? r2 : r1;
     if (rr <= 0.0f || dmg <= 0) return;
     auto hit = [&](const Target& t, float tx, float ty) {
@@ -11914,7 +11928,7 @@ void Server::DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, 
         if (!MapTraceRay(cx, cy, tx, ty, 0x1)) return;
         float rdmg = static_cast<float>(dmg);
         if (dist >= r2 && rr > r2) rdmg *= 1.0f - (dist - r2) / (rr - r2);
-        HurtTarget(t, static_cast<int>(rdmg), out, by, dtype, nullptr, hitter);   // Go `game.go:1438` CallDamage(who, nil, ...)
+        HurtTarget(t, static_cast<int>(rdmg), out, by, dtype, whoSrc, hitter);   // Go `game.go:1438` CallDamage(who, nil, ...)
     };
     std::vector<std::string> who;
     for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
@@ -11942,7 +11956,7 @@ void Server::FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPa
     // ★ 4-c3b2 — 직격의 때린 것 = 불덩이(a3 = a1 · `GAME3_3.c:4181`) · 둘레 피해는 who = 불덩이 자신(`:4185·4191` v12 = a1)이라
     //   때린 이도 불덩이다 — 몬스터가 쏜 불덩이여도 둘레 쪽은 몬스터 소리 모음을 안 본다
     // ★ 09-26 M1 — 직격의 a3 = 불덩이(클래스 MISSILE · `:4181`) · 전에는 때린 것 없이(nullptr) 넘겨 막기 판정을 안 탔다.
-    //   ⚠ 둘레 피해(아래)는 정답지가 who = 불덩이 · a3 = 없음이라 v9 = 불덩이인데, 우리 `DamageUnitsAround` 는 by = 주인으로 두는 설계라 미결
+    //   ★ 09-27 S1 — 둘레 피해(아래)도 정답지는 who = 불덩이 · a3 = 없음이라 v9 = 불덩이다 → 같은 `src` 를 넘긴다(대검이 둘레 불꽃도 막는다)
     AttackSrc src;
     src.x = m.posX; src.y = m.posY;
     src.byMonsterType = m.type;
@@ -11950,7 +11964,7 @@ void Server::FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPa
     src.missile = true;
     if (!hit.none()) HurtTarget(hit, dmg, out, m.owner, 1, &src, HitterMissile(m));
     DamageUnitsAround(m.posX, m.posY, static_cast<float>(static_cast<double>(amount) * 0.33333334), 15.0f,
-                      dmg, 1, m.owner, hit, out, HitterObj(m.type));
+                      dmg, 1, m.owner, hit, out, HitterObj(m.type), &src);
     const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
     const uint8_t fx[6] = {
         static_cast<uint8_t>(Op::FX_SPARK_EXPLOSION),

@@ -3912,7 +3912,8 @@ private:
     //   skip 은 이미 직접 맞은 것(두 번 때리지 않는다). 벽 너머(선 추적 1)는 안 닿는다.
     void DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,
                            const std::string& by, const Target& skip, std::vector<OutPacket>& out,
-                           HitterRef hitter = HitterRef{});   // ★ 4-c3b1 — 정답지 `who`(부르는 쪽마다 다르다 — 표)
+                           HitterRef hitter = HitterRef{},    // ★ 4-c3b1 — 정답지 `who`(부르는 쪽마다 다르다 — 표)
+                           const AttackSrc* whoSrc = nullptr); // ★ 09-27 S1 — 피해 함수의 v9(= a3 없음 → who) · 막기 판정·때린 이 자리
     void FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPacket>& out);                 // fireballCollide_4E9AC0
     // ── 묶음 4-c2a 독 ──
     uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
