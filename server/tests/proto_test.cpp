@@ -19423,6 +19423,94 @@ void TestDequipWeapon() {
     std::printf("  09-27 B4 — 무기 내려놓기: 든 것만 · 공격 중이면 13 · 0x61·0x54 · 공격 중 석궁 벗기 요청은 버림(가만히면 벗겨짐)\n");
 }
 
+// ── 09-27 B5 — 들고 놓을 때 딸린 일: 지팡이 충전 알림(`GAME4_3.c:4976~4979`) · 두 손 무기가 방패를 벗김(`53A3D0`) · 지팡이 놓으면 지속 주문 끊기(`4FEB60`) ─────────
+void TestWeaponEffects() {
+    using nox::CharClass;
+    const std::string a = "10.9.27.41:9311", b = "10.9.27.42:9312";
+    const uint16_t kShield = 728 + 3;                         // 워리어 셋째 = 나무방패(스냅샷 꼬리 차례)
+    auto make = [&](nox::Server& srv) {
+        GearTemplates(srv);
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        std::vector<nox::Server::WorldStatic> st;
+        auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, bool wand, uint32_t sub) {
+            nox::Server::WorldStatic w;
+            w.netCode = nc; w.type = type; w.x = 1000; w.y = 1000;
+            w.modifiable = true; w.equipBit = bit; w.isWeapon = true; w.weaponClass = true;
+            w.wandClass = wand; w.subclass = sub;
+            if (wand) { w.charges = 10; w.chargesMax = 20; }
+            st.push_back(w);
+            srv.SetWeaponDef(type, 1, 0);
+        };
+        put(500, 1170, 0x400, false, 0x400);           // 대검 — 두 손(0x7FFE40C 안)
+        put(504, 1171, 0x100, false, 0x100);           // 칼 — 한 손
+        put(505, 1172, 0x40000, true, 0x40000);        // 번개 지팡이 꼴(SUBCLASS STAFF_LIGHTNING)
+        put(506, 1173, 0x4000000, true, 0x4000000);    // 오블리비언 오브 꼴
+        SetWeights(st, 8);
+        srv.SetWorldStatics(st);
+        srv.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::OutPacket> o;
+        for (uint16_t nc : { (uint16_t)500, (uint16_t)504, (uint16_t)505, (uint16_t)506 }) {
+            const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_GET, nc);
+            srv.OnPacket(a, p.data(), p.size(), o);
+        }
+    };
+    auto send = [&](nox::Server& srv, nox::Op op, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> p = CodePacket(op, nc);
+        srv.OnPacket(a, p.data(), p.size(), out);
+    };
+    auto shieldOn = [&](nox::Server& srv) {
+        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == kShield) return c.equipped;
+        return false;
+    };
+
+    // ① 대검(두 손)을 들면 방패를 벗는다 — 본인 0x61(방패) · 남에게 0x53 · 갑옷 비트에서 방패가 빠짐(방패 막기도 꺼짐)
+    {
+        nox::Server srv; make(srv);
+        Check(shieldOn(srv) && (srv.DebugArmorEquip(a) & 0x3000000), "① 처음부터 방패를 안 들었다 — 이 시험이 무의미해진다");
+        std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_EQUIP, 500, out);
+        const auto toA = FlattenTo(out, a);
+        bool shieldMsg = false;
+        for (const auto& m : toA)
+            if (m.size() >= 3 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_DEQUIP) && (m[1] | (m[2] << 8)) == kShield) shieldMsg = true;
+        Check(!shieldOn(srv) && shieldMsg && !(srv.DebugArmorEquip(a) & 0x3000000), "① 대검을 들었는데 방패가 안 벗겨졌다");
+        Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_ARMOR_DEQUIP)) != nullptr, "① 남에게 방패 벗음(0x53)이 안 갔다");
+        Check(srv.twoHandShieldOff() == 1, "① 두손무기가벗긴방패 계수기가 1 이 아니다");
+    }
+    // ② 칼(한 손)은 방패를 그대로 둔다
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_EQUIP, 504, out);
+        Check(srv.DebugWeaponNet(a) == 504 && shieldOn(srv) && srv.twoHandShieldOff() == 0, "② 한 손 칼인데 방패를 벗겼거나 못 들었다");
+    }
+    // ③ 마법 지팡이를 들면 본인에게 충전 알림 `64 <번호> <지금> <최대>`
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_EQUIP, 505, out);
+        const auto toA = FlattenTo(out, a);                   // 변수에 담는다 — 임시 벡터 안 포인터를 문장 뒤에 쓰면 안 된다(B1 에서 한 번 당함)
+        const auto* ch = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_CHARGES));
+        Check(ch && ch->size() == 5 && ((*ch)[1] | ((*ch)[2] << 8)) == 505 && (*ch)[3] == 10 && (*ch)[4] == 20, "③ 지팡이를 들었는데 충전 알림이 없거나 값이 다르다");
+        Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_CHARGES)) == nullptr, "③ 충전 알림이 남에게 갔다");
+        Check(srv.wandChargesOnEquip() == 1, "③ 들때충전알림 계수기가 1 이 아니다");
+    }
+    // ④ 번개 지팡이를 내려놓으면 지속 주문 43 만 끊긴다 · ⑤ 오브는 59 만 · ⑥ 대검을 놓으면 아무것도 안 끊는다(대조)
+    struct Case { uint16_t nc; bool cut43, cut59; const char* msg; };
+    for (const Case& k : { Case{ 505, true, false, "④ 번개 지팡이를 놓았는데 43 만 끊기지 않았다" },
+                           Case{ 506, false, true, "⑤ 오브를 놓았는데 59 만 끊기지 않았다" },
+                           Case{ 500, false, false, "⑥ 대검을 놓았는데 지속 주문이 끊겼다" } }) {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> out;
+        send(srv, nox::Op::TRY_EQUIP, k.nc, out);
+        srv.DebugDurNew(a, 43, 0, -1, -1, false, nox::Target{}, out);
+        srv.DebugDurNew(a, 59, 0, -1, -1, false, nox::Target{}, out);
+        Check(srv.DebugDurActive(43, a) && srv.DebugDurActive(59, a), "④~⑥ 지속 주문을 못 걸었다 — 이 시험이 무의미해진다");
+        send(srv, nox::Op::TRY_DEQUIP, k.nc, out);
+        Check(srv.DebugWeaponNet(a) == 0 && srv.DebugDurActive(43, a) == !k.cut43 && srv.DebugDurActive(59, a) == !k.cut59 &&
+              srv.wandSpellCut() == static_cast<unsigned long long>((k.cut43 ? 1 : 0) + (k.cut59 ? 1 : 0)), k.msg);
+    }
+    std::printf("  09-27 B5 — 두 손 무기는 방패를 벗김(갑옷 비트도) · 한 손은 그대로 · 지팡이 들면 충전 알림(본인만) · 번개 지팡이 43 · 오브 59 끊기\n");
+}
+
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
 //   떠 있지 않은 사람이 바닥 번호 6(FLOR 순번 6 = Lava) 위면 틱마다 짝 (나, 6) 하나 → 피해 2 · 종류 12 · 때린 이 없음
 void TestLavaFloor() {
@@ -24057,6 +24145,7 @@ int main() {
     TestWeaponSlot();
     TestEquipWeaponGates();
     TestDequipWeapon();
+    TestWeaponEffects();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();

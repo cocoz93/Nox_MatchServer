@@ -1473,6 +1473,9 @@ int main(int argc, char** argv) {
                 // ★ 09-27 B3 — 무기 들기 첫 관문(`obj_class & 0x1001000` = WEAPON|WAND)
                 w2.weaponClass = ti->classRaw.find("WEAPON") != std::string::npos ||
                                  ti->classRaw.find("WAND")   != std::string::npos;
+                // ★ 09-27 B5 — 지팡이 클래스(0x1000) · 무기·지팡이 SUBCLASS 비트(충전 알림·지속 주문 끊기가 본다)
+                w2.wandClass = ti->classRaw.find("WAND") != std::string::npos;
+                if (w2.weaponClass) w2.subclass = nox::WeaponClassBitsOf(ti->subclassRaw);
                 // ★ 묶음 5 — 줍기 한도를 재는 두 값. 여기까지 온 물건은 `hasWeight` 가 참이다.
                 w2.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
                 w2.isFood = ti->classRaw.find("FOOD") != std::string::npos;
@@ -1513,6 +1516,8 @@ int main(int argc, char** argv) {
                     c.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
                     c.weaponClass = ti->classRaw.find("WEAPON") != std::string::npos ||   // ★ 09-27 B3
                                     ti->classRaw.find("WAND")   != std::string::npos;
+                    c.wandClass = ti->classRaw.find("WAND") != std::string::npos;          // ★ 09-27 B5
+                    if (c.weaponClass) c.subclass = nox::WeaponClassBitsOf(ti->subclassRaw);
                     std::printf(" %s(무게 %d%s · 비트 %#x%s)", nm, (int)c.weight, ti->hasWeight ? "" : "·WEIGHT없음",
                                 (unsigned)c.equipBit, c.isWeapon ? (c.weaponClass ? " · 무기" : " · 무기(클래스 아님)") : "");
                     srv.SetItemTemplate(gw, c);
@@ -2856,10 +2861,12 @@ int main(int argc, char** argv) {
                             srv.equipGate(nox::EquipGate::StrengthFail), srv.equipGate(nox::EquipGate::QuiverLater),
                             srv.equipGate(nox::EquipGate::DequipFail), srv.equipGate(nox::EquipGate::Equipped));
                 // ★ 09-27 B4 — 무기 내려놓기(`53A140`) 나간 길별 + 공격 중 석궁 벗기 요청 버림
-                std::printf("[무기내려놓기] 무기아님 %llu · 든것아님 %llu · 화살통 %llu · 내려놓음 %llu · 공격중석궁 %llu\n",
+                std::printf("[무기내려놓기] 무기아님 %llu · 든것아님 %llu · 화살통 %llu · 내려놓음 %llu · 공격중석궁 %llu"
+                            " · (B5) 들때충전알림 %llu · 두손무기가벗긴방패 %llu · 내려놓으며끊은주문 %llu\n",
                             srv.dequipGate(nox::DequipGate::NotWeapon), srv.dequipGate(nox::DequipGate::NotHeld),
                             srv.dequipGate(nox::DequipGate::QuiverLater), srv.dequipGate(nox::DequipGate::Dequipped),
-                            srv.dequipGate(nox::DequipGate::CrossbowAttacking));
+                            srv.dequipGate(nox::DequipGate::CrossbowAttacking),
+                            srv.wandChargesOnEquip(), srv.twoHandShieldOff(), srv.wandSpellCut());
                 // ★★ 조각 D — **여기서부터 넉 줄이 「눈이 없던 자리」다.**
                 //   계수기 41개 중 24개가 한 번도 안 찍히고 있었다(조각 C). 아래가 그 24개를
                 //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.

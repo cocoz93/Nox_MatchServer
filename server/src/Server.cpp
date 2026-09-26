@@ -2906,6 +2906,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.equipBit = w.equipBit;
                 c.isWeapon = w.isWeapon;
                 c.weaponClass = w.weaponClass;         // ★ 09-27 B3
+                c.wandClass = w.wandClass; c.subclass = w.subclass;   // ★ 09-27 B5
                 c.weight = w.weight;
                 c.isFood = w.isFood;
                 c.foodBits = w.foodBits;
@@ -3014,6 +3015,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.equipBit = s.inventory[i].equipBit;
                     back.isWeapon = s.inventory[i].isWeapon;
                     back.weaponClass = s.inventory[i].weaponClass;   // ★ 09-27 B3
+                    back.wandClass = s.inventory[i].wandClass; back.subclass = s.inventory[i].subclass;   // ★ 09-27 B5
                     back.weight = s.inventory[i].weight;
                     back.isFood = s.inventory[i].isFood;
                     back.foodBits = s.inventory[i].foodBits;
@@ -13023,7 +13025,8 @@ void Server::ReportEquipChange(Session& s, const Session::Carried& c, bool wear,
 // ★ 09-27 B3 — 무기 들기 `nox_xxx_playerEquipWeapon_53A420`(`GAME4_3.c:4906~4993`) — 관문 순서 그대로.
 //   옮긴 것: 무기 클래스 `:4908` · 이미 듦 `:4911~4914` · 함성·광전사 켜짐 값 `:4923` · 직업 `:4926~4932`(modifier.bin CLASSUSE) ·
 //     힘 `:4933~4940`(REQUIRED_STRENGTH) · 공격 중이면 상태 13 `:4951~4953` · 먼저 든 무기 내려놓기 `:4964~4967` · 듦 깃발·알림·무기 칸 `:4968~4975`
-//   ⚠ 안 옮긴 것 — 화살통(무기 비트 2 · 활 찾기 `53A680`·`53A0F0` `:4954~4963`) · 충전 알림 `:4976~4987` · 마법부여 켜기 `:4988` · `53A3D0` `:4989~4991` → B5
+//   ⚠ 안 옮긴 것 — 화살통(무기 비트 2 · 활 찾기 `53A680`·`53A0F0` `:4954~4963`) · WEAPON 쪽 충전 `:4980~4986` · 마법부여 켜기 `:4988`(붙일 것 없음) — 끝의 B5 주석
+//     (09-27 B5 에서 지팡이 충전 알림 `:4976~4979` 와 `53A3D0` `:4989~4991` 은 옮김)
 //     NPC 갈래 `:4916~4918` · 사람 아님 `:4919~4921` 은 우리 부름이 늘 사람이라 없음 · 가방에 있음 `:4941~4950` 은 부르는 쪽이 가방에서 찾아 넘김
 //   거절 글·소리 — `netPriMsgToPlayer` + `aud_501960(925, 사람, 2, 사람 번호)`(a4 가 참일 때만 소리 · 입기 요청은 참)
 bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vector<OutPacket>& out) {
@@ -13054,14 +13057,29 @@ bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vec
     item->equipped = true;
     ReportEquipChange(s, *item, true, out);                                     // netReportEquip_4D8540(+ 겉모습 — 우리 옛 입기 그대로)
     s.weaponNet = item->netCode;                                                // +104
+    // ★ 09-27 B5 — 충전 알림(`:4976~4979`) — 지팡이 클래스이고 SUBCLASS 가 마법 지팡이(0x47F0000)면 `64 <번호> <지금> <최대>`
+    //   ⚠ WEAPON 쪽 화살통·차크람 충전(`:4980~4983`)·활 0 으로(`:4984~4986`)는 화살 수가 없어 안 옮김 · 마법부여 켜기 `4F2FF0`(`:4988`)는
+    //     우리 물건에 마법부여가 없어(맵 물건 수식을 안 읽어 늘 −1) 붙일 것이 없다
+    if (item->wandClass && (item->subclass & 0x47F0000)) { SendCharges(s, *item, out); ++wandChargesOnEquip_; }
+    // ★ 09-27 B5 — `sub_53A3D0`(`:4989~4991` · `GAME4_3.c:4887~4903`) — 두 손 무기(무기 비트 0x7FFE40C)를 들면 입은 방패(갑옷 비트 0x3000000)를 벗는다(`53E430(1, 1)`).
+    //   우리 갑옷 벗기는 아직 옛 켜고 끄기라 그 길로(입음 끔 · 알림). 방패 막기는 `ArmorEquipOf` 가 가방을 읽어 따라 꺼진다
+    if (item->equipBit & 0x7FFE40C) {
+        for (auto& c : s.inventory) {
+            if (!c.equipped || c.isWeapon || !(c.equipBit & 0x3000000)) continue;
+            c.equipped = false;
+            ReportEquipChange(s, c, false, out);
+            ++twoHandShieldOff_;
+        }
+    }
     return gate(EquipGate::Equipped);
 }
 
 // ★ 09-27 B4 — 무기 내려놓기 `nox_xxx_playerDequipWeapon_53A140`(`GAME4_3.c:4755~4816`) — 사람 갈래.
 //   무기 클래스 아님 → 0(`:4760`) · 공격 중이면 상태 13(`:4764~4766`) · **든 무기가 아니면 0**(`:4767~4770` — 화살통만 예외) ·
 //   든 것의 듦 깃발 끔 · 본인 알림(a3 `4D8590`)·모두 알림(a4 `4D84C0`) · +104 = 0(`:4784~4795`)
-//   ⚠ 안 옮긴 것(B5) — 활·석궁이면 화살통 내려놓기 `53A0F0`(`:4771~4773`) · 번개 지팡이·오블리비언 오브의 지속 주문 끊기 `4FEB60`(`:4774`) ·
-//     화살통 갈래(`:4775~4783`) · 마법부여 끄기 `4F3030`(`:4796`). `:4797~4814` 는 원본 exe 에 없는 GameEx 확장이라 안 옮긴다(소스 주석)
+//   ⚠ 안 옮긴 것 — 활·석궁이면 화살통 내려놓기 `53A0F0`(`:4771~4773`) · 화살통 갈래(`:4775~4783`) — 화살 수가 없다 ·
+//     마법부여 끄기 `4F3030`(`:4796`) — 우리 물건에 마법부여가 없다. `:4797~4814` 는 원본 exe 에 없는 GameEx 확장이라 안 옮긴다(소스 주석)
+//     (09-27 B5 에서 지속 주문 끊기 `4FEB60`(`:4774`)은 옮김)
 //   부르는 자리는 모두 (a3, a4) = (1, 1) 이다 — 무기 들기(`:4965`) · 벗기 요청(`playerTryDequip_4F2FB0` `GAME3_3.c:10571`)
 bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out) {
     auto gate = [&](DequipGate g) { ++dequipGate_[static_cast<size_t>(g)]; return g == DequipGate::Dequipped; };
@@ -13073,6 +13091,11 @@ bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>&
     Session::Carried* held = nullptr;
     for (auto& c : s.inventory) if (s.weaponNet != 0 && c.netCode == s.weaponNet) { held = &c; break; }
     if (!held || held != item) return gate(DequipGate::NotHeld);
+    // ★ 09-27 B5 — `sub_4FEB60`(`:4774` · `GAME4.c:3389~3402`) — 지팡이 클래스면 SUBCLASS 0x40000 은 지속 주문 43(연쇄 번개) · 0x4000000 은 59(플라스마)를 끊는다(`4FEB10`)
+    if (item->wandClass) {
+        if (item->subclass & 0x40000) { DurCancelFor(43, s.addr, out); ++wandSpellCut_; }
+        if (item->subclass & 0x4000000) { DurCancelFor(59, s.addr, out); ++wandSpellCut_; }
+    }
     held->equipped = false;
     ReportEquipChange(s, *held, false, out);
     s.weaponNet = 0;

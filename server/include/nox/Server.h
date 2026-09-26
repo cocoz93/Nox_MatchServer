@@ -638,6 +638,8 @@ struct Session {
         uint32_t equipBit = 0;
         bool isWeapon = false;
         bool weaponClass = false;   // ★ 09-27 B3 — CLASS 에 WEAPON 또는 WAND(정답지 무기 들기 첫 관문 `obj_class & 0x1001000`)
+        bool wandClass = false;     // ★ 09-27 B5 — CLASS 에 WAND(0x1000 — 충전 알림 `:4977` · 지속 주문 끊기 `4FEB60`)
+        uint32_t subclass = 0;      // ★ 09-27 B5 — 무기·지팡이의 SUBCLASS 비트(thing.bin · `WeaponClassBitsOf`). 그 밖은 0
         uint8_t weight = 255;   // 묶음 5 — 줍기 한도를 재는 무게. 세계에 있을 때 값을 그대로 들고 온다
         bool isFood = false;    // 묶음 5 — 같은 종류 개수 한도(셋)를 재는 갈래
         uint32_t foodBits = 0;  // 묶음 5-b — SUBCLASS 먹을거리 갈래 비트(FoodClassBits)
@@ -1456,6 +1458,8 @@ public:
         uint32_t equipBit = 0;
         bool isWeapon = false;
         bool weaponClass = false;   // ★ 09-27 B3 — CLASS 에 WEAPON 또는 WAND(가방 항목으로 그대로 옮긴다)
+        bool wandClass = false;     // ★ 09-27 B5 — CLASS 에 WAND
+        uint32_t subclass = 0;      // ★ 09-27 B5 — 무기·지팡이의 SUBCLASS 비트
         // ★ 묶음 5 — **무게**(thing.bin `WEIGHT`). 줍기 한도가 이것의 합으로 걸린다
         //   (`object_pickup.go:70~79`). 정답지 기본은 255 이고 파일 값이 있으면 그것으로 덮는다
         //   (`server/object_type.go:202·212`).
@@ -3323,6 +3327,12 @@ public:
     unsigned long long weaponNoStats() const { return weaponNoStats_; }   // ★ 09-27 B2
     unsigned long long equipGate(EquipGate g) const { return g < EquipGate::Count ? equipGate_[static_cast<size_t>(g)] : 0; }   // ★ 09-27 B3
     unsigned long long dequipGate(DequipGate g) const { return g < DequipGate::Count ? dequipGate_[static_cast<size_t>(g)] : 0; }   // ★ 09-27 B4
+    unsigned long long wandChargesOnEquip() const { return wandChargesOnEquip_; }   // ★ 09-27 B5
+    unsigned long long twoHandShieldOff() const { return twoHandShieldOff_; }
+    unsigned long long wandSpellCut() const { return wandSpellCut_; }
+    uint32_t DebugArmorEquip(const std::string& addr) const {                        // 시험용 — 플레이어 +0(갑옷 비트 합)
+        auto it = sessions_.find(addr); return it == sessions_.end() ? 0u : ArmorEquipOf(it->second);
+    }
     // ★ 09-27 B3 — modifier.bin `WEAPON_DEFINITIONS` 한 칸(종류 번호별): 쓸 수 있는 직업 비트(CLASSUSE — 워리어 1 · 위저드 2 · 컨저러 4) · 요구 힘.
     //   정답지 `server/modifiers.go:314~320`(Classes62 · ReqStrength60). main 이 복호본을 읽어 채운다 — 없는 종류는 직업 검사에서 거절(`object_pickup.go:113~118`)
     void SetWeaponDef(uint16_t wire, uint8_t classes, uint16_t reqStrength) { weaponDef_[wire] = WeaponDef{ classes, reqStrength }; }
@@ -4013,6 +4023,7 @@ private:
     unsigned long long weaponNoStats_ = 0;        // ★ 09-27 B2 — 수치 표에 없는 무기로 판정 칸에 닿아 판정 없이 넘긴 수
     unsigned long long equipGate_[kEquipGateCount] = {};   // ★ 09-27 B3 — 무기 들기 관문별
     unsigned long long dequipGate_[kDequipGateCount] = {}; // ★ 09-27 B4 — 무기 내려놓기 나간 길별
+    unsigned long long wandChargesOnEquip_ = 0, twoHandShieldOff_ = 0, wandSpellCut_ = 0;   // ★ 09-27 B5 — 들 때 충전 알림 · 두 손 무기가 벗긴 방패 · 내려놓으며 끊은 지속 주문
     struct WeaponDef { uint8_t classes = 0; uint16_t reqStrength = 0; };
     std::map<uint16_t, WeaponDef> weaponDef_;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
     std::map<uint16_t, Session::Carried> itemTemplate_;   // ★ 09-27 B1 — 기본 장비 종류 틀
@@ -4256,7 +4267,15 @@ private:
     int DebugDurUpdate(DurSpell& d, std::vector<OutPacket>& out);
     void DebugDurDestroyFn(DurSpell& d, std::vector<OutPacket>& out);
 
-    static uint32_t ArmorEquipOf(const Session& s) { return nox::ArmorEquipOf(s.charClass); }
+    // 플레이어 +0 ArmorEquip — 입은 갑옷의 장비 비트 합.
+    //   ★ 09-27 B5 — 기본 장비를 가방에 실은 사람은 **가방에서 입은 것**의 비트 합(정답지는 입을 때 |= · 벗을 때 &= ~ — 같은 표 `object_armor.go` armorTable).
+    //   두 손 무기가 방패를 벗기면(`53A3D0`) 방패 막기(0x3000000)가 따라 꺼지게. 기본 장비를 못 실은 시험 서버는 옛 방식(직업 표)
+    static uint32_t ArmorEquipOf(const Session& s) {
+        if (!s.gearInBag) return nox::ArmorEquipOf(s.charClass);
+        uint32_t bits = 0;
+        for (const auto& c : s.inventory) if (c.equipped && !c.isWeapon) bits |= c.equipBit;
+        return bits;
+    }
     // 두 쪽(주인 기준)이 적인가 — `server/object.go:1667` IsEnemyTo 를 사람·소환수·맵 몬스터에 맞춘 판.
     //   wild = 주인 없는 몬스터(자기 자신이 주인)
     // ★ 09-20 — 둘째·넷째 인자는 「주인 사슬의 **뿌리가 몬스터인가**」다(전에는 「주인이 없나」였다).
