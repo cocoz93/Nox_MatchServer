@@ -3393,6 +3393,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     for (int k = 1; k < 137; ++k) s.spellLvl[k] = 3;
                     s.strength  = StrengthOnline(s.charClass);
                     s.carryCap  = static_cast<uint16_t>(CarryCapacityOnline(s.charClass));   // +490(묶음 5)
+                    GiveDefaultGear(s);                    // ★ 09-27 B1 — 기본 장비를 서버 가방에도(전에는 스냅샷으로 클라에만 → 입기 처리가 번호를 못 찾음)
                     s.health = s.maxHealth;
                     s.mana   = s.maxMana;
                     s.manaPrev = s.mana;                   // sub_4EFF10 +4 = +6 = 최대(`GAME3_3.c:8103`)
@@ -12970,6 +12971,27 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
         missiles_[i].posX = missiles_[i].newX; missiles_[i].posY = missiles_[i].newY;
         missiles_[i].forceX = missiles_[i].forceY = 0;
         ++i;
+    }
+}
+
+// ★ 09-27 B1 — 직업 기본 장비를 서버 가방에 싣는다.
+//   정답지는 기본 장비를 진짜 물건으로 만들어 가방에 넣는다(`playerMakeDefItems_4EF7D0` → `playerRespawnItem_4EF750`
+//   → `inventoryServPlace_4F36F0`, `GAME3_3.c:7872~7897·7990~8041`). 우리는 스냅샷 꼬리로 클라에만 보내고
+//   (`SnapshotTail.cpp:128~183`) 가방엔 없어서, 입기·벗기·버리기가 그 번호를 못 찾았다.
+//   번호·순서는 스냅샷 꼬리와 같다 — 사람 번호 +1 부터 `LoadoutFor` 순서(두 곳이 같은 순서인지는 시험이 본다).
+//   ⚠ 종류 틀(무게·수식 갈래·장비 비트)이 없으면 싣지 않는다 — 무게를 짐작으로 채우면 줍기 한도가 틀어진다.
+//   ⚠ 안 옮긴 것 — 가방 순서(정답지는 새로 든 것을 맨 앞에 끼운다 · 우리 줍기처럼 뒤에 붙임) · 부활 때 다시 주기
+void Server::GiveDefaultGear(Session& s) {
+    const Loadout l = LoadoutFor(s.charClass);
+    for (int g = 0; g < l.count && g < 4; ++g) {
+        const auto it = itemTemplate_.find(l.items[g]);
+        if (it == itemTemplate_.end()) { ++gearGiven_[0]; continue; }
+        Session::Carried c = it->second;
+        c.netCode = static_cast<uint16_t>(s.netCode + 1 + g);
+        c.type = l.items[g];
+        c.equipped = true;                     // 스냅샷 꼬리가 `60 REPORT_EQUIP` 을 같이 보낸다
+        s.inventory.push_back(c);
+        ++gearGiven_[1];
     }
 }
 

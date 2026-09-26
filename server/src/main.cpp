@@ -1482,6 +1482,35 @@ int main(int argc, char** argv) {
             nStat = st.size();
             srv.SetWorldStatics(std::move(st));
 
+            // ★ 09-27 B1 — 직업 기본 장비의 가방 항목 틀. 맵 물건(위)과 같은 칸 규칙으로 thing.bin 에서 채운다
+            //   (수식 갈래 · 장비 비트 · 무게). 서버는 접속 때 이 틀로 기본 장비를 가방에 싣는다(`Server::GiveDefaultGear`)
+            {
+                std::printf("[기본장비] 가방 틀 —");
+                for (uint16_t gw : { nox::kItemStreetShirt, nox::kItemStreetPants, nox::kItemStreetSneakers,
+                                     nox::kItemWizardRobe, nox::kItemWoodenShield, nox::kItemLongsword }) {
+                    const char* nm = nox::LoadoutItemName(gw);
+                    const nox::ThingInfo* ti = tdb.ByWire(gw);
+                    if (!nm || !ti || ti->name != nm) {   // 와이어 번호(종류표)와 thing.bin 이름이 어긋나면 싣지 않는다
+                        std::printf(" %u(✗ 이름 다름)", (unsigned)gw);
+                        continue;
+                    }
+                    nox::Session::Carried c;
+                    bool isW = false;
+                    c.equipBit = nox::EquipBitFor(nm, &isW);
+                    c.isWeapon = isW;
+                    c.modifiable =
+                        ti->classRaw.find("WEAPON") != std::string::npos ||
+                        ti->classRaw.find("ARMOR")  != std::string::npos ||
+                        ti->classRaw.find("WAND")   != std::string::npos ||
+                        ti->classRaw.find("FLAG")   != std::string::npos;
+                    c.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
+                    std::printf(" %s(무게 %d%s · 비트 %#x%s)", nm, (int)c.weight, ti->hasWeight ? "" : "·WEIGHT없음",
+                                (unsigned)c.equipBit, c.isWeapon ? " · 무기" : "");
+                    srv.SetItemTemplate(gw, c);
+                }
+                std::printf("\n");
+            }
+
             // ★ 묶음 5 — 사람이 들 수 있는 무게의 **밑천**. thing.bin 의 사람 칸에서 읽는다.
             //   한도는 이것의 두 배다. 못 찾으면 그대로 두고(기본 100) 표시줄에 알린다.
             {
@@ -2744,12 +2773,13 @@ int main(int argc, char** argv) {
                 std::printf("[물건] 줍기요청 %llu(성공 %llu·멂 %llu) · 쓰기 %llu(모르는갈래 %llu)"
                             " · 입기 %llu · 벗기 %llu · 되돌림 %llu"
                             " · 거절(한도 %llu·무거움 %llu·개수 %llu·직업 %llu)"
-                            " · 즉시마심 %llu · 금 %llu\n",
+                            " · 즉시마심 %llu · 금 %llu · 기본장비(실음 %llu·틀없음 %llu)\n",
                             srv.tryGets(), srv.picked(), srv.pickTooFar(),
                             srv.used(), srv.useUnknown(),
                             srv.equipped(), srv.dequipped(), srv.dropped(),
                             srv.pickNoCap(), srv.pickTooHeavy(), srv.pickTooMany(), srv.pickClassFail(),
-                            srv.drankOnPickup(), srv.goldPicked());
+                            srv.drankOnPickup(), srv.goldPicked(),
+                            srv.gearGiven(true), srv.gearGiven(false));
                 // ★★ 조각 D — **여기서부터 넉 줄이 「눈이 없던 자리」다.**
                 //   계수기 41개 중 24개가 한 번도 안 찍히고 있었다(조각 C). 아래가 그 24개를
                 //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.

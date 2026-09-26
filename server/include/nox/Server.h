@@ -2142,6 +2142,8 @@ public:
         s.observer = observer;
         s.importantReady = true;
         s.importantImmediate = true;   // 시험 — Session::importantImmediate 주석
+        // ★ 09-27 B1 — 진짜 접속 경로처럼 기본 장비를 가방에(틀이 없으면 안 실린다 — 틀을 안 넣는 옛 시험은 그대로)
+        if (s.inventory.empty()) GiveDefaultGear(s);
     }
     // 시험용 — 중요 메시지 경로를 진짜로(대기열·준비·확인) 돌리게 한다.
     void DebugImportantReal(const std::string& addr, bool ready) {
@@ -2876,6 +2878,11 @@ public:
             if (c.netCode == netCode) return true;
         return false;
     }
+    // 시험용 — 가방 통째(09-27 B1 기본 장비 번호·순서 대조)
+    std::vector<Session::Carried> DebugInventory(const std::string& addr) const {
+        auto it = sessions_.find(addr);
+        return it == sessions_.end() ? std::vector<Session::Carried>{} : it->second.inventory;
+    }
 
     // ── 주문 마나 비용 ─────────────────────────────────
     //
@@ -3294,6 +3301,8 @@ public:
     // ★ 09-26 M2 — 죽음(16) 걸린 사람이 산 사람에게 닿았을 때: [0] 남은 시간이 14초 이상이라 안 넘김 · [1] 넘김
     unsigned long long deathPass(bool passed) const { return deathPass_[passed ? 1 : 0]; }
     unsigned long long lavaHurts() const { return lavaHurts_; }   // ★ 09-26 M3 — 바닥 칸 6(용암) 피해 부름(사람 · 틱에 한 번)
+    // ★ 09-27 B1 — 접속 때 직업 기본 장비를 가방에: [0] 종류 틀이 없어 못 실음 · [1] 실음
+    unsigned long long gearGiven(bool ok) const { return gearGiven_[ok ? 1 : 0]; }
     unsigned long long berserkHit(BerserkHit h) const {                          // ★ 2-b2 — 그 갈래별
         return h < BerserkHit::Count ? berserkHit_[static_cast<size_t>(h)] : 0;
     }
@@ -3398,6 +3407,8 @@ public:
     void SetMonsterMeleeHitSoundIds(std::vector<uint16_t> byWire) { monsterSnd_[7] = std::move(byWire); }
     // ★ 09-26 M4a — 다른 칸도 같은 꼴로(근접 시작 5 · 쏘기 시작 9 · 쏘기 10 · 죽음 14 — 정답지 `aud_501960(모음+칸, 몬스터, 0, 0)`)
     void SetMonsterSoundIds(int field, std::vector<uint16_t> byWire) { if (field >= 0 && field < 18) monsterSnd_[field] = std::move(byWire); }
+    // ★ 09-27 B1 — 기본 장비의 가방 항목 틀(와이어 번호 → 틀 · 번호·입음은 `GiveDefaultGear` 가 채운다). main 이 맵 물건과 같은 칸 규칙으로 thing.bin 에서 채운다
+    void SetItemTemplate(uint16_t wire, const Session::Carried& c) { itemTemplate_[wire] = c; }
     unsigned long long monsterSnd(int field, bool played) const { return (field >= 0 && field < 18) ? monsterSndCount_[field][played ? 1 : 0] : 0; }
     unsigned long long monsterMeleeHitSnd(bool played) const { return played ? monsterMeleeHitPlayed_ : monsterMeleeHitNone_; }
     void SetMaterialTables(std::vector<uint32_t> matByWire, std::vector<uint8_t> breastplateByWire, uint16_t newPlayerWire) {
@@ -3883,6 +3894,7 @@ private:
     // 묶음 6-g(3b) — 크리처가 `MISSILE_NAME` 오브젝트를 만들어 날린다
     bool SpawnCreatureMissile(Creature& k, const char* name, float tx, float ty, std::vector<OutPacket>& out);   // ★ 09-26 M4a — 만들었나
     bool MonsterSound(const Creature& k, int field);   // ★ 09-26 M4a — 소리 모음 칸 하나를 몬스터 자리에서 모두에게 · 냈으면 참
+    void GiveDefaultGear(Session& s);   // ★ 09-27 B1 — 직업 기본 장비를 가방에(스냅샷 꼬리가 보내는 번호·순서 그대로)
     void AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIEnd(Creature& k, uint8_t act);
@@ -3959,6 +3971,8 @@ private:
     unsigned long long berserkCollideCalls_ = 0;  // ★ 2-b2
     unsigned long long deathPass_[2] = {};        // ★ 09-26 M2 — 안 넘김(시간 남음) · 넘김
     unsigned long long lavaHurts_ = 0;            // ★ 09-26 M3 — 바닥 칸 6(용암) 짝으로 피해 함수를 부른 수
+    unsigned long long gearGiven_[2] = {};        // ★ 09-27 B1 — [틀 없어 못 실음, 실음]
+    std::map<uint16_t, Session::Carried> itemTemplate_;   // ★ 09-27 B1 — 기본 장비 종류 틀
     unsigned long long jumpCodes_ = 0, jumpIn_ = 0, jumpGate_[kJumpGateCount] = {};   // ★ 3-a
     unsigned long long jumpForceTicks_ = 0, jumpHeldTicks_ = 0, jumpLanded_ = 0, airborneOffIdle_ = 0, recoilBlockedAirborne_ = 0;
     unsigned long long equakeSkipAirborne_ = 0, spellRefusedAirborne_ = 0;   // ★ 3-b

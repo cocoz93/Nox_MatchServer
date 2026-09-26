@@ -18993,6 +18993,85 @@ void TestMonsterSounds() {
     std::printf("  09-26 M4a·M4b — 몬스터 소리: 근접 시작(쉬는 시간 끝) · 쏘기 시작 · 쏘기(만들었을 때만) · 죽음 · 명령 대답 — 모두에게\n");
 }
 
+// ── 09-27 B1 — 기본 장비를 서버 가방에(`playerMakeDefItems_4EF7D0` → `playerRespawnItem_4EF750`) ─────────
+//   번호·종류·순서가 스냅샷 꼬리(`0x4c <번호2> <종류2>`)와 같나 · 틀이 없으면 안 싣나 · 이제 벗기가 그 번호를 찾나
+void TestDefaultGear() {
+    using nox::CharClass;
+    const std::string a = "10.9.27.1:9271", b = "10.9.27.2:9272";
+    auto tmpl = [](nox::Server& srv) {
+        for (uint16_t gw : { nox::kItemStreetShirt, nox::kItemStreetPants, nox::kItemStreetSneakers,
+                             nox::kItemWizardRobe, nox::kItemWoodenShield, nox::kItemLongsword }) {
+            nox::Session::Carried c;
+            bool w = false;
+            c.equipBit = nox::EquipBitFor(nox::LoadoutItemName(gw), &w);
+            c.isWeapon = w;
+            c.modifiable = true;
+            c.weight = 7;
+            srv.SetItemTemplate(gw, c);
+        }
+    };
+    // 스냅샷 꼬리의 장비 알림을 차례대로 — 사람 번호 +1~+4 이고 종류가 기본 장비인 `0x4c` 만
+    auto tailGear = [](uint16_t nc, CharClass cls) {
+        const auto t = nox::BuildSnapshotTail(nc, cls, 0, 0);
+        std::vector<std::pair<uint16_t, uint16_t>> v;
+        for (size_t i = 0; i + 4 < t.size(); ++i) {
+            if (t[i] != 0x4c) continue;
+            const uint16_t code = static_cast<uint16_t>(t[i + 1] | (t[i + 2] << 8));
+            const uint16_t type = static_cast<uint16_t>(t[i + 3] | (t[i + 4] << 8));
+            if (code > nc && code <= nc + 4 && nox::LoadoutItemName(type)) v.push_back({ code, type });
+        }
+        return v;
+    };
+
+    // ① 직업 셋 — 가방 = 스냅샷 꼬리의 장비(번호·종류·순서) · 전부 입음 · 무기 칸은 워리어 롱소드 하나
+    for (CharClass cls : { CharClass::Warrior, CharClass::Wizard, CharClass::Conjurer }) {
+        nox::Server srv;
+        tmpl(srv);
+        srv.DebugEnterGame(a, 728, false, cls);
+        const auto inv = srv.DebugInventory(a);
+        const auto want = tailGear(728, cls);
+        bool same = inv.size() == want.size() && !want.empty();
+        for (size_t i = 0; same && i < inv.size(); ++i)
+            same = inv[i].netCode == want[i].first && inv[i].type == want[i].second && inv[i].equipped;
+        int weapons = 0;
+        for (const auto& c : inv) if (c.isWeapon) ++weapons;
+        Check(same, "① 가방의 기본 장비가 스냅샷 꼬리(번호·종류·순서·입음)와 다르다");
+        Check(weapons == (cls == CharClass::Warrior ? 1 : 0), "① 무기 칸 수가 직업과 안 맞는다");
+        Check(srv.gearGiven(true) == want.size() && srv.gearGiven(false) == 0, "① 실은 수 계수기가 다르다");
+        // 다시 들어와도 겹쳐 싣지 않는다(시험 입장만 — 진짜 경로는 처음 접속 한 번)
+        srv.DebugEnterGame(a, 728, false, cls);
+        Check(srv.CarriedCount(a) == want.size(), "① 다시 들어왔더니 기본 장비가 겹쳐 실렸다");
+    }
+    // ② 틀이 없으면 안 싣는다(무게를 짐작으로 안 채움) — 못 실은 수만 센다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        Check(srv.CarriedCount(a) == 0, "② 틀이 없는데 실었다");
+        Check(srv.gearGiven(false) == 4 && srv.gearGiven(true) == 0, "② 못 실은 수를 안 셌다");
+    }
+    // ③ 이제 기본 롱소드를 벗을 수 있다 — 전에는 가방에 없어 입기 처리가 번호를 못 찾고 아무것도 안 보냈다
+    {
+        nox::Server srv;
+        tmpl(srv);
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        const uint16_t sword = 728 + 4;   // 워리어 넷째 = 롱소드(스냅샷 꼬리 차례)
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> d = CodePacket(nox::Op::TRY_DEQUIP, sword);
+        srv.OnPacket(a, d.data(), d.size(), out);
+        const auto toA = FlattenTo(out, a);
+        const auto toB = FlattenTo(out, b);
+        const auto* self = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_DEQUIP));
+        Check(self && self->size() >= 3 && (*self)[1] == static_cast<uint8_t>(sword) &&
+              (*self)[2] == static_cast<uint8_t>(sword >> 8),
+              "③ 기본 롱소드를 벗었는데 본인에게 벗음 알림이 안 갔다");
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)) != nullptr,
+              "③ 남에게 무기 벗음(0x54)이 안 갔다");
+        Check(srv.dequipped() == 1, "③ 벗기를 안 셌다");
+    }
+    std::printf("  09-27 B1 — 기본 장비가 서버 가방에(스냅샷 꼬리와 번호·종류·순서 같음) · 틀 없으면 안 실음 · 기본 롱소드 벗기가 번호를 찾음\n");
+}
+
 // ── 09-26 M3 — 바닥 칸 피해(`GAME4_1.c:3240~3245` · `GAME5.c:2062~2065`) ─────────
 //   떠 있지 않은 사람이 바닥 번호 6(FLOR 순번 6 = Lava) 위면 틱마다 짝 (나, 6) 하나 → 피해 2 · 종류 12 · 때린 이 없음
 void TestLavaFloor() {
@@ -23623,6 +23702,7 @@ int main() {
     TestDeathPass();
     TestLavaFloor();
     TestMonsterSounds();
+    TestDefaultGear();
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestJournalAndSysop();
