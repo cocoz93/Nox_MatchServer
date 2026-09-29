@@ -12,6 +12,7 @@
 // 지금 답하는 것은 접속 절차 세 자리뿐이다. 그 밖의 오프코드는 세기만 한다.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <list>
@@ -286,6 +287,22 @@ enum class BrainStat : uint8_t {
     Count
 };
 constexpr size_t kBrainStatCount = static_cast<size_t>(BrainStat::Count);
+
+// ★ 09-29 B5 — 몬스터 애니 칸(`updateNPCAnimData_50A850`)과 걸음 소리(`monsterMoveAudio_534030`)가 **무엇을 했나**
+//   걸음 소리를 부르는 자리는 셋(가기 7 · 도망 24 · 아무 데나 걷기 29·36) — 자리마다 센다(한 곳만 세면 나머지의 0 이 거짓말이 된다)
+enum class AnimStat : uint8_t {
+    NoTable = 0,     // 그 종류에 MonsterDraw 표가 없음 — 칸이 안 움직인다
+    NoFrames,        // 지금 애니 칸 수 0 → 끝남(+483)
+    Advance,         // 칸을 넘김
+    Wrap,            //   그중 되풀이 애니가 처음 칸으로
+    Done,            //   그중 한 번짜리 애니가 끝 칸에서 끝남
+    StepMoveTo,      // 걸음 소리 부름 — 가기(7)
+    StepFlee,        //                — 도망(24)
+    StepWalk,        //                — 아무 데나 걷기(29 · 혼란 36)
+    StepHit,         // 칸이 걸음 칸(A·B)이고 칸 안 틱 0 — 소리 칸 17 을 냄(났나는 monsterSnd(17, …))
+    Count
+};
+constexpr size_t kAnimStatCount = static_cast<size_t>(AnimStat::Count);
 
 // ★ 09-23 3-a — 점프(CCJump 7)가 **어떻게 끝났나**(`object_update.go:550~571`). 들어옴 = 갈래 합
 enum class JumpGate : uint8_t {
@@ -588,6 +605,10 @@ struct Creature {
     uint32_t stuckFrame = 0;        // 갱신자료 +496(`Field124`) — 15 넘게 움직인 마지막 프레임(답답함 재기) · 행동이 바뀌어도 새로 찍힌다(`MonsterActionReset`)
     float stuckX = 0, stuckY = 0;   // 갱신자료 +500·+504 — 그때 자리
     bool frustrated = false;        // StatusFlags FRUSTRATED(0x200000) — 조건 70 이 보고 지운다
+    // ★ 09-29 B5 — 애니 칸(갱신자료 +480~+483 · `Field120_0~3`) — 칸 수 · 지금 칸 · 칸 안 틱 · 끝남.
+    //   행동이 바뀌면 지금 칸·칸 안 틱·끝남이 0(`MonsterActionReset` — 칸 수는 그대로)
+    uint8_t animFrames = 0, animFrame = 0, animTick = 0;
+    bool animDone = false;
 };
 
 // 깃발 하나.
@@ -1729,6 +1750,18 @@ public:
     unsigned long long b2Stat(B2Stat s) const { return s < B2Stat::Count ? b2Stat_[static_cast<size_t>(s)] : 0; }               // ★ 09-29 B2
     unsigned long long meleeStrike(MeleeStrikeWay w) const { return w < MeleeStrikeWay::Count ? meleeStrike_[static_cast<size_t>(w)] : 0; }   // ★ 09-29 B3
     unsigned long long brainStat(BrainStat b) const { return b < BrainStat::Count ? brainStat_[static_cast<size_t>(b)] : 0; }                   // ★ 09-29 B4
+    unsigned long long animStat(AnimStat b) const { return b < AnimStat::Count ? animStat_[static_cast<size_t>(b)] : 0; }                        // ★ 09-29 B5
+    // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
+    void SetMonsterAnim(uint16_t wire, int idx, int frames, int hold, bool loop) {
+        if (idx < 0 || idx >= 16) return;
+        MonsterAnimRow& r = monsterAnims_[wire][static_cast<size_t>(idx)];
+        r.frames = static_cast<uint8_t>(frames); r.hold = static_cast<uint8_t>(hold); r.loop = loop;
+    }
+    size_t MonsterAnimTypes() const { return monsterAnims_.size(); }
+    int DebugPetAnimFrame(size_t i) const { return i < pets_.size() ? pets_[i].animFrame : -1; }
+    int DebugPetAnimTick(size_t i) const { return i < pets_.size() ? pets_[i].animTick : -1; }
+    bool DebugPetAnimDone(size_t i) const { return i < pets_.size() && pets_[i].animDone; }
+    int DebugPetAnimIndex(size_t i) const { return i < pets_.size() ? MonsterAnimIndex(pets_[i]) : -1; }
     void DebugSetPetHealth(size_t i, uint16_t hp) { if (i < pets_.size()) pets_[i].health = hp; }
     void DebugSetPetMoveAttempt(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].moveAttemptFrame = f; }
     uint32_t DebugPetMoveAttempt(size_t i) const { return i < pets_.size() ? pets_[i].moveAttemptFrame : 0; }
@@ -4339,6 +4372,10 @@ private:
     bool MonsterCanResumeAttack(const Creature& k) const;
     bool MonsterCheckDodgeables(Creature& k);                 // ★ B4b 옆걸음(`547C50`)
     Target MonsterEnemyAggro(const Creature& k, float r) const;   // ★ B4b `EnemyAggroXxx`
+    // ★ 09-29 B5 — 애니 칸·걸음 소리(Server.cpp 「B5」 절)
+    int  MonsterAnimIndex(const Creature& k) const;          // `mobActionToAnimation_533790`
+    void MonsterAnimUpdate(Creature& k);                      // `updateNPCAnimData_50A850`
+    void MonsterMoveAudio(Creature& k, AnimStat site);        // `monsterMoveAudio_534030`
     void SendGold(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-a — 경험치 알림·주기·레벨 오름
     // 묶음 7-d — 능력(0xCD·0xCE·0xCF·0xEB)
@@ -5172,6 +5209,9 @@ private:
     unsigned long long b2Stat_[kB2StatCount] = {};   // ★ 09-29 B2
     unsigned long long meleeStrike_[kMeleeStrikeWayCount] = {};   // ★ 09-29 B3
     unsigned long long brainStat_[kBrainStatCount] = {};          // ★ 09-29 B4
+    unsigned long long animStat_[kAnimStatCount] = {};            // ★ 09-29 B5
+    struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };
+    std::map<uint16_t, std::array<MonsterAnimRow, 16>> monsterAnims_;   // ★ 09-29 B5 — 갱신자료 +476 표(종류별)
     uint32_t sightForceFrame_ = 0xFFFFFFFFu;   // dword_5d4594_2487684 — 이 프레임엔 모든 몬스터가 다시 훑는다(순간이동·살금살금 켜기 다음 프레임)
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
     std::map<uint16_t, PhysBody> typeBodies_;   // 소환수 종류 → 몸

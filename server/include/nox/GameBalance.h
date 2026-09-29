@@ -622,6 +622,29 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
     }
 }
 
+// ★ 09-29 B5 — 걸음 소리 칸 ⭕ monster.bin(`MOVE_SOUND_FRAME_A` +100 · `MOVE_SOUND_FRAME_B` +104) — 위 `kMonsters` 열셋만(스크립트로 13종 추림 · 09-29).
+//   애니 칸(+481)이 둘 중 하나이고 칸 안 틱(+482)이 0 일 때 소리 모음 칸 17(MOVE_SOUND · +72)을 낸다(`monsterMoveAudio_534030`)
+//   ⚠ 파일에 없으면 0(정답지 몬스터표 기본값) — 그래서 표에 없는 종류는 {0, 0}
+struct MonsterMoveSound { int a = 0, b = 0; };
+inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
+    switch (wire) {
+        case 1317: return { 0, 4 };   // EvilCherub
+        case 1325: return { 0, 0 };   // Ghost
+        case 1328: return { 1, 5 };   // Imp
+        case 1337: return { 0, 4 };   // EmberDemon
+        case 1348: return { 0, 4 };   // Bomber
+        case 1355: return { 0, 4 };   // AlbinoSpider
+        case 1356: return { 0, 4 };   // SmallAlbinoSpider
+        case 1357: return { 1, 5 };   // Bat
+        case 1358: return { 1, 1 };   // GiantLeech
+        case 1365: return { 1, 5 };   // Bear
+        case 1366: return { 1, 5 };   // BlackBear
+        case 1371: return { 0, 0 };   // CarnivorousPlant
+        case 1382: return { 0, 4 };   // Beholder
+        default:   return {};
+    }
+}
+
 // ★ 09-29 B3 — 근접 때리기 함수·피해 종류·밀어내기·독 ⭕ monster.bin(`MELEE_STRIKE_FUNCTION` +236 · `MELEE_ATTACK_DAMAGE_TYPE` +124 ·
 //   `MELEE_ATTACK_IMPACT` +120 · `MELEE_ATTACK_POISON_CHANCE/STRENGTH/MAX` +136·+140·+144) — 위 `kMonsters` 열셋만.
 //   피해 종류 번호는 아래 18칸 표(8 BITE · 2 CRUSH · 4 DRAIN · 10 CLAW). NULL(Imp·EvilCherub·Beholder)은 근접을 못 한다(`532440` — 빠짐)

@@ -8024,6 +8024,7 @@ void Server::AIRandomWalk(Creature& k) {
     k.facingWant = d;                                          // ★ 둘을 같이 놓는다
     k.velX = k.speedCur * DirVecX(d);
     k.velY = k.speedCur * DirVecY(d);
+    MonsterMoveAudio(k, AnimStat::StepWalk);                  // ★ 09-29 B5 — `GAME5.c:88`
 }
 
 // ── 묶음 6-g(2b) 때릴 거리를 정하고 사슬을 쌓는다 ─────────────────────
@@ -10714,6 +10715,9 @@ bool Server::AIIsCondition(uint8_t act) {
 void Server::AIActionReset(Creature& k) {
     k.aiActionFrame = frame_;
     k.stuckFrame = frame_;          // ★ 09-29 B4b — `+124`(+496) 는 답답함 시계와 같은 칸이다 — 행동이 바뀌면 0.5초를 새로 잰다
+    k.animFrame = 0;                // ★ 09-29 B5 — `Field120_1~3`(+481~+483) — 애니를 첫 칸부터(칸 수 +480 은 그대로)
+    k.animTick = 0;
+    k.animDone = false;
     k.aiMorphReady = false;
 }
 
@@ -10915,7 +10919,7 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             //   · 움직일 수 없으면 뺀다 · 지금 상대가 있으면 도망칠 자리(인자)를 그 자리로 고치고, 도망 거리 안이면 0.5초마다 길을 다시 낸다
             //   · 길이 2초 넘게 묵었으면 버린다 · 길이 있거나 낸 지 10프레임 안이면 따라 걷는다 · 아니면 멀어지는 길을 내고(`50CA00`) 점 둘 이상이면 걷는다 ·
             //     못 내면 도망칠 자리를 제 자리로
-            //   ⚠ 주문 몬스터의 도망 중 주문(`mobCastRelated`·`BuffSelf`·`CastOffensive`)은 B7 · 걸음 소리는 B5
+            //   ⚠ 주문 몬스터의 도망 중 주문(`mobCastRelated`·`BuffSelf`·`CastOffensive`)은 B7 · 걸음 소리는 걸을 때(B5)
             if (k.speedCur < 0.0099999998f) { AIPop(k); break; }
             const Target e{ k.enemyAddr, k.enemyPet };
             float ex = 0, ey = 0;
@@ -10935,6 +10939,7 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             }
             if (go) {
                 if (!k.path.empty() && CreatureActuallyMove(k)) k.path.clear();
+                MonsterMoveAudio(k, AnimStat::StepFlee);              // ★ 09-29 B5 — `GAME4_3.c:9667`
             } else {
                 st.argX = static_cast<float>(k.x); st.argY = static_cast<float>(k.y);
                 ++brainStat_[static_cast<size_t>(BrainStat::FleeNoPath)];
@@ -11043,7 +11048,8 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 if (d2 >= near2 * near2) { if (d2 > far2 * far2) k.running = true; }
                 else k.running = false;
             }
-            if (CreatureSetMovePath(k, st.argX, st.argY) != 1) break;   // 아직 가는 중
+            // ★ 09-29 B5 — 걸음 소리는 이 함수 **끝에서 늘** 부른다(`GAME4_3.c:9548`) — 아직 가는 중이어도 · 닿아 뺀 뒤에도(아래 `break` 셋 앞마다)
+            if (CreatureSetMovePath(k, st.argX, st.argY) != 1) { MonsterMoveAudio(k, AnimStat::StepMoveTo); break; }   // 아직 가는 중
 
             // ② 길 찾기 **결과(+284)** 로 갈래가 갈린다
             const uint8_t ps = k.pathStatus;
@@ -11061,6 +11067,7 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 //   보는 쪽(+124)은 건드리지 않는다(그쪽은 딴 데서 8씩 쫓아간다)
                 k.facingWant = DirFromVec(st.argX - k.x, st.argY - k.y);
                 AIPop(k);
+                MonsterMoveAudio(k, AnimStat::StepMoveTo);
                 break;
             }
             // ④ **막혔으면** — 2~4초짜리 **때(41) 조건**을 깔고 **아무 데나 걷기(29)** 를 올린다
@@ -11071,10 +11078,12 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                     //   60~120 이니 값이 **61가지**다
                     k.aiStack[idx].argU32 = frame_ + 60 + NextRandom(61);
                 AIPush(k, 29);
+                k.frustrated = true;                         // ★ 09-29 B4b — FRUSTRATED 도 켠다(`GAME4_3.c:9539`)
             }
             // ⑤ 결과가 0 이 아니면 **잠깐 기다린다**(0.5~1초) — `GAME4_3.c:9541` `if (+284)`
             if (ps != 0 && AIPush(k, 1))
                 k.aiStack[k.aiStackInd].argU32 = frame_ + 15 + NextRandom(16);   // randomInt(FPS/2, FPS) = 15~30
+            MonsterMoveAudio(k, AnimStat::StepMoveTo);
             break;
         }
         case 3: {    // ── 묶음 6-h 호위 — `nox_xxx_mobActionEscort_546430`(`legacy/GAME5.c:924`)
@@ -12120,6 +12129,67 @@ Target Server::MonsterEnemyAggro(const Creature& k, float r) const {
     return best;
 }
 
+// ── ★ 09-29 B5 애니 칸 · 걸음 소리 ─────────────────────────────────────
+//
+// `nox_xxx_mobActionToAnimation_533790`(`GAME4_3.c:2278~2364`) — 맨 위 행동 → 애니 순번(libs `MonsterAnimationType`)
+//   걷는 행동(7·8·10·13·29·36·37)은 달리기(0x4000)면 13 MOVE_2 · 아니면 12 MOVE · 피하기 9 는 12 · 근접 16 → 1 · 쏘기 17 → 3 ·
+//   주문 18~20 → 7 · 막기 21·23 → 5 · 22 → 6 · 도망 24 → 13 · 죽어가는 중 30 → 9 · 죽음 31 → 10 · 변신 33·35 → 14 · 34 → 15 · 그 밖 8 IDLE
+//   · 식충식물은 놀기(8)인데 지금 상대가 없으면 14 · 흉내쟁이·좀비 갈래는 우리 몬스터에 없음
+int Server::MonsterAnimIndex(const Creature& k) const {
+    int v = 8;
+    switch (k.aiStack[k.aiStackInd].action) {
+        case 7: case 8: case 10: case 13: case 29: case 36: case 37: v = k.running ? 13 : 12; break;
+        case 9:  v = 12; break;
+        case 16: v = 1;  break;
+        case 17: v = 3;  break;
+        case 18: case 19: case 20: v = 7; break;
+        case 21: case 23: v = 5; break;
+        case 22: v = 6;  break;
+        case 24: v = 13; break;
+        case 30: v = 9;  break;
+        case 31: v = 10; break;
+        case 33: case 35: v = 14; break;
+        case 34: v = 15; break;
+        default: v = 8;  break;
+    }
+    if (k.type == kCarnivorousPlantType && v == 8 && k.enemyAddr.empty() && k.enemyPet < 0) return 14;   // `534A10` · +1196 없음
+    return v;
+}
+
+// `nox_xxx_updateNPCAnimData_50A850`(`GAME4_1.c:532~579`) — 조건 뒤 · 행동 앞에 한 번(`unit_ai.go:579`) · 끝났으면(+483) 안 넘긴다
+//   칸 수(+480)를 적고 0 이면 끝 · 칸 안 틱(+482)을 올려 붙드는 틱 + 1 에 닿으면 다음 칸(+481) · 끝 칸을 넘으면 되풀이면 0, 아니면 끝 칸에 서고 끝
+//   ⚠ NPC(아종 0x10)의 사람 애니 갈래는 우리 몬스터에 없다
+void Server::MonsterAnimUpdate(Creature& k) {
+    if (k.animDone) return;
+    const auto it = monsterAnims_.find(k.type);
+    if (it == monsterAnims_.end()) { ++animStat_[static_cast<size_t>(AnimStat::NoTable)]; return; }   // +476 표 없음
+    const MonsterAnimRow& a = it->second[static_cast<size_t>(MonsterAnimIndex(k))];
+    k.animFrames = a.frames;
+    if (a.frames == 0) { k.animDone = true; ++animStat_[static_cast<size_t>(AnimStat::NoFrames)]; return; }
+    k.animTick = static_cast<uint8_t>(k.animTick + 1);
+    if (k.animTick < a.hold + 1) return;
+    k.animTick = 0;
+    k.animFrame = static_cast<uint8_t>(k.animFrame + 1);
+    ++animStat_[static_cast<size_t>(AnimStat::Advance)];
+    if (k.animFrame < a.frames) return;
+    if (a.loop) { k.animFrame = 0; ++animStat_[static_cast<size_t>(AnimStat::Wrap)]; return; }
+    k.animFrame = static_cast<uint8_t>(a.frames - 1);
+    k.animDone = true;
+    ++animStat_[static_cast<size_t>(AnimStat::Done)];
+}
+
+// `nox_xxx_monsterMoveAudio_534030`(`GAME4_3.c:2648~2691`) — 지금 칸(+481)이 걸음 칸 A·B(monster.bin +100·+104) 중 하나이고 칸 안 틱(+482)이 0 이면
+//   소리 모음 칸 17(MOVE_SOUND · +72)을 몬스터 자리에서 · 부르는 자리 = 가기(7) 끝 · 도망(24) 걸을 때 · 아무 데나 걷기(`545020`) 끝 · 떠돌기(10 — 우리는 가기로 걷는다)
+//   ⚠ NPC(아종 0x30)의 사람 걷기 애니 갈래는 우리 몬스터에 없다
+void Server::MonsterMoveAudio(Creature& k, AnimStat site) {
+    ++animStat_[static_cast<size_t>(site)];
+    const MonsterMoveSound ms = MonsterMoveSoundOf(k.type);
+    if ((k.animFrame == ms.a || k.animFrame == ms.b) && k.animTick == 0) {
+        ++animStat_[static_cast<size_t>(AnimStat::StepHit)];
+        MonsterSound(k, 17);
+    }
+}
+
 // `nox_xxx_monsterPopAttackActions_5471B0` — 맨 위가 공격 행동(16~20 · 25~28)인 동안 뺀다
 void Server::MonsterPopAttackActions(Creature& k) {
     for (int guard = 0; guard <= Creature::kAIStackMax; ++guard) {
@@ -13142,6 +13212,10 @@ void Server::SpawnCreature(uint16_t type, float x, float y, const std::string& o
     if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
     k.x = x;
     k.y = y;
+    // ★ 09-29 B5 — 놓을 때 지난 자리도 그 자리(`CreateObjectAt` `object.go:251` PrevPos = pos).
+    //   ✖ 전에는 (0,0) 이라 첫 틱에 놀기(0)가 「움직였다」로 보고 (0,0) 쪽 바라보기(25)를 쌓았다(B5 시험에서 잡힘)
+    k.prevX = x;
+    k.prevY = y;
     k.health = static_cast<uint16_t>(TuningFor(type).health);
     pets_.push_back(k);
 }
@@ -16092,9 +16166,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             AIRefreshStackArgs(k);                             // ★ 09-28 — 정답지는 조건 보기 전(`unit_ai.go:548`)
             AIProcDeps(k, out);
             if (pets_.size() != before) break;
+            MonsterAnimUpdate(k);                              // ★ 09-29 B5 — 애니 칸 넘기기 — 조건 뒤 · 행동 앞(`unit_ai.go:579`)
             AITick(k, out);
             if (pets_.size() != before) break;
-            k.injured = false;                                 // ★ 09-29 B2 — INJURED 는 제 갱신 끝에 끈다(unit_ai.go:608)
+            k.injured = false;                                // ★ 09-29 B2 — INJURED 는 제 갱신 끝에 끈다(unit_ai.go:608)
             // ★ 09-29 B1 — 지난 자리(+72 PrevPos)는 **옮기기 직전 자리**다(`server.go:163` — 정답지는 이동 적분마다 적는다).
             //   ✖ 전에는 크리처에서 한 번도 안 적었다(시험만 세움) — 조건 71(안 움직였나)이 (0,0) 과 견줬고, 알아보기의 「순간이동」 검사가 늘 참이 될 뻔했다
             k.prevX = k.x; k.prevY = k.y;

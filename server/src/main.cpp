@@ -284,6 +284,11 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.brainStat(BS::Runs), srv.brainStat(BS::Confused), srv.brainStat(BS::Fear), srv.brainStat(BS::Retreat),
                     srv.brainStat(BS::RetreatAnti), srv.brainStat(BS::FleeNoPath), srv.brainStat(BS::AggroAtWill), srv.brainStat(BS::KeepDistance),
                     srv.brainStat(BS::Frustrated), srv.brainStat(BS::Sidestep), srv.brainStat(BS::WaitStuck), srv.brainStat(BS::Eat));
+        using AS = nox::AnimStat;    // ★ 09-29 B5 — 애니 칸·걸음 소리
+        std::printf("[몬스터애니] 표없음 %llu · 칸0 %llu · 넘김 %llu(되풀이 %llu · 끝 %llu) · 걸음 부름 가기 %llu/도망 %llu/걷기 %llu · 칸맞음 %llu · 소리 %llu(번호없음 %llu)\n",
+                    srv.animStat(AS::NoTable), srv.animStat(AS::NoFrames), srv.animStat(AS::Advance), srv.animStat(AS::Wrap), srv.animStat(AS::Done),
+                    srv.animStat(AS::StepMoveTo), srv.animStat(AS::StepFlee), srv.animStat(AS::StepWalk), srv.animStat(AS::StepHit),
+                    srv.monsterSnd(17, true), srv.monsterSnd(17, false));
     }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
     std::printf("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",
@@ -1192,8 +1197,12 @@ int main(int argc, char** argv) {
                                 (unsigned)hitIds[tdb.WireByName("SmallSpider")]);
                     srv.SetMonsterMeleeHitSoundIds(std::move(hitIds));
                     // ★ 09-26 M4a — 같은 꼴로 칸 넷 더: 근접 시작 5 · 쏘기 시작 9 · 쏘기 10 · 죽음 14(`kSoundSetFieldNames` 순서)
+                    // ★ 09-29 B5 — **칸 전부**(맞히는 소리 7 은 위에서). ✖ 전에는 5·9·10·14·16 만 실어서 B2~B4a 가 부르는 칸
+                    //   (도발 1 · 놀 때 3 · 교전 4 · 빗나감 8 · 도망 11 · 후퇴 12 · 다침 15)과 걸음 17 이 **실서버에서 한 번도 안 났다**
+                    //   (시험은 「났음+번호 없음」을 합쳐 세어 못 잡았다 — 시험 표에는 번호를 안 싣기 때문)
                     std::printf("[소리모음] 칸별 번호 있는 종류 —");
-                    for (int field : { 5, 9, 10, 14, 16 }) {   // ★ 09-26 M4b — 16 RECOGNIZE(명령 대답)
+                    for (int field = 0; field < nox::kSoundSetFields; ++field) {
+                        if (field == nox::kSoundSetMeleeHitting) continue;
                         std::vector<uint16_t> ids(tdb.Count() + 1, 0);
                         size_t n = 0;
                         for (size_t w = 1; w <= tdb.Count(); ++w) {
@@ -1960,6 +1969,20 @@ int main(int argc, char** argv) {
             // ★ 2026-09-13 묶음 3-a — 사람 애니 칸 수(PlayerDraw STAT). 맨손 공격이 끝나는 틱이 이 값이다.
             for (int i = 0; i < nox::kPlayerAnimTypeCount; ++i)
                 srv.SetPlayerAnimFrames(i, tdb.PlayerAnim(i).frames, tdb.PlayerAnim(i).hold);
+            // ★ 09-29 B5 — 몬스터 애니 표(MonsterDraw STAT) — 걸음 소리가 애니 칸을 본다(`monsterMoveAudio_534030`)
+            {
+                for (size_t w = 1; w <= tdb.Count(); ++w) {
+                    const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                    if (!t || !t->hasMonsterDraw) continue;
+                    for (int i = 0; i < 16; ++i)
+                        srv.SetMonsterAnim(static_cast<uint16_t>(w), i, t->monsterAnims[i].frames, t->monsterAnims[i].hold, t->monsterAnims[i].loop);
+                }
+                const nox::ThingInfo* lg = tdb.ByWire(tdb.WireByName("GiantLeech"));
+                std::printf("[몬스터애니] MonsterDraw 종류 %zu개 · GiantLeech 걷기(12) %d칸/붙듦 %d/되풀이 %d · 근접(1) %d칸/붙듦 %d\n",
+                            srv.MonsterAnimTypes(),
+                            lg ? lg->monsterAnims[12].frames : -1, lg ? lg->monsterAnims[12].hold : -1, lg ? (int)lg->monsterAnims[12].loop : -1,
+                            lg ? lg->monsterAnims[1].frames : -1, lg ? lg->monsterAnims[1].hold : -1);
+            }
             // ★ 09-23 2-a1 — 함성(46)·광전사(45) 애니 길이도 찍는다. 함성 애니가 끝나면 켜짐 값이 내려가 광전사·작살을 더는 안 막으므로
             //   「함성 지속 120 중 얼마 동안 막나」가 이 값으로 정해진다(플랜 v2 에서 미확인이던 것)
             //   ★ 3-a — 점프(3) 애니 길이 = 떠 있는 틱 수(칸 × (붙듦+1))

@@ -406,6 +406,31 @@ void ReadPlayerDraw(Cur& c, size_t end, PlayerAnimFrames* anims, int* seen) {
     }
 }
 
+// ★ 09-29 B5 — MonsterDraw 짐 — libs `things/thing_draw.go:270` readMonsterDraw 그대로.
+//   STAT = 순번(u8) · 소리 이름(len8) · Field8(len8) · FramesPerDir(u8) · Field10(u8) · 종류(len8 — OneShot·Loop …) · 8방향 × 칸 수 그림 참조
+//   END  = 끝. 모르는 섹션이면 멈춘다(바깥에서 크기로 건너뛰므로 걸음은 안 밀린다)
+void ReadMonsterDraw(Cur& c, size_t end, ThingInfo& t) {
+    while (!c.bad && c.off < end) {
+        const std::string sect = c.Sect();
+        if (c.bad || sect == "END ") return;
+        if (sect != "STAT") return;
+        const int typ = c.U8();
+        c.SkipBytes8();                       // 소리 이름
+        c.SkipBytes8();                       // Field8
+        const int frames = c.U8();
+        const int hold = c.U8();
+        const std::string kind = c.Str8();
+        if (c.bad) return;
+        for (int d = 0; d < 8 && !c.bad; ++d)
+            for (int j = 0; j < frames && !c.bad; ++j) SkipImageRef(c);
+        if (c.bad || typ < 0 || typ >= 16) return;   // 정답지 — 「unexpected animation index」
+        t.monsterAnims[typ].frames = frames;
+        t.monsterAnims[typ].hold = hold;
+        t.monsterAnims[typ].loop = (kind == "Loop" || kind == "LoopAndFade");   // `object_type.go:1059~1062`
+        t.hasMonsterDraw = true;
+    }
+}
+
 // THNG 하나. Go ReadThingSect 에서 서버에 필요한 것만 남긴 판.
 bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
     t.name = c.Str8();
@@ -441,6 +466,13 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
                     sub.err = nullptr;   // 읽다 틀려도 본 커서의 오류로 번지지 않게
                     sub.n = std::min(c.n, start + static_cast<size_t>(sz));
                     ReadPlayerDraw(sub, sub.n, anims, animSeen);
+                }
+                // ★ 09-29 B5 — MonsterDraw 도 STAT 만 읽는다(몬스터 애니 칸 — 걸음 소리가 이 칸을 본다)
+                if (dname == "MonsterDraw" && !c.bad) {
+                    Cur sub = c;
+                    sub.err = nullptr;
+                    sub.n = std::min(c.n, c.off + static_cast<size_t>(sz));
+                    ReadMonsterDraw(sub, sub.n, t);
                 }
                 c.Skip(static_cast<size_t>(sz));
             } else if (key == "MENUICON" || key == "PRETTYIMAGE") {

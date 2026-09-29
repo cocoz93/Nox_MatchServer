@@ -189,6 +189,12 @@ struct ThingInfo {
     //   ⇒ 같은 종류의 덫은 **전부 같은 쪽**을 본다
     std::string initFn;
     std::string initArgs;
+    // ★ 09-29 B5 — `DRAW = MonsterDraw` 의 STAT(애니 16종 · 순번 = libs `MonsterAnimationType` 0 SPECIAL_3 ~ 15 SPECIAL_2).
+    //   정답지 서버가 읽는 셋만 담는다(`server/object_type.go:1041~1064` → 갱신자료 +476 표) —
+    //   칸 수(FramesPerDir · 표 +9) · 한 칸을 몇 틱 더 붙드나(Field10 · +10) · 되풀이(Loop·LoopAndFade · +12). 칸 수 0 = 그 애니 없음
+    struct MonsterAnim { int frames = 0; int hold = 0; bool loop = false; };
+    bool hasMonsterDraw = false;
+    MonsterAnim monsterAnims[16];
 };
 
 // '+' 로 이은 이름 목록 → 비트 (2026-09-13 묶음 2-c). 이름 순서 = 비트 순서

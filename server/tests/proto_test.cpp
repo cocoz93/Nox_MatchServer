@@ -11826,6 +11826,7 @@ void TestAIMoveTo() {
         Check(srv.DebugAIAction(0, 2) == 29, "아무 데나 걷기(29)가 안 올라갔다");
         Check(srv.DebugAIAction(0, 3) == 1, "기다리기(1)가 안 올라갔다");
         Check(srv.DebugAIStackInd(0) == 3, "쌓임 맨 위가 기다리기가 아니다");
+        Check(srv.DebugPetFrustrated(0), "막혀 41·29 를 올렸는데 FRUSTRATED 를 안 켰다(`GAME4_3.c:9539` — 09-29 B4b)");
     }
 
     // ⑤ **결과가 0 이 아니면 기다리기만 올린다**(막힌 것으로는 안 볼 때)
@@ -20845,6 +20846,133 @@ void TestMonsterBrainB4b() {
     std::printf("  09-29 B4b — 두뇌 2: 거리 두기(비홀더만·물러남) · 지키기 중 공격 성향(성향·100) · 답답함(0.5초·갈래 수·구석·조건 70) · 옆걸음·피하기 · 쪽 세우기 · 먹기(75·항아리·물약·버섯·멀쩡)\n");
 }
 
+// ── 09-29 B5 — 몬스터 애니 칸(`updateNPCAnimData_50A850` · `mobActionToAnimation_533790`) · 걸음 소리(`monsterMoveAudio_534030`) ─────────
+void TestMonsterAnimB5() {
+    const std::string a = "10.9.29.61:9361";
+    using AS = nox::AnimStat;
+    // 프레임을 **정확히 n 개** 넘긴다 — 틱 한 번에 34ms 를 밀면 30fps(33.3ms)라 가끔 프레임 둘이 돈다(첫 판에서 부름 49 로 잡힘)
+    auto run = [](nox::Server& srv, uint32_t& ms, int n) {
+        for (int t = 0; t < n; ++t) {
+            const uint32_t f = srv.frame();
+            for (int g = 0; g < 100 && srv.frame() == f; ++g) { ms += 5; std::vector<nox::OutPacket> o; srv.Tick(ms, o); }
+        }
+    };
+    auto mk = [&](nox::Server& srv, uint16_t type) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 3000.0f, 3000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, std::string());
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetFrame(1000);
+    };
+    // ① 실물 thing.bin — MonsterDraw STAT 을 읽는다(거머리 걷기 12 = 되풀이 · 죽기 9 = 한 번) · 우리 열셋 전부 표가 있다
+    {
+        nox::ThingDb tdb;
+        if (!tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            std::printf("  09-29 B5 ① — 건너뜀(thing.bin 없음)\n");
+        } else {
+            const nox::ThingInfo* lg = tdb.ByWire(tdb.WireByName("GiantLeech"));
+            char msg[200]; std::snprintf(msg, sizeof(msg), "① 거머리 MonsterDraw 가 걷기 8칸·붙듦 2·되풀이 / 죽기 한 번이 아니다 — 걷기 %d·%d·%d 죽기 %d·%d·%d",
+                lg ? lg->monsterAnims[12].frames : -1, lg ? lg->monsterAnims[12].hold : -1, lg ? (int)lg->monsterAnims[12].loop : -1,
+                lg ? lg->monsterAnims[9].frames : -1, lg ? lg->monsterAnims[9].hold : -1, lg ? (int)lg->monsterAnims[9].loop : -1);
+            Check(lg && lg->hasMonsterDraw && lg->monsterAnims[12].frames == 8 && lg->monsterAnims[12].hold == 2 && lg->monsterAnims[12].loop &&
+                  lg->monsterAnims[9].frames > 0 && !lg->monsterAnims[9].loop, msg);
+            int have = 0;
+            for (const auto& m : nox::kMonsters) { const nox::ThingInfo* t = tdb.ByWire(m.wireType); if (t && t->hasMonsterDraw && t->monsterAnims[8].frames > 0) ++have; }
+            Check(have == static_cast<int>(sizeof(nox::kMonsters) / sizeof(nox::kMonsters[0])), "① 소환 표 열셋 중 MonsterDraw(놀기 칸)가 없는 것이 있다");
+        }
+    }
+    // ② 행동 → 애니 순번 — 갈래 전수(`533790`)
+    {
+        nox::Server srv; mk(srv, 1358);
+        srv.DebugSetAutoFight(false);
+        struct Row { int act; bool running; int want; };
+        const Row rows[] = {
+            { 7, false, 12 }, { 7, true, 13 }, { 8, false, 12 }, { 10, false, 12 }, { 13, true, 13 }, { 29, false, 12 }, { 36, true, 13 }, { 37, false, 12 },
+            { 9, true, 12 }, { 16, false, 1 }, { 17, false, 3 }, { 18, false, 7 }, { 19, false, 7 }, { 20, false, 7 }, { 21, false, 5 }, { 23, false, 5 },
+            { 22, false, 6 }, { 24, false, 13 }, { 30, false, 9 }, { 33, false, 14 }, { 35, false, 14 }, { 34, false, 15 }, { 25, false, 8 }, { 15, true, 8 },
+        };
+        int ok = 0;
+        for (const Row& r : rows) {
+            srv.DebugAIClearStack(0);
+            srv.DebugAIPush(0, static_cast<uint8_t>(r.act));
+            srv.DebugSetPetRunning(0, r.running);
+            const int got = srv.DebugPetAnimIndex(0);
+            if (got == r.want) ++ok;
+            else { char msg[120]; std::snprintf(msg, sizeof(msg), "② 행동 %d(달리기 %d)의 애니가 %d 가 아니라 %d", r.act, (int)r.running, r.want, got); Check(false, msg); }
+        }
+        srv.DebugAIClearStack(0);
+        srv.DebugAIPush(0, 30); srv.DebugAIPush(0, 31);
+        Check(srv.DebugPetAnimIndex(0) == 10, "② 죽음(31)의 애니가 10 DEAD 가 아니다");
+        Check(ok == static_cast<int>(sizeof(rows) / sizeof(rows[0])), "② 애니 순번 표가 다 맞지 않다");
+        // 식충식물 — 놀기(8)인데 지금 상대 없으면 14 · 있으면 8
+        nox::Server s2; mk(s2, 1371);
+        s2.DebugSetAutoFight(false);
+        Check(s2.DebugPetAnimIndex(0) == 14, "② 상대 없는 식충식물 놀기가 14 가 아니다");
+        s2.DebugSetPetEnemy(0, a, -1);
+        Check(s2.DebugPetAnimIndex(0) == 8, "② 상대 있는 식충식물 놀기가 8 이 아니다");
+    }
+    // ③ 칸 넘기기 — 되풀이 걷기(8칸 · 붙듦 2 → 3틱에 한 칸 · 24틱에 한 바퀴) · 걸음 소리는 칸 A·B 에서 칸 안 틱 0 일 때만
+    //   거머리 A=B=1 → 한 바퀴에 한 번 · 곰 A=1·B=5 → 두 번 · 행동이 바뀌면 첫 칸부터
+    for (int bear = 0; bear <= 1; ++bear) {
+        const uint16_t ty = bear ? 1365 : 1358;
+        nox::Server srv; uint32_t ms = 0; mk(srv, ty);
+        srv.SetMonsterAnim(ty, 12, 8, 2, true);
+        std::vector<uint16_t> ids(1400, 0); ids[ty] = 777;
+        srv.SetMonsterSoundIds(17, ids);
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0.0f, 1600.0f, 1000.0f);
+        const uint32_t f0 = srv.frame();
+        run(srv, ms, 3);
+        Check(srv.DebugPetAnimFrame(0) == 1 && srv.DebugPetAnimTick(0) == 0, "③ 붙듦 2 인데 3프레임에 한 칸이 아니다");
+        run(srv, ms, 45);                                     // 모두 48프레임 = 두 바퀴
+        const unsigned long long want = bear ? 4u : 2u;
+        char msg[220]; std::snprintf(msg, sizeof(msg), "③ %s 48프레임 걸음 — 부름 %llu(프레임 %u) · 칸맞음 %llu · 소리 %llu(%llu 여야) · 되풀이 %llu(2) · 지금 칸 %d",
+            bear ? "곰" : "거머리", srv.animStat(AS::StepMoveTo), srv.frame() - f0, srv.animStat(AS::StepHit), srv.monsterSnd(17, true), want, srv.animStat(AS::Wrap), srv.DebugPetAnimFrame(0));
+        Check(srv.frame() - f0 == 48 && srv.animStat(AS::StepMoveTo) == 48 && srv.animStat(AS::StepHit) == want && srv.monsterSnd(17, true) == want &&
+              srv.animStat(AS::Wrap) == 2 && srv.DebugPetAnimFrame(0) == 0, msg);
+        // 행동 바꾸면 첫 칸 — ⚠ 48프레임 뒤엔 칸이 이미 0 이라 되돌림이 없어도 0 으로 보인다(돌연변이 Y6 이 빠져나감) → 칸 1·틱 1 에서 바꾼다
+        run(srv, ms, 4);
+        Check(srv.DebugPetAnimFrame(0) == 1 && srv.DebugPetAnimTick(0) == 1, "③ 전제 — 4프레임 더 갔는데 칸 1·틱 1 이 아니다");
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        Check(srv.DebugPetAnimFrame(0) == 0 && srv.DebugPetAnimTick(0) == 0 && !srv.DebugPetAnimDone(0), "③ 행동이 바뀌었는데 애니가 첫 칸으로 안 돌아갔다");
+    }
+    // ④ 한 번짜리 애니 — 끝 칸에 서고 끝(+483) · 더 안 넘김 / 칸 수 0 이면 바로 끝 / 표가 없으면 안 움직임
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358);
+        srv.SetMonsterAnim(1358, 8, 3, 0, false);             // 놀기 — 3칸 · 붙듦 0 · 한 번
+        run(srv, ms, 2);
+        Check(srv.DebugPetAnimFrame(0) == 2 && !srv.DebugPetAnimDone(0), "④ 붙듦 0 인데 2틱에 둘째 칸(2)이 아니다");
+        run(srv, ms, 1);
+        Check(srv.DebugPetAnimFrame(0) == 2 && srv.DebugPetAnimDone(0) && srv.animStat(AS::Done) == 1, "④ 한 번짜리가 끝 칸(2)에서 안 끝났다");
+        run(srv, ms, 10);
+        Check(srv.animStat(AS::Advance) == 3 && srv.animStat(AS::Done) == 1, "④ 끝난 애니를 또 넘겼다");
+    }
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358);
+        srv.SetMonsterAnim(1358, 12, 8, 2, true);             // 걷기만 — 놀기(8) 칸 수 0
+        run(srv, ms, 5);
+        Check(srv.animStat(AS::NoFrames) == 1 && srv.DebugPetAnimDone(0), "④ 칸 수 0 인 애니가 바로 끝나지 않았다(또는 거듭 셈)");
+        nox::Server s2; uint32_t m2 = 0; mk(s2, 1358);
+        const unsigned long long n0 = s2.animStat(AS::NoTable);
+        run(s2, m2, 5);
+        Check(s2.animStat(AS::NoTable) - n0 == 5 && s2.DebugPetAnimFrame(0) == 0, "④ 표 없는 종류가 칸을 넘겼거나 못 셌다");
+    }
+    // ⑤ 부르는 자리 — 도망(24) · 아무 데나 걷기(29)
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358);
+        srv.SetMonsterAnim(1358, 13, 8, 2, true);
+        srv.DebugAIPushDep(0, 24, std::string(), -1, 0, 0.0f, 1100.0f, 1000.0f);
+        run(srv, ms, 10);
+        Check(srv.animStat(AS::StepFlee) >= 1, "⑤ 도망(24)이 걷는데 걸음 소리를 안 불렀다");
+        srv.DebugAIClearStack(0);
+        srv.DebugAIPush(0, 29);
+        const unsigned long long w0 = srv.animStat(AS::StepWalk);
+        run(srv, ms, 10);
+        Check(srv.animStat(AS::StepWalk) - w0 == 10, "⑤ 아무 데나 걷기(29)가 틱마다 걸음 소리를 안 불렀다");
+    }
+    std::printf("  09-29 B5 — 애니 칸: 실물 MonsterDraw · 행동→애니 25갈래 · 되풀이·한 번·칸 0·표 없음 · 걸음 소리(거머리 1번·곰 2번/바퀴) · 부르는 자리 셋 · 행동 바뀌면 첫 칸\n");
+}
+
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
 //   사람 판 09-28 「워리어가 컨저러를 볼 때 흰 티가 살색으로」 — 새로 온 쪽이 먼저 온 쪽의 평상복 색(수식)을 못 받았다
 void TestWornLooksForNewcomer() {
@@ -25998,6 +26126,7 @@ int main() {
     TestMonsterMeleeB3();
     TestMonsterBrainB4a();
     TestMonsterBrainB4b();
+    TestMonsterAnimB5();
     TestPickupAutoEquip();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
