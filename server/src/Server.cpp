@@ -10713,6 +10713,7 @@ bool Server::AIIsCondition(uint8_t act) {
 //   ⚠ 함께 0 이 되는 셈들(Field2·67·74·91·120…)은 우리 `Creature` 에 아직 없다 — 생기면 여기에 붙인다.
 void Server::AIActionReset(Creature& k) {
     k.aiActionFrame = frame_;
+    k.stuckFrame = frame_;          // ★ 09-29 B4b — `+124`(+496) 는 답답함 시계와 같은 칸이다 — 행동이 바뀌면 0.5초를 새로 잰다
     k.aiMorphReady = false;
 }
 
@@ -10958,6 +10959,24 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 AIPush(k, 58);
                 AIPush(k, 10);
             }
+            break;
+        }
+        case 9: {    // ★ 09-29 B4b — 피하기 `nox_xxx_mobActionDodge_544640`(`GAME4_3.c:9577~9609`) — 움직일 수 없으면 뺀다 ·
+            //   혼란(3)·붙들림(5)·홀림(28)이 아니면 인자 자리로 **뛰기 배율 × 빠르기**로 곧장(속도를 직접 세움) · 8 안이면 뺀다
+            if (k.speedCur < 0.0099999998f) { AIPop(k); break; }
+            if (k.buffs.Has(3) || k.buffs.Has(5) || k.buffs.Has(28)) break;
+            const double dx = st.argX - k.x, dy = st.argY - k.y;
+            const double d = std::sqrt(dx * dx + dy * dy) + 0.000099999997;
+            if (d < 8.0) { AIPop(k); break; }
+            const MonsterStats* dm = FindMonster(k.type);
+            k.speedCur = static_cast<float>((dm ? dm->runMul : 1.0) * k.speedCur);
+            k.velX = k.speedCur * dx / d;
+            k.velY = k.speedCur * dy / d;
+            break;
+        }
+        case 28: {   // ★ 09-29 B4b — 쪽 세우기 `sub_5453E0`(`GAME5.c:235~247`) — 보는 쪽을 인자(0~255)로 두고 뺀다
+            k.facing = k.facingWant = static_cast<uint8_t>(st.argU32 & 0xFF);
+            AIPop(k);
             break;
         }
         case 36: {   // ★ 09-29 B4 — 혼란 `nox_xxx_mobActionConfuse_545140`(`GAME5.c:119~146`) — 85% 아무 데나 걷기 ·
@@ -11401,6 +11420,9 @@ void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
             }
             case 64: ok = !MonsterCanResumeAttack(k); break;                   // ★ 09-29 B4 — 건강하지 않나(`:191~199`) — 체력 비율 < 회복 비율
             case 68: ok = !(frame_ - k.moveAttemptFrame < static_cast<uint32_t>(3 * kServerTickRate)); break;   // ★ 09-29 B4 — 구석 아님(`:213~214`)
+            case 70:                                                            // ★ 09-29 B4b — 답답하지 않나(`:224~227`) — 답답하면 거짓 · 그 깃발을 지운다
+                if (k.frustrated) { ok = false; k.frustrated = false; }
+                break;
             case 45: ok = hasT && CanInteractFrom(k, targ); break;             // 보이나
             case 46: ok = !(hasT && CanInteractFrom(k, targ)); break;          // 안 보이나
             case 47: {                                                          // 쏠 줄이 막혔나
@@ -11916,16 +11938,17 @@ int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg, std::
 // ── ★ 09-29 B4 두뇌 반응 층 ─────────────────────────────────────────────
 //
 // `nox_xxx_monsterMainAIFn_547210`(`GAME5.c:1193~1548`) — 알아보기 뒤 · 조건 앞(`unit_ai.go:576~578`)
-//   · 놀기(0)·지키기(4)가 맨 위면 16프레임에 한 번(몬스터마다 엇갈림 — 정답지 `(프레임 + 오브젝트+36 − 갱신자료+548) & 0xF` · 우리는 번호로 엇갈림)
+//   · 놀기(0)·지키기(4)가 맨 위면 16프레임에 한 번(몬스터마다 엇갈림 — 정답지 `(프레임 + 오브젝트+36 − 갱신자료+548) & 0xF` ·
+//     +548 은 행동을 바꾼 프레임(`Field137` — 우리 `aiActionFrame`) · +36 은 번호)
 //   · 맨 위 아래에 61(방해 금지)이 있으면 끝 · 죽었으면 끝 · 협동 커서 갈래는 안 옮김(멀티 아님)
 //   · 혼란(버프 3)이고 36 이 없으면 62(3)·36 · 거꾸로 주문(`5408D0` — B7)은 늘 0 으로 본다
 //   · 두려움(버프 11)·움직일 수 있음·24 없음 → 62(11)·24(제 자리) · 소리 칸 11 → 끝
 //   · 후퇴 — 체력 자료가 있고 움직일 수 있고 막힌 지 3초 넘고 24·6·14 가 없을 때, 체력 비율 ≤ 후퇴 비율(ARENA 전부 0)이거나
 //     주문 몬스터(STATUS 0x20)가 반주문(29)에 걸렸으면 → 공격 행동 빼기 · 68 · 6(협동의 소환수면 14) · 소리 칸 12 → 끝
 //   ⚠ B4b 몫 — 공격 성향(지키기 중 100 안 적) · 거리 두기(도망 거리) · 방패 막기 · 피하기(협동만) · 답답함 · 먹기
-void Server::MonsterBrain(Creature& k) {
+void Server::MonsterBrain(Creature& k, std::vector<OutPacket>& out) {
     const uint8_t top = k.aiStack[k.aiStackInd].action;
-    if ((top == 0 || top == 4) && ((frame_ + k.netCode) & 0xF)) return;
+    if ((top == 0 || top == 4) && ((frame_ + k.netCode - k.aiActionFrame) & 0xF)) return;
     for (int i = k.aiStackInd - 1; i >= 0; --i) if (k.aiStack[i].action == 61) return;
     if (k.health == 0) return;
     ++brainStat_[static_cast<size_t>(BrainStat::Runs)];
@@ -11944,6 +11967,40 @@ void Server::MonsterBrain(Creature& k) {
         ++brainStat_[static_cast<size_t>(BrainStat::Fear)];
         return;
     }
+    // ★ B4b — 공격 성향(`:1342~1360`) — 16프레임마다, 성향이 가운데·마음대로이고 지키기(4)가 쌓임에 있는데 맨 위가 아니고 싸움이 없으면
+    //   100 안 적(`EnemyAggroXxx`)이 유닛일 때 **맞은 것처럼** 적는다 — INJURED · 마지막 때린 쪽 = **지금 상대**(+1196 — 찾은 것이 아니다) · 피해 종류 11 · 피해 프레임
+    //   → 놀기가 되갚기로 그쪽과 싸운다
+    const bool mid = k.aggression < 0.66000003f && k.aggression > 0.33000001f;
+    const bool atWill = k.aggression > 0.66000003f;
+    if (!(frame_ & 0xF) && (mid || atWill) && AIHasAction(k, 4) && k.aiStack[k.aiStackInd].action != 4 && !AIHasAction(k, 15)) {
+        const Target f = MonsterEnemyAggro(k, 100.0f);
+        if (!f.none()) {
+            k.injured = true;
+            k.lastAttacker = Creature::SeenRef{};
+            if (!k.enemyAddr.empty()) k.lastAttacker.addr = k.enemyAddr; else k.lastAttacker.petNet = k.enemyNet;
+            k.lastDamageType = 11;
+            k.lastDamageFrame = frame_;
+            ++brainStat_[static_cast<size_t>(BrainStat::AggroAtWill)];
+        }
+    }
+    // ★ B4b — 거리 두기(`:1361~1419`) — 성향 ≥ 0.08 · 움직일 수 있음 · 맨 위가 주문(18~20) 아님 · 혼란 아님 · 구석 아님 · 지금 상대가 도망 거리 안이면
+    //   (주문 몬스터의 점멸 — B7) 도망(24)이 없고 도망 거리 ≠ 0 이면 28(뒤로 돌기)·68·63(도망 거리 + 30)·24(상대 자리) · 50% 로 소리 칸 11
+    if (k.aggression >= 0.079999998f && moving && !(top >= 18 && top <= 20) && !k.buffs.Has(3) && !cornered) {
+        const Target e{ k.enemyAddr, k.enemyPet };
+        float ex = 0, ey = 0;
+        if (!e.none() && TargetXY(e, ex, ey) && bi.fleeRange != 0.0f && !AIHasAction(k, 24)) {
+            const double d = std::sqrt((ex - k.x) * (ex - k.x) + (ey - k.y) * (ey - k.y));
+            if (d < static_cast<double>(bi.fleeRange)) {
+                if (AIPush(k, 28)) k.aiStack[k.aiStackInd].argU32 = static_cast<uint32_t>((k.facing + 128) & 0xFF);
+                AIPush(k, 68);
+                if (AIPush(k, 63)) k.aiStack[k.aiStackInd].argF = bi.fleeRange + 30.0f;
+                if (AIPush(k, 24)) { k.aiStack[k.aiStackInd].argX = ex; k.aiStack[k.aiStackInd].argY = ey; k.aiStack[k.aiStackInd].argU32 = 0; }
+                if (NextRandom(2)) MonsterSound(k, 11);
+                ++brainStat_[static_cast<size_t>(BrainStat::KeepDistance)];
+                return;
+            }
+        }
+    }
     const int maxHp = TuningFor(k.type).health;
     if (maxHp != 0 && moving && !cornered && !AIHasAction(k, 24) && !AIHasAction(k, 6) && !AIHasAction(k, 14)) {   // `:1421~1423`
         const double ratio = static_cast<double>(k.health) / static_cast<double>(maxHp);
@@ -11958,6 +12015,109 @@ void Server::MonsterBrain(Creature& k) {
             return;
         }
     }
+    // ⚠ 방패 막기(`:1442~1469` — NPC·방패 든 몬스터 — 우리 몬스터에 없음) · 피하기(`:1470~1483` — 협동 전용) 는 안 옮김
+    // ★ B4b — 답답함(`:1484~1517`) — 맨 위가 가기(7)·집으로(37)·먼 가기(8)·떠돌기(10)·도망(24)이면: 15 넘게 움직였으면 자리·때를 새로 적고,
+    //   0.5초 넘게 15 안에 머물렀으면 FRUSTRATED · 도망·후퇴 중이면 +508(구석) · 싸움 중이면 옆걸음 · 아니면 67% 기다리기(0.5~2초)(33% 는 옆걸음 먼저) → 끝
+    {
+        const uint8_t cur = k.aiStack[k.aiStackInd].action;
+        if (cur == 7 || cur == 37 || cur == 8 || cur == 10 || cur == 24) {
+            const double dx = k.stuckX - k.x, dy = k.stuckY - k.y;
+            if (dx * dx + dy * dy > 225.0) {
+                k.stuckFrame = frame_;
+                k.stuckX = static_cast<float>(k.x); k.stuckY = static_cast<float>(k.y);
+            } else if (frame_ - k.stuckFrame > static_cast<uint32_t>(kServerTickRate / 2)) {
+                k.frustrated = true;
+                ++brainStat_[static_cast<size_t>(BrainStat::Frustrated)];
+                if (AIHasAction(k, 6) || AIHasAction(k, 14) || AIHasAction(k, 24)) k.moveAttemptFrame = frame_;
+                if (AIHasAction(k, 15)) {
+                    if (MonsterCheckDodgeables(k)) ++brainStat_[static_cast<size_t>(BrainStat::Sidestep)];
+                } else if (NextRandom(101) >= 33 || !MonsterCheckDodgeables(k)) {
+                    if (AIPush(k, 1)) k.aiStack[k.aiStackInd].argU32 = frame_ + static_cast<uint32_t>(kServerTickRate / 2) + NextRandom(static_cast<uint32_t>(2 * kServerTickRate - kServerTickRate / 2 + 1));
+                    ++brainStat_[static_cast<size_t>(BrainStat::WaitStuck)];
+                } else {
+                    ++brainStat_[static_cast<size_t>(BrainStat::Sidestep)];
+                }
+                k.stuckFrame = frame_;
+                k.stuckX = static_cast<float>(k.x); k.stuckY = static_cast<float>(k.y);
+                return;
+            }
+        }
+    }
+    // ★ B4b — 먹기(`:1518~1534`) — 성향 ≥ 0.08 · 체력 < 최대 · 16프레임마다 — 75 안 먹을 것(`mobSearchEdible_544A00`) 을 집는다
+    //   거르기(`544A40`) — 먹을 것 클래스 · 항아리(4) 아님 · 버섯(0x80)은 **독이 있을 때만** · 물약(8)은 NPC 의 체력 물약만(우리 몬스터 없음) · 보임 · 가장 가까운 것
+    //   ⚠ 집은 것이 체력 물약·버섯(0x90)이면 곧바로 쓴다(`useByNetCode`) — 몬스터 쓰기는 안 옮김(버섯만 닿는다) · 사과 등은 집기만
+    if (k.aggression >= 0.079999998f && maxHp != 0 && k.health < maxHp && !(frame_ & 0xF)) {
+        size_t best = statics_.size();
+        double bestD2 = 75.0 * 75.0;
+        for (size_t i = 0; i < statics_.size(); ++i) {
+            const WorldStatic& w = statics_[i];
+            if (!w.isFood) continue;
+            if (w.foodBits & 0x4) continue;
+            if ((w.foodBits & 0x80) && k.poison == 0) continue;
+            if (w.foodBits & 0x8) continue;
+            const double dx = w.x - k.x, dy = w.y - k.y;
+            const double d2 = dx * dx + dy * dy;
+            if (d2 >= bestD2) continue;
+            if (!MapTraceVision(static_cast<float>(k.x), static_cast<float>(k.y), static_cast<float>(w.x), static_cast<float>(w.y))) continue;
+            bestD2 = d2; best = i;
+        }
+        if (best < statics_.size()) {
+            const uint16_t nc = statics_[best].netCode;
+            const uint8_t msg[3] = { static_cast<uint8_t>(Op::DESTROY_OBJECT), static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
+            Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);             // 사람이 주울 때와 같은 길(바닥에서 사라진다)
+            TakeStatic(nc);
+            ++brainStat_[static_cast<size_t>(BrainStat::Eat)];
+        }
+    }
+}
+
+// `nox_xxx_monsterCheckDodgeables_547C50`(`GAME5.c:1551~1609`) — 옆걸음 — 보는 쪽의 옆으로 (2~3 × 몸 반지름, 최대 15) 지점을 다섯 번까지 골라
+//   선 추적(1)·장애물·용암(바닥 6) 이 아니면 공격 행동을 빼고 때(41 · 1초)·피하기(9 그 지점) · 못 고르면 0
+bool Server::MonsterCheckDodgeables(Creature& k) {
+    double r = 0.0;
+    {
+        const auto tb = typeBodies_.find(k.type);
+        if (tb != typeBodies_.end()) r = static_cast<double>(tb->second.r);
+    }
+    const double dirX = DirVecX(k.facing), dirY = DirVecY(k.facing);
+    for (int tries = 0; tries < 5; ++tries) {
+        double v = (2.0 + NextRandomFloat()) * r;
+        if (v > 15.0) v = 15.0;
+        if (NextRandom(101) < 50) v = -v;
+        const float px = static_cast<float>(v * -dirY + k.x), py = static_cast<float>(v * dirX + k.y);
+        if (!MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), px, py, 0x1)) continue;
+        if (!MapTraceObstacles(-1, static_cast<float>(k.x), static_cast<float>(k.y), px, py)) continue;
+        if (floorGrid_.TileAt(px, py, floorEdges_).tile == 6) continue;
+        MonsterPopAttackActions(k);
+        if (AIPush(k, 41)) k.aiStack[k.aiStackInd].argU32 = frame_ + static_cast<uint32_t>(kServerTickRate);
+        if (AIPush(k, 9)) { k.aiStack[k.aiStackInd].argX = px; k.aiStack[k.aiStackInd].argY = py; k.aiStack[k.aiStackInd].argU32 = 0; }
+        return true;
+    }
+    return false;
+}
+
+// `EnemyAggroXxx`(`server/object_ai.go:225~263`, r = max = 100) — 둘레 안 유닛·생성기 중 적 · 안 죽음 · 보임 · 가장 가까운 것(악당 버프면 거리 ÷ 3)
+Target Server::MonsterEnemyAggro(const Creature& k, float r) const {
+    Target best;
+    double bestD = r;
+    auto consider = [&](const Target& t, double tx, double ty, const Buffs* b) {
+        if (!CreatureEnemyTo(k, t) || TargetDeadOrGone(t) || !CanInteractFrom(k, t)) return;
+        const double dx = tx - k.x, dy = ty - k.y;
+        const double dist = std::sqrt(dx * dx + dy * dy) + 0.001;
+        if (dist > r) return;                                  // `EachObjInCircle` 반지름
+        double d2 = dist;
+        if (b && b->Has(10)) d2 /= 3.0;                        // ENCHANT_VILLAIN
+        if (d2 < bestD) { bestD = d2; best = t; }
+    };
+    for (const auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        consider(Target{ kv.first, -1 }, kv.second.posX, kv.second.posY, &kv.second.buffs);
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        if (&pets_[i] == &k) continue;
+        consider(Target{ std::string(), static_cast<int>(i) }, pets_[i].x, pets_[i].y, &pets_[i].buffs);
+    }
+    return best;
 }
 
 // `nox_xxx_monsterPopAttackActions_5471B0` — 맨 위가 공격 행동(16~20 · 25~28)인 동안 뺀다
@@ -15927,7 +16087,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             }
 
             // ★ 09-29 B4 — 두뇌(`monsterMainAIFn_547210`) — 알아보기 뒤 · 조건 앞(`unit_ai.go:576~578`)
-            if (!debugNoAutoFight_) MonsterBrain(k);
+            if (!debugNoAutoFight_) MonsterBrain(k, out);
             k.velX = 0; k.velY = 0;
             AIRefreshStackArgs(k);                             // ★ 09-28 — 정답지는 조건 보기 전(`unit_ai.go:548`)
             AIProcDeps(k, out);

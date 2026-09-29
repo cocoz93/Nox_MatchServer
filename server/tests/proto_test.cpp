@@ -20555,9 +20555,22 @@ void TestMonsterBrainB4a() {
         for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) if (srv.DebugAIAction(0, i) == 36) conf = true;
         Check(!conf, "② 혼란이 풀렸는데 36 이 남았다");
     }
+    // 비홀더는 도망 거리가 65 라 a 에게 다가가면 거리 두기(24)가 먼저 걸려 후퇴가 막힌다(정답지 순서 `:1361` → `:1421`) —
+    //   그래서 a 를 200 앞에 두고 3초 관문(+508 = 0)은 프레임을 건너뛰어 푼다
+    auto mkB = [&](nox::Server& srv, uint32_t& ms) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 1200.0f, 1000.0f);
+        srv.DebugSpawnPet(1382, 1000, 1000, std::string());
+        srv.DebugApplyEnchant(a, 23, 100000, 1);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetFrame(1000);
+        run(srv, ms, 3);
+    };
     // ③ 후퇴 — 주문 몬스터(비홀더 STATUS 0x20)가 반주문(29)에 걸리면 68·6 → 6 이 41·24 · 소리 칸 12 / 주문 못 쓰는 거머리는 안 함 / ARENA 후퇴 비율 0 이라 체력 1 이어도 안 함
     for (int kind = 0; kind < 3; ++kind) {
-        nox::Server srv; uint32_t ms = 0; mk(srv, ms, kind == 0 ? 1382 : 1358);
+        nox::Server srv; uint32_t ms = 0;
+        if (kind == 0) mkB(srv, ms); else mk(srv, ms, 1358);
         if (kind < 2) srv.DebugApplyEnchantPet(0, 29, 300, 1);
         else srv.DebugSetPetHealth(0, 1);
         run(srv, ms, 2);
@@ -20572,14 +20585,14 @@ void TestMonsterBrainB4a() {
     }
     // ④ 구석(+508 3초 안) — 후퇴를 안 시작하고, 시작한 후퇴는 조건 68 이 뺀다
     {
-        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1382);
+        nox::Server srv; uint32_t ms = 0; mkB(srv, ms);
         srv.DebugSetPetMoveAttempt(0, srv.frame());
         srv.DebugApplyEnchantPet(0, 29, 300, 1);
         run(srv, ms, 2);
         Check(srv.brainStat(BS::Retreat) == 0, "④ 구석에 몰렸는데(3초 안) 후퇴를 시작했다");
     }
     {
-        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1382);
+        nox::Server srv; uint32_t ms = 0; mkB(srv, ms);
         srv.DebugApplyEnchantPet(0, 29, 300, 1);
         run(srv, ms, 2);                                      // 후퇴 시작(68·6 → 41·24)
         Check(srv.brainStat(BS::Retreat) == 1, "④ 전제 — 후퇴를 안 시작했다");
@@ -20608,6 +20621,228 @@ void TestMonsterBrainB4a() {
         else        Check(srv.missilesMade() == n0 && srv.DebugAIAction(0, 0) == 0, "⑤ 대상도 자리도 없는데 쐈거나 안 빠졌다");
     }
     std::printf("  09-29 B4a — 두뇌: 두려움 도망(멀어짐·달리기·풀리면 빠짐) · 혼란 · 반주문 후퇴(비홀더만) · ARENA 비율 0 · 구석 · 자리 겨눔 쏘기\n");
+}
+
+// ── 09-29 B4b — 두뇌 2: 거리 두기 · 지키기 중 공격 성향 · 답답함(기다리기·옆걸음·구석·조건 70) · 피하기(9) · 쪽 세우기(28) · 먹기
+//   (`monsterMainAIFn_547210` `GAME5.c:1342~1534` · `monsterCheckDodgeables_547C50` · `mobActionDodge_544640` · `mobSearchEdible2_544A40`) ─────────
+void TestMonsterBrainB4b() {
+    const std::string a = "10.9.29.51:9351";
+    using BS = nox::BrainStat;
+    auto run = [](nox::Server& srv, uint32_t& ms, int n) {
+        for (int t = 0; t < n; ++t) { ms += 34; std::vector<nox::OutPacket> o; srv.Tick(ms, o); }
+    };
+    auto has = [](nox::Server& srv, int act) {
+        for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) if (srv.DebugAIAction(0, i) == act) return true;
+        return false;
+    };
+    // 3초 관문(+508 = 0 → 구석)은 프레임을 건너뛰어 푼다
+    auto mk = [&](nox::Server& srv, uint16_t type, float ax, float ay) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, ax, ay);
+        srv.DebugSpawnPet(type, 1000, 1000, std::string());
+        srv.DebugApplyEnchant(a, 23, 100000, 1);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetFrame(1000);
+    };
+    // ① 거리 두기 — 비홀더(도망 거리 65)는 50 앞 상대에게서 28(뒤로 돌기)·68·63(95)·24 · 멀어진다 / 거머리(도망 거리 0)는 안 한다
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1382, 1050.0f, 1000.0f);
+        srv.DebugSetPetEnemy(0, a, -1);
+        bool seen = false;
+        for (int t = 0; t < 40 && !seen; ++t) {
+            const int f0 = srv.DebugPetFacingWant(0);
+            run(srv, ms, 1);
+            if (srv.brainStat(BS::KeepDistance) == 1) {
+                seen = true;
+                const int top = srv.DebugAIStackInd(0);
+                char msg[200]; std::snprintf(msg, sizeof(msg), "① 거리 두기 사슬이 28·68·63(95)·24 가 아니다 — 맨 위 %d·%d·%d·%d · 자 %.1f · 쪽 %u(보던 쪽 %d)",
+                    srv.DebugAIAction(0, top), srv.DebugAIAction(0, top - 1), srv.DebugAIAction(0, top - 2), srv.DebugAIAction(0, top - 3),
+                    srv.DebugAIArgF(0, top - 1), srv.DebugAIArgU32(0, top - 3), f0);
+                Check(top >= 3 && srv.DebugAIAction(0, top) == 24 && srv.DebugAIAction(0, top - 1) == 63 && std::fabs(srv.DebugAIArgF(0, top - 1) - 95.0f) < 0.01f &&
+                      srv.DebugAIAction(0, top - 2) == 68 && srv.DebugAIAction(0, top - 3) == 28 &&
+                      srv.DebugAIArgU32(0, top - 3) == static_cast<uint32_t>((f0 + 128) & 0xFF), msg);
+            }
+        }
+        Check(seen, "① 50 앞 상대인데 비홀더가 거리 두기를 안 했다");
+        run(srv, ms, 60);
+        double px = 0, py = 0; srv.DebugPetXY(0, px, py);
+        char msg[120]; std::snprintf(msg, sizeof(msg), "① 거리 두기인데 도망 거리(65) 밖으로 안 물러났다 — %.0f", std::hypot(px - 1050.0, py - 1000.0));
+        Check(std::hypot(px - 1050.0, py - 1000.0) > 65.0, msg);
+        Check(srv.monsterSnd(11, false) + srv.monsterSnd(11, true) <= srv.brainStat(BS::KeepDistance), "① 거리 두기 소리(칸 11 · 50%)가 거리 두기보다 많다");
+    }
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 1050.0f, 1000.0f);
+        srv.DebugSetPetEnemy(0, a, -1);
+        run(srv, ms, 40);
+        Check(srv.brainStat(BS::KeepDistance) == 0, "① 도망 거리 0 인 거머리가 거리 두기를 했다");
+    }
+    // ② 지키기(4)가 쌓였는데 맨 위가 딴 일(기다리기 1 · 조건 44)이면 — 100 안 적을 **맞은 것처럼** 적어 44 가 깨지고 지키기가 싸움(15)을 올린다
+    //   되비춤 — 성향 0.2(가운데 아님) · 적이 150(100 밖)이면 안 한다
+    for (int kind = 0; kind < 3; ++kind) {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358, kind == 2 ? 1150.0f : 1080.0f, 1000.0f);
+        srv.DebugSetPetEnemy(0, a, -1);
+        if (kind == 1) srv.DebugSetPetAggression(0, 0.2f);
+        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0.0f, 1000.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 44, std::string(), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        run(srv, ms, 20);
+        if (kind == 0) Check(srv.brainStat(BS::AggroAtWill) >= 1 && has(srv, 15), "② 지키는 중 80 앞 적인데 공격 성향이 싸움을 안 불렀다");
+        else Check(srv.brainStat(BS::AggroAtWill) == 0 && !has(srv, 15) && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 1,
+                   kind == 1 ? "② 성향 0.2 인데 공격 성향이 돌았다" : "② 적이 150(100 밖)인데 공격 성향이 돌았다");
+    }
+    // ③ 답답함 — 가기(7) 중 15 안에 머물면(매 틱 자리를 되돌려 막힘을 흉내) 0.5초 전엔 안 하고 넘으면 FRUSTRATED · 싸움이 아니니 기다리기 또는 옆걸음
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0.0f, 1300.0f, 1000.0f);
+        auto stuck = [&](int n) { for (int t = 0; t < n; ++t) { srv.DebugSetPetPos(0, 1000.0, 1000.0); run(srv, ms, 1); } };
+        stuck(10);
+        Check(srv.brainStat(BS::Frustrated) == 0, "③ 0.5초도 안 머물렀는데 답답해했다");
+        stuck(20);
+        const unsigned long long fr = srv.brainStat(BS::Frustrated);
+        char msg[160]; std::snprintf(msg, sizeof(msg), "③ 답답함 갈래 수가 안 맞다 — 답답 %llu · 기다리기 %llu · 옆걸음 %llu",
+            fr, static_cast<unsigned long long>(srv.brainStat(BS::WaitStuck)), static_cast<unsigned long long>(srv.brainStat(BS::Sidestep)));
+        Check(fr >= 1 && srv.brainStat(BS::WaitStuck) + srv.brainStat(BS::Sidestep) == fr && srv.DebugPetFrustrated(0), msg);
+        // 조건 70 — 답답하면 거짓(그 행동을 뺀다) · 깃발을 지운다
+        srv.DebugAIClearStack(0);
+        srv.DebugAIPushDep(0, 70, std::string(), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        run(srv, ms, 1);
+        Check(!srv.DebugPetFrustrated(0) && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) != 1, "③ 조건 70 이 답답함을 보고도 안 뺐거나 깃발을 안 지웠다");
+    }
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
+        srv.DebugAIPushDep(0, 70, std::string(), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        run(srv, ms, 1);
+        Check(srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 1, "③ 안 답답한데 조건 70 이 뺐다");
+    }
+    // ③'' 답답함 시계(+496)는 행동을 바꾼 프레임과 같은 칸이다(`MonsterActionReset`) — 기다리기·옆걸음이 끝나 가기(7)로 돌아오면 0.5초를 새로 잰다
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0.0f, 1300.0f, 1000.0f);
+        uint32_t back7 = 0; bool wasOther = false; int gaps = 0, bad = 0;
+        unsigned long long fr0 = 0;
+        char msg[160] = "③'' 안 굴렀다";
+        for (int t = 0; t < 400; ++t) {
+            srv.DebugSetPetPos(0, 1000.0, 1000.0);
+            run(srv, ms, 1);
+            const bool on7 = srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 7;
+            if (on7 && wasOther) back7 = srv.frame();
+            wasOther = !on7;
+            if (srv.brainStat(BS::Frustrated) != fr0) {
+                fr0 = srv.brainStat(BS::Frustrated);
+                if (back7 != 0) {
+                    ++gaps;
+                    if (srv.frame() - back7 < 16) { ++bad; std::snprintf(msg, sizeof(msg), "③'' 가기로 돌아온 지 %u 프레임 만에 또 답답해했다(0.5초 = 15 넘게여야)", srv.frame() - back7); }
+                }
+            }
+        }
+        Check(gaps >= 3 && bad == 0, msg);
+    }
+    // ③' 도망(24) 중 막히면 +508(구석)을 적는다 — 조건 68 이 뒤 사슬을 끊게
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
+        srv.DebugAIPushDep(0, 24, std::string(), -1, 0, 0.0f, 1100.0f, 1000.0f);
+        const uint32_t f0 = srv.DebugPetMoveAttempt(0);
+        for (int t = 0; t < 30; ++t) { srv.DebugSetPetPos(0, 1000.0, 1000.0); run(srv, ms, 1); }
+        char msg[160]; std::snprintf(msg, sizeof(msg), "③' 도망 중 막혔는데 구석(+508)을 안 적었다 — 답답 %llu · 맨 위 %d",
+            static_cast<unsigned long long>(srv.brainStat(BS::Frustrated)), srv.DebugAIAction(0, srv.DebugAIStackInd(0)));
+        Check(srv.brainStat(BS::Frustrated) >= 1 && srv.DebugPetMoveAttempt(0) > f0, msg);
+    }
+    // ④ 싸움 중 답답하면 옆걸음 — 보는 쪽의 옆 15(몸 반지름 10 × 2~3 → 15 로 자름) · 41(1초)·9 · 그리고 피하기(9)가 그 자리로 간다
+    {
+        nox::Server srv; uint32_t ms = 0;
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1358, body);
+        mk(srv, 1358, 1150.0f, 1000.0f);
+        srv.DebugSetPetEnemy(0, a, -1);
+        bool seen = false;
+        float dxp = 0, dyp = 0;
+        for (int t = 0; t < 60 && !seen; ++t) {
+            srv.DebugSetPetPos(0, 1000.0, 1000.0);
+            const int f0 = srv.DebugPetFacingWant(0);
+            run(srv, ms, 1);
+            if (srv.brainStat(BS::Sidestep) >= 1) {
+                seen = true;
+                const int top = srv.DebugAIStackInd(0);
+                dxp = srv.DebugAIArgX(0, top); dyp = srv.DebugAIArgY(0, top);
+                const double ang = f0 * 3.14159265358979 * 2.0 / 256.0;
+                const double along = (dxp - 1000.0) * std::cos(ang) + (dyp - 1000.0) * std::sin(ang);
+                const double off = std::hypot(dxp - 1000.0, dyp - 1000.0);
+                char msg[200]; std::snprintf(msg, sizeof(msg), "④ 옆걸음이 41·9(옆 15)가 아니다 — 맨 위 %d·%d · 자리 (%.1f,%.1f) · 거리 %.2f · 앞뒤 성분 %.2f · 보는 쪽 %d",
+                    srv.DebugAIAction(0, top), srv.DebugAIAction(0, top - 1), dxp, dyp, off, along, f0);
+                Check(top >= 1 && srv.DebugAIAction(0, top) == 9 && srv.DebugAIAction(0, top - 1) == 41 &&
+                      std::fabs(off - 15.0) < 0.5 && std::fabs(along) < 0.5, msg);
+            }
+        }
+        Check(seen && has(srv, 15), "④ 싸움 중 막혔는데 옆걸음을 안 했다");
+        double best = 1e9;
+        for (int t = 0; t < 30; ++t) {
+            run(srv, ms, 1);
+            double px = 0, py = 0; srv.DebugPetXY(0, px, py);
+            best = std::min(best, std::hypot(px - dxp, py - dyp));
+        }
+        char msg[120]; std::snprintf(msg, sizeof(msg), "④ 피하기(9)가 옆걸음 자리로 안 갔다 — 가장 가까이 %.1f", best);
+        Check(best < 8.5, msg);
+    }
+    // ⑤ 쪽 세우기(28) — 인자(0~255)로 보는 쪽을 두고 빠진다
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
+        srv.DebugSetAutoFight(false);
+        srv.DebugAIPushDep(0, 28, std::string(), -1, 200, 0.0f);
+        std::vector<nox::OutPacket> o;
+        srv.DebugAITick(0, o);
+        Check(srv.DebugPetFacing(0) == 200 && srv.DebugPetFacingWant(0) == 200 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) != 28, "⑤ 쪽 세우기(28)가 쪽을 안 두었거나 안 빠졌다");
+    }
+    // ⑥ 먹기 — 다친 몬스터가 75 안 먹을 것을 집는다(바닥에서 사라짐 · 모두에게 지움) · 항아리(4)·물약(8)은 안 · 버섯(0x80)은 독이 있을 때만 · 멀쩡하면 안
+    struct Food { uint32_t bits; bool poisoned; bool hurt; float x; bool eat; const char* why; };
+    const Food foods[] = {
+        { 0x02, false, true,  1040.0f, true,  "⑥ 다친 몬스터가 40 앞 사과를 안 집었다" },
+        { 0x02, false, false, 1040.0f, false, "⑥ 멀쩡한 몬스터가 먹을 것을 집었다" },
+        { 0x02, false, true,  1080.0f, false, "⑥ 80(75 밖) 사과를 집었다" },
+        { 0x04, false, true,  1040.0f, false, "⑥ 항아리(4)를 집었다" },
+        { 0x08, false, true,  1040.0f, false, "⑥ 물약(8)을 집었다" },
+        { 0x80, false, true,  1040.0f, false, "⑥ 독 없는데 버섯을 집었다" },
+        { 0x80, true,  true,  1040.0f, true,  "⑥ 독 있는데 버섯을 안 집었다" },
+    };
+    for (const Food& f : foods) {
+        nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w;
+        w.netCode = 777; w.type = 638; w.x = f.x; w.y = 1000; w.weight = 5; w.isFood = true; w.foodBits = f.bits;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        if (f.hurt) srv.DebugSetPetHealth(0, 1);
+        if (f.poisoned) srv.DebugPoisonPet(0, 1);
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);   // 맨 위를 기다리기로 — 놀기(0)의 16프레임 엇갈림과 먹기의 16프레임이 안 겹쳐도 돌게
+        bool destroyed = false;
+        for (int t = 0; t < 20; ++t) {
+            ms += 34; std::vector<nox::OutPacket> o; srv.Tick(ms, o);
+            for (const auto& m : FlattenTo(o, a))
+                if (m.size() >= 3 && m[0] == static_cast<uint8_t>(nox::Op::DESTROY_OBJECT) && m[1] == (777 & 0xFF) && m[2] == (777 >> 8)) destroyed = true;
+        }
+        const bool ate = srv.WorldStaticCount() == 0;
+        Check(ate == f.eat && destroyed == f.eat && srv.brainStat(BS::Eat) == (f.eat ? 1u : 0u), f.why);
+    }
+    // ⑦ 지키기(4)·놀기(0)가 맨 위일 때 두뇌는 16프레임에 한 번 — 엇갈림은 `(프레임 + 번호 − 행동 바꾼 프레임 +548) & 0xF` 다
+    //   행동 바꾼 프레임만 5 다른 두 판은 두뇌가 도는 프레임도 5 어긋난다(번호만 보면 같은 프레임에 돈다)
+    //   ⚠ 놀기는 「행동 바꾼 지 0.5초 안」을 따로 봐서 두 판이 딴 길로 갈린다 — 제자리를 지키는 지키기(4)를 맨 위에 두고 두 값 다 0.5초 넘게 과거로
+    {
+        uint32_t fAt[2] = { 0, 0 };
+        for (int s = 0; s < 2; ++s) {
+            nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
+            srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0.0f, 1000.0f, 1000.0f);
+            srv.DebugSetPetActionFrame(0, srv.frame() - (s ? 11u : 16u));
+            srv.DebugApplyEnchantPet(0, 11, 600, 1);
+            for (int t = 0; t < 40 && srv.brainStat(BS::Fear) == 0; ++t) run(srv, ms, 1);
+            fAt[s] = srv.frame();
+            Check(srv.brainStat(BS::Fear) == 1, "⑦ 전제 — 두려움 도망이 안 돌았다");
+        }
+        char msg[160]; std::snprintf(msg, sizeof(msg), "⑦ 행동 바꾼 프레임이 5 다른데 두뇌 도는 프레임 차가 5 가 아니다 — %u · %u", fAt[0], fAt[1]);
+        Check(((fAt[1] - fAt[0]) & 0xF) == 5, msg);
+    }
+    std::printf("  09-29 B4b — 두뇌 2: 거리 두기(비홀더만·물러남) · 지키기 중 공격 성향(성향·100) · 답답함(0.5초·갈래 수·구석·조건 70) · 옆걸음·피하기 · 쪽 세우기 · 먹기(75·항아리·물약·버섯·멀쩡)\n");
 }
 
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
@@ -25762,6 +25997,7 @@ int main() {
     TestMonsterIdleB2();
     TestMonsterMeleeB3();
     TestMonsterBrainB4a();
+    TestMonsterBrainB4b();
     TestPickupAutoEquip();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
