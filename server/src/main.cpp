@@ -289,6 +289,11 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.animStat(AS::NoTable), srv.animStat(AS::NoFrames), srv.animStat(AS::Advance), srv.animStat(AS::Wrap), srv.animStat(AS::Done),
                     srv.animStat(AS::StepMoveTo), srv.animStat(AS::StepFlee), srv.animStat(AS::StepWalk), srv.animStat(AS::StepHit),
                     srv.monsterSnd(17, true), srv.monsterSnd(17, false));
+        using HS = nox::HearStat;    // ★ 09-29 B6 — 소리 듣기
+        std::printf("[소리듣기] 기록 %llu · 귀막힘 %llu · 아군무시 %llu · 작음 %llu · 벽반감 %llu(작아짐 %llu) · 들음 %llu · 가봄 %llu · 바라봄 %llu · 못감 %llu · 조건59 %llu · 조건69 %llu\n",
+                    srv.hearStat(HS::Recorded), srv.hearStat(HS::Deaf), srv.hearStat(HS::NotListen), srv.hearStat(HS::Quiet), srv.hearStat(HS::WallHalved),
+                    srv.hearStat(HS::WallQuiet), srv.hearStat(HS::Heard), srv.hearStat(HS::ReactGo), srv.hearStat(HS::ReactLook), srv.hearStat(HS::ReactSkip),
+                    srv.hearStat(HS::Cond59), srv.hearStat(HS::Cond69));
     }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
     std::printf("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",
@@ -1101,6 +1106,16 @@ int main(int argc, char** argv) {
                 std::printf("[소리] AUD %zu개 · 이름표에 맞물림 %zu · 소리조각 있는 것 %zu%s\n",
                             tdb.Sounds().size(), sd.size(), withSamples,
                             miss ? " ⚠ 이름표에 없는 것 있음" : "");
+                // ★ 09-29 B6 — 몬스터가 듣는 소리는 깃발이 0 이 아닌 것뿐이다(`unit_ai.go:290` NewSound) — 0x10 아군 것도 · 0x20 걷기(문턱 89) · 0x40 달리기(문턱 20)
+                {
+                    size_t nf = 0, f10 = 0, f20 = 0, f40 = 0;
+                    for (const auto& in : sd) {
+                        if (in.flags == 0) continue;
+                        ++nf; if (in.flags & 0x10) ++f10; if (in.flags & 0x20) ++f20; if (in.flags & 0x40) ++f40;
+                        if (std::getenv("NOX_DUMP_SOUND_FLAGS")) std::printf("  [소리깃발] %u %s 깃발 0x%x 거리 %d\n", (unsigned)in.id, nox::SoundName(in.id), (unsigned)in.flags, in.maxDist);
+                    }
+                    std::printf("[소리듣기] 깃발 있는 소리 %zu개 — 0x10 %zu · 0x20 %zu · 0x40 %zu\n", nf, f10, f20, f40);
+                }
                 // ★ 09-22 — **정품이 실제로 보낸 번호** 중 우리 표에 없는 것을 센다.
                 //   `_evidence/CAP_server_0906.txt` 의 `a6`·`a7` 610건을 풀어 얻은 번호들이다.
                 //   우리 표에 없으면 `PlaySoundAt` 이 조용히 버린다 — 「소리가 안 들린다」의 뿌리
@@ -1976,6 +1991,48 @@ int main(int argc, char** argv) {
                     if (!t || !t->hasMonsterDraw) continue;
                     for (int i = 0; i < 16; ++i)
                         srv.SetMonsterAnim(static_cast<uint16_t>(w), i, t->monsterAnims[i].frames, t->monsterAnims[i].hold, t->monsterAnims[i].loop);
+                }
+                // ★ 09-29 B6 — 몬스터 아종 비트(SUBCLASS — libs `object/subclass_monster.go` 차례 · 0x200 IMMUNE_POISON · 0x400 IMMUNE_FIRE)
+                //   · 위험한 종류(조건 69 — CLASS FIRE · 독구름 두 이름 · CLASS DANGEROUS — `unitIsDangerous_547120`)
+                {
+                    static const char* const kMonSub[] = {
+                        "SMALL_MONSTER", "MEDIUM_MONSTER", "LARGE_MONSTER", "SHOPKEEPER", "NPC", "FEMALE_NPC",
+                        "UNDEAD", "MONITOR", "MIGRATE", "IMMUNE_POISON", "IMMUNE_FIRE", "IMMUNE_ELECTRICITY",
+                        "IMMUNE_FEAR", "BOMBER", "NO_TARGET", "NO_SPELL_TARGET", "HAS_SOUL", "WARCRY_STUN",
+                        "LOOK_AROUND", "WOUNDED_NPC" };
+                    auto hasTok = [](const std::string& raw, const char* tok) {
+                        size_t a = 0;
+                        while (a <= raw.size()) {
+                            size_t e = raw.find('+', a);
+                            if (e == std::string::npos) e = raw.size();
+                            std::string s = raw.substr(a, e - a);
+                            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+                            while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+                            if (s == tok) return true;
+                            if (e == raw.size()) break;
+                            a = e + 1;
+                        }
+                        return false;
+                    };
+                    size_t nSub = 0, nFireImm = 0, dn[4] = {};
+                    std::string fireImm;
+                    for (size_t w = 1; w <= tdb.Count(); ++w) {
+                        const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                        if (!t) continue;
+                        if (t->isMonster) {
+                            uint32_t bits = 0;
+                            for (size_t i = 0; i < sizeof(kMonSub) / sizeof(kMonSub[0]); ++i) if (hasTok(t->subclassRaw, kMonSub[i])) bits |= 1u << i;
+                            if (bits) { srv.SetMonsterSubclass(static_cast<uint16_t>(w), bits); ++nSub; }
+                            if (bits & 0x400) { ++nFireImm; if (fireImm.size() < 80) { fireImm += ' '; fireImm += t->name; } }
+                        }
+                        uint8_t d = 0;
+                        if (hasTok(t->classRaw, "FIRE")) d = 1;
+                        else if (t->name == "ToxicCloud" || t->name == "SmallToxicCloud") d = 2;
+                        else if (hasTok(t->classRaw, "DANGEROUS")) d = 3;
+                        if (d) { srv.SetDangerType(static_cast<uint16_t>(w), d); ++dn[d]; }
+                    }
+                    std::printf("[몬스터아종] 아종 비트 있는 몬스터 %zu · 불에 안 탐 %zu(%s) · 위험한 종류 불 %zu · 독구름 %zu · DANGEROUS %zu\n",
+                                nSub, nFireImm, fireImm.c_str(), dn[1], dn[2], dn[3]);
                 }
                 const nox::ThingInfo* lg = tdb.ByWire(tdb.WireByName("GiantLeech"));
                 std::printf("[몬스터애니] MonsterDraw 종류 %zu개 · GiantLeech 걷기(12) %d칸/붙듦 %d/되풀이 %d · 근접(1) %d칸/붙듦 %d\n",

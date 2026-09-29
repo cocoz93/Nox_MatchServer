@@ -20973,6 +20973,203 @@ void TestMonsterAnimB5() {
     std::printf("  09-29 B5 — 애니 칸: 실물 MonsterDraw · 행동→애니 25갈래 · 되풀이·한 번·칸 0·표 없음 · 걸음 소리(거머리 1번·곰 2번/바퀴) · 부르는 자리 셋 · 행동 바뀌면 첫 칸\n");
 }
 
+// ── 09-29 B6 — 소리 듣기(`aiListenToSounds` · `Sub_5466F0` · `sub_545DA0`) · 지키기·호위·떠돌기 앞머리 · 조건 42·59·69 ─────────
+void TestMonsterHearB6() {
+    const std::string a = "10.9.29.71:9371";
+    using HS = nox::HearStat;
+    auto run = [](nox::Server& srv, uint32_t& ms, int n) {   // 프레임을 정확히 n 개(B5 와 같은 도우미)
+        for (int t = 0; t < n; ++t) {
+            const uint32_t f = srv.frame();
+            for (int g = 0; g < 100 && srv.frame() == f; ++g) { ms += 5; std::vector<nox::OutPacket> o; srv.Tick(ms, o); }
+        }
+    };
+    auto top = [](nox::Server& srv) { return srv.DebugAIAction(0, srv.DebugAIStackInd(0)); };
+    // 거머리(1000,1000 · 동쪽을 봄) · a 는 등 뒤 서쪽 100(안 보임) · 소리 300(깃발 인자 · 거리 600)
+    auto mk = [&](nox::Server& srv, uint32_t& ms, uint16_t flags, float ax = 900.0f) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, ax, 1000.0f);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugApplyEnchant(a, 23, 100000, 1);
+        srv.DebugSetSoundDef(300, flags, 600);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetFrame(1000);
+        run(srv, ms, 2);
+    };
+    // ① 기록 — 깃발 있고 사람(임자)이 낸 것만 · kind 2(한 사람만)·깃발 0·출처 없음은 안 남음 · 2프레임 넘으면 지움
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 3000.0f);
+        srv.DebugSetSoundDef(301, 0, 600);
+        const unsigned long long r0 = srv.hearStat(HS::Recorded);
+        srv.PlaySoundAt(300, 900, 1000, 0, 0, a);
+        srv.PlaySoundAt(300, 900, 1000, 2, 0, a);
+        srv.PlaySoundAt(301, 900, 1000, 0, 0, a);
+        srv.PlaySoundAt(300, 900, 1000);
+        srv.PlaySoundAt(300, 900, 1000, 0, 0, std::string(), nox::Target{ std::string(), 0 });
+        Check(srv.hearStat(HS::Recorded) - r0 == 2 && srv.DebugListenCount() == 2, "① 들을 거리 기록 갈래(사람 임자·크리처 출처만)가 안 맞다");
+        run(srv, ms, 3);
+        Check(srv.DebugListenCount() == 0, "① 2프레임 넘은 들을 거리를 안 지웠다");
+    }
+    // ② 듣고 바라봄 — 등 뒤 100(세기 83 ≥ 50) · 시야선이 트여 들은 자리 바라보기(59·56·1·25) · 세기·자리를 적음
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1);
+        srv.PlaySoundAt(300, 900, 1000, 0, 0, a);
+        run(srv, ms, 1);
+        const int t = srv.DebugAIStackInd(0);
+        char msg[200]; std::snprintf(msg, sizeof(msg), "② 등 뒤 소리를 듣고 바라보지 않았다 — 들음 %llu · 세기 %d · 바라봄 %llu · 맨 위 %d·%d·%d·%d",
+            srv.hearStat(HS::Heard), srv.DebugPetHeardDist(0), srv.hearStat(HS::ReactLook),
+            srv.DebugAIAction(0, t), srv.DebugAIAction(0, t - 1), srv.DebugAIAction(0, t - 2), srv.DebugAIAction(0, t - 3));
+        Check(srv.hearStat(HS::Heard) == 1 && srv.DebugPetHeardDist(0) == 83 && srv.hearStat(HS::ReactLook) == 1 &&
+              t >= 3 && srv.DebugAIAction(0, t) == 25 && std::fabs(srv.DebugAIArgX(0, t) - 900.0f) < 0.01f &&
+              srv.DebugAIAction(0, t - 1) == 1 && srv.DebugAIAction(0, t - 2) == 56 && srv.DebugAIAction(0, t - 3) == 59, msg);
+        Check(srv.DebugPetHeardSnd(0) == 0, "② 반응한 뒤 들은 소리를 안 지웠다");
+    }
+    // ③ 문턱 — 걷기(0x20) 89 · 달리기(0x40) 20 · 그 밖 50
+    struct Th { uint16_t flags; float x; bool heard; const char* why; };
+    const Th ths[] = {
+        { 0x20, 900.0f, false, "③ 걷기 소리(문턱 89)인데 세기 83 을 들었다" },
+        { 0x40, 550.0f, true,  "③ 달리기 소리(문턱 20)인데 세기 25 를 못 들었다" },
+        { 0x01, 550.0f, false, "③ 보통 소리(문턱 50)인데 세기 25 를 들었다" },
+    };
+    for (const Th& h : ths) {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, h.flags, 3000.0f);
+        srv.PlaySoundAt(300, h.x, 1000, 0, 0, a);
+        run(srv, ms, 1);
+        Check((srv.hearStat(HS::Heard) == 1) == h.heard, h.why);
+    }
+    // ④ 벽 너머는 절반 — 150(75) 가 37 로: 보통은 못 듣고 · 달리기는 듣고 가 봄(시야선 막힘 → 59·56·70·69·7)
+    for (int run40 = 0; run40 <= 1; ++run40) {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, run40 ? 0x40 : 0x1, 3000.0f);
+        srv.SetWalls({ { 40, 43 } });
+        srv.PlaySoundAt(300, 850, 1000, 0, 0, a);
+        run(srv, ms, 1);
+        if (!run40) Check(srv.hearStat(HS::WallQuiet) == 1 && srv.hearStat(HS::Heard) == 0, "④ 벽 너머 절반(37 < 50)인데 들었다");
+        else {
+            const int t = srv.DebugAIStackInd(0);
+            char msg[200]; std::snprintf(msg, sizeof(msg), "④ 벽 너머 달리기 소리를 듣고 가 보지 않았다 — 반감 %llu · 들음 %llu · 가봄 %llu · 맨 위 %d·%d·%d·%d·%d",
+                srv.hearStat(HS::WallHalved), srv.hearStat(HS::Heard), srv.hearStat(HS::ReactGo),
+                srv.DebugAIAction(0, t), srv.DebugAIAction(0, t - 1), srv.DebugAIAction(0, t - 2), srv.DebugAIAction(0, t - 3), srv.DebugAIAction(0, t - 4));
+            Check(srv.hearStat(HS::WallHalved) == 1 && srv.hearStat(HS::ReactGo) == 1 && t >= 4 && srv.DebugAIAction(0, t) == 7 &&
+                  std::fabs(srv.DebugAIArgX(0, t) - 850.0f) < 0.01f && srv.DebugAIAction(0, t - 1) == 69 && srv.DebugAIAction(0, t - 2) == 70 &&
+                  srv.DebugAIAction(0, t - 3) == 56 && srv.DebugAIAction(0, t - 4) == 59, msg);
+        }
+    }
+    // ⑤ 제 소리 — 깃발 0x10 없으면 안 듣고(아군 무시) · 있으면 듣는다 / 귀 막힘(+404 가 앞날)이면 안 듣는다
+    for (int kind = 0; kind < 3; ++kind) {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, kind == 1 ? 0x11 : 0x1, 3000.0f);
+        if (kind == 2) srv.DebugSetPetHeard(0, 0, srv.frame() + 30, 0, 0);
+        if (kind < 2) srv.PlaySoundAt(300, 900, 1000, 0, 0, std::string(), nox::Target{ std::string(), 0 });
+        else srv.PlaySoundAt(300, 900, 1000, 0, 0, a);
+        run(srv, ms, 1);
+        if (kind == 0) Check(srv.hearStat(HS::NotListen) >= 1 && srv.hearStat(HS::Heard) == 0, "⑤ 깃발 0x10 없는 제 소리를 들었다");
+        if (kind == 1) Check(srv.hearStat(HS::Heard) == 1, "⑤ 깃발 0x10 있는 제 소리를 못 들었다");
+        if (kind == 2) Check(srv.hearStat(HS::Deaf) >= 1 && srv.hearStat(HS::Heard) == 0, "⑤ 귀가 막혔는데 들었다");
+    }
+    // ⑥ 가장 큰 것 — 83(100) 과 50(300) 이면 83
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 3000.0f);
+        srv.PlaySoundAt(300, 700, 1000, 0, 0, a);
+        srv.PlaySoundAt(300, 900, 1000, 0, 0, a);
+        srv.PlaySoundAt(300, 700, 1000, 0, 0, a);
+        run(srv, ms, 1);
+        Check(srv.hearStat(HS::Heard) == 1 && srv.DebugPetHeardDist(0) == 83, "⑥ 들은 것 중 가장 큰 것을 안 골랐다");
+    }
+    // ⑦ 조건 59(3초 안 들은 소리면 거짓) · 69(자리 둘레 50 에 불 — 불에 안 타면 괜찮음)
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 3000.0f);
+        srv.DebugSetAutoFight(false);
+        srv.DebugSetPetHeard(0, 300, srv.frame(), 900, 1000);
+        srv.DebugAIPushDep(0, 59, std::string(), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        std::vector<nox::OutPacket> o;
+        srv.DebugAIProcDeps(0, o);
+        Check(top(srv) != 1 && srv.hearStat(HS::Cond59) == 1, "⑦ 3초 안 들은 소리가 있는데 조건 59 가 안 깨졌다");
+    }
+    for (int immune = 0; immune <= 1; ++immune) {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 3000.0f);
+        srv.DebugSetAutoFight(false);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w; w.netCode = 888; w.type = 999; w.x = 1220; w.y = 1000;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        srv.SetDangerType(999, 1);
+        if (immune) srv.SetMonsterSubclass(1358, 0x400);
+        srv.DebugAIPushDep(0, 69, std::string(), -1, 0, 0.0f, 1200.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        std::vector<nox::OutPacket> o;
+        srv.DebugAIProcDeps(0, o);
+        if (!immune) Check(top(srv) != 1 && srv.hearStat(HS::Cond69) == 1, "⑦ 자리 둘레 20 에 불이 있는데 조건 69 가 안 깨졌다");
+        else Check(top(srv) == 1, "⑦ 불에 안 타는데 조건 69 가 깨졌다");
+    }
+    // ⑧ 조건 42 가 깨지면 들은 것을 지우고 1초 귀를 막는다
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 3000.0f);
+        srv.DebugSetAutoFight(false);
+        srv.DebugSetPetHeard(0, 300, srv.frame(), 900, 1000);
+        srv.DebugAIPushDep(0, 42, std::string("없는:1"), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        std::vector<nox::OutPacket> o;
+        srv.DebugAIProcDeps(0, o);
+        Check(srv.DebugPetHeardSnd(0) == 0 && srv.DebugPetHeardFrame(0) == srv.frame() + 30, "⑧ 조건 42 가 깨졌는데 귀를 1초 안 막았다");
+    }
+    // ⑨ 지키기(4) — 가운데(0.5)는 상대가 지킬 자리에서 시야 안일 때만 43·52·40·15 · 밖이면 안 싸움 / 마음대로(0.83)는 곧장 15
+    for (int kind = 0; kind < 3; ++kind) {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, kind == 1 ? 1400.0f : 1150.0f, 1000.0f);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugApplyEnchant(a, 23, 100000, 1);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetFrame(1000);
+        srv.DebugSetPetAggression(0, kind == 2 ? 0.83f : 0.5f);
+        srv.DebugSetPetSightRange(0, 250.0f);
+        srv.DebugAIClearStack(0);
+        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0.0f, 1000.0f, 1000.0f);
+        srv.DebugSetPetEnemy(0, a, -1);
+        srv.DebugAITick(0, o);
+        const int t = srv.DebugAIStackInd(0);
+        char msg[200]; std::snprintf(msg, sizeof(msg), "⑨ 지키기 갈래 %d 가 틀렸다 — 맨 위 %d·%d·%d·%d", kind,
+            srv.DebugAIAction(0, t), srv.DebugAIAction(0, t - 1), srv.DebugAIAction(0, t - 2), srv.DebugAIAction(0, t - 3));
+        bool has15 = false;
+        for (int i = 0; i <= t; ++i) if (srv.DebugAIAction(0, i) == 15) has15 = true;
+        if (kind == 0) Check(has15 && srv.DebugAIAction(0, t) == 15 && srv.DebugAIAction(0, t - 1) == 40 && srv.DebugAIAction(0, t - 2) == 52 && srv.DebugAIAction(0, t - 3) == 43, msg);
+        if (kind == 1) Check(!has15, msg);
+        if (kind == 2) Check(srv.DebugAIAction(0, t) == 15 && srv.DebugAIAction(0, t - 1) == 4, msg);
+    }
+    // ⑩ 떠돌기(10) — 가운데(0.5)는 지금 상대가 있어도 싸움을 안 올린다(마음대로만) · 마음대로는 올린다
+    for (int atWill = 0; atWill <= 1; ++atWill) {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 1150.0f);
+        srv.DebugSetPetAggression(0, atWill ? 0.83f : 0.5f);
+        srv.DebugAIClearStack(0);
+        srv.DebugAIPush(0, 10);
+        srv.DebugSetPetEnemy(0, a, -1);
+        std::vector<nox::OutPacket> o;
+        srv.DebugAITick(0, o);
+        bool has15 = false;
+        for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) if (srv.DebugAIAction(0, i) == 15) has15 = true;
+        Check(has15 == (atWill == 1), atWill ? "⑩ 마음대로 떠돌기가 지금 상대와 안 싸웠다" : "⑩ 가운데 성향 떠돌기가 지금 상대와 싸웠다(정답지는 마음대로만)");
+    }
+    // ⑪ 호위(3) — 소환수(마음대로 0.83)가 주인 곁에서 3초 안 들은 소리가 있으면 그쪽을 본다 / 오래된(3초 넘은) 것이면 안 본다
+    for (int old = 0; old <= 1; ++old) {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 1020.0f, 1000.0f);
+        srv.DebugSpawnPet(1358, 1000, 1000, a);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetFrame(1000);
+        srv.DebugSetAutoFight(false);
+        srv.DebugSetPetAggression(0, 0.83f);
+        srv.DebugAIPush(0, 3);
+        srv.DebugSetPetHeard(0, 300, srv.frame() - (old ? 90u : 0u), 1000, 1200);
+        srv.DebugAITick(0, o);
+        if (!old) Check(srv.hearStat(HS::ReactLook) == 1 && top(srv) == 25, "⑪ 호위 중 곁에서 들은 소리를 안 봤다");
+        else Check(srv.hearStat(HS::ReactLook) == 0 && top(srv) == 3 && srv.DebugPetHeardSnd(0) == 300, "⑪ 3초 넘은 소리에 반응했거나 지웠다");
+    }
+    std::printf("  09-29 B6 — 소리 듣기: 기록 갈래·2프레임 · 바라봄·가 봄 · 문턱 89/20/50 · 벽 절반 · 제 소리 0x10 · 귀막힘 · 가장 큰 것 · 조건 42·59·69 · 지키기 갈래 셋 · 떠돌기 성향\n");
+}
+
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
 //   사람 판 09-28 「워리어가 컨저러를 볼 때 흰 티가 살색으로」 — 새로 온 쪽이 먼저 온 쪽의 평상복 색(수식)을 못 받았다
 void TestWornLooksForNewcomer() {
@@ -26127,6 +26324,7 @@ int main() {
     TestMonsterBrainB4a();
     TestMonsterBrainB4b();
     TestMonsterAnimB5();
+    TestMonsterHearB6();
     TestPickupAutoEquip();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

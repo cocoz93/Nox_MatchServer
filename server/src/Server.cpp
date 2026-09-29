@@ -4301,7 +4301,7 @@ int Server::DamageToMap(int gx, int gy, int dmg, uint8_t dtype, const WallHitter
     if (!w.breakable) {
         if (who.present) {
             const uint16_t snd = HitSoundFor(hitMat, who.material);
-            if (snd != 0) PlaySoundAt(snd, who.x, who.y);
+            if (snd != 0) PlaySoundAt(snd, who.x, who.y, 0, 0, std::string(), Target{ who.src, -1 });
         }
         ++wallGate_[1];
         return 0;
@@ -4312,7 +4312,7 @@ int Server::DamageToMap(int gx, int gy, int dmg, uint8_t dtype, const WallHitter
     w.hp = static_cast<uint8_t>(static_cast<int>(w.hp) - d);
     if (who.present) {
         const uint16_t snd = BreakableHitSound(hitMat);
-        if (snd != 0) PlaySoundAt(snd, who.x, who.y);
+        if (snd != 0) PlaySoundAt(snd, who.x, who.y, 0, 0, std::string(), Target{ who.src, -1 });
     }
     ++wallGate_[2];
     return 0;
@@ -4357,6 +4357,7 @@ Server::WallHitter Server::WallHitterOfAddr(const std::string& addr) const {
     auto it = sessions_.find(addr);
     if (it == sessions_.end() || !it->second.inGame) return h;
     h.present = true; h.unit = true; h.player = true;
+    h.src = addr;                                            // ★ 09-29 B6 — 맞는 소리의 출처(몬스터가 들을 거리)
     h.x = static_cast<float>(it->second.posX); h.y = static_cast<float>(it->second.posY);
     h.dir = it->second.facing;
     h.material = MaterialOfWire(newPlayerWire_);
@@ -7049,7 +7050,7 @@ void Server::ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const 
             PlaySoundAt(131, static_cast<float>(si->second.posX), static_cast<float>(si->second.posY), 0, 0, t.addr);
     } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
         const Creature& k = pets_[static_cast<size_t>(t.pet)];
-        PlaySoundAt(131, static_cast<float>(k.x), static_cast<float>(k.y));
+        PlaySoundAt(131, static_cast<float>(k.x), static_cast<float>(k.y), 0, 0, std::string(), t);
     }
     const int hp = TargetHealth(t);
     if (hp > dmg) {
@@ -8162,7 +8163,7 @@ bool Server::MonsterSound(const Creature& k, int field) {
     const uint16_t snd = (k.type < tbl.size()) ? tbl[k.type] : 0;
     ++monsterSndCount_[field][snd != 0 ? 1 : 0];
     if (snd == 0) return false;
-    PlaySoundAt(snd, static_cast<float>(k.x), static_cast<float>(k.y));
+    PlaySoundAt(snd, static_cast<float>(k.x), static_cast<float>(k.y), 0, 0, std::string(), PetTarget(k));
     return true;
 }
 
@@ -8868,7 +8869,7 @@ bool Server::AbilityDo(Session& s, uint8_t abil, std::vector<OutPacket>& out) {
     // ★ 09-20 묶음 10 — **쓸 때 소리**(정답지 `spells_abil.go:225~226` — `getSound(능력,0)`).
     //   소리 번호는 thing.bin `ABIL` 칸에서 읽어 넣는다(`SetAbilitySound`) — 지어내지 않는다
     if (abilSoundUse_[abil] != 0) {
-        PlaySoundAt(abilSoundUse_[abil], static_cast<float>(s.posX), static_cast<float>(s.posY));
+        PlaySoundAt(abilSoundUse_[abil], static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, std::string(), Target{ s.addr, -1 });
         ++abilSoundUseCalls_[abil];
     }
     return true;
@@ -8889,7 +8890,7 @@ void Server::AbilityUpdate(Session& s, std::vector<OutPacket>& out) {
             SendAbilityActive(s, i, false, out);
             // ★ 09-20 묶음 10 — **꺼질 때 소리**(정답지 `spells_abil.go:249~250` — `getSound(능력,2)`)
             if (abilSoundOff_[i] != 0) {
-                PlaySoundAt(abilSoundOff_[i], static_cast<float>(s.posX), static_cast<float>(s.posY));
+                PlaySoundAt(abilSoundOff_[i], static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, std::string(), Target{ s.addr, -1 });
                 ++abilSoundOffCalls_[i];
             }
             if (i == 1) PlayerSetState(s, 13, frame_);                  // 광전사는 끝나면 상태 13
@@ -10384,7 +10385,7 @@ int Server::SoundFadePerc(uint16_t id, float sx, float sy, double px, double py)
 }
 
 void Server::PlaySoundAt(uint16_t id, float x, float y, uint8_t kind, uint32_t code,
-                         const std::string& owner) {
+                         const std::string& owner, const Target& src) {
     // ⚠ **소리조각이 0 이면 아예 안 만든다** — `newAudioEventPos` 의 `Field12 <= 0` 문.
     //   thing.bin 을 안 읽었으면 표가 비어 있어 **한 개도 안 나간다**(정답지와 같다)
     if (id == 0 || id >= soundDefs_.size() || soundDefs_[id].samples <= 0) { ++soundsDropped_; ++soundsDroppedIds_[id]; return; }
@@ -10397,6 +10398,23 @@ void Server::PlaySoundAt(uint16_t id, float x, float y, uint8_t kind, uint32_t c
     e.owner = owner;
     audioEvents_.push_back(std::move(e));
     ++soundsQueued_;
+    // ★ 09-29 B6 — 몬스터가 들을 거리(`EventObj` → `onSound`(kind ≠ 2) → `NewSound` `unit_ai.go:289~312` · `server.go:652~656`)
+    //   깃발 0 이면 버림 · 낸 것이 유닛이거나 유닛이 임자인 것만(`GetOwnerUnit() == nil` 이면 버림 — 자리 소리·문·판·공은 안 남는다)
+    //   출처 = `src`(넘긴 유닛) · 없으면 `owner`(그 사람) · 자리 = 낸 것의 자리
+    if (kind != 2 && soundDefs_[id].flags != 0) {
+        ListenRec r;
+        if (!src.none()) {
+            if (!src.addr.empty()) r.srcAddr = src.addr;
+            else if (static_cast<size_t>(src.pet) < pets_.size()) { r.srcIsPet = true; r.srcNet = pets_[static_cast<size_t>(src.pet)].netCode; }
+        } else if (!owner.empty()) {
+            r.srcAddr = owner;
+        }
+        if (!r.srcAddr.empty() || r.srcIsPet) {
+            r.snd = id; r.x = x; r.y = y; r.frame = frame_;
+            listens_.push_back(std::move(r));
+            ++hearStat_[static_cast<size_t>(HearStat::Recorded)];
+        }
+    }
 }
 
 void Server::FlushAudioEvents(std::vector<OutPacket>& out) {
@@ -11101,21 +11119,37 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             float mx = 0, my = 0;
             if (k.owner.empty() || !TargetXY(master, mx, my)) { AIPop(k); break; }
             st.argX = mx; st.argY = my;                       // +4·+8 — 호위 대상 자리
-            const Target foe{ k.enemyAddr, k.enemyPet };
-            float ex = 0, ey = 0;
-            if (!foe.none() && TargetXY(foe, ex, ey)) {
-                if (AIPush(k, 15)) {
-                    k.aiStack[k.aiStackInd].argX = ex;
-                    k.aiStack[k.aiStackInd].argY = ey;
-                    k.aiStack[k.aiStackInd].argU32 = frame_;
+            // ★ 09-29 B6 — 성향 갈래를 정답지대로(`GAME5.c:948~1002`) — 마음대로면 지금 상대로 싸움 · 아니면 때린 쪽 돌아보기 /
+            //   가운데면 되갚기 · 때린 쪽 돌아보기 / 곁이면 [마음대로면 들은 소리(`Sub_5466F0`)] · 못 했으면 치유(B7) /
+            //   멀면 [가운데·마음대로면 44] · [마음대로면 56] · 49 · 7. 소환수는 0.83(마음대로)이라 싸움·멀 때는 겉이 같다
+            const bool midE = k.aggression < 0.66000003f && k.aggression > 0.33000001f;
+            const bool atWillE = k.aggression > 0.66000003f;
+            if (atWillE) {
+                const Target foe{ k.enemyAddr, k.enemyPet };
+                float ex = 0, ey = 0;
+                if (!foe.none() && TargetXY(foe, ex, ey)) {
+                    if (AIPush(k, 15)) {
+                        k.aiStack[k.aiStackInd].argX = ex;
+                        k.aiStack[k.aiStackInd].argY = ey;
+                        k.aiStack[k.aiStackInd].argU32 = frame_;
+                    }
+                    break;
                 }
-                break;
+                if (MonsterLookAtDamager(k)) break;
+            } else if (midE) {
+                if (MonsterRetaliate(k)) break;
+                if (MonsterLookAtDamager(k)) break;
             }
             const double ddx = k.x - mx, ddy = k.y - my;
             const double lim = k.escortDist + 30.0;
-            if (ddx * ddx + ddy * ddy <= lim * lim) break;    // 곁에 있다 — 가만히
-            AIPush(k, 44);                                    // 공격받고 있지 않나
-            AIPush(k, 56);                                    // 보이는 적이 없나
+            if (ddx * ddx + ddy * ddy <= lim * lim) {         // 곁에 있다
+                if (!atWillE || !MonsterHearReact(k)) {
+                    // `mobHealSomeone_5411A0` — 치유 주문(B7 — 반주문 29 아니면)
+                }
+                break;
+            }
+            if (midE || atWillE) AIPush(k, 44);               // 공격받고 있지 않나
+            if (atWillE) AIPush(k, 56);                       // 보이는 적이 없나
             if (AIPush(k, 49)) {                              // 호위 거리보다 머나
                 k.aiStack[k.aiStackInd].argF = k.escortDist;
                 k.aiStack[k.aiStackInd].targetAddr = k.owner;
@@ -11141,34 +11175,82 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
         case 4: {    // ── 묶음 6-i(2) 지키기 — `nox_xxx_mobActionGuard_546010`(`legacy/GAME5.c:738`)
             //
             // ⭕ 「이 자리를 지켜라」다. 쌓임 항목의 `+4·+8` 이 **지킬 자리**, `+12` 가 **볼 쪽**이다.
-            //   · **지금 상대가 있으면 싸움(15)** 을 올린다(쫓고 때리는 것은 그쪽 몫)
+            //   · **지금 상대가 있으면 싸움(15)** 을 올린다(쫓고 때리는 것은 그쪽 몫) — ✖ 09-29 정정: 마음대로일 때만 곧장(아래 ★★ ②)
             //   · 아니면 **16프레임에 한 번**만 자리를 살핀다(`(프레임 + 번호) & 0xF`) —
             //     지킬 자리에서 **8 넘게** 벗어났으면 **56·59·44** 를 깔고 **가기(7)** 로 되돌아간다
             //   ⚠ 매 틱 살피지 않는 것이 핵심이다 — 번호를 더해 **개체마다 살피는 틱이 어긋난다**
             //
-            // ⚠ 안 옮긴 것 — `sub_5343C0`(못 싸울 때의 43·52·40 갈래) · 흉내쟁이·식물 갈래 ·
-            //   `monsterLookAtDamager_5466B0`(때린 쪽 돌아보기) · 둘레 둘러보기(`sub_5466F0`·`sub_545DA0`)
-            const Target foe{ k.enemyAddr, k.enemyPet };
-            float ex = 0, ey = 0;
-            if (!foe.none() && TargetXY(foe, ex, ey)) {
-                if (AIPush(k, 15)) {
-                    k.aiStack[k.aiStackInd].argX = ex;
-                    k.aiStack[k.aiStackInd].argY = ey;
-                    k.aiStack[k.aiStackInd].argU32 = frame_;
+            // ★★ 09-29 B6 — **정답지 전체로 다시 옮김**(`GAME5.c:738~915`). ✖ 전에는 「지금 상대가 있으면 늘 싸움」 + 자리 살피기뿐이었다 —
+            //   지키기 명령(성향 0.5 = 가운데)이 **자리에서 먼 적까지 쫓아갔다**. 정답지 차례:
+            //   ① 성향 < 0.08 이거나 되갚기가 0 일 때만 아래(되갚기가 쌓았으면 끝)
+            //   ② 지금 상대가 있으면 — 마음대로(> 0.66)면 싸움(15) → 끝 · 가운데면 **상대가 지킬 자리에서 시야(+1312) 안일 때만**
+            //      43(0)·52(시야 × 1.5 · 지킬 자리)·40(또는)·15 — 「맞고 있거나 자리 둘레에 있는 동안만 싸운다」(식충식물은 63(시야 × 1.05)·15) · 끝 아님
+            //   ③ 때린 쪽 돌아보기(`5466B0`) → 끝 · 마음대로면 들은 소리(`Sub_5466F0`) · 아니면 들은 자리 바라보기(`545DA0`) → 했으면 끝
+            //   ④ 16프레임에 한 번(`(프레임 + 번호) & 0xF`) — 자리에서 8 넘게 벗어났으면 [마음대로면 56·59] · 44 · 7(자리) → 끝
+            //      제자리면 — 보이는 것이 있으면 지금 상대 · 없으면 보이는 목록의 첫 사람(없으면 첫째)을 바라봄(26 — 이미 보면 안 함) ·
+            //      보이는 것이 없으면 볼 쪽(+12)을 봄(56·27 — 이미 보면 안 함)
+            //   ⑤ 행동 바꾼 지 0.5초 안이거나 안 움직였으면 치유(B7 — 반주문 29 아니면) · 아니면 지난 자리 바라보기(25)
+            //   ⚠ 흉내쟁이 갈래는 우리 몬스터에 없음
+            {
+                const bool midG = k.aggression < 0.66000003f && k.aggression > 0.33000001f;
+                const bool atWillG = k.aggression > 0.66000003f;
+                if (!(k.aggression < 0.079999998f || MonsterRetaliate(k) == 0)) break;           // ①
+                const float postX = st.argX, postY = st.argY;
+                const uint8_t postDir = static_cast<uint8_t>(st.argU32 & 0xFF);
+                const Target foe{ k.enemyAddr, k.enemyPet };
+                float ex = 0, ey = 0;
+                if (!foe.none() && TargetXY(foe, ex, ey)) {                                     // ②
+                    if (atWillG) {
+                        if (AIPush(k, 15)) { k.aiStack[k.aiStackInd].argX = ex; k.aiStack[k.aiStackInd].argY = ey; k.aiStack[k.aiStackInd].argU32 = frame_; }
+                        break;
+                    }
+                    if (midG) {
+                        const double fx = postX - ex, fy = postY - ey;
+                        if (static_cast<double>(k.sightRange) * k.sightRange > fx * fx + fy * fy) {
+                            if (k.type == kCarnivorousPlantType) {
+                                if (AIPush(k, 63)) k.aiStack[k.aiStackInd].argF = static_cast<float>(k.sightRange * 1.05);
+                            } else {
+                                if (AIPush(k, 43)) k.aiStack[k.aiStackInd].argU32 = 0;
+                                if (AIPush(k, 52)) { k.aiStack[k.aiStackInd].argF = static_cast<float>(k.sightRange * 1.5); k.aiStack[k.aiStackInd].argX = postX; k.aiStack[k.aiStackInd].argY = postY; }
+                                AIPush(k, 40);
+                            }
+                            if (AIPush(k, 15)) { k.aiStack[k.aiStackInd].argX = ex; k.aiStack[k.aiStackInd].argY = ey; k.aiStack[k.aiStackInd].argU32 = frame_; }
+                        }
+                    }
                 }
-                break;
-            }
-            if (((frame_ + k.netCode) & 0xF) != 0) break;    // 이 틱은 안 살핀다
-            const double px = st.argX - k.x, py = st.argY - k.y;
-            if (px * px + py * py <= 64.0) break;            // 제자리다
-            AIPush(k, 56);                                   // 보이는 적이 없나
-            AIPush(k, 59);                                   // 귀에 걸리는 소리가 없나
-            AIPush(k, 44);                                   // 공격받고 있지 않나
-            const float postX = st.argX, postY = st.argY;
-            if (AIPush(k, 7)) {
-                k.aiStack[k.aiStackInd].argX = postX;
-                k.aiStack[k.aiStackInd].argY = postY;
-                k.aiStack[k.aiStackInd].argU32 = 0;
+                if (MonsterLookAtDamager(k)) break;                                             // ③
+                if (atWillG) { if (MonsterHearReact(k)) break; }
+                else if (MonsterLookAtHeard(k)) break;
+                if (((frame_ + k.netCode) & 0xF) == 0) {                                         // ④
+                    const double px = postX - k.x, py = postY - k.y;
+                    if (px * px + py * py > 64.0) {
+                        if (atWillG) { AIPush(k, 56); AIPush(k, 59); }
+                        AIPush(k, 44);
+                        if (AIPush(k, 7)) { k.aiStack[k.aiStackInd].argX = postX; k.aiStack[k.aiStackInd].argY = postY; k.aiStack[k.aiStackInd].argU32 = 0; }
+                        break;
+                    }
+                    auto facingDot = [&](double vx, double vy) { return DirVecX(k.facing) * vx + DirVecY(k.facing) * vy > 0.89999998; };   // `sub_534120`
+                    if (!k.seen.empty()) {
+                        Target look = foe;
+                        if (look.none()) {
+                            SightResolve(k.seen[0], look);
+                            for (const auto& r : k.seen) { if (r.addr.empty()) continue; Target t; if (SightResolve(r, t)) look = t; break; }
+                        }
+                        float lx = 0, ly = 0;
+                        if (!look.none() && TargetXY(look, lx, ly)) {
+                            const double vx = lx - k.x, vy = ly - k.y, vl = std::sqrt(vx * vx + vy * vy) + 0.001;
+                            if (!facingDot(vx / vl, vy / vl) && AIPush(k, 26)) { k.aiStack[k.aiStackInd].targetAddr = look.addr; k.aiStack[k.aiStackInd].targetPet = look.pet; }
+                        }
+                    } else if (!facingDot(DirVecX(postDir), DirVecY(postDir))) {
+                        AIPush(k, 56);
+                        if (AIPush(k, 27)) k.aiStack[k.aiStackInd].argU32 = postDir;
+                    }
+                }
+                if (frame_ - k.aiActionFrame <= static_cast<uint32_t>(kServerTickRate / 2) || (k.x == k.prevX && k.y == k.prevY)) {   // ⑤
+                    // `mobHealSomeone_5411A0` — 치유 주문(B7)
+                } else if (AIPush(k, 25)) {
+                    k.aiStack[k.aiStackInd].argX = static_cast<float>(k.prevX); k.aiStack[k.aiStackInd].argY = static_cast<float>(k.prevY);
+                }
             }
             break;
         }
@@ -11200,15 +11282,26 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             //   실측 — estate 에서 71 움직이고 길목 (3463,2358) 에서 **5 떨어진 자리**에 섬).
             //   정답지는 고른 길목을 쌓임 항목 `+4` 에 적어 두고, **거리² ≤ 64** 면 이음을 타고
             //   다음 길목으로 넘어간다(`GAME5.c:519~528` · `monsterRoamDeadEnd_545BB0`)
-            const Target foe{ k.enemyAddr, k.enemyPet };
-            float ex = 0, ey = 0;
-            if (!foe.none() && TargetXY(foe, ex, ey)) {
-                if (AIPush(k, 15)) {
-                    k.aiStack[k.aiStackInd].argX = ex;
-                    k.aiStack[k.aiStackInd].argY = ey;
-                    k.aiStack[k.aiStackInd].argU32 = frame_;
+            // ★ 09-29 B6 — 앞머리를 정답지대로(`GAME5.c:453~492`) — 성향 가운데·마음대로면 되갚기가 먼저 · 싸움은 **마음대로(> 0.66)일 때만** ·
+            //   그다음 들은 소리(`Sub_5466F0`). ✖ 전에는 성향과 상관없이 지금 상대로 싸웠다(사냥 명령은 0.83 이라 겉 차이 없음)
+            //   ⚠ 봇(0x20000)의 가만히 서기 갈래(`:459~476`)는 우리 몬스터에 없음
+            {
+                const bool midR = k.aggression < 0.66000003f && k.aggression > 0.33000001f;
+                const bool atWillR = k.aggression > 0.66000003f;
+                if ((midR || atWillR) && MonsterRetaliate(k)) break;
+                if (atWillR) {
+                    const Target foe{ k.enemyAddr, k.enemyPet };
+                    float ex = 0, ey = 0;
+                    if (!foe.none() && TargetXY(foe, ex, ey)) {
+                        if (AIPush(k, 15)) {
+                            k.aiStack[k.aiStackInd].argX = ex;
+                            k.aiStack[k.aiStackInd].argY = ey;
+                            k.aiStack[k.aiStackInd].argU32 = frame_;
+                        }
+                        break;
+                    }
+                    if (MonsterHearReact(k)) break;
                 }
-                break;
             }
             // ★ 묶음 6-j(2) — 고른 길목이 아직 쓸 만한가(`sub_547EE0`). 아니면 잊는다
             if (!WaypointById(st.argWp)) st.argWp = 0;
@@ -11330,7 +11423,7 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             if (res) {
                 const uint16_t snd = (kSnap.type < monsterSnd_[7].size()) ? monsterSnd_[7][kSnap.type] : 0;   // ★ 09-26 M4a — 칸 7 표로 합침
                 if (snd != 0) {
-                    PlaySoundAt(snd, static_cast<float>(kSnap.x), static_cast<float>(kSnap.y));
+                    PlaySoundAt(snd, static_cast<float>(kSnap.x), static_cast<float>(kSnap.y), 0, 0, std::string(), PetTarget(kSnap));
                     ++monsterMeleeHitPlayed_;
                 } else {
                     ++monsterMeleeHitNone_;
@@ -11407,7 +11500,11 @@ void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
                 okPrev = false;
                 continue;
             case 41: ok = st.argU32 > frame_; break;         // 때 — 그 프레임 전까지만
-            case 42: ok = hasT && TargetHealth(targ) > 0; break;               // 살아 있나
+            case 42:                                                            // 살아 있나
+                ok = hasT && TargetHealth(targ) > 0;
+                // ★ 09-29 B6 — 깨지면 들은 소리를 지우고 1초 귀를 막는다(`unit_ai.go:71~73` Field97 = 0 · Field101 = 지금 + 1초)
+                if (!ok) { k.heardSnd = 0; k.heardFrame = frame_ + static_cast<uint32_t>(kServerTickRate); }
+                break;
             case 43: {                                                          // ★ 09-29 B2 — 맞는 중(`unit_ai.go:75~84`)
                 // 다쳤고 때린 쪽이 유닛이면 인자를 지금으로 고친다 · 참 = 인자 뒤 10초 안
                 Target att;
@@ -11429,6 +11526,12 @@ void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
             }
             case 64: ok = !MonsterCanResumeAttack(k); break;                   // ★ 09-29 B4 — 건강하지 않나(`:191~199`) — 체력 비율 < 회복 비율
             case 68: ok = !(frame_ - k.moveAttemptFrame < static_cast<uint32_t>(3 * kServerTickRate)); break;   // ★ 09-29 B4 — 구석 아님(`:213~214`)
+            case 59:                                                            // ★ 09-29 B6 — 들은 소리가 없나(`:157~160`) — 3초 안 들은 것(+388)이 있으면 거짓
+                if (k.heardSnd != 0 && frame_ - k.heardFrame < static_cast<uint32_t>(3 * kServerTickRate)) { ok = false; ++hearStat_[static_cast<size_t>(HearStat::Cond59)]; }
+                break;
+            case 69:                                                            // ★ 09-29 B6 — 그 자리가 안전한가(`:215~223`) — 둘레 50 에 위험한 것
+                if (!LocationIsSafe(k, st.argX, st.argY)) { ok = false; ++hearStat_[static_cast<size_t>(HearStat::Cond69)]; }
+                break;
             case 70:                                                            // ★ 09-29 B4b — 답답하지 않나(`:224~227`) — 답답하면 거짓 · 그 깃발을 지운다
                 if (k.frustrated) { ok = false; k.frustrated = false; }
                 break;
@@ -12190,6 +12293,138 @@ void Server::MonsterMoveAudio(Creature& k, AnimStat site) {
     }
 }
 
+// ── ★ 09-29 B6 소리 듣기 ────────────────────────────────────────────────
+//
+// `aiListenToSounds`(`unit_ai.go:314~360`) — 몬스터 갱신 앞(`unitUpdateMonster_50A5C0` `:549` — 알아보기보다 먼저)
+//   · 죽일 수 없는 것(체력 자료 없음·죽음 — `checkIsKillable_528190`)은 안 듣는다 · 물고기·개구리·쥐 갈래는 우리 몬스터에 없음
+//   · 들을 거리는 2프레임까지만 산다(지금 < 그 프레임 이거나 2 넘게 지났으면 지움)
+//   · 귀가 안 막혔고(+404 ≤ 그 기록) 들어야 하는 것(`shouldUnitListen`) 중 **세기가 가장 큰 것**(같으면 새것 — 정답지 목록은 새것이 앞)
+//   · 그것이 마지막 들은 것보다 새롭거나(프레임) 더 크면(+408) 들은 것으로 적는다(`unitEmitHearEvent_50D110` — 스크립트 사건은 안 옮김)
+void Server::MonsterListen(Creature& k) {
+    for (size_t i = 0; i < listens_.size();) {
+        const ListenRec& r = listens_[i];
+        if (frame_ < r.frame || frame_ - r.frame > 2) { listens_.erase(listens_.begin() + static_cast<std::ptrdiff_t>(i)); continue; }
+        ++i;
+    }
+    if (k.health == 0 || TuningFor(k.type).health == 0) return;
+    const ListenRec* best = nullptr;
+    int maxDist = 0;
+    for (auto it = listens_.rbegin(); it != listens_.rend(); ++it) {
+        const ListenRec& r = *it;
+        // `ud.Field101 <= it.frame` — 막힌 귀(+404 가 앞날)는 여기서 걸린다(그래서 `shouldUnitListen` 의 같은 검사는 이 흐름에선 안 닿는다 · 셈은 여기)
+        if (k.heardFrame > r.frame) { if (k.heardFrame > frame_) ++hearStat_[static_cast<size_t>(HearStat::Deaf)]; continue; }
+        if (!MonsterShouldListen(k, r)) continue;
+        const int d = MonsterTraceSound(k, r);
+        if (d > 0 && d > maxDist) { maxDist = d; best = &r; }
+    }
+    if (!best || !(best->frame > k.heardFrame || maxDist > k.heardDist)) return;
+    k.heardSnd = best->snd;
+    k.heardFrame = frame_;
+    k.heardDist = maxDist;
+    k.heardSrcNet = 0;
+    if (best->srcIsPet) k.heardSrcNet = best->srcNet;
+    else { auto si = sessions_.find(best->srcAddr); if (si != sessions_.end()) k.heardSrcNet = si->second.netCode; }
+    k.heardX = best->x;
+    k.heardY = best->y;
+    ++hearStat_[static_cast<size_t>(HearStat::Heard)];
+}
+
+// `shouldUnitListen`(`unit_ai.go:418~450`) — 귀가 막혔으면(+404 > 지금) 거짓 · 낸 것의 임자 사슬 끝(`FindOwnerChainPlayer` — 사람이면 그 사람 ·
+//   크리처면 임자 사람, 없으면 그 크리처)이 없으면(사라짐) 깃발만 보고 · 적이면 깃발만 보고 · 아군·자기 것이면 깃발 0x10 이 있어야 한다
+//   ⚠ 방(폴리곤)이 다르면 안 듣는 갈래(`Sub_501C00` · `polygonIsPlayerInPolygon`)는 우리 맵에 방 자료가 없어 안 옮김
+bool Server::MonsterShouldListen(const Creature& k, const ListenRec& r) {
+    if (k.heardFrame > frame_) { ++hearStat_[static_cast<size_t>(HearStat::Deaf)]; return false; }
+    const uint16_t flags = soundDefs_[r.snd].flags;
+    Creature::SeenRef ref; ref.addr = r.srcAddr; ref.petNet = r.srcIsPet ? r.srcNet : 0;
+    Target pu;
+    if (!SightResolve(ref, pu)) return flags != 0;
+    if (pu.addr.empty() && !pets_[static_cast<size_t>(pu.pet)].owner.empty()) pu = Target{ pets_[static_cast<size_t>(pu.pet)].owner, -1 };
+    if (CreatureEnemyTo(k, pu)) return flags != 0;
+    if (!(flags & 0x10)) { ++hearStat_[static_cast<size_t>(HearStat::NotListen)]; return false; }
+    return true;
+}
+
+// `traceSound`(`unit_ai.go:362~375`) — 세기(`soundFadePerc` — 멀티는 끄는 문턱 0 · `game.go:349`)가 문턱(깃발 0x20 → 89 · 0x40 → 20 · 그 밖 50) 아래면 −1 ·
+//   몬스터→소리 자리 선 추적(5)이 막히면 반으로 깎아 다시 본다
+int Server::MonsterTraceSound(const Creature& k, const ListenRec& r) {
+    const uint16_t flags = soundDefs_[r.snd].flags;
+    auto enough = [&](int p) { const int th = (flags & 0x20) ? 89 : ((flags & 0x40) ? 20 : 50); return p >= th; };
+    int perc = SoundFadePerc(r.snd, r.x, r.y, k.x, k.y);
+    if (!enough(perc)) { ++hearStat_[static_cast<size_t>(HearStat::Quiet)]; return -1; }
+    if (!MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), r.x, r.y, 0x5)) {
+        perc = static_cast<int>(static_cast<double>(perc) * 0.5);
+        if (!enough(perc)) { ++hearStat_[static_cast<size_t>(HearStat::WallQuiet)]; return -1; }
+        ++hearStat_[static_cast<size_t>(HearStat::WallHalved)];
+    }
+    return perc;
+}
+
+// `sub_5466F0`(`GAME5.c:1065~1112`) — 3초 안에 들은 것(+388)이 있으면: 불에 안 타거나(IMMUNE_FIRE 0x400) 그 자리가 용암(바닥 6)이 아니고 ·
+//   닿을 수 있는 칸이면(`sub_50B810` — 벽 칸 아님 · 막힘 아님) — 시야선(추적 9)이 트였으면 바라보기(`545DA0`) · 아니면 59·56·70·69(자리)·7(자리)로 가 본다 ·
+//   어느 쪽이든 들은 것을 지우고 1 · 들은 것이 없으면 0
+bool Server::MonsterHearReact(Creature& k) {
+    if (k.heardSnd == 0 || frame_ - k.heardFrame >= static_cast<uint32_t>(3 * kServerTickRate)) return false;
+    const uint32_t sub = MonsterSubclass(k.type);
+    bool acted = false;
+    if ((sub & 0x400) || floorGrid_.TileAt(k.heardX, k.heardY, floorEdges_).tile != 6) {
+        const int gx = static_cast<int>(static_cast<double>(k.heardX) / 23.0), gy = static_cast<int>(static_cast<double>(k.heardY) / 23.0);
+        bool airborne = false;
+        { const auto tb = typeBodies_.find(k.type); if (tb != typeBodies_.end()) airborne = (tb->second.flags & 0x4000) != 0; }
+        if (WallDirAt(gx, gy) == -1 && AIPathCanPass(airborne, sub, gx, gy)) {
+            acted = true;
+            if (MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), k.heardX, k.heardY, 0x9)) {
+                MonsterLookAtHeard(k);
+            } else {
+                const float hx = k.heardX, hy = k.heardY;
+                AIPush(k, 59);
+                AIPush(k, 56);
+                AIPush(k, 70);
+                if (AIPush(k, 69)) { k.aiStack[k.aiStackInd].argX = hx; k.aiStack[k.aiStackInd].argY = hy; }
+                if (AIPush(k, 7)) { k.aiStack[k.aiStackInd].argX = hx; k.aiStack[k.aiStackInd].argY = hy; k.aiStack[k.aiStackInd].argU32 = 0; }
+                ++hearStat_[static_cast<size_t>(HearStat::ReactGo)];
+            }
+        }
+    }
+    if (!acted) ++hearStat_[static_cast<size_t>(HearStat::ReactSkip)];
+    k.heardSnd = 0;
+    return true;
+}
+
+// `sub_545DA0`(`GAME5.c:713~735`) — 3초 안에 들은 것이 있으면 59·56·1(1~2초)·25(들은 자리) 를 쌓고 지운다
+bool Server::MonsterLookAtHeard(Creature& k) {
+    if (k.heardSnd == 0 || frame_ - k.heardFrame >= static_cast<uint32_t>(3 * kServerTickRate)) return false;
+    const float hx = k.heardX, hy = k.heardY;
+    AIPush(k, 59);
+    AIPush(k, 56);
+    if (AIPush(k, 1)) k.aiStack[k.aiStackInd].argU32 = frame_ + static_cast<uint32_t>(kServerTickRate) + NextRandom(static_cast<uint32_t>(kServerTickRate + 1));
+    if (AIPush(k, 25)) { k.aiStack[k.aiStackInd].argX = hx; k.aiStack[k.aiStackInd].argY = hy; }
+    k.heardSnd = 0;
+    ++hearStat_[static_cast<size_t>(HearStat::ReactLook)];
+    return true;
+}
+
+// 조건 69 `DEPENDENCY_LOCATION_IS_SAFE`(`unit_ai.go:215~223`) — 그 자리 둘레 50 에 위험한 것이 없나(`unitIsDangerous_547120`):
+//   불(클래스 FIRE) — IMMUNE_FIRE(0x400)가 아니면 · 독구름(ToxicCloud·SmallToxicCloud) — IMMUNE_POISON(0x200)이 아니면 · 클래스 DANGEROUS 는 늘
+//   ⚠ 둘레는 오브젝트 가운데 자리로만 잰다(정답지 `EachObjInCircle` 은 몸 크기도 본다) · 보는 오브젝트 = 주문이 놓은 것·세계 물건·판/문 등
+bool Server::LocationIsSafe(const Creature& k, float x, float y) const {
+    const uint32_t sub = MonsterSubclass(k.type);
+    auto danger = [&](uint16_t type, float ox, float oy) {
+        const auto it = dangerTypes_.find(type);
+        if (it == dangerTypes_.end()) return false;
+        const float dx = ox - x, dy = oy - y;
+        if (dx * dx + dy * dy > 50.0f * 50.0f) return false;
+        switch (it->second) {
+            case 1:  return (sub & 0x400) == 0;
+            case 2:  return (sub & 0x200) == 0;
+            default: return true;
+        }
+    };
+    for (const auto& p : placed_) if (danger(p.type, p.x, p.y)) return false;
+    for (const auto& w : statics_) if (danger(w.type, static_cast<float>(w.x), static_cast<float>(w.y))) return false;
+    for (const auto& p : props_) if (danger(p.type, static_cast<float>(p.x), static_cast<float>(p.y))) return false;
+    return true;
+}
+
 // `nox_xxx_monsterPopAttackActions_5471B0` — 맨 위가 공격 행동(16~20 · 25~28)인 동안 뺀다
 void Server::MonsterPopAttackActions(Creature& k) {
     for (int guard = 0; guard <= Creature::kAIStackMax; ++guard) {
@@ -12238,7 +12473,7 @@ int Server::CreatureGenRetreatPath(Creature& k, float fromX, float fromY) {
 }
 
 // 놀기 `AIActionIdle.Update`(`unit_ai.go:637~670`)
-//   성향이 가운데(0.33~0.66)이거나 마음대로 공격(> 0.66)이면 — 지금 상대가 있으면 싸움(그 자리) · 들은 소리가 있으면(`Sub_5466F0` — B6) 그쪽
+//   성향이 가운데(0.33~0.66)이거나 마음대로 공격(> 0.66)이면 — 지금 상대가 있으면 싸움(그 자리) · 들은 소리가 있으면(`Sub_5466F0` — B6) 그쪽 → 끝
 //   성향 < 0.08 이거나 되갚기가 0 이면 — 다쳤으면 때린 자리 바라보기 · 아니면 행동 바꾼 지 0.5초 안이거나 안 움직였으면 치유(B7) · 그 밖에는 지난 자리 바라보기(25)
 void Server::MonsterIdleUpdate(Creature& k) {
     const bool mid = k.aggression < 0.66000003f && k.aggression > 0.33000001f;   // `Sub_5343C0`
@@ -12251,7 +12486,7 @@ void Server::MonsterIdleUpdate(Creature& k) {
             ++b2Stat_[static_cast<size_t>(B2Stat::IdleFight)];
             return;
         }
-        // `Sub_5466F0` — 들은 소리(+388)가 3초 안이면 그쪽으로 — 듣기(B6)가 아직 없어 늘 0
+        if (MonsterHearReact(k)) return;                                          // ★ 09-29 B6 — `Sub_5466F0` 들은 소리(3초 안) 쪽으로
     }
     if (k.aggression < 0.079999998f || MonsterRetaliate(k) == 0) {              // `Sub_534440` || `Sub_545E60() == 0`
         if (MonsterLookAtDamager(k)) { ++b2Stat_[static_cast<size_t>(B2Stat::IdleLookDamager)]; return; }
@@ -13478,6 +13713,7 @@ void Server::FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPa
     if (!hit.none()) HurtTarget(hit, dmg, out, m.owner, 1, &src, HitterMissile(m));
     WallHitter fw;                                           // ★ 09-29 Z1-A — 벽 피해 who = 불덩이(MISSILE — 방향 없음 · 재질은 그 종류)
     fw.present = true; fw.x = m.posX; fw.y = m.posY; fw.material = MaterialOfWire(m.type);
+    fw.src = m.owner;                                        // ★ 09-29 B6 — 불덩이의 임자(사람) · 몬스터가 쏜 것은 비어 기록 안 됨(⚠ 쏜 몬스터 추적 없음)
     DamageUnitsAround(m.posX, m.posY, static_cast<float>(static_cast<double>(amount) * 0.33333334), 15.0f,
                       dmg, 1, m.owner, hit, out, HitterObj(m.type), &src, fw);
     const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
@@ -13928,7 +14164,7 @@ bool Server::DurNew(uint8_t spell, const std::string& a2, const std::string& obj
     durSpells_.push_front(d);                                // Add — 머리에
     // 소리 — 겨눔(0x4)이면 On · 아니면 Cast(10)
     // 10-f PlaySound: on apply, TARGETED(0x4) -> OnSound else CastSound, at the target (spells_dur.go:131~138)
-    PlaySoundAt(SpellSoundOn(spell), static_cast<float>(u2.posX), static_cast<float>(u2.posY));
+    PlaySoundAt(SpellSoundOn(spell), static_cast<float>(u2.posX), static_cast<float>(u2.posY), 0, 0, std::string(), Target{ u2.addr, -1 });
     DurSpell& p = durSpells_.front();
     if (fns.create == nullptr || (this->*fns.create)(p, out) == 0) return true;
     DurCancel(p, out);
@@ -15088,7 +15324,7 @@ void Server::WarcryBreakCasts(Session& s, double dist, std::vector<OutPacket>& o
         c.castFrame = 0;
         c.castFlag = 0;
         InformSpell(c, 0, 15, out);
-        PlaySoundAt(231, static_cast<float>(c.posX), static_cast<float>(c.posY));
+        PlaySoundAt(231, static_cast<float>(c.posX), static_cast<float>(c.posY), 0, 0, std::string(), Target{ c.addr, -1 });
         PlayerSetState(c, kPlayerStateIdle, frame_);
         castList_.erase(castList_.begin() + static_cast<std::ptrdiff_t>(i));
         ++warcryCastsBroken_;
@@ -15171,7 +15407,7 @@ int Server::CastCounterSpell(Session& caster, std::vector<OutPacket>& out) {
         strip(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
     }
     // ④ 시전 소리
-    if (spellDefs_[13].valid && spellDefs_[13].castSound != 0) PlaySoundAt(spellDefs_[13].castSound, cx, cy);
+    if (spellDefs_[13].valid && spellDefs_[13].castSound != 0) PlaySoundAt(spellDefs_[13].castSound, cx, cy, 0, 0, std::string(), Target{ caster.addr, -1 });
     return 1;
 }
 
@@ -15412,7 +15648,7 @@ void Server::PetDamageSound(const Creature& k, uint8_t dtype, HitterRef hitter) 
     const uint16_t id = DefaultHitSound(MaterialOfWire(k.type), TuningFor(k.type).health != 0, dtype, hitterPresent, hitterMat, w);
     way(w);
     if (id == 0) return;
-    PlaySoundAt(id, static_cast<float>(k.x), static_cast<float>(k.y));
+    PlaySoundAt(id, static_cast<float>(k.x), static_cast<float>(k.y), 0, 0, std::string(), PetTarget(k));
     lastHitSound_ = id;
 }
 
@@ -15449,7 +15685,7 @@ void Server::HarpoonDefaultHitSound(const Target& t, uint16_t boltType) {
     ++harpoonHitSoundWay_[static_cast<size_t>(w)];
     if (id == 0) return;
     if (!addr.empty()) PlaySoundAt(id, x, y, 0, 0, addr);
-    else PlaySoundAt(id, x, y);
+    else PlaySoundAt(id, x, y, 0, 0, std::string(), t);
     lastHitSound_ = id;
 }
 
@@ -16126,6 +16362,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   목록 중 가장 가까운 적. 한번 본 것은 (거리+30) 안에서 보이는 동안 남는다(시야선은 2초마다 다시 봄).
             //   ✖ 전에는 거리 제한 없이 가장 가까운 적(`NearestTarget(…, 1e9)`)을 매 틱 골랐다 — 멀리서도 · 등 뒤도 알아봤다(09-28 사람 판 박쥐)
             //   ★ 09-29 B2 — 주인 없는 것은 놀기(0) 갱신이 지금 상대(안 보여도)로 싸움을 쌓는다 · 아래는 주인 있는 것의 호위 대체(소환 기본 명령)만 남았다
+            // ★ 09-29 B6 — 소리 듣기(`unitUpdateMonster_50A5C0` `:549` — 앞머리·알아보기보다 먼저)
+            if (!debugNoAutoFight_) MonsterListen(k);
             // ★ 09-29 B2 — 몬스터 한 틱 앞머리(unit_ai.go:557~573) — 다침 소리 · 도발 · 놀 때 소리(알아보기 앞)
             MonsterHeadUpdate(k);
             if (debugNoAutoFight_) { k.enemyAddr.clear(); k.enemyNet = 0; k.enemyPet = -1; }

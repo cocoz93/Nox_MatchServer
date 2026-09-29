@@ -304,6 +304,24 @@ enum class AnimStat : uint8_t {
 };
 constexpr size_t kAnimStatCount = static_cast<size_t>(AnimStat::Count);
 
+// ★ 09-29 B6 — 소리 듣기(`aiListenToSounds` · `Sub_5466F0` · `sub_545DA0`)가 **무엇을 했나**
+enum class HearStat : uint8_t {
+    Recorded = 0,    // 들을 거리 기록 — 깃발 ≠ 0 · 유닛(또는 유닛이 임자)이 낸 소리 · 조각 있음 · kind ≠ 2
+    Deaf,            // 귀 막힘(+404 가 앞날 — 조건 42 가 상대를 잃으면 1초)
+    NotListen,       // 아군·자기 소리인데 깃발 0x10 없음
+    Quiet,           // 문턱 아래(걷기 0x20 → 89 · 달리기 0x40 → 20 · 그 밖 50)
+    WallHalved,      // 벽 너머라 절반 — 그래도 문턱을 넘음
+    WallQuiet,       // 벽 너머 절반이라 문턱 아래
+    Heard,           // 들었다(+388 번호 · +396 자리 · +404 프레임 · +408 세기)
+    ReactGo,         // 들은 자리로 가 봄(59·56·70·69·7)
+    ReactLook,       // 들은 자리를 바라봄(59·56·1·25 — `545DA0`)
+    ReactSkip,       // 들은 것이 있었지만 용암·못 닿는 칸이라 지움만
+    Cond59,          // 조건 59 가 깨짐(3초 안 들은 소리)
+    Cond69,          // 조건 69 가 깨짐(자리 둘레 50 에 위험한 것)
+    Count
+};
+constexpr size_t kHearStatCount = static_cast<size_t>(HearStat::Count);
+
 // ★ 09-23 3-a — 점프(CCJump 7)가 **어떻게 끝났나**(`object_update.go:550~571`). 들어옴 = 갈래 합
 enum class JumpGate : uint8_t {
     Ok = 0,        // 뛰었다 — 기력 90 · 떠 있음 · 상태 12
@@ -609,6 +627,12 @@ struct Creature {
     //   행동이 바뀌면 지금 칸·칸 안 틱·끝남이 0(`MonsterActionReset` — 칸 수는 그대로)
     uint8_t animFrames = 0, animFrame = 0, animTick = 0;
     bool animDone = false;
+    // ★ 09-29 B6 — 들은 소리(갱신자료 +388 번호 · +392 낸 것 번호 · +396·+400 자리 · +404 프레임 · +408 세기 — `unitEmitHearEvent_50D110`)
+    //   +404 는 조건 42(상대 잃음)가 「지금 + 1초」로 앞당겨 적어 그동안 귀를 막는다
+    uint16_t heardSnd = 0, heardSrcNet = 0;
+    float heardX = 0, heardY = 0;
+    uint32_t heardFrame = 0;
+    int heardDist = 0;
 };
 
 // 깃발 하나.
@@ -1415,7 +1439,8 @@ public:
                          const std::vector<std::pair<uint32_t, uint32_t>>& windows);
     // ★ 09-29 Z1-A — 벽을 때린 것(`Nox_xxx_mapDamageToWalls_534FC0` 의 who). 유닛이면 그 앞쪽(내적 > 0.5)만 · 거리는 그 자리에서 잰다 ·
     //   맞는 소리는 그 재질로 그 자리에서. present 가 거짓이면 who 없음(소리 없음 · 자리는 폭발 자리)
-    struct WallHitter { bool present = false; bool unit = false; bool player = false; float x = 0, y = 0; uint8_t dir = 0; uint32_t material = 0; };
+    struct WallHitter { bool present = false; bool unit = false; bool player = false; float x = 0, y = 0; uint8_t dir = 0; uint32_t material = 0;
+                        std::string src; };   // ★ 09-29 B6 src — 임자 사슬 끝 사람(맞는 소리를 몬스터가 들을 거리의 출처)
     int DamageToMap(int gx, int gy, int dmg, uint8_t dtype, const WallHitter& who, std::vector<OutPacket>& out);
     int WallPreDestroy(int gx, int gy, std::vector<OutPacket>& out);
     bool MapDamageToWalls(int gx0, int gy0, int gx1, int gy1, float px, float py, float rad, int dmg, uint8_t dtype,
@@ -1490,8 +1515,9 @@ public:
     void MusicPush(std::vector<OutPacket>& out);
     void MusicPop(std::vector<OutPacket>& out);
     void MusicEvent(std::vector<OutPacket>& out);
+    // ★ 09-29 B6 — `src` = 소리를 낸 유닛(몬스터가 들을 거리의 출처 · `EventObj` 의 obj). 비면 `owner`(사람)를 쓴다
     void PlaySoundAt(uint16_t id, float x, float y, uint8_t kind = 0, uint32_t code = 0,
-                     const std::string& owner = std::string());
+                     const std::string& owner = std::string(), const Target& src = Target());
 
 
     // ── 묶음 9-a 비밀벽 ────────────────────────────────────────────────
@@ -1762,6 +1788,22 @@ public:
     int DebugPetAnimTick(size_t i) const { return i < pets_.size() ? pets_[i].animTick : -1; }
     bool DebugPetAnimDone(size_t i) const { return i < pets_.size() && pets_[i].animDone; }
     int DebugPetAnimIndex(size_t i) const { return i < pets_.size() ? MonsterAnimIndex(pets_[i]) : -1; }
+    // ★ 09-29 B6 — 소리 듣기
+    unsigned long long hearStat(HearStat b) const { return b < HearStat::Count ? hearStat_[static_cast<size_t>(b)] : 0; }
+    // 종류별 몬스터 아종 비트(thing.bin SUBCLASS — 0x200 IMMUNE_POISON · 0x400 IMMUNE_FIRE …) · 위험한 종류(1 불 FIRE · 2 독구름 · 3 DANGEROUS)
+    void SetMonsterSubclass(uint16_t wire, uint32_t bits) { monsterSubclass_[wire] = bits; }
+    void SetDangerType(uint16_t wire, uint8_t kind) { dangerTypes_[wire] = kind; }
+    size_t DebugListenCount() const { return listens_.size(); }
+    int DebugPetHeardSnd(size_t i) const { return i < pets_.size() ? pets_[i].heardSnd : -1; }
+    uint32_t DebugPetHeardFrame(size_t i) const { return i < pets_.size() ? pets_[i].heardFrame : 0; }
+    int DebugPetHeardDist(size_t i) const { return i < pets_.size() ? pets_[i].heardDist : -1; }
+    void DebugSetPetHeard(size_t i, uint16_t snd, uint32_t frame, float x, float y) {
+        if (i < pets_.size()) { pets_[i].heardSnd = snd; pets_[i].heardFrame = frame; pets_[i].heardX = x; pets_[i].heardY = y; }
+    }
+    void DebugSetSoundDef(uint16_t id, uint16_t flags, int maxDist) {   // 시험용 — 소리 하나의 깃발·거리(조각 1)
+        if (id >= soundDefs_.size()) soundDefs_.resize(static_cast<size_t>(id) + 1);
+        soundDefs_[id].flags = flags; soundDefs_[id].maxDist = maxDist; soundDefs_[id].samples = 1;
+    }
     void DebugSetPetHealth(size_t i, uint16_t hp) { if (i < pets_.size()) pets_[i].health = hp; }
     void DebugSetPetMoveAttempt(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].moveAttemptFrame = f; }
     uint32_t DebugPetMoveAttempt(size_t i) const { return i < pets_.size() ? pets_[i].moveAttemptFrame : 0; }
@@ -4376,6 +4418,20 @@ private:
     int  MonsterAnimIndex(const Creature& k) const;          // `mobActionToAnimation_533790`
     void MonsterAnimUpdate(Creature& k);                      // `updateNPCAnimData_50A850`
     void MonsterMoveAudio(Creature& k, AnimStat site);        // `monsterMoveAudio_534030`
+    // ★ 09-29 B6 — 소리 듣기(Server.cpp 「B6」 절)
+    struct ListenRec { uint16_t snd = 0; std::string srcAddr; uint16_t srcNet = 0; bool srcIsPet = false; float x = 0, y = 0; uint32_t frame = 0; };
+    void MonsterListen(Creature& k);                          // `aiListenToSounds`
+    bool MonsterShouldListen(const Creature& k, const ListenRec& r);   // `shouldUnitListen`
+    int  MonsterTraceSound(const Creature& k, const ListenRec& r);     // `traceSound`
+    bool MonsterHearReact(Creature& k);                       // `Sub_5466F0`
+    bool MonsterLookAtHeard(Creature& k);                     // `sub_545DA0`
+    bool LocationIsSafe(const Creature& k, float x, float y) const;   // 조건 69 · `unitIsDangerous_547120`
+    uint32_t MonsterSubclass(uint16_t wire) const { auto it = monsterSubclass_.find(wire); return it == monsterSubclass_.end() ? 0u : it->second; }
+    // 크리처(사본이어도 — 번호로 찾는다)를 대상 꼴로 · 목록에 없으면 빈 것
+    Target PetTarget(const Creature& k) const {
+        for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == k.netCode) return Target{ std::string(), static_cast<int>(i) };
+        return Target{};
+    }
     void SendGold(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-a — 경험치 알림·주기·레벨 오름
     // 묶음 7-d — 능력(0xCD·0xCE·0xCF·0xEB)
@@ -5212,6 +5268,10 @@ private:
     unsigned long long animStat_[kAnimStatCount] = {};            // ★ 09-29 B5
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };
     std::map<uint16_t, std::array<MonsterAnimRow, 16>> monsterAnims_;   // ★ 09-29 B5 — 갱신자료 +476 표(종류별)
+    unsigned long long hearStat_[kHearStatCount] = {};            // ★ 09-29 B6
+    std::vector<ListenRec> listens_;                              // ★ 09-29 B6 — 들을 거리(2프레임까지 산다 · 정답지 `listenHead`)
+    std::map<uint16_t, uint32_t> monsterSubclass_;                // ★ 09-29 B6 — 종류 → 몬스터 아종 비트
+    std::map<uint16_t, uint8_t> dangerTypes_;                     // ★ 09-29 B6 — 종류 → 위험 갈래(1 불 · 2 독구름 · 3 DANGEROUS)
     uint32_t sightForceFrame_ = 0xFFFFFFFFu;   // dword_5d4594_2487684 — 이 프레임엔 모든 몬스터가 다시 훑는다(순간이동·살금살금 켜기 다음 프레임)
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
     std::map<uint16_t, PhysBody> typeBodies_;   // 소환수 종류 → 몸
