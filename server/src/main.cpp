@@ -260,6 +260,15 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.monsterSnd(16, true), srv.monsterSnd(16, false));
     // ★ 09-28 박쥐 — 공격 사슬 가기(7)가 대상을 따라 자리를 고친 틱 수 · 대상이 안 보여 잊은 횟수
     std::printf("[몬스터쫓기] 따라감 %llu · 잊음 %llu\n", srv.aiMoveTargetFollow(), srv.aiMoveTargetForgot());
+    {   // ★ 09-29 B1 — 알아보기. 후보 = 적아님 + 이미 + 부채꼴밖 + 안보임 + 찼음 + 넣음 · 뺌 = 여섯 까닭 합
+        using SS = nox::SightStat;
+        std::printf("[알아보기] 훑기 %llu · 후보 %llu = 적아님 %llu + 이미 %llu + 부채꼴밖 %llu + 안보임 %llu + 찼음 %llu + 넣음 %llu · "
+                    "뺌 죽음 %llu · 버프 %llu · 멀어짐 %llu · 옮겨짐 %llu · 시야선 %llu · 밀림 %llu · 발견 소리 %llu\n",
+                    srv.sightStat(SS::Scan), srv.sightStat(SS::Cand), srv.sightStat(SS::NotEnemy), srv.sightStat(SS::Already),
+                    srv.sightStat(SS::Cone), srv.sightStat(SS::Los), srv.sightStat(SS::FullFar), srv.sightStat(SS::Added),
+                    srv.sightStat(SS::LostGone), srv.sightStat(SS::LostCantSee), srv.sightStat(SS::LostFar), srv.sightStat(SS::LostMoved),
+                    srv.sightStat(SS::LostRecheck), srv.sightStat(SS::LostReplaced), srv.sightStat(SS::Spot));
+    }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
     std::printf("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",
                 srv.wallGate(0), srv.wallGate(1), srv.wallGate(2), srv.wallGate(3), srv.wallGate(4));

@@ -3460,7 +3460,7 @@ void TestKillArmorCollide() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1400, 1000);
+        srv.DebugMoveTo(b, 1240, 1000);   // ★ 09-29 B1 — 알아보기 거리 250 안(전에는 1400 — 거리 제한 없이 알아보던 때)
         std::vector<nox::OutPacket> out;
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         RegImpShot(srv);
@@ -11590,7 +11590,9 @@ void TestCreatureTickMove() {
         for (int t = 0; t < 400; ++t) {
             ms += 34;
             srv.Tick(ms, out);
-            if (t == 0) blockedAtFirst = srv.DebugPetEnemy(0).empty();
+            // ★ 09-29 B1 — 전제는 「벽이 시야선을 막나」다. 정답지 알아보기는 한번 본 상대를 시야선 재확인(2초마다) 전까지
+            //   목록·지금 상대에 둔다(`GAME4_2.c:7319~7335`) — 그래서 「상대가 비었나」가 아니라 「그 순간 보이나」로 본다
+            if (t == 0) blockedAtFirst = !srv.DebugPetCanSee(0, b);
             double px = 0, py = 0;
             if (!srv.DebugPetXY(0, px, py)) break;            // 죽었거나 사라졌다
             offY = std::max(offY, std::fabs(py - 1000.0));
@@ -11612,6 +11614,7 @@ void TestCreatureTickMove() {
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1300, 1000);
         srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugSetPetSightRange(0, 400.0f);                 // ★ 09-29 B1 — 상대가 300 밖이라 알아보기 거리(250)를 넓힌다(시험의 뜻은 길이지 시야가 아니다)
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
@@ -12677,6 +12680,7 @@ void TestAIEscort() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugSpawnPet(1358, 1200, 1000, std::string());   // 주인 없음 · a 가 보인다
+        srv.DebugSetPetFacing(0, 128);                        // ★ 09-29 B1 — a(−x 쪽)를 보게 — 등 뒤는 못 알아본다(앞쪽 부채꼴 `GAME4_2.c:7487~7490`)
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
@@ -20152,6 +20156,141 @@ void TestDoorLock() {
     std::printf("  09-29 Z1-A — 잠긴 문: 짐 읽기 두 꼴 · 문짝 가운데 칸 · 잠기면 안 돎 · 열쇠 없음 f0 21(1.5초) · 장치 · 열쇠로 풀기(짝·4d·f0 0f)\n");
 }
 
+// ── 09-29 B1 — 몬스터 알아보기(`nox_xxx_unitUpdateSightMB_5281F0` `GAME4_2.c:7278~7388`) ─────────
+//   거리 250(퀘스트 640) · 앞쪽 부채꼴 · (거리+30) 안에서 유지 · 발견 소리 2~4초 · 가장 가까운 적 · 순간이동 다음 프레임 다시 훑기 · 후보 등식
+void TestMonsterSight() {
+    const std::string a = "10.9.29.11:9311", c = "10.9.29.12:9312";
+    using SS = nox::SightStat;
+    auto run = [](nox::Server& srv, uint32_t& ms, int n) {
+        for (int t = 0; t < n; ++t) { ms += 34; std::vector<nox::OutPacket> o; srv.Tick(ms, o); }
+    };
+    auto candEq = [](const nox::Server& srv) {
+        return srv.sightStat(SS::Cand) == srv.sightStat(SS::NotEnemy) + srv.sightStat(SS::Already) + srv.sightStat(SS::Cone) +
+                                          srv.sightStat(SS::Los) + srv.sightStat(SS::FullFar) + srv.sightStat(SS::Added);
+    };
+    // ① 거리 250 — 240 은 알아보고 260 은 못 알아본다(주인 없는 거머리 · +x 를 봄)
+    for (int far = 0; far <= 1; ++far) {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugMoveTo(a, far ? 1260 : 1240, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        run(srv, ms, 3);
+        if (far) Check(srv.DebugPetEnemy(0).empty() && srv.sightStat(SS::Added) == 0, "① 260 인데 알아봤다(거리 250)");
+        else     Check(srv.DebugPetEnemy(0) == a && srv.sightStat(SS::Added) == 1, "① 240 인데 못 알아봤다");
+        Check(srv.sightStat(SS::Scan) >= 1 && candEq(srv), "① 훑기가 없거나 후보 등식이 안 맞는다");
+    }
+    // ①' 퀘스트면 640 — 600 을 알아본다
+    {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728);
+        srv.StartQuest(1, 6000, 6000);                           // 파도 몬스터는 멀리 — 퀘스트 판정만 켠다
+        const size_t i = srv.pets();
+        srv.DebugMoveTo(a, 1600, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        run(srv, ms, 3);
+        Check(srv.DebugPetEnemy(i) == a, "①' 퀘스트인데 600 을 못 알아봤다(640)");
+    }
+    // ② 앞쪽 부채꼴 — 등 뒤(−x 를 볼 때 +x)는 못 알아보고, 돌아서면 다음 훑기에 알아본다
+    {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugMoveTo(a, 1100, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugSetPetFacing(0, 128);
+        run(srv, ms, 20);
+        Check(srv.DebugPetEnemy(0).empty() && srv.sightStat(SS::Cone) >= 1 && srv.sightStat(SS::Added) == 0, "② 등 뒤를 알아봤다");
+        srv.DebugSetPetFacing(0, 0);
+        run(srv, ms, 12);                                         // 다음 훑기(온라인 5~10프레임)
+        Check(srv.DebugPetEnemy(0) == a, "② 돌아섰는데 못 알아봤다");
+    }
+    // ③ 한번 본 것은 (250 + 30) 안에서 남는다 · 밖이면 놓친다 · 발견 소리는 2~4초에 한 번
+    {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugMoveTo(a, 1200, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        run(srv, ms, 3);
+        Check(srv.DebugPetEnemy(0) == a && srv.sightStat(SS::Spot) == 1, "③ 전제 — 못 알아봤거나 발견 소리를 안 불렀다");
+        double px = 0, py = 0;
+        srv.DebugPetXY(0, px, py);
+        srv.DebugMoveTo(a, static_cast<int>(px) + 275, static_cast<int>(py));
+        run(srv, ms, 1);
+        Check(srv.DebugPetEnemy(0) == a && srv.sightStat(SS::LostFar) == 0, "③ 275(< 280)인데 놓쳤다");
+        srv.DebugPetXY(0, px, py);
+        srv.DebugMoveTo(a, static_cast<int>(px) + 290, static_cast<int>(py));
+        run(srv, ms, 1);
+        Check(srv.DebugPetEnemy(0).empty() && srv.sightStat(SS::LostFar) == 1, "③ 290(> 280)인데 안 놓쳤다");
+        srv.DebugPetXY(0, px, py);
+        srv.DebugMoveTo(a, static_cast<int>(px) + 150, static_cast<int>(py));
+        run(srv, ms, 12);
+        Check(srv.DebugPetEnemy(0) == a && srv.sightStat(SS::Added) == 2 && srv.sightStat(SS::Spot) == 1,
+              "③ 다시 알아봤는데 2초 안에 발견 소리를 또 불렀거나 못 알아봤다");
+        srv.DebugPetXY(0, px, py);
+        srv.DebugMoveTo(a, static_cast<int>(px) + 2000, static_cast<int>(py));   // 멀리 치운다 — 마지막 자리로 걷다 다시 알아보지 않게
+        run(srv, ms, 130);                                        // 4초 넘게
+        srv.DebugPetXY(0, px, py);
+        srv.DebugMoveTo(a, static_cast<int>(px) + 150, static_cast<int>(py));
+        run(srv, ms, 12);
+        {
+            char msg[200];
+            std::snprintf(msg, sizeof(msg), "③ 4초가 지났는데 발견 소리를 다시 안 불렀다 — 발견 %llu · 넣음 %llu · 상대 %s · 뺌(멀어짐) %llu",
+                          srv.sightStat(SS::Spot), srv.sightStat(SS::Added), srv.DebugPetEnemy(0).c_str(), srv.sightStat(SS::LostFar));
+            Check(srv.sightStat(SS::Spot) == 2, msg);
+        }
+    }
+    // ④ 목록 중 **가장 가까운** 적이 지금 상대
+    {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(c, 729);
+        srv.DebugMoveTo(a, 1200, 1000);
+        srv.DebugMoveTo(c, 1100, 1010);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        run(srv, ms, 3);
+        Check(srv.DebugPetEnemy(0) == c && srv.DebugPetSeenCount(0) == 2, "④ 둘 다 목록에 넣고 가까운 c 를 상대로 삼지 않았다");
+    }
+    // ⑤ 상대가 있으면 훑은 지 2초 안에는 다시 안 훑는다(앞쪽 새 사람도 안 넣음) · 2초가 지나면 넣는다(`GAME4_2.c:7348~7349`)
+    {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugMoveTo(a, 1200, 1000);
+        srv.DebugSpawnPet(1371, 1000, 1000, std::string());       // 식충식물 — 빠르기 0 이라 자리·보는 쪽이 그대로다
+        srv.DebugApplyEnchant(a, 23, 100000, 1);                   // 무적 — 우리 근접은 아직 사거리를 안 봐서(B3) 200 밖에서도 물어 죽인다
+        run(srv, ms, 3);
+        const unsigned long long added0 = srv.sightStat(SS::Added);
+        srv.DebugEnterGame(c, 729);
+        srv.DebugMoveTo(c, 1100, 1030);                            // 앞쪽(+x)
+        const std::string enemy0 = srv.DebugPetEnemy(0);
+        run(srv, ms, 20);
+        {
+            char msg[220];
+            std::snprintf(msg, sizeof(msg), "⑤ 훑은 지 2초 안인데 새 사람을 넣었다 — 처음 상대 %s · 넣음 %llu→%llu · 훑기 %llu · 뺌 죽음 %llu 버프 %llu 멀어짐 %llu 옮겨짐 %llu 시야선 %llu",
+                          enemy0.c_str(), added0, srv.sightStat(SS::Added), srv.sightStat(SS::Scan), srv.sightStat(SS::LostGone),
+                          srv.sightStat(SS::LostCantSee), srv.sightStat(SS::LostFar), srv.sightStat(SS::LostMoved), srv.sightStat(SS::LostRecheck));
+            Check(!enemy0.empty() && srv.sightStat(SS::Added) == added0, msg);
+        }
+        run(srv, ms, 60);
+        Check(srv.sightStat(SS::Added) == added0 + 1, "⑤ 2초가 지났는데 새 사람을 안 넣었다");
+        Check(candEq(srv), "⑤ 후보 등식이 안 맞는다");
+    }
+    // ⑤' 상대가 없으면 5~10프레임마다 훑는다 — 순간이동(`SetPos`)은 **다음 프레임**에 훑게 한다(대기만 건너뜀 · `object.go:719~721`)
+    for (int tele = 0; tele <= 1; ++tele) {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugMoveTo(a, 3000, 3000);                           // 안 보이는 곳
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        auto one = [&]() { ms += 33; std::vector<nox::OutPacket> o; srv.Tick(ms, o); };   // 정확히 한 프레임씩
+        one(); one(); one();
+        const unsigned long long s0 = srv.sightStat(SS::Scan);
+        for (int t = 0; t < 20 && srv.sightStat(SS::Scan) == s0; ++t) one();   // 훑기가 막 일어난 프레임을 잡는다
+        if (tele) srv.DebugTeleport(a, 1100, 1000); else srv.DebugMoveTo(a, 1100, 1000);
+        one();
+        if (tele) Check(srv.sightStat(SS::Added) == 1, "⑤' 순간이동 다음 프레임에 안 훑었다");
+        else      Check(srv.sightStat(SS::Added) == 0, "⑤' 대조 — 순간이동 없이 훑은 바로 다음 프레임에 또 훑었다(5~10프레임 대기)");
+    }
+    std::printf("  09-29 B1 — 알아보기: 거리 250·640 · 앞쪽 부채꼴 · 280 까지 유지 · 발견 소리 2~4초 · 가장 가까운 적 · 순간이동 뒤 다시 훑기\n");
+}
+
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
 //   사람 판 09-28 「워리어가 컨저러를 볼 때 흰 티가 살색으로」 — 새로 온 쪽이 먼저 온 쪽의 평상복 색(수식)을 못 받았다
 void TestWornLooksForNewcomer() {
@@ -20440,15 +20579,18 @@ void TestMonsterChaseReturn() {
         s4.DebugMoveTo(a, 1000, 1000);
         s4.DebugMoveTo(b, 1400, 1000);
         s4.DebugSpawnPet(1357, 1000, 1000, a);
+        s4.DebugSetPetSightRange(0, 500.0f);                  // ★ 09-29 B1 — b 가 400 밖이라 알아보기 거리를 넓힌다(시험의 뜻은 조건 60)
         std::vector<nox::OutPacket> o4;
         uint32_t m4 = 0;
         for (int t = 0; t < 3; ++t) { m4 += 34; o4.clear(); s4.Tick(m4, o4); }   // b 를 쫓기 시작
         Check(s4.DebugPetEnemy(0) == b, "④ 전제 — 박쥐가 b 를 상대로 안 잡았다");
         s4.DebugEnterGame(c, 730, false, CharClass::Warrior);
         double qx = 0, qy = 0; s4.DebugPetXY(0, qx, qy);
-        s4.DebugMoveTo(c, static_cast<int>(qx), static_cast<int>(qy) + 20);      // 박쥐 바로 옆에 새 상대
+        // ★ 09-29 B1 — 새 상대는 **앞쪽**(+x 로 쫓는 중)에 세운다 — 옆(90°)은 앞쪽 부채꼴 밖이라 정답지도 못 알아본다.
+        //   알아보기는 상대가 있으면 훑은 지 2초가 지나야 다시 훑으므로(`GAME4_2.c:7348`) 창을 4초로 늘린다
+        s4.DebugMoveTo(c, 1300, 1000);                                              // b(1400) 가는 길 앞 — 다시 훑을 때(2초) 박쥐보다 앞에 있다
         const uint16_t hc = s4.HealthOf(c);
-        for (int t = 0; t < 60; ++t) { m4 += 34; o4.clear(); s4.Tick(m4, o4); }
+        for (int t = 0; t < 120; ++t) { m4 += 34; o4.clear(); s4.Tick(m4, o4); }
         Check(s4.HealthOf(c) < hc, "④ 더 가까운 새 상대가 옆에 섰는데 박쥐가 옛 상대만 쫓았다(조건 60)");
     }
 }
@@ -24287,7 +24429,7 @@ void TestSummon() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1400, 1000);   // 멀리 둔다 — 다가가야 닿는다
+        srv.DebugMoveTo(b, 1240, 1000);   // 멀리 둔다 — 다가가야 닿는다(★ 09-29 B1 — 알아보기 250 안 · 쏘기 사거리 150 밖)
         std::vector<nox::OutPacket> out;
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         srv.Tick(0, out);
@@ -24337,6 +24479,7 @@ void TestPetDies() {
             srv.SetTypeBody(1328, body);   // 4-a — 임프
         }
         srv.DebugMoveTo(b, static_cast<int>(petX) - 25, static_cast<int>(petY));
+        srv.DebugSetPetFacing(0, 128);                     // ★ 09-29 B1 — b(서쪽)를 보게 — 등 뒤는 못 알아본다(앞쪽 부채꼴)
         srv.DebugMoveTo(a, 500, static_cast<int>(petY));   // 부른 사람은 비킨다 — b 와 15 로 겹치면 몸끼리 튕겨 b 가 날아간다(2-c)
 
         uint32_t ms = 0;
@@ -25296,6 +25439,7 @@ int main() {
     TestWornLooksForNewcomer();
     TestWallBreak();
     TestDoorLock();
+    TestMonsterSight();
     TestPickupAutoEquip();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

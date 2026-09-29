@@ -214,6 +214,28 @@ enum class BerserkHit : uint8_t {
 };
 constexpr size_t kBerserkHitCount = static_cast<size_t>(BerserkHit::Count);
 
+// ★ 09-29 B1 — 알아보기가 **무엇을 했나**(`UpdateSight`). 훑을 때 본 후보 = NotEnemy + Already + Cone + Los + FullFar + Added ·
+//   목록에서 뺀 수 = Lost* 합. 두 등식이 「세는 자리가 빠졌나」를 잡는다
+enum class SightStat : uint8_t {
+    Scan = 0,      // 둘레를 훑은 횟수
+    Cand,          // 훑을 때 원 안에 든 유닛(자기 빼고)
+    NotEnemy,      // 죽음·사라짐이거나 적이 아님
+    Already,       // 이미 목록에 있음
+    Cone,          // 앞쪽 부채꼴 밖(내적 < 0.5)
+    Los,           // 버프·시야선으로 안 보임
+    FullFar,       // 목록이 찼는데 가장 먼 것보다 멀다
+    Added,         // 목록에 넣음
+    LostGone,      // 뺌 — 죽음·사라짐
+    LostCantSee,   // 뺌 — 버프로 안 보임
+    LostFar,       // 뺌 — (거리 + 30) 밖
+    LostMoved,     // 뺌 — 한 프레임에 √1000 넘게 옮겨짐
+    LostRecheck,   // 뺌 — 2초마다 시야선까지 다시 봐서 안 보임
+    LostReplaced,  // 뺌 — 목록이 차서 더 가까운 것에 밀림
+    Spot,          // 발견 소리를 부름(소리 모음 칸 16)
+    Count
+};
+constexpr size_t kSightStatCount = static_cast<size_t>(SightStat::Count);
+
 // ★ 09-23 3-a — 점프(CCJump 7)가 **어떻게 끝났나**(`object_update.go:550~571`). 들어옴 = 갈래 합
 enum class JumpGate : uint8_t {
     Ok = 0,        // 뛰었다 — 기력 90 · 떠 있음 · 상태 12
@@ -492,6 +514,15 @@ struct Creature {
     float sightRange = 0.0f;    // +1312 SightRange (지켜가 250 으로 놓는다)
     bool ordered = false;       // 사람이 명령을 준 적이 있나 — 틱의 기본 호위를 멈춘다
     bool deadDone = false;      // 묶음 6-j — 죽음(31) 갱신이 한 번 돌았나(치울 표시)
+    // ★ 09-29 B1 — 알아보기(`nox_xxx_unitUpdateSightMB_5281F0` `GAME4_2.c:7278~7388`).
+    //   보이는 목록(+1129 수 · +1132 최대 16) — 사람은 주소 · 크리처는 번호로 적는다(자리 번호는 앞 것이 지워지면 밀린다)
+    struct SeenRef { std::string addr; uint16_t petNet = 0; };
+    std::vector<SeenRef> seen;
+    uint32_t sightScanFrame = 0;    // +1204 마지막으로 둘레를 훑은 프레임
+    uint32_t sightNextScan = 0;     // +1208 이 프레임부터 다시 훑는다
+    uint32_t sightRecheckFrame = 0; // +1212 보이는 목록을 시야선까지 다시 본 프레임(2초마다)
+    uint32_t spotSoundFrame = 0;    // 갱신자료 +536 — 이 프레임이 지나야 발견 소리(RECOGNIZE)를 또 낸다
+    uint16_t enemyNet = 0;          // +1196 지금 상대가 크리처면 그 번호(틱마다 `enemyPet` 자리 번호로 푼다)
 };
 
 // 깃발 하나.
@@ -1629,6 +1660,13 @@ public:
     };
     unsigned long long doorTouch(DoorTouch t) const { return t < DoorTouch::Count ? doorTouch_[static_cast<size_t>(t)] : 0; }
     unsigned long long berserkDoorLocked() const { return berserkDoorLocked_; }
+    unsigned long long sightStat(SightStat s) const { return s < SightStat::Count ? sightStat_[static_cast<size_t>(s)] : 0; }   // ★ 09-29 B1
+    size_t DebugPetSeenCount(size_t i) const { return i < pets_.size() ? pets_[i].seen.size() : 0; }
+    // 시험용 — 몬스터 자체 시야 거리(+1312 SightRange — 정답지는 스크립트 `SetSightRange`·명령 「지켜」가 바꾼다). 알아보기 거리 = max(250·640, 이것)
+    void DebugSetPetSightRange(size_t i, float r) { if (i < pets_.size()) pets_[i].sightRange = r; }
+    bool DebugPetCanSee(size_t i, const std::string& addr) const { return i < pets_.size() && CanInteractFrom(pets_[i], Target{ addr, -1 }); }
+    void DebugTeleport(const std::string& addr, float x, float y) { TeleportTarget(Target{ addr, -1 }, x, y, nullptr); }
+    int DebugPetEnemyPet(size_t i) const { return i < pets_.size() ? pets_[i].enemyPet : -1; }
     // 시험용
     void DebugSetDoorLock(uint16_t netCode, uint8_t lock) { for (auto& p : props_) if (p.netCode == netCode) p.lock = lock; }
     int PropLock(uint16_t netCode) const { for (const auto& p : props_) if (p.netCode == netCode) return p.lock; return -1; }
@@ -4186,6 +4224,15 @@ private:
     // 09-28 — 쌓임 항목의 자리를 대상 오브젝트 자리로 고쳐 적는다(`nox_xxx_mobAction_50A910`)
     void AIRefreshStackArgs(Creature& k);
     bool CanInteractFrom(const Creature& k, const Target& t) const;
+    bool CanSeeFrom(const Creature& k, const Target& t) const;     // ★ 09-29 B1 — `CanSee`(버프만)
+    // ★ 09-29 B1 — 알아보기(Server.cpp 「B1 알아보기」 절)
+    void UpdateSight(Creature& k);
+    bool SightResolve(const Creature::SeenRef& r, Target& t) const;
+    bool TargetDeadOrGone(const Target& t) const;
+    bool CreatureEnemyTo(const Creature& k, const Target& t) const;
+    void SightLose(Creature& k, size_t i, SightStat why);
+    void SightSeeEnemy(Creature& k, const Target& t);
+    void SightPickEnemy(Creature& k);
     void SendGold(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-a — 경험치 알림·주기·레벨 오름
     // 묶음 7-d — 능력(0xCD·0xCE·0xCF·0xEB)
@@ -5014,6 +5061,9 @@ private:
     unsigned long long doorTouch_[static_cast<size_t>(DoorTouch::Count)] = {};
     unsigned long long berserkDoorLocked_ = 0;
     size_t doorCellDiff_ = 0, doorCellOldHadWall_ = 0, doorCellNewHadWall_ = 0;
+    // ★ 09-29 B1 알아보기
+    unsigned long long sightStat_[kSightStatCount] = {};
+    uint32_t sightForceFrame_ = 0xFFFFFFFFu;   // dword_5d4594_2487684 — 이 프레임엔 모든 몬스터가 다시 훑는다(순간이동·살금살금 켜기 다음 프레임)
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
     std::map<uint16_t, PhysBody> typeBodies_;   // 소환수 종류 → 몸
     static constexpr int kPlayerAnimSlots = 55;     // ThingDb kPlayerAnimTypeCount 와 같은 길이

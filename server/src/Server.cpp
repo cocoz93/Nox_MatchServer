@@ -7069,6 +7069,7 @@ void Server::ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const 
 //
 // teleportToMB_4E7190 — 그 자리로 옮긴다. 우리 서버는 물리 자리(posX)와 옛 자리칸(x)을 **둘 다** 맞춰야 한다.
 void Server::TeleportTarget(const Target& t, float x, float y, std::vector<OutPacket>* out) {
+    sightForceFrame_ = frame_ + 1;   // ★ 09-29 B1 — 유닛 `SetPos` 는 다음 프레임에 모두 다시 훑게 한다(`object.go:719~721`)
     if (!t.addr.empty()) {
         auto it = sessions_.find(t.addr);
         if (it == sessions_.end()) return;
@@ -7089,6 +7090,8 @@ void Server::TeleportTarget(const Target& t, float x, float y, std::vector<OutPa
     if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return;
     pets_[static_cast<size_t>(t.pet)].x = x;
     pets_[static_cast<size_t>(t.pet)].y = y;
+    pets_[static_cast<size_t>(t.pet)].prevX = x;   // ★ 09-29 B1 — `SetPos` 는 PrevPos 도 새 자리(`object.go:707`)
+    pets_[static_cast<size_t>(t.pet)].prevY = y;
 }
 
 // spellBlink2_530310(`GAME4_3.c:600`) — 켤 때 **언제 터질지**만 정한다.
@@ -9189,6 +9192,7 @@ void Server::AbilityEffect(Session& s, uint8_t abil, std::vector<OutPacket>& out
         case 4: {   // 살금살금
             if (s.moveState == 5) PlayerSetState(s, 13, frame_);   // 달리는 중이면 내린다
             ApplyEnchant(self, 31, static_cast<int>(kAbilityDuration[4]), s.spellLvl[4]);
+            sightForceFrame_ = frame_ + 1;                           // ★ 09-29 B1 — `frameCounterSetCopyToNextFrame_5281D0`(`spell_tread.go:24`) — 다음 프레임에 모두 다시 훑음
             break;
         }
         case 5: {   // 늑대의 눈
@@ -11368,17 +11372,194 @@ void Server::AIRefreshStackArgs(Creature& k) {
 //   **제자리에 섰다**(사람 판 박쥐 「때려도 맞기만 하고 안 따라온다」 · 시험 TestMonsterChaseReturn ②).
 //   상대 고르기·조건 45/46·가기(7) 자리 고치기가 이제 이 한 잣대를 쓴다
 bool Server::CanInteractFrom(const Creature& k, const Target& t) const {
-    const Buffs* tb = BuffsOf(t);
-    if (!tb) return false;
+    if (!CanSeeFrom(k, t)) return false;
     float tx = 0, ty = 0;
     if (!TargetXY(t, tx, ty)) return false;
+    return MapTraceVision(static_cast<float>(k.x), static_cast<float>(k.y), tx, ty);
+}
+
+// ★ 09-29 B1 — `CanSee`(`server/object.go:77~104`) — 버프만 본다(눈멂 · 투명 — 느리면 안 보임 · 적외선). 시야선은 안 본다.
+//   대상 빠르기는 사람·크리처 모두 그 속도(09-28 까지는 크리처를 0 으로 봤다 — 움직이는 투명 크리처를 못 봤다)
+bool Server::CanSeeFrom(const Creature& k, const Target& t) const {
+    const Buffs* tb = BuffsOf(t);
+    if (!tb) return false;
     double tvx = 0, tvy = 0;
     if (!t.addr.empty()) {
         auto it = sessions_.find(t.addr);
         if (it != sessions_.end()) { tvx = it->second.velX; tvy = it->second.velY; }
+    } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+        tvx = pets_[static_cast<size_t>(t.pet)].velX; tvy = pets_[static_cast<size_t>(t.pet)].velY;
     }
-    if (!CanSeeBuffs(&k.buffs, tb, tvx, tvy, 0)) return false;
-    return MapTraceVision(static_cast<float>(k.x), static_cast<float>(k.y), tx, ty);
+    return CanSeeBuffs(&k.buffs, tb, tvx, tvy, 0);
+}
+
+// ── ★ 09-29 B1 알아보기 ────────────────────────────────────────────────
+//
+// 정답지 `nox_xxx_unitUpdateSightMB_5281F0`(`GAME4_2.c:7278~7388`) · 둘레 하나씩 `monsterUpdateSeenEnemies_5286D0`(`:7468~7499`) ·
+//   목록에 넣기 `monsterVisionSeeEnemy_5287B0`(`:7502~7565`) · 빼기 `aiLostSight_528560`(`:7391~7428`) · 상대 고르기 `sub_528610`(`:7431~7465`)
+//   · 거리 = 250(퀘스트 640) 과 몬스터 자체 시야(+1312) 중 큰 것
+//   · 목록에서 뺀다 — 죽음·사라짐(깃발 0x8020) · 버프로 안 보임 · (거리 + 30) 밖 · 한 프레임에 √1000 넘게 옮겨짐 · 2초마다 시야선까지 다시 봐서 안 보임
+//   · 훑는다 — 상대가 없거나 마지막 훑기가 2초 지났고, 다음 훑기 때가 됐거나(온라인은 5~10프레임마다) 누가 다시 훑으라 했을 때(순간이동·살금살금 켜기)
+//   · 넣는다 — 유닛(사람·크리처) · 적 · 아직 목록에 없음 · **앞쪽 부채꼴**(보는 쪽과의 내적 ≥ 0.5 — STATUS ALERT 면 안 봄 · monster.bin 에 ALERT 0) · 시야선
+//              목록이 차면(16) 가장 먼 것보다 가까울 때만 그것을 밀어내고 넣는다 · 넣을 때 적이면 발견 소리(소리 모음 칸 16 · 2~4초에 한 번)
+//   · 지금 상대 = 목록 중 **가장 가까운** 죽일 수 있는 적(+1216 우선 상대는 스크립트만 세운다 — 우리에게 없음)
+//   ⚠ 안 옮긴 것 — 스크립트 사건(14 보았다 · 15 놓쳤다) · 좀비 예외 · STATUS CAN_SEE_FRIENDS(0x400 — monster.bin 에 0) · 오프라인 훑기 주기(가까운 적 거리로 늦춤)
+bool Server::SightResolve(const Creature::SeenRef& r, Target& t) const {
+    t = Target{};
+    if (!r.addr.empty()) {
+        auto it = sessions_.find(r.addr);
+        if (it == sessions_.end() || !it->second.inGame) return false;
+        t.addr = r.addr;
+        return true;
+    }
+    for (size_t i = 0; i < pets_.size(); ++i)
+        if (pets_[i].netCode == r.petNet) { t.pet = static_cast<int>(i); return true; }
+    return false;
+}
+
+// 깃발 0x8020(죽음·사라짐) — 사람은 부활 기다림·체력 0 · 크리처는 체력 0(죽음 행동 중)
+bool Server::TargetDeadOrGone(const Target& t) const {
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        return it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0 || it->second.health == 0;
+    }
+    if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return true;
+    return pets_[static_cast<size_t>(t.pet)].health == 0;
+}
+
+// `unitIsEnemyTo_5330C0`(크리처, 대상) — 뿌리 주인으로 가른다(`OwnersEnemy` 와 같은 규칙 · 그쪽은 투사체 계수를 올리므로 따로 둔다)
+//   같은 주인 → 적 아님 · 둘 다 주인 없는 몬스터 → 적 아님 · 한쪽이 주인 없음 → 적 · 둘 다 사람 쪽 → `IsEnemyTo`(팀)
+bool Server::CreatureEnemyTo(const Creature& k, const Target& t) const {
+    std::string tOwner;
+    if (!t.addr.empty()) tOwner = t.addr;
+    else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+        if (&pets_[static_cast<size_t>(t.pet)] == &k) return false;
+        tOwner = pets_[static_cast<size_t>(t.pet)].owner;
+        if (k.owner.empty() && tOwner.empty()) return false;
+    } else return false;
+    if (k.owner.empty() || tOwner.empty()) return true;
+    if (k.owner == tOwner) return false;
+    return IsEnemyTo(k.owner, tOwner);
+}
+
+void Server::SightLose(Creature& k, size_t i, SightStat why) {
+    if (i >= k.seen.size()) return;
+    ++sightStat_[static_cast<size_t>(why)];
+    const Creature::SeenRef r = k.seen[i];
+    const bool wasEnemy = (!r.addr.empty() && r.addr == k.enemyAddr) || (r.addr.empty() && r.petNet != 0 && r.petNet == k.enemyNet);
+    if (wasEnemy) { k.enemyAddr.clear(); k.enemyNet = 0; k.enemyPet = -1; }   // `:7409~7414` — 지금 상대였으면 비운다
+    k.seen.erase(k.seen.begin() + static_cast<long>(i));
+}
+
+// `monsterVisionSeeEnemy_5287B0` — 목록에 넣고 발견 소리
+void Server::SightSeeEnemy(Creature& k, const Target& t) {
+    float tx = 0, ty = 0;
+    TargetXY(t, tx, ty);
+    if (k.seen.size() >= 16) {
+        double farD2 = 0.0; size_t far = 0;
+        for (size_t i = 0; i < k.seen.size(); ++i) {
+            Target o; float ox = 0, oy = 0;
+            if (!SightResolve(k.seen[i], o) || !TargetXY(o, ox, oy)) continue;
+            const double d2 = (ox - k.x) * (ox - k.x) + (oy - k.y) * (oy - k.y);
+            if (d2 > farD2) { farD2 = d2; far = i; }
+        }
+        const double nd2 = (tx - k.x) * (tx - k.x) + (ty - k.y) * (ty - k.y);
+        if (farD2 <= nd2) { ++sightStat_[static_cast<size_t>(SightStat::FullFar)]; return; }
+        SightLose(k, far, SightStat::LostReplaced);                                  // `sub_528910`
+    }
+    Creature::SeenRef r;
+    if (!t.addr.empty()) r.addr = t.addr; else r.petNet = pets_[static_cast<size_t>(t.pet)].netCode;
+    k.seen.push_back(r);
+    ++sightStat_[static_cast<size_t>(SightStat::Added)];
+    if (frame_ > k.spotSoundFrame && CreatureEnemyTo(k, t)) {                       // `:7552~7563`
+        MonsterSound(k, 16);                                                          // +68 RECOGNIZE
+        k.spotSoundFrame = frame_ + static_cast<uint32_t>(2 * kServerTickRate) + NextRandom(static_cast<uint32_t>(2 * kServerTickRate + 1));
+        ++sightStat_[static_cast<size_t>(SightStat::Spot)];
+    }
+}
+
+// `sub_528610` — 목록 중 가장 가까운 「적 · 죽일 수 있음」(`checkIsKillable_528190` — 체력 자료가 있고 살았거나 최대 0)
+void Server::SightPickEnemy(Creature& k) {
+    k.enemyAddr.clear(); k.enemyNet = 0; k.enemyPet = -1;
+    double best = 100000000.0;
+    for (const auto& r : k.seen) {
+        Target t; float tx = 0, ty = 0;
+        if (!SightResolve(r, t) || !TargetXY(t, tx, ty)) continue;
+        if (!CreatureEnemyTo(k, t) || TargetDeadOrGone(t)) continue;
+        const double d2 = (tx - k.x) * (tx - k.x) + (ty - k.y) * (ty - k.y);
+        if (d2 < best) { best = d2; k.enemyAddr = t.addr; k.enemyNet = t.addr.empty() ? r.petNet : 0; k.enemyPet = t.pet; }
+    }
+}
+
+void Server::UpdateSight(Creature& k) {
+    if (k.health == 0) return;                                        // `:7306` 죽은 것(0x8000)
+    const bool quest = questTotal_ > 0 || questStage_ > 0;
+    const float base = quest ? 640.0f : 250.0f;                       // `:7309~7313` 게임 깃발 4096
+    const float range = (base >= k.sightRange) ? base : k.sightRange;
+    bool recheck = false;
+    if (frame_ - k.sightRecheckFrame > static_cast<uint32_t>(2 * kServerTickRate)) { recheck = true; k.sightRecheckFrame = frame_; }
+    bool changed = false;
+    for (size_t i = 0; i < k.seen.size();) {
+        Target t; float tx = 0, ty = 0;
+        SightStat why = SightStat::Count;
+        if (!SightResolve(k.seen[i], t) || !TargetXY(t, tx, ty) || TargetDeadOrGone(t)) why = SightStat::LostGone;
+        else if (!CanSeeFrom(k, t)) why = SightStat::LostCantSee;
+        else if ((k.x - tx) * (k.x - tx) + (k.y - ty) * (k.y - ty) > (range + 30.0) * (range + 30.0)) why = SightStat::LostFar;
+        else if ((k.x - k.prevX) * (k.x - k.prevX) + (k.y - k.prevY) * (k.y - k.prevY) > 1000.0) why = SightStat::LostMoved;
+        else if (recheck && !CanInteractFrom(k, t)) why = SightStat::LostRecheck;
+        if (why != SightStat::Count) { SightLose(k, i, why); changed = true; continue; }
+        ++i;
+    }
+    {   // `:7344~7347` — 지금 상대가 홀려(버프 28) 있으면 다시 고른다
+        Target e; e.addr = k.enemyAddr; e.pet = -1;
+        if (e.addr.empty() && k.enemyNet != 0) for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == k.enemyNet) e.pet = static_cast<int>(i);
+        const Buffs* eb = e.none() ? nullptr : BuffsOf(e);
+        if (eb && eb->Has(28)) changed = true;
+    }
+    const bool noEnemy = k.enemyAddr.empty() && k.enemyNet == 0;
+    if ((noEnemy || frame_ - k.sightScanFrame > static_cast<uint32_t>(2 * kServerTickRate)) &&
+        (k.sightNextScan <= frame_ || frame_ == sightForceFrame_)) {
+        ++sightStat_[static_cast<size_t>(SightStat::Scan)];
+        auto consider = [&](const Target& t, float tx, float ty) {    // `monsterUpdateSeenEnemies_5286D0`
+            ++sightStat_[static_cast<size_t>(SightStat::Cand)];
+            if (TargetDeadOrGone(t)) { ++sightStat_[static_cast<size_t>(SightStat::NotEnemy)]; return; }
+            if (!CreatureEnemyTo(k, t)) { ++sightStat_[static_cast<size_t>(SightStat::NotEnemy)]; return; }
+            for (const auto& r : k.seen)
+                if ((!t.addr.empty() && r.addr == t.addr) || (t.addr.empty() && r.petNet == pets_[static_cast<size_t>(t.pet)].netCode)) {
+                    ++sightStat_[static_cast<size_t>(SightStat::Already)]; return;
+                }
+            const double dx = tx - k.x, dy = ty - k.y;
+            const double len = std::sqrt(dx * dx + dy * dy) + 0.001;
+            if (dy / len * DirVecY(k.facing) + dx / len * DirVecX(k.facing) < 0.5) { ++sightStat_[static_cast<size_t>(SightStat::Cone)]; return; }
+            if (!CanInteractFrom(k, t)) { ++sightStat_[static_cast<size_t>(SightStat::Los)]; return; }
+            SightSeeEnemy(k, t);
+        };
+        // `unitsGetInCircle_517F90(자리, 거리)` — 유닛 중심이 원 안인 것(⚠ 정답지는 충돌 칸 겹침 — 몸 반지름만큼 넓다)
+        const double r2 = static_cast<double>(range) * range;
+        for (const auto& kv : sessions_) {
+            const Session& o = kv.second;
+            if (!o.inGame) continue;
+            const double dx = o.posX - k.x, dy = o.posY - k.y;
+            if (dx * dx + dy * dy > r2) continue;
+            consider(Target{ kv.first, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY));
+        }
+        for (size_t i = 0; i < pets_.size(); ++i) {
+            if (&pets_[i] == &k) continue;
+            const double dx = pets_[i].x - k.x, dy = pets_[i].y - k.y;
+            if (dx * dx + dy * dy > r2) continue;
+            consider(Target{ std::string(), static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y));
+        }
+        k.sightScanFrame = frame_;
+        k.sightRecheckFrame = frame_;
+        changed = true;
+    }
+    if (changed) SightPickEnemy(k);
+    if (k.sightScanFrame == frame_)                                   // `:7370~7373` — 온라인(게임 깃발 0x2000)은 늘 5~10프레임 뒤
+        k.sightNextScan = frame_ + 5 + NextRandom(6);
+    // 지금 상대의 자리 번호는 틱마다 번호로 다시 푼다(앞 크리처가 지워지면 밀린다)
+    k.enemyPet = -1;
+    if (k.enemyAddr.empty() && k.enemyNet != 0)
+        for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == k.enemyNet) { k.enemyPet = static_cast<int>(i); break; }
 }
 
 // ── 묶음 5-h 금 ───────────────────────────────────────────────────────
@@ -15228,12 +15409,16 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   ⚠ 잣대는 **크리처 자리에서 보는 선 추적**이다. (09-28 전) `CanInteractFrom` 은 **주인 시점**이라
             //     크리처 시야로는 틀렸다(주인이 보면 소환수도 본다는 셈이 된다)
             // ★ 09-28 — `CanInteractFrom` 을 크리처 눈(버프 + 시야선)으로 고치고 잣대를 그 하나로 — 조건 45 와 어긋나면 사슬이 매 틱 무너진다
-            const Target t = debugNoAutoFight_ ? Target{} : NearestTarget(k.owner, k.x, k.y, 1e9);
+            // ★★ 09-29 B1 — **지금 상대는 알아보기(`UpdateSight`)가 정한다** — 거리 250(퀘스트 640) · 앞쪽 부채꼴 · 시야선으로 목록에 넣고,
+            //   목록 중 가장 가까운 적. 한번 본 것은 (거리+30) 안에서 보이는 동안 남는다(시야선은 2초마다 다시 봄).
+            //   ✖ 전에는 거리 제한 없이 가장 가까운 적(`NearestTarget(…, 1e9)`)을 매 틱 골랐다 — 멀리서도 · 등 뒤도 알아봤다(09-28 사람 판 박쥐)
+            //   쌓기는 아직 대체 두뇌다(B2 가 놀기 0 으로 바꾼다) — **지금 보일 때만** 쌓는다(09-28 잣대 — 조건 45 와 어긋나면 사슬이 매 틱 무너진다)
+            if (debugNoAutoFight_) { k.enemyAddr.clear(); k.enemyNet = 0; k.enemyPet = -1; }
+            else UpdateSight(k);
+            Target t; t.addr = k.enemyAddr; t.pet = k.enemyPet;
             float sx = 0, sy = 0;
             const bool sees = !t.none() && TargetXY(t, sx, sy) && CanInteractFrom(k, t);
             if (sees) {
-                k.enemyAddr = t.addr;
-                k.enemyPet = t.pet;
                 // ★ **할 일이 아예 없을 때만** 쌓는다(바닥이 놀기 하나).
                 //   ⚠ 정답지는 **적을 알아본 순간**(`unitUpdateSightMB_5281F0` 둘레)에 한 번 쌓는다.
                 //     그 「알아보기」를 아직 안 옮겨서, **놀고 있으면 쌓는다**로 대신한다.
@@ -15260,8 +15445,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                         if (k.aiStack[i].action == 15) { k.aiStack[i].argX = sx; k.aiStack[i].argY = sy; }
                 }
             } else if (!debugNoAutoFight_) {
-                k.enemyAddr.clear();
-                k.enemyPet = -1;
+                // ★ 09-29 B1 — 지금 상대를 여기서 비우지 않는다(알아보기가 목록에서 뺄 때 비운다 · `aiLostSight_528560`)
                 // ★ 적이 안 보여도 **주인이 있으면 호위**는 선다 — 그래야 따라다닌다
                 if (!k.ordered && !k.owner.empty() && k.aiStackInd == 0 && k.aiStack[0].action == 0) AIPush(k, 3);
             }
@@ -15272,6 +15456,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (pets_.size() != before) break;
             AITick(k, out);
             if (pets_.size() != before) break;
+            // ★ 09-29 B1 — 지난 자리(+72 PrevPos)는 **옮기기 직전 자리**다(`server.go:163` — 정답지는 이동 적분마다 적는다).
+            //   ✖ 전에는 크리처에서 한 번도 안 적었다(시험만 세움) — 조건 71(안 움직였나)이 (0,0) 과 견줬고, 알아보기의 「순간이동」 검사가 늘 참이 될 뻔했다
+            k.prevX = k.x; k.prevY = k.y;
             if (k.velX != 0.0 || k.velY != 0.0) CreatureApplyVelocity(k);
         }
         if (pets_.size() != before) break;
