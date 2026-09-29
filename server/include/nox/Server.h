@@ -340,6 +340,22 @@ enum class CastStat : uint8_t {
 };
 constexpr size_t kCastStatCount = static_cast<size_t>(CastStat::Count);
 
+// ★ 09-29 — 갑옷 입기·벗기(`playerEquipArmor_53E650` · `sub_53E430` · `pickupArmor_53E7F0`)가 **어떻게 끝났나**
+enum class ArmorGate : uint8_t {
+    NotArmor = 0,     // 갑옷 클래스가 아님(입기)
+    Already,          // 이미 입음
+    ClassFail,        // 직업(modifier.bin CLASSUSE) — 글 armor.c:ArmorEquipClassFail
+    StrengthFail,     // 힘(REQUIRED_STRENGTH) — 글 armor.c:ArmorEquipStrengthFail
+    Swapped,          // 같은 부위(SUBCLASS)를 먼저 벗김
+    Equipped,         // 입음
+    NotWorn,          // 벗기 — 갑옷 아님·안 입음
+    Dequipped,        // 벗음
+    ShieldBlockIdle,  //   그중 방패를 막기 자세(15~17)에서 벗어 자세 13
+    PickupClassFail,  // 줍기 전 직업 거절(`:7618~7624`) — 못 주움
+    Count
+};
+constexpr size_t kArmorGateCount = static_cast<size_t>(ArmorGate::Count);
+
 // ★ 09-23 3-a — 점프(CCJump 7)가 **어떻게 끝났나**(`object_update.go:550~571`). 들어옴 = 갈래 합
 enum class JumpGate : uint8_t {
     Ok = 0,        // 뛰었다 — 기력 90 · 떠 있음 · 상태 12
@@ -3738,6 +3754,11 @@ public:
     // ★ 09-27 B3 — modifier.bin `WEAPON_DEFINITIONS` 한 칸(종류 번호별): 쓸 수 있는 직업 비트(CLASSUSE — 워리어 1 · 위저드 2 · 컨저러 4) · 요구 힘.
     //   정답지 `server/modifiers.go:314~320`(Classes62 · ReqStrength60). main 이 복호본을 읽어 채운다 — 없는 종류는 직업 검사에서 거절(`object_pickup.go:113~118`)
     void SetWeaponDef(uint16_t wire, uint8_t classes, uint16_t reqStrength) { weaponDef_[wire] = WeaponDef{ classes, reqStrength }; }
+    // ★ 09-29 — 갑옷 정의(modifier.bin `ARMOR_DEFINITIONS` — CLASSUSE · REQUIRED_STRENGTH · ARMOR_VALUE → `Modifier` +62·+60·+64)
+    void SetArmorDef(uint16_t wire, uint8_t classes, uint16_t reqStrength, float value) { armorDef_[wire] = ArmorDef{ classes, reqStrength, value }; }
+    size_t ArmorDefCount() const { return armorDef_.size(); }
+    unsigned long long armorGate(ArmorGate g) const { return g < ArmorGate::Count ? armorGate_[static_cast<size_t>(g)] : 0; }
+    float DebugArmorValue(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0.0f : ArmorValueOf(it->second); }
     size_t WeaponDefCount() const { return weaponDef_.size(); }
     // 시험용 — 든 무기(09-27 B2): 비트 · 종류 번호 · 무기 칸 번호
     uint32_t DebugWeaponEquip(const std::string& addr) const {
@@ -3870,6 +3891,10 @@ public:
         if (i == sessions_.end()) return;
         Session::Carried c; c.netCode = 60002; c.type = type;
         i->second.inventory.push_back(c);
+    }
+    void DebugGiveCarried(const std::string& x, const Session::Carried& c) {   // ★ 09-29 시험용 — 줍기 관문을 안 거치고 가방에 넣는다(퀘스트에서 주운 것 흉내)
+        auto i = sessions_.find(x);
+        if (i != sessions_.end()) i->second.inventory.push_back(c);
     }
     bool DebugAirborne(const std::string& a) const { auto i = sessions_.find(a); return i != sessions_.end() && i->second.airborne; }
     bool DebugAbilActiveVal(const std::string& a, uint8_t k) const {            // ★ 2-a1 시험용
@@ -4360,6 +4385,11 @@ private:
     void GiveDefaultGear(Session& s);   // ★ 09-27 B1 — 직업 기본 장비를 가방에(스냅샷 꼬리가 보내는 번호·순서 그대로)
     // ★ 09-27 B3 — 무기 들기 `53A420`(a3 = 알림 · a4 = 거절 소리) · 내려놓기(B4 — `53A140`) · 입기·벗기 알림(본인 0x60/0x61 + 남에게 겉모습)
     bool PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vector<OutPacket>& out);
+    // ★ 09-29 — 갑옷 입기·벗기·방어값(Server.cpp 「갑옷」 절)
+    bool PlayerEquipArmor(Session& s, uint16_t nc, bool failSound, std::vector<OutPacket>& out);            // `playerEquipArmor_53E650`
+    bool PlayerDequipArmor(Session& s, uint16_t nc, std::vector<OutPacket>& out, bool toSelf = true, bool toOthers = true);   // `sub_53E430`
+    float ArmorValueOf(const Session& s) const;                                                             // `recalculateArmorVal_53E300`
+    static bool IsArmorItem(const Session::Carried& c) { return c.equipBit != 0 && !c.isWeapon && !c.weaponClass; }
     bool PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out, bool toSelf = true, bool toOthers = true);
     // toSelf = 거짓이면 본인 알림(0x60/0x61)은 빼고 남에게 겉모습만(버리기 `sub_4ED0C0` 가 a3 = 0 으로 부른다)
     // toOthers = 거짓이면 남에게 겉모습도 안 보낸다(09-28 B4b — 죽은 사람이 떨어뜨릴 때 a4 = 0)
@@ -4516,6 +4546,9 @@ private:
     unsigned long long shieldDropsTwoHand_ = 0;   // ★ 09-28 — 방패를 입어 내려놓게 한 두 손 무기(`sub_53E600`)
     struct WeaponDef { uint8_t classes = 0; uint16_t reqStrength = 0; };
     std::map<uint16_t, WeaponDef> weaponDef_;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
+    struct ArmorDef { uint8_t classes = 0; uint16_t reqStrength = 0; float value = 0.0f; };
+    std::map<uint16_t, ArmorDef> armorDef_;       // ★ 09-29 — 종류 번호 → modifier.bin 갑옷 정의
+    unsigned long long armorGate_[kArmorGateCount] = {};
     std::map<uint16_t, Session::Carried> itemTemplate_;   // ★ 09-27 B1 — 기본 장비 종류 틀
     unsigned long long jumpCodes_ = 0, jumpIn_ = 0, jumpGate_[kJumpGateCount] = {};   // ★ 3-a
     unsigned long long jumpForceTicks_ = 0, jumpHeldTicks_ = 0, jumpLanded_ = 0, airborneOffIdle_ = 0, recoilBlockedAirborne_ = 0;

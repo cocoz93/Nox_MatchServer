@@ -1275,24 +1275,23 @@ void TestAppearanceAndFx() {
         sw.modifiable = true;                    // 무기라 수식이 붙는다
         sw.equipBit = 0x200;                     // Longsword
         sw.isWeapon = true;
+        sw.weaponClass = true;                   // ★ 09-29 — 입기 요청은 무기(CLASS WEAPON)·갑옷만 받는다(`playerTryEquip_4F2F70`) — 진짜 무기로
         sw.mods[0] = 0x07; sw.mods[1] = 0xff; sw.mods[2] = 0x7a; sw.mods[3] = 0x7d;
         st.push_back(sw);
+        srv.SetWeaponDef(1160, 7, 0);
         nox::Server::WorldStatic unk;            // 표에 없는 것 — 겉모습을 안 보내야 한다
         unk.netCode = 501; unk.type = 700; unk.x = 1000; unk.y = 1000;
         st.push_back(unk);
         SetWeights(st, 8);
         srv.SetWorldStatics(st);
 
+        // ★ 09-29 — 손이 빈 채 무기를 주우면 **저절로 든다**(`sub_53A720`) — 입음 알림(51)은 줍기 출력에 있다
+        std::vector<nox::OutPacket> out;
         for (uint16_t nc : { (uint16_t)500, (uint16_t)501 }) {
-            std::vector<nox::OutPacket> o1;
             const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nc);
-            srv.OnPacket(a, g.data(), g.size(), o1);
+            srv.OnPacket(a, g.data(), g.size(), out);
         }
         Check(srv.CarriedCount(a) == 2, "둘을 못 주웠다");
-
-        std::vector<nox::OutPacket> out;
-        const std::vector<uint8_t> e = CodePacket(nox::Op::TRY_EQUIP, 500);
-        srv.OnPacket(a, e.data(), e.size(), out);
         const auto toB = FlattenTo(out, b);
         const auto* m = FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MODIFIABLE_WEAPON_EQUIP));
         Check(m != nullptr, "입었는데 남에게 0x51 이 안 감");
@@ -1318,12 +1317,14 @@ void TestAppearanceAndFx() {
             Check((*m2)[1] == 0xd8 && (*m2)[2] == 0x02, "벗기에 bit15 가 실렸다 — 클라가 안 본다");
         }
 
-        // ③ 장비 비트를 모르는 것 — 본인 0x60 은 가되 남에게는 아무것도 안 간다
+        // ③ 장비 비트를 모르는 것 — ★ 09-29 정정: 무기도 갑옷도 아니면 입기 요청이 **아무 일도 안 한다**(`playerTryEquip_4F2F70` — 무기 `53A420`·갑옷 `53E650` 둘 다 0).
+        //   ✖ 전에는 옛 켜고 끄기라 아무 물건이나 입혀 본인 0x60 을 보냈다 · 실물 갑옷 26종은 모두 겉모습 비트 표에 있어 「비트 모르는 갑옷」은 없다
         const unsigned long long unkBefore = srv.appearanceUnknown();
         std::vector<nox::OutPacket> out3;
         const std::vector<uint8_t> e2 = CodePacket(nox::Op::TRY_EQUIP, 501);
         srv.OnPacket(a, e2.data(), e2.size(), out3);
-        Check(srv.appearanceUnknown() == unkBefore + 1, "모르는 장비를 안 셌다");
+        Check(srv.appearanceUnknown() == unkBefore && FindMsg(FlattenTo(out3, a), static_cast<uint8_t>(nox::Op::REPORT_EQUIP)) == nullptr,
+              "무기도 갑옷도 아닌 것을 입혔다");
         const auto toB3 = FlattenTo(out3, b);
         for (uint8_t op : { 0x4F, 0x50, 0x51, 0x52 }) {
             const std::string why = "장비 비트를 모르는데 겉모습을 지어 보냈다";
@@ -2071,6 +2072,9 @@ void TestUseAndEquip() {
     st[1].foodBits = nox::kFoodPotion | nox::kFoodManaPotion;
     // ★ 5-d — **무엇을 부를지는 `USE` 의 앞말이 정한다**. 안 담으면 아무 일도 안 난다
     st[0].useFn = st[1].useFn = nox::UseFn::Potion;
+    // ★ 09-29 — 입기 요청은 무기·갑옷만 받는다 — 「검」자리 종류 1133 은 실물 StreetPants 라 그 갑옷으로(겉모습 비트 · 정의 모두·0.01)
+    st[2].equipBit = nox::EquipBitFor("StreetPants", nullptr);
+    srv.SetArmorDef(1133, 7, 0, 0.01f);
     srv.SetWorldStatics(st);
     for (uint16_t nc : { kRed, kBlue, kSword, kBook }) {
         std::vector<nox::OutPacket> out;
@@ -19078,9 +19082,25 @@ static void GearTemplates(nox::Server& srv) {
         c.modifiable = true;
         c.weight = 7;
         c.dropFn = nox::DropFn::ArmorWeapon;   // ★ 09-28 — thing.bin `DROP` = ArmorDrop·WeaponDrop(부팅 줄 [기본장비] 로 확인)
+        // ★ 09-29 — 부위(SUBCLASS) ⭕ 부팅 줄 [기본장비] — 셔츠 0x40 · 바지 0x10 · 운동화 0x20 · 로브 0x4 · 나무 방패 0x2 · 롱소드 0x200
+        //   갑옷 입기(`53E650`)가 같은 부위를 벗기고 방패(& 2)면 두 손 무기를 내려놓으므로 실물과 같게 채운다
+        switch (gw) {
+            case nox::kItemStreetShirt: c.subclass = 0x40; break;
+            case nox::kItemStreetPants: c.subclass = 0x10; break;
+            case nox::kItemStreetSneakers: c.subclass = 0x20; break;
+            case nox::kItemWizardRobe: c.subclass = 0x4; break;
+            case nox::kItemWoodenShield: c.subclass = 0x2; break;
+            default: c.subclass = 0x200; break;
+        }
         srv.SetItemTemplate(gw, c);
     }
     srv.SetWeaponDef(nox::kItemLongsword, 1, 30);   // ⭕ modifier.bin Longsword — CLASSUSE = WARRIOR · REQUIRED_STRENGTH = 30
+    // ★ 09-29 — 갑옷 정의(⭕ 부팅 줄 [갑옷정의] — 평상복 셋 모두·0.01 · 로브 위저드·0.2 · 나무 방패 워리어·힘 20·0)
+    srv.SetArmorDef(nox::kItemStreetShirt, 7, 0, 0.01f);
+    srv.SetArmorDef(nox::kItemStreetPants, 7, 0, 0.01f);
+    srv.SetArmorDef(nox::kItemStreetSneakers, 7, 0, 0.01f);
+    srv.SetArmorDef(nox::kItemWizardRobe, 2, 0, 0.2f);
+    srv.SetArmorDef(nox::kItemWoodenShield, 1, 20, 0.0f);
 }
 
 void TestDefaultGear() {
@@ -21393,6 +21413,10 @@ void TestPickupAutoEquip() {
         put(602, 1182, 0x2000000, false, 0x2);   // 강철 방패 — 부위 SHIELD(2)
         put(603, 1170, 0x400, true, 0x400);      // 대검 — 두 손
         put(604, 1171, 0x100, true, 0x100);      // 칼 — 한 손
+        // ★ 09-29 — 갑옷 정의(줍기 전 직업 관문·입기 관문 — 워리어가 입는 것) · 투구 방어 0.1·0.05
+        srv.SetArmorDef(1180, 1, 0, 0.1f);
+        srv.SetArmorDef(1181, 1, 0, 0.05f);
+        srv.SetArmorDef(1182, 1, 0, 0.0f);
         srv.SetWorldStatics(st);
     };
     auto get = [&](nox::Server& srv, uint16_t nc, std::vector<nox::OutPacket>& out) {
@@ -21429,6 +21453,127 @@ void TestPickupAutoEquip() {
         Check(!worn(srv, 602) && srv.autoEquip(3) == 1, "④ 대검을 든 채 방패를 주웠는데 입었다");
     }
     std::printf("  09-28 — 줍고 저절로 입음: 빈 부위 갑옷 · 같은 부위면 안 입음 · 빈손이면 무기 듦 · 두 손 무기면 방패 안 입음\n");
+}
+
+// ── 09-29 — 갑옷 입기·벗기(`playerEquipArmor_53E650` · `sub_53E430`) · 방어값 = 입은 갑옷 합(`recalculateArmorVal_53E300`) · 줍기 전 직업 관문 ─────────
+void TestArmorEquip() {
+    using nox::CharClass;
+    using AG = nox::ArmorGate;
+    const std::string a = "10.9.29.91:9391", b = "10.9.29.92:9392";
+    auto send = [&](nox::Server& srv, nox::Op op, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> p = CodePacket(op, nc);
+        srv.OnPacket(a, p.data(), p.size(), out);
+    };
+    auto worn = [&](nox::Server& srv, uint16_t nc) {
+        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == nc) return c.equipped;
+        return false;
+    };
+    auto inBag = [&](nox::Server& srv, uint16_t nc) {
+        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == nc) return true;
+        return false;
+    };
+    // 투구 A(0.1)·B(0.05)(HELMET 1) · 무거운 것(힘 999 · BREASTPLATE 4) · 방어 2.0 짜리(ARM_ARMOR 8 — 1.0 에서 잘림) · 모두 워리어만
+    auto make = [&](nox::Server& srv, CharClass cls) {
+        GearTemplates(srv);
+        srv.DebugEnterGame(a, 728, false, cls);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::Server::WorldStatic> st;
+        auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, uint32_t sub) {
+            nox::Server::WorldStatic w;
+            w.netCode = nc; w.type = type; w.x = 1000; w.y = 1000; w.modifiable = true; w.equipBit = bit; w.subclass = sub; w.weight = 5;
+            st.push_back(w);
+        };
+        put(700, 1180, 0x400000, 0x1);
+        put(701, 1181, 0x200000, 0x1);
+        put(702, 1183, 0x800, 0x4);
+        put(703, 1184, 0x2000, 0x8);
+        srv.SetArmorDef(1180, 1, 0, 0.1f);
+        srv.SetArmorDef(1181, 1, 0, 0.05f);
+        srv.SetArmorDef(1183, 1, 999, 0.3f);
+        srv.SetArmorDef(1184, 1, 0, 2.0f);
+        srv.SetWorldStatics(st);
+    };
+    auto get = [&](nox::Server& srv, uint16_t nc, std::vector<nox::OutPacket>& out) { send(srv, nox::Op::TRY_GET, nc, out); };
+    // ① 방어값 = 입은 갑옷 합 — 워리어 기본(바지·운동화 0.01 둘 · 나무 방패 0) 0.02 → 투구 A(0.1) 를 주워 저절로 입으면 0.12 · 다음 틱 49 로 알림
+    {
+        nox::Server srv; make(srv, CharClass::Warrior);
+        const float v0 = srv.DebugArmorValue(a);
+        std::vector<nox::OutPacket> out; get(srv, 700, out);
+        const float v1 = srv.DebugArmorValue(a);
+        char msg[160]; std::snprintf(msg, sizeof(msg), "① 방어값이 입은 갑옷 합이 아니다 — %.4f → %.4f(0.02 → 0.12)", v0, v1);
+        Check(std::fabs(v0 - 0.02f) < 1e-6f && worn(srv, 700) && std::fabs(v1 - 0.12f) < 1e-6f, msg);
+        std::vector<nox::OutPacket> tick;
+        srv.Tick(srv.DebugNowMs(), tick);                    // ⚠ 이 서버의 첫 틱 — 시작만 하고 안 돈다
+        srv.Tick(srv.DebugNowMs() + 34, tick);
+        bool rep = false;
+        for (const auto& m : FlattenTo(tick, a))
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_ARMOR_VALUE)) {
+                float f = 0; std::memcpy(&f, m.data() + 1, 4); if (f == v1) rep = true;
+            }
+        Check(rep, "① 입은 뒤 다음 틱에 방어값(49)을 새 값으로 안 알렸다");
+    }
+    // ② 같은 부위 — 투구 B 를 주우면 안 입고(투구는 바꿔 입는 갈래 아님) · 입기 요청이면 A 를 벗기고 B 를 입음(0.07)
+    {
+        nox::Server srv; make(srv, CharClass::Warrior);
+        std::vector<nox::OutPacket> out; get(srv, 700, out); get(srv, 701, out);
+        Check(worn(srv, 700) && !worn(srv, 701), "② 전제 — 투구 A 입음 · B 안 입음이 아니다");
+        std::vector<nox::OutPacket> o2; send(srv, nox::Op::TRY_EQUIP, 701, o2);
+        Check(!worn(srv, 700) && worn(srv, 701) && srv.armorGate(AG::Swapped) == 1 && std::fabs(srv.DebugArmorValue(a) - 0.07f) < 1e-6f,
+              "② 같은 부위 투구를 입었는데 먼저 것을 안 벗겼거나 방어값이 틀렸다");
+    }
+    // ③ 힘 — 요구 힘 999 는 못 입음(주울 때 저절로도 · 요청으로도) · ④ 방어 2.0 짜리는 1.0 에서 잘림
+    {
+        nox::Server srv; make(srv, CharClass::Warrior);
+        std::vector<nox::OutPacket> out; get(srv, 702, out);
+        send(srv, nox::Op::TRY_EQUIP, 702, out);
+        Check(!worn(srv, 702) && srv.armorGate(AG::StrengthFail) == 2, "③ 힘이 모자란데 입었다(또는 두 번 다 거절이 아니다)");
+        get(srv, 703, out);
+        Check(worn(srv, 703) && srv.DebugArmorValue(a) == 1.0f, "④ 방어값이 1.0 에서 안 잘렸다");
+    }
+    // ⑤ 직업 — 위저드는 워리어 투구를 **아예 못 줍는다**(글 + 925) · 가방에 있어도(퀘스트에서 주운 것) 입기 요청은 직업 거절
+    {
+        nox::Server srv; make(srv, CharClass::Wizard);
+        std::vector<nox::OutPacket> out; get(srv, 700, out);
+        Check(!inBag(srv, 700) && srv.armorGate(AG::PickupClassFail) == 1, "⑤ 위저드가 워리어 투구를 주웠다");
+        nox::Session::Carried c; c.netCode = 710; c.type = 1180; c.equipBit = 0x400000; c.subclass = 0x1; c.modifiable = true;
+        srv.DebugGiveCarried(a, c);
+        send(srv, nox::Op::TRY_EQUIP, 710, out);
+        Check(!worn(srv, 710) && srv.armorGate(AG::ClassFail) == 1, "⑤ 위저드가 워리어 투구를 입었다");
+    }
+    // ⑥ 방패를 막기 자세(16)에서 벗으면 자세 13 · 남에게 벗음(53)
+    {
+        nox::Server srv; make(srv, CharClass::Warrior);
+        uint16_t shield = 0;
+        for (const auto& c : srv.DebugInventory(a)) if (c.equipped && (c.equipBit & 0x3000000)) shield = c.netCode;
+        Check(shield != 0, "⑥ 전제 — 입은 방패가 없다");
+        srv.DebugSetState(a, 16);
+        std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_DEQUIP, shield, out);
+        Check(!worn(srv, shield) && srv.armorGate(AG::ShieldBlockIdle) == 1 &&
+              FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_ARMOR_DEQUIP)) != nullptr, "⑥ 막기 자세에서 방패를 벗었는데 자세 13·알림이 아니다");
+    }
+    // ⑦ 줍고 바꿔 입기 — 수식 없는 나무 방패를 입은 채(두 손 무기 없음) 강철 방패를 주우면 바꿔 입는다(`:7666~7710`)
+    {
+        nox::Server srv; make(srv, CharClass::Warrior);
+        uint16_t wood = 0;
+        for (const auto& c : srv.DebugInventory(a)) if (c.equipped && (c.equipBit & 0x3000000)) wood = c.netCode;
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic w; w.netCode = 720; w.type = 1160; w.x = 1000; w.y = 1000; w.modifiable = true; w.equipBit = 0x2000000; w.subclass = 0x2; w.weight = 5;
+        st.push_back(w);
+        srv.SetWorldStatics(st);
+        srv.SetArmorDef(1160, 1, 0, 0.0f);
+        std::vector<nox::OutPacket> out; get(srv, 720, out);
+        Check(worn(srv, 720) && !worn(srv, wood) && srv.armorGate(AG::Swapped) == 1, "⑦ 나무 방패를 입은 채 강철 방패를 주웠는데 안 바꿔 입었다");
+    }
+    // ⑧ 더하는 차례 — 위저드 기본(셔츠·바지·운동화 0.01 · 로브 0.2)을 **새것(로브)부터** 더하면 0x3e6b8520(정품 녹음 `49 20 85 6b 3e` · 3-d)
+    {
+        nox::Server srv; make(srv, CharClass::Wizard);
+        const float v = srv.DebugArmorValue(a);
+        uint32_t bits = 0; std::memcpy(&bits, &v, 4);
+        char msg[120]; std::snprintf(msg, sizeof(msg), "⑧ 위저드 기본 방어값이 0x3e6b8520 이 아니다 — 0x%08x", bits);
+        Check(bits == 0x3e6b8520u, msg);
+    }
+    std::printf("  09-29 — 갑옷 입기·벗기: 방어값 = 입은 합(0.02→0.12 · 49 알림 · 1.0 자름) · 같은 부위 바꿔 입기 · 힘·직업 관문 · 줍기 전 직업 · 막기 자세 방패 벗기 · 방패 주워 바꿔 입기\n");
 }
 
 // ── 09-28 — 남을 소개하는 `2d NEW_PLAYER` 의 104·108 자리 = 지금 갑옷·무기 비트(`player.go:233~234`) ─────────
@@ -26467,6 +26612,7 @@ int main() {
     TestMonsterHearB6();
     TestMonsterCastB7();
     TestPickupAutoEquip();
+    TestArmorEquip();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
     TestMonsterChaseReturn();

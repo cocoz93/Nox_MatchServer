@@ -1786,6 +1786,60 @@ int main(int argc, char** argv) {
                 }
                 std::printf("[무기정의] modifier.bin %zu바이트 · 무기 %zu개 실음 · 종류표에 없음 %zu · 모르는 직업 이름 %zu\n",
                             mb.size(), nDef, nNoWire, nBadClass);
+                // ★ 09-29 — `ARMOR_DEFINITIONS` → 갑옷 입기의 직업·힘 관문과 방어값(ARMOR_VALUE → `Modifier` +64 · `parseWeaponOrArmorDef412D40` `modifiers.go:325~329`).
+                //   절은 다음 절 이름(ENCHANTMENT·EFFECTIVENESS·MATERIAL) 줄에서 끝난다
+                if (armorAt != std::string::npos) {
+                    std::string asec = txt.substr(armorAt);
+                    for (const char* nextSec : { "\nENCHANTMENT", "\nEFFECTIVENESS", "\nMATERIAL" }) {
+                        const size_t cut = asec.find(nextSec);
+                        if (cut != std::string::npos) asec = asec.substr(0, cut);
+                    }
+                    std::string acur;
+                    uint8_t aclasses = 0;
+                    int areq = 0;
+                    double aval = 0.0;
+                    size_t nArm = 0, nArmNoWire = 0;
+                    size_t apos = 0;
+                    while (apos < asec.size()) {
+                        size_t e = asec.find('\n', apos);
+                        if (e == std::string::npos) e = asec.size();
+                        const std::string line = trim(asec.substr(apos, e - apos));
+                        apos = e + 1;
+                        if (line.empty() || line == "ARMOR_DEFINITIONS") continue;
+                        if (line == "END") {
+                            if (!acur.empty()) {
+                                const uint16_t wire = tdb.WireByName(acur);
+                                if (wire == 0) ++nArmNoWire;
+                                else { srv.SetArmorDef(wire, aclasses, static_cast<uint16_t>(areq < 0 ? 0 : areq), static_cast<float>(aval)); ++nArm; }
+                                if (acur == "StreetShirt" || acur == "StreetPants" || acur == "StreetSneakers" || acur == "WizardRobe" || acur == "WoodenShield" || acur == "SteelShield" || acur == "LeatherHelm")
+                                    std::printf("[갑옷정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 방어 %.3f\n", acur.c_str(), (unsigned)wire, (unsigned)aclasses, areq, aval);
+                            }
+                            acur.clear();
+                            continue;
+                        }
+                        const size_t eq = line.find('=');
+                        if (eq == std::string::npos) { acur = line; aclasses = 0; areq = 0; aval = 0.0; continue; }
+                        const std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
+                        if (key == "CLASSUSE") {
+                            size_t s0 = 0;
+                            while (s0 <= val.size()) {
+                                size_t s1 = val.find('+', s0);
+                                if (s1 == std::string::npos) s1 = val.size();
+                                const std::string tok = trim(val.substr(s0, s1 - s0));
+                                if (tok == "WARRIOR") aclasses |= 1;
+                                else if (tok == "WIZARD") aclasses |= 2;
+                                else if (tok == "CONJURER") aclasses |= 4;
+                                else ++nBadClass;
+                                s0 = s1 + 1;
+                            }
+                        } else if (key == "REQUIRED_STRENGTH") {
+                            areq = std::atoi(val.c_str());
+                        } else if (key == "ARMOR_VALUE") {
+                            aval = std::atof(val.c_str());
+                        }
+                    }
+                    std::printf("[갑옷정의] 갑옷 %zu개 실음 · 종류표에 없음 %zu\n", nArm, nArmNoWire);
+                }
             }
 
             // ★ 묶음 5 — 사람이 들 수 있는 무게의 **밑천**. thing.bin 의 사람 칸에서 읽는다.

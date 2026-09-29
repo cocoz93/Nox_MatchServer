@@ -1335,7 +1335,7 @@ bool Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
             }
         }
         // 방어 — 종류마다 방어값(+228)을 먹는 정도가 다르고, 깎인 피해의 소수부는 +84 에 이월된다
-        const float armor = ArmorValueFloat(s.charClass);
+        const float armor = ArmorValueOf(s);   // ★ 09-29 — 입은 갑옷의 합(`53E300`) · 전에는 직업 표
         auto carry = [&](float f) {
             const float a3 = static_cast<float>(static_cast<double>(f) + static_cast<double>(s.dmgRemainder));
             const int v = static_cast<int>(a3);            // nox_float2int = (int)
@@ -2994,6 +2994,21 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     }
                 }
 
+                // ★ 09-29 — 갑옷 줍기(`pickupArmor_53E7F0` `GAME4_3.c:7612~7624`) — 협동·퀘스트가 아니면 **직업이 못 입는 갑옷은 아예 못 줍는다**
+                //   (글 `armor.c:ArmorEquipClassFail` + 소리 925 kind 2) · 정의가 없으면 못 입는 것(`57B3D0`)
+                //   ⚠ 안 옮긴 것 — 같은 갑옷 거절(`CannotPickupDuplicateArmor` — 게임 설정 비트 2 · `sub_409F40` — 우리 설정 없음)
+                if (w.equipBit != 0 && !w.isWeapon && !w.weaponClass && !(questTotal_ > 0 || questStage_ > 0)) {
+                    const auto d = armorDef_.find(w.type);
+                    const uint8_t classes = (d == armorDef_.end()) ? 0 : d->second.classes;
+                    if (!(classes & (1u << static_cast<uint8_t>(s.charClass)))) {
+                        SendPriMsg(s, "armor.c:ArmorEquipClassFail", out);
+                        PlaySoundAt(925, static_cast<float>(s.posX), static_cast<float>(s.posY), /*kind=*/2, s.netCode, s.addr);
+                        ++armorGate_[static_cast<size_t>(ArmorGate::PickupClassFail)];
+                        ++handled_;
+                        break;
+                    }
+                }
+
                 // ── 묶음 5-a — 줍기 규칙(`nox_xxx_pickupDefault_4F31E0`) ──────────
                 //
                 // ① **들 밑천이 0 이면 아예 못 든다**(`object_pickup.go:23·68`).
@@ -3091,24 +3106,42 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 //   무기 — `sub_53A720`(`GAME4_3.c:5099~5104`): 손이 비었고(+104 == 0) 화살통(무기 비트 2)이 아니면 무기 들기 `53A420(a4, 0)`(실패 글·소리 없음)
                 //   갑옷 — `pickupArmor_53E7F0`(`:7628~7663`): 같은 부위(SUBCLASS 같음 — `armorHaveSameSubclass_53E7B0`)를 입은 게 없으면 입기 `53E650`.
                 //          방패(SUBCLASS & 2)는 두 손 무기(0x7FFE40C)를 들었으면 안 입는다(`:7657~7661`)
-                //   ⚠ 안 옮긴 것 — `sub_419E60`(사람마다 깃발 · 뜻 미확인 — 늘 꺼진 것으로 둔다) · 같은 부위를 이미 입었을 때
-                //     평범한 것(운동화·로브·나무/강철 방패 — 수식 비교)을 바꿔 입기(`:7634~7711`): 우리 갑옷 입기가 아직 같은 부위를
-                //     벗기지 않아(`53E650` 미이식) 넣으면 둘 다 입은 꼴이 된다 · 갑옷 줍기 소리(804~816)
+                //   ⚠ 안 옮긴 것 — `sub_419E60`(사람마다 깃발 · 뜻 미확인 — 늘 꺼진 것으로 둔다) · 갑옷 줍기 소리(804~816)
+                //   (★ 09-29 — 같은 부위 바꿔 입기(`:7634~7711`)는 갑옷 입기 `53E650` 이식과 함께 옮김 — 아래)
                 {
                     const uint16_t pnc = c.netCode;
                     if (c.weaponClass) {
                         if (s.weaponNet == 0 && c.equipBit != 2 && PlayerEquipWeapon(s, pnc, /*failSound=*/false, out)) ++autoEquip_[0];
-                    } else if (c.equipBit != 0 && !c.isWeapon) {
-                        bool same = false;
+                    } else if (IsArmorItem(c)) {
+                        // ★ 09-29 — `pickupArmor_53E7F0` `:7628~7711` 그대로 · 입기는 `53E650(a4, 0)`(실패 소리 없음 — 직업·힘은 거기서 다시 봄)
+                        //   같은 부위를 입었으면 — 그것이 운동화·로브·나무/강철 방패가 아니면 안 입음 · 로브면 로브에 수식이 없을 때만 바꿔 입음
+                        //   방패가 아니면 입음(같은 부위면 바꿔 입음) · 방패면 — 입은 방패가 없으면 두 손 무기를 안 들었을 때 · 나무 방패를 입었으면 그게 수식 없을 때 ·
+                        //   강철 방패를 입었으면 새것이 나무면 「입은 것 수식 없음 · 새것 수식 있음」 · 새것이 강철이면 입은 것 수식 없을 때
+                        //   ⚠ `sub_419E60`(사람 깃발 · 뜻 미확인)은 늘 꺼진 것으로 · 부위를 못 읽은 것(SUBCLASS 0)은 안 입음(원본엔 없는 안전판)
+                        const uint16_t kSneak = kItemStreetSneakers, kRobe = kItemWizardRobe, kWood = kItemWoodenShield, kSteel = NamedType("SteelShield");
+                        auto noMods = [](const Session::Carried& x) { for (int m = 0; m < 4; ++m) if (x.mods[m] != 0xff) return false; return true; };
+                        const Session::Carried* same = nullptr;
                         for (const auto& x : s.inventory)
-                            if (x.netCode != pnc && x.equipped && !x.isWeapon && c.subclass != 0 && x.subclass == c.subclass) same = true;
-                        if (c.subclass == 0) ++autoEquip_[4];
-                        else if (same) ++autoEquip_[2];
-                        else if ((c.subclass & 2) && (WeaponEquipOf(s) & 0x7FFE40C)) ++autoEquip_[3];
-                        else {
-                            for (auto& x : s.inventory) if (x.netCode == pnc) { x.equipped = true; ReportEquipChange(s, x, true, out); break; }
-                            ++autoEquip_[1];
+                            if (x.netCode != pnc && x.equipped && IsArmorItem(x) && x.subclass == c.subclass) { same = &x; break; }
+                        int decide = -1;                                  // -1 아직 · 0 안 입음 · 1 입음
+                        if (c.subclass == 0) { decide = 0; ++autoEquip_[4]; }
+                        else if (same) {
+                            const uint16_t st = same->type;
+                            if (st != kWood && st != kSteel && st != kSneak && st != kRobe) { decide = 0; ++autoEquip_[2]; }
+                            else if (st == kRobe) { decide = noMods(*same) ? 1 : 0; if (!decide) ++autoEquip_[2]; }
                         }
+                        if (decide < 0) {
+                            if (!(c.subclass & 2)) decide = 1;
+                            else if (!same) { decide = (WeaponEquipOf(s) & 0x7FFE40C) ? 0 : 1; if (!decide) ++autoEquip_[3]; }
+                            else if (same->type == kWood) decide = noMods(*same) ? 1 : 0;
+                            else if (same->type == kSteel) {
+                                if (c.type == kWood) decide = (noMods(*same) && !noMods(c)) ? 1 : 0;
+                                else if (c.type == kSteel) decide = noMods(*same) ? 1 : 0;
+                                else decide = 0;
+                            } else decide = 0;
+                            if (!decide && same) ++autoEquip_[2];
+                        }
+                        if (decide == 1 && PlayerEquipArmor(s, pnc, /*failSound=*/false, out)) ++autoEquip_[1];
                     }
                 }
                 ++handled_;
@@ -3225,20 +3258,11 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     ++handled_;
                     break;
                 }
-                if (c->equipped != wear) {                                         // 이미 그 상태면 아무것도 안 한다
-                    c->equipped = wear;
-                    ReportEquipChange(s, *c, wear, out);
-                    // ★ 09-28 사람 판 — 「워해머를 든 채 방패를 다시 입으면 입혀진다」. 정답지 갑옷 입기 `53E650` 끝(`GAME4_3.c:7484~7486`)은
-                    //   방패(SUBCLASS & 2)면 `sub_53E600`(`:7491~7505`) — 든 두 손 무기(무기 비트 0x7FFE40C)를 내려놓는다(`53A140(a1, 무기, 1, 1)`).
-                    //   B5 의 반대쪽(두 손 무기를 들면 방패를 벗김 — `PlayerEquipWeapon`)과 짝. 방패 = 갑옷 비트 0x3000000(나무·강철 둘뿐)
-                    if (wear && !c->isWeapon && (c->equipBit & 0x3000000)) {
-                        std::vector<uint16_t> twoHand;                             // 먼저 모은다 — 내려놓기가 가방을 만진다
-                        for (const auto& x : s.inventory)
-                            if (x.equipped && x.weaponClass && (x.equipBit & 0x7FFE40C)) twoHand.push_back(x.netCode);
-                        for (uint16_t wnc : twoHand)
-                            if (PlayerDequipWeapon(s, wnc, out)) ++shieldDropsTwoHand_;
-                    }
-                }
+                // ★ 09-29 — 갑옷 입기 `53E650(a1, 것, 1, 1)` · 벗기 `53E430(a1, 것, 1, 1)`(`GAME3_3.c:10557~10571`) — 갑옷이 아니면 둘 다 0(아무 일 없음).
+                //   ✖ 전에는 옛 켜고 끄기 — 직업·힘 관문 없음 · 같은 부위를 둘 입음 · 방어값은 직업 표(입어도 안 바뀜)
+                //   (09-28 사람 판 「워해머를 든 채 방패를 다시 입으면 입혀진다」의 두 손 무기 내려놓기는 입기 끝 `sub_53E600` 으로 옮김)
+                if (wear) PlayerEquipArmor(s, nc, /*failSound=*/true, out);
+                else PlayerDequipArmor(s, nc, out);
                 ++handled_;
                 break;
             }
@@ -5646,7 +5670,7 @@ void Server::SendKillInform(Session& s, std::vector<OutPacket>& out) {
 // playerReportAnything_4D9900(`GAME3_2.c:4855~4970`) — 자기 갱신(a1 == a2 · netUpdate_518EE0 → netPlayerObjSend) 때 매 틱 「바뀐 것만」
 void Server::PlayerReportAnything(Session& s, std::vector<OutPacket>& out) {
     // ① 방어 +228 ≠ +232 → `49 <f32>`(Packet0)
-    const float armor = ArmorValueFloat(s.charClass);
+    const float armor = ArmorValueOf(s);   // ★ 09-29 — 입은 갑옷의 합(`53E300`) · 전에는 직업 표
     if (s.armorReported != armor) {
         uint32_t bits = 0;
         std::memcpy(&bits, &armor, sizeof(bits));
@@ -15329,14 +15353,13 @@ bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vec
     //     우리 물건에 마법부여가 없어(맵 물건 수식을 안 읽어 늘 −1) 붙일 것이 없다
     if (item->wandClass && (item->subclass & 0x47F0000)) { SendCharges(s, *item, out); ++wandChargesOnEquip_; }
     // ★ 09-27 B5 — `sub_53A3D0`(`:4989~4991` · `GAME4_3.c:4887~4903`) — 두 손 무기(무기 비트 0x7FFE40C)를 들면 입은 방패(갑옷 비트 0x3000000)를 벗는다(`53E430(1, 1)`).
-    //   우리 갑옷 벗기는 아직 옛 켜고 끄기라 그 길로(입음 끔 · 알림). 방패 막기는 `ArmorEquipOf` 가 가방을 읽어 따라 꺼진다
+    //   ★ 09-29 — 이제 갑옷 벗기(`PlayerDequipArmor` = `53E430(1,1)`)로. 방패 막기는 `ArmorEquipOf` 가 가방을 읽어 따라 꺼진다
     if (item->equipBit & 0x7FFE40C) {
-        for (auto& c : s.inventory) {
-            if (!c.equipped || c.isWeapon || !(c.equipBit & 0x3000000)) continue;
-            c.equipped = false;
-            ReportEquipChange(s, c, false, out);
-            ++twoHandShieldOff_;
-        }
+        std::vector<uint16_t> shields;                                           // 먼저 모은다 — 벗기가 가방 깃발을 만진다
+        for (const auto& c : s.inventory)
+            if (c.equipped && !c.isWeapon && (c.equipBit & 0x3000000)) shields.push_back(c.netCode);
+        for (uint16_t snc : shields)
+            if (PlayerDequipArmor(s, snc, out)) ++twoHandShieldOff_;
     }
     return gate(EquipGate::Equipped);
 }
@@ -15376,6 +15399,79 @@ const Session::Carried* Server::HeldWeapon(const Session& s) {
     for (const auto& c : s.inventory)
         if (c.netCode == s.weaponNet) return &c;
     return nullptr;
+}
+
+// ── ★ 09-29 갑옷 입기·벗기 · 방어값 ─────────────────────────────────────
+//
+// `nox_xxx_playerEquipArmor_53E650`(`GAME4_3.c:7508~7567`) — 사람 갈래.
+//   갑옷 클래스(0x2000000) 아님 → 0 · 이미 입음 → 0 · 같은 부위(SUBCLASS 가 같은 입은 갑옷 — `armorHaveSameSubclass_53E7B0`)를 기억 ·
+//   직업(modifier.bin CLASSUSE — 정의가 없으면 0 · `57B3D0`) → 글 `armor.c:ArmorEquipClassFail` + [a4 면 소리 925(kind 2)] · 0 ·
+//   힘(REQUIRED_STRENGTH · `4F3180`) → 글 `armor.c:ArmorEquipStrengthFail` + 소리 · 0 · 같은 부위를 벗김(`53E430(1,1)`) ·
+//   입음 깃발 · 갑옷 비트 · 알림(`4D8540`) · 방어값 다시(`53E300`) · 방패(SUBCLASS & 2)면 든 두 손 무기 내려놓기(`sub_53E600`)
+//   ⚠ 안 옮긴 것 — 마법부여 켜기(`4F2FF0` — 우리 물건에 마법부여 없음) · `sub_53E2D0`(0x10000000 깃발 — 쓰는 곳 못 찾음)
+bool Server::PlayerEquipArmor(Session& s, uint16_t nc, bool failSound, std::vector<OutPacket>& out) {
+    auto gate = [&](ArmorGate g) { ++armorGate_[static_cast<size_t>(g)]; return g == ArmorGate::Equipped; };
+    Session::Carried* item = nullptr;
+    for (auto& c : s.inventory) if (c.netCode == nc) { item = &c; break; }
+    if (!item || !IsArmorItem(*item)) return gate(ArmorGate::NotArmor);
+    if (item->equipped) return gate(ArmorGate::Already);
+    uint16_t sameNet = 0;
+    for (const auto& c : s.inventory)
+        if (c.netCode != nc && c.equipped && IsArmorItem(c) && c.subclass == item->subclass) { sameNet = c.netCode; break; }
+    auto refuse = [&](const char* key, ArmorGate g) {
+        SendPriMsg(s, key, out);
+        if (failSound) PlaySoundAt(925, static_cast<float>(s.posX), static_cast<float>(s.posY), /*kind=*/2, s.netCode, s.addr);
+        return gate(g);
+    };
+    const auto d = armorDef_.find(item->type);
+    const uint8_t classes = (d == armorDef_.end()) ? 0 : d->second.classes;
+    if (!(classes & (1u << static_cast<uint8_t>(s.charClass)))) return refuse("armor.c:ArmorEquipClassFail", ArmorGate::ClassFail);
+    if (s.strength < static_cast<int>(d->second.reqStrength)) return refuse("armor.c:ArmorEquipStrengthFail", ArmorGate::StrengthFail);
+    if (sameNet != 0) { PlayerDequipArmor(s, sameNet, out); ++armorGate_[static_cast<size_t>(ArmorGate::Swapped)]; }
+    for (auto& c : s.inventory) if (c.netCode == nc) { item = &c; break; }   // 벗기가 가방을 안 바꾸지만 다시 잡아 둔다
+    item->equipped = true;
+    ReportEquipChange(s, *item, true, out);
+    if (item->subclass & 2) {                                                // `sub_53E600` — 방패면 든 두 손 무기(0x7FFE40C)를 내려놓는다
+        std::vector<uint16_t> twoHand;
+        for (const auto& x : s.inventory)
+            if (x.equipped && x.weaponClass && (x.equipBit & 0x7FFE40C)) twoHand.push_back(x.netCode);
+        for (uint16_t wnc : twoHand)
+            if (PlayerDequipWeapon(s, wnc, out)) ++shieldDropsTwoHand_;
+    }
+    return gate(ArmorGate::Equipped);
+}
+
+// `sub_53E430`(`GAME4_3.c:7390~7441`) — 사람 갈래. 갑옷 아님·안 입음·가방에 없음 → 0 · 입음 깃발·갑옷 비트 끔 ·
+//   a3 면 본인 알림(`4D8590`) · a4 면 모두 알림(`4D84C0`) · 방어값 다시 · 마법부여 끄기(없음) ·
+//   방패(SUBCLASS & 2)이고 자세가 막기(15·16·17)면 자세 13
+bool Server::PlayerDequipArmor(Session& s, uint16_t nc, std::vector<OutPacket>& out, bool toSelf, bool toOthers) {
+    auto gate = [&](ArmorGate g) { ++armorGate_[static_cast<size_t>(g)]; return g == ArmorGate::Dequipped; };
+    Session::Carried* item = nullptr;
+    for (auto& c : s.inventory) if (c.netCode == nc) { item = &c; break; }
+    if (!item || !IsArmorItem(*item) || !item->equipped) return gate(ArmorGate::NotWorn);
+    item->equipped = false;
+    ReportEquipChange(s, *item, false, out, toSelf, toOthers);
+    if ((item->subclass & 2) && (s.moveState == 15 || s.moveState == 16 || s.moveState == 17)) {
+        PlayerSetState(s, kPlayerStateIdle, frame_, &out);
+        ++armorGate_[static_cast<size_t>(ArmorGate::ShieldBlockIdle)];
+    }
+    return gate(ArmorGate::Dequipped);
+}
+
+// `nox_xxx_recalculateArmorVal_53E300`(`GAME4_3.c:7327~7354`) — 가방을 **앞(새것)부터** 돌며 입은 갑옷의 방어값(`itemApplyDefendEffect_415C00` =
+//   modifier.bin ARMOR_VALUE · 마법부여 콜백 +76 은 없음)을 float 로 더하고 1.0 을 넘으면 1.0.
+//   ⚠ 우리 가방은 뒤에 붙이므로(push_back) 거꾸로 돈다 — 순서가 float 값을 바꾼다(3-d · 위저드 0x3e6b8520)
+//   정의가 없는 종류는 옛 표(`ItemArmorValue` — 기본 장비 다섯)로 · 기본 장비를 가방에 안 실은 시험 서버는 직업 표
+float Server::ArmorValueOf(const Session& s) const {
+    if (!s.gearInBag) return ArmorValueFloat(s.charClass);
+    float v = 0.0f;
+    for (auto it = s.inventory.rbegin(); it != s.inventory.rend(); ++it) {
+        if (!it->equipped || !IsArmorItem(*it)) continue;
+        const auto d = armorDef_.find(it->type);
+        v = (d != armorDef_.end() ? d->second.value : ItemArmorValue(it->type)) + v;
+    }
+    if (v > 1.0) v = 1.0f;
+    return v;
 }
 
 // 든 무기의 종류 번호 — 죽음 알림의 무기 그림(3-d). 시험용 바꿔 들기는 main 이 채운 이름 표
