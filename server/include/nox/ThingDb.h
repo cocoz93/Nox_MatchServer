@@ -72,6 +72,12 @@ struct AbilityRaw {
 struct WallDefRaw {
     std::string name;
     uint32_t flags = 0;
+    // ★ 09-29 Z1-A — 벽 부수기가 보는 칸(`server/wall.go:60~82` ReadWall).
+    //   hitMat = Field36(맞을 때 소리 표의 「맞는 쪽 재질」 · `Sub_532FE0`·`Sub_533010`) · health = Health41(부서지는 벽의 체력 · `mapWallGetHpByTile_410E20`) ·
+    //   breakSound = Sound683(비면 `WallDestroyed` · `WallDef.BreakSound`)
+    uint16_t hitMat = 0;
+    uint8_t health = 0;
+    std::string breakSound;
 };
 // ★ 09-23 nine-defects 4-d1 — 바닥 정의(thing.bin FLOR · `nox_thing_read_FLOR_411540` `GAME1.c:1060~1108`). 순번 = 바닥 번호(최대 176).
 //   `material` = `field_36` — 발소리가 이 값으로 갈린다(`object_update.go:164~220` — 2·0x4000 소리 없음 · 8 나무 · 64 흙 · 128 물 · 0x400 눈 · 0x800 진흙 · 그 밖 돌)
@@ -144,6 +150,9 @@ struct ThingInfo {
     //   TrapPickup 6 · GoldPickup 6 · AmmoPickup 4 · CrownPickup 2.
     //   갈래마다 「줍는 순간 무슨 일이 나는가」가 다르다 — 물약은 **그 자리에서 마실 수도** 있다.
     std::string pickupFn;
+    // ★ 09-28 — **버릴 때 부르는 함수 이름**(`DROP = ArmorDrop` 꼴 · 원문 그대로). 실측 분포 —
+    //   DefaultDrop 35 · WeaponDrop 31 · ArmorDrop 27 · PotionDrop 19 · FoodDrop 9 · AudEventDrop … · TrapDrop 2
+    std::string dropFn;
     // ★ 2026-09-18 ⑫ — **그리기 함수 이름**(`DRAW = VectorAnimateDraw` 꼴).
     //   클라는 이 이름으로 그리는 함수를 고른다(`client/drawable_draw.go:47` `drawFuncs[name]`).
     //   화살이 화면에 안 그려지는 까닭을 가르려면 **어느 함수를 타는지**부터 알아야 한다.

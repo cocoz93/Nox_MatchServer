@@ -305,8 +305,11 @@ inline Loadout LoadoutFor(CharClass c) {
                      3, 0, 0.03 };
         case CharClass::Warrior:
         default:
-            return { { kItemStreetPants, kItemStreetSneakers, kItemWoodenShield,
-                       kItemLongsword }, 4, kItemLongsword, 0.02 };
+            // ★ 09-29 — 차례를 **롱소드 → 방패**로 고침. 정품 녹음 `orig_arena_1851` 18:53:09.486 워리어 접속 —
+            //   `4c 5d 바지 · 5e 신발 · 5f 롱소드(0x491) · 60 나무방패(0x48a)` · 정답지도 롱소드를 먼저 준다(`GAME3_3.c:8040~8041`).
+            //   전에는 방패가 먼저였다(녹음에 워리어가 없던 때의 짐작 — 스냅샷 꼬리 주석 「못 본 것(방패·검)」)
+            return { { kItemStreetPants, kItemStreetSneakers, kItemLongsword,
+                       kItemWoodenShield }, 4, kItemLongsword, 0.02 };
     }
 }
 

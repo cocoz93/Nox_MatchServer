@@ -67,7 +67,25 @@ struct MapObject {
     // ★ 09-22 — **머리 뒤에 남는 짐.** 종류마다 뜻이 다르다(문은 각도가 여기 있을 것이다).
     //   전에는 크기로 건너뛰고 버렸다 — 「문이 휙 열린다」를 파다가 필요해져 남긴다
     std::vector<uint8_t> tail;
+    // ★ 09-29 Z1-A — 오브젝트 판(`mapReadWriteObjData_4F4530` 의 v18 · 61~64). 짐 해석이 판마다 다르다(63 이상 스크립트 · 64 이상 u32 하나)
+    uint16_t objVers = 0;
+    // ★ 09-29 Z1-A — 종류 xfer 판(머리가 두 겹일 때 앞 u16 · 한 겹이면 0). 문은 41 이상이면 짐 끝에 u32 하나 더
+    uint16_t typeVers = 0;
 };
+
+// ★ 09-29 Z1-A — 문 짐(`nox_xxx_XFerDoor_4F4CB0` `GAME3_3.c:11481~11536`).
+//   `tail` 은 오브젝트 머리(판·extent·id·x·y) 뒤다. 첫 바이트(`sub_4F40A0` 값)가 0 이면 곧바로 문 자료이고,
+//   0 이 아니면 그 사이에 깃발·이름·팀·가방·XStatus·스크립트가 낀다(`mapReadWriteObjData_4F4530` `:11290~11370`).
+//   문 자료 = 각도 u32 · 잠김 u32(`ud+1` — 0 안 잠김 · 1 은 · 2 금 · 3 루비 · 4 사파이어 · 5 장치) · (종류 판 ≥ 41 이면 u32 하나 더)
+struct DoorXfer {
+    uint32_t angle = 0;      // 첫 u32 → +12 지금 각도 · +8 · 미세각 +40 = 각도 × 8(`:11516~11519`)
+    uint32_t lock = 0;
+    uint32_t closed = 0;     // 셋째 u32(종류 판 ≥ 41) → +4 닫힘 각도 · 판 < 41 이면 첫 u32 와 같다(`:11510~11514`)
+    uint8_t team = 0;        // +52 — 머리 첫 바이트가 0 이면 없음(0)
+    bool extra = false;      // 사이 자료가 끼어 있었나
+    size_t rest = 0;         // 문 자료 뒤에 남은 바이트(판 ≥ 41 의 u32 + 가방 물건)
+};
+bool ReadDoorXfer(const MapObject& o, DoorXfer& d);
 
 class MapFile {
 public:
@@ -124,6 +142,11 @@ public:
         uint8_t  anim = 0;          // +22 — 0~23
     };
     std::vector<SecretWall> ReadSecretWalls();
+
+    // ★ 09-28 — 벽 칸에 깃발을 얹는 두 칸. 정답지 `nox_server_mapRWDestructableWalls_429530`(부서지는 벽 +4 |= 8 · `GAME1_2.c:972~1027`) ·
+    //   `nox_server_mapRWWindowWalls_4292C0`(창문 +4 |= 0x40 · `:882~935`) — u16 판(부서지는 벽 ≤1 `:984` · 창문 ≤2 `:894`) · u16 개수 ·
+    //   {u32 격자x · u32 격자y}×개수. 없는 맵은 빈 목록. 실측(09-28 · 157개 맵) — 부서지는 벽이 있는 아레나 G_Lava 117 · G_Mines 1135 · G_Castle 73 … · Estate 0
+    std::vector<std::pair<uint32_t, uint32_t>> ReadGridList(const char* section, uint16_t maxVer);
 
     // ★ 09-23 nine-defects 4-d2 — FloorMap(바닥 칸). 정답지 `nox_server_mapRWFloorMap_422230`(`GAME1_1.c:3869~3954`) 읽기 전용 갈래 ·
     //   칸 하나 `nox_xxx_tileReadOne_422A40`(`:4174~4233`).

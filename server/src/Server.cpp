@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "nox/Messages.h"
@@ -86,8 +88,48 @@ Session& Server::SessionFor(const std::string& addr) {
     return sessions_.emplace(addr, s).first->second;
 }
 
+// ★ 09-28 진단 — 환경변수 `NOX_TRACE_OUT=<파일>` 이면 **받는 사람별로 나가는 메시지**를 한 줄씩 적는다.
+//   가르려는 것 — 「맨몸인데 남 화면엔 로브」(겉모습 알림이 무엇이 언제 갔나) · 「남이 접속·끊길 때 내 화면이 검게 깜빡」
+//   (그때 나에게 무엇이 갔나). 매 틱 나가는 시야 갱신(a4)·시각(27·28)은 뺀다. `cc`(순번 싼 것)는 속을 풀어 적는다.
+//   켜지 않으면 아무것도 안 한다(파일을 여는 것도 첫 호출 한 번)
+static FILE* TraceOutFile() {
+    static FILE* f = nullptr;
+    static bool tried = false;
+    if (!tried) {
+        tried = true;
+        const char* p = std::getenv("NOX_TRACE_OUT");
+        if (p && *p) f = std::fopen(p, "a");
+    }
+    return f;
+}
+static void TraceOutMsgs(FILE* f, const std::string& to, uint32_t frame, const uint8_t* m, size_t n, int depth) {
+    size_t pos = 0;
+    while (pos < n) {
+        const uint8_t op = m[pos];
+        const size_t sz = MessageSize(m + pos, n - pos, /*fromClient=*/false);
+        if (op == static_cast<uint8_t>(Op::SEQ_IMPORTANT) && pos + 4 <= n) {   // cc 번호2 길이1 속…
+            const size_t inner = m[pos + 3];
+            if (depth < 2 && pos + 4 + inner <= n) TraceOutMsgs(f, to, frame, m + pos + 4, inner, depth + 1);
+            pos += 4 + inner;
+            continue;
+        }
+        if (sz == 0 && op == static_cast<uint8_t>(Op::UPDATE_STREAM)) {   // a4 는 가변 — RenumberSeq 와 같이 풀어 잰다
+            const UpdateMsg um = DecodeUpdate(m + pos + 1, n - pos - 1, nullptr);
+            if (um.ok && um.consumed > 0) { pos += 1 + um.consumed; continue; }
+        }
+        if (sz == 0) { std::fprintf(f, "%u\t%s\t?? %02x (남은 %zu)\n", frame, to.c_str(), op, n - pos); return; }
+        if (op != static_cast<uint8_t>(Op::UPDATE_STREAM) && op != 0x27 && op != 0x28) {
+            std::fprintf(f, "%u\t%s\t%s", frame, to.c_str(), OpName(static_cast<Op>(op)));
+            for (size_t i = 0; i < sz && i < 12; ++i) std::fprintf(f, " %02x", m[pos + i]);
+            std::fprintf(f, "\n");
+        }
+        pos += sz;
+    }
+}
+
 void Server::Emit(Session& s, bool reliable, uint8_t stream,
                   const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
+    if (FILE* tf = TraceOutFile()) { TraceOutMsgs(tf, s.addr, frame_, msg, n, 0); std::fflush(tf); }
     OutPacket p;
     p.to = s.addr;
     p.data.resize(kWireHeaderSize + n);
@@ -181,11 +223,23 @@ void Server::EmitNewPlayer(Session& to, const Session& who, uint8_t status,
     //   소개가 없으면 클라에 그 사람의 playerInfo 가 없어 이름·외모가 안 서고,
     //   상태 알림(`6a`)도 빈손이면 되돌아간다(09-09 기록).
     std::vector<uint8_t> np;
+    // ★ 09-28 사람 판 — 「남에게는 모두 컨저러·Jack 색으로 소개된다」. 정답지는 **그 사람의 플레이어 정보 97B** 를 싣는다
+    //   (`nox_xxx_netNewPlayerMakePacket_4DDA90` `player.go:240` `*pl.Info()` — 이름·직업·여성·머리/피부/옷 색).
+    //   우리는 녹음 `2d` 를 그대로 써서 정보 자리가 녹음 속 Jack(컨저러 0x02)이었다. 자기 접속 묶음은 이미 받은 97B 로 덮는다(`:3591~3596`) —
+    //   남을 소개할 때도 같게 덮는다. 97B 가 없는 사람(시험의 `DebugEnterGame`)만 녹음 그대로 간다
+    const bool realInfo = who.info97.size() >= kJoinPlayerInfoLen;
     if (joinBody_.size() >= kJoinNewPlayerAt + kJoinNewPlayerLen) {
         np.assign(joinBody_.begin() + kJoinNewPlayerAt,
                   joinBody_.begin() + kJoinNewPlayerAt + kJoinNewPlayerLen);
-    } else if (!who.info97.empty()) {
+        if (realInfo && np.size() >= 3 + kJoinPlayerInfoLen) {
+            std::memcpy(np.data() + 3, who.info97.data(), kJoinPlayerInfoLen);
+            ++newPlayerInfo_[1];
+        } else {
+            ++newPlayerInfo_[0];
+        }
+    } else if (realInfo) {
         np = BuildNewPlayer(who.netCode, who.info97.data());
+        ++newPlayerInfo_[2];
     } else {
         return;   // 재료가 없다 — 지어내지 않는다
     }
@@ -195,13 +249,23 @@ void Server::EmitNewPlayer(Session& to, const Session& who, uint8_t status,
     //   (2026-09-09: 자리·좌표 모드·덧붙이·간격을 다 기각하고 남은 후보가 「누구냐」였다.)
     //   이름은 3번 자리부터 UTF-16LE 다 — 실측 `2d <번호2> 4a 00 61 00 63 00 6b 00`("Jack").
     //   첫 글자만 번호에 따라 바꾼다. 길이·짜임은 그대로라 안전하다.
-    if (np.size() > 4) np[3] = static_cast<uint8_t>('A' + (who.netCode % 26));
+    //   ★ 09-28 — **녹음 이름일 때만** 바꾼다. 진짜 정보를 덮었으면 그 사람 이름 그대로다(정답지도 안 바꾼다)
+    if (!realInfo && np.size() > 4) np[3] = static_cast<uint8_t>('A' + (who.netCode % 26));
     // ★ 상태는 4바이트지만 우리가 쓰는 값은 하위 한 바이트뿐이다(0x423 안에 든다).
     if (np.size() > kNewPlayerStatusAt + 3) {
         np[kNewPlayerStatusAt] = status;
         np[kNewPlayerStatusAt + 1] = 0;
         np[kNewPlayerStatusAt + 2] = 0;
         np[kNewPlayerStatusAt + 3] = 0;
+    }
+    // ★★ 09-28 사람 판 — 「평상복을 입었는데 남 화면엔 맨몸」. `2d` 의 104·108 자리는 **갑옷·무기 비트**이고,
+    //   받는 클라는 그 값으로 그 사람 겉모습을 **덮어쓴다**(`network_client.go:315~316` `pl.ArmorEquip = …` — `|=` 아님).
+    //   정답지 서버는 **지금 입은 것**을 싣는다(`player.go:233~234` `nox_xxx_netNewPlayerMakePacket_4DDA90`).
+    //   우리는 녹음(컨저러 Jack · 둘 다 0)을 그대로 보내, 누가 들어올 때마다 모두를 다시 소개하면서 **남의 차림을 0 으로 지웠다**
+    if (np.size() >= 112) {
+        PutU32(np.data() + 104, ArmorEquipOf(who));
+        PutU32(np.data() + 108, WeaponEquipOf(who));
+        ++newPlayerGearBits_;
     }
     EmitSeq(to, np.data(), np.size(), out);
     ++handled_;
@@ -729,13 +793,16 @@ static void Relativize(ObjEntry& e, uint16_t netCode, int wx, int wy,
 //   아이템을 매 틱 항목에 넣으면(별칭+상대라도, 문법이 전수 유효해도) 클라 게임
 //   루프가 첫 프레임에 멎는다 — ao1~ao6 이 전부 그 죽음이었다.
 //   여기서는 introAt(이 사람에게 소개한 물체)에 없는 것만 ff 로 1번 소개한다.
+// ★ 09-28 — `only` 가 있으면 그 번호들만(시야 반경이 꺼진 판에서 게임 중 새로 놓인 물건 — 버리기·되돌리기)
 static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
                              AliasTable& tbl, std::map<uint16_t, uint32_t>& introAt,
                              uint32_t frame, int sx, int sy,
-                             int& baseX, int& baseY, UpdateMsg& m) {
+                             int& baseX, int& baseY, UpdateMsg& m,
+                             const std::set<uint16_t>* only = nullptr) {
     struct Near { double d2; const Server::WorldStatic* w; };
     std::vector<Near> near_;
     for (const auto& w : statics) {
+        if (only && !only->count(w.netCode)) continue;
         if (introAt.count(w.netCode)) continue;   // 이미 소개했다 — 다시는 안 싣는다
         const double dx = w.x - sx, dy = w.y - sy;
         const double d2 = dx * dx + dy * dy;
@@ -786,6 +853,58 @@ static void CollectAoiExits(std::map<uint16_t, uint32_t>& introAt,
 //
 // ⚠ `staticIntroAt` 에서도 지운다 — 안 지우면 「이미 소개했다」가 영영 남아,
 //   같은 번호가 나중에 다시 놓일 때(되돌려 떨구기) 아무에게도 소개되지 않는다.
+// ★ 09-28 — 버린 물건의 사라질 프레임(0 = 안 사라짐). 버리기(`drop_4ED790`)는 물건별 함수(+712 · thing.bin `DROP`)를 부르고,
+//   그 함수들은 모두 먼저 `dropDefault_4ED290` 을 부른다.
+//   ① dropDefault — 협동(2048)·퀘스트(4096)가 아니고 RESPAWN 깃발·FLAG 클래스·Glyph 가 아니면 **10초**(`GAME3_3.c:6440~6444`)
+//   ② 그 뒤 25초로 **다시 건다**(`unitSetDecayTime_511660` 은 앞 시계를 빼고 새로 넣는다 `GAME4_1.c:3033~3035`) —
+//      갑옷·무기: 협동·퀘스트 아니고 「아이템 되살아남」이면(`GAME4_3.c:7761~7764·5183~5186`) · 물약: 협동·퀘스트 아니면(`GAME3_3.c:6877`) ·
+//      음식: 협동 아니면(`:6893`)
+//   ⭕ 정품 녹음 09-28 `orig_arena_1851` — 기본 로브 6043→6793 · 맵에서 주운 갑옷 6013→6765 · 죽을 때 떨어진 넷 3468→4219 (모두 약 750 = 25×30)
+//   ⚠ 「아이템 되살아남」(`sub_409F40(2)` — 설정 `ItemRespawn`)은 우리에게 설정이 없다 — 녹음에서 켜져 있었으므로 켠 것으로 둔다
+//   ⚠ 안 옮긴 것 — SHADOW 깃발(0x10000)이면 시계를 안 거는 막이(`:3032`) · 글리프·덫·왕관 버리기 함수
+uint32_t Server::DropDecayFrame(DropFn fn, DecayExempt ex) {
+    constexpr bool kItemRespawnOn = true;
+    const bool coop = (gameSettings_.gameFlags & 0x800u) != 0;
+    const bool quest = questTotal_ > 0 || questStage_ > 0;
+    auto count = [&](DecayGate g) { ++decayGate_[static_cast<size_t>(g)]; };
+    if (fn == DropFn::NotPorted) { count(DecayGate::NotPorted); return 0; }
+    DecayGate g = DecayGate::Armed;                          // ① dropDefault
+    if (coop || quest) g = DecayGate::CoopOrQuest;
+    else if (ex == DecayExempt::Respawn) g = DecayGate::Respawn;
+    else if (ex == DecayExempt::FlagClass) g = DecayGate::FlagClass;
+    else if (ex == DecayExempt::Glyph) g = DecayGate::Glyph;
+    uint32_t at = (g == DecayGate::Armed) ? frame_ + 10u * kServerTickRate : 0;
+    bool again25 = false;                                    // ② 물건별 함수
+    switch (fn) {
+        case DropFn::ArmorWeapon: again25 = !coop && !quest && kItemRespawnOn; break;
+        case DropFn::Potion:      again25 = !coop && !quest; break;
+        case DropFn::Food:        again25 = !coop; break;
+        default: break;
+    }
+    if (again25) { at = frame_ + 25u * kServerTickRate; g = DecayGate::Armed25; }
+    count(g);
+    return at;
+}
+
+// ★ 09-28 — `nox_xxx_decay_511750`(`GAME4_1.c:3100~3124`) — 사라질 프레임이 된 바닥 물건을 지운다.
+//   정답지 목록은 때 순으로 늘어서 있어 첫 「아직」에서 멈추지만, 우리는 바닥 물건을 다 훑는다(결과는 같다).
+//   ✖ 09-28 정정 — 처음엔 줍기처럼 `31 DESTROY_OBJECT` 를 모두에게 보냈다. 정품 녹음(`orig_arena_1851`)에서 사라질 때 온 것은
+//     **`33 OBJECT_IN_SHADOWS`** 를 그것을 알던 사람에게 — 지운 오브젝트는 사람별 갱신에서 「더는 안 보임」 갈래를 타고(`GAME4_1.c:4560~4565`)
+//     물건(유닛 아님)이면 33 이다(`nox_xxx_netObjectInShadows_528A90` — 맨 메시지 · 중요). 녹음 — 죽을 때 떨어진 넷 · 버린 둘 모두 두 클라에 33
+//   들린 것은 애초에 `statics_` 에 없다(줍기가 뺀다)
+void Server::DecayStatics(std::vector<OutPacket>& out) {
+    for (size_t i = statics_.size(); i-- > 0;) {
+        const WorldStatic& w = statics_[i];
+        if (w.decayFrame == 0 || frame_ < w.decayFrame) continue;
+        const uint16_t nc = w.netCode;
+        const uint8_t msg[3] = { static_cast<uint8_t>(Op::OBJECT_IN_SHADOWS), static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
+        for (auto& kv : sessions_)
+            if (kv.second.inGame && kv.second.staticIntroAt.count(nc)) { EmitImportantRaw(kv.second, msg, sizeof(msg), out); ++decayShadowSent_; }
+        TakeStatic(nc);
+        ++decayExpired_;
+    }
+}
+
 bool Server::TakeStatic(uint16_t netCode) {
     size_t at = statics_.size();
     for (size_t i = 0; i < statics_.size(); ++i)
@@ -793,6 +912,7 @@ bool Server::TakeStatic(uint16_t netCode) {
     if (at == statics_.size()) return false;
     statics_.erase(statics_.begin() + static_cast<long>(at));
     for (auto& kv : sessions_) kv.second.staticIntroAt.erase(netCode);
+    freshStatics_.erase(netCode);   // ★ 09-28 — 게임 중 새로 놓인 것 표에서도
     return true;
 }
 
@@ -1415,6 +1535,11 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     //   이 서버는 늘 아레나(깃발 256)라 `playerUpdateScore_54D980` 갈래만 탄다
     DeathScoring(s, out);   // 8-f — 모드로 갈린다(전에는 늘 아레나였다)
 
+    // ★ 09-28 B4b — 퀘스트가 아니면 가방을 몸 둘레에 떨군다(`GAME5.c:5093~5095` — 점수 셈 뒤 · 죽음 알림 `netNotifyPlayerDied` 앞).
+    //   정품 녹음 18:55:55.9 도 죽은 쪽에 `4d` 넷 → `e8` 차례다. 사용자 결정 09-28 「정할 것 셋 다 원본대로」
+    //   DEAD 깃발(+16 0x8000)은 정답지가 이보다 먼저 세운다(`:5065~5067`) — 벗을 때 남에게 안 알리는 갈래가 그 깃발을 본다(`DropCarriedToWorld` dead)
+    if (!(questTotal_ > 0 || questStage_ > 0)) DropAllItems(s, out);
+
     // ③ 죽음 — 껍데기 안. 실측 `e8 d8 02`.
     //    ★ **모두에게.** 남이 쓰러지는 것을 봐야 판이 판이 된다.
     {
@@ -1437,8 +1562,9 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
     AbilityCancelAll(s, out);                              // 7-d — `GAME5.c:5100` 능력 끄기(`playerCancelAbils_4FC180`)
     PlayerCancelSpells(addr, out);                         // playerCancelSpells_4FEAE0(`GAME5.c:5103`, 4-a3)
     ClearBuffs(Target{ addr, -1 });
-    // ⚠ 옮기지 않은 것 — 죽는 소리(10) · 가진 것 전부 떨구기(퀘스트 아니면 · 아이템 5)
+    // ⚠ 옮기지 않은 것 — 죽는 소리(10)
     //   · 모드별 점수 정답지(8 — 지금은 아래 우리 점수) · 능력 끄기(7)
+    //   (09-28 B4b — 가진 것 전부 떨구기는 위 `DropAllItems` 로 옮김)
 
     // ④ 판 끝 판정 — 묶음 8-c 가 정답지 규칙으로 옮겼다(아래 `RoundCheckLimit`)
     RoundCheckLimit(out);
@@ -1999,10 +2125,32 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 const double dist = std::sqrt(qx * qx + qy * qy);
                 const double depth = kBodyRadius - dist;                     // 사람 반지름 − 거리
                 if (depth > 0.0) {
-                    const double cross = dirx * py - diry * px;
-                    const double push = depth * PlayerMassOf(*nearest);
-                    p.spin += (cross <= 0.0) ? push : -push;
-                    p.lastPushFrame = frame_;
+                    p.lastPushFrame = frame_;                                // +44 — 잠김과 상관없이 닿으면 적는다(`GAME5.c:2170`)
+                    // ★ 09-29 Z1-A — 밀어서 돌리는 것은 **안 잠긴 문만**(`GAME5.c:2191~2215`):
+                    //   팀 문이 닫혀 있고 다른 팀이면 못 민다 — 1초에 한 번 「GateLockedMechanism」(+136)
+                    //   그 밖에는 잠김(+1)이 0 일 때만 돈다 · 마법 잠금(+508)은 우리에게 SPELL_LOCK 이 없어 늘 비어 있다
+                    const bool closedNow = ((32 * static_cast<int>(p.fine) / 256) & 31) == static_cast<int>(p.angle);
+                    if (p.team != 0 && closedNow && nearest->team != p.team) {
+                        ++doorTouch_[static_cast<size_t>(DoorTouch::TeamBlocked)];
+                        if (frame_ > p.teamMsgFrame) {
+                            p.teamMsgFrame = frame_ + kServerTickRate;
+                            SendPriMsg(*nearest, "objcoll.c:GateLockedMechanism", out);
+                        }
+                    } else if (p.lock != 0) {
+                        ++doorTouch_[static_cast<size_t>(DoorTouch::SpinLocked)];
+                    } else {
+                        const double cross = dirx * py - diry * px;
+                        const double push = depth * PlayerMassOf(*nearest);
+                        p.spin += (cross <= 0.0) ? push : -push;
+                    }
+                    // ★ 09-29 Z1-A — 닿음 짝(사람, 문) — `collSysAddCollision_548630(사람, 문)`(`GAME5.c:2169`) 뒤
+                    //   닿음 처리가 a.collide(b) → b.collide(a) 로 부른다: 사람 쪽(광전사 갈래) → 문 쪽(`collideDoor_4E8AC0`).
+                    //   버프 몫(`4FDF90`)은 문이 유닛·생성기가 아니라 할 일이 없다
+                    //   ⚠ 정답지는 이 짝을 이동 적분의 닿음 처리에서 부른다 — 우리는 문 갱신에서 곧바로 부른다(같은 틱 · 이동 뒤)
+                    const size_t di = static_cast<size_t>(&p - props_.data());
+                    const ContactRef doorRef{ 4, std::string(), static_cast<int>(di) };
+                    PlayerCollide(*nearest, &doorRef, out);
+                    DoorCollide(di, *nearest, out);
                 }
             }
             // 용수철 — 각속도로 미세각(0~255)을 돌린다. 한 걸음에 최대 4(정답지 `sub_548B60`),
@@ -2087,11 +2235,15 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             //     안 쓸 때(`:6477~6489`) **fps/2 프레임마다** 잔량 1 회복, **최대 50**
             //   ⇒ 가득(50)이면 1.7초 만에 바닥나고, 다시 차는 데 25초.
             //   ⚠ **한쪽만 넣으면 안 된다** — 회복 없이 소모만 넣으면 마나석이 영영 죽는다
-            const bool inUse = (best <= kObeliskDist * kObeliskDist) &&
-                               nearest->mana < nearest->maxMana && p.charge >= 1;
+            // ★ 09-28 사람 판 — 「마나석 옆에 있으면 소리가 계속 난다」. 정답지는 둘레 50 안에 사람이 **있기만 해도**
+            //   회복하지 않는다(`GAME4_3.c:6373` v23 = 0 → `:6472~6474` 회복 건너뜀 — 마나가 가득이든 잔량이 0 이든).
+            //   전에는 「줄 게 없으면 회복」이라 잔량 0 인 마나석 옆에서 0.5초마다 1 차고 → 곧바로 주고 → 소리 230 이 되풀이됐다
+            //   ⚠ 정답지는 둘레 안 사람을 **모두** 채우고 벽 가림(`mapCheck_537110`)·팀도 본다 — 우리는 가장 가까운 한 사람만(옛 그대로)
+            const bool someoneNear = best <= kObeliskDist * kObeliskDist;
+            const bool inUse = someoneNear && nearest->mana < nearest->maxMana && p.charge >= 1;
             const uint8_t before = p.charge;
-            if (!inUse) {
-                // 회복 — 0.5초마다 1
+            if (!someoneNear) {
+                // 회복 — 0.5초마다 1 (둘레에 아무도 없을 때만)
                 if ((frame_ % (kServerTickRate / 2)) == 0 && p.charge < kObeliskFullCharge) ++p.charge;
                 if (p.charge != before && (p.charge % 8) == 0) {
                     const uint16_t onc2 = PropWireCode(p);
@@ -2101,6 +2253,7 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
                 }
                 continue;
             }
+            if (!inUse) { ++obeliskNearIdle_; continue; }   // 옆에 있으나 줄 것 없음 — 회복도 소리도 없다
             if (frame_ < p.nextManaFrame) continue;
             p.nextManaFrame = frame_ + kObeliskEveryTicks;
             --p.charge;
@@ -2913,9 +3066,76 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.useFn = w.useFn;
                 c.charges = w.charges; c.chargesMax = w.chargesMax;
                 c.wandSpell = w.wandSpell; c.wandCooldown = w.wandCooldown;
+                c.decayExempt = w.decayExempt;         // ★ 09-28 — 주우면 사라짐 시계는 풀린다(`decay_511750` 이 들린 것은 목록에서만 뺀다) · 예외 까닭은 들고 간다
+                c.dropFn = w.dropFn;
+                for (int m = 0; m < 4; ++m) c.mods[m] = w.mods[m];   // ★ 09-29 — 수식(버린 평상복을 다시 주우면 색이 따라온다)
                 s.inventory.push_back(c);
                 ++picked_;
+                // ④ ★ 09-28 사람 판 — 「빈 부위 갑옷을 주우면 원래 저절로 입었다」
+                //   무기 — `sub_53A720`(`GAME4_3.c:5099~5104`): 손이 비었고(+104 == 0) 화살통(무기 비트 2)이 아니면 무기 들기 `53A420(a4, 0)`(실패 글·소리 없음)
+                //   갑옷 — `pickupArmor_53E7F0`(`:7628~7663`): 같은 부위(SUBCLASS 같음 — `armorHaveSameSubclass_53E7B0`)를 입은 게 없으면 입기 `53E650`.
+                //          방패(SUBCLASS & 2)는 두 손 무기(0x7FFE40C)를 들었으면 안 입는다(`:7657~7661`)
+                //   ⚠ 안 옮긴 것 — `sub_419E60`(사람마다 깃발 · 뜻 미확인 — 늘 꺼진 것으로 둔다) · 같은 부위를 이미 입었을 때
+                //     평범한 것(운동화·로브·나무/강철 방패 — 수식 비교)을 바꿔 입기(`:7634~7711`): 우리 갑옷 입기가 아직 같은 부위를
+                //     벗기지 않아(`53E650` 미이식) 넣으면 둘 다 입은 꼴이 된다 · 갑옷 줍기 소리(804~816)
+                {
+                    const uint16_t pnc = c.netCode;
+                    if (c.weaponClass) {
+                        if (s.weaponNet == 0 && c.equipBit != 2 && PlayerEquipWeapon(s, pnc, /*failSound=*/false, out)) ++autoEquip_[0];
+                    } else if (c.equipBit != 0 && !c.isWeapon) {
+                        bool same = false;
+                        for (const auto& x : s.inventory)
+                            if (x.netCode != pnc && x.equipped && !x.isWeapon && c.subclass != 0 && x.subclass == c.subclass) same = true;
+                        if (c.subclass == 0) ++autoEquip_[4];
+                        else if (same) ++autoEquip_[2];
+                        else if ((c.subclass & 2) && (WeaponEquipOf(s) & 0x7FFE40C)) ++autoEquip_[3];
+                        else {
+                            for (auto& x : s.inventory) if (x.netCode == pnc) { x.equipped = true; ReportEquipChange(s, x, true, out); break; }
+                            ++autoEquip_[1];
+                        }
+                    }
+                }
                 ++handled_;
+                break;
+            }
+
+            // ── 버리기 ────────────────────────────────────────────────
+            //
+            // ★ 09-28 사람 판 — 「아이템이 안 버려진다」. `72 TRY_DROP <번호2> <x2> <y2>` 를 받는 곳이 **아예 없었다.**
+            //   정답지 `sdecode.c:99~116` → `drop_4ED810`(`GAME3_3.c:6600~6648`) → `drop_4ED790` → `dropDefault_4ED290`(`:6370~6466`)
+            //     ① 관전(+3680 & 3)이면 안 받음 ② 가방에서 번호로(`equipedItemByCode_4F7920`)
+            //     ③ 목표를 사람 자리에서 **75 안으로** 당김(`:6625~6628`) ④ 벽에 막히면 글 `drop.c:DropNotAllowed` + 소리 925(`:6644~6646`)
+            //     ⑤ `sub_4ED0C0`(`:6304~6365`) — 벗기(갑옷 `53E430`·무기 `53A140` 을 a3 = 0 · a4 = 1 → **본인 알림 없이 남에게만**) →
+            //        본인에게 `4d REPORT_DROP <번호2> <종류2>`(`netReportDrop_4D8B50` `GAME3_2.c:4282~4290`) → 가방에서 뺌
+            //     ⑥ 그 자리에 세계로(`createAt_4DAA50`) — 소개는 시야 갱신이 한다(TakeStatic 이 소개 기록을 지웠으니 다시 소개된다)
+            //   ⚠ 안 옮긴 것 — (+280·+284)·(+16 & 2) 막이(뜻 미확인) · 못 버리는 물건(`53EBF0`·`53EC80` → CantDropThat) ·
+            //     물건별 버리기 함수(a2[178] — 음식·보물·깃발·글리프) ·
+            //     소리 821(CLASS 0x40) · 무게 넘침 깃발(+3656) 다시 셈 · 횃불·등불 버프 끄기
+            case Op::TRY_DROP: {
+                if (!s.inGame || it.bodyLen() != 6) break;
+                auto gate = [&](DropGate g) { ++dropGate_[static_cast<size_t>(g)]; ++handled_; };
+                const uint8_t* b = it.body();
+                const uint16_t nc = static_cast<uint16_t>(b[0] | (b[1] << 8));
+                if (s.observer) { gate(DropGate::Observer); break; }
+                size_t at = s.inventory.size();
+                for (size_t i = 0; i < s.inventory.size(); ++i)
+                    if (s.inventory[i].netCode == nc) { at = i; break; }
+                if (at == s.inventory.size()) { gate(DropGate::NotInBag); break; }
+                // ③ 75 안으로
+                const double px = s.posX, py = s.posY;
+                double tx = static_cast<double>(b[2] | (b[3] << 8)), ty = static_cast<double>(b[4] | (b[5] << 8));
+                const double dx = tx - px, dy = ty - py, d = std::sqrt(dx * dx + dy * dy);
+                if (d > 75.0) { tx = dx * 75.0 / d + px; ty = dy * 75.0 / d + py; }
+                // ④ 벽
+                if (!MapTraceRay(static_cast<float>(px), static_cast<float>(py), static_cast<float>(tx), static_cast<float>(ty), 0)) {
+                    SendPriMsg(s, "drop.c:DropNotAllowed", out);
+                    PlaySoundAt(925, static_cast<float>(s.posX), static_cast<float>(s.posY), /*kind=*/2, s.netCode, s.addr);
+                    gate(DropGate::Wall);
+                    break;
+                }
+                // ⑤⑥ 벗기·`4d`·가방에서 빼기·세계에 놓기·사라짐 시계 — 죽을 때 떨어뜨리기(B4b)와 함께 쓴다
+                DropCarriedToWorld(s, at, tx, ty, /*dead=*/false, out);
+                gate(DropGate::Dropped);
                 break;
             }
 
@@ -2992,6 +3212,16 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 if (c->equipped != wear) {                                         // 이미 그 상태면 아무것도 안 한다
                     c->equipped = wear;
                     ReportEquipChange(s, *c, wear, out);
+                    // ★ 09-28 사람 판 — 「워해머를 든 채 방패를 다시 입으면 입혀진다」. 정답지 갑옷 입기 `53E650` 끝(`GAME4_3.c:7484~7486`)은
+                    //   방패(SUBCLASS & 2)면 `sub_53E600`(`:7491~7505`) — 든 두 손 무기(무기 비트 0x7FFE40C)를 내려놓는다(`53A140(a1, 무기, 1, 1)`).
+                    //   B5 의 반대쪽(두 손 무기를 들면 방패를 벗김 — `PlayerEquipWeapon`)과 짝. 방패 = 갑옷 비트 0x3000000(나무·강철 둘뿐)
+                    if (wear && !c->isWeapon && (c->equipBit & 0x3000000)) {
+                        std::vector<uint16_t> twoHand;                             // 먼저 모은다 — 내려놓기가 가방을 만진다
+                        for (const auto& x : s.inventory)
+                            if (x.equipped && x.weaponClass && (x.equipBit & 0x7FFE40C)) twoHand.push_back(x.netCode);
+                        for (uint16_t wnc : twoHand)
+                            if (PlayerDequipWeapon(s, wnc, out)) ++shieldDropsTwoHand_;
+                    }
                 }
                 ++handled_;
                 break;
@@ -3022,9 +3252,13 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.useFn = s.inventory[i].useFn;
                     back.charges = s.inventory[i].charges; back.chargesMax = s.inventory[i].chargesMax;
                     back.wandSpell = s.inventory[i].wandSpell; back.wandCooldown = s.inventory[i].wandCooldown;
+                    back.decayExempt = s.inventory[i].decayExempt;   // ★ 09-28 — 들고 간다(사라짐 시계는 버릴 때만 건다)
+                    back.dropFn = s.inventory[i].dropFn;
+                    for (int m = 0; m < 4; ++m) back.mods[m] = s.inventory[i].mods[m];
                     back.x = s.x;
                     back.y = s.y;
                     statics_.push_back(back);
+                    freshStatics_.insert(nc);   // ★ 09-28 — 시야 반경이 꺼진 판에서도 소개되게(버리기와 같은 사정)
                     s.inventory.erase(s.inventory.begin() + static_cast<long>(i));
                     ++dropped_;
                     break;
@@ -3842,9 +4076,28 @@ void Server::AttachDoorWalls() {
     //   벽 없는 맵에서 `walls_[...]` 가 범위를 넘어 **죽었다**(시험 ⑱-5 가 SEGFAULT 로 잡았다)
     if (wallTiles_.empty()) wallTiles_.assign(256 * 256, WallTile{});
     if (walls_.size() != 256 * 256) walls_.assign(256 * 256, 0);
+    doorCellDiff_ = 0;
+    doorCellOldHadWall_ = 0; doorCellNewHadWall_ = 0;
     for (size_t i = 0; i < props_.size(); ++i) {
         if (props_[i].kind != PropKind::Door) continue;
-        const int gx = props_[i].x / 23, gy = props_[i].y / 23;
+        // ★★ 09-29 Z1-A — **칸은 문짝 가운데다**(`DoorWallCell` — (자리 + 표값/2) ÷ 23 · `GAME3_3.c:11520~11524`).
+        //   ✖ 전에는 문 자리(경첩) ÷ 23 이었다. 58맵 부팅으로 견주니 대부분의 문이 칸이 달랐고(Estate 6/7 · G_Castle 40/48),
+        //     정답지 칸은 **맵 벽과 한 번도 안 겹치고**(0 — 파일 WallMap 에 문 칸이 없다는 것과 맞다) 옛 칸은 자주 겹쳤다
+        //     (G_Lava 19 · G_Castle 14 · Estate 2). 옛 칸이 맵 벽이면 ① 닫힌 문이 제 칸을 안 막고 ② 문이 열리면 **그 맵 벽이
+        //     걸음 추적에서 사라졌다**(`WallShapeAt` 문 갈래 — 열렸으면 −1)
+        int gx = 0, gy = 0;
+        DoorWallCell(props_[i], gx, gy);
+        {
+            const int ox = props_[i].x / 23, oy = props_[i].y / 23;   // 옛 칸 — 진단으로만 센다
+            if (ox != gx || oy != gy) {
+                ++doorCellDiff_;
+                // 판정용 — 두 칸에 **맵 벽이 원래 있었나**(문을 붙이기 전 · 앞 문이 만든 벽은 door 로 가린다)
+                const WallTile* wo = (ox >= 0 && ox < 256 && oy >= 0 && oy < 256) ? &wallTiles_[oy * 256 + ox] : nullptr;
+                const WallTile* wn = (gx >= 0 && gx < 256 && gy >= 0 && gy < 256) ? &wallTiles_[gy * 256 + gx] : nullptr;
+                if (wo && wo->present && wo->door < 0) ++doorCellOldHadWall_;
+                if (wn && wn->present && wn->door < 0) ++doorCellNewHadWall_;
+            }
+        }
         if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256) continue;
         WallTile& w = wallTiles_[gy * 256 + gx];
         w.door = static_cast<int16_t>(i);
@@ -3858,6 +4111,116 @@ void Server::AttachDoorWalls() {
         walls_[gy * 256 + gx] = 1;
     }
     AIPathBakeWalls();   // 길찾기 격자에도 같은 벽을 굽는다
+}
+
+// ★ 09-29 Z1-A — 문의 벽 칸(Server.h 선언 주석). 표값의 반은 C 정수 나눗셈(0 쪽 버림 — −23/2 = −11) ·
+//   곱은 `(long long)` 버림(`GAME3_3.c:11520~11523`). 우리 문 자리는 정수(맵의 float 를 버린 값)지만 표값이 정수라 같은 칸이 나온다
+void Server::DoorWallCell(const WorldProp& p, int& gx, int& gy) {
+    const int a = p.angle & 31;
+    const int hx = kDoorWallTable[a][0] / 2, hy = kDoorWallTable[a][1] / 2;
+    gx = static_cast<int>(static_cast<long long>((static_cast<double>(hx) + static_cast<double>(p.x)) * 0.043478262));
+    gy = static_cast<int>(static_cast<long long>((static_cast<double>(hy) + static_cast<double>(p.y)) * 0.043478262));
+}
+
+// ★ 09-29 Z1-A — 퀘스트에서 문이 풀릴 때(`sub_4E8390` `GAME3_3.c:3127~3130`): 갱신자료 +48 = 1 · 모두에게 `f0 0f <extent u16>`
+//   (`sub_4D6A20(255, 문)` `GAME3_2.c:3313~3322` — MSG_GAUNTLET 15 · netSendPacket0 중요). +48 은 우리에게 읽는 곳이 없어 안 둔다
+void Server::DoorUnlockQuest(size_t di, std::vector<OutPacket>& out) {
+    if (di >= props_.size()) return;
+    const uint16_t ext = props_[di].netCode;   // 번호 = 맵 extent(15비트) — 클라가 이 번호로 문을 찾는다
+    const uint8_t msg[4] = { static_cast<uint8_t>(Op::GAUNTLET), 15, static_cast<uint8_t>(ext), static_cast<uint8_t>(ext >> 8) };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitImportantRaw(kv.second, msg, sizeof(msg), out);
+}
+
+// ★ 09-29 Z1-A — `nox_xxx_collideDoor_4E8AC0(문, 닿은 것)`(`GAME3_3.c:3383~3516` · 열쇠 찾기 `DoorCheckKey` `server/object_door.go:57~92`).
+//   ① 닫힘 각도일 때만(`:3407` +12 == +4) ② 마법 잠금(+508 · SPELL_LOCK)은 우리에게 없다 — 늘 비어 있다
+//   ③ 잠김 0 → 끝 ④ 잠김 5(장치) → 「…LockedMechanism」 ⑤ 열쇠 없음 → 소리 + `f0 21` 「…LockedKey」(잠김 종류를 끝 바이트에)
+//   ⑥ 열쇠 있음 → 잠김 0 · 짝 문도 0(`fnFindCloseDoors_4E8340`) · 퀘스트면 `f0 0f` · 소리 234(Unlock) · 열쇠 지움(`4d` — `sub_4ED0C0`)
+//   ④⑤ 의 말은 1.5초에 한 번(정답지는 실시간 ms 한 칸을 모든 문·사람이 같이 쓴다 — 우리는 프레임으로 센다)
+//   소리 — 부분류 GATE(`+12 & 4`)면 244 GateLocked · 아니면 240 WoodenDoorLocked · 자리는 문
+//   ⚠ 안 옮긴 것 — 퀘스트에서 은 열쇠를 나눠 쓰기(`sub_4D72C0` 깃발 — 켜는 `sub_4D71F0` 이 없다) · 「KeyShared1」(그 깃발일 때만) · 몬스터가 닿는 문(우리 문은 가장 가까운 사람만 본다)
+void Server::DoorCollide(size_t di, Session& s, std::vector<OutPacket>& out) {
+    if (di >= props_.size()) return;
+    WorldProp& d = props_[di];
+    const int coarse = (32 * static_cast<int>(d.fine) / 256) & 31;
+    if (coarse != static_cast<int>(d.angle)) { ++doorTouch_[static_cast<size_t>(DoorTouch::NotClosed)]; return; }
+    if (d.lock == 0) { ++doorTouch_[static_cast<size_t>(DoorTouch::Unlocked)]; return; }
+    // 1.5초 — `ticks − 지난 ms <= 0x5DC` 면 말 없이 끝(`:3413~3417`). 30fps 에서 45프레임 이하 = 조용
+    auto quiet = [&]() {
+        if (frame_ < doorLockMsgFrame_) { ++doorTouch_[static_cast<size_t>(DoorTouch::Quiet)]; return true; }
+        doorLockMsgFrame_ = frame_ + kServerTickRate * 3 / 2 + 1;
+        return false;
+    };
+    const uint16_t lockedSnd = d.gate ? 244 : 240;   // GateLocked · WoodenDoorLocked
+    if (d.lock == 5) {
+        if (quiet()) return;
+        PlaySoundAt(lockedSnd, static_cast<float>(d.x), static_cast<float>(d.y));
+        SendPriMsg(s, d.gate ? "objcoll.c:GateLockedMechanism" : "objcoll.c:DoorLockedMechanism", out);
+        ++doorTouch_[static_cast<size_t>(DoorTouch::Mechanism)];
+        return;
+    }
+    // 열쇠 찾기 — 가방 첫 물건부터(정답지 가방은 새 것이 머리 · 우리 벡터는 뒤가 새 것)
+    size_t keyAt = s.inventory.size();
+    if (d.lock >= 1 && d.lock <= 4 && keyWire_[d.lock] != 0) {
+        for (size_t i = s.inventory.size(); i-- > 0;)
+            if (s.inventory[i].type == keyWire_[d.lock]) { keyAt = i; break; }
+    }
+    if (keyAt == s.inventory.size()) {
+        if (quiet()) return;
+        PlaySoundAt(lockedSnd, static_cast<float>(d.x), static_cast<float>(d.y));
+        // sub_4FADD0(`GAME4.c:2238~2257`) — 52바이트 `f0 21 <글>\0 … <[51] = 잠김 종류>` · netSendPacket0 중요 · 사람에게만
+        const char* key = d.gate ? "objcoll.c:GateLockedKey" : "objcoll.c:DoorLockedKey";
+        uint8_t msg[52] = {};
+        msg[0] = static_cast<uint8_t>(Op::GAUNTLET);
+        msg[1] = 33;
+        std::memcpy(msg + 2, key, std::strlen(key) + 1);
+        msg[51] = d.lock;
+        EmitImportantRaw(s, msg, sizeof(msg), out);
+        ++doorTouch_[static_cast<size_t>(DoorTouch::KeyMissing)];
+        return;
+    }
+    // ── 풀림 ──
+    const bool quest = questTotal_ > 0 || questStage_ > 0;
+    d.lock = 0;
+    int gx = 0, gy = 0;
+    DoorWallCell(d, gx, gy);
+    int nx = 0, ny = 0;
+    bool hasPartner = true;
+    switch (d.angle) {                                // `:3477~3502` — 닫힘 각도별 이웃 칸(그 밖 각도는 정답지도 값을 안 채운다)
+        case 0:  nx = gx - 1; ny = gy - 1; break;
+        case 8:  nx = gx + 1; ny = gy - 1; break;
+        case 16: nx = gx + 1; ny = gy + 1; break;
+        case 24: nx = gx - 1; ny = gy + 1; break;
+        default: hasPartner = false; break;
+    }
+    if (quest) DoorUnlockQuest(di, out);
+    if (hasPartner) {
+        // `getUnitsInRect_517C10` — 사각형 = 칸 모서리(23 × 칸) ±34 · 거르기는 충돌 상자 겹침(`server/map.go:305~306`)
+        const double rx0 = 23.0 * gx - 34.0, rx1 = 23.0 * gx + 34.0, ry0 = 23.0 * gy - 34.0, ry1 = 23.0 * gy + 34.0;
+        for (size_t j = 0; j < props_.size(); ++j) {
+            WorldProp& o = props_[j];
+            if (o.kind != PropKind::Door) continue;
+            double r = 0.0;
+            auto tb = typeBodies_.find(o.type);
+            if (tb != typeBodies_.end()) r = static_cast<double>(tb->second.r);
+            if (!(o.x - r < rx1 && o.x + r > rx0 && o.y - r < ry1 && o.y + r > ry0)) continue;
+            int ox = 0, oy = 0;
+            DoorWallCell(o, ox, oy);
+            if (ox != nx || oy != ny) continue;
+            o.lock = 0;
+            if (quest) DoorUnlockQuest(j, out);
+            ++doorTouch_[static_cast<size_t>(DoorTouch::PartnerUnlocked)];
+        }
+    }
+    PlaySoundAt(234, static_cast<float>(d.x), static_cast<float>(d.y));   // Unlock
+    // 열쇠 지움 — `delayedDeleteObject_4E5CC0` → `sub_4ED0C0` → 본인에게 `4d <번호2> <종류2>`(`GAME3_3.c:6335`)
+    {
+        const Session::Carried k = s.inventory[keyAt];
+        const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_DROP), static_cast<uint8_t>(k.netCode), static_cast<uint8_t>(k.netCode >> 8),
+                                 static_cast<uint8_t>(k.type), static_cast<uint8_t>(k.type >> 8) };
+        EmitSeq(s, msg, sizeof(msg), out);
+        s.inventory.erase(s.inventory.begin() + static_cast<long>(keyAt));
+    }
+    ++doorTouch_[static_cast<size_t>(DoorTouch::KeyUsed)];
 }
 
 // ★★ 09-22 묶음 9 — **문 갈래를 넣었다.** 정답지 `Sub_57B500(pos, flags)` 그대로:
@@ -3877,9 +4240,157 @@ int Server::WallShapeAt(int gx, int gy, uint8_t sflags) const {
         if (props_[static_cast<size_t>(w.door)].open) return -1;   // 열렸으면 지나간다
         return w.dir;
     }
+    // ★ 09-29 Z1-A — 창문은 **0x40 을 안 준 추적**에서만 없는 벽이다(`server/wall.go:848` — 떠 있는 것의 걸음·가까운 칸 추적이 창을 지나간다)
+    if (!(sflags & 0x40) && w.window) return -1;
     if (w.secret >= 0 && static_cast<size_t>(w.secret) < secretWalls_.size() &&
         secretWalls_[static_cast<size_t>(w.secret)].anim > 11) return -1;
     return w.dir;
+}
+
+// ★ 09-29 Z1-A — 맵의 부서지는 벽·창문 칸을 벽 모양에 얹는다(Server.h 선언 주석). 체력은 모든 벽에 정의 값
+void Server::SetWallSpecials(const std::vector<std::pair<uint32_t, uint32_t>>& destructible,
+                             const std::vector<std::pair<uint32_t, uint32_t>>& windows) {
+    if (wallTiles_.empty()) return;
+    for (auto& w : wallTiles_) {
+        if (!w.present) continue;
+        w.hp = (w.tile < wallDefExtra_.size()) ? wallDefExtra_[w.tile].health : 0;
+    }
+    uint16_t id = 0;
+    for (const auto& g : destructible) {
+        if (g.first >= 256 || g.second >= 256) continue;
+        WallTile& w = wallTiles_[g.second * 256 + g.first];
+        if (!w.present) continue;                            // 벽이 없는 칸은 번호도 안 센다(`:1008~1011`)
+        w.breakable = true;
+        w.breakId = id++;
+    }
+    for (const auto& g : windows) {
+        if (g.first >= 256 || g.second >= 256) continue;
+        WallTile& w = wallTiles_[g.second * 256 + g.first];
+        if (w.present) w.window = true;
+    }
+}
+
+// ★ 09-29 Z1-A — `Nox_xxx_damageToMap_534BC0`(`wall.go:307~353`) — 한 칸 벽에 피해.
+//   · 벽 찾기는 `GetWallAtGrid`(`server/wall.go:237~251`) — 홀수 칸·문·부서진 벽은 없는 것
+//   · 부서지는 벽이 아니면 맞는 소리만(`Sub_532FE0` = 표 `Sub_532930`(정의 Field36 × 때린 것 재질) · who 자리) → 0
+//   · 퀘스트에서 사람이 친 것이면 한 방에(99999999) · 아니면 받은 피해
+//   · 체력 − 피해 ≤ 0 → `WallPreDestroy` · 아니면 체력을 깎고 부서지는 재질 소리(`Sub_533010` = `Sub_532EC0`(Field36) · who 자리)
+//   ⚠ 안 옮긴 것 — 깎일 때 튀는 벽돌 오브젝트(정의 BrickType42 · 힘 10~20) · 마법 벽(sysuse)
+int Server::DamageToMap(int gx, int gy, int dmg, uint8_t dtype, const WallHitter& who, std::vector<OutPacket>& out) {
+    (void)dtype;
+    if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256 || wallTiles_.empty() || ((gx + gy) & 1)) { ++wallGate_[0]; return 0; }
+    WallTile& w = wallTiles_[gy * 256 + gx];
+    if (!w.present || w.door >= 0 || w.broken) { ++wallGate_[0]; return 0; }
+    const uint16_t hitMat = (w.tile < wallDefExtra_.size()) ? wallDefExtra_[w.tile].hitMat : 0;
+    if (!w.breakable) {
+        if (who.present) {
+            const uint16_t snd = HitSoundFor(hitMat, who.material);
+            if (snd != 0) PlaySoundAt(snd, who.x, who.y);
+        }
+        ++wallGate_[1];
+        return 0;
+    }
+    const bool quest = questTotal_ > 0 || questStage_ > 0;
+    const int d = (quest && who.present && who.player) ? 99999999 : dmg;
+    if (static_cast<int>(w.hp) - d <= 0) return WallPreDestroy(gx, gy, out);
+    w.hp = static_cast<uint8_t>(static_cast<int>(w.hp) - d);
+    if (who.present) {
+        const uint16_t snd = BreakableHitSound(hitMat);
+        if (snd != 0) PlaySoundAt(snd, who.x, who.y);
+    }
+    ++wallGate_[2];
+    return 0;
+}
+
+// ★ 09-29 Z1-A — `nox_xxx_wallPreDestroy_534DA0`(`wall.go:388~437`) — 부서지는 벽을 부순다.
+//   체력 0 · 부서지는 소리(정의 Sound683 · 비면 WallDestroyed)를 벽 자리에 · 연기 `8a <x2> <y2>`(화면 안) ·
+//   부서짐 깃발(그 뒤로는 벽이 없다 — 모양·충돌·길 찾기에서 빠진다) · 모두에게 `3a <번호2>`(`wallSendDestroyed_4DF0A0` — 맨 메시지 · 중요)
+//   ⚠ 안 옮긴 것 — 벽돌 오브젝트 3~6개(퀘스트 아닐 때 · 힘 4~10)
+int Server::WallPreDestroy(int gx, int gy, std::vector<OutPacket>& out) {
+    if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256 || wallTiles_.empty()) return 0;
+    WallTile& w = wallTiles_[gy * 256 + gx];
+    if (!w.present || !w.breakable || w.broken) return 0;
+    w.hp = 0;
+    const float px = static_cast<float>(gx) * 23.0f + 11.5f, py = static_cast<float>(gy) * 23.0f + 11.5f;
+    uint16_t snd = (w.tile < wallDefExtra_.size()) ? wallDefExtra_[w.tile].breakSound : 0;
+    if (snd == 0) snd = SoundByName("WallDestroyed");
+    if (snd != 0) PlaySoundAt(snd, px, py);
+    {
+        const uint16_t ix = static_cast<uint16_t>(static_cast<int>(px)), iy = static_cast<uint16_t>(static_cast<int>(py));
+        const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_SMOKE_BLAST), static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+        SendFxAllCli(px, py, fx, sizeof(fx), out);
+    }
+    w.broken = true;
+    w.present = false;                                       // 모양·추적·충돌 모두 이 칸을 빈 칸으로 본다(`GetWallAtGrid2` 가 부서진 것을 뺀다)
+    walls_[gy * 256 + gx] = 0;
+    AIPathBakeWalls();                                       // 길 찾기 격자도 다시 굽는다
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::DESTROY_WALL), static_cast<uint8_t>(w.breakId), static_cast<uint8_t>(w.breakId >> 8) };
+    for (auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        EmitImportantRaw(kv.second, msg, sizeof(msg), out);
+        ++wallGate_[4];
+    }
+    ++wallGate_[3];
+    return 1;
+}
+
+// ★ 09-29 Z1-A — 사람을 벽 피해의 who 로(유닛 — 자리 +56 · 방향 +124(Direction1) · 재질 = NewPlayer 재질)
+Server::WallHitter Server::WallHitterOfAddr(const std::string& addr) const {
+    WallHitter h;
+    auto it = sessions_.find(addr);
+    if (it == sessions_.end() || !it->second.inGame) return h;
+    h.present = true; h.unit = true; h.player = true;
+    h.x = static_cast<float>(it->second.posX); h.y = static_cast<float>(it->second.posY);
+    h.dir = it->second.facing;
+    h.material = MaterialOfWire(newPlayerWire_);
+    return h;
+}
+
+// ★ 09-29 Z1-A — `Nox_xxx_wall_4DF1E0` 의 벽 몫(`wall.go:354~360`) — 들어온 사람에게 이미 부서진 벽마다 `3a <번호2>`
+void Server::SendBrokenWalls(Session& s, std::vector<OutPacket>& out) {
+    for (const auto& w : wallTiles_) {
+        if (!w.broken) continue;
+        const uint8_t msg[3] = { static_cast<uint8_t>(Op::DESTROY_WALL), static_cast<uint8_t>(w.breakId), static_cast<uint8_t>(w.breakId >> 8) };
+        EmitImportantRaw(s, msg, sizeof(msg), out);
+        ++wallGate_[4];
+    }
+}
+
+// ★ 09-29 Z1-A — `Nox_xxx_mapDamageToWalls_534FC0`(`wall.go:210~305`) — 칸 네모 안 벽들에 둘레 피해.
+//   · who 가 유닛이면 **그 자리에서** 거리를 재고 그 앞쪽(방향 내적 > 0.5)만 · 아니면 폭발 자리에서
+//   · 반지름² 안이고 · 폭발 자리에서 벽 가운데까지 선 추적(깃발 1)이 트였거나 막은 칸이 바로 그 벽이면 — 32칸까지 모아
+//   · 모은 칸마다 `DamageToMap`(같은 피해)
+bool Server::MapDamageToWalls(int gx0, int gy0, int gx1, int gy1, float px, float py, float rad, int dmg, uint8_t dtype,
+                              const WallHitter& who, std::vector<OutPacket>& out) {
+    if (wallTiles_.empty()) return false;
+    float cs = 0, sn = 0;
+    const bool dirSet = who.present && who.unit;
+    if (dirSet) { cs = DirVecX(who.dir); sn = DirVecY(who.dir); }
+    const float r2 = rad * rad;
+    std::vector<std::pair<int, int>> pts;
+    for (int yi = gy0; yi <= gy1; ++yi) {
+        for (int xi = gx0; xi <= gx1; ++xi) {
+            if (xi < 0 || xi >= 256 || yi < 0 || yi >= 256 || ((xi + yi) & 1)) continue;
+            const WallTile& w = wallTiles_[yi * 256 + xi];
+            if (!w.present || w.door >= 0 || w.broken) continue;   // GetWallAtGrid
+            const float bx = dirSet ? who.x : px, by = dirSet ? who.y : py;
+            const float dx = static_cast<float>(xi) * 23.0f + 11.5f - bx;
+            const float dy = static_cast<float>(yi) * 23.0f + 11.5f - by;
+            const float d2 = dy * dy + dx * dx;
+            if (!(d2 < r2)) continue;
+            if (dirSet && d2 > 0.0f) {
+                const float len = std::sqrt(d2) + 0.5f;
+                if (!((dy / len) * sn + (dx / len) * cs > 0.5f)) continue;
+            }
+            const float cx = static_cast<float>(xi) * 23.0f + 11.5f, cy = static_cast<float>(yi) * 23.0f + 11.5f;
+            TraceHit th;
+            const bool clear = MapTraceRay(px, py, cx, cy, 0x1, &th);
+            if ((clear || (th.gx == xi && th.gy == yi)) && pts.size() < 32) pts.emplace_back(xi, yi);
+        }
+    }
+    for (const auto& p : pts) DamageToMap(p.first, p.second, dmg, dtype, who, out);
+    return !pts.empty();
 }
 
 // mapTraceRayImpl(`server/wall.go:1055`) — 이 칸의 벽 선분을 p1→p2 가 가로지르나.
@@ -5002,8 +5513,8 @@ void Server::ForgetDrawables(Session& s, std::vector<OutPacket>& out) {
 }
 
 // `GAME4.c:1420` playerRespawn_4F7EF0 + `GAME3_3.c:7901` playerMakeDefItems(a1, 1, 0) — 퀘스트 아닌 갈래.
-//   ⚠ 옮기지 않은 것 — 기본 장비 다시 만들기(playerRespawnItem · 아이템 5 — 클라는 E9 의 무기 깃발로 겉모습을 되살린다) ·
-//     부활 소리 148(10) · 부활 이펙트 respawnPlayerImpl_53FBC0(4) · 능력·주문 끄기(7·4) · 퀘스트 목숨·되살림 자리(8)
+//   ⚠ 옮기지 않은 것 — 부활 소리 148(10) · 부활 이펙트 respawnPlayerImpl_53FBC0(4) · 능력·주문 끄기(7·4) · 퀘스트 목숨·되살림 자리(8)
+//   (09-28 B4b — 기본 장비 다시 만들기는 `RespawnGear` 로 옮김)
 void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& out) {
     s.health = s.maxHealth;                                // unitHPsetOnMax
     for (auto& kv : sessions_) if (kv.second.inGame) s.hpReportedTo[kv.first] = s.health;   // +12+2×i 서른둘 = 지금 체력(`GAME3_3.c:7937`) — 그 뒤 피해만 `42`
@@ -5034,15 +5545,24 @@ void Server::PlayerRespawn(Session& s, uint32_t frame, std::vector<OutPacket>& o
     // 모두에게 — `e9 <번호2> <프레임4> <무기 깃발> 01`(netSendPlayerRespawn_4EFC30 · 끝 1 = 클라가 기본 장비 겉모습을 다시 세움)
     //   무기 깃발 = getRespawnWeaponFlags_4EF580 — 서버에 쓸 수 있는 기본 장비 종류 비트. 모두 허용 = 0xff(녹음 값과 같음)
     //   ⚠ 프레임은 받는 사람마다 그 사람의 틱 번호로 싣는다(우리 서버는 접속마다 시계가 따로다 — Session::tickFrame)
+    // ★ 09-28 사람 판 — 「서로 맨몸인데 상대 화면엔 로브」. 끝 1 을 받은 클라는 그 사람을 **직업 기본 차림**으로 다시 그린다
+    //   (`cdecode.c:2875~2879` → `cliPlayerRespawn_417680` `GAME1.c:2590~2696` — 위저드면 로브 0x4000). 정답지 서버는 같은 때
+    //   기본 장비를 실제로 다시 준다(B4b — 우리는 미결) → 우리는 가방이 그대로인데 남 화면만 기본 차림이 된다.
+    //   ⇒ **B4b 전까지 끝 바이트를 0** 으로 — 다시 그리지 말라. B4b(떨어뜨리기·기본 장비 새로)를 넣으면 **녹음 값 01 로 되돌릴 것**
+    // ★ 09-28 B4b 넣음 — 녹음 값 01 로 되돌림(정품 녹음 18:56:07.9 `e9 61 00 57 0e 00 00 ff 01`). 기본 장비는 아래 `RespawnGear` 가 실제로 준다
+    constexpr uint8_t kRespawnRedrawGear = 0x01;
     for (auto& kv : sessions_) {
         Session& o = kv.second;
         if (!o.inGame) continue;
         const uint32_t f = o.tickFrame + 1;               // 이 틱 끝에 실리는 시각(27) 과 같은 값 — 대기열이 시각 뒤에 나간다
         const uint8_t e9[9] = { static_cast<uint8_t>(Op::PLAYER_RESPAWN), static_cast<uint8_t>(s.netCode),
                                 static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(f), static_cast<uint8_t>(f >> 8),
-                                static_cast<uint8_t>(f >> 16), static_cast<uint8_t>(f >> 24), 0xff, 0x01 };
+                                static_cast<uint8_t>(f >> 16), static_cast<uint8_t>(f >> 24), 0xff, kRespawnRedrawGear };
         EmitSeq(o, e9, sizeof(e9), out);
     }
+    // ★ 09-28 B4b — 가방 정리 + 기본 장비 새로(`GAME3_3.c:7969~8043` — `e9` 바로 앞이 지우기, 바로 뒤가 주기 ·
+    //   녹음 차례 `e9` → `4c` → `44` → `60` → `ea`). 지우기는 알림이 없어 `e9` 뒤에 몰아 해도 와이어는 같다
+    if (s.gearInBag) RespawnGear(s, out);
     // 자리 — 시작 지점 고르기 → 옮기기(FORGET_DRAWABLES)
     float sx = 0.0f, sy = 0.0f;
     FindPlayerStart(s, sx, sy);
@@ -5752,7 +6272,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
 //   ⑤ nox_xxx_wall_4DF1E0(`wall.go:354`) — 갈래가 넷이다(09-21 에 따로 셌다):
 //        ⭕ 비밀 벽(`sub_4DF2A0`) — `SecretWallSync` 가 사람마다 `secretSeen` 으로 이미 한다
 //        ⭕ 문 — 09-21 `UpdateProps` 끝의 **문 되맞춤**(`doorTold`)이 같은 일을 한다
-//        ⚠ 부서진 벽(`wallSendDestroyed`) · ⚠ 퀘스트 문(`Sub_4D6A20`) — 아직 안 옮겼다
+//        ⭕ 부서진 벽(`wallSendDestroyed`) — 09-29 Z1-A `SendBrokenWalls` · ⚠ 퀘스트 문(`Sub_4D6A20`) — 아직 안 옮겼다
 //      ⑥ ⚠ 퀘스트 건틀릿(8)
 //   ⑦ netStatsMultiplier_4D9C20 — `ef <f32 체력> <f32 마나> <f32 힘> <f32 속도>` Packet0 · 직업 배수(아레나는 초기값 1 · 퀘스트 DefaultStatMult 는 8)
 void Server::GameServerReadyMB(Session& s, std::vector<OutPacket>& out) {
@@ -5770,6 +6290,7 @@ void Server::GameServerReadyMB(Session& s, std::vector<OutPacket>& out) {
         ApplyEnchant(Target{ s.addr, -1 }, 23, 5 * static_cast<int>(kServerTickRate), 5);
         ++spawnInvulnApplied_;     // 스위치가 실제로 먹는지 가르는 계수기
     }
+    SendBrokenWalls(s, out);                               // ⑤ ★ 09-29 Z1-A — 이미 부서진 벽마다 `3a <번호2>`(정답지 차례 — 무적 뒤 · 배수 앞)
     const float mult[4] = { 1.0f, 1.0f, 1.0f, 1.0f };     // Health · Mana · Strength · Speed(server/player.go:167 init)
     uint8_t msg[17] = { static_cast<uint8_t>(Op::STAT_MULTIPLIERS) };
     for (int i = 0; i < 4; ++i) std::memcpy(msg + 1 + 4 * i, &mult[i], 4);
@@ -6439,7 +6960,8 @@ int Server::CastDeathRay(Session& caster, const SpellArg& arg, std::vector<OutPa
     const float rin = static_cast<float>(BalanceFloat("DeathRayInRadius"));
     AttackSrc ws;                                            // ★ 09-27 S1 — v9 = who = 시전자 사람(+72 지난 자리) · 발사체 아님
     ws.x = static_cast<float>(caster.prevX); ws.y = static_cast<float>(caster.prevY);
-    DamageUnitsAround(arg.x, arg.y, rout, rin, dmg, 16, caster.addr, Target{}, out, HitterByAddr(caster.addr), &ws);   // ★ 4-c3b1 who = 시전자(`spell_death_ray.go:35`)
+    DamageUnitsAround(arg.x, arg.y, rout, rin, dmg, 16, caster.addr, Target{}, out, HitterByAddr(caster.addr), &ws,
+                      WallHitterOfAddr(caster.addr));   // ★ 4-c3b1 who = 시전자(`spell_death_ray.go:35`) · ★ 09-29 Z1-A 벽 피해 who 도 시전자
     const uint16_t x1 = static_cast<uint16_t>(static_cast<int>(cx)), y1 = static_cast<uint16_t>(static_cast<int>(cy));
     const uint16_t x2 = static_cast<uint16_t>(static_cast<int>(arg.x)), y2 = static_cast<uint16_t>(static_cast<int>(arg.y));
     const uint8_t fx[9] = { static_cast<uint8_t>(Op::FX_DEATH_RAY),
@@ -8463,6 +8985,14 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other, std::vect
             if (other->idx < 0 || static_cast<size_t>(other->idx) >= obstacles_.size()) return;
             const PhysBody& o = obstacles_[static_cast<size_t>(other->idx)];
             cls = o.cls; flags = o.flags; mass = o.mass;
+        } else if (other->kind == 4) {
+            // ★ 09-29 Z1-A — 문(UpdateProps 의 문짝 닿음). 몸을 모르면 DOOR+IMMOBILE · 무게 1(thing.bin 에 MASS 없음 → 정답지 기본 1)
+            if (other->idx < 0 || static_cast<size_t>(other->idx) >= props_.size()) return;
+            const WorldProp& d = props_[static_cast<size_t>(other->idx)];
+            if (d.kind != PropKind::Door) return;
+            auto tb = typeBodies_.find(d.type);
+            if (tb != typeBodies_.end()) { cls = tb->second.cls; flags = tb->second.flags; mass = tb->second.mass; }
+            else { cls = kClsDoor | 0x400000u; flags = 0; mass = 1.0; }
         } else {
             return;
         }
@@ -8473,9 +9003,14 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other, std::vect
     if (other) {
         const bool unit = (cls & 0x6) != 0;
         if ((!unit || deadUnit) && !(cls & 0x400000) && !(flags & 0x80) && mass <= myMass) { hit(BerserkHit::Light); return; }
-        // 문 — 잠겼으면 부딪힘이다. ⚠ 지금은 닿을 수 없는 갈래다: main 이 문을 장애물에서 빼고 `BodyVsBody` 도 문 짝을 거른다(묶음 9).
-        //   잠김 상태를 모르므로 지나감으로 둔다 — 문이 오브젝트가 되면 여기에 잠김 검사를 넣는다
-        if (cls & kClsDoor) { hit(BerserkHit::Door); return; }
+        // 문 — 잠겼으면 부딪힘이다(`GAME3_3.c:3207~3210` — `*(ud+1)` 이 0 이 아니면 LABEL_14).
+        //   ★ 09-29 Z1-A — 닿음은 `UpdateProps` 의 문짝 닿음에서 온다(짝 종류 4) · 잠김을 읽게 되어 두 갈래를 가른다.
+        //   잠긴 문은 아래 LABEL_14 에서 `Object` 로 세고(IMMOBILE 이라 튕김 없음 · 기절 · 자기 피해) 여기서는 따로만 센다
+        if (cls & kClsDoor) {
+            const bool locked = other->kind == 4 && props_[static_cast<size_t>(other->idx)].lock != 0;
+            if (!locked) { hit(BerserkHit::Door); return; }
+            ++berserkDoorLocked_;
+        }
         if ((flags & (kFlBelow | kFlAllowOverlap)) || (cls & 0x1)) { hit(BerserkHit::Overlap); return; }
     }
     // ── LABEL_14 부딪힘 ──
@@ -8520,7 +9055,10 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other, std::vect
         hit(BerserkHit::WallHard);
         PlaySoundAt(171, static_cast<float>(s.tickStartX), static_cast<float>(s.tickStartY), 0, 0, s.addr);   // BerserkerCrash
         ApplyEnchant(Target{ s.addr, -1 }, 5, stunDur, 5);
-        // ⚠ nox_xxx_damageToMap_534BC0(칸, 100, 2) — 벽 부수기는 묶음 9
+        // ★ 09-29 Z1-A — `nox_xxx_damageToMap_534BC0(새 자리 ÷ 23, 100, 2, 나)`(`GAME3_3.c:3241~3245`) — 칸은 **닿은 벽이 아니라 내 새 자리(+64)** 의 칸이다.
+        //   적분 중의 `posX` 가 +64 다(`tickStartX` 가 +56) · `nox_float2int` 는 이 리포 관례대로 버림(`:6215`)
+        DamageToMap(static_cast<int>(static_cast<float>(s.posX) * 0.043478262f), static_cast<int>(static_cast<float>(s.posY) * 0.043478262f),
+                    100, 2, WallHitterOfAddr(s.addr), out);
     }
     int pain = static_cast<int>(static_cast<float>(BalanceFloat("BerserkerPainRatio") * static_cast<double>(s.health)));
     if (pain < 1) pain = 1;
@@ -10383,8 +10921,11 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                                (ps == 1 && (frame_ - k.pathStuckFrame) < static_cast<uint32_t>(5 * 30));
             if (ps == 1) k.pathStuckFrame = frame_;
             // ③ **제대로 닿았으면**(결과 0) 그쪽을 보고 **행동을 뺀다**
-            //   ⚠ `sub_547F10`(길목 모드)과 쌓임 항목 `+12` 갈래는 아직 안 옮겼다
-            if (ps == 0) {
+            //   ★ 09-28 — 단 **대상 오브젝트(+12)가 있으면 안 뺀다**(`GAME4_3.c:9529` `!*(v4 + 12)`). 그 자리는 매 틱
+            //     대상 자리로 고쳐지므로(`AIRefreshStackArgs`) 닿아도 계속 따라가고, 빠지는 것은 아래 조건(49 더 머나)이 깨질 때다
+            //   ⚠ `sub_547F10`(길목 모드)은 아직 안 옮겼다
+            const bool hasObj = !Target{ st.targetAddr, st.targetPet }.none();
+            if (ps == 0 && !hasObj) {
                 // ★ `mobCalcDir_533CC0` 은 **돌아가려는 쪽(+126)만** 세운다 —
                 //   보는 쪽(+124)은 건드리지 않는다(그쪽은 딴 데서 8씩 쫓아간다)
                 k.facingWant = DirFromVec(st.argX - k.x, st.argY - k.y);
@@ -10400,9 +10941,9 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                     k.aiStack[idx].argU32 = frame_ + 60 + NextRandom(61);
                 AIPush(k, 29);
             }
-            // ⑤ 결과가 0 이 아니면 **잠깐 기다린다**(0.5~1초)
-            AIPush(k, 1);
-            k.aiStack[k.aiStackInd].argU32 = frame_ + 15 + NextRandom(16);   // randomInt(FPS/2, FPS) = 15~30
+            // ⑤ 결과가 0 이 아니면 **잠깐 기다린다**(0.5~1초) — `GAME4_3.c:9541` `if (+284)`
+            if (ps != 0 && AIPush(k, 1))
+                k.aiStack[k.aiStackInd].argU32 = frame_ + 15 + NextRandom(16);   // randomInt(FPS/2, FPS) = 15~30
             break;
         }
         case 3: {    // ── 묶음 6-h 호위 — `nox_xxx_mobActionEscort_546430`(`legacy/GAME5.c:924`)
@@ -10683,9 +11224,10 @@ void Server::AICancel(Creature& k, uint8_t act) {
 //
 // ⭕ 옮긴 조건(우리 상태로 충실히 잴 수 있는 것):
 //   41 때 · 42 살아 있나 · 45 보이나 · 46 안 보이나 · 49 더 머나 · 50 더 가까운가 ·
-//   51 자리가 더 머나 · 52 자리가 더 가까운가 · 61 안 끊기나(늘 참) · 62 마법이 걸렸나 · 71 안 움직였나
+//   51 자리가 더 머나 · 52 자리가 더 가까운가 · 53 보이는 적이 있나 · 56 보이는 적이 없나 · 60 새 적이 없나(09-28) ·
+//   61 안 끊기나(늘 참) · 62 마법이 걸렸나 · 71 안 움직였나
 // ⚠ 안 옮긴 조건 — 43·44 맞고 있나(피격 기록) · 47 사선이 막혔나 · 48 보이는 자리인가 ·
-//   53~58 보이는 적·친구·먹이(몬스터 시야 목록이 아직 없다) · 59 소리 · 60 새 적 ·
+//   54·55·57·58 보이는 친구·먹이(몬스터 시야 목록이 아직 없다) · 59 소리 ·
 //   63·66 적 거리 · 64 성치 않나 · 65 기력 · 67 커서 아래 · 68 몰렸나 · 69 안전한 자리 · 70 답답한가.
 //   **이들은 늘 참으로 둔다** — 없는 것을 거짓으로 만들면 멀쩡한 할 일이 사라진다.
 void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
@@ -10735,6 +11277,23 @@ void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
             }
             case 51: ok = std::sqrt(dx * dx + dy * dy) >= st.argF; break;      // 자리가 더 머나
             case 52: ok = std::sqrt(dx * dx + dy * dy) <= st.argF; break;      // 자리가 더 가까운가
+            // ★ 09-28 박쥐(사람 판 「멀리 도망갔다 오면 안 때리고 옛 자리로 간다」) — 53·56 은 시야 목록이 아니라
+            //   **지금 상대(+1196)가 있나**만 본다(`unit_ai.go:147~150`). 우리 `enemyAddr` 가 그 자리다(보이는 적만 넣는다).
+            //   늘 참으로 두었을 때는 「마지막으로 본 자리로 가기」(15 → 56·7)가 적이 다시 보여도 안 깨져
+            //   **옆에서 때려도 옛 자리로 계속 갔다**
+            case 53: ok = !Target{ k.enemyAddr, k.enemyPet }.none(); break;   // 보이는 적이 있나
+            case 56: ok = Target{ k.enemyAddr, k.enemyPet }.none(); break;    // 보이는 적이 없나
+            case 60: {                                                          // 새 적이 없나(`unit_ai.go:161~183`)
+                // 옛 대상이 없으면 거짓 · 지금 상대가 없으면 참 · 있으면 **지금 상대가 옛 대상보다 가깝지 않은가**
+                if (!hasT) { ok = false; break; }
+                const Target foe{ k.enemyAddr, k.enemyPet };
+                float ex = 0, ey = 0;
+                if (foe.none() || !TargetXY(foe, ex, ey)) break;
+                const float ox = tx - static_cast<float>(k.x), oy = ty - static_cast<float>(k.y);
+                const float nx = ex - static_cast<float>(k.x), ny = ey - static_cast<float>(k.y);
+                ok = (nx * nx + ny * ny) >= (ox * ox + oy * oy);
+                break;
+            }
             case 62: ok = k.buffs.Has(static_cast<int>(st.argU32)); break;     // 마법이 걸렸나
             case 71: ok = (k.x == k.prevX && k.y == k.prevY); break;           // 안 움직였나
             default: ok = true; break;   // ⚠ 안 옮긴 조건 — 늘 참(없는 것을 거짓으로 만들지 않는다)
@@ -10758,12 +11317,68 @@ void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
     (void)out;
 }
 
-// 소환수에서 대상까지 볼 수 있나. `CanInteract` 는 사람 기준이라 소환수 자리로 한 번 더 싸맨다.
-//   ⚠ 지금은 **주인의 눈**으로 갈음한다 — 소환수 눈으로 보는 시야 추적은 6-f 에서.
+// nox_xxx_mobAction_50A910(`GAME4_1.c:582~673`) — 매 틱 조건을 보기 **전에** 쌓임을 위에서 아래로 훑어
+//   **대상 오브젝트(+12)가 있는 항목의 자리(+4·+8)를 그 오브젝트의 지금 자리로** 고쳐 적는다.
+//   · 3 호위 — 대상이 있으면 늘
+//   · 7·8 가기 — 대상이 **보이거나** 쌓임에 호위(3)가 있으면 고쳐 적고, 아니면 **대상을 잊는다**(+12 = 0 — 그 뒤로는 그 자리까지만 간다)
+//   · 17 쏘기 — 대상이 보이면
+//   · 15 싸움 — 지금 상대(+1196)의 자리. ⚠ 이것은 이미 틱이 한다(`Tick` 의 「마지막으로 본 자리」 줄) — 여기선 안 한다
+// ★ 09-28 박쥐 — 이것이 없어 공격 사슬의 가기(7)가 **사슬을 쌓던 때의 자리**로만 갔다. 달아나는 사람을 쫓다가
+//   그 사람이 곁으로 돌아와도 박쥐는 옛 자리로 계속 갔다(사람 판 「도망간 길을 안 따라오고 옆에서 때려도 안 문다」)
+// ⚠ 「보이나」(`nox_xxx_unitCanInteractWith_5370E0`)는 틱의 상대 고르기와 같은 잣대 — `CanInteractFrom`(크리처 눈)
+// ⚠ 안 옮긴 것 — 각 항목의 오브젝트 인자가 죽었으면 비우는 `sub_509FF0`(우리는 `TargetXY` 가 못 찾으면 그 자리를 안 고친다)
+void Server::AIRefreshStackArgs(Creature& k) {
+    const bool escorting = AIHasAction(k, 3);
+    for (int i = k.aiStackInd; i >= 0; --i) {
+        Creature::AIStackItem& st = k.aiStack[i];
+        const Target targ{ st.targetAddr, st.targetPet };
+        if (targ.none()) continue;
+        float tx = 0, ty = 0;
+        switch (st.action) {
+            case 3:
+                if (TargetXY(targ, tx, ty)) { st.argX = tx; st.argY = ty; }
+                break;
+            case 7:
+            case 8: {
+                const bool known = TargetXY(targ, tx, ty);
+                if (known && (escorting || CanInteractFrom(k, targ))) {
+                    st.argX = tx; st.argY = ty;
+                    ++aiMoveTargetFollow_;
+                } else {
+                    st.targetAddr.clear();
+                    st.targetPet = -1;
+                    ++aiMoveTargetForgot_;
+                }
+                break;
+            }
+            case 17:
+                if (TargetXY(targ, tx, ty) && CanInteractFrom(k, targ)) {
+                    st.argX = tx; st.argY = ty;
+                }
+                break;
+            default: break;
+        }
+    }
+}
+
+// 크리처가 대상을 볼 수 있나 — **크리처 자신의 눈**(`CanInteract(u, obj, 0)` · `unit_ai.go:99~103` · `nox_xxx_unitCanInteractWith_5370E0`).
+//   버프(눈멂·투명)는 `CanSee` 그대로, 시야선은 크리처 자리에서 본다(사람판 `CanInteract` 와 같은 두 겹).
+// ✖ 09-28 정정 — 전에는 **주인의 눈**으로 갈음했고 주인이 없으면 늘 참이었다. 틱은 상대를 **크리처 자리의 시야**로 고르므로
+//   「크리처는 보는데 주인은 벽 너머라 못 보는」 자리에서 조건 45 가 매 틱 깨져 공격 사슬을 쌓았다 무너뜨리기만 하며
+//   **제자리에 섰다**(사람 판 박쥐 「때려도 맞기만 하고 안 따라온다」 · 시험 TestMonsterChaseReturn ②).
+//   상대 고르기·조건 45/46·가기(7) 자리 고치기가 이제 이 한 잣대를 쓴다
 bool Server::CanInteractFrom(const Creature& k, const Target& t) const {
-    auto o = sessions_.find(k.owner);
-    if (o == sessions_.end()) return true;
-    return CanInteract(o->second, t);
+    const Buffs* tb = BuffsOf(t);
+    if (!tb) return false;
+    float tx = 0, ty = 0;
+    if (!TargetXY(t, tx, ty)) return false;
+    double tvx = 0, tvy = 0;
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        if (it != sessions_.end()) { tvx = it->second.velX; tvy = it->second.velY; }
+    }
+    if (!CanSeeBuffs(&k.buffs, tb, tvx, tvy, 0)) return false;
+    return MapTraceVision(static_cast<float>(k.x), static_cast<float>(k.y), tx, ty);
 }
 
 // ── 묶음 5-h 금 ───────────────────────────────────────────────────────
@@ -11889,7 +12504,7 @@ int Server::CastFist(Session& caster, const SpellArg& arg, int lvl, std::vector<
 // meteorExplode_53D6E0(`GAME4_3.c:6540`) — 높이가 0 이하가 된 운석이 하는 일.
 //   · 그을음 · **화면 흔들기 10**(earthquakeSend) · `MeteorExplode` 그림 오브젝트 · 소리 87
 //   · 둘레 피해 : 바깥 **80** · 안쪽 **30** · 피해 = 갱신자료 첫 칸 · 종류 **7**(폭발)
-//   ⚠ 아직 안 옮긴 것 — 그을음 · 소리 · 벽 피해(mapDamageToWalls)
+//   ⚠ 아직 안 옮긴 것 — 그을음 · 소리 · (09-29 Z1-A — 벽 피해는 `DamageUnitsAround` 끝이 한다 · who = 주인)
 void Server::MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out) {
     const float x = o.x, y = o.y;
     const int dmg = o.damage;
@@ -11902,7 +12517,8 @@ void Server::MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out) {
         ws.x = static_cast<float>(oi->second.prevX); ws.y = static_cast<float>(oi->second.prevY);
         wsp = &ws;
     }
-    DamageUnitsAround(x, y, 80.0f, 30.0f, dmg, 7, owner, Target{}, out, HitterByAddr(owner), wsp);   // ★ 4-c3b1 who = 주인 사람(`GAME4_3.c:6839~6840`)
+    DamageUnitsAround(x, y, 80.0f, 30.0f, dmg, 7, owner, Target{}, out, HitterByAddr(owner), wsp,
+                      WallHitterOfAddr(owner));   // ★ 4-c3b1 who = 주인 사람(`GAME4_3.c:6839~6840`)
     // 터짐 그림은 **1초 뒤 스스로 사라지는**(OneSecondDieUpdate) 장식 오브젝트다
     PlaceObject(NamedType("MeteorExplode"), x, y, owner, static_cast<uint32_t>(kServerTickRate), /*kind=*/0);
 }
@@ -11910,14 +12526,14 @@ void Server::MeteorExplode(PlacedObj& o, std::vector<OutPacket>& out) {
 // mapDamageUnitsAround_4E25B0(Go `game.go:1407`) — 둘레 피해. rr = max(r1, r2)
 //   · 자기(날아간 것)와 **이미 직접 맞은 것**은 건너뛴다 · 벽 너머(선 추적 1)는 안 닿는다
 //   · 안쪽 r2 까지는 온전, 그 밖은 `1 − (거리 − r2) / (rr − r2)` 로 줄어든다
-//   ⚠ 벽 피해(mapDamageToWalls_534FC0)는 아직 안 옮김 — 벽이 부서지는 묶음(9)에서
+//   ★ 09-29 Z1-A — 벽 피해(mapDamageToWalls_534FC0)를 끝에 붙였다(`wallWho` — 부르는 쪽이 who 를 넘긴다)
 //   ★ 09-27 S1 — 정답지는 `CallDamage(who, nil, …)`(`game.go:1438`) — a3 가 없으니 피해 함수의 v9 = who 다(방패·대검·지팡이 막기·되받아치기가 이것을 본다).
 //     전에는 여기서 때린 것 없이(nullptr) 넘겨 **둘레 피해는 막기 판정을 아예 안 탔다**. 부르는 쪽이 who 로 채운 `whoSrc` 를 넘긴다
 //     (불덩이 = 불덩이 자신 · 죽음 광선·운석 = 시전자 사람). 못 넘기면 옛 방식(막기 없음)
 //   ⚠ who 자신 건너뛰기(`:1418` `u == who && !damageWalls`)는 옮기지 않는다 — damageWalls 가 늘 참으로 돌아와(`:1401·1448`) 실제로 안 걸린다
 void Server::DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,
                                const std::string& by, const Target& skip, std::vector<OutPacket>& out, HitterRef hitter,
-                               const AttackSrc* whoSrc) {
+                               const AttackSrc* whoSrc, const WallHitter& wallWho) {
     const float rr = (r1 < r2) ? r2 : r1;
     if (rr <= 0.0f || dmg <= 0) return;
     auto hit = [&](const Target& t, float tx, float ty) {
@@ -11939,6 +12555,10 @@ void Server::DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, 
     }
     for (size_t k = 0; k < pets_.size(); ++k)
         hit(Target{ std::string(), static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
+    // ★ 09-29 Z1-A — 끝에 늘 벽 피해(`game.go:1441~1447`) — 칸 네모 = 둘레 네모(rr) ÷ 23 · 반지름은 **r1** · 피해는 줄이지 않은 값
+    const int gx0 = static_cast<int>(cx - rr) / 23, gy0 = static_cast<int>(cy - rr) / 23;
+    const int gx1 = static_cast<int>(cx + rr) / 23, gy1 = static_cast<int>(cy + rr) / 23;
+    MapDamageToWalls(gx0, gy0, gx1, gy1, cx, cy, r1, dmg, dtype, wallWho, out);
 }
 
 // fireballCollide_4E9AC0(`GAME3_3.c:4160`) — 닿은 자리에서 터진다. 인자 한 바이트가 크기를 다 정한다.
@@ -11947,7 +12567,7 @@ void Server::DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, 
 //   · 둘레 피해 : 바깥 **양 × 0.33333** · 안쪽 **15** · 같은 **양 >> 1** · 직접 맞은 것은 건너뜀
 //   · 불똥 그림 : `netSparkExplosionFx_5231B0` = **`93 <x u16> <y u16> <양 i8>` 6바이트**를 화면 안 모두에게
 //     ⚠ 옛 자리표시는 여기에 `85`(FireBoom)를 보냈다 — **짐작이었고, 정답지는 `93` 이다.**
-//   ⚠ 아직 안 옮긴 것 — 그을음(sMakeScorch) · 소리 42 · 벽 피해(mapDamageToWalls)
+//   ⚠ 아직 안 옮긴 것 — 그을음(sMakeScorch) · 소리 42 · (09-29 Z1-A — 벽 피해는 `DamageUnitsAround` 끝 · who = 불덩이 — 유닛이 아니라 폭발 자리에서 잰다)
 void Server::FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPacket>& out) {
     const int amount = static_cast<int>(m.collideAmount);
     if (amount <= 0) return;
@@ -11963,8 +12583,10 @@ void Server::FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPa
     src.rootIsMonster = MissileRootIsMonster(m);
     src.missile = true;
     if (!hit.none()) HurtTarget(hit, dmg, out, m.owner, 1, &src, HitterMissile(m));
+    WallHitter fw;                                           // ★ 09-29 Z1-A — 벽 피해 who = 불덩이(MISSILE — 방향 없음 · 재질은 그 종류)
+    fw.present = true; fw.x = m.posX; fw.y = m.posY; fw.material = MaterialOfWire(m.type);
     DamageUnitsAround(m.posX, m.posY, static_cast<float>(static_cast<double>(amount) * 0.33333334), 15.0f,
-                      dmg, 1, m.owner, hit, out, HitterObj(m.type), &src);
+                      dmg, 1, m.owner, hit, out, HitterObj(m.type), &src, fw);
     const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
     const uint8_t fx[6] = {
         static_cast<uint8_t>(Op::FX_SPARK_EXPLOSION),
@@ -12981,6 +13603,7 @@ void Server::GiveDefaultGear(Session& s) {
         c.netCode = static_cast<uint16_t>(s.netCode + 1 + g);
         c.type = l.items[g];
         c.equipped = true;                     // 스냅샷 꼬리가 `60 REPORT_EQUIP` 을 같이 보낸다
+        DefaultGearMods(c.type, s.info97, c.mods);   // ★ 09-29 — 평상복 색(수식) — 남에게 겉모습을 알릴 때 싣는다
         s.inventory.push_back(c);
         ++gearGiven_[1];
         s.gearInBag = true;
@@ -12990,16 +13613,194 @@ void Server::GiveDefaultGear(Session& s) {
     }
 }
 
+// ★ 09-28 B4b — 평상복인가(`sub_53E2D0` 의 반대 — 갑옷이고 입음 비트 & 0xC0D · `GAME4_3.c:7315~7324`). 셔츠 0x400 · 바지 4 · 신발 1
+static bool IsStreetClothes(const Session::Carried& c) {
+    return c.equipBit != 0 && !c.isWeapon && !c.weaponClass && (c.equipBit & 0xC0Du) != 0;
+}
+
+// ★ 09-28 B4b — 가방 한 칸을 바닥에 떨군다(`dropDefault_4ED290` 의 몸통 — 손 버리기 `72 TRY_DROP` 과 죽을 때 떨어뜨리기가 함께 쓴다).
+//   ① 벗기 `sub_4ED0C0`(`GAME3_3.c:6304~6365`) — 본인 알림은 늘 없다(a3 = 0) · 남에게는 산 사람만(죽었으면 a4 = 0 · `:6321~6323`).
+//      무기는 든 것일 때만 내려놓는다(53A140 이 가린다)
+//   ② 본인에게 `4d REPORT_DROP <번호2> <종류2>`(`netReportDrop_4D8B50`) → 가방에서 뺀다
+//   ③ 그 자리에 세계로(`createAt_4DAA50`) — 소개는 시야 갱신이 한다 · 사라짐 시계(`DropDecayFrame`)
+void Server::DropCarriedToWorld(Session& s, size_t at, double tx, double ty, bool dead, std::vector<OutPacket>& out) {
+    if (at >= s.inventory.size()) return;
+    const uint16_t nc = s.inventory[at].netCode;
+    if (s.inventory[at].equipped) {
+        if (s.inventory[at].weaponClass) {
+            PlayerDequipWeapon(s, nc, out, /*toSelf=*/false, /*toOthers=*/!dead);
+        } else {
+            s.inventory[at].equipped = false;
+            ReportEquipChange(s, s.inventory[at], false, out, /*toSelf=*/false, /*toOthers=*/!dead);
+        }
+    }
+    const Session::Carried c = s.inventory[at];
+    {
+        const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_DROP), static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8),
+                                 static_cast<uint8_t>(c.type), static_cast<uint8_t>(c.type >> 8) };
+        EmitSeq(s, msg, sizeof(msg), out);
+    }
+    s.inventory.erase(s.inventory.begin() + static_cast<long>(at));
+    if (s.weaponNet == nc) s.weaponNet = 0;   // 들고 있지 않은 칸이어도 번호가 남지 않게(HeldWeapon 은 어차피 못 찾는다)
+    // 세계로 — 칸은 `INVENTORY_FAIL` 되돌리기와 같다
+    WorldStatic w;
+    w.netCode = nc; w.type = c.type; w.modifiable = c.modifiable; w.useAmount = c.useAmount;
+    w.equipBit = c.equipBit; w.isWeapon = c.isWeapon; w.weaponClass = c.weaponClass;
+    w.wandClass = c.wandClass; w.subclass = c.subclass; w.weight = c.weight;
+    w.isFood = c.isFood; w.foodBits = c.foodBits; w.useFn = c.useFn;
+    w.charges = c.charges; w.chargesMax = c.chargesMax; w.wandSpell = c.wandSpell; w.wandCooldown = c.wandCooldown;
+    w.x = static_cast<int>(std::lround(tx)); w.y = static_cast<int>(std::lround(ty));
+    // ★ 09-28 사람 판 「버린 물건이 10초가 지나도 안 사라진다」 — 사라짐 시계(`DropDecayFrame` 주석).
+    //   ✖ 09-28 정정 — 처음엔 `dropDefault_4ED290` 의 10초 규칙만 옮겨 「기본 장비만 10초 · 맵 물건은 남음」이라 했다.
+    //     정품 녹음은 로브·맵 갑옷 모두 **25초**(750프레임) — 갑옷·무기는 물건별 버리기 함수가 25초로 다시 건다
+    w.decayExempt = c.decayExempt;
+    w.dropFn = c.dropFn;
+    for (int m = 0; m < 4; ++m) w.mods[m] = c.mods[m];   // ★ 09-29 — 수식도 바닥으로
+    w.decayFrame = DropDecayFrame(c.dropFn, c.decayExempt);
+    statics_.push_back(w);
+    freshStatics_.insert(nc);   // 시야 반경이 꺼진 판에서도 소개되게(틱 갱신의 freshStatics_ 자리)
+}
+
+// ★ 09-28 B4b — 죽을 때 가방 떨어뜨리기 `nox_xxx_dropAllItems_4EDA40`(`GAME3_3.c:6701~6861`). 퀘스트가 아니면 `diePlayer_54D2B0` 이 부른다(`GAME5.c:5093~5095`).
+//   · 거름 `unitDropCheckSome_4EDCD0`(`:6864~6869`) — 사람이면 NO_AUTO_DROP(0x10000000)은 안 떨군다. 그 깃발은 평상복을 **입을 때** 서고
+//     **벗을 때** 지워진다(`GAME4_3.c:7479~7481·7558~7560` · 벗기 `&= 0xEFFFFEFF`) ⇒ **입은 평상복만 남는다**
+//   · 차례 — 가방 머리부터(정답지는 새로 든 것을 머리에 끼운다 · 우리 가방은 뒤에 붙이므로 **뒤에서부터**).
+//     정품 녹음 18:55:55.9 — `4d` 넷이 b0·bc·b8·68 = 가장 최근에 주운 것부터
+//   · 자리 — 몸 둘레를 네모 나선으로 돌며(간격 = 떨굴 것 중 가장 큰 몸 반지름 × 2 + 6 · 칸마다 ±3 흔듦) 몸에서 그 자리까지
+//     선 추적(깃발 1)이 트인 첫 자리에 하나씩. 한 바퀴를 다 돌아도 하나도 못 놓으면 그 뒤 것은 전부 **몸 자리에**
+//   · 벗을 때 남에게 안 알린다(죽음 — `DropCarriedToWorld` dead) · 본인에게 `4d` 만(녹음과 같다)
+void Server::DropAllItems(Session& s, std::vector<OutPacket>& out) {
+    std::vector<uint16_t> order;
+    float maxR = 0.0f;
+    for (size_t k = s.inventory.size(); k-- > 0;) {
+        const Session::Carried& c = s.inventory[k];
+        if (c.equipped && IsStreetClothes(c)) { ++deathDropKept_; continue; }
+        order.push_back(c.netCode);
+        const auto r = itemRadius_.find(c.type);
+        if (r != itemRadius_.end() && r->second > maxR) maxR = r->second;
+    }
+    const double step = static_cast<double>(maxR) + maxR + 6.0;   // v13
+    const double px = s.posX, py = s.posY;
+    auto dropNc = [&](uint16_t nc, double x, double y) {
+        for (size_t i = 0; i < s.inventory.size(); ++i)
+            if (s.inventory[i].netCode == nc) { DropCarriedToWorld(s, i, x, y, /*dead=*/true, out); return; }
+    };
+    int v2 = 0, v6 = -1, v7 = 3, v14 = 0, v15 = 0, v20 = 0, v21 = -1;
+    bool v16 = false;
+    auto stepDir = [&](int d) {
+        switch (d) {
+            case 0: v20 = ++v2; break;
+            case 1: v21 = ++v6; break;
+            case 2: v20 = --v2; break;
+            case 3: v21 = --v6; break;
+            default: break;
+        }
+    };
+    size_t oi = 0;
+    for (; oi < order.size(); ++oi) {
+        bool v8 = false, v17 = false;
+        int v18 = v7 - 1;
+        for (;;) {
+            double tx = v20 * step + px, ty = py - v21 * step;
+            tx += -3.0 + 6.0 * NextRandomFloat();
+            ty += -3.0 + 6.0 * NextRandomFloat();
+            if (MapTraceRay(static_cast<float>(px), static_cast<float>(py), static_cast<float>(tx), static_cast<float>(ty), 1)) {
+                dropNc(order[oi], tx, ty);
+                ++deathDropSpiral_;
+                v8 = v16 = v17 = true;
+            } else {
+                v8 = v17;
+            }
+            if (v14 != v18) { ++v14; stepDir(v15); }
+            else if (v15 != 3 && v18) { ++v15; v14 = 1; stepDir(v15); }
+            else {
+                if (!v16) break;                                  // 한 바퀴 내내 못 놓았다
+                v7 += 2; v18 += 2;
+                v2 = 1 - v7 / 2; v20 = v2; v14 = 1;
+                v6 = v7 / -2; v21 = v6; v15 = 0; v16 = false;
+            }
+            if (v8) break;
+        }
+        if (!v8) break;
+    }
+    for (; oi < order.size(); ++oi) { dropNc(order[oi], px, py); ++deathDropAtBody_; }   // 남은 것은 몸 자리에(`:6849~6859`)
+}
+
+// ★ 09-28 B4b — 부활 때 가방 정리 + 기본 장비 새로 — `playerMakeDefItems_4EF7D0(a1, 1, 0)` 의 a3 = 0 갈래(`GAME3_3.c:7969~8043`).
+//   ① 가방에서 지운다 — **입은 평상복 중 0x808 비트가 아닌 것**(셔츠·바지·신발)만 남긴다(`:7969~7979`). 알림 없음(`delayedDeleteObject`)
+//   ② (부르는 쪽이 `e9 … 01` 을 보낸 뒤) 새로 준다 — `playerRespawnItem_4EF750`(`:7872~7897`): 새 오브젝트 · RESPAWN 지움 · 가방에 넣고 입힘
+//      셔츠: (협동 2048 | 협동팀 512) 이거나 워리어가 아니면 · 입은 비트에 0x400 없을 때 / 바지: 4 없을 때 / 신발: 1 없을 때
+//      직업(협동·퀘스트 아님): 위저드 로브 · 워리어 롱소드+나무방패 · 컨저러 없음
+//   ③ 본인에게 물건마다 `4c <번호2> <종류2> <색4>` · (내구도 있으면) `44 <번호2> <내구도2> <내구도2>` · `60 <번호2>` — 정품 녹음 18:56:07.9
+//      위저드 부활 = `4c 0c 02 79 04 ff ff ff ff` · `44 0c 02 45 01 45 01` · `60 0c 02`. 남에게는 알림 없음(`e9 … 01` 로 클라가 기본 차림을 다시 그린다)
+//   ⚠ 안 옮긴 것 — 협동(2048)·퀘스트(4096) 갈래의 직업 장비 표 · 평상복 색(사람이 고른 색 — 접속 스냅샷과 같은 녹음 색을 쓴다)
+void Server::RespawnGear(Session& s, std::vector<OutPacket>& out) {
+    for (size_t i = s.inventory.size(); i-- > 0;) {
+        const Session::Carried& c = s.inventory[i];
+        const bool keep = c.equipped && IsStreetClothes(c) && (c.equipBit & 0x808u) == 0;
+        if (keep) continue;
+        if (s.weaponNet == c.netCode) s.weaponNet = 0;
+        s.inventory.erase(s.inventory.begin() + static_cast<long>(i));
+        ++respawnGearDeleted_;
+    }
+    uint32_t worn = 0;
+    for (const auto& c : s.inventory) if (c.equipped && !c.isWeapon) worn |= c.equipBit;
+    const bool coop = (gameSettings_.gameFlags & 0x800u) != 0;
+    const bool quest = questTotal_ > 0 || questStage_ > 0;
+    std::vector<uint16_t> give;
+    if (((gameSettings_.gameFlags & 0xA00u) != 0 || s.charClass != CharClass::Warrior) && !(worn & 0x400u)) give.push_back(kItemStreetShirt);
+    if (!(worn & 0x4u)) give.push_back(kItemStreetPants);
+    if (!(worn & 0x1u)) give.push_back(kItemStreetSneakers);
+    if (coop || quest) {
+        ++respawnGearNotPorted_;                              // ⚠ 협동·퀘스트의 직업 장비 표는 안 옮김
+    } else if (s.charClass == CharClass::Wizard) {
+        give.push_back(kItemWizardRobe);
+    } else if (s.charClass == CharClass::Warrior) {
+        give.push_back(kItemLongsword);
+        give.push_back(kItemWoodenShield);
+    }
+    for (uint16_t type : give) {
+        const auto it = itemTemplate_.find(type);
+        if (it == itemTemplate_.end()) { ++respawnGearNoTemplate_; continue; }   // 틀이 없으면 안 준다(무게를 짐작하지 않는다)
+        Session::Carried c = it->second;
+        c.netCode = nextShotNetCode_++;
+        if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+        c.type = type;
+        c.equipped = true;
+        c.decayExempt = DecayExempt::None;                    // RESPAWN 지움(`:7891`)
+        uint8_t look[4] = { 0xff, 0xff, 0xff, 0xff };
+        uint16_t dur = 0;
+        DefaultGearLook(type, look, dur);                     // 내구도만 이 표에서
+        DefaultGearMods(type, s.info97, c.mods);              // ★ 09-29 — 색(수식)은 캐릭터 색으로(정보 97B 가 없으면 같은 표)
+        const uint8_t pk[9] = { static_cast<uint8_t>(Op::REPORT_MODIFIABLE_PICKUP), static_cast<uint8_t>(c.netCode), static_cast<uint8_t>(c.netCode >> 8),
+                                static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8), c.mods[0], c.mods[1], c.mods[2], c.mods[3] };
+        EmitSeq(s, pk, sizeof(pk), out);
+        if (dur > 0) {
+            const uint8_t d[7] = { 0x44, static_cast<uint8_t>(c.netCode), static_cast<uint8_t>(c.netCode >> 8),
+                                   static_cast<uint8_t>(dur), static_cast<uint8_t>(dur >> 8), static_cast<uint8_t>(dur), static_cast<uint8_t>(dur >> 8) };
+            EmitSeq(s, d, sizeof(d), out);
+        }
+        const uint8_t eq[3] = { static_cast<uint8_t>(Op::REPORT_EQUIP), static_cast<uint8_t>(c.netCode), static_cast<uint8_t>(c.netCode >> 8) };
+        EmitSeq(s, eq, sizeof(eq), out);
+        s.inventory.push_back(c);
+        if (c.isWeapon && s.weaponNet == 0) s.weaponNet = c.netCode;
+        ++respawnGearGiven_;
+    }
+}
+
 // ★ 09-27 B3 — 입기·벗기 알림(09-27 전에는 입기 처리 안에 있던 것을 그대로 옮김) — 본인에게 `0x60/0x61` · 남에게 겉모습
-void Server::ReportEquipChange(Session& s, const Session::Carried& c, bool wear, std::vector<OutPacket>& out) {
+void Server::ReportEquipChange(Session& s, const Session::Carried& c, bool wear, std::vector<OutPacket>& out, bool toSelf, bool toOthers) {
     const uint16_t nc = c.netCode;
     uint8_t msg[3] = {
         static_cast<uint8_t>(wear ? Op::REPORT_EQUIP : Op::REPORT_DEQUIP),
         static_cast<uint8_t>(nc),
         static_cast<uint8_t>(nc >> 8),
     };
-    EmitSeq(s, msg, sizeof(msg), out);   // 본인에게
+    if (toSelf) EmitSeq(s, msg, sizeof(msg), out);   // 본인에게(버리기는 빼고 `4d REPORT_DROP` 이 대신한다)
     if (wear) ++equipped_; else ++dequipped_;
+    // ★ 09-28 B4b — 죽은 사람이 떨어뜨리는 갑옷·무기는 **남에게도 안 알린다**(`sub_4ED0C0` `GAME3_3.c:6321~6323` 이 a4 = 0 ·
+    //   정품 녹음 `orig_arena_1851` 18:55:55.9 — 죽은 쪽에 `4d` 넷뿐, 상대에게 `53`·`54` 없음). 클라는 부활 `e9 … 01` 로 다시 그린다
+    if (!toOthers) return;
 
     // ★★ **남들에게 겉모습을 알린다** (P7). 그동안 본인 표시(0x60/0x61)만
     //   있어서 옆 사람 화면의 몸이 안 바뀌었다.
@@ -13007,33 +13808,86 @@ void Server::ReportEquipChange(Session& s, const Session::Carried& c, bool wear,
     //     입기: op | 번호2(**bit15=사람**) | 장비비트4 | (수식4, 빈 칸 ff)
     //     벗기: op | 번호2(**bit15 안 봄** — 클라가 사람 전용으로 처리) | 장비비트4
     //   장비비트가 0 이면(표에 없는 이름) **안 보낸다** — 짐작으로 안 채운다.
-    if (c.equipBit != 0) {
+    // ★ 09-29 — 입기는 `BuildWornLook`(`sub_4D82F0`)로 — 수식이 하나라도 있으면 51·52(수식 넷), 없으면 50·4f.
+    //   ✖ 전에는 CLASS 가 수식 갈래면 늘 52 에 ff 넷을 실었다 — 평상복 색(수식)이 빠져 남 화면에 셔츠가 살색으로 보였다(09-28 사람 판)
+    if (wear && c.equipBit != 0) {
         uint8_t am[11];
-        size_t an = 7;
-        if (wear) {
-            am[0] = static_cast<uint8_t>(c.modifiable
-                ? (c.isWeapon ? Op::REPORT_MODIFIABLE_WEAPON_EQUIP
-                              : Op::REPORT_MODIFIABLE_ARMOR_EQUIP)
-                : (c.isWeapon ? Op::REPORT_MUNDANE_WEAPON_EQUIP
-                              : Op::REPORT_MUNDANE_ARMOR_EQUIP));
+        const size_t an = BuildWornLook(s, c, am);
+        if (an > 0) {
+            Broadcast(/*viaSeq=*/true, am, an, out);
+            ++appearanceSent_;
         } else {
-            am[0] = static_cast<uint8_t>(
-                c.isWeapon ? Op::REPORT_WEAPON_DEQUIP : Op::REPORT_ARMOR_DEQUIP);
+            ++appearanceUnknown_;
         }
-        const uint16_t who = static_cast<uint16_t>(
-            s.netCode | (wear ? 0x8000u : 0u));
-        am[1] = static_cast<uint8_t>(who);
-        am[2] = static_cast<uint8_t>(who >> 8);
+        return;
+    }
+    if (c.equipBit != 0) {                                 // 벗기 — `53`·`54` 7바이트
+        uint8_t am[7];
+        am[0] = static_cast<uint8_t>(c.isWeapon ? Op::REPORT_WEAPON_DEQUIP : Op::REPORT_ARMOR_DEQUIP);
+        am[1] = static_cast<uint8_t>(s.netCode);
+        am[2] = static_cast<uint8_t>(s.netCode >> 8);
         PutU32(am + 3, c.equipBit);
-        if (wear && c.modifiable) {
-            am[7] = am[8] = am[9] = am[10] = 0xFF;   // 수식 없음 = -1
-            an = 11;
-        }
-        Broadcast(/*viaSeq=*/true, am, an, out);
+        Broadcast(/*viaSeq=*/true, am, sizeof(am), out);
         ++appearanceSent_;
     } else {
         ++appearanceUnknown_;
     }
+}
+
+// ★ 09-29 — `sub_4D82F0`(`GAME3_2.c:3841~3947`) — 입은 물건 하나의 겉모습.
+//   무기 갈래(CLASS & 0x11001000 — 무기·지팡이·깃발): 수식이 하나라도 있으면 `51`(11바이트 · 수식 넷), 없으면 `50`(7바이트)
+//   갑옷(CLASS & 0x2000000): 같은 규칙으로 `52`·`4f` · 번호는 주인이 사람이면 bit15 · 비트는 무기/갑옷 입음 비트
+//   ⭕ 정품 녹음 `orig_arena_1851` 18:53:27.410 — 새로 온 위저드에게 워리어의 나무방패 `4f 5c 80 00 00 00 01` · 롱소드 `50 5c 80 00 02 00 00` ·
+//     신발 `52 5c 80 01 00 00 00 b9 ca ff ff` · 바지 `52 5c 80 04 00 00 00 ff bf ff ff`
+size_t Server::BuildWornLook(const Session& who, const Session::Carried& c, uint8_t buf[11]) {
+    if (c.equipBit == 0) return 0;                         // 비트를 모르면 안 보낸다(짐작으로 안 채운다)
+    bool hasMod = false;
+    for (uint8_t m : c.mods) if (m != 0xff) hasMod = true;
+    const bool weapon = c.weaponClass || c.isWeapon;
+    buf[0] = static_cast<uint8_t>(weapon ? (hasMod ? Op::REPORT_MODIFIABLE_WEAPON_EQUIP : Op::REPORT_MUNDANE_WEAPON_EQUIP)
+                                         : (hasMod ? Op::REPORT_MODIFIABLE_ARMOR_EQUIP : Op::REPORT_MUNDANE_ARMOR_EQUIP));
+    const uint16_t nc = static_cast<uint16_t>(who.netCode | 0x8000u);
+    buf[1] = static_cast<uint8_t>(nc);
+    buf[2] = static_cast<uint8_t>(nc >> 8);
+    PutU32(buf + 3, c.equipBit);
+    if (!hasMod) return 7;
+    for (int i = 0; i < 4; ++i) buf[7 + i] = c.mods[i];
+    return 11;
+}
+
+// ★ 09-29 — `sub_4DDE10`(`GAME3_2.c:5670~5693`) — 받는 사람에게 그 사람의 입은 것(+ 깃발) 전부를 `sub_4D82F0` 로.
+//   새로 온 사람에게 먼저 온 사람을 소개할 때 `2d` 뒤에 부른다(녹음 18:53:27.410 — `2d` → `4f`·`50`·`52`·`52`).
+//   ✖ 전에는 이 자리가 없어 나중에 들어온 사람이 먼저 온 사람의 **평상복 색**(수식)을 못 받았다 — 09-28 사람 판 「컨저러 셔츠가 살색」
+//   ⚠ 깃발 갈래(입지 않아도 `Flag` 면)는 우리 깃발이 가방에 없어 뺀다
+void Server::SendWornLooks(Session& to, const Session& who, std::vector<OutPacket>& out) {
+    // 차례 — 가방 머리부터(정답지는 새로 든 것을 머리에 끼운다 · 우리는 뒤에 붙이므로 뒤에서부터). 녹음 차례 = 방패 → 검 → 신발 → 바지
+    for (size_t k = who.inventory.size(); k-- > 0;) {
+        const Session::Carried& c = who.inventory[k];
+        if (!c.equipped) continue;
+        uint8_t buf[11];
+        const size_t n = BuildWornLook(who, c, buf);
+        if (n == 0) { ++wornLookSkipped_; continue; }
+        EmitSeq(to, buf, n, out);
+        ++wornLookSent_;
+    }
+}
+
+// ★ 09-29 — 기본 장비의 수식 넷. 평상복은 캐릭터 색이 수식이다 — `playerMakeDefItems_4EF7D0`(`GAME3_3.c:7983~8006`):
+//   셔츠 { 0, UserColor1+색[84], UserColor1+색[85], 0 } · 바지 { 0, UserColor1+색[83], 0, 0 } · 신발 { UserColor1+색[87], UserColor1+색[86], 0, 0 }
+//   UserColor1 번호 = **0xb3**(정품 녹음 — 캐릭터 색 07·13·0c·17·06 → 수식 ba·c6·bf·ca·b9 다섯이 모두 0xb3 + 색)
+//   정보 97B 가 없으면(시험 접속) 접속 스냅샷과 같은 표(`DefaultGearLook`) · 로브·방패·검은 수식 없음
+void Server::DefaultGearMods(uint16_t type, const std::vector<uint8_t>& info97, uint8_t mods[4]) {
+    mods[0] = mods[1] = mods[2] = mods[3] = 0xff;
+    if (info97.size() >= 88) {
+        constexpr uint8_t kUserColor1 = 0xb3;
+        if (type == kItemStreetShirt) { mods[1] = static_cast<uint8_t>(kUserColor1 + info97[84]); mods[2] = static_cast<uint8_t>(kUserColor1 + info97[85]); }
+        else if (type == kItemStreetPants) { mods[1] = static_cast<uint8_t>(kUserColor1 + info97[83]); }
+        else if (type == kItemStreetSneakers) { mods[0] = static_cast<uint8_t>(kUserColor1 + info97[87]); mods[1] = static_cast<uint8_t>(kUserColor1 + info97[86]); }
+        return;
+    }
+    uint16_t dur = 0;
+    uint8_t look[4];
+    if (DefaultGearLook(type, look, dur)) for (int i = 0; i < 4; ++i) mods[i] = look[i];
 }
 
 // ★ 09-27 B3 — 무기 들기 `nox_xxx_playerEquipWeapon_53A420`(`GAME4_3.c:4906~4993`) — 관문 순서 그대로.
@@ -13095,7 +13949,7 @@ bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vec
 //     마법부여 끄기 `4F3030`(`:4796`) — 우리 물건에 마법부여가 없다. `:4797~4814` 는 원본 exe 에 없는 GameEx 확장이라 안 옮긴다(소스 주석)
 //     (09-27 B5 에서 지속 주문 끊기 `4FEB60`(`:4774`)은 옮김)
 //   부르는 자리는 모두 (a3, a4) = (1, 1) 이다 — 무기 들기(`:4965`) · 벗기 요청(`playerTryDequip_4F2FB0` `GAME3_3.c:10571`)
-bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out) {
+bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out, bool toSelf, bool toOthers) {
     auto gate = [&](DequipGate g) { ++dequipGate_[static_cast<size_t>(g)]; return g == DequipGate::Dequipped; };
     Session::Carried* item = nullptr;
     for (auto& c : s.inventory) if (c.netCode == nc) { item = &c; break; }
@@ -13111,7 +13965,7 @@ bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>&
         if (item->subclass & 0x4000000) { DurCancelFor(59, s.addr, out); ++wandSpellCut_; }
     }
     held->equipped = false;
-    ReportEquipChange(s, *held, false, out);
+    ReportEquipChange(s, *held, false, out, toSelf, toOthers);   // ★ 09-28 — 버리기는 a3 = 0(본인 알림 없음, `GAME3_3.c:6334`) · 죽음은 a4 도 0
     s.weaponNet = 0;
     return gate(DequipGate::Dequipped);
 }
@@ -14371,12 +15225,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   안 보이는 것을 상대로 잡아 두면, 45 가 깨져 사슬이 빠지고 싸움이 다시 쌓기를
             //   **매 틱 되풀이**해 제자리에 선다(2026-09-15 벽 시험에서 잡혔다).
             //   정답지도 **알아본 적**만 `+1196` 에 넣는다
-            //   ⚠ 잣대는 **크리처 자리에서 보는 선 추적**이다. `CanInteractFrom` 은 **주인 시점**이라
-            //     크리처 시야로는 틀린다(주인이 보면 소환수도 본다는 셈이 된다)
+            //   ⚠ 잣대는 **크리처 자리에서 보는 선 추적**이다. (09-28 전) `CanInteractFrom` 은 **주인 시점**이라
+            //     크리처 시야로는 틀렸다(주인이 보면 소환수도 본다는 셈이 된다)
+            // ★ 09-28 — `CanInteractFrom` 을 크리처 눈(버프 + 시야선)으로 고치고 잣대를 그 하나로 — 조건 45 와 어긋나면 사슬이 매 틱 무너진다
             const Target t = debugNoAutoFight_ ? Target{} : NearestTarget(k.owner, k.x, k.y, 1e9);
             float sx = 0, sy = 0;
-            const bool sees = !t.none() && TargetXY(t, sx, sy) &&
-                              MapTraceVision(static_cast<float>(k.x), static_cast<float>(k.y), sx, sy);
+            const bool sees = !t.none() && TargetXY(t, sx, sy) && CanInteractFrom(k, t);
             if (sees) {
                 k.enemyAddr = t.addr;
                 k.enemyPet = t.pet;
@@ -14413,6 +15267,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             }
 
             k.velX = 0; k.velY = 0;
+            AIRefreshStackArgs(k);                             // ★ 09-28 — 정답지는 조건 보기 전(`unit_ai.go:548`)
             AIProcDeps(k, out);
             if (pets_.size() != before) break;
             AITick(k, out);
@@ -14493,6 +15348,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     // (4-a4) 무적 켜짐·꺼짐 비교 루프는 걷어냄 — 버프가 바뀌는 자리(setUnitBuffFlags)가 곧바로 `5a` 를 올린다
 
     UpdatePlaced(out);                                     // 4-c3 놓인 오브젝트(독구름 …)의 주기 함수·수명
+    DecayStatics(out);                                     // ★ 09-28 버린 물건 10초 사라짐(`decay_511750` · `server.go:142`)
     PoisonTick(out);                                       // 4-c2a 독 — 감쇠와 피해(server.go 의 유닛 갱신 자리)
 
     // ★ R4 — 이 틱에 바뀐 것들을 각자에게 보내고 목록을 비운다.
@@ -14673,7 +15529,19 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 if (!o.inGame || o.addr == s.addr) continue;
                 // 상태는 **그 사람이 지금 어떤지** 그대로 — 관전 중이면 1, 놀고 있으면 0.
                 EmitNewPlayer(o, s, s.observer ? 1 : 0, out);   // 먼저 온 사람에게 새 사람을
+                // ★ 09-29 — 먼저 온 사람에게 새 사람의 `e9 <번호2> <프레임4> ff 01`(기본 차림 다시 그리기). 정답지는 새 사람이 기본 장비를 받을 때
+                //   `netSendPlayerRespawn_4EFC30(…, 1)` 을 **모두에게** 보낸다 — 정품 녹음 18:53:27.374 먼저 온 워리어가 `e9 61 00 7c 02 00 00 ff 01` 받음.
+                //   ✖ 전에는 새 사람 본인(스냅샷 꼬리)에게만 갔다 — 먼저 온 사람 화면에서 새 사람의 로브가 갈색으로 보였다(09-29 사람 판)
+                {
+                    const uint32_t f = o.tickFrame + 1;
+                    const uint8_t e9[9] = { static_cast<uint8_t>(Op::PLAYER_RESPAWN), static_cast<uint8_t>(s.netCode),
+                                            static_cast<uint8_t>(s.netCode >> 8), static_cast<uint8_t>(f), static_cast<uint8_t>(f >> 8),
+                                            static_cast<uint8_t>(f >> 16), static_cast<uint8_t>(f >> 24), 0xff, 0x01 };
+                    EmitSeq(o, e9, sizeof(e9), out);
+                    ++introRedrawSent_;
+                }
                 EmitNewPlayer(s, o, o.observer ? 1 : 0, out);   // 새 사람에게 먼저 온 사람을
+                SendWornLooks(s, o, out);                       // ★ 09-29 — 그 사람이 입은 것 전부(색 수식 포함 · `sub_4DDE10`)
 
                 // ★★★ **소개 바로 뒤에 상태를 한 번 더 갈아 끼운다.**
                 //   `2d` 의 상태 자리는 클라에서 `|=` 로 들어가 **한 번 선 비트가 안 꺼진다.**
@@ -15168,6 +16036,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             // 멀어진 것은 갱신 **항목이 아니라** 별도 메시지로 알린다 —
             // 갱신에 실을 수 있는 것은 「움직인 것」뿐이라는 규약(P4 8런의 결론) 때문이다.
             CollectAoiExits(s.staticIntroAt, statics_, s.x, s.y, outOfSight);
+        } else if (!freshStatics_.empty()) {
+            // ★ 09-28 사람 판 — 「버리면 가방에서는 빠지는데 바닥에 안 생긴다」. 시야 반경이 꺼진 판은 바닥 물건을
+            //   **접속 스냅샷에서만** 소개했다(위 14707 자리). 게임 중 새로 놓인 것은 소개할 길이 없었다 →
+            //   그것들만 반경 안에서 한 번 소개한다(소개 규약은 같다 — ff·절대·한 번). 지우기는 줍기의 DESTROY 가 한다
+            AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,
+                             s.tickFrame, s.x, s.y, baseX, baseY, m, &freshStatics_);
         }
 
         // ★★★ 2026-09-19 — **512 → 2048.** 정답지가 쓰는 크기다(`gameloop.go:487`

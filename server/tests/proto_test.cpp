@@ -548,7 +548,9 @@ void TestDeathFlow() {
             const auto* ts = FindLastMsg(msgs, static_cast<uint8_t>(nox::Op::TIMESTAMP));
             Check(ts != nullptr && (tick & 0xFFFF) == static_cast<uint32_t>((*ts)[1] | ((*ts)[2] << 8)),
                   "0xe9 의 4바이트가 그 틱의 시각(27) 과 다름");
-            Check((*r)[7] == 0xff && (*r)[8] == 0x01, "0xe9 끝 두 바이트가 표본과 다름");
+            // ★ 09-28 — 끝 바이트는 B4b 전까지 0(녹음 표본은 01 — 받는 클라가 기본 차림을 다시 그린다 · `PlayerRespawn` 주석)
+            //   ★ 09-28 B4b 넣음 — 녹음 값 01 로 되돌림(정품 녹음 `orig_arena_1851` 18:56:07.9 `… ff 01`)
+            Check((*r)[7] == 0xff && (*r)[8] == 0x01, "0xe9 끝 두 바이트가 ff 01 이 아님 — B4b 뒤로는 녹음 값(기본 차림 다시 그림)");
         }
         const auto* tot = FindLastMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
         Check(tot != nullptr, "0xdd 가 안 나감");
@@ -1260,6 +1262,8 @@ void TestAppearanceAndFx() {
     const std::string b = "10.9.9.2:41092";
 
     // ① 입으면 남에게 0x51(무기·수식·11B)이 bit15 와 장비 비트를 싣고 간다
+    //   ★ 09-29 — 51 은 **수식이 하나라도 있을 때만**(`sub_4D82F0`) — 정품 녹음 18:55:51.209 맵 갑옷의 수식 `07 ff 7a 7d` 를 싣는다.
+    //     수식이 없으면 50(아래 ①') — 전에는 CLASS 만 보고 늘 51 에 ff 넷이었다
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
@@ -1271,6 +1275,7 @@ void TestAppearanceAndFx() {
         sw.modifiable = true;                    // 무기라 수식이 붙는다
         sw.equipBit = 0x200;                     // Longsword
         sw.isWeapon = true;
+        sw.mods[0] = 0x07; sw.mods[1] = 0xff; sw.mods[2] = 0x7a; sw.mods[3] = 0x7d;
         st.push_back(sw);
         nox::Server::WorldStatic unk;            // 표에 없는 것 — 겉모습을 안 보내야 한다
         unk.netCode = 501; unk.type = 700; unk.x = 1000; unk.y = 1000;
@@ -1297,7 +1302,7 @@ void TestAppearanceAndFx() {
                   "번호에 bit15(사람 표식)가 안 실렸다");          // 0x02d8|0x8000 = 0x82d8
             Check((*m)[3] == 0x00 && (*m)[4] == 0x02 && (*m)[5] == 0x00 && (*m)[6] == 0x00,
                   "장비 비트 0x200 이 안 실렸다");
-            Check((*m)[7] == 0xFF && (*m)[10] == 0xFF, "빈 수식 칸이 ff 가 아님");
+            Check((*m)[7] == 0x07 && (*m)[8] == 0xFF && (*m)[9] == 0x7a && (*m)[10] == 0x7d, "수식 넷(07 ff 7a 7d)이 그대로 안 실렸다");
         }
         Check(srv.appearanceSent() == 1, "겉모습 송신을 안 셌다");
 
@@ -1605,6 +1610,17 @@ void TestPropsAndInvuln() {
         // ② **바닥나면 멈춘다** — 계속 굴려도 0 아래로 안 간다
         for (int i = 0; i < 120; ++i) { ms6 += 34; s6.Tick(ms6, out6); }
         Check(s6.DebugPropCharge(600) >= 0, "잔량이 0 아래로 내려갔다");
+        // ②' ★ 09-28 사람 판 — **옆에 서 있는 동안은 회복하지 않는다**(정답지 `GAME4_3.c:6373` v23 · `:6472~6474`).
+        //   전에는 잔량 0 이면 옆에서도 0.5초마다 1 차고 → 곧바로 주고 → 소리 230 이 되풀이됐다(「마나석 옆에 있으면 소리가 계속」)
+        {
+            const int bottomNear = s6.DebugPropCharge(600);
+            const unsigned long long givenBefore = s6.obeliskMana(), idleBefore = s6.obeliskNearIdle();
+            Check(s6.ManaOf(w) < nox::ManaOnline(nox::CharClass::Wizard), "②' 전제 — 마나가 이미 가득이라 줄 자리가 없다(이 시험이 무의미해진다)");
+            for (int i = 0; i < 120; ++i) { ms6 += 34; s6.Tick(ms6, out6); }
+            Check(s6.DebugPropCharge(600) == bottomNear, "②' 옆에 사람이 서 있는데 마나석이 다시 찼다");
+            Check(s6.obeliskMana() == givenBefore, "②' 바닥난 마나석이 옆 사람에게 마나를 또 줬다(소리 230 도 같이 난다)");
+            Check(s6.obeliskNearIdle() > idleBefore, "②' 옆에 있으나 줄 것 없는 틱을 안 셌다");
+        }
         // ③ **떨어지면 회복한다** — 멀리 보내고 굴리면 다시 찬다
         const int bottom = s6.DebugPropCharge(600);
         s6.DebugMoveTo(w, 4000, 4000);
@@ -8737,12 +8753,13 @@ void TestUsePotion() {
     }
 
     // ⑦ **죽었으면 못 쓴다**
+    //   ★ 09-28 B4b — 죽으면 가방이 몸 둘레에 떨어진다(`dropAllItems_4EDA40`). 죽은 **뒤에** 쥐여 주고 쓰게 한다 — 전에는 죽기 전에 줬다
     {
         nox::Server srv; mk(srv);
-        const uint16_t red = give(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50);
         std::vector<nox::OutPacket> out;
         srv.DebugHurt(a, -1, 9999, std::string(), 16, out);
         Check(!srv.IsAlive(a), "안 죽었다(이 시험의 전제)");
+        const uint16_t red = give(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50);
         use(srv, red, out);
         Check(srv.CarriedCount(a) == 1, "죽었는데 물약을 썼다");
     }
@@ -10664,8 +10681,11 @@ void TestAIPathFind() {
             srv.SetWorldProps({ d });
             srv.AttachDoorWalls();
             // 막는 대각선도 그 각도에서 나온다(0·8·16·24 → 1·0·1·0)
+            // ★ 09-29 Z1-A — 벽 칸은 경첩 칸(500/23)이 아니라 문짝 가운데 칸이다(`DoorWallCell` · 시험 TestDoorLock ②)
             const int want = nox::DoorWallDir(closed);
-            Check(srv.DebugWallDirAt(500 / 23, 500 / 23) == want,
+            int cgx = 0, cgy = 0;
+            nox::Server::DoorWallCell(d, cgx, cgy);
+            Check(srv.DebugWallDirAt(cgx, cgy) == want,
                   "문이 막는 대각선이 제 각도에서 안 나온다");
         }
         // ★ 일부러 틀려 보기 — 네 각도가 **다 같은 답**이면 각도를 안 보고 있는 것이다
@@ -11565,16 +11585,22 @@ void TestCreatureTickMove() {
         srv.SetWalls({ { 45, 41 }, { 45, 42 }, { 45, 43 }, { 45, 44 }, { 45, 45 } });
         srv.DebugSetPetPos(0, 1000, 1000);
 
-        double bestX = 1000, offY = 0;
+        double offY = 0;
+        bool blockedAtFirst = false;
         for (int t = 0; t < 400; ++t) {
             ms += 34;
             srv.Tick(ms, out);
+            if (t == 0) blockedAtFirst = srv.DebugPetEnemy(0).empty();
             double px = 0, py = 0;
             if (!srv.DebugPetXY(0, px, py)) break;            // 죽었거나 사라졌다
-            if (px > bestX) bestX = px;
             offY = std::max(offY, std::fabs(py - 1000.0));
         }
-        Check(bestX > 45 * 23.0 + 23.0, "벽을 못 넘었다 — 길을 따라 돌아가야 한다");
+        // ✖ 09-28 정정 — 전에는 「벽 선(x 1058)을 넘었나」를 봤다. 조건 56(보이는 적이 없나)을 늘 참으로 두던 때라
+        //   마지막으로 본 자리(1150,1000)까지 걸어갔기 때문이다. 정답지는 56 이 「지금 상대가 없나」라 **다시 보이는 순간** 싸움으로 돌아가고,
+        //   임프는 쏘는 것이라 사선이 트이고 사거리(150) 안이면 그 자리에서 멈춘다(실측 — 모서리 (1033,925) · 상대까지 139).
+        //   ⇒ 「벽을 돌아 **상대가 보이는 자리**까지 갔나」를 본다
+        Check(blockedAtFirst, "전제 — 벽을 세운 첫 틱에 벌써 상대가 보였다(벽이 줄을 안 막는다)");
+        Check(srv.DebugPetEnemy(0) == b, "벽을 돌아 상대가 보이는 자리까지 못 갔다 — 길을 따라 돌아가야 한다");
         Check(offY > 23.0, "옆으로 안 비켰다 — 곧장 벽에 밀고 있나");
     }
 
@@ -15281,6 +15307,8 @@ void TestBerserkCrash() {
         Check(srv.DebugPrevX(a) == h.px && srv.DebugPrevY(a) == h.py, "① 옮긴 틱 끝 PrevPos 가 옮긴 자리가 아니다");
         Check(has(h.out, nox::Op::FX_JIGGLE) && has(h.out, nox::Op::FORGET_DRAWABLES), "① 땅울림(97)·ea 가 안 갔다");
         Check(srv.abilEnded(1, nox::AbilEnd::Disabled) == 1, "① 광전사가 DisableAbility 로 안 꺼졌다");
+        // ★ 09-29 Z1-A — 벽 세게면 `damageToMap(새 자리 칸, 100, 2)` 을 한 번 부른다(`GAME3_3.c:3241~3245`) — 갈래 넷 중 어디든 합 1
+        Check(srv.wallGate(0) + srv.wallGate(1) + srv.wallGate(2) + srv.wallGate(3) == 1, "① 광전사 벽 부딪힘이 벽 피해를 한 번 안 불렀다");
     }
     // ② **벽(깃발 0 — &5 없음)** — 살짝: 되돌아가기만(기절·피해·소리 없음)
     {
@@ -15385,7 +15413,27 @@ void TestBerserkCrash() {
         Check(srv.wallContacts() >= 1 && srv.berserkCollideCalls() == 0 && srv.BerserkHitSum() == 0,
               "⑦ 광전사 없이 벽에 닿았는데 벽 짝이 없거나 광전사 갈래가 올랐다");
     }
-    std::printf("  nine-defects 2-b2 — 광전사 부딪힘: 벽 세게(171·기절 44·20%%·옛 자리)·살짝 · 사람(속도 맞바꿈)·소환수 · 장애물 · 지나감 둘 · 광전사 없이 벽\n");
+    // ⑧ ★ 09-29 Z1-A **문** — 잠겼으면 부딪힘(LABEL_14 · `Object` 로 셈 · 기절) · 아니면 지나감(`Door`)(`GAME3_3.c:3207~3210`)
+    //   문짝(각도 16 · 경첩 1050,985 → 1072,1007)이 +x 돌진 길(y 1000)을 가로지른다 · 문 벽은 안 붙인다(문짝 닿음만 본다)
+    for (int locked = 0; locked <= 1; ++locked) {
+        nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        nox::Server::WorldProp d; d.kind = nox::PropKind::Door; d.netCode = 900; d.type = 306; d.x = 1050; d.y = 985;
+        d.angle = 16; d.fine = 128; d.lock = locked ? 1 : 0;
+        srv.SetWorldProps({ d });
+        mk(srv, out, ms);
+        Hit h = charge(srv, ms, out);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "⑧ %s — 부름 %llu · 합 %llu · 문(지나감) %llu · 잠긴 문 %llu · 물건 %llu · 켜짐 %d", locked ? "잠긴 문" : "안 잠긴 문",
+                      srv.berserkCollideCalls(), srv.BerserkHitSum(), srv.berserkHit(nox::BerserkHit::Door), srv.berserkDoorLocked(),
+                      srv.berserkHit(nox::BerserkHit::Object), static_cast<int>(srv.DebugAbilActive(a, 1)));
+        if (locked) {
+            Check(h.ok && only(srv, nox::BerserkHit::Object) && srv.berserkDoorLocked() == 1 && srv.DebugHasEnchant(a, 5), msg);
+        } else {
+            Check(srv.berserkHit(nox::BerserkHit::Door) >= 1 && srv.berserkDoorLocked() == 0 &&
+                  srv.berserkHit(nox::BerserkHit::Object) == 0 && !srv.DebugHasEnchant(a, 5), msg);
+        }
+    }
+    std::printf("  nine-defects 2-b2 — 광전사 부딪힘: 벽 세게(171·기절 44·20%%·옛 자리)·살짝 · 사람(속도 맞바꿈)·소환수 · 장애물 · 지나감 둘 · 광전사 없이 벽 · 문(잠김 부딪힘·안 잠김 지나감)\n");
 }
 
 // ── nine-defects 3-a — 점프(CCJump 7 · `object_update.go:550~571` 입력 · `:305~327` 매 틱) ─────────
@@ -19006,6 +19054,7 @@ static void GearTemplates(nox::Server& srv) {
         c.weaponClass = w;               // ★ B3 — 기본 장비 중 무기는 롱소드 하나(CLASS WEAPON)
         c.modifiable = true;
         c.weight = 7;
+        c.dropFn = nox::DropFn::ArmorWeapon;   // ★ 09-28 — thing.bin `DROP` = ArmorDrop·WeaponDrop(부팅 줄 [기본장비] 로 확인)
         srv.SetItemTemplate(gw, c);
     }
     srv.SetWeaponDef(nox::kItemLongsword, 1, 30);   // ⭕ modifier.bin Longsword — CLASSUSE = WARRIOR · REQUIRED_STRENGTH = 30
@@ -19060,7 +19109,7 @@ void TestDefaultGear() {
         tmpl(srv);
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
         srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
-        const uint16_t sword = 728 + 4;   // 워리어 넷째 = 롱소드(스냅샷 꼬리 차례)
+        const uint16_t sword = 728 + 3;   // 워리어 셋째 = 롱소드(스냅샷 꼬리 차례 · 09-29 정품 녹음으로 방패와 자리 바꿈)
         std::vector<nox::OutPacket> out;
         const std::vector<uint8_t> d = CodePacket(nox::Op::TRY_DEQUIP, sword);
         srv.OnPacket(a, d.data(), d.size(), out);
@@ -19081,7 +19130,7 @@ void TestDefaultGear() {
 void TestWeaponSlot() {
     using nox::CharClass;
     const std::string a = "10.9.27.11:9281", b = "10.9.27.12:9282";
-    const uint16_t kSword = 728 + 4;                          // 워리어 기본 롱소드 번호(스냅샷 꼬리 차례)
+    const uint16_t kSword = 728 + 3;                          // 워리어 기본 롱소드 번호(스냅샷 꼬리 차례 · 09-29 셋째로)
     auto code = [&](nox::Server& srv, nox::Op op, uint16_t nc) {
         std::vector<nox::OutPacket> o;
         const std::vector<uint8_t> p = CodePacket(op, nc);
@@ -19182,7 +19231,7 @@ void TestEquipWeaponGates() {
     using nox::CharClass;
     using nox::EquipGate;
     const std::string a = "10.9.27.21:9291", b = "10.9.27.22:9292";
-    const uint16_t kSword = 728 + 4;
+    const uint16_t kSword = 728 + 3;
     auto make = [&](nox::Server& srv, bool bObserver = false) {
         std::vector<nox::Server::SoundDefIn> sd;
         nox::Server::SoundDefIn d; d.id = 925; d.maxDist = 600; d.merged = 0; d.samples = 1;
@@ -19295,8 +19344,9 @@ void TestEquipWeaponGates() {
         const auto* eq = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_EQUIP));
         Check(de && de->size() >= 3 && ((*de)[1] | ((*de)[2] << 8)) == kSword, "④ 롱소드 내려놓음(0x61)이 안 갔다");
         Check(eq && eq->size() >= 3 && ((*eq)[1] | ((*eq)[2] << 8)) == 500, "④ 대검 듦(0x60)이 안 갔다");
+        // ★ 09-29 — 수식 없는 대검이라 50(`sub_4D82F0` — 정품 녹음의 롱소드도 50)
         Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)) &&
-              FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MODIFIABLE_WEAPON_EQUIP)), "④ 남에게 무기 겉모습(0x54·0x51)이 안 갔다");
+              FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MUNDANE_WEAPON_EQUIP)), "④ 남에게 무기 겉모습(0x54·0x50)이 안 갔다");
         Check(srv.DebugWeaponNet(a) == 500 && srv.DebugWeaponEquip(a) == 0x400, "④ 무기 칸이 대검이 아니다");
         bool swordOff = false;
         for (const auto& c : srv.DebugInventory(a)) if (c.netCode == kSword) swordOff = !c.equipped;
@@ -19344,7 +19394,7 @@ void TestDequipWeapon() {
     using nox::CharClass;
     using nox::DequipGate;
     const std::string a = "10.9.27.31:9301", b = "10.9.27.32:9302";
-    const uint16_t kSword = 728 + 4;
+    const uint16_t kSword = 728 + 3;
     auto make = [&](nox::Server& srv) {
         GearTemplates(srv);
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
@@ -19427,7 +19477,7 @@ void TestDequipWeapon() {
 void TestWeaponEffects() {
     using nox::CharClass;
     const std::string a = "10.9.27.41:9311", b = "10.9.27.42:9312";
-    const uint16_t kShield = 728 + 3;                         // 워리어 셋째 = 나무방패(스냅샷 꼬리 차례)
+    const uint16_t kShield = 728 + 4;                         // 워리어 넷째 = 나무방패(스냅샷 꼬리 차례 · 09-29 정품 녹음)
     auto make = [&](nox::Server& srv) {
         GearTemplates(srv);
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
@@ -19483,6 +19533,28 @@ void TestWeaponEffects() {
         std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_EQUIP, 504, out);
         Check(srv.DebugWeaponNet(a) == 504 && shieldOn(srv) && srv.twoHandShieldOff() == 0, "② 한 손 칼인데 방패를 벗겼거나 못 들었다");
     }
+    // ⑦ ★ 09-28 사람 판 — 대검(두 손)을 든 채 방패를 다시 입으면 **대검을 내려놓는다**(`53E650` 끝 → `sub_53E600` `GAME4_3.c:7484~7505`)
+    //   본인 0x61(대검) · 남에게 0x54 · 방패는 입힘 · ⑧ 칼(한 손)이면 방패를 입어도 칼은 그대로(대조)
+    for (int twoHand = 1; twoHand >= 0; --twoHand) {
+        const uint16_t wnc = twoHand ? 500 : 504;
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0;
+        send(srv, nox::Op::TRY_EQUIP, wnc, o0);
+        if (shieldOn(srv)) send(srv, nox::Op::TRY_DEQUIP, kShield, o0);   // 칼은 방패를 안 벗기므로 손으로 벗긴다
+        Check(srv.DebugWeaponNet(a) == wnc && !shieldOn(srv), "⑦⑧ 무기를 들고 방패를 벗은 자리를 못 만들었다 — 이 시험이 무의미해진다");
+        std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_EQUIP, kShield, out);
+        Check(shieldOn(srv), "⑦⑧ 방패가 안 입혀졌다");
+        if (twoHand) {
+            bool dqMsg = false;
+            for (const auto& m : FlattenTo(out, a))
+                if (m.size() >= 3 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_DEQUIP) && (m[1] | (m[2] << 8)) == 500) dqMsg = true;
+            Check(srv.DebugWeaponNet(a) == 0 && dqMsg, "⑦ 방패를 입었는데 대검을 안 내려놓았다");
+            Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)) != nullptr, "⑦ 남에게 무기 내려놓음(0x54)이 안 갔다");
+            Check(srv.shieldDropsTwoHand() == 1, "⑦ 방패가내려놓게한두손무기 계수기가 1 이 아니다");
+        } else {
+            Check(srv.DebugWeaponNet(a) == 504 && srv.shieldDropsTwoHand() == 0, "⑧ 한 손 칼인데 방패를 입자 칼을 내려놓았다");
+        }
+    }
     // ③ 마법 지팡이를 들면 본인에게 충전 알림 `64 <번호> <지금> <최대>`
     {
         nox::Server srv; make(srv);
@@ -19508,7 +19580,877 @@ void TestWeaponEffects() {
         Check(srv.DebugWeaponNet(a) == 0 && srv.DebugDurActive(43, a) == !k.cut43 && srv.DebugDurActive(59, a) == !k.cut59 &&
               srv.wandSpellCut() == static_cast<unsigned long long>((k.cut43 ? 1 : 0) + (k.cut59 ? 1 : 0)), k.msg);
     }
-    std::printf("  09-27 B5 — 두 손 무기는 방패를 벗김(갑옷 비트도) · 한 손은 그대로 · 지팡이 들면 충전 알림(본인만) · 번개 지팡이 43 · 오브 59 끊기\n");
+    std::printf("  09-27 B5 — 두 손 무기는 방패를 벗김(갑옷 비트도) · 한 손은 그대로 · 지팡이 들면 충전 알림(본인만) · 번개 지팡이 43 · 오브 59 끊기"
+                " · (09-28) 방패를 입으면 든 두 손 무기를 내려놓음\n");
+}
+
+// ── 09-28 — 버리기 `72 TRY_DROP <번호2> <x2> <y2>`(`sdecode.c:99~116` → `drop_4ED810` → `dropDefault_4ED290`) ─────────
+//   사람 판에서 「아이템이 안 버려진다」 — 받는 곳이 아예 없었다
+void TestDrop() {
+    using nox::CharClass;
+    using nox::DropGate;
+    const std::string a = "10.9.28.1:9281", b = "10.9.28.2:9282";
+    auto make = [&](nox::Server& srv) {
+        GearTemplates(srv);
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        // ⚠ DebugMoveTo 는 x·y 만 바꾼다 — 버리기는 정답지대로 실수 자리(+56 = posX·posY)에서 재므로 둘 다 맞춘다(B3 기록의 925 소리와 같은 사정)
+        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(b, 1200, 1000);
+    };
+    auto drop = [&](nox::Server& srv, const std::string& who, uint16_t nc, int x, int y, std::vector<nox::OutPacket>& out) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 7, 0);
+        p[nox::kWireHeaderSize + 0] = static_cast<uint8_t>(nox::Op::TRY_DROP);
+        p[nox::kWireHeaderSize + 1] = static_cast<uint8_t>(nc); p[nox::kWireHeaderSize + 2] = static_cast<uint8_t>(nc >> 8);
+        p[nox::kWireHeaderSize + 3] = static_cast<uint8_t>(x);  p[nox::kWireHeaderSize + 4] = static_cast<uint8_t>(x >> 8);
+        p[nox::kWireHeaderSize + 5] = static_cast<uint8_t>(y);  p[nox::kWireHeaderSize + 6] = static_cast<uint8_t>(y >> 8);
+        srv.OnPacket(who, p.data(), p.size(), out);
+    };
+    auto codeOf = [&](nox::Server& srv, const std::string& who, uint32_t bit, bool weapon) -> uint16_t {
+        for (const auto& c : srv.DebugInventory(who)) if (c.equipBit == bit && c.isWeapon == weapon) return c.netCode;
+        return 0;
+    };
+    auto has = [&](nox::Server& srv, const std::string& who, uint16_t nc) {
+        for (const auto& c : srv.DebugInventory(who)) if (c.netCode == nc) return true;
+        return false;
+    };
+
+    // ① 입은 로브를 버린다 — 본인 4d(번호·종류) · 본인 0x61 없음 · 남에게 0x53(로브 0x4000) · 가방에서 빠짐 · 그 자리 바닥에
+    {
+        nox::Server srv; make(srv);
+        const uint16_t robe = codeOf(srv, b, 0x4000, false);
+        Check(robe != 0, "① 위저드 가방에 로브가 없다 — 이 시험이 무의미해진다");
+        std::vector<nox::OutPacket> out; drop(srv, b, robe, 1230, 1010, out);
+        const auto toB = FlattenTo(out, b);
+        const auto* rd = FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_DROP));
+        Check(rd && rd->size() == 5 && ((*rd)[1] | ((*rd)[2] << 8)) == robe, "① 본인에게 4d REPORT_DROP 이 안 갔거나 번호가 다르다");
+        Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) == nullptr, "① 버리기인데 본인에게 0x61 이 갔다(정답지 a3 = 0)");
+        const auto toA = FlattenTo(out, a);
+        const auto* ad = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_ARMOR_DEQUIP));
+        Check(ad && ad->size() == 7 && ((*ad)[3] | ((*ad)[4] << 8)) == 0x4000, "① 남에게 로브 벗음(0x53 · 0x4000)이 안 갔다 — 남 화면에 로브가 남는다");
+        int x = 0, y = 0;
+        Check(!has(srv, b, robe) && srv.DebugStaticPos(robe, x, y) && x == 1230 && y == 1010, "① 가방에서 안 빠졌거나 그 자리 바닥에 없다");
+        Check(srv.dropGate(DropGate::Dropped) == 1, "① 버림 계수기가 1 이 아니다");
+        // ①' ★ 09-28 사람 판 2차 — 「버리면 가방에선 빠지는데 바닥에 안 생긴다」. 시야 반경이 꺼진 판(기본)에서도
+        //   다음 틱 갱신에 **둘 다에게** 소개돼야 한다(전에는 접속 스냅샷에서만 바닥 물건을 소개했다)
+        Check(!srv.DebugStaticIntroduced(b, robe), "①' 전제 — 틱 전인데 벌써 소개됐다고 적혀 있다");
+        std::vector<nox::OutPacket> t1; uint32_t ms = srv.DebugNowMs();
+        for (int i = 0; i < 3; ++i) { ms += 34; srv.Tick(ms, t1); }
+        Check(srv.DebugStaticIntroduced(b, robe) && srv.DebugStaticIntroduced(a, robe), "①' 버린 로브가 틱 갱신으로 소개되지 않았다 — 바닥에 안 보인다");
+    }
+    // ② 멀리 찍으면 75 안으로 당긴다(`:6625~6628`)
+    {
+        nox::Server srv; make(srv);
+        const uint16_t robe = codeOf(srv, b, 0x4000, false);
+        std::vector<nox::OutPacket> out; drop(srv, b, robe, 1500, 1000, out);
+        int x = 0, y = 0;
+        Check(srv.DebugStaticPos(robe, x, y) && x == 1275 && y == 1000, "② 멀리 찍었는데 75 안으로 안 당겼다");
+    }
+    // ③ 든 롱소드를 버린다 — 남에게 0x54 · 맨손 · ④ 가방에 없는 번호는 아무 일도 없음
+    {
+        nox::Server srv; make(srv);
+        const uint16_t sword = srv.DebugWeaponNet(a);
+        Check(sword != 0, "③ 워리어가 처음부터 무기를 안 들었다 — 이 시험이 무의미해진다");
+        std::vector<nox::OutPacket> out; drop(srv, a, sword, 1020, 1000, out);
+        Check(srv.DebugWeaponNet(a) == 0 && !has(srv, a, sword), "③ 든 무기를 버렸는데 손에 남았거나 가방에 있다");
+        Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)) != nullptr, "③ 남에게 무기 내려놓음(0x54)이 안 갔다");
+        std::vector<nox::OutPacket> o2; drop(srv, a, 9999, 1020, 1000, o2);
+        Check(srv.dropGate(DropGate::NotInBag) == 1 && srv.dropGate(DropGate::Dropped) == 1, "④ 가방에 없는 번호인데 가방에없음 칸만 오르지 않았다");
+    }
+    std::printf("  09-28 — 버리기: 본인 4d · 남에게 벗음 겉모습(본인 0x61 없음) · 가방에서 빼 그 자리 바닥에 · 75 안으로 · 든 무기면 맨손 · 없는 번호 무시\n");
+}
+
+// ── 09-28 — 버린 물건 사라짐(`DropDecayFrame` · `decay_511750` `GAME4_1.c:3100~3124`) ─────────
+//   사람 판 「버린 물건은 10초가 지나도 안 사라진다」 → 정품 녹음(`orig_arena_1851`) — 로브·맵 갑옷 모두 **750프레임(25초)** 뒤 사라짐.
+//   갑옷·무기는 물건별 버리기 함수가 25초로 다시 건다(RESPAWN 과 상관없이) · 기본 버리기만 10초 규칙(RESPAWN 이면 안 사라짐) · 협동은 안 건다
+void TestDropDecay() {
+    using nox::CharClass;
+    using nox::DecayGate;
+    const std::string a = "10.9.28.31:9311", b = "10.9.28.32:9312";
+    auto make = [&](nox::Server& srv) {
+        GearTemplates(srv);
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugMoveTo(b, 1200, 1000);
+        nox::Server::WorldStatic w;                           // 맵에서 온 갑옷 — thing.bin 에 RESPAWN · DROP = ArmorDrop
+        w.netCode = 610; w.type = 1180; w.x = 1210; w.y = 1000; w.modifiable = true; w.weight = 5;
+        w.decayExempt = nox::DecayExempt::Respawn;
+        w.dropFn = nox::DropFn::ArmorWeapon;
+        nox::Server::WorldStatic d1 = w;                      // 기본 버리기 · RESPAWN 없음 → 10초
+        d1.netCode = 611; d1.type = 1181; d1.decayExempt = nox::DecayExempt::None; d1.dropFn = nox::DropFn::Default;
+        nox::Server::WorldStatic d2 = d1;                     // 기본 버리기 · RESPAWN → 안 사라짐
+        d2.netCode = 612; d2.type = 1182; d2.decayExempt = nox::DecayExempt::Respawn;
+        nox::Server::WorldStatic p1 = d2;                     // 물약(PotionDrop) · RESPAWN → 25초
+        p1.netCode = 613; p1.type = 1183; p1.dropFn = nox::DropFn::Potion;
+        nox::Server::WorldStatic f1 = d2;                     // 음식(FoodDrop) · RESPAWN → 25초 (Estate 바닥 28개가 이 갈래)
+        f1.netCode = 614; f1.type = 1184; f1.dropFn = nox::DropFn::Food;
+        srv.SetWorldStatics({ w, d1, d2, p1, f1 });
+    };
+    auto drop = [&](nox::Server& srv, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize + 7, 0);
+        p[nox::kWireHeaderSize + 0] = static_cast<uint8_t>(nox::Op::TRY_DROP);
+        p[nox::kWireHeaderSize + 1] = static_cast<uint8_t>(nc); p[nox::kWireHeaderSize + 2] = static_cast<uint8_t>(nc >> 8);
+        p[nox::kWireHeaderSize + 3] = static_cast<uint8_t>(1230 & 0xFF); p[nox::kWireHeaderSize + 4] = static_cast<uint8_t>(1230 >> 8);
+        p[nox::kWireHeaderSize + 5] = static_cast<uint8_t>(1010 & 0xFF); p[nox::kWireHeaderSize + 6] = static_cast<uint8_t>(1010 >> 8);
+        srv.OnPacket(b, p.data(), p.size(), out);
+    };
+    auto robeOf = [&](nox::Server& srv) -> uint16_t {
+        for (const auto& c : srv.DebugInventory(b)) if (c.equipBit == 0x4000) return c.netCode;
+        return 0;
+    };
+    auto inBag = [&](nox::Server& srv, uint16_t nc) {
+        for (const auto& c : srv.DebugInventory(b)) if (c.netCode == nc) return true;
+        return false;
+    };
+    // ★ 사라질 때 정품은 `33 OBJECT_IN_SHADOWS` 를 알던 사람에게(녹음 `orig_arena_1851`) — `31` 이 아니다
+    auto msgTo = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t nc, nox::Op op) {
+        for (const auto& m : FlattenTo(out, who))
+            if (m.size() == 3 && m[0] == static_cast<uint8_t>(op) && (m[1] | (m[2] << 8)) == nc) return true;
+        return false;
+    };
+    auto destroyedTo = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t nc) {
+        return msgTo(out, who, nc, nox::Op::OBJECT_IN_SHADOWS) && !msgTo(out, who, nc, nox::Op::DESTROY_OBJECT);
+    };
+    // 34ms 마다 한 틱 — n 틱 돌리며 나간 것을 모은다
+    auto run = [&](nox::Server& srv, int n, std::vector<nox::OutPacket>& all) {
+        uint32_t ms = srv.DebugNowMs();
+        for (int i = 0; i < n; ++i) { std::vector<nox::OutPacket> t; ms += 34; srv.Tick(ms, t); all.insert(all.end(), t.begin(), t.end()); }
+    };
+    int x = 0, y = 0;
+    // ① 기본 로브(RESPAWN 을 지운 것)를 아레나에서 버림 → 9초엔 있고 11초엔 없다 · 둘 다에게 31
+    {
+        nox::Server srv; make(srv);
+        const uint16_t robe = robeOf(srv);
+        Check(robe != 0, "① 위저드 가방에 로브가 없다 — 이 시험이 무의미해진다");
+        std::vector<nox::OutPacket> out; drop(srv, robe, out);
+        Check(srv.decayGate(DecayGate::Armed25) == 1, "① 기본 로브(ArmorDrop)를 버렸는데 25초 시계가 안 걸렸다");
+        std::vector<nox::OutPacket> all; run(srv, 700, all);
+        Check(srv.DebugStaticPos(robe, x, y) && srv.decayExpired() == 0, "① 24초도 안 됐는데 버린 로브가 사라졌다(정품은 750프레임)");
+        run(srv, 60, all);
+        Check(!srv.DebugStaticPos(robe, x, y) && srv.decayExpired() == 1, "① 26초가 지났는데 버린 로브가 바닥에 남았다");
+        Check(destroyedTo(all, a, robe) && destroyedTo(all, b, robe), "① 사라질 때 33 OBJECT_IN_SHADOWS 가 둘 다에게 안 갔거나 31 이 갔다");
+    }
+    // ② 맵에서 주운 갑옷(RESPAWN · ArmorDrop) — 10초 규칙엔 안 걸리지만 25초로 다시 걸려 사라진다(정품 녹음 6013→6765)
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 610);
+        srv.OnPacket(b, g.data(), g.size(), o0);
+        Check(inBag(srv, 610), "② 맵 물건을 못 주웠다 — 이 시험이 무의미해진다");
+        std::vector<nox::OutPacket> out; drop(srv, 610, out);
+        std::vector<nox::OutPacket> all; run(srv, 760, all);
+        Check(srv.decayGate(DecayGate::Armed25) == 1 && srv.decayGate(DecayGate::Respawn) == 0, "② RESPAWN 갑옷인데 25초 칸이 안 올랐다");
+        Check(!srv.DebugStaticPos(610, x, y) && srv.decayExpired() == 1 && destroyedTo(all, a, 610), "② RESPAWN 갑옷이 26초 뒤에도 남았다");
+    }
+    // ③ 협동(2048)이면 기본 로브도 안 사라진다
+    {
+        nox::Server srv; make(srv);
+        srv.SetGameFlags(0x800);
+        const uint16_t robe = robeOf(srv);
+        std::vector<nox::OutPacket> out; drop(srv, robe, out);
+        std::vector<nox::OutPacket> all; run(srv, 800, all);
+        Check(srv.decayGate(DecayGate::CoopOrQuest) == 1 && srv.DebugStaticPos(robe, x, y) && srv.decayExpired() == 0,
+              "③ 협동인데 버린 로브가 사라졌거나 계수가 안 올랐다");
+    }
+    // ④ 5초 뒤 다시 주우면 시계가 풀린다 — 26초가 돼도 가방에 있고 31 이 안 나간다
+    {
+        nox::Server srv; make(srv);
+        const uint16_t robe = robeOf(srv);
+        std::vector<nox::OutPacket> out; drop(srv, robe, out);
+        std::vector<nox::OutPacket> all; run(srv, 150, all);
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, robe);
+        srv.OnPacket(b, g.data(), g.size(), all);
+        Check(inBag(srv, robe), "④ 버린 로브를 다시 못 주웠다 — 이 시험이 무의미해진다");
+        run(srv, 650, all);
+        Check(inBag(srv, robe) && srv.decayExpired() == 0, "④ 다시 주운 로브가 가방에서 사라졌거나 지움 계수가 올랐다");
+    }
+    // ⑤ 기본 버리기(DefaultDrop) · RESPAWN 없음 → 10초 · ⑥ 기본 버리기 · RESPAWN → 30초 뒤에도 남음
+    {
+        nox::Server srv; make(srv);
+        for (uint16_t nc : { 611, 612 }) {
+            std::vector<nox::OutPacket> o0;
+            const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nc);
+            srv.OnPacket(b, g.data(), g.size(), o0);
+            Check(inBag(srv, nc), "⑤⑥ 맵 물건을 못 주웠다 — 이 시험이 무의미해진다");
+            std::vector<nox::OutPacket> out; drop(srv, nc, out);
+        }
+        Check(srv.decayGate(DecayGate::Armed) == 1 && srv.decayGate(DecayGate::Respawn) == 1, "⑤⑥ 기본 버리기 10초·RESPAWN 칸이 하나씩 안 올랐다");
+        std::vector<nox::OutPacket> all; run(srv, 270, all);
+        Check(srv.DebugStaticPos(611, x, y), "⑤ 9초도 안 됐는데 기본 버리기 물건이 사라졌다");
+        run(srv, 60, all);
+        Check(!srv.DebugStaticPos(611, x, y), "⑤ 기본 버리기 물건이 11초 뒤에도 남았다");
+        run(srv, 600, all);
+        Check(srv.DebugStaticPos(612, x, y) && srv.decayExpired() == 1, "⑥ 기본 버리기 RESPAWN 물건이 사라졌다");
+    }
+    // ⑦ 물약(PotionDrop · RESPAWN) → 25초 · 협동이면 남음(`sub_4EDDE0` `GAME3_3.c:6877`) · 음식(FoodDrop)도 같다(`:6893`)
+    for (const uint16_t nc : { 613, 614 })
+    for (const bool coop : { false, true }) {
+        nox::Server srv; make(srv);
+        if (coop) srv.SetGameFlags(0x800);
+        std::vector<nox::OutPacket> o0;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nc);
+        srv.OnPacket(b, g.data(), g.size(), o0);
+        if (!inBag(srv, nc)) { Check(false, "⑦ 물약·음식을 못 주웠다(주우면 마시는 갈래를 탔나) — 이 시험이 무의미해진다"); continue; }
+        std::vector<nox::OutPacket> out; drop(srv, nc, out);
+        std::vector<nox::OutPacket> all; run(srv, 760, all);
+        Check(srv.DebugStaticPos(nc, x, y) == coop, coop ? "⑦ 협동인데 물약·음식이 사라졌다" : "⑦ 물약·음식이 26초 뒤에도 남았다");
+    }
+    // ⑧ 이름 → 갈래(첫 낱말만 · 뒤 인자 무시)
+    Check(nox::DropFnOf("WeaponDrop") == nox::DropFn::ArmorWeapon && nox::DropFnOf("ArmorDrop") == nox::DropFn::ArmorWeapon &&
+          nox::DropFnOf("AudEventDrop BookDrop") == nox::DropFn::Default && nox::DropFnOf("FoodDrop") == nox::DropFn::Food &&
+          nox::DropFnOf("PotionDrop") == nox::DropFn::Potion && nox::DropFnOf("TrapDrop") == nox::DropFn::NotPorted &&
+          nox::DropFnOf("") == nox::DropFn::Default, "⑧ 버리기 함수 이름 → 갈래가 틀렸다");
+    std::printf("  09-28 — 버린 물건 사라짐: 갑옷·무기 25초(RESPAWN 무관 · 알던 사람에게 33) · 기본 버리기 10초(RESPAWN 이면 남음) · 협동 남음 · 다시 주우면 풀림\n");
+}
+
+// ── 09-28 B4b — 죽을 때 가방 떨어뜨리기(`dropAllItems_4EDA40`) · 부활 때 기본 장비 새로(`playerMakeDefItems_4EF7D0`) ─────────
+//   사용자 결정 09-28 「정할 것 셋 다 원본대로」 · 정품 녹음 `orig_arena_1851` 18:55:55.9(죽음)·18:56:07.9(부활)
+void TestDeathDropRespawnGear() {
+    using nox::CharClass;
+    const std::string a = "10.9.28.51:9331", b = "10.9.28.52:9332";
+    auto make = [&](nox::Server& srv) {
+        GearTemplates(srv);
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugMoveTo(b, 1200, 1000);
+        nox::Server::WorldStatic w;                           // 맵 갑옷(RESPAWN · ArmorDrop)
+        w.netCode = 620; w.type = 1180; w.x = 1210; w.y = 1000; w.modifiable = true; w.weight = 5;
+        w.decayExempt = nox::DecayExempt::Respawn; w.dropFn = nox::DropFn::ArmorWeapon;
+        srv.SetWorldStatics({ w });
+    };
+    auto inBag = [&](nox::Server& srv, const std::string& who, uint16_t nc) {
+        for (const auto& c : srv.DebugInventory(who)) if (c.netCode == nc) return true;
+        return false;
+    };
+    auto ops = [&](const std::vector<nox::OutPacket>& out, const std::string& who) {
+        std::vector<std::vector<uint8_t>> v;
+        for (const auto& m : FlattenTo(out, who)) v.push_back(m);
+        return v;
+    };
+    // ① 위저드가 맵 갑옷을 주운 뒤 죽는다 — 로브·주운 것은 떨어지고 입은 평상복 셋은 남는다 · 본인에게 `4d` 둘(최근 것 먼저) → `e8` · 상대에게 벗음 겉모습 없음
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0;
+        const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 620);
+        srv.OnPacket(b, g.data(), g.size(), o0);
+        Check(inBag(srv, b, 620), "① 맵 갑옷을 못 주웠다 — 이 시험이 무의미해진다");
+        uint16_t robe = 0;
+        for (const auto& c : srv.DebugInventory(b)) if (c.equipBit == 0x4000) robe = c.netCode;
+        Check(robe != 0 && srv.DebugInventory(b).size() == 5, "① 전제 — 위저드 가방이 평상복 셋 + 로브 + 주운 갑옷이 아니다");
+        std::vector<nox::OutPacket> out;
+        srv.DebugHurt(b, -1, 9999, std::string(), 16, out);
+        Check(!srv.IsAlive(b), "① 안 죽었다(이 시험의 전제)");
+        const auto bag = srv.DebugInventory(b);
+        bool onlyStreet = bag.size() == 3;
+        for (const auto& c : bag) if (!(c.equipped && (c.equipBit & 0xC0D))) onlyStreet = false;
+        Check(onlyStreet, "① 죽은 뒤 가방에 입은 평상복 셋만 남아야 한다");
+        int x = 0, y = 0;
+        Check(srv.DebugStaticPos(620, x, y) && srv.DebugStaticPos(robe, x, y) && std::abs(x - 1200) < 60 && std::abs(y - 1000) < 60,
+              "① 로브·주운 갑옷이 몸 둘레 바닥에 없다");
+        const auto toB = ops(out, b);
+        int drop620 = -1, dropRobe = -1, died = -1;
+        for (size_t i = 0; i < toB.size(); ++i) {
+            const auto& m = toB[i];
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_DROP)) {
+                const uint16_t nc = static_cast<uint16_t>(m[1] | (m[2] << 8));
+                if (nc == 620) drop620 = static_cast<int>(i);
+                if (nc == robe) dropRobe = static_cast<int>(i);
+            }
+            if (m.size() == 3 && m[0] == static_cast<uint8_t>(nox::Op::PLAYER_DIED) && died < 0) died = static_cast<int>(i);
+        }
+        Check(drop620 >= 0 && dropRobe >= 0 && drop620 < dropRobe && died > dropRobe,
+              "① 본인에게 `4d` 가 최근 주운 것부터 가고 그 뒤에 `e8` 이어야 한다(정품 녹음 차례)");
+        for (const auto& m : ops(out, a))
+            Check(!(m[0] == static_cast<uint8_t>(nox::Op::REPORT_ARMOR_DEQUIP) || m[0] == static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)),
+                  "① 죽은 사람이 떨어뜨리는데 상대에게 벗음 겉모습이 갔다(정답지 a4 = 0)");
+        Check(srv.deathDropKept() == 3 && srv.deathDropSpiral() == 2, "① 계수 — 남긴 평상복 3 · 둘레에 2 가 아니다");
+    }
+    // ② 워리어가 죽는다 — 롱소드·나무방패가 떨어지고 맨손 · 바지·신발은 남는다
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> out;
+        Check(srv.DebugWeaponNet(a) != 0, "② 전제 — 워리어가 무기를 안 들었다");
+        srv.DebugHurt(a, -1, 9999, std::string(), 16, out);
+        Check(srv.DebugWeaponNet(a) == 0 && srv.DebugInventory(a).size() == 2, "② 죽은 워리어가 맨손에 바지·신발만 남지 않았다");
+    }
+    // ③ 부활 — 위저드: 빠진 로브만 새 번호로(`4c` → `44` 325 → `60`) · 평상복은 그대로 · 모두에게 `e9 … ff 01`
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o1;
+        srv.DebugHurt(b, -1, 9999, std::string(), 16, o1);
+        std::vector<uint16_t> before;
+        for (const auto& c : srv.DebugInventory(b)) before.push_back(c.netCode);
+        std::vector<nox::OutPacket> out;
+        srv.DebugRespawnOut(b, out);
+        const auto bag = srv.DebugInventory(b);
+        uint16_t newRobe = 0;
+        for (const auto& c : bag) if (c.equipBit == 0x4000 && c.equipped) newRobe = c.netCode;
+        Check(bag.size() == 4 && newRobe != 0 && std::find(before.begin(), before.end(), newRobe) == before.end(),
+              "③ 부활한 위저드가 평상복 셋 + 새 번호 로브(입음)가 아니다");
+        const auto toB = ops(out, b);
+        int iPick = -1, iDur = -1, iEq = -1, iE9 = -1;
+        for (size_t i = 0; i < toB.size(); ++i) {
+            const auto& m = toB[i];
+            const uint16_t nc = m.size() >= 3 ? static_cast<uint16_t>(m[1] | (m[2] << 8)) : 0;
+            if (m[0] == static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN) && m.size() == 9 && m[8] == 0x01 && iE9 < 0) iE9 = static_cast<int>(i);
+            if (m[0] == static_cast<uint8_t>(nox::Op::REPORT_MODIFIABLE_PICKUP) && nc == newRobe) iPick = static_cast<int>(i);
+            if (m[0] == 0x44 && nc == newRobe && m.size() == 7 && (m[3] | (m[4] << 8)) == 325) iDur = static_cast<int>(i);
+            if (m[0] == static_cast<uint8_t>(nox::Op::REPORT_EQUIP) && nc == newRobe) iEq = static_cast<int>(i);
+        }
+        Check(iE9 >= 0 && iPick > iE9 && iDur > iPick && iEq > iDur, "③ 본인에게 `e9 … 01` → `4c` → `44`(325) → `60` 차례가 아니다(정품 녹음 18:56:07.9)");
+        bool e9ToA = false;
+        for (const auto& m : ops(out, a)) if (m[0] == static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN) && m.size() == 9 && m[8] == 0x01) e9ToA = true;
+        Check(e9ToA, "③ 상대에게 `e9 … ff 01` 이 안 갔다");
+        Check(srv.respawnGearGiven() == 1 && srv.respawnGearDeleted() == 0, "③ 계수 — 줌 1 · 지움 0 이 아니다(평상복은 남기고 로브만 새로)");
+    }
+    // ④ 부활 — 워리어: 롱소드(든다)+나무방패 새로 · 셔츠는 안 준다(워리어)
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o1;
+        srv.DebugHurt(a, -1, 9999, std::string(), 16, o1);
+        std::vector<nox::OutPacket> out;
+        srv.DebugRespawnOut(a, out);
+        bool shirt = false, sword = false, shield = false;
+        for (const auto& c : srv.DebugInventory(a)) {
+            if (c.equipBit == 0x400) shirt = true;
+            if (c.isWeapon && c.equipped && srv.DebugWeaponNet(a) == c.netCode) sword = true;
+            if (c.equipBit == 0x1000000 && c.equipped) shield = true;
+        }
+        Check(sword && shield && !shirt && srv.DebugInventory(a).size() == 4, "④ 부활한 워리어가 바지·신발 + 새 롱소드(든다)·나무방패가 아니다(셔츠는 없어야)");
+    }
+    std::printf("  09-28 B4b — 죽을 때: 입은 평상복만 남기고 몸 둘레에(4d 최근 것부터 → e8 · 남에게 벗음 없음) · 부활: 로브·검·방패 새 번호(4c→44→60) · e9 ff 01\n");
+}
+
+// ── 09-29 Z1-A — 벽 부수기(`Nox_xxx_damageToMap_534BC0` · `wallPreDestroy_534DA0` · `mapDamageToWalls_534FC0`) · 창문 ─────────
+void TestWallBreak() {
+    using nox::CharClass;
+    const std::string a = "10.9.29.11:9411", c = "10.9.29.13:9413";
+    auto make = [&](nox::Server& srv) {
+        // (46,44) 부서지는 벽 · (48,44) 안 부서지는 벽 · (46,46) 창문 — 모두 짝수 칸
+        srv.SetWalls({ { 46, 44 }, { 48, 44 }, { 46, 46 } });
+        srv.SetWallDefFlags({ 1 });
+        nox::Server::WallDefExtra e; e.hitMat = 32; e.health = 150; e.breakSound = 0;
+        srv.SetWallDefExtras({ e });
+        srv.SetWallSpecials({ { 46, 44 } }, { { 46, 46 } });
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugSetPos(a, 1000, 1000);                      // 연기(8a)는 화면 안 사람에게만 — 실수 자리(+56)를 채운다
+    };
+    auto sent3a = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
+        for (const auto& m : FlattenTo(out, who))
+            if (m.size() == 3 && m[0] == static_cast<uint8_t>(nox::Op::DESTROY_WALL) && (m[1] | (m[2] << 8)) == id) return true;
+        return false;
+    };
+    const float wy = 44 * 23.0f + 11.5f, wx = 46 * 23.0f + 11.5f;
+    // ① 부서지는 벽 — 체력 150 · 100 맞으면 50 · 또 100 이면 부서짐(모두에게 `3a 00 00` · 연기 8a) · 그 뒤로 선 추적이 지나간다 · 또 치면 「벽 없음」
+    {
+        nox::Server srv; make(srv);
+        Check(srv.DebugWallHp(46, 44) == 150, "① 벽 체력이 정의 값(150)이 아니다");
+        Check(!srv.DebugTraceRay(wx - 30, wy, wx + 30, wy), "① 전제 — 부서지기 전인데 선 추적이 지나간다");
+        std::vector<nox::OutPacket> out;
+        srv.DamageToMap(46, 44, 100, 2, nox::Server::WallHitter{}, out);
+        Check(srv.DebugWallHp(46, 44) == 50 && !srv.DebugWallBroken(46, 44) && srv.wallGate(2) == 1, "① 100 맞고 체력 50 · 안 부서짐이 아니다");
+        srv.DamageToMap(46, 44, 100, 2, nox::Server::WallHitter{}, out);
+        Check(srv.DebugWallBroken(46, 44) && srv.wallGate(3) == 1, "① 또 100 맞았는데 안 부서졌다");
+        Check(sent3a(out, a, 0), "① 부서질 때 `3a 00 00`(부서지는 벽 첫째 번호 0)이 안 갔다");
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::FX_SMOKE_BLAST)) != nullptr, "① 부서질 때 연기(8a)가 안 갔다");
+        Check(srv.DebugTraceRay(wx - 30, wy, wx + 30, wy), "① 부서진 벽을 선 추적이 아직도 막는다");
+        srv.DamageToMap(46, 44, 100, 2, nox::Server::WallHitter{}, out);
+        Check(srv.wallGate(0) == 1 && srv.wallGate(3) == 1, "① 부서진 벽을 또 쳤는데 「벽 없음」이 아니다");
+        // ①' 나중에 들어온 사람은 준비(CLIENT_READY) 때 이미 부서진 벽을 받는다(`Nox_xxx_wall_4DF1E0`)
+        srv.DebugEnterGame(c, 729, false, CharClass::Wizard);
+        std::vector<nox::OutPacket> o2;
+        srv.DebugServerReady(c, o2);
+        Check(sent3a(o2, c, 0), "①' 나중에 들어온 사람이 준비 때 부서진 벽 `3a 00 00` 을 못 받았다");
+    }
+    // ② 안 부서지는 벽 — 체력 그대로 · 「안부서지는벽」 칸 · ③ 홀수 칸은 벽이 없다
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> out;
+        const int hp0 = srv.DebugWallHp(48, 44);
+        srv.DamageToMap(48, 44, 999, 2, nox::Server::WallHitter{}, out);
+        Check(srv.DebugWallHp(48, 44) == hp0 && !srv.DebugWallBroken(48, 44) && srv.wallGate(1) == 1, "② 안 부서지는 벽이 깎였거나 부서졌다");
+        srv.DamageToMap(47, 44, 999, 2, nox::Server::WallHitter{}, out);
+        Check(srv.wallGate(0) == 1, "③ 홀수 칸인데 「벽 없음」이 안 올랐다");
+    }
+    // ④ 둘레 피해 — 벽 앞 폭발(반지름 60 · 200) → 부서짐 · 유닛 who 가 **등지고** 있으면 앞쪽이 아니라 안 친다
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> out;
+        nox::Server::WallHitter away;
+        away.present = true; away.unit = true; away.x = wx - 30; away.y = wy; away.dir = 128;   // 방향 128 = −x(벽을 등짐)
+        srv.MapDamageToWalls(44, 42, 48, 46, wx - 30, wy, 60.0f, 200, 1, away, out);
+        Check(!srv.DebugWallBroken(46, 44), "④ 벽을 등진 유닛의 둘레 피해가 벽을 부쉈다(앞쪽만 쳐야)");
+        srv.MapDamageToWalls(44, 42, 48, 46, wx - 30, wy, 60.0f, 200, 1, nox::Server::WallHitter{}, out);
+        Check(srv.DebugWallBroken(46, 44), "④ 벽 앞 폭발(who 없음)이 벽을 못 부쉈다");
+    }
+    // ④' 둘레 피해 함수가 끝에 벽 피해를 부른다(`game.go:1441~1447`) — 바깥 반지름 60 · 피해 200
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> out;
+        srv.DebugDamageUnitsAround(wx - 30, wy, 60.0f, 15.0f, 200, 1, out);
+        Check(srv.DebugWallBroken(46, 44), "④' 둘레 피해가 벽 피해를 안 불렀다");
+    }
+    // ⑤ 창문 — 0x40 을 안 주는 추적(깃발 0x4 = Flag3)은 지나가고, 보통 추적(0x1)은 막힌다(`server/wall.go:848`)
+    {
+        nox::Server srv; make(srv);
+        const float ny = 46 * 23.0f + 11.5f, nx = 46 * 23.0f + 11.5f;
+        Check(!srv.DebugTraceRayFlags(nx - 30, ny, nx + 30, ny, 0x1), "⑤ 창문을 보통 추적이 지나갔다(막혀야)");
+        Check(srv.DebugTraceRayFlags(nx - 30, ny, nx + 30, ny, 0x4), "⑤ 창문을 0x40 없는 추적(Flag3)이 못 지나갔다");
+    }
+    std::printf("  09-29 Z1-A — 벽 부수기: 체력 깎기·부서짐(3a·8a·추적 통과)·안 부서지는 벽·홀수 칸·둘레 피해(유닛은 앞쪽만)·나중 온 사람 3a · 창문\n");
+}
+
+// ── 09-29 Z1-A — 잠긴 문(`nox_xxx_collideDoor_4E8AC0` · 밀기 `GAME5.c:2191~2215` · 열쇠 `DoorCheckKey`) · 문 짐 읽기 · 문 벽 칸 ─────────
+//   58맵 부팅 — 잠긴 문은 퀘스트 맵에만(전부 은·금 열쇠 문 · 장치 0 · 팀 문 0) · 옛 각도 읽기가 틀린 문 26 · 문 벽 칸이 경첩 칸이던 문 대부분
+void TestDoorLock() {
+    const std::string a = "10.9.29.1:9291";
+    // ① 문 짐 읽기 — 머리 0 · 머리 1(깃발·이름·팀·링크·XStatus·스크립트·판 64 의 u32 가 낀 꼴)
+    {
+        nox::MapObject o; o.objVers = 64; o.typeVers = 60;
+        o.tail = { 0, 8,0,0,0, 1,0,0,0, 8,0,0,0 };
+        nox::DoorXfer d;
+        Check(nox::ReadDoorXfer(o, d) && d.angle == 8 && d.lock == 1 && d.closed == 8 && d.rest == 0 && !d.extra && d.team == 0,
+              "① 머리 0 문 짐을 못 읽었다(각도 8 · 잠김 1)");
+        o.tail = { 1, 0,0,0,0, 3,'a','b','c', 2, 0, 1,0, 9,9,9,9, 0,0,0,0,
+                   1,0, 2,0,0,0, 'x','y', 0,0,0,0, 0,0,0,0,
+                   16,0,0,0, 2,0,0,0, 16,0,0,0 };
+        Check(nox::ReadDoorXfer(o, d) && d.angle == 16 && d.lock == 2 && d.closed == 16 && d.team == 2 && d.extra && d.rest == 0,
+              "① 사이 자료 낀 문 짐을 못 읽었다(각도 16 · 잠김 2 · 팀 2)");
+        // ★ 일부러 틀려 보기 — 옛 읽기(tail[1])는 이 문에서 깃발 첫 바이트를 각도로 읽는다
+        Check(o.tail[1] != 16, "① 옛 읽기가 우연히 맞는다 — 이 시험은 사이 자료를 안 본다");
+        o.objVers = 62;                                  // 판 62 면 스크립트·u32 몫이 없다 — 같은 짐을 62 로 읽으면 어긋나야 한다
+        nox::DoorXfer d62;
+        Check(!nox::ReadDoorXfer(o, d62) || d62.angle != 16 || d62.rest != 0, "① 판을 안 보고 읽는다(62 인데 스크립트 몫을 건너뛰었다)");
+    }
+    // ② 문 벽 칸 = 문짝 가운데((자리 + 표값/2) ÷ 23). 자리 (1012,1012)는 칸 모서리라 경첩 칸(44,44)과 갈린다
+    {
+        nox::Server::WorldProp p; p.kind = nox::PropKind::Door; p.x = 1012; p.y = 1012;
+        int gx = 0, gy = 0;
+        p.angle = 0;  nox::Server::DoorWallCell(p, gx, gy); Check(gx == 43 && gy == 43, "② 각도 0 문의 벽 칸이 (43,43)이 아니다");
+        p.angle = 16; nox::Server::DoorWallCell(p, gx, gy); Check(gx == 44 && gy == 44, "② 각도 16 문의 벽 칸이 (44,44)가 아니다");
+        p.angle = 8;  nox::Server::DoorWallCell(p, gx, gy); Check(gx == 44 && gy == 43, "② 각도 8 문의 벽 칸이 (44,43)이 아니다");
+        nox::Server srv;
+        srv.SetWallTiles({ { 44, 44, 0, 0, false } });   // 경첩 칸에 맵 벽(방향 0 — 칸 안 x+y = 23 선)
+        p.angle = 0; p.netCode = 700;
+        srv.SetWorldProps({ p });
+        srv.AttachDoorWalls();
+        Check(srv.DebugWallDirAt(43, 43) == 1, "② 문짝 가운데 칸(43,43)에 문 벽(방향 1)이 없다");
+        Check(srv.DebugWallDirAt(44, 44) == 0, "② 경첩 칸의 맵 벽 방향이 바뀌었다");
+        // 문을 열어도 경첩 칸의 **맵 벽은 그대로 막는다**(옛 식은 그 벽을 문으로 삼아 열리면 지나가게 했다)
+        srv.DebugSetPropOpen(700, true);
+        const float cx = 44 * 23.0f, cy = 44 * 23.0f;
+        Check(!srv.DebugTraceRay(cx + 5, cy + 16, cx + 5, cy + 22), "② 문을 열었더니 경첩 칸의 맵 벽이 사라졌다");
+        Check(srv.DoorCellDiff() == 1 && srv.DoorCellOldHadWall() == 1 && srv.DoorCellNewHadWall() == 0, "② 옛 칸·새 칸 진단 수가 어긋난다");
+    }
+    // 공통 — 문(각도 0 · 자리 1000,1000 · 문짝은 (978,978)까지) · 사람은 문짝 위(990,990)
+    auto door = [](uint16_t nc, int x, int y, uint8_t lock, bool gate) {
+        nox::Server::WorldProp d; d.kind = nox::PropKind::Door; d.netCode = nc; d.type = 306; d.x = x; d.y = y;
+        d.lock = lock; d.gate = gate;
+        return d;
+    };
+    auto keyMsg = [&](const std::vector<nox::OutPacket>& out) -> std::vector<uint8_t> {
+        for (const auto& m : FlattenTo(out, a))
+            if (m.size() == 52 && m[0] == static_cast<uint8_t>(nox::Op::GAUNTLET) && m[1] == 33) return m;
+        return {};
+    };
+    auto dropped = [](const nox::Server& srv, uint16_t id) -> unsigned long long {
+        auto it = srv.soundsDroppedIds().find(id); return it == srv.soundsDroppedIds().end() ? 0 : it->second;
+    };
+    // ③ 잠긴 문은 밀어도 안 돈다(대조 — 안 잠긴 문은 돈다)
+    for (int locked = 0; locked <= 1; ++locked) {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.SetWorldProps({ door(800, 1000, 1000, locked ? 1 : 0, false) });
+        srv.DebugMoveTo(a, 990, 990);
+        uint32_t ms = 0;
+        for (int t = 0; t < 16; ++t) { ms += 33; std::vector<nox::OutPacket> z; srv.Tick(ms, z); }
+        if (locked) {
+            Check(srv.DebugPropFine(800) == 0, "③ 잠긴 문이 밀려 돌았다");
+            Check(srv.doorTouch(nox::Server::DoorTouch::SpinLocked) >= 1, "③ 잠겨서 안 돈 수를 안 셌다");
+        } else {
+            Check(srv.DebugPropFine(800) != 0, "③ (대조) 안 잠긴 문이 안 돈다 — 이 시험은 미는 자리를 못 만든다");
+            Check(srv.doorTouch(nox::Server::DoorTouch::SpinLocked) == 0 && srv.doorTouch(nox::Server::DoorTouch::Unlocked) >= 1,
+                  "③ 안 잠긴 문을 잠겼다고 셌거나 닿음을 안 셌다");
+        }
+    }
+    // ④ 열쇠 없음 — 소리 240(나무)/244(GATE) + `f0 21` 「…LockedKey」 끝 바이트 = 잠김 종류 · 1.5초 안은 조용
+    for (int gate = 0; gate <= 1; ++gate) {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.SetKeyTypes(623, 624, 625, 626);
+        srv.DebugGiveItemType(a, 624);                   // 금 열쇠 — 은 자물쇠에는 안 맞는다
+        srv.SetWorldProps({ door(800, 1000, 1000, 1, gate != 0) });
+        { std::vector<nox::OutPacket> warm; srv.Tick(0, warm); }   // 첫 Tick 은 기준점만 잡는다
+        srv.DebugMoveTo(a, 990, 990);
+        uint32_t ms = 0;
+        std::vector<nox::OutPacket> first;
+        ms += 33; srv.Tick(ms, first);
+        const auto m = keyMsg(first);
+        const char* want = gate ? "objcoll.c:GateLockedKey" : "objcoll.c:DoorLockedKey";
+        Check(!m.empty() && std::strcmp(reinterpret_cast<const char*>(m.data() + 2), want) == 0 && m[51] == 1,
+              gate ? "④ GATE 문 — f0 21 GateLockedKey(끝 바이트 1)가 안 갔다" : "④ f0 21 DoorLockedKey(끝 바이트 1)가 안 갔다");
+        Check(dropped(srv, gate ? 244 : 240) == 1 && dropped(srv, gate ? 240 : 244) == 0, "④ 잠김 소리가 문 종류대로 안 갈렸다");
+        Check(srv.doorTouch(nox::Server::DoorTouch::KeyMissing) == 1, "④ 열쇠 없음을 한 번 안 셌다");
+        for (int t = 0; t < 30; ++t) { ms += 33; std::vector<nox::OutPacket> z; srv.Tick(ms, z); Check(keyMsg(z).empty(), "④ 1.5초 안에 또 말했다"); }
+        Check(srv.doorTouch(nox::Server::DoorTouch::Quiet) >= 25, "④ 1.5초 안 조용함을 안 셌다");
+        for (int t = 0; t < 30; ++t) { ms += 33; std::vector<nox::OutPacket> z; srv.Tick(ms, z); }
+        Check(srv.doorTouch(nox::Server::DoorTouch::KeyMissing) == 2, "④ 1.5초가 지나도 다시 안 말했다");
+        Check(srv.PropLock(800) == 1 && srv.DebugInventory(a).size() == 1, "④ 안 맞는 열쇠로 풀렸거나 열쇠가 사라졌다");
+    }
+    // ⑤ 장치 잠김(5) — 「DoorLockedMechanism」(a9 0f) · 열쇠를 안 찾는다
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.SetKeyTypes(623, 624, 625, 626);
+        srv.DebugGiveItemType(a, 623);
+        srv.SetWorldProps({ door(800, 1000, 1000, 5, false) });
+        { std::vector<nox::OutPacket> warm; srv.Tick(0, warm); }   // 첫 Tick 은 기준점만 잡는다
+        srv.DebugMoveTo(a, 990, 990);
+        std::vector<nox::OutPacket> out; srv.Tick(33, out);
+        const auto msgs = FlattenTo(out, a);
+        bool mech = false;
+        for (const auto& m : msgs)
+            if (m.size() > 3 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 15 &&
+                std::strcmp(reinterpret_cast<const char*>(m.data() + 3), "objcoll.c:DoorLockedMechanism") == 0) mech = true;
+        Check(mech && srv.doorTouch(nox::Server::DoorTouch::Mechanism) == 1, "⑤ 장치 잠김 글이 안 갔다");
+        Check(srv.PropLock(800) == 5 && srv.DebugInventory(a).size() == 1, "⑤ 장치 문이 열쇠로 풀렸다");
+    }
+    // ⑥ 열쇠 있음 — 풀림 · 소리 234 · 열쇠 지움(`4d <번호> <종류>`) · 짝 문도 풀림 · 퀘스트면 `f0 0f <번호>` 둘 · 다음 틱부터 돈다
+    //   문 A(1000,1000 각도 0) 칸 (43,43) → 짝 칸 (42,42) = 문 B(980,980 각도 0) · 문 C(1500,1500)는 짝이 아니다
+    for (int quest = 0; quest <= 1; ++quest) {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728);
+        srv.SetKeyTypes(623, 624, 625, 626);
+        srv.DebugGiveItemType(a, 623);
+        srv.SetWorldProps({ door(800, 1000, 1000, 1, false), door(801, 980, 980, 1, false), door(802, 1500, 1500, 1, false) });
+        if (quest) srv.StartQuest(1, 3000, 3000);
+        { std::vector<nox::OutPacket> warm; srv.Tick(0, warm); }   // 첫 Tick 은 기준점만 잡는다
+        srv.DebugMoveTo(a, 990, 990);
+        std::vector<nox::OutPacket> out; srv.Tick(33, out);
+        Check(srv.PropLock(800) == 0 && srv.doorTouch(nox::Server::DoorTouch::KeyUsed) == 1, "⑥ 은 열쇠로 안 풀렸다");
+        Check(srv.PropLock(801) == 0 && srv.doorTouch(nox::Server::DoorTouch::PartnerUnlocked) == 1, "⑥ 짝 문이 안 풀렸다");
+        Check(srv.PropLock(802) == 1, "⑥ 짝이 아닌 먼 문까지 풀렸다");
+        Check(srv.DebugInventory(a).empty(), "⑥ 쓴 열쇠가 가방에 남았다");
+        const auto msgs = FlattenTo(out, a);
+        const auto* dm = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_DROP));
+        Check(dm && dm->size() == 5 && (*dm)[1] == (60002 & 0xFF) && (*dm)[2] == (60002 >> 8) && (*dm)[3] == (623 & 0xFF) && (*dm)[4] == (623 >> 8),
+              "⑥ 열쇠 지움 4d <번호> <종류> 가 안 갔다");
+        Check(dropped(srv, 234) == 1, "⑥ 풀림 소리 234 를 안 불렀다");
+        int gauntlet15 = 0;
+        for (const auto& m : msgs)
+            if (m.size() == 4 && m[0] == static_cast<uint8_t>(nox::Op::GAUNTLET) && m[1] == 15 &&
+                ((m[2] | (m[3] << 8)) == 800 || (m[2] | (m[3] << 8)) == 801)) ++gauntlet15;
+        Check(gauntlet15 == (quest ? 2 : 0), quest ? "⑥ 퀘스트인데 f0 0f 가 두 문에 안 갔다" : "⑥ 퀘스트가 아닌데 f0 0f 가 갔다");
+        uint32_t ms = 33;
+        for (int t = 0; t < 10; ++t) { ms += 33; std::vector<nox::OutPacket> z; srv.Tick(ms, z); }
+        Check(srv.DebugPropFine(800) != 0, "⑥ 풀린 문이 안 돈다");
+    }
+    std::printf("  09-29 Z1-A — 잠긴 문: 짐 읽기 두 꼴 · 문짝 가운데 칸 · 잠기면 안 돎 · 열쇠 없음 f0 21(1.5초) · 장치 · 열쇠로 풀기(짝·4d·f0 0f)\n");
+}
+
+// ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
+//   사람 판 09-28 「워리어가 컨저러를 볼 때 흰 티가 살색으로」 — 새로 온 쪽이 먼저 온 쪽의 평상복 색(수식)을 못 받았다
+void TestWornLooksForNewcomer() {
+    using nox::CharClass;
+    const std::string a = "10.9.29.1:9401", b = "10.9.29.2:9402";
+    nox::Server srv;
+    GearTemplates(srv);
+    srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+    srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+    std::vector<nox::OutPacket> out;
+    srv.DebugSendWornLooks(b, a, out);
+    const auto toB = FlattenTo(out, b);
+    std::vector<std::vector<uint8_t>> looks;
+    for (const auto& m : toB)
+        if (m[0] == 0x4f || m[0] == 0x50 || m[0] == 0x51 || m[0] == 0x52) looks.push_back(m);
+    // ⭕ 정품 녹음 `orig_arena_1851` 18:53:27.410 — 새로 온 위저드가 워리어(0x5c)에 대해 받은 넷 그대로(번호만 728)
+    const std::vector<std::vector<uint8_t>> want = {
+        { 0x4f, 0xd8, 0x82, 0x00, 0x00, 0x00, 0x01 },                                  // 나무방패 — 수식 없음
+        { 0x50, 0xd8, 0x82, 0x00, 0x02, 0x00, 0x00 },                                  // 롱소드 — 수식 없음
+        { 0x52, 0xd8, 0x82, 0x01, 0x00, 0x00, 0x00, 0xb9, 0xca, 0xff, 0xff },          // 신발 — 캐릭터 색
+        { 0x52, 0xd8, 0x82, 0x04, 0x00, 0x00, 0x00, 0xff, 0xbf, 0xff, 0xff } };        // 바지 — 캐릭터 색
+    if (looks != want) {   // 다르면 무엇이 왔는지 찍는다
+        for (const auto& m : looks) { std::printf("    [겉모습]"); for (uint8_t x : m) std::printf(" %02x", x); std::printf("\n"); }
+    }
+    Check(looks == want, "① 새로 온 사람에게 간 입은 것 겉모습이 정품 녹음 넷(4f·50·52·52 · 차례·색)과 다르다");
+    Check(srv.wornLookSent() == 4, "① 계수 — 보냄 4 가 아니다");
+    // ①' 실제 소개 자리 — 새로 온 위저드를 소개하는 틱에 위저드가 워리어의 입은 것(신발 52 · 색)을 받는다
+    {
+        nox::Server s2;
+        GearTemplates(s2);
+        s2.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        s2.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        std::vector<nox::OutPacket> o2;
+        s2.Tick(0, o2);
+        o2.clear();
+        s2.DebugSetPendingIntro(b);
+        s2.Tick(34, o2);
+        bool gotShoe = false;
+        for (const auto& m : FlattenTo(o2, b))
+            if (m.size() == 11 && m[0] == 0x52 && m[1] == 0xd8 && m[3] == 0x01 && m[7] == 0xb9 && m[8] == 0xca) gotShoe = true;
+        Check(gotShoe, "①' 소개하는 틱에 새로 온 사람이 먼저 온 사람의 신발 겉모습(52 · 색 b9 ca)을 못 받았다");
+        // ①'' 먼저 온 사람은 새 사람의 `e9 … ff 01`(기본 차림 다시 그리기)을 받는다 — 정품 녹음 18:53:27.374
+        bool gotE9 = false;
+        for (const auto& m : FlattenTo(o2, a))
+            if (m.size() == 9 && m[0] == static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN) && m[1] == 0xdd && m[2] == 0x02 && m[7] == 0xff && m[8] == 0x01) gotE9 = true;
+        Check(gotE9 && s2.introRedrawSent() >= 1, "①'' 먼저 온 사람이 새 사람(733)의 `e9 … ff 01` 을 못 받았다");
+    }
+    // ② 캐릭터 색(정보 97B)이 다르면 수식도 다르다 — 셔츠 { ff, b3+[84], b3+[85], ff }
+    uint8_t mods[4];
+    std::vector<uint8_t> info(97, 0);
+    info[84] = 0x01; info[85] = 0x02; info[83] = 0x03; info[86] = 0x04; info[87] = 0x05;
+    nox::Server::DefaultGearMods(nox::kItemStreetShirt, info, mods);
+    Check(mods[0] == 0xff && mods[1] == 0xb4 && mods[2] == 0xb5 && mods[3] == 0xff, "② 셔츠 수식이 0xb3 + 캐릭터 색이 아니다");
+    nox::Server::DefaultGearMods(nox::kItemStreetSneakers, info, mods);
+    Check(mods[0] == 0xb8 && mods[1] == 0xb7 && mods[2] == 0xff, "② 신발 수식이 { b3+[87], b3+[86] } 가 아니다");
+    nox::Server::DefaultGearMods(nox::kItemWizardRobe, info, mods);
+    Check(mods[0] == 0xff && mods[1] == 0xff && mods[2] == 0xff && mods[3] == 0xff, "② 로브에 수식이 붙었다");
+    std::printf("  09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것(4f·50·52·52 — 정품 녹음과 바이트 같음) · 평상복 색 = 0xb3 + 캐릭터 색\n");
+}
+
+// ── 09-28 — 줍고 저절로 입음(`pickupArmor_53E7F0` · `sub_53A720`) ─────────
+//   사람 판 2차 — 「빈 부위 갑옷을 주우면 원래 저절로 입었다」
+void TestPickupAutoEquip() {
+    using nox::CharClass;
+    const std::string a = "10.9.28.21:9301", b = "10.9.28.22:9302";
+    auto make = [&](nox::Server& srv) {
+        GearTemplates(srv);
+        srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        srv.DebugMoveTo(a, 1000, 1000);
+        std::vector<nox::Server::WorldStatic> st;
+        auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, bool weapon, uint32_t sub) {
+            nox::Server::WorldStatic w;
+            w.netCode = nc; w.type = type; w.x = 1000; w.y = 1000; w.modifiable = true;
+            w.equipBit = bit; w.isWeapon = weapon; w.weaponClass = weapon; w.subclass = sub; w.weight = 5;
+            st.push_back(w);
+            if (weapon) srv.SetWeaponDef(type, 1, 0);
+        };
+        put(600, 1180, 0x400000, false, 0x1);    // 강철 투구 — 부위 HELMET(1)
+        put(601, 1181, 0x200000, false, 0x1);    // 가죽 투구 — 같은 부위
+        put(602, 1182, 0x2000000, false, 0x2);   // 강철 방패 — 부위 SHIELD(2)
+        put(603, 1170, 0x400, true, 0x400);      // 대검 — 두 손
+        put(604, 1171, 0x100, true, 0x100);      // 칼 — 한 손
+        srv.SetWorldStatics(st);
+    };
+    auto get = [&](nox::Server& srv, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_GET, nc);
+        srv.OnPacket(a, p.data(), p.size(), out);
+    };
+    auto worn = [&](nox::Server& srv, uint16_t nc) {
+        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == nc) return c.equipped;
+        return false;
+    };
+    // ① 빈 부위(투구) → 저절로 입음 · 남에게 겉모습 · ② 같은 부위 둘째 → 안 입음
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> out; get(srv, 600, out);
+        Check(worn(srv, 600) && (srv.DebugArmorEquip(a) & 0x400000), "① 빈 부위 투구를 주웠는데 안 입었다");
+        // ★ 09-29 — 수식 없는 투구라 4f(`sub_4D82F0`)
+        Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_MUNDANE_ARMOR_EQUIP)) != nullptr, "① 남에게 투구 입음 겉모습(4f)이 안 갔다");
+        std::vector<nox::OutPacket> o2; get(srv, 601, o2);
+        Check(!worn(srv, 601) && worn(srv, 600) && srv.autoEquip(2) == 1, "② 같은 부위 투구를 또 주웠는데 입었거나 계수가 안 올랐다");
+    }
+    // ③ 손이 빈 채 칼을 주우면 든다 · ④ 대검을 든 채 방패를 주우면 안 입는다
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> o0;
+        const uint16_t sword0 = srv.DebugWeaponNet(a);
+        const std::vector<uint8_t> dq = CodePacket(nox::Op::TRY_DEQUIP, sword0);
+        srv.OnPacket(a, dq.data(), dq.size(), o0);
+        Check(srv.DebugWeaponNet(a) == 0, "③ 전제 — 롱소드를 못 내려놓았다");
+        get(srv, 603, o0);
+        Check(srv.DebugWeaponNet(a) == 603 && srv.autoEquip(0) == 1, "③ 손이 빈 채 대검을 주웠는데 안 들었다");
+        get(srv, 604, o0);
+        Check(srv.DebugWeaponNet(a) == 603, "③ 이미 든 채 칼을 주웠는데 바꿔 들었다(손이 빌 때만 든다)");
+        get(srv, 602, o0);
+        Check(!worn(srv, 602) && srv.autoEquip(3) == 1, "④ 대검을 든 채 방패를 주웠는데 입었다");
+    }
+    std::printf("  09-28 — 줍고 저절로 입음: 빈 부위 갑옷 · 같은 부위면 안 입음 · 빈손이면 무기 듦 · 두 손 무기면 방패 안 입음\n");
+}
+
+// ── 09-28 — 남을 소개하는 `2d NEW_PLAYER` 의 104·108 자리 = 지금 갑옷·무기 비트(`player.go:233~234`) ─────────
+//   사람 판 2차 — 「평상복을 입었는데 남 화면엔 맨몸」. 녹음(0)을 그대로 보내 다시 소개할 때마다 남의 차림을 지웠다
+void TestNewPlayerGearBits() {
+    using nox::CharClass;
+    const std::string a = "10.9.28.11:9291", b = "10.9.28.12:9292";
+    nox::Server srv;
+    GearTemplates(srv);
+    std::vector<uint8_t> join(216, 0);            // 녹음 대신 — 87 자리부터 2d 129바이트(나머지 0)
+    join[87] = static_cast<uint8_t>(nox::Op::NEW_PLAYER);
+    srv.SetJoinTemplate(join.data(), join.size());
+    srv.DebugEnterGame(a, 728, false, CharClass::Wizard);
+    srv.DebugEnterGame(b, 733, false, CharClass::Warrior);
+    const uint32_t armorA = srv.DebugArmorEquip(a);
+    Check(armorA & 0x4000, "전제 — 위저드가 로브를 안 입었다(이 시험이 무의미해진다)");
+    std::vector<nox::OutPacket> out;
+    srv.DebugEmitNewPlayer(b, a, out);
+    const auto toB = FlattenTo(out, b);
+    const auto* np = FindMsg(toB, static_cast<uint8_t>(nox::Op::NEW_PLAYER));
+    auto u32 = [](const std::vector<uint8_t>& m, size_t at) {
+        return static_cast<uint32_t>(m[at] | (m[at + 1] << 8) | (m[at + 2] << 16) | (static_cast<uint32_t>(m[at + 3]) << 24));
+    };
+    Check(np && np->size() >= 112, "2d 가 안 갔거나 짧다");
+    if (np && np->size() >= 112) {
+        Check(u32(*np, 104) == armorA, "2d 104 자리가 지금 갑옷 비트가 아니다 — 남 화면에서 차림이 지워진다");
+        Check(u32(*np, 108) == srv.DebugWeaponEquip(a), "2d 108 자리가 지금 무기 비트가 아니다");
+    }
+    // 로브를 벗은 뒤 다시 소개하면 로브 비트가 빠져야 한다(평상복은 남는다)
+    for (const auto& c : srv.DebugInventory(a))
+        if (c.equipBit == 0x4000 && !c.isWeapon) {
+            const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_DEQUIP, c.netCode);
+            std::vector<nox::OutPacket> o; srv.OnPacket(a, p.data(), p.size(), o);
+        }
+    std::vector<nox::OutPacket> out2;
+    srv.DebugEmitNewPlayer(b, a, out2);
+    const auto toB2 = FlattenTo(out2, b);
+    const auto* np2 = FindMsg(toB2, static_cast<uint8_t>(nox::Op::NEW_PLAYER));
+    Check(np2 && np2->size() >= 112 && !(u32(*np2, 104) & 0x4000) && (u32(*np2, 104) & 0x405),
+          "로브를 벗은 뒤 다시 소개한 2d 에 로브가 남았거나 평상복이 빠졌다");
+    std::printf("  09-28 — 2d NEW_PLAYER 104·108 = 지금 갑옷·무기 비트(벗은 뒤 다시 소개해도 맞음)\n");
+}
+
+// ── 09-28 — 남을 소개하는 2d 에 **그 사람의 정보 97B**(`player.go:240` `*pl.Info()`) ─────────
+//   사람 판 — 녹음 2d 를 그대로 써서 남에게는 모두 컨저러·Jack 색으로 소개됐다
+void TestNewPlayerRealInfo() {
+    using nox::CharClass;
+    const std::string a = "10.9.28.41:9321", b = "10.9.28.42:9322";
+    std::vector<uint8_t> join(216, 0);
+    join[87] = static_cast<uint8_t>(nox::Op::NEW_PLAYER);
+    join[87 + 3] = 'J'; join[87 + 5] = 'a';                   // 녹음 이름 "Ja…"
+    join[87 + 3 + 66] = 0x02;                                  // 녹음 직업 = 컨저러
+    auto make = [&](nox::Server& srv) {
+        srv.SetJoinTemplate(join.data(), join.size());
+        srv.DebugEnterGame(a, 728, false, CharClass::Wizard);
+        srv.DebugEnterGame(b, 733, false, CharClass::Warrior);
+    };
+    // ① 97B 가 있으면 그대로 — 이름 "Zed" · 직업 위저드(1) · 여성 · 머리색
+    {
+        nox::Server srv; make(srv);
+        std::vector<uint8_t> info(97, 0);
+        info[0] = 'Z'; info[2] = 'e'; info[4] = 'd';
+        info[66] = 0x01; info[67] = 1; info[68] = 0x11; info[69] = 0x22; info[70] = 0x33;
+        srv.DebugSetInfo97(a, info);
+        std::vector<nox::OutPacket> out; srv.DebugEmitNewPlayer(b, a, out);
+        const auto toB = FlattenTo(out, b);                    // ⚠ 담아 둔다 — 임시 벡터 안을 가리키면 식이 끝나며 사라진다
+        const auto* np = FindMsg(toB, static_cast<uint8_t>(nox::Op::NEW_PLAYER));
+        Check(np && np->size() >= 100 && std::equal(info.begin(), info.end(), np->begin() + 3),
+              "① 2d 정보 97B 가 그 사람 것이 아니다(녹음 Jack 이 남았거나 이름 첫 글자를 바꿨다)");
+        Check(srv.newPlayerInfo(1) == 1 && srv.newPlayerInfo(0) == 0, "① 계수 — 「진짜로 덮음」이 안 올랐다");
+    }
+    // ② 97B 가 없으면(시험 접속) 녹음 그대로 + 이름 첫 글자만 번호로(옛 동작 유지)
+    {
+        nox::Server srv; make(srv);
+        std::vector<nox::OutPacket> out; srv.DebugEmitNewPlayer(b, a, out);
+        const auto toB = FlattenTo(out, b);
+        const auto* np = FindMsg(toB, static_cast<uint8_t>(nox::Op::NEW_PLAYER));
+        Check(np && np->size() >= 100 && (*np)[3 + 66] == 0x02 && (*np)[3] == static_cast<uint8_t>('A' + (728 % 26)),
+              "② 97B 없는 사람인데 녹음 정보·이름 첫 글자 규칙이 안 지켜졌다");
+        Check(srv.newPlayerInfo(0) == 1, "② 계수 — 「녹음 그대로」가 안 올랐다");
+    }
+    std::printf("  09-28 — 2d 정보 97B = 그 사람 것(이름·직업·색) · 없으면 녹음 그대로\n");
+}
+
+// ── 09-28 박쥐 — 멀리 도망갔다 돌아오면 안 때리고 딴 데로 간다(사람 판) ─────────
+void TestMonsterChaseReturn() {
+    using nox::CharClass;
+    const std::string a = "10.9.28.21:9301", b = "10.9.28.22:9302";
+    nox::Server srv;
+    srv.DebugEnterGame(a, 728, false, CharClass::Conjurer);
+    srv.DebugEnterGame(b, 729, false, CharClass::Warrior);
+    srv.DebugMoveTo(a, 1000, 1000);
+    srv.DebugMoveTo(b, 1060, 1000);
+    srv.DebugSpawnPet(1357, 1000, 1000, a);                  // 박쥐 — 주인 a
+    std::vector<nox::OutPacket> out;
+    uint32_t ms = 0;
+    auto tick = [&](int n) { for (int t = 0; t < n; ++t) { ms += 34; out.clear(); srv.Tick(ms, out); } };
+    // ① 열린 땅 — 물다가 상대가 멀리(1600) 달아난 뒤 박쥐 바로 옆으로 돌아온다.
+    //   공격 사슬의 가기(7)가 **쌓던 때의 자리**로만 가면 박쥐는 옛 자리(1600 쪽)로 떠나며 안 문다(09-28 사람 판 증상)
+    const uint16_t hp0 = srv.HealthOf(b);
+    tick(120);
+    Check(srv.HealthOf(b) < hp0, "전제 — 처음 붙었을 때도 안 물었다");
+    double px = 0, py = 0; srv.DebugPetXY(0, px, py);
+    const double x0 = px;
+    // 멀리 달아난다(열린 땅 — 계속 보인다). ★ 틱마다 6 씩 — 한 번에 옮기면 사슬을 다시 쌓는 순간 새 자리가 들어가
+    //   자리 고치기 없이도 따라가 보인다(09-28 돌연변이 M1 이 이 줄 없이 안 걸렸다)
+    for (int t = 0; t < 90; ++t) { srv.DebugMoveTo(b, srv.XOf(b) + 6, 1000); tick(1); }
+    srv.DebugPetXY(0, px, py);
+    // 3초면 박쥐(틱당 3.28)는 약 290 간다. 사슬의 가기(7)가 쌓던 때 자리에 머물면 거기서 선다
+    Check(px - x0 > 200.0, "① 달아나는 상대를 3초 동안 안 따라갔다 — 가기(7)가 옛 자리에 머문다");
+    srv.DebugMoveTo(b, static_cast<int>(px) + 20, static_cast<int>(py));   // 박쥐 바로 옆으로 돌아온다
+    const uint16_t hp1 = srv.HealthOf(b);
+    tick(90);
+    srv.DebugPetXY(0, px, py);
+    const double dx = px - srv.XOf(b), dy = py - srv.YOf(b);
+    Check(srv.HealthOf(b) < hp1, "① 돌아와 옆에 섰는데 3초 동안 안 물었다");
+    Check(std::sqrt(dx * dx + dy * dy) < 60.0, "① 돌아와 옆에 섰는데 박쥐가 옛 자리로 떠났다");
+    Check(srv.aiMoveTargetFollow() > 0, "① 가기(7)가 대상을 한 번도 안 따라갔다 — 자리 고치기가 안 돌았다");
+
+    // ② 주인은 벽 너머 · 박쥐와 상대는 같은 쪽 — 조건 45(보이나)가 **주인 눈**이면 매 틱 사슬이 무너져 제자리에 선다
+    {
+        nox::Server s2;
+        s2.DebugEnterGame(a, 728, false, CharClass::Conjurer);
+        s2.DebugEnterGame(b, 729, false, CharClass::Warrior);
+        s2.DebugMoveTo(a, 1000, 1000);
+        s2.DebugMoveTo(b, 1300, 1000);
+        s2.DebugSpawnPet(1357, 1000, 1000, a);
+        std::vector<nox::OutPacket> o2;
+        uint32_t m2 = 0;
+        m2 += 34; s2.Tick(m2, o2);
+        // x=47 세로 벽(47+43=90 짝수라 y=1000 줄 추적에 걸린다) — 주인(1000)과 박쥐·상대(1250·1300) 사이
+        s2.SetWalls({ { 47, 39 }, { 47, 40 }, { 47, 41 }, { 47, 42 }, { 47, 43 }, { 47, 44 }, { 47, 45 }, { 47, 46 }, { 47, 47 } });
+        s2.DebugSetPetPos(0, 1250, 1000);
+        const uint16_t h0 = s2.HealthOf(b);
+        for (int t = 0; t < 150; ++t) { m2 += 34; o2.clear(); s2.Tick(m2, o2); }
+        Check(s2.HealthOf(b) < h0, "② 주인이 벽 너머일 때 박쥐가 옆의 상대를 5초 동안 안 물었다(조건 45 가 주인 눈)");
+    }
+
+    // ③ 벽 뒤로 사라진 상대의 **마지막 자리로 가던 중**(15 → 56·7) 상대가 박쥐 바로 옆에 다시 보이면 곧장 싸움으로 돌아간다.
+    //   56(보이는 적이 없나)이 늘 참이면 옛 자리까지 다 간 뒤에야 돌아온다
+    {
+        nox::Server s3;
+        s3.DebugEnterGame(a, 728, false, CharClass::Conjurer);
+        s3.DebugEnterGame(b, 729, false, CharClass::Warrior);
+        s3.DebugMoveTo(a, 1000, 1000);
+        s3.DebugMoveTo(b, 1300, 1000);
+        s3.DebugSpawnPet(1357, 1000, 1000, a);
+        std::vector<nox::OutPacket> o3;
+        uint32_t m3 = 0;
+        for (int t = 0; t < 3; ++t) { m3 += 34; o3.clear(); s3.Tick(m3, o3); }   // 보고 싸움을 쌓는다(마지막 자리 = 1300)
+        s3.SetWalls({ { 47, 39 }, { 47, 40 }, { 47, 41 }, { 47, 42 }, { 47, 43 }, { 47, 44 }, { 47, 45 }, { 47, 46 }, { 47, 47 } });
+        for (int t = 0; t < 10; ++t) { m3 += 34; o3.clear(); s3.Tick(m3, o3); }  // 안 보여 마지막 자리로 가기 시작
+        Check(s3.DebugPetEnemy(0).empty(), "③ 전제 — 벽을 세웠는데 아직 상대가 보인다");
+        double qx = 0, qy = 0; s3.DebugPetXY(0, qx, qy);
+        s3.DebugMoveTo(b, static_cast<int>(qx) + 20, static_cast<int>(qy));      // 박쥐 바로 옆(벽 이쪽)으로
+        const uint16_t h3 = s3.HealthOf(b);
+        for (int t = 0; t < 60; ++t) { m3 += 34; o3.clear(); s3.Tick(m3, o3); }
+        Check(s3.HealthOf(b) < h3, "③ 마지막 자리로 가던 박쥐가 옆에 다시 보인 상대를 2초 동안 안 물었다(조건 56)");
+    }
+
+    // ④ 먼 상대를 쫓던 중 **더 가까운 새 상대**가 보이면 사슬을 버리고 그쪽을 문다(조건 60 `unit_ai.go:161~183`)
+    {
+        const std::string c = "10.9.28.23:9303";
+        nox::Server s4;
+        s4.DebugEnterGame(a, 728, false, CharClass::Conjurer);
+        s4.DebugEnterGame(b, 729, false, CharClass::Warrior);
+        s4.DebugMoveTo(a, 1000, 1000);
+        s4.DebugMoveTo(b, 1400, 1000);
+        s4.DebugSpawnPet(1357, 1000, 1000, a);
+        std::vector<nox::OutPacket> o4;
+        uint32_t m4 = 0;
+        for (int t = 0; t < 3; ++t) { m4 += 34; o4.clear(); s4.Tick(m4, o4); }   // b 를 쫓기 시작
+        Check(s4.DebugPetEnemy(0) == b, "④ 전제 — 박쥐가 b 를 상대로 안 잡았다");
+        s4.DebugEnterGame(c, 730, false, CharClass::Warrior);
+        double qx = 0, qy = 0; s4.DebugPetXY(0, qx, qy);
+        s4.DebugMoveTo(c, static_cast<int>(qx), static_cast<int>(qy) + 20);      // 박쥐 바로 옆에 새 상대
+        const uint16_t hc = s4.HealthOf(c);
+        for (int t = 0; t < 60; ++t) { m4 += 34; o4.clear(); s4.Tick(m4, o4); }
+        Check(s4.HealthOf(c) < hc, "④ 더 가까운 새 상대가 옆에 섰는데 박쥐가 옛 상대만 쫓았다(조건 60)");
+    }
 }
 
 // ── 09-27 S1 — 둘레 피해의 v9 = who(`game.go:1438` `CallDamage(who, nil, …)`) — 막기 판정을 탄다 ─────────
@@ -24348,6 +25290,16 @@ int main() {
     TestEquipWeaponGates();
     TestDequipWeapon();
     TestWeaponEffects();
+    TestDrop();
+    TestDropDecay();
+    TestDeathDropRespawnGear();
+    TestWornLooksForNewcomer();
+    TestWallBreak();
+    TestDoorLock();
+    TestPickupAutoEquip();
+    TestNewPlayerGearBits();
+    TestNewPlayerRealInfo();
+    TestMonsterChaseReturn();
     TestSplashWhoSrc();
     TestLavaPets();
     TestMissileBlockMore();

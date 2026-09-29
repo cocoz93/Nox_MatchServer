@@ -114,4 +114,8 @@ extern bool fillColorsOn;
 std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame,
                                        uint32_t enchantBits = 0, const std::string& mapName = std::string());
 
+// ★ 09-28 B4b — 기본 장비 한 종류의 `4c` 색 4바이트와 내구도(`44` · 0 이면 안 보냄). 스냅샷 꼬리와 **같은 표**다
+//   (부활 때 새로 주는 기본 장비가 쓴다). 표에 없는 종류면 거짓 · 색은 ff ff ff ff · 내구도 0
+bool DefaultGearLook(uint16_t type, uint8_t look[4], uint16_t& durability);
+
 }  // namespace nox

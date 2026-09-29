@@ -258,6 +258,24 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.monsterSnd(5, true), srv.monsterSnd(5, false), srv.monsterSnd(9, true), srv.monsterSnd(9, false),
                 srv.monsterSnd(10, true), srv.monsterSnd(10, false), srv.monsterSnd(14, true), srv.monsterSnd(14, false),
                 srv.monsterSnd(16, true), srv.monsterSnd(16, false));
+    // ★ 09-28 박쥐 — 공격 사슬 가기(7)가 대상을 따라 자리를 고친 틱 수 · 대상이 안 보여 잊은 횟수
+    std::printf("[몬스터쫓기] 따라감 %llu · 잊음 %llu\n", srv.aiMoveTargetFollow(), srv.aiMoveTargetForgot());
+    // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
+    std::printf("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",
+                srv.wallGate(0), srv.wallGate(1), srv.wallGate(2), srv.wallGate(3), srv.wallGate(4));
+    // ★ 09-28 — 버릴 때 사라짐 시계(걸림 · 협동·퀘스트 · 예외 셋) · 시계가 다 돼 지운 수
+    {
+        using DG = nox::DecayGate;
+        std::printf("[버린물건사라짐] 10초 %llu · 25초 %llu · 안 걺(협동·퀘스트 %llu · RESPAWN %llu · FLAG %llu · Glyph %llu · 함수안옮김 %llu) · 지움 %llu(33 보냄 %llu)\n",
+                    srv.decayGate(DG::Armed), srv.decayGate(DG::Armed25), srv.decayGate(DG::CoopOrQuest), srv.decayGate(DG::Respawn),
+                    srv.decayGate(DG::FlagClass), srv.decayGate(DG::Glyph), srv.decayGate(DG::NotPorted), srv.decayExpired(),
+                    srv.decayShadowSent());
+    }
+    // ★ 09-28 B4b — 죽을 때 가방 떨어뜨리기 · 부활 때 기본 장비
+    std::printf("[죽음가방] 남긴 평상복 %llu · 둘레에 %llu · 몸 자리에 %llu · [부활장비] 지움 %llu · 줌 %llu · 틀없음 %llu · 협동퀘스트안옮김 %llu"
+                " · [입은것겉모습] 보냄 %llu · 비트몰라뺌 %llu\n",
+                srv.deathDropKept(), srv.deathDropSpiral(), srv.deathDropAtBody(), srv.respawnGearDeleted(), srv.respawnGearGiven(),
+                srv.respawnGearNoTemplate(), srv.respawnGearNotPorted(), srv.wornLookSent(), srv.wornLookSkipped());
     // ★ 09-23 nine-defects 4-d4 — 발소리(달리기 RUN 2·8칸 · 걷기 WALK 3·9칸 × 발밑 바닥 종류). 「바닥없음」 = 칸 찾기 −1·정의 밖
     using FK = nox::FootKind;
     std::printf("[발소리] 달리기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu}"
@@ -756,6 +774,10 @@ int main(int argc, char** argv) {
         // ★ 09-22 — UPDATE·INIT 인자. **소리 이름이 여기 적혀 있는 종류가 있다**(밟는 판이 그랬다)
         std::printf("  UPDATE     %s\n", ti->updateFn.empty() ? "(없음)" : ti->updateFn.c_str());
         std::printf("  UPDATE 인자 %s\n", ti->updateArgs.empty() ? "(없음)" : ti->updateArgs.c_str());
+        // ★ 09-29 Z1-A — 닿음·줍기·버리기 함수와 무게 유무(열쇠가 왜 세계에 안 실리나를 보려고)
+        std::printf("  COLLIDE    %s %s\n", ti->collideFn.empty() ? "(없음)" : ti->collideFn.c_str(), ti->collideArgs.c_str());
+        std::printf("  PICKUP     %s · DROP %s · WEIGHT %s\n", ti->pickupFn.empty() ? "(없음)" : ti->pickupFn.c_str(),
+                    ti->dropFn.empty() ? "(없음)" : ti->dropFn.c_str(), ti->hasWeight ? "있음" : "없음");
         std::fflush(stdout);
         return 0;
     }
@@ -842,6 +864,26 @@ int main(int argc, char** argv) {
                 for (const auto& w : cells) if (w.tile < flags.size() && (flags[w.tile] & 0x5)) ++hardCells;
                 std::printf("[벽] 모양 %zu칸 · 재질 %zu종 · 방향 표 밖 %zu칸 · 광전사 세게(깃발&5) 재질 %zu종·%zu칸\n",
                             cells.size(), flags.size(), badDir, hardDefs, hardCells);
+                // ★ 09-29 Z1-A — 벽 정의의 부수기 칸(맞는 소리 재질·체력·부서지는 소리) + 맵의 부서지는 벽·창문 칸
+                {
+                    std::vector<nox::Server::WallDefExtra> ex;
+                    size_t withHp = 0, noSnd = 0;
+                    for (const auto& d : wdb.Walls()) {
+                        nox::Server::WallDefExtra e;
+                        e.hitMat = d.hitMat;
+                        e.health = d.health;
+                        e.breakSound = d.breakSound.empty() ? 0 : nox::SoundByName(d.breakSound.c_str());
+                        if (!d.breakSound.empty() && e.breakSound == 0) ++noSnd;
+                        if (d.health > 0) ++withHp;
+                        ex.push_back(e);
+                    }
+                    srv.SetWallDefExtras(std::move(ex));
+                    const auto destr = mf.ReadGridList("DestructableWalls", 1);
+                    const auto win = mf.ReadGridList("WindowWalls", 2);
+                    srv.SetWallSpecials(destr, win);
+                    std::printf("[벽 부수기] 정의 체력 있는 것 %zu/%zu종 · 부서지는 소리 이름 못 찾음 %zu · 맵 부서지는 벽 %zu칸 · 창문 %zu칸\n",
+                                withHp, wdb.Walls().size(), noSnd, destr.size(), win.size());
+                }
             } else {
                 std::printf("[벽] 모양 %zu칸 · ⚠ thing.bin 을 못 읽어 재질 깃발 없음(모두 막는 벽으로 봄)\n", cells.size());
             }
@@ -858,6 +900,8 @@ int main(int argc, char** argv) {
         nox::ThingDb tdb;
         size_t nStat = 0, nSkip = 0;
         std::map<std::string, int> notPickup;   // 아이템이 아니라 걸러진 것 — 이름별로
+        size_t decayExemptKinds[4] = {};        // ★ 09-28 — 바닥 물건의 「10초 규칙 예외」 까닭별(없음·RESPAWN·FLAG·Glyph)
+        size_t dropFnKinds[5] = {};             // ★ 09-28 — 바닥 물건의 버리기 함수 갈래별(Default·갑옷무기·물약·음식·안옮김)
         // ★ 2026-09-18 ④⑯ — 맵에 **그려진** 판 물건(깃발·왕관·공)의 자리.
         //   우리 서버는 맵 깃발을 안 읽고 제 자리에 놓으므로, 그림과 실물이 얼마나
         //   어긋나는지 보려면 맵 쪽 좌표가 있어야 한다.
@@ -927,6 +971,9 @@ int main(int argc, char** argv) {
             std::vector<nox::Server::WorldStatic> st;
             std::vector<nox::Server::WorldProp> props;
             size_t propExtentTooBig = 0;   // ⑩ extent 가 15비트를 넘는 것(정적 조회로 못 가리킨다)
+            size_t doorsSeen = 0, doorsLocked = 0, doorsUnread = 0;   // ★ 09-29 Z1-A 문 · 그중 잠긴 것(광전사가 부딪히는 문) · 못 읽은 것
+            size_t doorLockKinds[7] = {};
+            size_t doorsExtra = 0, doorsTeam = 0, doorsAngleBad = 0, doorsAngleFixed = 0, doorsRestOdd = 0, doorsClosedDiff = 0;
             const auto objs = mf.ReadObjects();
             if (!mf.Error().empty())
                 std::printf("[맵] ⚠ 오브젝트 읽기가 도중에 멈춤: %s — 읽은 %zu개만 쓴다\n", mf.Error().c_str(), objs.size());
@@ -942,6 +989,29 @@ int main(int argc, char** argv) {
                 for (size_t k = 0; k < starts.size() && k < 14; ++k)
                     std::printf(" (%d,%d)", static_cast<int>(starts[k].first), static_cast<int>(starts[k].second));
                 std::printf("\n");
+                // ★ 09-28 — 부서지는 벽·창문 칸 수와, 부활 자리마다 **가장 가까운 부서지는 벽**(세상 좌표 = 칸 × 23 + 11).
+                //   정품 서버 판에서 벽 부서짐 와이어를 녹음하려면 사람이 그 벽을 찾아가야 한다(Z1-A 준비)
+                {
+                    const std::string errBefore = mf.Error();
+                    const auto destr = mf.ReadGridList("DestructableWalls", 1);
+                    const auto win = mf.ReadGridList("WindowWalls", 2);
+                    if (mf.Error() != errBefore) std::printf("[벽 칸 읽기] ⚠ %s\n", mf.Error().c_str());
+                    std::printf("[부서지는벽] %zu칸 · [창문벽] %zu칸", destr.size(), win.size());
+                    if (!destr.empty()) {
+                        std::printf(" · 부활 자리마다 가장 가까운 부서지는 벽:");
+                        for (size_t k = 0; k < starts.size() && k < 8; ++k) {
+                            double best = 1e18; int bx = 0, by = 0;
+                            for (const auto& g : destr) {
+                                const double wx = g.first * 23.0 + 11.0, wy = g.second * 23.0 + 11.0;
+                                const double d2 = (wx - starts[k].first) * (wx - starts[k].first) + (wy - starts[k].second) * (wy - starts[k].second);
+                                if (d2 < best) { best = d2; bx = static_cast<int>(wx); by = static_cast<int>(wy); }
+                            }
+                            std::printf(" [%d,%d → (%d,%d) %.0f]", static_cast<int>(starts[k].first), static_cast<int>(starts[k].second),
+                                        bx, by, std::sqrt(best));
+                        }
+                    }
+                    std::printf("\n");
+                }
                 srv.SetPlayerStarts(std::move(starts));
             }
             // ★ ④⑯ — 맵에 그려진 판 물건의 자리를 모아 둔다(출력은 아래 「맵 판물건」).
@@ -1404,10 +1474,36 @@ int main(int argc, char** argv) {
                         //   둘 다 `DOOR+IMMOBILE` · 몸은 **원 반지름 32** · thing.bin 에 MASS 없음(기본 1)
                         // ★ 09-22 — **문 짐을 찍는다.** 정품 캡처가 문 번호별 각도를 주므로
                         //   (`8bdf 00 · 8be0 10 · 8be1 18 · 8be2 18 · 8be3 08`) 어느 바이트가 각도인지 맞댈 수 있다
-                        if (isDoor && objs[i].tail.size() >= 2) {
-                            wp.angle = objs[i].tail[1];
-                            // 미세각은 거친각 × 8 에서 시작한다(거친각 = 32 × 미세 / 256)
-                            wp.fine = static_cast<uint8_t>((static_cast<int>(wp.angle) * 8) & 255);
+                        // ★ 09-29 Z1-A — 문 짐을 정답지 짜임대로 읽는다(`nox::ReadDoorXfer` — 각도 · 잠김 · 팀).
+                        //   ✖ 전에는 「각도 = tail[1]」로 읽었다 — 짐 머리 첫 바이트가 0 일 때만 맞고, 0 이 아니면
+                        //     (이름·팀·스크립트가 낀 문) **깃발 첫 바이트를 각도로** 읽었다(G_Castle 6 · Fortress 6 · LostTomb 4 …)
+                        nox::DoorXfer dx;
+                        const bool dxOk = isDoor && nox::ReadDoorXfer(objs[i], dx);
+                        if (isDoor) {
+                            ++doorsSeen;
+                            if (!dxOk) {
+                                ++doorsUnread;                    // 짐이 짧거나 판이 어긋난다 — 잠김을 못 읽었다
+                            } else {
+                                if (dx.lock != 0) ++doorsLocked;
+                                ++doorLockKinds[dx.lock <= 5 ? dx.lock : 6];   // 0 안 잠김 · 1~4 열쇠(은·금·루비·사파이어) · 5 장치 · 6 그 밖
+                                if (dx.extra) ++doorsExtra;
+                                if (dx.team != 0) ++doorsTeam;
+                                if (dx.angle > 31) ++doorsAngleBad;
+                                if (objs[i].tail.size() >= 2 && objs[i].tail[1] != (dx.angle & 31)) ++doorsAngleFixed;
+                                // 짐 끝 확인 — 셋째 u32 까지 읽었으니 가방이 없으면 남는 게 없다
+                                if (dx.rest != 0) ++doorsRestOdd;
+                                if (dx.closed != dx.angle) ++doorsClosedDiff;
+                                wp.lock = static_cast<uint8_t>(dx.lock > 255 ? 255 : dx.lock);
+                                wp.team = dx.team;
+                            }
+                            // `+12 & 4` = 부분류 GATE(`subclass_other.go:8` 셋째) — 잠김 소리 244(GateLocked)와 240(WoodenDoorLocked)을 가른다
+                            wp.gate = ti && ti->subclassRaw.find("GATE") != std::string::npos;
+                        }
+                        if (dxOk) {
+                            // 닫힘 각도 = 셋째 u32(+4) · 지금 각도 = 첫 u32(+12) — 58맵 전부 둘이 같다(부팅 줄 「지금 각도≠닫힘 각도 0」)
+                            wp.angle = static_cast<uint8_t>(dx.closed & 31);
+                            // 미세각은 거친각 × 8 에서 시작한다(거친각 = 32 × 미세 / 256 · 정답지 +40 = (각도 << 8) / 32)
+                            wp.fine = static_cast<uint8_t>((static_cast<int>(dx.angle & 31) * 8) & 255);
                             // ⚠ 여는 거리는 **반지름을 같이 찍는다** — 진짜로 문 몸에서 나온 42 와
                             //   못 찾아 떨어진 기본값 42 가 숫자로는 똑같아서 구분이 안 된다
                             std::printf("[문각도] 번호 %04x %s (%d,%d) — 닫힘 %u · 열림 %u · 여는거리 %.0f(문반지름 %s)\n",
@@ -1496,6 +1592,8 @@ int main(int argc, char** argv) {
                 // ★ 09-27 B5 — 지팡이 클래스(0x1000) · 무기·지팡이 SUBCLASS 비트(충전 알림·지속 주문 끊기가 본다)
                 w2.wandClass = ti->classRaw.find("WAND") != std::string::npos;
                 if (w2.weaponClass) w2.subclass = nox::WeaponClassBitsOf(ti->subclassRaw);
+                // ★ 09-28 — 갑옷이면 갑옷 SUBCLASS 비트(투구 1·방패 2·가슴 4·…) — 줍기 자동 입기가 「같은 부위를 입었나」를 본다(`armorHaveSameSubclass_53E7B0`)
+                else if (ti->classRaw.find("ARMOR") != std::string::npos) w2.subclass = nox::ParseArmorClass(ti->subclassRaw);
                 // ★ 묶음 5 — 줍기 한도를 재는 두 값. 여기까지 온 물건은 `hasWeight` 가 참이다.
                 w2.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
                 w2.isFood = ti->classRaw.find("FOOD") != std::string::npos;
@@ -1507,6 +1605,24 @@ int main(int argc, char** argv) {
                 const nox::PickupFn pf = nox::PickupFnOf(ti->pickupFn);
                 w2.potionPickup = (pf == nox::PickupFn::Potion);
                 w2.goldPickup = (pf == nox::PickupFn::Gold);
+                // ★ 09-28 — 버려도 안 사라지는 까닭(`GAME3_3.c:6440~6442`). 오브젝트 깃발은 thing.bin FLAGS 가 밑이다 —
+                //   맵 파일 깃발은 0x11408162 안의 비트만 덮으므로(`mapReadWriteObjData_4F4530` `:11296~11306`) RESPAWN(0x80000)은 종류 값 그대로
+                {
+                    bool flagClass = false;
+                    for (size_t p = 0; p <= ti->classRaw.size();) {
+                        const size_t e = ti->classRaw.find('+', p);
+                        const std::string tok = ti->classRaw.substr(p, e == std::string::npos ? std::string::npos : e - p);
+                        if (tok == "FLAG") flagClass = true;
+                        if (e == std::string::npos) break;
+                        p = e + 1;
+                    }
+                    if (nox::ParseObjectFlags(ti->flagsRaw) & 0x80000u) w2.decayExempt = nox::DecayExempt::Respawn;
+                    else if (flagClass) w2.decayExempt = nox::DecayExempt::FlagClass;
+                    else if (objs[i].type == "Glyph") w2.decayExempt = nox::DecayExempt::Glyph;
+                    ++decayExemptKinds[static_cast<size_t>(w2.decayExempt)];
+                    w2.dropFn = nox::DropFnOf(ti->dropFn);   // ★ 09-28 — 갑옷·무기·물약·음식은 25초로 다시 건다(RESPAWN 과 상관없이)
+                    ++dropFnKinds[static_cast<size_t>(w2.dropFn)];
+                }
                 st.push_back(w2);
             }
             nStat = st.size();
@@ -1548,8 +1664,11 @@ int main(int argc, char** argv) {
                                     ti->classRaw.find("WAND")   != std::string::npos;
                     c.wandClass = ti->classRaw.find("WAND") != std::string::npos;          // ★ 09-27 B5
                     if (c.weaponClass) c.subclass = nox::WeaponClassBitsOf(ti->subclassRaw);
-                    std::printf(" %s(무게 %d%s · 비트 %#x%s)", nm, (int)c.weight, ti->hasWeight ? "" : "·WEIGHT없음",
-                                (unsigned)c.equipBit, c.isWeapon ? (c.weaponClass ? " · 무기" : " · 무기(클래스 아님)") : "");
+                    else if (ti->classRaw.find("ARMOR") != std::string::npos) c.subclass = nox::ParseArmorClass(ti->subclassRaw);   // ★ 09-28
+                    c.dropFn = nox::DropFnOf(ti->dropFn);   // ★ 09-28 — 버리기 함수(로브·롱소드·나무방패는 갑옷무기 → 25초) · RESPAWN 은 기본 장비라 지운 채(`GAME3_3.c:7891`)
+                    std::printf(" %s(무게 %d%s · 비트 %#x%s · 부위 %#x · 버리기 %s)", nm, (int)c.weight, ti->hasWeight ? "" : "·WEIGHT없음",
+                                (unsigned)c.equipBit, c.isWeapon ? (c.weaponClass ? " · 무기" : " · 무기(클래스 아님)") : "",
+                                (unsigned)c.subclass, ti->dropFn.empty() ? "(없음)" : ti->dropFn.c_str());
                     srv.SetItemTemplate(gw, c);
                 }
                 std::printf("\n");
@@ -1722,6 +1841,19 @@ int main(int argc, char** argv) {
                     obs.clear();
                 }
                 srv.SetObstacles(std::move(obs));
+                // ★ 09-28 B4b — 물건 몸 반지름(원 모양만 · +176). 죽을 때 떨굴 자리 간격 = 가장 큰 반지름 × 2 + 6(`GAME3_3.c:6730~6748`)
+                {
+                    size_t nR = 0;
+                    for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                        const nox::ThingInfo* t2 = tdb.ByWire(w);
+                        if (!t2 || !t2->hasWeight || t2->shapeKind != 2) continue;
+                        srv.SetItemRadius(w, t2->radius);
+                        ++nR;
+                    }
+                    const nox::ThingInfo* rb = tdb.ByWire(nox::kItemWizardRobe);
+                    std::printf("[물건몸] 원 모양 반지름 %zu종 · 로브 %s %.0f\n", nR,
+                                rb ? (rb->shapeKind == 2 ? "원" : "원아님") : "없음", rb ? rb->radius : 0.0f);
+                }
                 // 소환수 몸 — 몬스터 종류 전부(원만)
                 for (uint16_t w = 1; w <= tdb.Count(); ++w) {
                     const nox::ThingInfo* t2 = tdb.ByWire(w);
@@ -1943,11 +2075,23 @@ int main(int argc, char** argv) {
                 if (propExtentTooBig)
                     std::printf("[판·문 번호] ⚠ extent 가 15비트를 넘는 것 %zu개 — 그것들은 클라가 못 찾는다\n",
                                 propExtentTooBig);
+                std::printf("[문 잠김] 문 %zu개 중 잠긴 것 %zu개 · 못 읽음 %zu — 종류 안잠김 %zu · 은 %zu · 금 %zu · 루비 %zu · 사파이어 %zu · 장치 %zu · 그밖 %zu\n",
+                            doorsSeen, doorsLocked, doorsUnread, doorLockKinds[0], doorLockKinds[1], doorLockKinds[2],
+                            doorLockKinds[3], doorLockKinds[4], doorLockKinds[5], doorLockKinds[6]);   // ★ 09-29 Z1-A
+                std::printf("[문 짐] 사이 자료 낀 문 %zu · 팀 있는 문 %zu · 각도 31 넘음 %zu · 옛 읽기와 각도 다름 %zu · 짐 끝 어긋남 %zu · 지금 각도≠닫힘 각도 %zu\n",
+                            doorsExtra, doorsTeam, doorsAngleBad, doorsAngleFixed, doorsRestOdd, doorsClosedDiff);
                 srv.SetWorldProps(std::move(props));
                 // ★ 09-22 묶음 9 — 문을 **제 칸의 벽으로** 붙인다(정답지 `doorAttachWall`).
                 //   벽과 문이 **둘 다 들어온 뒤**에 불러야 한다
                 if (!getenv("NOX_NO_DOOR_WALLS")) srv.AttachDoorWalls();   // A/B 스위치(09-22)
-                std::printf("[문·벽] 문 칸에 벽을 붙였다 — 닫힌 문이 걸음을 막는다(밀어내기는 안 한다)\n");
+                std::printf("[문·벽] 문짝 가운데 칸에 벽을 붙였다 — 닫힌 문이 걸음을 막는다(밀어내기는 안 한다) · 옛 식(경첩 칸)과 칸이 다른 문 %zu(옛 칸에 맵 벽 %zu · 새 칸에 맵 벽 %zu)\n",
+                            srv.DoorCellDiff(), srv.DoorCellOldHadWall(), srv.DoorCellNewHadWall());
+                // ★ 09-29 Z1-A — 열쇠 종류(잠김 1~4)의 와이어 번호(`DoorCheckKey` 는 이름으로 견준다)
+                srv.SetKeyTypes(tdb.WireByName("SilverKey"), tdb.WireByName("GoldKey"),
+                                tdb.WireByName("RubyKey"), tdb.WireByName("SapphireKey"));
+                std::printf("[열쇠] 은 %u · 금 %u · 루비 %u · 사파이어 %u(와이어 번호 — 0 이면 못 찾음)\n",
+                            (unsigned)tdb.WireByName("SilverKey"), (unsigned)tdb.WireByName("GoldKey"),
+                            (unsigned)tdb.WireByName("RubyKey"), (unsigned)tdb.WireByName("SapphireKey"));
             }
 
             // ★ 주문 마나 비용 — 같은 파일의 SPEL 섹션에서 온다.
@@ -2074,6 +2218,11 @@ int main(int argc, char** argv) {
             for (const auto& kv : noWeight) std::printf(" %sx%d", kv.first.c_str(), kv.second);
             std::printf("\n");
         }
+        // ★ 09-28 — 버린 물건 10초 사라짐의 예외가 맵 물건에 몇 개씩 붙었나(합 = 바닥 물건 수)
+        std::printf("[바닥물건 사라짐] 10초 규칙 걸림 %zu · 10초 예외(RESPAWN %zu · FLAG %zu · Glyph %zu) / %zu"
+                    " · 버리기 함수: 기본 %zu · 갑옷무기 %zu · 물약 %zu · 음식 %zu · 안옮김 %zu\n",
+                    decayExemptKinds[0], decayExemptKinds[1], decayExemptKinds[2], decayExemptKinds[3], nStat,
+                    dropFnKinds[0], dropFnKinds[1], dropFnKinds[2], dropFnKinds[3], dropFnKinds[4]);
         if (!notPickup.empty()) {
             size_t total = 0;
             for (const auto& kv : notPickup) total += static_cast<size_t>(kv.second);
@@ -2892,11 +3041,19 @@ int main(int argc, char** argv) {
                             srv.equipGate(nox::EquipGate::DequipFail), srv.equipGate(nox::EquipGate::Equipped));
                 // ★ 09-27 B4 — 무기 내려놓기(`53A140`) 나간 길별 + 공격 중 석궁 벗기 요청 버림
                 std::printf("[무기내려놓기] 무기아님 %llu · 든것아님 %llu · 화살통 %llu · 내려놓음 %llu · 공격중석궁 %llu"
-                            " · (B5) 들때충전알림 %llu · 두손무기가벗긴방패 %llu · 내려놓으며끊은주문 %llu\n",
+                            " · (B5) 들때충전알림 %llu · 두손무기가벗긴방패 %llu · 내려놓으며끊은주문 %llu · (09-28) 방패가내려놓게한두손무기 %llu\n",
                             srv.dequipGate(nox::DequipGate::NotWeapon), srv.dequipGate(nox::DequipGate::NotHeld),
                             srv.dequipGate(nox::DequipGate::QuiverLater), srv.dequipGate(nox::DequipGate::Dequipped),
                             srv.dequipGate(nox::DequipGate::CrossbowAttacking),
-                            srv.wandChargesOnEquip(), srv.twoHandShieldOff(), srv.wandSpellCut());
+                            srv.wandChargesOnEquip(), srv.twoHandShieldOff(), srv.wandSpellCut(), srv.shieldDropsTwoHand());
+                // ★ 09-28 — 버리기(`TRY_DROP` → `drop_4ED810`) 나간 길별
+                std::printf("[버리기] 관전 %llu · 가방에없음 %llu · 벽 %llu · 버림 %llu"
+                            " · [줍고입음] 무기 %llu · 갑옷 %llu · 같은부위라안입음 %llu · 두손무기라방패안입음 %llu · 부위모름 %llu · [2d차림실음] %llu"
+                            " · [2d정보] 녹음그대로 %llu · 진짜로덮음 %llu · 조립 %llu\n",
+                            srv.dropGate(nox::DropGate::Observer), srv.dropGate(nox::DropGate::NotInBag),
+                            srv.dropGate(nox::DropGate::Wall), srv.dropGate(nox::DropGate::Dropped),
+                            srv.autoEquip(0), srv.autoEquip(1), srv.autoEquip(2), srv.autoEquip(3), srv.autoEquip(4),
+                            srv.newPlayerGearBits(), srv.newPlayerInfo(0), srv.newPlayerInfo(1), srv.newPlayerInfo(2));
                 // ★★ 조각 D — **여기서부터 넉 줄이 「눈이 없던 자리」다.**
                 //   계수기 41개 중 24개가 한 번도 안 찍히고 있었다(조각 C). 아래가 그 24개를
                 //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.
@@ -3008,12 +3165,12 @@ int main(int argc, char** argv) {
                 }
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
-                            " · 문 %llu(되맞춤 %llu·가장가까이 %.0f) · 오벨리스크 %llu · **밟는판(눌림 %llu·뗌 %llu)**"
+                            " · 문 %llu(되맞춤 %llu·가장가까이 %.0f) · 오벨리스크 %llu(옆인데줄것없음 %llu) · **밟는판(눌림 %llu·뗌 %llu)**"
                             " · **비밀벽(열림 %llu·닫힘 %llu)**"
                             " · 자기주문 %llu · 미룬주문효과 %llu\n",
                             srv.roundsPlayed(), srv.flagStatusSent(), srv.chats(), srv.timerAsks(),
                             srv.fxSent(), srv.appearanceSent(), srv.appearanceUnknown(),
-                            srv.doorsOpened(), srv.doorResync(), srv.doorNearestDist(), srv.obeliskMana(), srv.plateOn(), srv.plateOff(),
+                            srv.doorsOpened(), srv.doorResync(), srv.doorNearestDist(), srv.obeliskMana(), srv.obeliskNearIdle(), srv.plateOn(), srv.plateOff(),
                             srv.wallOpenSent(), srv.wallCloseSent(),
                             srv.spellsOnSelf(), srv.spellEffectDeferred());
                 if (!srv.stoppedByOp().empty()) {

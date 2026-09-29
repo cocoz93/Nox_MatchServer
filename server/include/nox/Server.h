@@ -66,6 +66,24 @@ inline PickupFn PickupFnOf(const std::string& name) {
     return PickupFn::Default;
 }
 
+// ★ 09-28 — **버릴 때 부르는 함수**(`DROP = ArmorDrop` 의 첫 낱말 · 등록표 `legacy/object_drop.go:22~35`).
+//   사라짐 시계가 갈래마다 다르다(모두 `dropDefault_4ED290` 을 먼저 부른다 — 그쪽이 10초 규칙):
+//   · Default·AudEvent·Treasure·AnkhTradable — 10초 규칙만(`GAME3_3.c:6440~6444`)
+//   · Armor·Weapon — 그 뒤 협동·퀘스트 아니고 「아이템 되살아남」(`sub_409F40(2)`)이면 **25초로 다시**(`GAME4_3.c:7756~7767·5178~5189`) —
+//     RESPAWN 깃발과 상관없다
+//   · Potion — 그 뒤 협동·퀘스트 아니면 25초(`sub_4EDDE0` `GAME3_3.c:6872~6881`) · Food — 협동 아니면 25초(`:6884~6895`)
+//   · Glyph·Trap·Crown — 아직 안 옮김(시계를 안 건다)
+//   ⭕ 정품 녹음 09-28 `orig_arena_1851` — 기본 로브·맵에서 주운 갑옷·죽을 때 떨어진 넷이 모두 **750프레임(25×30)** 뒤 사라짐
+enum class DropFn : uint8_t { Default = 0, ArmorWeapon, Potion, Food, NotPorted };
+inline DropFn DropFnOf(const std::string& name) {
+    const std::string first = name.substr(0, name.find(' '));
+    if (first == "ArmorDrop" || first == "WeaponDrop") return DropFn::ArmorWeapon;
+    if (first == "PotionDrop") return DropFn::Potion;
+    if (first == "FoodDrop") return DropFn::Food;
+    if (first == "GlyphDrop" || first == "TrapDrop" || first == "CrownDrop") return DropFn::NotPorted;
+    return DropFn::Default;
+}
+
 // ★★ 묶음 5-b — **먹을거리 갈래 비트**(`SUBCLASS = POTION+HEALTH_POTION` 의 뒷말).
 //   ⭕ 이름과 **차례**는 `blob_587000.dat` 0xf968~0xfa78 의 이름표에서 그대로 뽑았다
 //     (`SIMPLE` `APPLE` `JUG` `POTION` `HEALTH_POTION` … `VAMPIRISM_POTION`).
@@ -190,7 +208,8 @@ enum class BerserkHit : uint8_t {
     WallSoft,      // 벽(깃발 &5 가 0) — 되돌아가기만
     Light,         // 가볍고 움직이는 것(IMMOBILE·0x80 없음 · 무게 ≤ 나) — 그냥 지나감
     Overlap,       // 밑에 깔림·겹쳐도 됨(0x9)·투사체 — 그냥 지나감
-    Door,          // 문 — 잠겼으면 부딪힘. ⚠ 지금은 닿을 수 없다(main 이 문을 장애물에서 빼고 BodyVsBody 가 문 짝을 거른다 · 묶음 9)
+    Door,          // 안 잠긴 문 — 그냥 지나감(`:3207~3210`). ★ 09-29 Z1-A — 잠긴 문은 부딪힘(LABEL_14)이라 `Object` 로 센다(따로 `berserkDoorLocked`).
+                   //   닿음은 `UpdateProps` 의 문짝 닿음(`GAME5.c:2166~2169`)에서 온다 — 짝 종류 4(문)
     Count
 };
 constexpr size_t kBerserkHitCount = static_cast<size_t>(BerserkHit::Count);
@@ -253,6 +272,16 @@ constexpr size_t kEquipGateCount = static_cast<size_t>(EquipGate::Count);
 //   공격 중 석궁 벗기 요청 무시(해독 쪽 `server__network__sdecode.c:185~186` — 내려놓기 함수 앞에서 걸림)
 enum class DequipGate : uint8_t { NotWeapon = 0, NotHeld, QuiverLater, Dequipped, CrossbowAttacking, Count };
 constexpr size_t kDequipGateCount = static_cast<size_t>(DequipGate::Count);
+// ★ 09-28 — 버리기(`TRY_DROP` → `drop_4ED810`) 나간 길별: 관전 · 가방에 없음 · 벽에 막힘 · 버림
+enum class DropGate : uint8_t { Observer = 0, NotInBag, Wall, Dropped, Count };
+constexpr size_t kDropGateCount = static_cast<size_t>(DropGate::Count);
+// ★ 09-28 — 버린 물건 10초 뒤 사라짐의 예외(`dropDefault_4ED290` `GAME3_3.c:6440~6444`). 물건마다 하나 —
+//   없음 · 오브젝트 깃발 RESPAWN(0x80000 — thing.bin FLAGS · 기본 장비는 만들 때 지운다 `:7891`) · 클래스 FLAG(0x10000000) · 종류 Glyph
+enum class DecayExempt : uint8_t { None = 0, Respawn, FlagClass, Glyph };
+// 버릴 때 사라짐 시계가 어디로 갔나 — 10초 걸림 · 25초 걸림(갑옷·무기·물약·음식) · 협동·퀘스트라 안 걺(`!(2048)·!(4096)`) ·
+//   10초 예외 셋(그 물건이 25초 갈래가 아닐 때만 남는다) · 버리기 함수를 안 옮김(글리프·덫·왕관)
+enum class DecayGate : uint8_t { Armed = 0, Armed25, CoopOrQuest, Respawn, FlagClass, Glyph, NotPorted, Count };
+constexpr size_t kDecayGateCount = static_cast<size_t>(DecayGate::Count);
 
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
 //   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
@@ -639,7 +668,7 @@ struct Session {
         bool isWeapon = false;
         bool weaponClass = false;   // ★ 09-27 B3 — CLASS 에 WEAPON 또는 WAND(정답지 무기 들기 첫 관문 `obj_class & 0x1001000`)
         bool wandClass = false;     // ★ 09-27 B5 — CLASS 에 WAND(0x1000 — 충전 알림 `:4977` · 지속 주문 끊기 `4FEB60`)
-        uint32_t subclass = 0;      // ★ 09-27 B5 — 무기·지팡이의 SUBCLASS 비트(thing.bin · `WeaponClassBitsOf`). 그 밖은 0
+        uint32_t subclass = 0;      // ★ 09-27 B5 — 무기·지팡이의 SUBCLASS 비트(thing.bin · `WeaponClassBitsOf`) · 09-28 갑옷이면 갑옷 SUBCLASS(`ParseArmorClass` — 방패 2). 그 밖은 0
         uint8_t weight = 255;   // 묶음 5 — 줍기 한도를 재는 무게. 세계에 있을 때 값을 그대로 들고 온다
         bool isFood = false;    // 묶음 5 — 같은 종류 개수 한도(셋)를 재는 갈래
         uint32_t foodBits = 0;  // 묶음 5-b — SUBCLASS 먹을거리 갈래 비트(FoodClassBits)
@@ -650,6 +679,12 @@ struct Session {
         uint8_t wandSpell = 0;         // 걸 주문 번호(0 = 없음)
         uint32_t wandCooldown = 0;     // 재사용 대기 프레임(초 × 30)
         uint32_t wandLastFrame = 0;    // 마지막으로 쓴 프레임(`+104`)
+        DecayExempt decayExempt = DecayExempt::None;   // ★ 09-28 — 버려도 안 사라지는 까닭(세계에 있을 때 값을 들고 온다 · 기본 장비는 None)
+        DropFn dropFn = DropFn::Default;               // ★ 09-28 — 버릴 때 부르는 함수 갈래(thing.bin `DROP`) — 사라짐 시계가 이것으로 갈린다
+        // ★ 09-29 — 수식(모디파이어) 넷의 번호(없으면 0xff) · 오브젝트 `+692` 넷(`sub_4D82F0` 이 +4 바이트를 싣는다).
+        //   하나라도 있으면 남에게 겉모습을 `51`·`52`(수식 넷 실음), 없으면 `50`·`4f` 로 알린다.
+        //   평상복은 캐릭터 색이 수식이다(`UserColor1` + 색 번호 — 녹음에서 번호 0xb3 + 색) · 맵 물건은 우리가 수식을 안 읽어 없음
+        uint8_t mods[4] = { 0xff, 0xff, 0xff, 0xff };
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다 · **무게**도 여기서 나온다(아래 PlayerMassOf)
@@ -1254,6 +1289,26 @@ public:
         AIPathBakeWalls();   // 묶음 6-f(3) — 길 찾기 격자에도 같은 벽을 굽는다
     }
     void SetWallDefFlags(std::vector<uint32_t> f) { wallDefFlags_ = std::move(f); }
+    // ★ 09-29 Z1-A — 벽 정의별 부수기 칸(`WallDefRaw` 주석) · 부서지는 벽·창문 칸(맵 두 구역 · `MapFile::ReadGridList`)
+    struct WallDefExtra { uint16_t hitMat = 0; uint8_t health = 0; uint16_t breakSound = 0; };
+    void SetWallDefExtras(std::vector<WallDefExtra> e) { wallDefExtra_ = std::move(e); }
+    // 정답지 `nox_server_mapRWDestructableWalls_429530`(`GAME1_2.c:1006~1014`) — 벽이 있는 칸마다 깃발 8 · 번호 = 그때까지 센 수(0 부터) ·
+    //   `nox_server_mapRWWindowWalls_4292C0`(`:916~919`) — 깃발 0x40 · 체력은 모든 벽이 정의의 Health41(`:1322`)
+    void SetWallSpecials(const std::vector<std::pair<uint32_t, uint32_t>>& destructible,
+                         const std::vector<std::pair<uint32_t, uint32_t>>& windows);
+    // ★ 09-29 Z1-A — 벽을 때린 것(`Nox_xxx_mapDamageToWalls_534FC0` 의 who). 유닛이면 그 앞쪽(내적 > 0.5)만 · 거리는 그 자리에서 잰다 ·
+    //   맞는 소리는 그 재질로 그 자리에서. present 가 거짓이면 who 없음(소리 없음 · 자리는 폭발 자리)
+    struct WallHitter { bool present = false; bool unit = false; bool player = false; float x = 0, y = 0; uint8_t dir = 0; uint32_t material = 0; };
+    int DamageToMap(int gx, int gy, int dmg, uint8_t dtype, const WallHitter& who, std::vector<OutPacket>& out);
+    int WallPreDestroy(int gx, int gy, std::vector<OutPacket>& out);
+    bool MapDamageToWalls(int gx0, int gy0, int gx1, int gy1, float px, float py, float rad, int dmg, uint8_t dtype,
+                          const WallHitter& who, std::vector<OutPacket>& out);
+    void SendBrokenWalls(Session& s, std::vector<OutPacket>& out);   // 들어온 사람에게 이미 부서진 벽(`Nox_xxx_wall_4DF1E0`)
+    WallHitter WallHitterOfAddr(const std::string& addr) const;       // 사람이면 유닛 who(자리·방향·재질) · 없으면 who 없음
+    // 시험용
+    bool DebugWallBroken(int gx, int gy) const { return gx >= 0 && gx < 256 && gy >= 0 && gy < 256 && !wallTiles_.empty() && wallTiles_[gy * 256 + gx].broken; }
+    int DebugWallHp(int gx, int gy) const { return (gx >= 0 && gx < 256 && gy >= 0 && gy < 256 && !wallTiles_.empty()) ? wallTiles_[gy * 256 + gx].hp : -1; }
+    unsigned long long wallGate(size_t i) const { return i < 5 ? wallGate_[i] : 0; }   // [0] 벽없음 · [1] 안부서지는벽(소리만) · [2] 깎음 · [3] 부서짐 · [4] 부서짐알림(받는 사람별)
 
     // ── 묶음 10-a 소리 ────────────────────────────────────────────────
     //
@@ -1459,7 +1514,7 @@ public:
         bool isWeapon = false;
         bool weaponClass = false;   // ★ 09-27 B3 — CLASS 에 WEAPON 또는 WAND(가방 항목으로 그대로 옮긴다)
         bool wandClass = false;     // ★ 09-27 B5 — CLASS 에 WAND
-        uint32_t subclass = 0;      // ★ 09-27 B5 — 무기·지팡이의 SUBCLASS 비트
+        uint32_t subclass = 0;      // ★ 09-27 B5 — 무기·지팡이의 SUBCLASS 비트 · 09-28 갑옷이면 갑옷 SUBCLASS
         // ★ 묶음 5 — **무게**(thing.bin `WEIGHT`). 줍기 한도가 이것의 합으로 걸린다
         //   (`object_pickup.go:70~79`). 정답지 기본은 255 이고 파일 값이 있으면 그것으로 덮는다
         //   (`server/object_type.go:202·212`).
@@ -1485,6 +1540,12 @@ public:
         // ★ 묶음 5-c — **줍는 순간 부르는 함수가 물약 갈래인가**(`PICKUP = PotionPickup`).
         //   참이면 줍는 그 자리에서 마실 수 있고, 마셨으면 가방에 안 들어간다.
         bool potionPickup = false;
+        // ★ 09-28 — 버려도 안 사라지는 까닭(`dropDefault_4ED290` `GAME3_3.c:6440~6442`). main 이 thing.bin 으로 채운다
+        DecayExempt decayExempt = DecayExempt::None;
+        DropFn dropFn = DropFn::Default;   // ★ 09-28 — 버릴 때 부르는 함수 갈래(thing.bin `DROP`)
+        uint8_t mods[4] = { 0xff, 0xff, 0xff, 0xff };   // ★ 09-29 — 수식 넷의 번호(`Session::Carried::mods` 주석) — 줍고 버려도 따라간다
+        // ★ 09-28 — 사라질 프레임(`unitSetDecayTime_511660` → `+136`). 0 = 안 사라진다. 버릴 때만 건다
+        uint32_t decayFrame = 0;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
 
@@ -1506,6 +1567,11 @@ public:
         // ★ 09-22 — 문의 **닫힘 각도**(0·8·16·24). 맵 짐 꼬리의 둘째 바이트다.
         //   전에는 모든 문을 0 으로 보내 **문 방향이 전부 틀렸다**
         uint8_t angle = kDoorClosedFallback;
+        // ★ 09-29 Z1-A — 문 잠김(`ud+1` — 0 안 잠김 · 1 은 · 2 금 · 3 루비 · 4 사파이어 · 5 장치) · 팀(+52) · 부분류 GATE(`+12 & 4`)
+        uint8_t lock = 0;
+        uint8_t team = 0;
+        bool gate = false;
+        uint32_t teamMsgFrame = 0;  // +136 — 팀 문 「GateLockedMechanism」 다음 알림 프레임(`GAME5.c:2210~2212`)
         // ★★ 09-22 — 문이 **도는** 얼개(정답지 `GAME5.c:2193` + `sub_548B60`).
         //   `fine` 은 미세각 0~255, 클라에 보내는 거친각은 `32 × fine / 256`(0~31)이다.
         //   `spin` 은 사람이 민 각속도 — 걸음마다 미세각을 돌리고 그 자리에서 지운다
@@ -1536,6 +1602,36 @@ public:
     // 문 칸을 벽 표에 만들어 붙인다 — 정답지 `nox_xxx_doorAttachWall_410360`.
     //   맵을 읽은 뒤(벽·문 둘 다 들어온 뒤) 부른다. 두 번 불러도 같은 결과다
     void AttachDoorWalls();
+    // ★ 09-29 Z1-A — 문의 벽 칸(`nox_xxx_XFerDoor_4F4CB0` `GAME3_3.c:11520~11526` — (자리 + 표값/2) × 0.043478262 를 버림 → +16·+20).
+    //   정답지는 이 칸에 벽을 붙이고(`doorAttachWall_410360(v1, v4, v5)`) 짝 문 찾기(`fnFindCloseDoors_4E8340`)도 이 칸을 본다
+    static void DoorWallCell(const WorldProp& p, int& gx, int& gy);
+    size_t DoorCellDiff() const { return doorCellDiff_; }   // 옛 식(자리 ÷ 23)과 칸이 다른 문 수 — AttachDoorWalls 가 센다
+    size_t DoorCellOldHadWall() const { return doorCellOldHadWall_; }   // 그중 옛 칸에 맵 벽이 원래 있던 수
+    size_t DoorCellNewHadWall() const { return doorCellNewHadWall_; }   // 그중 정답지 칸에 맵 벽이 원래 있던 수
+    // ★ 09-29 Z1-A — 열쇠 종류의 와이어 번호. `DoorCheckKey`(`server/object_door.go:57~92`)는 KEY 클래스 물건을 **종류 이름**으로 견준다
+    //   (1 SilverKey · 2 GoldKey · 3 RubyKey · 4 SapphireKey). 와이어 번호는 이름과 1:1 이라 번호로 견준다
+    void SetKeyTypes(uint16_t silver, uint16_t gold, uint16_t ruby, uint16_t sapphire) {
+        keyWire_[1] = silver; keyWire_[2] = gold; keyWire_[3] = ruby; keyWire_[4] = sapphire;
+    }
+    // ★ 09-29 Z1-A — 문에 닿은 결과(`nox_xxx_collideDoor_4E8AC0` `GAME3_3.c:3383~3516` · 문짝 밀기 `GAME5.c:2191~2215`).
+    //   닿음 = 갈래 합(Closed 제외 — Closed 는 「닫혀 있어서 봤다」의 수이고 그 아래 갈래로 다시 갈린다)
+    enum class DoorTouch : uint8_t {
+        NotClosed = 0,   // 닫힘 각도가 아니다 — 잠김을 안 본다(`:3407`)
+        Unlocked,        // 잠김 0 — 할 일 없음(`:3430~3432`)
+        Mechanism,       // 잠김 5 — 「DoorLockedMechanism」(1.5초에 한 번)
+        KeyMissing,      // 열쇠 없음 — 소리 240/244 + `f0 21` 「DoorLockedKey」(1.5초에 한 번)
+        Quiet,           // 1.5초 안이라 말 없이 끝(`:3415·3436·3453`)
+        KeyUsed,         // 열쇠로 풀림 — 소리 234 · 열쇠 지움(`4d`)
+        PartnerUnlocked, // 짝 문도 풀림(`fnFindCloseDoors_4E8340`) — 위 KeyUsed 의 덤(합에 안 넣는다)
+        SpinLocked,      // 잠겨서 밀어도 안 돈다(`GAME5.c:2193` `!*(v4+1)`) — 합에 안 넣는다(닿음 처리와 따로다)
+        TeamBlocked,     // 팀 문 — 다른 팀이 닫힌 문을 못 민다(`GAME5.c:2191~2192`) — 합에 안 넣는다
+        Count
+    };
+    unsigned long long doorTouch(DoorTouch t) const { return t < DoorTouch::Count ? doorTouch_[static_cast<size_t>(t)] : 0; }
+    unsigned long long berserkDoorLocked() const { return berserkDoorLocked_; }
+    // 시험용
+    void DebugSetDoorLock(uint16_t netCode, uint8_t lock) { for (auto& p : props_) if (p.netCode == netCode) p.lock = lock; }
+    int PropLock(uint16_t netCode) const { for (const auto& p : props_) if (p.netCode == netCode) return p.lock; return -1; }
     size_t WorldPropCount() const { return props_.size(); }
     // 시험용 — 그 문이 열려 있나
     bool PropOpen(uint16_t netCode) const {
@@ -1696,6 +1792,7 @@ public:
     // 한 걸음에 **동시에** 민 벽 조각 수의 최대(1 이면 깊이 문제 · 여럿이면 모서리에서 겹쳐 미는 것)
     unsigned long long wallPushPerStepMax() const { return wallPushPerStepMax_; }
     unsigned long long obeliskMana() const { return obeliskMana_; }
+    unsigned long long obeliskNearIdle() const { return obeliskNearIdle_; }   // ★ 09-28 — 옆에 사람이 있어 회복을 건너뛰었고 줄 것도 없던 틱
     // ⑩ 밟는 판 — **0 을 「안 눌렸다」와 「안 셌다」로 가르려고** 09-20 에 넣었다.
     //   깜빡임을 보려면 먼저 「눌리긴 했나」가 서야 한다. 보낸 건수를 눌림·뗌으로 나눠 센다
     unsigned long long plateOn() const { return plateOn_; }
@@ -1709,6 +1806,9 @@ public:
     //   둘 다 0 이면 애초에 **도착을 못 한 것**이다 — 셋을 같이 읽어야 뜻이 선다
     unsigned long long roamAdvance() const { return roamAdvance_; }
     unsigned long long roamDeadEnd() const { return roamDeadEnd_; }
+    // 09-28 박쥐 — 가기(7·8)가 대상 오브젝트 자리로 고쳐 적힌 틱 수 · 대상이 안 보여 잊은 횟수(`AIRefreshStackArgs`)
+    unsigned long long aiMoveTargetFollow() const { return aiMoveTargetFollow_; }
+    unsigned long long aiMoveTargetForgot() const { return aiMoveTargetForgot_; }
     void SetAoi(bool on) { aoiOn_ = on; }
     // 크리처 시야 판정 — 사각형 반폭. 0 이면 꺼짐(모두 싣는 옛 동작).
     // 정답지 기본은 화면절반 + 100 (1280×960 이면 740 × 580, `player.go:325` · `server.go:533`).
@@ -2175,6 +2275,16 @@ public:
         // ★ 09-27 B1 — 진짜 접속 경로처럼 기본 장비를 가방에(틀이 없으면 안 실린다 — 틀을 안 넣는 옛 시험은 그대로)
         if (s.inventory.empty()) GiveDefaultGear(s);
     }
+    // ★ 09-29 Z1-A 시험용 — 둘레 피해(끝의 벽 피해까지)를 곧바로
+    void DebugDamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype, std::vector<OutPacket>& out,
+                                const WallHitter& wallWho = WallHitter{}) {
+        DamageUnitsAround(cx, cy, r1, r2, dmg, dtype, std::string(), Target{}, out, HitterRef{}, nullptr, wallWho);
+    }
+    // ★ 09-29 시험용 — CLIENT_READY 처리(`nox_xxx_gameServerReadyMB_4DD180`)를 곧바로
+    void DebugServerReady(const std::string& addr, std::vector<OutPacket>& out) {
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) GameServerReadyMB(it->second, out);
+    }
     // 시험용 — 중요 메시지 경로를 진짜로(대기열·준비·확인) 돌리게 한다.
     void DebugImportantReal(const std::string& addr, bool ready) {
         auto it = sessions_.find(addr);
@@ -2226,6 +2336,17 @@ public:
     }
     // 시험용 — 틱 밖에서 곧바로 되살린다(playerRespawn_4F7EF0). 「부활 직후 · 첫 갱신 전」 창을 여는 데 쓴다
     void DebugRespawn(const std::string& addr) { auto it = sessions_.find(addr); if (it == sessions_.end()) return; std::vector<OutPacket> o; PlayerRespawn(it->second, frame_, o); }
+    // ★ 09-29 — 기본 장비의 수식 넷(평상복 = 캐릭터 색 · 그 밖 없음)
+    static void DefaultGearMods(uint16_t type, const std::vector<uint8_t>& info97, uint8_t mods[4]);
+    // ★ 09-29 시험용 — 다음 틱에 그 사람을 새로 온 사람으로 소개한다(`CLIENT_ACCEPT` 가 세우는 표시 · 시험 접속은 안 거친다)
+    void DebugSetPendingIntro(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.pendingIntro = true; }
+    // ★ 09-29 시험용 — `to` 에게 `who` 의 입은 것 겉모습 전부(새로 온 사람 소개 자리의 몫)
+    void DebugSendWornLooks(const std::string& to, const std::string& who, std::vector<OutPacket>& out) {
+        auto t = sessions_.find(to); auto w = sessions_.find(who);
+        if (t != sessions_.end() && w != sessions_.end()) SendWornLooks(t->second, w->second, out);
+    }
+    // ★ 09-28 B4b 시험용 — 부활시키고 나간 것을 받는다
+    void DebugRespawnOut(const std::string& addr, std::vector<OutPacket>& out) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerRespawn(it->second, frame_, out); }
 
     // ★ 시험용 — 첫 세계 스냅샷을 **다음 틱에** 이 사람에게 보내도록 예약한다.
     void DebugArmSnapshot(const std::string& addr) {
@@ -3152,6 +3273,19 @@ public:
     // 부활 무적이 막은 피해 횟수. 0 이면 무적이 한 번도 안 걸린 것이다.
     unsigned long long invulnBlocked() const { return invulnBlocked_; }
     unsigned long long appearanceSent() const { return appearanceSent_; }
+    unsigned long long newPlayerGearBits() const { return newPlayerGearBits_; }   // ★ 09-28 — 2d 에 지금 갑옷·무기 비트를 실은 횟수
+    // ★ 09-28 — 남을 소개한 2d 의 정보 97B 출처: [0] 녹음 그대로(Jack) · [1] 녹음에 그 사람 97B 를 덮음 · [2] 97B 로 조립
+    unsigned long long newPlayerInfo(size_t i) const { return i < 3 ? newPlayerInfo_[i] : 0; }
+    // 시험용 — `who` 를 `to` 에게 소개하는 `2d` 를 그대로 만든다(EmitNewPlayer 는 private)
+    void DebugEmitNewPlayer(const std::string& to, const std::string& who, std::vector<OutPacket>& out) {
+        auto t = sessions_.find(to); auto w = sessions_.find(who);
+        if (t != sessions_.end() && w != sessions_.end()) EmitNewPlayer(t->second, w->second, 0, out);
+    }
+    // 시험용 — 이 사람에게 그 번호의 바닥 물건을 소개했나
+    bool DebugStaticIntroduced(const std::string& addr, uint16_t netCode) const {
+        auto it = sessions_.find(addr);
+        return it != sessions_.end() && it->second.staticIntroAt.count(netCode) != 0;
+    }
     unsigned long long appearanceUnknown() const { return appearanceUnknown_; }
     unsigned long long fxSent() const { return fxSent_; }
     void SetNoSpellStart(bool on) { noSpellStart_ = on; }
@@ -3337,8 +3471,33 @@ public:
     unsigned long long weaponNoStats() const { return weaponNoStats_; }   // ★ 09-27 B2
     unsigned long long equipGate(EquipGate g) const { return g < EquipGate::Count ? equipGate_[static_cast<size_t>(g)] : 0; }   // ★ 09-27 B3
     unsigned long long dequipGate(DequipGate g) const { return g < DequipGate::Count ? dequipGate_[static_cast<size_t>(g)] : 0; }   // ★ 09-27 B4
+    unsigned long long dropGate(DropGate g) const { return g < DropGate::Count ? dropGate_[static_cast<size_t>(g)] : 0; }   // ★ 09-28
+    unsigned long long decayGate(DecayGate g) const { return g < DecayGate::Count ? decayGate_[static_cast<size_t>(g)] : 0; }   // ★ 09-28
+    unsigned long long decayExpired() const { return decayExpired_; }   // ★ 09-28 — 시계가 다 돼 지운 물건 수
+    unsigned long long decayShadowSent() const { return decayShadowSent_; }   // ★ 09-28 — 그때 보낸 `33` 건수(받는 사람별)
+    // ★ 09-28 B4b — 죽을 때: 남긴 평상복 · 나선 자리에 떨굼 · 몸 자리에 떨굼 / 부활 때: 지움 · 새로 줌 · 틀 없어 못 줌 · 협동·퀘스트 표 안 옮김
+    unsigned long long deathDropKept() const { return deathDropKept_; }
+    unsigned long long deathDropSpiral() const { return deathDropSpiral_; }
+    unsigned long long deathDropAtBody() const { return deathDropAtBody_; }
+    unsigned long long respawnGearDeleted() const { return respawnGearDeleted_; }
+    unsigned long long respawnGearGiven() const { return respawnGearGiven_; }
+    unsigned long long respawnGearNoTemplate() const { return respawnGearNoTemplate_; }
+    unsigned long long respawnGearNotPorted() const { return respawnGearNotPorted_; }
+    unsigned long long wornLookSent() const { return wornLookSent_; }       // ★ 09-29
+    unsigned long long wornLookSkipped() const { return wornLookSkipped_; } // ★ 09-29
+    unsigned long long introRedrawSent() const { return introRedrawSent_; } // ★ 09-29
+    // ★ 09-28 B4b — 물건 종류의 몸 반지름(+176 · thing.bin 원 모양). 죽을 때 떨굴 자리 간격을 가른다(`GAME3_3.c:6730~6748`)
+    void SetItemRadius(uint16_t type, float r) { itemRadius_[type] = r; }
+    // ★ 09-28 — 줍고 저절로 입음: [0] 무기 듦 · [1] 갑옷 입음 · [2] 같은 부위 이미 입음(안 입음) · [3] 방패인데 두 손 무기(안 입음) · [4] 부위 모름(안 입음)
+    unsigned long long autoEquip(size_t i) const { return i < 5 ? autoEquip_[i] : 0; }
+    // 시험용 — 그 번호의 바닥 물건 자리(없으면 거짓)
+    bool DebugStaticPos(uint16_t netCode, int& x, int& y) const {
+        for (const auto& w : statics_) if (w.netCode == netCode) { x = w.x; y = w.y; return true; }
+        return false;
+    }
     unsigned long long wandChargesOnEquip() const { return wandChargesOnEquip_; }   // ★ 09-27 B5
     unsigned long long twoHandShieldOff() const { return twoHandShieldOff_; }
+    unsigned long long shieldDropsTwoHand() const { return shieldDropsTwoHand_; }   // ★ 09-28 — 방패를 입어 내려놓게 한 두 손 무기
     unsigned long long wandSpellCut() const { return wandSpellCut_; }
     uint32_t DebugArmorEquip(const std::string& addr) const {                        // 시험용 — 플레이어 +0(갑옷 비트 합)
         auto it = sessions_.find(addr); return it == sessions_.end() ? 0u : ArmorEquipOf(it->second);
@@ -3447,6 +3606,10 @@ public:
     unsigned long long footTreadSilent() const { return footTreadSilent_; }
     unsigned long long hurtVoice(HurtVoice k) const { return hurtVoice_[static_cast<size_t>(k)]; }   // ★ 09-24
     unsigned long long HurtVoiceSum() const { unsigned long long n = 0; for (auto v : hurtVoice_) n += v; return n; }
+    void DebugSetInfo97(const std::string& addr, const std::vector<uint8_t>& info) {   // ★ 09-28 시험용 — `CLIENT_ACCEPT` 로 받는 97B 대신
+        auto it = sessions_.find(addr);
+        if (it != sessions_.end()) it->second.info97 = info;
+    }
     void DebugSetFemale(const std::string& addr, bool female) {   // ★ 09-24 시험용 — 사람 정보 97바이트의 67번 칸(IsFemale)
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
@@ -3914,7 +4077,8 @@ private:
     void DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,
                            const std::string& by, const Target& skip, std::vector<OutPacket>& out,
                            HitterRef hitter = HitterRef{},    // ★ 4-c3b1 — 정답지 `who`(부르는 쪽마다 다르다 — 표)
-                           const AttackSrc* whoSrc = nullptr); // ★ 09-27 S1 — 피해 함수의 v9(= a3 없음 → who) · 막기 판정·때린 이 자리
+                           const AttackSrc* whoSrc = nullptr,  // ★ 09-27 S1 — 피해 함수의 v9(= a3 없음 → who) · 막기 판정·때린 이 자리
+                           const WallHitter& wallWho = WallHitter{});   // ★ 09-29 Z1-A — 끝의 벽 피해가 보는 who
     void FireballExplode(MissileObj& m, const Target& hit, std::vector<OutPacket>& out);                 // fireballCollide_4E9AC0
     // ── 묶음 4-c2a 독 ──
     uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
@@ -3952,8 +4116,21 @@ private:
     void GiveDefaultGear(Session& s);   // ★ 09-27 B1 — 직업 기본 장비를 가방에(스냅샷 꼬리가 보내는 번호·순서 그대로)
     // ★ 09-27 B3 — 무기 들기 `53A420`(a3 = 알림 · a4 = 거절 소리) · 내려놓기(B4 — `53A140`) · 입기·벗기 알림(본인 0x60/0x61 + 남에게 겉모습)
     bool PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vector<OutPacket>& out);
-    bool PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out);
-    void ReportEquipChange(Session& s, const Session::Carried& c, bool wear, std::vector<OutPacket>& out);
+    bool PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out, bool toSelf = true, bool toOthers = true);
+    // toSelf = 거짓이면 본인 알림(0x60/0x61)은 빼고 남에게 겉모습만(버리기 `sub_4ED0C0` 가 a3 = 0 으로 부른다)
+    // toOthers = 거짓이면 남에게 겉모습도 안 보낸다(09-28 B4b — 죽은 사람이 떨어뜨릴 때 a4 = 0)
+    void ReportEquipChange(Session& s, const Session::Carried& c, bool wear, std::vector<OutPacket>& out, bool toSelf = true, bool toOthers = true);
+    // ★ 09-28 B4b — 가방 `at` 번째를 (tx,ty) 바닥에 떨군다(`dropDefault_4ED290` 의 벗기·`4d`·가방에서 빼기·세계에 놓기·사라짐 시계).
+    //   dead = 죽은 사람이면 벗을 때 남에게도 안 알린다(`GAME3_3.c:6321~6323`)
+    void DropCarriedToWorld(Session& s, size_t at, double tx, double ty, bool dead, std::vector<OutPacket>& out);
+    // ★ 09-28 B4b — 죽을 때 가방 떨어뜨리기(`nox_xxx_dropAllItems_4EDA40` · 입은 평상복만 남김)
+    void DropAllItems(Session& s, std::vector<OutPacket>& out);
+    // ★ 09-28 B4b — 부활 때 가방 정리 + 기본 장비 새로(`playerMakeDefItems_4EF7D0` 의 a3 = 0 갈래 · `GAME3_3.c:7969~8043`)
+    void RespawnGear(Session& s, std::vector<OutPacket>& out);
+    // ★ 09-29 — 입은 물건 하나의 겉모습 메시지(`sub_4D82F0` `GAME3_2.c:3841~3947`)를 buf 에 짓고 길이(0 = 무기·갑옷 아님)
+    static size_t BuildWornLook(const Session& who, const Session::Carried& c, uint8_t buf[11]);
+    // ★ 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 전부(`sub_4DDE10` `GAME3_2.c:5670~5693`)
+    void SendWornLooks(Session& to, const Session& who, std::vector<OutPacket>& out);
     void AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out);
     void AIEnd(Creature& k, uint8_t act);
@@ -4006,6 +4183,8 @@ private:
                     float toX, float toY, const PathFilter& fnc, int maxDepth);
     // 묶음 6-b — 쌓임에 붙은 **조건**을 위에서부터 본다. 틀리면 그 아래까지 빼 버린다
     void AIProcDeps(Creature& k, std::vector<OutPacket>& out);
+    // 09-28 — 쌓임 항목의 자리를 대상 오브젝트 자리로 고쳐 적는다(`nox_xxx_mobAction_50A910`)
+    void AIRefreshStackArgs(Creature& k);
     bool CanInteractFrom(const Creature& k, const Target& t) const;
     void SendGold(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-a — 경험치 알림·주기·레벨 오름
@@ -4035,7 +4214,18 @@ private:
     unsigned long long weaponNoStats_ = 0;        // ★ 09-27 B2 — 수치 표에 없는 무기로 판정 칸에 닿아 판정 없이 넘긴 수
     unsigned long long equipGate_[kEquipGateCount] = {};   // ★ 09-27 B3 — 무기 들기 관문별
     unsigned long long dequipGate_[kDequipGateCount] = {}; // ★ 09-27 B4 — 무기 내려놓기 나간 길별
+    unsigned long long dropGate_[kDropGateCount] = {};     // ★ 09-28 — 버리기 나간 길별
+    unsigned long long decayGate_[kDecayGateCount] = {};   // ★ 09-28 — 버릴 때 사라짐 시계 갈래별
+    unsigned long long decayExpired_ = 0;                  // ★ 09-28 — 시계가 다 돼 지운 물건 수
+    unsigned long long decayShadowSent_ = 0;               // ★ 09-28 — 그때 보낸 `33 OBJECT_IN_SHADOWS` 건수
+    unsigned long long deathDropKept_ = 0, deathDropSpiral_ = 0, deathDropAtBody_ = 0;   // ★ 09-28 B4b 죽을 때 갈래별
+    unsigned long long respawnGearDeleted_ = 0, respawnGearGiven_ = 0, respawnGearNoTemplate_ = 0, respawnGearNotPorted_ = 0;   // ★ 09-28 B4b 부활 때
+    std::map<uint16_t, float> itemRadius_;                 // ★ 09-28 B4b 물건 종류 → 몸 반지름
+    unsigned long long wornLookSent_ = 0, wornLookSkipped_ = 0;   // ★ 09-29 새로 온 사람에게 보낸 입은 것 겉모습 · 비트 몰라 뺀 것
+    unsigned long long introRedrawSent_ = 0;                      // ★ 09-29 먼저 온 사람에게 보낸 새 사람의 `e9 … ff 01`
+    unsigned long long autoEquip_[5] = {};                 // ★ 09-28 — 줍고 저절로 입음 갈래별(autoEquip 주석)
     unsigned long long wandChargesOnEquip_ = 0, twoHandShieldOff_ = 0, wandSpellCut_ = 0;   // ★ 09-27 B5 — 들 때 충전 알림 · 두 손 무기가 벗긴 방패 · 내려놓으며 끊은 지속 주문
+    unsigned long long shieldDropsTwoHand_ = 0;   // ★ 09-28 — 방패를 입어 내려놓게 한 두 손 무기(`sub_53E600`)
     struct WeaponDef { uint8_t classes = 0; uint16_t reqStrength = 0; };
     std::map<uint16_t, WeaponDef> weaponDef_;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
     std::map<uint16_t, Session::Carried> itemTemplate_;   // ★ 09-27 B1 — 기본 장비 종류 틀
@@ -4476,6 +4666,8 @@ private:
 
     // 세계에서 정적 하나를 뺀다(주웠을 때). 없으면 false.
     bool TakeStatic(uint16_t netCode);
+    void DecayStatics(std::vector<OutPacket>& out);   // ★ 09-28 버린 물건 사라짐(`decay_511750`)
+    uint32_t DropDecayFrame(DropFn fn, DecayExempt ex);   // ★ 09-28 버릴 때 사라질 프레임(0 = 안 사라짐) · 갈래 계수
 
     // 녹음본 조각 안의 `cc` 껍데기 번호를 **이 세션의 이어달기 번호로 다시 매긴다.**
     //
@@ -4595,6 +4787,10 @@ private:
     unsigned long long joinInfo97Null_ = 0;   // **없어서 0 으로 채웠다**(색이 검정이 된다)
     size_t acceptBodyLenLast_ = 0;            // 마지막 CLIENT_ACCEPT 본문 길이
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
+    unsigned long long newPlayerGearBits_ = 0;   // ★ 09-28 — 2d 104·108 에 지금 갑옷·무기 비트를 실은 횟수
+    unsigned long long newPlayerInfo_[3] = {};   // ★ 09-28 — 2d 정보 97B 출처(녹음 그대로 · 덮음 · 조립)
+    // ★ 09-28 — 게임 중 새로 놓인 바닥 물건(버리기·되돌리기). 시야 반경이 꺼진 판에서도 이것만은 반경 안에 한 번 소개한다
+    std::set<uint16_t> freshStatics_;
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수
     unsigned long long fxSent_ = 0;           // 그린 이펙트 수
     // ★ 시전 알림 `0x70` 을 끄는 **진단 스위치**. **기본은 보낸다.**
@@ -4696,10 +4892,13 @@ private:
     mutable unsigned long long wallPushPerStepCur_ = 0; // 이번 걸음에 민 조각 수
     mutable unsigned long long wallPushPerStepMax_ = 0; // 그 최대
     unsigned long long obeliskMana_ = 0;
+    unsigned long long obeliskNearIdle_ = 0;   // ★ 09-28 — 옆에 사람 있음 · 줄 것 없음(잔량 0 또는 마나 가득) → 회복도 소리도 없음
     unsigned long long plateOn_ = 0;    // ⑩ 판이 **눌렸다**고 보낸 건수(`0xb4` 칸 1)
     unsigned long long plateOff_ = 0;   // ⑩ 판을 **뗐다**고 보낸 건수(`0xb4` 칸 0)
     unsigned long long roamAdvance_ = 0;     // ⑥ 이음을 타고 다음 길목으로 넘어간 횟수
     unsigned long long roamDeadEnd_ = 0;     // ⑥ 갈 이음이 없어 떠돌기를 접은 횟수
+    unsigned long long aiMoveTargetFollow_ = 0;   // 09-28 가기(7·8)가 대상 자리로 고쳐 적힌 틱 수
+    unsigned long long aiMoveTargetForgot_ = 0;   // 09-28 가기(7·8)가 대상이 안 보여 대상을 잊은 횟수
     unsigned long long wallOpenSent_ = 0;    // 9-a 비밀벽 열림 알림 건수
     unsigned long long wallCloseSent_ = 0;   // 9-a 비밀벽 닫힘 알림 건수
     bool aoiOn_ = false;
@@ -4799,9 +4998,22 @@ private:
     //   `nox_xxx_doorAttachWall_410360`(`GAME1.c:692`)으로 문 자리에 **벽을 만들어** 붙이고
     //   `Flags4 |= 0x10`(FlagDoor)을 켠다. 그래서 정적 WallMap 에는 문 칸이 없다
     //   (Estate 실측 — 문 6개 중 그 칸에 벽이 있는 것은 1개뿐이었다)
-    struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; int16_t secret = -1; int16_t door = -1; };
+    // ★ 09-29 Z1-A — breakable(깃발 8 · 맵 `DestructableWalls`) · broken(깃발 0x20 — 부서짐 · 그 뒤로는 벽이 없다) · window(깃발 0x40 · 맵 `WindowWalls`) ·
+    //   hp(+7 · 벽 정의 Health41) · breakId(+10 · 부서지는 벽 목록의 차례 — 부서짐 알림 `3a <번호2>` 에 실린다)
+    struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; int16_t secret = -1; int16_t door = -1;
+                      bool breakable = false; bool broken = false; bool window = false; uint8_t hp = 0; uint16_t breakId = 0; };
     std::vector<WallTile> wallTiles_;        // 256×256 벽 모양 (묶음 2-b)
     std::vector<uint32_t> wallDefFlags_;     // thing.bin WALL 순번 → 깃발
+    std::vector<WallDefExtra> wallDefExtra_; // ★ 09-29 Z1-A thing.bin WALL 순번 → 맞는 소리 재질·체력·부서지는 소리
+    unsigned long long wallGate_[5] = {};    // ★ 09-29 Z1-A 벽 피해 갈래(wallGate 주석)
+    // ★ 09-29 Z1-A 문 잠김(DoorTouch 주석)
+    void DoorCollide(size_t di, Session& s, std::vector<OutPacket>& out);   // nox_xxx_collideDoor_4E8AC0(문, 사람)
+    void DoorUnlockQuest(size_t di, std::vector<OutPacket>& out);            // sub_4E8390 — 퀘스트면 모두에게 `f0 0f <extent>`
+    uint16_t keyWire_[5] = {};
+    uint32_t doorLockMsgFrame_ = 0;          // qword_5d4594_1567940 — 잠김 알림 1.5초 간격(정답지는 실시간 ms · 모든 문·사람이 하나를 같이 쓴다)
+    unsigned long long doorTouch_[static_cast<size_t>(DoorTouch::Count)] = {};
+    unsigned long long berserkDoorLocked_ = 0;
+    size_t doorCellDiff_ = 0, doorCellOldHadWall_ = 0, doorCellNewHadWall_ = 0;
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
     std::map<uint16_t, PhysBody> typeBodies_;   // 소환수 종류 → 몸
     static constexpr int kPlayerAnimSlots = 55;     // ThingDb kPlayerAnimTypeCount 와 같은 길이

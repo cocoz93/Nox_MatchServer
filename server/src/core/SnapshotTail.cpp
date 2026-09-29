@@ -42,7 +42,28 @@ void PushRaw(std::vector<uint8_t>& m, const uint8_t* body, size_t n) {
     m.insert(m.end(), body, body + n);
 }
 
+// 기본 장비의 색 4바이트·내구도 — 아래 스냅샷 꼬리 주석 참고(09-28 B4b 부활 새 장비가 같은 표를 쓰려고 밖으로 뺐다)
+struct SnapGearItem { uint16_t type; uint16_t durability; uint8_t c[4]; };
+const SnapGearItem kSnapShirt    = { kItemStreetShirt,      0, { 0xff, 0xba, 0xc6, 0xff } };
+const SnapGearItem kSnapPants    = { kItemStreetPants,      0, { 0xff, 0xbf, 0xff, 0xff } };
+const SnapGearItem kSnapSneakers = { kItemStreetSneakers,   0, { 0xb9, 0xca, 0xff, 0xff } };
+const SnapGearItem kSnapRobe     = { kItemWizardRobe,     325, { 0xff, 0xff, 0xff, 0xff } };
+const SnapGearItem kSnapShield   = { kItemWoodenShield,   200, { 0xff, 0xff, 0xff, 0xff } };
+const SnapGearItem kSnapSword    = { kItemLongsword,      180, { 0xff, 0xff, 0xff, 0xff } };
+
 }  // namespace
+
+bool DefaultGearLook(uint16_t type, uint8_t look[4], uint16_t& durability) {
+    for (const SnapGearItem* g : { &kSnapShirt, &kSnapPants, &kSnapSneakers, &kSnapRobe, &kSnapShield, &kSnapSword }) {
+        if (g->type != type) continue;
+        std::memcpy(look, g->c, 4);
+        durability = g->durability;
+        return true;
+    }
+    look[0] = look[1] = look[2] = look[3] = 0xff;
+    durability = 0;
+    return false;
+}
 
 std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame,
                                        uint32_t enchantBits, const std::string& mapName) {
@@ -134,13 +155,13 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t
     // ⚠ 색 4바이트는 뜻 미상이다. 녹음에서 본 것은 그대로 쓰고, 못 본 것(방패·검)은
     //   흰색(ff ff ff ff)으로 둔다.
     {
-        struct GearItem { uint16_t type; uint16_t durability; uint8_t c[4]; };
-        static const GearItem kShirt    = { kItemStreetShirt,      0, { 0xff, 0xba, 0xc6, 0xff } };
-        static const GearItem kPants    = { kItemStreetPants,      0, { 0xff, 0xbf, 0xff, 0xff } };
-        static const GearItem kSneakers = { kItemStreetSneakers,   0, { 0xb9, 0xca, 0xff, 0xff } };
-        static const GearItem kRobe     = { kItemWizardRobe,     325, { 0xff, 0xff, 0xff, 0xff } };
-        static const GearItem kShield   = { kItemWoodenShield,   200, { 0xff, 0xff, 0xff, 0xff } };
-        static const GearItem kSword    = { kItemLongsword,      180, { 0xff, 0xff, 0xff, 0xff } };
+        using GearItem = SnapGearItem;
+        const GearItem& kShirt = kSnapShirt;
+        const GearItem& kPants = kSnapPants;
+        const GearItem& kSneakers = kSnapSneakers;
+        const GearItem& kRobe = kSnapRobe;
+        const GearItem& kShield = kSnapShield;
+        const GearItem& kSword = kSnapSword;
 
         const GearItem* gear[4] = {};
         int nGear = 0;
@@ -155,7 +176,8 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t
                 break;
             case CharClass::Warrior:
             default:
-                gear[0] = &kPants; gear[1] = &kSneakers; gear[2] = &kShield; gear[3] = &kSword;
+                // ★ 09-29 — 롱소드 → 방패(정품 녹음 `orig_arena_1851` 18:53:09.486 · `LoadoutFor` 주석)
+                gear[0] = &kPants; gear[1] = &kSneakers; gear[2] = &kSword; gear[3] = &kShield;
                 nGear = 4;
                 break;
         }

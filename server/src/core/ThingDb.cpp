@@ -131,11 +131,19 @@ void SkipWALL(Cur& c, std::vector<WallDefRaw>* out) {
     WallDefRaw d;
     d.name = c.Str8();
     d.flags = c.U32();
-    c.Skip(2 * 4 + 2 * 1);
+    // ★ 09-29 Z1-A — Field36(i32 → u16) · Field38(i32) · Field40(u8) · Health41(u8) — 전에는 건너뛰었다(걸음은 같다: 4+4+1+1)
+    d.hitMat = static_cast<uint16_t>(static_cast<int16_t>(c.U32()));
+    c.Skip(4);
+    c.Skip(1);
+    d.health = c.U8();
+    const size_t at = out ? out->size() : 0;
     if (out && !c.bad) out->push_back(d);
     const uint64_t v1 = c.U64Align();
     for (int i = 0; i < static_cast<int>(static_cast<uint8_t>(v1)) && !c.bad; ++i) c.SkipBytes8();
-    for (int i = 0; i < 3; ++i) c.SkipBytes8();
+    c.SkipBytes8();                                   // SoundOpen555
+    c.SkipBytes8();                                   // SoundClose619
+    const std::string brk = c.Str8();                 // Sound683 — 부서질 때 소리(`WallDef.BreakSound`)
+    if (out && at < out->size()) (*out)[at].breakSound = brk;
     c.Skip(1);
     for (int i = 0; i < 15 && !c.bad; ++i) {
         const uint64_t v2 = c.U64Align();
@@ -310,6 +318,10 @@ void ParseClasses(const std::string& val, ThingInfo& t) {
         //   TestPickupClass 로 찍어 확정한다.
         else if (c == "WEAPON" || c == "ARMOR" || c == "FOOD" || c == "PICKUP")
             t.isPickup = true;
+        // ★ 09-29 Z1-A — 열쇠(`KEY+LIGHT+SIMPLE`)도 줍는 물건이다 — thing.bin `COLLIDE = PickupCollide` · `PICKUP = DefaultPickup` · WEIGHT 있음.
+        //   빠져 있어서 퀘스트 맵의 은·금 열쇠가 세계에 안 놓였다(G_Castle 「아이템 아닌 것」 SilverKey 18 · GoldKey 1). 잠긴 문을 여는 유일한 길이다
+        else if (c == "KEY")
+            t.isPickup = true;
         start = e + 1;
         if (e == val.size()) break;
     }
@@ -473,6 +485,9 @@ bool ReadThing(Cur& c, ThingInfo& t, PlayerAnimFrames* anims, int* animSeen) {
             } else if (key == "PICKUP") {
                 // ★ 묶음 5-c — 주울 때 부르는 함수 이름. 인자가 붙는 갈래는 없다.
                 t.pickupFn = val;
+            } else if (key == "DROP") {
+                // ★ 09-28 — 버릴 때 부르는 함수 이름(`DROP = AudEventDrop BookDrop` 처럼 뒤에 인자가 붙기도 한다 — 원문 그대로)
+                t.dropFn = val;
             } else if (key == "CARRYCAPACITY") {
                 // ★ 묶음 5 — 들 수 있는 무게의 **밑천**. 한도는 이것의 두 배다(`object_pickup.go:75`).
                 t.carryCap = std::atoi(val.c_str());

@@ -250,6 +250,8 @@ std::vector<MapObject> MapFile::ReadObjects() {
                 o.y = fy;
                 // ★ 09-22 — 머리(h+18) 뒤를 그대로 남긴다. 뜻은 종류마다 다르다
                 if (sz > h + 18) o.tail.assign(q + h + 18, q + sz);
+                o.objVers = (h == 2) ? v1 : v0;       // ★ 09-29 Z1-A
+                o.typeVers = (h == 2) ? v0 : 0;
                 out.push_back(std::move(o));
             }
         }
@@ -445,6 +447,30 @@ std::vector<MapFile::SecretWall> MapFile::ReadSecretWalls() {
     return out;
 }
 
+// ★ 09-28 — `DestructableWalls`·`WindowWalls` 칸(선언 주석 참고). u16 판(≤maxVer) · u16 개수 · {u32 x · u32 y}×개수
+std::vector<std::pair<uint32_t, uint32_t>> MapFile::ReadGridList(const char* section, uint16_t maxVer) {
+    std::vector<std::pair<uint32_t, uint32_t>> out;
+    const MapSection* ss = Find(section);
+    if (!ss) return out;
+    const uint8_t* p = buf_.data() + ss->offset;
+    const size_t n = ss->size;
+    if (n < 4) { error_ = std::string(section) + " too short"; return out; }
+    const uint16_t ver = static_cast<uint16_t>(p[0] | (p[1] << 8));
+    const uint16_t cnt = static_cast<uint16_t>(p[2] | (p[3] << 8));
+    if (ver > maxVer) { error_ = std::string(section) + " version " + std::to_string(ver); return out; }
+    if (4 + static_cast<size_t>(cnt) * 8 != n) { error_ = std::string(section) + " size mismatch"; return out; }
+    auto u32 = [](const uint8_t* q) {
+        return static_cast<uint32_t>(q[0]) | (static_cast<uint32_t>(q[1]) << 8) |
+               (static_cast<uint32_t>(q[2]) << 16) | (static_cast<uint32_t>(q[3]) << 24);
+    };
+    out.reserve(cnt);
+    for (uint16_t k = 0; k < cnt; ++k) {
+        const uint8_t* e = p + 4 + static_cast<size_t>(k) * 8;
+        out.push_back({ u32(e), u32(e + 4) });
+    }
+    return out;
+}
+
 void MapFile::DumpFirstObjects(size_t count) const {
     const MapSection* toc = Find("ObjectTOC");
     const MapSection* dat = Find("ObjectData");
@@ -468,6 +494,58 @@ void MapFile::DumpFirstObjects(size_t count) const {
         std::printf("\n");
         off += static_cast<size_t>(sz);
     }
+}
+
+// ★ 09-29 Z1-A — 문 짐 읽기(MapFile.h 선언 주석). 사이 자료의 짜임은 `mapReadWriteObjData_4F4530`(`GAME3_3.c:11290~11370`)
+//   · 스크립트 몫은 `nox_xxx_xferReadScriptHandler_4F5580`(`server__script__script.c:21~74` — 판 u16 · 길이 u32 · 글 · u32)
+bool ReadDoorXfer(const MapObject& o, DoorXfer& d) {
+    const std::vector<uint8_t>& t = o.tail;
+    size_t k = 0;
+    auto need = [&](size_t n) { return k + n <= t.size(); };
+    auto u8 = [&]() -> uint32_t { return t[k++]; };
+    auto u16 = [&]() -> uint32_t { const uint32_t v = t[k] | (t[k + 1] << 8); k += 2; return v; };
+    auto u32 = [&]() -> uint32_t {
+        const uint32_t v = t[k] | (t[k + 1] << 8) | (t[k + 2] << 16) | (static_cast<uint32_t>(t[k + 3]) << 24);
+        k += 4; return v;
+    };
+    if (!need(1)) return false;
+    d = DoorXfer{};
+    if (u8() != 0) {                                  // `:11291~11294` — 0 이면 곧장 돌아간다
+        d.extra = true;
+        if (!need(4 + 1)) return false;
+        u32();                                        // 깃발(`:11297`)
+        const uint32_t nameLen = u8();                // 이름(`:11319~11325`)
+        if (!need(nameLen + 1 + 1 + 2)) return false;
+        k += nameLen;
+        d.team = static_cast<uint8_t>(u8());          // +52(`:11326`)
+        u8();                                         // 가방 물건 수(`:11331`)
+        const uint32_t links = u16();                 // `:11341~11348` — u32 × 수
+        if (!need(links * 4 + 4)) return false;
+        k += links * 4;
+        u32();                                        // XStatus(`:11357`)
+        if (o.objVers >= 63) {                        // `:11360`
+            if (!need(2 + 4)) return false;
+            if (u16() > 1) return false;
+            const uint32_t len = u32();
+            if (len >= 0x400 || !need(len + 4)) return false;
+            k += len;
+            u32();
+        }
+        if (o.objVers >= 64) {                        // `:11361~11363`
+            if (!need(4)) return false;
+            u32();
+        }
+    }
+    if (!need(8)) return false;
+    d.angle = u32();                                  // `:11508`
+    d.lock = u32();                                   // `:11509`
+    d.closed = d.angle;                               // `:11510~11511` — 판 < 41
+    if (o.typeVers >= 41) {                           // `:11513`
+        if (!need(4)) return false;
+        d.closed = u32();
+    }
+    d.rest = t.size() - k;
+    return true;
 }
 
 }  // namespace nox
