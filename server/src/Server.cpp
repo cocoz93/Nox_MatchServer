@@ -10830,6 +10830,9 @@ void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             ++b2Stat_[static_cast<size_t>(B2Stat::FightStart)];
             break;
         }
+        case 24:     // ★ 09-29 B4 — 도망 시작 `sub_544740` = 달리기(`534750`)
+            k.running = true;
+            break;
         case 17: {   // ── 묶음 6-g(3) 쏘기 시작 — `sub_532540`(`legacy/GAME4_3.c:2119`)
             // 근접과 **같은 꼴**이다 — 쉬는 시간(+512)이 끝났으면 휘두르기를 시작하고
             // 다음 때를 **쏘기 간격**(`monsterDef+220`·`+224`)으로 잡는다.
@@ -10907,6 +10910,77 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
         case 0:      // ★ 09-29 B2 — 놀기(`AIActionIdle.Update` `unit_ai.go:637~670`)
             MonsterIdleUpdate(k);
             break;
+        case 24: {   // ★ 09-29 B4 — 도망 `nox_xxx_mobActionFlee_544760`(`GAME4_3.c:9619~9677`) — 스스로는 안 빠진다(아래 조건이 뺀다)
+            //   · 움직일 수 없으면 뺀다 · 지금 상대가 있으면 도망칠 자리(인자)를 그 자리로 고치고, 도망 거리 안이면 0.5초마다 길을 다시 낸다
+            //   · 길이 2초 넘게 묵었으면 버린다 · 길이 있거나 낸 지 10프레임 안이면 따라 걷는다 · 아니면 멀어지는 길을 내고(`50CA00`) 점 둘 이상이면 걷는다 ·
+            //     못 내면 도망칠 자리를 제 자리로
+            //   ⚠ 주문 몬스터의 도망 중 주문(`mobCastRelated`·`BuffSelf`·`CastOffensive`)은 B7 · 걸음 소리는 B5
+            if (k.speedCur < 0.0099999998f) { AIPop(k); break; }
+            const Target e{ k.enemyAddr, k.enemyPet };
+            float ex = 0, ey = 0;
+            if (!e.none() && TargetXY(e, ex, ey)) {
+                st.argX = ex; st.argY = ey;
+                const float fr = MonsterBrainOf(k.type).fleeRange;
+                const double dx = ex - k.x, dy = ey - k.y;
+                if (static_cast<double>(fr) * fr > dx * dx + dy * dy && frame_ - k.pathFrame > static_cast<uint32_t>(kServerTickRate / 2)) k.path.clear();
+            }
+            if (!k.path.empty() && frame_ - k.pathFrame > static_cast<uint32_t>(2 * kServerTickRate)) k.path.clear();
+            bool go = !k.path.empty() || frame_ - k.pathFrame <= 10;
+            if (!go) {
+                const int n = CreatureGenRetreatPath(k, st.argX, st.argY);
+                k.pathFrame = frame_;
+                k.pathInd = 0;
+                go = n > 1;
+            }
+            if (go) {
+                if (!k.path.empty() && CreatureActuallyMove(k)) k.path.clear();
+            } else {
+                st.argX = static_cast<float>(k.x); st.argY = static_cast<float>(k.y);
+                ++brainStat_[static_cast<size_t>(BrainStat::FleeNoPath)];
+            }
+            break;
+        }
+        case 6: {    // ★ 09-29 B4 — 후퇴 `nox_xxx_mobActionRetreat_545440`(`GAME5.c:250~284`)
+            //   · 다시 싸울 수 있고(체력 비율 ≥ 회복 비율) 반주문에 안 걸렸으면(`5455B0`) 뺀다
+            //   · 지금 상대가 있으면 — 반주문이거나 후퇴 주문(`mobCastRelated_541050` — B7)이 없으면 때(41 · 4~6초)·도망(24 그 자리)
+            //   · 없으면 — 아직 다시 못 싸우면 먹을 것 찾기(`mobRetreatCheckEdibles_5455E0` — 먹기는 B4b · 지금은 없는 갈래만: 64·56·58·떠돌기)
+            const MonsterBrainInfo bi = MonsterBrainOf(k.type);
+            const bool anti = (bi.status & 0x20) && k.buffs.Has(29);
+            if (MonsterCanResumeAttack(k) && !anti) { AIPop(k); break; }
+            const Target e{ k.enemyAddr, k.enemyPet };
+            float ex = 0, ey = 0;
+            if (!e.none() && TargetXY(e, ex, ey)) {
+                if (AIPush(k, 41)) k.aiStack[k.aiStackInd].argU32 = frame_ + static_cast<uint32_t>(4 * kServerTickRate) + NextRandom(static_cast<uint32_t>(2 * kServerTickRate + 1));
+                if (AIPush(k, 24)) { k.aiStack[k.aiStackInd].argX = ex; k.aiStack[k.aiStackInd].argY = ey; k.aiStack[k.aiStackInd].argU32 = 0; }
+            } else if (!MonsterCanResumeAttack(k)) {
+                AIPush(k, 64);
+                AIPush(k, 56);
+                AIPush(k, 58);
+                AIPush(k, 10);
+            }
+            break;
+        }
+        case 36: {   // ★ 09-29 B4 — 혼란 `nox_xxx_mobActionConfuse_545140`(`GAME5.c:119~146`) — 85% 아무 데나 걷기 ·
+            //   15% 는 근접이 되면(주문 몬스터 아님 · 근접 사거리 > 0) 쏠 수 없거나 50% 로 근접(16) · 아니면 쏠 수 있으면 앞 10 지점 쏘기(17)
+            if (NextRandom(101) >= 15) { AIRandomWalk(k); break; }
+            const MonsterStats* mm = FindMonster(k.type);
+            const bool canCast = (MonsterBrainOf(k.type).status & 0x20) != 0;
+            const bool canMelee = !canCast && mm && mm->meleeRange > 0.0;          // `534220`
+            const bool canShoot = mm && mm->missileName != nullptr;               // `534280`
+            if (canMelee) {
+                if (!canShoot || NextRandom(101) < 50) { AIPush(k, 16); break; }
+            } else if (!canShoot) {
+                break;
+            }
+            if (AIPush(k, 17)) {
+                Creature::AIStackItem& it = k.aiStack[k.aiStackInd];
+                it.targetAddr.clear(); it.targetPet = -1;
+                it.argX = DirVecX(k.facing) * 10.0f + static_cast<float>(k.x);
+                it.argY = DirVecY(k.facing) * 10.0f + static_cast<float>(k.y);
+                it.argU32 = 0;
+            }
+            break;
+        }
         case 25:     // 자리를 바라보기(`sub_545210`) — 인자로 받은 점
             if (AIFacePoint(k, st.argX, st.argY)) AIPop(k);
             break;
@@ -11183,12 +11257,17 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             // ⚠ **애니 칸이 없어** 「휘두르기를 시작한 그 틱」을 그 자리로 삼는다.
             //   이 막이 없으면 쉬는 시간이 안 지켜져 매 틱 쏜다
             // ⚠ **앞질러 겨눔**(`projAddVelocitySmth_533080`)은 아직 안 옮겼다 — 지금은 곧장 겨눈다
+            // ★ 09-29 B4 — 겨누는 곳은 **쌓임 항목**이다(`532610` `:2181~2188` — 대상 오브젝트 v4[3] 이 있으면 그것 · 없으면 자리 v4[1·2]).
+            //   ✖ 전에는 지금 상대(+1196)를 겨눴다 — 정답지 쏘기는 +1196 을 안 읽는다. 공격 사슬은 대상·자리를 둘 다 싣고,
+            //     혼란(36)은 자리만(앞 10) 싣는다
             const MonsterStats* m = FindMonster(k.type);
-            const Target foe{ k.enemyAddr, k.enemyPet };
-            if (!m || m->missileName == nullptr || foe.none()) { AIPop(k); break; }
+            const Target foe{ st.targetAddr, st.targetPet };
+            if (!m || m->missileName == nullptr) { AIPop(k); break; }
             if (k.attackStartFrame != frame_) { AIPop(k); break; }
             float tx = 0, ty = 0;
-            if (!TargetXY(foe, tx, ty)) { AIPop(k); break; }
+            if (!foe.none()) { if (!TargetXY(foe, tx, ty)) { AIPop(k); break; } }
+            else if (st.argX != 0.0f || st.argY != 0.0f) { tx = st.argX; ty = st.argY; }
+            else { AIPop(k); break; }
             // ★ 09-26 M4a — MISSILE_ATTACK(+44 · `GAME4_3.c:2215~2218`) — 정답지는 발사체 오브젝트를 **만들었을 때만**(`if (v6)` 안 ·
             //   선 추적이 막혀 곧 지워져도 소리는 난다)
             if (SpawnCreatureMissile(k, m->missileName, tx, ty, out)) MonsterSound(k, 10);
@@ -11250,6 +11329,7 @@ void Server::AIEnd(Creature& k, uint8_t act) {
         k.running = false;
         ++b2Stat_[static_cast<size_t>(B2Stat::FightEnd)];
     }
+    if (act == 24) k.running = false;   // ★ 09-29 B4 — 도망 끝 `sub_544750` = 달리기 끄기(`534780`)
 }
 
 // 취소 — ★ **기다리기 둘만** 스스로 빠진다(`Cancel` 이 `MonsterPopAction`).
@@ -11312,6 +11392,15 @@ void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
                 ok = !(k.injured && SightResolve(k.lastAttacker, att));
                 break;
             }
+            case 63: {                                                          // ★ 09-29 B4 — 적이 이보다 가깝나(`unit_ai.go:188~190`) — 지금 상대까지 ≤ 자
+                const Target e{ k.enemyAddr, k.enemyPet };
+                float ex = 0, ey = 0;
+                ok = !e.none() && TargetXY(e, ex, ey) &&
+                     std::sqrt((ex - k.x) * (ex - k.x) + (ey - k.y) * (ey - k.y)) <= static_cast<double>(st.argF);
+                break;
+            }
+            case 64: ok = !MonsterCanResumeAttack(k); break;                   // ★ 09-29 B4 — 건강하지 않나(`:191~199`) — 체력 비율 < 회복 비율
+            case 68: ok = !(frame_ - k.moveAttemptFrame < static_cast<uint32_t>(3 * kServerTickRate)); break;   // ★ 09-29 B4 — 구석 아님(`:213~214`)
             case 45: ok = hasT && CanInteractFrom(k, targ); break;             // 보이나
             case 46: ok = !(hasT && CanInteractFrom(k, targ)); break;          // 안 보이나
             case 47: {                                                          // 쏠 줄이 막혔나
@@ -11822,6 +11911,100 @@ int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg, std::
         ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::GhostFlee)];
     }
     return 1;
+}
+
+// ── ★ 09-29 B4 두뇌 반응 층 ─────────────────────────────────────────────
+//
+// `nox_xxx_monsterMainAIFn_547210`(`GAME5.c:1193~1548`) — 알아보기 뒤 · 조건 앞(`unit_ai.go:576~578`)
+//   · 놀기(0)·지키기(4)가 맨 위면 16프레임에 한 번(몬스터마다 엇갈림 — 정답지 `(프레임 + 오브젝트+36 − 갱신자료+548) & 0xF` · 우리는 번호로 엇갈림)
+//   · 맨 위 아래에 61(방해 금지)이 있으면 끝 · 죽었으면 끝 · 협동 커서 갈래는 안 옮김(멀티 아님)
+//   · 혼란(버프 3)이고 36 이 없으면 62(3)·36 · 거꾸로 주문(`5408D0` — B7)은 늘 0 으로 본다
+//   · 두려움(버프 11)·움직일 수 있음·24 없음 → 62(11)·24(제 자리) · 소리 칸 11 → 끝
+//   · 후퇴 — 체력 자료가 있고 움직일 수 있고 막힌 지 3초 넘고 24·6·14 가 없을 때, 체력 비율 ≤ 후퇴 비율(ARENA 전부 0)이거나
+//     주문 몬스터(STATUS 0x20)가 반주문(29)에 걸렸으면 → 공격 행동 빼기 · 68 · 6(협동의 소환수면 14) · 소리 칸 12 → 끝
+//   ⚠ B4b 몫 — 공격 성향(지키기 중 100 안 적) · 거리 두기(도망 거리) · 방패 막기 · 피하기(협동만) · 답답함 · 먹기
+void Server::MonsterBrain(Creature& k) {
+    const uint8_t top = k.aiStack[k.aiStackInd].action;
+    if ((top == 0 || top == 4) && ((frame_ + k.netCode) & 0xF)) return;
+    for (int i = k.aiStackInd - 1; i >= 0; --i) if (k.aiStack[i].action == 61) return;
+    if (k.health == 0) return;
+    ++brainStat_[static_cast<size_t>(BrainStat::Runs)];
+    const MonsterBrainInfo bi = MonsterBrainOf(k.type);
+    const bool moving = k.speedCur >= 0.0099999998f;                              // `534320`
+    const bool cornered = frame_ - k.moveAttemptFrame < static_cast<uint32_t>(3 * kServerTickRate);   // `534810`
+    if (k.buffs.Has(3) && !AIHasAction(k, 36)) {                                // `:1315~1322`
+        if (AIPush(k, 62)) k.aiStack[k.aiStackInd].argU32 = 3;
+        AIPush(k, 36);
+        ++brainStat_[static_cast<size_t>(BrainStat::Confused)];
+    }
+    if (k.buffs.Has(11) && moving && !AIHasAction(k, 24)) {                     // `:1324~1341`
+        if (AIPush(k, 62)) k.aiStack[k.aiStackInd].argU32 = 11;
+        if (AIPush(k, 24)) { k.aiStack[k.aiStackInd].argX = static_cast<float>(k.x); k.aiStack[k.aiStackInd].argY = static_cast<float>(k.y); k.aiStack[k.aiStackInd].argU32 = 0; }
+        MonsterSound(k, 11);                                                     // +48
+        ++brainStat_[static_cast<size_t>(BrainStat::Fear)];
+        return;
+    }
+    const int maxHp = TuningFor(k.type).health;
+    if (maxHp != 0 && moving && !cornered && !AIHasAction(k, 24) && !AIHasAction(k, 6) && !AIHasAction(k, 14)) {   // `:1421~1423`
+        const double ratio = static_cast<double>(k.health) / static_cast<double>(maxHp);
+        const bool anti = (bi.status & 0x20) && k.buffs.Has(29);
+        if (ratio <= static_cast<double>(bi.retreat) || anti) {
+            MonsterPopAttackActions(k);
+            AIPush(k, 68);
+            AIPush(k, 6);                                                        // 협동(2048)의 소환수면 14 — 멀티 아님
+            MonsterSound(k, 12);                                                 // +52
+            ++brainStat_[static_cast<size_t>(BrainStat::Retreat)];
+            if (anti) ++brainStat_[static_cast<size_t>(BrainStat::RetreatAnti)];
+            return;
+        }
+    }
+}
+
+// `nox_xxx_monsterPopAttackActions_5471B0` — 맨 위가 공격 행동(16~20 · 25~28)인 동안 뺀다
+void Server::MonsterPopAttackActions(Creature& k) {
+    for (int guard = 0; guard <= Creature::kAIStackMax; ++guard) {
+        const uint8_t a = k.aiStack[k.aiStackInd].action;
+        if (!((a >= 16 && a <= 20) || (a >= 25 && a <= 28))) return;
+        AIPop(k);
+    }
+}
+
+// `nox_xxx_monsterCanResumeAttack_545520` — 체력 비율(최대 0 이면 1) ≥ 회복 비율(+1344)
+bool Server::MonsterCanResumeAttack(const Creature& k) const {
+    const int maxHp = TuningFor(k.type).health;
+    const double ratio = maxHp != 0 ? static_cast<double>(k.health) / static_cast<double>(maxHp) : 1.0;
+    return ratio >= static_cast<double>(MonsterBrainOf(k.type).resume);
+}
+
+// `Nox_xxx_generateRetreatPath_50CA00`(`unit_ai_path.go:526~530`) — 길찾기 멀어지기 모드 · 거르기 = 그 칸 가운데 100 안에 적이 없음(`HasNoEnemiesAround`) · 깊이 6
+int Server::CreatureGenRetreatPath(Creature& k, float fromX, float fromY) {
+    uint32_t oflags = 0;
+    auto tb = typeBodies_.find(k.type);
+    if (tb != typeBodies_.end()) oflags = tb->second.flags;
+    const bool airborne = (oflags & 0x4000) != 0;
+    auto noEnemies = [&](int gx, int gy) {
+        const double cx = gx * 23.0 + 11.5, cy = gy * 23.0 + 11.5;
+        for (const auto& kv : sessions_) {
+            const Session& o = kv.second;
+            if (!o.inGame) continue;
+            const double dx = o.posX - cx, dy = o.posY - cy;
+            if (dx * dx + dy * dy <= 100.0 * 100.0 && CreatureEnemyTo(k, Target{ kv.first, -1 })) return false;
+        }
+        for (size_t i = 0; i < pets_.size(); ++i) {
+            if (&pets_[i] == &k) continue;
+            const double dx = pets_[i].x - cx, dy = pets_[i].y - cy;
+            if (dx * dx + dy * dy <= 100.0 * 100.0 && CreatureEnemyTo(k, Target{ std::string(), static_cast<int>(i) })) return false;
+        }
+        return true;
+    };
+    AIPathFind(true, PathActor{ airborne, 0, -1 }, static_cast<float>(k.x), static_cast<float>(k.y), fromX, fromY, PathFilter(noEnemies), 6);
+    if (aiPathPts_.size() > kCreaturePathMax && aiPathStatus_ == 0) aiPathStatus_ = 1;
+    k.path.clear();
+    for (size_t i = 0; i < aiPathPts_.size(); ++i) {
+        if (k.path.size() >= kCreaturePathMax - 1) break;
+        k.path.push_back(aiPathPts_[i]);
+    }
+    return static_cast<int>(k.path.size());
 }
 
 // 놀기 `AIActionIdle.Update`(`unit_ai.go:637~670`)
@@ -12789,6 +12972,11 @@ void Server::SpawnCreature(uint16_t type, float x, float y, const std::string& o
     Creature k;
     k.owner = owner;
     if (owner.empty()) k.aggression = 0.5f;   // ★ 09-29 B2 — 맵 몬스터 공격 성향 기본(unit_monster.go:124)
+    if (type == kCarnivorousPlantType) {      // ★ 09-29 B4 — 식충식물 자체 시야 = 근접 사거리 + 몸 반지름 + 10(`unit_monster.go:21~24` — 되갚기 조건 63 의 자)
+        const MonsterStats* pm = FindMonster(type);
+        const auto tb = typeBodies_.find(type);
+        k.sightRange = static_cast<float>((pm ? pm->meleeRange : 0.0) + (tb != typeBodies_.end() ? tb->second.r : 0.0f) + 10.0);
+    }
     k.type = type;
     k.netCode = nextShotNetCode_++;
     if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
@@ -15738,6 +15926,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 if (!k.ordered && !k.owner.empty() && k.aiStackInd == 0 && k.aiStack[0].action == 0) AIPush(k, 3);
             }
 
+            // ★ 09-29 B4 — 두뇌(`monsterMainAIFn_547210`) — 알아보기 뒤 · 조건 앞(`unit_ai.go:576~578`)
+            if (!debugNoAutoFight_) MonsterBrain(k);
             k.velX = 0; k.velY = 0;
             AIRefreshStackArgs(k);                             // ★ 09-28 — 정답지는 조건 보기 전(`unit_ai.go:548`)
             AIProcDeps(k, out);

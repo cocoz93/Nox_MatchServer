@@ -269,6 +269,18 @@ enum class MeleeStrikeWay : uint8_t {
 };
 constexpr size_t kMeleeStrikeWayCount = static_cast<size_t>(MeleeStrikeWay::Count);
 
+// ★ 09-29 B4 — 두뇌 반응 층이 **무엇을 했나**
+enum class BrainStat : uint8_t {
+    Runs = 0,        // 두뇌를 끝까지 본 수(16프레임 관문·61·죽음을 지난 것)
+    Confused,        // 혼란 — 62(3)·36 을 쌓음
+    Fear,            // 두려움 — 62(11)·24 를 쌓고 칸 11 소리
+    Retreat,         // 후퇴 — 공격 행동을 빼고 68·6 을 쌓고 칸 12 소리
+    RetreatAnti,     //   그중 반주문(버프 29) 걸린 주문 몬스터
+    FleeNoPath,      // 도망 — 멀어지는 길을 못 냄(제자리를 도망 자리로)
+    Count
+};
+constexpr size_t kBrainStatCount = static_cast<size_t>(BrainStat::Count);
+
 // ★ 09-23 3-a — 점프(CCJump 7)가 **어떻게 끝났나**(`object_update.go:550~571`). 들어옴 = 갈래 합
 enum class JumpGate : uint8_t {
     Ok = 0,        // 뛰었다 — 기력 90 · 떠 있음 · 상태 12
@@ -565,6 +577,8 @@ struct Creature {
     uint32_t tauntFrame = 0;        // 갱신자료 +520 Field130 — 적을 때린 프레임(`sub_532880`) · 1초 뒤 도발 소리
     uint32_t tauntNext = 0;         // 갱신자료 +532 — 도발 소리 다음 때(2~4초)
     uint32_t idleSoundNext = 0;     // 갱신자료 +528 — 놀 때 소리 다음 때(20~60초)
+    // ★ 09-29 B4 — 두뇌(`monsterMainAIFn_547210`)
+    uint32_t moveAttemptFrame = 0;  // 갱신자료 +508 — 막혀서(답답함) 도망·후퇴가 멈춘 프레임 · 3초 안이면 「구석에 몰림」(`534810`)
 };
 
 // 깃발 하나.
@@ -1705,6 +1719,9 @@ public:
     unsigned long long sightStat(SightStat s) const { return s < SightStat::Count ? sightStat_[static_cast<size_t>(s)] : 0; }   // ★ 09-29 B1
     unsigned long long b2Stat(B2Stat s) const { return s < B2Stat::Count ? b2Stat_[static_cast<size_t>(s)] : 0; }               // ★ 09-29 B2
     unsigned long long meleeStrike(MeleeStrikeWay w) const { return w < MeleeStrikeWay::Count ? meleeStrike_[static_cast<size_t>(w)] : 0; }   // ★ 09-29 B3
+    unsigned long long brainStat(BrainStat b) const { return b < BrainStat::Count ? brainStat_[static_cast<size_t>(b)] : 0; }                   // ★ 09-29 B4
+    void DebugSetPetHealth(size_t i, uint16_t hp) { if (i < pets_.size()) pets_[i].health = hp; }
+    void DebugSetPetMoveAttempt(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].moveAttemptFrame = f; }
     bool DebugPetAlert(size_t i) const { return i < pets_.size() && pets_[i].alert; }
     void DebugAIClearStack(size_t i) { if (i < pets_.size()) AIClearStack(pets_[i]); }   // ★ 09-29 B2 — 명령이 쌓임을 비우는 자리(`ClearActionStack`)
     double DebugForceX(const std::string& addr) const { auto it = sessions_.find(addr); return it != sessions_.end() ? it->second.forceX : 0.0; }   // ★ 09-29 B3
@@ -4303,6 +4320,11 @@ private:
     Target MonsterPickMeleeTarget(const Creature& k, double meleeRange) const;
     void ObjectApplyForce(float fromX, float fromY, const Target& t, double force);
     int  MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg, std::vector<OutPacket>& out);
+    // ★ 09-29 B4 — 두뇌 반응 층(Server.cpp 「B4」 절)
+    void MonsterBrain(Creature& k);
+    void MonsterPopAttackActions(Creature& k);
+    int  CreatureGenRetreatPath(Creature& k, float fromX, float fromY);
+    bool MonsterCanResumeAttack(const Creature& k) const;
     void SendGold(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-a — 경험치 알림·주기·레벨 오름
     // 묶음 7-d — 능력(0xCD·0xCE·0xCF·0xEB)
@@ -5135,6 +5157,7 @@ private:
     unsigned long long sightStat_[kSightStatCount] = {};
     unsigned long long b2Stat_[kB2StatCount] = {};   // ★ 09-29 B2
     unsigned long long meleeStrike_[kMeleeStrikeWayCount] = {};   // ★ 09-29 B3
+    unsigned long long brainStat_[kBrainStatCount] = {};          // ★ 09-29 B4
     uint32_t sightForceFrame_ = 0xFFFFFFFFu;   // dword_5d4594_2487684 — 이 프레임엔 모든 몬스터가 다시 훑는다(순간이동·살금살금 켜기 다음 프레임)
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
     std::map<uint16_t, PhysBody> typeBodies_;   // 소환수 종류 → 몸

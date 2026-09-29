@@ -10078,7 +10078,7 @@ void TestAIDeps() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 64, std::string(), -1, 0, 0);   // 64 성치 않나 — 아직 안 옮김
+        srv.DebugAIPushDep(0, 67, std::string(), -1, 0, 0);   // 67 커서 아래 — 아직 안 옮김(협동 전용) · ★ 09-29 B4 — 64 는 옮겨서 바꿈
         srv.DebugAIPush(0, 7);
         srv.DebugAIProcDeps(0, out);
         Check(srv.DebugAIStackInd(0) == 1, "안 옮긴 조건이 할 일을 지웠다");
@@ -12456,7 +12456,7 @@ void TestAIMelee() {
         nox::Server srv; mk(srv, 1328);
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
-        srv.DebugAIPush(0, 17);
+        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         uint32_t lo = 99999, hi = 0;
         for (int t = 0; t < 400; ++t) {
             srv.DebugSetPetNextHit(0, 0);
@@ -12473,7 +12473,7 @@ void TestAIMelee() {
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 1100);
-        srv.DebugAIPush(0, 17);
+        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         srv.DebugAIStart(0, 17, out);
         Check(srv.DebugAIStackInd(0) == 0, "쏘기는 쉬는 중에 아무것도 안 올려야 한다");
         Check(srv.DebugPetNextHit(0) == 1100, "쉬는 중인데 다음 때를 바꿨다");
@@ -12484,7 +12484,7 @@ void TestAIMelee() {
         nox::Server srv; mk(srv, 1358);                       // GiantLeech — 쏠 게 없다
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
-        srv.DebugAIPush(0, 17);
+        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "쏠 게 없는데 안 빠졌다");
     }
@@ -12494,7 +12494,7 @@ void TestAIMelee() {
         RegImpShot(srv);
         SetEnemySeen(srv, 0, b, -1);
         const size_t n0 = srv.missiles();
-        srv.DebugAIPush(0, 17);
+        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         srv.DebugAITick(0, out);
         // ★ 이제 **피해를 바로 주지 않는다** — `ImpShot` 오브젝트를 만들어 날린다(6-g(3b))
         Check(srv.missiles() == n0 + 1, "발사체가 안 생겼다");
@@ -19012,7 +19012,7 @@ void TestMonsterSounds() {
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetEnemy(0, b, -1);
         srv.DebugSetPetNextHit(0, 0);
-        srv.DebugAIPush(0, 17);
+        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         srv.DebugAIStart(0, 17, out);
         srv.DebugAITick(0, out);
         std::vector<nox::OutPacket> o2; srv.Tick(34, o2);
@@ -20506,6 +20506,108 @@ void TestMonsterMeleeB3() {
                         "⑨ 거머리(BITE)가 물었는데 기본 타격 소리를 안 걸렀다(피해 종류를 안 넘김)");
     }
     std::printf("  09-29 B3 — 근접 다시 고르기: 사거리·앞쪽·시야선(빗나감)·가장 가까운 틈 · 거미 독 · 곰 밀기 · 유령 기절·도망 · 표 정정 · 피해 종류\n");
+}
+
+// ── 09-29 B4a — 두뇌 반응 층: 두려움 도망 · 혼란 · 반주문 후퇴(`monsterMainAIFn_547210` · `mobActionFlee_544760` · `mobActionRetreat_545440` · `mobActionConfuse_545140`) ─────────
+void TestMonsterBrainB4a() {
+    const std::string a = "10.9.29.41:9341";
+    using BS = nox::BrainStat;
+    auto run = [](nox::Server& srv, uint32_t& ms, int n) {
+        for (int t = 0; t < n; ++t) { ms += 34; std::vector<nox::OutPacket> o; srv.Tick(ms, o); }
+    };
+    auto mk = [&](nox::Server& srv, uint32_t& ms, uint16_t type) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 1150.0f, 1000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, std::string());
+        srv.DebugApplyEnchant(a, 23, 100000, 1);             // 사람은 무적 — 도망·후퇴만 본다
+        run(srv, ms, 100);                                    // 3초 넘게 — 막힘(+508 = 0) 3초 관문이 풀린다 · a 를 알아보고 싸움
+    };
+    // ① 두려움(11) — 62(11)·24 · 소리 칸 11 · 달리기 · a 에게서 멀어진다 · 두려움이 풀리면 62 가 도망을 뺀다
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1358);
+        double px0 = 0, py0 = 0; srv.DebugPetXY(0, px0, py0);
+        const double d0 = std::hypot(px0 - 1150.0, py0 - 1000.0);
+        srv.DebugApplyEnchantPet(0, 11, 60, 1);
+        run(srv, ms, 1);
+        const int top = srv.DebugAIStackInd(0);
+        Check(srv.brainStat(BS::Fear) == 1 && srv.DebugAIAction(0, top) == 24 && srv.DebugAIAction(0, top - 1) == 62, "① 두려움인데 62·24 를 안 쌓았다");
+        Check(srv.monsterSnd(11, false) + srv.monsterSnd(11, true) == 1, "① 두려움 소리(칸 11)를 안 불렀다");
+        run(srv, ms, 30);
+        double px1 = 0, py1 = 0; srv.DebugPetXY(0, px1, py1);
+        const double d1 = std::hypot(px1 - 1150.0, py1 - 1000.0);
+        char msg[160]; std::snprintf(msg, sizeof(msg), "① 도망가는데 a 에게서 안 멀어졌다 — %.0f → %.0f · 달리기 %d", d0, d1, static_cast<int>(srv.DebugPetRunning(0)));
+        Check(d1 > d0 + 20.0 && srv.DebugPetRunning(0), msg);
+        run(srv, ms, 40);                                     // 두려움 60틱이 끝난다
+        bool fleeing = false;
+        for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) if (srv.DebugAIAction(0, i) == 24) fleeing = true;
+        Check(!fleeing, "① 두려움이 풀렸는데 도망이 남았다(조건 62)");
+    }
+    // ② 혼란(3) — 62(3)·36 · 풀리면 빠진다
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1358);
+        srv.DebugApplyEnchantPet(0, 3, 30, 1);
+        run(srv, ms, 1);
+        bool conf = false;
+        for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) if (srv.DebugAIAction(0, i) == 36) conf = true;
+        Check(srv.brainStat(BS::Confused) == 1 && conf, "② 혼란인데 36 을 안 쌓았다");
+        run(srv, ms, 40);
+        conf = false;
+        for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) if (srv.DebugAIAction(0, i) == 36) conf = true;
+        Check(!conf, "② 혼란이 풀렸는데 36 이 남았다");
+    }
+    // ③ 후퇴 — 주문 몬스터(비홀더 STATUS 0x20)가 반주문(29)에 걸리면 68·6 → 6 이 41·24 · 소리 칸 12 / 주문 못 쓰는 거머리는 안 함 / ARENA 후퇴 비율 0 이라 체력 1 이어도 안 함
+    for (int kind = 0; kind < 3; ++kind) {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, kind == 0 ? 1382 : 1358);
+        if (kind < 2) srv.DebugApplyEnchantPet(0, 29, 300, 1);
+        else srv.DebugSetPetHealth(0, 1);
+        run(srv, ms, 2);
+        if (kind == 0) {
+            bool r6 = false, f24 = false;
+            for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) { if (srv.DebugAIAction(0, i) == 6) r6 = true; if (srv.DebugAIAction(0, i) == 24) f24 = true; }
+            Check(srv.brainStat(BS::Retreat) == 1 && srv.brainStat(BS::RetreatAnti) == 1 && r6 && f24 &&
+                  srv.monsterSnd(12, false) + srv.monsterSnd(12, true) == 1, "③ 반주문 걸린 비홀더가 후퇴(6→24)를 안 했다");
+        } else {
+            Check(srv.brainStat(BS::Retreat) == 0, kind == 1 ? "③ 주문 못 쓰는 거머리가 반주문에 후퇴했다" : "③ ARENA 후퇴 비율 0 인데 체력 1 에 후퇴했다");
+        }
+    }
+    // ④ 구석(+508 3초 안) — 후퇴를 안 시작하고, 시작한 후퇴는 조건 68 이 뺀다
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1382);
+        srv.DebugSetPetMoveAttempt(0, srv.frame());
+        srv.DebugApplyEnchantPet(0, 29, 300, 1);
+        run(srv, ms, 2);
+        Check(srv.brainStat(BS::Retreat) == 0, "④ 구석에 몰렸는데(3초 안) 후퇴를 시작했다");
+    }
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1382);
+        srv.DebugApplyEnchantPet(0, 29, 300, 1);
+        run(srv, ms, 2);                                      // 후퇴 시작(68·6 → 41·24)
+        Check(srv.brainStat(BS::Retreat) == 1, "④ 전제 — 후퇴를 안 시작했다");
+        srv.DebugSetPetMoveAttempt(0, srv.frame());          // 이제 구석
+        run(srv, ms, 1);
+        bool r6 = false;
+        for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) if (srv.DebugAIAction(0, i) == 6) r6 = true;
+        Check(!r6, "④ 구석에 몰렸는데 조건 68 이 후퇴를 안 뺐다");
+    }
+    // ⑤ 쏘기(17)는 항목의 자리를 겨눈다(대상 없음 — 혼란의 앞 10 쏘기) · 대상도 자리도 없으면 빠진다
+    for (int hasPos = 0; hasPos <= 1; ++hasPos) {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 3000.0f, 3000.0f);
+        srv.DebugSpawnPet(1328, 1000, 1000, std::string());
+        RegImpShot(srv);
+        srv.DebugSetAutoFight(false);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv.DebugSetFrame(1000);
+        srv.DebugSetPetNextHit(0, 0);
+        const unsigned long long n0 = srv.missilesMade();
+        srv.DebugAIPushDep(0, 17, std::string(), -1, 0, 0.0f, hasPos ? 1010.0f : 0.0f, hasPos ? 1000.0f : 0.0f);
+        srv.DebugAITick(0, out);
+        if (hasPos) Check(srv.missilesMade() == n0 + 1, "⑤ 자리만 실린 쏘기가 안 쐈다");
+        else        Check(srv.missilesMade() == n0 && srv.DebugAIAction(0, 0) == 0, "⑤ 대상도 자리도 없는데 쐈거나 안 빠졌다");
+    }
+    std::printf("  09-29 B4a — 두뇌: 두려움 도망(멀어짐·달리기·풀리면 빠짐) · 혼란 · 반주문 후퇴(비홀더만) · ARENA 비율 0 · 구석 · 자리 겨눔 쏘기\n");
 }
 
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
@@ -25659,6 +25761,7 @@ int main() {
     TestMonsterSight();
     TestMonsterIdleB2();
     TestMonsterMeleeB3();
+    TestMonsterBrainB4a();
     TestPickupAutoEquip();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

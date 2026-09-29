@@ -278,6 +278,10 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
         std::printf("[몬스터근접] 맞힘 %llu · 대상없음 %llu · 시야막힘 %llu · 폭탄병 %llu · (독 %llu · 유령도망 %llu) · 빗나감소리 %llu\n",
                     srv.meleeStrike(MW::Hit), srv.meleeStrike(MW::NoTarget), srv.meleeStrike(MW::Blocked), srv.meleeStrike(MW::Bomber),
                     srv.meleeStrike(MW::Poisoned), srv.meleeStrike(MW::GhostFlee), srv.meleeStrike(MW::MissSound));
+        using BS = nox::BrainStat;   // ★ 09-29 B4 — 두뇌 반응 층
+        std::printf("[몬스터두뇌] 돎 %llu · 혼란 %llu · 두려움 %llu · 후퇴 %llu(반주문 %llu) · 도망 길 못냄 %llu\n",
+                    srv.brainStat(BS::Runs), srv.brainStat(BS::Confused), srv.brainStat(BS::Fear), srv.brainStat(BS::Retreat),
+                    srv.brainStat(BS::RetreatAnti), srv.brainStat(BS::FleeNoPath));
     }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
     std::printf("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",

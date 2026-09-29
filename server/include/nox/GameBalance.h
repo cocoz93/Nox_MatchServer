@@ -598,6 +598,30 @@ struct QuestStage {
 // ★ 09-29 B2 — 식충식물 와이어 번호(위 `kMonsters` 표 · 정답지 `s.IsPlant`) — 되갚기가 다르게 간다(`server/object_ai.go:191~195`)
 constexpr uint16_t kCarnivorousPlantType = 1371;
 
+// ★ 09-29 B4 — 두뇌가 읽는 몬스터 값 ⭕ monster.bin(`STATUS` → 갱신자료 +1440 · `ARENA RETREAT_RATIO` +1336 · `RESUME_RATIO` +1344 · `FLEE_RANGE` +1356)
+//   위 `kMonsters` 열셋만(스크립트로 13종 전수 대조 — 09-29). ARENA 후퇴 비율은 **전부 0** 이다(SOLO 만 0.1~0.25) — 그래서 멀티에서
+//   「체력이 줄면 도망」은 안 일어나고, 후퇴는 주문 쓰는 몬스터가 반주문(버프 29)에 걸렸을 때만 난다(`GAME5.c:1425`)
+//   STATUS 비트 — 0x1 DESTROY_WHEN_DEAD · 0x8 CAN_DODGE · 0x20 CAN_CAST_SPELLS(`libs object/subclass_monster.go:73~85`)
+struct MonsterBrainInfo { uint32_t status = 0; float retreat = 0.0f, resume = 1.0f, fleeRange = 0.0f; };
+inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
+    switch (wire) {
+        case 1317: return { 0x08, 0.0f, 1.0f,  0.0f };   // EvilCherub  CAN_DODGE
+        case 1325: return { 0x01, 0.0f, 1.0f,  0.0f };   // Ghost       DESTROY_WHEN_DEAD
+        case 1328: return { 0x08, 0.0f, 1.0f,  0.0f };   // Imp         CAN_DODGE
+        case 1337: return { 0x08, 0.0f, 0.5f,  0.0f };   // EmberDemon  CAN_DODGE · 회복 0.5
+        case 1348: return { 0x01, 0.0f, 1.0f,  0.0f };   // Bomber      DESTROY_WHEN_DEAD
+        case 1355: return { 0x00, 0.0f, 1.0f,  0.0f };   // AlbinoSpider
+        case 1356: return { 0x00, 0.0f, 1.0f,  0.0f };   // SmallAlbinoSpider
+        case 1357: return { 0x00, 0.0f, 0.5f,  0.0f };   // Bat         회복 0.5
+        case 1358: return { 0x00, 0.0f, 1.0f,  0.0f };   // GiantLeech
+        case 1365: return { 0x00, 0.0f, 0.25f, 0.0f };   // Bear        회복 0.25
+        case 1366: return { 0x00, 0.0f, 0.5f,  0.0f };   // BlackBear   회복 0.5
+        case 1371: return { 0x00, 0.0f, 1.0f,  0.0f };   // CarnivorousPlant
+        case 1382: return { 0x28, 0.0f, 0.25f, 65.0f };  // Beholder    CAN_CAST_SPELLS+CAN_DODGE · 회복 0.25 · 도망 거리 65
+        default:   return {};
+    }
+}
+
 // ★ 09-29 B3 — 근접 때리기 함수·피해 종류·밀어내기·독 ⭕ monster.bin(`MELEE_STRIKE_FUNCTION` +236 · `MELEE_ATTACK_DAMAGE_TYPE` +124 ·
 //   `MELEE_ATTACK_IMPACT` +120 · `MELEE_ATTACK_POISON_CHANCE/STRENGTH/MAX` +136·+140·+144) — 위 `kMonsters` 열셋만.
 //   피해 종류 번호는 아래 18칸 표(8 BITE · 2 CRUSH · 4 DRAIN · 10 CLAW). NULL(Imp·EvilCherub·Beholder)은 근접을 못 한다(`532440` — 빠짐)
