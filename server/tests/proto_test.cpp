@@ -12016,6 +12016,13 @@ void TestAIRandomWalk() {
 //   · 대상이 있으면 그때를 적고 **근접 공격(16)** 을 올린다
 //   · 없으면 마지막 자리로 **가기(7)** 를 밀되, 아래에 **「보이는 적 없음(56)」** 조건을 깐다
 //   · 이미 그 자리(8 안)면 그냥 빠진다
+// ★ 09-29 B2 — 싸움 사슬 시험용 — 상대를 손으로 세울 때 몬스터 자체 시야 거리(+1312)를 넓힌다.
+//   싸움 시작(531E20)이 알아보기를 돌리는데, 시험의 상대는 400 밖이라 원본 거리(250+30)에서는 목록에서 빠진다(시험의 뜻은 사슬 모양)
+static void SetEnemySeen(nox::Server& srv, size_t i, const std::string& addr, int pet) {
+    srv.DebugSetPetSightRange(i, 1000.0f);
+    srv.DebugSetPetEnemy(i, addr, pet);
+}
+
 void TestAIFight() {
     const std::string a = "10.6.11.1:7101";
     const std::string b = "10.6.11.2:7102";
@@ -12062,7 +12069,7 @@ void TestAIFight() {
     {
         nox::Server srv; mkT(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
@@ -12086,7 +12093,7 @@ void TestAIFight() {
     {
         nox::Server srv; mk(srv);                             // 임프 — ImpShot · 사거리 150
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
@@ -12104,7 +12111,7 @@ void TestAIFight() {
     {
         nox::Server srv; mkT(srv, 1348);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
@@ -12118,7 +12125,7 @@ void TestAIFight() {
     {
         nox::Server srv; mkT(srv, 1337);                      // Fireball 200 · 근접 15
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetPos(0, 1350, 1000);                    // 적까지 50 — 200×0.5 = 100 안
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
@@ -12132,7 +12139,7 @@ void TestAIFight() {
     {
         nox::Server srv; mkT(srv, 1337);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetPos(0, 1000, 1000);                    // 적까지 400 — 100 밖
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
@@ -12142,7 +12149,7 @@ void TestAIFight() {
     {
         nox::Server srv; mkT(srv, 1337);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetPos(0, 1250, 1000);                    // 적까지 150
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
@@ -12152,21 +12159,25 @@ void TestAIFight() {
     {
         nox::Server srv; mkT(srv, 1337);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetPos(0, 1300, 1000);                    // 적까지 딱 100
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 3) == 17, "딱 절반인데 근접으로 갔다 — 경계가 < 다");
     }
 
-    // ③ **대상이 사라졌으면 빠진다**
+    // ③ **대상이 사라지면 알아보기가 지우고 마지막 자리로 간다**
+    //   ✖ 09-29 B2 정정 — 전에는 「빠진다」를 봤다. 정답지 싸움 시작(`531E20`)은 알아보기를 곧바로 돌리고, 알아보기는 사라진 것을
+    //     목록·지금 상대에서 지운다(`GAME4_2.c:7329~7338`) — 그래서 싸움은 「상대 없음」 갈래(마지막 자리로 가기)를 탄다.
+    //     「죽일 수 없으면 빠짐」(`:1840~1849`)은 알아보기와 같은 프레임에만 닿는다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetEnemy(0, "10.6.11.9:9999", -1);        // 없는 사람
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
-        Check(srv.DebugAIAction(0, 0) == 0, "대상이 사라졌는데 안 빠졌다");
+        Check(srv.DebugPetEnemy(0).empty() && srv.DebugAIAction(0, 1) == 56 && srv.DebugAIAction(0, 2) == 7,
+              "대상이 사라졌는데 알아보기가 안 지웠거나 마지막 자리로 안 갔다");
     }
 
     // ④ **대상이 없으면 마지막 자리로 가기(7)를 민다** — 아래에 조건 56 을 깐다
@@ -12185,8 +12196,9 @@ void TestAIFight() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetPos(0, 1400, 1000);                    // 마지막 자리에 서 있다
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        // ★ 09-29 B2 — 마지막 자리를 b(1400,1000) 에서 떨어뜨린다 — 싸움 시작이 ALERT(전방위)로 알아보기를 돌려 거기 선 b 를 알아본다
+        srv.DebugSetPetPos(0, 1000, 1600);                    // 마지막 자리에 서 있다
+        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1000, 1600);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "이미 그 자리인데 안 빠졌다");
     }
@@ -12245,7 +12257,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 0);                         // 쉬는 시간 없음
         srv.DebugAIPush(0, 16);
         srv.DebugAIStart(0, 16, out);
@@ -12258,7 +12270,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugAIPush(0, 16);
         uint32_t first = 0;
         bool differ = false;
@@ -12276,7 +12288,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 1100);                      // 아직 100틱 남았다
         srv.DebugAIPush(0, 16);
         srv.DebugAIStart(0, 16, out);
@@ -12290,7 +12302,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 1100);
         srv.DebugAIPush(0, 16);
         srv.DebugAIStart(0, 16, out);
@@ -12302,7 +12314,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 1000);                      // 지금이 딱 그 프레임
         srv.DebugAIPush(0, 16);
         srv.DebugAIStart(0, 16, out);
@@ -12314,7 +12326,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugAIPush(0, 16);
         uint32_t lo = 99999, hi = 0;
         for (int t = 0; t < 400; ++t) {
@@ -12332,7 +12344,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1328);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugAIPush(0, 16);
         const size_t n0 = out.size();
         srv.DebugAITick(0, out);
@@ -12354,7 +12366,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 0);
         const int hp0 = srv.HealthOf(b);
         srv.DebugAIPush(0, 16);
@@ -12369,7 +12381,7 @@ void TestAIMelee() {
         AllMetalButPlayer(srv);
         if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1358] = 1; srv.SetMonsterHitSounds(t); }
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 0);
         const int hp0 = srv.HealthOf(b);
         srv.DebugAIPush(0, 16);
@@ -12390,7 +12402,7 @@ void TestAIMelee() {
         srv.SetTypeBody(1328, body);
         srv.DebugSpawnPet(1328, 1010.0f, 1000.0f, std::string());   // 1 — 맵 몬스터(물릴 쪽)
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, std::string(), 1);
+        SetEnemySeen(srv, 0, std::string(), 1);
         srv.DebugSetPetNextHit(0, 0);
         const uint16_t hp0 = srv.DebugPetHealth(1);
         srv.DebugAIPush(0, 16);
@@ -12412,7 +12424,7 @@ void TestAIMelee() {
         { std::vector<nox::Server::SoundDefIn> sd(1); sd[0].id = bite; sd[0].samples = 1; sd[0].maxDist = 600; srv.SetSoundDefs(sd); }
         if (has) { std::vector<uint16_t> t(4096, 0); t[1358] = bite; srv.SetMonsterMeleeHitSoundIds(t); }
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 0);
         srv.DebugAIPush(0, 16);
         srv.DebugAITick(0, out);
@@ -12441,7 +12453,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1328);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugAIPush(0, 17);
         uint32_t lo = 99999, hi = 0;
         for (int t = 0; t < 400; ++t) {
@@ -12457,7 +12469,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1328);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 1100);
         srv.DebugAIPush(0, 17);
         srv.DebugAIStart(0, 17, out);
@@ -12469,7 +12481,7 @@ void TestAIMelee() {
     {
         nox::Server srv; mk(srv, 1358);                       // GiantLeech — 쏠 게 없다
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         srv.DebugAIPush(0, 17);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "쏠 게 없는데 안 빠졌다");
@@ -12478,7 +12490,7 @@ void TestAIMelee() {
         nox::Server srv; mk(srv, 1328);
         std::vector<nox::OutPacket> out;
         RegImpShot(srv);
-        srv.DebugSetPetEnemy(0, b, -1);
+        SetEnemySeen(srv, 0, b, -1);
         const size_t n0 = srv.missiles();
         srv.DebugAIPush(0, 17);
         srv.DebugAITick(0, out);
@@ -12638,6 +12650,9 @@ void TestAIEscort() {
         srv.DebugSetPetRunning(0, false);
         srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/1000, 0, 3000, 3000);
         srv.DebugAITick(0, out);                              // 싸움이 사슬을 쌓는다
+        // ★ 09-29 B2 — 싸움 시작 자체가 달리기를 켠다(`531E20` → `sub_534750`) — 가기의 갈아타기와 따로 본다: 끈 뒤에 가기가 다시 켜나
+        Check(srv.DebugPetRunning(0), "싸움 시작이 달리기를 안 켰다(`534750`)");
+        srv.DebugSetPetRunning(0, false);
         srv.DebugAITick(0, out);                              // 맨 위 가기를 굴린다
         Check(!srv.DebugPetRunning(0), "아래가 호위가 아닌데 뛰기로 갈아탔다");
     }
@@ -12741,7 +12756,8 @@ void TestCreatureOrder() {
         Check(srv.DebugAIStackInd(0) == 0 && srv.DebugAIAction(0, 0) == 0, "가만히가 놀기만 안 남겼다");
         uint32_t ms = 68;
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.DebugAIAction(0, 0) == 0, "틱이 명령을 덮어 호위로 되돌렸다");
+        // ★ 09-29 B2 — 가만히(성향 0.5)도 보이는 적(b 200 앞)이면 놀기가 싸움을 쌓는다(`AIActionIdle.Update` — 0.33~0.66) — 호위로만 안 되돌리면 된다
+        Check(srv.DebugAIAction(0, 0) != 3, "틱이 명령을 덮어 호위로 되돌렸다");
         Check(std::fabs(srv.DebugPetAggression(0) - 0.5f) < 0.001f, "사나움이 0.5 가 아니다");
     }
 
@@ -20291,6 +20307,89 @@ void TestMonsterSight() {
     std::printf("  09-29 B1 — 알아보기: 거리 250·640 · 앞쪽 부채꼴 · 280 까지 유지 · 발견 소리 2~4초 · 가장 가까운 적 · 순간이동 뒤 다시 훑기\n");
 }
 
+// ── 09-29 B2 — 놀기·되갚기·소리 넷·싸움 시작/끝(`unit_ai.go:537~670` · `Sub_545E60` · `531E20`·`531E90` · `5469B0`·`532800`) ─────────
+void TestMonsterIdleB2() {
+    const std::string a = "10.9.29.21:9321", b = "10.9.29.22:9322";
+    using B2 = nox::B2Stat;
+    auto run = [](nox::Server& srv, uint32_t& ms, int n) {
+        for (int t = 0; t < n; ++t) { ms += 34; std::vector<nox::OutPacket> o; srv.Tick(ms, o); }
+    };
+    // ① 등 뒤에서 맞으면 — 다침(INJURED) · 다침 소리(칸 15) · 되갚기가 때린 쪽으로 싸움 · 싸움 시작이 ALERT(전방위)·달리기 · 그래서 알아본다
+    {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1150, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugSetPetFacing(0, 128);                         // −x 를 봄 — a 는 등 뒤
+        run(srv, ms, 3);
+        Check(srv.DebugPetEnemy(0).empty() && !srv.DebugPetAlert(0), "① 전제 — 등 뒤인데 알아봤거나 벌써 ALERT");
+        std::vector<nox::OutPacket> o;
+        srv.DebugHurt(std::string(), 0, 5, a, 0, o);
+        Check(srv.b2Stat(B2::Injured) == 1, "① 맞았는데 INJURED 를 안 켰다");
+        run(srv, ms, 1);
+        Check(srv.monsterSnd(15, false) + srv.monsterSnd(15, true) == 1 && srv.b2Stat(B2::InjuredSound) == 1, "① 다침 소리(칸 15)를 한 번 안 불렀다");
+        Check(srv.b2Stat(B2::RetFight) == 1, "① 되갚기가 때린 쪽으로 싸움을 안 쌓았다");
+        run(srv, ms, 2);
+        Check(srv.b2Stat(B2::InjuredSound) == 1, "① INJURED 를 제 갱신 끝에 안 껐다(다침 소리를 또 불렀다)");
+        Check(srv.DebugPetAlert(0) && srv.DebugPetRunning(0) && srv.b2Stat(B2::FightStart) >= 1, "① 싸움 시작이 ALERT·달리기를 안 켰다");
+        Check(srv.DebugPetEnemy(0) == a, "① ALERT 인데 등 뒤의 때린 쪽을 못 알아봤다");
+        // 싸움을 끊으면(명령의 쌓임 비우기) 싸움 끝이 불려 ALERT·달리기가 꺼진다
+        srv.DebugAIClearStack(0);
+        Check(!srv.DebugPetAlert(0) && !srv.DebugPetRunning(0) && srv.b2Stat(B2::FightEnd) >= 1, "① 쌓임을 비웠는데 싸움 끝이 안 불렸다(ALERT 남음)");
+    }
+    // ② 들짐승 성향 0.5 · 소환수 0.83 · 놀기가 보이는 적으로 싸움을 쌓는다
+    {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1150, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugSpawnPet(1358, 3000, 3000, a);
+        Check(std::fabs(srv.DebugPetAggression(0) - 0.5f) < 1e-6f && std::fabs(srv.DebugPetAggression(1) - 0.83f) < 1e-6f,
+              "② 성향 기본이 들짐승 0.5 · 소환수 0.83 이 아니다");
+        run(srv, ms, 3);
+        Check(srv.b2Stat(B2::IdleFight) >= 1 && srv.DebugAIAction(0, 0) == 15, "② 놀기가 보이는 적으로 싸움을 안 쌓았다");
+    }
+    // ③ 놀 때 소리(칸 3) — 성향 ≤ 0.66 · 상대 없음 · 놀기 → 한 번 뒤 20~60초 · 마음대로 공격(> 0.66)이면 안 냄
+    for (int atWill = 0; atWill <= 1; ++atWill) {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 4000, 4000);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        if (atWill) srv.DebugSetPetAggression(0, 0.83f);
+        run(srv, ms, 100);
+        if (atWill) Check(srv.b2Stat(B2::IdleSound) == 0, "③ 마음대로 공격(0.83)인데 놀 때 소리를 냈다");
+        else        Check(srv.b2Stat(B2::IdleSound) == 1, "③ 놀 때 소리를 한 번(그 뒤 20초 이상 쉼) 안 냈다");
+    }
+    // ④ 도발(칸 1) — 적을 문 뒤 1초 · 2~4초에 한 번(그 사이 문 것은 조용)
+    {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1012, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        run(srv, ms, 20);                                         // 첫 무름은 3틱 안 · 1초(30프레임)가 안 지났다
+        Check(srv.hurts() >= 1 && srv.b2Stat(B2::Taunt) == 0, "④ 물고 1초가 안 지났는데 도발했다(또는 안 물었다)");
+        run(srv, ms, 130);
+        Check(srv.b2Stat(B2::Taunt) >= 1 && srv.b2Stat(B2::TauntQuiet) >= 1,
+              "④ 물고 1초 뒤 도발을 안 냈거나 쉬는 갈래(2~4초)가 안 돌았다 — 무는 간격 30~40 < 쉼 60");
+        Check(srv.monsterSnd(1, false) + srv.monsterSnd(1, true) == srv.b2Stat(B2::Taunt), "④ 도발 수와 칸 1 소리 수가 다르다");
+    }
+    // ⑤ 때린 쪽을 모르면(주인 없는 피해) — 되갚기는 떠돌기(41·56·10)를 쌓고 0 · 다쳤으니 때린 자리를 바라본다(25)
+    {
+        nox::Server srv; uint32_t ms = 0;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 4000, 4000);
+        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        run(srv, ms, 3);
+        std::vector<nox::OutPacket> o;
+        srv.DebugHurt(std::string(), 0, 5, std::string(), 12, o);
+        run(srv, ms, 1);
+        Check(srv.b2Stat(B2::RetRoam) == 1 && srv.b2Stat(B2::IdleLookDamager) == 1 && srv.b2Stat(B2::RetFight) == 0,
+              "⑤ 때린 쪽 없는 피해에 떠돌기·때린 자리 바라보기를 안 쌓았다");
+    }
+    (void)b;
+    std::printf("  09-29 B2 — 놀기·되갚기: 등 뒤 피해 → 다침 소리·되갚기 싸움·ALERT·달리기 · 쌓임 비우면 싸움 끝 · 성향 0.5/0.83 · 놀 때 소리 · 도발\n");
+}
+
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
 //   사람 판 09-28 「워리어가 컨저러를 볼 때 흰 티가 살색으로」 — 새로 온 쪽이 먼저 온 쪽의 평상복 색(수식)을 못 받았다
 void TestWornLooksForNewcomer() {
@@ -25440,6 +25539,7 @@ int main() {
     TestWallBreak();
     TestDoorLock();
     TestMonsterSight();
+    TestMonsterIdleB2();
     TestPickupAutoEquip();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

@@ -236,6 +236,26 @@ enum class SightStat : uint8_t {
 };
 constexpr size_t kSightStatCount = static_cast<size_t>(SightStat::Count);
 
+// ★ 09-29 B2 — 놀기·되갚기·소리 넷·싸움 시작/끝이 **무엇을 했나**
+enum class B2Stat : uint8_t {
+    Injured = 0,     // 피해 끝에 INJURED 를 켬(몬스터가 맞음)
+    InjuredSound,    // 다침 소리(칸 15)를 부름
+    Taunt,           // 도발 소리(칸 1)를 부름
+    TauntQuiet,      // 도발 때가 됐는데 2~4초 쉬는 중이라 안 부름
+    IdleSound,       // 놀 때 소리(칸 3)를 부름
+    IdleFight,       // 놀기 — 지금 상대로 싸움을 쌓음
+    IdleLookDamager, // 놀기 — 때린 자리를 바라봄
+    IdleFaceBack,    // 놀기 — 지난 자리를 바라봄
+    IdleStay,        // 놀기 — 그대로(치유는 B7)
+    RetFight,        // 되갚기 — 때린 쪽으로 싸움
+    RetNotEnemy,     // 되갚기 — 때린 쪽이 적이 아님(식충식물은 안 보임)
+    RetRoam,         // 되갚기 — 때린 쪽을 몰라 떠돌기
+    FightStart,      // 싸움 시작(칸 4 · ALERT·달리기 켬)
+    FightEnd,        // 싸움 끝(ALERT·달리기 끔)
+    Count
+};
+constexpr size_t kB2StatCount = static_cast<size_t>(B2Stat::Count);
+
 // ★ 09-23 3-a — 점프(CCJump 7)가 **어떻게 끝났나**(`object_update.go:550~571`). 들어옴 = 갈래 합
 enum class JumpGate : uint8_t {
     Ok = 0,        // 뛰었다 — 기력 90 · 떠 있음 · 상태 12
@@ -523,6 +543,15 @@ struct Creature {
     uint32_t sightRecheckFrame = 0; // +1212 보이는 목록을 시야선까지 다시 본 프레임(2초마다)
     uint32_t spotSoundFrame = 0;    // 갱신자료 +536 — 이 프레임이 지나야 발견 소리(RECOGNIZE)를 또 낸다
     uint16_t enemyNet = 0;          // +1196 지금 상대가 크리처면 그 번호(틱마다 `enemyPet` 자리 번호로 푼다)
+    // ★ 09-29 B2 — 놀기·되갚기·소리 넷·싸움 시작(`unit_ai.go:537~620` · `AIActionIdle` · `Sub_545E60` · `531E20`·`531E90`)
+    bool alert = false;             // StatusFlags ALERT(0x100) — 싸움 시작에 켜고 끝에 끈다(켜져 있으면 알아보기가 앞쪽 부채꼴을 안 본다)
+    bool injured = false;           // StatusFlags INJURED(0x200) — 피해 끝에 켜고(`GAME3_2.c:7237~7242`) 제 갱신 끝에 끈다(`unit_ai.go:608`)
+    SeenRef lastAttacker;           // 오브젝트 +520 Obj130 — 마지막으로 때린 쪽(주인 유닛으로 푼다)
+    float hitFromX = 0, hitFromY = 0;   // 오브젝트 +528 Pos132 — 때린 것의 지난 자리(`GAME3_2.c:7185~7212`)
+    uint32_t hitHandledFrame = 0;   // 갱신자료 +516 Field129 — 되갚기가 이미 본 피해 프레임
+    uint32_t tauntFrame = 0;        // 갱신자료 +520 Field130 — 적을 때린 프레임(`sub_532880`) · 1초 뒤 도발 소리
+    uint32_t tauntNext = 0;         // 갱신자료 +532 — 도발 소리 다음 때(2~4초)
+    uint32_t idleSoundNext = 0;     // 갱신자료 +528 — 놀 때 소리 다음 때(20~60초)
 };
 
 // 깃발 하나.
@@ -1661,6 +1690,9 @@ public:
     unsigned long long doorTouch(DoorTouch t) const { return t < DoorTouch::Count ? doorTouch_[static_cast<size_t>(t)] : 0; }
     unsigned long long berserkDoorLocked() const { return berserkDoorLocked_; }
     unsigned long long sightStat(SightStat s) const { return s < SightStat::Count ? sightStat_[static_cast<size_t>(s)] : 0; }   // ★ 09-29 B1
+    unsigned long long b2Stat(B2Stat s) const { return s < B2Stat::Count ? b2Stat_[static_cast<size_t>(s)] : 0; }               // ★ 09-29 B2
+    bool DebugPetAlert(size_t i) const { return i < pets_.size() && pets_[i].alert; }
+    void DebugAIClearStack(size_t i) { if (i < pets_.size()) AIClearStack(pets_[i]); }   // ★ 09-29 B2 — 명령이 쌓임을 비우는 자리(`ClearActionStack`)
     size_t DebugPetSeenCount(size_t i) const { return i < pets_.size() ? pets_[i].seen.size() : 0; }
     // 시험용 — 몬스터 자체 시야 거리(+1312 SightRange — 정답지는 스크립트 `SetSightRange`·명령 「지켜」가 바꾼다). 알아보기 거리 = max(250·640, 이것)
     void DebugSetPetSightRange(size_t i, float r) { if (i < pets_.size()) pets_[i].sightRange = r; }
@@ -2744,7 +2776,16 @@ public:
     }
     std::string DebugPetEnemy(size_t i) const { return i < pets_.size() ? pets_[i].enemyAddr : std::string(); }
     void DebugSetPetEnemy(size_t i, const std::string& addr, int pet) {
-        if (i < pets_.size()) { pets_[i].enemyAddr = addr; pets_[i].enemyPet = pet; }
+        if (i < pets_.size()) {
+            Creature& k = pets_[i];
+            k.enemyAddr = addr; k.enemyPet = pet;
+            k.enemyNet = (addr.empty() && pet >= 0 && static_cast<size_t>(pet) < pets_.size()) ? pets_[static_cast<size_t>(pet)].netCode : 0;
+            // ★ 09-29 B1·B2 — 정답지 지금 상대는 늘 보이는 목록에서 나온다 — 목록에도 넣어 알아보기가 다시 고를 때 남게 한다
+            Creature::SeenRef r; r.addr = addr; r.petNet = k.enemyNet;
+            bool have = false;
+            for (const auto& s : k.seen) if ((!addr.empty() && s.addr == addr) || (addr.empty() && s.petNet == r.petNet)) have = true;
+            if (!have && (!addr.empty() || r.petNet != 0)) k.seen.push_back(r);
+        }
     }
     bool DebugCreatureTickMove(size_t i, double tx, double ty) {
         return i < pets_.size() ? CreatureTickMove(pets_[i], tx, ty) : false;
@@ -4233,6 +4274,12 @@ private:
     void SightLose(Creature& k, size_t i, SightStat why);
     void SightSeeEnemy(Creature& k, const Target& t);
     void SightPickEnemy(Creature& k);
+    // ★ 09-29 B2 — 놀기·되갚기·소리 넷(Server.cpp 「B2」 절)
+    void NoteMonsterStruck(const AttackSrc* src);
+    void MonsterHeadUpdate(Creature& k);
+    bool MonsterLookAtDamager(Creature& k);
+    int  MonsterRetaliate(Creature& k);
+    void MonsterIdleUpdate(Creature& k);
     void SendGold(Session& s, std::vector<OutPacket>& out);
     // 묶음 7-a — 경험치 알림·주기·레벨 오름
     // 묶음 7-d — 능력(0xCD·0xCE·0xCF·0xEB)
@@ -5063,6 +5110,7 @@ private:
     size_t doorCellDiff_ = 0, doorCellOldHadWall_ = 0, doorCellNewHadWall_ = 0;
     // ★ 09-29 B1 알아보기
     unsigned long long sightStat_[kSightStatCount] = {};
+    unsigned long long b2Stat_[kB2StatCount] = {};   // ★ 09-29 B2
     uint32_t sightForceFrame_ = 0xFFFFFFFFu;   // dword_5d4594_2487684 — 이 프레임엔 모든 몬스터가 다시 훑는다(순간이동·살금살금 켜기 다음 프레임)
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
     std::map<uint16_t, PhysBody> typeBodies_;   // 소환수 종류 → 몸

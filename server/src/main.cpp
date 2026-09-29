@@ -268,6 +268,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.sightStat(SS::Cone), srv.sightStat(SS::Los), srv.sightStat(SS::FullFar), srv.sightStat(SS::Added),
                     srv.sightStat(SS::LostGone), srv.sightStat(SS::LostCantSee), srv.sightStat(SS::LostFar), srv.sightStat(SS::LostMoved),
                     srv.sightStat(SS::LostRecheck), srv.sightStat(SS::LostReplaced), srv.sightStat(SS::Spot));
+        using B2 = nox::B2Stat;   // ★ 09-29 B2 — 놀기·되갚기·소리
+        std::printf("[몬스터놀기] 맞음 %llu(다침소리 %llu) · 도발 %llu(쉼 %llu) · 놀때소리 %llu · 놀기{싸움 %llu·때린데봄 %llu·지난데봄 %llu·그대로 %llu} · "
+                    "되갚기{싸움 %llu·적아님 %llu·떠돌기 %llu} · 싸움 시작 %llu · 끝 %llu\n",
+                    srv.b2Stat(B2::Injured), srv.b2Stat(B2::InjuredSound), srv.b2Stat(B2::Taunt), srv.b2Stat(B2::TauntQuiet), srv.b2Stat(B2::IdleSound),
+                    srv.b2Stat(B2::IdleFight), srv.b2Stat(B2::IdleLookDamager), srv.b2Stat(B2::IdleFaceBack), srv.b2Stat(B2::IdleStay),
+                    srv.b2Stat(B2::RetFight), srv.b2Stat(B2::RetNotEnemy), srv.b2Stat(B2::RetRoam), srv.b2Stat(B2::FightStart), srv.b2Stat(B2::FightEnd));
     }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
     std::printf("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",

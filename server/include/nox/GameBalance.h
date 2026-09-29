@@ -595,6 +595,9 @@ struct QuestStage {
     uint16_t monster;         // 와이어 종류 번호 (kMonsters)
     int count;                // 이 스테이지에 세우는 마릿수
 };
+// ★ 09-29 B2 — 식충식물 와이어 번호(위 `kMonsters` 표 · 정답지 `s.IsPlant`) — 되갚기가 다르게 간다(`server/object_ai.go:191~195`)
+constexpr uint16_t kCarnivorousPlantType = 1371;
+
 constexpr QuestStage kQuestStages[] = {
     { "Stage 1: Leeches",  1358, 2 },   // GiantLeech 체력 60
     { "Stage 2: Spiders",  1355, 3 },   // AlbinoSpider 체력 60·피해 15

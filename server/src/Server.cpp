@@ -1414,6 +1414,7 @@ bool Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
         //   정답지 `GAME3_2.c:7229~7233` 은 **a3 가 없으면 a2**(때린 이)를 넣는다 —
         //   그 자리가 `Damage` 의 else 가지(`cls = 1 · player = by`)다
         ++damageStops_["사람갈래끝→Damage"];
+        NoteMonsterStruck(src);                            // ★ 09-29 B2 — `sub_532880`(`GAME3_2.c:7301~7315`) — 사람을 때린 몬스터의 도발 시계
         Damage(t.addr, hp, out, by, src ? &hit : nullptr);   // unitDamageClear_4EE5E0
         return true;                                       // `:7330` 1
     }
@@ -1468,6 +1469,20 @@ bool Server::HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
     DamageVampirism(attacker, t, amount, out);             // 흡혈(13)
     // ⚠ 마법 방패(26) 줄이기(4-d) · 몬스터 원한(7)
     k.lastDamageFrame = frame_;                            // +536(`GAME3_2.c:7236` — 몬스터도 같은 자리)
+    // ★ 09-29 B2 — 같은 자리(`:7229~7246`) — +520 마지막 때린 쪽(주인 유닛으로 푼다) · +528 때린 것의 지난 자리 · 몬스터면 INJURED(0x200)
+    //   · 때린 것 자리 — 발사체 등 때린 것(a3)이 있으면 그 지난 자리(`src`) · 없으면 때린 이 자리 · 둘 다 없으면 (0,0)(`:7185~7212`)
+    k.injured = true;
+    k.lastAttacker = Creature::SeenRef{};
+    if (!attacker.addr.empty()) k.lastAttacker.addr = attacker.addr;
+    else if (attacker.pet >= 0 && static_cast<size_t>(attacker.pet) < pets_.size()) k.lastAttacker.petNet = pets_[static_cast<size_t>(attacker.pet)].netCode;
+    {
+        float fx = 0, fy = 0;
+        if (src) { fx = src->x; fy = src->y; }
+        else if (!TargetXY(attacker, fx, fy)) { fx = 0; fy = 0; }
+        k.hitFromX = fx; k.hitFromY = fy;
+    }
+    ++b2Stat_[static_cast<size_t>(B2Stat::Injured)];
+    NoteMonsterStruck(src);                                // `sub_532880`(`:7301~7315`) — 때린 몬스터의 도발 시계
     // unitDamageClear_4EE5E0
     if (k.health > amount) {
         k.health = static_cast<uint16_t>(k.health - amount);
@@ -1846,6 +1861,7 @@ void Server::SpawnQuestStage(std::vector<OutPacket>* out) {
         const double ang = 2.0 * 3.14159265358979 * i / (n > 0 ? n : 1);
         Creature k;
         k.owner.clear();                 // 주인이 없다 — 아무 편도 아니다
+        k.aggression = 0.5f;             // ★ 09-29 B2 — 맵 몬스터 공격 성향 기본(objectMonsterInit unit_monster.go:124) · 소환수는 따라와 명령의 0.83
         k.type = st.monster;
         k.netCode = nextShotNetCode_++;
         if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
@@ -8222,6 +8238,9 @@ void Server::EnactUnitOrder(Session& src, Creature& k, uint8_t order) {
 }
 
 void Server::AIClearStack(Creature& k) {
+    // ★ 09-29 B2 — 정답지 `ClearActionStack`(`server/object_ai.go:64~70`)은 「비고 놀기만 남음」이 될 때까지 **빼기**를 되풀이한다 —
+    //   시작한 행동마다 끝(End)이 불린다(싸움 끝이 ALERT·달리기를 끈다). 전에는 통째로 지워서 명령이 싸움을 끊어도 ALERT 가 남을 뻔했다
+    for (int guard = 0; guard <= Creature::kAIStackMax && !(k.aiStackInd == 0 && k.aiStack[0].action == 0); ++guard) AIPop(k);
     for (int i = 0; i < Creature::kAIStackMax; ++i) k.aiStack[i] = Creature::AIStackItem{};
     k.aiStackInd = 0;
     k.path.clear();
@@ -10799,6 +10818,18 @@ void Server::CreatureApplyVelocity(Creature& k) {
 void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
     (void)out;
     switch (act) {
+        case 15: {   // ★ 09-29 B2 — 싸움 시작 `nox_xxx_mobActionFightStart_531E20`(`GAME4_3.c:1791~1808`)
+            //   교전 소리(+20 = 칸 4) · ALERT(0x100 — 전방위 시야) · 이 프레임 모두 다시 훑기(`frameCounterSetCopy_5281E0`) · 곧바로 알아보기 ·
+            //   달리기(`sub_534750` — NEVER_RUN 이 아니면 0x4000 · 우리 몬스터 중 NEVER_RUN 없음 — monster.bin 에 Troll 뿐)
+            //   ⚠ 스크립트 사건 13(교전) 안 옮김
+            MonsterSound(k, 4);
+            k.alert = true;
+            sightForceFrame_ = frame_;
+            UpdateSight(k);
+            k.running = true;
+            ++b2Stat_[static_cast<size_t>(B2Stat::FightStart)];
+            break;
+        }
         case 17: {   // ── 묶음 6-g(3) 쏘기 시작 — `sub_532540`(`legacy/GAME4_3.c:2119`)
             // 근접과 **같은 꼴**이다 — 쉬는 시간(+512)이 끝났으면 휘두르기를 시작하고
             // 다음 때를 **쏘기 간격**(`monsterDef+220`·`+224`)으로 잡는다.
@@ -10873,6 +10904,9 @@ bool Server::AIFacePoint(Creature& k, float tx, float ty) {
 void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
     Creature::AIStackItem& st = k.aiStack[k.aiStackInd];
     switch (act) {
+        case 0:      // ★ 09-29 B2 — 놀기(`AIActionIdle.Update` `unit_ai.go:637~670`)
+            MonsterIdleUpdate(k);
+            break;
         case 25:     // 자리를 바라보기(`sub_545210`) — 인자로 받은 점
             if (AIFacePoint(k, st.argX, st.argY)) AIPop(k);
             break;
@@ -11206,7 +11240,15 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
 }
 
 // 끝내기 — 넷 다 아무 일도 안 한다(정답지 `End(_ *Object) {}`).
-void Server::AIEnd(Creature& k, uint8_t act) { (void)k; (void)act; }
+void Server::AIEnd(Creature& k, uint8_t act) {
+    // ★ 09-29 B2 — 싸움 끝 `sub_531E90`(`GAME4_3.c:1811~1820`) — ALERT 끄기 · 달리기 끄기(`sub_534780` — ALWAYS_RUN 이 아니면 · 우리 몬스터에 없음).
+    //   싸움에는 취소 함수가 없다(`legacy/unit_ai.go:50`) — 위에 무엇을 쌓아도 ALERT 는 남는다
+    if (act == 15) {
+        k.alert = false;
+        k.running = false;
+        ++b2Stat_[static_cast<size_t>(B2Stat::FightEnd)];
+    }
+}
 
 // 취소 — ★ **기다리기 둘만** 스스로 빠진다(`Cancel` 이 `MonsterPopAction`).
 //   변신·떨구기·찾기는 취소돼도 가만히 있는다.
@@ -11256,6 +11298,18 @@ void Server::AIProcDeps(Creature& k, std::vector<OutPacket>& out) {
                 continue;
             case 41: ok = st.argU32 > frame_; break;         // 때 — 그 프레임 전까지만
             case 42: ok = hasT && TargetHealth(targ) > 0; break;               // 살아 있나
+            case 43: {                                                          // ★ 09-29 B2 — 맞는 중(`unit_ai.go:75~84`)
+                // 다쳤고 때린 쪽이 유닛이면 인자를 지금으로 고친다 · 참 = 인자 뒤 10초 안
+                Target att;
+                if (k.injured && SightResolve(k.lastAttacker, att)) st.argU32 = frame_;
+                ok = frame_ - st.argU32 <= static_cast<uint32_t>(10 * kServerTickRate);
+                break;
+            }
+            case 44: {                                                          // ★ 09-29 B2 — 안 맞는 중(`unit_ai.go:85~98`) — 다쳤고 때린 쪽이 유닛이면 거짓
+                Target att;
+                ok = !(k.injured && SightResolve(k.lastAttacker, att));
+                break;
+            }
             case 45: ok = hasT && CanInteractFrom(k, targ); break;             // 보이나
             case 46: ok = !(hasT && CanInteractFrom(k, targ)); break;          // 안 보이나
             case 47: {                                                          // 쏠 줄이 막혔나
@@ -11530,7 +11584,8 @@ void Server::UpdateSight(Creature& k) {
                 }
             const double dx = tx - k.x, dy = ty - k.y;
             const double len = std::sqrt(dx * dx + dy * dy) + 0.001;
-            if (dy / len * DirVecY(k.facing) + dx / len * DirVecX(k.facing) < 0.5) { ++sightStat_[static_cast<size_t>(SightStat::Cone)]; return; }
+            // ★ 09-29 B2 — ALERT(싸움 중)면 부채꼴을 안 본다(`:7487` `v5 & 0x100 ||`)
+            if (!k.alert && dy / len * DirVecY(k.facing) + dx / len * DirVecX(k.facing) < 0.5) { ++sightStat_[static_cast<size_t>(SightStat::Cone)]; return; }
             if (!CanInteractFrom(k, t)) { ++sightStat_[static_cast<size_t>(SightStat::Los)]; return; }
             SightSeeEnemy(k, t);
         };
@@ -11560,6 +11615,117 @@ void Server::UpdateSight(Creature& k) {
     k.enemyPet = -1;
     if (k.enemyAddr.empty() && k.enemyNet != 0)
         for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == k.enemyNet) { k.enemyPet = static_cast<int>(i); break; }
+}
+
+// ── ★ 09-29 B2 놀기·되갚기·소리 넷 ─────────────────────────────────────
+//
+// 몬스터 한 틱 앞머리(`nox_xxx_unitUpdateMonster_50A5C0` `unit_ai.go:557~573`) — 살았으면:
+//   ① INJURED(0x200)면 다침 소리(소리 모음 +64 = 칸 15) ② 적을 때린 지(+520) 1초가 지났으면 도발(`532800` — +8 = 칸 1 · 2~4초에 한 번) 뒤 +520 비움
+//   ③ 놀 때 소리(`mobAction_5469B0` — 마음대로 공격 아님(성향 ≤ 0.66) · 지금 상대 없음 · 가까운 적 거리(+524) ≤ 300 · 맨 위가 놀기 0 이나 지키기 4 ·
+//      +528 이 지남 → 다음 20~60초 · +16 = 칸 3). +524 는 온라인에서 알아보기가 안 적어 0 이다(`GAME4_2.c:7370~7386` — 오프라인 갈래만 적음)
+//   ⚠ 스크립트 사건(다침 · 놀기 중 적 찾기) · 체력 차기(`monsterRegenerateHP` — 우리 몬스터는 차는 값이 없다)는 안 옮겼다
+void Server::NoteMonsterStruck(const AttackSrc* src) {
+    if (!src || src->byPet < 0 || static_cast<size_t>(src->byPet) >= pets_.size()) return;
+    Creature& m = pets_[static_cast<size_t>(src->byPet)];
+    if (m.tauntFrame == 0) m.tauntFrame = frame_;       // `sub_532880` — 비었을 때만
+}
+
+void Server::MonsterHeadUpdate(Creature& k) {
+    if (k.health == 0) return;                                            // `:557` 죽음·사라짐이 아니면
+    if (k.injured) { MonsterSound(k, 15); ++b2Stat_[static_cast<size_t>(B2Stat::InjuredSound)]; }   // `:558~567` +64
+    if (k.tauntFrame != 0 && frame_ - k.tauntFrame >= static_cast<uint32_t>(kServerTickRate)) {    // `:568~571` 1초
+        if (frame_ >= k.tauntNext) {                                                               // `532800` +532
+            k.tauntNext = frame_ + static_cast<uint32_t>(2 * kServerTickRate) + NextRandom(static_cast<uint32_t>(2 * kServerTickRate + 1));
+            MonsterSound(k, 1);                                                                    // +8
+            ++b2Stat_[static_cast<size_t>(B2Stat::Taunt)];
+        } else {
+            ++b2Stat_[static_cast<size_t>(B2Stat::TauntQuiet)];
+        }
+        k.tauntFrame = 0;
+    }
+    // `mobAction_5469B0`
+    const bool atWill = k.aggression > 0.66000003f;
+    const bool noEnemy = k.enemyAddr.empty() && k.enemyNet == 0;
+    const uint8_t top = k.aiStack[k.aiStackInd].action;                   // `mobActionGet_50A020` — 맨 위(조건도 그대로)
+    if (!atWill && noEnemy && (top == 0 || top == 4) && frame_ >= k.idleSoundNext) {
+        k.idleSoundNext = frame_ + static_cast<uint32_t>(20 * kServerTickRate) + NextRandom(static_cast<uint32_t>(40 * kServerTickRate + 1));
+        MonsterSound(k, 3);                                                                        // +16
+        ++b2Stat_[static_cast<size_t>(B2Stat::IdleSound)];
+    }
+}
+
+// `MonsterLookAtDamager`(`server/object_ai.go:160~166`) — 다쳤으면 때린 것의 자리를 바라본다(25)
+bool Server::MonsterLookAtDamager(Creature& k) {
+    if (!k.injured) return false;
+    if (AIPush(k, 25)) { k.aiStack[k.aiStackInd].argX = k.hitFromX; k.aiStack[k.aiStackInd].argY = k.hitFromY; }
+    return true;
+}
+
+// 되갚기 `Sub_545E60`(`server/object_ai.go:176~219`) — 10초 안에 맞았고 아직 안 본 피해면:
+//   때린 쪽(주인 유닛)이 있으면 — 적이 아니면 0 · 적이면 조건 43(맞는 중) · 싸움(그 자리) · 안 보이면 조건 56·(마음대로 공격이면 59)·가기(7 그 자리) → 1
+//     (식충식물은 안 보이면 0 · 보이면 조건 63(적이 SightRange × 1.05 안) — 43 대신)
+//   때린 쪽이 없으면 — 떠돌기(10)가 없을 때만 조건 41(5초)·56·(59)·떠돌기 → 0
+int Server::MonsterRetaliate(Creature& k) {
+    const uint32_t ts = k.lastDamageFrame;
+    if (k.hitHandledFrame >= ts || frame_ - ts >= static_cast<uint32_t>(10 * kServerTickRate)) return 0;
+    k.hitHandledFrame = ts;
+    const bool atWill = k.aggression > 0.66000003f;
+    Target att;
+    if (SightResolve(k.lastAttacker, att) && !TargetDeadOrGone(att)) {
+        if (!CreatureEnemyTo(k, att)) { ++b2Stat_[static_cast<size_t>(B2Stat::RetNotEnemy)]; return 0; }
+        float ax = 0, ay = 0;
+        TargetXY(att, ax, ay);
+        const bool can = CanInteractFrom(k, att);
+        if (k.type == kCarnivorousPlantType) {
+            if (!can) { ++b2Stat_[static_cast<size_t>(B2Stat::RetNotEnemy)]; return 0; }
+            if (AIPush(k, 63)) k.aiStack[k.aiStackInd].argF = k.sightRange * 1.05f;
+        } else if (AIPush(k, 43)) {
+            k.aiStack[k.aiStackInd].argU32 = frame_;
+        }
+        if (AIPush(k, 15)) { k.aiStack[k.aiStackInd].argX = ax; k.aiStack[k.aiStackInd].argY = ay; k.aiStack[k.aiStackInd].argU32 = frame_; }
+        if (!can) {
+            AIPush(k, 56);
+            if (atWill) AIPush(k, 59);
+            if (AIPush(k, 7)) { k.aiStack[k.aiStackInd].argX = ax; k.aiStack[k.aiStackInd].argY = ay; k.aiStack[k.aiStackInd].argU32 = 0; }
+        }
+        ++b2Stat_[static_cast<size_t>(B2Stat::RetFight)];
+        return 1;
+    }
+    if (!AIHasAction(k, 10)) {
+        if (AIPush(k, 41)) k.aiStack[k.aiStackInd].argU32 = frame_ + static_cast<uint32_t>(5 * kServerTickRate);
+        AIPush(k, 56);
+        if (atWill) AIPush(k, 59);
+        AIPush(k, 10);                                        // 떠돌기(길목 0 = 새로 고름 · 정답지 인자 0,0,−128)
+        ++b2Stat_[static_cast<size_t>(B2Stat::RetRoam)];
+    }
+    return 0;
+}
+
+// 놀기 `AIActionIdle.Update`(`unit_ai.go:637~670`)
+//   성향이 가운데(0.33~0.66)이거나 마음대로 공격(> 0.66)이면 — 지금 상대가 있으면 싸움(그 자리) · 들은 소리가 있으면(`Sub_5466F0` — B6) 그쪽
+//   성향 < 0.08 이거나 되갚기가 0 이면 — 다쳤으면 때린 자리 바라보기 · 아니면 행동 바꾼 지 0.5초 안이거나 안 움직였으면 치유(B7) · 그 밖에는 지난 자리 바라보기(25)
+void Server::MonsterIdleUpdate(Creature& k) {
+    const bool mid = k.aggression < 0.66000003f && k.aggression > 0.33000001f;   // `Sub_5343C0`
+    const bool atWill = k.aggression > 0.66000003f;                              // `534390`
+    if (mid || atWill) {
+        const Target e{ k.enemyAddr, k.enemyPet };
+        float ex = 0, ey = 0;
+        if (!e.none() && TargetXY(e, ex, ey)) {
+            if (AIPush(k, 15)) { k.aiStack[k.aiStackInd].argX = ex; k.aiStack[k.aiStackInd].argY = ey; k.aiStack[k.aiStackInd].argU32 = frame_; }
+            ++b2Stat_[static_cast<size_t>(B2Stat::IdleFight)];
+            return;
+        }
+        // `Sub_5466F0` — 들은 소리(+388)가 3초 안이면 그쪽으로 — 듣기(B6)가 아직 없어 늘 0
+    }
+    if (k.aggression < 0.079999998f || MonsterRetaliate(k) == 0) {              // `Sub_534440` || `Sub_545E60() == 0`
+        if (MonsterLookAtDamager(k)) { ++b2Stat_[static_cast<size_t>(B2Stat::IdleLookDamager)]; return; }
+        if (frame_ - k.aiActionFrame <= static_cast<uint32_t>(kServerTickRate / 2) || (k.x == k.prevX && k.y == k.prevY)) {
+            ++b2Stat_[static_cast<size_t>(B2Stat::IdleStay)];                    // `mobHealSomeone_5411A0` — 치유 주문(B7)
+        } else {
+            if (AIPush(k, 25)) { k.aiStack[k.aiStackInd].argX = static_cast<float>(k.prevX); k.aiStack[k.aiStackInd].argY = static_cast<float>(k.prevY); }
+            ++b2Stat_[static_cast<size_t>(B2Stat::IdleFaceBack)];
+        }
+    }
 }
 
 // ── 묶음 5-h 금 ───────────────────────────────────────────────────────
@@ -12499,6 +12665,7 @@ void Server::SpawnCreature(uint16_t type, float x, float y, const std::string& o
     if (type == 0) return;
     Creature k;
     k.owner = owner;
+    if (owner.empty()) k.aggression = 0.5f;   // ★ 09-29 B2 — 맵 몬스터 공격 성향 기본(unit_monster.go:124)
     k.type = type;
     k.netCode = nextShotNetCode_++;
     if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
@@ -15126,6 +15293,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (!kv.second.inGame) continue;
             Creature k;
             k.owner = debugPetWild_ ? std::string() : kv.second.addr;   // --debug-dummy 면 주인 없음(적)
+            if (k.owner.empty()) k.aggression = 0.5f;                  // ★ 09-29 B2 — 맵 몬스터 공격 성향 기본
             k.type = SummonType(87);   // SUMMON_IMP → Imp
             k.netCode = nextShotNetCode_++;
             if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
@@ -15412,7 +15580,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             // ★★ 09-29 B1 — **지금 상대는 알아보기(`UpdateSight`)가 정한다** — 거리 250(퀘스트 640) · 앞쪽 부채꼴 · 시야선으로 목록에 넣고,
             //   목록 중 가장 가까운 적. 한번 본 것은 (거리+30) 안에서 보이는 동안 남는다(시야선은 2초마다 다시 봄).
             //   ✖ 전에는 거리 제한 없이 가장 가까운 적(`NearestTarget(…, 1e9)`)을 매 틱 골랐다 — 멀리서도 · 등 뒤도 알아봤다(09-28 사람 판 박쥐)
-            //   쌓기는 아직 대체 두뇌다(B2 가 놀기 0 으로 바꾼다) — **지금 보일 때만** 쌓는다(09-28 잣대 — 조건 45 와 어긋나면 사슬이 매 틱 무너진다)
+            //   ★ 09-29 B2 — 주인 없는 것은 놀기(0) 갱신이 지금 상대(안 보여도)로 싸움을 쌓는다 · 아래는 주인 있는 것의 호위 대체(소환 기본 명령)만 남았다
+            // ★ 09-29 B2 — 몬스터 한 틱 앞머리(unit_ai.go:557~573) — 다침 소리 · 도발 · 놀 때 소리(알아보기 앞)
+            MonsterHeadUpdate(k);
             if (debugNoAutoFight_) { k.enemyAddr.clear(); k.enemyNet = 0; k.enemyPet = -1; }
             else UpdateSight(k);
             Target t; t.addr = k.enemyAddr; t.pet = k.enemyPet;
@@ -15429,14 +15599,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 //     주인이 없는 것(퀘스트 몬스터)은 호위가 스스로 빠지므로 **싸움을 바로 쌓는다**
                 //   ⚠ **사람이 명령을 준 것은 안 덮는다**(6-i) — 「가만히」가 바닥에 놀기를 남기므로
                 //     이 관문이 없으면 다음 틱에 호위로 되돌아가 명령이 안 선다
+                // ★ 09-29 B2 — 주인 없는 것의 싸움 쌓기는 놀기(0) 갱신이 한다(AIActionIdle.Update → MonsterIdleUpdate) — 여기서는 호위만
                 if (!k.ordered && k.aiStackInd == 0 && k.aiStack[0].action == 0) {
-                    if (!k.owner.empty()) {
-                        AIPush(k, 3);
-                    } else if (AIPush(k, 15)) {
-                        k.aiStack[k.aiStackInd].argX = sx;          // 마지막으로 본 자리
-                        k.aiStack[k.aiStackInd].argY = sy;
-                        k.aiStack[k.aiStackInd].argU32 = frame_;    // 마지막 소식 때
-                    }
+                    if (!k.owner.empty()) AIPush(k, 3);
                 } else {
                     // ★ **보이는 동안에는 「마지막으로 본 자리」를 계속 고쳐 적는다.**
                     //   정답지는 알아보기 쪽이 이 자리를 갱신한다. 안 고치면 적이 옮겨가도
@@ -15456,6 +15621,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (pets_.size() != before) break;
             AITick(k, out);
             if (pets_.size() != before) break;
+            k.injured = false;                                 // ★ 09-29 B2 — INJURED 는 제 갱신 끝에 끈다(unit_ai.go:608)
             // ★ 09-29 B1 — 지난 자리(+72 PrevPos)는 **옮기기 직전 자리**다(`server.go:163` — 정답지는 이동 적분마다 적는다).
             //   ✖ 전에는 크리처에서 한 번도 안 적었다(시험만 세움) — 조건 71(안 움직였나)이 (0,0) 과 견줬고, 알아보기의 「순간이동」 검사가 늘 참이 될 뻔했다
             k.prevX = k.x; k.prevY = k.y;
