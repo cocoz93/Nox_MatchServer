@@ -65,7 +65,25 @@ int main(int argc, char** argv) {
     std::map<int, long long> stopOps;
     long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0, partSend = 0, partRecv = 0, updUnread = 0, padTail = 0;  // ★ 멈춘 자리도 센다
 
+    static char buf2[65536];
     while (std::fgets(buf, sizeof(buf), f)) {
+        // ★ 09-28 — 중계기(`nox_proxy --dump`) 기록도 읽는다. 짜임이 두 줄이다 —
+        //     `HH:MM:SS.mmm C->S <상대> len=N op=0x.. 이름` / `  <16진 바이트>` (C->S = 클라→서버 · S->C = 서버→클라)
+        //   전에는 이 짜임을 몰라 **조각 0** 으로 읽혔다(09-28 정품 녹음 `orig_arena_1851`). 한 줄 꼴(`SEND/RECV … | …`)로 바꿔 넘긴다
+        {
+            const char* cs = std::strstr(buf, " C->S ");
+            const char* sc = cs ? nullptr : std::strstr(buf, " S->C ");
+            const char* lenAt = std::strstr(buf, " len=");
+            if ((cs || sc) && lenAt && buf[2] == ':' && std::fgets(buf2, sizeof(buf2), f)) {
+                const char* dirAt = cs ? cs : sc;
+                std::string one(buf, 12);
+                one += cs ? " RECV " : " SEND ";
+                one.append(dirAt + 6, lenAt - (dirAt + 6));
+                one += " len=" + std::to_string(std::atoi(lenAt + 5)) + " | ";
+                one += buf2;
+                std::snprintf(buf, sizeof(buf), "%s", one.c_str());
+            }
+        }
         if (!nox::dump::ParseLine(buf, ln)) continue;
         std::vector<uint8_t> d = ln.data;
         if (d.size() < 3) continue;
@@ -142,6 +160,13 @@ int main(int argc, char** argv) {
                     if (inner >= 1) {
                         const int iop = b[q + 4];
                         if (send) ++sendOps[iop]; else ++recvOps[iop];
+                        // ★ 09-28 — 껍데기 목록 속 메시지도 찾으면 찍는다(`cc` 하나짜리만 찍고 이쪽은 세기만 했다)
+                        if (want.count(iop)) {
+                            std::printf("  ★속 %s %s %s op=0x%02x(0xaa 목록 속) | ", ln.time.c_str(), ln.dir.c_str(),
+                                        ln.peer.c_str(), iop);
+                            for (size_t i = 0; i < inner && i < 16; ++i) std::printf("%02x ", b[q + 4 + i]);
+                            std::printf("\n");
+                        }
                     }
                     q += 4 + inner;
                     sane = true;
@@ -235,8 +260,8 @@ int main(int argc, char** argv) {
                         seqLine += t;
                     }
                     if (want.count(iop)) {
-                        std::printf("  ★속 %s %s op=0x%02x(껍데기 0xcc 안) | ",
-                                    ln.dir.c_str(), ln.peer.c_str(), iop);
+                        std::printf("  ★속 %s %s %s op=0x%02x(껍데기 0xcc 안) | ",
+                                    ln.time.c_str(), ln.dir.c_str(), ln.peer.c_str(), iop);
                         for (int i = 0; i < innerLen && i < 16; ++i) std::printf("%02x ", ib[3 + i]);
                         std::printf("\n");
                     }
@@ -245,7 +270,7 @@ int main(int argc, char** argv) {
             if (want.count(op)) {
                 // ★ 조각 앞부분이 아니라 **그 메시지의 본문**을 찍는다.
                 //   앞부분만 찍으면 뒤에 붙은 메시지는 영영 안 보인다(2026-09-08).
-                std::printf("  ★ %s %s op=0x%02x 본문%d바이트 자리%zu/%zu | ", ln.dir.c_str(),
+                std::printf("  ★ %s %s %s op=0x%02x 본문%d바이트 자리%zu/%zu | ", ln.time.c_str(), ln.dir.c_str(),
                             ln.peer.c_str(), op, bl, eaten, bodyAll);
                 for (int i = 0; i < bl && i < 32; ++i)
                     std::printf("%02x ", b[eaten + 1 + i]);
