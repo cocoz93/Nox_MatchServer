@@ -2994,6 +2994,52 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     }
                 }
 
+                // ★ 09-29 — 화살통 줍기(`nox_xxx_pickupAmmo_4F3B00` `GAME3_3.c:10831~10903`) — 비트 0x82(화살통·수리검)면 가방에서
+                //   같은 종류 · WEAPON · 같은 비트 · 수식 넷이 같고 · 무한 아님 · 최대 합 ≤ 250 인 첫 것에 **합친다**(화살 수·최대를 더함) →
+                //   그것의 충전 알림 · 바닥 것은 지움 · 줍는 소리(`53A6C0`). 합칠 것이 없으면 무기 줍기(`sub_53A720`)로 — 아래 무기 갈래
+                //   ⚠ 합칠 때는 무게·개수 관문(`pickupDefault`)을 안 탄다 — 정답지 그대로
+                if (w.pickupFn == PickupFn::Ammo && (w.equipBit & 0x82)) {
+                    Session::Carried* into = nullptr;
+                    for (size_t k = s.inventory.size(); k-- > 0;) {
+                        Session::Carried& c2 = s.inventory[k];
+                        if (c2.type != w.type || !c2.weaponClass || c2.wandClass || !(c2.equipBit & w.equipBit)) continue;
+                        bool same = true;
+                        for (int m = 0; m < 4; ++m) if (c2.mods[m] != w.mods[m]) same = false;
+                        if (same && static_cast<int>(w.chargesMax) + static_cast<int>(c2.chargesMax) <= 250) { into = &c2; break; }
+                    }
+                    if (into) {
+                        into->charges = static_cast<uint8_t>(into->charges + w.charges);
+                        into->chargesMax = static_cast<uint8_t>(into->chargesMax + w.chargesMax);
+                        SendCharges(s, *into, out);
+                        {   // 모두에게 — 바닥에서 사라진다(`delayedDeleteObject`)
+                            uint8_t msg[3];
+                            msg[0] = static_cast<uint8_t>(Op::DESTROY_OBJECT);
+                            msg[1] = static_cast<uint8_t>(w.netCode);
+                            msg[2] = static_cast<uint8_t>(w.netCode >> 8);
+                            Broadcast(/*viaSeq=*/false, msg, sizeof(msg), out);
+                        }
+                        TakeStatic(w.netCode);
+                        PlayWeaponPickupSound(s, w.pickupSound);
+                        ++weaponPick_[static_cast<size_t>(WeaponPick::AmmoMerged)];
+                        ++handled_;
+                        break;
+                    }
+                }
+                // ★ 09-29 — 무기 줍기(`sub_53A720` `GAME4_3.c:5089~5095`) — 협동·퀘스트가 아니면 **직업이 못 쓰는 무기는 아예 못 줍는다**
+                //   (글 `weapon.c:WeaponEquipClassFail` + 소리 925 kind 2 · 정의가 없으면 못 쓰는 것 — `57B3D0`).
+                //   ⚠ 안 옮긴 것 — 같은 무기 거절(`CannotPickupDuplicateWeapon` — 게임 설정 비트 2 · 우리 설정 없음) · 퀘스트의 자연의 힘 지팡이 개수(`:5048~5057`)
+                if ((w.pickupFn == PickupFn::Weapon || w.pickupFn == PickupFn::Ammo) && !(questTotal_ > 0 || questStage_ > 0)) {
+                    const auto d = weaponDef_.find(w.type);
+                    const uint8_t classes = (d == weaponDef_.end()) ? 0 : d->second.classes;
+                    if (!(classes & (1u << static_cast<uint8_t>(s.charClass)))) {
+                        SendPriMsg(s, "weapon.c:WeaponEquipClassFail", out);
+                        PlaySoundAt(925, static_cast<float>(s.posX), static_cast<float>(s.posY), /*kind=*/2, s.netCode, s.addr);
+                        ++weaponPick_[static_cast<size_t>(WeaponPick::ClassFail)];
+                        ++handled_;
+                        break;
+                    }
+                }
+
                 // ★ 09-29 — 갑옷 줍기(`pickupArmor_53E7F0` `GAME4_3.c:7612~7624`) — 협동·퀘스트가 아니면 **직업이 못 입는 갑옷은 아예 못 줍는다**
                 //   (글 `armor.c:ArmorEquipClassFail` + 소리 925 kind 2) · 정의가 없으면 못 입는 것(`57B3D0`)
                 //   ⚠ 안 옮긴 것 — 같은 갑옷 거절(`CannotPickupDuplicateArmor` — 게임 설정 비트 2 · `sub_409F40` — 우리 설정 없음)
@@ -3100,6 +3146,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 c.decayExempt = w.decayExempt;         // ★ 09-28 — 주우면 사라짐 시계는 풀린다(`decay_511750` 이 들린 것은 목록에서만 뺀다) · 예외 까닭은 들고 간다
                 c.dropFn = w.dropFn;
                 for (int m = 0; m < 4; ++m) c.mods[m] = w.mods[m];   // ★ 09-29 — 수식(버린 평상복을 다시 주우면 색이 따라온다)
+                c.pickupFn = w.pickupFn; c.pickupSound = w.pickupSound; c.bowReload = w.bowReload;   // ★ 09-29
                 s.inventory.push_back(c);
                 ++picked_;
                 // ④ ★ 09-28 사람 판 — 「빈 부위 갑옷을 주우면 원래 저절로 입었다」
@@ -3111,7 +3158,28 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 {
                     const uint16_t pnc = c.netCode;
                     if (c.weaponClass) {
-                        if (s.weaponNet == 0 && c.equipBit != 2 && PlayerEquipWeapon(s, pnc, /*failSound=*/false, out)) ++autoEquip_[0];
+                        // ★ 09-29 — `sub_53A720` `:5099~5125` 나머지 — 화살통이면 활·석궁(0xC)을 들었고 든 화살통(2)이 없을 때 저절로 든다 ·
+                        //   저절로 안 들었으면 충전 알림(지팡이 0x47F0000 → 쓰기 짐 108·109 = 우리 충전 · WEAPON 0x82 → (화살 수, 최대)) · 줍는 소리
+                        //   ⚠ 무기 줍기 함수를 타는 것(WeaponPickup·AmmoPickup)만 — 가방 항목의 `pickupFn` 으로 가른다
+                        bool v9 = false;
+                        if (s.weaponNet == 0 && c.equipBit != 2 && PlayerEquipWeapon(s, pnc, /*failSound=*/false, out)) { v9 = true; ++autoEquip_[0]; }
+                        if (c.equipBit == 2) {
+                            const uint32_t f = WeaponEquipOf(s);
+                            if ((f & 0xC) && !(f & 2) && PlayerEquipWeapon(s, pnc, /*failSound=*/false, out)) {
+                                v9 = true;
+                                ++weaponPick_[static_cast<size_t>(WeaponPick::QuiverAutoEquip)];
+                            }
+                        }
+                        const bool weaponPickFn = (c.pickupFn == PickupFn::Weapon || c.pickupFn == PickupFn::Ammo);
+                        if (!v9 && weaponPickFn) {
+                            const bool wandCh = c.wandClass && (c.subclass & 0x47F0000);
+                            const bool ammoCh = !c.wandClass && (c.subclass & 0x82);
+                            if (wandCh || ammoCh) {
+                                for (auto& c3 : s.inventory) if (c3.netCode == pnc) { SendCharges(s, c3, out); break; }
+                                ++weaponPick_[static_cast<size_t>(WeaponPick::ChargesReport)];
+                            }
+                        }
+                        if (weaponPickFn) PlayWeaponPickupSound(s, c.pickupSound);
                     } else if (IsArmorItem(c)) {
                         // ★ 09-29 — `pickupArmor_53E7F0` `:7628~7711` 그대로 · 입기는 `53E650(a4, 0)`(실패 소리 없음 — 직업·힘은 거기서 다시 봄)
                         //   같은 부위를 입었으면 — 그것이 운동화·로브·나무/강철 방패가 아니면 안 입음 · 로브면 로브에 수식이 없을 때만 바꿔 입음
@@ -3295,6 +3363,9 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     back.decayExempt = s.inventory[i].decayExempt;   // ★ 09-28 — 들고 간다(사라짐 시계는 버릴 때만 건다)
                     back.dropFn = s.inventory[i].dropFn;
                     for (int m = 0; m < 4; ++m) back.mods[m] = s.inventory[i].mods[m];
+                    back.pickupFn = s.inventory[i].pickupFn; back.pickupSound = s.inventory[i].pickupSound;   // ★ 09-29
+                    back.potionPickup = (back.pickupFn == PickupFn::Potion);
+                    back.bowReload = s.inventory[i].bowReload;
                     back.x = s.x;
                     back.y = s.y;
                     statics_.push_back(back);
@@ -5023,6 +5094,14 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 !(!IncomingMissile(s) && (frame - s.stateFrame) <= kServerTickRate / 4)) {
                 PlayerSetState(s, 15, frame);
                 s.animFrame = 0;
+            }
+        } else if (canMove && s.moveState == 14) {
+            // ★ 09-29 — 활을 쏜 뒤(`object_update.go:340~346`) — 칸은 활 애니 33 의 마지막 · 상태 시작(Field34)에서 1초(틱 수)가 넘으면 13.
+            //   전에는 이 갈래가 없어 활로 한 번 치면 상태 14 에 그대로 머물렀다
+            s.animFrame = static_cast<uint8_t>(playerAnimFrames_[33][0] - 1);
+            if (static_cast<int>(frame) - static_cast<int>(s.stateFrame) > static_cast<int>(kServerTickRate)) {
+                PlayerSetState(s, kPlayerStateIdle, frame);
+                ++bowPoseEnded_;
             }
         } else if (canMove && s.moveState == 15) {
             // 방패 올리는 중 — RAISE_SHIELD(40) 칸이 끝나면 16(`:346~353`)
@@ -14646,6 +14725,11 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
             //   정답지는 때가 되면 대상 없이 닿음 함수를 부르고, 그쪽은 맵에 피해를 주고 사라진다.
             //   ⚠ 맵 피해(`damageToMap_534BC0`)는 아직 안 옷겼다 — 지금은 그냥 지운다
             if (frame - m.createdFrame > 40u) { ++arrowGoneAge_; DestroyMissile(i, out); continue; }
+        } else if (m.collideKind == 6) {
+            // ★ 09-29 사람이 쏜 화살 — `UPDATE = ProjectileUpdate`(40틱) 뒤 닿음 함수(ArrowCollide)를 대상 없이 부른다.
+            //   그 갈래는 벽 기록(`sub_537760`)이 서 있으면 그 칸에 맵 피해를 주고 지우는데, 기록은 닿음 함수를 부를 때마다
+            //   지워지므로(`sub_537770` `GAME4_3.c:3377·3384`) 수명으로 부를 때는 비어 있다 — 그냥 지운다
+            if (frame - m.createdFrame > 40u) { ++arrowHit_[static_cast<size_t>(ArrowHit::Age)]; DestroyMissile(i, out); continue; }
         } else if (m.collideKind == 3) {
             // ①-d 묶음 6-g(3b) — `ImpShot` 도 `UPDATE = ProjectileUpdate` 다(불덩이와 같은 40틱).
             //   때가 되면 **대상 없이** 제 닿음 함수를 부르는데, 그쪽은 맵에 피해를 주고 사라진다.
@@ -14874,6 +14958,20 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     erased = true;
                     continue;
                 }
+                if (m.collideKind == 6) {
+                    // ★ 09-29 `collideArrow_4EB490` 의 a2 == 0 갈래(`GAME3_3.c:5257~5266`) — 막은 벽 칸(`sub_537760` = 이 추적이 막힌 칸)에
+                    //   화살 피해(종류 11)를 주고 지운다. 때린 것(who)은 화살 — 유닛이 아니다(`damageToMap_534BC0(x, y, 피해, 11, 화살)`)
+                    WallHitter who;
+                    who.present = true;
+                    who.x = m.posX; who.y = m.posY; who.dir = m.dir1;
+                    who.material = MaterialOfWire(m.type);
+                    who.src = m.owner;
+                    DamageToMap(th.gx, th.gy, ArrowDamage(m.owner, m.type), 11, who, out);
+                    ++arrowHit_[static_cast<size_t>(ArrowHit::Wall)];
+                    DestroyMissile(i, out);
+                    erased = true;
+                    continue;
+                }
                 // collideReflect_57B810 — 법선 부호 곱으로 속도 성분 맞바꿈
                 if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
                 else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
@@ -14966,6 +15064,53 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                         HurtTarget(tgt, static_cast<int>(m.collideAmount), out, m.owner, 3, &src, HitterMissile(m));   // ★ 4-c3b2 a3 = 화살(`GAME3_3.c:5329`) · 몬스터가 쏜 것은 b3
                         DestroyMissile(i, out);
                         erased = true;
+                        handled = true;
+                    }
+                    // ★ 09-29 `nox_xxx_collideArrow_4EB490`(`GAME3_3.c:5197~5309`) — 사람이 쏜 화살(활·석궁)
+                    //   · 쏜 이에게 닿으면 아무 일 없음(그대로 날아감 `:5227~5232`) · 죽은 것(+16 & 0x8000)도 그대로(`:5272~5275`)
+                    //   · 피해 = 쏜 이 힘으로 `calcBoltDamage`(+0.5 버림) · 종류 11 · 때린 것 = 화살(MISSILE — 막기·되받아치기가 본다)
+                    //   · 쇠뇌살이면 — 맞은 것에 체력이 있고 지금 0 이면(죽였으면) 최대가 0 이 아닌 한 **안 지우고 뚫고 간다**(`:5297~5304`)
+                    //   · 그 밖은 피해가 안 들어갔으면(피해 함수가 0) 그대로 두고, 들어갔으면 지운다(`:5305~5308`)
+                    //   · 유닛 아닌 장애물 — 피해 함수가 DefaultDamage 계열(`nox_xxx_damageDefaultProc_4E0B30` — 버프 26 이 없으면 1)이면 지운다.
+                    //     화약(`damageBlackPowder_4E2560` `GAME3_3.c:677~686`)은 종류 1·12·2·0 만 받고 11 이면 0 → 화살이 그대로 지나간다
+                    //     ⚠ 장애물 자신의 체력 깎기는 안 옮겼다(다른 날아가는 것 갈래와 같다 — 장애물 체력이 우리에게 없다)
+                    //   ⚠ 안 옮긴 것 — 화살 수식 공격 효과(`itemApplyAttackEffect_538840`) · 맞는 쪽 미리 효과(`playerPreAttackEffects_538290`) — 우리 물건에 수식이 없다 ·
+                    //     퀘스트 갈래(`:5238~5256` 같은 편 사람 안 때림) · 막을 때의 되받아치기는 앞의 방패(16)·대검(가만) 갈래만 — 막기 상태(18~20) 대검은 되받아치지 않아
+                    //     화살이 그대로 남는다(정답지는 피해 함수 안에서 되받아친다 `GAME3_3.c:269~276`)
+                    if (!handled && m.collideKind == 6) {
+                        auto hit = [&](ArrowHit k) { ++arrowHit_[static_cast<size_t>(k)]; };
+                        const bool petDead = (hk == HitPet && pets_[static_cast<size_t>(hIdx)].health == 0);
+                        if (hk == HitPlayer && hAddr == m.owner) { hit(ArrowHit::Owner); }
+                        else if (petDead) { hit(ArrowHit::Dead); }
+                        else if (hk == HitObstacle) {
+                            if (obstacles_[static_cast<size_t>(hIdx)].damageFn == kDmgBlackPowder) hit(ArrowHit::NoHurt);
+                            else { hit(ArrowHit::Obstacle); DestroyMissile(i, out); erased = true; }
+                        }
+                        else {
+                            const Target tgt = HitTargetOf(hk, hAddr, hIdx);
+                            AttackSrc src;
+                            src.x = m.posX; src.y = m.posY;
+                            src.byMonsterType = m.type;
+                            src.rootIsMonster = MissileRootIsMonster(m);
+                            src.missile = true;
+                            const bool hurt = HurtTarget(tgt, ArrowDamage(m.owner, m.type), out, m.owner, 11, &src, HitterMissile(m));
+                            bool keep = false;
+                            // ⚠ 종류 번호는 쏠 때 쓴 표(`ProjType`)에서 — 이름표(`NamedType`)엔 ArcherBolt 가 등록돼 있지 않다(시험이 잡음)
+                            const ProjTypeInfo* boltPt = ProjType("ArcherBolt");
+                            if (boltPt && boltPt->type != 0 && m.type == boltPt->type) {
+                                int hp = -1, hpMax = 0;
+                                if (hk == HitPlayer) { const Session& t2 = sessions_.at(hAddr); hp = t2.health; hpMax = t2.maxHealth; }
+                                else { hp = pets_[static_cast<size_t>(hIdx)].health; hpMax = static_cast<int>(TuningFor(pets_[static_cast<size_t>(hIdx)].type).health); }
+                                if (hp == 0) { keep = (hpMax != 0); if (keep) hit(ArrowHit::BoltPass); }
+                                else hit(hurt ? ArrowHit::Hurt : ArrowHit::NoHurt);   // 쇠뇌살은 피해 결과와 상관없이 지운다
+                            } else if (!hurt) {
+                                keep = true;
+                                hit(ArrowHit::NoHurt);
+                            } else {
+                                hit(ArrowHit::Hurt);
+                            }
+                            if (!keep) { DestroyMissile(i, out); erased = true; }
+                        }
                         handled = true;
                     }
                     if (!handled && m.collideKind == 4) {
@@ -15079,6 +15224,10 @@ void Server::DropCarriedToWorld(Session& s, size_t at, double tx, double ty, boo
     w.decayExempt = c.decayExempt;
     w.dropFn = c.dropFn;
     for (int m = 0; m < 4; ++m) w.mods[m] = c.mods[m];   // ★ 09-29 — 수식도 바닥으로
+    // ★ 09-29 — 줍기 함수 갈래·줍는 소리·재장전 칸도 바닥으로. 물약 줍기 깃발은 갈래에서 다시 세운다
+    //   (✖ 전에는 버린 물약이 `potionPickup` 을 잃어 다시 주우면 「그 자리에서 마시기」·직업 거절을 안 탔다)
+    w.pickupFn = c.pickupFn; w.pickupSound = c.pickupSound; w.bowReload = c.bowReload;
+    w.potionPickup = (c.pickupFn == PickupFn::Potion);
     w.decayFrame = DropDecayFrame(c.dropFn, c.decayExempt);
     statics_.push_back(w);
     freshStatics_.insert(nc);   // 시야 반경이 꺼진 판에서도 소개되게(틱 갱신의 freshStatics_ 자리)
@@ -15316,8 +15465,10 @@ void Server::DefaultGearMods(uint16_t type, const std::vector<uint8_t>& info97, 
 // ★ 09-27 B3 — 무기 들기 `nox_xxx_playerEquipWeapon_53A420`(`GAME4_3.c:4906~4993`) — 관문 순서 그대로.
 //   옮긴 것: 무기 클래스 `:4908` · 이미 듦 `:4911~4914` · 함성·광전사 켜짐 값 `:4923` · 직업 `:4926~4932`(modifier.bin CLASSUSE) ·
 //     힘 `:4933~4940`(REQUIRED_STRENGTH) · 공격 중이면 상태 13 `:4951~4953` · 먼저 든 무기 내려놓기 `:4964~4967` · 듦 깃발·알림·무기 칸 `:4968~4975`
-//   ⚠ 안 옮긴 것 — 화살통(무기 비트 2 · 활 찾기 `53A680`·`53A0F0` `:4954~4963`) · WEAPON 쪽 충전 `:4980~4986` · 마법부여 켜기 `:4988`(붙일 것 없음) — 끝의 B5 주석
+//   ⚠ 안 옮긴 것 — 마법부여 켜기 `:4988`(붙일 것 없음) — 끝의 B5 주석
 //     (09-27 B5 에서 지팡이 충전 알림 `:4976~4979` 와 `53A3D0` `:4989~4991` 은 옮김)
+//     (★ 09-29 화살통 갈래 `:4954~4963`(활 없으면 가방에서 들기 `53A680` · 없으면 BowNotFound · 든 화살통 내려놓기 `53A0F0`) ·
+//      화살통은 무기 칸을 안 바꿈 `:4964·4973` · WEAPON 쪽 충전 알림(0x82)·활 재장전 칸 0(0xC) `:4980~4986` 옮김)
 //     NPC 갈래 `:4916~4918` · 사람 아님 `:4919~4921` 은 우리 부름이 늘 사람이라 없음 · 가방에 있음 `:4941~4950` 은 부르는 쪽이 가방에서 찾아 넘김
 //   거절 글·소리 — `netPriMsgToPlayer` + `aud_501960(925, 사람, 2, 사람 번호)`(a4 가 참일 때만 소리 · 입기 요청은 참)
 bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vector<OutPacket>& out) {
@@ -15342,16 +15493,30 @@ bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vec
     if (s.strength < static_cast<int>(d->second.reqStrength))
         return refuse("weapon.c:WeaponEquipStrengthFail", EquipGate::StrengthFail);
     if (s.moveState == kPlayerStateAttack) PlayerSetState(s, kPlayerStateIdle, frame_, &out);
-    if (item->equipBit == 2) return gate(EquipGate::QuiverLater);                 // ⚠ 화살통 — B5 전까지 거절
+    const uint16_t nc0 = item->netCode;
+    const bool isQuiver = (item->equipBit == 2);
+    if (isQuiver) {
+        // ★ 09-29 — `:4954~4963` 활·석궁(비트 0xC)을 안 들었으면 가방에서 든다 — 못 들면 BowNotFound(+ 소리). 그다음 든 화살통을 내려놓는다(1, 1)
+        //   ⚠ 가방에서 활을 들면 그 들기가 다시 이 함수를 타(`53A680` → `53A420(1,1)`) 가방이 바뀔 수 있다 — 아래에서 번호로 다시 찾는다
+        if (!(WeaponEquipOf(s) & 0xC) && !EquipBowFromBag(s, out)) return refuse("weapon.c:BowNotFound", EquipGate::BowNotFound);
+        DequipQuiver(s, true, true, out);
+        item = nullptr;
+        for (auto& c : s.inventory) if (c.netCode == nc0) { item = &c; break; }
+        if (!item) return gate(EquipGate::NotWeapon);
+    }
     const Session::Carried* prev = HeldWeapon(s);
-    if (prev && !PlayerDequipWeapon(s, prev->netCode, out)) return gate(EquipGate::DequipFail);
+    if (prev && !isQuiver && !PlayerDequipWeapon(s, prev->netCode, out)) return gate(EquipGate::DequipFail);
     item->equipped = true;
     ReportEquipChange(s, *item, true, out);                                     // netReportEquip_4D8540(+ 겉모습 — 우리 옛 입기 그대로)
-    s.weaponNet = item->netCode;                                                // +104
+    if (!isQuiver) s.weaponNet = item->netCode;                                 // +104 — 화살통은 무기 칸을 안 바꾼다(`:4973`)
     // ★ 09-27 B5 — 충전 알림(`:4976~4979`) — 지팡이 클래스이고 SUBCLASS 가 마법 지팡이(0x47F0000)면 `64 <번호> <지금> <최대>`
-    //   ⚠ WEAPON 쪽 화살통·차크람 충전(`:4980~4983`)·활 0 으로(`:4984~4986`)는 화살 수가 없어 안 옮김 · 마법부여 켜기 `4F2FF0`(`:4988`)는
-    //     우리 물건에 마법부여가 없어(맵 물건 수식을 안 읽어 늘 −1) 붙일 것이 없다
+    //   ★ 09-29 — 그 밖의 WEAPON 클래스(`:4980~4986`) — 화살통·수리검(비트 0x82)이면 충전 알림 (화살 수, 최대) · 활·석궁(0xC)이면 재장전 칸 0
+    //   ⚠ 마법부여 켜기 `4F2FF0`(`:4988`)는 우리 물건에 마법부여가 없어(맵 물건 수식을 안 읽어 늘 −1) 붙일 것이 없다
     if (item->wandClass && (item->subclass & 0x47F0000)) { SendCharges(s, *item, out); ++wandChargesOnEquip_; }
+    else if (!item->wandClass) {
+        if (item->equipBit & 0x82) SendCharges(s, *item, out);
+        else if (item->equipBit & 0xC) item->bowReload = 0;
+    }
     // ★ 09-27 B5 — `sub_53A3D0`(`:4989~4991` · `GAME4_3.c:4887~4903`) — 두 손 무기(무기 비트 0x7FFE40C)를 들면 입은 방패(갑옷 비트 0x3000000)를 벗는다(`53E430(1, 1)`).
     //   ★ 09-29 — 이제 갑옷 벗기(`PlayerDequipArmor` = `53E430(1,1)`)로. 방패 막기는 `ArmorEquipOf` 가 가방을 읽어 따라 꺼진다
     if (item->equipBit & 0x7FFE40C) {
@@ -15367,9 +15532,10 @@ bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound, std::vec
 // ★ 09-27 B4 — 무기 내려놓기 `nox_xxx_playerDequipWeapon_53A140`(`GAME4_3.c:4755~4816`) — 사람 갈래.
 //   무기 클래스 아님 → 0(`:4760`) · 공격 중이면 상태 13(`:4764~4766`) · **든 무기가 아니면 0**(`:4767~4770` — 화살통만 예외) ·
 //   든 것의 듦 깃발 끔 · 본인 알림(a3 `4D8590`)·모두 알림(a4 `4D84C0`) · +104 = 0(`:4784~4795`)
-//   ⚠ 안 옮긴 것 — 활·석궁이면 화살통 내려놓기 `53A0F0`(`:4771~4773`) · 화살통 갈래(`:4775~4783`) — 화살 수가 없다 ·
-//     마법부여 끄기 `4F3030`(`:4796`) — 우리 물건에 마법부여가 없다. `:4797~4814` 는 원본 exe 에 없는 GameEx 확장이라 안 옮긴다(소스 주석)
+//   ⚠ 안 옮긴 것 — 마법부여 끄기 `4F3030`(`:4796`) — 우리 물건에 마법부여가 없다. `:4797~4814` 는 원본 exe 에 없는 GameEx 확장이라 안 옮긴다(소스 주석)
 //     (09-27 B5 에서 지속 주문 끊기 `4FEB60`(`:4774`)은 옮김)
+//     (★ 09-29 — 활·석궁이면 화살통 내려놓기 `53A0F0(a3, a4)`(`:4771~4773`) · 화살통 갈래(`:4775~4783` — 깃발·비트 2 끄고 알림, 무기 칸은 그대로) 옮김.
+//      화살통도 **든 무기가 있어야** 내려놓는다(`:4768` 의 `!v11 ||`))
 //   부르는 자리는 모두 (a3, a4) = (1, 1) 이다 — 무기 들기(`:4965`) · 벗기 요청(`playerTryDequip_4F2FB0` `GAME3_3.c:10571`)
 bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out, bool toSelf, bool toOthers) {
     auto gate = [&](DequipGate g) { ++dequipGate_[static_cast<size_t>(g)]; return g == DequipGate::Dequipped; };
@@ -15377,10 +15543,18 @@ bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>&
     for (auto& c : s.inventory) if (c.netCode == nc) { item = &c; break; }
     if (!item || !item->weaponClass) return gate(DequipGate::NotWeapon);
     if (s.moveState == kPlayerStateAttack) PlayerSetState(s, kPlayerStateIdle, frame_, &out);
-    if (item->equipBit == 2) return gate(DequipGate::QuiverLater);             // ⚠ 화살통 — B5(지금은 들 수도 없다)
     Session::Carried* held = nullptr;
     for (auto& c : s.inventory) if (s.weaponNet != 0 && c.netCode == s.weaponNet) { held = &c; break; }
-    if (!held || held != item) return gate(DequipGate::NotHeld);
+    const bool isQuiver = (item->equipBit == 2);
+    if (!held || (held != item && !isQuiver)) return gate(DequipGate::NotHeld);   // `:4768` — 화살통만 「든 것과 같아야」를 비켜 간다
+    if (item->equipBit & 0xC) DequipQuiver(s, toSelf, toOthers, out);         // ★ 09-29 `:4771~4773` — 활·석궁을 내리면 화살통도
+    if (isQuiver) {
+        // ★ 09-29 `:4775~4783` — 화살통: 깃발(+16 & 0x100)·비트 2 끄고 본인(a3)·모두(a4)에게 알림. 무기 칸(+104)은 그대로
+        item->equipped = false;
+        ReportEquipChange(s, *item, false, out, toSelf, toOthers);
+        gate(DequipGate::QuiverOff);
+        return true;
+    }
     // ★ 09-27 B5 — `sub_4FEB60`(`:4774` · `GAME4.c:3389~3402`) — 지팡이 클래스면 SUBCLASS 0x40000 은 지속 주문 43(연쇄 번개) · 0x4000000 은 59(플라스마)를 끊는다(`4FEB10`)
     if (item->wandClass) {
         if (item->subclass & 0x40000) { DurCancelFor(43, s.addr, out); ++wandSpellCut_; }
@@ -15399,6 +15573,156 @@ const Session::Carried* Server::HeldWeapon(const Session& s) {
     for (const auto& c : s.inventory)
         if (c.netCode == s.weaponNet) return &c;
     return nullptr;
+}
+
+// ── ★ 09-29 활·석궁·화살통 ─────────────────────────────────────────────
+//
+// 정답지 가방 고리(+504)는 새로 든 것이 머리다 — 우리 가방은 뒤에 붙이므로 「첫 것」은 **뒤에서부터** 찾는다.
+// 세 도우미 모두 고리에서 **처음 맞는 것 하나**에 부르고 끝난다(그것이 실패해도 다음 것을 안 본다).
+
+// `sub_53A680`(`GAME4_3.c:4997~5011`) — 활·석궁(비트 0xC)을 가방에서 찾아 든다(a3 = a4 = 1)
+bool Server::EquipBowFromBag(Session& s, std::vector<OutPacket>& out) {
+    for (size_t i = s.inventory.size(); i-- > 0;)
+        if (s.inventory[i].weaponClass && (s.inventory[i].equipBit & 0xC))
+            return PlayerEquipWeapon(s, s.inventory[i].netCode, /*failSound=*/true, out);
+    return false;
+}
+
+// `sub_53A0F0`(`GAME4_3.c:4732~4752`) — 든(+16 & 0x100) 화살통(비트 2)을 내려놓는다(`53A140(a1, 그것, a2, a3)`)
+void Server::DequipQuiver(Session& s, bool toSelf, bool toOthers, std::vector<OutPacket>& out) {
+    for (size_t i = s.inventory.size(); i-- > 0;)
+        if (s.inventory[i].equipped && s.inventory[i].weaponClass && s.inventory[i].equipBit == 2) {
+            PlayerDequipWeapon(s, s.inventory[i].netCode, out, toSelf, toOthers);
+            return;
+        }
+}
+
+// `playerTryReloadQuiver_539FF0`(`GAME4_3.c:4672~4686`) — 화살통(비트 2)을 가방에서 찾아 든다(a3 = a4 = 1).
+//   ⚠ 든 화살통이 첫 것이면 「이미 듦」으로 실패한다 — 정답지 그대로(다 쓴 화살통은 이미 지워져 보통은 안 걸린다)
+bool Server::TryReloadQuiver(Session& s, std::vector<OutPacket>& out) {
+    for (size_t i = s.inventory.size(); i-- > 0;)
+        if (s.inventory[i].weaponClass && s.inventory[i].equipBit == 2)
+            return PlayerEquipWeapon(s, s.inventory[i].netCode, /*failSound=*/true, out);
+    return false;
+}
+
+// `sub_53A6C0`(`GAME4_3.c:5014~5031`) — 무기 줍는 소리(사람 자리에서 모두에게). 번호는 main 이 클래스·재질로 정해 둔다
+void Server::PlayWeaponPickupSound(const Session& s, uint16_t snd) {
+    if (snd == 0) return;
+    PlaySoundAt(snd, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
+    ++weaponPick_[static_cast<size_t>(WeaponPick::Sound)];
+}
+
+// `nox_xxx_calcBoltDamage_4EF1E0`(`GAME3_3.c:7752~7765`) — (힘 − 요구 힘) × 계수 + 최소 · 화살의 modifier.bin 정의로.
+//   힘은 쏜 이(+508)의 것 · 쏜 이가 없으면 30(`GAME3_3.c:5233~5237`). 솔로(깃발 2048)의 쇠뇌살 갈래는 우리 판에 없다.
+//   부르는 쪽이 `(long long)(값 + 0.5)`(`:5294` — qword_581450_9544 = 0.5)로 자른다 — 여기서 함께
+int Server::ArrowDamage(const std::string& owner, uint16_t arrowType) const {
+    const auto d = weaponDef_.find(arrowType);
+    if (d == weaponDef_.end()) return 0;                                  // 정의가 없으면 정답지는 닿음 함수에서 바로 돌아간다(`:5223~5226`)
+    int str = 30;
+    auto it = sessions_.find(owner);
+    if (it != sessions_.end()) str = it->second.strength;
+    const double v = static_cast<double>(str - static_cast<int>(d->second.reqStrength)) * static_cast<double>(d->second.coeff) +
+                     static_cast<double>(d->second.damageMin);
+    return static_cast<int>(static_cast<long long>(static_cast<double>(static_cast<float>(v)) + 0.5));
+}
+
+// `nox_xxx_shootBowCrossbow1_539BD0`(`GAME4_3.c:4460~4534`) — 활·석궁의 한 발. 참 = 쐈다(화살을 만들었든 앞이 막혔든)
+//   ① 재장전 칸(쓰기 짐 [0])이 0 이면 — 든 화살통 중 화살이 남은 첫 것으로 쏜다(`539D80`)
+//      없으면 — (퀘스트 · 활이면 화살통 없이 약한 화살) · 가방의 화살통을 들어 보고(ReloadQuiver · 칸 0) 못 들면 NoQuiver(퀘스트 · 활이면 글 없음) ·
+//      소리 활 887(퀘스트면 없음) · 석궁 888 · 상태 13
+//   ② 0 이 아니면 — ReloadingQuiver · 소리(활 887 퀘스트면 없음 · 석궁 888) · 칸 하나 줄임
+bool Server::ShootBowCrossbow(Session& s, Session::Carried& bow, std::vector<OutPacket>& out) {
+    const uint32_t kind = bow.equipBit & 0xC;                              // 4 활 · 8 석궁(`weaponInventoryEquipFlags_415820`)
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);               // gameFlags 4096
+    const uint16_t bowNet = bow.netCode;
+    auto bowRef = [&]() -> Session::Carried* { for (auto& c : s.inventory) if (c.netCode == bowNet) return &c; return nullptr; };
+    auto sound = [&](uint16_t id) { PlaySoundAt(id, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr); };
+    if (bow.bowReload == 0) {
+        for (size_t i = s.inventory.size(); i-- > 0;) {
+            Session::Carried& q = s.inventory[i];
+            if (q.equipped && q.weaponClass && q.equipBit == 2 && q.charges != 0) {   // [1] 화살 수(무한 [2] 은 우리 판에 없음)
+                ShootArrow(s, &q, kind, out);
+                return true;
+            }
+        }
+        if (quest && kind == 4) ShootArrow(s, nullptr, 4, out);            // LABEL_14 — 퀘스트 활은 화살통 없이도 약한 화살
+        bool skipMsg = false;
+        if (TryReloadQuiver(s, out)) {
+            SendPriMsg(s, "pattack.c:ReloadQuiver", out);
+            if (Session::Carried* b = bowRef()) b->bowReload = 0;
+            ++bowShot_[static_cast<size_t>(BowShot::Reloaded)];
+        } else {
+            if (quest && kind == 4) skipMsg = true;                        // goto LABEL_25
+            else SendPriMsg(s, "pattack.c:NoQuiver", out);
+            ++bowShot_[static_cast<size_t>(BowShot::NoQuiver)];
+        }
+        if (skipMsg || kind == 4) { if (!quest) sound(887); }              // LABEL_25
+        else if (kind == 8) sound(888);
+        PlayerSetState(s, kPlayerStateIdle, frame_, &out);                 // LABEL_29
+        return false;
+    }
+    SendPriMsg(s, "pattack.c:ReloadingQuiver", out);
+    if (kind == 4) { if (!quest) sound(887); }
+    else if (kind == 8) sound(888);
+    --bow.bowReload;
+    ++bowShot_[static_cast<size_t>(BowShot::Reloading)];
+    return false;
+}
+
+// `nox_xxx_shootBowCrossbow2_539D80`(`GAME4_3.c:4537~4618`) — 화살 하나를 만든다.
+//   · 자리 = 사람 자리 + (몸 반지름 + 4) × 바라보는 쪽(Direction1 +124) — 사람 자리에서 거기까지 선 추적(5)이 막히면 아무것도 안 한다
+//   · 종류 = 화살통이 있으면 활 ArcherArrow · 석궁 ArcherBolt, 없으면 WeakArcherArrow
+//   · 주인(+508)·갱신 짐 [1] = 쏜 이 · 속도 = 바라보는 쪽 × 제 빠르기(+544) · 방향 둘 = 사람 방향
+//   · 화살통이 있고 무한이 아니면 화살 수 하나 줄이고 충전 알림 — 0 이 되면 화살통을 지운다(`delayedDeleteObject` → `sub_4ED0C0`)
+//   · 소리 활 885 · 석궁 886
+//   ⚠ 안 옮긴 것 — 화살통 수식을 화살에(`modifSetItemAttrs_4E4990` — 우리 물건에 수식 효과가 없다) · 활의 마법부여 반동·빠르기(`shootApplyEffects_539F40`)
+void Server::ShootArrow(Session& s, Session::Carried* quiver, uint32_t kind, std::vector<OutPacket>& out) {
+    const double r = static_cast<double>(kBodyRadius) + 4.0;
+    const uint8_t dir = s.facingPrev;                                       // +124 Direction1
+    const float sx = static_cast<float>(r * DirVecX(dir) + s.posX);
+    const float sy = static_cast<float>(r * DirVecY(dir) + s.posY);
+    TraceHit th;
+    if (!MapTraceRay(static_cast<float>(s.posX), static_cast<float>(s.posY), sx, sy, 0x5, &th)) {
+        ++bowShot_[static_cast<size_t>(BowShot::Blocked)];
+        return;
+    }
+    const char* name = quiver ? (kind == 4 ? "ArcherArrow" : "ArcherBolt") : "WeakArcherArrow";
+    const ProjTypeInfo* pt = ProjType(name);
+    if (pt && pt->type != 0) {                                              // 종류를 모르면 안 만든다(지어내지 않는다)
+        MissileObj m;
+        m.netCode = nextShotNetCode_++;
+        m.type = pt->type;
+        m.flags = pt->flags;
+        m.posX = m.newX = m.prevX = sx;
+        m.posY = m.newY = m.prevY = sy;
+        m.dir1 = m.dir2 = dir;
+        m.createdFrame = m.frame136 = frame_;
+        m.speed = pt->speed;
+        m.velX = DirVecX(dir) * m.speed;
+        m.velY = DirVecY(dir) * m.speed;
+        m.collideKind = 6;                                                  // ArrowCollide
+        m.owner = s.addr;
+        missiles_.push_back(m); ++missilesMade_;
+        if (missiles_.size() > missilesPeak_) missilesPeak_ = missiles_.size();
+    }
+    if (quiver) {
+        --quiver->charges;
+        SendCharges(s, *quiver, out);
+        if (quiver->charges == 0) {
+            // `delayedDeleteObject_4E5CC0` → 가방에 있으면 `sub_4ED0C0`(`GAME3_3.c:6304~6366` · Go `object.go:67~69`) —
+            //   벗기(a3 = 0 · 살아 있으니 a4 = 1 — 본인 알림 없이 남에게만) → 본인에게 `4d <번호2> <종류2>` → 가방에서 뺌
+            const uint16_t qnc = quiver->netCode, qtype = quiver->type;
+            PlayerDequipWeapon(s, qnc, out, /*toSelf=*/false, /*toOthers=*/true);
+            const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_DROP), static_cast<uint8_t>(qnc), static_cast<uint8_t>(qnc >> 8),
+                                     static_cast<uint8_t>(qtype), static_cast<uint8_t>(qtype >> 8) };
+            EmitSeq(s, msg, sizeof(msg), out);
+            for (size_t i = 0; i < s.inventory.size(); ++i)
+                if (s.inventory[i].netCode == qnc) { s.inventory.erase(s.inventory.begin() + static_cast<long>(i)); break; }
+        }
+    }
+    PlaySoundAt(kind == 4 ? 885 : 886, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.addr);
+    ++bowShot_[static_cast<size_t>(BowShot::Shot)];
 }
 
 // ── ★ 09-29 갑옷 입기·벗기 · 방어값 ─────────────────────────────────────
@@ -15495,7 +15819,10 @@ uint32_t Server::WeaponEquipOf(const Session& s) {
         return w ? w->classBits : 0u;
     }
     const Session::Carried* h = HeldWeapon(s);
-    return h ? h->equipBit : 0u;
+    // ★ 09-29 — 든 화살통은 무기 칸(+104)에 안 들어가고 비트(2)만 선다(`playerEquipWeapon_53A420` `:4971·4973`) — 원본 +4 는 그 합이다
+    uint32_t quiver = 0;
+    for (const auto& c : s.inventory) if (c.equipped && c.weaponClass && c.equipBit == 2) { quiver = 2; break; }
+    return (h ? h->equipBit : 0u) | quiver;
 }
 // 든 무기의 modifier 값 — 시험용 바꿔 들기(DebugSetWeapon)가 있으면 그 이름, 없으면 무기 칸(09-27 B2 · 시험 서버는 직업 기본 장비)
 //   ⚠ 수치 표에 없는 무기면 nullptr — 부르는 자리가 비트(WeaponEquipOf)로 먼저 가른다
@@ -15951,7 +16278,29 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
                 }
             }
         }
-        // 활(0x4)·석궁(0x8) — 화살 오브젝트가 없어 묶음 5 로(여기 오면 아무 일도 안 하고 LABEL_159)
+        // ★ 09-29 — 활(0x4)·석궁(0x8)(`GAME4_3.c:4288~4324`). 준비 효과(`itemCheckReadinessEffect_4E0960` — 무기 수식)는 우리 물건에 없어 0
+        //   활 — 애니 33 · 칸이 (칸 수 − 1) 이상이고 지난 칸보다 크면 한 발(`539BD0`) 뒤 칸 = 칸 수(→ 공격 끝 · 상태 14)
+        //   석궁 — 애니 34 · 칸이 1 이 되는 틱(지난 칸 0)에 한 발 · 애니는 끝까지 돈다
+        else if (equip & 0x4) {
+            range(33);
+            setReady();
+            calcIdx();
+            if (idx >= frames - 1 && idx > prevFrame) {
+                Session::Carried* bow = nullptr;
+                for (auto& c : s.inventory) if (c.netCode == s.weaponNet) { bow = &c; break; }
+                if (bow) ShootBowCrossbow(s, *bow, out);
+                idx = frames;
+            }
+        } else if (equip & 0x8) {
+            range(34);
+            setReady();
+            calcIdx();
+            if (idx == 1 && prevFrame == 0) {
+                Session::Carried* bow = nullptr;
+                for (auto& c : s.inventory) if (c.netCode == s.weaponNet) { bow = &c; break; }
+                if (bow) ShootBowCrossbow(s, *bow, out);
+            }
+        }
     }
     // 차크람(0x40)·수리검(0x80) — 날아가는 오브젝트라 묶음 5 로
     s.animFrame = static_cast<uint8_t>(idx >= frames ? frames - 1 : idx);   // LABEL_159

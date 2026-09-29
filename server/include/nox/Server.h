@@ -59,11 +59,14 @@ inline UseFn UseFnOf(const std::string& name) {
 // ★ 묶음 5 — **줄을 때 부르는 함수**(`PICKUP = GoldPickup` 의 이름).
 //   갈래마다 「줄는 순간 무슨 일이 나는가」가 다르다 — 물약은 **그 자리에서 마실 수도** 있고,
 //   금은 **가방에 안 들어가고 숫자로 쌓인다**. 그 밖은 보통 줄기다.
-//   ⚠ 아직 안 옮긴 것 — Armor·Weapon·Food·SpellBook·Trap·Ammo·Crown·Treasure·Oblivion·AnkhTradable
-enum class PickupFn : uint8_t { Default = 0, Potion, Gold };
+//   ⚠ 아직 안 옮긴 것 — Armor·Food·SpellBook·Trap·Crown·Treasure·Oblivion·AnkhTradable
+//   ★ 09-29 — Weapon(`sub_53A720`)·Ammo(`nox_xxx_pickupAmmo_4F3B00` — 같은 화살통 합치기 뒤 `sub_53A720`)를 가른다
+enum class PickupFn : uint8_t { Default = 0, Potion, Gold, Weapon, Ammo };
 inline PickupFn PickupFnOf(const std::string& name) {
     if (name == "PotionPickup") return PickupFn::Potion;
     if (name == "GoldPickup") return PickupFn::Gold;
+    if (name == "WeaponPickup") return PickupFn::Weapon;
+    if (name == "AmmoPickup") return PickupFn::Ammo;
     return PickupFn::Default;
 }
 
@@ -405,14 +408,32 @@ enum class WarcryPeer : uint8_t { NotInGame = 0, Warrior, Observer, SameTeam, Ou
 constexpr size_t kWarcryPeerCount = static_cast<size_t>(WarcryPeer::Count);
 
 // ★ 09-27 B3 — 무기 들기(`nox_xxx_playerEquipWeapon_53A420` `GAME4_3.c:4906~4993`)가 어느 관문에서 나갔나 — 정답지 순서 그대로.
-//   무기 아님(0x1001000) · 이미 듦(+16 & 0x100) · 함성·광전사 값(`:4923`) · 직업(`57B3D0`) · 힘(`4F3180`) · 화살통(B5 전까지 거절) · 먼저 든 것 못 내려놓음 · 듦
+//   무기 아님(0x1001000) · 이미 듦(+16 & 0x100) · 함성·광전사 값(`:4923`) · 직업(`57B3D0`) · 힘(`4F3180`) · 화살통인데 활이 없고 가방에서도 못 듦(`:4954~4961` BowNotFound) ·
+//   먼저 든 것 못 내려놓음 · 듦
 //   「가방에 없음」(`:4941~4950`)은 뺐다 — 우리 입기 요청은 늘 가방에서 찾은 물건을 넘긴다(구조상 0)
-enum class EquipGate : uint8_t { NotWeapon = 0, Already, Ability, ClassFail, StrengthFail, QuiverLater, DequipFail, Equipped, Count };
+//   ★ 09-29 — 화살통 칸이 「B5 전까지 거절(QuiverLater)」에서 BowNotFound 로 바뀜(화살통 이식)
+enum class EquipGate : uint8_t { NotWeapon = 0, Already, Ability, ClassFail, StrengthFail, BowNotFound, DequipFail, Equipped, Count };
 constexpr size_t kEquipGateCount = static_cast<size_t>(EquipGate::Count);
 // ★ 09-27 B4 — 무기 내려놓기(`nox_xxx_playerDequipWeapon_53A140` `GAME4_3.c:4755~4816`)가 어디로 나갔나 —
-//   무기 아님(`:4760`) · 든 무기가 아님(`:4767~4770`) · 화살통(B5 전까지 없음 — 들 수가 없다) · 내려놓음 ·
+//   무기 아님(`:4760`) · 든 무기가 아님(`:4767~4770` — 화살통은 든 무기가 있기만 하면 통과) · 화살통 내려놓음(`:4775~4783` — 무기 칸은 그대로) · 내려놓음 ·
 //   공격 중 석궁 벗기 요청 무시(해독 쪽 `server__network__sdecode.c:185~186` — 내려놓기 함수 앞에서 걸림)
-enum class DequipGate : uint8_t { NotWeapon = 0, NotHeld, QuiverLater, Dequipped, CrossbowAttacking, Count };
+//   ★ 09-29 — 화살통 칸이 「B5 전까지 없음(QuiverLater)」에서 QuiverOff 로 바뀜
+enum class DequipGate : uint8_t { NotWeapon = 0, NotHeld, QuiverOff, Dequipped, CrossbowAttacking, Count };
+// ★ 09-29 — 활·석궁 쏘기(`shootBowCrossbow1_539BD0` · `2_539D80`)가 어떻게 끝났나 —
+//   쏨(화살 만듦) · 앞이 벽에 막혀 안 만듦(`:4571` 선 추적 5 — 화살통도 안 깎임) · 재장전 칸이 0 이 아님(ReloadingQuiver) ·
+//   든 화살통이 비어 가방의 화살통을 듦(ReloadQuiver) · 화살통이 없음(NoQuiver)
+enum class BowShot : uint8_t { Shot = 0, Blocked, Reloading, Reloaded, NoQuiver, Count };
+constexpr size_t kBowShotCount = static_cast<size_t>(BowShot::Count);
+// ★ 09-29 — 사람이 쏜 화살 닿음(`nox_xxx_collideArrow_4EB490` `GAME3_3.c:5197~5309`)이 어디로 갔나 —
+//   쏜 이(그대로 날아감) · 죽은 것(그대로) · 피해가 들어감(지움) · 피해가 안 들어감(화살은 그대로 — `:5305~5306`) ·
+//   쇠뇌살이 죽인 것을 뚫고 감(`:5297~5303`) · 유닛 아닌 장애물(피해 함수 DefaultDamage 가 1 → 지움) · 벽(맵 피해 · 지움) · 40틱 수명(지움)
+enum class ArrowHit : uint8_t { Owner = 0, Dead, Hurt, NoHurt, BoltPass, Obstacle, Wall, Age, Count };
+constexpr size_t kArrowHitCount = static_cast<size_t>(ArrowHit::Count);
+// ★ 09-29 — 무기·화살통 줍기(`sub_53A720` `GAME4_3.c:5033~5128` · `pickupAmmo_4F3B00` `GAME3_3.c:10831~10903`)에서 난 일 —
+//   직업이 못 쓰는 무기라 못 주움(`:5089~5095`) · 같은 화살통에 합침 · 활·석궁을 들고 있어 화살통을 저절로 듦(`:5105~5111`) ·
+//   저절로 안 들어 충전을 따로 알림(`:5113~5123`) · 줍는 소리(`sub_53A6C0` — 830 지팡이 · 842 쇠 · 844 나무)
+enum class WeaponPick : uint8_t { ClassFail = 0, AmmoMerged, QuiverAutoEquip, ChargesReport, Sound, Count };
+constexpr size_t kWeaponPickCount = static_cast<size_t>(WeaponPick::Count);
 constexpr size_t kDequipGateCount = static_cast<size_t>(DequipGate::Count);
 // ★ 09-28 — 버리기(`TRY_DROP` → `drop_4ED810`) 나간 길별: 관전 · 가방에 없음 · 벽에 막힘 · 버림
 enum class DropGate : uint8_t { Observer = 0, NotInBag, Wall, Dropped, Count };
@@ -864,6 +885,15 @@ struct Session {
         //   하나라도 있으면 남에게 겉모습을 `51`·`52`(수식 넷 실음), 없으면 `50`·`4f` 로 알린다.
         //   평상복은 캐릭터 색이 수식이다(`UserColor1` + 색 번호 — 녹음에서 번호 0xb3 + 색) · 맵 물건은 우리가 수식을 안 읽어 없음
         uint8_t mods[4] = { 0xff, 0xff, 0xff, 0xff };
+        // ★ 09-29 — 줍기 함수 갈래(thing.bin `PICKUP`) · 무기 줍는 소리(`sub_53A6C0` — main 이 클래스·재질로 정함, 0 = 없음).
+        //   바닥에 놓으면 다시 WorldStatic 으로 가므로 들고 다닌다(전에는 버린 물약이 「물약 줍기」를 잃었다)
+        PickupFn pickupFn = PickupFn::Default;
+        uint16_t pickupSound = 0;
+        // ★ 09-29 — 화살통의 쓰기 짐(AmmoUse 3바이트)은 [0] 최대 → `chargesMax` · [1] 화살 수 → `charges` 로 담는다(충전 알림이 (지금, 최대)라 같은 칸).
+        //   [2] 무한 깃발은 우리 판에서 늘 0 이라 칸을 안 둔다(짐 읽기가 퀘스트면 0 으로 · 아니면 안 건드림 — 맵 파일에 없는 값)
+        //   활·석궁의 쓰기 짐(BowUse 1바이트) [0] = 재장전 칸 — 들 때 0 으로(`:4984~4986`), 쏠 때 0 이 아니면 하나 줄이고 못 쏜다(`:4522~4533`)
+        //   ⚠ 이 칸을 올리는 자리는 정답지에서 못 찾았다(BowUse 쓰기 함수는 비어 있다 `object_funcs.go:87`) — 그래서 늘 0
+        uint8_t bowReload = 0;
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다 · **무게**도 여기서 나온다(아래 PlayerMassOf)
@@ -1727,6 +1757,10 @@ public:
         uint8_t mods[4] = { 0xff, 0xff, 0xff, 0xff };   // ★ 09-29 — 수식 넷의 번호(`Session::Carried::mods` 주석) — 줍고 버려도 따라간다
         // ★ 09-28 — 사라질 프레임(`unitSetDecayTime_511660` → `+136`). 0 = 안 사라진다. 버릴 때만 건다
         uint32_t decayFrame = 0;
+        // ★ 09-29 — 줍기 함수 갈래·무기 줍는 소리·활 재장전 칸(`Session::Carried` 같은 이름 주석). 화살통 화살 수는 `charges`·`chargesMax`(맵 짐 `AmmoXfer`)
+        PickupFn pickupFn = PickupFn::Default;
+        uint16_t pickupSound = 0;
+        uint8_t bowReload = 0;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
 
@@ -3753,7 +3787,28 @@ public:
     }
     // ★ 09-27 B3 — modifier.bin `WEAPON_DEFINITIONS` 한 칸(종류 번호별): 쓸 수 있는 직업 비트(CLASSUSE — 워리어 1 · 위저드 2 · 컨저러 4) · 요구 힘.
     //   정답지 `server/modifiers.go:314~320`(Classes62 · ReqStrength60). main 이 복호본을 읽어 채운다 — 없는 종류는 직업 검사에서 거절(`object_pickup.go:113~118`)
-    void SetWeaponDef(uint16_t wire, uint8_t classes, uint16_t reqStrength) { weaponDef_[wire] = WeaponDef{ classes, reqStrength }; }
+    //   ★ 09-29 — 화살 셋(ArcherArrow·ArcherBolt·WeakArcherArrow)은 피해 식 `calcBoltDamage_4EF1E0` 이 이 정의의 DAMAGE_MIN(+72)·DAMAGE_COEFFICIENT(+64)를 쓴다
+    void SetWeaponDef(uint16_t wire, uint8_t classes, uint16_t reqStrength, uint16_t damageMin = 0, float coeff = 0.0f) {
+        weaponDef_[wire] = WeaponDef{ classes, reqStrength, damageMin, coeff };
+    }
+    unsigned long long bowShot(BowShot k) const { return k < BowShot::Count ? bowShot_[static_cast<size_t>(k)] : 0; }          // ★ 09-29
+    unsigned long long arrowHit(ArrowHit k) const { return k < ArrowHit::Count ? arrowHit_[static_cast<size_t>(k)] : 0; }      // ★ 09-29
+    unsigned long long weaponPick(WeaponPick k) const { return k < WeaponPick::Count ? weaponPick_[static_cast<size_t>(k)] : 0; }   // ★ 09-29
+    unsigned long long quiverFromMap() const { return quiverFromMap_; }   // ★ 09-29 — 맵 짐에서 화살 수를 읽어 실은 바닥 화살통
+    unsigned long long bowPoseEnded() const { return bowPoseEnded_; }     // ★ 09-29
+    int DebugArrowDamage(const std::string& owner, uint16_t arrowType) const { return ArrowDamage(owner, arrowType); }   // ★ 09-29
+    void NoteQuiverFromMap() { ++quiverFromMap_; }
+    // ★ 09-29 — 시험용: 가방 물건의 재장전 칸·화살 수를 바꾼다
+    bool DebugSetBowReload(const std::string& addr, uint16_t nc, uint8_t v) {
+        auto it = sessions_.find(addr); if (it == sessions_.end()) return false;
+        for (auto& c : it->second.inventory) if (c.netCode == nc) { c.bowReload = v; return true; }
+        return false;
+    }
+    bool DebugSetCharges(const std::string& addr, uint16_t nc, uint8_t cur, uint8_t max) {
+        auto it = sessions_.find(addr); if (it == sessions_.end()) return false;
+        for (auto& c : it->second.inventory) if (c.netCode == nc) { c.charges = cur; c.chargesMax = max; return true; }
+        return false;
+    }
     // ★ 09-29 — 갑옷 정의(modifier.bin `ARMOR_DEFINITIONS` — CLASSUSE · REQUIRED_STRENGTH · ARMOR_VALUE → `Modifier` +62·+60·+64)
     void SetArmorDef(uint16_t wire, uint8_t classes, uint16_t reqStrength, float value) { armorDef_[wire] = ArmorDef{ classes, reqStrength, value }; }
     size_t ArmorDefCount() const { return armorDef_.size(); }
@@ -4391,6 +4446,14 @@ private:
     float ArmorValueOf(const Session& s) const;                                                             // `recalculateArmorVal_53E300`
     static bool IsArmorItem(const Session::Carried& c) { return c.equipBit != 0 && !c.isWeapon && !c.weaponClass; }
     bool PlayerDequipWeapon(Session& s, uint16_t nc, std::vector<OutPacket>& out, bool toSelf = true, bool toOthers = true);
+    // ★ 09-29 활·석궁·화살통 — 가방 머리부터(우리 가방은 뒤에서부터) 첫 것 하나만 본다(정답지 고리가 첫 것에서 멈춘다)
+    bool EquipBowFromBag(Session& s, std::vector<OutPacket>& out);                          // `sub_53A680` — 활·석궁(비트 0xC)을 듦
+    void DequipQuiver(Session& s, bool toSelf, bool toOthers, std::vector<OutPacket>& out); // `sub_53A0F0` — 든 화살통을 내려놓음
+    bool TryReloadQuiver(Session& s, std::vector<OutPacket>& out);                          // `playerTryReloadQuiver_539FF0` — 화살통(비트 2)을 듦
+    bool ShootBowCrossbow(Session& s, Session::Carried& bow, std::vector<OutPacket>& out);  // `shootBowCrossbow1_539BD0`
+    void ShootArrow(Session& s, Session::Carried* quiver, uint32_t kind, std::vector<OutPacket>& out);   // `shootBowCrossbow2_539D80`
+    int ArrowDamage(const std::string& owner, uint16_t arrowType) const;                     // `calcBoltDamage_4EF1E0` + 0.5 버림
+    void PlayWeaponPickupSound(const Session& s, uint16_t snd);                               // `sub_53A6C0`
     // toSelf = 거짓이면 본인 알림(0x60/0x61)은 빼고 남에게 겉모습만(버리기 `sub_4ED0C0` 가 a3 = 0 으로 부른다)
     // toOthers = 거짓이면 남에게 겉모습도 안 보낸다(09-28 B4b — 죽은 사람이 떨어뜨릴 때 a4 = 0)
     void ReportEquipChange(Session& s, const Session::Carried& c, bool wear, std::vector<OutPacket>& out, bool toSelf = true, bool toOthers = true);
@@ -4544,7 +4607,12 @@ private:
     unsigned long long autoEquip_[5] = {};                 // ★ 09-28 — 줍고 저절로 입음 갈래별(autoEquip 주석)
     unsigned long long wandChargesOnEquip_ = 0, twoHandShieldOff_ = 0, wandSpellCut_ = 0;   // ★ 09-27 B5 — 들 때 충전 알림 · 두 손 무기가 벗긴 방패 · 내려놓으며 끊은 지속 주문
     unsigned long long shieldDropsTwoHand_ = 0;   // ★ 09-28 — 방패를 입어 내려놓게 한 두 손 무기(`sub_53E600`)
-    struct WeaponDef { uint8_t classes = 0; uint16_t reqStrength = 0; };
+    struct WeaponDef { uint8_t classes = 0; uint16_t reqStrength = 0; uint16_t damageMin = 0; float coeff = 0.0f; };
+    unsigned long long bowShot_[kBowShotCount] = {};       // ★ 09-29
+    unsigned long long arrowHit_[kArrowHitCount] = {};     // ★ 09-29
+    unsigned long long weaponPick_[kWeaponPickCount] = {}; // ★ 09-29
+    unsigned long long quiverFromMap_ = 0;                 // ★ 09-29
+    unsigned long long bowPoseEnded_ = 0;                  // ★ 09-29 — 활 쏜 뒤 상태 14 → 13(1초)
     std::map<uint16_t, WeaponDef> weaponDef_;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
     struct ArmorDef { uint8_t classes = 0; uint16_t reqStrength = 0; float value = 0.0f; };
     std::map<uint16_t, ArmorDef> armorDef_;       // ★ 09-29 — 종류 번호 → modifier.bin 갑옷 정의

@@ -19411,13 +19411,18 @@ void TestEquipWeaponGates() {
         std::vector<nox::OutPacket> out; send(srv, a, nox::Op::TRY_EQUIP, 500, out);
         Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle && srv.DebugWeaponNet(a) == 500, "⑥ 공격 중에 들었는데 상태 13 이 아니거나 못 들었다");
     }
-    // ⑦ 화살통(비트 2) — B5 전까지 거절(칸 QuiverLater) · 롱소드 그대로
+    // ⑦ 화살통(비트 2) — 활·석궁을 안 들었고 가방에도 없으면 BowNotFound(글 + 925 본인만) · 롱소드 그대로
+    //   (★ 09-29 — 전에는 「B5 전까지 거절(QuiverLater)」 · 화살통 이식으로 정답지 `:4954~4961` 관문이 됨)
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> o0; send(srv, a, nox::Op::TRY_GET, 502, o0);
         const auto g0 = gates(srv);
-        std::vector<nox::OutPacket> out; send(srv, a, nox::Op::TRY_EQUIP, 502, out);
-        Check(onlyGate(g0, srv, EquipGate::QuiverLater) && srv.DebugWeaponNet(a) == kSword, "⑦ 화살통이 B5 전인데 들렸거나 안 셌다");
+        std::vector<nox::OutPacket> out; tryEquip(srv, a, 502, out);
+        Check(onlyGate(g0, srv, EquipGate::BowNotFound) && srv.DebugWeaponNet(a) == kSword, "⑦ 활 없는 화살통 들기가 BowNotFound 로 안 갔다");
+        Check(HasPriMsg(out, a, "weapon.c:BowNotFound") && heard925(out, a) == 1 && heard925(out, b) == 0, "⑦ BowNotFound 글·925 가 본인에게만 한 번이 아니다");
+        bool qOn = false;
+        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == 502) qOn = c.equipped;
+        Check(!qOn && srv.DebugWeaponEquip(a) == 0x200, "⑦ 거절됐는데 화살통이 들렸다");
     }
     // ⑧ 관전 중이면 입기·벗기 요청을 안 받는다(`sdecode.c:167·181` +3680 & 3) — 입은 셔츠를 벗기려 해도 아무 일 없음
     //   (✖ 처음엔 입은 셔츠를 「또 입기」로 쟀다 — 막이가 없어도 「이미 그 상태」라 조용해 돌연변이를 못 잡았다)
@@ -19429,7 +19434,7 @@ void TestEquipWeaponGates() {
         Check(worn && FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) == nullptr,
               "⑧ 관전 중인데 벗기 요청을 받았다");
     }
-    std::printf("  09-27 B3 — 무기 들기 관문: 직업·힘(글+925 본인만) · 함성 값(조용히) · 바꿔 들기(내려놓고 듦) · 이미 듦 · 공격 중 13 · 화살통 B5 전 거절 · 관전 무시\n");
+    std::printf("  09-27 B3 — 무기 들기 관문: 직업·힘(글+925 본인만) · 함성 값(조용히) · 바꿔 들기(내려놓고 듦) · 이미 듦 · 공격 중 13 · 활 없는 화살통 BowNotFound · 관전 무시\n");
 }
 
 // ── 09-27 B4 — 무기 내려놓기(`nox_xxx_playerDequipWeapon_53A140` `GAME4_3.c:4755~4816`) + 공격 중 석궁 벗기 버림(`sdecode.c:185~186`) ─────────
@@ -21574,6 +21579,383 @@ void TestArmorEquip() {
         Check(bits == 0x3e6b8520u, msg);
     }
     std::printf("  09-29 — 갑옷 입기·벗기: 방어값 = 입은 합(0.02→0.12 · 49 알림 · 1.0 자름) · 같은 부위 바꿔 입기 · 힘·직업 관문 · 줍기 전 직업 · 막기 자세 방패 벗기 · 방패 주워 바꿔 입기\n");
+}
+
+// ── 09-29 — 활·석궁·화살통: 들기·놓기의 화살통 갈래(`53A420` `:4954~4986` · `53A140` `:4768~4783`) · 줍기(`pickupAmmo_4F3B00` · `sub_53A720`) ·
+//    쏘기(`shootBowCrossbow1_539BD0` · `2_539D80`) · 사람 화살 닿음(`collideArrow_4EB490`) · 쏜 뒤 상태 14(`object_update.go:340~346`) ─────────
+void TestBowQuiver() {
+    using nox::CharClass;
+    using BS = nox::BowShot;
+    using AH = nox::ArrowHit;
+    using WP = nox::WeaponPick;
+    const std::string c = "10.9.29.51:9351", w = "10.9.29.52:9352";
+    const uint16_t kBow = 600, kQ1 = 601, kQ2 = 602, kXbow = 603, kQBig = 604;
+    auto run = [](nox::Server& srv, uint32_t& ms, int n, std::vector<nox::OutPacket>* keep = nullptr) {   // 프레임을 정확히 n 개
+        for (int t = 0; t < n; ++t) {
+            const uint32_t f = srv.frame();
+            for (int g = 0; g < 100 && srv.frame() == f; ++g) {
+                ms += 5; std::vector<nox::OutPacket> o; srv.Tick(ms, o);
+                if (keep) keep->insert(keep->end(), o.begin(), o.end());
+            }
+        }
+    };
+    auto send = [&](nox::Server& srv, const std::string& who, nox::Op op, uint16_t nc, std::vector<nox::OutPacket>& out) {
+        const std::vector<uint8_t> p = CodePacket(op, nc);
+        srv.OnPacket(who, p.data(), p.size(), out);
+        srv.DebugFlushAudio(out);
+    };
+    auto click = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+        auto pkt = InputPacket(6);
+        srv.OnPacket(c, pkt.data(), pkt.size(), out);
+    };
+    auto heard = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && (x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) || x[0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) &&
+                (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;
+        return n;
+    };
+    auto worn = [&](nox::Server& srv, uint16_t nc) {
+        for (const auto& x : srv.DebugInventory(c)) if (x.netCode == nc) return x.equipped;
+        return false;
+    };
+    auto ch = [&](nox::Server& srv, uint16_t nc) {   // (화살 수 × 1000 + 최대) · 없으면 −1
+        for (const auto& x : srv.DebugInventory(c)) if (x.netCode == nc) return static_cast<int>(x.charges) * 1000 + x.chargesMax;
+        return -1;
+    };
+    auto chMsg = [&](const std::vector<nox::OutPacket>& out, uint16_t nc, int cur, int max) {
+        for (const auto& m : FlattenTo(out, c))
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_CHARGES) && (m[1] | (m[2] << 8)) == nc && m[3] == cur && m[4] == max) return true;
+        return false;
+    };
+    auto mk = [&](nox::Server& srv, uint32_t& ms) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id : { 925, 885, 886, 887, 888, 844 }) {
+            nox::Server::SoundDefIn d; d.id = id; d.maxDist = 600; d.merged = 0; d.samples = 1; sd.push_back(d);
+        }
+        srv.SetSoundDefs(sd);
+        GearTemplates(srv);
+        srv.SetPlayerAnimFrames(33, 6, 1);   // 시험값 — 활 6칸 · 붙듦 1 → 칸 5(프레임 10)에 쏜다
+        srv.SetPlayerAnimFrames(34, 4, 1);   // 시험값 — 석궁 4칸 · 붙듦 1 → 칸 1(프레임 2)에 쏜다
+        // ⭕ 부팅 줄 [날리기 종류] — SPEED 800·1000 · 깃발 AIRBORNE(0x4000 · `--dump-thing`)
+        srv.SetProjType("ArcherArrow", 527, 800, 0x4000, 0);
+        srv.SetProjType("ArcherBolt", 531, 1000, 0x4000, 0);
+        srv.SetProjType("WeakArcherArrow", 2677, 800, 0x4000, 0);
+        // ⭕ 부팅 줄 [무기정의] — 모두 컨저러만(4) · 화살 셋의 피해 최소·계수 · 활 힘 20 · 석궁 34 · 화살통 0
+        srv.SetWeaponDef(527, 4, 20, 10, 1.481f);
+        srv.SetWeaponDef(531, 4, 20, 255, 0.0f);
+        srv.SetWeaponDef(2677, 4, 20, 10, 0.0f);
+        srv.SetWeaponDef(1167, 4, 20);
+        srv.SetWeaponDef(1182, 4, 34);
+        srv.SetWeaponDef(1168, 4, 0);
+        srv.DebugEnterGame(c, 728, false, CharClass::Conjurer);   // 힘 55 — 석궁(34)도 든다
+        srv.DebugEnterGame(w, 733, false, CharClass::Warrior);
+        srv.DebugMoveTo(c, 1000, 1000);
+        srv.DebugMoveTo(w, 1000, 1000);
+        std::vector<nox::Server::WorldStatic> st;
+        auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, nox::PickupFn pf, uint8_t cur, uint8_t max, uint16_t snd) {
+            nox::Server::WorldStatic x;
+            x.netCode = nc; x.type = type; x.x = 1000; x.y = 1000; x.modifiable = true;
+            x.equipBit = bit; x.isWeapon = true; x.weaponClass = true; x.subclass = bit;   // 무기 SUBCLASS 비트 = 장비 비트(QUIVER 2 · BOW 4 · CROSSBOW 8)
+            x.pickupFn = pf; x.charges = cur; x.chargesMax = max; x.pickupSound = snd;
+            st.push_back(x);
+        };
+        put(kBow, 1167, 0x4, nox::PickupFn::Weapon, 0, 0, 844);
+        put(kQ1, 1168, 0x2, nox::PickupFn::Ammo, 20, 20, 0);      // ⭕ 맵 화살통은 20/20(부팅 줄 [화살통] — Estate 6개 합 120)
+        put(kQ2, 1168, 0x2, nox::PickupFn::Ammo, 20, 20, 0);
+        put(kXbow, 1182, 0x8, nox::PickupFn::Weapon, 0, 0, 844);
+        put(kQBig, 1168, 0x2, nox::PickupFn::Ammo, 240, 240, 0);
+        SetWeights(st, 8);
+        srv.SetWorldStatics(st);
+        run(srv, ms, 1);
+    };
+    // 활·화살통을 들고 동쪽(0)을 보게 · w 는 멀리(북쪽) · 기력(틱당 3 · 활 10)을 채운다
+    auto armed = [&](nox::Server& srv, uint32_t& ms, uint16_t weapon) {
+        mk(srv, ms);
+        std::vector<nox::OutPacket> o;
+        send(srv, c, nox::Op::TRY_GET, weapon, o);
+        send(srv, c, nox::Op::TRY_GET, kQ1, o);
+        srv.DebugSetFacing(c, 0);
+        srv.DebugMoveTo(w, 1000, 1600);
+        srv.DebugMoveTo(c, 1000, 1000);                     // ⚠ 줍는 동안 같은 자리의 w 와 몸 밀기로 떨어졌다(y 1018.7 로 쏜 전례) — 다시 세운다
+        run(srv, ms, 5);
+    };
+    // 한 번 쏘고(클릭) 쏜 프레임까지 — 돌려주는 값 = 쏜 프레임 − 공격 상태가 선 프레임(못 쏘면 −1)
+    auto shoot = [&](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& keep, BS until = BS::Shot) {
+        const unsigned long long n0 = srv.bowShot(until);
+        click(srv, keep);
+        int startF = -1;
+        for (int t = 0; t < 20; ++t) {
+            run(srv, ms, 1, &keep);
+            if (startF < 0 && (srv.DebugStateOf(c) == nox::kPlayerStateAttack || srv.bowShot(until) != n0)) startF = static_cast<int>(srv.frame());
+            if (srv.bowShot(until) != n0) return static_cast<int>(srv.frame()) - startF;
+        }
+        return -1;
+    };
+
+    // ① 줍기 — 워리어는 컨저러 전용 활을 못 줍는다(글·925 본인만) · 컨저러는 주워 빈손이면 저절로 든다 · 줍는 소리 844
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms);
+        std::vector<nox::OutPacket> out; send(srv, w, nox::Op::TRY_GET, kBow, out);
+        Check(!srv.Carries(w, kBow) && HasPriMsg(out, w, "weapon.c:WeaponEquipClassFail") && heard(out, w, 925) == 1 && heard(out, c, 925) == 0 &&
+              srv.weaponPick(WP::ClassFail) == 1, "① 워리어가 컨저러 전용 활을 주웠다(또는 글·925·칸이 안 맞다)");
+        std::vector<nox::OutPacket> o2; send(srv, c, nox::Op::TRY_GET, kBow, o2);
+        Check(srv.Carries(c, kBow) && srv.DebugWeaponNet(c) == kBow && srv.DebugWeaponEquip(c) == 0x4, "① 컨저러가 활을 주워 저절로 안 들었다");
+        Check(srv.weaponPick(WP::Sound) == 1 && heard(o2, c, 844) == 1, "① 활 줍는 소리 844 가 한 번이 아니다");
+    }
+    // ②~⑤ 화살통 줍기·합치기·바꿔 들기
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms);
+        std::vector<nox::OutPacket> o0; send(srv, c, nox::Op::TRY_GET, kBow, o0);
+        // ② 활을 들었고 든 화살통이 없으면 주운 화살통을 저절로 든다 · 충전 알림 (20, 20) · 무기 칸은 활 그대로 · 비트 = 4 | 2
+        std::vector<nox::OutPacket> o1; send(srv, c, nox::Op::TRY_GET, kQ1, o1);
+        Check(worn(srv, kQ1) && srv.DebugWeaponNet(c) == kBow && srv.DebugWeaponEquip(c) == 0x6 && srv.weaponPick(WP::QuiverAutoEquip) == 1 &&
+              srv.weaponPick(WP::ChargesReport) == 0, "② 활을 든 채 주운 화살통을 저절로 안 들었다(또는 무기 칸·비트가 틀렸다)");
+        Check(chMsg(o1, kQ1, 20, 20), "② 화살통을 들 때 충전 알림(64 · 20/20)이 안 갔다");
+        // ③ 같은 화살통을 또 주우면 합친다 — 40/40 · 바닥 것은 없어지고 가방에 안 들어감
+        std::vector<nox::OutPacket> o2; send(srv, c, nox::Op::TRY_GET, kQ2, o2);
+        int sx = 0, sy = 0;
+        Check(!srv.Carries(c, kQ2) && ch(srv, kQ1) == 40040 && srv.weaponPick(WP::AmmoMerged) == 1 && chMsg(o2, kQ1, 40, 40) &&
+              !srv.DebugStaticPos(kQ2, sx, sy), "③ 같은 화살통을 합치지 않았다(40/40 · 바닥에서 지움)");
+        // ④ 최대 합이 250 을 넘으면(40 + 240) 안 합치고 따로 든다 — 든 화살통이 있어 저절로 안 들고 충전 알림만
+        std::vector<nox::OutPacket> o3; send(srv, c, nox::Op::TRY_GET, kQBig, o3);
+        Check(srv.Carries(c, kQBig) && !worn(srv, kQBig) && ch(srv, kQ1) == 40040 && srv.weaponPick(WP::AmmoMerged) == 1 &&
+              srv.weaponPick(WP::ChargesReport) == 1 && chMsg(o3, kQBig, 240, 240), "④ 최대 합 250 을 넘는데 합쳤다(또는 충전 알림이 없다)");
+        // ⑤ 그 화살통을 들면 먼저 든 것(Q1)을 내려놓는다 — 화살통 내려놓음 1 · 무기 칸은 활 · 비트 6
+        std::vector<nox::OutPacket> o4; send(srv, c, nox::Op::TRY_EQUIP, kQBig, o4);
+        Check(worn(srv, kQBig) && !worn(srv, kQ1) && srv.dequipGate(nox::DequipGate::QuiverOff) == 1 && srv.DebugWeaponNet(c) == kBow &&
+              srv.DebugWeaponEquip(c) == 0x6, "⑤ 새 화살통을 들 때 먼저 든 화살통을 안 내려놓았다");
+    }
+    // ⑥ 활 없이 화살통을 주우면 저절로 안 들고 충전만 알림 · 가방에 활이 있으면 화살통 들기가 활부터 든다(`53A680`)
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms);
+        std::vector<nox::OutPacket> o0; send(srv, c, nox::Op::TRY_GET, kQ1, o0);
+        Check(!worn(srv, kQ1) && srv.weaponPick(WP::ChargesReport) == 1 && chMsg(o0, kQ1, 20, 20), "⑥ 활 없이 주운 화살통을 들었거나 충전 알림이 없다");
+        send(srv, c, nox::Op::TRY_GET, kBow, o0);
+        send(srv, c, nox::Op::TRY_DEQUIP, kBow, o0);
+        Check(srv.DebugWeaponNet(c) == 0 && !worn(srv, kQ1), "⑥ 활을 내려놓지 못했다 — 이 시험이 무의미해진다");
+        const unsigned long long eq0 = srv.equipGate(nox::EquipGate::Equipped);
+        std::vector<nox::OutPacket> o1; send(srv, c, nox::Op::TRY_EQUIP, kQ1, o1);
+        Check(worn(srv, kQ1) && srv.DebugWeaponNet(c) == kBow && srv.DebugWeaponEquip(c) == 0x6 && srv.equipGate(nox::EquipGate::Equipped) == eq0 + 2,
+              "⑥ 가방에 활이 있는데 화살통 들기가 활부터 안 들었다");
+    }
+    // ⑦ 활을 내려놓으면 화살통도 내려놓는다(`:4771~4773`) · 화살통만 내려놓으면 무기 칸은 활 그대로(`:4775~4783`)
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms);
+        std::vector<nox::OutPacket> o0; send(srv, c, nox::Op::TRY_GET, kBow, o0); send(srv, c, nox::Op::TRY_GET, kQ1, o0);
+        std::vector<nox::OutPacket> o1; send(srv, c, nox::Op::TRY_DEQUIP, kBow, o1);
+        Check(!worn(srv, kQ1) && !worn(srv, kBow) && srv.DebugWeaponEquip(c) == 0 && srv.dequipGate(nox::DequipGate::QuiverOff) == 1 &&
+              srv.dequipGate(nox::DequipGate::Dequipped) == 1, "⑦ 활을 내려놓았는데 화살통이 남았다");
+        send(srv, c, nox::Op::TRY_EQUIP, kQ1, o1);
+        std::vector<nox::OutPacket> o2; send(srv, c, nox::Op::TRY_DEQUIP, kQ1, o2);
+        Check(!worn(srv, kQ1) && srv.DebugWeaponNet(c) == kBow && srv.DebugWeaponEquip(c) == 0x4 && srv.dequipGate(nox::DequipGate::QuiverOff) == 2 &&
+              FindMsg(FlattenTo(o2, c), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)), "⑦ 화살통만 내려놓았는데 활까지 놓았거나 알림(0x61)이 없다");
+    }
+    // ⑧ 쏘기 — 칸 5(프레임 10)에 ArcherArrow 하나(동쪽으로) · 화살통 19/20 알림 · 885 · 활은 끝나면 14 → 1초(30프레임) 넘으면 13
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        std::vector<nox::OutPacket> keep;
+        const int dt = shoot(srv, ms, keep);
+        char m[200]; std::snprintf(m, sizeof(m), "⑧ 활이 공격 시작 뒤 프레임 10 에 안 쐈다(%d)", dt);
+        Check(dt == 10, m);
+        const auto& ml = srv.missileList();
+        Check(ml.size() == 1 && ml[0].type == 527 && ml[0].velX > 49.0f && ml[0].posX > 1000.0f && ml[0].owner == c, "⑧ 동쪽으로 나는 ArcherArrow 하나가 안 생겼다");
+        Check(ch(srv, kQ1) == 19020 && chMsg(keep, kQ1, 19, 20) && heard(keep, c, 885) == 1, "⑧ 화살통이 19/20 이 아니거나 알림·885 가 없다");
+        Check(srv.DebugStateOf(c) == 14, "⑧ 활을 쏜 뒤 상태 14 가 아니다");
+        run(srv, ms, 30);                                   // `프레임 − Field34 > 30` — 30 째는 아직
+        Check(srv.DebugStateOf(c) == 14 && srv.bowPoseEnded() == 0, "⑧ 30프레임째인데 14 가 끝났다(문턱은 30 초과)");
+        run(srv, ms, 1);
+        Check(srv.DebugStateOf(c) == nox::kPlayerStateIdle && srv.bowPoseEnded() == 1, "⑧ 31프레임째인데 14 → 13 이 아니다");
+    }
+    // ⑨ 화살 피해 — 동쪽 1100 의 워리어가 맞는다(피해 1 · 화살 지움) · 피해 식 = (힘 − 20) × 1.481 + 10 을 +0.5 버림
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        srv.DebugMoveTo(w, 1100, 1000);
+        run(srv, ms, 1);
+        std::vector<nox::OutPacket> keep;
+        shoot(srv, ms, keep);
+        for (int t = 0; t < 5 && srv.arrowHit(AH::Hurt) == 0; ++t) run(srv, ms, 1, &keep);
+        Check(srv.arrowHit(AH::Hurt) == 1 && srv.HealthOf(w) < nox::HealthOnline(CharClass::Warrior) && srv.missileList().empty(),
+              "⑨ 화살이 워리어를 안 때렸거나 안 지워졌다");
+        char m[200];
+        std::snprintf(m, sizeof(m), "⑨ 화살 피해 식이 다르다 — 컨저러 %d(62) · 쏜 이 없음 %d(25) · 쇠뇌살 %d(255) · 약한 화살 %d(10)",
+                      srv.DebugArrowDamage(c, 527), srv.DebugArrowDamage("none", 527), srv.DebugArrowDamage(c, 531), srv.DebugArrowDamage(c, 2677));
+        Check(srv.DebugArrowDamage(c, 527) == 62 && srv.DebugArrowDamage("none", 527) == 25 && srv.DebugArrowDamage(c, 531) == 255 &&
+              srv.DebugArrowDamage(c, 2677) == 10, m);
+    }
+    // ⑩ 석궁 — 칸 1(프레임 2)에 ArcherBolt · 886 · 255 로 죽이면 지우지 않고 뚫고 간다
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kXbow);
+        Check(srv.DebugWeaponEquip(c) == 0xA, "⑩ 석궁·화살통을 못 들었다 — 이 시험이 무의미해진다");
+        srv.DebugMoveTo(w, 1100, 1000);
+        run(srv, ms, 1);
+        std::vector<nox::OutPacket> keep;
+        const int dt = shoot(srv, ms, keep);
+        char m[200]; std::snprintf(m, sizeof(m), "⑩ 석궁이 공격 시작 뒤 프레임 2 에 안 쐈다(%d)", dt);
+        Check(dt == 2, m);
+        Check(heard(keep, c, 886) == 1 && heard(keep, c, 885) == 0, "⑩ 석궁 쏘는 소리가 886 이 아니다");
+        for (int t = 0; t < 5 && srv.arrowHit(AH::BoltPass) == 0; ++t) run(srv, ms, 1, &keep);
+        std::snprintf(m, sizeof(m), "⑩ 쇠뇌살이 죽인 것을 뚫고 가지 않았다(뚫음 %llu · 피해 %llu · 안들어감 %llu · w 체력 %u · 화살 %zu)",
+                      srv.arrowHit(AH::BoltPass), srv.arrowHit(AH::Hurt), srv.arrowHit(AH::NoHurt), srv.HealthOf(w), srv.missileList().size());
+        Check(srv.arrowHit(AH::BoltPass) == 1 && srv.HealthOf(w) == 0 && srv.missileList().size() == 1 && srv.missileList()[0].type == 531, m);
+    }
+    // ⑪ 재장전 칸 — 2 로 두면 쏠 때 ReloadingQuiver · 칸 1 · 화살 없음 · 887
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        srv.DebugSetBowReload(c, kBow, 2);
+        std::vector<nox::OutPacket> keep;
+        shoot(srv, ms, keep, BS::Reloading);
+        int reload = -1;
+        for (const auto& x : srv.DebugInventory(c)) if (x.netCode == kBow) reload = x.bowReload;
+        Check(srv.bowShot(BS::Reloading) == 1 && srv.bowShot(BS::Shot) == 0 && srv.missileList().empty() && reload == 1 &&
+              HasPriMsg(keep, c, "pattack.c:ReloadingQuiver") && heard(keep, c, 887) == 1, "⑪ 재장전 칸이 있는데 쐈거나 칸·글·887 이 틀렸다");
+        // 다시 들면 칸이 0 이 된다(`:4984~4986`)
+        run(srv, ms, 31);
+        std::vector<nox::OutPacket> o1;
+        send(srv, c, nox::Op::TRY_DEQUIP, kBow, o1);
+        send(srv, c, nox::Op::TRY_EQUIP, kBow, o1);
+        for (const auto& x : srv.DebugInventory(c)) if (x.netCode == kBow) reload = x.bowReload;
+        Check(srv.DebugWeaponNet(c) == kBow && reload == 0, "⑪ 활을 다시 들었는데 재장전 칸이 0 이 아니다");
+    }
+    // ⑪b 든 화살통이 0발이면 쏘지 않는다 — 가방 첫 화살통이 그 든 것이라 다시 들기도 「이미 듦」으로 실패 → NoQuiver · 화살통 0/20 그대로
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        srv.DebugSetCharges(c, kQ1, 0, 20);
+        std::vector<nox::OutPacket> keep;
+        shoot(srv, ms, keep, BS::NoQuiver);
+        Check(srv.bowShot(BS::NoQuiver) == 1 && srv.bowShot(BS::Shot) == 0 && srv.missileList().empty() && ch(srv, kQ1) == 20 && worn(srv, kQ1),
+              "⑪b 0발 화살통으로 쐈거나(또는 화살 수가 흐트러졌다)");
+    }
+    // ⑫ 화살이 다 떨어지면 화살통을 지운다(본인 `4d` · 남에게 벗음 겉모습) → 다음 발은 가방의 다른 화살통을 든다(ReloadQuiver) · 그것도 없으면 NoQuiver + 887
+    for (int spare = 1; spare >= 0; --spare) {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        std::vector<nox::OutPacket> o0;
+        if (spare) send(srv, c, nox::Op::TRY_GET, kQBig, o0);
+        srv.DebugSetCharges(c, kQ1, 1, 20);
+        std::vector<nox::OutPacket> keep;
+        shoot(srv, ms, keep);
+        bool drop = false;
+        for (const auto& m : FlattenTo(keep, c))
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_DROP) && (m[1] | (m[2] << 8)) == kQ1) drop = true;
+        Check(!srv.Carries(c, kQ1) && drop && chMsg(keep, kQ1, 0, 20) &&
+              FindMsg(FlattenTo(keep, w), static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)), "⑫ 빈 화살통을 안 지웠다(0/20 알림 · 본인 4d · 남에게 벗음)");
+        run(srv, ms, 31);                                   // 14 → 13
+        std::vector<nox::OutPacket> k2;
+        shoot(srv, ms, k2, spare ? BS::Reloaded : BS::NoQuiver);
+        if (spare) Check(srv.bowShot(BS::Reloaded) == 1 && worn(srv, kQBig) && HasPriMsg(k2, c, "pattack.c:ReloadQuiver") && srv.bowShot(BS::Shot) == 1,
+                         "⑫ 가방에 화살통이 있는데 바꿔 들지 않았다");
+        else Check(srv.bowShot(BS::NoQuiver) == 1 && HasPriMsg(k2, c, "pattack.c:NoQuiver") && heard(k2, c, 887) == 1 && srv.bowShot(BS::Shot) == 1,
+                   "⑫ 화살통이 없는데 NoQuiver·887 이 아니다");
+    }
+    // ⑬ 벽 — 동쪽 벽 칸(45,43)에 닿으면 Wall · 화살 지움 · 그 칸에 맵 피해(안 부서지는 벽 → 소리만 wallGate[1])
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        srv.SetWalls({ { 45, 43 } });
+        std::vector<nox::OutPacket> keep;
+        shoot(srv, ms, keep);
+        for (int t = 0; t < 5 && srv.arrowHit(AH::Wall) == 0; ++t) run(srv, ms, 1, &keep);
+        Check(srv.arrowHit(AH::Wall) == 1 && srv.missileList().empty() && srv.wallGate(1) == 1 && srv.wallGate(0) == 0,
+              "⑬ 화살이 벽에 닿아 맵 피해를 주고 사라지지 않았다");
+    }
+    // ⑭ 앞이 막힘 — 쏘는 틱에 코앞(10)이 벽 칸 가운데면 화살을 안 만들고 화살통도 안 깎는다(`:4571` 선 추적 5)
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        srv.SetWalls({ { 44, 43 } });                       // 가운데 (1023.5, 1000.5) · 쏘는 자리 = 몸 + 4 앞
+        std::vector<nox::OutPacket> keep;
+        click(srv, keep);
+        run(srv, ms, 10, &keep);                            // 쏘기 한 프레임 전(클릭은 다음 프레임에 공격이 서고 그 뒤 10 째에 쏜다)
+        srv.DebugMoveTo(c, 1010, 1000);
+        run(srv, ms, 1, &keep);
+        char m[200]; std::snprintf(m, sizeof(m), "⑭ 코앞이 벽인데 화살을 만들었다(막힘 %llu · 쏨 %llu · 화살통 %d)",
+                                   srv.bowShot(BS::Blocked), srv.bowShot(BS::Shot), ch(srv, kQ1));
+        Check(srv.bowShot(BS::Blocked) == 1 && srv.bowShot(BS::Shot) == 0 && srv.missileList().empty() && ch(srv, kQ1) == 20020, m);
+    }
+    // ⑮ 수명 — 트인 곳으로 쏘면 40프레임까지 날고 41째에 사라진다(`ProjectileUpdate`)
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        std::vector<nox::OutPacket> keep;
+        shoot(srv, ms, keep);
+        run(srv, ms, 40);
+        Check(srv.missileList().size() == 1 && srv.arrowHit(AH::Age) == 0, "⑮ 40프레임 전에 화살이 사라졌다");
+        run(srv, ms, 1);
+        Check(srv.missileList().empty() && srv.arrowHit(AH::Age) == 1, "⑮ 41프레임째에 수명으로 안 사라졌다");
+    }
+    // ⑯ 쏜 이 — 화살 앞으로 옮겨 서면 화살이 그냥 지나간다(Owner · 안 지움 · 피해 없음)
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        std::vector<nox::OutPacket> keep;
+        shoot(srv, ms, keep);
+        srv.DebugMoveTo(c, 1214, 1000);
+        for (int t = 0; t < 6 && srv.arrowHit(AH::Owner) == 0; ++t) run(srv, ms, 1);
+        Check(srv.arrowHit(AH::Owner) >= 1 && srv.missileList().size() == 1 && srv.HealthOf(c) == nox::HealthOnline(CharClass::Conjurer),
+              "⑯ 쏜 이에게 닿은 화살이 지워졌거나 피해를 줬다");
+    }
+    // ⑰ 장애물 — 동쪽 1100 의 원 장애물: 기본 피해 함수면 Obstacle · 지움 / 화약이면 종류 11 을 안 받아 NoHurt · 그대로 날아감
+    for (int powder = 0; powder <= 1; ++powder) {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        nox::Server::PhysBody ob;
+        ob.x = 1100; ob.y = 1000; ob.shape = 2; ob.r = 12;
+        ob.damageFn = powder ? nox::Server::kDmgBlackPowder : nox::Server::kDmgDefault;
+        srv.SetObstacles({ ob });
+        std::vector<nox::OutPacket> keep;
+        shoot(srv, ms, keep);
+        for (int t = 0; t < 5 && srv.arrowHit(AH::Obstacle) + srv.arrowHit(AH::NoHurt) == 0; ++t) run(srv, ms, 1);
+        if (powder) Check(srv.arrowHit(AH::NoHurt) >= 1 && srv.arrowHit(AH::Obstacle) == 0 && srv.missileList().size() == 1, "⑰ 화약 장애물에 화살이 지워졌다");
+        else Check(srv.arrowHit(AH::Obstacle) == 1 && srv.missileList().empty(), "⑰ 장애물에 닿은 화살이 안 지워졌다");
+    }
+    // ⑱ 피해가 안 들어가면 화살이 남는다(`:5305~5306`) — 막기 자세(18)의 대검 워리어가 앞에서 받으면 피해 함수가 0(`GAME3_3.c:258~288`)
+    {
+        nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic gs;
+        gs.netCode = 610; gs.type = 1170; gs.x = 1100; gs.y = 1000; gs.modifiable = true; gs.equipBit = 0x400; gs.isWeapon = true; gs.weaponClass = true;
+        gs.subclass = 0x400; gs.pickupFn = nox::PickupFn::Weapon; gs.weight = 8;
+        st.push_back(gs);
+        srv.SetWorldStatics(st);
+        srv.SetWeaponDef(1170, 1, 0);
+        srv.DebugMoveTo(w, 1100, 1000);
+        std::vector<nox::OutPacket> o0;
+        send(srv, w, nox::Op::TRY_GET, 610, o0);
+        send(srv, w, nox::Op::TRY_EQUIP, 610, o0);
+        Check(srv.DebugWeaponEquip(w) == 0x400, "⑱ 워리어가 대검을 못 들었다 — 이 시험이 무의미해진다");
+        run(srv, ms, 1);
+        const uint16_t hp0 = srv.HealthOf(w);
+        std::vector<nox::OutPacket> keep;
+        shoot(srv, ms, keep);
+        srv.DebugSetFacing(w, 128);                         // c(서쪽)를 봄
+        srv.DebugSetState(w, 18);
+        for (int t = 0; t < 3 && srv.arrowHit(AH::NoHurt) == 0; ++t) run(srv, ms, 1);
+        char m[200];
+        std::snprintf(m, sizeof(m), "⑱ 막힌 화살이 지워졌거나 피해가 들어갔다(안들어감 %llu · 피해 %llu · 화살 %zu · 체력 %u→%u)",
+                      srv.arrowHit(AH::NoHurt), srv.arrowHit(AH::Hurt), srv.missileList().size(), hp0, srv.HealthOf(w));
+        Check(srv.arrowHit(AH::NoHurt) == 1 && srv.arrowHit(AH::Hurt) == 0 && srv.missileList().size() == 1 && srv.HealthOf(w) == hp0, m);
+    }
+    // ⑲ (곁가지) 버린 물약이 「물약 줍기」를 되찾는다 — 전에는 바닥으로 돌아가며 `potionPickup` 을 잃어, 다쳐서 다시 주워도 그 자리에서 안 마셨다
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic p;
+        p.netCode = 620; p.type = 700; p.x = 1000; p.y = 1000; p.weight = 1;
+        p.isFood = true; p.foodBits = nox::kFoodHealthPotion; p.useAmount = 20; p.useFn = nox::UseFn::Potion;
+        p.potionPickup = true; p.pickupFn = nox::PickupFn::Potion;
+        st.push_back(p);
+        srv.SetWorldStatics(st);
+        std::vector<nox::OutPacket> o0;
+        send(srv, w, nox::Op::TRY_GET, 620, o0);           // 가득 차 있어 안 마시고 가방으로
+        Check(srv.Carries(w, 620) && srv.drankOnPickup() == 0, "⑲ 가득 찬 채 주운 물약을 마셨다 — 이 시험이 무의미해진다");
+        std::vector<uint8_t> d(nox::kWireHeaderSize + 7, 0);
+        d[nox::kWireHeaderSize + 0] = static_cast<uint8_t>(nox::Op::TRY_DROP);
+        d[nox::kWireHeaderSize + 1] = 620 & 0xff; d[nox::kWireHeaderSize + 2] = 620 >> 8;
+        d[nox::kWireHeaderSize + 3] = 1000 & 0xff; d[nox::kWireHeaderSize + 4] = 1000 >> 8;
+        d[nox::kWireHeaderSize + 5] = 1000 & 0xff; d[nox::kWireHeaderSize + 6] = 1000 >> 8;
+        srv.OnPacket(w, d.data(), d.size(), o0);
+        Check(!srv.Carries(w, 620), "⑲ 물약을 못 버렸다 — 이 시험이 무의미해진다");
+        srv.Damage(w, 50, o0);
+        std::vector<nox::OutPacket> o1; send(srv, w, nox::Op::TRY_GET, 620, o1);
+        Check(srv.drankOnPickup() == 1 && !srv.Carries(w, 620), "⑲ 버렸다 다시 주운 물약을 다친 채인데 그 자리에서 안 마셨다");
+    }
+    std::printf("  09-29 — 활·석궁·화살통: 줍기(직업·합치기 250·저절로 듦·충전 알림·소리) · 들기(활부터·먼저 든 화살통 놓기) · 놓기(활이면 화살통도) ·"
+                " 쏘기(칸 5·칸 1 · 19/20 · 885/886 · 14→13) · 피해 62 · 쇠뇌살 뚫기 · 재장전 칸 · 빈 화살통 지움·바꿔 듦·NoQuiver · 벽·막힘·수명·쏜 이·장애물\n");
 }
 
 // ── 09-28 — 남을 소개하는 `2d NEW_PLAYER` 의 104·108 자리 = 지금 갑옷·무기 비트(`player.go:233~234`) ─────────
@@ -26613,6 +26995,7 @@ int main() {
     TestMonsterCastB7();
     TestPickupAutoEquip();
     TestArmorEquip();
+    TestBowQuiver();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
     TestMonsterChaseReturn();

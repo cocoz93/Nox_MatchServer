@@ -548,4 +548,56 @@ bool ReadDoorXfer(const MapObject& o, DoorXfer& d) {
     return true;
 }
 
+// ★ 09-29 — 화살통 짐 `nox_xxx_XFerAmmo_4F6B20`(`GAME4.c:509~597`) — 판(u16, 우리 `tail` 앞) · 공통 머리(`mapReadWriteObjData_4F4530` — 위 문과 같은 짜임) ·
+//   수식 넷(u8 길이 + 이름) · 화살 수(u8 → 쓰기 짐 [1]) · 최대(u8 → [0]). 퀘스트면 [2] 를 0 으로(우리는 늘 0)
+bool ReadAmmoXfer(const MapObject& o, AmmoXfer& a) {
+    const std::vector<uint8_t>& t = o.tail;
+    size_t k = 0;
+    auto need = [&](size_t n) { return k + n <= t.size(); };
+    auto u8 = [&]() -> uint32_t { return t[k++]; };
+    auto u16 = [&]() -> uint32_t { const uint32_t v = t[k] | (t[k + 1] << 8); k += 2; return v; };
+    auto u32 = [&]() -> uint32_t {
+        const uint32_t v = t[k] | (t[k + 1] << 8) | (t[k + 2] << 16) | (static_cast<uint32_t>(t[k + 3]) << 24);
+        k += 4; return v;
+    };
+    if (!need(1)) return false;
+    a = AmmoXfer{};
+    if (u8() != 0) {
+        if (!need(4 + 1)) return false;
+        u32();
+        const uint32_t nameLen = u8();
+        if (!need(nameLen + 1 + 1 + 2)) return false;
+        k += nameLen;
+        u8();
+        u8();
+        const uint32_t links = u16();
+        if (!need(links * 4 + 4)) return false;
+        k += links * 4;
+        u32();
+        if (o.objVers >= 63) {
+            if (!need(2 + 4)) return false;
+            if (u16() > 1) return false;
+            const uint32_t len = u32();
+            if (len >= 0x400 || !need(len + 4)) return false;
+            k += len;
+            u32();
+        }
+        if (o.objVers >= 64) {
+            if (!need(4)) return false;
+            u32();
+        }
+    }
+    for (int m = 0; m < 4; ++m) {                     // 수식 넷(`:541~557`)
+        if (!need(1)) return false;
+        const uint32_t len = u8();
+        if (!need(len)) return false;
+        k += len;
+    }
+    if (!need(2)) return false;
+    a.count = static_cast<uint8_t>(u8());             // v13 → [1]
+    a.max = static_cast<uint8_t>(u8());               // v12 → [0]
+    a.rest = t.size() - k;
+    return true;
+}
+
 }  // namespace nox

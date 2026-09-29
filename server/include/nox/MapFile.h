@@ -87,6 +87,14 @@ struct DoorXfer {
 };
 bool ReadDoorXfer(const MapObject& o, DoorXfer& d);
 
+// ★ 09-29 — 화살통 짐(`nox_xxx_XFerAmmo_4F6B20` `GAME4.c:509~597`). 머리는 문과 같고, 수식 넷 뒤에 화살 수·최대
+struct AmmoXfer {
+    uint8_t count = 0;       // 쓰기 짐 [1] — 지금 화살 수
+    uint8_t max = 0;         // 쓰기 짐 [0] — 최대
+    size_t rest = 0;
+};
+bool ReadAmmoXfer(const MapObject& o, AmmoXfer& a);
+
 class MapFile {
 public:
     bool Load(const std::string& path);

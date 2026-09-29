@@ -818,6 +818,9 @@ int main(int argc, char** argv) {
         std::printf("  COLLIDE    %s %s\n", ti->collideFn.empty() ? "(없음)" : ti->collideFn.c_str(), ti->collideArgs.c_str());
         std::printf("  PICKUP     %s · DROP %s · WEIGHT %s\n", ti->pickupFn.empty() ? "(없음)" : ti->pickupFn.c_str(),
                     ti->dropFn.empty() ? "(없음)" : ti->dropFn.c_str(), ti->hasWeight ? "있음" : "없음");
+        // ★ 09-29 — 쓰기 함수(화살통 AmmoUse · 활 등 — 쓰기 짐이 화살 수·재장전 칸) · 초기 함수
+        std::printf("  USE        %s %s · INIT %s %s\n", ti->useHandler.empty() ? "(없음)" : ti->useHandler.c_str(), ti->useArgsRaw.c_str(),
+                    ti->initFn.empty() ? "(없음)" : ti->initFn.c_str(), ti->initArgs.c_str());
         std::fflush(stdout);
         return 0;
     }
@@ -942,6 +945,7 @@ int main(int argc, char** argv) {
         std::map<std::string, int> notPickup;   // 아이템이 아니라 걸러진 것 — 이름별로
         size_t decayExemptKinds[4] = {};        // ★ 09-28 — 바닥 물건의 「10초 규칙 예외」 까닭별(없음·RESPAWN·FLAG·Glyph)
         size_t dropFnKinds[5] = {};             // ★ 09-28 — 바닥 물건의 버리기 함수 갈래별(Default·갑옷무기·물약·음식·안옮김)
+        size_t ammoRead = 0, ammoBad = 0, ammoSum = 0, ammoMaxSum = 0, ammoRest = 0;   // ★ 09-29 — 화살통 짐: 읽음 · 못 읽음(0/0) · 화살 합 · 최대 합 · 짐 뒤 남은 바이트 합
         // ★ 2026-09-18 ④⑯ — 맵에 **그려진** 판 물건(깃발·왕관·공)의 자리.
         //   우리 서버는 맵 깃발을 안 읽고 제 자리에 놓으므로, 그림과 실물이 얼마나
         //   어긋나는지 보려면 맵 쪽 좌표가 있어야 한다.
@@ -973,8 +977,9 @@ int main(int argc, char** argv) {
             //     `ImpShot` 은 `SPEED = 400` · `COLLIDE = ProjectileCollide 5` 다
             //     ★ 묶음 9-b — **쏘는 덫이 쏘는 것**도 여기서 읽는다.
             //       `MercArcherArrow` 는 `SPEED = 800` · `COLLIDE = MonsterArrowCollide 10 10` 이다
+            //     ★ 09-29 — **사람이 쏘는 화살**(활 ArcherArrow · 석궁 ArcherBolt · 화살통 없는 WeakArcherArrow — `shootBowCrossbow2_539D80`)
             for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "HarpoonBolt",
-                                    "MercArcherArrow" }) {
+                                    "MercArcherArrow", "ArcherArrow", "ArcherBolt", "WeakArcherArrow" }) {
                 const uint16_t w = tdb.WireByName(nm);
                 const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
                 int amount = 0;
@@ -1659,6 +1664,31 @@ int main(int argc, char** argv) {
                 const nox::PickupFn pf = nox::PickupFnOf(ti->pickupFn);
                 w2.potionPickup = (pf == nox::PickupFn::Potion);
                 w2.goldPickup = (pf == nox::PickupFn::Gold);
+                w2.pickupFn = pf;   // ★ 09-29 — 무기·화살통 줍기 갈래(`sub_53A720` · `pickupAmmo_4F3B00`)
+                // ★ 09-29 — 무기 줍는 소리 `sub_53A6C0`(`GAME4_3.c:5014~5031`) — 지팡이 클래스(0x1000) 830 · 재질 쇠(0x10) 842 · 나무(8) 844 · 그 밖 없음
+                {
+                    const uint32_t mat = nox::ParseMaterial(ti->materialRaw);
+                    if (ti->classRaw.find("WAND") != std::string::npos) w2.pickupSound = 830;
+                    else if (mat & 0x10) w2.pickupSound = 842;
+                    else if (mat & 0x8) w2.pickupSound = 844;
+                }
+                // ★ 09-29 — 화살통의 화살 수·최대 — 맵 짐(`nox_xxx_XFerAmmo_4F6B20` `GAME4.c:509~597`)에서. 쓰기 함수가 AmmoUse 인 것만
+                //   짐 판 = 앞 u16(`typeVers` — `GAME4.c:534~537` 60 을 넘으면 실패) · 40 미만이면 옛 짜임(`readObjectOldVer_4F4170` `GAME3_3.c:11259~11261`)이라
+                //   우리 읽개가 못 읽는다 — 그런 것은 0/0 으로 두고 세어서 알린다
+                if (ti->useHandler == "AmmoUse") {
+                    nox::AmmoXfer ax;
+                    if (objs[i].typeVers >= 40 && objs[i].typeVers <= 60 && nox::ReadAmmoXfer(objs[i], ax)) {
+                        w2.charges = ax.count;
+                        w2.chargesMax = ax.max;
+                        srv.NoteQuiverFromMap();
+                        ++ammoRead;
+                        ammoSum += ax.count;
+                        ammoMaxSum += ax.max;
+                        ammoRest += ax.rest;
+                    } else {
+                        ++ammoBad;
+                    }
+                }
                 // ★ 09-28 — 버려도 안 사라지는 까닭(`GAME3_3.c:6440~6442`). 오브젝트 깃발은 thing.bin FLAGS 가 밑이다 —
                 //   맵 파일 깃발은 0x11408162 안의 비트만 덮으므로(`mapReadWriteObjData_4F4530` `:11296~11306`) RESPAWN(0x80000)은 종류 값 그대로
                 {
@@ -1746,6 +1776,8 @@ int main(int argc, char** argv) {
                 std::string cur;
                 uint8_t classes = 0;
                 int reqStr = 0;
+                int dmgMin = 0;          // ★ 09-29 — DAMAGE_MIN(+72) · DAMAGE_COEFFICIENT(+64) — 화살 피해 식(`calcBoltDamage_4EF1E0`)이 쓴다
+                double dmgCoeff = 0.0;   //   `0.0f;` 꼴도 있다(ArcherBolt) — atof 가 0 으로 읽는다
                 size_t nDef = 0, nNoWire = 0, nBadClass = 0;
                 size_t pos = 0;
                 while (pos < wsec.size()) {
@@ -1758,16 +1790,24 @@ int main(int argc, char** argv) {
                         if (!cur.empty()) {
                             const uint16_t wire = tdb.WireByName(cur);
                             if (wire == 0) ++nNoWire;
-                            else { srv.SetWeaponDef(wire, classes, static_cast<uint16_t>(reqStr < 0 ? 0 : reqStr)); ++nDef; }
-                            if (cur == "Longsword" || cur == "GreatSword" || cur == "StaffWooden" || cur == "ForceWand" || cur == "Bow")
-                                std::printf("[무기정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d\n", cur.c_str(), (unsigned)wire, (unsigned)classes, reqStr);
+                            else {
+                                srv.SetWeaponDef(wire, classes, static_cast<uint16_t>(reqStr < 0 ? 0 : reqStr),
+                                                 static_cast<uint16_t>(dmgMin < 0 ? 0 : dmgMin), static_cast<float>(dmgCoeff));
+                                ++nDef;
+                            }
+                            if (cur == "Longsword" || cur == "GreatSword" || cur == "StaffWooden" || cur == "ForceWand" || cur == "Bow" ||
+                                cur == "CrossBow" || cur == "Quiver" || cur == "ArcherArrow" || cur == "ArcherBolt" || cur == "WeakArcherArrow")
+                                std::printf("[무기정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 피해 최소 %d · 계수 %.3f\n",
+                                            cur.c_str(), (unsigned)wire, (unsigned)classes, reqStr, dmgMin, dmgCoeff);
                         }
                         cur.clear();
                         continue;
                     }
                     const size_t eq = line.find('=');
-                    if (eq == std::string::npos) { cur = line; classes = 0; reqStr = 0; continue; }   // 새 정의의 이름 줄
+                    if (eq == std::string::npos) { cur = line; classes = 0; reqStr = 0; dmgMin = 0; dmgCoeff = 0.0; continue; }   // 새 정의의 이름 줄
                     const std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
+                    if (key == "DAMAGE_MIN") dmgMin = std::atoi(val.c_str());
+                    else if (key == "DAMAGE_COEFFICIENT") dmgCoeff = std::atof(val.c_str());
                     if (key == "CLASSUSE") {
                         size_t s0 = 0;
                         while (s0 <= val.size()) {
@@ -2394,6 +2434,7 @@ int main(int argc, char** argv) {
                     " · 버리기 함수: 기본 %zu · 갑옷무기 %zu · 물약 %zu · 음식 %zu · 안옮김 %zu\n",
                     decayExemptKinds[0], decayExemptKinds[1], decayExemptKinds[2], decayExemptKinds[3], nStat,
                     dropFnKinds[0], dropFnKinds[1], dropFnKinds[2], dropFnKinds[3], dropFnKinds[4]);
+        std::printf("[화살통] 맵 짐 읽음 %zu · 못 읽음 %zu(0/0 으로 둠) · 화살 합 %zu · 최대 합 %zu · 짐 뒤 남은 바이트 합 %zu\n", ammoRead, ammoBad, ammoSum, ammoMaxSum, ammoRest);
         if (!notPickup.empty()) {
             size_t total = 0;
             for (const auto& kv : notPickup) total += static_cast<size_t>(kv.second);
@@ -3205,18 +3246,30 @@ int main(int argc, char** argv) {
                             srv.drankOnPickup(), srv.goldPicked(),
                             srv.gearGiven(true), srv.gearGiven(false), srv.weaponNoStats());
                 // ★ 09-27 B3 — 무기 들기 관문별(정답지 `53A420` 순서)
-                std::printf("[무기들기] 무기아님 %llu · 이미 %llu · 함성광전사 %llu · 직업 %llu · 힘 %llu · 화살통 %llu · 내려놓기실패 %llu · 듦 %llu\n",
+                std::printf("[무기들기] 무기아님 %llu · 이미 %llu · 함성광전사 %llu · 직업 %llu · 힘 %llu · 활없음 %llu · 내려놓기실패 %llu · 듦 %llu\n",
                             srv.equipGate(nox::EquipGate::NotWeapon), srv.equipGate(nox::EquipGate::Already),
                             srv.equipGate(nox::EquipGate::Ability), srv.equipGate(nox::EquipGate::ClassFail),
-                            srv.equipGate(nox::EquipGate::StrengthFail), srv.equipGate(nox::EquipGate::QuiverLater),
+                            srv.equipGate(nox::EquipGate::StrengthFail), srv.equipGate(nox::EquipGate::BowNotFound),
                             srv.equipGate(nox::EquipGate::DequipFail), srv.equipGate(nox::EquipGate::Equipped));
                 // ★ 09-27 B4 — 무기 내려놓기(`53A140`) 나간 길별 + 공격 중 석궁 벗기 요청 버림
                 std::printf("[무기내려놓기] 무기아님 %llu · 든것아님 %llu · 화살통 %llu · 내려놓음 %llu · 공격중석궁 %llu"
                             " · (B5) 들때충전알림 %llu · 두손무기가벗긴방패 %llu · 내려놓으며끊은주문 %llu · (09-28) 방패가내려놓게한두손무기 %llu\n",
                             srv.dequipGate(nox::DequipGate::NotWeapon), srv.dequipGate(nox::DequipGate::NotHeld),
-                            srv.dequipGate(nox::DequipGate::QuiverLater), srv.dequipGate(nox::DequipGate::Dequipped),
+                            srv.dequipGate(nox::DequipGate::QuiverOff), srv.dequipGate(nox::DequipGate::Dequipped),
                             srv.dequipGate(nox::DequipGate::CrossbowAttacking),
                             srv.wandChargesOnEquip(), srv.twoHandShieldOff(), srv.wandSpellCut(), srv.shieldDropsTwoHand());
+                // ★ 09-29 — 활·석궁 쏘기 · 사람 화살 닿음 · 무기·화살통 줍기
+                std::printf("[활] 쏨 %llu · 앞막힘 %llu · 재장전중 %llu · 화살통바꿔듦 %llu · 화살통없음 %llu · 쏜뒤자세끝 %llu"
+                            " · [화살닿음] 쏜이 %llu · 죽은것 %llu · 피해 %llu · 안들어감 %llu · 쇠뇌살뚫음 %llu · 장애물 %llu · 벽 %llu · 수명 %llu"
+                            " · [무기줍기] 직업 %llu · 화살통합침 %llu · 화살통저절로 %llu · 충전알림 %llu · 소리 %llu · 맵화살통 %llu\n",
+                            srv.bowShot(nox::BowShot::Shot), srv.bowShot(nox::BowShot::Blocked), srv.bowShot(nox::BowShot::Reloading),
+                            srv.bowShot(nox::BowShot::Reloaded), srv.bowShot(nox::BowShot::NoQuiver), srv.bowPoseEnded(),
+                            srv.arrowHit(nox::ArrowHit::Owner), srv.arrowHit(nox::ArrowHit::Dead), srv.arrowHit(nox::ArrowHit::Hurt),
+                            srv.arrowHit(nox::ArrowHit::NoHurt), srv.arrowHit(nox::ArrowHit::BoltPass), srv.arrowHit(nox::ArrowHit::Obstacle),
+                            srv.arrowHit(nox::ArrowHit::Wall), srv.arrowHit(nox::ArrowHit::Age),
+                            srv.weaponPick(nox::WeaponPick::ClassFail), srv.weaponPick(nox::WeaponPick::AmmoMerged),
+                            srv.weaponPick(nox::WeaponPick::QuiverAutoEquip), srv.weaponPick(nox::WeaponPick::ChargesReport),
+                            srv.weaponPick(nox::WeaponPick::Sound), srv.quiverFromMap());
                 // ★ 09-28 — 버리기(`TRY_DROP` → `drop_4ED810`) 나간 길별
                 std::printf("[버리기] 관전 %llu · 가방에없음 %llu · 벽 %llu · 버림 %llu"
                             " · [줍고입음] 무기 %llu · 갑옷 %llu · 같은부위라안입음 %llu · 두손무기라방패안입음 %llu · 부위모름 %llu · [2d차림실음] %llu"
