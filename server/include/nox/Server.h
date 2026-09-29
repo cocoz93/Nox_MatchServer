@@ -3796,6 +3796,7 @@ public:
     unsigned long long weaponPick(WeaponPick k) const { return k < WeaponPick::Count ? weaponPick_[static_cast<size_t>(k)] : 0; }   // ★ 09-29
     unsigned long long quiverFromMap() const { return quiverFromMap_; }   // ★ 09-29 — 맵 짐에서 화살 수를 읽어 실은 바닥 화살통
     unsigned long long bowPoseEnded() const { return bowPoseEnded_; }     // ★ 09-29
+    unsigned long long connectTailStops() const { return connectTailStops_; }   // ★ 09-29 ③
     int DebugArrowDamage(const std::string& owner, uint16_t arrowType) const { return ArrowDamage(owner, arrowType); }   // ★ 09-29
     void NoteQuiverFromMap() { ++quiverFromMap_; }
     // ★ 09-29 — 시험용: 가방 물건의 재장전 칸·화살 수를 바꾼다
@@ -4613,6 +4614,7 @@ private:
     unsigned long long weaponPick_[kWeaponPickCount] = {}; // ★ 09-29
     unsigned long long quiverFromMap_ = 0;                 // ★ 09-29
     unsigned long long bowPoseEnded_ = 0;                  // ★ 09-29 — 활 쏜 뒤 상태 14 → 13(1초)
+    unsigned long long connectTailStops_ = 0;              // ★ 09-29 ③ — 게임 패킷 안 0x00 에서 읽기를 끝낸 수(전에는 0x04 로 답함)
     std::map<uint16_t, WeaponDef> weaponDef_;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
     struct ArmorDef { uint8_t classes = 0; uint16_t reqStrength = 0; float value = 0.0f; };
     std::map<uint16_t, ArmorDef> armorDef_;       // ★ 09-29 — 종류 번호 → modifier.bin 갑옷 정의

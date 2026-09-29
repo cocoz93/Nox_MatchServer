@@ -3405,6 +3405,8 @@ int main(int argc, char** argv) {
                     }
                     std::printf("\n");
                 }
+                // ★ 09-29 ③ — 게임 패킷 안의 0x00(0 채움)에서 읽기를 끝낸 수(전에는 하나하나 0x04 로 답했다)
+                std::printf("[0채움] 게임 패킷 안 0x00 에서 읽기 끝 %llu\n", srv.connectTailStops());
                 std::fflush(stdout);
             }
         }

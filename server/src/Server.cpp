@@ -2648,6 +2648,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
     lastFragOps_.clear();   // 진단 — 이 조각에서 무엇을 읽었는지 남긴다
     while (it.Next()) {
         ++count;
+        // ★ 09-29 ③ 와이어 대조(같은 자동 클라 · 서버만 바꿔) — **게임 패킷 안의 0x00 은 거기서 읽기를 끝낸다.**
+        //   정답지는 첫 번호가 0x20 미만인 패킷만 접속 제어로 보고(`netstr/conn.go:704~708` `processStreamOp` — 첫 번호 하나만),
+        //   게임 패킷은 `sdecode` 로 넘기는데 0x00 은 거기서 모르는 번호라 −1 → 그 패킷 나머지를 버린다(`network_server.go:62~67` · `sdecode.c:473~474`).
+        //   ✖ 우리는 클라 중요 메시지(`aa`) 뒤의 **0 채움 바이트 하나하나**를 「접속 요청 재전송」으로 읽고 매번 `0x04`(「이미 접속함」
+        //     `codeAlreadyJoined4`)로 답했다 — 2분 판에 **47,082건**(패킷 하나에 7개 안팎 · 대조군 0건 · `_evidence/_runs/wc0929_*.cap.txt`)
+        if (count > 1 && it.op() == static_cast<uint8_t>(Op::SERVER_CONNECT)) { ++connectTailStops_; break; }
         ++seen_[it.op()];
         if (lastFragOps_.size() < 16) lastFragOps_.push_back(it.op());
 

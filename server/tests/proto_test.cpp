@@ -21958,6 +21958,39 @@ void TestBowQuiver() {
                 " 쏘기(칸 5·칸 1 · 19/20 · 885/886 · 14→13) · 피해 62 · 쇠뇌살 뚫기 · 재장전 칸 · 빈 화살통 지움·바꿔 듦·NoQuiver · 벽·막힘·수명·쏜 이·장애물\n");
 }
 
+// ── 09-29 ③ 와이어 대조 — 게임 패킷 안의 0x00(0 채움)은 읽기 끝 · 0x04 로 답하지 않는다(`netstr/conn.go:704` · `network_server.go:62~67`) ─────────
+void TestConnectZeroTail() {
+    const std::string a = "10.9.29.61:9361";
+    auto count04 = [&](const std::vector<nox::OutPacket>& out) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, a)) if (!m.empty() && m[0] == static_cast<uint8_t>(nox::Op::CODE4)) ++n;
+        return n;
+    };
+    nox::Server srv;
+    srv.SetInboundPlain(true);                              // 암호 없이 — 번호 셈만 본다
+    srv.SetXorKey(0);                                       // ⚠ 키를 준 뒤 나가는 것도 XOR 된다 — 0 이 아니면 `Flatten` 이 0x04 를 못 읽어 ②가 「못 읽어서 0」으로 거짓 통과한다(첫 판 ①이 잡음)
+    {
+        const uint8_t conn[3] = { 0xff, 0x00, 0x00 };       // 첫 접속 요청(`ff 00 00`) — 키를 받는다
+        std::vector<nox::OutPacket> o; srv.OnPacket(a, conn, sizeof(conn), o);
+    }
+    // ① 키를 받은 뒤 접속 요청만 든 패킷(첫 메시지 0x00)은 전처럼 0x04 하나(정품 09-05 녹음 자리)
+    {
+        const uint8_t again[3] = { 0xff, 0x00, 0x00 };
+        std::vector<nox::OutPacket> o; srv.OnPacket(a, again, sizeof(again), o);
+        Check(count04(o) == 1, "① 키 받은 뒤 다시 온 접속 요청에 0x04 하나가 안 갔다");
+    }
+    // ② 게임 메시지 뒤 0 채움 셋 — 0x04 없음 · 읽기 끝 1
+    {
+        std::vector<uint8_t> p = CodePacket(nox::Op::TRY_GET, 9999);
+        p.push_back(0); p.push_back(0); p.push_back(0);
+        const unsigned long long s0 = srv.connectTailStops();
+        std::vector<nox::OutPacket> o; srv.OnPacket(a, p.data(), p.size(), o);
+        char m[160]; std::snprintf(m, sizeof(m), "② 게임 패킷의 0 채움에 0x04 로 답했다(%d · 읽기 끝 %llu)", count04(o), srv.connectTailStops() - s0);
+        Check(count04(o) == 0 && srv.connectTailStops() - s0 == 1, m);
+    }
+    std::printf("  09-29 ③ — 게임 패킷 안의 0x00 은 읽기 끝(0x04 답 없음) · 접속 요청만 든 패킷은 0x04 하나\n");
+}
+
 // ── 09-28 — 남을 소개하는 `2d NEW_PLAYER` 의 104·108 자리 = 지금 갑옷·무기 비트(`player.go:233~234`) ─────────
 //   사람 판 2차 — 「평상복을 입었는데 남 화면엔 맨몸」. 녹음(0)을 그대로 보내 다시 소개할 때마다 남의 차림을 지웠다
 void TestNewPlayerGearBits() {
@@ -26996,6 +27029,7 @@ int main() {
     TestPickupAutoEquip();
     TestArmorEquip();
     TestBowQuiver();
+    TestConnectZeroTail();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
     TestMonsterChaseReturn();
