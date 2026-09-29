@@ -555,9 +555,9 @@ constexpr MonsterStats kMonsters[] = {
     { "EvilCherub",         1317,    40,    0,    0.0,   100,   0,  0,  "CherubArrow", 150.0, 15, 25, 1.2, 110000 },
     { "Ghost",              1325,    40,   10,   10.0,    60,   0,  0,  nullptr,         0.0,  0,  0, 1.1,  20000 },
     { "Imp",                1328,    25,    0,    0.0,   120,   0,  0,  "ImpShot",     150.0, 15, 30, 1.3,  13000 },   // 발사체 피해 5
-    { "EmberDemon",         1337,    30,    0,   15.0,    85,   0,  0,  "Fireball",    200.0, 30, 60, 1.3,  60000 },   // ★ 근접 15.0 정정
+    { "EmberDemon",         1337,    30,   20,   15.0,    85,   5, 10,  "Fireball",    200.0, 30, 60, 1.3,  60000 },   // ★ 근접 15.0 정정 · ★ 09-29 B3 — 근접 피해 20·간격 5~10 정정(monster.bin ARENA — 「근접 칸이 비었다」는 틀림)
     { "Bomber",             1348,     1,    0,    0.0,   120,   0,  0,  nullptr,         0.0,  0,  0, 1.0,  10000 },   // 자폭형
-    { "AlbinoSpider",       1355,    60,   15,   15.0,    80,   0,  0,  nullptr,         0.0,  0,  0, 1.5,  20000 },   // ★ 근접 15.0 정정
+    { "AlbinoSpider",       1355,    60,   15,   15.0,    80,  15, 25,  nullptr,         0.0,  0,  0, 1.5,  20000 },   // ★ 근접 15.0 정정 · ★ 09-29 B3 — 간격 15~25 정정(monster.bin 모드 구분 없는 값)
     { "SmallAlbinoSpider",  1356,    25,    6,   15.0,   100,   0,  0,  nullptr,         0.0,  0,  0, 1.5,   5000 },
     { "Bat",                1357,    35,    4,   15.0,   105,   0,  0,  nullptr,         0.0,  0,  0, 1.3,   8000 },
     { "GiantLeech",         1358,    60,   20,   15.0,    50,  30, 40,  nullptr,         0.0,  0,  0, 1.3,  12000 },
@@ -597,6 +597,27 @@ struct QuestStage {
 };
 // ★ 09-29 B2 — 식충식물 와이어 번호(위 `kMonsters` 표 · 정답지 `s.IsPlant`) — 되갚기가 다르게 간다(`server/object_ai.go:191~195`)
 constexpr uint16_t kCarnivorousPlantType = 1371;
+
+// ★ 09-29 B3 — 근접 때리기 함수·피해 종류·밀어내기·독 ⭕ monster.bin(`MELEE_STRIKE_FUNCTION` +236 · `MELEE_ATTACK_DAMAGE_TYPE` +124 ·
+//   `MELEE_ATTACK_IMPACT` +120 · `MELEE_ATTACK_POISON_CHANCE/STRENGTH/MAX` +136·+140·+144) — 위 `kMonsters` 열셋만.
+//   피해 종류 번호는 아래 18칸 표(8 BITE · 2 CRUSH · 4 DRAIN · 10 CLAW). NULL(Imp·EvilCherub·Beholder)은 근접을 못 한다(`532440` — 빠짐)
+enum class StrikeFn : uint8_t { None = 0, Monster, Spider, Ghost, Bomber };
+struct MeleeStrikeInfo { StrikeFn fn = StrikeFn::None; uint8_t dtype = 0; float impact = 0.0f; int poisonChance = 0, poisonStrength = 0, poisonMax = 0; };
+inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
+    switch (wire) {
+        case 1358: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };    // GiantLeech BITE
+        case 1355: return { StrikeFn::Spider,  8,  0.0f, 20, 1, 3 };   // AlbinoSpider BITE · 독 20% · 세기 1 · 최대 3
+        case 1356: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };    // SmallAlbinoSpider BITE
+        case 1366: return { StrikeFn::Monster, 2, 60.0f, 0, 0, 0 };    // BlackBear CRUSH · 밀어내기 60
+        case 1365: return { StrikeFn::Monster, 2, 60.0f, 0, 0, 0 };    // Bear CRUSH · 밀어내기 60
+        case 1357: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };    // Bat BITE
+        case 1325: return { StrikeFn::Ghost,   4,  0.0f, 0, 0, 0 };    // Ghost DRAIN
+        case 1337: return { StrikeFn::Monster, 10, 0.0f, 0, 0, 0 };    // EmberDemon CLAW
+        case 1348: return { StrikeFn::Bomber,  0,  0.0f, 0, 0, 0 };    // Bomber(근접 사거리 0 · 함수는 늘 1)
+        case 1371: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };    // CarnivorousPlant BITE
+        default:   return {};                                          // Imp·EvilCherub·Beholder — NULL
+    }
+}
 
 constexpr QuestStage kQuestStages[] = {
     { "Stage 1: Leeches",  1358, 2 },   // GiantLeech 체력 60

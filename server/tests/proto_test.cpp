@@ -12245,6 +12245,7 @@ void TestAIMelee() {
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         srv.DebugMoveTo(a, 1000, 1000);
         srv.DebugMoveTo(b, 1010, 1000);
+        srv.DebugTeleport(b, 1010.0f, 1000.0f);   // ★ 09-29 B3 — 물리 자리(posX)까지 — 근접이 이제 대상을 자리로 다시 고른다(549440)
         srv.DebugSpawnPet(type, 1000, 1000, a);
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
@@ -12374,12 +12375,12 @@ void TestAIMelee() {
         Check(srv.HealthOf(b) < hp0, "때렸는데 상대 체력이 안 줄었다");
         Check(srv.DebugAIAction(0, 0) == 0, "때린 뒤 안 빠졌다");
     }
-    // ⑤b ★ nine-defects 4-c3b3b — 소환수가 물 때 맞는 소리: 때린 이 = 때린 것 = 그 몬스터(`GAME5.c:2529~2531`).
+    // ⑤b ★ 09-29 B3 — 곰(CRUSH 2)으로 — 거머리 BITE(8)는 기본 타격 소리가 안 난다(`sub_532F70` 0·2·3·10·11 만)`r`n    // ⑤b ★ nine-defects 4-c3b3b — 소환수가 물 때 맞는 소리: 때린 이 = 때린 것 = 그 몬스터(`GAME5.c:2529~2531`).
     //   그 종류가 맞히는 소리를 가지면 **맞는 쪽 소리를 안 낸다**(주인 있는 소환수도 몬스터라 검사를 받는다) · 없으면 몬스터 몸 재질로(쇠 × 살 862)
     for (int hitSnd = 0; hitSnd < 2; ++hitSnd) {
-        nox::Server srv; mk(srv, 1358);
+        nox::Server srv; mk(srv, 1365);
         AllMetalButPlayer(srv);
-        if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1358] = 1; srv.SetMonsterHitSounds(t); }
+        if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1365] = 1; srv.SetMonsterHitSounds(t); }
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 0);
@@ -12395,12 +12396,13 @@ void TestAIMelee() {
     }
     // ⑤c ★ 4-c3b3b — 맞는 쪽이 **소환수**여도 같다(기본 타격 소리 `532E20` 앞에서 가른다) — 쇠 몬스터 × 쇠 몬스터 861
     for (int hitSnd = 0; hitSnd < 2; ++hitSnd) {
-        nox::Server srv; mk(srv, 1358);
+        nox::Server srv; mk(srv, 1365);
         AllMetalButPlayer(srv);
-        if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1358] = 1; srv.SetMonsterHitSounds(t); }
+        if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1365] = 1; srv.SetMonsterHitSounds(t); }
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
         srv.DebugSpawnPet(1328, 1010.0f, 1000.0f, std::string());   // 1 — 맵 몬스터(물릴 쪽)
+        srv.DebugTeleport(b, 3000.0f, 3000.0f);                     // ★ 09-29 B3 — b 가 같은 자리면 근접이 b 를 고른다(틈이 같으면 먼저 본 쪽)
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, std::string(), 1);
         srv.DebugSetPetNextHit(0, 0);
@@ -20390,6 +20392,122 @@ void TestMonsterIdleB2() {
     std::printf("  09-29 B2 — 놀기·되갚기: 등 뒤 피해 → 다침 소리·되갚기 싸움·ALERT·달리기 · 쌓임 비우면 싸움 끝 · 성향 0.5/0.83 · 놀 때 소리 · 도발\n");
 }
 
+// ── 09-29 B3 — 근접 다시 고르기(`strikeMonsterDefault_549380` · `monsterPickMeleeTarget_549440` · `strikeSpider_549BC0` · `strikeGhost_549A60`) ─────────
+void TestMonsterMeleeB3() {
+    const std::string a = "10.9.29.31:9331", c = "10.9.29.32:9332";
+    using MW = nox::MeleeStrikeWay;
+    // 몬스터 하나(1000,1000 · +x 를 봄)와 사람 a · 휘두르기 한 번(쉬는 시간 없음 → 16 시작 → 그 틱에 때림)
+    auto mk = [&](nox::Server& srv, uint16_t type, float ax, float ay) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, ax, ay);
+        srv.DebugSpawnPet(type, 1000, 1000, std::string());
+        srv.DebugSetAutoFight(false);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetFrame(1000);
+    };
+    auto swing = [](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPush(0, 16);
+        srv.DebugAITick(0, out);
+    };
+    // ① 사거리 — 식충식물(40) · 200 앞은 못 맞히고(대상 없음 · 기본 1) 45 앞(틈 35)은 맞힌다
+    for (int near = 0; near <= 1; ++near) {
+        nox::Server srv; mk(srv, 1371, near ? 1045.0f : 1200.0f, 1000.0f);
+        std::vector<nox::OutPacket> out;
+        const int h0 = srv.HealthOf(a);
+        swing(srv, out);
+        if (near) Check(srv.HealthOf(a) < h0 && srv.meleeStrike(MW::Hit) == 1, "① 45 앞(틈 35 < 40)인데 못 맞혔다");
+        else      Check(srv.HealthOf(a) == h0 && srv.meleeStrike(MW::NoTarget) == 1 && srv.meleeStrike(MW::MissSound) == 0,
+                        "① 200 앞을 맞혔거나(사거리 안 봄) 기본 근접이 빗나감 소리를 냈다(대상 없음은 1)");
+    }
+    // ② 앞쪽 — 등 뒤 10 은 못 맞힌다
+    {
+        nox::Server srv; mk(srv, 1358, 990.0f, 1000.0f);
+        std::vector<nox::OutPacket> out;
+        const int h0 = srv.HealthOf(a);
+        swing(srv, out);
+        Check(srv.HealthOf(a) == h0 && srv.meleeStrike(MW::NoTarget) == 1, "② 등 뒤를 물었다(앞쪽 내적 > 0.5)");
+    }
+    // ③ 시야선 — 사이에 벽이 있으면 0(빗나감 소리 칸 8)
+    {
+        nox::Server srv; mk(srv, 1371, 1030.0f, 1000.0f);
+        srv.SetWalls({ { 44, 42 }, { 44, 43 }, { 44, 44 } });   // x 1012~1035 칸 — 둘 사이
+        std::vector<nox::OutPacket> out;
+        const int h0 = srv.HealthOf(a);
+        swing(srv, out);
+        Check(srv.HealthOf(a) == h0 && srv.meleeStrike(MW::Blocked) == 1 && srv.meleeStrike(MW::MissSound) == 1 &&
+              srv.monsterSnd(8, false) + srv.monsterSnd(8, true) == 1,
+              "③ 벽 너머를 물었거나 빗나감 소리(칸 8)를 안 불렀다");
+    }
+    // ④ 틈이 가장 작은 것 — a(40 앞)보다 c(20 앞)
+    {
+        nox::Server srv; mk(srv, 1371, 1040.0f, 1000.0f);
+        srv.DebugEnterGame(c, 729, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(c, 1020.0f, 1005.0f);
+        std::vector<nox::OutPacket> out;
+        const int ha = srv.HealthOf(a), hc = srv.HealthOf(c);
+        swing(srv, out);
+        Check(srv.HealthOf(c) < hc && srv.HealthOf(a) == ha, "④ 더 가까운 c 가 아니라 a 를 물었다");
+    }
+    // ⑤ 거미 — 대상이 없으면 0(빗나감 소리) · 물면 20% 로 독
+    {
+        nox::Server srv; mk(srv, 1355, 1300.0f, 1000.0f);
+        std::vector<nox::OutPacket> out;
+        swing(srv, out);
+        Check(srv.meleeStrike(MW::NoTarget) == 1 && srv.meleeStrike(MW::MissSound) == 1, "⑤ 거미가 대상 없이 휘둘렀는데 빗나감 소리를 안 냈다");
+    }
+    {
+        nox::Server srv; mk(srv, 1355, 1015.0f, 1000.0f);
+        std::vector<nox::OutPacket> out;
+        for (int i = 0; i < 60; ++i) { swing(srv, out); srv.DebugSetHealth(a, 150); srv.DebugSetPoison(a, 0); }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "⑤ 거미 독 확률이 20%% 근처가 아니다 — 맞힘 %llu · 독 %llu", srv.meleeStrike(MW::Hit), srv.meleeStrike(MW::Poisoned));
+        Check(srv.meleeStrike(MW::Hit) == 60 && srv.meleeStrike(MW::Poisoned) >= 2 && srv.meleeStrike(MW::Poisoned) <= 30, msg);
+    }
+    // ⑥ 곰 — 밀어내기(IMPACT 60) — a 가 +x 로 밀린다
+    {
+        nox::Server srv; mk(srv, 1365, 1020.0f, 1000.0f);
+        std::vector<nox::OutPacket> out;
+        swing(srv, out);
+        Check(srv.meleeStrike(MW::Hit) == 1 && srv.DebugForceX(a) > 0.0, "⑥ 곰이 때렸는데 밀어내지 않았다");
+    }
+    // ⑦ 유령 — 때린 뒤 상대 기절(5) · 도망 사슬(25·41·24)
+    {
+        nox::Server srv; mk(srv, 1325, 1012.0f, 1000.0f);
+        std::vector<nox::OutPacket> out;
+        swing(srv, out);
+        Check(srv.meleeStrike(MW::Hit) == 1 && srv.DebugHasEnchant(a, 5) && srv.meleeStrike(MW::GhostFlee) == 1, "⑦ 유령이 때렸는데 기절을 안 걸었다");
+        const int top = srv.DebugAIStackInd(0);
+        Check(top >= 2 && srv.DebugAIAction(0, top) == 24 && srv.DebugAIAction(0, top - 1) == 41 && srv.DebugAIAction(0, top - 2) == 25,
+              "⑦ 유령 도망 사슬(25·41·24)이 안 쌓였다");
+    }
+    // ⑧ 표 — 불악마 근접 20·간격 5~10 · 흰 거미 간격 15~25(monster.bin)
+    {
+        const nox::MonsterStats* ed = nullptr; const nox::MonsterStats* sp = nullptr;
+        for (const auto& m : nox::kMonsters) { if (m.wireType == 1337) ed = &m; if (m.wireType == 1355) sp = &m; }
+        Check(ed && ed->meleeDamage == 20 && ed->minDelay == 5 && ed->maxDelay == 10, "⑧ 불악마 근접 표가 monster.bin(20·5~10)과 다르다");
+        Check(sp && sp->minDelay == 15 && sp->maxDelay == 25, "⑧ 흰 거미 근접 간격이 monster.bin(15~25)과 다르다");
+        Check(nox::MeleeStrikeOf(1365).dtype == 2 && nox::MeleeStrikeOf(1358).dtype == 8 && nox::MeleeStrikeOf(1328).fn == nox::StrikeFn::None,
+              "⑧ 근접 함수·피해 종류 표가 monster.bin 과 다르다");
+    }
+    // ⑨ 피해 종류 — 거머리는 BITE(8) 라 기본 타격 소리가 걸러진다(`sub_532F70` 0·2·3·10·11 만) · 곰(CRUSH 2)은 난다
+    for (int bear = 0; bear <= 1; ++bear) {
+        nox::Server srv; mk(srv, bear ? 1365 : 1358, 3000.0f, 3000.0f);
+        AllMetalButPlayer(srv);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        srv.DebugSpawnPet(1328, 1012.0f, 1000.0f, a);               // 물릴 임프 — a 의 소환수(주인 없는 것끼리는 적이 아니다)
+        std::vector<nox::OutPacket> out;
+        swing(srv, out);
+        if (bear) Check(srv.defHitSoundWay(nox::DefHitSoundWay::Played) == 1, "⑨ 곰(CRUSH)이 물었는데 기본 타격 소리가 안 났다");
+        else      Check(srv.defHitSoundWay(nox::DefHitSoundWay::Filtered) == 1 && srv.defHitSoundWay(nox::DefHitSoundWay::Played) == 0,
+                        "⑨ 거머리(BITE)가 물었는데 기본 타격 소리를 안 걸렀다(피해 종류를 안 넘김)");
+    }
+    std::printf("  09-29 B3 — 근접 다시 고르기: 사거리·앞쪽·시야선(빗나감)·가장 가까운 틈 · 거미 독 · 곰 밀기 · 유령 기절·도망 · 표 정정 · 피해 종류\n");
+}
+
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
 //   사람 판 09-28 「워리어가 컨저러를 볼 때 흰 티가 살색으로」 — 새로 온 쪽이 먼저 온 쪽의 평상복 색(수식)을 못 받았다
 void TestWornLooksForNewcomer() {
@@ -25540,6 +25658,7 @@ int main() {
     TestDoorLock();
     TestMonsterSight();
     TestMonsterIdleB2();
+    TestMonsterMeleeB3();
     TestPickupAutoEquip();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

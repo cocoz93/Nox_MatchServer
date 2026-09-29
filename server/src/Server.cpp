@@ -11201,35 +11201,37 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             //   우리는 **크리처 애니 칸이 없다**(thing.bin 몬스터 애니를 아직 안 읽는다).
             //   그래서 **한 틱에 때리고 뺀다**. ★ 때리는 **간격**은 Start 가 쉬는 시간으로 이미 맞춘다 —
             //   달라지는 것은 「휘두르는 동안 몇 틱 붙들려 있나」뿐이다
+            // ★★ 09-29 B3 — **정답지 근접은 지금 상대를 안 본다**(`532440` `:2083~2107`). 때리는 칸에서 몬스터의 근접 함수
+            //   (monster.bin `MELEE_STRIKE_FUNCTION`)를 부르고, 함수가 **스스로 대상을 고른다**(`MonsterPickMeleeTarget`) · 함수가 NULL 이면 빠진다.
+            //   ✖ 전에는 「지금 상대가 없으면 빠짐 · 있으면 거리·시야 상관없이 그 상대를 늘 맞힘」 — 식충식물이 200 밖을 물어 죽였다(B1 시험에서 잡힘)
             const MonsterStats* m = FindMonster(k.type);
             const int dmg = (m && m->meleeDamage > 0) ? m->meleeDamage : 0;
-            const Target foe{ k.enemyAddr, k.enemyPet };
-            if (dmg == 0 || foe.none()) { AIPop(k); break; }   // 때릴 수 없다(정답지도 뺀다)
+            const MeleeStrikeInfo si = MeleeStrikeOf(k.type);
+            if (dmg == 0 || si.fn == StrikeFn::None) { AIPop(k); break; }   // 「Tried to MELEE_ATTACK but cannot」(`:2101~2106`)
             // ★ 쏘기(17)와 같은 막 — 휘두르기를 시작한 틱에만 맞힌다
             if (k.attackStartFrame != frame_) { AIPop(k); break; }
-            AttackSrc src;
-            src.x = static_cast<float>(k.x);
-            src.y = static_cast<float>(k.y);
-            src.byMonsterType = k.type;
-            src.byPet = static_cast<int>(&k - pets_.data());
-            src.rootIsMonster = k.owner.empty();          // 09-20 — 맵 몬스터가 때리면 뿌리가 몬스터
-            HurtTarget(foe, dmg, out, k.owner, 0, &src, HitterMonster(k));   // ★ 4-c3b3b a2 = a3 = 그 몬스터(`GAME5.c:2529~2531`)
+            // 때리다 상대(앞 자리 크리처)가 죽으면 목록이 당겨져 `k` 가 다른 것을 가리킬 수 있다 — 소리에 쓸 값은 먼저 떠 둔다
+            const Creature kSnap = k;
+            // 우리 근접은 한 틱이라 **먼저 뺀다** — 유령 근접이 그 위에 도망 사슬(25·41·24)을 쌓기 때문이다
+            //   (정답지는 애니가 끝날 때 빼는데, 그때는 도망이 이미 위에 있어 근접은 그 아래에 남았다가 드러난다)
+            AIPop(k);
+            const int res = MonsterStrike(k, si, dmg, out);
             // ★ 09-24 H1(사람 판 「박쥐가 물 때 원작은 박쥐 소리」) — 때리기 함수 뒤 그 종류 소리 모음의 **맞히는 소리**(+32)를
             //   몬스터 자리에서 모두에게(`GAME4_3.c:2087~2094` · `aud_501960(…, a1, 0, 0)`). 4-c3b3b 가 맞는 쪽 소리를 끈 것의 짝이다.
-            //   ⚠ 정답지는 때리기 함수가 0 이면 **빗나가는 소리**(+36)다 — 기본 함수(`strikeMonsterDefault_549380` `GAME5.c:2503~2538`)는
-            //   대상을 찾았는데 시야가 막힌 때만 0 · 거미 함수(`strikeSpider_549BC0` `:2866~2903`)는 대상이 없어도 0.
-            //   우리 근접은 대상을 다시 고르지도 시야를 보지도 않고 **늘 때리므로** 여기선 늘 맞힘 쪽이다(빗나감은 미결).
-            //   방패에 막혀도 정답지 함수는 1 이다(피해 함수만 부르고 결과를 안 본다) — 그래서 `HurtTarget` 결과를 안 본다
-            {
-                const uint16_t snd = (k.type < monsterSnd_[7].size()) ? monsterSnd_[7][k.type] : 0;   // ★ 09-26 M4a — 칸 7 표로 합침
+            //   ★ 09-29 B3 — 함수가 0 이면 **빗나가는 소리**(+36 = 칸 8) — 기본은 대상을 찾았는데 시야가 막힌 때만 0 · 거미는 대상이 없어도 0.
+            //   방패에 막혀도 정답지 함수는 1 이다(피해 함수만 부르고 결과를 안 본다)
+            if (res) {
+                const uint16_t snd = (kSnap.type < monsterSnd_[7].size()) ? monsterSnd_[7][kSnap.type] : 0;   // ★ 09-26 M4a — 칸 7 표로 합침
                 if (snd != 0) {
-                    PlaySoundAt(snd, static_cast<float>(k.x), static_cast<float>(k.y));
+                    PlaySoundAt(snd, static_cast<float>(kSnap.x), static_cast<float>(kSnap.y));
                     ++monsterMeleeHitPlayed_;
                 } else {
                     ++monsterMeleeHitNone_;
                 }
+            } else {
+                MonsterSound(kSnap, 8);                                  // +36 MELEE_ATTACK_MISSING
+                ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::MissSound)];
             }
-            AIPop(k);
             break;
         }
         case 29:     // 아무 데나 걷기 — 6-f(5). **스스로 안 빠진다**(아래 깔린 때(41) 조건이 뺀다)
@@ -11699,6 +11701,127 @@ int Server::MonsterRetaliate(Creature& k) {
         ++b2Stat_[static_cast<size_t>(B2Stat::RetRoam)];
     }
     return 0;
+}
+
+// ── ★ 09-29 B3 근접 다시 고르기 ─────────────────────────────────────────
+//
+// `nox_xxx_monsterPickMeleeTarget_549440` + 거르기 `sub_5494C0`(`GAME5.c:2541~2591`)
+//   · 사각형 = 몬스터 자리 ± (근접 사거리 + 제 몸 반지름 + 30(`0x587000+287328` — blob 실측 30.0)) · 거르기는 충돌 상자 겹침
+//   · 후보 = 자기 아님 · 유닛(사람·크리처) · 적(`unitIsEnemyTo` — 죽음은 안 본다) · **앞쪽**(내적 > 0.5) ·
+//     틈(거리 − 두 몸 반지름) 이 가장 작은 것 — 처음 값 = 근접 사거리(그보다 멀면 못 고른다)
+//   ⚠ 사각형은 틈 검사가 이미 더 좁혀서 따로 안 둔다 · 관전자는 뺀다(세계에 몸이 없다)
+Target Server::MonsterPickMeleeTarget(const Creature& k, double meleeRange) const {
+    Target best;
+    double bestGap = meleeRange;
+    double myR = 0.0;
+    {
+        const auto tb = typeBodies_.find(k.type);
+        if (tb != typeBodies_.end()) myR = static_cast<double>(tb->second.r);
+    }
+    const double fx = DirVecX(k.facing), fy = DirVecY(k.facing);
+    auto consider = [&](const Target& t, double tx, double ty, double tr) {
+        if (!CreatureEnemyTo(k, t)) return;
+        const double dx = tx - k.x, dy = ty - k.y;
+        const double len = std::sqrt(dx * dx + dy * dy) + 0.001;
+        if (dy / len * fy + dx / len * fx <= 0.5) return;
+        const double gap = len - (tr + myR);
+        if (gap < bestGap) { bestGap = gap; best = t; }
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.observer) continue;
+        consider(Target{ kv.first, -1 }, o.posX, o.posY, kBodyRadius);
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        if (&pets_[i] == &k) continue;
+        double r = 0.0;
+        const auto tb = typeBodies_.find(pets_[i].type);
+        if (tb != typeBodies_.end()) r = static_cast<double>(tb->second.r);
+        consider(Target{ std::string(), static_cast<int>(i) }, pets_[i].x, pets_[i].y, r);
+    }
+    return best;
+}
+
+// `objectApplyForce_52DF80` — 대상을 (from → 대상) 쪽으로 민다(힘 < 0 이면 끌어온다) · `f = 10 × 힘 / 무게` · `ForceVec += dp × f / (|dp| + 0.1)`
+//   ⚠ 소환수는 ForceVec 적분이 없어 자리로 바로 옮긴다(작살 끌기와 같은 단순화)
+void Server::ObjectApplyForce(float fromX, float fromY, const Target& t, double force) {
+    float tx = 0, ty = 0;
+    if (!TargetXY(t, tx, ty)) return;
+    const double dpx = static_cast<double>(tx) - fromX, dpy = static_cast<double>(ty) - fromY;
+    const double r = std::sqrt(dpx * dpx + dpy * dpy) + 0.1;
+    double mass = 1.0;
+    if (!t.addr.empty()) {
+        auto it = sessions_.find(t.addr);
+        if (it == sessions_.end() || it->second.respawnAtFrame != 0) return;   // 죽은 것은 안 밀린다
+        mass = PlayerMassOf(it->second);
+    } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+        const auto tb = typeBodies_.find(pets_[static_cast<size_t>(t.pet)].type);
+        mass = (tb != typeBodies_.end() && tb->second.mass > 0.0f) ? tb->second.mass : 1.0;
+    }
+    if (mass <= 0.0) mass = 1.0;
+    const double f = 10.0 * force / mass;
+    const double fxv = dpx * f / r, fyv = dpy * f / r;
+    if (!t.addr.empty()) {
+        Session& s = sessions_.at(t.addr);
+        s.forceX += fxv; s.forceY += fyv;
+    } else {
+        pets_[static_cast<size_t>(t.pet)].x += fxv;
+        pets_[static_cast<size_t>(t.pet)].y += fyv;
+    }
+}
+
+// 근접 함수(monster.bin `MELEE_STRIKE_FUNCTION`) — 1 이면 맞힘 소리 · 0 이면 빗나감 소리(부르는 쪽)
+//   · 기본(`strikeMonsterDefault_549380` `GAME5.c:2503~2538`) — 대상을 고르고 없으면 1(허공) · 시야선(추적 5)이 막히면 0 ·
+//     피해 함수(대상, 나, 나, 근접 피해, 피해 종류) · 밀어내기(IMPACT > 0) · 1
+//   · 거미(`strikeSpider_549BC0` `:2866~2903`) — 대상 없으면 0 · 기본과 같이 때린 뒤 독(확률 %) 걸리면 「aifunc.c:Poisoned」
+//   · 유령(`strikeGhost_549A60` `:2806~2860`) — 기본과 같이 때린 뒤 대상에 기절(5) 2초 세기 3 · 대상 자리 바라보기(25) · 때(41 — 2~4초) · 도망(24)
+//     ⚠ 도망(24)은 B4a 가 옮긴다 — 그때까지는 때(41)가 다할 때 빠진다
+//   · 폭탄병(`strikeBomber_549BB0`) — 늘 1
+int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg, std::vector<OutPacket>& out) {
+    if (si.fn == StrikeFn::Bomber) { ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::Bomber)]; return 1; }
+    const MonsterStats* m = FindMonster(k.type);
+    const double range = (m && m->meleeRange > 0.0) ? m->meleeRange : 0.0;
+    const Target v = MonsterPickMeleeTarget(k, range);
+    if (v.none()) {
+        ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::NoTarget)];
+        return si.fn == StrikeFn::Spider ? 0 : 1;
+    }
+    float vx = 0, vy = 0;
+    TargetXY(v, vx, vy);
+    if (!MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), vx, vy, 0x5)) {
+        ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::Blocked)];
+        return 0;
+    }
+    const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
+    const std::string kOwner = k.owner;
+    AttackSrc src;
+    src.x = kx; src.y = ky;
+    src.byMonsterType = k.type;
+    src.byPet = static_cast<int>(&k - pets_.data());
+    src.rootIsMonster = k.owner.empty();                     // 09-20 — 맵 몬스터가 때리면 뿌리가 몬스터
+    const size_t kIdx = static_cast<size_t>(&k - pets_.data());
+    const size_t petsBefore = pets_.size();
+    const HitterRef hitter = HitterMonster(k);
+    HurtTarget(v, dmg, out, kOwner, si.dtype, &src, hitter); // ★ 4-c3b3b a2 = a3 = 그 몬스터(`GAME5.c:2529~2531`)
+    ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::Hit)];
+    // 때린 뒤 상대(앞 자리 크리처)가 죽으면 번호가 당겨진다 — 그 뒤 몫(밀기·독·유령)은 사람 대상이거나 목록이 그대로일 때만
+    const bool listSame = pets_.size() == petsBefore;
+    if (si.impact > 0.0f && (listSame || !v.addr.empty())) ObjectApplyForce(kx, ky, v, si.impact);
+    if (si.fn == StrikeFn::Spider && si.poisonChance > 0 && (listSame || !v.addr.empty())) {   // `sub_549690` — randomInt(1,100) <= 확률
+        if (static_cast<int>(1 + NextRandom(100)) <= si.poisonChance && ActivatePoison(v, si.poisonStrength, si.poisonMax, out)) {
+            ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::Poisoned)];
+            if (!v.addr.empty()) { auto it = sessions_.find(v.addr); if (it != sessions_.end()) SendPriMsg(it->second, "aifunc.c:Poisoned", out); }
+        }
+    }
+    if (si.fn == StrikeFn::Ghost && listSame && kIdx < pets_.size()) {
+        ApplyEnchant(v, 5, static_cast<int>(2 * kServerTickRate), 3);
+        Creature& g = pets_[kIdx];
+        if (AIPush(g, 25)) { g.aiStack[g.aiStackInd].argX = vx; g.aiStack[g.aiStackInd].argY = vy; }
+        if (AIPush(g, 41)) g.aiStack[g.aiStackInd].argU32 = frame_ + static_cast<uint32_t>(2 * kServerTickRate) + NextRandom(static_cast<uint32_t>(2 * kServerTickRate + 1));
+        if (AIPush(g, 24)) { g.aiStack[g.aiStackInd].argX = vx; g.aiStack[g.aiStackInd].argY = vy; g.aiStack[g.aiStackInd].argU32 = 0; }
+        ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::GhostFlee)];
+    }
+    return 1;
 }
 
 // 놀기 `AIActionIdle.Update`(`unit_ai.go:637~670`)

@@ -274,6 +274,10 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.b2Stat(B2::Injured), srv.b2Stat(B2::InjuredSound), srv.b2Stat(B2::Taunt), srv.b2Stat(B2::TauntQuiet), srv.b2Stat(B2::IdleSound),
                     srv.b2Stat(B2::IdleFight), srv.b2Stat(B2::IdleLookDamager), srv.b2Stat(B2::IdleFaceBack), srv.b2Stat(B2::IdleStay),
                     srv.b2Stat(B2::RetFight), srv.b2Stat(B2::RetNotEnemy), srv.b2Stat(B2::RetRoam), srv.b2Stat(B2::FightStart), srv.b2Stat(B2::FightEnd));
+        using MW = nox::MeleeStrikeWay;   // ★ 09-29 B3 — 근접 함수 끝남 갈래
+        std::printf("[몬스터근접] 맞힘 %llu · 대상없음 %llu · 시야막힘 %llu · 폭탄병 %llu · (독 %llu · 유령도망 %llu) · 빗나감소리 %llu\n",
+                    srv.meleeStrike(MW::Hit), srv.meleeStrike(MW::NoTarget), srv.meleeStrike(MW::Blocked), srv.meleeStrike(MW::Bomber),
+                    srv.meleeStrike(MW::Poisoned), srv.meleeStrike(MW::GhostFlee), srv.meleeStrike(MW::MissSound));
     }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
     std::printf("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",
