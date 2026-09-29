@@ -322,6 +322,24 @@ enum class HearStat : uint8_t {
 };
 constexpr size_t kHearStatCount = static_cast<size_t>(HearStat::Count);
 
+// ★ 09-29 B7 — 몬스터 주문(`540D90` 공격 · `541050` 달아날 때 · `540B90` 제 몸 · `540F20` 되받기 · `5413B0` 시전 행동)이 **무엇을 했나**
+enum class CastStat : uint8_t {
+    PickOffense = 0, // 싸움 갈래 — 공격(0x40000000) 주문을 골라 시전 사슬을 쌓음
+    PickEscape,      // 도망 중 후퇴면 — 달아날 때(0x80000000) 주문
+    PickBuff,        // 도망 중 — 제 몸(0x10000000) 주문
+    PickReact,       // 도망 중 — 되받기(0x20000000) 주문
+    BlinkNear,       // 두뇌 거리 두기 — 도망 거리 절반 안 적이면 곧장 점멸(4)
+    InitSound,       // 시전 애니 1칸 — 소리 칸 13(SPELL_INIT)
+    Cast,            // 쏘기 칸(+216)에서 시전(`mobCast_541300`)
+    CastAnti,        //   반주문(29)이라 안 함
+    Accepted,        // 몬스터 시전을 받아들임(전기 광선 24 · 점멸 4)
+    NotPorted,       // 몬스터 시전인데 안 옮긴 주문
+    BeamHit,         // 몬스터 전기 광선이 한 틱 맞힘
+    BeamMoved,       // 몬스터가 시전 자리에서 5 넘게 움직여 끊김(`sub_4FEA70`)
+    Count
+};
+constexpr size_t kCastStatCount = static_cast<size_t>(CastStat::Count);
+
 // ★ 09-23 3-a — 점프(CCJump 7)가 **어떻게 끝났나**(`object_update.go:550~571`). 들어옴 = 갈래 합
 enum class JumpGate : uint8_t {
     Ok = 0,        // 뛰었다 — 기력 90 · 떠 있음 · 상태 12
@@ -633,6 +651,10 @@ struct Creature {
     float heardX = 0, heardY = 0;
     uint32_t heardFrame = 0;
     int heardDist = 0;
+    // ★ 09-29 B7 — 몬스터 주문(갱신자료 +1488 + 4×주문 = 깃발 · +2040 세기) · 쉬는 때(+1460 제 몸 · +1468 되받기 · +1476 공격 · +1484 달아날 때)
+    std::vector<std::pair<uint8_t, uint32_t>> spells;
+    int spellLevel = 3;
+    uint32_t castNextBuff = 0, castNextReact = 0, castNextOffense = 0, castNextEscape = 0;
 };
 
 // 깃발 하나.
@@ -1790,6 +1812,15 @@ public:
     int DebugPetAnimIndex(size_t i) const { return i < pets_.size() ? MonsterAnimIndex(pets_[i]) : -1; }
     // ★ 09-29 B6 — 소리 듣기
     unsigned long long hearStat(HearStat b) const { return b < HearStat::Count ? hearStat_[static_cast<size_t>(b)] : 0; }
+    unsigned long long castStat(CastStat b) const { return b < CastStat::Count ? castStat_[static_cast<size_t>(b)] : 0; }   // ★ 09-29 B7
+    size_t DebugPetSpellCount(size_t i) const { return i < pets_.size() ? pets_[i].spells.size() : 0; }
+    bool DebugPetHasSpell(size_t i, uint8_t sp) const { return i < pets_.size() && MonsterHasSpell(pets_[i], sp); }
+    void DebugSetPetCastNext(size_t i, uint32_t f) { if (i < pets_.size()) { pets_[i].castNextOffense = f; pets_[i].castNextEscape = f; } }
+    uint32_t DebugPetCastNextOffense(size_t i) const { return i < pets_.size() ? pets_[i].castNextOffense : 0; }
+    uint32_t DebugPetCastNextEscape(size_t i) const { return i < pets_.size() ? pets_[i].castNextEscape : 0; }
+    // 몬스터가 연 지속 주문(주문 번호 · 시전자 번호)이 있나 · 그 대상
+    bool DebugPetDurActive(uint8_t sp, uint16_t net) const { for (const auto& d : durSpells_) if (d.spell == sp && d.casterPet == net && !(d.flags88 & 1)) return true; return false; }
+    uint16_t DebugPetNet(size_t i) const { return i < pets_.size() ? pets_[i].netCode : 0; }
     // 종류별 몬스터 아종 비트(thing.bin SUBCLASS — 0x200 IMMUNE_POISON · 0x400 IMMUNE_FIRE …) · 위험한 종류(1 불 FIRE · 2 독구름 · 3 DANGEROUS)
     void SetMonsterSubclass(uint16_t wire, uint32_t bits) { monsterSubclass_[wire] = bits; }
     void SetDangerType(uint16_t wire, uint8_t kind) { dangerTypes_[wire] = kind; }
@@ -2801,7 +2832,7 @@ public:
         pets_[i].aiStack[pets_[i].aiStackInd].argF = f;
         return true;
     }
-    void DebugAIProcDeps(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AIProcDeps(pets_[i], out); }
+    void DebugAIProcDeps(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) { aiOut_ = &out; AIProcDeps(pets_[i], out); aiOut_ = nullptr; } }
     void DebugAISetPrevPos(size_t i) { if (i < pets_.size()) { pets_[i].prevX = pets_[i].x; pets_[i].prevY = pets_[i].y; } }
     // 시험용 — 변신 「됐다」 표시·변신 상태(6-c)
     void DebugAISetMorphReady(size_t i, bool v) { if (i < pets_.size()) pets_[i].aiMorphReady = v; }
@@ -2844,7 +2875,7 @@ public:
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argWp : 0;
     }
     int  DebugAIPop(size_t i) { return i < pets_.size() ? AIPop(pets_[i]) : -1; }
-    void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) AITick(pets_[i], out); }
+    void DebugAITick(size_t i, std::vector<OutPacket>& out) { if (i < pets_.size()) { aiOut_ = &out; AITick(pets_[i], out); aiOut_ = nullptr; } }
     // 시험용 — 길 찾기 격자 색인(6-e(1))
     void DebugPathReset() { AIPathResetIndex(); }
     // 시험용 — 길 따라 걷기(6-f(1))
@@ -2868,7 +2899,7 @@ public:
     bool DebugCreatureMove(size_t i) { return i < pets_.size() ? CreatureActuallyMove(pets_[i]) : false; }
     void DebugAIRandomWalk(size_t i) { if (i < pets_.size()) AIRandomWalk(pets_[i]); }
     // 시험용 — 근접 공격(6-g(2))
-    void DebugAIStart(size_t i, uint8_t act, std::vector<OutPacket>& out) { if (i < pets_.size()) AIStart(pets_[i], act, out); }
+    void DebugAIStart(size_t i, uint8_t act, std::vector<OutPacket>& out) { if (i < pets_.size()) { aiOut_ = &out; AIStart(pets_[i], act, out); aiOut_ = nullptr; } }
     void DebugSetPetNextHit(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].nextHitFrame = f; }
     uint32_t DebugPetNextHit(size_t i) const { return i < pets_.size() ? pets_[i].nextHitFrame : 0; }
     uint32_t DebugPetAttackStart(size_t i) const { return i < pets_.size() ? pets_[i].attackStartFrame : 0; }
@@ -4169,11 +4200,22 @@ private:
         int pool = 0;                    // +18(u32) 방패가 막아 낼 남은 양(ShieldHealth). 0 이 되면 주문이 끝난다
         uint32_t field80 = 0, field84 = 0;
         uint32_t flags88 = 0;            // +88 1 = 취소됨(다음 차례에 지운다)
+        uint16_t casterPet = 0;          // ★ 09-29 B7 — 몬스터 시전자(번호) — 0 이면 사람(`caster`)
         DurFns fns;
         std::vector<DurSpell> sub108;    // +108 하위(연쇄 번개 조각 · 4-d)
     };
     bool DurNew(uint8_t spell, const std::string& a2, const std::string& obj3, bool u3Glyph, const SpellArg& arg, int lvl,
                 const DurFns& fns, uint32_t dt, std::vector<OutPacket>& out);                          // spellsDuration.New
+    // ★ 09-29 B7 — 몬스터 시전(Server.cpp 「B7」 절)
+    bool MonsterDurNew(Creature& k, uint8_t spell, const Target& target, const DurFns& fns, uint32_t dt, std::vector<OutPacket>& out);
+    void DurCancelForPet(uint8_t spell, uint16_t net, std::vector<OutPacket>& out);
+    bool MonsterCastPick(Creature& k, uint32_t mask, const Target& target, uint32_t& nextFrame, int lo, int hi, CastStat stat);
+    void MonsterCast(Creature& k, uint8_t spell, const Target& target);                                   // `MonsterCast` object_monster.go:569
+    void MonsterActionCast(Creature& k, int a2, std::vector<OutPacket>& out);                             // `mobActionCast_5413B0`
+    bool MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& target, float x, float y, std::vector<OutPacket>& out);   // `mobCast_541300` + `castSpell`
+    Target EnergyBoltSearchPet(const Creature& k, float range) const;
+    bool MonsterHasSpell(const Creature& k, uint8_t spell) const { for (const auto& s : k.spells) if (s.first == spell) return true; return false; }
+    int PetIndexByNet(uint16_t net) const { for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == net) return static_cast<int>(i); return -1; }
     void DurOnNewSpell(std::vector<OutPacket>& out);                                                    // onNewSpell
     void DurDestroy(std::list<DurSpell>::iterator it, std::vector<OutPacket>& out);                     // destroyDurSpell
     void DurCancel(DurSpell& d, std::vector<OutPacket>& out);                                           // CancelSpell(4FE9D0)
@@ -5269,6 +5311,9 @@ private:
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };
     std::map<uint16_t, std::array<MonsterAnimRow, 16>> monsterAnims_;   // ★ 09-29 B5 — 갱신자료 +476 표(종류별)
     unsigned long long hearStat_[kHearStatCount] = {};            // ★ 09-29 B6
+    unsigned long long castStat_[kCastStatCount] = {};            // ★ 09-29 B7
+    // ★ 09-29 B7 — 크리처 틱 동안의 패킷 통로 — 끝내기·취소(`AIEnd`·`AICancel`)는 `out` 을 안 받는데 지속 시전을 끌 때 빔 끄기 패킷을 내야 한다
+    std::vector<OutPacket>* aiOut_ = nullptr;
     std::vector<ListenRec> listens_;                              // ★ 09-29 B6 — 들을 거리(2프레임까지 산다 · 정답지 `listenHead`)
     std::map<uint16_t, uint32_t> monsterSubclass_;                // ★ 09-29 B6 — 종류 → 몬스터 아종 비트
     std::map<uint16_t, uint8_t> dangerTypes_;                     // ★ 09-29 B6 — 종류 → 위험 갈래(1 불 · 2 독구름 · 3 DANGEROUS)

@@ -6540,10 +6540,12 @@ bool Server::TargetJustDamaged(const Target& t) const {
 //   ⚠ 미니맵 표시(netMarkMinimapForAll 2)는 미니맵 묶음에서
 void Server::NetStartRaySpell(const DurSpell& d, std::vector<OutPacket>& out) {
     auto c = sessions_.find(d.caster);
-    if (d.caster.empty() || c == sessions_.end() || !c->second.inGame) return;
+    const bool petCaster = d.casterPet != 0;                  // ★ 09-29 B7 — 몬스터 시전자(번호 그대로)
+    if (!petCaster && (d.caster.empty() || c == sessions_.end() || !c->second.inGame)) return;
     uint8_t typ = 0, val = static_cast<uint8_t>(d.level);
     // 하위 조각(연쇄 번개)은 **시작 쪽이 사람이 아닐 수도** 있다 — fromUnit 이 있으면 그쪽 번호를 쓴다
-    uint16_t n1 = d.fromUnit.none() ? c->second.netCode : UnitNetCode(d.fromUnit);
+    uint16_t n1 = !d.fromUnit.none() ? UnitNetCode(d.fromUnit) : (petCaster ? d.casterPet : c->second.netCode);
+    if (petCaster && d.spell != 24) return;                  // 몬스터 빔은 전기 광선뿐(옮긴 것)
     uint16_t n2 = UnitNetCode(d.target);
     switch (d.spell) {
         case 43:
@@ -6751,6 +6753,7 @@ Target Server::EnergyBoltSearch(const Session& caster, float range) const {
 // spellEnergyBoltStop_52E820(`GAME4_2.c:10630`) — 켤 때 **연쇄 번개(43)를 끄고** 점 효과 130 을 낸다. 0 = 살려 둔다
 int Server::DurEnergyBoltCreate(DurSpell& d, std::vector<OutPacket>& out) {
     if (!d.caster.empty()) DurCancelFor(43, d.caster, out);
+    else if (d.casterPet != 0) DurCancelForPet(43, d.casterPet, out);   // ★ 09-29 B7 — 몬스터 시전자
     return 0;
 }
 
@@ -6760,6 +6763,58 @@ int Server::DurEnergyBoltCreate(DurSpell& d, std::vector<OutPacket>& out) {
 //   피해: `EnergyBoltDamage[세기-1]` + 소수 이월 · 종류 **17(공중 전기)** · 대상이 바뀌면 옛 빔을 끄고 새 빔을 켠다
 //   시전자는 자세 10 · **틱마다 마나 1**
 int Server::DurEnergyBoltTick(DurSpell& d, std::vector<OutPacket>& out) {
+    // ★ 09-29 B7 — 몬스터 시전자(`52E850` 의 +16 이 몬스터인 갈래 · `GAME4_2.c:10911~10997`)
+    //   달리기(8)면 끊김 · **시전 자리(+28)에서 5 넘게 움직였으면 끊김**(`sub_4FEA70` — 몬스터만) · 만든 뒤 2틱 넘겨 맞았으면 끊김 ·
+    //   지금 대상이 살았고·앞쪽·사거리 안·보이면 그대로 · 아니면 둘레에서 다시 · 없으면 빔만 끄고 이어 감 ·
+    //   피해 = `EnergyBoltDamage[세기-1]` + 이월 · 종류 17 · 때린 것 = 그 몬스터 · 마나·자세는 사람만(몬스터는 없음)
+    //   ⚠ 1/3초마다 소리 32(시전자·대상)·`LightningSearchTime`·죽은 대상 점 효과 130 은 사람 쪽에도 아직 없음(미결)
+    if (d.casterPet != 0) {
+        const int ki = PetIndexByNet(d.casterPet);
+        if (ki < 0) return 1;
+        const Creature& k = pets_[static_cast<size_t>(ki)];
+        if (k.buffs.Has(8)) return 1;
+        if (std::fabs(d.posX - static_cast<float>(k.x)) >= 5.0f || std::fabs(d.posY - static_cast<float>(k.y)) >= 5.0f) {
+            ++castStat_[static_cast<size_t>(CastStat::BeamMoved)];
+            return 1;
+        }
+        const Target self{ std::string(), ki };
+        if (frame_ - d.frame60 > 2 && TargetJustDamaged(self)) return 1;
+        const float range = static_cast<float>(BalanceFloat("LightningRange"));
+        const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
+        bool keep = false;
+        if (!d.target.none()) {
+            float tx = 0, ty = 0;
+            if (TargetXY(d.target, tx, ty)) {
+                const float dx = tx - kx, dy = ty - ky;
+                keep = TargetHealth(d.target) > 0 && (TestTwoPointsAndDirection(kx, ky, k.facing, tx, ty) & 1) != 0 &&
+                       std::sqrt(dx * dx + dy * dy) <= range && CanInteractFrom(k, d.target);
+            }
+        }
+        if (!keep) d.target = EnergyBoltSearchPet(k, range);
+        if (d.target.none()) {
+            if (!d.field36.none()) { NetStopRaySpell(d, d.field36, out); d.field36 = Target{}; }
+            return 0;
+        }
+        const float v = d.field72 + static_cast<float>(BalanceFloatInd("EnergyBoltDamage", d.level - 1));
+        const int dmg = static_cast<int>(v);
+        d.field72 = v - static_cast<float>(dmg);
+        if (!(d.field36.addr == d.target.addr && d.field36.pet == d.target.pet)) {
+            if (!d.field36.none()) NetStopRaySpell(d, d.field36, out);
+            NetStartRaySpell(d, out);
+        }
+        AttackSrc src;
+        src.x = kx; src.y = ky;
+        src.byMonsterType = k.type;
+        src.byPet = ki;
+        src.rootIsMonster = k.owner.empty();
+        const std::string kOwner = k.owner;
+        const HitterRef hitter = HitterMonster(k);
+        const Target tgt = d.target;
+        HurtTarget(tgt, dmg, out, kOwner, 17, &src, hitter);  // `k` 는 여기서부터 안 쓴다(목록이 당겨질 수 있다)
+        d.field36 = tgt;
+        ++castStat_[static_cast<size_t>(CastStat::BeamHit)];
+        return 0;
+    }
     auto c = sessions_.find(d.caster);
     if (d.caster.empty() || c == sessions_.end() || !c->second.inGame) return 1;
     Session& caster = c->second;
@@ -8065,6 +8120,8 @@ void Server::MonsterPushAttack(Creature& k, const Target& foe, float fx, float f
     };
 
     // ── 갈래 고르기(`531B40`) ──
+    //   ★ 09-29 B7 — 맨 먼저 반주문(29)이 아니면 **공격 주문**(`mobCastRelated2_540D90`) — 골랐으면 끝
+    if (!k.buffs.Has(29) && MonsterCastPick(k, 0x40000000u, foe, k.castNextOffense, 0, static_cast<int>(3 * kServerTickRate), CastStat::PickOffense)) return;
     //   쏠 수 있으면 — 근접도 되고 **쏘기 사거리의 절반보다 가까우면** 근접 사슬, 아니면 **원거리 사슬**
     if (canShoot) {
         const double ex = fx - k.x, ey = fy - k.y;
@@ -8091,6 +8148,9 @@ void Server::MonsterPushAttack(Creature& k, const Target& foe, float fx, float f
         }
     }
     if (!canMelee) {
+        // ★ 09-29 B7 — 주문을 쓸 수 있으면(STATUS 0x20) **아무것도 안 쌓는다**(`531B40:1646~1649` — 주문은 위 공격 주문 몫).
+        //   ✖ 전에는 비홀더도 아래로 떨어져 적에게 걸어갔다
+        if (MonsterBrainOf(k.type).status & 0x20) return;
         // sub_531C10 — 때릴 수단이 없으면 **일단 그 자리로 간다**
         push(60);                                            // 새 적 없음
         push(42);                                            // 살아 있나
@@ -10946,6 +11006,16 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 const float fr = MonsterBrainOf(k.type).fleeRange;
                 const double dx = ex - k.x, dy = ey - k.y;
                 if (static_cast<double>(fr) * fr > dx * dx + dy * dy && frame_ - k.pathFrame > static_cast<uint32_t>(kServerTickRate / 2)) k.path.clear();
+                // ★ 09-29 B7 — 도망 중 주문(`GAME4_3.c:9646~9653`) — 주문 가능 · 반주문(29) 아님 · 성향 ≥ 0.33(`534400`·`534440` 아님)이면
+                //   후퇴(6) 중이면 달아날 때 주문(`541050` · 자기) · 아니면 제 몸 주문(`540B90`) · 둘 다 못 했고 상대가 보이면 되받기(`540F20`)
+                if ((MonsterBrainOf(k.type).status & 0x20) && !k.buffs.Has(29) && !(k.aggression < 0.33000001f)) {
+                    const Target self = PetTarget(k);
+                    const bool did = AIHasAction(k, 6)
+                        ? MonsterCastPick(k, 0x80000000u, self, k.castNextEscape, 0, static_cast<int>(6 * kServerTickRate), CastStat::PickEscape)
+                        : MonsterCastPick(k, 0x10000000u, self, k.castNextBuff, static_cast<int>(3 * kServerTickRate), static_cast<int>(10 * kServerTickRate), CastStat::PickBuff);
+                    if (!did && CanInteractFrom(k, e))
+                        MonsterCastPick(k, 0x20000000u, e, k.castNextReact, static_cast<int>(3 * kServerTickRate), static_cast<int>(6 * kServerTickRate), CastStat::PickReact);
+                }
             }
             if (!k.path.empty() && frame_ - k.pathFrame > static_cast<uint32_t>(2 * kServerTickRate)) k.path.clear();
             bool go = !k.path.empty() || frame_ - k.pathFrame <= 10;
@@ -11437,6 +11507,23 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
         case 29:     // 아무 데나 걷기 — 6-f(5). **스스로 안 빠진다**(아래 깔린 때(41) 조건이 뺀다)
             AIRandomWalk(k);
             break;
+        // ★ 09-29 B7 — 시전 행동(`unit_ai.go:672~743`) — 인자 = 주문 번호(argU32) · 대상(target)
+        //   18 대상에게 — 대상이 없으면 뺀다 · 시전(`5413B0`, 0) · 애니가 끝나면(+483) 뺀다
+        //   19 자리에 — 시전(1) · 애니가 끝나면 뺀다
+        //   20 지속 — 대상이 있으면 시전(0) · 없으면 뺀다 · 스스로는 안 빠진다(아래 41 때가 뺀다 · 끝·취소가 그 주문을 끈다)
+        case 18:
+            if (Target{ st.targetAddr, st.targetPet }.none()) { AIPop(k); break; }
+            MonsterActionCast(k, 0, out);
+            if (k.animDone) AIPop(k);
+            break;
+        case 19:
+            MonsterActionCast(k, 1, out);
+            if (k.animDone) AIPop(k);
+            break;
+        case 20:
+            if (Target{ st.targetAddr, st.targetPet }.none()) { AIPop(k); break; }
+            MonsterActionCast(k, 0, out);
+            break;
         default: break;   // 12·13 은 아무 일도 안 한다 · 나머지는 아직 안 옮겼다
     }
 }
@@ -11451,6 +11538,8 @@ void Server::AIEnd(Creature& k, uint8_t act) {
         ++b2Stat_[static_cast<size_t>(B2Stat::FightEnd)];
     }
     if (act == 24) k.running = false;   // ★ 09-29 B4 — 도망 끝 `sub_544750` = 달리기 끄기(`534780`)
+    // ★ 09-29 B7 — 지속 시전 끝 = 그 주문을 끈다(`AIActionCastDuration.End` → `Dur.CancelFor(주문, 나)`)
+    if (act == 20) { std::vector<OutPacket> sink; DurCancelForPet(static_cast<uint8_t>(k.aiStack[k.aiStackInd].argU32), k.netCode, aiOut_ ? *aiOut_ : sink); }
 }
 
 // 취소 — ★ **기다리기 둘만** 스스로 빠진다(`Cancel` 이 `MonsterPopAction`).
@@ -11459,6 +11548,8 @@ void Server::AIEnd(Creature& k, uint8_t act) {
 //     을 달아 두었다(`legacy/unit_ai.go:57~60`).
 void Server::AICancel(Creature& k, uint8_t act) {
     if (act == 1 || act == 2 || (act >= 25 && act <= 28)) AIPop(k);
+    // ★ 09-29 B7 — 지속 시전 취소 = 그 주문을 끄고 빠진다(`AIActionCastDuration.Cancel`) — 빼기가 끝내기(End)를 한 번 더 불러도 이미 꺼진 것이라 겉 차이 없음
+    if (act == 20) { std::vector<OutPacket> sink; DurCancelForPet(static_cast<uint8_t>(k.aiStack[k.aiStackInd].argU32), k.netCode, aiOut_ ? *aiOut_ : sink); AIPop(k); }
 }
 
 // nox_xxx_mobActionDependency(`unit_ai.go:44~262`) — 쌓임에 붙은 **조건**을 **위에서부터** 본다.
@@ -12100,8 +12191,17 @@ void Server::MonsterBrain(Creature& k, std::vector<OutPacket>& out) {
     if (k.aggression >= 0.079999998f && moving && !(top >= 18 && top <= 20) && !k.buffs.Has(3) && !cornered) {
         const Target e{ k.enemyAddr, k.enemyPet };
         float ex = 0, ey = 0;
-        if (!e.none() && TargetXY(e, ex, ey) && bi.fleeRange != 0.0f && !AIHasAction(k, 24)) {
-            const double d = std::sqrt((ex - k.x) * (ex - k.x) + (ey - k.y) * (ey - k.y));
+        const double d = (!e.none() && TargetXY(e, ex, ey)) ? std::sqrt((ex - k.x) * (ex - k.x) + (ey - k.y) * (ey - k.y)) : 1e9;
+        // ★ 09-29 B7 — 주문 몬스터(STATUS 0x20)가 점멸(4)을 쥐고 · 반주문(29) 아니고 · 달아날 때 쉬는 때(+1484) 지났고 · 상대가 **도망 거리 절반** 안이면
+        //   곧장 제 자리에 점멸(`mobCast_541300(4, 나, {나, 내 자리})` — 시전 행동 없이) · 쉬는 때 = 지금 + randomInt(0, 6초) → 끝(`:1368~1385`)
+        if (d < static_cast<double>(bi.fleeRange) && (bi.status & 0x20) && MonsterHasSpell(k, 4) && !k.buffs.Has(29) && frame_ >= k.castNextEscape &&
+            static_cast<double>(bi.fleeRange) * 0.5 > d) {
+            MonsterCastSpellNow(k, 4, PetTarget(k), static_cast<float>(k.x), static_cast<float>(k.y), out);
+            k.castNextEscape = frame_ + NextRandom(static_cast<uint32_t>(6 * kServerTickRate + 1));
+            ++castStat_[static_cast<size_t>(CastStat::BlinkNear)];
+            return;
+        }
+        if (d < 1e9 && bi.fleeRange != 0.0f && !AIHasAction(k, 24)) {
             if (d < static_cast<double>(bi.fleeRange)) {
                 if (AIPush(k, 28)) k.aiStack[k.aiStackInd].argU32 = static_cast<uint32_t>((k.facing + 128) & 0xFF);
                 AIPush(k, 68);
@@ -12423,6 +12523,159 @@ bool Server::LocationIsSafe(const Creature& k, float x, float y) const {
     for (const auto& w : statics_) if (danger(w.type, static_cast<float>(w.x), static_cast<float>(w.y))) return false;
     for (const auto& p : props_) if (danger(p.type, static_cast<float>(p.x), static_cast<float>(p.y))) return false;
     return true;
+}
+
+// ── ★ 09-29 B7 몬스터 주문 ──────────────────────────────────────────────
+//
+// 고르기 넷의 공통 꼴 — `mobCastRelated2_540D90`(공격 0x40000000 · 대상 = 상대) · `mobCastRelated_541050`(달아날 때 0x80000000 · 대상 = 자기) ·
+//   `monsterBuffSelf_540B90`(제 몸 0x10000000 · 자기) · `monsterCastOffensive_540F20`(되받기 0x20000000 · 상대)
+//   관문 — 주문 가능(STATUS 0x20 · `534300`) · 쉬는 때 지남 · 시전 중(맨 위 18~20 · `sub_5408A0`) 아님
+//   그 깃발이고 **몬스터가 쓸 수 있는**(주문 깃발 0x10 MobsCanCast) 주문 중 무작위 하나 → `monsterCast_540A30` · 쉬는 때 = 지금 + randomInt(lo, hi)
+//   ⚠ 제 몸·달아날 때의 「이미 걸린 버프 주문이 있으면 안 함」(`sub_540CE0` — 버프→주문 표 `getEnchantSpell_424920`)은 우리 표가 없어 안 옮김 —
+//     우리 몬스터의 해당 주문은 점멸(4)뿐이고 점멸은 버프가 아니라 겉 차이 없음 · 공격의 소환 주문 갈래(75~114 · 소환 수 한도)도 우리 몬스터에 없음
+bool Server::MonsterCastPick(Creature& k, uint32_t mask, const Target& target, uint32_t& nextFrame, int lo, int hi, CastStat stat) {
+    if (!(MonsterBrainOf(k.type).status & 0x20)) return false;
+    if (frame_ < nextFrame) return false;
+    const uint8_t top = k.aiStack[k.aiStackInd].action;
+    if (top >= 18 && top <= 20) return false;
+    std::vector<uint8_t> list;
+    for (const auto& sf : k.spells) if ((sf.second & mask) && (SpellFlags(sf.first) & 0x10)) list.push_back(sf.first);
+    if (list.empty()) return false;
+    const uint8_t sp = list[NextRandom(static_cast<uint32_t>(list.size()))];
+    MonsterCast(k, sp, target);
+    nextFrame = frame_ + static_cast<uint32_t>(lo) + NextRandom(static_cast<uint32_t>(hi - lo + 1));
+    ++castStat_[static_cast<size_t>(stat)];
+    return true;
+}
+
+// `MonsterCast`(`server/object_monster.go:569~590`) — 61(안 끊김) · 지속 주문(깃발 0x2)이면 41(0.5~2초)·20 · 아니면 18 ·
+//   대상이 자기가 아니고 도망(24) 중이 아니면 [겨눔(0x4)이 아니면 26 바라보기 · 47 사선 막힘] · 49(쏘기 사거리 +212) · 40(또는) · 7(대상 자리)
+//   → 「멀거나 사선이 막혔으면 다가가고, 닿으면 바라보고, 바라보면 시전」
+void Server::MonsterCast(Creature& k, uint8_t spell, const Target& target) {
+    AIPush(k, 61);
+    const uint32_t fl = SpellFlags(spell);
+    if (fl & 0x2) {
+        if (AIPush(k, 41)) k.aiStack[k.aiStackInd].argU32 = frame_ + static_cast<uint32_t>(kServerTickRate / 2) + NextRandom(static_cast<uint32_t>(2 * kServerTickRate - kServerTickRate / 2 + 1));
+        if (AIPush(k, 20, target)) k.aiStack[k.aiStackInd].argU32 = spell;
+    } else {
+        if (AIPush(k, 18, target)) k.aiStack[k.aiStackInd].argU32 = spell;
+    }
+    const Target self = PetTarget(k);
+    const bool toSelf = target.addr.empty() && target.pet >= 0 && target.pet == self.pet;
+    if (toSelf || AIHasAction(k, 24)) return;
+    if (!(fl & 0x4)) { AIPush(k, 26, target); AIPush(k, 47, target); }
+    const MonsterStats* m = FindMonster(k.type);
+    if (AIPush(k, 49, target)) k.aiStack[k.aiStackInd].argF = static_cast<float>(m ? m->missileRange : 0.0);
+    AIPush(k, 40);
+    float tx = 0, ty = 0;
+    TargetXY(target, tx, ty);
+    AIPush(k, 7, target, tx, ty);
+}
+
+// `mobActionCast_5413B0`(`GAME4_3.c:8799~8840`) — 칸 안 틱(+482) 0 일 때만: 지금 칸(+481)이 쏘기 칸(monster.bin +216)이면
+//   대상(0 = 쌓임의 대상 · 1 = 쌓임의 자리)으로 · 반주문(29)이 아니면 `mobCast_541300` · 1칸이면 소리 칸 13(SPELL_INIT +56)
+//   ⚠ 0 갈래의 「자리 흔들기」(`mobCastRandomRecoil_541490`)는 대상 자리로 둔다 — 우리 몬스터 주문(전기 광선·점멸)은 자리를 안 쓴다
+void Server::MonsterActionCast(Creature& k, int a2, std::vector<OutPacket>& out) {
+    if (k.animTick != 0) return;
+    const Creature::AIStackItem& st = k.aiStack[k.aiStackInd];
+    if (k.animFrame == static_cast<uint8_t>(MonsterMissileFrameOf(k.type))) {
+        Target target;
+        float x = 0, y = 0;
+        if (a2 == 0) { target = Target{ st.targetAddr, st.targetPet }; TargetXY(target, x, y); }
+        else if (a2 == 1) { x = st.argX; y = st.argY; }
+        else return;
+        if (k.buffs.Has(29)) { ++castStat_[static_cast<size_t>(CastStat::CastAnti)]; return; }
+        MonsterCastSpellNow(k, static_cast<uint8_t>(st.argU32), target, x, y, out);
+    } else if (k.animFrame == 1) {
+        MonsterSound(k, 13);
+        ++castStat_[static_cast<size_t>(CastStat::InitSound)];
+    }
+}
+
+// `mobCast_541300` + `castSpellByUser_4FDD20` → `castSpell`(`spells.go:432~443`) — 그 자리를 보게 돌리고(`mobCalcDir_533CC0`) ·
+//   공격 주문(0x20)이면 투명(0)·무적(23)을 끄고 타원 방패(67)를 끈다 · 겨눔(0x4)이 아니거나 대상이 자기면 곧장 받아들임(`spellAccept`) ·
+//   겨눔이고 남이면 날아가는 주문(`createSpellFly_4FDDA0`) — 우리 몬스터에 없음
+//   받아들임 — 전기 광선(24) = 지속(30) · 점멸(4) = 지속(0, 대상 자기) · 그 밖은 안 옮김
+bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& target, float x, float y, std::vector<OutPacket>& out) {
+    ++castStat_[static_cast<size_t>(CastStat::Cast)];
+    if ((x != 0.0f || y != 0.0f) && (x != static_cast<float>(k.x) || y != static_cast<float>(k.y))) k.facingWant = DirFromVec(x - k.x, y - k.y);   // 제 자리면 안 돌림
+    const uint32_t fl = SpellFlags(spell);
+    const Target self = PetTarget(k);
+    if (fl & 0x20) {
+        BuffOff(self, 0);
+        BuffOff(self, 23);
+        DurCancelForPet(67, k.netCode, out);
+    }
+    const bool toSelf = target.addr.empty() && target.pet >= 0 && target.pet == self.pet;
+    if ((fl & 0x4) && !toSelf) { ++castStat_[static_cast<size_t>(CastStat::NotPorted)]; return false; }
+    DurFns f;
+    uint32_t dt = 0;
+    if (spell == 24) { f.create = &Server::DurEnergyBoltCreate; f.update = &Server::DurEnergyBoltTick; dt = 30; }
+    else if (spell == 4) { f.create = &Server::DurBlinkCreate; f.update = &Server::DurBlinkTick; dt = 0; }
+    else { ++castStat_[static_cast<size_t>(CastStat::NotPorted)]; return false; }
+    ++castStat_[static_cast<size_t>(CastStat::Accepted)];
+    return MonsterDurNew(k, spell, spell == 4 ? self : target, f, dt, out);
+}
+
+// `spellsDuration.New`(`spells_dur.go:88`)의 몬스터 시전자 판 — 시전자 = 그 몬스터(번호) · 자리(+28) = 몬스터 자리 · 같은 주문의 옛것은 끄고 ·
+//   취소 깃발 붙은 것을 치우고 · 머리에 넣고 · 켜는 소리(몬스터 자리) · 만들기 함수가 0 이 아니면 취소
+bool Server::MonsterDurNew(Creature& k, uint8_t spell, const Target& target, const DurFns& fns, uint32_t dt, std::vector<OutPacket>& out) {
+    if (k.health == 0) return false;
+    const uint16_t net = k.netCode;
+    const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
+    const Target self = PetTarget(k);
+    DurCancelForPet(spell, net, out);
+    DurOnNewSpell(out);
+    DurSpell d;
+    d.id = ++durLastId_;
+    d.spell = spell;
+    d.level = k.spellLevel;
+    d.casterPet = net;
+    d.posX = kx; d.posY = ky;
+    d.target = target;
+    float tx = 0, ty = 0;
+    if (TargetXY(target, tx, ty)) { d.pos2X = tx; d.pos2Y = ty; }
+    d.frame60 = frame_;
+    d.frame64 = frame_;
+    d.frame68 = dt + frame_;
+    d.fns = fns;
+    durSpells_.push_front(d);
+    PlaySoundAt(SpellSoundOn(spell), kx, ky, 0, 0, std::string(), self);
+    DurSpell& p = durSpells_.front();
+    if (fns.create == nullptr || (this->*fns.create)(p, out) == 0) return true;
+    DurCancel(p, out);
+    return false;
+}
+
+// `CancelFor`(`spells_dur.go:169`)의 몬스터 시전자 판
+void Server::DurCancelForPet(uint8_t spell, uint16_t net, std::vector<OutPacket>& out) {
+    if (net == 0) return;
+    for (auto& d : durSpells_) if (d.spell == spell && d.casterPet == net && !(d.flags88 & 1)) DurCancel(d, out);
+}
+
+// `spellEnergyBoltSetTarget_52EC60` 의 몬스터 시전자 판 — 둘레(번개 사거리) 안 · 자기 아님 · 살아 있음 · 적(`CreatureEnemyTo`) ·
+//   앞쪽(`TestTwoPointsAndDirection` — 몬스터 보는 쪽) · 볼 수 있음(`CanInteractFrom`) · 가장 가까운 것
+Target Server::EnergyBoltSearchPet(const Creature& k, float range) const {
+    float best = range * range;
+    Target found;
+    const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
+    auto consider = [&](const Target& t, float ox, float oy) {
+        if (!CreatureEnemyTo(k, t) || TargetHealth(t) <= 0) return;
+        if (!(TestTwoPointsAndDirection(kx, ky, k.facing, ox, oy) & 1)) return;
+        if (!CanInteractFrom(k, t)) return;
+        const float dx = ox - kx, dy = oy - ky, d2 = dx * dx + dy * dy;
+        if (d2 >= best) return;
+        best = d2; found = t;
+    };
+    for (const auto& kv : sessions_) {
+        if (!kv.second.inGame || kv.second.respawnAtFrame != 0) continue;
+        consider(Target{ kv.first, -1 }, static_cast<float>(kv.second.posX), static_cast<float>(kv.second.posY));
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        if (&pets_[i] == &k || pets_[i].health == 0) continue;
+        consider(Target{ std::string(), static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y));
+    }
+    return found;
 }
 
 // `nox_xxx_monsterPopAttackActions_5471B0` — 맨 위가 공격 행동(16~20 · 25~28)인 동안 뺀다
@@ -13452,6 +13705,14 @@ void Server::SpawnCreature(uint16_t type, float x, float y, const std::string& o
     k.prevX = x;
     k.prevY = y;
     k.health = static_cast<uint16_t>(TuningFor(type).health);
+    // ★ 09-29 B7 — 자동 주문(`nox_xxx_monsterAutoSpells_54C0C0` `GAME5.c:4211~4252`) — 종류 이름으로 주문 칸(+1488 + 4×주문)에 깃발 · 세기(+2040) 3.
+    //   우리 소환 열셋 중엔 **Beholder 하나** — 전기 광선 24 = 공격(0x40000000) · 퀘스트가 아니면 점멸 4 = 달아날 때(0x80000000)
+    //   (나머지 여덟 — UrchinShaman·Wizard·WizardWhite·Lich·LichLord·Demon·WizardGreen·WillOWisp — 은 우리 표에 없음)
+    if (type == 1382) {
+        k.spells.push_back({ 24, 0x40000000u });
+        if (!(questTotal_ > 0 || questStage_ > 0)) k.spells.push_back({ 4, 0x80000000u });
+        k.spellLevel = 3;
+    }
     pets_.push_back(k);
 }
 
@@ -14187,7 +14448,12 @@ void Server::DurDestroy(std::list<DurSpell>::iterator it, std::vector<OutPacket>
         auto ci = sessions_.find(it->caster);
         if (!it->caster.empty() && ci != sessions_.end())
             PlaySoundAt(SpellSoundOff(it->spell), static_cast<float>(ci->second.posX),
-                        static_cast<float>(ci->second.posY));
+                        static_cast<float>(ci->second.posY), 0, 0, std::string(), Target{ it->caster, -1 });   // ★ 09-29 B6 — 출처 = 시전자
+        // ★ 09-29 B7 — 몬스터 시전자면 그 자리
+        const int pi = it->casterPet ? PetIndexByNet(it->casterPet) : -1;
+        if (pi >= 0)
+            PlaySoundAt(SpellSoundOff(it->spell), static_cast<float>(pets_[static_cast<size_t>(pi)].x),
+                        static_cast<float>(pets_[static_cast<size_t>(pi)].y), 0, 0, std::string(), Target{ std::string(), pi });
     }
     if (it->fns.destroy) (this->*(it->fns.destroy))(*it, out);
     auto c = sessions_.find(it->caster);
@@ -14258,7 +14524,9 @@ const Server::DurSpell* Server::DurFindByTarget(uint8_t spell, const Target& tar
 // NetStopRaySpell(server/spells.go:458) — `9e <갈래> <값> <u1 번호2> <u2 번호2>` Packet1 모두
 void Server::NetStopRaySpell(const DurSpell& d, const Target& who, std::vector<OutPacket>& out) {
     auto c = sessions_.find(d.caster);
-    if (d.caster.empty() || c == sessions_.end() || !c->second.inGame) return;
+    const bool petCaster = d.casterPet != 0;                  // ★ 09-29 B7 — 몬스터 시전자(번호 그대로) — 빔은 전기 광선뿐
+    if (petCaster && d.spell != 24) return;
+    if (!petCaster && (d.caster.empty() || c == sessions_.end() || !c->second.inGame)) return;
     auto netOf = [&](const Target& t) -> uint16_t {
         if (!t.addr.empty()) {
             auto it = sessions_.find(t.addr);
@@ -14268,7 +14536,7 @@ void Server::NetStopRaySpell(const DurSpell& d, const Target& who, std::vector<O
     };
     if (who.none() || netOf(who) == 0) return;
     uint8_t typ = 0, val = 0;
-    uint16_t n1 = d.fromUnit.none() ? c->second.netCode : netOf(d.fromUnit);
+    uint16_t n1 = !d.fromUnit.none() ? netOf(d.fromUnit) : (petCaster ? d.casterPet : c->second.netCode);
     uint16_t n2 = netOf(who);
     switch (d.spell) {
         case 43:                                             // 연쇄 번개 — 하위마다
@@ -14305,7 +14573,9 @@ void Server::SpellCastByPlayer(uint32_t frame, std::vector<OutPacket>& out) {
         if (d.flags88 & 1) { DurDestroy(it, out); it = next; continue; }
         if (!d.caster.empty() && (!alive(d.caster) || sessions_.at(d.caster).respawnAtFrame != 0)) d.caster.clear();   // DEAD|DESTROYED
         if (!d.obj12.empty() && !alive(d.obj12)) d.obj12.clear();                                                      // DESTROYED
-        if (d.caster.empty() && !d.flag20) { DurCancel(d, out); it = next; continue; }
+        // ★ 09-29 B7 — 몬스터 시전자 — 없어졌거나 죽었으면 시전자 없음
+        if (d.casterPet != 0) { const int pi = PetIndexByNet(d.casterPet); if (pi < 0 || pets_[static_cast<size_t>(pi)].health == 0) d.casterPet = 0; }
+        if (d.caster.empty() && d.casterPet == 0 && !d.flag20) { DurCancel(d, out); it = next; continue; }
         if ((d.frame68 != d.frame60 && d.frame68 <= frame) || (d.fns.update && (this->*d.fns.update)(d, out) != 0))
             DurCancel(d, out);
         it = next;
@@ -15912,6 +16182,9 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
 }
 
 int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
+    // ★ 09-29 B7 — 이 틱 동안 끝내기·취소가 낼 패킷도 `out` 으로(나갈 때 풀어 둔다)
+    struct AiOutGuard { std::vector<OutPacket>*& p; ~AiOutGuard() { p = nullptr; } } aiOutGuard{ aiOut_ };
+    aiOut_ = &out;
     if (!tickStarted_) {
         tickStarted_ = true;
         lastTickMs_ = nowMs;

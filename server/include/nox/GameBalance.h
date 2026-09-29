@@ -645,6 +645,18 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
     }
 }
 
+// ★ 09-29 B7 — 쏘기 칸 ⭕ monster.bin(`MISSILE_ATTACK_FRAME` +216) — 몬스터 시전(`mobActionCast_5413B0`)이 시전 애니의 이 칸에서 한 번 · 위 열셋만(스크립트로 추림)
+//   ⚠ 쏘기(17)도 원본은 이 칸에서 쏘지만 우리 쏘기는 아직 「첫 틱」(B5 미결 — 애니 칸 시점)
+inline int MonsterMissileFrameOf(uint16_t wire) {
+    switch (wire) {
+        case 1317: return 4;   // EvilCherub
+        case 1328: return 1;   // Imp
+        case 1337: return 4;   // EmberDemon
+        case 1382: return 4;   // Beholder
+        default:   return 0;   // 나머지 아홉은 파일 값 0
+    }
+}
+
 // ★ 09-29 B3 — 근접 때리기 함수·피해 종류·밀어내기·독 ⭕ monster.bin(`MELEE_STRIKE_FUNCTION` +236 · `MELEE_ATTACK_DAMAGE_TYPE` +124 ·
 //   `MELEE_ATTACK_IMPACT` +120 · `MELEE_ATTACK_POISON_CHANCE/STRENGTH/MAX` +136·+140·+144) — 위 `kMonsters` 열셋만.
 //   피해 종류 번호는 아래 18칸 표(8 BITE · 2 CRUSH · 4 DRAIN · 10 CLAW). NULL(Imp·EvilCherub·Beholder)은 근접을 못 한다(`532440` — 빠짐)

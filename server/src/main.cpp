@@ -294,6 +294,11 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.hearStat(HS::Recorded), srv.hearStat(HS::Deaf), srv.hearStat(HS::NotListen), srv.hearStat(HS::Quiet), srv.hearStat(HS::WallHalved),
                     srv.hearStat(HS::WallQuiet), srv.hearStat(HS::Heard), srv.hearStat(HS::ReactGo), srv.hearStat(HS::ReactLook), srv.hearStat(HS::ReactSkip),
                     srv.hearStat(HS::Cond59), srv.hearStat(HS::Cond69));
+        using CS = nox::CastStat;    // ★ 09-29 B7 — 몬스터 주문
+        std::printf("[몬스터주문] 고름 공격 %llu · 달아남 %llu · 제몸 %llu · 되받기 %llu · 가까워 점멸 %llu · 시전소리 %llu · 시전 %llu(반주문 %llu) · 받음 %llu · 안옮김 %llu · 빔맞힘 %llu · 움직여끊김 %llu\n",
+                    srv.castStat(CS::PickOffense), srv.castStat(CS::PickEscape), srv.castStat(CS::PickBuff), srv.castStat(CS::PickReact), srv.castStat(CS::BlinkNear),
+                    srv.castStat(CS::InitSound), srv.castStat(CS::Cast), srv.castStat(CS::CastAnti), srv.castStat(CS::Accepted), srv.castStat(CS::NotPorted),
+                    srv.castStat(CS::BeamHit), srv.castStat(CS::BeamMoved));
     }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
     std::printf("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",
@@ -2039,6 +2044,11 @@ int main(int argc, char** argv) {
                             srv.MonsterAnimTypes(),
                             lg ? lg->monsterAnims[12].frames : -1, lg ? lg->monsterAnims[12].hold : -1, lg ? (int)lg->monsterAnims[12].loop : -1,
                             lg ? lg->monsterAnims[1].frames : -1, lg ? lg->monsterAnims[1].hold : -1);
+                // ★ 09-29 B7 — 비홀더 시전 애니(7 CAST_SPELL) — 시전은 이 애니가 쏘기 칸(monster.bin +216 = 4)에 닿을 때(`mobActionCast_5413B0`)
+                const nox::ThingInfo* bh = tdb.ByWire(tdb.WireByName("Beholder"));
+                std::printf("[몬스터애니] Beholder 시전(7) %d칸/붙듦 %d/되풀이 %d · 놀기(8) %d칸\n",
+                            bh ? bh->monsterAnims[7].frames : -1, bh ? bh->monsterAnims[7].hold : -1, bh ? (int)bh->monsterAnims[7].loop : -1,
+                            bh ? bh->monsterAnims[8].frames : -1);
             }
             // ★ 09-23 2-a1 — 함성(46)·광전사(45) 애니 길이도 찍는다. 함성 애니가 끝나면 켜짐 값이 내려가 광전사·작살을 더는 안 막으므로
             //   「함성 지속 120 중 얼마 동안 막나」가 이 값으로 정해진다(플랜 v2 에서 미확인이던 것)
@@ -2248,6 +2258,8 @@ int main(int argc, char** argv) {
                     mapPath.c_str(), ws.size(), nStat, nSkip);
         std::printf("[주문] 마나 표 %zu개 — 0 이면 thing.bin 을 못 읽은 것이고 주문이 공짜가 된다\n",
                     srv.SpellCostCount());
+        // ★ 09-29 B7 — 비홀더가 쥐는 주문 둘의 깃발(몬스터가 고르는 조건 0x10 · 겨눔 0x4 · 공격 0x20 · 지속 — `castSpell` 갈래)
+        std::printf("[주문] 깃발 — 24(전기 광선) 0x%x · 4(점멸) 0x%x\n", srv.SpellFlags(24), srv.SpellFlags(4));
         // ★ 2026-09-14 묶음 4-a4 — gamedata.bin(기획 상수 · 버프 길이 등). 태그 ARENA
         {
             nox::Gamedata gd;

@@ -21170,6 +21170,146 @@ void TestMonsterHearB6() {
     std::printf("  09-29 B6 — 소리 듣기: 기록 갈래·2프레임 · 바라봄·가 봄 · 문턱 89/20/50 · 벽 절반 · 제 소리 0x10 · 귀막힘 · 가장 큰 것 · 조건 42·59·69 · 지키기 갈래 셋 · 떠돌기 성향\n");
 }
 
+// ── 09-29 B7 — 몬스터 주문(비홀더 — 자동 주문 · 공격 주문 사슬 · 쏘기 칸 시전 · 몬스터 전기 광선 · 가까우면 점멸 · 도망 중 달아날 때 주문) ─────────
+void TestMonsterCastB7() {
+    const std::string a = "10.9.29.81:9381";
+    using CS = nox::CastStat;
+    auto run = [](nox::Server& srv, uint32_t& ms, int n, std::vector<nox::OutPacket>* keep = nullptr) {
+        for (int t = 0; t < n; ++t) {
+            const uint32_t f = srv.frame();
+            for (int g = 0; g < 100 && srv.frame() == f; ++g) { ms += 5; std::vector<nox::OutPacket> o; srv.Tick(ms, o); if (keep) keep->insert(keep->end(), o.begin(), o.end()); }
+        }
+    };
+    auto has = [](nox::Server& srv, int act) { for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) if (srv.DebugAIAction(0, i) == act) return true; return false; };
+    // 비홀더(1000,1000 · 동쪽을 봄) · a 는 앞 ax · 실물 주문 깃발(24 = 0x42340033 · 4 = 0x811c0491) · 번개 사거리 300 · 시전 애니 8칸/붙듦 2/한 번
+    auto mk = [&](nox::Server& srv, uint32_t& ms, float ax, bool invul) {
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningRange = 300;\n");
+        srv.SetGamedata(g);
+        srv.SetSpellDef(24, 0, 0x42340033u, { 1, 2 });
+        srv.SetSpellDef(4, 0, 0x811c0491u, { 1, 2 });
+        srv.SetMonsterAnim(1382, 7, 8, 2, false);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, ax, 1000.0f);
+        srv.DebugSpawnPet(1382, 1000, 1000, std::string());
+        if (invul) srv.DebugApplyEnchant(a, 23, 100000, 1);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetFrame(1000);
+    };
+    // ① 자동 주문 — 비홀더는 24(공격) · 멀티면 4(달아날 때) / 거머리는 없음
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 3000.0f, true);
+        srv.DebugSpawnPet(1358, 2000, 2000, std::string());
+        Check(srv.DebugPetSpellCount(0) == 2 && srv.DebugPetHasSpell(0, 24) && srv.DebugPetHasSpell(0, 4) && srv.DebugPetSpellCount(1) == 0,
+              "① 비홀더 자동 주문(24·4)이 아니거나 거머리에 주문이 있다");
+    }
+    // ② 싸움 갈래 — 공격 주문을 골라 61·41·20(24)·26·47·49(200)·40·7 · 쉬는 때 0~3초
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1150.0f, true);
+        bool seen = false;
+        for (int t = 0; t < 60 && !seen; ++t) {
+            run(srv, ms, 1);
+            if (srv.castStat(CS::PickOffense) == 1) {
+                seen = true;
+                bool has20 = false, has61 = false, has41 = false, has26 = false, has7 = false;
+                for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) {
+                    const int act = srv.DebugAIAction(0, i);
+                    if (act == 20 && srv.DebugAIArgU32(0, i) == 24) has20 = true;
+                    if (act == 61) has61 = true;
+                    if (act == 41) has41 = true;
+                    if (act == 26) has26 = true;
+                    if (act == 7) has7 = true;
+                }
+                const uint32_t cn = srv.DebugPetCastNextOffense(0);
+                std::string stk;
+                for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) stk += std::to_string(srv.DebugAIAction(0, i)) + " ";
+                char msg[220]; std::snprintf(msg, sizeof(msg), "② 공격 주문 사슬이 틀렸다 — 20(24) %d · 61 %d · 41 %d · 26 %d · 7 %d · 쉬는 때 +%u · 쌓임 %s",
+                    (int)has20, (int)has61, (int)has41, (int)has26, (int)has7, cn - srv.frame(), stk.c_str());
+                Check(has20 && has61 && has41 && has26 && has7 && cn >= srv.frame() && cn <= srv.frame() + 90, msg);
+            }
+        }
+        Check(seen, "② 비홀더가 싸움에서 공격 주문을 안 골랐다");
+    }
+    // ③ 쏘기 칸(4)에서 시전 → 몬스터 전기 광선 — 빔 켜기(9e 04 · 비홀더 번호 → a)·피해 · 41 때가 다하면 20 이 빠지며 빔을 끈다
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1150.0f, false);
+        const uint16_t hp0 = srv.HealthOf(a);
+        std::vector<nox::OutPacket> keep;
+        int castAt = -1, initAt = -1;
+        for (int t = 0; t < 400 && srv.castStat(CS::BeamHit) == 0; ++t) {
+            const unsigned long long c0 = srv.castStat(CS::Cast), i0 = srv.castStat(CS::InitSound);
+            run(srv, ms, 1, &keep);
+            if (castAt < 0 && srv.castStat(CS::Cast) != c0) castAt = srv.DebugPetAnimFrame(0);
+            if (initAt < 0 && srv.castStat(CS::InitSound) != i0) initAt = srv.DebugPetAnimFrame(0);
+        }
+        Check(castAt == 4 && initAt == 1, "③ 시전이 쏘기 칸(4)·시전 소리가 1칸이 아니다");
+        const uint16_t bn = srv.DebugPetNet(0);
+        bool start = false;
+        for (const auto& m : FlattenTo(keep, a))
+            if (m.size() == 7 && m[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) && m[1] == 4 && (m[3] | (m[4] << 8)) == bn && (m[5] | (m[6] << 8)) == 728) start = true;
+        char msg[200]; std::snprintf(msg, sizeof(msg), "③ 비홀더 빔이 안 켜졌다 — 시전 %llu · 받음 %llu · 빔맞힘 %llu · 시전소리 %llu · 켜기 패킷 %d · 체력 %u → %u",
+            srv.castStat(CS::Cast), srv.castStat(CS::Accepted), srv.castStat(CS::BeamHit), srv.castStat(CS::InitSound), (int)start, hp0, srv.HealthOf(a));
+        Check(srv.castStat(CS::Cast) >= 1 && srv.castStat(CS::Accepted) >= 1 && srv.castStat(CS::BeamHit) >= 1 && srv.castStat(CS::InitSound) >= 1 &&
+              start && srv.HealthOf(a) < hp0, msg);
+        if (srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 20 && srv.DebugPetDurActive(24, bn)) {
+            srv.DebugAIPop(0);
+            Check(!srv.DebugPetDurActive(24, bn), "③ 20 이 빠졌는데(끝내기) 빔이 곧장 안 꺼졌다");
+        } else Check(false, "③ 전제 — 빔이 켜진 뒤 맨 위가 20 이 아니다");
+    }
+    // ④ 몬스터가 시전 자리에서 5 넘게 움직이면 빔이 끊긴다(`sub_4FEA70`)
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1150.0f, true);
+        for (int t = 0; t < 400 && srv.castStat(CS::BeamHit) == 0; ++t) run(srv, ms, 1);
+        const uint16_t bn = srv.DebugPetNet(0);
+        Check(srv.DebugPetDurActive(24, bn), "④ 전제 — 빔이 안 켜졌다");
+        double px = 0, py = 0; srv.DebugPetXY(0, px, py);
+        srv.DebugSetPetPos(0, px, py + 10.0);
+        run(srv, ms, 1);
+        Check(srv.castStat(CS::BeamMoved) == 1 && !srv.DebugPetDurActive(24, bn), "④ 비홀더가 10 움직였는데 빔이 안 끊겼다");
+    }
+    // ⑤ 반주문(29)이면 공격 주문을 안 고른다 · 쉬는 때가 남았으면 아무것도 안 쌓는다(가기 7 없음 — 주문 몬스터는 걸어가지 않는다)
+    for (int kind = 0; kind <= 1; ++kind) {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1150.0f, true);
+        if (kind == 0) { srv.DebugApplyEnchantPet(0, 29, 600, 1); srv.DebugSetPetMoveAttempt(0, srv.frame()); }   // 구석(3초) — 반주문 후퇴(B4a)가 먼저 가로채지 않게
+        else srv.DebugSetPetCastNext(0, 100000);
+        bool moved = false;
+        for (int t = 0; t < 60; ++t) { run(srv, ms, 1); if (kind == 1 && has(srv, 7)) moved = true; }
+        if (kind == 0) Check(srv.castStat(CS::PickOffense) == 0, "⑤ 반주문인데 공격 주문을 골랐다");
+        else Check(srv.castStat(CS::PickOffense) == 0 && !moved, "⑤ 쉬는 때인데 공격 주문을 골랐거나 걸어갔다(원본은 아무것도 안 쌓음)");
+    }
+    // ⑥ 두뇌 — 상대가 도망 거리 절반(32.5) 안이면 곧장 점멸(4) · 달아날 때 쉬는 때 0~6초
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1020.0f, true);
+        for (int t = 0; t < 40 && srv.castStat(CS::BlinkNear) == 0; ++t) run(srv, ms, 1);
+        const uint32_t ce = srv.DebugPetCastNextEscape(0);
+        char msg[160]; std::snprintf(msg, sizeof(msg), "⑥ 20 앞 상대인데 점멸을 안 했다 — 가까워 점멸 %llu · 받음 %llu · 쉬는 때 +%u",
+            srv.castStat(CS::BlinkNear), srv.castStat(CS::Accepted), ce - srv.frame());
+        Check(srv.castStat(CS::BlinkNear) == 1 && srv.castStat(CS::Accepted) >= 1 && ce <= srv.frame() + 180, msg);
+    }
+    // ⑥' 도망 거리 절반 밖(50 — 65 안)이면 점멸 대신 거리 두기
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1050.0f, true);
+        for (int t = 0; t < 40 && srv.brainStat(nox::BrainStat::KeepDistance) == 0; ++t) run(srv, ms, 1);
+        Check(srv.castStat(CS::BlinkNear) == 0 && srv.brainStat(nox::BrainStat::KeepDistance) >= 1, "⑥' 50 앞 상대(절반 32.5 밖)인데 점멸했거나 거리 두기를 안 했다");
+    }
+    // ⑦ 도망(24) 중 후퇴(6)면 달아날 때 주문(4 · 자기) — 61·18(자기)
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1150.0f, true);
+        srv.DebugSetAutoFight(false);
+        srv.DebugAIPush(0, 6);
+        srv.DebugAIPushDep(0, 24, std::string(), -1, 0, 0.0f, 1150.0f, 1000.0f);
+        srv.DebugSetPetEnemy(0, a, -1);
+        std::vector<nox::OutPacket> o;
+        srv.DebugAITick(0, o);
+        const int t = srv.DebugAIStackInd(0);
+        char msg[160]; std::snprintf(msg, sizeof(msg), "⑦ 후퇴 중 도망인데 달아날 때 주문을 안 쌓았다 — 고름 %llu · 맨 위 %d(%u)·%d",
+            srv.castStat(CS::PickEscape), srv.DebugAIAction(0, t), srv.DebugAIArgU32(0, t), srv.DebugAIAction(0, t - 1));
+        Check(srv.castStat(CS::PickEscape) == 1 && srv.DebugAIAction(0, t) == 18 && srv.DebugAIArgU32(0, t) == 4 && srv.DebugAIAction(0, t - 1) == 61, msg);
+    }
+    std::printf("  09-29 B7 — 몬스터 주문: 비홀더 자동 주문 · 공격 주문 사슬 · 쏘기 칸 시전(빔 패킷·피해·20 끝에 끔) · 움직이면 끊김 · 반주문·쉬는 때 · 가까우면 점멸 · 후퇴 도망 중 점멸\n");
+}
+
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
 //   사람 판 09-28 「워리어가 컨저러를 볼 때 흰 티가 살색으로」 — 새로 온 쪽이 먼저 온 쪽의 평상복 색(수식)을 못 받았다
 void TestWornLooksForNewcomer() {
@@ -26325,6 +26465,7 @@ int main() {
     TestMonsterBrainB4b();
     TestMonsterAnimB5();
     TestMonsterHearB6();
+    TestMonsterCastB7();
     TestPickupAutoEquip();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
