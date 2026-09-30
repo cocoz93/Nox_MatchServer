@@ -1867,6 +1867,7 @@ public:
     unsigned long long b2Stat(B2Stat s) const { return s < B2Stat::Count ? b2Stat_[static_cast<size_t>(s)] : 0; }               // ★ 09-29 B2
     unsigned long long meleeStrike(MeleeStrikeWay w) const { return w < MeleeStrikeWay::Count ? meleeStrike_[static_cast<size_t>(w)] : 0; }   // ★ 09-29 B3
     unsigned long long attackTiming(AttackTiming t) const { return t < AttackTiming::Count ? attackTiming_[static_cast<size_t>(t)] : 0; }   // ★ 09-30
+    unsigned long long shotNoAim() const { return shotNoAim_; }   // ★ 09-30
     // ★ 09-30 — 제때·어긋남 가리지 않고 본 시작→칸 틱 수의 가장 작은·큰 값(0 = 근접 · 1 = 쏘기) · 한 번도 없으면 -1
     int attackLagMin(int kind) const { return (kind == 0 || kind == 1) && attackLagSeen_[kind] ? static_cast<int>(attackLagMin_[kind]) : -1; }
     int attackLagMax(int kind) const { return (kind == 0 || kind == 1) && attackLagSeen_[kind] ? static_cast<int>(attackLagMax_[kind]) : -1; }
@@ -5437,6 +5438,7 @@ private:
     unsigned long long b2Stat_[kB2StatCount] = {};   // ★ 09-29 B2
     unsigned long long meleeStrike_[kMeleeStrikeWayCount] = {};   // ★ 09-29 B3
     unsigned long long attackTiming_[kAttackTimingCount] = {};    // ★ 09-30
+    unsigned long long shotNoAim_ = 0;                            // ★ 09-30 — 쏘는 칸에서 겨눌 곳이 없어 안 쏜 수(대상 사라짐 · 자리 0)
     uint32_t attackLagMin_[2] = {}, attackLagMax_[2] = {};
     bool attackLagSeen_[2] = {};
     void CountAttackTiming(const Creature& k, int kind, int frame);   // kind 0 근접(애니 1) · 1 쏘기(애니 3)

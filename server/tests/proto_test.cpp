@@ -37,6 +37,32 @@ static void RegHarpoonBolt(nox::Server& srv) {
     srv.SetProjType("HarpoonBolt", 526, 800, 0x4000, 0);
 }
 
+// ★ 09-30 — 열셋의 근접(1)·쏘기(3)·죽어가기(9) 애니 — ⭕ Estate 기동 `[몬스터칸]` 줄 그대로(thing.bin MonsterDraw · `_evidence/_runs/melee0930_boot.srv.txt`).
+//   근접·쏘기가 애니 칸으로 때리고 애니 끝에 빠지므로, 몬스터가 때리는 시험은 이 표를 싣는다(서버는 main 이 thing.bin 에서 싣는다)
+static void LoadRealAttackAnims(nox::Server& srv) {
+    struct Row { uint16_t wire; int mf, mh, mloop, sf, sh, df, dh; };
+    static const Row kRows[] = {
+        { 1317,  8, 0, 0, 8, 0, 12, 1 },   // EvilCherub
+        { 1325,  8, 0, 0, 0, 0, 12, 1 },   // Ghost
+        { 1328,  0, 0, 0, 4, 0, 12, 0 },   // Imp
+        { 1337,  8, 0, 0, 8, 2, 12, 1 },   // EmberDemon
+        { 1348,  8, 0, 1, 0, 0,  0, 0 },   // Bomber(근접 애니 되풀이 — 근접을 안 한다)
+        { 1355,  6, 1, 0, 0, 0, 12, 0 },   // AlbinoSpider
+        { 1356,  6, 1, 0, 0, 0, 12, 0 },   // SmallAlbinoSpider
+        { 1357, 13, 0, 0, 0, 0, 16, 0 },   // Bat
+        { 1358,  8, 2, 0, 0, 0,  4, 1 },   // GiantLeech
+        { 1365,  9, 1, 0, 0, 0, 12, 1 },   // Bear
+        { 1366,  9, 1, 0, 0, 0, 12, 1 },   // BlackBear
+        { 1371,  8, 1, 0, 0, 0, 12, 1 },   // CarnivorousPlant
+        { 1382,  0, 0, 0, 0, 0, 26, 1 },   // Beholder
+    };
+    for (const Row& r : kRows) {
+        srv.SetMonsterAnim(r.wire, 1, r.mf, r.mh, r.mloop != 0);
+        srv.SetMonsterAnim(r.wire, 3, r.sf, r.sh, false);
+        srv.SetMonsterAnim(r.wire, 9, r.df, r.dh, false);
+    }
+}
+
 #include "nox/ThingDb.h"
 #include "nox/ThingFlags.h"
 #include "nox/NoxCrypt.h"
@@ -1084,6 +1110,7 @@ const char* HitSoundMsg(const nox::Server& srv, const char* what) {
 //   시전 틀(음소 7개 × 3틱)을 거치므로 서버 시계를 이어서 틱을 돌린다.
 void SummonImp(nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out) {
     RegSpell(srv, 87);
+    LoadRealAttackAnims(srv);   // ★ 09-30 — 임프는 쏘기 애니(4칸)의 쏘는 칸(1)에서 쏜다 — 표가 없으면 영영 안 쏜다(실제 서버는 늘 싣는다)
     srv.DebugSetClass(who, nox::CharClass::Conjurer);
     // 소환 시간은 기획자료 값이다(아레나 실측 60·210·375). 없으면 0 이 되어 **영영 안 나온다**
     //   — `+68 − 1 == 지금` 으로 터지는데 0 이면 그 프레임이 과거가 된다.
@@ -12028,32 +12055,6 @@ static void SetEnemySeen(nox::Server& srv, size_t i, const std::string& addr, in
     srv.DebugSetPetEnemy(i, addr, pet);
 }
 
-// ★ 09-30 — 열셋의 근접(1)·쏘기(3)·죽어가기(9) 애니 — ⭕ Estate 기동 `[몬스터칸]` 줄 그대로(thing.bin MonsterDraw · `_evidence/_runs/melee0930_boot.srv.txt`).
-//   근접·쏘기가 애니 칸으로 때리고 애니 끝에 빠지므로, 몬스터가 때리는 시험은 이 표를 싣는다(서버는 main 이 thing.bin 에서 싣는다)
-static void LoadRealAttackAnims(nox::Server& srv) {
-    struct Row { uint16_t wire; int mf, mh, mloop, sf, sh, df, dh; };
-    static const Row kRows[] = {
-        { 1317,  8, 0, 0, 8, 0, 12, 1 },   // EvilCherub
-        { 1325,  8, 0, 0, 0, 0, 12, 1 },   // Ghost
-        { 1328,  0, 0, 0, 4, 0, 12, 0 },   // Imp
-        { 1337,  8, 0, 0, 8, 2, 12, 1 },   // EmberDemon
-        { 1348,  8, 0, 1, 0, 0,  0, 0 },   // Bomber(근접 애니 되풀이 — 근접을 안 한다)
-        { 1355,  6, 1, 0, 0, 0, 12, 0 },   // AlbinoSpider
-        { 1356,  6, 1, 0, 0, 0, 12, 0 },   // SmallAlbinoSpider
-        { 1357, 13, 0, 0, 0, 0, 16, 0 },   // Bat
-        { 1358,  8, 2, 0, 0, 0,  4, 1 },   // GiantLeech
-        { 1365,  9, 1, 0, 0, 0, 12, 1 },   // Bear
-        { 1366,  9, 1, 0, 0, 0, 12, 1 },   // BlackBear
-        { 1371,  8, 1, 0, 0, 0, 12, 1 },   // CarnivorousPlant
-        { 1382,  0, 0, 0, 0, 0, 26, 1 },   // Beholder
-    };
-    for (const Row& r : kRows) {
-        srv.SetMonsterAnim(r.wire, 1, r.mf, r.mh, r.mloop != 0);
-        srv.SetMonsterAnim(r.wire, 3, r.sf, r.sh, false);
-        srv.SetMonsterAnim(r.wire, 9, r.df, r.dh, false);
-    }
-}
-
 // ★ 09-30 — 틱 차례대로(애니 넘기기 → 행동) 근접(16)이 맨 위에서 내려올 때까지 돌린다 — 몇 틱 돌았나
 //   ⚠ 프레임은 안 넘긴다(쉬는 시간 셈은 그대로) — 칸 셈만 굴린다
 static int RunSwing(nox::Server& srv, size_t i, std::vector<nox::OutPacket>& out, uint8_t act = 16, int maxTicks = 80) {
@@ -12560,10 +12561,10 @@ void TestAIMelee() {
         SetEnemySeen(srv, 0, b, -1);
         const size_t n0 = srv.missiles();
         srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
-        srv.DebugAITick(0, out);
+        const int ticks = RunSwing(srv, 0, out, 17);           // ★ 09-30 — 쏘는 칸(1)에서 쏘고 애니(4칸·붙듦 0) 끝에 빠진다 = 4 틱
         // ★ 이제 **피해를 바로 주지 않는다** — `ImpShot` 오브젝트를 만들어 날린다(6-g(3b))
         Check(srv.missiles() == n0 + 1, "발사체가 안 생겼다");
-        Check(srv.DebugAIAction(0, 0) == 0, "쏜 뒤 안 빠졌다");
+        Check(srv.DebugAIAction(0, 0) == 0 && ticks == 4, "쏜 뒤 애니 끝(4 틱)에 안 빠졌다");
     }
     std::printf("  6-g(2) — 근접(16): 쉬는 시간 끝나면 휘두름(다음 때 30~40) · 아니면 50+1 · 못 때리면 뺌\n");
 }
@@ -12764,6 +12765,89 @@ void TestMonsterMeleeTiming() {
         Check(timing == calls && calls == 3 && srv.meleeStrike(MW::NoTarget) == 3 && srv.attackTiming(AT::MeleeOnTime) == 3, msg);
     }
     std::printf("  09-30 근접 시점 — 곰 9틱 뒤 한 번(제때) · 휘두르는 중 취소면 안 맞음 · 작은 흰거미 끝 칸 두 번 · 유령 사슬 뒤 16 없음 · 계수 합\n");
+}
+
+// ── ★ 09-30 쏘기(17)를 애니 칸으로(`mobActionMissileAtt_532610` `GAME4_3.c:2178·2220~2223`) ─────────
+//   칸 == 쏘는 칸(monster.bin +216) · 칸 안 틱 0 → 발사체 · 애니 끝 → 뺌. 불악마 쏘기 애니 8칸·붙듦 2·쏘는 칸 4(실데이터)
+//   ⚠ 시험 서버는 `Fireball` 종류를 모른다 — 발사체는 안 생기지만(지어내지 않음) 쏘는 **시점**은 계수로 본다 · 발사체가 생기는지는 임프(`RegImpShot`)로
+void TestMonsterShotTiming() {
+    const std::string a = "10.9.30.11:9311", b = "10.9.30.12:9312";
+    using AT = nox::AttackTiming;
+    auto mk = [&](nox::Server& srv, uint16_t type) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 900.0f, 1000.0f);
+        srv.DebugTeleport(b, 1100.0f, 1000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);
+        LoadRealAttackAnims(srv);
+        RegImpShot(srv);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetFrame(1000);
+    };
+    auto step = [](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& f) {
+        srv.DebugSetFrame(++f);
+        srv.DebugMonsterAnimUpdate(0);
+        srv.DebugAITick(0, out);
+    };
+    auto stack = [](nox::Server& srv) {
+        std::string s;
+        for (int j = 0; j <= srv.DebugAIStackInd(0); ++j) { if (j) s += ','; s += std::to_string(srv.DebugAIAction(0, j)); }
+        return s;
+    };
+
+    // ① 불악마 — 시작 틱에서 4×3−1 = 11 틱 뒤에 한 번 쏘고(제때) · 24 번째 틱에 빠진다
+    {
+        nox::Server srv; mk(srv, 1337);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);
+        uint32_t f = 1000;
+        int t = 0;
+        for (t = 1; t <= 40 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 17; ++t) step(srv, out, f);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "① 불악마 쏘기 — 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu · 틱 %d~%d(기대 11) · 빠진 틱 %d(기대 24)",
+                      srv.attackTiming(AT::ShotOnTime), srv.attackTiming(AT::ShotOff), srv.attackTiming(AT::ShotLastRepeat),
+                      srv.attackLagMin(1), srv.attackLagMax(1), t - 1);
+        Check(srv.attackTiming(AT::ShotOnTime) == 1 && srv.attackTiming(AT::ShotOff) == 0 && srv.attackTiming(AT::ShotLastRepeat) == 0 &&
+              srv.attackLagMin(1) == 11 && srv.attackLagMax(1) == 11 && t - 1 == 24, msg);
+    }
+    // ② 임프 — 발사체가 쏘는 칸에서 **한 개** 생긴다 · 그 전 틱에는 없다(칸 1 = 첫 넘김 틱 · 4칸 끝에 빠짐)
+    {
+        nox::Server srv; mk(srv, 1328);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetNextHit(0, 0);
+        const unsigned long long n0 = srv.missilesMade();
+        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);
+        srv.DebugAITick(0, out);                               // 넘기기 없이 한 번 — 칸 0 이라 아직 안 쏜다
+        const unsigned long long before = srv.missilesMade() - n0;
+        uint32_t f = 1000;
+        int t = 0;
+        for (t = 1; t <= 20 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 17; ++t) step(srv, out, f);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "② 임프 — 칸 0 에서 %llu 개(기대 0) · 끝까지 %llu 개(기대 1) · 빠진 틱 %d(기대 4)",
+                      before, srv.missilesMade() - n0, t - 1);
+        Check(before == 0 && srv.missilesMade() - n0 == 1 && t - 1 == 4, msg);
+    }
+    // ③ 쏘는 칸 전에 위로 바라보기(25)가 올라오면 — 취소가 쏘기를 빼서 **안 쏜다**
+    {
+        nox::Server srv; mk(srv, 1337);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);
+        uint32_t f = 1000;
+        for (int t = 0; t < 5; ++t) step(srv, out, f);
+        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0.0f, 1000.0f, 1400.0f);
+        const std::string s = stack(srv);
+        for (int t = 0; t < 40; ++t) step(srv, out, f);
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "③ 쏘는 중 취소 — 올린 직후 쌓임 [%s](기대 [0,25]) · 쏨 %llu(기대 0)", s.c_str(),
+                      srv.attackTiming(AT::ShotOnTime) + srv.attackTiming(AT::ShotOff));
+        Check(s == "0,25" && srv.attackTiming(AT::ShotOnTime) + srv.attackTiming(AT::ShotOff) == 0, msg);
+    }
+    std::printf("  09-30 쏘기 시점 — 불악마 11틱 뒤 한 번·24틱에 빠짐 · 임프 칸 1 에서 한 개 · 쏘는 중 취소면 안 쏨\n");
 }
 
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
@@ -19242,6 +19326,7 @@ void TestMonsterSounds() {
         srv.DebugMoveTo(b, 1010, 1000);
         srv.DebugSpawnPet(type, 1000, 1000, a);
         srv.DebugSetAutoFight(false);
+        LoadRealAttackAnims(srv);   // ★ 09-30
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetPetPos(0, 1000, 1000);
@@ -19277,7 +19362,8 @@ void TestMonsterSounds() {
         srv.DebugSetPetNextHit(0, 0);
         srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         // ★ 09-30 — 시작은 틱이 한 번만 부른다. ✖ 전에는 시작을 손으로 한 번 더 불렀다 — 두 번째 시작이 이제 쉬는 중 갈래(50·1)로 쏘기를 뺀다
-        srv.DebugAITick(0, out);
+        //   쏘기는 애니 칸(임프 4칸·쏘는 칸 1)에서 쏘므로 애니 끝까지 돌린다
+        RunSwing(srv, 0, out, 17);
         std::vector<nox::OutPacket> o2; srv.Tick(34, o2);
         char msg[220];
         std::snprintf(msg, sizeof(msg), "M4a ② 쏘기(종류 %s) — 쏘기시작 냄 %llu · 쏘기 냄 %llu · 발사체 %zu · a 들음 %d/%d",
@@ -20888,13 +20974,14 @@ void TestMonsterBrainB4a() {
         for (int i = 0; i <= srv.DebugAIStackInd(0); ++i) if (srv.DebugAIAction(0, i) == 6) r6 = true;
         Check(!r6, "④ 구석에 몰렸는데 조건 68 이 후퇴를 안 뺐다");
     }
-    // ⑤ 쏘기(17)는 항목의 자리를 겨눈다(대상 없음 — 혼란의 앞 10 쏘기) · 대상도 자리도 없으면 빠진다
+    // ⑤ 쏘기(17)는 항목의 자리를 겨눈다(대상 없음 — 혼란의 앞 10 쏘기) · 대상도 자리도 없으면 안 쏘고 애니 끝에 빠진다(09-30 — 전에는 곧 뺐다)
     for (int hasPos = 0; hasPos <= 1; ++hasPos) {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugTeleport(a, 3000.0f, 3000.0f);
         srv.DebugSpawnPet(1328, 1000, 1000, std::string());
         RegImpShot(srv);
+        LoadRealAttackAnims(srv);                              // ★ 09-30 — 쏘는 칸에서 쏜다
         srv.DebugSetAutoFight(false);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
@@ -20902,9 +20989,10 @@ void TestMonsterBrainB4a() {
         srv.DebugSetPetNextHit(0, 0);
         const unsigned long long n0 = srv.missilesMade();
         srv.DebugAIPushDep(0, 17, std::string(), -1, 0, 0.0f, hasPos ? 1010.0f : 0.0f, hasPos ? 1000.0f : 0.0f);
-        srv.DebugAITick(0, out);
+        RunSwing(srv, 0, out, 17);
         if (hasPos) Check(srv.missilesMade() == n0 + 1, "⑤ 자리만 실린 쏘기가 안 쐈다");
-        else        Check(srv.missilesMade() == n0 && srv.DebugAIAction(0, 0) == 0, "⑤ 대상도 자리도 없는데 쐈거나 안 빠졌다");
+        else        Check(srv.missilesMade() == n0 && srv.DebugAIAction(0, 0) == 0 && srv.shotNoAim() == 1,
+                          "⑤ 대상도 자리도 없는데 쐈거나 애니 끝에 안 빠졌다(겨눌곳없음 1)");
     }
     std::printf("  09-29 B4a — 두뇌: 두려움 도망(멀어짐·달리기·풀리면 빠짐) · 혼란 · 반주문 후퇴(비홀더만) · ARENA 비율 0 · 구석 · 자리 겨눔 쏘기\n");
 }
@@ -27211,6 +27299,7 @@ int main() {
     TestAIMelee();
     TestAIAttackCancel();
     TestMonsterMeleeTiming();
+    TestMonsterShotTiming();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();

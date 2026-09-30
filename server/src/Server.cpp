@@ -11545,27 +11545,34 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             }
             break;
         }
-        case 17: {   // 쏘기 — `mobActionMissileAtt_532610` (묶음 6-g(3b))
+        case 17: {   // 쏘기 — `mobActionMissileAtt_532610`(`GAME4_3.c:2143~2226`) (묶음 6-g(3b))
             // ⭕ 정답지는 애니의 **쏘는 칸**(`monsterDef+216`)에서 `MISSILE_NAME` 오브젝트를
             //   **만들어 날린다**. 이제 우리도 **진짜로 만든다** — 피해는 그것이 맞을 때 들어간다
-            // ⚠ **애니 칸이 없어** 「휘두르기를 시작한 그 틱」을 그 자리로 삼는다.
-            //   이 막이 없으면 쉬는 시간이 안 지켜져 매 틱 쏜다
+            // ★ 09-30 — **애니 칸으로 굴린다**(원본 그대로) — 쏘기 애니(3)가 쏘는 칸(`MonsterMissileFrameOf`)·칸 안 틱 0 이면 쏘고(`:2178`),
+            //   **애니가 끝나면**(+483) 뺀다(`:2220~2223`). 겨눌 곳도 그 칸에서만 읽는다(`:2181~2188`)
+            //   ✖ 전에는 애니 칸이 없던 때(B5 전)의 대신으로 「휘두르기를 시작한 틱에 쏘고 곧 뺌」 · 대상이 없으면 곧 뺐다
+            //   · 쏘는 칸에서 겨눌 곳이 없으면(대상이 사라짐 · 자리 0) 안 쏘고 애니 끝을 기다린다 — 정답지는 그 자리를 그대로 읽는다(사라진 대상은 조건 42·45 가 먼저 뺀다)
             // ⚠ **앞질러 겨눔**(`projAddVelocitySmth_533080`)은 아직 안 옮겼다 — 지금은 곧장 겨눈다
             // ★ 09-29 B4 — 겨누는 곳은 **쌓임 항목**이다(`532610` `:2181~2188` — 대상 오브젝트 v4[3] 이 있으면 그것 · 없으면 자리 v4[1·2]).
             //   ✖ 전에는 지금 상대(+1196)를 겨눴다 — 정답지 쏘기는 +1196 을 안 읽는다. 공격 사슬은 대상·자리를 둘 다 싣고,
             //     혼란(36)은 자리만(앞 10) 싣는다
             const MonsterStats* m = FindMonster(k.type);
-            const Target foe{ st.targetAddr, st.targetPet };
             if (!m || m->missileName == nullptr) { AIPop(k); break; }
-            if (k.attackStartFrame != frame_) { AIPop(k); break; }
-            float tx = 0, ty = 0;
-            if (!foe.none()) { if (!TargetXY(foe, tx, ty)) { AIPop(k); break; } }
-            else if (st.argX != 0.0f || st.argY != 0.0f) { tx = st.argX; ty = st.argY; }
-            else { AIPop(k); break; }
-            // ★ 09-26 M4a — MISSILE_ATTACK(+44 · `GAME4_3.c:2215~2218`) — 정답지는 발사체 오브젝트를 **만들었을 때만**(`if (v6)` 안 ·
-            //   선 추적이 막혀 곧 지워져도 소리는 난다)
-            if (SpawnCreatureMissile(k, m->missileName, tx, ty, out)) MonsterSound(k, 10);
-            AIPop(k);
+            const int shotFrame = MonsterMissileFrameOf(k.type);
+            if (k.animFrame == static_cast<uint8_t>(shotFrame) && k.animTick == 0) {
+                CountAttackTiming(k, 1, shotFrame);
+                const Target foe{ st.targetAddr, st.targetPet };
+                float tx = 0, ty = 0;
+                bool aim = true;
+                if (!foe.none()) aim = TargetXY(foe, tx, ty);
+                else if (st.argX != 0.0f || st.argY != 0.0f) { tx = st.argX; ty = st.argY; }
+                else aim = false;
+                // ★ 09-26 M4a — MISSILE_ATTACK(+44 · `GAME4_3.c:2215~2218`) — 정답지는 발사체 오브젝트를 **만들었을 때만**(`if (v6)` 안 ·
+                //   선 추적이 막혀 곧 지워져도 소리는 난다)
+                if (!aim) ++shotNoAim_;
+                else if (SpawnCreatureMissile(k, m->missileName, tx, ty, out)) MonsterSound(k, 10);
+            }
+            if (k.animDone) AIPop(k);
             break;
         }
         case 16: {   // 근접 공격 — `mobActionMeleeAtt_532440`(`GAME4_3.c:2058~2110`)
