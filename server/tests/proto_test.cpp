@@ -13512,8 +13512,13 @@ void TestAIGuardHunt() {
         Check(!srv.DebugAIPush(0, 7), "죽음 위에 가기가 올라갔다");
         Check(srv.DebugAIPush(0, 30), "죽음 위에 죽어가는 중(30)이 안 올라갔다");
         srv.DebugSetPetPos(0, 1100, 1000);
-        srv.DebugAITick(0, out);                              // 죽어가는 중은 곧바로 빠진다
-        Check(srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 31, "죽어가는 중이 안 빠져 죽음이 안 드러났다");
+        // ★ 09-30 — 죽어가는 중은 **죽어가기 애니(9)가 끝나면** 빠진다(`sub_544D60`) — 거머리 4칸·붙듦 1 → 8 번째 틱.
+        //   ✖ 전에는 「곧바로 빠진다」(애니 칸이 없던 때)
+        LoadRealAttackAnims(srv);
+        const int dyingTicks = RunSwing(srv, 0, out, 30);
+        char dmsg[120];
+        std::snprintf(dmsg, sizeof(dmsg), "죽어가는 중이 애니 끝(8 틱)에 안 빠져 죽음이 안 드러났다 — %d 틱", dyingTicks);
+        Check(dyingTicks == 8 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 31, dmsg);
         srv.DebugAITick(0, out);                              // 죽음이 시작되며 속도를 끈다
         Check(srv.DebugPetVelX(0) == 0 && srv.DebugPetVelY(0) == 0, "죽음 시작이 속도를 안 껐다");
         Check(srv.DebugPetPathCount(0) == 0, "죽음 시작이 길을 안 버렸다");
