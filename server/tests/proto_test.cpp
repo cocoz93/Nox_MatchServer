@@ -13140,6 +13140,68 @@ void TestMonsterAnimOnWire() {
     std::printf("  몬스터 애니 싣기 — 걷기 12·13 · 근접 1 · 칸 바이트(0x80) 서버 칸과 같음\n");
 }
 
+// ★ 10-01 — 소환 끝에 **주인에게만** `6c`(번호·종류) → `dd`(번호·체력·최대) · 죽으면 주인에게만 `6d`(번호)
+//   (사람 판 3 「소환수 머리 위 체력·정보 없음」 · 원본 `4D91A0` `GAME3_2.c:4602~4614` · `50A3D0` `GAME4_1.c:491~498`)
+//   ⚠ 셀 때는 **그 소환수 번호**로 거른다 — 사람 자신의 `dd` 가 같은 조각들에 섞인다
+void TestSummonOwnership() {
+    const std::string a = "10.10.2.1:1101", b = "10.10.2.2:1102";
+    auto find = [](const std::vector<std::vector<uint8_t>>& msgs, uint8_t op, uint16_t net, std::vector<uint8_t>* last, int* at) {
+        int n = 0;
+        for (size_t j = 0; j < msgs.size(); ++j) {
+            const auto& m = msgs[j];
+            if (m.size() < 3 || m[0] != op || static_cast<uint16_t>(m[1] | (m[2] << 8)) != net) continue;
+            ++n;
+            if (last) *last = m;
+            if (at) *at = static_cast<int>(j);
+        }
+        return n;
+    };
+    nox::Server srv;
+    srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+    srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+    srv.DebugTeleport(b, 1600.0f, 1000.0f);
+    std::vector<nox::OutPacket> out;
+    SummonImp(srv, a, out);
+    Check(srv.pets() == 1, "① 임프가 안 나왔다");
+    if (srv.pets() != 1) return;
+    const uint16_t net = srv.DebugPetNet(0);
+    // ① 얻음 — 주인에게만 · 6c 다음 dd · 6c 5바이트(종류 1328) · dd 7바이트(체력 = 최대 = 지금 체력)
+    {
+        const auto toA = FlattenTo(out, a), toB = FlattenTo(out, b);
+        std::vector<uint8_t> acq, dd;
+        int atAcq = -1, atDd = -1;
+        Check(find(toA, 0x6C, net, &acq, &atAcq) == 1, "① 주인에게 6c 가 한 번이 아니다");
+        Check(find(toA, 0xDD, net, &dd, &atDd) == 1, "① 주인에게 소환수 dd 가 한 번이 아니다");
+        Check(atAcq >= 0 && atDd > atAcq, "① 6c 다음에 dd 가 아니다(원본 순서)");
+        Check(acq.size() == 5 && static_cast<uint16_t>(acq[3] | (acq[4] << 8)) == 1328, "① 6c 가 5바이트·종류 1328 이 아니다");
+        const uint16_t hp = srv.DebugPetHealth(0);
+        Check(dd.size() == 7 && hp > 0 && static_cast<uint16_t>(dd[3] | (dd[4] << 8)) == hp &&
+              static_cast<uint16_t>(dd[5] | (dd[6] << 8)) == hp, "① dd 가 7바이트·체력=최대=지금 체력이 아니다");
+        Check(find(toB, 0x6C, net, nullptr, nullptr) == 0 && find(toB, 0xDD, net, nullptr, nullptr) == 0, "① 남에게도 6c·dd 가 갔다");
+        Check(srv.summonOwnSent(0) == 1 && srv.summonOwnSent(1) == 1, "① 계수 6c·dd 가 1·1 이 아니다");
+    }
+    // ② 잃음 — 죽이면 주인에게만 6d 3바이트
+    {
+        out.clear();
+        srv.DebugHurt(std::string(), 0, 9999, b, 0, out);
+        Check(srv.pets() == 0, "② 임프가 안 죽었다");
+        std::vector<uint8_t> lose;
+        Check(find(FlattenTo(out, a), 0x6D, net, &lose, nullptr) == 1 && lose.size() == 3, "② 주인에게 6d(3바이트)가 한 번이 아니다");
+        Check(find(FlattenTo(out, b), 0x6D, net, nullptr, nullptr) == 0, "② 남에게도 6d 가 갔다");
+        Check(srv.summonOwnSent(2) == 1, "② 계수 6d 가 1 이 아니다");
+    }
+    // ③ 주인 없는 맵 몬스터가 죽으면 아무에게도 6d 가 없다
+    {
+        srv.DebugSpawnPet(1328, 1000, 1000, std::string());
+        const uint16_t wildNet = srv.DebugPetNet(0);
+        out.clear();
+        srv.DebugHurt(std::string(), 0, 9999, b, 0, out);
+        Check(srv.pets() == 0, "③ 맵 몬스터가 안 죽었다");
+        Check(find(Flatten(out), 0x6D, wildNet, nullptr, nullptr) == 0 && srv.summonOwnSent(2) == 1, "③ 주인 없는데 6d 가 나갔다");
+    }
+    std::printf("  소유 알림 — 소환 끝 주인에게만 6c→dd · 죽으면 주인에게만 6d · 맵 몬스터는 없음\n");
+}
+
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
 //
 // 정답지 `legacy/GAME5.c:924` `nox_xxx_mobActionEscort_546430`.
@@ -27597,6 +27659,7 @@ int main() {
     TestMonsterMeleeTiming();
     TestMonsterShotTiming();
     TestMonsterAnimOnWire();
+    TestSummonOwnership();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();

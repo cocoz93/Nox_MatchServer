@@ -1075,6 +1075,18 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
     MonsterSound(pets_[idx], 14);
     const uint16_t netCode = pets_[idx].netCode;
     const bool wild = pets_[idx].owner.empty();   // 주인 없는 것 = 맵의 몬스터
+    // ★ 10-01 — 주인이 사람이면 `6d`(번호2 · Packet1) — `monsterCallDieFn_50A3D0`(`GAME4_1.c:491~498`) → `4D9200`(`GAME3_2.c:4617~4626`).
+    //   클라는 제 소환수 목록에서 뺀다(`cdecode.c:1528~1552`) · 짝 = `ReportAcquireCreature` 의 `6c`
+    //   ⚠ 안 옮김 — 미니맵 장부 지우기 `netUnmarkMinimapObj_417300` · 종류 윗비트(GameFlag28)
+    if (!wild) {
+        auto oi = sessions_.find(pets_[idx].owner);
+        if (oi != sessions_.end() && oi->second.inGame) {
+            const uint8_t lose[3] = { static_cast<uint8_t>(Op::REPORT_LOSE_CREATURE),
+                                      static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8) };
+            EmitSeq(oi->second, lose, sizeof(lose), out);
+            ++summonOwnSent_[2];
+        }
+    }
     pets_.erase(pets_.begin() + static_cast<long>(idx));
     ++petsKilled_;
     if (wild && questTotal_ > 0) {
@@ -13297,7 +13309,28 @@ int Server::DurSummonTick(DurSpell& d, std::vector<OutPacket>& out) {
     SpawnCreature(type, static_cast<float>(s.posX + kPetReach * std::cos(rad)),
                   static_cast<float>(s.posY + kPetReach * std::sin(rad)), d.caster);
     if (!pets_.empty()) pets_.back().facing = s.facing;
+    if (!pets_.empty()) ReportAcquireCreature(s, pets_.back(), out);   // ★ 10-01 — unitDoSummonAt_5016C0(`spell_summon.go:54`)
     return 1;
+}
+
+// ★ 10-01 `nox_xxx_netReportAcquireCreature_4D91A0`(`GAME3_2.c:4602~4614`) — 주인에게 `6c`(번호2·종류2) + `netReportTotalHealth_4D85C0`
+//   `dd`(번호2·체력2·최대2) · 둘 다 Packet1. 클라는 `6c` 로 **제 소환수 목록·체력 막대**를 세운다(`cdecode.c:1507~1527`).
+//   ✖ 안 보내서 소환수 머리 위 체력·정보가 없었다(10-01 사람 판 3 — 비홀더·곰·임프).
+//   ⚠ 안 옮김 — 종류 윗비트(GameFlag28 0x8000000 이면 0x80 · 뜻 미상 → 0) · 미니맵 장부 `netMarkMinimapObject_417190` ·
+//     `SendSimpleObject2_4DF360` · 팀 알림(`createAtImpl_4191D0`)
+void Server::ReportAcquireCreature(Session& owner, const Creature& k, std::vector<OutPacket>& out) {
+    const uint8_t acq[5] = { static_cast<uint8_t>(Op::REPORT_ACQUIRE_CREATURE),
+                             static_cast<uint8_t>(k.netCode), static_cast<uint8_t>(k.netCode >> 8),
+                             static_cast<uint8_t>(k.type), static_cast<uint8_t>(k.type >> 8) };
+    EmitSeq(owner, acq, sizeof(acq), out);
+    ++summonOwnSent_[0];
+    const int maxHp = TuningFor(k.type).health;
+    const uint8_t dd[7] = { static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH),
+                            static_cast<uint8_t>(k.netCode), static_cast<uint8_t>(k.netCode >> 8),
+                            static_cast<uint8_t>(k.health), static_cast<uint8_t>(k.health >> 8),
+                            static_cast<uint8_t>(maxHp), static_cast<uint8_t>(maxHp >> 8) };
+    EmitSeq(owner, dd, sizeof(dd), out);
+    ++summonOwnSent_[1];
 }
 
 // ── 묶음 4-c1 밀기·당기기·땅흔들기 ─────────────────────────────────────

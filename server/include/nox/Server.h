@@ -1899,6 +1899,7 @@ public:
     unsigned long long brainStat(BrainStat b) const { return b < BrainStat::Count ? brainStat_[static_cast<size_t>(b)] : 0; }                   // ★ 09-29 B4
     unsigned long long animStat(AnimStat b) const { return b < AnimStat::Count ? animStat_[static_cast<size_t>(b)] : 0; }                        // ★ 09-29 B5
     unsigned long long monsterAnimSent(int idx) const { return idx >= 0 && idx < 16 ? monsterAnimSent_[idx] : 0; }                      // ★ 10-01 — 갱신 항목에 실은 애니 번호별
+    unsigned long long summonOwnSent(int i) const { return i >= 0 && i < 3 ? summonOwnSent_[i] : 0; }                                  // ★ 10-01 — 0 `6c` · 1 `dd` · 2 `6d`
     // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
     void SetMonsterAnim(uint16_t wire, int idx, int frames, int hold, bool loop) {
         if (idx < 0 || idx >= 16) return;
@@ -4405,6 +4406,7 @@ private:
     int CountControlledCreatures(const std::string& owner) const;
     int DurSummonCreate(DurSpell& d, std::vector<OutPacket>& out);                                     // summonStart_500DA0
     int DurSummonTick(DurSpell& d, std::vector<OutPacket>& out);                                       // summonFinish_5010D0
+    void ReportAcquireCreature(Session& owner, const Creature& k, std::vector<OutPacket>& out);        // ★ 10-01 netReportAcquireCreature_4D91A0
     int CastMark(uint8_t spell, Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);    // sub_52CBD0
     int DurTeleMarkCreate(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_5305D0
     int DurTeleMarkTick(DurSpell& d, std::vector<OutPacket>& out);                                     // sub_530650
@@ -5480,6 +5482,7 @@ private:
     unsigned long long brainStat_[kBrainStatCount] = {};          // ★ 09-29 B4
     unsigned long long animStat_[kAnimStatCount] = {};            // ★ 09-29 B5
     unsigned long long monsterAnimSent_[16] = {};                 // ★ 10-01 — 몬스터 갱신 항목에 실은 애니 번호(0~15)별 · 보는 사람마다 한 번씩
+    unsigned long long summonOwnSent_[3] = {};                    // ★ 10-01 — 주인에게 보낸 소유 알림 0 `6c` 얻음 · 1 `dd` 총체력 · 2 `6d` 잃음
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };
     std::map<uint16_t, std::array<MonsterAnimRow, 16>> monsterAnims_;   // ★ 09-29 B5 — 갱신자료 +476 표(종류별)
     unsigned long long hearStat_[kHearStatCount] = {};            // ★ 09-29 B6

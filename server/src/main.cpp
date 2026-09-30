@@ -312,6 +312,9 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
             }
             std::printf("[몬스터애니보냄] 항목 %llu ·%s\n", all, row.empty() ? " (없음)" : row.c_str());
         }
+        // ★ 10-01 — 주인에게 보낸 소유 알림(소환 끝 = 6c·dd 한 쌍 · 소환수 죽음 = 6d)
+        std::printf("[소유알림] 6c 얻음 %llu · dd 총체력 %llu · 6d 잃음 %llu\n",
+                    srv.summonOwnSent(0), srv.summonOwnSent(1), srv.summonOwnSent(2));
         using HS = nox::HearStat;    // ★ 09-29 B6 — 소리 듣기
         std::printf("[소리듣기] 기록 %llu · 귀막힘 %llu · 아군무시 %llu · 작음 %llu · 벽반감 %llu(작아짐 %llu) · 들음 %llu · 가봄 %llu · 바라봄 %llu · 못감 %llu · 조건59 %llu · 조건69 %llu\n",
                     srv.hearStat(HS::Recorded), srv.hearStat(HS::Deaf), srv.hearStat(HS::NotListen), srv.hearStat(HS::Quiet), srv.hearStat(HS::WallHalved),
