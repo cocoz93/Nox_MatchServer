@@ -3377,6 +3377,47 @@ void TestBundleOneDatagram() {
                       (int)chatToA, srv.bundleStat(BS::DirectChat) - c0, (int)pong, srv.bundleStat(BS::DirectCtrl) - k0);
         Check(chatToA && srv.bundleStat(BS::DirectChat) - c0 == 2 && pong && srv.bundleStat(BS::DirectCtrl) - k0 == 1, msg);
     }
+    // ⑤ 넘침(조각 2) — 알림 글 12줄(한 줄 201B) + 중요 `6e` 가 2048 을 넘으면 그 틱 안에서 **둘로** 끊는다.
+    //   둘 다 같은 `27` 로 시작 · 둘 다 2048 이하 · 글 12줄은 **하나도 안 버림**(정답지는 넘친 Kind1 을 버린다 — 우리는 안 버린다) ·
+    //   갱신 `a4` 는 첫 조각에 · 중요 칸 `aa` 는 마지막 조각에만
+    {
+        nox::Server s2;
+        const std::string c = "10.9.30.23:49303";
+        s2.DebugEnterGame(c, 752);
+        s2.DebugImportantReal(c, /*ready=*/true);
+        uint32_t t2 = 0;
+        std::vector<nox::OutPacket> w2;
+        s2.Tick(t2, w2);
+        t2 += 34; s2.Tick(t2, w2);
+        std::vector<nox::OutPacket> out;
+        s2.DebugGiveExp(c, 300.0f, out);
+        const std::string line(190, 'x');
+        for (int i = 0; i < 12; ++i) s2.DebugSendNotice(line.c_str(), out);
+        out.clear();
+        const unsigned long long ov0 = s2.bundleStat(BS::Overflow), ex0 = s2.bundleStat(BS::OverExtra), sz0 = s2.bundleStat(BS::OverSize);
+        t2 += 34; s2.Tick(t2, out);
+        std::vector<std::vector<uint8_t>> bodies;
+        for (const auto& p : out) if (p.to == c) bodies.push_back(Body(p));
+        int texts = 0; bool allTs = true, sameTs = true, allFit = true; int a4At = -1, aaAt = -1, a4Count = 0, aaCount = 0;
+        for (size_t k = 0; k < bodies.size(); ++k) {
+            const auto& bb = bodies[k];
+            if (bb.size() < 3 || bb[0] != 0x27) allTs = false;
+            else if (!bodies.empty() && bodies[0].size() >= 3 && (bb[1] != bodies[0][1] || bb[2] != bodies[0][2])) sameTs = false;
+            if (bb.size() > nox::kBundleMaxPayload) allFit = false;
+            for (uint8_t op : BundleOps(bb)) {
+                if (op == static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) ++texts;
+                if (op == 0xa4) { ++a4Count; a4At = static_cast<int>(k); }
+                if (op == 0xaa) { ++aaCount; aaAt = static_cast<int>(k); }
+            }
+        }
+        char msg[260];
+        std::snprintf(msg, sizeof(msg), "⑤ 넘침 — 조각 %zu(기대 2) · 27 시작 %d·같은 시각 %d · 2048 안 %d · 글 %d(기대 12) · a4 %d개@%d · aa %d개@%d · 끊음 +%llu·더 낸 +%llu·혼자 넘음 +%llu",
+                      bodies.size(), (int)allTs, (int)sameTs, (int)allFit, texts, a4Count, a4At, aaCount, aaAt,
+                      s2.bundleStat(BS::Overflow) - ov0, s2.bundleStat(BS::OverExtra) - ex0, s2.bundleStat(BS::OverSize) - sz0);
+        Check(bodies.size() == 2 && allTs && sameTs && allFit && texts == 12 && a4Count <= 1 && (a4Count == 0 || a4At == 0) &&
+              aaCount == 1 && aaAt == 1 && s2.bundleStat(BS::Overflow) - ov0 == 1 && s2.bundleStat(BS::OverExtra) - ex0 == 1 &&
+              s2.bundleStat(BS::OverSize) - sz0 == 0, msg);
+    }
     // ④ 게임 밖(접속 중)이면 묶지 않는다 — 틱 끝을 기다리지 않고 곧바로
     {
         srv.DebugLeave(a);
@@ -3389,7 +3430,7 @@ void TestBundleOneDatagram() {
                       countTo(out, a), srv.bundleStat(BS::DirectNotInGame) - g0);
         Check(countTo(out, a) == 1 && srv.bundleStat(BS::DirectNotInGame) - g0 == 1, msg);
     }
-    std::printf("  09-30 묶음 — ab 는 다음 틱 묶음에 · [27][a4][잡다][aa] 한 조각 · 빈 틱도 하나 · 시험 모드는 따로 · 채팅·제어·게임 밖은 곧바로\n");
+    std::printf("  09-30 묶음 — ab 는 다음 틱 묶음에 · [27][a4][잡다][aa] 한 조각 · 빈 틱도 하나 · 시험 모드는 따로 · 채팅·제어·게임 밖은 곧바로 · 2048 넘으면 둘(둘 다 27 · 안 버림)\n");
 }
 
 void TestImportantQueue() {

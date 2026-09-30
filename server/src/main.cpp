@@ -287,9 +287,9 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.attackTiming(AT::ShotOnTime), srv.attackTiming(AT::ShotOff), srv.attackTiming(AT::ShotLastRepeat),
                     srv.attackLagMin(1), srv.attackLagMax(1), srv.shotNoAim());
         using BS2 = nox::BundleStat;      // ★ 09-30 한 틱 한 데이터그램
-        std::printf("[묶음] 낸 조각 %llu · 담음 시각 %llu·갱신 %llu·잡다 %llu·중요 %llu · 넘침 %llu(칸마다 %llu) · 곧바로 스트림 %llu·제어 %llu·게임밖 %llu·시험 %llu·채팅 %llu·서두 %llu\n",
+        std::printf("[묶음] 낸 조각 %llu · 담음 시각 %llu·갱신 %llu·잡다 %llu·중요 %llu · 넘쳐 끊음 %llu(더 낸 조각 %llu · 혼자 넘음 %llu) · 곧바로 스트림 %llu·제어 %llu·게임밖 %llu·시험 %llu·채팅 %llu·서두 %llu\n",
                     srv.bundleStat(BS2::Datagrams), srv.bundleStat(BS2::InTs), srv.bundleStat(BS2::InUpd), srv.bundleStat(BS2::InMisc),
-                    srv.bundleStat(BS2::InImp), srv.bundleStat(BS2::Overflow), srv.bundleStat(BS2::OverSlots),
+                    srv.bundleStat(BS2::InImp), srv.bundleStat(BS2::Overflow), srv.bundleStat(BS2::OverExtra), srv.bundleStat(BS2::OverSize),
                     srv.bundleStat(BS2::DirectStream), srv.bundleStat(BS2::DirectCtrl), srv.bundleStat(BS2::DirectNotInGame),
                     srv.bundleStat(BS2::DirectTest), srv.bundleStat(BS2::DirectChat), srv.bundleStat(BS2::DirectMirror));
         using BS = nox::BrainStat;   // ★ 09-29 B4 — 두뇌 반응 층

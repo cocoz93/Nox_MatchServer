@@ -147,6 +147,7 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
         if (msg[0] == static_cast<uint8_t>(Op::TIMESTAMP))          { slot = &s.bundleTs;  in = BundleStat::InTs; }
         else if (msg[0] == static_cast<uint8_t>(Op::UPDATE_STREAM)) { slot = &s.bundleUpd; in = BundleStat::InUpd; }
         slot->insert(slot->end(), msg, msg + n);
+        if (slot == &s.bundleMisc) s.bundleMiscEnds.push_back(static_cast<uint32_t>(s.bundleMisc.size()));
         ++bundleStat_[static_cast<size_t>(in)];
         return;
     }
@@ -154,33 +155,51 @@ void Server::Emit(Session& s, bool reliable, uint8_t stream,
     EmitNow(s, reliable, stream, msg, n, out);
 }
 
-// 틱 끝 — 사람마다 묶음 칸 넷을 정답지 차례로 한 조각에(되받기 값·XOR 은 `EmitNow` 가 조각마다 한 번).
-//   칸이 다 비었으면 안 낸다 · 몸통 한도 2048(`kBundleMaxPayload`)을 넘으면 ⚠ 조각 2 전까지는 칸마다 따로 낸다(옛 꼴 · `Overflow` 로 센다)
+// 틱 끝 — 사람마다 묶음 칸 넷을 정답지 차례로 한 조각에(되받기 값·XOR 은 `EmitNow` 가 조각마다 한 번). 칸이 다 비었으면 안 낸다.
+// ★ 09-30 조각 2 — 몸통 한도 2048(`kBundleMaxPayload`)을 넘으면 **그 틱 안에서 끊는다** — 조각마다 같은 `27` 로 시작하고
+//   단위(갱신 하나 · 잡다 메시지 하나하나 · 중요 칸 하나)를 차례로 채우다 안 들어가면 새 조각을 연다.
+//   ⚖ 정답지는 넘친 Kind1 을 **버린다**(`netlist.go:63~75`) — 우리는 버리지 않는다(`ab` 가 사라지면 클라 재전송이 는다 ·
+//     정품도 버리는지는 확인 불가 · 플랜 「할 일 3」) · 갱신이 넘칠 때 새 조각을 `27` 부터 다시 쓰는 것은 정답지 `AddToMsgListSrv`(`netlist.go:233~266`)와 같은 꼴
+//   한 단위가 `27` 과 합쳐 혼자 한도를 넘으면 메시지는 못 가르므로 그대로 낸다(`OverSize`)
 void Server::FlushBundles(std::vector<OutPacket>& out) {
     for (auto& kv : sessions_) {
         Session& s = kv.second;
         const size_t total = s.bundleTs.size() + s.bundleUpd.size() + s.bundleMisc.size() + s.bundleImp.size();
         if (total == 0) continue;
-        if (total <= kBundleMaxPayload) {
-            std::vector<uint8_t> pkt;
-            pkt.reserve(total);
-            pkt.insert(pkt.end(), s.bundleTs.begin(), s.bundleTs.end());
-            pkt.insert(pkt.end(), s.bundleUpd.begin(), s.bundleUpd.end());
-            pkt.insert(pkt.end(), s.bundleMisc.begin(), s.bundleMisc.end());
-            pkt.insert(pkt.end(), s.bundleImp.begin(), s.bundleImp.end());
+        // 단위 — (시작, 길이) 를 칸 차례로
+        struct Unit { const uint8_t* p; size_t n; };
+        std::vector<Unit> units;
+        if (!s.bundleUpd.empty()) units.push_back({ s.bundleUpd.data(), s.bundleUpd.size() });
+        uint32_t from = 0;
+        for (uint32_t end : s.bundleMiscEnds) { units.push_back({ s.bundleMisc.data() + from, end - from }); from = end; }
+        if (!s.bundleImp.empty()) units.push_back({ s.bundleImp.data(), s.bundleImp.size() });
+        std::vector<uint8_t> pkt;
+        pkt.reserve(total < kBundleMaxPayload ? total : kBundleMaxPayload);
+        pkt.insert(pkt.end(), s.bundleTs.begin(), s.bundleTs.end());
+        const size_t prefix = pkt.size();
+        int sent = 0;
+        auto emit = [&]() {
+            if (pkt.size() > kBundleMaxPayload) ++bundleStat_[static_cast<size_t>(BundleStat::OverSize)];
             EmitNow(s, /*reliable=*/false, /*stream=*/0, pkt.data(), pkt.size(), out);
             ++bundleStat_[static_cast<size_t>(BundleStat::Datagrams)];
-        } else {
-            ++bundleStat_[static_cast<size_t>(BundleStat::Overflow)];
-            for (const std::vector<uint8_t>* slot : { &s.bundleTs, &s.bundleUpd, &s.bundleMisc, &s.bundleImp }) {
-                if (slot->empty()) continue;
-                EmitNow(s, /*reliable=*/false, /*stream=*/0, slot->data(), slot->size(), out);
-                ++bundleStat_[static_cast<size_t>(BundleStat::OverSlots)];
+            ++sent;
+        };
+        for (const Unit& u : units) {
+            if (pkt.size() > prefix && pkt.size() + u.n > kBundleMaxPayload) {
+                emit();
+                pkt.resize(prefix);                            // 다음 조각도 같은 `27` 로
             }
+            pkt.insert(pkt.end(), u.p, u.p + u.n);
+        }
+        if (pkt.size() > prefix || sent == 0) emit();          // 남은 것 · 시각만 있는 틱도 한 조각
+        if (sent > 1) {
+            ++bundleStat_[static_cast<size_t>(BundleStat::Overflow)];
+            bundleStat_[static_cast<size_t>(BundleStat::OverExtra)] += static_cast<unsigned long long>(sent - 1);
         }
         s.bundleTs.clear();
         s.bundleUpd.clear();
         s.bundleMisc.clear();
+        s.bundleMiscEnds.clear();
         s.bundleImp.clear();
     }
 }

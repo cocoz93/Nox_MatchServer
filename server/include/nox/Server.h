@@ -289,8 +289,9 @@ constexpr size_t kAttackTimingCount = static_cast<size_t>(AttackTiming::Count);
 enum class BundleStat : uint8_t {
     InTs = 0, InUpd, InMisc, InImp,   // 칸별로 담은 것(중요는 FlushImportant 가 쓴 조각 수)
     Datagrams,                        // 틱 끝에 낸 묶음 조각
-    Overflow,                         // 2048 을 넘은 묶음(조각 2 전까지는 칸마다 따로 낸다)
-    OverSlots,                        // 넘친 묶음을 칸마다 낸 조각 수
+    Overflow,                         // 2048 을 넘어 둘 이상으로 끊은 묶음(★ 조각 2 — 끊은 조각도 다 `27` 로 시작)
+    OverExtra,                        // 끊어서 더 낸 조각 수(Datagrams 에도 들어간다)
+    OverSize,                         // `27` 과 합쳐 한 단위만으로 2048 을 넘은 것 — 메시지는 못 가르므로 그대로 낸다
     DirectStream,                     // 스트림 0 이 아님(퐁 등)
     DirectCtrl,                       // 접속 제어(첫 번호 < 0x20 — 정답지 `netstr/conn.go:704`)
     DirectNotInGame,                  // 아직 게임 밖(접속 중)
@@ -1119,6 +1120,7 @@ struct Session {
     // ★ 09-30 **한 틱 한 데이터그램** — 정답지 `sendPoll`(`network_lists.go:177~227`)의 차례 그대로 칸 넷에 모았다가
     //   틱 끝 `FlushBundles` 가 한 조각으로 낸다: 시각 `27`(Kind2 맨 앞) → 갱신 `a4` → 잡다(Kind1 — `ab`·소리 등 넣은 차례) → `aa`+중요
     std::vector<uint8_t> bundleTs, bundleUpd, bundleMisc, bundleImp;
+    std::vector<uint32_t> bundleMiscEnds;   // ★ 09-30 조각 2 — 잡다 칸 메시지마다 끝 자리(넘칠 때 메시지 경계에서 끊는다)
     uint32_t importantAcked = 0;   // 진단 — 확인받아 지운 수
     uint32_t importantResent = 0;  // 진단 — 다시 실은 수
     uint8_t team = 0;              // 0 = 무소속 · 1 = 빨강 · 2 = 파랑
@@ -3114,6 +3116,7 @@ public:
     // 시험용 — 경험치·레벨
     float DebugExp(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0f : i->second.experience; }
     int DebugLevel(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? -1 : i->second.level; }
+    void DebugSendNotice(const char* text, std::vector<OutPacket>& out) { SendNotice(text, out); }   // ★ 09-30 묶음 넘침 시험용
     void DebugGiveExp(const std::string& a, float v, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) PlayerGiveExp(i->second, v, out);
     }
