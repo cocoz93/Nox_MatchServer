@@ -2177,6 +2177,28 @@ int main(int argc, char** argv) {
                 std::printf("[몬스터애니] Beholder 시전(7) %d칸/붙듦 %d/되풀이 %d · 놀기(8) %d칸\n",
                             bh ? bh->monsterAnims[7].frames : -1, bh ? bh->monsterAnims[7].hold : -1, bh ? (int)bh->monsterAnims[7].loop : -1,
                             bh ? bh->monsterAnims[8].frames : -1);
+                // ★ 09-30 — 열셋의 근접(1)·쏘기(3)·죽어가기(9) 애니 — 근접은 때리는 칸(monster.bin +108)·쏘기는 쏘는 칸(+216)에서, 둘 다 애니가 끝나면 빠진다.
+                //   표 없음(MonsterDraw 없음)이면 근접·쏘기가 안 빠지고, 칸이 칸 수 밖이면 안 맞는다 — 그 수를 같이 센다
+                {
+                    int noDraw = 0, meleeOut = 0, shotOut = 0, loopAtk = 0;   // 되풀이 애니면 끝(+483)이 안 와 근접·쏘기가 안 빠진다
+                    for (const auto& ms : nox::kMonsters) {
+                        const nox::ThingInfo* t = tdb.ByWire(ms.wireType);
+                        if (!t || !t->hasMonsterDraw) { ++noDraw; std::printf("[몬스터칸] %s 표 없음\n", ms.name); continue; }
+                        const int hitF = nox::MonsterMeleeFrameOf(ms.wireType), shotF = nox::MonsterMissileFrameOf(ms.wireType);
+                        const bool melee = nox::MeleeStrikeOf(ms.wireType).fn != nox::StrikeFn::None && ms.meleeRange > 0.0;
+                        const bool shoot = ms.missileName != nullptr;
+                        if (melee && hitF >= t->monsterAnims[1].frames) ++meleeOut;
+                        if (shoot && shotF >= t->monsterAnims[3].frames) ++shotOut;
+                        if ((melee && t->monsterAnims[1].loop) || (shoot && t->monsterAnims[3].loop)) ++loopAtk;
+                        std::printf("[몬스터칸] %-17s 근접(1) %2d칸/붙듦 %d/되풀이 %d%s · 쏘기(3) %2d칸/붙듦 %d/되풀이 %d%s · 죽어가기(9) %2d칸/붙듦 %d/되풀이 %d\n",
+                                    ms.name, t->monsterAnims[1].frames, t->monsterAnims[1].hold, (int)t->monsterAnims[1].loop,
+                                    melee ? (" 때림칸 " + std::to_string(hitF)).c_str() : "",
+                                    t->monsterAnims[3].frames, t->monsterAnims[3].hold, (int)t->monsterAnims[3].loop,
+                                    shoot ? (" 쏨칸 " + std::to_string(shotF)).c_str() : "",
+                                    t->monsterAnims[9].frames, t->monsterAnims[9].hold, (int)t->monsterAnims[9].loop);
+                    }
+                    std::printf("[몬스터칸] 열셋 중 표 없음 %d · 때림칸이 칸 수 밖 %d · 쏨칸이 칸 수 밖 %d · 공격 애니가 되풀이 %d\n", noDraw, meleeOut, shotOut, loopAtk);
+                }
             }
             // ★ 09-23 2-a1 — 함성(46)·광전사(45) 애니 길이도 찍는다. 함성 애니가 끝나면 켜짐 값이 내려가 광전사·작살을 더는 안 막으므로
             //   「함성 지속 120 중 얼마 동안 막나」가 이 값으로 정해진다(플랜 v2 에서 미확인이던 것)

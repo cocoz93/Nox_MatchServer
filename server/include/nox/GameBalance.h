@@ -646,7 +646,7 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
 }
 
 // ★ 09-29 B7 — 쏘기 칸 ⭕ monster.bin(`MISSILE_ATTACK_FRAME` +216) — 몬스터 시전(`mobActionCast_5413B0`)이 시전 애니의 이 칸에서 한 번 · 위 열셋만(스크립트로 추림)
-//   ⚠ 쏘기(17)도 원본은 이 칸에서 쏘지만 우리 쏘기는 아직 「첫 틱」(B5 미결 — 애니 칸 시점)
+//   ★ 09-30 — 쏘기(17)도 이 칸에서 쏜다(`mobActionMissileAtt_532610` `GAME4_3.c:2178`)
 inline int MonsterMissileFrameOf(uint16_t wire) {
     switch (wire) {
         case 1317: return 4;   // EvilCherub
@@ -654,6 +654,28 @@ inline int MonsterMissileFrameOf(uint16_t wire) {
         case 1337: return 4;   // EmberDemon
         case 1382: return 4;   // Beholder
         default:   return 0;   // 나머지 아홉은 파일 값 0
+    }
+}
+
+// ★ 09-30 — 때리는 칸 ⭕ monster.bin(`MELEE_ATTACK_FRAME` +108) — 근접(16) 갱신이 근접 애니(1)의 이 칸 · 칸 안 틱 0 에서 때린다
+//   (`mobActionMeleeAtt_532440` `GAME4_3.c:2086`) · 위 열셋만(`nox_datadump --out` 으로 풀어 13종 전수 · 09-30)
+//   ⚠ 근접 함수가 NULL 인 셋(Imp·EvilCherub·Beholder)·근접 사거리 0 인 Bomber 는 근접을 안 한다 — 값만 적어 둔다
+inline int MonsterMeleeFrameOf(uint16_t wire) {
+    switch (wire) {
+        case 1317: return 0;   // EvilCherub
+        case 1325: return 1;   // Ghost
+        case 1328: return 0;   // Imp
+        case 1337: return 5;   // EmberDemon
+        case 1348: return 1;   // Bomber
+        case 1355: return 3;   // AlbinoSpider
+        case 1356: return 5;   // SmallAlbinoSpider
+        case 1357: return 5;   // Bat
+        case 1358: return 5;   // GiantLeech
+        case 1365: return 5;   // Bear
+        case 1366: return 5;   // BlackBear
+        case 1371: return 5;   // CarnivorousPlant
+        case 1382: return 4;   // Beholder
+        default:   return 0;
     }
 }
 
