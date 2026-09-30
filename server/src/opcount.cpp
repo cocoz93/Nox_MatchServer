@@ -214,7 +214,16 @@ int main(int argc, char** argv) {
                             std::printf("(%zu바이트)\n", um.consumed);
                         }
                     }
-                    else { ++updUnread; break; }
+                    else {
+                        // ★ 09-30 — **어느 조각인지** 앞의 셋만 찍는다(한 틱 한 데이터그램 뒤 1건이 새로 떠서 — 세기만 하면 무엇인지 못 가른다)
+                        if (updUnread < 3) {
+                            std::printf("  ▲a4 못 뜯음 %s %s %s 자리%zu/%zu | ", ln.time.c_str(), ln.dir.c_str(), ln.peer.c_str(), eaten, bodyAll);
+                            for (size_t i = 0; i < bodyAll && i < 64; ++i) std::printf("%02x ", b[i]);
+                            std::printf("\n");
+                        }
+                        ++updUnread;
+                        break;
+                    }
                 } else {
                     // ★ **어디서 멈췄는지 센다.** 이게 없으면 「32% 를 못 읽는다」까지만 알고
                     //   무엇을 고쳐야 하는지는 모른다(2026-09-08).
