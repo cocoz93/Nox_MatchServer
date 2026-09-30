@@ -10,6 +10,7 @@
 #include "nox/DumpSniff.h"
 #include "nox/MsgLen.h"
 #include "nox/Opcode.h"
+#include "nox/UpdateStream.h"
 #include "nox/Wire.h"
 
 int main(int argc, char** argv) {
@@ -60,6 +61,10 @@ int main(int argc, char** argv) {
     static char buf[65536];
     nox::dump::Line ln;
     std::map<std::string, uint8_t> keys;          // 상대별 XOR 키
+    // ★ 10-01 — 상대별 **별칭 표**. 클라가 보내는 `a5 NEW_ALIAS`(별칭1·번호2·종류2·기한4 — 클라 `GAME2_3.c:1627~1632`)로 채운다.
+    //   표가 없으면 별칭으로만 온 항목은 종류를 몰라 덧붙이를 0~3 으로 다 시험하는데, 0 부터 맞춰 보다 **엉뚱한 끝**을 잡는다 —
+    //   몬스터 항목에 칸 바이트(0x80 · 2바이트 덧붙이)를 싣자 「끝까지 못 읽은 조각」이 몬스터 수만큼 늘었다(임프 넷 판 17/1887)
+    std::map<std::string, nox::AliasTable> aliasByPeer;
     std::map<int, long long> sendOps, recvOps;
     // 판독이 멈춘 오프코드. 0x1000 비트를 세워 클라→서버를 가른다.
     std::map<int, long long> stopOps;
@@ -183,8 +188,9 @@ int main(int argc, char** argv) {
                 if (op == (int)nox::Op::UPDATE_STREAM) {
                     // ⚠ 별칭 표 없이 뜯는다 — 별칭으로만 온 항목은 종류를 모르니
                     //   디코더가 갈래를 넓게 연다. 길이를 얻는 데는 그걸로 족하다.
+                    //   ❌ 정정(10-01) — 족하지 않았다: 갈래를 0 부터 열어 엉뚱한 끝을 잡는다(위 aliasByPeer 주석) → 클라가 알려 준 별칭 표로 뜯는다
                     const nox::UpdateMsg um =
-                        nox::DecodeUpdate(b + eaten + 1, bodyAll - eaten - 1, nullptr);
+                        nox::DecodeUpdate(b + eaten + 1, bodyAll - eaten - 1, &aliasByPeer[ln.peer]);
                     if (um.ok && um.consumed > 0) {
                         msz = 1 + um.consumed;
                         if (updShown < updShow) {
@@ -243,6 +249,12 @@ int main(int argc, char** argv) {
             const int bl = (int)msz - 1;
             if (eaten + msz > bodyAll) break;
             ++got;
+            // ★ 10-01 — 클라가 정한 별칭을 적는다(위 aliasByPeer)
+            if (!send && op == (int)nox::Op::NEW_ALIAS && bl >= 9) {
+                const uint8_t* q = b + eaten + 1;
+                aliasByPeer[ln.peer].Set(q[0], static_cast<uint16_t>(q[1] | (q[2] << 8)), static_cast<uint16_t>(q[3] | (q[4] << 8)),
+                                         static_cast<uint32_t>(q[5] | (q[6] << 8) | (q[7] << 16) | (static_cast<uint32_t>(q[8]) << 24)));
+            }
             if (send) ++sendOps[op]; else ++recvOps[op];
             if (seqShow > 0 && send) {
                 char t[32];
