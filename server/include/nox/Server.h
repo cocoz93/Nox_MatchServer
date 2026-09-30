@@ -273,6 +273,17 @@ enum class MeleeStrikeWay : uint8_t {
 };
 constexpr size_t kMeleeStrikeWayCount = static_cast<size_t>(MeleeStrikeWay::Count);
 
+// ★ 09-30 — 근접(16)·쏘기(17)가 **언제** 때리고 쐈나 — 시작한 틱(+136)에서 칸(때리는 칸 +108 · 쏘는 칸 +216)까지의 틱 수.
+//   기대 = 칸 × (붙듦+1) − 1 ~ 칸 × (붙듦+1)(애니 셈을 0 으로 한 자리가 그 틱의 애니 넘기기 앞이면 −1 · 뒤면 그대로).
+//   끝 칸이 그 칸이면 원본도 한 번 더 때린다(끝을 넘으려다 설 때 칸 == 끝 칸 · 틱 0) — 그건 「끝칸 두번째」로 따로 센다.
+//   부른 수 = 제때 + 어긋남 + 끝칸 두번째 — 근접은 근접 함수 부른 수(Hit+NoTarget+Blocked+Bomber)와 같아야 한다
+enum class AttackTiming : uint8_t {
+    MeleeOnTime = 0, MeleeOff, MeleeLastRepeat,
+    ShotOnTime, ShotOff, ShotLastRepeat,
+    Count
+};
+constexpr size_t kAttackTimingCount = static_cast<size_t>(AttackTiming::Count);
+
 // ★ 09-29 B4 — 두뇌 반응 층이 **무엇을 했나**
 enum class BrainStat : uint8_t {
     Runs = 0,        // 두뇌를 끝까지 본 수(16프레임 관문·61·죽음을 지난 것)
@@ -1855,6 +1866,10 @@ public:
     unsigned long long sightStat(SightStat s) const { return s < SightStat::Count ? sightStat_[static_cast<size_t>(s)] : 0; }   // ★ 09-29 B1
     unsigned long long b2Stat(B2Stat s) const { return s < B2Stat::Count ? b2Stat_[static_cast<size_t>(s)] : 0; }               // ★ 09-29 B2
     unsigned long long meleeStrike(MeleeStrikeWay w) const { return w < MeleeStrikeWay::Count ? meleeStrike_[static_cast<size_t>(w)] : 0; }   // ★ 09-29 B3
+    unsigned long long attackTiming(AttackTiming t) const { return t < AttackTiming::Count ? attackTiming_[static_cast<size_t>(t)] : 0; }   // ★ 09-30
+    // ★ 09-30 — 제때·어긋남 가리지 않고 본 시작→칸 틱 수의 가장 작은·큰 값(0 = 근접 · 1 = 쏘기) · 한 번도 없으면 -1
+    int attackLagMin(int kind) const { return (kind == 0 || kind == 1) && attackLagSeen_[kind] ? static_cast<int>(attackLagMin_[kind]) : -1; }
+    int attackLagMax(int kind) const { return (kind == 0 || kind == 1) && attackLagSeen_[kind] ? static_cast<int>(attackLagMax_[kind]) : -1; }
     unsigned long long brainStat(BrainStat b) const { return b < BrainStat::Count ? brainStat_[static_cast<size_t>(b)] : 0; }                   // ★ 09-29 B4
     unsigned long long animStat(AnimStat b) const { return b < AnimStat::Count ? animStat_[static_cast<size_t>(b)] : 0; }                        // ★ 09-29 B5
     // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
@@ -2958,6 +2973,7 @@ public:
     void DebugAIRandomWalk(size_t i) { if (i < pets_.size()) AIRandomWalk(pets_[i]); }
     // 시험용 — 근접 공격(6-g(2))
     void DebugAIStart(size_t i, uint8_t act, std::vector<OutPacket>& out) { if (i < pets_.size()) { aiOut_ = &out; AIStart(pets_[i], act, out); aiOut_ = nullptr; } }
+    void DebugMonsterAnimUpdate(size_t i) { if (i < pets_.size()) MonsterAnimUpdate(pets_[i]); }   // ★ 09-30 — 틱 차례의 「애니 넘기기」만(행동 앞)
     void DebugSetPetNextHit(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].nextHitFrame = f; }
     uint32_t DebugPetNextHit(size_t i) const { return i < pets_.size() ? pets_[i].nextHitFrame : 0; }
     uint32_t DebugPetAttackStart(size_t i) const { return i < pets_.size() ? pets_[i].attackStartFrame : 0; }
@@ -5420,6 +5436,10 @@ private:
     unsigned long long sightStat_[kSightStatCount] = {};
     unsigned long long b2Stat_[kB2StatCount] = {};   // ★ 09-29 B2
     unsigned long long meleeStrike_[kMeleeStrikeWayCount] = {};   // ★ 09-29 B3
+    unsigned long long attackTiming_[kAttackTimingCount] = {};    // ★ 09-30
+    uint32_t attackLagMin_[2] = {}, attackLagMax_[2] = {};
+    bool attackLagSeen_[2] = {};
+    void CountAttackTiming(const Creature& k, int kind, int frame);   // kind 0 근접(애니 1) · 1 쏘기(애니 3)
     unsigned long long brainStat_[kBrainStatCount] = {};          // ★ 09-29 B4
     unsigned long long animStat_[kAnimStatCount] = {};            // ★ 09-29 B5
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };

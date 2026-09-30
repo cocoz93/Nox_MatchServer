@@ -12028,6 +12028,44 @@ static void SetEnemySeen(nox::Server& srv, size_t i, const std::string& addr, in
     srv.DebugSetPetEnemy(i, addr, pet);
 }
 
+// ★ 09-30 — 열셋의 근접(1)·쏘기(3)·죽어가기(9) 애니 — ⭕ Estate 기동 `[몬스터칸]` 줄 그대로(thing.bin MonsterDraw · `_evidence/_runs/melee0930_boot.srv.txt`).
+//   근접·쏘기가 애니 칸으로 때리고 애니 끝에 빠지므로, 몬스터가 때리는 시험은 이 표를 싣는다(서버는 main 이 thing.bin 에서 싣는다)
+static void LoadRealAttackAnims(nox::Server& srv) {
+    struct Row { uint16_t wire; int mf, mh, mloop, sf, sh, df, dh; };
+    static const Row kRows[] = {
+        { 1317,  8, 0, 0, 8, 0, 12, 1 },   // EvilCherub
+        { 1325,  8, 0, 0, 0, 0, 12, 1 },   // Ghost
+        { 1328,  0, 0, 0, 4, 0, 12, 0 },   // Imp
+        { 1337,  8, 0, 0, 8, 2, 12, 1 },   // EmberDemon
+        { 1348,  8, 0, 1, 0, 0,  0, 0 },   // Bomber(근접 애니 되풀이 — 근접을 안 한다)
+        { 1355,  6, 1, 0, 0, 0, 12, 0 },   // AlbinoSpider
+        { 1356,  6, 1, 0, 0, 0, 12, 0 },   // SmallAlbinoSpider
+        { 1357, 13, 0, 0, 0, 0, 16, 0 },   // Bat
+        { 1358,  8, 2, 0, 0, 0,  4, 1 },   // GiantLeech
+        { 1365,  9, 1, 0, 0, 0, 12, 1 },   // Bear
+        { 1366,  9, 1, 0, 0, 0, 12, 1 },   // BlackBear
+        { 1371,  8, 1, 0, 0, 0, 12, 1 },   // CarnivorousPlant
+        { 1382,  0, 0, 0, 0, 0, 26, 1 },   // Beholder
+    };
+    for (const Row& r : kRows) {
+        srv.SetMonsterAnim(r.wire, 1, r.mf, r.mh, r.mloop != 0);
+        srv.SetMonsterAnim(r.wire, 3, r.sf, r.sh, false);
+        srv.SetMonsterAnim(r.wire, 9, r.df, r.dh, false);
+    }
+}
+
+// ★ 09-30 — 틱 차례대로(애니 넘기기 → 행동) 근접(16)이 맨 위에서 내려올 때까지 돌린다 — 몇 틱 돌았나
+//   ⚠ 프레임은 안 넘긴다(쉬는 시간 셈은 그대로) — 칸 셈만 굴린다
+static int RunSwing(nox::Server& srv, size_t i, std::vector<nox::OutPacket>& out, uint8_t act = 16, int maxTicks = 80) {
+    for (int t = 1; t <= maxTicks; ++t) {
+        srv.DebugMonsterAnimUpdate(i);
+        srv.DebugAITick(i, out);
+        const int top = srv.DebugAIStackInd(i);
+        if (srv.DebugAIAction(i, top) != act) return t;
+    }
+    return -1;
+}
+
 void TestAIFight() {
     const std::string a = "10.6.11.1:7101";
     const std::string b = "10.6.11.2:7102";
@@ -12253,6 +12291,7 @@ void TestAIMelee() {
         srv.DebugTeleport(b, 1010.0f, 1000.0f);   // ★ 09-29 B3 — 물리 자리(posX)까지 — 근접이 이제 대상을 자리로 다시 고른다(549440)
         srv.DebugSpawnPet(type, 1000, 1000, a);
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
+        LoadRealAttackAnims(srv);       // ★ 09-30 — 근접은 애니 칸에서 때린다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetPetPos(0, 1000, 1000);
@@ -12357,18 +12396,23 @@ void TestAIMelee() {
         Check(srv.DebugAIAction(0, 0) == 0, "근접이 없는데 안 빠졌다");
         Check(out.size() == n0, "때릴 수 없는데 뭔가 내보냈다 — 때리기를 아예 안 불러야 한다");
     }
-    // 대상이 없어도 뺀다 — 이때도 아무것도 안 내보낸다
+    // 대상이 없어도 휘두르고(허공 — 기본 근접 함수는 1) 애니가 끝나면 뺀다 — 이때도 아무것도 안 내보낸다
+    //   ★ 09-30 — 전에는 「대상이 없으면 곧 뺀다」였다(시작 틱에 때리던 때) — 이제 휘두르기를 끝까지 한다(원본 `532440`)
     {
         nox::Server srv; mk(srv, 1358);
+        srv.DebugTeleport(b, 3000.0f, 3000.0f);                // 근접 함수는 스스로 대상을 고른다(B3) — 앞 10 의 b 를 치우지 않으면 b 를 문다
         std::vector<nox::OutPacket> out;
         srv.DebugAIPush(0, 16);
         const size_t n0 = out.size();
-        srv.DebugAITick(0, out);
-        Check(srv.DebugAIAction(0, 0) == 0, "대상이 없는데 안 빠졌다");
+        const int ticks = RunSwing(srv, 0, out);
+        Check(ticks > 0 && srv.DebugAIAction(0, 0) == 0, "대상이 없는데 휘두르기 끝에 안 빠졌다");
+        Check(srv.meleeStrike(nox::MeleeStrikeWay::NoTarget) == 1, "대상이 없는데 휘두르기(허공)를 한 번 안 했다");
         Check(out.size() == n0, "대상이 없는데 뭔가 내보냈다");
     }
 
-    // ⑤ **때리고 뺀다** — 상대 체력이 준다
+    // ⑤ **때리고, 애니가 끝나면 뺀다** — 상대 체력이 준다
+    //   ★ 09-30 거머리 근접 애니 8칸·붙듦 2 · 때리는 칸 5 — 넘김 t 번이면 칸 t/3·틱 t%3 → 칸 5·틱 0 = 15 번째 틱(시작한 1 번째 틱에서 14 뒤 = 5×3−1)에 때리고,
+    //     끝 칸(7)을 넘으려는 24 번째 틱에 빠진다
     {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
@@ -12376,9 +12420,17 @@ void TestAIMelee() {
         srv.DebugSetPetNextHit(0, 0);
         const int hp0 = srv.HealthOf(b);
         srv.DebugAIPush(0, 16);
-        srv.DebugAITick(0, out);
-        Check(srv.HealthOf(b) < hp0, "때렸는데 상대 체력이 안 줄었다");
-        Check(srv.DebugAIAction(0, 0) == 0, "때린 뒤 안 빠졌다");
+        int hitAt = -1, t = 0;
+        for (t = 1; t <= 40 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 16; ++t) {
+            srv.DebugMonsterAnimUpdate(0);
+            srv.DebugAITick(0, out);
+            if (hitAt < 0 && srv.HealthOf(b) < hp0) hitAt = t;
+        }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "⑤ 거머리 한 번 휘두르기 — 맞은 틱 %d(기대 15) · 빠진 틱 %d(기대 24) · 맞힘 %llu", hitAt, t - 1,
+                      srv.meleeStrike(nox::MeleeStrikeWay::Hit));
+        Check(hitAt == 15 && t - 1 == 24 && srv.meleeStrike(nox::MeleeStrikeWay::Hit) == 1, msg);
+        Check(srv.DebugAIAction(0, 0) == 0, "때린 뒤 애니가 끝났는데 안 빠졌다");
     }
     // ⑤b ★ 09-29 B3 — 곰(CRUSH 2)으로 — 거머리 BITE(8)는 기본 타격 소리가 안 난다(`sub_532F70` 0·2·3·10·11 만)`r`n    // ⑤b ★ nine-defects 4-c3b3b — 소환수가 물 때 맞는 소리: 때린 이 = 때린 것 = 그 몬스터(`GAME5.c:2529~2531`).
     //   그 종류가 맞히는 소리를 가지면 **맞는 쪽 소리를 안 낸다**(주인 있는 소환수도 몬스터라 검사를 받는다) · 없으면 몬스터 몸 재질로(쇠 × 살 862)
@@ -12391,7 +12443,7 @@ void TestAIMelee() {
         srv.DebugSetPetNextHit(0, 0);
         const int hp0 = srv.HealthOf(b);
         srv.DebugAIPush(0, 16);
-        srv.DebugAITick(0, out);
+        RunSwing(srv, 0, out);                                 // ★ 09-30 — 휘두르기 끝까지(애니 칸에서 때리고 끝에 빠진다)
         char msg[200];
         std::snprintf(msg, sizeof(msg), "⑤b 소환수 물기 · 맞히는 소리 %s — b 체력 %d→%d · 부름 %llu · 냄 %llu · 몬스터소리 %llu · 마지막 %u",
                       hitSnd ? "있음" : "없음", hp0, srv.HealthOf(b), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
@@ -12413,7 +12465,7 @@ void TestAIMelee() {
         srv.DebugSetPetNextHit(0, 0);
         const uint16_t hp0 = srv.DebugPetHealth(1);
         srv.DebugAIPush(0, 16);
-        srv.DebugAITick(0, out);
+        RunSwing(srv, 0, out);                                 // ★ 09-30 — 휘두르기 끝까지(애니 칸에서 때리고 끝에 빠진다)
         char msg[200];
         std::snprintf(msg, sizeof(msg), "⑤c 소환수가 소환수를 묾 · 맞히는 소리 %s — 체력 %u→%u · 부름 %llu · 냄 %llu · 몬스터소리 %llu · 마지막 %u",
                       hitSnd ? "있음" : "없음", hp0, srv.DebugPetHealth(1), srv.defHitSoundCalls(),
@@ -12434,7 +12486,7 @@ void TestAIMelee() {
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 0);
         srv.DebugAIPush(0, 16);
-        srv.DebugAITick(0, out);
+        RunSwing(srv, 0, out);                                 // ★ 09-30 — 휘두르기 끝까지(애니 칸에서 때리고 끝에 빠진다)
         out.clear();
         std::vector<nox::OutPacket> o2;
         srv.Tick(34, o2);                                      // 소리는 틱 끝에 사람마다 나간다
@@ -12598,6 +12650,120 @@ void TestAIAttackCancel() {
         Check(s == "12,33,7", ("④ 변신 위 — 쌓임 [" + s + "] (기대 [12,33,7])").c_str());
     }
     std::printf("  09-30 취소 — 취소 뒤 자리에서 올림 · 근접·쏘기 취소 = 빼기 · 쉬는 중 50·1 에 근접·쏘기가 빠짐 · 변신은 그대로\n");
+}
+
+// ── ★ 09-30 근접(16)을 애니 칸으로(`mobActionMeleeAtt_532440` `GAME4_3.c:2086·2097~2100`) ─────────
+//   칸 == 때리는 칸(monster.bin +108) · 칸 안 틱 0 → 때림 · 애니 끝(+483) → 뺌. 애니 표는 실데이터(`LoadRealAttackAnims`)
+void TestMonsterMeleeTiming() {
+    const std::string a = "10.9.30.1:9301", b = "10.9.30.2:9302";
+    using MW = nox::MeleeStrikeWay;
+    using AT = nox::AttackTiming;
+    auto mk = [&](nox::Server& srv, uint16_t type, float bx) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 900.0f, 1000.0f);                 // 주인은 등 뒤
+        srv.DebugTeleport(b, bx, 1000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);
+        LoadRealAttackAnims(srv);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);                    // 처음부터 +x 를 본다(B3 시험과 같은 꼴)
+        srv.DebugSetFrame(1000);
+    };
+    auto stack = [](nox::Server& srv) {
+        std::string s;
+        for (int j = 0; j <= srv.DebugAIStackInd(0); ++j) { if (j) s += ','; s += std::to_string(srv.DebugAIAction(0, j)); }
+        return s;
+    };
+    // 한 틱 = 프레임 하나 넘기고 애니 넘기기 → 행동
+    auto step = [](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& f) {
+        srv.DebugSetFrame(++f);
+        srv.DebugMonsterAnimUpdate(0);
+        srv.DebugAITick(0, out);
+    };
+
+    // ① 시점 — 곰(근접 9칸·붙듦 1·때리는 칸 5): 시작 틱에서 5×2−1 = 9 틱 뒤에 한 번 · 계수 「제때」 1 · 틱 9~9
+    {
+        nox::Server srv; mk(srv, 1365, 1020.0f);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPush(0, 16);
+        uint32_t f = 1000;
+        const int hp0 = srv.HealthOf(b);
+        int hitAt = -1;
+        for (int t = 1; t <= 30 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 16; ++t) {
+            step(srv, out, f);
+            if (hitAt < 0 && srv.HealthOf(b) < hp0) hitAt = static_cast<int>(f - srv.DebugPetAttackStart(0));
+        }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "① 곰 — 시작→맞음 %d 틱(기대 9) · 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu · 틱 %d~%d · 맞힘 %llu",
+                      hitAt, srv.attackTiming(AT::MeleeOnTime), srv.attackTiming(AT::MeleeOff), srv.attackTiming(AT::MeleeLastRepeat),
+                      srv.attackLagMin(0), srv.attackLagMax(0), srv.meleeStrike(MW::Hit));
+        Check(hitAt == 9 && srv.meleeStrike(MW::Hit) == 1 && srv.attackTiming(AT::MeleeOnTime) == 1 && srv.attackTiming(AT::MeleeOff) == 0 &&
+              srv.attackLagMin(0) == 9 && srv.attackLagMax(0) == 9, msg);
+    }
+    // ② 휘두르는 중(때리는 칸 전)에 위로 바라보기(25)를 올리면 — 취소가 근접을 빼서 **안 맞는다**
+    {
+        nox::Server srv; mk(srv, 1365, 1020.0f);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPush(0, 16);
+        uint32_t f = 1000;
+        for (int t = 0; t < 4; ++t) step(srv, out, f);         // 칸 2 쯤 — 아직 안 때림
+        const int hp0 = srv.HealthOf(b);
+        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0.0f, 1000.0f, 1400.0f);
+        const std::string s = stack(srv);
+        for (int t = 0; t < 40; ++t) step(srv, out, f);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "② 휘두르는 중 취소 — 올린 직후 쌓임 [%s](기대 [0,25]) · 맞힘 %llu(기대 0) · b 체력 %d→%d",
+                      s.c_str(), srv.meleeStrike(MW::Hit), hp0, srv.HealthOf(b));
+        Check(s == "0,25" && srv.meleeStrike(MW::Hit) == 0 && srv.HealthOf(b) == hp0, msg);
+    }
+    // ③ 끝 칸이 때리는 칸이면 두 번 — 작은 흰거미(6칸·붙듦 1·칸 5) · 원본 그대로(끝 칸에 닿을 때 · 끝을 넘으려다 설 때)
+    {
+        nox::Server srv; mk(srv, 1356, 1015.0f);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPush(0, 16);
+        uint32_t f = 1000;
+        int t = 0;
+        for (t = 1; t <= 30 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 16; ++t) { step(srv, out, f); srv.DebugSetHealth(b, 150); }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "③ 작은 흰거미 — 맞힘 %llu(기대 2) · 제때 %llu · 끝칸두번째 %llu · 빠진 틱 %d(기대 12)",
+                      srv.meleeStrike(MW::Hit), srv.attackTiming(AT::MeleeOnTime), srv.attackTiming(AT::MeleeLastRepeat), t - 1);
+        Check(srv.meleeStrike(MW::Hit) == 2 && srv.attackTiming(AT::MeleeOnTime) == 1 && srv.attackTiming(AT::MeleeLastRepeat) == 1 && t - 1 == 12, msg);
+    }
+    // ④ 유령 — 때리기 함수가 도망 사슬(25·41·24)을 올리면 취소가 근접을 뺀다 — 쌓임에 16 이 안 남는다
+    {
+        nox::Server srv; mk(srv, 1325, 1012.0f);
+        std::vector<nox::OutPacket> out;
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPush(0, 16);
+        const int ticks = RunSwing(srv, 0, out);
+        const std::string s = stack(srv);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "④ 유령 — %d 틱 · 쌓임 [%s](기대 [0,25,41,24]) · 도망 %llu", ticks, s.c_str(), srv.meleeStrike(MW::GhostFlee));
+        Check(s == "0,25,41,24" && srv.meleeStrike(MW::GhostFlee) == 1, msg);
+    }
+    // ⑤ 계수 합 — 제때 + 어긋남 + 끝칸두번째 = 근접 함수 부른 수(Hit + NoTarget + Blocked + Bomber) · 대상 없음(허공)도 센다
+    {
+        nox::Server srv; mk(srv, 1358, 3000.0f);
+        std::vector<nox::OutPacket> out;
+        uint32_t f = 1000;
+        for (int k = 0; k < 3; ++k) {
+            srv.DebugSetPetNextHit(0, 0);
+            srv.DebugAIPush(0, 16);
+            for (int t = 0; t < 40 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 16; ++t) step(srv, out, f);
+        }
+        const unsigned long long timing = srv.attackTiming(AT::MeleeOnTime) + srv.attackTiming(AT::MeleeOff) + srv.attackTiming(AT::MeleeLastRepeat);
+        const unsigned long long calls = srv.meleeStrike(MW::Hit) + srv.meleeStrike(MW::NoTarget) + srv.meleeStrike(MW::Blocked) + srv.meleeStrike(MW::Bomber);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "⑤ 계수 합 — 시점 %llu · 부른 수 %llu(기대 3 · 대상없음 %llu) · 제때 %llu", timing, calls,
+                      srv.meleeStrike(MW::NoTarget), srv.attackTiming(AT::MeleeOnTime));
+        Check(timing == calls && calls == 3 && srv.meleeStrike(MW::NoTarget) == 3 && srv.attackTiming(AT::MeleeOnTime) == 3, msg);
+    }
+    std::printf("  09-30 근접 시점 — 곰 9틱 뒤 한 번(제때) · 휘두르는 중 취소면 안 맞음 · 작은 흰거미 끝 칸 두 번 · 유령 사슬 뒤 16 없음 · 계수 합\n");
 }
 
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
@@ -20486,7 +20652,8 @@ void TestMonsterIdleB2() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugMoveTo(a, 1012, 1000);
         srv.DebugSpawnPet(1358, 1000, 1000, std::string());
-        run(srv, ms, 20);                                         // 첫 무름은 3틱 안 · 1초(30프레임)가 안 지났다
+        LoadRealAttackAnims(srv);                                 // ★ 09-30 — 근접은 애니 칸(거머리 칸 5 · 붙듦 2)에서 문다
+        run(srv, ms, 20);                                         // 첫 무름은 20틱 안(09-30 전에는 3틱 안) · 1초(30프레임)가 안 지났다
         Check(srv.hurts() >= 1 && srv.b2Stat(B2::Taunt) == 0, "④ 물고 1초가 안 지났는데 도발했다(또는 안 물었다)");
         run(srv, ms, 130);
         Check(srv.b2Stat(B2::Taunt) >= 1 && srv.b2Stat(B2::TauntQuiet) >= 1,
@@ -20514,21 +20681,22 @@ void TestMonsterIdleB2() {
 void TestMonsterMeleeB3() {
     const std::string a = "10.9.29.31:9331", c = "10.9.29.32:9332";
     using MW = nox::MeleeStrikeWay;
-    // 몬스터 하나(1000,1000 · +x 를 봄)와 사람 a · 휘두르기 한 번(쉬는 시간 없음 → 16 시작 → 그 틱에 때림)
+    // 몬스터 하나(1000,1000 · +x 를 봄)와 사람 a · 휘두르기 한 번(쉬는 시간 없음 → 16 시작 → 때리는 칸에서 때림 · 09-30 전에는 「그 틱에 때림」)
     auto mk = [&](nox::Server& srv, uint16_t type, float ax, float ay) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugTeleport(a, ax, ay);
         srv.DebugSpawnPet(type, 1000, 1000, std::string());
         srv.DebugSetAutoFight(false);
+        LoadRealAttackAnims(srv);                              // ★ 09-30
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetPetPos(0, 1000, 1000);
         srv.DebugSetFrame(1000);
     };
-    auto swing = [](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+    auto swing =[](nox::Server& srv, std::vector<nox::OutPacket>& out) {
         srv.DebugSetPetNextHit(0, 0);
         srv.DebugAIPush(0, 16);
-        srv.DebugAITick(0, out);
+        RunSwing(srv, 0, out);                                 // ★ 09-30 — 휘두르기 끝까지(애니 칸에서 때린다)
     };
     // ① 사거리 — 식충식물(40) · 200 앞은 못 맞히고(대상 없음 · 기본 1) 45 앞(틈 35)은 맞힌다
     for (int near = 0; near <= 1; ++near) {
@@ -22175,6 +22343,7 @@ void TestMonsterChaseReturn() {
     srv.DebugMoveTo(a, 1000, 1000);
     srv.DebugMoveTo(b, 1060, 1000);
     srv.DebugSpawnPet(1357, 1000, 1000, a);                  // 박쥐 — 주인 a
+    LoadRealAttackAnims(srv);                                // ★ 09-30 — 근접은 애니 칸(박쥐 칸 5)에서 문다
     std::vector<nox::OutPacket> out;
     uint32_t ms = 0;
     auto tick = [&](int n) { for (int t = 0; t < n; ++t) { ms += 34; out.clear(); srv.Tick(ms, out); } };
@@ -22208,6 +22377,7 @@ void TestMonsterChaseReturn() {
         s2.DebugMoveTo(a, 1000, 1000);
         s2.DebugMoveTo(b, 1300, 1000);
         s2.DebugSpawnPet(1357, 1000, 1000, a);
+        LoadRealAttackAnims(s2);                                // ★ 09-30 — 근접은 애니 칸(박쥐 칸 5)에서 문다
         std::vector<nox::OutPacket> o2;
         uint32_t m2 = 0;
         m2 += 34; s2.Tick(m2, o2);
@@ -22228,6 +22398,7 @@ void TestMonsterChaseReturn() {
         s3.DebugMoveTo(a, 1000, 1000);
         s3.DebugMoveTo(b, 1300, 1000);
         s3.DebugSpawnPet(1357, 1000, 1000, a);
+        LoadRealAttackAnims(s3);                                // ★ 09-30 — 근접은 애니 칸(박쥐 칸 5)에서 문다
         std::vector<nox::OutPacket> o3;
         uint32_t m3 = 0;
         for (int t = 0; t < 3; ++t) { m3 += 34; o3.clear(); s3.Tick(m3, o3); }   // 보고 싸움을 쌓는다(마지막 자리 = 1300)
@@ -22250,6 +22421,7 @@ void TestMonsterChaseReturn() {
         s4.DebugMoveTo(a, 1000, 1000);
         s4.DebugMoveTo(b, 1400, 1000);
         s4.DebugSpawnPet(1357, 1000, 1000, a);
+        LoadRealAttackAnims(s4);                                // ★ 09-30 — 근접은 애니 칸(박쥐 칸 5)에서 문다
         s4.DebugSetPetSightRange(0, 500.0f);                  // ★ 09-29 B1 — b 가 400 밖이라 알아보기 거리를 넓힌다(시험의 뜻은 조건 60)
         std::vector<nox::OutPacket> o4;
         uint32_t m4 = 0;
@@ -27038,6 +27210,7 @@ int main() {
     TestAIFight();
     TestAIMelee();
     TestAIAttackCancel();
+    TestMonsterMeleeTiming();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();

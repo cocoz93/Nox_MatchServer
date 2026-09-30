@@ -280,6 +280,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
         std::printf("[몬스터근접] 맞힘 %llu · 대상없음 %llu · 시야막힘 %llu · 폭탄병 %llu · (독 %llu · 유령도망 %llu) · 빗나감소리 %llu\n",
                     srv.meleeStrike(MW::Hit), srv.meleeStrike(MW::NoTarget), srv.meleeStrike(MW::Blocked), srv.meleeStrike(MW::Bomber),
                     srv.meleeStrike(MW::Poisoned), srv.meleeStrike(MW::GhostFlee), srv.meleeStrike(MW::MissSound));
+        using AT = nox::AttackTiming;     // ★ 09-30 — 시작 → 칸 틱 수(기대 칸 × (붙듦+1) − 1 ~ 칸 × (붙듦+1))
+        std::printf("[몬스터시점] 근접 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu (틱 %d~%d) · 쏘기 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu (틱 %d~%d)\n",
+                    srv.attackTiming(AT::MeleeOnTime), srv.attackTiming(AT::MeleeOff), srv.attackTiming(AT::MeleeLastRepeat),
+                    srv.attackLagMin(0), srv.attackLagMax(0),
+                    srv.attackTiming(AT::ShotOnTime), srv.attackTiming(AT::ShotOff), srv.attackTiming(AT::ShotLastRepeat),
+                    srv.attackLagMin(1), srv.attackLagMax(1));
         using BS = nox::BrainStat;   // ★ 09-29 B4 — 두뇌 반응 층
         std::printf("[몬스터두뇌] 돎 %llu · 혼란 %llu · 두려움 %llu · 후퇴 %llu(반주문 %llu) · 도망 길 못냄 %llu · 지키기공격 %llu · 거리두기 %llu · "
                     "답답함 %llu(옆걸음 %llu · 기다림 %llu) · 먹기 %llu\n",

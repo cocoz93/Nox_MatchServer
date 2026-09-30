@@ -11568,12 +11568,12 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             AIPop(k);
             break;
         }
-        case 16: {   // 근접 공격 — `mobActionMeleeAtt_532440`
-            // ⚠⚠ **여기가 정답지와 갈리는 자리다.** 정답지는 애니 칸으로 굴린다 —
-            //   「**때리는 칸**(`monsterDef+108`)에 닿으면 한 번 때리고, **애니가 끝나면**(+483) 뺀다」.
-            //   우리는 **크리처 애니 칸이 없다**(thing.bin 몬스터 애니를 아직 안 읽는다).
-            //   그래서 **한 틱에 때리고 뺀다**. ★ 때리는 **간격**은 Start 가 쉬는 시간으로 이미 맞춘다 —
-            //   달라지는 것은 「휘두르는 동안 몇 틱 붙들려 있나」뿐이다
+        case 16: {   // 근접 공격 — `mobActionMeleeAtt_532440`(`GAME4_3.c:2058~2110`)
+            // ★ 09-30 — **애니 칸으로 굴린다**(원본 그대로) — 근접 애니(1)가 **때리는 칸**(monster.bin +108 · `MonsterMeleeFrameOf`)에 닿고
+            //   칸 안 틱이 0 이면 한 번 때리고(`:2086`), **애니가 끝나면**(+483) 뺀다(`:2097~2100`).
+            //   ✖ 전에는 애니 칸이 없던 때(B5 전)의 대신으로 「휘두르기를 시작한 틱에 때리고 곧 뺌」 — 체력이 휘두르는 그림보다 먼저 깎였다
+            //   · 때리기 함수가 위로 무엇을 올리면(유령 도망 사슬 25·41·24) 취소가 근접을 뺀다(09-30 취소 = 빼기) — 올리기가 애니 셈을 0 으로 하므로 이 틱엔 한 번 더 안 빠진다
+            //   · 때리는 칸이 끝 칸이면 원본도 두 번 때린다(끝 칸에 닿을 때 · 끝을 넘으려다 설 때 — 우리 열셋 중 SmallAlbinoSpider 6칸·칸 5)
             // ★★ 09-29 B3 — **정답지 근접은 지금 상대를 안 본다**(`532440` `:2083~2107`). 때리는 칸에서 몬스터의 근접 함수
             //   (monster.bin `MELEE_STRIKE_FUNCTION`)를 부르고, 함수가 **스스로 대상을 고른다**(`MonsterPickMeleeTarget`) · 함수가 NULL 이면 빠진다.
             //   ✖ 전에는 「지금 상대가 없으면 빠짐 · 있으면 거리·시야 상관없이 그 상대를 늘 맞힘」 — 식충식물이 200 밖을 물어 죽였다(B1 시험에서 잡힘)
@@ -11581,13 +11581,14 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             const int dmg = (m && m->meleeDamage > 0) ? m->meleeDamage : 0;
             const MeleeStrikeInfo si = MeleeStrikeOf(k.type);
             if (dmg == 0 || si.fn == StrikeFn::None) { AIPop(k); break; }   // 「Tried to MELEE_ATTACK but cannot」(`:2101~2106`)
-            // ★ 쏘기(17)와 같은 막 — 휘두르기를 시작한 틱에만 맞힌다
-            if (k.attackStartFrame != frame_) { AIPop(k); break; }
-            // 때리다 상대(앞 자리 크리처)가 죽으면 목록이 당겨져 `k` 가 다른 것을 가리킬 수 있다 — 소리에 쓸 값은 먼저 떠 둔다
+            const int hitFrame = MonsterMeleeFrameOf(k.type);
+            if (k.animFrame != static_cast<uint8_t>(hitFrame) || k.animTick != 0) {
+                if (k.animDone) AIPop(k);
+                break;
+            }
+            CountAttackTiming(k, 0, hitFrame);
+            // 때리다 상대(앞 자리 크리처)가 죽으면 목록이 당겨져 `k` 가 다른 것을 가리킬 수 있다 — 소리에 쓸 값은 먼저 떠 두고, 뒤에는 번호로 다시 찾는다
             const Creature kSnap = k;
-            // 우리 근접은 한 틱이라 **먼저 뺀다** — 유령 근접이 그 위에 도망 사슬(25·41·24)을 쌓기 때문이다
-            //   (정답지는 애니가 끝날 때 빼는데, 그때는 도망이 이미 위에 있어 근접은 그 아래에 남았다가 드러난다)
-            AIPop(k);
             const int res = MonsterStrike(k, si, dmg, out);
             // ★ 09-24 H1(사람 판 「박쥐가 물 때 원작은 박쥐 소리」) — 때리기 함수 뒤 그 종류 소리 모음의 **맞히는 소리**(+32)를
             //   몬스터 자리에서 모두에게(`GAME4_3.c:2087~2094` · `aud_501960(…, a1, 0, 0)`). 4-c3b3b 가 맞는 쪽 소리를 끈 것의 짝이다.
@@ -11604,6 +11605,12 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             } else {
                 MonsterSound(kSnap, 8);                                  // +36 MELEE_ATTACK_MISSING
                 ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::MissSound)];
+            }
+            // 애니가 끝났으면 뺀다(`:2097~2100` — 때린 뒤에 본다) · 목록이 당겨졌을 수 있어 번호로 다시 찾는다
+            for (Creature& self : pets_) {
+                if (self.netCode != kSnap.netCode) continue;
+                if (self.animDone) AIPop(self);
+                break;
             }
             break;
         }
@@ -12484,6 +12491,21 @@ void Server::MonsterAnimUpdate(Creature& k) {
     k.animFrame = static_cast<uint8_t>(a.frames - 1);
     k.animDone = true;
     ++animStat_[static_cast<size_t>(AnimStat::Done)];
+}
+
+// ★ 09-30 — 근접·쏘기가 칸에서 때린 **시점**을 센다(계수 뜻은 `AttackTiming` 머리 주석) — 부르는 자리 = 칸 · 틱 0 에 닿은 그 갱신
+void Server::CountAttackTiming(const Creature& k, int kind, int frame) {
+    const size_t base = kind == 0 ? static_cast<size_t>(AttackTiming::MeleeOnTime) : static_cast<size_t>(AttackTiming::ShotOnTime);
+    if (k.animDone) { ++attackTiming_[base + 2]; return; }                 // 끝 칸 두 번째
+    const uint32_t lag = frame_ - k.attackStartFrame;
+    if (!attackLagSeen_[kind] || lag < attackLagMin_[kind]) attackLagMin_[kind] = lag;
+    if (!attackLagSeen_[kind] || lag > attackLagMax_[kind]) attackLagMax_[kind] = lag;
+    attackLagSeen_[kind] = true;
+    const auto it = monsterAnims_.find(k.type);
+    const uint32_t hold = it == monsterAnims_.end() ? 0u : it->second[kind == 0 ? 1u : 3u].hold;
+    const uint32_t want = static_cast<uint32_t>(frame) * (hold + 1u);
+    const bool onTime = lag == want || (want > 0 && lag == want - 1);
+    ++attackTiming_[base + (onTime ? 0 : 1)];
 }
 
 // `nox_xxx_monsterMoveAudio_534030`(`GAME4_3.c:2648~2691`) — 지금 칸(+481)이 걸음 칸 A·B(monster.bin +100·+104) 중 하나이고 칸 안 틱(+482)이 0 이면
