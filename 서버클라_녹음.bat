@@ -66,7 +66,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
-start "Nox 서버 - %MAP%" "%SERVER%" --port 18591 --standalone --map "%MAPFILE%" --mode arena --quiet%EXTRA%
+rem --aoi(걸어가면 바닥 물건 알림) --friends(내 소환수 파랑) - 10-01 사람 판 3 에서 정품으로 확인해 기본으로 붙임
+start "Nox 서버 - %MAP%" "%SERVER%" --port 18591 --standalone --map "%MAPFILE%" --mode arena --quiet --aoi --friends%EXTRA%
 timeout /t 3 /nobreak >nul
 tasklist /fi "imagename eq nox_server.exe" | find /i "nox_server.exe" >nul
 if errorlevel 1 (
