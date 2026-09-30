@@ -1,4 +1,5 @@
-﻿param([string]$Tag = 'wc1', [switch]$Ref, [int]$Secs = 120, [string]$Map = 'Estate', [switch]$NoWalk)
+﻿param([string]$Tag = 'wc1', [switch]$Ref, [int]$Secs = 120, [string]$Map = 'Estate', [switch]$NoWalk, [string]$SrvExtra = '')
+# -SrvExtra — 우리 서버에 덧붙일 인자(공백으로 가름 · 대조군에는 안 붙음). 예: '--spawn-at 2466 2838 --debug-mob 150 1382 2566 2838'
 # ★ 09-29 — 와이어 대조 녹음(리포 지침 「같은 클라·같은 자동화로 **서버만 바꿔**」). 양쪽 다 중계기를 끼운다(`Docs/PROTOCOL.md:1438~1444`).
 #     우리  : 자동 클라 → 중계기(18590 · 기록) → nox_server(18591)
 #     대조군: 자동 클라 → 중계기(18590 · 기록) → opennox-server(18591)
@@ -31,7 +32,9 @@ if ($Ref) {
   $wait = 90
   "대조군 서버(opennox-server) pid=$($srv.Id)"
 } else {
-  $srv = Start-Process -FilePath (Join-Path $root 'build\Release\nox_server.exe') -ArgumentList @('--port','18591','--map',"`"$mapFile`"") `
+  $srvArgs = @('--port','18591','--map',"`"$mapFile`"")
+  if ($SrvExtra -ne '') { $srvArgs += ($SrvExtra -split '\s+' | Where-Object { $_ -ne '' }) }
+  $srv = Start-Process -FilePath (Join-Path $root 'build\Release\nox_server.exe') -ArgumentList $srvArgs `
     -PassThru -WindowStyle Minimized -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr
   $wait = 6
   "우리 서버 pid=$($srv.Id)"
