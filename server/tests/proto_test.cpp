@@ -3344,6 +3344,28 @@ void TestBundleOneDatagram() {
         Check(n == 1 && i27 == 0 && n27 == 1 && iAb > 0 && iAa > iAb && iAa == static_cast<int>(ops.size()) - 1 &&
               (iA4 < 0 || (iA4 > i27 && iA4 < iAb)) && abBody && imp6e && entries >= 1, msg);
     }
+    // ①' 실제 클라는 제 번호(스트림 1)로 보낸다 — 그래도 `ab` 는 스트림 0 묶음에(정답지 Kind1 · 서버 머리 첫 바이트 = 서버 쪽 번호)
+    //   ✖ 09-30 자동 클라 판에서 잡힘 — 받은 스트림으로 돌려줘 `ab` 8,039건이 따로 나갔다(①은 스트림 0 으로만 넣어 못 잡았다)
+    {
+        std::vector<nox::OutPacket> out;
+        const std::vector<uint8_t> imp1 = { 0x01, 0x00, static_cast<uint8_t>(nox::Op::IMPORTANT), 0x99, 0x88, 0x77, 0x66, 0x00 };
+        const unsigned long long m0 = srv.bundleStat(BS::InMisc), st0 = srv.bundleStat(BS::DirectStream);
+        srv.OnPacket(a, imp1.data(), imp1.size(), out);
+        const size_t now = countTo(out, a);
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        bool abIn = false;
+        for (const auto& p : out) {
+            if (p.to != a) continue;
+            const auto bb = Body(p);
+            for (size_t q = 0; q + 5 <= bb.size(); ++q)
+                if (bb[q] == 0xab && bb[q + 1] == 0x99 && bb[q + 2] == 0x88 && bb[q + 3] == 0x77 && bb[q + 4] == 0x66) abIn = true;
+        }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "①' 스트림 1 로 온 중요 — 곧바로 %zu(기대 0) · 잡다 +%llu(기대 1) · 스트림 갈래 +%llu(기대 0) · 다음 묶음에 ab %d · 조각 %zu",
+                      now, srv.bundleStat(BS::InMisc) - m0, srv.bundleStat(BS::DirectStream) - st0, (int)abIn, countTo(out, a));
+        Check(now == 0 && srv.bundleStat(BS::InMisc) - m0 == 1 && srv.bundleStat(BS::DirectStream) - st0 == 0 && abIn && countTo(out, a) == 1, msg);
+    }
     // ② 아무 일 없는 틱도 사람당 한 조각 · 시험용 즉시 모드(b)는 따로따로(갈래 계수)
     {
         std::vector<nox::OutPacket> out;

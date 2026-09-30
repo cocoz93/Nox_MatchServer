@@ -2816,7 +2816,11 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 uint8_t msg[5];
                 msg[0] = static_cast<uint8_t>(Op::IMPORTANT_ACK);
                 std::memcpy(msg + 1, it.body(), 4);
-                Emit(s, /*reliable=*/false, head.stream, msg, sizeof(msg), out);
+                // ★ 09-30 — **스트림 0** 으로(= 묶음). 정답지는 `ab` 를 Kind1 에 넣어 그 프레임 묶음에 싣고(`server/network.go:154`),
+                //   서버→클라 머리 첫 바이트는 서버 쪽 번호다(`internal/netstr/conn.go:239~240` `hdr[0] = byte(ns.ind)`).
+                //   받은 머리를 되쓰는 것은 0x20 미만 접속 제어 답(퐁 등 · `conn.go:704~708`)뿐이다.
+                //   ✖ 전에는 받은 스트림(클라 번호 1)으로 돌려줘 묶음에 못 들고 따로 나갔다 — 09-30 자동 클라 2분 `곧바로 스트림 8084`(ab 8,039 + 퐁 45)
+                Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
                 ++handled_;
                 break;
             }
