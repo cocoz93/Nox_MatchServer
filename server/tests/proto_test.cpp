@@ -13059,6 +13059,87 @@ void TestMonsterShotTiming() {
     std::printf("  09-30 쏘기 시점 — 불악마 11틱 뒤 한 번·24틱에 빠짐 · 임프 칸 1 에서 한 개 · 쏘는 중 취소면 안 쏨\n");
 }
 
+// ★ 10-01 — 몬스터 갱신 항목에 **애니 번호와 칸**이 실리나(사람 판 3 「곰이 멈춘 그림으로 미끄러짐」).
+//   정답지 `netSendComplexObject_518960`(`GAME4_1.c:4294~4296`) + 줄이기(`network_lists.go:292~297`):
+//   [방향<<4 | 애니] 에 칸이 255 가 아니면 0x80 · 그다음 칸 한 바이트. 애니 = `mobActionToAnimation`(= MonsterAnimIndex)
+//   ⚠ 값은 **틱 뒤 서버 상태와 같은가**로 본다(보내는 자리가 틱 끝) · 가만만 보면 「8 고정」을 못 잡으니 걷기·근접을 따로 연다
+void TestMonsterAnimOnWire() {
+    const std::string a = "10.10.1.1:1001", b = "10.10.1.2:1002";
+    auto mk = [&](nox::Server& srv, float bx) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 900.0f, 1000.0f);
+        srv.DebugTeleport(b, bx, 1000.0f);
+        srv.DebugSpawnPet(1365, 1000, 1000, a);                   // 곰 — 근접 9칸 · 붙듦 1
+        srv.DebugSetAutoFight(false);
+        LoadRealAttackAnims(srv);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+    };
+    struct Seen { int n = 0; uint8_t b0 = 0, b1 = 0; int extra = 0; };
+    auto petEntry = [&](const std::vector<nox::OutPacket>& out) {
+        Seen r;
+        for (const auto& p : out) {
+            if (p.to != a) continue;
+            auto body = Body(p);
+            if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
+            nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
+            for (const auto& e : m.objects) {
+                if (e.type != 1365) continue;
+                ++r.n; r.b0 = e.extraBytes[0]; r.b1 = e.extraBytes[1]; r.extra = e.extra;
+            }
+        }
+        return r;
+    };
+    // 한 틱 돌리고 곰 항목이 [방향|0x80|애니][칸] 이고 애니·칸이 서버 것과 같은지 — 본 애니 번호를 돌려준다(못 보면 −1)
+    auto tickCheck = [&](nox::Server& srv, uint32_t& ms, const char* tag) -> int {
+        std::vector<nox::OutPacket> out;
+        ms += 34;
+        srv.Tick(ms, out);
+        const Seen r = petEntry(out);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "%s — 곰 항목 %d 개(기대 1)", tag, r.n);
+        Check(r.n == 1, msg);
+        if (r.n != 1) return -1;
+        std::snprintf(msg, sizeof(msg), "%s — 덧붙이 %d(기대 2) · 첫 바이트 %02x(0x80 기대)", tag, r.extra, r.b0);
+        Check(r.extra == 2 && (r.b0 & 0x80), msg);
+        std::snprintf(msg, sizeof(msg), "%s — 애니 %d · 서버 %d", tag, r.b0 & 0x0F, srv.DebugPetAnimIndex(0));
+        Check((r.b0 & 0x0F) == srv.DebugPetAnimIndex(0), msg);
+        std::snprintf(msg, sizeof(msg), "%s — 칸 %d · 서버 %d", tag, r.b1, srv.DebugPetAnimFrame(0));
+        Check(r.b1 == srv.DebugPetAnimFrame(0), msg);
+        return r.b0 & 0x0F;
+    };
+
+    // ① 걷기 — 가기(7)를 멀리(2000) 세우면 12 MOVE(뛰면 13)
+    {
+        nox::Server srv; mk(srv, 1400.0f);
+        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0.0f, 2000.0f, 1000.0f);
+        uint32_t ms = 0;
+        const int an = tickCheck(srv, ms, "① 걷기");
+        Check(an == 12 || an == 13, "① 가는 중인데 애니가 걷기(12·13)가 아니다");
+        Check(srv.monsterAnimSent(12) + srv.monsterAnimSent(13) > 0, "① 걷기 계수가 안 늘었다");
+    }
+    // ② 근접 — 붙은 워리어(1020)에 16 을 세우면 1 · 칸이 틱마다 서버 칸을 따라가고 0 에만 머물지 않는다
+    {
+        nox::Server srv; mk(srv, 1020.0f);
+        srv.DebugSetPetNextHit(0, 0);
+        srv.DebugAIPush(0, 16);
+        uint32_t ms = 0;
+        int swings = 0, maxFrame = -1;
+        for (int t = 0; t < 8; ++t) {
+            const bool melee = srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 16;
+            const int an = tickCheck(srv, ms, "② 근접");
+            if (melee && an == 1) { ++swings; if (srv.DebugPetAnimFrame(0) > maxFrame) maxFrame = srv.DebugPetAnimFrame(0); }
+        }
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "② 근접 틱 %d 개 · 가장 큰 칸 %d — 근접 애니(1)가 실리고 칸이 넘어가야 한다", swings, maxFrame);
+        Check(swings >= 3 && maxFrame >= 1, msg);
+        Check(srv.monsterAnimSent(1) > 0, "② 근접 계수가 안 늘었다");
+    }
+    std::printf("  몬스터 애니 싣기 — 걷기 12·13 · 근접 1 · 칸 바이트(0x80) 서버 칸과 같음\n");
+}
+
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
 //
 // 정답지 `legacy/GAME5.c:924` `nox_xxx_mobActionEscort_546430`.
@@ -27515,6 +27596,7 @@ int main() {
     TestAIAttackCancel();
     TestMonsterMeleeTiming();
     TestMonsterShotTiming();
+    TestMonsterAnimOnWire();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();

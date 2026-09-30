@@ -303,6 +303,15 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.animStat(AS::NoTable), srv.animStat(AS::NoFrames), srv.animStat(AS::Advance), srv.animStat(AS::Wrap), srv.animStat(AS::Done),
                     srv.animStat(AS::StepMoveTo), srv.animStat(AS::StepFlee), srv.animStat(AS::StepWalk), srv.animStat(AS::StepHit),
                     srv.monsterSnd(17, true), srv.monsterSnd(17, false));
+        {   // ★ 10-01 — 갱신 항목에 실은 애니 번호별(보는 사람 × 틱) · 1 근접 · 3 쏘기 · 7 주문 · 8 가만 · 9 죽어감 · 10 죽음 · 12 걷기 · 13 달리기
+            unsigned long long all = 0;
+            std::string row;
+            for (int i = 0; i < 16; ++i) {
+                all += srv.monsterAnimSent(i);
+                if (srv.monsterAnimSent(i)) row += " " + std::to_string(i) + ":" + std::to_string(srv.monsterAnimSent(i));
+            }
+            std::printf("[몬스터애니보냄] 항목 %llu ·%s\n", all, row.empty() ? " (없음)" : row.c_str());
+        }
         using HS = nox::HearStat;    // ★ 09-29 B6 — 소리 듣기
         std::printf("[소리듣기] 기록 %llu · 귀막힘 %llu · 아군무시 %llu · 작음 %llu · 벽반감 %llu(작아짐 %llu) · 들음 %llu · 가봄 %llu · 바라봄 %llu · 못감 %llu · 조건59 %llu · 조건69 %llu\n",
                     srv.hearStat(HS::Recorded), srv.hearStat(HS::Deaf), srv.hearStat(HS::NotListen), srv.hearStat(HS::Quiet), srv.hearStat(HS::WallHalved),

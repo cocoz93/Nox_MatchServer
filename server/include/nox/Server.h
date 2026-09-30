@@ -1898,6 +1898,7 @@ public:
     int attackLagMax(int kind) const { return (kind == 0 || kind == 1) && attackLagSeen_[kind] ? static_cast<int>(attackLagMax_[kind]) : -1; }
     unsigned long long brainStat(BrainStat b) const { return b < BrainStat::Count ? brainStat_[static_cast<size_t>(b)] : 0; }                   // ★ 09-29 B4
     unsigned long long animStat(AnimStat b) const { return b < AnimStat::Count ? animStat_[static_cast<size_t>(b)] : 0; }                        // ★ 09-29 B5
+    unsigned long long monsterAnimSent(int idx) const { return idx >= 0 && idx < 16 ? monsterAnimSent_[idx] : 0; }                      // ★ 10-01 — 갱신 항목에 실은 애니 번호별
     // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
     void SetMonsterAnim(uint16_t wire, int idx, int frames, int hold, bool loop) {
         if (idx < 0 || idx >= 16) return;
@@ -5478,6 +5479,7 @@ private:
     void CountAttackTiming(const Creature& k, int kind, int frame);   // kind 0 근접(애니 1) · 1 쏘기(애니 3)
     unsigned long long brainStat_[kBrainStatCount] = {};          // ★ 09-29 B4
     unsigned long long animStat_[kAnimStatCount] = {};            // ★ 09-29 B5
+    unsigned long long monsterAnimSent_[16] = {};                 // ★ 10-01 — 몬스터 갱신 항목에 실은 애니 번호(0~15)별 · 보는 사람마다 한 번씩
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };
     std::map<uint16_t, std::array<MonsterAnimRow, 16>> monsterAnims_;   // ★ 09-29 B5 — 갱신자료 +476 표(종류별)
     unsigned long long hearStat_[kHearStatCount] = {};            // ★ 09-29 B6

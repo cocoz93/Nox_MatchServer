@@ -17977,8 +17977,18 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             if (!CoordInRange(static_cast<int>(k.x), static_cast<int>(k.y))) continue;   // ⓒ 관문
             ReportHealthDeltaTo(s, k.netCode, k.health, k.lastDamageFrame, k.hpReportedTo, out);   // netSendComplexObject_518960 a3 갈래(+412+2×i)
             ObjEntry e;
+            // ★ 10-01 — **애니 번호와 칸을 싣는다.** 전에는 `FillEntry` 기본값 8(가만)만 실어
+            //   곰이 **멈춘 그림으로 미끄러졌다**(10-01 사람 판 3 · 임프는 가만 애니가 날갯짓이라 티가 안 났다).
+            //   정답지 `netSendComplexObject_518960`(`GAME4_1.c:4294~4296`) — 애니 = `mobActionToAnimation_533790`(= MonsterAnimIndex) ·
+            //   칸 = +481 · 줄이는 쪽(`network_lists.go:292~297`)이 칸이 255 가 아니면 0x80 을 켜고 칸 한 바이트를 붙인다.
+            //   ⚠ 안 옮김 — `:4297~4301` 아종 0x10(NPC) 의 20% 애니 14 갈래(우리 소환 13종에 NPC 없음)
+            const int animIdx = MonsterAnimIndex(k);
             FillEntry(s.aliases, k.netCode, k.type, s.tickFrame,
-                      static_cast<int>(k.x), static_cast<int>(k.y), k.facing, e);
+                      static_cast<int>(k.x), static_cast<int>(k.y), k.facing, e,
+                      /*complex=*/true, /*playerAnim=*/0, /*forceDir=*/-1,
+                      /*playerFrame=*/k.animFrame == 255 ? -1 : static_cast<int>(k.animFrame),
+                      static_cast<uint8_t>(animIdx));
+            ++monsterAnimSent_[animIdx & 0x0F];
             Relativize(e, k.netCode, static_cast<int>(k.x), static_cast<int>(k.y),
                        baseX, baseY);
             m.objects.push_back(e);
