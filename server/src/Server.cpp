@@ -6406,6 +6406,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, const std::string& obj3, con
                 DurFns f;
                 f.create = &Server::DurSummonCreate;
                 f.update = &Server::DurSummonTick;
+                f.destroy = &Server::DurSummonEnd;                                             // ★ 10-01 summonCancel_5011C0
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0, out) ? 1 : 0;
                 break;
             }
@@ -13286,8 +13287,45 @@ int Server::DurSummonCreate(DurSpell& d, std::vector<OutPacket>& out) {
         return 1;
     }
     const int idx = (size >= 4) ? 2 : (size >= 2 ? 1 : 0);
-    d.frame68 = frame_ + static_cast<uint32_t>(BalanceFloatInd("SummonDuration", idx));
+    const uint32_t dur = static_cast<uint32_t>(BalanceFloatInd("SummonDuration", idx));
+    d.frame68 = frame_ + dur;
+    // ★ 10-01 — 자리·종류·방향·효과 번호를 **시작 때** 적고 모두에게 `7e`(`GAME4.c:4086~4126` → `sendSummonStartFX_5236F0` `GAME4_2.c:3911~3928`).
+    //   ✖ 안 보내 소환 소용돌이가 없었다(10-01 사람 판 3) · 자리는 전처럼 「시전자 앞 kPetReach」(sub_500F40 갈음)인데 **끝이 아니라 시작 때** 정한다
+    //   `7e | x i16 | y i16 | 효과번호 u16 | 종류 u16 | 방향 u8 | 시간 u16`(12B · Packet0 을 255 = 모두에게)
+    Session& s = c->second;
+    const double rad = s.facing * 3.14159265358979 / 128.0;  // 시전자 앞
+    d.summonType = type;
+    d.summonX = static_cast<float>(s.posX + kPetReach * std::cos(rad));
+    d.summonY = static_cast<float>(s.posY + kPetReach * std::sin(rad));
+    d.summonDir = s.facing;
+    d.summonFxId = summonFxNext_++;
+    if (summonFxNext_ >= 0xFDE8) summonFxNext_ = 0;
+    const uint16_t fx = static_cast<uint16_t>(static_cast<long long>(d.summonX));   // (long long) 로 버린 뒤 아래 16비트(원본 `:3922~3925`)
+    const uint16_t fy = static_cast<uint16_t>(static_cast<long long>(d.summonY));
+    const uint8_t msg[12] = { static_cast<uint8_t>(Op::FX_SUMMON),
+                              static_cast<uint8_t>(fx), static_cast<uint8_t>(fx >> 8),
+                              static_cast<uint8_t>(fy), static_cast<uint8_t>(fy >> 8),
+                              static_cast<uint8_t>(d.summonFxId), static_cast<uint8_t>(d.summonFxId >> 8),
+                              static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8),
+                              d.summonDir,
+                              static_cast<uint8_t>(dur), static_cast<uint8_t>(dur >> 8) };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitImportantRaw(kv.second, msg, sizeof(msg), out);
+    d.summonFxSent = true;
+    ++summonFxSent_[0];
     return 0;
+}
+
+// ★ 10-01 `summonCancel_5011C0`(`GAME4.c:4257~4262`) — 파괴 때(끝났든 끊겼든 불린다) **아직 안 세웠으면** 모두에게 `7f`(효과 번호 · 3B · Packet0)
+//   + 그 자리에 소리 900 `SummonAbort`(`audCreate_501A30` — 자리 소리). 클라는 그 번호의 소용돌이를 지운다(`cdecode.c:1601~1605`)
+//   ⚠ 원본은 만들기가 실패해도(시작 검사에서 끝남) 이 길을 타며 그때 +83·+74 는 안 채워진 값이다 → 짓지 않음: `7e` 를 보낸 것만
+//     (첫 효과 번호가 0 이라 `7f 00 00` 을 막 보내면 남의 소용돌이를 지울 수 있다)
+void Server::DurSummonEnd(DurSpell& d, std::vector<OutPacket>& out) {
+    if (d.summonDone || !d.summonFxSent) return;
+    const uint8_t msg[3] = { static_cast<uint8_t>(Op::FX_SUMMON_CANCEL),
+                             static_cast<uint8_t>(d.summonFxId), static_cast<uint8_t>(d.summonFxId >> 8) };
+    for (auto& kv : sessions_) if (kv.second.inGame) EmitImportantRaw(kv.second, msg, sizeof(msg), out);
+    ++summonFxSent_[1];
+    PlaySoundAt(900, d.summonX, d.summonY);                  // SummonAbort(`sound.go:937` − 37)
 }
 
 // summonFinish_5010D0(`GAME4.c:4230`) — 그 프레임이 되면 **한 마리** 세우고 끝난다.
@@ -13305,11 +13343,16 @@ int Server::DurSummonTick(DurSpell& d, std::vector<OutPacket>& out) {
         return 1;
     }
     Session& s = c->second;
-    const double rad = s.facing * 3.14159265358979 / 128.0;  // 시전자 앞
-    SpawnCreature(type, static_cast<float>(s.posX + kPetReach * std::cos(rad)),
-                  static_cast<float>(s.posY + kPetReach * std::sin(rad)), d.caster);
-    if (!pets_.empty()) pets_.back().facing = s.facing;
-    if (!pets_.empty()) ReportAcquireCreature(s, pets_.back(), out);   // ★ 10-01 — unitDoSummonAt_5016C0(`spell_summon.go:54`)
+    // ★ 10-01 — **시작 때 적은 자리·방향**에 세운다(`GAME4.c:4246~4247` `unitDoSummonAt_5016C0(+72, +74, 시전자, +82)`).
+    //   전에는 이 틱의 시전자 앞에 세워, 부르는 동안 움직이면 소용돌이(`7e`) 자리와 어긋났다
+    SpawnCreature(type, d.summonX, d.summonY, d.caster);
+    if (!pets_.empty()) pets_.back().facing = d.summonDir;
+    if (!pets_.empty()) {
+        ReportAcquireCreature(s, pets_.back(), out);         // ★ 10-01 — unitDoSummonAt_5016C0(`spell_summon.go:54`)
+        PlaySoundAt(899, static_cast<float>(pets_.back().x), static_cast<float>(pets_.back().y), 0, 0, std::string(),
+                    Target{ std::string(), static_cast<int>(pets_.size() - 1) });   // SummonComplete(`sound.go:936` − 37) · `aud_501960(899, 그것)`
+    }
+    d.summonDone = true;                                     // +85 = 1 → 파괴(DurSummonEnd)가 `7f` 를 안 낸다
     return 1;
 }
 

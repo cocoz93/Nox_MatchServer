@@ -1900,6 +1900,7 @@ public:
     unsigned long long animStat(AnimStat b) const { return b < AnimStat::Count ? animStat_[static_cast<size_t>(b)] : 0; }                        // ★ 09-29 B5
     unsigned long long monsterAnimSent(int idx) const { return idx >= 0 && idx < 16 ? monsterAnimSent_[idx] : 0; }                      // ★ 10-01 — 갱신 항목에 실은 애니 번호별
     unsigned long long summonOwnSent(int i) const { return i >= 0 && i < 3 ? summonOwnSent_[i] : 0; }                                  // ★ 10-01 — 0 `6c` · 1 `dd` · 2 `6d`
+    unsigned long long summonFxSent(int i) const { return i >= 0 && i < 2 ? summonFxSent_[i] : 0; }                                    // ★ 10-01 — 0 `7e` 시작 · 1 `7f` 끊김(보는 사람마다가 아니라 소환 한 번에 1)
     // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
     void SetMonsterAnim(uint16_t wire, int idx, int frames, int hold, bool loop) {
         if (idx < 0 || idx >= 16) return;
@@ -4335,6 +4336,14 @@ private:
         uint32_t field80 = 0, field84 = 0;
         uint32_t flags88 = 0;            // +88 1 = 취소됨(다음 차례에 지운다)
         uint16_t casterPet = 0;          // ★ 09-29 B7 — 몬스터 시전자(번호) — 0 이면 사람(`caster`)
+        // ★ 10-01 소환(75~87) — `summonStart_500DA0`(`GAME4.c:4086~4126`)이 **시작 때** 적는 것
+        //   +72 종류 · +74 자리 · +82 방향 · +83 효과 번호 · +85 세웠음(끝 `5010D0` 이 켠다 → 파괴 `5011C0` 이 `7f` 를 안 낸다)
+        uint16_t summonType = 0;
+        float summonX = 0, summonY = 0;
+        uint8_t summonDir = 0;
+        uint16_t summonFxId = 0;
+        bool summonFxSent = false;       // 우리 몫 — `7e` 를 보냈나(만들기 실패 뒤 파괴에 `7f` 를 짓지 않게 · 플랜 자가검증)
+        bool summonDone = false;         // +85
         DurFns fns;
         std::vector<DurSpell> sub108;    // +108 하위(연쇄 번개 조각 · 4-d)
     };
@@ -4407,6 +4416,7 @@ private:
     int DurSummonCreate(DurSpell& d, std::vector<OutPacket>& out);                                     // summonStart_500DA0
     int DurSummonTick(DurSpell& d, std::vector<OutPacket>& out);                                       // summonFinish_5010D0
     void ReportAcquireCreature(Session& owner, const Creature& k, std::vector<OutPacket>& out);        // ★ 10-01 netReportAcquireCreature_4D91A0
+    void DurSummonEnd(DurSpell& d, std::vector<OutPacket>& out);                                       // ★ 10-01 summonCancel_5011C0
     int CastMark(uint8_t spell, Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);    // sub_52CBD0
     int DurTeleMarkCreate(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_5305D0
     int DurTeleMarkTick(DurSpell& d, std::vector<OutPacket>& out);                                     // sub_530650
@@ -5483,6 +5493,8 @@ private:
     unsigned long long animStat_[kAnimStatCount] = {};            // ★ 09-29 B5
     unsigned long long monsterAnimSent_[16] = {};                 // ★ 10-01 — 몬스터 갱신 항목에 실은 애니 번호(0~15)별 · 보는 사람마다 한 번씩
     unsigned long long summonOwnSent_[3] = {};                    // ★ 10-01 — 주인에게 보낸 소유 알림 0 `6c` 얻음 · 1 `dd` 총체력 · 2 `6d` 잃음
+    unsigned long long summonFxSent_[2] = {};                     // ★ 10-01 — 소환 효과 0 `7e` 시작 · 1 `7f` 끊김(소환 한 번에 하나씩)
+    uint16_t summonFxNext_ = 0;                                   // ★ 10-01 — 다음 효과 번호(원본 0x5D4594+1570276 · 0xFDE8 에 닿으면 0)
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };
     std::map<uint16_t, std::array<MonsterAnimRow, 16>> monsterAnims_;   // ★ 09-29 B5 — 갱신자료 +476 표(종류별)
     unsigned long long hearStat_[kHearStatCount] = {};            // ★ 09-29 B6

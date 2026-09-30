@@ -13202,6 +13202,114 @@ void TestSummonOwnership() {
     std::printf("  소유 알림 — 소환 끝 주인에게만 6c→dd · 죽으면 주인에게만 6d · 맵 몬스터는 없음\n");
 }
 
+// ★ 10-01 — 소환 소용돌이: 부르기 시작에 **모두에게** `7e`(12B) · 세우기 전에 끊기면 `7f`(같은 효과 번호) · 세운 뒤엔 `7f` 없음 ·
+//   만들기가 실패하면 둘 다 없음 · 세우는 자리 = **시작 때 적은 자리**(부르는 동안 시전자가 움직여도)
+//   (사람 판 3 「소환 효과 없음」 · 원본 `GAME4.c:4086~4127·4246~4262` · `GAME4_2.c:3911~3936`)
+void TestSummonFx() {
+    const std::string a = "10.10.3.1:1201", b = "10.10.3.2:1202";
+    auto mk = [&](nox::Server& srv) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 1000.0f, 1000.0f);
+        srv.DebugTeleport(b, 1600.0f, 1000.0f);
+        RegSpell(srv, 87);
+        LoadRealAttackAnims(srv);
+        nox::Gamedata g;
+        g.Parse("SummonDuration = 60, 210, 375;\n");
+        srv.SetGamedata(g);
+        srv.DebugSetFacing(a, 64);                              // +y 쪽(64/256 바퀴) — 자리 = (1000, 1000 + 40) · 0 이 아니어야 「방향 칸 0 고정」이 걸린다
+    };
+    auto pick = [](const std::vector<std::vector<uint8_t>>& v, uint8_t op) {
+        std::vector<std::vector<uint8_t>> r;
+        for (const auto& m : v) if (!m.empty() && m[0] == op) r.push_back(m);
+        return r;
+    };
+    auto u16 = [](const std::vector<uint8_t>& m, size_t at) { return static_cast<uint16_t>(m[at] | (m[at + 1] << 8)); };
+    auto runOut = [&](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, size_t before) {
+        for (int t = 0; t < 400 && srv.pets() == before && srv.DurCount() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+    };
+    char msg[240];
+
+    // ① 부르기 — 시작에 a·b 모두 7e 한 번(12B · 번호 0 · 종류 1328 · 방향 64 · 시간 60 · 자리 ≈ 1000,1040) · 세운 곳 = 7e 자리 · 7f 없음
+    //   ⑤ 한 번 더 부르면 효과 번호 1
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = srv.DebugNowMs();
+        CastAndWait(srv, a, 87, false, ms, out);
+        runOut(srv, ms, out, 0);
+        Check(srv.pets() == 1, "① 임프가 안 나왔다");
+        const auto toA = pick(FlattenTo(out, a), 0x7E), toB = pick(FlattenTo(out, b), 0x7E);
+        std::snprintf(msg, sizeof(msg), "① 7e 가 a %zu · b %zu 번(기대 1·1)", toA.size(), toB.size());
+        Check(toA.size() == 1 && toB.size() == 1, msg);
+        if (toA.size() == 1 && toA[0].size() == 12 && srv.pets() == 1) {
+            const auto& m = toA[0];
+            std::snprintf(msg, sizeof(msg), "① 7e 칸 — 자리 %d,%d · 번호 %u · 종류 %u · 방향 %u · 시간 %u",
+                          static_cast<int16_t>(u16(m, 1)), static_cast<int16_t>(u16(m, 3)), u16(m, 5), u16(m, 7), m[9], u16(m, 10));
+            Check(std::abs(static_cast<int16_t>(u16(m, 1)) - 1000) <= 2 && std::abs(static_cast<int16_t>(u16(m, 3)) - 1040) <= 2 &&
+                  u16(m, 5) == 0 && u16(m, 7) == 1328 && m[9] == 64 && u16(m, 10) == 60, msg);
+            double px = 0, py = 0;
+            srv.DebugPetXY(0, px, py);
+            std::snprintf(msg, sizeof(msg), "① 세운 곳 %.1f,%.1f 가 7e 자리에서 멀다", px, py);
+            Check(std::fabs(px - static_cast<int16_t>(u16(m, 1))) <= 8.0 && std::fabs(py - static_cast<int16_t>(u16(m, 3))) <= 8.0, msg);
+        } else {
+            Check(false, "① 7e 가 12바이트가 아니다");
+        }
+        // 파괴는 **다음 틱**이다(갱신이 1 → DurCancel 표시 → 다음 차례 DurDestroy `Server.cpp` SpellCastByPlayer) — 선 틱에서 멈추면 7f 를 못 본다
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DurCount() == 0, "① 세운 뒤 틱 셋이 지났는데 소환 주문이 안 지워졌다 — 파괴를 거쳤는지 못 가른다");
+        Check(pick(Flatten(out), 0x7F).empty(), "① 다 세웠는데 7f 가 나갔다");
+        Check(srv.summonFxSent(0) == 1 && srv.summonFxSent(1) == 0, "① 계수 7e·7f 가 1·0 이 아니다");
+        // ⑤ 두 번째
+        out.clear();
+        CastAndWait(srv, a, 87, false, ms, out);
+        runOut(srv, ms, out, 1);
+        const auto again = pick(FlattenTo(out, a), 0x7E);
+        Check(again.size() == 1 && again[0].size() == 12 && u16(again[0], 5) == 1, "⑤ 두 번째 7e 의 효과 번호가 1 이 아니다");
+    }
+    // ② 부르는 동안 시전자가 멀리(2000) 옮겨도 **처음 자리**(≈1000,1040)에 선다
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = srv.DebugNowMs();
+        CastAndWait(srv, a, 87, false, ms, out);
+        srv.DebugTeleport(a, 2000.0f, 1000.0f);
+        runOut(srv, ms, out, 0);
+        double px = 0, py = 0;
+        const bool have = srv.pets() == 1 && srv.DebugPetXY(0, px, py);
+        std::snprintf(msg, sizeof(msg), "② 옮긴 뒤 선 곳 %.1f,%.1f — 처음 자리(1000,1040)여야 한다", px, py);
+        Check(have && std::fabs(px - 1000.0) <= 8.0 && std::fabs(py - 1040.0) <= 8.0, msg);
+    }
+    // ③ 세우기 전에 시전자가 죽으면 모두에게 7f(같은 번호) · 6c 없음
+    {
+        nox::Server srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = srv.DebugNowMs();
+        CastAndWait(srv, a, 87, false, ms, out);
+        const auto start = pick(FlattenTo(out, a), 0x7E);
+        srv.DebugHurt(a, -1, 9999, b, 0, out);
+        runOut(srv, ms, out, 0);
+        Check(srv.pets() == 0, "③ 시전자가 죽었는데 임프가 섰다");
+        const auto endA = pick(FlattenTo(out, a), 0x7F), endB = pick(FlattenTo(out, b), 0x7F);
+        std::snprintf(msg, sizeof(msg), "③ 7f 가 a %zu · b %zu 번(기대 1·1)", endA.size(), endB.size());
+        Check(endA.size() == 1 && endB.size() == 1, msg);
+        Check(start.size() == 1 && endA.size() == 1 && endA[0].size() == 3 && u16(endA[0], 1) == u16(start[0], 5), "③ 7f 번호가 7e 번호와 다르다");
+        Check(pick(Flatten(out), 0x6C).empty() && srv.summonFxSent(1) == 1, "③ 6c 가 나갔거나 7f 계수가 1 이 아니다");
+    }
+    // ④ 거느린 크기 한도(4)가 차 있으면 만들기가 실패 — 7e·7f 둘 다 없음(글은 나감 = 실패 갈래를 탔다는 분모)
+    {
+        nox::Server srv; mk(srv);
+        for (int n = 0; n < 4; ++n) srv.DebugSpawnPet(1328, 1100.0f, 1100.0f, a);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = srv.DebugNowMs();
+        CastAndWait(srv, a, 87, false, ms, out);
+        for (int t = 0; t < 80; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "④ 한도 글이 안 나갔다 — 실패 갈래를 안 탔다");
+        Check(pick(Flatten(out), 0x7E).empty() && pick(Flatten(out), 0x7F).empty(), "④ 만들기 실패인데 7e 나 7f 가 나갔다");
+    }
+    std::printf("  소환 소용돌이 — 7e 모두에게(12B·칸) · 끊기면 7f(같은 번호) · 세운 뒤·만들기 실패엔 7f 없음 · 처음 자리에 섬 · 번호 늘어남\n");
+}
+
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
 //
 // 정답지 `legacy/GAME5.c:924` `nox_xxx_mobActionEscort_546430`.
@@ -27660,6 +27768,7 @@ int main() {
     TestMonsterShotTiming();
     TestMonsterAnimOnWire();
     TestSummonOwnership();
+    TestSummonFx();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();
