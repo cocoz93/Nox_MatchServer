@@ -3134,25 +3134,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 // ③ 세계에서 뺀다. **지우는 길이 아예 없었다**(계획서 벽②).
                 TakeStatic(w.netCode);
 
-                Session::Carried c;
-                c.netCode = w.netCode;
-                c.type = w.type;
-                c.modifiable = w.modifiable;
-                c.useAmount = w.useAmount;
-                c.equipBit = w.equipBit;
-                c.isWeapon = w.isWeapon;
-                c.weaponClass = w.weaponClass;         // ★ 09-27 B3
-                c.wandClass = w.wandClass; c.subclass = w.subclass;   // ★ 09-27 B5
-                c.weight = w.weight;
-                c.isFood = w.isFood;
-                c.foodBits = w.foodBits;
-                c.useFn = w.useFn;
-                c.charges = w.charges; c.chargesMax = w.chargesMax;
-                c.wandSpell = w.wandSpell; c.wandCooldown = w.wandCooldown;
-                c.decayExempt = w.decayExempt;         // ★ 09-28 — 주우면 사라짐 시계는 풀린다(`decay_511750` 이 들린 것은 목록에서만 뺀다) · 예외 까닭은 들고 간다
-                c.dropFn = w.dropFn;
-                for (int m = 0; m < 4; ++m) c.mods[m] = w.mods[m];   // ★ 09-29 — 수식(버린 평상복을 다시 주우면 색이 따라온다)
-                c.pickupFn = w.pickupFn; c.pickupSound = w.pickupSound; c.bowReload = w.bowReload;   // ★ 09-29
+                Session::Carried c = CarriedFromStatic(w);   // ★ 09-30 — 칸 옮기기를 함수로(시험 물건 주기도 같은 것을 쓴다)
                 s.inventory.push_back(c);
                 ++picked_;
                 // ④ ★ 09-28 사람 판 — 「빈 부위 갑옷을 주우면 원래 저절로 입었다」
@@ -15581,6 +15563,63 @@ const Session::Carried* Server::HeldWeapon(const Session& s) {
     return nullptr;
 }
 
+// ★ 09-30 — 바닥 물건 → 가방 항목. 줍기(TRY_GET)가 하던 칸 옮기기 그대로(번호도 들고 온다)
+Session::Carried Server::CarriedFromStatic(const WorldStatic& w) {
+    Session::Carried c;
+    c.netCode = w.netCode;
+    c.type = w.type;
+    c.modifiable = w.modifiable;
+    c.useAmount = w.useAmount;
+    c.equipBit = w.equipBit;
+    c.isWeapon = w.isWeapon;
+    c.weaponClass = w.weaponClass;         // ★ 09-27 B3
+    c.wandClass = w.wandClass; c.subclass = w.subclass;   // ★ 09-27 B5
+    c.weight = w.weight;
+    c.isFood = w.isFood;
+    c.foodBits = w.foodBits;
+    c.useFn = w.useFn;
+    c.charges = w.charges; c.chargesMax = w.chargesMax;
+    c.wandSpell = w.wandSpell; c.wandCooldown = w.wandCooldown;
+    c.decayExempt = w.decayExempt;         // ★ 09-28 — 주우면 사라짐 시계는 풀린다(`decay_511750` 이 들린 것은 목록에서만 뺀다) · 예외 까닭은 들고 간다
+    c.dropFn = w.dropFn;
+    for (int m = 0; m < 4; ++m) c.mods[m] = w.mods[m];   // ★ 09-29 — 수식(버린 평상복을 다시 주우면 색이 따라온다)
+    c.pickupFn = w.pickupFn; c.pickupSound = w.pickupSound; c.bowReload = w.bowReload;   // ★ 09-29
+    return c;
+}
+
+// ★ 09-30 사람 판 시험용 — `--give-items` 로 고른 물건을 **세계를 받은 지 2초 뒤** 가방에 넣는다(한 사람에 한 번 · 관전 중이면 기다림).
+//   정답지에 없는 **시험 도구**다. 맵 물건을 서버에서 옮기면 클라가 맵으로 만든 그림과 어긋나서(`main.cpp` `--item-at-spawn` 주석),
+//   새 번호로 가방에만 넣는다 — 본인에게 `4c <번호2> <종류2> <수식4>`(부활 새 장비 `RespawnGear` 와 같은 알림) · 충전이 있으면 `64`.
+//   틀은 main 이 맵 바닥 물건에서 떠 둔다(화살통은 맵 짐의 20/20) — 맵에 없는 종류는 틀이 없어 안 준다
+void Server::GiveTestItems(std::vector<OutPacket>& out) {
+    if (giveItems_.empty()) return;
+    for (auto& kv : sessions_) {
+        Session& o = kv.second;
+        if (!o.inGame || o.observer || o.snapshotIn >= 0 || o.testItemsGiven) continue;
+        if (o.testItemsFrom == 0) o.testItemsFrom = frame_ + 2 * kServerTickRate;
+        if (frame_ < o.testItemsFrom) continue;
+        o.testItemsGiven = true;
+        for (uint16_t type : giveItems_) {
+            const auto it = itemTemplate_.find(type);
+            if (it == itemTemplate_.end()) { ++testItemsNoTemplate_; continue; }
+            Session::Carried c = it->second;
+            c.netCode = nextShotNetCode_++;
+            if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+            c.type = type;
+            c.equipped = false;
+            c.decayExempt = DecayExempt::None;
+            const uint8_t pk[9] = { static_cast<uint8_t>(Op::REPORT_MODIFIABLE_PICKUP), static_cast<uint8_t>(c.netCode), static_cast<uint8_t>(c.netCode >> 8),
+                                    static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8), c.mods[0], c.mods[1], c.mods[2], c.mods[3] };
+            EmitSeq(o, pk, sizeof(pk), out);
+            if (c.chargesMax != 0) SendCharges(o, c, out);
+            o.inventory.push_back(c);
+            ++testItemsGiven_;
+        }
+        std::printf("[시험물건] %s 가방에 %zu개 넣음(틀 없음 %llu)\n", o.addr.c_str(), giveItems_.size(), testItemsNoTemplate_);
+        std::fflush(stdout);
+    }
+}
+
 // ── ★ 09-29 활·석궁·화살통 ─────────────────────────────────────────────
 //
 // 정답지 가방 고리(+504)는 새로 든 것이 머리다 — 우리 가방은 뒤에 붙이므로 「첫 것」은 **뒤에서부터** 찾는다.
@@ -17203,6 +17242,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     CheckVictorySurvivors(out);   // 8-g — 탈락전에서 하나만 남았나(`server.go:143`)
     if (gameSettings_.timeLimitFrames != 0 && frame_ >= gameSettings_.timeLimitFrames) RoundTimeUp(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
+    GiveTestItems(out); // ★ 09-30 사람 판 시험용(`--give-items` 가 없으면 아무것도 안 함)
     // 10-a — 이 틱에 울린 소리를 보낸다.
     //   ★ **모든 갱신이 끝난 뒤에야** 한다 — 정답지도 분배자에서 모아 보낸다
     //   (`NetUpdateRemotePlrAudioEvents`). 앞에 두면 그 틱에 울린 소리가 **한 틱 늦는다**

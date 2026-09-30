@@ -795,6 +795,9 @@ struct Session {
     //     지나간 **여섯째**에 스냅샷이 온다. 그 사이가 클라가 맵을 읽는 시간이다.
     //   남은 틱 수. 0 이 되는 틱에 보내고 -1 로 잠근다(-1 = 보낼 것 없음 또는 이미 보냄).
     int snapshotIn = -1;
+    // ★ 09-30 사람 판 시험용 — `--give-items` 물건을 넣을 프레임(0 = 아직 안 셈) · 넣었나
+    uint32_t testItemsFrom = 0;
+    bool testItemsGiven = false;
     // ★★ 이 사람에게 상태 갱신을 한 번이라도 보냈나. **첫 갱신만 머리를 전체번호(ff)로**
     //   보내고 그 뒤로는 별칭 `01` 한 바이트로 보낸다(정품 실측, 2026-09-08).
     //   ⚠ 앞서는 이 판정을 `preludeAt > 0`(서두 재생 진행도)으로 했는데, 재생을 안 쓰면
@@ -1763,6 +1766,11 @@ public:
         uint8_t bowReload = 0;
     };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
+    static Session::Carried CarriedFromStatic(const WorldStatic& w);   // ★ 09-30 — 바닥 물건 → 가방 항목(줍기와 시험 물건 주기가 같이 씀)
+    // ★ 09-30 사람 판 시험용 — 들어온 사람마다 세계를 받은 지 2초 뒤 이 종류들을 가방에(틀은 `SetItemTemplate` — main 이 맵 물건에서 뜬다)
+    void SetGiveItems(std::vector<uint16_t> v) { giveItems_ = std::move(v); }
+    unsigned long long testItemsGiven() const { return testItemsGiven_; }
+    unsigned long long testItemsNoTemplate() const { return testItemsNoTemplate_; }
 
     // ── 다루는 것 — 문·오벨리스크 (P5) ────────────
     //
@@ -4615,6 +4623,9 @@ private:
     unsigned long long quiverFromMap_ = 0;                 // ★ 09-29
     unsigned long long bowPoseEnded_ = 0;                  // ★ 09-29 — 활 쏜 뒤 상태 14 → 13(1초)
     unsigned long long connectTailStops_ = 0;              // ★ 09-29 ③ — 게임 패킷 안 0x00 에서 읽기를 끝낸 수(전에는 0x04 로 답함)
+    std::vector<uint16_t> giveItems_;                      // ★ 09-30 사람 판 시험용
+    unsigned long long testItemsGiven_ = 0, testItemsNoTemplate_ = 0;
+    void GiveTestItems(std::vector<OutPacket>& out);
     std::map<uint16_t, WeaponDef> weaponDef_;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
     struct ArmorDef { uint8_t classes = 0; uint16_t reqStrength = 0; float value = 0.0f; };
     std::map<uint16_t, ArmorDef> armorDef_;       // ★ 09-29 — 종류 번호 → modifier.bin 갑옷 정의

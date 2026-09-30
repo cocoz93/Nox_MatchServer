@@ -14,11 +14,13 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -447,6 +449,7 @@ int main(int argc, char** argv) {
     bool noObstacles = false;       // 진단 — 장애물 안 실음(묶음 2-c 대조군)
     bool itemAtSpawn = false;
     std::string spawnAtItem;   // ★ 09-27 B6 — `--spawn-at-item <이름>`
+    std::vector<std::string> giveItemNames;   // ★ 09-30 — `--give-items <이름,이름…>`(사람 판 시험용)
     int startHealth = 0;       // 진단 — 들어올 때 체력(0 이면 안 건드림)
     int startMana = 0;         // 진단 — 들어올 때 마나(0 이면 안 건드림)
     int forceDir = -1;         // 진단 — 덧붙이 방향 3비트 고정
@@ -722,6 +725,17 @@ int main(int argc, char** argv) {
             // ★ 09-27 B6 — 이름으로 고른 바닥 물건(첫 것) 자리로 스폰하고 그 번호를 찍는다.
             //   자동 클라(`NOX_AUTO_CODES`)가 그 번호로 줍기·입기를 보내 무기 들기 관문을 **진짜 와이어로** 탄다
             spawnAtItem = argv[++i];
+        } else if (a == "--give-items" && i + 1 < argc) {
+            // ★ 09-30 사람 판 시험용 — `Bow,Quiver,Quiver,CrossBow` 처럼 쉼표로. 들어온 사람마다 세계를 받은 지 2초 뒤 가방에 넣는다.
+            //   틀은 이 맵의 바닥 물건에서 뜬다(맵에 없는 종류는 못 준다) · 기본 장비 여섯 종류는 부활 틀을 건드리지 않게 뺀다
+            std::string list = argv[++i];
+            for (size_t p = 0; p <= list.size();) {
+                const size_t e = list.find(',', p);
+                const std::string nm = list.substr(p, e == std::string::npos ? std::string::npos : e - p);
+                if (!nm.empty()) giveItemNames.push_back(nm);
+                if (e == std::string::npos) break;
+                p = e + 1;
+            }
         } else if (a == "--item-at-spawn") {
             // ★ 시험용 — 아이템 하나를 **스폰 자리로 옮긴다.**
             //
@@ -945,6 +959,7 @@ int main(int argc, char** argv) {
         std::map<std::string, int> notPickup;   // 아이템이 아니라 걸러진 것 — 이름별로
         size_t decayExemptKinds[4] = {};        // ★ 09-28 — 바닥 물건의 「10초 규칙 예외」 까닭별(없음·RESPAWN·FLAG·Glyph)
         size_t dropFnKinds[5] = {};             // ★ 09-28 — 바닥 물건의 버리기 함수 갈래별(Default·갑옷무기·물약·음식·안옮김)
+        std::set<uint16_t> giveTemplated;       // ★ 09-30 — `--give-items` 틀을 뜬 종류
         size_t ammoRead = 0, ammoBad = 0, ammoSum = 0, ammoMaxSum = 0, ammoRest = 0;   // ★ 09-29 — 화살통 짐: 읽음 · 못 읽음(0/0) · 화살 합 · 최대 합 · 짐 뒤 남은 바이트 합
         // ★ 2026-09-18 ④⑯ — 맵에 **그려진** 판 물건(깃발·왕관·공)의 자리.
         //   우리 서버는 맵 깃발을 안 읽고 제 자리에 놓으므로, 그림과 실물이 얼마나
@@ -1707,10 +1722,29 @@ int main(int argc, char** argv) {
                     w2.dropFn = nox::DropFnOf(ti->dropFn);   // ★ 09-28 — 갑옷·무기·물약·음식은 25초로 다시 건다(RESPAWN 과 상관없이)
                     ++dropFnKinds[static_cast<size_t>(w2.dropFn)];
                 }
+                // ★ 09-30 — `--give-items` 에 든 종류면 이 바닥 물건으로 가방 틀을 뜬다(첫 것 하나 · 기본 장비 여섯은 부활 틀이라 뺀다)
+                if (!giveItemNames.empty() && !giveTemplated.count(wire) &&
+                    std::find(giveItemNames.begin(), giveItemNames.end(), objs[i].type) != giveItemNames.end() &&
+                    wire != nox::kItemStreetShirt && wire != nox::kItemStreetPants && wire != nox::kItemStreetSneakers &&
+                    wire != nox::kItemWizardRobe && wire != nox::kItemWoodenShield && wire != nox::kItemLongsword) {
+                    srv.SetItemTemplate(wire, nox::Server::CarriedFromStatic(w2));
+                    giveTemplated.insert(wire);
+                }
                 st.push_back(w2);
             }
             nStat = st.size();
             srv.SetWorldStatics(std::move(st));
+            if (!giveItemNames.empty()) {   // ★ 09-30 사람 판 시험용
+                std::vector<uint16_t> give;
+                std::string missing;
+                for (const auto& nm : giveItemNames) {
+                    const uint16_t gw = tdb.WireByName(nm);
+                    if (gw != 0 && giveTemplated.count(gw)) give.push_back(gw);
+                    else missing += " " + nm;
+                }
+                srv.SetGiveItems(give);
+                std::printf("[시험물건] 들어오면 가방에 %zu개 넣음%s%s\n", give.size(), missing.empty() ? "" : " · ⚠ 이 맵 바닥에 없어 못 줌:", missing.c_str());
+            }
             if (!spawnAtItem.empty()) {   // ★ 09-27 B6
                 uint16_t nc = 0;
                 const uint16_t wire = tdb.WireByName(spawnAtItem);
