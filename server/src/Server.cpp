@@ -10904,6 +10904,9 @@ bool Server::AIPush(Creature& k, uint8_t act, const Target& targ, float x, float
         ind = -1;                                            // 바닥의 놀기는 덮어쓴다
     } else if (!AIIsCondition(cur) && k.aiStack[ind].started) {
         AICancel(k, cur);
+        // ★ 09-30 — 취소가 빼기면 자리가 내려간다 — 정답지는 취소 **뒤** 자리에서 올린다(`object_ai.go:105~111` `ud.AIStackInd++`).
+        //   ✖ 전에는 취소 전 자리를 써서, 아래에 다른 할 일이 깔려 있으면 **뺀 것이 그 자리에 그대로 남았다**(바닥일 때만 우연히 같았다)
+        ind = k.aiStackInd;
     }
     ++ind;
     k.aiStack[ind] = Creature::AIStackItem{};
@@ -11007,10 +11010,11 @@ void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
         case 24:     // ★ 09-29 B4 — 도망 시작 `sub_544740` = 달리기(`534750`)
             k.running = true;
             break;
-        case 17: {   // ── 묶음 6-g(3) 쏘기 시작 — `sub_532540`(`legacy/GAME4_3.c:2119`)
+        case 17: {   // ── 묶음 6-g(3) 쏘기 시작 — `sub_532540`(`legacy/GAME4_3.c:2113~2140`)
             // 근접과 **같은 꼴**이다 — 쉬는 시간(+512)이 끝났으면 휘두르기를 시작하고
             // 다음 때를 **쏘기 간격**(`monsterDef+220`·`+224`)으로 잡는다.
-            // ⚠ 근접과 달리 **쉬는 중에 아무것도 안 올린다**(정답지에 그 갈래가 없다)
+            // ★ 09-30 — 쉬는 중이면 근접처럼 **50(쏘기 사거리 +212 × 1.2 · 지금 상대 +1196)·1(+512 까지)** 을 올린다(`:2128~2138`).
+            //   ✖ 전에는 「정답지에 그 갈래가 없다」로 적고 아무것도 안 올렸다 — 틀림. 올리면 취소가 쏘기를 뺀다
             const MonsterStats* m = FindMonster(k.type);
             if (frame_ >= k.nextHitFrame) {
                 k.attackStartFrame = frame_;
@@ -11019,6 +11023,14 @@ void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
                 const int span = (hi >= lo) ? (hi - lo + 1) : 1;
                 k.nextHitFrame = frame_ + static_cast<uint32_t>(lo) + NextRandom(static_cast<uint32_t>(span));
                 MonsterSound(k, 9);                          // ★ 09-26 M4a — MISSILE_ATTACK_INIT(+40 · `GAME4_3.c:2124~2127` result[10])
+            } else {
+                const double shootRange = m ? m->missileRange : 0.0;
+                if (AIPush(k, 50)) {
+                    k.aiStack[k.aiStackInd].argF = static_cast<float>(shootRange * 1.2);
+                    k.aiStack[k.aiStackInd].targetAddr = k.enemyAddr;
+                    k.aiStack[k.aiStackInd].targetPet = k.enemyPet;
+                }
+                if (AIPush(k, 1)) k.aiStack[k.aiStackInd].argU32 = k.nextHitFrame;
             }
             break;
         }
@@ -11633,12 +11645,14 @@ void Server::AIEnd(Creature& k, uint8_t act) {
     if (act == 20) { std::vector<OutPacket> sink; DurCancelForPet(static_cast<uint8_t>(k.aiStack[k.aiStackInd].argU32), k.netCode, aiOut_ ? *aiOut_ : sink); }
 }
 
-// 취소 — ★ **기다리기 둘만** 스스로 빠진다(`Cancel` 이 `MonsterPopAction`).
+// 취소 — ★ **기다리기 둘**이 스스로 빠진다(`Cancel` 이 `MonsterPopAction`) — 아래 바라보기 넷·근접·쏘기도(09-30 「둘만」 정정).
 //   변신·떨구기·찾기는 취소돼도 가만히 있는다.
 //   ★ 바라보기 넷(25·26·27·28)도 스스로 빠진다 — 등록표가 `Cancel: nox_ai_action_pop_532100`
 //     을 달아 두었다(`legacy/unit_ai.go:57~60`).
+//   ★ 09-30 — 근접(16)·쏘기(17)도 같다(`legacy/unit_ai.go:51~52`) — 휘두르는 중에 위로 무엇이 올라오면 휘두르기가 빠진다
+//     (쉬는 중 갈래의 50·1 · 유령 도망 사슬 · 두뇌의 혼란·두려움). 막기 21~23 도 같은 등록이지만 우리가 안 쌓는다
 void Server::AICancel(Creature& k, uint8_t act) {
-    if (act == 1 || act == 2 || (act >= 25 && act <= 28)) AIPop(k);
+    if (act == 1 || act == 2 || act == 16 || act == 17 || (act >= 25 && act <= 28)) AIPop(k);
     // ★ 09-29 B7 — 지속 시전 취소 = 그 주문을 끄고 빠진다(`AIActionCastDuration.Cancel`) — 빼기가 끝내기(End)를 한 번 더 불러도 이미 꺼진 것이라 겉 차이 없음
     if (act == 20) { std::vector<OutPacket> sink; DurCancelForPet(static_cast<uint8_t>(k.aiStack[k.aiStackInd].argU32), k.netCode, aiOut_ ? *aiOut_ : sink); AIPop(k); }
 }

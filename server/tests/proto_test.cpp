@@ -12472,7 +12472,9 @@ void TestAIMelee() {
         Check(lo == 1000 + 15, "쏘기 간격 최소 15 가 안 나왔다");
         Check(hi == 1000 + 30, "쏘기 간격 최대 30 이 안 나왔다");
     }
-    // 쉬는 중이면 **아무것도 안 올린다**(근접과 다르다)
+    // ★ 09-30 쉬는 중이면 **근접처럼 50(쏘기 사거리 × 1.2 · 지금 상대)·1(다음 때까지)** 을 올린다(`sub_532540` `GAME4_3.c:2128~2138`)
+    //   ✖ 전에는 「아무것도 안 올린다(근접과 다르다)」를 시험했다 — 정답지를 잘못 읽은 것
+    //   (시작만 부르므로 쏘기가 「시작됨」이 아니어서 취소가 안 걸린다 — 취소까지 가는 길은 TestAIAttackCancel)
     {
         nox::Server srv; mk(srv, 1328);
         std::vector<nox::OutPacket> out;
@@ -12480,7 +12482,13 @@ void TestAIMelee() {
         srv.DebugSetPetNextHit(0, 1100);
         srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         srv.DebugAIStart(0, 17, out);
-        Check(srv.DebugAIStackInd(0) == 0, "쏘기는 쉬는 중에 아무것도 안 올려야 한다");
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "쏘기 쉬는 중 — 자리 %d · [1] %d 자 %.2f 대상 %s · [2] %d 때 %u",
+                      srv.DebugAIStackInd(0), srv.DebugAIAction(0, 1), srv.DebugAIArgF(0, 1), srv.DebugAITargetAddr(0, 1).c_str(),
+                      srv.DebugAIAction(0, 2), srv.DebugAIArgU32(0, 2));
+        Check(srv.DebugAIStackInd(0) == 2 && srv.DebugAIAction(0, 1) == 50 && srv.DebugAIAction(0, 2) == 1, msg);
+        Check(std::fabs(srv.DebugAIArgF(0, 1) - 150.0f * 1.2f) < 0.01f && srv.DebugAITargetAddr(0, 1) == b, msg);
+        Check(srv.DebugAIArgU32(0, 2) == 1100, msg);
         Check(srv.DebugPetNextHit(0) == 1100, "쉬는 중인데 다음 때를 바꿨다");
     }
 
@@ -12506,6 +12514,90 @@ void TestAIMelee() {
         Check(srv.DebugAIAction(0, 0) == 0, "쏜 뒤 안 빠졌다");
     }
     std::printf("  6-g(2) — 근접(16): 쉬는 시간 끝나면 휘두름(다음 때 30~40) · 아니면 50+1 · 못 때리면 뺌\n");
+}
+
+// ── ★ 09-30 근접·쏘기의 취소 = 빼기 · 취소 뒤 자리 ─────────────────────────
+//
+// 정답지 등록표 — 근접 16·쏘기 17 의 취소는 `nox_ai_action_pop_532100`(`legacy/unit_ai.go:51~52`).
+//   밀기는 맨 위가 시작된 할 일이면 그 취소를 부르고 **취소 뒤 자리**에서 올린다(`server/object_ai.go:105~111`).
+//   바닥(자리 0)에서만 보면 옛 자리든 새 자리든 같다 — 그래서 **아래에 다른 할 일(12 떨구기 — 아무 일 안 함)을 깔고** 본다
+void TestAIAttackCancel() {
+    const std::string a = "10.6.13.1:7201";
+    const std::string b = "10.6.13.2:7202";
+    auto mk = [&](nox::Server& srv, uint16_t type) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(b, 1010, 1000);
+        srv.DebugTeleport(b, 1010.0f, 1000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugSetAutoFight(false);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, 1000, 1000);
+        srv.DebugSetFrame(1000);
+    };
+    auto stack = [](nox::Server& srv) {
+        std::string s;
+        for (int j = 0; j <= srv.DebugAIStackInd(0); ++j) { if (j) s += ','; s += std::to_string(srv.DebugAIAction(0, j)); }
+        return s;
+    };
+
+    // ① 시작된 기다리기(1) 위에 가기(7)를 올리면 — 기다리기가 빠지고 **그 자리에** 가기가 선다: [12, 7]
+    //   ✖ 옛 자리를 쓰면 [12, 1, 7] — 뺀 기다리기가 남는다
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPush(0, 12);
+        srv.DebugAIPushDep(0, 1, std::string(), -1, 99999, 0);
+        srv.DebugAITick(0, out);
+        Check(srv.DebugAIStarted(0, 1), "기다리기가 안 시작됐다(이 시험의 전제)");
+        srv.DebugAIPush(0, 7);
+        const std::string s = stack(srv);
+        Check(s == "12,7", ("① 취소 뒤 자리 — 쌓임 [" + s + "] (기대 [12,7])").c_str());
+    }
+    // ② 근접(16)이 쉬는 중에 시작하면 50·1 을 올리는데 그 순간 **취소가 근접을 뺀다**: [12, 50, 1]
+    //   ✖ 취소가 없으면 [12, 16, 50, 1] — 기다림이 끝나면 근접이 다시 드러난다(칸으로 때리면 쉬는 시간 없이 또 휘두른다)
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        SetEnemySeen(srv, 0, b, -1);
+        srv.DebugSetPetNextHit(0, 1100);
+        srv.DebugAIPush(0, 12);
+        srv.DebugAIPush(0, 16);
+        srv.DebugAITick(0, out);
+        const std::string s = stack(srv);
+        Check(s == "12,50,1", ("② 근접 쉬는 중 — 쌓임 [" + s + "] (기대 [12,50,1])").c_str());
+        Check(srv.DebugAIArgU32(0, 2) == 1100, "② 기다리기 때가 다음 때와 다르다");
+    }
+    // ③ 쏘기(17)도 같다 — 임프(쏘기 사거리 150)
+    {
+        nox::Server srv; mk(srv, 1328);
+        std::vector<nox::OutPacket> out;
+        SetEnemySeen(srv, 0, b, -1);
+        srv.DebugSetPetNextHit(0, 1100);
+        srv.DebugAIPush(0, 12);
+        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);
+        srv.DebugAITick(0, out);
+        const std::string s = stack(srv);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "③ 쏘기 쉬는 중 — 쌓임 [%s] (기대 [12,50,1]) · 50 의 자 %.2f(기대 180) · 대상 %s · 때 %u",
+                      s.c_str(), srv.DebugAIArgF(0, 1), srv.DebugAITargetAddr(0, 1).c_str(), srv.DebugAIArgU32(0, 2));
+        Check(s == "12,50,1" && std::fabs(srv.DebugAIArgF(0, 1) - 180.0f) < 0.01f && srv.DebugAITargetAddr(0, 1) == b &&
+              srv.DebugAIArgU32(0, 2) == 1100, msg);
+    }
+    // ④ 취소로 안 빠지는 것은 그대로 — 변신(33) 위에 올리면 [12, 33, 7]
+    {
+        nox::Server srv; mk(srv, 1358);
+        std::vector<nox::OutPacket> out;
+        srv.DebugAIPush(0, 12);
+        srv.DebugAIPush(0, 33);
+        srv.DebugAITick(0, out);
+        srv.DebugAIPush(0, 7);
+        const std::string s = stack(srv);
+        Check(s == "12,33,7", ("④ 변신 위 — 쌓임 [" + s + "] (기대 [12,33,7])").c_str());
+    }
+    std::printf("  09-30 취소 — 취소 뒤 자리에서 올림 · 근접·쏘기 취소 = 빼기 · 쉬는 중 50·1 에 근접·쏘기가 빠짐 · 변신은 그대로\n");
 }
 
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
@@ -19018,7 +19110,7 @@ void TestMonsterSounds() {
         srv.DebugSetPetEnemy(0, b, -1);
         srv.DebugSetPetNextHit(0, 0);
         srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
-        srv.DebugAIStart(0, 17, out);
+        // ★ 09-30 — 시작은 틱이 한 번만 부른다. ✖ 전에는 시작을 손으로 한 번 더 불렀다 — 두 번째 시작이 이제 쉬는 중 갈래(50·1)로 쏘기를 뺀다
         srv.DebugAITick(0, out);
         std::vector<nox::OutPacket> o2; srv.Tick(34, o2);
         char msg[220];
@@ -26945,6 +27037,7 @@ int main() {
     TestAIRandomWalk();
     TestAIFight();
     TestAIMelee();
+    TestAIAttackCancel();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();
