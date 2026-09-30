@@ -285,7 +285,7 @@ enum class AttackTiming : uint8_t {
 constexpr size_t kAttackTimingCount = static_cast<size_t>(AttackTiming::Count);
 
 // ★ 09-30 한 틱 한 데이터그램 — 묶음에 무엇을 담았고, 비신뢰 메시지가 **왜 곧바로** 나갔나(갈래마다 따로)
-//   담은 수 = InTs + InUpd + InMisc(+ 중요 조각 InImp) · 곧바로 = Direct* 합 · 낸 묶음 조각 = Datagrams(+ 넘쳐 칸마다 낸 OverSlots)
+//   담은 수 = InTs + InUpd + InMisc(+ 중요 조각 InImp) · 곧바로 = Direct* 합 · 낸 묶음 조각 = Datagrams(넘쳐 끊어 더 낸 OverExtra 포함)
 enum class BundleStat : uint8_t {
     InTs = 0, InUpd, InMisc, InImp,   // 칸별로 담은 것(중요는 FlushImportant 가 쓴 조각 수)
     Datagrams,                        // 틱 끝에 낸 묶음 조각
