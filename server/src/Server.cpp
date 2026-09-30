@@ -127,8 +127,66 @@ static void TraceOutMsgs(FILE* f, const std::string& to, uint32_t frame, const u
     }
 }
 
+// ★ 09-30 한 틱 한 데이터그램 — 정답지는 원격 사람에게 **프레임마다 조각 하나**만 보낸다(`server.go:474~475` `FlushAndPoll` →
+//   `network_lists.go:177~227` `sendPoll`): 시각 `27` → 갱신 `a4` → Kind1(`ab` 중요 확인 · 소리 등 넣은 차례) → `aa`+중요.
+//   `ab` 도 받는 자리에서 곧바로 안 보내고 Kind1 에 넣는다(`server/network.go:145~155`).
+//   ✖ 우리는 이것들을 따로 보냈다 — 09-29 같은 자동 클라 2분 대조 `ab` 7,871 · `27` 2,772 · `a4` 2,761 ↔ 대조군 2,522(평균 29.8B)
+//   그래서 비신뢰 · 스트림 0 · 게임 메시지(첫 번호 ≥ 0x20) · 게임 안 사람이면 그 사람 묶음 칸에 담고, 틱 끝 `FlushBundles` 가 낸다.
+//   나머지 갈래는 곧바로(`EmitNow`) — 갈래마다 따로 센다(`BundleStat::Direct*`)
 void Server::Emit(Session& s, bool reliable, uint8_t stream,
                   const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
+    if (reliable || n == 0) { EmitNow(s, reliable, stream, msg, n, out); return; }
+    BundleStat why;
+    if ((stream & 0x7F) != 0)      why = BundleStat::DirectStream;
+    else if (msg[0] < 0x20)        why = BundleStat::DirectCtrl;
+    else if (!s.inGame)            why = BundleStat::DirectNotInGame;
+    else if (s.importantImmediate) why = BundleStat::DirectTest;
+    else {
+        std::vector<uint8_t>* slot = &s.bundleMisc;
+        BundleStat in = BundleStat::InMisc;
+        if (msg[0] == static_cast<uint8_t>(Op::TIMESTAMP))          { slot = &s.bundleTs;  in = BundleStat::InTs; }
+        else if (msg[0] == static_cast<uint8_t>(Op::UPDATE_STREAM)) { slot = &s.bundleUpd; in = BundleStat::InUpd; }
+        slot->insert(slot->end(), msg, msg + n);
+        ++bundleStat_[static_cast<size_t>(in)];
+        return;
+    }
+    ++bundleStat_[static_cast<size_t>(why)];
+    EmitNow(s, reliable, stream, msg, n, out);
+}
+
+// 틱 끝 — 사람마다 묶음 칸 넷을 정답지 차례로 한 조각에(되받기 값·XOR 은 `EmitNow` 가 조각마다 한 번).
+//   칸이 다 비었으면 안 낸다 · 몸통 한도 2048(`kBundleMaxPayload`)을 넘으면 ⚠ 조각 2 전까지는 칸마다 따로 낸다(옛 꼴 · `Overflow` 로 센다)
+void Server::FlushBundles(std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        const size_t total = s.bundleTs.size() + s.bundleUpd.size() + s.bundleMisc.size() + s.bundleImp.size();
+        if (total == 0) continue;
+        if (total <= kBundleMaxPayload) {
+            std::vector<uint8_t> pkt;
+            pkt.reserve(total);
+            pkt.insert(pkt.end(), s.bundleTs.begin(), s.bundleTs.end());
+            pkt.insert(pkt.end(), s.bundleUpd.begin(), s.bundleUpd.end());
+            pkt.insert(pkt.end(), s.bundleMisc.begin(), s.bundleMisc.end());
+            pkt.insert(pkt.end(), s.bundleImp.begin(), s.bundleImp.end());
+            EmitNow(s, /*reliable=*/false, /*stream=*/0, pkt.data(), pkt.size(), out);
+            ++bundleStat_[static_cast<size_t>(BundleStat::Datagrams)];
+        } else {
+            ++bundleStat_[static_cast<size_t>(BundleStat::Overflow)];
+            for (const std::vector<uint8_t>* slot : { &s.bundleTs, &s.bundleUpd, &s.bundleMisc, &s.bundleImp }) {
+                if (slot->empty()) continue;
+                EmitNow(s, /*reliable=*/false, /*stream=*/0, slot->data(), slot->size(), out);
+                ++bundleStat_[static_cast<size_t>(BundleStat::OverSlots)];
+            }
+        }
+        s.bundleTs.clear();
+        s.bundleUpd.clear();
+        s.bundleMisc.clear();
+        s.bundleImp.clear();
+    }
+}
+
+void Server::EmitNow(Session& s, bool reliable, uint8_t stream,
+                     const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
     if (FILE* tf = TraceOutFile()) { TraceOutMsgs(tf, s.addr, frame_, msg, n, 0); std::fflush(tf); }
     OutPacket p;
     p.to = s.addr;
@@ -385,14 +443,14 @@ void Server::EmitImportantRaw(Session& s, const uint8_t* msg, size_t n,
 //   ③ 기다림 = FPS × 2 / 전송률(1) = 60틱(2039줄 · 1565125 자리 초깃값 2).
 //   ④ 머리 `aa` 는 조각마다 한 번(2011~2022줄 — 호스트가 아닌 사람에게는 `aa` 1바이트).
 //   ⑤ 확인은 조각의 시각으로 온다 — 클라가 같은 조각의 `27` 로 localFrame 을 잡아 `ab <그 프레임>` 을 돌려준다
-//      (`network_client.go:302~318`). 그래서 이 조각 머리에 `27` 을 **따로 붙인다.**
+//      (`network_client.go:302~318`). ★ 09-30 — 이제 **묶음의 맨 끝 칸**에 `aa`+ 만 쓴다 — 같은 묶음 머리의 `27`(이 틱 `tickFrame`)이 그 시각이다
+//      (정답지 `sendPoll` 이 `27`·`a4`·Kind1 뒤에 `netImportant_4E5770` 을 붙인다 · `network_lists.go:216~224`).
+//      ✖ 전에는 따로 한 조각이라 제 `27` 을 **따로 붙였다**
 void Server::FlushImportant(Session& s, std::vector<OutPacket>& out) {
+    (void)out;
     if (!s.importantReady || s.importantQ.empty()) return;
     std::vector<uint8_t> pkt;
     pkt.reserve(kImportantPacketBudget + 8);
-    pkt.push_back(static_cast<uint8_t>(Op::TIMESTAMP));
-    pkt.push_back(static_cast<uint8_t>(s.tickFrame));
-    pkt.push_back(static_cast<uint8_t>(s.tickFrame >> 8));
     pkt.push_back(static_cast<uint8_t>(Op::IMPORTANT));
     const size_t headLen = pkt.size();
     int resentThisTick = 0;
@@ -409,7 +467,8 @@ void Server::FlushImportant(Session& s, std::vector<OutPacket>& out) {
         p.wait = kImportantResendTicks;
     }
     if (pkt.size() == headLen) return;
-    Emit(s, /*reliable=*/false, /*stream=*/0, pkt.data(), pkt.size(), out);
+    s.bundleImp.insert(s.bundleImp.end(), pkt.begin(), pkt.end());
+    ++bundleStat_[static_cast<size_t>(BundleStat::InImp)];
 }
 
 // 불려 나온 것의 값 — **종류마다 다르다** (2026-09-10 정본화, ⭕ monster.bin).
@@ -1911,7 +1970,9 @@ void Server::BroadcastChat(const Session& who, const uint8_t* text, size_t n,
     msg.insert(msg.end(), text, text + n);
     for (auto& kv : sessions_) {
         if (!kv.second.inGame) continue;
-        Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
+        // ★ 09-30 — 채팅 중계는 묶지 않고 곧바로 — 정답지도 사람마다 `SendUnreliableMsg` 뒤 `conn.Flush()`(`network_server.go:149~151`)
+        EmitNow(kv.second, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
+        ++bundleStat_[static_cast<size_t>(BundleStat::DirectChat)];
     }
 }
 
@@ -17540,7 +17601,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
                 std::vector<uint8_t> patched;
                 const std::vector<uint8_t>& send =
                     PatchPreludePlayer(m, s.netCode, s.x, s.y, patched, forceHudOn_) ? patched : m;
-                Emit(s, /*reliable=*/false, /*stream=*/0, send.data(), send.size(), out);
+                // ★ 09-30 — 녹음 조각은 이미 한 데이터그램이다 — 묶지 않고 그대로
+                EmitNow(s, /*reliable=*/false, /*stream=*/0, send.data(), send.size(), out);
+                ++bundleStat_[static_cast<size_t>(BundleStat::DirectMirror)];
             }
             continue;
         }
@@ -18073,6 +18136,8 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
         if (n && sendUpdates_) Emit(s, /*reliable=*/false, /*stream=*/0, body, 1 + n, out);
     }
+    // ★ 09-30 한 틱 한 데이터그램 — 이 틱(과 지난 틱 뒤 받는 자리)에서 담은 것을 사람마다 한 조각으로(정답지 `server.go:474~475`)
+    FlushBundles(out);
     return ticks;
 }
 

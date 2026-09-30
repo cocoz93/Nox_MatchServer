@@ -284,6 +284,24 @@ enum class AttackTiming : uint8_t {
 };
 constexpr size_t kAttackTimingCount = static_cast<size_t>(AttackTiming::Count);
 
+// ★ 09-30 한 틱 한 데이터그램 — 묶음에 무엇을 담았고, 비신뢰 메시지가 **왜 곧바로** 나갔나(갈래마다 따로)
+//   담은 수 = InTs + InUpd + InMisc(+ 중요 조각 InImp) · 곧바로 = Direct* 합 · 낸 묶음 조각 = Datagrams(+ 넘쳐 칸마다 낸 OverSlots)
+enum class BundleStat : uint8_t {
+    InTs = 0, InUpd, InMisc, InImp,   // 칸별로 담은 것(중요는 FlushImportant 가 쓴 조각 수)
+    Datagrams,                        // 틱 끝에 낸 묶음 조각
+    Overflow,                         // 2048 을 넘은 묶음(조각 2 전까지는 칸마다 따로 낸다)
+    OverSlots,                        // 넘친 묶음을 칸마다 낸 조각 수
+    DirectStream,                     // 스트림 0 이 아님(퐁 등)
+    DirectCtrl,                       // 접속 제어(첫 번호 < 0x20 — 정답지 `netstr/conn.go:704`)
+    DirectNotInGame,                  // 아직 게임 밖(접속 중)
+    DirectTest,                       // 시험용 즉시 모드(`importantImmediate`)
+    DirectChat,                       // 채팅 — 정답지도 곧바로(`network_server.go:149~151`)
+    DirectMirror,                     // 서두 재생(녹음 조각 그대로)
+    Count
+};
+constexpr size_t kBundleStatCount = static_cast<size_t>(BundleStat::Count);
+constexpr size_t kBundleMaxPayload = 2048;   // 정답지 몸통 한도(`internal/netlist/netlist.go:10` bufSize)
+
 // ★ 09-29 B4 — 두뇌 반응 층이 **무엇을 했나**
 enum class BrainStat : uint8_t {
     Runs = 0,        // 두뇌를 끝까지 본 수(16프레임 관문·61·죽음을 지난 것)
@@ -1097,6 +1115,10 @@ struct Session {
     // 시험용 — 켜면 예전처럼 **바로** 한 통씩 보낸다(대기열·확인 없음). DebugEnterGame 만 켠다.
     //   메시지 **내용**을 보는 시험 수십 곳이 처리 직후 out 을 들여다본다. 전송 경로는 TestImportantQueue 가 따로 잰다.
     bool importantImmediate = false;
+    //   ★ 09-30 — 이 시험용 즉시 모드이면 **묶지도 않는다**(아래 묶음 칸 — 같은 까닭: 처리 직후 out 을 보는 시험들)
+    // ★ 09-30 **한 틱 한 데이터그램** — 정답지 `sendPoll`(`network_lists.go:177~227`)의 차례 그대로 칸 넷에 모았다가
+    //   틱 끝 `FlushBundles` 가 한 조각으로 낸다: 시각 `27`(Kind2 맨 앞) → 갱신 `a4` → 잡다(Kind1 — `ab`·소리 등 넣은 차례) → `aa`+중요
+    std::vector<uint8_t> bundleTs, bundleUpd, bundleMisc, bundleImp;
     uint32_t importantAcked = 0;   // 진단 — 확인받아 지운 수
     uint32_t importantResent = 0;  // 진단 — 다시 실은 수
     uint8_t team = 0;              // 0 = 무소속 · 1 = 빨강 · 2 = 파랑
@@ -1868,6 +1890,7 @@ public:
     unsigned long long meleeStrike(MeleeStrikeWay w) const { return w < MeleeStrikeWay::Count ? meleeStrike_[static_cast<size_t>(w)] : 0; }   // ★ 09-29 B3
     unsigned long long attackTiming(AttackTiming t) const { return t < AttackTiming::Count ? attackTiming_[static_cast<size_t>(t)] : 0; }   // ★ 09-30
     unsigned long long shotNoAim() const { return shotNoAim_; }   // ★ 09-30
+    unsigned long long bundleStat(BundleStat b) const { return b < BundleStat::Count ? bundleStat_[static_cast<size_t>(b)] : 0; }   // ★ 09-30
     // ★ 09-30 — 제때·어긋남 가리지 않고 본 시작→칸 틱 수의 가장 작은·큰 값(0 = 근접 · 1 = 쏘기) · 한 번도 없으면 -1
     int attackLagMin(int kind) const { return (kind == 0 || kind == 1) && attackLagSeen_[kind] ? static_cast<int>(attackLagMin_[kind]) : -1; }
     int attackLagMax(int kind) const { return (kind == 0 || kind == 1) && attackLagSeen_[kind] ? static_cast<int>(attackLagMax_[kind]) : -1; }
@@ -5106,8 +5129,15 @@ private:
     void RenumberSeq(Session& s, std::vector<uint8_t>& frag);
 
     // 머리 2바이트를 붙여 한 조각을 만든다. keyed 면 XOR 을 건다.
+    // ★ 09-30 — 게임 안 사람에게 가는 비신뢰·스트림 0·게임 메시지(첫 번호 ≥ 0x20)는 곧바로 안 만들고 그 사람 묶음에 담는다
+    //   (`BundleSlotOf` · 틱 끝 `FlushBundles`) — 정답지 한 프레임 한 데이터그램(`network_lists.go:177~227`)
     void Emit(Session& s, bool reliable, uint8_t stream,
               const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
+    // 묶지 않고 곧바로 한 조각 — 신뢰 · 접속 제어 · 채팅(정답지 `conn.Flush()` · `network_server.go:149~151`) · 서두 재생 · 묶음 내보내기
+    void EmitNow(Session& s, bool reliable, uint8_t stream,
+                 const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
+    // ★ 09-30 틱 끝 — 사람마다 묶음을 [27][a4][잡다][aa+중요] 차례로 한 데이터그램에 싣는다
+    void FlushBundles(std::vector<OutPacket>& out);
 
     std::map<std::string, Session> sessions_;
     std::map<uint8_t, unsigned long long> seen_;
@@ -5439,6 +5469,7 @@ private:
     unsigned long long meleeStrike_[kMeleeStrikeWayCount] = {};   // ★ 09-29 B3
     unsigned long long attackTiming_[kAttackTimingCount] = {};    // ★ 09-30
     unsigned long long shotNoAim_ = 0;                            // ★ 09-30 — 쏘는 칸에서 겨눌 곳이 없어 안 쏜 수(대상 사라짐 · 자리 0)
+    unsigned long long bundleStat_[kBundleStatCount] = {};        // ★ 09-30 한 틱 한 데이터그램
     uint32_t attackLagMin_[2] = {}, attackLagMax_[2] = {};
     bool attackLagSeen_[2] = {};
     void CountAttackTiming(const Creature& k, int kind, int frame);   // kind 0 근접(애니 1) · 1 쏘기(애니 3)

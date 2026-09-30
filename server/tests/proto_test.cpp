@@ -3212,16 +3212,38 @@ void TestShieldBlock() {
 //   ③ `ab <그 시각>` = 그 조각에 실은 것을 지운다 · ④ 확인이 없으면 60틱 뒤 **같은 순번**으로 다시 싣는다.
 // ⚠ 왜 — 한 번만 보내던 때, 준비 전에 나간 순번 0~4 를 클라가 버려 **뒤 cc 가 전부 막혔다**
 //   (09-13 실클라: 친구 알림을 cc 로 보내면 빨강 · 맨 메시지로 보내면 파랑).
+// ★ 09-30 한 틱 한 데이터그램 — 중요 칸(`aa`+)은 묶음의 **맨 끝**에 붙는다(`27` → `a4` → 잡다 → `aa` · 정답지 `network_lists.go:177~227`).
+//   ✖ 전에는 `[27][aa]…` 따로 한 조각이라 「0번 `27` · 3번 `aa`」로 찾았다 — 이제 맨 앞이 `27` 인 조각을 메시지 단위로 걸어
+//   `aa` **다음 자리**를 돌려준다(없으면 0). `a4` 는 가변이라 서버 해독기(`DecodeUpdate`)로 넘는다
+static size_t ImportantStart(const std::vector<uint8_t>& b) {
+    if (b.size() < 4 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP)) return 0;
+    size_t q = 0;
+    while (q < b.size()) {
+        const uint8_t op = b[q];
+        if (op == static_cast<uint8_t>(nox::Op::IMPORTANT)) return q + 1;
+        if (op == static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) {
+            const nox::UpdateMsg um = nox::DecodeUpdate(b.data() + q + 1, b.size() - q - 1, nullptr);
+            if (!um.ok || um.consumed == 0) return 0;
+            q += 1 + um.consumed;
+            continue;
+        }
+        const size_t sz = nox::MessageSize(b.data() + q, b.size() - q, /*fromClient=*/false);
+        if (sz == 0) return 0;
+        q += sz;
+    }
+    return 0;
+}
+
 // `entries` — 실린 항목 수(cc 봉투 + 봉투 없는 것). 3-d 부터 방어값 `49` 가 봉투 없이 같은 조각에 실린다
 static bool FindImportantPacket(const std::vector<nox::OutPacket>& out, const std::string& to,
                                 uint16_t* frame, std::vector<uint16_t>* ids, size_t* entries = nullptr) {
     for (const auto& p : out) {
         if (p.to != to) continue;
         const std::vector<uint8_t> b = Body(p);
-        if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
-            b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
+        const size_t imp0 = ImportantStart(b);
+        if (imp0 == 0) continue;
         if (frame) *frame = static_cast<uint16_t>(b[1] | (b[2] << 8));
-        size_t q = 4;
+        size_t q = imp0;
         size_t n = 0;
         while (q < b.size()) {
             if (b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && q + 4 <= b.size()) {
@@ -3244,6 +3266,130 @@ static std::vector<uint8_t> WireOf(std::initializer_list<uint8_t> msg) {
     std::vector<uint8_t> p(nox::kWireHeaderSize, 0);   // 비신뢰 · 스트림 0 · 순번 0
     p.insert(p.end(), msg);
     return p;
+}
+
+// ── ★ 09-30 한 틱 한 데이터그램(정답지 `sendPoll` `network_lists.go:177~227` · `server.go:474~475`) ─────────
+//   묶음 안의 메시지 번호를 차례로 — `aa` 를 만나면 거기서 끝(그 뒤는 중요 칸)
+static std::vector<uint8_t> BundleOps(const std::vector<uint8_t>& b) {
+    std::vector<uint8_t> ops;
+    size_t q = 0;
+    while (q < b.size()) {
+        const uint8_t op = b[q];
+        ops.push_back(op);
+        if (op == static_cast<uint8_t>(nox::Op::IMPORTANT)) break;
+        if (op == static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) {
+            const nox::UpdateMsg um = nox::DecodeUpdate(b.data() + q + 1, b.size() - q - 1, nullptr);
+            if (!um.ok || um.consumed == 0) { ops.push_back(0xFF); break; }   // 못 푼 자리 표시
+            q += 1 + um.consumed;
+            continue;
+        }
+        const size_t sz = nox::MessageSize(b.data() + q, b.size() - q, /*fromClient=*/false);
+        if (sz == 0) { ops.push_back(0xFF); break; }
+        q += sz;
+    }
+    return ops;
+}
+
+void TestBundleOneDatagram() {
+    nox::Server srv;
+    const std::string a = "10.9.30.21:49301";   // 묶는 사람(진짜 경로)
+    const std::string b = "10.9.30.22:49302";   // 시험용 즉시 모드(묶지 않음)
+    srv.DebugEnterGame(a, 750);
+    srv.DebugEnterGame(b, 751);
+    srv.DebugImportantReal(a, /*ready=*/true);
+    using BS = nox::BundleStat;
+    uint32_t ms = 0;
+    std::vector<nox::OutPacket> warm;
+    srv.Tick(ms, warm);                                       // 첫 부름은 시계만
+    auto countTo = [](const std::vector<nox::OutPacket>& v, const std::string& to) {
+        size_t n = 0; for (const auto& p : v) if (p.to == to) ++n; return n;
+    };
+    auto opsStr = [](const std::vector<uint8_t>& ops) {
+        std::string s; char h[4];
+        for (uint8_t o : ops) { std::snprintf(h, sizeof(h), "%02x ", o); s += h; }
+        return s;
+    };
+
+    // ① 받는 자리의 `ab` 는 곧바로 안 나가고, 다음 틱 묶음 하나에 [27][a4?][…ab…][aa+6e] 차례로
+    {
+        std::vector<nox::OutPacket> out;
+        // 클라→서버 `aa` 몸은 우리 길이 표로 5(`MsgLen.cpp:214` 「실측 5」) — 앞 4 가 확인 번호
+        const auto imp = WireOf({ static_cast<uint8_t>(nox::Op::IMPORTANT), 0x11, 0x22, 0x33, 0x44, 0x00 });
+        const unsigned long long m0 = srv.bundleStat(BS::InMisc);
+        srv.OnPacket(a, imp.data(), imp.size(), out);
+        Check(countTo(out, a) == 0 && srv.bundleStat(BS::InMisc) - m0 == 1,
+              "① 클라 중요 메시지에 `ab` 가 곧바로 나갔거나 묶음 잡다 칸에 안 담겼다");
+        srv.DebugGiveExp(a, 250.0f, out);                     // 중요 대기열에 `6e`
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        const size_t n = countTo(out, a);
+        std::vector<uint8_t> body;
+        for (const auto& p : out) if (p.to == a) body = Body(p);
+        const std::vector<uint8_t> ops = BundleOps(body);
+        int i27 = -1, iA4 = -1, iAb = -1, iAa = -1, n27 = 0;
+        for (size_t i = 0; i < ops.size(); ++i) {
+            if (ops[i] == 0x27) { ++n27; if (i27 < 0) i27 = static_cast<int>(i); }
+            if (ops[i] == 0xa4 && iA4 < 0) iA4 = static_cast<int>(i);
+            if (ops[i] == 0xab && iAb < 0) iAb = static_cast<int>(i);
+            if (ops[i] == 0xaa && iAa < 0) iAa = static_cast<int>(i);
+        }
+        bool abBody = false;
+        for (size_t q = 0; q + 5 <= body.size(); ++q)
+            if (body[q] == 0xab && body[q + 1] == 0x11 && body[q + 2] == 0x22 && body[q + 3] == 0x33 && body[q + 4] == 0x44) abBody = true;
+        uint16_t fr = 0; std::vector<uint16_t> ids; size_t entries = 0;
+        const bool imp6e = FindImportantPacket(out, a, &fr, &ids, &entries);
+        char msg[300];
+        std::snprintf(msg, sizeof(msg), "① 묶음 — 조각 %zu(기대 1) · 차례 [%s] · 27 %d개 · ab 몸 %d · 중요 칸 %d(항목 %zu)",
+                      n, opsStr(ops).c_str(), n27, (int)abBody, (int)imp6e, entries);
+        Check(n == 1 && i27 == 0 && n27 == 1 && iAb > 0 && iAa > iAb && iAa == static_cast<int>(ops.size()) - 1 &&
+              (iA4 < 0 || (iA4 > i27 && iA4 < iAb)) && abBody && imp6e && entries >= 1, msg);
+    }
+    // ② 아무 일 없는 틱도 사람당 한 조각 · 시험용 즉시 모드(b)는 따로따로(갈래 계수)
+    {
+        std::vector<nox::OutPacket> out;
+        const unsigned long long d0 = srv.bundleStat(BS::Datagrams), t0 = srv.bundleStat(BS::DirectTest);
+        ms += 34; srv.Tick(ms, out);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "② 빈 틱 — a 조각 %zu(기대 1) · 묶음 낸 수 +%llu · b 조각 %zu · 시험 갈래 +%llu",
+                      countTo(out, a), srv.bundleStat(BS::Datagrams) - d0, countTo(out, b), srv.bundleStat(BS::DirectTest) - t0);
+        Check(countTo(out, a) == 1 && srv.bundleStat(BS::Datagrams) - d0 == 1 && countTo(out, b) >= 1 &&
+              srv.bundleStat(BS::DirectTest) - t0 == countTo(out, b), msg);
+    }
+    // ③ 채팅은 곧바로(정답지 `conn.Flush()`) · 접속 제어(퐁 0x08)도 곧바로
+    {
+        std::vector<nox::OutPacket> out;
+        std::vector<uint8_t> chat(nox::kWireHeaderSize, 0);
+        const uint8_t head[11] = { static_cast<uint8_t>(nox::Op::TEXT_MESSAGE), 0xee, 0x02, 0x02, 0, 0, 0, 0, 2, 0, 0 };
+        chat.insert(chat.end(), head, head + 11);
+        chat.push_back('h'); chat.push_back('i');
+        const unsigned long long c0 = srv.bundleStat(BS::DirectChat);
+        srv.OnPacket(a, chat.data(), chat.size(), out);
+        bool chatToA = false;
+        for (const auto& m : FlattenTo(out, a)) if (!m.empty() && m[0] == static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) chatToA = true;
+        std::vector<nox::OutPacket> out2;
+        const auto ping = WireOf({ static_cast<uint8_t>(nox::Op::CLIENT_PING), 1, 2, 3, 4 });
+        const unsigned long long k0 = srv.bundleStat(BS::DirectCtrl);
+        srv.OnPacket(a, ping.data(), ping.size(), out2);
+        bool pong = false;
+        for (const auto& p : out2) if (p.to == a) { const auto bb = Body(p); if (!bb.empty() && bb[0] == static_cast<uint8_t>(nox::Op::CLIENT_PONG)) pong = true; }
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "③ 곧바로 — 채팅 a %d · 채팅 갈래 +%llu(기대 2) · 퐁 %d · 제어 갈래 +%llu",
+                      (int)chatToA, srv.bundleStat(BS::DirectChat) - c0, (int)pong, srv.bundleStat(BS::DirectCtrl) - k0);
+        Check(chatToA && srv.bundleStat(BS::DirectChat) - c0 == 2 && pong && srv.bundleStat(BS::DirectCtrl) - k0 == 1, msg);
+    }
+    // ④ 게임 밖(접속 중)이면 묶지 않는다 — 틱 끝을 기다리지 않고 곧바로
+    {
+        srv.DebugLeave(a);
+        std::vector<nox::OutPacket> out;
+        const auto imp = WireOf({ static_cast<uint8_t>(nox::Op::IMPORTANT), 0x55, 0x66, 0x77, 0x08, 0x00 });
+        const unsigned long long g0 = srv.bundleStat(BS::DirectNotInGame);
+        srv.OnPacket(a, imp.data(), imp.size(), out);
+        char msg[160];
+        std::snprintf(msg, sizeof(msg), "④ 게임 밖 — 곧바로 나간 조각 %zu(기대 1) · 게임밖 갈래 +%llu(기대 1)",
+                      countTo(out, a), srv.bundleStat(BS::DirectNotInGame) - g0);
+        Check(countTo(out, a) == 1 && srv.bundleStat(BS::DirectNotInGame) - g0 == 1, msg);
+    }
+    std::printf("  09-30 묶음 — ab 는 다음 틱 묶음에 · [27][a4][잡다][aa] 한 조각 · 빈 틱도 하나 · 시험 모드는 따로 · 채팅·제어·게임 밖은 곧바로\n");
 }
 
 void TestImportantQueue() {
@@ -3339,9 +3485,9 @@ void TestImportantQueue() {
             for (const auto& p : oo) {
                 if (p.to != b) continue;
                 const std::vector<uint8_t> body = Body(p);
-                if (body.size() < 7 || body[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
-                    body[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
-                for (size_t q = 4; q + 3 <= body.size(); ++q)
+                const size_t imp0 = ImportantStart(body);            // ★ 09-30 묶음 안의 `aa` 다음 자리
+                if (imp0 == 0) continue;
+                for (size_t q = imp0; q + 3 <= body.size(); ++q)
                     if (body[q] == static_cast<uint8_t>(nox::Op::OBJECT_OUT_OF_SIGHT) &&
                         body[q + 1] == 0x21 && body[q + 2] == 0x43) rawInImportant = true;
             }
@@ -13652,9 +13798,9 @@ void TestPlayerExp() {
         for (const auto& pk : out) {
             if (pk.to != a) continue;
             const std::vector<uint8_t> b = Body(pk);
-            if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
-                b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
-            size_t q = 4;
+            const size_t imp0 = ImportantStart(b);             // ★ 09-30 묶음 안의 `aa` 다음 자리
+            if (imp0 == 0) continue;
+            size_t q = imp0;
             while (q < b.size()) {
                 if (b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && q + 4 <= b.size()) {
                     if (b[q + 3] >= 1 && q + 4 + b[q + 3] <= b.size() &&
@@ -13752,9 +13898,9 @@ void TestSpellAward() {
         for (const auto& pk : out) {
             if (pk.to != a) continue;
             const std::vector<uint8_t> b = Body(pk);
-            if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
-                b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
-            size_t q = 4;
+            const size_t imp0 = ImportantStart(b);             // ★ 09-30 묶음 안의 `aa` 다음 자리
+            if (imp0 == 0) continue;
+            size_t q = imp0;
             while (q + 4 <= b.size() && b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
                 const size_t inner = b[q + 3];
                 if (q + 4 + inner > b.size()) break;
@@ -13921,9 +14067,9 @@ void TestLessonScore() {
         for (const auto& pk : out) {
             if (pk.to != a) continue;
             const std::vector<uint8_t> bb = Body(pk);
-            if (bb.size() < 8 || bb[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
-                bb[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
-            size_t q = 4;
+            const size_t imp0 = ImportantStart(bb);             // ★ 09-30 묶음 안의 `aa` 다음 자리
+            if (imp0 == 0) continue;
+            size_t q = imp0;
             while (q + 4 <= bb.size() && bb[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
                 const size_t inner = bb[q + 3];
                 if (q + 4 + inner > bb.size()) break;
@@ -14095,9 +14241,9 @@ void TestAbilities() {
         for (const auto& pk : out) {
             if (pk.to != a) continue;
             const std::vector<uint8_t> b = Body(pk);
-            if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
-                b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
-            size_t q = 4;
+            const size_t imp0 = ImportantStart(b);             // ★ 09-30 묶음 안의 `aa` 다음 자리
+            if (imp0 == 0) continue;
+            size_t q = imp0;
             while (q < b.size()) {
                 if (b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && q + 4 <= b.size()) {
                     if (b[q + 3] >= 1 && q + 4 + b[q + 3] <= b.size() &&
@@ -17218,9 +17364,9 @@ void TestGuideAward() {
         for (const auto& pk : out) {
             if (pk.to != a) continue;
             const std::vector<uint8_t> b = Body(pk);
-            if (b.size() < 8 || b[0] != static_cast<uint8_t>(nox::Op::TIMESTAMP) ||
-                b[3] != static_cast<uint8_t>(nox::Op::IMPORTANT)) continue;
-            size_t q = 4;
+            const size_t imp0 = ImportantStart(b);             // ★ 09-30 묶음 안의 `aa` 다음 자리
+            if (imp0 == 0) continue;
+            size_t q = imp0;
             while (q + 4 <= b.size() && b[q] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) {
                 const size_t inner = b[q + 3];
                 if (q + 4 + inner > b.size()) break;
@@ -27248,6 +27394,7 @@ int main() {
     TestObserverExit();
     TestSnapshotSeqRenumber();
     TestImportantQueue();
+    TestBundleOneDatagram();
     TestKillArmorCollide();
     TestCastPipeline();
     TestSpellFly();

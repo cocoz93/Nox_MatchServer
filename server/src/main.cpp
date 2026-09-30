@@ -286,6 +286,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.attackLagMin(0), srv.attackLagMax(0),
                     srv.attackTiming(AT::ShotOnTime), srv.attackTiming(AT::ShotOff), srv.attackTiming(AT::ShotLastRepeat),
                     srv.attackLagMin(1), srv.attackLagMax(1), srv.shotNoAim());
+        using BS2 = nox::BundleStat;      // ★ 09-30 한 틱 한 데이터그램
+        std::printf("[묶음] 낸 조각 %llu · 담음 시각 %llu·갱신 %llu·잡다 %llu·중요 %llu · 넘침 %llu(칸마다 %llu) · 곧바로 스트림 %llu·제어 %llu·게임밖 %llu·시험 %llu·채팅 %llu·서두 %llu\n",
+                    srv.bundleStat(BS2::Datagrams), srv.bundleStat(BS2::InTs), srv.bundleStat(BS2::InUpd), srv.bundleStat(BS2::InMisc),
+                    srv.bundleStat(BS2::InImp), srv.bundleStat(BS2::Overflow), srv.bundleStat(BS2::OverSlots),
+                    srv.bundleStat(BS2::DirectStream), srv.bundleStat(BS2::DirectCtrl), srv.bundleStat(BS2::DirectNotInGame),
+                    srv.bundleStat(BS2::DirectTest), srv.bundleStat(BS2::DirectChat), srv.bundleStat(BS2::DirectMirror));
         using BS = nox::BrainStat;   // ★ 09-29 B4 — 두뇌 반응 층
         std::printf("[몬스터두뇌] 돎 %llu · 혼란 %llu · 두려움 %llu · 후퇴 %llu(반주문 %llu) · 도망 길 못냄 %llu · 지키기공격 %llu · 거리두기 %llu · "
                     "답답함 %llu(옆걸음 %llu · 기다림 %llu) · 먹기 %llu\n",
