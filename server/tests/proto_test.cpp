@@ -3571,6 +3571,83 @@ void TestBundleOneDatagram() {
     std::printf("  09-30 묶음 — ab 는 다음 틱 묶음에 · [27][a4][잡다][aa] 한 조각 · 빈 틱도 하나 · 시험 모드는 따로 · 채팅·제어·게임 밖은 곧바로 · 2048 넘으면 둘(둘 다 27 · 안 버림) · 혼자 넘으면 통째로(계수)\n");
 }
 
+// ★ 10-01 — 갱신 `a4` 는 **`27` 을 쓴 뒤 남은 자리**에 맞춰 짠다(원본 `sendPoll` · `network_lists.go:185~195`) → 조각이 2048 을 안 넘는다
+//   ✖ 전에는 2048 통을 따로 채워 `[27 3B]` 뒤에 붙였다 — 최대 2051(`OverSize` 로 셈 · 받는 쪽 16384 라 깨지진 않았다)
+//   `a4` 는 항목 단위로 끊겨 넘는지는 섞인 항목 크기에 달렸다 → 클라가 **별칭을 알려 준 몬스터 수(0~5)** 를 훑는다
+//     (별칭 항목은 전체번호 항목보다 4B 작다) · 옛 통(2047)에서 조각 2042·2042·2047·2040·2045·**2050** — 별칭 5 판이 넘었다(10-01 실측)
+//   **모든 조각 ≤ 2048** · 그리고 **한도 바로 밑(≥ 2045)까지 찬 판이 있었나**를 같이 본다
+//   ⚠ 몬스터 수·배치·다른 사람 수·종류 섞기로는 안 됐다 — 항목이 모두 12B 라 통이 차면 끝 크기가 한 값(2042)에 고정(네 판 전부 2042)
+void TestUpdateFitsWithTimestamp() {
+    using BS = nox::BundleStat;
+    size_t worst = 0;
+    int nearFull = 0, over = 0, runs = 0;
+    unsigned long long overSize = 0;
+    const int n = 260;                                        // 통을 넘길 만큼
+    const int row = 20;
+    for (int aliased = 0; aliased <= 5; ++aliased) {
+        nox::Server s;
+        const std::string c = "10.9.30.31:49311";
+        s.DebugEnterGame(c, 760);
+        s.DebugMoveTo(c, 2000, 2000);
+        s.DebugImportantReal(c, /*ready=*/true);
+        s.DebugSetAutoFight(false);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        s.SetTypeBody(1328, body);
+        for (int i = 0; i < n; ++i)
+            s.DebugSpawnPet(1328, 1600.0f + static_cast<float>((i % row) * 40), 1700.0f + static_cast<float>((i / row) * 40), std::string());
+        uint32_t t = 0;
+        std::vector<nox::OutPacket> w;
+        s.Tick(t, w);
+        t += 34; s.Tick(t, w);
+        for (int i = 0; i < aliased; ++i) {                    // 클라가 앞 몬스터 몇에 별칭을 정해 알려 준다(`a5` 별칭1·번호2·종류2·기한4)
+            const uint16_t nc = s.DebugPetNetCode(static_cast<size_t>(i));
+            const std::vector<uint8_t> pkt = { 0x01, 0x04, static_cast<uint8_t>(nox::Op::NEW_ALIAS), static_cast<uint8_t>(0x20 + i),
+                                               static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8), 0x30, 0x05, 0, 0, 0, 0 };
+            s.OnPacket(c, pkt.data(), pkt.size(), w);
+        }
+        const unsigned long long sz0 = s.bundleStat(BS::OverSize);
+        std::vector<nox::OutPacket> out;
+        t += 34; s.Tick(t, out);
+        for (const auto& p : out) {
+            if (p.to != c) continue;
+            const size_t len = Body(p).size();
+            if (std::getenv("NOX_FIT_DBG")) {
+                const auto bb = Body(p);
+                size_t q = 0; std::string ops;
+                while (q < bb.size()) {
+                    const uint8_t op = bb[q];
+                    char h[48];
+                    if (op == 0xa4) {
+                        const nox::UpdateMsg um = nox::DecodeUpdate(bb.data() + q + 1, bb.size() - q - 1, nullptr);
+                        std::snprintf(h, sizeof(h), "a4(%zu항목·%zuB) ", um.objects.size(), um.consumed);
+                        ops += h;
+                        if (!um.ok || um.consumed == 0) break;
+                        q += 1 + um.consumed; continue;
+                    }
+                    const size_t sz = nox::MessageSize(bb.data() + q, bb.size() - q, false);
+                    std::snprintf(h, sizeof(h), "%02x(%zu) ", op, sz);
+                    ops += h;
+                    if (sz == 0) break;
+                    q += sz;
+                }
+                std::printf("    [훑기 별칭 %d] 조각 %zu | %s\n", aliased, len, ops.c_str());
+            }
+            if (len > worst) worst = len;
+            if (len > nox::kBundleMaxPayload) ++over;
+            if (len >= 2045 && len <= nox::kBundleMaxPayload) ++nearFull;
+        }
+        overSize += s.bundleStat(BS::OverSize) - sz0;
+        ++runs;
+    }
+    char msg[220];
+    std::snprintf(msg, sizeof(msg), "갱신이 27 과 합쳐 2048 초과 — 판 %d 중 넘은 조각 %d · 가장 큰 조각 %zu · 혼자 넘음 +%llu",
+                  runs, over, worst, overSize);
+    Check(over == 0 && overSize == 0 && worst <= nox::kBundleMaxPayload, msg);
+    std::snprintf(msg, sizeof(msg), "훑기가 한도 밑까지 못 감 — 2045~2048 조각 %d · 가장 큰 조각 %zu(시험이 넘침 자리를 안 봄)", nearFull, worst);
+    Check(nearFull > 0, msg);
+    std::printf("  갱신은 27 뒤 남은 자리에 — 판 %d · 가장 큰 조각 %zu · 2045~2048 %d\n", runs, worst, nearFull);
+}
+
 void TestImportantQueue() {
     nox::Server srv;
     const std::string a = "10.9.9.1:49001";
@@ -28183,6 +28260,7 @@ int main() {
     TestSnapshotSeqRenumber();
     TestImportantQueue();
     TestBundleOneDatagram();
+    TestUpdateFitsWithTimestamp();
     TestKillArmorCollide();
     TestCastPipeline();
     TestSpellFly();

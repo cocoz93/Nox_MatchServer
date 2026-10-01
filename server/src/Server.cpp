@@ -18260,7 +18260,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         uint8_t body[2048];
         body[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
         size_t droppedObjs = 0;
-        size_t n = EncodeUpdate(m, body + 1, sizeof(body) - 1, &droppedObjs);
+        // ★ 10-01 — 통은 **같은 묶음의 `27` 을 뺀 자리**까지(정답지 `sendPoll` 은 `27` 을 쓴 뒤 남은 자리에 갱신을 짠다 · `network_lists.go:185~195`)
+        //   ✖ 전에는 2048 통을 따로 채워 `[27 3B]` 뒤에 붙여 조각이 최대 2051(`OverSize`) — 받는 쪽 16384(`netstr.go:332`)라 깨지진 않았다
+        //   `27` 은 이 틱 앞에서 이미 `bundleTs` 에 담겼다(위 ① · `Emit`) · 묶지 않는 갈래(시험 모드 등)면 비어 있어 2048 그대로
+        const size_t tsLen = s.bundleTs.size();
+        const size_t room = tsLen < sizeof(body) ? sizeof(body) - tsLen : 1;
+        size_t n = EncodeUpdate(m, body + 1, room - 1, &droppedObjs);
         if (droppedObjs) {
             updateDroppedObjs_ += droppedObjs;
             ++updateDroppedTicks_;
