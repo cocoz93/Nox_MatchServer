@@ -79,7 +79,7 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x27 */    2,   // MSG_TIMESTAMP
     /* 0x28 */    4,   // MSG_FULL_TIMESTAMP
     /* 0x29 */   -1,   // MSG_NEED_TIMESTAMP
-    /* 0x2A */   -1,   // MSG_SIMULATED_TIMESTAMP
+    /* 0x2A */    4,   // MSG_SIMULATED_TIMESTAMP — ★ 10-01 클라 Go 해독기 `network_client.go:182~187` return 5(조건 없음)
     /* 0x2B */   40,   // MSG_USE_MAP
     /* 0x2C */    6,   // MSG_JOIN_DATA
     /* 0x2D */  128,   // MSG_NEW_PLAYER
@@ -149,8 +149,11 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x6D */    2,   // MSG_REPORT_LOSE_CREATURE
     /* 0x6E */    4,   // MSG_REPORT_EXPERIENCE
     /* 0x6F */    3,   // MSG_REPORT_SPELL_AWARD
-    /* 0x70 */   -1,   // MSG_REPORT_SPELL_START
-    /* 0x71 */   -1,   // MSG_REPORT_INVENTORY_LOADED
+    // ★ 10-01 — 아래 0x70·0x71(·0x2A·0x7C)은 **C 해독기가 아니라 Go 해독기(`network_client.go`)가 받는** 메시지라
+    //   09-16 전수 대조(C `case` 145개)에서 빠졌다. Go 쪽 갈래 21개를 다시 맞대 고정 길이 11개 중 넷이 우리 `-1` 이었다.
+    //   ⚠ 0x70 은 우리 서버가 주문마다 보내는데(`70 <주문>` · Server.cpp SpellCastByBook) 표가 `-1` 이라 판독기가 거기서 섰다
+    /* 0x70 */    1,   // MSG_REPORT_SPELL_START — `network_client.go:369~374` return 2
+    /* 0x71 */    0,   // MSG_REPORT_INVENTORY_LOADED — `network_client.go:375~377` return 1
     // ★ 아래 다섯은 **길이를 몰라 조각을 통째로 버리던 자리**다 (2026-09-10 채움).
     //   `-1` 이면 그 조각의 나머지가 정상 메시지라도 같이 죽는다 → 「줍기가 안 된다」의 뿌리.
     //   값의 근거 = 정품 서버가 갈래마다 **소비하는 바이트 수**(`sdecode.c`).
@@ -165,7 +168,7 @@ const int16_t kMsgBodyLen[256] = {
     /* 0x79 */   21,   // MSG_TRY_SPELL  ← 손으로 채움 (근거는 genlen.go 의 extra)
     /* 0x7A */   -1,   // MSG_TRY_ABILITY
     /* 0x7B */   -1,   // MSG_TRY_COLLIDE
-    /* 0x7C */   -1,   // MSG_FX_PARTICLEFX
+    /* 0x7C */   13,   // MSG_FX_PARTICLEFX — ★ 10-01 `network_client.go:388~396` return 14(짧으면 -1 일 뿐 · 조건 없음)
     /* 0x7D */    8,   // MSG_FX_PLASMA          ← 09-16 E1: 0x8C·0x8D·0x8E 와 **같은 본문**(c:1561 `return 9`)
     /* 0x7E */   11,   // MSG_FX_SUMMON
     /* 0x7F */    2,   // MSG_FX_SUMMON_CANCEL
@@ -377,4 +380,6 @@ int MsgBodyLenByDir(uint8_t op, bool fromClient) {
 }
 
 // 뽑은 결과 — 길이를 아는 것 145개(그중 손으로 채운 것 4) / 가변·미상 111개
+//   (★ 10-01 — 이 줄은 생성 때 값이다. 그 뒤 손으로 채운 자리가 쌓여 **10-01 표 실측 = 아는 것 191 / 모름(-1) 65**
+//    (`grep -cE '/\* 0x.. \*/\s+-1,'` 로 셈) · 이번에 Go 해독기 몫 넷(0x2A·0x70·0x71·0x7C)을 채웠다)
 }  // namespace nox

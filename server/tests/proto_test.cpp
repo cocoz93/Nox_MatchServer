@@ -1882,6 +1882,26 @@ void TestChat() {
     std::printf("  채팅 — 모두에게 감 · 번호·좌표는 서버가 새로 지음(남의 번호로 말하기 막힘)\n");
 }
 
+// ★ 10-01 — Go 해독기(`network_client.go`)가 받는 서버→클라 메시지의 길이(09-16 C 전수 대조에서 빠진 넷)
+//   0x2A SIMULATED_TIMESTAMP 5 · 0x70 REPORT_SPELL_START 2 · 0x71 REPORT_INVENTORY_LOADED 1 · 0x7C FX_PARTICLEFX 14(총 바이트)
+//   ⚠ 0x70 은 우리 서버가 주문마다 보낸다 — 표가 `-1` 이면 판독기가 그 조각에서 선다(임프 판 14조각)
+void TestGoDecoderLengths() {
+    Check(nox::MsgBodyLenByDir(0x2A, false) == 4, "0x2A SIMULATED_TIMESTAMP 본문이 4 가 아님(`network_client.go:187`)");
+    Check(nox::MsgBodyLenByDir(0x70, false) == 1, "0x70 REPORT_SPELL_START 본문이 1 이 아님(`network_client.go:374`)");
+    Check(nox::MsgBodyLenByDir(0x71, false) == 0, "0x71 REPORT_INVENTORY_LOADED 본문이 0 이 아님(`network_client.go:377`)");
+    Check(nox::MsgBodyLenByDir(0x7C, false) == 13, "0x7C FX_PARTICLEFX 본문이 13 이 아님(`network_client.go:396`)");
+    // 서버가 실제로 보내는 꼴 — `70 <주문 87>` 뒤에 `31 DESTROY_OBJECT <번호>` 가 오면 둘 다 쪼개져 끝까지 간다
+    const uint8_t b[] = { 0x70, 0x57, 0x31, 0x00, 0x10 };
+    size_t q = 0; int n = 0;
+    while (q < sizeof(b)) {
+        const size_t sz = nox::MessageSize(b + q, sizeof(b) - q, /*fromClient=*/false);
+        if (sz == 0 || q + sz > sizeof(b)) break;
+        q += sz; ++n;
+    }
+    Check(q == sizeof(b) && n == 2, "`70 57 31 00 10` 이 메시지 둘로 끝까지 안 쪼개진다");
+    std::printf("  Go 해독기 몫 길이 넷 — 0x2A·0x70·0x71·0x7C · `70 57` 뒤 메시지까지 쪼개짐\n");
+}
+
 // ── 판 시계 물음(0xd4) · 정상 종료(0x0a) ────────────────────────────────
 //
 // ★ `0xd4` 는 **조각을 죽이던 자리**다. 길이표가 `-1` 이라 그 조각을 통째로 버렸고,
@@ -27941,6 +27961,7 @@ int main() {
     TestAim();
     TestChat();
     TestTimerAskAndClose();
+    TestGoDecoderLengths();
     TestPickup();
     TestUseAndEquip();
     TestUseFromFile();
