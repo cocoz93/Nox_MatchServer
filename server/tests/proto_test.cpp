@@ -13333,9 +13333,21 @@ void TestCorpse() {
         return n;
     };
     char msg[240];
-    // ① 소환수 — 죽음 표시 · 체력 0 · 쌓임 [0, 31, 30] · 목록에 남음 · 지우기 안 나감 · 썩음 = 지금 + 300~600 프레임
+    // ① 소환수 — 죽음 표시 · 체력 0 · 쌓임 [31, 30] · 목록에 남음 · 지우기 안 나감 · 썩음 = 지금 + 300~600 프레임
     {
         nox::Server srv; mk(srv, a);
+        // 시험 값 셋 — 이게 없으면 조각 2 의 갈래가 안 보인다(10-01 돌연변이 M3~M6 이 안 걸렸다)
+        //   · 곰 몸 깃발에 0x80(MISSILE_HIT) — 죽으면 꺼져야 한다(시험 서버엔 thing.bin 이 없어 기본 0)
+        //   · 죽음(10) 애니 4칸 되풀이 — 31 첫 갱신 뒤에도 AI 가 돌면 칸이 넘어가 드러난다
+        //   · 죽기 전 지금 상대·보이는 목록을 채움 — 31 첫 갱신이 비우는지 보려면 차 있어야 한다
+        {
+            nox::Server::PhysBody body;
+            body.shape = 2; body.r = 10.0f; body.cls = 0x2; body.flags = 0x80;
+            srv.SetTypeBody(1365, body);
+        }
+        srv.SetMonsterAnim(1365, 10, 4, 0, true);
+        srv.DebugSetPetEnemy(0, b, -1);
+        Check((srv.DebugPetObjFlags(0) & 0x80) && srv.DebugPetSeenCount(0) == 1 && srv.DebugPetEnemy(0) == b, "① 시험 값(몸 0x80 · 상대·보이는 목록)이 안 들어갔다");
         uint32_t ms = srv.DebugNowMs();
         const uint16_t net = srv.DebugPetNet(0);
         std::vector<nox::OutPacket> out;
@@ -13347,6 +13359,12 @@ void TestCorpse() {
                       srv.DebugAIAction(0, 0), srv.DebugAIAction(0, 1));
         Check(srv.DebugAIStackInd(0) == 1 && srv.DebugAIAction(0, 0) == 31 && srv.DebugAIAction(0, 1) == 30, msg);
         Check(destroyed(Flatten(out), net) == 0, "① 죽자마자 31 지우기가 나갔다");
+        // ⑥ 몸 깃발 — 죽는 순간 0x8000 켬 · 0x80 끔 · 0x18 은 아직(31 시작 때)
+        {
+            const uint32_t fl = srv.DebugPetObjFlags(0);
+            std::snprintf(msg, sizeof(msg), "⑥ 죽은 순간 몸 깃발 %08x — 0x8000 켬 · 0x80 끔 · 0x18 아직", fl);
+            Check((fl & 0x8000) && !(fl & 0x80) && (fl & 0x18) != 0x18, msg);
+        }
         const uint32_t dz = srv.DebugPetDecayFrame(0) - f0;
         std::snprintf(msg, sizeof(msg), "① 썩음 %u 프레임 뒤(기대 300~600 = 10~20초)", dz);
         Check(srv.DebugPetDecayFrame(0) != 0 && dz >= 300 && dz <= 600, msg);
@@ -13364,6 +13382,19 @@ void TestCorpse() {
         std::snprintf(msg, sizeof(msg), "④ 31 만 남은 틱 %d(기대 20~30) · 쌓임이 딴 것으로 바뀐 틱 %d(기대 0) · 알아보기 훑기 %llu→%llu(그대로)",
                       at31, grew, scan0, srv.sightStat(nox::SightStat::Scan));
         Check(at31 >= 20 && at31 <= 30 && grew == 0 && srv.sightStat(nox::SightStat::Scan) == scan0, msg);
+        // ⑥' 31 시작 = 몸 깃발 0x18 · 31 첫 갱신 = 갱신 목록 밖(`deadDone`) · 보이는 목록·지금 상대 비움 · 그 뒤 애니 칸이 안 넘어감
+        {
+            const uint32_t fl = srv.DebugPetObjFlags(0);
+            std::snprintf(msg, sizeof(msg), "⑥' 31 뒤 몸 깃발 %08x(0x18·0x8000 켬) · 끝남 %d · 보이는 수 %zu · 상대 '%s'", fl,
+                          srv.DebugPetDeadDone(0) ? 1 : 0, srv.DebugPetSeenCount(0), srv.DebugPetEnemy(0).c_str());
+            Check((fl & 0x18) == 0x18 && (fl & 0x8000) && srv.DebugPetDeadDone(0) && srv.DebugPetSeenCount(0) == 0 && srv.DebugPetEnemy(0).empty(), msg);
+            const unsigned long long adv0 = srv.animStat(nox::AnimStat::Advance);
+            const int frame0 = srv.DebugPetAnimFrame(0);
+            for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+            std::snprintf(msg, sizeof(msg), "⑥' 갱신 목록 밖인데 애니가 돎 — 넘김 %llu→%llu · 칸 %d→%d", adv0, srv.animStat(nox::AnimStat::Advance),
+                          frame0, srv.DebugPetAnimFrame(0));
+            Check(srv.animStat(nox::AnimStat::Advance) == adv0 && srv.DebugPetAnimFrame(0) == frame0, msg);
+        }
         // ② 시체를 또 때려도 다시 안 죽음 — 6d·죽음 소리·죽은 수·죽음 계수 그대로
         const auto lose0 = srv.summonOwnSent(2);
         const auto snd0 = srv.monsterSnd(14, true);
@@ -13390,6 +13421,29 @@ void TestCorpse() {
         uint32_t ms = srv.DebugNowMs();
         for (int t = 0; t < 760; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.pets() == 1 && srv.DebugPetDead(0) && srv.corpseStat(1) == 0, "⑤ 맵 몬스터 시체가 25초 안에 사라졌다");
+    }
+    // ⑦ STATUS 0x1 DESTROY_WHEN_DEAD(Ghost 1325) — 죽어감 애니 뒤 31 첫 갱신에 **바로** 지움(썩음 전) · a·b 에 31 한 번씩 · 즉시 지움 계수 1
+    {
+        nox::Server srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 900.0f, 1000.0f);
+        srv.DebugTeleport(b, 1300.0f, 1000.0f);
+        srv.DebugSpawnPet(1325, 1000, 1000, a);
+        LoadRealAttackAnims(srv);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        const uint16_t net = srv.DebugPetNet(0);
+        srv.DebugHurt(std::string(), 0, 9999, b, 0, o);
+        const uint32_t decay = srv.DebugPetDecayFrame(0);
+        uint32_t ms = srv.DebugNowMs();
+        std::vector<nox::OutPacket> all;
+        int gone = -1;
+        for (int t = 1; t <= 60 && gone < 0; ++t) { ms += 34; srv.Tick(ms, all); if (srv.pets() == 0) gone = t; }
+        std::snprintf(msg, sizeof(msg), "⑦ Ghost — 지운 틱 %d(기대 20~31 · 썩음 %u 전) · 31 a %d · b %d · 즉시 지움 %llu · 썩어 지움 %llu",
+                      gone, decay, destroyed(FlattenTo(all, a), net), destroyed(FlattenTo(all, b), net), srv.corpseStat(2), srv.corpseStat(1));
+        Check(gone >= 20 && gone <= 31 && srv.DebugFrame() < decay && destroyed(FlattenTo(all, a), net) == 1 && destroyed(FlattenTo(all, b), net) == 1 &&
+              srv.corpseStat(2) == 1 && srv.corpseStat(1) == 0, msg);
     }
     std::printf("  시체 — 죽어도 남음 · [0 31 30] → 31 · 소환수 10~20초 뒤 썩어 31 지우기 · 맵 몬스터 안 썩음 · 다시 안 죽음 · 싸움 안 쌓음\n");
 }

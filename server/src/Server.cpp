@@ -1083,6 +1083,8 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
         Creature& k = pets_[idx];                            // ⚠ 아래 퀘스트 웨이브가 `pets_` 에 넣기 전에 다 적는다(참조가 깨진다)
         k.dead = true;
         k.health = 0;
+        k.flagsSet |= 0x8000;                                // DEAD(`GAME3_3.c:7164`)
+        k.flagsClear |= 0x80;                                // MISSILE_HIT 끔(`GAME4_1.c:476~478`)
         AIClearStack(k);                                     // `monsterClearActionStack_50A3A0`
         AIPush(k, 31);
         AIPush(k, 30);
@@ -11175,6 +11177,7 @@ void Server::AIStart(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             //   ⚠ 풀려난 넋(`createReleasedSoul_544E60`)·좀비 시간표는 안 옮겼다
             k.velX = 0; k.velY = 0;
             k.path.clear();
+            k.flagsSet |= 0x18;                              // ★ 10-01 — ALLOW_OVERLAP·SHORT(`GAME4_3.c:9893~9894` · 좀비 아님) — 길을 안 막고 낮다
             break;
         }
         case 16: {   // ── 묶음 6-g(2) 근접 공격 시작 — `mobActionMelee1_532130`(`legacy/GAME4_3.c:1943`)
@@ -11474,13 +11477,19 @@ void Server::AIUpdate(Creature& k, uint8_t act, std::vector<OutPacket>& out) {
             // 하는 일이 하나뿐이다 — **죽는 애니가 끝나면 빠진다**(`+483`).
             //   빠지면 아래에 깔아 둔 **죽음(31)** 이 드러난다
             // ★ 09-30 — 애니 칸(B5)으로 원본대로 **죽어가기 애니(9)가 끝나면** 뺀다. ✖ 전에는 애니 칸이 없던 때의 대신으로 첫 갱신에 바로 뺐다
-            // ⚠ 우리는 체력이 0 이면 곧바로 지운다(`KillPet`) — 30 은 **실제 판에서 안 쌓인다**(시험에만 닿는 길 · 시체·죽는 애니 흐름은 따로)
+            // ❌ 정정(10-01) — 「우리는 체력이 0 이면 곧바로 지운다 · 30 은 실제 판에서 안 쌓인다」는 이제 틀림:
+            //   `KillPet` 이 죽음 함수가 되어 31·30 을 쌓는다(시체 · `ee7be4c`)
             if (k.animDone) AIPop(k);
             break;
         case 31:     // ── 묶음 6-j 죽음 — `mobActionDead2_544EC0`
             // 갱신 목록에서 빼고, 종류표가 그러라고 하면 **치운다**.
             //   ⚠ 좀비의 되살아나기(`mobRaiseZombie_534AB0`)와 불타 사라지기는 안 옮겼다
+            // ★ 10-01 — `deadDone` 을 AI 루프가 읽는다(다음 틱부터 AI·애니 안 돎 = `unitRemoveFromUpdatable_4DA920` `GAME4_3.c:9942`) ·
+            //   보이는 목록·지금 상대 비움(`sub_544F70` `:9952~9987`) · STATUS 0x1 DESTROY_WHEN_DEAD(Ghost·Bomber)면 지울 표시(`:9945~9947`)
             k.deadDone = true;
+            k.seen.clear();
+            k.enemyAddr.clear(); k.enemyNet = 0; k.enemyPet = -1;
+            if (MonsterBrainOf(k.type).status & 0x1) k.removeMe = true;
             break;
         case 4: {    // ── 묶음 6-i(2) 지키기 — `nox_xxx_mobActionGuard_546010`(`legacy/GAME5.c:738`)
             //
@@ -12613,6 +12622,13 @@ int Server::MonsterAnimIndex(const Creature& k) const {
     }
     if (k.type == kCarnivorousPlantType && v == 8 && k.enemyAddr.empty() && k.enemyPet < 0) return 14;   // `534A10` · +1196 없음
     return v;
+}
+
+// ★ 10-01 — 몸 깃발(+16) — thing.bin FLAGS 에 죽음 덧칠(`Creature::flagsSet`·`flagsClear`). 몸을 모르는 종류는 덧칠만
+uint32_t Server::PetObjFlags(const Creature& k) const {
+    const auto tb = typeBodies_.find(k.type);
+    const uint32_t base = (tb != typeBodies_.end()) ? tb->second.flags : 0u;
+    return (base | k.flagsSet) & ~k.flagsClear;
 }
 
 // `nox_xxx_updateNPCAnimData_50A850`(`GAME4_1.c:532~579`) — 조건 뒤 · 행동 앞에 한 번(`unit_ai.go:579`) · 끝났으면(+483) 안 넘긴다
@@ -17374,6 +17390,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   ⚠ 안쪽 넷(`UpdateSight`·`MonsterListen`·`MonsterHeadUpdate`·`MonsterBrain`)도 이미 체력 0 이면 돌아간다 — 이 갈래를 빼도
             //     겉 동작이 같다(10-01 돌연변이 「등가」) · 원본 갱신 차례를 그대로 적어 두는 자리
             if (k.dead) {
+                if (k.deadDone) continue;                    // ★ 10-01 — 31 첫 갱신 뒤 갱신 목록 밖(`GAME4_3.c:9942`) — 시체는 그대로 그려지기만 한다
                 k.velX = 0; k.velY = 0;
                 AIRefreshStackArgs(k);
                 AIProcDeps(k, out);

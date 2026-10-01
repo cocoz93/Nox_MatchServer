@@ -689,6 +689,9 @@ struct Creature {
     bool dead = false;          // +16 0x8000 DEAD — 체력 0 순간 켬(`GAME3_3.c:7163~7165`) · 켜져 있으면 다시 안 죽음
     uint32_t decayFrame = 0;    // 썩어 지울 프레임(`unitSetDecayTime_511660`) · 0 이면 안 썩음(아레나 맵 몬스터)
     bool removeMe = false;      // 지금 지울 것(원본 `delayedDeleteObject_4E5CC0` — AI 돌기 뒤 한꺼번에)
+    // 몸 깃발(+16) 덧칠 — thing.bin FLAGS 위에 죽음이 켜고 끄는 것(`PetObjFlags`) ·
+    //   죽음 = 0x8000 켬 · 0x80 MISSILE_HIT 끔(`GAME4_1.c:476~478`) · 31 시작 = 0x18 ALLOW_OVERLAP·SHORT 켬(`GAME4_3.c:9893~9894`)
+    uint32_t flagsSet = 0, flagsClear = 0;
     // ★ 09-29 B1 — 알아보기(`nox_xxx_unitUpdateSightMB_5281F0` `GAME4_2.c:7278~7388`).
     //   보이는 목록(+1129 수 · +1132 최대 16) — 사람은 주소 · 크리처는 번호로 적는다(자리 번호는 앞 것이 지워지면 밀린다)
     struct SeenRef { std::string addr; uint16_t petNet = 0; };
@@ -4059,6 +4062,7 @@ public:
     unsigned long long petsKilled() const { return petsKilled_; }
     unsigned long long corpseStat(int i) const { return i >= 0 && i < 4 ? corpseStat_[i] : 0; }   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움 · 3 동시 시체 최대
     bool DebugPetDead(size_t i) const { return i < pets_.size() && pets_[i].dead; }
+    uint32_t DebugPetObjFlags(size_t i) const { return i < pets_.size() ? PetObjFlags(pets_[i]) : 0; }
     uint32_t DebugPetDecayFrame(size_t i) const { return i < pets_.size() ? pets_[i].decayFrame : 0; }
     // ── 조각 D(09-16) 신설 계수기 — 「눈이 없어 못 재던 것」을 재는 자리 ──
     //   ★ 소리는 **셋으로 갈라 센다.** 합치면 「안 불렀다」와 「불렀는데 표가 비어 버렸다」와
@@ -4623,6 +4627,7 @@ private:
     Target MonsterEnemyAggro(const Creature& k, float r) const;   // ★ B4b `EnemyAggroXxx`
     // ★ 09-29 B5 — 애니 칸·걸음 소리(Server.cpp 「B5」 절)
     int  MonsterAnimIndex(const Creature& k) const;          // `mobActionToAnimation_533790`
+    uint32_t PetObjFlags(const Creature& k) const;          // ★ 10-01 — 몸 깃발(+16) = thing.bin FLAGS + 죽음 덧칠(`flagsSet`·`flagsClear`)
     void MonsterAnimUpdate(Creature& k);                      // `updateNPCAnimData_50A850`
     void MonsterMoveAudio(Creature& k, AnimStat site);        // `monsterMoveAudio_534030`
     // ★ 09-29 B6 — 소리 듣기(Server.cpp 「B6」 절)
