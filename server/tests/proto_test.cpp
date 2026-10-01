@@ -14011,6 +14011,131 @@ void TestRoundFreeze() {
     std::printf("  판끝 멈춤 — 크리처·사람 그 자리 · 27·a4 안 짬 · 중요는 나감 · 다시 열면 다시 돎\n");
 }
 
+// ★ 10-01 R4 — 맵 다시 열기 와이어(`Server::ReopenMap` 머리 주석 · 정품 꼴 `[2b]` → `[27]` 만 → `c0` → 스냅샷 → 평소)
+//   ⓪ 독립 모드 · 바닥 물건 하나 담음 · 판 중에 줍기 ① 판끝 → 300틱 뒤 다시 엶 — `2b USE_MAP` 1건(시각 > 접속 때) · 바닥 물건 되돌아옴
+//   ② `c0` 전 — 묶음에 `27` 만(`a4`·스냅샷 없음) ③ `c0` 뒤 — 스냅샷(꼬리 `e9` 자기 번호 · `4c` 장비 번호 = 사람 번호 +1) · `4e` 나감
+//   ④ 그 뒤 평소 `[27 a4]`
+static void GearTemplates(nox::Server& srv);   // 아래(기본 장비 틀) — 이 시험이 앞에 있어 미리 알린다
+void TestReopenMap() {
+    const std::string a = "10.9.35.1:49801";
+    nox::Server srv;
+    srv.SetStandalone("estate.map", 0x12345678u);
+    GearTemplates(srv);
+    std::vector<nox::Server::WorldStatic> st;
+    nox::Server::WorldStatic w;
+    w.netCode = 500; w.type = 1170; w.x = 1000; w.y = 1000; w.modifiable = true; w.equipBit = 0x400; w.isWeapon = true; w.weaponClass = true;
+    st.push_back(w);
+    SetWeights(st, 8);
+    srv.SetWeaponDef(1170, 1, 0);
+    srv.SetWorldStatics(st);
+    srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+    srv.DebugMoveTo(a, 1000, 1000);
+    srv.DebugSetPos(a, 1000, 1000);
+    srv.DebugImportantReal(a, /*ready=*/true);
+    // b — 남의 점수 알림(`4e` b)은 a 의 스냅샷 꼬리에 없다 → 중요 대기열로만 온다(비우기와 넣기의 차례를 보는 자리)
+    const std::string b = "10.9.35.2:49802";
+    srv.DebugEnterGame(b, 733, false, nox::CharClass::Wizard);
+    srv.DebugMoveTo(b, 1400, 1000);
+    srv.CaptureMapInitial();
+    std::vector<nox::OutPacket> out;
+    uint32_t ms = 0;
+    srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+    const auto get = CodePacket(nox::Op::TRY_GET, 500);
+    srv.OnPacket(a, get.data(), get.size(), out);
+    char msg[260];
+    Check(srv.WorldStaticCount() == 0, "⓪ 전제 — 바닥 물건을 못 주웠다");
+    srv.DebugEndRound();
+    // ① 다시 열 때까지
+    int useMaps = 0;
+    uint32_t umFrame = 0;
+    for (int t = 0; t < 400 && srv.roundsPlayed() == 0; ++t) {
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        for (const auto& m : FlattenTo(out, a))
+            if (!m.empty() && m[0] == static_cast<uint8_t>(nox::Op::USE_MAP)) {
+                ++useMaps;
+                if (m.size() >= 41) umFrame = static_cast<uint32_t>(m[37] | (m[38] << 8) | (m[39] << 16) | (static_cast<uint32_t>(m[40]) << 24));
+            }
+    }
+    std::snprintf(msg, sizeof(msg), "① 다시 엶 — 판 수 %llu · USE_MAP %d(1) · 시각 %u · 바닥 물건 %zu(1) · 스냅샷 대기 %d(≥0) · 준비 %d(0)",
+                  srv.roundsPlayed(), useMaps, umFrame, srv.WorldStaticCount(), srv.DebugSnapshotIn(a), (int)srv.DebugImportantReady(a));
+    Check(srv.roundsPlayed() == 1 && useMaps == 1 && umFrame > 0 && srv.WorldStaticCount() == 1 && srv.DebugSnapshotIn(a) >= 0 &&
+          !srv.DebugImportantReady(a) && srv.mapReopenStat(0) == 2, msg);   // 게임 안 둘(a·b) 모두에게
+    // ② c0 전 — 27 만
+    bool s27 = false, sA4 = false, sE9 = false;
+    for (int t = 0; t < 10; ++t) {
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        for (const auto& p : out) {
+            if (p.to != a) continue;
+            for (uint8_t op : BundleOps(Body(p))) { if (op == 0x27) s27 = true; if (op == 0xa4) sA4 = true; }
+        }
+        for (const auto& m : FlattenTo(out, a)) if (!m.empty() && m[0] == static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN)) sE9 = true;
+    }
+    std::snprintf(msg, sizeof(msg), "② c0 전 — 27 %d(1) · a4 %d(0) · 스냅샷 e9 %d(0)", (int)s27, (int)sA4, (int)sE9);
+    Check(s27 && !sA4 && !sE9, msg);
+    // ③ c0 뒤 — 스냅샷
+    const auto ready = WireOf({ static_cast<uint8_t>(nox::Op::CLIENT_READY) });
+    out.clear();
+    srv.OnPacket(a, ready.data(), ready.size(), out);
+    // ⚠ `FlattenTo` 는 스냅샷의 `a4` 뒤를 못 펼친다(첫 판에서 스냅샷이 나갔는데 `27` 하나만 돌려줌) — 여기서 `a4` 를 건너뛰고 `cc` 껍데기 속을 꺼낸다
+    auto inner = [&](const std::vector<nox::OutPacket>& v) {
+        std::vector<std::vector<uint8_t>> ms;
+        for (const auto& p : v) {
+            if (p.to != a) continue;
+            const auto b = Body(p);
+            size_t q = 0;
+            while (q < b.size()) {
+                const uint8_t op = b[q];
+                if (op == 0xa4) {
+                    const nox::UpdateMsg um = nox::DecodeUpdate(b.data() + q + 1, b.size() - q - 1, nullptr);
+                    if (!um.ok || um.consumed == 0) break;
+                    q += 1 + um.consumed; continue;
+                }
+                if (op == 0xaa) { ++q; continue; }                 // 서버→클라 `aa` 는 1바이트 + 뒤에 껍데기들
+                if (op == 0xcc && q + 4 <= b.size()) {
+                    const size_t n = b[q + 3];
+                    if (q + 4 + n > b.size()) break;
+                    ms.emplace_back(b.begin() + static_cast<long>(q + 4), b.begin() + static_cast<long>(q + 4 + n));
+                    q += 4 + n; continue;
+                }
+                const size_t sz = nox::MessageSize(b.data() + q, b.size() - q, /*fromClient=*/false);
+                if (sz == 0) break;
+                ms.emplace_back(b.begin() + static_cast<long>(q), b.begin() + static_cast<long>(q + sz));
+                q += sz;
+            }
+        }
+        return ms;
+    };
+    bool e9Self = false, gearNc1 = false, lesson = false, lessonB = false;
+    for (int t = 0; t < 30 && !(e9Self && gearNc1 && lesson && lessonB); ++t) {
+        ms += 34; srv.Tick(ms, out);
+        for (const auto& m : inner(out)) {
+            if (m.size() >= 3 && m[0] == static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN) && (m[1] | (m[2] << 8)) == 728) e9Self = true;
+            if (m.size() >= 3 && m[0] == 0x4c && (m[1] | (m[2] << 8)) == 729) gearNc1 = true;
+            if (m.size() >= 3 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_LESSON) && (m[1] | (m[2] << 8)) == 728) lesson = true;
+            if (m.size() >= 3 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_LESSON) && (m[1] | (m[2] << 8)) == 733) lessonB = true;
+        }
+        out.clear();
+    }
+    std::snprintf(msg, sizeof(msg), "③ c0 뒤 — 스냅샷 꼬리 e9 자기 %d · 장비 4c 번호 729 %d · 4e 자기 %d · 4e 남(b) %d · 스냅샷 대기 %d(<0)", (int)e9Self,
+                  (int)gearNc1, (int)lesson, (int)lessonB, srv.DebugSnapshotIn(a));
+    Check(e9Self && gearNc1 && lesson && lessonB && srv.DebugSnapshotIn(a) < 0, msg);
+    // ④ 평소
+    s27 = sA4 = false;
+    for (int t = 0; t < 5; ++t) {
+        out.clear();
+        ms += 34; srv.Tick(ms, out);
+        for (const auto& p : out) {
+            if (p.to != a) continue;
+            for (uint8_t op : BundleOps(Body(p))) { if (op == 0x27) s27 = true; if (op == 0xa4) sA4 = true; }
+        }
+    }
+    std::snprintf(msg, sizeof(msg), "④ 평소 — 27 %d · a4 %d", (int)s27, (int)sA4);
+    Check(s27 && sA4, msg);
+    std::printf("  맵 다시 열기 — USE_MAP 1 · 바닥 물건 되돌아옴 · c0 전 27 만 · c0 뒤 스냅샷(e9·장비 nc+1)·4e · 평소\n");
+}
+
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
 //
 // 정답지 `legacy/GAME5.c:924` `nox_xxx_mobActionEscort_546430`.
@@ -21367,8 +21492,9 @@ void TestDropDecay() {
 // ── 09-28 B4b — 죽을 때 가방 떨어뜨리기(`dropAllItems_4EDA40`) · 부활 때 기본 장비 새로(`playerMakeDefItems_4EF7D0`) ─────────
 //   사용자 결정 09-28 「정할 것 셋 다 원본대로」 · 정품 녹음 `orig_arena_1851` 18:55:55.9(죽음)·18:56:07.9(부활)
 // ★ 10-01 R3 — 다시 열 때 사람 몫(`Server::RestartPlayers` 머리 주석 · 정품 맵 바꾸기 녹음 꼴)
-//   ① 점수·죽음 0 · 표식 비움 · 체력 가득 ② 되살림 `e9` — 유닛 있는 둘(a·b)만 · 모두에게(관전 c 포함) ③ a 의 새 기본 장비(롱소드 번호가 바뀜)
-//   ④ `4e` 점수 알림 — 게임 안 셋 모두에 대해 · 모두에게 ⑤ 계수 되살림 +2
+//   ① 점수·죽음 0 · 표식 비움 · 체력 가득 ② `e9` 를 **곧바로는 안 보낸다** — 다시 열기는 스냅샷 꼬리가 싣는다(R4 정정)
+//   ③ 가방 = 접속 때 기본 장비(번호 = 사람 번호 +1~ · 롱소드 번호 그대로) · 판 중에 얻은 물건은 빠짐
+//   ④ `4e` 점수 알림 — 게임 안 셋 모두에 대해 · 모두에게 ⑤ 계수 되살림 +2(관전 뺌)
 void TestRestartPlayers() {
     using nox::CharClass;
     const std::string a = "10.9.34.1:49701", b = "10.9.34.2:49702", c = "10.9.34.3:49703";
@@ -21382,6 +21508,9 @@ void TestRestartPlayers() {
     srv.DebugSetMark(a, 1);
     srv.DebugSetHealth(a, 20);
     const uint16_t aw0 = srv.DebugWeaponNet(a);
+    const size_t bag0 = srv.DebugInventory(a).size();
+    nox::Session::Carried extra; extra.netCode = 3999; extra.type = 2001;   // 판 중에 얻은 물건
+    srv.DebugGiveCarried(a, extra);
     const unsigned long long resp0 = srv.restartRespawned();
     std::vector<nox::OutPacket> out;
     srv.RestartPlayers(out);
@@ -21395,13 +21524,16 @@ void TestRestartPlayers() {
     char msg[260];
     std::snprintf(msg, sizeof(msg), "① 점수 %d · 표식 %d · 체력 %u/%u", srv.DebugScore(a), (int)srv.DebugMarkSet(a, 1), srv.HealthOf(a), srv.MaxHealthOf(a));
     Check(srv.DebugScore(a) == 0 && !srv.DebugMarkSet(a, 1) && srv.HealthOf(a) == srv.MaxHealthOf(a), msg);
-    std::snprintf(msg, sizeof(msg), "② e9 — a 에 대해 a·b·c %d·%d·%d · b 에 대해 %d·%d·%d · 관전 c 에 대해 %d(0)",
-                  count(a, kE9, 728), count(b, kE9, 728), count(c, kE9, 728), count(a, kE9, 733), count(b, kE9, 733), count(c, kE9, 733),
-                  count(a, kE9, 740) + count(b, kE9, 740) + count(c, kE9, 740));
-    Check(count(a, kE9, 728) == 1 && count(b, kE9, 728) == 1 && count(c, kE9, 728) == 1 && count(a, kE9, 733) == 1 &&
-          count(b, kE9, 733) == 1 && count(c, kE9, 733) == 1 && count(a, kE9, 740) + count(b, kE9, 740) + count(c, kE9, 740) == 0, msg);
-    std::snprintf(msg, sizeof(msg), "③ a 롱소드 번호 %u → %u(바뀌어야 · 0 아님)", aw0, srv.DebugWeaponNet(a));
-    Check(aw0 != 0 && srv.DebugWeaponNet(a) != 0 && srv.DebugWeaponNet(a) != aw0, msg);
+    int e9s = 0;
+    for (const std::string* to : { &a, &b, &c })
+        for (uint16_t nc : { uint16_t(728), uint16_t(733), uint16_t(740) }) e9s += count(*to, kE9, nc);
+    std::snprintf(msg, sizeof(msg), "② 곧바로 나간 e9 %d(0 — 스냅샷 꼬리 몫)", e9s);
+    Check(e9s == 0, msg);
+    bool extraGone = true;
+    for (const auto& it : srv.DebugInventory(a)) if (it.netCode == 3999) extraGone = false;
+    std::snprintf(msg, sizeof(msg), "③ a 롱소드 번호 %u → %u(그대로) · 가방 %zu(접속 때 %zu) · 판 중 얻은 것 빠짐 %d", aw0, srv.DebugWeaponNet(a),
+                  srv.DebugInventory(a).size(), bag0, (int)extraGone);
+    Check(aw0 != 0 && srv.DebugWeaponNet(a) == aw0 && srv.DebugInventory(a).size() == bag0 && extraGone, msg);
     int lessons = 0;
     for (const std::string* to : { &a, &b, &c })
         for (uint16_t nc : { uint16_t(728), uint16_t(733), uint16_t(740) }) lessons += count(*to, k4e, nc);
@@ -21409,7 +21541,7 @@ void TestRestartPlayers() {
     Check(lessons == 9, msg);
     std::snprintf(msg, sizeof(msg), "⑤ 되살림 계수 +%llu(2)", srv.restartRespawned() - resp0);
     Check(srv.restartRespawned() - resp0 == 2, msg);
-    std::printf("  다시 열 때 사람 — 점수·표식 0 · 유닛 있는 사람만 되살림(e9 모두에게) · 새 기본 장비 · 4e 모두\n");
+    std::printf("  다시 열 때 사람 — 점수·표식 0 · 유닛 있는 사람만 되살림(상태만 · e9 는 스냅샷이) · 접속 때 기본 장비 · 4e 모두\n");
 }
 
 void TestDeathDropRespawnGear() {
@@ -28581,6 +28713,7 @@ int main() {
     TestCorpseFilters();
     TestCorpseGaps();
     TestRoundFreeze();
+    TestReopenMap();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();

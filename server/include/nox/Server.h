@@ -3626,6 +3626,12 @@ public:
     unsigned long long mapResetStat(int i) const { return i >= 0 && i < 3 ? mapResetStat_[i] : 0; }   // 0 담음 · 1 되돌림 · 2 안 담은 채 되돌림(비우기만)
     // ★ 10-01 R3 — 다시 열 때 사람 몫(머리 주석은 `Server.cpp` `RestartPlayers`)
     void RestartPlayers(std::vector<OutPacket>& out);
+    // ★ 10-01 R4 — 맵 다시 열기(머리 주석은 `Server.cpp` `ReopenMap`)
+    void RejoinReset(Session& s);
+    void ReopenMap(std::vector<OutPacket>& out);
+    unsigned long long mapReopenStat(int i) const { return i >= 0 && i < 2 ? mapReopenStat_[i] : 0; }   // 0 USE_MAP 보냄(사람 수) · 1 맵 정보 없어 못 보냄
+    int DebugSnapshotIn(const std::string& a) const { auto it = sessions_.find(a); return it == sessions_.end() ? -99 : it->second.snapshotIn; }
+    bool DebugImportantReady(const std::string& a) const { auto it = sessions_.find(a); return it != sessions_.end() && it->second.importantReady; }
     unsigned long long restartRespawned() const { return restartRespawned_; }   // 다시 열며 되살린 사람 수(관전자 뺌)
     bool DebugMarkSet(const std::string& a, int i) const { auto it = sessions_.find(a); return it != sessions_.end() && i >= 0 && i < 4 && it->second.markSet[i]; }
     void DebugSetMark(const std::string& a, int i) { auto it = sessions_.find(a); if (it != sessions_.end() && i >= 0 && i < 4) it->second.markSet[i] = true; }
@@ -5735,6 +5741,7 @@ private:
     } mapInitial_;
     unsigned long long mapResetStat_[3] = {};
     unsigned long long restartRespawned_ = 0;                     // ★ 10-01 R3
+    unsigned long long mapReopenStat_[2] = {};                    // ★ 10-01 R4 — 0 USE_MAP 보냄 · 1 맵 정보 없어 못 보냄
     // 날아가는 것에 매길 번호.
     // ⚠ **진짜 서버가 번호를 어떻게 매기는지는 모른다.** 캡처에서 사람이 715·720·728 을
     //   받은 것만 봤다. 사람과 안 부딪히게 넉넉히 띄운 자리에서 시작할 뿐이다.

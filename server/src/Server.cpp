@@ -1785,9 +1785,12 @@ void Server::ResetWorldFromMap() {
 //   + 맵 다시 읽은 뒤 사람마다(`game.go:1170~1188`) 표식 칸 비우기(`sub_4EF660` +116~+128) · 시작 자리 · 점수·죽음 0 · `4e`(netReportLesson)
 //   ⭕ 정품 맵 바꾸기 녹음(`hj0928/orig_arena_1851` 18:53:59.671 · 클라 `c0` 뒤 스냅샷 안 중요 목록) —
 //      사람마다 `e9 <번호> … ff 01`(부활 · 셋) · 그 사람의 새 기본 장비 `4c`·`44`·`60`(새 번호 0x66·0x67 · 바지·신발은 다시 안 줌) · 사람마다 `4e` 점수 0(셋)
-//   ⇒ 우리 `PlayerRespawn`(체력·마나 · 버프·주문 끄기 · `e9` 모두에게 · `RespawnGear` · 시작 자리)이 그 꼴이라 그대로 부른다
 //   관전자는 안 되살린다(원본 `Players.ListUnits()` — 유닛 있는 사람만) · 점수 0 과 `4e` 는 게임 안 모두 · 팀 점수 0
-//   ⚠ 부르는 자리는 R4(맵 다시 열기)와 같이 — 클라에 `USE_MAP` 을 안 보내고 서버만 바꾸면 화면이 어긋난다
+//   ✖ 10-01 R4 에서 고침 — 처음엔 `PlayerRespawn` 을 그대로 불렀는데(`RespawnGear` = 새 번호 장비 + `e9`·`dd`·`de` 를 곧바로),
+//     다시 열기는 클라가 `USE_MAP` 에서 다 지우고 **스냅샷**으로 다시 받는다 — 우리 스냅샷 꼬리(`BuildSnapshotTail`)가
+//     `e9`·장비 넷(번호 = 사람 번호 +1~)·`dd`·`de` 를 이미 싣는다. 새 번호 장비를 따로 주면 꼬리 장비와 겹친다
+//     ⇒ 되살리기는 **상태만**(`PlayerRespawn` 의 체력·마나·버프·주문·마지막 피해·자리 몫) · 가방은 접속 때와 같은 `GiveDefaultGear`
+//     (정품은 새 번호로 다시 만든다 — 클라가 다 지운 뒤라 번호가 겹칠 일이 없어 결과는 같다 · 와이어 번호만 다름)
 void Server::RestartPlayers(std::vector<OutPacket>& out) {
     for (auto& kv : sessions_) {
         Session& s = kv.second;
@@ -1795,13 +1798,81 @@ void Server::RestartPlayers(std::vector<OutPacket>& out) {
         s.score = 0;
         s.deaths = 0;
         for (int i = 0; i < 4; ++i) s.markSet[i] = false;
-        if (!s.observer) {
-            PlayerRespawn(s, frame_, out);
-            ++restartRespawned_;
-        }
+        if (s.observer) continue;
+        // `PlayerRespawn` 의 상태 몫(`Server.cpp` PlayerRespawn 머리 · `GAME4.c:1420` playerRespawn_4F7EF0) — 알림은 스냅샷 꼬리가
+        s.health = s.maxHealth;
+        PlayerManaRefresh(s);
+        s.dmgRemainder = 0.0f;
+        s.respawnAtFrame = 0;
+        s.airborne = false;
+        PlayerSetState(s, kPlayerStateIdle, frame_);
+        ClearBuffs(Target{ s.addr, -1 });
+        PlayerCancelSpells(s.addr, out);
+        s.lastHit = Session::LastHit{};
+        // 가방 — 접속 때와 같은 기본 장비(번호 = 스냅샷 꼬리)
+        s.inventory.clear();
+        s.weaponNet = 0;
+        s.secondaryWeapon = 0;
+        GiveDefaultGear(s);
+        // 자리 — 시작 지점(`mapFindPlayerStart_4F7AB0` · `game.go:1172~1180`)
+        float sx = 0.0f, sy = 0.0f;
+        FindPlayerStart(s, sx, sy);
+        s.x = static_cast<int>(std::lround(sx));
+        s.y = static_cast<int>(std::lround(sy));
+        s.posX = sx; s.posY = sy;
+        s.prevX = sx; s.prevY = sy;
+        s.velX = s.velY = 0.0;
+        ++restartRespawned_;
     }
     for (auto& kv : sessions_) if (kv.second.inGame) SendLesson(kv.second, out);
     for (Team& t : teams_) t.score = 0;
+}
+
+// ★ 10-01 R4 — **사람별로 「새로 들어온 것처럼」** — 클라는 `USE_MAP` 에서 다 지운다(`network_client.go:241~258` `gameClearAll`)
+//   스냅샷 기다림(`snapshotIn` — 0 에서 준비 `c0` 를 기다린다 · 아래 스냅샷 자리) · 준비 깃발 끔 · 중요 대기열 비움(결정 ②) ·
+//   첫 갱신 · 별칭 · 정적 소개 · 비밀벽 앎 · 보이는 크리처 · 친구 알림 · 문 알림 · 체력 알림 · 바뀐 것 알림 — 11종(접속 때 처음 값)
+//   ⚠ 안 건드림 — 신뢰 번호(`seq`)·중요 번호: 정품도 다시 연 뒤 이어 매긴다(녹음 스냅샷의 `cc#33`·`#34`) · 사람 시계(`tickFrame`)
+void Server::RejoinReset(Session& s) {
+    s.snapshotIn = (standalone_ || !firstSnapshot_.empty()) ? kSnapshotDelayTicks : -1;
+    s.importantReady = false;
+    s.importantQ.clear();
+    s.sentFirstUpdate = false;
+    s.pendingIntro = false;
+    s.aliases = AliasTable{};
+    s.staticIntroAt.clear();
+    s.secretSeen.clear();
+    s.visibleCreatures.clear();
+    s.friendsSent.clear();
+    s.doorTold.clear();
+    s.hpReportedTo.clear();
+    s.pending.clear();
+}
+
+// ★ 10-01 R4 — **맵 다시 열기**(원본 판끝 10초 뒤 `server_C` — 맵 다시 읽기 → 모두에게 `USE_MAP` · `game.go:815~851·935~962`)
+//   ① 세계를 맵 처음 상태로(R2) ② 사람별 「새로 들어온 것처럼」 ③ 사람 몫(R3 — 중요 대기열을 비운 **뒤**에 넣어 `4e` 가 남는다)
+//   ④ 게임 안 모두에게 `USE_MAP`(시각 = 지금 시계 + 1 — 클라는 지난 USE_MAP 시각보다 커야 받는다 `network_client.go:247`)
+//   그다음은 처음 접속과 같은 길 — 시각(`27`)만 나가다가 클라 `c0` → 준비 → 스냅샷 → 평소 `[27 a4]`
+//   ⭕ 정품 꼴(`orig_arena_1851` 18:53:59) — `[2b]` → `[27]` 만 두 틱 → `c0` → 782B 스냅샷 → 평소
+void Server::ReopenMap(std::vector<OutPacket>& out) {
+    ResetWorldFromMap();
+    for (auto& kv : sessions_) if (kv.second.inGame) RejoinReset(kv.second);
+    RestartPlayers(out);
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) continue;
+        const uint32_t f = s.tickFrame + 1;
+        std::vector<uint8_t> um;
+        if (!useMapBody_.empty()) {
+            um = useMapBody_;
+            if (um.size() > kUseMapFrame + 3) PutU32(um.data() + kUseMapFrame, f);
+        } else if (standalone_) {
+            um = BuildUseMap(saMapName_, saMapCrc_, f);
+        }
+        if (um.empty()) { ++mapReopenStat_[1]; continue; }
+        Emit(s, /*reliable=*/true, /*stream=*/0, um.data(), um.size(), out);
+        ++useMapSent_;
+        ++mapReopenStat_[0];
+    }
 }
 
 void Server::SendRoundWinner(uint8_t op, uint16_t who, uint8_t reason, std::vector<OutPacket>& out) {
@@ -17112,6 +17183,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             kv.second.deaths = 0;
         }
         caps_[0] = caps_[1] = caps_[2] = 0;
+        // ★ 10-01 R4 — 맵을 다시 연다(세계 처음 상태 · 사람별 새로 들어온 것처럼 · 사람 몫 · 모두에게 `USE_MAP`) — `ReopenMap` 머리 주석.
+        //   퀘스트 웨이브보다 **앞**이어야 한다 — 세계 되돌리기가 크리처를 비우므로 뒤에 두면 새 웨이브까지 지운다
+        ReopenMap(out);
         // 퀘스트는 스테이지 1 부터 다시. 새 웨이브가 다음 틱에 밀려온다.
         if (questTotal_ > 0) {
             questStage_ = 0;
