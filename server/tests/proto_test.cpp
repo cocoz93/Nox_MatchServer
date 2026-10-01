@@ -13622,6 +13622,101 @@ void TestCorpseFilters() {
     std::printf("  시체 거르기 — 명령·밀기·커서·날아가는 주문 대상·근접·몸·독에서 시체가 빠지고 산 곰은 그대로 받음\n");
 }
 
+// ★ 10-01 — 시체 시험 공백 메우기(시체 플랜 조각 3 의 공백 넷 중 셋 · 망치는 시험 서버에 무기 표가 없어 그대로)
+//   ① 작살이 **붙은** 소환수가 죽으면 끊김(`spell_harpoon.go:266`) ② 작살이 **겨눈** 소환수가 날아가는 중에 죽으면 끊김(`:213`)
+//   ③ 떠 있는 발사체(픽시 0x4000)는 31 뒤 시체(SHORT 0x10)를 **지나가고** 산 곰에는 맞음(`sub_54E730` 0x11↔0x4000)
+void TestCorpseGaps() {
+    const std::string a = "10.10.6.1:1501";
+    // ①② 작살 — 워리어 a(1000) 앞에 맵 임프 하나
+    auto mkHarpoon = [&](nox::Server& srv, float px) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 1000, 1000);
+        RegHarpoonBolt(srv);
+        AllMetalButPlayer(srv);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1328, body);
+        LoadRealAttackAnims(srv);
+        srv.DebugSpawnPet(1328, px, 1000.0f, std::string());
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        srv.Tick(ms, o); ms += 34; srv.Tick(ms, o);
+        srv.DebugSetPetPos(0, px, 1000.0f);
+        srv.DebugSetAutoFight(false);
+        srv.DebugAbilAward(a, 3, false, o);
+        srv.DebugSetFacing(a, 0);
+        return ms;
+    };
+    char msg[240];
+    {
+        nox::Server srv;
+        uint32_t ms = mkHarpoon(srv, 1100.0f);
+        std::vector<nox::OutPacket> out;
+        const auto att0 = srv.harpoonTouch(nox::HarpoonTouch::Attached);
+        const bool fired = srv.DebugAbilDo(a, 3, out);
+        for (int t = 0; t < 30 && srv.harpoonTouch(nox::HarpoonTouch::Attached) == att0 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const bool attached = srv.harpoonTouch(nox::HarpoonTouch::Attached) > att0;
+        Check(fired && attached, "① 작살 전제 — 쏘아 임프에 붙지 못했다");
+        const auto td0 = srv.harpoonEnd(nox::HarpoonEnd::TargetDead);
+        srv.DebugHurt(std::string(), 0, 9999, a, 0, out);
+        srv.DebugHarpoonUpdate(a, out);
+        std::snprintf(msg, sizeof(msg), "① 붙은 임프가 죽음 — 「상대 죽음」 끊김 +%llu(1) · 화살 %u(0)",
+                      srv.harpoonEnd(nox::HarpoonEnd::TargetDead) - td0, static_cast<unsigned>(srv.DebugHarpoonBolt(a)));
+        Check(srv.DebugPetDead(0) && srv.harpoonEnd(nox::HarpoonEnd::TargetDead) - td0 == 1 && srv.DebugHarpoonBolt(a) == 0, msg);
+    }
+    {
+        nox::Server srv;
+        uint32_t ms = mkHarpoon(srv, 1250.0f);
+        srv.DebugAimAt(a, 1250, 1000);                         // 휘어 가기의 겨눔은 **사람이 겨눈 자리(커서)** 둘레에서 찾는다 — 안 두면 곧장 날아가 붙는다(첫 판)
+        std::vector<nox::OutPacket> out;
+        const auto aim0 = srv.harpoonAimFound();
+        const auto att0 = srv.harpoonTouch(nox::HarpoonTouch::Attached);
+        const bool fired = srv.DebugAbilDo(a, 3, out);
+        for (int t = 0; t < 30 && srv.harpoonAimFound() == aim0 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const bool aimed = srv.harpoonAimFound() > aim0 && srv.harpoonTouch(nox::HarpoonTouch::Attached) == att0 && srv.DebugHarpoonBolt(a) != 0;
+        std::snprintf(msg, sizeof(msg), "② 작살 전제 — 쏨 %d · 겨눔 +%llu · 붙음 +%llu · 화살 %u", fired ? 1 : 0, srv.harpoonAimFound() - aim0,
+                      srv.harpoonTouch(nox::HarpoonTouch::Attached) - att0, static_cast<unsigned>(srv.DebugHarpoonBolt(a)));
+        Check(fired && aimed, msg);
+        const auto ad0 = srv.harpoonEnd(nox::HarpoonEnd::AimDead);
+        srv.DebugHurt(std::string(), 0, 9999, a, 0, out);
+        srv.DebugHarpoonUpdate(a, out);
+        std::snprintf(msg, sizeof(msg), "② 겨눈 임프가 날아가는 중에 죽음 — 「겨눈 것 죽음」 끊김 +%llu(1) · 화살 %u(0)",
+                      srv.harpoonEnd(nox::HarpoonEnd::AimDead) - ad0, static_cast<unsigned>(srv.DebugHarpoonBolt(a)));
+        Check(srv.DebugPetDead(0) && srv.harpoonEnd(nox::HarpoonEnd::AimDead) - ad0 == 1 && srv.DebugHarpoonBolt(a) == 0, msg);
+    }
+    // ③ 픽시 — 컨저러 a 의 픽시 둘을 시체(곰 0, 31 뒤) 자리와 산 곰(1) 자리에 놓고 한 틱
+    {
+        nox::Server srv;
+        nox::Gamedata g;
+        g.Parse("PixieCount = 2, 3, 4, 5, 6;\n" "SummonDuration = 60, 210, 375;\n");
+        srv.SetGamedata(g);
+        srv.SetNamedType("Pixie", 672);
+        srv.SetSpellDef(58, 10, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 810, false, nox::CharClass::Conjurer);
+        srv.DebugMoveTo(a, 1000, 1000);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1365, body);
+        LoadRealAttackAnims(srv);
+        srv.DebugSpawnPet(1365, 1300.0f, 1000.0f, std::string());
+        srv.DebugSpawnPet(1365, 1500.0f, 1000.0f, std::string());
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        srv.DebugSetPetPos(0, 1300.0f, 1000.0f);
+        srv.DebugSetPetPos(1, 1500.0f, 1000.0f);
+        srv.DebugSetAutoFight(false);
+        srv.DebugHurt(std::string(), 0, 9999, a, 0, out);
+        for (int t = 0; t < 40 && !srv.DebugPetDeadDone(0); ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugPetDeadDone(0) && (srv.DebugPetObjFlags(0) & 0x10), "③ 전제 — 시체가 31 첫 갱신(SHORT)까지 못 갔다");
+        srv.DebugSpellAccept(a, 58, 1, out);                   // 세기 1 → 두 마리
+        Check(srv.missiles() == 2, "③ 전제 — 픽시가 둘이 아니다");
+        srv.DebugSetMissileXY(0, 1300.0f, 1000.0f);
+        srv.DebugSetMissileXY(1, 1500.0f, 1000.0f);
+        const uint16_t hp1 = srv.DebugPetHealth(1);
+        ms += 34; srv.Tick(ms, out);
+        std::snprintf(msg, sizeof(msg), "③ 픽시 — 남은 픽시 %zu(1 — 시체 위 것) · 산 곰 체력 %u→%u(깎여야)", srv.missiles(), hp1, srv.DebugPetHealth(1));
+        Check(srv.missiles() == 1 && srv.DebugPetHealth(1) < hp1, msg);
+    }
+    std::printf("  시체 공백 — 작살 붙은/겨눈 대상 죽음 끊김 · 떠 있는 픽시는 시체를 지나가고 산 곰에 맞음\n");
+}
+
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
 //
 // 정답지 `legacy/GAME5.c:924` `nox_xxx_mobActionEscort_546430`.
@@ -28086,6 +28181,7 @@ int main() {
     TestSummonFx();
     TestCorpse();
     TestCorpseFilters();
+    TestCorpseGaps();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();
