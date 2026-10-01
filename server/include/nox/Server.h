@@ -4402,6 +4402,9 @@ private:
     void MonsterActionCast(Creature& k, int a2, std::vector<OutPacket>& out);                             // `mobActionCast_5413B0`
     bool MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& target, float x, float y, std::vector<OutPacket>& out);   // `mobCast_541300` + `castSpell`
     Target EnergyBoltSearchPet(const Creature& k, float range) const;
+    // ★ 10-02 — 원본 거리 `nox_xxx_calcDistance_4E6C00` — 중심 거리 − 두 몸 크기(머리 주석은 `Server.cpp`)
+    double CalcDistanceEdge(const Creature& k, const Target& t, float tx, float ty) const;
+    unsigned long long edgeDistBoxUnknown() const { return edgeDistBoxUnknown_; }
     bool MonsterHasSpell(const Creature& k, uint8_t spell) const { for (const auto& s : k.spells) if (s.first == spell) return true; return false; }
     int PetIndexByNet(uint16_t net) const { for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == net) return static_cast<int>(i); return -1; }
     void DurOnNewSpell(std::vector<OutPacket>& out);                                                    // onNewSpell
@@ -5742,6 +5745,7 @@ private:
     unsigned long long mapResetStat_[3] = {};
     unsigned long long restartRespawned_ = 0;                     // ★ 10-01 R3
     unsigned long long mapReopenStat_[2] = {};                    // ★ 10-01 R4 — 0 USE_MAP 보냄 · 1 맵 정보 없어 못 보냄
+    mutable unsigned long long edgeDistBoxUnknown_ = 0;           // ★ 10-02 — 가장자리 거리에서 상자 몸이라 크기를 못 뺀 횟수(우리 몸 정보에 가로·세로 없음)
     // 날아가는 것에 매길 번호.
     // ⚠ **진짜 서버가 번호를 어떻게 매기는지는 모른다.** 캡처에서 사람이 715·720·728 을
     //   받은 것만 봤다. 사람과 안 부딪히게 넉넉히 띄운 자리에서 시작할 뿐이다.

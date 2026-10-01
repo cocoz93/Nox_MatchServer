@@ -12616,7 +12616,9 @@ void Server::MonsterBrain(Creature& k, std::vector<OutPacket>& out) {
     if (k.aggression >= 0.079999998f && moving && !(top >= 18 && top <= 20) && !k.buffs.Has(3) && !cornered) {
         const Target e{ k.enemyAddr, k.enemyPet };
         float ex = 0, ey = 0;
-        const double d = (!e.none() && TargetXY(e, ex, ey)) ? std::sqrt((ex - k.x) * (ex - k.x) + (ey - k.y) * (ey - k.y)) : 1e9;
+        // ★ 10-02 사람 판 3·5·6 「바짝 붙어도 점멸 안 함」 — 원본은 가장자리 거리(`calcDistance_4E6C00` · `GAME5.c:1366`)인데 중심 거리를 썼다.
+        //   비홀더(원 15)와 사람(10)이면 25 차이 — 점멸(절반 32.5 안)이 중심 57.5 가 아니라 32.5 에서야 걸려 몸이 닿아도 거의 안 맞았다
+        const double d = (!e.none() && TargetXY(e, ex, ey)) ? CalcDistanceEdge(k, e, ex, ey) : 1e9;
         // ★ 09-29 B7 — 주문 몬스터(STATUS 0x20)가 점멸(4)을 쥐고 · 반주문(29) 아니고 · 달아날 때 쉬는 때(+1484) 지났고 · 상대가 **도망 거리 절반** 안이면
         //   곧장 제 자리에 점멸(`mobCast_541300(4, 나, {나, 내 자리})` — 시전 행동 없이) · 쉬는 때 = 지금 + randomInt(0, 6초) → 끝(`:1368~1385`)
         if (d < static_cast<double>(bi.fleeRange) && (bi.status & 0x20) && MonsterHasSpell(k, 4) && !k.buffs.Has(29) && frame_ >= k.castNextEscape &&
@@ -13098,6 +13100,28 @@ bool Server::MonsterDurNew(Creature& k, uint8_t spell, const Target& target, con
 void Server::DurCancelForPet(uint8_t spell, uint16_t net, std::vector<OutPacket>& out) {
     if (net == 0) return;
     for (auto& d : durSpells_) if (d.spell == spell && d.casterPet == net && !(d.flags88 & 1)) DurCancel(d, out);
+}
+
+// ★ 10-02 — 원본 거리 `nox_xxx_calcDistance_4E6C00`(`GAME3_3.c:2377~2420`) — **중심 거리에서 두 몸의 크기를 뺀다**
+//   (원 = 반지름 +176 · 상자 = 가로 +184·세로 +188 중 큰 쪽 절반) · 0.01 아래면 0.01
+//   사람(NewPlayer)은 원 반지름 `kPlayerRadius` 10 · 크리처는 종류 몸(`typeBodies_`) · ⚠ 상자 몸은 우리 몸 정보에 가로·세로가 없어 0 으로 두고 센다
+//   ⚠ 원본은 몬스터 판단 여러 곳(조건 거리·점멸·거리 두기 · `unit_ai.go:131~206` 등)에서 이 거리를 쓴다 — 우리는 거의 중심 거리로 옮겼다
+//     (작살은 09-24 H4 에 따로 고침) · 이 함수는 10-02 점멸·거리 두기부터 씀 · 나머지 자리는 따로 셀 것
+double Server::CalcDistanceEdge(const Creature& k, const Target& t, float tx, float ty) const {
+    double d = std::sqrt((static_cast<double>(tx) - k.x) * (static_cast<double>(tx) - k.x) +
+                         (static_cast<double>(ty) - k.y) * (static_cast<double>(ty) - k.y));
+    auto half = [&](uint16_t type) -> double {
+        const auto it = typeBodies_.find(type);
+        if (it == typeBodies_.end()) return 0.0;
+        if (it->second.shape == 2) return static_cast<double>(it->second.r);
+        if (it->second.shape == 3) ++edgeDistBoxUnknown_;
+        return 0.0;
+    };
+    d -= half(k.type);
+    if (!t.addr.empty()) d -= kPlayerRadius;
+    else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) d -= half(pets_[static_cast<size_t>(t.pet)].type);
+    if (d < 0.0099999998) d = 0.0099999998;
+    return d;
 }
 
 // `spellEnergyBoltSetTarget_52EC60` 의 몬스터 시전자 판 — 둘레(번개 사거리) 안 · 자기 아님 · 살아 있음 · 적(`CreatureEnemyTo`) ·

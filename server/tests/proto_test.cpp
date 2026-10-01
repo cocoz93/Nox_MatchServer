@@ -23074,6 +23074,18 @@ void TestMonsterCastB7() {
         for (int t = 0; t < 40 && srv.brainStat(nox::BrainStat::KeepDistance) == 0; ++t) run(srv, ms, 1);
         Check(srv.castStat(CS::BlinkNear) == 0 && srv.brainStat(nox::BrainStat::KeepDistance) >= 1, "⑥' 50 앞 상대(절반 32.5 밖)인데 점멸했거나 거리 두기를 안 했다");
     }
+    // ⑥'' ★ 10-02 — 실물 몸(비홀더 원 15 · `--dump-thing Beholder`) — 중심 55 앞 = 가장자리 55 − 15 − 10 = 30 < 32.5 → 점멸
+    //   (원본 거리 `calcDistance_4E6C00` = 중심 − 두 몸 · 중심 거리로 재면 55 > 32.5 라 거리 두기로 빠졌다 — 사람 판 「바짝 붙어도 점멸 안 함」)
+    {
+        nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1055.0f, true);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 15.0f; body.cls = 0x2;
+        srv.SetTypeBody(1382, body);
+        for (int t = 0; t < 40 && srv.castStat(CS::BlinkNear) == 0; ++t) run(srv, ms, 1);
+        char msg[200];
+        std::snprintf(msg, sizeof(msg), "⑥'' 몸 15 비홀더 · 중심 55 앞(가장자리 30)인데 점멸 안 함 — 가까워 점멸 %llu · 거리 두기 %llu",
+                      srv.castStat(CS::BlinkNear), srv.brainStat(nox::BrainStat::KeepDistance));
+        Check(srv.castStat(CS::BlinkNear) == 1, msg);
+    }
     // ⑦ 도망(24) 중 후퇴(6)면 달아날 때 주문(4 · 자기) — 61·18(자기)
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1150.0f, true);
