@@ -113,9 +113,15 @@ inline size_t MessageSize(const uint8_t* p, size_t n, bool fromClient) {
         //
         // ⚠ 글자수 자리가 3 이 아닌 표본은 아직 못 봤다. 다른 값에서도 이 식이
         //   맞는지는 확인 못 했다.
+        //
+        // ✖ 10-01 정정 — **원본 서버 해독기 식(`5 + 2×글자수` · `network_server.go:211~222`)으로 바꾼다.**
+        //   ⑴ 위 「13바이트」는 그때 `aa` 를 몸 5 로 읽던 판 위에서 잰 것 · 글자수 3 이면 원본 식 11 + 끝 채움 `00 00` 으로도 맞는다
+        //      (인코더가 덧쓴 두 0 은 원본 서버도 안 읽는다 — 조각 끝이라 `0x00` 에서 멈출 뿐)
+        //   ⑵ 글자수 7 표본(10-01 자동 클라 `bb 00 c9 02 07 0d f0 ad f0 00…` · 남은 19)은 원본 식 19 와 꼭 맞고 옛 식(21)으로는 멈췄다
+        //   ⇒ 옛 식은 `aa` 몸 5 가 `bb` 첫 바이트를 먹어 가려져 있었다(`aa` 를 4 로 고치며 드러남)
         case static_cast<uint8_t>(Op::SERVER_CMD): {
             if (bn < 4) return 0;
-            const size_t need = 4 + 2 * static_cast<size_t>(b[3]) + 2;
+            const size_t need = 4 + 2 * static_cast<size_t>(b[3]);
             return bn < need ? 0 : 1 + need;
         }
         // INFORM — 첫 바이트가 알림 종류이고, 종류마다 크기가 정해져 있다

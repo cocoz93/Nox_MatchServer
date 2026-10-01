@@ -217,6 +217,9 @@ const int16_t kMsgBodyLen[256] = {
     /* 0xAA */    5,   // MSG_IMPORTANT  ★2026-09-07 실측 5 (손으로 채운 4 는 틀렸다).
                    //               표본 셋이 다 맞음 — 20B=2+12+6 · 30B=2+12+10+6 ·
                    //               195B=2+12+5+10x17+6. 4 면 1바이트가 남아 패킷이 통째로 버려졌다
+                   //   ✖ 10-01 정정 — **클라→서버는 4** 다(아래 `MsgBodyLenByDir` 0xAA 갈래). 「5」는 그때 뒤에 붙은
+                   //     `d4`(몸 0 · 09-10 확정)·`e0`(클라→서버 몸 2 · 09-11 확정)을 몰라 그 첫 바이트를 먹어 맞아 보인 것으로 읽힘(추정)
+                   //     · 이 칸(5)은 서버→클라 판독기 몫으로만 남는다
     /* 0xAB */    4,   // MSG_IMPORTANT_ACK  ← 손으로 채움 (근거는 genlen.go 의 extra)
     /* 0xAC */    4,   // MSG_MOUSE
     /* 0xAD */    0,   // MSG_INCOMING_CLIENT
@@ -374,6 +377,15 @@ int MsgBodyLenByDir(uint8_t op, bool fromClient) {
         //   ★★ 이 함수는 `WaitServerResponse` 로 **서버 답을 기다린다.** 버려서 답이 없으니
         //     클라가 깨끗하게 못 나갔고, 그것이 「재접속 안 됨」으로 보였다.
         case 0xAE: return fromClient ? 0 : kMsgBodyLen[op];
+
+        // ★★ 10-01 클라→서버 `0xaa MSG_IMPORTANT` 는 **본문 4**(번호 u32)다.
+        //   짜는 쪽 — 클라는 `nox_xxx_netImportant_4E5770(0x1F, 0)`(`client_only.go:83~85`)에서 `aa`+`gameFrame()` 4바이트를 쓴다
+        //     (`GAME3_3.c:2016~2019`) · 그 뒤는 중요 메시지 하나하나(맨몸 또는 `cc` 껍데기)
+        //   읽는 쪽 — 원본 서버 `server/network.go:145~155` 가 `return 5`(오프코드 1 + 번호 4)
+        //   ⚠ 표의 5 로 읽어 정품 판에서 `[aa +4][e0 +2]` 로 끝나는 조각이 **2초마다 통째로 버려졌다**
+        //     (사람 판 3 556 · 판 4 775 — 같이 실린 입력 `3f`·별칭·확인까지) · 근거 `개인 메모`
+        //   서버→클라는 `aa` 1바이트 + 껍데기 목록이라 판독기가 따로 걷는다(`opcount.cpp`) — 표의 5 는 그쪽 몫으로 둔다
+        case 0xAA: return fromClient ? 4 : kMsgBodyLen[op];
 
         default: return kMsgBodyLen[op];
     }

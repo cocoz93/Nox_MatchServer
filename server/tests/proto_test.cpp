@@ -1902,6 +1902,68 @@ void TestGoDecoderLengths() {
     std::printf("  Go 해독기 몫 길이 넷 — 0x2A·0x70·0x71·0x7C · `70 57` 뒤 메시지까지 쪼개짐\n");
 }
 
+// ★ 10-01 — 클라→서버 `aa` 몸 **4**(원본 `server/network.go:145~155`) · `bb` SERVER_CMD **5+2×글자수**(`network_server.go:211~222`)
+//   ① 길이표 — 클라→서버 4 · 서버→클라 칸 5 는 판독기 몫으로 그대로
+//   ② 정품 표본(사람 판 3 · 키 풀고 머리 뒤) `[3f …][a5 …][a5 …][ab +4][aa +4][e0 +2]` — 끝까지 쪼개지고 서버가 안 버림 · `e0` 까지 읽음
+//      (표가 5 이던 때는 `e0` 를 `aa` 몸으로 먹고 `cc 02` 에서 서서 조각째 버렸다 — 판 3 556 · 판 4 775)
+//   ③ 자동 클라 표본 `[aa +4][bb · 글자수 7 · 19B]` — 끝까지 · ④ 글자수 3 + 끝 채움 `00 00` 도 안 버림
+void TestC2SImportantLength() {
+    Check(nox::MsgBodyLenByDir(0xAA, /*fromClient=*/true) == 4, "① 0xaa 클라→서버 본문이 4 가 아님(`server/network.go:155`)");
+    Check(nox::MsgBodyLenByDir(0xAA, /*fromClient=*/false) == 5, "① 0xaa 서버→클라 칸(판독기 몫 5)이 바뀜");
+    auto split = [](const std::vector<uint8_t>& b, int* n) {
+        size_t q = 0; *n = 0;
+        while (q < b.size()) {
+            const size_t sz = nox::MessageSize(b.data() + q, b.size() - q, /*fromClient=*/true);
+            if (sz == 0 || q + sz > b.size()) break;
+            q += sz; ++*n;
+        }
+        return q;
+    };
+    const std::vector<uint8_t> retail = {
+        0x3f, 0x0a, 0x01, 0x00, 0x00, 0x00, 0x0c, 0x01, 0x00, 0x00, 0x97, 0x0c,
+        0xa5, 0xc9, 0xc9, 0x02, 0xc9, 0x02, 0x67, 0x37, 0x00, 0x00,
+        0xa5, 0xce, 0xce, 0x02, 0xc9, 0x02, 0x67, 0x37, 0x00, 0x00,
+        0xab, 0x2b, 0x37, 0x00, 0x00,
+        0xaa, 0x2b, 0x37, 0x00, 0x00,
+        0xe0, 0xcc, 0x02 };
+    const std::vector<uint8_t> autoCli = {
+        0xaa, 0x1a, 0x6d, 0x00, 0x00,
+        0xbb, 0x00, 0xc9, 0x02, 0x07, 0x0d, 0xf0, 0xad, 0xf0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const std::vector<uint8_t> cmd3 = {
+        0xbb, 0x00, 0xc9, 0x02, 0x03, 0x61, 0x00, 0x62, 0x00, 0x63, 0x00, 0x00, 0x00 };
+    char msg[200];
+    int n = 0;
+    size_t q = split(retail, &n);
+    std::snprintf(msg, sizeof(msg), "② 정품 표본 — 쪼갠 끝 %zu/%zu · 메시지 %d(기대 6)", q, retail.size(), n);
+    Check(q == retail.size() && n == 6, msg);
+    q = split(autoCli, &n);
+    std::snprintf(msg, sizeof(msg), "③ 자동 클라 표본 — 쪼갠 끝 %zu/%zu · 메시지 %d(기대 2)", q, autoCli.size(), n);
+    Check(q == autoCli.size() && n == 2, msg);
+    std::snprintf(msg, sizeof(msg), "④ 글자수 3 `bb` 가 %zu 바이트(기대 11 · 끝 `00 00` 은 채움)",
+                  nox::MessageSize(cmd3.data(), cmd3.size(), /*fromClient=*/true));
+    Check(nox::MessageSize(cmd3.data(), cmd3.size(), /*fromClient=*/true) == 11, msg);
+
+    // 서버가 받는 자리 — 버림 0 · 뒤의 `e0`·`bb` 까지 읽음
+    nox::Server srv;
+    const std::string a = "10.9.6.1:41061";
+    srv.DebugEnterGame(a, 728);
+    auto feed = [&](const std::vector<uint8_t>& body) {
+        std::vector<uint8_t> pkt = { 0x01, 0x04 };
+        pkt.insert(pkt.end(), body.begin(), body.end());
+        std::vector<nox::OutPacket> out;
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+    };
+    auto seenOf = [&](uint8_t op) { auto it = srv.seen().find(op); return it == srv.seen().end() ? 0ull : it->second; };
+    const unsigned long long st0 = srv.stopped(), e00 = seenOf(0xE0), bb0 = seenOf(0xBB), aa0 = seenOf(0xAA);
+    feed(retail);
+    feed(autoCli);
+    feed(cmd3);
+    std::snprintf(msg, sizeof(msg), "②③④ 서버 — 버린 조각 +%llu(0) · e0 +%llu(1) · bb +%llu(2) · aa +%llu(2)",
+                  srv.stopped() - st0, seenOf(0xE0) - e00, seenOf(0xBB) - bb0, seenOf(0xAA) - aa0);
+    Check(srv.stopped() == st0 && seenOf(0xE0) - e00 == 1 && seenOf(0xBB) - bb0 == 2 && seenOf(0xAA) - aa0 == 2, msg);
+    std::printf("  클라→서버 aa 몸 4 · bb 5+2×글자수 — 정품·자동 클라 표본 끝까지 · 서버 버림 0\n");
+}
+
 // ── 판 시계 물음(0xd4) · 정상 종료(0x0a) ────────────────────────────────
 //
 // ★ `0xd4` 는 **조각을 죽이던 자리**다. 길이표가 `-1` 이라 그 조각을 통째로 버렸고,
@@ -3334,6 +3396,7 @@ void TestBundleOneDatagram() {
     {
         std::vector<nox::OutPacket> out;
         // 클라→서버 `aa` 몸은 우리 길이 표로 5(`MsgLen.cpp:214` 「실측 5」) — 앞 4 가 확인 번호
+        //   ✖ 10-01 — 몸은 4(`TestC2SImportantLength`) · 끝의 `00` 은 채움으로 읽혀 거기서 끝난다(결과 같음)
         const auto imp = WireOf({ static_cast<uint8_t>(nox::Op::IMPORTANT), 0x11, 0x22, 0x33, 0x44, 0x00 });
         const unsigned long long m0 = srv.bundleStat(BS::InMisc);
         srv.OnPacket(a, imp.data(), imp.size(), out);
@@ -28090,6 +28153,7 @@ int main() {
     TestChat();
     TestTimerAskAndClose();
     TestGoDecoderLengths();
+    TestC2SImportantLength();
     TestPickup();
     TestUseAndEquip();
     TestUseFromFile();

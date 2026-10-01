@@ -160,6 +160,8 @@ int main(int argc, char** argv) {
             //     opennox 소스는 소비 5(본문 4)로 읽히지만 **우리 실측은 본문 5 다.**
             //   ★ **서버→클라에만** 쓴다. 클라→서버는 표의 5 가 실측으로 맞고,
             //     껍데기 순회를 그쪽까지 쓰면 RECV 미판독이 9 → 69 로 늘었다.
+            //   ✖ 10-01 정정 — 클라→서버 몸은 **4** 다(`MsgLen.cpp` `MsgBodyLenByDir` 0xAA 갈래 · 원본 `server/network.go:145~155`).
+            //     09-08 의 「4 로 바꾸니 폭증」은 그때 `d4`·클라→서버 `e0`·`bb` 길이가 틀려 있던 탓으로 읽힌다(추정 · `nox-c2s-aa-length.md`)
             if (op == (int)nox::Op::IMPORTANT && send) {
                 size_t q = eaten + 1;
                 bool sane = false;
