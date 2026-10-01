@@ -17059,6 +17059,16 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         std::fflush(stdout);
     }
 
+    // ★ 10-01 R1 — **판끝 동안 세계를 멈춘다**(원본은 판끝 깃발 `GameFlag4` 가 서 있으면 `server_B` 를 안 부른다 —
+    //   유닛·능력·각본·`updateRemotePlayers`(사람별 시각·갱신 짜기) 전부 · 보내기 `server_A2` 만 · `game.go:790~801` · `server.go:325~362·435~470`).
+    //   막는 것 일곱 묶음 — 사람 걸음(이동·공격·나는 것·버프·시전 목록) · 크리처 생각·시체 정리 · 소환수 용암 피해 ·
+    //     깃발·공·투표·덫·비밀벽·탈락전·문 · 놓인 물체·버린 물건·독 · 사람별 `27`·`a4`·정적 소개·비밀벽 맞춤
+    //   남기는 것 — 재시작 · 세션 정리 · 진단 스위치 · 소리 보내기 · 중요 메시지(Kind1 은 원본도 나감 · `network_lists.go:206~224`) ·
+    //     판 시계 · 지연 보고 · 새로 온 사람 스냅샷
+    //   판이 끝난 **그 틱**은 끝까지 돈다(여기서 한 번 읽는다) · 받은 패킷이 바로 하는 일(줍기·입기 등 `OnPacket`)은 안 막는다(원본도 `server_B` 밖)
+    const bool frozen = roundOver_;
+    if (frozen) ++roundFrozenTicks_;
+
     // ── 자리 비우기 — **조용해진 세션을 걷어낸다** ──
     //
     // 지우는 자리가 아예 없었다. 클라를 죽이면 세션이 그대로 남아 사람 수에 계속
@@ -17407,7 +17417,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
     // ── 사람을 걷게 하고 때리게 한다 (묶음 2-a · 3-a) — 걸음마다 제 프레임으로 ──
     //    그 틱의 시전 목록도 함께(spellBookReact_4FCB70 — 정답지는 유닛 갱신 뒤 · server.go:341)
-    for (int step = 0; step < ticks; ++step) {
+    for (int step = 0; step < ticks && !frozen; ++step) {                                    // R1 — 판끝 동안 멈춤
         UpdatePlayerMovement(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
         SpellCastByBook(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
         SpellCastByPlayer(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);   // 4-a3 지속 주문(spellBookReact_4FCB70)
@@ -17430,7 +17440,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     // ⚠ 속도는 **틱마다 0 으로 되돌린다** — 정답지는 물리가 깎지만 우리는 그 자리가 없다.
     //   안 되돌리면 때리는 동안에도 지난 속도로 밀려간다
     // ⚠ 때리다 상대가 죽으면 **목록이 바뀐다** — 크기가 바뀌면 그 걸음을 접는다
-    for (int step = 0; step < ticks && !pets_.empty(); ++step) {
+    for (int step = 0; step < ticks && !pets_.empty() && !frozen; ++step) {                  // R1 — 판끝 동안 멈춤
         const size_t before = pets_.size();
         for (size_t pi = 0; pi < pets_.size(); ++pi) {
             Creature& k = pets_[pi];
@@ -17526,7 +17536,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
         if (pets_.size() != before) break;
     }
-    FlushDeadPets(out);                                      // ★ 10-01 — 썩은 시체·지울 표시(AI 를 다 돈 뒤 한꺼번에)
+    if (!frozen) FlushDeadPets(out);                         // ★ 10-01 — 썩은 시체·지울 표시(AI 를 다 돈 뒤 한꺼번에) · R1 판끝 동안 멈춤
 
     // ★ 09-27 S2 — 소환수·맵 몬스터 바닥 칸 피해(`GAME4_1.c:3240~3245` — 사람 몫은 09-26 M3). 정답지는 이동 적분 목록의 오브젝트마다
     //   **서 있어도** 새 자리(+64)의 바닥 번호가 6(Lava)이고 떠 있지 않고(+16 & 0x4000 — thing.bin FLAGS AIRBORNE) 체력 자료(+556)가 있으면 짝 (나, 6) →
@@ -17534,7 +17544,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     //   몸 모르는 종류는 깃발도 모른다 → 안 떠 있는 것으로 본다(지진과 같은 규칙).
     //   ⚠ 안 옮긴 것 — 적분을 건너뛰는 두 경우(`:3201` 오브젝트 깃발 0x2 · 몬스터 행동 67) · 짝 목록 대신 바로 피해 함수(순서만 다르다)
     //   뒤에서부터 돈다 — 피해로 죽으면 자리 번호가 당겨지기 때문
-    for (size_t i = pets_.size(); i-- > 0;) {
+    for (size_t i = frozen ? 0 : pets_.size(); i-- > 0;) {                                   // R1 — 판끝 동안 멈춤
         const Creature& k = pets_[i];
         if (k.health == 0) continue;
         const auto tb = typeBodies_.find(k.type);
@@ -17583,6 +17593,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     //   정답지는 스냅샷 꼬리(첫 playerReportAnything 몫 dd·de·48·43 — SnapshotTail.cpp #21·#22)뿐이고, 그 뒤는 바뀔 때만(PlayerReportAnything).
     //   되풀이가 필요했던 까닭(cc 가 접속 직후 막힘)은 7821fc7 대기열로 해소됐다.
 
+    if (!frozen) {                                            // R1 — 판끝 동안 멈춤
     UpdateFlags(out);
     UpdateBall(out);          // 8-d 플래그볼
     VoteUpdate(out);          // 8-e 투표
@@ -17591,6 +17602,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     CheckVictorySurvivors(out);   // 8-g — 탈락전에서 하나만 남았나(`server.go:143`)
     if (gameSettings_.timeLimitFrames != 0 && frame_ >= gameSettings_.timeLimitFrames) RoundTimeUp(out);
     UpdateProps(out);   // 문·오벨리스크 (P5)
+    }
     GiveTestItems(out); // ★ 09-30 사람 판 시험용(`--give-items` 가 없으면 아무것도 안 함)
     // 10-a — 이 틱에 울린 소리를 보낸다.
     //   ★ **모든 갱신이 끝난 뒤에야** 한다 — 정답지도 분배자에서 모아 보낸다
@@ -17599,9 +17611,11 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
 
     // (4-a4) 무적 켜짐·꺼짐 비교 루프는 걷어냄 — 버프가 바뀌는 자리(setUnitBuffFlags)가 곧바로 `5a` 를 올린다
 
+    if (!frozen) {                                         // R1 — 판끝 동안 멈춤
     UpdatePlaced(out);                                     // 4-c3 놓인 오브젝트(독구름 …)의 주기 함수·수명
     DecayStatics(out);                                     // ★ 09-28 버린 물건 10초 사라짐(`decay_511750` · `server.go:142`)
     PoisonTick(out);                                       // 4-c2a 독 — 감쇠와 피해(server.go 의 유닛 갱신 자리)
+    }
 
     // ★ R4 — 이 틱에 바뀐 것들을 각자에게 보내고 목록을 비운다.
     //   정품의 「비트가 켜진 것만 보내고 곧바로 끈다」와 같은 자리다.
@@ -17858,6 +17872,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             s.tickFrameSet = true;
         }
         ++s.tickFrame;
+        // R1 — 판끝 동안은 시각·갱신을 안 짠다(원본 `updateRemotePlayers` 가 안 돎) · 시계는 계속 센다(원본 프레임도 `server_E` 에서 오름) ·
+        //   중요 메시지는 보낸다(원본 `sendPoll` 은 시각이 없어도 Kind1·중요를 싣는다 — `network_lists.go:185·206~224`)
+        if (frozen) { FlushImportant(s, out); continue; }
 
         // ① 시각 — 본문 2바이트(LE16). 클라는 이 값으로 프레임을 맞춘다.
         {

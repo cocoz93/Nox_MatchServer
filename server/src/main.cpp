@@ -3475,6 +3475,7 @@ int main(int argc, char** argv) {
                     }
                     std::printf("\n");
                 }
+                std::printf("[판끝멈춤] 멈춘 틱 %llu\n", srv.roundFrozenTicks());   // ★ 10-01 R1
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
                             " · 문 %llu(되맞춤 %llu·가장가까이 %.0f) · 오벨리스크 %llu(옆인데줄것없음 %llu) · **밟는판(눌림 %llu·뗌 %llu)**"

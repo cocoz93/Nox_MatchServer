@@ -13923,6 +13923,94 @@ void TestCorpseGaps() {
     std::printf("  시체 공백 — 작살 붙은/겨눈 대상 죽음 끊김 · 떠 있는 픽시는 시체를 지나가고 산 곰에 맞음\n");
 }
 
+// ★ 10-01 R1 — 판끝 동안 세계 멈춤(원본은 판끝 깃발이 서 있으면 `server_B` 를 안 부른다 · `game.go:790~801`)
+//   ① 판끝 전 — 크리처(맵 임프)·사람(걷기 입력을 틱마다 보냄)이 움직이고 묶음에 `27`·`a4` ② 판끝 뒤 30틱 — 둘 다 그 자리 · 묶음에 `27`·`a4` 없음 ·
+//   중요 메시지(`aa`)는 나감 · 멈춘 틱 계수 ③ 다시 열기 직전 틱까지 그 자리 · 다시 열면 사람이 다시 걷고 `27`·`a4`
+//   ⚠ 안 보는 것 — 소환수 용암 · 깃발·문·덫 같은 세계 갱신 · 놓인 물체·버린 물건·독(관문은 같은 `frozen` 한 값 — 코드로만 봄)
+//   ⚠ 첫 판은 나는 것으로 보려 했는데 픽시가 판끝 전에도 안 움직여(목표가 멀어 떠 있기만) 사람 걸음으로 바꿈 ·
+//     ③ 을 「다시 연 뒤 임프가 움직이나」로 보면 이미 붙어 때리는 중이라 안 움직임 — 걷기 입력을 계속 주는 사람으로 봄
+void TestRoundFreeze() {
+    const std::string a = "10.9.32.1:49501", b = "10.9.32.2:49502";
+    nox::Server srv;
+    srv.DebugEnterGame(a, 790, false, nox::CharClass::Conjurer);
+    srv.DebugEnterGame(b, 791, false, nox::CharClass::Wizard);
+    srv.DebugMoveTo(a, 1500, 1000);                             // 임프에서 200 — 첫 판에서 쫓는 것을 본 거리(300 은 안 쫓음)
+    srv.DebugMoveTo(b, 1000, 1600);
+    srv.DebugAimAt(b, 3000, 1600);                              // 커서 멀리 — 걷기 입력이면 오른쪽으로 달림
+    srv.DebugImportantReal(a, /*ready=*/true);                // a 는 묶음 길(진짜 경로)
+    nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+    srv.SetTypeBody(1328, body);
+    LoadRealAttackAnims(srv);
+    srv.DebugSpawnPet(1328, 1300.0f, 1000.0f, std::string());   // 맵 임프 — a 를 노린다
+    std::vector<nox::OutPacket> out;
+    uint32_t ms = 0;
+    srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+    std::vector<uint8_t> walk = InputPacket(2);
+    walk[nox::kWireHeaderSize + 1] = 5;
+    walk.push_back(0);
+    auto pos = [&](double& px, double& py, float& mx, float& my) {
+        srv.DebugPetXY(0, px, py);
+        mx = static_cast<float>(srv.XOf(b));
+        my = static_cast<float>(srv.YOf(b));
+    };
+    auto run = [&](int n, bool* saw27, bool* sawA4, bool* sawAa) {
+        *saw27 = *sawA4 = *sawAa = false;
+        for (int t = 0; t < n; ++t) {
+            out.clear();
+            srv.OnPacket(b, walk.data(), walk.size(), out);
+            ms += 34; srv.Tick(ms, out);
+            for (const auto& p : out) {
+                if (p.to != a) continue;
+                for (uint8_t op : BundleOps(Body(p))) {
+                    if (op == 0x27) *saw27 = true;
+                    if (op == 0xa4) *sawA4 = true;
+                    if (op == 0xaa) *sawAa = true;
+                }
+            }
+        }
+    };
+    char msg[260];
+    double px0, py0, px1, py1; float mx0, my0, mx1, my1;
+    bool s27, sA4, sAa;
+    // ① 판끝 전
+    pos(px0, py0, mx0, my0);
+    run(10, &s27, &sA4, &sAa);
+    pos(px1, py1, mx1, my1);
+    const bool petMoved0 = (px1 != px0 || py1 != py0), walked0 = (mx1 != mx0 || my1 != my0);
+    std::snprintf(msg, sizeof(msg), "① 판끝 전 — 임프 움직임 %d · 사람 걸음 %d(x %.0f→%.0f) · 27 %d · a4 %d", (int)petMoved0, (int)walked0,
+                  mx0, mx1, (int)s27, (int)sA4);
+    Check(petMoved0 && walked0 && s27 && sA4, msg);
+    // ② 판끝 뒤 30틱
+    srv.DebugEndRound();
+    const unsigned long long fr0 = srv.roundFrozenTicks();
+    pos(px0, py0, mx0, my0);
+    run(15, &s27, &sA4, &sAa);
+    srv.DebugGiveExp(a, 50.0f, out);                            // 판끝 동안 중요 메시지 하나(`6e`)
+    bool s27b, sA4b;
+    run(15, &s27b, &sA4b, &sAa);
+    pos(px1, py1, mx1, my1);
+    std::snprintf(msg, sizeof(msg), "② 판끝 동안 — 임프 그대로 %d · 사람 그대로 %d(x %.0f→%.0f) · 27 %d · a4 %d · 중요 aa %d · 멈춘 틱 +%llu(30)",
+                  (int)(px1 == px0 && py1 == py0), (int)(mx1 == mx0 && my1 == my0), mx0, mx1,
+                  (int)(s27 || s27b), (int)(sA4 || sA4b), (int)sAa, srv.roundFrozenTicks() - fr0);
+    Check(px1 == px0 && py1 == py0 && mx1 == mx0 && my1 == my0 && !(s27 || s27b) && !(sA4 || sA4b) && sAa &&
+          srv.roundFrozenTicks() - fr0 == 30, msg);
+    // ③ 다시 열기 직전 틱까지 그 자리 · 다시 열면 다시 걷는다
+    bool stillUntilRestart = true;
+    int guard = 0;
+    while (srv.roundsPlayed() == 0 && guard++ < 400) {
+        float bx = static_cast<float>(srv.XOf(b));
+        run(1, &s27, &sA4, &sAa);
+        if (srv.roundsPlayed() == 0 && static_cast<float>(srv.XOf(b)) != bx) stillUntilRestart = false;
+    }
+    pos(px0, py0, mx0, my0);
+    run(10, &s27, &sA4, &sAa);
+    pos(px1, py1, mx1, my1);
+    std::snprintf(msg, sizeof(msg), "③ 다시 연 뒤 — 판 수 %llu · 직전까지 그대로 %d · 사람 걸음 %d(x %.0f→%.0f) · 27 %d · a4 %d", srv.roundsPlayed(),
+                  (int)stillUntilRestart, (int)(mx1 != mx0 || my1 != my0), mx0, mx1, (int)s27, (int)sA4);
+    Check(srv.roundsPlayed() == 1 && stillUntilRestart && (mx1 != mx0 || my1 != my0) && s27 && sA4, msg);
+    std::printf("  판끝 멈춤 — 크리처·사람 그 자리 · 27·a4 안 짬 · 중요는 나감 · 다시 열면 다시 돎\n");
+}
+
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
 //
 // 정답지 `legacy/GAME5.c:924` `nox_xxx_mobActionEscort_546430`.
@@ -28391,6 +28479,7 @@ int main() {
     TestCorpse();
     TestCorpseFilters();
     TestCorpseGaps();
+    TestRoundFreeze();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();

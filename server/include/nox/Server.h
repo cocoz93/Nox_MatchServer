@@ -3617,6 +3617,8 @@ public:
     unsigned long long chats() const { return chats_; }
     // 몇 판을 마쳤나. 0 이면 아직 한 판도 안 끝난 것이다.
     unsigned long long roundsPlayed() const { return roundsPlayed_; }
+    unsigned long long roundFrozenTicks() const { return roundFrozenTicks_; }   // ★ 10-01 R1 — 판끝이라 세계를 멈춘 틱 수
+    void DebugEndRound() { roundOver_ = true; restartAtFrame_ = frame_ + kRoundRestartTicks; }   // ★ 10-01 R1 시험용 — 승자 알림 없이 판끝만
     // 깃발 HUD 를 몇 번 보냈나. **매 틱 수준으로 오르면 과잉이다**(0x5e 270배 사고 참조).
     unsigned long long flagStatusSent() const { return flagStatusSent_; }
     // 부활 무적이 막은 피해 횟수. 0 이면 무적이 한 번도 안 걸린 것이다.
@@ -5524,6 +5526,7 @@ private:
     unsigned long long monsterAnimSent_[16] = {};                 // ★ 10-01 — 몬스터 갱신 항목에 실은 애니 번호(0~15)별 · 보는 사람마다 한 번씩
     unsigned long long summonOwnSent_[3] = {};                    // ★ 10-01 — 주인에게 보낸 소유 알림 0 `6c` 얻음 · 1 `dd` 총체력 · 2 `6d` 잃음
     unsigned long long secondaryWeaponStat_[4] = {};              // ★ 10-01 — 클라 `e0` 대체 무기 갈래 0 비움(번호 0) · 1 가방에 없음 · 2 맞음 · 3 직업·힘 안 맞아 되돌림
+    unsigned long long roundFrozenTicks_ = 0;                     // ★ 10-01 R1 — 판끝이라 세계를 멈춘 틱 수(`Tick` 의 `frozen`)
     unsigned long long summonFxSent_[2] = {};                     // ★ 10-01 — 소환 효과 0 `7e` 시작 · 1 `7f` 끊김(소환 한 번에 하나씩)
     uint16_t summonFxNext_ = 0;                                   // ★ 10-01 — 다음 효과 번호(원본 0x5D4594+1570276 · 0xFDE8 에 닿으면 0)
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };
