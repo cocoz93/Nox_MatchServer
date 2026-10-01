@@ -4063,6 +4063,12 @@ public:
     unsigned long long corpseStat(int i) const { return i >= 0 && i < 4 ? corpseStat_[i] : 0; }   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움 · 3 동시 시체 최대
     bool DebugPetDead(size_t i) const { return i < pets_.size() && pets_[i].dead; }
     uint32_t DebugPetObjFlags(size_t i) const { return i < pets_.size() ? PetObjFlags(pets_[i]) : 0; }
+    // ★ 10-01 시체 거르기 시험용 — 명령 · 둘레 밀기 · 날아가는 주문 대상 고르기를 바로 부른다
+    void DebugOrder(const std::string& addr, uint16_t net, uint8_t order) { auto it = sessions_.find(addr); if (it != sessions_.end()) OrderUnit(it->second, net, order); }
+    void DebugPushAround(float cx, float cy, float outer, float inner, float power) { PushUnitsAround(cx, cy, outer, inner, power); }
+    Target DebugFlySearch(float x, float y, const std::string& owner, float dist) const {
+        return SpellFlySearchTarget(true, x, y, x, y, owner, std::string(), 0, dist, nullptr, nullptr);
+    }
     uint32_t DebugPetDecayFrame(size_t i) const { return i < pets_.size() ? pets_[i].decayFrame : 0; }
     // ── 조각 D(09-16) 신설 계수기 — 「눈이 없어 못 재던 것」을 재는 자리 ──
     //   ★ 소리는 **셋으로 갈라 센다.** 합치면 「안 불렀다」와 「불렀는데 표가 비어 버렸다」와

@@ -13448,6 +13448,127 @@ void TestCorpse() {
     std::printf("  시체 — 죽어도 남음 · [0 31 30] → 31 · 소환수 10~20초 뒤 썩어 31 지우기 · 맵 몬스터 안 썩음 · 다시 안 죽음 · 싸움 안 쌓음\n");
 }
 
+// ★ 10-01 — 시체 거르기(시체 플랜 조각 3): 원본이 DEAD 를 빼는 자리에서 시체가 빠지나 · 자리마다 **살아 있는 대조군**과 짝으로
+//   (`nox-corpse-loops.md` 「새로 뺌」 · 몸 깃발 · 작살 · 독) · 곰 0 = 시체가 될 것 · 곰 1 = 산 것
+//   ⚠ 발사체(`UpdateMissiles` passFlags)는 시험 없음 — 시험 서버에 떠 있는 발사체 깃발(0x4000)을 만들 길이 없다(진행 파일에 적음)
+void TestCorpseFilters() {
+    const std::string a = "10.10.5.1:1401", b = "10.10.5.2:1402";
+    auto mk = [&](nox::Server& srv, const std::string& owner, float x0, float x1) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugTeleport(a, 600.0f, 1000.0f);
+        srv.DebugTeleport(b, 1600.0f, 1000.0f);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv.SetTypeBody(1365, body);
+        LoadRealAttackAnims(srv);
+        srv.DebugSpawnPet(1365, x0, 1000.0f, owner);
+        srv.DebugSpawnPet(1365, x1, 1000.0f, owner);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv.DebugSetPetPos(0, x0, 1000.0f);
+        srv.DebugSetPetPos(1, x1, 1000.0f);
+        srv.DebugSetAutoFight(false);                           // 산 곰이 움직여 자리를 흐리지 않게(시체를 만들기 전에 — 이 손잡이는 쌓임을 비운다)
+    };
+    // 죽이고 31 첫 갱신까지(몸 0x18 · 끝남) 돌린다
+    auto killToCorpse = [&](nox::Server& srv, size_t i, uint32_t& ms, std::vector<nox::OutPacket>& o) {
+        srv.DebugHurt(std::string(), static_cast<int>(i), 9999, b, 0, o);
+        for (int t = 0; t < 40 && !srv.DebugPetDeadDone(i); ++t) { ms += 34; srv.Tick(ms, o); }
+        Check(srv.DebugPetDead(i) && srv.DebugPetDeadDone(i), "시체 만들기 전제 — 31 첫 갱신까지 못 갔다");
+    };
+    char msg[240];
+    // ① 명령 「지켜(3)」 — 산 곰은 쌓임을 비우고 4 · 시체는 [31] 그대로(원본은 죽을 때 주인을 지워 명령 목록 밖 `GAME4_1.c:504`)
+    {
+        nox::Server srv; mk(srv, a, 1000.0f, 1100.0f);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        killToCorpse(srv, 0, ms, o);
+        srv.DebugOrder(a, 0, 3);                                // 번호 0 = 내 것 전부
+        srv.DebugOrder(a, srv.DebugPetNet(0), 3);               // 시체 번호로 콕 집어도
+        std::snprintf(msg, sizeof(msg), "① 명령 — 산 곰 맨 위 %d(4) · 시체 맨 위 %d·[%d](0·[31])", srv.DebugAIAction(1, srv.DebugAIStackInd(1)),
+                      srv.DebugAIStackInd(0), srv.DebugAIAction(0, 0));
+        Check(srv.DebugAIAction(1, srv.DebugAIStackInd(1)) == 4 && srv.DebugAIStackInd(0) == 0 && srv.DebugAIAction(0, 0) == 31, msg);
+    }
+    // ② 둘레 밀기 — 산 곰은 밀리고 시체는 안 밀림(`isObjectMovable_52E020` 0x8068)
+    {
+        nox::Server srv; mk(srv, std::string(), 1000.0f, 1100.0f);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        killToCorpse(srv, 0, ms, o);
+        double x0 = 0, y0 = 0, x1 = 0, y1 = 0, x0b = 0, y0b = 0, x1b = 0, y1b = 0;
+        srv.DebugPetXY(0, x0, y0); srv.DebugPetXY(1, x1, y1);
+        srv.DebugPushAround(1050.0f, 1000.0f, 300.0f, 10.0f, 50.0f);
+        srv.DebugPetXY(0, x0b, y0b); srv.DebugPetXY(1, x1b, y1b);
+        std::snprintf(msg, sizeof(msg), "② 밀기 — 시체 %.1f→%.1f(그대로) · 산 곰 %.1f→%.1f(밀림)", x0, x0b, x1, x1b);
+        Check(x0b == x0 && y0b == y0 && (x1b != x1 || y1b != y1), msg);
+    }
+    // ③ 커서 고르기 — 시체 위를 겨누면 아무것도 안 고름 · 산 곰 위는 고름(`playerCursorScanFn_54AFB0` 0x8020)
+    {
+        nox::Server srv; mk(srv, std::string(), 1000.0f, 1100.0f);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        killToCorpse(srv, 0, ms, o);
+        srv.DebugAimAt(a, 1000, 1000);
+        const nox::Target onCorpse = srv.DebugFindObjectAtCursor(a);
+        srv.DebugAimAt(a, 1100, 1000);
+        const nox::Target onLive = srv.DebugFindObjectAtCursor(a);
+        std::snprintf(msg, sizeof(msg), "③ 커서 — 시체 위 칸 %d(없음 −1) · 산 곰 위 칸 %d(1)", onCorpse.pet, onLive.pet);
+        Check(onCorpse.none() && onLive.pet == 1, msg);
+    }
+    // ④ 날아가는 주문 대상 — 시체(0 거리)를 건너뛰고 산 곰(100)을 고름(`server/spells.go:426` FlagDead)
+    {
+        nox::Server srv; mk(srv, std::string(), 1000.0f, 1100.0f);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        killToCorpse(srv, 0, ms, o);
+        const nox::Target found = srv.DebugFlySearch(1000.0f, 1000.0f, b, 300.0f);
+        std::snprintf(msg, sizeof(msg), "④ 날아가는 주문 대상 — 칸 %d · 사람 '%s'(기대 칸 1)", found.pet, found.addr.c_str());
+        Check(found.addr.empty() && found.pet == 1, msg);
+    }
+    // ⑤ 근접 — 컨저러 주먹(사거리 30) 바로 앞(15)의 시체가 아니라 그 뒤(30)의 산 곰을 친다(`sub_5386A0` 0x8049 · `sub_538510` 0x8040)
+    //   ⚠ 워리어 칼은 시험 서버에 무기 표가 없어 판정까지 안 간다(첫 판에서 「상태 1 들어감」만 찍히고 판정 줄 0) — 기존 근접 시험처럼 맨손으로
+    {
+        nox::Server srv; mk(srv, std::string(), 1025.0f, 1010.0f);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        killToCorpse(srv, 0, ms, o);
+        srv.DebugTeleport(a, 1040.0f, 1000.0f);
+        srv.DebugSetFacing(a, 128);                             // −x(곰 쪽)
+        srv.DebugAimAt(a, 1000, 1000);                          // 조작이 조준 쪽으로 돌려세우므로 조준도 곰 쪽
+        const uint16_t hp1 = srv.DebugPetHealth(1);
+        for (int n = 0; n < 3 && srv.DebugPetHealth(1) == hp1; ++n) {
+            auto pkt = InputPacket(6);
+            srv.OnPacket(a, pkt.data(), pkt.size(), o);
+            for (int t = 0; t < 15; ++t) { ms += 34; srv.Tick(ms, o); }
+        }
+        std::snprintf(msg, sizeof(msg), "⑤ 근접 — 산 곰 체력 %u→%u(깎여야) · 시체 체력 %u", hp1, srv.DebugPetHealth(1), srv.DebugPetHealth(0));
+        Check(srv.DebugPetHealth(1) < hp1, msg);
+    }
+    // ⑥ 몸 — 31 뒤 시체(0x18 ALLOW_OVERLAP)와 겹쳐 서도 안 밀림 · 산 곰과 겹치면 밀림(대조)
+    {
+        nox::Server srv; mk(srv, std::string(), 1000.0f, 1300.0f);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        killToCorpse(srv, 0, ms, o);
+        srv.DebugTeleport(b, 1004.0f, 1000.0f);
+        const unsigned long long p0 = srv.bodyPushSteps(2);
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, o); }
+        const unsigned long long onCorpse = srv.bodyPushSteps(2) - p0;
+        srv.DebugTeleport(b, 1304.0f, 1000.0f);
+        const unsigned long long p1 = srv.bodyPushSteps(2);
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, o); }
+        const unsigned long long onLive = srv.bodyPushSteps(2) - p1;
+        std::snprintf(msg, sizeof(msg), "⑥ 몸 — 시체와 겹침 밀림 %llu(0) · 산 곰과 겹침 밀림 %llu(>0)", onCorpse, onLive);
+        Check(onCorpse == 0 && onLive > 0, msg);
+    }
+    // ⑦ 독 감쇠 — 1000 틱 뒤 산 곰은 독이 1 줄고 시체는 그대로(`server.go:182` `!FlagDead`)
+    {
+        nox::Server srv; mk(srv, std::string(), 1000.0f, 1300.0f);
+        std::vector<nox::OutPacket> o; uint32_t ms = 0;
+        srv.DebugPoisonPet(0, 3);
+        srv.DebugPoisonPet(1, 3);
+        killToCorpse(srv, 0, ms, o);
+        const int pc0 = srv.DebugPetPoison(0), pl0 = srv.DebugPetPoison(1);
+        for (int t = 0; t < 1010; ++t) { ms += 34; srv.Tick(ms, o); }
+        std::snprintf(msg, sizeof(msg), "⑦ 독 감쇠 — 시체 %d→%d(그대로) · 산 곰 %d→%d(줄어야)", pc0, srv.DebugPetPoison(0), pl0, srv.DebugPetPoison(1));
+        Check(pc0 > 0 && srv.DebugPetPoison(0) == pc0 && srv.DebugPetPoison(1) < pl0, msg);
+    }
+    std::printf("  시체 거르기 — 명령·밀기·커서·날아가는 주문 대상·근접·몸·독에서 시체가 빠지고 산 곰은 그대로 받음\n");
+}
+
 // ── 묶음 6-h — 호위(3)와 뛰기·걷기 ────────────────────────────────────
 //
 // 정답지 `legacy/GAME5.c:924` `nox_xxx_mobActionEscort_546430`.
@@ -27910,6 +28031,7 @@ int main() {
     TestSummonOwnership();
     TestSummonFx();
     TestCorpse();
+    TestCorpseFilters();
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();

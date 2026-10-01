@@ -5423,8 +5423,11 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
                 const ContactRef other{ 2, std::string(), static_cast<int>(&k - pets_.data()) };
                 const double bx0 = m.ax, by0 = m.ay;
+                // ★ 10-01 시체 — 몸 깃발에 죽음 덧칠(31 의 0x18 ALLOW_OVERLAP → 안 밀림 · 원본 거르기 `sub_548360` 은 DEAD 를 안 봄 `GAME5.c:1925~1930`)
+                PhysBody petBody = tb->second;
+                petBody.flags = PetObjFlags(k);
                 BodyVsBody(playerBody, s.posX, s.posY, m.bx, m.by, s.velX, s.velY,
-                           tb->second, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
+                           petBody, k.x, k.y, k.x, k.y, 0.0, 0.0, m.ax, m.ay, &me, &other);
                 CountBodyPush(2, m.ax - bx0, m.ay - by0);
                 NotePush(std::hypot(m.ax - bx0, m.ay - by0) * PlayerMassOf(s));
                 NoteFirstKick(2, std::hypot(m.ax - bx0, m.ay - by0), 40.0 / PlayerMassOf(s), s.velX, s.velY,
@@ -8539,6 +8542,9 @@ void Server::AIClearStack(Creature& k) {
     aiStackChanged_ = true;
 }
 
+// ★ 10-01 시체 — 원본은 죽을 때 주인을 지워(`GAME4_1.c:504`) 주인 목록(+516)을 도는 명령에서 시체가 빠진다(`GAME4_3.c:2382~2388`).
+//   우리는 주인을 남기지만(시체 플랜 결정 ①) **`EnactUnitOrder` 머리가 이미 체력 0 을 거른다**(원본 `enactUnitOrder_5339A0` 0x8000 `GAME4_3.c:2413`)
+//   → 여기서 또 거르지 않음(돌연변이로 같은 일 두 번임을 확인 · 시험 `TestCorpseFilters` ①)
 void Server::OrderUnit(Session& src, uint16_t netCode, uint8_t order) {
     if (netCode != 0) {
         for (auto& k : pets_)
@@ -9709,7 +9715,8 @@ void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
             auto it = sessions_.find(t.addr);
             return it != sessions_.end() && it->second.inGame && it->second.respawnAtFrame == 0;
         }
-        return t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size();
+        // ★ 10-01 시체 — 겨눈 소환수가 죽었으면 끊는다(`FlagDestroyed|FlagDead` · `spell_harpoon.go:213`) · 전에는 죽으면 바로 지워져 칸 밖이 맡았다
+        return t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size() && !pets_[static_cast<size_t>(t.pet)].dead;
     };
     if (!bolt->ud1.none() && !aimAlive(bolt->ud1)) { HarpoonBreak(s, /*emitSound=*/true, HarpoonEnd::AimDead, out); return; }
     if (s.harpoonTarget.none()) {
@@ -9768,6 +9775,10 @@ void Server::HarpoonUpdate(Session& s, std::vector<OutPacket>& out) {
             if (it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0) {
                 HarpoonBreak(s, true, HarpoonEnd::TargetDead, out); return;
             }
+        } else if (s.harpoonTarget.pet >= 0 && static_cast<size_t>(s.harpoonTarget.pet) < pets_.size() &&
+                   pets_[static_cast<size_t>(s.harpoonTarget.pet)].dead) {
+            // ★ 10-01 시체 — 소환수 상대도 죽으면 끊는다(`FlagDestroyed|FlagDead` · `spell_harpoon.go:213·266`) · 전에는 죽으면 바로 지워져 위 「사라짐」이 맡았다
+            HarpoonBreak(s, true, HarpoonEnd::TargetDead, out); return;
         }
         if (dist > kHarpoonMaxDist) { HarpoonBreak(s, true, HarpoonEnd::TooFar, out); return; }     // ①
         if (dist < kHarpoonMinDist) { HarpoonBreak(s, false, HarpoonEnd::Arrived, out); return; }   // ②
@@ -13461,6 +13472,7 @@ void Server::PushUnitsAround(float cx, float cy, float outer, float inner, float
         apply(static_cast<float>(o.posX), static_cast<float>(o.posY), static_cast<float>(PlayerMassOf(o)), o.forceX, o.forceY);
     }
     for (auto& k : pets_) {
+        if (k.dead) continue;                                // ★ 10-01 시체 — `isObjectMovable_52E020` +16 & 0x8068(DEAD 포함 · `GAME4_2.c:10468`)
         const auto tb = typeBodies_.find(k.type);
         const float mass = (tb != typeBodies_.end()) ? tb->second.mass : 1.0f;
         double fx = 0, fy = 0;
@@ -13714,6 +13726,7 @@ void Server::PoisonTick(std::vector<OutPacket>& out) {
         } else {
             Creature& k = pets_[static_cast<size_t>(t.pet)];
             decay = &k.poisonDecay; start = k.poisonStart;
+            dead = k.dead;                                   // ★ 10-01 시체 — 감쇠의 독 갱신은 `!FlagDead`(`server.go:182`) · 피해는 아래 체력 0 이 거른다(`:191`)
         }
         if (decay && *decay > 0) {                          // ① 감쇠
             if (--*decay == 0) {
@@ -14497,6 +14510,7 @@ Target Server::SpellFlySearchTarget(bool havePos, float px, float py, float mslX
         consider(Target{ o.addr, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY), &o.buffs, o.velX, o.velY);
     }
     for (size_t i = 0; i < pets_.size(); ++i) {
+        if (pets_[i].dead) continue;                         // ★ 10-01 시체 — `FlagDestroyed|FlagDead`(`server/spells.go:426`)
         const auto tb = typeBodies_.find(pets_[i].type);
         if (tb != typeBodies_.end() && (tb->second.subclass & 0xC000)) continue;   // 몬스터 SUBCLASS 0x8000·0x4000
         consider(Target{ std::string(), static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y), &pets_[i].buffs, 0.0, 0.0);   // ⚠ 소환수 속도는 6
@@ -15116,7 +15130,8 @@ void Server::UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out) {
                     if (m.fromPet >= 0 && static_cast<int>(k) == m.fromPet) continue;
                     const auto tb = typeBodies_.find(pets_[k].type);
                     if (tb == typeBodies_.end() || !tb->second.hasCollide || tb->second.shape != 2) continue;
-                    if (!passFlags(tb->second.flags, !pets_[k].owner.empty() && pets_[k].owner == m.owner)) continue;
+                    // ★ 10-01 시체 — 죽음 덧칠(0x80 끔 · 31 의 SHORT 0x10 ↔ 떠 있는 발사체 0x4000 은 안 맞음 · `sub_54E730` `GAME5.c:5701~5729` 는 DEAD 를 안 봄)
+                    if (!passFlags(PetObjFlags(pets_[k]), !pets_[k].owner.empty() && pets_[k].owner == m.owner)) continue;
                     const float dx = static_cast<float>(pets_[k].x) - qx, dy = static_cast<float>(pets_[k].y) - qy;
                     if (dy * dy + dx * dx > tb->second.r * tb->second.r) continue;
                     hk = HitPet; hIdx = static_cast<int>(k); hx = static_cast<float>(pets_[k].x); hy = static_cast<float>(pets_[k].y); any = true;
@@ -16258,6 +16273,7 @@ Target Server::FindObjectAtCursor(const Session& s) const {
     }
     for (size_t i = 0; i < pets_.size(); ++i) {
         const Creature& k = pets_[i];
+        if (k.dead) continue;                                // ★ 10-01 시체 — `playerCursorScanFn_54AFB0` +16 & 0x8020(`GAME5.c:3587`)
         auto tb = typeBodies_.find(k.type);
         if (tb == typeBodies_.end() || tb->second.shape != 2) continue;   // 상자 몸 몬스터는 map_57B850(아직 없음)
         if (k.buffs.Has(0) && !s.buffs.Has(21)) continue;  // 투명이면 적외선일 때만(4-b1)
@@ -16796,7 +16812,7 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
             if (o.observer) tflags |= 0x40;
         } else if (kind == Pet) {
             tx = static_cast<float>(pets_[idx].x); ty = static_cast<float>(pets_[idx].y);
-            tflags = typeBodies_.at(pets_[idx].type).flags;
+            tflags = PetObjFlags(pets_[idx]);                // ★ 10-01 시체 — 죽음 덧칠(0x8000 → 아래 0x8040 에 걸림 · `sub_538510` `GAME4_3.c:3716`)
         } else {
             tx = obstacles_[idx].x; ty = obstacles_[idx].y;
             tflags = obstacles_[idx].flags;
@@ -16916,7 +16932,9 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
         auto tb = typeBodies_.find(k.type);
         if (tb == typeBodies_.end()) continue;                 // 몸을 모르는 종류(지어내지 않는다)
         const bool enemy = k.owner.empty() || (k.owner != s.addr && IsEnemyTo(s.addr, k.owner));
-        if (pick(tb->second, static_cast<float>(k.x), static_cast<float>(k.y), enemy, -1)) {
+        PhysBody pb = tb->second;
+        pb.flags = PetObjFlags(k);                             // ★ 10-01 시체 — 0x8049 에 걸림(`sub_5386A0` `GAME4_3.c:3783`)
+        if (pick(pb, static_cast<float>(k.x), static_cast<float>(k.y), enemy, -1)) {
             kind = Pet; bestIdx = static_cast<int>(i);
         }
     }
