@@ -996,6 +996,9 @@ struct Session {
     // ★ 09-27 B2 — 든 무기(플레이어 +748 → +104). 가방 항목 번호로 들고, 읽을 때마다 가방에서 찾는다(버리거나 되돌려 없어지면 맨손).
     //   0 = 없음. `gearInBag` 은 기본 장비를 가방에 실었나 — 못 실은 사람(종류 틀이 없는 서버 = 시험)은 옛 방식대로 직업 표에서 읽는다
     uint16_t weaponNet = 0;
+    // ★ 10-01 — 대체 무기(플레이어 +748 → +108 · 클라가 `e0 <번호2>` 로 알림 — `ReportSecondaryWeapon`). 가방 항목 번호 · 0 = 없음.
+    //   원본은 직업·힘이 안 맞아도 **적는다**(`GAME4_3.c:5204`) — 읽는 자리는 저장 파일 쪽뿐으로 보여 지금은 적어만 둔다
+    uint16_t secondaryWeapon = 0;
     bool     gearInBag = false;
     // ★ 기력(+91 Field22_3, 3-b) — 만들 때 0(`GAME4_1.c:732`), 살아 있으면 틱마다 100 아래일 때 100/30 = 3 씩(`object_update.go:108`).
     //   무기 공격이 무기별로 깎는다(weaponGetStaminaByType_4F7E80 — 롱소드 70). 깎을 때 `47 <기력>` 을 중요로 알린다.
@@ -1907,6 +1910,8 @@ public:
     unsigned long long animStat(AnimStat b) const { return b < AnimStat::Count ? animStat_[static_cast<size_t>(b)] : 0; }                        // ★ 09-29 B5
     unsigned long long monsterAnimSent(int idx) const { return idx >= 0 && idx < 16 ? monsterAnimSent_[idx] : 0; }                      // ★ 10-01 — 갱신 항목에 실은 애니 번호별
     unsigned long long summonOwnSent(int i) const { return i >= 0 && i < 3 ? summonOwnSent_[i] : 0; }                                  // ★ 10-01 — 0 `6c` · 1 `dd` · 2 `6d`
+    unsigned long long secondaryWeaponStat(int i) const { return i >= 0 && i < 4 ? secondaryWeaponStat_[i] : 0; }                      // ★ 10-01 — 0 비움 · 1 못 찾음 · 2 맞음 · 3 되돌림(`e0 0 01`)
+    uint16_t DebugSecondaryWeapon(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.secondaryWeapon; }
     unsigned long long summonFxSent(int i) const { return i >= 0 && i < 2 ? summonFxSent_[i] : 0; }                                    // ★ 10-01 — 0 `7e` 시작 · 1 `7f` 끊김(보는 사람마다가 아니라 소환 한 번에 1)
     // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
     void SetMonsterAnim(uint16_t wire, int idx, int frames, int hold, bool loop) {
@@ -4437,6 +4442,7 @@ private:
     int DurSummonCreate(DurSpell& d, std::vector<OutPacket>& out);                                     // summonStart_500DA0
     int DurSummonTick(DurSpell& d, std::vector<OutPacket>& out);                                       // summonFinish_5010D0
     void ReportAcquireCreature(Session& owner, const Creature& k, std::vector<OutPacket>& out);        // ★ 10-01 netReportAcquireCreature_4D91A0
+    void ReportSecondaryWeapon(Session& s, uint16_t code, std::vector<OutPacket>& out);               // ★ 10-01 sdecode 0xE0 → sub_53AB90
     void DurSummonEnd(DurSpell& d, std::vector<OutPacket>& out);                                       // ★ 10-01 summonCancel_5011C0
     int CastMark(uint8_t spell, Session& caster, const SpellArg& arg, std::vector<OutPacket>& out);    // sub_52CBD0
     int DurTeleMarkCreate(DurSpell& d, std::vector<OutPacket>& out);                                   // sub_5305D0
@@ -5517,6 +5523,7 @@ private:
     unsigned long long animStat_[kAnimStatCount] = {};            // ★ 09-29 B5
     unsigned long long monsterAnimSent_[16] = {};                 // ★ 10-01 — 몬스터 갱신 항목에 실은 애니 번호(0~15)별 · 보는 사람마다 한 번씩
     unsigned long long summonOwnSent_[3] = {};                    // ★ 10-01 — 주인에게 보낸 소유 알림 0 `6c` 얻음 · 1 `dd` 총체력 · 2 `6d` 잃음
+    unsigned long long secondaryWeaponStat_[4] = {};              // ★ 10-01 — 클라 `e0` 대체 무기 갈래 0 비움(번호 0) · 1 가방에 없음 · 2 맞음 · 3 직업·힘 안 맞아 되돌림
     unsigned long long summonFxSent_[2] = {};                     // ★ 10-01 — 소환 효과 0 `7e` 시작 · 1 `7f` 끊김(소환 한 번에 하나씩)
     uint16_t summonFxNext_ = 0;                                   // ★ 10-01 — 다음 효과 번호(원본 0x5D4594+1570276 · 0xFDE8 에 닿으면 0)
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };

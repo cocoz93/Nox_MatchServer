@@ -1964,6 +1964,72 @@ void TestC2SImportantLength() {
     std::printf("  클라→서버 aa 몸 4 · bb 5+2×글자수 — 정품·자동 클라 표본 끝까지 · 서버 버림 0\n");
 }
 
+// ★ 10-01 — 클라 대체 무기 알림 `e0 <번호2>`(sdecode `0xE0` → `sub_53AB90` · `GAME4_3.c:5192~5205`)
+//   번호 0 → 비움 · 가방에 없음 → 칸 0 · 직업(`57B3D0`) 또는 힘(`4F3180`)이 안 맞으면 그 사람에게 `e0 00 00 01`(Packet1)
+//   · 맞든 안 맞든 칸에 적음 · 무기·갑옷이 아닌 물건은 정의가 없어 힘 검사에서 늘 되돌림
+//   ⚠ 시험 번호는 0x8000 아래로 — 윗비트가 선 번호는 extent 라 가방 물건으로 안 본다(첫 판 61001… 이 다 「없음」으로 빠짐)
+void TestSecondaryWeapon() {
+    const std::string a = "10.9.31.1:49401", b = "10.9.31.2:49402";
+    nox::Server srv;
+    srv.DebugEnterGame(a, 780, false, nox::CharClass::Warrior);
+    srv.DebugEnterGame(b, 781, false, nox::CharClass::Conjurer);
+    const uint16_t kHeavy = 2000, kPotion = 2001;
+    srv.SetWeaponDef(nox::kItemLongsword, 1, 0);              // 워리어만 · 힘 0
+    srv.SetWeaponDef(kHeavy, 1, 9999);                         // 워리어만 · 힘 9999(못 듦)
+    srv.SetArmorDef(nox::kItemWoodenShield, 1, 0, 0.0f);       // 워리어만 · 힘 0
+    auto weapon = [](uint16_t nc, uint16_t type) { nox::Session::Carried c; c.netCode = nc; c.type = type; c.isWeapon = true; c.weaponClass = true; return c; };
+    nox::Session::Carried shield; shield.netCode = 31004; shield.type = nox::kItemWoodenShield; shield.equipBit = 0x2000;
+    nox::Session::Carried potion; potion.netCode = 31005; potion.type = kPotion;
+    srv.DebugGiveCarried(a, weapon(31001, nox::kItemLongsword));
+    srv.DebugGiveCarried(a, weapon(31003, kHeavy));
+    srv.DebugGiveCarried(a, shield);
+    srv.DebugGiveCarried(a, potion);
+    srv.DebugGiveCarried(b, weapon(31002, nox::kItemLongsword));
+    nox::Session::Carried shieldB = shield; shieldB.netCode = 31006;
+    srv.DebugGiveCarried(b, shieldB);
+    auto send = [&](const std::string& who, uint16_t nc) {
+        const std::vector<uint8_t> pkt = { 0x01, 0x04, static_cast<uint8_t>(nox::Op::REPORT_SECONDARY_WEAPON),
+                                           static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
+        std::vector<nox::OutPacket> out;
+        srv.OnPacket(who, pkt.data(), pkt.size(), out);
+        return out;
+    };
+    auto resets = [](const std::vector<nox::OutPacket>& out, const std::string& to) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 4 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SECONDARY_WEAPON) && m[1] == 0 && m[2] == 0 && m[3] == 1) ++n;
+        return n;
+    };
+    auto st = [&]() { return std::vector<unsigned long long>{ srv.secondaryWeaponStat(0), srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3) }; };
+    auto onlyUp = [&](const std::vector<unsigned long long>& before, int k) {
+        const auto now = st();
+        for (int i = 0; i < 4; ++i) if (now[i] - before[i] != (i == k ? 1u : 0u)) return false;
+        return true;
+    };
+    char msg[200];
+    struct Case { const char* name; const std::string* who; uint16_t nc; int stat; int resetsTo; uint16_t slot; };
+    const Case cases[] = {
+        { "② 워리어 롱소드 — 맞음",              &a, 31001, 2, 0, 31001 },
+        { "① 번호 0 — 비움",                     &a, 0,     0, 0, 0 },
+        { "③ 컨저러 롱소드 — 직업 되돌림",        &b, 31002, 3, 1, 31002 },
+        { "④ 워리어 힘 9999 무기 — 힘 되돌림",    &a, 31003, 3, 1, 31003 },
+        { "⑤ 물약(정의 없음) — 힘 되돌림",        &a, 31005, 3, 1, 31005 },
+        { "⑥ 가방에 없는 번호 — 없음",            &a, 31999, 1, 0, 0 },
+        { "⑦ 워리어 나무 방패(갑옷 정의) — 맞음", &a, 31004, 2, 0, 31004 },
+        { "⑧ 컨저러 나무 방패 — 갑옷 직업 되돌림", &b, 31006, 3, 1, 31006 },
+    };
+    for (const Case& c : cases) {
+        const auto before = st();
+        const auto out = send(*c.who, c.nc);
+        const std::string& other = (c.who == &a) ? b : a;
+        std::snprintf(msg, sizeof(msg), "%s — 갈래 %d 하나만 · 되돌림 본인 %d(기대 %d)·남 %d · 칸 %u(기대 %u)", c.name, c.stat,
+                      resets(out, *c.who), c.resetsTo, resets(out, other), srv.DebugSecondaryWeapon(*c.who), c.slot);
+        Check(onlyUp(before, c.stat) && resets(out, *c.who) == c.resetsTo && resets(out, other) == 0 &&
+              srv.DebugSecondaryWeapon(*c.who) == c.slot, msg);
+    }
+    std::printf("  대체 무기 e0 — 비움·없음·맞음(무기·갑옷)·직업/힘/정의없음 되돌림(본인에게 e0 0 01 · 칸은 적음)\n");
+}
+
 // ── 판 시계 물음(0xd4) · 정상 종료(0x0a) ────────────────────────────────
 //
 // ★ `0xd4` 는 **조각을 죽이던 자리**다. 길이표가 `-1` 이라 그 조각을 통째로 버렸고,
@@ -28231,6 +28297,7 @@ int main() {
     TestTimerAskAndClose();
     TestGoDecoderLengths();
     TestC2SImportantLength();
+    TestSecondaryWeapon();
     TestPickup();
     TestUseAndEquip();
     TestUseFromFile();

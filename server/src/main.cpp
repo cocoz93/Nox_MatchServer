@@ -317,6 +317,9 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.summonOwnSent(0), srv.summonOwnSent(1), srv.summonOwnSent(2));
         // ★ 10-01 — 소환 효과(부르기 시작 = 7e · 세우기 전에 끊김 = 7f) · 소환 한 번에 하나씩(보는 사람 수와 무관)
         std::printf("[소환효과] 7e 시작 %llu · 7f 끊김 %llu\n", srv.summonFxSent(0), srv.summonFxSent(1));
+        // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
+        std::printf("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
+                    srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));
         // ★ 10-01 — 시체(죽어도 안 지움 → 썩어 지움 · DESTROY_WHEN_DEAD 는 31 에서 바로)
         std::printf("[시체] 죽음 %llu · 썩어 지움 %llu · 즉시 지움 %llu · 동시 시체 최대 %llu\n",
                     srv.corpseStat(0), srv.corpseStat(1), srv.corpseStat(2), srv.corpseStat(3));

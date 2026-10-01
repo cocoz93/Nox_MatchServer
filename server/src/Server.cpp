@@ -2864,6 +2864,15 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                 break;
             }
 
+            // ★ 10-01 대체 무기 알림 `e0 <번호2>`(몸 2 · `MsgLen.cpp` 클라→서버 갈래) — `ReportSecondaryWeapon` 머리 주석
+            case Op::REPORT_SECONDARY_WEAPON: {
+                if (it.bodyLen() < 2) break;
+                const uint8_t* b = it.body();
+                ReportSecondaryWeapon(s, static_cast<uint16_t>(b[0] | (b[1] << 8)), out);
+                ++handled_;
+                break;
+            }
+
             case Op::IMPORTANT: {
                 if (it.bodyLen() < 4) break;
                 uint8_t msg[5];
@@ -15722,6 +15731,53 @@ void Server::DefaultGearMods(uint16_t type, const std::vector<uint8_t>& info97, 
     uint16_t dur = 0;
     uint8_t look[4];
     if (DefaultGearLook(type, look, dur)) for (int i = 0; i < 4; ++i) mods[i] = look[i];
+}
+
+// ★ 10-01 — 클라 「대체 무기」 알림 `e0 <번호2>`(sdecode `0xE0` · `server__network__sdecode.c:281~293`).
+//   클라는 무기 바꾸기 단축키 대상을 정할 때 보낸다(`nox_xxx_clientSetAltWeapon_461550` → `clientReportSecondaryWeapon_4BF010` · `GAME3_1.c:1622~1627`).
+//   서버 `sub_53AB90`(`GAME4_3.c:5192~5205`) —
+//     번호 0 → 칸(+108)을 비움 · 아니면 그 오브젝트를 찾아(`getObjectFromNetCode_4ECCB0` — 우리는 가방 속에서) 있으면
+//     직업(`57B3D0` = `sub_57B370` · `object_pickup.go:111~138`) **또는** 힘(`4F3180` · `GAME3_3.c:10664~10682`)이 안 맞을 때
+//     `e0 <0 0> 01`(`netSendSecondaryWeapon_4D9670` · `GAME3_2.c:4805~4812` · Packet1)을 그 사람에게 보내 클라 쪽을 비우게 한다 ·
+//     그리고 **맞든 안 맞든** 칸에 적는다(`:5204`) · 못 찾으면 칸 0
+//   직업 표 — 무기·지팡이는 무기 정의 · 갑옷은 갑옷 정의(정의가 없으면 0 = 못 씀) · 음식은 `~(SUBCLASS >> 5) | 0xFE` · 그 밖은 0xFF(누구나)
+//   힘 — 갑옷(0x2000000)이면 갑옷 정의 · 아니면 무기 정의의 필요 힘 · **정의가 없으면 거짓**(그래서 무기·갑옷이 아닌 물건은 늘 되돌림)
+//   ⚠ 번호 윗비트(0x8000 = extent · `packetDynamicUnitCode_578B40`)는 가방 물건이 아니라 못 찾음으로 센다
+//   ⚠ +108 을 읽는 자리는 저장 파일(`GAME1_1.c:1261~1267`) 말고는 못 찾았다 — 칸은 적어만 둔다
+void Server::ReportSecondaryWeapon(Session& s, uint16_t code, std::vector<OutPacket>& out) {
+    if (code == 0) { s.secondaryWeapon = 0; ++secondaryWeaponStat_[0]; return; }
+    const Session::Carried* item = nullptr;
+    if (!(code & 0x8000))
+        for (const auto& c : s.inventory) if (c.netCode == code) { item = &c; break; }
+    if (!item) { s.secondaryWeapon = 0; ++secondaryWeaponStat_[1]; return; }
+    const uint8_t bit = static_cast<uint8_t>(1u << static_cast<uint8_t>(s.charClass));
+    const bool armor = IsArmorItem(*item);
+    uint8_t classes = 0xFF;
+    if (item->weaponClass) {
+        const auto d = weaponDef_.find(item->type);
+        classes = (d == weaponDef_.end()) ? 0 : d->second.classes;
+    } else if (armor) {
+        const auto d = armorDef_.find(item->type);
+        classes = (d == armorDef_.end()) ? 0 : d->second.classes;
+    } else if (item->isFood) {
+        classes = ClassCanUseFood(s.charClass, item->foodBits) ? bit : 0;   // 같은 셈(`~(SUBCLASS >> 5) | 0xFE`)
+    }
+    bool strengthOk = false;
+    if (armor) {
+        const auto d = armorDef_.find(item->type);
+        strengthOk = d != armorDef_.end() && s.strength >= static_cast<int>(d->second.reqStrength);
+    } else {
+        const auto d = weaponDef_.find(item->type);
+        strengthOk = d != weaponDef_.end() && s.strength >= static_cast<int>(d->second.reqStrength);
+    }
+    if (!(classes & bit) || !strengthOk) {
+        const uint8_t msg[4] = { static_cast<uint8_t>(Op::REPORT_SECONDARY_WEAPON), 0, 0, 1 };
+        EmitSeq(s, msg, sizeof(msg), out);
+        ++secondaryWeaponStat_[3];
+    } else {
+        ++secondaryWeaponStat_[2];
+    }
+    s.secondaryWeapon = code;
 }
 
 // ★ 09-27 B3 — 무기 들기 `nox_xxx_playerEquipWeapon_53A420`(`GAME4_3.c:4906~4993`) — 관문 순서 그대로.
