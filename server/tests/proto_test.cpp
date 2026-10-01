@@ -3472,7 +3472,40 @@ void TestBundleOneDatagram() {
                       countTo(out, a), srv.bundleStat(BS::DirectNotInGame) - g0);
         Check(countTo(out, a) == 1 && srv.bundleStat(BS::DirectNotInGame) - g0 == 1, msg);
     }
-    std::printf("  09-30 묶음 — ab 는 다음 틱 묶음에 · [27][a4][잡다][aa] 한 조각 · 빈 틱도 하나 · 시험 모드는 따로 · 채팅·제어·게임 밖은 곧바로 · 2048 넘으면 둘(둘 다 27 · 안 버림)\n");
+    // ⑥ ★ 10-01 — 한 덩어리가 **혼자** 한도를 넘는 경우(OverSize) — 지금 동작 = 안 버리고 [27][그 덩어리] 한 조각으로 통째 + 계수 「혼자 넘음」
+    //   · 실제로 넘을 수 있는 건 a4(2047 버퍼 + 27 3B = 최대 2051) — 맵 몬스터 250 시도에선 a4 가 항목 단위로 끊겨 조각 2046 에 그쳐 못 넘었다
+    //     → 갈래를 확실히 지나가게 2100B 잡다 메시지 하나를 진짜 길(`DebugEmit` → `Emit`)로 싣는다
+    //   · 원본 서버는 a4 를 남은 자리에 맞춰 짜 2048 을 안 넘는다 · 받는 쪽은 16384 까지 받음(`internal/netstr/netstr.go:332`) — 진행 파일 미결
+    {
+        nox::Server s2;
+        s2.DebugEnterGame(a, 750);
+        s2.DebugImportantReal(a, /*ready=*/true);
+        uint32_t m2 = 0;
+        std::vector<nox::OutPacket> w2;
+        s2.Tick(m2, w2);
+        std::vector<uint8_t> big(2100, 0x55);
+        big[0] = 0xa8;                                       // 제어(< 0x20)·시각·갱신이 아닌 오프코드 — 잡다 칸으로 간다
+        std::vector<nox::OutPacket> o2;
+        const unsigned long long over0 = s2.bundleStat(BS::OverSize);
+        const unsigned long long misc0 = s2.bundleStat(BS::InMisc);
+        s2.DebugEmit(a, big, o2);
+        m2 += 34; s2.Tick(m2, o2);
+        size_t biggest = 0, n = 0, starts27 = 0;
+        for (const auto& p : o2) {
+            if (p.to != a) continue;
+            ++n;
+            const size_t pay = p.data.size() - nox::kWireHeaderSize;
+            if (pay > biggest) biggest = pay;
+            const auto body = Body(p);
+            if (!body.empty() && body[0] == 0x27) ++starts27;
+        }
+        char msg[220];
+        // 조각 수는 그 틱의 다른 덩어리(중요 목록 등)에 따라 2~3 — 큰 것 앞뒤에서 끊기므로 큰 것은 늘 [27][큰 것] 혼자다
+        std::snprintf(msg, sizeof(msg), "⑥ 혼자 넘음 — 잡다 +%llu(1) · 계수 +%llu(1) · 조각 %zu(≥2) · 27 시작 %zu(= 조각 수) · 가장 큰 조각 %zu(= 3 + 2100 — 혼자)",
+                      s2.bundleStat(BS::InMisc) - misc0, s2.bundleStat(BS::OverSize) - over0, n, starts27, biggest);
+        Check(s2.bundleStat(BS::InMisc) - misc0 == 1 && s2.bundleStat(BS::OverSize) - over0 == 1 && n >= 2 && starts27 == n && biggest == 3 + big.size(), msg);
+    }
+    std::printf("  09-30 묶음 — ab 는 다음 틱 묶음에 · [27][a4][잡다][aa] 한 조각 · 빈 틱도 하나 · 시험 모드는 따로 · 채팅·제어·게임 밖은 곧바로 · 2048 넘으면 둘(둘 다 27 · 안 버림) · 혼자 넘으면 통째로(계수)\n");
 }
 
 void TestImportantQueue() {

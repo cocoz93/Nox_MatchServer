@@ -4063,6 +4063,10 @@ public:
     unsigned long long corpseStat(int i) const { return i >= 0 && i < 4 ? corpseStat_[i] : 0; }   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움 · 3 동시 시체 최대
     bool DebugPetDead(size_t i) const { return i < pets_.size() && pets_[i].dead; }
     uint32_t DebugPetObjFlags(size_t i) const { return i < pets_.size() ? PetObjFlags(pets_[i]) : 0; }
+    // ★ 10-01 묶음 시험용 — 비신뢰 메시지 하나를 진짜 길(`Emit` → 묶음)로 싣는다(혼자 한도를 넘는 덩어리 만들기)
+    void DebugEmit(const std::string& addr, const std::vector<uint8_t>& msg, std::vector<OutPacket>& out) {
+        auto it = sessions_.find(addr); if (it != sessions_.end()) Emit(it->second, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
+    }
     // ★ 10-01 시체 거르기 시험용 — 명령 · 둘레 밀기 · 날아가는 주문 대상 고르기를 바로 부른다
     void DebugOrder(const std::string& addr, uint16_t net, uint8_t order) { auto it = sessions_.find(addr); if (it != sessions_.end()) OrderUnit(it->second, net, order); }
     void DebugPushAround(float cx, float cy, float outer, float inner, float power) { PushUnitsAround(cx, cy, outer, inner, power); }
