@@ -1408,7 +1408,9 @@ constexpr uint8_t kAnimRun = 6;    // ⭕ 정답지 상태 5(달리기) → 6 (`
 // 판이 끝나고 다음 판을 열기까지. ➖ **우리 값이다** — 정품이 몇 초 뒤에 새 판을
 // 여는지는 표본이 없다. 승자 화면을 볼 시간은 줘야 하므로 30Hz 기준 8초로 둔다.
 // ★ 이것이 없어서 **판이 한 번 끝나면 그 프로세스에서 다시 못 열었다**(2026-09-11 감사).
-constexpr uint32_t kRoundRestartTicks = 240;
+// ✖ 10-01 정정 — 원본 값이 있다: 판끝 뒤 **10,000ms** 타이머(`game.go:806~813` `platformTicks() + 10000`) → 30Hz 300틱
+//   (원본은 밀리초 시계 · 우리는 틱으로 센다 — 틱이 밀리면 조금 늦을 수 있음)
+constexpr uint32_t kRoundRestartTicks = 300;
 
 class Server {
 public:
@@ -3622,6 +3624,11 @@ public:
     void CaptureMapInitial();
     void ResetWorldFromMap();
     unsigned long long mapResetStat(int i) const { return i >= 0 && i < 3 ? mapResetStat_[i] : 0; }   // 0 담음 · 1 되돌림 · 2 안 담은 채 되돌림(비우기만)
+    // ★ 10-01 R3 — 다시 열 때 사람 몫(머리 주석은 `Server.cpp` `RestartPlayers`)
+    void RestartPlayers(std::vector<OutPacket>& out);
+    unsigned long long restartRespawned() const { return restartRespawned_; }   // 다시 열며 되살린 사람 수(관전자 뺌)
+    bool DebugMarkSet(const std::string& a, int i) const { auto it = sessions_.find(a); return it != sessions_.end() && i >= 0 && i < 4 && it->second.markSet[i]; }
+    void DebugSetMark(const std::string& a, int i) { auto it = sessions_.find(a); if (it != sessions_.end() && i >= 0 && i < 4) it->second.markSet[i] = true; }
     void DebugEndRound() { roundOver_ = true; restartAtFrame_ = frame_ + kRoundRestartTicks; }   // ★ 10-01 R1 시험용 — 승자 알림 없이 판끝만
     // 깃발 HUD 를 몇 번 보냈나. **매 틱 수준으로 오르면 과잉이다**(0x5e 270배 사고 참조).
     unsigned long long flagStatusSent() const { return flagStatusSent_; }
@@ -5727,6 +5734,7 @@ private:
         std::vector<MapObjRef> mapObjects;
     } mapInitial_;
     unsigned long long mapResetStat_[3] = {};
+    unsigned long long restartRespawned_ = 0;                     // ★ 10-01 R3
     // 날아가는 것에 매길 번호.
     // ⚠ **진짜 서버가 번호를 어떻게 매기는지는 모른다.** 캡처에서 사람이 715·720·728 을
     //   받은 것만 봤다. 사람과 안 부딪히게 넉넉히 띄운 자리에서 시작할 뿐이다.

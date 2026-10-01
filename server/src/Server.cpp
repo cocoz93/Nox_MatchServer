@@ -1781,6 +1781,29 @@ void Server::ResetWorldFromMap() {
     votes_.clear();
 }
 
+// ★ 10-01 R3 — **다시 열 때 사람 몫** — 원본 판끝 10초 뒤 `server_A2` 의 가방 비우기·기본 장비(`game.go:826~829` `playerMakeDefItems_4EF7D0(u,1,0)`)
+//   + 맵 다시 읽은 뒤 사람마다(`game.go:1170~1188`) 표식 칸 비우기(`sub_4EF660` +116~+128) · 시작 자리 · 점수·죽음 0 · `4e`(netReportLesson)
+//   ⭕ 정품 맵 바꾸기 녹음(`hj0928/orig_arena_1851` 18:53:59.671 · 클라 `c0` 뒤 스냅샷 안 중요 목록) —
+//      사람마다 `e9 <번호> … ff 01`(부활 · 셋) · 그 사람의 새 기본 장비 `4c`·`44`·`60`(새 번호 0x66·0x67 · 바지·신발은 다시 안 줌) · 사람마다 `4e` 점수 0(셋)
+//   ⇒ 우리 `PlayerRespawn`(체력·마나 · 버프·주문 끄기 · `e9` 모두에게 · `RespawnGear` · 시작 자리)이 그 꼴이라 그대로 부른다
+//   관전자는 안 되살린다(원본 `Players.ListUnits()` — 유닛 있는 사람만) · 점수 0 과 `4e` 는 게임 안 모두 · 팀 점수 0
+//   ⚠ 부르는 자리는 R4(맵 다시 열기)와 같이 — 클라에 `USE_MAP` 을 안 보내고 서버만 바꾸면 화면이 어긋난다
+void Server::RestartPlayers(std::vector<OutPacket>& out) {
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) continue;
+        s.score = 0;
+        s.deaths = 0;
+        for (int i = 0; i < 4; ++i) s.markSet[i] = false;
+        if (!s.observer) {
+            PlayerRespawn(s, frame_, out);
+            ++restartRespawned_;
+        }
+    }
+    for (auto& kv : sessions_) if (kv.second.inGame) SendLesson(kv.second, out);
+    for (Team& t : teams_) t.score = 0;
+}
+
 void Server::SendRoundWinner(uint8_t op, uint16_t who, uint8_t reason, std::vector<OutPacket>& out) {
     for (auto& kv : sessions_) {
         Session& o = kv.second;

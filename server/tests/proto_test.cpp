@@ -21366,6 +21366,52 @@ void TestDropDecay() {
 
 // ── 09-28 B4b — 죽을 때 가방 떨어뜨리기(`dropAllItems_4EDA40`) · 부활 때 기본 장비 새로(`playerMakeDefItems_4EF7D0`) ─────────
 //   사용자 결정 09-28 「정할 것 셋 다 원본대로」 · 정품 녹음 `orig_arena_1851` 18:55:55.9(죽음)·18:56:07.9(부활)
+// ★ 10-01 R3 — 다시 열 때 사람 몫(`Server::RestartPlayers` 머리 주석 · 정품 맵 바꾸기 녹음 꼴)
+//   ① 점수·죽음 0 · 표식 비움 · 체력 가득 ② 되살림 `e9` — 유닛 있는 둘(a·b)만 · 모두에게(관전 c 포함) ③ a 의 새 기본 장비(롱소드 번호가 바뀜)
+//   ④ `4e` 점수 알림 — 게임 안 셋 모두에 대해 · 모두에게 ⑤ 계수 되살림 +2
+void TestRestartPlayers() {
+    using nox::CharClass;
+    const std::string a = "10.9.34.1:49701", b = "10.9.34.2:49702", c = "10.9.34.3:49703";
+    nox::Server srv;
+    GearTemplates(srv);
+    srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
+    srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+    srv.DebugEnterGame(c, 740, true, CharClass::Wizard);       // 관전
+    srv.DebugSetScore(a, 5);
+    srv.DebugSetDeaths(a, 3);
+    srv.DebugSetMark(a, 1);
+    srv.DebugSetHealth(a, 20);
+    const uint16_t aw0 = srv.DebugWeaponNet(a);
+    const unsigned long long resp0 = srv.restartRespawned();
+    std::vector<nox::OutPacket> out;
+    srv.RestartPlayers(out);
+    auto count = [&](const std::string& to, uint8_t op, uint16_t nc) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() >= 3 && m[0] == op && static_cast<uint16_t>(m[1] | (m[2] << 8)) == nc) ++n;
+        return n;
+    };
+    const uint8_t kE9 = static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN), k4e = static_cast<uint8_t>(nox::Op::REPORT_LESSON);
+    char msg[260];
+    std::snprintf(msg, sizeof(msg), "① 점수 %d · 표식 %d · 체력 %u/%u", srv.DebugScore(a), (int)srv.DebugMarkSet(a, 1), srv.HealthOf(a), srv.MaxHealthOf(a));
+    Check(srv.DebugScore(a) == 0 && !srv.DebugMarkSet(a, 1) && srv.HealthOf(a) == srv.MaxHealthOf(a), msg);
+    std::snprintf(msg, sizeof(msg), "② e9 — a 에 대해 a·b·c %d·%d·%d · b 에 대해 %d·%d·%d · 관전 c 에 대해 %d(0)",
+                  count(a, kE9, 728), count(b, kE9, 728), count(c, kE9, 728), count(a, kE9, 733), count(b, kE9, 733), count(c, kE9, 733),
+                  count(a, kE9, 740) + count(b, kE9, 740) + count(c, kE9, 740));
+    Check(count(a, kE9, 728) == 1 && count(b, kE9, 728) == 1 && count(c, kE9, 728) == 1 && count(a, kE9, 733) == 1 &&
+          count(b, kE9, 733) == 1 && count(c, kE9, 733) == 1 && count(a, kE9, 740) + count(b, kE9, 740) + count(c, kE9, 740) == 0, msg);
+    std::snprintf(msg, sizeof(msg), "③ a 롱소드 번호 %u → %u(바뀌어야 · 0 아님)", aw0, srv.DebugWeaponNet(a));
+    Check(aw0 != 0 && srv.DebugWeaponNet(a) != 0 && srv.DebugWeaponNet(a) != aw0, msg);
+    int lessons = 0;
+    for (const std::string* to : { &a, &b, &c })
+        for (uint16_t nc : { uint16_t(728), uint16_t(733), uint16_t(740) }) lessons += count(*to, k4e, nc);
+    std::snprintf(msg, sizeof(msg), "④ 4e — 받는 셋 × 대상 셋 %d(9)", lessons);
+    Check(lessons == 9, msg);
+    std::snprintf(msg, sizeof(msg), "⑤ 되살림 계수 +%llu(2)", srv.restartRespawned() - resp0);
+    Check(srv.restartRespawned() - resp0 == 2, msg);
+    std::printf("  다시 열 때 사람 — 점수·표식 0 · 유닛 있는 사람만 되살림(e9 모두에게) · 새 기본 장비 · 4e 모두\n");
+}
+
 void TestDeathDropRespawnGear() {
     using nox::CharClass;
     const std::string a = "10.9.28.51:9331", b = "10.9.28.52:9332";
@@ -28605,6 +28651,7 @@ int main() {
     TestDrop();
     TestDropDecay();
     TestDeathDropRespawnGear();
+    TestRestartPlayers();
     TestWornLooksForNewcomer();
     TestWallBreak();
     TestDoorLock();
