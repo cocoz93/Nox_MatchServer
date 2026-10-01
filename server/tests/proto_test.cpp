@@ -21484,6 +21484,60 @@ void TestDeathDropRespawnGear() {
     std::printf("  09-28 B4b — 죽을 때: 입은 평상복만 남기고 몸 둘레에(4d 최근 것부터 → e8 · 남에게 벗음 없음) · 부활: 로브·검·방패 새 번호(4c→44→60) · e9 ff 01\n");
 }
 
+// ★ 10-01 R2 — 맵 처음 상태 담아 두기 · 되돌리기(`Server::CaptureMapInitial` 머리 주석)
+//   ⓪ 안 담은 채 되돌리면 비우기만(크리처 0 · 「안 담음」 계수) ① 담은 뒤 판 중에 바꾼다 — 바닥 물건 줍기 · 부서지는 벽 부수기 · 크리처 둘
+//   ② 되돌리면 — 바닥 물건 다시 1 · 벽 안 부서짐·체력 150·선 추적이 다시 막힘 · 크리처 0 · 「되돌림」 계수
+//   ⚠ 안 보는 것 — 길 찾기 격자 다시 굽기(`AIPathBakeWalls`) · 문·비밀벽·덫·맵 오브젝트 사본(같은 꼴의 대입 — 코드로만)
+void TestMapReset() {
+    const std::string a = "10.9.33.1:49601";
+    {
+        nox::Server s0;
+        s0.DebugSpawnPet(1328, 1300.0f, 1000.0f, std::string());
+        s0.ResetWorldFromMap();
+        Check(s0.pets() == 0 && s0.mapResetStat(2) == 1 && s0.mapResetStat(1) == 0, "⓪ 안 담은 채 되돌림 — 크리처를 안 비웠거나 계수가 틀렸다");
+    }
+    nox::Server srv;
+    srv.SetWalls({ { 46, 44 }, { 48, 44 } });
+    srv.SetWallDefFlags({ 1 });
+    nox::Server::WallDefExtra e; e.hitMat = 32; e.health = 150; e.breakSound = 0;
+    srv.SetWallDefExtras({ e });
+    srv.SetWallSpecials({ { 46, 44 } }, {});
+    srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+    srv.DebugMoveTo(a, 1000, 1000);
+    srv.DebugSetPos(a, 1000, 1000);
+    std::vector<nox::Server::WorldStatic> st;
+    nox::Server::WorldStatic w;
+    w.netCode = 500; w.type = 1170; w.x = 1000; w.y = 1000; w.modifiable = true; w.equipBit = 0x400; w.isWeapon = true; w.weaponClass = true;
+    st.push_back(w);
+    SetWeights(st, 8);
+    srv.SetWeaponDef(1170, 1, 0);
+    srv.SetWorldStatics(st);
+    std::vector<nox::OutPacket> out;
+    srv.Tick(0, out);
+    srv.CaptureMapInitial();
+    const float wy = 44 * 23.0f + 11.5f, wx = 46 * 23.0f + 11.5f;
+    // ① 판 중에 바꾼다
+    const auto get = CodePacket(nox::Op::TRY_GET, 500);
+    srv.OnPacket(a, get.data(), get.size(), out);
+    srv.DamageToMap(46, 44, 100, 2, nox::Server::WallHitter{}, out);
+    srv.DamageToMap(46, 44, 100, 2, nox::Server::WallHitter{}, out);
+    srv.DebugSpawnPet(1328, 1300.0f, 1000.0f, std::string());
+    srv.DebugSpawnPet(1328, 1400.0f, 1000.0f, std::string());
+    char msg[220];
+    std::snprintf(msg, sizeof(msg), "① 전제 — 바닥 물건 %zu(0) · 벽 부서짐 %d · 선 추적 통과 %d · 몸 막는 벽 칸 %d(0) · 크리처 %zu(2)", srv.WorldStaticCount(),
+                  (int)srv.DebugWallBroken(46, 44), (int)srv.DebugTraceRay(wx - 30, wy, wx + 30, wy), (int)srv.WallAt(wx, wy), srv.pets());
+    Check(srv.WorldStaticCount() == 0 && srv.DebugWallBroken(46, 44) && srv.DebugTraceRay(wx - 30, wy, wx + 30, wy) && !srv.WallAt(wx, wy) &&
+          srv.pets() == 2, msg);
+    // ② 되돌린다
+    srv.ResetWorldFromMap();
+    std::snprintf(msg, sizeof(msg), "② 되돌림 — 바닥 물건 %zu(1) · 벽 부서짐 %d(0) · 체력 %d(150) · 선 추적 통과 %d(0) · 몸 막는 벽 칸 %d(1) · 크리처 %zu(0) · 계수 담음 %llu·되돌림 %llu",
+                  srv.WorldStaticCount(), (int)srv.DebugWallBroken(46, 44), srv.DebugWallHp(46, 44),
+                  (int)srv.DebugTraceRay(wx - 30, wy, wx + 30, wy), (int)srv.WallAt(wx, wy), srv.pets(), srv.mapResetStat(0), srv.mapResetStat(1));
+    Check(srv.WorldStaticCount() == 1 && !srv.DebugWallBroken(46, 44) && srv.DebugWallHp(46, 44) == 150 &&
+          !srv.DebugTraceRay(wx - 30, wy, wx + 30, wy) && srv.WallAt(wx, wy) && srv.pets() == 0 && srv.mapResetStat(0) == 1 && srv.mapResetStat(1) == 1, msg);
+    std::printf("  맵 처음 상태 — 담고 줍기·벽 부수기·크리처 뒤 되돌리면 처음으로 · 안 담았으면 비우기만\n");
+}
+
 // ── 09-29 Z1-A — 벽 부수기(`Nox_xxx_damageToMap_534BC0` · `wallPreDestroy_534DA0` · `mapDamageToWalls_534FC0`) · 창문 ─────────
 void TestWallBreak() {
     using nox::CharClass;
@@ -21560,6 +21614,7 @@ void TestWallBreak() {
         Check(!srv.DebugTraceRayFlags(nx - 30, ny, nx + 30, ny, 0x1), "⑤ 창문을 보통 추적이 지나갔다(막혀야)");
         Check(srv.DebugTraceRayFlags(nx - 30, ny, nx + 30, ny, 0x4), "⑤ 창문을 0x40 없는 추적(Flag3)이 못 지나갔다");
     }
+    TestMapReset();
     std::printf("  09-29 Z1-A — 벽 부수기: 체력 깎기·부서짐(3a·8a·추적 통과)·안 부서지는 벽·홀수 칸·둘레 피해(유닛은 앞쪽만)·나중 온 사람 3a · 창문\n");
 }
 

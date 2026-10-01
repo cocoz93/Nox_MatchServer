@@ -3618,6 +3618,10 @@ public:
     // 몇 판을 마쳤나. 0 이면 아직 한 판도 안 끝난 것이다.
     unsigned long long roundsPlayed() const { return roundsPlayed_; }
     unsigned long long roundFrozenTicks() const { return roundFrozenTicks_; }   // ★ 10-01 R1 — 판끝이라 세계를 멈춘 틱 수
+    // ★ 10-01 R2 — 맵 처음 상태 담아 두기 · 되돌리기(머리 주석은 `Server.cpp` `CaptureMapInitial`)
+    void CaptureMapInitial();
+    void ResetWorldFromMap();
+    unsigned long long mapResetStat(int i) const { return i >= 0 && i < 3 ? mapResetStat_[i] : 0; }   // 0 담음 · 1 되돌림 · 2 안 담은 채 되돌림(비우기만)
     void DebugEndRound() { roundOver_ = true; restartAtFrame_ = frame_ + kRoundRestartTicks; }   // ★ 10-01 R1 시험용 — 승자 알림 없이 판끝만
     // 깃발 HUD 를 몇 번 보냈나. **매 틱 수준으로 오르면 과잉이다**(0x5e 270배 사고 참조).
     unsigned long long flagStatusSent() const { return flagStatusSent_; }
@@ -5711,6 +5715,18 @@ private:
     double questSpread_ = 0;
     bool questAnnounced_ = false; // 첫 스테이지 알림을 보냈나
     std::vector<Creature> pets_;
+    // ★ 10-01 R2 — 맵 처음 상태(판 중에 바뀌는 맵 몫 6종)의 사본 · `CaptureMapInitial` 이 채우고 `ResetWorldFromMap` 이 되돌린다
+    struct MapInitial {
+        bool captured = false;
+        std::vector<WorldStatic> statics;
+        std::vector<WorldProp> props;
+        std::vector<SecretWall> secretWalls;
+        std::vector<ShootingTrap> traps;
+        std::vector<WallTile> wallTiles;
+        std::vector<uint8_t> walls;
+        std::vector<MapObjRef> mapObjects;
+    } mapInitial_;
+    unsigned long long mapResetStat_[3] = {};
     // 날아가는 것에 매길 번호.
     // ⚠ **진짜 서버가 번호를 어떻게 매기는지는 모른다.** 캡처에서 사람이 715·720·728 을
     //   받은 것만 봤다. 사람과 안 부딪히게 넉넉히 띄운 자리에서 시작할 뿐이다.

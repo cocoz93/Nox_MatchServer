@@ -2924,6 +2924,11 @@ int main(int argc, char** argv) {
         outs.clear();
     };
 
+    // ★ 10-01 R2 — 맵을 다 넣었으니 처음 상태를 담아 둔다(판 다시 열 때 되돌릴 사본 · `Server::CaptureMapInitial`)
+    srv.CaptureMapInitial();
+    std::printf("[맵처음] 담음 — 바닥 물건 %zu · 문·오벨리스크 %zu\n", srv.WorldStaticCount(), srv.WorldPropCount());
+    std::fflush(stdout);
+
     // ★ `recvfrom` 을 그냥 부르면 패킷이 올 때까지 막혀서 **틱이 안 돈다.**
     //   기다리는 시간을 틱 주기로 잘라 두고, 그 사이사이에 틱을 돌린다.
     for (;;) {

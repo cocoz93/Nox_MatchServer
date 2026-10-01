@@ -1735,6 +1735,52 @@ bool Server::Damage(const std::string& addr, int amount, std::vector<OutPacket>&
 //   · 승자 번호 0 이면 무승부(팀 쪽은 "HL_Tie", 사람 쪽은 "DM_Tie")
 //   · 까닭 1 이면 「시간 초과」를 앞에 붙인다. **점수 한도로 끝날 때는 0**(정답지가 0 을 넘긴다)
 //   · 프레임은 **맵을 받은 프레임보다 커야** 클라가 안 버린다(`받은 값 <= 저장값`이면 통째로 버림)
+// ★ 10-01 R2 — **맵 처음 상태 담아 두기 · 되돌리기**(원본은 판끝 10초 뒤 맵을 통째로 다시 읽는다 — `game.go:815~851·935~962`).
+//   우리는 맵을 시작 때 한 번 읽고(`main.cpp` 의 `srv.Set*`) 다시 읽는 길이 없어, 판 중에 바뀌는 맵 몫을 사본으로 담아 둔다.
+//   되돌림 6종 — 바닥 물건 `statics_` · 문·오벨리스크 `props_` · 비밀벽 `secretWalls_` · 쏘는 덫 `traps_` ·
+//     벽 칸 `wallTiles_`·`walls_`(부서짐 포함 · 길 찾기 격자 다시 굽기) · 맵 오브젝트 `mapObjects_`
+//   비움 10종 — 크리처 `pets_`(맵에서 생기는 몬스터는 없다 — 소환·퀘스트·진단뿐 · `pets_` 넣는 자리 넷) · 나는 것 · 놓인 물체 · 지속 주문 ·
+//     시전 목록 · 들을 거리 · 낙하 대기 · 소리 대기 · 새로 놓인 물건 표시 · 투표
+//   안 건드림 — 장애물·시작점·길목·바닥·종류 표(판 중에 안 바뀜) · 사람 몫(가방·버프·자리 — R3) · 사람별 소개 기록(R4)
+//   ⚠ 담기는 `main` 이 맵을 다 넣은 뒤 본 루프 앞에서 한 번(깃발·퀘스트 판 차리기는 루프 안이라 담지 않는다 — 깃발은 재시작 블록이 집으로)
+void Server::CaptureMapInitial() {
+    mapInitial_.statics = statics_;
+    mapInitial_.props = props_;
+    mapInitial_.secretWalls = secretWalls_;
+    mapInitial_.traps = traps_;
+    mapInitial_.wallTiles = wallTiles_;
+    mapInitial_.walls = walls_;
+    mapInitial_.mapObjects = mapObjects_;
+    mapInitial_.captured = true;
+    ++mapResetStat_[0];
+}
+
+void Server::ResetWorldFromMap() {
+    if (mapInitial_.captured) {
+        statics_ = mapInitial_.statics;
+        props_ = mapInitial_.props;
+        secretWalls_ = mapInitial_.secretWalls;
+        traps_ = mapInitial_.traps;
+        wallTiles_ = mapInitial_.wallTiles;
+        walls_ = mapInitial_.walls;
+        mapObjects_ = mapInitial_.mapObjects;
+        AIPathBakeWalls();                                     // 부서졌던 벽이 길 찾기 격자에도 돌아오게
+        ++mapResetStat_[1];
+    } else {
+        ++mapResetStat_[2];
+    }
+    pets_.clear();
+    missiles_.clear();
+    placed_.clear();
+    durSpells_.clear();
+    castList_.clear();
+    listens_.clear();
+    pendingDeltaZ_.clear();
+    audioEvents_.clear();
+    freshStatics_.clear();
+    votes_.clear();
+}
+
 void Server::SendRoundWinner(uint8_t op, uint16_t who, uint8_t reason, std::vector<OutPacket>& out) {
     for (auto& kv : sessions_) {
         Session& o = kv.second;
