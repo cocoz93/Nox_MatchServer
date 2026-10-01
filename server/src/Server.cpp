@@ -17562,9 +17562,11 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     //    그 틱의 시전 목록도 함께(spellBookReact_4FCB70 — 정답지는 유닛 갱신 뒤 · server.go:341)
     for (int step = 0; step < ticks && !frozen; ++step) {                                    // R1 — 판끝 동안 멈춤
         UpdatePlayerMovement(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
-        SpellCastByBook(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
-        SpellCastByPlayer(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);   // 4-a3 지속 주문(spellBookReact_4FCB70)
     }
+    // ✖ 10-02 — 시전 목록·지속 주문(`spellBookReact_4FCB70`)을 여기(사람 걸음 바로 뒤)에서 돌렸다 → 아래 크리처 생각 **뒤**로 옮김.
+    //   원본은 유닛 갱신(사람·몬스터 모두 — `updateUnits`) 뒤에 돈다(`server.go:335~341` · `spells.go:187~190`).
+    //   앞에 두니 몬스터가 생각 중에 건 지속 주문은 다음 프레임에야 처음 봤고, 점멸(`spellBlink1_530380` — 「건 프레임 + 1 − 1 == 지금」)은
+    //   그 프레임을 영영 놓쳐 **비홀더가 점멸을 안 했다**(사람 판 3·5 「안 사라짐」 · 계수는 「가까워 점멸」 만 오름)
 
     // ── 묶음 6-f(6) 불려 나온 것들을 **쌓임으로** 움직인다 ────────────────
     //
@@ -17695,6 +17697,13 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         if (floorGrid_.TileAt(static_cast<float>(k.x), static_cast<float>(k.y), floorEdges_).tile != 6) continue;
         ++lavaHurtsPet_;
         HurtTarget(Target{ std::string(), static_cast<int>(i) }, 2, out, std::string(), 12, nullptr, HitterNone());
+    }
+
+    // ── 시전 목록·지속 주문(`spellBookReact_4FCB70` = `spellCastByBook_4FCB80` + `duration.spellCastByPlayer`) ──
+    //   ★ 10-02 — 유닛 갱신(사람 걸음·크리처 생각·용암) **뒤**로 옮김(원본 `server.go:335~341` 차례 · 위 사람 걸음 자리의 ✖ 주석)
+    for (int step = 0; step < ticks && !frozen; ++step) {                                    // R1 — 판끝 동안 멈춤
+        SpellCastByBook(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
+        SpellCastByPlayer(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);   // 4-a3 지속 주문(spellBookReact_4FCB70)
     }
 
     // ★★ **걷고 있나를 정한다** — 갱신 항목의 애니 번호(IDLE/WALK)를 가르는 데 썼다.

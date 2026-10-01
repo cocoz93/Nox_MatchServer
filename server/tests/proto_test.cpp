@@ -23054,11 +23054,19 @@ void TestMonsterCastB7() {
     // ⑥ 두뇌 — 상대가 도망 거리 절반(32.5) 안이면 곧장 점멸(4) · 달아날 때 쉬는 때 0~6초
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1020.0f, true);
+        srv.SetPlayerStarts({ { 3000.0f, 3000.0f } });             // 점멸 갈 데(길목이 없으면 시작 지점 — `GAME4_3.c:654~656`)
         for (int t = 0; t < 40 && srv.castStat(CS::BlinkNear) == 0; ++t) run(srv, ms, 1);
         const uint32_t ce = srv.DebugPetCastNextEscape(0);
-        char msg[160]; std::snprintf(msg, sizeof(msg), "⑥ 20 앞 상대인데 점멸을 안 했다 — 가까워 점멸 %llu · 받음 %llu · 쉬는 때 +%u",
+        char msg[200]; std::snprintf(msg, sizeof(msg), "⑥ 20 앞 상대인데 점멸을 안 했다 — 가까워 점멸 %llu · 받음 %llu · 쉬는 때 +%u",
             srv.castStat(CS::BlinkNear), srv.castStat(CS::Accepted), ce - srv.frame());
         Check(srv.castStat(CS::BlinkNear) == 1 && srv.castStat(CS::Accepted) >= 1 && ce <= srv.frame() + 180, msg);
+        // ★ 10-02 사람 판 3·5 「점멸로 안 사라짐」 — 판단·받음 계수만 보고 **실제로 옮겨졌나**를 안 봤다.
+        //   원본은 유닛 갱신(몬스터 생각) **뒤**에 지속 주문을 돌려(`server.go:335~341` · `spells.go:187~190`) 건 그 프레임에 터진다
+        //   (`spellBlink1_530380` — `a1[17] − 1 == gameFrame()`). 우리는 지속 주문을 몬스터 생각 앞에서 돌려 몬스터가 건 점멸이 영영 안 터졌다
+        run(srv, ms, 2);
+        double bx = 0, by = 0; srv.DebugPetXY(0, bx, by);
+        std::snprintf(msg, sizeof(msg), "⑥ 점멸이 실제로 옮기지 않았다 — 비홀더 자리 (%.0f,%.0f) · 기대 시작 지점 (3000,3000) 둘레 30", bx, by);
+        Check(std::abs(bx - 3000.0) < 30.0 && std::abs(by - 3000.0) < 30.0, msg);   // 옮긴 뒤 한 틱 더 걸을 수 있다(첫 판 2997,2997)
     }
     // ⑥' 도망 거리 절반 밖(50 — 65 안)이면 점멸 대신 거리 두기
     {
