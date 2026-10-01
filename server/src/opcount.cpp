@@ -66,6 +66,10 @@ int main(int argc, char** argv) {
     //   몬스터 항목에 칸 바이트(0x80 · 2바이트 덧붙이)를 싣자 「끝까지 못 읽은 조각」이 몬스터 수만큼 늘었다(임프 넷 판 17/1887)
     std::map<std::string, nox::AliasTable> aliasByPeer;
     std::map<int, long long> sendOps, recvOps;
+    // ★ 10-01 — 오프코드별 **바이트 합**(겉 메시지 기준 · 오프코드 1 포함 · `aa` 는 껍데기 목록 통째)과 조각 바이트 합.
+    //   조각 수는 대조군과 같은데 합이 +32% 라 「어느 메시지가 무거운가」를 세려고 더했다(무인 조각 7)
+    std::map<int, long long> sendBytes, recvBytes;
+    long long sendWire = 0;
     // 판독이 멈춘 오프코드. 0x1000 비트를 세워 클라→서버를 가른다.
     std::map<int, long long> stopOps;
     long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0, partSend = 0, partRecv = 0, updUnread = 0, padTail = 0;  // ★ 멈춘 자리도 센다
@@ -114,6 +118,7 @@ int main(int argc, char** argv) {
         if (!toT.empty()   && (ln.time.empty() || ln.time > toT))   continue;
 
         if (send) ++nSend; else ++nRecv;
+        if (keyed && send) sendWire += (long long)d.size();
 
         // ★★ **직접 훑는다.** `MessageIter` 는 길이표에 -1 인 오프코드를 만나면 선다.
         //   정품은 `0x27 TIMESTAMP` 뒤에 `0xa4 UPDATE_STREAM`(-1)을 붙여 보내므로,
@@ -256,6 +261,7 @@ int main(int argc, char** argv) {
                                          static_cast<uint32_t>(q[5] | (q[6] << 8) | (q[7] << 16) | (static_cast<uint32_t>(q[8]) << 24)));
             }
             if (send) ++sendOps[op]; else ++recvOps[op];
+            (send ? sendBytes : recvBytes)[op] += (long long)msz;
             if (seqShow > 0 && send) {
                 char t[32];
                 std::snprintf(t, sizeof(t), "%s%02x", seqLine.empty() ? "" : " ", op);
@@ -353,6 +359,20 @@ int main(int argc, char** argv) {
     int n = 0;
     for (auto& p : a) { if (++n > 60) break;
         std::printf("   0x%02x  %-34s x %lld\n", p.second, nox::OpName((nox::Op)p.second), -p.first); }
+    // ★ 10-01 — 바이트로 본 서버→클라. 합 = 조각 바이트(키 받은 뒤) = 머리 2×조각 + 메시지 바이트 + 끝의 채움 0 + 못 읽은 꼬리
+    {
+        long long msgSum = 0;
+        for (auto& p : sendBytes) msgSum += p.second;
+        std::printf("\n-- 서버→클라 바이트 -- 조각 바이트 %lld · 그중 메시지 %lld (머리·채움·못 읽은 꼬리는 나머지)\n",
+                    sendWire, msgSum);
+        std::multimap<long long, int> sb;
+        for (auto& p : sendBytes) sb.insert({-p.second, p.first});
+        int bn = 0;
+        for (auto& p : sb) { if (++bn > 25) break;
+            const long long c = sendOps.count(p.second) ? sendOps[p.second] : 0;
+            std::printf("   0x%02x  %-34s %9lld B · %7lld 건 · 평균 %.1f\n", p.second, nox::OpName((nox::Op)p.second),
+                        -p.first, c, c ? (double)(-p.first) / (double)c : 0.0); }
+    }
     std::printf("\n-- 클라→서버 상위 --\n");
     std::multimap<long long, int> b;
     for (auto& p : recvOps) b.insert({-p.second, p.first});
