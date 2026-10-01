@@ -1064,17 +1064,36 @@ Target Server::NearestTarget(const std::string& friendOwner, double x, double y,
     return best;
 }
 
-// 불려 나온 것 하나를 없애고 모두에게 알린다.
-//
-// ★ `0x31 DESTROY_OBJECT` 는 실측이다 — `31 d6 02`(번호 2바이트, 모두 3바이트).
-//   09-06 덤프에 54건 있었다. **이걸 안 보내면 화면에 시체가 영원히 남는다.**
+// ★ 10-01 — **죽음 함수**(`monsterCallDieFn_50A3D0` `GAME4_1.c:471~504` · 들어오는 길 = 체력 0 `GAME3_3.c:7158~7171` · 죽음 버프 끝).
+//   ✖ 전에는 여기서 `pets_` 에서 지우고 `31` 을 보내 **시체 없이 바로 사라졌다**(10-01 사람 판 4 — 곰·거머리·임프).
+//   원본 — 죽음 깃발 0x8000(이미 켜져 있으면 다시 안 죽음 `:7163`) · 쌓임을 비우고 31(죽음)·30(죽어감 — 맨 위) · 버프 끔 ·
+//   썩음 시간(소환수 +1440 0x80 → 10~20초 · 퀘스트 5~8초 · 그 밖 없음 `:481~489`) · 주인에게 `6d`
+//   ⚠ 주인은 **안 지운다**(원본 `:504` 는 지움) — 우리는 주인 없음을 「맵 몬스터」로도 쓰므로 시체가 맵 몬스터로 섞인다 → 죽음 표시로 거른다(플랜 결정 ①)
+//   ⚠ 안 옮김 — 들고 있던 것 떨구기(`:505~508` · 소환수는 가방 없음) · 감시 비트·부하 넘기기(`:500~503`)
+//   실제 지우기는 `RemovePet` — 썩음 프레임 · 31 의 DESTROY_WHEN_DEAD(조각 2) → `FlushDeadPets`(AI 돌기 뒤 한꺼번에)
 void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
     if (idx >= pets_.size()) return;
+    if (pets_[idx].dead) return;                             // `GAME3_3.c:7163` — 시체를 또 때려도 6d·죽음 소리·퀘스트 셈이 두 번 안 나게
     // ★ 09-26 M4a — DIE(+60 · `nox_xxx_mobGenericDeath_544C40` `GAME4_3.c:9801~9804`) — 죽은 자리에서 모두에게.
     //   부르는 자리 둘(체력 0 · 죽음 버프 끝) 모두 죽음이라 여기서 낸다 · 지우기 전에(자리·종류가 필요)
     MonsterSound(pets_[idx], 14);
     const uint16_t netCode = pets_[idx].netCode;
     const bool wild = pets_[idx].owner.empty();   // 주인 없는 것 = 맵의 몬스터
+    {
+        Creature& k = pets_[idx];                            // ⚠ 아래 퀘스트 웨이브가 `pets_` 에 넣기 전에 다 적는다(참조가 깨진다)
+        k.dead = true;
+        k.health = 0;
+        AIClearStack(k);                                     // `monsterClearActionStack_50A3A0`
+        AIPush(k, 31);
+        AIPush(k, 30);
+        ClearBuffs(Target{ std::string(), static_cast<int>(idx) });   // `unitClearBuffs_4FF580`(`:480`)
+        // 썩음 시간 — `randomInt` 는 양끝 포함
+        uint32_t secs = 0;
+        if (!wild) secs = 10 + NextRandom(11);               // 소환수(+1440 0x80) 10~20초
+        else if (questTotal_ > 0 || questStage_ > 0) secs = 5 + NextRandom(4);   // 퀘스트(4096) 5~8초
+        k.decayFrame = secs ? frame_ + secs * kServerTickRate : 0;   // 아레나 맵 몬스터는 안 썩음
+        ++corpseStat_[0];
+    }
     // ★ 10-01 — 주인이 사람이면 `6d`(번호2 · Packet1) — `monsterCallDieFn_50A3D0`(`GAME4_1.c:491~498`) → `4D9200`(`GAME3_2.c:4617~4626`).
     //   클라는 제 소환수 목록에서 뺀다(`cdecode.c:1528~1552`) · 짝 = `ReportAcquireCreature` 의 `6c`
     //   ⚠ 안 옮김 — 미니맵 장부 지우기 `netUnmarkMinimapObj_417300` · 종류 윗비트(GameFlag28)
@@ -1087,7 +1106,6 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
             ++summonOwnSent_[2];
         }
     }
-    pets_.erase(pets_.begin() + static_cast<long>(idx));
     ++petsKilled_;
     if (wild && questTotal_ > 0) {
         ++questKilled_;
@@ -1103,7 +1121,15 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
             }
         }
     }
+}
 
+// ★ 10-01 — 실제 지우기(전에 `KillPet` 끝에 있던 것). 부르는 곳은 `FlushDeadPets` 하나.
+// ★ `0x31 DESTROY_OBJECT` 는 실측이다 — `31 d6 02`(번호 2바이트, 모두 3바이트).
+//   09-06 덤프에 54건 있었다. **이걸 안 보내면 화면에 시체가 영원히 남는다.**
+void Server::RemovePet(size_t idx, std::vector<OutPacket>& out) {
+    if (idx >= pets_.size()) return;
+    const uint16_t netCode = pets_[idx].netCode;
+    pets_.erase(pets_.begin() + static_cast<long>(idx));
     uint8_t msg[3];
     msg[0] = static_cast<uint8_t>(Op::DESTROY_OBJECT);
     msg[1] = static_cast<uint8_t>(netCode);
@@ -1113,6 +1139,19 @@ void Server::KillPet(size_t idx, std::vector<OutPacket>& out) {
             Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
         }
     }
+}
+
+// ★ 10-01 — 썩음 프레임이 된 시체(`unitSetDecayTime_511660` 의 썩는 목록)와 지울 표시(`delayedDeleteObject_4E5CC0`)를 한꺼번에 지운다.
+//   AI 를 다 돈 뒤 한 번 — 도는 도중에 지우면 `pets_` 순번이 밀린다(전에는 그래서 「크기가 바뀌면 그 걸음을 접는다」를 뒀다)
+void Server::FlushDeadPets(std::vector<OutPacket>& out) {
+    size_t corpses = 0;
+    for (size_t i = pets_.size(); i-- > 0;) {
+        const Creature& k = pets_[i];
+        if (k.removeMe) { RemovePet(i, out); ++corpseStat_[2]; continue; }
+        if (k.dead && k.decayFrame != 0 && frame_ >= k.decayFrame) { RemovePet(i, out); ++corpseStat_[1]; continue; }
+        if (k.dead) ++corpses;
+    }
+    if (corpses > corpseStat_[3]) corpseStat_[3] = corpses;
 }
 
 // ★ 09-20 — 투사체의 **주인 사슬 뿌리가 몬스터인가**. 한 곳에서만 센다(두 갈래가 같은 셈을 쓴다).
@@ -17329,6 +17368,20 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   목록 중 가장 가까운 적. 한번 본 것은 (거리+30) 안에서 보이는 동안 남는다(시야선은 2초마다 다시 봄).
             //   ✖ 전에는 거리 제한 없이 가장 가까운 적(`NearestTarget(…, 1e9)`)을 매 틱 골랐다 — 멀리서도 · 등 뒤도 알아봤다(09-28 사람 판 박쥐)
             //   ★ 09-29 B2 — 주인 없는 것은 놀기(0) 갱신이 지금 상대(안 보여도)로 싸움을 쌓는다 · 아래는 주인 있는 것의 호위 대체(소환 기본 명령)만 남았다
+            // ★ 10-01 시체 — 죽은 것은 듣기(`checkIsKillable_528190` 0 → `unit_ai.go:317`)·앞머리(`:557`)·알아보기(`GAME4_2.c:7306`)·
+            //   주 AI(`GAME5.c:1262~1264` 0x8000 이면 돌아감)를 건너뛰고 **조건·애니·행동만** 돈다(`unit_ai.go:578~603`) —
+            //   죽어감(30) 애니가 끝나야 죽음(31)이 드러난다
+            //   ⚠ 안쪽 넷(`UpdateSight`·`MonsterListen`·`MonsterHeadUpdate`·`MonsterBrain`)도 이미 체력 0 이면 돌아간다 — 이 갈래를 빼도
+            //     겉 동작이 같다(10-01 돌연변이 「등가」) · 원본 갱신 차례를 그대로 적어 두는 자리
+            if (k.dead) {
+                k.velX = 0; k.velY = 0;
+                AIRefreshStackArgs(k);
+                AIProcDeps(k, out);
+                MonsterAnimUpdate(k);
+                AITick(k, out);
+                k.prevX = k.x; k.prevY = k.y;
+                continue;
+            }
             // ★ 09-29 B6 — 소리 듣기(`unitUpdateMonster_50A5C0` `:549` — 앞머리·알아보기보다 먼저)
             if (!debugNoAutoFight_) MonsterListen(k);
             // ★ 09-29 B2 — 몬스터 한 틱 앞머리(unit_ai.go:557~573) — 다침 소리 · 도발 · 놀 때 소리(알아보기 앞)
@@ -17382,6 +17435,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         }
         if (pets_.size() != before) break;
     }
+    FlushDeadPets(out);                                      // ★ 10-01 — 썩은 시체·지울 표시(AI 를 다 돈 뒤 한꺼번에)
 
     // ★ 09-27 S2 — 소환수·맵 몬스터 바닥 칸 피해(`GAME4_1.c:3240~3245` — 사람 몫은 09-26 M3). 정답지는 이동 적분 목록의 오브젝트마다
     //   **서 있어도** 새 자리(+64)의 바닥 번호가 6(Lava)이고 떠 있지 않고(+16 & 0x4000 — thing.bin FLAGS AIRBORNE) 체력 자료(+556)가 있으면 짝 (나, 6) →

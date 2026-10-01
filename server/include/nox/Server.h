@@ -685,6 +685,10 @@ struct Creature {
     float sightRange = 0.0f;    // +1312 SightRange (지켜가 250 으로 놓는다)
     bool ordered = false;       // 사람이 명령을 준 적이 있나 — 틱의 기본 호위를 멈춘다
     bool deadDone = false;      // 묶음 6-j — 죽음(31) 갱신이 한 번 돌았나(치울 표시)
+    // ★ 10-01 시체 — 원본은 죽어도 안 지운다(`monsterCallDieFn_50A3D0` `GAME4_1.c:471~489`)
+    bool dead = false;          // +16 0x8000 DEAD — 체력 0 순간 켬(`GAME3_3.c:7163~7165`) · 켜져 있으면 다시 안 죽음
+    uint32_t decayFrame = 0;    // 썩어 지울 프레임(`unitSetDecayTime_511660`) · 0 이면 안 썩음(아레나 맵 몬스터)
+    bool removeMe = false;      // 지금 지울 것(원본 `delayedDeleteObject_4E5CC0` — AI 돌기 뒤 한꺼번에)
     // ★ 09-29 B1 — 알아보기(`nox_xxx_unitUpdateSightMB_5281F0` `GAME4_2.c:7278~7388`).
     //   보이는 목록(+1129 수 · +1132 최대 16) — 사람은 주소 · 크리처는 번호로 적는다(자리 번호는 앞 것이 지워지면 밀린다)
     struct SeenRef { std::string addr; uint16_t petNet = 0; };
@@ -2505,7 +2509,7 @@ public:
     // 시험용 — 주인 없는 몬스터 하나를 죽인다(위치·근접에 안 기대고 스테이지 진행을 잰다).
     void DebugKillOneWild(std::vector<OutPacket>& out) {
         for (size_t i = 0; i < pets_.size(); ++i) {
-            if (pets_[i].owner.empty()) { KillPet(i, out); return; }
+            if (pets_[i].owner.empty() && !pets_[i].dead) { KillPet(i, out); return; }   // ★ 10-01 — 시체는 건너뜀(죽어도 남는다)
         }
     }
     // 시험용 — 불려 나온 것 하나를 **깎는다**(죽이지 않는다). 넷코드를 돌려준다, 없으면 0.
@@ -4053,6 +4057,9 @@ public:
     size_t pets() const { return pets_.size(); }
     // 불려 나온 것이 죽은 횟수.
     unsigned long long petsKilled() const { return petsKilled_; }
+    unsigned long long corpseStat(int i) const { return i >= 0 && i < 4 ? corpseStat_[i] : 0; }   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움 · 3 동시 시체 최대
+    bool DebugPetDead(size_t i) const { return i < pets_.size() && pets_[i].dead; }
+    uint32_t DebugPetDecayFrame(size_t i) const { return i < pets_.size() ? pets_[i].decayFrame : 0; }
     // ── 조각 D(09-16) 신설 계수기 — 「눈이 없어 못 재던 것」을 재는 자리 ──
     //   ★ 소리는 **셋으로 갈라 센다.** 합치면 「안 불렀다」와 「불렀는데 표가 비어 버렸다」와
     //     「담겼는데 거리에서 잘렸다」가 한 숫자로 뭉개져 묶음 10 전체가 판정 불능이 된다.
@@ -4979,7 +4986,9 @@ private:
     void UpdateFlags(std::vector<OutPacket>& out);
 
     // 불려 나온 것 하나를 없애고 모두에게 알린다.
-    void KillPet(size_t idx, std::vector<OutPacket>& out);
+    void KillPet(size_t idx, std::vector<OutPacket>& out);       // ★ 10-01 = 죽음 함수(안 지움)
+    void RemovePet(size_t idx, std::vector<OutPacket>& out);     // ★ 10-01 실제 지우기(`31 DESTROY` + 목록에서 뺌)
+    void FlushDeadPets(std::vector<OutPacket>& out);             // ★ 10-01 썩음 프레임·지울 표시를 한꺼번에
 
     // `0xcc SEQ_IMPORTANT` 껍데기에 싸서 내보낸다.
     //
@@ -5652,6 +5661,7 @@ private:
     // 클라는 231번 보냈는데 성사가 15에서 멎었다 — 유실이 파싱이냐 조건이냐를 가른다.
     unsigned long long code6Seen_ = 0;
     unsigned long long petsKilled_ = 0;
+    unsigned long long corpseStat_[4] = {};   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움(DESTROY_WHEN_DEAD) · 3 동시 시체 최대
     unsigned long long soundsQueued_ = 0;
     unsigned long long soundsDropped_ = 0;
     unsigned long long soundsSent_ = 0;
