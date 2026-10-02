@@ -2278,6 +2278,27 @@ uint16_t Server::PropWireCode(const WorldProp& p) const {
     return static_cast<uint16_t>(p.staticLookup ? (p.netCode | 0x8000u) : p.netCode);
 }
 
+namespace {
+// ★ 10-02 — 문짝 선분을 **두 자리가 같이 쓴다**(문 갱신의 밀림 `UpdateProps` · 사람 걸음의 밀려남 `UpdatePlayers` 적분) — 한쪽만 고치면 어긋난다
+//   정답지 `GAME5.c:2143~2156` — 방향표 `(미세각 + 160) & 255`(반지름 16 표) · 문짝 = 경첩(문 자리) → 경첩 + 표 값 × 2(길이 32)
+inline void DoorLeafDir(uint8_t fine, double& dirx, double& diry) {
+    const int idx = (static_cast<int>(fine) + 160) & 255;
+    const double th = idx * (2.0 * 3.14159265358979323846 / 256.0);
+    dirx = std::floor(std::cos(th) * 16.0 + 0.5);   // 반지름 16 표
+    diry = std::floor(std::sin(th) * 16.0 + 0.5);
+}
+// 경첩 기준 점 (px,py) 에서 문짝 선분 위 가장 가까운 점까지 — (qx,qy) = 점 − 가까운 점 · 돌려주는 값은 그 길이
+inline double DoorLeafDist(double dirx, double diry, double px, double py, double& qx, double& qy) {
+    const double ex = 2.0 * dirx, ey = 2.0 * diry;   // 문짝 끝(×2)
+    const double len2 = ex * ex + ey * ey;
+    double t = (len2 > 0.0) ? (px * ex + py * ey) / len2 : 0.0;
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+    qx = px - t * ex; qy = py - t * ey;
+    return std::sqrt(qx * qx + qy * qy);
+}
+}  // namespace
+
 void Server::UpdateProps(std::vector<OutPacket>& out) {
     if (props_.empty()) return;
     for (auto& p : props_) {
@@ -2399,47 +2420,47 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             //   정답지 `GAME5.c:2143~2166` — 문짝은 문 자리에서 방향표 값 **×2**(길이 32)만큼 뻗은 선분이고,
             //   부딪힘은 **사람 원(반지름 10) 대 그 선분**이다. 문이 비키면 거리가 멀어져 저절로 멈춘다
             {
-                const int idx = (static_cast<int>(p.fine) + 160) & 255;
-                const double th = idx * (2.0 * 3.14159265358979323846 / 256.0);
-                const double dirx = std::floor(std::cos(th) * 16.0 + 0.5);   // 반지름 16 표
-                const double diry = std::floor(std::sin(th) * 16.0 + 0.5);
-                const double ex = 2.0 * dirx, ey = 2.0 * diry;               // 문짝 끝(×2)
-                // 선분 [문자리 → 문짝끝] 위에서 사람에게 가장 가까운 점
-                const double px = nearest->posX - p.x, py = nearest->posY - p.y;
-                const double len2 = ex * ex + ey * ey;
-                double t = (len2 > 0.0) ? (px * ex + py * ey) / len2 : 0.0;
-                if (t < 0.0) t = 0.0;
-                if (t > 1.0) t = 1.0;
-                const double qx = px - t * ex, qy = py - t * ey;
-                const double dist = std::sqrt(qx * qx + qy * qy);
-                const double depth = kBodyRadius - dist;                     // 사람 반지름 − 거리
-                if (depth > 0.0) {
+                double dirx = 0.0, diry = 0.0;
+                DoorLeafDir(p.fine, dirx, diry);                             // 문짝 끝 = 경첩 + 2 × (dirx, diry)
+                const size_t di = static_cast<size_t>(&p - props_.data());
+                // ★ 10-02 — **닿은 사람 전부**를 본다(정답지는 문 둘레 유닛 전부 · `getUnitsInRect` `GAME5.c:1811`).
+                //   ✖ 전에는 경첩에 가장 가까운 한 사람만 봐서, 문 길에 선 사람이 있어도 경첩에 더 가까운 다른 사람이 있으면
+                //     그 사람이 안 닿은 셈이 되어 문이 길에 선 사람을 뚫고 닫혔다(시험 TestDoorHeldOpenByBody ③)
+                //   관전·죽음은 안 닿는다 — 사람 걸음 적분의 `collide` 와 같은 기준(관전 NO_COLLIDE `player.go:156` · 죽음 ALLOW_OVERLAP)
+                for (auto& kv : sessions_) {
+                    Session& s = kv.second;
+                    if (!s.inGame || s.respawnAtFrame != 0 || s.observer) continue;
+                    // 선분 [문자리 → 문짝끝] 위에서 사람에게 가장 가까운 점
+                    const double px = s.posX - p.x, py = s.posY - p.y;
+                    double qx = 0.0, qy = 0.0;
+                    const double dist = DoorLeafDist(dirx, diry, px, py, qx, qy);
+                    const double depth = kBodyRadius - dist;                 // 사람 반지름 − 거리
+                    if (depth <= 0.0) continue;
                     p.lastPushFrame = frame_;                                // +44 — 잠김과 상관없이 닿으면 적는다(`GAME5.c:2170`)
                     // ★ 09-29 Z1-A — 밀어서 돌리는 것은 **안 잠긴 문만**(`GAME5.c:2191~2215`):
                     //   팀 문이 닫혀 있고 다른 팀이면 못 민다 — 1초에 한 번 「GateLockedMechanism」(+136)
                     //   그 밖에는 잠김(+1)이 0 일 때만 돈다 · 마법 잠금(+508)은 우리에게 SPELL_LOCK 이 없어 늘 비어 있다
                     const bool closedNow = ((32 * static_cast<int>(p.fine) / 256) & 31) == static_cast<int>(p.angle);
-                    if (p.team != 0 && closedNow && nearest->team != p.team) {
+                    if (p.team != 0 && closedNow && s.team != p.team) {
                         ++doorTouch_[static_cast<size_t>(DoorTouch::TeamBlocked)];
                         if (frame_ > p.teamMsgFrame) {
                             p.teamMsgFrame = frame_ + kServerTickRate;
-                            SendPriMsg(*nearest, "objcoll.c:GateLockedMechanism", out);
+                            SendPriMsg(s, "objcoll.c:GateLockedMechanism", out);
                         }
                     } else if (p.lock != 0) {
                         ++doorTouch_[static_cast<size_t>(DoorTouch::SpinLocked)];
                     } else {
                         const double cross = dirx * py - diry * px;
-                        const double push = depth * PlayerMassOf(*nearest);
+                        const double push = depth * PlayerMassOf(s);
                         p.spin += (cross <= 0.0) ? push : -push;
                     }
                     // ★ 09-29 Z1-A — 닿음 짝(사람, 문) — `collSysAddCollision_548630(사람, 문)`(`GAME5.c:2169`) 뒤
                     //   닿음 처리가 a.collide(b) → b.collide(a) 로 부른다: 사람 쪽(광전사 갈래) → 문 쪽(`collideDoor_4E8AC0`).
                     //   버프 몫(`4FDF90`)은 문이 유닛·생성기가 아니라 할 일이 없다
                     //   ⚠ 정답지는 이 짝을 이동 적분의 닿음 처리에서 부른다 — 우리는 문 갱신에서 곧바로 부른다(같은 틱 · 이동 뒤)
-                    const size_t di = static_cast<size_t>(&p - props_.data());
                     const ContactRef doorRef{ 4, std::string(), static_cast<int>(di) };
-                    PlayerCollide(*nearest, &doorRef, out);
-                    DoorCollide(di, *nearest, out);
+                    PlayerCollide(s, &doorRef, out);
+                    DoorCollide(di, s, out);
                 }
             }
             // 용수철 — 각속도로 미세각(0~255)을 돌린다. 한 걸음에 최대 4(정답지 `sub_548B60`),
@@ -5595,6 +5616,32 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 NotePush(std::hypot(m.ax - bx0, m.ay - by0) * PlayerMassOf(s));
                 NoteFirstKick(2, std::hypot(m.ax - bx0, m.ay - by0), 40.0 / PlayerMassOf(s), s.velX, s.velY,
                               s.posX, s.posY, -1, -1, -1, frame);
+            }
+            // ★ 10-02 — **문짝이 사람을 밀어낸다**(정답지 `GAME5.c:1847` → `sub_5488B0(문, 사람, 1)` `:2171~2182`).
+            //   ✖ 전에는 문이 사람에게 밀려 돌기만 하고(`UpdateProps`) 사람은 문짝에 안 막혔다 — 다 연 문짝(경첩 한계)으로 걸어 들면
+            //     그대로 뚫고 지나갔고, 그다음 문이 그 사람을 뚫고 닫혔다(10-02 정품 호스트 판 1번 · 시험 TestDoorHeldOpenByBody ②)
+            //   힘 = √(무게 × k × 4) × (−법선·속도) × 0.25 + k × 깊이 · 법선 = 문짝 → 사람 · k = 100(`dword_587000_292492` = kWallPush) ·
+            //   `sub_548600` 이 힘 ÷ 무게로 더한다 · 문 +44 도 지금으로(`:2170`)
+            //   ⚠ 정답지는 닿은 문이 충돌 목록에 든 뒤(`:2190`) 문 쪽 차례에 민다 — 우리는 겹치면 곧바로 민다(첫 걸음 차례만 다를 수 있음)
+            //   ⚠ 거르기 사각형은 경첩 둘레 ±32(문짝 길이) — 정답지는 문 몸 상자(종류마다) · 겹침 판정은 아래 거리로 한다
+            for (auto& p : props_) {
+                if (p.kind != PropKind::Door) continue;
+                if (!(p.x - 32.0 < qx1 && p.x + 32.0 > qx0 && p.y - 32.0 < qy1 && p.y + 32.0 > qy0)) continue;
+                double dirx = 0.0, diry = 0.0;
+                DoorLeafDir(p.fine, dirx, diry);
+                double lqx = 0.0, lqy = 0.0;
+                double dist = DoorLeafDist(dirx, diry, s.posX - p.x, s.posY - p.y, lqx, lqy);
+                if (dist == 0.0) dist = 0.1;                       // `:2163~2165`
+                if (dist >= kBodyRadius) continue;                 // `:2166` 사람 반지름(+176)
+                const double nx = lqx / dist, ny = lqy / dist;
+                const double depth = kBodyRadius - dist;
+                const double mass = PlayerMassOf(s);
+                const double into = -(ny * s.velY) - nx * s.velX;
+                const double f = std::sqrt(mass * static_cast<double>(kWallPush) * 4.0) * into * 0.25 + static_cast<double>(kWallPush) * depth;
+                m.ax += f * nx / mass;
+                m.ay += f * ny / mass;
+                p.lastPushFrame = frame_;
+                ++doorBodyPushes_;
             }
             // 벽 — 오브젝트 다음(sub_5481C0 순서)
             {

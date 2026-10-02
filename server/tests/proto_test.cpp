@@ -1608,8 +1608,11 @@ void TestPropsAndInvuln() {
         std::vector<nox::OutPacket> closed;
         for (int i = 0; i < 400; ++i) { ms += 34; s4.Tick(ms, closed); }
         Check(!s4.PropOpen(300), "아무도 안 미는데 문이 안 닫힌다");
-        Check(countDoor(closed, a, /*openOnes=*/false) >= 1, "닫힘 알림이 A 에게 안 갔다");
-        Check(countDoor(closed, b2addr, false) >= 1, "닫힘 알림이 B 에게 안 갔다");
+        // ✖ 10-02 — 문짝이 사람을 **밀어낸다**(정답지 `GAME5.c:2171~2182` · TestDoorHeldOpenByBody) — 문짝 위에 세워 둔 A 는
+        //   (걸어서 밀지 않으면) 밀려나 문이 위 `late` 구간에서 이미 닫힐 수 있다. 위 「A 는 그대로 둔다」는 이제 「B 가 들어올 동안」까지만 붙잡는다.
+        //   ⇒ 닫힘 알림은 두 구간을 합쳐 센다(지킬 것은 「둘 다 닫힘을 안다」)
+        Check(countDoor(late, a, /*openOnes=*/false) + countDoor(closed, a, false) >= 1, "닫힘 알림이 A 에게 안 갔다");
+        Check(countDoor(late, b2addr, false) + countDoor(closed, b2addr, false) >= 1, "닫힘 알림이 B 에게 안 갔다");
     }
 
     // ★★ 마나석 **잔량** (2026-09-22) — 사용자가 「마나 차는 속도가 너무 느리다」고 짚어서 판 자리.
@@ -21837,6 +21840,107 @@ void TestWallBreak() {
     std::printf("  09-29 Z1-A — 벽 부수기: 체력 깎기·부서짐(3a·8a·추적 통과)·안 부서지는 벽·홀수 칸·둘레 피해(유닛은 앞쪽만)·나중 온 사람 3a · 창문\n");
 }
 
+// ── 10-02 정품 호스트 판 1번 — 문 길에 선 몸은 문이 못 뚫는다 ─────────
+//   정품: 문을 끝까지 열어(경첩 한계 · 벽에 닿음) 캐릭터가 문이 닫히는 길에 서 있으면 **안 닫힌다**
+//   우리(09-30 사람 판 2): 문이 캐릭터를 뚫고 닫혔다
+//   원본 — 닿은 동안 문 +44 = 지금(`GAME5.c:2170`) → 0.5초가 안 지나 저절로 안 닫힘(`GAME4_3.c:5268~5279`) ·
+//          도는 문은 둘레 유닛을 **밀어낸다**(`GAME5.c:1847` → `:2171~2182` a3 == 1 · `sub_548600`) · 둘레 유닛 **전부**(`getUnitsInRect` `:1811`)
+//   ① 닫히는 문은 길에 가만히 선 사람을 **뚫지 않고 밀어낸다**(정품에서 가만히 선 사람이 문을 붙잡는지는 안 봄 — 정답지 식으로는 밀려난다)
+//   ② 다 연 문짝으로 걸어 들어가는 사람은 문짝에 막히고 문은 안 닫힌다(사용자가 정품에서 본 것)
+//   ③ 경첩에 더 가까운 다른 사람이 있어도 문짝을 미는 사람이 문을 돌린다(닿은 사람 전부)
+void TestDoorHeldOpenByBody() {
+    const std::string a = "10.10.2.31:9431", b = "10.10.2.32:9432";
+    uint32_t ms = 0;
+    auto tick = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) { ms += 34; srv.Tick(ms, out); };
+    auto walkPkt = [](uint8_t facing) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::PLAYER_INPUT));
+        p.push_back(10);
+        const uint8_t items[10] = { 1, 0, 0, 0, facing, 2, 0, 0, 0, facing };
+        p.insert(p.end(), items, items + 10);
+        return p;
+    };
+    // 문(경첩 1000,1000 · 닫힘 각도 0 = 문짝 \ 대각)을 놓고 경첩에 60틱 서서 끝까지 연다 — 경첩 한계 미세각 96(문짝 +x · TestPlayer 「경첩 한계」 판)
+    auto openFully = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
+        nox::Server::WorldProp d;
+        d.netCode = 310; d.type = 306; d.x = 1000; d.y = 1000; d.kind = nox::PropKind::Door;
+        srv.SetWorldProps({ d });
+        srv.DebugMoveTo(a, 1000, 1000);
+        for (int t = 0; t < 60; ++t) tick(srv, out);
+        return srv.DebugPropFine(310);
+    };
+    char msg[240];
+    // 사람과 문짝 선분 사이 거리 — 서버와 같은 식(방향표 `(미세각 + 160) & 255` · 반지름 16 반올림 · 문짝 = ×2)
+    auto leafDist = [](int fine, double px, double py) {
+        const double th = ((fine + 160) & 255) * (2.0 * 3.14159265358979323846 / 256.0);
+        const double ex = 2.0 * std::floor(std::cos(th) * 16.0 + 0.5), ey = 2.0 * std::floor(std::sin(th) * 16.0 + 0.5);
+        const double rx = px - 1000.0, ry = py - 1000.0;
+        double t = (rx * ex + ry * ey) / (ex * ex + ey * ey);
+        t = std::max(0.0, std::min(1.0, t));
+        return std::hypot(rx - t * ex, ry - t * ey);
+    };
+    // ① 닫히는 길(경첩 위 25 — 문짝이 미세각 32 에서 지나는 자리)에 가만히 선 사람 — 문짝이 몸을 **뚫지 않는다**(겹침 깊이 5 미만)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        ms = 0; srv.Tick(ms, out);
+        const int f0 = openFully(srv, out);
+        srv.DebugMoveTo(a, 1000, 975);
+        tick(srv, out);
+        double minDist = 1e9;
+        for (int t = 0; t < 150; ++t) {
+            tick(srv, out);
+            minDist = std::min(minDist, leafDist(srv.DebugPropFine(310), srv.DebugPosX(a), srv.DebugPosY(a)));
+        }
+        std::snprintf(msg, sizeof(msg), "① 다 연 문(미세각 %d) 길에 선 사람 — 150틱 동안 문짝과 가장 가까운 거리 %.2f(몸 10 − 5 넘어야 · 0 = 뚫음) · 문짝이 민 걸음 %llu",
+                      f0, minDist, srv.doorBodyPushes());
+        Check(f0 == 96 && minDist > 5.0, msg);
+    }
+    // ② 다 연 문짝(+x 선분 y 1000)을 위(1016,984)에서 아래(+y)로 걸어 민다 — 경첩 한계라 문은 더 안 돌고 사람은 **문짝에 막혀야** 한다
+    //   20틱 걷고 90틱 가만 — 문짝을 넘어가면(y 1000 넘김) 그다음 문은 그 사람을 뚫고 닫힌다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        ms = 0; srv.Tick(ms, out);
+        const int f0 = openFully(srv, out);
+        srv.DebugMoveTo(a, 1016, 984);
+        tick(srv, out);
+        double maxY = 0.0;
+        for (int t = 0; t < 20; ++t) {
+            srv.DebugAimAt(a, srv.XOf(a), srv.YOf(a) + 50);           // 커서 50 앞 — 걷기
+            const auto p = walkPkt(64);                                // +y
+            srv.OnPacket(a, p.data(), p.size(), out);
+            tick(srv, out);
+            maxY = std::max(maxY, srv.DebugPosY(a));
+        }
+        int minFine = 255;
+        for (int t = 0; t < 90; ++t) { tick(srv, out); minFine = std::min(minFine, srv.DebugPropFine(310)); }
+        std::snprintf(msg, sizeof(msg), "② 다 연 문짝(미세각 %d)으로 걸어 든 사람 — 가장 깊은 y %.1f(문짝 1000 − 몸 10 안팎이어야) · 그 뒤 가장 닫힌 미세각 %d(73 보다 커야) · 문짝이 민 걸음 %llu(0 넘어야)",
+                      f0, maxY, minFine, srv.doorBodyPushes());
+        Check(f0 == 96 && maxY < 993.0 && minFine > 73 && srv.doorBodyPushes() > 0, msg);
+    }
+    // ③ 닫힌 문(문짝 \ 경첩 1000,1000 → 978,978)의 문짝 위(984,984)에 선 b + 경첩에 더 가까운 a(경첩 아래 12 — 문짝에 안 닿는 쪽)
+    //   ✖ 전에는 경첩에 가장 가까운 한 사람(a)만 봐 b 가 안 닿은 셈 → 문이 안 돌았다
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugMoveTo(a, 5000, 5000);
+        srv.DebugMoveTo(b, 5100, 5100);
+        nox::Server::WorldProp d;
+        d.netCode = 311; d.type = 306; d.x = 1000; d.y = 1000; d.kind = nox::PropKind::Door;
+        srv.SetWorldProps({ d });
+        ms = 0; srv.Tick(ms, out);
+        tick(srv, out);
+        srv.DebugMoveTo(a, 1000, 1012);
+        srv.DebugMoveTo(b, 984, 984);
+        for (int t = 0; t < 16; ++t) tick(srv, out);
+        std::snprintf(msg, sizeof(msg), "③ 경첩에 더 가까운 a 가 있어도 문짝 위 b 가 문을 돌려야 — 미세각 %d(0 이면 안 돎)", srv.DebugPropFine(311));
+        Check(srv.DebugPropFine(311) != 0, msg);
+    }
+    std::printf("  10-02 — 문과 몸: 닫히는 문짝이 선 사람을 안 뚫음 · 다 연 문짝으로 걸어 든 사람 막힘·문 안 닫힘 · 닿은 사람 전부가 문을 돌림\n");
+}
+
 // ── 09-29 Z1-A — 잠긴 문(`nox_xxx_collideDoor_4E8AC0` · 밀기 `GAME5.c:2191~2215` · 열쇠 `DoorCheckKey`) · 문 짐 읽기 · 문 벽 칸 ─────────
 //   58맵 부팅 — 잠긴 문은 퀘스트 맵에만(전부 은·금 열쇠 문 · 장치 0 · 팀 문 0) · 옛 각도 읽기가 틀린 문 26 · 문 벽 칸이 경첩 칸이던 문 대부분
 void TestDoorLock() {
@@ -28856,6 +28960,7 @@ int main() {
     TestWornLooksForNewcomer();
     TestWallBreak();
     TestDoorLock();
+    TestDoorHeldOpenByBody();
     TestMonsterSight();
     TestMonsterIdleB2();
     TestMonsterMeleeB3();

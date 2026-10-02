@@ -1998,6 +1998,7 @@ public:
     void DebugUpdateProps(std::vector<OutPacket>& out) { UpdateProps(out); }
     unsigned long long doorsOpened() const { return doorsOpened_; }
     double doorNearestDist() const { return doorNearestDist_; }
+    unsigned long long doorBodyPushes() const { return doorBodyPushes_; }   // ★ 10-02 문짝이 사람을 민 걸음 수(사람 걸음 적분)
     unsigned long long doorResync() const { return doorResync_; }
     unsigned long long obeliskTold() const { return obeliskTold_; }
     // ★ 09-21 벽 튕김 재기 — 사람이 벽에 밀려난 걸음 수와 **그때 더해진 가속의 최대**.
@@ -5377,6 +5378,7 @@ private:
     std::vector<WorldProp> props_;
     // ★ 09-22 — 사람이 문에 **가장 가까이 간 거리**. 「문 0」의 분모다
     double doorNearestDist_ = 1e18;
+    unsigned long long doorBodyPushes_ = 0;   // ★ 10-02 — 문짝 → 사람 밀기(`GAME5.c:2171~2182` a3 == 1) 걸음 수
     // ★ 09-22 `0xd7` — 500ms 주기와 **돌아가며 한 명** 뽑는 커서(정답지 `GAME3_2.c:1444`)
     uint32_t lastLatencyFrame_ = 0;
     size_t   latencyCursor_ = 0;
