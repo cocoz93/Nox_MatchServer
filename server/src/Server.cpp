@@ -2307,6 +2307,24 @@ inline double DoorLeafDist(double dirx, double diry, double px, double py, doubl
 }
 }  // namespace
 
+// ★ 10-02 — 문 저절로 닫힘을 **사람 걸음 적분 앞**으로(정답지 `nox_xxx_updateDoor_53AC50` `GAME4_3.c:5268~5279` — 유닛 갱신 BBB 자리 ·
+//   그 뒤에 `updateCollide`). 한 틱 안에서 「2 닫힘 → 닿은 몸이 되밀기」가 다 끝난 뒤의 거친각만 다음 문 갱신이 알린다(`:5262~5267` 은 틱 머리에서 지난 틱 끝 값을 본다).
+//   ✖ 전에는 `UpdateProps`(걸음 적분 **뒤**)에서 닫고 곧바로 알렸다 — 가만히 막고 선 몸 앞에서 다 연 문(눈금 4)이 0.5초마다
+//     3 으로 알려졌다가 다음 틱 되밀려 4 로 알려져 **문이 떨었다**(10-02 사람 판 · 녹음 `사람판_20261002_231301` 눈금 4↔3 0.6초마다)
+void Server::DoorAutoClose(uint32_t frame) {
+    for (auto& p : props_) {
+        if (p.kind != PropKind::Door) continue;
+        // 저절로 닫힘 — 민 지 0.5초가 지나면 닫힘 각도 쪽으로 2씩(정답지 `updateDoor` + `sub_548860`)
+        const uint8_t closedFine = static_cast<uint8_t>((static_cast<int>(p.angle) * 8) & 255);
+        if (p.fine != closedFine && frame > p.lastPushFrame + kServerTickRate / 2) {
+            const int diff = (static_cast<int>(p.fine) - static_cast<int>(closedFine) + 256) & 255;
+            p.fine = static_cast<uint8_t>((p.fine + (diff >= 128 ? 2 : -2)) & 255);
+            if (((static_cast<int>(p.fine) - static_cast<int>(closedFine) + 256) & 255) < 2)
+                p.fine = closedFine;                       // 지나치지 않게 딱 맞춘다
+        }
+    }
+}
+
 void Server::UpdateProps(std::vector<OutPacket>& out) {
     if (props_.empty()) return;
     for (auto& p : props_) {
@@ -2449,16 +2467,7 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             //     붙어 있어 밀림이 안 끝나고 그때 한계가 일한다 — **미세각 96·거친각 12 에서 딱 선다.**
             //     빼 보면 거친각 19 까지 돌아 **회전문**이 된다(돌연변이로 확인)
             //   ★ 10-02 — 이 한계·속도 제한은 걸음 끝 문 돌리기(`UpdatePlayers`)로 옮겼다 — 여기서는 안 돈다
-            // 저절로 닫힘 — 민 지 0.5초가 지나면 닫힘 각도 쪽으로 2씩(정답지 `updateDoor` + `sub_548860`)
-            {
-                const uint8_t closedFine = static_cast<uint8_t>((static_cast<int>(p.angle) * 8) & 255);
-                if (p.fine != closedFine && frame_ > p.lastPushFrame + kServerTickRate / 2) {
-                    const int diff = (static_cast<int>(p.fine) - static_cast<int>(closedFine) + 256) & 255;
-                    p.fine = static_cast<uint8_t>((p.fine + (diff >= 128 ? 2 : -2)) & 255);
-                    if (((static_cast<int>(p.fine) - static_cast<int>(closedFine) + 256) & 255) < 2)
-                        p.fine = closedFine;                       // 지나치지 않게 딱 맞춘다
-                }
-            }
+            // ★ 10-02 — 저절로 닫힘은 `DoorAutoClose`(사람 걸음 적분 앞)로 옮겼다 — 여기서는 그 틱이 다 끝난 거친각을 알리기만 한다
             const uint8_t coarseNow = static_cast<uint8_t>((32 * static_cast<int>(p.fine) / 256) & 31);
             const bool want = (coarseNow != p.angle);
             p.coarseSeen = coarseNow;                  // ★ 10-02 — 다음 문 갱신의 「돌기 전」
@@ -5611,7 +5620,7 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 } else {
                     ++doorStillHeld_;
                 }
-                p.lastPushFrame = frame_;
+                p.lastPushFrame = frame;                           // +44(`:2170`) — 이 걸음 적분의 틱(`DoorAutoClose` 와 같은 시계)
                 // ★ 10-02 — **같은 걸음에 사람도 문을 민다**(정답지 `GAME5.c:1863` → `sub_5488B0(문, 사람, 0)` `:2191~2215`) —
                 //   각속도 += (사람 반지름 − 거리) × 사람 무게(+120) · 부호는 문선의 어느 쪽인가. 아래 걸음 끝 `sub_548B60` 이 돌리고 지운다.
                 //   ✖ 처음 고침(`8e88761`)은 이 밀림을 문 갱신(틱 끝 한 번)에 두었다 — 그때는 사람이 이미 문짝 밖으로 밀려나 있어 문이 안 되밀리고,
@@ -17660,6 +17669,7 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     // ── 사람을 걷게 하고 때리게 한다 (묶음 2-a · 3-a) — 걸음마다 제 프레임으로 ──
     //    그 틱의 시전 목록도 함께(spellBookReact_4FCB70 — 정답지는 유닛 갱신 뒤 · server.go:341)
     for (int step = 0; step < ticks && !frozen; ++step) {                                    // R1 — 판끝 동안 멈춤
+        DoorAutoClose(frame_ - static_cast<uint32_t>(ticks - 1 - step));                    // ★ 10-02 — 문 저절로 닫힘은 걸음 적분 앞(정답지 BBB → updateCollide)
         UpdatePlayerMovement(frame_ - static_cast<uint32_t>(ticks - 1 - step), out);
     }
     // ✖ 10-02 — 시전 목록·지속 주문(`spellBookReact_4FCB70`)을 여기(사람 걸음 바로 뒤)에서 돌렸다 → 아래 크리처 생각 **뒤**로 옮김.

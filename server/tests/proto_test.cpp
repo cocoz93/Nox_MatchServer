@@ -21966,28 +21966,38 @@ void TestDoorHeldOpenByBody() {
         Check(f0 == 96 && minFine >= 96, msg);
     }
     // ⑤ 다 연 문 앞(닫히는 길)에 **10초 가만히 선** 사람 — 몸은 안 밀리고 문만 되밀려 안 닫힌다(10-02 정품 호스트 판 · 위 ⑤ 주석)
-    //   ⓐ 경첩 위 25(1000,975 — 문짝이 미세각 32 에서 지나는 자리) ⓑ 다 연 문짝에 닿을 듯 선 자리(1016,990)
+    //   ⓐ 경첩 위 25(1000,975 — 문짝이 미세각 32 에서 지나는 자리) ⓑ 다 연 문짝에 닿아 선 자리(1016,990 — 거리 10 · 문이 아예 안 돎)
+    //   ⓒ **사람 판 자리** — 다 연 문짝(미세각 96)에서는 거리 11 로 안 닿고, 2 닫히면(94 · 문짝 끝 1032,998) 거리 9.98 로 닿는 자리(1016,989)
     //   ✖ `8e88761`·고치는 중의 판은 몸이 밀려 문이 점점 닫혔다(ⓐ 미세각 0·14 · ⓑ 32·62 · 몸 9~33 밀림)
-    for (int variant = 0; variant < 2; ++variant) {
+    for (int variant = 0; variant < 3; ++variant) {
         nox::Server srv; std::vector<nox::OutPacket> out;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         ms = 0; srv.Tick(ms, out);
         const int f0 = openFully(srv, out);
-        const int sx = variant == 0 ? 1000 : 1016, sy = variant == 0 ? 975 : 990;
+        const int sx = variant == 0 ? 1000 : 1016, sy = variant == 0 ? 975 : (variant == 1 ? 990 : 989);
         srv.DebugMoveTo(a, sx, sy);
         tick(srv, out);
         int minFine = 255;
         double maxMove = 0.0;
+        int angleMsgs = 0;                                     // 자리 잡은 뒤(60틱) 클라에 간 문 각도 알림 — 문이 화면에서 움직인 횟수
         const unsigned long long held0 = srv.doorStillHeld();
         for (int t = 0; t < 300; ++t) {
-            tick(srv, out);
+            std::vector<nox::OutPacket> o;
+            tick(srv, o);
             minFine = std::min(minFine, srv.DebugPropFine(310));
             maxMove = std::max(maxMove, std::hypot(srv.DebugPosX(a) - sx, srv.DebugPosY(a) - sy));
+            if (t >= 60)
+                for (const auto& mm : FlattenTo(o, a))
+                    if (!mm.empty() && mm[0] == static_cast<uint8_t>(nox::Op::DOOR_ANGLE)) ++angleMsgs;
         }
         const int pass = variant == 0 ? 32 : 73;              // 사람 자리의 미세각(그 아래로 닫히면 사람을 지나간 것)
-        std::snprintf(msg, sizeof(msg), "⑤%s 다 연 문(미세각 %d) 앞에 10초 가만히 선 사람 — 가장 닫힌 미세각 %d(%d 보다 커야) · 몸이 밀린 거리 %.2f(0 이어야) · 밀림 지워진 걸음 %llu(0 넘어야)",
-                      variant == 0 ? "ⓐ" : "ⓑ", f0, minFine, pass, maxMove, srv.doorStillHeld() - held0);
-        Check(f0 == 96 && minFine > pass && maxMove < 0.01 && srv.doorStillHeld() > held0, msg);
+        char m5[600];
+        std::snprintf(m5, sizeof(m5), "⑤%s 다 연 문(미세각 %d) 앞에 10초 가만히 선 사람 — 가장 닫힌 미세각 %d(%d 보다 커야) · 몸이 밀린 거리 %.2f(0 이어야) · 밀림 지워진 걸음 %llu(0 넘어야) · 자리 잡은 뒤 문 각도 알림 %d(ⓑⓒ 0 이어야)",
+                      variant == 0 ? "ⓐ" : (variant == 1 ? "ⓑ" : "ⓒ"), f0, minFine, pass, maxMove, srv.doorStillHeld() - held0, angleMsgs);
+        std::printf("  %s\n", m5);
+        // ★ 10-02 — ⓑⓒ(다 연 문짝 곁에 선 몸)은 문이 **화면에서 안 움직여야** 한다: 닫힘 2 와 되밀림이 한 틱 안에서 끝나 알림 0
+        //   ✖ 저절로 닫힘을 걸음 적분 뒤에 두었을 때는 ⓒ 에서 0.5초마다 눈금 12→11→12 를 알렸다(사람 판 눈금 4↔3 「닫힐려다 다시 열림」)
+        Check(f0 == 96 && minFine > pass && maxMove < 0.01 && srv.doorStillHeld() > held0 && (variant == 0 || angleMsgs == 0), m5);
     }
     std::printf("  10-02 — 문과 몸: 닫히는 문짝이 선 사람을 안 뚫음 · 다 연 문짝으로 걸어 든 사람 막힘·문 안 닫힘(10초 밀어도) · 닿은 사람 전부가 문을 돌림 · 가만히 서서 막으면 몸은 그대로·문 안 닫힘\n");
 }

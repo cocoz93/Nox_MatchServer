@@ -2421,6 +2421,8 @@ public:
     //   그 까닭은 **정품 녹음에 CTF 판이 한 판도 없어서**다.
     // 문·오벨리스크를 매 틱 돌본다 (P5). 문은 다가가면 열리고, 오벨리스크는 마나를 채운다.
     void UpdateProps(std::vector<OutPacket>& out);
+    // ★ 10-02 — 문 저절로 닫힘(정답지 `updateDoor` 의 ±2 · 유닛 갱신 자리) — 사람 걸음 적분 **앞**에 부른다(Server.cpp 정의 주석)
+    void DoorAutoClose(uint32_t frame);
 
     void SendFlagWinner(uint8_t team, std::vector<OutPacket>& out);
     void SendFlagStatus(std::vector<OutPacket>& out);
