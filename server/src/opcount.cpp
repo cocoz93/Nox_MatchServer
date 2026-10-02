@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
     long long sendWire = 0;
     // 판독이 멈춘 오프코드. 0x1000 비트를 세워 클라→서버를 가른다.
     std::map<int, long long> stopOps;
-    long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0, partSend = 0, partRecv = 0, updUnread = 0, padTail = 0;  // ★ 멈춘 자리도 센다
+    long long nSend = 0, nRecv = 0, preKey = 0, stallSend = 0, stallRecv = 0, partSend = 0, partRecv = 0, updUnread = 0, padTail = 0, zeroEnd = 0;  // ★ 멈춘 자리도 센다
 
     static char buf2[65536];
     while (std::fgets(buf, sizeof(buf), f)) {
@@ -140,6 +140,9 @@ int main(int argc, char** argv) {
                     if (b[i] != 0) { allZero = false; break; }
                 if (allZero) { padTail += bodyAll - eaten; eaten = bodyAll; break; }
             }
+            // ★ 10-02 — 클라→서버 게임 패킷 안의 0x00(첫 메시지 뒤)은 **읽기 끝**이다 — 서버 `endsAtZero`(`Server.cpp` 검사·본 루프)와 같은 규칙.
+            //   이게 없어 정품 클라가 오래 손 안 대면 싣는 `bb` 뒤 `00 XX`(XX 0 아님)를 「끝까지 못 읽은 조각」으로 셌다(사람 판 7 · 20:35~37 6,477)
+            if (!send && got >= 1 && b[eaten] == 0) { ++zeroEnd; eaten = bodyAll; break; }
             const int op = b[eaten];
             // ⚠ **길이는 `MessageSize` 로 물을 것.** 원시 길이표(MsgBodyLenByDir)만 보면
             //   `0x3f PLAYER_INPUT` 처럼 **본문 첫 바이트에 길이가 든** 메시지를 못 다뤄
@@ -337,8 +340,8 @@ int main(int argc, char** argv) {
     std::printf("   갈라 보면 SEND %lld · RECV %lld\n", stallSend, stallRecv);
     std::printf("   **끝까지 못 읽은 조각** SEND %lld · RECV %lld"
                 "  (첫 메시지는 읽었으나 뒤가 남음)\n", partSend, partRecv);
-    std::printf("   0xa4 를 못 뜯어 접은 조각 %lld · 끝의 채움 0 %lld바이트\n",
-                updUnread, padTail);
+    std::printf("   0xa4 를 못 뜯어 접은 조각 %lld · 끝의 채움 0 %lld바이트 · 클라→서버 0x00 에서 읽기 끝 %lld조각\n",
+                updUnread, padTail, zeroEnd);
     std::printf("   (키 받기 전이라 안 푼 조각 %lld — 이건 멈춤이 아니다)\n", preKey);
     // ★ **어느 오프코드에서 멈췄나.** 「몇 퍼센트를 못 읽는다」까지만 알면
     //   무엇을 고쳐야 하는지는 모른다. 고칠 자리를 이름으로 짚어 준다.
