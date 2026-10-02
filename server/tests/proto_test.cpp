@@ -1964,6 +1964,36 @@ void TestC2SImportantLength() {
     std::printf("  클라→서버 aa 몸 4 · bb 5+2×글자수 — 정품·자동 클라 표본 끝까지 · 서버 버림 0\n");
 }
 
+// ★ 10-02 사람 판 7 「클라를 켜 두면 반응이 엄청 느림」 — 정품 클라가 오래 손 안 대면 `bb`(서버 명령 0 · `input_c.go:169~171`)를 싣는데
+//   그 뒤에 `00 XX`(XX 는 0 아님 · 녹음에서 30·20·65·40·15… 매번 다름)가 붙는다. 원본은 `00` 에서 읽기만 멈춘다(`network_server.go:62~67`)
+//   ✖ 우리 검사 루프는 `00` 을 본문 0 메시지로 넘기고 XX 에서 서 **조각째 버렸다** — 같은 조각의 입력 `3f`·`aa` 확인까지
+//   표본 = 녹음 `사람판_20261002_202730` 50700 20:38:50.134 조각(키 풀고 머리 뒤) · XX 셋은 판독기가 멈춘 자리 셋 + 0 채움 하나
+void TestC2SServerCmdZeroTail() {
+    nox::Server srv;
+    const std::string a = "10.10.2.7:43470";
+    srv.DebugEnterGame(a, 718);
+    auto seenOf = [&](uint8_t op) { auto it = srv.seen().find(op); return it == srv.seen().end() ? 0ull : it->second; };
+    const uint8_t tails[] = { 0x30, 0x20, 0x65, 0x00 };
+    const unsigned long long st0 = srv.stopped(), in0 = seenOf(0x3F), aa0 = seenOf(0xAA), bb0 = seenOf(0xBB),
+                             z0 = srv.connectTailStops();
+    for (uint8_t xx : tails) {
+        const std::vector<uint8_t> pkt = {
+            0x01, 0x04,
+            0x3f, 0x0a, 0x01, 0x00, 0x00, 0x00, 0xbe, 0x01, 0x00, 0x00, 0x01, 0xbe,
+            0xaa, 0xcd, 0x50, 0x00, 0x00,
+            0xbb, 0x00, 0xce, 0x02, 0x03, 0x0d, 0xf0, 0xad, 0xf0, 0x00, 0x00,
+            0x00, xx };
+        std::vector<nox::OutPacket> out;
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+    }
+    char msg[220];
+    std::snprintf(msg, sizeof(msg), "bb 뒤 `00 XX` 넷 — 버린 조각 +%llu(0) · 입력 3f +%llu(4) · aa +%llu(4) · bb +%llu(4) · 00 에서 읽기 끝 +%llu(4)",
+                  srv.stopped() - st0, seenOf(0x3F) - in0, seenOf(0xAA) - aa0, seenOf(0xBB) - bb0, srv.connectTailStops() - z0);
+    Check(srv.stopped() == st0 && seenOf(0x3F) - in0 == 4 && seenOf(0xAA) - aa0 == 4 && seenOf(0xBB) - bb0 == 4 &&
+          srv.connectTailStops() - z0 == 4, msg);
+    std::printf("  10-02 — bb 뒤 `00 XX` 조각을 안 버림 · 입력·aa·bb 읽고 00 에서 끝(XX 30·20·65·00)\n");
+}
+
 // ★ 10-01 — 클라 대체 무기 알림 `e0 <번호2>`(sdecode `0xE0` → `sub_53AB90` · `GAME4_3.c:5192~5205`)
 //   번호 0 → 비움 · 가방에 없음 → 칸 0 · 직업(`57B3D0`) 또는 힘(`4F3180`)이 안 맞으면 그 사람에게 `e0 00 00 01`(Packet1)
 //   · 맞든 안 맞든 칸에 적음 · 무기·갑옷이 아닌 물건은 정의가 없어 힘 검사에서 늘 되돌림
@@ -28638,6 +28668,7 @@ int main() {
     TestTimerAskAndClose();
     TestGoDecoderLengths();
     TestC2SImportantLength();
+    TestC2SServerCmdZeroTail();
     TestSecondaryWeapon();
     TestPickup();
     TestUseAndEquip();

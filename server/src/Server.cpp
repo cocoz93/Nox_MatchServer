@@ -2892,9 +2892,20 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
     //
     // 「모르면 안 읽는다」가 「읽은 척한다」보다 낫다. 가변 메시지를 하나씩
     // 옮길수록 여기를 통과하는 조각이 늘어난다.
+    //
+    // ★ 10-02 — 게임 패킷 안의 0x00 은 거기서 읽기 끝(아래 본 루프 09-29 ③ 주석). **검사 루프와 본 루프가 이 하나를 같이 쓴다.**
+    //   ✖ 본 루프에만 있었다 — 0 채움(`00 00…`)은 여기서 본문 0 메시지로 통과해 안 드러났는데,
+    //     정품 클라가 오래 손 안 대면 보내는 `bb`(서버 명령 0 · `input_c.go:169~171`) 뒤에는 `00 XX`(XX 는 0 아님 · 매번 다름)가 붙어
+    //     여기서 서서 조각째 버렸다 → 같은 조각의 입력 `3f` 도 버려지고 `aa` 확인을 못 내 클라가 매번 다시 실어 또 버림
+    //     (10-02 사람 판 7 「반응이 엄청 느림」 · 클라→서버 2분 7,230 조각 중 6,477 버림)
+    const auto endsAtZero = [](size_t n, uint8_t op) {
+        return n > 1 && op == static_cast<uint8_t>(Op::SERVER_CONNECT);
+    };
     {
         MessageIter probe(body, bodyLen, /*fromClient=*/true);
-        while (probe.Next()) {}
+        while (probe.Next()) {
+            if (endsAtZero(probe.count(), probe.op())) break;
+        }
         if (probe.stopped()) {
             ++stopped_;
             const uint8_t sop = static_cast<uint8_t>(probe.stopOp());
@@ -2926,7 +2937,7 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
         //   게임 패킷은 `sdecode` 로 넘기는데 0x00 은 거기서 모르는 번호라 −1 → 그 패킷 나머지를 버린다(`network_server.go:62~67` · `sdecode.c:473~474`).
         //   ✖ 우리는 클라 중요 메시지(`aa`) 뒤의 **0 채움 바이트 하나하나**를 「접속 요청 재전송」으로 읽고 매번 `0x04`(「이미 접속함」
         //     `codeAlreadyJoined4`)로 답했다 — 2분 판에 **47,082건**(패킷 하나에 7개 안팎 · 대조군 0건 · `_evidence/_runs/wc0929_*.cap.txt`)
-        if (count > 1 && it.op() == static_cast<uint8_t>(Op::SERVER_CONNECT)) { ++connectTailStops_; break; }
+        if (endsAtZero(count, it.op())) { ++connectTailStops_; break; }
         ++seen_[it.op()];
         if (lastFragOps_.size() < 16) lastFragOps_.push_back(it.op());
 
