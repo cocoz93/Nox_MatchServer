@@ -1104,6 +1104,7 @@ struct Session {
     uint32_t poisonStart = 0;      // 체력자료 +16 독이 시작한 프레임(0 = 없음) — 60틱 유예에 쓴다
     uint16_t poisonDecay = 0;      // +542 감쇠 계수기 — 독을 걸 때 1000, 0 이 되면 독 1 줄고 다시 1000
     float speedCur = 3.0f;         // +544 SpeedCur — CCC 가 매 틱 셈(느림·빠르게, 4-b3) · NewPlayer SPEED 96/32
+    float speedBase = 3.0f;        // +548 SpeedBase — 접속 때 직업으로 덮어씀(`SpeedBaseOnline` · `GAME3_3.c:7668` · 10-02) · 3.0 은 덮기 전 thing.bin 값
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     // ★★★ **중요 메시지 대기열** (2026-09-13 — 정답지 `nox_xxx_netSendPacket_4E5030`·`netImportant_4E5770` 이식).
     //   EmitSeq 는 바로 안 보내고 여기 쌓는다. 틱마다 `[27 시각][aa][cc…]` 한 조각으로 싣고,
@@ -2596,6 +2597,8 @@ public:
         s.maxMana = static_cast<uint16_t>(ManaOnline(cls));
         s.strength = StrengthOnline(cls);
         s.carryCap = static_cast<uint16_t>(CarryCapacityOnline(cls));   // +490(묶음 5)
+        s.speedBase = static_cast<float>(SpeedBaseOnline(cls));          // +548(10-02 · 진짜 접속 길과 같게)
+        s.speedCur = s.speedBase;
         s.health = s.maxHealth;
         s.mana = s.maxMana;
         // 09-14 — 「접속 + 스냅샷 꼬리까지 끝난 사람」이다: 꼬리가 dd·de·48·43 을 실었고(+2184 = 0 · +10 = 지금), sub_4EFF10 이 +6 = +4

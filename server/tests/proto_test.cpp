@@ -5385,20 +5385,22 @@ void TestMoveBuffs() {
         return srv.XOf(a) - x0;
     };
 
-    // ① SpeedCur — 버프 없음 3.0 · 느림(4) × 0.5 · 빠르게(9) × 1.25 · 걸은 거리 비도 같다
+    // ① SpeedCur — 버프 없음 SpeedBase · 느림(4) × 0.5 · 빠르게(9) × 1.25 · 걸은 거리 비도 같다
+    //   ✖ 10-02 — SpeedBase 가 3.0(thing.bin)에서 직업 값으로(위저드 1.75 · `SpeedBaseOnline`) — 기대값을 그 값에서 셈
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        const float base = static_cast<float>(nox::SpeedBaseOnline(nox::CharClass::Wizard));
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         srv.DebugApplyEnchant(a, 4, 0, 1);
         ms += 34; srv.Tick(ms, out);
-        Check(std::fabs(srv.DebugSpeedCur(a) - 1.5f) < 1e-6f, "느림인데 SpeedCur 가 1.5 가 아니다");
+        Check(std::fabs(srv.DebugSpeedCur(a) - base * 0.5f) < 1e-6f, "느림인데 SpeedCur 가 SpeedBase × 0.5 가 아니다");
         srv.DebugBuffOff(a, 4);
         srv.DebugApplyEnchant(a, 9, 0, 1);
         ms += 34; srv.Tick(ms, out);
-        Check(std::fabs(srv.DebugSpeedCur(a) - 3.75f) < 1e-6f, "빠르게인데 SpeedCur 가 3.75 가 아니다");
+        Check(std::fabs(srv.DebugSpeedCur(a) - base * 1.25f) < 1e-6f, "빠르게인데 SpeedCur 가 SpeedBase × 1.25 가 아니다");
         const int d0 = walk(-1, nullptr, nullptr), dSlow = walk(4, nullptr, nullptr), dHaste = walk(9, nullptr, nullptr);
         Check(d0 > 20, "12틱 걸었는데 거의 안 갔다(시험 전제)");
         Check(std::fabs(dSlow - 0.5 * d0) <= 0.08 * d0, "느림 걸음 거리가 절반이 아니다");
@@ -16844,6 +16846,11 @@ void TestBerserkCharge() {
         Check(srv.DebugPosX(a) - x0 > 60.0 && std::fabs(srv.DebugPosY(a) - y0) < 1.0, msg);
         Check(srv.berserkChargeTicks() == 10, "① 민 틱이 10 이 아니다");
         Check(srv.DebugAnimFrameOf(a) < 11, "① 애니 칸이 칸수−1(11) 에 닿았다(되돌아가야 한다)");
+        // ★ 10-02 — 돌진 힘 = SpeedBase × 6 · SpeedBase 는 직업 값(워리어 2.1 · `SpeedBaseOnline`) → 끝 속도 = 힘 ÷ 감쇠 0.5 = 25.2(전 3.0 × 6 → 36)
+        //   10틱 = 50걸음이면 끝 속도의 99.5% — 3% 안을 본다
+        const double vEnd = 6.0 * nox::SpeedBaseOnline(nox::CharClass::Warrior) / 0.5;
+        std::snprintf(msg, sizeof(msg), "① 10틱 돌진 속도 %.2f — 끝 속도 %.2f(SpeedBase × 6 ÷ 0.5)의 3%% 안이어야", srv.DebugVelX(a), vEnd);
+        Check(srv.DebugVelX(a) > vEnd * 0.97 && srv.DebugVelX(a) <= vEnd + 1e-6, msg);
     }
     // ② **돌진 중에는 방향 입력을 안 받는다**
     {
@@ -17013,11 +17020,15 @@ void TestBerserkCrash() {
         Check(srv.DebugPosX(a) == h.px && srv.DebugStateOf(a) == 13, "② 되돌아가지 않았거나 상태 13 이 아니다");
     }
     // ③ **사람** — 밀고(무게가 같으면 속도를 맞바꾼다) 상대에 피해 · 나는 기절·자기 피해 없음
+    //   ✖ 10-02 — 상대 자리 1045 → **1041**. 돌진 빠르기가 정답지 값(워리어 SpeedBase 2.1 × 6 · 전 3.0 × 6)으로 줄어
+    //     닿는 걸음이 틱 안에서 앞당겨졌고, 그러면 부딪힘 처리 전에 몸끼리 밀기가 여러 걸음 돌아 상대가 이미 빨라져
+    //     맞바꿈 뒤 내가 더 빠르게 나온다(1045: 나 18.19 · 상대 3.95). 결과는 닿는 걸음 자리에 따라 틱마다 되풀이된다 —
+    //     1031~1075 를 2 씩 훑어 「틱 끝 걸음에서 닿아 밀기 없이 맞바꾸는」 자리 1041(나 −6.27 · 상대 28.40)을 골랐다
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         gd(srv);
         srv.DebugEnterGame(b, 831, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1045, 1000);
+        srv.DebugMoveTo(b, 1041, 1000);
         mk(srv, out, ms);
         const int ha = srv.HealthOf(a), hb = srv.HealthOf(b);
         Hit h = charge(srv, ms, out);
@@ -27408,10 +27419,12 @@ void TestWallCollision() {
 
     // ④ 속도 — 정답지 적분의 끝 속도 = 힘 ÷ 감쇠. 걷기 3.0/0.5 = 6 · 달리기 ×2 = 12 유닛/틱
     //   커서가 몸에서 100 안이면 걷기, 밖이면 달리기(`object_update.go:150`). 멈추면 잦아든다.
+    //   ✖ 10-02 — 사람 SpeedBase 는 3.0 이 아니라 **직업 최대 빠르기 × 0.0001**(`GAME3_3.c:7668` · `SpeedBaseOnline`)
+    //     → 위저드 걷기 3.5 · 달리기 7.0 · 컨저러 달리기 7.4 · 워리어 달리기 8.4(정품 서버 녹음 틱당 가장 잦은 값 6~8 과 맞음)
     {
-        auto speedAfter = [&](int aimDx, double* stopDist) {
+        auto speedAfter = [&](int aimDx, double* stopDist, nox::CharClass cls = nox::CharClass::Wizard) {
             nox::Server srv;
-            srv.DebugEnterGame(a, 728);
+            srv.DebugEnterGame(a, 728, false, cls);
             std::vector<nox::OutPacket> out;
             srv.Tick(ms, out);
             for (int i = 0; i < 40; ++i) walkTick(srv, 0, out, aimDx);   // 끝 속도에 닿을 만큼
@@ -27436,8 +27449,12 @@ void TestWallCollision() {
         double walkStop = 0, runStop = 0;
         const int walk = speedAfter(50, &walkStop);    // 커서 50 앞 — 걷기
         const int run  = speedAfter(400, &runStop);    // 커서 400 앞 — 달리기
-        Check(walk >= 5 && walk <= 7, "걷기 끝 속도가 6 안팎이 아님");
-        Check(run >= 11 && run <= 13, "달리기 끝 속도가 12 안팎이 아님");
+        const int runWar = speedAfter(400, nullptr, nox::CharClass::Warrior);
+        const int runCon = speedAfter(400, nullptr, nox::CharClass::Conjurer);
+        char sm[200];
+        std::snprintf(sm, sizeof(sm), "직업별 끝 속도 — 위저드 걷기 %d(3~4) · 달리기 %d(7) · 컨저러 달리기 %d(7~8) · 워리어 달리기 %d(8~9)",
+                      walk, run, runCon, runWar);
+        Check(walk >= 3 && walk <= 4 && run == 7 && runCon >= 7 && runCon <= 8 && runWar >= 8 && runWar <= 9, sm);
         // 멈춘 뒤 미끄러짐 = 속도 × 1/(1−0.9^5) 안팎 — 걷기 6 이면 약 15, 영영 가지는 않는다
         //   ⚠ 멈춤 입력 첫 틱에는 아직 힘이 남는다(ImplA 가 ImplB 보다 먼저) — 한 걸음 더 간다.
         Check(walkStop > 0 && walkStop < 30, "멈춘 뒤 안 잦아든다(또는 바로 선다)");

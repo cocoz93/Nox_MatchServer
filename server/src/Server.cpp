@@ -4000,6 +4000,9 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                     for (int k = 1; k < 137; ++k) s.spellLvl[k] = 3;
                     s.strength  = StrengthOnline(s.charClass);
                     s.carryCap  = static_cast<uint16_t>(CarryCapacityOnline(s.charClass));   // +490(묶음 5)
+                    // ★ 10-02 — +548 SpeedBase = 직업 최대 빠르기 × 0.0001(`GAME3_3.c:7668` · `SpeedBaseOnline` 주석) — 전에는 모두 3.0(달리기 12)
+                    s.speedBase = static_cast<float>(SpeedBaseOnline(s.charClass));
+                    s.speedCur  = s.speedBase;
                     GiveDefaultGear(s);                    // ★ 09-27 B1 — 기본 장비를 서버 가방에도(전에는 스냅샷으로 클라에만 → 입기 처리가 번호를 못 찾음)
                     s.health = s.maxHealth;
                     s.mana   = s.maxMana;
@@ -5708,9 +5711,10 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     }
     // CCC: SpeedCur = (SpeedBonus + SpeedBase) × (1 − 0.2 × +541) · 느림(4)이면 × 0.5(`server.go:171~174`) — 빠르게(9) × 1.25 는 updateUnitBuffs 끝
     //   ⚠ SpeedBonus(아이템 무게·마법부여 5) · +541 느려짐 겹수(독·5) 는 0
+    //   ★ 10-02 — SpeedBase 는 사람마다 직업 값(`s.speedBase` · 접속 때 `SpeedBaseOnline`) — 전에는 모두 thing.bin 3.0
     for (auto& m : movers) {
         Session& s = *m.s;
-        s.speedCur = static_cast<float>((0.0 + kPlayerWalkPerFrame) * (1.0 - 0.2 * 0));
+        s.speedCur = static_cast<float>((0.0 + static_cast<double>(s.speedBase)) * (1.0 - 0.2 * 0));
         if (s.buffs.Has(4)) s.speedCur *= 0.5f;
     }
     // CCC: updateUnitBuffs_4FF620(`server.go:189`) — 버프 남은 틱 −1 · 0 이면 끔(4-a4)
@@ -16739,7 +16743,7 @@ bool Server::PlayerAttack(Session& s, uint32_t frame, std::vector<OutPacket>& ou
         if (s.buffs.Has(25) || s.buffs.Has(5)) return false;
         range(45);
         idx = static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
-        const double speed = static_cast<double>(kPlayerWalkPerFrame) * 6.0;   // SpeedBase(+548) × 6 — 우리 SpeedBase 는 걷기 기본값
+        const double speed = static_cast<double>(s.speedBase) * 6.0;   // SpeedBase(+548) × 6 — ✖ 10-02 전에는 thing.bin 3.0(모든 직업) · 이제 워리어 2.1
         s.speedCur = static_cast<float>(speed);
         s.forceX += DirVecX(s.facingPrev) * speed;            // Direction1(+124) — 이 틱 시작 때의 바라보는 쪽
         s.forceY += DirVecY(s.facingPrev) * speed;

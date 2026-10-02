@@ -102,6 +102,12 @@ inline int HealthOnline(CharClass c)   { return MaxStatsOf(c).maxHealth; }
 inline int ManaOnline(CharClass c)     { return MaxStatsOf(c).maxMana; }
 inline int StrengthOnline(CharClass c) { return MaxStatsOf(c).maxStrength; }
 inline int SpeedOnline(CharClass c)    { return MaxStatsOf(c).maxSpeed; }
+// ★★ 10-02 — **사람의 SpeedBase(+548)는 thing.bin 이 아니라 이 값이다** ⭕ plrReadVals_4EEDC0(`GAME3_3.c:7668`):
+//   온라인이면 `+548 = 직업 최대 빠르기 × 0.0001` 로 덮어쓴다(무게 +120 을 덮어쓰는 같은 함수 · 아래 PlayerMassFromStrength)
+//   → 워리어 2.1 · 위저드 1.75 · 컨저러 1.85 · 끝 속도(힘 ÷ 감쇠 0.5) 달리기 8.4·7.0·7.4 · 걷기 4.2·3.5·3.7
+//   ✖ 전에는 모든 직업 thing.bin `NewPlayer SPEED 96/32 = 3.0`(kPlayerWalkPerFrame) → 달리기 12 · 1.4~1.7배 빨랐다(사람 판 「이동속도가 좀 다르다」)
+//   ⭕ 검산 — 정품 서버 녹음 틱당 이동 가장 잦은 값 6~8 · p90 8.25~8.94(`orig_arena_1851`·`orig_dedicated_1124`) ↔ 고치기 전 우리 11~12
+inline double SpeedBaseOnline(CharClass c) { return static_cast<double>(SpeedOnline(c)) * 0.000099999997; }
 
 // ★★ **직업 스탯 배수** ◑ (`server/player.go:167` serverPlayers::init) — 온라인(아레나)은 **전부 1.0**.
 //   접속 준비 때 `ef STAT_MULTIPLIERS` 로 클라에 보내는 그 값이다.
@@ -458,6 +464,8 @@ constexpr double kLightningRange        = 240.0;   // ⭕ gamedata `LightningRan
 //   2.8~4.2 가 따로 있는데 걷기와 달리기로 갈리는 듯하나 못 가림」이라 적어 둔 것이
 //   바로 이 3.0 이다. 잦은 쪽(7)이 달리기다.
 // ★ **우리는 늘 달리기로 간다**(사용자 결정 2026-09-10). 그래서 `kStepPerTick = 7` 유지.
+// ✖ 10-02 정정 — 사람에게는 이 3.0 이 안 쓰인다. 온라인은 사람이 생길 때 +548 을 **직업 최대 빠르기 × 0.0001** 로 덮어쓴다
+//   (`SpeedBaseOnline` · `GAME3_3.c:7668`). 위 「느린 무리 2.8~4.2 = 걷기 · 잦은 7 = 달리기」는 그 식(걷기 3.5~4.2 · 달리기 7.0~8.4)과 맞는다
 constexpr double kThingSpeedDivisor  = 32.0;
 constexpr double kMissileSpeedFactor = 2.0;
 constexpr double kPlayerWalkPerFrame = 96.0 / kThingSpeedDivisor;                        // 3.0
