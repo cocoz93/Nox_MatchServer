@@ -1503,11 +1503,13 @@ void TestPropsAndInvuln() {
             for (int t = 0; t < 16; ++t) { mm += 33; std::vector<nox::OutPacket> z; s2.Tick(mm, z);
                 seq[t] = s2.DebugPropFine(300); std::printf(" %d", seq[t]); }
             std::printf("  (닫힘 0 · 경첩 끝 ±96)\n");
+            // ✖ 10-02 — 문짝이 사람을 밀어내므로(정답지 `GAME5.c:2171~2182`) 서 있기만 한 사람은 곧 안 닿고, 닿음이 끝난 지
+            //   0.5초(15틱)가 지나면 문이 저절로 닫히기 시작한다(끝 칸이 2 내려감). 떨림·멈춤은 **그 전 14칸**에서 본다
             int downs = 0;
-            for (int t = 1; t < 16; ++t) if (seq[t] < seq[t - 1]) ++downs;
-            Check(seq[15] != 0, "밀었는데 문이 안 돈다");
+            for (int t = 1; t < 14; ++t) if (seq[t] < seq[t - 1]) ++downs;
+            Check(seq[13] != 0, "밀었는데 문이 안 돈다");
             Check(downs == 0, "문 각도가 오르내린다 — 떨고 있다(문짝이 아니라 중심으로 밀고 있나)");
-            Check(seq[15] == seq[14], "문이 안 선다 — 문짝이 비켜도 밀림이 안 끝난다");
+            Check(seq[13] == seq[12], "문이 안 선다 — 문짝이 비켜도 밀림이 안 끝난다");
             Check(seq[15] < 96, "문이 경첩 끝까지 밀렸다 — 문짝 선분이 아니라 중심 거리로 밀고 있다");
         }
         // ★★ **경첩 한계(±12 눈금)** — 위 판은 문짝이 먼저 비켜서 이 가지를 못 건드렸다.
@@ -21845,9 +21847,12 @@ void TestWallBreak() {
 //   우리(09-30 사람 판 2): 문이 캐릭터를 뚫고 닫혔다
 //   원본 — 닿은 동안 문 +44 = 지금(`GAME5.c:2170`) → 0.5초가 안 지나 저절로 안 닫힘(`GAME4_3.c:5268~5279`) ·
 //          도는 문은 둘레 유닛을 **밀어낸다**(`GAME5.c:1847` → `:2171~2182` a3 == 1 · `sub_548600`) · 둘레 유닛 **전부**(`getUnitsInRect` `:1811`)
-//   ① 닫히는 문은 길에 가만히 선 사람을 **뚫지 않고 밀어낸다**(정품에서 가만히 선 사람이 문을 붙잡는지는 안 봄 — 정답지 식으로는 밀려난다)
-//   ② 다 연 문짝으로 걸어 들어가는 사람은 문짝에 막히고 문은 안 닫힌다(사용자가 정품에서 본 것)
+//   ① 닫히는 문은 길에 가만히 선 사람을 **뚫지 않는다**
+//   ② 다 연 문짝으로 걸어 들어가는 사람은 문짝에 막히고 문은 안 닫힌다
 //   ③ 경첩에 더 가까운 다른 사람이 있어도 문짝을 미는 사람이 문을 돌린다(닿은 사람 전부)
+//   ④ 10초 내내 미는 사람 앞에서도 문이 조금씩도 안 닫힌다
+//   ⑤ 가만히 서서 막는 사람 — **몸은 안 밀리고 문만 되밀린다**(사용자가 정품에서 본 것 · 10-02 녹음 `사람판_20261002_221748` 은 그때 이동 입력 0 인데 문이 10초에 눈금 12→24 로 닫힘)
+//      정답지: 가만한 몸(FlagStill)은 충돌 목록에 없다가 문이 밀 때 목록 끝에 깨어 붙고, 제 차례에 밀림(+96)을 지운다(`server_update.go:51~66` · `GAME5.c:2183~2189` · `:1808~1809`)
 void TestDoorHeldOpenByBody() {
     const std::string a = "10.10.2.31:9431", b = "10.10.2.32:9432";
     uint32_t ms = 0;
@@ -21938,7 +21943,53 @@ void TestDoorHeldOpenByBody() {
         std::snprintf(msg, sizeof(msg), "③ 경첩에 더 가까운 a 가 있어도 문짝 위 b 가 문을 돌려야 — 미세각 %d(0 이면 안 돎)", srv.DebugPropFine(311));
         Check(srv.DebugPropFine(311) != 0, msg);
     }
-    std::printf("  10-02 — 문과 몸: 닫히는 문짝이 선 사람을 안 뚫음 · 다 연 문짝으로 걸어 든 사람 막힘·문 안 닫힘 · 닿은 사람 전부가 문을 돌림\n");
+    // ④ 다 연 문짝으로 **10초 내내** 걸어 미는 사람 — 문이 조금씩도 안 닫혀야 한다(10-02 사람 판 「막고 있어도 점점 닫힘」)
+    //   ✖ `8e88761` 은 문짝이 사람을 밀어내는 것만 걸음 안에 두고 사람이 문을 미는 것은 틱 끝 한 번이라, 틱 끝엔 이미 안 닿아 문이 안 되밀리고
+    //     0.5초마다 2씩 닫히며 사람을 밀어 **점점 닫혔다**. 정답지는 같은 걸음에서 둘 다(`GAME5.c:1847·1863`)
+    {
+        nox::Server srv; std::vector<nox::OutPacket> out;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        ms = 0; srv.Tick(ms, out);
+        const int f0 = openFully(srv, out);
+        srv.DebugMoveTo(a, 1016, 984);
+        tick(srv, out);
+        int minFine = 255;
+        for (int t = 0; t < 300; ++t) {
+            srv.DebugAimAt(a, srv.XOf(a), srv.YOf(a) + 50);
+            const auto p = walkPkt(64);
+            srv.OnPacket(a, p.data(), p.size(), out);
+            tick(srv, out);
+            if (t >= 20) minFine = std::min(minFine, srv.DebugPropFine(310));
+        }
+        std::snprintf(msg, sizeof(msg), "④ 다 연 문짝(미세각 %d)을 10초 내내 미는 사람 — 그동안 가장 닫힌 미세각 %d(경첩 한계 눈금 12 = 미세각 96~103 이어야 · 점점 닫히면 그 아래)",
+                      f0, minFine);
+        Check(f0 == 96 && minFine >= 96, msg);
+    }
+    // ⑤ 다 연 문 앞(닫히는 길)에 **10초 가만히 선** 사람 — 몸은 안 밀리고 문만 되밀려 안 닫힌다(10-02 정품 호스트 판 · 위 ⑤ 주석)
+    //   ⓐ 경첩 위 25(1000,975 — 문짝이 미세각 32 에서 지나는 자리) ⓑ 다 연 문짝에 닿을 듯 선 자리(1016,990)
+    //   ✖ `8e88761`·고치는 중의 판은 몸이 밀려 문이 점점 닫혔다(ⓐ 미세각 0·14 · ⓑ 32·62 · 몸 9~33 밀림)
+    for (int variant = 0; variant < 2; ++variant) {
+        nox::Server srv; std::vector<nox::OutPacket> out;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        ms = 0; srv.Tick(ms, out);
+        const int f0 = openFully(srv, out);
+        const int sx = variant == 0 ? 1000 : 1016, sy = variant == 0 ? 975 : 990;
+        srv.DebugMoveTo(a, sx, sy);
+        tick(srv, out);
+        int minFine = 255;
+        double maxMove = 0.0;
+        const unsigned long long held0 = srv.doorStillHeld();
+        for (int t = 0; t < 300; ++t) {
+            tick(srv, out);
+            minFine = std::min(minFine, srv.DebugPropFine(310));
+            maxMove = std::max(maxMove, std::hypot(srv.DebugPosX(a) - sx, srv.DebugPosY(a) - sy));
+        }
+        const int pass = variant == 0 ? 32 : 73;              // 사람 자리의 미세각(그 아래로 닫히면 사람을 지나간 것)
+        std::snprintf(msg, sizeof(msg), "⑤%s 다 연 문(미세각 %d) 앞에 10초 가만히 선 사람 — 가장 닫힌 미세각 %d(%d 보다 커야) · 몸이 밀린 거리 %.2f(0 이어야) · 밀림 지워진 걸음 %llu(0 넘어야)",
+                      variant == 0 ? "ⓐ" : "ⓑ", f0, minFine, pass, maxMove, srv.doorStillHeld() - held0);
+        Check(f0 == 96 && minFine > pass && maxMove < 0.01 && srv.doorStillHeld() > held0, msg);
+    }
+    std::printf("  10-02 — 문과 몸: 닫히는 문짝이 선 사람을 안 뚫음 · 다 연 문짝으로 걸어 든 사람 막힘·문 안 닫힘(10초 밀어도) · 닿은 사람 전부가 문을 돌림 · 가만히 서서 막으면 몸은 그대로·문 안 닫힘\n");
 }
 
 // ── 09-29 Z1-A — 잠긴 문(`nox_xxx_collideDoor_4E8AC0` · 밀기 `GAME5.c:2191~2215` · 열쇠 `DoorCheckKey`) · 문 짐 읽기 · 문 벽 칸 ─────────
@@ -22010,7 +22061,10 @@ void TestDoorLock() {
             Check(srv.doorTouch(nox::Server::DoorTouch::SpinLocked) >= 1, "③ 잠겨서 안 돈 수를 안 셌다");
         } else {
             Check(srv.DebugPropFine(800) != 0, "③ (대조) 안 잠긴 문이 안 돈다 — 이 시험은 미는 자리를 못 만든다");
-            Check(srv.doorTouch(nox::Server::DoorTouch::SpinLocked) == 0 && srv.doorTouch(nox::Server::DoorTouch::Unlocked) >= 1,
+            // ✖ 10-02 — 문 닿음 함수가 이제 정답지 차례(걸음 적분에서 문을 다 돌린 **뒤** 짝 처리 · `server.go:146~158`)라
+            //   안 잠긴 문은 그 틱에 이미 돌아 있어 「닫히지 않음」(NotClosed)으로 셀 수 있다 — 닿음을 셌는지는 둘의 합으로 본다
+            Check(srv.doorTouch(nox::Server::DoorTouch::SpinLocked) == 0 &&
+                  srv.doorTouch(nox::Server::DoorTouch::Unlocked) + srv.doorTouch(nox::Server::DoorTouch::NotClosed) >= 1,
                   "③ 안 잠긴 문을 잠겼다고 셌거나 닿음을 안 셌다");
         }
     }

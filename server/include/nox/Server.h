@@ -1849,6 +1849,9 @@ public:
         uint8_t fine = 0;
         double spin = 0.0;
         uint32_t lastPushFrame = 0;
+        // ★ 10-02 — 지난 문 갱신(`UpdateProps`) 때의 거친각(0xFF = 아직 없음). 문이 이제 **사람 걸음 적분의 걸음마다** 돌아서
+        //   (`sub_548B60` 자리) 문 갱신 안의 「돌기 전·뒤」로는 바뀐 것을 못 본다 — 알림·소리는 이 값과 견준다
+        uint8_t coarseSeen = 0xFF;
         uint32_t nextManaFrame = 0; // 오벨리스크만 쓴다
         // ★ 09-22 — 소리는 **마나 주는 주기와 다른 주기**다(정답지는 `fps/2`). 따로 센다
         uint32_t nextManaSndFrame = 0;
@@ -1999,6 +2002,7 @@ public:
     unsigned long long doorsOpened() const { return doorsOpened_; }
     double doorNearestDist() const { return doorNearestDist_; }
     unsigned long long doorBodyPushes() const { return doorBodyPushes_; }   // ★ 10-02 문짝이 사람을 민 걸음 수(사람 걸음 적분)
+    unsigned long long doorStillHeld() const { return doorStillHeld_; }     // ★ 10-02 가만한 몸이라 밀림이 지워진 걸음 수(정답지 차례 · 문만 되밀림)
     unsigned long long doorResync() const { return doorResync_; }
     unsigned long long obeliskTold() const { return obeliskTold_; }
     // ★ 09-21 벽 튕김 재기 — 사람이 벽에 밀려난 걸음 수와 **그때 더해진 가속의 최대**.
@@ -5379,6 +5383,7 @@ private:
     // ★ 09-22 — 사람이 문에 **가장 가까이 간 거리**. 「문 0」의 분모다
     double doorNearestDist_ = 1e18;
     unsigned long long doorBodyPushes_ = 0;   // ★ 10-02 — 문짝 → 사람 밀기(`GAME5.c:2171~2182` a3 == 1) 걸음 수
+    unsigned long long doorStillHeld_ = 0;    // ★ 10-02 — 가만한 몸이라 그 밀기가 지워진 걸음 수(`GAME5.c:1808~1809` · 2183~2189)
     // ★ 09-22 `0xd7` — 500ms 주기와 **돌아가며 한 명** 뽑는 커서(정답지 `GAME3_2.c:1444`)
     uint32_t lastLatencyFrame_ = 0;
     size_t   latencyCursor_ = 0;

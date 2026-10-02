@@ -1308,6 +1308,13 @@ void Server::ContactCollide(const ContactRef& a1, const ContactRef& a2, std::vec
         if (it != sessions_.end() && it->second.inGame) PlayerCollide(it->second, a2.kind == 0 ? nullptr : &a2, out);   // ★ 09-26 M2
         return;
     }
+    // ★ 10-02 — 문의 닿음 함수(`collideDoor_4E8AC0` = `DoorCollide` — 잠김 알림·열쇠). 전에는 문 갱신이 곧바로 불렀다 — 닿음이 걸음 적분으로 옮겨 짝으로 온다
+    if (a1.kind == 4) {
+        if (a2.kind != 1 || a1.idx < 0 || static_cast<size_t>(a1.idx) >= props_.size()) return;
+        auto it = sessions_.find(a2.addr);
+        if (it != sessions_.end() && it->second.inGame) DoorCollide(static_cast<size_t>(a1.idx), it->second, out);
+        return;
+    }
     if (a1.kind != 3 || a1.idx < 0 || static_cast<size_t>(a1.idx) >= obstacles_.size()) return;
     const PhysBody& o = obstacles_[static_cast<size_t>(a1.idx)];
     if (o.contactDmgAmount == 0) return;
@@ -1332,6 +1339,7 @@ void Server::ContactCollide(const ContactRef& a1, const ContactRef& a2, std::vec
 
 void Server::CollideBuffs(const ContactRef& a1, const ContactRef& a2, std::vector<OutPacket>& out) {
     if (a1.kind == 3) return;                              // 장애물은 버프가 없다
+    if (a1.kind == 4) return;                              // ★ 10-02 문도 버프가 없다 — 짝 번호가 문 자리라 아래에서 소환수로 읽으면 안 된다
     const Target t1 = (a1.kind == 1) ? Target{ a1.addr, -1 } : Target{ std::string(), a1.idx };
     const Target t2 = (a2.kind == 1) ? Target{ a2.addr, -1 } : Target{ std::string(), a2.idx };
     const Buffs* b1 = BuffsOf(t1);
@@ -2419,53 +2427,17 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             //   각도가 오르내린다(실측: 미세각 216 ↔ 236 왕복).
             //   정답지 `GAME5.c:2143~2166` — 문짝은 문 자리에서 방향표 값 **×2**(길이 32)만큼 뻗은 선분이고,
             //   부딪힘은 **사람 원(반지름 10) 대 그 선분**이다. 문이 비키면 거리가 멀어져 저절로 멈춘다
-            {
-                double dirx = 0.0, diry = 0.0;
-                DoorLeafDir(p.fine, dirx, diry);                             // 문짝 끝 = 경첩 + 2 × (dirx, diry)
-                const size_t di = static_cast<size_t>(&p - props_.data());
-                // ★ 10-02 — **닿은 사람 전부**를 본다(정답지는 문 둘레 유닛 전부 · `getUnitsInRect` `GAME5.c:1811`).
-                //   ✖ 전에는 경첩에 가장 가까운 한 사람만 봐서, 문 길에 선 사람이 있어도 경첩에 더 가까운 다른 사람이 있으면
-                //     그 사람이 안 닿은 셈이 되어 문이 길에 선 사람을 뚫고 닫혔다(시험 TestDoorHeldOpenByBody ③)
-                //   관전·죽음은 안 닿는다 — 사람 걸음 적분의 `collide` 와 같은 기준(관전 NO_COLLIDE `player.go:156` · 죽음 ALLOW_OVERLAP)
-                for (auto& kv : sessions_) {
-                    Session& s = kv.second;
-                    if (!s.inGame || s.respawnAtFrame != 0 || s.observer) continue;
-                    // 선분 [문자리 → 문짝끝] 위에서 사람에게 가장 가까운 점
-                    const double px = s.posX - p.x, py = s.posY - p.y;
-                    double qx = 0.0, qy = 0.0;
-                    const double dist = DoorLeafDist(dirx, diry, px, py, qx, qy);
-                    const double depth = kBodyRadius - dist;                 // 사람 반지름 − 거리
-                    if (depth <= 0.0) continue;
-                    p.lastPushFrame = frame_;                                // +44 — 잠김과 상관없이 닿으면 적는다(`GAME5.c:2170`)
-                    // ★ 09-29 Z1-A — 밀어서 돌리는 것은 **안 잠긴 문만**(`GAME5.c:2191~2215`):
-                    //   팀 문이 닫혀 있고 다른 팀이면 못 민다 — 1초에 한 번 「GateLockedMechanism」(+136)
-                    //   그 밖에는 잠김(+1)이 0 일 때만 돈다 · 마법 잠금(+508)은 우리에게 SPELL_LOCK 이 없어 늘 비어 있다
-                    const bool closedNow = ((32 * static_cast<int>(p.fine) / 256) & 31) == static_cast<int>(p.angle);
-                    if (p.team != 0 && closedNow && s.team != p.team) {
-                        ++doorTouch_[static_cast<size_t>(DoorTouch::TeamBlocked)];
-                        if (frame_ > p.teamMsgFrame) {
-                            p.teamMsgFrame = frame_ + kServerTickRate;
-                            SendPriMsg(s, "objcoll.c:GateLockedMechanism", out);
-                        }
-                    } else if (p.lock != 0) {
-                        ++doorTouch_[static_cast<size_t>(DoorTouch::SpinLocked)];
-                    } else {
-                        const double cross = dirx * py - diry * px;
-                        const double push = depth * PlayerMassOf(s);
-                        p.spin += (cross <= 0.0) ? push : -push;
-                    }
-                    // ★ 09-29 Z1-A — 닿음 짝(사람, 문) — `collSysAddCollision_548630(사람, 문)`(`GAME5.c:2169`) 뒤
-                    //   닿음 처리가 a.collide(b) → b.collide(a) 로 부른다: 사람 쪽(광전사 갈래) → 문 쪽(`collideDoor_4E8AC0`).
-                    //   버프 몫(`4FDF90`)은 문이 유닛·생성기가 아니라 할 일이 없다
-                    //   ⚠ 정답지는 이 짝을 이동 적분의 닿음 처리에서 부른다 — 우리는 문 갱신에서 곧바로 부른다(같은 틱 · 이동 뒤)
-                    const ContactRef doorRef{ 4, std::string(), static_cast<int>(di) };
-                    PlayerCollide(s, &doorRef, out);
-                    DoorCollide(di, s, out);
-                }
-            }
+            // ★ 10-02 — 위 밀림(닿음 · 각속도)과 아래 용수철(걸음마다 돌리기 · 경첩 한계)은 **사람 걸음 적분의 걸음마다**로 옮겼다
+            //   (`UpdatePlayers` 의 문짝 고리 · 걸음 끝 문 돌리기 — 정답지 `updateCollide` 의 자리 `server.go:146~151`).
+            //   닿음 짝의 닿음 함수(PlayerCollide · DoorCollide)는 짝 처리(`nox_xxx_collide_548740` 자리)가 부른다.
+            //   ✖ 여기(틱 끝 한 번)에 두었을 때는 — 걸음 안에서 문짝이 사람을 밀어내게 한 뒤(`8e88761`) 틱 끝에는 사람이 이미 안 닿아
+            //     문이 안 되밀렸고, 0.5초마다 2씩 닫히며 **막고 선 사람을 밀어내고 점점 닫혔다**(10-02 사람 판)
+            //   닿은 사람 전부를 보는 것(전에는 경첩에 가장 가까운 한 사람 · 시험 TestDoorHeldOpenByBody ③)도 그쪽 고리가 맡는다
             // 용수철 — 각속도로 미세각(0~255)을 돌린다. 한 걸음에 최대 4(정답지 `sub_548B60`),
             //   걸음이 다섯이니 틱당 최대 20. 속도는 걸음마다 0 으로 지운다(정답지도 `+32` 를 지운다)
-            const uint8_t coarseBefore = static_cast<uint8_t>((32 * static_cast<int>(p.fine) / 256) & 31);
+            // ★ 10-02 — 돌기가 걸음 적분으로 옮겨 여기서는 이미 돈 뒤다 → 「돌기 전」은 지난 문 갱신의 거친각(`coarseSeen`)
+            const uint8_t coarseBefore = (p.coarseSeen != 0xFF) ? p.coarseSeen
+                                                                 : static_cast<uint8_t>((32 * static_cast<int>(p.fine) / 256) & 31);
             const int closedFineI = (static_cast<int>(p.angle) * 8) & 255;
             // ★★ **경첩 한계** — 정답지 `sub_548B60`(`GAME5.c:2248·2258`):
             //     거친각이 `(닫힘 + 12) % 32` 면 **더 안 돈다** · 반대쪽은 `닫힘 − 12`
@@ -2476,24 +2448,7 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             //     한때 미검증으로 뒀는데, **경첩 자리에 서면** 문이 돌아도 사람이 선분 끝에
             //     붙어 있어 밀림이 안 끝나고 그때 한계가 일한다 — **미세각 96·거친각 12 에서 딱 선다.**
             //     빼 보면 거친각 19 까지 돌아 **회전문**이 된다(돌연변이로 확인)
-            const int limPlus  = (static_cast<int>(p.angle) + 12) & 31;
-            const int limMinus = (static_cast<int>(p.angle) - 12 + 32) & 31;
-            for (int st = 0; st < kMoveSubSteps && p.spin != 0.0; ++st) {
-                int step = static_cast<int>(2.0 * p.spin + 0.5);
-                int mag = step < 0 ? -step : step;
-                if (mag > 4) mag = 4;
-                const int coarseCur = (32 * static_cast<int>(p.fine) / 256) & 31;
-                if (p.spin > 0.01) {
-                    if (coarseCur == limPlus) break;                 // 경첩 끝
-                    p.fine = static_cast<uint8_t>((p.fine + mag) & 255);
-                } else if (p.spin < -0.01) {
-                    if (coarseCur == limMinus) break;                // 반대쪽 끝
-                    p.fine = static_cast<uint8_t>((p.fine - mag) & 255);
-                } else {
-                    break;
-                }
-            }
-            p.spin = 0.0;
+            //   ★ 10-02 — 이 한계·속도 제한은 걸음 끝 문 돌리기(`UpdatePlayers`)로 옮겼다 — 여기서는 안 돈다
             // 저절로 닫힘 — 민 지 0.5초가 지나면 닫힘 각도 쪽으로 2씩(정답지 `updateDoor` + `sub_548860`)
             {
                 const uint8_t closedFine = static_cast<uint8_t>((static_cast<int>(p.angle) * 8) & 255);
@@ -2506,6 +2461,7 @@ void Server::UpdateProps(std::vector<OutPacket>& out) {
             }
             const uint8_t coarseNow = static_cast<uint8_t>((32 * static_cast<int>(p.fine) / 256) & 31);
             const bool want = (coarseNow != p.angle);
+            p.coarseSeen = coarseNow;                  // ★ 10-02 — 다음 문 갱신의 「돌기 전」
             if (coarseNow == coarseBefore) continue;   // 거친각이 안 바뀌면 안 보낸다
             if (want && !p.open) ++doorsOpened_;
             p.open = want;
@@ -5233,7 +5189,8 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     //   (`GAME4_1.c:3195` sub_5481C0 루프) **그다음 모두를 적분**한다(`:3200` 루프). 사람 하나씩 5걸음을 다 돌리면
     //   뒤에 도는 사람이 앞사람의 **끝난 자리**와 부딪혀 순서가 결과를 바꾼다.
     // wallTouchedLastStep — 09-22 계측용. 「닿는 첫 걸음」만 고르려면 직전 걸음의 상태가 있어야 한다
-    struct Mover { Session* s; double fx, fy, bx, by, ax, ay; bool collide; bool wallTouchedLastStep = false; };
+    // still — ★ 10-02 이 틱 시작에 「가만히 선 몸」이었나(정답지 FlagStill · 아래 문짝 밀기 주석)
+    struct Mover { Session* s; double fx, fy, bx, by, ax, ay; bool collide; bool wallTouchedLastStep = false; bool still = false; };
     std::vector<Mover> movers;
     // 밖에서 x·y 를 바꿨으면(접속·부활·진단 옮기기) 실수 자리를 거기에 맞추고 멈춘다.
     //   ★ 3-a — **모두 먼저** 맞춘다. 앞사람의 공격 판정이 뒷사람의 옛 실수 자리를 보면 안 된다.
@@ -5533,6 +5490,9 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
     for (auto& m : movers) {
         m.fx += m.s->forceX; m.fy += m.s->forceY;
         m.s->forceX = m.s->forceY = 0.0;
+        // ★ 10-02 — 「가만히 선 몸」(정답지 BBB `server_update.go:51~66` — 힘·속도가 모두 ±0.01 안이면 FlagStill 을 켜고 그 틱 충돌 목록에 안 넣는다).
+        //   ⚠ 정답지는 자리가 바뀐 것(NewPos ≠ PosVec)도 보고 이때 힘·속도를 0 으로 지운다 — 우리는 문짝 밀기에만 쓰므로 힘·속도만 본다
+        m.still = std::fabs(m.fx) < 0.01 && std::fabs(m.fy) < 0.01 && std::fabs(m.s->velX) < 0.01 && std::fabs(m.s->velY) < 0.01;
     }
 
     // ②' 날아가는 것들(4-a2) — 정답지 순서 BBB(갱신) → CallUpdate(투사체) → updateCollide(적분). 맞힘은 사람의 지난 틱 끝 자리 기준
@@ -5638,10 +5598,44 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 const double mass = PlayerMassOf(s);
                 const double into = -(ny * s.velY) - nx * s.velX;
                 const double f = std::sqrt(mass * static_cast<double>(kWallPush) * 4.0) * into * 0.25 + static_cast<double>(kWallPush) * depth;
-                m.ax += f * nx / mass;
-                m.ay += f * ny / mass;
+                // ★ 10-02 — **가만히 선 몸은 문짝에 안 밀린다**(정답지 차례가 만드는 결과 — 사람 판 「막고 서 있어도 문이 점점 닫힘」):
+                //   가만한 몸은 틱 시작에 충돌 목록에 없다(BBB FlagStill). 닫히는 문이 그 몸을 밀면 밀림(+96)을 더하고 몸을 깨워 **목록 끝에** 붙인다
+                //   (`GAME5.c:2183~2189`). 걸음 고리에서 몸 차례가 오면 `sub_5481C0` 이 맨 먼저 제 +96 을 **0 으로 지운다**(`:1808~1809`) —
+                //   문이 늘 앞이라 그 틱 다섯 걸음 내내 밀림이 지워지고, 몸 차례의 닿음(위 a3==0)만 남아 **문만 되밀린다**.
+                //   그래서 정품에서 가만히 서서 막으면 문이 안 닫힌다(10-02 정품 호스트 판). 걷거나 밀리는 몸(힘·속도 있음)은 BBB 에서 먼저 목록에 들어 밀린다(시험 ②④)
+                //   ⚠ 걷는 몸과 저절로 닫히는 문의 차례(둘 다 BBB 에서 듦)는 갱신 목록 순서에 달렸다 — 우리는 늘 밀리는 쪽으로 둔다
+                if (!m.still) {
+                    m.ax += f * nx / mass;
+                    m.ay += f * ny / mass;
+                    ++doorBodyPushes_;
+                } else {
+                    ++doorStillHeld_;
+                }
                 p.lastPushFrame = frame_;
-                ++doorBodyPushes_;
+                // ★ 10-02 — **같은 걸음에 사람도 문을 민다**(정답지 `GAME5.c:1863` → `sub_5488B0(문, 사람, 0)` `:2191~2215`) —
+                //   각속도 += (사람 반지름 − 거리) × 사람 무게(+120) · 부호는 문선의 어느 쪽인가. 아래 걸음 끝 `sub_548B60` 이 돌리고 지운다.
+                //   ✖ 처음 고침(`8e88761`)은 이 밀림을 문 갱신(틱 끝 한 번)에 두었다 — 그때는 사람이 이미 문짝 밖으로 밀려나 있어 문이 안 되밀리고,
+                //     0.5초마다 2씩 닫히며 사람을 밀어내 **문이 점점 닫혔다**(10-02 사람 판 「문 막고 있어도 점점 닫힘」)
+                //   팀 문이 닫혀 있고 다른 팀이면 못 민다 — 1초에 한 번 「GateLockedMechanism」(+136) · 잠김(+1)이면 안 돈다
+                {
+                    const bool closedNow = ((32 * static_cast<int>(p.fine) / 256) & 31) == static_cast<int>(p.angle);
+                    if (p.team != 0 && closedNow && s.team != p.team) {
+                        ++doorTouch_[static_cast<size_t>(DoorTouch::TeamBlocked)];
+                        if (frame_ > p.teamMsgFrame) {
+                            p.teamMsgFrame = frame_ + kServerTickRate;
+                            SendPriMsg(s, "objcoll.c:GateLockedMechanism", out);
+                        }
+                    } else if (p.lock != 0) {
+                        ++doorTouch_[static_cast<size_t>(DoorTouch::SpinLocked)];
+                    } else {
+                        const double rx = s.posX - p.x, ry = s.posY - p.y;
+                        const double cross = dirx * ry - diry * rx;
+                        const double push = depth * mass;
+                        p.spin += (cross <= 0.0) ? push : -push;
+                    }
+                }
+                // 닿음 짝(사람, 문) — `collSysAddCollision_548630`(`:2169`) · 틱 끝 짝 처리가 사람 쪽(PlayerCollide) → 문 쪽(DoorCollide)을 부른다
+                AddContact(me, ContactRef{ 4, std::string(), static_cast<int>(&p - props_.data()) });
             }
             // 벽 — 오브젝트 다음(sub_5481C0 순서)
             {
@@ -5713,6 +5707,25 @@ void Server::UpdatePlayerMovement(uint32_t frame, std::vector<OutPacket>& out) {
                 floorGrid_.TileAt(static_cast<float>(s.posX), static_cast<float>(s.posY), floorEdges_).tile == 6) {
                 AddContact(ContactRef{ 1, s.addr, -1 }, ContactRef{ 6, std::string(), -1 });
             }
+        }
+        // ★ 10-02 — 걸음마다 문 돌리기(정답지 `updateCollide` 의 `sub_548B60` — `server.go:148~151` 다섯 걸음 각각 적분 뒤 · `GAME5.c:2235~2285`):
+        //   한 걸음에 |2 × 각속도 + 0.5| 만큼(최대 4) · 경첩 한계(닫힘 ±12 눈금)면 그쪽으로 안 돎 · **돌린 뒤 각속도를 지운다**(+32 = 0)
+        //   ✖ 전에는 문 갱신(`UpdateProps`)이 틱 끝에 한 번 잰 각속도를 다섯 번 되풀이해 돌렸다 — 걸음 안에서 문짝이 사람을 밀어내게 된 뒤(`8e88761`)로는
+        //     틱 끝에 이미 안 닿아 각속도가 0 이었다
+        for (auto& p : props_) {
+            if (p.kind != PropKind::Door || p.spin == 0.0) continue;
+            int step = static_cast<int>(2.0 * p.spin + 0.5);
+            int mag = step < 0 ? -step : step;
+            if (mag > 4) mag = 4;
+            const int coarseCur = (32 * static_cast<int>(p.fine) / 256) & 31;
+            const int limPlus  = (static_cast<int>(p.angle) + 12) & 31;
+            const int limMinus = (static_cast<int>(p.angle) - 12 + 32) & 31;
+            if (p.spin > 0.0099999998) {
+                if (coarseCur != limPlus) p.fine = static_cast<uint8_t>((p.fine + mag) & 255);   // 경첩 끝이면 안 돎
+            } else if (p.spin < -0.0099999998) {
+                if (coarseCur != limMinus) p.fine = static_cast<uint8_t>((p.fine - mag) & 255);  // 반대쪽 끝
+            }
+            p.spin = 0.0;
         }
     }
     // nox_xxx_collide_548740 — 부딪힌 짝마다 a.collide(b)·4FDF90(a, b) → b.collide(a)·4FDF90(b, a)
