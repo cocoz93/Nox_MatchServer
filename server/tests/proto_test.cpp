@@ -24,6 +24,11 @@
 #include "nox/Opcode.h"
 #include "nox/DirVectors.h"
 
+// 테스트 정답지는 CMake가 전달한 저장소 경로를 기준으로 찾는다.
+#ifndef NOX_SOURCE_DIR
+#define NOX_SOURCE_DIR "."
+#endif
+
 // 묶음 6-g(3b) — 임프가 쏘는 `ImpShot` 종류를 시험 서버에 넣는다.
 //   ⚠ 시험 서버는 thing.bin 을 안 읽으므로 이것이 없으면 **발사체가 아예 안 생긴다**
 //     (지어내지 않으려고 `SpawnCreatureMissile` 이 조용히 돌아간다).
@@ -962,7 +967,7 @@ void TestSpellMana() {
     Check(!tdb.Spells().empty(), "SPEL 섹션이 비었다 — 파서가 그 섹션을 안 읽는다");
 
     FILE* f = std::fopen(
-        "C:\\Users\\USER\\Desktop\\MyGit\\Nox_Server\\_evidence\\CONSOLE_list_spells.txt", "rb");
+        NOX_SOURCE_DIR "/_evidence/CONSOLE_list_spells.txt", "rb");
     if (!f) {
         // 증거 파일은 `_evidence/`(git 밖)라 없을 수 있다. 그때는 값 대조를 건너뛴다.
         // ⚠ 걸음 자체는 `TestThingDb` 가 지킨다 — SPEL 을 잘못 걸으면 뒤의 THNG 2,874종이 무너진다.
@@ -4228,7 +4233,7 @@ void TestCastPipeline() {
 
     // ⑥ 소환 비용은 thing.bin 이 아니라 blob_587000 217668 표 — 파일에서 읽어 대조(임프 87) · 워리어는 코드 9
     {
-        FILE* f = std::fopen("C:\\Users\\USER\\Desktop\\MyGit\\Nox_Server\\third_party\\opennox-src\\src\\common\\memmap\\nox\\blobdata\\blob_587000.dat", "rb");
+        FILE* f = std::fopen(NOX_SOURCE_DIR "/third_party/opennox-src/src/common/memmap/nox/blobdata/blob_587000.dat", "rb");
         int blobCost = -1;
         if (f) {
             if (std::fseek(f, 217668 + 4 * 87, SEEK_SET) == 0) {

@@ -50,6 +50,7 @@ target_link_libraries(nox_datadump PRIVATE nox_proto)
 
 add_executable(proto_test server/tests/proto_test.cpp)
 target_link_libraries(proto_test PRIVATE nox_proto)
+target_compile_definitions(proto_test PRIVATE NOX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 enable_testing()
 add_test(NAME proto_test COMMAND proto_test)
