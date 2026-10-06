@@ -48,6 +48,15 @@ target_link_libraries(nox_verify PRIVATE nox_proto)
 add_executable(nox_datadump server/src/datadump.cpp)
 target_link_libraries(nox_datadump PRIVATE nox_proto)
 
+# 로비 서버(MO 2단계, Docs/LOBBY_DESIGN.md) — 게임 규약 라이브러리(nox_proto)에 기대지 않는다.
+add_library(nox_lobby_core STATIC
+  server/src/lobby/WolGameInfo.cpp
+)
+target_include_directories(nox_lobby_core PUBLIC server/include)
+
+add_executable(lobby_test server/tests/lobby_test.cpp)
+target_link_libraries(lobby_test PRIVATE nox_lobby_core)
+
 add_executable(proto_test server/tests/proto_test.cpp)
 target_link_libraries(proto_test PRIVATE nox_proto)
 target_compile_definitions(proto_test PRIVATE NOX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -55,6 +64,16 @@ target_compile_definitions(proto_test PRIVATE NOX_SOURCE_DIR="${CMAKE_CURRENT_SO
 enable_testing()
 add_test(NAME proto_test COMMAND proto_test)
 add_test(NAME server_selftest COMMAND nox_server --selftest)
+add_test(NAME lobby_unit COMMAND lobby_test)
+
+# 로비 녹음 대조 — 1단계 녹음(정품 클라 ↔ XWIS)이 정답지. 남의 이름·IP 가 들어 있어
+# `_evidence/` 에만 두므로(git 제외) 있을 때만 건다.
+set(NOX_WOL_RECORDING "${CMAKE_SOURCE_DIR}/_evidence/_wol_record_20261006/relay_log_20261006_233255.txt")
+if (EXISTS "${NOX_WOL_RECORDING}")
+  add_test(NAME lobby_gameinfo COMMAND lobby_test --gameinfo "${NOX_WOL_RECORDING}")
+else()
+  message(STATUS "로비 녹음이 없어 로비 녹음 대조는 걸지 않는다: ${NOX_WOL_RECORDING}")
+endif()
 
 # 대조 장치 회귀 — 접속 절차가 정품과 바이트까지 같은지 매번 다시 잰다.
 # 덤프는 `_evidence/` 에 있고 git 에 안 들어가므로(역분석 산물), 있을 때만 건다.
