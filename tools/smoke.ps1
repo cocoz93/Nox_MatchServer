@@ -115,6 +115,22 @@ function Find-Upd($d) {
   }
   return -1
 }
+# 갱신 머리의 자리 = 이 조각을 받는 사람 자신의 자리. 없으면 $null.
+# 0xa4 상태 갱신의 머리는 두 꼴이다 (정품과 같게 맞춰 둔 규약):
+#   첫 갱신  [op][ff][번호2][종류2][x2][y2]...   ← 전체 번호로 소개
+#   그 뒤    [op][01][x2][y2]...                 ← 별칭 한 바이트
+# 자리는 `a4` 기준(`$u`) — 앞에 시각이 묶여 온다(위 Find-Upd).
+function Get-HeadPos($d) {
+  $u = Find-Upd $d
+  if ($u -lt 0) { return $null }
+  if ($d[$u+1] -eq 0xff) {
+    return @{ x = ($d[$u+6] + $d[$u+7] * 256); y = ($d[$u+8] + $d[$u+9] * 256) }
+  }
+  if ($d[$u+1] -eq 0x01) {
+    return @{ x = ($d[$u+2] + $d[$u+3] * 256); y = ($d[$u+4] + $d[$u+5] * 256) }
+  }
+  return $null
+}
 Write-Host "5) 틱 방송"
 $udp.Client.ReceiveTimeout = 1500
 $tick = 0; $upd = 0
@@ -148,18 +164,8 @@ function Get-Pos {
     try {
       $g = $udp.Receive([ref]$any)
       $d = @(); foreach ($b in $g) { $d += ($b -bxor $k) }
-      # 0xa4 상태 갱신의 머리는 두 꼴이다 (정품과 같게 맞춰 둔 규약):
-      #   첫 갱신  [op][ff][번호2][종류2][x2][y2]...   ← 전체 번호로 소개
-      #   그 뒤    [op][01][x2][y2]...                 ← 별칭 한 바이트
-      # 자리는 `a4` 기준(`$u`) — 앞에 시각이 묶여 온다(위 Find-Upd).
-      $u = Find-Upd $d
-      if ($u -lt 0) { continue }
-      if ($d[$u+1] -eq 0xff) {
-        return @{ x = ($d[$u+6] + $d[$u+7] * 256); y = ($d[$u+8] + $d[$u+9] * 256) }
-      }
-      if ($d[$u+1] -eq 0x01) {
-        return @{ x = ($d[$u+2] + $d[$u+3] * 256); y = ($d[$u+4] + $d[$u+5] * 256) }
-      }
+      $hp = Get-HeadPos $d   # 머리 꼴은 Get-HeadPos 주석
+      if ($hp) { return $hp }
     } catch { return $null }
   }
   return $null
@@ -186,7 +192,7 @@ if ($before -and $after) {
 # ── 7. 둘째 사람 — 서로가 서로의 상태 갱신에 실려야 한다
 #
 # M 의 「서로를 본다」가 이것이다. 둘째를 붙이고, 첫째가 받는 상태 갱신에
-# 오브젝트가 둘로 늘어나는지 본다.
+# 둘째가 실리는지 본다.
 Write-Host "7) 둘이 서로 보임"
 $udp2 = New-Object System.Net.Sockets.UdpClient
 $udp2.Client.ReceiveTimeout = 1500
@@ -205,31 +211,44 @@ if ($k2 -ne 0) {
   [void]$udp2.Send([byte[]]$r2x, $r2x.Length, $ep)
   Start-Sleep -Milliseconds 300
 }
-# 첫째가 받는 상태 갱신에서 오브젝트 수를 센다.
-# 항목은 절대 좌표라 [00][별칭][x2][y2][덧붙이1] = 7바이트씩이고 끝은 00 00 00.
-$objs = 0
-for ($i = 0; $i -lt 25; $i++) {
-  try {
-    $g = $udp.Receive([ref]$any)
-    $d = @(); foreach ($b in $g) { $d += ($b -bxor $k) }
-    $u = Find-Upd $d
-    if ($u -lt 0) { continue }
-    # 머리 길이는 별칭 꼴에 따라 다르다 (Get-Pos 의 주석 참조) — `a4` 자리 `$u` 에서 센다
-    #   ff : op1 + ff1 + 번호2 + 종류2 + x2 + y2 + 깃발1 + 애니1 = 12
-    #   01 : op1 + 01 1 + x2 + y2 + 깃발1 + 애니1              =  8
-    if     ($d[$u+1] -eq 0xff) { $j = $u + 12 }
-    elseif ($d[$u+1] -eq 0x01) { $j = $u + 8 }
-    else                       { continue }
-    $n = 0
-    while ($j + 2 -lt $d.Length) {
-      if ($d[$j] -eq 0 -and $d[$j+1] -eq 0 -and $d[$j+2] -eq 0) { break }
-      $n++; $j += 8      # 00 + 별칭 + x2 + y2 + 덧붙이1 + (다음 00)
-    }
-    if ($n -gt $objs) { $objs = $n }
-  } catch { break }
+# 둘째가 받는 갱신의 머리 = 둘째 자리. 첫째의 갱신 항목 중 **그 자리에 선 것**이 있으면 첫째가 둘째를 본다.
+#
+# ⚠ 10-06 전에는 항목을 8바이트씩 잘라 셌다. 항목은 `[00][ff 번호2 종류2][x2 y2]` 뒤에 복합 오브젝트
+#   덧바이트가 가변으로 붙어(`UpdateStream.h` 짜임) 둘째를 게임에 안 넣어도 「4명」으로 통과했다.
+#   그래서 개수가 아니라 둘째의 자리를 찾는다. 항목은 절대 좌표·전체 번호 꼴(`00 ff`)만 찾으므로
+#   서버가 별칭·상대 좌표로 싣기 시작하면 못 찾은 쪽(실패)으로 틀린다.
+$pos2 = $null
+if ($k2 -ne 0) {
+  for ($i = 0; $i -lt 25 -and -not $pos2; $i++) {
+    try {
+      $g = $udp2.Receive([ref]$any)
+      $d = @(); foreach ($b in $g) { $d += ($b -bxor $k2) }
+      $pos2 = Get-HeadPos $d
+    } catch { break }
+  }
+}
+$seen = $null
+if ($pos2) {
+  for ($i = 0; $i -lt 25 -and -not $seen; $i++) {
+    try {
+      $g = $udp.Receive([ref]$any)
+      $d = @(); foreach ($b in $g) { $d += ($b -bxor $k) }
+      $me = Get-HeadPos $d
+      if (-not $me) { continue }
+      if ($me.x -eq $pos2.x -and $me.y -eq $pos2.y) { continue }   # 겹쳐 서면 누가 누군지 못 가른다
+      $u = Find-Upd $d
+      for ($q = $u + 2; $q + 9 -lt $d.Length; $q++) {
+        if ($d[$q] -ne 0 -or $d[$q+1] -ne 0xff) { continue }
+        $ex = $d[$q+6] + $d[$q+7] * 256; $ey = $d[$q+8] + $d[$q+9] * 256
+        if ($ex -eq $pos2.x -and $ey -eq $pos2.y) { $seen = @{ id = ($d[$q+2] + $d[$q+3] * 256) }; break }
+      }
+    } catch { break }
+  }
 }
 Check ($k2 -ne 0) "둘째가 접속했다"
-Check ($objs -ge 2) "첫째의 상태 갱신에 사람이 둘 실린다 — $objs 명"
+if ($pos2) { Write-Host ("     둘째 자리: ({0},{1})" -f $pos2.x, $pos2.y) }
+$seenTxt = if ($seen) { " — 번호 0x{0:x4}" -f $seen.id } else { "" }
+Check ($null -ne $seen) "첫째의 상태 갱신에 둘째가 그 자리로 실린다$seenTxt"
 $udp2.Close()
 
 # ── 8. 주문 시전 — 한 조각에 주문과 이동을 이어 붙여 보낸다
