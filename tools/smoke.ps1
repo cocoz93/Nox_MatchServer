@@ -101,6 +101,20 @@ Start-Sleep -Milliseconds 200
 #
 # 여기서 확인하는 것 = 30Hz 루프가 실제로 돌고, 시각과 상태 갱신이 짝지어 나가는가.
 # 클라가 아무것도 안 보내도 와야 한다.
+#
+# ★ 09-30 부터 한 틱이 한 조각이다 — 시각 `27` → 갱신 `a4` → 나머지 순으로 묶여 온다
+#   (`Server.cpp` `FlushBundles`). 맨 앞(`$d[2]`)만 보면 `a4` 를 영영 못 센다(10-06 확인).
+#   앞의 시각만 건너뛰고 `a4` 자리를 찾는다. 다른 것이 앞을 막으면 -1 — 못 찾은 쪽으로 틀린다.
+function Find-Upd($d) {
+  $p = 2
+  while ($p -lt $d.Length) {
+    if ($d[$p] -eq 0xa4) { return $p }
+    if     ($d[$p] -eq 0x27) { $p += 3 }   # TIMESTAMP      op1 + 2
+    elseif ($d[$p] -eq 0x28) { $p += 5 }   # FULL_TIMESTAMP op1 + 4
+    else { return -1 }
+  }
+  return -1
+}
 Write-Host "5) 틱 방송"
 $udp.Client.ReceiveTimeout = 1500
 $tick = 0; $upd = 0
@@ -111,7 +125,7 @@ for ($i = 0; $i -lt 30; $i++) {
     $g = $udp.Receive([ref]$any)
     $d = @(); foreach ($b in $g) { $d += ($b -bxor $k) }
     if ($d[2] -eq 0x27) { $tick++ }
-    if ($d[2] -eq 0xa4) { $upd++ }
+    if ((Find-Upd $d) -ge 0) { $upd++ }
   } catch { break }
 }
 Check ($tick -ge 3) "시각(0x27)이 스스로 온다 — $tick 건"
@@ -137,11 +151,14 @@ function Get-Pos {
       # 0xa4 상태 갱신의 머리는 두 꼴이다 (정품과 같게 맞춰 둔 규약):
       #   첫 갱신  [op][ff][번호2][종류2][x2][y2]...   ← 전체 번호로 소개
       #   그 뒤    [op][01][x2][y2]...                 ← 별칭 한 바이트
-      if ($d[2] -eq 0xa4 -and $d[3] -eq 0xff) {
-        return @{ x = ($d[8] + $d[9] * 256); y = ($d[10] + $d[11] * 256) }
+      # 자리는 `a4` 기준(`$u`) — 앞에 시각이 묶여 온다(위 Find-Upd).
+      $u = Find-Upd $d
+      if ($u -lt 0) { continue }
+      if ($d[$u+1] -eq 0xff) {
+        return @{ x = ($d[$u+6] + $d[$u+7] * 256); y = ($d[$u+8] + $d[$u+9] * 256) }
       }
-      if ($d[2] -eq 0xa4 -and $d[3] -eq 0x01) {
-        return @{ x = ($d[4] + $d[5] * 256); y = ($d[6] + $d[7] * 256) }
+      if ($d[$u+1] -eq 0x01) {
+        return @{ x = ($d[$u+2] + $d[$u+3] * 256); y = ($d[$u+4] + $d[$u+5] * 256) }
       }
     } catch { return $null }
   }
@@ -195,13 +212,14 @@ for ($i = 0; $i -lt 25; $i++) {
   try {
     $g = $udp.Receive([ref]$any)
     $d = @(); foreach ($b in $g) { $d += ($b -bxor $k) }
-    if ($d[2] -ne 0xa4) { continue }
-    # 머리 길이는 별칭 꼴에 따라 다르다 (Get-Pos 의 주석 참조)
-    #   ff : op1 + ff1 + 번호2 + 종류2 + x2 + y2 + 깃발1 + 애니1 = 12, 머리 앞 2바이트 더해 14
-    #   01 : op1 + 01 1 + x2 + y2 + 깃발1 + 애니1              =  8, 머리 앞 2바이트 더해 10
-    if     ($d[3] -eq 0xff) { $j = 14 }
-    elseif ($d[3] -eq 0x01) { $j = 10 }
-    else                    { continue }
+    $u = Find-Upd $d
+    if ($u -lt 0) { continue }
+    # 머리 길이는 별칭 꼴에 따라 다르다 (Get-Pos 의 주석 참조) — `a4` 자리 `$u` 에서 센다
+    #   ff : op1 + ff1 + 번호2 + 종류2 + x2 + y2 + 깃발1 + 애니1 = 12
+    #   01 : op1 + 01 1 + x2 + y2 + 깃발1 + 애니1              =  8
+    if     ($d[$u+1] -eq 0xff) { $j = $u + 12 }
+    elseif ($d[$u+1] -eq 0x01) { $j = $u + 8 }
+    else                       { continue }
     $n = 0
     while ($j + 2 -lt $d.Length) {
       if ($d[$j] -eq 0 -and $d[$j+1] -eq 0 -and $d[$j+2] -eq 0) { break }
