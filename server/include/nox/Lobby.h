@@ -23,7 +23,8 @@ constexpr uint16_t kLobbyPort    = 4000;  // 605 답으로 알려 주는 로비 
 
 struct LobbyConfig {
     std::string serverName = "Nox_Origin";          // 605 답의 '0:<이름>'
-    uint16_t lobbyPort = kLobbyPort;
+    uint16_t servServPort = kServServPort;          // 이 포트로 들어온 접속은 「로비 찾기」로 다룬다
+    uint16_t lobbyPort = kLobbyPort;                // 605 답으로 알려 주는 로비 포트
     std::vector<std::string> motd{"Welcome to Nox_Origin!", ""};  // 첫 줄은 375, 나머지는 372
     std::string roomHost = "NoxOrigin";             // 고정 방의 방장(가짜 사용자) — 채널 #<방장>'s_game
     uint32_t gameServerIp = 0x7f000001;             // 게임 서버 IPv4 정수(a<<24|b<<16|c<<8|d) — 326·353 두 곳에 같은 값

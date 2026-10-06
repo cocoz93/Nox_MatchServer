@@ -1,0 +1,255 @@
+﻿// lobby_main.cpp — 로비 서버 실행 파일 (MO 2단계, Docs/LOBBY_DESIGN.md).
+//
+//   nox_lobby.exe [--bind 0.0.0.0] [--servserv-port 4005] [--lobby-port 4000]
+//                 [--game-ip 127.0.0.1] [--room-host NoxOrigin] [--room-name Nox_Origin]
+//                 [--map estate] [--mode arena] [--max-players 31] [--seconds N] [--quiet]
+//
+// 소켓만 맡는다 — 받은 줄은 nox::wol::Lobby 에 넘기고, 돌려받은 줄을 보낸다(게임 서버 main.cpp 루프와 같은 짜임).
+//   · 한 스레드 select() 루프. 듣기 소켓 둘(로비 찾기 · 로비) + 접속 소켓들
+//   · 접속 소켓은 논블로킹 — 상대가 안 읽어도 루프가 막히지 않게 보내기 버퍼에 쌓고 쓰기 가능할 때 보낸다
+//   · 줄은 CRLF 로 가른다(LF 만 와도 받는다)
+//
+// ⚠ --bind 를 0.0.0.0 으로 두면 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다.
+//   같은 PC 시험(hosts → 127.0.0.1)은 --bind 127.0.0.1 로 충분하다.
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
+
+#include "nox/Lobby.h"
+
+#pragma comment(lib, "ws2_32.lib")
+
+namespace {
+
+struct Sock {
+    SOCKET s = INVALID_SOCKET;
+    uint16_t port = 0;        // 들어온 듣기 포트
+    std::string in;           // 아직 줄이 안 끝난 받은 바이트
+    std::string out;          // 아직 못 보낸 바이트
+    bool closing = false;     // 보내기 버퍼를 다 비우면 끊는다(QUIT 답)
+};
+
+bool g_quiet = false;
+constexpr size_t kMaxLine = 4096;   // 줄바꿈 없이 이만큼 오면 끊는다 — 규약상 이렇게 긴 줄은 없다
+
+bool ParseIp(const char* s, uint32_t& out) {
+    in_addr a{};
+    if (inet_pton(AF_INET, s, &a) != 1) return false;
+    out = ntohl(a.s_addr);
+    return true;
+}
+
+// 맵 종류 이름 → 깃발 칸 값 (WolGameInfo.h kMap*)
+bool ParseMode(const std::string& m, uint16_t& bits) {
+    static const std::map<std::string, uint16_t> kModes = {
+        {"kotr", nox::wol::kMapKotr},   {"ctf", nox::wol::kMapCtf},
+        {"flagball", nox::wol::kMapFlagBall}, {"chat", nox::wol::kMapChat},
+        {"arena", nox::wol::kMapArena}, {"elimination", nox::wol::kMapElimination},
+        {"coop", nox::wol::kMapCoop},   {"quest", nox::wol::kMapQuest},
+    };
+    const auto it = kModes.find(m);
+    if (it == kModes.end()) return false;
+    bits = it->second;
+    return true;
+}
+
+// 방 정보 덩어리처럼 글자가 아닌 바이트는 '.' 로 찍는다(콘솔이 깨지지 않게)
+std::string Printable(const std::string& s) {
+    std::string r = s;
+    for (char& c : r)
+        if (static_cast<uint8_t>(c) < 0x20 || static_cast<uint8_t>(c) > 0x7e) c = '.';
+    return r;
+}
+
+SOCKET Listen(uint32_t bindIp, uint16_t port) {
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return s;
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(bindIp);
+    a.sin_port = htons(port);
+    if (bind(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == SOCKET_ERROR || listen(s, SOMAXCONN) == SOCKET_ERROR) {
+        std::printf("[실패] %u 포트를 열 수 없다 (WSA %d)\n", port, WSAGetLastError());
+        closesocket(s);
+        return INVALID_SOCKET;
+    }
+    return s;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    SetConsoleOutputCP(CP_UTF8);
+
+    nox::wol::LobbyConfig cfg;
+    cfg.room.name = "Nox_Origin";
+    cfg.room.map = "estate";
+    cfg.room.maxPlayers = 31;
+    cfg.room.resolution = 2;   // 녹음 다섯 방 중 셋이 1024x768
+    uint32_t bindIp = INADDR_ANY;
+    int seconds = 0;           // 0 이면 끝없이. 자체검사가 정해진 시간 뒤 스스로 끝나게 쓴다
+    std::string mode = "arena";
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        const bool hasNext = i + 1 < argc;
+        if (a == "--quiet") g_quiet = true;
+        else if (a == "--bind" && hasNext) {
+            if (!ParseIp(argv[++i], bindIp)) { std::printf("[실패] --bind 주소: %s\n", argv[i]); return 2; }
+        } else if (a == "--servserv-port" && hasNext) cfg.servServPort = static_cast<uint16_t>(std::atoi(argv[++i]));
+        else if (a == "--lobby-port" && hasNext) cfg.lobbyPort = static_cast<uint16_t>(std::atoi(argv[++i]));
+        else if (a == "--game-ip" && hasNext) {
+            if (!ParseIp(argv[++i], cfg.gameServerIp)) { std::printf("[실패] --game-ip 주소: %s\n", argv[i]); return 2; }
+        } else if (a == "--room-host" && hasNext) cfg.roomHost = argv[++i];
+        else if (a == "--room-name" && hasNext) cfg.room.name = argv[++i];
+        else if (a == "--map" && hasNext) cfg.room.map = argv[++i];
+        else if (a == "--mode" && hasNext) mode = argv[++i];
+        else if (a == "--max-players" && hasNext) cfg.room.maxPlayers = static_cast<uint8_t>(std::atoi(argv[++i]));
+        else if (a == "--seconds" && hasNext) seconds = std::atoi(argv[++i]);
+        else { std::printf("[실패] 모르는 인자: %s\n", a.c_str()); return 2; }
+    }
+    uint16_t modeBits = 0;
+    if (!ParseMode(mode, modeBits)) { std::printf("[실패] --mode: %s\n", mode.c_str()); return 2; }
+    cfg.room.flags = static_cast<uint16_t>((cfg.room.flags & ~nox::wol::kMapTypeMask) | modeBits);
+
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        std::printf("WSAStartup 실패\n");
+        return 1;
+    }
+    const SOCKET lsServ = Listen(bindIp, cfg.servServPort);
+    const SOCKET lsLobby = Listen(bindIp, cfg.lobbyPort);
+    if (lsServ == INVALID_SOCKET || lsLobby == INVALID_SOCKET) return 1;
+
+    nox::wol::Lobby lobby(cfg);
+    std::printf("[로비] 듣기 %s — 로비 찾기 :%u · 로비 :%u · 방 %s → 게임 서버 %s · 맵 %s · %s · 최대 %u\n",
+                nox::wol::IpDotted(bindIp).c_str(), cfg.servServPort, cfg.lobbyPort, lobby.RoomChannel().c_str(),
+                nox::wol::IpDotted(cfg.gameServerIp).c_str(), cfg.room.map.c_str(), mode.c_str(), cfg.room.maxPlayers);
+    std::fflush(stdout);
+
+    std::map<int, Sock> socks;
+    int nextId = 1;
+    unsigned long long nIn = 0, nOut = 0, nConn = 0;
+    const auto start = std::chrono::steady_clock::now();
+
+    auto closeConn = [&](int id, const char* why) {
+        auto it = socks.find(id);
+        if (it == socks.end()) return;
+        closesocket(it->second.s);
+        lobby.OnClose(id);
+        if (!g_quiet) std::printf("[c%d:%u] 끊음 — %s\n", id, it->second.port, why);
+        socks.erase(it);
+    };
+
+    for (;;) {
+        if (seconds > 0 && std::chrono::steady_clock::now() - start >= std::chrono::seconds(seconds)) break;
+
+        fd_set rd, wr;
+        FD_ZERO(&rd);
+        FD_ZERO(&wr);
+        FD_SET(lsServ, &rd);
+        FD_SET(lsLobby, &rd);
+        for (const auto& kv : socks) {
+            FD_SET(kv.second.s, &rd);
+            if (!kv.second.out.empty()) FD_SET(kv.second.s, &wr);
+        }
+        timeval tv{};
+        tv.tv_usec = 100000;   // 100ms — 로비엔 틱이 없다. --seconds 확인용으로만 깨어난다
+        if (select(0, &rd, &wr, nullptr, &tv) <= 0) continue;
+
+        // 새 접속
+        for (const SOCKET ls : {lsServ, lsLobby}) {
+            if (!FD_ISSET(ls, &rd)) continue;
+            sockaddr_in peer{};
+            int plen = sizeof(peer);
+            const SOCKET s = accept(ls, reinterpret_cast<sockaddr*>(&peer), &plen);
+            if (s == INVALID_SOCKET) continue;
+            if (socks.size() >= static_cast<size_t>(FD_SETSIZE - 2)) {   // select 한 번에 담을 수 있는 소켓 수(FD_SETSIZE)를 넘기지 않는다
+                closesocket(s);
+                std::printf("[로비] 접속이 너무 많아 끊음 (FD_SETSIZE %d)\n", FD_SETSIZE);
+                continue;
+            }
+            u_long nb = 1;
+            ioctlsocket(s, FIONBIO, &nb);
+            sockaddr_in local{};
+            int llen = sizeof(local);
+            getsockname(s, reinterpret_cast<sockaddr*>(&local), &llen);
+            const uint16_t port = (ls == lsServ) ? cfg.servServPort : cfg.lobbyPort;
+            const int id = nextId++;
+            ++nConn;
+            Sock k;
+            k.s = s;
+            k.port = port;
+            socks[id] = k;
+            lobby.OnConnect(id, port, ntohl(peer.sin_addr.s_addr), ntohl(local.sin_addr.s_addr));
+            if (!g_quiet)
+                std::printf("[c%d:%u] 접속 %s → 내 쪽 %s\n", id, port, nox::wol::IpDotted(ntohl(peer.sin_addr.s_addr)).c_str(),
+                            nox::wol::IpDotted(ntohl(local.sin_addr.s_addr)).c_str());
+        }
+
+        std::vector<int> ids;
+        for (const auto& kv : socks) ids.push_back(kv.first);
+        for (const int id : ids) {
+            auto it = socks.find(id);
+            if (it == socks.end()) continue;
+            Sock& k = it->second;
+
+            if (FD_ISSET(k.s, &rd)) {
+                char buf[4096];
+                const int n = recv(k.s, buf, sizeof(buf), 0);
+                if (n == 0) { closeConn(id, "상대가 닫음"); continue; }
+                if (n < 0) {
+                    if (WSAGetLastError() != WSAEWOULDBLOCK) { closeConn(id, "받기 오류"); continue; }
+                } else {
+                    k.in.append(buf, static_cast<size_t>(n));
+                    std::vector<nox::wol::Out> outs;
+                    size_t nl;
+                    while ((nl = k.in.find('\n')) != std::string::npos) {
+                        std::string line = k.in.substr(0, nl);
+                        k.in.erase(0, nl + 1);
+                        if (!line.empty() && line.back() == '\r') line.pop_back();
+                        ++nIn;
+                        if (!g_quiet) std::printf("[c%d:%u] >> %s\n", id, k.port, Printable(line).c_str());
+                        lobby.OnLine(id, line, outs);
+                    }
+                    if (k.in.size() > kMaxLine) { closeConn(id, "줄이 너무 길다"); continue; }
+                    for (const auto& o : outs) {
+                        auto t = socks.find(o.conn);
+                        if (t == socks.end()) continue;
+                        t->second.out += o.line + "\r\n";
+                        if (o.closeAfter) t->second.closing = true;
+                        ++nOut;
+                        if (!g_quiet) std::printf("[c%d:%u] << %s\n", o.conn, t->second.port, Printable(o.line).c_str());
+                    }
+                    for (const auto& l : lobby.TakeLog()) std::printf("[로비] %s\n", Printable(l).c_str());
+                }
+            }
+
+            it = socks.find(id);
+            if (it == socks.end()) continue;
+            if (!it->second.out.empty()) {   // 쓰기 가능 여부와 관계없이 한 번 시도 — 막히면 WOULDBLOCK 으로 다음 차례
+                Sock& w = it->second;
+                const int n = send(w.s, w.out.data(), static_cast<int>(w.out.size()), 0);
+                if (n > 0) w.out.erase(0, static_cast<size_t>(n));
+                else if (n < 0 && WSAGetLastError() != WSAEWOULDBLOCK) { closeConn(id, "보내기 오류"); continue; }
+            }
+            it = socks.find(id);
+            if (it != socks.end() && it->second.closing && it->second.out.empty()) closeConn(id, "QUIT");
+        }
+        std::fflush(stdout);
+    }
+
+    for (auto& kv : socks) closesocket(kv.second.s);
+    closesocket(lsServ);
+    closesocket(lsLobby);
+    WSACleanup();
+    std::printf("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu\n", nConn, nIn, nOut);
+    return 0;
+}

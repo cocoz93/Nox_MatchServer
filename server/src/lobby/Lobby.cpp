@@ -74,7 +74,7 @@ void Lobby::OnLine(int conn, std::string_view line, std::vector<Out>& out) {
     if (it == conns_.end() || line.empty()) return;
     const auto t = Split(line);
     const std::string cmd = Upper(t[0]);
-    if (it->second.port == kServServPort) OnServServ(conn, it->second, cmd, line, out);
+    if (it->second.port == cfg_.servServPort) OnServServ(conn, it->second, cmd, line, out);
     else OnChat(conn, it->second, cmd, t, line, out);
 }
 
