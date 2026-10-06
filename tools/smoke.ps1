@@ -5,15 +5,25 @@
 #
 #   .\tools\smoke.ps1              기본 포트 18599
 #   .\tools\smoke.ps1 -Port 18590
-param([int]$Port = 18599)
+#   .\tools\smoke.ps1 -Map "C:\...\maps\estate\Estate.map"   독립 모드(사람 확인과 같은 실행 조건)
+#
+# ★ 10-06 — `-Map` 이 없으면 **녹음 기반 모드**(스냅샷이 녹음본)로 뜬다. 사람이 정품으로 붙는 것은
+#   독립 모드(`--standalone --map … --mode arena`, `Docs/HOW_TO_PLAY.md`)라 둘을 따로 건다(CMakeLists.txt).
+param([int]$Port = 18599, [string]$Map = '')
 $ErrorActionPreference = 'Continue'
 
 $repo = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $repo 'build\Release\nox_server.exe'
 if (-not (Test-Path $exe)) { Write-Host "[FAIL] 서버가 없다: $exe"; exit 1 }
 
-$srv = Start-Process -FilePath $exe -ArgumentList '--port', $Port, '--name', 'SMOKE', '--quiet' `
-                     -PassThru -WindowStyle Hidden
+$srvArgs = @('--port', $Port, '--name', 'SMOKE', '--quiet')
+if ($Map) {
+  if (-not (Test-Path -LiteralPath $Map)) { Write-Host "[FAIL] 맵이 없다: $Map"; exit 1 }
+  # Start-Process 는 인자를 빈칸으로 잇기만 한다 — 빈칸 든 경로는 따옴표로 싸서 넘긴다.
+  $srvArgs += @('--standalone', '--map', "`"$Map`"", '--mode', 'arena')
+}
+Write-Host ("모드: " + $(if ($Map) { "독립 — $Map" } else { "녹음 기반" }))
+$srv = Start-Process -FilePath $exe -ArgumentList $srvArgs -PassThru -WindowStyle Hidden
 Start-Sleep -Milliseconds 700
 
 $udp = New-Object System.Net.Sockets.UdpClient

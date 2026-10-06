@@ -73,4 +73,14 @@ if (NOX_POWERSHELL AND WIN32)
   add_test(NAME socket_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                    -File ${CMAKE_SOURCE_DIR}/tools/smoke.ps1)
+  # 같은 왕복을 독립 모드(맵을 직접 읽는다)로 — 사람 확인과 같은 실행 조건이다.
+  # 맵은 게임 설치본에 있고 git 에 안 들어가므로 있을 때만 건다. 포트는 위와 겹치지 않게.
+  set(NOX_SMOKE_MAP "C:/Program Files/GOG Galaxy/Games/Nox/maps/estate/Estate.map" CACHE FILEPATH "독립 모드 소켓 왕복에 쓸 맵")
+  if (EXISTS "${NOX_SMOKE_MAP}")
+    add_test(NAME socket_smoke_standalone
+             COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                     -File ${CMAKE_SOURCE_DIR}/tools/smoke.ps1 -Port 18598 -Map "${NOX_SMOKE_MAP}")
+  else()
+    message(STATUS "맵이 없어 독립 모드 소켓 왕복은 걸지 않는다: ${NOX_SMOKE_MAP}")
+  endif()
 endif()

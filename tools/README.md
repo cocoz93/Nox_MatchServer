@@ -2,8 +2,8 @@
 
 | 파일 | 하는 일 |
 |---|---|
-| `build.ps1` | Release 빌드 + 자체검사 5개(ctest) |
-| `smoke.ps1` | 자체검사 5번 `socket_smoke` 의 본체. **CMakeLists.txt:72 가 부른다** |
+| `build.ps1` | Release 빌드 + 자체검사(ctest — 녹음 덤프·게임 맵이 있으면 6개) |
+| `smoke.ps1` | 자체검사 `socket_smoke`(녹음 기반 모드)·`socket_smoke_standalone`(독립 모드, `-Map`)의 본체. **CMakeLists.txt 소켓 왕복 절이 부른다** |
 
 한글이 들어가므로 **UTF-8 BOM 이 필수**다(없으면 CP949 로 오독해 파싱부터 실패).
 Windows PowerShell 5.1 기준.
