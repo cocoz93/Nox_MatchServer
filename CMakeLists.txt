@@ -51,6 +51,7 @@ target_link_libraries(nox_datadump PRIVATE nox_proto)
 # 로비 서버(MO 2단계, Docs/LOBBY_DESIGN.md) — 게임 규약 라이브러리(nox_proto)에 기대지 않는다.
 add_library(nox_lobby_core STATIC
   server/src/lobby/WolGameInfo.cpp
+  server/src/lobby/Lobby.cpp
 )
 target_include_directories(nox_lobby_core PUBLIC server/include)
 
@@ -71,6 +72,7 @@ add_test(NAME lobby_unit COMMAND lobby_test)
 set(NOX_WOL_RECORDING "${CMAKE_SOURCE_DIR}/_evidence/_wol_record_20261006/relay_log_20261006_233255.txt")
 if (EXISTS "${NOX_WOL_RECORDING}")
   add_test(NAME lobby_gameinfo COMMAND lobby_test --gameinfo "${NOX_WOL_RECORDING}")
+  add_test(NAME lobby_replay COMMAND lobby_test --replay "${NOX_WOL_RECORDING}")
 else()
   message(STATUS "로비 녹음이 없어 로비 녹음 대조는 걸지 않는다: ${NOX_WOL_RECORDING}")
 endif()

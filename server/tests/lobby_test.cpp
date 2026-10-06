@@ -2,16 +2,20 @@
 //
 //   lobby_test                       늘 도는 단위 시험 (녹음 없이)
 //   lobby_test --gameinfo <녹음>     녹음 속 실제 방 정보 덩어리를 풀었다 다시 포장해 바이트 대조
+//   lobby_test --replay <녹음>       녹음의 정품 클라 줄을 로비에 넣고, 나온 답을 XWIS 원래 답과 접속 단위로 대조
 //
 // 녹음 = 1단계 중계기 기록(`_evidence/_wol_record_20261006/relay_log_*.txt`).
 //   중계기가 XWIS 줄을 Latin-1 로 읽어 UTF-8 로 적었으므로, 읽을 때 UTF-8 → 바이트로 되돌린다.
 //   `<<` 줄이 XWIS 원래 줄이고 `<~` 줄은 중계기가 바꿔 끼운 줄이라 정답지에서 뺀다.
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "nox/Lobby.h"
 #include "nox/WolGameInfo.h"
 
 namespace {
@@ -111,6 +115,104 @@ void UnitTests() {
     t.timeLimit = 0xffff;
     Check(Unpack(Pack(t), back) && back.map == "123456789", "맵 이름은 9바이트에서 잘린다");
     Check(back.timeLimit == 0x03ff, "시간 제한은 아래 10비트만 실린다");
+}
+
+std::vector<std::string> Tokens(const std::string& s) {
+    std::vector<std::string> t;
+    size_t p = 0;
+    for (;;) {
+        const size_t q = s.find(' ', p);
+        if (q == std::string::npos) {
+            t.push_back(s.substr(p));
+            return t;
+        }
+        t.push_back(s.substr(p, q - p));
+        p = q + 1;
+    }
+}
+
+std::vector<std::string> Lines(const std::vector<nox::wol::Out>& out) {
+    std::vector<std::string> r;
+    for (const auto& o : out) r.push_back(o.line);
+    return r;
+}
+
+// ── 로비 단위 시험 — 값이 설정대로 실리는지 (꼴은 --replay 가 녹음과 대조한다) ──
+void LobbyUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;
+    cfg.gameServerIp = (192u << 24) | (0u << 16) | (2u << 8) | 10u;   // 192.0.2.10 (문서용 주소)
+    cfg.room.map = "estate";
+    cfg.room.name = "Nox_Origin";
+    cfg.room.maxPlayers = 31;
+    Lobby lb(cfg);
+    const uint32_t loop = 0x7f000001;
+    const uint32_t peer = (198u << 24) | (51u << 16) | (100u << 8) | 7u;   // 198.51.100.7 (문서용 주소)
+    const std::string gameIp = std::to_string(cfg.gameServerIp);
+    std::vector<Out> out;
+
+    // 4005 — 로비 주소는 「클라가 붙은 내 쪽 주소」, QUIT 뒤엔 끊는다
+    lb.OnConnect(1, kServServPort, peer, loop);
+    for (const char* l : {"verchk 32512 65556", "verchk 9472 65538", "lobcount 9472",
+                          "whereto wn 1234 9472 65538 7726", "QUIT"})
+        lb.OnLine(1, l, out);
+    const std::vector<std::string> want4005 = {": 610 u 1",
+                                               ": 605 u :127.0.0.1 4000 '0:Nox_Origin' -8 36.1083 -115.0582", ": 607"};
+    Check(Lines(out) == want4005, "4005 답이 610 · 605(내 쪽 주소 127.0.0.1:4000) · 607");
+    Check(!out.empty() && out.back().closeAfter, "QUIT 답 뒤엔 끊는다");
+    lb.OnClose(1);
+
+    // 4000 — 로그인 묶음 → 376, verchk → 379
+    out.clear();
+    lb.OnConnect(2, kLobbyPort, peer, loop);
+    for (const char* l : {"CVERS 11020 9472", "PASS supersecret", "NICK wn", "apgar 1234 0", "SERIAL 7726",
+                          "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33"})
+        lb.OnLine(2, l, out);
+    Check(out.size() >= 2 && out[out.size() - 2].line == ": 376 u" &&
+              out.back().line == ": 379 u :none none none 1 32512 NONREQ",
+          "로그인 끝(376) 뒤 패치 없음(379)");
+
+    // 첫 목록(-1) = 방 1 + 채팅 로비 3, 방 줄에 게임 서버 IP · 방 정보는 풀리고 이름이 설정대로
+    out.clear();
+    lb.OnLine(2, "LIST -1 37", out);
+    int n326 = 0, n327 = 0;
+    for (const auto& o : out) {
+        const auto t = Tokens(o.line);
+        if (t.size() > 1 && t[1] == "326") {
+            ++n326;
+            Check(t.size() == 11 && t[9] == gameIp, "326 의 방장 주소 칸 = 게임 서버 IP");
+            GameInfo g;
+            Check(t.size() == 11 && t[10].rfind("128:", 0) == 0 && Unpack(t[10].substr(4), g) &&
+                      g.name == "Nox_Origin" && g.map == "estate",
+                  "326 의 방 정보가 풀리고 이름·맵이 설정대로");
+        }
+        if (t.size() > 1 && t[1] == "327") ++n327;
+    }
+    Check(n326 == 1 && n327 == 3, "LIST -1 37 = 방 1줄 + 채팅 로비 3줄");
+    out.clear();
+    lb.OnLine(2, "LIST 37 37", out);
+    n327 = 0;
+    for (const auto& o : out)
+        if (Tokens(o.line).size() > 1 && Tokens(o.line)[1] == "327") ++n327;
+    Check(n327 == 0 && out.size() == 3, "LIST 37 37 = 방 1줄만");
+
+    // 방 참가 — 353 에 방장(게임 서버 IP)과 나(내 IP)
+    out.clear();
+    lb.OnLine(2, "JOINGAME #NoxOrigin's_game 1 ", out);
+    const std::string want353 = ": 353 u = #NoxOrigin's_game :@NoxOrigin,0," + gameIp + " wn,0," + std::to_string(peer);
+    bool has353 = false;
+    for (const auto& o : out) has353 = has353 || o.line == want353;
+    Check(has353, "JOINGAME 답 353 = 방장(게임 서버 IP) + 나(내 IP)");
+    out.clear();
+    lb.OnLine(2, "JOINGAME #nobody's_game 1 ", out);
+    Check(out.empty(), "모르는 방 참가엔 답하지 않는다");
+
+    // 모르는 명령 — 답 없음, 처음 한 번만 기록
+    out.clear();
+    lb.TakeLog();
+    lb.OnLine(2, "PING abc", out);
+    lb.OnLine(2, "PING def", out);
+    Check(out.empty() && lb.TakeLog().size() == 1, "모르는 명령은 답 없이 처음 한 번만 기록");
 }
 
 // ── 녹음 대조 ───────────────────────────────────────────────────────
@@ -244,13 +346,208 @@ int GameInfoFromRecording(const char* path) {
     return 0;
 }
 
+// ── 녹음 되돌리기 — 정품 클라 줄을 로비에 넣고 XWIS 원래 답과 접속 단위로 대조 ──────────
+
+struct RecConn {
+    int id = 0;
+    int port = 0;
+    std::vector<std::string> client;   // `>>` 정품 클라가 보낸 줄
+    std::vector<std::string> xwis;     // `<<` XWIS 원래 줄 (`<~` 바꿔 끼운 줄은 뺀다)
+};
+
+// 답 한 줄의 종류 — `: 376 u` → "376", `:wn!u@h JOIN …` → "user:JOIN"
+std::string Kind(const std::string& l) {
+    const auto t = Tokens(l);
+    if (t.size() < 2) return "?" + l;
+    if (t[0] == ":") return t[1];
+    if (!t[0].empty() && t[0][0] == ':') return "user:" + t[1];
+    return "?" + t[0];
+}
+
+struct Item {
+    std::string kind;
+    std::vector<std::string> lines;   // 목록 묶음이면 그 안 줄들, 아니면 그 줄 하나
+};
+
+// 대조 단위로 묶는다 — 인사(372)는 줄 수가 달라도 되니 하나로, 목록(321…323)은 「안에 든 종류」로.
+// XWIS 의 `PAGE`(참가 직후 한 줄)는 로비가 일부러 안 보내므로 뺀다(LOBBY_DESIGN.md).
+std::vector<Item> Normalize(const std::vector<std::string>& lines, int& droppedPage) {
+    std::vector<Item> r;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string k = Kind(lines[i]);
+        if (k == "user:PAGE") {
+            ++droppedPage;
+            continue;
+        }
+        if (k == "372") {
+            if (r.empty() || r.back().kind != "372*") r.push_back({"372*", {lines[i]}});
+            continue;
+        }
+        if (k == "321") {
+            Item it;
+            std::set<std::string> kinds;
+            size_t j = i + 1;
+            for (; j < lines.size() && Kind(lines[j]) != "323"; ++j) {
+                kinds.insert(Kind(lines[j]));
+                it.lines.push_back(lines[j]);
+            }
+            it.kind = "LIST{";
+            for (const auto& s : kinds) it.kind += s + (s == *kinds.rbegin() ? "" : ",");
+            it.kind += "}";
+            r.push_back(it);
+            i = j;   // 323 까지 건너뛴다
+            continue;
+        }
+        r.push_back({k, {lines[i]}});
+    }
+    return r;
+}
+
+// 353 이름 목록 칸 `@?이름,0,숫자` 꼴인가
+bool MembersShape(const std::string& l) {
+    const size_t at = l.find(" :");
+    if (at == std::string::npos) return false;
+    for (const auto& e : Tokens(l.substr(at + 2))) {
+        const size_t c1 = e.find(",0,");
+        if (c1 == std::string::npos || c1 == 0 || c1 + 3 >= e.size()) return false;
+        for (size_t k = c1 + 3; k < e.size(); ++k)
+            if (e[k] < '0' || e[k] > '9') return false;
+    }
+    return true;
+}
+
+// 같은 종류끼리 꼴 대조 — 칸 수가 정해진 답은 칸 수, 353 은 구분 칸과 이름 목록 꼴, 목록은 안의 줄 칸 수
+int ShapeDiffs(const Item& ours, const Item& xw) {
+    static const std::set<std::string> kFixed = {"610", "605", "607", "376", "379", "329", "328", "366",
+                                                 "user:JOIN", "user:PART", "user:JOINGAME", "332", "375"};
+    int d = 0;
+    if (kFixed.count(ours.kind) && Tokens(ours.lines[0]).size() != Tokens(xw.lines[0]).size()) {
+        std::printf("    칸 수 다름 [%s]\n      우리 %s\n      XWIS %s\n", ours.kind.c_str(), ours.lines[0].c_str(),
+                    xw.lines[0].c_str());
+        ++d;
+    }
+    if (ours.kind == "353") {
+        const auto a = Tokens(ours.lines[0]), b = Tokens(xw.lines[0]);
+        if (a.size() < 4 || b.size() < 4 || a[3] != b[3] || !MembersShape(ours.lines[0])) {
+            std::printf("    353 꼴 다름\n      우리 %s\n      XWIS %s\n", ours.lines[0].c_str(), xw.lines[0].c_str());
+            ++d;
+        }
+    }
+    if (ours.kind.rfind("LIST{", 0) == 0) {
+        for (const auto& ol : ours.lines)
+            for (const auto& xl : xw.lines)
+                if (Kind(ol) == Kind(xl) && Tokens(ol).size() != Tokens(xl).size()) {
+                    std::printf("    목록 줄 칸 수 다름\n      우리 %s\n      XWIS %s\n", ol.c_str(), xl.c_str());
+                    ++d;
+                    break;
+                }
+    }
+    return d;
+}
+
+int ReplayRecording(const char* path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        std::printf("[실패] 녹음을 열 수 없다: %s\n", path);
+        return 1;
+    }
+    std::vector<RecConn> conns;
+    int lines = 0;
+    std::string line;
+    while (std::getline(f, line)) {
+        ++lines;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t b = line.find("[c");
+        if (b == std::string::npos) continue;
+        const size_t colon = line.find(':', b), close = line.find(']', b);
+        if (colon == std::string::npos || close == std::string::npos || colon > close) continue;
+        const int id = std::atoi(line.substr(b + 2, colon - b - 2).c_str());
+        const int port = std::atoi(line.substr(colon + 1, close - colon - 1).c_str());
+        const std::string rest = line.substr(close + 1);
+        RecConn* rc = nullptr;
+        for (auto& c : conns)
+            if (c.id == id) rc = &c;
+        if (!rc) {
+            conns.push_back({id, port, {}, {}});
+            rc = &conns.back();
+        }
+        if (rest.rfind(" >> ", 0) == 0 && rest.find("(partial)") == std::string::npos)
+            rc->client.push_back(Utf8ToLatin1(rest.substr(4)));
+        else if (rest.rfind(" << ", 0) == 0 && rest.find("(partial)") == std::string::npos)
+            rc->xwis.push_back(Utf8ToLatin1(rest.substr(4)));
+    }
+
+    // 녹음에서 정품 클라가 고른 방은 `#tak7's_game` — 고정 방의 방장 이름을 그것으로 맞춰 둔다
+    nox::wol::LobbyConfig cfg;
+    cfg.roomHost = "tak7";
+    nox::wol::Lobby lb(cfg);
+    const uint32_t loop = 0x7f000001;   // 녹음의 정품 클라는 127.0.0.1 에서 붙었다
+
+    int compared = 0, skipped = 0, items = 0, diffs = 0, droppedPage = 0;
+    for (const auto& rc : conns) {
+        bool login = false, invalid = false;
+        for (const auto& x : rc.xwis) {
+            login = login || Kind(x) == "376";
+            invalid = invalid || x.find("Invalid Password") != std::string::npos;
+        }
+        if (rc.port == nox::wol::kLobbyPort && !login) {
+            std::printf("  c%d:%d 건너뜀 — XWIS 가 로그인에 답하지 않음(클라 줄 %zu)\n", rc.id, rc.port, rc.client.size());
+            ++skipped;
+            continue;
+        }
+        if (invalid) {
+            std::printf("  c%d:%d 건너뜀 — 손님 로그인, XWIS 가 제한 모드로 답함(Invalid Password)\n", rc.id, rc.port);
+            ++skipped;
+            continue;
+        }
+        std::vector<nox::wol::Out> out;
+        lb.OnConnect(rc.id, static_cast<uint16_t>(rc.port), loop, loop);
+        for (const auto& cl : rc.client) lb.OnLine(rc.id, cl, out);
+        lb.OnClose(rc.id);
+        int oursPage = 0;
+        const auto ours = Normalize(Lines(out), oursPage);
+        const auto xw = Normalize(rc.xwis, droppedPage);
+        int d = oursPage;   // 로비는 PAGE 를 보내지 않는다 — 보냈다면 다름
+        if (ours.size() != xw.size()) ++d;
+        for (size_t i = 0; i < ours.size() && i < xw.size(); ++i) {
+            if (ours[i].kind != xw[i].kind) {
+                ++d;
+                continue;
+            }
+            d += ShapeDiffs(ours[i], xw[i]);
+        }
+        ++compared;
+        items += static_cast<int>(xw.size());
+        diffs += d;
+        std::printf("  c%d:%d 클라 줄 %zu · 답 묶음 우리 %zu / XWIS %zu — %s\n", rc.id, rc.port, rc.client.size(),
+                    ours.size(), xw.size(), d ? "다름" : "같음");
+        if (d) {
+            std::printf("    우리:");
+            for (const auto& it : ours) std::printf(" %s", it.kind.c_str());
+            std::printf("\n    XWIS:");
+            for (const auto& it : xw) std::printf(" %s", it.kind.c_str());
+            std::printf("\n");
+        }
+    }
+    for (const auto& l : lb.TakeLog()) std::printf("  로비 기록: %s\n", l.c_str());
+    // 0 은 「없었다」와 「못 읽었다」를 안 가른다 — 지나간 양을 같이 찍는다
+    std::printf("녹음 %d줄 · 접속 %zu (대조 %d · 건너뜀 %d) · 대조한 답 묶음 %d · 일부러 뺀 PAGE %d · 다름 %d\n", lines,
+                conns.size(), compared, skipped, items, droppedPage, diffs);
+    Check(compared > 0 && items > 0, "녹음에서 대조할 접속과 답을 찾았다");
+    Check(diffs == 0, "로비 답이 XWIS 원래 답과 종류·순서·꼴이 같다");
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "--gameinfo") == 0) {
         if (GameInfoFromRecording(argv[2]) != 0) return 1;
+    } else if (argc >= 3 && std::strcmp(argv[1], "--replay") == 0) {
+        if (ReplayRecording(argv[2]) != 0) return 1;
     } else {
         UnitTests();
+        LobbyUnitTests();
     }
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;
