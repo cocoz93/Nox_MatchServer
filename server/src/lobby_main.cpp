@@ -15,6 +15,7 @@
 #include <ws2tcpip.h>
 
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,6 +39,17 @@ struct Sock {
 
 bool g_quiet = false;
 constexpr size_t kMaxLine = 4096;   // 줄바꿈 없이 이만큼 오면 끊는다 — 규약상 이렇게 긴 줄은 없다
+
+// 줄마다 시각을 붙인다 — 10-07 사람 확인에서 마지막 「끊음」이 게임 중인지 게임을 닫을 때인지 기록만으로 못 가렸다
+void Log(const char* fmt, ...) {
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    std::fprintf(stdout, "%02u:%02u:%02u.%03u ", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
+    va_list ap;
+    va_start(ap, fmt);
+    std::vfprintf(stdout, fmt, ap);
+    va_end(ap);
+}
 
 bool ParseIp(const char* s, uint32_t& out) {
     in_addr a{};
@@ -76,7 +88,7 @@ SOCKET Listen(uint32_t bindIp, uint16_t port) {
     a.sin_addr.s_addr = htonl(bindIp);
     a.sin_port = htons(port);
     if (bind(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == SOCKET_ERROR || listen(s, SOMAXCONN) == SOCKET_ERROR) {
-        std::printf("[실패] %u 포트를 열 수 없다 (WSA %d)\n", port, WSAGetLastError());
+        Log("[실패] %u 포트를 열 수 없다 (WSA %d)\n", port, WSAGetLastError());
         closesocket(s);
         return INVALID_SOCKET;
     }
@@ -102,26 +114,26 @@ int main(int argc, char** argv) {
         const bool hasNext = i + 1 < argc;
         if (a == "--quiet") g_quiet = true;
         else if (a == "--bind" && hasNext) {
-            if (!ParseIp(argv[++i], bindIp)) { std::printf("[실패] --bind 주소: %s\n", argv[i]); return 2; }
+            if (!ParseIp(argv[++i], bindIp)) { Log("[실패] --bind 주소: %s\n", argv[i]); return 2; }
         } else if (a == "--servserv-port" && hasNext) cfg.servServPort = static_cast<uint16_t>(std::atoi(argv[++i]));
         else if (a == "--lobby-port" && hasNext) cfg.lobbyPort = static_cast<uint16_t>(std::atoi(argv[++i]));
         else if (a == "--game-ip" && hasNext) {
-            if (!ParseIp(argv[++i], cfg.gameServerIp)) { std::printf("[실패] --game-ip 주소: %s\n", argv[i]); return 2; }
+            if (!ParseIp(argv[++i], cfg.gameServerIp)) { Log("[실패] --game-ip 주소: %s\n", argv[i]); return 2; }
         } else if (a == "--room-host" && hasNext) cfg.roomHost = argv[++i];
         else if (a == "--room-name" && hasNext) cfg.room.name = argv[++i];
         else if (a == "--map" && hasNext) cfg.room.map = argv[++i];
         else if (a == "--mode" && hasNext) mode = argv[++i];
         else if (a == "--max-players" && hasNext) cfg.room.maxPlayers = static_cast<uint8_t>(std::atoi(argv[++i]));
         else if (a == "--seconds" && hasNext) seconds = std::atoi(argv[++i]);
-        else { std::printf("[실패] 모르는 인자: %s\n", a.c_str()); return 2; }
+        else { Log("[실패] 모르는 인자: %s\n", a.c_str()); return 2; }
     }
     uint16_t modeBits = 0;
-    if (!ParseMode(mode, modeBits)) { std::printf("[실패] --mode: %s\n", mode.c_str()); return 2; }
+    if (!ParseMode(mode, modeBits)) { Log("[실패] --mode: %s\n", mode.c_str()); return 2; }
     cfg.room.flags = static_cast<uint16_t>((cfg.room.flags & ~nox::wol::kMapTypeMask) | modeBits);
 
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        std::printf("WSAStartup 실패\n");
+        Log("WSAStartup 실패\n");
         return 1;
     }
     const SOCKET lsServ = Listen(bindIp, cfg.servServPort);
@@ -129,7 +141,7 @@ int main(int argc, char** argv) {
     if (lsServ == INVALID_SOCKET || lsLobby == INVALID_SOCKET) return 1;
 
     nox::wol::Lobby lobby(cfg);
-    std::printf("[로비] 듣기 %s — 로비 찾기 :%u · 로비 :%u · 방 %s → 게임 서버 %s · 맵 %s · %s · 최대 %u\n",
+    Log("[로비] 듣기 %s — 로비 찾기 :%u · 로비 :%u · 방 %s → 게임 서버 %s · 맵 %s · %s · 최대 %u\n",
                 nox::wol::IpDotted(bindIp).c_str(), cfg.servServPort, cfg.lobbyPort, lobby.RoomChannel().c_str(),
                 nox::wol::IpDotted(cfg.gameServerIp).c_str(), cfg.room.map.c_str(), mode.c_str(), cfg.room.maxPlayers);
     std::fflush(stdout);
@@ -144,7 +156,7 @@ int main(int argc, char** argv) {
         if (it == socks.end()) return;
         closesocket(it->second.s);
         lobby.OnClose(id);
-        if (!g_quiet) std::printf("[c%d:%u] 끊음 — %s\n", id, it->second.port, why);
+        if (!g_quiet) Log("[c%d:%u] 끊음 — %s\n", id, it->second.port, why);
         socks.erase(it);
     };
 
@@ -173,7 +185,7 @@ int main(int argc, char** argv) {
             if (s == INVALID_SOCKET) continue;
             if (socks.size() >= static_cast<size_t>(FD_SETSIZE - 2)) {   // select 한 번에 담을 수 있는 소켓 수(FD_SETSIZE)를 넘기지 않는다
                 closesocket(s);
-                std::printf("[로비] 접속이 너무 많아 끊음 (FD_SETSIZE %d)\n", FD_SETSIZE);
+                Log("[로비] 접속이 너무 많아 끊음 (FD_SETSIZE %d)\n", FD_SETSIZE);
                 continue;
             }
             u_long nb = 1;
@@ -190,7 +202,7 @@ int main(int argc, char** argv) {
             socks[id] = k;
             lobby.OnConnect(id, port, ntohl(peer.sin_addr.s_addr), ntohl(local.sin_addr.s_addr));
             if (!g_quiet)
-                std::printf("[c%d:%u] 접속 %s → 내 쪽 %s\n", id, port, nox::wol::IpDotted(ntohl(peer.sin_addr.s_addr)).c_str(),
+                Log("[c%d:%u] 접속 %s → 내 쪽 %s\n", id, port, nox::wol::IpDotted(ntohl(peer.sin_addr.s_addr)).c_str(),
                             nox::wol::IpDotted(ntohl(local.sin_addr.s_addr)).c_str());
         }
 
@@ -216,7 +228,7 @@ int main(int argc, char** argv) {
                         k.in.erase(0, nl + 1);
                         if (!line.empty() && line.back() == '\r') line.pop_back();
                         ++nIn;
-                        if (!g_quiet) std::printf("[c%d:%u] >> %s\n", id, k.port, Printable(line).c_str());
+                        if (!g_quiet) Log("[c%d:%u] >> %s\n", id, k.port, Printable(line).c_str());
                         lobby.OnLine(id, line, outs);
                     }
                     if (k.in.size() > kMaxLine) { closeConn(id, "줄이 너무 길다"); continue; }
@@ -226,9 +238,9 @@ int main(int argc, char** argv) {
                         t->second.out += o.line + "\r\n";
                         if (o.closeAfter) t->second.closing = true;
                         ++nOut;
-                        if (!g_quiet) std::printf("[c%d:%u] << %s\n", o.conn, t->second.port, Printable(o.line).c_str());
+                        if (!g_quiet) Log("[c%d:%u] << %s\n", o.conn, t->second.port, Printable(o.line).c_str());
                     }
-                    for (const auto& l : lobby.TakeLog()) std::printf("[로비] %s\n", Printable(l).c_str());
+                    for (const auto& l : lobby.TakeLog()) Log("[로비] %s\n", Printable(l).c_str());
                 }
             }
 
@@ -250,6 +262,6 @@ int main(int argc, char** argv) {
     closesocket(lsServ);
     closesocket(lsLobby);
     WSACleanup();
-    std::printf("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu\n", nConn, nIn, nOut);
+    Log("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu\n", nConn, nIn, nOut);
     return 0;
 }
