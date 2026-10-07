@@ -44,7 +44,7 @@ function Stop-Lobby {
 try {
   if ($Mode -eq 'Open') {
     if (-not $PublicIp) {
-      $c = Get-PublicIpCandidates
+      $c = @(Get-PublicIpCandidates)   # 후보가 하나면 함수가 문자열로 풀어 돌려줘 $c[0] 이 첫 글자가 된다(10-07 「공인 IP: 2」)
       if ($c.Count -ne 1) { throw "공인 IP 를 정하지 못했다(후보: $($c -join ', ')) — -PublicIp 로 주세요. 공유기 뒤라면 공유기 포트 포워딩도 필요" }
       $PublicIp = $c[0]
     }
