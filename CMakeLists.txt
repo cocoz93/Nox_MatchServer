@@ -27,7 +27,7 @@ add_library(nox_proto STATIC
 )
 target_include_directories(nox_proto PUBLIC server/include)
 
-add_executable(nox_server server/src/main.cpp)
+add_executable(nox_server server/src/main.cpp server/src/WorldBuild.cpp)
 target_link_libraries(nox_server PRIVATE nox_proto)
 
 add_executable(nox_proxy server/src/proxy.cpp)
