@@ -1,0 +1,324 @@
+﻿// UdpServer.cpp — 통신 층(원본 `internal/netstr` 자리). 설명은 `UdpServer.h` 머리.
+//
+// ★ 10-08 조각 3 — 아래 몸통은 옛 `Server.cpp` 의 `OnPacket` 앞부분(풀기·머리·순번)·접속 제어 다섯 갈래와
+//   `EmitNow`(머리·순번·되받기·XOR)를 옮긴 것이다. 주석도 그대로 옮겼다(`Docs/LAYERS_DESIGN.md` 조각 3).
+#include "nox/UdpServer.h"
+
+#include <cstdio>
+#include <cstring>
+#include <utility>
+
+#include "nox/ByteBuffer.h"
+#include "nox/Messages.h"
+#include "nox/MsgLen.h"
+#include "nox/Opcode.h"
+#include "nox/Wire.h"
+
+namespace nox {
+
+CUdpSession& CUdpServer::SessionFor(const std::string& addr) {
+    auto it = _sessions.find(addr);
+    if (it != _sessions.end()) return it->second;
+    CUdpSession s;
+    s.addr = addr;
+    return _sessions.emplace(addr, s).first->second;
+}
+
+size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size_t n,
+                              std::vector<OutPacket>& out, std::vector<NetworkEvent>& events) {
+    CUdpSession& s = SessionFor(from);
+
+    // 받은 것이 암호문이면 먼저 푼다. 사본을 뜬다 — 부르는 쪽 버퍼를 건드리지 않는다.
+    // ⚠ 덤프 재생일 때는 이미 평문이라 풀면 안 된다 (SetInboundPlain 주석 참조).
+    std::vector<uint8_t> buf(data, data + n);
+    if (s.keyed && !_inboundPlain) ApplyXor(buf.data(), buf.size(), s.xorKey);
+
+    WireHeader head;
+    if (!ReadWireHeader(buf.data(), buf.size(), head)) return 0;
+
+    // ★ B-1b — 클라가 **신뢰**로 보냈으면 그 순번을 적어 둔다. 답할 때 실어 주는 것이
+    //   정답지의 되받기다(StreamSeq::recvSeq 주석). 안 실으면 클라가 영원히 재전송한다.
+    if (head.reliable) {
+        StreamSeq& rq = s.seq[head.stream & 0x7F];
+        rq.recvSeq = head.seq;
+        rq.recvSeqSeen = true;
+        // 되받기 기준 스트림. ⚠ **접속 전 패킷(`0xff` = anyID · 스트림 127)은 빼야 한다** —
+        //   그건 아직 연결이 없는 상태의 `SERVER_CONNECT` 라 정품은 되받기 대상으로 안 본다.
+        //   ⭕ 근거 — 정품 녹음 idx 14~15: 클라가 `ff 00 00` 을 보낸 직후 서버가
+        //     `70 70 74`(XOR 풀면 `00 00 04`) 로 **seq 0** 을 보낸다. 우리는 1 을 보내고 있었고
+        //     그것이 `replay_connect` 에 마지막으로 남은 1건이었다.
+        if ((head.stream & 0x7F) != 0x7F) {
+            s.lastRelStream = static_cast<int>(head.stream & 0x7F);
+        }
+        ++_reliableHeard;
+        if ((head.stream & 0x7F) < 8) ++_recvRelStream[head.stream & 0x7F];
+    }
+
+    const uint8_t* body = buf.data() + kWireHeaderSize;
+    const size_t bodyLen = buf.size() - kWireHeaderSize;
+
+    // ★ 10-08 조각 3 — **앞에서부터 0x20(`CLIENT_ACCEPT`) 미만은 접속 제어라 여기서 처리하고,
+    //   처음 0x20 이상이 나오는 자리부터 끝까지는 게임 메시지라 게임에 넘긴다.**
+    //   원본 — 첫 번호가 0x20 이상이면 조각째 게임으로(`netstr/conn.go:709-712`), 미만이면 `processStreamOp`(`:704`).
+    //     단 접속 직후 첫 신뢰 조각 `[1f ACCEPTED 순번][20 CLIENT_ACCEPT …]` 은 앞을 먹고 `0x20` 부터 게임에 넘긴다
+    //     (`readXxx` `conn.go:397-411`). 정품 클라가 실제로 이렇게 보낸다(정품 녹음 `replay_connect`).
+    //   ⚠ 처음엔 첫 번호 하나로 조각째 갈랐다가 위 조각의 `CLIENT_ACCEPT` 를 못 넘겨 녹음 대조가 깨졌다(10-08).
+    //   ⚠ 전에는 메시지마다 갈랐다 — 게임 조각 안에 섞인 0x20 미만 번호(핑 등)도 받아 처리했다. 이제는 게임 몫이다(원본 쪽).
+    //   빈 몸통도 게임으로 넘긴다(전처럼 「메시지 0개」로 끝난다).
+    if (bodyLen == 0 || body[0] >= static_cast<uint8_t>(Op::CLIENT_ACCEPT)) {
+        NetworkEvent ev;
+        ev.type = NetworkEvent::Type::RECEIVED;
+        ev.addr = from;
+        ev.body.assign(body, body + bodyLen);
+        events.push_back(std::move(ev));
+        return 0;
+    }
+
+    // ★ 먼저 **끝까지 깨끗하게 쪼개지는지** 본다. 안 되면 아무 답도 만들지 않는다.
+    //   (게임 조각에도 같은 검사가 있다 — `Server::OnGameMessages` 의 같은 주석 참조)
+    const auto endsAtZero = [](size_t cnt, uint8_t op) {
+        return cnt > 1 && op == static_cast<uint8_t>(Op::SERVER_CONNECT);
+    };
+    {
+        MessageIter probe(body, bodyLen, /*fromClient=*/true);
+        while (probe.Next()) {
+            if (endsAtZero(probe.count(), probe.op())) break;
+        }
+        if (probe.stopped()) {
+            ++_stopped;
+            const uint8_t sop = static_cast<uint8_t>(probe.stopOp());
+            ++_stoppedByOp[sop];
+            if (_stopSampleShown.insert(sop).second) {
+                const size_t rest = probe.stopRest();
+                const size_t base = (bodyLen >= rest) ? bodyLen - rest : 0;
+                std::printf("[멈춤표본] op=%02x 남은 %zu |", sop, rest);
+                for (size_t q = 0; q < rest && q < 8; ++q)
+                    std::printf(" %02x", body[base + q]);
+                std::printf("\n");
+                std::fflush(stdout);
+            }
+            return 0;
+        }
+    }
+
+    MessageIter it(body, bodyLen, /*fromClient=*/true);
+    size_t count = 0;
+    _lastFragOps.clear();   // 진단 — 이 조각에서 무엇을 읽었는지 남긴다
+    while (it.Next()) {
+        ++count;
+        if (endsAtZero(count, it.op())) { ++_connectTailStops; break; }
+        if (it.op() >= static_cast<uint8_t>(Op::CLIENT_ACCEPT)) {
+            // 여기부터 끝까지 게임 몫(위 주석 · `readXxx`). 이 메시지부터는 게임이 센다.
+            const uint8_t* rest = it.body() - 1;   // 이 메시지의 오프코드 자리(`MessageIter::Next`)
+            NetworkEvent ev;
+            ev.type = NetworkEvent::Type::RECEIVED;
+            ev.addr = from;
+            ev.body.assign(rest, body + bodyLen);
+            events.push_back(std::move(ev));
+            --count;
+            break;
+        }
+        ++_seen[it.op()];
+        if (_lastFragOps.size() < 16) _lastFragOps.push_back(it.op());
+
+        switch (static_cast<Op>(it.op())) {
+            // 핑에 그대로 되돌린다. 값은 클라의 시각이라 **손대지 않는다.**
+            // 실측 = `01 04 06 <4바이트>` 에 `01 00 08 <같은 4바이트>` 로 답했다.
+            // 스트림은 받은 것을 그대로 쓴다(핑·퐁은 스트림 1 을 쓰더라).
+            case Op::CLIENT_PING: {
+                if (it.bodyLen() != 4) break;
+                uint8_t msg[5];
+                msg[0] = static_cast<uint8_t>(Op::CLIENT_PONG);
+                std::memcpy(msg + 1, it.body(), 4);
+                RequestSendMsg(from, /*reliable=*/false, head.stream, msg, sizeof(msg), out);
+                ++_handled;
+                break;
+            }
+
+            // 클라가 접속 자체를 닫는다(`0x0a`). 게임이 「나감」으로 표시하고 Tick 이 걷어낸다
+            // (게임 쪽 `0xae OUTGOING_CLIENT` 와 같은 길 — `Server::OnNetworkEvent` 주석).
+            case Op::CLIENT_CLOSE: {
+                NetworkEvent ev;
+                ev.type = NetworkEvent::Type::DISCONNECTED;
+                ev.addr = from;
+                events.push_back(std::move(ev));
+                ++_handled;
+                break;
+            }
+
+            case Op::SERVER_DISCOVER: {
+                // 이미 붙은 상대가 다시 찾을 리 없다. 상태를 지켜야 밀린 바이트에
+                // 속지 않는다.
+                if (s.keyed) break;
+                if (_infoBody.empty()) break;
+                MsgServerDiscover req;
+                Reader r(it.body(), it.bodyLen());
+                if (!req.Decode(r)) break;
+
+                // 원본을 그대로 두고 토큰 자리만 바꾼다.
+                std::vector<uint8_t> msg;
+                msg.reserve(1 + _infoBody.size());
+                msg.push_back(static_cast<uint8_t>(Op::SERVER_INFO));
+                msg.insert(msg.end(), _infoBody.begin(), _infoBody.end());
+                if (_infoBody.size() >= kInfoTokenOffset + 4) {
+                    uint8_t* t = msg.data() + 1 + kInfoTokenOffset;
+                    t[0] = static_cast<uint8_t>(req.token);
+                    t[1] = static_cast<uint8_t>(req.token >> 8);
+                    t[2] = static_cast<uint8_t>(req.token >> 16);
+                    t[3] = static_cast<uint8_t>(req.token >> 24);
+                }
+                RequestSendMsg(from, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
+                ++_handled;
+                break;
+            }
+
+            case Op::SERVER_TRY_JOIN: {
+                if (s.keyed) break;
+                // 지금은 조건 없이 받아준다. 거절 사유(중복 일련번호·인원 참·버전)는
+                // 세션 관리를 만들 때 붙인다.
+                const uint8_t msg[1] = {static_cast<uint8_t>(Op::SERVER_JOIN_OK)};
+                RequestSendMsg(from, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+                ++_handled;
+                break;
+            }
+
+            case Op::SERVER_CONNECT: {
+                // 이미 키를 준 상대가 다시 보내면 재전송이다. 번호를 새로 매기지 않는다.
+                // ★ 다만 **답은 한다** — 정품은 이 두 번째 요청에 0x04 를 하나 돌려준다
+                //   (3바이트·비신뢰·본문 0). 09-05 정품 덤프의 자리 그대로다.
+                //   무엇인지는 아직 모른다(PROTOCOL.md 도 「미상」).
+                if (s.keyed) {
+                    const uint8_t m4[1] = {static_cast<uint8_t>(Op::CODE4)};
+                    RequestSendMsg(from, /*reliable=*/false, /*stream=*/0, m4, sizeof(m4), out);
+                    ++_handled;
+                    break;
+                }
+                NetworkEvent ev;
+                ev.type = NetworkEvent::Type::CONNECTED;
+                ev.addr = from;
+                if (_scriptAt < _script.size()) {
+                    // 덤프 재생 — 그때 서버가 정한 값들을 그대로 쓴다.
+                    //   프레임·오브젝트 번호는 게임 것이라 이벤트에 실어 넘긴다.
+                    const AcceptScript& a = _script[_scriptAt++];
+                    s.connectId = a.connectId;
+                    s.xorKey = a.xorKey;
+                    ev.scripted = true;
+                    ev.frame = a.frame;
+                    ev.netCode = a.netCode;
+                } else {
+                    s.connectId = _nextConnectId++;
+                    s.xorKey = _xorKey;
+                }
+
+                uint8_t msg[8];
+                size_t k = 0;
+                msg[k++] = static_cast<uint8_t>(Op::ACCEPTED);
+                msg[k++] = 0;                      // 스트림을 받아들였다는 표시
+                msg[k++] = static_cast<uint8_t>(Op::SERVER_ACCEPT);
+                msg[k++] = static_cast<uint8_t>(s.connectId);
+                msg[k++] = static_cast<uint8_t>(s.connectId >> 8);
+                msg[k++] = static_cast<uint8_t>(s.connectId >> 16);
+                msg[k++] = static_cast<uint8_t>(s.connectId >> 24);
+                msg[k++] = s.xorKey;
+
+                // ★ 이 조각까지는 평문이다. 키는 이 안에 실려 나간다.
+                RequestSendMsg(from, /*reliable=*/true, /*stream=*/0, msg, k, out);
+                s.keyed = true;   // 다음 조각부터 뒤집는다
+                ++_handled;
+                events.push_back(std::move(ev));
+                break;
+            }
+
+            default:
+                break;   // 접속 제어 조각 안의 그 밖 번호 — 세기만 했다.
+        }
+    }
+    return count;
+}
+
+void CUdpServer::RequestSendMsg(const std::string& to, bool reliable, uint8_t stream,
+                                const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
+    CUdpSession& s = SessionFor(to);
+    OutPacket p;
+    p.to = to;
+    p.data.resize(kWireHeaderSize + n);
+    WireHeader h;
+    h.reliable = reliable;
+    h.stream = stream;
+
+    // 순번 규칙 — StreamSeq 주석 참조. 신뢰는 쓰고 올리고, 비신뢰는 직전 값을 싣는다.
+    StreamSeq& q = s.seq[stream & 0x7F];
+    {   // 스트림별로 갈라 센다 — 합계만으로는 「보낸 스트림 ↔ 답한 스트림」 어긋남을 못 본다
+        const uint8_t st = static_cast<uint8_t>(stream & 0x7F);
+        if (st < 8) { if (reliable) ++_sendRelStream[st]; else ++_sendPlainStream[st]; }
+    }
+    if (reliable) {
+        h.seq = q.next;
+        q.last = q.next;
+        ++q.next;
+    } else if (_ackRecvSeq && _ackAnyStream && (stream & 0x7F) == 0 &&
+               s.lastRelStream >= 0 && s.seq[s.lastRelStream].recvSeqSeen) {
+        // ★★★ 2026-09-18 — **되받기는 「스트림 0 비신뢰」에만 싣는다.**
+        //
+        //   ⭕ 정품 녹음으로 확정했다(`_evidence/20260905_server_bidir.txt` idx 24~45 ·
+        //     XOR 0x70 을 풀고 읽는다) —
+        //       idx=29  `71 70` → 비신뢰·**스트림 1**·seq **0**   ← 스트림 1 엔 늘 0
+        //       idx=32  `70 75` → 비신뢰·**스트림 0**·seq **5**   ← 그 직전 클라 신뢰가 4
+        //       idx=37  `70 77` → 비신뢰·**스트림 0**·seq **7**   ← 그 직전 클라 신뢰가 6
+        //     ⇒ **스트림 0 에만 「받은 순번 + 1」**. 우리 값 규칙은 맞았고 **자리가 틀렸다.**
+        //
+        //   ⭕ 왜 스트림 0 인가 — 클라의 수신 루프(`netstr/conn.go:643~650`)에
+        //     **스트림 1 패킷이 안 온다.** 실측 — 스트림 1 에 `ack=4` 를 2,743 번 실었는데
+        //     클라가 본 비신뢰 seq 분포는 `2:12 3:9389` 로 **4 가 0 건**이었다.
+        //
+        //   ⚠ 한때 **모든 스트림**에 실었다가 `replay_connect` 가 깨졌다 —
+        //     정품이 스트림 1 에 싣는 `0` 자리에 우리가 5·7 을 넣었기 때문이다.
+        //
+        //   값 규칙 — `ackOlder(N+1)` 이 N 이하를 지운다(`send_reliable.go:178~199`).
+        const StreamSeq& rq = s.seq[s.lastRelStream];
+        const uint8_t ack = static_cast<uint8_t>(rq.recvSeq + 1);
+        // ✖ **정정 09-21 — 여기서 재던 「다름」은 뜻이 없었다.**
+        //   `ack`(클라가 보낸 신뢰 순번 +1)과 `q.last`(우리가 스트림 0 에 마지막으로 쓴 순번)는
+        //   **서로 다른 것**이라 거의 늘 다르다. 실측 `되받기 7874 · 다름 7866` 은 결함이 아니라
+        //   **엉뚱한 둘을 견준 숫자**였고, 그게 「B-1b 가 아직 안 됐다」로 읽혔다(B-1b 는 09-18 에 닫혔다).
+        // ⭕ 뜻이 있는 것은 **되받기 값이 올라가나**다 — 안 올라가면 클라의 신뢰 순번이 멈춘 것이고,
+        //   그러면 클라의 재전송 줄이 안 비워진다. 그래서 **직전에 보낸 되받기 값과** 견준다.
+        if (_ackSeqApplied != 0 && ack != _ackLastSent) ++_ackSeqChanged;
+        _ackLastSent = ack;
+        ++_ackSeqApplied;
+        if (ack < 32) ++_ackValueHist[ack];
+        h.seq = ack;
+    } else if (false) {   // ⚠ 아래는 **죽은 가지**다. 지우지 않고 남긴 까닭은 주석에.
+        // ★ 옛 B-1b — 비신뢰 답에 **클라가 보낸 마지막 신뢰 순번**을 싣되 **스트림을 안 가렸다.**
+        //   ✖ 09-18 폐기 — 스트림 1 에도 실려 `replay_connect` 가 깨졌다.
+        //     정품은 스트림 1 에 **늘 0** 을 싣는다(위 가지의 정품 녹음 근거).
+        //   기록으로 남기는 값 규칙은 위 가지와 같다.
+        // ★★ **받은 순번 + 1** 을 싣는다. 그대로 실으면 안 된다 —
+        //   정답지 `SetCurrent(seq)` 는 `retry(seq)` + `ackOlder(seq)` 인데
+        //   `retry` 가 **그 순번을 다시 보내라고 표시**하고, `ackOlder` 는
+        //   `it.seq >= seq` 를 **남긴다**(send_reliable.go:165~199).
+        //   즉 N 을 돌려주면 N 번 패킷이 지워지기는커녕 재전송 예약된다.
+        //   N+1 을 주어야 N 이하가 전부 지워진다.
+        //   09-18 실측 — N 으로 37번 답했는데 준비 20 그대로였다(대조군과 동일).
+        const uint8_t ack = static_cast<uint8_t>(q.recvSeq + 1);
+        if (ack != q.last) ++_ackSeqDiffer;
+        ++_ackSeqApplied;
+        // ★ 2026-09-18 — **보낸 ack 값 자체를 센다.** 클라 쪽 로그에 0·2·3 만 찍히고
+        //   4 가 안 보여서, 「우리가 4 를 안 보내나」와 「보내는데 클라가 안 읽나」를 갈라야 한다.
+        //   값이 한두 개뿐이면 `recvSeq` 가 안 올라가는 것이다.
+        if (ack < 32) ++_ackValueHist[ack];
+        h.seq = ack;
+    } else {
+        h.seq = q.last;
+    }
+    p.data[0] = h.Byte0();
+    p.data[1] = h.seq;
+    std::memcpy(p.data.data() + kWireHeaderSize, msg, n);
+
+    // 키를 준 뒤로는 조각 전체가 뒤집힌다 — 머리도 포함이다.
+    // (덤프의 `70 70 74` 가 XOR 0x70 을 풀면 `00 00 04` 인 것이 그 증거다)
+    if (s.keyed) ApplyXor(p.data.data(), p.data.size(), s.xorKey);
+    out.push_back(std::move(p));
+}
+
+}  // namespace nox

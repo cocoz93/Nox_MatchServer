@@ -857,7 +857,9 @@ int main(int argc, char** argv) {
                 //   ⚠ `--quiet` 여도 찍는다. 드물게 나오고, 나오는 순간이 곧 답이다.
                 {
                     static std::map<uint8_t, bool> told;
-                    for (const auto& kv : srv.seen()) {
+                    // ★ 10-08 조각 3 — 접속 제어(0x20 미만) 오프코드는 통신 층이 센다. 둘 다 본다.
+                    for (const auto* seenMap : { &srv.seen(), &srv.Network().seen() })
+                    for (const auto& kv : *seenMap) {
                         if (told.count(kv.first)) continue;
                         told[kv.first] = true;
                         std::printf("[처음] 클라가 보낸 새 오프코드 0x%02x (%s)\n",
@@ -883,7 +885,7 @@ int main(int argc, char** argv) {
                         for (uint8_t o : srv.LastFragOps())
                             std::printf(" %02x(%s)", o, nox::OpName(static_cast<nox::Op>(o)));
                         std::printf("  · 열쇠 %s 0x%02x\n",
-                                    srv.IsKeyed(who) ? "있음" : "없음", srv.KeyOf(who));
+                                    srv.Network().IsKeyed(who) ? "있음" : "없음", srv.Network().KeyOf(who));
                     }
                     std::fflush(stdout);
                 }
@@ -1100,12 +1102,12 @@ int main(int argc, char** argv) {
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
                             srv.moves(), srv.melees(), srv.code6Seen(),
                             nSpell, srv.spellsNoMana(), srv.missiles(), srv.missilesMade(), srv.missilesGone(), srv.missileEntriesSent(), srv.hurts(), srv.aliasHeard(), modeInfo,
-                            srv.acceptHeard(), srv.useMapSent(), srv.readyHeard(), srv.reliableHeard(),
-                            srv.ackSeqApplied(), srv.ackSeqChanged(),
-                            static_cast<unsigned>(srv.ackLastSent()), srv.spawnInvulnApplied(),
-                            srv.recvReliableOn(0), srv.recvReliableOn(1), srv.recvReliableOn(2),
-                            srv.sendReliableOn(0), srv.sendReliableOn(1), srv.sendReliableOn(2),
-                            srv.sendPlainOn(0), srv.sendPlainOn(1), srv.sendPlainOn(2),
+                            srv.acceptHeard(), srv.useMapSent(), srv.readyHeard(), srv.Network().reliableHeard(),
+                            srv.Network().ackSeqApplied(), srv.Network().ackSeqChanged(),
+                            static_cast<unsigned>(srv.Network().ackLastSent()), srv.spawnInvulnApplied(),
+                            srv.Network().recvReliableOn(0), srv.Network().recvReliableOn(1), srv.Network().recvReliableOn(2),
+                            srv.Network().sendReliableOn(0), srv.Network().sendReliableOn(1), srv.Network().sendReliableOn(2),
+                            srv.Network().sendPlainOn(0), srv.Network().sendPlainOn(1), srv.Network().sendPlainOn(2),
                             srv.castRejDead(), srv.castRejRange(), srv.castRejUnknown(),
                             srv.castRejBusy(), srv.castRejClass(), srv.castRejCant(), srv.castAccepted(),
                             srv.spellPlayerCalls(), srv.spellLeafZero(), srv.spellIndZero(), srv.spellNotLearned(),
@@ -1164,28 +1166,28 @@ int main(int argc, char** argv) {
                     std::string sl = "[순번·스트림] 받은신뢰";
                     char sb[48];
                     for (uint8_t st = 0; st < 8; ++st) {
-                        if (!srv.recvReliableOn(st)) continue;
-                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.recvReliableOn(st));
+                        if (!srv.Network().recvReliableOn(st)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.Network().recvReliableOn(st));
                         sl += sb;
                     }
                     sl += " · 보낸신뢰";
                     for (uint8_t st = 0; st < 8; ++st) {
-                        if (!srv.sendReliableOn(st)) continue;
-                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.sendReliableOn(st));
+                        if (!srv.Network().sendReliableOn(st)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.Network().sendReliableOn(st));
                         sl += sb;
                     }
                     sl += " · 보낸비신뢰";
                     for (uint8_t st = 0; st < 8; ++st) {
-                        if (!srv.sendPlainOn(st)) continue;
-                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.sendPlainOn(st));
+                        if (!srv.Network().sendPlainOn(st)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.Network().sendPlainOn(st));
                         sl += sb;
                     }
                     // ★ 되받기로 **어떤 값**을 실었나. 값이 한두 개뿐이면 `recvSeq` 가 안 올라가는 것이다
                     sl += " · 되받기값";
                     bool any = false;
                     for (uint8_t v = 0; v < 32; ++v) {
-                        if (!srv.ackValueCount(v)) continue;
-                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)v, srv.ackValueCount(v));
+                        if (!srv.Network().ackValueCount(v)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)v, srv.Network().ackValueCount(v));
                         sl += sb;
                         any = true;
                     }
@@ -1391,9 +1393,11 @@ int main(int argc, char** argv) {
                             srv.doorsOpened(), srv.doorResync(), srv.doorNearestDist(), srv.obeliskMana(), srv.obeliskNearIdle(), srv.plateOn(), srv.plateOff(),
                             srv.wallOpenSent(), srv.wallCloseSent(),
                             srv.spellsOnSelf(), srv.spellEffectDeferred());
-                if (!srv.stoppedByOp().empty()) {
-                    std::printf("[버림] 조각 %llu개 —", srv.stopped());
-                    for (const auto& kv : srv.stoppedByOp()) {
+                // ★ 10-08 조각 3 — 접속 제어 조각의 버림은 통신 층이 센다. 둘을 합쳐 찍는다.
+                if (!srv.stoppedByOp().empty() || !srv.Network().stoppedByOp().empty()) {
+                    std::printf("[버림] 조각 %llu개 —", srv.stopped() + srv.Network().stopped());
+                    for (const auto* byOp : { &srv.stoppedByOp(), &srv.Network().stoppedByOp() })
+                    for (const auto& kv : *byOp) {
                         std::printf(" %02x(%s)x%llu", kv.first,
                                     nox::OpName(static_cast<nox::Op>(kv.first)), kv.second);
                     }

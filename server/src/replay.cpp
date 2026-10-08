@@ -89,9 +89,9 @@ int main(int argc, char** argv) {
 
     nox::Server srv;
     // 덤프의 RECV 는 이미 평문이다. 이걸 안 켜면 서버가 한 번 더 풀어 망가뜨린다.
-    srv.SetInboundPlain(true);
-    srv.SetInfoTemplate(setup.infoBody.data(), setup.infoBody.size());
-    srv.SetAcceptScript(setup.accepts);
+    srv.Network().SetInboundPlain(true);
+    srv.Network().SetInfoTemplate(setup.infoBody.data(), setup.infoBody.size());
+    srv.Network().SetAcceptScript(setup.accepts);
     if (!setup.joinBody.empty())
         srv.SetJoinTemplate(setup.joinBody.data(), setup.joinBody.size());
     if (!setup.useMapBody.empty())
@@ -160,7 +160,7 @@ int main(int argc, char** argv) {
             //    `0x57`·`0x0d` 로 흩어져 「깃발 승자 27,619건」 같은 통계가 나왔다.
             ++nMissing;
             if (ln.data.size() >= 3)
-                ++missingByOp[static_cast<uint8_t>(ln.data[2] ^ srv.KeyFor(ln.peer))];
+                ++missingByOp[static_cast<uint8_t>(ln.data[2] ^ srv.Network().KeyFor(ln.peer))];
             continue;
         }
         std::vector<uint8_t> mine = std::move(q.front());
@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
         // 그 둘 말고 다 같으면 실패로 세지 않되, **몇 자리가 남았는지는 드러내 둔다.**
         // ⚠ 키를 준 뒤의 조각은 **암호문**이다. 오프코드를 볼 때 풀어야 한다.
         //   (자리는 그대로라 「어디가 다른가」는 암호문에서 세도 된다)
-        const uint8_t peerKey = srv.KeyFor(ln.peer);
+        const uint8_t peerKey = srv.Network().KeyFor(ln.peer);
         bool joinUnknownOnly = false;
         if (mine.size() == ln.data.size() && mine.size() == 218 &&
             (mine[2] ^ peerKey) == static_cast<uint8_t>(nox::Op::INFORM)) {
@@ -249,9 +249,9 @@ int main(int argc, char** argv) {
     std::printf("  다름              %llu\n", nDiff);
     std::printf("  아직 안 만든 것   %llu\n", nMissing);
     std::printf("  내가 더 만든 것   %llu\n", nExtra);
-    std::printf("  답을 만든 메시지  %llu\n", srv.handled());
+    std::printf("  답을 만든 메시지  %llu\n", srv.handled() + srv.Network().handled());   // ★ 10-08 조각 3 — 접속 제어는 통신 층이 센다
     std::printf("  못 쪼개 통째로 넘긴 조각 %llu   (아직 못 읽는 메시지가 섞인 것)\n",
-                srv.stopped());
+                srv.stopped() + srv.Network().stopped());
 
     // 많은 것부터 보여준다. 오프코드 순으로 늘어놓으면 정작 큰 것이 아래로 밀린다.
     auto dump = [](const char* title, const std::map<uint8_t, unsigned long long>& m,
@@ -269,8 +269,13 @@ int main(int argc, char** argv) {
         }
     };
     dump("아직 안 만든 것 — 오프코드별 (많은 것부터)", missingByOp, 12);
-    dump("★ 여기서 막혀 조각을 통째로 넘겼다 — 다음에 옮길 것", srv.stoppedByOp(), 12);
-    dump("받은 메시지 — 오프코드별 (많은 것부터)", srv.seen(), 15);
+    // ★ 10-08 조각 3 — 접속 제어 조각(0x20 미만)은 통신 층이 센다. 둘을 합쳐 보인다.
+    auto merged = [](std::map<uint8_t, unsigned long long> a, const std::map<uint8_t, unsigned long long>& b) {
+        for (const auto& kv : b) a[kv.first] += kv.second;
+        return a;
+    };
+    dump("★ 여기서 막혀 조각을 통째로 넘겼다 — 다음에 옮길 것", merged(srv.stoppedByOp(), srv.Network().stoppedByOp()), 12);
+    dump("받은 메시지 — 오프코드별 (많은 것부터)", merged(srv.seen(), srv.Network().seen()), 15);
 
     // 판정 — 만든 자리에서 어긋난 것이 없어야 통과다.
     // 「아직 안 만든 것」은 실패가 아니다. 안 지나간 길일 뿐이다.

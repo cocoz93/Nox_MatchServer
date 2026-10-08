@@ -3586,7 +3586,9 @@ void TestBundleOneDatagram() {
         char msg[200];
         std::snprintf(msg, sizeof(msg), "③ 곧바로 — 채팅 a %d · 채팅 갈래 +%llu(기대 2) · 퐁 %d · 제어 갈래 +%llu",
                       (int)chatToA, srv.bundleStat(BS::DirectChat) - c0, (int)pong, srv.bundleStat(BS::DirectCtrl) - k0);
-        Check(chatToA && srv.bundleStat(BS::DirectChat) - c0 == 2 && pong && srv.bundleStat(BS::DirectCtrl) - k0 == 1, msg);
+        // ★ 10-08 조각 3 — 퐁은 이제 통신 층(`CUdpServer`)이 받는 자리에서 곧바로 보낸다. 게임의 `Emit` 을 안 거치므로
+        //   「제어 갈래」는 +0 이어야 맞다(+1 이면 핑이 게임으로 새고 있는 것이다). 「곧바로」는 퐁이 out2 에 있는 것으로 본다.
+        Check(chatToA && srv.bundleStat(BS::DirectChat) - c0 == 2 && pong && srv.bundleStat(BS::DirectCtrl) - k0 == 0, msg);
     }
     // ⑤ 넘침(조각 2) — 알림 글 12줄(한 줄 201B) + 중요 `6e` 가 2048 을 넘으면 그 틱 안에서 **둘로** 끊는다.
     //   둘 다 같은 `27` 로 시작 · 둘 다 2048 이하 · 글 12줄은 **하나도 안 버림**(정답지는 넘친 Kind1 을 버린다 — 우리는 안 버린다) ·
@@ -23949,8 +23951,8 @@ void TestConnectZeroTail() {
         return n;
     };
     nox::Server srv;
-    srv.SetInboundPlain(true);                              // 암호 없이 — 번호 셈만 본다
-    srv.SetXorKey(0);                                       // ⚠ 키를 준 뒤 나가는 것도 XOR 된다 — 0 이 아니면 `Flatten` 이 0x04 를 못 읽어 ②가 「못 읽어서 0」으로 거짓 통과한다(첫 판 ①이 잡음)
+    srv.Network().SetInboundPlain(true);                    // 암호 없이 — 번호 셈만 본다
+    srv.Network().SetXorKey(0);                             // ⚠ 키를 준 뒤 나가는 것도 XOR 된다 — 0 이 아니면 `Flatten` 이 0x04 를 못 읽어 ②가 「못 읽어서 0」으로 거짓 통과한다(첫 판 ①이 잡음)
     {
         const uint8_t conn[3] = { 0xff, 0x00, 0x00 };       // 첫 접속 요청(`ff 00 00`) — 키를 받는다
         std::vector<nox::OutPacket> o; srv.OnPacket(a, conn, sizeof(conn), o);
@@ -23971,6 +23973,51 @@ void TestConnectZeroTail() {
         Check(count04(o) == 0 && srv.connectTailStops() - s0 == 1, m);
     }
     std::printf("  09-29 ③ — 게임 패킷 안의 0x00 은 읽기 끝(0x04 답 없음) · 접속 요청만 든 패킷은 0x04 하나\n");
+}
+
+// ── 10-08 플랜 A 조각 3 — 사람을 지우면 통신 층의 키·순번도 지운다 → 같은 주소가 다시 붙으면 새로 키를 준다 ─────────
+//   지우는 자리가 둘이다 — 정상 종료(`0x0a` → `DISCONNECTED` → Tick 「자리 비우기」) · 내보내기(`KickPlayer`).
+//   둘 중 하나라도 `CUdpServer::RequestDisconnectSession` 을 빠뜨리면 그 주소는 「이미 접속함」(`0x04`)만 받고 영영 못 들어온다.
+//   ⚠ 이 시험이 생기기 전에는 그 호출을 빼도 아무 시험도 안 깨졌다(10-08 돌연변이 M3).
+void TestReconnectAfterClose() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };           // 접속 요청(`ff 00 00`)
+    auto accepts = [](const std::vector<nox::OutPacket>& out, const std::string& to) {
+        int n = 0;   // 접속 수락 = 머리 2 + `1f 00 01 번호4 키` 10바이트(키 0 이라 평문 그대로)
+        for (const auto& p : out)
+            if (p.to == to && p.data.size() == 10 && p.data[2] == static_cast<uint8_t>(nox::Op::ACCEPTED)) ++n;
+        return n;
+    };
+    // ① 정상 종료 — `0x0a CLIENT_CLOSE` 뒤 Tick 이 걷어낸다
+    {
+        const std::string a = "10.10.8.1:10801";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);                          // 키 0 — 오가는 것이 평문이라 바이트를 바로 본다
+        std::vector<nox::OutPacket> o1; srv.OnPacket(a, conn, sizeof(conn), o1);
+        const uint8_t close[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_CLOSE) };
+        std::vector<nox::OutPacket> o2; srv.OnPacket(a, close, sizeof(close), o2);
+        std::vector<nox::OutPacket> t; srv.Tick(1000, t); srv.Tick(1100, t);   // 첫 Tick 은 시계만 잡는다
+        const bool gone = !srv.Network().IsKeyed(a);
+        std::vector<nox::OutPacket> o3; srv.OnPacket(a, conn, sizeof(conn), o3);
+        char m[160];
+        std::snprintf(m, sizeof(m), "① 닫은 뒤 다시 접속 — 첫 수락 %d · 닫은 뒤 키 지움 %d · 다시 수락 %d",
+                      accepts(o1, a), (int)gone, accepts(o3, a));
+        Check(accepts(o1, a) == 1 && gone && accepts(o3, a) == 1, m);
+    }
+    // ② 내보내기 — `KickPlayer`
+    {
+        const std::string b = "10.10.8.2:10802";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);
+        std::vector<nox::OutPacket> o1; srv.OnPacket(b, conn, sizeof(conn), o1);
+        std::vector<nox::OutPacket> o2; srv.DebugKickPlayer(b, o2);
+        const bool gone = !srv.Network().IsKeyed(b);
+        std::vector<nox::OutPacket> o3; srv.OnPacket(b, conn, sizeof(conn), o3);
+        char m[160];
+        std::snprintf(m, sizeof(m), "② 내보낸 뒤 다시 접속 — 첫 수락 %d · 내보낸 뒤 키 지움 %d · 다시 수락 %d",
+                      accepts(o1, b), (int)gone, accepts(o3, b));
+        Check(accepts(o1, b) == 1 && gone && accepts(o3, b) == 1, m);
+    }
+    std::printf("  10-08 조각 3 — 닫기·내보내기 뒤 같은 주소의 다시 접속에 새 키(통신 층 상태도 같이 지움)\n");
 }
 
 // ── 09-28 — 남을 소개하는 `2d NEW_PLAYER` 의 104·108 자리 = 지금 갑옷·무기 비트(`player.go:233~234`) ─────────
@@ -28638,8 +28685,8 @@ void TestReliableAckStream() {
     // ⚠ 되받기는 **기본 꺼져 있다** — 켜면 `replay_connect`(정품 녹음 바이트 대조)가 깨진다
     //   (정품은 비신뢰 머리 순번이 늘 `00`. Server.h `ackRecvSeq_` 주석).
     //   이 시험은 「켰을 때 **제대로 실리는가**」만 본다.
-    srv.SetAckRecvSeq(true);
-    srv.SetAckAnyStream(true);
+    srv.Network().SetAckRecvSeq(true);
+    srv.Network().SetAckAnyStream(true);
     srv.DebugEnterGame(a, 921);
 
     // 클라가 **스트림 1** 로 신뢰를 보낸 것처럼 만든다(실측에서 클라는 스트림 1 만 쓴다).
@@ -29042,6 +29089,7 @@ int main() {
     TestArmorEquip();
     TestBowQuiver();
     TestConnectZeroTail();
+    TestReconnectAfterClose();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
     TestMonsterChaseReturn();

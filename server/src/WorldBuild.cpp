@@ -2039,7 +2039,7 @@ int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& t
             std::printf("소개 원본을 만들지 못했다\n");
             return 1;
         }
-        srv.SetInfoTemplate(info, w.written());
+        srv.Network().SetInfoTemplate(info, w.written());
     }
 
     // ★★ 접속 뒤에 내려줄 것 — 접속 묶음(216바이트)과 맵 지정(41바이트).
@@ -2075,7 +2075,7 @@ int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& t
                     uint8_t info2[256] = {};
                     nox::Writer w2(info2, sizeof(info2));
                     if (tmpl.Encode(w2) && w2.ok()) {
-                        srv.SetInfoTemplate(info2, w2.written());
+                        srv.Network().SetInfoTemplate(info2, w2.written());
                         std::printf("소개 맵 이름을 서두에 맞춤: %s\n", tmpl.mapName.c_str());
                     }
                 }
@@ -2118,8 +2118,8 @@ int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& t
         srv.SetPatchSnapshot(!rawSnapshot);
         srv.SetSendUpdates(!noUpdate);
         srv.SetNotifyNewGear(!noNewGear);
-        srv.SetAckRecvSeq(ackSeq);      // B-1b — 신뢰 순번 되받기(기본 끔 · `--ack-seq` 로 켬)
-        srv.SetAckAnyStream(ackAnyStream);
+        srv.Network().SetAckRecvSeq(ackSeq);      // B-1b — 신뢰 순번 되받기(기본 끔 · `--ack-seq` 로 켬)
+        srv.Network().SetAckAnyStream(ackAnyStream);
         srv.SetNoSpawnInvuln(noSpawnInvuln);   // 화면 확인 우회 — 부활 무적 안 걸기
         srv.SetForceHudOn(!hudOff);
         if (spawnSpread > 0) srv.SetSpawnSpread(spawnSpread);
