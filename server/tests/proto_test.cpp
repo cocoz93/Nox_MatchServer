@@ -4351,7 +4351,7 @@ void TestSpellFly() {
         Check(std::fabs(firstX - 1019.623f) < 0.01f, "첫 틱 자리가 (힘+속도)×감쇠 0.9 가 아니다");
         Check(hitTick == 10, "Magic 이 10틱째에 b 에 안 닿았다(힘·감쇠·속도가 틀림)");
         Check(srv.DebugAcceptCount() == before + 1, "b 에 닿았는데 받아들이기(spellAccept)가 안 불렸다");
-        Check(srv.DebugLastAcceptTarget().addr == Sid(srv, b), "받아들인 대상이 b 가 아니다");
+        Check(srv.DebugLastAcceptTarget().sessionId == Sid(srv, b), "받아들인 대상이 b 가 아니다");
         Check(destroyed, "닿아 지웠는데 `31 <번호>` 가 모두에게 안 갔다");
     }
 
@@ -4405,7 +4405,7 @@ void TestSpellFly() {
         }
         Check(farX < 1150.0f && farX > 1100.0f, "Magic 이 방패 앞에서 안 튕겼다");
         Check(srv.MissileCount() == 0 && srv.DebugAcceptCount() == before + 1, "되받아친 Magic 이 시전자에게 돌아와 받아들여지지 않았다");
-        Check(srv.DebugLastAcceptTarget().addr == Sid(srv, a), "되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다(주인·대상 맞바꿈)");
+        Check(srv.DebugLastAcceptTarget().sessionId == Sid(srv, a), "되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다(주인·대상 맞바꿈)");
         Check(srv.DebugStateOf(Sid(srv, b)) == 16, "되받아친 워리어 상태가 바뀌었다");
     }
     // ③b 되받아친 주인(b)이 게임에서 빠지면 ud[0] 이 비고, 시전자에게 닿아도 받아들이지 않는다(spellAccept obj3 == nil → false)
@@ -4485,9 +4485,9 @@ void TestSpellFly() {
         }
         if (k == 0) {
             Check(maxX < 1080.0f, "길목의 c 를 지나갔다(맞힘 없음)");
-            Check(srv.DebugLastAcceptTarget().addr != Sid(srv, c), "대상이 아닌 c 에 닿았는데 받아들였다");
+            Check(srv.DebugLastAcceptTarget().sessionId != Sid(srv, c), "대상이 아닌 c 에 닿았는데 받아들였다");
         } else {
-            Check(maxX > 1100.0f && srv.DebugLastAcceptTarget().addr == Sid(srv, b), "NO_COLLIDE_OWNER 인데 같은 편 c 에 막혔다");
+            Check(maxX > 1100.0f && srv.DebugLastAcceptTarget().sessionId == Sid(srv, b), "NO_COLLIDE_OWNER 인데 같은 편 c 에 막혔다");
         }
     }
 
@@ -4532,7 +4532,7 @@ void TestSpellFly() {
         CastAndWait(srv, a, 41, false, ms, out);
         Check(srv.MissileCount() == 1, "치유를 겨눠 말했는데 Magic 이 안 생겼다");
         for (int t = 1; t <= 60 && srv.MissileCount() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.DebugLastAcceptTarget().addr == Sid(srv, b), "커서가 제 발밑일 때 대상이 b 가 아니다(시전자 자신을 안 뺐다)");
+        Check(srv.DebugLastAcceptTarget().sessionId == Sid(srv, b), "커서가 제 발밑일 때 대상이 b 가 아니다(시전자 자신을 안 뺐다)");
     }
 
     // ⑧ 대검 든 가만(13) 앞에서 받으면 되받아쳐 주인·대상이 바뀌고 18~20 → 시전자 a 에게 돌아와 닿는다
@@ -4557,7 +4557,7 @@ void TestSpellFly() {
             if (st >= 18 && st <= 20) blocked = true;
         }
         Check(blocked, "대검 가만 상태가 앞에서 온 Magic 에 18~20 막기를 안 했다");
-        Check(srv.DebugLastAcceptTarget().addr == Sid(srv, a), "대검이 되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다");
+        Check(srv.DebugLastAcceptTarget().sessionId == Sid(srv, a), "대검이 되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다");
     }
 
     // ⑨ 날아오는 Magic 도 「들어오는 투사체」다 — 방패 든 워리어가 가만 7틱을 안 기다리고 올린다(getMissilesInCircle)
@@ -4966,7 +4966,7 @@ void TestBuffs() {
             CastAndWait(srv, a, 12, false, ms, out);
             const unsigned long long before = srv.DebugAcceptCount();
             for (int t = 0; t < 60 && srv.MissileCount() > 0; ++t) tickOut(srv, ms, out);
-            const bool hitB = srv.DebugAcceptCount() == before + 1 && srv.DebugLastAcceptTarget().addr == Sid(srv, b);
+            const bool hitB = srv.DebugAcceptCount() == before + 1 && srv.DebugLastAcceptTarget().sessionId == Sid(srv, b);
             static const char* kMsg[5] = { "눈멀지 않았는데 b 를 못 찾았다(시험 전제)", "눈먼 시전자가 b 를 찾았다",
                                             "가만히 선 투명한 b 를 찾았다", "적외선인데 투명한 b 를 못 찾았다",
                                             "날아가는 것이 시전자 적외선(21)을 안 물려받아 투명한 b 를 틱 찾기에서 못 봤다" };
@@ -4994,7 +4994,7 @@ void TestBuffs() {
         }
         // ★ 정답지 그대로 — 27 은 되받아치지 않고 주인·대상만 바꾼다(changeOwner 뒤 return) → Magic 이 b 를 지나가
         //   a 쪽으로 돌려다 b 등에 맞아 튕기기를 되풀이하다 수명이 끝난다(시험 기록 DBG: 1148 → 1183 → 1163~1183 왕복)
-        Check(maxX > 1160.0f && srv.DebugLastAcceptTarget().addr != Sid(srv, b), "되받아치기 방패(27)인데 b 가 받아들였다(주인·대상 맞바꿈 없음)");
+        Check(maxX > 1160.0f && srv.DebugLastAcceptTarget().sessionId != Sid(srv, b), "되받아치기 방패(27)인데 b 가 받아들였다(주인·대상 맞바꿈 없음)");
     }
 
     // ⑧ 도운 사람 — castBuffSpell(orig·offensive)이 +3600 을 적고 10초 안에 남이 죽이면 `a9 0e` 에 싣는다 · 죽인 이와 같으면 0
@@ -5293,11 +5293,11 @@ void TestDamageBuffs() {
         nox::Server srv; mk(srv);
         { std::vector<nox::OutPacket> o0; uint32_t m0 = 0; srv.Tick(m0, o0); m0 += 34; srv.Tick(m0, o0); }
         srv.DebugAimAt(Sid(srv, a), 1100, 1000);
-        Check(srv.DebugFindObjectAtCursor(Sid(srv, a)).addr == Sid(srv, b), "커서 아래 b 를 못 골랐다(시험 전제)");
+        Check(srv.DebugFindObjectAtCursor(Sid(srv, a)).sessionId == Sid(srv, b), "커서 아래 b 를 못 골랐다(시험 전제)");
         srv.DebugApplyEnchant(Sid(srv, b), 0, 0, 1);
         Check(srv.DebugFindObjectAtCursor(Sid(srv, a)).none(), "투명한 b 를 커서가 골랐다");
         srv.DebugApplyEnchant(Sid(srv, a), 21, 0, 1);
-        Check(srv.DebugFindObjectAtCursor(Sid(srv, a)).addr == Sid(srv, b), "적외선인데 투명한 b 를 커서가 못 골랐다");
+        Check(srv.DebugFindObjectAtCursor(Sid(srv, a)).sessionId == Sid(srv, b), "적외선인데 투명한 b 를 커서가 못 골랐다");
     }
     (void)c;
     std::printf("  4-b1 — 불·전기 보호(표·0.6·최소 1) · 감전 되갚기 · 맞으면 투명 풀림 · 흡혈 · 소환수 무적 · 되받아치기 27 · 몸닿기 감전·투명 · 커서 투명\n");
@@ -12644,9 +12644,9 @@ void TestAIFight() {
         Check(std::fabs(srv.DebugAIArgF(0, 6) - 15.0f) < 0.01f, "49 의 자가 근접 사거리가 아니다");
         Check(srv.DebugAIArgU32(0, 0) == 1000, "소식 때를 안 적었다");
         // 조건들이 **그 적을 가리켜야** 한다 — 안 그러면 늘 참이 되어 사슬이 안 깨진다
-        Check(srv.DebugAITargetAddr(0, 1) == Sid(srv, b), "60 이 그 적을 안 가리킨다");
-        Check(srv.DebugAITargetAddr(0, 3) == Sid(srv, b), "45 가 그 적을 안 가리킨다");
-        Check(srv.DebugAITargetAddr(0, 6) == Sid(srv, b), "49 가 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetSession(0, 1) == Sid(srv, b), "60 이 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetSession(0, 3) == Sid(srv, b), "45 가 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetSession(0, 6) == Sid(srv, b), "49 가 그 적을 안 가리킨다");
         Check(srv.DebugAIArgX(0, 7) == 1400.0f, "맨 위 가기가 적 자리를 안 받았다");
     }
     // ★ **쏘는 몬스터(임프)** — **원거리 사슬**(`sub_531D50`)
@@ -12681,7 +12681,7 @@ void TestAIFight() {
         Check(srv.DebugAIAction(0, 3) == 7, "가기(7)가 안 올라갔다");
         Check(srv.DebugAIStackInd(0) == 3, "때릴 수단이 없는데 사슬을 쌓았다");
         Check(srv.DebugAIArgX(0, 3) == 1400.0f, "가기가 적 자리를 안 받았다");
-        Check(srv.DebugAITargetAddr(0, 2) == Sid(srv, b), "42 가 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetSession(0, 2) == Sid(srv, b), "42 가 그 적을 안 가리킨다");
     }
     // ★ **쏘기도 근접도 되는 것(EmberDemon)** — **쏘기 사거리 절반 안**이면 근접 사슬로 간다
     {
@@ -12871,7 +12871,7 @@ void TestAIMelee() {
         srv.DebugAIPush(0, 16);
         srv.DebugAIStart(0, 16, out);
         Check(std::fabs(srv.DebugAIArgF(0, 1) - 15.0f * 1.2f) < 0.01f, "조건의 자가 사거리×1.2 가 아니다");
-        Check(srv.DebugAITargetAddr(0, 1) == Sid(srv, b), "조건이 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetSession(0, 1) == Sid(srv, b), "조건이 그 적을 안 가리킨다");
     }
 
     // ③-2 **쉬는 시간 경계는 「같으면 친다」** — 딱 그 프레임이면 휘두른다
@@ -13055,10 +13055,10 @@ void TestAIMelee() {
         srv.DebugAIStart(0, 17, out);
         char msg[200];
         std::snprintf(msg, sizeof(msg), "쏘기 쉬는 중 — 자리 %d · [1] %d 자 %.2f 대상 %s · [2] %d 때 %u",
-                      srv.DebugAIStackInd(0), srv.DebugAIAction(0, 1), srv.DebugAIArgF(0, 1), srv.Network().AddrOf(srv.DebugAITargetAddr(0, 1)).c_str(),
+                      srv.DebugAIStackInd(0), srv.DebugAIAction(0, 1), srv.DebugAIArgF(0, 1), srv.Network().AddrOf(srv.DebugAITargetSession(0, 1)).c_str(),
                       srv.DebugAIAction(0, 2), srv.DebugAIArgU32(0, 2));
         Check(srv.DebugAIStackInd(0) == 2 && srv.DebugAIAction(0, 1) == 50 && srv.DebugAIAction(0, 2) == 1, msg);
-        Check(std::fabs(srv.DebugAIArgF(0, 1) - 150.0f * 1.2f) < 0.01f && srv.DebugAITargetAddr(0, 1) == Sid(srv, b), msg);
+        Check(std::fabs(srv.DebugAIArgF(0, 1) - 150.0f * 1.2f) < 0.01f && srv.DebugAITargetSession(0, 1) == Sid(srv, b), msg);
         Check(srv.DebugAIArgU32(0, 2) == 1100, msg);
         Check(srv.DebugPetNextHit(0) == 1100, "쉬는 중인데 다음 때를 바꿨다");
     }
@@ -13153,8 +13153,8 @@ void TestAIAttackCancel() {
         const std::string s = stack(srv);
         char msg[200];
         std::snprintf(msg, sizeof(msg), "③ 쏘기 쉬는 중 — 쌓임 [%s] (기대 [12,50,1]) · 50 의 자 %.2f(기대 180) · 대상 %s · 때 %u",
-                      s.c_str(), srv.DebugAIArgF(0, 1), srv.Network().AddrOf(srv.DebugAITargetAddr(0, 1)).c_str(), srv.DebugAIArgU32(0, 2));
-        Check(s == "12,50,1" && std::fabs(srv.DebugAIArgF(0, 1) - 180.0f) < 0.01f && srv.DebugAITargetAddr(0, 1) == Sid(srv, b) &&
+                      s.c_str(), srv.DebugAIArgF(0, 1), srv.Network().AddrOf(srv.DebugAITargetSession(0, 1)).c_str(), srv.DebugAIArgU32(0, 2));
+        Check(s == "12,50,1" && std::fabs(srv.DebugAIArgF(0, 1) - 180.0f) < 0.01f && srv.DebugAITargetSession(0, 1) == Sid(srv, b) &&
               srv.DebugAIArgU32(0, 2) == 1100, msg);
     }
     // ④ 취소로 안 빠지는 것은 그대로 — 변신(33) 위에 올리면 [12, 33, 7]
@@ -13826,8 +13826,8 @@ void TestCorpseFilters() {
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
         killToCorpse(srv, 0, ms, o);
         const nox::Target found = srv.DebugFlySearch(1000.0f, 1000.0f, Sid(srv, b), 300.0f);
-        std::snprintf(msg, sizeof(msg), "④ 날아가는 주문 대상 — 칸 %d · 사람 '%s'(기대 칸 1)", found.pet, srv.Network().AddrOf(found.addr).c_str());
-        Check((found.addr == nox::kNoSession) && found.pet == 1, msg);
+        std::snprintf(msg, sizeof(msg), "④ 날아가는 주문 대상 — 칸 %d · 사람 '%s'(기대 칸 1)", found.pet, srv.Network().AddrOf(found.sessionId).c_str());
+        Check((found.sessionId == nox::kNoSession) && found.pet == 1, msg);
     }
     // ⑤ 근접 — 컨저러 주먹(사거리 30) 바로 앞(15)의 시체가 아니라 그 뒤(30)의 산 곰을 친다(`sub_5386A0` 0x8049 · `sub_538510` 0x8040)
     //   ⚠ 워리어 칼은 시험 서버에 무기 표가 없어 판정까지 안 간다(첫 판에서 「상태 1 들어감」만 찍히고 판정 줄 0) — 기존 근접 시험처럼 맨손으로
@@ -14244,7 +14244,7 @@ void TestAIEscort() {
         Check(srv.DebugAIAction(0, 3) == 49, "호위 거리보다 머나(49)가 안 깔렸다");
         Check(srv.DebugAIAction(0, 4) == 7, "가기(7)가 맨 위에 안 왔다");
         Check(std::fabs(srv.DebugAIArgF(0, 3) - 30.0f) < 0.01f, "49 의 자가 호위 거리(30)가 아니다");
-        Check(srv.DebugAITargetAddr(0, 3) == Sid(srv, a), "49 가 주인을 안 가리킨다");
+        Check(srv.DebugAITargetSession(0, 3) == Sid(srv, a), "49 가 주인을 안 가리킨다");
         Check(srv.DebugAIArgX(0, 4) == 1000.0f, "가기가 주인 자리를 안 받았다");
         Check(srv.DebugAIArgX(0, 0) == 1000.0f, "호위가 대상 자리를 안 적었다");
     }
@@ -14464,7 +14464,7 @@ void TestCreatureOrder() {
         std::vector<nox::OutPacket> out;
         order(srv, a, srv.DebugPetNetCode(0), 4, out);
         Check(srv.DebugAIStackInd(0) == 0 && srv.DebugAIAction(0, 0) == 3, "호위(3)가 안 섰다");
-        Check(srv.DebugAITargetAddr(0, 0) == Sid(srv, a), "호위가 명령한 사람을 안 가리킨다");
+        Check(srv.DebugAITargetSession(0, 0) == Sid(srv, a), "호위가 명령한 사람을 안 가리킨다");
         Check(std::fabs(srv.DebugPetAggression(0) - 0.83f) < 0.001f, "사나움이 0.83 이 아니다");
     }
 
@@ -17337,8 +17337,8 @@ void TestJump() {
         }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "⑤' c %s — Magic 최대 x %.1f · 받은 쪽 %s", jumped ? "떠 있음" : "서 있음", maxX,
-                      srv.Network().AddrOf(srv.DebugLastAcceptTarget().addr).c_str());
-        if (jumped) Check(srv.DebugAirborne(Sid(srv, c)) && maxX > 1100.0f && srv.DebugLastAcceptTarget().addr == Sid(srv, b), msg);
+                      srv.Network().AddrOf(srv.DebugLastAcceptTarget().sessionId).c_str());
+        if (jumped) Check(srv.DebugAirborne(Sid(srv, c)) && maxX > 1100.0f && srv.DebugLastAcceptTarget().sessionId == Sid(srv, b), msg);
         else        Check(maxX < 1080.0f, msg);
     }
     // ⑥ **떠 있으면 능력을 못 쓴다**(상태가 12 가 아니어도) · **가만(13)이 떠 있음을 끈다**
