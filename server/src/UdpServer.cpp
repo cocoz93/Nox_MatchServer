@@ -56,7 +56,9 @@ void CUdpServer::RequestDisconnectSession(int64_t sessionId) {
 void CUdpServer::RequestSetSessionTimeout(int64_t sessionId, uint32_t timeoutMs) {
     auto it = _addrOf.find(sessionId);
     if (it == _addrOf.end()) return;
-    _sessions.at(it->second).timeoutMs = timeoutMs;
+    CUdpSession& s = _sessions.at(it->second);
+    s.timeoutMs = timeoutMs;
+    ArmIdle(s);   // ★ 조각 5b — 한도가 줄면 더 이른 마감을 건다
 }
 
 void CUdpServer::DebugTouch(int64_t sessionId) {
@@ -65,6 +67,32 @@ void CUdpServer::DebugTouch(int64_t sessionId) {
     CUdpSession& s = _sessions.at(it->second);
     s.heard = true;
     s.lastSeenMs = _nowMs;
+    ArmIdle(s);
+}
+
+void CUdpServer::PushTimer(const Timer& t) {
+    _timers.push_back(t);
+    std::push_heap(_timers.begin(), _timers.end(), TimerLater);
+}
+
+bool CUdpServer::NextTimerDue(uint32_t& dueMs) const {
+    if (_timers.empty()) return false;
+    dueMs = _timers.front().dueMs;
+    return true;
+}
+
+void CUdpServer::ArmIdle(CUdpSession& s) {
+    if (!IdleWatched(s)) return;
+    const uint32_t due = s.lastSeenMs + IdleLimitOf(s) + 1;   // 조용한 시간이 한도를 「넘는」 첫 ms(옛 `quiet > limit`)
+    // 걸린 마감이 더 이르거나 같으면 그대로 둔다 — 그 항목을 꺼낼 때 받은 시각으로 다시 셈한다
+    if (s.idleArmed && static_cast<int32_t>(due - s.idleDueMs) >= 0) return;
+    s.idleArmed = true;
+    s.idleDueMs = due;
+    Timer t;
+    t.dueMs = due;
+    t.sessionId = s.sessionId;
+    t.kind = TimerKind::IDLE;
+    PushTimer(t);
 }
 
 size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size_t n,
@@ -72,6 +100,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
     CUdpSession& s = SessionFor(from);
     s.lastSeenMs = _nowMs;   // ★ 조각 4c — 접속 전 상대 걷어내기의 근거(`Tick`)
     s.heard = true;          // ★ 조각 5a — 시간 초과 감시도 이 시각으로 센다(접속 제어만 실린 조각 — 핑 등 — 도 「살아 있다」)
+    ArmIdle(s);              // ★ 조각 5b — 처음 보거나 처음 받은 세션이면 마감을 건다(걸려 있으면 그대로 — 꺼낼 때 다시 셈)
 
     // 받은 것이 암호문이면 먼저 푼다. 사본을 뜬다 — 부르는 쪽 버퍼를 건드리지 않는다.
     // ⚠ 덤프 재생일 때는 이미 평문이라 풀면 안 된다 (SetInboundPlain 주석 참조).
@@ -101,9 +130,11 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
     // ★ 10-08 조각 3b — 클라의 **비신뢰** 조각 머리 순번은 「서버가 보낸 신뢰 가운데 다음에 받을 순번」이다.
     //   바뀔 때만 처리한다(원본 `conn.go:659-665` — `seq != dst.seqRecv` 이면 `SetCurrent(seq)`).
     //   정품 녹음 — 클라는 서버 신뢰 0·1·2 를 받은 뒤로 비신뢰 머리에 늘 3 을 싣는다(`CAP_GEN3` 접속 59552).
+    // ★ 10-09 조각 5b — 「그 순번부터 다시」로 표시된 것은 다음 틱을 안 기다리고 여기서 바로 보낸다(`Resend`).
     if (!head.reliable && static_cast<int>(head.seq) != s.lastAckSeen) {
         s.lastAckSeen = head.seq;
         Ack(s, head.seq);
+        Resend(s, out);
     }
 
     const uint8_t* body = buf.data() + kWireHeaderSize;
@@ -199,6 +230,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 if (static_cast<int>(seq) != s.lastAckSeen) {
                     s.lastAckSeen = seq;
                     Ack(s, seq);
+                    Resend(s, out);   // ★ 조각 5b — 표시된 것은 바로
                 }
                 ++_handled;
                 break;
@@ -405,11 +437,17 @@ void CUdpServer::SendOn(CUdpSession& s, bool reliable, uint8_t stream,
         pr.wire = p.data;   // XOR 전
         pr.seq = h.seq;
         pr.retryAt = _nowMs + kReliableRetryMs;
+        Timer t;            // ★ 10-09 조각 5b — 그 재시도 시각에 꺼낼 타이머(버린 조각의 것은 꺼낼 때 못 찾아 버린다)
+        t.dueMs = pr.retryAt;
+        t.sessionId = s.sessionId;
+        t.kind = TimerKind::RESEND;
+        t.seq = h.seq;
         s.reliableQueue.push_back(std::move(pr));
         if (s.reliableQueue.size() > kReliableQueueMax) {
             s.reliableQueue.erase(s.reliableQueue.begin());
             ++_reliableQueueDropped;
         }
+        PushTimer(t);
     }
 
     // 키를 준 뒤로는 조각 전체가 뒤집힌다 — 머리도 포함이다.
@@ -431,70 +469,107 @@ void CUdpServer::Ack(CUdpSession& s, uint8_t seq) {
     _reliableAcked += before - s.reliableQueue.size();
 }
 
+// 「그 순번부터 다시」로 표시된 것을 내보낸다. 원본은 프레임마다 `FlushAndPoll` → `Resend` 를 부른다(`send.go:74`) —
+//   ★ 10-09 조각 5b 부터는 표시한 그 자리(`OnDatagram`)에서 바로 부른다(네트워크 스레드에는 프레임이 없다).
 void CUdpServer::Resend(CUdpSession& s, std::vector<OutPacket>& out) {
-    for (auto& p : s.reliableQueue) {
-        if (!p.shouldSend) continue;
-        p.shouldSend = false;
-        p.retryAt = _nowMs + kReliableRetryMs;
-        OutPacket o;
-        o.to = s.addr;
-        o.data = p.wire;
-        // 원본도 다시 보낼 때 그때의 키로 뒤집는다 — 키를 주기 전에 평문으로 나간 접속 수락도 다시 보낼 때는 뒤집힌다
-        // (`conn.go:748-760` `writeTo` · 정품 녹음에서 다시 보낸 접속 수락이 키로 뒤집혀 있다).
-        if (s.keyed) ApplyXor(o.data.data(), o.data.size(), s.xorKey);
-        out.push_back(std::move(o));
-        ++_reliableResent;
+    for (auto& p : s.reliableQueue)
+        if (p.shouldSend) ResendOne(s, p, out);
+}
+
+void CUdpServer::ResendOne(CUdpSession& s, CUdpSession::PendingReliable& p, std::vector<OutPacket>& out) {
+    p.shouldSend = false;
+    p.retryAt = _nowMs + kReliableRetryMs;
+    OutPacket o;
+    o.to = s.addr;
+    o.data = p.wire;
+    // 원본도 다시 보낼 때 그때의 키로 뒤집는다 — 키를 주기 전에 평문으로 나간 접속 수락도 다시 보낼 때는 뒤집힌다
+    // (`conn.go:748-760` `writeTo` · 정품 녹음에서 다시 보낸 접속 수락이 키로 뒤집혀 있다).
+    if (s.keyed) ApplyXor(o.data.data(), o.data.size(), s.xorKey);
+    out.push_back(std::move(o));
+    ++_reliableResent;
+    Timer t;
+    t.dueMs = p.retryAt;
+    t.sessionId = s.sessionId;
+    t.kind = TimerKind::RESEND;
+    t.seq = p.seq;
+    PushTimer(t);
+}
+
+// 재시도 시각이 된 조각 — 아직 보관에 있고 재시도 시각이 이 항목과 같을 때만 다시 보낸다.
+//   못 찾으면 확인이 와서 지웠거나(`Ack`) · 한도를 넘어 버렸거나 · 그 사이 다시 보내 새 항목이 걸린 것이다.
+void CUdpServer::OnResendTimer(const Timer& t, std::vector<OutPacket>& out) {
+    auto a = _addrOf.find(t.sessionId);
+    if (a == _addrOf.end()) return;
+    CUdpSession& s = _sessions.at(a->second);
+    for (auto& p : s.reliableQueue)
+        if (p.seq == t.seq && p.retryAt == t.dueMs) { ResendOne(s, p, out); return; }
+}
+
+// ★ 10-08 조각 4c — 게임에 한 번도 안 넘긴 상대(서버 찾기·접속 시도만 한 상대)는 여기서 걷어낸다.
+//   전에는 게임 「자리 비우기」가 30초 뒤 걷어내며 `TIMEOUT_NOTIFICATION` 을 보내고 「조용해서 내보냄」을 찍었다.
+//   게임에 넘긴 상대는 게임이 지운다(`RequestDisconnectSession`).
+// ★ 10-09 조각 5a — 게임에 넘긴 상대가 한도 동안 조용하면 `DISCONNECTED`(TIMEOUT)를 한 번 넘긴다. 지우는 것은 게임
+//   (그 사람에게 `TIMEOUT_NOTIFICATION` 을 보낸 뒤 — 원본 `server.go:445-451`). 옛 게임 「자리 비우기」의 판정을 옮겼다.
+// ★ 10-09 조각 5b — 마감에 꺼낸다. 그 사이에 받았으면(마감이 밀렸으면) 새 마감으로 다시 건다.
+void CUdpServer::OnIdleTimer(const Timer& t, std::vector<NetworkEvent>& events) {
+    auto a = _addrOf.find(t.sessionId);
+    if (a == _addrOf.end()) return;                                   // 지운 세션
+    CUdpSession& s = _sessions.at(a->second);
+    if (!s.idleArmed || s.idleDueMs != t.dueMs) return;              // 더 이른 마감이 따로 걸렸다 — 이 항목은 버림
+    s.idleArmed = false;
+    if (!IdleWatched(s)) return;
+    const uint32_t due = s.lastSeenMs + IdleLimitOf(s) + 1;
+    if (static_cast<int32_t>(_nowMs - due) < 0) { ArmIdle(s); return; }
+    if (!s.announced) {
+        _sessions.erase(a->second);
+        _addrOf.erase(a);
+        ++_unannouncedSwept;
+        return;
     }
+    s.timeoutNotified = true;
+    ++_sessionTimedOut;
+    NetworkEvent ev;
+    ev.type = NetworkEvent::Type::DISCONNECTED;
+    ev.reason = DisconnectReason::TIMEOUT;
+    ev.sessionId = s.sessionId;
+    ev.addr = s.addr;
+    events.push_back(std::move(ev));
 }
 
 void CUdpServer::Tick(uint32_t nowMs, std::vector<OutPacket>& out, std::vector<NetworkEvent>& events) {
-    if (!_resendClockSet) {
+    if (!_clockSet) {
         // 시계를 처음 잡는다 — 그 전에 보낸 조각은 지금부터 2초를 센다.
-        _resendClockSet = true;
-        _lastResendCheckMs = nowMs;
-        for (auto& kv : _sessions)
-            for (auto& p : kv.second.reliableQueue) p.retryAt = nowMs + kReliableRetryMs;
-        for (auto& kv : _sessions) kv.second.lastSeenMs = nowMs;   // ★ 조각 4c — 그 전에 본 상대도 지금부터 센다
+        //   ★ 조각 4c — 그 전에 본 상대도 지금부터 센다 · ★ 조각 5b — 그 전에 건 타이머는 버리고 다시 건다.
+        _clockSet = true;
+        _nowMs = nowMs;
+        _timers.clear();
+        for (auto& kv : _sessions) {
+            CUdpSession& s = kv.second;
+            s.lastSeenMs = nowMs;
+            s.idleArmed = false;
+            ArmIdle(s);
+            for (auto& p : s.reliableQueue) {
+                p.retryAt = nowMs + kReliableRetryMs;
+                Timer t;
+                t.dueMs = p.retryAt;
+                t.sessionId = s.sessionId;
+                t.kind = TimerKind::RESEND;
+                t.seq = p.seq;
+                PushTimer(t);
+            }
+        }
     }
     _nowMs = nowMs;
-    // ★ 10-08 조각 4c — 게임에 한 번도 안 넘긴 상대(서버 찾기·접속 시도만 한 상대)는 여기서 걷어낸다.
-    //   전에는 게임 「자리 비우기」가 30초 뒤 걷어내며 `TIMEOUT_NOTIFICATION` 을 보내고 「조용해서 내보냄」을 찍었다.
-    //   게임에 넘긴 상대는 게임이 지운다(`RequestDisconnectSession`).
-    // ★ 10-09 조각 5a — 게임에 넘긴 상대가 한도 동안 조용하면 `DISCONNECTED`(TIMEOUT)를 한 번 넘긴다. 지우는 것은 게임
-    //   (그 사람에게 `TIMEOUT_NOTIFICATION` 을 보낸 뒤 — 원본 `server.go:445-451`). 옛 게임 「자리 비우기」의 판정을 옮겼다.
-    for (auto it = _sessions.begin(); it != _sessions.end();) {
-        CUdpSession& u = it->second;
-        const int32_t quiet = static_cast<int32_t>(nowMs - u.lastSeenMs);
-        if (!u.announced && quiet > static_cast<int32_t>(kUnannouncedIdleMs)) {
-            _addrOf.erase(u.sessionId);
-            it = _sessions.erase(it);
-            ++_unannouncedSwept;
-            continue;
+    // ★ 10-09 조각 5b — 마감이 지난 타이머만 꺼낸다(옛 「1초마다 모든 세션 훑기」 — 원본 `MaybeSendReliable` `send_reliable.go:16-28` 꼴).
+    //   꺼내며 새로 거는 마감은 늘 지금보다 뒤라 이 고리는 끝난다.
+    while (!_timers.empty() && static_cast<int32_t>(nowMs - _timers.front().dueMs) >= 0) {
+        std::pop_heap(_timers.begin(), _timers.end(), TimerLater);
+        const Timer t = _timers.back();
+        _timers.pop_back();
+        switch (t.kind) {
+            case TimerKind::IDLE:   OnIdleTimer(t, events); break;
+            case TimerKind::RESEND: OnResendTimer(t, out); break;
         }
-        if (u.announced && u.heard && !u.timeoutNotified && quiet > static_cast<int32_t>(u.timeoutMs)) {
-            u.timeoutNotified = true;
-            ++_sessionTimedOut;
-            NetworkEvent ev;
-            ev.type = NetworkEvent::Type::DISCONNECTED;
-            ev.reason = DisconnectReason::TIMEOUT;
-            ev.sessionId = u.sessionId;
-            ev.addr = u.addr;
-            events.push_back(std::move(ev));
-        }
-        ++it;
-    }
-    if (!_reliableResend) return;
-    // 원본 `MaybeSendReliable` — 1초에 한 번만 「재시도 시각이 지난 것」을 표시한다(`send_reliable.go:16-28`).
-    const bool check = static_cast<int32_t>(nowMs - _lastResendCheckMs) >= static_cast<int32_t>(kReliableCheckMs);
-    if (check) _lastResendCheckMs = nowMs;
-    for (auto& kv : _sessions) {
-        CUdpSession& s = kv.second;
-        if (s.reliableQueue.empty()) continue;
-        if (check)
-            for (auto& p : s.reliableQueue)
-                if (static_cast<int32_t>(nowMs - p.retryAt) >= 0) p.shouldSend = true;
-        // 표시된 것은 틱마다 내보낸다 — 원본은 프레임마다 `FlushAndPoll` → `Resend` 를 부른다(`send.go:74`)
-        Resend(s, out);
     }
 }
 

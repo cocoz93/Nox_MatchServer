@@ -24249,6 +24249,125 @@ void TestSessionTimeout() {
     std::printf("  10-09 조각 5a — 시간 초과는 통신 층이 감시해 한 번 알리고 게임이 걷음 · 한도는 게임(판에 들면 90초)\n");
 }
 
+// ── 10-09 플랜 A 조각 5b — 1초마다 훑기 대신 마감 순 타이머(최소 힙) ─────────
+//   전에는 1초마다 모든 세션을 훑어 보낸 지 2초 지난 것을 표시했다 — 보낸 뒤 첫 다시 보내기가 살핌 주기에 따라 2~3초 사이로
+//   늦었다(그 뒤로는 살핌과 맞물려 2초 남짓 · 10-09 실물: 옛 서버 2,375 → 2,016ms · 새 서버 처음부터 1,995~2,029ms).
+//   ① 다시 보내기는 보낸 뒤 정확히 2초(부르는 간격 안) · 그 뒤도 2초마다 — 1초 살핌과 어긋나게 보낸 조각으로 본다
+//   ② 가장 이른 마감(`NextTimerDue`)이 그 재시도 시각이다
+//   ③ 시간 초과 마감은 받을 때마다 밀린다 — 꺼낼 때 다시 걸고, 받을 때마다 항목이 늘지는 않는다
+//   ④ 한도를 줄이면 더 이른 마감이 걸린다
+//   ⑤ 「다음은 0」으로 바로 다시 보낸 뒤에는 옛 마감에 또 보내지 않고 새 마감(그로부터 2초)에 보낸다
+//   ⑥ 한도를 줄여 버릴 항목이 생겨도 세션마다 시간 초과 항목은 하나로 남는다(버릴 항목을 꺼낼 때 새로 걸지 않는다)
+void TestTimerHeap() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    using Ev = nox::NetworkEvent;
+    auto accepts = [](const std::vector<nox::OutPacket>& out) {
+        int n = 0;
+        for (const auto& p : out) if (p.data.size() == 10 && p.data[0] == 0x80 && p.data[2] == 0x1f) ++n;
+        return n;
+    };
+    auto timeouts = [](const std::vector<Ev>& ev) {
+        int n = 0;
+        for (const auto& e : ev) if (e.type == Ev::Type::DISCONNECTED && e.reason == nox::DisconnectReason::TIMEOUT) ++n;
+        return n;
+    };
+    char m[240];
+    {
+        nox::CUdpServer net;
+        net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> ev;
+        net.Tick(1000, o, ev);                                       // 시계 — 옛 1초 살핌은 2000·3000·4000 …
+        net.Tick(1500, o, ev);
+        std::vector<nox::OutPacket> c0; net.OnDatagram("10.10.9.11:10911", conn, sizeof(conn), c0, ev);   // 1500 에 접속 수락(신뢰 0)
+        uint32_t due = 0;
+        const bool hasDue = net.NextTimerDue(due);
+        std::vector<uint32_t> at;                                     // 다시 보낸 시각
+        for (uint32_t ms = 1533; ms <= 8000; ms += 33) {
+            std::vector<nox::OutPacket> oo; net.Tick(ms, oo, ev);
+            if (accepts(oo) > 0) at.push_back(ms);
+        }
+        std::snprintf(m, sizeof(m), "①② 1500 에 보낸 조각 — 첫 마감 %u(있음 %d) · 다시 보낸 시각 %zu번: %u · %u · %u",
+                      due, (int)hasDue, at.size(), at.size() > 0 ? at[0] : 0u, at.size() > 1 ? at[1] : 0u, at.size() > 2 ? at[2] : 0u);
+        // 33ms 간격으로 부르므로 마감 뒤 첫 부름 — 3513 · 5526 · 7539 (옛 1초 살핌이면 첫 것이 4000 근처)
+        Check(hasDue && due == 3500 && at.size() == 3 && at[0] >= 3500 && at[0] < 3533 &&
+              at[1] - at[0] >= 2000 && at[1] - at[0] < 2033 && at[2] - at[1] >= 2000 && at[2] - at[1] < 2033, m);
+    }
+    {
+        const std::string a = "10.10.9.12:10912";
+        const uint8_t empty[2] = { 0x00, 0x01 };                     // 머리만 · 「다음은 1」 — 접속 수락을 받았다
+        nox::CUdpServer net;
+        net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
+        net.Tick(1000, o, ev);
+        net.OnDatagram(a, conn, sizeof(conn), o, got);
+        net.OnDatagram(a, empty, sizeof(empty), o, got);
+        for (uint32_t ms = 2000; ms <= 20000; ms += 1000) {          // 1초마다 받음 — 마감이 계속 밀린다
+            net.Tick(ms, o, ev);
+            net.OnDatagram(a, empty, sizeof(empty), o, got);
+        }
+        const size_t timers = net.TimerCount();
+        net.Tick(31000, o, ev);                                      // 처음 건 마감(31001) 직전
+        net.Tick(31001, o, ev);                                      // 꺼내 보니 20000 에 받았다 — 50001 로 다시 건다
+        const int at31 = timeouts(ev);
+        net.Tick(50000, o, ev);
+        const int at50 = timeouts(ev);
+        net.Tick(50001, o, ev);
+        const int at5001 = timeouts(ev);
+        std::snprintf(m, sizeof(m), "③ 1초마다 받다 20초에 멈춤 — 받는 동안 타이머 %zu개 · 31.001초 %d · 50초 %d · 50.001초 %d",
+                      timers, at31, at50, at5001);
+        Check(timers <= 2 && at31 == 0 && at50 == 0 && at5001 == 1, m);
+    }
+    {
+        const std::string b = "10.10.9.13:10913";
+        nox::CUdpServer net;
+        net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
+        net.Tick(1000, o, ev);
+        net.OnDatagram(b, conn, sizeof(conn), o, got);
+        net.RequestSetSessionTimeout(net.SessionIdOf(b), 5000);     // 30초 → 5초
+        net.Tick(6000, o, ev);
+        const int at6 = timeouts(ev);
+        net.Tick(6001, o, ev);
+        std::snprintf(m, sizeof(m), "④ 한도를 5초로 줄임 — 6초 %d · 6.001초 %d", at6, timeouts(ev));
+        Check(at6 == 0 && timeouts(ev) == 1, m);
+    }
+    {
+        const std::string c = "10.10.9.14:10914";
+        const uint8_t nack[2] = { 0x00, 0x00 };                      // 머리만 · 「다음은 0」 — 접속 수락을 못 받았다
+        nox::CUdpServer net;
+        net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
+        net.Tick(1000, o, ev);
+        std::vector<nox::OutPacket> o0; net.OnDatagram(c, conn, sizeof(conn), o0, got);   // 1000 — 마감 3000
+        net.Tick(2000, o, ev);
+        std::vector<nox::OutPacket> o1; net.OnDatagram(c, nack, sizeof(nack), o1, got);  // 2000 — 바로 다시 보냄 · 새 마감 4000
+        std::vector<nox::OutPacket> o2; net.Tick(3000, o2, ev);
+        std::vector<nox::OutPacket> o3; net.Tick(3999, o3, ev);
+        std::vector<nox::OutPacket> o4; net.Tick(4000, o4, ev);
+        std::snprintf(m, sizeof(m), "⑤ 바로 다시 보냄 %d · 옛 마감 3초 %d · 3.999초 %d · 새 마감 4초 %d",
+                      accepts(o1), accepts(o2), accepts(o3), accepts(o4));
+        Check(accepts(o1) == 1 && accepts(o2) == 0 && accepts(o3) == 0 && accepts(o4) == 1, m);
+    }
+    {
+        const std::string e = "10.10.9.15:10915";
+        const uint8_t ok[2] = { 0x00, 0x01 };                        // 머리만 · 「다음은 1」 — 접속 수락을 받았다
+        nox::CUdpServer net;
+        net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
+        net.Tick(1000, o, ev);
+        net.OnDatagram(e, conn, sizeof(conn), o, got);              // 1000 — 시간 초과 마감 31001 · 접속 수락 재시도 3000
+        net.OnDatagram(e, ok, sizeof(ok), o, got);                  // 접속 수락 확인 — 재시도 항목은 3000 에 버려진다
+        net.RequestSetSessionTimeout(net.SessionIdOf(e), 5000);     // 더 이른 마감 6001 — 31001 은 버릴 항목이 된다
+        for (uint32_t ms = 2000; ms <= 40000; ms += 2000) {          // 2초마다 받음 — 5초 한도 안
+            net.Tick(ms, o, ev);
+            net.OnDatagram(e, ok, sizeof(ok), o, got);
+        }
+        std::snprintf(m, sizeof(m), "⑥ 한도를 5초로 줄이고 2초마다 받으며 40초 — 시간 초과 %d · 타이머 %zu개", timeouts(ev), net.TimerCount());
+        Check(timeouts(ev) == 0 && net.TimerCount() == 1, m);
+    }
+    std::printf("  10-09 조각 5b — 타이머: 다시 보내기 정확히 2초 · 가장 이른 마감 · 시간 초과는 받을 때 밀리고 꺼낼 때 다시 걺 · 줄인 한도 · 옛 마감 버림\n");
+}
+
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
 //   원본 `send_reliable.go`(2초 뒤 · 1초마다 살핌) · 정품 녹음 `CAP_GEN3`(확인 못 받은 접속 수락을 약 2.1초마다 다시 보냄).
 //   클라 확인 = 비신뢰 조각 머리 순번(「다음에 받을 순번」) — 그보다 앞은 지우고, 그 순번이 있으면 바로 다시 보낸다.
@@ -24286,7 +24405,8 @@ void TestReliableResend() {
                       first, early, late, resent0, pendingAfterAck, after);
         Check(first == 1 && early == 0 && late == 1 && resent0 == 1 && pendingAfterAck == 0 && after == 0, m);
     }
-    // ③ 클라가 「다음은 0」(= 0 을 못 받았다)이라 하면 2초를 안 기다리고 다음 틱에 다시 보낸다(`retry`)
+    // ③ 클라가 「다음은 0」(= 0 을 못 받았다)이라 하면 2초를 안 기다리고 다시 보낸다(`retry`)
+    //   ★ 10-09 조각 5b — 다음 틱이 아니라 그 조각을 받는 자리에서 바로(네트워크 스레드에는 틱이 없다). 다음 틱엔 안 나간다
     {
         const std::string b = "10.10.8.4:10804";
         nox::Server srv;
@@ -24297,9 +24417,9 @@ void TestReliableResend() {
         std::vector<nox::OutPacket> o2; srv.OnPacket(b, nack, sizeof(nack), o2);
         std::vector<nox::OutPacket> o3; srv.Tick(1033, o3);
         char m[160];
-        std::snprintf(m, sizeof(m), "③ 「다음은 0」 뒤 다음 틱에 바로 다시 보냄 — %d(표시 %llu)",
-                      acceptsIn(o3, b, 0), srv.Network().reliableRetryMarked());
-        Check(acceptsIn(o3, b, 0) == 1 && srv.Network().reliableRetryMarked() == 1, m);
+        std::snprintf(m, sizeof(m), "③ 「다음은 0」 받는 자리에서 바로 다시 보냄 %d · 다음 틱 %d(표시 %llu)",
+                      acceptsIn(o2, b, 0), acceptsIn(o3, b, 0), srv.Network().reliableRetryMarked());
+        Check(acceptsIn(o2, b, 0) == 1 && acceptsIn(o3, b, 0) == 0 && srv.Network().reliableRetryMarked() == 1, m);
     }
     // ④ 키를 준 뒤 다시 보내는 접속 수락은 그 키로 뒤집혀 나간다(원본 `writeTo` · 정품 녹음도 그렇다) — 첫 것은 평문
     {
@@ -24329,11 +24449,11 @@ void TestReliableResend() {
         std::vector<nox::OutPacket> o2; srv.OnPacket(e, nack, sizeof(nack), o2);
         std::vector<nox::OutPacket> o3; srv.Tick(1033, o3);
         char m[160];
-        std::snprintf(m, sizeof(m), "⑤ 접속 시도 뒤 접속 · 「다음은 0」 — 다음 틱에 바로 다시 보냄 %d(표시 %llu)",
-                      acceptsIn(o3, e, 0), srv.Network().reliableRetryMarked());
-        Check(acceptsIn(o3, e, 0) == 1 && srv.Network().reliableRetryMarked() == 1, m);
+        std::snprintf(m, sizeof(m), "⑤ 접속 시도 뒤 접속 · 「다음은 0」 — 받는 자리에서 바로 다시 보냄 %d · 다음 틱 %d(표시 %llu)",
+                      acceptsIn(o2, e, 0), acceptsIn(o3, e, 0), srv.Network().reliableRetryMarked());
+        Check(acceptsIn(o2, e, 0) == 1 && acceptsIn(o3, e, 0) == 0 && srv.Network().reliableRetryMarked() == 1, m);
     }
-    std::printf("  10-08 조각 3b — 신뢰 조각 다시 보내기: 2초 뒤 한 번 · 확인 오면 멈춤 · 「다음은 그 순번」이면 바로 · 다시 보낼 땐 키로 뒤집음\n");
+    std::printf("  10-08 조각 3b — 신뢰 조각 다시 보내기: 2초 뒤 한 번 · 확인 오면 멈춤 · 「다음은 그 순번」이면 받는 자리에서 바로 · 다시 보낼 땐 키로 뒤집음\n");
 }
 
 // ── 09-28 — 남을 소개하는 `2d NEW_PLAYER` 의 104·108 자리 = 지금 갑옷·무기 비트(`player.go:233~234`) ─────────
@@ -29410,6 +29530,7 @@ int main() {
     TestSessionIds();
     TestPreConnectSweep();
     TestSessionTimeout();
+    TestTimerHeap();
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

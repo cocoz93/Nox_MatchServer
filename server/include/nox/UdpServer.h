@@ -117,6 +117,9 @@ struct CUdpSession {
     bool heard = false;
     uint32_t timeoutMs = kDefaultSessionTimeoutMs;
     bool timeoutNotified = false;
+    // ★ 10-09 조각 5b — 시간 초과·접속 전 걷기 타이머(세션마다 하나). 힙에 든 항목 가운데 이 마감과 같은 것만 살아 있다.
+    bool idleArmed = false;
+    uint32_t idleDueMs = 0;
     uint8_t xorKey = 0;      // 0이면 아직 평문
     bool keyed = false;      // 키를 준 뒤인가
     int lastRelStream = -1;  // 클라가 마지막으로 **신뢰**를 보낸 스트림(되받기 기준). -1 이면 아직 없음
@@ -196,7 +199,13 @@ public:
     //   1초마다 살펴 보낸 지 2초 지난 것을 다시 보내고(원본 `MaybeSendReliable` · `reliableRetry = 2s`),
     //   클라가 「그 순번부터 다시」라고 알려 온 것은 다음 틱에 바로 보낸다(`retry`).
     // ★ 10-09 조각 5a — 시간 초과도 여기서 본다. 한도를 넘긴 세션은 `events` 에 `DISCONNECTED`(TIMEOUT)로 넘긴다.
+    // ★ 10-09 조각 5b — 1초마다 모든 세션을 훑지 않고 마감이 지난 타이머만 꺼낸다(최소 힙 — `Docs/LAYERS_DESIGN.md`
+    //   「네트워크 스레드」). 그래서 다시 보내기는 보낸 뒤 정확히 2초(이 함수를 부르는 간격 안)에 나가고,
+    //   「그 순번부터 다시」는 다음 틱이 아니라 그 조각을 받는 자리(`OnDatagram`)에서 바로 나간다.
     void Tick(uint32_t nowMs, std::vector<OutPacket>& out, std::vector<NetworkEvent>& events);
+    // 가장 이른 타이머 마감. 없으면 false — 조각 5d 네트워크 스레드가 이때까지 기다린다.
+    bool NextTimerDue(uint32_t& dueMs) const;
+    size_t TimerCount() const { return _timers.size(); }   // 진단 — 힙에 든 항목 수(버릴 항목 포함)
     // 끄기 — 다시 보내기를 안 한다(대조용). 기본 켬.
     void SetReliableResend(bool v) { _reliableResend = v; }
 
@@ -270,10 +279,36 @@ private:
     void Ack(CUdpSession& s, uint8_t seq);
     // 표시된 것을 지금 키로 뒤집어 다시 내보낸다(`Resend`).
     void Resend(CUdpSession& s, std::vector<OutPacket>& out);
+    // 조각 하나를 지금 키로 뒤집어 다시 내보내고 다음 재시도 타이머를 건다.
+    void ResendOne(CUdpSession& s, CUdpSession::PendingReliable& p, std::vector<OutPacket>& out);
 
-    // 원본 값(`send_reliable.go:13` `reliableRetry = 2 * time.Second` · `:19` 1초마다 살핌)
+    // ★ 10-09 조각 5b — 마감 순 타이머(최소 힙). 지운 세션 · 확인이 와서 지운 조각 · 그 뒤 늦춰진 시간 초과는
+    //   꺼낼 때 보고 버리거나 새 마감으로 다시 넣는다(지연 무효화).
+    enum class TimerKind : uint8_t {
+        RESEND,   // 신뢰 조각 다시 보내기 — `seq` 의 조각 · 그 조각의 `retryAt` 과 같을 때만 살아 있다
+        IDLE      // 시간 초과(게임에 넘긴 세션) · 접속 전 상대 걷기(안 넘긴 세션) — 세션의 `idleDueMs` 와 같을 때만 살아 있다
+    };
+    struct Timer {
+        uint32_t dueMs = 0;
+        int64_t sessionId = 0;
+        TimerKind kind = TimerKind::RESEND;
+        uint8_t seq = 0;
+    };
+    // 힙 비교 — 「a 가 b 보다 늦다」가 참이면 a 를 뒤로, 그래서 맨 앞이 가장 이른 마감이다.
+    //   시각은 49일마다 한 바퀴 도는 ms 라 뺄셈의 부호로 견준다(살아 있는 마감끼리는 24일 안이다).
+    static bool TimerLater(const Timer& a, const Timer& b) { return static_cast<int32_t>(a.dueMs - b.dueMs) > 0; }
+    void PushTimer(const Timer& t);
+    // 시간 초과·접속 전 걷기 마감을 (다시) 건다. 지금 걸린 마감보다 이를 때만 새 항목을 넣는다(늦으면 걸린 것이 꺼낼 때 다시 건다).
+    void ArmIdle(CUdpSession& s);
+    // 조용해도 되는 시간 — 게임에 넘긴 세션은 게임이 알린 한도, 아니면 접속 전 30초
+    uint32_t IdleLimitOf(const CUdpSession& s) const { return s.announced ? s.timeoutMs : kUnannouncedIdleMs; }
+    // 그 세션을 지금 지켜보나 — 게임에 넘긴 세션은 받은 것이 있고 아직 안 알렸을 때만
+    static bool IdleWatched(const CUdpSession& s) { return !s.announced || (s.heard && !s.timeoutNotified); }
+    void OnIdleTimer(const Timer& t, std::vector<NetworkEvent>& events);
+    void OnResendTimer(const Timer& t, std::vector<OutPacket>& out);
+
+    // 원본 값(`send_reliable.go:13` `reliableRetry = 2 * time.Second` · `:19` 1초마다 살핌 — 10-09 조각 5b 부터 살피는 주기는 안 쓴다)
     static constexpr uint32_t kReliableRetryMs = 2000;
-    static constexpr uint32_t kReliableCheckMs = 1000;
     // 우리 값 — 원본은 한도가 없다. 확인을 안 보내는 상대(진단 봇 등)에게 쌓이기만 하는 것을 막는다. 넘치면 오래된 것부터 버리고 센다
     static constexpr size_t kReliableQueueMax = 128;
     // ★ 10-08 조각 4c — 게임에 안 넘긴 상대를 걷어내는 조용한 시간. 옛 게임 쪽 값(판에 안 든 사람 30초 · 지금 `kSessionTimeoutMs`) 그대로
@@ -334,8 +369,8 @@ private:
     // ★ 10-08 조각 3b — 다시 보내기
     bool _reliableResend = true;
     uint32_t _nowMs = 0;               // 마지막 Tick 의 시각 — 그 사이에 보낸 조각의 `retryAt` 기준
-    bool _resendClockSet = false;
-    uint32_t _lastResendCheckMs = 0;
+    bool _clockSet = false;            // 첫 Tick 에 시계를 잡았나(그 전에 건 타이머는 그때 다시 건다)
+    std::vector<Timer> _timers;        // ★ 10-09 조각 5b — 최소 힙(`PushTimer` · 맨 앞이 가장 이른 마감)
     unsigned long long _reliableResent = 0;       // 다시 보낸 조각 수
     unsigned long long _reliableAcked = 0;        // 확인받아 지운 조각 수
     unsigned long long _reliableRetryMarked = 0;  // 클라가 「그 순번부터 다시」라고 해서 표시한 수
