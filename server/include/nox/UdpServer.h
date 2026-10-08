@@ -77,22 +77,32 @@ constexpr int64_t kNoSession = 0;
 // SERVER_INFO 본문에서 토큰이 앉는 자리. 실측으로 확정했다.
 constexpr size_t kInfoTokenOffset = 41;
 
+// ★ 10-09 조각 5a — 끊긴 까닭(`DISCONNECTED` 에 싣는다). 원본 `PlayerDisconnect(pl, 이유)` 자리(`server.go:451` — 시간 초과는 3).
+enum class DisconnectReason {
+    CLIENT_CLOSE,   // 클라가 닫는다고 알렸다(0x0A CLIENT_CLOSE)
+    TIMEOUT         // 한도 동안 아무것도 안 왔다(통신 층 감시 — `CUdpServer::Tick`)
+};
+
 // 통신 층 → 게임으로 넘기는 일. ServerCore `NetworkEvent` 꼴.
 struct NetworkEvent {
     enum class Type {
         CONNECTED,      // 키를 줬다(SERVER_CONNECT 처리 뒤)
-        DISCONNECTED,   // 클라가 접속을 닫는다고 알렸다(0x0A CLIENT_CLOSE)
+        DISCONNECTED,   // 끊겼다 — 까닭은 `reason`(10-09 조각 5a 전에는 0x0A CLIENT_CLOSE 하나뿐)
         RECEIVED        // 게임 메시지 — 처음 0x20 이상 오프코드가 나온 자리부터 조각 끝까지(머리를 뗀 평문)
     };
     Type type = Type::RECEIVED;
     int64_t sessionId = 0;          // 게임이 사람을 가르는 번호(10-08 조각 4)
     std::string addr;               // 그 세션의 주소 — 기록용
     std::vector<uint8_t> body;      // RECEIVED
+    DisconnectReason reason = DisconnectReason::CLIENT_CLOSE;   // DISCONNECTED
     // CONNECTED — 덤프 재생이면 그때 서버가 정한 프레임·오브젝트 번호(`scripted`)
     bool scripted = false;
     uint32_t frame = 0;
     uint16_t netCode = 0;
 };
+
+// ★ 10-09 조각 5a — 게임이 한도를 알리기 전의 시간 초과 한도(ms). 한도는 게임 규칙이라 게임이 정한다(`RequestSetSessionTimeout`).
+constexpr uint32_t kDefaultSessionTimeoutMs = 30000;
 
 // 통신 층의 상대 하나 — 원본 netstr `Conn` 자리. 주소:포트로 가른다.
 struct CUdpSession {
@@ -101,6 +111,12 @@ struct CUdpSession {
     // ★ 10-08 조각 4c — 게임에 이벤트를 넘긴 적이 있나(없으면 서버 찾기·접속 시도만 한 상대 — 통신 층이 걷어낸다) · 마지막으로 받은 때
     bool announced = false;
     uint32_t lastSeenMs = 0;
+    // ★ 10-09 조각 5a — 시간 초과 감시(옛 게임 「자리 비우기」의 판정). 받은 것이 하나라도 있어야 건다 —
+    //   소켓 없이 세운 사람(`OpenSession`)은 안 건다(옛 「한 번도 못 받은 세션은 건드리지 않는다」).
+    //   한도를 넘기면 `DISCONNECTED`(TIMEOUT)를 한 번만 넘기고, 게임이 `RequestDisconnectSession` 을 부를 때까지 지우지 않는다.
+    bool heard = false;
+    uint32_t timeoutMs = kDefaultSessionTimeoutMs;
+    bool timeoutNotified = false;
     uint8_t xorKey = 0;      // 0이면 아직 평문
     bool keyed = false;      // 키를 준 뒤인가
     int lastRelStream = -1;  // 클라가 마지막으로 **신뢰**를 보낸 스트림(되받기 기준). -1 이면 아직 없음
@@ -172,12 +188,20 @@ public:
     int64_t SessionIdOf(const std::string& addr) const;   // 없으면 0
     const std::string& AddrOf(int64_t sessionId) const;    // 없으면 빈 문자열 — 기록용
 
+    // ★ 10-09 조각 5a — 이 세션의 시간 초과 한도(ms). 한도는 게임 규칙이라 게임이 판에 들고 날 때 알린다
+    //   (원본 `server.go:440-443` — 판에 들어 입력을 받으면 90초 · 아니면 30초). 없는 세션이면 무시한다.
+    void RequestSetSessionTimeout(int64_t sessionId, uint32_t timeoutMs);
+
     // ★ 10-08 조각 3b — 확인이 안 온 신뢰 조각 다시 보내기. 게임 틱이 부른다.
     //   1초마다 살펴 보낸 지 2초 지난 것을 다시 보내고(원본 `MaybeSendReliable` · `reliableRetry = 2s`),
     //   클라가 「그 순번부터 다시」라고 알려 온 것은 다음 틱에 바로 보낸다(`retry`).
-    void Tick(uint32_t nowMs, std::vector<OutPacket>& out);
+    // ★ 10-09 조각 5a — 시간 초과도 여기서 본다. 한도를 넘긴 세션은 `events` 에 `DISCONNECTED`(TIMEOUT)로 넘긴다.
+    void Tick(uint32_t nowMs, std::vector<OutPacket>& out, std::vector<NetworkEvent>& events);
     // 끄기 — 다시 보내기를 안 한다(대조용). 기본 켬.
     void SetReliableResend(bool v) { _reliableResend = v; }
+
+    // 시험용 — 그 세션에서 지금 무언가를 받은 것으로 친다(시간 초과 시계만 · 바이트는 안 읽는다). 없는 세션이면 무시한다.
+    void DebugTouch(int64_t sessionId);
 
     // ── 조회 ────────────────────────────────────────────────
     // ⚠⚠ 열쇠 상태를 **같이** 봐야 한다 — 복호가 어긋나면 쓰레기 바이트가
@@ -226,6 +250,8 @@ public:
     unsigned long long sendNoSession() const { return _sendNoSession; }
     // ★ 10-08 조각 4c — 게임에 안 넘긴 채 조용해져 걷어낸 상대 수(서버 찾기·접속 시도만 한 상대).
     unsigned long long unannouncedSwept() const { return _unannouncedSwept; }
+    // ★ 10-09 조각 5a — 시간 초과로 게임에 넘긴 세션 수(`DISCONNECTED` · TIMEOUT).
+    unsigned long long sessionTimedOut() const { return _sessionTimedOut; }
 
     // 접속 제어 조각만 센다(게임 조각은 `nox::Server` 의 같은 이름이 센다).
     const std::map<uint8_t, unsigned long long>& seen() const { return _seen; }
@@ -250,7 +276,7 @@ private:
     static constexpr uint32_t kReliableCheckMs = 1000;
     // 우리 값 — 원본은 한도가 없다. 확인을 안 보내는 상대(진단 봇 등)에게 쌓이기만 하는 것을 막는다. 넘치면 오래된 것부터 버리고 센다
     static constexpr size_t kReliableQueueMax = 128;
-    // ★ 10-08 조각 4c — 게임에 안 넘긴 상대를 걷어내는 조용한 시간. 옛 게임 쪽 값(판에 안 든 사람 30초 · `kSessionTimeoutTicks`) 그대로
+    // ★ 10-08 조각 4c — 게임에 안 넘긴 상대를 걷어내는 조용한 시간. 옛 게임 쪽 값(판에 안 든 사람 30초 · 지금 `kSessionTimeoutMs`) 그대로
     static constexpr uint32_t kUnannouncedIdleMs = 30000;
 
     std::map<std::string, CUdpSession> _sessions;
@@ -258,6 +284,7 @@ private:
     int64_t _nextSessionId = 1;
     unsigned long long _sendNoSession = 0;
     unsigned long long _unannouncedSwept = 0;
+    unsigned long long _sessionTimedOut = 0;
 
     std::vector<uint8_t> _infoBody;
     uint8_t _xorKey = 0x70;

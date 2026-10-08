@@ -53,10 +53,25 @@ void CUdpServer::RequestDisconnectSession(int64_t sessionId) {
     _addrOf.erase(it);
 }
 
+void CUdpServer::RequestSetSessionTimeout(int64_t sessionId, uint32_t timeoutMs) {
+    auto it = _addrOf.find(sessionId);
+    if (it == _addrOf.end()) return;
+    _sessions.at(it->second).timeoutMs = timeoutMs;
+}
+
+void CUdpServer::DebugTouch(int64_t sessionId) {
+    auto it = _addrOf.find(sessionId);
+    if (it == _addrOf.end()) return;
+    CUdpSession& s = _sessions.at(it->second);
+    s.heard = true;
+    s.lastSeenMs = _nowMs;
+}
+
 size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size_t n,
                               std::vector<OutPacket>& out, std::vector<NetworkEvent>& events) {
     CUdpSession& s = SessionFor(from);
     s.lastSeenMs = _nowMs;   // ★ 조각 4c — 접속 전 상대 걷어내기의 근거(`Tick`)
+    s.heard = true;          // ★ 조각 5a — 시간 초과 감시도 이 시각으로 센다(접속 제어만 실린 조각 — 핑 등 — 도 「살아 있다」)
 
     // 받은 것이 암호문이면 먼저 푼다. 사본을 뜬다 — 부르는 쪽 버퍼를 건드리지 않는다.
     // ⚠ 덤프 재생일 때는 이미 평문이라 풀면 안 된다 (SetInboundPlain 주석 참조).
@@ -194,6 +209,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
             case Op::CLIENT_CLOSE: {
                 NetworkEvent ev;
                 ev.type = NetworkEvent::Type::DISCONNECTED;
+                ev.reason = DisconnectReason::CLIENT_CLOSE;
                 ev.sessionId = s.sessionId;
                 s.announced = true;
                 ev.addr = from;
@@ -431,7 +447,7 @@ void CUdpServer::Resend(CUdpSession& s, std::vector<OutPacket>& out) {
     }
 }
 
-void CUdpServer::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
+void CUdpServer::Tick(uint32_t nowMs, std::vector<OutPacket>& out, std::vector<NetworkEvent>& events) {
     if (!_resendClockSet) {
         // 시계를 처음 잡는다 — 그 전에 보낸 조각은 지금부터 2초를 센다.
         _resendClockSet = true;
@@ -444,15 +460,28 @@ void CUdpServer::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     // ★ 10-08 조각 4c — 게임에 한 번도 안 넘긴 상대(서버 찾기·접속 시도만 한 상대)는 여기서 걷어낸다.
     //   전에는 게임 「자리 비우기」가 30초 뒤 걷어내며 `TIMEOUT_NOTIFICATION` 을 보내고 「조용해서 내보냄」을 찍었다.
     //   게임에 넘긴 상대는 게임이 지운다(`RequestDisconnectSession`).
+    // ★ 10-09 조각 5a — 게임에 넘긴 상대가 한도 동안 조용하면 `DISCONNECTED`(TIMEOUT)를 한 번 넘긴다. 지우는 것은 게임
+    //   (그 사람에게 `TIMEOUT_NOTIFICATION` 을 보낸 뒤 — 원본 `server.go:445-451`). 옛 게임 「자리 비우기」의 판정을 옮겼다.
     for (auto it = _sessions.begin(); it != _sessions.end();) {
-        const CUdpSession& u = it->second;
-        if (!u.announced && static_cast<int32_t>(nowMs - u.lastSeenMs) > static_cast<int32_t>(kUnannouncedIdleMs)) {
+        CUdpSession& u = it->second;
+        const int32_t quiet = static_cast<int32_t>(nowMs - u.lastSeenMs);
+        if (!u.announced && quiet > static_cast<int32_t>(kUnannouncedIdleMs)) {
             _addrOf.erase(u.sessionId);
             it = _sessions.erase(it);
             ++_unannouncedSwept;
-        } else {
-            ++it;
+            continue;
         }
+        if (u.announced && u.heard && !u.timeoutNotified && quiet > static_cast<int32_t>(u.timeoutMs)) {
+            u.timeoutNotified = true;
+            ++_sessionTimedOut;
+            NetworkEvent ev;
+            ev.type = NetworkEvent::Type::DISCONNECTED;
+            ev.reason = DisconnectReason::TIMEOUT;
+            ev.sessionId = u.sessionId;
+            ev.addr = u.addr;
+            events.push_back(std::move(ev));
+        }
+        ++it;
     }
     if (!_reliableResend) return;
     // 원본 `MaybeSendReliable` — 1초에 한 번만 「재시도 시각이 지난 것」을 표시한다(`send_reliable.go:16-28`).

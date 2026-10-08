@@ -24134,6 +24134,121 @@ void TestPreConnectSweep() {
     std::printf("  10-08 조각 4c — 접속 시도만 한 상대는 게임에 안 들고 통신 층이 30초 뒤 조용히 걷음 · 접속한 상대는 게임이 걷음\n");
 }
 
+// ── 10-09 플랜 A 조각 5a — 시간 초과는 통신 층이 감시하고 게임에 `DISCONNECTED`(TIMEOUT)로 알린다. 한도는 게임이 정한다 ─────────
+//   전에는 게임 Tick 「자리 비우기」가 받은 프레임(`lastSeenFrame`)으로 판정했다.
+//   ① 통신 층 혼자 — 접속한 상대가 30초 조용하면 이벤트 한 번 · 다시 Tick 해도 안 거듭함 · 게임이 지우기 전엔 세션이 남음
+//   ② 통신 층 혼자 — 한도를 90초로 알리면 31초엔 안 넘김 · 받을 때마다 시계를 다시 셈 · 받은 뒤 90초를 넘기면 넘김
+//   ③ 통신 층 혼자 — 받은 것이 없는 세션(`OpenSession`)은 안 넘김 · `DebugTouch` 뒤로는 셈
+//   ④ 게임까지 — 진짜 접속 경로(`CLIENT_ACCEPT`)로 판에 들면 31초에 안 나가고 91초에 나감 · 그 사람에게 `TIMEOUT_NOTIFICATION` 한 번
+//   ⑤ 게임까지 — 판에서 나오면(`DebugLeave`) 한도가 다시 30초
+void TestSessionTimeout() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    const uint8_t empty[2] = { 0x00, 0x00 };                     // 머리만 — 빈 게임 조각(받은 것으로 친다)
+    using Ev = nox::NetworkEvent;
+    auto timeouts = [](const std::vector<Ev>& ev, int64_t sid) {
+        int n = 0;
+        for (const auto& e : ev)
+            if (e.type == Ev::Type::DISCONNECTED && e.reason == nox::DisconnectReason::TIMEOUT && e.sessionId == sid) ++n;
+        return n;
+    };
+    char m[240];
+    {
+        const std::string a = "10.10.9.1:10901";
+        nox::CUdpServer net;
+        net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
+        net.OnDatagram(a, conn, sizeof(conn), o, got);              // 접속 — CONNECTED 를 넘겼다
+        const int64_t sa = net.SessionIdOf(a);
+        net.Tick(100000, o, ev);                                     // 첫 Tick — 그 전에 본 상대도 지금부터 센다
+        net.Tick(129900, o, ev);
+        const int at29 = timeouts(ev, sa);
+        net.Tick(130100, o, ev);
+        const int at30 = timeouts(ev, sa);
+        net.Tick(140000, o, ev);
+        const int at40 = timeouts(ev, sa);
+        const bool kept = net.SessionIdOf(a) == sa;
+        net.RequestDisconnectSession(sa);
+        std::snprintf(m, sizeof(m), "① 통신 층 — 시간 초과 이벤트 29.9초 %d · 30.1초 %d · 40초 %d(누적) · 게임이 지우기 전 세션 남음 %d · 셈 %llu",
+                      at29, at30, at40, (int)kept, net.sessionTimedOut());
+        Check(sa != nox::kNoSession && at29 == 0 && at30 == 1 && at40 == 1 && kept && net.sessionTimedOut() == 1 &&
+              net.SessionIdOf(a) == nox::kNoSession, m);
+    }
+    {
+        const std::string b = "10.10.9.2:10902";
+        nox::CUdpServer net;
+        net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
+        net.OnDatagram(b, conn, sizeof(conn), o, got);
+        const int64_t sb = net.SessionIdOf(b);
+        net.Tick(100000, o, ev);
+        net.RequestSetSessionTimeout(sb, 90000);
+        net.Tick(131000, o, ev);
+        const int at31 = timeouts(ev, sb);
+        net.OnDatagram(b, empty, sizeof(empty), o, got);            // 131초에 받음 — 여기서부터 다시 센다
+        net.Tick(221000, o, ev);
+        const int at221 = timeouts(ev, sb);
+        net.Tick(221100, o, ev);
+        const int at2211 = timeouts(ev, sb);
+        std::snprintf(m, sizeof(m), "② 한도 90초 — 31초 %d · 131초에 받은 뒤 90초 %d · 90.1초 %d",
+                      at31, at221, at2211);
+        Check(at31 == 0 && at221 == 0 && at2211 == 1, m);
+    }
+    {
+        const std::string c = "10.10.9.3:10903";
+        nox::CUdpServer net;
+        std::vector<nox::OutPacket> o; std::vector<Ev> ev;
+        const int64_t sc = net.OpenSession(c);                       // 소켓 없이 세운 사람
+        net.Tick(100000, o, ev);
+        net.Tick(400000, o, ev);
+        const int quiet300 = timeouts(ev, sc);
+        net.DebugTouch(sc);                                          // 400초에 받은 것으로 친다
+        net.Tick(430100, o, ev);
+        const int afterTouch = timeouts(ev, sc);
+        std::snprintf(m, sizeof(m), "③ 받은 것 없는 세션 — 300초 조용 %d · 받은 것으로 친 뒤 30.1초 %d",
+                      quiet300, afterTouch);
+        Check(quiet300 == 0 && afterTouch == 1, m);
+    }
+    auto toWho = [](const std::vector<nox::OutPacket>& out, const std::string& who, uint8_t op) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who)) if (x.size() == 1 && x[0] == op) ++n;
+        return n;
+    };
+    const uint8_t kTimeoutOp = static_cast<uint8_t>(nox::Op::TIMEOUT_NOTIFICATION);
+    {
+        const std::string d = "10.10.9.4:10904";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);
+        std::vector<nox::OutPacket> t; srv.Tick(100000, t); srv.Tick(100100, t);   // 첫 Tick 은 게임 시계만 · 둘째에 통신 층 시계
+        std::vector<nox::OutPacket> o0; srv.OnPacket(d, conn, sizeof(conn), o0);
+        std::vector<uint8_t> acc(156, 0);                            // `tools/smoke.ps1` 4.5 와 같은 꼴 — 머리 `01 05` + `20` + 자리 153
+        acc[0] = 0x01; acc[1] = 0x05; acc[2] = static_cast<uint8_t>(nox::Op::CLIENT_ACCEPT);
+        std::vector<nox::OutPacket> o1; srv.OnPacket(d, acc.data(), acc.size(), o1);
+        const int64_t sd = srv.Network().SessionIdOf(d);
+        const bool inGame = srv.IsInGame(sd);
+        std::vector<nox::OutPacket> t31; srv.Tick(131200, t31);
+        const size_t at31 = srv.SessionCount();
+        std::vector<nox::OutPacket> t91; srv.Tick(191200, t91);
+        std::snprintf(m, sizeof(m), "④ 진짜 접속 경로로 판에 듦 %d — 31초 사람 %zu · 91초 사람 %zu · 그 사람에게 시간 초과 알림 %d · 통신 세션 %lld · 셈 %llu",
+                      (int)inGame, at31, srv.SessionCount(), toWho(t91, d, kTimeoutOp), (long long)srv.Network().SessionIdOf(d),
+                      srv.Network().sessionTimedOut());
+        Check(inGame && at31 == 1 && srv.SessionCount() == 0 && toWho(t91, d, kTimeoutOp) == 1 &&
+              srv.Network().SessionIdOf(d) == nox::kNoSession && srv.Network().sessionTimedOut() == 1, m);
+    }
+    {
+        const std::string e = "10.10.9.5:10905";
+        nox::Server srv;
+        std::vector<nox::OutPacket> t; srv.Tick(100000, t); srv.Tick(100100, t);
+        const int64_t se = srv.DebugEnterGame(e, 1050);                // 판에 듦 — 한도 90초
+        srv.DebugTouch(se);
+        srv.DebugLeave(se);                                          // 판에서 나옴 — 한도 30초
+        std::vector<nox::OutPacket> t31; srv.Tick(131200, t31);
+        std::snprintf(m, sizeof(m), "⑤ 판에서 나온 뒤 31초 — 사람 %zu · 셈 %llu",
+                      srv.SessionCount(), srv.Network().sessionTimedOut());
+        Check(srv.SessionCount() == 0 && srv.Network().sessionTimedOut() == 1, m);
+    }
+    std::printf("  10-09 조각 5a — 시간 초과는 통신 층이 감시해 한 번 알리고 게임이 걷음 · 한도는 게임(판에 들면 90초)\n");
+}
+
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
 //   원본 `send_reliable.go`(2초 뒤 · 1초마다 살핌) · 정품 녹음 `CAP_GEN3`(확인 못 받은 접속 수락을 약 2.1초마다 다시 보냄).
 //   클라 확인 = 비신뢰 조각 머리 순번(「다음에 받을 순번」) — 그보다 앞은 지우고, 그 순번이 있으면 바로 다시 보낸다.
@@ -26142,6 +26257,7 @@ void TestLeaveNotify() {
         uint32_t ms = 34;
         for (int t = 0; t < 10; ++t) { srv.Tick(ms, out); ms += 34; }
         // ⚠ 프레임 0 에서 적으면 「한 번도 못 받은 세션」으로 걸려 **영영 안 걸린다**
+        //   (10-09 조각 5a 뒤로는 받은 시각을 통신 층이 들어 프레임 0 이어도 센다 — 이 차례는 그대로 둔다)
         srv.DebugTouch(Sid(srv, a));
         srv.DebugTouch(Sid(srv, b));
         // 30초(900틱)가 지나도 **판에 든 사람은** 안 나간다
@@ -29293,6 +29409,7 @@ int main() {
     TestReconnectAfterClose();
     TestSessionIds();
     TestPreConnectSweep();
+    TestSessionTimeout();
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

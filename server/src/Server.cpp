@@ -82,7 +82,13 @@ Session& Server::SessionFor(int64_t sessionId) {
     Session s;
     s.sessionId = sessionId;
     s.addrText = network_.AddrOf(sessionId);
+    network_.RequestSetSessionTimeout(sessionId, kSessionTimeoutMs);   // ★ 10-09 조각 5a — 한도는 게임이 정한다(판에 들면 `SetInGame`)
     return sessions_.emplace(sessionId, s).first->second;
+}
+
+void Server::SetInGame(Session& s, bool inGame) {
+    s.inGame = inGame;
+    network_.RequestSetSessionTimeout(s.sessionId, inGame ? kSessionTimeoutMsInGame : kSessionTimeoutMs);
 }
 
 const char* Server::AddrText(int64_t sessionId) const {
@@ -2763,17 +2769,12 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
     // ★ 10-08 조각 3 — 풀기·머리·순번·접속 제어는 통신 층이 한다(`UdpServer.cpp` `OnDatagram`).
     //   게임은 그가 넘긴 일만 처리한다. 돌려주는 값은 전처럼 이 조각에서 읽은 메시지 수다(둘의 합).
     // ★ 10-08 조각 4c — 사람 자리는 이벤트 때 만든다(`OnNetworkEvent`). 서버 찾기·접속 시도만 한 상대는 게임에 안 들고
-    //   통신 층이 걷어낸다(`CUdpServer::Tick`). 게임에 든 사람은 조각마다 「받았다」를 적는다 — 끊긴 세션을 걷어내는 근거
-    //   (Tick 의 「자리 비우기」). 이 값을 읽는 곳은 그 Tick 뿐이라 이벤트 처리 뒤에 적어도 같다.
+    //   통신 층이 걷어낸다(`CUdpServer::Tick`).
+    // ★ 10-09 조각 5a — 전에는 여기서 게임에 든 사람의 「받았다」(프레임)를 적어 Tick 「자리 비우기」가 시간 초과를 판정했다.
+    //   이제 받은 시각은 통신 층이 들고 시간 초과를 `DISCONNECTED`(TIMEOUT)로 알린다.
     std::vector<NetworkEvent> events;
     size_t count = network_.OnDatagram(from, data, n, out, events);
     for (const NetworkEvent& ev : events) count += OnNetworkEvent(ev, out);
-    const int64_t sessionId = network_.SessionIdOf(from);
-    auto it = sessionId != kNoSession ? sessions_.find(sessionId) : sessions_.end();
-    if (it != sessions_.end()) {
-        ++it->second.recvPackets;
-        it->second.lastSeenFrame = frame_;
-    }
     return count;
 }
 
@@ -2795,7 +2796,11 @@ size_t Server::OnNetworkEvent(const NetworkEvent& ev, std::vector<OutPacket>& ou
             return 0;
         case NetworkEvent::Type::DISCONNECTED:
             // `0x0a CLIENT_CLOSE` — 게임 메시지 `0xae OUTGOING_CLIENT` 와 같은 길이다(OnGameMessages 의 「정상 종료 알림」 주석).
-            s.closing = true;
+            // ★ 10-09 조각 5a — 시간 초과도 이 이벤트로 온다(통신 층 감시). 걷어내기는 둘 다 Tick 「자리 비우기」가 한다.
+            switch (ev.reason) {
+                case DisconnectReason::CLIENT_CLOSE: s.closing = true; break;
+                case DisconnectReason::TIMEOUT:      s.timedOut = true; break;
+            }
             return 0;
         case NetworkEvent::Type::RECEIVED:
             return OnGameMessages(s, ev.body.data(), ev.body.size(), out);
@@ -3897,7 +3902,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen,
                     //   ⚠ 안 비우면 **주소를 다시 쓰는 접속**이 옛 사람의 기억을 물려받는다
                     s.secretSeen.clear();
                 }
-                s.inGame = true;
+                SetInGame(s, true);   // ★ 10-09 조각 5a — 시간 초과 한도도 판에 든 사람 값으로(통신 층)
 
                 // ★ 깃발 판이 이미 서 있으면 **새로 온 사람에게도 팀을 준다.**
                 //   전에는 두 명이 찬 그 순간 한 번만 나눠서, 셋째부터 팀 0 으로 남아
@@ -17117,7 +17122,12 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     if (ticks == 0) return 0;
 
     // ★ 10-08 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다(통신 층 · 원본은 프레임마다 묶음보다 먼저 `Resend`).
-    network_.Tick(nowMs, out);
+    // ★ 10-09 조각 5a — 시간 초과도 통신 층이 알린다(`DISCONNECTED` · TIMEOUT → 아래 「자리 비우기」가 걷어냄).
+    {
+        std::vector<NetworkEvent> events;
+        network_.Tick(nowMs, out, events);
+        for (const NetworkEvent& ev : events) OnNetworkEvent(ev, out);
+    }
 
     // ★ 09-20 ⑰ — 지난 틱에 만든 물체의 **낙하 시작 알림**을 여기서 낸다.
     //   지난 틱 끝의 `a4 UPDATE_STREAM` 이 그 물체를 이미 소개했으므로 클라가 그림을 찾는다.
@@ -17183,11 +17193,10 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
             //   「한 번도 못 받은 세션」 검사에 걸리면 `0x0a` 를 보내고도 안 나간다 —
             //   틱이 아직 0 이면 `lastSeenFrame` 도 0 이라 늘 걸린다(시험이 잡아냈다).
             if (o.closing) { gone.push_back(kv.first); continue; }
-            // 아직 한 번도 못 받은 세션(이제 막 만든 것)은 건드리지 않는다.
-            if (o.lastSeenFrame == 0) continue;
-            // ★ 10-d — 정답지(`server.go:440`)는 **입력을 받는 중**이면 90초, 아니면 30초이다
-            const uint32_t limit = o.inGame ? kSessionTimeoutTicksInGame : kSessionTimeoutTicks;
-            if (frame_ - o.lastSeenFrame > limit) gone.push_back(kv.first);
+            // ★ 10-09 조각 5a — 시간 초과 판정은 통신 층이 한다(`CUdpServer::Tick` → `DISCONNECTED` · TIMEOUT → `timedOut`).
+            //   옛 판정 둘은 거기로 옮겼다 — 아직 한 번도 못 받은 세션(이제 막 만든 것)은 건드리지 않는다(`heard`) ·
+            //   ★ 10-d — 정답지(`server.go:440`)는 **입력을 받는 중**이면 90초, 아니면 30초이다(한도는 `SetInGame` 이 알림).
+            if (o.timedOut) gone.push_back(kv.first);
         }
         for (int64_t sessionId : gone) {
             // ★ 나갔다고 **알린다.** 전에는 조용히 지우기만 해서 남은 사람들 화면에

@@ -784,11 +784,8 @@ struct Session {
     std::string addrText;    // 그 세션의 주소 — 기록용
     uint32_t frame = 0;      // 이 사람에게 실어 보낼 프레임
     uint16_t netCode = 0;    // 이 사람에게 준 오브젝트 번호
-    unsigned long long recvPackets = 0;
-    // ★★ 이 사람에게서 마지막으로 무언가를 받은 프레임. **끊긴 세션을 걷어내는 근거다.**
-    //   지우는 자리가 아예 없어서 클라를 죽이면 세션이 그대로 남았고, 시험할 때마다
-    //   「사람 3」 같은 유령이 끼어 판정이 흐려졌다(2026-09-09).
-    uint32_t lastSeenFrame = 0;
+    // ★ 10-09 조각 5a — 옛 `lastSeenFrame`(마지막으로 받은 프레임 · 끊긴 세션을 걷어내는 근거)과 `recvPackets`(쓰기만 했다)는 뺐다.
+    //   받은 시각은 통신 층이 들고 시간 초과를 알린다(`timedOut`). 2026-09-09 유령 기록은 Tick 「자리 비우기」 주석에 있다.
 
     // 게임에 들어와 있는가 — 여기가 참이면 매 틱 상태를 받는다.
     bool inGame = false;
@@ -918,6 +915,8 @@ struct Session {
 
     // `0x0a CLIENT_CLOSE` 를 받았다 — 다음 틱에 걷어낸다(30초 타임아웃을 안 기다린다).
     bool closing = false;
+    // ★ 10-09 조각 5a — 통신 층이 시간 초과를 알렸다(`DISCONNECTED` · TIMEOUT). 다음 「자리 비우기」가 `TIMEOUT_NOTIFICATION` 을 보내고 걷어낸다.
+    bool timedOut = false;
 
     // ★ **겨눈 자리** — `0xac MOUSE` 가 나르는 월드 좌표다(⭕ 정품 표본 18,700+).
     //   투사체가 여기를 향해 난다. 겨눔이 없거나 낡았으면 몸 방향으로 되돌아간다.
@@ -1210,14 +1209,16 @@ constexpr uint16_t kPetHealth = 40;        // 되돌림
 //   열 명 죽이면 끝나는 것으로 두었을 뿐이다.
 constexpr uint16_t kArenaKillLimit = 10;
 
-// ★ 이 프레임 수만큼 아무것도 안 오면 세션을 걷어낸다. 30Hz 기준 30초. 8초로 뒀더니 **진짜 클라도 걸렸다**(2026-09-09).
+// ★ 이만큼 아무것도 안 오면 세션을 걷어낸다(10-09 조각 5a 전에는 프레임 수 — 30Hz 기준 30초). 8초로 뒀더니 **진짜 클라도 걸렸다**(2026-09-09).
 //   정품 클라는 조용해도 핑을 계속 보내므로 살아 있으면 걸리지 않는다
 //   (실측: 접속당 `0x06 CLIENT_PING` 이 꾸준히 온다).
 // ⭕ 묶음 10-d — 정답지 `server.go:440` 은 **입력을 받는 중**(상태 비트 0x10)이면 **90초**,
 //   아직 아니면 **30초**를 준다. 우리는 그 비트를 `inGame` 으로 대신한다
 //   (`netOnPlayerInput` 이 그 비트가 없으면 입력을 버린다 — `server/network.go:178`).
-constexpr uint32_t kSessionTimeoutTicks = 900;          // 30초 — 아직 판에 안 든 사람
-constexpr uint32_t kSessionTimeoutTicksInGame = 2700;   // 90초 — 판에 든 사람
+// ★ 10-09 조각 5a — 한도는 게임 규칙이라 여기(게임)에 두고, 감시는 통신 층이 한다(`SetInGame` → `RequestSetSessionTimeout`).
+//   프레임이 아니라 시각으로 센다 — 원본은 초(`SecToFrames(sec)`)이고, 옛 900·2700틱은 우리 틱 33ms로 29.7·89.1초였다.
+constexpr uint32_t kSessionTimeoutMs = 30000;          // 30초 — 아직 판에 안 든 사람
+constexpr uint32_t kSessionTimeoutMsInGame = 90000;    // 90초 — 판에 든 사람
 
 // 판 시계를 얼마마다 뿌리나. 실측 표본은 **2초 남짓 간격**이었다
 // (15:05:08.299 · 10.538 · 12.709 · 14.867 — 2.2초씩). 30Hz 기준 그만큼으로 둔다.
@@ -2512,7 +2513,7 @@ public:
         // ⚠ 진짜 접속 경로(`CLIENT_ACCEPT`)와 **같은 일을 해야** 한다 —
         //   `joinOrder` 를 여기서 안 매기면 팀이 사전순으로 갈린다(시험이 잡았다).
         if (!s.inGame) s.joinOrder = ++nextJoinOrder_;
-        s.inGame = true;
+        SetInGame(s, true);
         s.netCode = netCode;
         s.charClass = cls;
         s.charLevel = kMaxLevel;
@@ -3467,11 +3468,9 @@ public:
         if (i != sessions_.end()) i->second.closing = true;
     }
     // 10-d — 시험용. 진짜 경로에서는 조각을 받을 때마다 새로 적혀 시간 초과가 안 난다
-    void DebugTouch(int64_t sessionId) {
-        auto i = sessions_.find(sessionId);
-        if (i != sessions_.end()) i->second.lastSeenFrame = frame_;
-    }
-    void DebugLeave(int64_t sessionId) { auto it = sessions_.find(sessionId); if (it != sessions_.end()) it->second.inGame = false; }
+    //   ★ 10-09 조각 5a — 받은 시각은 통신 층이 든다
+    void DebugTouch(int64_t sessionId) { network_.DebugTouch(sessionId); }
+    void DebugLeave(int64_t sessionId) { auto it = sessions_.find(sessionId); if (it != sessions_.end()) SetInGame(it->second, false); }
     int DebugDurUpdates() const { return debugDurUpdates_; }
     uint8_t DebugDurSpellAt(size_t i) const {
         size_t k = 0;
@@ -4070,6 +4069,8 @@ public:
 
 private:
     Session& SessionFor(int64_t sessionId);
+    // ★ 10-09 조각 5a — 판에 들고 날 때 통신 층의 시간 초과 한도도 같이 바꾼다(한도는 게임 규칙 · 감시는 통신 층).
+    void SetInGame(Session& s, bool inGame);
     // ★ 10-08 조각 4 — 세션 번호의 주소 글자(기록용). 모르는 번호면 빈 글자.
     const char* AddrText(int64_t sessionId) const;
 
