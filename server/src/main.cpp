@@ -1200,6 +1200,8 @@ int main(int argc, char** argv) {
                             srv.Network().reliableResent(), srv.Network().reliableAcked(),
                             srv.Network().reliableRetryMarked(), srv.Network().reliableQueueDropped(),
                             srv.Network().reliablePending());
+                // ★ 10-08 조각 4 — 지운 세션 번호로 보내려다 버린 수. 0 이 아니면 게임이 지운 사람에게 아직 보내고 있다
+                std::printf("[세션] 없는 번호로 보내려다 버림 %llu\n", srv.Network().sendNoSession());
 
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());
@@ -1298,7 +1300,7 @@ int main(int argc, char** argv) {
                 // ★ **성장 한 줄** — 진단 스위치(`--debug-xp`·`--debug-give-spell`)가 먹었는지
                 //   보는 유일한 자리다. 없을 때는 판 G 가 통째로 판정 불능이었다(조각 C 13·14번).
                 if (!opt.bots.empty()) {
-                    const std::string b0 = "bot0";
+                    const int64_t b0 = srv.Network().SessionIdOf("bot0");   // ★ 10-08 조각 4 — 세션 번호
                     std::printf("[성장] 레벨 %d · 경험치 %.0f",
                                 srv.DebugLevel(b0), (double)srv.DebugExperience(b0));
                     if (opt.debugSpellId > 0)

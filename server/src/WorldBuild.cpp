@@ -1957,12 +1957,12 @@ int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& t
             if (bots[bi].cls == "wizard")        bc = nox::CharClass::Wizard;
             else if (bots[bi].cls == "conjurer") bc = nox::CharClass::Conjurer;
             const std::string bot = nox::BotAddr(bi);
-            srv.DebugEnterGame(bot, plan.netCode, /*observer=*/false, bc);
+            const int64_t botSid = srv.DebugEnterGame(bot, plan.netCode, /*observer=*/false, bc);   // ★ 10-08 조각 4 — 세션 번호
             // ⚠ 자리는 **둘 다** 맞춰야 한다 — `DebugMoveTo` 는 `x`·`y` 만, `DebugSetPos` 는 `posX`·`posY` 만 옮긴다.
             //   덫 겨눔·소리 거리는 `posX`·`posY` 로 재고, 걸음·갱신은 `x`·`y` 를 본다(09-15 에 한 번 데었다)
-            srv.DebugMoveTo(bot, bx, by);
-            srv.DebugSetPos(bot, bx, by);
-            srv.DebugSetTeam(bot, plan.team);
+            srv.DebugMoveTo(botSid, bx, by);
+            srv.DebugSetPos(botSid, bx, by);
+            srv.DebugSetTeam(botSid, plan.team);
             std::printf("[진단스위치] 가짜 사람 세움 — (%d, %d) · 직업 %s · 번호 %u · 편 %d\n",
                         bx, by, bots[bi].cls.c_str(), (unsigned)plan.netCode, (int)plan.team);
             std::fflush(stdout);

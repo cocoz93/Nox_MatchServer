@@ -593,7 +593,7 @@ struct Waypoint {
 };
 
 struct Creature {
-    std::string owner;     // 부른 사람의 주소
+    int64_t owner = 0;     // 부른 사람의 주소
     uint16_t netCode = 0;
     uint16_t type = 0;     // 와이어 종류 번호 (⚠ 종류표에서 이름으로 고른 것. 실측 아님)
     uint8_t facing = 0;
@@ -609,7 +609,7 @@ struct Creature {
     uint16_t poisonDecay = 0;                       // +542 감쇠 계수기 — 독을 걸 때 1000, 0 이 되면 독 1 줄고 다시 1000
     uint32_t lastDamageFrame = 0;                   // +536 — 마지막 피해 프레임(damageDefaultProc 끝 `GAME3_2.c:7236`)
     uint8_t lastDamageType = 0;                     // ★ 4-c3b2b — +524 마지막 피해 종류(`GAME3_2.c:7234`) — 작살이 끊길 때의 기본 타격 소리가 읽는다
-    std::map<std::string, uint16_t> hpReportedTo;   // +412+2×i — 보는 사람마다 마지막으로 알린 체력(`42` 증감 기준 · netSendComplexObject_518960)
+    std::map<int64_t, uint16_t> hpReportedTo;   // +412+2×i — 보는 사람마다 마지막으로 알린 체력(`42` 증감 기준 · netSendComplexObject_518960)
 
 
     // ── 묶음 6-a — **AI 행동 쌓기(AIStack)** ──────────────────────────
@@ -631,7 +631,7 @@ struct Creature {
         uint8_t action = 0;                    // ActionType
         bool started = false;                  // +5 Field5 — Start 를 했나
         // 행동마다 쓰는 인자. 지금은 대상 하나와 자리 하나만 담는다(늘 때 넓힌다).
-        std::string targetAddr;
+        int64_t targetAddr = 0;
         int targetPet = -1;
         float argX = 0, argY = 0;
         uint32_t argU32 = 0;                   // 때(41) 같은 셈 인자
@@ -670,7 +670,7 @@ struct Creature {
     uint32_t pathStuckFrame = 0;                 // +540 길 찾기 결과가 1 이었던 마지막 프레임
     // ★ 묶음 6-g — **지금 싸우는 상대**(`+1196`). 싸움(15)이 이것을 본다.
     //   비어 있으면 「마지막으로 본 자리」로 가 보는 갈래로 빠진다.
-    std::string enemyAddr;
+    int64_t enemyAddr = 0;
     int enemyPet = -1;
     uint32_t attackStartFrame = 0;               // +136 휘두르기를 시작한 프레임
     // 묶음 6-h — 호위 거리(+1316 `Field329`, 기본 **30**)와 뛰는 중인가(깃발 0x4000)
@@ -690,7 +690,7 @@ struct Creature {
     uint32_t flagsSet = 0, flagsClear = 0;
     // ★ 09-29 B1 — 알아보기(`nox_xxx_unitUpdateSightMB_5281F0` `GAME4_2.c:7278~7388`).
     //   보이는 목록(+1129 수 · +1132 최대 16) — 사람은 주소 · 크리처는 번호로 적는다(자리 번호는 앞 것이 지워지면 밀린다)
-    struct SeenRef { std::string addr; uint16_t petNet = 0; };
+    struct SeenRef { int64_t addr = 0; uint16_t petNet = 0; };
     std::vector<SeenRef> seen;
     uint32_t sightScanFrame = 0;    // +1204 마지막으로 둘레를 훑은 프레임
     uint32_t sightNextScan = 0;     // +1208 이 프레임부터 다시 훑는다
@@ -740,7 +740,7 @@ struct Flag {
     uint16_t type = 0;
     double homeX = 0, homeY = 0;   // 제자리
     double x = 0, y = 0;           // 지금 자리
-    std::string carrier;           // 들고 있는 사람. 비었으면 바닥에 있다
+    int64_t carrier = 0;           // 들고 있는 사람. 비었으면 바닥에 있다
     bool atHome = true;
     // 마지막으로 클라에 알린 상태 지문(상태<<16 | 든사람번호). **바뀔 때만 보내려고** 둔다.
     // ⚠ 매 틱 보내면 클라가 죽는다 — `0x5e` 를 270배 보냈던 사고(2026-09-08).
@@ -754,7 +754,7 @@ struct GameBall {
     uint16_t type = 0;
     double homeX = 0, homeY = 0;
     double x = 0, y = 0;
-    std::string carrier;
+    int64_t carrier = 0;
     bool atHome = true;
     uint32_t sentMark = 0xFFFFFFFFu;   // 바뀔 때만 보내려고(깃발과 같은 규칙)
 };
@@ -765,9 +765,9 @@ struct BallGoal { uint8_t team = 0; double x = 0, y = 0; };
 // 왜 한 덩이로 묶나 — 근접·투사체·소환수가 저마다 「누구를 때리나」를 따로 고르면
 // 셋이 조금씩 다르게 굴어 어긋난다. 고르는 자리를 하나로 모은다.
 struct Target {
-    std::string addr;   // 사람이면 그 주소
+    int64_t addr = 0;   // 사람이면 그 세션 번호
     int pet = -1;       // 불려 나온 것이면 그 자리 번호
-    bool none() const { return addr.empty() && pet < 0; }
+    bool none() const { return (addr == kNoSession) && pet < 0; }
 };
 
 
@@ -778,7 +778,8 @@ struct Target {
 //    (Docs/PROTOCOL.md 「접속 절차」의 "여기서 클라가 새 포트로 옮긴다").
 //    그래서 한 사람이 세션 둘로 보인다. 지금은 그대로 둔다.
 struct Session {
-    std::string addr;
+    int64_t addr = 0;        // 세션 번호(10-08 조각 4 — 전에는 주소 글자)
+    std::string addrText;    // 그 세션의 주소 — 기록용
     uint32_t frame = 0;      // 이 사람에게 실어 보낼 프레임
     uint16_t netCode = 0;    // 이 사람에게 준 오브젝트 번호
     unsigned long long recvPackets = 0;
@@ -987,11 +988,11 @@ struct Session {
         uint8_t cls = 0;          // 0 없음 · 1 사람 · 2 몬스터 · 3 무기·투사체
         uint8_t ownerCls = 0;     // cls 3 의 주인 — 0 없음 · 1 사람 · 2 몬스터
         uint16_t monsterType = 0; // 몬스터(또는 주인 몬스터)의 종류 번호
-        std::string player;       // findParentChainPlayer — 주인 사슬에서 찾은 사람 주소(없으면 빈)
+        int64_t player = 0;       // findParentChainPlayer — 주인 사슬에서 찾은 사람 주소(없으면 빈)
     } lastHit;
     // +3600/+3604/+3608 도운 사람 — sub_4E7540(혼란·기절 등 공격 버프를 건 사람) · 죽음 알림이 10초 안이면 싣는다(4-a4)
     bool assistSet = false;
-    std::string assistBy;
+    int64_t assistBy = 0;
     uint32_t assistFrame = 0;
     // +232 마지막으로 알린 방어값 — playerReportAnything 이 +228 과 다르면 `49` 를 보낸다(3-d)
     float armorReported = 0.0f;
@@ -1062,7 +1063,7 @@ struct Session {
     uint8_t level = 1;
     bool statsDirty = false;       // +2184 plrReadVals_4EEDC0 끝에 1 → `dd`·`de`·`48` 한 벌(접속 때는 스냅샷 꼬리가 그 몫)
     uint32_t lastDamageFrame = 0;  // +536  마지막 피해 프레임 — `42` 증감은 이 뒤 2틱 넘어야(netPlayerObjSend_518C30 `GAME4_1.c:4412`)
-    std::map<std::string, uint16_t> hpReportedTo;   // +12+2×i 보는 사람마다 마지막으로 알린 체력 — 부활 때 서른둘 = 지금(`GAME3_3.c:7937`)
+    std::map<int64_t, uint16_t> hpReportedTo;   // +12+2×i 보는 사람마다 마지막으로 알린 체력 — 부활 때 서른둘 = 지금(`GAME3_3.c:7937`)
     Buffs buffs;                   // ★ 4-a4 버프 — 부활 무적(전 invulnUntil 자리표시)도 버프 23 으로
     uint8_t  poison = 0;           // +540 독 남은 양(셀수록 자주 아프다 · 4-c2)
     uint32_t poisonStart = 0;      // 체력자료 +16 독이 시작한 프레임(0 = 없음) — 60틱 유예에 쓴다
@@ -1496,13 +1497,13 @@ public:
     // ★ 09-29 Z1-A — 벽을 때린 것(`Nox_xxx_mapDamageToWalls_534FC0` 의 who). 유닛이면 그 앞쪽(내적 > 0.5)만 · 거리는 그 자리에서 잰다 ·
     //   맞는 소리는 그 재질로 그 자리에서. present 가 거짓이면 who 없음(소리 없음 · 자리는 폭발 자리)
     struct WallHitter { bool present = false; bool unit = false; bool player = false; float x = 0, y = 0; uint8_t dir = 0; uint32_t material = 0;
-                        std::string src; };   // ★ 09-29 B6 src — 임자 사슬 끝 사람(맞는 소리를 몬스터가 들을 거리의 출처)
+                        int64_t src = 0; };   // ★ 09-29 B6 src — 임자 사슬 끝 사람(맞는 소리를 몬스터가 들을 거리의 출처)
     int DamageToMap(int gx, int gy, int dmg, uint8_t dtype, const WallHitter& who, std::vector<OutPacket>& out);
     int WallPreDestroy(int gx, int gy, std::vector<OutPacket>& out);
     bool MapDamageToWalls(int gx0, int gy0, int gx1, int gy1, float px, float py, float rad, int dmg, uint8_t dtype,
                           const WallHitter& who, std::vector<OutPacket>& out);
     void SendBrokenWalls(Session& s, std::vector<OutPacket>& out);   // 들어온 사람에게 이미 부서진 벽(`Nox_xxx_wall_4DF1E0`)
-    WallHitter WallHitterOfAddr(const std::string& addr) const;       // 사람이면 유닛 who(자리·방향·재질) · 없으면 who 없음
+    WallHitter WallHitterOfAddr(int64_t addr) const;       // 사람이면 유닛 who(자리·방향·재질) · 없으면 who 없음
     // 시험용
     bool DebugWallBroken(int gx, int gy) const { return gx >= 0 && gx < 256 && gy >= 0 && gy < 256 && !wallTiles_.empty() && wallTiles_[gy * 256 + gx].broken; }
     int DebugWallHp(int gx, int gy) const { return (gx >= 0 && gx < 256 && gy >= 0 && gy < 256 && !wallTiles_.empty()) ? wallTiles_[gy * 256 + gx].hp : -1; }
@@ -1543,7 +1544,7 @@ public:
     //   · `TIMEOUT_NOTIFICATION` **0xC6** — **1바이트** · 그 사람에게 `SendReliable` · 그 뒤 까닭 3 으로 끊는다
     // ⚠ `SERVER_QUIT_ACK`(0xC8)은 **서버가 보내는 것이 아니다** — 클라가 `SERVER_QUIT` 에 되보내는 답이다
     //   (`network_client.go:140`). 서버는 **받아서** 끊는다(`network_server.go:104`)
-    void SendOutgoingClient(uint16_t netCode, const std::string& except, std::vector<OutPacket>& out);
+    void SendOutgoingClient(uint16_t netCode, int64_t except, std::vector<OutPacket>& out);
 
     // ── 묶음 10-e 일지·장 끝·관리자 답 ────────────────────────────────
     //
@@ -1563,7 +1564,7 @@ public:
     //   보내면 **2바이트** `bd <맞으면 1, 아니면 0>` 으로 답한다.
     //   ⚠ **비밀번호가 비어 있으면 늘 틀린 것으로 본다**(`pass == "" || pass != got`)
     void SetSysopPassword(const std::string& pw) { sysopPassword_ = pw; }
-    bool SysopOf(const std::string& addr) const {
+    bool SysopOf(int64_t addr) const {
         auto i = sessions_.find(addr);
         return i != sessions_.end() && i->second.sysop;
     }
@@ -1573,7 +1574,7 @@ public:
     void MusicEvent(std::vector<OutPacket>& out);
     // ★ 09-29 B6 — `src` = 소리를 낸 유닛(몬스터가 들을 거리의 출처 · `EventObj` 의 obj). 비면 `owner`(사람)를 쓴다
     void PlaySoundAt(uint16_t id, float x, float y, uint8_t kind = 0, uint32_t code = 0,
-                     const std::string& owner = std::string(), const Target& src = Target());
+                     int64_t owner = 0, const Target& src = Target());
 
 
     // ── 묶음 9-a 비밀벽 ────────────────────────────────────────────────
@@ -1676,7 +1677,7 @@ public:
     }
     // 시험용 — 선 추적(Flag1, 걸음과 같은 깃발)
     // 시험용 — 편 거르기(`OwnersEnemy`)를 그대로 부른다. 둘째·넷째는 **뿌리가 몬스터인가**
-    bool DebugOwnersEnemy(const std::string& a, bool aMonsterRoot, const std::string& b, bool bMonsterRoot) const {
+    bool DebugOwnersEnemy(int64_t a, bool aMonsterRoot, int64_t b, bool bMonsterRoot) const {
         return OwnersEnemy(a, aMonsterRoot, b, bMonsterRoot);
     }
     bool DebugTraceRay(float x1, float y1, float x2, float y2) const { return MapTraceRay(x1, y1, x2, y2, 0x1); }
@@ -1854,7 +1855,7 @@ public:
     unsigned long long monsterAnimSent(int idx) const { return idx >= 0 && idx < 16 ? monsterAnimSent_[idx] : 0; }                      // ★ 10-01 — 갱신 항목에 실은 애니 번호별
     unsigned long long summonOwnSent(int i) const { return i >= 0 && i < 3 ? summonOwnSent_[i] : 0; }                                  // ★ 10-01 — 0 `6c` · 1 `dd` · 2 `6d`
     unsigned long long secondaryWeaponStat(int i) const { return i >= 0 && i < 4 ? secondaryWeaponStat_[i] : 0; }                      // ★ 10-01 — 0 비움 · 1 못 찾음 · 2 맞음 · 3 되돌림(`e0 0 01`)
-    uint16_t DebugSecondaryWeapon(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.secondaryWeapon; }
+    uint16_t DebugSecondaryWeapon(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.secondaryWeapon; }
     unsigned long long summonFxSent(int i) const { return i >= 0 && i < 2 ? summonFxSent_[i] : 0; }                                    // ★ 10-01 — 0 `7e` 시작 · 1 `7f` 끊김(보는 사람마다가 아니라 소환 한 번에 1)
     // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
     void SetMonsterAnim(uint16_t wire, int idx, int frames, int hold, bool loop) {
@@ -1899,12 +1900,12 @@ public:
     void DebugSetPetActionFrame(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].aiActionFrame = f; }
     bool DebugPetAlert(size_t i) const { return i < pets_.size() && pets_[i].alert; }
     void DebugAIClearStack(size_t i) { if (i < pets_.size()) AIClearStack(pets_[i]); }   // ★ 09-29 B2 — 명령이 쌓임을 비우는 자리(`ClearActionStack`)
-    double DebugForceX(const std::string& addr) const { auto it = sessions_.find(addr); return it != sessions_.end() ? it->second.forceX : 0.0; }   // ★ 09-29 B3
+    double DebugForceX(int64_t addr) const { auto it = sessions_.find(addr); return it != sessions_.end() ? it->second.forceX : 0.0; }   // ★ 09-29 B3
     size_t DebugPetSeenCount(size_t i) const { return i < pets_.size() ? pets_[i].seen.size() : 0; }
     // 시험용 — 몬스터 자체 시야 거리(+1312 SightRange — 정답지는 스크립트 `SetSightRange`·명령 「지켜」가 바꾼다). 알아보기 거리 = max(250·640, 이것)
     void DebugSetPetSightRange(size_t i, float r) { if (i < pets_.size()) pets_[i].sightRange = r; }
-    bool DebugPetCanSee(size_t i, const std::string& addr) const { return i < pets_.size() && CanInteractFrom(pets_[i], Target{ addr, -1 }); }
-    void DebugTeleport(const std::string& addr, float x, float y) { TeleportTarget(Target{ addr, -1 }, x, y, nullptr); }
+    bool DebugPetCanSee(size_t i, int64_t addr) const { return i < pets_.size() && CanInteractFrom(pets_[i], Target{ addr, -1 }); }
+    void DebugTeleport(int64_t addr, float x, float y) { TeleportTarget(Target{ addr, -1 }, x, y, nullptr); }
     int DebugPetEnemyPet(size_t i) const { return i < pets_.size() ? pets_[i].enemyPet : -1; }
     // 시험용
     void DebugSetDoorLock(uint16_t netCode, uint8_t lock) { for (auto& p : props_) if (p.netCode == netCode) p.lock = lock; }
@@ -2429,7 +2430,7 @@ public:
 
     bool IsEnemyTo(const Session& a, const Session& b) const;
     // 시험·로그용 — 주소로 부른다. 둘 중 하나라도 없으면 `false`(적이 아님).
-    bool IsEnemyTo(const std::string& a, const std::string& b) const;
+    bool IsEnemyTo(int64_t a, int64_t b) const;
 
     int QuestLeft() const { return questTotal_ - questKilled_; }
     int QuestKilled() const { return questKilled_; }
@@ -2437,7 +2438,7 @@ public:
     // 시험용 — 주인 없는 몬스터 하나를 죽인다(위치·근접에 안 기대고 스테이지 진행을 잰다).
     void DebugKillOneWild(std::vector<OutPacket>& out) {
         for (size_t i = 0; i < pets_.size(); ++i) {
-            if (pets_[i].owner.empty() && !pets_[i].dead) { KillPet(i, out); return; }   // ★ 10-01 — 시체는 건너뜀(죽어도 남는다)
+            if ((pets_[i].owner == kNoSession) && !pets_[i].dead) { KillPet(i, out); return; }   // ★ 10-01 — 시체는 건너뜀(죽어도 남는다)
         }
     }
     // 시험용 — 불려 나온 것 하나를 **깎는다**(죽이지 않는다). 넷코드를 돌려준다, 없으면 0.
@@ -2449,7 +2450,7 @@ public:
     //   ⚠ 처음엔 「얼마 깎기」로 만들었다가 **Bomber 체력이 1 이라 아무것도 못 깎았다.**
     //     0 을 돌려주며 까닭을 안 알려 줘 한참 헤맸다 — 「손잡이가 먹었는지 찍어라」를 어긴 자리다.
     //     이제 **체력을 그 값으로 정한다** — 얼마가 남아 있든 시험이 선다.
-    uint16_t DebugSetOwnedPetHealth(const std::string& owner, uint16_t hp) {
+    uint16_t DebugSetOwnedPetHealth(int64_t owner, uint16_t hp) {
         for (auto& k : pets_) {
             if (k.owner != owner) continue;
             k.health = hp;
@@ -2460,7 +2461,7 @@ public:
     }
     // 시험용 — 불려 나온 것 하나를 그 자리에 바로 세운다(시전 시간을 안 거친다).
     //   소환 한도처럼 「자리가 이미 차 있을 때」를 만들어야 하는 시험에 쓴다.
-    void DebugSpawnPet(uint16_t type, float x, float y, const std::string& owner) {
+    void DebugSpawnPet(uint16_t type, float x, float y, int64_t owner) {
         SpawnCreature(type, x, y, owner);
     }
     // ★ 4-c3b2 시험용 — 그 소환수가 `name` 발사체를 그 자리로 쏜다(AI 를 안 거친다)
@@ -2468,7 +2469,7 @@ public:
         if (i < pets_.size()) SpawnCreatureMissile(pets_[i], name, tx, ty, out);
     }
     // 시험용 — 그 사람의 소환수 체력(없으면 0). 위 손잡이가 왜 실패했는지 가르는 데 쓴다.
-    uint16_t DebugOwnedPetHealth(const std::string& owner) const {
+    uint16_t DebugOwnedPetHealth(int64_t owner) const {
         for (const auto& k : pets_) if (k.owner == owner) return k.health;
         return 0;
     }
@@ -2478,19 +2479,19 @@ public:
                        double goal1X, double goal1Y, double goal2X, double goal2Y);
     void AddBallStart(double x, double y) { ballStarts_.push_back({ x, y }); }
     size_t BallCount() const { return ball_.size(); }
-    std::string BallCarrier() const { return ball_.empty() ? std::string() : ball_[0].carrier; }
+    int64_t BallCarrier() const { return ball_.empty() ? kNoSession : ball_[0].carrier; }
     double BallX() const { return ball_.empty() ? 0.0 : ball_[0].x; }
     double BallY() const { return ball_.empty() ? 0.0 : ball_[0].y; }
-    uint8_t TeamOf(const std::string& addr) const {
+    uint8_t TeamOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.team;
     }
     // 이 사람이 깃발을 들고 있나.
-    bool Carrying(const std::string& addr) const {
+    bool Carrying(int64_t addr) const {
         for (const auto& f : flags_) if (f.carrier == addr) return true;
         return false;
     }
-    void DebugSetTeam(const std::string& addr, uint8_t team) {
+    void DebugSetTeam(int64_t addr, uint8_t team) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.team = team;
     }
@@ -2500,9 +2501,10 @@ public:
     //   관전 풀기 자체는 `TestObserverExit` 에서 따로 잰다.
     // ★ 시험용 접속. 직업을 고를 수 있다 — **스탯이 직업으로 갈리므로**
     //   기본은 위저드로 둔다(옛 시험이 기대하던 체력 75 가 위저드 값이었다).
-    void DebugEnterGame(const std::string& addr, uint16_t netCode, bool observer = false,
+    //   ★ 10-08 조각 4 — 돌려주는 값은 그 사람의 세션 번호(게임 쪽 함수는 이 번호를 받는다).
+    int64_t DebugEnterGame(const std::string& addr, uint16_t netCode, bool observer = false,
                         CharClass cls = CharClass::Wizard) {
-        Session& s = SessionFor(addr);
+        Session& s = SessionFor(network_.OpenSession(addr));   // ★ 10-08 조각 4 — 주소 → 세션 번호(통신 층)
         // ⚠ 진짜 접속 경로(`CLIENT_ACCEPT`)와 **같은 일을 해야** 한다 —
         //   `joinOrder` 를 여기서 안 매기면 팀이 사전순으로 갈린다(시험이 잡았다).
         if (!s.inGame) s.joinOrder = ++nextJoinOrder_;
@@ -2530,30 +2532,31 @@ public:
         s.importantImmediate = true;   // 시험 — Session::importantImmediate 주석
         // ★ 09-27 B1 — 진짜 접속 경로처럼 기본 장비를 가방에(틀이 없으면 안 실린다 — 틀을 안 넣는 옛 시험은 그대로)
         if (s.inventory.empty()) GiveDefaultGear(s);
+        return s.addr;
     }
     // ★ 09-29 Z1-A 시험용 — 둘레 피해(끝의 벽 피해까지)를 곧바로
     void DebugDamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype, std::vector<OutPacket>& out,
                                 const WallHitter& wallWho = WallHitter{}) {
-        DamageUnitsAround(cx, cy, r1, r2, dmg, dtype, std::string(), Target{}, out, HitterRef{}, nullptr, wallWho);
+        DamageUnitsAround(cx, cy, r1, r2, dmg, dtype, kNoSession, Target{}, out, HitterRef{}, nullptr, wallWho);
     }
     // ★ 09-29 시험용 — CLIENT_READY 처리(`nox_xxx_gameServerReadyMB_4DD180`)를 곧바로
-    void DebugServerReady(const std::string& addr, std::vector<OutPacket>& out) {
+    void DebugServerReady(int64_t addr, std::vector<OutPacket>& out) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) GameServerReadyMB(it->second, out);
     }
     // 시험용 — 중요 메시지 경로를 진짜로(대기열·준비·확인) 돌리게 한다.
-    void DebugImportantReal(const std::string& addr, bool ready) {
+    void DebugImportantReal(int64_t addr, bool ready) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
         it->second.importantImmediate = false;
         it->second.importantReady = ready;
     }
-    size_t DebugImportantPending(const std::string& addr) const {
+    size_t DebugImportantPending(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.importantQ.size();
     }
     // 시험용 — 대기열에 맨 메시지(Packet0)로 실린 옵 op 가 몇 개인가(sub_4E5450 겹침 지우기를 잰다)
-    size_t DebugImportantPendingOp(const std::string& addr, uint8_t op) const {
+    size_t DebugImportantPendingOp(int64_t addr, uint8_t op) const {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return 0;
         size_t n = 0;
@@ -2561,28 +2564,28 @@ public:
         return n;
     }
     // 시험용 — 갱신 알림 정답지화(09-14): 체력 채움(unitAdjustHP) · 마나 더하기/빼기(playerManaAdd/Sub) · +2184 세우기
-    void DebugAdjustHP(const std::string& addr, int dv) { std::vector<OutPacket> o; UnitAdjustHP(Target{ addr, -1 }, dv, o); }
-    void DebugManaAdd(const std::string& addr, int v) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerManaAdd(it->second, v); }
-    void DebugManaSub(const std::string& addr, int v) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerManaSub(it->second, v); }
-    void DebugSetStatsDirty(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.statsDirty = true; }
+    void DebugAdjustHP(int64_t addr, int dv) { std::vector<OutPacket> o; UnitAdjustHP(Target{ addr, -1 }, dv, o); }
+    void DebugManaAdd(int64_t addr, int v) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerManaAdd(it->second, v); }
+    void DebugManaSub(int64_t addr, int v) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerManaSub(it->second, v); }
+    void DebugSetStatsDirty(int64_t addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.statsDirty = true; }
     // 시험용 — 독 남은 양(4-c2a) · 감쇠 계수기를 줄여 「오래 지난 것」을 흉내낸다(감쇠 한 칸이 1000틱이라 그냥은 못 잰다)
-    void DebugSetPoison(const std::string& addr, uint8_t v) {
+    void DebugSetPoison(int64_t addr, uint8_t v) {
         auto i = sessions_.find(addr);
         if (i != sessions_.end()) i->second.poison = v;
     }
-    void DebugSetHealth(const std::string& addr, uint16_t hp) {   // ★ 09-29 B3 시험용 — 여러 번 물리는 시험에서 살려 둔다
+    void DebugSetHealth(int64_t addr, uint16_t hp) {   // ★ 09-29 B3 시험용 — 여러 번 물리는 시험에서 살려 둔다
         auto i = sessions_.find(addr);
         if (i != sessions_.end()) i->second.health = hp;
     }
-    int DebugPoisonOf(const std::string& addr) const {
+    int DebugPoisonOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : static_cast<int>(it->second.poison);
     }
-    void DebugSetPoisonDecay(const std::string& addr, int v) {
+    void DebugSetPoisonDecay(int64_t addr, int v) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.poisonDecay = static_cast<uint16_t>(v);
     }
-    int DebugPoisonDecayOf(const std::string& addr) const {
+    int DebugPoisonDecayOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : static_cast<int>(it->second.poisonDecay);
     }
@@ -2592,42 +2595,42 @@ public:
     void DebugPoisonPet(size_t i, int amount) {
         if (i >= pets_.size()) return;
         std::vector<OutPacket> o;
-        ActivatePoison(Target{ std::string(), static_cast<int>(i) }, amount, amount, o);
+        ActivatePoison(Target{ kNoSession, static_cast<int>(i) }, amount, amount, o);
     }
     // 시험용 — 틱 밖에서 곧바로 되살린다(playerRespawn_4F7EF0). 「부활 직후 · 첫 갱신 전」 창을 여는 데 쓴다
-    void DebugRespawn(const std::string& addr) { auto it = sessions_.find(addr); if (it == sessions_.end()) return; std::vector<OutPacket> o; PlayerRespawn(it->second, frame_, o); }
+    void DebugRespawn(int64_t addr) { auto it = sessions_.find(addr); if (it == sessions_.end()) return; std::vector<OutPacket> o; PlayerRespawn(it->second, frame_, o); }
     // ★ 09-29 — 기본 장비의 수식 넷(평상복 = 캐릭터 색 · 그 밖 없음)
     static void DefaultGearMods(uint16_t type, const std::vector<uint8_t>& info97, uint8_t mods[4]);
     // ★ 09-29 시험용 — 다음 틱에 그 사람을 새로 온 사람으로 소개한다(`CLIENT_ACCEPT` 가 세우는 표시 · 시험 접속은 안 거친다)
-    void DebugSetPendingIntro(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.pendingIntro = true; }
+    void DebugSetPendingIntro(int64_t addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.pendingIntro = true; }
     // ★ 09-29 시험용 — `to` 에게 `who` 의 입은 것 겉모습 전부(새로 온 사람 소개 자리의 몫)
-    void DebugSendWornLooks(const std::string& to, const std::string& who, std::vector<OutPacket>& out) {
+    void DebugSendWornLooks(int64_t to, int64_t who, std::vector<OutPacket>& out) {
         auto t = sessions_.find(to); auto w = sessions_.find(who);
         if (t != sessions_.end() && w != sessions_.end()) SendWornLooks(t->second, w->second, out);
     }
     // ★ 09-28 B4b 시험용 — 부활시키고 나간 것을 받는다
-    void DebugRespawnOut(const std::string& addr, std::vector<OutPacket>& out) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerRespawn(it->second, frame_, out); }
+    void DebugRespawnOut(int64_t addr, std::vector<OutPacket>& out) { auto it = sessions_.find(addr); if (it != sessions_.end()) PlayerRespawn(it->second, frame_, out); }
 
     // ★ 시험용 — 첫 세계 스냅샷을 **다음 틱에** 이 사람에게 보내도록 예약한다.
-    void DebugArmSnapshot(const std::string& addr) {
+    void DebugArmSnapshot(int64_t addr) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.snapshotIn = 0;
     }
 
     // ★ 시험용 — 실제 자리(`posX`/`posY`)와 그것을 통째로 옮기기.
     //   `DebugMoveTo` 는 `x`/`y` 만 넣고 틱이 옮긴다 — 이쪽은 **둘 다** 넣는다
-    double DebugPosX(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.posX; }
-    double DebugPosY(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.posY; }
+    double DebugPosX(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.posX; }
+    double DebugPosY(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.posY; }
     // ★ 2-b2 시험용 — 속도(+80) · 옛 자리(+72)
-    double DebugVelX(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.velX; }
-    double DebugVelY(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.velY; }
-    double DebugPrevX(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.prevX; }
-    double DebugPrevY(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.prevY; }
-    double DebugDistance(const std::string& p, const std::string& q) const {
+    double DebugVelX(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.velX; }
+    double DebugVelY(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.velY; }
+    double DebugPrevX(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.prevX; }
+    double DebugPrevY(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0 : i->second.prevY; }
+    double DebugDistance(int64_t p, int64_t q) const {
         const double dx = DebugPosX(p) - DebugPosX(q), dy = DebugPosY(p) - DebugPosY(q);
         return std::sqrt(dx * dx + dy * dy);
     }
-    void DebugSetPos(const std::string& a, double px, double py) {
+    void DebugSetPos(int64_t a, double px, double py) {
         auto i = sessions_.find(a);
         if (i == sessions_.end()) return;
         i->second.posX = px; i->second.posY = py;
@@ -2636,22 +2639,22 @@ public:
     }
 
     // ★ 시험용 — 지금 자리. 벽 충돌 시험이 이걸로 잰다.
-    int XOf(const std::string& addr) const {
+    int XOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.x;
     }
-    int YOf(const std::string& addr) const {
+    int YOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.y;
     }
 
     // ★ 시험용 — 공격 상태 들여다보기(묶음 3-a). 상태 · 애니 번호 · 애니 칸
-    uint8_t DebugStateOf(const std::string& addr) const {
+    uint8_t DebugStateOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0xff : it->second.moveState;
     }
     // 시험용 — 상태를 지금 프레임으로 새로 넣는다(4-a2 들어오는 Magic 보고 방패 올리기 · 가만 7틱 시계를 0 으로)
-    void DebugSetState(const std::string& addr, uint8_t st) {
+    void DebugSetState(int64_t addr, uint8_t st) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
         it->second.moveState = st;                          // 같은 상태여도 시작 프레임을 새로(PlayerSetState 는 같으면 안 건드린다)
@@ -2659,7 +2662,7 @@ public:
         it->second.animFrame = 0;
     }
     // 시험용 — +520 마지막으로 때린 것의 갈래(3-d · 0 없음 · 1 사람 · 2 몬스터 · 3 무기·투사체)
-    uint8_t DebugLastHitCls(const std::string& addr) const {
+    uint8_t DebugLastHitCls(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0xff : it->second.lastHit.cls;
     }
@@ -2688,38 +2691,38 @@ public:
         uint16_t monsterA2 = 0;
     };
     // ★ 시험용 — 피해 함수(3-e)를 바로 부른다. pet < 0 이면 사람(addr), 아니면 소환수 자리 번호
-    bool DebugHurt(const std::string& addr, int pet, int dmg, const std::string& by, uint8_t dtype,
+    bool DebugHurt(int64_t addr, int pet, int dmg, int64_t by, uint8_t dtype,
                    std::vector<OutPacket>& out, const AttackSrc* src = nullptr, HitterRef hitter = HitterRef{}) {
-        return HurtTarget(Target{ pet < 0 ? addr : std::string(), pet }, dmg, out, by, dtype, src, hitter);
+        return HurtTarget(Target{ pet < 0 ? addr : kNoSession, pet }, dmg, out, by, dtype, src, hitter);
     }
     uint16_t DebugPetHealth(size_t i) const { return i < pets_.size() ? pets_[i].health : 0; }
-    void DebugSetWeapon(const std::string& addr, int64_t classBits) {
+    void DebugSetWeapon(int64_t addr, int64_t classBits) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.debugWeapon = classBits;
     }
-    bool IsInvulnerable(const std::string& addr) const {
+    bool IsInvulnerable(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it != sessions_.end() && it->second.buffs.Has(23);
     }
     // 시험용 — 버프(4-a4)
-    Target DebugFindObjectAtCursor(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? Target{} : FindObjectAtCursor(it->second); }
-    void DebugAddForce(const std::string& addr, double fx, double fy) { auto it = sessions_.find(addr); if (it != sessions_.end()) { it->second.forceX += fx; it->second.forceY += fy; } }
-    float DebugSpeedCur(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0.0f : it->second.speedCur; }
-    uint8_t DebugFacingOf(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0 : it->second.facing; }
-    bool DebugHasEnchant(const std::string& addr, int buff) const {
+    Target DebugFindObjectAtCursor(int64_t addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? Target{} : FindObjectAtCursor(it->second); }
+    void DebugAddForce(int64_t addr, double fx, double fy) { auto it = sessions_.find(addr); if (it != sessions_.end()) { it->second.forceX += fx; it->second.forceY += fy; } }
+    float DebugSpeedCur(int64_t addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0.0f : it->second.speedCur; }
+    uint8_t DebugFacingOf(int64_t addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0 : it->second.facing; }
+    bool DebugHasEnchant(int64_t addr, int buff) const {
         auto it = sessions_.find(addr);
         return it != sessions_.end() && it->second.buffs.Has(buff);
     }
-    int DebugEnchantDur(const std::string& addr, int buff) const {
+    int DebugEnchantDur(int64_t addr, int buff) const {
         auto it = sessions_.find(addr);
         return (it != sessions_.end() && buff >= 0 && buff < 32) ? it->second.buffs.dur[buff] : -1;
     }
-    int DebugEnchantPower(const std::string& addr, int buff) const {
+    int DebugEnchantPower(int64_t addr, int buff) const {
         auto it = sessions_.find(addr);
         return (it != sessions_.end() && buff >= 0 && buff < 32) ? it->second.buffs.power[buff] : -1;
     }
-    void DebugApplyEnchant(const std::string& addr, int buff, int dur, int power) { ApplyEnchant(Target{ addr, -1 }, buff, dur, power); }
-    void DebugBuffOff(const std::string& addr, int buff) { BuffOff(Target{ addr, -1 }, buff); }
+    void DebugApplyEnchant(int64_t addr, int buff, int dur, int power) { ApplyEnchant(Target{ addr, -1 }, buff, dur, power); }
+    void DebugBuffOff(int64_t addr, int buff) { BuffOff(Target{ addr, -1 }, buff); }
     bool DebugPetHasEnchant(size_t i, int buff) const { return i < pets_.size() && pets_[i].buffs.Has(buff); }
     int DebugPetEnchantDur(size_t i, int buff) const {       // ★ 2-a2 시험용
         return (i < pets_.size() && buff >= 0 && buff < 32) ? pets_[i].buffs.dur[buff] : -1;
@@ -2728,7 +2731,7 @@ public:
         return (i < pets_.size() && buff >= 0 && buff < 32) ? pets_[i].buffs.power[buff] : -1;
     }
     uint16_t DebugPetNetCode(size_t i) const { return i < pets_.size() ? pets_[i].netCode : 0; }
-    void DebugApplyEnchantPet(size_t i, int buff, int dur, int power) { ApplyEnchant(Target{ std::string(), static_cast<int>(i) }, buff, dur, power); }
+    void DebugApplyEnchantPet(size_t i, int buff, int dur, int power) { ApplyEnchant(Target{ kNoSession, static_cast<int>(i) }, buff, dur, power); }
     struct BuffConf {                    // spellBuffConf(spells_buffs.go:11)
         int dur = 0;                     // 고정 길이
         std::string durOpt;              // gamedata 이름(있으면 이 값)
@@ -2737,7 +2740,7 @@ public:
         bool durLevelMul = false;        // 세기 곱
         bool once = false;               // 이미 걸려 있으면 안 건다
         bool defensive = false;          // 대상의 공격 지속 주문 취소
-        std::string orig;                // 건 사람(Offensive 면 도운 사람 기록)
+        int64_t orig = 0;                // 건 사람(Offensive 면 도운 사람 기록)
         bool offensive = false;
         uint8_t pointFx = 0;             // 대상 자리 점 효과 오프코드
     };
@@ -2751,15 +2754,15 @@ public:
         return (static_cast<size_t>(i) < arr.size()) ? arr[static_cast<size_t>(i)] : 0.0;
     }
     bool HasGamedata() const { return hasGamedata_; }
-    uint8_t DebugStaminaOf(const std::string& addr) const {
+    uint8_t DebugStaminaOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.stamina;
     }
-    uint8_t DebugAnimByteOf(const std::string& addr) const {
+    uint8_t DebugAnimByteOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : PlayerAnimByte(it->second);
     }
-    uint8_t DebugAttackAnimOf(const std::string& addr) const {
+    uint8_t DebugAttackAnimOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.attackAnim;
     }
@@ -2774,12 +2777,12 @@ public:
         pets_[i].x = x; pets_[i].y = y;
         return true;
     }
-    uint8_t DebugAnimFrameOf(const std::string& addr) const {
+    uint8_t DebugAnimFrameOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.animFrame;
     }
     // ★ 시험용 — 자리를 옮긴다. 사거리 시험에 쓴다.
-    void DebugMoveTo(const std::string& addr, int x, int y) {
+    void DebugMoveTo(int64_t addr, int x, int y) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
         it->second.x = x;
@@ -2791,13 +2794,13 @@ public:
     //   ⚠ 이것 없이는 시험에서 방향을 못 바꾼다 — 2026-09-12 배선 때 돌연변이가
     //     안 잡혀(시험 5개가 이 자리를 안 봤다) 시험을 새로 쓰면서 같이 넣었다.
     // 시험용 — 든 물건의 충전을 직접 정한다(5-e·5-f).
-    void DebugSetCharges(const std::string& addr, uint16_t netCode, uint8_t v) {
+    void DebugSetCharges(int64_t addr, uint16_t netCode, uint8_t v) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
         for (auto& c : it->second.inventory)
             if (c.netCode == netCode) { c.charges = v; if (c.chargesMax < v) c.chargesMax = v; return; }
     }
-    void DebugSetFacing(const std::string& addr, uint8_t facing) {
+    void DebugSetFacing(int64_t addr, uint8_t facing) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
         it->second.facing = facing;
@@ -2814,15 +2817,15 @@ public:
     // `by` 는 때린 쪽의 주소다. 죽으면 그쪽 점수가 오른다.
     // 불·독처럼 임자가 없는 피해면 빈 문자열을 넣는다.
     // `hit` = 마지막으로 때린 것(+520, 3-d). 비었으면 `by` 로 채운다 — 사람이 맨손으로 때린 것(시험·자기 주문 자리)
-    bool Damage(const std::string& addr, int amount, std::vector<OutPacket>& out,
-                const std::string& by = std::string(), const Session::LastHit* hit = nullptr, bool ignoreInvuln = false);
+    bool Damage(int64_t addr, int amount, std::vector<OutPacket>& out,
+                int64_t by = 0, const Session::LastHit* hit = nullptr, bool ignoreInvuln = false);
 
     // 점수 = 정답지 +2136(`Lessons`). 자살·팀킬이면 **내려간다**
-    int32_t KillsOf(const std::string& addr) const {
+    int32_t KillsOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.score;
     }
-    uint32_t DeathsOf(const std::string& addr) const {
+    uint32_t DeathsOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0u : it->second.deaths;
     }
@@ -2830,11 +2833,11 @@ public:
     bool RoundOver() const { return roundOver_; }
 
     // 지금 살아 있나. 없는 상대면 거짓.
-    bool IsAlive(const std::string& addr) const {
+    bool IsAlive(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it != sessions_.end() && it->second.inGame && it->second.respawnAtFrame == 0;
     }
-    uint16_t HealthOf(const std::string& addr) const {
+    uint16_t HealthOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.health;
     }
@@ -2842,7 +2845,7 @@ public:
     //   셈만 하는 순수 함수라 시험이 셈 자체를 들여다본다.
     static bool ClassCanUseFood(CharClass cls, uint32_t foodBits);
     // 시험용 — 금을 뺀다(`playerSubGold_4FA5D0`). 가게가 생기면 그쪽이 이 길을 쓴다.
-    void DebugSubGold(const std::string& addr, uint32_t v, std::vector<OutPacket>& out) {
+    void DebugSubGold(int64_t addr, uint32_t v, std::vector<OutPacket>& out) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
         PlayerSubGold(it->second, v, out);
@@ -2860,7 +2863,7 @@ public:
     }
     bool DebugAIPush(size_t i, uint8_t act) { return i < pets_.size() && AIPush(pets_[i], act); }
     // 시험용 — 조건을 인자와 함께 올린다(6-b)
-    bool DebugAIPushDep(size_t i, uint8_t act, const std::string& addr, int pet, uint32_t u, float f,
+    bool DebugAIPushDep(size_t i, uint8_t act, int64_t addr, int pet, uint32_t u, float f,
                         float x = 0, float y = 0) {
         if (i >= pets_.size()) return false;
         if (!AIPush(pets_[i], act, Target{ addr, pet }, x, y)) return false;
@@ -2894,7 +2897,7 @@ public:
     }
     // 09-21 — **그 사람의 시계**를 시험이 직접 세운다. 전역 `frame_` 과 **다르게** 둬야
     //   「도장을 누구 시계로 찍나」가 갈린다(같으면 어느 쪽을 찍어도 시험이 통과한다)
-    void DebugSetTickFrame(const std::string& addr, uint32_t v) {
+    void DebugSetTickFrame(int64_t addr, uint32_t v) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) { it->second.tickFrame = v; it->second.tickFrameSet = true; }
     }
@@ -2902,7 +2905,7 @@ public:
     // 09-21 — 판 끝 상태를 시험이 직접 뒤집는다(시계가 **바뀔 때만** 나가는지 보려고)
     void DebugSetRoundOver(bool v) { roundOver_ = v; }
     // 09-21 — 그 사람이 믿고 있는 시계(와이어 도장과 견주려고)
-    uint32_t DebugTickFrame(const std::string& addr) const {
+    uint32_t DebugTickFrame(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : ClockOf(it->second);
     }
@@ -2949,8 +2952,8 @@ public:
     float DebugAIArgF(size_t i, int j) const {
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argF : 0.0f;
     }
-    std::string DebugAITargetAddr(size_t i, int j) const {
-        return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].targetAddr : std::string();
+    int64_t DebugAITargetAddr(size_t i, int j) const {
+        return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].targetAddr : kNoSession;
     }
     // 시험용 — 틱이 **스스로 싸움(15)을 쌓는 것**을 끈다.
     //   행동 하나만 떼어 보는 시험은 쌓임을 손으로 세우므로 이것이 필요하다
@@ -2962,20 +2965,20 @@ public:
             k.aiStackInd = 0;
             k.path.clear();
             k.velX = 0; k.velY = 0;
-            k.enemyAddr.clear(); k.enemyPet = -1;
+            k.enemyAddr = kNoSession; k.enemyPet = -1;
         }
     }
-    std::string DebugPetEnemy(size_t i) const { return i < pets_.size() ? pets_[i].enemyAddr : std::string(); }
-    void DebugSetPetEnemy(size_t i, const std::string& addr, int pet) {
+    int64_t DebugPetEnemy(size_t i) const { return i < pets_.size() ? pets_[i].enemyAddr : kNoSession; }
+    void DebugSetPetEnemy(size_t i, int64_t addr, int pet) {
         if (i < pets_.size()) {
             Creature& k = pets_[i];
             k.enemyAddr = addr; k.enemyPet = pet;
-            k.enemyNet = (addr.empty() && pet >= 0 && static_cast<size_t>(pet) < pets_.size()) ? pets_[static_cast<size_t>(pet)].netCode : 0;
+            k.enemyNet = ((addr == kNoSession) && pet >= 0 && static_cast<size_t>(pet) < pets_.size()) ? pets_[static_cast<size_t>(pet)].netCode : 0;
             // ★ 09-29 B1·B2 — 정답지 지금 상대는 늘 보이는 목록에서 나온다 — 목록에도 넣어 알아보기가 다시 고를 때 남게 한다
             Creature::SeenRef r; r.addr = addr; r.petNet = k.enemyNet;
             bool have = false;
-            for (const auto& s : k.seen) if ((!addr.empty() && s.addr == addr) || (addr.empty() && s.petNet == r.petNet)) have = true;
-            if (!have && (!addr.empty() || r.petNet != 0)) k.seen.push_back(r);
+            for (const auto& s : k.seen) if (((addr != kNoSession) && s.addr == addr) || ((addr == kNoSession) && s.petNet == r.petNet)) have = true;
+            if (!have && ((addr != kNoSession) || r.petNet != 0)) k.seen.push_back(r);
         }
     }
     bool DebugCreatureTickMove(size_t i, double tx, double ty) {
@@ -3051,23 +3054,23 @@ public:
     size_t DebugPathVisitCount() const { return aiVisit_.size(); }
     uint32_t DebugPathLast() const { return aiIndexLast_; }
     // 시험용 — 경험치·레벨
-    float DebugExp(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0f : i->second.experience; }
-    int DebugLevel(const std::string& a) const { auto i = sessions_.find(a); return i == sessions_.end() ? -1 : i->second.level; }
+    float DebugExp(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0.0f : i->second.experience; }
+    int DebugLevel(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? -1 : i->second.level; }
     void DebugSendNotice(const char* text, std::vector<OutPacket>& out) { SendNotice(text, out); }   // ★ 09-30 묶음 넘침 시험용
-    void DebugGiveExp(const std::string& a, float v, std::vector<OutPacket>& out) {
+    void DebugGiveExp(int64_t a, float v, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) PlayerGiveExp(i->second, v, out);
     }
     // 시험용 — 죽음 셈의 갈래를 **곧바로** 밟는다.
     //   같은 편 때리기는 `OwnersEnemy` 가 피해 자리에서 **미리 막아** 팀킬 갈래까지 못 간다.
     //   도운 이도 `MarkAssist`(주문 자리)가 세우는 것이라 맨 피해로는 안 선다.
     //   그 둘을 재려면 셈만 따로 불러야 한다
-    void DebugUpdateScore(const std::string& victim, const std::string& killer,
-                          const std::string& assist, std::vector<OutPacket>& out) {
+    void DebugUpdateScore(int64_t victim, int64_t killer,
+                          int64_t assist, std::vector<OutPacket>& out) {
         auto v = sessions_.find(victim);
         if (v == sessions_.end()) return;
         v->second.lastHit = Session::LastHit{};
-        if (!killer.empty()) { v->second.lastHit.cls = 1; v->second.lastHit.player = killer; }
-        if (!assist.empty()) MarkAssist(assist, Target{ victim, -1 });
+        if ((killer != kNoSession)) { v->second.lastHit.cls = 1; v->second.lastHit.player = killer; }
+        if ((assist != kNoSession)) MarkAssist(assist, Target{ victim, -1 });
         PlayerUpdateScore(v->second, out);
     }
     // 묶음 8-a — 판 설정(접속 묶음의 `af`·`b0` 가 이것을 싫는다)
@@ -3078,8 +3081,8 @@ public:
     void SetMaxPlayers(uint8_t n) { gameSettings_.maxPlayers = n; }
 
     size_t PlayerCount() const { size_t n = 0; for (const auto& kv : sessions_) if (kv.second.inGame) ++n; return n; }
-    bool IsInGame(const std::string& x) const { auto i = sessions_.find(x); return i != sessions_.end() && i->second.inGame; }
-    void DebugKick(const std::string& x, std::vector<OutPacket>& out) { KickPlayer(x, out); }
+    bool IsInGame(int64_t x) const { auto i = sessions_.find(x); return i != sessions_.end() && i->second.inGame; }
+    void DebugKick(int64_t x, std::vector<OutPacket>& out) { KickPlayer(x, out); }
 
     // 시험용 — 판 끝나는 나머지 길
     void DebugRoundTimeUp(std::vector<OutPacket>& out) { RoundTimeUp(out); }
@@ -3117,19 +3120,19 @@ public:
     uint8_t DebugMissileDir(size_t i) const { return i < missiles_.size() ? missiles_[i].dir1 : 0; }
     float DebugMissileY(size_t i) const { return i < missiles_.size() ? missiles_[i].posY : 0.0f; }
     void DebugSecretWallUpdate(std::vector<OutPacket>& out) { SecretWallUpdate(out); }
-    void DebugSecretWallSync(const std::string& addr, std::vector<OutPacket>& out) {
+    void DebugSecretWallSync(int64_t addr, std::vector<OutPacket>& out) {
         auto i = sessions_.find(addr);
         if (i != sessions_.end()) SecretWallSync(i->second, out);
     }
-    void DebugSetDeaths(const std::string& x, uint32_t v) {
+    void DebugSetDeaths(int64_t x, uint32_t v) {
         auto i = sessions_.find(x); if (i != sessions_.end()) i->second.deaths = v;
     }
     // 시험용 — 모드별 죽음 셈
-    bool DebugIsCrown(const std::string& x) const {
+    bool DebugIsCrown(int64_t x) const {
         auto i = sessions_.find(x); return i != sessions_.end() && IsCrown(i->second);
     }
     // 10-f — 시험용 완드. 충전이 0 이면 쓰려 할 때 222 가 울려야 한다
-    void DebugGiveWand(const std::string& x, uint8_t spell, uint8_t charges,
+    void DebugGiveWand(int64_t x, uint8_t spell, uint8_t charges,
                        uint8_t chargesMax, uint32_t cooldown) {
         auto i = sessions_.find(x);
         if (i == sessions_.end()) return;
@@ -3141,14 +3144,14 @@ public:
         c.wandCooldown = cooldown;
         i->second.inventory.push_back(c);
     }
-    bool DebugUseWand(const std::string& x, std::vector<OutPacket>& out) {
+    bool DebugUseWand(int64_t x, std::vector<OutPacket>& out) {
         auto i = sessions_.find(x);
         if (i == sessions_.end()) return false;
         for (auto& c : i->second.inventory)
             if (c.wandSpell != 0) return UseWandCast(i->second, c, out);
         return false;
     }
-    void DebugGiveCrown(const std::string& x) {
+    void DebugGiveCrown(int64_t x) {
         auto i = sessions_.find(x);
         if (i == sessions_.end()) return;
         // ⚠ 상수가 아니라 **날숫자 242** 를 넣는다 —
@@ -3156,28 +3159,28 @@ public:
         Session::Carried c; c.netCode = 60000; c.type = 242;
         i->second.inventory.push_back(c);
     }
-    void DebugDeathScoring(const std::string& victim, const std::string& killer,
+    void DebugDeathScoring(int64_t victim, int64_t killer,
                            std::vector<OutPacket>& out) {
         auto v = sessions_.find(victim);
         if (v == sessions_.end()) return;
         v->second.lastHit = Session::LastHit{};
-        if (!killer.empty()) { v->second.lastHit.cls = 1; v->second.lastHit.player = killer; }
+        if ((killer != kNoSession)) { v->second.lastHit.cls = 1; v->second.lastHit.player = killer; }
         DeathScoring(v->second, out);
     }
     // 시험용 — 투표
     size_t DebugVoteCount() const { return votes_.size(); }
     size_t DebugVoteVoters(size_t i) const { return i < votes_.size() ? votes_[i].voters.size() : 0; }
-    void DebugVoteCast(const std::string& who, uint8_t kind, const std::string& targetName,
+    void DebugVoteCast(int64_t who, uint8_t kind, const std::string& targetName,
                        std::vector<OutPacket>& out) {
         auto i = sessions_.find(who); if (i != sessions_.end()) VoteCast(i->second, kind, targetName, out);
     }
-    void DebugVoteWithdraw(const std::string& who, uint8_t kind, const std::string& targetName,
+    void DebugVoteWithdraw(int64_t who, uint8_t kind, const std::string& targetName,
                            std::vector<OutPacket>& out) {
         auto i = sessions_.find(who); if (i != sessions_.end()) VoteWithdraw(i->second, kind, targetName, out);
     }
     void DebugVoteUpdate(std::vector<OutPacket>& out) { VoteUpdate(out); }
     void DebugRemoveVote(size_t i, std::vector<OutPacket>& out) { RemoveVote(i, out); }
-    void DebugSetName(const std::string& who, const std::string& n) {
+    void DebugSetName(int64_t who, const std::string& n) {
         auto i = sessions_.find(who); if (i != sessions_.end()) i->second.name = n;
     }
     // 시험용 — 플래그볼
@@ -3185,7 +3188,7 @@ public:
     uint8_t DebugTeamAfter(uint8_t id) const { return TeamAfter(id); }
 
     // 시험용 — 판 끝
-    void DebugSetScore(const std::string& x, int32_t v) { auto i = sessions_.find(x); if (i != sessions_.end()) i->second.score = v; }
+    void DebugSetScore(int64_t x, int32_t v) { auto i = sessions_.find(x); if (i != sessions_.end()) i->second.score = v; }
     void DebugRoundCheck(std::vector<OutPacket>& out) { RoundCheckLimit(out); }
 
     // 시험용 — 팀
@@ -3195,89 +3198,89 @@ public:
     void DebugSendTeamRemove(uint8_t id, std::vector<OutPacket>& out) { SendTeamRemove(id, out); }
     size_t DebugTeamCount() const { return teams_.size(); }
     // 시험용 — 안내서
-    int DebugGuideLvl(const std::string& a, uint8_t g) const {
+    int DebugGuideLvl(int64_t a, uint8_t g) const {
         auto i = sessions_.find(a); return i == sessions_.end() || g >= 41 ? -1 : i->second.guideLvl[g];
     }
-    bool DebugGuideAward(const std::string& a, uint8_t g, bool announce, std::vector<OutPacket>& out) {
+    bool DebugGuideAward(int64_t a, uint8_t g, bool announce, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); return i != sessions_.end() && GuideAward(i->second, g, announce, out);
     }
     // 시험용 — 작살
-    uint16_t DebugHarpoonBolt(const std::string& a) const {
+    uint16_t DebugHarpoonBolt(int64_t a) const {
         auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.harpoonBoltNc;
     }
-    std::string DebugHarpoonTarget(const std::string& a) const {
-        auto i = sessions_.find(a); return i == sessions_.end() ? std::string() : i->second.harpoonTarget.addr;
+    int64_t DebugHarpoonTarget(int64_t a) const {
+        auto i = sessions_.find(a); return i == sessions_.end() ? kNoSession : i->second.harpoonTarget.addr;
     }
     // 작살 갱신만 따로 굴린다 — 움직임을 안 섞고 관문만 재려고
-    void DebugHarpoonUpdate(const std::string& a, std::vector<OutPacket>& out) {
+    void DebugHarpoonUpdate(int64_t a, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) HarpoonUpdate(i->second, out);
     }
     void DebugAdvanceFrame(uint32_t n) { frame_ += n; }
-    void DebugHarpoonBreak(const std::string& a, std::vector<OutPacket>& out) {
+    void DebugHarpoonBreak(int64_t a, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) HarpoonBreak(i->second, false, HarpoonEnd::Debug, out);
     }
     // 시험용 — 능력
-    int DebugAbilLvl(const std::string& a, uint8_t k) const {
+    int DebugAbilLvl(int64_t a, uint8_t k) const {
         auto i = sessions_.find(a); return i == sessions_.end() || k >= 137 ? -1 : i->second.spellLvl[k];
     }
-    uint32_t DebugAbilCooldown(const std::string& a, uint8_t k) const {
+    uint32_t DebugAbilCooldown(int64_t a, uint8_t k) const {
         auto i = sessions_.find(a); return i == sessions_.end() || k >= kAbilityCount ? 0u : i->second.abilCooldown[k];
     }
-    bool DebugAbilActive(const std::string& a, uint8_t k) const {
+    bool DebugAbilActive(int64_t a, uint8_t k) const {
         auto i = sessions_.find(a); return i != sessions_.end() && k < kAbilityCount && i->second.abilActive[k];
     }
-    bool DebugAbilAward(const std::string& a, uint8_t k, bool announce, std::vector<OutPacket>& out) {
+    bool DebugAbilAward(int64_t a, uint8_t k, bool announce, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); return i != sessions_.end() && AbilityAward(i->second, k, announce, out);
     }
-    bool DebugAbilDo(const std::string& a, uint8_t k, std::vector<OutPacket>& out) {
+    bool DebugAbilDo(int64_t a, uint8_t k, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); return i != sessions_.end() && AbilityDo(i->second, k, out);
     }
-    void DebugAbilTick(const std::string& a, std::vector<OutPacket>& out) {
+    void DebugAbilTick(int64_t a, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) AbilityUpdate(i->second, out);
     }
-    void DebugAbilReset(const std::string& a, uint8_t k, std::vector<OutPacket>& out) {
+    void DebugAbilReset(int64_t a, uint8_t k, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) AbilityReset(i->second, k, out);
     }
-    void DebugAbilCancelAll(const std::string& a, std::vector<OutPacket>& out) {
+    void DebugAbilCancelAll(int64_t a, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); if (i != sessions_.end()) AbilityCancelAll(i->second, out);
     }
-    void DebugSetOverweight(const std::string& a, bool v) {
+    void DebugSetOverweight(int64_t a, bool v) {
         auto i = sessions_.find(a); if (i != sessions_.end()) i->second.overweight = v;
     }
-    int DebugScore(const std::string& a) const {
+    int DebugScore(int64_t a) const {
         auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.score;
     }
-    int DebugSpellLvl(const std::string& a, uint8_t sp) const {
+    int DebugSpellLvl(int64_t a, uint8_t sp) const {
         auto i = sessions_.find(a); return i == sessions_.end() || sp >= 137 ? -1 : i->second.spellLvl[sp];
     }
-    void DebugSetSpellLvl(const std::string& a, uint8_t sp, uint8_t v) {
+    void DebugSetSpellLvl(int64_t a, uint8_t sp, uint8_t v) {
         auto i = sessions_.find(a); if (i != sessions_.end() && sp < 137) i->second.spellLvl[sp] = v;
     }
-    bool DebugGrantSpell(const std::string& a, uint8_t sp, uint8_t announce, bool extra,
+    bool DebugGrantSpell(int64_t a, uint8_t sp, uint8_t announce, bool extra,
                          uint8_t forceLevel, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a);
         return i != sessions_.end() && SpellGrantToPlayer(i->second, sp, announce, extra, forceLevel, out);
     }
-    bool DebugStatsDirty(const std::string& a) const {
+    bool DebugStatsDirty(int64_t a) const {
         auto i = sessions_.find(a); return i != sessions_.end() && i->second.statsDirty;
     }
-    void DebugClearStatsDirty(const std::string& a) {
+    void DebugClearStatsDirty(int64_t a) {
         auto i = sessions_.find(a); if (i != sessions_.end()) i->second.statsDirty = false;
     }
-    uint32_t GoldOf(const std::string& addr) const {
+    uint32_t GoldOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.gold;
     }
-    uint16_t MaxHealthOf(const std::string& addr) const {
+    uint16_t MaxHealthOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.maxHealth;
     }
     // 시험용 — 사람에게 독을 직접 얹는다(소환수용 `DebugPoisonPet` 의 짝).
-    void DebugPoisonPlayer(const std::string& addr, int amount) {
+    void DebugPoisonPlayer(int64_t addr, int amount) {
         std::vector<OutPacket> o;
         ActivatePoison(Target{ addr, -1 }, amount, amount, o);
     }
-    uint16_t ManaOf(const std::string& addr) const {
+    uint16_t ManaOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.mana;
     }
@@ -3285,15 +3288,15 @@ public:
     //   ⚠ 소환(75~114)은 **주문 정의의 마나를 안 쓴다** — blob_587000 217668 표(임프 30)다.
     //     그래서 `RegSpell(…, 0)` 으로도 공짜가 안 되고, 여러 번 부르면 마나가 말라
     //     「한도에 걸린 것」과 「마나가 없는 것」이 구별이 안 된다.
-    void DebugFillMana(const std::string& addr) {
+    void DebugFillMana(int64_t addr) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.mana = it->second.maxMana;
     }
-    size_t CarriedCount(const std::string& addr) const {
+    size_t CarriedCount(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.inventory.size();
     }
-    bool Carries(const std::string& addr, uint16_t netCode) const {
+    bool Carries(int64_t addr, uint16_t netCode) const {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return false;
         for (const auto& c : it->second.inventory)
@@ -3301,7 +3304,7 @@ public:
         return false;
     }
     // 시험용 — 가방 통째(09-27 B1 기본 장비 번호·순서 대조)
-    std::vector<Session::Carried> DebugInventory(const std::string& addr) const {
+    std::vector<Session::Carried> DebugInventory(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? std::vector<Session::Carried>{} : it->second.inventory;
     }
@@ -3358,7 +3361,7 @@ public:
     float DebugPlacedZ(size_t i) const { return i < placed_.size() ? placed_[i].z : 0.0f; }
     uint16_t DebugPlacedType(size_t i) const { return i < placed_.size() ? placed_[i].type : 0; }
     // 마지막으로 받은 피해 종류(+524) — 불꽃 1 · 독 5 처럼 **무엇에 맞았나**를 시험이 가른다
-    uint8_t DebugLastDamageType(const std::string& addr) const {
+    uint8_t DebugLastDamageType(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.lastDamageType;
     }
@@ -3379,7 +3382,7 @@ public:
     unsigned long long counterMissiles() const { return counterMissiles_; }   // 지운 날아가는 것
     unsigned long long counterDurs() const { return counterDurs_; }           // 끊은 지속 주문
     unsigned long long counterEnchants() const { return counterEnchants_; }   // 끈 버프
-    int DebugCastCounterSpell(const std::string& a, std::vector<OutPacket>& out) {
+    int DebugCastCounterSpell(int64_t a, std::vector<OutPacket>& out) {
         auto i = sessions_.find(a); return i == sessions_.end() ? 0 : CastCounterSpell(i->second, out);
     }
     void SetProjType(const std::string& name, uint16_t type, int speedRaw, uint32_t flags, uint8_t collideAmount) {
@@ -3408,10 +3411,10 @@ public:
     Target DebugLastAcceptTarget() const { return lastAcceptTarget_; }
     unsigned long long DebugAcceptCount() const { return acceptCount_; }   // spellAccept 가 캡처 검사를 지난 횟수(시험용)
     // 시험용 — 지속 주문 틀(4-a3). createRet: -1 create 없음 · 0/1 돌려줄 값 · updateStopAt: -1 update 없음 · 0 늘 0 · N 번째에 1
-    bool DebugDurNew(const std::string& caster, uint8_t spell, uint32_t dt, int createRet, int updateStopAt, bool withDestroy,
+    bool DebugDurNew(int64_t caster, uint8_t spell, uint32_t dt, int createRet, int updateStopAt, bool withDestroy,
                      const Target& target, std::vector<OutPacket>& out);
     size_t DurCount() const { return durSpells_.size(); }
-    bool DebugDurActive(uint8_t spell, const std::string& caster) const { return DurActive(spell, caster); }
+    bool DebugDurActive(uint8_t spell, int64_t caster) const { return DurActive(spell, caster); }
     bool DebugDurCanceled(size_t i) const {
         size_t k = 0;
         for (const auto& d : durSpells_) if (k++ == i) return (d.flags88 & 1) != 0;
@@ -3419,10 +3422,10 @@ public:
     }
     int DebugDurDestroys() const { return debugDurDestroys_; }
     bool DebugDurFindByTarget(uint8_t spell, const Target& t) const { return DurFindByTarget(spell, t) != nullptr; }
-    void DebugDurCancelOffensiveFor(const std::string& addr, std::vector<OutPacket>& out) { DurCancelOffensiveFor(addr, out); }
-    void DebugPlayerCancelSpells(const std::string& addr, std::vector<OutPacket>& out) { PlayerCancelSpells(addr, out); }
+    void DebugDurCancelOffensiveFor(int64_t addr, std::vector<OutPacket>& out) { DurCancelOffensiveFor(addr, out); }
+    void DebugPlayerCancelSpells(int64_t addr, std::vector<OutPacket>& out) { PlayerCancelSpells(addr, out); }
     // 시험용 — **세기를 박아** 효과 함수만 부른다. 온라인은 늘 세기 3 이라 세기별 갈래를 시험할 길이 없다.
-    bool DebugSpellAccept(const std::string& addr, uint8_t spell, int lvl, std::vector<OutPacket>& out) {
+    bool DebugSpellAccept(int64_t addr, uint8_t spell, int lvl, std::vector<OutPacket>& out) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return false;
         SpellArg arg;
@@ -3431,21 +3434,21 @@ public:
         return SpellAccept(spell, it->second, addr, arg, lvl, out);
     }
     // 시험용 — 게임에서 빠진 것으로(오브젝트 지워짐 · inGame 끔)
-    void DebugKickPlayer(const std::string& addr, std::vector<OutPacket>& out) { KickPlayer(addr, out); }
-    void DebugSetMana(const std::string& addr, uint16_t v) {
+    void DebugKickPlayer(int64_t addr, std::vector<OutPacket>& out) { KickPlayer(addr, out); }
+    void DebugSetMana(int64_t addr, uint16_t v) {
         auto i = sessions_.find(addr);
         if (i != sessions_.end()) { i->second.mana = v; i->second.manaPrev = v; }
     }
-    bool DebugAbilityDo(const std::string& addr, uint8_t abil, std::vector<OutPacket>& out) {
+    bool DebugAbilityDo(int64_t addr, uint8_t abil, std::vector<OutPacket>& out) {
         auto i = sessions_.find(addr);
         return i != sessions_.end() && AbilityDo(i->second, abil, out);
     }
-    void DebugSendChapterEnd(const std::string& addr, uint8_t ch, bool ended, std::vector<OutPacket>& out) {
+    void DebugSendChapterEnd(int64_t addr, uint8_t ch, bool ended, std::vector<OutPacket>& out) {
         auto i = sessions_.find(addr);
         if (i != sessions_.end()) SendChapterEnd(i->second, ch, ended, out);
     }
     // 10-e — 시험용. 진짜 경로는 `0xBC` 조각을 받는 자리다
-    bool DebugSysopTry(const std::string& addr, const std::string& pw, std::vector<OutPacket>& out) {
+    bool DebugSysopTry(int64_t addr, const std::string& pw, std::vector<OutPacket>& out) {
         auto i = sessions_.find(addr);
         if (i == sessions_.end()) return false;
         const bool okPw = !sysopPassword_.empty() && sysopPassword_ == pw;
@@ -3455,16 +3458,16 @@ public:
         EmitImportantRaw(i->second, res, sizeof(res), out);
         return okPw;
     }
-    void DebugSetClosing(const std::string& addr) {
+    void DebugSetClosing(int64_t addr) {
         auto i = sessions_.find(addr);
         if (i != sessions_.end()) i->second.closing = true;
     }
     // 10-d — 시험용. 진짜 경로에서는 조각을 받을 때마다 새로 적혀 시간 초과가 안 난다
-    void DebugTouch(const std::string& addr) {
+    void DebugTouch(int64_t addr) {
         auto i = sessions_.find(addr);
         if (i != sessions_.end()) i->second.lastSeenFrame = frame_;
     }
-    void DebugLeave(const std::string& addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.inGame = false; }
+    void DebugLeave(int64_t addr) { auto it = sessions_.find(addr); if (it != sessions_.end()) it->second.inGame = false; }
     int DebugDurUpdates() const { return debugDurUpdates_; }
     uint8_t DebugDurSpellAt(size_t i) const {
         size_t k = 0;
@@ -3486,14 +3489,14 @@ public:
         return true;
     }
     // 시험용 — 직업만 바꾼다(스탯은 그대로 · 주문 직업 거르기를 보려고)
-    void DebugSetClass(const std::string& addr, CharClass cls) {
+    void DebugSetClass(int64_t addr, CharClass cls) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.charClass = cls;
     }
     // 시험용 — 서버 시계(마지막 틱 ms). 시험 도우미가 시계를 이어 돌릴 때
     uint32_t DebugNowMs() const { return lastTickMs_; }
     // 시험용 — 그 사람이 시전 중인가(+216)
-    bool DebugCasting(const std::string& addr) const {
+    bool DebugCasting(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it != sessions_.end() && it->second.castFrame != 0;
     }
@@ -3519,13 +3522,13 @@ public:
 
     // ★ 묶음 5 — 그 사람의 **들 무게 밑천**(`+490`). 한도는 이 값의 **두 배**다.
     //   값이 어디서 오는지는 `Session::carryCap` 주석에 있다(thing.bin 이 아니라 힘에서 나온다).
-    uint16_t CarryCapOf(const std::string& addr) const {
+    uint16_t CarryCapOf(int64_t addr) const {
         auto it = sessions_.find(addr);
         return it == sessions_.end() ? 0 : it->second.carryCap;
     }
     // 시험용 — 밑천을 직접 정한다. 「밑천 0 이면 아무것도 못 든다」 갈래를 여는 데 쓴다
     //   (사람은 실제로 0 이 안 되지만, 정답지에 있는 문이라 그대로 옮겼다).
-    void DebugSetCarryCap(const std::string& addr, uint16_t v) {
+    void DebugSetCarryCap(int64_t addr, uint16_t v) {
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.carryCap = v;
     }
@@ -3550,11 +3553,11 @@ public:
     void RejoinReset(Session& s);
     void ReopenMap(std::vector<OutPacket>& out);
     unsigned long long mapReopenStat(int i) const { return i >= 0 && i < 2 ? mapReopenStat_[i] : 0; }   // 0 USE_MAP 보냄(사람 수) · 1 맵 정보 없어 못 보냄
-    int DebugSnapshotIn(const std::string& a) const { auto it = sessions_.find(a); return it == sessions_.end() ? -99 : it->second.snapshotIn; }
-    bool DebugImportantReady(const std::string& a) const { auto it = sessions_.find(a); return it != sessions_.end() && it->second.importantReady; }
+    int DebugSnapshotIn(int64_t a) const { auto it = sessions_.find(a); return it == sessions_.end() ? -99 : it->second.snapshotIn; }
+    bool DebugImportantReady(int64_t a) const { auto it = sessions_.find(a); return it != sessions_.end() && it->second.importantReady; }
     unsigned long long restartRespawned() const { return restartRespawned_; }   // 다시 열며 되살린 사람 수(관전자 뺌)
-    bool DebugMarkSet(const std::string& a, int i) const { auto it = sessions_.find(a); return it != sessions_.end() && i >= 0 && i < 4 && it->second.markSet[i]; }
-    void DebugSetMark(const std::string& a, int i) { auto it = sessions_.find(a); if (it != sessions_.end() && i >= 0 && i < 4) it->second.markSet[i] = true; }
+    bool DebugMarkSet(int64_t a, int i) const { auto it = sessions_.find(a); return it != sessions_.end() && i >= 0 && i < 4 && it->second.markSet[i]; }
+    void DebugSetMark(int64_t a, int i) { auto it = sessions_.find(a); if (it != sessions_.end() && i >= 0 && i < 4) it->second.markSet[i] = true; }
     void DebugEndRound() { roundOver_ = true; restartAtFrame_ = frame_ + kRoundRestartTicks; }   // ★ 10-01 R1 시험용 — 승자 알림 없이 판끝만
     // 깃발 HUD 를 몇 번 보냈나. **매 틱 수준으로 오르면 과잉이다**(0x5e 270배 사고 참조).
     unsigned long long flagStatusSent() const { return flagStatusSent_; }
@@ -3565,12 +3568,12 @@ public:
     // ★ 09-28 — 남을 소개한 2d 의 정보 97B 출처: [0] 녹음 그대로(Jack) · [1] 녹음에 그 사람 97B 를 덮음 · [2] 97B 로 조립
     unsigned long long newPlayerInfo(size_t i) const { return i < 3 ? newPlayerInfo_[i] : 0; }
     // 시험용 — `who` 를 `to` 에게 소개하는 `2d` 를 그대로 만든다(EmitNewPlayer 는 private)
-    void DebugEmitNewPlayer(const std::string& to, const std::string& who, std::vector<OutPacket>& out) {
+    void DebugEmitNewPlayer(int64_t to, int64_t who, std::vector<OutPacket>& out) {
         auto t = sessions_.find(to); auto w = sessions_.find(who);
         if (t != sessions_.end() && w != sessions_.end()) EmitNewPlayer(t->second, w->second, 0, out);
     }
     // 시험용 — 이 사람에게 그 번호의 바닥 물건을 소개했나
-    bool DebugStaticIntroduced(const std::string& addr, uint16_t netCode) const {
+    bool DebugStaticIntroduced(int64_t addr, uint16_t netCode) const {
         auto it = sessions_.find(addr);
         return it != sessions_.end() && it->second.staticIntroAt.count(netCode) != 0;
     }
@@ -3607,7 +3610,7 @@ public:
     //   무인으로 쏘려면 필요하다(09-18 실측 — 마나 5/125 라 6번 막혔다)
     void SetStartMana(int v) { startMana_ = v; }
     // 시험용 — 그 사람 팀에 득점을 넣는다(깃발을 실제로 나르지 않고 판끝을 재려고).
-    void DebugCapture(const std::string& addr, int n) {
+    void DebugCapture(int64_t addr, int n) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end() || it->second.team >= 3) return;
         for (int i = 0; i < n; ++i) {
@@ -3622,7 +3625,7 @@ public:
     unsigned long long aims() const { return aims_; }
     // 시험용 — 날아가는 것 하나의 자리. 없으면 (0,0).
     // 시험용 — 겨눈 자리를 직접 넣는다.
-    void DebugAimAt(const std::string& addr, int x, int y) {
+    void DebugAimAt(int64_t addr, int x, int y) {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
         it->second.aimX = x;
@@ -3635,7 +3638,7 @@ public:
     //   「투사체만 안 맞았다」가 구분된다(09-10 오판의 자리).
     unsigned long long hurts() const { return hurts_; }
     unsigned long long contactDamageHits() const { return contactDamageHits_; }   // ★ 1-d — 맵 불 같은 장애물 닿음 피해
-    bool IsEquipped(const std::string& addr, uint16_t netCode) const {
+    bool IsEquipped(int64_t addr, uint16_t netCode) const {
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return false;
         for (const auto& c : it->second.inventory)
@@ -3787,7 +3790,7 @@ public:
     unsigned long long twoHandShieldOff() const { return twoHandShieldOff_; }
     unsigned long long shieldDropsTwoHand() const { return shieldDropsTwoHand_; }   // ★ 09-28 — 방패를 입어 내려놓게 한 두 손 무기
     unsigned long long wandSpellCut() const { return wandSpellCut_; }
-    uint32_t DebugArmorEquip(const std::string& addr) const {                        // 시험용 — 플레이어 +0(갑옷 비트 합)
+    uint32_t DebugArmorEquip(int64_t addr) const {                        // 시험용 — 플레이어 +0(갑옷 비트 합)
         auto it = sessions_.find(addr); return it == sessions_.end() ? 0u : ArmorEquipOf(it->second);
     }
     // ★ 09-27 B3 — modifier.bin `WEAPON_DEFINITIONS` 한 칸(종류 번호별): 쓸 수 있는 직업 비트(CLASSUSE — 워리어 1 · 위저드 2 · 컨저러 4) · 요구 힘.
@@ -3802,15 +3805,15 @@ public:
     unsigned long long quiverFromMap() const { return quiverFromMap_; }   // ★ 09-29 — 맵 짐에서 화살 수를 읽어 실은 바닥 화살통
     unsigned long long bowPoseEnded() const { return bowPoseEnded_; }     // ★ 09-29
     unsigned long long connectTailStops() const { return connectTailStops_; }   // ★ 09-29 ③
-    int DebugArrowDamage(const std::string& owner, uint16_t arrowType) const { return ArrowDamage(owner, arrowType); }   // ★ 09-29
+    int DebugArrowDamage(int64_t owner, uint16_t arrowType) const { return ArrowDamage(owner, arrowType); }   // ★ 09-29
     void NoteQuiverFromMap() { ++quiverFromMap_; }
     // ★ 09-29 — 시험용: 가방 물건의 재장전 칸·화살 수를 바꾼다
-    bool DebugSetBowReload(const std::string& addr, uint16_t nc, uint8_t v) {
+    bool DebugSetBowReload(int64_t addr, uint16_t nc, uint8_t v) {
         auto it = sessions_.find(addr); if (it == sessions_.end()) return false;
         for (auto& c : it->second.inventory) if (c.netCode == nc) { c.bowReload = v; return true; }
         return false;
     }
-    bool DebugSetCharges(const std::string& addr, uint16_t nc, uint8_t cur, uint8_t max) {
+    bool DebugSetCharges(int64_t addr, uint16_t nc, uint8_t cur, uint8_t max) {
         auto it = sessions_.find(addr); if (it == sessions_.end()) return false;
         for (auto& c : it->second.inventory) if (c.netCode == nc) { c.charges = cur; c.chargesMax = max; return true; }
         return false;
@@ -3819,16 +3822,16 @@ public:
     void SetArmorDef(uint16_t wire, uint8_t classes, uint16_t reqStrength, float value) { armorDef_[wire] = ArmorDef{ classes, reqStrength, value }; }
     size_t ArmorDefCount() const { return armorDef_.size(); }
     unsigned long long armorGate(ArmorGate g) const { return g < ArmorGate::Count ? armorGate_[static_cast<size_t>(g)] : 0; }
-    float DebugArmorValue(const std::string& addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0.0f : ArmorValueOf(it->second); }
+    float DebugArmorValue(int64_t addr) const { auto it = sessions_.find(addr); return it == sessions_.end() ? 0.0f : ArmorValueOf(it->second); }
     size_t WeaponDefCount() const { return weaponDef_.size(); }
     // 시험용 — 든 무기(09-27 B2): 비트 · 종류 번호 · 무기 칸 번호
-    uint32_t DebugWeaponEquip(const std::string& addr) const {
+    uint32_t DebugWeaponEquip(int64_t addr) const {
         auto it = sessions_.find(addr); return it == sessions_.end() ? 0u : WeaponEquipOf(it->second);
     }
-    uint16_t DebugWeaponWire(const std::string& addr) const {
+    uint16_t DebugWeaponWire(int64_t addr) const {
         auto it = sessions_.find(addr); return it == sessions_.end() ? 0 : WeaponWireOf(it->second);
     }
-    uint16_t DebugWeaponNet(const std::string& addr) const {
+    uint16_t DebugWeaponNet(int64_t addr) const {
         auto it = sessions_.find(addr); return it == sessions_.end() ? 0 : it->second.weaponNet;
     }
     unsigned long long berserkHit(BerserkHit h) const {                          // ★ 2-b2 — 그 갈래별
@@ -3921,11 +3924,11 @@ public:
     unsigned long long footTreadSilent() const { return footTreadSilent_; }
     unsigned long long hurtVoice(HurtVoice k) const { return hurtVoice_[static_cast<size_t>(k)]; }   // ★ 09-24
     unsigned long long HurtVoiceSum() const { unsigned long long n = 0; for (auto v : hurtVoice_) n += v; return n; }
-    void DebugSetInfo97(const std::string& addr, const std::vector<uint8_t>& info) {   // ★ 09-28 시험용 — `CLIENT_ACCEPT` 로 받는 97B 대신
+    void DebugSetInfo97(int64_t addr, const std::vector<uint8_t>& info) {   // ★ 09-28 시험용 — `CLIENT_ACCEPT` 로 받는 97B 대신
         auto it = sessions_.find(addr);
         if (it != sessions_.end()) it->second.info97 = info;
     }
-    void DebugSetFemale(const std::string& addr, bool female) {   // ★ 09-24 시험용 — 사람 정보 97바이트의 67번 칸(IsFemale)
+    void DebugSetFemale(int64_t addr, bool female) {   // ★ 09-24 시험용 — 사람 정보 97바이트의 67번 칸(IsFemale)
         auto it = sessions_.find(addr);
         if (it == sessions_.end()) return;
         if (it->second.info97.size() < 68) it->second.info97.resize(97, 0);
@@ -3947,21 +3950,21 @@ public:
         matByWire_ = std::move(matByWire); breastByWire_ = std::move(breastplateByWire); newPlayerWire_ = newPlayerWire;
     }
     uint32_t MaterialOfWire(uint16_t w) const { return w < matByWire_.size() ? matByWire_[w] : 0u; }
-    void DebugGiveItemType(const std::string& x, uint16_t type) {   // ★ 4-c2 시험용 — 종류만 있는 물건 하나를 쥐여 준다
+    void DebugGiveItemType(int64_t x, uint16_t type) {   // ★ 4-c2 시험용 — 종류만 있는 물건 하나를 쥐여 준다
         auto i = sessions_.find(x);
         if (i == sessions_.end()) return;
         Session::Carried c; c.netCode = 60002; c.type = type;
         i->second.inventory.push_back(c);
     }
-    void DebugGiveCarried(const std::string& x, const Session::Carried& c) {   // ★ 09-29 시험용 — 줍기 관문을 안 거치고 가방에 넣는다(퀘스트에서 주운 것 흉내)
+    void DebugGiveCarried(int64_t x, const Session::Carried& c) {   // ★ 09-29 시험용 — 줍기 관문을 안 거치고 가방에 넣는다(퀘스트에서 주운 것 흉내)
         auto i = sessions_.find(x);
         if (i != sessions_.end()) i->second.inventory.push_back(c);
     }
-    bool DebugAirborne(const std::string& a) const { auto i = sessions_.find(a); return i != sessions_.end() && i->second.airborne; }
-    bool DebugAbilActiveVal(const std::string& a, uint8_t k) const {            // ★ 2-a1 시험용
+    bool DebugAirborne(int64_t a) const { auto i = sessions_.find(a); return i != sessions_.end() && i->second.airborne; }
+    bool DebugAbilActiveVal(int64_t a, uint8_t k) const {            // ★ 2-a1 시험용
         auto i = sessions_.find(a); return i != sessions_.end() && AbilityIsActiveVal(i->second, k);
     }
-    bool DebugPlayerSetState(const std::string& a, uint8_t st) {                // ★ 2-a1 시험용 — 규칙을 거치는 상태 바꾸기
+    bool DebugPlayerSetState(int64_t a, uint8_t st) {                // ★ 2-a1 시험용 — 규칙을 거치는 상태 바꾸기
         auto i = sessions_.find(a); return i != sessions_.end() && PlayerSetState(i->second, st, frame_);
     }
     unsigned long long harpoonAimFound() const { return harpoonAimFound_; }     // ★ 1-b
@@ -4008,14 +4011,14 @@ public:
     bool DebugPetDead(size_t i) const { return i < pets_.size() && pets_[i].dead; }
     uint32_t DebugPetObjFlags(size_t i) const { return i < pets_.size() ? PetObjFlags(pets_[i]) : 0; }
     // ★ 10-01 묶음 시험용 — 비신뢰 메시지 하나를 진짜 길(`Emit` → 묶음)로 싣는다(혼자 한도를 넘는 덩어리 만들기)
-    void DebugEmit(const std::string& addr, const std::vector<uint8_t>& msg, std::vector<OutPacket>& out) {
+    void DebugEmit(int64_t addr, const std::vector<uint8_t>& msg, std::vector<OutPacket>& out) {
         auto it = sessions_.find(addr); if (it != sessions_.end()) Emit(it->second, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
     }
     // ★ 10-01 시체 거르기 시험용 — 명령 · 둘레 밀기 · 날아가는 주문 대상 고르기를 바로 부른다
-    void DebugOrder(const std::string& addr, uint16_t net, uint8_t order) { auto it = sessions_.find(addr); if (it != sessions_.end()) OrderUnit(it->second, net, order); }
+    void DebugOrder(int64_t addr, uint16_t net, uint8_t order) { auto it = sessions_.find(addr); if (it != sessions_.end()) OrderUnit(it->second, net, order); }
     void DebugPushAround(float cx, float cy, float outer, float inner, float power) { PushUnitsAround(cx, cy, outer, inner, power); }
-    Target DebugFlySearch(float x, float y, const std::string& owner, float dist) const {
-        return SpellFlySearchTarget(true, x, y, x, y, owner, std::string(), 0, dist, nullptr, nullptr);
+    Target DebugFlySearch(float x, float y, int64_t owner, float dist) const {
+        return SpellFlySearchTarget(true, x, y, x, y, owner, kNoSession, 0, dist, nullptr, nullptr);
     }
     uint32_t DebugPetDecayFrame(size_t i) const { return i < pets_.size() ? pets_[i].decayFrame : 0; }
     // ── 조각 D(09-16) 신설 계수기 — 「눈이 없어 못 재던 것」을 재는 자리 ──
@@ -4029,7 +4032,7 @@ public:
     // 버린 소리를 **번호별로** — 수만 알면 「정답지대로 버림」과 「엉뚱한 번호를 부름」이 안 갈린다
     const std::map<uint16_t, unsigned long long>& soundsDroppedIds() const { return soundsDroppedIds_; }
     // 성장 — 레벨·경험치·지금 든 주문 칸 수. 진단 스위치가 먹었는지 보는 유일한 자리다
-    float DebugExperience(const std::string& a) const {
+    float DebugExperience(int64_t a) const {
         auto i = sessions_.find(a); return i == sessions_.end() ? -1.0f : i->second.experience;
     }
     // ⚠ 주문 **칸 수**로는 못 가른다 — 온라인은 들어올 때 137 칸을 전부 3 으로 채운다
@@ -4062,10 +4065,12 @@ public:
     unsigned long long spellsOnSelf() const { return spellsOnSelf_; }
 
 private:
-    Session& SessionFor(const std::string& addr);
+    Session& SessionFor(int64_t addr);
+    // ★ 10-08 조각 4 — 세션 번호의 주소 글자(기록용). 모르는 번호면 빈 글자.
+    const char* AddrText(int64_t addr) const;
 
     // 사거리 안에서 가장 가까운 **다른** 사람. 없으면 빈 문자열.
-    std::string NearestOther(const std::string& self, double range) const;
+    int64_t NearestOther(int64_t self, double range) const;
 
     // ★ 사거리 안에서 가장 가까운 **적** — 사람이든 불려 나온 것이든.
     //
@@ -4076,7 +4081,7 @@ private:
     // ⚠ 「부른 사람의 공격에도 소환수가 안 맞는다」는 **근거 없이 정한 것**이다.
     //   덤프에 소환 표본이 아예 없어 진짜 녹스가 어떻게 하는지 모른다.
     //   자기 소환수를 자기가 때려 죽이는 것이 이상해 보여 그렇게 뒀을 뿐이다.
-    Target NearestTarget(const std::string& friendOwner, double x, double y,
+    Target NearestTarget(int64_t friendOwner, double x, double y,
                          double range) const;
 
     // 고른 대상을 깎는다 — 정답지 **피해 함수(+716)** 자리(묶음 3-e, 2026-09-13).
@@ -4089,14 +4094,14 @@ private:
     //   죽음·관전·되받아치기·방패/대검/지팡이 막기(`GAME3_3.c:122·161·191·202·288·322·338`) · 마법 방패가 다 흡수(`GAME3_2.c:7326`) ·
     //   화약 피해 함수의 종류 아님(`GAME3_3.c:680`). **무적·같은 편·면역은 참**이다(`GAME3_3.c:129` · `GAME3_2.c:7069·7100·7131~7146`)
     bool HurtTarget(const Target& t, int dmg, std::vector<OutPacket>& out,
-                    const std::string& by = std::string(), uint8_t dtype = 0, const AttackSrc* src = nullptr,
+                    int64_t by = 0, uint8_t dtype = 0, const AttackSrc* src = nullptr,
                     HitterRef hitter = HitterRef{});
     // ★ 4-c3b1 — 「때린 것」 도우미. 사람 몸 = NewPlayer 번호 · 주소가 사람이 아니면(몬스터가 때린 이 등) 아직 안 옮김(4-c3b3)
     HitterRef HitterPlayerBody() const { HitterRef h; h.kind = HitterRef::Type; h.type = newPlayerWire_; return h; }
-    HitterRef HitterByAddr(const std::string& addr) const { return sessions_.count(addr) ? HitterPlayerBody() : HitterRef{}; }
+    HitterRef HitterByAddr(int64_t addr) const { return sessions_.count(addr) ? HitterPlayerBody() : HitterRef{}; }
     // ★ 4-c3b3b — 소환수(몬스터)면 때린 것·때린 이 둘 다 그 몸(감전 되갚기 a2 = a1 · 닿음 감전 a2 = a3 = a1)
     HitterRef HitterUnit(const Target& t) const {
-        if (!t.addr.empty()) return HitterByAddr(t.addr);
+        if ((t.addr != kNoSession)) return HitterByAddr(t.addr);
         if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) return HitterMonster(pets_[static_cast<size_t>(t.pet)]);
         return HitterRef{};
     }
@@ -4122,7 +4127,7 @@ private:
     void PlayerManaSub(Session& s, int v);                                       // playerManaSub_4EEBF0 — +6 = 이전 · 0 아래 안 감
     void PlayerManaRefresh(Session& s);                                          // playerManaRefresh_4EECF0 — +6 = 이전 · +4 = 최대
     void ReportHealthDeltaTo(Session& viewer, uint16_t netCode, uint16_t hp, uint32_t lastDamageFrame,
-                             std::map<std::string, uint16_t>& seen, std::vector<OutPacket>& out);   // netPlayerObjSend_518C30 a4 갈래 → netReportHealthDelta_4D8760
+                             std::map<int64_t, uint16_t>& seen, std::vector<OutPacket>& out);   // netPlayerObjSend_518C30 a4 갈래 → netReportHealthDelta_4D8760
     void TryCollide(Session& s, uint16_t code, std::vector<OutPacket>& out);      // sdecode `0x7B` MSG_TRY_COLLIDE
     uint16_t WeaponWireOf(const Session& s) const;
     // ── 시전 틀 (묶음 4-a) ──
@@ -4141,7 +4146,7 @@ private:
         int next[9] = { -1, -1, -1, -1, -1, -1, -1, -1, -1 };
     };
     struct CastEntry {                   // magicEnt (spellByBookInsert_4FE340)
-        std::string caster;              // [1] — 사람 주소(몬스터 시전은 묶음 6)
+        int64_t caster = 0;              // [1] — 사람 주소(몬스터 시전은 묶음 6)
         uint32_t spells[5] = {};         // [2..6]
         uint8_t slot = 0;                // +28 지금 주문 칸
         bool glyph = false;              // +29 글리프 섞임
@@ -4159,7 +4164,7 @@ private:
     void SpellCastByBook(uint32_t frame, std::vector<OutPacket>& out);
     void PlayerSpell(Session& s, std::vector<OutPacket>& out);                       // player.go:462
     bool CastSpellByUser(uint8_t spell, int lvl, Session& s, const SpellArg& arg, std::vector<OutPacket>& out);
-    bool SpellAccept(uint8_t spell, Session& s, const std::string& obj3, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);   // spells.go:193 · a2 = s · obj3 = 주인
+    bool SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg& arg, int lvl, std::vector<OutPacket>& out);   // spells.go:193 · a2 = s · obj3 = 주인
     int SpellCheckClass(const Session& s, uint8_t spell) const;                        // sub_4FD0E0
     int CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) const;      // checkPlrCantCastSpell_4FD150
     int SpellManaTake(Session& s, uint8_t spell, int costKind, std::vector<OutPacket>& out);   // sub_4FCF90
@@ -4188,14 +4193,14 @@ private:
         bool destroyed = false;          // +16 & 0x20
         uint32_t flags = 0;              // +16 오브젝트 깃발(thing FLAGS — Magic 은 AIRBORNE)
         Buffs buffs;                     // 시전자 적외선(21) 복사 — CanSee(4-a4)
-        std::string owner;               // +508 주인(사람 주소)
+        int64_t owner = 0;               // +508 주인(사람 주소)
         // ★ 09-20 — **쏜 크리처**의 자리 번호(사람이 쏘면 −1). 주인 사슬의 뿌리를 가리는 데 쓴다 —
         //   덫 화살과 **몬스터가 쏜 화살**은 둘 다 `owner` 가 비어 있어 이것 없이는 못 가른다
         int ownerPet = -1;
         // SpellProjectileUpdateData(server/object_spell.go:5)
-        std::string ud0;                 // [0] 시전자(되받아치면 바뀐다)
+        int64_t ud0 = 0;                 // [0] 시전자(되받아치면 바뀐다)
         Target ud1;                      // [1] 대상
-        std::string ud2;                 // [2] 처음 시전자
+        int64_t ud2 = 0;                 // [2] 처음 시전자
         uint8_t spell = 0;               // [3]
         int level = 0;                   // [4]
         // ★ 닿음 함수 갈래(묶음 4-c3 날리는 것) — thing.bin `COLLIDE` 가 정한다.
@@ -4220,7 +4225,7 @@ private:
         uint16_t netCode = 0;
         uint16_t type = 0;           // 와이어 종류(이름 → SetNamedType 으로 받는다)
         float x = 0, y = 0;
-        std::string owner;           // 놓은 사람 — 피해 임자 사슬(findParentChainPlayer)
+        int64_t owner = 0;           // 놓은 사람 — 피해 임자 사슬(findParentChainPlayer)
         uint32_t life = 0;           // 갱신자료 첫 칸 — 매 틱 하나씩 줄고 0 이면 지운다
         uint32_t nextHitFrame = 0;   // +136 다음 판정 프레임
         uint8_t kind = 0;            // 주기 함수 갈래 — 1 = 독구름(ToxicCloudUpdate) · 2 = 닿음 피해(DamageCollide)
@@ -4248,16 +4253,16 @@ private:
         float radius = 0.0f;         // EXTENT CIRCLE — 닿음 판정 반지름(불꽃 6)
     };
     bool CreateSpellFly(Session& s, Target target, uint8_t spell, std::vector<OutPacket>& out);   // createSpellFly_4FDDA0
-    Target SpellFlySearchTarget(bool havePos, float px, float py, float mslX, float mslY, const std::string& mslOwner,
-                                const std::string& mslSelf, uint32_t sflags, float dist, const Session* self, const Buffs* mslBuffs) const;   // server/spells.go:360
+    Target SpellFlySearchTarget(bool havePos, float px, float py, float mslX, float mslY, int64_t mslOwner,
+                                int64_t mslSelf, uint32_t sflags, float dist, const Session* self, const Buffs* mslBuffs) const;   // server/spells.go:360
     void UpdateMissiles(uint32_t frame, std::vector<OutPacket>& out);                                 // updateUnitsCallUpdate 의 투사체 몫
     void DestroyMissile(size_t i, std::vector<OutPacket>& out);                                       // DelayedDelete → netReportDestroyObject
-    void MissileChangeOwner(MissileObj& m, const std::string& own, uint32_t frame);                 // changeOwner_52BE40
+    void MissileChangeOwner(MissileObj& m, int64_t own, uint32_t frame);                 // changeOwner_52BE40
     void GameServerReadyMB(Session& s, std::vector<OutPacket>& out);                                // gameServerReadyMB_4DD180
-    int CastConfuse(const std::string& obj3, const Target& targ, int lvl);                          // 4-b4 52C1E0
-    int CastStun(const std::string& obj3, const Target& targ, int lvl);                             // 52C2C0
+    int CastConfuse(int64_t obj3, const Target& targ, int lvl);                          // 4-b4 52C1E0
+    int CastStun(int64_t obj3, const Target& targ, int lvl);                             // 52C2C0
     int CastFumble(const Target& targ);                                                              // 52C060
-    int CastInversion(const Session& a4, const std::string& obj3);                                  // 52BEB0
+    int CastInversion(const Session& a4, int64_t obj3);                                  // 52BEB0
     int CastCurePoison(uint8_t spell, Session& a2, const Target& targ, int lvl, std::vector<OutPacket>& out);   // 52CDB0
     // ── 묶음 4-b5a 즉발 회복 ──
     int CastLesserHeal(uint8_t spell, Session& caster, const Target& targ, std::vector<OutPacket>& out);         // sub_52DD50
@@ -4275,8 +4280,8 @@ private:
         uint16_t id = 0;                 // +0 NewRaw 가 매긴 번호
         uint8_t spell = 0;               // +4
         int level = 0;                   // +8
-        std::string obj12;               // +12 처음 시전자(spellAccept a2)
-        std::string caster;              // +16 Caster16 주인(obj3) — 사람 주소(몬스터 시전은 묶음 7)
+        int64_t obj12 = 0;               // +12 처음 시전자(spellAccept a2)
+        int64_t caster = 0;              // +16 Caster16 주인(obj3) — 사람 주소(몬스터 시전은 묶음 7)
         bool flag20 = false;             // +20 글리프가 건 것(4-e)
         float posX = 0, posY = 0;        // +28 Pos
         Target field36;                  // +36 먼젓번 빔 대상 — 바뀌면 옛 빔을 끄고 새 빔을 켠다(마나 빨기 52E210)
@@ -4304,7 +4309,7 @@ private:
         DurFns fns;
         std::vector<DurSpell> sub108;    // +108 하위(연쇄 번개 조각 · 4-d)
     };
-    bool DurNew(uint8_t spell, const std::string& a2, const std::string& obj3, bool u3Glyph, const SpellArg& arg, int lvl,
+    bool DurNew(uint8_t spell, int64_t a2, int64_t obj3, bool u3Glyph, const SpellArg& arg, int lvl,
                 const DurFns& fns, uint32_t dt, std::vector<OutPacket>& out);                          // spellsDuration.New
     // ★ 09-29 B7 — 몬스터 시전(Server.cpp 「B7」 절)
     bool MonsterDurNew(Creature& k, uint8_t spell, const Target& target, const DurFns& fns, uint32_t dt, std::vector<OutPacket>& out);
@@ -4322,11 +4327,11 @@ private:
     void DurOnNewSpell(std::vector<OutPacket>& out);                                                    // onNewSpell
     void DurDestroy(std::list<DurSpell>::iterator it, std::vector<OutPacket>& out);                     // destroyDurSpell
     void DurCancel(DurSpell& d, std::vector<OutPacket>& out);                                           // CancelSpell(4FE9D0)
-    void DurCancelFor(uint8_t spell, const std::string& obj, std::vector<OutPacket>& out);              // CancelFor(4FEB10)
-    void DurCancelOffensiveFor(const std::string& obj, std::vector<OutPacket>& out);                    // CancelOffensiveFor(4FF310)
-    bool DurActive(uint8_t spell, const std::string& obj) const;                                        // Sub4FEE50
-    void PlayerCancelSpells(const std::string& obj, std::vector<OutPacket>& out);                       // playerCancelSpells_4FEAE0
-    void CancelChannelSpells(const std::string& obj, std::vector<OutPacket>& out);                      // cancelAllSpells_4FEE90
+    void DurCancelFor(uint8_t spell, int64_t obj, std::vector<OutPacket>& out);              // CancelFor(4FEB10)
+    void DurCancelOffensiveFor(int64_t obj, std::vector<OutPacket>& out);                    // CancelOffensiveFor(4FF310)
+    bool DurActive(uint8_t spell, int64_t obj) const;                                        // Sub4FEE50
+    void PlayerCancelSpells(int64_t obj, std::vector<OutPacket>& out);                       // playerCancelSpells_4FEAE0
+    void CancelChannelSpells(int64_t obj, std::vector<OutPacket>& out);                      // cancelAllSpells_4FEE90
     const DurSpell* DurFindByTarget(uint8_t spell, const Target& target) const;                         // sub_4FF2D0
     void NetStopRaySpell(const DurSpell& d, const Target& who, std::vector<OutPacket>& out);            // NetStopRaySpell
     void SpellCastByPlayer(uint32_t frame, std::vector<OutPacket>& out);                                // spellCastByPlayer(틱)
@@ -4351,7 +4356,7 @@ private:
     // 수명으로 안 지우는 것(운석처럼 제 조건으로 사라지는 것)에 쓰는 값.
     static constexpr uint32_t kPlacedNoLife = 0xFFFFFFFFu;
     // 놓은 것을 가리킨다. 못 놓았으면 nullptr. ⚠ 돌려준 포인터는 **다음 PlaceObject 까지만** 쓸 것(벡터가 옮겨 앉는다).
-    PlacedObj* PlaceObject(uint16_t type, float x, float y, const std::string& owner, uint32_t life, uint8_t kind,
+    PlacedObj* PlaceObject(uint16_t type, float x, float y, int64_t owner, uint32_t life, uint8_t kind,
                            uint8_t dmgAmount = 0, uint8_t dmgType = 0, float radius = 0.0f);
     void UpdatePlaced(std::vector<OutPacket>& out);                                                      // 놓인 것들의 주기 함수 + 수명
     void DestroyPlaced(size_t i, std::vector<OutPacket>& out);
@@ -4372,7 +4377,7 @@ private:
     static constexpr int kSummonLimit = 4;   // summonLimit(`spell_summon.go:13`) — 크기 합 상한
     int SummonSizeOf(uint16_t type) const;
     // countControlledCreatures_500D10 — 그 사람이 **거느린** 것들의 크기 합.
-    int CountControlledCreatures(const std::string& owner) const;
+    int CountControlledCreatures(int64_t owner) const;
     int DurSummonCreate(DurSpell& d, std::vector<OutPacket>& out);                                     // summonStart_500DA0
     int DurSummonTick(DurSpell& d, std::vector<OutPacket>& out);                                       // summonFinish_5010D0
     void ReportAcquireCreature(Session& owner, const Creature& k, std::vector<OutPacket>& out);        // ★ 10-01 netReportAcquireCreature_4D91A0
@@ -4400,7 +4405,7 @@ private:
     // ── 묶음 4-d 지속 공격 ──
     // 대상의 자리. 없으면 false — 사람과 소환수를 한 자리에서 가른다.
     bool TargetXY(const Target& t, float& x, float& y) const {
-        if (!t.addr.empty()) {
+        if ((t.addr != kNoSession)) {
             auto it = sessions_.find(t.addr);
             if (it == sessions_.end() || !it->second.inGame) return false;
             x = static_cast<float>(it->second.posX); y = static_cast<float>(it->second.posY);
@@ -4420,12 +4425,12 @@ private:
                            const std::vector<Target>& taken) const;
     int DurChainLightningCreate(DurSpell& d, std::vector<OutPacket>& out);                               // onStartLightning_52F820
     int DurChainLightningTick(DurSpell& d, std::vector<OutPacket>& out);                                 // onFrameLightning_52F8A0
-    void SpawnCreature(uint16_t type, float x, float y, const std::string& owner);                       // newObjectWithTypeInd + createAt
+    void SpawnCreature(uint16_t type, float x, float y, int64_t owner);                       // newObjectWithTypeInd + createAt
     void PlacedCollide(PlacedObj& o, std::vector<OutPacket>& out);                                       // 놓인 것의 닿음 함수(피해·마나 빨기)
     // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.
     //   skip 은 이미 직접 맞은 것(두 번 때리지 않는다). 벽 너머(선 추적 1)는 안 닿는다.
     void DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, uint8_t dtype,
-                           const std::string& by, const Target& skip, std::vector<OutPacket>& out,
+                           int64_t by, const Target& skip, std::vector<OutPacket>& out,
                            HitterRef hitter = HitterRef{},    // ★ 4-c3b1 — 정답지 `who`(부르는 쪽마다 다르다 — 표)
                            const AttackSrc* whoSrc = nullptr,  // ★ 09-27 S1 — 피해 함수의 v9(= a3 없음 → who) · 막기 판정·때린 이 자리
                            const WallHitter& wallWho = WallHitter{});   // ★ 09-29 Z1-A — 끝의 벽 피해가 보는 who
@@ -4478,7 +4483,7 @@ private:
     bool TryReloadQuiver(Session& s, std::vector<OutPacket>& out);                          // `playerTryReloadQuiver_539FF0` — 화살통(비트 2)을 듦
     bool ShootBowCrossbow(Session& s, Session::Carried& bow, std::vector<OutPacket>& out);  // `shootBowCrossbow1_539BD0`
     void ShootArrow(Session& s, Session::Carried* quiver, uint32_t kind, std::vector<OutPacket>& out);   // `shootBowCrossbow2_539D80`
-    int ArrowDamage(const std::string& owner, uint16_t arrowType) const;                     // `calcBoltDamage_4EF1E0` + 0.5 버림
+    int ArrowDamage(int64_t owner, uint16_t arrowType) const;                     // `calcBoltDamage_4EF1E0` + 0.5 버림
     void PlayWeaponPickupSound(const Session& s, uint16_t snd);                               // `sub_53A6C0`
     // toSelf = 거짓이면 본인 알림(0x60/0x61)은 빼고 남에게 겉모습만(버리기 `sub_4ED0C0` 가 a3 = 0 으로 부른다)
     // toOthers = 거짓이면 남에게 겉모습도 안 보낸다(09-28 B4b — 죽은 사람이 떨어뜨릴 때 a4 = 0)
@@ -4581,7 +4586,7 @@ private:
     void MonsterAnimUpdate(Creature& k);                      // `updateNPCAnimData_50A850`
     void MonsterMoveAudio(Creature& k, AnimStat site);        // `monsterMoveAudio_534030`
     // ★ 09-29 B6 — 소리 듣기(Server.cpp 「B6」 절)
-    struct ListenRec { uint16_t snd = 0; std::string srcAddr; uint16_t srcNet = 0; bool srcIsPet = false; float x = 0, y = 0; uint32_t frame = 0; };
+    struct ListenRec { uint16_t snd = 0; int64_t srcAddr = 0; uint16_t srcNet = 0; bool srcIsPet = false; float x = 0, y = 0; uint32_t frame = 0; };
     void MonsterListen(Creature& k);                          // `aiListenToSounds`
     bool MonsterShouldListen(const Creature& k, const ListenRec& r);   // `shouldUnitListen`
     int  MonsterTraceSound(const Creature& k, const ListenRec& r);     // `traceSound`
@@ -4591,7 +4596,7 @@ private:
     uint32_t MonsterSubclass(uint16_t wire) const { auto it = monsterSubclass_.find(wire); return it == monsterSubclass_.end() ? 0u : it->second; }
     // 크리처(사본이어도 — 번호로 찾는다)를 대상 꼴로 · 목록에 없으면 빈 것
     Target PetTarget(const Creature& k) const {
-        for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == k.netCode) return Target{ std::string(), static_cast<int>(i) };
+        for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == k.netCode) return Target{ kNoSession, static_cast<int>(i) };
         return Target{};
     }
     void SendGold(Session& s, std::vector<OutPacket>& out);
@@ -4767,7 +4772,7 @@ private:
         float x = 0, y = 0;
         uint8_t kind = 0;
         uint32_t code = 0;
-        std::string owner;                     // 이 소리의 임자(사람 주소) — 있으면 그 사람에게는 0xA7
+        int64_t owner = 0;                     // 이 소리의 임자(사람 주소) — 있으면 그 사람에게는 0xA7
     };
     std::vector<AudioEvent> audioEvents_;
     int SoundFadePerc(uint16_t id, float sx, float sy, double px, double py) const;
@@ -4778,29 +4783,29 @@ private:
     // 묶음 8-e — 투표(0xEE)
     struct Vote {
         uint8_t kind = 0;                 // [0] 0·1 강퇴 · 2 퀘스트 다시 시작 · 3 퀘스트에서 내보내기
-        std::string target;               // [28] 겨눈 사람(갈래 2 는 없음)
-        std::vector<std::string> voters;  // [8] 표를 던진 사람들 · [4] 는 그 개수
+        int64_t target = 0;               // [28] 겨눈 사람(갈래 2 는 없음)
+        std::vector<int64_t> voters;  // [8] 표를 던진 사람들 · [4] 는 그 개수
         uint8_t team = 0;                 // [16] 낸 사람의 팀
         bool teamOnly = false;            // [20] 같은 팀만 셀 것인가
         uint32_t startFrame = 0;          // [24]
     };
     void SendVoteGui(uint8_t val, std::vector<OutPacket>& out);
     void SendVoteClose(Session& s, std::vector<OutPacket>& out);
-    Vote* FindVote(uint8_t kind, const std::string& target);
+    Vote* FindVote(uint8_t kind, int64_t target);
     void RemoveVote(size_t i, std::vector<OutPacket>& out);
     bool VotePasses(const Vote& v) const;
     void VoteCast(Session& voter, uint8_t kind, const std::string& targetName,
                   std::vector<OutPacket>& out);
     void VoteWithdraw(Session& voter, uint8_t kind, const std::string& targetName,
                       std::vector<OutPacket>& out);
-    void VoteDropPlayer(const std::string& who, std::vector<OutPacket>& out);
+    void VoteDropPlayer(int64_t who, std::vector<OutPacket>& out);
     void VoteUpdate(std::vector<OutPacket>& out);
-    void KickPlayer(const std::string& addr, std::vector<OutPacket>& out);
+    void KickPlayer(int64_t addr, std::vector<OutPacket>& out);
 
     // 묶음 8-d — 플래그볼
     void SendBallStatus(std::vector<OutPacket>& out);
     void SendFlagBallWinner(uint8_t teamId, std::vector<OutPacket>& out);
-    void DropBall(const std::string& who, std::vector<OutPacket>& out);
+    void DropBall(int64_t who, std::vector<OutPacket>& out);
     void UpdateBall(std::vector<OutPacket>& out);
     uint8_t TeamAfter(uint8_t teamId) const;
 
@@ -4856,7 +4861,7 @@ private:
     void PlayerAddGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerAddGold_4FA590
     void PlayerSubGold(Session& s, uint32_t v, std::vector<OutPacket>& out);   // playerSubGold_4FA5D0
     void PoisonTick(std::vector<OutPacket>& out);                                                        // server.go:175~201 감쇠 + 피해
-    int CastPoison(const std::string& obj3, const Target& targ, int lvl, std::vector<OutPacket>& out);   // castPoison_52C720
+    int CastPoison(int64_t obj3, const Target& targ, int lvl, std::vector<OutPacket>& out);   // castPoison_52C720
     Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기
     int DrainApply(Session& caster, const Target& t, int amount);                                        // sub_52E450
     int TargetMaxHealth(const Target& t) const;                                                          // unitGetMaxHP_4EE7A0
@@ -4879,12 +4884,12 @@ private:
     // CanSee(server/object.go:76) — obj 가 눈멀면 못 봄 · flags&1 아니면 투명 targ 는 적외선·느리면(속도 ≤ 6) 못 봄
     static bool CanSeeBuffs(const Buffs* obj, const Buffs* targ, double targVelX, double targVelY, int flags);
     void SendFxAllCli(float x, float y, const uint8_t* msg, size_t n, std::vector<OutPacket>& out);   // netSendFxAllCli_523030
-    Target DamageAttacker(const std::string& by, const AttackSrc* src) const;                               // 4-b1 a2
+    Target DamageAttacker(int64_t by, const AttackSrc* src) const;                               // 4-b1 a2
     void DamageShockBack(const Target& victim, const Buffs& vb, const Target& attacker, const AttackSrc* src, std::vector<OutPacket>& out);
     int DamageProtect(const Buffs& b, uint8_t dtype, int amount) const;                                     // 4DFE40·4DFF40
     void DamageVampirism(const Target& attacker, const Target& victim, int amount, std::vector<OutPacket>& out);
     void UnitAdjustHP(const Target& t, int dv, std::vector<OutPacket>& out);                                 // unitAdjustHP_4EE460
-    void MarkAssist(const std::string& orig, const Target& targ);        // sub_4E7540(+3600 도운 사람) — 효과 묶음에서
+    void MarkAssist(int64_t orig, const Target& targ);        // sub_4E7540(+3600 도운 사람) — 효과 묶음에서
     int DebugDurCreate(DurSpell& d, std::vector<OutPacket>& out);                                      // 시험용 create/update/destroy
     int DebugDurUpdate(DurSpell& d, std::vector<OutPacket>& out);
     void DebugDurDestroyFn(DurSpell& d, std::vector<OutPacket>& out);
@@ -4914,7 +4919,7 @@ private:
         if (MissileRootIsMonster(m)) h.monsterA2 = pets_[static_cast<size_t>(m.ownerPet)].type;
         return h;
     }
-    bool OwnersEnemy(const std::string& a, bool aMonsterRoot, const std::string& b, bool bMonsterRoot) const;
+    bool OwnersEnemy(int64_t a, bool aMonsterRoot, int64_t b, bool bMonsterRoot) const;
 
     // 판 시계를 뿌린다 — `0xd3 TIMER_STATUS`. 짜임은 실측이다(PROTOCOL.md 「판 시계」).
     void SendTimer(std::vector<OutPacket>& out);
@@ -4935,7 +4940,7 @@ private:
     void SendNotice(const char* text, std::vector<OutPacket>& out);
 
     // 깃발을 들고 있으면 그 자리에 떨어뜨린다 (죽었을 때).
-    void DropFlag(const std::string& who, std::vector<OutPacket>& out);
+    void DropFlag(int64_t who, std::vector<OutPacket>& out);
 
     // 깃발 줍기·득점을 살핀다. 틱마다 부른다.
     void UpdateFlags(std::vector<OutPacket>& out);
@@ -5032,7 +5037,7 @@ private:
     //   ★ 2-b2 — kind 0 = **벽**(정답지 짝의 둘째가 0). 벽 짝은 a.collide(0) 만 부르고 버프 몫·되부르기가 없다(`GAME5.c:2055~2066`)
     struct ContactRef {
         uint8_t kind = 0;
-        std::string addr;
+        int64_t addr = 0;
         int idx = -1;
     };
     // ★ 2-b2 — `PlayerCollide`(`GAME3_3.c:3188~3253`)의 광전사 갈래. other 가 null 이면 벽
@@ -5122,7 +5127,7 @@ private:
     // ★ 09-30 틱 끝 — 사람마다 묶음을 [27][a4][잡다][aa+중요] 차례로 한 데이터그램에 싣는다
     void FlushBundles(std::vector<OutPacket>& out);
 
-    std::map<std::string, Session> sessions_;
+    std::map<int64_t, Session> sessions_;
     std::map<uint8_t, unsigned long long> seen_;
     unsigned long long handled_ = 0;   // 답을 만든 메시지 수
     uint32_t nextJoinOrder_ = 0;       // 접속한 차례에 매기는 번호 (팀 나누기용)
@@ -5400,7 +5405,7 @@ private:
     int debugDurUpdates_ = 0, debugDurDestroys_ = 0;
     Target lastAcceptTarget_;                      // 시험용 — 마지막 spellAccept 의 대상
     unsigned long long acceptCount_ = 0;
-    std::string lastAcceptCaster_;
+    int64_t lastAcceptCaster_ = 0;
     MagicTypeInfo magicType_;                      // 묶음 4-a2 thing "Magic"
     std::map<std::string, ProjTypeInfo> projTypes_;   // 묶음 4-c3 이름 → 날아가는 종류(불덩이 셋 …)
     unsigned long long spellEffectDeferred_ = 0;   // 효과 함수를 아직 안 옮긴 주문이 받아들여진 수

@@ -76,6 +76,12 @@ static void LoadRealAttackAnims(nox::Server& srv) {
 #include "nox/SoundNames.h"
 #include "nox/JoinBundle.h"
 
+// ★ 10-08 조각 4 — 시험의 「사람」은 주소 글자다. 게임 쪽 함수는 세션 번호를 받으므로 통신 층에서 번호를 얻는다
+//   (없으면 만든다 — `DebugEnterGame` 이 쓰는 번호와 같다). 빈 글자는 「사람 없음」.
+static int64_t Sid(nox::Server& srv, const std::string& addr) {
+    return addr.empty() ? nox::kNoSession : srv.Network().OpenSession(addr);
+}
+
 namespace {
 
 int g_failed = 0;
@@ -471,8 +477,8 @@ void TestDeathFlow() {
     nox::Server srv;
     const std::string who = "10.0.0.1:1000";
     srv.DebugEnterGame(who, 728);
-    Check(srv.IsAlive(who), "들어오자마자 살아 있지 않음");
-    Check(srv.HealthOf(who) == nox::kDefaultMaxHealth, "처음 체력이 최대가 아님");
+    Check(srv.IsAlive(Sid(srv, who)), "들어오자마자 살아 있지 않음");
+    Check(srv.HealthOf(Sid(srv, who)) == nox::kDefaultMaxHealth, "처음 체력이 최대가 아님");
 
     // ① 안 죽을 만큼 때린다 — ★ 09-14 정답지화: `42` 증감·`43` 절대값은 피해 자리가 아니라 **갱신 틱**이 보낸다
     //    `43` 은 다음 틱 PlayerReportAnything(+10 ≠ 지금 · Packet1) · `42` 는 마지막 피해(+536) 뒤 2틱 넘은 갱신(보는 사람별 · 음수만 · Packet0)
@@ -481,9 +487,9 @@ void TestDeathFlow() {
         srv.Tick(0, warm);                                   // 첫 호출은 기준점만
         for (int t = 1; t <= 3; ++t) srv.Tick(33 * t, warm); // 봐 둔다 — 처음 보는 오브젝트는 지금 값을 적을 뿐 42 를 안 보낸다(정답지 0 과 견줌 · +536 뒤 2틱)
         std::vector<nox::OutPacket> out;
-        const bool died = srv.Damage(who, 30, out);
+        const bool died = srv.Damage(Sid(srv, who), 30, out);
         Check(!died, "30 맞고 죽으면 안 됨");
-        Check(srv.HealthOf(who) == 45, "75-30 이 45 가 아님");
+        Check(srv.HealthOf(Sid(srv, who)) == 45, "75-30 이 45 가 아님");
         Check(FindMsg(Flatten(out), static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA)) == nullptr &&
               FindMsg(Flatten(out), static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH)) == nullptr,
               "피해 자리에서 42·43 을 곧바로 보냈다(정답지는 갱신 틱)");
@@ -523,10 +529,10 @@ void TestDeathFlow() {
     // ② 죽인다
     {
         std::vector<nox::OutPacket> out;
-        const bool died = srv.Damage(who, 100, out);
+        const bool died = srv.Damage(Sid(srv, who), 100, out);
         Check(died, "100 맞고 안 죽음");
-        Check(srv.HealthOf(who) == 0, "죽었는데 체력이 0 이 아님");
-        Check(!srv.IsAlive(who), "죽었는데 살아 있다고 나옴");
+        Check(srv.HealthOf(Sid(srv, who)) == 0, "죽었는데 체력이 0 이 아님");
+        Check(!srv.IsAlive(Sid(srv, who)), "죽었는데 살아 있다고 나옴");
 
         auto msgs = Flatten(out);
         const auto* e = FindMsg(msgs, static_cast<uint8_t>(nox::Op::PLAYER_DIED));
@@ -541,7 +547,7 @@ void TestDeathFlow() {
     // ③ 죽어 있는 동안 또 때려도 아무 일 없어야 한다
     {
         std::vector<nox::OutPacket> out;
-        Check(!srv.Damage(who, 10, out), "죽은 사람이 또 죽음");
+        Check(!srv.Damage(Sid(srv, who), 10, out), "죽은 사람이 또 죽음");
         Check(out.empty(), "죽은 사람을 때렸는데 뭔가 나감");
     }
 
@@ -550,7 +556,7 @@ void TestDeathFlow() {
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);                    // 첫 호출은 기준점만 잡는다
         out.clear();
-        Check(srv.DebugStateOf(who) == 3, "죽은 순간 상태가 3(DIE) 이 아니다");
+        Check(srv.DebugStateOf(Sid(srv, who)) == 3, "죽은 순간 상태가 3(DIE) 이 아니다");
         srv.Tick(33 * 60, out);              // 60틱 — 3→4(30) · 15 도 넘김
         {   // 죽음의 `42` 도 갱신 틱이 보낸다 — 남은 45 만 깎여야 한다
             const auto msgs4 = Flatten(out);
@@ -558,14 +564,14 @@ void TestDeathFlow() {
             Check(d != nullptr, "죽음의 0x42 가 갱신 틱에 안 나감");
             if (d) Check(static_cast<int16_t>((*d)[3] | ((*d)[4] << 8)) == -45, "남은 45 만 깎여야 하는데 아님");
         }
-        Check(!srv.IsAlive(who), "클릭 없이 되살아났다 — 자동 부활은 정답지 기본 꺼짐");
-        Check(srv.DebugStateOf(who) == 4, "죽고 30틱이 지났는데 상태 4(DEAD) 가 아니다");
+        Check(!srv.IsAlive(Sid(srv, who)), "클릭 없이 되살아났다 — 자동 부활은 정답지 기본 꺼짐");
+        Check(srv.DebugStateOf(Sid(srv, who)) == 4, "죽고 30틱이 지났는데 상태 4(DEAD) 가 아니다");
         out.clear();
         auto click = InputPacket(6);
         srv.OnPacket(who, click.data(), click.size(), out);
         srv.Tick(33 * 61, out);              // 한 틱
-        Check(srv.IsAlive(who), "상태 4 에서 클릭했는데 안 살아남");
-        Check(srv.HealthOf(who) == nox::kDefaultMaxHealth, "되살아났는데 체력이 최대가 아님");
+        Check(srv.IsAlive(Sid(srv, who)), "상태 4 에서 클릭했는데 안 살아남");
+        Check(srv.HealthOf(Sid(srv, who)) == nox::kDefaultMaxHealth, "되살아났는데 체력이 최대가 아님");
 
         auto msgs = Flatten(out);
         const auto* r = FindMsg(msgs, static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN));
@@ -611,28 +617,28 @@ void TestRespawnFaithful() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(a, 9999, out, "");
-        Check(srv.DebugAnimByteOf(a) == 1, "죽은 순간 자세가 1(DIE) 이 아니다");
+        srv.Damage(Sid(srv, a), 9999, out, Sid(srv, ""));
+        Check(srv.DebugAnimByteOf(Sid(srv, a)) == 1, "죽은 순간 자세가 1(DIE) 이 아니다");
         int to4 = -1;
         for (int t = 1; t <= 40; ++t) {
             if (t == 20) click(srv, a, out);                // 상태 3 중 클릭 — 무시
             ms += 33; srv.Tick(ms, out);
-            if (to4 < 0 && srv.DebugStateOf(a) == 4) to4 = t;
+            if (to4 < 0 && srv.DebugStateOf(Sid(srv, a)) == 4) to4 = t;
         }
         Check(to4 == 31, "죽고 31틱째(30 넘김) 에 상태 4 가 아니다");
-        Check(srv.DebugAnimByteOf(a) == 2, "상태 4 자세가 2(DEAD) 가 아니다");
-        Check(!srv.IsAlive(a), "상태 3 중 클릭으로 살아났다");
+        Check(srv.DebugAnimByteOf(Sid(srv, a)) == 2, "상태 4 자세가 2(DEAD) 가 아니다");
+        Check(!srv.IsAlive(Sid(srv, a)), "상태 3 중 클릭으로 살아났다");
         // 상태 4 된 지 9틱(40−31) — 15 안이라 클릭해도 안 살림
         click(srv, a, out);
         ms += 33; srv.Tick(ms, out);
-        Check(!srv.IsAlive(a), "상태 4 된 지 15틱 안인데 클릭으로 살아났다");
+        Check(!srv.IsAlive(Sid(srv, a)), "상태 4 된 지 15틱 안인데 클릭으로 살아났다");
         for (int t = 0; t < 10; ++t) { ms += 33; srv.Tick(ms, out); }
-        Check(!srv.IsAlive(a), "클릭 없이 살아났다(자동 부활 꺼짐)");
+        Check(!srv.IsAlive(Sid(srv, a)), "클릭 없이 살아났다(자동 부활 꺼짐)");
         click(srv, a, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.IsAlive(a), "상태 4 15틱 뒤 클릭했는데 안 살아났다");
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "살아난 뒤 상태가 13 이 아니다");
-        Check(srv.IsInvulnerable(a), "살아났는데 무적(버프 23) 이 아니다");
+        Check(srv.IsAlive(Sid(srv, a)), "상태 4 15틱 뒤 클릭했는데 안 살아났다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateIdle, "살아난 뒤 상태가 13 이 아니다");
+        Check(srv.IsInvulnerable(Sid(srv, a)), "살아났는데 무적(버프 23) 이 아니다");
     }
 
     // ② 시작 지점 — 적(b)에게서 가장 먼 곳 · FORGET_DRAWABLES 는 본인에게만 · E9 는 모두 · DD 는 본인만 · DE 는 워리어가 아니면
@@ -642,20 +648,20 @@ void TestRespawnFaithful() {
         srv.SetAutoRespawn(true);
         srv.DebugEnterGame(a, 728);                          // 위저드
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1000, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(a, 9999, out, "");
+        srv.Damage(Sid(srv, a), 9999, out, Sid(srv, ""));
         out.clear();
         int alive = -1;
         for (int t = 1; t <= 60 && alive < 0; ++t) {
             out.clear();                                    // 부활한 그 틱에 나간 것만 본다(HUD 되풀이 등 섞임 방지)
             ms += 33; srv.Tick(ms, out);
-            if (srv.IsAlive(a)) alive = t;
+            if (srv.IsAlive(Sid(srv, a))) alive = t;
         }
         Check(alive == 47, "자동 부활이 3(30)+4(15) 넘긴 47틱째가 아니다");
-        Check(srv.XOf(a) == 3000 && srv.YOf(a) == 3000, "적에게서 가장 먼 시작 지점(3000,3000) 으로 안 옮겼다");
+        Check(srv.XOf(Sid(srv, a)) == 3000 && srv.YOf(Sid(srv, a)) == 3000, "적에게서 가장 먼 시작 지점(3000,3000) 으로 안 옮겼다");
         const auto toA = FlattenTo(out, a);
         const auto toB = FlattenTo(out, b);
         Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::FORGET_DRAWABLES)) != nullptr, "본인에게 FORGET_DRAWABLES(ea) 가 없다");
@@ -676,10 +682,10 @@ void TestRespawnFaithful() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(a, 9999, out, "");
+        srv.Damage(Sid(srv, a), 9999, out, Sid(srv, ""));
         out.clear();
-        for (int t = 0; t < 60 && !srv.IsAlive(a); ++t) { out.clear(); ms += 33; srv.Tick(ms, out); }
-        const bool atStart = (srv.XOf(a) == 1100 && srv.YOf(a) == 1000) || (srv.XOf(a) == 3000 && srv.YOf(a) == 3000);
+        for (int t = 0; t < 60 && !srv.IsAlive(Sid(srv, a)); ++t) { out.clear(); ms += 33; srv.Tick(ms, out); }
+        const bool atStart = (srv.XOf(Sid(srv, a)) == 1100 && srv.YOf(Sid(srv, a)) == 1000) || (srv.XOf(Sid(srv, a)) == 3000 && srv.YOf(Sid(srv, a)) == 3000);
         Check(atStart, "적이 없는데 시작 지점 중 한 곳으로 안 옮겼다");
         Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_TOTAL_MANA)) == nullptr, "워리어인데 DE 가 나갔다");
     }
@@ -691,9 +697,9 @@ void TestRespawnFaithful() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(a, 9999, out, "");
-        for (int t = 0; t < 60 && !srv.IsAlive(a); ++t) { ms += 33; srv.Tick(ms, out); }
-        Check(srv.XOf(a) == 2000 && srv.YOf(a) == 2000, "시작 지점이 없는데 (2000,2000) 이 아니다");
+        srv.Damage(Sid(srv, a), 9999, out, Sid(srv, ""));
+        for (int t = 0; t < 60 && !srv.IsAlive(Sid(srv, a)); ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(srv.XOf(Sid(srv, a)) == 2000 && srv.YOf(Sid(srv, a)) == 2000, "시작 지점이 없는데 (2000,2000) 이 아니다");
     }
 
     // ③ 종류 16 으로 죽으면 자세 51(DUST)
@@ -702,9 +708,9 @@ void TestRespawnFaithful() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(a, -1, 9999, b, 16, out);
-        Check(!srv.IsAlive(a), "종류 16 피해로 안 죽었다 — 이 시험이 무의미해진다");
-        Check(srv.DebugAnimByteOf(a) == 51, "종류 16 으로 죽었는데 자세가 51(DUST) 이 아니다");
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, b), 16, out);
+        Check(!srv.IsAlive(Sid(srv, a)), "종류 16 피해로 안 죽었다 — 이 시험이 무의미해진다");
+        Check(srv.DebugAnimByteOf(Sid(srv, a)) == 51, "종류 16 으로 죽었는데 자세가 51(DUST) 이 아니다");
     }
     std::printf("  죽음·부활(정답지) — 자세 1→2·30/15틱·클릭 부활·가장 먼 시작 지점·무작위·(2000,2000)·ea 본인만·e9 모두·dd/de·먼지 51\n");
 }
@@ -730,7 +736,7 @@ void TestBroadcastToOthers() {
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);                                        // 기준점
         for (int t = 1; t <= 3; ++t) srv.Tick(33 * t, out);      // 봐 둔다(처음 보는 오브젝트는 42 를 안 보낸다 · +536 뒤 2틱)
-        srv.Damage(a, 30, out);
+        srv.Damage(Sid(srv, a), 30, out);
         for (int t = 4; t <= 7; ++t) srv.Tick(33 * t, out);
         const auto toB = FlattenTo(out, b);
         const auto* d = FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA));
@@ -755,8 +761,8 @@ void TestBroadcastToOthers() {
     // ② 죽음 — `0xE8` 이 옆 사람에게
     {
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, srv.HealthOf(a) + 100, out);
-        Check(!srv.IsAlive(a), "치명타를 맞고도 안 죽음");
+        srv.Damage(Sid(srv, a), srv.HealthOf(Sid(srv, a)) + 100, out);
+        Check(!srv.IsAlive(Sid(srv, a)), "치명타를 맞고도 안 죽음");
         const auto toB = FlattenTo(out, b);
         const auto* d = FindMsg(toB, static_cast<uint8_t>(nox::Op::PLAYER_DIED));
         Check(d != nullptr, "남이 죽은 0xE8 이 옆 사람에게 안 감");
@@ -775,7 +781,7 @@ void TestBroadcastToOthers() {
         auto click = InputPacket(6);
         srv.OnPacket(a, click.data(), click.size(), out);        // 클릭해야 부활(3-c)
         srv.Tick(33 * 61, out);
-        Check(srv.IsAlive(a), "클릭했는데 안 되살아남");
+        Check(srv.IsAlive(Sid(srv, a)), "클릭했는데 안 되살아남");
         const auto toB = FlattenTo(out, b);
         const auto* r = FindMsg(toB, static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN));
         Check(r != nullptr, "남이 되살아난 0xE9 가 옆 사람에게 안 감");
@@ -831,7 +837,7 @@ void TestAoiSightExit() {
 
     const std::string a = "10.9.1.1:41011";
     srv.DebugEnterGame(a, 728);
-    srv.DebugMoveTo(a, 1000, 1000);
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
 
     const std::vector<uint8_t> pat = {
         static_cast<uint8_t>(nox::Op::OBJECT_OUT_OF_SIGHT), 0x21, 0x43,
@@ -851,7 +857,7 @@ void TestAoiSightExit() {
 
     // ② 시야 밖으로 걸어가면 — `32 <번호2>` 가 나가야 한다
     {
-        srv.DebugMoveTo(a, 1000 + static_cast<int>(nox::kAoiDropRadius) + 300, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000 + static_cast<int>(nox::kAoiDropRadius) + 300, 1000);
         std::vector<nox::OutPacket> out;
         srv.Tick(66, out);
         const size_t farHits = CountBytes(out, a, pat);
@@ -860,7 +866,7 @@ void TestAoiSightExit() {
 
     // ③ 되돌아오면 **다시 소개**돼야 한다 — `introAt` 에서 지웠어야 성립한다
     {
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         srv.Tick(99, out);
         // 소개는 `ff` + 전체번호라 갱신 안에 종류·좌표까지 실린다. 번호 두 바이트만 본다.
@@ -897,8 +903,8 @@ void TestAoiSightExit() {
 static std::vector<uint8_t> FacingWire(const std::string& a, uint8_t facing) {
     nox::Server srv;
     srv.DebugEnterGame(a, 0x0501);
-    srv.DebugMoveTo(a, 1000, 1000);
-    srv.DebugSetFacing(a, facing);
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+    srv.DebugSetFacing(Sid(srv, a), facing);
     std::vector<nox::OutPacket> warm;
     srv.Tick(0, warm);                      // 첫 호출은 기준점만 잡는다
     std::vector<nox::OutPacket> out;
@@ -1085,7 +1091,7 @@ void CastAndWait(nox::Server& srv, const std::string& who, uint8_t spell, bool o
     srv.Tick(ms, out);                                   // 첫 부름이면 기준점만(시험이 이미 잡았으면 0틱)
     const std::vector<uint8_t> pkt = SpellPacket(spell, onSelf);
     srv.OnPacket(who, pkt.data(), pkt.size(), out);
-    for (int t = 0; t < 60 && (srv.DebugCasting(who) || srv.CastPending() > 0); ++t) {
+    for (int t = 0; t < 60 && (srv.DebugCasting(Sid(srv, who)) || srv.CastPending() > 0); ++t) {
         ms += 34;
         srv.Tick(ms, out);
     }
@@ -1116,7 +1122,7 @@ const char* HitSoundMsg(const nox::Server& srv, const char* what) {
 void SummonImp(nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out) {
     RegSpell(srv, 87);
     LoadRealAttackAnims(srv);   // ★ 09-30 — 임프는 쏘기 애니(4칸)의 쏘는 칸(1)에서 쏜다 — 표가 없으면 영영 안 쏜다(실제 서버는 늘 싣는다)
-    srv.DebugSetClass(who, nox::CharClass::Conjurer);
+    srv.DebugSetClass(Sid(srv, who), nox::CharClass::Conjurer);
     // 소환 시간은 기획자료 값이다(아레나 실측 60·210·375). 없으면 0 이 되어 **영영 안 나온다**
     //   — `+68 − 1 == 지금` 으로 터지는데 0 이면 그 프레임이 과거가 된다.
     //   제 기획자료를 이미 넣은 시험은 안 건드린다(그쪽은 SummonDuration 을 직접 담았다).
@@ -1147,7 +1153,7 @@ void TestManaSpend() {
     const std::string b = "10.9.2.2:41022";
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
     srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-    const uint16_t full = srv.ManaOf(a);
+    const uint16_t full = srv.ManaOf(Sid(srv, a));
     Check(full == nox::ManaOnline(nox::CharClass::Wizard), "들어오자마자 마나가 최대가 아님");
 
     const uint8_t kSpell = 27;      // 파이어볼
@@ -1164,16 +1170,16 @@ void TestManaSpend() {
         const std::vector<uint8_t> pkt = SpellPacket(kSpell, /*onSelf=*/false);   // 여기만은 틱을 손으로 돌린다
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.ManaOf(a) == full, "음소를 말하기도 전에 마나가 깎였다");
-        Check(srv.DebugStateOf(a) == 2, "시전을 넣었는데 상태 2(CAST_SPELL) 가 아니다");
+        Check(srv.ManaOf(Sid(srv, a)) == full, "음소를 말하기도 전에 마나가 깎였다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 2, "시전을 넣었는데 상태 2(CAST_SPELL) 가 아니다");
         const auto first = FlattenTo(out, a);
         const auto* st = FindMsg(first, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START));
         Check(st && st->size() == 2 && (*st)[1] == kSpell, "첫 음소 틱에 `70 <주문>` 이 시전자에게 안 나감");
         Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) == nullptr, "`70` 이 남에게도 감");
         out.clear();
-        for (int t = 0; t < 30 && srv.DebugCasting(a); ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.ManaOf(a) == full - kCost, "시전했는데 마나가 안 깎임");
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "시전이 끝났는데 상태 13 으로 안 돌아옴");
+        for (int t = 0; t < 30 && srv.DebugCasting(Sid(srv, a)); ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.ManaOf(Sid(srv, a)) == full - kCost, "시전했는데 마나가 안 깎임");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateIdle, "시전이 끝났는데 상태 13 으로 안 돌아옴");
 
         const auto toA = FlattenTo(out, a);
         const auto* m = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_MANA));
@@ -1206,12 +1212,12 @@ void TestManaSpend() {
 
     // ② 마나가 바닥나면 효과가 안 난다 — 정답지는 첫 음소에 `70` 은 보내고, 끝에 마나를 못 내면 inform 0 코드 11 · STAT 0
     {
-        const int room = srv.ManaOf(a) / kCost;
+        const int room = srv.ManaOf(Sid(srv, a)) / kCost;
         for (int i = 0; i < room; ++i) {
             std::vector<nox::OutPacket> out;
             CastAndWait(srv, a, kSpell, false, ms, out);
         }
-        Check(srv.ManaOf(a) < kCost, "다 쓰고도 비용만큼 남아 있음");
+        Check(srv.ManaOf(Sid(srv, a)) < kCost, "다 쓰고도 비용만큼 남아 있음");
 
         const unsigned long long before = srv.spellsNoMana();
         std::vector<nox::OutPacket> out;
@@ -1231,11 +1237,11 @@ void TestManaSpend() {
 
     // ③ 정의가 없는 주문은 넣지도 않는다 — 코드 10(꺼짐) · STAT 0 · 마나 그대로
     {
-        const uint16_t was = srv.ManaOf(a);
+        const uint16_t was = srv.ManaOf(Sid(srv, a));
         std::vector<nox::OutPacket> out;
         CastAndWait(srv, a, /*spell=*/43, false, ms, out);   // 정의를 안 넣었다
-        Check(srv.ManaOf(a) == was, "정의 없는 주문이 마나를 깎았다");
-        Check(!srv.DebugCasting(a) && srv.DebugStateOf(a) != 2, "정의 없는 주문이 시전 목록에 들어갔다");
+        Check(srv.ManaOf(Sid(srv, a)) == was, "정의 없는 주문이 마나를 깎았다");
+        Check(!srv.DebugCasting(Sid(srv, a)) && srv.DebugStateOf(Sid(srv, a)) != 2, "정의 없는 주문이 시전 목록에 들어갔다");
         bool code10 = false;
         for (const auto& mm : FlattenTo(out, a))
             if (mm.size() == 6 && mm[0] == static_cast<uint8_t>(nox::Op::INFORM) && mm[1] == 0 && mm[2] == 10) code10 = true;
@@ -1255,7 +1261,7 @@ void TestManaSpend() {
         for (const auto& mm : FlattenTo(out, c))
             if (mm.size() == 6 && mm[0] == static_cast<uint8_t>(nox::Op::INFORM) && mm[1] == 0 && mm[2] == 9) code9 = true;
         Check(code9, "컨저러가 위저드 주문을 넣었는데 코드 9 가 아니다");
-        Check(s2.ManaOf(c) == nox::ManaOnline(nox::CharClass::Conjurer), "직업이 안 맞는데 마나를 깎았다");
+        Check(s2.ManaOf(Sid(s2, c)) == nox::ManaOnline(nox::CharClass::Conjurer), "직업이 안 맞는데 마나를 깎았다");
     }
 
     std::printf("  마나 — 시전에 깎임 · 바닥나면 못 씀 · 0x45 는 본인에게만\n");
@@ -1300,7 +1306,7 @@ void TestAppearanceAndFx() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic sw;
         sw.netCode = 500; sw.type = 1160; sw.x = 1000; sw.y = 1000;
@@ -1323,7 +1329,7 @@ void TestAppearanceAndFx() {
             const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, nc);
             srv.OnPacket(a, g.data(), g.size(), out);
         }
-        Check(srv.CarriedCount(a) == 2, "둘을 못 주웠다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 2, "둘을 못 주웠다");
         const auto toB = FlattenTo(out, b);
         const auto* m = FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MODIFIABLE_WEAPON_EQUIP));
         Check(m != nullptr, "입었는데 남에게 0x51 이 안 감");
@@ -1369,18 +1375,18 @@ void TestAppearanceAndFx() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1000, 1140);   // 사거리(180) 안
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1000, 1140);   // 사거리(180) 안
         RegSpell(srv, 27, 0);
         RegFireballTypes(srv);       // ★ 4-c3 — 이제 불덩이는 정답지 오브젝트다(자리표시 shots_ 가 아니다)
-        srv.DebugSetClass(a, nox::CharClass::Wizard);
+        srv.DebugSetClass(Sid(srv, a), nox::CharClass::Wizard);
 
         std::vector<nox::OutPacket> all;
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);           // ★ 겨눔·시전은 Tick(0) 뒤에 — frame_ 이 맞아야 겨눔이 안 낡는다
         // 불덩이는 **몸 방향**(+124)으로 난다 — 커서가 아니다(castFireball 이 Direction1 을 읽는다).
         // b 를 몸 방향(+x) 앞에 놓는다.
-        srv.DebugMoveTo(b, 1140, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1140, 1000);
         std::vector<nox::OutPacket> cast1;
         { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, cast1); }   // 4-a 시전 틀
         for (int t = 1; t <= 40 && srv.missiles() > 0; ++t) {
@@ -1415,8 +1421,8 @@ void TestAppearanceAndFx() {
         srv.SetGamedata(g);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         RegSpell(srv, 43, 0);
 
         std::vector<nox::OutPacket> out;
@@ -1451,36 +1457,36 @@ void TestPropsAndInvuln() {
         nox::Server srv;
         srv.SetAutoRespawn(true);            // 3-c — 서버 설정 자동 부활(무적 시험이라 클릭 절차는 TestDeathFlow 가 본다)
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);
         std::vector<nox::OutPacket> kill;
-        srv.Damage(a, srv.HealthOf(a) + 100, kill);
-        Check(!srv.IsAlive(a), "안 죽음");
+        srv.Damage(Sid(srv, a), srv.HealthOf(Sid(srv, a)) + 100, kill);
+        Check(!srv.IsAlive(Sid(srv, a)), "안 죽음");
 
         std::vector<nox::OutPacket> rez;
         srv.Tick(33 * (nox::kRespawnDelayTicks + 2), rez);
-        Check(srv.IsAlive(a), "안 되살아남");
-        const uint16_t full = srv.HealthOf(a);
+        Check(srv.IsAlive(Sid(srv, a)), "안 되살아남");
+        const uint16_t full = srv.HealthOf(Sid(srv, a));
 
         const unsigned long long before = srv.invulnBlocked();
         std::vector<nox::OutPacket> hit;
-        srv.Damage(a, 30, hit);
-        Check(srv.HealthOf(a) == full, "부활 직후인데 맞았다 — 무적이 안 걸렸다");
+        srv.Damage(Sid(srv, a), 30, hit);
+        Check(srv.HealthOf(Sid(srv, a)) == full, "부활 직후인데 맞았다 — 무적이 안 걸렸다");
         Check(srv.invulnBlocked() == before + 1, "무적으로 막은 것을 안 셌다");
 
         std::vector<nox::OutPacket> later;
         srv.Tick(33 * (nox::kRespawnDelayTicks + nox::kRespawnInvulnTicks + 5), later);
         std::vector<nox::OutPacket> hit2;
-        srv.Damage(a, 30, hit2);
-        Check(srv.HealthOf(a) < full, "무적이 끝났는데도 안 맞는다 — 영영 무적이다");
+        srv.Damage(Sid(srv, a), 30, hit2);
+        Check(srv.HealthOf(Sid(srv, a)) < full, "무적이 끝났는데도 안 맞는다 — 영영 무적이다");
     }
 
     // 문 — 멀면 닫혀 있고, 다가가면 열린다
     {
         nox::Server s2;
         s2.DebugEnterGame(a, 728);
-        s2.DebugMoveTo(a, 5000, 5000);
+        s2.DebugMoveTo(Sid(s2, a), 5000, 5000);
         std::vector<nox::Server::WorldProp> ps;
         nox::Server::WorldProp door;
         door.netCode = 300; door.type = 306;
@@ -1496,7 +1502,7 @@ void TestPropsAndInvuln() {
         s2.Tick(33, far);
         Check(!s2.PropOpen(300), "멀리 있는데 문이 열렸다");
 
-        s2.DebugMoveTo(a, 990, 990);   // 문짝 선분 위(닫힘각 0 → 문짝은 \ 대각선)
+        s2.DebugMoveTo(Sid(s2, a), 990, 990);   // 문짝 선분 위(닫힘각 0 → 문짝은 \ 대각선)
         std::vector<nox::OutPacket> nearOut;
         s2.Tick(66, nearOut);
         {   // ★★ **도는 모양**을 본다 — 이 셋이 오늘 두 번 무너진 자리다:
@@ -1528,7 +1534,7 @@ void TestPropsAndInvuln() {
             d2.netCode = 301; d2.type = 306; d2.x = 1000; d2.y = 1000;
             d2.kind = nox::PropKind::Door;
             s3.SetWorldProps({ d2 });
-            s3.DebugMoveTo(a, 1000, 1000);                 // ★ 경첩 자리에 선다
+            s3.DebugMoveTo(Sid(s3, a), 1000, 1000);                 // ★ 경첩 자리에 선다
             uint32_t m3 = 0;
             for (int t = 0; t < 60; ++t) { m3 += 33; std::vector<nox::OutPacket> z; s3.Tick(m3, z); }
             const int fine = s3.DebugPropFine(301);
@@ -1552,7 +1558,7 @@ void TestPropsAndInvuln() {
         // 사람이 계속 밀고 있으면 **더 돈다** — 옛 시험은 「또 보내면 안 된다」고 못 박았는데,
         //   그건 각도가 한 값뿐일 때 이야기다. 지금은 도는 동안 각도가 바뀌니 보내는 게 맞다.
         //   대신 **사람이 떠나면 멈추고 닫힌다**를 본다(그게 지금 모형의 불변식이다)
-        s2.DebugMoveTo(a, 4000, 4000);
+        s2.DebugMoveTo(Sid(s2, a), 4000, 4000);
         uint32_t ms2 = 99;
         for (int t = 0; t < 120; ++t) { ms2 += 33; std::vector<nox::OutPacket> o; s2.Tick(ms2, o); }
         Check(!s2.PropOpen(300), "사람이 떠났는데 문이 안 닫힌다");
@@ -1568,7 +1574,7 @@ void TestPropsAndInvuln() {
         const std::string b2addr = "10.9.4.2:41042";
         nox::Server s4;
         s4.DebugEnterGame(a, 728);
-        s4.DebugMoveTo(a, 5000, 5000);
+        s4.DebugMoveTo(Sid(s4, a), 5000, 5000);
         std::vector<nox::Server::WorldProp> ps;
         nox::Server::WorldProp door;
         door.netCode = 300; door.type = 306;
@@ -1590,7 +1596,7 @@ void TestPropsAndInvuln() {
         for (int i = 0; i < 60; ++i) { ms += 34; s4.Tick(ms, sink); }      // A 가 자리 잡는다(1초 넘게)
         Check(countDoor(sink, a, /*openOnes=*/true) == 0, "멀리 있는데 열림 알림이 갔다(시험 전제)");
 
-        s4.DebugMoveTo(a, 990, 990);   // 문짝 선분 위                                     // A 가 문 앞으로
+        s4.DebugMoveTo(Sid(s4, a), 990, 990);   // 문짝 선분 위                                     // A 가 문 앞으로
         std::vector<nox::OutPacket> opened;
         for (int i = 0; i < 5; ++i) { ms += 34; s4.Tick(ms, opened); }
         Check(s4.PropOpen(300), "문이 안 열렸다(시험 전제)");
@@ -1600,7 +1606,7 @@ void TestPropsAndInvuln() {
         //   B 의 1초 유예가 끝나기 전에 문이 닫혀 버린다(되맞춤이 돌 일이 없어진다).
         //   실제로 그렇게 짰다가 「되맞춤이 한 번도 안 돌았다」로 걸렸다
         s4.DebugEnterGame(b2addr, 729);                                    // ★ B 는 **그 뒤에** 들어온다
-        s4.DebugMoveTo(b2addr, 5000, 5000);
+        s4.DebugMoveTo(Sid(s4, b2addr), 5000, 5000);
         std::vector<nox::OutPacket> late;
         for (int i = 0; i < 75; ++i) { ms += 34; s4.Tick(ms, late); }
         Check(countDoor(late, b2addr, true) >= 1,
@@ -1611,7 +1617,7 @@ void TestPropsAndInvuln() {
         //   ⇒ 여기서 지킬 것은 **「B 가 문이 열린 것을 안다」** 하나다.
         //   ⏸ 되맞춤 경로 자체를 보는 시험은 따로 만들어야 한다(레버로 붙잡아 두는 문이 생기면 그때)
 
-        s4.DebugMoveTo(a, 5000, 5000);                                     // 이제 A 도 물러난다
+        s4.DebugMoveTo(Sid(s4, a), 5000, 5000);                                     // 이제 A 도 물러난다
         std::vector<nox::OutPacket> closed;
         for (int i = 0; i < 400; ++i) { ms += 34; s4.Tick(ms, closed); }
         Check(!s4.PropOpen(300), "아무도 안 미는데 문이 안 닫힌다");
@@ -1631,7 +1637,7 @@ void TestPropsAndInvuln() {
         const std::string w = "10.5.9.1:5901";
         nox::Server s6;
         s6.DebugEnterGame(w, 728, false, nox::CharClass::Wizard);
-        s6.DebugMoveTo(w, 1000, 1000);
+        s6.DebugMoveTo(Sid(s6, w), 1000, 1000);
         nox::Server::WorldProp ob;
         ob.netCode = 600; ob.type = 121; ob.x = 1010; ob.y = 1000;   // 바로 옆
         ob.kind = nox::PropKind::Obelisk;
@@ -1640,11 +1646,11 @@ void TestPropsAndInvuln() {
         uint32_t ms6 = 0;
         Check(s6.DebugPropCharge(600) == 50, "마나석이 가득(50)에서 시작 안 한다");
         // ① 쓰면 **준다** — 마나를 비워 두고 굴린다
-        s6.DebugSetMana(w, 0);
+        s6.DebugSetMana(Sid(s6, w), 0);
         for (int i = 0; i < 20; ++i) { ms6 += 34; s6.Tick(ms6, out6); }
         const int after = s6.DebugPropCharge(600);
         Check(after < 50, "옆에 섰는데 마나석 잔량이 안 줄었다");
-        Check(s6.ManaOf(w) > 0, "잔량이 줄었는데 마나가 안 찼다 — 한쪽만 도는 것이다");
+        Check(s6.ManaOf(Sid(s6, w)) > 0, "잔량이 줄었는데 마나가 안 찼다 — 한쪽만 도는 것이다");
         // ② **바닥나면 멈춘다** — 계속 굴려도 0 아래로 안 간다
         for (int i = 0; i < 120; ++i) { ms6 += 34; s6.Tick(ms6, out6); }
         Check(s6.DebugPropCharge(600) >= 0, "잔량이 0 아래로 내려갔다");
@@ -1653,7 +1659,7 @@ void TestPropsAndInvuln() {
         {
             const int bottomNear = s6.DebugPropCharge(600);
             const unsigned long long givenBefore = s6.obeliskMana(), idleBefore = s6.obeliskNearIdle();
-            Check(s6.ManaOf(w) < nox::ManaOnline(nox::CharClass::Wizard), "②' 전제 — 마나가 이미 가득이라 줄 자리가 없다(이 시험이 무의미해진다)");
+            Check(s6.ManaOf(Sid(s6, w)) < nox::ManaOnline(nox::CharClass::Wizard), "②' 전제 — 마나가 이미 가득이라 줄 자리가 없다(이 시험이 무의미해진다)");
             for (int i = 0; i < 120; ++i) { ms6 += 34; s6.Tick(ms6, out6); }
             Check(s6.DebugPropCharge(600) == bottomNear, "②' 옆에 사람이 서 있는데 마나석이 다시 찼다");
             Check(s6.obeliskMana() == givenBefore, "②' 바닥난 마나석이 옆 사람에게 마나를 또 줬다(소리 230 도 같이 난다)");
@@ -1661,7 +1667,7 @@ void TestPropsAndInvuln() {
         }
         // ③ **떨어지면 회복한다** — 멀리 보내고 굴리면 다시 찬다
         const int bottom = s6.DebugPropCharge(600);
-        s6.DebugMoveTo(w, 4000, 4000);
+        s6.DebugMoveTo(Sid(s6, w), 4000, 4000);
         for (int i = 0; i < 120; ++i) { ms6 += 34; s6.Tick(ms6, out6); }
         Check(s6.DebugPropCharge(600) > bottom, "아무도 안 쓰는데 마나석이 안 차오른다");
         Check(s6.DebugPropCharge(600) <= 50, "마나석이 가득을 넘어 찼다");
@@ -1675,7 +1681,7 @@ void TestPropsAndInvuln() {
     {
         nox::Server s5;
         s5.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        s5.DebugMoveTo(a, 1000, 1000);
+        s5.DebugMoveTo(Sid(s5, a), 1000, 1000);
         std::vector<nox::Server::WorldProp> ps;
         nox::Server::WorldProp far1;                       // **멀리** 둔다 — 마나를 줄 수 없는 자리
         far1.netCode = 500; far1.type = 121;
@@ -1691,7 +1697,7 @@ void TestPropsAndInvuln() {
             if (m.size() != 4 || m[0] != static_cast<uint8_t>(nox::Op::OBELISK_CHARGE)) continue;
             if (m[3] == nox::kObeliskFullCharge) ++lit; else ++dark;
         }
-        Check(s5.ManaOf(a) == s5.ManaOf(a), "");           // (마나는 안 본다 — 멀어서 안 찬다)
+        Check(s5.ManaOf(Sid(s5, a)) == s5.ManaOf(Sid(s5, a)), "");           // (마나는 안 본다 — 멀어서 안 찬다)
         Check(lit == 1, "멀리 있는 마나석의 밝기를 한 번 안 알려 줬다 — 클라에선 꺼진 채로 남는다");
         Check(dark == 0, "밝기 0 을 보냈다 — 아무도 안 쓴 마나석은 가득이어야 한다");
         // 같은 것을 또 보내지 않는다 — 매 틱 보내면 클라가 죽는다
@@ -1707,11 +1713,11 @@ void TestPropsAndInvuln() {
     {
         nox::Server s3;
         s3.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        s3.DebugMoveTo(a, 1000, 1000);
+        s3.DebugMoveTo(Sid(s3, a), 1000, 1000);
         RegSpell(s3, 27, 60);
         std::vector<nox::OutPacket> burn;
         { uint32_t castMs = s3.DebugNowMs(); CastAndWait(s3, a, 27, false, castMs, burn); }   // 4-a 시전 틀
-        const uint16_t low = s3.ManaOf(a);
+        const uint16_t low = s3.ManaOf(Sid(s3, a));
         Check(low < nox::ManaOnline(nox::CharClass::Wizard), "마나를 안 썼다");
 
         std::vector<nox::Server::WorldProp> ps;
@@ -1726,7 +1732,7 @@ void TestPropsAndInvuln() {
         s3.Tick(0, warm);
         std::vector<nox::OutPacket> fill;
         s3.Tick(33 * (nox::kObeliskEveryTicks * 4), fill);
-        Check(s3.ManaOf(a) > low, "오벨리스크 옆인데 마나가 안 찼다");
+        Check(s3.ManaOf(Sid(s3, a)) > low, "오벨리스크 옆인데 마나가 안 찼다");
         Check(s3.obeliskMana() > 0, "오벨리스크가 채운 것을 안 셌다");
         Check(FindMsg(FlattenTo(fill, a), static_cast<uint8_t>(nox::Op::REPORT_MANA)) != nullptr,
               "마나 0x45 가 안 나감");
@@ -1755,9 +1761,9 @@ void TestRoundFlow() {
     srv.StartCtf(1000, 1000, 2000, 2000);
 
     // ① 팀은 **접속한 차례**로 갈린다 — 사전순이 아니라
-    Check(srv.TeamOf(c) == 1, "첫째로 들어온 사람이 1팀이 아님 — 사전순으로 나눴다");
-    Check(srv.TeamOf(a) == 2, "둘째로 들어온 사람이 2팀이 아님");
-    Check(srv.TeamOf(b) == 1, "셋째로 들어온 사람이 1팀이 아님");
+    Check(srv.TeamOf(Sid(srv, c)) == 1, "첫째로 들어온 사람이 1팀이 아님 — 사전순으로 나눴다");
+    Check(srv.TeamOf(Sid(srv, a)) == 2, "둘째로 들어온 사람이 2팀이 아님");
+    Check(srv.TeamOf(Sid(srv, b)) == 1, "셋째로 들어온 사람이 1팀이 아님");
 
     // ② 판이 선 뒤에 들어온 사람도 팀을 받는다 (전에는 0 으로 남았다)
     {
@@ -1767,7 +1773,7 @@ void TestRoundFlow() {
         pkt[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::CLIENT_ACCEPT);
         // DebugEnterGame 은 CLIENT_ACCEPT 를 안 거치므로 직접 부른다
         srv.AssignTeams();
-        Check(srv.TeamOf(d) != 0, "판이 선 뒤 들어온 사람이 팀 0 으로 남았다");
+        Check(srv.TeamOf(Sid(srv, d)) != 0, "판이 선 뒤 들어온 사람이 팀 0 으로 남았다");
     }
 
     // ③ 깃발 3점이면 판끝, 그리고 **때가 되면 다시 열린다**
@@ -1775,7 +1781,7 @@ void TestRoundFlow() {
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);
         Check(!srv.RoundOver(), "시작하자마자 판끝이면 안 된다");
-        srv.DebugCapture(c, 3);            // 1팀이 3점
+        srv.DebugCapture(Sid(srv, c), 3);            // 1팀이 3점
         Check(srv.RoundOver(), "3점인데 판끝이 아님");
         Check(srv.roundsPlayed() == 0, "아직 다시 안 열렸는데 판 수가 올랐다");
 
@@ -1798,7 +1804,7 @@ void TestAim() {
     nox::Server srv;
     const std::string a = "10.9.7.1:41071";
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-    srv.DebugMoveTo(a, 1000, 1000);
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     // 몸은 +x 를 본다(facing 기본 0). 겨눔은 **+y 쪽**으로 준다 — 갈리는 자리다.
 
     // ① `0xac` 를 받아야 한다 — 전에는 세지도 않았다
@@ -1834,7 +1840,7 @@ void TestChat() {
     const std::string b = "10.9.6.2:41062";
     srv.DebugEnterGame(a, 728);
     srv.DebugEnterGame(b, 729);
-    srv.DebugMoveTo(a, 0x0c20, 0x09cc);        // 정품 표본과 같은 좌표로 맞춰 본다
+    srv.DebugMoveTo(Sid(srv, a), 0x0c20, 0x09cc);        // 정품 표본과 같은 좌표로 맞춰 본다
 
     // 클라가 보낸다고 보는 꼴 — 머리 10 + 글자. ★ 머리의 번호를 **남의 것(729)** 으로
     //   넣어 본다. 서버가 그것을 그대로 쓰면 「남의 번호로 말하기」가 된다.
@@ -2020,13 +2026,13 @@ void TestSecondaryWeapon() {
     auto weapon = [](uint16_t nc, uint16_t type) { nox::Session::Carried c; c.netCode = nc; c.type = type; c.isWeapon = true; c.weaponClass = true; return c; };
     nox::Session::Carried shield; shield.netCode = 31004; shield.type = nox::kItemWoodenShield; shield.equipBit = 0x2000;
     nox::Session::Carried potion; potion.netCode = 31005; potion.type = kPotion;
-    srv.DebugGiveCarried(a, weapon(31001, nox::kItemLongsword));
-    srv.DebugGiveCarried(a, weapon(31003, kHeavy));
-    srv.DebugGiveCarried(a, shield);
-    srv.DebugGiveCarried(a, potion);
-    srv.DebugGiveCarried(b, weapon(31002, nox::kItemLongsword));
+    srv.DebugGiveCarried(Sid(srv, a), weapon(31001, nox::kItemLongsword));
+    srv.DebugGiveCarried(Sid(srv, a), weapon(31003, kHeavy));
+    srv.DebugGiveCarried(Sid(srv, a), shield);
+    srv.DebugGiveCarried(Sid(srv, a), potion);
+    srv.DebugGiveCarried(Sid(srv, b), weapon(31002, nox::kItemLongsword));
     nox::Session::Carried shieldB = shield; shieldB.netCode = 31006;
-    srv.DebugGiveCarried(b, shieldB);
+    srv.DebugGiveCarried(Sid(srv, b), shieldB);
     auto send = [&](const std::string& who, uint16_t nc) {
         const std::vector<uint8_t> pkt = { 0x01, 0x04, static_cast<uint8_t>(nox::Op::REPORT_SECONDARY_WEAPON),
                                            static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
@@ -2063,9 +2069,9 @@ void TestSecondaryWeapon() {
         const auto out = send(*c.who, c.nc);
         const std::string& other = (c.who == &a) ? b : a;
         std::snprintf(msg, sizeof(msg), "%s — 갈래 %d 하나만 · 되돌림 본인 %d(기대 %d)·남 %d · 칸 %u(기대 %u)", c.name, c.stat,
-                      resets(out, *c.who), c.resetsTo, resets(out, other), srv.DebugSecondaryWeapon(*c.who), c.slot);
+                      resets(out, *c.who), c.resetsTo, resets(out, other), srv.DebugSecondaryWeapon(Sid(srv, *c.who)), c.slot);
         Check(onlyUp(before, c.stat) && resets(out, *c.who) == c.resetsTo && resets(out, other) == 0 &&
-              srv.DebugSecondaryWeapon(*c.who) == c.slot, msg);
+              srv.DebugSecondaryWeapon(Sid(srv, *c.who)) == c.slot, msg);
     }
     std::printf("  대체 무기 e0 — 비움·없음·맞음(무기·갑옷)·직업/힘/정의없음 되돌림(본인에게 e0 0 01 · 칸은 적음)\n");
 }
@@ -2120,8 +2126,8 @@ void TestTimerAskAndClose() {
                  | (static_cast<uint32_t>(m[11]) << 16) | (static_cast<uint32_t>(m[12]) << 24);
         };
         srv.DebugSetFrame(2000);                 // 서버 전역
-        srv.DebugSetTickFrame(a, 1990);          // a 의 시계는 10 뒤
-        srv.DebugSetTickFrame(b, 1975);          // b 의 시계는 25 뒤
+        srv.DebugSetTickFrame(Sid(srv, a), 1990);          // a 의 시계는 10 뒤
+        srv.DebugSetTickFrame(Sid(srv, b), 1975);          // b 의 시계는 25 뒤
         // 물음에 대한 즉답
         {
             std::vector<uint8_t> pkt(nox::kWireHeaderSize + 1, 0);
@@ -2181,8 +2187,8 @@ void TestPickup() {
     const std::string b = "10.9.3.2:41032";
     srv.DebugEnterGame(a, 728);
     srv.DebugEnterGame(b, 729);
-    srv.DebugMoveTo(a, 1000, 1000);
-    srv.DebugMoveTo(b, 1000, 1000);
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+    srv.DebugMoveTo(Sid(srv, b), 1000, 1000);
 
     const uint16_t kPotion = 176;    // 물약 — 수식 안 붙는다 → `4b`
     const uint16_t kSword  = 180;    // 무기 — 수식 붙는다   → `4c`
@@ -2201,7 +2207,7 @@ void TestPickup() {
         const std::vector<uint8_t> pkt = CodePacket(nox::Op::TRY_GET, kPotion);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
 
-        Check(srv.Carries(a, kPotion), "주웠는데 인벤토리에 없다");
+        Check(srv.Carries(Sid(srv, a), kPotion), "주웠는데 인벤토리에 없다");
         Check(srv.WorldStaticCount() == 2, "주웠는데 세계에서 안 없어졌다");
 
         const auto toA = FlattenTo(out, a);
@@ -2246,7 +2252,7 @@ void TestPickup() {
         const std::vector<uint8_t> pkt = CodePacket(nox::Op::TRY_GET, kFar);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
         Check(srv.pickTooFar() == before + 1, "멀리 있는 것을 못 집은 것으로 안 셈");
-        Check(!srv.Carries(a, kFar), "손도 안 닿는데 주워졌다");
+        Check(!srv.Carries(Sid(srv, a), kFar), "손도 안 닿는데 주워졌다");
         Check(srv.WorldStaticCount() == 1, "못 주웠는데 세계에서 없어졌다");
     }
 
@@ -2256,7 +2262,7 @@ void TestPickup() {
         std::vector<nox::OutPacket> out;
         const std::vector<uint8_t> pkt = CodePacket(nox::Op::INVENTORY_FAIL, kPotion);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(!srv.Carries(a, kPotion), "되돌렸는데 아직 들고 있다");
+        Check(!srv.Carries(Sid(srv, a), kPotion), "되돌렸는데 아직 들고 있다");
         Check(srv.WorldStaticCount() == worldBefore + 1, "되돌렸는데 바닥에 안 놓였다");
     }
 
@@ -2272,7 +2278,7 @@ void TestUseAndEquip() {
     nox::Server srv;
     const std::string a = "10.9.4.1:41041";
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-    srv.DebugMoveTo(a, 1000, 1000);
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
 
     const uint16_t kRed = 176, kBlue = 177, kSword = 180, kBook = 181;
     std::vector<nox::Server::WorldStatic> st;
@@ -2296,24 +2302,24 @@ void TestUseAndEquip() {
         const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_GET, nc);
         srv.OnPacket(a, p.data(), p.size(), out);
     }
-    Check(srv.CarriedCount(a) == 4, "넷을 다 못 주웠다");
+    Check(srv.CarriedCount(Sid(srv, a)) == 4, "넷을 다 못 주웠다");
 
     // ① 빨강 물약 — 다친 뒤에 쓰면 그만큼 찬다
     {
         std::vector<nox::OutPacket> hurt;
-        srv.Damage(a, 40, hurt);
+        srv.Damage(Sid(srv, a), 40, hurt);
         srv.Tick(srv.DebugNowMs(), hurt);                       // 기준점
         srv.Tick(srv.DebugNowMs() + 33, hurt);                  // 다친 체력 43 이 나간 뒤(09-14 — 알림은 갱신 틱)
-        const uint16_t low = srv.HealthOf(a);
-        Check(low < srv.HealthOf(a) + 40, "안 다쳤다");
+        const uint16_t low = srv.HealthOf(Sid(srv, a));
+        Check(low < srv.HealthOf(Sid(srv, a)) + 40, "안 다쳤다");
 
         std::vector<nox::OutPacket> out;
         const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_USE, kRed);
         srv.OnPacket(a, p.data(), p.size(), out);
         // 위저드 최대 체력은 75 라 40 맞고 50 을 마시면 **최대치에서 멈춘다**
-        Check(srv.HealthOf(a) == nox::HealthOnline(nox::CharClass::Wizard),
+        Check(srv.HealthOf(Sid(srv, a)) == nox::HealthOnline(nox::CharClass::Wizard),
               "물약을 마셨는데 최대치까지 안 참");
-        Check(!srv.Carries(a, kRed), "마신 물약이 아직 인벤토리에 있다");
+        Check(!srv.Carries(Sid(srv, a), kRed), "마신 물약이 아직 인벤토리에 있다");
 
         // ★ 09-14 정답지화 — 회복은 `42` 로 안 나간다(netReportHealthDelta_4D8760 은 음수만) · `43` 절대값이 다음 틱에 간다
         Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_HEALTH_DELTA)) == nullptr, "회복(양수)을 0x42 로 보냈다");
@@ -2332,13 +2338,13 @@ void TestUseAndEquip() {
         for (int i = 0; i < 2; ++i) {
             { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, burn); }   // 4-a 시전 틀
         }
-        const uint16_t low = srv.ManaOf(a);
+        const uint16_t low = srv.ManaOf(Sid(srv, a));
         Check(low < nox::ManaOnline(nox::CharClass::Wizard), "마나를 안 썼다");
 
         std::vector<nox::OutPacket> out;
         const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_USE, kBlue);
         srv.OnPacket(a, p.data(), p.size(), out);
-        Check(srv.ManaOf(a) == low + 50, "파란 물약이 50 을 안 채웠다");
+        Check(srv.ManaOf(Sid(srv, a)) == low + 50, "파란 물약이 50 을 안 채웠다");
         // ★ 09-14 — `45` 는 물약 자리가 아니라 다음 틱 PlayerReportAnything(+4 ≠ +6 · playerManaAdd 가 +6 을 남긴다)
         Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_MANA)) == nullptr, "물약 자리에서 0x45 를 곧바로 보냈다");
         srv.Tick(srv.DebugNowMs() + 33, out);
@@ -2356,7 +2362,7 @@ void TestUseAndEquip() {
         const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_USE, kBook);
         srv.OnPacket(a, p.data(), p.size(), out);
         Check(srv.useUnknown() == before + 1, "모르는 갈래를 안 셌다");
-        Check(srv.Carries(a, kBook), "아무 일도 안 났는데 없어졌다");
+        Check(srv.Carries(Sid(srv, a), kBook), "아무 일도 안 났는데 없어졌다");
     }
 
     // ④ 입기·벗기 — `60`/`61` 이 본인에게, 상태가 기록된다
@@ -2364,7 +2370,7 @@ void TestUseAndEquip() {
         std::vector<nox::OutPacket> out;
         const std::vector<uint8_t> on = CodePacket(nox::Op::TRY_EQUIP, kSword);
         srv.OnPacket(a, on.data(), on.size(), out);
-        Check(srv.IsEquipped(a, kSword), "입었는데 기록이 안 됨");
+        Check(srv.IsEquipped(Sid(srv, a), kSword), "입었는데 기록이 안 됨");
         const auto toA = FlattenTo(out, a);
         const auto* e = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_EQUIP));
         Check(e != nullptr, "0x60 이 안 나감");
@@ -2377,7 +2383,7 @@ void TestUseAndEquip() {
         std::vector<nox::OutPacket> out2;
         const std::vector<uint8_t> off = CodePacket(nox::Op::TRY_DEQUIP, kSword);
         srv.OnPacket(a, off.data(), off.size(), out2);
-        Check(!srv.IsEquipped(a, kSword), "벗었는데 기록이 안 됨");
+        Check(!srv.IsEquipped(Sid(srv, a), kSword), "벗었는데 기록이 안 됨");
         Check(FindMsg(FlattenTo(out2, a), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) != nullptr,
               "0x61 이 안 나감");
     }
@@ -2449,9 +2455,9 @@ void TestSpellDamage() {
         RegFireballTypes(srv);                               // 4-c3 — 진짜 불덩이(Magic 자리표시가 아니다)
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugSetClass(a, nox::CharClass::Wizard);        // 워리어는 주문을 못 쓴다(직업 거르기 9)
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);                      // a 의 몸 방향(+x) 앞
+        srv.DebugSetClass(Sid(srv, a), nox::CharClass::Wizard);        // 워리어는 주문을 못 쓴다(직업 거르기 9)
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);                      // a 의 몸 방향(+x) 앞
     };
     const int kHP = nox::HealthOnline(nox::CharClass::Warrior);
 
@@ -2464,7 +2470,7 @@ void TestSpellDamage() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 27, /*onSelf=*/false, ms, out);
         Check(srv.missiles() == 1, "날아가는 것이 하나가 아님");
-        Check(srv.HealthOf(b) == kHP, "쏘자마자 맞음 (투사체가 안 날아감)");
+        Check(srv.HealthOf(Sid(srv, b)) == kHP, "쏘자마자 맞음 (투사체가 안 날아감)");
         // ★★ `0x70` 은 **시전자에게만**, 중요 메시지로 간다(`GAME4.c:2455~2463` — 앞 인자가 시전자 순번, 둘째 1 이 중요).
         //   중요로 가면 `cc` 봉투에 들어가므로 **봉투를 열어야** 보인다(본문은 body[4] 부터).
         int spellStarts = 0;
@@ -2484,8 +2490,8 @@ void TestSpellDamage() {
         }
         Check(spellStarts == 1, "0x70 이 시전자에게 한 번 안 갔다");
         for (int t = 0; t < 40 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < kHP, "날아간 불덩이가 안 맞음");
-        Check(srv.HealthOf(a) == kHP, "쏜 쪽이 깎임");
+        Check(srv.HealthOf(Sid(srv, b)) < kHP, "날아간 불덩이가 안 맞음");
+        Check(srv.HealthOf(Sid(srv, a)) == kHP, "쏜 쪽이 깎임");
     }
 
     // ② 공격이 아닌 주문은 아무도 안 깎는다
@@ -2497,7 +2503,7 @@ void TestSpellDamage() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 4, /*onSelf=*/true, ms, out);     // 점멸
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == kHP && srv.HealthOf(a) == kHP, "공격 아닌 주문이 누군가를 깎았다");
+        Check(srv.HealthOf(Sid(srv, b)) == kHP && srv.HealthOf(Sid(srv, a)) == kHP, "공격 아닌 주문이 누군가를 깎았다");
     }
 
     // ③ 계속 맞으면 **죽는다** — 죽음 흐름이 끝까지 이어지는지
@@ -2507,11 +2513,11 @@ void TestSpellDamage() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        for (int n = 0; n < 20 && srv.HealthOf(b) > 0; ++n) {
+        for (int n = 0; n < 20 && srv.HealthOf(Sid(srv, b)) > 0; ++n) {
             CastAndWait(srv, a, 27, false, ms, out);
             for (int t = 0; t < 40 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
         }
-        Check(srv.HealthOf(b) == 0, "불덩이를 스무 번 맞고도 안 죽음");
+        Check(srv.HealthOf(Sid(srv, b)) == 0, "불덩이를 스무 번 맞고도 안 죽음");
     }
 }
 
@@ -2542,9 +2548,9 @@ void TestEnemyTo() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        Check(srv.TeamOf(a) == 0 && srv.TeamOf(b) == 0, "아레나인데 팀이 붙었다");
-        Check(srv.IsEnemyTo(a, b), "팀 없는 둘이 적이 아니라고 나온다");
-        Check(!srv.IsEnemyTo(a, a), "자기 자신이 적이라고 나온다");
+        Check(srv.TeamOf(Sid(srv, a)) == 0 && srv.TeamOf(Sid(srv, b)) == 0, "아레나인데 팀이 붙었다");
+        Check(srv.IsEnemyTo(Sid(srv, a), Sid(srv, b)), "팀 없는 둘이 적이 아니라고 나온다");
+        Check(!srv.IsEnemyTo(Sid(srv, a), Sid(srv, a)), "자기 자신이 적이라고 나온다");
     }
 
     // ② 깃발 — **같은 팀은 아군, 다른 팀은 적**
@@ -2553,10 +2559,10 @@ void TestEnemyTo() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.StartCtf(1000, 1000, 2000, 2000);
-        const uint8_t ta = srv.TeamOf(a), tb = srv.TeamOf(b);
+        const uint8_t ta = srv.TeamOf(Sid(srv, a)), tb = srv.TeamOf(Sid(srv, b));
         Check(ta != 0 && tb != 0, "깃발 판인데 팀이 0 이다");
-        if (ta == tb) Check(!srv.IsEnemyTo(a, b), "같은 팀인데 적이라고 나온다");
-        else          Check(srv.IsEnemyTo(a, b), "다른 팀인데 아군이라고 나온다");
+        if (ta == tb) Check(!srv.IsEnemyTo(Sid(srv, a), Sid(srv, b)), "같은 팀인데 적이라고 나온다");
+        else          Check(srv.IsEnemyTo(Sid(srv, a), Sid(srv, b)), "다른 팀인데 아군이라고 나온다");
     }
 
     // ③ 퀘스트 — 협동이므로 **사람끼리는 아군**(➖ 우리 값)
@@ -2565,7 +2571,7 @@ void TestEnemyTo() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.StartQuest(2, 1000, 1000, 100.0);
-        Check(!srv.IsEnemyTo(a, b), "퀘스트인데 사람끼리 적이라고 나온다");
+        Check(!srv.IsEnemyTo(Sid(srv, a), Sid(srv, b)), "퀘스트인데 사람끼리 적이라고 나온다");
     }
 
     // ⑤ 09-20 — **주인 없는 둘**은 뿌리의 종류로 갈린다(정답지 `object.go:1737·1740`).
@@ -2582,7 +2588,7 @@ void TestEnemyTo() {
         };
         int enemies = 0;
         for (const auto& c : cs) {
-            const bool got = srv.DebugOwnersEnemy(std::string(), c.aMon, std::string(), c.bMon);
+            const bool got = srv.DebugOwnersEnemy(Sid(srv, std::string()), c.aMon, Sid(srv, std::string()), c.bMon);
             Check(got == c.want, c.name);
             if (got) ++enemies;
         }
@@ -2593,7 +2599,7 @@ void TestEnemyTo() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
-        Check(!srv.IsEnemyTo(a, "9.9.9.9:1"), "없는 상대가 적이라고 나온다");
+        Check(!srv.IsEnemyTo(Sid(srv, a), Sid(srv, "9.9.9.9:1")), "없는 상대가 적이라고 나온다");
     }
 }
 
@@ -2635,8 +2641,8 @@ void TestDirtyUnitHealth() {
         srv.StartQuest(2, 5000, 5000, 100.0);   // 사람에게서 멀리 — 몬스터가 안 끼게
         std::vector<nox::OutPacket> out;
         // ⚠ 2026-09-13 묶음 3-a — 주먹은 이제 애니가 끝나야 닿고 퀘스트에선 사람끼리 안 맞는다 → 피해를 직접 준다
-        srv.Damage(b, 5, out, a);
-        const uint16_t hp = srv.HealthOf(b);
+        srv.Damage(Sid(srv, b), 5, out, Sid(srv, a));
+        const uint16_t hp = srv.HealthOf(Sid(srv, b));
         Check(hp < nox::kDefaultMaxHealth, "때렸는데 안 깎임");
 
         out.clear();
@@ -2656,8 +2662,8 @@ void TestDirtyUnitHealth() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        srv.Damage(b, 5, out, a);
-        Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "때렸는데 안 깎임(아레나)");
+        srv.Damage(Sid(srv, b), 5, out, Sid(srv, a));
+        Check(srv.HealthOf(Sid(srv, b)) < nox::kDefaultMaxHealth, "때렸는데 안 깎임(아레나)");
 
         out.clear();
         srv.Tick(0, out);
@@ -2672,7 +2678,7 @@ void TestDirtyUnitHealth() {
         srv.DebugEnterGame(b, 729);
         srv.StartQuest(2, 5000, 5000, 100.0);
         std::vector<nox::OutPacket> out;
-        srv.Damage(b, 5, out, a);
+        srv.Damage(Sid(srv, b), 5, out, Sid(srv, a));
         out.clear();
         for (uint32_t ms = 0; ms <= 120; ms += 33) srv.Tick(ms, out);   // 실제로 돌게
         const unsigned long long afterFirst = srv.unitHealthSent();
@@ -2697,9 +2703,9 @@ void TestDirtyUnitHealth() {
 
         out.clear();
         // 체력을 **정해서** 바꾼다 — 얼마가 남아 있든 시험이 선다(Bomber 는 체력 1 이다).
-        const uint16_t petCode = srv.DebugSetOwnedPetHealth(a, 40);
+        const uint16_t petCode = srv.DebugSetOwnedPetHealth(Sid(srv, a), 40);
         Check(petCode != 0, "내 소환수를 못 찾았다 — 이 시험이 무의미해진다");
-        Check(srv.DebugOwnedPetHealth(a) == 40, "체력을 정했는데 안 바뀌었다");
+        Check(srv.DebugOwnedPetHealth(Sid(srv, a)) == 40, "체력을 정했는데 안 바뀌었다");
         for (uint32_t ms = 0; ms <= 120; ms += 33) srv.Tick(ms, out);
 
         // 누구에게 갔는지 센다 — 받는 사람은 `OutPacket` 의 주소로 가른다.
@@ -2760,12 +2766,12 @@ void TestEnchantInvuln() {
 
     std::vector<nox::OutPacket> out;
     // ① 죽인다 → 부활까지 틱을 돌린다. 부활 순간 **무적이 켜지고** `0x5A` 가 나가야 한다.
-    srv.Damage(a, 9999, out, "");
-    Check(srv.HealthOf(a) == 0, "안 죽었다");
+    srv.Damage(Sid(srv, a), 9999, out, Sid(srv, ""));
+    Check(srv.HealthOf(Sid(srv, a)) == 0, "안 죽었다");
     out.clear();
     uint32_t ms = 0;
     for (int i = 0; i < 120; ++i) { ms += 33; srv.Tick(ms, out); }   // 부활 지연(45틱)을 넘긴다
-    Check(srv.HealthOf(a) > 0, "안 되살아났다 — 이 시험이 무의미해진다");
+    Check(srv.HealthOf(Sid(srv, a)) > 0, "안 되살아났다 — 이 시험이 무의미해진다");
     uint32_t bits = 0;
     Check(find5a(out, &bits), "부활했는데 0x5A 가 안 나갔다");
     Check(bits == nox::kEnchantInvulnerable, "0x5A 의 비트가 1<<23 이 아니다");
@@ -2798,7 +2804,7 @@ void TestMelee() {
         for (int i = 23; i <= 25; ++i) srv.SetPlayerAnimFrames(i, kPunchFrames, 0);
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1025, 1000);   // 반지름 합(20) 밖 · 사거리 안 · a 가 바라보는 +x 쪽
+        srv.DebugMoveTo(Sid(srv, b), 1025, 1000);   // 반지름 합(20) 밖 · 사거리 안 · a 가 바라보는 +x 쪽
     };
     auto click = [&](nox::Server& srv, const std::string& who, uint8_t code, std::vector<nox::OutPacket>& out) {
         // 걸음(2~5)은 데이터 1바이트가 붙는다(Server.cpp PLAYER_INPUT 길이 표) — 없으면 서버가 조각을 버린다
@@ -2815,22 +2821,22 @@ void TestMelee() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         click(srv, a, 6, out);
-        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "클릭한 순간 바로 깎였다 — 애니를 안 기다린다");
+        Check(srv.HealthOf(Sid(srv, b)) == nox::kDefaultMaxHealth, "클릭한 순간 바로 깎였다 — 애니를 안 기다린다");
         ms += 33; srv.Tick(ms, out);                               // 틱 T — 상태 1 로 들어간다
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "클릭한 틱에 상태 1 로 안 들어갔다");
-        const uint8_t anim = srv.DebugAttackAnimOf(a);
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateAttack, "클릭한 틱에 상태 1 로 안 들어갔다");
+        const uint8_t anim = srv.DebugAttackAnimOf(Sid(srv, a));
         Check(anim == 23 || anim == 24, "위저드 맨손 애니가 23·24 가 아니다");
         int hitTick = -1;
         for (int t = 1; t <= 12 && hitTick < 0; ++t) {
             ms += 33; srv.Tick(ms, out);
-            if (srv.HealthOf(b) != nox::kDefaultMaxHealth) hitTick = t;
-            else Check(srv.DebugAnimFrameOf(a) == t, "공격 중 애니 칸이 (프레임 − 시작) 이 아니다");
+            if (srv.HealthOf(Sid(srv, b)) != nox::kDefaultMaxHealth) hitTick = t;
+            else Check(srv.DebugAnimFrameOf(Sid(srv, a)) == t, "공격 중 애니 칸이 (프레임 − 시작) 이 아니다");
         }
         Check(hitTick == kPunchFrames, "주먹이 애니 끝(8틱) 이 아닌 때에 닿았다");
-        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth - kWizardPunch, "한 대 피해가 맨손 식(힘×0.04+5, 방어) 과 다르다");
+        Check(srv.HealthOf(Sid(srv, b)) == nox::kDefaultMaxHealth - kWizardPunch, "한 대 피해가 맨손 식(힘×0.04+5, 방어) 과 다르다");
         Check(srv.melees() == 1, "근접 집계가 1 이 아님");
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "판정한 틱에 상태 13 으로 안 돌아왔다");
-        Check(srv.DebugAttackAnimOf(a) == 0, "공격이 끝났는데 애니 번호(Field8) 가 안 지워졌다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateIdle, "판정한 틱에 상태 13 으로 안 돌아왔다");
+        Check(srv.DebugAttackAnimOf(Sid(srv, a)) == 0, "공격이 끝났는데 애니 번호(Field8) 가 안 지워졌다");
     }
 
     // ② 공격 중 클릭은 무시 · 끝난 틱의 클릭도 쉬는 시간(Field0) 에 막힌다 · 그다음 틱부터 된다
@@ -2847,10 +2853,10 @@ void TestMelee() {
         click(srv, a, 6, out);
         ms += 33; srv.Tick(ms, out);                               // T+8: 판정 · 같은 틱 클릭은 Field0(T+9) 에 막힘
         Check(srv.melees() == 1, "8틱째 판정이 안 났다");
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "쉬는 시간 중 클릭이 상태 1 로 넣었다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateIdle, "쉬는 시간 중 클릭이 상태 1 로 넣었다");
         click(srv, a, 6, out);
         ms += 33; srv.Tick(ms, out);                               // T+9: 다시 상태 1
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "쉬는 시간이 끝났는데 공격이 안 들어간다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateAttack, "쉬는 시간이 끝났는데 공격이 안 들어간다");
     }
 
     // ③ 공격 중 걸음 코드는 안 먹는다(맨손 상태 1) · 걸음 코드는 때리지 않는다
@@ -2862,14 +2868,14 @@ void TestMelee() {
         srv.Tick(ms, out);
         click(srv, a, 2, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateWalk, "걸음 코드가 걷기 상태로 안 바꿨다");
-        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "걸음 코드가 사람을 깎음");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateWalk, "걸음 코드가 걷기 상태로 안 바꿨다");
+        Check(srv.HealthOf(Sid(srv, b)) == nox::kDefaultMaxHealth, "걸음 코드가 사람을 깎음");
         click(srv, a, 6, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "걷다가 클릭해도 공격으로 안 바뀐다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateAttack, "걷다가 클릭해도 공격으로 안 바뀐다");
         click(srv, a, 2, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "맨손 공격 중 걸음 코드가 공격을 끊었다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateAttack, "맨손 공격 중 걸음 코드가 공격을 끊었다");
     }
 
     // ④ 사거리 — 반지름 10 + 20 = 30 을 가장자리(중심 − 상대 반지름 10)까지 잰다 → 중심 39 는 닿고 41 은 안 닿는다
@@ -2877,13 +2883,13 @@ void TestMelee() {
         for (int dist : { 39, 41 }) {
             nox::Server srv;
             makeSrv(srv);
-            srv.DebugMoveTo(b, 1000 + dist, 1000);
+            srv.DebugMoveTo(Sid(srv, b), 1000 + dist, 1000);
             std::vector<nox::OutPacket> out;
             uint32_t ms = 0;
             srv.Tick(ms, out);
             click(srv, a, 6, out);
             for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
-            const bool hit = srv.HealthOf(b) != nox::kDefaultMaxHealth;
+            const bool hit = srv.HealthOf(Sid(srv, b)) != nox::kDefaultMaxHealth;
             Check(dist == 39 ? hit : !hit, dist == 39 ? "사거리 안(39) 인데 안 맞음" : "사거리 밖(41) 인데 맞음");
         }
         Check(nox::kMeleeRange < nox::kSpellRange, "근접이 주문보다 멀다");
@@ -2904,14 +2910,14 @@ void TestMelee() {
         for (const auto& c : cases) {
             nox::Server srv;
             makeSrv(srv);
-            srv.DebugMoveTo(b, c.bx, c.by);
-            srv.DebugSetFacing(a, c.face);
+            srv.DebugMoveTo(Sid(srv, b), c.bx, c.by);
+            srv.DebugSetFacing(Sid(srv, a), c.face);
             std::vector<nox::OutPacket> out;
             uint32_t ms = 0;
             srv.Tick(ms, out);
             click(srv, a, 6, out);
             for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
-            Check((srv.HealthOf(b) != nox::kDefaultMaxHealth) == c.expect, c.why);
+            Check((srv.HealthOf(Sid(srv, b)) != nox::kDefaultMaxHealth) == c.expect, c.why);
         }
     }
 
@@ -2937,8 +2943,8 @@ void TestMelee() {
                 if (!(e.extraBytes[0] & 0x80)) continue;
                 const uint8_t anim = e.extraBytes[2];
                 if (anim != 23 && anim != 24) continue;
-                Check(e.extraBytes[1] == srv.DebugAnimFrameOf(a) || e.extraBytes[1] + 1 == srv.DebugAnimFrameOf(a) ||
-                      e.extraBytes[1] == srv.DebugAnimFrameOf(a) + 1, "갱신의 애니 칸이 서버 칸과 한참 다르다");
+                Check(e.extraBytes[1] == srv.DebugAnimFrameOf(Sid(srv, a)) || e.extraBytes[1] + 1 == srv.DebugAnimFrameOf(Sid(srv, a)) ||
+                      e.extraBytes[1] == srv.DebugAnimFrameOf(Sid(srv, a)) + 1, "갱신의 애니 칸이 서버 칸과 한참 다르다");
                 seen = true;
             }
         }
@@ -2951,16 +2957,16 @@ void TestMelee() {
         for (bool wall : { true, false }) {
             nox::Server srv;
             makeSrv(srv);
-            srv.DebugMoveTo(b, 1038, 1000);
+            srv.DebugMoveTo(Sid(srv, b), 1038, 1000);
             if (wall) srv.SetWallTiles({ nox::Server::WallTileIn{ 44, 43, 1, 0, false } });
             std::vector<nox::OutPacket> out;
             uint32_t ms = 0;
             srv.Tick(ms, out);
             click(srv, a, 6, out);
             for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
-            const bool hit = srv.HealthOf(b) != nox::kDefaultMaxHealth;
+            const bool hit = srv.HealthOf(Sid(srv, b)) != nox::kDefaultMaxHealth;
             Check(wall ? !hit : hit, wall ? "벽 너머인데 맞음" : "벽 없는 대조군(38) 이 안 맞음 — 벽 시험이 무의미해진다");
-            Check(srv.XOf(b) == 1038 && srv.XOf(a) == 1000, "벽 시험 중 몸이 밀렸다 — 자리 가정이 깨졌다");
+            Check(srv.XOf(Sid(srv, b)) == 1038 && srv.XOf(Sid(srv, a)) == 1000, "벽 시험 중 몸이 밀렸다 — 자리 가정이 깨졌다");
         }
     }
 
@@ -2970,7 +2976,7 @@ void TestMelee() {
         for (bool shadow : { true, false }) {
             nox::Server srv;
             makeSrv(srv);
-            srv.DebugMoveTo(b, 1038, 1000);
+            srv.DebugMoveTo(Sid(srv, b), 1038, 1000);
             nox::Server::PhysBody blocker;
             blocker.x = 1019; blocker.y = 1000; blocker.shape = 2; blocker.r = 3.0f;
             blocker.flags = 0x40 | (shadow ? 0x10000u : 0u);
@@ -2980,7 +2986,7 @@ void TestMelee() {
             srv.Tick(ms, out);
             click(srv, a, 6, out);
             for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
-            const bool hit = srv.HealthOf(b) != nox::kDefaultMaxHealth;
+            const bool hit = srv.HealthOf(Sid(srv, b)) != nox::kDefaultMaxHealth;
             Check(shadow ? !hit : hit, shadow ? "그늘 오브젝트 너머인데 맞음" : "그늘 없는 대조군이 안 맞음 — 그늘 시험이 무의미해진다");
         }
     }
@@ -2990,7 +2996,7 @@ void TestMelee() {
     {
         nox::Server srv;
         makeSrv(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         auto facePkt = [&](uint8_t dir) {
             std::vector<uint8_t> p = InputPacket(1);
             p[nox::kWireHeaderSize + 1] = 5;
@@ -3001,16 +3007,16 @@ void TestMelee() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         for (int t = 0; t < 4; ++t) { click(srv, a, 2, out); ms += 33; srv.Tick(ms, out); }
-        const int y0 = srv.YOf(a);
-        Check(srv.XOf(a) > 1000 && y0 == 1000, "동쪽 걷기 준비가 안 됐다 — 이 시험이 무의미해진다");
+        const int y0 = srv.YOf(Sid(srv, a));
+        Check(srv.XOf(Sid(srv, a)) > 1000 && y0 == 1000, "동쪽 걷기 준비가 안 됐다 — 이 시험이 무의미해진다");
         auto fp = facePkt(64);
         srv.OnPacket(a, fp.data(), fp.size(), out);
         click(srv, a, 2, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.YOf(a) == y0, "방향을 받은 틱에 벌써 새 방향으로 힘이 들어갔다(ImplA 가 ImplB 보다 먼저)");
+        Check(srv.YOf(Sid(srv, a)) == y0, "방향을 받은 틱에 벌써 새 방향으로 힘이 들어갔다(ImplA 가 ImplB 보다 먼저)");
         click(srv, a, 2, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.YOf(a) > y0, "방향을 받은 다음 틱에도 새 방향으로 안 간다");
+        Check(srv.YOf(Sid(srv, a)) > y0, "방향을 받은 다음 틱에도 새 방향으로 안 간다");
     }
 
     std::printf("  근접 공격(맨손 정답지) — 애니 끝 판정·쉬는 시간·걸음 막힘·사거리 30·앞쪽·갱신 칸 바이트\n");
@@ -3027,7 +3033,7 @@ void TestWeaponAttack() {
         srv.SetPlayerAnimFrames(28, 8, 0);   // ⭕ thing.bin LONG_SWORD_STRIKE 8/0 (TestThingDb ⑥)
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729);           // 위저드 — 방어합 0.23
-        srv.DebugMoveTo(b, bx, 1000);
+        srv.DebugMoveTo(Sid(srv, b), bx, 1000);
     };
     auto click = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
         auto pkt = InputPacket(6);
@@ -3045,35 +3051,35 @@ void TestWeaponAttack() {
         srv.Tick(ms, out);
         click(srv, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.DebugStaminaOf(a) == 3, "기력이 첫 틱에 3 이 아니다(0 에서 100/30)");
-        Check(srv.DebugStateOf(a) != nox::kPlayerStateAttack, "기력 3 인데 롱소드 공격(70)이 들어갔다");
+        Check(srv.DebugStaminaOf(Sid(srv, a)) == 3, "기력이 첫 틱에 3 이 아니다(0 에서 100/30)");
+        Check(srv.DebugStateOf(Sid(srv, a)) != nox::kPlayerStateAttack, "기력 3 인데 롱소드 공격(70)이 들어갔다");
         for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
-        Check(srv.DebugStaminaOf(a) >= 70, "31틱 뒤 기력이 70 아래 — 회복이 안 돈다");
-        const uint8_t before = srv.DebugStaminaOf(a);
+        Check(srv.DebugStaminaOf(Sid(srv, a)) >= 70, "31틱 뒤 기력이 70 아래 — 회복이 안 돈다");
+        const uint8_t before = srv.DebugStaminaOf(Sid(srv, a));
         out.clear();
         click(srv, out);
         ms += 33; srv.Tick(ms, out);                             // T: 회복 3 → 깎기 70
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "기력이 넉넉한데 공격이 안 들어갔다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateAttack, "기력이 넉넉한데 공격이 안 들어갔다");
         const int expect = std::min(before + 3, 102) - 70;
-        Check(srv.DebugStaminaOf(a) == expect, "롱소드가 기력을 70 깎지 않았다");
+        Check(srv.DebugStaminaOf(Sid(srv, a)) == expect, "롱소드가 기력을 70 깎지 않았다");
         bool report = false;
         for (const auto& m : Flatten(out))
             if (m.size() == 2 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_STAMINA) && m[1] == expect) report = true;
         Check(report, "기력을 깎았는데 `47 <기력>` 알림이 없다");
-        Check(srv.DebugAnimByteOf(a) == 28, "롱소드 공격 자세가 28(LONG_SWORD_STRIKE) 이 아니다");
+        Check(srv.DebugAnimByteOf(Sid(srv, a)) == 28, "롱소드 공격 자세가 28(LONG_SWORD_STRIKE) 이 아니다");
 
         // ② 한가운데 칸(4) 에서 한 번만 · 칸 8 에서 상태 13
         int hitTick = -1, hits = 0;
-        uint16_t hp = srv.HealthOf(b);
+        uint16_t hp = srv.HealthOf(Sid(srv, b));
         for (int t = 1; t <= 10; ++t) {
             ms += 33; srv.Tick(ms, out);
-            if (srv.HealthOf(b) != hp) { ++hits; if (hitTick < 0) hitTick = t; hp = srv.HealthOf(b); }
-            if (t == 7) Check(srv.DebugStateOf(a) == nox::kPlayerStateAttack, "칸 7 인데 공격 상태가 끝났다");
-            if (t == 8) Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "칸 8 인데 상태 13 으로 안 돌아왔다");
+            if (srv.HealthOf(Sid(srv, b)) != hp) { ++hits; if (hitTick < 0) hitTick = t; hp = srv.HealthOf(Sid(srv, b)); }
+            if (t == 7) Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateAttack, "칸 7 인데 공격 상태가 끝났다");
+            if (t == 8) Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateIdle, "칸 8 인데 상태 13 으로 안 돌아왔다");
         }
         Check(hitTick == 4, "롱소드가 애니 한가운데(4틱) 가 아닌 때에 닿았다");
         Check(hits == 1, "한 번 휘두르는데 두 번 이상 맞았다");
-        Check(srv.HealthOf(b) == nox::HealthOnline(nox::CharClass::Wizard) - kSword, "롱소드 피해가 (힘−30)×0.3+9 · 방어 식과 다르다");
+        Check(srv.HealthOf(Sid(srv, b)) == nox::HealthOnline(nox::CharClass::Wizard) - kSword, "롱소드 피해가 (힘−30)×0.3+9 · 방어 식과 다르다");
     }
 
     // ③ 사거리 — 몸 10 + 무기 45 = 55 를 상대 가장자리까지 → 중심 64 는 닿고 66 은 안 닿는다
@@ -3086,7 +3092,7 @@ void TestWeaponAttack() {
         for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
         click(srv, out);
         for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
-        const bool hit = srv.HealthOf(b) != nox::HealthOnline(nox::CharClass::Wizard);
+        const bool hit = srv.HealthOf(Sid(srv, b)) != nox::HealthOnline(nox::CharClass::Wizard);
         Check(dist == 64 ? hit : !hit, dist == 64 ? "롱소드 사거리 안(64) 인데 안 맞음" : "롱소드 사거리 밖(66) 인데 맞음");
     }
 
@@ -3096,15 +3102,15 @@ void TestWeaponAttack() {
         makeSrv(srv, 1050);
         srv.SetAutoRespawn(true);   // 3-c — 서버 설정 자동 부활(클릭 절차는 TestDeathFlow)
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 9999, out, "");
+        srv.Damage(Sid(srv, a), 9999, out, Sid(srv, ""));
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        for (int t = 0; t < 120 && srv.HealthOf(a) == 0; ++t) { ms += 33; srv.Tick(ms, out); }
-        Check(srv.HealthOf(a) > 0, "워리어가 안 되살아났다 — 이 시험이 무의미해진다");
-        Check(srv.IsInvulnerable(a), "부활 직후 무적이 아니다 — 이 시험이 무의미해진다");
+        for (int t = 0; t < 120 && srv.HealthOf(Sid(srv, a)) == 0; ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(srv.HealthOf(Sid(srv, a)) > 0, "워리어가 안 되살아났다 — 이 시험이 무의미해진다");
+        Check(srv.IsInvulnerable(Sid(srv, a)), "부활 직후 무적이 아니다 — 이 시험이 무의미해진다");
         click(srv, out);
         ms += 33; srv.Tick(ms, out);
-        Check(!srv.IsInvulnerable(a), "무기 공격 클릭을 했는데 부활 무적이 안 꺼졌다");
+        Check(!srv.IsInvulnerable(Sid(srv, a)), "무기 공격 클릭을 했는데 부활 무적이 안 꺼졌다");
     }
 
     // ⑤ 칸을 붙드는 애니(붙듦 1)면 칸 4 가 두 틱 이어진다 — 「지난 틱 칸보다 클 때만」(v76 아래 바이트)이 두 번 치기를 막는다
@@ -3118,10 +3124,10 @@ void TestWeaponAttack() {
         for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
         click(srv, out);
         int hits = 0;
-        uint16_t hp = srv.HealthOf(b);
+        uint16_t hp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 20; ++t) {
             ms += 33; srv.Tick(ms, out);
-            if (srv.HealthOf(b) != hp) { ++hits; hp = srv.HealthOf(b); }
+            if (srv.HealthOf(Sid(srv, b)) != hp) { ++hits; hp = srv.HealthOf(Sid(srv, b)); }
         }
         Check(hits == 1, "붙듦 1 애니에서 한가운데 칸이 두 틱 이어져 두 번 맞았다");
     }
@@ -3145,12 +3151,12 @@ void TestDamageHandler() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(b, -1, 6, a, 0, out);
-        Check(srv.HealthOf(b) == kWizHP - 4, "첫 대가 버림 4 가 아니다");
-        srv.DebugHurt(b, -1, 6, a, 0, out);
-        Check(srv.HealthOf(b) == kWizHP - 9, "둘째 대가 이월 더해 5 가 아니다");
-        srv.DebugHurt(b, -1, 6, a, 0, out);
-        Check(srv.HealthOf(b) == kWizHP - 13, "셋째 대가 이월 더해 4 가 아니다");
+        srv.DebugHurt(Sid(srv, b), -1, 6, Sid(srv, a), 0, out);
+        Check(srv.HealthOf(Sid(srv, b)) == kWizHP - 4, "첫 대가 버림 4 가 아니다");
+        srv.DebugHurt(Sid(srv, b), -1, 6, Sid(srv, a), 0, out);
+        Check(srv.HealthOf(Sid(srv, b)) == kWizHP - 9, "둘째 대가 이월 더해 5 가 아니다");
+        srv.DebugHurt(Sid(srv, b), -1, 6, Sid(srv, a), 0, out);
+        Check(srv.HealthOf(Sid(srv, b)) == kWizHP - 13, "셋째 대가 이월 더해 4 가 아니다");
     }
     // ② 종류별 — 2(망치·철퇴) 는 방어 절반 · 1(불) 은 방어 없음 · 1 짜리가 0 으로 버려지면 1
     {
@@ -3165,8 +3171,8 @@ void TestDamageHandler() {
             srv.DebugEnterGame(a, 728);
             srv.DebugEnterGame(b, 729);
             std::vector<nox::OutPacket> out;
-            srv.DebugHurt(b, -1, c.dmg, a, c.type, out);
-            Check(srv.HealthOf(b) == kWizHP - c.expect, c.why);
+            srv.DebugHurt(Sid(srv, b), -1, c.dmg, Sid(srv, a), c.type, out);
+            Check(srv.HealthOf(Sid(srv, b)) == kWizHP - c.expect, c.why);
         }
     }
     // ③ 편 거르기 — 같은 팀이면 안 깎인다(친선 피해 기본 꺼짐) · 다른 팀은 깎인다 · 자기가 자기를 치면 깎인다
@@ -3174,16 +3180,16 @@ void TestDamageHandler() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(b, -1, 6, a, 0, out);
-        Check(srv.HealthOf(b) == kWizHP, "같은 팀인데 깎였다");
-        srv.DebugSetTeam(b, 2);
-        srv.DebugHurt(b, -1, 6, a, 0, out);
-        Check(srv.HealthOf(b) < kWizHP, "다른 팀인데 안 깎였다");
-        srv.DebugHurt(a, -1, 6, a, 0, out);
-        Check(srv.HealthOf(a) < kWizHP, "자기가 자기를 쳤는데 안 깎였다(퀘스트 아님)");
+        srv.DebugHurt(Sid(srv, b), -1, 6, Sid(srv, a), 0, out);
+        Check(srv.HealthOf(Sid(srv, b)) == kWizHP, "같은 팀인데 깎였다");
+        srv.DebugSetTeam(Sid(srv, b), 2);
+        srv.DebugHurt(Sid(srv, b), -1, 6, Sid(srv, a), 0, out);
+        Check(srv.HealthOf(Sid(srv, b)) < kWizHP, "다른 팀인데 안 깎였다");
+        srv.DebugHurt(Sid(srv, a), -1, 6, Sid(srv, a), 0, out);
+        Check(srv.HealthOf(Sid(srv, a)) < kWizHP, "자기가 자기를 쳤는데 안 깎였다(퀘스트 아님)");
     }
     // ④ 20 이상 맞으면 움찔(상태 30 · 자세 52) → RECOIL 칸이 끝나면 13 · 19 는 안 움찔
     {
@@ -3192,15 +3198,15 @@ void TestDamageHandler() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);   // 체력 150 · 방어 0.02
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(b, -1, 19, a, 1, out);
-        Check(srv.DebugStateOf(b) != 30, "19 에 움찔했다");
-        srv.DebugHurt(b, -1, 20, a, 1, out);
-        Check(srv.DebugStateOf(b) == 30, "20 을 맞았는데 움찔(상태 30) 이 아니다");
-        Check(srv.DebugAnimByteOf(b) == 52, "움찔 자세가 52(RECOIL) 가 아니다");
+        srv.DebugHurt(Sid(srv, b), -1, 19, Sid(srv, a), 1, out);
+        Check(srv.DebugStateOf(Sid(srv, b)) != 30, "19 에 움찔했다");
+        srv.DebugHurt(Sid(srv, b), -1, 20, Sid(srv, a), 1, out);
+        Check(srv.DebugStateOf(Sid(srv, b)) == 30, "20 을 맞았는데 움찔(상태 30) 이 아니다");
+        Check(srv.DebugAnimByteOf(Sid(srv, b)) == 52, "움찔 자세가 52(RECOIL) 가 아니다");
         uint32_t ms = 0;
         srv.Tick(ms, out);
         int back = -1;
-        for (int t = 1; t <= 12 && back < 0; ++t) { ms += 33; srv.Tick(ms, out); if (srv.DebugStateOf(b) == nox::kPlayerStateIdle) back = t; }
+        for (int t = 1; t <= 12 && back < 0; ++t) { ms += 33; srv.Tick(ms, out); if (srv.DebugStateOf(Sid(srv, b)) == nox::kPlayerStateIdle) back = t; }
         Check(back >= 8 && back <= 9, "움찔이 RECOIL 8칸 뒤에 13 으로 안 돌아왔다");
     }
     // ⑤ 몬스터 — 불 면역은 종류 1 무시 · 종류 0 은 깎임 · 기계 골렘 피해 함수는 전기 두 배 · 내 소환수는 내가 쳐도 안 깎임
@@ -3216,14 +3222,14 @@ void TestDamageHandler() {
         body.subclass = nox::Server::MonsterClassBitsOf("SMALL_MONSTER+IMMUNE_FIRE");
         body.damageFn = nox::Server::DamageFnOf("MechGolemDamage");
         srv.SetTypeBody(1328, body);   // 4-a — 임프
-        srv.DebugSetOwnedPetHealth(a, 100);
-        srv.DebugHurt("", 0, 10, b, 1, out);
+        srv.DebugSetOwnedPetHealth(Sid(srv, a), 100);
+        srv.DebugHurt(Sid(srv, ""), 0, 10, Sid(srv, b), 1, out);
         Check(srv.DebugPetHealth(0) == 100, "불 면역인데 종류 1 에 깎였다");
-        srv.DebugHurt("", 0, 10, b, 0, out);
+        srv.DebugHurt(Sid(srv, ""), 0, 10, Sid(srv, b), 0, out);
         Check(srv.DebugPetHealth(0) == 90, "종류 0 이 10 깎지 않았다(몬스터는 방어 없음)");
-        srv.DebugHurt("", 0, 10, b, 9, out);
+        srv.DebugHurt(Sid(srv, ""), 0, 10, Sid(srv, b), 9, out);
         Check(srv.DebugPetHealth(0) == 70, "기계 골렘 피해 함수가 전기를 두 배로 안 했다");
-        srv.DebugHurt("", 0, 10, a, 0, out);
+        srv.DebugHurt(Sid(srv, ""), 0, 10, Sid(srv, a), 0, out);
         Check(srv.DebugPetHealth(0) == 70, "주인이 자기 소환수를 쳤는데 깎였다(편 거르기)");
     }
     // ⑥ 무적이면 안 깎인다(버프 23)
@@ -3233,14 +3239,14 @@ void TestDamageHandler() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        srv.Damage(b, 9999, out, "");
+        srv.Damage(Sid(srv, b), 9999, out, Sid(srv, ""));
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        for (int t = 0; t < 120 && srv.HealthOf(b) == 0; ++t) { ms += 33; srv.Tick(ms, out); }
-        Check(srv.IsInvulnerable(b), "부활 무적이 아니다 — 이 시험이 무의미해진다");
-        const uint16_t hp = srv.HealthOf(b);
-        srv.DebugHurt(b, -1, 30, a, 0, out);
-        Check(srv.HealthOf(b) == hp, "무적인데 깎였다");
+        for (int t = 0; t < 120 && srv.HealthOf(Sid(srv, b)) == 0; ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(srv.IsInvulnerable(Sid(srv, b)), "부활 무적이 아니다 — 이 시험이 무의미해진다");
+        const uint16_t hp = srv.HealthOf(Sid(srv, b));
+        srv.DebugHurt(Sid(srv, b), -1, 30, Sid(srv, a), 0, out);
+        Check(srv.HealthOf(Sid(srv, b)) == hp, "무적인데 깎였다");
     }
     std::printf("  피해 함수 — 버림·이월·종류별 방어·최소 1·편 거르기·움찔 20·몬스터 면역·골렘 전기 두 배·무적\n");
 }
@@ -3257,7 +3263,7 @@ void TestShieldBlock() {
         srv.SetPlayerAnimFrames(30, 6, 0);    // STAFF_BLOCK 6/0
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
     };
     auto move = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
         std::vector<uint8_t> pkt = InputPacket(2);
@@ -3278,21 +3284,21 @@ void TestShieldBlock() {
         int up15 = -1, up16 = -1;
         for (int t = 1; t <= 30; ++t) {
             ms += 33; srv.Tick(ms, out);
-            if (up15 < 0 && srv.DebugStateOf(a) == 15) up15 = t;
-            if (up16 < 0 && srv.DebugStateOf(a) == 16) up16 = t;
+            if (up15 < 0 && srv.DebugStateOf(Sid(srv, a)) == 15) up15 = t;
+            if (up16 < 0 && srv.DebugStateOf(Sid(srv, a)) == 16) up16 = t;
         }
         Check(up15 == 8, "가만 8틱째(7 넘김) 에 방패 올리기(15) 가 아니다");
         Check(up16 == up15 + 12, "올리기 12틱 뒤 올린 채(16) 가 아니다");
-        Check(srv.DebugAnimByteOf(a) == 40, "방패 자세가 40(RAISE_SHIELD) 이 아니다");
-        Check(srv.DebugAnimFrameOf(a) == 5, "올린 채 칸이 마지막(5) 이 아니다");
+        Check(srv.DebugAnimByteOf(Sid(srv, a)) == 40, "방패 자세가 40(RAISE_SHIELD) 이 아니다");
+        Check(srv.DebugAnimFrameOf(Sid(srv, a)) == 5, "올린 채 칸이 마지막(5) 이 아니다");
 
         // ② 걸음 입력 — 먼저 내리기(17), 다음 걸음 틱에 걷기(0)
         move(srv, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.DebugStateOf(a) == 17, "방패 올린 채 걸음 입력이 내리기(17) 로 안 갔다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 17, "방패 올린 채 걸음 입력이 내리기(17) 로 안 갔다");
         move(srv, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateWalk, "내리는 중 걸음 입력이 걷기로 안 갔다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateWalk, "내리는 중 걸음 입력이 걷기로 안 갔다");
     }
 
     // ③ 방패 올린 채(16) — 앞에서 온 칼은 막고 · 뒤에서 온 칼과 앞에서 온 전기(9)는 들어간다 · 올리기 전(13) 은 안 막음
@@ -3300,45 +3306,45 @@ void TestShieldBlock() {
         nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         makeSrv(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(a, -1, 30, b, 0, out, &front);
-        Check(srv.HealthOf(a) < kWarHP, "방패를 아직 안 올렸는데(13) 막았다");
-        const uint16_t hp0 = srv.HealthOf(a);
+        srv.DebugHurt(Sid(srv, a), -1, 30, Sid(srv, b), 0, out, &front);
+        Check(srv.HealthOf(Sid(srv, a)) < kWarHP, "방패를 아직 안 올렸는데(13) 막았다");
+        const uint16_t hp0 = srv.HealthOf(Sid(srv, a));
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        for (int t = 0; t < 40 && srv.DebugStateOf(a) != 16; ++t) { ms += 33; srv.Tick(ms, out); }
-        Check(srv.DebugStateOf(a) == 16, "방패가 안 올라갔다 — 이 시험이 무의미해진다");
-        const uint16_t hp1 = srv.HealthOf(a);
+        for (int t = 0; t < 40 && srv.DebugStateOf(Sid(srv, a)) != 16; ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(srv.DebugStateOf(Sid(srv, a)) == 16, "방패가 안 올라갔다 — 이 시험이 무의미해진다");
+        const uint16_t hp1 = srv.HealthOf(Sid(srv, a));
         Check(hp1 == hp0, "가만히 있는 사이 체력이 바뀌었다 — 이 시험이 무의미해진다");
-        srv.DebugHurt(a, -1, 30, b, 0, out, &front);
-        Check(srv.HealthOf(a) == hp1, "방패를 올렸는데 앞에서 온 칼에 깎였다");
-        srv.DebugHurt(a, -1, 30, b, 0, out, &back);
-        Check(srv.HealthOf(a) < hp1, "뒤에서 온 칼을 방패가 막았다");
-        const uint16_t hp2 = srv.HealthOf(a);
+        srv.DebugHurt(Sid(srv, a), -1, 30, Sid(srv, b), 0, out, &front);
+        Check(srv.HealthOf(Sid(srv, a)) == hp1, "방패를 올렸는데 앞에서 온 칼에 깎였다");
+        srv.DebugHurt(Sid(srv, a), -1, 30, Sid(srv, b), 0, out, &back);
+        Check(srv.HealthOf(Sid(srv, a)) < hp1, "뒤에서 온 칼을 방패가 막았다");
+        const uint16_t hp2 = srv.HealthOf(Sid(srv, a));
         // 뒤에서 맞아 움찔(30) 했을 수 있다 — 다시 올릴 때까지 기다린다
-        for (int t = 0; t < 60 && srv.DebugStateOf(a) != 16; ++t) { ms += 33; srv.Tick(ms, out); }
-        srv.DebugHurt(a, -1, 30, b, 9, out, &front);
-        Check(srv.HealthOf(a) < hp2, "방패가 앞에서 온 전기(9) 까지 막았다");
+        for (int t = 0; t < 60 && srv.DebugStateOf(Sid(srv, a)) != 16; ++t) { ms += 33; srv.Tick(ms, out); }
+        srv.DebugHurt(Sid(srv, a), -1, 30, Sid(srv, b), 9, out, &front);
+        Check(srv.HealthOf(Sid(srv, a)) < hp2, "방패가 앞에서 온 전기(9) 까지 막았다");
     }
 
     // ④ 대검(0x400) — 가만(13) 에 앞에서 온 칼(0) 을 막고 18~20 으로 · 망치류(2) 는 못 막음
     {
         nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         makeSrv(srv);
-        srv.DebugSetWeapon(a, 0x400);
+        srv.DebugSetWeapon(Sid(srv, a), 0x400);
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(a, -1, 30, b, 0, out, &front);
-        Check(srv.HealthOf(a) == kWarHP, "대검 든 가만 상태가 앞 칼을 못 막았다");
-        const uint8_t st = srv.DebugStateOf(a);
+        srv.DebugHurt(Sid(srv, a), -1, 30, Sid(srv, b), 0, out, &front);
+        Check(srv.HealthOf(Sid(srv, a)) == kWarHP, "대검 든 가만 상태가 앞 칼을 못 막았다");
+        const uint8_t st = srv.DebugStateOf(Sid(srv, a));
         Check(st >= 18 && st <= 20, "대검 막기 뒤 상태가 18~20 이 아니다");
         nox::Server srv2; RegAllSpells(srv2);   // 4-a 주문 정의
         makeSrv(srv2);
-        srv2.DebugSetWeapon(a, 0x400);
-        srv2.DebugHurt(a, -1, 30, b, 2, out, &front);
-        Check(srv2.HealthOf(a) < kWarHP, "대검이 종류 2(망치·철퇴) 를 막았다");
+        srv2.DebugSetWeapon(Sid(srv2, a), 0x400);
+        srv2.DebugHurt(Sid(srv2, a), -1, 30, Sid(srv2, b), 2, out, &front);
+        Check(srv2.HealthOf(Sid(srv2, a)) < kWarHP, "대검이 종류 2(망치·철퇴) 를 막았다");
         // 걷는 중(0) 에는 대검도 못 막는다(가만 13 · 막기 18~20 만)
         nox::Server srv3; RegAllSpells(srv3);   // 4-a 주문 정의
         makeSrv(srv3);
-        srv3.DebugSetWeapon(a, 0x400);
+        srv3.DebugSetWeapon(Sid(srv3, a), 0x400);
         uint32_t ms = 0;
         srv3.Tick(ms, out);
         {
@@ -3348,36 +3354,36 @@ void TestShieldBlock() {
             srv3.OnPacket(a, pkt.data(), pkt.size(), out);
         }
         ms += 33; srv3.Tick(ms, out);
-        Check(srv3.DebugStateOf(a) == nox::kPlayerStateWalk, "걷기 상태로 못 만들었다 — 이 시험이 무의미해진다");
+        Check(srv3.DebugStateOf(Sid(srv3, a)) == nox::kPlayerStateWalk, "걷기 상태로 못 만들었다 — 이 시험이 무의미해진다");
         nox::Server::AttackSrc front2;
-        front2.x = static_cast<float>(srv3.XOf(a) + 30); front2.y = static_cast<float>(srv3.YOf(a));
-        srv3.DebugHurt(a, -1, 30, b, 0, out, &front2);
-        Check(srv3.HealthOf(a) < kWarHP, "걷는 중인데 대검이 막았다");
+        front2.x = static_cast<float>(srv3.XOf(Sid(srv3, a)) + 30); front2.y = static_cast<float>(srv3.YOf(Sid(srv3, a)));
+        srv3.DebugHurt(Sid(srv3, a), -1, 30, Sid(srv3, b), 0, out, &front2);
+        Check(srv3.HealthOf(Sid(srv3, a)) < kWarHP, "걷는 중인데 대검이 막았다");
     }
 
     // ⑤ 지팡이(0x8000) — 가만(13) 에 투사체 아닌 칼(0) 을 막고 21 · 투사체는 못 막음
     {
         nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         makeSrv(srv);
-        srv.DebugSetWeapon(a, 0x8000);
+        srv.DebugSetWeapon(Sid(srv, a), 0x8000);
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(a, -1, 30, b, 0, out, &front);
-        Check(srv.HealthOf(a) == kWarHP && srv.DebugStateOf(a) == 21, "지팡이 가만 상태가 앞 칼을 막고 21 로 가지 않았다");
+        srv.DebugHurt(Sid(srv, a), -1, 30, Sid(srv, b), 0, out, &front);
+        Check(srv.HealthOf(Sid(srv, a)) == kWarHP && srv.DebugStateOf(Sid(srv, a)) == 21, "지팡이 가만 상태가 앞 칼을 막고 21 로 가지 않았다");
         nox::Server srv2; RegAllSpells(srv2);   // 4-a 주문 정의
         makeSrv(srv2);
-        srv2.DebugSetWeapon(a, 0x8000);
+        srv2.DebugSetWeapon(Sid(srv2, a), 0x8000);
         nox::Server::AttackSrc missile = front;
         missile.missile = true;
-        srv2.DebugHurt(a, -1, 30, b, 0, out, &missile);
-        Check(srv2.HealthOf(a) < kWarHP, "지팡이가 투사체를 막았다");
+        srv2.DebugHurt(Sid(srv2, a), -1, 30, Sid(srv2, b), 0, out, &missile);
+        Check(srv2.HealthOf(Sid(srv2, a)) < kWarHP, "지팡이가 투사체를 막았다");
     }
 
     // ⑥ 들어오는 투사체가 있으면 7틱 안 기다리고 바로 방패를 올린다(monsterTestBlockShield)
     {
         nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         makeSrv(srv);
-        srv.DebugMoveTo(b, 1090, 1000);
-        srv.DebugSetFacing(b, 128);            // b 가 −x(a 쪽) 을 본다
+        srv.DebugMoveTo(Sid(srv, b), 1090, 1000);
+        srv.DebugSetFacing(Sid(srv, b), 128);            // b 가 −x(a 쪽) 을 본다
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
@@ -3387,7 +3393,7 @@ void TestShieldBlock() {
         Check(srv.missiles() == 1, "불덩이가 안 날았다 — 이 시험이 무의미해진다");
         ms += 33; srv.Tick(ms, out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.DebugStateOf(a) == 15 || srv.DebugStateOf(a) == 30, "앞에서 투사체가 오는데 7틱 전에 방패를 안 올렸다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 15 || srv.DebugStateOf(Sid(srv, a)) == 30, "앞에서 투사체가 오는데 7틱 전에 방패를 안 올렸다");
     }
 
     std::printf("  방패·막기 — 가만 7틱 뒤 올리기·12틱 올린 채·걸음이면 내리기·앞 막기·뒤·전기 통과·대검·지팡이·투사체 보고 올리기\n");
@@ -3484,7 +3490,7 @@ void TestBundleOneDatagram() {
     const std::string b = "10.9.30.22:49302";   // 시험용 즉시 모드(묶지 않음)
     srv.DebugEnterGame(a, 750);
     srv.DebugEnterGame(b, 751);
-    srv.DebugImportantReal(a, /*ready=*/true);
+    srv.DebugImportantReal(Sid(srv, a), /*ready=*/true);
     using BS = nox::BundleStat;
     uint32_t ms = 0;
     std::vector<nox::OutPacket> warm;
@@ -3508,7 +3514,7 @@ void TestBundleOneDatagram() {
         srv.OnPacket(a, imp.data(), imp.size(), out);
         Check(countTo(out, a) == 0 && srv.bundleStat(BS::InMisc) - m0 == 1,
               "① 클라 중요 메시지에 `ab` 가 곧바로 나갔거나 묶음 잡다 칸에 안 담겼다");
-        srv.DebugGiveExp(a, 250.0f, out);                     // 중요 대기열에 `6e`
+        srv.DebugGiveExp(Sid(srv, a), 250.0f, out);                     // 중요 대기열에 `6e`
         out.clear();
         ms += 34; srv.Tick(ms, out);
         const size_t n = countTo(out, a);
@@ -3597,13 +3603,13 @@ void TestBundleOneDatagram() {
         nox::Server s2;
         const std::string c = "10.9.30.23:49303";
         s2.DebugEnterGame(c, 752);
-        s2.DebugImportantReal(c, /*ready=*/true);
+        s2.DebugImportantReal(Sid(s2, c), /*ready=*/true);
         uint32_t t2 = 0;
         std::vector<nox::OutPacket> w2;
         s2.Tick(t2, w2);
         t2 += 34; s2.Tick(t2, w2);
         std::vector<nox::OutPacket> out;
-        s2.DebugGiveExp(c, 300.0f, out);
+        s2.DebugGiveExp(Sid(s2, c), 300.0f, out);
         const std::string line(190, 'x');
         for (int i = 0; i < 12; ++i) s2.DebugSendNotice(line.c_str(), out);
         out.clear();
@@ -3633,7 +3639,7 @@ void TestBundleOneDatagram() {
     }
     // ④ 게임 밖(접속 중)이면 묶지 않는다 — 틱 끝을 기다리지 않고 곧바로
     {
-        srv.DebugLeave(a);
+        srv.DebugLeave(Sid(srv, a));
         std::vector<nox::OutPacket> out;
         const auto imp = WireOf({ static_cast<uint8_t>(nox::Op::IMPORTANT), 0x55, 0x66, 0x77, 0x08, 0x00 });
         const unsigned long long g0 = srv.bundleStat(BS::DirectNotInGame);
@@ -3650,7 +3656,7 @@ void TestBundleOneDatagram() {
     {
         nox::Server s2;
         s2.DebugEnterGame(a, 750);
-        s2.DebugImportantReal(a, /*ready=*/true);
+        s2.DebugImportantReal(Sid(s2, a), /*ready=*/true);
         uint32_t m2 = 0;
         std::vector<nox::OutPacket> w2;
         s2.Tick(m2, w2);
@@ -3659,7 +3665,7 @@ void TestBundleOneDatagram() {
         std::vector<nox::OutPacket> o2;
         const unsigned long long over0 = s2.bundleStat(BS::OverSize);
         const unsigned long long misc0 = s2.bundleStat(BS::InMisc);
-        s2.DebugEmit(a, big, o2);
+        s2.DebugEmit(Sid(s2, a), big, o2);
         m2 += 34; s2.Tick(m2, o2);
         size_t biggest = 0, n = 0, starts27 = 0;
         for (const auto& p : o2) {
@@ -3696,13 +3702,13 @@ void TestUpdateFitsWithTimestamp() {
         nox::Server s;
         const std::string c = "10.9.30.31:49311";
         s.DebugEnterGame(c, 760);
-        s.DebugMoveTo(c, 2000, 2000);
-        s.DebugImportantReal(c, /*ready=*/true);
+        s.DebugMoveTo(Sid(s, c), 2000, 2000);
+        s.DebugImportantReal(Sid(s, c), /*ready=*/true);
         s.DebugSetAutoFight(false);
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         s.SetTypeBody(1328, body);
         for (int i = 0; i < n; ++i)
-            s.DebugSpawnPet(1328, 1600.0f + static_cast<float>((i % row) * 40), 1700.0f + static_cast<float>((i / row) * 40), std::string());
+            s.DebugSpawnPet(1328, 1600.0f + static_cast<float>((i % row) * 40), 1700.0f + static_cast<float>((i / row) * 40), Sid(s, std::string()));
         uint32_t t = 0;
         std::vector<nox::OutPacket> w;
         s.Tick(t, w);
@@ -3760,7 +3766,7 @@ void TestImportantQueue() {
     nox::Server srv;
     const std::string a = "10.9.9.1:49001";
     srv.DebugEnterGame(a, 740);
-    srv.DebugImportantReal(a, /*ready=*/false);
+    srv.DebugImportantReal(Sid(srv, a), /*ready=*/false);
     uint32_t ms = 0;
     std::vector<nox::OutPacket> warm;
     srv.Tick(ms, warm);   // 첫 부름은 시계만 잡는다
@@ -3768,13 +3774,13 @@ void TestImportantQueue() {
     // ① 준비 전 — 쌓이기만, 틱이 돌아도 안 나간다
     {
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 10, out);
+        srv.Damage(Sid(srv, a), 10, out);
         ms += 34; srv.Tick(ms, out);                          // 09-14 — 43 은 피해 자리가 아니라 다음 틱 PlayerReportAnything 이 싣는다
-        const size_t pend = srv.DebugImportantPending(a);
+        const size_t pend = srv.DebugImportantPending(Sid(srv, a));
         Check(pend > 0, "준비 전 중요 메시지가 대기열에 안 쌓임");
         for (int i = 0; i < 3; ++i) { ms += 34; srv.Tick(ms, out); }
         Check(!FindImportantPacket(out, a, nullptr, nullptr), "준비 전에 중요 조각(27 aa cc)이 나감");
-        Check(srv.DebugImportantPending(a) >= pend, "준비 전에 대기열이 줄었다");
+        Check(srv.DebugImportantPending(Sid(srv, a)) >= pend, "준비 전에 대기열이 줄었다");
     }
 
     // ② 준비 — 다음 틱에 [27][aa][cc…], 순번은 0 부터 빈틈 없이
@@ -3795,19 +3801,19 @@ void TestImportantQueue() {
 
     // ③ 확인 — 그 시각으로 `ab` 가 오면 실었던 것이 지워진다
     {
-        const size_t before = srv.DebugImportantPending(a);
+        const size_t before = srv.DebugImportantPending(Sid(srv, a));
         std::vector<nox::OutPacket> out;
         const auto ack = WireOf({ static_cast<uint8_t>(nox::Op::IMPORTANT_ACK),
                                   static_cast<uint8_t>(f1), static_cast<uint8_t>(f1 >> 8), 0, 0 });
         srv.OnPacket(a, ack.data(), ack.size(), out);
-        Check(srv.DebugImportantPending(a) + carried1 == before, "확인했는데 실은 만큼 안 지워짐");
+        Check(srv.DebugImportantPending(Sid(srv, a)) + carried1 == before, "확인했는데 실은 만큼 안 지워짐");
     }
 
     // ④ 확인 없음 — 새로 실은 순번이 60틱 안에는 다시 안 나가고, 60틱 무렵 같은 순번으로 다시 나간다
     {
         std::vector<nox::OutPacket> out;
-        srv.DebugBuffOff(a, 23);                               // 준비(CLIENT_READY)가 건 무적 23 을 끈다(gameServerReadyMB) — 안 끄면 피해가 막힌다
-        srv.Damage(a, 5, out);
+        srv.DebugBuffOff(Sid(srv, a), 23);                               // 준비(CLIENT_READY)가 건 무적 23 을 끈다(gameServerReadyMB) — 안 끄면 피해가 막힌다
+        srv.Damage(Sid(srv, a), 5, out);
         ms += 34; srv.Tick(ms, out);
         std::vector<uint16_t> ids2;
         Check(FindImportantPacket(out, a, nullptr, &ids2), "새 중요 메시지가 안 실림");
@@ -3835,13 +3841,13 @@ void TestImportantQueue() {
         s2.SetWorldStatics(st);
         const std::string b = "10.9.9.2:49002";
         s2.DebugEnterGame(b, 741);
-        s2.DebugImportantReal(b, /*ready=*/true);
-        s2.DebugMoveTo(b, 1000, 1000);
+        s2.DebugImportantReal(Sid(s2, b), /*ready=*/true);
+        s2.DebugMoveTo(Sid(s2, b), 1000, 1000);
         std::vector<nox::OutPacket> o;
         uint32_t t = 0;
         s2.Tick(t, o);
         t += 34; s2.Tick(t, o);   // 소개
-        s2.DebugMoveTo(b, 1000 + static_cast<int>(nox::kAoiDropRadius) + 300, 1000);
+        s2.DebugMoveTo(Sid(s2, b), 1000 + static_cast<int>(nox::kAoiDropRadius) + 300, 1000);
         bool rawInImportant = false;
         for (int i = 0; i < 3 && !rawInImportant; ++i) {
             std::vector<nox::OutPacket> oo;
@@ -3883,10 +3889,10 @@ void TestKillArmorCollide() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         std::vector<nox::OutPacket> out;
-        srv.Damage(b, 149, out, "");
+        srv.Damage(Sid(srv, b), 149, out, Sid(srv, ""));
         out.clear();
-        srv.DebugHurt(b, -1, 50, by, dtype, out, src);
-        Check(!srv.IsAlive(b), "죽음 알림 시험 — 한 대에 안 죽었다(시험이 무의미)");
+        srv.DebugHurt(Sid(srv, b), -1, 50, Sid(srv, by), dtype, out, src);
+        Check(!srv.IsAlive(Sid(srv, b)), "죽음 알림 시험 — 한 대에 안 죽었다(시험이 무의미)");
         if (toA) *toA = killMsg(out, a);
         if (toB) *toB = killMsg(out, b);
     };
@@ -3955,10 +3961,10 @@ void TestKillArmorCollide() {
         std::vector<nox::OutPacket> out;
         nox::Server::AttackSrc w;
         w.x = 1000; w.y = 1000; w.obj = true; w.objType = nox::kItemLongsword;
-        srv.DebugHurt(b, -1, 10, a, 0, out, &w);
-        srv.Damage(b, nox::HealthOnline(nox::CharClass::Warrior) - 20, out, "");
+        srv.DebugHurt(Sid(srv, b), -1, 10, Sid(srv, a), 0, out, &w);
+        srv.Damage(Sid(srv, b), nox::HealthOnline(nox::CharClass::Warrior) - 20, out, Sid(srv, ""));
         out.clear();
-        srv.DebugHurt(b, -1, 50, "", 13, out, nullptr);
+        srv.DebugHurt(Sid(srv, b), -1, 50, Sid(srv, ""), 13, out, nullptr);
         const auto m13 = killMsg(out, b);
         Check(m13.size() == 11 && m13[10] == 0, "앞 대의 갈래 1 기록이 다음 피해에서 안 비워졌다");
     }
@@ -3968,17 +3974,17 @@ void TestKillArmorCollide() {
         srv.SetPlayerAnimFrames(28, 8, 0);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1050, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1050, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(b, nox::HealthOnline(nox::CharClass::Wizard) - 1, out, "");
+        srv.Damage(Sid(srv, b), nox::HealthOnline(nox::CharClass::Wizard) - 1, out, Sid(srv, ""));
         for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
         out.clear();
         auto click = InputPacket(6);
         srv.OnPacket(a, click.data(), click.size(), out);
-        for (int t = 0; t < 8 && srv.IsAlive(b); ++t) { ms += 33; srv.Tick(ms, out); }
-        Check(!srv.IsAlive(b), "롱소드 한 번에 체력 1 짜리가 안 죽었다");
+        for (int t = 0; t < 8 && srv.IsAlive(Sid(srv, b)); ++t) { ms += 33; srv.Tick(ms, out); }
+        Check(!srv.IsAlive(Sid(srv, b)), "롱소드 한 번에 체력 1 짜리가 안 죽었다");
         const auto mb = killMsg(out, b);
         Check(mb.size() == 11 && u16(mb, 2) == 728 && u16(mb, 8) == nox::kItemLongsword && mb[10] == 1,
               "롱소드로 죽였는데 알림에 롱소드 그림(갈래 1·1169)이 아님");
@@ -3987,11 +3993,11 @@ void TestKillArmorCollide() {
         auto clickB = InputPacket(6);
         srv.OnPacket(b, clickB.data(), clickB.size(), out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.IsAlive(b), "클릭했는데 안 되살아남(시험 전제)");
-        Check(srv.DebugLastHitCls(b) == 0, "부활했는데 +520(마지막으로 때린 것)을 안 지웠다");
+        Check(srv.IsAlive(Sid(srv, b)), "클릭했는데 안 되살아남(시험 전제)");
+        Check(srv.DebugLastHitCls(Sid(srv, b)) == 0, "부활했는데 +520(마지막으로 때린 것)을 안 지웠다");
         for (int t = 0; t < 5 * nox::kServerTickRate + 2; ++t) { ms += 33; srv.Tick(ms, out); }   // 부활 무적 5초
         out.clear();
-        srv.Damage(b, 999, out);
+        srv.Damage(Sid(srv, b), 999, out);
         const auto mb2 = killMsg(out, b);
         Check(mb2.size() == 11 && u16(mb2, 2) == 0 && mb2[10] == 0, "부활 뒤에도 옛 죽인 사람·갈래가 남아 있다");
     }
@@ -4001,22 +4007,22 @@ void TestKillArmorCollide() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1240, 1000);   // ★ 09-29 B1 — 알아보기 거리 250 안(전에는 1400 — 거리 제한 없이 알아보던 때)
+        srv.DebugMoveTo(Sid(srv, b), 1240, 1000);   // ★ 09-29 B1 — 알아보기 거리 250 안(전에는 1400 — 거리 제한 없이 알아보던 때)
         std::vector<nox::OutPacket> out;
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         RegImpShot(srv);
         Check(srv.pets() == 1, "소환수가 안 불려 나옴(시험 전제)");
         AllMetalButPlayer(srv);
-        srv.Damage(b, nox::HealthOnline(nox::CharClass::Wizard) - 1, out, "");
+        srv.Damage(Sid(srv, b), nox::HealthOnline(nox::CharClass::Wizard) - 1, out, Sid(srv, ""));
         srv.Tick(0, out);
         uint32_t ms = 0;
         std::vector<uint8_t> mb;
-        for (int t = 0; t < 400 && srv.IsAlive(b); ++t) {
+        for (int t = 0; t < 400 && srv.IsAlive(Sid(srv, b)); ++t) {
             out.clear();
             ms += 33; srv.Tick(ms, out);
-            if (!srv.IsAlive(b)) mb = killMsg(out, b);
+            if (!srv.IsAlive(Sid(srv, b))) mb = killMsg(out, b);
         }
-        Check(!srv.IsAlive(b), "소환수가 체력 1 짜리를 못 죽였다(시험 전제)");
+        Check(!srv.IsAlive(Sid(srv, b)), "소환수가 체력 1 짜리를 못 죽였다(시험 전제)");
         Check(mb.size() == 11 && u16(mb, 2) == 728 && mb[10] == 1 && u16(mb, 8) != 0 && u16(mb, 8) != nox::kPlayerType,
               "소환수가 죽였는데 알림이 주인·갈래 1·소환수 종류가 아님");
         // ★ 4-c3b2 — 사람의 임프가 쏜 ImpShot 은 뿌리가 사람이라 때린 것 = ImpShot(862)
@@ -4126,7 +4132,7 @@ void TestCastPipeline() {
         RegSpell(srv, 27);
         srv.SetPlayerAnimFrames(21, 8, 2);                    // ⭕ thing.bin CAST_SPELL 8/2
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        const uint16_t full = srv.ManaOf(a);
+        const uint16_t full = srv.ManaOf(Sid(srv, a));
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
@@ -4138,16 +4144,16 @@ void TestCastPipeline() {
             ms += 34; srv.Tick(ms, o);
             if (t == 1) {
                 Check(count(o, a, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) == 1, "받은 다음 틱에 `70` 이 없다");
-                Check(srv.DebugStateOf(a) == 2 && srv.DebugAnimByteOf(a) == 21, "시전 중인데 상태 2 · 자세 21(CAST_SPELL) 이 아니다");
+                Check(srv.DebugStateOf(Sid(srv, a)) == 2 && srv.DebugAnimByteOf(Sid(srv, a)) == 21, "시전 중인데 상태 2 · 자세 21(CAST_SPELL) 이 아니다");
             }
-            if (t == 7) Check(srv.DebugAnimFrameOf(a) == 2, "시전 자세 칸이 (프레임−시작)÷3 이 아니다");
-            if (t > 1 && srv.DebugCasting(a)) Check(count(o, a, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) == 0, "`70` 이 첫 음소 뒤에도 나간다");
-            if (srv.DebugCasting(a)) Check(srv.ManaOf(a) == full, "음소를 다 말하기 전에 마나가 깎였다");
-            if (!srv.DebugCasting(a)) { endTick = t; endOut = o; }
+            if (t == 7) Check(srv.DebugAnimFrameOf(Sid(srv, a)) == 2, "시전 자세 칸이 (프레임−시작)÷3 이 아니다");
+            if (t > 1 && srv.DebugCasting(Sid(srv, a))) Check(count(o, a, static_cast<uint8_t>(nox::Op::REPORT_SPELL_START)) == 0, "`70` 이 첫 음소 뒤에도 나간다");
+            if (srv.DebugCasting(Sid(srv, a))) Check(srv.ManaOf(Sid(srv, a)) == full, "음소를 다 말하기 전에 마나가 깎였다");
+            if (!srv.DebugCasting(Sid(srv, a))) { endTick = t; endOut = o; }
         }
         Check(endTick == 10, "파이어볼(음소 3) 이 10틱째에 안 끝났다 — 음소 3틱 간격·끝 판정");
-        Check(srv.ManaOf(a) == full - 30, "끝났는데 마나 30 이 안 깎였다");
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "끝났는데 상태 13 으로 안 돌아왔다");
+        Check(srv.ManaOf(Sid(srv, a)) == full - 30, "끝났는데 마나 30 이 안 깎였다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateIdle, "끝났는데 상태 13 으로 안 돌아왔다");
         Check(hasStat(endOut, a, 27, 15), "끝났는데 `df 1b 00 00 00 0f` 가 없다");
     }
 
@@ -4194,16 +4200,16 @@ void TestCastPipeline() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         std::vector<nox::OutPacket> out;
         SummonImp(srv, a, out);
-        srv.DebugSetClass(a, nox::CharClass::Wizard);
+        srv.DebugSetClass(Sid(srv, a), nox::CharClass::Wizard);
         double px = 0, py = 0;
         Check(srv.DebugPetXY(0, px, py), "임프가 안 불려 나옴(시험 전제)");
-        srv.DebugAimAt(a, static_cast<int>(px), static_cast<int>(py));
+        srv.DebugAimAt(Sid(srv, a), static_cast<int>(px), static_cast<int>(py));
         out.clear();
         send(srv, a, 27, false, out);
         Check(srv.CastPending() == 0, "커서가 내 소환수 위인데 공격 주문을 넣었다");
         Check(!hasStat(out, a, 27, 0), "친구 거르기 갈래에서 STAT 을 보냈다");
         // 커서를 치우면 넣는다
-        srv.DebugAimAt(a, static_cast<int>(px) + 400, static_cast<int>(py) + 400);
+        srv.DebugAimAt(Sid(srv, a), static_cast<int>(px) + 400, static_cast<int>(py) + 400);
         send(srv, a, 27, false, out);
         Check(srv.CastPending() == 1, "커서가 빈 곳인데 공격 주문을 안 넣었다");
     }
@@ -4223,7 +4229,7 @@ void TestCastPipeline() {
         for (int t = 1; t <= 40 && endTick < 0; ++t) {
             std::vector<nox::OutPacket> o;
             ms += 34; srv.Tick(ms, o);
-            if (!srv.DebugCasting(a)) { endTick = t; endOut = o; }
+            if (!srv.DebugCasting(Sid(srv, a))) { endTick = t; endOut = o; }
         }
         const int want = (sp == 24) ? 13 : 22;
         Check(endTick == want, sp == 24 ? "에너지볼트가 13틱째에 안 끝났다(겹치는 나무)" : "연쇄번개가 22틱째에 안 끝났다(겹치는 나무 — 에너지볼트 자리에서 멈췄나)");
@@ -4251,12 +4257,12 @@ void TestCastPipeline() {
             RegSpell(srv, 87);
             srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
             srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-            srv.DebugMoveTo(b, 3000, 3000);
-            const uint16_t full = srv.ManaOf(a);
+            srv.DebugMoveTo(Sid(srv, b), 3000, 3000);
+            const uint16_t full = srv.ManaOf(Sid(srv, a));
             std::vector<nox::OutPacket> out;
             uint32_t ms = 0;
             CastAndWait(srv, a, 87, false, ms, out);
-            Check(srv.ManaOf(a) == full - blobCost, "임프 소환 마나가 blob_587000 217668 표 값과 다르다");
+            Check(srv.ManaOf(Sid(srv, a)) == full - blobCost, "임프 소환 마나가 blob_587000 217668 표 값과 다르다");
             std::vector<nox::OutPacket> o2;
             uint32_t m2 = srv.DebugNowMs();
             srv.SetFriends(false);
@@ -4284,10 +4290,10 @@ void TestCastPipeline() {
         mv.push_back(0);
         srv.OnPacket(a, mv.data(), mv.size(), out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.DebugStateOf(a) != 2, "걸었는데 상태 2 가 그대로다");
-        Check(srv.DebugCasting(a), "걸었다고 시전이 취소됐다");
-        for (int t = 0; t < 20 && srv.DebugCasting(a); ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.ManaOf(a) == nox::ManaOnline(nox::CharClass::Wizard) - 30, "걸으면서 말한 파이어볼이 끝나지 않았다");
+        Check(srv.DebugStateOf(Sid(srv, a)) != 2, "걸었는데 상태 2 가 그대로다");
+        Check(srv.DebugCasting(Sid(srv, a)), "걸었다고 시전이 취소됐다");
+        for (int t = 0; t < 20 && srv.DebugCasting(Sid(srv, a)); ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.ManaOf(Sid(srv, a)) == nox::ManaOnline(nox::CharClass::Wizard) - 30, "걸으면서 말한 파이어볼이 끝나지 않았다");
     }
     std::printf("  4-a — 음소 3틱·10/13/22틱에 끝 · 시전 중 거절 · 관전 글 · 친구 커서 거르기 · 소환 blob 비용 · 걸어도 계속\n");
 }
@@ -4316,8 +4322,8 @@ void TestSpellFly() {
     {
         nox::Server srv;
         setup(srv);
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugAimAt(a, 1150, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         CastAndWait(srv, a, 12, false, ms, out);
@@ -4345,7 +4351,7 @@ void TestSpellFly() {
         Check(std::fabs(firstX - 1019.623f) < 0.01f, "첫 틱 자리가 (힘+속도)×감쇠 0.9 가 아니다");
         Check(hitTick == 10, "Magic 이 10틱째에 b 에 안 닿았다(힘·감쇠·속도가 틀림)");
         Check(srv.DebugAcceptCount() == before + 1, "b 에 닿았는데 받아들이기(spellAccept)가 안 불렸다");
-        Check(srv.DebugLastAcceptTarget().addr == b, "받아들인 대상이 b 가 아니다");
+        Check(srv.DebugLastAcceptTarget().addr == Sid(srv, b), "받아들인 대상이 b 가 아니다");
         Check(destroyed, "닿아 지웠는데 `31 <번호>` 가 모두에게 안 갔다");
     }
 
@@ -4353,8 +4359,8 @@ void TestSpellFly() {
     {
         nox::Server srv;
         setup(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         CastAndWait(srv, a, 12, false, ms, out);
@@ -4380,14 +4386,14 @@ void TestSpellFly() {
         nox::Server srv;
         setup(srv);
         srv.SetPlayerAnimFrames(40, 6, 1);                    // RAISE_SHIELD
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugSetFacing(b, 128);                           // a 쪽(−x)
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugSetFacing(Sid(srv, b), 128);                           // a 쪽(−x)
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.DebugStateOf(b) == 16, "워리어가 방패를 안 올렸다(시험 전제)");
-        srv.DebugAimAt(a, 1150, 1000);
+        Check(srv.DebugStateOf(Sid(srv, b)) == 16, "워리어가 방패를 안 올렸다(시험 전제)");
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         CastAndWait(srv, a, 12, false, ms, out);
         Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
         const unsigned long long before = srv.DebugAcceptCount();
@@ -4399,21 +4405,21 @@ void TestSpellFly() {
         }
         Check(farX < 1150.0f && farX > 1100.0f, "Magic 이 방패 앞에서 안 튕겼다");
         Check(srv.MissileCount() == 0 && srv.DebugAcceptCount() == before + 1, "되받아친 Magic 이 시전자에게 돌아와 받아들여지지 않았다");
-        Check(srv.DebugLastAcceptTarget().addr == a, "되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다(주인·대상 맞바꿈)");
-        Check(srv.DebugStateOf(b) == 16, "되받아친 워리어 상태가 바뀌었다");
+        Check(srv.DebugLastAcceptTarget().addr == Sid(srv, a), "되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다(주인·대상 맞바꿈)");
+        Check(srv.DebugStateOf(Sid(srv, b)) == 16, "되받아친 워리어 상태가 바뀌었다");
     }
     // ③b 되받아친 주인(b)이 게임에서 빠지면 ud[0] 이 비고, 시전자에게 닿아도 받아들이지 않는다(spellAccept obj3 == nil → false)
     {
         nox::Server srv;
         setup(srv);
         srv.SetPlayerAnimFrames(40, 6, 1);
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugSetFacing(b, 128);
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugSetFacing(Sid(srv, b), 128);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
-        srv.DebugAimAt(a, 1150, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         CastAndWait(srv, a, 12, false, ms, out);
         const unsigned long long before = srv.DebugAcceptCount();
         float lastX = 0;
@@ -4421,7 +4427,7 @@ void TestSpellFly() {
         for (int t = 1; t <= 90 && srv.MissileCount() > 0; ++t) {
             float x = 0, y = 0;
             srv.DebugMissileXY(0, x, y);
-            if (!left && lastX > 0 && x < lastX) { srv.DebugLeave(b); left = true; }
+            if (!left && lastX > 0 && x < lastX) { srv.DebugLeave(Sid(srv, b)); left = true; }
             lastX = x;
             ms += 34; srv.Tick(ms, out);
         }
@@ -4432,9 +4438,9 @@ void TestSpellFly() {
     {
         nox::Server srv;
         setup(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         srv.SetWalls({ { 47, 43 } });                          // 앞 +x 쪽 칸(X 자 벽)
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         CastAndWait(srv, a, 12, false, ms, out);
@@ -4460,13 +4466,13 @@ void TestSpellFly() {
         setup(srv);
         if (k == 1) {
             srv.SetMagicType(kMagic, 50, 10.0f, 0x4400);      // 시험용 — AIRBORNE + NO_COLLIDE_OWNER
-            srv.DebugSetTeam(a, 1);
+            srv.DebugSetTeam(Sid(srv, a), 1);
         }
         srv.DebugEnterGame(c, 730, false, nox::CharClass::Warrior);
-        if (k == 1) srv.DebugSetTeam(c, 1);
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugMoveTo(c, 1080, 1000);
-        srv.DebugAimAt(a, 1150, 1000);
+        if (k == 1) srv.DebugSetTeam(Sid(srv, c), 1);
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1080, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         CastAndWait(srv, a, 12, false, ms, out);
@@ -4479,9 +4485,9 @@ void TestSpellFly() {
         }
         if (k == 0) {
             Check(maxX < 1080.0f, "길목의 c 를 지나갔다(맞힘 없음)");
-            Check(srv.DebugLastAcceptTarget().addr != c, "대상이 아닌 c 에 닿았는데 받아들였다");
+            Check(srv.DebugLastAcceptTarget().addr != Sid(srv, c), "대상이 아닌 c 에 닿았는데 받아들였다");
         } else {
-            Check(maxX > 1100.0f && srv.DebugLastAcceptTarget().addr == b, "NO_COLLIDE_OWNER 인데 같은 편 c 에 막혔다");
+            Check(maxX > 1100.0f && srv.DebugLastAcceptTarget().addr == Sid(srv, b), "NO_COLLIDE_OWNER 인데 같은 편 c 에 막혔다");
         }
     }
 
@@ -4491,12 +4497,12 @@ void TestSpellFly() {
     for (uint32_t obFlags : { 0u, 0x10u, 0x90u, 0x40u }) {
         nox::Server srv;
         setup(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         nox::Server::PhysBody ob;
         ob.shape = 2; ob.r = 4.0f; ob.x = 1137.5f; ob.y = 1000.0f;
         ob.flags = obFlags;
         srv.SetObstacles({ ob });
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         CastAndWait(srv, a, 12, false, ms, out);
@@ -4519,14 +4525,14 @@ void TestSpellFly() {
         nox::Server srv;
         setup(srv);
         RegSpell(srv, 41);                                    // 작은 치유(TARGETED · 공격 아님)
-        srv.DebugMoveTo(b, 1300, 1000);
-        srv.DebugAimAt(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         CastAndWait(srv, a, 41, false, ms, out);
         Check(srv.MissileCount() == 1, "치유를 겨눠 말했는데 Magic 이 안 생겼다");
         for (int t = 1; t <= 60 && srv.MissileCount() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.DebugLastAcceptTarget().addr == b, "커서가 제 발밑일 때 대상이 b 가 아니다(시전자 자신을 안 뺐다)");
+        Check(srv.DebugLastAcceptTarget().addr == Sid(srv, b), "커서가 제 발밑일 때 대상이 b 가 아니다(시전자 자신을 안 뺐다)");
     }
 
     // ⑧ 대검 든 가만(13) 앞에서 받으면 되받아쳐 주인·대상이 바뀌고 18~20 → 시전자 a 에게 돌아와 닿는다
@@ -4534,24 +4540,24 @@ void TestSpellFly() {
         nox::Server srv;
         setup(srv);
         for (int anim : { 47, 48, 49 }) srv.SetPlayerAnimFrames(anim, 6, 1);   // GREAT_SWORD_BLOCK_*
-        srv.DebugSetClass(b, nox::CharClass::Conjurer);       // 방패가 없어야 가만(13)에 머문다
-        srv.DebugSetWeapon(b, 0x400);
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugSetFacing(b, 128);
-        srv.DebugAimAt(a, 1150, 1000);
+        srv.DebugSetClass(Sid(srv, b), nox::CharClass::Conjurer);       // 방패가 없어야 가만(13)에 머문다
+        srv.DebugSetWeapon(Sid(srv, b), 0x400);
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugSetFacing(Sid(srv, b), 128);
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         CastAndWait(srv, a, 12, false, ms, out);
         Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
-        Check(srv.DebugStateOf(b) == nox::kPlayerStateIdle, "b 가 가만(13)이 아니다(시험 전제)");
+        Check(srv.DebugStateOf(Sid(srv, b)) == nox::kPlayerStateIdle, "b 가 가만(13)이 아니다(시험 전제)");
         bool blocked = false;
         for (int t = 1; t <= 90 && srv.MissileCount() > 0; ++t) {
             ms += 34; srv.Tick(ms, out);
-            const uint8_t st = srv.DebugStateOf(b);
+            const uint8_t st = srv.DebugStateOf(Sid(srv, b));
             if (st >= 18 && st <= 20) blocked = true;
         }
         Check(blocked, "대검 가만 상태가 앞에서 온 Magic 에 18~20 막기를 안 했다");
-        Check(srv.DebugLastAcceptTarget().addr == a, "대검이 되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다");
+        Check(srv.DebugLastAcceptTarget().addr == Sid(srv, a), "대검이 되받아친 Magic 을 받아들인 대상이 시전자 a 가 아니다");
     }
 
     // ⑨ 날아오는 Magic 도 「들어오는 투사체」다 — 방패 든 워리어가 가만 7틱을 안 기다리고 올린다(getMissilesInCircle)
@@ -4560,18 +4566,18 @@ void TestSpellFly() {
         nox::Server srv;
         setup(srv);
         srv.SetPlayerAnimFrames(40, 6, 1);
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugSetFacing(b, 128);
-        srv.DebugAimAt(a, 1150, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugSetFacing(Sid(srv, b), 128);
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         CastAndWait(srv, a, 12, false, ms, out);
         Check(srv.MissileCount() == 1, "Magic 이 안 생겼다(시험 전제)");
-        srv.DebugSetState(b, nox::kPlayerStateIdle);          // 가만 시계를 0 으로
+        srv.DebugSetState(Sid(srv, b), nox::kPlayerStateIdle);          // 가만 시계를 0 으로
         int raiseTick = -1;
         for (int t = 1; t <= 10 && raiseTick < 0; ++t) {
             ms += 34; srv.Tick(ms, out);
-            if (srv.DebugStateOf(b) == 15) raiseTick = t;
+            if (srv.DebugStateOf(Sid(srv, b)) == 15) raiseTick = t;
         }
         Check(raiseTick > 0 && raiseTick <= 7, "Magic 이 날아오는데 가만 7틱을 기다려 방패를 올렸다");
     }
@@ -4607,7 +4613,7 @@ void TestDurSpells() {
         srv.SetSpellDef(24, 10, 0x20 | 0x4, {});              // 번개는 공격 주문으로(CancelOffensiveFor)
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
         srv.Tick(ms, out);
     };
     const nox::Target none;
@@ -4616,7 +4622,7 @@ void TestDurSpells() {
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         setup(srv, ms, out);
-        Check(srv.DebugDurNew(a, 4, 5, -1, -1, true, none, out), "지속 주문 New 가 false");
+        Check(srv.DebugDurNew(Sid(srv, a), 4, 5, -1, -1, true, none, out), "지속 주문 New 가 false");
         Check(srv.DurCount() == 1, "New 뒤 목록이 1 이 아니다");
         int statTick = -1, goneTick = -1;
         for (int t = 1; t <= 10 && goneTick < 0; ++t) {
@@ -4628,8 +4634,8 @@ void TestDurSpells() {
         Check(statTick == 5, "dt 5 인데 5틱째에 STAT 15 로 취소되지 않았다");
         Check(goneTick == 6, "취소 다음 틱에 지워지지 않았다");
         Check(srv.DebugDurDestroys() == 1, "지울 때 destroy 함수가 한 번 불리지 않았다");
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle, "지운 뒤 주인 상태가 13 이 아니다");
-        Check(srv.DebugDurNew(a, 4, 0, -1, -1, false, none, out), "New(dt 0) 가 false");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateIdle, "지운 뒤 주인 상태가 13 이 아니다");
+        Check(srv.DebugDurNew(Sid(srv, a), 4, 0, -1, -1, false, none, out), "New(dt 0) 가 false");
         for (int t = 0; t < 100; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.DurCount() == 1, "dt 0 인데 끝났다(68 == 60 이면 끝 없음)");
     }
@@ -4638,28 +4644,28 @@ void TestDurSpells() {
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         setup(srv, ms, out);
-        srv.DebugDurNew(a, 4, 0, -1, -1, false, none, out);
+        srv.DebugDurNew(Sid(srv, a), 4, 0, -1, -1, false, none, out);
         std::vector<nox::OutPacket> o;
-        srv.DebugDurNew(a, 4, 0, -1, -1, false, none, o);
+        srv.DebugDurNew(Sid(srv, a), 4, 0, -1, -1, false, none, o);
         Check(srv.DurCount() == 1 && hasStat(o, a, 4, 15), "같은 주문을 다시 걸었는데 앞의 것이 취소·지워지지 않았다");
-        srv.DebugDurNew(a, 75, 0, -1, -1, false, none, out);
+        srv.DebugDurNew(Sid(srv, a), 75, 0, -1, -1, false, none, out);
         std::vector<nox::OutPacket> o2;
-        srv.DebugDurNew(a, 87, 0, -1, -1, false, none, o2);
+        srv.DebugDurNew(Sid(srv, a), 87, 0, -1, -1, false, none, o2);
         Check(srv.DurCount() == 2 && srv.DebugDurSpellAt(0) == 87 && hasStat(o2, a, 75, 15), "소환 둘 — 앞 소환(75)이 취소되지 않았다");
-        srv.DebugDurNew(b, 87, 0, -1, -1, false, none, out);
+        srv.DebugDurNew(Sid(srv, b), 87, 0, -1, -1, false, none, out);
         Check(srv.DurCount() == 3, "남(b)의 소환이 a 의 소환을 취소했다(주인이 같아야)");
         std::vector<nox::OutPacket> o3;
-        srv.DebugDurNew(a, 59, 0, -1, -1, false, none, o3);
+        srv.DebugDurNew(Sid(srv, a), 59, 0, -1, -1, false, none, o3);
         std::vector<nox::OutPacket> o4;
-        Check(srv.DebugDurNew(a, 59, 0, -1, -1, false, none, o4), "플라스마 두 번째가 false");
+        Check(srv.DebugDurNew(Sid(srv, a), 59, 0, -1, -1, false, none, o4), "플라스마 두 번째가 false");
         Check(srv.DurCount() == 4 && !hasStat(o4, a, 59, 15), "플라스마를 또 걸었는데 새로 만들거나 앞의 것을 취소했다(Sub4FEE50)");
-        Check(srv.DebugDurActive(59, a) && !srv.DebugDurActive(59, b), "Sub4FEE50 이 주인을 안 가린다");
+        Check(srv.DebugDurActive(59, Sid(srv, a)) && !srv.DebugDurActive(59, Sid(srv, b)), "Sub4FEE50 이 주인을 안 가린다");
         std::vector<nox::OutPacket> o5;
-        srv.DebugPlayerCancelSpells(a, o5);
-        Check(!srv.DebugDurActive(59, a), "취소된 플라스마를 Sub4FEE50 이 아직 있다고 본다");
+        srv.DebugPlayerCancelSpells(Sid(srv, a), o5);
+        Check(!srv.DebugDurActive(59, Sid(srv, a)), "취소된 플라스마를 Sub4FEE50 이 아직 있다고 본다");
         std::vector<nox::OutPacket> o6;
-        srv.DebugDurNew(a, 59, 0, -1, -1, false, none, o6);
-        Check(srv.DebugDurActive(59, a) && srv.DebugDurSpellAt(0) == 59, "취소 뒤 플라스마를 다시 걸었는데 새로 안 만들었다");
+        srv.DebugDurNew(Sid(srv, a), 59, 0, -1, -1, false, none, o6);
+        Check(srv.DebugDurActive(59, Sid(srv, a)) && srv.DebugDurSpellAt(0) == 59, "취소 뒤 플라스마를 다시 걸었는데 새로 안 만들었다");
     }
 
     // ③ create 가 0 아니면 취소하고 false · update 가 1 을 돌려준 틱에 취소
@@ -4667,11 +4673,11 @@ void TestDurSpells() {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         setup(srv, ms, out);
         std::vector<nox::OutPacket> o;
-        Check(!srv.DebugDurNew(a, 4, 0, 1, -1, false, none, o), "create 가 1 인데 New 가 true");
+        Check(!srv.DebugDurNew(Sid(srv, a), 4, 0, 1, -1, false, none, o), "create 가 1 인데 New 가 true");
         Check(hasStat(o, a, 4, 15) && srv.DebugDurCanceled(0), "create 실패인데 취소(STAT 15·깃발)가 아니다");
         ms += 34; srv.Tick(ms, out);
         Check(srv.DurCount() == 0, "create 실패한 것이 다음 틱에 안 지워졌다");
-        Check(srv.DebugDurNew(a, 4, 0, 0, 3, false, none, out), "create 0 인데 New 가 false");
+        Check(srv.DebugDurNew(Sid(srv, a), 4, 0, 0, 3, false, none, out), "create 0 인데 New 가 false");
         int statTick = -1;
         for (int t = 1; t <= 6 && statTick < 0; ++t) {
             std::vector<nox::OutPacket> o2;
@@ -4685,15 +4691,15 @@ void TestDurSpells() {
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         setup(srv, ms, out);
-        srv.DebugDurNew(a, 43, 0, -1, -1, false, none, out);
+        srv.DebugDurNew(Sid(srv, a), 43, 0, -1, -1, false, none, out);
         std::vector<nox::OutPacket> o;
-        srv.Damage(a, 1000, o);
+        srv.Damage(Sid(srv, a), 1000, o);
         Check(hasStat(o, a, 43, 0), "주인이 죽었는데 연쇄 번개가 STAT 0 으로 취소되지 않았다");
-        Check(!srv.DebugDurNew(a, 4, 0, -1, -1, false, none, out), "죽은 주인에게 New 가 true(u2 DEAD)");
+        Check(!srv.DebugDurNew(Sid(srv, a), 4, 0, -1, -1, false, none, out), "죽은 주인에게 New 가 true(u2 DEAD)");
         nox::Server srv2; std::vector<nox::OutPacket> out2; uint32_t ms2 = 0;
         setup(srv2, ms2, out2);
-        srv2.DebugDurNew(b, 4, 0, -1, -1, false, none, out2);
-        srv2.DebugLeave(b);
+        srv2.DebugDurNew(Sid(srv2, b), 4, 0, -1, -1, false, none, out2);
+        srv2.DebugLeave(Sid(srv2, b));
         ms2 += 34; srv2.Tick(ms2, out2);
         Check(srv2.DebugDurCanceled(0), "주인이 빠졌는데 틱에서 취소되지 않았다");
         ms2 += 34; srv2.Tick(ms2, out2);
@@ -4704,8 +4710,8 @@ void TestDurSpells() {
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         setup(srv, ms, out);
-        srv.DebugDurNew(a, 24, 0, -1, -1, false, none, out);
-        srv.DebugDurNew(a, 4, 0, -1, -1, false, none, out);
+        srv.DebugDurNew(Sid(srv, a), 24, 0, -1, -1, false, none, out);
+        srv.DebugDurNew(Sid(srv, a), 4, 0, -1, -1, false, none, out);
         std::vector<uint8_t> mv = InputPacket(2);
         mv[nox::kWireHeaderSize + 1] = 5;
         mv.push_back(0);
@@ -4715,13 +4721,13 @@ void TestDurSpells() {
         Check(hasStat(o, a, 24, 15) && !hasStat(o, a, 4, 15), "걷기 입력에 번개(24)만 취소되지 않았다(cancelAllSpells_4FEE90)");
         nox::Server srv2; std::vector<nox::OutPacket> out2; uint32_t ms2 = 0;
         setup(srv2, ms2, out2);
-        srv2.DebugDurNew(a, 31, 0, -1, -1, false, none, out2);
-        const int x0 = srv2.XOf(a);
+        srv2.DebugDurNew(Sid(srv2, a), 31, 0, -1, -1, false, none, out2);
+        const int x0 = srv2.XOf(Sid(srv2, a));
         for (int t = 0; t < 5; ++t) {
             srv2.OnPacket(a, mv.data(), mv.size(), out2);
             ms2 += 34; srv2.Tick(ms2, out2);
         }
-        Check(srv2.XOf(a) == x0 && srv2.DebugStateOf(a) != nox::kPlayerStateWalk, "자연의 힘 중인데 걸었다(방향 입력만)");
+        Check(srv2.XOf(Sid(srv2, a)) == x0 && srv2.DebugStateOf(Sid(srv2, a)) != nox::kPlayerStateWalk, "자연의 힘 중인데 걸었다(방향 입력만)");
         Check(srv2.DurCount() == 1, "자연의 힘 중 걷기 입력이 주문을 취소했다");
     }
 
@@ -4729,29 +4735,29 @@ void TestDurSpells() {
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         setup(srv, ms, out);
-        srv.DebugDurNew(a, 67, 0, -1, -1, false, none, out);
+        srv.DebugDurNew(Sid(srv, a), 67, 0, -1, -1, false, none, out);
         std::vector<nox::OutPacket> o;
         CastAndWait(srv, a, 27, false, ms, o);
         Check(hasStat(o, a, 67, 15), "파이어볼(공격)을 말했는데 타원 방패가 취소되지 않았다");
         nox::Server srv2; std::vector<nox::OutPacket> out2; uint32_t ms2 = 0;
         setup(srv2, ms2, out2);
-        srv2.DebugSetWeapon(a, 0);
+        srv2.DebugSetWeapon(Sid(srv2, a), 0);
         for (int anim : { 23, 24, 25 }) srv2.SetPlayerAnimFrames(anim, 8, 0);   // 주먹 8칸(thing.bin)
-        srv2.DebugDurNew(a, 67, 0, -1, -1, false, none, out2);
+        srv2.DebugDurNew(Sid(srv2, a), 67, 0, -1, -1, false, none, out2);
         { std::vector<nox::OutPacket> o0; ms2 += 34; srv2.Tick(ms2, o0); Check(!hasStat(o0, a, 67, 15), "치지 않았는데 타원 방패가 취소됐다"); }
         std::vector<nox::OutPacket> o2;
         auto click = InputPacket(6);
         srv2.OnPacket(a, click.data(), click.size(), o2);
         ms2 += 34; srv2.Tick(ms2, o2);
         // ⚠ 정답지 그대로 — 같은 틱 spellCastByPlayer 가 취소된 방패를 지우며 상태 13 으로 돌린다(playerSetState 에 1→13 막는 문 없음)
-        Check(srv2.DebugStateOf(a) == nox::kPlayerStateIdle, "타원 방패를 지운 틱에 주인 상태가 13 이 아니다(destroyDurSpell)");
+        Check(srv2.DebugStateOf(Sid(srv2, a)) == nox::kPlayerStateIdle, "타원 방패를 지운 틱에 주인 상태가 13 이 아니다(destroyDurSpell)");
         Check(hasStat(o2, a, 67, 15), "맨손으로 쳤는데 타원 방패가 취소되지 않았다");
         nox::Server srv3; std::vector<nox::OutPacket> out3; uint32_t ms3 = 0;
         setup(srv3, ms3, out3);
-        srv3.DebugDurNew(a, 24, 0, -1, -1, false, none, out3);
-        srv3.DebugDurNew(a, 4, 0, -1, -1, false, none, out3);
+        srv3.DebugDurNew(Sid(srv3, a), 24, 0, -1, -1, false, none, out3);
+        srv3.DebugDurNew(Sid(srv3, a), 4, 0, -1, -1, false, none, out3);
         std::vector<nox::OutPacket> o3;
-        srv3.DebugDurCancelOffensiveFor(a, o3);
+        srv3.DebugDurCancelOffensiveFor(Sid(srv3, a), o3);
         Check(hasStat(o3, a, 24, 15) && !hasStat(o3, a, 4, 15), "CancelOffensiveFor 가 공격 주문만 취소하지 않았다");
     }
 
@@ -4759,24 +4765,24 @@ void TestDurSpells() {
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         setup(srv, ms, out);
-        srv.DebugSetFacing(a, 77);
-        const nox::Target tb{ b, -1 };
+        srv.DebugSetFacing(Sid(srv, a), 77);
+        const nox::Target tb{ Sid(srv, b), -1 };
         struct { uint8_t spell, typ, val; bool swap; } rows[] = { { 24, 11, 3, false }, { 22, 12, 3, false }, { 9, 9, 3, false },
                                                                   { 59, 8, 77, false }, { 35, 13, 3, true } };
         for (const auto& r : rows) {
-            srv.DebugDurNew(a, r.spell, 0, -1, -1, false, tb, out);
+            srv.DebugDurNew(Sid(srv, a), r.spell, 0, -1, -1, false, tb, out);
             Check(srv.DebugDurFindByTarget(r.spell, tb), "대상으로 찾기(sub_4FF2D0)가 못 찾았다");
             std::vector<nox::OutPacket> o;
-            srv.DebugPlayerCancelSpells(a, o);
+            srv.DebugPlayerCancelSpells(Sid(srv, a), o);
             const uint16_t n1 = r.swap ? 729 : 728, n2 = r.swap ? 728 : 729;
             Check(rayStop(o, a, r.typ, r.val, n1, n2) && rayStop(o, b, r.typ, r.val, n1, n2), "취소했는데 `9e` 광선 멈춤이 모두에게 안 갔다");
             Check(!srv.DebugDurFindByTarget(r.spell, tb), "취소된 것을 대상으로 찾았다");
             ms += 34; srv.Tick(ms, out);
         }
-        srv.DebugDurNew(a, 35, 0, -1, -1, false, nox::Target{ a, -1 }, out);
-        srv.DebugDurNew(a, 4, 0, -1, -1, false, tb, out);
+        srv.DebugDurNew(Sid(srv, a), 35, 0, -1, -1, false, nox::Target{ Sid(srv, a), -1 }, out);
+        srv.DebugDurNew(Sid(srv, a), 4, 0, -1, -1, false, tb, out);
         std::vector<nox::OutPacket> o;
-        srv.DebugPlayerCancelSpells(a, o);
+        srv.DebugPlayerCancelSpells(Sid(srv, a), o);
         Check(!anyRay(o, a), "자기에게 건 큰 치유 · 광선 아닌 주문에 `9e` 를 보냈다");
     }
     std::printf("  4-a3 — dt 끝·dt 0 · 같은 주문·소환 교체 · 플라스마 안 겹침 · create/update 취소 · 죽음·빠짐 · 걷기·자연의 힘 · 타원 방패 · 광선 멈춤\n");
@@ -4836,21 +4842,21 @@ void TestBuffs() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         srv.Tick(ms, out);
-        srv.DebugApplyEnchant(a, 0, 100, 1);
+        srv.DebugApplyEnchant(Sid(srv, a), 0, 100, 1);
         std::vector<nox::OutPacket> o;
-        srv.DebugApplyEnchant(a, 21, 90, 3);
+        srv.DebugApplyEnchant(Sid(srv, a), 21, 90, 3);
         tickOut(srv, ms, o);
         uint32_t bits = 0;
         Check(enchantBits(o, b, 728, &bits) && bits == (1u << 21), "적외선을 걸었는데 `5a` 비트가 1<<21 이 아니다(투명이 안 꺼짐)");
-        Check(srv.DebugEnchantPower(a, 21) == 3 && srv.DebugEnchantDur(a, 21) == 89, "세기·남은 틱(90 − 1)이 틀리다");
-        srv.DebugApplyEnchant(a, 17, 0, 2);
-        srv.DebugApplyEnchant(a, 17, 50, 4);
-        Check(srv.DebugEnchantDur(a, 17) == 0 && srv.DebugEnchantPower(a, 17) == 2, "끝없는(0) 버프를 덮어썼다");
-        srv.DebugApplyEnchant(a, 21, 40, 5);
-        Check(srv.DebugEnchantDur(a, 21) == 40 && srv.DebugEnchantPower(a, 21) == 5, "남은 틱이 있는 버프를 새로 못 덮었다");
-        srv.Damage(b, 1000, out);
-        srv.DebugApplyEnchant(b, 21, 40, 5);
-        Check(!srv.DebugHasEnchant(b, 21), "죽은 이에게 버프가 걸렸다");
+        Check(srv.DebugEnchantPower(Sid(srv, a), 21) == 3 && srv.DebugEnchantDur(Sid(srv, a), 21) == 89, "세기·남은 틱(90 − 1)이 틀리다");
+        srv.DebugApplyEnchant(Sid(srv, a), 17, 0, 2);
+        srv.DebugApplyEnchant(Sid(srv, a), 17, 50, 4);
+        Check(srv.DebugEnchantDur(Sid(srv, a), 17) == 0 && srv.DebugEnchantPower(Sid(srv, a), 17) == 2, "끝없는(0) 버프를 덮어썼다");
+        srv.DebugApplyEnchant(Sid(srv, a), 21, 40, 5);
+        Check(srv.DebugEnchantDur(Sid(srv, a), 21) == 40 && srv.DebugEnchantPower(Sid(srv, a), 21) == 5, "남은 틱이 있는 버프를 새로 못 덮었다");
+        srv.Damage(Sid(srv, b), 1000, out);
+        srv.DebugApplyEnchant(Sid(srv, b), 21, 40, 5);
+        Check(!srv.DebugHasEnchant(Sid(srv, b), 21), "죽은 이에게 버프가 걸렸다");
     }
 
     // ③ 틱마다 −1 → 0 되는 틱에 끄고 `5a` 0 · 끝없음은 안 줄어든다 · BuffOff 는 걸린 것만 알린다
@@ -4858,20 +4864,20 @@ void TestBuffs() {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.Tick(ms, out);
-        srv.DebugApplyEnchant(a, 9, 3, 1);
-        srv.DebugApplyEnchant(a, 18, 0, 1);
+        srv.DebugApplyEnchant(Sid(srv, a), 9, 3, 1);
+        srv.DebugApplyEnchant(Sid(srv, a), 18, 0, 1);
         int offTick = -1;
         for (int t = 1; t <= 6 && offTick < 0; ++t) {
             std::vector<nox::OutPacket> o;
             tickOut(srv, ms, o);
             uint32_t bits = 0xFFFFFFFFu;
-            if (!srv.DebugHasEnchant(a, 9)) { offTick = t; Check(enchantBits(o, a, 728, &bits) && bits == (1u << 18), "꺼진 틱에 `5a` 가 남은 비트로 안 갔다"); }
+            if (!srv.DebugHasEnchant(Sid(srv, a), 9)) { offTick = t; Check(enchantBits(o, a, 728, &bits) && bits == (1u << 18), "꺼진 틱에 `5a` 가 남은 비트로 안 갔다"); }
         }
         Check(offTick == 3, "남은 틱 3 인데 3틱째에 안 꺼졌다");
         for (int t = 0; t < 40; ++t) tickOut(srv, ms, out);
-        Check(srv.DebugHasEnchant(a, 18) && srv.DebugEnchantDur(a, 18) == 0, "끝없는 버프가 꺼졌거나 남은 틱이 줄었다");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 18) && srv.DebugEnchantDur(Sid(srv, a), 18) == 0, "끝없는 버프가 꺼졌거나 남은 틱이 줄었다");
         std::vector<nox::OutPacket> o;
-        srv.DebugBuffOff(a, 9);
+        srv.DebugBuffOff(Sid(srv, a), 9);
         tickOut(srv, ms, o);
         Check(!enchantBits(o, a, 728, nullptr), "안 걸린 버프를 끄는데 `5a` 를 보냈다");
     }
@@ -4883,21 +4889,21 @@ void TestBuffs() {
         srv.SetAutoRespawn(true);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.Tick(ms, out);
-        srv.Damage(a, 1000, out);
-        for (int t = 0; t < 60 && !srv.IsAlive(a); ++t) tickOut(srv, ms, out);
-        Check(srv.IsAlive(a) && srv.DebugHasEnchant(a, 23) && srv.DebugEnchantPower(a, 23) == 5, "부활했는데 버프 23(세기 5)이 아니다");
-        Check(srv.DebugEnchantDur(a, 23) > 140 && srv.DebugEnchantDur(a, 23) <= 150, "부활 무적 남은 틱이 150 근처가 아니다");
-        srv.DebugApplyEnchant(a, 16, 2, 1);
+        srv.Damage(Sid(srv, a), 1000, out);
+        for (int t = 0; t < 60 && !srv.IsAlive(Sid(srv, a)); ++t) tickOut(srv, ms, out);
+        Check(srv.IsAlive(Sid(srv, a)) && srv.DebugHasEnchant(Sid(srv, a), 23) && srv.DebugEnchantPower(Sid(srv, a), 23) == 5, "부활했는데 버프 23(세기 5)이 아니다");
+        Check(srv.DebugEnchantDur(Sid(srv, a), 23) > 140 && srv.DebugEnchantDur(Sid(srv, a), 23) <= 150, "부활 무적 남은 틱이 150 근처가 아니다");
+        srv.DebugApplyEnchant(Sid(srv, a), 16, 2, 1);
         for (int t = 0; t < 3; ++t) tickOut(srv, ms, out);
-        Check(!srv.IsAlive(a), "DEATH(16) 남은 틱이 끝났는데 무적이라 안 죽었다(unitDamageClear 는 무적을 안 본다)");
+        Check(!srv.IsAlive(Sid(srv, a)), "DEATH(16) 남은 틱이 끝났는데 무적이라 안 죽었다(unitDamageClear 는 무적을 안 본다)");
         nox::Server srv2; std::vector<nox::OutPacket> out2; uint32_t ms2 = 0;
         RegAllSpells(srv2);
         srv2.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv2.Tick(ms2, out2);
-        srv2.DebugApplyEnchant(a, 23, 0, 5);
-        srv2.DebugApplyEnchant(a, 0, 0, 5);                     // 투명(0)은 23 을 건 뒤에 걸어야 남는다
+        srv2.DebugApplyEnchant(Sid(srv2, a), 23, 0, 5);
+        srv2.DebugApplyEnchant(Sid(srv2, a), 0, 0, 5);                     // 투명(0)은 23 을 건 뒤에 걸어야 남는다
         CastAndWait(srv2, a, 27, false, ms2, out2);
-        Check(!srv2.DebugHasEnchant(a, 23) && !srv2.DebugHasEnchant(a, 0), "공격 주문을 말했는데 무적·투명이 안 꺼졌다");
+        Check(!srv2.DebugHasEnchant(Sid(srv2, a), 23) && !srv2.DebugHasEnchant(Sid(srv2, a), 0), "공격 주문을 말했는데 무적·투명이 안 꺼졌다");
     }
 
     // ⑤ 반마법(29)이면 시전 끝에 코드 14 · 얼림(25)이면 걷기·방향·공격 입력 무시 · 붙잡힘(5)이면 걷기만 무시
@@ -4906,7 +4912,7 @@ void TestBuffs() {
         RegAllSpells(srv);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.Tick(ms, out);
-        srv.DebugApplyEnchant(a, 29, 0, 1);
+        srv.DebugApplyEnchant(Sid(srv, a), 29, 0, 1);
         std::vector<nox::OutPacket> o;
         CastAndWait(srv, a, 27, false, ms, o);
         bool code14 = false;
@@ -4918,27 +4924,27 @@ void TestBuffs() {
             s2.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
             s2.SetPlayerAnimFrames(23, 8, 0); s2.SetPlayerAnimFrames(24, 8, 0);
             s2.Tick(m2, o2);
-            s2.DebugApplyEnchant(a, buff, 0, 1);
-            const int x0 = s2.XOf(a);
+            s2.DebugApplyEnchant(Sid(s2, a), buff, 0, 1);
+            const int x0 = s2.XOf(Sid(s2, a));
             std::vector<uint8_t> mv = InputPacket(2);
             mv[nox::kWireHeaderSize + 1] = 5;
             mv.push_back(0);
             for (int t = 0; t < 5; ++t) { s2.OnPacket(a, mv.data(), mv.size(), o2); tickOut(s2, m2, o2); }
-            Check(s2.XOf(a) == x0 && s2.DebugStateOf(a) != nox::kPlayerStateWalk, buff == 25 ? "얼림인데 걸었다" : "붙잡힘인데 걸었다");
-            s2.DebugSetWeapon(a, 0);
+            Check(s2.XOf(Sid(s2, a)) == x0 && s2.DebugStateOf(Sid(s2, a)) != nox::kPlayerStateWalk, buff == 25 ? "얼림인데 걸었다" : "붙잡힘인데 걸었다");
+            s2.DebugSetWeapon(Sid(s2, a), 0);
             auto click = InputPacket(6);
             s2.OnPacket(a, click.data(), click.size(), o2);
             tickOut(s2, m2, o2);
-            if (buff == 25) Check(s2.DebugStateOf(a) != nox::kPlayerStateAttack, "얼림인데 공격이 들어갔다(playerCanAttack)");
-            else Check(s2.DebugStateOf(a) == nox::kPlayerStateAttack, "붙잡힘은 공격을 막지 않는다");
+            if (buff == 25) Check(s2.DebugStateOf(Sid(s2, a)) != nox::kPlayerStateAttack, "얼림인데 공격이 들어갔다(playerCanAttack)");
+            else Check(s2.DebugStateOf(Sid(s2, a)) == nox::kPlayerStateAttack, "붙잡힘은 공격을 막지 않는다");
             std::vector<uint8_t> fp = InputPacket(1);
             fp[nox::kWireHeaderSize + 1] = 5;
             fp.push_back(64);
-            const uint8_t f0 = s2.DebugFacingOf(a);
+            const uint8_t f0 = s2.DebugFacingOf(Sid(s2, a));
             s2.OnPacket(a, fp.data(), fp.size(), o2);
             tickOut(s2, m2, o2);
-            if (buff == 25) Check(s2.DebugFacingOf(a) == f0, "얼림인데 방향 입력으로 돌았다(CCOrientation)");
-            else Check(s2.DebugFacingOf(a) == 64, "붙잡힘은 방향 입력을 막지 않는다");
+            if (buff == 25) Check(s2.DebugFacingOf(Sid(s2, a)) == f0, "얼림인데 방향 입력으로 돌았다(CCOrientation)");
+            else Check(s2.DebugFacingOf(Sid(s2, a)) == 64, "붙잡힘은 방향 입력을 막지 않는다");
         }
     }
 
@@ -4952,15 +4958,15 @@ void TestBuffs() {
             srv.SetMagicType(1237, 50, 10.0f, 0x4000);
             srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
             srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-            srv.DebugMoveTo(b, kase == 4 ? 1650 : 1150, 1000);
-            srv.DebugAimAt(a, 1150, kase == 4 ? 2100 : 1060);   // b 몸 밖(커서 오브젝트 아님) · 둘레 600 안(kase 4 는 밖)
-            if (kase == 1) srv.DebugApplyEnchant(a, 2, 0, 1);
-            if (kase >= 2) srv.DebugApplyEnchant(b, 0, 0, 1);
-            if (kase >= 3) srv.DebugApplyEnchant(a, 21, 0, 1);
+            srv.DebugMoveTo(Sid(srv, b), kase == 4 ? 1650 : 1150, 1000);
+            srv.DebugAimAt(Sid(srv, a), 1150, kase == 4 ? 2100 : 1060);   // b 몸 밖(커서 오브젝트 아님) · 둘레 600 안(kase 4 는 밖)
+            if (kase == 1) srv.DebugApplyEnchant(Sid(srv, a), 2, 0, 1);
+            if (kase >= 2) srv.DebugApplyEnchant(Sid(srv, b), 0, 0, 1);
+            if (kase >= 3) srv.DebugApplyEnchant(Sid(srv, a), 21, 0, 1);
             CastAndWait(srv, a, 12, false, ms, out);
             const unsigned long long before = srv.DebugAcceptCount();
             for (int t = 0; t < 60 && srv.MissileCount() > 0; ++t) tickOut(srv, ms, out);
-            const bool hitB = srv.DebugAcceptCount() == before + 1 && srv.DebugLastAcceptTarget().addr == b;
+            const bool hitB = srv.DebugAcceptCount() == before + 1 && srv.DebugLastAcceptTarget().addr == Sid(srv, b);
             static const char* kMsg[5] = { "눈멀지 않았는데 b 를 못 찾았다(시험 전제)", "눈먼 시전자가 b 를 찾았다",
                                             "가만히 선 투명한 b 를 찾았다", "적외선인데 투명한 b 를 못 찾았다",
                                             "날아가는 것이 시전자 적외선(21)을 안 물려받아 투명한 b 를 틱 찾기에서 못 봤다" };
@@ -4975,10 +4981,10 @@ void TestBuffs() {
         srv.SetMagicType(1237, 50, 10.0f, 0x4000);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugSetFacing(b, 128);
-        srv.DebugAimAt(a, 1150, 1000);
-        srv.DebugApplyEnchant(b, 27, 0, 1);
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugSetFacing(Sid(srv, b), 128);
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
+        srv.DebugApplyEnchant(Sid(srv, b), 27, 0, 1);
         CastAndWait(srv, a, 12, false, ms, out);
         float maxX = 0;
         for (int t = 0; t < 90 && srv.MissileCount() > 0; ++t) {
@@ -4988,7 +4994,7 @@ void TestBuffs() {
         }
         // ★ 정답지 그대로 — 27 은 되받아치지 않고 주인·대상만 바꾼다(changeOwner 뒤 return) → Magic 이 b 를 지나가
         //   a 쪽으로 돌려다 b 등에 맞아 튕기기를 되풀이하다 수명이 끝난다(시험 기록 DBG: 1148 → 1183 → 1163~1183 왕복)
-        Check(maxX > 1160.0f && srv.DebugLastAcceptTarget().addr != b, "되받아치기 방패(27)인데 b 가 받아들였다(주인·대상 맞바꿈 없음)");
+        Check(maxX > 1160.0f && srv.DebugLastAcceptTarget().addr != Sid(srv, b), "되받아치기 방패(27)인데 b 가 받아들였다(주인·대상 맞바꿈 없음)");
     }
 
     // ⑧ 도운 사람 — castBuffSpell(orig·offensive)이 +3600 을 적고 10초 안에 남이 죽이면 `a9 0e` 에 싣는다 · 죽인 이와 같으면 0
@@ -5010,13 +5016,13 @@ void TestBuffs() {
             srv.Tick(ms, out);
             nox::Server::BuffConf conf;
             conf.durOpt = "ConfuseEnchantDuration";
-            conf.orig = b;
+            conf.orig = Sid(srv, b);
             conf.offensive = true;
-            Check(srv.CastBuffSpell(12, 3, 2, nox::Target{ a, -1 }, conf, out) == 1, "castBuffSpell 이 1 이 아니다");
-            Check(srv.DebugEnchantDur(a, 3) == 90 && srv.DebugEnchantPower(a, 3) == 2, "gamedata 이름 길이(90)·세기가 안 들어갔다");
+            Check(srv.CastBuffSpell(12, 3, 2, nox::Target{ Sid(srv, a), -1 }, conf, out) == 1, "castBuffSpell 이 1 이 아니다");
+            Check(srv.DebugEnchantDur(Sid(srv, a), 3) == 90 && srv.DebugEnchantPower(Sid(srv, a), 3) == 2, "gamedata 이름 길이(90)·세기가 안 들어갔다");
             if (kase == 2) for (int t = 0; t < 301; ++t) tickOut(srv, ms, out);
             std::vector<nox::OutPacket> o;
-            srv.Damage(a, 1000, o, kase == 1 ? b : c);
+            srv.Damage(Sid(srv, a), 1000, o, Sid(srv, kase == 1 ? b : c));
             const auto m = killMsg(o, a);
             const uint16_t assist = m.size() == 11 ? static_cast<uint16_t>(m[4] | (m[5] << 8)) : 0xFFFF;
             static const char* kMsg[3] = { "도운 사람(b)이 죽음 알림에 안 실렸다", "죽인 이가 도운 이와 같은데 도운 자리가 0 이 아니다",
@@ -5031,14 +5037,14 @@ void TestBuffs() {
         srv.Tick(ms, out);
         nox::Server::BuffConf conf;
         conf.dur = 2; conf.durInSec = true; conf.durLevelMul = true; conf.once = true;
-        srv.CastBuffSpell(51, 26, 3, nox::Target{ a, -1 }, conf, out);
-        Check(srv.DebugEnchantDur(a, 26) == 2 * 30 * 3, "초(×30)·세기 곱이 틀리다");
-        Check(srv.CastBuffSpell(51, 26, 3, nox::Target{ a, -1 }, conf, out) == 0, "Once 인데 두 번 걸렸다");
-        srv.DebugDurNew(a, 24, 0, -1, -1, false, nox::Target{}, out);
+        srv.CastBuffSpell(51, 26, 3, nox::Target{ Sid(srv, a), -1 }, conf, out);
+        Check(srv.DebugEnchantDur(Sid(srv, a), 26) == 2 * 30 * 3, "초(×30)·세기 곱이 틀리다");
+        Check(srv.CastBuffSpell(51, 26, 3, nox::Target{ Sid(srv, a), -1 }, conf, out) == 0, "Once 인데 두 번 걸렸다");
+        srv.DebugDurNew(Sid(srv, a), 24, 0, -1, -1, false, nox::Target{}, out);
         nox::Server::BuffConf def;
         def.defensive = true; def.pointFx = static_cast<uint8_t>(nox::Op::FX_RICOCHET);
         std::vector<nox::OutPacket> o;
-        srv.CastBuffSpell(18, 18, 1, nox::Target{ a, -1 }, def, o);
+        srv.CastBuffSpell(18, 18, 1, nox::Target{ Sid(srv, a), -1 }, def, o);
         bool stat15 = false, fx = false;
         for (const auto& m : FlattenTo(o, a)) {
             if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_STAT) && m[1] == 24 && m[5] == 15) stat15 = true;
@@ -5066,13 +5072,13 @@ void TestBuffs() {
         for (int i = 23; i <= 25; ++i) s2.SetPlayerAnimFrames(i, 8, 0);
         s2.DebugEnterGame(a, 728);
         s2.DebugEnterGame(b, 729);
-        s2.DebugMoveTo(b, 1025, 1000);
+        s2.DebugMoveTo(Sid(s2, b), 1025, 1000);
         s2.Tick(m2, o2);
-        s2.DebugApplyEnchant(a, 2, 0, 1);
+        s2.DebugApplyEnchant(Sid(s2, a), 2, 0, 1);
         auto click = InputPacket(6);
         s2.OnPacket(a, click.data(), click.size(), o2);
         for (int t = 0; t < 12; ++t) tickOut(s2, m2, o2);
-        Check(s2.HealthOf(b) == nox::kDefaultMaxHealth, "눈먼 사람이 맨손으로 때렸다");
+        Check(s2.HealthOf(Sid(s2, b)) == nox::kDefaultMaxHealth, "눈먼 사람이 맨손으로 때렸다");
     }
     // ⑩ 눈먼 워리어는 날아오는 Magic 을 못 봐서(CanInteract) 가만 7틱을 기다려 방패를 올린다
     for (int blind = 0; blind < 2; ++blind) {
@@ -5082,16 +5088,16 @@ void TestBuffs() {
         srv.SetPlayerAnimFrames(40, 6, 1);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugSetFacing(b, 128);
-        srv.DebugAimAt(a, 1150, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugSetFacing(Sid(srv, b), 128);
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         CastAndWait(srv, a, 12, false, ms, out);
-        if (blind) srv.DebugApplyEnchant(b, 2, 0, 1);
-        srv.DebugSetState(b, nox::kPlayerStateIdle);
+        if (blind) srv.DebugApplyEnchant(Sid(srv, b), 2, 0, 1);
+        srv.DebugSetState(Sid(srv, b), nox::kPlayerStateIdle);
         int raiseTick = -1;
         for (int t = 1; t <= 10 && raiseTick < 0; ++t) {
             tickOut(srv, ms, out);
-            if (srv.DebugStateOf(b) == 15) raiseTick = t;
+            if (srv.DebugStateOf(Sid(srv, b)) == 15) raiseTick = t;
         }
         Check(blind ? raiseTick == 8 : (raiseTick > 0 && raiseTick <= 7),
               blind ? "눈먼 워리어가 날아오는 Magic 을 보고 방패를 올렸다" : "눈멀지 않은 워리어가 Magic 을 보고 일찍 올리지 않았다(시험 전제)");
@@ -5114,7 +5120,7 @@ void TestDamageBuffs() {
         srv.SetGamedata(g);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
     };
     auto hasOp = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t op, size_t len) {
         for (const auto& m : FlattenTo(out, to)) if (m.size() == len && m[0] == op) return true;
@@ -5125,29 +5131,29 @@ void TestDamageBuffs() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        const uint16_t h0 = srv.HealthOf(b);
-        srv.DebugHurt(b, -1, 40, a, 1, out);
-        Check(srv.HealthOf(b) == h0 - 40, "보호 없는데 불 피해가 그대로가 아니다");
-        srv.DebugApplyEnchant(b, 17, 0, 2);
-        const uint16_t h1 = srv.HealthOf(b);
-        srv.DebugHurt(b, -1, 40, a, 1, out);
-        Check(srv.HealthOf(b) == h1 - 20, "불 보호(0.5)인데 불 피해가 절반이 아니다");
-        const uint16_t h2 = srv.HealthOf(b);
-        srv.DebugHurt(b, -1, 1, a, 12, out);
-        Check(srv.HealthOf(b) == h2 - 1, "보호로 0 이 된 피해가 1 이 아니다");
-        srv.DebugApplyEnchant(b, 20, 0, 1);
-        const uint16_t h3 = srv.HealthOf(b);
-        srv.DebugHurt(b, -1, 30, a, 9, out);
-        Check(srv.HealthOf(b) == h3 - 15, "전기 보호인데 전기 피해가 절반이 아니다");
+        const uint16_t h0 = srv.HealthOf(Sid(srv, b));
+        srv.DebugHurt(Sid(srv, b), -1, 40, Sid(srv, a), 1, out);
+        Check(srv.HealthOf(Sid(srv, b)) == h0 - 40, "보호 없는데 불 피해가 그대로가 아니다");
+        srv.DebugApplyEnchant(Sid(srv, b), 17, 0, 2);
+        const uint16_t h1 = srv.HealthOf(Sid(srv, b));
+        srv.DebugHurt(Sid(srv, b), -1, 40, Sid(srv, a), 1, out);
+        Check(srv.HealthOf(Sid(srv, b)) == h1 - 20, "불 보호(0.5)인데 불 피해가 절반이 아니다");
+        const uint16_t h2 = srv.HealthOf(Sid(srv, b));
+        srv.DebugHurt(Sid(srv, b), -1, 1, Sid(srv, a), 12, out);
+        Check(srv.HealthOf(Sid(srv, b)) == h2 - 1, "보호로 0 이 된 피해가 1 이 아니다");
+        srv.DebugApplyEnchant(Sid(srv, b), 20, 0, 1);
+        const uint16_t h3 = srv.HealthOf(Sid(srv, b));
+        srv.DebugHurt(Sid(srv, b), -1, 30, Sid(srv, a), 9, out);
+        Check(srv.HealthOf(Sid(srv, b)) == h3 - 15, "전기 보호인데 전기 피해가 절반이 아니다");
         nox::Server s2; mk(s2);
         nox::Gamedata g;
         g.Parse("ARENA FireSpellProtection = 0.9, 0.9, 0.9, 0.9, 0.9;\n" "SummonDuration = 60, 210, 375;\n");
         s2.SetGamedata(g);
-        s2.DebugApplyEnchant(b, 17, 0, 1);
-        const uint16_t h4 = s2.HealthOf(b);
-        s2.DebugHurt(b, -1, 50, a, 1, out);
+        s2.DebugApplyEnchant(Sid(s2, b), 17, 0, 1);
+        const uint16_t h4 = s2.HealthOf(Sid(s2, b));
+        s2.DebugHurt(Sid(s2, b), -1, 50, Sid(s2, a), 1, out);
         // 0.60000002f 로 자르므로 (1 − 0.60000002) × 50 = 19.999999 → 버림 19(정답지 float 그대로)
-        Check(s2.HealthOf(b) == h4 - 19, "보호 합이 0.60000002 에서 안 잘렸다(50 × 0.39999998 → 19)");
+        Check(s2.HealthOf(Sid(s2, b)) == h4 - 19, "보호 합이 0.60000002 에서 안 잘렸다(50 × 0.39999998 → 19)");
     }
 
     // ② 감전(22) 되갚기 — 근접 무기로 때린 사람에게 ShockDamage[4]=75 전기 · 상태 23 · 버프 꺼짐 · 투사체·맨손(무기 오브젝트 없음)은 안 됨
@@ -5155,20 +5161,20 @@ void TestDamageBuffs() {
         for (int kase = 0; kase < 3; ++kase) {
             nox::Server srv; mk(srv);
             std::vector<nox::OutPacket> out;
-            srv.DebugApplyEnchant(b, 22, 0, 1);
+            srv.DebugApplyEnchant(Sid(srv, b), 22, 0, 1);
             nox::Server::AttackSrc src;
             src.x = 1000; src.y = 1000;
             src.obj = (kase != 1);
             src.missile = (kase == 2);
-            const uint16_t ha = srv.HealthOf(a);
-            srv.DebugHurt(b, -1, 10, a, 0, out, &src);
+            const uint16_t ha = srv.HealthOf(Sid(srv, a));
+            srv.DebugHurt(Sid(srv, b), -1, 10, Sid(srv, a), 0, out, &src);
             if (kase == 0) {
-                Check(srv.HealthOf(a) == ha - 75 && srv.DebugStateOf(a) == 23 && !srv.DebugHasEnchant(b, 22), "감전 되갚기(75 · 상태 23 · 버프 끔)가 아니다");
+                Check(srv.HealthOf(Sid(srv, a)) == ha - 75 && srv.DebugStateOf(Sid(srv, a)) == 23 && !srv.DebugHasEnchant(Sid(srv, b), 22), "감전 되갚기(75 · 상태 23 · 버프 끔)가 아니다");
                 // ★ nine-defects 4-c3b1 — 되갚기의 맞는 소리: 때린 것 = 감전 건 b(사람 몸 · 재질표가 없어 「표에 없음」) · b 쪽은 DebugHurt 라 「안 옮김」
                 Check(srv.hitSoundCalls() == 2 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1 &&
                       srv.hitSoundWay(nox::HitSoundWay::NotPorted) == 1, "4-c3b1 감전 되갚기에 때린 것(b)이 안 넘어갔다");
             } else {
-                Check(srv.HealthOf(a) == ha && srv.DebugHasEnchant(b, 22), kase == 1 ? "무기 오브젝트 없이 감전을 되갚았다" : "투사체에 감전을 되갚았다");
+                Check(srv.HealthOf(Sid(srv, a)) == ha && srv.DebugHasEnchant(Sid(srv, b), 22), kase == 1 ? "무기 오브젝트 없이 감전을 되갚았다" : "투사체에 감전을 되갚았다");
             }
         }
     }
@@ -5177,31 +5183,31 @@ void TestDamageBuffs() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugApplyEnchant(b, 0, 0, 1);
-        srv.DebugHurt(b, -1, 5, "", 1, out);
-        Check(srv.DebugHasEnchant(b, 0), "때린 이 없는 불(1)에 투명이 풀렸다");
-        srv.DebugHurt(b, -1, 5, "", 12, out);
-        Check(!srv.DebugHasEnchant(b, 0), "때린 이 없는 종류 12 에 투명이 안 풀렸다");
-        srv.DebugApplyEnchant(b, 0, 0, 1);
-        srv.DebugHurt(b, -1, 5, a, 1, out);
-        Check(!srv.DebugHasEnchant(b, 0), "사람에게 맞았는데 투명이 안 풀렸다");
+        srv.DebugApplyEnchant(Sid(srv, b), 0, 0, 1);
+        srv.DebugHurt(Sid(srv, b), -1, 5, Sid(srv, ""), 1, out);
+        Check(srv.DebugHasEnchant(Sid(srv, b), 0), "때린 이 없는 불(1)에 투명이 풀렸다");
+        srv.DebugHurt(Sid(srv, b), -1, 5, Sid(srv, ""), 12, out);
+        Check(!srv.DebugHasEnchant(Sid(srv, b), 0), "때린 이 없는 종류 12 에 투명이 안 풀렸다");
+        srv.DebugApplyEnchant(Sid(srv, b), 0, 0, 1);
+        srv.DebugHurt(Sid(srv, b), -1, 5, Sid(srv, a), 1, out);
+        Check(!srv.DebugHasEnchant(Sid(srv, b), 0), "사람에게 맞았는데 투명이 안 풀렸다");
     }
 
     // ④ 흡혈(13) — 때린 이 세기 2(0.2) × 피해 50 = 10 채움 · `a2` 11바이트 · 최대면 안 채움
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(a, -1, 40, b, 1, out);
-        const uint16_t ha = srv.HealthOf(a);
-        srv.DebugApplyEnchant(a, 13, 0, 2);
+        srv.DebugHurt(Sid(srv, a), -1, 40, Sid(srv, b), 1, out);
+        const uint16_t ha = srv.HealthOf(Sid(srv, a));
+        srv.DebugApplyEnchant(Sid(srv, a), 13, 0, 2);
         std::vector<nox::OutPacket> o;
-        srv.DebugHurt(b, -1, 50, a, 1, o);
-        Check(srv.HealthOf(a) == ha + 10, "흡혈(0.2 × 50)만큼 안 채웠다");
+        srv.DebugHurt(Sid(srv, b), -1, 50, Sid(srv, a), 1, o);
+        Check(srv.HealthOf(Sid(srv, a)) == ha + 10, "흡혈(0.2 × 50)만큼 안 채웠다");
         Check(hasOp(o, a, static_cast<uint8_t>(nox::Op::FX_VAMPIRISM), 11), "흡혈 효과 `a2` 11바이트가 없다");
         nox::Server full; mk(full);
-        full.DebugApplyEnchant(a, 13, 0, 2);
+        full.DebugApplyEnchant(Sid(full, a), 13, 0, 2);
         std::vector<nox::OutPacket> o4;
-        full.DebugHurt(b, -1, 50, a, 1, o4);
+        full.DebugHurt(Sid(full, b), -1, 50, Sid(full, a), 1, o4);
         Check(!hasOp(o4, a, static_cast<uint8_t>(nox::Op::REPORT_PLAYER_HEALTH), 3), "체력이 가득한데 흡혈이 체력 알림을 보냈다(unitAdjustHP 는 최대 아래일 때만)");
     }
 
@@ -5213,22 +5219,22 @@ void TestDamageBuffs() {
         srv.SetTypeBody(1328, body);
         std::vector<nox::OutPacket> out;
         srv.DebugEnterGame(c, 730, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(c, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, c), 3000, 3000);
         SummonImp(srv, c, out);
         Check(srv.pets() == 1, "임프가 안 불려 나옴(시험 전제)");
         const uint16_t hp0 = srv.DebugPetHealth(0);
         srv.DebugApplyEnchantPet(0, 23, 0, 1);
-        srv.DebugHurt(std::string(), 0, 3, b, 1, out);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 3, Sid(srv, b), 1, out);
         Check(srv.DebugPetHealth(0) == hp0, "무적 소환수가 깎였다(damageDefaultProc 23)");
         nox::Server s3; mk(s3);
         s3.SetTypeBody(1328, body);
         s3.DebugEnterGame(c, 730, false, nox::CharClass::Conjurer);
-        s3.DebugMoveTo(c, 3000, 3000);
+        s3.DebugMoveTo(Sid(s3, c), 3000, 3000);
         std::vector<nox::OutPacket> o3;
         SummonImp(s3, c, o3);
         s3.DebugApplyEnchantPet(0, 17, 0, 1);
         const uint16_t p0 = s3.DebugPetHealth(0);
-        s3.DebugHurt(std::string(), 0, 4, b, 1, o3);
+        s3.DebugHurt(Sid(s3, std::string()), 0, 4, Sid(s3, b), 1, o3);
         Check(s3.DebugPetHealth(0) == p0 - 2, "소환수 불 보호(0.5)가 피해를 절반으로 안 줄였다");
     }
 
@@ -5242,14 +5248,14 @@ void TestDamageBuffs() {
         for (const auto& r : rows) {
             nox::Server srv; mk(srv);
             { std::vector<nox::OutPacket> o0; uint32_t m0 = 0; srv.Tick(m0, o0); m0 += 34; srv.Tick(m0, o0); }   // 옮긴 자리를 실수 자리에 맞춤
-            srv.DebugSetFacing(b, 128);
-            srv.DebugApplyEnchant(b, 27, 0, 1);
+            srv.DebugSetFacing(Sid(srv, b), 128);
+            srv.DebugApplyEnchant(Sid(srv, b), 27, 0, 1);
             nox::Server::AttackSrc src;
             src.x = r.sx; src.y = 1000; src.missile = r.missile;
             std::vector<nox::OutPacket> out;
-            const uint16_t h = srv.HealthOf(b);
-            srv.DebugHurt(b, -1, 10, a, r.dtype, out, &src);
-            Check((srv.HealthOf(b) == h) == r.blocked, r.msg);
+            const uint16_t h = srv.HealthOf(Sid(srv, b));
+            srv.DebugHurt(Sid(srv, b), -1, 10, Sid(srv, a), r.dtype, out, &src);
+            Check((srv.HealthOf(Sid(srv, b)) == h) == r.blocked, r.msg);
             if (r.blocked && r.dtype == 16) Check(hasOp(out, a, static_cast<uint8_t>(nox::Op::FX_VIOLET_SPARKS), 5), "종류 16 을 막았는데 점 효과 `84` 가 없다");
         }
     }
@@ -5260,38 +5266,38 @@ void TestDamageBuffs() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugMoveTo(b, 1012, 1000);                        // 몸 반지름 합 20 안 — 겹침
-        srv.DebugApplyEnchant(a, 22, 0, 2);
-        srv.DebugApplyEnchant(a, 0, 0, 1);
-        const uint16_t hb = srv.HealthOf(b);
+        srv.DebugMoveTo(Sid(srv, b), 1012, 1000);                        // 몸 반지름 합 20 안 — 겹침
+        srv.DebugApplyEnchant(Sid(srv, a), 22, 0, 2);
+        srv.DebugApplyEnchant(Sid(srv, a), 0, 0, 1);
+        const uint16_t hb = srv.HealthOf(Sid(srv, b));
         ms += 34; srv.Tick(ms, out);
-        Check(srv.HealthOf(b) == hb - 30 && !srv.DebugHasEnchant(a, 22), "감전 몸닿기로 적이 ShockDamage[1]=30 을 안 받았다");
+        Check(srv.HealthOf(Sid(srv, b)) == hb - 30 && !srv.DebugHasEnchant(Sid(srv, a), 22), "감전 몸닿기로 적이 ShockDamage[1]=30 을 안 받았다");
         Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1,
               "4-c3b1 몸닿기 감전에 때린 것(감전 건 a)이 안 넘어갔다");
-        Check(!srv.DebugHasEnchant(a, 0), "적에 닿았는데 투명이 안 풀렸다");
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 0), "적에 닿았는데 투명이 안 풀렸다");
         nox::Server s2; mk(s2);
         std::vector<nox::OutPacket> o2;
         uint32_t m2 = 0;
         s2.Tick(m2, o2);
-        s2.DebugSetTeam(a, 1); s2.DebugSetTeam(b, 1);
-        s2.DebugMoveTo(b, 1012, 1000);
-        s2.DebugApplyEnchant(a, 22, 0, 2);
-        s2.DebugApplyEnchant(a, 0, 0, 1);                     // 투명은 나중에(새 버프가 투명을 끈다)
-        const uint16_t hb2 = s2.HealthOf(b);
+        s2.DebugSetTeam(Sid(s2, a), 1); s2.DebugSetTeam(Sid(s2, b), 1);
+        s2.DebugMoveTo(Sid(s2, b), 1012, 1000);
+        s2.DebugApplyEnchant(Sid(s2, a), 22, 0, 2);
+        s2.DebugApplyEnchant(Sid(s2, a), 0, 0, 1);                     // 투명은 나중에(새 버프가 투명을 끈다)
+        const uint16_t hb2 = s2.HealthOf(Sid(s2, b));
         m2 += 34; s2.Tick(m2, o2);
-        Check(s2.DebugHasEnchant(a, 0) && s2.HealthOf(b) == hb2 && s2.DebugHasEnchant(a, 22), "같은 편에 닿았는데 투명이 풀리거나 감전했다");
+        Check(s2.DebugHasEnchant(Sid(s2, a), 0) && s2.HealthOf(Sid(s2, b)) == hb2 && s2.DebugHasEnchant(Sid(s2, a), 22), "같은 편에 닿았는데 투명이 풀리거나 감전했다");
     }
 
     // ⑧ 커서 고르기 — 투명한 사람은 적외선일 때만 커서 오브젝트
     {
         nox::Server srv; mk(srv);
         { std::vector<nox::OutPacket> o0; uint32_t m0 = 0; srv.Tick(m0, o0); m0 += 34; srv.Tick(m0, o0); }
-        srv.DebugAimAt(a, 1100, 1000);
-        Check(srv.DebugFindObjectAtCursor(a).addr == b, "커서 아래 b 를 못 골랐다(시험 전제)");
-        srv.DebugApplyEnchant(b, 0, 0, 1);
-        Check(srv.DebugFindObjectAtCursor(a).none(), "투명한 b 를 커서가 골랐다");
-        srv.DebugApplyEnchant(a, 21, 0, 1);
-        Check(srv.DebugFindObjectAtCursor(a).addr == b, "적외선인데 투명한 b 를 커서가 못 골랐다");
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);
+        Check(srv.DebugFindObjectAtCursor(Sid(srv, a)).addr == Sid(srv, b), "커서 아래 b 를 못 골랐다(시험 전제)");
+        srv.DebugApplyEnchant(Sid(srv, b), 0, 0, 1);
+        Check(srv.DebugFindObjectAtCursor(Sid(srv, a)).none(), "투명한 b 를 커서가 골랐다");
+        srv.DebugApplyEnchant(Sid(srv, a), 21, 0, 1);
+        Check(srv.DebugFindObjectAtCursor(Sid(srv, a)).addr == Sid(srv, b), "적외선인데 투명한 b 를 커서가 못 골랐다");
     }
     (void)c;
     std::printf("  4-b1 — 불·전기 보호(표·0.6·최소 1) · 감전 되갚기 · 맞으면 투명 풀림 · 흡혈 · 소환수 무적 · 되받아치기 27 · 몸닿기 감전·투명 · 커서 투명\n");
@@ -5333,7 +5339,7 @@ void TestBuffSpells() {
         CastAndWait(srv, a, r.spell, true, ms, out);
         char msg[160];
         std::snprintf(msg, sizeof(msg), "%s — 버프 %d 가 길이 %d · 세기 3 으로 안 걸렸다", r.name, r.enc, r.dur);
-        Check(srv.DebugHasEnchant(a, r.enc) && srv.DebugEnchantDur(a, r.enc) == r.dur && srv.DebugEnchantPower(a, r.enc) == 3, msg);
+        Check(srv.DebugHasEnchant(Sid(srv, a), r.enc) && srv.DebugEnchantDur(Sid(srv, a), r.enc) == r.dur && srv.DebugEnchantPower(Sid(srv, a), r.enc) == 3, msg);
         if (r.fx) {
             bool smoke = false;
             for (const auto& m : FlattenTo(out, a)) if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::FX_SMOKE_BLAST)) smoke = true;
@@ -5346,19 +5352,19 @@ void TestBuffSpells() {
         nox::Server srv; mk(srv, 15);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
-        const uint16_t full = srv.ManaOf(a);
+        const uint16_t full = srv.ManaOf(Sid(srv, a));
         CastAndWait(srv, a, 15, true, ms, out);
         std::vector<nox::OutPacket> o2;
         CastAndWait(srv, a, 15, true, ms, o2);
         bool stat0 = false;
         for (const auto& m : FlattenTo(o2, a)) if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_STAT) && m[1] == 15 && m[5] == 0) stat0 = true;
-        Check(srv.ManaOf(a) == full - 10 && stat0, "Death(Once) 두 번째가 실패(마나 되돌림 · STAT 0)가 아니다");
+        Check(srv.ManaOf(Sid(srv, a)) == full - 10 && stat0, "Death(Once) 두 번째가 실패(마나 되돌림 · STAT 0)가 아니다");
         nox::Server s2; mk(s2, 36);
         std::vector<nox::OutPacket> o3;
         uint32_t m3 = 0;
-        const uint16_t full2 = s2.ManaOf(a);
+        const uint16_t full2 = s2.ManaOf(Sid(s2, a));
         CastAndWait(s2, a, 36, false, m3, o3);
-        Check(!s2.DebugHasEnchant(a, 9) && s2.ManaOf(a) == full2, "대상 없는 Haste 가 걸렸거나 마나를 가져갔다(castBuffSpell 대상 없음 0)");
+        Check(!s2.DebugHasEnchant(Sid(s2, a), 9) && s2.ManaOf(Sid(s2, a)) == full2, "대상 없는 Haste 가 걸렸거나 마나를 가져갔다(castBuffSpell 대상 없음 0)");
     }
     std::printf("  4-b2 — 버프 주문 20 함수 길이·세기·연기 · Death 한 번만 · 대상 없음 실패 · 4-c4 충격(22)\n");
 }
@@ -5379,22 +5385,22 @@ void TestMoveBuffs() {
     auto walk = [&](int buff, int* facingAfter1, uint32_t* frameAt1) {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugAimAt(a, 3000, 1000);                         // 커서 멀리 — 달림
+        srv.DebugAimAt(Sid(srv, a), 3000, 1000);                         // 커서 멀리 — 달림
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        if (buff >= 0) srv.DebugApplyEnchant(a, buff, 0, 1);
+        if (buff >= 0) srv.DebugApplyEnchant(Sid(srv, a), buff, 0, 1);
         ms += 34; srv.Tick(ms, out);                           // CCC 가 SpeedCur 를 한 번 셈
         const auto mv = walkPkt();
-        const int x0 = srv.XOf(a);
+        const int x0 = srv.XOf(Sid(srv, a));
         for (int t = 0; t < 12; ++t) {
             srv.OnPacket(a, mv.data(), mv.size(), out);
             ms += 34; srv.Tick(ms, out);
             // 첫 틱은 ImplB 가 걷기로 넣을 뿐 — 힘(과 혼란)은 다음 틱 ImplA 부터. 그래서 둘째 틱 방향·프레임을 본다
-            if (t == 0 && facingAfter1) *facingAfter1 = srv.DebugFacingOf(a);
-            if (t == 1 && facingAfter1) { *frameAt1 = srv.frame(); facingAfter1[1] = srv.DebugFacingOf(a); }
+            if (t == 0 && facingAfter1) *facingAfter1 = srv.DebugFacingOf(Sid(srv, a));
+            if (t == 1 && facingAfter1) { *frameAt1 = srv.frame(); facingAfter1[1] = srv.DebugFacingOf(Sid(srv, a)); }
         }
-        return srv.XOf(a) - x0;
+        return srv.XOf(Sid(srv, a)) - x0;
     };
 
     // ① SpeedCur — 버프 없음 SpeedBase · 느림(4) × 0.5 · 빠르게(9) × 1.25 · 걸은 거리 비도 같다
@@ -5406,13 +5412,13 @@ void TestMoveBuffs() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugApplyEnchant(a, 4, 0, 1);
+        srv.DebugApplyEnchant(Sid(srv, a), 4, 0, 1);
         ms += 34; srv.Tick(ms, out);
-        Check(std::fabs(srv.DebugSpeedCur(a) - base * 0.5f) < 1e-6f, "느림인데 SpeedCur 가 SpeedBase × 0.5 가 아니다");
-        srv.DebugBuffOff(a, 4);
-        srv.DebugApplyEnchant(a, 9, 0, 1);
+        Check(std::fabs(srv.DebugSpeedCur(Sid(srv, a)) - base * 0.5f) < 1e-6f, "느림인데 SpeedCur 가 SpeedBase × 0.5 가 아니다");
+        srv.DebugBuffOff(Sid(srv, a), 4);
+        srv.DebugApplyEnchant(Sid(srv, a), 9, 0, 1);
         ms += 34; srv.Tick(ms, out);
-        Check(std::fabs(srv.DebugSpeedCur(a) - base * 1.25f) < 1e-6f, "빠르게인데 SpeedCur 가 SpeedBase × 1.25 가 아니다");
+        Check(std::fabs(srv.DebugSpeedCur(Sid(srv, a)) - base * 1.25f) < 1e-6f, "빠르게인데 SpeedCur 가 SpeedBase × 1.25 가 아니다");
         const int d0 = walk(-1, nullptr, nullptr), dSlow = walk(4, nullptr, nullptr), dHaste = walk(9, nullptr, nullptr);
         Check(d0 > 20, "12틱 걸었는데 거의 안 갔다(시험 전제)");
         Check(std::fabs(dSlow - 0.5 * d0) <= 0.08 * d0, "느림 걸음 거리가 절반이 아니다");
@@ -5426,10 +5432,10 @@ void TestMoveBuffs() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugApplyEnchant(a, 8, 0, 1);
-        const int x0 = srv.XOf(a);
+        srv.DebugApplyEnchant(Sid(srv, a), 8, 0, 1);
+        const int x0 = srv.XOf(Sid(srv, a));
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateRun && srv.XOf(a) > x0 + 10, "달리기 버프인데 상태 5 로 달리지 않는다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateRun && srv.XOf(Sid(srv, a)) > x0 + 10, "달리기 버프인데 상태 5 로 달리지 않는다");
     }
 
     // ③ 혼란(3) — 걷는 틱마다 방향을 (세기+3) × (삼각파 − 10) 만큼 흔든다
@@ -5437,24 +5443,24 @@ void TestMoveBuffs() {
         for (int power : { 1, 3 }) {
             nox::Server srv;
             srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-            srv.DebugAimAt(a, 3000, 1000);
+            srv.DebugAimAt(Sid(srv, a), 3000, 1000);
             std::vector<nox::OutPacket> out;
             uint32_t ms = 0;
             srv.Tick(ms, out);
-            srv.DebugApplyEnchant(a, 3, 0, power);
+            srv.DebugApplyEnchant(Sid(srv, a), 3, 0, power);
             const auto mv = walkPkt();
-            int prev = srv.DebugFacingOf(a);
+            int prev = srv.DebugFacingOf(Sid(srv, a));
             int checked = 0;
             for (int t = 0; t < 30; ++t) {
                 srv.OnPacket(a, mv.data(), mv.size(), out);
-                const bool walking = srv.DebugStateOf(a) == nox::kPlayerStateWalk || srv.DebugStateOf(a) == nox::kPlayerStateRun;
+                const bool walking = srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateWalk || srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateRun;
                 ms += 34; srv.Tick(ms, out);
-                if (!walking) { prev = srv.DebugFacingOf(a); continue; }
+                if (!walking) { prev = srv.DebugFacingOf(Sid(srv, a)); continue; }
                 int v3 = static_cast<int>((srv.frame() + 728u) % 40u);
                 if (v3 > 20) v3 = 40 - v3;
                 const int want = ((((power + 3) * (v3 - 10) + prev) % 256) + 256) % 256;
-                if (srv.DebugFacingOf(a) != want) { Check(false, "혼란 걸음 방향이 playerConfusedGetDirection 식과 다르다"); break; }
-                prev = srv.DebugFacingOf(a);
+                if (srv.DebugFacingOf(Sid(srv, a)) != want) { Check(false, "혼란 걸음 방향이 playerConfusedGetDirection 식과 다르다"); break; }
+                prev = srv.DebugFacingOf(Sid(srv, a));
                 ++checked;
             }
             Check(checked >= 20, "혼란 걸음을 20틱 넘게 못 쟀다(시험 전제)");
@@ -5468,12 +5474,12 @@ void TestMoveBuffs() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        if (buff >= 0) srv.DebugApplyEnchant(a, buff, 0, 1);
-        const int x0 = srv.XOf(a);
-        srv.DebugAddForce(a, 40.0, 0.0);
+        if (buff >= 0) srv.DebugApplyEnchant(Sid(srv, a), buff, 0, 1);
+        const int x0 = srv.XOf(Sid(srv, a));
+        srv.DebugAddForce(Sid(srv, a), 40.0, 0.0);
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
-        if (buff < 0) Check(srv.XOf(a) > x0, "버프 없는데 힘을 받고 안 밀렸다(시험 전제)");
-        else Check(srv.XOf(a) == x0, buff == 25 ? "얼림인데 밀렸다" : "붙잡힘인데 밀렸다");
+        if (buff < 0) Check(srv.XOf(Sid(srv, a)) > x0, "버프 없는데 힘을 받고 안 밀렸다(시험 전제)");
+        else Check(srv.XOf(Sid(srv, a)) == x0, buff == 25 ? "얼림인데 밀렸다" : "붙잡힘인데 밀렸다");
     }
     std::printf("  4-b3 — SpeedCur 느림 0.5·빠르게 1.25 · 달리기 버프 상태 5 · 혼란 방향 식 · 얼림·붙잡힘 힘 무시\n");
 }
@@ -5492,7 +5498,7 @@ void TestDebuffSpells() {
         srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, bClass);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
     };
     auto syncTick = [](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) { srv.Tick(ms, out); ms += 34; srv.Tick(ms, out); };
 
@@ -5503,11 +5509,11 @@ void TestDebuffSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         syncTick(srv, ms, out);
-        srv.DebugAimAt(a, 1100, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);
         CastAndWait(srv, a, 12, false, ms, out);
-        Check(srv.DebugHasEnchant(b, 3) && srv.DebugEnchantDur(b, 3) == 90 && srv.DebugEnchantPower(b, 3) == 3, "Confuse — b 에 혼란 90·세기 3 이 안 걸렸다");
+        Check(srv.DebugHasEnchant(Sid(srv, b), 3) && srv.DebugEnchantDur(Sid(srv, b), 3) == 90 && srv.DebugEnchantPower(Sid(srv, b), 3) == 3, "Confuse — b 에 혼란 90·세기 3 이 안 걸렸다");
         std::vector<nox::OutPacket> o;
-        srv.Damage(b, 1000, o, c);
+        srv.Damage(Sid(srv, b), 1000, o, Sid(srv, c));
         uint16_t assist = 0xFFFF;
         for (const auto& m : FlattenTo(o, b)) if (m.size() == 11 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 14) assist = static_cast<uint16_t>(m[4] | (m[5] << 8));
         Check(assist == 728, "Confuse 를 건 a 가 죽음 알림 도운 자리에 안 실렸다");
@@ -5519,10 +5525,10 @@ void TestDebuffSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         syncTick(srv, ms, out);
-        srv.DebugAimAt(a, 1100, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);
         CastAndWait(srv, a, 74, false, ms, out);
         const int want = k == 0 ? 5 : 4;
-        Check(srv.DebugHasEnchant(b, want) && !srv.DebugHasEnchant(b, 9 - want) && srv.DebugEnchantDur(b, want) == 60,
+        Check(srv.DebugHasEnchant(Sid(srv, b), want) && !srv.DebugHasEnchant(Sid(srv, b), 9 - want) && srv.DebugEnchantDur(Sid(srv, b), want) == 60,
               k == 0 ? "Stun — 위저드가 붙잡힘(5) 60 이 아니다" : "Stun — 워리어가 느림(4) 60 이 아니다");
     }
     //   소환수 — 질량 15 넘으면 느림(4) · 아니면 붙잡힘(5) · 소환수 AI(자리표시)가 움직이지 않게 진단 고정 임프(--debug-own-pet)로
@@ -5539,7 +5545,7 @@ void TestDebuffSpells() {
         Check(srv.pets() == 1, "진단 고정 임프가 안 생겼다(시험 전제)");
         double px = 0, py = 0;
         srv.DebugPetXY(0, px, py);
-        srv.DebugAimAt(a, static_cast<int>(px), static_cast<int>(py));
+        srv.DebugAimAt(Sid(srv, a), static_cast<int>(px), static_cast<int>(py));
         CastAndWait(srv, a, 74, false, ms, out);
         Check(srv.DebugPetHasEnchant(0, mass > 15.0f ? 4 : 5), mass > 15.0f ? "Stun — 무거운 소환수가 느림(4)이 아니다" : "Stun — 가벼운 소환수가 붙잡힘(5)이 아니다");
     }
@@ -5550,13 +5556,13 @@ void TestDebuffSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         syncTick(srv, ms, out);
-        const uint16_t full = srv.ManaOf(a);
-        srv.DebugAimAt(a, 2000, 2000);
+        const uint16_t full = srv.ManaOf(Sid(srv, a));
+        srv.DebugAimAt(Sid(srv, a), 2000, 2000);
         CastAndWait(srv, a, 33, false, ms, out);
-        Check(srv.ManaOf(a) == full, "대상 없는 Fumble 이 마나를 가져갔다");
-        srv.DebugAimAt(a, 1100, 1000);
+        Check(srv.ManaOf(Sid(srv, a)) == full, "대상 없는 Fumble 이 마나를 가져갔다");
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);
         CastAndWait(srv, a, 33, false, ms, out);
-        Check(srv.ManaOf(a) == full - 10, "대상 있는 Fumble 이 받아들여지지 않았다");
+        Check(srv.ManaOf(Sid(srv, a)) == full - 10, "대상 있는 Fumble 이 받아들여지지 않았다");
     }
 
     // ④ Inversion — b 가 a 에게 날린 혼란 Magic 을 a 가 뒤집으면(둘레 240) 대상이 b 로 바뀌어 b 가 혼란
@@ -5569,16 +5575,16 @@ void TestDebuffSpells() {
         srv.SetGamedata(g);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
-        srv.DebugMoveTo(b, far ? 1900 : 1300, 1000);   // far — 뒤집기를 다 말할 때 Magic 이 둘레 240 밖                        // a 가 뒤집기를 다 말할 때(약 10틱) Magic 이 둘레 240 안 · 아직 안 닿음
-        srv.DebugSetFacing(b, 128);
+        srv.DebugMoveTo(Sid(srv, b), far ? 1900 : 1300, 1000);   // far — 뒤집기를 다 말할 때 Magic 이 둘레 240 밖                        // a 가 뒤집기를 다 말할 때(약 10틱) Magic 이 둘레 240 안 · 아직 안 닿음
+        srv.DebugSetFacing(Sid(srv, b), 128);
         syncTick(srv, ms, out);
-        srv.DebugAimAt(b, 1000, 1000);
+        srv.DebugAimAt(Sid(srv, b), 1000, 1000);
         CastAndWait(srv, b, 12, false, ms, out);
         Check(srv.MissileCount() == 1, "b 의 혼란 Magic 이 안 생겼다(시험 전제)");
         CastAndWait(srv, a, 38, true, ms, out);
         for (int t = 0; t < 120 && srv.MissileCount() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        if (!far) Check(srv.DebugHasEnchant(b, 3) && !srv.DebugHasEnchant(a, 3), "Inversion 뒤 Magic 이 b 에게 돌아가 b 를 혼란시키지 않았다");
-        else Check(srv.DebugHasEnchant(a, 3) && !srv.DebugHasEnchant(b, 3), "둘레 240 밖 Magic 까지 Inversion 이 뒤집었다");
+        if (!far) Check(srv.DebugHasEnchant(Sid(srv, b), 3) && !srv.DebugHasEnchant(Sid(srv, a), 3), "Inversion 뒤 Magic 이 b 에게 돌아가 b 를 혼란시키지 않았다");
+        else Check(srv.DebugHasEnchant(Sid(srv, a), 3) && !srv.DebugHasEnchant(Sid(srv, b), 3), "둘레 240 밖 Magic 까지 Inversion 이 뒤집었다");
     }
 
     // ⑤ CurePoison — 독 없고 자기에게면 마나를 되돌려 받아 공짜 · 남에게면 마나 씀(독 풀기는 4-c)
@@ -5587,12 +5593,12 @@ void TestDebuffSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         syncTick(srv, ms, out);
-        const uint16_t full = srv.ManaOf(a);
+        const uint16_t full = srv.ManaOf(Sid(srv, a));
         CastAndWait(srv, a, 14, true, ms, out);
-        Check(srv.ManaOf(a) == full, "독 없는 자기 CurePoison 이 마나를 되돌려 주지 않았다");
-        srv.DebugAimAt(a, 1100, 1000);
+        Check(srv.ManaOf(Sid(srv, a)) == full, "독 없는 자기 CurePoison 이 마나를 되돌려 주지 않았다");
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);
         CastAndWait(srv, a, 14, false, ms, out);
-        Check(srv.ManaOf(a) == full - 10, "남에게 건 CurePoison 이 마나를 안 썼다");
+        Check(srv.ManaOf(Sid(srv, a)) == full - 10, "남에게 건 CurePoison 이 마나를 안 썼다");
     }
     std::printf("  4-b4 — Confuse 90·도운 사람 · Stun 직업·질량 갈래 · Fumble 대상 · Inversion 되돌림 · CurePoison 자기 공짜\n");
 }
@@ -5620,7 +5626,7 @@ void TestReportFramework() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }   // 봐 둔다 — 처음 보는 오브젝트는 지금 값을 적을 뿐(정답지 0 과 견줘 양수 → 안 보냄 · +536 뒤 2틱)
-        srv.Damage(a, 10, out);
+        srv.Damage(Sid(srv, a), 10, out);
         tick4(srv, ms, out);
         Check(count(FlattenTo(out, a), k42) == 1, "a 가 자기 피해 42 를 한 번 안 받았다");
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
@@ -5628,7 +5634,7 @@ void TestReportFramework() {
         tick4(srv, ms, out);
         Check(count(FlattenTo(out, b), k42) == 0, "늦게 들어온 b 가 a 의 옛 피해 42 를 받았다(처음 보면 지금 값을 적을 뿐)");
         out.clear();
-        srv.Damage(a, 7, out);
+        srv.Damage(Sid(srv, a), 7, out);
         tick4(srv, ms, out);
         const auto toA1 = FlattenTo(out, a), toB1 = FlattenTo(out, b);
         const auto* da = FindMsg(toA1, k42);
@@ -5644,9 +5650,9 @@ void TestReportFramework() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
-        srv.Damage(a, 10, out);
+        srv.Damage(Sid(srv, a), 10, out);
         ms += 33; srv.Tick(ms, out);
-        srv.Damage(a, 5, out);
+        srv.Damage(Sid(srv, a), 5, out);
         ms += 33; srv.Tick(ms, out);
         ms += 33; srv.Tick(ms, out);
         Check(count(FlattenTo(out, a), k42) == 0, "마지막 피해 뒤 2틱 안인데 42 가 나갔다");
@@ -5666,10 +5672,10 @@ void TestReportFramework() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(a, 20, out);
+        srv.Damage(Sid(srv, a), 20, out);
         tick4(srv, ms, out);
         out.clear();
-        srv.DebugAdjustHP(a, 5);
+        srv.DebugAdjustHP(Sid(srv, a), 5);
         ms += 33; srv.Tick(ms, out);
         const auto toA = FlattenTo(out, a);
         Check(count(toA, k42) == 0, "회복(양수)이 42 로 나갔다");
@@ -5681,10 +5687,10 @@ void TestReportFramework() {
         out.clear();
         tick4(srv, ms, out);
         Check(count(FlattenTo(out, a), k43) == 0, "값이 안 바뀌었는데 43 을 또 보냈다");
-        srv.DebugAdjustHP(a, 100);
-        Check(srv.HealthOf(a) == nox::HealthOnline(nox::CharClass::Wizard), "unitAdjustHP 가 최대로 안 잘랐다");
-        srv.DebugAdjustHP(a, 5);
-        Check(srv.HealthOf(a) == nox::HealthOnline(nox::CharClass::Wizard), "가득한데 unitAdjustHP 가 넘겼다");
+        srv.DebugAdjustHP(Sid(srv, a), 100);
+        Check(srv.HealthOf(Sid(srv, a)) == nox::HealthOnline(nox::CharClass::Wizard), "unitAdjustHP 가 최대로 안 잘랐다");
+        srv.DebugAdjustHP(Sid(srv, a), 5);
+        Check(srv.HealthOf(Sid(srv, a)) == nox::HealthOnline(nox::CharClass::Wizard), "가득한데 unitAdjustHP 가 넘겼다");
     }
     // ④ 마나 — 빼고·더하면 다음 틱 45(맨 메시지) 한 번 · 같은 틱에 두 번 바뀌면 마지막 값 하나 · 대기열에서는 앞의 45 를 지운다(sub_4E5450) · 워리어 없음
     {
@@ -5693,10 +5699,10 @@ void TestReportFramework() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t full = srv.ManaOf(a);
-        srv.DebugManaSub(a, 30);
-        srv.DebugManaAdd(a, 10);
-        Check(srv.ManaOf(a) == full - 20, "빼고 더한 마나가 다르다");
+        const uint16_t full = srv.ManaOf(Sid(srv, a));
+        srv.DebugManaSub(Sid(srv, a), 30);
+        srv.DebugManaAdd(Sid(srv, a), 10);
+        Check(srv.ManaOf(Sid(srv, a)) == full - 20, "빼고 더한 마나가 다르다");
         ms += 33; srv.Tick(ms, out);
         const auto toA = FlattenTo(out, a);
         const auto* m = FindMsg(toA, k45);
@@ -5708,20 +5714,20 @@ void TestReportFramework() {
         out.clear();
         tick4(srv, ms, out);
         Check(count(FlattenTo(out, a), k45) == 0, "마나가 안 바뀌었는데 45 를 또 보냈다");
-        srv.DebugImportantReal(a, true);
-        srv.DebugManaSub(a, 5);
+        srv.DebugImportantReal(Sid(srv, a), true);
+        srv.DebugManaSub(Sid(srv, a), 5);
         ms += 33; srv.Tick(ms, out);
-        srv.DebugManaSub(a, 5);
+        srv.DebugManaSub(Sid(srv, a), 5);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.DebugImportantPendingOp(a, k45) == 1, "대기열에 45 가 둘 남았다(sub_4E5450 은 같은 옵을 지운다)");
+        Check(srv.DebugImportantPendingOp(Sid(srv, a), k45) == 1, "대기열에 45 가 둘 남았다(sub_4E5450 은 같은 옵을 지운다)");
         nox::Server s2;
         s2.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         std::vector<nox::OutPacket> o2;
         uint32_t m2 = 0;
         s2.Tick(m2, o2);
-        s2.DebugManaSub(b, -5);                                        // 최대 0 이라 더하기는 0 — playerManaSub 산수(현재 > 양 → 현재 − 양)로 5 를 만든다
+        s2.DebugManaSub(Sid(s2, b), -5);                                        // 최대 0 이라 더하기는 0 — playerManaSub 산수(현재 > 양 → 현재 − 양)로 5 를 만든다
         m2 += 33; s2.Tick(m2, o2);
-        Check(s2.ManaOf(b) == 5 && count(FlattenTo(o2, b), k45) == 0, "워리어에게 45 가 나갔다(+2251 직업 0 은 netReportMana 가 안 보냄)");
+        Check(s2.ManaOf(Sid(s2, b)) == 5 && count(FlattenTo(o2, b), k45) == 0, "워리어에게 45 가 나갔다(+2251 직업 0 은 netReportMana 가 안 보냄)");
     }
     // ⑤ +2184 → dd(껍데기 안) · de(맨 · 워리어 제외) · 48 14B(번호·최대 체력·최대 마나·짐 한계·속도·힘·레벨) 한 번만 · 스냅샷 꼬리도 직업 값
     {
@@ -5732,7 +5738,7 @@ void TestReportFramework() {
             std::vector<nox::OutPacket> out;
             uint32_t ms = 0;
             srv.Tick(ms, out);
-            srv.DebugSetStatsDirty(a);
+            srv.DebugSetStatsDirty(Sid(srv, a));
             ms += 33; srv.Tick(ms, out);
             const auto toA = FlattenTo(out, a);
             const auto* dd = FindMsg(toA, static_cast<uint8_t>(nox::Op::REPORT_TOTAL_HEALTH));
@@ -5771,17 +5777,17 @@ void TestReportFramework() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
-        srv.DebugManaSub(a, 30);
-        srv.Damage(a, 1000, out);
-        Check(!srv.IsAlive(a), "안 죽었다(시험 전제)");
+        srv.DebugManaSub(Sid(srv, a), 30);
+        srv.Damage(Sid(srv, a), 1000, out);
+        Check(!srv.IsAlive(Sid(srv, a)), "안 죽었다(시험 전제)");
         for (int t = 0; t < 60; ++t) { ms += 33; srv.Tick(ms, out); }
         out.clear();
         auto click = InputPacket(6);
         srv.OnPacket(a, click.data(), click.size(), out);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.IsAlive(a), "클릭했는데 안 되살아났다(시험 전제)");
-        srv.DebugBuffOff(a, 23);                                       // 부활 무적(4-a4)을 끄고 때린다
-        srv.Damage(a, 5, out);
+        Check(srv.IsAlive(Sid(srv, a)), "클릭했는데 안 되살아났다(시험 전제)");
+        srv.DebugBuffOff(Sid(srv, a), 23);                                       // 부활 무적(4-a4)을 끄고 때린다
+        srv.Damage(Sid(srv, a), 5, out);
         ms += 33; srv.Tick(ms, out);
         const auto toA = FlattenTo(out, a);
         const auto* h = FindLastMsg(toA, k43);
@@ -5807,12 +5813,12 @@ void TestReportFramework() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
-        srv.Damage(a, 1000, out);
+        srv.Damage(Sid(srv, a), 1000, out);
         tick4(srv, ms, out);                                           // 죽음의 42(−75)가 나가고 기록 = 0
         out.clear();
-        srv.DebugRespawn(a);                                           // playerMakeDefItems — 서른둘 = 지금(최대)
-        srv.DebugBuffOff(a, 23);
-        srv.Damage(a, 5, out);                                         // 첫 갱신 전에 맞음
+        srv.DebugRespawn(Sid(srv, a));                                           // playerMakeDefItems — 서른둘 = 지금(최대)
+        srv.DebugBuffOff(Sid(srv, a), 23);
+        srv.Damage(Sid(srv, a), 5, out);                                         // 첫 갱신 전에 맞음
         for (int t = 0; t < 6; ++t) { ms += 33; srv.Tick(ms, out); }
         const auto toB6b = FlattenTo(out, b);
         const auto* db = FindMsg(toB6b, k42);
@@ -5823,7 +5829,7 @@ void TestReportFramework() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
         std::vector<nox::OutPacket> out;
         SummonImp(srv, b, out);
         const uint16_t pnc = srv.DebugPetNetCode(0);
@@ -5831,7 +5837,7 @@ void TestReportFramework() {
         uint32_t ms = srv.DebugNowMs();
         for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
         out.clear();
-        srv.DebugHurt("", 0, 10, a, 1, out);                           // a 가 b 의 임프를 때린다(주인이 달라 적)
+        srv.DebugHurt(Sid(srv, ""), 0, 10, Sid(srv, a), 1, out);                           // a 가 b 의 임프를 때린다(주인이 달라 적)
         ms += 33; srv.Tick(ms, out);
         ms += 33; srv.Tick(ms, out);
         auto petDelta = [&](const std::vector<std::vector<uint8_t>>& msgs) -> const std::vector<uint8_t>* {
@@ -5872,10 +5878,10 @@ void TestHealSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(a, 40, out);                              // 75 → 35
-        Check(srv.HealthOf(a) == full - 40, "다침 전제(35)가 아니다");
+        srv.Damage(Sid(srv, a), 40, out);                              // 75 → 35
+        Check(srv.HealthOf(Sid(srv, a)) == full - 40, "다침 전제(35)가 아니다");
         CastAndWait(srv, a, 41, true, ms, out);
-        Check(srv.HealthOf(a) == full - 40 + 15, "LesserHeal 이 15(LesserHealAmount × 직업배수 1.0) 안 채웠다");
+        Check(srv.HealthOf(Sid(srv, a)) == full - 40 + 15, "LesserHeal 이 15(LesserHealAmount × 직업배수 1.0) 안 채웠다");
     }
 
     // ② LesserHeal 자기 · 최대 체력 — 마나를 되돌려 공짜(cast 에서 뗀 마나가 다시 참)
@@ -5884,11 +5890,11 @@ void TestHealSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t manaFull = srv.ManaOf(a);
-        Check(srv.HealthOf(a) == full, "시작이 최대 체력이 아니다(전제)");
+        const uint16_t manaFull = srv.ManaOf(Sid(srv, a));
+        Check(srv.HealthOf(Sid(srv, a)) == full, "시작이 최대 체력이 아니다(전제)");
         CastAndWait(srv, a, 41, true, ms, out);
-        Check(srv.HealthOf(a) == full, "최대인데 LesserHeal 이 체력을 바꿨다");
-        Check(srv.ManaOf(a) == manaFull, "최대 체력 자기 LesserHeal 이 마나를 안 되돌렸다(공짜여야 한다)");
+        Check(srv.HealthOf(Sid(srv, a)) == full, "최대인데 LesserHeal 이 체력을 바꿨다");
+        Check(srv.ManaOf(Sid(srv, a)) == manaFull, "최대 체력 자기 LesserHeal 이 마나를 안 되돌렸다(공짜여야 한다)");
     }
 
     // ③ RestoreHealth 자기 — 다친 뒤 가득
@@ -5897,10 +5903,10 @@ void TestHealSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(a, 40, out);
-        Check(srv.HealthOf(a) == full - 40, "다침 전제가 아니다");
+        srv.Damage(Sid(srv, a), 40, out);
+        Check(srv.HealthOf(Sid(srv, a)) == full - 40, "다침 전제가 아니다");
         CastAndWait(srv, a, 68, true, ms, out);
-        Check(srv.HealthOf(a) == full, "RestoreHealth 가 최대로 안 채웠다");
+        Check(srv.HealthOf(Sid(srv, a)) == full, "RestoreHealth 가 최대로 안 채웠다");
     }
 
     // ③b Wink(133) — 회복 함수를 RestoreHealth 와 공유(순간이동은 안 딸림)
@@ -5909,9 +5915,9 @@ void TestHealSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(a, 40, out);
+        srv.Damage(Sid(srv, a), 40, out);
         CastAndWait(srv, a, 133, true, ms, out);
-        Check(srv.HealthOf(a) == full, "Wink 가 최대로 안 채웠다(회복 몫)");
+        Check(srv.HealthOf(Sid(srv, a)) == full, "Wink 가 최대로 안 채웠다(회복 몫)");
     }
 
     // ④ RestoreMana 자기 — 마나 쓴 뒤 가득
@@ -5920,11 +5926,11 @@ void TestHealSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t manaFull = srv.ManaOf(a);
-        srv.DebugManaSub(a, 60);                             // 마나 씀
-        Check(srv.ManaOf(a) < manaFull, "마나가 안 줄었다(전제)");
+        const uint16_t manaFull = srv.ManaOf(Sid(srv, a));
+        srv.DebugManaSub(Sid(srv, a), 60);                             // 마나 씀
+        Check(srv.ManaOf(Sid(srv, a)) < manaFull, "마나가 안 줄었다(전제)");
         CastAndWait(srv, a, 69, true, ms, out);
-        Check(srv.ManaOf(a) == manaFull, "RestoreMana 가 최대 마나로 안 채웠다");
+        Check(srv.ManaOf(Sid(srv, a)) == manaFull, "RestoreMana 가 최대 마나로 안 채웠다");
     }
 
     // ⑤ 대상 없는 커서 빈 곳 — 세 회복 주문 다 받아들이지 않음(fnc 0). SpellAccept 가 false 면 시전 틀이 **마나를 되돌린다**(CastSpellByUser 실패 갈래)
@@ -5934,15 +5940,15 @@ void TestHealSpells() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(a, 40, out);
-        srv.DebugManaSub(a, 5);                              // 마나를 조금 써 둔다 — RestoreMana(69)도 「채웠나」와 「되돌렸나」가 안 겹치게
-        const uint16_t manaBefore = srv.ManaOf(a);
-        srv.DebugAimAt(a, 4000, 4000);                       // 빈 곳
+        srv.Damage(Sid(srv, a), 40, out);
+        srv.DebugManaSub(Sid(srv, a), 5);                              // 마나를 조금 써 둔다 — RestoreMana(69)도 「채웠나」와 「되돌렸나」가 안 겹치게
+        const uint16_t manaBefore = srv.ManaOf(Sid(srv, a));
+        srv.DebugAimAt(Sid(srv, a), 4000, 4000);                       // 빈 곳
         CastAndWait(srv, a, heal, false, ms, out);
         char msg[96];
         std::snprintf(msg, sizeof(msg), "대상 없는 회복 주문 %u 이 마나를 안 되돌렸다(SpellAccept 0 → 시전 틀이 되돌림)", heal);
-        Check(srv.ManaOf(a) == manaBefore, msg);
-        Check(srv.HealthOf(a) == full - 40, "대상 없는 회복 주문이 체력을 채웠다(효과가 0 이어야 한다)");
+        Check(srv.ManaOf(Sid(srv, a)) == manaBefore, msg);
+        Check(srv.HealthOf(Sid(srv, a)) == full - 40, "대상 없는 회복 주문이 체력을 채웠다(효과가 0 이어야 한다)");
     }
 
     // ⑥ LesserHeal 을 **자기가 아닌** 최대 체력 대상에게 — 마나는 안 되돌아온다(되돌림은 「자기+최대」 갈래만)
@@ -5953,15 +5959,15 @@ void TestHealSpells() {
         srv.SetSpellDef(41, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t manaFull = srv.ManaOf(a);
-        srv.DebugAimAt(a, 1100, 1000);                       // b 를 겨눔(자기 아님)
+        const uint16_t manaFull = srv.ManaOf(Sid(srv, a));
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);                       // b 를 겨눔(자기 아님)
         CastAndWait(srv, a, 41, false, ms, out);
-        Check(srv.HealthOf(b) == full, "b 가 최대 체력이 아니다(전제)");
-        Check(srv.ManaOf(a) == manaFull - 10, "자기가 아닌 최대 체력 대상 LesserHeal 인데 마나가 되돌아왔다(자기검사 빠짐)");
+        Check(srv.HealthOf(Sid(srv, b)) == full, "b 가 최대 체력이 아니다(전제)");
+        Check(srv.ManaOf(Sid(srv, a)) == manaFull - 10, "자기가 아닌 최대 체력 대상 LesserHeal 인데 마나가 되돌아왔다(자기검사 빠짐)");
     }
     std::printf("  4-b5a — LesserHeal 15(기획값×배수 1.0)·자기 최대 마나 되돌림·남에게는 안 되돌림 · RestoreHealth·Wink 가득 · RestoreMana 가득 · 대상 없음 마나 되돌림\n");
 }
@@ -5981,10 +5987,10 @@ void TestChannelLife() {
         srv.SetSpellDef(8, 10, 0x1000000, { 1, 2 });        // 어느 직업이나 · 겨눔 아님(자기 아닌 대상도 곧바로 SpellAccept)
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
     };
     auto cast = [&](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
-        srv.DebugAimAt(a, 1100, 1000);                       // b 를 겨눔
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);                       // b 를 겨눔
         CastAndWait(srv, a, 8, false, ms, out);
     };
 
@@ -5994,14 +6000,14 @@ void TestChannelLife() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugManaSub(b, 40);                             // 대상 마나를 비워 둔다(가득이면 곧바로 취소)
-        const uint16_t bMana = srv.ManaOf(b);
-        const uint16_t aHp = srv.HealthOf(a);
+        srv.DebugManaSub(Sid(srv, b), 40);                             // 대상 마나를 비워 둔다(가득이면 곧바로 취소)
+        const uint16_t bMana = srv.ManaOf(Sid(srv, b));
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a));
         cast(srv, ms, out);
-        Check(srv.DebugDurActive(8, a), "ChannelLife 가 지속 주문으로 안 걸렸다");
+        Check(srv.DebugDurActive(8, Sid(srv, a)), "ChannelLife 가 지속 주문으로 안 걸렸다");
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int gaveMana = static_cast<int>(srv.ManaOf(b)) - static_cast<int>(bMana);
-        const int lostHp = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        const int gaveMana = static_cast<int>(srv.ManaOf(Sid(srv, b))) - static_cast<int>(bMana);
+        const int lostHp = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(Sid(srv, a)));
         Check(lostHp >= 9 && lostHp <= 11, "시전자가 틱마다 1 씩 안 깎였다");
         Check(gaveMana >= 4 && gaveMana <= 6, "대상 마나가 0.5/틱(이월 포함) 으로 안 찼다");
         Check(gaveMana < lostHp, "계수 0.5 인데 마나가 깎인 체력만큼 올랐다(이월을 안 쓴 것)");
@@ -6013,11 +6019,11 @@ void TestChannelLife() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t aHp = srv.HealthOf(a);
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a));
         cast(srv, ms, out);                                  // b 는 마나 가득
         for (int t = 0; t < 6; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(!srv.DebugDurActive(8, a), "대상 마나가 가득인데 ChannelLife 가 안 끊겼다");
-        Check(srv.HealthOf(a) == aHp, "대상 마나가 가득인데 시전자 체력이 깎였다");
+        Check(!srv.DebugDurActive(8, Sid(srv, a)), "대상 마나가 가득인데 ChannelLife 가 안 끊겼다");
+        Check(srv.HealthOf(Sid(srv, a)) == aHp, "대상 마나가 가득인데 시전자 체력이 깎였다");
     }
 
     // ③ 시전자가 달리면(버프 8) 끊긴다
@@ -6026,12 +6032,12 @@ void TestChannelLife() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugManaSub(b, 40);
+        srv.DebugManaSub(Sid(srv, b), 40);
         cast(srv, ms, out);
-        Check(srv.DebugDurActive(8, a), "걸리지도 않았다(시험 전제)");
-        srv.DebugApplyEnchant(a, 8, 0, 1);                   // 달리기
+        Check(srv.DebugDurActive(8, Sid(srv, a)), "걸리지도 않았다(시험 전제)");
+        srv.DebugApplyEnchant(Sid(srv, a), 8, 0, 1);                   // 달리기
         ms += 34; srv.Tick(ms, out);
-        Check(!srv.DebugDurActive(8, a), "시전자가 달리는데 ChannelLife 가 안 끊겼다");
+        Check(!srv.DebugDurActive(8, Sid(srv, a)), "시전자가 달리는데 ChannelLife 가 안 끊겼다");
     }
 
     // ④ 시전자 체력이 1 이하로 내려가면 끊긴다(제 목숨까지 태우지 않는다)
@@ -6040,12 +6046,12 @@ void TestChannelLife() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugManaSub(b, 120);                            // 오래 이어지도록 대상 마나를 많이 비움
+        srv.DebugManaSub(Sid(srv, b), 120);                            // 오래 이어지도록 대상 마나를 많이 비움
         cast(srv, ms, out);
-        srv.Damage(a, srv.HealthOf(a) - 3, out);             // 체력 3 만 남김
+        srv.Damage(Sid(srv, a), srv.HealthOf(Sid(srv, a)) - 3, out);             // 체력 3 만 남김
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(!srv.DebugDurActive(8, a), "시전자 체력이 바닥인데 ChannelLife 가 안 끊겼다");
-        Check(srv.HealthOf(a) >= 1 && srv.IsAlive(a), "ChannelLife 가 시전자를 죽였다(체력 1 이하면 멈춰야 한다)");
+        Check(!srv.DebugDurActive(8, Sid(srv, a)), "시전자 체력이 바닥인데 ChannelLife 가 안 끊겼다");
+        Check(srv.HealthOf(Sid(srv, a)) >= 1 && srv.IsAlive(Sid(srv, a)), "ChannelLife 가 시전자를 죽였다(체력 1 이하면 멈춰야 한다)");
     }
 
     // ⑤ 소환수를 대상으로 걸 때 — 그 소환수가 **건 자리(시전자가 서 있던 곳)** 에서 5 넘게 떨어져 있으면 곧바로 끊긴다
@@ -6064,21 +6070,21 @@ void TestChannelLife() {
         impBody.shape = 2; impBody.r = 10.0f; impBody.cls = 0x2; impBody.mass = 10.0f;
         srv.SetTypeBody(1328, impBody);
         srv.DebugEnterGame(c, 730, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(c, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, c), 3000, 3000);
         SummonImp(srv, c, out);                              // ⚠ **남의** 임프라야 한다 — 제 소환수는 커서 친구 거르기에 걸려 대상이 안 잡힌다
         double px = 0, py = 0;
         Check(srv.DebugPetXY(0, px, py), "임프가 안 불려 나왔다(시험 전제)");
         uint32_t ms = srv.DebugNowMs();
-        srv.DebugMoveTo(a, static_cast<int>(px) - 60, static_cast<int>(py));   // 60 — 더 띄우면 커서가 임프를 못 집어 주문이 아예 안 붙는다
+        srv.DebugMoveTo(Sid(srv, a), static_cast<int>(px) - 60, static_cast<int>(py));   // 60 — 더 띄우면 커서가 임프를 못 집어 주문이 아예 안 붙는다
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, static_cast<int>(px), static_cast<int>(py));
+        srv.DebugAimAt(Sid(srv, a), static_cast<int>(px), static_cast<int>(py));
         CastAndWait(srv, a, 8, false, ms, out);
         for (int t = 0; t < 2; ++t) { ms += 34; srv.Tick(ms, out); }
         // ⚠ 체력으로는 못 가른다 — **남의 임프가 걸어와 때리기** 때문이다(그걸 ChannelLife 탓으로 오독했던 자리)
         // ⚠⚠ **알려진 구멍(09-14)** — 이 갈래는 「목줄 검사를 지운」 돌연변이(CL10)를 **아직 못 잡는다**. 네 판을 고쳐 봤고
         //   몸 등록 빠짐·제 소환수 친구 거르기·거리 300 에서 대상 못 집음은 전부 걷어냈는데도 원본·돌연변이가 같이 끊긴다.
         //   즉 **이 검사가 아니라 다른 이유로 끊기고 있다** — 소환수 대상 지속주문을 더 볼 때(4-f 소환) 다시 판다
-        Check(!srv.DebugDurActive(8, a), "소환수가 건 자리에서 5 넘게 떨어졌는데 ChannelLife 가 안 끊겼다");
+        Check(!srv.DebugDurActive(8, Sid(srv, a)), "소환수가 건 자리에서 5 넘게 떨어졌는데 ChannelLife 가 안 끊겼다");
     }
     std::printf("  4-b5b(1) — ChannelLife 생명→마나(0.5/틱 이월) · 대상 마나 가득/달리기/체력 1 이하/소환수 목줄 5 면 끊김\n");
 }
@@ -6095,10 +6101,10 @@ void TestGreaterHeal() {
         srv.SetSpellDef(35, 10, 0x1000000, { 1, 2 });        // 어느 직업이나 · 음소 둘
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1080, 1000);                      // 둘레 400 안
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, sameTeam ? 1 : 2);               // 같은 편이라야 고쳐 준다
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1080, 1000);                      // 둘레 400 안
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), sameTeam ? 1 : 2);               // 같은 편이라야 고쳐 준다
     };
     const uint8_t k9e = static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL);
 
@@ -6108,12 +6114,12 @@ void TestGreaterHeal() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(b, 30, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.Damage(Sid(srv, b), 30, out);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         out.clear();
-        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        srv.DebugAimAt(Sid(srv, a), 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
         CastAndWait(srv, a, 35, false, ms, out);
-        Check(srv.DebugDurActive(35, a), "아군에게 건 GreaterHeal 이 안 걸렸다");
+        Check(srv.DebugDurActive(35, Sid(srv, a)), "아군에게 건 GreaterHeal 이 안 걸렸다");
         // 빔 시작 — 갈래 6 · 받는 쪽(b 729) 이 앞, 시전자(a 728) 가 뒤
         // ⚠ `FindMsg(FlattenTo(...))` 로 쓰면 임시 벡터를 가리키는 **매달린 포인터**가 된다 — 이름을 붙여 살려 둔다
         const auto toB = FlattenTo(out, b);
@@ -6122,10 +6128,10 @@ void TestGreaterHeal() {
               ((*ray)[3] | ((*ray)[4] << 8)) == 729 && ((*ray)[5] | ((*ray)[6] << 8)) == 728,
               "치료 광선 `9e 06`(받는 쪽 앞)이 안 나갔다");
         // ★ 마나는 **시전 뒤부터** 재야 틱 소모만 보인다 — 시전 비용(10)이 섮이면 「틱마다 1 안 씁」 돌연변이를 가린다
-        const uint16_t aManaAfterCast = srv.ManaOf(a);
+        const uint16_t aManaAfterCast = srv.ManaOf(Sid(srv, a));
         for (int t = 0; t < 8; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int healed = static_cast<int>(srv.HealthOf(b)) - static_cast<int>(bHp);
-        const int spent = static_cast<int>(aManaAfterCast) - static_cast<int>(srv.ManaOf(a));
+        const int healed = static_cast<int>(srv.HealthOf(Sid(srv, b))) - static_cast<int>(bHp);
+        const int spent = static_cast<int>(aManaAfterCast) - static_cast<int>(srv.ManaOf(Sid(srv, a)));
         Check(healed >= 6 && healed <= 10, "대상 체력이 틱마다 1(레벨 3 → 1.0) 안 찼다");
         Check(spent >= 6 && spent <= 10, "시전자 마나가 틱마다 1 안 줄었다(시전 비용 제외)");
     }
@@ -6136,13 +6142,13 @@ void TestGreaterHeal() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(b, 30, out);
-        const uint16_t bHp = srv.HealthOf(b);
-        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        srv.Damage(Sid(srv, b), 30, out);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
+        srv.DebugAimAt(Sid(srv, a), 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
         CastAndWait(srv, a, 35, false, ms, out);
         for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(!srv.DebugDurActive(35, a), "적인데 GreaterHeal 이 걸렸다");
-        Check(srv.HealthOf(b) == bHp, "적을 고쳤다");
+        Check(!srv.DebugDurActive(35, Sid(srv, a)), "적인데 GreaterHeal 이 걸렸다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "적을 고쳤다");
     }
 
     // ③ 시전자가 맞으면 끊긴다(sub_4E6BD0 — 지난 1틱 안에 맞음)
@@ -6151,13 +6157,13 @@ void TestGreaterHeal() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(b, 30, out);
-        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        srv.Damage(Sid(srv, b), 30, out);
+        srv.DebugAimAt(Sid(srv, a), 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
         CastAndWait(srv, a, 35, false, ms, out);
-        Check(srv.DebugDurActive(35, a), "걸리지도 않았다(시험 전제)");
-        srv.Damage(a, 5, out);                               // 시전자가 맞는다
+        Check(srv.DebugDurActive(35, Sid(srv, a)), "걸리지도 않았다(시험 전제)");
+        srv.Damage(Sid(srv, a), 5, out);                               // 시전자가 맞는다
         ms += 34; srv.Tick(ms, out);
-        Check(!srv.DebugDurActive(35, a), "시전자가 맞았는데 치료 광선이 안 끊겼다");
+        Check(!srv.DebugDurActive(35, Sid(srv, a)), "시전자가 맞았는데 치료 광선이 안 끊겼다");
     }
 
     // ④ 대상 체력이 가득이면 첫 틱에 끊긴다
@@ -6166,12 +6172,12 @@ void TestGreaterHeal() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t aMana = srv.ManaOf(a);
-        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        const uint16_t aMana = srv.ManaOf(Sid(srv, a));
+        srv.DebugAimAt(Sid(srv, a), 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
         CastAndWait(srv, a, 35, false, ms, out);             // b 는 안 다쳤다
         for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(!srv.DebugDurActive(35, a), "대상이 멀쩡한데 치료 광선이 안 끊겼다");
-        Check(srv.ManaOf(a) >= aMana - 10, "안 고쳐도 되는데 마나를 계속 썼다");
+        Check(!srv.DebugDurActive(35, Sid(srv, a)), "대상이 멀쩡한데 치료 광선이 안 끊겼다");
+        Check(srv.ManaOf(Sid(srv, a)) >= aMana - 10, "안 고쳐도 되는데 마나를 계속 썼다");
     }
 
     // ⑤ 시전자 마나가 바닥이면 끊긴다
@@ -6180,13 +6186,13 @@ void TestGreaterHeal() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(b, 60, out);
-        srv.DebugAimAt(a, 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
+        srv.Damage(Sid(srv, b), 60, out);
+        srv.DebugAimAt(Sid(srv, a), 1080, 1000);                       // 정답지는 **커서 자리**를 탐색 중심으로 쓴다(Pos2) — 안 겨누면 (0,0) 을 뒤진다
         CastAndWait(srv, a, 35, false, ms, out);
-        Check(srv.DebugDurActive(35, a), "걸리지도 않았다(시험 전제)");
-        srv.DebugManaSub(a, srv.ManaOf(a));                  // 마나 0
+        Check(srv.DebugDurActive(35, Sid(srv, a)), "걸리지도 않았다(시험 전제)");
+        srv.DebugManaSub(Sid(srv, a), srv.ManaOf(Sid(srv, a)));                  // 마나 0
         ms += 34; srv.Tick(ms, out);
-        Check(!srv.DebugDurActive(35, a), "시전자 마나가 0 인데 치료 광선이 안 끊겼다");
+        Check(!srv.DebugDurActive(35, Sid(srv, a)), "시전자 마나가 0 인데 치료 광선이 안 끊겼다");
     }
     // ⑥ 시전자가 달리면 끕긴다(버프 8)
     {
@@ -6194,13 +6200,13 @@ void TestGreaterHeal() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.Damage(b, 40, out);
-        srv.DebugAimAt(a, 1080, 1000);
+        srv.Damage(Sid(srv, b), 40, out);
+        srv.DebugAimAt(Sid(srv, a), 1080, 1000);
         CastAndWait(srv, a, 35, false, ms, out);
-        Check(srv.DebugDurActive(35, a), "걸리지도 않았다(시험 전제)");
-        srv.DebugApplyEnchant(a, 8, 0, 1);                   // 달리기
+        Check(srv.DebugDurActive(35, Sid(srv, a)), "걸리지도 않았다(시험 전제)");
+        srv.DebugApplyEnchant(Sid(srv, a), 8, 0, 1);                   // 달리기
         ms += 34; srv.Tick(ms, out);
-        Check(!srv.DebugDurActive(35, a), "시전자가 달리는데 치료 광선이 안 끕겼다");
+        Check(!srv.DebugDurActive(35, Sid(srv, a)), "시전자가 달리는데 치료 광선이 안 끕겼다");
     }
     std::printf("  4-b5b(2) — GreaterHeal 아군 치료 광선 `9e 06` · 틱마다 체력 1/마나 1 · 적·가득·맞음·마나 0 이면 끊김\n");
 }
@@ -6220,8 +6226,8 @@ void TestDrainMana() {
         srv.SetSpellDef(22, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1080, 1000);                      // 둘레 안 · 팀이 없으니 아레나 규칙으로 서로 적
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1080, 1000);                      // 둘레 안 · 팀이 없으니 아레나 규칙으로 서로 적
     };
     const uint8_t k9e = static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL);
 
@@ -6231,18 +6237,18 @@ void TestDrainMana() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugManaSub(a, 60);                             // 시전자 마나가 가득이면 안 돈다
+        srv.DebugManaSub(Sid(srv, a), 60);                             // 시전자 마나가 가득이면 안 돈다
         CastAndWait(srv, a, 22, false, ms, out);
-        Check(srv.DebugDurActive(22, a), "DrainMana 가 안 걸렸다");
+        Check(srv.DebugDurActive(22, Sid(srv, a)), "DrainMana 가 안 걸렸다");
         const auto toB = FlattenTo(out, b);
         const auto* ray = FindMsg(toB, k9e);
         Check(ray != nullptr && ray->size() == 7 && (*ray)[1] == 5 &&
               ((*ray)[3] | ((*ray)[4] << 8)) == 728 && ((*ray)[5] | ((*ray)[6] << 8)) == 729,
               "마나 빨기 광선 `9e 05`(시전자가 앞)이 안 나갔다");
-        const uint16_t aMana = srv.ManaOf(a), bMana = srv.ManaOf(b);
+        const uint16_t aMana = srv.ManaOf(Sid(srv, a)), bMana = srv.ManaOf(Sid(srv, b));
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int gained = static_cast<int>(srv.ManaOf(a)) - static_cast<int>(aMana);
-        const int lost = static_cast<int>(bMana) - static_cast<int>(srv.ManaOf(b));
+        const int gained = static_cast<int>(srv.ManaOf(Sid(srv, a))) - static_cast<int>(aMana);
+        const int lost = static_cast<int>(bMana) - static_cast<int>(srv.ManaOf(Sid(srv, b)));
         Check(gained >= 4 && gained <= 6, "시전자 마나가 0.5/틱(이월 포함)으로 안 찼다");
         Check(lost == gained, "빨린 만큼과 채워진 만큼이 다르다");
     }
@@ -6253,13 +6259,13 @@ void TestDrainMana() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t bMana = srv.ManaOf(b);
+        const uint16_t bMana = srv.ManaOf(Sid(srv, b));
         CastAndWait(srv, a, 22, false, ms, out);
         // ⚠ 시전 자체가 마나 10 을 쓰므로 **시전 직후는 가득이 아니다** — 도로 채워야 「가득」 갈래를 잰다
-        srv.DebugManaAdd(a, 999);
+        srv.DebugManaAdd(Sid(srv, a), 999);
         for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(!srv.DebugDurActive(22, a), "시전자 마나가 가득인데 안 끊겼다");
-        Check(srv.ManaOf(b) == bMana, "가득인데 남의 마나를 빨았다");
+        Check(!srv.DebugDurActive(22, Sid(srv, a)), "시전자 마나가 가득인데 안 끊겼다");
+        Check(srv.ManaOf(Sid(srv, b)) == bMana, "가득인데 남의 마나를 빨았다");
     }
 
     // ③ 시전자가 맞으면 끊긴다
@@ -6268,12 +6274,12 @@ void TestDrainMana() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugManaSub(a, 60);
+        srv.DebugManaSub(Sid(srv, a), 60);
         CastAndWait(srv, a, 22, false, ms, out);
-        Check(srv.DebugDurActive(22, a), "걸리지도 않았다(시험 전제)");
-        srv.Damage(a, 5, out);
+        Check(srv.DebugDurActive(22, Sid(srv, a)), "걸리지도 않았다(시험 전제)");
+        srv.Damage(Sid(srv, a), 5, out);
         ms += 34; srv.Tick(ms, out);
-        Check(!srv.DebugDurActive(22, a), "시전자가 맞았는데 안 끊겼다");
+        Check(!srv.DebugDurActive(22, Sid(srv, a)), "시전자가 맞았는데 안 끊겼다");
     }
 
     // ④ 시전자가 건 자리에서 5 넘게 움직이면 끊긴다
@@ -6282,12 +6288,12 @@ void TestDrainMana() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugManaSub(a, 60);
+        srv.DebugManaSub(Sid(srv, a), 60);
         CastAndWait(srv, a, 22, false, ms, out);
-        Check(srv.DebugDurActive(22, a), "걸리지도 않았다(시험 전제)");
-        srv.DebugMoveTo(a, 1040, 1000);                      // 40 이동
+        Check(srv.DebugDurActive(22, Sid(srv, a)), "걸리지도 않았다(시험 전제)");
+        srv.DebugMoveTo(Sid(srv, a), 1040, 1000);                      // 40 이동
         ms += 34; srv.Tick(ms, out);
-        Check(!srv.DebugDurActive(22, a), "시전자가 자리를 떴는데 안 끊겼다");
+        Check(!srv.DebugDurActive(22, Sid(srv, a)), "시전자가 자리를 떴는데 안 끊겼다");
     }
 
     // ⑤ 빨 것이 없으면(적 마나 0) 끊긴다
@@ -6296,11 +6302,11 @@ void TestDrainMana() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugManaSub(a, 60);
-        srv.DebugManaSub(b, srv.ManaOf(b));                  // 대상 마나 0
+        srv.DebugManaSub(Sid(srv, a), 60);
+        srv.DebugManaSub(Sid(srv, b), srv.ManaOf(Sid(srv, b)));                  // 대상 마나 0
         CastAndWait(srv, a, 22, false, ms, out);
         for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(!srv.DebugDurActive(22, a), "빨 대상이 없는데 안 끊겼다");
+        Check(!srv.DebugDurActive(22, Sid(srv, a)), "빨 대상이 없는데 안 끊겼다");
     }
 
     // ⑥ 시전자가 달리면 끊긴다
@@ -6309,12 +6315,12 @@ void TestDrainMana() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugManaSub(a, 60);
+        srv.DebugManaSub(Sid(srv, a), 60);
         CastAndWait(srv, a, 22, false, ms, out);
-        Check(srv.DebugDurActive(22, a), "걸리지도 않았다(시험 전제)");
-        srv.DebugApplyEnchant(a, 8, 0, 1);
+        Check(srv.DebugDurActive(22, Sid(srv, a)), "걸리지도 않았다(시험 전제)");
+        srv.DebugApplyEnchant(Sid(srv, a), 8, 0, 1);
         ms += 34; srv.Tick(ms, out);
-        Check(!srv.DebugDurActive(22, a), "시전자가 달리는데 안 끊겼다");
+        Check(!srv.DebugDurActive(22, Sid(srv, a)), "시전자가 달리는데 안 끊겼다");
     }
 
     // ⑦ 곁에 **같은 편**만 있으면 못 빤다(적만 고른다) — 아군 마나는 그대로
@@ -6323,14 +6329,14 @@ void TestDrainMana() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);                              // 같은 편 → 적이 아니다
-        srv.DebugManaSub(a, 60);
-        const uint16_t bMana = srv.ManaOf(b);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);                              // 같은 편 → 적이 아니다
+        srv.DebugManaSub(Sid(srv, a), 60);
+        const uint16_t bMana = srv.ManaOf(Sid(srv, b));
         CastAndWait(srv, a, 22, false, ms, out);
         for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(!srv.DebugDurActive(22, a), "같은 편만 곁에 있는데 안 끊겼다");
-        Check(srv.ManaOf(b) == bMana, "같은 편 마나를 빨았다");
+        Check(!srv.DebugDurActive(22, Sid(srv, a)), "같은 편만 곁에 있는데 안 끊겼다");
+        Check(srv.ManaOf(Sid(srv, b)) == bMana, "같은 편 마나를 빨았다");
     }
 
     // ⑧ 둘레(ManaDrainRange) 밖이면 못 빤다
@@ -6339,13 +6345,13 @@ void TestDrainMana() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugMoveTo(b, 1000 + 500, 1000);                // 둘레 300 밖
-        srv.DebugManaSub(a, 60);
-        const uint16_t bMana = srv.ManaOf(b);
+        srv.DebugMoveTo(Sid(srv, b), 1000 + 500, 1000);                // 둘레 300 밖
+        srv.DebugManaSub(Sid(srv, a), 60);
+        const uint16_t bMana = srv.ManaOf(Sid(srv, b));
         CastAndWait(srv, a, 22, false, ms, out);
         for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(!srv.DebugDurActive(22, a), "둘레 밖인데 안 끊겼다");
-        Check(srv.ManaOf(b) == bMana, "둘레 밖 사람의 마나를 빨았다");
+        Check(!srv.DebugDurActive(22, Sid(srv, a)), "둘레 밖인데 안 끊겼다");
+        Check(srv.ManaOf(Sid(srv, b)) == bMana, "둘레 밖 사람의 마나를 빨았다");
     }
     std::printf("  4-b5b(3) — DrainMana 적 마나 빨기 광선 `9e 05` · 0.5/틱 이월 · 가득/맞음/움직임/대상없음/달리기/같은편/둘레밖\n");
 }
@@ -6366,8 +6372,8 @@ void TestPushPullQuake() {
         srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1080, 1000);                      // 시전자 오른쪽 80
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1080, 1000);                      // 시전자 오른쪽 80
     };
 
     // ① 밀기 — 남이 **멀어지는 쪽**으로 밀린다
@@ -6376,15 +6382,15 @@ void TestPushPullQuake() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const int bx = srv.XOf(b);
+        const int bx = srv.XOf(Sid(srv, b));
         CastAndWait(srv, a, 66, false, ms, out);
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.XOf(b) > bx, "밀기인데 상대가 멀어지지 않았다");
+        Check(srv.XOf(Sid(srv, b)) > bx, "밀기인데 상대가 멀어지지 않았다");
         // ★ 크기도 재야 한다 — 힘을 **×10** 하는 걸 빼먹어도 밀리기는 하니 방향만 보면 안 걸린다
         // ⚠ 2026-09-22 다시 잡음 — 사람 무게를 1 → 15.6(위저드)으로 고치면서 밀리는 거리가
         //   **39 → 3** 이 됐다(39 ÷ 15.6 = 2.5, 셈과 맞는다). 문턱 20 은 무게 1 기준이었다.
         //   ⭕ 판별력은 **돌연변이로 다시 확인**했다 — ×10 을 빼면 **0**, 두면 **3**. 그래서 2 로 잡는다
-        Check(srv.XOf(b) - bx >= 2, "밀린 거리가 너무 작다(힘 ×10 이 빠졌나)");
+        Check(srv.XOf(Sid(srv, b)) - bx >= 2, "밀린 거리가 너무 작다(힘 ×10 이 빠졌나)");
     }
 
     // ② 당기기 — 남이 **가까워지는 쪽**으로 끌린다(힘이 음수)
@@ -6393,24 +6399,24 @@ void TestPushPullQuake() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const int bx = srv.XOf(b);
+        const int bx = srv.XOf(Sid(srv, b));
         CastAndWait(srv, a, 65, false, ms, out);
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.XOf(b) < bx, "당기기인데 상대가 가까워지지 않았다");
+        Check(srv.XOf(Sid(srv, b)) < bx, "당기기인데 상대가 가까워지지 않았다");
     }
 
     // ③ 멀수록 약하게 — 가까운 b 가 먼 c 보다 많이 밀린다
     {
         nox::Server srv; mk(srv, 66);
         srv.DebugEnterGame(c, 730, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(c, 1400, 1000);                      // 둘레 600 안이지만 훨씬 멀다
+        srv.DebugMoveTo(Sid(srv, c), 1400, 1000);                      // 둘레 600 안이지만 훨씬 멀다
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const int bx = srv.XOf(b), cx = srv.XOf(c);
+        const int bx = srv.XOf(Sid(srv, b)), cx = srv.XOf(Sid(srv, c));
         CastAndWait(srv, a, 66, false, ms, out);
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int bMoved = srv.XOf(b) - bx, cMoved = srv.XOf(c) - cx;
+        const int bMoved = srv.XOf(Sid(srv, b)) - bx, cMoved = srv.XOf(Sid(srv, c)) - cx;
         Check(bMoved > 0 && cMoved >= 0, "밀기가 아예 안 먹었다(시험 전제)");
         Check(bMoved > cMoved, "가까운 쪽이 먼 쪽보다 더 밀리지 않았다(거리 비례가 빠짐)");
     }
@@ -6420,20 +6426,20 @@ void TestPushPullQuake() {
         const std::string d = "10.9.1.4:9104";
         nox::Server srv; mk(srv, 23);
         srv.DebugEnterGame(c, 730, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(c, 1190, 1000);                      // 둘레 200 안이지만 b(80)보다 훨씬 멀다
+        srv.DebugMoveTo(Sid(srv, c), 1190, 1000);                      // 둘레 200 안이지만 b(80)보다 훨씬 멀다
         srv.DebugEnterGame(d, 731, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(d, 1000 + 400, 1000);                // **둘레 200 밖 · 화면 흔들기 300 도 밖**
+        srv.DebugMoveTo(Sid(srv, d), 1000 + 400, 1000);                // **둘레 200 밖 · 화면 흔들기 300 도 밖**
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t aHp = srv.HealthOf(a), bHp = srv.HealthOf(b), cHp = srv.HealthOf(c), dHp = srv.HealthOf(d);
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a)), bHp = srv.HealthOf(Sid(srv, b)), cHp = srv.HealthOf(Sid(srv, c)), dHp = srv.HealthOf(Sid(srv, d));
         CastAndWait(srv, a, 23, false, ms, out);
-        const int bLost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
-        const int cLost = static_cast<int>(cHp) - static_cast<int>(srv.HealthOf(c));
-        Check(srv.HealthOf(a) == aHp, "땅흔들기가 시전자를 때렸다");
+        const int bLost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
+        const int cLost = static_cast<int>(cHp) - static_cast<int>(srv.HealthOf(Sid(srv, c)));
+        Check(srv.HealthOf(Sid(srv, a)) == aHp, "땅흔들기가 시전자를 때렸다");
         Check(bLost > 0, "가까운 사람이 땅흔들기에 안 맞았다");
         Check(bLost > cLost, "먼 사람이 가까운 사람만큼 맞았다(거리 반비례가 빠짐)");
-        Check(srv.HealthOf(d) == dHp, "둘레 밖 사람이 땅흔들기에 맞았다");
+        Check(srv.HealthOf(Sid(srv, d)) == dHp, "둘레 밖 사람이 땅흔들기에 맞았다");
         // 화면 흔들기 — 둘레 300 **안** 사람에게만 `97 <세기>` 2바이트
         const auto toB = FlattenTo(out, b);
         const auto* jig = FindMsg(toB, static_cast<uint8_t>(nox::Op::FX_JIGGLE));
@@ -6446,14 +6452,14 @@ void TestPushPullQuake() {
     // ⑤ 둘레 밖은 안 밀린다
     {
         nox::Server srv; mk(srv, 66);
-        srv.DebugMoveTo(b, 1000 + 900, 1000);                // 둘레 600 밖
+        srv.DebugMoveTo(Sid(srv, b), 1000 + 900, 1000);                // 둘레 600 밖
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const int bx = srv.XOf(b);
+        const int bx = srv.XOf(Sid(srv, b));
         CastAndWait(srv, a, 66, false, ms, out);
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.XOf(b) == bx, "둘레 밖인데 밀렸다");
+        Check(srv.XOf(Sid(srv, b)) == bx, "둘레 밖인데 밀렸다");
     }
     std::printf("  4-c1 — 밀기/당기기 방향·거리 비례 · 둘레 밖 안 밀림 · 땅흔들기 거리 반비례 피해·자기 제외·화면 흔들기 `97`\n");
 }
@@ -6470,11 +6476,11 @@ void TestPoison() {
         srv.SetSpellDef(14, 10, 0x1000000, { 1, 3 });        // 해독 — ⚠ 음소를 달리. 같은 음소를 주면 음소 나무가 덮여 앞 주문 시전이 아예 안 성립한다
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1080, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1080, 1000);
     };
     auto poisonB = [&](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
-        srv.DebugAimAt(a, 1080, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1080, 1000);
         CastAndWait(srv, a, 60, false, ms, out);
     };
 
@@ -6485,7 +6491,7 @@ void TestPoison() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         poisonB(srv, ms, out);
-        Check(srv.DebugPoisonOf(b) == 3, "독이 세기(3)만큼 안 얹혔다");
+        Check(srv.DebugPoisonOf(Sid(srv, b)) == 3, "독이 세기(3)만큼 안 얹혔다");
         bool poisoned = false;
         for (const auto& m : FlattenTo(out, a)) {
             if (m.size() == 7 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_CLIENT_STATUS) &&
@@ -6501,9 +6507,9 @@ void TestPoison() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         poisonB(srv, ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 50; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "독 시작 60틱 안인데 벌써 아팠다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "독 시작 60틱 안인데 벌써 아팠다");
     }
 
     // ③ 유예가 지나면 주기적으로 아프다(독 3 → 128>>2 = 32틱마다 1)
@@ -6513,9 +6519,9 @@ void TestPoison() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         poisonB(srv, ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 200; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         Check(lost >= 2, "유예가 지났는데 독이 안 아프다");
         Check(lost <= 10, "독이 너무 자주 아프다(주기 128>>(양−1) 이 빠졌나)");
         // ★ nine-defects 4-c3b1 — 독 주기 피해는 때린 이·때린 것 둘 다 nil(Go `server.go:198`) → 맞는 소리 없음
@@ -6529,9 +6535,9 @@ void TestPoison() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugApplyEnchant(b, 23, 0, 5);                  // 무적
+        srv.DebugApplyEnchant(Sid(srv, b), 23, 0, 5);                  // 무적
         poisonB(srv, ms, out);
-        Check(srv.DebugPoisonOf(b) == 0, "무적인데 독이 걸렸다");
+        Check(srv.DebugPoisonOf(Sid(srv, b)) == 0, "무적인데 독이 걸렸다");
     }
 
     // ⑤ 해독이 푼다 — 독이 0 이 되고 상태 비트가 꺼진다
@@ -6541,11 +6547,11 @@ void TestPoison() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         poisonB(srv, ms, out);
-        Check(srv.DebugPoisonOf(b) > 0, "독이 안 걸렸다(시험 전제)");
+        Check(srv.DebugPoisonOf(Sid(srv, b)) > 0, "독이 안 걸렸다(시험 전제)");
         std::vector<nox::OutPacket> o2;
-        srv.DebugAimAt(a, 1080, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1080, 1000);
         CastAndWait(srv, a, 14, false, ms, o2);              // a 가 b 에게 해독
-        Check(srv.DebugPoisonOf(b) == 0, "해독했는데 독이 안 풀렸다");
+        Check(srv.DebugPoisonOf(Sid(srv, b)) == 0, "해독했는데 독이 안 풀렸다");
         bool cleared = false;
         for (const auto& m : FlattenTo(o2, a)) {
             if (m.size() == 7 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_CLIENT_STATUS) &&
@@ -6561,12 +6567,12 @@ void TestPoison() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         poisonB(srv, ms, out);
-        const int before = srv.DebugPoisonOf(b);
-        srv.DebugSetPoisonDecay(b, 1);                       // 다음 틱에 0 이 된다
+        const int before = srv.DebugPoisonOf(Sid(srv, b));
+        srv.DebugSetPoisonDecay(Sid(srv, b), 1);                       // 다음 틱에 0 이 된다
         ms += 34; srv.Tick(ms, out);
-        Check(srv.DebugPoisonOf(b) == before - 1, "감쇠 계수기가 0 인데 독이 안 줄었다");
+        Check(srv.DebugPoisonOf(Sid(srv, b)) == before - 1, "감쇠 계수기가 0 인데 독이 안 줄었다");
         // ★ 줄인 뒤 **다시 1000 으로 채워야** 다음 감쇠가 온다 — 안 채우면 독이 영영 그대로 남는다
-        Check(srv.DebugPoisonDecayOf(b) == 1000, "감쇠 뒤 계수기를 1000 으로 다시 안 채웠다");
+        Check(srv.DebugPoisonDecayOf(Sid(srv, b)) == 1000, "감쇠 뒤 계수기를 1000 으로 다시 안 채웠다");
     }
 
     // ⑦ 두 번 걸어도 **상한**을 넘지 않는다(activatePoison 의 cap)
@@ -6576,9 +6582,9 @@ void TestPoison() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         poisonB(srv, ms, out);
-        const int first = srv.DebugPoisonOf(b);
+        const int first = srv.DebugPoisonOf(Sid(srv, b));
         poisonB(srv, ms, out);                               // 한 번 더
-        Check(srv.DebugPoisonOf(b) == first, "독을 두 번 걸었더니 상한을 넘어 쌓였다");
+        Check(srv.DebugPoisonOf(Sid(srv, b)) == first, "독을 두 번 걸었더니 상한을 넘어 쌓였다");
     }
 
     // ⑧ **독 면역** 소환수는 독에 안 아프다 — 피해 종류가 5(독)여야 면역이 걸린다
@@ -6592,7 +6598,7 @@ void TestPoison() {
         srv.SetTypeBody(1328, body);                         // 커서가 집으려면 몸이 있어야 한다
         std::vector<nox::OutPacket> out;
         srv.DebugEnterGame(c, 730, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(c, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, c), 3000, 3000);
         SummonImp(srv, c, out);
         double px = 0, py = 0;
         Check(srv.DebugPetXY(0, px, py), "임프가 안 불려 나왔다(시험 전제)");
@@ -6624,8 +6630,8 @@ void TestToxicCloud() {
         srv.SetSpellDef(128, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);                      // 구름에서 멀리 떨어져 시작
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);                      // 구름에서 멀리 떨어져 시작
     };
 
     // ① 커서 자리에 구름이 놓이고, 둘레(75) 안 사람이 피해 + 독을 받는다
@@ -6634,14 +6640,14 @@ void TestToxicCloud() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1330, 1000);                       // b 곁에 놓는다(b 에서 30)
+        srv.DebugAimAt(Sid(srv, a), 1330, 1000);                       // b 곁에 놓는다(b 에서 30)
         AllMetalButPlayer(srv);                              // ★ 4-c3b2 — 시전 전에(놓자마자 한 번 맞는다)
         CastAndWait(srv, a, 128, false, ms, out);
         Check(srv.PlacedCount() == 1, "독구름이 안 놓였다");
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "구름 둘레 안인데 안 아팠다");
-        Check(srv.DebugPoisonOf(b) > 0, "적인데 구름이 독을 안 얹었다");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "구름 둘레 안인데 안 아팠다");
+        Check(srv.DebugPoisonOf(Sid(srv, b)) > 0, "적인데 구름이 독을 안 얹었다");
         Check(PlayerHitByObject(srv), HitSoundMsg(srv, "① 4-c3b2 독구름에 맞는 소리의 때린 것이 구름(862)이 아니다"));
     }
 
@@ -6651,12 +6657,12 @@ void TestToxicCloud() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1000, 1000);                       // 시전자 자리(= b 에서 300)
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);                       // 시전자 자리(= b 에서 300)
         CastAndWait(srv, a, 128, false, ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "둘레 밖인데 구름에 맞았다");
-        Check(srv.DebugPoisonOf(b) == 0, "둘레 밖인데 독이 얹혔다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "둘레 밖인데 구름에 맞았다");
+        Check(srv.DebugPoisonOf(Sid(srv, b)) == 0, "둘레 밖인데 독이 얹혔다");
     }
 
     // ③ 놓은 이도 **피해는 받지만 독은 안 받는다**(독은 적에게만)
@@ -6665,12 +6671,12 @@ void TestToxicCloud() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1000, 1000);                       // 제 발밑에 놓는다
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);                       // 제 발밑에 놓는다
         CastAndWait(srv, a, 128, false, ms, out);
-        const uint16_t aHp = srv.HealthOf(a);
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a));
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(a) < aHp, "제 구름 안에 서 있는데 안 아팠다");
-        Check(srv.DebugPoisonOf(a) == 0, "제 구름이 자기에게 독을 얹었다(독은 적에게만)");
+        Check(srv.HealthOf(Sid(srv, a)) < aHp, "제 구름 안에 서 있는데 안 아팠다");
+        Check(srv.DebugPoisonOf(Sid(srv, a)) == 0, "제 구름이 자기에게 독을 얹었다(독은 적에게만)");
     }
 
     // ④ 수명이 다하면 사라지고 지움 알림이 나간다
@@ -6679,7 +6685,7 @@ void TestToxicCloud() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1000, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);
         CastAndWait(srv, a, 128, false, ms, out);
         Check(srv.PlacedCount() == 1, "구름이 안 놓였다(시험 전제)");
         out.clear();
@@ -6695,7 +6701,7 @@ void TestToxicCloud() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1150, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         CastAndWait(srv, a, 128, false, ms, out);
         Check(srv.PlacedCount() == 0, "벽 뒤인데 독구름이 놓였다(선 추적이 빠졌나)");
     }
@@ -6706,17 +6712,17 @@ void TestToxicCloud() {
         // ⚠ 벽 칸(45 = x 1035~1058)에 **몸이 닿으면 충돌로 밀려난다** — 1060 에 두었더니 (1085,1020)으로 밀려
         //   둘레 75 밖이 되어 원본도 돌연변이도 안 맞았다(그래서 「벽 뒤」 검사가 안 걸렸다).
         //   몸 반지름만큼 띄운 1070 이면 안 밀리고 둘레(70) 안에 남는다
-        srv.DebugMoveTo(b, 1070, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1070, 1000);
         srv.SetWalls({ { 45, 43 } });                        // 구름(1000)과 b(1070) 사이
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1000, 1000);                       // 제자리에 놓는다(선 추적 길이 0 이라 통과)
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);                       // 제자리에 놓는다(선 추적 길이 0 이라 통과)
         CastAndWait(srv, a, 128, false, ms, out);
         Check(srv.PlacedCount() == 1, "구름이 안 놓였다(시험 전제)");
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "벽 뒤인데 구름에 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "벽 뒤인데 구름에 맞았다");
     }
 
     // ⑦ 판정은 **5~10틱마다**다 — 매 틱 때리면 같은 시간에 피해가 몇 배가 된다(양으로 가른다)
@@ -6725,11 +6731,11 @@ void TestToxicCloud() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1000, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);
         CastAndWait(srv, a, 128, false, ms, out);
-        const uint16_t aHp = srv.HealthOf(a);
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a));
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(Sid(srv, a)));
         Check(lost > 0, "구름 안인데 안 아팠다(시험 전제)");
         Check(lost <= 50, "20틱에 피해가 너무 크다(판정 주기 5~10틱이 빠졌나)");
     }
@@ -6740,7 +6746,7 @@ void TestToxicCloud() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1000, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);
         CastAndWait(srv, a, 128, false, ms, out);
         const uint16_t nc = srv.DebugPlacedNetCode(0);
         Check(nc != 0, "구름 번호가 없다(시험 전제)");
@@ -6779,8 +6785,8 @@ void TestBurn() {
         srv.SetSpellDef(5, 5, 0x1000000, { 3, 6 });
         srv.DebugEnterGame(a, 740, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 741, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);                      // 불꽃에서 멀리 떨어져 시작
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);                      // 불꽃에서 멀리 떨어져 시작
     };
 
     // ① 커서 자리에 불꽃이 놓이고, 그 안에 선 사람이 **틱마다 1** 씩 탄다
@@ -6789,50 +6795,50 @@ void TestBurn() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);                       // b 발밑
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);                       // b 발밑
         AllMetalButPlayer(srv);                              // ★ 4-c3b2 — 시전 전에(놓자마자 한 번 맞는다)
         CastAndWait(srv, a, 5, false, ms, out);
         Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다");
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         // ★ 양까지 잰다 — 「아프긴 했다」로는 2>>1 을 2 로 준 것도 통과한다
         if (lost != 20) std::printf("  [불꽃] 20틱에 잃은 값 %d — 20 이어야 한다\n", lost);
         Check(lost == 20, "불꽃 피해가 틱마다 1 이 아니다");
-        Check(srv.DebugLastDamageType(b) == 1, "피해 종류가 불꽃(1)이 아니다");
-        Check(srv.DebugPoisonOf(b) == 0, "불꽃이 독을 얹었다(불꽃은 독이 아니다)");
+        Check(srv.DebugLastDamageType(Sid(srv, b)) == 1, "피해 종류가 불꽃(1)이 아니다");
+        Check(srv.DebugPoisonOf(Sid(srv, b)) == 0, "불꽃이 독을 얹었다(불꽃은 독이 아니다)");
         Check(PlayerHitByObject(srv) && srv.hitSoundCalls() >= 20, HitSoundMsg(srv, "① 4-c3b2 놓인 불꽃에 맞는 소리의 때린 것이 불꽃(862)이 아니다"));
     }
 
     // ② 닿음 둘레는 **불꽃 6 + 몸 10 = 16** — 그 밖은 안 탄다
     {
         nox::Server srv; mk(srv, 300);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1330, 1000);                       // b 에서 30 — 둘레 16 밖
+        srv.DebugAimAt(Sid(srv, a), 1330, 1000);                       // b 에서 30 — 둘레 16 밖
         CastAndWait(srv, a, 5, false, ms, out);
         Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다(시험 전제)");
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "닿음 둘레(16) 밖인데 불에 탔다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "닿음 둘레(16) 밖인데 불에 탔다");
     }
 
     // ②b 둘레 **안쪽 경계**도 잰다 — 13 은 16 안이고 6(불꽃만)·10(몸만) 밖이다.
     //   ⚠ 이 칸이 없으면 「반지름을 안 더함」·「반지름 0」 돌연변이가 둘 다 안 걸린다(BN2·BN10 실측).
     {
         nox::Server srv; mk(srv, 300);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1313, 1000);                       // b 에서 13
+        srv.DebugAimAt(Sid(srv, a), 1313, 1000);                       // b 에서 13
         CastAndWait(srv, a, 5, false, ms, out);
         Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다(시험 전제)");
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "13 은 닿음 둘레(불꽃 6 + 몸 10 = 16) 안인데 안 탔다");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "13 은 닿음 둘레(불꽃 6 + 몸 10 = 16) 안인데 안 탔다");
     }
 
     // ③ **시전자도 탄다** — 불꽃에는 NO_COLLIDE_OWNER 가 없다(독구름과 다른 자리)
@@ -6841,11 +6847,11 @@ void TestBurn() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1000, 1000);                       // 제 발밑
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);                       // 제 발밑
         CastAndWait(srv, a, 5, false, ms, out);
-        const uint16_t aHp = srv.HealthOf(a);
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a));
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(Sid(srv, a)));
         if (lost != 20) std::printf("  [불꽃] 시전자가 20틱에 잃은 값 %d — 20 이어야 한다\n", lost);
         Check(lost == 20, "제 불꽃 안인데 안 탔다(시전자도 타야 한다)");
     }
@@ -6856,7 +6862,7 @@ void TestBurn() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1000, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);
         CastAndWait(srv, a, 5, false, ms, out);
         Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다(시험 전제)");
         for (int t = 0; t < 15; ++t) { ms += 34; srv.Tick(ms, out); }
@@ -6875,7 +6881,7 @@ void TestBurn() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1150, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         CastAndWait(srv, a, 5, false, ms, out);
         Check(srv.PlacedCount() == 0, "벽 뒤인데 불꽃이 놓였다(선 추적이 빠졌나)");
     }
@@ -6886,7 +6892,7 @@ void TestBurn() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1000, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);
         CastAndWait(srv, a, 5, false, ms, out);
         const uint16_t nc = srv.DebugPlacedNetCode(0);
         Check(nc != 0, "불꽃 번호가 없다(시험 전제)");
@@ -6911,11 +6917,11 @@ void TestBurn() {
         srv.SetTypeBody(1328, body);                         // 임프
         std::vector<nox::OutPacket> out;
         srv.DebugEnterGame(c, 742, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(c, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, c), 3000, 3000);
         SummonImp(srv, c, out);
         Check(srv.pets() == 1, "임프가 안 불려 나옴(시험 전제)");
         uint32_t ms = srv.DebugNowMs();
-        srv.DebugAimAt(a, 1000, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);
         CastAndWait(srv, a, 5, false, ms, out);
         Check(srv.PlacedCount() == 1, "불꽃이 안 놓였다(시험 전제)");
         // ⚠ 소환수는 시전 9틱 사이에 걸어 나간다 — 불꽃을 놓은 **뒤에** 자리에 세운다
@@ -6944,8 +6950,8 @@ void TestFireball() {
         RegFireballTypes(srv);
         srv.DebugEnterGame(a, 760, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 761, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);                      // a 의 몸 방향(+x) 앞
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);                      // a 의 몸 방향(+x) 앞
     };
 
     // ① 날아가 맞으면 **양 >> 1** 만큼 깎인다. 온라인 세기 3 → TitanFireball(255) → 127
@@ -6955,14 +6961,14 @@ void TestFireball() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         AllMetalButPlayer(srv);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 27, false, ms, out);
         Check(srv.missiles() == 1, "불덩이가 안 날았다");
         Check(srv.DebugMissileType(0) == 693, "세기 3 인데 TitanFireball(693)이 아니다");
-        Check(srv.HealthOf(b) == bHp, "쏘자마자 맞았다 — 날아가는 중이어야 한다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "쏘자마자 맞았다 — 날아가는 중이어야 한다");
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.missiles() == 0, "불덩이가 끝까지 안 터졌다");
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         if (lost != 127) std::printf("  [불덩이] 직격에 잃은 값 %d — 127(255>>1) 이어야 한다\n", lost);
         Check(lost == 127, "직격 피해가 양>>1 이 아니다");
         Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 1, "① 4-c3b2 불덩이 직격의 때린 것이 불덩이(862)가 아니다");
@@ -6977,12 +6983,12 @@ void TestFireball() {
         // ⚠ `DebugMoveTo` 는 옛 자리칸(x·y)만 적는다 — 물리 자리(posX)는 **틱이 돌아야** 맞춰진다.
         //   한 틱을 더 돌리지 않으면 시전자가 (0,0)에 선 것으로 보여 불덩이가 엉뚱한 데서 난다(실측).
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
-        srv.DebugSpellAccept(a, 27, 1, out);                 // 세기를 1 로 박아 효과 함수만 부른다
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
+        srv.DebugSpellAccept(Sid(srv, a), 27, 1, out);                 // 세기를 1 로 박아 효과 함수만 부른다
         Check(srv.missiles() == 1, "세기 1 불덩이가 안 날았다");
         Check(srv.DebugMissileType(0) == 695, "세기 1 인데 Fireball(695)이 아니다");
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         if (lost != 64) std::printf("  [불덩이] 세기 1 직격에 잃은 값 %d — 64(128>>1) 이어야 한다\n", lost);
         Check(lost == 64, "세기 1 직격 피해가 64 가 아니다");
     }
@@ -6993,16 +6999,16 @@ void TestFireball() {
         nox::Server srv; mk(srv);
         const std::string c = "10.9.5.3:9503";
         srv.DebugEnterGame(c, 762, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(c, 1300, 1040);                      // 터지는 자리에서 40
+        srv.DebugMoveTo(Sid(srv, c), 1300, 1040);                      // 터지는 자리에서 40
         AllMetalButPlayer(srv);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t cHp = srv.HealthOf(c);
+        const uint16_t cHp = srv.HealthOf(Sid(srv, c));
         out.clear();
         CastAndWait(srv, a, 27, false, ms, out);
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(cHp) - static_cast<int>(srv.HealthOf(c));
+        const int lost = static_cast<int>(cHp) - static_cast<int>(srv.HealthOf(Sid(srv, c)));
         Check(lost > 0, "둘레 안인데 안 깎였다");
         // b 직격 하나 + c 둘레 하나 — 둘 다 때린 것 = 불덩이(둘레는 who = 불덩이 자신)
         Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 2, "③ 4-c3b2 불덩이 둘레 피해의 때린 것이 불덩이(862)가 아니다");
@@ -7027,14 +7033,14 @@ void TestFireball() {
         nox::Server srv; mk(srv);
         const std::string c = "10.9.5.3:9503";
         srv.DebugEnterGame(c, 762, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(c, 1300, 1120);                      // 터지는 자리에서 120
+        srv.DebugMoveTo(Sid(srv, c), 1300, 1120);                      // 터지는 자리에서 120
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t cHp = srv.HealthOf(c);
+        const uint16_t cHp = srv.HealthOf(Sid(srv, c));
         CastAndWait(srv, a, 27, false, ms, out);
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(c) == cHp, "둘레 85 밖(120)인데 깎였다 — 바깥 반지름이 너무 크다");
+        Check(srv.HealthOf(Sid(srv, c)) == cHp, "둘레 85 밖(120)인데 깎였다 — 바깥 반지름이 너무 크다");
     }
 
     // ③c 벽 뒤 사람은 **둘레 피해를 안 받는다**(선 추적 1) — 칸 52(x 1196~1219)가 터지는 자리와 c 사이.
@@ -7044,16 +7050,16 @@ void TestFireball() {
         nox::Server srv; mk(srv);
         const std::string c = "10.9.5.3:9503";
         srv.DebugEnterGame(c, 762, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1180, 1000);                      // 벽 앞에서 맞는다
-        srv.DebugMoveTo(c, 1240, 1000);                      // 벽 너머 · 터지는 자리에서 70
+        srv.DebugMoveTo(Sid(srv, b), 1180, 1000);                      // 벽 앞에서 맞는다
+        srv.DebugMoveTo(Sid(srv, c), 1240, 1000);                      // 벽 너머 · 터지는 자리에서 70
         srv.SetWalls({ { 52, 43 } });
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t cHp = srv.HealthOf(c);
+        const uint16_t cHp = srv.HealthOf(Sid(srv, c));
         CastAndWait(srv, a, 27, false, ms, out);
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(c) == cHp, "벽 뒤인데 둘레 피해를 받았다");
+        Check(srv.HealthOf(Sid(srv, c)) == cHp, "벽 뒤인데 둘레 피해를 받았다");
     }
 
     // ④ 둘레 **밖**(85 초과)은 안 깎인다
@@ -7061,20 +7067,20 @@ void TestFireball() {
         nox::Server srv; mk(srv);
         const std::string c = "10.9.5.3:9503";
         srv.DebugEnterGame(c, 762, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(c, 1300, 1200);                      // 터지는 자리에서 200
+        srv.DebugMoveTo(Sid(srv, c), 1300, 1200);                      // 터지는 자리에서 200
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t cHp = srv.HealthOf(c);
+        const uint16_t cHp = srv.HealthOf(Sid(srv, c));
         CastAndWait(srv, a, 27, false, ms, out);
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(c) == cHp, "둘레(85) 밖인데 불덩이에 깎였다");
+        Check(srv.HealthOf(Sid(srv, c)) == cHp, "둘레(85) 밖인데 불덩이에 깎였다");
     }
 
     // ⑤ **벽에 닿아도 터진다** — 칸 57 이 1300 과 1400 사이(23 × 57 = 1311)
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 3000, 3000);                      // b 는 멀리 치운다
+        srv.DebugMoveTo(Sid(srv, b), 3000, 3000);                      // b 는 멀리 치운다
         srv.SetWalls({ { 57, 43 } });
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
@@ -7091,34 +7097,34 @@ void TestFireball() {
     // ⑥ 쏜 사람은 제 불덩이에 **바로 안 맞는다** — 몸 반지름 두 배 앞에서 난다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, b), 3000, 3000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t aHp = srv.HealthOf(a);
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a));
         CastAndWait(srv, a, 27, false, ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.HealthOf(a) == aHp, "쏘자마자 제 불덩이에 맞았다");
+        Check(srv.HealthOf(Sid(srv, a)) == aHp, "쏘자마자 제 불덩이에 맞았다");
     }
 
     // ⑦ **멀리도 간다** — 수명 40틱 × 빠르기(2.4 × 12 = 28.8) = 1152. 880 은 넉넉히 닿는다.
     //   ⚠ 이 칸이 없으면 「Magic 수명 15틱을 불덩이에도 씌움」·「빠르기 계수 안 곱함」이 둘 다 안 걸린다(실측).
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1900, 1000);                      // 880 앞
+        srv.DebugMoveTo(Sid(srv, b), 1900, 1000);                      // 880 앞
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 27, false, ms, out);
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "880 앞인데 안 닿았다 — 수명이나 빠르기가 Magic 것으로 새 들어왔나");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "880 앞인데 안 닿았다 — 수명이나 빠르기가 Magic 것으로 새 들어왔나");
     }
 
     // ⑧ 빈 데 쏘면 **40틱에 스스로 터진다**(ProjectileUpdate 가 하는 일이 이것뿐이다)
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);                      // 아무도 앞에 없다
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);                      // 아무도 앞에 없다
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
@@ -7161,8 +7167,8 @@ void TestMeteor() {
         //   그래서 유성우는 시전 경로가 아니라 효과 함수를 바로 불러 시험한다.
         srv.DebugEnterGame(a, 770, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 771, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
     };
 
     // ① 커서 자리에 운석이 뜨고, **255 / 8 ≈ 32틱** 뒤에 떨어져 터진다
@@ -7172,14 +7178,14 @@ void TestMeteor() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);                       // b 머리 위
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);                       // b 머리 위
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 52, false, ms, out);
         Check(srv.PlacedCount() == 1, "운석이 안 떴다");
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "20틱 만에 떨어졌다 — 255 높이를 8씩 내려와야 한다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "20틱 만에 떨어졌다 — 255 높이를 8씩 내려와야 한다");
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         // 온라인 세기 3 → MeteorDamage[2] = 85. b 는 터진 자리 바로 아래라 안쪽 30 안 → 감쇠 없음.
         // ⚠ 다만 피해 **종류 7(폭발)은 방어가 먹는 갈래**라 워리어 기본 방어만큼 깎여 들어온다.
         const int want = nox::ApplyArmor(85, nox::ArmorValueFloat(nox::CharClass::Warrior), nox::DamageKind::Physical);
@@ -7196,7 +7202,7 @@ void TestMeteor() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         CastAndWait(srv, a, 52, false, ms, out);
         Check(srv.PlacedCount() == 1, "첫 운석이 안 떴다(시험 전제)");
         out.clear();
@@ -7215,7 +7221,7 @@ void TestMeteor() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         CastAndWait(srv, a, 52, false, ms, out);
         Check(srv.PlacedCount() == 0, "벽 뒤인데 운석이 떴다(선 추적이 빠졌나)");
     }
@@ -7223,31 +7229,31 @@ void TestMeteor() {
     // ④ 둘레 **밖**(80 초과)은 안 깎인다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1300, 1150);                      // 떨어지는 자리에서 150
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1150);                      // 떨어지는 자리에서 150
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 52, false, ms, out);
         for (int t = 0; t < 45; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "둘레(80) 밖인데 운석에 깎였다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "둘레(80) 밖인데 운석에 깎였다");
     }
 
     // ⑤ 안쪽 30 **밖**(둘레 안)은 줄어든 값을 받는다 — 감쇠식이 도는지 양으로 가른다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1300, 1060);                      // 떨어지는 자리에서 60
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1060);                      // 떨어지는 자리에서 60
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 52, false, ms, out);
         for (int t = 0; t < 45; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         // 거리 60 · 바깥 80 · 안쪽 30 → 85 × (1 − (60−30)/50) = 85 × 0.4 = 34, 거기서 방어가 먹는다
         const int want = nox::ApplyArmor(static_cast<int>(85.0f * (1.0f - (60.0f - 30.0f) / (80.0f - 30.0f))),
                                          nox::ArmorValueFloat(nox::CharClass::Warrior), nox::DamageKind::Physical);
@@ -7262,7 +7268,7 @@ void TestMeteor() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1100, 1000);                       // 시전자 가까이 — 흔들림이 닿게
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);                       // 시전자 가까이 — 흔들림이 닿게
         CastAndWait(srv, a, 52, false, ms, out);
         out.clear();
         for (int t = 0; t < 45; ++t) { ms += 34; srv.Tick(ms, out); }
@@ -7273,13 +7279,13 @@ void TestMeteor() {
     // ⑦ 유성우 — 뿌리개가 놓이고 **5초 동안 여러 개**를 떨군 뒤 스스로 사라진다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);                      // 아무도 안 맞게
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);                      // 아무도 안 맞게
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        srv.DebugSpellAccept(a, 53, 3, out);                 // 사람은 못 쓰는 주문이라 효과 함수를 바로 부른다
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        srv.DebugSpellAccept(Sid(srv, a), 53, 3, out);                 // 사람은 못 쓰는 주문이라 효과 함수를 바로 부른다
         Check(srv.PlacedCount() == 1, "유성우 뿌리개가 안 놓였다");
         size_t most = 0;
         float farthest = 0.0f;
@@ -7305,16 +7311,16 @@ void TestMeteor() {
     // ⑧ 유성우가 떨군 운석도 **제 피해값을 물려받는다** — 뿌리개 아래 선 사람은 깎인다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1300, 1000);                      // 뿌리개 바로 아래
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);                      // 뿌리개 바로 아래
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        const uint16_t bHp = srv.HealthOf(b);
-        srv.DebugSpellAccept(a, 53, 3, out);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
+        srv.DebugSpellAccept(Sid(srv, a), 53, 3, out);
         for (int t = 0; t < 200; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "유성우 아래 서 있는데 안 깎였다(피해값을 안 물려줬나)");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "유성우 아래 서 있는데 안 깎였다(피해값을 안 물려줬나)");
     }
     std::printf("  4-c3(4) — 운석 떨어져 터짐(피해 표·감쇠·흔들기)·한 사람에 하나·벽 뒤 못 띄움 · 유성우 여러 개·5초 수명\n");
 }
@@ -7339,8 +7345,8 @@ void TestFist() {
         RegSpell(srv, 29, 0);
         srv.DebugEnterGame(a, 780, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 781, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
     };
 
     // ① 떨어져 닿으면 때린다 — 세기 3 → LargeFist · 피해 200(종류 2 는 방어가 절반만 먹는다)
@@ -7350,36 +7356,36 @@ void TestFist() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         AllMetalButPlayer(srv);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 29, false, ms, out);
         Check(srv.PlacedCount() == 1, "주먹이 안 떴다");
-        Check(srv.HealthOf(b) == bHp, "뜨자마자 맞았다 — 아직 하늘에 있어야 한다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "뜨자마자 맞았다 — 아직 하늘에 있어야 한다");
         // ★ **닿는 때까지 재야** 중력·떨어지는 속도가 걸린다.
         //   255 에서 −10 으로 떠나 틱마다 0.5 씩 빨라지면 **18틱**에 땅이다.
         //   중력이 없으면 26틱, 속도가 1 이면 31틱 — 22틱 안에 안 닿는다.
         int hitTick = -1;
         for (int t = 0; t < 22 && hitTick < 0; ++t) {
             ms += 34; srv.Tick(ms, out);
-            if (srv.HealthOf(b) != bHp) hitTick = t;
+            if (srv.HealthOf(Sid(srv, b)) != bHp) hitTick = t;
         }
         if (hitTick < 0) std::printf("  [주먹] 22틱 안에 안 닿았다 — 18틱쯤이어야 한다\n");
         Check(hitTick >= 0, "주먹이 22틱 안에 안 닿았다(중력·떨어지는 속도가 빠졌나)");
         // 세기 3 → LargeFist · 피해 200. 워리어 체력 150 이라 **한 대에 죽는다**
-        Check(srv.HealthOf(b) == 0, "세기 3 주먹 한 대에 안 죽었다(피해 표가 세기를 안 타나)");
+        Check(srv.HealthOf(Sid(srv, b)) == 0, "세기 3 주먹 한 대에 안 죽었다(피해 표가 세기를 안 타나)");
         Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 1, "① 4-c3b2 주먹에 맞는 소리의 때린 것이 주먹(862)이 아니다");
     }
 
     // ①b **되튄다** — 땅에 닿은 뒤 다시 떠오른다(되튐 9.0 × 0.1)
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         CastAndWait(srv, a, 29, false, ms, out);
         bool landed = false, roseAgain = false;
         for (int t = 0; t < 40 && srv.PlacedCount() > 0; ++t) {
@@ -7396,16 +7402,16 @@ void TestFist() {
     // ①c 세기별 **둘레**가 다르다 — 세기 3 은 35(+몸 10 = 45)라 40 떨어진 사람도 맞는다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1300, 1040);                      // 40
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1040);                      // 40
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 29, false, ms, out);
         for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "40 은 세기 3 둘레(35+10=45) 안인데 안 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "40 은 세기 3 둘레(35+10=45) 안인데 안 맞았다");
     }
 
     // ①d **낙하 알림(`9f`)은 만든 틱이 아니라 다음 틱에 나간다** ← 09-20 실측으로 들어온 시험
@@ -7417,12 +7423,12 @@ void TestFist() {
     // ⚠ 이 시험이 보는 것은 **값이 아니라 나가는 틱**이다 — 같은 틱에 보내도 값은 똑같이 맞다.
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         out.clear();
         CastAndWait(srv, a, 29, false, ms, out);            // 마지막 틱이 **주먹을 만든 틱**이다
         Check(srv.PlacedCount() == 1, "주먹이 안 떴다(시험 전제)");
@@ -7457,7 +7463,7 @@ void TestFist() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         CastAndWait(srv, a, 29, false, ms, out);
         Check(srv.PlacedCount() == 1, "첫 주먹이 안 떴다(시험 전제)");
         CastAndWait(srv, a, 29, false, ms, out);
@@ -7473,7 +7479,7 @@ void TestFist() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         CastAndWait(srv, a, 29, false, ms, out);
         Check(srv.PlacedCount() == 0, "벽 뒤인데 주먹이 떴다");
     }
@@ -7481,27 +7487,27 @@ void TestFist() {
     // ④ **닿는 둘레는 35 + 몸 10 = 45** — 60 떨어진 사람은 안 맞는다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1300, 1060);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1060);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 29, false, ms, out);
         for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "닿는 둘레(45) 밖인데 주먹에 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "닿는 둘레(45) 밖인데 주먹에 맞았다");
     }
 
     // ⑤ 닿는 순간 **화면이 흔들린다**(30)
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1100, 1000);                       // 시전자 가까이
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);                       // 시전자 가까이
         CastAndWait(srv, a, 29, false, ms, out);
         out.clear();
         for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
@@ -7512,12 +7518,12 @@ void TestFist() {
     // ⑥ **3초(90틱)** 면 사라진다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         CastAndWait(srv, a, 29, false, ms, out);
         for (int t = 0; t < 80; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.PlacedCount() == 1, "80틱 만에 사라졌다 — 3초는 남아야 한다");
@@ -7550,8 +7556,8 @@ void TestCleansingFlame() {
         srv.SetSpellDef(spell, 10, 0x1000000, { 1, 2 });     // 어느 직업이나 · 겨누지 않음
         srv.DebugEnterGame(a, 790, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 791, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1040, 1000);                      // 불꽃이 지나가는 자리
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1040, 1000);                      // 불꽃이 지나가는 자리
     };
 
     // ① 불꽃이 **여럿** 생기고, 시전자에게서 **바깥으로 나간다**
@@ -7595,10 +7601,10 @@ void TestCleansingFlame() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         AllMetalButPlayer(srv);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 10, true, ms, out);
         for (int t = 0; t < 15; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "붉은 정화의 불꽃이 닿았는데 안 아팠다");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "붉은 정화의 불꽃이 닿았는데 안 아팠다");
         Check(PlayerHitByObject(srv), "② 4-c3b2 정화의 불꽃에 맞는 소리의 때린 것이 불꽃(862)이 아니다");
     }
 
@@ -7609,12 +7615,12 @@ void TestCleansingFlame() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
-        const uint16_t bMana = srv.ManaOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
+        const uint16_t bMana = srv.ManaOf(Sid(srv, b));
         CastAndWait(srv, a, 11, true, ms, out);
         for (int t = 0; t < 15; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.ManaOf(b) < bMana, "파란 정화의 불꽃이 마나를 안 깎았다");
-        Check(srv.HealthOf(b) == bHp, "파란 정화의 불꽃이 체력을 깎았다(마나만 깎아야 한다)");
+        Check(srv.ManaOf(Sid(srv, b)) < bMana, "파란 정화의 불꽃이 마나를 안 깎았다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "파란 정화의 불꽃이 체력을 깎았다(마나만 깎아야 한다)");
     }
 
     // ④ 내 불꽃이 남아 있으면 **두 번째는 거절**된다
@@ -7634,7 +7640,7 @@ void TestCleansingFlame() {
     // ⑤ 수명(3~6초)이 다하면 모두 사라진다
     {
         nox::Server srv; mk(srv, 10);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
@@ -7697,7 +7703,7 @@ void TestArachnaphobia() {
         srv.SetNamedType("SmallSpider", 941);
         srv.SetSpellDef(2, 10, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
         srv.DebugEnterGame(a, 800, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
 
     // ① 커서 자리에 자리표가 놓이고 거미가 **여러 마리** 나온다
@@ -7707,7 +7713,7 @@ void TestArachnaphobia() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1200, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1200, 1000);
         CastAndWait(srv, a, 2, false, ms, out);
         Check(srv.PlacedCount() == 1, "거미 자리표가 안 놓였다");
         Check(srv.pets() == 0, "놓자마자 거미가 나왔다 — 첫 틱부터여야 한다");
@@ -7727,7 +7733,7 @@ void TestArachnaphobia() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1200, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1200, 1000);
         CastAndWait(srv, a, 2, false, ms, out);
         // ⚠ **나온 자리**를 보는 시험이다 — 틱을 더 돌리면 안 된다.
         //   소환수는 이제 **주인을 호위**하므로(6-h(2)) 곧바로 주인 쪽으로 걸어간다
@@ -7745,7 +7751,7 @@ void TestArachnaphobia() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1200, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1200, 1000);
         CastAndWait(srv, a, 2, false, ms, out);
         for (int t = 0; t < 80; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.PlacedCount() == 1, "80틱 만에 자리표가 사라졌다 — 3초는 남아야 한다");
@@ -7766,7 +7772,7 @@ void TestArachnaphobia() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1200, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1200, 1000);
         CastAndWait(srv, a, 2, false, ms, out);
         Check(srv.PlacedCount() == 0, "벽 뒤인데 거미 자리표가 놓였다");
         Check(srv.pets() == 0, "벽 뒤인데 거미가 나왔다");
@@ -7791,7 +7797,7 @@ void TestPixieSwarm() {
         srv.SetNamedType("Pixie", 672);
         srv.SetSpellDef(58, 10, 0x1000000, { 1, 2 });        // 어느 직업이나 · 겨누지 않음
         srv.DebugEnterGame(a, 810, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
 
     // ① 온라인 세기 3 → **네 마리**가 나온다
@@ -7829,9 +7835,9 @@ void TestPixieSwarm() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugSpellAccept(a, 58, 1, out);                 // 세기 1 → 두 마리
+        srv.DebugSpellAccept(Sid(srv, a), 58, 1, out);                 // 세기 1 → 두 마리
         Check(srv.missiles() == 2, "세기 1 에 두 마리가 아니다(시험 전제)");
-        srv.DebugSpellAccept(a, 58, 3, out);                 // 세기 3 → 넷까지 채운다
+        srv.DebugSpellAccept(Sid(srv, a), 58, 3, out);                 // 세기 3 → 넷까지 채운다
         if (srv.missiles() != 4) std::printf("  [픽시] 채운 뒤 수 %zu — 4 여야 한다\n", srv.missiles());
         Check(srv.missiles() == 4, "모자란 만큼만 채우지 않았다");
     }
@@ -7843,7 +7849,7 @@ void TestPixieSwarm() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugSpellAccept(a, 58, 1, out);
+        srv.DebugSpellAccept(Sid(srv, a), 58, 1, out);
         if (srv.missiles() != 2) std::printf("  [픽시] 세기 1 에 나온 수 %zu — 2 여야 한다\n", srv.missiles());
         Check(srv.missiles() == 2, "세기 1 인데 두 마리가 아니다");
     }
@@ -7866,7 +7872,7 @@ void TestPixieSwarm() {
         nox::Server srv; mk(srv);
         const std::string b = "10.9.10.2:9012";
         srv.DebugEnterGame(b, 811, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
         AllMetalButPlayer(srv);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
@@ -7874,13 +7880,13 @@ void TestPixieSwarm() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 58, true, ms, out);
         Check(srv.missiles() > 0, "④b 픽시가 없다(시험 전제)");
-        const uint16_t bHp = srv.HealthOf(b);
-        srv.DebugMoveTo(b, static_cast<int>(srv.DebugMissileX(0)), static_cast<int>(srv.DebugMissileY(0)));
-        for (int t = 0; t < 10 && srv.HealthOf(b) == bHp; ++t) { ms += 34; srv.Tick(ms, out); }
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
+        srv.DebugMoveTo(Sid(srv, b), static_cast<int>(srv.DebugMissileX(0)), static_cast<int>(srv.DebugMissileY(0)));
+        for (int t = 0; t < 10 && srv.HealthOf(Sid(srv, b)) == bHp; ++t) { ms += 34; srv.Tick(ms, out); }
         char msg[160];
-        std::snprintf(msg, sizeof(msg), "④b 픽시 닿음 — b 체력 %u→%u · 부름 %llu · 냄 %llu · 마지막 %u(862 여야)", bHp, srv.HealthOf(b),
+        std::snprintf(msg, sizeof(msg), "④b 픽시 닿음 — b 체력 %u→%u · 부름 %llu · 냄 %llu · 마지막 %u(862 여야)", bHp, srv.HealthOf(Sid(srv, b)),
                       srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played), static_cast<unsigned>(srv.lastHitSound()));
-        Check(srv.HealthOf(b) < bHp && PlayerHitByObject(srv), msg);
+        Check(srv.HealthOf(Sid(srv, b)) < bHp && PlayerHitByObject(srv), msg);
     }
 
     // ⑤ 수명(30~90초)이 다하면 사라진다 — 90초는 2,700틱
@@ -7918,8 +7924,8 @@ void TestEnergyBolt() {
         srv.SetSpellDef(24, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음 · 마나 0(끊김을 따로 본다)
         srv.DebugEnterGame(a, 820, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 821, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);                      // a 의 몸 방향(+x) 앞
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);                      // a 의 몸 방향(+x) 앞
     };
 
     // ① 앞에 선 적을 **틱마다** 깎는다 — 세기 3 이면 2.0, 다섯 틱이면 10
@@ -7931,13 +7937,13 @@ void TestEnergyBolt() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 24, true, ms, out);
         // ⚠ **시전이 끝나는 그 틱에 이미 한 방**이 들어간다 — 재기는 그 뒤부터.
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         // 세기 3 → 2.0/틱, 종류 17 은 **방어를 안 타므로** 다섯 틱에 정확히 10 이다.
         if (lost != 10) std::printf("  [에너지볼트] 다섯 틱에 잃은 값 %d — 10 이어야 한다\n", lost);
         Check(lost == 10, "에너지볼트가 틱마다 EnergyBoltDamage 만큼 안 깎았다");
-        Check(srv.DebugLastDamageType(b) == 17, "피해 종류가 공중 전기(17)가 아니다");
+        Check(srv.DebugLastDamageType(Sid(srv, b)) == 17, "피해 종류가 공중 전기(17)가 아니다");
         // ★ nine-defects 4-c3b1 — 맞는 소리의 때린 것 = 시전자(사람 몸) — 여섯 번 다 「표에 없음」(재질표 없음)이지 「안 옮김」·「없음」이 아니다
         Check(srv.hitSoundCalls() >= 6 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == srv.hitSoundCalls(),
               "4-c3b1 에너지볼트에 때린 것(시전자)이 안 넘어갔다");
@@ -7950,10 +7956,10 @@ void TestEnergyBolt() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
-        srv.DebugSpellAccept(a, 24, 1, out);                 // 세기를 1 로 박는다
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
+        srv.DebugSpellAccept(Sid(srv, a), 24, 1, out);                 // 세기를 1 로 박는다
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         // 1.3 × 10 = 13 인데 부동소수 나머지 탓에 12 로 떨어질 수 있다.
         // **이월을 아예 안 하면 10**(1 씩 열 번)이라 12 를 문턱으로 잡으면 갈린다.
         if (lost < 12) std::printf("  [에너지볼트] 세기 1 열 틱에 잃은 값 %d — 12 이상이어야 한다\n", lost);
@@ -7969,13 +7975,13 @@ void TestEnergyBolt() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 24, true, ms, out);
         for (int t = 0; t < 4; ++t) { ms += 34; srv.Tick(ms, out); }
-        const uint16_t aHp0 = srv.HealthOf(a);
-        srv.DebugHurt(a, -1, 5, b, 0, out);                  // ⚠ 인자는 (맞는 이, 소환수, 피해, 때린 이, 종류)
-        Check(srv.HealthOf(a) < aHp0, "시전자가 안 맞았다(시험 전제)");
+        const uint16_t aHp0 = srv.HealthOf(Sid(srv, a));
+        srv.DebugHurt(Sid(srv, a), -1, 5, Sid(srv, b), 0, out);                  // ⚠ 인자는 (맞는 이, 소환수, 피해, 때린 이, 종류)
+        Check(srv.HealthOf(Sid(srv, a)) < aHp0, "시전자가 안 맞았다(시험 전제)");
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "시전자가 맞았는데 에너지볼트가 계속 나갔다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "시전자가 맞았는데 에너지볼트가 계속 나갔다");
     }
 
     // ①d 켤 때 **연쇄 번개(43)를 끈다**
@@ -7985,10 +7991,10 @@ void TestEnergyBolt() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.DebugDurNew(a, 43, 0, 0, -1, false, nox::Target{}, out), "연쇄 번개를 못 걸었다(시험 전제)");
-        Check(srv.DebugDurActive(43, a), "연쇄 번개가 안 걸렸다(시험 전제)");
-        srv.DebugSpellAccept(a, 24, 3, out);
-        Check(!srv.DebugDurActive(43, a), "에너지볼트를 켰는데 연쇄 번개가 안 꺼졌다");
+        Check(srv.DebugDurNew(Sid(srv, a), 43, 0, 0, -1, false, nox::Target{}, out), "연쇄 번개를 못 걸었다(시험 전제)");
+        Check(srv.DebugDurActive(43, Sid(srv, a)), "연쇄 번개가 안 걸렸다(시험 전제)");
+        srv.DebugSpellAccept(Sid(srv, a), 24, 3, out);
+        Check(!srv.DebugDurActive(43, Sid(srv, a)), "에너지볼트를 켰는데 연쇄 번개가 안 꺼졌다");
     }
 
     // ② **빔 알림(`9e`)** 이 나간다
@@ -8008,29 +8014,29 @@ void TestEnergyBolt() {
     // ③ **둘레 밖**(LightningRange 300)은 안 맞는다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1500, 1000);                      // 500
+        srv.DebugMoveTo(Sid(srv, b), 1500, 1000);                      // 500
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 24, true, ms, out);
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "사거리(300) 밖인데 에너지볼트에 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "사거리(300) 밖인데 에너지볼트에 맞았다");
     }
 
     // ④ **뒤쪽**은 안 맞는다(앞쪽만 고른다)
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 900, 1000);                       // a 의 뒤(−x)
+        srv.DebugMoveTo(Sid(srv, b), 900, 1000);                       // a 의 뒤(−x)
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 24, true, ms, out);
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "뒤쪽인데 에너지볼트에 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "뒤쪽인데 에너지볼트에 맞았다");
     }
 
     // ⑤ 시전자가 **달리면 끊긴다**
@@ -8042,10 +8048,10 @@ void TestEnergyBolt() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 24, true, ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
-        srv.DebugApplyEnchant(a, 8, 300, 3);                 // 달리기(8)
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
+        srv.DebugApplyEnchant(Sid(srv, a), 8, 300, 3);                 // 달리기(8)
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "달리는데 에너지볼트가 계속 나갔다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "달리는데 에너지볼트가 계속 나갔다");
     }
 
     // ⑥ **마나가 바닥나면 끊긴다** — 틱마다 1 씩 쓴다
@@ -8055,17 +8061,17 @@ void TestEnergyBolt() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t m0 = srv.ManaOf(a);
+        const uint16_t m0 = srv.ManaOf(Sid(srv, a));
         CastAndWait(srv, a, 24, true, ms, out);
         for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.ManaOf(a) < m0, "에너지볼트가 마나를 안 썼다");
-        srv.DebugManaSub(a, 1000);                           // 바닥
+        Check(srv.ManaOf(Sid(srv, a)) < m0, "에너지볼트가 마나를 안 썼다");
+        srv.DebugManaSub(Sid(srv, a), 1000);                           // 바닥
         // ★ 정답지는 깎은 뒤 **이전 마나**를 보므로, 0 이 된 그 틱의 피해는 이미 들어간다.
         //   그래서 한 틱 지나고 나서 「더는 안 깎이나」를 본다.
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "마나가 0 인데 에너지볼트가 계속 나갔다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "마나가 0 인데 에너지볼트가 계속 나갔다");
     }
     // ⑦ **같은 편은 안 맞는다** — 적만 고른다
     {
@@ -8074,18 +8080,18 @@ void TestEnergyBolt() {
         //   뒤의 적이 안 맞는다. 「같은 편이 안 깎인다」만 보면 HurtTarget 의 편 거르기에 가려 못 갈린다.
         const std::string c = "10.9.11.3:9113";
         srv.DebugEnterGame(c, 822, false, nox::CharClass::Warrior);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(c, 1);                              // a 와 같은 편
-        srv.DebugMoveTo(c, 1050, 1000);                      // b(1100)보다 가깝다
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, c), 1);                              // a 와 같은 편
+        srv.DebugMoveTo(Sid(srv, c), 1050, 1000);                      // b(1100)보다 가깝다
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b), cHp = srv.HealthOf(c);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b)), cHp = srv.HealthOf(Sid(srv, c));
         CastAndWait(srv, a, 24, true, ms, out);
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(c) == cHp, "같은 편인데 에너지볼트에 맞았다");
-        Check(srv.HealthOf(b) < bHp, "같은 편을 고르느라 뒤의 적을 안 맞혔다");
+        Check(srv.HealthOf(Sid(srv, c)) == cHp, "같은 편인데 에너지볼트에 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "같은 편을 고르느라 뒤의 적을 안 맞혔다");
     }
     std::printf("  4-d(1) — 에너지볼트 틱 피해(종류 17)·빔 알림·사거리·앞쪽만·달리면 끊김·마나 바닥\n");
 }
@@ -8111,8 +8117,8 @@ void TestChainLightning() {
         srv.SetSpellDef(24, 0, 0x1000000, { 3, 4 });         // 에너지볼트 — 끄는지 보려고
         srv.DebugEnterGame(a, 830, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 831, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
     };
 
     // ① 앞의 적을 틱마다 깎는다(종류 17) · 다섯 틱이면 1.5×5 = 7
@@ -8123,14 +8129,14 @@ void TestChainLightning() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 43, false, ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         // 1.5 씩 쌓아 정수만 준다. 시전이 끝나는 틱이 이미 1 을 주고 **0.5 를 이월**하므로
         // 그다음 다섯 틱은 2·1·2·1·2 = **8** 이다(7.5 가 아니다).
         if (lost != 8) std::printf("  [연쇄번개] 다섯 틱에 잃은 값 %d — 8 이어야 한다\n", lost);
         Check(lost == 8, "연쇄 번개가 LightningDamage 만큼 안 깎았다");
-        Check(srv.DebugLastDamageType(b) == 17, "피해 종류가 공중 전기(17)가 아니다");
+        Check(srv.DebugLastDamageType(Sid(srv, b)) == 17, "피해 종류가 공중 전기(17)가 아니다");
         Check(srv.hitSoundCalls() >= 6 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == srv.hitSoundCalls(),
               "4-c3b1 연쇄 번개에 때린 것(시전자)이 안 넘어갔다");
     }
@@ -8138,31 +8144,31 @@ void TestChainLightning() {
     // ② **뒤쪽도 맞는다** — 에너지볼트와 달리 앞쪽 검사가 없다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 900, 1000);                       // a 의 뒤(−x)
+        srv.DebugMoveTo(Sid(srv, b), 900, 1000);                       // a 의 뒤(−x)
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 43, false, ms, out);
         for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "뒤쪽인데 연쇄 번개가 안 맞았다(앞쪽 검사가 새 들어왔나)");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "뒤쪽인데 연쇄 번개가 안 맞았다(앞쪽 검사가 새 들어왔나)");
     }
 
     // ③ **사슬이 튄다** — 세기 3 이면 첫 대상 둘레에서 하나 더 잡아 **둘 다** 깎인다
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(c, 832, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(c, 1200, 1000);                      // b(1100) 너머 — a 에서 200, b 에서 100
+        srv.DebugMoveTo(Sid(srv, c), 1200, 1000);                      // b(1100) 너머 — a 에서 200, b 에서 100
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b), cHp = srv.HealthOf(c);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b)), cHp = srv.HealthOf(Sid(srv, c));
         CastAndWait(srv, a, 43, false, ms, out);
         for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
-        const int lostB = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
-        const int lostC = static_cast<int>(cHp) - static_cast<int>(srv.HealthOf(c));
+        const int lostB = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
+        const int lostC = static_cast<int>(cHp) - static_cast<int>(srv.HealthOf(Sid(srv, c)));
         Check(lostB > 0, "첫 대상이 안 깎였다");
         Check(lostC > 0, "사슬이 안 튀었다(둘째 대상이 안 깎였다)");
         // ★ **조각마다 같은 값**이다 — 한쪽이 두 배면 같은 것을 두 번 고른 것이다(이미 고른 것 거르기가 빠졌나)
@@ -8174,16 +8180,16 @@ void TestChainLightning() {
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(c, 832, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(c, 1200, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1200, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b), cHp = srv.HealthOf(c);
-        srv.DebugSpellAccept(a, 43, 1, out);                 // 세기를 1 로 박는다
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b)), cHp = srv.HealthOf(Sid(srv, c));
+        srv.DebugSpellAccept(Sid(srv, a), 43, 1, out);                 // 세기를 1 로 박는다
         for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "세기 1 인데 첫 대상이 안 깎였다");
-        Check(srv.HealthOf(c) == cHp, "세기 1 인데 사슬이 튀었다");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "세기 1 인데 첫 대상이 안 깎였다");
+        Check(srv.HealthOf(Sid(srv, c)) == cHp, "세기 1 인데 사슬이 튀었다");
     }
 
     // ⑤ 조각마다 **빔(`9e`) 갈래 3** 이 나간다
@@ -8207,10 +8213,10 @@ void TestChainLightning() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.DebugDurNew(a, 24, 0, 0, -1, false, nox::Target{}, out), "에너지볼트를 못 걸었다(시험 전제)");
-        Check(srv.DebugDurActive(24, a), "에너지볼트가 안 걸렸다(시험 전제)");
-        srv.DebugSpellAccept(a, 43, 3, out);
-        Check(!srv.DebugDurActive(24, a), "연쇄 번개를 켰는데 에너지볼트가 안 꺼졌다");
+        Check(srv.DebugDurNew(Sid(srv, a), 24, 0, 0, -1, false, nox::Target{}, out), "에너지볼트를 못 걸었다(시험 전제)");
+        Check(srv.DebugDurActive(24, Sid(srv, a)), "에너지볼트가 안 걸렸다(시험 전제)");
+        srv.DebugSpellAccept(Sid(srv, a), 43, 3, out);
+        Check(!srv.DebugDurActive(24, Sid(srv, a)), "연쇄 번개를 켰는데 에너지볼트가 안 꺼졌다");
     }
 
     // ⑦ 시전자가 **달리면 끊긴다**
@@ -8222,43 +8228,43 @@ void TestChainLightning() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 43, false, ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
-        srv.DebugApplyEnchant(a, 8, 300, 3);                 // 달리기(8)
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
+        srv.DebugApplyEnchant(Sid(srv, a), 8, 300, 3);                 // 달리기(8)
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "달리는데 연쇄 번개가 계속 나갔다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "달리는데 연쇄 번개가 계속 나갔다");
     }
 
     // ⑧ **같은 편은 안 맞는다** — 같은 편을 더 가까이 세워도 뒤의 적을 고른다
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(c, 832, false, nox::CharClass::Warrior);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(c, 1);
-        srv.DebugMoveTo(c, 1050, 1000);                      // b(1100)보다 가깝다
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, c), 1);
+        srv.DebugMoveTo(Sid(srv, c), 1050, 1000);                      // b(1100)보다 가깝다
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b), cHp = srv.HealthOf(c);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b)), cHp = srv.HealthOf(Sid(srv, c));
         // ⚠ **세기 1** 로 건다 — 세기 3 이면 사슬이 뒤의 적을 주워 와서 「적 거르기」가 빠져도 안 갈린다
-        srv.DebugSpellAccept(a, 43, 1, out);
+        srv.DebugSpellAccept(Sid(srv, a), 43, 1, out);
         for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(c) == cHp, "같은 편인데 연쇄 번개에 맞았다");
-        Check(srv.HealthOf(b) < bHp, "같은 편을 고르느라 뒤의 적을 안 맞혔다");
+        Check(srv.HealthOf(Sid(srv, c)) == cHp, "같은 편인데 연쇄 번개에 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "같은 편을 고르느라 뒤의 적을 안 맞혔다");
     }
 
     // ⑨ **사거리(240) 밖**은 안 맞는다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1500, 1000);                      // 500
+        srv.DebugMoveTo(Sid(srv, b), 1500, 1000);                      // 500
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 43, false, ms, out);
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "사거리(240) 밖인데 연쇄 번개에 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "사거리(240) 밖인데 연쇄 번개에 맞았다");
     }
 
     // ⑩ **틱마다 마나 1** 을 쓰고, 바닥나면 끊긴다
@@ -8268,15 +8274,15 @@ void TestChainLightning() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t m0 = srv.ManaOf(a);
+        const uint16_t m0 = srv.ManaOf(Sid(srv, a));
         CastAndWait(srv, a, 43, false, ms, out);
         for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.ManaOf(a) < m0, "연쇄 번개가 마나를 안 썼다");
-        srv.DebugManaSub(a, 1000);                           // 바닥
+        Check(srv.ManaOf(Sid(srv, a)) < m0, "연쇄 번개가 마나를 안 썼다");
+        srv.DebugManaSub(Sid(srv, a), 1000);                           // 바닥
         ms += 34; srv.Tick(ms, out);                         // 0 이 된 그 틱은 이미 들어간다
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "마나가 0 인데 연쇄 번개가 계속 나갔다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "마나가 0 인데 연쇄 번개가 계속 나갔다");
     }
 
     // ⑪ 세기 3 이면 **셋까지** 이어진다 — 첫 대상 둘레에서 둘을 잡는다
@@ -8285,18 +8291,18 @@ void TestChainLightning() {
         const std::string d = "10.9.12.4:9124";
         srv.DebugEnterGame(c, 832, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(d, 833, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1100, 1000);                      // a 에서 100
-        srv.DebugMoveTo(c, 1100, 1120);                      // b 에서 120
-        srv.DebugMoveTo(d, 1100, 880);                       // b 에서 220 — 둘레 ×0.90(216) 밖이라 ×0.95(228)에만 걸린다
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);                      // a 에서 100
+        srv.DebugMoveTo(Sid(srv, c), 1100, 1120);                      // b 에서 120
+        srv.DebugMoveTo(Sid(srv, d), 1100, 880);                       // b 에서 220 — 둘레 ×0.90(216) 밖이라 ×0.95(228)에만 걸린다
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b), cHp = srv.HealthOf(c), dHp = srv.HealthOf(d);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b)), cHp = srv.HealthOf(Sid(srv, c)), dHp = srv.HealthOf(Sid(srv, d));
         CastAndWait(srv, a, 43, false, ms, out);
         for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "첫 대상이 안 깎였다");
-        const bool two = (srv.HealthOf(c) < cHp) && (srv.HealthOf(d) < dHp);
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "첫 대상이 안 깎였다");
+        const bool two = (srv.HealthOf(Sid(srv, c)) < cHp) && (srv.HealthOf(Sid(srv, d)) < dHp);
         Check(two, "세기 3 인데 첫 대상 둘레에서 둘을 안 잡았다");
     }
     std::printf("  4-d(2) — 연쇄 번개 틱 피해(종류 17)·뒤쪽도 맞음·사슬 튐·세기별 가지·빔 갈래 3·에너지볼트 끔·달리면 끊김·같은 편 제외\n");
@@ -8320,8 +8326,8 @@ void TestDeathRay() {
         srv.SetSpellDef(16, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
         srv.DebugEnterGame(a, 840, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 841, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
     };
 
     // ① 커서 자리에 선 사람이 **한 방에** 크게 깎인다(종류 16 은 방어를 안 탄다)
@@ -8331,14 +8337,14 @@ void TestDeathRay() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 16, false, ms, out);
-        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(b));
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv.HealthOf(Sid(srv, b)));
         // 종류 16 은 **방어를 안 타므로** 정확히 100 이다(워리어 150 이라 한 방에 죽지는 않는다)
         if (lost != 100) std::printf("  [죽음광선] 잃은 값 %d — 100 이어야 한다\n", lost);
         Check(lost == 100, "죽음광선이 DeathRayDamage 만큼 안 깎았다");
-        Check(srv.DebugLastDamageType(b) == 16, "피해 종류가 죽음광선(16)이 아니다");
+        Check(srv.DebugLastDamageType(Sid(srv, b)) == 16, "피해 종류가 죽음광선(16)이 아니다");
         Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1,
               "4-c3b1 죽음광선(둘레 피해)에 때린 것(시전자)이 안 넘어갔다");
     }
@@ -8346,16 +8352,16 @@ void TestDeathRay() {
     // ② **한 방이다** — 다음 틱에 또 깎이지 않는다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetClass(b, nox::CharClass::Warrior);
+        srv.DebugSetClass(Sid(srv, b), nox::CharClass::Warrior);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1100);                       // b 에서 100 — 둘레(15) 밖
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1100);                       // b 에서 100 — 둘레(15) 밖
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 16, false, ms, out);
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "둘레(15) 밖인데 죽음광선에 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "둘레(15) 밖인데 죽음광선에 맞았다");
     }
 
     // ③ **선 그림(`94`)** 이 9바이트로 나가고, 시작이 시전자 자리다
@@ -8365,7 +8371,7 @@ void TestDeathRay() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
         out.clear();
         CastAndWait(srv, a, 16, false, ms, out);
         const auto toA = FlattenTo(out, a);
@@ -8388,10 +8394,10 @@ void TestDeathRay() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 16, false, ms, out);
-        Check(srv.HealthOf(b) == bHp, "벽 뒤인데 죽음광선에 맞았다");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "벽 뒤인데 죽음광선에 맞았다");
     }
     std::printf("  4-d(3) — 죽음광선 한 방(종류 16)·둘레 15·선 그림 9바이트·벽 뒤 못 쏨\n");
 }
@@ -8416,8 +8422,8 @@ void TestShieldSpell() {
         //   그래서 「워리어가 방패 올린 채 앞에서 맞으면 피해 1」 갈래는 여기서 못 본다(미결).
         srv.DebugEnterGame(a, 850, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 851, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
     };
 
     // ① 걸면 버프 26 이 붙는다
@@ -8428,7 +8434,7 @@ void TestShieldSpell() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 51, /*onSelf=*/true, ms, out);
-        Check(srv.DebugHasEnchant(a, 26), "방패를 걸었는데 버프 26 이 없다");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 26), "방패를 걸었는데 버프 26 이 없다");
     }
 
     // ② 맞으면 피해가 **반**이 된다
@@ -8439,10 +8445,10 @@ void TestShieldSpell() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 51, true, ms, out);
-        const uint16_t aHp = srv.HealthOf(a);
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a));
         // ⚠ **종류 1(불)** 로 친다 — 물리(0)면 **방어가 먼저 깎아** 방패 반감만 재기 어렵다
-        srv.DebugHurt(a, -1, 10, b, 1, out);
-        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        srv.DebugHurt(Sid(srv, a), -1, 10, Sid(srv, b), 1, out);
+        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(Sid(srv, a)));
         if (lost != 5) std::printf("  [방패] 10 을 맞고 잃은 값 %d — 5 여야 한다\n", lost);
         Check(lost == 5, "방패가 피해를 반으로 안 줄였다");
     }
@@ -8455,15 +8461,15 @@ void TestShieldSpell() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 51, true, ms, out);
-        Check(srv.DebugHasEnchant(a, 26), "방패가 안 걸렸다(시험 전제)");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 26), "방패가 안 걸렸다(시험 전제)");
         // 한 번에 10 을 맞으면 5 가 깎이고 주머니에서 5 가 빠진다 → 열 번이면 50
-        for (int n = 0; n < 12 && srv.HealthOf(a) > 20; ++n) {
-            srv.DebugHurt(a, -1, 10, b, 1, out);
-            srv.DebugAdjustHP(a, 20);                        // 죽지 않게 되살려 가며 때린다
+        for (int n = 0; n < 12 && srv.HealthOf(Sid(srv, a)) > 20; ++n) {
+            srv.DebugHurt(Sid(srv, a), -1, 10, Sid(srv, b), 1, out);
+            srv.DebugAdjustHP(Sid(srv, a), 20);                        // 죽지 않게 되살려 가며 때린다
         }
         // ⚠ 취소는 **깃발만 세우고** 실제로 지우는 것은 다음 틱이다 — 한 틱 돌려야 버프가 풀린다
         ms += 34; srv.Tick(ms, out);
-        Check(!srv.DebugHasEnchant(a, 26), "주머니를 다 썼는데 방패가 안 끝났다");
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 26), "주머니를 다 썼는데 방패가 안 끝났다");
     }
 
     // ④ **죽을 만큼** 맞으면 체력이 2 로 남고 그 방망이는 안 맞은 것이 된다
@@ -8474,10 +8480,10 @@ void TestShieldSpell() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 51, true, ms, out);
-        srv.DebugHurt(a, -1, 9999, b, 1, out);
-        Check(srv.HealthOf(a) == 2, "죽을 만큼 맞았는데 체력이 2 로 안 남았다");
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, b), 1, out);
+        Check(srv.HealthOf(Sid(srv, a)) == 2, "죽을 만큼 맞았는데 체력이 2 로 안 남았다");
         ms += 34; srv.Tick(ms, out);
-        Check(!srv.DebugHasEnchant(a, 26), "죽을 만큼 맞았는데 방패가 안 끝났다");
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 26), "죽을 만큼 맞았는데 방패가 안 끝났다");
     }
 
     // ⑤ **독(5)은 안 막는다**
@@ -8488,23 +8494,23 @@ void TestShieldSpell() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 51, true, ms, out);
-        const uint16_t aHp = srv.HealthOf(a);
-        srv.DebugHurt(a, -1, 10, b, 5, out);                 // 종류 5 = 독
-        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(a));
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a));
+        srv.DebugHurt(Sid(srv, a), -1, 10, Sid(srv, b), 5, out);                 // 종류 5 = 독
+        const int lost = static_cast<int>(aHp) - static_cast<int>(srv.HealthOf(Sid(srv, a)));
         if (lost != 10) std::printf("  [방패] 독 10 에 잃은 값 %d — 10 이어야 한다\n", lost);
         Check(lost == 10, "방패가 독을 막았다(독은 안 막는다)");
     }
     // ⑥ **대상이 없으면** 안 걸린다 — 빈 곳을 겨누고 건다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);                      // 커서에 아무도 없게
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);                      // 커서에 아무도 없게
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 2000, 2000);                       // 빈 곳
+        srv.DebugAimAt(Sid(srv, a), 2000, 2000);                       // 빈 곳
         CastAndWait(srv, a, 51, /*onSelf=*/false, ms, out);
-        Check(!srv.DebugHasEnchant(a, 26), "대상이 없는데 방패가 걸렸다");
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 26), "대상이 없는데 방패가 걸렸다");
         Check(srv.DurCount() == 0, "대상이 없는데 지속 주문이 남았다");
     }
     std::printf("  4-d(4) — 방패 버프 26·피해 반감·주머니 소진·죽을 만큼이면 체력 2·독은 안 막음\n");
@@ -8526,7 +8532,7 @@ void TestBlink() {
         srv.SetGamedata(g);
         srv.SetSpellDef(4, 0, 0x1000000, { 1, 2 });          // 어느 직업이나 · 겨누지 않음
         srv.DebugEnterGame(a, 860, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
 
     // ① 길목이 있으면 그중 한 곳으로 옮겨진다
@@ -8543,8 +8549,8 @@ void TestBlink() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 4, /*onSelf=*/true, ms, out);
         ms += 34; srv.Tick(ms, out);                         // 다음 틱에 터진다
-        Check(srv.XOf(a) > 2900 && srv.XOf(a) < 3100, "길목으로 안 옮겨졌다(가로)");
-        Check(srv.YOf(a) > 2300 && srv.YOf(a) < 2500, "길목의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
+        Check(srv.XOf(Sid(srv, a)) > 2900 && srv.XOf(Sid(srv, a)) < 3100, "길목으로 안 옮겨졌다(가로)");
+        Check(srv.YOf(Sid(srv, a)) > 2300 && srv.YOf(Sid(srv, a)) < 2500, "길목의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
         Check(srv.DurCount() == 0, "옮기고도 주문이 안 끝났다");
     }
 
@@ -8566,7 +8572,7 @@ void TestBlink() {
         out.clear();
         CastAndWait(srv, a, 4, /*onSelf=*/true, ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.XOf(a) > 2900 && srv.XOf(a) < 3100, "길목으로 안 옮겨졌다(시험 전제)");
+        Check(srv.XOf(Sid(srv, a)) > 2900 && srv.XOf(Sid(srv, a)) < 3100, "길목으로 안 옮겨졌다(시험 전제)");
         const auto toA = FlattenTo(out, a);
         Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::FORGET_DRAWABLES)) != nullptr,
               "옮겼는데 ea FORGET_DRAWABLES 가 안 갔다 — 클라에 제 캐릭터가 안 그려진다");
@@ -8583,8 +8589,8 @@ void TestBlink() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 4, true, ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.XOf(a) > 2400 && srv.XOf(a) < 2600, "길목이 없는데 시작 지점으로 안 갔다(가로)");
-        Check(srv.YOf(a) > 2000 && srv.YOf(a) < 2200, "시작 지점의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
+        Check(srv.XOf(Sid(srv, a)) > 2400 && srv.XOf(Sid(srv, a)) < 2600, "길목이 없는데 시작 지점으로 안 갔다(가로)");
+        Check(srv.YOf(Sid(srv, a)) > 2000 && srv.YOf(Sid(srv, a)) < 2200, "시작 지점의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
     }
 
     // ③ **닻(버프 14)** 이면 못 옮긴다
@@ -8595,10 +8601,10 @@ void TestBlink() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugApplyEnchant(a, 14, 300, 3);                // 닻
+        srv.DebugApplyEnchant(Sid(srv, a), 14, 300, 3);                // 닻
         CastAndWait(srv, a, 4, true, ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.XOf(a) > 900 && srv.XOf(a) < 1100, "닻이 걸렸는데 옮겨졌다");
+        Check(srv.XOf(Sid(srv, a)) > 900 && srv.XOf(Sid(srv, a)) < 1100, "닻이 걸렸는데 옮겨졌다");
         Check(srv.DurCount() == 0, "닻이면 그 자리에서 끝나야 한다");
     }
 
@@ -8613,7 +8619,7 @@ void TestBlink() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 4, true, ms, out);
-        Check(srv.XOf(a) > 2900 && srv.XOf(a) < 3100, "아레나인데 시전이 끝나는 틱에 안 옮겨졌다");
+        Check(srv.XOf(Sid(srv, a)) > 2900 && srv.XOf(Sid(srv, a)) < 3100, "아레나인데 시전이 끝나는 틱에 안 옮겨졌다");
         // ⚠ 취소는 **깃발만** 세운다 — 실제로 지우는 것은 다음 틱이다(①이 그 자리를 본다)
     }
 
@@ -8652,7 +8658,7 @@ void TestMarkTeleport() {
         for (uint8_t sp : { (uint8_t)46, (uint8_t)47, (uint8_t)121, (uint8_t)122, (uint8_t)123 })
             srv.SetSpellDef(sp, 0, 0x1000000, { static_cast<uint8_t>(sp % 8), static_cast<uint8_t>((sp / 8) % 8), 2 });
         srv.DebugEnterGame(a, 870, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
 
     // ① 표식을 걸고 딴 데로 간 뒤 **그 표식으로** 돌아온다
@@ -8663,10 +8669,10 @@ void TestMarkTeleport() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 46, /*onSelf=*/true, ms, out);   // 칸 0 에 (1000,1000)
-        srv.DebugMoveTo(a, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, a), 3000, 3000);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 122, true, ms, out);             // 칸 0 으로
-        Check(srv.XOf(a) > 950 && srv.XOf(a) < 1050, "표식으로 안 돌아왔다");
+        Check(srv.XOf(Sid(srv, a)) > 950 && srv.XOf(Sid(srv, a)) < 1050, "표식으로 안 돌아왔다");
     }
 
     // ② **칸이 따로** 논다 — 칸 1 에 안 걸었으면 123 은 아예 안 걸린다
@@ -8677,10 +8683,10 @@ void TestMarkTeleport() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 46, true, ms, out);              // 칸 0 만 건다
-        srv.DebugMoveTo(a, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, a), 3000, 3000);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 123, true, ms, out);             // 칸 1 — 비어 있다
-        Check(srv.XOf(a) > 2950 && srv.XOf(a) < 3050, "빈 칸인데 옮겨졌다");
+        Check(srv.XOf(Sid(srv, a)) > 2950 && srv.XOf(Sid(srv, a)) < 3050, "빈 칸인데 옮겨졌다");
         Check(srv.DurCount() == 0, "빈 칸인데 주문이 걸렸다");
     }
 
@@ -8691,13 +8697,13 @@ void TestMarkTeleport() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugMoveTo(a, 2000, 2000);
+        srv.DebugMoveTo(Sid(srv, a), 2000, 2000);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 47, true, ms, out);              // 칸 1 에 (2000,2000)
-        srv.DebugMoveTo(a, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, a), 3000, 3000);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 123, true, ms, out);
-        Check(srv.XOf(a) > 1950 && srv.XOf(a) < 2050, "칸 1 표식으로 안 갔다");
+        Check(srv.XOf(Sid(srv, a)) > 1950 && srv.XOf(Sid(srv, a)) < 2050, "칸 1 표식으로 안 갔다");
     }
 
     // ④ **무작위 표식으로**(121) — 걸린 것이 하나뿐이면 그리로 간다
@@ -8708,10 +8714,10 @@ void TestMarkTeleport() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 46, true, ms, out);              // 칸 0 에 (1000,1000)
-        srv.DebugMoveTo(a, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, a), 3000, 3000);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 121, true, ms, out);
-        Check(srv.XOf(a) > 950 && srv.XOf(a) < 1050, "무작위 표식으로 안 갔다");
+        Check(srv.XOf(Sid(srv, a)) > 950 && srv.XOf(Sid(srv, a)) < 1050, "무작위 표식으로 안 갔다");
     }
 
     // ⑤ 표식이 **하나도 없으면** 무작위 표식은 아무 일도 안 한다
@@ -8722,7 +8728,7 @@ void TestMarkTeleport() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 121, true, ms, out);
-        Check(srv.XOf(a) > 950 && srv.XOf(a) < 1050, "표식이 없는데 어디론가 옮겨졌다");
+        Check(srv.XOf(Sid(srv, a)) > 950 && srv.XOf(Sid(srv, a)) < 1050, "표식이 없는데 어디론가 옮겨졌다");
     }
 
     // ⑥ **닻(14)** 이면 못 옮긴다
@@ -8733,11 +8739,11 @@ void TestMarkTeleport() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 46, true, ms, out);
-        srv.DebugMoveTo(a, 3000, 3000);
+        srv.DebugMoveTo(Sid(srv, a), 3000, 3000);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugApplyEnchant(a, 14, 300, 3);
+        srv.DebugApplyEnchant(Sid(srv, a), 14, 300, 3);
         CastAndWait(srv, a, 122, true, ms, out);
-        Check(srv.XOf(a) > 2950 && srv.XOf(a) < 3050, "닻이 걸렸는데 옮겨졌다");
+        Check(srv.XOf(Sid(srv, a)) > 2950 && srv.XOf(Sid(srv, a)) < 3050, "닻이 걸렸는데 옮겨졌다");
     }
     std::printf("  4-e(2) — 표식 걸기·칸별로 따로·표식으로 가기·무작위 표식·표식 없음·닻\n");
 }
@@ -8767,7 +8773,7 @@ void TestSummonSpell() {
         srv.SetGamedata(g);
         RegSpell(srv, 87, 0);                                // 임프(마나 0 — 이 시험은 마나를 안 잰다)
         srv.DebugEnterGame(a, 880, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
     // 「불려 나올 때까지」 기다린다(늘어났나로 본다)
     auto waitSpawn = [](nox::Server& srv, size_t before, int ticks, uint32_t& ms,
@@ -8781,7 +8787,7 @@ void TestSummonSpell() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
         Check(srv.pets() == 0, "시전이 끝나자마자 나왔다 — 소환 시간이 빠졌나");
         Check(srv.DurCount() == 1, "소환이 지속 주문으로 안 걸렸다");
@@ -8799,7 +8805,7 @@ void TestSummonSpell() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
         for (int t = 0; t < 100; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.pets() == 0, "큰 것인데 100틱에 나왔다 — 375틱이어야 한다");
@@ -8815,13 +8821,13 @@ void TestSummonSpell() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         for (int n = 0; n < 4; ++n) {
-            srv.DebugFillMana(a);
+            srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
             waitSpawn(srv, static_cast<size_t>(n), 120, ms, out);
         }
         Check(srv.pets() == 4, "넷까지 안 불려 나왔다");
         out.clear();
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);             // 다섯째 — 1+1+1+1+1 > 4
         Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "한도를 넘겼는데 글이 안 왔다");
         ms += 34; srv.Tick(ms, out);                         // 취소 깃발이 여기서 치워진다
@@ -8837,21 +8843,21 @@ void TestSummonSpell() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
         waitSpawn(srv, 0, 400, ms, out);
         Check(srv.pets() == 1, "큰 것이 안 나왔다(이 시험의 전제)");
         out.clear();
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);             // 둘째
         Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "큰 것이 하나 있는데 글이 안 왔다");
         ms += 34; srv.Tick(ms, out);
         Check(srv.DurCount() == 0, "큰 것이 하나 있는데 또 걸렸다");
 
         // ★ 자리는 **죽으면 빈다** — `CountControlledCreatures` 가 체력 0 을 안 센다
-        srv.DebugSetOwnedPetHealth(a, 0);
+        srv.DebugSetOwnedPetHealth(Sid(srv, a), 0);
         out.clear();
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
         Check(!HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "죽어서 자리가 났는데 거절됐다");
         Check(srv.DurCount() == 1, "죽어서 자리가 났는데 못 걸었다");
@@ -8865,11 +8871,11 @@ void TestSummonSpell() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);             // 큰 것 아님 — 60틱 걸린다
         Check(srv.DurCount() == 1, "소환이 안 걸렸다(이 시험의 전제)");
         // 부르는 동안 자리를 네 칸 채운다(주인만 맞으면 어디서 왔든 센다)
-        for (int n = 0; n < 4; ++n) srv.DebugSpawnPet(1328, 1000, 1000, a);
+        for (int n = 0; n < 4; ++n) srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         Check(srv.pets() == 4, "자리 채우기가 안 됐다(이 시험의 전제)");
         out.clear();
         for (int t = 0; t < 120; ++t) { ms += 34; srv.Tick(ms, out); }
@@ -8885,18 +8891,18 @@ void TestSummonSpell() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
         for (int t = 0; t < 150; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.pets() == 0, "중간인데 150틱에 나왔다 — 210틱이어야 한다");
         waitSpawn(srv, 0, 120, ms, out);
         Check(srv.pets() == 1, "270틱이 지났는데 중간이 안 나왔다");
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
         waitSpawn(srv, 1, 300, ms, out);
         Check(srv.pets() == 2, "중간 둘째가 안 나왔다(2+2 = 4 라 되어야 한다)");
         out.clear();
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);             // 셋째 — 4 + 2 > 4
         Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "중간 셋째가 거절 안 됐다 — 머릿수로 세나");
     }
@@ -8909,13 +8915,13 @@ void TestSummonSpell() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         for (int n = 0; n < 4; ++n) {
-            srv.DebugFillMana(a);
+            srv.DebugFillMana(Sid(srv, a));
             CastAndWait(srv, a, 87, false, ms, out);
             waitSpawn(srv, static_cast<size_t>(n), 120, ms, out);
         }
         Check(srv.pets() == 4, "몸을 안 정했더니 넷이 안 나왔다");
         out.clear();
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
         Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "몸을 안 정했더니 한도가 안 걸린다");
     }
@@ -8929,10 +8935,10 @@ void TestSummonSpell() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        for (int n = 0; n < 4; ++n) srv.DebugSpawnPet(1328, 1200, 1200, b);   // ★ 전부 b 것이다
+        for (int n = 0; n < 4; ++n) srv.DebugSpawnPet(1328, 1200, 1200, Sid(srv, b));   // ★ 전부 b 것이다
         Check(srv.pets() == 4, "남의 소환수 채우기가 안 됐다(이 시험의 전제)");
         out.clear();
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
         Check(!HasPriMsg(out, a, "Summon.c:CreatureControlFailed"), "남의 소환수를 내 자리로 셌다");
         waitSpawn(srv, 4, 120, ms, out);
@@ -8946,11 +8952,11 @@ void TestSummonSpell() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugFillMana(a);
+        srv.DebugFillMana(Sid(srv, a));
         CastAndWait(srv, a, 87, false, ms, out);
         Check(srv.DurCount() == 1, "소환이 안 걸렸다(이 시험의 전제)");
-        srv.DebugHurt(a, -1, 9999, std::string(), 16, out);  // 부르는 도중에 죽인다
-        Check(!srv.IsAlive(a), "안 죽었다(이 시험의 전제)");
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, std::string()), 16, out);  // 부르는 도중에 죽인다
+        Check(!srv.IsAlive(Sid(srv, a)), "안 죽었다(이 시험의 전제)");
         for (int t = 0; t < 80; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.pets() == 0, "죽었는데 소환수가 나왔다");
     }
@@ -8991,7 +8997,7 @@ void TestPickupLimits() {
     auto mk = [&](nox::Server& srv) {
         st.clear();
         srv.DebugEnterGame(a, 728);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
     auto place = [&](nox::Server& srv) { srv.SetWorldStatics(st); };
 
@@ -8999,31 +9005,31 @@ void TestPickupLimits() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        Check(srv.CarryCapOf(a) == 1650, "위저드 밑천이 1650 이 아니다(힘 35 로 다시 센 값)");
+        Check(srv.CarryCapOf(Sid(srv, a)) == 1650, "위저드 밑천이 1650 이 아니다(힘 35 로 다시 센 값)");
         const std::string wr = "10.5.0.2:5002", cj = "10.5.0.3:5003";
         srv.DebugEnterGame(wr, 729, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(cj, 730, false, nox::CharClass::Conjurer);
-        Check(srv.CarryCapOf(wr) == 3000, "워리어 밑천이 3000 이 아니다(힘 125)");
-        Check(srv.CarryCapOf(cj) == 1950, "컨저러 밑천이 1950 이 아니다(힘 55)");
-        Check(srv.CarryCapOf(wr) > srv.CarryCapOf(a), "힘이 센 쪽이 더 못 든다 — 식이 뒤집혔나");
+        Check(srv.CarryCapOf(Sid(srv, wr)) == 3000, "워리어 밑천이 3000 이 아니다(힘 125)");
+        Check(srv.CarryCapOf(Sid(srv, cj)) == 1950, "컨저러 밑천이 1950 이 아니다(힘 55)");
+        Check(srv.CarryCapOf(Sid(srv, wr)) > srv.CarryCapOf(Sid(srv, a)), "힘이 센 쪽이 더 못 든다 — 식이 뒤집혔나");
     }
 
     // ② 밑천 100 → 한도 **200**. **딱 200 은 들어간다**(경계가 `>` 이지 `>=` 가 아니다)
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetCarryCap(a, 100);
+        srv.DebugSetCarryCap(Sid(srv, a), 100);
         put(300, 1175, 200, false);                     // WarHammer
         place(srv);
         std::vector<nox::OutPacket> out;
         get(srv, 300, out);
-        Check(srv.CarriedCount(a) == 1, "한도와 똑같은 무게(200)를 못 들었다 — 경계가 > 가 아닌가");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "한도와 똑같은 무게(200)를 못 들었다 — 경계가 > 가 아닌가");
         Check(!HasPriMsg(out, a, "pickup.c:CarryingTooMuch"), "딱 맞는데 무겁다고 글이 왔다");
     }
 
     // ② **한 칸이라도 넘치면 거절**하고 글이 온다 — 가슴판 150 뒤에 롱소드 50 은 되고 사과 2 는 안 된다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetCarryCap(a, 100);
+        srv.DebugSetCarryCap(Sid(srv, a), 100);
         put(301, 1176, 150, false);                     // Breastplate
         put(302, 1169, 50, false);                      // Longsword
         put(303, 1150, 2, true);                        // RedApple
@@ -9031,10 +9037,10 @@ void TestPickupLimits() {
         std::vector<nox::OutPacket> out;
         get(srv, 301, out);
         get(srv, 302, out);
-        Check(srv.CarriedCount(a) == 2, "150 + 50 = 200 인데 둘째를 못 들었다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 2, "150 + 50 = 200 인데 둘째를 못 들었다");
         out.clear();
         get(srv, 303, out);                                  // 200 + 2 > 200
-        Check(srv.CarriedCount(a) == 2, "한도를 넘겼는데 들어갔다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 2, "한도를 넘겼는데 들어갔다");
         Check(HasPriMsg(out, a, "pickup.c:CarryingTooMuch"), "무거워서 거절했는데 글이 안 왔다");
         Check(srv.pickTooHeavy() == 1, "무게로 막은 횟수가 안 올랐다");
         Check(srv.WorldStaticCount() == 1, "못 들었는데 세계에서 없어졌다");
@@ -9043,36 +9049,36 @@ void TestPickupLimits() {
     // ③ **버리면 자리가 난다** — 무게는 든 것의 합이지 누적이 아니다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetCarryCap(a, 100);
+        srv.DebugSetCarryCap(Sid(srv, a), 100);
         put(304, 1176, 150, false);
         put(305, 1176, 150, false);
         place(srv);
         std::vector<nox::OutPacket> out;
         get(srv, 304, out);
         get(srv, 305, out);
-        Check(srv.CarriedCount(a) == 1, "150 둘은 300 이라 둘째가 들어가면 안 된다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "150 둘은 300 이라 둘째가 들어가면 안 된다");
         {   // 클라가 못 받겠다고 되돌린다 — 든 것이 바닥으로 간다
             const std::vector<uint8_t> f = CodePacket(nox::Op::INVENTORY_FAIL, 304);
             srv.OnPacket(a, f.data(), f.size(), out);
         }
-        Check(srv.CarriedCount(a) == 0, "되돌렸는데 아직 들고 있다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "되돌렸는데 아직 들고 있다");
         out.clear();
         get(srv, 305, out);
-        Check(srv.CarriedCount(a) == 1, "자리가 났는데 못 들었다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "자리가 났는데 못 들었다");
     }
 
     // ④ **먹는 것은 같은 종류 셋까지** — 넷째는 거절되고 글이 온다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetCarryCap(a, 100);
+        srv.DebugSetCarryCap(Sid(srv, a), 100);
         for (uint16_t i = 0; i < 4; ++i) put(static_cast<uint16_t>(310 + i), 1150, 2, true);
         place(srv);
         std::vector<nox::OutPacket> out;
         for (uint16_t i = 0; i < 3; ++i) get(srv, static_cast<uint16_t>(310 + i), out);
-        Check(srv.CarriedCount(a) == 3, "사과 셋을 못 들었다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 3, "사과 셋을 못 들었다");
         out.clear();
         get(srv, 313, out);
-        Check(srv.CarriedCount(a) == 3, "같은 먹을거리를 넷째까지 들었다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 3, "같은 먹을거리를 넷째까지 들었다");
         Check(HasPriMsg(out, a, "pickup.c:MaxSameItem"), "개수로 거절했는데 글이 안 왔다");
         Check(srv.pickTooMany() == 1, "개수로 막은 횟수가 안 올랐다");
     }
@@ -9080,7 +9086,7 @@ void TestPickupLimits() {
     // ⑤ **종류가 다르면 따로 센다** — 사과 셋 + 버섯 하나는 된다(무게는 넉넉하다)
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetCarryCap(a, 100);
+        srv.DebugSetCarryCap(Sid(srv, a), 100);
         for (uint16_t i = 0; i < 3; ++i) put(static_cast<uint16_t>(320 + i), 1150, 2, true);
         put(323, 1151, 1, true);                        // Mushroom — 다른 종류
         place(srv);
@@ -9088,31 +9094,31 @@ void TestPickupLimits() {
         for (uint16_t i = 0; i < 3; ++i) get(srv, static_cast<uint16_t>(320 + i), out);
         out.clear();
         get(srv, 323, out);
-        Check(srv.CarriedCount(a) == 4, "종류가 다른 먹을거리를 개수 한도로 막았다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 4, "종류가 다른 먹을거리를 개수 한도로 막았다");
         Check(!HasPriMsg(out, a, "pickup.c:MaxSameItem"), "종류가 다른데 개수 글이 왔다");
     }
 
     // ⑥ **먹는 것이 아니면 개수 한도가 없다** — 무게만 본다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetCarryCap(a, 100);
+        srv.DebugSetCarryCap(Sid(srv, a), 100);
         for (uint16_t i = 0; i < 4; ++i) put(static_cast<uint16_t>(330 + i), 1169, 50, false);
         place(srv);
         std::vector<nox::OutPacket> out;
         for (uint16_t i = 0; i < 4; ++i) get(srv, static_cast<uint16_t>(330 + i), out);
-        Check(srv.CarriedCount(a) == 4, "먹는 게 아닌데 넷째에서 막혔다(50 × 4 = 200)");
+        Check(srv.CarriedCount(Sid(srv, a)) == 4, "먹는 게 아닌데 넷째에서 막혔다(50 × 4 = 200)");
         Check(srv.pickTooMany() == 0, "먹는 게 아닌데 개수로 막았다");
     }
 
     // ⑦ **밑천이 0 이면 아무것도 못 든다** — 무게가 1 이어도
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetCarryCap(a, 0);
+        srv.DebugSetCarryCap(Sid(srv, a), 0);
         put(340, 1151, 1, true);
         place(srv);
         std::vector<nox::OutPacket> out;
         get(srv, 340, out);
-        Check(srv.CarriedCount(a) == 0, "밑천이 0 인데 들었다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "밑천이 0 인데 들었다");
         Check(srv.pickNoCap() == 1, "밑천 0 으로 막은 횟수가 안 올랐다");
     }
     // ⑧ **버려 되돌아온 물건도 제 무게·갈래를 그대로 지닌다**
@@ -9120,22 +9126,22 @@ void TestPickupLimits() {
     //   되돌아온 물건이 **무게 없는 먹을거리 아닌 것**이 되어 한도를 빠져나간다.
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetCarryCap(a, 100);
+        srv.DebugSetCarryCap(Sid(srv, a), 100);
         for (uint16_t i = 0; i < 4; ++i) put(static_cast<uint16_t>(350 + i), 1150, 2, true);   // 사과 넷
         place(srv);
         std::vector<nox::OutPacket> out;
         for (uint16_t i = 0; i < 3; ++i) get(srv, static_cast<uint16_t>(350 + i), out);
-        Check(srv.CarriedCount(a) == 3, "사과 셋을 못 들었다(이 시험의 전제)");
+        Check(srv.CarriedCount(Sid(srv, a)) == 3, "사과 셋을 못 들었다(이 시험의 전제)");
         {   // 첫째를 바닥에 되돌린다 — 든 것은 둘, 바닥에는 350 과 353
             const std::vector<uint8_t> f = CodePacket(nox::Op::INVENTORY_FAIL, 350);
             srv.OnPacket(a, f.data(), f.size(), out);
         }
-        Check(srv.CarriedCount(a) == 2, "되돌렸는데 아직 셋이다(이 시험의 전제)");
+        Check(srv.CarriedCount(Sid(srv, a)) == 2, "되돌렸는데 아직 셋이다(이 시험의 전제)");
         get(srv, 353, out);                                  // 새 사과 — 셋째
-        Check(srv.CarriedCount(a) == 3, "새 사과를 못 들었다(이 시험의 전제)");
+        Check(srv.CarriedCount(Sid(srv, a)) == 3, "새 사과를 못 들었다(이 시험의 전제)");
         out.clear();
         get(srv, 350, out);                                  // 되돌아온 사과 — 넷째라 안 된다
-        Check(srv.CarriedCount(a) == 3, "되돌아온 사과가 넷째로 들어갔다 — 먹을거리 갈래가 오다 빠졌나");
+        Check(srv.CarriedCount(Sid(srv, a)) == 3, "되돌아온 사과가 넷째로 들어갔다 — 먹을거리 갈래가 오다 빠졌나");
         Check(HasPriMsg(out, a, "pickup.c:MaxSameItem"), "되돌아온 사과를 거절하면서 글이 안 왔다");
     }
 
@@ -9144,14 +9150,14 @@ void TestPickupLimits() {
     //   즉 「무게를 모르는 것」은 「가벼운 것」이 아니다.
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetCarryCap(a, 100);
+        srv.DebugSetCarryCap(Sid(srv, a), 100);
         nox::Server::WorldStatic w;                          // 무게를 일부러 안 담는다
         w.netCode = 360; w.type = 1150; w.x = 1000; w.y = 1000;
         st.push_back(w);
         place(srv);
         std::vector<nox::OutPacket> out;
         get(srv, 360, out);
-        Check(srv.CarriedCount(a) == 0, "무게를 모르는 물건을 들었다 — 기본이 255 가 아닌가");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "무게를 모르는 물건을 들었다 — 기본이 255 가 아닌가");
         Check(HasPriMsg(out, a, "pickup.c:CarryingTooMuch"), "무게를 모르는 물건인데 글이 안 왔다");
     }
     std::printf("  5-a — 줍기 한도: 밑천은 힘에서(위저드 1650 · 워리어 3000) · 한도 = 밑천×2(경계 포함) · 넘치면 CarryingTooMuch · 먹을거리 같은 종류 셋 · 버리면 자리 남 · 되돌아온 것도 제 무게 · 무게 모르면 255 · 밑천 0\n");
@@ -9192,24 +9198,24 @@ void TestUsePotion() {
     };
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
 
     // ① **가득 차 있으면 안 마신다** — 물약이 그대로 남는다
     {
         nox::Server srv; mk(srv);
         const uint16_t red = give(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50);
-        Check(srv.CarriedCount(a) == 1, "물약을 못 들었다(이 시험의 전제)");
-        Check(srv.HealthOf(a) == srv.MaxHealthOf(a), "체력이 가득이 아니다(이 시험의 전제)");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "물약을 못 들었다(이 시험의 전제)");
+        Check(srv.HealthOf(Sid(srv, a)) == srv.MaxHealthOf(Sid(srv, a)), "체력이 가득이 아니다(이 시험의 전제)");
         std::vector<nox::OutPacket> out;
         use(srv, red, out);
-        Check(srv.CarriedCount(a) == 1, "가득 찼는데 물약이 없어졌다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "가득 찼는데 물약이 없어졌다");
 
         // 다치면 그때는 마신다
-        srv.Damage(a, 40, out);
+        srv.Damage(Sid(srv, a), 40, out);
         use(srv, red, out);
-        Check(srv.CarriedCount(a) == 0, "다쳤는데 안 마셨다");
-        Check(srv.HealthOf(a) == srv.MaxHealthOf(a), "50 짜리로 40 을 못 채웠다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "다쳤는데 안 마셨다");
+        Check(srv.HealthOf(Sid(srv, a)) == srv.MaxHealthOf(Sid(srv, a)), "50 짜리로 40 을 못 채웠다");
     }
 
     // ② 마나도 같은 꼴 — 가득이면 안 마시고, 줄었으면 마신다
@@ -9218,12 +9224,12 @@ void TestUsePotion() {
         const uint16_t blue = give(srv, nox::kFoodPotion | nox::kFoodManaPotion, 50);
         std::vector<nox::OutPacket> out;
         use(srv, blue, out);
-        Check(srv.CarriedCount(a) == 1, "마나가 가득인데 물약이 없어졌다");
-        srv.DebugManaAdd(a, -60);
-        const uint16_t low = srv.ManaOf(a);
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "마나가 가득인데 물약이 없어졌다");
+        srv.DebugManaAdd(Sid(srv, a), -60);
+        const uint16_t low = srv.ManaOf(Sid(srv, a));
         use(srv, blue, out);
-        Check(srv.CarriedCount(a) == 0, "마나가 줄었는데 안 마셨다");
-        Check(srv.ManaOf(a) == low + 50, "마나가 50 안 찼다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "마나가 줄었는데 안 마셨다");
+        Check(srv.ManaOf(Sid(srv, a)) == low + 50, "마나가 50 안 찼다");
     }
 
     // ③ **독 해제는 독이 있을 때만** — 없으면 물약이 남는다
@@ -9232,12 +9238,12 @@ void TestUsePotion() {
         const uint16_t cure = give(srv, nox::kFoodPotion | nox::kFoodCurePoisonPotion, 0);
         std::vector<nox::OutPacket> out;
         use(srv, cure, out);
-        Check(srv.CarriedCount(a) == 1, "독이 없는데 해독제가 없어졌다");
-        srv.DebugPoisonPlayer(a, 5);
-        Check(srv.DebugPoisonOf(a) == 5, "독을 못 얹었다(이 시험의 전제)");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "독이 없는데 해독제가 없어졌다");
+        srv.DebugPoisonPlayer(Sid(srv, a), 5);
+        Check(srv.DebugPoisonOf(Sid(srv, a)) == 5, "독을 못 얹었다(이 시험의 전제)");
         use(srv, cure, out);
-        Check(srv.CarriedCount(a) == 0, "독이 있는데 안 썼다");
-        Check(srv.DebugPoisonOf(a) == 0, "해독제를 썼는데 독이 남았다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "독이 있는데 안 썼다");
+        Check(srv.DebugPoisonOf(Sid(srv, a)) == 0, "해독제를 썼는데 독이 남았다");
     }
 
     // ④ **버프 물약 여덟** — 각각 제 버프가 걸린다
@@ -9257,14 +9263,14 @@ void TestUsePotion() {
             const uint16_t nc = give(srv, nox::kFoodPotion | k.bit, 0);
             std::vector<nox::OutPacket> out;
             use(srv, nc, out);
-            if (!srv.DebugHasEnchant(a, k.buff))
+            if (!srv.DebugHasEnchant(Sid(srv, a), k.buff))
                 std::printf("  [실패] %s 물약인데 버프 %d 가 안 걸렸다\n", k.nm, k.buff);
             // ★ 세기는 **3** 이다(`object_use.go:160` buffApplyTo(…, 3)) — 세기를 안 보면
             //   「걸리긴 걸렸다」로 0 짜리 버프도 통과한다
-            if (srv.DebugEnchantPower(a, k.buff) != 3)
+            if (srv.DebugEnchantPower(Sid(srv, a), k.buff) != 3)
                 std::printf("  [실패] %s 물약 버프 세기가 3 이 아니다(%d)\n",
-                            k.nm, srv.DebugEnchantPower(a, k.buff));
-            if (srv.CarriedCount(a) != 0)
+                            k.nm, srv.DebugEnchantPower(Sid(srv, a), k.buff));
+            if (srv.CarriedCount(Sid(srv, a)) != 0)
                 std::printf("  [실패] %s 물약이 안 없어졌다\n", k.nm);
         }
     }
@@ -9274,13 +9280,13 @@ void TestUsePotion() {
         nox::Server srv; mk(srv);
         const uint16_t both = give(srv, nox::kFoodPotion | nox::kFoodHealthPotion | nox::kFoodManaPotion, 30);
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 40, out);
-        srv.DebugManaAdd(a, -60);
-        const uint16_t h0 = srv.HealthOf(a), m0 = srv.ManaOf(a);
+        srv.Damage(Sid(srv, a), 40, out);
+        srv.DebugManaAdd(Sid(srv, a), -60);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a)), m0 = srv.ManaOf(Sid(srv, a));
         use(srv, both, out);
-        Check(srv.HealthOf(a) == h0 + 30, "겹친 물약이 체력을 안 채웠다");
-        Check(srv.ManaOf(a) == m0 + 30, "겹친 물약이 마나를 안 채웠다");
-        Check(srv.CarriedCount(a) == 0, "겹친 물약이 안 없어졌다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0 + 30, "겹친 물약이 체력을 안 채웠다");
+        Check(srv.ManaOf(Sid(srv, a)) == m0 + 30, "겹친 물약이 마나를 안 채웠다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "겹친 물약이 안 없어졌다");
     }
 
     // ⑥ **아무 갈래도 아니면 아무 일도 안 난다** — 물약이 남는다
@@ -9288,11 +9294,11 @@ void TestUsePotion() {
         nox::Server srv; mk(srv);
         const uint16_t plain = give(srv, nox::kFoodPotion, 50);   // POTION 만
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 40, out);
-        const uint16_t h0 = srv.HealthOf(a);
+        srv.Damage(Sid(srv, a), 40, out);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         use(srv, plain, out);
-        Check(srv.HealthOf(a) == h0, "갈래가 없는 물약이 체력을 채웠다");
-        Check(srv.CarriedCount(a) == 1, "갈래가 없는 물약이 없어졌다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0, "갈래가 없는 물약이 체력을 채웠다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "갈래가 없는 물약이 없어졌다");
     }
 
     // ⑦ **죽었으면 못 쓴다**
@@ -9300,11 +9306,11 @@ void TestUsePotion() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(a, -1, 9999, std::string(), 16, out);
-        Check(!srv.IsAlive(a), "안 죽었다(이 시험의 전제)");
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, std::string()), 16, out);
+        Check(!srv.IsAlive(Sid(srv, a)), "안 죽었다(이 시험의 전제)");
         const uint16_t red = give(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50);
         use(srv, red, out);
-        Check(srv.CarriedCount(a) == 1, "죽었는데 물약을 썼다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "죽었는데 물약을 썼다");
     }
 
     // ⑧ **방패 물약은 주문 51 을 건다** — `USE` 값이 세기다
@@ -9317,8 +9323,8 @@ void TestUsePotion() {
         const uint16_t sh = give(srv, nox::kFoodPotion | nox::kFoodShieldPotion, 3);
         std::vector<nox::OutPacket> out;
         use(srv, sh, out);
-        Check(srv.DebugHasEnchant(a, 26), "방패 물약인데 버프 26 이 안 걸렸다");
-        Check(srv.CarriedCount(a) == 0, "방패 물약이 안 없어졌다");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 26), "방패 물약인데 버프 26 이 안 걸렸다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "방패 물약이 안 없어졌다");
     }
     // ⑨ **버려 되돌아온 물약도 제 갈래를 지닌다** — 든 것(`Carried`)을 거쳐 바닥으로 가므로
     //   그 길에서 갈래 비트가 빠지면 다시 주워도 **아무 일도 안 나는 물약**이 된다
@@ -9330,17 +9336,17 @@ void TestUsePotion() {
             const std::vector<uint8_t> f = CodePacket(nox::Op::INVENTORY_FAIL, red);
             srv.OnPacket(a, f.data(), f.size(), out);
         }
-        Check(srv.CarriedCount(a) == 0, "되돌렸는데 아직 들고 있다(이 시험의 전제)");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "되돌렸는데 아직 들고 있다(이 시험의 전제)");
         {   // 다시 줍는다
             const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, red);
             srv.OnPacket(a, g.data(), g.size(), out);
         }
-        Check(srv.CarriedCount(a) == 1, "되돌아온 물약을 다시 못 들었다(이 시험의 전제)");
-        srv.Damage(a, 40, out);
-        const uint16_t h0 = srv.HealthOf(a);
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "되돌아온 물약을 다시 못 들었다(이 시험의 전제)");
+        srv.Damage(Sid(srv, a), 40, out);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         use(srv, red, out);
-        Check(srv.HealthOf(a) > h0, "되돌아온 물약이 아무 일도 안 했다 — 갈래가 오다 빠졌나");
-        Check(srv.CarriedCount(a) == 0, "되돌아온 물약이 안 없어졌다");
+        Check(srv.HealthOf(Sid(srv, a)) > h0, "되돌아온 물약이 아무 일도 안 했다 — 갈래가 오다 빠졌나");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "되돌아온 물약이 안 없어졌다");
     }
 
     // ⑩ **`SUBCLASS` 글자를 비트로 옮기는 표** — 차례가 밀리면 갈래가 통째로 어긋난다
@@ -9393,19 +9399,19 @@ void TestPickupPotion() {
     };
     auto mk = [&](nox::Server& srv, nox::CharClass cls = nox::CharClass::Wizard) {
         srv.DebugEnterGame(a, 728, false, cls);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
 
     // ① **넘칠 것 같으면 안 마시고 가방으로** — 5-b 와 갈리는 바로 그 자리
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 10, out);                              // 위저드 75 → 65. 50 을 더하면 115 > 75
-        const uint16_t h0 = srv.HealthOf(a);
+        srv.Damage(Sid(srv, a), 10, out);                              // 위저드 75 → 65. 50 을 더하면 115 > 75
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, true);
         get(srv, red, out);
-        Check(srv.HealthOf(a) == h0, "넘치는데 줍는 순간 마셨다");
-        Check(srv.CarriedCount(a) == 1, "못 마셨으면 가방에 들어가야 한다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0, "넘치는데 줍는 순간 마셨다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "못 마셨으면 가방에 들어가야 한다");
         Check(srv.drankOnPickup() == 0, "안 마셨는데 마신 것으로 셌다");
     }
 
@@ -9413,12 +9419,12 @@ void TestPickupPotion() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 60, out);                              // 75 → 15. 50 을 더해도 65 < 75
-        const uint16_t h0 = srv.HealthOf(a);
+        srv.Damage(Sid(srv, a), 60, out);                              // 75 → 15. 50 을 더해도 65 < 75
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, true);
         get(srv, red, out);
-        Check(srv.HealthOf(a) == h0 + 50, "줍는 순간 50 을 안 채웠다");
-        Check(srv.CarriedCount(a) == 0, "마셨는데 가방에도 들어갔다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0 + 50, "줍는 순간 50 을 안 채웠다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "마셨는데 가방에도 들어갔다");
         Check(srv.WorldStaticCount() == 0, "마셨는데 바닥에 남았다");
         Check(srv.drankOnPickup() == 1, "그 자리에서 마신 횟수가 안 올랐다");
     }
@@ -9427,12 +9433,12 @@ void TestPickupPotion() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 60, out);
-        const uint16_t h0 = srv.HealthOf(a);
+        srv.Damage(Sid(srv, a), 60, out);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, /*potionPickup=*/false);
         get(srv, red, out);
-        Check(srv.HealthOf(a) == h0, "PotionPickup 이 아닌데 줍는 순간 마셨다");
-        Check(srv.CarriedCount(a) == 1, "가방에 안 들어갔다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0, "PotionPickup 이 아닌데 줍는 순간 마셨다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "가방에 안 들어갔다");
     }
 
     // ④ **워리어는 마나 물약을 못 든다** — 셈 `~(SUBCLASS>>5)|0xFE` 의 유일한 뜻
@@ -9441,7 +9447,7 @@ void TestPickupPotion() {
         std::vector<nox::OutPacket> out;
         const uint16_t blue = put(srv, nox::kFoodPotion | nox::kFoodManaPotion, 50, true);
         get(srv, blue, out);
-        Check(srv.CarriedCount(a) == 0, "워리어가 마나 물약을 들었다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "워리어가 마나 물약을 들었다");
         Check(srv.WorldStaticCount() == 1, "못 드는데 바닥에서 없어졌다");
         Check(HasPriMsg(out, a, "pickup.c:ObjectEquipClassFail"), "직업이 못 쓰는데 글이 안 왔다");
         Check(srv.pickClassFail() == 1, "직업으로 막은 횟수가 안 올랐다");
@@ -9453,13 +9459,13 @@ void TestPickupPotion() {
         std::vector<nox::OutPacket> out;
         const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, true);
         get(srv, red, out);
-        Check(srv.CarriedCount(a) == 1, "워리어가 체력 물약도 못 들었다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "워리어가 체력 물약도 못 들었다");
     }
     {
         nox::Server srv;
         const std::string cj = "10.5.3.2:5302";
         srv.DebugEnterGame(cj, 729, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(cj, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, cj), 1000, 1000);
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic w;
         w.netCode = 590; w.type = 638; w.x = 1000; w.y = 1000;
@@ -9472,7 +9478,7 @@ void TestPickupPotion() {
         const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 590);
         srv.OnPacket(cj, g.data(), g.size(), out);
         // 컨저러 마나 125 가 가득이라 못 마시고 가방으로 간다
-        Check(srv.CarriedCount(cj) == 1, "컨저러가 마나 물약을 못 들었다");
+        Check(srv.CarriedCount(Sid(srv, cj)) == 1, "컨저러가 마나 물약을 못 들었다");
     }
 
     // ⑥ **직업 셈 자체** — 마나 물약만 워리어가 막힌다
@@ -9492,12 +9498,12 @@ void TestPickupPotion() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugPoisonPlayer(a, 5);
-        Check(srv.DebugPoisonOf(a) == 5, "독을 못 얹었다(이 시험의 전제)");
+        srv.DebugPoisonPlayer(Sid(srv, a), 5);
+        Check(srv.DebugPoisonOf(Sid(srv, a)) == 5, "독을 못 얹었다(이 시험의 전제)");
         const uint16_t cure = put(srv, nox::kFoodPotion | nox::kFoodCurePoisonPotion, 0, true);
         get(srv, cure, out);
-        Check(srv.DebugPoisonOf(a) == 0, "줍는 순간 독이 안 풀렸다");
-        Check(srv.CarriedCount(a) == 0, "독을 풀었는데 가방에도 들어갔다");
+        Check(srv.DebugPoisonOf(Sid(srv, a)) == 0, "줍는 순간 독이 안 풀렸다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "독을 풀었는데 가방에도 들어갔다");
     }
     // 독이 없으면 그냥 가방으로
     {
@@ -9505,38 +9511,38 @@ void TestPickupPotion() {
         std::vector<nox::OutPacket> out;
         const uint16_t cure = put(srv, nox::kFoodPotion | nox::kFoodCurePoisonPotion, 0, true);
         get(srv, cure, out);
-        Check(srv.CarriedCount(a) == 1, "독이 없는데 해독제가 없어졌다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "독이 없는데 해독제가 없어졌다");
     }
     // ⑧ **딱 최대가 되는 것도 안 마신다** — 경계가 `<` 이지 `<=` 가 아니다
     //   위저드 75 에서 50 을 깎으면 25. 50 을 더하면 정확히 75 = 최대라 **안 마신다**
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 50, out);
-        const uint16_t h0 = srv.HealthOf(a);
-        Check(h0 + 50 == srv.MaxHealthOf(a), "딱 맞게 안 다쳤다(이 시험의 전제)");
+        srv.Damage(Sid(srv, a), 50, out);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
+        Check(h0 + 50 == srv.MaxHealthOf(Sid(srv, a)), "딱 맞게 안 다쳤다(이 시험의 전제)");
         const uint16_t red = put(srv, nox::kFoodPotion | nox::kFoodHealthPotion, 50, true);
         get(srv, red, out);
-        Check(srv.HealthOf(a) == h0, "딱 최대가 되는데 마셨다 — 경계가 <= 인가");
-        Check(srv.CarriedCount(a) == 1, "안 마셨으면 가방에 들어가야 한다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0, "딱 최대가 되는데 마셨다 — 경계가 <= 인가");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "안 마셨으면 가방에 들어가야 한다");
     }
 
     // ⑨ **마나 문턱도 같은 꼴** — 넘칠 것 같으면 안 마시고 가방으로
     {
         nox::Server srv; mk(srv);                            // 위저드 마나 150
         std::vector<nox::OutPacket> out;
-        srv.DebugManaAdd(a, -10);                            // 140. 50 을 더하면 190 > 150
-        const uint16_t m0 = srv.ManaOf(a);
+        srv.DebugManaAdd(Sid(srv, a), -10);                            // 140. 50 을 더하면 190 > 150
+        const uint16_t m0 = srv.ManaOf(Sid(srv, a));
         const uint16_t blue = put(srv, nox::kFoodPotion | nox::kFoodManaPotion, 50, true);
         get(srv, blue, out);
-        Check(srv.ManaOf(a) == m0, "마나가 넘치는데 줍는 순간 마셨다");
-        Check(srv.CarriedCount(a) == 1, "못 마셨으면 가방에 들어가야 한다");
+        Check(srv.ManaOf(Sid(srv, a)) == m0, "마나가 넘치는데 줍는 순간 마셨다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "못 마셨으면 가방에 들어가야 한다");
         // 넉넉히 모자라면 마신다
         nox::Server s2; s2.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        s2.DebugMoveTo(a, 1000, 1000);
+        s2.DebugMoveTo(Sid(s2, a), 1000, 1000);
         std::vector<nox::OutPacket> o2;
-        s2.DebugManaAdd(a, -100);                            // 50. 50 을 더해도 100 < 150
-        const uint16_t m1 = s2.ManaOf(a);
+        s2.DebugManaAdd(Sid(s2, a), -100);                            // 50. 50 을 더해도 100 < 150
+        const uint16_t m1 = s2.ManaOf(Sid(s2, a));
         std::vector<nox::Server::WorldStatic> st2;
         nox::Server::WorldStatic w2;
         w2.netCode = 595; w2.type = 638; w2.x = 1000; w2.y = 1000;
@@ -9547,8 +9553,8 @@ void TestPickupPotion() {
         s2.SetWorldStatics(st2);
         const std::vector<uint8_t> g2 = CodePacket(nox::Op::TRY_GET, 595);
         s2.OnPacket(a, g2.data(), g2.size(), o2);
-        Check(s2.ManaOf(a) == m1 + 50, "마나가 넉넉히 모자란데 줍는 순간 안 마셨다");
-        Check(s2.CarriedCount(a) == 0, "마셨는데 가방에도 들어갔다");
+        Check(s2.ManaOf(Sid(s2, a)) == m1 + 50, "마나가 넉넉히 모자란데 줍는 순간 안 마셨다");
+        Check(s2.CarriedCount(Sid(s2, a)) == 0, "마셨는데 가방에도 들어갔다");
     }
     std::printf("  5-c — 줍는 순간: 넘치면 안 마시고 가방(경계 <) · 모자라면 그 자리에서 마심 · 마나도 같은 꼴 · PotionPickup 만 · 워리어는 마나 물약 못 듦 · 독 있으면 바로 풀림\n");
 }
@@ -9585,7 +9591,7 @@ void TestEatAndMushroom() {
     };
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
 
     // ① **체력이 가득이면 안 먹는다** — 음식이 그대로 남는다
@@ -9594,12 +9600,12 @@ void TestEatAndMushroom() {
         const uint16_t apple = give(srv, nox::UseFn::Consume, nox::kFoodApple, 10);
         std::vector<nox::OutPacket> out;
         use(srv, apple, out);
-        Check(srv.CarriedCount(a) == 1, "가득 찼는데 사과가 없어졌다");
-        srv.Damage(a, 30, out);
-        const uint16_t h0 = srv.HealthOf(a);
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "가득 찼는데 사과가 없어졌다");
+        srv.Damage(Sid(srv, a), 30, out);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         use(srv, apple, out);
-        Check(srv.HealthOf(a) == h0 + 10, "사과가 10 을 안 채웠다");
-        Check(srv.CarriedCount(a) == 0, "먹었는데 안 없어졌다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0 + 10, "사과가 10 을 안 채웠다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "먹었는데 안 없어졌다");
     }
 
     // ② **먹으면 깎이는 음식** — `ConsumeUse -15` 는 실측이다
@@ -9607,11 +9613,11 @@ void TestEatAndMushroom() {
         nox::Server srv; mk(srv);
         const uint16_t bad = give(srv, nox::UseFn::Consume, nox::kFoodSimple, -15);
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 30, out);                              // 가득이면 아예 안 먹으므로 먼저 깎는다
-        const uint16_t h0 = srv.HealthOf(a);
+        srv.Damage(Sid(srv, a), 30, out);                              // 가득이면 아예 안 먹으므로 먼저 깎는다
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         use(srv, bad, out);
-        Check(srv.HealthOf(a) == h0 - 15, "음수 음식이 체력을 안 깎았다");
-        Check(srv.CarriedCount(a) == 0, "먹었는데 안 없어졌다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0 - 15, "음수 음식이 체력을 안 깎았다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "먹었는데 안 없어졌다");
     }
 
     // ③ **물약 갈래는 먹기에서 빠진다** — `usePotion` 이 맡는다
@@ -9620,11 +9626,11 @@ void TestEatAndMushroom() {
         const uint16_t p2 = give(srv, nox::UseFn::Consume,
                                  nox::kFoodPotion | nox::kFoodHealthPotion, 50);
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 30, out);
-        const uint16_t h0 = srv.HealthOf(a);
+        srv.Damage(Sid(srv, a), 30, out);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         use(srv, p2, out);
-        Check(srv.HealthOf(a) == h0, "물약 갈래인데 먹기가 처리했다");
-        Check(srv.CarriedCount(a) == 1, "안 먹었는데 없어졌다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0, "물약 갈래인데 먹기가 처리했다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "안 먹었는데 없어졌다");
     }
 
     // ④ **버섯 — 독이 없으면 혼란만** (글도 다르다)
@@ -9633,11 +9639,11 @@ void TestEatAndMushroom() {
         const uint16_t mush = give(srv, nox::UseFn::Mushroom, nox::kFoodMushroom, 0);
         std::vector<nox::OutPacket> out;
         use(srv, mush, out);
-        Check(srv.DebugHasEnchant(a, 3), "버섯인데 혼란이 안 걸렸다");
-        Check(srv.DebugEnchantPower(a, 3) == 5, "버섯 혼란 세기가 5 가 아니다");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 3), "버섯인데 혼란이 안 걸렸다");
+        Check(srv.DebugEnchantPower(Sid(srv, a), 3) == 5, "버섯 혼란 세기가 5 가 아니다");
         Check(HasPriMsg(out, a, "Use.c:MushroomConfuse"), "독이 없는데 MushroomConfuse 가 안 왔다");
         Check(!HasPriMsg(out, a, "Use.c:MushroomClean"), "독이 없는데 MushroomClean 이 왔다");
-        Check(srv.CarriedCount(a) == 0, "버섯이 안 없어졌다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "버섯이 안 없어졌다");
     }
 
     // ⑤ **버섯 — 독이 있으면 풀고, 그래도 혼란은 걸린다**
@@ -9645,11 +9651,11 @@ void TestEatAndMushroom() {
         nox::Server srv; mk(srv);
         const uint16_t mush = give(srv, nox::UseFn::Mushroom, nox::kFoodMushroom, 0);
         std::vector<nox::OutPacket> out;
-        srv.DebugPoisonPlayer(a, 5);
+        srv.DebugPoisonPlayer(Sid(srv, a), 5);
         use(srv, mush, out);
-        Check(srv.DebugPoisonOf(a) == 0, "버섯이 독을 안 풀었다");
+        Check(srv.DebugPoisonOf(Sid(srv, a)) == 0, "버섯이 독을 안 풀었다");
         Check(HasPriMsg(out, a, "Use.c:MushroomClean"), "독을 풀었는데 MushroomClean 이 안 왔다");
-        Check(srv.DebugHasEnchant(a, 3), "독을 풀었다고 혼란이 안 걸렸다 — 어느 쪽이든 걸려야 한다");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 3), "독을 풀었다고 혼란이 안 걸렸다 — 어느 쪽이든 걸려야 한다");
     }
 
     // ⑥ **사이다 — 5초 혼란(세기 4) + 먹기**
@@ -9657,14 +9663,14 @@ void TestEatAndMushroom() {
         nox::Server srv; mk(srv);
         const uint16_t cider = give(srv, nox::UseFn::ConsumeConfuse, nox::kFoodJug, 10);
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 30, out);
-        const uint16_t h0 = srv.HealthOf(a);
+        srv.Damage(Sid(srv, a), 30, out);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         use(srv, cider, out);
-        Check(srv.DebugHasEnchant(a, 3), "사이다인데 혼란이 안 걸렸다");
-        Check(srv.DebugEnchantPower(a, 3) == 4, "사이다 혼란 세기가 4 가 아니다(버섯과 다르다)");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 3), "사이다인데 혼란이 안 걸렸다");
+        Check(srv.DebugEnchantPower(Sid(srv, a), 3) == 4, "사이다 혼란 세기가 4 가 아니다(버섯과 다르다)");
         Check(HasPriMsg(out, a, "Use.c:CiderConfuse"), "사이다 글이 안 왔다");
-        Check(srv.HealthOf(a) == h0 + 10, "사이다가 10 을 안 채웠다");
-        Check(srv.CarriedCount(a) == 0, "사이다가 안 없어졌다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0 + 10, "사이다가 10 을 안 채웠다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "사이다가 안 없어졌다");
     }
 
     // ⑦ **체력이 가득이면 사이다는 안 채우지만 그래도 없어진다**
@@ -9673,11 +9679,11 @@ void TestEatAndMushroom() {
         nox::Server srv; mk(srv);
         const uint16_t cider = give(srv, nox::UseFn::ConsumeConfuse, nox::kFoodJug, 10);
         std::vector<nox::OutPacket> out;
-        const uint16_t h0 = srv.HealthOf(a);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         use(srv, cider, out);
-        Check(srv.HealthOf(a) == h0, "가득인데 사이다가 채웠다");
-        Check(srv.CarriedCount(a) == 0, "가득이어도 사이다는 없어져야 한다");
-        Check(srv.DebugHasEnchant(a, 3), "가득이어도 혼란은 걸려야 한다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0, "가득인데 사이다가 채웠다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "가득이어도 사이다는 없어져야 한다");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 3), "가득이어도 혼란은 걸려야 한다");
     }
 
     // ⑧ **아직 안 옮긴 갈래는 아무 일도 안 난다** — 그대로 남는다
@@ -9685,11 +9691,11 @@ void TestEatAndMushroom() {
         nox::Server srv; mk(srv);
         const uint16_t book = give(srv, nox::UseFn::None, 0, 0);   // ReadUse 따위
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 30, out);
-        const uint16_t h0 = srv.HealthOf(a);
+        srv.Damage(Sid(srv, a), 30, out);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         use(srv, book, out);
-        Check(srv.HealthOf(a) == h0, "안 옮긴 갈래가 뭔가 했다");
-        Check(srv.CarriedCount(a) == 1, "안 옮긴 갈래인데 없어졌다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0, "안 옮긴 갈래가 뭔가 했다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "안 옮긴 갈래인데 없어졌다");
     }
     // ⑨ **먹을거리가 아니면 안 먹는다** — `CLASS` 에 FOOD 가 없으면 `ConsumeUse` 라도 그냥 남는다
     {
@@ -9704,12 +9710,12 @@ void TestEatAndMushroom() {
         std::vector<nox::OutPacket> out;
         const std::vector<uint8_t> g = CodePacket(nox::Op::TRY_GET, 690);
         srv.OnPacket(a, g.data(), g.size(), out);
-        Check(srv.CarriedCount(a) == 1, "못 들었다(이 시험의 전제)");
-        srv.Damage(a, 30, out);
-        const uint16_t h0 = srv.HealthOf(a);
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "못 들었다(이 시험의 전제)");
+        srv.Damage(Sid(srv, a), 30, out);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, a));
         use(srv, 690, out);
-        Check(srv.HealthOf(a) == h0, "먹을거리가 아닌데 먹혔다");
-        Check(srv.CarriedCount(a) == 1, "먹을거리가 아닌데 없어졌다");
+        Check(srv.HealthOf(Sid(srv, a)) == h0, "먹을거리가 아닌데 먹혔다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "먹을거리가 아닌데 없어졌다");
     }
 
     // ⑩ **`USE` 앞말을 갈래로 옮기는 표** — 하나만 어긋나도 엉뚱한 함수가 불린다
@@ -9770,19 +9776,19 @@ void TestWandCharges() {
     auto mk = [&](nox::Server& srv) {
         RegSpell(srv, 24, 0);                                // 번개 — 지속 주문이라 걸리는지 보기 쉽다
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugAimAt(a, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);
     };
 
     // ① **마나를 안 쓴다** — 완드는 `spellAccept` 를 곧장 부른다
     {
         nox::Server srv; mk(srv);
         giveWand(srv, 24, 5, 0);
-        const uint16_t m0 = srv.ManaOf(a);
+        const uint16_t m0 = srv.ManaOf(Sid(srv, a));
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         use(srv, out);
-        Check(srv.ManaOf(a) == m0, "완드가 마나를 가져갔다 — 충전으로 써야 한다");
+        Check(srv.ManaOf(Sid(srv, a)) == m0, "완드가 마나를 가져갔다 — 충전으로 써야 한다");
         Check(srv.DurCount() == 1, "완드가 주문을 안 걸었다");
     }
 
@@ -9797,7 +9803,7 @@ void TestWandCharges() {
         int now = -1, max = -1;
         Check(charges(out, a, now, max), "충전 알림 `64` 가 안 왔다");
         Check(now == 2 && max == 3, "충전 알림 값이 2/3 이 아니다");
-        Check(srv.CarriedCount(a) == 1, "완드가 없어졌다 — 충전만 깎여야 한다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "완드가 없어졌다 — 충전만 깎여야 한다");
     }
 
     // ③ **다 쓰면 안 걸린다** — 충전이 0 이면 주문도 안 나간다
@@ -9816,7 +9822,7 @@ void TestWandCharges() {
         }
         Check(fired == 2, "충전 2 짜리인데 나간 횟수가 2 가 아니다");
         Check(now == 0, "마지막 충전 알림이 0 이 아니다");
-        Check(srv.CarriedCount(a) == 1, "다 쓴 완드가 없어졌다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "다 쓴 완드가 없어졌다");
     }
 
     // ④ **최대가 0 이면 무한** — 깎지도 않고 알림도 안 간다
@@ -9880,8 +9886,8 @@ void TestWandCharges() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugAimAt(a, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);
         giveWand(srv, 43, 5, 0);                             // 43 은 이 시험이 정의를 안 넣었다
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
@@ -9912,14 +9918,14 @@ void TestWandCharges() {
         g.Parse("ShieldHealth = 20, 35, 50, 75, 100;\nShieldDuration = 30, 60, 90, 120, 150;\n");
         srv.SetGamedata(g);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugAimAt(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);
         giveWand(srv, 51, 5, 0);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         use(srv, out);
-        Check(srv.DebugHasEnchant(a, 26), "완드로 방패가 안 걸렸다(이 시험의 전제)");
-        Check(srv.DebugEnchantPower(a, 26) == 4, "완드가 건 주문 세기가 4 가 아니다");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 26), "완드로 방패가 안 걸렸다(이 시험의 전제)");
+        Check(srv.DebugEnchantPower(Sid(srv, a), 26) == 4, "완드가 건 주문 세기가 4 가 아니다");
     }
 
     // ⑩ **버려 되돌아온 완드도 충전을 지닌다**
@@ -9935,7 +9941,7 @@ void TestWandCharges() {
             const std::vector<uint8_t> g2 = CodePacket(nox::Op::TRY_GET, 700);
             srv.OnPacket(a, g2.data(), g2.size(), out);
         }
-        Check(srv.CarriedCount(a) == 1, "되돌아온 완드를 다시 못 들었다(이 시험의 전제)");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "되돌아온 완드를 다시 못 들었다(이 시험의 전제)");
         out.clear();
         use(srv, out);
         int now = -1, max = -1;
@@ -9963,9 +9969,9 @@ void TestPlasma() {
         srv.SetGamedata(g);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);                      // 앞쪽 100 — 400 안
-        srv.DebugSetFacing(a, 0);                                 // +x 쪽을 본다
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);                      // 앞쪽 100 — 400 안
+        srv.DebugSetFacing(Sid(srv, a), 0);                                 // +x 쪽을 본다
         if (!withWand) return;
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic w;
@@ -9979,7 +9985,7 @@ void TestPlasma() {
         srv.OnPacket(a, g2.data(), g2.size(), o);
     };
     auto cast = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
-        srv.DebugSpellAccept(a, 59, 1, out);
+        srv.DebugSpellAccept(Sid(srv, a), 59, 1, out);
     };
 
     // ① **완드가 없으면 곧바로 취소된다** — 이것이 묶음 4 에서 막혀 있던 자리다
@@ -10000,10 +10006,10 @@ void TestPlasma() {
         srv.Tick(ms, out);
         cast(srv, out);
         Check(srv.DurCount() == 1, "완드가 있는데 플라스마가 안 걸렸다");
-        const uint16_t h0 = srv.HealthOf(b);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, b));
         ms += 34; srv.Tick(ms, out);
-        Check(srv.HealthOf(b) < h0, "플라스마가 앞쪽 적을 안 깎았다");
-        Check(srv.DebugLastDamageType(b) == 14, "플라스마 피해 종류가 14 가 아니다");
+        Check(srv.HealthOf(Sid(srv, b)) < h0, "플라스마가 앞쪽 적을 안 깎았다");
+        Check(srv.DebugLastDamageType(Sid(srv, b)) == 14, "플라스마 피해 종류가 14 가 아니다");
         Check(srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == srv.hitSoundCalls(),
               "4-c3b1 플라스마에 때린 것(시전자)이 안 넘어갔다");
     }
@@ -10011,27 +10017,27 @@ void TestPlasma() {
     // ③ **400 밖은 안 문다**
     {
         nox::Server srv; mk(srv, /*withWand=*/true);
-        srv.DebugMoveTo(b, 1500, 1000);                      // 500 — 밖
+        srv.DebugMoveTo(Sid(srv, b), 1500, 1000);                      // 500 — 밖
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         cast(srv, out);
-        const uint16_t h0 = srv.HealthOf(b);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, b));
         ms += 34; srv.Tick(ms, out);
-        Check(srv.HealthOf(b) == h0, "400 밖인데 깎았다");
+        Check(srv.HealthOf(Sid(srv, b)) == h0, "400 밖인데 깎았다");
     }
 
     // ④ **뒤쪽은 안 문다** — 찾기 잣대가 앞쪽(`& 1`)이다
     {
         nox::Server srv; mk(srv, /*withWand=*/true);
-        srv.DebugMoveTo(b, 900, 1000);                       // 뒤쪽 100
+        srv.DebugMoveTo(Sid(srv, b), 900, 1000);                       // 뒤쪽 100
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         cast(srv, out);
-        const uint16_t h0 = srv.HealthOf(b);
+        const uint16_t h0 = srv.HealthOf(Sid(srv, b));
         ms += 34; srv.Tick(ms, out);
-        Check(srv.HealthOf(b) == h0, "뒤쪽인데 물었다");
+        Check(srv.HealthOf(Sid(srv, b)) == h0, "뒤쪽인데 물었다");
     }
 
     // ⑤ **틱마다 충전을 하나 먹는다** — 10 충전이면 열 틱 뒤에 끝난다
@@ -10052,12 +10058,12 @@ void TestPlasma() {
     // ⑥ **대상이 있는 동안 끝을 미룬다** — `PlasmaSearchTime`(30틱)보다 오래 간다
     {
         nox::Server srv; mk(srv, /*withWand=*/true);
-        srv.DebugSetCarryCap(a, 3000);
+        srv.DebugSetCarryCap(Sid(srv, a), 3000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         // 충전을 넉넉히 — 40틱을 버텨야 「미룬다」가 보인다
-        srv.DebugSetCharges(a, 800, 200);
+        srv.DebugSetCharges(Sid(srv, a), 800, 200);
         cast(srv, out);
         for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.DurCount() == 1, "대상이 있는데 30틱에 끝났다 — 끝을 안 미뤘나");
@@ -10069,10 +10075,10 @@ void TestPlasma() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugSetCharges(a, 800, 200);
+        srv.DebugSetCharges(Sid(srv, a), 800, 200);
         cast(srv, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugMoveTo(b, 5000, 5000);                      // 멀리 보낸다
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);                      // 멀리 보낸다
         for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.DurCount() == 0, "대상이 없어졌는데 안 끝났다");
     }
@@ -10087,19 +10093,19 @@ void TestPlasma() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugSetCharges(a, 800, 200);
+        srv.DebugSetCharges(Sid(srv, a), 800, 200);
         cast(srv, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t h1 = srv.HealthOf(b);
-        Check(h1 < srv.MaxHealthOf(b), "처음에 안 물었다(이 시험의 전제)");
-        srv.DebugAdjustHP(b, 200);
-        srv.DebugSetFacing(a, 128);                          // 몸을 돌린다 — 대상이 뒤가 된다
+        const uint16_t h1 = srv.HealthOf(Sid(srv, b));
+        Check(h1 < srv.MaxHealthOf(Sid(srv, b)), "처음에 안 물었다(이 시험의 전제)");
+        srv.DebugAdjustHP(Sid(srv, b), 200);
+        srv.DebugSetFacing(Sid(srv, a), 128);                          // 몸을 돌린다 — 대상이 뒤가 된다
         // ⚠ 대상을 **계속 살려 둔다**. 안 그러면 대상이 죽어서 끝난 것을
         //   「유예가 끝나서」로 잘못 읽는다 — 처음에 그렇게 재서 돌연변이를 놓쳤다.
-        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAdjustHP(b, 200); }
-        Check(srv.HealthOf(b) < srv.MaxHealthOf(b) || srv.DurCount() == 1,
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAdjustHP(Sid(srv, b), 200); }
+        Check(srv.HealthOf(Sid(srv, b)) < srv.MaxHealthOf(Sid(srv, b)) || srv.DurCount() == 1,
               "뒤로 돌리자마자 끊겼다 — 잠깐은 물고 있어야 한다");
-        for (int t = 0; t < 50; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAdjustHP(b, 200); }
+        for (int t = 0; t < 50; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAdjustHP(Sid(srv, b), 200); }
         Check(srv.DurCount() == 0, "뒤로 돈 채 60틱이 지났는데 안 끝났다 — 유예 중에 끝을 미뤘나");
     }
 
@@ -10109,7 +10115,7 @@ void TestPlasma() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugSetCharges(a, 800, 0);
+        srv.DebugSetCharges(Sid(srv, a), 800, 0);
         cast(srv, out);
         ms += 34; srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
@@ -10138,8 +10144,8 @@ void TestChargedStaffCast() {
         srv.SetGamedata(g);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         if (!withWand) return;
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic w;
@@ -10153,7 +10159,7 @@ void TestChargedStaffCast() {
         srv.OnPacket(a, g2.data(), g2.size(), o);
     };
     auto cast = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) {
-        srv.DebugSpellAccept(a, 43, 1, out);
+        srv.DebugSpellAccept(Sid(srv, a), 43, 1, out);
     };
     auto charges = [&](const std::vector<nox::OutPacket>& out, int& now, int& max) {
         bool found = false;
@@ -10171,9 +10177,9 @@ void TestChargedStaffCast() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         cast(srv, out);
-        const uint16_t m0 = srv.ManaOf(a);
+        const uint16_t m0 = srv.ManaOf(Sid(srv, a));
         ms += 34; srv.Tick(ms, out);
-        Check(srv.ManaOf(a) == m0 - 1, "완드가 없는데 마나를 안 썼다");
+        Check(srv.ManaOf(Sid(srv, a)) == m0 - 1, "완드가 없는데 마나를 안 썼다");
         int now = -1, max = -1;
         Check(!charges(out, now, max), "완드가 없는데 충전 알림이 갔다");
     }
@@ -10185,10 +10191,10 @@ void TestChargedStaffCast() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         cast(srv, out);
-        const uint16_t m0 = srv.ManaOf(a);
+        const uint16_t m0 = srv.ManaOf(Sid(srv, a));
         out.clear();
         ms += 34; srv.Tick(ms, out);
-        Check(srv.ManaOf(a) == m0, "완드를 들었는데 마나를 썼다");
+        Check(srv.ManaOf(Sid(srv, a)) == m0, "완드를 들었는데 마나를 썼다");
         int now = -1, max = -1;
         Check(charges(out, now, max), "완드를 들었는데 충전 알림이 안 왔다");
         Check(now == 4 && max == 5, "충전이 4/5 가 아니다");
@@ -10216,7 +10222,7 @@ void TestChargedStaffCast() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         cast(srv, out);
-        srv.DebugManaSub(a, 1000);                           // 마나를 말린다
+        srv.DebugManaSub(Sid(srv, a), 1000);                           // 마나를 말린다
         out.clear();
         ms += 34; srv.Tick(ms, out);
         int now = -1, max = -1;
@@ -10231,7 +10237,7 @@ void TestChargedStaffCast() {
         srv.Tick(ms, out);
         cast(srv, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.DebugStateOf(a) == 22, "완드로 걸었는데 자세가 22 가 아니다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 22, "완드로 걸었는데 자세가 22 가 아니다");
     }
     {
         nox::Server srv; mk(srv, /*withWand=*/false);
@@ -10240,7 +10246,7 @@ void TestChargedStaffCast() {
         srv.Tick(ms, out);
         cast(srv, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.DebugStateOf(a) == 10, "마나로 걸었는데 자세가 10 이 아니다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 10, "마나로 걸었는데 자세가 10 이 아니다");
     }
     // ⑥ **도중에 완드가 말라도 곧바로 끝난다** — 0 에서 빼면 255 로 감긴다
     //   (다른 길로 충전을 다 쓴 완드를 들고 있을 수 있다 — 그때 이 갈래가 열린다)
@@ -10250,7 +10256,7 @@ void TestChargedStaffCast() {
         uint32_t ms = 0;
         srv.Tick(ms, out);
         cast(srv, out);
-        srv.DebugSetCharges(a, 900, 0);                      // 바깥에서 말린다
+        srv.DebugSetCharges(Sid(srv, a), 900, 0);                      // 바깥에서 말린다
         ms += 34; srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);                         // 취소 깃발이 여기서 치워진다
         Check(srv.DurCount() == 0, "충전이 0 인데 계속 돈다 — 0 에서 빼 255 로 감겼나");
@@ -10295,7 +10301,7 @@ void TestGold() {
     };
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
 
     // ① **가방에 안 들어가고 숫자로 쌓인다** · `4a` 가 간다
@@ -10304,8 +10310,8 @@ void TestGold() {
         put(srv, 1000, 250);
         std::vector<nox::OutPacket> out;
         get(srv, 1000, out);
-        Check(srv.GoldOf(a) == 250, "금이 250 이 안 됐다");
-        Check(srv.CarriedCount(a) == 0, "금이 가방에 들어갔다");
+        Check(srv.GoldOf(Sid(srv, a)) == 250, "금이 250 이 안 됐다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "금이 가방에 들어갔다");
         Check(srv.WorldStaticCount() == 0, "주웠는데 바닥에 남았다");
         Check(srv.goldPicked() == 1, "금 주운 횟수가 안 올랐다");
         uint32_t v = 0;
@@ -10322,7 +10328,7 @@ void TestGold() {
         put(srv, 1002, 70);
         out.clear();
         get(srv, 1002, out);
-        Check(srv.GoldOf(a) == 170, "금이 안 쌓였다");
+        Check(srv.GoldOf(Sid(srv, a)) == 170, "금이 안 쌓였다");
         uint32_t v = 0;
         Check(goldMsg(out, v) && v == 170, "`4a` 가 합을 안 실었다");
     }
@@ -10333,11 +10339,11 @@ void TestGold() {
         put(srv, 1003, 50);
         std::vector<nox::OutPacket> out;
         get(srv, 1003, out);
-        srv.DebugSubGold(a, 20, out);
-        Check(srv.GoldOf(a) == 30, "20 을 뺐는데 30 이 아니다");
+        srv.DebugSubGold(Sid(srv, a), 20, out);
+        Check(srv.GoldOf(Sid(srv, a)) == 30, "20 을 뺐는데 30 이 아니다");
         out.clear();
-        srv.DebugSubGold(a, 1000, out);                           // 가진 것보다 많이
-        Check(srv.GoldOf(a) == 0, "모자란데 0 이 아니다 — 음수로 감겼나");
+        srv.DebugSubGold(Sid(srv, a), 1000, out);                           // 가진 것보다 많이
+        Check(srv.GoldOf(Sid(srv, a)) == 0, "모자란데 0 이 아니다 — 음수로 감겼나");
         uint32_t v = 1;
         Check(goldMsg(out, v) && v == 0, "뺀 뒤 `4a` 가 0 을 안 실었다");
     }
@@ -10348,7 +10354,7 @@ void TestGold() {
         put(srv, 1004, 300000);                              // 두 바이트로는 못 담는 값
         std::vector<nox::OutPacket> out;
         get(srv, 1004, out);
-        Check(srv.GoldOf(a) == 300000, "큰 금액이 안 들어갔다");
+        Check(srv.GoldOf(Sid(srv, a)) == 300000, "큰 금액이 안 들어갔다");
         uint32_t v = 0;
         Check(goldMsg(out, v) && v == 300000, "`4a` 가 큰 값을 잘랐다 — u32 가 맞나");
     }
@@ -10364,8 +10370,8 @@ void TestGold() {
         srv.SetWorldStatics(st);
         std::vector<nox::OutPacket> out;
         get(srv, 1005, out);
-        Check(srv.CarriedCount(a) == 1, "보통 물건이 가방에 안 들어갔다");
-        Check(srv.GoldOf(a) == 0, "보통 물건인데 금이 늘었다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 1, "보통 물건이 가방에 안 들어갔다");
+        Check(srv.GoldOf(Sid(srv, a)) == 0, "보통 물건인데 금이 늘었다");
     }
     std::printf("  5-h — 금: 가방에 안 들어감 · `4a` 5바이트 u32 · 쌓임 · 빼기는 0 바닥 · 큰 값 그대로\n");
 }
@@ -10384,8 +10390,8 @@ void TestAIStack() {
     const std::string a = "10.6.0.1:6001";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1040, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1040, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
     };
 
@@ -10497,9 +10503,9 @@ void TestAIDeps() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
-        srv.DebugSpawnPet(1328, 1040, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
+        srv.DebugSpawnPet(1328, 1040, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         // ⚠ `DebugMoveTo` 는 옛 자리칸(x)만 바꾼다. **실수 자리(posX)는 틱이 맞춘다**
         //   (`Server.cpp:3547` 「밖에서 x·y 를 바꿨으면 실수 자리를 거기에 맞추고 멈춘다」).
@@ -10526,7 +10532,7 @@ void TestAIDeps() {
         std::vector<nox::OutPacket> out;
         // ★ 조건은 할 일 **아래**에 쌓인다(`MonsterPopAction` 이 맨 위를 뺀 뒤 **그 아래 조건들**을
         //   같이 내리는 짜임이다). 그래서 조건을 **먼저** 올리고 할 일을 그 위에 올린다.
-        srv.DebugAIPushDep(0, 42, b, -1, 0, 0);              // 조건 — b 가 살아 있나
+        srv.DebugAIPushDep(0, 42, Sid(srv, b), -1, 0, 0);              // 조건 — b 가 살아 있나
         srv.DebugAIPush(0, 7);                               // 할 일 — 가기
         Check(srv.DebugAIStackInd(0) == 1, "조건이 안 쌓였다(이 시험의 전제)");
         srv.DebugAIProcDeps(0, out);
@@ -10538,10 +10544,10 @@ void TestAIDeps() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 42, b, -1, 0, 0);
+        srv.DebugAIPushDep(0, 42, Sid(srv, b), -1, 0, 0);
         srv.DebugAIPush(0, 7);
-        srv.DebugHurt(b, -1, 9999, std::string(), 16, out);  // b 를 죽인다
-        Check(!srv.IsAlive(b), "안 죽었다(이 시험의 전제)");
+        srv.DebugHurt(Sid(srv, b), -1, 9999, Sid(srv, std::string()), 16, out);  // b 를 죽인다
+        Check(!srv.IsAlive(Sid(srv, b)), "안 죽었다(이 시험의 전제)");
         srv.DebugAIProcDeps(0, out);
         Check(srv.DebugAIStackInd(0) == 0, "조건이 틀렸는데 안 빠졌다");
         Check(srv.DebugAIAction(0, 0) == 0, "다 빠진 뒤 바닥이 놀기(0)가 아니다");
@@ -10553,7 +10559,7 @@ void TestAIDeps() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugAIPushDep(0, 41, std::string(), -1, /*u=*/5, 0);   // 5프레임 전까지
+        srv.DebugAIPushDep(0, 41, Sid(srv, std::string()), -1, /*u=*/5, 0);   // 5프레임 전까지
         srv.DebugAIPush(0, 7);
         srv.DebugAIProcDeps(0, out);
         Check(srv.DebugAIStackInd(0) == 1, "아직 때가 안 됐는데 빠졌다");
@@ -10566,11 +10572,11 @@ void TestAIDeps() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 50, b, -1, 0, /*f=*/100.0f);   // b 까지 100 안인가
+        srv.DebugAIPushDep(0, 50, Sid(srv, b), -1, 0, /*f=*/100.0f);   // b 까지 100 안인가
         srv.DebugAIPush(0, 7);
         srv.DebugAIProcDeps(0, out);                          // 소환수 1040 · b 1100 → 60
         Check(srv.DebugAIStackInd(0) == 1, "100 안인데 빠졌다");
-        srv.DebugMoveTo(b, 1400, 1000);                       // 360 으로 멀어진다
+        srv.DebugMoveTo(Sid(srv, b), 1400, 1000);                       // 360 으로 멀어진다
         srv.Tick(68, out);                                    // 자리를 맞춘다(x → posX)
         srv.DebugAIProcDeps(0, out);
         Check(srv.DebugAIStackInd(0) == 0, "멀어졌는데 안 빠졌다");
@@ -10583,8 +10589,8 @@ void TestAIDeps() {
         // ★ `또는(40)` 은 묶을 조건들 **위**에 온다 — 훑기가 **위에서 아래로** 가면서
         //   `또는` 을 만난 뒤 **그 아래** 조건들을 한 묶음으로 보기 때문이다.
         //   즉 쌓는 차례는 **조건들 → 또는 → 할 일** 이다.
-        srv.DebugAIPushDep(0, 50, b, -1, 0, 1.0f);            // 틀림(1 안에 없다)
-        srv.DebugAIPushDep(0, 42, b, -1, 0, 0);               // 맞음(살아 있다)
+        srv.DebugAIPushDep(0, 50, Sid(srv, b), -1, 0, 1.0f);            // 틀림(1 안에 없다)
+        srv.DebugAIPushDep(0, 42, Sid(srv, b), -1, 0, 0);               // 맞음(살아 있다)
         srv.DebugAIPush(0, 40);                               // 또는
         srv.DebugAIPush(0, 7);                                // 할 일은 맨 위
         Check(srv.DebugAIStackInd(0) == 3, "또는 묶음이 안 쌓였다(이 시험의 전제)");
@@ -10595,8 +10601,8 @@ void TestAIDeps() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 50, b, -1, 0, 1.0f);            // 틀림
-        srv.DebugAIPushDep(0, 50, b, -1, 0, 2.0f);            // 역시 틀림
+        srv.DebugAIPushDep(0, 50, Sid(srv, b), -1, 0, 1.0f);            // 틀림
+        srv.DebugAIPushDep(0, 50, Sid(srv, b), -1, 0, 2.0f);            // 역시 틀림
         srv.DebugAIPush(0, 40);
         srv.DebugAIPush(0, 7);
         srv.DebugAIProcDeps(0, out);
@@ -10608,7 +10614,7 @@ void TestAIDeps() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugAISetPrevPos(0);                             // 지난 자리 = 지금 자리
-        srv.DebugAIPushDep(0, 71, std::string(), -1, 0, 0);
+        srv.DebugAIPushDep(0, 71, Sid(srv, std::string()), -1, 0, 0);
         srv.DebugAIPush(0, 7);
         srv.DebugAIProcDeps(0, out);
         Check(srv.DebugAIStackInd(0) == 1, "안 움직였는데 빠졌다");
@@ -10621,7 +10627,7 @@ void TestAIDeps() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 67, std::string(), -1, 0, 0);   // 67 커서 아래 — 아직 안 옮김(협동 전용) · ★ 09-29 B4 — 64 는 옮겨서 바꿈
+        srv.DebugAIPushDep(0, 67, Sid(srv, std::string()), -1, 0, 0);   // 67 커서 아래 — 아직 안 옮김(협동 전용) · ★ 09-29 B4 — 64 는 옮겨서 바꿈
         srv.DebugAIPush(0, 7);
         srv.DebugAIProcDeps(0, out);
         Check(srv.DebugAIStackInd(0) == 1, "안 옮긴 조건이 할 일을 지웠다");
@@ -10641,8 +10647,8 @@ void TestAIActions() {
     const std::string a = "10.6.2.1:6201";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1040, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1040, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
@@ -10654,7 +10660,7 @@ void TestAIActions() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 68;
-        srv.DebugAIPushDep(0, 1, std::string(), -1, /*u=*/6, 0);   // 6프레임까지
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, /*u=*/6, 0);   // 6프레임까지
         Check(srv.DebugAIStackInd(0) == 0, "기다리기가 바닥을 안 덮었다(이 시험의 전제)");
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out); }
         Check(srv.DebugAIAction(0, 0) == 1, "아직 때가 안 됐는데 빠졌다");
@@ -10668,7 +10674,7 @@ void TestAIActions() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 68;
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAIPushDep(0, 2, std::string(), -1, /*u=*/3, 0);   // 지금부터 3프레임
+        srv.DebugAIPushDep(0, 2, Sid(srv, std::string()), -1, /*u=*/3, 0);   // 지금부터 3프레임
         const uint32_t f0 = srv.DebugAIActionFrame(0);
         Check(f0 != 0, "행동 바꾼 프레임이 안 적혔다");
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out); }
@@ -10710,7 +10716,7 @@ void TestAIActions() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 99999, 0);     // 기다리기 — 오래
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 99999, 0);     // 기다리기 — 오래
         srv.DebugAITick(0, out);                                   // 시작시킨다
         Check(srv.DebugAIStarted(0, 0), "기다리기가 안 시작됐다(이 시험의 전제)");
         srv.DebugAIPush(0, 7);                                     // 그 위에 가기를 올린다
@@ -10750,7 +10756,7 @@ void TestAIActions() {
         // 지금 프레임을 재고, 거기서 두 프레임 뒤를 목표로 삼는다
         ms += 34; srv.Tick(ms, out);
         const uint32_t target = srv.frame() + 2;
-        srv.DebugAIPushDep(0, 1, std::string(), -1, target, 0);
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, target, 0);
         ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out);      // 목표 −1
         Check(srv.DebugAIAction(0, 0) == 1, "목표 한 프레임 전인데 빠졌다");
         ms += 34; srv.Tick(ms, out); srv.DebugAITick(0, out);      // 목표 그 프레임
@@ -10785,9 +10791,9 @@ void TestAIFace() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1000, 1400);                      // 소환수 기준 **아래쪽**(+y)
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1000, 1400);                      // 소환수 기준 **아래쪽**(+y)
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
@@ -10799,7 +10805,7 @@ void TestAIFace() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, /*x=*/1000, /*y=*/1400);
+        srv.DebugAIPushDep(0, 25, Sid(srv, std::string()), -1, 0, 0, /*x=*/1000, /*y=*/1400);
         const int w0 = srv.DebugPetFacingWant(0);
         srv.DebugAITick(0, out);
         Check(srv.DebugPetFacingWant(0) != w0, "돌아가려는 쪽이 안 돌았다");
@@ -10812,7 +10818,7 @@ void TestAIFace() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetFacing(0, 64);                        // +y 쪽(한 바퀴 256 의 1/4)
-        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAIPushDep(0, 25, Sid(srv, std::string()), -1, 0, 0, 1000, 1400);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "이미 보고 있는데 안 빠졌다");
     }
@@ -10821,7 +10827,7 @@ void TestAIFace() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetFacing(0, 192);                       // −y 쪽 — 정반대
-        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAIPushDep(0, 25, Sid(srv, std::string()), -1, 0, 0, 1000, 1400);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 25, "등지고 있는데 한 틱에 끝났다");
     }
@@ -10831,7 +10837,7 @@ void TestAIFace() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetFacing(0, 64);                        // 이미 b 쪽
-        srv.DebugAIPushDep(0, 26, b, -1, 0, 0);
+        srv.DebugAIPushDep(0, 26, Sid(srv, b), -1, 0, 0);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "대상을 이미 보고 있는데 안 빠졌다");
     }
@@ -10839,7 +10845,7 @@ void TestAIFace() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 26, "10.6.3.9:9999", -1, 0, 0);   // 없는 사람
+        srv.DebugAIPushDep(0, 26, Sid(srv, "10.6.3.9:9999"), -1, 0, 0);   // 없는 사람
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "대상이 없는데 안 빠졌다");
     }
@@ -10849,7 +10855,7 @@ void TestAIFace() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetFacing(0, 64);
-        srv.DebugAIPushDep(0, 27, std::string(), -1, /*u=*/64, 0);   // 지금 쪽과 같은 번호
+        srv.DebugAIPushDep(0, 27, Sid(srv, std::string()), -1, /*u=*/64, 0);   // 지금 쪽과 같은 번호
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "같은 각도인데 안 빠졌다");
     }
@@ -10859,7 +10865,7 @@ void TestAIFace() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetFacing(0, 192);                       // 한 틱에 안 끝나게
-        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAIPushDep(0, 25, Sid(srv, std::string()), -1, 0, 0, 1000, 1400);
         srv.DebugAITick(0, out);                             // 시작시킨다
         Check(srv.DebugAIStarted(0, 0), "바라보기가 안 시작됐다(이 시험의 전제)");
         srv.DebugAIPush(0, 12);                              // 그 위에 아무 일 안 하는 행동
@@ -10873,7 +10879,7 @@ void TestAIFace() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetFacing(0, 56);                        // b 쪽(64)에서 한 칸 어긋남
-        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAIPushDep(0, 25, Sid(srv, std::string()), -1, 0, 0, 1000, 1400);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "한 칸 어긋났는데 안 끝났다 — 문턱이 0.9 보다 빡빡한가");
     }
@@ -10881,7 +10887,7 @@ void TestAIFace() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetFacing(0, 32);                        // 네 칸(45°) 어긋남
-        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0, 1000, 1400);
+        srv.DebugAIPushDep(0, 25, Sid(srv, std::string()), -1, 0, 0, 1000, 1400);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 25, "45° 어긋났는데 끝났다 — 문턱이 0.9 보다 헐거운가");
     }
@@ -10895,7 +10901,7 @@ void TestAIFace() {
         srv.DebugSetPetFacing(0, 0);
         double px = 0, py = 0;
         srv.DebugPetXY(0, px, py);   // ⚠ 소환수는 틱 동안 조금 움직인다 — **제 자리를 읽어** 겨눈다
-        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0,
+        srv.DebugAIPushDep(0, 25, Sid(srv, std::string()), -1, 0, 0,
                            static_cast<float>(px), static_cast<float>(py));
         srv.DebugAITick(0, out);
         Check(srv.DebugPetFacingWant(0) == 8, "제자리를 겨눴는데 +8 쪽으로 안 돌았다 — 0 나눗셈 막이 빠졌나");
@@ -11713,8 +11719,8 @@ void TestCreatureMove() {
     const std::string a = "10.6.6.1:6601";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.Tick(34, o);
@@ -11895,8 +11901,8 @@ void TestCreatureSetPath() {
     const std::string a = "10.6.7.1:6701";
     auto mk = [&](nox::Server& srv, uint32_t ms) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.Tick(ms, o);
@@ -12114,9 +12120,9 @@ void TestCreatureTickMove() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         // ★ **먼저 보게 한 뒤 벽을 세운다** — 틱은 **보이는 적만** 상대로 삼는다(정답지도 그렇다).
@@ -12135,7 +12141,7 @@ void TestCreatureTickMove() {
             srv.Tick(ms, out);
             // ★ 09-29 B1 — 전제는 「벽이 시야선을 막나」다. 정답지 알아보기는 한번 본 상대를 시야선 재확인(2초마다) 전까지
             //   목록·지금 상대에 둔다(`GAME4_2.c:7319~7335`) — 그래서 「상대가 비었나」가 아니라 「그 순간 보이나」로 본다
-            if (t == 0) blockedAtFirst = !srv.DebugPetCanSee(0, b);
+            if (t == 0) blockedAtFirst = !srv.DebugPetCanSee(0, Sid(srv, b));
             double px = 0, py = 0;
             if (!srv.DebugPetXY(0, px, py)) break;            // 죽었거나 사라졌다
             offY = std::max(offY, std::fabs(py - 1000.0));
@@ -12145,7 +12151,7 @@ void TestCreatureTickMove() {
         //   임프는 쏘는 것이라 사선이 트이고 사거리(150) 안이면 그 자리에서 멈춘다(실측 — 모서리 (1033,925) · 상대까지 139).
         //   ⇒ 「벽을 돌아 **상대가 보이는 자리**까지 갔나」를 본다
         Check(blockedAtFirst, "전제 — 벽을 세운 첫 틱에 벌써 상대가 보였다(벽이 줄을 안 막는다)");
-        Check(srv.DebugPetEnemy(0) == b, "벽을 돌아 상대가 보이는 자리까지 못 갔다 — 길을 따라 돌아가야 한다");
+        Check(srv.DebugPetEnemy(0) == Sid(srv, b), "벽을 돌아 상대가 보이는 자리까지 못 갔다 — 길을 따라 돌아가야 한다");
         Check(offY > 23.0, "옆으로 안 비켰다 — 곧장 벽에 밀고 있나");
     }
 
@@ -12154,9 +12160,9 @@ void TestCreatureTickMove() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         srv.DebugSetPetSightRange(0, 400.0f);                 // ★ 09-29 B1 — 상대가 300 밖이라 알아보기 거리(250)를 넓힌다(시험의 뜻은 길이지 시야가 아니다)
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
@@ -12177,8 +12183,8 @@ void TestCreatureTickMove() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         srv.DebugSetPetPos(0, 1000, 1000);
@@ -12199,8 +12205,8 @@ void TestCreatureTickMove() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         srv.SetWalls({ { 44, 43 } });                         // 바로 오른쪽 칸이 벽
@@ -12222,8 +12228,8 @@ void TestCreatureTickMove() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         srv.DebugSetPetPos(0, 1000, 1000);
@@ -12246,9 +12252,9 @@ void TestCreatureTickMove() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1400, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1400, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
@@ -12267,8 +12273,8 @@ void TestCreatureTickMove() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         srv.DebugSetPetPos(0, 1000, 1000);
@@ -12296,8 +12302,8 @@ void TestAIMoveTo() {
     const std::string a = "10.6.9.1:6901";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
@@ -12315,7 +12321,7 @@ void TestAIMoveTo() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetSpeed(0, 0.0f);
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0, 1200, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "못 움직이는데 안 빠졌다");
     }
@@ -12324,7 +12330,7 @@ void TestAIMoveTo() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0, 1200, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 7, "가는 중인데 빠졌다");
         Check(srv.DebugPetVelX(0) > 0, "가는 중인데 속도가 안 섰다");
@@ -12335,7 +12341,7 @@ void TestAIMoveTo() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetFacing(0, 0);                          // +x 를 보고 선다
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1000, 1200);   // 아래쪽(+y)
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0, 1000, 1200);   // 아래쪽(+y)
         srv.DebugAITick(0, out);
         Check(srv.DebugPetPathStatus(0) == 0, "닿는 길인데 결과가 0 이 아니다(이 시험의 전제)");
         // ⚠ **목표에 딱 겹치게 두면 안 된다** — 방향이 (0,0) 이라 돌아설 쪽이 안 나온다.
@@ -12357,7 +12363,7 @@ void TestAIMoveTo() {
             for (int x = 41; x <= 45; ++x)
                 if (x == 41 || x == 45 || y == 41 || y == 45) w.push_back({ static_cast<uint8_t>(x), static_cast<uint8_t>(y) });
         srv.SetWalls(w);                                      // 가둔다
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0, 1200, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugPetPathStatus(0) == 2, "갇혔는데 결과가 2 가 아니다(이 시험의 전제)");
         const size_t n = srv.DebugPetPathCount(0);
@@ -12384,7 +12390,7 @@ void TestAIMoveTo() {
         }
         w.push_back({ 41, 43 });
         srv.SetWalls(w);                                      // 한 칸 복도 — 길이 31개로 잘린다
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 91 * 23 + 11.0f, 1000);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0, 91 * 23 + 11.0f, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugPetPathStatus(0) == 1, "잘린 길인데 결과가 1 이 아니다(이 시험의 전제)");
         const size_t n = srv.DebugPetPathCount(0);
@@ -12398,7 +12404,7 @@ void TestAIMoveTo() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetSpeed(0, 0.005f);                      // 0 보다는 크지만 0.01 보다 작다
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0, 1200, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "0.005 는 못 움직이는 것인데 안 빠졌다");
     }
@@ -12412,7 +12418,7 @@ void TestAIMoveTo() {
             for (int x = 41; x <= 45; ++x)
                 if (x == 41 || x == 45 || y == 41 || y == 45) w.push_back({ static_cast<uint8_t>(x), static_cast<uint8_t>(y) });
         srv.SetWalls(w);
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 1200, 1000);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0, 1200, 1000);
         srv.DebugAITick(0, out);
         const size_t n = srv.DebugPetPathCount(0);
         srv.DebugSetPetPos(0, srv.DebugPetPathPtX(0, n - 1), srv.DebugPetPathPtY(0, n - 1));
@@ -12436,7 +12442,7 @@ void TestAIMoveTo() {
         }
         w.push_back({ 41, 43 });
         srv.SetWalls(w);                                      // 한 칸 복도 — 길이 잘려 결과 1
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0, 190 * 23 + 11.0f, 1000);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0, 190 * 23 + 11.0f, 1000);
         srv.DebugAITick(0, out);
         size_t n = srv.DebugPetPathCount(0);
         srv.DebugSetPetPos(0, srv.DebugPetPathPtX(0, n - 1), srv.DebugPetPathPtY(0, n - 1));
@@ -12468,8 +12474,8 @@ void TestAIRandomWalk() {
     const std::string a = "10.6.10.1:7001";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
@@ -12564,7 +12570,7 @@ void TestAIRandomWalk() {
 //   싸움 시작(531E20)이 알아보기를 돌리는데, 시험의 상대는 400 밖이라 원본 거리(250+30)에서는 목록에서 빠진다(시험의 뜻은 사슬 모양)
 static void SetEnemySeen(nox::Server& srv, size_t i, const std::string& addr, int pet) {
     srv.DebugSetPetSightRange(i, 1000.0f);
-    srv.DebugSetPetEnemy(i, addr, pet);
+    srv.DebugSetPetEnemy(i, Sid(srv, addr), pet);
 }
 
 // ★ 09-30 — 틱 차례대로(애니 넘기기 → 행동) 근접(16)이 맨 위에서 내려올 때까지 돌린다 — 몇 틱 돌았나
@@ -12585,9 +12591,9 @@ void TestAIFight() {
     auto mkT = [&](nox::Server& srv, uint16_t type) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1400, 1000);
-        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1400, 1000);
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         // ⚠ **두 번 틱을 돌린다** — `DebugMoveTo` 는 `x` 만 세우고 `posX` 는 움직임 틱이 맞춘다.
@@ -12604,7 +12610,7 @@ void TestAIFight() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/699, 0, 1400, 1000);   // 1000−699 = 301 > 300
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/699, 0, 1400, 1000);   // 1000−699 = 301 > 300
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "10초를 넘겼는데 안 빠졌다");
     }
@@ -12612,7 +12618,7 @@ void TestAIFight() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/700, 0, 1400, 1000);   // 1000−700 = 300
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/700, 0, 1400, 1000);   // 1000−700 = 300
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 15, "딱 300틱인데 빠졌다 — 경계가 > 다");
     }
@@ -12626,7 +12632,7 @@ void TestAIFight() {
         nox::Server srv; mkT(srv, 1358);
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
         Check(srv.DebugAIAction(0, 2) == 42, "살아 있나(42)가 안 깔렸다");
@@ -12638,9 +12644,9 @@ void TestAIFight() {
         Check(std::fabs(srv.DebugAIArgF(0, 6) - 15.0f) < 0.01f, "49 의 자가 근접 사거리가 아니다");
         Check(srv.DebugAIArgU32(0, 0) == 1000, "소식 때를 안 적었다");
         // 조건들이 **그 적을 가리켜야** 한다 — 안 그러면 늘 참이 되어 사슬이 안 깨진다
-        Check(srv.DebugAITargetAddr(0, 1) == b, "60 이 그 적을 안 가리킨다");
-        Check(srv.DebugAITargetAddr(0, 3) == b, "45 가 그 적을 안 가리킨다");
-        Check(srv.DebugAITargetAddr(0, 6) == b, "49 가 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetAddr(0, 1) == Sid(srv, b), "60 이 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetAddr(0, 3) == Sid(srv, b), "45 가 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetAddr(0, 6) == Sid(srv, b), "49 가 그 적을 안 가리킨다");
         Check(srv.DebugAIArgX(0, 7) == 1400.0f, "맨 위 가기가 적 자리를 안 받았다");
     }
     // ★ **쏘는 몬스터(임프)** — **원거리 사슬**(`sub_531D50`)
@@ -12650,7 +12656,7 @@ void TestAIFight() {
         nox::Server srv; mk(srv);                             // 임프 — ImpShot · 사거리 150
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
         Check(srv.DebugAIAction(0, 2) == 45, "보이나(45)가 안 깔렸다");
@@ -12668,14 +12674,14 @@ void TestAIFight() {
         nox::Server srv; mkT(srv, 1348);
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 60, "새 적 없음(60)이 안 깔렸다");
         Check(srv.DebugAIAction(0, 2) == 42, "살아 있나(42)가 안 깔렸다");
         Check(srv.DebugAIAction(0, 3) == 7, "가기(7)가 안 올라갔다");
         Check(srv.DebugAIStackInd(0) == 3, "때릴 수단이 없는데 사슬을 쌓았다");
         Check(srv.DebugAIArgX(0, 3) == 1400.0f, "가기가 적 자리를 안 받았다");
-        Check(srv.DebugAITargetAddr(0, 2) == b, "42 가 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetAddr(0, 2) == Sid(srv, b), "42 가 그 적을 안 가리킨다");
     }
     // ★ **쏘기도 근접도 되는 것(EmberDemon)** — **쏘기 사거리 절반 안**이면 근접 사슬로 간다
     {
@@ -12683,7 +12689,7 @@ void TestAIFight() {
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetPos(0, 1350, 1000);                    // 적까지 50 — 200×0.5 = 100 안
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         // 쏘기도 되므로 **50(사거리×0.6) 조건이 끼어들어** 한 칸씩 밀린다 — 60·42·**50**·45·16…
         Check(srv.DebugAIAction(0, 3) == 50, "쏘는 것인데 50 조건이 안 끼었다");
@@ -12697,7 +12703,7 @@ void TestAIFight() {
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetPos(0, 1000, 1000);                    // 적까지 400 — 100 밖
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 3) == 17, "먼데 원거리 사슬로 안 갔다");
     }
@@ -12707,7 +12713,7 @@ void TestAIFight() {
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetPos(0, 1250, 1000);                    // 적까지 150
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 3) == 17, "150 은 절반(100) 밖인데 근접으로 갔다 — 잣대가 절반이다");
     }
@@ -12717,7 +12723,7 @@ void TestAIFight() {
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetPos(0, 1300, 1000);                    // 적까지 딱 100
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 3) == 17, "딱 절반인데 근접으로 갔다 — 경계가 < 다");
     }
@@ -12729,10 +12735,10 @@ void TestAIFight() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, "10.6.11.9:9999", -1);        // 없는 사람
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugSetPetEnemy(0, Sid(srv, "10.6.11.9:9999"), -1);        // 없는 사람
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
-        Check(srv.DebugPetEnemy(0).empty() && srv.DebugAIAction(0, 1) == 56 && srv.DebugAIAction(0, 2) == 7,
+        Check((srv.DebugPetEnemy(0) == nox::kNoSession) && srv.DebugAIAction(0, 1) == 56 && srv.DebugAIAction(0, 2) == 7,
               "대상이 사라졌는데 알아보기가 안 지웠거나 마지막 자리로 안 갔다");
     }
 
@@ -12740,7 +12746,7 @@ void TestAIFight() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 15, "싸움이 바닥에 안 남았다");
         Check(srv.DebugAIAction(0, 1) == 56, "「보이는 적 없음(56)」 조건이 안 깔렸다");
@@ -12754,7 +12760,7 @@ void TestAIFight() {
         std::vector<nox::OutPacket> out;
         // ★ 09-29 B2 — 마지막 자리를 b(1400,1000) 에서 떨어뜨린다 — 싸움 시작이 ALERT(전방위)로 알아보기를 돌려 거기 선 b 를 알아본다
         srv.DebugSetPetPos(0, 1000, 1600);                    // 마지막 자리에 서 있다
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1000, 1600);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1000, 1600);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "이미 그 자리인데 안 빠졌다");
     }
@@ -12763,7 +12769,7 @@ void TestAIFight() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetPos(0, 1392, 1000);                    // 8 만큼 떨어짐
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1400, 1000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1400, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 15, "딱 8 인데 그 자리로 봤다");
     }
@@ -12772,7 +12778,7 @@ void TestAIFight() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/900, 0, 1234, 1567);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/900, 0, 1234, 1567);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 2) == 7, "가기(7)가 안 올라갔다(이 시험의 전제)");
         // 그 가기를 굴려 보면 그 자리로 길을 낸다
@@ -12799,10 +12805,10 @@ void TestAIMelee() {
     auto mk = [&](nox::Server& srv, uint16_t type) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1010, 1000);
-        srv.DebugTeleport(b, 1010.0f, 1000.0f);   // ★ 09-29 B3 — 물리 자리(posX)까지 — 근접이 이제 대상을 자리로 다시 고른다(549440)
-        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1010, 1000);
+        srv.DebugTeleport(Sid(srv, b), 1010.0f, 1000.0f);   // ★ 09-29 B3 — 물리 자리(posX)까지 — 근접이 이제 대상을 자리로 다시 고른다(549440)
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);   // 이 시험은 쌓임을 손으로 세운다
         LoadRealAttackAnims(srv);       // ★ 09-30 — 근접은 애니 칸에서 때린다
         std::vector<nox::OutPacket> o;
@@ -12865,7 +12871,7 @@ void TestAIMelee() {
         srv.DebugAIPush(0, 16);
         srv.DebugAIStart(0, 16, out);
         Check(std::fabs(srv.DebugAIArgF(0, 1) - 15.0f * 1.2f) < 0.01f, "조건의 자가 사거리×1.2 가 아니다");
-        Check(srv.DebugAITargetAddr(0, 1) == b, "조건이 그 적을 안 가리킨다");
+        Check(srv.DebugAITargetAddr(0, 1) == Sid(srv, b), "조건이 그 적을 안 가리킨다");
     }
 
     // ③-2 **쉬는 시간 경계는 「같으면 친다」** — 딱 그 프레임이면 휘두른다
@@ -12913,7 +12919,7 @@ void TestAIMelee() {
     //   ★ 09-30 — 전에는 「대상이 없으면 곧 뺀다」였다(시작 틱에 때리던 때) — 이제 휘두르기를 끝까지 한다(원본 `532440`)
     {
         nox::Server srv; mk(srv, 1358);
-        srv.DebugTeleport(b, 3000.0f, 3000.0f);                // 근접 함수는 스스로 대상을 고른다(B3) — 앞 10 의 b 를 치우지 않으면 b 를 문다
+        srv.DebugTeleport(Sid(srv, b), 3000.0f, 3000.0f);                // 근접 함수는 스스로 대상을 고른다(B3) — 앞 10 의 b 를 치우지 않으면 b 를 문다
         std::vector<nox::OutPacket> out;
         srv.DebugAIPush(0, 16);
         const size_t n0 = out.size();
@@ -12931,13 +12937,13 @@ void TestAIMelee() {
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 0);
-        const int hp0 = srv.HealthOf(b);
+        const int hp0 = srv.HealthOf(Sid(srv, b));
         srv.DebugAIPush(0, 16);
         int hitAt = -1, t = 0;
         for (t = 1; t <= 40 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 16; ++t) {
             srv.DebugMonsterAnimUpdate(0);
             srv.DebugAITick(0, out);
-            if (hitAt < 0 && srv.HealthOf(b) < hp0) hitAt = t;
+            if (hitAt < 0 && srv.HealthOf(Sid(srv, b)) < hp0) hitAt = t;
         }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "⑤ 거머리 한 번 휘두르기 — 맞은 틱 %d(기대 15) · 빠진 틱 %d(기대 24) · 맞힘 %llu", hitAt, t - 1,
@@ -12954,15 +12960,15 @@ void TestAIMelee() {
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 0);
-        const int hp0 = srv.HealthOf(b);
+        const int hp0 = srv.HealthOf(Sid(srv, b));
         srv.DebugAIPush(0, 16);
         RunSwing(srv, 0, out);                                 // ★ 09-30 — 휘두르기 끝까지(애니 칸에서 때리고 끝에 빠진다)
         char msg[200];
         std::snprintf(msg, sizeof(msg), "⑤b 소환수 물기 · 맞히는 소리 %s — b 체력 %d→%d · 부름 %llu · 냄 %llu · 몬스터소리 %llu · 마지막 %u",
-                      hitSnd ? "있음" : "없음", hp0, srv.HealthOf(b), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
+                      hitSnd ? "있음" : "없음", hp0, srv.HealthOf(Sid(srv, b)), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
                       srv.hitSoundWay(nox::HitSoundWay::MonsterSound), static_cast<unsigned>(srv.lastHitSound()));
-        if (hitSnd) Check(srv.HealthOf(b) < hp0 && srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::MonsterSound) == 1, msg);
-        else Check(srv.HealthOf(b) < hp0 && srv.hitSoundCalls() == 1 && PlayerHitByObject(srv), msg);
+        if (hitSnd) Check(srv.HealthOf(Sid(srv, b)) < hp0 && srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::MonsterSound) == 1, msg);
+        else Check(srv.HealthOf(Sid(srv, b)) < hp0 && srv.hitSoundCalls() == 1 && PlayerHitByObject(srv), msg);
     }
     // ⑤c ★ 4-c3b3b — 맞는 쪽이 **소환수**여도 같다(기본 타격 소리 `532E20` 앞에서 가른다) — 쇠 몬스터 × 쇠 몬스터 861
     for (int hitSnd = 0; hitSnd < 2; ++hitSnd) {
@@ -12971,8 +12977,8 @@ void TestAIMelee() {
         if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1365] = 1; srv.SetMonsterHitSounds(t); }
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
-        srv.DebugSpawnPet(1328, 1010.0f, 1000.0f, std::string());   // 1 — 맵 몬스터(물릴 쪽)
-        srv.DebugTeleport(b, 3000.0f, 3000.0f);                     // ★ 09-29 B3 — b 가 같은 자리면 근접이 b 를 고른다(틈이 같으면 먼저 본 쪽)
+        srv.DebugSpawnPet(1328, 1010.0f, 1000.0f, Sid(srv, std::string()));   // 1 — 맵 몬스터(물릴 쪽)
+        srv.DebugTeleport(Sid(srv, b), 3000.0f, 3000.0f);                     // ★ 09-29 B3 — b 가 같은 자리면 근접이 b 를 고른다(틈이 같으면 먼저 본 쪽)
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, std::string(), 1);
         srv.DebugSetPetNextHit(0, 0);
@@ -13026,7 +13032,7 @@ void TestAIMelee() {
         nox::Server srv; mk(srv, 1328);
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
-        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
+        srv.DebugAIPushDep(0, 17, Sid(srv, b), -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         uint32_t lo = 99999, hi = 0;
         for (int t = 0; t < 400; ++t) {
             srv.DebugSetPetNextHit(0, 0);
@@ -13045,14 +13051,14 @@ void TestAIMelee() {
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 1100);
-        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
+        srv.DebugAIPushDep(0, 17, Sid(srv, b), -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         srv.DebugAIStart(0, 17, out);
         char msg[200];
         std::snprintf(msg, sizeof(msg), "쏘기 쉬는 중 — 자리 %d · [1] %d 자 %.2f 대상 %s · [2] %d 때 %u",
-                      srv.DebugAIStackInd(0), srv.DebugAIAction(0, 1), srv.DebugAIArgF(0, 1), srv.DebugAITargetAddr(0, 1).c_str(),
+                      srv.DebugAIStackInd(0), srv.DebugAIAction(0, 1), srv.DebugAIArgF(0, 1), srv.Network().AddrOf(srv.DebugAITargetAddr(0, 1)).c_str(),
                       srv.DebugAIAction(0, 2), srv.DebugAIArgU32(0, 2));
         Check(srv.DebugAIStackInd(0) == 2 && srv.DebugAIAction(0, 1) == 50 && srv.DebugAIAction(0, 2) == 1, msg);
-        Check(std::fabs(srv.DebugAIArgF(0, 1) - 150.0f * 1.2f) < 0.01f && srv.DebugAITargetAddr(0, 1) == b, msg);
+        Check(std::fabs(srv.DebugAIArgF(0, 1) - 150.0f * 1.2f) < 0.01f && srv.DebugAITargetAddr(0, 1) == Sid(srv, b), msg);
         Check(srv.DebugAIArgU32(0, 2) == 1100, msg);
         Check(srv.DebugPetNextHit(0) == 1100, "쉬는 중인데 다음 때를 바꿨다");
     }
@@ -13062,7 +13068,7 @@ void TestAIMelee() {
         nox::Server srv; mk(srv, 1358);                       // GiantLeech — 쏠 게 없다
         std::vector<nox::OutPacket> out;
         SetEnemySeen(srv, 0, b, -1);
-        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
+        srv.DebugAIPushDep(0, 17, Sid(srv, b), -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 0) == 0, "쏠 게 없는데 안 빠졌다");
     }
@@ -13072,7 +13078,7 @@ void TestAIMelee() {
         RegImpShot(srv);
         SetEnemySeen(srv, 0, b, -1);
         const size_t n0 = srv.missiles();
-        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
+        srv.DebugAIPushDep(0, 17, Sid(srv, b), -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         const int ticks = RunSwing(srv, 0, out, 17);           // ★ 09-30 — 쏘는 칸(1)에서 쏘고 애니(4칸·붙듦 0) 끝에 빠진다 = 4 틱
         // ★ 이제 **피해를 바로 주지 않는다** — `ImpShot` 오브젝트를 만들어 날린다(6-g(3b))
         Check(srv.missiles() == n0 + 1, "발사체가 안 생겼다");
@@ -13092,10 +13098,10 @@ void TestAIAttackCancel() {
     auto mk = [&](nox::Server& srv, uint16_t type) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1010, 1000);
-        srv.DebugTeleport(b, 1010.0f, 1000.0f);
-        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1010, 1000);
+        srv.DebugTeleport(Sid(srv, b), 1010.0f, 1000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
@@ -13114,7 +13120,7 @@ void TestAIAttackCancel() {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
         srv.DebugAIPush(0, 12);
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 99999, 0);
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 99999, 0);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIStarted(0, 1), "기다리기가 안 시작됐다(이 시험의 전제)");
         srv.DebugAIPush(0, 7);
@@ -13142,13 +13148,13 @@ void TestAIAttackCancel() {
         SetEnemySeen(srv, 0, b, -1);
         srv.DebugSetPetNextHit(0, 1100);
         srv.DebugAIPush(0, 12);
-        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 17, Sid(srv, b), -1, 0, 0.0f);
         srv.DebugAITick(0, out);
         const std::string s = stack(srv);
         char msg[200];
         std::snprintf(msg, sizeof(msg), "③ 쏘기 쉬는 중 — 쌓임 [%s] (기대 [12,50,1]) · 50 의 자 %.2f(기대 180) · 대상 %s · 때 %u",
-                      s.c_str(), srv.DebugAIArgF(0, 1), srv.DebugAITargetAddr(0, 1).c_str(), srv.DebugAIArgU32(0, 2));
-        Check(s == "12,50,1" && std::fabs(srv.DebugAIArgF(0, 1) - 180.0f) < 0.01f && srv.DebugAITargetAddr(0, 1) == b &&
+                      s.c_str(), srv.DebugAIArgF(0, 1), srv.Network().AddrOf(srv.DebugAITargetAddr(0, 1)).c_str(), srv.DebugAIArgU32(0, 2));
+        Check(s == "12,50,1" && std::fabs(srv.DebugAIArgF(0, 1) - 180.0f) < 0.01f && srv.DebugAITargetAddr(0, 1) == Sid(srv, b) &&
               srv.DebugAIArgU32(0, 2) == 1100, msg);
     }
     // ④ 취소로 안 빠지는 것은 그대로 — 변신(33) 위에 올리면 [12, 33, 7]
@@ -13174,9 +13180,9 @@ void TestMonsterMeleeTiming() {
     auto mk = [&](nox::Server& srv, uint16_t type, float bx) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 900.0f, 1000.0f);                 // 주인은 등 뒤
-        srv.DebugTeleport(b, bx, 1000.0f);
-        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugTeleport(Sid(srv, a), 900.0f, 1000.0f);                 // 주인은 등 뒤
+        srv.DebugTeleport(Sid(srv, b), bx, 1000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);
         LoadRealAttackAnims(srv);
         std::vector<nox::OutPacket> o;
@@ -13203,11 +13209,11 @@ void TestMonsterMeleeTiming() {
         srv.DebugSetPetNextHit(0, 0);
         srv.DebugAIPush(0, 16);
         uint32_t f = 1000;
-        const int hp0 = srv.HealthOf(b);
+        const int hp0 = srv.HealthOf(Sid(srv, b));
         int hitAt = -1;
         for (int t = 1; t <= 30 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 16; ++t) {
             step(srv, out, f);
-            if (hitAt < 0 && srv.HealthOf(b) < hp0) hitAt = static_cast<int>(f - srv.DebugPetAttackStart(0));
+            if (hitAt < 0 && srv.HealthOf(Sid(srv, b)) < hp0) hitAt = static_cast<int>(f - srv.DebugPetAttackStart(0));
         }
         char msg[200];
         std::snprintf(msg, sizeof(msg), "① 곰 — 시작→맞음 %d 틱(기대 9) · 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu · 틱 %d~%d · 맞힘 %llu",
@@ -13224,14 +13230,14 @@ void TestMonsterMeleeTiming() {
         srv.DebugAIPush(0, 16);
         uint32_t f = 1000;
         for (int t = 0; t < 4; ++t) step(srv, out, f);         // 칸 2 쯤 — 아직 안 때림
-        const int hp0 = srv.HealthOf(b);
-        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0.0f, 1000.0f, 1400.0f);
+        const int hp0 = srv.HealthOf(Sid(srv, b));
+        srv.DebugAIPushDep(0, 25, Sid(srv, std::string()), -1, 0, 0.0f, 1000.0f, 1400.0f);
         const std::string s = stack(srv);
         for (int t = 0; t < 40; ++t) step(srv, out, f);
         char msg[200];
         std::snprintf(msg, sizeof(msg), "② 휘두르는 중 취소 — 올린 직후 쌓임 [%s](기대 [0,25]) · 맞힘 %llu(기대 0) · b 체력 %d→%d",
-                      s.c_str(), srv.meleeStrike(MW::Hit), hp0, srv.HealthOf(b));
-        Check(s == "0,25" && srv.meleeStrike(MW::Hit) == 0 && srv.HealthOf(b) == hp0, msg);
+                      s.c_str(), srv.meleeStrike(MW::Hit), hp0, srv.HealthOf(Sid(srv, b)));
+        Check(s == "0,25" && srv.meleeStrike(MW::Hit) == 0 && srv.HealthOf(Sid(srv, b)) == hp0, msg);
     }
     // ③ 끝 칸이 때리는 칸이면 두 번 — 작은 흰거미(6칸·붙듦 1·칸 5) · 원본 그대로(끝 칸에 닿을 때 · 끝을 넘으려다 설 때)
     {
@@ -13241,7 +13247,7 @@ void TestMonsterMeleeTiming() {
         srv.DebugAIPush(0, 16);
         uint32_t f = 1000;
         int t = 0;
-        for (t = 1; t <= 30 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 16; ++t) { step(srv, out, f); srv.DebugSetHealth(b, 150); }
+        for (t = 1; t <= 30 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 16; ++t) { step(srv, out, f); srv.DebugSetHealth(Sid(srv, b), 150); }
         char msg[200];
         std::snprintf(msg, sizeof(msg), "③ 작은 흰거미 — 맞힘 %llu(기대 2) · 제때 %llu · 끝칸두번째 %llu · 빠진 틱 %d(기대 12)",
                       srv.meleeStrike(MW::Hit), srv.attackTiming(AT::MeleeOnTime), srv.attackTiming(AT::MeleeLastRepeat), t - 1);
@@ -13288,9 +13294,9 @@ void TestMonsterShotTiming() {
     auto mk = [&](nox::Server& srv, uint16_t type) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 900.0f, 1000.0f);
-        srv.DebugTeleport(b, 1100.0f, 1000.0f);
-        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugTeleport(Sid(srv, a), 900.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, b), 1100.0f, 1000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);
         LoadRealAttackAnims(srv);
         RegImpShot(srv);
@@ -13315,7 +13321,7 @@ void TestMonsterShotTiming() {
         nox::Server srv; mk(srv, 1337);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetNextHit(0, 0);
-        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 17, Sid(srv, b), -1, 0, 0.0f);
         uint32_t f = 1000;
         int t = 0;
         for (t = 1; t <= 40 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 17; ++t) step(srv, out, f);
@@ -13332,7 +13338,7 @@ void TestMonsterShotTiming() {
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetNextHit(0, 0);
         const unsigned long long n0 = srv.missilesMade();
-        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 17, Sid(srv, b), -1, 0, 0.0f);
         srv.DebugAITick(0, out);                               // 넘기기 없이 한 번 — 칸 0 이라 아직 안 쏜다
         const unsigned long long before = srv.missilesMade() - n0;
         uint32_t f = 1000;
@@ -13348,10 +13354,10 @@ void TestMonsterShotTiming() {
         nox::Server srv; mk(srv, 1337);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetNextHit(0, 0);
-        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 17, Sid(srv, b), -1, 0, 0.0f);
         uint32_t f = 1000;
         for (int t = 0; t < 5; ++t) step(srv, out, f);
-        srv.DebugAIPushDep(0, 25, std::string(), -1, 0, 0.0f, 1000.0f, 1400.0f);
+        srv.DebugAIPushDep(0, 25, Sid(srv, std::string()), -1, 0, 0.0f, 1000.0f, 1400.0f);
         const std::string s = stack(srv);
         for (int t = 0; t < 40; ++t) step(srv, out, f);
         char msg[160];
@@ -13371,9 +13377,9 @@ void TestMonsterAnimOnWire() {
     auto mk = [&](nox::Server& srv, float bx) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 900.0f, 1000.0f);
-        srv.DebugTeleport(b, bx, 1000.0f);
-        srv.DebugSpawnPet(1365, 1000, 1000, a);                   // 곰 — 근접 9칸 · 붙듦 1
+        srv.DebugTeleport(Sid(srv, a), 900.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, b), bx, 1000.0f);
+        srv.DebugSpawnPet(1365, 1000, 1000, Sid(srv, a));                   // 곰 — 근접 9칸 · 붙듦 1
         srv.DebugSetAutoFight(false);
         LoadRealAttackAnims(srv);
         std::vector<nox::OutPacket> o;
@@ -13417,7 +13423,7 @@ void TestMonsterAnimOnWire() {
     // ① 걷기 — 가기(7)를 멀리(2000) 세우면 12 MOVE(뛰면 13)
     {
         nox::Server srv; mk(srv, 1400.0f);
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0.0f, 2000.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0.0f, 2000.0f, 1000.0f);
         uint32_t ms = 0;
         const int an = tickCheck(srv, ms, "① 걷기");
         Check(an == 12 || an == 13, "① 가는 중인데 애니가 걷기(12·13)가 아니다");
@@ -13462,7 +13468,7 @@ void TestSummonOwnership() {
     nox::Server srv;
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
     srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-    srv.DebugTeleport(b, 1600.0f, 1000.0f);
+    srv.DebugTeleport(Sid(srv, b), 1600.0f, 1000.0f);
     std::vector<nox::OutPacket> out;
     SummonImp(srv, a, out);
     Check(srv.pets() == 1, "① 임프가 안 나왔다");
@@ -13486,7 +13492,7 @@ void TestSummonOwnership() {
     // ② 잃음 — 죽이면 주인에게만 6d 3바이트
     {
         out.clear();
-        srv.DebugHurt(std::string(), 0, 9999, b, 0, out);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, b), 0, out);
         Check(srv.DebugPetDead(0), "② 임프가 안 죽었다");   // ★ 10-01 — 죽어도 시체로 남는다(목록 0 이 아니라 죽음 표시로 봄)
         std::vector<uint8_t> lose;
         Check(find(FlattenTo(out, a), 0x6D, net, &lose, nullptr) == 1 && lose.size() == 3, "② 주인에게 6d(3바이트)가 한 번이 아니다");
@@ -13495,11 +13501,11 @@ void TestSummonOwnership() {
     }
     // ③ 주인 없는 맵 몬스터가 죽으면 아무에게도 6d 가 없다
     {
-        srv.DebugSpawnPet(1328, 1000, 1000, std::string());
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, std::string()));
         const size_t wi = srv.pets() - 1;                     // ★ 10-01 — 앞 칸(0)은 ② 의 시체
         const uint16_t wildNet = srv.DebugPetNet(wi);
         out.clear();
-        srv.DebugHurt(std::string(), static_cast<int>(wi), 9999, b, 0, out);
+        srv.DebugHurt(Sid(srv, std::string()), static_cast<int>(wi), 9999, Sid(srv, b), 0, out);
         Check(srv.DebugPetDead(wi), "③ 맵 몬스터가 안 죽었다");
         Check(find(Flatten(out), 0x6D, wildNet, nullptr, nullptr) == 0 && srv.summonOwnSent(2) == 1, "③ 주인 없는데 6d 가 나갔다");
     }
@@ -13514,14 +13520,14 @@ void TestSummonFx() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 1000.0f, 1000.0f);
-        srv.DebugTeleport(b, 1600.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, a), 1000.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, b), 1600.0f, 1000.0f);
         RegSpell(srv, 87);
         LoadRealAttackAnims(srv);
         nox::Gamedata g;
         g.Parse("SummonDuration = 60, 210, 375;\n");
         srv.SetGamedata(g);
-        srv.DebugSetFacing(a, 64);                              // +y 쪽(64/256 바퀴) — 자리 = (1000, 1000 + 40) · 0 이 아니어야 「방향 칸 0 고정」이 걸린다
+        srv.DebugSetFacing(Sid(srv, a), 64);                              // +y 쪽(64/256 바퀴) — 자리 = (1000, 1000 + 40) · 0 이 아니어야 「방향 칸 0 고정」이 걸린다
     };
     auto pick = [](const std::vector<std::vector<uint8_t>>& v, uint8_t op) {
         std::vector<std::vector<uint8_t>> r;
@@ -13577,7 +13583,7 @@ void TestSummonFx() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = srv.DebugNowMs();
         CastAndWait(srv, a, 87, false, ms, out);
-        srv.DebugTeleport(a, 2000.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, a), 2000.0f, 1000.0f);
         runOut(srv, ms, out, 0);
         double px = 0, py = 0;
         const bool have = srv.pets() == 1 && srv.DebugPetXY(0, px, py);
@@ -13591,7 +13597,7 @@ void TestSummonFx() {
         uint32_t ms = srv.DebugNowMs();
         CastAndWait(srv, a, 87, false, ms, out);
         const auto start = pick(FlattenTo(out, a), 0x7E);
-        srv.DebugHurt(a, -1, 9999, b, 0, out);
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, b), 0, out);
         runOut(srv, ms, out, 0);
         Check(srv.pets() == 0, "③ 시전자가 죽었는데 임프가 섰다");
         const auto endA = pick(FlattenTo(out, a), 0x7F), endB = pick(FlattenTo(out, b), 0x7F);
@@ -13603,7 +13609,7 @@ void TestSummonFx() {
     // ④ 거느린 크기 한도(4)가 차 있으면 만들기가 실패 — 7e·7f 둘 다 없음(글은 나감 = 실패 갈래를 탔다는 분모)
     {
         nox::Server srv; mk(srv);
-        for (int n = 0; n < 4; ++n) srv.DebugSpawnPet(1328, 1100.0f, 1100.0f, a);
+        for (int n = 0; n < 4; ++n) srv.DebugSpawnPet(1328, 1100.0f, 1100.0f, Sid(srv, a));
         std::vector<nox::OutPacket> out;
         uint32_t ms = srv.DebugNowMs();
         CastAndWait(srv, a, 87, false, ms, out);
@@ -13622,9 +13628,9 @@ void TestCorpse() {
     auto mk = [&](nox::Server& srv, const std::string& owner) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 900.0f, 1000.0f);
-        srv.DebugTeleport(b, 1060.0f, 1000.0f);                 // 곰 옆 — 시체가 싸움을 쌓나 보려고 적을 가까이 둔다
-        srv.DebugSpawnPet(1365, 1000, 1000, owner);             // 곰 — 죽어감(9) 12칸 · 붙듦 1(LoadRealAttackAnims)
+        srv.DebugTeleport(Sid(srv, a), 900.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, b), 1060.0f, 1000.0f);                 // 곰 옆 — 시체가 싸움을 쌓나 보려고 적을 가까이 둔다
+        srv.DebugSpawnPet(1365, 1000, 1000, Sid(srv, owner));             // 곰 — 죽어감(9) 12칸 · 붙듦 1(LoadRealAttackAnims)
         LoadRealAttackAnims(srv);
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
@@ -13649,13 +13655,13 @@ void TestCorpse() {
             srv.SetTypeBody(1365, body);
         }
         srv.SetMonsterAnim(1365, 10, 4, 0, true);
-        srv.DebugSetPetEnemy(0, b, -1);
-        Check((srv.DebugPetObjFlags(0) & 0x80) && srv.DebugPetSeenCount(0) == 1 && srv.DebugPetEnemy(0) == b, "① 시험 값(몸 0x80 · 상대·보이는 목록)이 안 들어갔다");
+        srv.DebugSetPetEnemy(0, Sid(srv, b), -1);
+        Check((srv.DebugPetObjFlags(0) & 0x80) && srv.DebugPetSeenCount(0) == 1 && srv.DebugPetEnemy(0) == Sid(srv, b), "① 시험 값(몸 0x80 · 상대·보이는 목록)이 안 들어갔다");
         uint32_t ms = srv.DebugNowMs();
         const uint16_t net = srv.DebugPetNet(0);
         std::vector<nox::OutPacket> out;
         const uint32_t f0 = srv.DebugFrame();
-        srv.DebugHurt(std::string(), 0, 9999, b, 0, out);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, b), 0, out);
         Check(srv.pets() == 1 && srv.DebugPetDead(0) && srv.DebugPetHealth(0) == 0, "① 죽었는데 시체로 안 남았다");
         // 바닥이 놀기 하나면 그 칸을 덮어쓴다(원본 `server/object_ai.go:103~104`) → [31, 30(맨 위)]
         std::snprintf(msg, sizeof(msg), "① 쌓임 맨 위 %d · [%d %d](기대 1 · [31 30])", srv.DebugAIStackInd(0),
@@ -13689,8 +13695,8 @@ void TestCorpse() {
         {
             const uint32_t fl = srv.DebugPetObjFlags(0);
             std::snprintf(msg, sizeof(msg), "⑥' 31 뒤 몸 깃발 %08x(0x18·0x8000 켬) · 끝남 %d · 보이는 수 %zu · 상대 '%s'", fl,
-                          srv.DebugPetDeadDone(0) ? 1 : 0, srv.DebugPetSeenCount(0), srv.DebugPetEnemy(0).c_str());
-            Check((fl & 0x18) == 0x18 && (fl & 0x8000) && srv.DebugPetDeadDone(0) && srv.DebugPetSeenCount(0) == 0 && srv.DebugPetEnemy(0).empty(), msg);
+                          srv.DebugPetDeadDone(0) ? 1 : 0, srv.DebugPetSeenCount(0), srv.Network().AddrOf(srv.DebugPetEnemy(0)).c_str());
+            Check((fl & 0x18) == 0x18 && (fl & 0x8000) && srv.DebugPetDeadDone(0) && srv.DebugPetSeenCount(0) == 0 && (srv.DebugPetEnemy(0) == nox::kNoSession), msg);
             const unsigned long long adv0 = srv.animStat(nox::AnimStat::Advance);
             const int frame0 = srv.DebugPetAnimFrame(0);
             for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
@@ -13702,7 +13708,7 @@ void TestCorpse() {
         const auto lose0 = srv.summonOwnSent(2);
         const auto snd0 = srv.monsterSnd(14, true);
         const auto k0 = srv.petsKilled();
-        srv.DebugHurt(std::string(), 0, 9999, b, 0, out);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, b), 0, out);
         std::snprintf(msg, sizeof(msg), "② 시체를 또 때림 — 6d %llu→%llu · 죽음 소리 %llu→%llu · 죽은 수 %llu→%llu · 죽음 계수 %llu(1)",
                       lose0, srv.summonOwnSent(2), snd0, srv.monsterSnd(14, true), k0, srv.petsKilled(), srv.corpseStat(0));
         Check(srv.summonOwnSent(2) == lose0 && srv.monsterSnd(14, true) == snd0 && srv.petsKilled() == k0 && srv.corpseStat(0) == 1, msg);
@@ -13719,7 +13725,7 @@ void TestCorpse() {
     {
         nox::Server srv; mk(srv, std::string());
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(std::string(), 0, 9999, b, 0, out);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, b), 0, out);
         Check(srv.DebugPetDead(0) && srv.DebugPetDecayFrame(0) == 0, "⑤ 맵 몬스터 시체에 썩음 프레임이 잡혔다");
         uint32_t ms = srv.DebugNowMs();
         for (int t = 0; t < 760; ++t) { ms += 34; srv.Tick(ms, out); }
@@ -13730,14 +13736,14 @@ void TestCorpse() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 900.0f, 1000.0f);
-        srv.DebugTeleport(b, 1300.0f, 1000.0f);
-        srv.DebugSpawnPet(1325, 1000, 1000, a);
+        srv.DebugTeleport(Sid(srv, a), 900.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, b), 1300.0f, 1000.0f);
+        srv.DebugSpawnPet(1325, 1000, 1000, Sid(srv, a));
         LoadRealAttackAnims(srv);
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         const uint16_t net = srv.DebugPetNet(0);
-        srv.DebugHurt(std::string(), 0, 9999, b, 0, o);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, b), 0, o);
         const uint32_t decay = srv.DebugPetDecayFrame(0);
         uint32_t ms = srv.DebugNowMs();
         std::vector<nox::OutPacket> all;
@@ -13759,13 +13765,13 @@ void TestCorpseFilters() {
     auto mk = [&](nox::Server& srv, const std::string& owner, float x0, float x1) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 600.0f, 1000.0f);
-        srv.DebugTeleport(b, 1600.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, a), 600.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, b), 1600.0f, 1000.0f);
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1365, body);
         LoadRealAttackAnims(srv);
-        srv.DebugSpawnPet(1365, x0, 1000.0f, owner);
-        srv.DebugSpawnPet(1365, x1, 1000.0f, owner);
+        srv.DebugSpawnPet(1365, x0, 1000.0f, Sid(srv, owner));
+        srv.DebugSpawnPet(1365, x1, 1000.0f, Sid(srv, owner));
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetPetPos(0, x0, 1000.0f);
@@ -13774,7 +13780,7 @@ void TestCorpseFilters() {
     };
     // 죽이고 31 첫 갱신까지(몸 0x18 · 끝남) 돌린다
     auto killToCorpse = [&](nox::Server& srv, size_t i, uint32_t& ms, std::vector<nox::OutPacket>& o) {
-        srv.DebugHurt(std::string(), static_cast<int>(i), 9999, b, 0, o);
+        srv.DebugHurt(Sid(srv, std::string()), static_cast<int>(i), 9999, Sid(srv, b), 0, o);
         for (int t = 0; t < 40 && !srv.DebugPetDeadDone(i); ++t) { ms += 34; srv.Tick(ms, o); }
         Check(srv.DebugPetDead(i) && srv.DebugPetDeadDone(i), "시체 만들기 전제 — 31 첫 갱신까지 못 갔다");
     };
@@ -13784,8 +13790,8 @@ void TestCorpseFilters() {
         nox::Server srv; mk(srv, a, 1000.0f, 1100.0f);
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
         killToCorpse(srv, 0, ms, o);
-        srv.DebugOrder(a, 0, 3);                                // 번호 0 = 내 것 전부
-        srv.DebugOrder(a, srv.DebugPetNet(0), 3);               // 시체 번호로 콕 집어도
+        srv.DebugOrder(Sid(srv, a), 0, 3);                                // 번호 0 = 내 것 전부
+        srv.DebugOrder(Sid(srv, a), srv.DebugPetNet(0), 3);               // 시체 번호로 콕 집어도
         std::snprintf(msg, sizeof(msg), "① 명령 — 산 곰 맨 위 %d(4) · 시체 맨 위 %d·[%d](0·[31])", srv.DebugAIAction(1, srv.DebugAIStackInd(1)),
                       srv.DebugAIStackInd(0), srv.DebugAIAction(0, 0));
         Check(srv.DebugAIAction(1, srv.DebugAIStackInd(1)) == 4 && srv.DebugAIStackInd(0) == 0 && srv.DebugAIAction(0, 0) == 31, msg);
@@ -13807,10 +13813,10 @@ void TestCorpseFilters() {
         nox::Server srv; mk(srv, std::string(), 1000.0f, 1100.0f);
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
         killToCorpse(srv, 0, ms, o);
-        srv.DebugAimAt(a, 1000, 1000);
-        const nox::Target onCorpse = srv.DebugFindObjectAtCursor(a);
-        srv.DebugAimAt(a, 1100, 1000);
-        const nox::Target onLive = srv.DebugFindObjectAtCursor(a);
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);
+        const nox::Target onCorpse = srv.DebugFindObjectAtCursor(Sid(srv, a));
+        srv.DebugAimAt(Sid(srv, a), 1100, 1000);
+        const nox::Target onLive = srv.DebugFindObjectAtCursor(Sid(srv, a));
         std::snprintf(msg, sizeof(msg), "③ 커서 — 시체 위 칸 %d(없음 −1) · 산 곰 위 칸 %d(1)", onCorpse.pet, onLive.pet);
         Check(onCorpse.none() && onLive.pet == 1, msg);
     }
@@ -13819,9 +13825,9 @@ void TestCorpseFilters() {
         nox::Server srv; mk(srv, std::string(), 1000.0f, 1100.0f);
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
         killToCorpse(srv, 0, ms, o);
-        const nox::Target found = srv.DebugFlySearch(1000.0f, 1000.0f, b, 300.0f);
-        std::snprintf(msg, sizeof(msg), "④ 날아가는 주문 대상 — 칸 %d · 사람 '%s'(기대 칸 1)", found.pet, found.addr.c_str());
-        Check(found.addr.empty() && found.pet == 1, msg);
+        const nox::Target found = srv.DebugFlySearch(1000.0f, 1000.0f, Sid(srv, b), 300.0f);
+        std::snprintf(msg, sizeof(msg), "④ 날아가는 주문 대상 — 칸 %d · 사람 '%s'(기대 칸 1)", found.pet, srv.Network().AddrOf(found.addr).c_str());
+        Check((found.addr == nox::kNoSession) && found.pet == 1, msg);
     }
     // ⑤ 근접 — 컨저러 주먹(사거리 30) 바로 앞(15)의 시체가 아니라 그 뒤(30)의 산 곰을 친다(`sub_5386A0` 0x8049 · `sub_538510` 0x8040)
     //   ⚠ 워리어 칼은 시험 서버에 무기 표가 없어 판정까지 안 간다(첫 판에서 「상태 1 들어감」만 찍히고 판정 줄 0) — 기존 근접 시험처럼 맨손으로
@@ -13829,9 +13835,9 @@ void TestCorpseFilters() {
         nox::Server srv; mk(srv, std::string(), 1025.0f, 1010.0f);
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
         killToCorpse(srv, 0, ms, o);
-        srv.DebugTeleport(a, 1040.0f, 1000.0f);
-        srv.DebugSetFacing(a, 128);                             // −x(곰 쪽)
-        srv.DebugAimAt(a, 1000, 1000);                          // 조작이 조준 쪽으로 돌려세우므로 조준도 곰 쪽
+        srv.DebugTeleport(Sid(srv, a), 1040.0f, 1000.0f);
+        srv.DebugSetFacing(Sid(srv, a), 128);                             // −x(곰 쪽)
+        srv.DebugAimAt(Sid(srv, a), 1000, 1000);                          // 조작이 조준 쪽으로 돌려세우므로 조준도 곰 쪽
         const uint16_t hp1 = srv.DebugPetHealth(1);
         for (int n = 0; n < 3 && srv.DebugPetHealth(1) == hp1; ++n) {
             auto pkt = InputPacket(6);
@@ -13846,11 +13852,11 @@ void TestCorpseFilters() {
         nox::Server srv; mk(srv, std::string(), 1000.0f, 1300.0f);
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
         killToCorpse(srv, 0, ms, o);
-        srv.DebugTeleport(b, 1004.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, b), 1004.0f, 1000.0f);
         const unsigned long long p0 = srv.bodyPushSteps(2);
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, o); }
         const unsigned long long onCorpse = srv.bodyPushSteps(2) - p0;
-        srv.DebugTeleport(b, 1304.0f, 1000.0f);
+        srv.DebugTeleport(Sid(srv, b), 1304.0f, 1000.0f);
         const unsigned long long p1 = srv.bodyPushSteps(2);
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, o); }
         const unsigned long long onLive = srv.bodyPushSteps(2) - p1;
@@ -13880,19 +13886,19 @@ void TestCorpseGaps() {
     // ①② 작살 — 워리어 a(1000) 앞에 맵 임프 하나
     auto mkHarpoon = [&](nox::Server& srv, float px) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         RegHarpoonBolt(srv);
         AllMetalButPlayer(srv);
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
         LoadRealAttackAnims(srv);
-        srv.DebugSpawnPet(1328, px, 1000.0f, std::string());
+        srv.DebugSpawnPet(1328, px, 1000.0f, Sid(srv, std::string()));
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
         srv.Tick(ms, o); ms += 34; srv.Tick(ms, o);
         srv.DebugSetPetPos(0, px, 1000.0f);
         srv.DebugSetAutoFight(false);
-        srv.DebugAbilAward(a, 3, false, o);
-        srv.DebugSetFacing(a, 0);
+        srv.DebugAbilAward(Sid(srv, a), 3, false, o);
+        srv.DebugSetFacing(Sid(srv, a), 0);
         return ms;
     };
     char msg[240];
@@ -13901,36 +13907,36 @@ void TestCorpseGaps() {
         uint32_t ms = mkHarpoon(srv, 1100.0f);
         std::vector<nox::OutPacket> out;
         const auto att0 = srv.harpoonTouch(nox::HarpoonTouch::Attached);
-        const bool fired = srv.DebugAbilDo(a, 3, out);
-        for (int t = 0; t < 30 && srv.harpoonTouch(nox::HarpoonTouch::Attached) == att0 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const bool fired = srv.DebugAbilDo(Sid(srv, a), 3, out);
+        for (int t = 0; t < 30 && srv.harpoonTouch(nox::HarpoonTouch::Attached) == att0 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
         const bool attached = srv.harpoonTouch(nox::HarpoonTouch::Attached) > att0;
         Check(fired && attached, "① 작살 전제 — 쏘아 임프에 붙지 못했다");
         const auto td0 = srv.harpoonEnd(nox::HarpoonEnd::TargetDead);
-        srv.DebugHurt(std::string(), 0, 9999, a, 0, out);
-        srv.DebugHarpoonUpdate(a, out);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, a), 0, out);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
         std::snprintf(msg, sizeof(msg), "① 붙은 임프가 죽음 — 「상대 죽음」 끊김 +%llu(1) · 화살 %u(0)",
-                      srv.harpoonEnd(nox::HarpoonEnd::TargetDead) - td0, static_cast<unsigned>(srv.DebugHarpoonBolt(a)));
-        Check(srv.DebugPetDead(0) && srv.harpoonEnd(nox::HarpoonEnd::TargetDead) - td0 == 1 && srv.DebugHarpoonBolt(a) == 0, msg);
+                      srv.harpoonEnd(nox::HarpoonEnd::TargetDead) - td0, static_cast<unsigned>(srv.DebugHarpoonBolt(Sid(srv, a))));
+        Check(srv.DebugPetDead(0) && srv.harpoonEnd(nox::HarpoonEnd::TargetDead) - td0 == 1 && srv.DebugHarpoonBolt(Sid(srv, a)) == 0, msg);
     }
     {
         nox::Server srv;
         uint32_t ms = mkHarpoon(srv, 1250.0f);
-        srv.DebugAimAt(a, 1250, 1000);                         // 휘어 가기의 겨눔은 **사람이 겨눈 자리(커서)** 둘레에서 찾는다 — 안 두면 곧장 날아가 붙는다(첫 판)
+        srv.DebugAimAt(Sid(srv, a), 1250, 1000);                         // 휘어 가기의 겨눔은 **사람이 겨눈 자리(커서)** 둘레에서 찾는다 — 안 두면 곧장 날아가 붙는다(첫 판)
         std::vector<nox::OutPacket> out;
         const auto aim0 = srv.harpoonAimFound();
         const auto att0 = srv.harpoonTouch(nox::HarpoonTouch::Attached);
-        const bool fired = srv.DebugAbilDo(a, 3, out);
-        for (int t = 0; t < 30 && srv.harpoonAimFound() == aim0 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        const bool aimed = srv.harpoonAimFound() > aim0 && srv.harpoonTouch(nox::HarpoonTouch::Attached) == att0 && srv.DebugHarpoonBolt(a) != 0;
+        const bool fired = srv.DebugAbilDo(Sid(srv, a), 3, out);
+        for (int t = 0; t < 30 && srv.harpoonAimFound() == aim0 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const bool aimed = srv.harpoonAimFound() > aim0 && srv.harpoonTouch(nox::HarpoonTouch::Attached) == att0 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0;
         std::snprintf(msg, sizeof(msg), "② 작살 전제 — 쏨 %d · 겨눔 +%llu · 붙음 +%llu · 화살 %u", fired ? 1 : 0, srv.harpoonAimFound() - aim0,
-                      srv.harpoonTouch(nox::HarpoonTouch::Attached) - att0, static_cast<unsigned>(srv.DebugHarpoonBolt(a)));
+                      srv.harpoonTouch(nox::HarpoonTouch::Attached) - att0, static_cast<unsigned>(srv.DebugHarpoonBolt(Sid(srv, a))));
         Check(fired && aimed, msg);
         const auto ad0 = srv.harpoonEnd(nox::HarpoonEnd::AimDead);
-        srv.DebugHurt(std::string(), 0, 9999, a, 0, out);
-        srv.DebugHarpoonUpdate(a, out);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, a), 0, out);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
         std::snprintf(msg, sizeof(msg), "② 겨눈 임프가 날아가는 중에 죽음 — 「겨눈 것 죽음」 끊김 +%llu(1) · 화살 %u(0)",
-                      srv.harpoonEnd(nox::HarpoonEnd::AimDead) - ad0, static_cast<unsigned>(srv.DebugHarpoonBolt(a)));
-        Check(srv.DebugPetDead(0) && srv.harpoonEnd(nox::HarpoonEnd::AimDead) - ad0 == 1 && srv.DebugHarpoonBolt(a) == 0, msg);
+                      srv.harpoonEnd(nox::HarpoonEnd::AimDead) - ad0, static_cast<unsigned>(srv.DebugHarpoonBolt(Sid(srv, a))));
+        Check(srv.DebugPetDead(0) && srv.harpoonEnd(nox::HarpoonEnd::AimDead) - ad0 == 1 && srv.DebugHarpoonBolt(Sid(srv, a)) == 0, msg);
     }
     // ③ 픽시 — 컨저러 a 의 픽시 둘을 시체(곰 0, 31 뒤) 자리와 산 곰(1) 자리에 놓고 한 틱
     {
@@ -13941,21 +13947,21 @@ void TestCorpseGaps() {
         srv.SetNamedType("Pixie", 672);
         srv.SetSpellDef(58, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 810, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1365, body);
         LoadRealAttackAnims(srv);
-        srv.DebugSpawnPet(1365, 1300.0f, 1000.0f, std::string());
-        srv.DebugSpawnPet(1365, 1500.0f, 1000.0f, std::string());
+        srv.DebugSpawnPet(1365, 1300.0f, 1000.0f, Sid(srv, std::string()));
+        srv.DebugSpawnPet(1365, 1500.0f, 1000.0f, Sid(srv, std::string()));
         std::vector<nox::OutPacket> out; uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
         srv.DebugSetPetPos(0, 1300.0f, 1000.0f);
         srv.DebugSetPetPos(1, 1500.0f, 1000.0f);
         srv.DebugSetAutoFight(false);
-        srv.DebugHurt(std::string(), 0, 9999, a, 0, out);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, a), 0, out);
         for (int t = 0; t < 40 && !srv.DebugPetDeadDone(0); ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.DebugPetDeadDone(0) && (srv.DebugPetObjFlags(0) & 0x10), "③ 전제 — 시체가 31 첫 갱신(SHORT)까지 못 갔다");
-        srv.DebugSpellAccept(a, 58, 1, out);                   // 세기 1 → 두 마리
+        srv.DebugSpellAccept(Sid(srv, a), 58, 1, out);                   // 세기 1 → 두 마리
         Check(srv.missiles() == 2, "③ 전제 — 픽시가 둘이 아니다");
         srv.DebugSetMissileXY(0, 1300.0f, 1000.0f);
         srv.DebugSetMissileXY(1, 1500.0f, 1000.0f);
@@ -13978,14 +13984,14 @@ void TestRoundFreeze() {
     nox::Server srv;
     srv.DebugEnterGame(a, 790, false, nox::CharClass::Conjurer);
     srv.DebugEnterGame(b, 791, false, nox::CharClass::Wizard);
-    srv.DebugMoveTo(a, 1500, 1000);                             // 임프에서 200 — 첫 판에서 쫓는 것을 본 거리(300 은 안 쫓음)
-    srv.DebugMoveTo(b, 1000, 1600);
-    srv.DebugAimAt(b, 3000, 1600);                              // 커서 멀리 — 걷기 입력이면 오른쪽으로 달림
-    srv.DebugImportantReal(a, /*ready=*/true);                // a 는 묶음 길(진짜 경로)
+    srv.DebugMoveTo(Sid(srv, a), 1500, 1000);                             // 임프에서 200 — 첫 판에서 쫓는 것을 본 거리(300 은 안 쫓음)
+    srv.DebugMoveTo(Sid(srv, b), 1000, 1600);
+    srv.DebugAimAt(Sid(srv, b), 3000, 1600);                              // 커서 멀리 — 걷기 입력이면 오른쪽으로 달림
+    srv.DebugImportantReal(Sid(srv, a), /*ready=*/true);                // a 는 묶음 길(진짜 경로)
     nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
     srv.SetTypeBody(1328, body);
     LoadRealAttackAnims(srv);
-    srv.DebugSpawnPet(1328, 1300.0f, 1000.0f, std::string());   // 맵 임프 — a 를 노린다
+    srv.DebugSpawnPet(1328, 1300.0f, 1000.0f, Sid(srv, std::string()));   // 맵 임프 — a 를 노린다
     std::vector<nox::OutPacket> out;
     uint32_t ms = 0;
     srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
@@ -13994,8 +14000,8 @@ void TestRoundFreeze() {
     walk.push_back(0);
     auto pos = [&](double& px, double& py, float& mx, float& my) {
         srv.DebugPetXY(0, px, py);
-        mx = static_cast<float>(srv.XOf(b));
-        my = static_cast<float>(srv.YOf(b));
+        mx = static_cast<float>(srv.XOf(Sid(srv, b)));
+        my = static_cast<float>(srv.YOf(Sid(srv, b)));
     };
     auto run = [&](int n, bool* saw27, bool* sawA4, bool* sawAa) {
         *saw27 = *sawA4 = *sawAa = false;
@@ -14029,7 +14035,7 @@ void TestRoundFreeze() {
     const unsigned long long fr0 = srv.roundFrozenTicks();
     pos(px0, py0, mx0, my0);
     run(15, &s27, &sA4, &sAa);
-    srv.DebugGiveExp(a, 50.0f, out);                            // 판끝 동안 중요 메시지 하나(`6e`)
+    srv.DebugGiveExp(Sid(srv, a), 50.0f, out);                            // 판끝 동안 중요 메시지 하나(`6e`)
     bool s27b, sA4b;
     run(15, &s27b, &sA4b, &sAa);
     pos(px1, py1, mx1, my1);
@@ -14042,9 +14048,9 @@ void TestRoundFreeze() {
     bool stillUntilRestart = true;
     int guard = 0;
     while (srv.roundsPlayed() == 0 && guard++ < 400) {
-        float bx = static_cast<float>(srv.XOf(b));
+        float bx = static_cast<float>(srv.XOf(Sid(srv, b)));
         run(1, &s27, &sA4, &sAa);
-        if (srv.roundsPlayed() == 0 && static_cast<float>(srv.XOf(b)) != bx) stillUntilRestart = false;
+        if (srv.roundsPlayed() == 0 && static_cast<float>(srv.XOf(Sid(srv, b))) != bx) stillUntilRestart = false;
     }
     pos(px0, py0, mx0, my0);
     run(10, &s27, &sA4, &sAa);
@@ -14073,13 +14079,13 @@ void TestReopenMap() {
     srv.SetWeaponDef(1170, 1, 0);
     srv.SetWorldStatics(st);
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-    srv.DebugMoveTo(a, 1000, 1000);
-    srv.DebugSetPos(a, 1000, 1000);
-    srv.DebugImportantReal(a, /*ready=*/true);
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+    srv.DebugSetPos(Sid(srv, a), 1000, 1000);
+    srv.DebugImportantReal(Sid(srv, a), /*ready=*/true);
     // b — 남의 점수 알림(`4e` b)은 a 의 스냅샷 꼬리에 없다 → 중요 대기열로만 온다(비우기와 넣기의 차례를 보는 자리)
     const std::string b = "10.9.35.2:49802";
     srv.DebugEnterGame(b, 733, false, nox::CharClass::Wizard);
-    srv.DebugMoveTo(b, 1400, 1000);
+    srv.DebugMoveTo(Sid(srv, b), 1400, 1000);
     srv.CaptureMapInitial();
     std::vector<nox::OutPacket> out;
     uint32_t ms = 0;
@@ -14102,9 +14108,9 @@ void TestReopenMap() {
             }
     }
     std::snprintf(msg, sizeof(msg), "① 다시 엶 — 판 수 %llu · USE_MAP %d(1) · 시각 %u · 바닥 물건 %zu(1) · 스냅샷 대기 %d(≥0) · 준비 %d(0)",
-                  srv.roundsPlayed(), useMaps, umFrame, srv.WorldStaticCount(), srv.DebugSnapshotIn(a), (int)srv.DebugImportantReady(a));
-    Check(srv.roundsPlayed() == 1 && useMaps == 1 && umFrame > 0 && srv.WorldStaticCount() == 1 && srv.DebugSnapshotIn(a) >= 0 &&
-          !srv.DebugImportantReady(a) && srv.mapReopenStat(0) == 2, msg);   // 게임 안 둘(a·b) 모두에게
+                  srv.roundsPlayed(), useMaps, umFrame, srv.WorldStaticCount(), srv.DebugSnapshotIn(Sid(srv, a)), (int)srv.DebugImportantReady(Sid(srv, a)));
+    Check(srv.roundsPlayed() == 1 && useMaps == 1 && umFrame > 0 && srv.WorldStaticCount() == 1 && srv.DebugSnapshotIn(Sid(srv, a)) >= 0 &&
+          !srv.DebugImportantReady(Sid(srv, a)) && srv.mapReopenStat(0) == 2, msg);   // 게임 안 둘(a·b) 모두에게
     // ② c0 전 — 27 만
     bool s27 = false, sA4 = false, sE9 = false;
     for (int t = 0; t < 10; ++t) {
@@ -14163,8 +14169,8 @@ void TestReopenMap() {
         out.clear();
     }
     std::snprintf(msg, sizeof(msg), "③ c0 뒤 — 스냅샷 꼬리 e9 자기 %d · 장비 4c 번호 729 %d · 4e 자기 %d · 4e 남(b) %d · 스냅샷 대기 %d(<0)", (int)e9Self,
-                  (int)gearNc1, (int)lesson, (int)lessonB, srv.DebugSnapshotIn(a));
-    Check(e9Self && gearNc1 && lesson && lessonB && srv.DebugSnapshotIn(a) < 0, msg);
+                  (int)gearNc1, (int)lesson, (int)lessonB, srv.DebugSnapshotIn(Sid(srv, a)));
+    Check(e9Self && gearNc1 && lesson && lessonB && srv.DebugSnapshotIn(Sid(srv, a)) < 0, msg);
     // ④ 평소
     s27 = sA4 = false;
     for (int t = 0; t < 5; ++t) {
@@ -14195,9 +14201,9 @@ void TestAIEscort() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 3000, 3000);                       // 멀리 — 끼어들지 않게
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 3000, 3000);                       // 멀리 — 끼어들지 않게
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);                         // 쌓임을 손으로 세운다
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
@@ -14238,7 +14244,7 @@ void TestAIEscort() {
         Check(srv.DebugAIAction(0, 3) == 49, "호위 거리보다 머나(49)가 안 깔렸다");
         Check(srv.DebugAIAction(0, 4) == 7, "가기(7)가 맨 위에 안 왔다");
         Check(std::fabs(srv.DebugAIArgF(0, 3) - 30.0f) < 0.01f, "49 의 자가 호위 거리(30)가 아니다");
-        Check(srv.DebugAITargetAddr(0, 3) == a, "49 가 주인을 안 가리킨다");
+        Check(srv.DebugAITargetAddr(0, 3) == Sid(srv, a), "49 가 주인을 안 가리킨다");
         Check(srv.DebugAIArgX(0, 4) == 1000.0f, "가기가 주인 자리를 안 받았다");
         Check(srv.DebugAIArgX(0, 0) == 1000.0f, "호위가 대상 자리를 안 적었다");
     }
@@ -14247,7 +14253,7 @@ void TestAIEscort() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSpawnPet(1328, 2000, 2000, std::string());   // 주인 없음
+        srv.DebugSpawnPet(1328, 2000, 2000, Sid(srv, std::string()));   // 주인 없음
         srv.DebugSetAutoFight(false);
         srv.DebugAIPush(1, 3);
         srv.DebugAITick(1, out);
@@ -14259,7 +14265,7 @@ void TestAIEscort() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetPos(0, 1300, 1000);
-        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetEnemy(0, Sid(srv, b), -1);
         srv.DebugAIPush(0, 3);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 15, "상대가 있는데 싸움(15)을 안 올렸다");
@@ -14325,9 +14331,9 @@ void TestAIEscort() {
         std::vector<nox::OutPacket> out;
         srv.DebugPathBakeWalls();
         srv.DebugSetPetPos(0, 1000, 1000);
-        srv.DebugSetPetEnemy(0, b, -1);                       // b 는 (3000,3000) — 아주 멀다
+        srv.DebugSetPetEnemy(0, Sid(srv, b), -1);                       // b 는 (3000,3000) — 아주 멀다
         srv.DebugSetPetRunning(0, false);
-        srv.DebugAIPushDep(0, 15, std::string(), -1, /*u=*/1000, 0, 3000, 3000);
+        srv.DebugAIPushDep(0, 15, Sid(srv, std::string()), -1, /*u=*/1000, 0, 3000, 3000);
         srv.DebugAITick(0, out);                              // 싸움이 사슬을 쌓는다
         // ★ 09-29 B2 — 싸움 시작 자체가 달리기를 켠다(`531E20` → `sub_534750`) — 가기의 갈아타기와 따로 본다: 끈 뒤에 가기가 다시 켜나
         Check(srv.DebugPetRunning(0), "싸움 시작이 달리기를 안 켰다(`534750`)");
@@ -14339,14 +14345,14 @@ void TestAIEscort() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
         Check(srv.DebugAIAction(0, 0) == 3, "틱이 호위(3)를 안 쌓았다");
         // 주인이 멀리 걸어가면 따라온다
-        srv.DebugMoveTo(a, 1600, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1600, 1000);
         srv.DebugSetPetPos(0, 1000, 1000);
         double px = 0, py = 0;
         for (int t = 0; t < 300; ++t) { ms += 34; srv.Tick(ms, out); }
@@ -14359,9 +14365,9 @@ void TestAIEscort() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1200, 1000);                       // 보이는 적
-        srv.DebugSpawnPet(1358, 1000, 1000, a);               // 근접 몬스터
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1200, 1000);                       // 보이는 적
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, a));               // 근접 몬스터
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
@@ -14372,8 +14378,8 @@ void TestAIEscort() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1358, 1200, 1000, std::string());   // 주인 없음 · a 가 보인다
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1358, 1200, 1000, Sid(srv, std::string()));   // 주인 없음 · a 가 보인다
         srv.DebugSetPetFacing(0, 128);                        // ★ 09-29 B1 — a(−x 쪽)를 보게 — 등 뒤는 못 알아본다(앞쪽 부채꼴 `GAME4_2.c:7487~7490`)
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
@@ -14384,8 +14390,8 @@ void TestAIEscort() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 5000, 5000, std::string());   // 주인 없음 · 아주 멀다
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 5000, 5000, Sid(srv, std::string()));   // 주인 없음 · 아주 멀다
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
@@ -14408,9 +14414,9 @@ void TestCreatureOrder() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1200, 1000);
-        srv.DebugSpawnPet(1358, 1000, 1000, a);               // 근접 몬스터
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1200, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, a));               // 근접 몬스터
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.Tick(34, o);
@@ -14458,7 +14464,7 @@ void TestCreatureOrder() {
         std::vector<nox::OutPacket> out;
         order(srv, a, srv.DebugPetNetCode(0), 4, out);
         Check(srv.DebugAIStackInd(0) == 0 && srv.DebugAIAction(0, 0) == 3, "호위(3)가 안 섰다");
-        Check(srv.DebugAITargetAddr(0, 0) == a, "호위가 명령한 사람을 안 가리킨다");
+        Check(srv.DebugAITargetAddr(0, 0) == Sid(srv, a), "호위가 명령한 사람을 안 가리킨다");
         Check(std::fabs(srv.DebugPetAggression(0) - 0.83f) < 0.001f, "사나움이 0.83 이 아니다");
     }
 
@@ -14475,8 +14481,8 @@ void TestCreatureOrder() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSpawnPet(1358, 1050, 1000, a);               // 내 것 둘째
-        srv.DebugSpawnPet(1358, 1300, 1000, b);               // 남의 것
+        srv.DebugSpawnPet(1358, 1050, 1000, Sid(srv, a));               // 내 것 둘째
+        srv.DebugSpawnPet(1358, 1300, 1000, Sid(srv, b));               // 남의 것
         std::vector<nox::OutPacket> o2;
         srv.Tick(68, o2);
         order(srv, a, 0, 2, out);
@@ -14488,7 +14494,7 @@ void TestCreatureOrder() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSpawnPet(1358, 1300, 1000, b);
+        srv.DebugSpawnPet(1358, 1300, 1000, Sid(srv, b));
         std::vector<nox::OutPacket> o2;
         srv.Tick(68, o2);
         order(srv, a, srv.DebugPetNetCode(1), 2, out);
@@ -14499,7 +14505,7 @@ void TestCreatureOrder() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSpawnPet(1371, 1400, 1000, a);               // CarnivorousPlant — SPEED 0
+        srv.DebugSpawnPet(1371, 1400, 1000, Sid(srv, a));               // CarnivorousPlant — SPEED 0
         std::vector<nox::OutPacket> o2;
         srv.Tick(68, o2);
         srv.DebugSetPetSpeed(1, 0.0f);
@@ -14521,8 +14527,8 @@ void TestCreatureOrder() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1358, 1000, 1000, a);               // 적이 아무도 없다
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, a));               // 적이 아무도 없다
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
@@ -14559,9 +14565,9 @@ void TestAIGuardHunt() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 3000, 3000);
-        srv.DebugSpawnPet(1358, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 3000, 3000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
@@ -14580,7 +14586,7 @@ void TestAIGuardHunt() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         alignLook(srv);
-        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);   // 지킬 자리 = 선 자리
+        srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0, 1000, 1000);   // 지킬 자리 = 선 자리
         srv.DebugAITick(0, out);
         Check(srv.DebugAIStackInd(0) == 0, "제자리인데 뭘 올렸다");
     }
@@ -14591,7 +14597,7 @@ void TestAIGuardHunt() {
         std::vector<nox::OutPacket> out;
         alignLook(srv);
         srv.DebugSetPetPos(0, 1100, 1000);                    // 자리에서 100
-        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0, 1000, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 56, "보이는 적 없음(56)이 안 깔렸다");
         Check(srv.DebugAIAction(0, 2) == 59, "귀에 걸리는 소리 없음(59)이 안 깔렸다");
@@ -14605,7 +14611,7 @@ void TestAIGuardHunt() {
         std::vector<nox::OutPacket> out;
         alignLook(srv);
         srv.DebugSetPetPos(0, 1008, 1000);
-        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0, 1000, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIStackInd(0) == 0, "딱 8 인데 벗어났다고 봤다");
     }
@@ -14617,7 +14623,7 @@ void TestAIGuardHunt() {
         alignLook(srv);
         srv.DebugSetFrame(srv.DebugFrame() + 1);              // 살피는 틱에서 하나 어긋난다
         srv.DebugSetPetPos(0, 1100, 1000);
-        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0, 1000, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIStackInd(0) == 0, "살피는 틱이 아닌데 되돌아가기를 밀었다");
     }
@@ -14628,7 +14634,7 @@ void TestAIGuardHunt() {
         alignLook(srv);
         srv.DebugSetFrame(srv.DebugFrame() + 8);
         srv.DebugSetPetPos(0, 1100, 1000);
-        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0, 1000, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIStackInd(0) == 0, "8틱 뒤에 또 살폈다 — 관문은 16틱이다");
     }
@@ -14636,7 +14642,7 @@ void TestAIGuardHunt() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSpawnPet(1358, 1000, 1000, a);               // 번호가 다른 둘째
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, a));               // 번호가 다른 둘째
         std::vector<nox::OutPacket> o2;
         srv.Tick(68, o2);
         srv.DebugSetAutoFight(false);
@@ -14644,8 +14650,8 @@ void TestAIGuardHunt() {
         alignLook(srv);                                        // 0번이 살피는 틱
         srv.DebugSetPetPos(0, 1100, 1000);
         srv.DebugSetPetPos(1, 1100, 1000);
-        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
-        srv.DebugAIPushDep(1, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0, 1000, 1000);
+        srv.DebugAIPushDep(1, 4, Sid(srv, std::string()), -1, 0, 0, 1000, 1000);
         srv.DebugAITick(0, out);
         srv.DebugAITick(1, out);
         Check(srv.DebugAIStackInd(0) > 0, "0번이 살피는 틱인데 안 살폈다");
@@ -14657,8 +14663,8 @@ void TestAIGuardHunt() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSetPetPos(0, 1100, 1000);
-        srv.DebugSetPetEnemy(0, b, -1);
-        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0, 1000, 1000);
+        srv.DebugSetPetEnemy(0, Sid(srv, b), -1);
+        srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0, 1000, 1000);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 15, "상대가 있는데 싸움(15)을 안 올렸다");
         Check(srv.DebugAIStackInd(0) == 1, "싸움 말고 다른 것도 올렸다");
@@ -14691,7 +14697,7 @@ void TestAIGuardHunt() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetEnemy(0, Sid(srv, b), -1);
         srv.DebugAIPush(0, 10);
         srv.DebugAITick(0, out);
         Check(srv.DebugAIAction(0, 1) == 15, "떠돌기 중에 싸움(15)을 안 올렸다");
@@ -14870,7 +14876,7 @@ void TestPlayerExp() {
     const std::string a = "10.7.1.1:7101";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
     // 내용 보기 — `DebugEnterGame` 은 시험용 **즉시 보내기**를 켜 두므로 나간 조각을 그냥 펴면 된다.
     //   중요 경로(봉투)로 정말 가는지는 ⑨ 에서 따로 잰다.
@@ -14890,8 +14896,8 @@ void TestPlayerExp() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGiveExp(a, 250.0f, out);
-        Check(srv.DebugExp(a) == 250.0f, "경험치가 250 이 안 됐다");
+        srv.DebugGiveExp(Sid(srv, a), 250.0f, out);
+        Check(srv.DebugExp(Sid(srv, a)) == 250.0f, "경험치가 250 이 안 됐다");
         uint32_t v = 0; size_t len = 0;
         Check(expMsg(out, v, len), "`6e` 가 중요 봉투로 안 갔다");
         Check(len == 5, "`6e` 가 5바이트가 아니다");
@@ -14902,7 +14908,7 @@ void TestPlayerExp() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGiveExp(a, 1234.9f, out);
+        srv.DebugGiveExp(Sid(srv, a), 1234.9f, out);
         uint32_t v = 0; size_t len = 0;
         Check(expMsg(out, v, len) && v == 1234, "1234.9 를 1234 로 안 잘랐다");
     }
@@ -14911,58 +14917,58 @@ void TestPlayerExp() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGiveExp(a, 100.0f, out);
+        srv.DebugGiveExp(Sid(srv, a), 100.0f, out);
         out.clear();
-        srv.DebugGiveExp(a, 70.0f, out);
+        srv.DebugGiveExp(Sid(srv, a), 70.0f, out);
         uint32_t v = 0; size_t len = 0;
         Check(expMsg(out, v, len) && v == 170, "`6e` 가 합을 안 실었다");
-        Check(srv.DebugExp(a) == 170.0f, "경험치가 안 쌓였다");
+        Check(srv.DebugExp(Sid(srv, a)) == 170.0f, "경험치가 안 쌓였다");
     }
 
     // ④ **레벨 첫값은 1** — 글자파일을 안 읽으므로 `sub_4EFF10` 의 1 이 그대로다
     {
         nox::Server srv; mk(srv);
-        Check(srv.DebugLevel(a) == 1, "레벨 첫값이 1 이 아니다");
+        Check(srv.DebugLevel(Sid(srv, a)) == 1, "레벨 첫값이 1 이 아니다");
     }
 
     // ⑤ **`XPTable[레벨+1]` 이 관문이다** — 레벨 1 은 셋째 칸 18200 을 봐야 오른다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGiveExp(a, 18199.0f, out);
-        Check(srv.DebugLevel(a) == 1, "18199 인데 레벨이 올랐다");
-        srv.DebugGiveExp(a, 1.0f, out);
-        Check(srv.DebugLevel(a) == 2, "18200 인데 레벨이 안 올랐다");
+        srv.DebugGiveExp(Sid(srv, a), 18199.0f, out);
+        Check(srv.DebugLevel(Sid(srv, a)) == 1, "18199 인데 레벨이 올랐다");
+        srv.DebugGiveExp(Sid(srv, a), 1.0f, out);
+        Check(srv.DebugLevel(Sid(srv, a)) == 2, "18200 인데 레벨이 안 올랐다");
     }
 
     // ⑥ **한 번에 한 단계만** — 크게 한 번 받아도 한 칸이다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGiveExp(a, 2000000.0f, out);          // 표 전체를 넘는 값
-        Check(srv.DebugLevel(a) == 2, "한 번에 두 단계 넘게 올랐다");
-        srv.DebugGiveExp(a, 0.0f, out);
-        Check(srv.DebugLevel(a) == 3, "다시 불렀는데 한 단계가 안 올랐다");
+        srv.DebugGiveExp(Sid(srv, a), 2000000.0f, out);          // 표 전체를 넘는 값
+        Check(srv.DebugLevel(Sid(srv, a)) == 2, "한 번에 두 단계 넘게 올랐다");
+        srv.DebugGiveExp(Sid(srv, a), 0.0f, out);
+        Check(srv.DebugLevel(Sid(srv, a)) == 3, "다시 불렀는데 한 단계가 안 올랐다");
     }
 
     // ⑦ **천장 10** — 아무리 불러도 10 을 안 넘는다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGiveExp(a, 2000000.0f, out);
-        for (int i = 0; i < 30; ++i) srv.DebugGiveExp(a, 0.0f, out);
-        Check(srv.DebugLevel(a) == 10, "레벨 천장이 10 이 아니다");
+        srv.DebugGiveExp(Sid(srv, a), 2000000.0f, out);
+        for (int i = 0; i < 30; ++i) srv.DebugGiveExp(Sid(srv, a), 0.0f, out);
+        Check(srv.DebugLevel(Sid(srv, a)) == 10, "레벨 천장이 10 이 아니다");
     }
 
     // ⑧ **레벨이 오르면 「바뀌었다」 표시가 선다**(`plrReadVals_4EEDC0(a1, 1)` 자리)
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugClearStatsDirty(a);
-        srv.DebugGiveExp(a, 100.0f, out);
-        Check(!srv.DebugStatsDirty(a), "레벨이 안 올랐는데 표시가 섰다");
-        srv.DebugGiveExp(a, 18100.0f, out);
-        Check(srv.DebugStatsDirty(a), "레벨이 올랐는데 표시가 안 섰다");
+        srv.DebugClearStatsDirty(Sid(srv, a));
+        srv.DebugGiveExp(Sid(srv, a), 100.0f, out);
+        Check(!srv.DebugStatsDirty(Sid(srv, a)), "레벨이 안 올랐는데 표시가 섰다");
+        srv.DebugGiveExp(Sid(srv, a), 18100.0f, out);
+        Check(srv.DebugStatsDirty(Sid(srv, a)), "레벨이 올랐는데 표시가 안 섰다");
     }
     // ⑨ **중요로 가되 순번은 안 붙는다** — 정답지 `NetSendPacketXxx0(…, 0, 1)` 의 **여섯째 인자가 0** 이다.
     //   `netImportant_4E5770`(`GAME3_3.c:2024`) 가 그 자리(+184)를 보고 갈라 —
@@ -14973,8 +14979,8 @@ void TestPlayerExp() {
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);                                    // 첫 부름은 시계만 잡는다
         std::vector<nox::OutPacket> out;
-        srv.DebugImportantReal(a, /*ready=*/true);
-        srv.DebugGiveExp(a, 250.0f, out);
+        srv.DebugImportantReal(Sid(srv, a), /*ready=*/true);
+        srv.DebugGiveExp(Sid(srv, a), 250.0f, out);
         Check(out.empty(), "중요가 대기열에 안 쌓이고 곧바로 나갔다");
         srv.Tick(34, out);
         bool inEnvelope = false;
@@ -15026,8 +15032,8 @@ void TestSpellAward() {
     const std::string a = "10.7.2.1:7201";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        for (int k = 1; k < 137; ++k) srv.DebugSetSpellLvl(a, static_cast<uint8_t>(k), 0);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        for (int k = 1; k < 137; ++k) srv.DebugSetSpellLvl(Sid(srv, a), static_cast<uint8_t>(k), 0);
     };
     // `6f` 를 찾는다 — 순번 봉투(`cc`)를 벗겨 넣어 주는 `FlattenTo` 로
     auto awardMsg = [&](const std::vector<nox::OutPacket>& out, std::vector<uint8_t>& m) {
@@ -15041,8 +15047,8 @@ void TestSpellAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugGrantSpell(a, 27, 1, false, 0, out), "주기가 실패했다");
-        Check(srv.DebugSpellLvl(a, 27) == 1, "레벨이 1 이 안 됐다");
+        Check(srv.DebugGrantSpell(Sid(srv, a), 27, 1, false, 0, out), "주기가 실패했다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), 27) == 1, "레벨이 1 이 안 됐다");
         std::vector<uint8_t> m;
         Check(awardMsg(out, m), "`6f` 가 안 갔다");
         Check(m.size() == 4, "`6f` 가 4바이트가 아니다");
@@ -15055,7 +15061,7 @@ void TestSpellAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGrantSpell(a, 27, 1, true, 0, out);
+        srv.DebugGrantSpell(Sid(srv, a), 27, 1, true, 0, out);
         std::vector<uint8_t> m;
         Check(awardMsg(out, m) && m[3] == (1 | 0x80), "넷째 인자가 0x80 으로 안 얹혔다");
     }
@@ -15063,7 +15069,7 @@ void TestSpellAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGrantSpell(a, 27, 0, false, 0, out);
+        srv.DebugGrantSpell(Sid(srv, a), 27, 0, false, 0, out);
         std::vector<uint8_t> m;
         Check(awardMsg(out, m) && m[3] == 0, "조용히 줬는데 알림 비트가 섰다");
     }
@@ -15074,8 +15080,8 @@ void TestSpellAward() {
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);
         std::vector<nox::OutPacket> out;
-        srv.DebugImportantReal(a, /*ready=*/true);
-        srv.DebugGrantSpell(a, 27, 1, false, 0, out);
+        srv.DebugImportantReal(Sid(srv, a), /*ready=*/true);
+        srv.DebugGrantSpell(Sid(srv, a), 27, 1, false, 0, out);
         Check(out.empty(), "중요가 대기열에 안 쌓이고 곧바로 나갔다");
         srv.Tick(34, out);
         bool sequenced = false;
@@ -15099,10 +15105,10 @@ void TestSpellAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        for (int i = 0; i < 5; ++i) Check(srv.DebugGrantSpell(a, 27, 0, false, 0, out), "다섯 번 안에서 실패했다");
-        Check(srv.DebugSpellLvl(a, 27) == 5, "다섯 번 줬는데 5 가 아니다");
+        for (int i = 0; i < 5; ++i) Check(srv.DebugGrantSpell(Sid(srv, a), 27, 0, false, 0, out), "다섯 번 안에서 실패했다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), 27) == 5, "다섯 번 줬는데 5 가 아니다");
         out.clear();
-        Check(!srv.DebugGrantSpell(a, 27, 0, false, 0, out), "천장에서도 성공했다");
+        Check(!srv.DebugGrantSpell(Sid(srv, a), 27, 0, false, 0, out), "천장에서도 성공했다");
         std::vector<uint8_t> m;
         Check(!awardMsg(out, m), "천장인데 `6f` 가 갔다");
     }
@@ -15111,20 +15117,20 @@ void TestSpellAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        Check(!srv.DebugGrantSpell(a, 0, 0, false, 0, out), "0 번을 받아들였다");
-        Check(!srv.DebugGrantSpell(a, 137, 0, false, 0, out), "137 번을 받아들였다");
+        Check(!srv.DebugGrantSpell(Sid(srv, a), 0, 0, false, 0, out), "0 번을 받아들였다");
+        Check(!srv.DebugGrantSpell(Sid(srv, a), 137, 0, false, 0, out), "137 번을 받아들였다");
         std::vector<uint8_t> m;
         Check(!awardMsg(out, m), "번호 밖인데 `6f` 가 갔다");
-        Check(srv.DebugGrantSpell(a, 136, 0, false, 0, out), "136 번(마지막)이 막혔다");
+        Check(srv.DebugGrantSpell(Sid(srv, a), 136, 0, false, 0, out), "136 번(마지막)이 막혔다");
     }
 
     // ⑥ **`forceLevel` 은 올리지 않고 덮는다**
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetSpellLvl(a, 27, 1);
-        srv.DebugGrantSpell(a, 27, 0, false, 4, out);
-        Check(srv.DebugSpellLvl(a, 27) == 4, "`forceLevel` 이 안 덮였다");
+        srv.DebugSetSpellLvl(Sid(srv, a), 27, 1);
+        srv.DebugGrantSpell(Sid(srv, a), 27, 0, false, 4, out);
+        Check(srv.DebugSpellLvl(Sid(srv, a), 27) == 4, "`forceLevel` 이 안 덮였다");
         std::vector<uint8_t> m;
         Check(awardMsg(out, m) && m[2] == 4, "`6f` 가 덮은 값을 안 실었다");
     }
@@ -15135,10 +15141,10 @@ void TestSpellAward() {
         std::vector<nox::OutPacket> out;
         RegSpell(srv, 134); RegSpell(srv, 87);            // 대표 A 와 딸림 A(임프 소환)
         RegSpell(srv, 27);                                 // 무리 밖 — 안 건드려야 한다
-        srv.DebugGrantSpell(a, 134, 0, false, 0, out);
-        Check(srv.DebugSpellLvl(a, 134) == 1, "대표 주문이 안 올랐다");
-        Check(srv.DebugSpellLvl(a, 87) == 1, "딸린 소환 주문이 같이 안 올랐다");
-        Check(srv.DebugSpellLvl(a, 27) == 0, "무리 밖 주문까지 올랐다");
+        srv.DebugGrantSpell(Sid(srv, a), 134, 0, false, 0, out);
+        Check(srv.DebugSpellLvl(Sid(srv, a), 134) == 1, "대표 주문이 안 올랐다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), 87) == 1, "딸린 소환 주문이 같이 안 올랐다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), 27) == 0, "무리 밖 주문까지 올랐다");
         // `6f` 는 **대표 하나만** 간다(정답지도 끝에 한 번만 보낸다)
         int n = 0;
         for (const auto& x : FlattenTo(out, a))
@@ -15150,19 +15156,19 @@ void TestSpellAward() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         RegSpell(srv, 135); RegSpell(srv, 46);
-        srv.DebugGrantSpell(a, 135, 0, false, 0, out);
-        Check(srv.DebugSpellLvl(a, 135) == 1, "대표 B 가 안 올랐다");
-        Check(srv.DebugSpellLvl(a, 46) == 1, "MARK_1 이 같이 안 올랐다");
+        srv.DebugGrantSpell(Sid(srv, a), 135, 0, false, 0, out);
+        Check(srv.DebugSpellLvl(Sid(srv, a), 135) == 1, "대표 B 가 안 올랐다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), 46) == 1, "MARK_1 이 같이 안 올랐다");
     }
     // 무리 C — 136 → 122. 그리고 `forceLevel` 은 무리에도 **덮어** 간다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         RegSpell(srv, 136); RegSpell(srv, 122);
-        srv.DebugSetSpellLvl(a, 122, 1);
-        srv.DebugGrantSpell(a, 136, 0, false, 4, out);
-        Check(srv.DebugSpellLvl(a, 136) == 4, "대표 C 에 forceLevel 이 안 먹었다");
-        Check(srv.DebugSpellLvl(a, 122) == 4, "딸림에 forceLevel 이 안 먹었다(올리기만 했다)");
+        srv.DebugSetSpellLvl(Sid(srv, a), 122, 1);
+        srv.DebugGrantSpell(Sid(srv, a), 136, 0, false, 4, out);
+        Check(srv.DebugSpellLvl(Sid(srv, a), 136) == 4, "대표 C 에 forceLevel 이 안 먹었다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), 122) == 4, "딸림에 forceLevel 이 안 먹었다(올리기만 했다)");
     }
     // ⑧ **천장 넘은 레벨은 다음 번에 5 로 잘린다** — 천장 검사가 `==` 라 6 은 통과하기 때문이다
     //   정답지 차례 그대로 — `++` → 5 로 자르기 → (협동/퀘스트면 3) → **그 다음에** `forceLevel` 덮기.
@@ -15170,10 +15176,10 @@ void TestSpellAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGrantSpell(a, 27, 0, false, 6, out);      // 덮기는 안 잘린다
-        Check(srv.DebugSpellLvl(a, 27) == 6, "`forceLevel` 6 이 잘렸다(덮기는 자르기 뒤다)");
-        Check(srv.DebugGrantSpell(a, 27, 0, false, 0, out), "6 은 천장(==5)이 아니라 통과해야 한다");
-        Check(srv.DebugSpellLvl(a, 27) == 5, "7 이 5 로 안 잘렸다");
+        srv.DebugGrantSpell(Sid(srv, a), 27, 0, false, 6, out);      // 덮기는 안 잘린다
+        Check(srv.DebugSpellLvl(Sid(srv, a), 27) == 6, "`forceLevel` 6 이 잘렸다(덮기는 자르기 뒤다)");
+        Check(srv.DebugGrantSpell(Sid(srv, a), 27, 0, false, 0, out), "6 은 천장(==5)이 아니라 통과해야 한다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), 27) == 5, "7 이 5 로 안 잘렸다");
     }
     std::printf("  7-b — 주문 받기(6f 4바이트·순번 봉투) · 올린 뒤 레벨 실음 · 천장 5 · forceLevel 덮기 · 무리 같이 오름\n");
 }
@@ -15193,13 +15199,13 @@ void TestLessonScore() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
     };
     auto kill = [&](nox::Server& srv, const std::string& victim, const std::string& by,
                     std::vector<nox::OutPacket>& out) {
         int guard = 0;
-        while (srv.IsAlive(victim) && guard++ < 40) srv.DebugHurt(victim, -1, 30, by, 0, out);
+        while (srv.IsAlive(Sid(srv, victim)) && guard++ < 40) srv.DebugHurt(Sid(srv, victim), -1, 30, Sid(srv, by), 0, out);
     };
     // `4e` 를 찾는다 — 누구에게 갔는지도 같이 센다
     auto lessons = [&](const std::vector<nox::OutPacket>& out, const std::string& to) {
@@ -15218,11 +15224,11 @@ void TestLessonScore() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         kill(srv, b, a, out);
-        Check(!srv.IsAlive(b), "안 죽었다(이 시험의 전제)");
-        Check(srv.KillsOf(a) == 1, "죽인 쪽 점수가 1 이 아니다");
-        Check(srv.DeathsOf(b) == 1, "죽은 쪽 죽은 횟수가 1 이 아니다");
-        Check(srv.KillsOf(b) == 0, "죽은 쪽에 점수가 붙었다");
-        Check(srv.DeathsOf(a) == 0, "죽인 쪽 죽은 횟수가 올랐다");
+        Check(!srv.IsAlive(Sid(srv, b)), "안 죽었다(이 시험의 전제)");
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "죽인 쪽 점수가 1 이 아니다");
+        Check(srv.DeathsOf(Sid(srv, b)) == 1, "죽은 쪽 죽은 횟수가 1 이 아니다");
+        Check(srv.KillsOf(Sid(srv, b)) == 0, "죽은 쪽에 점수가 붙었다");
+        Check(srv.DeathsOf(Sid(srv, a)) == 0, "죽인 쪽 죽은 횟수가 올랐다");
         const auto toA = lessons(out, a);
         const auto toB = lessons(out, b);
         Check(!toA.empty() && !toB.empty(), "`4e` 가 모두에게 안 갔다");
@@ -15243,7 +15249,7 @@ void TestLessonScore() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);
-        srv.DebugImportantReal(a, /*ready=*/true);
+        srv.DebugImportantReal(Sid(srv, a), /*ready=*/true);
         std::vector<nox::OutPacket> out;
         kill(srv, b, a, out);
         srv.Tick(34, out);
@@ -15269,8 +15275,8 @@ void TestLessonScore() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         kill(srv, a, a, out);
-        Check(srv.KillsOf(a) == -1, "자살인데 점수가 −1 이 아니다");
-        Check(srv.DeathsOf(a) == 0, "자살인데 죽은 횟수가 올랐다");
+        Check(srv.KillsOf(Sid(srv, a)) == -1, "자살인데 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(Sid(srv, a)) == 0, "자살인데 죽은 횟수가 올랐다");
         Check(lessons(out, a).size() == 1, "자살에 `4e` 가 한 통이 아니다");
     }
 
@@ -15279,75 +15285,75 @@ void TestLessonScore() {
     //     그래서 셈만 곧바로 부른다(`DebugUpdateScore`)
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
         std::vector<nox::OutPacket> out;
-        srv.DebugUpdateScore(b, a, std::string(), out);
-        Check(srv.KillsOf(a) == -1, "팀킬인데 죽인이 점수가 −1 이 아니다");
-        Check(srv.DeathsOf(b) == 1, "팀킬인데 죽은 횟수가 안 올랐다");
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, a), Sid(srv, std::string()), out);
+        Check(srv.KillsOf(Sid(srv, a)) == -1, "팀킬인데 죽인이 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(Sid(srv, b)) == 1, "팀킬인데 죽은 횟수가 안 올랐다");
     }
     // 편이 다르면 그대로 +1
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
         std::vector<nox::OutPacket> out;
-        srv.DebugUpdateScore(b, a, std::string(), out);
-        Check(srv.KillsOf(a) == 1, "다른 편인데 점수가 1 이 아니다");
-        Check(srv.DeathsOf(b) == 1, "다른 편인데 죽은 횟수가 안 올랐다");
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, a), Sid(srv, std::string()), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "다른 편인데 점수가 1 이 아니다");
+        Check(srv.DeathsOf(Sid(srv, b)) == 1, "다른 편인데 죽은 횟수가 안 올랐다");
     }
     // 편이 **아무도 없으면** 남이므로 +1(정답지 `!v5 && !v14` 가지)
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugUpdateScore(b, a, std::string(), out);
-        Check(srv.KillsOf(a) == 1, "편 없는 둘인데 점수가 1 이 아니다");
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, a), Sid(srv, std::string()), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "편 없는 둘인데 점수가 1 이 아니다");
     }
 
     // ⑤ **죽인 이가 없으면 점수 −1 · 죽은 횟수 그대로**(LABEL_31)
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugUpdateScore(b, std::string(), std::string(), out);
-        Check(srv.KillsOf(b) == -1, "죽인 이가 없는데 점수가 −1 이 아니다");
-        Check(srv.DeathsOf(b) == 0, "죽인 이가 없는데 죽은 횟수가 올랐다");
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, std::string()), Sid(srv, std::string()), out);
+        Check(srv.KillsOf(Sid(srv, b)) == -1, "죽인 이가 없는데 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(Sid(srv, b)) == 0, "죽인 이가 없는데 죽은 횟수가 올랐다");
     }
 
     // ⑥ **도운 사람도 +1** — 죽인이·죽은이와 편이 다를 때만
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(c, 730);
-        srv.DebugMoveTo(c, 1200, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1200, 1000);
         std::vector<nox::OutPacket> out;
-        srv.DebugUpdateScore(b, a, c, out);
-        Check(srv.KillsOf(a) == 1, "죽인이 점수가 1 이 아니다");
-        Check(srv.KillsOf(c) == 1, "도운이 점수가 1 이 아니다");
-        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, a), Sid(srv, c), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "죽인이 점수가 1 이 아니다");
+        Check(srv.KillsOf(Sid(srv, c)) == 1, "도운이 점수가 1 이 아니다");
+        Check(srv.DeathsOf(Sid(srv, b)) == 1, "죽은 횟수가 안 올랐다");
         Check(lessons(out, a).size() == 3, "`4e` 가 세 통(죽인이·죽은이·도운이)이 아니다");
     }
     // 도운이가 죽인이와 같은 편이면 안 받는다
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(c, 730);
-        srv.DebugMoveTo(c, 1200, 1000);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(c, 1);
-        srv.DebugSetTeam(b, 2);
+        srv.DebugMoveTo(Sid(srv, c), 1200, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, c), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
         std::vector<nox::OutPacket> out;
-        srv.DebugUpdateScore(b, a, c, out);
-        Check(srv.KillsOf(c) == 0, "같은 편 도운이가 점수를 받았다");
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, a), Sid(srv, c), out);
+        Check(srv.KillsOf(Sid(srv, c)) == 0, "같은 편 도운이가 점수를 받았다");
     }
     // 도운이가 죽은이와 같은 편이어도 안 받는다
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(c, 730);
-        srv.DebugMoveTo(c, 1200, 1000);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
-        srv.DebugSetTeam(c, 2);
+        srv.DebugMoveTo(Sid(srv, c), 1200, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
+        srv.DebugSetTeam(Sid(srv, c), 2);
         std::vector<nox::OutPacket> out;
-        srv.DebugUpdateScore(b, a, c, out);
-        Check(srv.KillsOf(c) == 0, "죽은이와 같은 편 도운이가 점수를 받았다");
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, a), Sid(srv, c), out);
+        Check(srv.KillsOf(Sid(srv, c)) == 0, "죽은이와 같은 편 도운이가 점수를 받았다");
     }
     std::printf("  7-c — 점수·죽은 횟수(4e 11바이트·모두에게·순번 봉투) · 자살 −1(죽은 수 그대로) · 팀킬 −1 · 도운이 +1\n");
 }
@@ -15363,8 +15369,8 @@ void TestAbilities() {
     const std::string a = "10.7.4.1:7401";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        for (int k = 1; k < 6; ++k) srv.DebugSetSpellLvl(a, static_cast<uint8_t>(k), 0);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        for (int k = 1; k < 6; ++k) srv.DebugSetSpellLvl(Sid(srv, a), static_cast<uint8_t>(k), 0);
     };
     auto find = [&](const std::vector<nox::OutPacket>& out, uint8_t op, std::vector<uint8_t>& m) {
         bool found = false;
@@ -15382,8 +15388,8 @@ void TestAbilities() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugAbilAward(a, 1, /*announce=*/true, out), "주기가 실패했다");
-        Check(srv.DebugAbilLvl(a, 1) == 5, "능력 레벨이 한 번에 5 가 안 됐다");
+        Check(srv.DebugAbilAward(Sid(srv, a), 1, /*announce=*/true, out), "주기가 실패했다");
+        Check(srv.DebugAbilLvl(Sid(srv, a), 1) == 5, "능력 레벨이 한 번에 5 가 안 됐다");
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_AWARD), m), "`cd` 가 안 갔다");
         Check(m.size() == 3, "`cd` 가 3바이트가 아니다");
@@ -15394,7 +15400,7 @@ void TestAbilities() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 2, /*announce=*/false, out);
+        srv.DebugAbilAward(Sid(srv, a), 2, /*announce=*/false, out);
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_AWARD), m) && m[2] == 5,
               "조용히 줬는데 0x80 이 붙었다");
@@ -15403,11 +15409,11 @@ void TestAbilities() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
         out.clear();
-        Check(!srv.DebugAbilAward(a, 1, false, out), "이미 있는데 또 줬다");
-        Check(!srv.DebugAbilAward(a, 0, false, out), "0 번을 받아들였다");
-        Check(!srv.DebugAbilAward(a, 6, false, out), "6 번을 받아들였다");
+        Check(!srv.DebugAbilAward(Sid(srv, a), 1, false, out), "이미 있는데 또 줬다");
+        Check(!srv.DebugAbilAward(Sid(srv, a), 0, false, out), "0 번을 받아들였다");
+        Check(!srv.DebugAbilAward(Sid(srv, a), 6, false, out), "6 번을 받아들였다");
         Check(count(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_AWARD)) == 0, "막혔는데 `cd` 가 갔다");
     }
 
@@ -15417,9 +15423,9 @@ void TestAbilities() {
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);
         std::vector<nox::OutPacket> out;
-        srv.DebugImportantReal(a, /*ready=*/true);
-        srv.DebugAbilAward(a, 1, true, out);
-        srv.DebugAbilDo(a, 1, out);                        // 쉬는 시간이 걸리며 `ce` 가 나간다
+        srv.DebugImportantReal(Sid(srv, a), /*ready=*/true);
+        srv.DebugAbilAward(Sid(srv, a), 1, true, out);
+        srv.DebugAbilDo(Sid(srv, a), 1, out);                        // 쉬는 시간이 걸리며 `ce` 가 나간다
         srv.Tick(34, out);
         bool awardSeq = false, stateRaw = false;
         for (const auto& pk : out) {
@@ -15449,20 +15455,20 @@ void TestAbilities() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 4, false, out);              // 살금살금 — 쉬는 시간 30
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);              // 살금살금 — 쉬는 시간 30
         out.clear();
-        Check(srv.DebugAbilDo(a, 4, out), "능력 쓰기가 실패했다");
-        Check(srv.DebugAbilCooldown(a, 4) == 30, "쉬는 시간이 30 이 아니다");
+        Check(srv.DebugAbilDo(Sid(srv, a), 4, out), "능력 쓰기가 실패했다");
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 4) == 30, "쉬는 시간이 30 이 아니다");
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_STATE), m), "`ce` 가 안 갔다");
         Check(m.size() == 3 && m[1] == 4 && m[2] == 0, "`ce` 가 <번호 4> <상태 0> 이 아니다");
         // 29틱은 조용하고 30틱째에 상태 1 이 간다
-        for (int t = 0; t < 29; ++t) { out.clear(); srv.DebugAbilTick(a, out); }
-        Check(srv.DebugAbilCooldown(a, 4) == 1, "29틱 뒤 쉬는 시간이 1 이 아니다");
+        for (int t = 0; t < 29; ++t) { out.clear(); srv.DebugAbilTick(Sid(srv, a), out); }
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 4) == 1, "29틱 뒤 쉬는 시간이 1 이 아니다");
         Check(count(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_STATE)) == 0, "다 쉬기 전에 `ce` 가 갔다");
         out.clear();
-        srv.DebugAbilTick(a, out);
-        Check(srv.DebugAbilCooldown(a, 4) == 0, "30틱 뒤에도 쉬는 시간이 남았다");
+        srv.DebugAbilTick(Sid(srv, a), out);
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 4) == 0, "30틱 뒤에도 쉬는 시간이 남았다");
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ABILITY_STATE), m) && m[2] == 1,
               "다 쉬었는데 `ce` 상태 1 이 안 갔다");
     }
@@ -15471,19 +15477,19 @@ void TestAbilities() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 1, false, out);              // 광전사 — 지속 90
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);              // 광전사 — 지속 90
         srv.DebugSetFrame(1000);
-        srv.DebugAbilDo(a, 1, out);
-        Check(srv.DebugAbilActive(a, 1), "지속이 있는데 안 켜졌다");
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
+        Check(srv.DebugAbilActive(Sid(srv, a), 1), "지속이 있는데 안 켜졌다");
         // 프레임 1090 까지는 켜져 있고, 1091 에 꺼진다(`Frame() <= p.Frame` 이 남기는 조건)
         srv.DebugSetFrame(1090);
         out.clear();
-        srv.DebugAbilTick(a, out);
-        Check(srv.DebugAbilActive(a, 1), "딱 1090 인데 꺼졌다");
+        srv.DebugAbilTick(Sid(srv, a), out);
+        Check(srv.DebugAbilActive(Sid(srv, a), 1), "딱 1090 인데 꺼졌다");
         srv.DebugSetFrame(1091);
         out.clear();
-        srv.DebugAbilTick(a, out);
-        Check(!srv.DebugAbilActive(a, 1), "1091 인데 안 꺼졌다");
+        srv.DebugAbilTick(Sid(srv, a), out);
+        Check(!srv.DebugAbilActive(Sid(srv, a), 1), "1091 인데 안 꺼졌다");
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_ACTIVE_ABILITIES), m), "`cf` 가 안 갔다");
         Check(m.size() == 3 && m[1] == 1 && m[2] == 0, "`cf` 가 <번호 1> <꺼짐 0> 이 아니다");
@@ -15492,58 +15498,58 @@ void TestAbilities() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 3, false, out);
-        srv.DebugAbilDo(a, 3, out);
-        Check(!srv.DebugAbilActive(a, 3), "지속 0 인데 켜졌다");
-        Check(srv.DebugAbilCooldown(a, 3) == 150, "작살 쉬는 시간이 150 이 아니다");
+        srv.DebugAbilAward(Sid(srv, a), 3, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        Check(!srv.DebugAbilActive(Sid(srv, a), 3), "지속 0 인데 켜졌다");
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 3) == 150, "작살 쉬는 시간이 150 이 아니다");
     }
 
     // ⑤ **같이 못 켜는 짝** — 광전사·함성·작살은 서로를 막는다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        for (uint8_t k = 1; k <= 3; ++k) srv.DebugAbilAward(a, k, false, out);
-        srv.DebugAbilDo(a, 1, out);                        // 광전사를 켠다
-        Check(srv.DebugAbilActive(a, 1), "광전사가 안 켜졌다(이 시험의 전제)");
-        Check(!srv.DebugAbilDo(a, 2, out), "광전사 중에 함성이 먹었다");
-        Check(!srv.DebugAbilDo(a, 3, out), "광전사 중에 작살이 먹었다");
+        for (uint8_t k = 1; k <= 3; ++k) srv.DebugAbilAward(Sid(srv, a), k, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 1, out);                        // 광전사를 켠다
+        Check(srv.DebugAbilActive(Sid(srv, a), 1), "광전사가 안 켜졌다(이 시험의 전제)");
+        Check(!srv.DebugAbilDo(Sid(srv, a), 2, out), "광전사 중에 함성이 먹었다");
+        Check(!srv.DebugAbilDo(Sid(srv, a), 3, out), "광전사 중에 작살이 먹었다");
         // 무리 밖(살금살금)은 막지 않는다
-        srv.DebugAbilAward(a, 4, false, out);
-        Check(srv.DebugAbilDo(a, 4, out), "광전사 중에 살금살금까지 막혔다");
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);
+        Check(srv.DebugAbilDo(Sid(srv, a), 4, out), "광전사 중에 살금살금까지 막혔다");
     }
     // ★ **거꾸로도 막지 않는다** — 살금살금이 켜져 있어도 광전사는 켜진다.
     //   (짝은 1·2·3 **셋뿐**이다. 넷까지 넓히면 이 자리가 걸린다)
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 4, false, out);
-        srv.DebugAbilAward(a, 1, false, out);
-        srv.DebugAbilDo(a, 4, out);                        // 살금살금을 먼저 켠다
-        Check(srv.DebugAbilActive(a, 4), "살금살금이 안 켜졌다(이 시험의 전제)");
-        Check(srv.DebugAbilDo(a, 1, out), "살금살금 중에 광전사가 막혔다");
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);                        // 살금살금을 먼저 켠다
+        Check(srv.DebugAbilActive(Sid(srv, a), 4), "살금살금이 안 켜졌다(이 시험의 전제)");
+        Check(srv.DebugAbilDo(Sid(srv, a), 1, out), "살금살금 중에 광전사가 막혔다");
     }
     // ★ **켜져 있으면 또 못 쓴다** — 쉬는 시간이 없는 자리에서 재야 관문이 드러난다.
     //   살금살금은 쉬는 시간 30 · 지속 99999 라, 30틱 뒤에는 **쉬는 시간은 없고 켜짐만** 남는다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 4, false, out);
-        srv.DebugAbilDo(a, 4, out);
-        for (int t = 0; t < 30; ++t) srv.DebugAbilTick(a, out);
-        Check(srv.DebugAbilCooldown(a, 4) == 0, "30틱 뒤에도 쉬는 시간이 남았다(이 시험의 전제)");
-        Check(srv.DebugAbilActive(a, 4), "30틱 뒤에 켜짐이 사라졌다(이 시험의 전제)");
-        Check(!srv.DebugAbilDo(a, 4, out), "쉬는 시간이 없는데 켜진 것을 또 켰다");
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
+        for (int t = 0; t < 30; ++t) srv.DebugAbilTick(Sid(srv, a), out);
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 4) == 0, "30틱 뒤에도 쉬는 시간이 남았다(이 시험의 전제)");
+        Check(srv.DebugAbilActive(Sid(srv, a), 4), "30틱 뒤에 켜짐이 사라졌다(이 시험의 전제)");
+        Check(!srv.DebugAbilDo(Sid(srv, a), 4, out), "쉬는 시간이 없는데 켜진 것을 또 켰다");
     }
 
     // ⑥ **쉬는 시간이 남았으면 못 쓴다**
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 3, false, out);              // 작살 — 지속 0 이라 켜짐으로는 안 막힌다
-        srv.DebugAbilDo(a, 3, out);
-        Check(!srv.DebugAbilDo(a, 3, out), "쉬는 시간이 남았는데 먹었다");
-        for (int t = 0; t < 150; ++t) srv.DebugAbilTick(a, out);
-        Check(srv.DebugAbilDo(a, 3, out), "다 쉬었는데 안 먹었다");
+        srv.DebugAbilAward(Sid(srv, a), 3, false, out);              // 작살 — 지속 0 이라 켜짐으로는 안 막힌다
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        Check(!srv.DebugAbilDo(Sid(srv, a), 3, out), "쉬는 시간이 남았는데 먹었다");
+        for (int t = 0; t < 150; ++t) srv.DebugAbilTick(Sid(srv, a), out);
+        Check(srv.DebugAbilDo(Sid(srv, a), 3, out), "다 쉬었는데 안 먹었다");
     }
 
     // ⑦ **워리어가 아니면 · 짐이 넘치면 못 쓴다**
@@ -15552,29 +15558,29 @@ void TestAbilities() {
         const std::string w = "10.7.4.2:7402";
         srv.DebugEnterGame(w, 729, false, nox::CharClass::Wizard);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(w, 1, false, out);
-        Check(!srv.DebugAbilDo(w, 1, out), "워리어가 아닌데 능력이 먹었다");
+        srv.DebugAbilAward(Sid(srv, w), 1, false, out);
+        Check(!srv.DebugAbilDo(Sid(srv, w), 1, out), "워리어가 아닌데 능력이 먹었다");
     }
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 1, false, out);
-        srv.DebugSetOverweight(a, true);
-        Check(!srv.DebugAbilDo(a, 1, out), "짐이 넘치는데 광전사가 먹었다");
-        Check(srv.DebugAbilDo(a, 2, out) || true, "");     // 함성은 짐과 무관 — 값만 확인
-        srv.DebugSetOverweight(a, false);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
+        srv.DebugSetOverweight(Sid(srv, a), true);
+        Check(!srv.DebugAbilDo(Sid(srv, a), 1, out), "짐이 넘치는데 광전사가 먹었다");
+        Check(srv.DebugAbilDo(Sid(srv, a), 2, out) || true, "");     // 함성은 짐과 무관 — 값만 확인
+        srv.DebugSetOverweight(Sid(srv, a), false);
     }
 
     // ⑧ **되돌림** — 하나는 그 번호, 전부는 **6**
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 1, false, out);
-        srv.DebugAbilDo(a, 1, out);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
         out.clear();
-        srv.DebugAbilReset(a, 1, out);
-        Check(srv.DebugAbilCooldown(a, 1) == 0, "되돌렸는데 쉬는 시간이 남았다");
-        Check(!srv.DebugAbilActive(a, 1), "되돌렸는데 켜짐이 남았다");
+        srv.DebugAbilReset(Sid(srv, a), 1, out);
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 1) == 0, "되돌렸는데 쉬는 시간이 남았다");
+        Check(!srv.DebugAbilActive(Sid(srv, a), 1), "되돌렸는데 켜짐이 남았다");
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::RESET_ABILITIES), m), "`eb` 가 안 갔다");
         Check(m.size() == 2 && m[1] == 1, "`eb` 가 <번호 1> 이 아니다");
@@ -15583,14 +15589,14 @@ void TestAbilities() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 1, false, out);
-        srv.DebugAbilAward(a, 4, false, out);
-        srv.DebugAbilDo(a, 1, out);
-        srv.DebugAbilDo(a, 4, out);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
         out.clear();
-        srv.DebugAbilCancelAll(a, out);
-        Check(srv.DebugAbilCooldown(a, 1) == 0 && srv.DebugAbilCooldown(a, 4) == 0, "전부 되돌렸는데 쉬는 시간이 남았다");
-        Check(!srv.DebugAbilActive(a, 1) && !srv.DebugAbilActive(a, 4), "전부 되돌렸는데 켜짐이 남았다");
+        srv.DebugAbilCancelAll(Sid(srv, a), out);
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 1) == 0 && srv.DebugAbilCooldown(Sid(srv, a), 4) == 0, "전부 되돌렸는데 쉬는 시간이 남았다");
+        Check(!srv.DebugAbilActive(Sid(srv, a), 1) && !srv.DebugAbilActive(Sid(srv, a), 4), "전부 되돌렸는데 켜짐이 남았다");
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::RESET_ABILITIES), m) && m[1] == 6,
               "전부 되돌림이 `eb 6` 이 아니다");
@@ -15601,22 +15607,22 @@ void TestAbilities() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 4, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);
         std::vector<uint8_t> p(nox::kWireHeaderSize + 2, 0);
         p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::TRY_ABILITY);
         p[nox::kWireHeaderSize + 1] = 4;
         srv.OnPacket(a, p.data(), p.size(), out);
-        Check(srv.DebugAbilCooldown(a, 4) == 30, "`7a` 로 능력이 안 걸렸다");
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 4) == 30, "`7a` 로 능력이 안 걸렸다");
     }
     // 몸 길이가 틀리면 무시한다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 4, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);
         std::vector<uint8_t> p(nox::kWireHeaderSize + 1, 0);
         p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::TRY_ABILITY);
         srv.OnPacket(a, p.data(), p.size(), out);
-        Check(srv.DebugAbilCooldown(a, 4) == 0, "길이가 틀린 것을 받아 처리했다");
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 4) == 0, "길이가 틀린 것을 받아 처리했다");
     }
     std::printf("  7-d — 능력: 받으면 레벨 5(cd 순번 봉투) · 쉬는 시간 ce · 지속 끝 cf · 되돌림 eb(전부는 6) · 7a 입력\n");
 }
@@ -15634,8 +15640,8 @@ void TestAbilityEffects() {
     const std::string b = "10.7.5.2:7502";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        for (int k = 1; k < 6; ++k) srv.DebugSetSpellLvl(a, static_cast<uint8_t>(k), 0);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        for (int k = 1; k < 6; ++k) srv.DebugSetSpellLvl(Sid(srv, a), static_cast<uint8_t>(k), 0);
     };
     auto activeMsg = [&](const std::vector<nox::OutPacket>& out, uint8_t abil) {
         for (const auto& x : FlattenTo(out, a))
@@ -15649,9 +15655,9 @@ void TestAbilityEffects() {
         for (uint8_t k : { 1, 2, 4, 5 }) {
             nox::Server srv; mk(srv);
             std::vector<nox::OutPacket> out;
-            srv.DebugAbilAward(a, k, false, out);
+            srv.DebugAbilAward(Sid(srv, a), k, false, out);
             out.clear();
-            Check(srv.DebugAbilDo(a, k, out), "능력 쓰기가 실패했다");
+            Check(srv.DebugAbilDo(Sid(srv, a), k, out), "능력 쓰기가 실패했다");
             Check(activeMsg(out, k), "`cf 1`(켜졌다)이 안 갔다");
         }
     }
@@ -15660,9 +15666,9 @@ void TestAbilityEffects() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 3, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 3, false, out);
         out.clear();
-        Check(srv.DebugAbilDo(a, 3, out), "작살 쓰기 자체는 되어야 한다(쉬는 시간은 걸린다)");
+        Check(srv.DebugAbilDo(Sid(srv, a), 3, out), "작살 쓰기 자체는 되어야 한다(쉬는 시간은 걸린다)");
         Check(!activeMsg(out, 3), "작살에 `cf 1` 이 나갔다(효과는 다음 조각이다)");
     }
 
@@ -15670,70 +15676,70 @@ void TestAbilityEffects() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
         // ⚠ 차례가 있다 — `ApplyEnchant` 는 **새 버프를 걸 때마다 투명(0)을 끈다.**
         //   그래서 투명을 **나중에** 걸어야 둘 다 서 있다
-        srv.DebugApplyEnchant(a, 23, 300, 5);              // 무적
-        srv.DebugApplyEnchant(a, 0, 300, 5);               // 투명
-        Check(srv.DebugHasEnchant(a, 0) && srv.DebugHasEnchant(a, 23), "버프가 안 걸렸다(이 시험의 전제)");
-        srv.DebugAbilDo(a, 1, out);
-        Check(!srv.DebugHasEnchant(a, 0), "광전사인데 투명이 안 꺼졌다");
-        Check(!srv.DebugHasEnchant(a, 23), "광전사인데 무적이 안 꺼졌다");
-        Check(srv.DebugStateOf(a) == 1, "광전사인데 상태가 1 이 아니다");
+        srv.DebugApplyEnchant(Sid(srv, a), 23, 300, 5);              // 무적
+        srv.DebugApplyEnchant(Sid(srv, a), 0, 300, 5);               // 투명
+        Check(srv.DebugHasEnchant(Sid(srv, a), 0) && srv.DebugHasEnchant(Sid(srv, a), 23), "버프가 안 걸렸다(이 시험의 전제)");
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 0), "광전사인데 투명이 안 꺼졌다");
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 23), "광전사인데 무적이 안 꺼졌다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 1, "광전사인데 상태가 1 이 아니다");
     }
 
     // ③ **살금살금** — 발소리 죽이기(31)가 능력 레벨로 걸린다 · 달리는 중이면 상태 13
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 4, false, out);              // 레벨 5 가 된다
-        srv.DebugAbilDo(a, 4, out);
-        Check(srv.DebugHasEnchant(a, 31), "살금살금인데 31 이 안 걸렸다");
-        Check(srv.DebugEnchantPower(a, 31) == 5, "31 의 세기가 능력 레벨(5)이 아니다");
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);              // 레벨 5 가 된다
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
+        Check(srv.DebugHasEnchant(Sid(srv, a), 31), "살금살금인데 31 이 안 걸렸다");
+        Check(srv.DebugEnchantPower(Sid(srv, a), 31) == 5, "31 의 세기가 능력 레벨(5)이 아니다");
     }
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 4, false, out);
-        srv.DebugSetState(a, 5);                       // 달리는 중
-        srv.DebugAbilDo(a, 4, out);
-        Check(srv.DebugStateOf(a) == 13, "달리는 중인데 상태 13 으로 안 내렸다");
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);
+        srv.DebugSetState(Sid(srv, a), 5);                       // 달리는 중
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
+        Check(srv.DebugStateOf(Sid(srv, a)) == 13, "달리는 중인데 상태 13 으로 안 내렸다");
     }
     // 걷는 중이면 상태를 안 건드린다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 4, false, out);
-        srv.DebugSetState(a, 0);
-        srv.DebugAbilDo(a, 4, out);
-        Check(srv.DebugStateOf(a) == 0, "걷는 중인데 상태를 건드렸다");
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);
+        srv.DebugSetState(Sid(srv, a), 0);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
+        Check(srv.DebugStateOf(Sid(srv, a)) == 0, "걷는 중인데 상태를 건드렸다");
     }
 
     // ④ **늑대의 눈** — 밤눈(21)이 능력 레벨로 걸린다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilAward(a, 5, false, out);
-        srv.DebugAbilDo(a, 5, out);
-        Check(srv.DebugHasEnchant(a, 21), "늑대의 눈인데 21 이 안 걸렸다");
-        Check(srv.DebugEnchantPower(a, 21) == 5, "21 의 세기가 능력 레벨(5)이 아니다");
+        srv.DebugAbilAward(Sid(srv, a), 5, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 5, out);
+        Check(srv.DebugHasEnchant(Sid(srv, a), 21), "늑대의 눈인데 21 이 안 걸렸다");
+        Check(srv.DebugEnchantPower(Sid(srv, a), 21) == 5, "21 의 세기가 능력 레벨(5)이 아니다");
     }
 
     // ⑤ **함성** — 둘레 300 안의 적에게 무효화(29 반마법)가 걸린다
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(b, 1200, 1000);                    // 200 — 안쪽
+        srv.DebugMoveTo(Sid(srv, b), 1200, 1000);                    // 200 — 안쪽
         std::vector<nox::OutPacket> out;
         RegSpell(srv, 55);                                 // 무효화 정의가 없으면 `SpellAccept` 가 곧바로 거절한다
         // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
         //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
         { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
-        srv.DebugAbilAward(a, 2, false, out);
-        srv.DebugAbilDo(a, 2, out);
-        Check(srv.DebugHasEnchant(b, 29), "둘레 안 적에게 반마법이 안 걸렸다");
-        Check(srv.DebugEnchantPower(b, 29) == 5, "반마법 세기가 5 가 아니다(정답지는 레벨 5 로 건다)");
-        Check(srv.DebugStateOf(a) == 1, "함성인데 상태가 1 이 아니다");
+        srv.DebugAbilAward(Sid(srv, a), 2, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
+        Check(srv.DebugHasEnchant(Sid(srv, b), 29), "둘레 안 적에게 반마법이 안 걸렸다");
+        Check(srv.DebugEnchantPower(Sid(srv, b), 29) == 5, "반마법 세기가 5 가 아니다(정답지는 레벨 5 로 건다)");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 1, "함성인데 상태가 1 이 아니다");
         // ★ 09-24 H3 — 계수기: 본 사람 1(b) = 걸림 1 · 다음 틱에 29 비트가 선 알림(0x5A)이 a·b 둘에게
         Check(srv.WarcryPeerSum() == 1 && srv.warcryPeer(nox::WarcryPeer::Applied) == 1, "⑤ H3 함성 둘레 계수기가 「걸림 1」이 아니다");
         { std::vector<nox::OutPacket> w; srv.Tick(68, w);
@@ -15749,47 +15755,47 @@ void TestAbilityEffects() {
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(b, 1400, 1000);                    // 400 — 바깥
+        srv.DebugMoveTo(Sid(srv, b), 1400, 1000);                    // 400 — 바깥
         std::vector<nox::OutPacket> out;
         RegSpell(srv, 55);                                 // 무효화 정의가 없으면 `SpellAccept` 가 곧바로 거절한다
         // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
         //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
         { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
-        srv.DebugAbilAward(a, 2, false, out);
-        srv.DebugAbilDo(a, 2, out);
-        Check(!srv.DebugHasEnchant(b, 29), "둘레 밖인데 반마법이 걸렸다");
+        srv.DebugAbilAward(Sid(srv, a), 2, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
+        Check(!srv.DebugHasEnchant(Sid(srv, b), 29), "둘레 밖인데 반마법이 걸렸다");
         Check(srv.WarcryPeerSum() == 1 && srv.warcryPeer(nox::WarcryPeer::OutOfRange) == 1, "H3 둘레 밖이 「멀리」로 안 셌다");
     }
     // **워리어에게는 안 걸린다**
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1200, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1200, 1000);
         std::vector<nox::OutPacket> out;
         RegSpell(srv, 55);                                 // 무효화 정의가 없으면 `SpellAccept` 가 곧바로 거절한다
         // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
         //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
         { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
-        srv.DebugAbilAward(a, 2, false, out);
-        srv.DebugAbilDo(a, 2, out);
-        Check(!srv.DebugHasEnchant(b, 29), "워리어인데 반마법이 걸렸다");
+        srv.DebugAbilAward(Sid(srv, a), 2, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
+        Check(!srv.DebugHasEnchant(Sid(srv, b), 29), "워리어인데 반마법이 걸렸다");
         Check(srv.WarcryPeerSum() == 1 && srv.warcryPeer(nox::WarcryPeer::Warrior) == 1, "H3 워리어가 「워리어」로 안 셌다");
     }
     // **같은 편에게는 안 걸린다**
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(b, 1200, 1000);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);
+        srv.DebugMoveTo(Sid(srv, b), 1200, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
         std::vector<nox::OutPacket> out;
         RegSpell(srv, 55);                                 // 무효화 정의가 없으면 `SpellAccept` 가 곧바로 거절한다
         // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
         //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
         { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
-        srv.DebugAbilAward(a, 2, false, out);
-        srv.DebugAbilDo(a, 2, out);
-        Check(!srv.DebugHasEnchant(b, 29), "같은 편인데 반마법이 걸렸다");
+        srv.DebugAbilAward(Sid(srv, a), 2, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
+        Check(!srv.DebugHasEnchant(Sid(srv, b), 29), "같은 편인데 반마법이 걸렸다");
         Check(srv.WarcryPeerSum() == 1 && srv.warcryPeer(nox::WarcryPeer::SameTeam) == 1, "H3 같은 편이 「같은편」으로 안 셌다");
     }
     // **자기 자신에게는 안 걸린다**
@@ -15800,9 +15806,9 @@ void TestAbilityEffects() {
         // ⚠ `DebugMoveTo` 는 `x`/`y` 만 넣고 `posX`/`posY` 는 **틱이 옮긴다** —
         //   둘레를 재기 전에 두 번 돌려야 한다(안 그러면 둘 다 0,0 이라 거리가 항상 0 이다)
         { std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w); }
-        srv.DebugAbilAward(a, 2, false, out);
-        srv.DebugAbilDo(a, 2, out);
-        Check(!srv.DebugHasEnchant(a, 29), "함성이 자기에게 걸렸다");
+        srv.DebugAbilAward(Sid(srv, a), 2, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 29), "함성이 자기에게 걸렸다");
         Check(srv.WarcryPeerSum() == 0, "H3 시전자 자신을 셌다");
     }
     std::printf("  7-e — 능력 효과 넷: cf 1 은 효과에서 · 광전사 상태 1+투명·무적 끄기 · 살금살금 31 · 늑대의 눈 21 · 함성 300 안 적에게 29\n");
@@ -15825,21 +15831,21 @@ void TestHarpoonDrift() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1000 + dist, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1000 + dist, 1000);
         RegHarpoonBolt(srv);
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w); srv.Tick(34, w);
-        srv.DebugAbilAward(a, 3, false, w);
-        srv.DebugSetFacing(a, 0);
-        srv.DebugAbilDo(a, 3, w);
+        srv.DebugAbilAward(Sid(srv, a), 3, false, w);
+        srv.DebugSetFacing(Sid(srv, a), 0);
+        srv.DebugAbilDo(Sid(srv, a), 3, w);
         uint32_t ms = 68;
         for (int t = 0; t < 70; ++t) { ms += 34; srv.Tick(ms, w); w.clear(); }
-        const double pushed = 1000.0 - srv.DebugPosX(a);
+        const double pushed = 1000.0 - srv.DebugPosX(Sid(srv, a));
         char msg[200];
         std::snprintf(msg, sizeof(msg), "H4 거리 %d — 70틱 뒤 주인 밀림 %.1f(40 미만) · 다끌어옴 %llu(1) · 아직 걸림 %s",
-                      dist, pushed, srv.harpoonEnd(nox::HarpoonEnd::Arrived), srv.DebugHarpoonTarget(a).empty() ? "아니오" : "예");
-        Check(pushed < 40.0 && srv.harpoonEnd(nox::HarpoonEnd::Arrived) == 1 && srv.DebugHarpoonTarget(a).empty(), msg);
+                      dist, pushed, srv.harpoonEnd(nox::HarpoonEnd::Arrived), (srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession) ? "아니오" : "예");
+        Check(pushed < 40.0 && srv.harpoonEnd(nox::HarpoonEnd::Arrived) == 1 && (srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession), msg);
     }
     std::printf("  09-24 H4 — 작살 끌기: 거리 100·200·300 모두 「다 끌어옴」으로 끊기고 주인이 계속 밀리지 않음(몸 크기 뺀 거리)\n");
 }
@@ -15850,14 +15856,14 @@ void TestHarpoon() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         RegHarpoonBolt(srv);
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w); srv.Tick(34, w);
         std::vector<nox::OutPacket> o2;
-        srv.DebugAbilAward(a, 3, false, o2);
-        srv.DebugSetFacing(a, 0);                          // +x 쪽 — b 를 겨눈다
+        srv.DebugAbilAward(Sid(srv, a), 3, false, o2);
+        srv.DebugSetFacing(Sid(srv, a), 0);                          // +x 쪽 — b 를 겨눈다
     };
     auto fx = [&](const std::vector<nox::OutPacket>& out, uint8_t code, std::vector<uint8_t>& m) {
         for (const auto& x : FlattenTo(out, a))
@@ -15872,22 +15878,22 @@ void TestHarpoon() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         const size_t before = srv.missiles();
-        Check(srv.DebugAbilDo(a, 3, out), "작살 쓰기가 실패했다");
-        Check(srv.DebugStateOf(a) == 32, "작살인데 상태가 32 가 아니다");
+        Check(srv.DebugAbilDo(Sid(srv, a), 3, out), "작살 쓰기가 실패했다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 32, "작살인데 상태가 32 가 아니다");
         Check(srv.missiles() == before + 1, "화살이 안 생겼다");
-        Check(srv.DebugHarpoonBolt(a) != 0, "화살 번호가 안 잡혔다");
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) != 0, "화살 번호가 안 잡혔다");
     }
 
     // ② **적에게 닿으면 꽂힌다** — 피해 1 을 주고 화살이 안 사라진다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        const int hp0 = srv.HealthOf(b);
-        srv.DebugAbilDo(a, 3, out);
+        const int hp0 = srv.HealthOf(Sid(srv, b));
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         uint32_t ms = 68;
-        for (int t = 0; t < 30 && srv.DebugHarpoonTarget(a).empty(); ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.DebugHarpoonTarget(a) == b, "적에게 안 꽂혔다");
-        Check(srv.HealthOf(b) == hp0 - 1, "꽂히며 피해 1 을 안 줬다");
+        for (int t = 0; t < 30 && (srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession); ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugHarpoonTarget(Sid(srv, a)) == Sid(srv, b), "적에게 안 꽂혔다");
+        Check(srv.HealthOf(Sid(srv, b)) == hp0 - 1, "꽂히며 피해 1 을 안 줬다");
         // ★ 4-c3b2 — 재질표가 없는 판이라 때린 것(작살 화살)은 「표없음」으로 드러난다(안옮김·없음이 아니다)
         Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1, "② 4-c3b2 작살에 때린 것(화살)이 안 넘어갔다");
         Check(srv.missiles() >= 1, "꽂혔는데 화살이 사라졌다");
@@ -15896,21 +15902,21 @@ void TestHarpoon() {
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "② 꽂힌 뒤 20틱 — 걸림 %llu(1 이어야) · b 체력 %d→%d(1 만 줄어야) · 맞는 소리 %llu",
-                      srv.harpoonTouch(nox::HarpoonTouch::Attached), hp0, srv.HealthOf(b), srv.hitSoundCalls());
-        Check(srv.harpoonTouch(nox::HarpoonTouch::Attached) == 1 && srv.HealthOf(b) == hp0 - 1 && srv.hitSoundCalls() == 1, msg);
+                      srv.harpoonTouch(nox::HarpoonTouch::Attached), hp0, srv.HealthOf(Sid(srv, b)), srv.hitSoundCalls());
+        Check(srv.harpoonTouch(nox::HarpoonTouch::Attached) == 1 && srv.HealthOf(Sid(srv, b)) == hp0 - 1 && srv.hitSoundCalls() == 1, msg);
     }
 
     // ③ **같은 편이면 피해만 주고 끊긴다**
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         uint32_t ms = 68;
-        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.DebugHarpoonTarget(a).empty(), "같은 편에 꽂혔다");
-        Check(srv.DebugHarpoonBolt(a) == 0, "같은 편에 닿았는데 줄이 안 끊겼다");
+        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check((srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession), "같은 편에 꽂혔다");
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "같은 편에 닿았는데 줄이 안 끊겼다");
         std::vector<uint8_t> m;
         Check(fx(out, 14, m), "끊김(`9e 0e`)이 안 갔다");
     }
@@ -15919,10 +15925,10 @@ void TestHarpoon() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
-        const uint16_t bolt = srv.DebugHarpoonBolt(a);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        const uint16_t bolt = srv.DebugHarpoonBolt(Sid(srv, a));
         out.clear();
-        srv.DebugHarpoonBreak(a, out);
+        srv.DebugHarpoonBreak(Sid(srv, a), out);
         std::vector<uint8_t> m;
         Check(fx(out, 14, m), "끊김이 안 갔다");
         Check(m[2] == 0, "셋째 칸이 0 이 아니다");
@@ -15933,32 +15939,32 @@ void TestHarpoon() {
         for (const auto& x : FlattenTo(out, b))
             if (x.size() == 7 && x[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) && x[1] == 14) toB = true;
         Check(toB, "끊김이 남에게 안 갔다");
-        Check(srv.DebugHarpoonBolt(a) == 0, "끊었는데 줄이 남았다");
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "끊었는데 줄이 남았다");
     }
 
     // ⑤ **다시 쏘면 앞의 줄을 먼저 치운다**
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
-        const uint16_t first = srv.DebugHarpoonBolt(a);
-        srv.DebugAbilReset(a, 3, out);                     // 쉬는 시간을 지운다(줄은 그대로 둔다)
-        srv.DebugAbilDo(a, 3, out);
-        Check(srv.DebugHarpoonBolt(a) != first, "두 번째 화살 번호가 첫째와 같다");
-        Check(srv.DebugHarpoonBolt(a) != 0, "두 번째 화살이 없다");
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        const uint16_t first = srv.DebugHarpoonBolt(Sid(srv, a));
+        srv.DebugAbilReset(Sid(srv, a), 3, out);                     // 쉬는 시간을 지운다(줄은 그대로 둔다)
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) != first, "두 번째 화살 번호가 첫째와 같다");
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) != 0, "두 번째 화살이 없다");
         Check(srv.missiles() == 1, "앞 화살이 안 치워져 둘이 남았다");
     }
 
     // ⑥ **벽에 닿으면 조용히 끊긴다** — 정답지 `Collide(대상 없음)` 갈래
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);                    // 상대를 치운다
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);                    // 상대를 치운다
         srv.SetWalls({ { 47, 43 } });                      // 앞 +x 쪽 칸
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         uint32_t ms = 68;
-        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.DebugHarpoonBolt(a) == 0, "벽에 닿았는데 줄이 안 끊겼다");
+        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "벽에 닿았는데 줄이 안 끊겼다");
         Check(srv.missiles() == 0, "벽에 닿았는데 화살이 남았다");
         std::vector<uint8_t> m;
         Check(fx(out, 14, m), "벽에 닿았는데 끊김(`9e 0e`)이 안 갔다");
@@ -15968,7 +15974,7 @@ void TestHarpoon() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         for (const auto& x : FlattenTo(out, a))
             Check(!(x.size() == 3 && x[0] == static_cast<uint8_t>(nox::Op::REPORT_ACTIVE_ABILITIES) &&
                     x[1] == 3 && x[2] == 1), "작살에 `cf 1` 이 갔다");
@@ -15990,10 +15996,10 @@ void TestAbilityCounters() {
     using H = nox::HarpoonEnd;
     auto mk = [&](nox::Server& srv, nox::CharClass cls = nox::CharClass::Warrior) {
         srv.DebugEnterGame(a, 740, false, cls);
-        srv.DebugMoveTo(a, 1000, 1000);
-        for (int k = 1; k < 6; ++k) srv.DebugSetSpellLvl(a, static_cast<uint8_t>(k), 0);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        for (int k = 1; k < 6; ++k) srv.DebugSetSpellLvl(Sid(srv, a), static_cast<uint8_t>(k), 0);
         std::vector<nox::OutPacket> o;
-        for (uint8_t k = 1; k < 6; ++k) srv.DebugAbilAward(a, k, false, o);
+        for (uint8_t k = 1; k < 6; ++k) srv.DebugAbilAward(Sid(srv, a), k, false, o);
     };
     // 능력 × 갈래 칸 전부를 한 줄로 떠 둔다
     auto snap = [&](const nox::Server& srv) {
@@ -16008,7 +16014,7 @@ void TestAbilityCounters() {
         const auto before = snap(srv);
         unsigned long long in0[nox::kAbilityCount];
         for (uint8_t k = 0; k < nox::kAbilityCount; ++k) in0[k] = srv.abilIn(k);
-        srv.DebugAbilDo(who, abil, out);
+        srv.DebugAbilDo(Sid(srv, who), abil, out);
         const auto after = snap(srv);
         size_t changed = 0, at = 0;
         for (size_t i = 0; i < after.size(); ++i)
@@ -16061,10 +16067,10 @@ void TestAbilityCounters() {
     }
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetOverweight(a, true);
+        srv.DebugSetOverweight(Sid(srv, a), true);
         expectOne(srv, a, 1, G::Overweight, "④ 짐 넘침(광전사)");
         expectOne(srv, a, 2, G::Ok, "④ 짐이 넘쳐도 함성은 실행");
-        srv.DebugSetOverweight(a, false);
+        srv.DebugSetOverweight(Sid(srv, a), false);
         equations(srv, "④ 뒤");
     }
     {
@@ -16075,8 +16081,8 @@ void TestAbilityCounters() {
         expectOne(srv, a, 1, G::Ok, "⑤-전제 광전사 실행");
         std::vector<nox::OutPacket> out;
         srv.DebugSetFrame(1091);
-        srv.DebugAbilTick(a, out);                           // 1091 에 꺼진다(④ 시험과 같은 경계)
-        Check(!srv.DebugAbilActive(a, 1), "⑤ 전제 — 1091 인데 광전사가 안 꺼졌다");
+        srv.DebugAbilTick(Sid(srv, a), out);                           // 1091 에 꺼진다(④ 시험과 같은 경계)
+        Check(!srv.DebugAbilActive(Sid(srv, a), 1), "⑤ 전제 — 1091 인데 광전사가 안 꺼졌다");
         Check(srv.abilEnded(1, E::Expired) == 1, "⑤ 꺼짐 까닭 「시간 다함」이 1 이 아니다");
         Check(srv.abilSoundUseCalls(1) == 1 && srv.abilSoundOffCalls(1) == 1, "⑤ 광전사 소리 부름이 쓸 때 1 · 꺼질 때 1 이 아니다");
         expectOne(srv, a, 1, G::Cooldown, "⑤ 쉬는 중(꺼진 광전사)");
@@ -16090,13 +16096,13 @@ void TestAbilityCounters() {
     {
         // ⑦ **상태 12**
         nox::Server srv; mk(srv);
-        srv.DebugSetState(a, 12);
+        srv.DebugSetState(Sid(srv, a), 12);
         expectOne(srv, a, 2, G::MoveState, "⑦ 상태 12(함성)");
     }
     {
         // ⑧ **안 배움** — 퀘스트에서만 레벨 0 을 막는다. 늑대의 눈만 레벨 0 으로
         nox::Server srv; mk(srv);
-        srv.DebugSetSpellLvl(a, 5, 0);
+        srv.DebugSetSpellLvl(Sid(srv, a), 5, 0);
         srv.StartQuest(2, 5000, 5000, 100.0);                // 사람에게서 멀리
         expectOne(srv, a, 5, G::NotLearned, "⑧ 안 배움(퀘스트 · 늑대의 눈 레벨 0)");
     }
@@ -16105,7 +16111,7 @@ void TestAbilityCounters() {
         nox::Server srv; mk(srv);
         expectOne(srv, a, 4, G::Ok, "⑨-전제 살금살금 실행");
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(a, -1, 9999, std::string(), 16, out);
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, std::string()), 16, out);
         Check(srv.abilEnded(4, E::CancelAll) == 1 && srv.abilEnded(4, E::Gone) == 0,
               "⑨ 죽으며 꺼진 살금살금이 「전부 되돌림」 1 이 아니다");
         expectOne(srv, a, 5, G::Dead, "⑨ 죽음(늑대의 눈)");
@@ -16116,8 +16122,8 @@ void TestAbilityCounters() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         const auto before = snap(srv);
-        srv.DebugAbilDo(a, 0, out);
-        srv.DebugAbilDo(a, 6, out);
+        srv.DebugAbilDo(Sid(srv, a), 0, out);
+        srv.DebugAbilDo(Sid(srv, a), 6, out);
         Check(snap(srv) == before && srv.abilBadNum() == 2, "⑩ 번호 밖(0·6)이 칸을 건드렸거나 번호밖이 2 가 아니다");
         equations(srv, "⑩ 뒤");
     }
@@ -16125,12 +16131,12 @@ void TestAbilityCounters() {
         // ⑪ **꺼짐 까닭 — 되돌림 둘** · 켜져 있지 않은 것을 되돌리면 안 센다
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 1, out);
-        srv.DebugAbilDo(a, 4, out);
-        srv.DebugAbilReset(a, 1, out);
-        srv.DebugAbilReset(a, 2, out);                       // 함성은 안 켜져 있었다
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
+        srv.DebugAbilReset(Sid(srv, a), 1, out);
+        srv.DebugAbilReset(Sid(srv, a), 2, out);                       // 함성은 안 켜져 있었다
         Check(srv.abilEnded(1, E::Reset) == 1 && srv.abilEnded(2, E::Reset) == 0, "⑪ 하나 되돌림이 켜진 것만 세지 않는다");
-        srv.DebugAbilCancelAll(a, out);
+        srv.DebugAbilCancelAll(Sid(srv, a), out);
         Check(srv.abilEnded(4, E::CancelAll) == 1 && srv.abilEnded(1, E::CancelAll) == 0,
               "⑪ 전부 되돌림이 그때 켜진 것(살금살금)만 세지 않는다");
     }
@@ -16139,11 +16145,11 @@ void TestAbilityCounters() {
     auto mkH = [&](nox::Server& srv) {
         mk(srv);
         srv.DebugEnterGame(b, 741, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         RegHarpoonBolt(srv);
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w); srv.Tick(34, w);
-        srv.DebugSetFacing(a, 0);                          // +x 쪽 — b 를 겨눈다
+        srv.DebugSetFacing(Sid(srv, a), 0);                          // +x 쪽 — b 를 겨눈다
     };
     auto endSum = [&](const nox::Server& srv) {
         unsigned long long n = 0;
@@ -16154,14 +16160,14 @@ void TestAbilityCounters() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 68;
         for (int t = 0; t < 40; ++t) {
-            if (wantTarget ? !srv.DebugHarpoonTarget(a).empty() : srv.DebugHarpoonBolt(a) == 0) break;
+            if (wantTarget ? (srv.DebugHarpoonTarget(Sid(srv, a)) != nox::kNoSession) : srv.DebugHarpoonBolt(Sid(srv, a)) == 0) break;
             ms += 34; srv.Tick(ms, out);
         }
     };
     {
         nox::Server srv; mkH(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         flyUntil(srv, true);
         Check(srv.harpoonTouch(T::Attached) == 1 && srv.harpoonTouch(T::Wall) == 0 && srv.harpoonTouch(T::NotEnemy) == 0,
               "⑫ 적에게 꽂혔는데 닿음 칸이 「걸림 1」 하나가 아니다");
@@ -16169,20 +16175,20 @@ void TestAbilityCounters() {
     }
     {
         nox::Server srv; mkH(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         flyUntil(srv, false);
         Check(srv.harpoonTouch(T::NotEnemy) == 1 && srv.harpoonEnd(H::NotEnemy) == 1 && endSum(srv) == 1,
               "⑫ 같은 편에 닿았는데 「적 아님」 닿음 1 · 끊김 1 이 아니다");
     }
     {
         nox::Server srv; mkH(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         srv.SetWalls({ { 47, 43 } });                      // 앞 +x 쪽 칸(`TestHarpoon` ⑥ 과 같은 자리)
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         flyUntil(srv, false);
         Check(srv.harpoonTouch(T::Wall) == 1 && srv.harpoonEnd(H::Wall) == 1 && endSum(srv) == 1,
               "⑫ 벽에 닿았는데 「벽」 닿음 1 · 끊김 1 이 아니다");
@@ -16190,12 +16196,12 @@ void TestAbilityCounters() {
     {
         nox::Server srv; mkH(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
-        srv.DebugAbilReset(a, 3, out);                     // 쉬는 시간만 지운다(줄은 그대로)
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        srv.DebugAbilReset(Sid(srv, a), 3, out);                     // 쉬는 시간만 지운다(줄은 그대로)
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         Check(srv.harpoonEnd(H::Replaced) == 1 && endSum(srv) == 1, "⑫ 다시 쏘며 앞 줄을 치웠는데 「새로 쏨」 1 이 아니다");
-        srv.DebugHarpoonBreak(a, out);
-        srv.DebugHarpoonBreak(a, out);                     // 줄이 없으면 안 센다
+        srv.DebugHarpoonBreak(Sid(srv, a), out);
+        srv.DebugHarpoonBreak(Sid(srv, a), out);                     // 줄이 없으면 안 센다
         Check(srv.harpoonEnd(H::Debug) == 1 && endSum(srv) == 2, "⑫ 시험용 끊김이 한 번만 세지지 않았다");
     }
     std::printf("  nine-defects 0-d — 능력 갈래 9 칸마다 하나씩 · 번호밖 · 등식 셋 · 꺼짐 까닭 · 작살 닿음·끊김\n");
@@ -16212,11 +16218,11 @@ void TestTreadLightlyOff() {
     const std::string a = "10.7.10.1:7101";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 750, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSetFacing(a, 0);
-        srv.DebugAimAt(a, 1500, 1000);                      // 커서가 몸에서 500 — 달리기 거리(100) 밖
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSetFacing(Sid(srv, a), 0);
+        srv.DebugAimAt(Sid(srv, a), 1500, 1000);                      // 커서가 몸에서 500 — 달리기 거리(100) 밖
         std::vector<nox::OutPacket> o;
-        srv.DebugAbilAward(a, 4, false, o);
+        srv.DebugAbilAward(Sid(srv, a), 4, false, o);
         srv.SetAbilitySound(4, 180, 182);                   // 꺼질 때 소리를 **안** 부르는지 보려고 번호를 넣어 둔다
         srv.Tick(0, o);
     };
@@ -16247,80 +16253,80 @@ void TestTreadLightlyOff() {
         std::vector<nox::OutPacket> out;
         move(srv, out); tick(srv, out);
         move(srv, out); tick(srv, out);
-        Check(srv.DebugStateOf(a) == 5, "① 전제 — 살금살금 없이 두 틱 걸었는데 달리기(5)가 아니다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 5, "① 전제 — 살금살금 없이 두 틱 걸었는데 달리기(5)가 아니다");
         Check(srv.treadBlockedRun() == 0, "① 살금살금이 없는데 달리기막음이 셌다");
     }
     // ① **살금살금 중에는 안 달린다** — 같은 입력인데 걷기(0)에 머물고 「달리기막음」이 는다
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugAbilDo(a, 4, out), "① 전제 — 살금살금이 안 켜졌다");
+        Check(srv.DebugAbilDo(Sid(srv, a), 4, out), "① 전제 — 살금살금이 안 켜졌다");
         move(srv, out); tick(srv, out);
         move(srv, out); tick(srv, out);
-        Check(srv.DebugStateOf(a) == 0, "① 살금살금 중인데 달린다(걷기 0 이어야 한다)");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 0, "① 살금살금 중인데 달린다(걷기 0 이어야 한다)");
         Check(srv.treadBlockedRun() >= 1, "① 살금살금이 달리기를 막았는데 「달리기막음」이 0 이다");
-        Check(srv.DebugAbilActive(a, 4), "① 계속 걷는 중인데 살금살금이 꺼졌다");
+        Check(srv.DebugAbilActive(Sid(srv, a), 4), "① 계속 걷는 중인데 살금살금이 꺼졌다");
     }
     // ② **걷다가 멈추면 꺼진다** — 걷기 입력 없이 다른 조작(바라보기)이 오면 ImplB 가 상태를 가만(13)으로 내리고,
     //   그 틱의 ImplA 는 걷기 갈래를 탔으므로 끈다. 알림 `cf 04 00` · 발소리 죽이기(31) 끔 · 꺼질 때 소리는 **없음** · 쉬는 시간 그대로
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 4, out);
-        Check(srv.DebugHasEnchant(a, 31), "② 전제 — 발소리 죽이기(31)가 안 걸렸다");
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
+        Check(srv.DebugHasEnchant(Sid(srv, a), 31), "② 전제 — 발소리 죽이기(31)가 안 걸렸다");
         move(srv, out); tick(srv, out);
         move(srv, out); tick(srv, out);
-        Check(srv.DebugAbilActive(a, 4), "② 전제 — 걷는 동안 이미 꺼졌다");
-        const uint32_t cd = srv.DebugAbilCooldown(a, 4);
+        Check(srv.DebugAbilActive(Sid(srv, a), 4), "② 전제 — 걷는 동안 이미 꺼졌다");
+        const uint32_t cd = srv.DebugAbilCooldown(Sid(srv, a), 4);
         out.clear();
         face(srv, out); tick(srv, out);
-        Check(srv.DebugStateOf(a) == 13, "② 전제 — 걷기 입력이 끊겼는데 가만(13)이 아니다");
-        Check(!srv.DebugAbilActive(a, 4), "② 걷다 멈췄는데 살금살금이 안 꺼졌다");
-        Check(!srv.DebugHasEnchant(a, 31), "② 꺼졌는데 발소리 죽이기(31)가 남았다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 13, "② 전제 — 걷기 입력이 끊겼는데 가만(13)이 아니다");
+        Check(!srv.DebugAbilActive(Sid(srv, a), 4), "② 걷다 멈췄는데 살금살금이 안 꺼졌다");
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 31), "② 꺼졌는데 발소리 죽이기(31)가 남았다");
         Check(cfOff(out), "② 꺼졌는데 `cf 04 00` 이 안 갔다");
         Check(srv.abilEnded(4, nox::AbilEnd::Disabled) == 1, "② 꺼짐 까닭 「동작이 끔」이 1 이 아니다");
         Check(srv.abilSoundOffCalls(4) == 0, "② 동작이 끈 것인데 꺼질 때 소리를 불렀다(정답지 `DisableAbility` 는 안 부른다)");
-        Check(srv.DebugAbilCooldown(a, 4) + 1 >= cd && srv.DebugAbilCooldown(a, 4) <= cd,
+        Check(srv.DebugAbilCooldown(Sid(srv, a), 4) + 1 >= cd && srv.DebugAbilCooldown(Sid(srv, a), 4) <= cd,
               "② 끄면서 쉬는 시간을 건드렸다");
     }
     // ③ **가만히 선 채로는 안 꺼진다** — 걷기 갈래를 안 탔다(`v68` 거짓)
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 4, out);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
         face(srv, out); tick(srv, out);
         face(srv, out); tick(srv, out);
-        Check(srv.DebugAbilActive(a, 4), "③ 가만히 서서 바라보기만 했는데 살금살금이 꺼졌다");
+        Check(srv.DebugAbilActive(Sid(srv, a), 4), "③ 가만히 서서 바라보기만 했는데 살금살금이 꺼졌다");
     }
     // ④ **걷는 중 조작이 없는 틱에도 안 꺼진다** — 상태가 걷기에 그대로다
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 4, out);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
         move(srv, out); tick(srv, out);
         tick(srv, out);
-        Check(srv.DebugAbilActive(a, 4), "④ 조작 없는 틱에 살금살금이 꺼졌다");
+        Check(srv.DebugAbilActive(Sid(srv, a), 4), "④ 조작 없는 틱에 살금살금이 꺼졌다");
     }
     // ⑤ **끈 뒤에는 다시 쓸 수 있다**(쉬는 시간 30 이 지나면) — 사람 판 증상의 뒷면
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 4, out);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
         move(srv, out); tick(srv, out);
         face(srv, out); tick(srv, out);
-        Check(!srv.DebugAbilActive(a, 4), "⑤ 전제 — 안 꺼졌다");
-        for (int t = 0; t < 30; ++t) srv.DebugAbilTick(a, out);
-        Check(srv.DebugAbilDo(a, 4, out), "⑤ 꺼지고 쉰 뒤인데 살금살금을 다시 못 쓴다");
+        Check(!srv.DebugAbilActive(Sid(srv, a), 4), "⑤ 전제 — 안 꺼졌다");
+        for (int t = 0; t < 30; ++t) srv.DebugAbilTick(Sid(srv, a), out);
+        Check(srv.DebugAbilDo(Sid(srv, a), 4, out), "⑤ 꺼지고 쉰 뒤인데 살금살금을 다시 못 쓴다");
     }
     // ⑥ **짐이 넘치면 안 꺼진다** — 정답지는 짐 넘침에서 걷기 갈래를 `v68` 전에 빠져나간다
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 4, out);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
         move(srv, out); tick(srv, out);
-        srv.DebugSetOverweight(a, true);
+        srv.DebugSetOverweight(Sid(srv, a), true);
         face(srv, out); tick(srv, out);
-        Check(srv.DebugAbilActive(a, 4), "⑥ 짐이 넘치는데 살금살금이 꺼졌다(정답지는 `v68` 이 거짓)");
+        Check(srv.DebugAbilActive(Sid(srv, a), 4), "⑥ 짐이 넘치는데 살금살금이 꺼졌다(정답지는 `v68` 이 거짓)");
     }
     std::printf("  nine-defects 1-a — 살금살금: 달리기 막기 · 걷다 멈추면 끔(cf 0·31 끔·소리 없음) · 가만/무입력/짐넘침은 유지 · 다시 쓰기\n");
 }
@@ -16337,13 +16343,13 @@ void TestHarpoonHoming() {
     auto mk = [&](nox::Server& srv, int bx, int by) {
         srv.DebugEnterGame(a, 760, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 761, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, bx, by);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), bx, by);
         RegHarpoonBolt(srv);
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w); srv.Tick(34, w);
-        srv.DebugAbilAward(a, 3, false, w);
-        srv.DebugSetFacing(a, 0);                          // +x 쪽
+        srv.DebugAbilAward(Sid(srv, a), 3, false, w);
+        srv.DebugSetFacing(Sid(srv, a), 0);                          // +x 쪽
     };
     uint32_t ms = 34;
     auto tick = [&](nox::Server& srv, std::vector<nox::OutPacket>& out) { ms += 34; srv.Tick(ms, out); };
@@ -16351,22 +16357,22 @@ void TestHarpoonHoming() {
     // ① **대조 — 커서가 상대에서 멀면 곧게 날아 빗나간다**(이 배치가 곧은 길로는 못 맞힌다는 전제)
     {
         nox::Server srv; mk(srv, 1250, 1060); ms = 34;
-        srv.DebugAimAt(a, 1000, 3000);
+        srv.DebugAimAt(Sid(srv, a), 1000, 3000);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
-        for (int t = 0; t < 12 && srv.DebugHarpoonBolt(a) != 0; ++t) tick(srv, out);
-        Check(srv.DebugHarpoonTarget(a).empty(), "① 전제 — 커서가 먼데도 꽂혔다(곧은 길로 맞는 배치다)");
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        for (int t = 0; t < 12 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0; ++t) tick(srv, out);
+        Check((srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession), "① 전제 — 커서가 먼데도 꽂혔다(곧은 길로 맞는 배치다)");
         Check(srv.harpoonAimFound() == 0, "① 커서 둘레에 아무도 없는데 휘기 상대를 잡았다");
     }
     // ② **커서를 상대에 두면 휘어 꽂힌다** — 잡은 틱에는 안 틀고(정답지 `else`) 그다음 틱부터 튼다
     {
         nox::Server srv; mk(srv, 1250, 1060); ms = 34;
-        srv.DebugAimAt(a, 1250, 1060);
+        srv.DebugAimAt(Sid(srv, a), 1250, 1060);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         int foundAt = -1;
         bool vecChecked = false;
-        for (int t = 0; t < 12 && srv.DebugHarpoonTarget(a).empty(); ++t) {
+        for (int t = 0; t < 12 && (srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession); ++t) {
             tick(srv, out);
             if (foundAt < 0 && srv.harpoonAimFound() == 1) {
                 foundAt = t;
@@ -16376,7 +16382,7 @@ void TestHarpoonHoming() {
             //   (한 축만 트는 반쪽 구현도 꽂히기는 해서, 꽂혔나만 보면 못 가른다 — 돌연변이로 드러남)
             if (!vecChecked && srv.harpoonSteerTicks() == 1) {
                 vecChecked = true;
-                const uint16_t nc = srv.DebugHarpoonBolt(a);
+                const uint16_t nc = srv.DebugHarpoonBolt(Sid(srv, a));
                 for (const auto& m : srv.missileList()) {
                     if (m.netCode != nc) continue;
                     const double sp = std::sqrt(static_cast<double>(m.velX) * m.velX + static_cast<double>(m.velY) * m.velY);
@@ -16392,42 +16398,42 @@ void TestHarpoonHoming() {
         Check(vecChecked, "② 튼 틱을 못 봤다(이 시험의 전제)");
         Check(foundAt >= 0, "② 커서가 상대 위인데 휘기 상대를 못 잡았다");
         Check(srv.harpoonSteerTicks() >= 1, "② 잡았는데 한 번도 안 틀었다");
-        Check(srv.DebugHarpoonTarget(a) == b, "② 휘어 가서 꽂히지 않았다");
+        Check(srv.DebugHarpoonTarget(Sid(srv, a)) == Sid(srv, b), "② 휘어 가서 꽂히지 않았다");
     }
     // ③ **뒤쪽 상대는 안 잡는다** — 화살의 처음 방향(+x) 뒤(−x)에 선 상대
     {
         nox::Server srv; mk(srv, 800, 1000); ms = 34;
-        srv.DebugAimAt(a, 800, 1000);
+        srv.DebugAimAt(Sid(srv, a), 800, 1000);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
-        for (int t = 0; t < 12 && srv.DebugHarpoonBolt(a) != 0; ++t) tick(srv, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        for (int t = 0; t < 12 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0; ++t) tick(srv, out);
         Check(srv.harpoonAimFound() == 0, "③ 화살 뒤쪽 상대를 휘기 상대로 잡았다");
-        Check(srv.DebugHarpoonTarget(a).empty(), "③ 뒤쪽 상대에 꽂혔다");
+        Check((srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession), "③ 뒤쪽 상대에 꽂혔다");
     }
     // ④ **휘어 가던 상대가 죽으면 끊긴다**(`:212~216`) — 닿기 전에 죽인다
     {
         nox::Server srv; mk(srv, 1250, 1060); ms = 34;
-        srv.DebugAimAt(a, 1250, 1060);
+        srv.DebugAimAt(Sid(srv, a), 1250, 1060);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         for (int t = 0; t < 12 && srv.harpoonAimFound() == 0; ++t) tick(srv, out);
-        Check(srv.harpoonAimFound() == 1 && srv.DebugHarpoonBolt(a) != 0, "④ 전제 — 상대를 잡고 화살이 날고 있어야 한다");
-        srv.DebugHurt(b, -1, 9999, std::string(), 16, out);
+        Check(srv.harpoonAimFound() == 1 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0, "④ 전제 — 상대를 잡고 화살이 날고 있어야 한다");
+        srv.DebugHurt(Sid(srv, b), -1, 9999, Sid(srv, std::string()), 16, out);
         tick(srv, out);
-        Check(srv.DebugHarpoonBolt(a) == 0, "④ 휘어 가던 상대가 죽었는데 줄이 안 끊겼다");
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "④ 휘어 가던 상대가 죽었는데 줄이 안 끊겼다");
         Check(srv.harpoonEnd(nox::HarpoonEnd::AimDead) == 1, "④ 끊김 까닭이 「휘던 상대 죽음」이 아니다");
     }
     // ⑤ **잡은 뒤에 커서를 옮겨도 그 상대를 따라간다** — 정답지는 잡은 상대가 있으면 다시 안 찾는다
     {
         nox::Server srv; mk(srv, 1250, 1060); ms = 34;
-        srv.DebugAimAt(a, 1250, 1060);
+        srv.DebugAimAt(Sid(srv, a), 1250, 1060);
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 3, out);
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
         for (int t = 0; t < 12 && srv.harpoonAimFound() == 0; ++t) tick(srv, out);
-        srv.DebugAimAt(a, 1000, 3000);                     // 커서를 치운다
-        for (int t = 0; t < 12 && srv.DebugHarpoonTarget(a).empty(); ++t) tick(srv, out);
+        srv.DebugAimAt(Sid(srv, a), 1000, 3000);                     // 커서를 치운다
+        for (int t = 0; t < 12 && (srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession); ++t) tick(srv, out);
         Check(srv.harpoonAimFound() == 1, "⑤ 커서를 옮기자 다시 찾았다");
-        Check(srv.DebugHarpoonTarget(a) == b, "⑤ 커서를 옮기자 잡았던 상대를 놓쳤다");
+        Check(srv.DebugHarpoonTarget(Sid(srv, a)) == Sid(srv, b), "⑤ 커서를 옮기자 잡았던 상대를 놓쳤다");
     }
     std::printf("  nine-defects 1-b — 작살 휘기: 커서 둘레 적을 잡고 다음 틱부터 튼다 · 뒤쪽은 안 잡음 · 휘던 상대 죽으면 끊김 · 잡은 뒤엔 커서 무관\n");
 }
@@ -16452,7 +16458,7 @@ void TestMapHazard() {
     };
     auto mk = [&](nox::Server& srv, float fx, float fy, uint8_t amount) {
         srv.DebugEnterGame(a, 770, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         srv.SetObstacles({ flame(fx, fy, amount) });
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w);
@@ -16461,36 +16467,36 @@ void TestMapHazard() {
     {
         nox::Server srv; mk(srv, 2000, 2000, 3);
         std::vector<nox::OutPacket> out;
-        const int hp0 = srv.HealthOf(a);
+        const int hp0 = srv.HealthOf(Sid(srv, a));
         uint32_t ms = 0;
         for (int t = 0; t < 6; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.contactDamageHits() == 0 && srv.HealthOf(a) == hp0, "① 멀리 있는 불에 탔다");
+        Check(srv.contactDamageHits() == 0 && srv.HealthOf(Sid(srv, a)) == hp0, "① 멀리 있는 불에 탔다");
     }
     // ② **불 위에 서 있으면 틱마다 양>>1 씩 탄다**(양 3 → 1)
     {
         nox::Server srv; mk(srv, 1003, 1000, 3);
         AllMetalButPlayer(srv);
         std::vector<nox::OutPacket> out;
-        const int hp0 = srv.HealthOf(a);
+        const int hp0 = srv.HealthOf(Sid(srv, a));
         uint32_t ms = 0;
         for (int t = 0; t < 6; ++t) { ms += 34; srv.Tick(ms, out); }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "② 불 위 6틱 — 닿음 부름 %llu(6 이어야) · 줄어든 체력 %d(6 이어야)",
-                      srv.contactDamageHits(), hp0 - srv.HealthOf(a));
-        Check(srv.contactDamageHits() == 6 && hp0 - srv.HealthOf(a) == 6, msg);
+                      srv.contactDamageHits(), hp0 - srv.HealthOf(Sid(srv, a)));
+        Check(srv.contactDamageHits() == 6 && hp0 - srv.HealthOf(Sid(srv, a)) == 6, msg);
         Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 6, "② 4-c3b2 맵 불에 맞는 소리의 때린 것이 불(862)이 아니다");
     }
     // ③ **양 1 짜리(SmallFlameImmobile)는 홀수 프레임에만 1** — 부름은 틱마다, 피해는 절반
     {
         nox::Server srv; mk(srv, 1003, 1000, 1);
         std::vector<nox::OutPacket> out;
-        const int hp0 = srv.HealthOf(a);
+        const int hp0 = srv.HealthOf(Sid(srv, a));
         uint32_t ms = 0;
         for (int t = 0; t < 6; ++t) { ms += 34; srv.Tick(ms, out); }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "③ 양 1 불 위 6틱 — 닿음 부름 %llu(6) · 줄어든 체력 %d(3 이어야)",
-                      srv.contactDamageHits(), hp0 - srv.HealthOf(a));
-        Check(srv.contactDamageHits() == 6 && hp0 - srv.HealthOf(a) == 3, msg);
+                      srv.contactDamageHits(), hp0 - srv.HealthOf(Sid(srv, a)));
+        Check(srv.contactDamageHits() == 6 && hp0 - srv.HealthOf(Sid(srv, a)) == 3, msg);
     }
     // ④ **닿음 피해가 없는 장애물(양 0)은 부르지도 않는다** — 나무·덤불
     {
@@ -16519,10 +16525,10 @@ void TestWarcryAnim() {
     const int kFrames = 10, kHold = 1;
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 780, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         srv.SetPlayerAnimFrames(46, kFrames, kHold);
         std::vector<nox::OutPacket> o;
-        for (uint8_t k = 1; k <= 3; ++k) srv.DebugAbilAward(a, k, false, o);
+        for (uint8_t k = 1; k <= 3; ++k) srv.DebugAbilAward(Sid(srv, a), k, false, o);
         srv.Tick(0, o);
     };
     uint32_t ms = 0;
@@ -16532,21 +16538,21 @@ void TestWarcryAnim() {
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugAbilDo(a, 2, out), "① 함성이 안 먹었다");
-        Check(srv.DebugStateOf(a) == 1, "① 함성인데 상태가 1(공격)이 아니다");
-        Check(srv.DebugAnimByteOf(a) == 46, "① 함성인데 몸짓이 46(WARCRY)이 아니다");
-        Check(srv.DebugAbilActive(a, 2) && srv.DebugAbilActiveVal(a, 2), "① 함성 켜짐·값이 안 섰다");
+        Check(srv.DebugAbilDo(Sid(srv, a), 2, out), "① 함성이 안 먹었다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 1, "① 함성인데 상태가 1(공격)이 아니다");
+        Check(srv.DebugAnimByteOf(Sid(srv, a)) == 46, "① 함성인데 몸짓이 46(WARCRY)이 아니다");
+        Check(srv.DebugAbilActive(Sid(srv, a), 2) && srv.DebugAbilActiveVal(Sid(srv, a), 2), "① 함성 켜짐·값이 안 섰다");
     }
     // ② **외침 칸(2→3)은 한 번 · 애니가 다 돌면 값만 내리고 상태 13 · 몸짓도 돌아간다 · 목록엔 남는다**
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 2, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
         int endTick = -1, shoutTick = -1;
         for (int t = 1; t <= 3 * kFrames * (kHold + 1) && endTick < 0; ++t) {
             tick(srv, out);
             if (shoutTick < 0 && srv.warcryShouts() == 1) shoutTick = t;
-            if (!srv.DebugAbilActiveVal(a, 2)) endTick = t;
+            if (!srv.DebugAbilActiveVal(Sid(srv, a), 2)) endTick = t;
         }
         char msg[200];
         std::snprintf(msg, sizeof(msg), "② 외침 칸 틱 %d(칸 3 = 3×2=6틱째여야) · 외침 수 %llu(1 이어야)",
@@ -16555,38 +16561,38 @@ void TestWarcryAnim() {
         std::snprintf(msg, sizeof(msg), "② 애니 끝 틱 %d(칸 10 = 20틱째여야)", endTick);
         Check(endTick == kFrames * (kHold + 1), msg);
         Check(srv.abilValOff() == 1, "② 켜짐 값을 한 번 내리지 않았다");
-        Check(srv.DebugAbilActive(a, 2), "② 애니가 끝났는데 목록에서까지 빠졌다(정답지는 값만 내린다)");
-        Check(srv.DebugStateOf(a) == 13, "② 애니가 끝났는데 가만(13)으로 안 돌아갔다");
-        Check(srv.DebugAnimByteOf(a) != 46, "② 애니가 끝났는데 몸짓이 여전히 46 이다");
+        Check(srv.DebugAbilActive(Sid(srv, a), 2), "② 애니가 끝났는데 목록에서까지 빠졌다(정답지는 값만 내린다)");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 13, "② 애니가 끝났는데 가만(13)으로 안 돌아갔다");
+        Check(srv.DebugAnimByteOf(Sid(srv, a)) != 46, "② 애니가 끝났는데 몸짓이 여전히 46 이다");
     }
     // ③ **겹침은 값을 본다** — 외치는 동안 광전사·작살은 막히고, 애니가 끝나면(값 0) 함성 지속 중이어도 **안 막힌다**
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 2, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
         tick(srv, out);
-        Check(!srv.DebugAbilDo(a, 1, out) && srv.abilBlockedBy(1, 2) == 1, "③ 외치는 중인데 광전사가 함성에 안 막혔다");
-        for (int t = 0; t < 2 * kFrames * (kHold + 1) && srv.DebugAbilActiveVal(a, 2); ++t) tick(srv, out);
-        Check(srv.DebugAbilActive(a, 2) && !srv.DebugAbilActiveVal(a, 2), "③ 전제 — 함성이 목록에 남고 값만 내려가야 한다");
-        Check(srv.DebugAbilDo(a, 1, out), "③ 함성 애니가 끝났는데(값 0) 광전사가 아직 막힌다");
+        Check(!srv.DebugAbilDo(Sid(srv, a), 1, out) && srv.abilBlockedBy(1, 2) == 1, "③ 외치는 중인데 광전사가 함성에 안 막혔다");
+        for (int t = 0; t < 2 * kFrames * (kHold + 1) && srv.DebugAbilActiveVal(Sid(srv, a), 2); ++t) tick(srv, out);
+        Check(srv.DebugAbilActive(Sid(srv, a), 2) && !srv.DebugAbilActiveVal(Sid(srv, a), 2), "③ 전제 — 함성이 목록에 남고 값만 내려가야 한다");
+        Check(srv.DebugAbilDo(Sid(srv, a), 1, out), "③ 함성 애니가 끝났는데(값 0) 광전사가 아직 막힌다");
     }
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 2, out);
-        for (int t = 0; t < 2 * kFrames * (kHold + 1) && srv.DebugAbilActiveVal(a, 2); ++t) tick(srv, out);
-        Check(srv.DebugAbilDo(a, 3, out), "③ 함성 애니가 끝났는데(값 0) 작살이 아직 막힌다");
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
+        for (int t = 0; t < 2 * kFrames * (kHold + 1) && srv.DebugAbilActiveVal(Sid(srv, a), 2); ++t) tick(srv, out);
+        Check(srv.DebugAbilDo(Sid(srv, a), 3, out), "③ 함성 애니가 끝났는데(값 0) 작살이 아직 막힌다");
         // 함성 자신은 목록에 남아 있으니 다시 누르면 「이미 켜짐」
-        Check(!srv.DebugAbilDo(a, 2, out) && srv.abilGate(2, nox::AbilGate::Already) == 1, "③ 애니 뒤 함성을 또 눌렀는데 「이미 켜짐」이 아니다");
+        Check(!srv.DebugAbilDo(Sid(srv, a), 2, out) && srv.abilGate(2, nox::AbilGate::Already) == 1, "③ 애니 뒤 함성을 또 눌렀는데 「이미 켜짐」이 아니다");
     }
     // ④ **외치는 동안에는 죽음 말고 상태를 못 바꾼다**
     {
         nox::Server srv; mk(srv); ms = 0;
         std::vector<nox::OutPacket> out;
-        srv.DebugAbilDo(a, 2, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
         tick(srv, out);
-        Check(!srv.DebugPlayerSetState(a, 13) && srv.DebugStateOf(a) == 1, "④ 외치는 중인데 가만(13)으로 바뀌었다");
-        Check(srv.DebugPlayerSetState(a, 3) && srv.DebugStateOf(a) == 3, "④ 외치는 중이어도 죽음(3)으로는 바뀌어야 한다");
+        Check(!srv.DebugPlayerSetState(Sid(srv, a), 13) && srv.DebugStateOf(Sid(srv, a)) == 1, "④ 외치는 중인데 가만(13)으로 바뀌었다");
+        Check(srv.DebugPlayerSetState(Sid(srv, a), 3) && srv.DebugStateOf(Sid(srv, a)) == 3, "④ 외치는 중이어도 죽음(3)으로는 바뀌어야 한다");
     }
     std::printf("  nine-defects 2-a1 — 함성: 상태 1·몸짓 46 · 외침 칸 한 번 · 애니 끝에 값만 내리고 13 · 겹침은 값 · 외치는 동안 상태 고정\n");
 }
@@ -16606,17 +16612,17 @@ void TestWarcryShout() {
     };
     nox::Server srv;
     srv.DebugEnterGame(a, 790, false, nox::CharClass::Warrior);
-    srv.DebugMoveTo(a, 1000, 1000);
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     srv.SetPlayerAnimFrames(46, 10, 1);
     srv.SetTypeBody(kStun, body("MEDIUM_MONSTER+WARCRY_STUN"));
     srv.SetTypeBody(kPlain, body("MEDIUM_MONSTER"));
-    srv.DebugSpawnPet(kStun, 1100, 1000, std::string());     // 0 — 걸려야 한다
-    srv.DebugSpawnPet(kStun, 1400, 1000, std::string());     // 1 — 300 밖(400)
-    srv.DebugSpawnPet(kPlain, 1050, 1000, std::string());    // 2 — 비트 없음
+    srv.DebugSpawnPet(kStun, 1100, 1000, Sid(srv, std::string()));     // 0 — 걸려야 한다
+    srv.DebugSpawnPet(kStun, 1400, 1000, Sid(srv, std::string()));     // 1 — 300 밖(400)
+    srv.DebugSpawnPet(kPlain, 1050, 1000, Sid(srv, std::string()));    // 2 — 비트 없음
     std::vector<nox::OutPacket> out;
     srv.Tick(0, out);
-    srv.DebugAbilAward(a, 2, false, out);
-    Check(srv.DebugAbilDo(a, 2, out), "전제 — 함성이 안 먹었다");
+    srv.DebugAbilAward(Sid(srv, a), 2, false, out);
+    Check(srv.DebugAbilDo(Sid(srv, a), 2, out), "전제 — 함성이 안 먹었다");
     Check(srv.warcryStunned() == 0 && !srv.DebugPetHasEnchant(0, 5), "전제 — 외치기 전에 이미 기절이 걸렸다");
     uint32_t ms = 0;
     bool jiggle15 = false;
@@ -16669,10 +16675,10 @@ void TestCounterSpell() {
         srv.DebugEnterGame(b, 801, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(c, 802, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(d, 803, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
-        srv.DebugMoveTo(c, 2000, 2000);                        // 약 1414 — 600 밖
-        srv.DebugMoveTo(d, 1000, 1200);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 2000, 2000);                        // 약 1414 — 600 밖
+        srv.DebugMoveTo(Sid(srv, d), 1000, 1200);
         ms = 0; srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);                           // 물리 자리(posX)는 틱이 돌아야 맞춰진다
     };
@@ -16686,59 +16692,59 @@ void TestCounterSpell() {
     // ① **날아가는 것** — 둘레 안 불덩이는 터지고 지워진다
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugAimAt(b, 1100, 1500);
-        srv.DebugSpellAccept(b, 27, 1, out);
+        srv.DebugAimAt(Sid(srv, b), 1100, 1500);
+        srv.DebugSpellAccept(Sid(srv, b), 27, 1, out);
         Check(srv.missiles() == 1, "① 전제 — 불덩이가 안 생겼다");
         out.clear();
-        srv.DebugCastCounterSpell(a, out);
+        srv.DebugCastCounterSpell(Sid(srv, a), out);
         Check(srv.missiles() == 0 && srv.counterMissiles() == 1, "① 둘레 안 불덩이가 안 지워졌다");
         Check(fxCount(out) >= 1, "① 지운 자리에 반주문 FX(0x87)가 안 갔다");
     }
     // ② **지속 주문** — CAN_COUNTER 이고 둘레 안인 것만 끊긴다(목록 머리에 넣으므로 색인 0 이 마지막에 넣은 것)
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugDurNew(c, 31, 0, -1, -1, false, nox::Target{}, out);   // 2 — 둘레 밖
-        srv.DebugDurNew(b, 51, 0, -1, -1, false, nox::Target{}, out);   // 1 — CAN_COUNTER 아님
-        srv.DebugDurNew(b, 31, 0, -1, -1, false, nox::Target{}, out);   // 0 — 끊겨야 한다
+        srv.DebugDurNew(Sid(srv, c), 31, 0, -1, -1, false, nox::Target{}, out);   // 2 — 둘레 밖
+        srv.DebugDurNew(Sid(srv, b), 51, 0, -1, -1, false, nox::Target{}, out);   // 1 — CAN_COUNTER 아님
+        srv.DebugDurNew(Sid(srv, b), 31, 0, -1, -1, false, nox::Target{}, out);   // 0 — 끊겨야 한다
         Check(srv.DurCount() == 3, "② 전제 — 지속 주문이 셋이 아니다");
-        srv.DebugCastCounterSpell(a, out);
+        srv.DebugCastCounterSpell(Sid(srv, a), out);
         Check(srv.DebugDurCanceled(0) && !srv.DebugDurCanceled(1) && !srv.DebugDurCanceled(2) && srv.counterDurs() == 1,
               "② 끊긴 지속 주문이 「둘레 안·CAN_COUNTER」 하나가 아니다");
     }
     // ③ **버프** — 끄는 것은 b 의 충격(22, 지속 100)뿐. b 의 가속(9)·a(시전자)의 충격·c(둘레 밖)의 충격·d 의 영구(지속 0) 충격은 남는다
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugApplyEnchant(b, 22, 100, 1);
-        srv.DebugApplyEnchant(b, 9, 100, 1);
-        srv.DebugApplyEnchant(a, 22, 100, 1);
-        srv.DebugApplyEnchant(c, 22, 100, 1);
-        srv.DebugApplyEnchant(d, 22, 0, 1);
-        Check(srv.DebugHasEnchant(d, 22) && srv.DebugEnchantDur(d, 22) == 0, "③ 전제 — 영구(지속 0) 충격이 안 걸렸다");
+        srv.DebugApplyEnchant(Sid(srv, b), 22, 100, 1);
+        srv.DebugApplyEnchant(Sid(srv, b), 9, 100, 1);
+        srv.DebugApplyEnchant(Sid(srv, a), 22, 100, 1);
+        srv.DebugApplyEnchant(Sid(srv, c), 22, 100, 1);
+        srv.DebugApplyEnchant(Sid(srv, d), 22, 0, 1);
+        Check(srv.DebugHasEnchant(Sid(srv, d), 22) && srv.DebugEnchantDur(Sid(srv, d), 22) == 0, "③ 전제 — 영구(지속 0) 충격이 안 걸렸다");
         out.clear();
-        srv.DebugCastCounterSpell(a, out);
-        Check(!srv.DebugHasEnchant(b, 22), "③ 둘레 안 b 의 충격(CAN_COUNTER)이 안 꺼졌다");
-        Check(srv.DebugHasEnchant(b, 9), "③ b 의 가속(CAN_COUNTER 아님)이 꺼졌다");
-        Check(srv.DebugHasEnchant(a, 22), "③ 시전자 자신의 충격이 꺼졌다(a4 는 뺀다)");
-        Check(srv.DebugHasEnchant(c, 22), "③ 둘레 밖 c 의 충격이 꺼졌다");
-        Check(srv.DebugHasEnchant(d, 22), "③ 영구(지속 0) 충격이 꺼졌다");
+        srv.DebugCastCounterSpell(Sid(srv, a), out);
+        Check(!srv.DebugHasEnchant(Sid(srv, b), 22), "③ 둘레 안 b 의 충격(CAN_COUNTER)이 안 꺼졌다");
+        Check(srv.DebugHasEnchant(Sid(srv, b), 9), "③ b 의 가속(CAN_COUNTER 아님)이 꺼졌다");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 22), "③ 시전자 자신의 충격이 꺼졌다(a4 는 뺀다)");
+        Check(srv.DebugHasEnchant(Sid(srv, c), 22), "③ 둘레 밖 c 의 충격이 꺼졌다");
+        Check(srv.DebugHasEnchant(Sid(srv, d), 22), "③ 영구(지속 0) 충격이 꺼졌다");
         Check(srv.counterEnchants() == 1 && fxCount(out) == 1, "③ 끈 버프 1 · FX 한 번이 아니다");
     }
     // ④ **시전 소리** — 반주문(13)의 시전 소리가 담긴다
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
         const size_t q0 = srv.DebugAudioQueued();
-        srv.DebugCastCounterSpell(a, out);
+        srv.DebugCastCounterSpell(Sid(srv, a), out);
         Check(srv.DebugAudioQueued() == q0 + 1 && srv.counterCasts() == 1, "④ 반주문 시전 소리가 한 번 담기지 않았다");
     }
     // ⑤ **함성이 부른다** — 외침 칸에서 반주문 한 번
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
         srv.SetPlayerAnimFrames(46, 10, 1);
-        srv.DebugAbilAward(a, 2, false, out);
-        srv.DebugApplyEnchant(b, 22, 100, 1);
-        srv.DebugAbilDo(a, 2, out);
+        srv.DebugAbilAward(Sid(srv, a), 2, false, out);
+        srv.DebugApplyEnchant(Sid(srv, b), 22, 100, 1);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
         for (int t = 0; t < 20 && srv.warcryShouts() == 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.counterCasts() == 1 && !srv.DebugHasEnchant(b, 22), "⑤ 함성 외침이 반주문을 안 불렀다(b 의 충격이 남음)");
+        Check(srv.counterCasts() == 1 && !srv.DebugHasEnchant(Sid(srv, b), 22), "⑤ 함성 외침이 반주문을 안 불렀다(b 의 충격이 남음)");
     }
     std::printf("  nine-defects 2-a3 — 반주문: 불덩이 지움 · CAN_COUNTER 지속 주문만 끊음 · 버프(시전자·밖·영구 제외) · 소리 · 함성이 부름\n");
 }
@@ -16755,11 +16761,11 @@ void TestWarcryDo() {
         RegSpell(srv, 55);                                     // 무효화 정의가 없으면 `SpellAccept` 가 거절한다
         srv.DebugEnterGame(a, 810, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 811, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, bx, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), bx, 1000);
         ms = 0; srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAbilAward(a, 2, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 2, false, out);
     };
     auto startCast = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
         const std::vector<uint8_t> pkt = SpellPacket(27, false);
@@ -16777,28 +16783,28 @@ void TestWarcryDo() {
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, 1100, out, ms);
         startCast(srv, out, ms);
-        Check(srv.CastPending() == 1 && srv.DebugCasting(b), "① 전제 — b 가 시전 중이 아니다");
+        Check(srv.CastPending() == 1 && srv.DebugCasting(Sid(srv, b)), "① 전제 — b 가 시전 중이 아니다");
         out.clear();
-        srv.DebugAbilDo(a, 2, out);
-        Check(srv.CastPending() == 0 && !srv.DebugCasting(b), "① 함성이 둘레 안 적의 시전을 안 끊었다");
-        Check(srv.DebugStateOf(b) == 13, "① 끊긴 시전자가 가만(13)으로 안 돌아갔다");
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
+        Check(srv.CastPending() == 0 && !srv.DebugCasting(Sid(srv, b)), "① 함성이 둘레 안 적의 시전을 안 끊었다");
+        Check(srv.DebugStateOf(Sid(srv, b)) == 13, "① 끊긴 시전자가 가만(13)으로 안 돌아갔다");
         Check(informTo(out, b, 0, 15), "① 끊긴 시전자에게 알림(0, 15)이 안 갔다");
         Check(srv.warcryCastsBroken() == 1, "① 끊은 수가 1 이 아니다");
     }
     // ② **같은 편이면 안 끊는다**
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, 1100, out, ms);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
         startCast(srv, out, ms);
-        srv.DebugAbilDo(a, 2, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
         Check(srv.CastPending() == 1 && srv.warcryCastsBroken() == 0, "② 같은 편의 시전을 끊었다");
     }
     // ③ **300 밖이면 안 끊는다**
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, 1400, out, ms);
         startCast(srv, out, ms);
-        srv.DebugAbilDo(a, 2, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
         Check(srv.CastPending() == 1 && srv.warcryCastsBroken() == 0, "③ 300 밖 적의 시전을 끊었다");
     }
     // ④ **주문 쓰는 몬스터에게도 무효화**(monster.bin CAN_CAST_SPELLS) — 못 쓰는 몬스터는 안 걸린다
@@ -16808,19 +16814,19 @@ void TestWarcryDo() {
         srv.SetTypeBody(1382, body);                             // Beholder
         srv.SetTypeBody(1365, body);                             // Bear
         srv.SetCastingMonsterType(1382);
-        srv.DebugSpawnPet(1382, 1100, 1000, std::string());     // 0 — 주문 쓰는 몬스터
-        srv.DebugSpawnPet(1365, 1050, 1000, std::string());     // 1 — 못 쓰는 몬스터
+        srv.DebugSpawnPet(1382, 1100, 1000, Sid(srv, std::string()));     // 0 — 주문 쓰는 몬스터
+        srv.DebugSpawnPet(1365, 1050, 1000, Sid(srv, std::string()));     // 1 — 못 쓰는 몬스터
         ms += 34; srv.Tick(ms, out);
-        srv.DebugAbilDo(a, 2, out);
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
         Check(srv.DebugPetHasEnchant(0, 29) && !srv.DebugPetHasEnchant(1, 29) && srv.warcryNullifiedMonsters() == 1,
               "④ 무효화가 「주문 쓰는 몬스터」 하나에만 걸리지 않았다");
     }
     // ⑤ **타원 방패(67)를 끊고, 보호막(51)은 안 끊는다** — 전에는 51 을 끊고 있었다
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, 1400, out, ms);
-        srv.DebugDurNew(a, 51, 0, -1, -1, false, nox::Target{}, out);   // 1 — 보호막
-        srv.DebugDurNew(a, 67, 0, -1, -1, false, nox::Target{}, out);   // 0 — 타원 방패
-        srv.DebugAbilDo(a, 2, out);
+        srv.DebugDurNew(Sid(srv, a), 51, 0, -1, -1, false, nox::Target{}, out);   // 1 — 보호막
+        srv.DebugDurNew(Sid(srv, a), 67, 0, -1, -1, false, nox::Target{}, out);   // 0 — 타원 방패
+        srv.DebugAbilDo(Sid(srv, a), 2, out);
         Check(srv.DebugDurCanceled(0) && !srv.DebugDurCanceled(1), "⑤ 함성이 타원 방패(67)를 끊고 보호막(51)을 남기지 않았다");
     }
     std::printf("  nine-defects 2-a4 — 함성 do: 둘레 적 시전 끊기(같은 편·300 밖 제외) · 주문 쓰는 몬스터 무효화 · 타원 방패 67\n");
@@ -16835,12 +16841,12 @@ void TestBerserkCharge() {
     const std::string a = "10.7.17.1:7171";
     auto mk = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
         srv.DebugEnterGame(a, 820, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         srv.SetPlayerAnimFrames(45, 12, 0);
-        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
         ms = 0; srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);                           // 물리 자리 맞추기
-        srv.DebugSetFacing(a, 0);                              // +x
+        srv.DebugSetFacing(Sid(srv, a), 0);                              // +x
         ms += 34; srv.Tick(ms, out);                           // Direction1 = Direction2
     };
     auto tick = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) { ms += 34; srv.Tick(ms, out); };
@@ -16848,59 +16854,59 @@ void TestBerserkCharge() {
     // ① **쓰면 상태 1 · 몸짓 45 · 앞(+x)으로 달려간다** — 10틱에 걷기(틱당 3)·달리기(6)로는 못 가는 거리
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        const double x0 = srv.DebugPosX(a), y0 = srv.DebugPosY(a);
-        Check(srv.DebugAbilDo(a, 1, out), "① 광전사가 안 먹었다");
-        Check(srv.DebugStateOf(a) == 1 && srv.DebugAnimByteOf(a) == 45, "① 상태 1 · 몸짓 45 가 아니다");
+        const double x0 = srv.DebugPosX(Sid(srv, a)), y0 = srv.DebugPosY(Sid(srv, a));
+        Check(srv.DebugAbilDo(Sid(srv, a), 1, out), "① 광전사가 안 먹었다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 1 && srv.DebugAnimByteOf(Sid(srv, a)) == 45, "① 상태 1 · 몸짓 45 가 아니다");
         for (int t = 0; t < 10; ++t) tick(srv, out, ms);
         char msg[160];
         std::snprintf(msg, sizeof(msg), "① 10틱 돌진 — x 로 %.1f · y 로 %.1f 움직였다(x 60 넘게 · y 거의 0 이어야)",
-                      srv.DebugPosX(a) - x0, srv.DebugPosY(a) - y0);
-        Check(srv.DebugPosX(a) - x0 > 60.0 && std::fabs(srv.DebugPosY(a) - y0) < 1.0, msg);
+                      srv.DebugPosX(Sid(srv, a)) - x0, srv.DebugPosY(Sid(srv, a)) - y0);
+        Check(srv.DebugPosX(Sid(srv, a)) - x0 > 60.0 && std::fabs(srv.DebugPosY(Sid(srv, a)) - y0) < 1.0, msg);
         Check(srv.berserkChargeTicks() == 10, "① 민 틱이 10 이 아니다");
-        Check(srv.DebugAnimFrameOf(a) < 11, "① 애니 칸이 칸수−1(11) 에 닿았다(되돌아가야 한다)");
+        Check(srv.DebugAnimFrameOf(Sid(srv, a)) < 11, "① 애니 칸이 칸수−1(11) 에 닿았다(되돌아가야 한다)");
         // ★ 10-02 — 돌진 힘 = SpeedBase × 6 · SpeedBase 는 직업 값(워리어 2.1 · `SpeedBaseOnline`) → 끝 속도 = 힘 ÷ 감쇠 0.5 = 25.2(전 3.0 × 6 → 36)
         //   10틱 = 50걸음이면 끝 속도의 99.5% — 3% 안을 본다
         const double vEnd = 6.0 * nox::SpeedBaseOnline(nox::CharClass::Warrior) / 0.5;
-        std::snprintf(msg, sizeof(msg), "① 10틱 돌진 속도 %.2f — 끝 속도 %.2f(SpeedBase × 6 ÷ 0.5)의 3%% 안이어야", srv.DebugVelX(a), vEnd);
-        Check(srv.DebugVelX(a) > vEnd * 0.97 && srv.DebugVelX(a) <= vEnd + 1e-6, msg);
+        std::snprintf(msg, sizeof(msg), "① 10틱 돌진 속도 %.2f — 끝 속도 %.2f(SpeedBase × 6 ÷ 0.5)의 3%% 안이어야", srv.DebugVelX(Sid(srv, a)), vEnd);
+        Check(srv.DebugVelX(Sid(srv, a)) > vEnd * 0.97 && srv.DebugVelX(Sid(srv, a)) <= vEnd + 1e-6, msg);
     }
     // ② **돌진 중에는 방향 입력을 안 받는다**
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugAbilDo(a, 1, out);
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
         std::vector<uint8_t> p = InputPacket(1);
         p[nox::kWireHeaderSize + 1] = 5;
         p.push_back(64);                                       // 바라보기 64
         srv.OnPacket(a, p.data(), p.size(), out);
         tick(srv, out, ms);
-        Check(srv.DebugFacingOf(a) == 0, "② 돌진 중인데 방향이 바뀌었다");
+        Check(srv.DebugFacingOf(Sid(srv, a)) == 0, "② 돌진 중인데 방향이 바뀌었다");
     }
     // ③ **얼리면 돌진이 멈추고 공격이 끝난다**(상태 13)
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugAbilDo(a, 1, out);
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
         tick(srv, out, ms);
-        srv.DebugApplyEnchant(a, 25, 100, 1);
+        srv.DebugApplyEnchant(Sid(srv, a), 25, 100, 1);
         const unsigned long long n0 = srv.berserkChargeTicks();
         tick(srv, out, ms);
-        Check(srv.berserkChargeTicks() == n0 && srv.DebugStateOf(a) == 13, "③ 얼었는데 계속 밀었거나 공격이 안 끝났다");
+        Check(srv.berserkChargeTicks() == n0 && srv.DebugStateOf(Sid(srv, a)) == 13, "③ 얼었는데 계속 밀었거나 공격이 안 끝났다");
         // 광전사는 아직 켜져 있다 — 이때 걷기 입력은 상태를 안 바꾼다(`:512` `!IsActive(Berserk)`)
-        srv.DebugBuffOff(a, 25);
+        srv.DebugBuffOff(Sid(srv, a), 25);
         std::vector<uint8_t> mv = InputPacket(2);
         mv[nox::kWireHeaderSize + 1] = 5;
         mv.push_back(0);
         srv.OnPacket(a, mv.data(), mv.size(), out);
         tick(srv, out, ms);
-        Check(srv.DebugAbilActive(a, 1) && srv.DebugStateOf(a) == 13, "③ 광전사가 켜져 있는데 걷기 입력이 상태를 바꿨다");
+        Check(srv.DebugAbilActive(Sid(srv, a), 1) && srv.DebugStateOf(Sid(srv, a)) == 13, "③ 광전사가 켜져 있는데 걷기 입력이 상태를 바꿨다");
     }
     // ④ **지속(90)이 다하면 멈춘다** — `AbilityUpdate` 가 상태 13
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugAbilDo(a, 1, out);
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
         for (int t = 0; t < 95; ++t) tick(srv, out, ms);
         const unsigned long long n0 = srv.berserkChargeTicks();
         tick(srv, out, ms);
-        Check(!srv.DebugAbilActive(a, 1) && srv.DebugStateOf(a) == 13 && srv.berserkChargeTicks() == n0,
+        Check(!srv.DebugAbilActive(Sid(srv, a), 1) && srv.DebugStateOf(Sid(srv, a)) == 13 && srv.berserkChargeTicks() == n0,
               "④ 지속이 다했는데 계속 민다");
         Check(n0 >= 89 && n0 <= 91, "④ 민 틱이 지속(90) 언저리가 아니다");
     }
@@ -16908,21 +16914,21 @@ void TestBerserkCharge() {
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         srv.DebugEnterGame(a, 820, false, nox::CharClass::Warrior);
-        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
         srv.StartCtf(1000, 1000, 2000, 1000);
         srv.SetGameFlags(0x20);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugMoveTo(a, 2000, 1000);                        // 적(파랑) 깃발 위
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugMoveTo(Sid(srv, a), 2000, 1000);                        // 적(파랑) 깃발 위
         srv.Tick(0, out); srv.Tick(34, out); srv.Tick(68, out);
-        Check(srv.Carrying(a), "⑤ 전제 — 깃발을 안 들었다");
-        Check(!srv.DebugAbilDo(a, 1, out) && srv.abilGate(1, nox::AbilGate::CtfFlag) == 1, "⑤ 깃발을 든 채 광전사가 먹었다");
+        Check(srv.Carrying(Sid(srv, a)), "⑤ 전제 — 깃발을 안 들었다");
+        Check(!srv.DebugAbilDo(Sid(srv, a), 1, out) && srv.abilGate(1, nox::AbilGate::CtfFlag) == 1, "⑤ 깃발을 든 채 광전사가 먹었다");
     }
     // ⑥ **타원 방패(67)를 끊는다** — 전에는 51(SHIELD)을 끊었다
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugDurNew(a, 51, 0, -1, -1, false, nox::Target{}, out);   // 1
-        srv.DebugDurNew(a, 67, 0, -1, -1, false, nox::Target{}, out);   // 0
-        srv.DebugAbilDo(a, 1, out);
+        srv.DebugDurNew(Sid(srv, a), 51, 0, -1, -1, false, nox::Target{}, out);   // 1
+        srv.DebugDurNew(Sid(srv, a), 67, 0, -1, -1, false, nox::Target{}, out);   // 0
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
         Check(srv.DebugDurCanceled(0) && !srv.DebugDurCanceled(1), "⑥ 광전사가 타원 방패(67)를 끊고 보호막(51)을 남기지 않았다");
     }
     std::printf("  nine-defects 2-b1 — 광전사: 상태 1·몸짓 45·+x 로 돌진(방향 잠김) · 얼면 멈춤 · 지속 끝에 멈춤 · 깃발 들면 못 씀 · 타원 방패 67\n");
@@ -16947,24 +16953,24 @@ void TestBerserkCrash() {
     auto mk = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
         gd(srv);
         srv.DebugEnterGame(a, 830, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         srv.SetPlayerAnimFrames(45, 12, 0);
-        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
         ms = 0; srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugSetFacing(a, 0);                              // +x
+        srv.DebugSetFacing(Sid(srv, a), 0);                              // +x
         ms += 34; srv.Tick(ms, out);
     };
     // 광전사를 켜고 부딪힐 때까지 민다. 부딪힌 틱 직전의 옛 자리(+72)를 돌려준다 — 되돌아갈 자리다
     struct Hit { bool ok = false; double px = 0, py = 0; std::vector<nox::OutPacket> out; };
     auto charge = [&](nox::Server& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
         Hit h;
-        srv.DebugAbilDo(a, 1, out);
+        srv.DebugAbilDo(Sid(srv, a), 1, out);
         for (int t = 0; t < 40; ++t) {
-            h.px = srv.DebugPrevX(a); h.py = srv.DebugPrevY(a);
+            h.px = srv.DebugPrevX(Sid(srv, a)); h.py = srv.DebugPrevY(Sid(srv, a));
             h.out.clear();
             ms += 34; srv.Tick(ms, h.out);
-            if (!srv.DebugAbilActive(a, 1)) { h.ok = true; break; }
+            if (!srv.DebugAbilActive(Sid(srv, a), 1)) { h.ok = true; break; }
         }
         return h;
     };
@@ -16998,22 +17004,22 @@ void TestBerserkCrash() {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         wallCol(srv); srv.SetWallDefFlags({ 1 });
         mk(srv, out, ms);
-        const int h0 = srv.HealthOf(a);
+        const int h0 = srv.HealthOf(Sid(srv, a));
         const unsigned long long snd0 = srv.soundsQueued();
         Hit h = charge(srv, ms, out);
         Check(h.ok, "① 벽에 닿았는데 광전사가 안 꺼졌다");
         Check(only(srv, nox::BerserkHit::WallHard), "① 갈래가 「벽 세게」 하나가 아니다");
         Check(srv.wallContacts() >= 1, "① 벽 짝이 안 적혔다");
-        Check(srv.DebugStateOf(a) == 13, "① 상태가 13 이 아니다");
-        Check(srv.DebugHasEnchant(a, 5) && srv.DebugEnchantDur(a, 5) == 44 && srv.DebugEnchantPower(a, 5) == 5,
+        Check(srv.DebugStateOf(Sid(srv, a)) == 13, "① 상태가 13 이 아니다");
+        Check(srv.DebugHasEnchant(Sid(srv, a), 5) && srv.DebugEnchantDur(Sid(srv, a), 5) == 44 && srv.DebugEnchantPower(Sid(srv, a), 5) == 5,
               "① 기절(5) 44틱·세기 5 가 아니다");
         char msg[160];
-        std::snprintf(msg, sizeof(msg), "① 자기 피해 — 체력 %d → %d (%d 이어야)", h0, srv.HealthOf(a), h0 - h0 / 5);
-        Check(srv.HealthOf(a) == h0 - static_cast<int>(static_cast<float>(0.2 * h0)), msg);
+        std::snprintf(msg, sizeof(msg), "① 자기 피해 — 체력 %d → %d (%d 이어야)", h0, srv.HealthOf(Sid(srv, a)), h0 - h0 / 5);
+        Check(srv.HealthOf(Sid(srv, a)) == h0 - static_cast<int>(static_cast<float>(0.2 * h0)), msg);
         Check(srv.soundsQueued() == snd0 + 1, "① 부딪힘 소리 171 이 한 번이 아니다");
-        std::snprintf(msg, sizeof(msg), "① 되돌아감 — (%.2f,%.2f) · 옛 자리 (%.2f,%.2f)", srv.DebugPosX(a), srv.DebugPosY(a), h.px, h.py);
-        Check(srv.DebugPosX(a) == h.px && srv.DebugPosY(a) == h.py, msg);
-        Check(srv.DebugPrevX(a) == h.px && srv.DebugPrevY(a) == h.py, "① 옮긴 틱 끝 PrevPos 가 옮긴 자리가 아니다");
+        std::snprintf(msg, sizeof(msg), "① 되돌아감 — (%.2f,%.2f) · 옛 자리 (%.2f,%.2f)", srv.DebugPosX(Sid(srv, a)), srv.DebugPosY(Sid(srv, a)), h.px, h.py);
+        Check(srv.DebugPosX(Sid(srv, a)) == h.px && srv.DebugPosY(Sid(srv, a)) == h.py, msg);
+        Check(srv.DebugPrevX(Sid(srv, a)) == h.px && srv.DebugPrevY(Sid(srv, a)) == h.py, "① 옮긴 틱 끝 PrevPos 가 옮긴 자리가 아니다");
         Check(has(h.out, nox::Op::FX_JIGGLE) && has(h.out, nox::Op::FORGET_DRAWABLES), "① 땅울림(97)·ea 가 안 갔다");
         Check(srv.abilEnded(1, nox::AbilEnd::Disabled) == 1, "① 광전사가 DisableAbility 로 안 꺼졌다");
         // ★ 09-29 Z1-A — 벽 세게면 `damageToMap(새 자리 칸, 100, 2)` 을 한 번 부른다(`GAME3_3.c:3241~3245`) — 갈래 넷 중 어디든 합 1
@@ -17024,12 +17030,12 @@ void TestBerserkCrash() {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         wallCol(srv); srv.SetWallDefFlags({ 0 });
         mk(srv, out, ms);
-        const int h0 = srv.HealthOf(a);
+        const int h0 = srv.HealthOf(Sid(srv, a));
         const unsigned long long snd0 = srv.soundsQueued();
         Hit h = charge(srv, ms, out);
         Check(h.ok && only(srv, nox::BerserkHit::WallSoft), "② 갈래가 「벽 살짝」 하나가 아니다");
-        Check(!srv.DebugHasEnchant(a, 5) && srv.HealthOf(a) == h0 && srv.soundsQueued() == snd0, "② 살짝인데 기절·피해·소리가 났다");
-        Check(srv.DebugPosX(a) == h.px && srv.DebugStateOf(a) == 13, "② 되돌아가지 않았거나 상태 13 이 아니다");
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 5) && srv.HealthOf(Sid(srv, a)) == h0 && srv.soundsQueued() == snd0, "② 살짝인데 기절·피해·소리가 났다");
+        Check(srv.DebugPosX(Sid(srv, a)) == h.px && srv.DebugStateOf(Sid(srv, a)) == 13, "② 되돌아가지 않았거나 상태 13 이 아니다");
     }
     // ③ **사람** — 밀고(무게가 같으면 속도를 맞바꾼다) 상대에 피해 · 나는 기절·자기 피해 없음
     //   ✖ 10-02 — 상대 자리 1045 → **1041**. 돌진 빠르기가 정답지 값(워리어 SpeedBase 2.1 × 6 · 전 3.0 × 6)으로 줄어
@@ -17040,21 +17046,21 @@ void TestBerserkCrash() {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         gd(srv);
         srv.DebugEnterGame(b, 831, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1041, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1041, 1000);
         mk(srv, out, ms);
-        const int ha = srv.HealthOf(a), hb = srv.HealthOf(b);
+        const int ha = srv.HealthOf(Sid(srv, a)), hb = srv.HealthOf(Sid(srv, b));
         Hit h = charge(srv, ms, out);
         Check(h.ok && only(srv, nox::BerserkHit::Unit), "③ 갈래가 「유닛」 하나가 아니다");
-        Check(srv.HealthOf(b) < hb, "③ 부딪힌 사람이 피해를 안 입었다");
-        Check(srv.HealthOf(a) == ha && !srv.DebugHasEnchant(a, 5), "③ 사람에 부딪혔는데 내가 기절하거나 다쳤다");
+        Check(srv.HealthOf(Sid(srv, b)) < hb, "③ 부딪힌 사람이 피해를 안 입었다");
+        Check(srv.HealthOf(Sid(srv, a)) == ha && !srv.DebugHasEnchant(Sid(srv, a), 5), "③ 사람에 부딪혔는데 내가 기절하거나 다쳤다");
         Check(srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == srv.hitSoundCalls(),
               "③ 4-c3b1 광전사 피해에 때린 것(광전사 몸)이 안 넘어갔다");
         // 둘 다 몸끼리 밀려 이미 +x 로 움직이는데(상대는 밀려난 만큼) 무게가 같으면 **속도를 맞바꾼다** — 그래서 상대가 더 빠르다.
         //   (맞바꿈이 빠지면 거꾸로 내가 더 빠르다 — 돌연변이로 확인)
         char msg[160];
-        std::snprintf(msg, sizeof(msg), "③ 속도 맞바꿈 — 나 %.2f · 상대 %.2f(상대가 빨라야)", srv.DebugVelX(a), srv.DebugVelX(b));
-        Check(srv.DebugVelX(b) > 5.0 && srv.DebugVelX(b) > srv.DebugVelX(a), msg);
-        Check(srv.DebugPosX(a) == h.px, "③ 되돌아가지 않았다");
+        std::snprintf(msg, sizeof(msg), "③ 속도 맞바꿈 — 나 %.2f · 상대 %.2f(상대가 빨라야)", srv.DebugVelX(Sid(srv, a)), srv.DebugVelX(Sid(srv, b)));
+        Check(srv.DebugVelX(Sid(srv, b)) > 5.0 && srv.DebugVelX(Sid(srv, b)) > srv.DebugVelX(Sid(srv, a)), msg);
+        Check(srv.DebugPosX(Sid(srv, a)) == h.px, "③ 되돌아가지 않았다");
     }
     // ③' `sub_4E86E0` 식 — 무게 1 이 (4,0) 으로 무게 3 의 서 있는 것에 부딪히면 (−2,0) · (2,0). 무게가 같으면 맞바꿈
     {
@@ -17071,12 +17077,12 @@ void TestBerserkCrash() {
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
         mk(srv, out, ms);
-        srv.DebugSpawnPet(1328, 1040.0f, 1000.0f, std::string());
+        srv.DebugSpawnPet(1328, 1040.0f, 1000.0f, Sid(srv, std::string()));
         const uint16_t hp0 = srv.DebugPetHealth(0);
         Hit h = charge(srv, ms, out);
         Check(h.ok && only(srv, nox::BerserkHit::Unit), "④ 갈래가 「유닛」 하나가 아니다");
         Check(srv.pets() == 0 || srv.DebugPetHealth(0) < hp0, "④ 소환수가 피해를 안 입었다");
-        Check(!srv.DebugHasEnchant(a, 5), "④ 소환수에 부딪혔는데 내가 기절했다");
+        Check(!srv.DebugHasEnchant(Sid(srv, a), 5), "④ 소환수에 부딪혔는데 내가 기절했다");
         // 소환수 쪽(532E20) — 종류 2 는 통과 · 때린 것이 있으면 「표에 없음」, 없으면 「거름」 · 안 넘기면 「안 옮김」
         Check(srv.defHitSoundCalls() >= 1 && srv.defHitSoundWay(nox::DefHitSoundWay::TableEmpty) == srv.defHitSoundCalls(),
               "④ 4-c3b1 광전사가 소환수를 칠 때 때린 것(광전사 몸)이 안 넘어갔다");
@@ -17087,12 +17093,12 @@ void TestBerserkCrash() {
         nox::Server::PhysBody ob; ob.shape = 2; ob.r = 10.0f; ob.x = 1045.0f; ob.y = 1000.0f; ob.cls = 0x400000; ob.mass = 1e10f;
         srv.SetObstacles({ ob });
         mk(srv, out, ms);
-        const int h0 = srv.HealthOf(a);
+        const int h0 = srv.HealthOf(Sid(srv, a));
         Hit h = charge(srv, ms, out);
         Check(h.ok && only(srv, nox::BerserkHit::Object), "⑤ 갈래가 「물체」 하나가 아니다");
-        Check(srv.DebugHasEnchant(a, 5) && srv.HealthOf(a) == h0 - static_cast<int>(static_cast<float>(0.2 * h0)),
+        Check(srv.DebugHasEnchant(Sid(srv, a), 5) && srv.HealthOf(Sid(srv, a)) == h0 - static_cast<int>(static_cast<float>(0.2 * h0)),
               "⑤ 장애물에 부딪혔는데 기절·자기 피해가 없다");
-        Check(srv.DebugPosX(a) == h.px, "⑤ 되돌아가지 않았다");
+        Check(srv.DebugPosX(Sid(srv, a)) == h.px, "⑤ 되돌아가지 않았다");
     }
     // ⑥ **지나가는 둘** — 겹쳐도 됨(0x8) · 가벼운 것(IMMOBILE 없음 · 무게 1) — 광전사가 **안 꺼진다**
     //   ⚠ 문 갈래는 여기서 못 만든다 — `BodyVsBody` 가 문 짝을 걸러 짝이 안 생긴다(묶음 9)
@@ -17108,12 +17114,12 @@ void TestBerserkCrash() {
             ob.cls = v.cls; ob.flags = v.flags; ob.mass = v.mass;
             srv.SetObstacles({ ob });
             mk(srv, out, ms);
-            srv.DebugAbilDo(a, 1, out);
+            srv.DebugAbilDo(Sid(srv, a), 1, out);
             for (int t = 0; t < 12; ++t) { ms += 34; srv.Tick(ms, out); }
             char msg[160];
             std::snprintf(msg, sizeof(msg), "⑥ %s — 갈래가 그것 하나가 아니거나(합 %llu · 부름 %llu) 광전사가 꺼졌다", v.name,
                           srv.BerserkHitSum(), srv.berserkCollideCalls());
-            Check(only(srv, v.want) && srv.DebugAbilActive(a, 1) && !srv.DebugHasEnchant(a, 5), msg);
+            Check(only(srv, v.want) && srv.DebugAbilActive(Sid(srv, a), 1) && !srv.DebugHasEnchant(Sid(srv, a), 5), msg);
         }
     }
     // ⑦ **광전사 없이 벽** — 벽 짝은 적히지만(분모) 광전사 갈래는 0
@@ -17121,7 +17127,7 @@ void TestBerserkCrash() {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
         wallCol(srv); srv.SetWallDefFlags({ 1 });
         mk(srv, out, ms);
-        srv.DebugMoveTo(a, 1080, 1000);                        // 벽 대각선(x−y=92)까지 8.5 — 반지름 10 안이라 밀려난다
+        srv.DebugMoveTo(Sid(srv, a), 1080, 1000);                        // 벽 대각선(x−y=92)까지 8.5 — 반지름 10 안이라 밀려난다
         for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.wallContacts() >= 1 && srv.berserkCollideCalls() == 0 && srv.BerserkHitSum() == 0,
               "⑦ 광전사 없이 벽에 닿았는데 벽 짝이 없거나 광전사 갈래가 올랐다");
@@ -17138,12 +17144,12 @@ void TestBerserkCrash() {
         char msg[200];
         std::snprintf(msg, sizeof(msg), "⑧ %s — 부름 %llu · 합 %llu · 문(지나감) %llu · 잠긴 문 %llu · 물건 %llu · 켜짐 %d", locked ? "잠긴 문" : "안 잠긴 문",
                       srv.berserkCollideCalls(), srv.BerserkHitSum(), srv.berserkHit(nox::BerserkHit::Door), srv.berserkDoorLocked(),
-                      srv.berserkHit(nox::BerserkHit::Object), static_cast<int>(srv.DebugAbilActive(a, 1)));
+                      srv.berserkHit(nox::BerserkHit::Object), static_cast<int>(srv.DebugAbilActive(Sid(srv, a), 1)));
         if (locked) {
-            Check(h.ok && only(srv, nox::BerserkHit::Object) && srv.berserkDoorLocked() == 1 && srv.DebugHasEnchant(a, 5), msg);
+            Check(h.ok && only(srv, nox::BerserkHit::Object) && srv.berserkDoorLocked() == 1 && srv.DebugHasEnchant(Sid(srv, a), 5), msg);
         } else {
             Check(srv.berserkHit(nox::BerserkHit::Door) >= 1 && srv.berserkDoorLocked() == 0 &&
-                  srv.berserkHit(nox::BerserkHit::Object) == 0 && !srv.DebugHasEnchant(a, 5), msg);
+                  srv.berserkHit(nox::BerserkHit::Object) == 0 && !srv.DebugHasEnchant(Sid(srv, a), 5), msg);
         }
     }
     std::printf("  nine-defects 2-b2 — 광전사 부딪힘: 벽 세게(171·기절 44·20%%·옛 자리)·살짝 · 사람(속도 맞바꿈)·소환수 · 장애물 · 지나감 둘 · 광전사 없이 벽 · 문(잠김 부딪힘·안 잠김 지나감)\n");
@@ -17160,9 +17166,9 @@ void TestJump() {
     auto mk = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, nox::CharClass cls = nox::CharClass::Warrior) {
         srv.SetPlayerAnimFrames(3, 10, 1);
         srv.DebugEnterGame(a, 840, false, cls);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         ms = 0; srv.Tick(ms, out);
-        srv.DebugSetFacing(a, 0);
+        srv.DebugSetFacing(Sid(srv, a), 0);
         for (int t = 0; t < 35; ++t) tick(srv, out, ms);
     };
     auto jump = [&](nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out, uint32_t& ms) {
@@ -17177,29 +17183,29 @@ void TestJump() {
     // ① **뛴다** — 상태 12 · 몸짓 3 · 떠 있음 · 기력 −90(`47`) · 앞(+x)으로 · 20틱째 상태 0 으로 내려옴
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        const int st0 = srv.DebugStaminaOf(a);
-        const double x0 = srv.DebugPosX(a), y0 = srv.DebugPosY(a);
+        const int st0 = srv.DebugStaminaOf(Sid(srv, a));
+        const double x0 = srv.DebugPosX(Sid(srv, a)), y0 = srv.DebugPosY(Sid(srv, a));
         std::vector<nox::OutPacket> o1;
         jump(srv, a, o1, ms);
         Check(srv.jumpCodes() == 1 && only(srv, nox::JumpGate::Ok), "① 코드 7 이 「뜀」 하나로 안 갔다");
-        Check(srv.DebugStateOf(a) == 12 && srv.DebugAnimByteOf(a) == 3 && srv.DebugAirborne(a), "① 상태 12 · 몸짓 3 · 떠 있음이 아니다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 12 && srv.DebugAnimByteOf(Sid(srv, a)) == 3 && srv.DebugAirborne(Sid(srv, a)), "① 상태 12 · 몸짓 3 · 떠 있음이 아니다");
         char msg[160];
-        std::snprintf(msg, sizeof(msg), "① 기력 %d → %d (90 깎여야)", st0, srv.DebugStaminaOf(a));
-        Check(srv.DebugStaminaOf(a) == st0 + (st0 < 100 ? 3 : 0) - 90, msg);
+        std::snprintf(msg, sizeof(msg), "① 기력 %d → %d (90 깎여야)", st0, srv.DebugStaminaOf(Sid(srv, a)));
+        Check(srv.DebugStaminaOf(Sid(srv, a)) == st0 + (st0 < 100 ? 3 : 0) - 90, msg);
         Check(FindMsg(FlattenTo(o1, a), static_cast<uint8_t>(nox::Op::REPORT_STAMINA)) != nullptr, "① 기력 알림 47 이 안 갔다");
         // 뛴 틱이 Field34 = T. 칸 = (f − T) ÷ 2 ≥ 10 → f = T+20 에 내려온다(그 틱까지 20번 민다)
         for (int t = 0; t < 19; ++t) tick(srv, out, ms);
-        Check(srv.DebugStateOf(a) == 12 && srv.DebugAirborne(a), "① 뛴 뒤 19틱째에 벌써 내려왔다(20틱째여야)");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 12 && srv.DebugAirborne(Sid(srv, a)), "① 뛴 뒤 19틱째에 벌써 내려왔다(20틱째여야)");
         tick(srv, out, ms);
-        Check(srv.DebugStateOf(a) == 0 && !srv.DebugAirborne(a) && srv.jumpLanded() == 1, "① 20틱째에 상태 0 · 떠 있음 끔이 아니다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 0 && !srv.DebugAirborne(Sid(srv, a)) && srv.jumpLanded() == 1, "① 20틱째에 상태 0 · 떠 있음 끔이 아니다");
         // 힘의 크기까지 본다 — 정지에서 20틱(걸음 100) 동안 F = 2·SpeedCur 로 민 거리를 적분식 그대로 셈해 견준다.
         //   (전에는 「40 넘게」만 봐서 힘을 반으로 줄인 돌연변이가 통과했다 — 거리는 F 에 정비례)
         double ev = 0.0, ex = 0.0;
-        const double F = 2.0 * static_cast<double>(srv.DebugSpeedCur(a));
+        const double F = 2.0 * static_cast<double>(srv.DebugSpeedCur(Sid(srv, a)));
         for (int t = 0; t < 20 * nox::kMoveSubSteps; ++t) { ev += (F - ev * nox::kPlayerDamping) * nox::kMoveSubStep; ex += ev * nox::kMoveSubStep; }
-        std::snprintf(msg, sizeof(msg), "① 점프 동안 x 로 %.3f(기대 %.3f · F %.2f) · y 로 %.3f", srv.DebugPosX(a) - x0, ex, F,
-                      srv.DebugPosY(a) - y0);
-        Check(std::fabs((srv.DebugPosX(a) - x0) - ex) < 0.01 * ex && std::fabs(srv.DebugPosY(a) - y0) < 1.0 &&
+        std::snprintf(msg, sizeof(msg), "① 점프 동안 x 로 %.3f(기대 %.3f · F %.2f) · y 로 %.3f", srv.DebugPosX(Sid(srv, a)) - x0, ex, F,
+                      srv.DebugPosY(Sid(srv, a)) - y0);
+        Check(std::fabs((srv.DebugPosX(Sid(srv, a)) - x0) - ex) < 0.01 * ex && std::fabs(srv.DebugPosY(Sid(srv, a)) - y0) < 1.0 &&
               srv.jumpForceTicks() == 20, msg);
     }
     // ② **못 뛰는 다섯** — 얼림 · 광전사 · 함성 값 · 짐 넘침(힘쓰는 소리·알림 13,3) · 기력 모자람 — 상태는 12 가 아니다
@@ -17211,25 +17217,25 @@ void TestJump() {
         if (k == 4) {                                            // 기력이 안 찬 판
             srv.SetPlayerAnimFrames(3, 10, 1);
             srv.DebugEnterGame(a, 840, false, nox::CharClass::Warrior);
-            srv.DebugMoveTo(a, 1000, 1000);
+            srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
             ms = 0; srv.Tick(ms, out); tick(srv, out, ms);
         } else {
             mk(srv, out, ms);
         }
         nox::JumpGate want = nox::JumpGate::Ok;
-        if (k == 0) { srv.DebugApplyEnchant(a, 25, 100, 1); want = nox::JumpGate::CantMove; }
-        if (k == 1) { srv.DebugAbilAward(a, 1, false, out); srv.DebugAbilDo(a, 1, out); want = nox::JumpGate::Berserk; }
-        if (k == 2) { srv.DebugAbilAward(a, 2, false, out); srv.DebugAbilDo(a, 2, out); want = nox::JumpGate::Warcry; }
-        if (k == 3) { srv.DebugSetOverweight(a, true); want = nox::JumpGate::Overweight; }
+        if (k == 0) { srv.DebugApplyEnchant(Sid(srv, a), 25, 100, 1); want = nox::JumpGate::CantMove; }
+        if (k == 1) { srv.DebugAbilAward(Sid(srv, a), 1, false, out); srv.DebugAbilDo(Sid(srv, a), 1, out); want = nox::JumpGate::Berserk; }
+        if (k == 2) { srv.DebugAbilAward(Sid(srv, a), 2, false, out); srv.DebugAbilDo(Sid(srv, a), 2, out); want = nox::JumpGate::Warcry; }
+        if (k == 3) { srv.DebugSetOverweight(Sid(srv, a), true); want = nox::JumpGate::Overweight; }
         if (k == 4) want = nox::JumpGate::NoStamina;
-        const int st0 = srv.DebugStaminaOf(a);
+        const int st0 = srv.DebugStaminaOf(Sid(srv, a));
         const unsigned long long snd0 = srv.soundsQueued();
         std::vector<nox::OutPacket> o1;
         jump(srv, a, o1, ms);
         static const char* const kName[5] = { "얼림", "광전사", "함성", "짐 넘침", "기력 모자람" };
         char msg[160];
-        std::snprintf(msg, sizeof(msg), "② %s — 그 갈래 하나가 아니거나 뛰었다(상태 %u)", kName[k], srv.DebugStateOf(a));
-        Check(only(srv, want) && srv.DebugStateOf(a) != 12 && !srv.DebugAirborne(a), msg);
+        std::snprintf(msg, sizeof(msg), "② %s — 그 갈래 하나가 아니거나 뛰었다(상태 %u)", kName[k], srv.DebugStateOf(Sid(srv, a)));
+        Check(only(srv, want) && srv.DebugStateOf(Sid(srv, a)) != 12 && !srv.DebugAirborne(Sid(srv, a)), msg);
         if (k == 3) {
             const auto flat = FlattenTo(o1, a);                  // ⚠ 담아 둔다 — 임시 벡터 안을 가리키면 식이 끝나자마자 사라진다
             const auto* inf = FindMsg(flat, static_cast<uint8_t>(nox::Op::INFORM));
@@ -17239,8 +17245,8 @@ void TestJump() {
             Check(srv.soundsQueued() == snd0 + 1 && inf && inf->size() == 6 && (*inf)[1] == 13 && (*inf)[2] == 3, msg);
         }
         if (k == 4) {
-            std::snprintf(msg, sizeof(msg), "② 기력 모자람 — 기력 %d → %d(깎이면 안 됨)", st0, srv.DebugStaminaOf(a));
-            Check(srv.DebugStaminaOf(a) == st0 + 3, msg);
+            std::snprintf(msg, sizeof(msg), "② 기력 모자람 — 기력 %d → %d(깎이면 안 됨)", st0, srv.DebugStaminaOf(Sid(srv, a)));
+            Check(srv.DebugStaminaOf(Sid(srv, a)) == st0 + 3, msg);
         }
     }
     // ③ **뛰는 동안 조작을 안 받는다**(ImplB 를 안 부름) — 방향·공격이 먹지 않는다
@@ -17254,43 +17260,43 @@ void TestJump() {
         const auto atk = InputPacket(6);
         srv.OnPacket(a, atk.data(), atk.size(), out);
         tick(srv, out, ms);
-        Check(srv.DebugFacingOf(a) == 0 && srv.DebugStateOf(a) == 12, "③ 뛰는 중인데 방향·공격 입력이 먹었다");
+        Check(srv.DebugFacingOf(Sid(srv, a)) == 0 && srv.DebugStateOf(Sid(srv, a)) == 12, "③ 뛰는 중인데 방향·공격 입력이 먹었다");
     }
     // ③' **뛴 틱에는 목록 나머지(공격)를 안 돈다**(`:570` return) — 맨손이라 기력 없이도 칠 수 있는 판
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugSetWeapon(a, 0);
+        srv.DebugSetWeapon(Sid(srv, a), 0);
         const auto j = InputPacket(7);
         const auto atk = InputPacket(6);
         srv.OnPacket(a, j.data(), j.size(), out);
         srv.OnPacket(a, atk.data(), atk.size(), out);
         tick(srv, out, ms);
-        Check(srv.DebugStateOf(a) == 12, "③' 뛴 틱에 공격까지 들어갔다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 12, "③' 뛴 틱에 공격까지 들어갔다");
     }
     // ③'' **뛴 틱에는 살금살금 끄기(LABEL_247)도 안 돈다** — 걷던 중(v68) 뛰어 상태가 12 가 돼도 살금살금이 남는다
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugAbilAward(a, 4, false, out);
-        srv.DebugAbilDo(a, 4, out);
+        srv.DebugAbilAward(Sid(srv, a), 4, false, out);
+        srv.DebugAbilDo(Sid(srv, a), 4, out);
         std::vector<uint8_t> mv = InputPacket(2);
         mv[nox::kWireHeaderSize + 1] = 5;
         mv.push_back(0);
         // 35틱 서 있는 동안 방패를 올렸다(16) — 걷기 입력이 먼저 내리고(17) 가만(13)을 거쳐 걷기(0)가 된다
-        for (int t = 0; t < 20 && srv.DebugStateOf(a) != 0; ++t) { srv.OnPacket(a, mv.data(), mv.size(), out); tick(srv, out, ms); }
+        for (int t = 0; t < 20 && srv.DebugStateOf(Sid(srv, a)) != 0; ++t) { srv.OnPacket(a, mv.data(), mv.size(), out); tick(srv, out, ms); }
         char pre[160];
-        std::snprintf(pre, sizeof(pre), "③'' 전제 — 걷기 · 살금살금 켜짐이 아니다(상태 %u · 켜짐 %d)", srv.DebugStateOf(a),
-                      static_cast<int>(srv.DebugAbilActive(a, 4)));
-        Check(srv.DebugStateOf(a) == 0 && srv.DebugAbilActive(a, 4), pre);
+        std::snprintf(pre, sizeof(pre), "③'' 전제 — 걷기 · 살금살금 켜짐이 아니다(상태 %u · 켜짐 %d)", srv.DebugStateOf(Sid(srv, a)),
+                      static_cast<int>(srv.DebugAbilActive(Sid(srv, a), 4)));
+        Check(srv.DebugStateOf(Sid(srv, a)) == 0 && srv.DebugAbilActive(Sid(srv, a), 4), pre);
         jump(srv, a, out, ms);                                  // 이 틱 ImplA 는 걷기 갈래(v68) → ImplB 에서 뜀
-        Check(srv.DebugStateOf(a) == 12 && srv.DebugAbilActive(a, 4), "③'' 뛴 틱에 살금살금이 꺼졌다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == 12 && srv.DebugAbilActive(Sid(srv, a), 4), "③'' 뛴 틱에 살금살금이 꺼졌다");
     }
     // ④ **떠 있으면 움찔(30)을 안 받는다** — 대조: 가만히 있을 때는 30
     for (int jumped = 0; jumped < 2; ++jumped) {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
         if (jumped) jump(srv, a, out, ms);
-        srv.DebugHurt(a, -1, 40, std::string(), 0, out);
-        if (jumped) Check(srv.DebugStateOf(a) == 12 && srv.recoilBlockedAirborne() == 1, "④ 떠 있는데 움찔(30)로 바뀌었다");
-        else        Check(srv.DebugStateOf(a) == 30 && srv.recoilBlockedAirborne() == 0, "④ 대조 — 서 있는데 움찔이 안 났다(시험 전제)");
+        srv.DebugHurt(Sid(srv, a), -1, 40, Sid(srv, std::string()), 0, out);
+        if (jumped) Check(srv.DebugStateOf(Sid(srv, a)) == 12 && srv.recoilBlockedAirborne() == 1, "④ 떠 있는데 움찔(30)로 바뀌었다");
+        else        Check(srv.DebugStateOf(Sid(srv, a)) == 30 && srv.recoilBlockedAirborne() == 0, "④ 대조 — 서 있는데 움찔이 안 났다(시험 전제)");
     }
     // ⑤ **떠 있으면 낮은 것(SHORT 0x10)을 넘는다** — 같은 점프로 보통 장애물은 막힌다
     for (uint32_t obFlags : { 0x0u, 0x10u }) {
@@ -17301,9 +17307,9 @@ void TestJump() {
         jump(srv, a, out, ms);
         for (int t = 0; t < 19; ++t) tick(srv, out, ms);
         char msg[160];
-        std::snprintf(msg, sizeof(msg), "⑤ 깃발 0x%x 장애물(1060) — 점프 끝 x %.1f", obFlags, srv.DebugPosX(a));
-        if (obFlags) Check(srv.DebugPosX(a) > 1080.0, msg);
-        else         Check(srv.DebugPosX(a) < 1045.0, msg);
+        std::snprintf(msg, sizeof(msg), "⑤ 깃발 0x%x 장애물(1060) — 점프 끝 x %.1f", obFlags, srv.DebugPosX(Sid(srv, a)));
+        if (obFlags) Check(srv.DebugPosX(Sid(srv, a)) > 1080.0, msg);
+        else         Check(srv.DebugPosX(Sid(srv, a)) < 1045.0, msg);
     }
     // ⑤' **떠 있으면 낮은 날아가는 것(SHORT)에 안 맞는다** — 길목의 c 가 뛰어 얼어 있으면 Magic 이 넘어가 b 에 닿는다
     for (int jumped = 0; jumped < 2; ++jumped) {
@@ -17315,13 +17321,13 @@ void TestJump() {
         srv.DebugEnterGame(a, 841, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 842, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(c, 843, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, 1150, 1000);
-        srv.DebugMoveTo(c, 1080, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1150, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1080, 1000);
         srv.Tick(ms, out);
         for (int t = 0; t < 35; ++t) tick(srv, out, ms);
         if (jumped) jump(srv, c, out, ms);
-        srv.DebugApplyEnchant(c, 25, 300, 1);                   // 얼려 제자리에(떠 있음은 그대로)
-        srv.DebugAimAt(a, 1150, 1000);
+        srv.DebugApplyEnchant(Sid(srv, c), 25, 300, 1);                   // 얼려 제자리에(떠 있음은 그대로)
+        srv.DebugAimAt(Sid(srv, a), 1150, 1000);
         CastAndWait(srv, a, 12, false, ms, out);
         float maxX = 0;
         for (int t = 1; t <= 60 && srv.MissileCount() > 0; ++t) {
@@ -17331,23 +17337,23 @@ void TestJump() {
         }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "⑤' c %s — Magic 최대 x %.1f · 받은 쪽 %s", jumped ? "떠 있음" : "서 있음", maxX,
-                      srv.DebugLastAcceptTarget().addr.c_str());
-        if (jumped) Check(srv.DebugAirborne(c) && maxX > 1100.0f && srv.DebugLastAcceptTarget().addr == b, msg);
+                      srv.Network().AddrOf(srv.DebugLastAcceptTarget().addr).c_str());
+        if (jumped) Check(srv.DebugAirborne(Sid(srv, c)) && maxX > 1100.0f && srv.DebugLastAcceptTarget().addr == Sid(srv, b), msg);
         else        Check(maxX < 1080.0f, msg);
     }
     // ⑥ **떠 있으면 능력을 못 쓴다**(상태가 12 가 아니어도) · **가만(13)이 떠 있음을 끈다**
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugAbilAward(a, 1, false, out);
+        srv.DebugAbilAward(Sid(srv, a), 1, false, out);
         jump(srv, a, out, ms);
-        srv.DebugApplyEnchant(a, 8, 100, 1);                    // 달리기 버프 — 틱 끝에 상태를 5 로 묶는다(떠 있음은 남음)
+        srv.DebugApplyEnchant(Sid(srv, a), 8, 100, 1);                    // 달리기 버프 — 틱 끝에 상태를 5 로 묶는다(떠 있음은 남음)
         tick(srv, out, ms);
-        Check(srv.DebugStateOf(a) == 5 && srv.DebugAirborne(a), "⑥ 전제 — 상태 5 · 떠 있음이 아니다");
-        Check(!srv.DebugAbilDo(a, 1, out) && srv.abilGate(1, nox::AbilGate::MoveState) == 1, "⑥ 떠 있는데 광전사가 먹었다");
-        srv.DebugBuffOff(a, 8);
-        srv.DebugPlayerSetState(a, 13);
+        Check(srv.DebugStateOf(Sid(srv, a)) == 5 && srv.DebugAirborne(Sid(srv, a)), "⑥ 전제 — 상태 5 · 떠 있음이 아니다");
+        Check(!srv.DebugAbilDo(Sid(srv, a), 1, out) && srv.abilGate(1, nox::AbilGate::MoveState) == 1, "⑥ 떠 있는데 광전사가 먹었다");
+        srv.DebugBuffOff(Sid(srv, a), 8);
+        srv.DebugPlayerSetState(Sid(srv, a), 13);
         tick(srv, out, ms);
-        Check(!srv.DebugAirborne(a) && srv.airborneOffIdle() == 1, "⑥ 가만(13)이 떠 있음을 안 껐다");
+        Check(!srv.DebugAirborne(Sid(srv, a)) && srv.airborneOffIdle() == 1, "⑥ 가만(13)이 떠 있음을 안 껐다");
     }
     // ⑦ **작살에 걸려 있으면 앞으로 안 민다**(`:309~319`) — b 가 a 에게 걸린 채 뛴다
     {
@@ -17355,30 +17361,30 @@ void TestJump() {
         srv.SetPlayerAnimFrames(3, 10, 1);
         srv.DebugEnterGame(a, 844, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 845, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         RegHarpoonBolt(srv);
         srv.Tick(ms, out);
         for (int t = 0; t < 35; ++t) tick(srv, out, ms);
-        srv.DebugAbilAward(a, 3, false, out);
-        srv.DebugSetFacing(a, 0);
+        srv.DebugAbilAward(Sid(srv, a), 3, false, out);
+        srv.DebugSetFacing(Sid(srv, a), 0);
         tick(srv, out, ms);
-        srv.DebugAbilDo(a, 3, out);
-        for (int t = 0; t < 30 && srv.DebugHarpoonTarget(a).empty(); ++t) tick(srv, out, ms);
-        Check(srv.DebugHarpoonTarget(a) == b, "⑦ 전제 — 작살이 b 에 안 꽂혔다");
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        for (int t = 0; t < 30 && (srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession); ++t) tick(srv, out, ms);
+        Check(srv.DebugHarpoonTarget(Sid(srv, a)) == Sid(srv, b), "⑦ 전제 — 작살이 b 에 안 꽂혔다");
         jump(srv, b, out, ms);
         tick(srv, out, ms);
-        Check(srv.DebugStateOf(b) == 12 && srv.jumpHeldTicks() >= 1 && srv.jumpForceTicks() == 0, "⑦ 작살에 걸렸는데 앞으로 밀었다");
+        Check(srv.DebugStateOf(Sid(srv, b)) == 12 && srv.jumpHeldTicks() >= 1 && srv.jumpForceTicks() == 0, "⑦ 작살에 걸렸는데 앞으로 밀었다");
     }
     // ⑧ **떠 있는 채 죽어도 부활하면 끈다**(`GAME3_3.c:7943` `&= 0xFFEB3FE7`)
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
         jump(srv, a, out, ms);
-        srv.DebugHurt(a, -1, 9999, std::string(), 0, out);
-        Check(!srv.IsAlive(a) && srv.DebugAirborne(a), "⑧ 전제 — 떠 있는 채 죽지 않았다");
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, std::string()), 0, out);
+        Check(!srv.IsAlive(Sid(srv, a)) && srv.DebugAirborne(Sid(srv, a)), "⑧ 전제 — 떠 있는 채 죽지 않았다");
         const auto click = InputPacket(6);
-        for (int t = 0; t < 80 && !srv.IsAlive(a); ++t) { srv.OnPacket(a, click.data(), click.size(), out); tick(srv, out, ms); }
-        Check(srv.IsAlive(a) && !srv.DebugAirborne(a), "⑧ 부활했는데 떠 있음이 남았다");
+        for (int t = 0; t < 80 && !srv.IsAlive(Sid(srv, a)); ++t) { srv.OnPacket(a, click.data(), click.size(), out); tick(srv, out, ms); }
+        Check(srv.IsAlive(Sid(srv, a)) && !srv.DebugAirborne(Sid(srv, a)), "⑧ 부활했는데 떠 있음이 남았다");
     }
     std::printf("  nine-defects 3-a — 점프: 12·몸짓 3·떠 있음·기력 90·20틱에 내려옴 · 못 뛰는 다섯 · 뛰는 중 조작 없음 · 움찔 막힘 · 낮은 것·낮은 Magic 넘음 · 능력 막힘·13 이 끔 · 작살 걸림이면 안 밂\n");
 }
@@ -17398,11 +17404,11 @@ void TestAirborneReaders() {
         srv.DebugEnterGame(a, 850, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 851, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(c, 852, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1080, 1000);                         // 시전자 오른쪽 80
-        srv.DebugMoveTo(c, 920, 1000);                          // 시전자 왼쪽 80(같은 거리)
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1080, 1000);                         // 시전자 오른쪽 80
+        srv.DebugMoveTo(Sid(srv, c), 920, 1000);                          // 시전자 왼쪽 80(같은 거리)
         ms = 0; srv.Tick(ms, out);
-        srv.DebugSetFacing(c, 128);                             // 시전자를 등지게 — 서 있으면 방패를 올려 **정면** 지진을 막는다(b 는 이미 등짐)
+        srv.DebugSetFacing(Sid(srv, c), 128);                             // 시전자를 등지게 — 서 있으면 방패를 올려 **정면** 지진을 막는다(b 는 이미 등짐)
         for (int t = 0; t < 35; ++t) tick(srv, out, ms);       // 기력 90
     };
     auto jump = [&](nox::Server& srv, const std::string& who, std::vector<nox::OutPacket>& out, uint32_t& ms) {
@@ -17420,22 +17426,22 @@ void TestAirborneReaders() {
         srv.SetTypeBody(1328, fly);
         srv.SetTypeBody(1329, walk);
         mk(srv, out, ms);
-        srv.DebugSpawnPet(1328, 1000.0f, 1080.0f, std::string());   // 아래 80 — 날아다님
-        srv.DebugSpawnPet(1329, 1000.0f, 920.0f, std::string());    // 위 80 — 걸어다님
-        srv.DebugSpawnPet(1328, 1000.0f, 1400.0f, std::string());   // 아래 400 — 날아다님 · **둘레 밖**(계수기가 세면 안 됨)
+        srv.DebugSpawnPet(1328, 1000.0f, 1080.0f, Sid(srv, std::string()));   // 아래 80 — 날아다님
+        srv.DebugSpawnPet(1329, 1000.0f, 920.0f, Sid(srv, std::string()));    // 위 80 — 걸어다님
+        srv.DebugSpawnPet(1328, 1000.0f, 1400.0f, Sid(srv, std::string()));   // 아래 400 — 날아다님 · **둘레 밖**(계수기가 세면 안 됨)
         jump(srv, b, out, ms);
-        srv.DebugApplyEnchant(b, 25, 300, 1);                   // 얼려 제자리에(떠 있음은 그대로)
-        srv.DebugApplyEnchant(c, 25, 300, 1);                   // 대조도 같게
-        Check(srv.DebugAirborne(b) && !srv.DebugAirborne(c), "① 전제 — b 만 떠 있어야 한다");
-        const uint16_t bHp = srv.HealthOf(b), cHp = srv.HealthOf(c);
+        srv.DebugApplyEnchant(Sid(srv, b), 25, 300, 1);                   // 얼려 제자리에(떠 있음은 그대로)
+        srv.DebugApplyEnchant(Sid(srv, c), 25, 300, 1);                   // 대조도 같게
+        Check(srv.DebugAirborne(Sid(srv, b)) && !srv.DebugAirborne(Sid(srv, c)), "① 전제 — b 만 떠 있어야 한다");
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b)), cHp = srv.HealthOf(Sid(srv, c));
         const uint16_t flyHp = srv.DebugPetHealth(0), walkHp = srv.DebugPetHealth(1);
         Check(flyHp > 0 && walkHp > 0, "① 전제 — 소환수 체력이 0 이다");
         CastAndWait(srv, a, 23, false, ms, out);
         char msg[200];
         std::snprintf(msg, sizeof(msg), "① 지진 — 떠 있는 b %u→%u · 서 있는 c %u→%u · 나는 것 %u→%u · 걷는 것 %u→%u · 뺌 %llu",
-                      bHp, srv.HealthOf(b), cHp, srv.HealthOf(c), flyHp, srv.DebugPetHealth(0), walkHp, srv.DebugPetHealth(1),
+                      bHp, srv.HealthOf(Sid(srv, b)), cHp, srv.HealthOf(Sid(srv, c)), flyHp, srv.DebugPetHealth(0), walkHp, srv.DebugPetHealth(1),
                       srv.equakeSkipAirborne());
-        Check(srv.HealthOf(b) == bHp && srv.HealthOf(c) < cHp && srv.DebugPetHealth(0) == flyHp && srv.DebugPetHealth(1) < walkHp &&
+        Check(srv.HealthOf(Sid(srv, b)) == bHp && srv.HealthOf(Sid(srv, c)) < cHp && srv.DebugPetHealth(0) == flyHp && srv.DebugPetHealth(1) < walkHp &&
               srv.equakeSkipAirborne() == 2, msg);
         // ★ nine-defects 4-c3b1 — 맞은 c(사람)·걷는 소환수 둘 다 때린 것 = 시전자(종류 11 은 소환수 쪽 거름을 통과)
         Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::TableEmpty) == 1 &&
@@ -17446,14 +17452,14 @@ void TestAirborneReaders() {
     for (int jumped = 0; jumped < 2; ++jumped) {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
         if (jumped) jump(srv, a, out, ms);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         std::vector<nox::OutPacket> o;
         CastAndWait(srv, a, 23, false, ms, o);
         if (jumped) {
-            Check(srv.DebugAirborne(a) && srv.HealthOf(b) == bHp && srv.spellRefusedAirborne() == 1, "② 떠 있는데 주문이 걸렸다");
+            Check(srv.DebugAirborne(Sid(srv, a)) && srv.HealthOf(Sid(srv, b)) == bHp && srv.spellRefusedAirborne() == 1, "② 떠 있는데 주문이 걸렸다");
             Check(FindMsg(FlattenTo(o, a), static_cast<uint8_t>(nox::Op::INFORM)) == nullptr, "② 떠 있어 거절했는데 알림을 보냈다(정답지는 안 보냄)");
         } else {
-            Check(srv.HealthOf(b) < bHp && srv.spellRefusedAirborne() == 0, "② 대조 — 서 있는데 지진이 안 걸렸다(시험 전제)");
+            Check(srv.HealthOf(Sid(srv, b)) < bHp && srv.spellRefusedAirborne() == 0, "② 대조 — 서 있는데 지진이 안 걸렸다(시험 전제)");
         }
     }
     // ③ **협동(2048)이면 떠 있어도 건다**
@@ -17461,9 +17467,9 @@ void TestAirborneReaders() {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
         srv.SetGameFlags(0x800);
         jump(srv, a, out, ms);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 23, false, ms, out);
-        Check(srv.DebugAirborne(a) && srv.HealthOf(b) < bHp && srv.spellRefusedAirborne() == 0, "③ 협동인데 떠 있다고 시전을 막았다");
+        Check(srv.DebugAirborne(Sid(srv, a)) && srv.HealthOf(Sid(srv, b)) < bHp && srv.spellRefusedAirborne() == 0, "③ 협동인데 떠 있다고 시전을 막았다");
     }
     std::printf("  nine-defects 3-b — 떠 있음: 지진이 뛰는 사람·나는 소환수를 뺌 · 떠 있으면 시전 거절(알림 없음) · 협동이면 걸림\n");
 }
@@ -17483,13 +17489,13 @@ void TestSwingSounds() {
         srv.SetSoundDefs(sd);
         for (int anim : { 23, 24, 25, 26, 27, 28, 29, 35, 37, 39 }) srv.SetPlayerAnimFrames(anim, 8, 0);
         srv.DebugEnterGame(a, 860, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         srv.DebugEnterGame(b, 861, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(b, withTarget ? 1030 : 5000, 1000);
-        srv.DebugSetWeapon(a, weapon);
+        srv.DebugMoveTo(Sid(srv, b), withTarget ? 1030 : 5000, 1000);
+        srv.DebugSetWeapon(Sid(srv, a), weapon);
         std::vector<nox::OutPacket> out; uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugSetFacing(a, 0);
+        srv.DebugSetFacing(Sid(srv, a), 0);
         for (int t = 0; t < 35; ++t) tick(srv, out, ms);       // 기력(망치 100)
         const auto click = InputPacket(6);
         srv.OnPacket(a, click.data(), click.size(), out);
@@ -17521,9 +17527,9 @@ void TestSwingSounds() {
         swing(srv, c.weapon, true);
         const bool hammer = (c.weapon == 0x4000);
         char msg[200];
-        std::snprintf(msg, sizeof(msg), "② %s 닿음 — 판정 %llu · b 체력 %u · 소리 합 %llu(%s)", c.name, srv.melees(), srv.HealthOf(b), sum(srv),
+        std::snprintf(msg, sizeof(msg), "② %s 닿음 — 판정 %llu · b 체력 %u · 소리 합 %llu(%s)", c.name, srv.melees(), srv.HealthOf(Sid(srv, b)), sum(srv),
                       hammer ? "망치는 1" : "0 이어야");
-        Check(srv.melees() == 1 && srv.HealthOf(b) < srv.MaxHealthOf(b) && sum(srv) == (hammer ? 1u : 0u) &&
+        Check(srv.melees() == 1 && srv.HealthOf(Sid(srv, b)) < srv.MaxHealthOf(Sid(srv, b)) && sum(srv) == (hammer ? 1u : 0u) &&
               (!hammer || srv.swingSound(882) == 1), msg);
     }
     std::printf("  nine-defects 4-a — 휘두르기 소리: 맨손·지팡이 879 · 롱소드 880 · 칼·대검 881 · 망치 882(늘) · 철퇴 884 · 도끼 883 · 닿으면 없음\n");
@@ -17678,8 +17684,8 @@ void TestFootsteps() {
     //   칸 9 로 둔 까닭 — 달리기 2·8 은 한 바퀴(9틱)에 두 번, 걷기 3·9 는 9 가 없어 **한 번**이라 칸 번호를 잘못 옮기면 개수가 갈린다
     auto mk = [&](nox::Server& srv, bool floor) {
         srv.DebugEnterGame(a, 750, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSetFacing(a, 0);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSetFacing(Sid(srv, a), 0);
         srv.SetPlayerAnimFrames(4, 9, 0);
         srv.SetPlayerAnimFrames(6, 9, 0);
         std::vector<nox::Server::SoundDefIn> sd;
@@ -17699,7 +17705,7 @@ void TestFootsteps() {
         if (floor) g.Build(cells);
         srv.SetFloor(g, {}, { 0x40 });
         std::vector<nox::OutPacket> o;
-        srv.DebugAbilAward(a, 4, false, o);
+        srv.DebugAbilAward(Sid(srv, a), 4, false, o);
         srv.Tick(0, o);
     };
     uint32_t ms = 0;
@@ -17713,14 +17719,14 @@ void TestFootsteps() {
     for (int kind = 0; kind < 4; ++kind) {
         nox::Server srv; mk(srv, kind != 3); ms = 0;
         std::vector<nox::OutPacket> out;
-        if (kind == 1) Check(srv.DebugAbilDo(a, 4, out), "살금살금이 안 켜졌다(시험 전제)");
+        if (kind == 1) Check(srv.DebugAbilDo(Sid(srv, a), 4, out), "살금살금이 안 켜졌다(시험 전제)");
         const unsigned long long q0 = srv.soundsQueued();
         int runTicks = 0, walkTicks = 0;
         for (int t = 0; t < 30; ++t) {
-            srv.DebugAimAt(a, static_cast<int>(srv.DebugPosX(a)) + ((kind == 2) ? 50 : 500), 1000);
+            srv.DebugAimAt(Sid(srv, a), static_cast<int>(srv.DebugPosX(Sid(srv, a))) + ((kind == 2) ? 50 : 500), 1000);
             move(srv, out);
             ms += 34; srv.Tick(ms, out);
-            if (srv.DebugStateOf(a) == 5) ++runTicks; else if (srv.DebugStateOf(a) == 0) ++walkTicks;
+            if (srv.DebugStateOf(Sid(srv, a)) == 5) ++runTicks; else if (srv.DebugStateOf(Sid(srv, a)) == 0) ++walkTicks;
         }
         using FK = nox::FootKind;
         char msg[320];
@@ -17746,10 +17752,10 @@ void TestFootsteps() {
         std::vector<nox::OutPacket> out;
         int runTicks = 0;
         for (int t = 0; t < 1000; ++t) {
-            srv.DebugAimAt(a, static_cast<int>(srv.DebugPosX(a)) + 500, static_cast<int>(srv.DebugPosY(a)));
+            srv.DebugAimAt(Sid(srv, a), static_cast<int>(srv.DebugPosX(Sid(srv, a))) + 500, static_cast<int>(srv.DebugPosY(Sid(srv, a))));
             move(srv, out);
             ms += 34; srv.Tick(ms, out);
-            if (srv.DebugStateOf(a) == 5) ++runTicks;
+            if (srv.DebugStateOf(Sid(srv, a)) == 5) ++runTicks;
         }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "⑥ 달림틱 %d · 힘쓰는 소리 %llu(8~35 여야 — 101 중 2)", runTicks, srv.exertionLight());
@@ -17787,10 +17793,10 @@ void TestHurtVoice() {
     //   그 틱에 다시 10 → 쉬는 7틱 동안은 안 나고, 끝나면 140→130 = 71 → **Medium**(70 을 넘는다)
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugHurt(a, -1, 10, std::string(), 1, out);
+        srv.DebugHurt(Sid(srv, a), -1, 10, Sid(srv, std::string()), 1, out);
         out.clear(); tick(srv, out, ms);
         const bool light = heard(out, "HumanMaleHurtLight");
-        srv.DebugHurt(a, -1, 10, std::string(), 1, out);
+        srv.DebugHurt(Sid(srv, a), -1, 10, Sid(srv, std::string()), 1, out);
         unsigned long long during = 0;
         for (int t = 0; t < 7; ++t) { tick(srv, out, ms); during = srv.HurtVoiceSum(); }
         out.clear(); tick(srv, out, ms);
@@ -17802,26 +17808,26 @@ void TestHurtVoice() {
     // ② 100 → 666 → Heavy · ③ 독(종류 5) → Poison · ④ 여자면 Female 것 · ⑤ 죽으면 안 낸다
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugHurt(a, -1, 100, std::string(), 1, out);
+        srv.DebugHurt(Sid(srv, a), -1, 100, Sid(srv, std::string()), 1, out);
         out.clear(); tick(srv, out, ms);
         Check(srv.hurtVoice(HV::Heavy) == 1 && srv.HurtVoiceSum() == 1 && heard(out, "HumanMaleHurtHeavy"), "② 100/150 이 심함(Heavy)이 아니다");
     }
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugHurt(a, -1, 3, std::string(), 5, out);
+        srv.DebugHurt(Sid(srv, a), -1, 3, Sid(srv, std::string()), 5, out);
         out.clear(); tick(srv, out, ms);
         Check(srv.hurtVoice(HV::Poison) == 1 && srv.HurtVoiceSum() == 1 && heard(out, "HumanMaleHurtPoison"), "③ 독 피해가 독 신음이 아니다");
     }
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugSetFemale(a, true);
-        srv.DebugHurt(a, -1, 10, std::string(), 1, out);
+        srv.DebugSetFemale(Sid(srv, a), true);
+        srv.DebugHurt(Sid(srv, a), -1, 10, Sid(srv, std::string()), 1, out);
         out.clear(); tick(srv, out, ms);
         Check(srv.hurtVoice(HV::Light) == 1 && heard(out, "HumanFemaleHurtLight") && !heard(out, "HumanMaleHurtLight"), "④ 여자인데 여자 신음이 아니다");
     }
     {
         nox::Server srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
-        srv.DebugHurt(a, -1, 9999, std::string(), 1, out);
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, std::string()), 1, out);
         for (int t = 0; t < 3; ++t) tick(srv, out, ms);
         Check(srv.HurtVoiceSum() == 0, "⑤ 죽었는데 신음을 냈다");
     }
@@ -17944,13 +17950,13 @@ void TestPlayerHitSound() {
         for (int anim : { 23, 24, 25, 28 }) srv.SetPlayerAnimFrames(anim, 8, 0);
         srv.DebugEnterGame(a, 870, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 871, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1030, 1000);
-        if (aWeapon >= 0) srv.DebugSetWeapon(a, aWeapon);
-        if (bItem) srv.DebugGiveItemType(b, bItem);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1030, 1000);
+        if (aWeapon >= 0) srv.DebugSetWeapon(Sid(srv, a), aWeapon);
+        if (bItem) srv.DebugGiveItemType(Sid(srv, b), bItem);
         std::vector<nox::OutPacket> out; uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugSetFacing(a, 0);
+        srv.DebugSetFacing(Sid(srv, a), 0);
         for (int t = 0; t < 35; ++t) tick(srv, out, ms);
         const unsigned long long q0 = srv.soundsQueued();
         const auto click = InputPacket(6);
@@ -17958,10 +17964,10 @@ void TestPlayerHitSound() {
         for (int t = 0; t < 12; ++t) tick(srv, out, ms);
         char msg[240];
         std::snprintf(msg, sizeof(msg), "② %s — b 체력 %u · 부름 %llu · 냄 %llu · 합 %llu · 담긴 소리 %llu · 번호 %u(기대 %u 번 하나)", what,
-                      srv.HealthOf(b), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played), srv.HitSoundWaySum(),
+                      srv.HealthOf(Sid(srv, b)), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played), srv.HitSoundWaySum(),
                       srv.soundsQueued() - q0, srv.lastHitSound(), expectId);
         // 담긴 소리 = 타격 소리 하나(닿았으니 휘두르기 소리는 없다)
-        Check(srv.HealthOf(b) < srv.MaxHealthOf(b) && srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::Played) == 1 &&
+        Check(srv.HealthOf(Sid(srv, b)) < srv.MaxHealthOf(Sid(srv, b)) && srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::Played) == 1 &&
               srv.HitSoundWaySum() == 1 && srv.soundsQueued() - q0 == 1 && srv.lastHitSound() == expectId, msg);
         return srv.hitSoundCalls();
     };
@@ -17978,7 +17984,7 @@ void TestPlayerHitSound() {
         std::vector<nox::OutPacket> out;
         nox::Server::AttackSrc notMelee;                        // 때린 이(b · 사람)는 있지만 근접 판정이 아니다(날아가는 것·주문 자리 꼴)
         notMelee.x = 900.0f; notMelee.y = 1000.0f;
-        srv.DebugHurt(a, -1, 10, b, 0, out, &notMelee);
+        srv.DebugHurt(Sid(srv, a), -1, 10, Sid(srv, b), 0, out, &notMelee);
         Check(srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::NotPorted) == 1 && srv.HitSoundWaySum() == 1,
               "③ 근접이 아닌 피해가 「아직 안 옮김」 칸으로 안 갔다");
     }
@@ -18027,12 +18033,12 @@ void TestPetHitSound() {
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
         srv.DebugEnterGame(a, 880, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out; uint32_t ms = 0;
         srv.Tick(ms, out);
-        srv.DebugSetFacing(a, 0);
+        srv.DebugSetFacing(Sid(srv, a), 0);
         for (int t = 0; t < 35; ++t) tick(srv, out, ms);
-        srv.DebugSpawnPet(1328, 1030.0f, 1000.0f, std::string());
+        srv.DebugSpawnPet(1328, 1030.0f, 1000.0f, Sid(srv, std::string()));
         const uint16_t hp0 = srv.DebugPetHealth(0);
         const auto click = InputPacket(6);
         srv.OnPacket(a, click.data(), click.size(), out);
@@ -18055,17 +18061,17 @@ void TestPetHitSound() {
         nox::Server srv;
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
-        srv.DebugSpawnPet(1328, 1000.0f, 1000.0f, std::string());
+        srv.DebugSpawnPet(1328, 1000.0f, 1000.0f, Sid(srv, std::string()));
         std::vector<nox::OutPacket> out;
         nox::Server::AttackSrc notMelee; notMelee.x = 900.0f; notMelee.y = 1000.0f;
-        srv.DebugHurt(std::string(), 0, 5, std::string(), 0, out, &notMelee);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 5, Sid(srv, std::string()), 0, out, &notMelee);
         Check(srv.defHitSoundCalls() == 1 && srv.defHitSoundWay(nox::DefHitSoundWay::NotPorted) == 1, "③ 근접 아닌 피해가 「안옮김」 칸으로 안 갔다");
         // ★ nine-defects 4-c3b1 — 「때린 것 없음」(nil)은 거름 · 종류가 있으면 표로 간다(재질표가 없어 「표없음」) — 피해 종류 0 이라 종류 관문은 둘 다 통과.
         //   ⚠ 실제 판으로는 못 가른다 — 지금 「없음」을 넘기는 자리는 독(종류 5)뿐이고 종류 5 는 어차피 거름이다
         nox::Server::HitterRef none; none.kind = nox::Server::HitterRef::None;
         nox::Server::HitterRef man; man.kind = nox::Server::HitterRef::Type; man.type = 713;
-        srv.DebugHurt(std::string(), 0, 1, std::string(), 0, out, nullptr, none);
-        srv.DebugHurt(std::string(), 0, 1, std::string(), 0, out, nullptr, man);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 1, Sid(srv, std::string()), 0, out, nullptr, none);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 1, Sid(srv, std::string()), 0, out, nullptr, man);
         char msg[200];
         std::snprintf(msg, sizeof(msg), "③ 4-c3b1 소환수 — 부름 %llu · 거름 %llu · 표없음 %llu(3·1·1 이어야) · 소환수 %zu", srv.defHitSoundCalls(),
                       srv.defHitSoundWay(nox::DefHitSoundWay::Filtered), srv.defHitSoundWay(nox::DefHitSoundWay::TableEmpty), static_cast<size_t>(srv.pets()));
@@ -18090,29 +18096,29 @@ void TestMissileHitterRoot() {
         srv.SetTypeBody(1328, body);
         srv.DebugEnterGame(a, 890, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 891, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         AllMetalButPlayer(srv);
         if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1328] = 1; srv.SetMonsterHitSounds(t); }
         std::vector<nox::OutPacket> out; uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        srv.DebugSpawnPet(1328, 1000.0f, 1100.0f, owned ? a : std::string());   // a 아래 100 — 맵 몬스터 또는 a 의 소환수
-        const uint16_t bHp = srv.HealthOf(b);
+        srv.DebugSpawnPet(1328, 1000.0f, 1100.0f, Sid(srv, owned ? a : std::string()));   // a 아래 100 — 맵 몬스터 또는 a 의 소환수
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         srv.DebugCreatureShoot(0, "ImpShot", 1100.0f, 1000.0f, out);
         Check(srv.missiles() == 1, owned ? "소환수가 안 쐈다(시험 전제)" : "맵 몬스터가 안 쐈다(시험 전제)");
-        for (int t = 0; t < 20 && srv.HealthOf(b) == bHp; ++t) { ms += 34; srv.Tick(ms, out); }
+        for (int t = 0; t < 20 && srv.HealthOf(Sid(srv, b)) == bHp; ++t) { ms += 34; srv.Tick(ms, out); }
         char msg[240];
         std::snprintf(msg, sizeof(msg), "%s · 맞히는 소리 %s — b 체력 %u→%u · 부름 %llu · 냄 %llu · 몬스터소리 %llu · 안옮김 %llu · 마지막 %u",
                       owned ? "사람의 소환수" : "맵 몬스터", hitSnd ? "있음" : "없음",
-                      bHp, srv.HealthOf(b), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
+                      bHp, srv.HealthOf(Sid(srv, b)), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
                       srv.hitSoundWay(nox::HitSoundWay::MonsterSound), srv.hitSoundWay(nox::HitSoundWay::NotPorted),
                       static_cast<unsigned>(srv.lastHitSound()));
         // 맵 몬스터 + 맞히는 소리 있음 → 몬스터소리(맞는 쪽 소리 없음) · 그 밖 셋 → 발사체 재질(862)
         if (!owned && hitSnd)
-            Check(srv.HealthOf(b) < bHp && srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::MonsterSound) == srv.hitSoundCalls(), msg);
+            Check(srv.HealthOf(Sid(srv, b)) < bHp && srv.hitSoundCalls() >= 1 && srv.hitSoundWay(nox::HitSoundWay::MonsterSound) == srv.hitSoundCalls(), msg);
         else
-            Check(srv.HealthOf(b) < bHp && PlayerHitByObject(srv), msg);
+            Check(srv.HealthOf(Sid(srv, b)) < bHp && PlayerHitByObject(srv), msg);
     }
     std::printf("  nine-defects 4-c3b2·b3b — 날아가는 것: 맵 몬스터가 쏜 것은 그 맞히는 소리가 있으면 몬스터소리 · 없거나 사람의 소환수면 발사체 재질(862)\n");
 }
@@ -18130,21 +18136,21 @@ void TestMonsterShockBackSound() {
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
         srv.DebugEnterGame(a, 895, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSpawnPet(1328, 1030.0f, 1000.0f, std::string());   // 맵 몬스터
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSpawnPet(1328, 1030.0f, 1000.0f, Sid(srv, std::string()));   // 맵 몬스터
         AllMetalButPlayer(srv);
         if (hitSnd) { std::vector<uint8_t> t(4096, 0); t[1328] = 1; srv.SetMonsterHitSounds(t); }
         srv.DebugApplyEnchantPet(0, 22, 0, 1);
         std::vector<nox::OutPacket> out;
-        const uint16_t ha = srv.HealthOf(a);
+        const uint16_t ha = srv.HealthOf(Sid(srv, a));
         nox::Server::AttackSrc src; src.x = 1000; src.y = 1000; src.obj = true;   // 칼(무기 오브젝트)
-        srv.DebugHurt(std::string(), 0, 5, a, 0, out, &src);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 5, Sid(srv, a), 0, out, &src);
         char msg[220];
         std::snprintf(msg, sizeof(msg), "감전 되갚기 · 맞히는 소리 %s — a 체력 %u→%u · 부름 %llu · 냄 %llu · 몬스터소리 %llu · 마지막 %u",
-                      hitSnd ? "있음" : "없음", ha, srv.HealthOf(a), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
+                      hitSnd ? "있음" : "없음", ha, srv.HealthOf(Sid(srv, a)), srv.hitSoundCalls(), srv.hitSoundWay(nox::HitSoundWay::Played),
                       srv.hitSoundWay(nox::HitSoundWay::MonsterSound), static_cast<unsigned>(srv.lastHitSound()));
-        if (hitSnd) Check(srv.HealthOf(a) < ha && srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::MonsterSound) == 1, msg);
-        else Check(srv.HealthOf(a) < ha && srv.hitSoundCalls() == 1 && PlayerHitByObject(srv), msg);
+        if (hitSnd) Check(srv.HealthOf(Sid(srv, a)) < ha && srv.hitSoundCalls() == 1 && srv.hitSoundWay(nox::HitSoundWay::MonsterSound) == 1, msg);
+        else Check(srv.HealthOf(Sid(srv, a)) < ha && srv.hitSoundCalls() == 1 && PlayerHitByObject(srv), msg);
     }
     std::printf("  nine-defects 4-c3b3b — 감전 건 소환수의 되갚기: 맞히는 소리가 있으면 몬스터소리 · 없으면 소환수 몸 재질(862)\n");
 }
@@ -18160,26 +18166,26 @@ void TestHarpoonRefused() {
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
-        srv.DebugSpawnPet(1328, 1500.0f, 1500.0f, a);            // a 의 소환수
+        srv.DebugSpawnPet(1328, 1500.0f, 1500.0f, Sid(srv, a));            // a 의 소환수
         std::vector<nox::OutPacket> out;
         int ok = 0, n = 0;
         auto want = [&](bool got, bool w, const char* what) { ++n; if (got == w) ++ok; else std::printf("  [피해 참거짓] %s — %d(기대 %d)\n", what, got, w); };
-        want(srv.DebugHurt(b, -1, 5, a, 0, out), true, "보통 피해");
-        want(srv.DebugHurt(std::string("9.9.9.9:1"), -1, 5, a, 0, out), false, "없는 사람");
-        want(srv.DebugHurt(std::string(), 7, 5, b, 0, out), false, "없는 소환수 칸");
-        want(srv.DebugHurt(std::string(), 0, 1, b, 0, out), true, "소환수 보통 피해");
-        want(srv.DebugHurt(std::string(), 0, 1, a, 0, out), true, "소환수 — 주인이 때림(편 아님도 참)");
-        srv.DebugSetTeam(a, 1); srv.DebugSetTeam(b, 1);
-        want(srv.DebugHurt(b, -1, 5, a, 0, out), true, "같은 편(편 아님도 참)");
-        srv.DebugSetTeam(b, 2);
-        srv.DebugApplyEnchant(b, 23, 300, 1);
-        want(srv.DebugHurt(b, -1, 5, a, 0, out), true, "무적(참)");
-        srv.DebugApplyEnchant(b, 23, 0, 0);
+        want(srv.DebugHurt(Sid(srv, b), -1, 5, Sid(srv, a), 0, out), true, "보통 피해");
+        want(srv.DebugHurt(Sid(srv, std::string("9.9.9.9:1")), -1, 5, Sid(srv, a), 0, out), false, "없는 사람");
+        want(srv.DebugHurt(Sid(srv, std::string()), 7, 5, Sid(srv, b), 0, out), false, "없는 소환수 칸");
+        want(srv.DebugHurt(Sid(srv, std::string()), 0, 1, Sid(srv, b), 0, out), true, "소환수 보통 피해");
+        want(srv.DebugHurt(Sid(srv, std::string()), 0, 1, Sid(srv, a), 0, out), true, "소환수 — 주인이 때림(편 아님도 참)");
+        srv.DebugSetTeam(Sid(srv, a), 1); srv.DebugSetTeam(Sid(srv, b), 1);
+        want(srv.DebugHurt(Sid(srv, b), -1, 5, Sid(srv, a), 0, out), true, "같은 편(편 아님도 참)");
+        srv.DebugSetTeam(Sid(srv, b), 2);
+        srv.DebugApplyEnchant(Sid(srv, b), 23, 300, 1);
+        want(srv.DebugHurt(Sid(srv, b), -1, 5, Sid(srv, a), 0, out), true, "무적(참)");
+        srv.DebugApplyEnchant(Sid(srv, b), 23, 0, 0);
         nox::Server s2;
         s2.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         s2.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        s2.DebugHurt(b, -1, 9999, a, 0, out);                    // 죽인다
-        want(s2.DebugHurt(b, -1, 5, a, 0, out), false, "죽은 사람");
+        s2.DebugHurt(Sid(s2, b), -1, 9999, Sid(s2, a), 0, out);                    // 죽인다
+        want(s2.DebugHurt(Sid(s2, b), -1, 5, Sid(s2, a), 0, out), false, "죽은 사람");
         char msg[120];
         std::snprintf(msg, sizeof(msg), "① 피해 함수 참/거짓 %d/%d 이 정답지와 맞는다(전부여야)", ok, n);
         Check(ok == n && n == 8, msg);
@@ -18200,37 +18206,37 @@ void TestHarpoonRefused() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         // b 는 위저드 — 워리어는 가만히 서 있으면 방패를 올려(16) 앞에서 오는 작살을 되받아친다(피해 함수까지 안 감)
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, kind == 4 ? 1500 : 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), kind == 4 ? 1500 : 1100, 1000);
         RegHarpoonBolt(srv);
         AllMetalButPlayer(srv);
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
         std::vector<nox::OutPacket> out; uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
-        srv.DebugAbilAward(a, 3, false, out);
-        srv.DebugSetFacing(a, 0);
-        srv.DebugSetFacing(b, 128);                              // a 쪽(−x)을 본다
+        srv.DebugAbilAward(Sid(srv, a), 3, false, out);
+        srv.DebugSetFacing(Sid(srv, a), 0);
+        srv.DebugSetFacing(Sid(srv, b), 128);                              // a 쪽(−x)을 본다
         if (kind == 0) {
-            srv.Damage(b, nox::HealthOnline(nox::CharClass::Wizard) - 1, out, "");   // 체력 1 — 작살 1 이 죽을 만큼
-            srv.DebugApplyEnchant(b, 26, 300, 1);                // 마법 방패
-            Check(srv.HealthOf(b) == 1, "② 마법 방패 판 전제 — b 체력이 1 이 아니다");
+            srv.Damage(Sid(srv, b), nox::HealthOnline(nox::CharClass::Wizard) - 1, out, Sid(srv, ""));   // 체력 1 — 작살 1 이 죽을 만큼
+            srv.DebugApplyEnchant(Sid(srv, b), 26, 300, 1);                // 마법 방패
+            Check(srv.HealthOf(Sid(srv, b)) == 1, "② 마법 방패 판 전제 — b 체력이 1 이 아니다");
         }
-        if (kind == 1) srv.DebugApplyEnchant(b, 23, 300, 1);
+        if (kind == 1) srv.DebugApplyEnchant(Sid(srv, b), 23, 300, 1);
         if (kind == 2) {
-            srv.DebugHurt(b, -1, 1, std::string(), 1, out);      // 주인 없는 불 1 — +524 = 1
-            srv.DebugSetTeam(a, 1); srv.DebugSetTeam(b, 1);
+            srv.DebugHurt(Sid(srv, b), -1, 1, Sid(srv, std::string()), 1, out);      // 주인 없는 불 1 — +524 = 1
+            srv.DebugSetTeam(Sid(srv, a), 1); srv.DebugSetTeam(Sid(srv, b), 1);
         }
         if (kind == 4) {
-            srv.DebugSpawnPet(1328, 1100.0f, 1000.0f, a);
-            srv.DebugHurt(std::string(), 0, 1, std::string(), 1, out);   // 주인 없는 불 1 — 소환수 +524 = 1
+            srv.DebugSpawnPet(1328, 1100.0f, 1000.0f, Sid(srv, a));
+            srv.DebugHurt(Sid(srv, std::string()), 0, 1, Sid(srv, std::string()), 1, out);   // 주인 없는 불 1 — 소환수 +524 = 1
         }
         const unsigned long long hs0 = srv.hitSoundCalls();
-        const bool fired = srv.DebugAbilDo(a, 3, out);
-        if (!fired) std::printf("  [작살 판 %d] 쏘기 실패 — a 상태 %u · b 상태 %u\n", kind, static_cast<unsigned>(srv.DebugStateOf(a)), static_cast<unsigned>(srv.DebugStateOf(b)));
-        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(a) != 0 && srv.DebugHarpoonTarget(a).empty(); ++t) { ms += 34; srv.Tick(ms, out); }
+        const bool fired = srv.DebugAbilDo(Sid(srv, a), 3, out);
+        if (!fired) std::printf("  [작살 판 %d] 쏘기 실패 — a 상태 %u · b 상태 %u\n", kind, static_cast<unsigned>(srv.DebugStateOf(Sid(srv, a))), static_cast<unsigned>(srv.DebugStateOf(Sid(srv, b))));
+        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0 && (srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession); ++t) { ms += 34; srv.Tick(ms, out); }
         const Want& w = ws[kind];
-        const bool attached = !srv.DebugHarpoonTarget(a).empty();
+        const bool attached = (srv.DebugHarpoonTarget(Sid(srv, a)) != nox::kNoSession);
         char msg[320];
         std::snprintf(msg, sizeof(msg), "② %s — 꽂힘 %d · 닿음{피해안들어감 %llu·적아님 %llu·걸림 %llu} · 끊길때소리 %llu{냄 %llu·거름 %llu} · 마지막 %u · 사람맞는소리 +%llu",
                       w.name, attached, srv.harpoonTouch(nox::HarpoonTouch::Refused), srv.harpoonTouch(nox::HarpoonTouch::NotEnemy),
@@ -18248,7 +18254,7 @@ void TestHarpoonRefused() {
             for (size_t k = 0; k < nox::kHarpoonTouchCount; ++k) std::printf(" %llu", srv.harpoonTouch(static_cast<nox::HarpoonTouch>(k)));
             std::printf(" · 끊김:");
             for (size_t k = 0; k < nox::kHarpoonEndCount; ++k) std::printf(" %llu", srv.harpoonEnd(static_cast<nox::HarpoonEnd>(k)));
-            std::printf(" · 날것 %zu · 쏨 %llu · a 상태 %u · b 체력 %u\n", srv.missiles(), srv.harpoonShot(), static_cast<unsigned>(srv.DebugStateOf(a)), static_cast<unsigned>(srv.HealthOf(b)));
+            std::printf(" · 날것 %zu · 쏨 %llu · a 상태 %u · b 체력 %u\n", srv.missiles(), srv.harpoonShot(), static_cast<unsigned>(srv.DebugStateOf(Sid(srv, a))), static_cast<unsigned>(srv.HealthOf(Sid(srv, b))));
         }
         Check(ok, msg);
     }
@@ -18268,20 +18274,20 @@ void TestHarpoonPull() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         RegHarpoonBolt(srv);
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w); srv.Tick(34, w);
         std::vector<nox::OutPacket> o2;
-        srv.DebugAbilAward(a, 3, false, o2);
-        srv.DebugSetFacing(a, 0);
+        srv.DebugAbilAward(Sid(srv, a), 3, false, o2);
+        srv.DebugSetFacing(Sid(srv, a), 0);
     };
     // 꽂힐 때까지 굴린다
     auto stick = [&](nox::Server& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
-        srv.DebugAbilDo(a, 3, out);
-        for (int t = 0; t < 30 && srv.DebugHarpoonTarget(a).empty(); ++t) { ms += 34; srv.Tick(ms, out); }
-        return !srv.DebugHarpoonTarget(a).empty();
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        for (int t = 0; t < 30 && (srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession); ++t) { ms += 34; srv.Tick(ms, out); }
+        return (srv.DebugHarpoonTarget(Sid(srv, a)) != nox::kNoSession);
     };
     auto fx = [&](const std::vector<nox::OutPacket>& out, uint8_t code) {
         for (const auto& x : FlattenTo(out, a))
@@ -18308,9 +18314,9 @@ void TestHarpoonPull() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        const double d0 = srv.DebugDistance(a, b);
+        const double d0 = srv.DebugDistance(Sid(srv, a), Sid(srv, b));
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
-        const double d1 = srv.DebugDistance(a, b);
+        const double d1 = srv.DebugDistance(Sid(srv, a), Sid(srv, b));
         Check(d1 < d0, "꽂혔는데 안 끌려온다");
     }
 
@@ -18326,7 +18332,7 @@ void TestHarpoonPull() {
         //     부드럽게 다가와 **주인(1000)을 한 번도 안 지나친다.** 끝의 되돌아감은 줄이 끊긴 뒤
         //     **몸끼리 밀려 떨어지는 것**이다(반지름 10+10 이라 8 이면 겹친다) — 정상이다
         int xs[12];
-        for (int t = 0; t < 12; ++t) { ms += 34; srv.Tick(ms, out); xs[t] = srv.XOf(b); }
+        for (int t = 0; t < 12; ++t) { ms += 34; srv.Tick(ms, out); xs[t] = srv.XOf(Sid(srv, b)); }
         int minX = xs[0], downs = 0;
         for (int t = 0; t < 12; ++t) {
             if (xs[t] < minX) minX = xs[t];
@@ -18347,12 +18353,12 @@ void TestHarpoonPull() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        srv.DebugSetPos(b, 1015, 1000);                    // 15 — 20 안
+        srv.DebugSetPos(Sid(srv, b), 1015, 1000);                    // 15 — 20 안
         // ⚠ 거리는 **화살↔주인**이지 상대↔주인이 아니다.
         //   화살은 갱신 **끝**에서 상대 자리로 옥겨 붙으므로 한 번 더 돌려야 관문에 닿는다
-        srv.DebugHarpoonUpdate(a, out);
-        srv.DebugHarpoonUpdate(a, out);
-        Check(srv.DebugHarpoonBolt(a) == 0, "20 안인데 줄이 안 끊겼다");
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "20 안인데 줄이 안 끊겼다");
         onlyEnd(srv, nox::HarpoonEnd::Arrived, "③ 끊김 까닭이 「다 끌어옴」 하나가 아니다");
     }
     // 경계 — ★ 09-24 H4: 거리는 **몸 크기를 뺀 거리**다(`nox_xxx_calcDistance_4E6C00` `GAME3_3.c:2377~2420` —
@@ -18362,11 +18368,11 @@ void TestHarpoonPull() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        srv.DebugSetPos(b, cx, 1000);
-        srv.DebugHarpoonUpdate(a, out);
-        srv.DebugHarpoonUpdate(a, out);
-        if (cx == 1030) Check(srv.DebugHarpoonBolt(a) != 0, "가장자리 딱 20(중심 30)인데 끊겼다");
-        else { Check(srv.DebugHarpoonBolt(a) == 0, "H4 가장자리 15(중심 25)인데 안 끊겼다 — 중심 거리로 재고 있다");
+        srv.DebugSetPos(Sid(srv, b), cx, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        if (cx == 1030) Check(srv.DebugHarpoonBolt(Sid(srv, a)) != 0, "가장자리 딱 20(중심 30)인데 끊겼다");
+        else { Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "H4 가장자리 15(중심 25)인데 안 끊겼다 — 중심 거리로 재고 있다");
                onlyEnd(srv, nox::HarpoonEnd::Arrived, "H4 중심 25 끊김 까닭이 「다 끌어옴」 하나가 아니다"); }
     }
 
@@ -18375,16 +18381,16 @@ void TestHarpoonPull() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        srv.DebugHarpoonUpdate(a, out);                    // 첫 틱에 `9e 07` 과 시계가 선다
-        Check(srv.DebugHarpoonBolt(a) != 0, "첫 갱신에 끊겼다");
-        srv.DebugSetPos(b, 1200, 1000);                    // 20~375 사이에 세워 둔다
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);                    // 첫 틱에 `9e 07` 과 시계가 선다
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) != 0, "첫 갱신에 끊겼다");
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);                    // 20~375 사이에 세워 둔다
         srv.DebugAdvanceFrame(150);
-        srv.DebugHarpoonUpdate(a, out);
-        Check(srv.DebugHarpoonBolt(a) != 0, "딱 150 인데 끊겼다(`> 150` 이어야 한다)");
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) != 0, "딱 150 인데 끊겼다(`> 150` 이어야 한다)");
         srv.DebugAdvanceFrame(1);
-        srv.DebugSetPos(b, 1200, 1000);
-        srv.DebugHarpoonUpdate(a, out);
-        Check(srv.DebugHarpoonBolt(a) == 0, "151 인데 줄이 안 끊겼다");
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "151 인데 줄이 안 끊겼다");
         onlyEnd(srv, nox::HarpoonEnd::Lifetime, "④ 끊김 까닭이 「수명」 하나가 아니다");
     }
 
@@ -18393,10 +18399,10 @@ void TestHarpoonPull() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        srv.DebugSetPos(b, 1500, 1000);                    // 500 — 375 밖
-        srv.DebugHarpoonUpdate(a, out);                    // 화살이 상대 자리로 옮겨 붙는다
-        srv.DebugHarpoonUpdate(a, out);                    // 그 다음 갱신이 거리를 재 끊는다
-        Check(srv.DebugHarpoonBolt(a) == 0, "375 밖인데 줄이 안 끊겼다");
+        srv.DebugSetPos(Sid(srv, b), 1500, 1000);                    // 500 — 375 밖
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);                    // 화살이 상대 자리로 옮겨 붙는다
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);                    // 그 다음 갱신이 거리를 재 끊는다
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "375 밖인데 줄이 안 끊겼다");
         onlyEnd(srv, nox::HarpoonEnd::TooFar, "⑤ 끊김 까닭이 「멀어짐」 하나가 아니다");
     }
     // ★ 09-24 H4 — 먼 쪽 경계도 몸 크기를 뺀 거리다: 중심 385(가장자리 375)는 안 끊기고 386 은 끊긴다(`dist > 375`)
@@ -18404,11 +18410,11 @@ void TestHarpoonPull() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        srv.DebugSetPos(b, cx, 1000);
-        srv.DebugHarpoonUpdate(a, out);
-        srv.DebugHarpoonUpdate(a, out);
-        if (cx == 1385) Check(srv.DebugHarpoonBolt(a) != 0, "H4 가장자리 딱 375(중심 385)인데 끊겼다");
-        else { Check(srv.DebugHarpoonBolt(a) == 0, "H4 가장자리 376(중심 386)인데 안 끊겼다");
+        srv.DebugSetPos(Sid(srv, b), cx, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        if (cx == 1385) Check(srv.DebugHarpoonBolt(Sid(srv, a)) != 0, "H4 가장자리 딱 375(중심 385)인데 끊겼다");
+        else { Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "H4 가장자리 376(중심 386)인데 안 끊겼다");
                onlyEnd(srv, nox::HarpoonEnd::TooFar, "H4 중심 386 끊김 까닭이 「멀어짐」 하나가 아니다"); }
     }
 
@@ -18417,15 +18423,15 @@ void TestHarpoonPull() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        srv.DebugSetPos(b, 1200, 1000);
-        srv.DebugHarpoonUpdate(a, out);                    // 이때 자리를 기억한다
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);                    // 이때 자리를 기억한다
         srv.DebugAdvanceFrame(31);
-        srv.DebugSetPos(b, 1200, 1000);
-        srv.DebugHarpoonUpdate(a, out);                    // 첫 본본 — 꿂힐 때 자리(1100)와 다르므로 1200 을 기억한다
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);                    // 첫 본본 — 꿂힐 때 자리(1100)와 다르므로 1200 을 기억한다
         srv.DebugAdvanceFrame(31);
-        srv.DebugSetPos(b, 1200, 1000);                    // 한 칸도 안 움직였다
-        srv.DebugHarpoonUpdate(a, out);
-        Check(srv.DebugHarpoonBolt(a) == 0, "31틱 동안 안 움직였는데 줄이 안 끊겼다");
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);                    // 한 칸도 안 움직였다
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "31틱 동안 안 움직였는데 줄이 안 끊겼다");
         onlyEnd(srv, nox::HarpoonEnd::Stuck, "⑥ 끊김 까닭이 「안 움직임」 하나가 아니다");
     }
     // 움직였으면 안 끊긴다
@@ -18433,17 +18439,17 @@ void TestHarpoonPull() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        srv.DebugSetPos(b, 1200, 1000);
-        srv.DebugHarpoonUpdate(a, out);
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
         srv.DebugAdvanceFrame(31);
-        srv.DebugSetPos(b, 1200, 1000);
-        srv.DebugHarpoonUpdate(a, out);                    // 본본 — 꿂힐 때 자리와 다르므로 1200 을 기억한다
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);                    // 본본 — 꿂힐 때 자리와 다르므로 1200 을 기억한다
         srv.DebugAdvanceFrame(31);
         // ⚠ **5 만** 움직인다 — 거리제곱 25 다. 자가 1 이면 「움직였다」이고,
         //   자를 100 으로 넓히면 「안 움직였다」가 되어 끊긴다(그 자리가 이 시험이다)
-        srv.DebugSetPos(b, 1205, 1000);
-        srv.DebugHarpoonUpdate(a, out);
-        Check(srv.DebugHarpoonBolt(a) != 0, "5 움직였는데 줄이 끊겼다");
+        srv.DebugSetPos(Sid(srv, b), 1205, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) != 0, "5 움직였는데 줄이 끊겼다");
     }
 
     // ⑦ **주인과 상대 사이가 벽으로 막히면 끊긴다**(벽 추적 9)
@@ -18451,25 +18457,25 @@ void TestHarpoonPull() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
-        srv.DebugSetPos(b, 1200, 1000);
-        srv.DebugHarpoonUpdate(a, out);
-        Check(srv.DebugHarpoonBolt(a) != 0, "벽을 세우기 전에 끊겼다(이 시험의 전제)");
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) != 0, "벽을 세우기 전에 끊겼다(이 시험의 전제)");
         srv.SetWalls({ { 47, 43 } });                      // a(1000)와 b(1200) 사이 칸
-        srv.DebugSetPos(b, 1200, 1000);
-        srv.DebugHarpoonUpdate(a, out);
-        Check(srv.DebugHarpoonBolt(a) == 0, "벽이 가로막았는데 줄이 안 끊겼다");
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
+        srv.DebugHarpoonUpdate(Sid(srv, a), out);
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "벽이 가로막았는데 줄이 안 끊겼다");
         onlyEnd(srv, nox::HarpoonEnd::NoSight, "⑦ 끊김 까닭이 「시야 막힘」 하나가 아니다");
     }
 
     // ⑧ **안 걸린 채 300 넘게 날면 끊긴다**
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);                    // 맞을 것이 없다
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);                    // 맞을 것이 없다
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         srv.Tick(ms, out);
-        srv.DebugAbilDo(a, 3, out);
-        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.DebugHarpoonBolt(a) == 0, "300 넘게 날았는데 줄이 안 끊겼다");
+        srv.DebugAbilDo(Sid(srv, a), 3, out);
+        for (int t = 0; t < 30 && srv.DebugHarpoonBolt(Sid(srv, a)) != 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "300 넘게 날았는데 줄이 안 끊겼다");
         onlyEnd(srv, nox::HarpoonEnd::OverFlight, "⑧ 끊김 까닭이 「너무 멀리 날아감」 하나가 아니다");
     }
 
@@ -18479,9 +18485,9 @@ void TestHarpoonPull() {
         std::vector<nox::OutPacket> out; uint32_t ms = 68;
         Check(stick(srv, out, ms), "안 꽂혔다(이 시험의 전제)");
         int guard = 0;
-        while (srv.IsAlive(a) && guard++ < 40) srv.DebugHurt(a, -1, 30, b, 0, out);
+        while (srv.IsAlive(Sid(srv, a)) && guard++ < 40) srv.DebugHurt(Sid(srv, a), -1, 30, Sid(srv, b), 0, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.DebugHarpoonBolt(a) == 0, "주인이 죽었는데 줄이 안 끊겼다");
+        Check(srv.DebugHarpoonBolt(Sid(srv, a)) == 0, "주인이 죽었는데 줄이 안 끊겼다");
         onlyEnd(srv, nox::HarpoonEnd::OwnerDead, "⑨ 끊김 까닭이 「주인 죽음」 하나가 아니다");
     }
     std::printf("  7-g — 작살 끌기: 9e 07 첫 틱 · 끌려옴 · 20 안·375 밖·안 움직임·주인 죽음에 끊김 · 안 걸리면 300\n");
@@ -18498,7 +18504,7 @@ void TestGuideAward() {
     const std::string a = "10.7.8.1:7801";
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
     auto find = [&](const std::vector<nox::OutPacket>& out, std::vector<uint8_t>& m) {
         bool found = false;
@@ -18517,8 +18523,8 @@ void TestGuideAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugGuideAward(a, 5, /*announce=*/true, out), "주기가 실패했다");
-        Check(srv.DebugGuideLvl(a, 5) == 1, "안내서가 1 이 안 됐다");
+        Check(srv.DebugGuideAward(Sid(srv, a), 5, /*announce=*/true, out), "주기가 실패했다");
+        Check(srv.DebugGuideLvl(Sid(srv, a), 5) == 1, "안내서가 1 이 안 됐다");
         std::vector<uint8_t> m;
         Check(find(out, m), "`d1` 이 안 갔다");
         Check(m.size() == 3, "`d1` 이 3바이트가 아니다");
@@ -18529,7 +18535,7 @@ void TestGuideAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGuideAward(a, 5, false, out);
+        srv.DebugGuideAward(Sid(srv, a), 5, false, out);
         std::vector<uint8_t> m;
         Check(find(out, m) && m[2] == 0, "조용히 줬는데 셋째 칸이 0 이 아니다");
     }
@@ -18538,7 +18544,7 @@ void TestGuideAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGuideAward(a, 5, true, out);
+        srv.DebugGuideAward(Sid(srv, a), 5, true, out);
         std::vector<uint8_t> m;
         Check(find(out, m) && (m[2] & 0x80) == 0, "`d1` 에 0x80 이 섰다");
     }
@@ -18549,8 +18555,8 @@ void TestGuideAward() {
         std::vector<nox::OutPacket> warm;
         srv.Tick(0, warm);
         std::vector<nox::OutPacket> out;
-        srv.DebugImportantReal(a, /*ready=*/true);
-        srv.DebugGuideAward(a, 5, true, out);
+        srv.DebugImportantReal(Sid(srv, a), /*ready=*/true);
+        srv.DebugGuideAward(Sid(srv, a), 5, true, out);
         Check(out.empty(), "중요가 대기열에 안 쌓이고 곧바로 나갔다");
         srv.Tick(34, out);
         bool sequenced = false;
@@ -18574,9 +18580,9 @@ void TestGuideAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGuideAward(a, 5, false, out);
+        srv.DebugGuideAward(Sid(srv, a), 5, false, out);
         out.clear();
-        Check(!srv.DebugGuideAward(a, 5, false, out), "이미 있는데 또 줬다");
+        Check(!srv.DebugGuideAward(Sid(srv, a), 5, false, out), "이미 있는데 또 줬다");
         Check(count(out) == 0, "이미 있는데 `d1` 이 갔다");
     }
 
@@ -18584,23 +18590,23 @@ void TestGuideAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        Check(!srv.DebugGuideAward(a, 0, false, out), "0 번을 받아들였다");
-        Check(!srv.DebugGuideAward(a, 41, false, out), "41 번을 받아들였다");
+        Check(!srv.DebugGuideAward(Sid(srv, a), 0, false, out), "0 번을 받아들였다");
+        Check(!srv.DebugGuideAward(Sid(srv, a), 41, false, out), "41 번을 받아들였다");
         Check(count(out) == 0, "번호 밖인데 `d1` 이 갔다");
-        Check(srv.DebugGuideAward(a, 40, false, out), "40 번(마지막)이 막혔다");
+        Check(srv.DebugGuideAward(Sid(srv, a), 40, false, out), "40 번(마지막)이 막혔다");
     }
 
     // ⑥ **무리는 24 하나뿐** — 24 를 받으면 7·8·25·26 도 같이 선다
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugGuideAward(a, 24, false, out), "24 번 주기가 실패했다");
-        Check(srv.DebugGuideLvl(a, 24) == 1, "24 가 안 섰다");
+        Check(srv.DebugGuideAward(Sid(srv, a), 24, false, out), "24 번 주기가 실패했다");
+        Check(srv.DebugGuideLvl(Sid(srv, a), 24) == 1, "24 가 안 섰다");
         for (uint8_t g : { 7, 8, 25, 26 })
-            Check(srv.DebugGuideLvl(a, g) == 1, "무리에 든 안내서가 같이 안 섰다");
+            Check(srv.DebugGuideLvl(Sid(srv, a), g) == 1, "무리에 든 안내서가 같이 안 섰다");
         // 무리 밖은 안 건드린다
         for (uint8_t g : { 6, 9, 23, 27 })
-            Check(srv.DebugGuideLvl(a, g) == 0, "무리 밖 안내서까지 섰다");
+            Check(srv.DebugGuideLvl(Sid(srv, a), g) == 0, "무리 밖 안내서까지 섰다");
         // `d1` 은 **받은 번호 하나만** 간다
         Check(count(out) == 1, "무리마다 `d1` 을 보냈다(하나여야 한다)");
         std::vector<uint8_t> m;
@@ -18610,10 +18616,10 @@ void TestGuideAward() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugGuideAward(a, 7, false, out);
-        Check(srv.DebugGuideLvl(a, 7) == 1, "7 이 안 섰다");
-        Check(srv.DebugGuideLvl(a, 24) == 0, "7 을 받았는데 24 까지 섰다");
-        Check(srv.DebugGuideLvl(a, 8) == 0, "7 을 받았는데 8 까지 섰다");
+        srv.DebugGuideAward(Sid(srv, a), 7, false, out);
+        Check(srv.DebugGuideLvl(Sid(srv, a), 7) == 1, "7 이 안 섰다");
+        Check(srv.DebugGuideLvl(Sid(srv, a), 24) == 0, "7 을 받았는데 24 까지 섰다");
+        Check(srv.DebugGuideLvl(Sid(srv, a), 8) == 0, "7 을 받았는데 8 까지 섰다");
     }
     std::printf("  7-h — 안내서(d1 3바이트·순번 봉투) · 1~40 · 이미 있으면 조용히 실패 · 무리는 24 → 7·8·25·26 하나뿐\n");
 }
@@ -18734,8 +18740,8 @@ void TestTeamMsg() {
     auto mk = [&](nox::Server& srv) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
     };
     auto teamMsgs = [&](const std::vector<nox::OutPacket>& out, uint8_t code) {
         std::vector<std::vector<uint8_t>> v;
@@ -18779,7 +18785,7 @@ void TestTeamMsg() {
     // 팀 없는 사람은 안 실린다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(b, 0);
+        srv.DebugSetTeam(Sid(srv, b), 0);
         std::vector<nox::OutPacket> out;
         srv.DebugSendTeamState(out);
         Check(teamMsgs(out, 1).size() == 1, "팀 없는 사람까지 실렸다");
@@ -18827,17 +18833,17 @@ void TestTeamMsg() {
         std::vector<nox::OutPacket> out;
         srv.DebugSendTeamState(out);
         out.clear();
-        srv.DebugUpdateScore(b, a, std::string(), out);     // a(1팀)가 b(2팀)를 죽였다
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, a), Sid(srv, std::string()), out);     // a(1팀)가 b(2팀)를 죽였다
         Check(srv.DebugTeamScore(1) == 1, "죽인 이의 팀 점수가 1 이 안 됐다");
         Check(teamMsgs(out, 8).size() == 1, "팀 점수 알림이 안 갔다");
     }
     // 같은 편을 죽이면 그 팀이 내려간다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(b, 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
         std::vector<nox::OutPacket> out;
         srv.DebugSendTeamState(out);
-        srv.DebugUpdateScore(b, a, std::string(), out);
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, a), Sid(srv, std::string()), out);
         Check(srv.DebugTeamScore(1) == -1, "팀킬인데 팀 점수가 −1 이 아니다");
     }
     // 죽인 이가 없으면 죽은 이의 팀이 내려간다
@@ -18845,7 +18851,7 @@ void TestTeamMsg() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.DebugSendTeamState(out);
-        srv.DebugUpdateScore(b, std::string(), std::string(), out);
+        srv.DebugUpdateScore(Sid(srv, b), Sid(srv, std::string()), Sid(srv, std::string()), out);
         Check(srv.DebugTeamScore(2) == -1, "죽인 이가 없는데 죽은 이 팀이 −1 이 아니다");
         Check(srv.DebugTeamScore(1) == 0, "엉뚱한 팀이 움직였다");
     }
@@ -18884,10 +18890,10 @@ void TestRoundEnd() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
-        srv.DebugSetScore(a, 14);
+        srv.DebugSetScore(Sid(srv, a), 14);
         srv.DebugRoundCheck(out);
         Check(!srv.RoundOver(), "14 인데 끝났다");
-        srv.DebugSetScore(a, 15);
+        srv.DebugSetScore(Sid(srv, a), 15);
         out.clear();
         srv.DebugRoundCheck(out);
         Check(srv.RoundOver(), "15 인데 안 끝났다");
@@ -18902,7 +18908,7 @@ void TestRoundEnd() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
-        srv.DebugSetScore(a, 15);
+        srv.DebugSetScore(Sid(srv, a), 15);
         srv.DebugRoundCheck(out);
         Check(srv.RoundOver(), "안 끝났다(이 시험의 전제)");
         out.clear();
@@ -18917,10 +18923,10 @@ void TestRoundEnd() {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
-        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
         srv.DebugSendTeamState(out);
         srv.DebugTeamChangeScore(1, 15, out);
-        srv.DebugSetScore(a, 15);
+        srv.DebugSetScore(Sid(srv, a), 15);
         out.clear();
         srv.DebugRoundCheck(out);
         Check(srv.RoundOver(), "팀이 한도에 닿았는데 안 끝났다");
@@ -18940,7 +18946,7 @@ void TestRoundEnd() {
         srv.SetGameSettings(g);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
-        srv.DebugSetScore(a, 99);
+        srv.DebugSetScore(Sid(srv, a), 99);
         srv.DebugRoundCheck(out);
         Check(!srv.RoundOver(), "협동팀인데 판이 끝났다");
     }
@@ -18953,7 +18959,7 @@ void TestRoundEnd() {
         srv.SetGameSettings(g);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
-        srv.DebugSetScore(a, 99);
+        srv.DebugSetScore(Sid(srv, a), 99);
         srv.DebugRoundCheck(out);
         Check(!srv.RoundOver(), "한도가 0 인데 판이 끝났다");
     }
@@ -18965,7 +18971,7 @@ void TestRoundEnd() {
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
-        srv.DebugSetScore(a, 99);
+        srv.DebugSetScore(Sid(srv, a), 99);
         srv.DebugRoundCheck(out);
         Check(!srv.RoundOver(), "관전자가 이겼다");
     }
@@ -18976,7 +18982,7 @@ void TestRoundEnd() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         for (int t = 0; t < 5; ++t) { srv.Tick(ms, out); ms += 34; }
-        srv.DebugSetScore(a, 15);
+        srv.DebugSetScore(Sid(srv, a), 15);
         out.clear();
         srv.DebugRoundCheck(out);
         std::vector<uint8_t> m;
@@ -19006,7 +19012,7 @@ void TestFlagBall() {
         srv.StartFlagBall(1000, 1000, 1000, 1400, 1000, 600);
         // ⚠ `DebugEnterGame` 은 사람을 **공 근처**에 놓는다 — 치워 두지 않으면
         //   둘째 사람이 공을 주워 가 시험이 엉뚱한 것을 재게 된다
-        srv.DebugSetPos(b, 5000, 5000);
+        srv.DebugSetPos(Sid(srv, b), 5000, 5000);
         std::vector<nox::OutPacket> w;
         srv.DebugSendTeamState(w);
     };
@@ -19022,18 +19028,18 @@ void TestFlagBall() {
         nox::Server srv; mk(srv);
         Check(srv.BallCount() == 1, "공이 하나가 아니다");
         Check(srv.BallX() == 1000 && srv.BallY() == 1000, "공이 놓은 자리에 없다");
-        Check(srv.BallCarrier().empty(), "차리자마자 누가 들었다");
+        Check((srv.BallCarrier() == nox::kNoSession), "차리자마자 누가 들었다");
         Check(srv.DebugTeamCount() == 2, "팀이 둘이 안 섰다");
     }
 
     // ② **가까이 가면 줍는다** — `d9` 가 「누가 들었다」로 간다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugUpdateBall(out);
-        Check(srv.BallCarrier() == a, "가까이 갔는데 안 주웠다");
+        Check(srv.BallCarrier() == Sid(srv, a), "가까이 갔는데 안 주웠다");
         std::vector<uint8_t> m;
         Check(ballMsg(out, m), "`d9` 가 안 갔다");
         Check(m[1] == 2, "1팀(칭호 1)이 들었는데 상태가 2 가 아니다");
@@ -19042,8 +19048,8 @@ void TestFlagBall() {
     // 칭호 2 인 팀이 들면 상태 4
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 2);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 2);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugUpdateBall(out);
         std::vector<uint8_t> m;
@@ -19052,21 +19058,21 @@ void TestFlagBall() {
     // 멀면 안 줍는다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugUpdateBall(out);
-        Check(srv.BallCarrier().empty(), "먼데 주웠다");
+        Check((srv.BallCarrier() == nox::kNoSession), "먼데 주웠다");
     }
 
     // ③ **든 공은 따라다닌다**
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugUpdateBall(out);
-        srv.DebugSetPos(a, 1100, 1050);
+        srv.DebugSetPos(Sid(srv, a), 1100, 1050);
         srv.DebugUpdateBall(out);
         Check(srv.BallX() == 1100 && srv.BallY() == 1050, "든 공이 안 따라왔다");
     }
@@ -19074,18 +19080,18 @@ void TestFlagBall() {
     // ④ **남의 골대에 넣으면 득점** — 사람 +1 · 팀 +1 · 공은 시작 자리로
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugUpdateBall(out);
-        Check(srv.BallCarrier() == a, "안 주웠다(이 시험의 전제)");
+        Check(srv.BallCarrier() == Sid(srv, a), "안 주웠다(이 시험의 전제)");
         // 1팀은 **2팀 골대**(1000,600)에 넣는다 — `TeamAfter(2) == 1`
-        srv.DebugSetPos(a, 1000, 600);
+        srv.DebugSetPos(Sid(srv, a), 1000, 600);
         out.clear();
         srv.DebugUpdateBall(out);
-        Check(srv.KillsOf(a) == 1, "넣었는데 사람 점수가 1 이 아니다");
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "넣었는데 사람 점수가 1 이 아니다");
         Check(srv.DebugTeamScore(1) == 1, "넣었는데 팀 점수가 1 이 아니다");
-        Check(srv.BallCarrier().empty(), "넣었는데 공을 계속 들고 있다");
+        Check((srv.BallCarrier() == nox::kNoSession), "넣었는데 공을 계속 들고 있다");
         Check(srv.BallX() == 1000 && srv.BallY() == 1000, "공이 시작 자리로 안 돌아갔다");
         std::vector<uint8_t> m;
         Check(ballMsg(out, m) && m[1] == 0, "넣은 뒤 `d9` 상태가 0(제자리)이 아니다");
@@ -19093,26 +19099,26 @@ void TestFlagBall() {
     // **제 골대에는 못 넣는다**
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugUpdateBall(out);
-        srv.DebugSetPos(a, 1000, 1400);                    // 1팀 골대
+        srv.DebugSetPos(Sid(srv, a), 1000, 1400);                    // 1팀 골대
         srv.DebugUpdateBall(out);
-        Check(srv.KillsOf(a) == 0, "제 골대에 넣고 점수를 얻었다");
-        Check(srv.BallCarrier() == a, "제 골대에서 공을 놓쳤다");
+        Check(srv.KillsOf(Sid(srv, a)) == 0, "제 골대에 넣고 점수를 얻었다");
+        Check(srv.BallCarrier() == Sid(srv, a), "제 골대에서 공을 놓쳤다");
     }
 
     // ⑤ **한도에 닿으면 `0x56` 이 간다** — 까닭 칸은 늘 0
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         srv.DebugTeamChangeScore(1, 14, out);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         srv.DebugUpdateBall(out);
-        srv.DebugSetPos(a, 1000, 600);
+        srv.DebugSetPos(Sid(srv, a), 1000, 600);
         out.clear();
         srv.DebugUpdateBall(out);
         Check(srv.DebugTeamScore(1) == 15, "팀 점수가 15 가 안 됐다");
@@ -19131,19 +19137,19 @@ void TestFlagBall() {
     //   (2026-09-09 깃발에서 **1378:1378** 이 됐던 사고가 이 관문을 빼면 생긴다)
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         srv.DebugTeamChangeScore(1, 14, out);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         srv.DebugUpdateBall(out);
-        srv.DebugSetPos(a, 1000, 600);
+        srv.DebugSetPos(Sid(srv, a), 1000, 600);
         srv.DebugUpdateBall(out);
         Check(srv.RoundOver(), "한도에 닿았는데 안 끝났다(이 시험의 전제)");
         const int32_t after = srv.DebugTeamScore(1);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         srv.DebugUpdateBall(out);
-        srv.DebugSetPos(a, 1000, 600);
+        srv.DebugSetPos(Sid(srv, a), 1000, 600);
         srv.DebugUpdateBall(out);
         Check(srv.DebugTeamScore(1) == after, "끝난 판인데 점수가 또 올랐다");
     }
@@ -19151,15 +19157,15 @@ void TestFlagBall() {
     // ⑥ **죽으면 공을 떨군다** — 상태 1(바닥)
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugUpdateBall(out);
-        Check(srv.BallCarrier() == a, "안 주웠다(이 시험의 전제)");
+        Check(srv.BallCarrier() == Sid(srv, a), "안 주웠다(이 시험의 전제)");
         out.clear();
         int guard = 0;
-        while (srv.IsAlive(a) && guard++ < 40) srv.DebugHurt(a, -1, 30, b, 0, out);
-        Check(srv.BallCarrier().empty(), "죽었는데 공을 계속 들고 있다");
+        while (srv.IsAlive(Sid(srv, a)) && guard++ < 40) srv.DebugHurt(Sid(srv, a), -1, 30, Sid(srv, b), 0, out);
+        Check((srv.BallCarrier() == nox::kNoSession), "죽었는데 공을 계속 들고 있다");
         std::vector<uint8_t> m;
         Check(ballMsg(out, m) && m[1] == 1, "떨군 공의 상태가 1(바닥)이 아니다");
     }
@@ -19167,8 +19173,8 @@ void TestFlagBall() {
     // ⑦ **바뀔 때만 보낸다** — 같은 상태로 두 번 굴리면 한 번만 간다
     {
         nox::Server srv; mk(srv);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugUpdateBall(out);
         out.clear();
@@ -19201,9 +19207,9 @@ void TestVote() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.DebugEnterGame(c, 730);
-        srv.DebugSetName(a, "Alice");
-        srv.DebugSetName(b, "Bob");
-        srv.DebugSetName(c, "Carl");
+        srv.DebugSetName(Sid(srv, a), "Alice");
+        srv.DebugSetName(Sid(srv, b), "Bob");
+        srv.DebugSetName(Sid(srv, c), "Carl");
     };
     auto voteMsg = [&](const std::vector<nox::OutPacket>& out, const std::string& to,
                        uint8_t sub, std::vector<uint8_t>& m) {
@@ -19216,7 +19222,7 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
         Check(srv.DebugVoteCount() == 1, "투표가 안 섰다");
         Check(srv.DebugVoteVoters(0) == 1, "표가 하나가 아니다");
         std::vector<uint8_t> m;
@@ -19228,9 +19234,9 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
         out.clear();
-        srv.DebugVoteCast(c, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, c), 0, "Bob", out);
         Check(srv.DebugVoteVoters(0) == 2, "둘째 표가 안 셌다");
         std::vector<uint8_t> m;
         Check(!voteMsg(out, a, 6, m), "목록이 이미 찼는데 `ee 06` 이 또 갔다");
@@ -19240,12 +19246,12 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
-        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
         Check(srv.DebugVoteVoters(0) == 1, "같은 사람이 두 표를 던졌다");
-        srv.DebugVoteCast(a, 0, "Alice", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Alice", out);
         Check(srv.DebugVoteCount() == 1, "자기 자신에게 투표가 섰다");
-        srv.DebugVoteCast(a, 0, "Nobody", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Nobody", out);
         Check(srv.DebugVoteCount() == 1, "없는 사람에게 투표가 섰다");
     }
 
@@ -19253,14 +19259,14 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
-        srv.DebugVoteCast(c, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, c), 0, "Bob", out);
         out.clear();
-        srv.DebugVoteWithdraw(c, 0, "Bob", out);
+        srv.DebugVoteWithdraw(Sid(srv, c), 0, "Bob", out);
         Check(srv.DebugVoteVoters(0) == 1, "물렸는데 표가 안 줄었다");
         Check(srv.DebugVoteCount() == 1, "표가 남았는데 투표가 사라졌다");
         out.clear();
-        srv.DebugVoteWithdraw(a, 0, "Bob", out);
+        srv.DebugVoteWithdraw(Sid(srv, a), 0, "Bob", out);
         Check(srv.DebugVoteCount() == 0, "표가 0 인데 투표가 안 사라졌다");
         std::vector<uint8_t> m;
         Check(voteMsg(out, a, 6, m) && m[2] == 0, "목록이 비었는데 `ee 06 00` 이 안 갔다");
@@ -19270,23 +19276,23 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
         srv.DebugVoteUpdate(out);
         Check(srv.DebugVoteCount() == 1, "한 표인데 통과했다");
         Check(srv.PlayerCount() == 3, "아직 아무도 안 나가야 한다");
-        srv.DebugVoteCast(c, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, c), 0, "Bob", out);
         srv.DebugVoteUpdate(out);
         Check(srv.DebugVoteCount() == 0, "두 표인데 통과가 안 됐다");
         Check(srv.PlayerCount() == 2, "통과했는데 안 내보냈다");
-        Check(!srv.IsInGame(b), "내보낸 사람이 아직 판에 있다");
+        Check(!srv.IsInGame(Sid(srv, b)), "내보낸 사람이 아직 판에 있다");
     }
 
     // ⑤ **겨눈 사람이 먼저 나가면 투표가 사라진다**
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
-        srv.DebugKick(b, out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
+        srv.DebugKick(Sid(srv, b), out);
         srv.DebugVoteUpdate(out);
         Check(srv.DebugVoteCount() == 0, "겨눈 사람이 나갔는데 투표가 남았다");
     }
@@ -19295,12 +19301,12 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
-        srv.DebugVoteCast(c, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, c), 0, "Bob", out);
         Check(srv.DebugVoteVoters(0) == 2, "두 표가 안 섰다(이 시험의 전제)");
-        srv.DebugKick(c, out);
+        srv.DebugKick(Sid(srv, c), out);
         Check(srv.DebugVoteVoters(0) == 1, "나간 사람 표가 안 빠졌다");
-        srv.DebugKick(a, out);
+        srv.DebugKick(Sid(srv, a), out);
         Check(srv.DebugVoteCount() == 0, "표가 0 인데 투표가 안 사라졌다");
     }
 
@@ -19342,9 +19348,9 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
         out.clear();
-        srv.DebugVoteCast(a, 0, "Carl", out);              // **다른 사람**을 겨눈 새 투표
+        srv.DebugVoteCast(Sid(srv, a), 0, "Carl", out);              // **다른 사람**을 겨눈 새 투표
         Check(srv.DebugVoteCount() == 2, "새 투표가 안 섰다");
         std::vector<uint8_t> m;
         Check(!voteMsg(out, a, 6, m), "목록이 이미 찼는데 `ee 06` 이 또 갔다");
@@ -19355,41 +19361,41 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         const std::string d = "10.8.5.4:8504", e = "10.8.5.5:8505", f = "10.8.5.6:8506";
-        srv.DebugEnterGame(d, 731); srv.DebugSetName(d, "Dan");
-        srv.DebugEnterGame(e, 732); srv.DebugSetName(e, "Eve");
-        srv.DebugEnterGame(f, 733); srv.DebugSetName(f, "Fay");
+        srv.DebugEnterGame(d, 731); srv.DebugSetName(Sid(srv, d), "Dan");
+        srv.DebugEnterGame(e, 732); srv.DebugSetName(Sid(srv, e), "Eve");
+        srv.DebugEnterGame(f, 733); srv.DebugSetName(Sid(srv, f), "Fay");
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
-        srv.DebugVoteCast(c, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, c), 0, "Bob", out);
         srv.DebugVoteUpdate(out);
         Check(srv.DebugVoteCount() == 1, "두 표인데 통과했다(필요 수는 4 다)");
-        srv.DebugVoteCast(d, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, d), 0, "Bob", out);
         srv.DebugVoteUpdate(out);
         Check(srv.DebugVoteCount() == 1, "세 표인데 통과했다");
-        srv.DebugVoteCast(e, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, e), 0, "Bob", out);
         srv.DebugVoteUpdate(out);
         Check(srv.DebugVoteCount() == 0, "네 표인데 통과가 안 됐다");
-        Check(!srv.IsInGame(b), "통과했는데 안 내보냈다");
+        Check(!srv.IsInGame(Sid(srv, b)), "통과했는데 안 내보냈다");
     }
 
     // ⑪ **둘뿐이면 한 표로는 안 된다** — 규칙 ②에 「2표 이상」이 붙어 있다
     {
         nox::Server srv;
-        srv.DebugEnterGame(a, 728); srv.DebugSetName(a, "Alice");
-        srv.DebugEnterGame(b, 729); srv.DebugSetName(b, "Bob");
+        srv.DebugEnterGame(a, 728); srv.DebugSetName(Sid(srv, a), "Alice");
+        srv.DebugEnterGame(b, 729); srv.DebugSetName(Sid(srv, b), "Bob");
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
         srv.DebugVoteUpdate(out);
         Check(srv.DebugVoteCount() == 1, "둘뿐인데 한 표로 통과했다");
-        Check(srv.IsInGame(b), "한 표로 내보냈다");
+        Check(srv.IsInGame(Sid(srv, b)), "한 표로 내보냈다");
     }
 
     // ⑫ **갈래 2·3 은 매 틱 셈에서 건드리지 않는다**(퀘스트 전용이라 안 옮겼다)
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 2, std::string(), out);
-        srv.DebugVoteCast(c, 2, std::string(), out);
+        srv.DebugVoteCast(Sid(srv, a), 2, std::string(), out);
+        srv.DebugVoteCast(Sid(srv, c), 2, std::string(), out);
         srv.DebugVoteUpdate(out);
         Check(srv.DebugVoteCount() == 1, "갈래 2 투표가 강퇴 셈에 걸려 사라졌다");
     }
@@ -19398,7 +19404,7 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 0, "Bob", out);
+        srv.DebugVoteCast(Sid(srv, a), 0, "Bob", out);
         out.clear();
         srv.DebugRemoveVote(0, out);
         std::vector<uint8_t> m;
@@ -19409,7 +19415,7 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 1, "Bob", out);               // 갈래 1 로 한 표
+        srv.DebugVoteCast(Sid(srv, a), 1, "Bob", out);               // 갈래 1 로 한 표
         Check(srv.DebugVoteVoters(0) == 1, "갈래 1 표가 안 섰다(이 시험의 전제)");
         std::vector<uint8_t> p(nox::kWireHeaderSize + 52, 0);
         p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::VOTE);
@@ -19424,8 +19430,8 @@ void TestVote() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugVoteCast(a, 2, std::string(), out);
-        srv.DebugVoteCast(c, 2, std::string(), out);
+        srv.DebugVoteCast(Sid(srv, a), 2, std::string(), out);
+        srv.DebugVoteCast(Sid(srv, c), 2, std::string(), out);
         out.clear();
         // ⚠ 정답지는 **비트를 먼저 지우고** 지우므로, 마지막 표를 물린 사람은 `ee 07` 을 못 받는다.
         //   그래서 그 길 대신 **투표를 바로 지워** 알림만 재다(정답지에서는 갈래 2 가 통과할 때 그렇게 된다)
@@ -19463,74 +19469,74 @@ void TestModeScoring() {
     // ① **왕관을 가지면 왕이다**
     {
         nox::Server srv; mk(srv, 0x10u);
-        Check(!srv.DebugIsCrown(a), "아무것도 안 가졌는데 왕이다");
-        srv.DebugGiveCrown(a);
-        Check(srv.DebugIsCrown(a), "왕관을 가졌는데 왕이 아니다");
+        Check(!srv.DebugIsCrown(Sid(srv, a)), "아무것도 안 가졌는데 왕이다");
+        srv.DebugGiveCrown(Sid(srv, a));
+        Check(srv.DebugIsCrown(Sid(srv, a)), "왕관을 가졌는데 왕이 아니다");
     }
 
     // ② **KOTR — 아무도 왕이 아니면 죽은 횟수만 오른다**
     {
         nox::Server srv; mk(srv, 0x10u);
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == 0, "왕이 없는데 점수가 올랐다");
-        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 0, "왕이 없는데 점수가 올랐다");
+        Check(srv.DeathsOf(Sid(srv, b)) == 1, "죽은 횟수가 안 올랐다");
     }
     // 죽인 이가 왕이면 1점
     {
         nox::Server srv; mk(srv, 0x10u);
-        srv.DebugGiveCrown(a);
+        srv.DebugGiveCrown(Sid(srv, a));
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == 1, "왕이 졸을 잡았는데 1점이 아니다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "왕이 졸을 잡았는데 1점이 아니다");
     }
     // 죽은 이가 왕이면 1점
     {
         nox::Server srv; mk(srv, 0x10u);
-        srv.DebugGiveCrown(b);
+        srv.DebugGiveCrown(Sid(srv, b));
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == 1, "졸이 왕을 잡았는데 1점이 아니다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "졸이 왕을 잡았는데 1점이 아니다");
     }
     // **둘 다 왕이면 3점**
     {
         nox::Server srv; mk(srv, 0x10u);
-        srv.DebugGiveCrown(a);
-        srv.DebugGiveCrown(b);
+        srv.DebugGiveCrown(Sid(srv, a));
+        srv.DebugGiveCrown(Sid(srv, b));
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == 3, "왕이 왕을 잡았는데 3점이 아니다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 3, "왕이 왕을 잡았는데 3점이 아니다");
     }
     // 편이 있으면 팀 점수도 같은 만큼
     {
         nox::Server srv; mk(srv, 0x10u);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
-        srv.DebugGiveCrown(a);
-        srv.DebugGiveCrown(b);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
+        srv.DebugGiveCrown(Sid(srv, a));
+        srv.DebugGiveCrown(Sid(srv, b));
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
         Check(srv.DebugTeamScore(1) == 3, "팀 점수가 3 이 아니다");
     }
 
     // ③ **KOTR — 자살·같은 편** — 죽인 이가 왕일 때만 −1
     {
         nox::Server srv; mk(srv, 0x10u);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == 0, "왕이 아닌데 팀킬로 점수가 깎였다");
-        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 0, "왕이 아닌데 팀킬로 점수가 깎였다");
+        Check(srv.DeathsOf(Sid(srv, b)) == 1, "죽은 횟수가 안 올랐다");
     }
     {
         nox::Server srv; mk(srv, 0x10u);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);
-        srv.DebugGiveCrown(a);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
+        srv.DebugGiveCrown(Sid(srv, a));
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == -1, "왕이 팀킬을 했는데 −1 이 아니다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == -1, "왕이 팀킬을 했는데 −1 이 아니다");
         Check(srv.DebugTeamScore(1) == -1, "왕의 팀킬인데 팀 점수가 −1 이 아니다");
     }
 
@@ -19538,57 +19544,57 @@ void TestModeScoring() {
     {
         nox::Server srv; mk(srv, 0x400u);
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(a, a, out);
-        Check(srv.KillsOf(a) == -1, "탈락전 자살인데 점수가 −1 이 아니다");
-        Check(srv.DeathsOf(a) == 1, "탈락전 자살인데 죽은 횟수가 안 올랐다");
+        srv.DebugDeathScoring(Sid(srv, a), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == -1, "탈락전 자살인데 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(Sid(srv, a)) == 1, "탈락전 자살인데 죽은 횟수가 안 올랐다");
     }
     // 남이 죽이면 +1 · 죽은 이 팀이 **오른다**(벌점)
     {
         nox::Server srv; mk(srv, 0x400u);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == 1, "탈락전인데 죽인 이 점수가 1 이 아니다");
-        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "탈락전인데 죽인 이 점수가 1 이 아니다");
+        Check(srv.DeathsOf(Sid(srv, b)) == 1, "죽은 횟수가 안 올랐다");
         Check(srv.DebugTeamScore(2) == 1, "죽은 이의 팀이 안 올랐다(탈락전은 벌점이다)");
         Check(srv.DebugTeamScore(1) == 0, "죽인 이의 팀이 움직였다");
     }
     // 같은 편이면 죽인 이 −1
     {
         nox::Server srv; mk(srv, 0x400u);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 1);
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == -1, "탈락전 팀킬인데 −1 이 아니다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == -1, "탈락전 팀킬인데 −1 이 아니다");
     }
 
     // ⑤ **아레나(256)는 7-c 셈 그대로** — 자살은 죽은 횟수가 **안** 오른다
     {
         nox::Server srv; mk(srv, 0x100u);
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(a, a, out);
-        Check(srv.KillsOf(a) == -1, "아레나 자살인데 점수가 −1 이 아니다");
-        Check(srv.DeathsOf(a) == 0, "아레나 자살인데 죽은 횟수가 올랐다");
+        srv.DebugDeathScoring(Sid(srv, a), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == -1, "아레나 자살인데 점수가 −1 이 아니다");
+        Check(srv.DeathsOf(Sid(srv, a)) == 0, "아레나 자살인데 죽은 횟수가 올랐다");
     }
 
     // ⑥ **셋 다 아니면 아무 셈도 안 한다**(깃발 판·퀘스트)
     {
         nox::Server srv; mk(srv, 0x20u);                  // CTF(32)
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == 0 && srv.DeathsOf(b) == 0, "모드가 아닌데 셈이 돌았다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 0 && srv.DeathsOf(Sid(srv, b)) == 0, "모드가 아닌데 셈이 돌았다");
     }
 
     // ⑦ **아레나가 왕 죽이기보다 앞선다** — 둘 다 켜면 아레나 셈이다
     {
         nox::Server srv; mk(srv, 0x100u | 0x10u);
-        srv.DebugGiveCrown(a);
+        srv.DebugGiveCrown(Sid(srv, a));
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(b, a, out);
-        Check(srv.KillsOf(a) == 1, "아레나 셈이 아니다");
-        Check(srv.DeathsOf(b) == 1, "죽은 횟수가 안 올랐다");
+        srv.DebugDeathScoring(Sid(srv, b), Sid(srv, a), out);
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "아레나 셈이 아니다");
+        Check(srv.DeathsOf(Sid(srv, b)) == 1, "죽은 횟수가 안 올랐다");
     }
     // ⑧ **아레나가 왕 죽이기보다 앞선다는 것을 가르는 자리** — **자살**이면 둘이 다르다.
     //   아레나는 점수 −1 · 죽은 횟수 **0** 이고,
@@ -19596,9 +19602,9 @@ void TestModeScoring() {
     {
         nox::Server srv; mk(srv, 0x100u | 0x10u);
         std::vector<nox::OutPacket> out;
-        srv.DebugDeathScoring(a, a, out);                 // 왕관 없이 자살
-        Check(srv.KillsOf(a) == -1, "아레나 셈이 아니다(자살 점수)");
-        Check(srv.DeathsOf(a) == 0, "아레나 셈이 아니다(자살은 죽은 횟수가 안 오른다)");
+        srv.DebugDeathScoring(Sid(srv, a), Sid(srv, a), out);                 // 왕관 없이 자살
+        Check(srv.KillsOf(Sid(srv, a)) == -1, "아레나 셈이 아니다(자살 점수)");
+        Check(srv.DeathsOf(Sid(srv, a)) == 0, "아레나 셈이 아니다(자살은 죽은 횟수가 안 오른다)");
     }
 
     std::printf("  8-f — 모드별 죽음 셈: 아레나·왕 죽이기(1·1·3)·탈락전 · 왕은 왕관 242 · 그 밖은 셈 없음\n");
@@ -19645,8 +19651,8 @@ void TestRoundTimeUp() {
     {
         nox::Server srv; mk(srv, 0x100u);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetScore(a, 3);
-        srv.DebugSetScore(b, 1);
+        srv.DebugSetScore(Sid(srv, a), 3);
+        srv.DebugSetScore(Sid(srv, b), 1);
         srv.DebugRoundTimeUp(out);
         Check(srv.RoundOver(), "시간이 다했는데 안 끝났다");
         std::vector<uint8_t> m;
@@ -19658,8 +19664,8 @@ void TestRoundTimeUp() {
     {
         nox::Server srv; mk(srv, 0x100u);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetScore(a, 2);
-        srv.DebugSetScore(b, 2);
+        srv.DebugSetScore(Sid(srv, a), 2);
+        srv.DebugSetScore(Sid(srv, b), 2);
         srv.DebugRoundTimeUp(out);
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_TEAM_WINNER), m), "무승부가 안 갔다");
@@ -19669,8 +19675,8 @@ void TestRoundTimeUp() {
     // 팀이 있으면 팀이 이긴다(사람은 팀 점수 이상이어야 이긴다)
     {
         nox::Server srv; mk(srv, 0x100u, true);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
         std::vector<nox::OutPacket> out;
         srv.DebugTeamChangeScore(1, 5, out);
         srv.DebugTeamChangeScore(2, 2, out);
@@ -19686,11 +19692,11 @@ void TestRoundTimeUp() {
     //   그래서 팀·사람이 둘 다 잡혔을 때 **사람이 먼저** 알려진다
     {
         nox::Server srv; mk(srv, 0x100u, true);
-        srv.DebugSetTeam(b, 2);                           // a 는 무소속
+        srv.DebugSetTeam(Sid(srv, b), 2);                           // a 는 무소속
         std::vector<nox::OutPacket> out;
         srv.DebugTeamChangeScore(1, 5, out);
         srv.DebugTeamChangeScore(2, 3, out);
-        srv.DebugSetScore(a, 5);                          // 최고 팀 점수와 **같다**
+        srv.DebugSetScore(Sid(srv, a), 5);                          // 최고 팀 점수와 **같다**
         out.clear();
         srv.DebugRoundTimeUp(out);
         std::vector<uint8_t> m;
@@ -19700,11 +19706,11 @@ void TestRoundTimeUp() {
     // ★ **팀에 든 사람은 사람 고리에서 빠진다**(`servObjectHasTeam_419130` 이 거른다)
     {
         nox::Server srv; mk(srv, 0x100u, true);
-        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
         std::vector<nox::OutPacket> out;
         srv.DebugTeamChangeScore(1, 2, out);
-        srv.DebugSetScore(a, 9);                          // 팀 점수보다 훨씬 높지만 셈 밖
-        srv.DebugSetScore(b, 0);
+        srv.DebugSetScore(Sid(srv, a), 9);                          // 팀 점수보다 훨씬 높지만 셈 밖
+        srv.DebugSetScore(Sid(srv, b), 0);
         out.clear();
         srv.DebugRoundTimeUp(out);
         std::vector<uint8_t> m;
@@ -19716,8 +19722,8 @@ void TestRoundTimeUp() {
         nox::Server srv; mk(srv, 0x100u);
         srv.DebugEnterGame("10.8.7.3:8703", 730, /*observer=*/true);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetScore("10.8.7.3:8703", 50);
-        srv.DebugSetScore(a, 3);
+        srv.DebugSetScore(Sid(srv, "10.8.7.3:8703"), 50);
+        srv.DebugSetScore(Sid(srv, a), 3);
         srv.DebugRoundTimeUp(out);
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER), m), "`0x58` 이 안 갔다");
@@ -19727,7 +19733,7 @@ void TestRoundTimeUp() {
     {
         nox::Server srv; mk(srv, 0x1000u);                // 4096 퀘스트
         std::vector<nox::OutPacket> out;
-        srv.DebugSetScore(a, 3);
+        srv.DebugSetScore(Sid(srv, a), 3);
         srv.DebugRoundTimeUp(out);
         Check(!srv.RoundOver(), "갈래가 없는데 판이 끝났다");
         Check(FlattenTo(out, a).empty(), "갈래가 없는데 뭔가 갔다");
@@ -19736,7 +19742,7 @@ void TestRoundTimeUp() {
     {
         nox::Server srv; mk(srv, 0x100u);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetScore(a, 3);
+        srv.DebugSetScore(Sid(srv, a), 3);
         srv.DebugRoundTimeUp(out);
         srv.DebugRoundTimeUp(out);
         size_t n = 0;
@@ -19749,8 +19755,8 @@ void TestRoundTimeUp() {
     {
         nox::Server srv; mk(srv, 0x400u);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetDeaths(a, 5);
-        srv.DebugSetDeaths(b, 1);
+        srv.DebugSetDeaths(Sid(srv, a), 5);
+        srv.DebugSetDeaths(Sid(srv, b), 1);
         srv.DebugRoundTimeUp(out);
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER), m), "`0x58` 이 안 갔다");
@@ -19764,8 +19770,8 @@ void TestRoundTimeUp() {
     {
         nox::Server srv; mk(srv, 0x400u, true);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetDeaths(a, 5);
-        srv.DebugSetDeaths(b, 1);
+        srv.DebugSetDeaths(Sid(srv, a), 5);
+        srv.DebugSetDeaths(Sid(srv, b), 1);
         srv.DebugRoundTimeUp(out);
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_TEAM_WINNER), m), "빈 팀 둘이면 무승부여야 한다");
@@ -19826,7 +19832,7 @@ void TestRoundTimeUp() {
         std::vector<nox::OutPacket> out;
         srv.DebugCheckVictory(out);
         Check(!srv.RoundOver(), "둘 다 살아 있는데 끝났다");
-        srv.DebugSetDeaths(b, 15);                        // 목숨 한도(15)에 닿아 탈락
+        srv.DebugSetDeaths(Sid(srv, b), 15);                        // 목숨 한도(15)에 닿아 탈락
         out.clear();
         srv.DebugCheckVictory(out);
         Check(srv.RoundOver(), "하나만 남았는데 안 끝났다");
@@ -19838,10 +19844,10 @@ void TestRoundTimeUp() {
     // 한 팀만 남으면 그 팀이 이긴다
     {
         nox::Server srv; mk(srv, 0x400u);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetDeaths(b, 15);
+        srv.DebugSetDeaths(Sid(srv, b), 15);
         srv.DebugCheckVictory(out);
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_TEAM_WINNER), m), "`0x59` 가 안 갔다");
@@ -19851,8 +19857,8 @@ void TestRoundTimeUp() {
     {
         nox::Server srv; mk(srv, 0x400u);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetDeaths(a, 15);
-        srv.DebugSetDeaths(b, 15);
+        srv.DebugSetDeaths(Sid(srv, a), 15);
+        srv.DebugSetDeaths(Sid(srv, b), 15);
         srv.DebugCheckVictory(out);
         std::vector<uint8_t> m;
         Check(find(out, static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER), m), "무승부가 안 갔다");
@@ -19861,8 +19867,8 @@ void TestRoundTimeUp() {
     // ★ **두 팀이 살아 있으면 판이 이어진다**
     {
         nox::Server srv; mk(srv, 0x400u);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
         std::vector<nox::OutPacket> out;
         srv.DebugCheckVictory(out);
         Check(!srv.RoundOver(), "두 팀이 살아 있는데 끝났다");
@@ -19889,7 +19895,7 @@ void TestRoundTimeUp() {
     // ★ **생존 판정은 매 프레임 틱에서 돈다**
     {
         nox::Server srv; mk(srv, 0x400u);
-        srv.DebugSetDeaths(b, 15);
+        srv.DebugSetDeaths(Sid(srv, b), 15);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 34;
         for (int t = 0; t < 4 && !srv.RoundOver(); ++t) { srv.Tick(ms, out); ms += 34; }
@@ -19899,7 +19905,7 @@ void TestRoundTimeUp() {
     // ★ **무소속을 먼저 찾아도 팀이 덮어쓴다** — 정답지가 팀 갈래에서 무소속을 안 보기 때문이다
     {
         nox::Server srv; mk(srv, 0x400u);
-        srv.DebugSetTeam(b, 2);                           // a 는 무소속 · b 는 팀 2
+        srv.DebugSetTeam(Sid(srv, b), 2);                           // a 는 무소속 · b 는 팀 2
         std::vector<nox::OutPacket> out;
         srv.DebugCheckVictory(out);
         std::vector<uint8_t> m;
@@ -19930,7 +19936,7 @@ void TestRoundTimeUp() {
     {
         nox::Server srv; mk(srv, 0x100u);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetDeaths(b, 15);
+        srv.DebugSetDeaths(Sid(srv, b), 15);
         srv.DebugCheckVictory(out);
         Check(!srv.RoundOver(), "아레나인데 생존 판정이 돌았다");
     }
@@ -19973,7 +19979,7 @@ void TestSecretWall() {
                            nox::Server::WallTileIn{ 46, 43, 1, 0, false } });
         srv.SetSecretWalls(sw);
         srv.DebugEnterGame(a, 901);
-        srv.DebugSetPos(a, 44 * 23, 43 * 23);              // 벽 바로 옆 — 시야 안
+        srv.DebugSetPos(Sid(srv, a), 44 * 23, 43 * 23);              // 벽 바로 옆 — 시야 안
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w);
     };
@@ -20120,33 +20126,33 @@ void TestSecretWall() {
         nox::Server srv;
         mk(srv, { sw1(44, 43, 0, 1, 0, 2) });
         std::vector<nox::OutPacket> out;
-        srv.DebugSecretWallSync(a, out);
+        srv.DebugSecretWallSync(Sid(srv, a), out);
         Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0 &&
               count(out, a, static_cast<uint8_t>(nox::Op::CLOSE_WALL), nullptr) == 0,
               "닫힌 채로 있는데 알림이 갔다");
         srv.WallOpen(44, 43);
         out.clear();
-        for (int t = 0; t < 22; ++t) { srv.DebugSecretWallUpdate(out); srv.DebugSecretWallSync(a, out); }
+        for (int t = 0; t < 22; ++t) { srv.DebugSecretWallUpdate(out); srv.DebugSecretWallSync(Sid(srv, a), out); }
         Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0,
               "여는 중(4)인데 벌써 열림 알림이 갔다");
         srv.DebugSecretWallUpdate(out);                    // 여기서 3 이 된다
         out.clear();
-        srv.DebugSecretWallSync(a, out);
+        srv.DebugSecretWallSync(Sid(srv, a), out);
         uint16_t id = 0xffff;
         Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), &id) == 1, "열림 알림이 한 번이 아니다");
         Check(id == 0, "번호가 0 이 아니다");
         out.clear();
-        srv.DebugSecretWallSync(a, out);
+        srv.DebugSecretWallSync(Sid(srv, a), out);
         Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0, "같은 알림이 또 갔다");
         // 닫는 중(2)은 **열린 것으로 친다** — 다 닫히고서야 닫힘 알림이 간다
         srv.WallClose(44, 43);
         out.clear();
-        for (int t = 0; t < 22; ++t) { srv.DebugSecretWallUpdate(out); srv.DebugSecretWallSync(a, out); }
+        for (int t = 0; t < 22; ++t) { srv.DebugSecretWallUpdate(out); srv.DebugSecretWallSync(Sid(srv, a), out); }
         Check(count(out, a, static_cast<uint8_t>(nox::Op::CLOSE_WALL), nullptr) == 0,
               "닫는 중(2)인데 벌써 닫힘 알림이 갔다");
         srv.DebugSecretWallUpdate(out);
         out.clear();
-        srv.DebugSecretWallSync(a, out);
+        srv.DebugSecretWallSync(Sid(srv, a), out);
         Check(count(out, a, static_cast<uint8_t>(nox::Op::CLOSE_WALL), &id) == 1, "닫힘 알림이 한 번이 아니다");
         Check(id == 0, "닫힘 번호가 0 이 아니다");
     }
@@ -20157,7 +20163,7 @@ void TestSecretWall() {
         srv.WallOpen(46, 43);
         std::vector<nox::OutPacket> out;
         for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
-        srv.DebugSecretWallSync(a, out);
+        srv.DebugSecretWallSync(Sid(srv, a), out);
         uint16_t id = 0xffff;
         Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), &id) == 1, "열림 알림이 한 번이 아니다");
         Check(id == 1, "둘째 벽 번호가 1 이 아니다");
@@ -20168,14 +20174,14 @@ void TestSecretWall() {
         nox::Server srv;
         mk(srv, { sw1(44, 43, 8, 3, 23, 2) });
         std::vector<nox::OutPacket> out;
-        srv.DebugSecretWallSync(a, out);
+        srv.DebugSecretWallSync(Sid(srv, a), out);
         Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0,
               "처음부터 열린 벽에 알림이 갔다");
         // 그 벽을 닫으면 그때는 간다
         srv.WallClose(44, 43);
         for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
         out.clear();
-        srv.DebugSecretWallSync(a, out);
+        srv.DebugSecretWallSync(Sid(srv, a), out);
         Check(count(out, a, static_cast<uint8_t>(nox::Op::CLOSE_WALL), nullptr) == 1, "닫힘 알림이 안 갔다");
     }
 
@@ -20184,12 +20190,12 @@ void TestSecretWall() {
         nox::Server srv;
         mk(srv, { sw1(44, 43, 0, 1, 0, 2) });
         srv.DebugEnterGame(b, 902);
-        srv.DebugSetPos(b, 44 * 23 + 3000, 43 * 23);
+        srv.DebugSetPos(Sid(srv, b), 44 * 23 + 3000, 43 * 23);
         srv.WallOpen(44, 43);
         std::vector<nox::OutPacket> out;
         for (int t = 0; t < 23; ++t) srv.DebugSecretWallUpdate(out);
-        srv.DebugSecretWallSync(a, out);
-        srv.DebugSecretWallSync(b, out);
+        srv.DebugSecretWallSync(Sid(srv, a), out);
+        srv.DebugSecretWallSync(Sid(srv, b), out);
         Check(count(out, a, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 1, "가까운 사람이 못 받았다");
         Check(count(out, b, static_cast<uint8_t>(nox::Op::OPEN_WALL), nullptr) == 0, "먼 사람이 받았다");
     }
@@ -20263,7 +20269,7 @@ void TestCounterCoverage() {
     far.x = 9000; far.y = 9000;
     srv.SetShootingTraps({ t, far });
     srv.DebugEnterGame(a, 916);
-    srv.DebugSetPos(a, 1200, 1000);
+    srv.DebugSetPos(Sid(srv, a), 1200, 1000);
     std::vector<nox::OutPacket> w; srv.Tick(0, w);
 
     std::vector<nox::OutPacket> out;
@@ -20287,7 +20293,7 @@ void TestCounterCoverage() {
 
     // ⑤ 크리처 — 없을 때 0, **길을 쥐여 주면 1**. 한쪽만 보면 굳은 0 과 구별이 안 된다
     Check(srv.petCount() == 0 && srv.petsWithPath() == 0, "크리처가 없는데 셈이 0 이 아니다");
-    srv.DebugSpawnPet(1354, 1100, 1000, a);                 // SmallSpider
+    srv.DebugSpawnPet(1354, 1100, 1000, Sid(srv, a));                 // SmallSpider
     Check(srv.petCount() == 1, "소환했는데 크리처 수가 1 이 아니다");
     Check(srv.petsWithPath() == 0, "길을 안 줬는데 길 든 것이 있다");
     srv.DebugSetPetPath(0, { { 1150.0f, 1000.0f }, { 1200.0f, 1000.0f } });
@@ -20304,7 +20310,7 @@ void TestCounterCoverage() {
         s2.SetProjType("MercArcherArrow", 528, 800, 0x4000u, 10);
         s2.SetShootingTraps({ t });
         s2.DebugEnterGame(a, 917);
-        s2.DebugSetPos(a, 1200, 1000);
+        s2.DebugSetPos(Sid(s2, a), 1200, 1000);
         std::vector<nox::OutPacket> w2; s2.Tick(0, w2);
         std::vector<nox::OutPacket> o2;
         s2.DebugShootingTrapUpdate(o2);
@@ -20444,12 +20450,12 @@ void TestObstacleIsNotAPet() {
     srv.SetProjType("MercArcherArrow", 528, 800, 0x4000u, 10);
     srv.DebugEnterGame(a, 918);
     // 사람은 덫의 **쏘는 선 위**에 둔다 — 안 그러면 덫이 겨누지 않아 한 발도 안 나간다
-    srv.DebugSetPos(a, 1200, 1200);
-    srv.DebugMoveTo(a, 1200, 1200);
+    srv.DebugSetPos(Sid(srv, a), 1200, 1200);
+    srv.DebugMoveTo(Sid(srv, a), 1200, 1200);
     std::vector<nox::OutPacket> w; srv.Tick(0, w);
 
     // 소환수 하나 — **자리 0**. 쏘는 선(대각) **밖**에 둔다(직접 맞으면 시험이 무의미해진다)
-    srv.DebugSpawnPet(1354, 1000, 3000, a);                  // SmallSpider
+    srv.DebugSpawnPet(1354, 1000, 3000, Sid(srv, a));                  // SmallSpider
     Check(srv.petCount() == 1, "소환수가 안 섰다(시험 전제)");
     const uint16_t hp0 = srv.DebugPetHealth(0);
     Check(hp0 > 0, "소환수 체력이 0 이다(시험 전제)");
@@ -20498,12 +20504,12 @@ void TestPetDamageStops() {
 
     nox::Server srv;
     srv.DebugEnterGame(a, 919);
-    srv.DebugSetPos(a, 1000, 1000);
+    srv.DebugSetPos(Sid(srv, a), 1000, 1000);
     std::vector<nox::OutPacket> out;
     srv.Tick(0, out);
 
     // 주인 없는 **맵 몬스터**를 하나 — `owner` 가 비면 맵 것이다
-    srv.DebugSpawnPet(1354, 1100, 1000, std::string());
+    srv.DebugSpawnPet(1354, 1100, 1000, Sid(srv, std::string()));
     Check(srv.petCount() == 1, "맵 몬스터가 안 섰다(시험 전제)");
     const uint16_t hp0 = srv.DebugPetHealth(0);
     Check(hp0 > 0, "몬스터 체력이 0 이다(시험 전제)");
@@ -20511,7 +20517,7 @@ void TestPetDamageStops() {
     // ① **칸 밖** — 없는 자리를 때리면 그 이름으로 세야 한다.
     //   ★ 09-16 에 잡은 결함이 바로 이 자리로 샜다(장애물 색인이 소환수 색인으로).
     //     그때는 **이름이 없어 조용히 사라졌다.**
-    srv.DebugHurt(std::string(), 99, 10, a, 3, out);
+    srv.DebugHurt(Sid(srv, std::string()), 99, 10, Sid(srv, a), 3, out);
     Check(count(srv, "칸밖(소환수)") == 1, "없는 자리를 때렸는데 「칸밖」으로 안 센다");
 
     // ② **편 아님** — **맵 몬스터끼리**는 적이 아니다(`OwnersEnemy` — `server/object.go:1737`).
@@ -20520,17 +20526,17 @@ void TestPetDamageStops() {
     //     그래서 이 검사는 **뿌리가 몬스터인 때림**(맵 몬스터의 공격)으로 바꾼다
     nox::Server::AttackSrc mon;
     mon.rootIsMonster = true;
-    srv.DebugHurt(std::string(), 0, 10, std::string(), 3, out, &mon);
+    srv.DebugHurt(Sid(srv, std::string()), 0, 10, Sid(srv, std::string()), 3, out, &mon);
     Check(count(srv, "편아님(소환수)") == 1, "맵 몬스터끼리 때렸는데 「편아님」으로 안 센다");
     Check(srv.DebugPetHealth(0) == hp0, "적이 아닌데 체력이 깎였다");
 
     // 09-20 — **덫 화살**(주인 없음 · 뿌리가 몬스터 아님)은 맵 몬스터를 **때린다**
     const uint16_t hpTrap = srv.DebugPetHealth(0);
-    srv.DebugHurt(std::string(), 0, 10, std::string(), 3, out);   // src 없음 = 덫 화살
+    srv.DebugHurt(Sid(srv, std::string()), 0, 10, Sid(srv, std::string()), 3, out);   // src 없음 = 덫 화살
     Check(srv.DebugPetHealth(0) < hpTrap, "덫 화살이 맵 몬스터를 못 때린다(⑮ 결함)");
 
     // ③ **깎임** — 사람이 때리면 들어간다. 여기까지 와야 셈이 닫힌다
-    srv.DebugHurt(std::string(), 0, 10, a, 3, out);
+    srv.DebugHurt(Sid(srv, std::string()), 0, 10, Sid(srv, a), 3, out);
     Check(count(srv, "깎임(소환수)") == 2, "사람이 때렸는데 「깎임」이 2(덫 화살 + 사람)가 아니다");
     Check(srv.DebugPetHealth(0) < hp0, "사람이 때렸는데 체력이 안 깎였다");
 
@@ -20544,8 +20550,8 @@ void TestPetDamageStops() {
     //   크리처 쪽만 닫힘 검사가 있었고 사람 쪽은 **실물로만** 봤다(피해 5 = 방패막기 1 + 깎임 4).
     //   시험에 없으면 되돌이가 안 막힌다.
     const unsigned long long before = srv.hurts();
-    srv.DebugHurt("없는주소", -1, 10, a, 3, out);            // 세션없음
-    srv.DebugHurt(a, -1, 10, std::string(), 3, out);         // 사람이 맞는다(주인 없는 것에게)
+    srv.DebugHurt(Sid(srv, "없는주소"), -1, 10, Sid(srv, a), 3, out);            // 세션없음
+    srv.DebugHurt(Sid(srv, a), -1, 10, Sid(srv, std::string()), 3, out);         // 사람이 맞는다(주인 없는 것에게)
     unsigned long long manSum = 0;
     for (const auto& kv : srv.damageStops()) {
         if (kv.first.find("(→") == 0) continue;
@@ -20584,7 +20590,7 @@ void TestReportKindsMatchSource() {
     const std::string a = "10.9.20.1:9201";
     nox::Server srv;
     srv.DebugEnterGame(a, 920);
-    srv.DebugSetPos(a, 1000, 1000);
+    srv.DebugSetPos(Sid(srv, a), 1000, 1000);
     std::vector<nox::OutPacket> w; srv.Tick(0, w);
     const unsigned long long h0 = srv.unitHealthSent();
 
@@ -20666,9 +20672,9 @@ void TestMonsterSounds() {
         for (int i = 0; i < 5; ++i) { std::vector<uint16_t> t(4096, 0); t[type] = kId[i]; srv.SetMonsterSoundIds(kField[i], t); }
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1010, 1000);
-        srv.DebugSpawnPet(type, 1000, 1000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1010, 1000);
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, a));
         srv.DebugSetAutoFight(false);
         LoadRealAttackAnims(srv);   // ★ 09-30
         std::vector<nox::OutPacket> o;
@@ -20686,7 +20692,7 @@ void TestMonsterSounds() {
     for (int rested = 0; rested < 2; ++rested) {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetEnemy(0, Sid(srv, b), -1);
         srv.DebugSetPetNextHit(0, rested ? 0 : 5000);
         srv.DebugAIPush(0, 16);
         srv.DebugAIStart(0, 16, out);
@@ -20702,9 +20708,9 @@ void TestMonsterSounds() {
         nox::Server srv; mk(srv, 1328);
         if (known) RegImpShot(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPetEnemy(0, b, -1);
+        srv.DebugSetPetEnemy(0, Sid(srv, b), -1);
         srv.DebugSetPetNextHit(0, 0);
-        srv.DebugAIPushDep(0, 17, b, -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
+        srv.DebugAIPushDep(0, 17, Sid(srv, b), -1, 0, 0.0f);   // ★ 09-29 B4 — 쏘기는 항목의 대상을 겨눈다(정답지 `532610` v4[3] — 지금 상대는 안 본다)
         // ★ 09-30 — 시작은 틱이 한 번만 부른다. ✖ 전에는 시작을 손으로 한 번 더 불렀다 — 두 번째 시작이 이제 쉬는 중 갈래(50·1)로 쏘기를 뺀다
         //   쏘기는 애니 칸(임프 4칸·쏘는 칸 1)에서 쏘므로 애니 끝까지 돌린다
         RunSwing(srv, 0, out, 17);
@@ -20719,7 +20725,7 @@ void TestMonsterSounds() {
     {
         nox::Server srv; mk(srv, 1358);
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(std::string(), 0, 9999, b, 0, out);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, b), 0, out);
         std::vector<nox::OutPacket> o2; srv.Tick(34, o2);
         char msg[200];
         // ★ 10-01 — 죽어도 **시체로 남는다**(`monsterCallDieFn_50A3D0` — 안 지움) · 전에는 「소환수 0」을 기대했다
@@ -20814,7 +20820,7 @@ void TestDefaultGear() {
         nox::Server srv;
         tmpl(srv);
         srv.DebugEnterGame(a, 728, false, cls);
-        const auto inv = srv.DebugInventory(a);
+        const auto inv = srv.DebugInventory(Sid(srv, a));
         const auto want = tailGear(728, cls);
         bool same = inv.size() == want.size() && !want.empty();
         for (size_t i = 0; same && i < inv.size(); ++i)
@@ -20826,13 +20832,13 @@ void TestDefaultGear() {
         Check(srv.gearGiven(true) == want.size() && srv.gearGiven(false) == 0, "① 실은 수 계수기가 다르다");
         // 다시 들어와도 겹쳐 싣지 않는다(시험 입장만 — 진짜 경로는 처음 접속 한 번)
         srv.DebugEnterGame(a, 728, false, cls);
-        Check(srv.CarriedCount(a) == want.size(), "① 다시 들어왔더니 기본 장비가 겹쳐 실렸다");
+        Check(srv.CarriedCount(Sid(srv, a)) == want.size(), "① 다시 들어왔더니 기본 장비가 겹쳐 실렸다");
     }
     // ② 틀이 없으면 안 싣는다(무게를 짐작으로 안 채움) — 못 실은 수만 센다
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
-        Check(srv.CarriedCount(a) == 0, "② 틀이 없는데 실었다");
+        Check(srv.CarriedCount(Sid(srv, a)) == 0, "② 틀이 없는데 실었다");
         Check(srv.gearGiven(false) == 4 && srv.gearGiven(true) == 0, "② 못 실은 수를 안 셌다");
     }
     // ③ 이제 기본 롱소드를 벗을 수 있다 — 전에는 가방에 없어 입기 처리가 번호를 못 찾고 아무것도 안 보냈다
@@ -20872,8 +20878,8 @@ void TestWeaponSlot() {
         GearTemplates(srv);
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
         srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1050, 1000);                       // a 가 보는 +x 쪽 · 대검 사거리(10 + 50) 안
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1050, 1000);                       // a 가 보는 +x 쪽 · 대검 사거리(10 + 50) 안
     };
     // 바닥에 무기 하나 놓고 줍고 든다(B3 부터 무기 정의가 있어야 들린다 — 워리어만 · 요구 힘 0)
     auto pickEquip = [&](nox::Server& srv, uint16_t nc, uint16_t type, uint32_t bit) {
@@ -20895,63 +20901,63 @@ void TestWeaponSlot() {
         const auto pkt = InputPacket(6);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
         ms += 33; srv.Tick(ms, out);
-        if (animSeen) *animSeen = srv.DebugAnimByteOf(a);
+        if (animSeen) *animSeen = srv.DebugAnimByteOf(Sid(srv, a));
         for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
     };
 
     // ① 기본 — 워리어는 롱소드가 무기 칸에 · 위저드는 빈 손
     {
         nox::Server srv; make(srv);
-        Check(srv.DebugWeaponNet(a) == kSword && srv.DebugWeaponEquip(a) == 0x200 && srv.DebugWeaponWire(a) == nox::kItemLongsword,
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == kSword && srv.DebugWeaponEquip(Sid(srv, a)) == 0x200 && srv.DebugWeaponWire(Sid(srv, a)) == nox::kItemLongsword,
               "① 워리어 무기 칸이 기본 롱소드가 아니다");
-        Check(srv.DebugWeaponNet(b) == 0 && srv.DebugWeaponEquip(b) == 0 && srv.DebugWeaponWire(b) == 0, "① 위저드가 무기를 들었다");
+        Check(srv.DebugWeaponNet(Sid(srv, b)) == 0 && srv.DebugWeaponEquip(Sid(srv, b)) == 0 && srv.DebugWeaponWire(Sid(srv, b)) == 0, "① 위저드가 무기를 들었다");
     }
     // ② 롱소드를 벗으면 맨손 · 다시 들면 롱소드
     {
         nox::Server srv; make(srv);
         code(srv, nox::Op::TRY_DEQUIP, kSword);
-        Check(srv.DebugWeaponEquip(a) == 0 && srv.DebugWeaponWire(a) == 0 && srv.DebugWeaponNet(a) == 0, "② 벗었는데 무기를 들고 있다");
+        Check(srv.DebugWeaponEquip(Sid(srv, a)) == 0 && srv.DebugWeaponWire(Sid(srv, a)) == 0 && srv.DebugWeaponNet(Sid(srv, a)) == 0, "② 벗었는데 무기를 들고 있다");
         code(srv, nox::Op::TRY_EQUIP, kSword);
-        Check(srv.DebugWeaponEquip(a) == 0x200 && srv.DebugWeaponNet(a) == kSword, "② 다시 들었는데 롱소드가 아니다");
+        Check(srv.DebugWeaponEquip(Sid(srv, a)) == 0x200 && srv.DebugWeaponNet(Sid(srv, a)) == kSword, "② 다시 들었는데 롱소드가 아니다");
     }
     // ③ 든 롱소드가 가방에서 빠지면(되돌림) 칸 번호가 남아도 맨손 — 칸은 읽을 때마다 가방을 뒤진다
     {
         nox::Server srv; make(srv);
         code(srv, nox::Op::INVENTORY_FAIL, kSword);
-        Check(!srv.Carries(a, kSword), "③ 되돌렸는데 가방에 남았다 — 이 시험이 무의미해진다");
-        Check(srv.DebugWeaponEquip(a) == 0 && srv.DebugWeaponWire(a) == 0, "③ 가방에 없는 롱소드를 들고 있다");
+        Check(!srv.Carries(Sid(srv, a), kSword), "③ 되돌렸는데 가방에 남았다 — 이 시험이 무의미해진다");
+        Check(srv.DebugWeaponEquip(Sid(srv, a)) == 0 && srv.DebugWeaponWire(Sid(srv, a)) == 0, "③ 가방에 없는 롱소드를 들고 있다");
     }
     // ④ 주운 대검(0x400)을 들면 비트·종류·공격 자세·피해가 대검 것
     {
         nox::Server srv; make(srv);
         srv.SetPlayerAnimFrames(37, 8, 0);
         pickEquip(srv, 500, 1170, 0x400);
-        Check(srv.DebugWeaponEquip(a) == 0x400 && srv.DebugWeaponWire(a) == 1170 && srv.DebugWeaponNet(a) == 500,
+        Check(srv.DebugWeaponEquip(Sid(srv, a)) == 0x400 && srv.DebugWeaponWire(Sid(srv, a)) == 1170 && srv.DebugWeaponNet(Sid(srv, a)) == 500,
               "④ 주운 대검을 들었는데 무기 칸이 대검이 아니다");
         uint32_t ms = 0; uint8_t anim = 0;
-        const uint16_t hp0 = srv.HealthOf(b);
+        const uint16_t hp0 = srv.HealthOf(Sid(srv, b));
         swing(srv, ms, &anim);
         Check(anim == 37, "④ 대검 공격 자세가 37(GREAT_SWORD_STRIKE) 이 아니다");
         const int dmg = nox::WeaponDamage(nox::kWeapons[5], nox::StrengthOnline(CharClass::Warrior));   // GreatSword
         const int want = static_cast<int>(static_cast<float>((1.0 - static_cast<double>(nox::ArmorValueFloat(CharClass::Wizard))) * dmg));
-        Check(srv.melees() == 1 && hp0 - srv.HealthOf(b) == want, "④ 대검 한 대 피해가 대검 식과 다르다");
+        Check(srv.melees() == 1 && hp0 - srv.HealthOf(Sid(srv, b)) == want, "④ 대검 한 대 피해가 대검 식과 다르다");
     }
     // ⑤ 수치 표에 없는 무기(ForceWand 0x40000 — 지팡이 갈래)로 휘둘러도 서버가 안 죽고 판정 없이 센다
     {
         nox::Server srv; make(srv);
         srv.SetPlayerAnimFrames(29, 8, 0);
         pickEquip(srv, 501, 1171, 0x40000);
-        Check(srv.DebugWeaponEquip(a) == 0x40000, "⑤ 지팡이를 들었는데 비트가 0x40000 이 아니다");
+        Check(srv.DebugWeaponEquip(Sid(srv, a)) == 0x40000, "⑤ 지팡이를 들었는데 비트가 0x40000 이 아니다");
         uint32_t ms = 0;
-        const uint16_t hp0 = srv.HealthOf(b);
+        const uint16_t hp0 = srv.HealthOf(Sid(srv, b));
         swing(srv, ms, nullptr);
-        Check(srv.weaponNoStats() == 1 && srv.melees() == 0 && srv.HealthOf(b) == hp0, "⑤ 표에 없는 무기인데 판정했거나 안 셌다");
+        Check(srv.weaponNoStats() == 1 && srv.melees() == 0 && srv.HealthOf(Sid(srv, b)) == hp0, "⑤ 표에 없는 무기인데 판정했거나 안 셌다");
     }
     // ⑥ 틀 없는 서버(기본 장비를 못 실음)는 옛 방식 — 직업 표의 롱소드
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
-        Check(srv.DebugWeaponEquip(a) == 0x200 && srv.DebugWeaponWire(a) == nox::kItemLongsword && srv.DebugWeaponNet(a) == 0,
+        Check(srv.DebugWeaponEquip(Sid(srv, a)) == 0x200 && srv.DebugWeaponWire(Sid(srv, a)) == nox::kItemLongsword && srv.DebugWeaponNet(Sid(srv, a)) == 0,
               "⑥ 틀 없는 서버에서 워리어가 직업 표 롱소드를 안 들었다");
     }
     std::printf("  09-27 B2 — 무기 칸: 기본 롱소드 · 벗으면 맨손 · 가방에서 빠지면 맨손 · 주운 대검 자세 37·피해 · 표 없는 지팡이는 판정 없이 셈 · 틀 없는 서버는 직업 표\n");
@@ -20972,8 +20978,8 @@ void TestEquipWeaponGates() {
         GearTemplates(srv);
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
         srv.DebugEnterGame(b, 733, bObserver, CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1000, 1000);
         // 바닥 무기 둘 — 500 대검(워리어만 · 힘 70) · 501 무거운 것(워리어만 · 힘 200) · 502 화살통(워리어만 · 비트 2)
         std::vector<nox::Server::WorldStatic> st;
         auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, uint8_t classes, uint16_t str) {
@@ -21026,7 +21032,7 @@ void TestEquipWeaponGates() {
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> o0; send(srv, b, nox::Op::TRY_GET, 500, o0);
-        Check(srv.Carries(b, 500), "① 위저드가 대검을 못 주웠다 — 이 시험이 무의미해진다");
+        Check(srv.Carries(Sid(srv, b), 500), "① 위저드가 대검을 못 주웠다 — 이 시험이 무의미해진다");
         const auto g0 = gates(srv);
         std::vector<nox::OutPacket> out; tryEquip(srv, b, 500, out);
         Check(onlyGate(g0, srv, EquipGate::ClassFail), "① 직업 관문 칸 하나만 오르지 않았다");
@@ -21037,7 +21043,7 @@ void TestEquipWeaponGates() {
                           srv.soundsQueued(), srv.soundsDropped(), srv.soundsSent());
             Check(heard925(out, b) == 1 && heard925(out, a) == 0, m);
         }
-        Check(srv.DebugWeaponNet(b) == 0 && srv.DebugWeaponEquip(b) == 0, "① 거절됐는데 무기를 들었다");
+        Check(srv.DebugWeaponNet(Sid(srv, b)) == 0 && srv.DebugWeaponEquip(Sid(srv, b)) == 0, "① 거절됐는데 무기를 들었다");
     }
     // ② 힘 — 워리어(힘 125)가 요구 힘 200 인 것을 들려 하면 거절 · 롱소드는 그대로
     {
@@ -21048,20 +21054,20 @@ void TestEquipWeaponGates() {
         Check(onlyGate(g0, srv, EquipGate::StrengthFail), "② 힘 관문 칸 하나만 오르지 않았다");
         Check(HasPriMsg(out, a, "weapon.c:WeaponEquipStrengthFail"), "② 힘 거절 글이 안 갔다");
         Check(heard925(out, a) == 1 && heard925(out, b) == 0, "② 거절 소리 925 가 본인에게만 한 번이 아니다");
-        Check(srv.DebugWeaponNet(a) == kSword, "② 거절됐는데 롱소드를 내려놓았다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == kSword, "② 거절됐는데 롱소드를 내려놓았다");
     }
     // ③ 함성 켜짐 값 — 글·소리 없이 거절(`:4923` 은 그냥 0)
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> o0; send(srv, a, nox::Op::TRY_GET, 500, o0);
         std::vector<nox::OutPacket> o1;
-        Check(srv.DebugAbilityDo(a, 2, o1), "③ 함성이 안 켜졌다 — 이 시험이 무의미해진다");
+        Check(srv.DebugAbilityDo(Sid(srv, a), 2, o1), "③ 함성이 안 켜졌다 — 이 시험이 무의미해진다");
         const auto g0 = gates(srv);
         std::vector<nox::OutPacket> out; tryEquip(srv, a, 500, out);
         Check(onlyGate(g0, srv, EquipGate::Ability), "③ 함성 관문 칸 하나만 오르지 않았다");
         Check(heard925(out, a) == 0 && !HasPriMsg(out, a, "weapon.c:WeaponEquipClassFail") &&
               !HasPriMsg(out, a, "weapon.c:WeaponEquipStrengthFail"), "③ 함성 거절인데 글이나 소리가 났다");
-        Check(srv.DebugWeaponNet(a) == kSword, "③ 함성 중인데 무기를 바꿨다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == kSword, "③ 함성 중인데 무기를 바꿨다");
     }
     // ④ 바꿔 들기 — 롱소드를 내려놓고(본인 0x61 · 남 0x54) 대검을 든다(본인 0x60 · 남 0x51) · 칸 = 대검
     {
@@ -21079,9 +21085,9 @@ void TestEquipWeaponGates() {
         // ★ 09-29 — 수식 없는 대검이라 50(`sub_4D82F0` — 정품 녹음의 롱소드도 50)
         Check(FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)) &&
               FindMsg(toB, static_cast<uint8_t>(nox::Op::REPORT_MUNDANE_WEAPON_EQUIP)), "④ 남에게 무기 겉모습(0x54·0x50)이 안 갔다");
-        Check(srv.DebugWeaponNet(a) == 500 && srv.DebugWeaponEquip(a) == 0x400, "④ 무기 칸이 대검이 아니다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 500 && srv.DebugWeaponEquip(Sid(srv, a)) == 0x400, "④ 무기 칸이 대검이 아니다");
         bool swordOff = false;
-        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == kSword) swordOff = !c.equipped;
+        for (const auto& c : srv.DebugInventory(Sid(srv, a))) if (c.netCode == kSword) swordOff = !c.equipped;
         Check(swordOff, "④ 롱소드가 「입음」 으로 남았다");
     }
     // ⑤ 이미 든 것 — 롱소드를 또 들라 하면 이미 듦 · 아무 알림 없음
@@ -21096,9 +21102,9 @@ void TestEquipWeaponGates() {
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> o0; send(srv, a, nox::Op::TRY_GET, 500, o0);
-        srv.DebugSetState(a, nox::kPlayerStateAttack);
+        srv.DebugSetState(Sid(srv, a), nox::kPlayerStateAttack);
         std::vector<nox::OutPacket> out; send(srv, a, nox::Op::TRY_EQUIP, 500, out);
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle && srv.DebugWeaponNet(a) == 500, "⑥ 공격 중에 들었는데 상태 13 이 아니거나 못 들었다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateIdle && srv.DebugWeaponNet(Sid(srv, a)) == 500, "⑥ 공격 중에 들었는데 상태 13 이 아니거나 못 들었다");
     }
     // ⑦ 화살통(비트 2) — 활·석궁을 안 들었고 가방에도 없으면 BowNotFound(글 + 925 본인만) · 롱소드 그대로
     //   (★ 09-29 — 전에는 「B5 전까지 거절(QuiverLater)」 · 화살통 이식으로 정답지 `:4954~4961` 관문이 됨)
@@ -21107,11 +21113,11 @@ void TestEquipWeaponGates() {
         std::vector<nox::OutPacket> o0; send(srv, a, nox::Op::TRY_GET, 502, o0);
         const auto g0 = gates(srv);
         std::vector<nox::OutPacket> out; tryEquip(srv, a, 502, out);
-        Check(onlyGate(g0, srv, EquipGate::BowNotFound) && srv.DebugWeaponNet(a) == kSword, "⑦ 활 없는 화살통 들기가 BowNotFound 로 안 갔다");
+        Check(onlyGate(g0, srv, EquipGate::BowNotFound) && srv.DebugWeaponNet(Sid(srv, a)) == kSword, "⑦ 활 없는 화살통 들기가 BowNotFound 로 안 갔다");
         Check(HasPriMsg(out, a, "weapon.c:BowNotFound") && heard925(out, a) == 1 && heard925(out, b) == 0, "⑦ BowNotFound 글·925 가 본인에게만 한 번이 아니다");
         bool qOn = false;
-        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == 502) qOn = c.equipped;
-        Check(!qOn && srv.DebugWeaponEquip(a) == 0x200, "⑦ 거절됐는데 화살통이 들렸다");
+        for (const auto& c : srv.DebugInventory(Sid(srv, a))) if (c.netCode == 502) qOn = c.equipped;
+        Check(!qOn && srv.DebugWeaponEquip(Sid(srv, a)) == 0x200, "⑦ 거절됐는데 화살통이 들렸다");
     }
     // ⑧ 관전 중이면 입기·벗기 요청을 안 받는다(`sdecode.c:167·181` +3680 & 3) — 입은 셔츠를 벗기려 해도 아무 일 없음
     //   (✖ 처음엔 입은 셔츠를 「또 입기」로 쟀다 — 막이가 없어도 「이미 그 상태」라 조용해 돌연변이를 못 잡았다)
@@ -21119,7 +21125,7 @@ void TestEquipWeaponGates() {
         nox::Server srv; make(srv, /*bObserver=*/true);
         std::vector<nox::OutPacket> out; send(srv, b, nox::Op::TRY_DEQUIP, 733 + 1, out);
         bool worn = false;
-        for (const auto& c : srv.DebugInventory(b)) if (c.netCode == 733 + 1) worn = c.equipped;
+        for (const auto& c : srv.DebugInventory(Sid(srv, b))) if (c.netCode == 733 + 1) worn = c.equipped;
         Check(worn && FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) == nullptr,
               "⑧ 관전 중인데 벗기 요청을 받았다");
     }
@@ -21148,7 +21154,7 @@ void TestDequipWeapon() {
         put(503, 1168, 0x8);     // 석궁(장비 비트 = 무기 SUBCLASS CROSSBOW 비트 3)
         SetWeights(st, 8);
         srv.SetWorldStatics(st);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
     auto send = [&](nox::Server& srv, nox::Op op, uint16_t nc, std::vector<nox::OutPacket>& out) {
         const std::vector<uint8_t> p = CodePacket(op, nc);
@@ -21174,14 +21180,14 @@ void TestDequipWeapon() {
         Check(onlyDq(g0, srv, DequipGate::Dequipped), "① 내려놓음 칸 하나만 오르지 않았다");
         Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) &&
               FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)), "① 벗음 알림(0x61·0x54)이 안 갔다");
-        Check(srv.DebugWeaponNet(a) == 0, "① 벗었는데 무기 칸이 남았다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 0, "① 벗었는데 무기 칸이 남았다");
     }
     // ② 공격 중(상태 1)에 롱소드를 벗으면 상태 13 으로(`:4764~4766`) — 석궁이 아니라 요청은 받는다
     {
         nox::Server srv; make(srv);
-        srv.DebugSetState(a, nox::kPlayerStateAttack);
+        srv.DebugSetState(Sid(srv, a), nox::kPlayerStateAttack);
         std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_DEQUIP, kSword, out);
-        Check(srv.DebugStateOf(a) == nox::kPlayerStateIdle && srv.DebugWeaponNet(a) == 0, "② 공격 중에 벗었는데 13 이 아니거나 못 벗었다");
+        Check(srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateIdle && srv.DebugWeaponNet(Sid(srv, a)) == 0, "② 공격 중에 벗었는데 13 이 아니거나 못 벗었다");
     }
     // ③ 안 든 무기(주웠지만 안 든 대검)를 벗으려 하면 0 — 든 무기만 내려놓는다(`:4767~4770`)
     {
@@ -21190,7 +21196,7 @@ void TestDequipWeapon() {
         const auto g0 = dq(srv);
         std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_DEQUIP, 500, out);
         Check(onlyDq(g0, srv, DequipGate::NotHeld), "③ 든것아님 칸 하나만 오르지 않았다");
-        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) == nullptr && srv.DebugWeaponNet(a) == kSword,
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)) == nullptr && srv.DebugWeaponNet(Sid(srv, a)) == kSword,
               "③ 안 든 무기인데 벗음 알림이 갔거나 롱소드를 놓았다");
     }
     // ④ 석궁을 들고 공격 중에 벗기 요청 → 요청을 버린다(내려놓기 함수까지 안 감) · ⑤ 가만히면 벗겨진다(대조)
@@ -21199,13 +21205,13 @@ void TestDequipWeapon() {
         std::vector<nox::OutPacket> o0;
         send(srv, nox::Op::TRY_GET, 503, o0);
         send(srv, nox::Op::TRY_EQUIP, 503, o0);
-        Check(srv.DebugWeaponNet(a) == 503, "④ 석궁을 못 들었다 — 이 시험이 무의미해진다");
-        if (attacking) srv.DebugSetState(a, nox::kPlayerStateAttack);
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 503, "④ 석궁을 못 들었다 — 이 시험이 무의미해진다");
+        if (attacking) srv.DebugSetState(Sid(srv, a), nox::kPlayerStateAttack);
         const auto g0 = dq(srv);
         std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_DEQUIP, 503, out);
-        if (attacking) Check(onlyDq(g0, srv, DequipGate::CrossbowAttacking) && srv.DebugWeaponNet(a) == 503 &&
-                             srv.DebugStateOf(a) == nox::kPlayerStateAttack, "④ 공격 중 석궁 벗기 요청을 안 버렸다");
-        else Check(onlyDq(g0, srv, DequipGate::Dequipped) && srv.DebugWeaponNet(a) == 0, "⑤ 가만히 있는데 석궁이 안 벗겨졌다");
+        if (attacking) Check(onlyDq(g0, srv, DequipGate::CrossbowAttacking) && srv.DebugWeaponNet(Sid(srv, a)) == 503 &&
+                             srv.DebugStateOf(Sid(srv, a)) == nox::kPlayerStateAttack, "④ 공격 중 석궁 벗기 요청을 안 버렸다");
+        else Check(onlyDq(g0, srv, DequipGate::Dequipped) && srv.DebugWeaponNet(Sid(srv, a)) == 0, "⑤ 가만히 있는데 석궁이 안 벗겨졌다");
     }
     std::printf("  09-27 B4 — 무기 내려놓기: 든 것만 · 공격 중이면 13 · 0x61·0x54 · 공격 중 석궁 벗기 요청은 버림(가만히면 벗겨짐)\n");
 }
@@ -21235,7 +21241,7 @@ void TestWeaponEffects() {
         put(506, 1173, 0x4000000, true, 0x4000000);    // 오블리비언 오브 꼴
         SetWeights(st, 8);
         srv.SetWorldStatics(st);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> o;
         for (uint16_t nc : { (uint16_t)500, (uint16_t)504, (uint16_t)505, (uint16_t)506 }) {
             const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_GET, nc);
@@ -21247,20 +21253,20 @@ void TestWeaponEffects() {
         srv.OnPacket(a, p.data(), p.size(), out);
     };
     auto shieldOn = [&](nox::Server& srv) {
-        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == kShield) return c.equipped;
+        for (const auto& c : srv.DebugInventory(Sid(srv, a))) if (c.netCode == kShield) return c.equipped;
         return false;
     };
 
     // ① 대검(두 손)을 들면 방패를 벗는다 — 본인 0x61(방패) · 남에게 0x53 · 갑옷 비트에서 방패가 빠짐(방패 막기도 꺼짐)
     {
         nox::Server srv; make(srv);
-        Check(shieldOn(srv) && (srv.DebugArmorEquip(a) & 0x3000000), "① 처음부터 방패를 안 들었다 — 이 시험이 무의미해진다");
+        Check(shieldOn(srv) && (srv.DebugArmorEquip(Sid(srv, a)) & 0x3000000), "① 처음부터 방패를 안 들었다 — 이 시험이 무의미해진다");
         std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_EQUIP, 500, out);
         const auto toA = FlattenTo(out, a);
         bool shieldMsg = false;
         for (const auto& m : toA)
             if (m.size() >= 3 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_DEQUIP) && (m[1] | (m[2] << 8)) == kShield) shieldMsg = true;
-        Check(!shieldOn(srv) && shieldMsg && !(srv.DebugArmorEquip(a) & 0x3000000), "① 대검을 들었는데 방패가 안 벗겨졌다");
+        Check(!shieldOn(srv) && shieldMsg && !(srv.DebugArmorEquip(Sid(srv, a)) & 0x3000000), "① 대검을 들었는데 방패가 안 벗겨졌다");
         Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_ARMOR_DEQUIP)) != nullptr, "① 남에게 방패 벗음(0x53)이 안 갔다");
         Check(srv.twoHandShieldOff() == 1, "① 두손무기가벗긴방패 계수기가 1 이 아니다");
     }
@@ -21268,7 +21274,7 @@ void TestWeaponEffects() {
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_EQUIP, 504, out);
-        Check(srv.DebugWeaponNet(a) == 504 && shieldOn(srv) && srv.twoHandShieldOff() == 0, "② 한 손 칼인데 방패를 벗겼거나 못 들었다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 504 && shieldOn(srv) && srv.twoHandShieldOff() == 0, "② 한 손 칼인데 방패를 벗겼거나 못 들었다");
     }
     // ⑦ ★ 09-28 사람 판 — 대검(두 손)을 든 채 방패를 다시 입으면 **대검을 내려놓는다**(`53E650` 끝 → `sub_53E600` `GAME4_3.c:7484~7505`)
     //   본인 0x61(대검) · 남에게 0x54 · 방패는 입힘 · ⑧ 칼(한 손)이면 방패를 입어도 칼은 그대로(대조)
@@ -21278,18 +21284,18 @@ void TestWeaponEffects() {
         std::vector<nox::OutPacket> o0;
         send(srv, nox::Op::TRY_EQUIP, wnc, o0);
         if (shieldOn(srv)) send(srv, nox::Op::TRY_DEQUIP, kShield, o0);   // 칼은 방패를 안 벗기므로 손으로 벗긴다
-        Check(srv.DebugWeaponNet(a) == wnc && !shieldOn(srv), "⑦⑧ 무기를 들고 방패를 벗은 자리를 못 만들었다 — 이 시험이 무의미해진다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == wnc && !shieldOn(srv), "⑦⑧ 무기를 들고 방패를 벗은 자리를 못 만들었다 — 이 시험이 무의미해진다");
         std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_EQUIP, kShield, out);
         Check(shieldOn(srv), "⑦⑧ 방패가 안 입혀졌다");
         if (twoHand) {
             bool dqMsg = false;
             for (const auto& m : FlattenTo(out, a))
                 if (m.size() >= 3 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_DEQUIP) && (m[1] | (m[2] << 8)) == 500) dqMsg = true;
-            Check(srv.DebugWeaponNet(a) == 0 && dqMsg, "⑦ 방패를 입었는데 대검을 안 내려놓았다");
+            Check(srv.DebugWeaponNet(Sid(srv, a)) == 0 && dqMsg, "⑦ 방패를 입었는데 대검을 안 내려놓았다");
             Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)) != nullptr, "⑦ 남에게 무기 내려놓음(0x54)이 안 갔다");
             Check(srv.shieldDropsTwoHand() == 1, "⑦ 방패가내려놓게한두손무기 계수기가 1 이 아니다");
         } else {
-            Check(srv.DebugWeaponNet(a) == 504 && srv.shieldDropsTwoHand() == 0, "⑧ 한 손 칼인데 방패를 입자 칼을 내려놓았다");
+            Check(srv.DebugWeaponNet(Sid(srv, a)) == 504 && srv.shieldDropsTwoHand() == 0, "⑧ 한 손 칼인데 방패를 입자 칼을 내려놓았다");
         }
     }
     // ③ 마법 지팡이를 들면 본인에게 충전 알림 `64 <번호> <지금> <최대>`
@@ -21310,11 +21316,11 @@ void TestWeaponEffects() {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> out;
         send(srv, nox::Op::TRY_EQUIP, k.nc, out);
-        srv.DebugDurNew(a, 43, 0, -1, -1, false, nox::Target{}, out);
-        srv.DebugDurNew(a, 59, 0, -1, -1, false, nox::Target{}, out);
-        Check(srv.DebugDurActive(43, a) && srv.DebugDurActive(59, a), "④~⑥ 지속 주문을 못 걸었다 — 이 시험이 무의미해진다");
+        srv.DebugDurNew(Sid(srv, a), 43, 0, -1, -1, false, nox::Target{}, out);
+        srv.DebugDurNew(Sid(srv, a), 59, 0, -1, -1, false, nox::Target{}, out);
+        Check(srv.DebugDurActive(43, Sid(srv, a)) && srv.DebugDurActive(59, Sid(srv, a)), "④~⑥ 지속 주문을 못 걸었다 — 이 시험이 무의미해진다");
         send(srv, nox::Op::TRY_DEQUIP, k.nc, out);
-        Check(srv.DebugWeaponNet(a) == 0 && srv.DebugDurActive(43, a) == !k.cut43 && srv.DebugDurActive(59, a) == !k.cut59 &&
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 0 && srv.DebugDurActive(43, Sid(srv, a)) == !k.cut43 && srv.DebugDurActive(59, Sid(srv, a)) == !k.cut59 &&
               srv.wandSpellCut() == static_cast<unsigned long long>((k.cut43 ? 1 : 0) + (k.cut59 ? 1 : 0)), k.msg);
     }
     std::printf("  09-27 B5 — 두 손 무기는 방패를 벗김(갑옷 비트도) · 한 손은 그대로 · 지팡이 들면 충전 알림(본인만) · 번개 지팡이 43 · 오브 59 끊기"
@@ -21332,8 +21338,8 @@ void TestDrop() {
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
         srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
         // ⚠ DebugMoveTo 는 x·y 만 바꾼다 — 버리기는 정답지대로 실수 자리(+56 = posX·posY)에서 재므로 둘 다 맞춘다(B3 기록의 925 소리와 같은 사정)
-        srv.DebugSetPos(a, 1000, 1000);
-        srv.DebugSetPos(b, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
     };
     auto drop = [&](nox::Server& srv, const std::string& who, uint16_t nc, int x, int y, std::vector<nox::OutPacket>& out) {
         std::vector<uint8_t> p(nox::kWireHeaderSize + 7, 0);
@@ -21344,11 +21350,11 @@ void TestDrop() {
         srv.OnPacket(who, p.data(), p.size(), out);
     };
     auto codeOf = [&](nox::Server& srv, const std::string& who, uint32_t bit, bool weapon) -> uint16_t {
-        for (const auto& c : srv.DebugInventory(who)) if (c.equipBit == bit && c.isWeapon == weapon) return c.netCode;
+        for (const auto& c : srv.DebugInventory(Sid(srv, who))) if (c.equipBit == bit && c.isWeapon == weapon) return c.netCode;
         return 0;
     };
     auto has = [&](nox::Server& srv, const std::string& who, uint16_t nc) {
-        for (const auto& c : srv.DebugInventory(who)) if (c.netCode == nc) return true;
+        for (const auto& c : srv.DebugInventory(Sid(srv, who))) if (c.netCode == nc) return true;
         return false;
     };
 
@@ -21370,10 +21376,10 @@ void TestDrop() {
         Check(srv.dropGate(DropGate::Dropped) == 1, "① 버림 계수기가 1 이 아니다");
         // ①' ★ 09-28 사람 판 2차 — 「버리면 가방에선 빠지는데 바닥에 안 생긴다」. 시야 반경이 꺼진 판(기본)에서도
         //   다음 틱 갱신에 **둘 다에게** 소개돼야 한다(전에는 접속 스냅샷에서만 바닥 물건을 소개했다)
-        Check(!srv.DebugStaticIntroduced(b, robe), "①' 전제 — 틱 전인데 벌써 소개됐다고 적혀 있다");
+        Check(!srv.DebugStaticIntroduced(Sid(srv, b), robe), "①' 전제 — 틱 전인데 벌써 소개됐다고 적혀 있다");
         std::vector<nox::OutPacket> t1; uint32_t ms = srv.DebugNowMs();
         for (int i = 0; i < 3; ++i) { ms += 34; srv.Tick(ms, t1); }
-        Check(srv.DebugStaticIntroduced(b, robe) && srv.DebugStaticIntroduced(a, robe), "①' 버린 로브가 틱 갱신으로 소개되지 않았다 — 바닥에 안 보인다");
+        Check(srv.DebugStaticIntroduced(Sid(srv, b), robe) && srv.DebugStaticIntroduced(Sid(srv, a), robe), "①' 버린 로브가 틱 갱신으로 소개되지 않았다 — 바닥에 안 보인다");
     }
     // ② 멀리 찍으면 75 안으로 당긴다(`:6625~6628`)
     {
@@ -21386,10 +21392,10 @@ void TestDrop() {
     // ③ 든 롱소드를 버린다 — 남에게 0x54 · 맨손 · ④ 가방에 없는 번호는 아무 일도 없음
     {
         nox::Server srv; make(srv);
-        const uint16_t sword = srv.DebugWeaponNet(a);
+        const uint16_t sword = srv.DebugWeaponNet(Sid(srv, a));
         Check(sword != 0, "③ 워리어가 처음부터 무기를 안 들었다 — 이 시험이 무의미해진다");
         std::vector<nox::OutPacket> out; drop(srv, a, sword, 1020, 1000, out);
-        Check(srv.DebugWeaponNet(a) == 0 && !has(srv, a, sword), "③ 든 무기를 버렸는데 손에 남았거나 가방에 있다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 0 && !has(srv, a, sword), "③ 든 무기를 버렸는데 손에 남았거나 가방에 있다");
         Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)) != nullptr, "③ 남에게 무기 내려놓음(0x54)이 안 갔다");
         std::vector<nox::OutPacket> o2; drop(srv, a, 9999, 1020, 1000, o2);
         Check(srv.dropGate(DropGate::NotInBag) == 1 && srv.dropGate(DropGate::Dropped) == 1, "④ 가방에 없는 번호인데 가방에없음 칸만 오르지 않았다");
@@ -21408,9 +21414,9 @@ void TestDropDecay() {
         GearTemplates(srv);
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
         srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
-        srv.DebugSetPos(a, 1000, 1000);
-        srv.DebugSetPos(b, 1200, 1000);
-        srv.DebugMoveTo(b, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1200, 1000);
         nox::Server::WorldStatic w;                           // 맵에서 온 갑옷 — thing.bin 에 RESPAWN · DROP = ArmorDrop
         w.netCode = 610; w.type = 1180; w.x = 1210; w.y = 1000; w.modifiable = true; w.weight = 5;
         w.decayExempt = nox::DecayExempt::Respawn;
@@ -21434,11 +21440,11 @@ void TestDropDecay() {
         srv.OnPacket(b, p.data(), p.size(), out);
     };
     auto robeOf = [&](nox::Server& srv) -> uint16_t {
-        for (const auto& c : srv.DebugInventory(b)) if (c.equipBit == 0x4000) return c.netCode;
+        for (const auto& c : srv.DebugInventory(Sid(srv, b))) if (c.equipBit == 0x4000) return c.netCode;
         return 0;
     };
     auto inBag = [&](nox::Server& srv, uint16_t nc) {
-        for (const auto& c : srv.DebugInventory(b)) if (c.netCode == nc) return true;
+        for (const auto& c : srv.DebugInventory(Sid(srv, b))) if (c.netCode == nc) return true;
         return false;
     };
     // ★ 사라질 때 정품은 `33 OBJECT_IN_SHADOWS` 를 알던 사람에게(녹음 `orig_arena_1851`) — `31` 이 아니다
@@ -21556,14 +21562,14 @@ void TestRestartPlayers() {
     srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
     srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
     srv.DebugEnterGame(c, 740, true, CharClass::Wizard);       // 관전
-    srv.DebugSetScore(a, 5);
-    srv.DebugSetDeaths(a, 3);
-    srv.DebugSetMark(a, 1);
-    srv.DebugSetHealth(a, 20);
-    const uint16_t aw0 = srv.DebugWeaponNet(a);
-    const size_t bag0 = srv.DebugInventory(a).size();
+    srv.DebugSetScore(Sid(srv, a), 5);
+    srv.DebugSetDeaths(Sid(srv, a), 3);
+    srv.DebugSetMark(Sid(srv, a), 1);
+    srv.DebugSetHealth(Sid(srv, a), 20);
+    const uint16_t aw0 = srv.DebugWeaponNet(Sid(srv, a));
+    const size_t bag0 = srv.DebugInventory(Sid(srv, a)).size();
     nox::Session::Carried extra; extra.netCode = 3999; extra.type = 2001;   // 판 중에 얻은 물건
-    srv.DebugGiveCarried(a, extra);
+    srv.DebugGiveCarried(Sid(srv, a), extra);
     const unsigned long long resp0 = srv.restartRespawned();
     std::vector<nox::OutPacket> out;
     srv.RestartPlayers(out);
@@ -21575,18 +21581,18 @@ void TestRestartPlayers() {
     };
     const uint8_t kE9 = static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN), k4e = static_cast<uint8_t>(nox::Op::REPORT_LESSON);
     char msg[260];
-    std::snprintf(msg, sizeof(msg), "① 점수 %d · 표식 %d · 체력 %u/%u", srv.DebugScore(a), (int)srv.DebugMarkSet(a, 1), srv.HealthOf(a), srv.MaxHealthOf(a));
-    Check(srv.DebugScore(a) == 0 && !srv.DebugMarkSet(a, 1) && srv.HealthOf(a) == srv.MaxHealthOf(a), msg);
+    std::snprintf(msg, sizeof(msg), "① 점수 %d · 표식 %d · 체력 %u/%u", srv.DebugScore(Sid(srv, a)), (int)srv.DebugMarkSet(Sid(srv, a), 1), srv.HealthOf(Sid(srv, a)), srv.MaxHealthOf(Sid(srv, a)));
+    Check(srv.DebugScore(Sid(srv, a)) == 0 && !srv.DebugMarkSet(Sid(srv, a), 1) && srv.HealthOf(Sid(srv, a)) == srv.MaxHealthOf(Sid(srv, a)), msg);
     int e9s = 0;
     for (const std::string* to : { &a, &b, &c })
         for (uint16_t nc : { uint16_t(728), uint16_t(733), uint16_t(740) }) e9s += count(*to, kE9, nc);
     std::snprintf(msg, sizeof(msg), "② 곧바로 나간 e9 %d(0 — 스냅샷 꼬리 몫)", e9s);
     Check(e9s == 0, msg);
     bool extraGone = true;
-    for (const auto& it : srv.DebugInventory(a)) if (it.netCode == 3999) extraGone = false;
-    std::snprintf(msg, sizeof(msg), "③ a 롱소드 번호 %u → %u(그대로) · 가방 %zu(접속 때 %zu) · 판 중 얻은 것 빠짐 %d", aw0, srv.DebugWeaponNet(a),
-                  srv.DebugInventory(a).size(), bag0, (int)extraGone);
-    Check(aw0 != 0 && srv.DebugWeaponNet(a) == aw0 && srv.DebugInventory(a).size() == bag0 && extraGone, msg);
+    for (const auto& it : srv.DebugInventory(Sid(srv, a))) if (it.netCode == 3999) extraGone = false;
+    std::snprintf(msg, sizeof(msg), "③ a 롱소드 번호 %u → %u(그대로) · 가방 %zu(접속 때 %zu) · 판 중 얻은 것 빠짐 %d", aw0, srv.DebugWeaponNet(Sid(srv, a)),
+                  srv.DebugInventory(Sid(srv, a)).size(), bag0, (int)extraGone);
+    Check(aw0 != 0 && srv.DebugWeaponNet(Sid(srv, a)) == aw0 && srv.DebugInventory(Sid(srv, a)).size() == bag0 && extraGone, msg);
     int lessons = 0;
     for (const std::string* to : { &a, &b, &c })
         for (uint16_t nc : { uint16_t(728), uint16_t(733), uint16_t(740) }) lessons += count(*to, k4e, nc);
@@ -21604,16 +21610,16 @@ void TestDeathDropRespawnGear() {
         GearTemplates(srv);
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
         srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
-        srv.DebugSetPos(a, 1000, 1000);
-        srv.DebugSetPos(b, 1200, 1000);
-        srv.DebugMoveTo(b, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
+        srv.DebugSetPos(Sid(srv, b), 1200, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1200, 1000);
         nox::Server::WorldStatic w;                           // 맵 갑옷(RESPAWN · ArmorDrop)
         w.netCode = 620; w.type = 1180; w.x = 1210; w.y = 1000; w.modifiable = true; w.weight = 5;
         w.decayExempt = nox::DecayExempt::Respawn; w.dropFn = nox::DropFn::ArmorWeapon;
         srv.SetWorldStatics({ w });
     };
     auto inBag = [&](nox::Server& srv, const std::string& who, uint16_t nc) {
-        for (const auto& c : srv.DebugInventory(who)) if (c.netCode == nc) return true;
+        for (const auto& c : srv.DebugInventory(Sid(srv, who))) if (c.netCode == nc) return true;
         return false;
     };
     auto ops = [&](const std::vector<nox::OutPacket>& out, const std::string& who) {
@@ -21629,12 +21635,12 @@ void TestDeathDropRespawnGear() {
         srv.OnPacket(b, g.data(), g.size(), o0);
         Check(inBag(srv, b, 620), "① 맵 갑옷을 못 주웠다 — 이 시험이 무의미해진다");
         uint16_t robe = 0;
-        for (const auto& c : srv.DebugInventory(b)) if (c.equipBit == 0x4000) robe = c.netCode;
-        Check(robe != 0 && srv.DebugInventory(b).size() == 5, "① 전제 — 위저드 가방이 평상복 셋 + 로브 + 주운 갑옷이 아니다");
+        for (const auto& c : srv.DebugInventory(Sid(srv, b))) if (c.equipBit == 0x4000) robe = c.netCode;
+        Check(robe != 0 && srv.DebugInventory(Sid(srv, b)).size() == 5, "① 전제 — 위저드 가방이 평상복 셋 + 로브 + 주운 갑옷이 아니다");
         std::vector<nox::OutPacket> out;
-        srv.DebugHurt(b, -1, 9999, std::string(), 16, out);
-        Check(!srv.IsAlive(b), "① 안 죽었다(이 시험의 전제)");
-        const auto bag = srv.DebugInventory(b);
+        srv.DebugHurt(Sid(srv, b), -1, 9999, Sid(srv, std::string()), 16, out);
+        Check(!srv.IsAlive(Sid(srv, b)), "① 안 죽었다(이 시험의 전제)");
+        const auto bag = srv.DebugInventory(Sid(srv, b));
         bool onlyStreet = bag.size() == 3;
         for (const auto& c : bag) if (!(c.equipped && (c.equipBit & 0xC0D))) onlyStreet = false;
         Check(onlyStreet, "① 죽은 뒤 가방에 입은 평상복 셋만 남아야 한다");
@@ -21663,20 +21669,20 @@ void TestDeathDropRespawnGear() {
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugWeaponNet(a) != 0, "② 전제 — 워리어가 무기를 안 들었다");
-        srv.DebugHurt(a, -1, 9999, std::string(), 16, out);
-        Check(srv.DebugWeaponNet(a) == 0 && srv.DebugInventory(a).size() == 2, "② 죽은 워리어가 맨손에 바지·신발만 남지 않았다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) != 0, "② 전제 — 워리어가 무기를 안 들었다");
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, std::string()), 16, out);
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 0 && srv.DebugInventory(Sid(srv, a)).size() == 2, "② 죽은 워리어가 맨손에 바지·신발만 남지 않았다");
     }
     // ③ 부활 — 위저드: 빠진 로브만 새 번호로(`4c` → `44` 325 → `60`) · 평상복은 그대로 · 모두에게 `e9 … ff 01`
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> o1;
-        srv.DebugHurt(b, -1, 9999, std::string(), 16, o1);
+        srv.DebugHurt(Sid(srv, b), -1, 9999, Sid(srv, std::string()), 16, o1);
         std::vector<uint16_t> before;
-        for (const auto& c : srv.DebugInventory(b)) before.push_back(c.netCode);
+        for (const auto& c : srv.DebugInventory(Sid(srv, b))) before.push_back(c.netCode);
         std::vector<nox::OutPacket> out;
-        srv.DebugRespawnOut(b, out);
-        const auto bag = srv.DebugInventory(b);
+        srv.DebugRespawnOut(Sid(srv, b), out);
+        const auto bag = srv.DebugInventory(Sid(srv, b));
         uint16_t newRobe = 0;
         for (const auto& c : bag) if (c.equipBit == 0x4000 && c.equipped) newRobe = c.netCode;
         Check(bag.size() == 4 && newRobe != 0 && std::find(before.begin(), before.end(), newRobe) == before.end(),
@@ -21701,16 +21707,16 @@ void TestDeathDropRespawnGear() {
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> o1;
-        srv.DebugHurt(a, -1, 9999, std::string(), 16, o1);
+        srv.DebugHurt(Sid(srv, a), -1, 9999, Sid(srv, std::string()), 16, o1);
         std::vector<nox::OutPacket> out;
-        srv.DebugRespawnOut(a, out);
+        srv.DebugRespawnOut(Sid(srv, a), out);
         bool shirt = false, sword = false, shield = false;
-        for (const auto& c : srv.DebugInventory(a)) {
+        for (const auto& c : srv.DebugInventory(Sid(srv, a))) {
             if (c.equipBit == 0x400) shirt = true;
-            if (c.isWeapon && c.equipped && srv.DebugWeaponNet(a) == c.netCode) sword = true;
+            if (c.isWeapon && c.equipped && srv.DebugWeaponNet(Sid(srv, a)) == c.netCode) sword = true;
             if (c.equipBit == 0x1000000 && c.equipped) shield = true;
         }
-        Check(sword && shield && !shirt && srv.DebugInventory(a).size() == 4, "④ 부활한 워리어가 바지·신발 + 새 롱소드(든다)·나무방패가 아니다(셔츠는 없어야)");
+        Check(sword && shield && !shirt && srv.DebugInventory(Sid(srv, a)).size() == 4, "④ 부활한 워리어가 바지·신발 + 새 롱소드(든다)·나무방패가 아니다(셔츠는 없어야)");
     }
     std::printf("  09-28 B4b — 죽을 때: 입은 평상복만 남기고 몸 둘레에(4d 최근 것부터 → e8 · 남에게 벗음 없음) · 부활: 로브·검·방패 새 번호(4c→44→60) · e9 ff 01\n");
 }
@@ -21723,7 +21729,7 @@ void TestMapReset() {
     const std::string a = "10.9.33.1:49601";
     {
         nox::Server s0;
-        s0.DebugSpawnPet(1328, 1300.0f, 1000.0f, std::string());
+        s0.DebugSpawnPet(1328, 1300.0f, 1000.0f, Sid(s0, std::string()));
         s0.ResetWorldFromMap();
         Check(s0.pets() == 0 && s0.mapResetStat(2) == 1 && s0.mapResetStat(1) == 0, "⓪ 안 담은 채 되돌림 — 크리처를 안 비웠거나 계수가 틀렸다");
     }
@@ -21734,8 +21740,8 @@ void TestMapReset() {
     srv.SetWallDefExtras({ e });
     srv.SetWallSpecials({ { 46, 44 } }, {});
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-    srv.DebugMoveTo(a, 1000, 1000);
-    srv.DebugSetPos(a, 1000, 1000);
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+    srv.DebugSetPos(Sid(srv, a), 1000, 1000);
     std::vector<nox::Server::WorldStatic> st;
     nox::Server::WorldStatic w;
     w.netCode = 500; w.type = 1170; w.x = 1000; w.y = 1000; w.modifiable = true; w.equipBit = 0x400; w.isWeapon = true; w.weaponClass = true;
@@ -21752,8 +21758,8 @@ void TestMapReset() {
     srv.OnPacket(a, get.data(), get.size(), out);
     srv.DamageToMap(46, 44, 100, 2, nox::Server::WallHitter{}, out);
     srv.DamageToMap(46, 44, 100, 2, nox::Server::WallHitter{}, out);
-    srv.DebugSpawnPet(1328, 1300.0f, 1000.0f, std::string());
-    srv.DebugSpawnPet(1328, 1400.0f, 1000.0f, std::string());
+    srv.DebugSpawnPet(1328, 1300.0f, 1000.0f, Sid(srv, std::string()));
+    srv.DebugSpawnPet(1328, 1400.0f, 1000.0f, Sid(srv, std::string()));
     char msg[220];
     std::snprintf(msg, sizeof(msg), "① 전제 — 바닥 물건 %zu(0) · 벽 부서짐 %d · 선 추적 통과 %d · 몸 막는 벽 칸 %d(0) · 크리처 %zu(2)", srv.WorldStaticCount(),
                   (int)srv.DebugWallBroken(46, 44), (int)srv.DebugTraceRay(wx - 30, wy, wx + 30, wy), (int)srv.WallAt(wx, wy), srv.pets());
@@ -21781,7 +21787,7 @@ void TestWallBreak() {
         srv.SetWallDefExtras({ e });
         srv.SetWallSpecials({ { 46, 44 } }, { { 46, 46 } });
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
-        srv.DebugSetPos(a, 1000, 1000);                      // 연기(8a)는 화면 안 사람에게만 — 실수 자리(+56)를 채운다
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);                      // 연기(8a)는 화면 안 사람에게만 — 실수 자리(+56)를 채운다
     };
     auto sent3a = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
         for (const auto& m : FlattenTo(out, who))
@@ -21807,7 +21813,7 @@ void TestWallBreak() {
         // ①' 나중에 들어온 사람은 준비(CLIENT_READY) 때 이미 부서진 벽을 받는다(`Nox_xxx_wall_4DF1E0`)
         srv.DebugEnterGame(c, 729, false, CharClass::Wizard);
         std::vector<nox::OutPacket> o2;
-        srv.DebugServerReady(c, o2);
+        srv.DebugServerReady(Sid(srv, c), o2);
         Check(sent3a(o2, c, 0), "①' 나중에 들어온 사람이 준비 때 부서진 벽 `3a 00 00` 을 못 받았다");
     }
     // ② 안 부서지는 벽 — 체력 그대로 · 「안부서지는벽」 칸 · ③ 홀수 칸은 벽이 없다
@@ -21877,7 +21883,7 @@ void TestDoorHeldOpenByBody() {
         nox::Server::WorldProp d;
         d.netCode = 310; d.type = 306; d.x = 1000; d.y = 1000; d.kind = nox::PropKind::Door;
         srv.SetWorldProps({ d });
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         for (int t = 0; t < 60; ++t) tick(srv, out);
         return srv.DebugPropFine(310);
     };
@@ -21897,12 +21903,12 @@ void TestDoorHeldOpenByBody() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         ms = 0; srv.Tick(ms, out);
         const int f0 = openFully(srv, out);
-        srv.DebugMoveTo(a, 1000, 975);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 975);
         tick(srv, out);
         double minDist = 1e9;
         for (int t = 0; t < 150; ++t) {
             tick(srv, out);
-            minDist = std::min(minDist, leafDist(srv.DebugPropFine(310), srv.DebugPosX(a), srv.DebugPosY(a)));
+            minDist = std::min(minDist, leafDist(srv.DebugPropFine(310), srv.DebugPosX(Sid(srv, a)), srv.DebugPosY(Sid(srv, a))));
         }
         std::snprintf(msg, sizeof(msg), "① 다 연 문(미세각 %d) 길에 선 사람 — 150틱 동안 문짝과 가장 가까운 거리 %.2f(몸 10 − 5 넘어야 · 0 = 뚫음) · 문짝이 민 걸음 %llu",
                       f0, minDist, srv.doorBodyPushes());
@@ -21915,15 +21921,15 @@ void TestDoorHeldOpenByBody() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         ms = 0; srv.Tick(ms, out);
         const int f0 = openFully(srv, out);
-        srv.DebugMoveTo(a, 1016, 984);
+        srv.DebugMoveTo(Sid(srv, a), 1016, 984);
         tick(srv, out);
         double maxY = 0.0;
         for (int t = 0; t < 20; ++t) {
-            srv.DebugAimAt(a, srv.XOf(a), srv.YOf(a) + 50);           // 커서 50 앞 — 걷기
+            srv.DebugAimAt(Sid(srv, a), srv.XOf(Sid(srv, a)), srv.YOf(Sid(srv, a)) + 50);           // 커서 50 앞 — 걷기
             const auto p = walkPkt(64);                                // +y
             srv.OnPacket(a, p.data(), p.size(), out);
             tick(srv, out);
-            maxY = std::max(maxY, srv.DebugPosY(a));
+            maxY = std::max(maxY, srv.DebugPosY(Sid(srv, a)));
         }
         int minFine = 255;
         for (int t = 0; t < 90; ++t) { tick(srv, out); minFine = std::min(minFine, srv.DebugPropFine(310)); }
@@ -21937,15 +21943,15 @@ void TestDoorHeldOpenByBody() {
         nox::Server srv; std::vector<nox::OutPacket> out;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 5000, 5000);
-        srv.DebugMoveTo(b, 5100, 5100);
+        srv.DebugMoveTo(Sid(srv, a), 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5100, 5100);
         nox::Server::WorldProp d;
         d.netCode = 311; d.type = 306; d.x = 1000; d.y = 1000; d.kind = nox::PropKind::Door;
         srv.SetWorldProps({ d });
         ms = 0; srv.Tick(ms, out);
         tick(srv, out);
-        srv.DebugMoveTo(a, 1000, 1012);
-        srv.DebugMoveTo(b, 984, 984);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1012);
+        srv.DebugMoveTo(Sid(srv, b), 984, 984);
         for (int t = 0; t < 16; ++t) tick(srv, out);
         std::snprintf(msg, sizeof(msg), "③ 경첩에 더 가까운 a 가 있어도 문짝 위 b 가 문을 돌려야 — 미세각 %d(0 이면 안 돎)", srv.DebugPropFine(311));
         Check(srv.DebugPropFine(311) != 0, msg);
@@ -21958,11 +21964,11 @@ void TestDoorHeldOpenByBody() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         ms = 0; srv.Tick(ms, out);
         const int f0 = openFully(srv, out);
-        srv.DebugMoveTo(a, 1016, 984);
+        srv.DebugMoveTo(Sid(srv, a), 1016, 984);
         tick(srv, out);
         int minFine = 255;
         for (int t = 0; t < 300; ++t) {
-            srv.DebugAimAt(a, srv.XOf(a), srv.YOf(a) + 50);
+            srv.DebugAimAt(Sid(srv, a), srv.XOf(Sid(srv, a)), srv.YOf(Sid(srv, a)) + 50);
             const auto p = walkPkt(64);
             srv.OnPacket(a, p.data(), p.size(), out);
             tick(srv, out);
@@ -21982,7 +21988,7 @@ void TestDoorHeldOpenByBody() {
         ms = 0; srv.Tick(ms, out);
         const int f0 = openFully(srv, out);
         const int sx = variant == 0 ? 1000 : 1016, sy = variant == 0 ? 975 : (variant == 1 ? 990 : 989);
-        srv.DebugMoveTo(a, sx, sy);
+        srv.DebugMoveTo(Sid(srv, a), sx, sy);
         tick(srv, out);
         int minFine = 255;
         double maxMove = 0.0;
@@ -21992,7 +21998,7 @@ void TestDoorHeldOpenByBody() {
             std::vector<nox::OutPacket> o;
             tick(srv, o);
             minFine = std::min(minFine, srv.DebugPropFine(310));
-            maxMove = std::max(maxMove, std::hypot(srv.DebugPosX(a) - sx, srv.DebugPosY(a) - sy));
+            maxMove = std::max(maxMove, std::hypot(srv.DebugPosX(Sid(srv, a)) - sx, srv.DebugPosY(Sid(srv, a)) - sy));
             if (t >= 60)
                 for (const auto& mm : FlattenTo(o, a))
                     if (!mm.empty() && mm[0] == static_cast<uint8_t>(nox::Op::DOOR_ANGLE)) ++angleMsgs;
@@ -22070,7 +22076,7 @@ void TestDoorLock() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.SetWorldProps({ door(800, 1000, 1000, locked ? 1 : 0, false) });
-        srv.DebugMoveTo(a, 990, 990);
+        srv.DebugMoveTo(Sid(srv, a), 990, 990);
         uint32_t ms = 0;
         for (int t = 0; t < 16; ++t) { ms += 33; std::vector<nox::OutPacket> z; srv.Tick(ms, z); }
         if (locked) {
@@ -22090,10 +22096,10 @@ void TestDoorLock() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.SetKeyTypes(623, 624, 625, 626);
-        srv.DebugGiveItemType(a, 624);                   // 금 열쇠 — 은 자물쇠에는 안 맞는다
+        srv.DebugGiveItemType(Sid(srv, a), 624);                   // 금 열쇠 — 은 자물쇠에는 안 맞는다
         srv.SetWorldProps({ door(800, 1000, 1000, 1, gate != 0) });
         { std::vector<nox::OutPacket> warm; srv.Tick(0, warm); }   // 첫 Tick 은 기준점만 잡는다
-        srv.DebugMoveTo(a, 990, 990);
+        srv.DebugMoveTo(Sid(srv, a), 990, 990);
         uint32_t ms = 0;
         std::vector<nox::OutPacket> first;
         ms += 33; srv.Tick(ms, first);
@@ -22107,17 +22113,17 @@ void TestDoorLock() {
         Check(srv.doorTouch(nox::Server::DoorTouch::Quiet) >= 25, "④ 1.5초 안 조용함을 안 셌다");
         for (int t = 0; t < 30; ++t) { ms += 33; std::vector<nox::OutPacket> z; srv.Tick(ms, z); }
         Check(srv.doorTouch(nox::Server::DoorTouch::KeyMissing) == 2, "④ 1.5초가 지나도 다시 안 말했다");
-        Check(srv.PropLock(800) == 1 && srv.DebugInventory(a).size() == 1, "④ 안 맞는 열쇠로 풀렸거나 열쇠가 사라졌다");
+        Check(srv.PropLock(800) == 1 && srv.DebugInventory(Sid(srv, a)).size() == 1, "④ 안 맞는 열쇠로 풀렸거나 열쇠가 사라졌다");
     }
     // ⑤ 장치 잠김(5) — 「DoorLockedMechanism」(a9 0f) · 열쇠를 안 찾는다
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.SetKeyTypes(623, 624, 625, 626);
-        srv.DebugGiveItemType(a, 623);
+        srv.DebugGiveItemType(Sid(srv, a), 623);
         srv.SetWorldProps({ door(800, 1000, 1000, 5, false) });
         { std::vector<nox::OutPacket> warm; srv.Tick(0, warm); }   // 첫 Tick 은 기준점만 잡는다
-        srv.DebugMoveTo(a, 990, 990);
+        srv.DebugMoveTo(Sid(srv, a), 990, 990);
         std::vector<nox::OutPacket> out; srv.Tick(33, out);
         const auto msgs = FlattenTo(out, a);
         bool mech = false;
@@ -22125,7 +22131,7 @@ void TestDoorLock() {
             if (m.size() > 3 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 15 &&
                 std::strcmp(reinterpret_cast<const char*>(m.data() + 3), "objcoll.c:DoorLockedMechanism") == 0) mech = true;
         Check(mech && srv.doorTouch(nox::Server::DoorTouch::Mechanism) == 1, "⑤ 장치 잠김 글이 안 갔다");
-        Check(srv.PropLock(800) == 5 && srv.DebugInventory(a).size() == 1, "⑤ 장치 문이 열쇠로 풀렸다");
+        Check(srv.PropLock(800) == 5 && srv.DebugInventory(Sid(srv, a)).size() == 1, "⑤ 장치 문이 열쇠로 풀렸다");
     }
     // ⑥ 열쇠 있음 — 풀림 · 소리 234 · 열쇠 지움(`4d <번호> <종류>`) · 짝 문도 풀림 · 퀘스트면 `f0 0f <번호>` 둘 · 다음 틱부터 돈다
     //   문 A(1000,1000 각도 0) 칸 (43,43) → 짝 칸 (42,42) = 문 B(980,980 각도 0) · 문 C(1500,1500)는 짝이 아니다
@@ -22133,16 +22139,16 @@ void TestDoorLock() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.SetKeyTypes(623, 624, 625, 626);
-        srv.DebugGiveItemType(a, 623);
+        srv.DebugGiveItemType(Sid(srv, a), 623);
         srv.SetWorldProps({ door(800, 1000, 1000, 1, false), door(801, 980, 980, 1, false), door(802, 1500, 1500, 1, false) });
         if (quest) srv.StartQuest(1, 3000, 3000);
         { std::vector<nox::OutPacket> warm; srv.Tick(0, warm); }   // 첫 Tick 은 기준점만 잡는다
-        srv.DebugMoveTo(a, 990, 990);
+        srv.DebugMoveTo(Sid(srv, a), 990, 990);
         std::vector<nox::OutPacket> out; srv.Tick(33, out);
         Check(srv.PropLock(800) == 0 && srv.doorTouch(nox::Server::DoorTouch::KeyUsed) == 1, "⑥ 은 열쇠로 안 풀렸다");
         Check(srv.PropLock(801) == 0 && srv.doorTouch(nox::Server::DoorTouch::PartnerUnlocked) == 1, "⑥ 짝 문이 안 풀렸다");
         Check(srv.PropLock(802) == 1, "⑥ 짝이 아닌 먼 문까지 풀렸다");
-        Check(srv.DebugInventory(a).empty(), "⑥ 쓴 열쇠가 가방에 남았다");
+        Check(srv.DebugInventory(Sid(srv, a)).empty(), "⑥ 쓴 열쇠가 가방에 남았다");
         const auto msgs = FlattenTo(out, a);
         const auto* dm = FindMsg(msgs, static_cast<uint8_t>(nox::Op::REPORT_DROP));
         Check(dm && dm->size() == 5 && (*dm)[1] == (60002 & 0xFF) && (*dm)[2] == (60002 >> 8) && (*dm)[3] == (623 & 0xFF) && (*dm)[4] == (623 >> 8),
@@ -22176,11 +22182,11 @@ void TestMonsterSight() {
     for (int far = 0; far <= 1; ++far) {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728);
-        srv.DebugMoveTo(a, far ? 1260 : 1240, 1000);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), far ? 1260 : 1240, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         run(srv, ms, 3);
-        if (far) Check(srv.DebugPetEnemy(0).empty() && srv.sightStat(SS::Added) == 0, "① 260 인데 알아봤다(거리 250)");
-        else     Check(srv.DebugPetEnemy(0) == a && srv.sightStat(SS::Added) == 1, "① 240 인데 못 알아봤다");
+        if (far) Check((srv.DebugPetEnemy(0) == nox::kNoSession) && srv.sightStat(SS::Added) == 0, "① 260 인데 알아봤다(거리 250)");
+        else     Check(srv.DebugPetEnemy(0) == Sid(srv, a) && srv.sightStat(SS::Added) == 1, "① 240 인데 못 알아봤다");
         Check(srv.sightStat(SS::Scan) >= 1 && candEq(srv), "① 훑기가 없거나 후보 등식이 안 맞는다");
     }
     // ①' 퀘스트면 640 — 600 을 알아본다
@@ -22189,56 +22195,56 @@ void TestMonsterSight() {
         srv.DebugEnterGame(a, 728);
         srv.StartQuest(1, 6000, 6000);                           // 파도 몬스터는 멀리 — 퀘스트 판정만 켠다
         const size_t i = srv.pets();
-        srv.DebugMoveTo(a, 1600, 1000);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), 1600, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         run(srv, ms, 3);
-        Check(srv.DebugPetEnemy(i) == a, "①' 퀘스트인데 600 을 못 알아봤다(640)");
+        Check(srv.DebugPetEnemy(i) == Sid(srv, a), "①' 퀘스트인데 600 을 못 알아봤다(640)");
     }
     // ② 앞쪽 부채꼴 — 등 뒤(−x 를 볼 때 +x)는 못 알아보고, 돌아서면 다음 훑기에 알아본다
     {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728);
-        srv.DebugMoveTo(a, 1100, 1000);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), 1100, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         srv.DebugSetPetFacing(0, 128);
         run(srv, ms, 20);
-        Check(srv.DebugPetEnemy(0).empty() && srv.sightStat(SS::Cone) >= 1 && srv.sightStat(SS::Added) == 0, "② 등 뒤를 알아봤다");
+        Check((srv.DebugPetEnemy(0) == nox::kNoSession) && srv.sightStat(SS::Cone) >= 1 && srv.sightStat(SS::Added) == 0, "② 등 뒤를 알아봤다");
         srv.DebugSetPetFacing(0, 0);
         run(srv, ms, 12);                                         // 다음 훑기(온라인 5~10프레임)
-        Check(srv.DebugPetEnemy(0) == a, "② 돌아섰는데 못 알아봤다");
+        Check(srv.DebugPetEnemy(0) == Sid(srv, a), "② 돌아섰는데 못 알아봤다");
     }
     // ③ 한번 본 것은 (250 + 30) 안에서 남는다 · 밖이면 놓친다 · 발견 소리는 2~4초에 한 번
     {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728);
-        srv.DebugMoveTo(a, 1200, 1000);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), 1200, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         run(srv, ms, 3);
-        Check(srv.DebugPetEnemy(0) == a && srv.sightStat(SS::Spot) == 1, "③ 전제 — 못 알아봤거나 발견 소리를 안 불렀다");
+        Check(srv.DebugPetEnemy(0) == Sid(srv, a) && srv.sightStat(SS::Spot) == 1, "③ 전제 — 못 알아봤거나 발견 소리를 안 불렀다");
         double px = 0, py = 0;
         srv.DebugPetXY(0, px, py);
-        srv.DebugMoveTo(a, static_cast<int>(px) + 275, static_cast<int>(py));
+        srv.DebugMoveTo(Sid(srv, a), static_cast<int>(px) + 275, static_cast<int>(py));
         run(srv, ms, 1);
-        Check(srv.DebugPetEnemy(0) == a && srv.sightStat(SS::LostFar) == 0, "③ 275(< 280)인데 놓쳤다");
+        Check(srv.DebugPetEnemy(0) == Sid(srv, a) && srv.sightStat(SS::LostFar) == 0, "③ 275(< 280)인데 놓쳤다");
         srv.DebugPetXY(0, px, py);
-        srv.DebugMoveTo(a, static_cast<int>(px) + 290, static_cast<int>(py));
+        srv.DebugMoveTo(Sid(srv, a), static_cast<int>(px) + 290, static_cast<int>(py));
         run(srv, ms, 1);
-        Check(srv.DebugPetEnemy(0).empty() && srv.sightStat(SS::LostFar) == 1, "③ 290(> 280)인데 안 놓쳤다");
+        Check((srv.DebugPetEnemy(0) == nox::kNoSession) && srv.sightStat(SS::LostFar) == 1, "③ 290(> 280)인데 안 놓쳤다");
         srv.DebugPetXY(0, px, py);
-        srv.DebugMoveTo(a, static_cast<int>(px) + 150, static_cast<int>(py));
+        srv.DebugMoveTo(Sid(srv, a), static_cast<int>(px) + 150, static_cast<int>(py));
         run(srv, ms, 12);
-        Check(srv.DebugPetEnemy(0) == a && srv.sightStat(SS::Added) == 2 && srv.sightStat(SS::Spot) == 1,
+        Check(srv.DebugPetEnemy(0) == Sid(srv, a) && srv.sightStat(SS::Added) == 2 && srv.sightStat(SS::Spot) == 1,
               "③ 다시 알아봤는데 2초 안에 발견 소리를 또 불렀거나 못 알아봤다");
         srv.DebugPetXY(0, px, py);
-        srv.DebugMoveTo(a, static_cast<int>(px) + 2000, static_cast<int>(py));   // 멀리 치운다 — 마지막 자리로 걷다 다시 알아보지 않게
+        srv.DebugMoveTo(Sid(srv, a), static_cast<int>(px) + 2000, static_cast<int>(py));   // 멀리 치운다 — 마지막 자리로 걷다 다시 알아보지 않게
         run(srv, ms, 130);                                        // 4초 넘게
         srv.DebugPetXY(0, px, py);
-        srv.DebugMoveTo(a, static_cast<int>(px) + 150, static_cast<int>(py));
+        srv.DebugMoveTo(Sid(srv, a), static_cast<int>(px) + 150, static_cast<int>(py));
         run(srv, ms, 12);
         {
             char msg[200];
             std::snprintf(msg, sizeof(msg), "③ 4초가 지났는데 발견 소리를 다시 안 불렀다 — 발견 %llu · 넣음 %llu · 상대 %s · 뺌(멀어짐) %llu",
-                          srv.sightStat(SS::Spot), srv.sightStat(SS::Added), srv.DebugPetEnemy(0).c_str(), srv.sightStat(SS::LostFar));
+                          srv.sightStat(SS::Spot), srv.sightStat(SS::Added), srv.Network().AddrOf(srv.DebugPetEnemy(0)).c_str(), srv.sightStat(SS::LostFar));
             Check(srv.sightStat(SS::Spot) == 2, msg);
         }
     }
@@ -22247,31 +22253,31 @@ void TestMonsterSight() {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(c, 729);
-        srv.DebugMoveTo(a, 1200, 1000);
-        srv.DebugMoveTo(c, 1100, 1010);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), 1200, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1100, 1010);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         run(srv, ms, 3);
-        Check(srv.DebugPetEnemy(0) == c && srv.DebugPetSeenCount(0) == 2, "④ 둘 다 목록에 넣고 가까운 c 를 상대로 삼지 않았다");
+        Check(srv.DebugPetEnemy(0) == Sid(srv, c) && srv.DebugPetSeenCount(0) == 2, "④ 둘 다 목록에 넣고 가까운 c 를 상대로 삼지 않았다");
     }
     // ⑤ 상대가 있으면 훑은 지 2초 안에는 다시 안 훑는다(앞쪽 새 사람도 안 넣음) · 2초가 지나면 넣는다(`GAME4_2.c:7348~7349`)
     {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728);
-        srv.DebugMoveTo(a, 1200, 1000);
-        srv.DebugSpawnPet(1371, 1000, 1000, std::string());       // 식충식물 — 빠르기 0 이라 자리·보는 쪽이 그대로다
-        srv.DebugApplyEnchant(a, 23, 100000, 1);                   // 무적 — 우리 근접은 아직 사거리를 안 봐서(B3) 200 밖에서도 물어 죽인다
+        srv.DebugMoveTo(Sid(srv, a), 1200, 1000);
+        srv.DebugSpawnPet(1371, 1000, 1000, Sid(srv, std::string()));       // 식충식물 — 빠르기 0 이라 자리·보는 쪽이 그대로다
+        srv.DebugApplyEnchant(Sid(srv, a), 23, 100000, 1);                   // 무적 — 우리 근접은 아직 사거리를 안 봐서(B3) 200 밖에서도 물어 죽인다
         run(srv, ms, 3);
         const unsigned long long added0 = srv.sightStat(SS::Added);
         srv.DebugEnterGame(c, 729);
-        srv.DebugMoveTo(c, 1100, 1030);                            // 앞쪽(+x)
-        const std::string enemy0 = srv.DebugPetEnemy(0);
+        srv.DebugMoveTo(Sid(srv, c), 1100, 1030);                            // 앞쪽(+x)
+        const int64_t enemy0 = srv.DebugPetEnemy(0);
         run(srv, ms, 20);
         {
             char msg[220];
             std::snprintf(msg, sizeof(msg), "⑤ 훑은 지 2초 안인데 새 사람을 넣었다 — 처음 상대 %s · 넣음 %llu→%llu · 훑기 %llu · 뺌 죽음 %llu 버프 %llu 멀어짐 %llu 옮겨짐 %llu 시야선 %llu",
-                          enemy0.c_str(), added0, srv.sightStat(SS::Added), srv.sightStat(SS::Scan), srv.sightStat(SS::LostGone),
+                          srv.Network().AddrOf(enemy0).c_str(), added0, srv.sightStat(SS::Added), srv.sightStat(SS::Scan), srv.sightStat(SS::LostGone),
                           srv.sightStat(SS::LostCantSee), srv.sightStat(SS::LostFar), srv.sightStat(SS::LostMoved), srv.sightStat(SS::LostRecheck));
-            Check(!enemy0.empty() && srv.sightStat(SS::Added) == added0, msg);
+            Check((enemy0 != nox::kNoSession) && srv.sightStat(SS::Added) == added0, msg);
         }
         run(srv, ms, 60);
         Check(srv.sightStat(SS::Added) == added0 + 1, "⑤ 2초가 지났는데 새 사람을 안 넣었다");
@@ -22281,13 +22287,13 @@ void TestMonsterSight() {
     for (int tele = 0; tele <= 1; ++tele) {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728);
-        srv.DebugMoveTo(a, 3000, 3000);                           // 안 보이는 곳
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), 3000, 3000);                           // 안 보이는 곳
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         auto one = [&]() { ms += 33; std::vector<nox::OutPacket> o; srv.Tick(ms, o); };   // 정확히 한 프레임씩
         one(); one(); one();
         const unsigned long long s0 = srv.sightStat(SS::Scan);
         for (int t = 0; t < 20 && srv.sightStat(SS::Scan) == s0; ++t) one();   // 훑기가 막 일어난 프레임을 잡는다
-        if (tele) srv.DebugTeleport(a, 1100, 1000); else srv.DebugMoveTo(a, 1100, 1000);
+        if (tele) srv.DebugTeleport(Sid(srv, a), 1100, 1000); else srv.DebugMoveTo(Sid(srv, a), 1100, 1000);
         one();
         if (tele) Check(srv.sightStat(SS::Added) == 1, "⑤' 순간이동 다음 프레임에 안 훑었다");
         else      Check(srv.sightStat(SS::Added) == 0, "⑤' 대조 — 순간이동 없이 훑은 바로 다음 프레임에 또 훑었다(5~10프레임 대기)");
@@ -22306,13 +22312,13 @@ void TestMonsterIdleB2() {
     {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1150, 1000);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), 1150, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         srv.DebugSetPetFacing(0, 128);                         // −x 를 봄 — a 는 등 뒤
         run(srv, ms, 3);
-        Check(srv.DebugPetEnemy(0).empty() && !srv.DebugPetAlert(0), "① 전제 — 등 뒤인데 알아봤거나 벌써 ALERT");
+        Check((srv.DebugPetEnemy(0) == nox::kNoSession) && !srv.DebugPetAlert(0), "① 전제 — 등 뒤인데 알아봤거나 벌써 ALERT");
         std::vector<nox::OutPacket> o;
-        srv.DebugHurt(std::string(), 0, 5, a, 0, o);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 5, Sid(srv, a), 0, o);
         Check(srv.b2Stat(B2::Injured) == 1, "① 맞았는데 INJURED 를 안 켰다");
         run(srv, ms, 1);
         Check(srv.monsterSnd(15, false) + srv.monsterSnd(15, true) == 1 && srv.b2Stat(B2::InjuredSound) == 1, "① 다침 소리(칸 15)를 한 번 안 불렀다");
@@ -22320,7 +22326,7 @@ void TestMonsterIdleB2() {
         run(srv, ms, 2);
         Check(srv.b2Stat(B2::InjuredSound) == 1, "① INJURED 를 제 갱신 끝에 안 껐다(다침 소리를 또 불렀다)");
         Check(srv.DebugPetAlert(0) && srv.DebugPetRunning(0) && srv.b2Stat(B2::FightStart) >= 1, "① 싸움 시작이 ALERT·달리기를 안 켰다");
-        Check(srv.DebugPetEnemy(0) == a, "① ALERT 인데 등 뒤의 때린 쪽을 못 알아봤다");
+        Check(srv.DebugPetEnemy(0) == Sid(srv, a), "① ALERT 인데 등 뒤의 때린 쪽을 못 알아봤다");
         // 싸움을 끊으면(명령의 쌓임 비우기) 싸움 끝이 불려 ALERT·달리기가 꺼진다
         srv.DebugAIClearStack(0);
         Check(!srv.DebugPetAlert(0) && !srv.DebugPetRunning(0) && srv.b2Stat(B2::FightEnd) >= 1, "① 쌓임을 비웠는데 싸움 끝이 안 불렸다(ALERT 남음)");
@@ -22329,9 +22335,9 @@ void TestMonsterIdleB2() {
     {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1150, 1000);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
-        srv.DebugSpawnPet(1358, 3000, 3000, a);
+        srv.DebugMoveTo(Sid(srv, a), 1150, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
+        srv.DebugSpawnPet(1358, 3000, 3000, Sid(srv, a));
         Check(std::fabs(srv.DebugPetAggression(0) - 0.5f) < 1e-6f && std::fabs(srv.DebugPetAggression(1) - 0.83f) < 1e-6f,
               "② 성향 기본이 들짐승 0.5 · 소환수 0.83 이 아니다");
         run(srv, ms, 3);
@@ -22341,8 +22347,8 @@ void TestMonsterIdleB2() {
     for (int atWill = 0; atWill <= 1; ++atWill) {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 4000, 4000);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), 4000, 4000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         if (atWill) srv.DebugSetPetAggression(0, 0.83f);
         run(srv, ms, 100);
         if (atWill) Check(srv.b2Stat(B2::IdleSound) == 0, "③ 마음대로 공격(0.83)인데 놀 때 소리를 냈다");
@@ -22352,8 +22358,8 @@ void TestMonsterIdleB2() {
     {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1012, 1000);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), 1012, 1000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         LoadRealAttackAnims(srv);                                 // ★ 09-30 — 근접은 애니 칸(거머리 칸 5 · 붙듦 2)에서 문다
         run(srv, ms, 20);                                         // 첫 무름은 20틱 안(09-30 전에는 3틱 안) · 1초(30프레임)가 안 지났다
         Check(srv.hurts() >= 1 && srv.b2Stat(B2::Taunt) == 0, "④ 물고 1초가 안 지났는데 도발했다(또는 안 물었다)");
@@ -22366,11 +22372,11 @@ void TestMonsterIdleB2() {
     {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 4000, 4000);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
+        srv.DebugMoveTo(Sid(srv, a), 4000, 4000);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
         run(srv, ms, 3);
         std::vector<nox::OutPacket> o;
-        srv.DebugHurt(std::string(), 0, 5, std::string(), 12, o);
+        srv.DebugHurt(Sid(srv, std::string()), 0, 5, Sid(srv, std::string()), 12, o);
         run(srv, ms, 1);
         Check(srv.b2Stat(B2::RetRoam) == 1 && srv.b2Stat(B2::IdleLookDamager) == 1 && srv.b2Stat(B2::RetFight) == 0,
               "⑤ 때린 쪽 없는 피해에 떠돌기·때린 자리 바라보기를 안 쌓았다");
@@ -22386,8 +22392,8 @@ void TestMonsterMeleeB3() {
     // 몬스터 하나(1000,1000 · +x 를 봄)와 사람 a · 휘두르기 한 번(쉬는 시간 없음 → 16 시작 → 때리는 칸에서 때림 · 09-30 전에는 「그 틱에 때림」)
     auto mk = [&](nox::Server& srv, uint16_t type, float ax, float ay) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, ax, ay);
-        srv.DebugSpawnPet(type, 1000, 1000, std::string());
+        srv.DebugTeleport(Sid(srv, a), ax, ay);
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, std::string()));
         srv.DebugSetAutoFight(false);
         LoadRealAttackAnims(srv);                              // ★ 09-30
         std::vector<nox::OutPacket> o;
@@ -22404,28 +22410,28 @@ void TestMonsterMeleeB3() {
     for (int near = 0; near <= 1; ++near) {
         nox::Server srv; mk(srv, 1371, near ? 1045.0f : 1200.0f, 1000.0f);
         std::vector<nox::OutPacket> out;
-        const int h0 = srv.HealthOf(a);
+        const int h0 = srv.HealthOf(Sid(srv, a));
         swing(srv, out);
-        if (near) Check(srv.HealthOf(a) < h0 && srv.meleeStrike(MW::Hit) == 1, "① 45 앞(틈 35 < 40)인데 못 맞혔다");
-        else      Check(srv.HealthOf(a) == h0 && srv.meleeStrike(MW::NoTarget) == 1 && srv.meleeStrike(MW::MissSound) == 0,
+        if (near) Check(srv.HealthOf(Sid(srv, a)) < h0 && srv.meleeStrike(MW::Hit) == 1, "① 45 앞(틈 35 < 40)인데 못 맞혔다");
+        else      Check(srv.HealthOf(Sid(srv, a)) == h0 && srv.meleeStrike(MW::NoTarget) == 1 && srv.meleeStrike(MW::MissSound) == 0,
                         "① 200 앞을 맞혔거나(사거리 안 봄) 기본 근접이 빗나감 소리를 냈다(대상 없음은 1)");
     }
     // ② 앞쪽 — 등 뒤 10 은 못 맞힌다
     {
         nox::Server srv; mk(srv, 1358, 990.0f, 1000.0f);
         std::vector<nox::OutPacket> out;
-        const int h0 = srv.HealthOf(a);
+        const int h0 = srv.HealthOf(Sid(srv, a));
         swing(srv, out);
-        Check(srv.HealthOf(a) == h0 && srv.meleeStrike(MW::NoTarget) == 1, "② 등 뒤를 물었다(앞쪽 내적 > 0.5)");
+        Check(srv.HealthOf(Sid(srv, a)) == h0 && srv.meleeStrike(MW::NoTarget) == 1, "② 등 뒤를 물었다(앞쪽 내적 > 0.5)");
     }
     // ③ 시야선 — 사이에 벽이 있으면 0(빗나감 소리 칸 8)
     {
         nox::Server srv; mk(srv, 1371, 1030.0f, 1000.0f);
         srv.SetWalls({ { 44, 42 }, { 44, 43 }, { 44, 44 } });   // x 1012~1035 칸 — 둘 사이
         std::vector<nox::OutPacket> out;
-        const int h0 = srv.HealthOf(a);
+        const int h0 = srv.HealthOf(Sid(srv, a));
         swing(srv, out);
-        Check(srv.HealthOf(a) == h0 && srv.meleeStrike(MW::Blocked) == 1 && srv.meleeStrike(MW::MissSound) == 1 &&
+        Check(srv.HealthOf(Sid(srv, a)) == h0 && srv.meleeStrike(MW::Blocked) == 1 && srv.meleeStrike(MW::MissSound) == 1 &&
               srv.monsterSnd(8, false) + srv.monsterSnd(8, true) == 1,
               "③ 벽 너머를 물었거나 빗나감 소리(칸 8)를 안 불렀다");
     }
@@ -22433,11 +22439,11 @@ void TestMonsterMeleeB3() {
     {
         nox::Server srv; mk(srv, 1371, 1040.0f, 1000.0f);
         srv.DebugEnterGame(c, 729, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(c, 1020.0f, 1005.0f);
+        srv.DebugTeleport(Sid(srv, c), 1020.0f, 1005.0f);
         std::vector<nox::OutPacket> out;
-        const int ha = srv.HealthOf(a), hc = srv.HealthOf(c);
+        const int ha = srv.HealthOf(Sid(srv, a)), hc = srv.HealthOf(Sid(srv, c));
         swing(srv, out);
-        Check(srv.HealthOf(c) < hc && srv.HealthOf(a) == ha, "④ 더 가까운 c 가 아니라 a 를 물었다");
+        Check(srv.HealthOf(Sid(srv, c)) < hc && srv.HealthOf(Sid(srv, a)) == ha, "④ 더 가까운 c 가 아니라 a 를 물었다");
     }
     // ⑤ 거미 — 대상이 없으면 0(빗나감 소리) · 물면 20% 로 독
     {
@@ -22449,7 +22455,7 @@ void TestMonsterMeleeB3() {
     {
         nox::Server srv; mk(srv, 1355, 1015.0f, 1000.0f);
         std::vector<nox::OutPacket> out;
-        for (int i = 0; i < 60; ++i) { swing(srv, out); srv.DebugSetHealth(a, 150); srv.DebugSetPoison(a, 0); }
+        for (int i = 0; i < 60; ++i) { swing(srv, out); srv.DebugSetHealth(Sid(srv, a), 150); srv.DebugSetPoison(Sid(srv, a), 0); }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "⑤ 거미 독 확률이 20%% 근처가 아니다 — 맞힘 %llu · 독 %llu", srv.meleeStrike(MW::Hit), srv.meleeStrike(MW::Poisoned));
         Check(srv.meleeStrike(MW::Hit) == 60 && srv.meleeStrike(MW::Poisoned) >= 2 && srv.meleeStrike(MW::Poisoned) <= 30, msg);
@@ -22459,14 +22465,14 @@ void TestMonsterMeleeB3() {
         nox::Server srv; mk(srv, 1365, 1020.0f, 1000.0f);
         std::vector<nox::OutPacket> out;
         swing(srv, out);
-        Check(srv.meleeStrike(MW::Hit) == 1 && srv.DebugForceX(a) > 0.0, "⑥ 곰이 때렸는데 밀어내지 않았다");
+        Check(srv.meleeStrike(MW::Hit) == 1 && srv.DebugForceX(Sid(srv, a)) > 0.0, "⑥ 곰이 때렸는데 밀어내지 않았다");
     }
     // ⑦ 유령 — 때린 뒤 상대 기절(5) · 도망 사슬(25·41·24)
     {
         nox::Server srv; mk(srv, 1325, 1012.0f, 1000.0f);
         std::vector<nox::OutPacket> out;
         swing(srv, out);
-        Check(srv.meleeStrike(MW::Hit) == 1 && srv.DebugHasEnchant(a, 5) && srv.meleeStrike(MW::GhostFlee) == 1, "⑦ 유령이 때렸는데 기절을 안 걸었다");
+        Check(srv.meleeStrike(MW::Hit) == 1 && srv.DebugHasEnchant(Sid(srv, a), 5) && srv.meleeStrike(MW::GhostFlee) == 1, "⑦ 유령이 때렸는데 기절을 안 걸었다");
         const int top = srv.DebugAIStackInd(0);
         Check(top >= 2 && srv.DebugAIAction(0, top) == 24 && srv.DebugAIAction(0, top - 1) == 41 && srv.DebugAIAction(0, top - 2) == 25,
               "⑦ 유령 도망 사슬(25·41·24)이 안 쌓였다");
@@ -22486,7 +22492,7 @@ void TestMonsterMeleeB3() {
         AllMetalButPlayer(srv);
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1328, body);
-        srv.DebugSpawnPet(1328, 1012.0f, 1000.0f, a);               // 물릴 임프 — a 의 소환수(주인 없는 것끼리는 적이 아니다)
+        srv.DebugSpawnPet(1328, 1012.0f, 1000.0f, Sid(srv, a));               // 물릴 임프 — a 의 소환수(주인 없는 것끼리는 적이 아니다)
         std::vector<nox::OutPacket> out;
         swing(srv, out);
         if (bear) Check(srv.defHitSoundWay(nox::DefHitSoundWay::Played) == 1, "⑨ 곰(CRUSH)이 물었는데 기본 타격 소리가 안 났다");
@@ -22505,9 +22511,9 @@ void TestMonsterBrainB4a() {
     };
     auto mk = [&](nox::Server& srv, uint32_t& ms, uint16_t type) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 1150.0f, 1000.0f);
-        srv.DebugSpawnPet(type, 1000, 1000, std::string());
-        srv.DebugApplyEnchant(a, 23, 100000, 1);             // 사람은 무적 — 도망·후퇴만 본다
+        srv.DebugTeleport(Sid(srv, a), 1150.0f, 1000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, std::string()));
+        srv.DebugApplyEnchant(Sid(srv, a), 23, 100000, 1);             // 사람은 무적 — 도망·후퇴만 본다
         run(srv, ms, 100);                                    // 3초 넘게 — 막힘(+508 = 0) 3초 관문이 풀린다 · a 를 알아보고 싸움
     };
     // ① 두려움(11) — 62(11)·24 · 소리 칸 11 · 달리기 · a 에게서 멀어진다 · 두려움이 풀리면 62 가 도망을 뺀다
@@ -22547,9 +22553,9 @@ void TestMonsterBrainB4a() {
     //   그래서 a 를 200 앞에 두고 3초 관문(+508 = 0)은 프레임을 건너뛰어 푼다
     auto mkB = [&](nox::Server& srv, uint32_t& ms) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 1200.0f, 1000.0f);
-        srv.DebugSpawnPet(1382, 1000, 1000, std::string());
-        srv.DebugApplyEnchant(a, 23, 100000, 1);
+        srv.DebugTeleport(Sid(srv, a), 1200.0f, 1000.0f);
+        srv.DebugSpawnPet(1382, 1000, 1000, Sid(srv, std::string()));
+        srv.DebugApplyEnchant(Sid(srv, a), 23, 100000, 1);
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetFrame(1000);
@@ -22594,8 +22600,8 @@ void TestMonsterBrainB4a() {
     for (int hasPos = 0; hasPos <= 1; ++hasPos) {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 3000.0f, 3000.0f);
-        srv.DebugSpawnPet(1328, 1000, 1000, std::string());
+        srv.DebugTeleport(Sid(srv, a), 3000.0f, 3000.0f);
+        srv.DebugSpawnPet(1328, 1000, 1000, Sid(srv, std::string()));
         RegImpShot(srv);
         LoadRealAttackAnims(srv);                              // ★ 09-30 — 쏘는 칸에서 쏜다
         srv.DebugSetAutoFight(false);
@@ -22604,7 +22610,7 @@ void TestMonsterBrainB4a() {
         srv.DebugSetFrame(1000);
         srv.DebugSetPetNextHit(0, 0);
         const unsigned long long n0 = srv.missilesMade();
-        srv.DebugAIPushDep(0, 17, std::string(), -1, 0, 0.0f, hasPos ? 1010.0f : 0.0f, hasPos ? 1000.0f : 0.0f);
+        srv.DebugAIPushDep(0, 17, Sid(srv, std::string()), -1, 0, 0.0f, hasPos ? 1010.0f : 0.0f, hasPos ? 1000.0f : 0.0f);
         RunSwing(srv, 0, out, 17);
         if (hasPos) Check(srv.missilesMade() == n0 + 1, "⑤ 자리만 실린 쏘기가 안 쐈다");
         else        Check(srv.missilesMade() == n0 && srv.DebugAIAction(0, 0) == 0 && srv.shotNoAim() == 1,
@@ -22628,9 +22634,9 @@ void TestMonsterBrainB4b() {
     // 3초 관문(+508 = 0 → 구석)은 프레임을 건너뛰어 푼다
     auto mk = [&](nox::Server& srv, uint16_t type, float ax, float ay) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, ax, ay);
-        srv.DebugSpawnPet(type, 1000, 1000, std::string());
-        srv.DebugApplyEnchant(a, 23, 100000, 1);
+        srv.DebugTeleport(Sid(srv, a), ax, ay);
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, std::string()));
+        srv.DebugApplyEnchant(Sid(srv, a), 23, 100000, 1);
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetFrame(1000);
@@ -22638,7 +22644,7 @@ void TestMonsterBrainB4b() {
     // ① 거리 두기 — 비홀더(도망 거리 65)는 50 앞 상대에게서 28(뒤로 돌기)·68·63(95)·24 · 멀어진다 / 거머리(도망 거리 0)는 안 한다
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, 1382, 1050.0f, 1000.0f);
-        srv.DebugSetPetEnemy(0, a, -1);
+        srv.DebugSetPetEnemy(0, Sid(srv, a), -1);
         bool seen = false;
         for (int t = 0; t < 40 && !seen; ++t) {
             const int f0 = srv.DebugPetFacingWant(0);
@@ -22663,7 +22669,7 @@ void TestMonsterBrainB4b() {
     }
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 1050.0f, 1000.0f);
-        srv.DebugSetPetEnemy(0, a, -1);
+        srv.DebugSetPetEnemy(0, Sid(srv, a), -1);
         run(srv, ms, 40);
         Check(srv.brainStat(BS::KeepDistance) == 0, "① 도망 거리 0 인 거머리가 거리 두기를 했다");
     }
@@ -22671,11 +22677,11 @@ void TestMonsterBrainB4b() {
     //   되비춤 — 성향 0.2(가운데 아님) · 적이 150(100 밖)이면 안 한다
     for (int kind = 0; kind < 3; ++kind) {
         nox::Server srv; uint32_t ms = 0; mk(srv, 1358, kind == 2 ? 1150.0f : 1080.0f, 1000.0f);
-        srv.DebugSetPetEnemy(0, a, -1);
+        srv.DebugSetPetEnemy(0, Sid(srv, a), -1);
         if (kind == 1) srv.DebugSetPetAggression(0, 0.2f);
-        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0.0f, 1000.0f, 1000.0f);
-        srv.DebugAIPushDep(0, 44, std::string(), -1, 0, 0.0f);
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0.0f, 1000.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 44, Sid(srv, std::string()), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 100000, 0.0f);
         run(srv, ms, 20);
         if (kind == 0) Check(srv.brainStat(BS::AggroAtWill) >= 1 && has(srv, 15), "② 지키는 중 80 앞 적인데 공격 성향이 싸움을 안 불렀다");
         else Check(srv.brainStat(BS::AggroAtWill) == 0 && !has(srv, 15) && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 1,
@@ -22684,7 +22690,7 @@ void TestMonsterBrainB4b() {
     // ③ 답답함 — 가기(7) 중 15 안에 머물면(매 틱 자리를 되돌려 막힘을 흉내) 0.5초 전엔 안 하고 넘으면 FRUSTRATED · 싸움이 아니니 기다리기 또는 옆걸음
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0.0f, 1300.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0.0f, 1300.0f, 1000.0f);
         auto stuck = [&](int n) { for (int t = 0; t < n; ++t) { srv.DebugSetPetPos(0, 1000.0, 1000.0); run(srv, ms, 1); } };
         stuck(10);
         Check(srv.brainStat(BS::Frustrated) == 0, "③ 0.5초도 안 머물렀는데 답답해했다");
@@ -22695,22 +22701,22 @@ void TestMonsterBrainB4b() {
         Check(fr >= 1 && srv.brainStat(BS::WaitStuck) + srv.brainStat(BS::Sidestep) == fr && srv.DebugPetFrustrated(0), msg);
         // 조건 70 — 답답하면 거짓(그 행동을 뺀다) · 깃발을 지운다
         srv.DebugAIClearStack(0);
-        srv.DebugAIPushDep(0, 70, std::string(), -1, 0, 0.0f);
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        srv.DebugAIPushDep(0, 70, Sid(srv, std::string()), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 100000, 0.0f);
         run(srv, ms, 1);
         Check(!srv.DebugPetFrustrated(0) && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) != 1, "③ 조건 70 이 답답함을 보고도 안 뺐거나 깃발을 안 지웠다");
     }
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
-        srv.DebugAIPushDep(0, 70, std::string(), -1, 0, 0.0f);
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        srv.DebugAIPushDep(0, 70, Sid(srv, std::string()), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 100000, 0.0f);
         run(srv, ms, 1);
         Check(srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 1, "③ 안 답답한데 조건 70 이 뺐다");
     }
     // ③'' 답답함 시계(+496)는 행동을 바꾼 프레임과 같은 칸이다(`MonsterActionReset`) — 기다리기·옆걸음이 끝나 가기(7)로 돌아오면 0.5초를 새로 잰다
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0.0f, 1300.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0.0f, 1300.0f, 1000.0f);
         uint32_t back7 = 0; bool wasOther = false; int gaps = 0, bad = 0;
         unsigned long long fr0 = 0;
         char msg[160] = "③'' 안 굴렀다";
@@ -22733,7 +22739,7 @@ void TestMonsterBrainB4b() {
     // ③' 도망(24) 중 막히면 +508(구석)을 적는다 — 조건 68 이 뒤 사슬을 끊게
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
-        srv.DebugAIPushDep(0, 24, std::string(), -1, 0, 0.0f, 1100.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 24, Sid(srv, std::string()), -1, 0, 0.0f, 1100.0f, 1000.0f);
         const uint32_t f0 = srv.DebugPetMoveAttempt(0);
         for (int t = 0; t < 30; ++t) { srv.DebugSetPetPos(0, 1000.0, 1000.0); run(srv, ms, 1); }
         char msg[160]; std::snprintf(msg, sizeof(msg), "③' 도망 중 막혔는데 구석(+508)을 안 적었다 — 답답 %llu · 맨 위 %d",
@@ -22746,7 +22752,7 @@ void TestMonsterBrainB4b() {
         nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         srv.SetTypeBody(1358, body);
         mk(srv, 1358, 1150.0f, 1000.0f);
-        srv.DebugSetPetEnemy(0, a, -1);
+        srv.DebugSetPetEnemy(0, Sid(srv, a), -1);
         bool seen = false;
         float dxp = 0, dyp = 0;
         for (int t = 0; t < 60 && !seen; ++t) {
@@ -22780,7 +22786,7 @@ void TestMonsterBrainB4b() {
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
         srv.DebugSetAutoFight(false);
-        srv.DebugAIPushDep(0, 28, std::string(), -1, 200, 0.0f);
+        srv.DebugAIPushDep(0, 28, Sid(srv, std::string()), -1, 200, 0.0f);
         std::vector<nox::OutPacket> o;
         srv.DebugAITick(0, o);
         Check(srv.DebugPetFacing(0) == 200 && srv.DebugPetFacingWant(0) == 200 && srv.DebugAIAction(0, srv.DebugAIStackInd(0)) != 28, "⑤ 쪽 세우기(28)가 쪽을 안 두었거나 안 빠졌다");
@@ -22805,7 +22811,7 @@ void TestMonsterBrainB4b() {
         srv.SetWorldStatics(st);
         if (f.hurt) srv.DebugSetPetHealth(0, 1);
         if (f.poisoned) srv.DebugPoisonPet(0, 1);
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);   // 맨 위를 기다리기로 — 놀기(0)의 16프레임 엇갈림과 먹기의 16프레임이 안 겹쳐도 돌게
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 100000, 0.0f);   // 맨 위를 기다리기로 — 놀기(0)의 16프레임 엇갈림과 먹기의 16프레임이 안 겹쳐도 돌게
         bool destroyed = false;
         for (int t = 0; t < 20; ++t) {
             ms += 34; std::vector<nox::OutPacket> o; srv.Tick(ms, o);
@@ -22822,7 +22828,7 @@ void TestMonsterBrainB4b() {
         uint32_t fAt[2] = { 0, 0 };
         for (int s = 0; s < 2; ++s) {
             nox::Server srv; uint32_t ms = 0; mk(srv, 1358, 3000.0f, 3000.0f);
-            srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0.0f, 1000.0f, 1000.0f);
+            srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0.0f, 1000.0f, 1000.0f);
             srv.DebugSetPetActionFrame(0, srv.frame() - (s ? 11u : 16u));
             srv.DebugApplyEnchantPet(0, 11, 600, 1);
             for (int t = 0; t < 40 && srv.brainStat(BS::Fear) == 0; ++t) run(srv, ms, 1);
@@ -22848,8 +22854,8 @@ void TestMonsterAnimB5() {
     };
     auto mk = [&](nox::Server& srv, uint16_t type) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 3000.0f, 3000.0f);
-        srv.DebugSpawnPet(type, 1000, 1000, std::string());
+        srv.DebugTeleport(Sid(srv, a), 3000.0f, 3000.0f);
+        srv.DebugSpawnPet(type, 1000, 1000, Sid(srv, std::string()));
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetFrame(1000);
@@ -22898,7 +22904,7 @@ void TestMonsterAnimB5() {
         nox::Server s2; mk(s2, 1371);
         s2.DebugSetAutoFight(false);
         Check(s2.DebugPetAnimIndex(0) == 14, "② 상대 없는 식충식물 놀기가 14 가 아니다");
-        s2.DebugSetPetEnemy(0, a, -1);
+        s2.DebugSetPetEnemy(0, Sid(s2, a), -1);
         Check(s2.DebugPetAnimIndex(0) == 8, "② 상대 있는 식충식물 놀기가 8 이 아니다");
     }
     // ③ 칸 넘기기 — 되풀이 걷기(8칸 · 붙듦 2 → 3틱에 한 칸 · 24틱에 한 바퀴) · 걸음 소리는 칸 A·B 에서 칸 안 틱 0 일 때만
@@ -22909,7 +22915,7 @@ void TestMonsterAnimB5() {
         srv.SetMonsterAnim(ty, 12, 8, 2, true);
         std::vector<uint16_t> ids(1400, 0); ids[ty] = 777;
         srv.SetMonsterSoundIds(17, ids);
-        srv.DebugAIPushDep(0, 7, std::string(), -1, 0, 0.0f, 1600.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 7, Sid(srv, std::string()), -1, 0, 0.0f, 1600.0f, 1000.0f);
         const uint32_t f0 = srv.frame();
         run(srv, ms, 3);
         Check(srv.DebugPetAnimFrame(0) == 1 && srv.DebugPetAnimTick(0) == 0, "③ 붙듦 2 인데 3프레임에 한 칸이 아니다");
@@ -22922,7 +22928,7 @@ void TestMonsterAnimB5() {
         // 행동 바꾸면 첫 칸 — ⚠ 48프레임 뒤엔 칸이 이미 0 이라 되돌림이 없어도 0 으로 보인다(돌연변이 Y6 이 빠져나감) → 칸 1·틱 1 에서 바꾼다
         run(srv, ms, 4);
         Check(srv.DebugPetAnimFrame(0) == 1 && srv.DebugPetAnimTick(0) == 1, "③ 전제 — 4프레임 더 갔는데 칸 1·틱 1 이 아니다");
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 100000, 0.0f);
         Check(srv.DebugPetAnimFrame(0) == 0 && srv.DebugPetAnimTick(0) == 0 && !srv.DebugPetAnimDone(0), "③ 행동이 바뀌었는데 애니가 첫 칸으로 안 돌아갔다");
     }
     // ④ 한 번짜리 애니 — 끝 칸에 서고 끝(+483) · 더 안 넘김 / 칸 수 0 이면 바로 끝 / 표가 없으면 안 움직임
@@ -22950,7 +22956,7 @@ void TestMonsterAnimB5() {
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, 1358);
         srv.SetMonsterAnim(1358, 13, 8, 2, true);
-        srv.DebugAIPushDep(0, 24, std::string(), -1, 0, 0.0f, 1100.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 24, Sid(srv, std::string()), -1, 0, 0.0f, 1100.0f, 1000.0f);
         run(srv, ms, 10);
         Check(srv.animStat(AS::StepFlee) >= 1, "⑤ 도망(24)이 걷는데 걸음 소리를 안 불렀다");
         srv.DebugAIClearStack(0);
@@ -22976,9 +22982,9 @@ void TestMonsterHearB6() {
     // 거머리(1000,1000 · 동쪽을 봄) · a 는 등 뒤 서쪽 100(안 보임) · 소리 300(깃발 인자 · 거리 600)
     auto mk = [&](nox::Server& srv, uint32_t& ms, uint16_t flags, float ax = 900.0f) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, ax, 1000.0f);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
-        srv.DebugApplyEnchant(a, 23, 100000, 1);
+        srv.DebugTeleport(Sid(srv, a), ax, 1000.0f);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
+        srv.DebugApplyEnchant(Sid(srv, a), 23, 100000, 1);
         srv.DebugSetSoundDef(300, flags, 600);
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
@@ -22990,11 +22996,11 @@ void TestMonsterHearB6() {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 3000.0f);
         srv.DebugSetSoundDef(301, 0, 600);
         const unsigned long long r0 = srv.hearStat(HS::Recorded);
-        srv.PlaySoundAt(300, 900, 1000, 0, 0, a);
-        srv.PlaySoundAt(300, 900, 1000, 2, 0, a);
-        srv.PlaySoundAt(301, 900, 1000, 0, 0, a);
+        srv.PlaySoundAt(300, 900, 1000, 0, 0, Sid(srv, a));
+        srv.PlaySoundAt(300, 900, 1000, 2, 0, Sid(srv, a));
+        srv.PlaySoundAt(301, 900, 1000, 0, 0, Sid(srv, a));
         srv.PlaySoundAt(300, 900, 1000);
-        srv.PlaySoundAt(300, 900, 1000, 0, 0, std::string(), nox::Target{ std::string(), 0 });
+        srv.PlaySoundAt(300, 900, 1000, 0, 0, Sid(srv, std::string()), nox::Target{ nox::kNoSession, 0 });
         Check(srv.hearStat(HS::Recorded) - r0 == 2 && srv.DebugListenCount() == 2, "① 들을 거리 기록 갈래(사람 임자·크리처 출처만)가 안 맞다");
         run(srv, ms, 3);
         Check(srv.DebugListenCount() == 0, "① 2프레임 넘은 들을 거리를 안 지웠다");
@@ -23002,7 +23008,7 @@ void TestMonsterHearB6() {
     // ② 듣고 바라봄 — 등 뒤 100(세기 83 ≥ 50) · 시야선이 트여 들은 자리 바라보기(59·56·1·25) · 세기·자리를 적음
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1);
-        srv.PlaySoundAt(300, 900, 1000, 0, 0, a);
+        srv.PlaySoundAt(300, 900, 1000, 0, 0, Sid(srv, a));
         run(srv, ms, 1);
         const int t = srv.DebugAIStackInd(0);
         char msg[200]; std::snprintf(msg, sizeof(msg), "② 등 뒤 소리를 듣고 바라보지 않았다 — 들음 %llu · 세기 %d · 바라봄 %llu · 맨 위 %d·%d·%d·%d",
@@ -23022,7 +23028,7 @@ void TestMonsterHearB6() {
     };
     for (const Th& h : ths) {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, h.flags, 3000.0f);
-        srv.PlaySoundAt(300, h.x, 1000, 0, 0, a);
+        srv.PlaySoundAt(300, h.x, 1000, 0, 0, Sid(srv, a));
         run(srv, ms, 1);
         Check((srv.hearStat(HS::Heard) == 1) == h.heard, h.why);
     }
@@ -23030,7 +23036,7 @@ void TestMonsterHearB6() {
     for (int run40 = 0; run40 <= 1; ++run40) {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, run40 ? 0x40 : 0x1, 3000.0f);
         srv.SetWalls({ { 40, 43 } });
-        srv.PlaySoundAt(300, 850, 1000, 0, 0, a);
+        srv.PlaySoundAt(300, 850, 1000, 0, 0, Sid(srv, a));
         run(srv, ms, 1);
         if (!run40) Check(srv.hearStat(HS::WallQuiet) == 1 && srv.hearStat(HS::Heard) == 0, "④ 벽 너머 절반(37 < 50)인데 들었다");
         else {
@@ -23047,8 +23053,8 @@ void TestMonsterHearB6() {
     for (int kind = 0; kind < 3; ++kind) {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, kind == 1 ? 0x11 : 0x1, 3000.0f);
         if (kind == 2) srv.DebugSetPetHeard(0, 0, srv.frame() + 30, 0, 0);
-        if (kind < 2) srv.PlaySoundAt(300, 900, 1000, 0, 0, std::string(), nox::Target{ std::string(), 0 });
-        else srv.PlaySoundAt(300, 900, 1000, 0, 0, a);
+        if (kind < 2) srv.PlaySoundAt(300, 900, 1000, 0, 0, Sid(srv, std::string()), nox::Target{ nox::kNoSession, 0 });
+        else srv.PlaySoundAt(300, 900, 1000, 0, 0, Sid(srv, a));
         run(srv, ms, 1);
         if (kind == 0) Check(srv.hearStat(HS::NotListen) >= 1 && srv.hearStat(HS::Heard) == 0, "⑤ 깃발 0x10 없는 제 소리를 들었다");
         if (kind == 1) Check(srv.hearStat(HS::Heard) == 1, "⑤ 깃발 0x10 있는 제 소리를 못 들었다");
@@ -23057,9 +23063,9 @@ void TestMonsterHearB6() {
     // ⑥ 가장 큰 것 — 83(100) 과 50(300) 이면 83
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 3000.0f);
-        srv.PlaySoundAt(300, 700, 1000, 0, 0, a);
-        srv.PlaySoundAt(300, 900, 1000, 0, 0, a);
-        srv.PlaySoundAt(300, 700, 1000, 0, 0, a);
+        srv.PlaySoundAt(300, 700, 1000, 0, 0, Sid(srv, a));
+        srv.PlaySoundAt(300, 900, 1000, 0, 0, Sid(srv, a));
+        srv.PlaySoundAt(300, 700, 1000, 0, 0, Sid(srv, a));
         run(srv, ms, 1);
         Check(srv.hearStat(HS::Heard) == 1 && srv.DebugPetHeardDist(0) == 83, "⑥ 들은 것 중 가장 큰 것을 안 골랐다");
     }
@@ -23068,8 +23074,8 @@ void TestMonsterHearB6() {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 3000.0f);
         srv.DebugSetAutoFight(false);
         srv.DebugSetPetHeard(0, 300, srv.frame(), 900, 1000);
-        srv.DebugAIPushDep(0, 59, std::string(), -1, 0, 0.0f);
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        srv.DebugAIPushDep(0, 59, Sid(srv, std::string()), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 100000, 0.0f);
         std::vector<nox::OutPacket> o;
         srv.DebugAIProcDeps(0, o);
         Check(top(srv) != 1 && srv.hearStat(HS::Cond59) == 1, "⑦ 3초 안 들은 소리가 있는데 조건 59 가 안 깨졌다");
@@ -23083,8 +23089,8 @@ void TestMonsterHearB6() {
         srv.SetWorldStatics(st);
         srv.SetDangerType(999, 1);
         if (immune) srv.SetMonsterSubclass(1358, 0x400);
-        srv.DebugAIPushDep(0, 69, std::string(), -1, 0, 0.0f, 1200.0f, 1000.0f);
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        srv.DebugAIPushDep(0, 69, Sid(srv, std::string()), -1, 0, 0.0f, 1200.0f, 1000.0f);
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 100000, 0.0f);
         std::vector<nox::OutPacket> o;
         srv.DebugAIProcDeps(0, o);
         if (!immune) Check(top(srv) != 1 && srv.hearStat(HS::Cond69) == 1, "⑦ 자리 둘레 20 에 불이 있는데 조건 69 가 안 깨졌다");
@@ -23095,8 +23101,8 @@ void TestMonsterHearB6() {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 0x1, 3000.0f);
         srv.DebugSetAutoFight(false);
         srv.DebugSetPetHeard(0, 300, srv.frame(), 900, 1000);
-        srv.DebugAIPushDep(0, 42, std::string("없는:1"), -1, 0, 0.0f);
-        srv.DebugAIPushDep(0, 1, std::string(), -1, 100000, 0.0f);
+        srv.DebugAIPushDep(0, 42, Sid(srv, std::string("없는:1")), -1, 0, 0.0f);
+        srv.DebugAIPushDep(0, 1, Sid(srv, std::string()), -1, 100000, 0.0f);
         std::vector<nox::OutPacket> o;
         srv.DebugAIProcDeps(0, o);
         Check(srv.DebugPetHeardSnd(0) == 0 && srv.DebugPetHeardFrame(0) == srv.frame() + 30, "⑧ 조건 42 가 깨졌는데 귀를 1초 안 막았다");
@@ -23105,17 +23111,17 @@ void TestMonsterHearB6() {
     for (int kind = 0; kind < 3; ++kind) {
         nox::Server srv; uint32_t ms = 0;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, kind == 1 ? 1400.0f : 1150.0f, 1000.0f);
-        srv.DebugSpawnPet(1358, 1000, 1000, std::string());
-        srv.DebugApplyEnchant(a, 23, 100000, 1);
+        srv.DebugTeleport(Sid(srv, a), kind == 1 ? 1400.0f : 1150.0f, 1000.0f);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, std::string()));
+        srv.DebugApplyEnchant(Sid(srv, a), 23, 100000, 1);
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetFrame(1000);
         srv.DebugSetPetAggression(0, kind == 2 ? 0.83f : 0.5f);
         srv.DebugSetPetSightRange(0, 250.0f);
         srv.DebugAIClearStack(0);
-        srv.DebugAIPushDep(0, 4, std::string(), -1, 0, 0.0f, 1000.0f, 1000.0f);
-        srv.DebugSetPetEnemy(0, a, -1);
+        srv.DebugAIPushDep(0, 4, Sid(srv, std::string()), -1, 0, 0.0f, 1000.0f, 1000.0f);
+        srv.DebugSetPetEnemy(0, Sid(srv, a), -1);
         srv.DebugAITick(0, o);
         const int t = srv.DebugAIStackInd(0);
         char msg[200]; std::snprintf(msg, sizeof(msg), "⑨ 지키기 갈래 %d 가 틀렸다 — 맨 위 %d·%d·%d·%d", kind,
@@ -23132,7 +23138,7 @@ void TestMonsterHearB6() {
         srv.DebugSetPetAggression(0, atWill ? 0.83f : 0.5f);
         srv.DebugAIClearStack(0);
         srv.DebugAIPush(0, 10);
-        srv.DebugSetPetEnemy(0, a, -1);
+        srv.DebugSetPetEnemy(0, Sid(srv, a), -1);
         std::vector<nox::OutPacket> o;
         srv.DebugAITick(0, o);
         bool has15 = false;
@@ -23143,8 +23149,8 @@ void TestMonsterHearB6() {
     for (int old = 0; old <= 1; ++old) {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, 1020.0f, 1000.0f);
-        srv.DebugSpawnPet(1358, 1000, 1000, a);
+        srv.DebugTeleport(Sid(srv, a), 1020.0f, 1000.0f);
+        srv.DebugSpawnPet(1358, 1000, 1000, Sid(srv, a));
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetFrame(1000);
@@ -23179,9 +23185,9 @@ void TestMonsterCastB7() {
         srv.SetSpellDef(4, 0, 0x811c0491u, { 1, 2 });
         srv.SetMonsterAnim(1382, 7, 8, 2, false);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugTeleport(a, ax, 1000.0f);
-        srv.DebugSpawnPet(1382, 1000, 1000, std::string());
-        if (invul) srv.DebugApplyEnchant(a, 23, 100000, 1);
+        srv.DebugTeleport(Sid(srv, a), ax, 1000.0f);
+        srv.DebugSpawnPet(1382, 1000, 1000, Sid(srv, std::string()));
+        if (invul) srv.DebugApplyEnchant(Sid(srv, a), 23, 100000, 1);
         std::vector<nox::OutPacket> o;
         srv.Tick(0, o);
         srv.DebugSetFrame(1000);
@@ -23189,7 +23195,7 @@ void TestMonsterCastB7() {
     // ① 자동 주문 — 비홀더는 24(공격) · 멀티면 4(달아날 때) / 거머리는 없음
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 3000.0f, true);
-        srv.DebugSpawnPet(1358, 2000, 2000, std::string());
+        srv.DebugSpawnPet(1358, 2000, 2000, Sid(srv, std::string()));
         Check(srv.DebugPetSpellCount(0) == 2 && srv.DebugPetHasSpell(0, 24) && srv.DebugPetHasSpell(0, 4) && srv.DebugPetSpellCount(1) == 0,
               "① 비홀더 자동 주문(24·4)이 아니거나 거머리에 주문이 있다");
     }
@@ -23223,7 +23229,7 @@ void TestMonsterCastB7() {
     // ③ 쏘기 칸(4)에서 시전 → 몬스터 전기 광선 — 빔 켜기(9e 04 · 비홀더 번호 → a)·피해 · 41 때가 다하면 20 이 빠지며 빔을 끈다
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1150.0f, false);
-        const uint16_t hp0 = srv.HealthOf(a);
+        const uint16_t hp0 = srv.HealthOf(Sid(srv, a));
         std::vector<nox::OutPacket> keep;
         int castAt = -1, initAt = -1;
         for (int t = 0; t < 400 && srv.castStat(CS::BeamHit) == 0; ++t) {
@@ -23238,9 +23244,9 @@ void TestMonsterCastB7() {
         for (const auto& m : FlattenTo(keep, a))
             if (m.size() == 7 && m[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) && m[1] == 4 && (m[3] | (m[4] << 8)) == bn && (m[5] | (m[6] << 8)) == 728) start = true;
         char msg[200]; std::snprintf(msg, sizeof(msg), "③ 비홀더 빔이 안 켜졌다 — 시전 %llu · 받음 %llu · 빔맞힘 %llu · 시전소리 %llu · 켜기 패킷 %d · 체력 %u → %u",
-            srv.castStat(CS::Cast), srv.castStat(CS::Accepted), srv.castStat(CS::BeamHit), srv.castStat(CS::InitSound), (int)start, hp0, srv.HealthOf(a));
+            srv.castStat(CS::Cast), srv.castStat(CS::Accepted), srv.castStat(CS::BeamHit), srv.castStat(CS::InitSound), (int)start, hp0, srv.HealthOf(Sid(srv, a)));
         Check(srv.castStat(CS::Cast) >= 1 && srv.castStat(CS::Accepted) >= 1 && srv.castStat(CS::BeamHit) >= 1 && srv.castStat(CS::InitSound) >= 1 &&
-              start && srv.HealthOf(a) < hp0, msg);
+              start && srv.HealthOf(Sid(srv, a)) < hp0, msg);
         if (srv.DebugAIAction(0, srv.DebugAIStackInd(0)) == 20 && srv.DebugPetDurActive(24, bn)) {
             srv.DebugAIPop(0);
             Check(!srv.DebugPetDurActive(24, bn), "③ 20 이 빠졌는데(끝내기) 빔이 곧장 안 꺼졌다");
@@ -23307,8 +23313,8 @@ void TestMonsterCastB7() {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms, 1150.0f, true);
         srv.DebugSetAutoFight(false);
         srv.DebugAIPush(0, 6);
-        srv.DebugAIPushDep(0, 24, std::string(), -1, 0, 0.0f, 1150.0f, 1000.0f);
-        srv.DebugSetPetEnemy(0, a, -1);
+        srv.DebugAIPushDep(0, 24, Sid(srv, std::string()), -1, 0, 0.0f, 1150.0f, 1000.0f);
+        srv.DebugSetPetEnemy(0, Sid(srv, a), -1);
         std::vector<nox::OutPacket> o;
         srv.DebugAITick(0, o);
         const int t = srv.DebugAIStackInd(0);
@@ -23329,7 +23335,7 @@ void TestWornLooksForNewcomer() {
     srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
     srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
     std::vector<nox::OutPacket> out;
-    srv.DebugSendWornLooks(b, a, out);
+    srv.DebugSendWornLooks(Sid(srv, b), Sid(srv, a), out);
     const auto toB = FlattenTo(out, b);
     std::vector<std::vector<uint8_t>> looks;
     for (const auto& m : toB)
@@ -23354,7 +23360,7 @@ void TestWornLooksForNewcomer() {
         std::vector<nox::OutPacket> o2;
         s2.Tick(0, o2);
         o2.clear();
-        s2.DebugSetPendingIntro(b);
+        s2.DebugSetPendingIntro(Sid(s2, b));
         s2.Tick(34, o2);
         bool gotShoe = false;
         for (const auto& m : FlattenTo(o2, b))
@@ -23388,7 +23394,7 @@ void TestPickupAutoEquip() {
         GearTemplates(srv);
         srv.DebugEnterGame(a, 728, false, CharClass::Warrior);
         srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         std::vector<nox::Server::WorldStatic> st;
         auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, bool weapon, uint32_t sub) {
             nox::Server::WorldStatic w;
@@ -23413,14 +23419,14 @@ void TestPickupAutoEquip() {
         srv.OnPacket(a, p.data(), p.size(), out);
     };
     auto worn = [&](nox::Server& srv, uint16_t nc) {
-        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == nc) return c.equipped;
+        for (const auto& c : srv.DebugInventory(Sid(srv, a))) if (c.netCode == nc) return c.equipped;
         return false;
     };
     // ① 빈 부위(투구) → 저절로 입음 · 남에게 겉모습 · ② 같은 부위 둘째 → 안 입음
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> out; get(srv, 600, out);
-        Check(worn(srv, 600) && (srv.DebugArmorEquip(a) & 0x400000), "① 빈 부위 투구를 주웠는데 안 입었다");
+        Check(worn(srv, 600) && (srv.DebugArmorEquip(Sid(srv, a)) & 0x400000), "① 빈 부위 투구를 주웠는데 안 입었다");
         // ★ 09-29 — 수식 없는 투구라 4f(`sub_4D82F0`)
         Check(FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_MUNDANE_ARMOR_EQUIP)) != nullptr, "① 남에게 투구 입음 겉모습(4f)이 안 갔다");
         std::vector<nox::OutPacket> o2; get(srv, 601, o2);
@@ -23430,14 +23436,14 @@ void TestPickupAutoEquip() {
     {
         nox::Server srv; make(srv);
         std::vector<nox::OutPacket> o0;
-        const uint16_t sword0 = srv.DebugWeaponNet(a);
+        const uint16_t sword0 = srv.DebugWeaponNet(Sid(srv, a));
         const std::vector<uint8_t> dq = CodePacket(nox::Op::TRY_DEQUIP, sword0);
         srv.OnPacket(a, dq.data(), dq.size(), o0);
-        Check(srv.DebugWeaponNet(a) == 0, "③ 전제 — 롱소드를 못 내려놓았다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 0, "③ 전제 — 롱소드를 못 내려놓았다");
         get(srv, 603, o0);
-        Check(srv.DebugWeaponNet(a) == 603 && srv.autoEquip(0) == 1, "③ 손이 빈 채 대검을 주웠는데 안 들었다");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 603 && srv.autoEquip(0) == 1, "③ 손이 빈 채 대검을 주웠는데 안 들었다");
         get(srv, 604, o0);
-        Check(srv.DebugWeaponNet(a) == 603, "③ 이미 든 채 칼을 주웠는데 바꿔 들었다(손이 빌 때만 든다)");
+        Check(srv.DebugWeaponNet(Sid(srv, a)) == 603, "③ 이미 든 채 칼을 주웠는데 바꿔 들었다(손이 빌 때만 든다)");
         get(srv, 602, o0);
         Check(!worn(srv, 602) && srv.autoEquip(3) == 1, "④ 대검을 든 채 방패를 주웠는데 입었다");
     }
@@ -23454,11 +23460,11 @@ void TestArmorEquip() {
         srv.OnPacket(a, p.data(), p.size(), out);
     };
     auto worn = [&](nox::Server& srv, uint16_t nc) {
-        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == nc) return c.equipped;
+        for (const auto& c : srv.DebugInventory(Sid(srv, a))) if (c.netCode == nc) return c.equipped;
         return false;
     };
     auto inBag = [&](nox::Server& srv, uint16_t nc) {
-        for (const auto& c : srv.DebugInventory(a)) if (c.netCode == nc) return true;
+        for (const auto& c : srv.DebugInventory(Sid(srv, a))) if (c.netCode == nc) return true;
         return false;
     };
     // 투구 A(0.1)·B(0.05)(HELMET 1) · 무거운 것(힘 999 · BREASTPLATE 4) · 방어 2.0 짜리(ARM_ARMOR 8 — 1.0 에서 잘림) · 모두 워리어만
@@ -23466,7 +23472,7 @@ void TestArmorEquip() {
         GearTemplates(srv);
         srv.DebugEnterGame(a, 728, false, cls);
         srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         std::vector<nox::Server::WorldStatic> st;
         auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, uint32_t sub) {
             nox::Server::WorldStatic w;
@@ -23487,9 +23493,9 @@ void TestArmorEquip() {
     // ① 방어값 = 입은 갑옷 합 — 워리어 기본(바지·운동화 0.01 둘 · 나무 방패 0) 0.02 → 투구 A(0.1) 를 주워 저절로 입으면 0.12 · 다음 틱 49 로 알림
     {
         nox::Server srv; make(srv, CharClass::Warrior);
-        const float v0 = srv.DebugArmorValue(a);
+        const float v0 = srv.DebugArmorValue(Sid(srv, a));
         std::vector<nox::OutPacket> out; get(srv, 700, out);
-        const float v1 = srv.DebugArmorValue(a);
+        const float v1 = srv.DebugArmorValue(Sid(srv, a));
         char msg[160]; std::snprintf(msg, sizeof(msg), "① 방어값이 입은 갑옷 합이 아니다 — %.4f → %.4f(0.02 → 0.12)", v0, v1);
         Check(std::fabs(v0 - 0.02f) < 1e-6f && worn(srv, 700) && std::fabs(v1 - 0.12f) < 1e-6f, msg);
         std::vector<nox::OutPacket> tick;
@@ -23508,7 +23514,7 @@ void TestArmorEquip() {
         std::vector<nox::OutPacket> out; get(srv, 700, out); get(srv, 701, out);
         Check(worn(srv, 700) && !worn(srv, 701), "② 전제 — 투구 A 입음 · B 안 입음이 아니다");
         std::vector<nox::OutPacket> o2; send(srv, nox::Op::TRY_EQUIP, 701, o2);
-        Check(!worn(srv, 700) && worn(srv, 701) && srv.armorGate(AG::Swapped) == 1 && std::fabs(srv.DebugArmorValue(a) - 0.07f) < 1e-6f,
+        Check(!worn(srv, 700) && worn(srv, 701) && srv.armorGate(AG::Swapped) == 1 && std::fabs(srv.DebugArmorValue(Sid(srv, a)) - 0.07f) < 1e-6f,
               "② 같은 부위 투구를 입었는데 먼저 것을 안 벗겼거나 방어값이 틀렸다");
     }
     // ③ 힘 — 요구 힘 999 는 못 입음(주울 때 저절로도 · 요청으로도) · ④ 방어 2.0 짜리는 1.0 에서 잘림
@@ -23518,7 +23524,7 @@ void TestArmorEquip() {
         send(srv, nox::Op::TRY_EQUIP, 702, out);
         Check(!worn(srv, 702) && srv.armorGate(AG::StrengthFail) == 2, "③ 힘이 모자란데 입었다(또는 두 번 다 거절이 아니다)");
         get(srv, 703, out);
-        Check(worn(srv, 703) && srv.DebugArmorValue(a) == 1.0f, "④ 방어값이 1.0 에서 안 잘렸다");
+        Check(worn(srv, 703) && srv.DebugArmorValue(Sid(srv, a)) == 1.0f, "④ 방어값이 1.0 에서 안 잘렸다");
     }
     // ⑤ 직업 — 위저드는 워리어 투구를 **아예 못 줍는다**(글 + 925) · 가방에 있어도(퀘스트에서 주운 것) 입기 요청은 직업 거절
     {
@@ -23526,7 +23532,7 @@ void TestArmorEquip() {
         std::vector<nox::OutPacket> out; get(srv, 700, out);
         Check(!inBag(srv, 700) && srv.armorGate(AG::PickupClassFail) == 1, "⑤ 위저드가 워리어 투구를 주웠다");
         nox::Session::Carried c; c.netCode = 710; c.type = 1180; c.equipBit = 0x400000; c.subclass = 0x1; c.modifiable = true;
-        srv.DebugGiveCarried(a, c);
+        srv.DebugGiveCarried(Sid(srv, a), c);
         send(srv, nox::Op::TRY_EQUIP, 710, out);
         Check(!worn(srv, 710) && srv.armorGate(AG::ClassFail) == 1, "⑤ 위저드가 워리어 투구를 입었다");
     }
@@ -23534,9 +23540,9 @@ void TestArmorEquip() {
     {
         nox::Server srv; make(srv, CharClass::Warrior);
         uint16_t shield = 0;
-        for (const auto& c : srv.DebugInventory(a)) if (c.equipped && (c.equipBit & 0x3000000)) shield = c.netCode;
+        for (const auto& c : srv.DebugInventory(Sid(srv, a))) if (c.equipped && (c.equipBit & 0x3000000)) shield = c.netCode;
         Check(shield != 0, "⑥ 전제 — 입은 방패가 없다");
-        srv.DebugSetState(a, 16);
+        srv.DebugSetState(Sid(srv, a), 16);
         std::vector<nox::OutPacket> out; send(srv, nox::Op::TRY_DEQUIP, shield, out);
         Check(!worn(srv, shield) && srv.armorGate(AG::ShieldBlockIdle) == 1 &&
               FindMsg(FlattenTo(out, b), static_cast<uint8_t>(nox::Op::REPORT_ARMOR_DEQUIP)) != nullptr, "⑥ 막기 자세에서 방패를 벗었는데 자세 13·알림이 아니다");
@@ -23545,7 +23551,7 @@ void TestArmorEquip() {
     {
         nox::Server srv; make(srv, CharClass::Warrior);
         uint16_t wood = 0;
-        for (const auto& c : srv.DebugInventory(a)) if (c.equipped && (c.equipBit & 0x3000000)) wood = c.netCode;
+        for (const auto& c : srv.DebugInventory(Sid(srv, a))) if (c.equipped && (c.equipBit & 0x3000000)) wood = c.netCode;
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic w; w.netCode = 720; w.type = 1160; w.x = 1000; w.y = 1000; w.modifiable = true; w.equipBit = 0x2000000; w.subclass = 0x2; w.weight = 5;
         st.push_back(w);
@@ -23557,7 +23563,7 @@ void TestArmorEquip() {
     // ⑧ 더하는 차례 — 위저드 기본(셔츠·바지·운동화 0.01 · 로브 0.2)을 **새것(로브)부터** 더하면 0x3e6b8520(정품 녹음 `49 20 85 6b 3e` · 3-d)
     {
         nox::Server srv; make(srv, CharClass::Wizard);
-        const float v = srv.DebugArmorValue(a);
+        const float v = srv.DebugArmorValue(Sid(srv, a));
         uint32_t bits = 0; std::memcpy(&bits, &v, 4);
         char msg[120]; std::snprintf(msg, sizeof(msg), "⑧ 위저드 기본 방어값이 0x3e6b8520 이 아니다 — 0x%08x", bits);
         Check(bits == 0x3e6b8520u, msg);
@@ -23600,11 +23606,11 @@ void TestBowQuiver() {
         return n;
     };
     auto worn = [&](nox::Server& srv, uint16_t nc) {
-        for (const auto& x : srv.DebugInventory(c)) if (x.netCode == nc) return x.equipped;
+        for (const auto& x : srv.DebugInventory(Sid(srv, c))) if (x.netCode == nc) return x.equipped;
         return false;
     };
     auto ch = [&](nox::Server& srv, uint16_t nc) {   // (화살 수 × 1000 + 최대) · 없으면 −1
-        for (const auto& x : srv.DebugInventory(c)) if (x.netCode == nc) return static_cast<int>(x.charges) * 1000 + x.chargesMax;
+        for (const auto& x : srv.DebugInventory(Sid(srv, c))) if (x.netCode == nc) return static_cast<int>(x.charges) * 1000 + x.chargesMax;
         return -1;
     };
     auto chMsg = [&](const std::vector<nox::OutPacket>& out, uint16_t nc, int cur, int max) {
@@ -23634,8 +23640,8 @@ void TestBowQuiver() {
         srv.SetWeaponDef(1168, 4, 0);
         srv.DebugEnterGame(c, 728, false, CharClass::Conjurer);   // 힘 55 — 석궁(34)도 든다
         srv.DebugEnterGame(w, 733, false, CharClass::Warrior);
-        srv.DebugMoveTo(c, 1000, 1000);
-        srv.DebugMoveTo(w, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, w), 1000, 1000);
         std::vector<nox::Server::WorldStatic> st;
         auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, nox::PickupFn pf, uint8_t cur, uint8_t max, uint16_t snd) {
             nox::Server::WorldStatic x;
@@ -23659,9 +23665,9 @@ void TestBowQuiver() {
         std::vector<nox::OutPacket> o;
         send(srv, c, nox::Op::TRY_GET, weapon, o);
         send(srv, c, nox::Op::TRY_GET, kQ1, o);
-        srv.DebugSetFacing(c, 0);
-        srv.DebugMoveTo(w, 1000, 1600);
-        srv.DebugMoveTo(c, 1000, 1000);                     // ⚠ 줍는 동안 같은 자리의 w 와 몸 밀기로 떨어졌다(y 1018.7 로 쏜 전례) — 다시 세운다
+        srv.DebugSetFacing(Sid(srv, c), 0);
+        srv.DebugMoveTo(Sid(srv, w), 1000, 1600);
+        srv.DebugMoveTo(Sid(srv, c), 1000, 1000);                     // ⚠ 줍는 동안 같은 자리의 w 와 몸 밀기로 떨어졌다(y 1018.7 로 쏜 전례) — 다시 세운다
         run(srv, ms, 5);
     };
     // 한 번 쏘고(클릭) 쏜 프레임까지 — 돌려주는 값 = 쏜 프레임 − 공격 상태가 선 프레임(못 쏘면 −1)
@@ -23671,7 +23677,7 @@ void TestBowQuiver() {
         int startF = -1;
         for (int t = 0; t < 20; ++t) {
             run(srv, ms, 1, &keep);
-            if (startF < 0 && (srv.DebugStateOf(c) == nox::kPlayerStateAttack || srv.bowShot(until) != n0)) startF = static_cast<int>(srv.frame());
+            if (startF < 0 && (srv.DebugStateOf(Sid(srv, c)) == nox::kPlayerStateAttack || srv.bowShot(until) != n0)) startF = static_cast<int>(srv.frame());
             if (srv.bowShot(until) != n0) return static_cast<int>(srv.frame()) - startF;
         }
         return -1;
@@ -23681,10 +23687,10 @@ void TestBowQuiver() {
     {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms);
         std::vector<nox::OutPacket> out; send(srv, w, nox::Op::TRY_GET, kBow, out);
-        Check(!srv.Carries(w, kBow) && HasPriMsg(out, w, "weapon.c:WeaponEquipClassFail") && heard(out, w, 925) == 1 && heard(out, c, 925) == 0 &&
+        Check(!srv.Carries(Sid(srv, w), kBow) && HasPriMsg(out, w, "weapon.c:WeaponEquipClassFail") && heard(out, w, 925) == 1 && heard(out, c, 925) == 0 &&
               srv.weaponPick(WP::ClassFail) == 1, "① 워리어가 컨저러 전용 활을 주웠다(또는 글·925·칸이 안 맞다)");
         std::vector<nox::OutPacket> o2; send(srv, c, nox::Op::TRY_GET, kBow, o2);
-        Check(srv.Carries(c, kBow) && srv.DebugWeaponNet(c) == kBow && srv.DebugWeaponEquip(c) == 0x4, "① 컨저러가 활을 주워 저절로 안 들었다");
+        Check(srv.Carries(Sid(srv, c), kBow) && srv.DebugWeaponNet(Sid(srv, c)) == kBow && srv.DebugWeaponEquip(Sid(srv, c)) == 0x4, "① 컨저러가 활을 주워 저절로 안 들었다");
         Check(srv.weaponPick(WP::Sound) == 1 && heard(o2, c, 844) == 1, "① 활 줍는 소리 844 가 한 번이 아니다");
     }
     // ②~⑤ 화살통 줍기·합치기·바꿔 들기
@@ -23693,22 +23699,22 @@ void TestBowQuiver() {
         std::vector<nox::OutPacket> o0; send(srv, c, nox::Op::TRY_GET, kBow, o0);
         // ② 활을 들었고 든 화살통이 없으면 주운 화살통을 저절로 든다 · 충전 알림 (20, 20) · 무기 칸은 활 그대로 · 비트 = 4 | 2
         std::vector<nox::OutPacket> o1; send(srv, c, nox::Op::TRY_GET, kQ1, o1);
-        Check(worn(srv, kQ1) && srv.DebugWeaponNet(c) == kBow && srv.DebugWeaponEquip(c) == 0x6 && srv.weaponPick(WP::QuiverAutoEquip) == 1 &&
+        Check(worn(srv, kQ1) && srv.DebugWeaponNet(Sid(srv, c)) == kBow && srv.DebugWeaponEquip(Sid(srv, c)) == 0x6 && srv.weaponPick(WP::QuiverAutoEquip) == 1 &&
               srv.weaponPick(WP::ChargesReport) == 0, "② 활을 든 채 주운 화살통을 저절로 안 들었다(또는 무기 칸·비트가 틀렸다)");
         Check(chMsg(o1, kQ1, 20, 20), "② 화살통을 들 때 충전 알림(64 · 20/20)이 안 갔다");
         // ③ 같은 화살통을 또 주우면 합친다 — 40/40 · 바닥 것은 없어지고 가방에 안 들어감
         std::vector<nox::OutPacket> o2; send(srv, c, nox::Op::TRY_GET, kQ2, o2);
         int sx = 0, sy = 0;
-        Check(!srv.Carries(c, kQ2) && ch(srv, kQ1) == 40040 && srv.weaponPick(WP::AmmoMerged) == 1 && chMsg(o2, kQ1, 40, 40) &&
+        Check(!srv.Carries(Sid(srv, c), kQ2) && ch(srv, kQ1) == 40040 && srv.weaponPick(WP::AmmoMerged) == 1 && chMsg(o2, kQ1, 40, 40) &&
               !srv.DebugStaticPos(kQ2, sx, sy), "③ 같은 화살통을 합치지 않았다(40/40 · 바닥에서 지움)");
         // ④ 최대 합이 250 을 넘으면(40 + 240) 안 합치고 따로 든다 — 든 화살통이 있어 저절로 안 들고 충전 알림만
         std::vector<nox::OutPacket> o3; send(srv, c, nox::Op::TRY_GET, kQBig, o3);
-        Check(srv.Carries(c, kQBig) && !worn(srv, kQBig) && ch(srv, kQ1) == 40040 && srv.weaponPick(WP::AmmoMerged) == 1 &&
+        Check(srv.Carries(Sid(srv, c), kQBig) && !worn(srv, kQBig) && ch(srv, kQ1) == 40040 && srv.weaponPick(WP::AmmoMerged) == 1 &&
               srv.weaponPick(WP::ChargesReport) == 1 && chMsg(o3, kQBig, 240, 240), "④ 최대 합 250 을 넘는데 합쳤다(또는 충전 알림이 없다)");
         // ⑤ 그 화살통을 들면 먼저 든 것(Q1)을 내려놓는다 — 화살통 내려놓음 1 · 무기 칸은 활 · 비트 6
         std::vector<nox::OutPacket> o4; send(srv, c, nox::Op::TRY_EQUIP, kQBig, o4);
-        Check(worn(srv, kQBig) && !worn(srv, kQ1) && srv.dequipGate(nox::DequipGate::QuiverOff) == 1 && srv.DebugWeaponNet(c) == kBow &&
-              srv.DebugWeaponEquip(c) == 0x6, "⑤ 새 화살통을 들 때 먼저 든 화살통을 안 내려놓았다");
+        Check(worn(srv, kQBig) && !worn(srv, kQ1) && srv.dequipGate(nox::DequipGate::QuiverOff) == 1 && srv.DebugWeaponNet(Sid(srv, c)) == kBow &&
+              srv.DebugWeaponEquip(Sid(srv, c)) == 0x6, "⑤ 새 화살통을 들 때 먼저 든 화살통을 안 내려놓았다");
     }
     // ⑥ 활 없이 화살통을 주우면 저절로 안 들고 충전만 알림 · 가방에 활이 있으면 화살통 들기가 활부터 든다(`53A680`)
     {
@@ -23717,10 +23723,10 @@ void TestBowQuiver() {
         Check(!worn(srv, kQ1) && srv.weaponPick(WP::ChargesReport) == 1 && chMsg(o0, kQ1, 20, 20), "⑥ 활 없이 주운 화살통을 들었거나 충전 알림이 없다");
         send(srv, c, nox::Op::TRY_GET, kBow, o0);
         send(srv, c, nox::Op::TRY_DEQUIP, kBow, o0);
-        Check(srv.DebugWeaponNet(c) == 0 && !worn(srv, kQ1), "⑥ 활을 내려놓지 못했다 — 이 시험이 무의미해진다");
+        Check(srv.DebugWeaponNet(Sid(srv, c)) == 0 && !worn(srv, kQ1), "⑥ 활을 내려놓지 못했다 — 이 시험이 무의미해진다");
         const unsigned long long eq0 = srv.equipGate(nox::EquipGate::Equipped);
         std::vector<nox::OutPacket> o1; send(srv, c, nox::Op::TRY_EQUIP, kQ1, o1);
-        Check(worn(srv, kQ1) && srv.DebugWeaponNet(c) == kBow && srv.DebugWeaponEquip(c) == 0x6 && srv.equipGate(nox::EquipGate::Equipped) == eq0 + 2,
+        Check(worn(srv, kQ1) && srv.DebugWeaponNet(Sid(srv, c)) == kBow && srv.DebugWeaponEquip(Sid(srv, c)) == 0x6 && srv.equipGate(nox::EquipGate::Equipped) == eq0 + 2,
               "⑥ 가방에 활이 있는데 화살통 들기가 활부터 안 들었다");
     }
     // ⑦ 활을 내려놓으면 화살통도 내려놓는다(`:4771~4773`) · 화살통만 내려놓으면 무기 칸은 활 그대로(`:4775~4783`)
@@ -23728,11 +23734,11 @@ void TestBowQuiver() {
         nox::Server srv; uint32_t ms = 0; mk(srv, ms);
         std::vector<nox::OutPacket> o0; send(srv, c, nox::Op::TRY_GET, kBow, o0); send(srv, c, nox::Op::TRY_GET, kQ1, o0);
         std::vector<nox::OutPacket> o1; send(srv, c, nox::Op::TRY_DEQUIP, kBow, o1);
-        Check(!worn(srv, kQ1) && !worn(srv, kBow) && srv.DebugWeaponEquip(c) == 0 && srv.dequipGate(nox::DequipGate::QuiverOff) == 1 &&
+        Check(!worn(srv, kQ1) && !worn(srv, kBow) && srv.DebugWeaponEquip(Sid(srv, c)) == 0 && srv.dequipGate(nox::DequipGate::QuiverOff) == 1 &&
               srv.dequipGate(nox::DequipGate::Dequipped) == 1, "⑦ 활을 내려놓았는데 화살통이 남았다");
         send(srv, c, nox::Op::TRY_EQUIP, kQ1, o1);
         std::vector<nox::OutPacket> o2; send(srv, c, nox::Op::TRY_DEQUIP, kQ1, o2);
-        Check(!worn(srv, kQ1) && srv.DebugWeaponNet(c) == kBow && srv.DebugWeaponEquip(c) == 0x4 && srv.dequipGate(nox::DequipGate::QuiverOff) == 2 &&
+        Check(!worn(srv, kQ1) && srv.DebugWeaponNet(Sid(srv, c)) == kBow && srv.DebugWeaponEquip(Sid(srv, c)) == 0x4 && srv.dequipGate(nox::DequipGate::QuiverOff) == 2 &&
               FindMsg(FlattenTo(o2, c), static_cast<uint8_t>(nox::Op::REPORT_DEQUIP)), "⑦ 화살통만 내려놓았는데 활까지 놓았거나 알림(0x61)이 없다");
     }
     // ⑧ 쏘기 — 칸 5(프레임 10)에 ArcherArrow 하나(동쪽으로) · 화살통 19/20 알림 · 885 · 활은 끝나면 14 → 1초(30프레임) 넘으면 13
@@ -23743,35 +23749,35 @@ void TestBowQuiver() {
         char m[200]; std::snprintf(m, sizeof(m), "⑧ 활이 공격 시작 뒤 프레임 10 에 안 쐈다(%d)", dt);
         Check(dt == 10, m);
         const auto& ml = srv.missileList();
-        Check(ml.size() == 1 && ml[0].type == 527 && ml[0].velX > 49.0f && ml[0].posX > 1000.0f && ml[0].owner == c, "⑧ 동쪽으로 나는 ArcherArrow 하나가 안 생겼다");
+        Check(ml.size() == 1 && ml[0].type == 527 && ml[0].velX > 49.0f && ml[0].posX > 1000.0f && ml[0].owner == Sid(srv, c), "⑧ 동쪽으로 나는 ArcherArrow 하나가 안 생겼다");
         Check(ch(srv, kQ1) == 19020 && chMsg(keep, kQ1, 19, 20) && heard(keep, c, 885) == 1, "⑧ 화살통이 19/20 이 아니거나 알림·885 가 없다");
-        Check(srv.DebugStateOf(c) == 14, "⑧ 활을 쏜 뒤 상태 14 가 아니다");
+        Check(srv.DebugStateOf(Sid(srv, c)) == 14, "⑧ 활을 쏜 뒤 상태 14 가 아니다");
         run(srv, ms, 30);                                   // `프레임 − Field34 > 30` — 30 째는 아직
-        Check(srv.DebugStateOf(c) == 14 && srv.bowPoseEnded() == 0, "⑧ 30프레임째인데 14 가 끝났다(문턱은 30 초과)");
+        Check(srv.DebugStateOf(Sid(srv, c)) == 14 && srv.bowPoseEnded() == 0, "⑧ 30프레임째인데 14 가 끝났다(문턱은 30 초과)");
         run(srv, ms, 1);
-        Check(srv.DebugStateOf(c) == nox::kPlayerStateIdle && srv.bowPoseEnded() == 1, "⑧ 31프레임째인데 14 → 13 이 아니다");
+        Check(srv.DebugStateOf(Sid(srv, c)) == nox::kPlayerStateIdle && srv.bowPoseEnded() == 1, "⑧ 31프레임째인데 14 → 13 이 아니다");
     }
     // ⑨ 화살 피해 — 동쪽 1100 의 워리어가 맞는다(피해 1 · 화살 지움) · 피해 식 = (힘 − 20) × 1.481 + 10 을 +0.5 버림
     {
         nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
-        srv.DebugMoveTo(w, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, w), 1100, 1000);
         run(srv, ms, 1);
         std::vector<nox::OutPacket> keep;
         shoot(srv, ms, keep);
         for (int t = 0; t < 5 && srv.arrowHit(AH::Hurt) == 0; ++t) run(srv, ms, 1, &keep);
-        Check(srv.arrowHit(AH::Hurt) == 1 && srv.HealthOf(w) < nox::HealthOnline(CharClass::Warrior) && srv.missileList().empty(),
+        Check(srv.arrowHit(AH::Hurt) == 1 && srv.HealthOf(Sid(srv, w)) < nox::HealthOnline(CharClass::Warrior) && srv.missileList().empty(),
               "⑨ 화살이 워리어를 안 때렸거나 안 지워졌다");
         char m[200];
         std::snprintf(m, sizeof(m), "⑨ 화살 피해 식이 다르다 — 컨저러 %d(62) · 쏜 이 없음 %d(25) · 쇠뇌살 %d(255) · 약한 화살 %d(10)",
-                      srv.DebugArrowDamage(c, 527), srv.DebugArrowDamage("none", 527), srv.DebugArrowDamage(c, 531), srv.DebugArrowDamage(c, 2677));
-        Check(srv.DebugArrowDamage(c, 527) == 62 && srv.DebugArrowDamage("none", 527) == 25 && srv.DebugArrowDamage(c, 531) == 255 &&
-              srv.DebugArrowDamage(c, 2677) == 10, m);
+                      srv.DebugArrowDamage(Sid(srv, c), 527), srv.DebugArrowDamage(Sid(srv, "none"), 527), srv.DebugArrowDamage(Sid(srv, c), 531), srv.DebugArrowDamage(Sid(srv, c), 2677));
+        Check(srv.DebugArrowDamage(Sid(srv, c), 527) == 62 && srv.DebugArrowDamage(Sid(srv, "none"), 527) == 25 && srv.DebugArrowDamage(Sid(srv, c), 531) == 255 &&
+              srv.DebugArrowDamage(Sid(srv, c), 2677) == 10, m);
     }
     // ⑩ 석궁 — 칸 1(프레임 2)에 ArcherBolt · 886 · 255 로 죽이면 지우지 않고 뚫고 간다
     {
         nox::Server srv; uint32_t ms = 0; armed(srv, ms, kXbow);
-        Check(srv.DebugWeaponEquip(c) == 0xA, "⑩ 석궁·화살통을 못 들었다 — 이 시험이 무의미해진다");
-        srv.DebugMoveTo(w, 1100, 1000);
+        Check(srv.DebugWeaponEquip(Sid(srv, c)) == 0xA, "⑩ 석궁·화살통을 못 들었다 — 이 시험이 무의미해진다");
+        srv.DebugMoveTo(Sid(srv, w), 1100, 1000);
         run(srv, ms, 1);
         std::vector<nox::OutPacket> keep;
         const int dt = shoot(srv, ms, keep);
@@ -23780,17 +23786,17 @@ void TestBowQuiver() {
         Check(heard(keep, c, 886) == 1 && heard(keep, c, 885) == 0, "⑩ 석궁 쏘는 소리가 886 이 아니다");
         for (int t = 0; t < 5 && srv.arrowHit(AH::BoltPass) == 0; ++t) run(srv, ms, 1, &keep);
         std::snprintf(m, sizeof(m), "⑩ 쇠뇌살이 죽인 것을 뚫고 가지 않았다(뚫음 %llu · 피해 %llu · 안들어감 %llu · w 체력 %u · 화살 %zu)",
-                      srv.arrowHit(AH::BoltPass), srv.arrowHit(AH::Hurt), srv.arrowHit(AH::NoHurt), srv.HealthOf(w), srv.missileList().size());
-        Check(srv.arrowHit(AH::BoltPass) == 1 && srv.HealthOf(w) == 0 && srv.missileList().size() == 1 && srv.missileList()[0].type == 531, m);
+                      srv.arrowHit(AH::BoltPass), srv.arrowHit(AH::Hurt), srv.arrowHit(AH::NoHurt), srv.HealthOf(Sid(srv, w)), srv.missileList().size());
+        Check(srv.arrowHit(AH::BoltPass) == 1 && srv.HealthOf(Sid(srv, w)) == 0 && srv.missileList().size() == 1 && srv.missileList()[0].type == 531, m);
     }
     // ⑪ 재장전 칸 — 2 로 두면 쏠 때 ReloadingQuiver · 칸 1 · 화살 없음 · 887
     {
         nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
-        srv.DebugSetBowReload(c, kBow, 2);
+        srv.DebugSetBowReload(Sid(srv, c), kBow, 2);
         std::vector<nox::OutPacket> keep;
         shoot(srv, ms, keep, BS::Reloading);
         int reload = -1;
-        for (const auto& x : srv.DebugInventory(c)) if (x.netCode == kBow) reload = x.bowReload;
+        for (const auto& x : srv.DebugInventory(Sid(srv, c))) if (x.netCode == kBow) reload = x.bowReload;
         Check(srv.bowShot(BS::Reloading) == 1 && srv.bowShot(BS::Shot) == 0 && srv.missileList().empty() && reload == 1 &&
               HasPriMsg(keep, c, "pattack.c:ReloadingQuiver") && heard(keep, c, 887) == 1, "⑪ 재장전 칸이 있는데 쐈거나 칸·글·887 이 틀렸다");
         // 다시 들면 칸이 0 이 된다(`:4984~4986`)
@@ -23798,13 +23804,13 @@ void TestBowQuiver() {
         std::vector<nox::OutPacket> o1;
         send(srv, c, nox::Op::TRY_DEQUIP, kBow, o1);
         send(srv, c, nox::Op::TRY_EQUIP, kBow, o1);
-        for (const auto& x : srv.DebugInventory(c)) if (x.netCode == kBow) reload = x.bowReload;
-        Check(srv.DebugWeaponNet(c) == kBow && reload == 0, "⑪ 활을 다시 들었는데 재장전 칸이 0 이 아니다");
+        for (const auto& x : srv.DebugInventory(Sid(srv, c))) if (x.netCode == kBow) reload = x.bowReload;
+        Check(srv.DebugWeaponNet(Sid(srv, c)) == kBow && reload == 0, "⑪ 활을 다시 들었는데 재장전 칸이 0 이 아니다");
     }
     // ⑪b 든 화살통이 0발이면 쏘지 않는다 — 가방 첫 화살통이 그 든 것이라 다시 들기도 「이미 듦」으로 실패 → NoQuiver · 화살통 0/20 그대로
     {
         nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
-        srv.DebugSetCharges(c, kQ1, 0, 20);
+        srv.DebugSetCharges(Sid(srv, c), kQ1, 0, 20);
         std::vector<nox::OutPacket> keep;
         shoot(srv, ms, keep, BS::NoQuiver);
         Check(srv.bowShot(BS::NoQuiver) == 1 && srv.bowShot(BS::Shot) == 0 && srv.missileList().empty() && ch(srv, kQ1) == 20 && worn(srv, kQ1),
@@ -23815,13 +23821,13 @@ void TestBowQuiver() {
         nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
         std::vector<nox::OutPacket> o0;
         if (spare) send(srv, c, nox::Op::TRY_GET, kQBig, o0);
-        srv.DebugSetCharges(c, kQ1, 1, 20);
+        srv.DebugSetCharges(Sid(srv, c), kQ1, 1, 20);
         std::vector<nox::OutPacket> keep;
         shoot(srv, ms, keep);
         bool drop = false;
         for (const auto& m : FlattenTo(keep, c))
             if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_DROP) && (m[1] | (m[2] << 8)) == kQ1) drop = true;
-        Check(!srv.Carries(c, kQ1) && drop && chMsg(keep, kQ1, 0, 20) &&
+        Check(!srv.Carries(Sid(srv, c), kQ1) && drop && chMsg(keep, kQ1, 0, 20) &&
               FindMsg(FlattenTo(keep, w), static_cast<uint8_t>(nox::Op::REPORT_WEAPON_DEQUIP)), "⑫ 빈 화살통을 안 지웠다(0/20 알림 · 본인 4d · 남에게 벗음)");
         run(srv, ms, 31);                                   // 14 → 13
         std::vector<nox::OutPacket> k2;
@@ -23848,7 +23854,7 @@ void TestBowQuiver() {
         std::vector<nox::OutPacket> keep;
         click(srv, keep);
         run(srv, ms, 10, &keep);                            // 쏘기 한 프레임 전(클릭은 다음 프레임에 공격이 서고 그 뒤 10 째에 쏜다)
-        srv.DebugMoveTo(c, 1010, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1010, 1000);
         run(srv, ms, 1, &keep);
         char m[200]; std::snprintf(m, sizeof(m), "⑭ 코앞이 벽인데 화살을 만들었다(막힘 %llu · 쏨 %llu · 화살통 %d)",
                                    srv.bowShot(BS::Blocked), srv.bowShot(BS::Shot), ch(srv, kQ1));
@@ -23869,9 +23875,9 @@ void TestBowQuiver() {
         nox::Server srv; uint32_t ms = 0; armed(srv, ms, kBow);
         std::vector<nox::OutPacket> keep;
         shoot(srv, ms, keep);
-        srv.DebugMoveTo(c, 1214, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1214, 1000);
         for (int t = 0; t < 6 && srv.arrowHit(AH::Owner) == 0; ++t) run(srv, ms, 1);
-        Check(srv.arrowHit(AH::Owner) >= 1 && srv.missileList().size() == 1 && srv.HealthOf(c) == nox::HealthOnline(CharClass::Conjurer),
+        Check(srv.arrowHit(AH::Owner) >= 1 && srv.missileList().size() == 1 && srv.HealthOf(Sid(srv, c)) == nox::HealthOnline(CharClass::Conjurer),
               "⑯ 쏜 이에게 닿은 화살이 지워졌거나 피해를 줬다");
     }
     // ⑰ 장애물 — 동쪽 1100 의 원 장애물: 기본 피해 함수면 Obstacle · 지움 / 화약이면 종류 11 을 안 받아 NoHurt · 그대로 날아감
@@ -23897,22 +23903,22 @@ void TestBowQuiver() {
         st.push_back(gs);
         srv.SetWorldStatics(st);
         srv.SetWeaponDef(1170, 1, 0);
-        srv.DebugMoveTo(w, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, w), 1100, 1000);
         std::vector<nox::OutPacket> o0;
         send(srv, w, nox::Op::TRY_GET, 610, o0);
         send(srv, w, nox::Op::TRY_EQUIP, 610, o0);
-        Check(srv.DebugWeaponEquip(w) == 0x400, "⑱ 워리어가 대검을 못 들었다 — 이 시험이 무의미해진다");
+        Check(srv.DebugWeaponEquip(Sid(srv, w)) == 0x400, "⑱ 워리어가 대검을 못 들었다 — 이 시험이 무의미해진다");
         run(srv, ms, 1);
-        const uint16_t hp0 = srv.HealthOf(w);
+        const uint16_t hp0 = srv.HealthOf(Sid(srv, w));
         std::vector<nox::OutPacket> keep;
         shoot(srv, ms, keep);
-        srv.DebugSetFacing(w, 128);                         // c(서쪽)를 봄
-        srv.DebugSetState(w, 18);
+        srv.DebugSetFacing(Sid(srv, w), 128);                         // c(서쪽)를 봄
+        srv.DebugSetState(Sid(srv, w), 18);
         for (int t = 0; t < 3 && srv.arrowHit(AH::NoHurt) == 0; ++t) run(srv, ms, 1);
         char m[200];
         std::snprintf(m, sizeof(m), "⑱ 막힌 화살이 지워졌거나 피해가 들어갔다(안들어감 %llu · 피해 %llu · 화살 %zu · 체력 %u→%u)",
-                      srv.arrowHit(AH::NoHurt), srv.arrowHit(AH::Hurt), srv.missileList().size(), hp0, srv.HealthOf(w));
-        Check(srv.arrowHit(AH::NoHurt) == 1 && srv.arrowHit(AH::Hurt) == 0 && srv.missileList().size() == 1 && srv.HealthOf(w) == hp0, m);
+                      srv.arrowHit(AH::NoHurt), srv.arrowHit(AH::Hurt), srv.missileList().size(), hp0, srv.HealthOf(Sid(srv, w)));
+        Check(srv.arrowHit(AH::NoHurt) == 1 && srv.arrowHit(AH::Hurt) == 0 && srv.missileList().size() == 1 && srv.HealthOf(Sid(srv, w)) == hp0, m);
     }
     // ⑲ (곁가지) 버린 물약이 「물약 줍기」를 되찾는다 — 전에는 바닥으로 돌아가며 `potionPickup` 을 잃어, 다쳐서 다시 주워도 그 자리에서 안 마셨다
     {
@@ -23926,17 +23932,17 @@ void TestBowQuiver() {
         srv.SetWorldStatics(st);
         std::vector<nox::OutPacket> o0;
         send(srv, w, nox::Op::TRY_GET, 620, o0);           // 가득 차 있어 안 마시고 가방으로
-        Check(srv.Carries(w, 620) && srv.drankOnPickup() == 0, "⑲ 가득 찬 채 주운 물약을 마셨다 — 이 시험이 무의미해진다");
+        Check(srv.Carries(Sid(srv, w), 620) && srv.drankOnPickup() == 0, "⑲ 가득 찬 채 주운 물약을 마셨다 — 이 시험이 무의미해진다");
         std::vector<uint8_t> d(nox::kWireHeaderSize + 7, 0);
         d[nox::kWireHeaderSize + 0] = static_cast<uint8_t>(nox::Op::TRY_DROP);
         d[nox::kWireHeaderSize + 1] = 620 & 0xff; d[nox::kWireHeaderSize + 2] = 620 >> 8;
         d[nox::kWireHeaderSize + 3] = 1000 & 0xff; d[nox::kWireHeaderSize + 4] = 1000 >> 8;
         d[nox::kWireHeaderSize + 5] = 1000 & 0xff; d[nox::kWireHeaderSize + 6] = 1000 >> 8;
         srv.OnPacket(w, d.data(), d.size(), o0);
-        Check(!srv.Carries(w, 620), "⑲ 물약을 못 버렸다 — 이 시험이 무의미해진다");
-        srv.Damage(w, 50, o0);
+        Check(!srv.Carries(Sid(srv, w), 620), "⑲ 물약을 못 버렸다 — 이 시험이 무의미해진다");
+        srv.Damage(Sid(srv, w), 50, o0);
         std::vector<nox::OutPacket> o1; send(srv, w, nox::Op::TRY_GET, 620, o1);
-        Check(srv.drankOnPickup() == 1 && !srv.Carries(w, 620), "⑲ 버렸다 다시 주운 물약을 다친 채인데 그 자리에서 안 마셨다");
+        Check(srv.drankOnPickup() == 1 && !srv.Carries(Sid(srv, w), 620), "⑲ 버렸다 다시 주운 물약을 다친 채인데 그 자리에서 안 마셨다");
     }
     std::printf("  09-29 — 활·석궁·화살통: 줍기(직업·합치기 250·저절로 듦·충전 알림·소리) · 들기(활부터·먼저 든 화살통 놓기) · 놓기(활이면 화살통도) ·"
                 " 쏘기(칸 5·칸 1 · 19/20 · 885/886 · 14→13) · 피해 62 · 쇠뇌살 뚫기 · 재장전 칸 · 빈 화살통 지움·바꿔 듦·NoQuiver · 벽·막힘·수명·쏜 이·장애물\n");
@@ -24009,7 +24015,7 @@ void TestReconnectAfterClose() {
         nox::Server srv;
         srv.Network().SetXorKey(0);
         std::vector<nox::OutPacket> o1; srv.OnPacket(b, conn, sizeof(conn), o1);
-        std::vector<nox::OutPacket> o2; srv.DebugKickPlayer(b, o2);
+        std::vector<nox::OutPacket> o2; srv.DebugKickPlayer(Sid(srv, b), o2);
         const bool gone = !srv.Network().IsKeyed(b);
         std::vector<nox::OutPacket> o3; srv.OnPacket(b, conn, sizeof(conn), o3);
         char m[160];
@@ -24018,6 +24024,41 @@ void TestReconnectAfterClose() {
         Check(accepts(o1, b) == 1 && gone && accepts(o3, b) == 1, m);
     }
     std::printf("  10-08 조각 3 — 닫기·내보내기 뒤 같은 주소의 다시 접속에 새 키(통신 층 상태도 같이 지움)\n");
+}
+
+// ── 10-08 플랜 A 조각 4 — 게임은 세션 번호로 사람을 가른다. 번호는 통신 층이 처음 보는 주소에 매기고, 지우면 버린다 ─────────
+//   ① 둘이 접속하면 번호가 서로 다르고, 그 번호로 보낸 것은 그 사람 주소로 나간다
+//   ② 내보낸 뒤 같은 주소로 다시 접속하면 **새 번호**다 — 옛 번호는 주소가 비고, 옛 번호로 보내면 버리고 센다
+void TestSessionIds() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    const uint8_t body[1] = { static_cast<uint8_t>(nox::Op::CODE4) };
+    const std::string a = "10.10.8.7:10807", b = "10.10.8.8:10808";
+    nox::Server srv;
+    srv.Network().SetXorKey(0);
+    std::vector<nox::OutPacket> o0;
+    srv.OnPacket(a, conn, sizeof(conn), o0);
+    srv.OnPacket(b, conn, sizeof(conn), o0);
+    const int64_t sa = srv.Network().SessionIdOf(a), sb = srv.Network().SessionIdOf(b);
+    {
+        std::vector<nox::OutPacket> o1; srv.Network().RequestSendMsg(sb, /*reliable=*/false, 0, body, sizeof(body), o1);
+        const bool toB = o1.size() == 1 && o1[0].to == b;
+        char m[200];
+        std::snprintf(m, sizeof(m), "① 번호 a %lld · b %lld · b 번호로 보낸 조각 %zu개가 b 주소로 %d · a 번호의 주소 %s",
+                      (long long)sa, (long long)sb, o1.size(), (int)toB, srv.Network().AddrOf(sa).c_str());
+        Check(sa != nox::kNoSession && sb != nox::kNoSession && sa != sb && toB && srv.Network().AddrOf(sa) == a, m);
+    }
+    {
+        std::vector<nox::OutPacket> o2; srv.DebugKickPlayer(sb, o2);
+        const bool addrGone = srv.Network().AddrOf(sb).empty();
+        std::vector<nox::OutPacket> o3; srv.OnPacket(b, conn, sizeof(conn), o3);
+        const int64_t sb2 = srv.Network().SessionIdOf(b);
+        std::vector<nox::OutPacket> o4; srv.Network().RequestSendMsg(sb, /*reliable=*/false, 0, body, sizeof(body), o4);
+        char m[200];
+        std::snprintf(m, sizeof(m), "② 내보낸 뒤 — 옛 번호 주소 비움 %d · 다시 접속 번호 %lld(옛 %lld) · 옛 번호로 보낸 조각 %zu · 버림 %llu",
+                      (int)addrGone, (long long)sb2, (long long)sb, o4.size(), srv.Network().sendNoSession());
+        Check(addrGone && sb2 != nox::kNoSession && sb2 != sb && o4.empty() && srv.Network().sendNoSession() == 1, m);
+    }
+    std::printf("  10-08 조각 4 — 세션 번호: 사람마다 다르고 · 그 번호로 보낸 것은 그 주소로 · 지운 뒤 다시 오면 새 번호\n");
 }
 
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
@@ -24119,10 +24160,10 @@ void TestNewPlayerGearBits() {
     srv.SetJoinTemplate(join.data(), join.size());
     srv.DebugEnterGame(a, 728, false, CharClass::Wizard);
     srv.DebugEnterGame(b, 733, false, CharClass::Warrior);
-    const uint32_t armorA = srv.DebugArmorEquip(a);
+    const uint32_t armorA = srv.DebugArmorEquip(Sid(srv, a));
     Check(armorA & 0x4000, "전제 — 위저드가 로브를 안 입었다(이 시험이 무의미해진다)");
     std::vector<nox::OutPacket> out;
-    srv.DebugEmitNewPlayer(b, a, out);
+    srv.DebugEmitNewPlayer(Sid(srv, b), Sid(srv, a), out);
     const auto toB = FlattenTo(out, b);
     const auto* np = FindMsg(toB, static_cast<uint8_t>(nox::Op::NEW_PLAYER));
     auto u32 = [](const std::vector<uint8_t>& m, size_t at) {
@@ -24131,16 +24172,16 @@ void TestNewPlayerGearBits() {
     Check(np && np->size() >= 112, "2d 가 안 갔거나 짧다");
     if (np && np->size() >= 112) {
         Check(u32(*np, 104) == armorA, "2d 104 자리가 지금 갑옷 비트가 아니다 — 남 화면에서 차림이 지워진다");
-        Check(u32(*np, 108) == srv.DebugWeaponEquip(a), "2d 108 자리가 지금 무기 비트가 아니다");
+        Check(u32(*np, 108) == srv.DebugWeaponEquip(Sid(srv, a)), "2d 108 자리가 지금 무기 비트가 아니다");
     }
     // 로브를 벗은 뒤 다시 소개하면 로브 비트가 빠져야 한다(평상복은 남는다)
-    for (const auto& c : srv.DebugInventory(a))
+    for (const auto& c : srv.DebugInventory(Sid(srv, a)))
         if (c.equipBit == 0x4000 && !c.isWeapon) {
             const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_DEQUIP, c.netCode);
             std::vector<nox::OutPacket> o; srv.OnPacket(a, p.data(), p.size(), o);
         }
     std::vector<nox::OutPacket> out2;
-    srv.DebugEmitNewPlayer(b, a, out2);
+    srv.DebugEmitNewPlayer(Sid(srv, b), Sid(srv, a), out2);
     const auto toB2 = FlattenTo(out2, b);
     const auto* np2 = FindMsg(toB2, static_cast<uint8_t>(nox::Op::NEW_PLAYER));
     Check(np2 && np2->size() >= 112 && !(u32(*np2, 104) & 0x4000) && (u32(*np2, 104) & 0x405),
@@ -24168,8 +24209,8 @@ void TestNewPlayerRealInfo() {
         std::vector<uint8_t> info(97, 0);
         info[0] = 'Z'; info[2] = 'e'; info[4] = 'd';
         info[66] = 0x01; info[67] = 1; info[68] = 0x11; info[69] = 0x22; info[70] = 0x33;
-        srv.DebugSetInfo97(a, info);
-        std::vector<nox::OutPacket> out; srv.DebugEmitNewPlayer(b, a, out);
+        srv.DebugSetInfo97(Sid(srv, a), info);
+        std::vector<nox::OutPacket> out; srv.DebugEmitNewPlayer(Sid(srv, b), Sid(srv, a), out);
         const auto toB = FlattenTo(out, b);                    // ⚠ 담아 둔다 — 임시 벡터 안을 가리키면 식이 끝나며 사라진다
         const auto* np = FindMsg(toB, static_cast<uint8_t>(nox::Op::NEW_PLAYER));
         Check(np && np->size() >= 100 && std::equal(info.begin(), info.end(), np->begin() + 3),
@@ -24179,7 +24220,7 @@ void TestNewPlayerRealInfo() {
     // ② 97B 가 없으면(시험 접속) 녹음 그대로 + 이름 첫 글자만 번호로(옛 동작 유지)
     {
         nox::Server srv; make(srv);
-        std::vector<nox::OutPacket> out; srv.DebugEmitNewPlayer(b, a, out);
+        std::vector<nox::OutPacket> out; srv.DebugEmitNewPlayer(Sid(srv, b), Sid(srv, a), out);
         const auto toB = FlattenTo(out, b);
         const auto* np = FindMsg(toB, static_cast<uint8_t>(nox::Op::NEW_PLAYER));
         Check(np && np->size() >= 100 && (*np)[3 + 66] == 0x02 && (*np)[3] == static_cast<uint8_t>('A' + (728 % 26)),
@@ -24196,32 +24237,32 @@ void TestMonsterChaseReturn() {
     nox::Server srv;
     srv.DebugEnterGame(a, 728, false, CharClass::Conjurer);
     srv.DebugEnterGame(b, 729, false, CharClass::Warrior);
-    srv.DebugMoveTo(a, 1000, 1000);
-    srv.DebugMoveTo(b, 1060, 1000);
-    srv.DebugSpawnPet(1357, 1000, 1000, a);                  // 박쥐 — 주인 a
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+    srv.DebugMoveTo(Sid(srv, b), 1060, 1000);
+    srv.DebugSpawnPet(1357, 1000, 1000, Sid(srv, a));                  // 박쥐 — 주인 a
     LoadRealAttackAnims(srv);                                // ★ 09-30 — 근접은 애니 칸(박쥐 칸 5)에서 문다
     std::vector<nox::OutPacket> out;
     uint32_t ms = 0;
     auto tick = [&](int n) { for (int t = 0; t < n; ++t) { ms += 34; out.clear(); srv.Tick(ms, out); } };
     // ① 열린 땅 — 물다가 상대가 멀리(1600) 달아난 뒤 박쥐 바로 옆으로 돌아온다.
     //   공격 사슬의 가기(7)가 **쌓던 때의 자리**로만 가면 박쥐는 옛 자리(1600 쪽)로 떠나며 안 문다(09-28 사람 판 증상)
-    const uint16_t hp0 = srv.HealthOf(b);
+    const uint16_t hp0 = srv.HealthOf(Sid(srv, b));
     tick(120);
-    Check(srv.HealthOf(b) < hp0, "전제 — 처음 붙었을 때도 안 물었다");
+    Check(srv.HealthOf(Sid(srv, b)) < hp0, "전제 — 처음 붙었을 때도 안 물었다");
     double px = 0, py = 0; srv.DebugPetXY(0, px, py);
     const double x0 = px;
     // 멀리 달아난다(열린 땅 — 계속 보인다). ★ 틱마다 6 씩 — 한 번에 옮기면 사슬을 다시 쌓는 순간 새 자리가 들어가
     //   자리 고치기 없이도 따라가 보인다(09-28 돌연변이 M1 이 이 줄 없이 안 걸렸다)
-    for (int t = 0; t < 90; ++t) { srv.DebugMoveTo(b, srv.XOf(b) + 6, 1000); tick(1); }
+    for (int t = 0; t < 90; ++t) { srv.DebugMoveTo(Sid(srv, b), srv.XOf(Sid(srv, b)) + 6, 1000); tick(1); }
     srv.DebugPetXY(0, px, py);
     // 3초면 박쥐(틱당 3.28)는 약 290 간다. 사슬의 가기(7)가 쌓던 때 자리에 머물면 거기서 선다
     Check(px - x0 > 200.0, "① 달아나는 상대를 3초 동안 안 따라갔다 — 가기(7)가 옛 자리에 머문다");
-    srv.DebugMoveTo(b, static_cast<int>(px) + 20, static_cast<int>(py));   // 박쥐 바로 옆으로 돌아온다
-    const uint16_t hp1 = srv.HealthOf(b);
+    srv.DebugMoveTo(Sid(srv, b), static_cast<int>(px) + 20, static_cast<int>(py));   // 박쥐 바로 옆으로 돌아온다
+    const uint16_t hp1 = srv.HealthOf(Sid(srv, b));
     tick(90);
     srv.DebugPetXY(0, px, py);
-    const double dx = px - srv.XOf(b), dy = py - srv.YOf(b);
-    Check(srv.HealthOf(b) < hp1, "① 돌아와 옆에 섰는데 3초 동안 안 물었다");
+    const double dx = px - srv.XOf(Sid(srv, b)), dy = py - srv.YOf(Sid(srv, b));
+    Check(srv.HealthOf(Sid(srv, b)) < hp1, "① 돌아와 옆에 섰는데 3초 동안 안 물었다");
     Check(std::sqrt(dx * dx + dy * dy) < 60.0, "① 돌아와 옆에 섰는데 박쥐가 옛 자리로 떠났다");
     Check(srv.aiMoveTargetFollow() > 0, "① 가기(7)가 대상을 한 번도 안 따라갔다 — 자리 고치기가 안 돌았다");
 
@@ -24230,9 +24271,9 @@ void TestMonsterChaseReturn() {
         nox::Server s2;
         s2.DebugEnterGame(a, 728, false, CharClass::Conjurer);
         s2.DebugEnterGame(b, 729, false, CharClass::Warrior);
-        s2.DebugMoveTo(a, 1000, 1000);
-        s2.DebugMoveTo(b, 1300, 1000);
-        s2.DebugSpawnPet(1357, 1000, 1000, a);
+        s2.DebugMoveTo(Sid(s2, a), 1000, 1000);
+        s2.DebugMoveTo(Sid(s2, b), 1300, 1000);
+        s2.DebugSpawnPet(1357, 1000, 1000, Sid(s2, a));
         LoadRealAttackAnims(s2);                                // ★ 09-30 — 근접은 애니 칸(박쥐 칸 5)에서 문다
         std::vector<nox::OutPacket> o2;
         uint32_t m2 = 0;
@@ -24240,9 +24281,9 @@ void TestMonsterChaseReturn() {
         // x=47 세로 벽(47+43=90 짝수라 y=1000 줄 추적에 걸린다) — 주인(1000)과 박쥐·상대(1250·1300) 사이
         s2.SetWalls({ { 47, 39 }, { 47, 40 }, { 47, 41 }, { 47, 42 }, { 47, 43 }, { 47, 44 }, { 47, 45 }, { 47, 46 }, { 47, 47 } });
         s2.DebugSetPetPos(0, 1250, 1000);
-        const uint16_t h0 = s2.HealthOf(b);
+        const uint16_t h0 = s2.HealthOf(Sid(s2, b));
         for (int t = 0; t < 150; ++t) { m2 += 34; o2.clear(); s2.Tick(m2, o2); }
-        Check(s2.HealthOf(b) < h0, "② 주인이 벽 너머일 때 박쥐가 옆의 상대를 5초 동안 안 물었다(조건 45 가 주인 눈)");
+        Check(s2.HealthOf(Sid(s2, b)) < h0, "② 주인이 벽 너머일 때 박쥐가 옆의 상대를 5초 동안 안 물었다(조건 45 가 주인 눈)");
     }
 
     // ③ 벽 뒤로 사라진 상대의 **마지막 자리로 가던 중**(15 → 56·7) 상대가 박쥐 바로 옆에 다시 보이면 곧장 싸움으로 돌아간다.
@@ -24251,21 +24292,21 @@ void TestMonsterChaseReturn() {
         nox::Server s3;
         s3.DebugEnterGame(a, 728, false, CharClass::Conjurer);
         s3.DebugEnterGame(b, 729, false, CharClass::Warrior);
-        s3.DebugMoveTo(a, 1000, 1000);
-        s3.DebugMoveTo(b, 1300, 1000);
-        s3.DebugSpawnPet(1357, 1000, 1000, a);
+        s3.DebugMoveTo(Sid(s3, a), 1000, 1000);
+        s3.DebugMoveTo(Sid(s3, b), 1300, 1000);
+        s3.DebugSpawnPet(1357, 1000, 1000, Sid(s3, a));
         LoadRealAttackAnims(s3);                                // ★ 09-30 — 근접은 애니 칸(박쥐 칸 5)에서 문다
         std::vector<nox::OutPacket> o3;
         uint32_t m3 = 0;
         for (int t = 0; t < 3; ++t) { m3 += 34; o3.clear(); s3.Tick(m3, o3); }   // 보고 싸움을 쌓는다(마지막 자리 = 1300)
         s3.SetWalls({ { 47, 39 }, { 47, 40 }, { 47, 41 }, { 47, 42 }, { 47, 43 }, { 47, 44 }, { 47, 45 }, { 47, 46 }, { 47, 47 } });
         for (int t = 0; t < 10; ++t) { m3 += 34; o3.clear(); s3.Tick(m3, o3); }  // 안 보여 마지막 자리로 가기 시작
-        Check(s3.DebugPetEnemy(0).empty(), "③ 전제 — 벽을 세웠는데 아직 상대가 보인다");
+        Check((s3.DebugPetEnemy(0) == nox::kNoSession), "③ 전제 — 벽을 세웠는데 아직 상대가 보인다");
         double qx = 0, qy = 0; s3.DebugPetXY(0, qx, qy);
-        s3.DebugMoveTo(b, static_cast<int>(qx) + 20, static_cast<int>(qy));      // 박쥐 바로 옆(벽 이쪽)으로
-        const uint16_t h3 = s3.HealthOf(b);
+        s3.DebugMoveTo(Sid(s3, b), static_cast<int>(qx) + 20, static_cast<int>(qy));      // 박쥐 바로 옆(벽 이쪽)으로
+        const uint16_t h3 = s3.HealthOf(Sid(s3, b));
         for (int t = 0; t < 60; ++t) { m3 += 34; o3.clear(); s3.Tick(m3, o3); }
-        Check(s3.HealthOf(b) < h3, "③ 마지막 자리로 가던 박쥐가 옆에 다시 보인 상대를 2초 동안 안 물었다(조건 56)");
+        Check(s3.HealthOf(Sid(s3, b)) < h3, "③ 마지막 자리로 가던 박쥐가 옆에 다시 보인 상대를 2초 동안 안 물었다(조건 56)");
     }
 
     // ④ 먼 상대를 쫓던 중 **더 가까운 새 상대**가 보이면 사슬을 버리고 그쪽을 문다(조건 60 `unit_ai.go:161~183`)
@@ -24274,23 +24315,23 @@ void TestMonsterChaseReturn() {
         nox::Server s4;
         s4.DebugEnterGame(a, 728, false, CharClass::Conjurer);
         s4.DebugEnterGame(b, 729, false, CharClass::Warrior);
-        s4.DebugMoveTo(a, 1000, 1000);
-        s4.DebugMoveTo(b, 1400, 1000);
-        s4.DebugSpawnPet(1357, 1000, 1000, a);
+        s4.DebugMoveTo(Sid(s4, a), 1000, 1000);
+        s4.DebugMoveTo(Sid(s4, b), 1400, 1000);
+        s4.DebugSpawnPet(1357, 1000, 1000, Sid(s4, a));
         LoadRealAttackAnims(s4);                                // ★ 09-30 — 근접은 애니 칸(박쥐 칸 5)에서 문다
         s4.DebugSetPetSightRange(0, 500.0f);                  // ★ 09-29 B1 — b 가 400 밖이라 알아보기 거리를 넓힌다(시험의 뜻은 조건 60)
         std::vector<nox::OutPacket> o4;
         uint32_t m4 = 0;
         for (int t = 0; t < 3; ++t) { m4 += 34; o4.clear(); s4.Tick(m4, o4); }   // b 를 쫓기 시작
-        Check(s4.DebugPetEnemy(0) == b, "④ 전제 — 박쥐가 b 를 상대로 안 잡았다");
+        Check(s4.DebugPetEnemy(0) == Sid(s4, b), "④ 전제 — 박쥐가 b 를 상대로 안 잡았다");
         s4.DebugEnterGame(c, 730, false, CharClass::Warrior);
         double qx = 0, qy = 0; s4.DebugPetXY(0, qx, qy);
         // ★ 09-29 B1 — 새 상대는 **앞쪽**(+x 로 쫓는 중)에 세운다 — 옆(90°)은 앞쪽 부채꼴 밖이라 정답지도 못 알아본다.
         //   알아보기는 상대가 있으면 훑은 지 2초가 지나야 다시 훑으므로(`GAME4_2.c:7348`) 창을 4초로 늘린다
-        s4.DebugMoveTo(c, 1300, 1000);                                              // b(1400) 가는 길 앞 — 다시 훑을 때(2초) 박쥐보다 앞에 있다
-        const uint16_t hc = s4.HealthOf(c);
+        s4.DebugMoveTo(Sid(s4, c), 1300, 1000);                                              // b(1400) 가는 길 앞 — 다시 훑을 때(2초) 박쥐보다 앞에 있다
+        const uint16_t hc = s4.HealthOf(Sid(s4, c));
         for (int t = 0; t < 120; ++t) { m4 += 34; o4.clear(); s4.Tick(m4, o4); }
-        Check(s4.HealthOf(c) < hc, "④ 더 가까운 새 상대가 옆에 섰는데 박쥐가 옛 상대만 쫓았다(조건 60)");
+        Check(s4.HealthOf(Sid(s4, c)) < hc, "④ 더 가까운 새 상대가 옆에 섰는데 박쥐가 옛 상대만 쫓았다(조건 60)");
     }
 }
 
@@ -24310,26 +24351,26 @@ void TestSplashWhoSrc() {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(c, 730, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);                        // 직격 대상(둘레 피해는 건너뜀)
-        srv.DebugMoveTo(c, 1100, 1030);                        // 불덩이 길(y 1000)에서 30 — 안 부딪힘 · 폭발(≈1080~1085)에서 33~36 < 둘레 42.7
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);                        // 직격 대상(둘레 피해는 건너뜀)
+        srv.DebugMoveTo(Sid(srv, c), 1100, 1030);                        // 불덩이 길(y 1000)에서 30 — 안 부딪힘 · 폭발(≈1080~1085)에서 33~36 < 둘레 42.7
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
         RegFireballTypes(srv);
-        srv.DebugSetFacing(a, 0);
-        srv.DebugSetWeapon(c, 0x400);                          // GreatSword
-        srv.DebugSetFacing(c, facingBlast ? 173 : 45);         // 173 ≈ 폭발 쪽(−15,−30) · 45 = 등짐
-        srv.DebugSetState(c, 18);
-        const int hp0 = srv.HealthOf(c);
+        srv.DebugSetFacing(Sid(srv, a), 0);
+        srv.DebugSetWeapon(Sid(srv, c), 0x400);                          // GreatSword
+        srv.DebugSetFacing(Sid(srv, c), facingBlast ? 173 : 45);         // 173 ≈ 폭발 쪽(−15,−30) · 45 = 등짐
+        srv.DebugSetState(Sid(srv, c), 18);
+        const int hp0 = srv.HealthOf(Sid(srv, c));
         { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); ms = castMs; }
         Check(srv.missiles() == 1, "S1 ① 불덩이가 안 날았다(이 시험의 전제)");
-        for (int k = 0; k < 40 && srv.missiles() > 0; ++k) { srv.DebugSetState(c, 18); ms += 34; srv.Tick(ms, out); }
+        for (int k = 0; k < 40 && srv.missiles() > 0; ++k) { srv.DebugSetState(Sid(srv, c), 18); ms += 34; srv.Tick(ms, out); }
         char msg[200];
         std::snprintf(msg, sizeof(msg), "S1 ① 불덩이 둘레(%s) — 대검막기 %llu · c 체력 %d→%d",
-                      facingBlast ? "정면" : "등짐", stops(srv, "대검막기"), hp0, srv.HealthOf(c));
-        if (facingBlast) Check(stops(srv, "대검막기") == 1 && srv.HealthOf(c) == hp0, msg);
-        else Check(stops(srv, "대검막기") == 0 && srv.HealthOf(c) < hp0, msg);
+                      facingBlast ? "정면" : "등짐", stops(srv, "대검막기"), hp0, srv.HealthOf(Sid(srv, c)));
+        if (facingBlast) Check(stops(srv, "대검막기") == 1 && srv.HealthOf(Sid(srv, c)) == hp0, msg);
+        else Check(stops(srv, "대검막기") == 0 && srv.HealthOf(Sid(srv, c)) < hp0, msg);
     }
     // ② 죽음 광선 — c(방패 · 올린 채 16)가 시전자 쪽을 보면 막고(v9 = 시전자 자리), 등지면 100 깎인다
     for (int facingCaster = 1; facingCaster >= 0; --facingCaster) {
@@ -24341,21 +24382,21 @@ void TestSplashWhoSrc() {
         srv.SetSpellDef(16, 0, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 840, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(c, 841, false, nox::CharClass::Warrior);   // 직업 표 방패(0x1000000)
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(c, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1300, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        srv.DebugSetFacing(c, facingCaster ? 128 : 0);         // 128 = −x(시전자 쪽)
-        srv.DebugSetState(c, 16);
-        const int hp0 = srv.HealthOf(c);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        srv.DebugSetFacing(Sid(srv, c), facingCaster ? 128 : 0);         // 128 = −x(시전자 쪽)
+        srv.DebugSetState(Sid(srv, c), 16);
+        const int hp0 = srv.HealthOf(Sid(srv, c));
         CastAndWait(srv, a, 16, false, ms, out);
         char msg[200];
         std::snprintf(msg, sizeof(msg), "S1 ② 죽음 광선(%s) — 방패막기 %llu · c 체력 %d→%d · 상태 %u",
-                      facingCaster ? "정면" : "등짐", stops(srv, "방패막기"), hp0, srv.HealthOf(c), (unsigned)srv.DebugStateOf(c));
-        if (facingCaster) Check(stops(srv, "방패막기") == 1 && srv.HealthOf(c) == hp0, msg);
-        else Check(stops(srv, "방패막기") == 0 && hp0 - srv.HealthOf(c) == 100, msg);
+                      facingCaster ? "정면" : "등짐", stops(srv, "방패막기"), hp0, srv.HealthOf(Sid(srv, c)), (unsigned)srv.DebugStateOf(Sid(srv, c)));
+        if (facingCaster) Check(stops(srv, "방패막기") == 1 && srv.HealthOf(Sid(srv, c)) == hp0, msg);
+        else Check(stops(srv, "방패막기") == 0 && hp0 - srv.HealthOf(Sid(srv, c)) == 100, msg);
     }
     // ③ 운석 — who = 주인 사람(`GAME4_3.c:6839~6840`) · c(방패 올린 채 16)가 시전자 쪽을 보면 막고, 등지면 깎인다(TestMeteor 틀)
     for (int facingCaster = 1; facingCaster >= 0; --facingCaster) {
@@ -24369,21 +24410,21 @@ void TestSplashWhoSrc() {
         RegSpell(srv, 52, 0);
         srv.DebugEnterGame(a, 770, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(c, 771, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(c, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, c), 1300, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
-        srv.DebugAimAt(a, 1300, 1000);
-        srv.DebugSetFacing(c, facingCaster ? 128 : 0);
-        const int hp0 = srv.HealthOf(c);
+        srv.DebugAimAt(Sid(srv, a), 1300, 1000);
+        srv.DebugSetFacing(Sid(srv, c), facingCaster ? 128 : 0);
+        const int hp0 = srv.HealthOf(Sid(srv, c));
         CastAndWait(srv, a, 52, false, ms, out);
-        for (int t = 0; t < 45 && srv.PlacedCount() > 0; ++t) { srv.DebugSetState(c, 16); ms += 34; srv.Tick(ms, out); }
+        for (int t = 0; t < 45 && srv.PlacedCount() > 0; ++t) { srv.DebugSetState(Sid(srv, c), 16); ms += 34; srv.Tick(ms, out); }
         char msg[200];
         std::snprintf(msg, sizeof(msg), "S1 ③ 운석(%s) — 방패막기 %llu · c 체력 %d→%d",
-                      facingCaster ? "정면" : "등짐", stops(srv, "방패막기"), hp0, srv.HealthOf(c));
-        if (facingCaster) Check(stops(srv, "방패막기") == 1 && srv.HealthOf(c) == hp0, msg);
-        else Check(stops(srv, "방패막기") == 0 && srv.HealthOf(c) < hp0, msg);
+                      facingCaster ? "정면" : "등짐", stops(srv, "방패막기"), hp0, srv.HealthOf(Sid(srv, c)));
+        if (facingCaster) Check(stops(srv, "방패막기") == 1 && srv.HealthOf(Sid(srv, c)) == hp0, msg);
+        else Check(stops(srv, "방패막기") == 0 && srv.HealthOf(Sid(srv, c)) < hp0, msg);
     }
     std::printf("  09-27 S1 — 둘레 피해 v9 = who: 불덩이 둘레를 대검(정면)이 · 죽음 광선·운석을 방패(정면)가 막음 · 등지면 깎임\n");
 }
@@ -24394,7 +24435,7 @@ void TestLavaPets() {
     const std::string a = "10.9.27.61:9331";
     auto mk = [&](nox::Server& srv, int tile, bool airborne, uint16_t hp) {
         srv.DebugEnterGame(a, 760, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         std::vector<nox::MapFile::FloorCell> cells;
         for (int x = 0; x < 128; ++x)
             for (int y = 0; y < 128; ++y) {
@@ -24409,8 +24450,8 @@ void TestLavaPets() {
         body.shape = 2; body.r = 10.0f; body.cls = 0x2;
         body.flags = airborne ? 0x4000u : 0u;
         srv.SetTypeBody(1328, body);                           // 임프 자리(시험에선 깃발만 바꿔 걷는 것·나는 것 둘 다 잰다)
-        srv.DebugSpawnPet(1328, 1040, 1000, a);
-        srv.DebugSetOwnedPetHealth(a, hp);
+        srv.DebugSpawnPet(1328, 1040, 1000, Sid(srv, a));
+        srv.DebugSetOwnedPetHealth(Sid(srv, a), hp);
         std::vector<nox::OutPacket> o; srv.Tick(0, o);
     };
     auto run = [&](nox::Server& srv, int ticks) {
@@ -24471,28 +24512,28 @@ void TestMissileBlockMore() {
         srv.SetSpellDef(58, 10, 0x1000000, { 1, 2 });
         srv.DebugEnterGame(a, 810, false, nox::CharClass::Conjurer);
         srv.DebugEnterGame(b, 811, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 58, true, ms, out);
         Check(srv.missiles() > 0, "S3 ② 픽시가 없다(이 시험의 전제)");
-        srv.DebugSetWeapon(b, 0x400);                            // GreatSword
-        srv.DebugSetFacing(b, 128);                              // −x(픽시 쪽)
-        const int hp0 = srv.HealthOf(b);
+        srv.DebugSetWeapon(Sid(srv, b), 0x400);                            // GreatSword
+        srv.DebugSetFacing(Sid(srv, b), 128);                              // −x(픽시 쪽)
+        const int hp0 = srv.HealthOf(Sid(srv, b));
         const size_t n0 = srv.missiles();
         for (int k = 0; k < 10 && srv.missiles() == n0; ++k) {
             // 픽시 바로 오른쪽 8 — 몸(10)이 겹쳐 닿되 자리가 겹치지 않게(같은 점이면 방향 판정이 안 선다)
-            srv.DebugMoveTo(b, static_cast<int>(srv.DebugMissileX(0)) + 8, static_cast<int>(srv.DebugMissileY(0)));
-            srv.DebugSetState(b, 18);
+            srv.DebugMoveTo(Sid(srv, b), static_cast<int>(srv.DebugMissileX(0)) + 8, static_cast<int>(srv.DebugMissileY(0)));
+            srv.DebugSetState(Sid(srv, b), 18);
             ms += 34; srv.Tick(ms, out);
         }
         char msg[200];
         std::snprintf(msg, sizeof(msg), "S3 ② 픽시 → 대검 정면 — 대검막기 %llu(닿은 수와 같아야) · 체력 %d→%d(그대로여야) · 픽시 %zu→%zu",
-                      stops(srv, "대검막기"), hp0, srv.HealthOf(b), n0, srv.missiles());
+                      stops(srv, "대검막기"), hp0, srv.HealthOf(Sid(srv, b)), n0, srv.missiles());
         // 픽시는 몇 마리가 한 틱에 같이 닿을 수 있다 — 닿아 사라진 수만큼 막았나를 본다
-        Check(srv.missiles() < n0 && stops(srv, "대검막기") == n0 - srv.missiles() && srv.HealthOf(b) == hp0, msg);
+        Check(srv.missiles() < n0 && stops(srv, "대검막기") == n0 - srv.missiles() && srv.HealthOf(Sid(srv, b)) == hp0, msg);
     }
     std::printf("  09-27 S3 — 픽시 직격은 대검이 막음(때린 것 있음 · 닿은 수만큼) — 임프 쏘기 틀은 미결\n");
 }
@@ -24504,7 +24545,7 @@ void TestLavaFloor() {
     auto mk = [&](nox::Server& srv, int tile) {
         srv.SetPlayerAnimFrames(3, 10, 1);
         srv.DebugEnterGame(a, 750, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         std::vector<nox::MapFile::FloorCell> cells;
         for (int x = 0; x < 128; ++x)
             for (int y = 0; y < 128; ++y) {
@@ -24520,37 +24561,37 @@ void TestLavaFloor() {
     // ① 용암(6) 위 10틱 — 틱마다 한 번 · 체력이 준다
     {
         nox::Server srv; mk(srv, 6);
-        const int hp0 = srv.HealthOf(a);
+        const int hp0 = srv.HealthOf(Sid(srv, a));
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
         const unsigned long long h0 = srv.lavaHurts();
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, o); }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "M3 ① 용암 10틱 — 피해 부름 %llu(10) · 체력 %d→%d · 마지막 피해 종류 %u(12)", srv.lavaHurts() - h0, hp0,
-                      srv.HealthOf(a), static_cast<unsigned>(srv.DebugLastDamageType(a)));
-        Check(srv.lavaHurts() - h0 == 10 && srv.HealthOf(a) < hp0 && srv.DebugLastDamageType(a) == 12, msg);
+                      srv.HealthOf(Sid(srv, a)), static_cast<unsigned>(srv.DebugLastDamageType(Sid(srv, a))));
+        Check(srv.lavaHurts() - h0 == 10 && srv.HealthOf(Sid(srv, a)) < hp0 && srv.DebugLastDamageType(Sid(srv, a)) == 12, msg);
     }
     // ② 다른 바닥(5 = DirtLight)은 아무 일 없음
     {
         nox::Server srv; mk(srv, 5);
-        const int hp0 = srv.HealthOf(a);
+        const int hp0 = srv.HealthOf(Sid(srv, a));
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, o); }
-        Check(srv.lavaHurts() == 0 && srv.HealthOf(a) == hp0, "M3 ② 용암이 아닌 바닥(5)에서 바닥 피해를 받았다");
+        Check(srv.lavaHurts() == 0 && srv.HealthOf(Sid(srv, a)) == hp0, "M3 ② 용암이 아닌 바닥(5)에서 바닥 피해를 받았다");
     }
     // ③ 떠 있는 동안(점프)은 안 받는다 — 기력 90 이 차도록 35틱 굴린 뒤 뛰고 떠 있는 틱만 센다
     {
         nox::Server srv; mk(srv, 6);
         std::vector<nox::OutPacket> o; uint32_t ms = 0;
-        srv.DebugSetFacing(a, 0);
+        srv.DebugSetFacing(Sid(srv, a), 0);
         for (int t = 0; t < 35; ++t) { ms += 34; srv.Tick(ms, o); }
         const auto p = InputPacket(7);
         srv.OnPacket(a, p.data(), p.size(), o);
         unsigned long long airTicks = 0, airHurts = 0;
         for (int t = 0; t < 10; ++t) {
-            const bool air = srv.DebugAirborne(a);
+            const bool air = srv.DebugAirborne(Sid(srv, a));
             const unsigned long long h = srv.lavaHurts();
             ms += 34; srv.Tick(ms, o);
-            if (air && srv.DebugAirborne(a)) { ++airTicks; airHurts += srv.lavaHurts() - h; }
+            if (air && srv.DebugAirborne(Sid(srv, a))) { ++airTicks; airHurts += srv.lavaHurts() - h; }
         }
         char msg[160];
         std::snprintf(msg, sizeof(msg), "M3 ③ 점프 — 떠 있던 틱 %llu(≥1) 동안 바닥 피해 %llu(0)", airTicks, airHurts);
@@ -24567,13 +24608,13 @@ void TestDeathPass() {
     auto mk = [&](nox::Server& srv, int dur) {
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1300, 1000);                    // 처음엔 떨어뜨려 둔다
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1000);                    // 처음엔 떨어뜨려 둔다
         std::vector<nox::OutPacket> w; srv.Tick(0, w); srv.Tick(34, w);
-        srv.DebugApplyEnchant(a, 16, dur, 3);
+        srv.DebugApplyEnchant(Sid(srv, a), 16, dur, 3);
     };
     auto touch = [&](nox::Server& srv) {
-        srv.DebugMoveTo(b, 1012, 1000);                    // 몸 반지름 합 20 안 — 겹침
+        srv.DebugMoveTo(Sid(srv, b), 1012, 1000);                    // 몸 반지름 합 20 안 — 겹침
         std::vector<nox::OutPacket> w; srv.Tick(68, w);
     };
     // ① 남은 300(< 420) → 넘긴다 · b 는 450 근처 · 세기 3 · a 는 풀림 · b 가 되넘기지 않는다
@@ -24581,18 +24622,18 @@ void TestDeathPass() {
         nox::Server srv; mk(srv, 300); touch(srv);
         char msg[220];
         std::snprintf(msg, sizeof(msg), "M2 ① 남은 300 — 넘김 %llu(1) · 안넘김 %llu · b 죽음 %d(시간 %d · 세기 %d) · a 죽음 %d",
-                      srv.deathPass(true), srv.deathPass(false), srv.DebugHasEnchant(b, 16), srv.DebugEnchantDur(b, 16),
-                      srv.DebugEnchantPower(b, 16), srv.DebugHasEnchant(a, 16));
-        Check(srv.deathPass(true) == 1 && srv.DebugHasEnchant(b, 16) && !srv.DebugHasEnchant(a, 16) &&
-              srv.DebugEnchantDur(b, 16) > 420 && srv.DebugEnchantDur(b, 16) <= 450 && srv.DebugEnchantPower(b, 16) == 3, msg);
+                      srv.deathPass(true), srv.deathPass(false), srv.DebugHasEnchant(Sid(srv, b), 16), srv.DebugEnchantDur(Sid(srv, b), 16),
+                      srv.DebugEnchantPower(Sid(srv, b), 16), srv.DebugHasEnchant(Sid(srv, a), 16));
+        Check(srv.deathPass(true) == 1 && srv.DebugHasEnchant(Sid(srv, b), 16) && !srv.DebugHasEnchant(Sid(srv, a), 16) &&
+              srv.DebugEnchantDur(Sid(srv, b), 16) > 420 && srv.DebugEnchantDur(Sid(srv, b), 16) <= 450 && srv.DebugEnchantPower(Sid(srv, b), 16) == 3, msg);
     }
     // ② 남은 425(420 = 14초 이상) → 안 넘긴다(`< 14 × FPS` 가 아니다)
     {
         nox::Server srv; mk(srv, 425); touch(srv);
         char msg[200];
         std::snprintf(msg, sizeof(msg), "M2 ② 남은 425 — 넘김 %llu(0) · 안넘김 %llu(≥1) · b 죽음 %d · a 죽음 %d",
-                      srv.deathPass(true), srv.deathPass(false), srv.DebugHasEnchant(b, 16), srv.DebugHasEnchant(a, 16));
-        Check(srv.deathPass(true) == 0 && srv.deathPass(false) >= 1 && !srv.DebugHasEnchant(b, 16) && srv.DebugHasEnchant(a, 16), msg);
+                      srv.deathPass(true), srv.deathPass(false), srv.DebugHasEnchant(Sid(srv, b), 16), srv.DebugHasEnchant(Sid(srv, a), 16));
+        Check(srv.deathPass(true) == 0 && srv.deathPass(false) >= 1 && !srv.DebugHasEnchant(Sid(srv, b), 16) && srv.DebugHasEnchant(Sid(srv, a), 16), msg);
     }
     // ⚠ 「닿은 쪽이 사람이 아니면 안 넘긴다」는 따로 시험하지 않는다 — 소환수·장애물은 주소가 비어 다음 줄(주소로 찾기)에서도 빠져
     //   그 줄을 빼는 돌연변이가 동등이다(09-26 돌연변이 Z6). 죽은 상대 거르기(Z7)는 광전사가 같은 부름에서 막 죽인 때만 닿는다 — 미확인
@@ -24610,28 +24651,28 @@ void TestMissileSrcBlock() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         RegHarpoonBolt(srv);
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w); srv.Tick(34, w);
-        srv.DebugAbilAward(a, 3, false, w);
-        srv.DebugSetFacing(a, 0);                          // a 는 +x(b 쪽)
-        srv.DebugSetWeapon(b, 0x8000);                     // StaffWooden
-        srv.DebugSetFacing(b, 128);                        // b 는 −x(a 쪽) — 정면
-        srv.DebugSetState(b, 13);
-        const int hp0 = srv.HealthOf(b);
-        srv.DebugAbilDo(a, 3, w);
+        srv.DebugAbilAward(Sid(srv, a), 3, false, w);
+        srv.DebugSetFacing(Sid(srv, a), 0);                          // a 는 +x(b 쪽)
+        srv.DebugSetWeapon(Sid(srv, b), 0x8000);                     // StaffWooden
+        srv.DebugSetFacing(Sid(srv, b), 128);                        // b 는 −x(a 쪽) — 정면
+        srv.DebugSetState(Sid(srv, b), 13);
+        const int hp0 = srv.HealthOf(Sid(srv, b));
+        srv.DebugAbilDo(Sid(srv, a), 3, w);
         uint32_t ms = 68;
-        for (int t = 0; t < 30 && srv.DebugHarpoonTarget(a).empty() && srv.DebugHarpoonBolt(a) != 0; ++t) { ms += 34; srv.Tick(ms, w); }
+        for (int t = 0; t < 30 && (srv.DebugHarpoonTarget(Sid(srv, a)) == nox::kNoSession) && srv.DebugHarpoonBolt(Sid(srv, a)) != 0; ++t) { ms += 34; srv.Tick(ms, w); }
         const auto& st = srv.damageStops();
         auto stop = [&](const char* k) { auto it = st.find(k); return it == st.end() ? 0ull : it->second; };
         char msg[220];
         std::snprintf(msg, sizeof(msg), "M1 ① 지팡이 정면 작살 — 걸림 %llu(1) · 피해안들어감 %llu(0) · 지팡이막기 %llu(0) · 체력 %d→%d",
                       srv.harpoonTouch(nox::HarpoonTouch::Attached), srv.harpoonTouch(nox::HarpoonTouch::Refused), stop("지팡이막기"),
-                      hp0, srv.HealthOf(b));
+                      hp0, srv.HealthOf(Sid(srv, b)));
         Check(srv.harpoonTouch(nox::HarpoonTouch::Attached) == 1 && srv.harpoonTouch(nox::HarpoonTouch::Refused) == 0 &&
-              stop("지팡이막기") == 0 && srv.HealthOf(b) == hp0 - 1, msg);
+              stop("지팡이막기") == 0 && srv.HealthOf(Sid(srv, b)) == hp0 - 1, msg);
     }
     // ② 덫 화살(종류 3) → 대검 든 워리어가 막기 자세(18)로 정면 — 막는다 · 체력 그대로
     {
@@ -24643,17 +24684,17 @@ void TestMissileSrcBlock() {
         t.x = 1000; t.y = 1000; t.facing = 0; t.proj = "ArrowTrapArrow"; t.fxKind = 0; t.damage = 25;
         srv.SetShootingTraps({ t });
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
-        srv.DebugSetPos(a, 1200, 1000);
-        srv.DebugMoveTo(a, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1200, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
-        srv.DebugSetWeapon(a, 0x400);                      // GreatSword
-        srv.DebugSetFacing(a, 128);                        // 덫 쪽(−x) — 정면
-        const int hp0 = srv.HealthOf(a);
+        srv.DebugSetWeapon(Sid(srv, a), 0x400);                      // GreatSword
+        srv.DebugSetFacing(Sid(srv, a), 128);                        // 덫 쪽(−x) — 정면
+        const int hp0 = srv.HealthOf(Sid(srv, a));
         srv.DebugShootingTrapUpdate(w);
         Check(srv.MissileCount() == 1, "M1 ② 화살이 안 나갔다(이 시험의 전제)");
         uint32_t ms = 34;
         for (int k = 0; k < 20 && srv.MissileCount() > 0; ++k) {
-            srv.DebugSetState(a, 18);                      // 막기 자세를 붙들어 둔다(대검 막기는 13·18~20 에서)
+            srv.DebugSetState(Sid(srv, a), 18);                      // 막기 자세를 붙들어 둔다(대검 막기는 13·18~20 에서)
             ms += 34; srv.Tick(ms, w);
         }
         const auto& st = srv.damageStops();
@@ -24661,8 +24702,8 @@ void TestMissileSrcBlock() {
         const unsigned long long blocked = it == st.end() ? 0ull : it->second;
         char msg[200];
         std::snprintf(msg, sizeof(msg), "M1 ② 대검 정면 덫 화살 — 대검막기 %llu(1) · 체력 %d→%d(그대로여야) · 남은 화살 %zu",
-                      blocked, hp0, srv.HealthOf(a), srv.MissileCount());
-        Check(blocked == 1 && srv.HealthOf(a) == hp0, msg);
+                      blocked, hp0, srv.HealthOf(Sid(srv, a)), srv.MissileCount());
+        Check(blocked == 1 && srv.HealthOf(Sid(srv, a)) == hp0, msg);
     }
     // ③ 불덩이 직격(종류 1) → 대검 든 워리어가 막기 자세(18)로 정면 — 막는다(`:4181` a3 = 불덩이)
     //   전에는 때린 것 없이(nullptr) 넘겨 막기 판정 자체를 안 탔다 · 둘레 피해는 직격 대상을 건너뛴다
@@ -24672,27 +24713,27 @@ void TestMissileSrcBlock() {
         nox::Server srv; RegAllSpells(srv);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugMoveTo(b, 1100, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1100, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
         RegFireballTypes(srv);
-        srv.DebugSetFacing(a, 0);                          // a 는 +x(b 쪽)
-        srv.DebugSetWeapon(b, 0x400);                      // GreatSword
-        srv.DebugSetFacing(b, 128);                        // b 는 −x(a 쪽) — 정면
-        srv.DebugSetState(b, 18);
-        const int hp0 = srv.HealthOf(b);
+        srv.DebugSetFacing(Sid(srv, a), 0);                          // a 는 +x(b 쪽)
+        srv.DebugSetWeapon(Sid(srv, b), 0x400);                      // GreatSword
+        srv.DebugSetFacing(Sid(srv, b), 128);                        // b 는 −x(a 쪽) — 정면
+        srv.DebugSetState(Sid(srv, b), 18);
+        const int hp0 = srv.HealthOf(Sid(srv, b));
         { uint32_t castMs = srv.DebugNowMs(); CastAndWait(srv, a, 27, false, castMs, out); ms = castMs; }
         Check(srv.missiles() == 1, "M1 ③ 불덩이가 안 날았다(이 시험의 전제)");
-        for (int k = 0; k < 40 && srv.missiles() > 0; ++k) { srv.DebugSetState(b, 18); ms += 34; srv.Tick(ms, out); }
+        for (int k = 0; k < 40 && srv.missiles() > 0; ++k) { srv.DebugSetState(Sid(srv, b), 18); ms += 34; srv.Tick(ms, out); }
         const auto& st = srv.damageStops();
         auto it = st.find("대검막기");
         const unsigned long long blocked = it == st.end() ? 0ull : it->second;
         char msg[200];
         std::snprintf(msg, sizeof(msg), "M1 ③ 대검 정면 불덩이 직격 — 대검막기 %llu(1) · 체력 %d→%d(그대로여야) · 남은 불덩이 %zu",
-                      blocked, hp0, srv.HealthOf(b), srv.missiles());
-        Check(blocked == 1 && srv.HealthOf(b) == hp0, msg);
+                      blocked, hp0, srv.HealthOf(Sid(srv, b)), srv.missiles());
+        Check(blocked == 1 && srv.HealthOf(Sid(srv, b)) == hp0, msg);
     }
     std::printf("  09-26 M1 — 발사체가 때린 것: 지팡이는 작살을 못 막고 꽂힘 · 대검은 덫 화살·불덩이 직격을 막음\n");
 }
@@ -24712,8 +24753,8 @@ void TestMissileComplexWire() {
         t.x = 1000; t.y = 1000; t.facing = facing; t.proj = name; t.fxKind = 0; t.damage = 25;
         srv.SetShootingTraps({ t });
         srv.DebugEnterGame(a, 911);
-        srv.DebugSetPos(a, px, py);                     // 덫이 보는 쪽에 둔다
-        srv.DebugMoveTo(a, px, py);
+        srv.DebugSetPos(Sid(srv, a), px, py);                     // 덫이 보는 쪽에 둔다
+        srv.DebugMoveTo(Sid(srv, a), px, py);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);               // 한 발
@@ -24920,7 +24961,7 @@ void TestTrapStartsEnabled() {
     t.x = 1000; t.y = 1000; t.facing = 0; t.proj = "MercArcherArrow"; t.fxKind = 1; t.damage = 25;
     srv.SetShootingTraps({ t });
     srv.DebugEnterGame(a, 912);
-    srv.DebugSetPos(a, 1200, 1000);
+    srv.DebugSetPos(Sid(srv, a), 1200, 1000);
     std::vector<nox::OutPacket> w; srv.Tick(0, w);
 
     // ★ **켜는 호출을 한 번도 안 했는데** 곧바로 쏴야 한다
@@ -24969,7 +25010,7 @@ void TestShootingTrap() {
     // ① **보는 쪽에 적이 있으면 쏜다** — 30틱마다 한 번
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1200, 1000);                   // 동쪽 200 — ±350 안이고 각 0 쪽
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);                   // 동쪽 200 — ±350 안이고 각 0 쪽
         std::vector<nox::OutPacket> out;
         Check(srv.MissileCount() == 0, "아직 안 쐈어야 한다");
         srv.DebugShootingTrapUpdate(out);                 // 첫 틱에 살피고 곧바로 쏜다
@@ -24989,7 +25030,7 @@ void TestShootingTrap() {
     // ② **보는 쪽이 아니면 안 쏜다**
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 800, 1000);                    // 서쪽 — 각 0 의 뒤쪽
+        srv.DebugSetPos(Sid(srv, a), 800, 1000);                    // 서쪽 — 각 0 의 뒤쪽
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(!srv.DebugTrapArmed(0), "뒤쪽인데 겨눴다");
@@ -24999,7 +25040,7 @@ void TestShootingTrap() {
     // ③ **±350 밖이면 안 쏜다**
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1400, 1000);                   // 400 — 350 밖
+        srv.DebugSetPos(Sid(srv, a), 1400, 1000);                   // 400 — 350 밖
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(!srv.DebugTrapArmed(0), "350 밖인데 겨눴다");
@@ -25010,8 +25051,8 @@ void TestShootingTrap() {
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
         srv.DebugEnterGame("10.9.2.9:9209", 929, /*observer=*/true);
-        srv.DebugSetPos("10.9.2.9:9209", 1200, 1000);
-        srv.DebugSetPos(a, 1000, 1400);                   // 본인은 남쪽(각 0 이 아니다)
+        srv.DebugSetPos(Sid(srv, "10.9.2.9:9209"), 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1400);                   // 본인은 남쪽(각 0 이 아니다)
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(!srv.DebugTrapArmed(0), "관전자를 겨눴다");
@@ -25020,7 +25061,7 @@ void TestShootingTrap() {
     // ⑤ **꺼진 덫은 아무것도 안 한다**(오브젝트 깃발 ENABLED)
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
         srv.DebugTrapEnable(0, false);
         std::vector<nox::OutPacket> out;
         for (int t = 0; t < 40; ++t) srv.DebugShootingTrapUpdate(out);
@@ -25035,7 +25076,7 @@ void TestShootingTrap() {
     // ⑥ **화살은 덫 앞(반지름 8 + 4)에 나고 방향 속도를 가진다**
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(srv.MissileCount() == 1, "안 쐈다");
@@ -25048,7 +25089,7 @@ void TestShootingTrap() {
     // ⑥-2 ★ **덫이 남쪽(각 64)을 보면 화살도 남쪽으로 난다**
     {
         nox::Server srv; mk(srv, 64, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1000, 1200);                   // 남쪽
+        srv.DebugSetPos(Sid(srv, a), 1000, 1200);                   // 남쪽
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(srv.MissileCount() == 1, "남쪽을 보는데 안 쐈다");
@@ -25059,11 +25100,11 @@ void TestShootingTrap() {
     // ⑥-3 ★ **아무것도 안 맞으면 40틱에 사라진다**(`ProjectileUpdate`)
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(srv.MissileCount() == 1, "안 쐈다");
-        srv.DebugSetPos(a, 4000, 4000);                   // 비켜 준다 — 화살이 아무것도 안 맞는다
+        srv.DebugSetPos(Sid(srv, a), 4000, 4000);                   // 비켜 준다 — 화살이 아무것도 안 맞는다
         uint32_t ms = 34;
         for (int t = 0; t < 39; ++t) { srv.Tick(ms, out); ms += 34; }
         Check(srv.MissileCount() == 1, "39틱인데 벌써 사라졌다");
@@ -25075,7 +25116,7 @@ void TestShootingTrap() {
         nox::Server srv;
         srv.SetWallTiles({ nox::Server::WallTileIn{ 48, 43, 1, 0, false } });   // (1104,989) 근처
         mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1200, 1000);                   // 벽 너머
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);                   // 벽 너머
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(!srv.DebugTrapArmed(0), "벽 너머인데 겨눴다");
@@ -25084,11 +25125,11 @@ void TestShootingTrap() {
     // ⑥-5 ★ **살피기는 30틱마다다** — 그 사이에 적이 들어와도 다음 살피기까지 안 겨눈다
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 800, 1000);                    // 처음엔 뒤쪽
+        srv.DebugSetPos(Sid(srv, a), 800, 1000);                    // 처음엔 뒤쪽
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(!srv.DebugTrapArmed(0), "뒤쪽인데 겨눴다");
-        srv.DebugSetPos(a, 1200, 1000);                   // 앞으로 옮겨 온다
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);                   // 앞으로 옮겨 온다
         for (int t = 0; t < 29; ++t) srv.DebugShootingTrapUpdate(out);
         Check(!srv.DebugTrapArmed(0), "29틱인데 벌써 다시 살폈다");
         srv.DebugShootingTrapUpdate(out);
@@ -25097,11 +25138,11 @@ void TestShootingTrap() {
     // ⑥-6 ★ **적이 사라지면 겨눔이 풀린다**
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(srv.DebugTrapArmed(0), "안 겨눴다");
-        srv.DebugSetPos(a, 800, 1000);                    // 뒤로 간다
+        srv.DebugSetPos(Sid(srv, a), 800, 1000);                    // 뒤로 간다
         for (int t = 0; t < 30; ++t) srv.DebugShootingTrapUpdate(out);
         Check(!srv.DebugTrapArmed(0), "적이 갔는데 겨눔이 안 풀렸다");
         const size_t n = srv.MissileCount();
@@ -25111,7 +25152,7 @@ void TestShootingTrap() {
     // ⑥-7 ★ **껐다 켜면 세는 값이 0 으로 돌아간다** — 쉬는 시간을 물려받지 않는다
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);                 // 한 발 쏜다 — 재는 값이 30 이 된다
         Check(srv.MissileCount() == 1, "안 쐈다");
@@ -25126,7 +25167,7 @@ void TestShootingTrap() {
     // ⑦ **해골은 FX 를 안 보내고 불덩이를 쏜다**
     {
         nox::Server srv; mk(srv, 0, "StrongFireball", 0, 0);
-        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(srv.MissileCount() == 1, "해골이 안 쐈다");
@@ -25137,7 +25178,7 @@ void TestShootingTrap() {
     // ⑧ **모르는 종류면 안 만든다**(지어내지 않는다)
     {
         nox::Server srv; mk(srv, 0, "NoSuchArrow", 1, 25);
-        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         Check(srv.MissileCount() == 0, "모르는 종류인데 만들었다");
@@ -25147,16 +25188,16 @@ void TestShootingTrap() {
     // ⑨ **화살이 맞으면 종류 3 피해를 주고 사라진다**
     {
         nox::Server srv; mk(srv, 0, "MercArcherArrow", 1, 25);
-        srv.DebugSetPos(a, 1060, 1000);                   // 가까이 — 한두 틱에 닿는다
+        srv.DebugSetPos(Sid(srv, a), 1060, 1000);                   // 가까이 — 한두 틱에 닿는다
         AllMetalButPlayer(srv);
-        const int before = static_cast<int>(srv.HealthOf(a));
+        const int before = static_cast<int>(srv.HealthOf(Sid(srv, a)));
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
         uint32_t ms = 34;
         for (int t = 0; t < 6 && srv.MissileCount() > 0; ++t) { srv.Tick(ms, out); ms += 34; }
         Check(srv.MissileCount() == 0, "화살이 안 사라졌다");
-        Check(static_cast<int>(srv.HealthOf(a)) < before, "피해가 안 들어갔다");
-        Check(srv.DebugLastDamageType(a) == 3, "피해 종류가 3 이 아니다");
+        Check(static_cast<int>(srv.HealthOf(Sid(srv, a))) < before, "피해가 안 들어갔다");
+        Check(srv.DebugLastDamageType(Sid(srv, a)) == 3, "피해 종류가 3 이 아니다");
         // ★ 4-c3b2 — 덫 화살은 주인 사슬 뿌리가 몬스터가 아니다 → 때린 것 = 화살
         Check(PlayerHitByObject(srv) && srv.hitSoundCalls() == 1, "⑨ 4-c3b2 덫 화살의 때린 것이 화살(862)이 아니다");
     }
@@ -25185,7 +25226,7 @@ void TestPressurePlate() {
         wp.staticLookup = true;
         srv.SetWorldProps({ wp });
         srv.DebugEnterGame(a, 931);
-        srv.DebugSetPos(a, 2500, 2500);                // 처음엔 판 밖
+        srv.DebugSetPos(Sid(srv, a), 2500, 2500);                // 처음엔 판 밖
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w);
     };
@@ -25215,7 +25256,7 @@ void TestPressurePlate() {
         Check(find(out, nullptr) == 0, "안 밟았는데 알림이 갔다");
         Check(srv.PlateAnim(kPlate) == 0, "처음 칸이 0 이 아니다");
 
-        srv.DebugSetPos(a, 2000, 2000);                // 판 한가운데
+        srv.DebugSetPos(Sid(srv, a), 2000, 2000);                // 판 한가운데
         out.clear();
         step(srv, out);
         uint8_t v = 0xff;
@@ -25226,7 +25267,7 @@ void TestPressurePlate() {
         step(srv, out);
         Check(find(out, nullptr) == 0, "계속 밟고 있는데 또 갔다");
 
-        srv.DebugSetPos(a, 2500, 2500);                // 내려온다
+        srv.DebugSetPos(Sid(srv, a), 2500, 2500);                // 내려온다
         out.clear();
         step(srv, out);
         Check(find(out, &v) == 1, "내려왔는데 알림이 한 번이 아니다");
@@ -25238,10 +25279,10 @@ void TestPressurePlate() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPos(a, 2000 + 60, 2000);           // 멀리
+        srv.DebugSetPos(Sid(srv, a), 2000 + 60, 2000);           // 멀리
         step(srv, out);
         Check(srv.PlateAnim(kPlate) == 0, "60 밖인데 눌렸다");
-        srv.DebugSetPos(a, 2000 + 25, 2000);           // 22.5 + 몸반지름 안
+        srv.DebugSetPos(Sid(srv, a), 2000 + 25, 2000);           // 22.5 + 몸반지름 안
         out.clear();
         step(srv, out);
         Check(srv.PlateAnim(kPlate) == 1, "판 가장자리인데 안 눌렸다");
@@ -25251,16 +25292,16 @@ void TestPressurePlate() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPos(a, 2000 + 45, 2000 + 45);
+        srv.DebugSetPos(Sid(srv, a), 2000 + 45, 2000 + 45);
         step(srv, out);
         Check(srv.PlateAnim(kPlate) == 0, "모서리 밖인데 눌렸다");
         // ★ **네모로만 재면 걸리는 자리** — (30,30) 은 네모로는 안이지만
         //   가장 가까운 점 (22.5,22.5) 까지가 √(7.5²+7.5²) ≈ 10.6 이라 몸 반지름 밖이다
-        srv.DebugSetPos(a, 2000 + 30, 2000 + 30);
+        srv.DebugSetPos(Sid(srv, a), 2000 + 30, 2000 + 30);
         step(srv, out);
         Check(srv.PlateAnim(kPlate) == 0, "모서리를 네모로 쟀다");
         // 같은 거리라도 곧은 쪽이면 닿는다
-        srv.DebugSetPos(a, 2000 + 30, 2000);
+        srv.DebugSetPos(Sid(srv, a), 2000 + 30, 2000);
         step(srv, out);
         Check(srv.PlateAnim(kPlate) == 1, "곧은 쪽 30 이 안 닿는다");
     }
@@ -25269,7 +25310,7 @@ void TestPressurePlate() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSpawnPet(1, 2000.0f, 2000.0f, a);
+        srv.DebugSpawnPet(1, 2000.0f, 2000.0f, Sid(srv, a));
         // ⚠ 틱이 돌면 소환수가 주인 쪽으로 걸어가 판에서 내려간다 — 판정 직전에 자리를 붙든다
         srv.DebugSetPetPos(0, 2000.0, 2000.0);
         step(srv, out);
@@ -25283,7 +25324,7 @@ void TestPressurePlate() {
         nox::Server srv; mk(srv);
         srv.DebugPlateEnable(kPlate, false);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPos(a, 2000, 2000);
+        srv.DebugSetPos(Sid(srv, a), 2000, 2000);
         step(srv, out);
         Check(find(out, nullptr) == 0, "꺼졌는데 알림이 갔다");
         Check(srv.PlateAnim(kPlate) == 0, "꺼졌는데 눌렸다");
@@ -25299,10 +25340,10 @@ void TestPressurePlate() {
         nox::Server srv; mk(srv);
         srv.DebugPlateOneShot(kPlate, true);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPos(a, 2000, 2000);
+        srv.DebugSetPos(Sid(srv, a), 2000, 2000);
         step(srv, out);
         Check(srv.PlateState(kPlate) == 1, "안 눌렸다");
-        srv.DebugSetPos(a, 2500, 2500);
+        srv.DebugSetPos(Sid(srv, a), 2500, 2500);
         step(srv, out);
         Check(srv.PlateState(kPlate) == 5, "한 번 쓰고 끝(5)이 아니다");
         // ★ **값 칸에는 상태(5)가 아니라 애니 칸(0)이 실린다**
@@ -25310,7 +25351,7 @@ void TestPressurePlate() {
         Check(find(out, &v) >= 1, "뗀 알림이 안 갔다");
         Check(v == 0, "뗀 값이 0 이 아니다(상태를 실었나)");
         out.clear();
-        srv.DebugSetPos(a, 2000, 2000);
+        srv.DebugSetPos(Sid(srv, a), 2000, 2000);
         step(srv, out);
         Check(srv.PlateAnim(kPlate) == 0, "끝난 판인데 다시 눌렸다");
         Check(find(out, nullptr) == 0, "끝난 판인데 알림이 갔다");
@@ -25332,7 +25373,7 @@ void TestPressurePlate() {
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame("10.9.3.9:9309", 939, /*observer=*/true);
-        srv.DebugSetPos("10.9.3.9:9309", 2000, 2000);
+        srv.DebugSetPos(Sid(srv, "10.9.3.9:9309"), 2000, 2000);
         std::vector<nox::OutPacket> out;
         step(srv, out);
         Check(srv.PlateAnim(kPlate) == 0, "관전자가 눌렀다");
@@ -25359,7 +25400,7 @@ void TestSoundWire() {
         d.id = kCap; d.maxDist = 600; d.merged = 2; d.samples = 1; sd.push_back(d);   // 가장 큰 둘만
         srv.SetSoundDefs(sd);
         srv.DebugEnterGame(a, 1001);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w);
     };
@@ -25395,7 +25436,7 @@ void TestSoundWire() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.PlaySoundAt(kSnd, 1000, 1000, 0, 0, a);
+        srv.PlaySoundAt(kSnd, 1000, 1000, 0, 0, Sid(srv, a));
         srv.DebugFlushAudio(out);
         std::vector<std::vector<uint8_t>> got;
         Check(grab(out, a, got) == 1, "소리가 안 갔다");
@@ -25403,9 +25444,9 @@ void TestSoundWire() {
                                    "제 소리인데 0xA6 이 갔다");
         // 남에게는 0xA6
         srv.DebugEnterGame(b, 1002);
-        srv.DebugSetPos(b, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, b), 1000, 1000);
         out.clear();
-        srv.PlaySoundAt(kSnd, 1000, 1000, 0, 0, a);
+        srv.PlaySoundAt(kSnd, 1000, 1000, 0, 0, Sid(srv, a));
         srv.DebugFlushAudio(out);
         Check(grab(out, b, got) == 1, "남에게 소리가 안 갔다");
         if (got.size() == 1) Check(got[0][0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT),
@@ -25464,9 +25505,9 @@ void TestSoundWire() {
     {
         nox::Server srv; mk(srv);
         srv.DebugEnterGame(b, 1002);
-        srv.DebugSetPos(b, 1000, 1000);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
+        srv.DebugSetPos(Sid(srv, b), 1000, 1000);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
         std::vector<nox::OutPacket> out;
         srv.PlaySoundAt(kSnd, 1000, 1000, /*kind=*/1, /*code=*/1);
         srv.DebugFlushAudio(out);
@@ -25601,13 +25642,13 @@ void TestSoundDebts() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1021);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         const std::string b = "10.10.2.2:1022";
         srv.DebugEnterGame(b, 1022);
-        srv.DebugSetPos(b, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, b), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        srv.DebugGiveExp(a, 100000.0f, out);           // 한 단계는 확실히 오른다
+        srv.DebugGiveExp(Sid(srv, a), 100000.0f, out);           // 한 단계는 확실히 오른다
         srv.Tick(34, out);                             // ← 소리는 **틱 끝**에 나간다
         uint8_t op = 0;
         Check(rang(out, 902, &op), "레벨이 올랐는데 902 가 안 울렸다");
@@ -25626,14 +25667,14 @@ void TestSoundDebts() {
         nox::Server srv; defs(srv);
         RegSpell(srv, 27);
         srv.DebugEnterGame(a, 1021);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        srv.DebugGrantSpell(a, 27, /*announce=*/0, false, 0, out);
+        srv.DebugGrantSpell(Sid(srv, a), 27, /*announce=*/0, false, 0, out);
         srv.Tick(34, out);
         Check(!rang(out, 226, nullptr), "조용히 받았는데 226 이 울렸다");
         out.clear();
-        srv.DebugGrantSpell(a, 27, /*announce=*/1, false, 0, out);
+        srv.DebugGrantSpell(Sid(srv, a), 27, /*announce=*/1, false, 0, out);
         srv.Tick(68, out);
         Check(rang(out, 226, nullptr), "알리며 받았는데 226 이 안 울렸다");
     }
@@ -25642,15 +25683,15 @@ void TestSoundDebts() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1021);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        srv.DebugGuideAward(a, 3, true, out);
+        srv.DebugGuideAward(Sid(srv, a), 3, true, out);
         srv.Tick(34, out);
         Check(rang(out, 227, nullptr), "안내서를 받았는데 227 이 안 울렸다");
         // 이미 있으면 조용히 실패 — 소리도 안 난다
         out.clear();
-        srv.DebugGuideAward(a, 3, true, out);
+        srv.DebugGuideAward(Sid(srv, a), 3, true, out);
         srv.Tick(68, out);
         Check(!rang(out, 227, nullptr), "이미 있는데 227 이 또 울렸다");
     }
@@ -25664,15 +25705,15 @@ void TestSoundDebts() {
         wp.sndPressed = 750; wp.sndReleased = 751;
         srv.SetWorldProps({ wp });
         srv.DebugEnterGame(a, 1021);
-        srv.DebugSetPos(a, 1500, 1500);
+        srv.DebugSetPos(Sid(srv, a), 1500, 1500);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 34;
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         srv.Tick(ms, out); ms += 34;
         Check(rang(out, 750, nullptr), "밟았는데 750 이 안 울렸다");
         out.clear();
-        srv.DebugSetPos(a, 1100, 1000);                // 판에서 내려온다(소리는 들리는 거리 안)
+        srv.DebugSetPos(Sid(srv, a), 1100, 1000);                // 판에서 내려온다(소리는 들리는 거리 안)
         srv.Tick(ms, out); ms += 34;
         Check(rang(out, 751, nullptr), "내려왔는데 751 이 안 울렸다");
     }
@@ -25681,11 +25722,11 @@ void TestSoundDebts() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1021);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        srv.DebugApplyEnchant(a, 26, 600, 50);
-        srv.DebugHurt(a, -1, 10, std::string(), 0, out);
+        srv.DebugApplyEnchant(Sid(srv, a), 26, 600, 50);
+        srv.DebugHurt(Sid(srv, a), -1, 10, Sid(srv, std::string()), 0, out);
         srv.Tick(34, out);
         Check(rang(out, 131, nullptr), "방패로 막았는데 131 이 안 울렸다");
     }
@@ -25698,7 +25739,7 @@ void TestSoundDebts() {
         t.x = 1000; t.y = 1000; t.facing = 0; t.proj = "MercArcherArrow"; t.fxKind = 1; t.damage = 25;
         srv.SetShootingTraps({ t });
         srv.DebugEnterGame(a, 1021);
-        srv.DebugSetPos(a, 1200, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1200, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
         srv.DebugShootingTrapUpdate(out);
@@ -25711,7 +25752,7 @@ void TestSoundDebts() {
         t2.x = 1000; t2.y = 1000; t2.facing = 0; t2.proj = "StrongFireball"; t2.fxKind = 0; t2.damage = 0;
         s2.SetShootingTraps({ t2 });
         s2.DebugEnterGame(a, 1021);
-        s2.DebugSetPos(a, 1200, 1000);
+        s2.DebugSetPos(Sid(s2, a), 1200, 1000);
         std::vector<nox::OutPacket> w2; s2.Tick(0, w2);
         std::vector<nox::OutPacket> o2;
         s2.DebugShootingTrapUpdate(o2);
@@ -25734,7 +25775,7 @@ void TestSoundDebts() {
         sw.gx = 44; sw.gy = 43; sw.flags = 0; sw.state = 1; sw.anim = 0; sw.waitSecs = 2;
         srv.SetSecretWalls({ sw });
         srv.DebugEnterGame(a, 1021);
-        srv.DebugSetPos(a, 44 * 23, 43 * 23);
+        srv.DebugSetPos(Sid(srv, a), 44 * 23, 43 * 23);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
         srv.WallOpen(44, 43);
@@ -25754,21 +25795,21 @@ void TestSoundDebts() {
         const std::string b2 = "10.10.2.3:1023";
         srv.DebugEnterGame(a, 1021);
         srv.DebugEnterGame(b2, 1023);
-        srv.DebugSetPos(a, 5000, 5000);
-        srv.DebugSetPos(b2, 5200, 5200);
+        srv.DebugSetPos(Sid(srv, a), 5000, 5000);
+        srv.DebugSetPos(Sid(srv, b2), 5200, 5200);
         std::vector<nox::OutPacket> w;
         srv.Tick(0, w);
         srv.DebugSendTeamState(w);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b2, 2);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b2), 2);
         // 공 하나와 골대 하나(2팀 골대 — 1팀이 넣는다)
         srv.StartFlagBall(1000, 1000, 900, 1000, 1100, 1000);
         std::vector<nox::OutPacket> out;
-        srv.DebugSetPos(a, 1000, 1000);                   // 공 위로
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);                   // 공 위로
         srv.Tick(34, out);
         Check(rang(out, 927, nullptr), "공을 주웠는데 927 이 안 울렸다");
         out.clear();
-        srv.DebugSetPos(a, 1100, 1000);                   // 골대로
+        srv.DebugSetPos(Sid(srv, a), 1100, 1000);                   // 골대로
         srv.Tick(68, out);
         Check(rang(out, 929, nullptr), "골을 넣었는데 929 가 안 울렸다");
     }
@@ -25881,7 +25922,7 @@ void TestMusicWire() {
     // ⑤ **판에 안 든 사람에겐 안 간다**
     {
         nox::Server srv; mk(srv);
-        srv.DebugLeave(b);                                 // 자리는 남고 판에서만 빠진다
+        srv.DebugLeave(Sid(srv, b));                                 // 자리는 남고 판에서만 빠진다
         std::vector<nox::OutPacket> out;
         srv.MusicPlay(3, 4, out);
         std::vector<uint8_t> m;
@@ -25920,9 +25961,9 @@ void TestDebugXpAndSpell() {
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);                                  // 첫 틱은 시계만 맞춘다
         srv.Tick(34 * 5, out);                             // 여기서 「첫 사람 프레임」이 잡힌다
-        Check(srv.DebugExp(a) == 0.0f, "문턱 전인데 경험치가 들어갔다");
+        Check(srv.DebugExp(Sid(srv, a)) == 0.0f, "문턱 전인데 경험치가 들어갔다");
         srv.Tick(34 * 200, out);                           // 넉넉히 넘긴다
-        Check(srv.DebugExp(a) > 0.0f, "문턱을 넘겼는데 경험치가 안 들어갔다");
+        Check(srv.DebugExp(Sid(srv, a)) > 0.0f, "문턱을 넘겼는데 경험치가 안 들어갔다");
     }
 
     // ② **한 번만 준다** — 그 뒤로 또 늘면 안 된다
@@ -25934,10 +25975,10 @@ void TestDebugXpAndSpell() {
         srv.Tick(0, out);
         srv.Tick(34 * 5, out);
         srv.Tick(34 * 200, out);
-        const float once = srv.DebugExp(a);
+        const float once = srv.DebugExp(Sid(srv, a));
         Check(once > 0.0f, "경험치가 한 번도 안 들어갔다");
         srv.Tick(34 * 400, out);
-        Check(srv.DebugExp(a) == once, "경험치를 두 번 줬다");
+        Check(srv.DebugExp(Sid(srv, a)) == once, "경험치를 두 번 줬다");
     }
 
     // ③ **0 이면 끈다** — 스위치를 안 주면 아무 일도 없다
@@ -25947,7 +25988,7 @@ void TestDebugXpAndSpell() {
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         srv.Tick(34 * 200, out);
-        Check(srv.DebugExp(a) == 0.0f, "스위치를 안 줬는데 경험치가 들어갔다");
+        Check(srv.DebugExp(Sid(srv, a)) == 0.0f, "스위치를 안 줬는데 경험치가 들어갔다");
     }
 
     // ④ **주문 세기가 3 → 4 로 오른다** (온라인 기본이 3 — 위 ⑵ 참조)
@@ -25960,11 +26001,11 @@ void TestDebugXpAndSpell() {
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         srv.Tick(34 * 5, out);
-        Check(srv.DebugSpellLvl(a, kSpell) == 3, "온라인 기본 세기가 3 이 아니다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), kSpell) == 3, "온라인 기본 세기가 3 이 아니다");
         srv.Tick(34 * 200, out);
-        Check(srv.DebugSpellLvl(a, kSpell) == 4, "주문 세기가 3 → 4 로 안 올랐다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), kSpell) == 4, "주문 세기가 3 → 4 로 안 올랐다");
         srv.Tick(34 * 400, out);
-        Check(srv.DebugSpellLvl(a, kSpell) == 4, "주문을 두 번 줬다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), kSpell) == 4, "주문을 두 번 줬다");
     }
 
     // ⑤ **주문 0 이면 끈다** — 기본 세기 3 에서 꿈쩍 않아야 한다
@@ -25976,7 +26017,7 @@ void TestDebugXpAndSpell() {
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         srv.Tick(34 * 200, out);
-        Check(srv.DebugSpellLvl(a, 30) == 3, "주문 0 인데 뭔가 줬다");
+        Check(srv.DebugSpellLvl(Sid(srv, a), 30) == 3, "주문 0 인데 뭔가 줬다");
     }
 
     std::printf("  11-a 진단 고리 — 경험치 문턱 뒤 한 번 · 주문 세기 3→4 한 번 · 0 이면 끔\n");
@@ -26000,7 +26041,7 @@ void TestLeaveNotify() {
         srv.DebugEnterGame(b, 1042);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        srv.DebugKickPlayer(a, out);
+        srv.DebugKickPlayer(Sid(srv, a), out);
         Check(count(out, a, static_cast<uint8_t>(nox::Op::KICK_NOTIFICATION), 1) == 1,
               "쫓겨나는 사람에게 `c5` 가 안 갔다");
         Check(count(out, b, static_cast<uint8_t>(nox::Op::KICK_NOTIFICATION), 1) == 0,
@@ -26028,8 +26069,8 @@ void TestLeaveNotify() {
         uint32_t ms = 34;
         for (int t = 0; t < 10; ++t) { srv.Tick(ms, out); ms += 34; }
         // ⚠ 프레임 0 에서 적으면 「한 번도 못 받은 세션」으로 걸려 **영영 안 걸린다**
-        srv.DebugTouch(a);
-        srv.DebugTouch(b);
+        srv.DebugTouch(Sid(srv, a));
+        srv.DebugTouch(Sid(srv, b));
         // 30초(900틱)가 지나도 **판에 든 사람은** 안 나간다
         for (int t = 0; t < 1000; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv.PlayerCount() == 2, "판에 든 사람이 30초에 나갔다");
@@ -26047,9 +26088,9 @@ void TestLeaveNotify() {
         srv.DebugEnterGame(a, 1041);
         srv.DebugEnterGame(b, 1042);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
-        srv.DebugLeave(b);                                 // 자리는 남고 판에서만 빠진다
+        srv.DebugLeave(Sid(srv, b));                                 // 자리는 남고 판에서만 빠진다
         std::vector<nox::OutPacket> out;
-        srv.DebugKickPlayer(a, out);
+        srv.DebugKickPlayer(Sid(srv, a), out);
         Check(count(out, b, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT), 3) == 0,
               "판에 없는 사람에게 `ae` 가 갔다");
     }
@@ -26062,9 +26103,9 @@ void TestLeaveNotify() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 34;
         for (int t = 0; t < 10; ++t) { srv.Tick(ms, out); ms += 34; }
-        srv.DebugTouch(a);
-        srv.DebugTouch(b);
-        srv.DebugSetClosing(a);                            // 스스로 나간다고 알렸다
+        srv.DebugTouch(Sid(srv, a));
+        srv.DebugTouch(Sid(srv, b));
+        srv.DebugSetClosing(Sid(srv, a));                            // 스스로 나간다고 알렸다
         out.clear();
         ms += 34; srv.Tick(ms, out);                       // `closing` 은 그 틱에 바로 걷힌다
         Check(count(out, a, static_cast<uint8_t>(nox::Op::TIMEOUT_NOTIFICATION), 1) == 0,
@@ -26080,7 +26121,7 @@ void TestLeaveNotify() {
         srv.DebugEnterGame(b, 1042);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        srv.DebugKickPlayer(a, out);
+        srv.DebugKickPlayer(Sid(srv, a), out);
         Check(count(out, b, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT), 3) == 0,
               "번호가 0 인데 `ae` 가 갔다");
     }
@@ -26127,7 +26168,7 @@ void TestJournalAndSysop() {
         }
         Check(grab(out, b, static_cast<uint8_t>(nox::Op::JOURNAL_MSG), 68, m) == 1, "남에게 안 갔다");
         // 판에 안 든 자리에는 안 간다
-        srv.DebugLeave(b);
+        srv.DebugLeave(Sid(srv, b));
         out.clear();
         srv.SendJournalAll(nox::Server::JournalKind::Add, "Q2", 1, out);
         Check(grab(out, b, static_cast<uint8_t>(nox::Op::JOURNAL_MSG), 68, m) == 0,
@@ -26167,7 +26208,7 @@ void TestJournalAndSysop() {
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        srv.DebugSendChapterEnd(a, 4, true, out);
+        srv.DebugSendChapterEnd(Sid(srv, a), 4, true, out);
         std::vector<uint8_t> m;
         Check(grab(out, a, static_cast<uint8_t>(nox::Op::CHAPTER_END), 3, m) == 1, "`d6` 가 안 갔다");
         if (m.size() == 3) {
@@ -26175,7 +26216,7 @@ void TestJournalAndSysop() {
             Check(m[2] == 1, "끝 표시가 1 이 아니다");
         }
         out.clear();
-        srv.DebugSendChapterEnd(a, 4, false, out);
+        srv.DebugSendChapterEnd(Sid(srv, a), 4, false, out);
         Check(grab(out, a, static_cast<uint8_t>(nox::Op::CHAPTER_END), 3, m) == 1, "`d6` 가 안 갔다");
         if (m.size() == 3) Check(m[2] == 0, "끝이 아닌데 1 이 갔다");
     }
@@ -26185,26 +26226,26 @@ void TestJournalAndSysop() {
         nox::Server srv; mk(srv);
         srv.SetSysopPassword("hunter2");
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugSysopTry(a, "hunter2", out), "맞는 비밀번호인데 거절했다");
+        Check(srv.DebugSysopTry(Sid(srv, a), "hunter2", out), "맞는 비밀번호인데 거절했다");
         std::vector<uint8_t> m;
         Check(grab(out, a, static_cast<uint8_t>(nox::Op::SYSOP_RESULT), 2, m) == 1, "`bd` 가 안 갔다");
         if (m.size() == 2) Check(m[1] == 1, "맞는데 0 이 갔다");
-        Check(srv.SysopOf(a), "맞았는데 관리자가 안 됐다");
+        Check(srv.SysopOf(Sid(srv, a)), "맞았는데 관리자가 안 됐다");
 
         out.clear();
-        Check(!srv.DebugSysopTry(b, "wrong", out), "틀린 비밀번호를 받아들였다");
+        Check(!srv.DebugSysopTry(Sid(srv, b), "wrong", out), "틀린 비밀번호를 받아들였다");
         Check(grab(out, b, static_cast<uint8_t>(nox::Op::SYSOP_RESULT), 2, m) == 1, "`bd` 가 안 갔다");
         if (m.size() == 2) Check(m[1] == 0, "틀렸는데 1 이 갔다");
-        Check(!srv.SysopOf(b), "틀렸는데 관리자가 됐다");
+        Check(!srv.SysopOf(Sid(srv, b)), "틀렸는데 관리자가 됐다");
     }
 
     // ⑥ **서버 비밀번호가 비어 있으면 무엇을 보내도 틀린 것이다**
     {
         nox::Server srv; mk(srv);
         std::vector<nox::OutPacket> out;
-        Check(!srv.DebugSysopTry(a, "", out), "빈 비밀번호가 통했다");
-        Check(!srv.SysopOf(a), "빈 비밀번호로 관리자가 됐다");
-        Check(!srv.DebugSysopTry(a, "anything", out), "비어 있는데 통했다");
+        Check(!srv.DebugSysopTry(Sid(srv, a), "", out), "빈 비밀번호가 통했다");
+        Check(!srv.SysopOf(Sid(srv, a)), "빈 비밀번호로 관리자가 됐다");
+        Check(!srv.DebugSysopTry(Sid(srv, a), "anything", out), "비어 있는데 통했다");
     }
 
     std::printf("  10-e — 일지 d5 68바이트(1 더하기·2 빼기·3 고치기, 빼기는 뒤 u16 없음) · "
@@ -26252,12 +26293,12 @@ void TestSpellSounds() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1061);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         // 충전이 0 인 완드를 들려 준다
-        srv.DebugGiveWand(a, /*spell=*/27, /*charges=*/0, /*chargesMax=*/10, /*cooldown=*/0);
+        srv.DebugGiveWand(Sid(srv, a), /*spell=*/27, /*charges=*/0, /*chargesMax=*/10, /*cooldown=*/0);
         std::vector<nox::OutPacket> out;
-        srv.DebugUseWand(a, out);
+        srv.DebugUseWand(Sid(srv, a), out);
         srv.Tick(34, out);
         Check(rang(out, 222), "완드를 다 썼는데 222 가 안 울렸다");
     }
@@ -26267,11 +26308,11 @@ void TestSpellSounds() {
         nox::Server srv; defs(srv);
         RegSpell(srv, 27);
         srv.DebugEnterGame(a, 1061);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
-        srv.DebugGiveWand(a, 27, /*charges=*/5, /*chargesMax=*/10, /*cooldown=*/0);
+        srv.DebugGiveWand(Sid(srv, a), 27, /*charges=*/5, /*chargesMax=*/10, /*cooldown=*/0);
         std::vector<nox::OutPacket> out;
-        srv.DebugUseWand(a, out);
+        srv.DebugUseWand(Sid(srv, a), out);
         srv.Tick(34, out);
         Check(!rang(out, 222), "충전이 남았는데 222 가 울렸다");
     }
@@ -26282,13 +26323,13 @@ void TestSpellSounds() {
         // 겨눔(0x4)이 아닌 주문 4 — 걸 때 **시전** 소리
         srv.SetSpellDef(4, 10, /*flags=*/0x0, { 0, 4 }, kCast, kOn, kOff);
         srv.DebugEnterGame(a, 1061);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         out.clear();
         const nox::Target none;
-        Check(srv.DebugDurNew(a, 4, 5, -1, -1, true, none, out), "지속 주문 New 가 false");
+        Check(srv.DebugDurNew(Sid(srv, a), 4, 5, -1, -1, true, none, out), "지속 주문 New 가 false");
         srv.Tick(ms += 34, out);
         Check(rang(out, kCast), "겨눔이 아닌 주문인데 시전 소리가 안 울렸다");
         Check(!rang(out, kOn), "겨눔이 아닌데 켜짐 소리가 울렸다");
@@ -26304,13 +26345,13 @@ void TestSpellSounds() {
         nox::Server srv; defs(srv);
         srv.SetSpellDef(4, 10, /*flags=*/0x4, { 0, 4 }, kCast, kOn, kOff);
         srv.DebugEnterGame(a, 1061);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         out.clear();
         const nox::Target none;
-        Check(srv.DebugDurNew(a, 4, 5, -1, -1, true, none, out), "지속 주문 New 가 false");
+        Check(srv.DebugDurNew(Sid(srv, a), 4, 5, -1, -1, true, none, out), "지속 주문 New 가 false");
         srv.Tick(ms += 34, out);
         Check(rang(out, kOn), "겨눔 주문인데 켜짐 소리가 안 울렸다");
         Check(!rang(out, kCast), "겨눔 주문인데 시전 소리가 울렸다");
@@ -26358,13 +26399,13 @@ void TestPickupAndAbilSounds() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1071, false, nox::CharClass::Warrior);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugAbilityDo(a, 4, out), "능력이 처음부터 안 먹었다");   // 4 = 살금살금
+        Check(srv.DebugAbilityDo(Sid(srv, a), 4, out), "능력이 처음부터 안 먹었다");   // 4 = 살금살금
         srv.Tick(34, out);
         out.clear();
-        Check(!srv.DebugAbilityDo(a, 4, out), "켜진 살금살금을 또 눌렀는데 먹었다");
+        Check(!srv.DebugAbilityDo(Sid(srv, a), 4, out), "켜진 살금살금을 또 눌렀는데 먹었다");
         Check(srv.abilGate(4, nox::AbilGate::Already) == 1 && srv.abilGate(4, nox::AbilGate::Cooldown) == 0,
               "② 막은 관문이 「이미 켜짐」이 아니다");
         srv.Tick(68, out);
@@ -26375,10 +26416,10 @@ void TestPickupAndAbilSounds() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1071, false, nox::CharClass::Warrior);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugAbilityDo(a, 4, out), "능력이 안 먹었다");
+        Check(srv.DebugAbilityDo(Sid(srv, a), 4, out), "능력이 안 먹었다");
         srv.Tick(34, out);
         Check(!rang(out, 231), "성공했는데 231 이 울렸다");
     }
@@ -26387,10 +26428,10 @@ void TestPickupAndAbilSounds() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1071, false, nox::CharClass::Wizard);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        Check(!srv.DebugAbilityDo(a, 4, out), "워리어가 아닌데 먹었다");
+        Check(!srv.DebugAbilityDo(Sid(srv, a), 4, out), "워리어가 아닌데 먹었다");
         srv.Tick(34, out);
         Check(!rang(out, 231), "워리어가 아닌데 231 이 울렸다");
     }
@@ -26399,8 +26440,8 @@ void TestPickupAndAbilSounds() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1071);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         { std::vector<nox::OutPacket> w0; srv.Tick(0, w0); }   // ⚠ 첫 Tick 은 시계만 맞추고 안 돌아 소리가 안 빠진다
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic w;
@@ -26420,11 +26461,11 @@ void TestPickupAndAbilSounds() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1071);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         { std::vector<nox::OutPacket> w0; srv.Tick(0, w0); }   // ⚠ 첫 Tick 은 시계만 맞추고 안 돌아 소리가 안 빠진다
         std::vector<nox::OutPacket> out;
-        srv.Damage(a, 40, out);                              // 넉넉히 모자라게 만든다
+        srv.Damage(Sid(srv, a), 40, out);                              // 넉넉히 모자라게 만든다
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic w;
         w.netCode = 701; w.type = 638; w.x = 1000; w.y = 1000;
@@ -26445,11 +26486,11 @@ void TestPickupAndAbilSounds() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1071);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         { std::vector<nox::OutPacket> w0; srv.Tick(0, w0); }   // ⚠ 첫 Tick 은 시계만 맞추고 안 돌아 소리가 안 빠진다
         std::vector<nox::OutPacket> out;
-        srv.DebugSetMana(a, 5);                              // 넉넉히 모자라게
+        srv.DebugSetMana(Sid(srv, a), 5);                              // 넉넉히 모자라게
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic w;
         w.netCode = 702; w.type = 638; w.x = 1000; w.y = 1000;
@@ -26470,13 +26511,13 @@ void TestPickupAndAbilSounds() {
     {
         nox::Server srv; defs(srv);
         srv.DebugEnterGame(a, 1071, false, nox::CharClass::Warrior);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
         std::vector<nox::OutPacket> out;
-        Check(srv.DebugAbilityDo(a, 3, out), "작살이 처음부터 안 먹었다");
+        Check(srv.DebugAbilityDo(Sid(srv, a), 3, out), "작살이 처음부터 안 먹었다");
         srv.Tick(34, out);
         out.clear();
-        Check(!srv.DebugAbilityDo(a, 3, out), "쉬는 시간인데 또 먹었다");
+        Check(!srv.DebugAbilityDo(Sid(srv, a), 3, out), "쉬는 시간인데 또 먹었다");
         srv.Tick(68, out);
         Check(rang(out, 231), "쉬는 시간 거절인데 231 이 안 울렸다");
     }
@@ -26497,10 +26538,10 @@ void TestPickupAndAbilSounds() {
         // 독 해제 주문(14)의 **켜짐** 소리를 kCure 로 — 겨눔(0x4)이라 켜짐이 쓰인다
         srv.SetSpellDef(14, 10, /*flags=*/0x4, { 0, 4 }, 0, kCure, 0);
         srv.DebugEnterGame(a, 1071);
-        srv.DebugMoveTo(a, 1000, 1000);
-        srv.DebugSetPos(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.DebugSetPos(Sid(srv, a), 1000, 1000);
         std::vector<nox::OutPacket> w; srv.Tick(0, w);
-        srv.DebugSetPoison(a, 5);
+        srv.DebugSetPoison(Sid(srv, a), 5);
         std::vector<nox::Server::WorldStatic> st;
         nox::Server::WorldStatic wp;
         wp.netCode = 703; wp.type = 638; wp.x = 1000; wp.y = 1000;
@@ -26527,14 +26568,14 @@ void TestGameServerReady() {
     const std::string a = "10.5.2.1:5201";
     nox::Server srv;
     srv.DebugEnterGame(a, 750);
-    srv.DebugImportantReal(a, /*ready=*/false);
+    srv.DebugImportantReal(Sid(srv, a), /*ready=*/false);
     uint32_t ms = 0;
     std::vector<nox::OutPacket> out;
     srv.Tick(ms, out);
-    Check(!srv.DebugHasEnchant(a, 23), "준비 전인데 무적 23 이 걸려 있다(시험 전제)");
+    Check(!srv.DebugHasEnchant(Sid(srv, a), 23), "준비 전인데 무적 23 이 걸려 있다(시험 전제)");
     const auto ready = WireOf({ static_cast<uint8_t>(nox::Op::CLIENT_READY) });
     srv.OnPacket(a, ready.data(), ready.size(), out);
-    Check(srv.DebugHasEnchant(a, 23) && srv.DebugEnchantDur(a, 23) == 150 && srv.DebugEnchantPower(a, 23) == 5,
+    Check(srv.DebugHasEnchant(Sid(srv, a), 23) && srv.DebugEnchantDur(Sid(srv, a), 23) == 150 && srv.DebugEnchantPower(Sid(srv, a), 23) == 5,
           "CLIENT_READY 인데 무적 23(150 · 세기 5)이 안 걸렸다");
     std::vector<nox::OutPacket> o;
     ms += 34; srv.Tick(ms, o);
@@ -26550,7 +26591,7 @@ void TestGameServerReady() {
     // 두 번째 준비(정품 클라는 두 번 보낸다) — 무적을 끄고 다시 150
     for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, o); }
     srv.OnPacket(a, ready.data(), ready.size(), o);
-    Check(srv.DebugEnchantDur(a, 23) == 150, "두 번째 CLIENT_READY 에 무적이 150 으로 다시 안 걸렸다");
+    Check(srv.DebugEnchantDur(Sid(srv, a), 23) == 150, "두 번째 CLIENT_READY 에 무적이 150 으로 다시 안 걸렸다");
     std::printf("  접속 준비 — CLIENT_READY 무적 23(150·5) · `ef` 직업 배수 · 두 번째 준비 다시 150\n");
 }
 
@@ -26580,7 +26621,7 @@ void TestResetFriends() {
         Check(count(o, nox::Op::RESET_FRIENDS) == 0, "팀이 그대로인데 36 이 나감");
     }
     {
-        srv.DebugSetTeam(a, 1);
+        srv.DebugSetTeam(Sid(srv, a), 1);
         std::vector<nox::OutPacket> o;
         ms += 34; srv.Tick(ms, o);
         Check(count(o, nox::Op::RESET_FRIENDS) == 1, "팀이 바뀌었는데 36 RESET_FRIENDS 가 안 나감");
@@ -26634,7 +26675,7 @@ void TestSnapshotSeqRenumber() {
 
     std::vector<nox::OutPacket> warm;
     srv.Tick(0, warm);              // 첫 호출은 기준점만 잡는다
-    srv.DebugArmSnapshot(a);
+    srv.DebugArmSnapshot(Sid(srv, a));
     std::vector<nox::OutPacket> out;
     srv.Tick(33, out);
 
@@ -26691,19 +26732,19 @@ void TestPlayersCenter() {
 
     // ② 하나면 그 사람 자리
     srv.DebugEnterGame(a, 728);
-    srv.DebugSetPos(a, 1000, 2000);
+    srv.DebugSetPos(Sid(srv, a), 1000, 2000);
     srv.PlayersCenter(x, y);
     Check(x == 1000 && y == 2000, "사람 하나인데 그 자리가 아니다");
 
     // ③ 둘이면 가운데
     srv.DebugEnterGame(b2, 729);
-    srv.DebugSetPos(b2, 2000, 3000);
+    srv.DebugSetPos(Sid(srv, b2), 2000, 3000);
     srv.PlayersCenter(x, y);
     Check(x == 1500 && y == 2500, "둘의 가운데가 아니다");
 
     // ④ 셋이면 셋의 평균 — **개수로도 본다**(둘만 세면 여기서 걸린다)
     srv.DebugEnterGame(c, 730);
-    srv.DebugSetPos(c, 3000, 4000);
+    srv.DebugSetPos(Sid(srv, c), 3000, 4000);
     srv.PlayersCenter(x, y);
     Check(x == 2000 && y == 3000, "셋의 평균이 아니다 — 세는 자리가 빠졌다");
 
@@ -27676,8 +27717,8 @@ void TestWallCollision() {
     auto walkTick = [&](nox::Server& srv, uint8_t facing, std::vector<nox::OutPacket>& out,
                         int aimAhead = 50) {
         const double rad = facing * 2.0 * 3.14159265358979 / 256.0;
-        srv.DebugAimAt(a, srv.XOf(a) + static_cast<int>(aimAhead * std::cos(rad)),
-                       srv.YOf(a) + static_cast<int>(aimAhead * std::sin(rad)));
+        srv.DebugAimAt(Sid(srv, a), srv.XOf(Sid(srv, a)) + static_cast<int>(aimAhead * std::cos(rad)),
+                       srv.YOf(Sid(srv, a)) + static_cast<int>(aimAhead * std::sin(rad)));
         auto pkt = walkPkt(facing);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
         ms += 34;
@@ -27691,7 +27732,7 @@ void TestWallCollision() {
         std::vector<nox::OutPacket> out;
         srv.Tick(ms, out);
         for (int i = 0; i < 3; ++i) walkTick(srv, 0, out);
-        Check(srv.XOf(a) > 1000, "벽이 없는데 걸음이 안 갔다");
+        Check(srv.XOf(Sid(srv, a)) > 1000, "벽이 없는데 걸음이 안 갔다");
     }
 
     // ② 동쪽 바로 앞이 벽 — 막힌다
@@ -27704,7 +27745,7 @@ void TestWallCollision() {
         std::vector<nox::OutPacket> out;
         srv.Tick(ms, out);
         for (int i = 0; i < 12; ++i) walkTick(srv, 0, out);   // 벽을 넘으면 x 가 1012 를 훌쩍 넘는다
-        Check(srv.XOf(a) < 1012, "동쪽 벽을 뚫었다");
+        Check(srv.XOf(Sid(srv, a)) < 1012, "동쪽 벽을 뚫었다");
     }
 
     // ③ 대각(북동 = 224)으로 스치면 y 축으로 미끄러진다
@@ -27713,15 +27754,15 @@ void TestWallCollision() {
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
-        srv.DebugMoveTo(a, 990, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 990, 1000);
         std::vector<std::pair<uint8_t, uint8_t>> cells = { { 44, 42 }, { 44, 43 }, { 44, 44 } };
         srv.SetWalls(cells);
-        const int y0 = srv.YOf(a);
+        const int y0 = srv.YOf(Sid(srv, a));
         std::vector<nox::OutPacket> out;
         srv.Tick(ms, out);
         for (int i = 0; i < 12; ++i) walkTick(srv, 224, out);   // 북동 — x+ 는 막히고 y- 는 열려 있다
-        Check(srv.XOf(a) < 1012, "미끄러지다 벽을 뚫었다");
-        Check(srv.YOf(a) < y0, "미끄러짐이 없다 — 대각에서 통째로 멈췄다");
+        Check(srv.XOf(Sid(srv, a)) < 1012, "미끄러지다 벽을 뚫었다");
+        Check(srv.YOf(Sid(srv, a)) < y0, "미끄러짐이 없다 — 대각에서 통째로 멈췄다");
     }
 
     // ④ 속도 — 정답지 적분의 끝 속도 = 힘 ÷ 감쇠. 걷기 3.0/0.5 = 6 · 달리기 ×2 = 12 유닛/틱
@@ -27735,11 +27776,11 @@ void TestWallCollision() {
             std::vector<nox::OutPacket> out;
             srv.Tick(ms, out);
             for (int i = 0; i < 40; ++i) walkTick(srv, 0, out, aimDx);   // 끝 속도에 닿을 만큼
-            const int x0 = srv.XOf(a);
+            const int x0 = srv.XOf(Sid(srv, a));
             walkTick(srv, 0, out, aimDx);
-            const int v = srv.XOf(a) - x0;
+            const int v = srv.XOf(Sid(srv, a)) - x0;
             // 멈춤 — 방향만 보내면(이동 코드 없음) 상태가 가만으로 바뀌고 속도가 잦아든다
-            const int xs = srv.XOf(a);
+            const int xs = srv.XOf(Sid(srv, a));
             for (int i = 0; i < 30; ++i) {
                 std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
                 p.push_back(static_cast<uint8_t>(nox::Op::PLAYER_INPUT));
@@ -27750,7 +27791,7 @@ void TestWallCollision() {
                 ms += 34;
                 srv.Tick(ms, out);
             }
-            if (stopDist) *stopDist = srv.XOf(a) - xs;
+            if (stopDist) *stopDist = srv.XOf(Sid(srv, a)) - xs;
             return v;
         };
         double walkStop = 0, runStop = 0;
@@ -27790,7 +27831,7 @@ void TestWallShape() {
     };
     nox::Server srv;
     srv.DebugEnterGame(a, 728);
-    srv.DebugMoveTo(a, 960, 1000);
+    srv.DebugMoveTo(Sid(srv, a), 960, 1000);
     //   ⚠ 한 칸짜리면 선 끝까지 미끄러져 지나간다(처음에 그렇게 짜서 「뚫었다」로 오판) — 칸 (x, x−1) 을 스무 칸 잇는다.
     std::vector<nox::Server::WallTileIn> tiles;
     for (int gx = 40; gx < 60; ++gx) {
@@ -27810,14 +27851,14 @@ void TestWallShape() {
     srv.Tick(ms, out);
     int maxX = 0;
     for (int i = 0; i < 40; ++i) {
-        srv.DebugAimAt(a, srv.XOf(a) + 300, srv.YOf(a));
+        srv.DebugAimAt(Sid(srv, a), srv.XOf(Sid(srv, a)) + 300, srv.YOf(Sid(srv, a)));
         auto pkt = walkPkt(0);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
         ms += 34;
         srv.Tick(ms, out);
-        maxX = std::max(maxX, srv.XOf(a));
+        maxX = std::max(maxX, srv.XOf(Sid(srv, a)));
     }
-    const int x = srv.XOf(a), y = srv.YOf(a);
+    const int x = srv.XOf(Sid(srv, a)), y = srv.YOf(Sid(srv, a));
     // 선 방정식 y − 989 = x − 1012 → 중심이 선의 **왼아래(서남) 쪽**에 머물러야 한다: (x−1012) − (y−989) < 0
     Check((x - 1012) - (y - 989) < 0, "대각선 벽을 뚫고 반대편으로 갔다");
     Check(y > 1000, "대각선을 따라 남동으로 미끄러지지 않았다");
@@ -27849,12 +27890,12 @@ void TestBodyCollision() {
         srv.Tick(ms, out);
         int maxX = 0;
         for (int i = 0; i < ticks; ++i) {
-            srv.DebugAimAt(a, srv.XOf(a) + 300, srv.YOf(a));
+            srv.DebugAimAt(Sid(srv, a), srv.XOf(Sid(srv, a)) + 300, srv.YOf(Sid(srv, a)));
             auto pkt = walkPkt(0);
             srv.OnPacket(a, pkt.data(), pkt.size(), out);
             ms += 34;
             srv.Tick(ms, out);
-            maxX = std::max(maxX, srv.XOf(a));
+            maxX = std::max(maxX, srv.XOf(Sid(srv, a)));
         }
         return maxX;
     };
@@ -27867,9 +27908,9 @@ void TestBodyCollision() {
         srv.SetObstacles({ tree });
         const int maxX = runEast(srv, 30);
         Check(maxX < 1060, "나무를 뚫고 중심을 넘어갔다");
-        Check(srv.XOf(a) < 1060, "나무 너머에 서 있다");
+        Check(srv.XOf(Sid(srv, a)) < 1060, "나무 너머에 서 있다");
         Check(maxX > 1025, "나무에 닿기도 전에 멈췄다");
-        std::printf("  몸 충돌 — 나무(r15 at 1060) 가장 멀리 x %d · 끝 x %d", maxX, srv.XOf(a));
+        std::printf("  몸 충돌 — 나무(r15 at 1060) 가장 멀리 x %d · 끝 x %d", maxX, srv.XOf(Sid(srv, a)));
     }
     // ② 오벨리스크(상자 20×20, 고정 at 1060) — 중심이 서쪽 꼭짓점(1045.9)을 넘지 않는다
     {
@@ -27881,20 +27922,20 @@ void TestBodyCollision() {
         srv.SetObstacles({ ob });
         const int maxX = runEast(srv, 30);
         Check(maxX < 1060, "상자를 뚫고 중심을 넘어갔다");
-        Check(srv.XOf(a) < 1060, "상자 너머에 서 있다");
+        Check(srv.XOf(Sid(srv, a)) < 1060, "상자 너머에 서 있다");
         Check(maxX > 1025, "상자에 닿기도 전에 멈췄다");
-        std::printf(" · 상자(20×20) 가장 멀리 x %d · 끝 x %d", maxX, srv.XOf(a));
+        std::printf(" · 상자(20×20) 가장 멀리 x %d · 끝 x %d", maxX, srv.XOf(Sid(srv, a)));
     }
     // ③ 서 있는 사람을 밀면 그 사람이 밀려난다(둘 다 움직이는 몸)
     {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1040, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1040, 1000);
         runEast(srv, 30);
-        Check(srv.XOf(b) > 1040, "서 있는 사람이 안 밀렸다");
-        Check(srv.XOf(b) - srv.XOf(a) >= 15, "두 몸이 겹쳐 지나갔다");
-        std::printf(" · 밀린 사람 x %d (민 사람 %d)\n", srv.XOf(b), srv.XOf(a));
+        Check(srv.XOf(Sid(srv, b)) > 1040, "서 있는 사람이 안 밀렸다");
+        Check(srv.XOf(Sid(srv, b)) - srv.XOf(Sid(srv, a)) >= 15, "두 몸이 겹쳐 지나갔다");
+        std::printf(" · 밀린 사람 x %d (민 사람 %d)\n", srv.XOf(Sid(srv, b)), srv.XOf(Sid(srv, a)));
     }
 }
 
@@ -27905,14 +27946,14 @@ void TestObserverExit() {
     srv.DebugEnterGame(a, 728, /*observer=*/true);
     srv.DebugEnterGame(b, 729);   // 둘 다 (1000,1000) — 근접 사거리 안이다
 
-    const uint16_t before = srv.HealthOf(b);
+    const uint16_t before = srv.HealthOf(Sid(srv, b));
 
     // ① 첫 클릭은 관전 풀기다. **때리지 않는다**
     {
         std::vector<nox::OutPacket> out;
         auto pkt = InputPacket(6);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
-        Check(srv.HealthOf(b) == before, "관전 중 첫 클릭이 때렸다");
+        Check(srv.HealthOf(Sid(srv, b)) == before, "관전 중 첫 클릭이 때렸다");
         Check(srv.melees() == 0, "관전 중 첫 클릭이 근접으로 세어졌다");
 
         const auto msgs = Flatten(out);
@@ -27948,11 +27989,11 @@ void TestObserverExit() {
     //   ⚠ 2026-09-13 묶음 3-a — 주먹은 애니가 끝나는 틱에 닿고(시험 서버는 칸 표가 비어 다음 틱) · 같은 자리면 방향이 없어 안 닿는다.
     {
         std::vector<nox::OutPacket> out;
-        srv.DebugMoveTo(b, 1025, 1000);
+        srv.DebugMoveTo(Sid(srv, b), 1025, 1000);
         auto pkt = InputPacket(6);
         srv.OnPacket(a, pkt.data(), pkt.size(), out);
         for (uint32_t ms = 0; ms <= 33 * 4; ms += 33) srv.Tick(ms, out);
-        Check(srv.HealthOf(b) == before - kWizardPunch, "관전을 푼 뒤 클릭이 안 때렸다");
+        Check(srv.HealthOf(Sid(srv, b)) == before - kWizardPunch, "관전을 푼 뒤 클릭이 안 때렸다");
         Check(srv.melees() == 1, "관전을 푼 뒤 근접 집계가 1 이 아님");
     }
 
@@ -27972,58 +28013,58 @@ void TestProjectile() {
         RegFireballTypes(srv);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-        srv.DebugMoveTo(a, 1000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
 
     // ① 옆으로 비켜 있으면 안 맞는다 — 몸 방향으로만 날아가니까
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1000, 1300);                      // 바라보는 쪽(+x)이 아니라 옆(+y)
+        srv.DebugMoveTo(Sid(srv, b), 1000, 1300);                      // 바라보는 쪽(+x)이 아니라 옆(+y)
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 27, false, ms, out);
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) == bHp, "옆에 비켜 있는데 맞음");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "옆에 비켜 있는데 맞음");
     }
 
     // ② 쏜 사람은 자기 것에 **바로** 안 맞는다 — 자기 앞에서 나가니 이게 없으면 늘 자폭한다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), 5000, 5000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t aHp = srv.HealthOf(a);
+        const uint16_t aHp = srv.HealthOf(Sid(srv, a));
         CastAndWait(srv, a, 27, false, ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.HealthOf(a) == aHp, "쏜 사람이 자기 것에 바로 맞음");
+        Check(srv.HealthOf(Sid(srv, a)) == aHp, "쏜 사람이 자기 것에 바로 맞음");
     }
 
     // ③ 가는 도중에는 아직 안 맞는다 — 한 틱만 돌려 본다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1800, 1000);                      // 한 틱으로는 못 닿는 거리
+        srv.DebugMoveTo(Sid(srv, b), 1800, 1000);                      // 한 틱으로는 못 닿는 거리
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 27, false, ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv.HealthOf(b) == bHp, "한 틱 만에 800 을 날아가 맞음");
+        Check(srv.HealthOf(Sid(srv, b)) == bHp, "한 틱 만에 800 을 날아가 맞음");
         Check(srv.missiles() == 1, "가는 도중인데 사라짐");
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "끝까지 날아가도 안 맞음");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "끝까지 날아가도 안 맞음");
     }
 
     // ④ 바라보는 쪽을 바꾸면 그쪽으로 날아간다
     {
         nox::Server srv; mk(srv);
-        srv.DebugMoveTo(b, 1000, 1300);                      // +y 쪽
+        srv.DebugMoveTo(Sid(srv, b), 1000, 1300);                      // +y 쪽
         std::vector<uint8_t> face(nox::kWireHeaderSize + 1 + 1 + 4 + 1, 0);
         face[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::PLAYER_INPUT);
         face[nox::kWireHeaderSize + 1] = 5;   // 항목 길이 = 코드4 + 데이터1
@@ -28035,10 +28076,10 @@ void TestProjectile() {
         // ⚠ 방향은 틱의 ImplB 에서 갈아 끼운다 → 한 틱 돌린 뒤 쏜다
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
-        const uint16_t bHp = srv.HealthOf(b);
+        const uint16_t bHp = srv.HealthOf(Sid(srv, b));
         CastAndWait(srv, a, 27, false, ms, out);
         for (int t = 0; t < 60 && srv.missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
-        Check(srv.HealthOf(b) < bHp, "바라보는 쪽으로 안 날아감");
+        Check(srv.HealthOf(Sid(srv, b)) < bHp, "바라보는 쪽으로 안 날아감");
     }
 
     std::printf("  투사체 — 비키면 안 맞음·자폭 안 함·가는 도중·방향\n");
@@ -28057,8 +28098,8 @@ void TestProjectileVisible() {
     RegFireballTypes(srv);
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
     srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
-    srv.DebugMoveTo(a, 1000, 1000);
-    srv.DebugMoveTo(b, 1900, 1000);   // 멀리 둬서 날아가는 동안 안 맞게
+    srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
+    srv.DebugMoveTo(Sid(srv, b), 1900, 1000);   // 멀리 둬서 날아가는 동안 안 맞게
 
     std::vector<nox::OutPacket> out;
     uint32_t ms = 0;
@@ -28127,7 +28168,7 @@ void TestSummon() {
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         srv.Tick(0, out);
         srv.Tick(33 * 200, out);   // 넉넉히 돌린다
-        Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "부른 사람이 자기 것에게 맞음");
+        Check(srv.HealthOf(Sid(srv, a)) == nox::kDefaultMaxHealth, "부른 사람이 자기 것에게 맞음");
     }
 
     // ③ 남에게는 다가가 때린다
@@ -28135,18 +28176,18 @@ void TestSummon() {
         nox::Server srv;
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1240, 1000);   // 멀리 둔다 — 다가가야 닿는다(★ 09-29 B1 — 알아보기 250 안 · 쏘기 사거리 150 밖)
+        srv.DebugMoveTo(Sid(srv, b), 1240, 1000);   // 멀리 둔다 — 다가가야 닿는다(★ 09-29 B1 — 알아보기 250 안 · 쏘기 사거리 150 밖)
         std::vector<nox::OutPacket> out;
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         srv.Tick(0, out);
         srv.Tick(33, out);
         RegImpShot(srv);
-        Check(srv.HealthOf(b) == nox::kDefaultMaxHealth, "부르자마자 멀리 있는 사람이 맞음");
+        Check(srv.HealthOf(Sid(srv, b)) == nox::kDefaultMaxHealth, "부르자마자 멀리 있는 사람이 맞음");
         // ⚠ **한 번에 크게 건너뛰면 안 된다** — 임프는 이제 **날아가는 것**을 쏘고(6-g(3b)),
         //   날아가는 것은 틱마다 한 걸음씩 나아간다. 한 번에 300틱을 주면 걸음이 안 쌓인다
         { uint32_t t2 = 33; for (int q = 0; q < 300; ++q) { t2 += 33; srv.Tick(t2, out); } }
-        Check(srv.HealthOf(b) < nox::kDefaultMaxHealth, "다가가서 안 때림(임프는 사거리에서 쏜다)");
-        Check(srv.HealthOf(a) == nox::kDefaultMaxHealth, "부른 사람이 맞음");
+        Check(srv.HealthOf(Sid(srv, b)) < nox::kDefaultMaxHealth, "다가가서 안 때림(임프는 사거리에서 쏜다)");
+        Check(srv.HealthOf(Sid(srv, a)) == nox::kDefaultMaxHealth, "부른 사람이 맞음");
     }
 
     // ④ 주문마다 다른 것이 나온다 — 뭉뚱그리면 유령이 곰으로 보인다
@@ -28170,7 +28211,7 @@ void TestPetDies() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         std::vector<nox::OutPacket> out;
-        srv.DebugMoveTo(b, 1300, 1300);   // 4-a — 시전 틀 동안 틱이 돈다. 같은 자리면 몸끼리 밀려(2-c) 부른 자리가 틀어진다
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1300);   // 4-a — 시전 틀 동안 틱이 돈다. 같은 자리면 몸끼리 밀려(2-c) 부른 자리가 틀어진다
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         Check(srv.pets() == 1, "안 불려 나옴");
         double petX = 0, petY = 0;
@@ -28184,9 +28225,9 @@ void TestPetDies() {
             body.shape = 2; body.r = 10.0f; body.cls = 0x2;
             srv.SetTypeBody(1328, body);   // 4-a — 임프
         }
-        srv.DebugMoveTo(b, static_cast<int>(petX) - 25, static_cast<int>(petY));
+        srv.DebugMoveTo(Sid(srv, b), static_cast<int>(petX) - 25, static_cast<int>(petY));
         srv.DebugSetPetFacing(0, 128);                     // ★ 09-29 B1 — b(서쪽)를 보게 — 등 뒤는 못 알아본다(앞쪽 부채꼴)
-        srv.DebugMoveTo(a, 500, static_cast<int>(petY));   // 부른 사람은 비킨다 — b 와 15 로 겹치면 몸끼리 튕겨 b 가 날아간다(2-c)
+        srv.DebugMoveTo(Sid(srv, a), 500, static_cast<int>(petY));   // 부른 사람은 비킨다 — b 와 15 로 겹치면 몸끼리 튕겨 b 가 날아간다(2-c)
 
         uint32_t ms = 0;
         srv.Tick(0, out);
@@ -28251,7 +28292,7 @@ void TestPetDies() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
         std::vector<nox::OutPacket> out;
-        srv.DebugMoveTo(b, 1300, 1300);   // 4-a — 시전 틀 동안 겹쳐 밀리지 않게
+        srv.DebugMoveTo(Sid(srv, b), 1300, 1300);   // 4-a — 시전 틀 동안 겹쳐 밀리지 않게
         SummonImp(srv, a, out);   // 4-a — 79(Bomber)는 thing.bin 에 주문 정의가 없어 임프(87) · 컨저러 · 시전 틀
         Check(srv.pets() == 1, "임프가 안 불려 나옴(시험 전제)");
         nox::Server::PhysBody body;
@@ -28263,8 +28304,8 @@ void TestPetDies() {
         double petX = 0, petY = 0;
         srv.DebugPetXY(0, petX, petY);
         // b 를 소환수 서쪽에 세우고 소환수 쪽(+x)으로 쏘게 한다
-        srv.DebugMoveTo(b, static_cast<int>(petX) - 200, static_cast<int>(petY));
-        srv.DebugMoveTo(a, 5000, 5000);
+        srv.DebugMoveTo(Sid(srv, b), static_cast<int>(petX) - 200, static_cast<int>(petY));
+        srv.DebugMoveTo(Sid(srv, a), 5000, 5000);
         uint32_t ms = srv.DebugNowMs();
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
@@ -28287,21 +28328,21 @@ void TestArena() {
         nox::Server srv; RegAllSpells(srv);   // 4-a 주문 정의
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1025, 1000);   // 겹치면 몸끼리 튕긴다(묶음 2-c) — TestMelee 주석
+        srv.DebugMoveTo(Sid(srv, b), 1025, 1000);   // 겹치면 몸끼리 튕긴다(묶음 2-c) — TestMelee 주석
         uint32_t ms = 0;
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
         int guard = 0;
-        while (srv.IsAlive(b) && guard++ < 40) {
+        while (srv.IsAlive(Sid(srv, b)) && guard++ < 40) {
             auto pkt = InputPacket(6);
             srv.OnPacket(a, pkt.data(), pkt.size(), out);
             ms += 33 * (nox::kMeleeCooldownTicks + 1);
             srv.Tick(ms, out);
         }
-        Check(!srv.IsAlive(b), "안 죽음");
-        Check(srv.KillsOf(a) == 1, "때린 쪽 점수가 1 이 아님");
-        Check(srv.DeathsOf(b) == 1, "죽은 쪽의 죽은 수가 1 이 아님");
-        Check(srv.KillsOf(b) == 0, "맞은 쪽에 점수가 붙음");
+        Check(!srv.IsAlive(Sid(srv, b)), "안 죽음");
+        Check(srv.KillsOf(Sid(srv, a)) == 1, "때린 쪽 점수가 1 이 아님");
+        Check(srv.DeathsOf(Sid(srv, b)) == 1, "죽은 쪽의 죽은 수가 1 이 아님");
+        Check(srv.KillsOf(Sid(srv, b)) == 0, "맞은 쪽에 점수가 붙음");
     }
 
     // ★★ ② 자기에게 건 주문으로 죽으면 **점수가 내려가고, 죽은 횟수는 안 오른다**
@@ -28316,10 +28357,10 @@ void TestArena() {
         //   여기서 보려는 것은 「스스로 죽으면 점수를 안 준다」이므로 **때린 이가 자기**인 피해로 잰다
         //   (`HurtTarget` 의 by == 자기 갈래 — 옛 주문 자폭과 같은 길이다).
         int guard = 0;
-        while (srv.IsAlive(a) && guard++ < 20) srv.DebugHurt(a, -1, 30, a, 0, out);
-        Check(!srv.IsAlive(a), "자기 피해로 안 죽음");
-        Check(srv.KillsOf(a) == -1, "자살인데 점수가 −1 이 안 됐다");
-        Check(srv.DeathsOf(a) == 0, "자살인데 죽은 횟수가 올랐다(정답지는 안 올린다)");
+        while (srv.IsAlive(Sid(srv, a)) && guard++ < 20) srv.DebugHurt(Sid(srv, a), -1, 30, Sid(srv, a), 0, out);
+        Check(!srv.IsAlive(Sid(srv, a)), "자기 피해로 안 죽음");
+        Check(srv.KillsOf(Sid(srv, a)) == -1, "자살인데 점수가 −1 이 안 됐다");
+        Check(srv.DeathsOf(Sid(srv, a)) == 0, "자살인데 죽은 횟수가 올랐다(정답지는 안 올린다)");
     }
 
     // ③ 한도에 닿으면 판이 끝나고 **0x58 이 나간다**
@@ -28329,7 +28370,7 @@ void TestArena() {
         srv.SetAutoRespawn(true);
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
-        srv.DebugMoveTo(b, 1025, 1000);   // 겹치면 몸끼리 튕긴다(묶음 2-c) — TestMelee 주석
+        srv.DebugMoveTo(Sid(srv, b), 1025, 1000);   // 겹치면 몸끼리 튕긴다(묶음 2-c) — TestMelee 주석
         uint32_t ms = 0;
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
@@ -28340,10 +28381,10 @@ void TestArena() {
             srv.OnPacket(a, pkt.data(), pkt.size(), out);
             ms += 33 * (nox::kMeleeCooldownTicks + 1);
             srv.Tick(ms, out);   // 부활도 여기서 돈다
-            if (srv.IsAlive(b) && srv.XOf(b) != 1025) srv.DebugMoveTo(b, 1025, 1000);
+            if (srv.IsAlive(Sid(srv, b)) && srv.XOf(Sid(srv, b)) != 1025) srv.DebugMoveTo(Sid(srv, b), 1025, 1000);
         }
         Check(srv.RoundOver(), "한도에 닿아도 안 끝남");
-        Check(srv.KillsOf(a) >= nox::kArenaKillLimit, "점수가 한도에 안 닿음");
+        Check(srv.KillsOf(Sid(srv, a)) >= nox::kArenaKillLimit, "점수가 한도에 안 닿음");
 
         bool won = false;
         for (const auto& p : out) {
@@ -28428,7 +28469,7 @@ void TestArena() {
             //       클라 (`cdecode.c:2638`)  if ((unsigned)(제 시계 − 도장) >= 30) → 다시 묻는다
             //   **부호 없는 뺄셈**이라 도장이 **앞서면**(음수 → 40억) 곧바로 「낡았다」가 되어 무한 되풀이.
             //   ⇒ 봐야 할 것은 ① 앞서지 않는가 ② 30 틱 넘게 뒤처지지 않는가, 둘이다.
-            const uint32_t clock = srv.DebugTickFrame(a);
+            const uint32_t clock = srv.DebugTickFrame(Sid(srv, a));
             const uint32_t gap = clock - tick;              // 클라와 같은 셈(부호 없음)
             if (gap >= 30)
                 std::printf("  [시계] 도장 %u · 그 사람 시계 %u · 차 %u · 전역 %u\n",
@@ -28456,12 +28497,12 @@ void TestCtf() {
         srv.DebugEnterGame(a, 728);
         srv.DebugEnterGame(b, 729);
         srv.StartCtf(1000, 1000, 2000, 1000);
-        srv.DebugSetTeam(a, 1);
-        srv.DebugSetTeam(b, 2);
+        srv.DebugSetTeam(Sid(srv, a), 1);
+        srv.DebugSetTeam(Sid(srv, b), 2);
         // ⚠ 둘 다 기본 자리가 (1000,1000) 인데 그게 **빨강 깃발의 제자리**다.
         //   그대로 두면 파랑인 b 가 시작하자마자 빨강 깃발을 주워 간다 —
         //   처음에 이걸 놓쳐 시험 다섯 줄이 한꺼번에 떨어졌다. **코드는 맞게 굴었다.**
-        srv.DebugMoveTo(b, 1500, 1500);
+        srv.DebugMoveTo(Sid(srv, b), 1500, 1500);
     };
 
     // ① 깃발이 **화면에 실린다** (복합이 아니라 붙는 바이트가 없어야 한다)
@@ -28503,14 +28544,14 @@ void TestCtf() {
         setup(srv);
         std::vector<nox::OutPacket> out;
         srv.Tick(0, out);
-        srv.DebugMoveTo(a, 1000, 1000);   // 자기 깃발 위
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);   // 자기 깃발 위
         srv.Tick(33, out);
-        Check(!srv.Carrying(a), "자기 깃발을 들었다");
+        Check(!srv.Carrying(Sid(srv, a)), "자기 깃발을 들었다");
 
-        srv.DebugMoveTo(a, 2000, 1000);   // 적 깃발 위
+        srv.DebugMoveTo(Sid(srv, a), 2000, 1000);   // 적 깃발 위
         out.clear();
         srv.Tick(66, out);
-        Check(srv.Carrying(a), "적 깃발을 안 들었다");
+        Check(srv.Carrying(Sid(srv, a)), "적 깃발을 안 들었다");
 
         // 줍기 알림이 실제로 나갔나 (0xa9 갈래 6)
         bool picked = false;
@@ -28529,14 +28570,14 @@ void TestCtf() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(0, out);
-        srv.DebugMoveTo(a, 2000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 2000, 1000);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.Carrying(a), "안 들었다");
-        srv.DebugMoveTo(a, 1000, 1000);
+        Check(srv.Carrying(Sid(srv, a)), "안 들었다");
+        srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
         out.clear();
         ms += 33; srv.Tick(ms, out);
         Check(srv.CapturesOf(1) == 1, "득점이 안 됐다");
-        Check(!srv.Carrying(a), "득점했는데 아직 들고 있다");
+        Check(!srv.Carrying(Sid(srv, a)), "득점했는데 아직 들고 있다");
         bool cap = false;
         for (const auto& p : out) {
             auto body = Body(p);
@@ -28553,14 +28594,14 @@ void TestCtf() {
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(0, out);
-        srv.DebugMoveTo(a, 2000, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 2000, 1000);
         ms += 33; srv.Tick(ms, out);
-        Check(srv.Carrying(a), "안 들었다");
+        Check(srv.Carrying(Sid(srv, a)), "안 들었다");
 
         out.clear();
-        srv.Damage(a, 999, out, b);          // b 가 죽인다
-        Check(!srv.IsAlive(a), "안 죽음");
-        Check(!srv.Carrying(a), "죽었는데 아직 들고 있다");
+        srv.Damage(Sid(srv, a), 999, out, Sid(srv, b));          // b 가 죽인다
+        Check(!srv.IsAlive(Sid(srv, a)), "안 죽음");
+        Check(!srv.Carrying(Sid(srv, a)), "죽었는데 아직 들고 있다");
         bool dropped = false;
         for (const auto& p : out) {
             auto body = Body(p);
@@ -28578,9 +28619,9 @@ void TestCtf() {
         uint32_t ms = 0;
         srv.Tick(0, out);
         for (int i = 0; i < nox::kCaptureLimit; ++i) {
-            srv.DebugMoveTo(a, 2000, 1000);
+            srv.DebugMoveTo(Sid(srv, a), 2000, 1000);
             ms += 33; srv.Tick(ms, out);
-            srv.DebugMoveTo(a, 1000, 1000);
+            srv.DebugMoveTo(Sid(srv, a), 1000, 1000);
             ms += 33; srv.Tick(ms, out);
         }
         Check(srv.CapturesOf(1) == nox::kCaptureLimit, "득점이 한도에 안 닿음");
@@ -28660,7 +28701,7 @@ void TestQuest() {
             body.shape = 2; body.r = 10.0f; body.cls = 0x2;
             srv.SetTypeBody(1358, body);
         }
-        srv.DebugMoveTo(a, 1000 + static_cast<int>(nox::kQuestSpread) - 25, 1000);
+        srv.DebugMoveTo(Sid(srv, a), 1000 + static_cast<int>(nox::kQuestSpread) - 25, 1000);
         std::vector<nox::OutPacket> out;
         uint32_t ms = 0;
         srv.Tick(0, out);
@@ -29177,6 +29218,7 @@ int main() {
     TestBowQuiver();
     TestConnectZeroTail();
     TestReconnectAfterClose();
+    TestSessionIds();
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

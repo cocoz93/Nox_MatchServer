@@ -17,12 +17,38 @@
 
 namespace nox {
 
+// ★ 10-08 조각 4 — 처음 보는 주소에 세션 번호를 매긴다. 게임은 이 번호로만 사람을 가른다(`Docs/LAYERS_DESIGN.md` 조각 4).
+//   지운 뒤 같은 주소로 다시 오면 새 번호다.
 CUdpSession& CUdpServer::SessionFor(const std::string& addr) {
     auto it = _sessions.find(addr);
     if (it != _sessions.end()) return it->second;
     CUdpSession s;
     s.addr = addr;
+    s.sessionId = _nextSessionId++;
+    _addrOf.emplace(s.sessionId, addr);
     return _sessions.emplace(addr, s).first->second;
+}
+
+int64_t CUdpServer::OpenSession(const std::string& addr) {
+    return SessionFor(addr).sessionId;
+}
+
+int64_t CUdpServer::SessionIdOf(const std::string& addr) const {
+    auto it = _sessions.find(addr);
+    return it == _sessions.end() ? 0 : it->second.sessionId;
+}
+
+const std::string& CUdpServer::AddrOf(int64_t sessionId) const {
+    static const std::string kNone;
+    auto it = _addrOf.find(sessionId);
+    return it == _addrOf.end() ? kNone : it->second;
+}
+
+void CUdpServer::RequestDisconnectSession(int64_t sessionId) {
+    auto it = _addrOf.find(sessionId);
+    if (it == _addrOf.end()) return;
+    _sessions.erase(it->second);
+    _addrOf.erase(it);
 }
 
 size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size_t n,
@@ -76,6 +102,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
     if (bodyLen == 0 || body[0] >= static_cast<uint8_t>(Op::CLIENT_ACCEPT)) {
         NetworkEvent ev;
         ev.type = NetworkEvent::Type::RECEIVED;
+        ev.sessionId = s.sessionId;
         ev.addr = from;
         ev.body.assign(body, body + bodyLen);
         events.push_back(std::move(ev));
@@ -120,6 +147,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
             const uint8_t* rest = it.body() - 1;   // 이 메시지의 오프코드 자리(`MessageIter::Next`)
             NetworkEvent ev;
             ev.type = NetworkEvent::Type::RECEIVED;
+            ev.sessionId = s.sessionId;
             ev.addr = from;
             ev.body.assign(rest, body + bodyLen);
             events.push_back(std::move(ev));
@@ -138,7 +166,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 uint8_t msg[5];
                 msg[0] = static_cast<uint8_t>(Op::CLIENT_PONG);
                 std::memcpy(msg + 1, it.body(), 4);
-                RequestSendMsg(from, /*reliable=*/false, head.stream, msg, sizeof(msg), out);
+                SendOn(s, /*reliable=*/false, head.stream, msg, sizeof(msg), out);
                 ++_handled;
                 break;
             }
@@ -161,6 +189,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
             case Op::CLIENT_CLOSE: {
                 NetworkEvent ev;
                 ev.type = NetworkEvent::Type::DISCONNECTED;
+                ev.sessionId = s.sessionId;
                 ev.addr = from;
                 events.push_back(std::move(ev));
                 ++_handled;
@@ -188,7 +217,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                     t[2] = static_cast<uint8_t>(req.token >> 16);
                     t[3] = static_cast<uint8_t>(req.token >> 24);
                 }
-                RequestSendMsg(from, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
+                SendOn(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
                 ++_handled;
                 break;
             }
@@ -198,7 +227,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 // 지금은 조건 없이 받아준다. 거절 사유(중복 일련번호·인원 참·버전)는
                 // 세션 관리를 만들 때 붙인다.
                 const uint8_t msg[1] = {static_cast<uint8_t>(Op::SERVER_JOIN_OK)};
-                RequestSendMsg(from, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+                SendOn(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
                 ++_handled;
                 break;
             }
@@ -210,7 +239,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 //   무엇인지는 아직 모른다(PROTOCOL.md 도 「미상」).
                 if (s.keyed) {
                     const uint8_t m4[1] = {static_cast<uint8_t>(Op::CODE4)};
-                    RequestSendMsg(from, /*reliable=*/false, /*stream=*/0, m4, sizeof(m4), out);
+                    SendOn(s, /*reliable=*/false, /*stream=*/0, m4, sizeof(m4), out);
                     ++_handled;
                     break;
                 }
@@ -220,6 +249,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 s.lastAckSeen = -1;
                 NetworkEvent ev;
                 ev.type = NetworkEvent::Type::CONNECTED;
+                ev.sessionId = s.sessionId;
                 ev.addr = from;
                 if (_scriptAt < _script.size()) {
                     // 덤프 재생 — 그때 서버가 정한 값들을 그대로 쓴다.
@@ -247,7 +277,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 msg[k++] = s.xorKey;
 
                 // ★ 이 조각까지는 평문이다. 키는 이 안에 실려 나간다.
-                RequestSendMsg(from, /*reliable=*/true, /*stream=*/0, msg, k, out);
+                SendOn(s, /*reliable=*/true, /*stream=*/0, msg, k, out);
                 s.keyed = true;   // 다음 조각부터 뒤집는다
                 ++_handled;
                 events.push_back(std::move(ev));
@@ -261,11 +291,17 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
     return count;
 }
 
-void CUdpServer::RequestSendMsg(const std::string& to, bool reliable, uint8_t stream,
+void CUdpServer::RequestSendMsg(int64_t sessionId, bool reliable, uint8_t stream,
                                 const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
-    CUdpSession& s = SessionFor(to);
+    auto a = _addrOf.find(sessionId);
+    if (a == _addrOf.end()) { ++_sendNoSession; return; }   // 지운 세션 — 보낼 곳이 없다
+    SendOn(_sessions.at(a->second), reliable, stream, msg, n, out);
+}
+
+void CUdpServer::SendOn(CUdpSession& s, bool reliable, uint8_t stream,
+                        const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
     OutPacket p;
-    p.to = to;
+    p.to = s.addr;
     p.data.resize(kWireHeaderSize + n);
     WireHeader h;
     h.reliable = reliable;

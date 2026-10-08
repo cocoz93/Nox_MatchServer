@@ -70,6 +70,10 @@ struct AcceptScript {
     uint16_t netCode = 0;  // 그 사람에게 준 오브젝트 번호
 };
 
+// ★ 10-08 조각 4 — 세션 번호 「없음」. 번호는 1부터라 0 이 비어 있다(옛 빈 주소 글자 자리).
+//   리터럴 0 대신 이 이름을 쓴다 — 0 은 `std::string` 인자에도 들어가(널 포인터) 컴파일되고 실행 중에 죽는다.
+constexpr int64_t kNoSession = 0;
+
 // SERVER_INFO 본문에서 토큰이 앉는 자리. 실측으로 확정했다.
 constexpr size_t kInfoTokenOffset = 41;
 
@@ -81,7 +85,8 @@ struct NetworkEvent {
         RECEIVED        // 게임 메시지 — 처음 0x20 이상 오프코드가 나온 자리부터 조각 끝까지(머리를 뗀 평문)
     };
     Type type = Type::RECEIVED;
-    std::string addr;               // 조각 4 에서 세션 번호로 바꾼다
+    int64_t sessionId = 0;          // 게임이 사람을 가르는 번호(10-08 조각 4)
+    std::string addr;               // 그 세션의 주소 — 기록용
     std::vector<uint8_t> body;      // RECEIVED
     // CONNECTED — 덤프 재생이면 그때 서버가 정한 프레임·오브젝트 번호(`scripted`)
     bool scripted = false;
@@ -92,6 +97,7 @@ struct NetworkEvent {
 // 통신 층의 상대 하나 — 원본 netstr `Conn` 자리. 주소:포트로 가른다.
 struct CUdpSession {
     std::string addr;
+    int64_t sessionId = 0;   // 처음 볼 때 매긴 번호(1부터) — 게임 쪽 이름표(10-08 조각 4)
     uint8_t xorKey = 0;      // 0이면 아직 평문
     bool keyed = false;      // 키를 준 뒤인가
     int lastRelStream = -1;  // 클라가 마지막으로 **신뢰**를 보낸 스트림(되받기 기준). -1 이면 아직 없음
@@ -150,11 +156,18 @@ public:
                       std::vector<OutPacket>& out, std::vector<NetworkEvent>& events);
 
     // 게임이 만든 몸통 하나를 조각으로 — 머리 2바이트(신뢰·스트림·순번)를 붙이고 키를 줬으면 XOR.
-    void RequestSendMsg(const std::string& to, bool reliable, uint8_t stream,
+    //   없는 세션이면 버리고 센다(`sendNoSession`).
+    void RequestSendMsg(int64_t sessionId, bool reliable, uint8_t stream,
                         const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
 
-    // 게임이 그 상대를 지웠다 — 키·순번도 함께 버린다(다시 접속하면 처음부터).
-    void RequestDisconnectSession(const std::string& addr) { _sessions.erase(addr); }
+    // 게임이 그 상대를 지웠다 — 키·순번도 함께 버린다(다시 접속하면 새 번호로 처음부터).
+    void RequestDisconnectSession(int64_t sessionId);
+
+    // ★ 10-08 조각 4 — 세션 번호. 처음 보는 주소에 1부터 매긴다.
+    //   `OpenSession` 은 그 주소의 번호(없으면 만든다) — 소켓 없이 사람을 세우는 시험·진단 진입(`DebugEnterGame`)이 쓴다.
+    int64_t OpenSession(const std::string& addr);
+    int64_t SessionIdOf(const std::string& addr) const;   // 없으면 0
+    const std::string& AddrOf(int64_t sessionId) const;    // 없으면 빈 문자열 — 기록용
 
     // ★ 10-08 조각 3b — 확인이 안 온 신뢰 조각 다시 보내기. 게임 틱이 부른다.
     //   1초마다 살펴 보낸 지 2초 지난 것을 다시 보내고(원본 `MaybeSendReliable` · `reliableRetry = 2s`),
@@ -206,6 +219,8 @@ public:
         for (const auto& kv : _sessions) n += kv.second.reliableQueue.size();
         return n;
     }
+    // ★ 10-08 조각 4 — 지운 세션 번호로 보내려 해 버린 수. 0 이 정상이다.
+    unsigned long long sendNoSession() const { return _sendNoSession; }
 
     // 접속 제어 조각만 센다(게임 조각은 `nox::Server` 의 같은 이름이 센다).
     const std::map<uint8_t, unsigned long long>& seen() const { return _seen; }
@@ -217,6 +232,9 @@ public:
 
 private:
     CUdpSession& SessionFor(const std::string& addr);
+    // 그 상대에게 몸통 하나를 조각으로(`RequestSendMsg` 몸통 · 접속 제어 답도 이걸 쓴다).
+    void SendOn(CUdpSession& s, bool reliable, uint8_t stream,
+                const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
     // 클라가 「다음에 받을 순번은 seq」라고 알렸다 — 그 순번은 다시 보낼 표시, 그보다 앞은 지운다(`SetCurrent`).
     void Ack(CUdpSession& s, uint8_t seq);
     // 표시된 것을 지금 키로 뒤집어 다시 내보낸다(`Resend`).
@@ -229,6 +247,9 @@ private:
     static constexpr size_t kReliableQueueMax = 128;
 
     std::map<std::string, CUdpSession> _sessions;
+    std::map<int64_t, std::string> _addrOf;   // 세션 번호 → 주소(`_sessions` 의 열쇠)
+    int64_t _nextSessionId = 1;
+    unsigned long long _sendNoSession = 0;
 
     std::vector<uint8_t> _infoBody;
     uint8_t _xorKey = 0x70;
