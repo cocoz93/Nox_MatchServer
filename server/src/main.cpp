@@ -1201,7 +1201,8 @@ int main(int argc, char** argv) {
                             srv.Network().reliableRetryMarked(), srv.Network().reliableQueueDropped(),
                             srv.Network().reliablePending());
                 // ★ 10-08 조각 4 — 지운 세션 번호로 보내려다 버린 수. 0 이 아니면 게임이 지운 사람에게 아직 보내고 있다
-                std::printf("[세션] 없는 번호로 보내려다 버림 %llu\n", srv.Network().sendNoSession());
+                std::printf("[세션] 없는 번호로 보내려다 버림 %llu · 접속 전 상대 걷어냄 %llu\n", srv.Network().sendNoSession(),
+                            srv.Network().unannouncedSwept());
 
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());

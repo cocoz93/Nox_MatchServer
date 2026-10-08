@@ -24061,6 +24061,79 @@ void TestSessionIds() {
     std::printf("  10-08 조각 4 — 세션 번호: 사람마다 다르고 · 그 번호로 보낸 것은 그 주소로 · 지운 뒤 다시 오면 새 번호\n");
 }
 
+// ── 10-08 플랜 A 조각 4c — 사람 자리는 이벤트(접속·게임 메시지·닫기) 때 든다. 접속 시도만 한 상대는 통신 층이 걷는다 ─────────
+//   전에는 조각마다 게임 표에 들어, 접속 시도만 한 상대도 30초 뒤 게임 「자리 비우기」가 걷으며 `TIMEOUT_NOTIFICATION` 을 보냈다.
+//   ① 접속 시도만(Tick 전에) → 게임 사람 0 · 통신 층 첫 Tick 에 안 걷힘(시계를 그때부터 셈) · 31초 뒤 통신 층이 걷음 · 그 상대에게 나간 조각 0
+//   ② 접속한 상대는 통신 층이 안 걷는다 — 게임만 「받았다」를 적어 주면(조각 없이) 31초 뒤에도 남는다
+//   ③ 접속한 뒤 조용하면 전처럼 게임이 30초 뒤 걷는다(통신 층의 셈은 0 그대로)
+//   ④ 접속 시도를 계속 보내는 상대(서버 목록 새로 고침)는 안 걷는다 — 받을 때마다 시계를 다시 셈
+void TestPreConnectSweep() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    std::vector<uint8_t> tryJoin(100, 0);
+    tryJoin[2] = static_cast<uint8_t>(nox::Op::SERVER_TRY_JOIN);
+    {
+        const std::string a = "10.10.8.10:10810";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);
+        std::vector<nox::OutPacket> o0; srv.OnPacket(a, tryJoin.data(), tryJoin.size(), o0);
+        const size_t inGame = srv.SessionCount();
+        std::vector<nox::OutPacket> t1; srv.Tick(100000, t1);              // 첫 Tick — 게임 시계만 잡는다
+        srv.Tick(100100, t1);   // 게임 틱이 처음 도는 때 — 통신 층 `Tick` 은 여기서 처음 불려 시계를 잡는다
+        const bool keptAtFirst = srv.Network().SessionIdOf(a) != nox::kNoSession;
+        std::vector<nox::OutPacket> t2; srv.Tick(131200, t2);
+        int toA = 0;
+        for (const auto& q : t2) if (q.to == a) ++toA;
+        char m[200];
+        std::snprintf(m, sizeof(m), "① 접속 시도만 — 게임 사람 %zu · 첫 Tick 뒤 남음 %d · 31초 뒤 통신 세션 %lld · 걷어낸 셈 %llu · 그 상대에게 간 조각 %d",
+                      inGame, (int)keptAtFirst, (long long)srv.Network().SessionIdOf(a), srv.Network().unannouncedSwept(), toA);
+        Check(inGame == 0 && keptAtFirst && srv.Network().SessionIdOf(a) == nox::kNoSession &&
+              srv.Network().unannouncedSwept() == 1 && toA == 0, m);
+    }
+    {
+        const std::string b = "10.10.8.11:10811";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);
+        std::vector<nox::OutPacket> t; srv.Tick(100000, t); srv.Tick(100100, t);
+        std::vector<nox::OutPacket> o0; srv.OnPacket(b, conn, sizeof(conn), o0);
+        const int64_t sb = srv.Network().SessionIdOf(b);
+        for (uint32_t ms = 105100; ms <= 131100; ms += 5000) { srv.DebugTouch(sb); srv.Tick(ms, t); }
+        char m[200];
+        std::snprintf(m, sizeof(m), "② 접속한 상대 31초 — 통신 세션 %lld(처음 %lld) · 게임 사람 %zu · 걷어낸 셈 %llu",
+                      (long long)srv.Network().SessionIdOf(b), (long long)sb, srv.SessionCount(), srv.Network().unannouncedSwept());
+        Check(sb != nox::kNoSession && srv.Network().SessionIdOf(b) == sb && srv.SessionCount() == 1 &&
+              srv.Network().unannouncedSwept() == 0, m);
+    }
+    {
+        const std::string c = "10.10.8.12:10812";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);
+        std::vector<nox::OutPacket> t; srv.Tick(100000, t); srv.Tick(100100, t);
+        std::vector<nox::OutPacket> o0; srv.OnPacket(c, conn, sizeof(conn), o0);
+        const size_t before = srv.SessionCount();
+        srv.Tick(131200, t);
+        char m[200];
+        std::snprintf(m, sizeof(m), "③ 접속 뒤 조용 — 게임 사람 %zu → %zu · 통신 세션 %lld · 통신 층 셈 %llu",
+                      before, srv.SessionCount(), (long long)srv.Network().SessionIdOf(c), srv.Network().unannouncedSwept());
+        Check(before == 1 && srv.SessionCount() == 0 && srv.Network().SessionIdOf(c) == nox::kNoSession &&
+              srv.Network().unannouncedSwept() == 0, m);
+    }
+    {
+        const std::string e = "10.10.8.13:10813";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);
+        std::vector<nox::OutPacket> t; srv.Tick(100000, t); srv.Tick(100100, t);
+        for (uint32_t ms = 100100; ms <= 140100; ms += 10000) {
+            std::vector<nox::OutPacket> o; srv.OnPacket(e, tryJoin.data(), tryJoin.size(), o);
+            srv.Tick(ms + 100, t);
+        }
+        char m[200];
+        std::snprintf(m, sizeof(m), "④ 10초마다 접속 시도 40초 — 통신 세션 %lld · 걷어낸 셈 %llu",
+                      (long long)srv.Network().SessionIdOf(e), srv.Network().unannouncedSwept());
+        Check(srv.Network().SessionIdOf(e) != nox::kNoSession && srv.Network().unannouncedSwept() == 0, m);
+    }
+    std::printf("  10-08 조각 4c — 접속 시도만 한 상대는 게임에 안 들고 통신 층이 30초 뒤 조용히 걷음 · 접속한 상대는 게임이 걷음\n");
+}
+
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
 //   원본 `send_reliable.go`(2초 뒤 · 1초마다 살핌) · 정품 녹음 `CAP_GEN3`(확인 못 받은 접속 수락을 약 2.1초마다 다시 보냄).
 //   클라 확인 = 비신뢰 조각 머리 순번(「다음에 받을 순번」) — 그보다 앞은 지우고, 그 순번이 있으면 바로 다시 보낸다.
@@ -29219,6 +29292,7 @@ int main() {
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();
+    TestPreConnectSweep();
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

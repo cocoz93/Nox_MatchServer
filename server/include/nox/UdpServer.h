@@ -98,6 +98,9 @@ struct NetworkEvent {
 struct CUdpSession {
     std::string addr;
     int64_t sessionId = 0;   // 처음 볼 때 매긴 번호(1부터) — 게임 쪽 이름표(10-08 조각 4)
+    // ★ 10-08 조각 4c — 게임에 이벤트를 넘긴 적이 있나(없으면 서버 찾기·접속 시도만 한 상대 — 통신 층이 걷어낸다) · 마지막으로 받은 때
+    bool announced = false;
+    uint32_t lastSeenMs = 0;
     uint8_t xorKey = 0;      // 0이면 아직 평문
     bool keyed = false;      // 키를 준 뒤인가
     int lastRelStream = -1;  // 클라가 마지막으로 **신뢰**를 보낸 스트림(되받기 기준). -1 이면 아직 없음
@@ -221,6 +224,8 @@ public:
     }
     // ★ 10-08 조각 4 — 지운 세션 번호로 보내려 해 버린 수. 0 이 정상이다.
     unsigned long long sendNoSession() const { return _sendNoSession; }
+    // ★ 10-08 조각 4c — 게임에 안 넘긴 채 조용해져 걷어낸 상대 수(서버 찾기·접속 시도만 한 상대).
+    unsigned long long unannouncedSwept() const { return _unannouncedSwept; }
 
     // 접속 제어 조각만 센다(게임 조각은 `nox::Server` 의 같은 이름이 센다).
     const std::map<uint8_t, unsigned long long>& seen() const { return _seen; }
@@ -245,11 +250,14 @@ private:
     static constexpr uint32_t kReliableCheckMs = 1000;
     // 우리 값 — 원본은 한도가 없다. 확인을 안 보내는 상대(진단 봇 등)에게 쌓이기만 하는 것을 막는다. 넘치면 오래된 것부터 버리고 센다
     static constexpr size_t kReliableQueueMax = 128;
+    // ★ 10-08 조각 4c — 게임에 안 넘긴 상대를 걷어내는 조용한 시간. 옛 게임 쪽 값(판에 안 든 사람 30초 · `kSessionTimeoutTicks`) 그대로
+    static constexpr uint32_t kUnannouncedIdleMs = 30000;
 
     std::map<std::string, CUdpSession> _sessions;
     std::map<int64_t, std::string> _addrOf;   // 세션 번호 → 주소(`_sessions` 의 열쇠)
     int64_t _nextSessionId = 1;
     unsigned long long _sendNoSession = 0;
+    unsigned long long _unannouncedSwept = 0;
 
     std::vector<uint8_t> _infoBody;
     uint8_t _xorKey = 0x70;

@@ -30,7 +30,9 @@ CUdpSession& CUdpServer::SessionFor(const std::string& addr) {
 }
 
 int64_t CUdpServer::OpenSession(const std::string& addr) {
-    return SessionFor(addr).sessionId;
+    CUdpSession& s = SessionFor(addr);
+    s.announced = true;   // 소켓 없이 게임에 세우는 사람 — 게임이 지운다
+    return s.sessionId;
 }
 
 int64_t CUdpServer::SessionIdOf(const std::string& addr) const {
@@ -54,6 +56,7 @@ void CUdpServer::RequestDisconnectSession(int64_t sessionId) {
 size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size_t n,
                               std::vector<OutPacket>& out, std::vector<NetworkEvent>& events) {
     CUdpSession& s = SessionFor(from);
+    s.lastSeenMs = _nowMs;   // ★ 조각 4c — 접속 전 상대 걷어내기의 근거(`Tick`)
 
     // 받은 것이 암호문이면 먼저 푼다. 사본을 뜬다 — 부르는 쪽 버퍼를 건드리지 않는다.
     // ⚠ 덤프 재생일 때는 이미 평문이라 풀면 안 된다 (SetInboundPlain 주석 참조).
@@ -103,6 +106,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
         NetworkEvent ev;
         ev.type = NetworkEvent::Type::RECEIVED;
         ev.sessionId = s.sessionId;
+        s.announced = true;
         ev.addr = from;
         ev.body.assign(body, body + bodyLen);
         events.push_back(std::move(ev));
@@ -148,6 +152,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
             NetworkEvent ev;
             ev.type = NetworkEvent::Type::RECEIVED;
             ev.sessionId = s.sessionId;
+            s.announced = true;
             ev.addr = from;
             ev.body.assign(rest, body + bodyLen);
             events.push_back(std::move(ev));
@@ -190,6 +195,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 NetworkEvent ev;
                 ev.type = NetworkEvent::Type::DISCONNECTED;
                 ev.sessionId = s.sessionId;
+                s.announced = true;
                 ev.addr = from;
                 events.push_back(std::move(ev));
                 ++_handled;
@@ -250,6 +256,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 NetworkEvent ev;
                 ev.type = NetworkEvent::Type::CONNECTED;
                 ev.sessionId = s.sessionId;
+                s.announced = true;
                 ev.addr = from;
                 if (_scriptAt < _script.size()) {
                     // 덤프 재생 — 그때 서버가 정한 값들을 그대로 쓴다.
@@ -431,8 +438,22 @@ void CUdpServer::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
         _lastResendCheckMs = nowMs;
         for (auto& kv : _sessions)
             for (auto& p : kv.second.reliableQueue) p.retryAt = nowMs + kReliableRetryMs;
+        for (auto& kv : _sessions) kv.second.lastSeenMs = nowMs;   // ★ 조각 4c — 그 전에 본 상대도 지금부터 센다
     }
     _nowMs = nowMs;
+    // ★ 10-08 조각 4c — 게임에 한 번도 안 넘긴 상대(서버 찾기·접속 시도만 한 상대)는 여기서 걷어낸다.
+    //   전에는 게임 「자리 비우기」가 30초 뒤 걷어내며 `TIMEOUT_NOTIFICATION` 을 보내고 「조용해서 내보냄」을 찍었다.
+    //   게임에 넘긴 상대는 게임이 지운다(`RequestDisconnectSession`).
+    for (auto it = _sessions.begin(); it != _sessions.end();) {
+        const CUdpSession& u = it->second;
+        if (!u.announced && static_cast<int32_t>(nowMs - u.lastSeenMs) > static_cast<int32_t>(kUnannouncedIdleMs)) {
+            _addrOf.erase(u.sessionId);
+            it = _sessions.erase(it);
+            ++_unannouncedSwept;
+        } else {
+            ++it;
+        }
+    }
     if (!_reliableResend) return;
     // 원본 `MaybeSendReliable` — 1초에 한 번만 「재시도 시각이 지난 것」을 표시한다(`send_reliable.go:16-28`).
     const bool check = static_cast<int32_t>(nowMs - _lastResendCheckMs) >= static_cast<int32_t>(kReliableCheckMs);

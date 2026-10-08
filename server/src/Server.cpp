@@ -2760,16 +2760,20 @@ void Server::SendTimer(std::vector<OutPacket>& out) {
 
 size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
                         std::vector<OutPacket>& out) {
-    Session& s = SessionFor(network_.OpenSession(from));   // ★ 10-08 조각 4 — 주소 → 세션 번호(통신 층)
-    ++s.recvPackets;
-    s.lastSeenFrame = frame_;   // 끊긴 세션을 걷어내는 근거. Tick 의 「자리 비우기」 참조
-
     // ★ 10-08 조각 3 — 풀기·머리·순번·접속 제어는 통신 층이 한다(`UdpServer.cpp` `OnDatagram`).
     //   게임은 그가 넘긴 일만 처리한다. 돌려주는 값은 전처럼 이 조각에서 읽은 메시지 수다(둘의 합).
-    //   ⚠ 사람 자리(`SessionFor`)는 전처럼 **조각마다** 먼저 만든다 — 서버 찾기만 한 상대도 Tick 이 걷어낸다.
+    // ★ 10-08 조각 4c — 사람 자리는 이벤트 때 만든다(`OnNetworkEvent`). 서버 찾기·접속 시도만 한 상대는 게임에 안 들고
+    //   통신 층이 걷어낸다(`CUdpServer::Tick`). 게임에 든 사람은 조각마다 「받았다」를 적는다 — 끊긴 세션을 걷어내는 근거
+    //   (Tick 의 「자리 비우기」). 이 값을 읽는 곳은 그 Tick 뿐이라 이벤트 처리 뒤에 적어도 같다.
     std::vector<NetworkEvent> events;
     size_t count = network_.OnDatagram(from, data, n, out, events);
     for (const NetworkEvent& ev : events) count += OnNetworkEvent(ev, out);
+    const int64_t sessionId = network_.SessionIdOf(from);
+    auto it = sessionId != kNoSession ? sessions_.find(sessionId) : sessions_.end();
+    if (it != sessions_.end()) {
+        ++it->second.recvPackets;
+        it->second.lastSeenFrame = frame_;
+    }
     return count;
 }
 

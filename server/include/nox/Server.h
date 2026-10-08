@@ -777,6 +777,8 @@ struct Target {
 //    그 다음 CONNECT 는 63073 에서 왔다. 프로토콜이 그렇게 생겼다
 //    (Docs/PROTOCOL.md 「접속 절차」의 "여기서 클라가 새 포트로 옮긴다").
 //    그래서 한 사람이 세션 둘로 보인다. 지금은 그대로 둔다.
+//    ★ 10-08 조각 4c — 이제 게임에는 이벤트(접속·게임 메시지·닫기)가 온 세션만 든다. 접속 시도만 한 옛 포트는
+//      통신 층에만 있다가 30초 뒤 걷힌다(`CUdpServer::Tick`) — 게임 쪽에서는 한 사람이 하나로 보인다.
 struct Session {
     int64_t sessionId = 0;        // 세션 번호(10-08 조각 4 — 전에는 주소 글자)
     std::string addrText;    // 그 세션의 주소 — 기록용
@@ -2313,6 +2315,8 @@ public:
     // 통신 층 — 설정(서버 찾기 원본·XOR 키·접속 대본·되받기·평문 재생)과 순번·스트림 지표는 여기서 다룬다.
     CUdpServer& Network() { return network_; }
     const CUdpServer& Network() const { return network_; }
+    // ★ 10-08 조각 4c — 게임 쪽 사람 표의 크기(시험·진단). 서버 찾기·접속 시도만 한 상대는 안 든다.
+    size_t SessionCount() const { return sessions_.size(); }
 
     // ★ 시험용 — 접속 절차를 다 밟지 않고 게임 안 상태를 만든다.
     //
