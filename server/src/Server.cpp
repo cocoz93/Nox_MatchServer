@@ -17106,6 +17106,9 @@ int Server::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
     }
     if (ticks == 0) return 0;
 
+    // ★ 10-08 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다(통신 층 · 원본은 프레임마다 묶음보다 먼저 `Resend`).
+    network_.Tick(nowMs, out);
+
     // ★ 09-20 ⑰ — 지난 틱에 만든 물체의 **낙하 시작 알림**을 여기서 낸다.
     //   지난 틱 끝의 `a4 UPDATE_STREAM` 이 그 물체를 이미 소개했으므로 클라가 그림을 찾는다.
     FlushDeltaZStart(out);

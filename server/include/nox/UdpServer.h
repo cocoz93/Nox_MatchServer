@@ -98,6 +98,18 @@ struct CUdpSession {
     uint32_t connectId = 0;  // SERVER_ACCEPT 에 실어 보낸 번호
     // 스트림마다 따로 센다. 핑·퐁이 스트림 1 을 쓰는 것이 실측으로 확인됐다.
     StreamSeq seq[128];
+
+    // ★ 10-08 조각 3b — 신뢰로 보낸 조각을 확인이 올 때까지 들고 있다가 다시 보낸다(원본 netstr `reliableSender`
+    //   `send_reliable.go`). 정품 호스트도 확인 못 받은 신뢰 조각을 약 2.1초마다 다시 보냈다(정품 녹음 `CAP_GEN3`·`CAP_GEN4`).
+    struct PendingReliable {
+        std::vector<uint8_t> wire;   // 머리 포함 · XOR 전 — 다시 보낼 때 그때 키로 뒤집는다(원본도 보낼 때 뒤집는다)
+        uint8_t seq = 0;
+        uint32_t retryAt = 0;        // 이 시각(ms)이 지나면 다시 보낼 차례(`retryAt`)
+        bool shouldSend = false;     // 다음 다시 보내기 때 보낸다(`shouldSend`)
+    };
+    std::vector<PendingReliable> reliableQueue;   // 보낸 차례(오래된 것이 앞)
+    // 클라가 비신뢰 머리에 실어 온 「다음에 받을 순번」. 바뀔 때만 처리한다(원본 `seqRecv` — `conn.go:659-665`).
+    int lastAckSeen = -1;
 };
 
 class CUdpServer {
@@ -144,6 +156,13 @@ public:
     // 게임이 그 상대를 지웠다 — 키·순번도 함께 버린다(다시 접속하면 처음부터).
     void RequestDisconnectSession(const std::string& addr) { _sessions.erase(addr); }
 
+    // ★ 10-08 조각 3b — 확인이 안 온 신뢰 조각 다시 보내기. 게임 틱이 부른다.
+    //   1초마다 살펴 보낸 지 2초 지난 것을 다시 보내고(원본 `MaybeSendReliable` · `reliableRetry = 2s`),
+    //   클라가 「그 순번부터 다시」라고 알려 온 것은 다음 틱에 바로 보낸다(`retry`).
+    void Tick(uint32_t nowMs, std::vector<OutPacket>& out);
+    // 끄기 — 다시 보내기를 안 한다(대조용). 기본 켬.
+    void SetReliableResend(bool v) { _reliableResend = v; }
+
     // ── 조회 ────────────────────────────────────────────────
     // ⚠⚠ 열쇠 상태를 **같이** 봐야 한다 — 복호가 어긋나면 쓰레기 바이트가
     //   **그럴듯한 오프코드로 보인다.** 「메시지 N개」만 보면 속는다.
@@ -177,6 +196,17 @@ public:
     unsigned long long ackSeqChanged() const { return _ackSeqChanged; }
     uint8_t ackLastSent() const { return _ackLastSent; }
 
+    // ★ 10-08 조각 3b — 다시 보내기 지표. 「보관」은 지금 확인을 기다리는 조각 수(모든 상대 합).
+    unsigned long long reliableResent() const { return _reliableResent; }
+    unsigned long long reliableAcked() const { return _reliableAcked; }
+    unsigned long long reliableRetryMarked() const { return _reliableRetryMarked; }
+    unsigned long long reliableQueueDropped() const { return _reliableQueueDropped; }
+    size_t reliablePending() const {
+        size_t n = 0;
+        for (const auto& kv : _sessions) n += kv.second.reliableQueue.size();
+        return n;
+    }
+
     // 접속 제어 조각만 센다(게임 조각은 `nox::Server` 의 같은 이름이 센다).
     const std::map<uint8_t, unsigned long long>& seen() const { return _seen; }
     unsigned long long stopped() const { return _stopped; }
@@ -187,6 +217,16 @@ public:
 
 private:
     CUdpSession& SessionFor(const std::string& addr);
+    // 클라가 「다음에 받을 순번은 seq」라고 알렸다 — 그 순번은 다시 보낼 표시, 그보다 앞은 지운다(`SetCurrent`).
+    void Ack(CUdpSession& s, uint8_t seq);
+    // 표시된 것을 지금 키로 뒤집어 다시 내보낸다(`Resend`).
+    void Resend(CUdpSession& s, std::vector<OutPacket>& out);
+
+    // 원본 값(`send_reliable.go:13` `reliableRetry = 2 * time.Second` · `:19` 1초마다 살핌)
+    static constexpr uint32_t kReliableRetryMs = 2000;
+    static constexpr uint32_t kReliableCheckMs = 1000;
+    // 우리 값 — 원본은 한도가 없다. 확인을 안 보내는 상대(진단 봇 등)에게 쌓이기만 하는 것을 막는다. 넘치면 오래된 것부터 버리고 센다
+    static constexpr size_t kReliableQueueMax = 128;
 
     std::map<std::string, CUdpSession> _sessions;
 
@@ -234,6 +274,16 @@ private:
     //     클라가 그 패킷의 seq 를 안 읽어(09-18 실측: 받은 seq 분포에 4 가 0 건) 효과가 없다.
     bool _ackRecvSeq = true;
     bool _ackAnyStream = true;   // 되받기를 **스트림 0 비신뢰**에 싣는가(기본 켬 · RequestSendMsg 주석의 정품 근거)
+
+    // ★ 10-08 조각 3b — 다시 보내기
+    bool _reliableResend = true;
+    uint32_t _nowMs = 0;               // 마지막 Tick 의 시각 — 그 사이에 보낸 조각의 `retryAt` 기준
+    bool _resendClockSet = false;
+    uint32_t _lastResendCheckMs = 0;
+    unsigned long long _reliableResent = 0;       // 다시 보낸 조각 수
+    unsigned long long _reliableAcked = 0;        // 확인받아 지운 조각 수
+    unsigned long long _reliableRetryMarked = 0;  // 클라가 「그 순번부터 다시」라고 해서 표시한 수
+    unsigned long long _reliableQueueDropped = 0; // 한도를 넘어 버린 수
 
     // 진단 — 접속 제어 조각만(게임 조각은 `nox::Server` 가 센다)
     std::map<uint8_t, unsigned long long> _seen;

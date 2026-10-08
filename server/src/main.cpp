@@ -1194,6 +1194,12 @@ int main(int argc, char** argv) {
                     if (!any) sl += " (없음)";
                     std::printf("%s\n", sl.c_str());
                 }
+                // ★ 10-08 조각 3b — 신뢰 패킷 다시 보내기. 「다시 보냄」만 있고 「확인으로 지움」이 0 이면
+                //   클라의 확인 순번을 못 읽는 것이다(UdpServer.cpp Ack)
+                std::printf("[다시보냄] 다시 보냄 %llu · 확인으로 지움 %llu · 바로 다시 보낼 표시 %llu · 한도 넘쳐 버림 %llu · 대기 %zu\n",
+                            srv.Network().reliableResent(), srv.Network().reliableAcked(),
+                            srv.Network().reliableRetryMarked(), srv.Network().reliableQueueDropped(),
+                            srv.Network().reliablePending());
 
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());

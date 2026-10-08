@@ -4,6 +4,7 @@
 //   `EmitNow`(머리·순번·되받기·XOR)를 옮긴 것이다. 주석도 그대로 옮겼다(`Docs/LAYERS_DESIGN.md` 조각 3).
 #include "nox/UdpServer.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -52,6 +53,13 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
         }
         ++_reliableHeard;
         if ((head.stream & 0x7F) < 8) ++_recvRelStream[head.stream & 0x7F];
+    }
+    // ★ 10-08 조각 3b — 클라의 **비신뢰** 조각 머리 순번은 「서버가 보낸 신뢰 가운데 다음에 받을 순번」이다.
+    //   바뀔 때만 처리한다(원본 `conn.go:659-665` — `seq != dst.seqRecv` 이면 `SetCurrent(seq)`).
+    //   정품 녹음 — 클라는 서버 신뢰 0·1·2 를 받은 뒤로 비신뢰 머리에 늘 3 을 싣는다(`CAP_GEN3` 접속 59552).
+    if (!head.reliable && static_cast<int>(head.seq) != s.lastAckSeen) {
+        s.lastAckSeen = head.seq;
+        Ack(s, head.seq);
     }
 
     const uint8_t* body = buf.data() + kWireHeaderSize;
@@ -135,6 +143,19 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 break;
             }
 
+            // ★ 10-08 조각 3b — 클라의 `0x1f ACCEPTED 순번` — 그 순번도 「다음에 받을 순번」이다(원본 `processStreamOp`
+            //   `conn.go:493-512` — 바뀌면 `SetCurrent`). 정품 클라는 키를 받은 뒤 첫 신뢰 조각 맨 앞에 싣는다.
+            case Op::ACCEPTED: {
+                if (it.bodyLen() < 1) break;
+                const uint8_t seq = it.body()[0];
+                if (static_cast<int>(seq) != s.lastAckSeen) {
+                    s.lastAckSeen = seq;
+                    Ack(s, seq);
+                }
+                ++_handled;
+                break;
+            }
+
             // 클라가 접속 자체를 닫는다(`0x0a`). 게임이 「나감」으로 표시하고 Tick 이 걷어낸다
             // (게임 쪽 `0xae OUTGOING_CLIENT` 와 같은 길 — `Server::OnNetworkEvent` 주석).
             case Op::CLIENT_CLOSE: {
@@ -193,6 +214,10 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                     ++_handled;
                     break;
                 }
+                // ★ 10-08 조각 3b — 접속 전 패킷(서버 찾기·접속 시도)이 머리 순번 0 으로 이 값을 이미 바꿔 놓았다.
+                //   원본은 접속 때 사람 연결을 새로 만들며 `seqRecv = -1` 로 시작한다(`netstr.go:257-263`) — 그래야
+                //   접속 뒤 클라의 첫 「다음은 0」이 접속 수락을 바로 다시 보내게 한다.
+                s.lastAckSeen = -1;
                 NetworkEvent ev;
                 ev.type = NetworkEvent::Type::CONNECTED;
                 ev.addr = from;
@@ -315,10 +340,76 @@ void CUdpServer::RequestSendMsg(const std::string& to, bool reliable, uint8_t st
     p.data[1] = h.seq;
     std::memcpy(p.data.data() + kWireHeaderSize, msg, n);
 
+    // ★ 10-08 조각 3b — 신뢰 조각은 확인이 올 때까지 들고 있는다(원본 `reliableSender.add`·`sendAtSeq` — 보낸 뒤 2초가 재시도 시각).
+    if (reliable && _reliableResend) {
+        CUdpSession::PendingReliable pr;
+        pr.wire = p.data;   // XOR 전
+        pr.seq = h.seq;
+        pr.retryAt = _nowMs + kReliableRetryMs;
+        s.reliableQueue.push_back(std::move(pr));
+        if (s.reliableQueue.size() > kReliableQueueMax) {
+            s.reliableQueue.erase(s.reliableQueue.begin());
+            ++_reliableQueueDropped;
+        }
+    }
+
     // 키를 준 뒤로는 조각 전체가 뒤집힌다 — 머리도 포함이다.
     // (덤프의 `70 70 74` 가 XOR 0x70 을 풀면 `00 00 04` 인 것이 그 증거다)
     if (s.keyed) ApplyXor(p.data.data(), p.data.size(), s.xorKey);
     out.push_back(std::move(p));
+}
+
+// 원본 `SetCurrent(seq)` = `retry(seq)` + `ackOlder(seq)`(`send_reliable.go:183-239`).
+//   retry — 그 순번이 아직 있으면 「다시 보낼 것」으로 표시한다(클라가 그것부터 못 받았다는 뜻).
+//   ackOlder — 그보다 앞 순번은 받았으니 지운다. 원본 그대로 바이트 크기로 견준다(순번이 255 를 넘어 돌 때의 처리는 원본도 없다 — `FIXME`).
+void CUdpServer::Ack(CUdpSession& s, uint8_t seq) {
+    for (auto& p : s.reliableQueue)
+        if (p.seq == seq) { p.shouldSend = true; ++_reliableRetryMarked; }
+    const size_t before = s.reliableQueue.size();
+    s.reliableQueue.erase(std::remove_if(s.reliableQueue.begin(), s.reliableQueue.end(),
+                                         [seq](const CUdpSession::PendingReliable& p) { return p.seq < seq; }),
+                          s.reliableQueue.end());
+    _reliableAcked += before - s.reliableQueue.size();
+}
+
+void CUdpServer::Resend(CUdpSession& s, std::vector<OutPacket>& out) {
+    for (auto& p : s.reliableQueue) {
+        if (!p.shouldSend) continue;
+        p.shouldSend = false;
+        p.retryAt = _nowMs + kReliableRetryMs;
+        OutPacket o;
+        o.to = s.addr;
+        o.data = p.wire;
+        // 원본도 다시 보낼 때 그때의 키로 뒤집는다 — 키를 주기 전에 평문으로 나간 접속 수락도 다시 보낼 때는 뒤집힌다
+        // (`conn.go:748-760` `writeTo` · 정품 녹음에서 다시 보낸 접속 수락이 키로 뒤집혀 있다).
+        if (s.keyed) ApplyXor(o.data.data(), o.data.size(), s.xorKey);
+        out.push_back(std::move(o));
+        ++_reliableResent;
+    }
+}
+
+void CUdpServer::Tick(uint32_t nowMs, std::vector<OutPacket>& out) {
+    if (!_resendClockSet) {
+        // 시계를 처음 잡는다 — 그 전에 보낸 조각은 지금부터 2초를 센다.
+        _resendClockSet = true;
+        _lastResendCheckMs = nowMs;
+        for (auto& kv : _sessions)
+            for (auto& p : kv.second.reliableQueue) p.retryAt = nowMs + kReliableRetryMs;
+    }
+    _nowMs = nowMs;
+    if (!_reliableResend) return;
+    // 원본 `MaybeSendReliable` — 1초에 한 번만 「재시도 시각이 지난 것」을 표시한다(`send_reliable.go:16-28`).
+    const bool check = static_cast<int32_t>(nowMs - _lastResendCheckMs) >= static_cast<int32_t>(kReliableCheckMs);
+    if (check) _lastResendCheckMs = nowMs;
+    for (auto& kv : _sessions) {
+        CUdpSession& s = kv.second;
+        if (s.reliableQueue.empty()) continue;
+        if (check)
+            for (auto& p : s.reliableQueue)
+                if (static_cast<int32_t>(nowMs - p.retryAt) >= 0) p.shouldSend = true;
+        // 표시된 것은 틱마다 내보낸다 — 원본은 프레임마다 `FlushAndPoll` → `Resend` 를 부른다(`send.go:74`)
+        Resend(s, out);
+    }
 }
 
 }  // namespace nox

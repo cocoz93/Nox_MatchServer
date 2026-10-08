@@ -24020,6 +24020,93 @@ void TestReconnectAfterClose() {
     std::printf("  10-08 조각 3 — 닫기·내보내기 뒤 같은 주소의 다시 접속에 새 키(통신 층 상태도 같이 지움)\n");
 }
 
+// ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
+//   원본 `send_reliable.go`(2초 뒤 · 1초마다 살핌) · 정품 녹음 `CAP_GEN3`(확인 못 받은 접속 수락을 약 2.1초마다 다시 보냄).
+//   클라 확인 = 비신뢰 조각 머리 순번(「다음에 받을 순번」) — 그보다 앞은 지우고, 그 순번이 있으면 바로 다시 보낸다.
+void TestReliableResend() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };   // 접속 요청 — 답이 신뢰 순번 0 의 접속 수락이다
+    // 접속 수락(10바이트) — 키로 뒤집혀 있어도 첫 바이트(신뢰 비트)와 셋째(0x1f)를 키로 풀어 본다
+    auto acceptsIn = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t key) {
+        int n = 0;
+        for (const auto& p : out)
+            if (p.to == to && p.data.size() == 10 && (p.data[0] ^ key) == 0x80 && (p.data[2] ^ key) == 0x1f) ++n;
+        return n;
+    };
+    auto tickRange = [&](nox::Server& srv, uint32_t from, uint32_t to, const std::string& who, uint8_t key) {
+        int n = 0;
+        for (uint32_t ms = from; ms <= to; ms += 33) { std::vector<nox::OutPacket> o; srv.Tick(ms, o); n += acceptsIn(o, who, key); }
+        return n;
+    };
+    // ① 확인이 없으면 2초 넘어 다시 보내고 · ② 확인(「다음은 1」)이 오면 멈춘다
+    {
+        const std::string a = "10.10.8.3:10803";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);                                  // 키 0 — 평문 그대로
+        std::vector<nox::OutPacket> t; srv.Tick(1000, t);            // 첫 Tick 은 시계만 잡는다
+        std::vector<nox::OutPacket> o1; srv.OnPacket(a, conn, sizeof(conn), o1);
+        const int first = acceptsIn(o1, a, 0);
+        const int early = tickRange(srv, 1033, 3000, a, 0);          // 보낸 지 2초 안 — 안 보낸다
+        const int late  = tickRange(srv, 3033, 4100, a, 0);          // 2초 넘어 첫 살핌 — 한 번
+        const unsigned long long resent0 = srv.Network().reliableResent();
+        const uint8_t ack[7] = { 0x00, 0x01, static_cast<uint8_t>(nox::Op::CLIENT_PING), 1, 2, 3, 4 };   // 비신뢰 · 머리 순번 1 = 「0 은 받았다」
+        std::vector<nox::OutPacket> o2; srv.OnPacket(a, ack, sizeof(ack), o2);
+        const size_t pendingAfterAck = srv.Network().reliablePending();
+        const int after = tickRange(srv, 4133, 9000, a, 0);          // 확인 뒤 5초 — 안 보낸다
+        char m[200];
+        std::snprintf(m, sizeof(m), "① 다시 보내기 — 첫 수락 %d · 2초 안 %d · 2초 뒤 %d(다시보냄 %llu) · 확인 뒤 보관 %zu · 확인 뒤 %d",
+                      first, early, late, resent0, pendingAfterAck, after);
+        Check(first == 1 && early == 0 && late == 1 && resent0 == 1 && pendingAfterAck == 0 && after == 0, m);
+    }
+    // ③ 클라가 「다음은 0」(= 0 을 못 받았다)이라 하면 2초를 안 기다리고 다음 틱에 다시 보낸다(`retry`)
+    {
+        const std::string b = "10.10.8.4:10804";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);
+        std::vector<nox::OutPacket> t; srv.Tick(1000, t);
+        std::vector<nox::OutPacket> o1; srv.OnPacket(b, conn, sizeof(conn), o1);
+        const uint8_t nack[7] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_PING), 1, 2, 3, 4 };  // 머리 순번 0
+        std::vector<nox::OutPacket> o2; srv.OnPacket(b, nack, sizeof(nack), o2);
+        std::vector<nox::OutPacket> o3; srv.Tick(1033, o3);
+        char m[160];
+        std::snprintf(m, sizeof(m), "③ 「다음은 0」 뒤 다음 틱에 바로 다시 보냄 — %d(표시 %llu)",
+                      acceptsIn(o3, b, 0), srv.Network().reliableRetryMarked());
+        Check(acceptsIn(o3, b, 0) == 1 && srv.Network().reliableRetryMarked() == 1, m);
+    }
+    // ④ 키를 준 뒤 다시 보내는 접속 수락은 그 키로 뒤집혀 나간다(원본 `writeTo` · 정품 녹음도 그렇다) — 첫 것은 평문
+    {
+        const std::string c = "10.10.8.5:10805";
+        nox::Server srv;
+        srv.Network().SetXorKey(0x5a);
+        std::vector<nox::OutPacket> t; srv.Tick(1000, t);
+        std::vector<nox::OutPacket> o1; srv.OnPacket(c, conn, sizeof(conn), o1);
+        const int plainFirst = acceptsIn(o1, c, 0);
+        const int xoredLater = tickRange(srv, 1033, 4100, c, 0x5a);
+        char m[160];
+        std::snprintf(m, sizeof(m), "④ 키 0x5a — 첫 수락 평문 %d · 다시 보낸 것 키로 뒤집힘 %d", plainFirst, xoredLater);
+        Check(plainFirst == 1 && xoredLater == 1, m);
+    }
+    // ⑤ ③을 진짜 클라 차례로 — 접속 시도(머리 순번 0)를 먼저 보낸 뒤 접속해도 「다음은 0」에 바로 다시 보낸다.
+    //   원본은 접속 때 사람 연결을 새로 만들며 `seqRecv = -1`(`netstr.go:257-263`). 10-08 소켓 실행에서 표시가 0 으로 나와 찾았다
+    {
+        const std::string e = "10.10.8.6:10806";
+        nox::Server srv;
+        srv.Network().SetXorKey(0);
+        std::vector<nox::OutPacket> t; srv.Tick(1000, t);
+        std::vector<uint8_t> tryJoin(100, 0);
+        tryJoin[2] = static_cast<uint8_t>(nox::Op::SERVER_TRY_JOIN);
+        std::vector<nox::OutPacket> o0; srv.OnPacket(e, tryJoin.data(), tryJoin.size(), o0);
+        std::vector<nox::OutPacket> o1; srv.OnPacket(e, conn, sizeof(conn), o1);
+        const uint8_t nack[7] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_PING), 1, 2, 3, 4 };  // 머리 순번 0
+        std::vector<nox::OutPacket> o2; srv.OnPacket(e, nack, sizeof(nack), o2);
+        std::vector<nox::OutPacket> o3; srv.Tick(1033, o3);
+        char m[160];
+        std::snprintf(m, sizeof(m), "⑤ 접속 시도 뒤 접속 · 「다음은 0」 — 다음 틱에 바로 다시 보냄 %d(표시 %llu)",
+                      acceptsIn(o3, e, 0), srv.Network().reliableRetryMarked());
+        Check(acceptsIn(o3, e, 0) == 1 && srv.Network().reliableRetryMarked() == 1, m);
+    }
+    std::printf("  10-08 조각 3b — 신뢰 조각 다시 보내기: 2초 뒤 한 번 · 확인 오면 멈춤 · 「다음은 그 순번」이면 바로 · 다시 보낼 땐 키로 뒤집음\n");
+}
+
 // ── 09-28 — 남을 소개하는 `2d NEW_PLAYER` 의 104·108 자리 = 지금 갑옷·무기 비트(`player.go:233~234`) ─────────
 //   사람 판 2차 — 「평상복을 입었는데 남 화면엔 맨몸」. 녹음(0)을 그대로 보내 다시 소개할 때마다 남의 차림을 지웠다
 void TestNewPlayerGearBits() {
@@ -29090,6 +29177,7 @@ int main() {
     TestBowQuiver();
     TestConnectZeroTail();
     TestReconnectAfterClose();
+    TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
     TestMonsterChaseReturn();
