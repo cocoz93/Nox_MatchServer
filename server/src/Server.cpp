@@ -92,14 +92,13 @@ Session& Server::SessionFor(const std::string& addr) {
 //   가르려는 것 — 「맨몸인데 남 화면엔 로브」(겉모습 알림이 무엇이 언제 갔나) · 「남이 접속·끊길 때 내 화면이 검게 깜빡」
 //   (그때 나에게 무엇이 갔나). 매 틱 나가는 시야 갱신(a4)·시각(27·28)은 뺀다. `cc`(순번 싼 것)는 속을 풀어 적는다.
 //   켜지 않으면 아무것도 안 한다(파일을 여는 것도 첫 호출 한 번)
+//   ★ 10-08 — 여는 일을 함수 안 정적 변수의 초기화로 옮겼다. 그 초기화는 여러 스레드가 동시에 불러도 한 번만 돈다
+//     (전에는 `tried` 깃발이라 동시에 처음 부르면 두 번 열 수 있었다 · `Docs/LAYERS_DESIGN.md` 조각 2).
 static FILE* TraceOutFile() {
-    static FILE* f = nullptr;
-    static bool tried = false;
-    if (!tried) {
-        tried = true;
+    static FILE* const f = []() -> FILE* {
         const char* p = std::getenv("NOX_TRACE_OUT");
-        if (p && *p) f = std::fopen(p, "a");
-    }
+        return (p && *p) ? std::fopen(p, "a") : nullptr;
+    }();
     return f;
 }
 static void TraceOutMsgs(FILE* f, const std::string& to, uint32_t frame, const uint8_t* m, size_t n, int depth) {
@@ -4429,17 +4428,18 @@ inline bool NearestOnRight(float ox, float oy, float lo, float hi, bool a4, bool
 // sub_550380 — 가까운 점까지가 반지름보다 가까우면 밀어낸다: 벽 쪽 속도 성분을 없애고
 //   (반지름 − 거리) × 100 ÷ 질량 을 가속(+96 Pos24 = Sub548600)에 더한다.
 //   ⚠ 공(GameBall) 예외·충돌 기록(collSysAddCollision)은 사람에게 안 쓰여 뺐다.
-// 09-21 계측용 — 재는 동안만 가리킨다(계측이 물리 식을 안 건드리게 밖에 둔다)
-double* gWallNearestLen = nullptr;
-unsigned long long* gWallPushCount = nullptr;
+// 09-21 계측 — 가장 가까운 거리·민 조각 수를 부른 쪽 서버 멤버에 적는다(계측이 물리 식을 안 건드리게 인자로 받는다).
+//   ★ 10-08 — 전에는 전역 포인터 둘이 재는 동안만 서버 멤버를 가리켰다. 서버 여럿이 같이 쓰는 상태라 인자로 바꿨다
+//     (`Docs/LAYERS_DESIGN.md` 조각 2).
 inline bool PushOut(double r, double mass, double px, double py, float cx, float cy,
-                    double& vx, double& vy, double& ax, double& ay) {
+                    double& vx, double& vy, double& ax, double& ay,
+                    double* nearestLen, unsigned long long* pushCount) {
     const float dx = static_cast<float>(px) - cx, dy = static_cast<float>(py) - cy;
     float len = std::sqrt(dx * dx + dy * dy);
     if (len == 0.0f) len = 0.0099999998f;
     if (len >= static_cast<float>(r)) return false;
-    if (gWallNearestLen && len < *gWallNearestLen) *gWallNearestLen = len;   // 09-21 계측
-    if (gWallPushCount) ++*gWallPushCount;
+    if (nearestLen && len < *nearestLen) *nearestLen = len;   // 09-21 계측
+    if (pushCount) ++*pushCount;
     const float nx = dx / len, ny = dy / len;
     const double into = -ny * vy + -nx * vx;
     if (into > 0.0) { vx += into * nx; vy += into * ny; }
@@ -4904,8 +4904,6 @@ bool Server::CircleVsWalls(double bx, double by, double r, double mass,
                            double nx, double ny, double& vx, double& vy, double& ax, double& ay,
                            int* lastGx, int* lastGy) const {
     if (!wallsOn_ || wallTiles_.empty()) return false;
-    gWallNearestLen = &wallNearestLen_;          // ★ 09-21 계측 시작(아래 끝에서 되돌린다)
-    gWallPushCount = &wallPushPerStepCur_;
     wallPushPerStepCur_ = 0;
     const int x0 = static_cast<int>(static_cast<float>(bx - r) * kInvGrid);
     const int y0 = static_cast<int>(static_cast<float>(by - r) * kInvGrid);
@@ -4935,7 +4933,7 @@ bool Server::CircleVsWalls(double bx, double by, double r, double mass,
                 }
                 const double wa0 = ax, wb0 = ay;
                 if (got && lastGx) { *lastGx = gx; *lastGy = gy; }   // ★ 2-b2 — +296(밀기 판단 전에 적는다)
-                if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay)) any = true;
+                if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay, &wallNearestLen_, &wallPushPerStepCur_)) any = true;
                 NoteWallPushWorst(ax - wa0, ay - wb0, gx, gy, d, nx, ny, cx, cy);
             }
             if (s.r) {
@@ -4950,15 +4948,13 @@ bool Server::CircleVsWalls(double bx, double by, double r, double mass,
                 }
                 const double wa0 = ax, wb0 = ay;
                 if (got && lastGx) { *lastGx = gx; *lastGy = gy; }   // ★ 2-b2 — +296(밀기 판단 전에 적는다)
-                if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay)) any = true;
+                if (got && PushOut(r, mass, nx, ny, cx, cy, vx, vy, ax, ay, &wallNearestLen_, &wallPushPerStepCur_)) any = true;
                 NoteWallPushWorst(ax - wa0, ay - wb0, gx, gy, d, nx, ny, cx, cy);
             }
         }
     }
     // ★ 09-21 계측 — 이번 걸음에 **동시에** 민 조각 수의 최대(모서리에서 겹쳐 미는지 가른다)
     if (wallPushPerStepCur_ > wallPushPerStepMax_) wallPushPerStepMax_ = wallPushPerStepCur_;
-    gWallNearestLen = nullptr;
-    gWallPushCount = nullptr;
     return any;
 }
 
@@ -4972,6 +4968,13 @@ constexpr uint32_t kFlBelow = 0x1, kFlAllowOverlap = 0x8, kFlShort = 0x10, kFlDe
 constexpr float kBodyPush = 40.0f;   // `dword_587000_292488` = 40.0 (데이터 덩어리)
 // 딱 겹쳤을 때 고르는 방향 넷 — `0x587000+292784` · `+289928` (둘 다 ±0.1 축 벡터)
 constexpr float kNudge[4][2] = { { 0.1f, 0.0f }, { -0.1f, 0.0f }, { 0.0f, 0.1f }, { 0.0f, -0.1f } };
+// ★ 10-08 — 위 넷 중 하나를 고르는 난수. 전에는 `std::rand()` 라 서버 여럿이 프로세스 난수열 하나를 나눠 썼다.
+//   서버마다 따로 들되 **MSVC `rand()` 와 같은 식·같은 씨앗(1)** 으로 둔다 — 서버 하나만 도는 프로세스에서는
+//   전과 같은 방향이 나온다(`Docs/LAYERS_DESIGN.md` 조각 2).
+inline int NudgeIndex(uint32_t& state) {
+    state = state * 214013u + 2531011u;
+    return static_cast<int>((state >> 16) & 0x7FFFu) % 4;
+}
 
 // 몸의 충돌 사각형(+232~+244, `GAME3_3.c:2508` objectUnkUpdateCoords) — 프레임 시작 자리 기준
 inline void BodyRect(const Server::PhysBody& b, double x, double y,
@@ -4985,7 +4988,8 @@ inline void BodyRect(const Server::PhysBody& b, double x, double y,
 
 // sub_54A990 — 원(중심 p, 반지름 r)과 상자(자리 bx,by)의 겹침. 반환 ≥ 0 이면 닿음, n 은 상자→원 방향.
 //   상자 꼭짓점 넷: A (LT,LB) · B (LB2,LT2) · C (RT,RB) · D (RB2,RT2) — LT2=LT, LB2=LB, RT2=RT, RB2=RB.
-double BoxOverlap(float px, float py, float r, const Server::PhysBody& b, float bx, float by, float& nx, float& ny) {
+double BoxOverlap(float px, float py, float r, const Server::PhysBody& b, float bx, float by, float& nx, float& ny,
+                  uint32_t& nudgeRand) {
     const float ax = b.boxLT + bx, ay = b.boxLB + by;
     const float cbx = b.boxLB + bx, cby = b.boxLT + by;
     const float ccx = b.boxRT + bx, ccy = b.boxRB + by;
@@ -5008,7 +5012,7 @@ double BoxOverlap(float px, float py, float r, const Server::PhysBody& b, float 
     switch (k) {
         case 0: {
             float dx = px - bx, dy = py - by;
-            if (dx == 0.0f && dy == 0.0f) { const int i = std::rand() % 4; dx = kNudge[i][0]; dy = kNudge[i][1]; }
+            if (dx == 0.0f && dy == 0.0f) { const int i = NudgeIndex(nudgeRand); dx = kNudge[i][0]; dy = kNudge[i][1]; }
             double len = std::sqrt(dy * dy + dx * dx);
             if (len == 0.0) len = 0.1;
             nx = static_cast<float>(dx / len); ny = static_cast<float>(dy / len);
@@ -5050,7 +5054,7 @@ void Server::BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, dou
     if (a2.shape == 2) {
         // ── 원 대 원 (`GAME5.c:7183`) ──
         float dx = static_cast<float>(ox - nx), dy = static_cast<float>(oy - ny);
-        if (dx == 0.0f && dy == 0.0f) { const int i = std::rand() % 4; dx = kNudge[i][0]; dy = kNudge[i][1]; }
+        if (dx == 0.0f && dy == 0.0f) { const int i = NudgeIndex(nudgeRandState_); dx = kNudge[i][0]; dy = kNudge[i][1]; }
         float len = std::sqrt(dy * dy + dx * dx);
         if (len == 0.0f) len = 0.0099999998f;
         const float overlap = a1.r + a2.r - len;
@@ -5079,7 +5083,7 @@ void Server::BodyVsBody(const PhysBody& a1, double nx, double ny, double bx, dou
         // ── 원 대 상자 (`GAME5.c:3465`, a3 = 0 — 원 쪽을 민다) ──
         float unx = 0, uny = 0;
         const double over = BoxOverlap(static_cast<float>(nx), static_cast<float>(ny), a1.r, a2,
-                                       static_cast<float>(ox), static_cast<float>(oy), unx, uny);
+                                       static_cast<float>(ox), static_cast<float>(oy), unx, uny, nudgeRandState_);
         if (over < 0.0) return;
         if (losPair && !MapTraceRay(static_cast<float>(bx), static_cast<float>(by),
                                     static_cast<float>(obx), static_cast<float>(oby), 0)) return;
@@ -17099,7 +17103,7 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
             g = ai.range - (std::sqrt((gx - ox) * (gx - ox) + (gy - oy) * (gy - oy)) - b.r);
         } else if (b.shape == 3) {
             float nx, ny;
-            g = BoxOverlap(gx, gy, ai.range, b, ox, oy, nx, ny);
+            g = BoxOverlap(gx, gy, ai.range, b, ox, oy, nx, ny, nudgeRandState_);
         } else {
             g = ai.range - std::sqrt((gx - ox) * (gx - ox) + (gy - oy) * (gy - oy));
         }
@@ -17208,7 +17212,7 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai, std::vector<Out
             len = len - b.r;
         } else if (b.shape == 3) {
             float nx, ny;
-            const double v7 = BoxOverlap(ax, ay, best, b, ox, oy, nx, ny);
+            const double v7 = BoxOverlap(ax, ay, best, b, ox, oy, nx, ny, nudgeRandState_);
             if (v7 < 0.0) return false;
             len = best - v7;
         }

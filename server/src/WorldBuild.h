@@ -86,6 +86,7 @@ struct ServerOptions {
     int debugKillAfter = 0;         // 진단 — N틱 뒤 첫 사람이 둘째를 죽인다 (0 끔)
     int debugScoreAfter = 0;        // 진단 — N틱 뒤 첫 사람 점수를 올린다 (0 끔)
     int debugScoreVal = 0;
+    int debugCrashAfter = 0;        // 진단 --debug-crash N — N 틱 뒤 일부러 죽는다(크래시 덤프 확인 · 0 끔 · 10-08)
     int spawnAtX = -1, spawnAtY = -1;   // --spawn-at X Y — 시작·부활 자리를 손으로 지정 (음수면 끔)
     // --debug-bot X Y [직업] — 가짜 사람을 세운다 (음수면 끔 · **여러 번 쓸 수 있다**).
     //   0 0 은 「맵의 시작 자리에 세워라」다. 여러 번 쓰면 시작 자리를 하나씩 옮겨 가며 쓴다.

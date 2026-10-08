@@ -5714,6 +5714,10 @@ private:
     unsigned long long moves_ = 0;
     unsigned long long melees_ = 0;
     uint32_t rngState_ = 0x13572468u;   // NextRandom 의 씨앗 — 고정이라 시험이 재현된다
+    // ★ 10-08 — 딱 겹친 몸을 밀 방향 넷 중 하나를 고르는 난수(`Server.cpp` `NudgeIndex`). 전에는 `std::rand()` 였다.
+    //   `NextRandom` 과 따로 두는 까닭 — 그 난수열을 쓰는 곳(가끔 발차기 등)의 차례를 흔들지 않으려고.
+    //   충돌 판정이 `const` 함수라 `mutable`.
+    mutable uint32_t nudgeRandState_ = 1;
     // 진단(2026-09-10 sq1) — 코드6(왼클릭)이 분기에 몇 번 도달했나.
     // 클라는 231번 보냈는데 성사가 15에서 멎었다 — 유실이 파싱이냐 조건이냐를 가른다.
     unsigned long long code6Seen_ = 0;

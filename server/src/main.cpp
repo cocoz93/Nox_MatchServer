@@ -41,6 +41,13 @@
 #include "nox/NoxCrypt.h"   // ★ 09-27 B3 — modifier.bin 복호
 
 #include "WorldBuild.h"
+// ★ 10-08 — 크래시 덤프(ServerCore 사본). 넣기만 하면 전역 인스턴스가 처리기를 건다 —
+//   덤프는 exe 옆 `CrashDump\` 에 남고 프로세스는 종료 코드 1 로 끝난다(`Docs/LAYERS_DESIGN.md` 조각 2).
+//   사본은 원본 그대로 두므로, 그쪽 처리기의 안 쓰는 매개변수 경고(C4100)만 여기서 끈다.
+#pragma warning(push)
+#pragma warning(disable: 4100)
+#include "CrashDump.h"
+#pragma warning(pop)
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -641,6 +648,9 @@ int main(int argc, char** argv) {
             opt.ctfSpan = std::atoi(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
             opt.dumpPath = argv[++i];
+        } else if (a == "--debug-crash" && i + 1 < argc) {
+            // 진단 — N 틱 뒤 일부러 죽는다. 크래시 덤프가 실제로 남는지 보는 용도(10-08)
+            opt.debugCrashAfter = std::atoi(argv[++i]);
         } else {
             std::printf("모르는 인자: %s\n", a.c_str());
             return 2;
@@ -975,6 +985,11 @@ int main(int argc, char** argv) {
         }
 
         const int ticks = srv.Tick(GetTickCount(), outs);
+        if (opt.debugCrashAfter > 0 && srv.frame() >= static_cast<uint32_t>(opt.debugCrashAfter)) {
+            std::printf("[진단스위치] --debug-crash — 프레임 %u 에서 일부러 죽는다\n", srv.frame());
+            std::fflush(stdout);
+            CRASH("--debug-crash");
+        }
         if (ticks > 0) {
             nTicks += static_cast<unsigned long long>(ticks);
             const size_t made = outs.size();
