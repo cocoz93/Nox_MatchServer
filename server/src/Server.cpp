@@ -2779,6 +2779,11 @@ size_t Server::OnPacket(const std::string& from, const uint8_t* data, size_t n,
 }
 
 size_t Server::OnNetworkEvent(const NetworkEvent& ev, std::vector<OutPacket>& out) {
+    // ★ 10-09 조각 5c — 접속 시도는 사람 자리를 만들지 않는다(받아 줄지만 답한다 — 접속 시도만 한 상대는 통신 층 몫 · 조각 4c).
+    if (ev.type == NetworkEvent::Type::JOIN_REQUESTED) {
+        OnJoinRequested(ev, out);
+        return 0;
+    }
     Session& s = SessionFor(ev.sessionId);
     switch (ev.type) {
         case NetworkEvent::Type::CONNECTED:
@@ -2804,8 +2809,16 @@ size_t Server::OnNetworkEvent(const NetworkEvent& ev, std::vector<OutPacket>& ou
             return 0;
         case NetworkEvent::Type::RECEIVED:
             return OnGameMessages(s, ev.body.data(), ev.body.size(), out);
+        case NetworkEvent::Type::JOIN_REQUESTED:
+            break;   // 위에서 처리했다
     }
     return 0;
+}
+
+// ★ 10-09 조각 5c — 받아 줄지는 게임 규칙이다(원본 `noxnetJoinCheck` `network.go:383` — 버전·인원·중복 일련번호·닫힘 …).
+//   지금은 늘 받아 준다 — 옛 통신 층 동작 그대로(「지금은 조건 없이 받아준다」). 거절 규칙을 옮기는 것은 기능 일이라 따로 정한다.
+void Server::OnJoinRequested(const NetworkEvent& ev, std::vector<OutPacket>& out) {
+    network_.RespondJoin(ev.sessionId, /*accept=*/true, {}, out);
 }
 
 size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen,

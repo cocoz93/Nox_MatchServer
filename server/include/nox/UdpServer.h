@@ -88,12 +88,13 @@ struct NetworkEvent {
     enum class Type {
         CONNECTED,      // 키를 줬다(SERVER_CONNECT 처리 뒤)
         DISCONNECTED,   // 끊겼다 — 까닭은 `reason`(10-09 조각 5a 전에는 0x0A CLIENT_CLOSE 하나뿐)
-        RECEIVED        // 게임 메시지 — 처음 0x20 이상 오프코드가 나온 자리부터 조각 끝까지(머리를 뗀 평문)
+        RECEIVED,       // 게임 메시지 — 처음 0x20 이상 오프코드가 나온 자리부터 조각 끝까지(머리를 뗀 평문)
+        JOIN_REQUESTED  // ★ 10-09 조각 5c — 접속 시도(0x0E TRY_JOIN). 받아 줄지는 게임이 정해 `RespondJoin` 으로 답한다
     };
     Type type = Type::RECEIVED;
     int64_t sessionId = 0;          // 게임이 사람을 가르는 번호(10-08 조각 4)
     std::string addr;               // 그 세션의 주소 — 기록용
-    std::vector<uint8_t> body;      // RECEIVED
+    std::vector<uint8_t> body;      // RECEIVED · JOIN_REQUESTED(오프코드 뺀 본문 97바이트 — `MsgServerTryJoin`)
     DisconnectReason reason = DisconnectReason::CLIENT_CLOSE;   // DISCONNECTED
     // CONNECTED — 덤프 재생이면 그때 서버가 정한 프레임·오브젝트 번호(`scripted`)
     bool scripted = false;
@@ -185,6 +186,11 @@ public:
     // 게임이 그 상대를 지웠다 — 키·순번도 함께 버린다(다시 접속하면 새 번호로 처음부터).
     void RequestDisconnectSession(int64_t sessionId);
 
+    // ★ 10-09 조각 5c — 접속 시도(`JOIN_REQUESTED`)에 답한다. 받아 줄지는 게임 규칙이다(원본 `noxnetJoinCheck` `network.go:383`).
+    //   허락이면 `SERVER_JOIN_OK` 를 보내고, 아니면 게임이 만든 거절 메시지(`rejectMsg` — 오프코드부터)를 보낸다
+    //   (원본도 `netstr` 가 게임 콜백 `onJoin` 의 답을 받아 싣는다 — `conn.go:356-366`). 그 사이 걷힌 세션이면 버리고 센다.
+    void RespondJoin(int64_t sessionId, bool accept, const std::vector<uint8_t>& rejectMsg, std::vector<OutPacket>& out);
+
     // ★ 10-08 조각 4 — 세션 번호. 처음 보는 주소에 1부터 매긴다.
     //   `OpenSession` 은 그 주소의 번호(없으면 만든다) — 소켓 없이 사람을 세우는 시험·진단 진입(`DebugEnterGame`)이 쓴다.
     int64_t OpenSession(const std::string& addr);
@@ -261,6 +267,10 @@ public:
     unsigned long long unannouncedSwept() const { return _unannouncedSwept; }
     // ★ 10-09 조각 5a — 시간 초과로 게임에 넘긴 세션 수(`DISCONNECTED` · TIMEOUT).
     unsigned long long sessionTimedOut() const { return _sessionTimedOut; }
+    // ★ 10-09 조각 5c — 접속 시도를 게임에 물은 수 · 게임이 거절한 수 · 답이 왔을 때 세션이 이미 없던 수(0 이 정상)
+    unsigned long long joinRequested() const { return _joinRequested; }
+    unsigned long long joinRejected() const { return _joinRejected; }
+    unsigned long long joinRespondNoSession() const { return _joinRespondNoSession; }
 
     // 접속 제어 조각만 센다(게임 조각은 `nox::Server` 의 같은 이름이 센다).
     const std::map<uint8_t, unsigned long long>& seen() const { return _seen; }
@@ -320,6 +330,9 @@ private:
     unsigned long long _sendNoSession = 0;
     unsigned long long _unannouncedSwept = 0;
     unsigned long long _sessionTimedOut = 0;
+    unsigned long long _joinRequested = 0;
+    unsigned long long _joinRejected = 0;
+    unsigned long long _joinRespondNoSession = 0;
 
     std::vector<uint8_t> _infoBody;
     uint8_t _xorKey = 0x70;

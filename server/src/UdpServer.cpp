@@ -53,6 +53,20 @@ void CUdpServer::RequestDisconnectSession(int64_t sessionId) {
     _addrOf.erase(it);
 }
 
+void CUdpServer::RespondJoin(int64_t sessionId, bool accept, const std::vector<uint8_t>& rejectMsg,
+                             std::vector<OutPacket>& out) {
+    auto a = _addrOf.find(sessionId);
+    if (a == _addrOf.end()) { ++_joinRespondNoSession; return; }   // 답하는 사이 걷혔다
+    CUdpSession& s = _sessions.at(a->second);
+    if (accept) {
+        const uint8_t msg[1] = {static_cast<uint8_t>(Op::SERVER_JOIN_OK)};
+        SendOn(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+        return;
+    }
+    ++_joinRejected;
+    if (!rejectMsg.empty()) SendOn(s, /*reliable=*/false, /*stream=*/0, rejectMsg.data(), rejectMsg.size(), out);
+}
+
 void CUdpServer::RequestSetSessionTimeout(int64_t sessionId, uint32_t timeoutMs) {
     auto it = _addrOf.find(sessionId);
     if (it == _addrOf.end()) return;
@@ -277,11 +291,19 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
             }
 
             case Op::SERVER_TRY_JOIN: {
-                if (s.keyed) break;
+                if (s.keyed) break;   // 이미 붙은 상대 — 게임에 안 묻는다
                 // 지금은 조건 없이 받아준다. 거절 사유(중복 일련번호·인원 참·버전)는
                 // 세션 관리를 만들 때 붙인다.
-                const uint8_t msg[1] = {static_cast<uint8_t>(Op::SERVER_JOIN_OK)};
-                SendOn(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+                // ★ 10-09 조각 5c — 받아 줄지는 게임이 정한다(`JOIN_REQUESTED` → 게임 `OnJoinRequested` → `RespondJoin`).
+                //   위 「조건 없이」는 이제 게임 쪽 몫이다. 이 세션은 게임에 넘긴 것으로 치지 않는다(`announced` 그대로) —
+                //   접속 시도만 한 상대는 계속 통신 층이 걷는다(조각 4c).
+                NetworkEvent ev;
+                ev.type = NetworkEvent::Type::JOIN_REQUESTED;
+                ev.sessionId = s.sessionId;
+                ev.addr = from;
+                ev.body.assign(it.body(), it.body() + it.bodyLen());
+                ++_joinRequested;
+                events.push_back(std::move(ev));
                 ++_handled;
                 break;
             }

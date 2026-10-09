@@ -24368,6 +24368,90 @@ void TestTimerHeap() {
     std::printf("  10-09 조각 5b — 타이머: 다시 보내기 정확히 2초 · 가장 이른 마감 · 시간 초과는 받을 때 밀리고 꺼낼 때 다시 걺 · 줄인 한도 · 옛 마감 버림\n");
 }
 
+// ── 10-09 플랜 A 조각 5c — 접속 시도(`TRY_JOIN`)를 받아 줄지는 게임이 정한다(`JOIN_REQUESTED` → `RespondJoin`) ─────────
+//   전에는 통신 층이 조건 없이 `JOIN_OK` 를 스스로 보냈다. 원본은 `netstr` 가 게임 콜백 `onJoin` 에 묻는다(`conn.go:356-366`).
+//   ① 통신 층 혼자 — 접속 시도에 답하지 않고 본문(97B)을 실어 게임에 묻는다 · 허락이면 `JOIN_OK` · 그 상대는 게임에 넘긴 것으로 안 쳐 30초 뒤 걷힌다
+//   ② 거절이면 게임이 만든 메시지만 나가고 `JOIN_OK` 는 안 간다
+//   ③ 답하기 전에 걷힌 세션이면 버리고 센다
+//   ④ 이미 붙은 상대의 접속 시도는 게임에 안 묻는다
+//   ⑤ 게임까지 — 접속 시도에 `JOIN_OK` 가 바로 나가고(지금은 늘 허락) 게임에 사람 자리는 안 생긴다
+void TestJoinBoundary() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    std::vector<uint8_t> tryJoin(100, 0);
+    tryJoin[2] = static_cast<uint8_t>(nox::Op::SERVER_TRY_JOIN);
+    tryJoin[4] = 'J';                                                 // 본문 1번 자리 — 이름 첫 글자(UTF-16LE)
+    using Ev = nox::NetworkEvent;
+    auto ops = [](const std::vector<nox::OutPacket>& out, uint8_t op) {
+        int n = 0;
+        for (const auto& p : out) if (p.data.size() >= 3 && p.data[2] == op) ++n;
+        return n;
+    };
+    const uint8_t kOk = static_cast<uint8_t>(nox::Op::SERVER_JOIN_OK);
+    const uint8_t kFail = static_cast<uint8_t>(nox::Op::SERVER_JOIN_FAIL);
+    char m[240];
+    {
+        const std::string a = "10.10.9.21:10921";
+        nox::CUdpServer net;
+        std::vector<nox::OutPacket> o, r; std::vector<Ev> ev, tev;
+        net.Tick(1000, o, tev);
+        net.OnDatagram(a, tryJoin.data(), tryJoin.size(), o, ev);
+        const int64_t sa = net.SessionIdOf(a);
+        const bool asked = ev.size() == 1 && ev[0].type == Ev::Type::JOIN_REQUESTED && ev[0].sessionId == sa &&
+                           ev[0].body.size() == 97 && ev[0].body[1] == 'J';
+        const int okBefore = ops(o, kOk);
+        net.RespondJoin(sa, true, {}, r);
+        net.Tick(31002, o, tev);
+        std::snprintf(m, sizeof(m), "① 접속 시도 — 게임에 물음 %d · 답 전 JOIN_OK %d · 허락 뒤 %d · 31초 뒤 걷힘 %d(셈 %llu) · 물은 수 %llu",
+                      (int)asked, okBefore, ops(r, kOk), (int)(net.SessionIdOf(a) == nox::kNoSession), net.unannouncedSwept(),
+                      net.joinRequested());
+        Check(asked && okBefore == 0 && ops(r, kOk) == 1 && net.SessionIdOf(a) == nox::kNoSession &&
+              net.unannouncedSwept() == 1 && net.joinRequested() == 1, m);
+    }
+    {
+        const std::string b = "10.10.9.22:10922";
+        nox::CUdpServer net;
+        std::vector<nox::OutPacket> o, r; std::vector<Ev> ev;
+        net.OnDatagram(b, tryJoin.data(), tryJoin.size(), o, ev);
+        net.RespondJoin(net.SessionIdOf(b), false, { kFail }, r);
+        std::snprintf(m, sizeof(m), "② 거절 — 거절 메시지 %d · JOIN_OK %d · 거절 셈 %llu", ops(r, kFail), ops(r, kOk), net.joinRejected());
+        Check(ops(r, kFail) == 1 && ops(r, kOk) == 0 && net.joinRejected() == 1, m);
+    }
+    {
+        const std::string c = "10.10.9.23:10923";
+        nox::CUdpServer net;
+        std::vector<nox::OutPacket> o, r; std::vector<Ev> ev, tev;
+        net.Tick(1000, o, tev);
+        net.OnDatagram(c, tryJoin.data(), tryJoin.size(), o, ev);
+        const int64_t sc = net.SessionIdOf(c);
+        net.Tick(31002, o, tev);                                     // 답하기 전에 걷혔다
+        net.RespondJoin(sc, true, {}, r);
+        std::snprintf(m, sizeof(m), "③ 걷힌 뒤 답 — 나간 조각 %zu · 셈 %llu", r.size(), net.joinRespondNoSession());
+        Check(r.empty() && net.joinRespondNoSession() == 1, m);
+    }
+    {
+        const std::string d = "10.10.9.24:10924";
+        nox::CUdpServer net;
+        net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> ev;
+        net.OnDatagram(d, conn, sizeof(conn), o, ev);                // 접속 — 키를 받았다
+        ev.clear();
+        net.OnDatagram(d, tryJoin.data(), tryJoin.size(), o, ev);
+        int asked = 0;
+        for (const auto& e : ev) if (e.type == Ev::Type::JOIN_REQUESTED) ++asked;
+        std::snprintf(m, sizeof(m), "④ 붙은 뒤 접속 시도 — 게임에 물음 %d · 물은 수 %llu", asked, net.joinRequested());
+        Check(asked == 0 && net.joinRequested() == 0, m);
+    }
+    {
+        const std::string e = "10.10.9.25:10925";
+        nox::Server srv;
+        std::vector<nox::OutPacket> o; srv.OnPacket(e, tryJoin.data(), tryJoin.size(), o);
+        std::snprintf(m, sizeof(m), "⑤ 게임까지 — JOIN_OK %d · 게임 사람 %zu · 물은 수 %llu",
+                      ops(o, kOk), srv.SessionCount(), srv.Network().joinRequested());
+        Check(ops(o, kOk) == 1 && srv.SessionCount() == 0 && srv.Network().joinRequested() == 1, m);
+    }
+    std::printf("  10-09 조각 5c — 접속 시도는 게임에 물어 답함(JOIN_REQUESTED → RespondJoin) · 허락·거절 · 걷힌 뒤 답 · 붙은 뒤엔 안 물음 · 사람 자리 안 만듦\n");
+}
+
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
 //   원본 `send_reliable.go`(2초 뒤 · 1초마다 살핌) · 정품 녹음 `CAP_GEN3`(확인 못 받은 접속 수락을 약 2.1초마다 다시 보냄).
 //   클라 확인 = 비신뢰 조각 머리 순번(「다음에 받을 순번」) — 그보다 앞은 지우고, 그 순번이 있으면 바로 다시 보낸다.
@@ -29531,6 +29615,7 @@ int main() {
     TestPreConnectSweep();
     TestSessionTimeout();
     TestTimerHeap();
+    TestJoinBoundary();
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
