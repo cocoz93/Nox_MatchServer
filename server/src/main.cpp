@@ -35,6 +35,7 @@
 #include "nox/ModeRules.h"
 #include "nox/Server.h"
 #include "nox/NetworkThread.h"
+#include "nox/RoomManager.h"
 #include "nox/Clock.h"
 #include "nox/MapFile.h"
 #include "nox/ThingDb.h"
@@ -692,7 +693,10 @@ int main(int argc, char** argv) {
     //   (`Docs/LAYERS_DESIGN.md` 「네트워크 스레드」). 통신 층 설정과 봇 세션 번호는 스레드를 띄우기 전에 한다.
     //   (5d-1b 까지는 한 스레드 조립 `CSyncHost` 였다 — 시험 · 덤프 재생은 그대로 그것을 쓴다)
     nox::CNetworkThread net;
-    nox::Server srv;
+    // ★ 10-09 플랜 B 작업 6a — 게임 스레드는 방 관리자(`CRoomManager`)를 돌린다. 지금은 방 하나(방 0)라 동작은 그대로이고,
+    //   `srv` 는 방 0 의 게임이다(세계 차리기 · 진단 줄). 이벤트 · 틱 · 요청 · 다음 틱 시각은 방 관리자를 거친다
+    nox::CRoomManager rooms;
+    nox::Server& srv = rooms.Game();
 
     // ★★ **`--standalone` 은 맵이 있어야 성립한다.** 접속 묶음에 맵 이름과 CRC 를
     //   싣기 때문이다(`SetStandalone`). 맵이 없으면 `standalone_` 이 안 켜지고,
@@ -855,7 +859,7 @@ int main(int argc, char** argv) {
             for (const nox::NetworkEvent& ev : netEvents) {
                 const uint32_t lat = nowEv - ev.queuedMs;
                 ++evCount; evLatSum += lat; if (lat > evLatMax) evLatMax = lat;
-                srv.OnNetworkEvent(ev);
+                rooms.OnNetworkEvent(ev);
             }
             netEvents.clear();
             // ★★ **클라가 처음 보낸 오프코드를 그때그때 알린다** — 게임 오프코드 쪽(옛 받은 조각마다 찍던 줄 · ⚠ `--quiet` 여도 찍는다)
@@ -964,9 +968,9 @@ int main(int argc, char** argv) {
         }
 
         // 틱 앞 — 받은 조각에 대한 답 · 판 차리기가 쌓은 요청을 먼저 넘긴다
-        srv.SwapOutNetworkRequests(netRequests);
+        rooms.SwapOutNetworkRequests(netRequests);
         net.PushRequests(netRequests);
-        const int ticks = srv.BeginTick(nox::NowMs());   // ★ 10-09 자가검증 ② — 옛 `GetTickCount`(15.6ms 단위) 대신 `Clock.h`
+        const int ticks = rooms.BeginTick(nox::NowMs());   // ★ 10-09 자가검증 ② — 옛 `GetTickCount`(15.6ms 단위) 대신 `Clock.h`
         if (opt.debugCrashAfter > 0 && srv.frame() >= static_cast<uint32_t>(opt.debugCrashAfter)) {
             std::printf("[진단스위치] --debug-crash — 프레임 %u 에서 일부러 죽는다\n", srv.frame());
             std::fflush(stdout);
@@ -982,12 +986,12 @@ int main(int argc, char** argv) {
                 tickGapSum += gap; ++tickGaps;
             }
             prevTickStart = tickStart;
-            srv.RunTick(ticks);
+            rooms.RunTick();
             const double tickMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tickStart).count();
             tickMsSum += tickMs; ++tickRuns; if (tickMs > tickMsMax) tickMsMax = tickMs;
             // 그 틱의 통신 요청을 한 묶음으로 넘긴다. `made` = 그 틱의 보내기 요청 수(옛 「나간 조각 수」 —
             //   다시 보내기는 이제 네트워크 스레드 몫이라 빠진다). 초당 줄은 전처럼 이것이 0 이 아닐 때만 찍는다
-            srv.SwapOutNetworkRequests(netRequests);
+            rooms.SwapOutNetworkRequests(netRequests);
             size_t made = 0;
             for (const nox::NetworkRequest& r : netRequests) if (r.type == nox::NetworkRequest::Type::SEND_MSG) ++made;
             net.PushRequests(netRequests);
@@ -1468,7 +1472,7 @@ int main(int argc, char** argv) {
         // ★ 10-09 플랜 A 5d 자가검증 ② — 기다림. 옛 `Sleep(1)`(5d-2b — 실제로는 약 15.5ms 잠)은 받은 것을 평균 8ms 늦게 처리했고
         //   틱 간격이 16~48ms로 흔들렸다(10-09 실측). 마감이 이미 지났으면 기다리지 않고 바로 다음 바퀴(밀린 틱을 몰아서 돈다)
         uint32_t tickDue = 0;
-        if (srv.NextTickDue(tickDue)) {
+        if (rooms.NextTickDue(tickDue)) {
             const int32_t left = static_cast<int32_t>(tickDue - nox::NowMs());
             if (left > 0) {
                 LARGE_INTEGER rel;
@@ -1485,7 +1489,7 @@ int main(int argc, char** argv) {
     //   키를 준 사람마다 `SERVER_CLOSE` 를 보내고 멈춘다 → 끝(종료 코드 0). 지금 게임에는 닫을 때 저장할 것이 없다.
     std::printf("[종료] 닫기 신호 — 쌓인 요청을 보내고 사람마다 SERVER_CLOSE 를 보낸 뒤 네트워크 스레드를 멈춘다\n");
     std::fflush(stdout);
-    srv.SwapOutNetworkRequests(netRequests);
+    rooms.SwapOutNetworkRequests(netRequests);
     net.PushRequests(netRequests);
     net.Stop(/*closeSessions=*/true);
     {

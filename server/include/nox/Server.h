@@ -4082,7 +4082,7 @@ private:
     // ★ 10-09 조각 5d — 통신 요청을 쌓는다. 이름은 그것을 처리하는 `CUdpServer` 의 같은 함수에 맞췄다
     void RequestSendMsg(int64_t sessionId, bool reliable, uint8_t stream, const uint8_t* msg, size_t n);
     void RequestDisconnectSession(int64_t sessionId);
-    void RespondJoin(int64_t sessionId, bool accept, const std::vector<uint8_t>& rejectMsg);
+    // (접속 시도 답 `RespondJoin` 은 10-09 플랜 B 작업 6a 에서 방 관리자 `CRoomManager` 로 옮겼다)
     void RequestSetSessionTimeout(int64_t sessionId, uint32_t timeoutMs);
     // ★ 10-08 조각 4 — 세션 번호의 주소 글자(기록용). 모르는 번호면 빈 글자.
     const char* AddrText(int64_t sessionId) const;
@@ -5133,8 +5133,6 @@ private:
 
     // ★ 10-08 조각 3 — 통신 층이 넘긴 게임 메시지 조각 하나(머리를 뗀 평문)를 읽는다. 옛 `OnPacket` 의 뒷부분이다.
     size_t OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen);
-    // ★ 10-09 조각 5c — 접속 시도(`TRY_JOIN`)를 받아 줄지 정해 통신 층에 답한다(`RespondJoin`). 사람 자리는 만들지 않는다.
-    void OnJoinRequested(const NetworkEvent& ev);
 
     // 몸통 하나를 내보낸다 — 머리 2바이트·XOR 은 통신 층(`CUdpServer::RequestSendMsg`)이 붙인다(10-08 조각 3 · 10-09 조각 5d 부터 요청 목록을 거쳐).
     // ★ 09-30 — 게임 안 사람에게 가는 비신뢰·스트림 0·게임 메시지(첫 번호 ≥ 0x20)는 곧바로 안 만들고 그 사람 묶음에 담는다

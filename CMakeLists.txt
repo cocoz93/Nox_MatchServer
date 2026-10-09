@@ -18,6 +18,7 @@ add_library(nox_proto STATIC
   server/src/UdpServer.cpp
   server/src/SyncHost.cpp
   server/src/NetworkThread.cpp
+  server/src/RoomManager.cpp
   server/src/DumpSniff.cpp
   server/src/UpdateStream.cpp
   server/src/core/GameBalance.cpp

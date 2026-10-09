@@ -5,6 +5,8 @@
 //   게임이 쌓은 요청(`NetworkRequest`)은 통신 층이 와이어 조각으로 바꾼다. 이 둘을 한 스레드에서 차례대로 잇는 것이 이 조립이다.
 //   시험(`proto_test`) · 덤프 재생(`nox_replay` · `nox_verify`) · `--selftest` 가 쓰고, 조각 5d-2 전까지는 `main` 도 쓴다.
 //   차례는 옛 `Server::OnPacket` · `Server::Tick` 그대로다(옛 게임이 그 자리에서 통신 층을 부르던 차례).
+// ★ 10-09 플랜 B 작업 6a — 게임 자리에 방 관리자(`CRoomManager`)가 선다. 지금은 방 하나(방 0)라 동작은 그대로이고,
+//   `Game()` · `host->X` 는 방 0 의 게임이다.
 #pragma once
 
 #include <cstddef>
@@ -12,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "nox/RoomManager.h"
 #include "nox/Server.h"
 #include "nox/UdpServer.h"
 
@@ -21,11 +24,12 @@ class CSyncHost {
 public:
     CUdpServer& Network() { return _network; }
     const CUdpServer& Network() const { return _network; }
-    Server& Game() { return _game; }
-    const Server& Game() const { return _game; }
-    // 시험 편의 — `host->X` 는 게임의 `X`
-    Server* operator->() { return &_game; }
-    const Server* operator->() const { return &_game; }
+    CRoomManager& Rooms() { return _rooms; }
+    Server& Game() { return _rooms.Game(); }
+    const Server& Game() const { return _rooms.Game(); }
+    // 시험 편의 — `host->X` 는 (방 0 의) 게임의 `X`
+    Server* operator->() { return &_rooms.Game(); }
+    const Server* operator->() const { return &_rooms.Game(); }
 
     // 받은 데이터그램 하나 — 통신 층 → 일 → 게임 → 요청 → 통신 층. 나간 조각은 `out` 에 붙인다.
     //   돌려주는 값 = 이 조각에서 읽은 메시지 수(통신 층이 읽은 접속 제어 + 게임이 읽은 게임 메시지).
@@ -44,7 +48,7 @@ public:
 
 private:
     CUdpServer _network;
-    Server _game;
+    CRoomManager _rooms;
     std::vector<NetworkRequest> _requests;   // `TakeOut` 이 쓰는 그릇(다시 씀)
 };
 

@@ -24602,6 +24602,77 @@ void TestNetworkThread() {
     std::printf("  10-09 조각 5d-2b — 네트워크 스레드: 소켓에 깨어 받고 · 요청에 깨어 보내고 · 타이머 마감에 깨어 다시 보내고 · 멈춤\n");
 }
 
+// ── 10-09 플랜 B 작업 6a — 방 관리자(`CRoomManager`) 틀 — 방 하나 · 열린 방식이라 동작은 그대로 ─────────
+//   ① 접속 시도는 방 관리자가 답한다(허락 하나) · 방의 게임에는 사람 자리가 안 생긴다
+//   ② 요청은 처리한 차례대로 — 방이 이벤트로 낸 요청(접속 수락 → 판에 든 사람의 시간 초과 한도) 뒤에 그다음 접속 시도의 답
+//      (게임의 보내기는 틱 끝에 한 데이터그램으로 모아 내므로 이벤트 처리 중에는 안 생긴다 — 09-30 「한 틱 한 데이터그램」)
+//   ③ 같은 차례 — 방이 틱으로 낸 보내기 뒤에 접속 시도의 답 ④ 다음 틱 시각 = 방의 것(시계를 돌리기 전엔 없음) · 틱 수
+void TestRoomManager() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    char m[240];
+    auto joinEv = [](int64_t sid) { Ev e; e.type = Ev::Type::JOIN_REQUESTED; e.sessionId = sid; e.body.assign(97, 0); return e; };
+    // 요청 목록에서 방이 낸 요청(접속 답 말고 전부) 수 · 마지막 자리 · 접속 답 자리(없으면 목록 크기)
+    auto order = [](const std::vector<Rq>& rq, size_t& fromRoom, size_t& lastRoom, size_t& joinAt) {
+        fromRoom = 0; lastRoom = 0; joinAt = rq.size();
+        for (size_t i = 0; i < rq.size(); ++i) {
+            if (rq[i].type == Rq::Type::RESPOND_JOIN) joinAt = i;
+            else { ++fromRoom; lastRoom = i; }
+        }
+    };
+    {
+        nox::CRoomManager rooms;
+        rooms.OnNetworkEvent(joinEv(5));
+        std::vector<Rq> rq; rooms.SwapOutNetworkRequests(rq);
+        const bool one = rq.size() == 1 && rq[0].type == Rq::Type::RESPOND_JOIN && rq[0].sessionId == 5 &&
+                         rq[0].accept && rq[0].body.empty();
+        std::snprintf(m, sizeof(m), "① 접속 시도 — 요청 %zu개(접속 답 허락 %d) · 방 0 세션 %zu · 방 수 %zu",
+                      rq.size(), (int)one, rooms.Game().SessionCount(), rooms.RoomCount());
+        Check(one && rooms.Game().SessionCount() == 0 && rooms.RoomCount() == 1, m);
+    }
+    {
+        nox::CRoomManager rooms;
+        Ev c; c.type = Ev::Type::CONNECTED; c.sessionId = 11; c.addr = "10.10.9.61:10961";
+        rooms.OnNetworkEvent(c);
+        Ev a; a.type = Ev::Type::RECEIVED; a.sessionId = 11; a.addr = c.addr;
+        a.body.assign(154, 0); a.body[0] = static_cast<uint8_t>(nox::Op::CLIENT_ACCEPT);   // 실물 접속 수락과 같은 길이(머리 2 + 154)
+        rooms.OnNetworkEvent(a);
+        rooms.OnNetworkEvent(joinEv(12));
+        std::vector<Rq> rq; rooms.SwapOutNetworkRequests(rq);
+        size_t fromRoom, lastRoom, joinAt; order(rq, fromRoom, lastRoom, joinAt);
+        std::snprintf(m, sizeof(m), "② 이벤트 차례 — 요청 %zu개 · 방이 낸 것 %zu(마지막 %zu번째) · 접속 답 %zu번째",
+                      rq.size(), fromRoom, lastRoom, joinAt);
+        Check(fromRoom > 0 && joinAt == rq.size() - 1 && lastRoom < joinAt, m);
+    }
+    {
+        nox::CRoomManager rooms;
+        uint32_t due0 = 0;
+        const bool before = rooms.NextTickDue(due0);
+        const int t0 = rooms.BeginTick(1000);
+        uint32_t due = 0, gameDue = 0;
+        const bool after = rooms.NextTickDue(due);
+        rooms.Game().NextTickDue(gameDue);
+        rooms.Game().DebugEnterGame(21, "10.10.9.62:10962", 0x2a);
+        std::vector<Rq> drop; rooms.SwapOutNetworkRequests(drop);   // 세우며 쌓인 것은 버린다
+        const int t1 = rooms.BeginTick(1034);
+        rooms.RunTick();
+        rooms.OnNetworkEvent(joinEv(22));
+        std::vector<Rq> rq; rooms.SwapOutNetworkRequests(rq);
+        size_t fromRoom, lastRoom, joinAt; order(rq, fromRoom, lastRoom, joinAt);
+        size_t sends = 0;
+        for (const Rq& q : rq) if (q.type == Rq::Type::SEND_MSG) ++sends;
+        const int t2 = rooms.BeginTick(1100);   // 1067 · 1100 — 두 틱
+        rooms.RunTick();
+        std::snprintf(m, sizeof(m), "③ 틱 차례 — 방이 낸 것 %zu(보내기 %zu · 마지막 %zu번째) · 접속 답 %zu번째 / 요청 %zu개",
+                      fromRoom, sends, lastRoom, joinAt, rq.size());
+        Check(sends > 0 && joinAt == rq.size() - 1 && lastRoom < joinAt, m);
+        std::snprintf(m, sizeof(m), "④ 다음 틱 시각 — 시계 전 %d · 뒤 %d(%u · 방 %u) · 틱 수 %d·%d·%d",
+                      (int)before, (int)after, due, gameDue, t0, t1, t2);
+        Check(!before && after && due == 1033 && due == gameDue && t0 == 0 && t1 == 1 && t2 == 2, m);
+    }
+    std::printf("  10-09 플랜 B 작업 6a — 방 관리자 틀: 접속 시도는 방 관리자가 답함 · 요청은 처리한 차례대로 · 다음 틱 시각 · 틱 수\n");
+}
+
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
 //   원본 `send_reliable.go`(2초 뒤 · 1초마다 살핌) · 정품 녹음 `CAP_GEN3`(확인 못 받은 접속 수락을 약 2.1초마다 다시 보냄).
 //   클라 확인 = 비신뢰 조각 머리 순번(「다음에 받을 순번」) — 그보다 앞은 지우고, 그 순번이 있으면 바로 다시 보낸다.
@@ -29770,6 +29841,7 @@ int main() {
     TestSyncHostOrder();
     TestUdpStats();
     TestNetworkThread();
+    TestRoomManager();
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
