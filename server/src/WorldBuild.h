@@ -11,7 +11,7 @@
 
 #include "nox/Messages.h"
 
-namespace nox { class Server; }
+namespace nox { class Server; class CUdpServer; }
 
 struct BotWant { int x = -1, y = -1; std::string cls = "warrior"; };
 
@@ -132,4 +132,4 @@ struct WorldExtras {
 
 // 실행 인자대로 `srv` 에 세계를 차린다. 0 이면 다 됐고, 아니면 그 값으로 끝낸다(`main` 의 종료 코드).
 //   `tmpl`(서버 찾기 답의 틀)은 여기서 맵 이름을 채워 서버에 넘긴다.
-int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& tmpl, WorldExtras& out);
+int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt, nox::MsgServerInfo& tmpl, WorldExtras& out);   // ★ 10-09 조각 5d — 통신 층 설정·봇 번호는 `net`

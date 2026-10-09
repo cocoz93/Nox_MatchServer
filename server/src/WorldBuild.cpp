@@ -73,7 +73,7 @@ std::string DefaultDumpPath() {
 
 }  // namespace
 
-int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& tmpl, WorldExtras& out) {
+int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt, nox::MsgServerInfo& tmpl, WorldExtras& out) {
     // 실행 인자 — 옮긴 몸통이 쓰는 것만 같은 이름으로 받는다.
     const auto& mirror = opt.mirror;
     const auto& mirrorLimit = opt.mirrorLimit;
@@ -1957,7 +1957,7 @@ int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& t
             if (bots[bi].cls == "wizard")        bc = nox::CharClass::Wizard;
             else if (bots[bi].cls == "conjurer") bc = nox::CharClass::Conjurer;
             const std::string bot = nox::BotAddr(bi);
-            const int64_t botSid = srv.DebugEnterGame(bot, plan.netCode, /*observer=*/false, bc);   // ★ 10-08 조각 4 — 세션 번호
+            const int64_t botSid = srv.DebugEnterGame(net.OpenSession(bot), bot, plan.netCode, /*observer=*/false, bc);   // ★ 10-08 조각 4 — 세션 번호
             // ⚠ 자리는 **둘 다** 맞춰야 한다 — `DebugMoveTo` 는 `x`·`y` 만, `DebugSetPos` 는 `posX`·`posY` 만 옮긴다.
             //   덫 겨눔·소리 거리는 `posX`·`posY` 로 재고, 걸음·갱신은 `x`·`y` 를 본다(09-15 에 한 번 데었다)
             srv.DebugMoveTo(botSid, bx, by);
@@ -2039,7 +2039,7 @@ int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& t
             std::printf("소개 원본을 만들지 못했다\n");
             return 1;
         }
-        srv.Network().SetInfoTemplate(info, w.written());
+        net.SetInfoTemplate(info, w.written());
     }
 
     // ★★ 접속 뒤에 내려줄 것 — 접속 묶음(216바이트)과 맵 지정(41바이트).
@@ -2075,7 +2075,7 @@ int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& t
                     uint8_t info2[256] = {};
                     nox::Writer w2(info2, sizeof(info2));
                     if (tmpl.Encode(w2) && w2.ok()) {
-                        srv.Network().SetInfoTemplate(info2, w2.written());
+                        net.SetInfoTemplate(info2, w2.written());
                         std::printf("소개 맵 이름을 서두에 맞춤: %s\n", tmpl.mapName.c_str());
                     }
                 }
@@ -2118,8 +2118,8 @@ int BuildWorld(nox::Server& srv, const ServerOptions& opt, nox::MsgServerInfo& t
         srv.SetPatchSnapshot(!rawSnapshot);
         srv.SetSendUpdates(!noUpdate);
         srv.SetNotifyNewGear(!noNewGear);
-        srv.Network().SetAckRecvSeq(ackSeq);      // B-1b — 신뢰 순번 되받기(기본 끔 · `--ack-seq` 로 켬)
-        srv.Network().SetAckAnyStream(ackAnyStream);
+        net.SetAckRecvSeq(ackSeq);      // B-1b — 신뢰 순번 되받기(기본 끔 · `--ack-seq` 로 켬)
+        net.SetAckAnyStream(ackAnyStream);
         srv.SetNoSpawnInvuln(noSpawnInvuln);   // 화면 확인 우회 — 부활 무적 안 걸기
         srv.SetForceHudOn(!hudOff);
         if (spawnSpread > 0) srv.SetSpawnSpread(spawnSpread);

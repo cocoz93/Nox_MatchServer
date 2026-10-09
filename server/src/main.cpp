@@ -32,6 +32,7 @@
 #include "nox/Recording.h"
 #include "nox/ModeRules.h"
 #include "nox/Server.h"
+#include "nox/SyncHost.h"
 #include "nox/MapFile.h"
 #include "nox/ThingDb.h"
 #include "nox/SpellNames.h"
@@ -668,7 +669,9 @@ int main(int argc, char** argv) {
     //   같은 로직을 대조 장치(server/src/replay.cpp)가 덤프로 돌려 채점한다.
     //
     // 서버 찾기에 답할 원본은 녹음을 쓰되, 이름만 인자로 바꿔 넣는다.
-    nox::Server srv;
+    // ★ 10-09 조각 5d — 통신 층과 게임을 한 스레드에서 잇는 조립. 게임은 통신 층을 갖지 않는다(5d-2 에서 스레드 둘로)
+    nox::CSyncHost host;
+    nox::Server& srv = host.Game();
 
     // ★★ **`--standalone` 은 맵이 있어야 성립한다.** 접속 묶음에 맵 이름과 CRC 를
     //   싣기 때문이다(`SetStandalone`). 맵이 없으면 `standalone_` 이 안 켜지고,
@@ -763,7 +766,7 @@ int main(int argc, char** argv) {
 
     // ★ 10-08 — 세계 차리기(맵·설정·접속 묶음)는 `BuildWorld`(`WorldBuild.cpp`)로 옮겼다.
     WorldExtras extras;
-    if (const int rc = BuildWorld(srv, opt, tmpl, extras)) return rc;
+    if (const int rc = BuildWorld(srv, host.Network(), opt, tmpl, extras)) return rc;
 
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -843,7 +846,7 @@ int main(int argc, char** argv) {
                 ++nRecv;
                 const std::string who = keyOf(from);
                 addrOf[who] = from;
-                const size_t got = srv.OnPacket(who, in, static_cast<size_t>(n), outs);
+                const size_t got = host.OnPacket(who, in, static_cast<size_t>(n), outs);
                 const size_t made = outs.size();
                 flush();
 
@@ -858,7 +861,7 @@ int main(int argc, char** argv) {
                 {
                     static std::map<uint8_t, bool> told;
                     // ★ 10-08 조각 3 — 접속 제어(0x20 미만) 오프코드는 통신 층이 센다. 둘 다 본다.
-                    for (const auto* seenMap : { &srv.seen(), &srv.Network().seen() })
+                    for (const auto* seenMap : { &srv.seen(), &host.Network().seen() })
                     for (const auto& kv : *seenMap) {
                         if (told.count(kv.first)) continue;
                         told[kv.first] = true;
@@ -885,7 +888,7 @@ int main(int argc, char** argv) {
                         for (uint8_t o : srv.LastFragOps())
                             std::printf(" %02x(%s)", o, nox::OpName(static_cast<nox::Op>(o)));
                         std::printf("  · 열쇠 %s 0x%02x\n",
-                                    srv.Network().IsKeyed(who) ? "있음" : "없음", srv.Network().KeyOf(who));
+                                    host.Network().IsKeyed(who) ? "있음" : "없음", host.Network().KeyOf(who));
                     }
                     std::fflush(stdout);
                 }
@@ -986,7 +989,7 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
         }
 
-        const int ticks = srv.Tick(GetTickCount(), outs);
+        const int ticks = host.Tick(GetTickCount(), outs);
         if (opt.debugCrashAfter > 0 && srv.frame() >= static_cast<uint32_t>(opt.debugCrashAfter)) {
             std::printf("[진단스위치] --debug-crash — 프레임 %u 에서 일부러 죽는다\n", srv.frame());
             std::fflush(stdout);
@@ -1102,12 +1105,12 @@ int main(int argc, char** argv) {
                             srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
                             srv.moves(), srv.melees(), srv.code6Seen(),
                             nSpell, srv.spellsNoMana(), srv.missiles(), srv.missilesMade(), srv.missilesGone(), srv.missileEntriesSent(), srv.hurts(), srv.aliasHeard(), modeInfo,
-                            srv.acceptHeard(), srv.useMapSent(), srv.readyHeard(), srv.Network().reliableHeard(),
-                            srv.Network().ackSeqApplied(), srv.Network().ackSeqChanged(),
-                            static_cast<unsigned>(srv.Network().ackLastSent()), srv.spawnInvulnApplied(),
-                            srv.Network().recvReliableOn(0), srv.Network().recvReliableOn(1), srv.Network().recvReliableOn(2),
-                            srv.Network().sendReliableOn(0), srv.Network().sendReliableOn(1), srv.Network().sendReliableOn(2),
-                            srv.Network().sendPlainOn(0), srv.Network().sendPlainOn(1), srv.Network().sendPlainOn(2),
+                            srv.acceptHeard(), srv.useMapSent(), srv.readyHeard(), host.Network().reliableHeard(),
+                            host.Network().ackSeqApplied(), host.Network().ackSeqChanged(),
+                            static_cast<unsigned>(host.Network().ackLastSent()), srv.spawnInvulnApplied(),
+                            host.Network().recvReliableOn(0), host.Network().recvReliableOn(1), host.Network().recvReliableOn(2),
+                            host.Network().sendReliableOn(0), host.Network().sendReliableOn(1), host.Network().sendReliableOn(2),
+                            host.Network().sendPlainOn(0), host.Network().sendPlainOn(1), host.Network().sendPlainOn(2),
                             srv.castRejDead(), srv.castRejRange(), srv.castRejUnknown(),
                             srv.castRejBusy(), srv.castRejClass(), srv.castRejCant(), srv.castAccepted(),
                             srv.spellPlayerCalls(), srv.spellLeafZero(), srv.spellIndZero(), srv.spellNotLearned(),
@@ -1166,28 +1169,28 @@ int main(int argc, char** argv) {
                     std::string sl = "[순번·스트림] 받은신뢰";
                     char sb[48];
                     for (uint8_t st = 0; st < 8; ++st) {
-                        if (!srv.Network().recvReliableOn(st)) continue;
-                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.Network().recvReliableOn(st));
+                        if (!host.Network().recvReliableOn(st)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, host.Network().recvReliableOn(st));
                         sl += sb;
                     }
                     sl += " · 보낸신뢰";
                     for (uint8_t st = 0; st < 8; ++st) {
-                        if (!srv.Network().sendReliableOn(st)) continue;
-                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.Network().sendReliableOn(st));
+                        if (!host.Network().sendReliableOn(st)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, host.Network().sendReliableOn(st));
                         sl += sb;
                     }
                     sl += " · 보낸비신뢰";
                     for (uint8_t st = 0; st < 8; ++st) {
-                        if (!srv.Network().sendPlainOn(st)) continue;
-                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, srv.Network().sendPlainOn(st));
+                        if (!host.Network().sendPlainOn(st)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)st, host.Network().sendPlainOn(st));
                         sl += sb;
                     }
                     // ★ 되받기로 **어떤 값**을 실었나. 값이 한두 개뿐이면 `recvSeq` 가 안 올라가는 것이다
                     sl += " · 되받기값";
                     bool any = false;
                     for (uint8_t v = 0; v < 32; ++v) {
-                        if (!srv.Network().ackValueCount(v)) continue;
-                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)v, srv.Network().ackValueCount(v));
+                        if (!host.Network().ackValueCount(v)) continue;
+                        std::snprintf(sb, sizeof(sb), " %u:%llu", (unsigned)v, host.Network().ackValueCount(v));
                         sl += sb;
                         any = true;
                     }
@@ -1199,15 +1202,15 @@ int main(int argc, char** argv) {
                 // ★ 10-09 조각 5b — 「타이머」는 힙에 든 항목 수(꺼낼 때 버릴 항목 포함). 세션 수 + 확인 기다리는 조각 수 근처에서
                 //   머물러야 한다 — 버릴 항목은 제 마감(2초 · 한도 시간)에 빠진다. 계속 불어나면 버릴 항목이 안 빠지는 것이다
                 std::printf("[다시보냄] 다시 보냄 %llu · 확인으로 지움 %llu · 바로 다시 보낼 표시 %llu · 한도 넘쳐 버림 %llu · 대기 %zu · 타이머 %zu\n",
-                            srv.Network().reliableResent(), srv.Network().reliableAcked(),
-                            srv.Network().reliableRetryMarked(), srv.Network().reliableQueueDropped(),
-                            srv.Network().reliablePending(), srv.Network().TimerCount());
+                            host.Network().reliableResent(), host.Network().reliableAcked(),
+                            host.Network().reliableRetryMarked(), host.Network().reliableQueueDropped(),
+                            host.Network().reliablePending(), host.Network().TimerCount());
                 // ★ 10-08 조각 4 — 지운 세션 번호로 보내려다 버린 수. 0 이 아니면 게임이 지운 사람에게 아직 보내고 있다
                 std::printf("[세션] 없는 번호로 보내려다 버림 %llu · 접속 전 상대 걷어냄 %llu · 시간 초과로 넘김 %llu · 입장 요청 %llu · 거절 %llu · 답할 때 없음 %llu\n",
-                            srv.Network().sendNoSession(), srv.Network().unannouncedSwept(),
-                            srv.Network().sessionTimedOut(),    // ★ 10-09 조각 5a — 통신 층이 시간 초과로 게임에 넘긴 세션 수
-                            srv.Network().joinRequested(), srv.Network().joinRejected(),
-                            srv.Network().joinRespondNoSession());   // ★ 10-09 조각 5c — 접속 시도를 게임에 물은 수 · 거절 · 답할 때 세션이 없던 수
+                            host.Network().sendNoSession(), host.Network().unannouncedSwept(),
+                            host.Network().sessionTimedOut(),    // ★ 10-09 조각 5a — 통신 층이 시간 초과로 게임에 넘긴 세션 수
+                            host.Network().joinRequested(), host.Network().joinRejected(),
+                            host.Network().joinRespondNoSession());   // ★ 10-09 조각 5c — 접속 시도를 게임에 물은 수 · 거절 · 답할 때 세션이 없던 수
 
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());
@@ -1306,7 +1309,7 @@ int main(int argc, char** argv) {
                 // ★ **성장 한 줄** — 진단 스위치(`--debug-xp`·`--debug-give-spell`)가 먹었는지
                 //   보는 유일한 자리다. 없을 때는 판 G 가 통째로 판정 불능이었다(조각 C 13·14번).
                 if (!opt.bots.empty()) {
-                    const int64_t b0 = srv.Network().SessionIdOf("bot0");   // ★ 10-08 조각 4 — 세션 번호
+                    const int64_t b0 = host.Network().SessionIdOf("bot0");   // ★ 10-08 조각 4 — 세션 번호
                     std::printf("[성장] 레벨 %d · 경험치 %.0f",
                                 srv.DebugLevel(b0), (double)srv.DebugExperience(b0));
                     if (opt.debugSpellId > 0)
@@ -1408,9 +1411,9 @@ int main(int argc, char** argv) {
                             srv.wallOpenSent(), srv.wallCloseSent(),
                             srv.spellsOnSelf(), srv.spellEffectDeferred());
                 // ★ 10-08 조각 3 — 접속 제어 조각의 버림은 통신 층이 센다. 둘을 합쳐 찍는다.
-                if (!srv.stoppedByOp().empty() || !srv.Network().stoppedByOp().empty()) {
-                    std::printf("[버림] 조각 %llu개 —", srv.stopped() + srv.Network().stopped());
-                    for (const auto* byOp : { &srv.stoppedByOp(), &srv.Network().stoppedByOp() })
+                if (!srv.stoppedByOp().empty() || !host.Network().stoppedByOp().empty()) {
+                    std::printf("[버림] 조각 %llu개 —", srv.stopped() + host.Network().stopped());
+                    for (const auto* byOp : { &srv.stoppedByOp(), &host.Network().stoppedByOp() })
                     for (const auto& kv : *byOp) {
                         std::printf(" %02x(%s)x%llu", kv.first,
                                     nox::OpName(static_cast<nox::Op>(kv.first)), kv.second);
