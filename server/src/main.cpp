@@ -35,6 +35,7 @@
 #include "nox/ModeRules.h"
 #include "nox/Server.h"
 #include "nox/NetworkThread.h"
+#include "nox/Clock.h"
 #include "nox/MapFile.h"
 #include "nox/ThingDb.h"
 #include "nox/SpellNames.h"
@@ -811,6 +812,12 @@ int main(int argc, char** argv) {
     unsigned long long evCount = 0, evLatSum = 0, tickRuns = 0;
     uint32_t evLatMax = 0;
     double tickMsSum = 0.0, tickMsMax = 0.0;
+    // ★ 10-09 플랜 A 5d 자가검증 ② — 틱 간격(앞 `RunTick` 시작 → 이번 시작). 목표 33ms — 루프가 깨는 때가 거칠면 여기서 흔들린다
+    std::chrono::steady_clock::time_point prevTickStart{};
+    double tickGapSum = 0.0, tickGapMin = 0.0, tickGapMax = 0.0;
+    unsigned long long tickGaps = 0;
+    // 게임 루프가 돈 바퀴 수 — 틱(30) + 이벤트로 깬 수 근처여야 한다. 기다림이 빠지면(헛돎) 수만 단위로 뛴다
+    unsigned long long loopTurns = 0;
 
     // ★ 10-01 R2 — 맵을 다 넣었으니 처음 상태를 담아 둔다(판 다시 열 때 되돌릴 사본 · `Server::CaptureMapInitial`)
     srv.CaptureMapInitial();
@@ -825,15 +832,26 @@ int main(int argc, char** argv) {
     wchar_t stopName[64];
     swprintf(stopName, 64, L"nox_server_stop_%lu", GetCurrentProcessId());
     HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, stopName);
+    // ★ 10-09 플랜 A 5d 자가검증 ② — 틱 마감 타이머. 정밀 타이머(윈도 10 1803~)라야 마감에 1ms 안으로 깬다 —
+    //   보통 타이머 · `Sleep` 은 윈도 기본 간격(약 15.6ms) 단위로 깬다(10-09 실측 — `Sleep(1)` 이 중앙 15.5ms를 잤다)
+    HANDLE tickTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!tickTimer) {
+        tickTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+        std::printf("[루프] 정밀 타이머를 못 만들어 보통 타이머로 기다린다 — 틱 간격이 약 15.6ms 단위로 흔들린다\n");
+        std::fflush(stdout);
+    }
 
     // ★ 10-09 조각 5d-2b — 게임 스레드. 쌓인 이벤트를 통째로 받아 처리하고(받은 조각 · 접속 · 닫기 · 접속 시도 · 시간 초과),
     //   틱을 돌리고, 그 사이 쌓인 통신 요청을 통째로 넘긴다. 옛 이 자리는 `select`(5ms) · `recvfrom` 으로 직접 받았다.
     //   받은 조각마다 찍던 `[받음]` · 열쇠 진단과 접속 제어 쪽 `[처음]` 은 네트워크 스레드가 찍는다.
+    //   ★ 10-09 플랜 A 5d 자가검증 ② — 한 바퀴 끝에 「이벤트가 들어옴」(`EventsReadyHandle`) · 「다음 틱 마감」(`tickTimer`) 중
+    //   먼저 오는 것을 기다린다. 닫기 신호는 늦어도 다음 틱(33ms)에 맨 위에서 본다.
     for (;;) {
         if (g_stopRequested.load() || WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;   // ★ 5d-2c — 닫기 신호
+        ++loopTurns;
         net.SwapOutNetworkEvents(netEvents);
         if (!netEvents.empty()) {
-            const uint32_t nowEv = static_cast<uint32_t>(GetTickCount64());
+            const uint32_t nowEv = nox::NowMs();   // 넣은 시각(`queuedMs`)과 같은 시계(`Clock.h`)
             for (const nox::NetworkEvent& ev : netEvents) {
                 const uint32_t lat = nowEv - ev.queuedMs;
                 ++evCount; evLatSum += lat; if (lat > evLatMax) evLatMax = lat;
@@ -948,7 +966,7 @@ int main(int argc, char** argv) {
         // 틱 앞 — 받은 조각에 대한 답 · 판 차리기가 쌓은 요청을 먼저 넘긴다
         srv.SwapOutNetworkRequests(netRequests);
         net.PushRequests(netRequests);
-        const int ticks = srv.BeginTick(GetTickCount());
+        const int ticks = srv.BeginTick(nox::NowMs());   // ★ 10-09 자가검증 ② — 옛 `GetTickCount`(15.6ms 단위) 대신 `Clock.h`
         if (opt.debugCrashAfter > 0 && srv.frame() >= static_cast<uint32_t>(opt.debugCrashAfter)) {
             std::printf("[진단스위치] --debug-crash — 프레임 %u 에서 일부러 죽는다\n", srv.frame());
             std::fflush(stdout);
@@ -957,6 +975,13 @@ int main(int argc, char** argv) {
         if (ticks > 0) {
             nTicks += static_cast<unsigned long long>(ticks);
             const auto tickStart = std::chrono::steady_clock::now();
+            if (prevTickStart != std::chrono::steady_clock::time_point{}) {
+                const double gap = std::chrono::duration<double, std::milli>(tickStart - prevTickStart).count();
+                if (tickGaps == 0 || gap < tickGapMin) tickGapMin = gap;
+                if (gap > tickGapMax) tickGapMax = gap;
+                tickGapSum += gap; ++tickGaps;
+            }
+            prevTickStart = tickStart;
             srv.RunTick(ticks);
             const double tickMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tickStart).count();
             tickMsSum += tickMs; ++tickRuns; if (tickMs > tickMsMax) tickMsMax = tickMs;
@@ -1193,13 +1218,16 @@ int main(int argc, char** argv) {
                 {
                     const nox::CNetworkThreadStats ts = net.LatestThreadStats();
                     std::printf("[스레드] 이벤트 넘김 지연 평균 %.1fms · 최대 %ums(%llu건) · 틱 시간 평균 %.2fms · 최대 %.2fms(%llu틱)"
+                                " · 틱 간격 최소 %.1fms · 평균 %.1fms · 최대 %.1fms(%llu) · 게임 루프 %llu바퀴"
                                 " · 네트워크 깨어남 %llu · 받음 %llu · 보냄 %llu · 한 번에 비운 최대 %llu · 받기 오류 %llu"
                                 " · 큐 버림(이벤트 %llu · 요청 %llu) · 큐 남음(이벤트 %zu · 요청 %zu)\n",
                                 evCount ? static_cast<double>(evLatSum) / static_cast<double>(evCount) : 0.0, evLatMax, evCount,
                                 tickRuns ? tickMsSum / static_cast<double>(tickRuns) : 0.0, tickMsMax, tickRuns,
+                                tickGapMin, tickGaps ? tickGapSum / static_cast<double>(tickGaps) : 0.0, tickGapMax, tickGaps, loopTurns,
                                 ts.wakes, ts.datagramsIn, ts.datagramsOut, ts.maxDatagramsPerWake, ts.recvErrors,
                                 ts.eventsDropped, ts.requestsDropped, ts.eventsQueued, ts.requestsQueued);
                     evCount = evLatSum = tickRuns = 0; evLatMax = 0; tickMsSum = tickMsMax = 0.0;
+                    tickGaps = 0; tickGapSum = tickGapMin = tickGapMax = 0.0; loopTurns = 0;
                 }
 
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
@@ -1437,7 +1465,21 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
             }
         }
-        Sleep(1);   // ★ 10-09 조각 5d-2b — 옛 `select`(5ms) 자리. 틱은 `GetTickCount` 로 세므로 늦게 깨면 틱을 몰아서 돈다(전과 같다)
+        // ★ 10-09 플랜 A 5d 자가검증 ② — 기다림. 옛 `Sleep(1)`(5d-2b — 실제로는 약 15.5ms 잠)은 받은 것을 평균 8ms 늦게 처리했고
+        //   틱 간격이 16~48ms로 흔들렸다(10-09 실측). 마감이 이미 지났으면 기다리지 않고 바로 다음 바퀴(밀린 틱을 몰아서 돈다)
+        uint32_t tickDue = 0;
+        if (srv.NextTickDue(tickDue)) {
+            const int32_t left = static_cast<int32_t>(tickDue - nox::NowMs());
+            if (left > 0) {
+                LARGE_INTEGER rel;
+                rel.QuadPart = -static_cast<LONGLONG>(left) * 10000;   // 100ns 단위 · 음수 = 지금부터
+                const HANDLE waits[2] = { static_cast<HANDLE>(net.EventsReadyHandle()), tickTimer };
+                if (tickTimer && SetWaitableTimer(tickTimer, &rel, 0, nullptr, nullptr, FALSE))
+                    WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                else
+                    WaitForSingleObject(waits[0], static_cast<DWORD>(left));   // 타이머가 없으면 이벤트만 시간 한도로(헛돌지 않게)
+            }
+        }
     }
     // ★ 10-09 조각 5d-2c — 정상 종료(`Docs/LAYERS_DESIGN.md` 「네트워크 스레드」) — 쌓인 요청을 넘기고 → 네트워크 스레드가 그것을 보낸 뒤
     //   키를 준 사람마다 `SERVER_CLOSE` 를 보내고 멈춘다 → 끝(종료 코드 0). 지금 게임에는 닫을 때 저장할 것이 없다.
@@ -1454,6 +1496,7 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
     }
     if (stopEvent) CloseHandle(stopEvent);
+    if (tickTimer) CloseHandle(tickTimer);
     SetEvent(g_shutdownDone);
     return 0;
 }

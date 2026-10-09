@@ -3658,6 +3658,13 @@ public:
     //   끼운다 — 옛 `Tick` 안의 차례 그대로다(`SyncHost.cpp`).
     int BeginTick(uint32_t nowMs);
     void RunTick(int ticks);
+    // ★ 10-09 플랜 A 5d 자가검증 ② — 다음 틱이 돌 시각(`BeginTick` 에 넘기는 시계로). 시계를 아직 안 돌렸으면 false.
+    //   게임 루프가 이 시각까지 기다린다(통신 층 `CUdpServer::NextTimerDue` 와 같은 꼴).
+    bool NextTickDue(uint32_t& due) const {
+        if (!tickStarted_) return false;
+        due = lastTickMs_ + tickMs_;
+        return true;
+    }
 
     uint32_t frame() const { return frame_; }
     // ★ 게임에 들어와 있는 사람 수. **「서로 보임」이 안 될 때 여기부터 본다** —

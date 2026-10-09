@@ -13,12 +13,13 @@
 #include <utility>
 #include <vector>
 
+#include "nox/Clock.h"
 #include "nox/NetworkThread.h"
 #include "nox/Opcode.h"
 
 namespace {
 
-uint32_t Now() { return static_cast<uint32_t>(GetTickCount64()); }
+uint32_t Now() { return nox::NowMs(); }   // 서버와 같은 시계(`Clock.h` — 10-09 자가검증 ② 전엔 `GetTickCount64`)
 
 // 기다리는 시간 안에 데이터그램 하나를 받는다. 못 받으면 빈 것.
 std::vector<uint8_t> RecvOne(SOCKET c, DWORD timeoutMs) {
@@ -37,7 +38,7 @@ bool IsAccept(const std::vector<uint8_t>& d) {   // 접속 수락 — 머리 2 +
 
 }  // namespace
 
-// ① 접속 → 접속 수락이 소켓으로 돌아오고 CONNECTED 이벤트가 큐로 온다(넣은 시각이 찍혀)
+// ① 접속 → 접속 수락이 소켓으로 돌아오고 CONNECTED 이벤트가 큐로 온다(넣은 시각이 찍혀 · 게임 루프를 깨우는 신호가 켜져)
 // ② 게임 요청(보내기)을 넣으면 깨어나 곧 보낸다 — 기다림 최대를 5초로 두었으니 깨우기가 없으면 다음 타이머(2초)까지 늦는다
 // ③ 확인이 없으면 접속 수락을 보낸 지 2초에 다시 받는다 — 타이머 마감에 깨어난다(깨지 않으면 5초)
 // ④ `Stop` — 스레드가 끝나고 두 번 불러도 된다
@@ -63,6 +64,8 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
     sendto(c, reinterpret_cast<const char*>(conn), sizeof(conn), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
     const std::vector<uint8_t> acc = RecvOne(c, 1000);
     const uint32_t acceptAt = Now();
+    // ★ 10-09 플랜 A 5d 자가검증 ② — 이벤트를 넣으면 게임 루프를 깨우는 신호가 켜진다(게임 루프는 이것과 틱 마감을 기다린다)
+    const bool readySignaled = WaitForSingleObject(static_cast<HANDLE>(net.EventsReadyHandle()), 1000) == WAIT_OBJECT_0;
     int64_t sid = 0;
     uint32_t queuedMs = 0;
     std::vector<nox::NetworkEvent> evs;
@@ -73,9 +76,9 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
         evs.clear();
         if (sid == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    std::snprintf(m, sizeof(m), "① 스레드 — 접속 수락 받음 %d · CONNECTED 이벤트 세션 %lld · 넣은 시각 찍힘 %d",
-                  (int)IsAccept(acc), (long long)sid, (int)(queuedMs != 0));
-    r.push_back({ IsAccept(acc) && sid != 0 && queuedMs != 0, m });
+    std::snprintf(m, sizeof(m), "① 스레드 — 접속 수락 받음 %d · CONNECTED 이벤트 세션 %lld · 넣은 시각 찍힘 %d · 깨우는 신호 %d",
+                  (int)IsAccept(acc), (long long)sid, (int)(queuedMs != 0), (int)readySignaled);
+    r.push_back({ IsAccept(acc) && sid != 0 && queuedMs != 0 && readySignaled, m });
 
     // ② 접속 수락 뒤 0.3초에 보내기 요청 — 다음 타이머(다시 보내기)는 1.7초 뒤라 깨우기가 없으면 그때까지 안 나간다
     std::this_thread::sleep_for(std::chrono::milliseconds(300));

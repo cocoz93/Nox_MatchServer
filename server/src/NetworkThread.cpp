@@ -10,6 +10,7 @@
 #include <map>
 #include <set>
 
+#include "nox/Clock.h"
 #include "nox/Opcode.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -17,7 +18,7 @@
 namespace nox {
 
 namespace {
-uint32_t NowMs() { return static_cast<uint32_t>(GetTickCount64()); }
+// ★ 10-09 플랜 A 5d 자가검증 ② — 시계는 게임 루프와 같은 `nox::NowMs`(`Clock.h` — 옛 이 자리 `GetTickCount64` 는 15.6ms 단위)
 
 std::string KeyOf(const sockaddr_in& a) {
     char ip[64] = {};
@@ -35,6 +36,7 @@ CNetworkThread::~CNetworkThread() {
     if (_sock != static_cast<uintptr_t>(INVALID_SOCKET)) closesocket(static_cast<SOCKET>(_sock));
     if (_sockEvent) WSACloseEvent(static_cast<WSAEVENT>(_sockEvent));
     if (_wakeEvent) CloseHandle(static_cast<HANDLE>(_wakeEvent));
+    if (_eventsReady) CloseHandle(static_cast<HANDLE>(_eventsReady));
     if (_wsaUp) WSACleanup();
 }
 
@@ -66,6 +68,7 @@ bool CNetworkThread::Open(const std::string& ip, uint16_t port, std::string& err
     _sockEvent = WSACreateEvent();
     if (WSAEventSelect(s, static_cast<WSAEVENT>(_sockEvent), FD_READ) == SOCKET_ERROR) { err = "WSAEventSelect 실패"; return false; }
     _wakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);   // 자동으로 되돌아가는 이벤트
+    _eventsReady = CreateEventW(nullptr, FALSE, FALSE, nullptr);  // 같은 꼴 — 게임 루프가 기다린다
     return true;
 }
 
@@ -220,13 +223,19 @@ void CNetworkThread::Run() {
         if (got > _threadStats.maxDatagramsPerWake) _threadStats.maxDatagramsPerWake = got;
         // ④ 이벤트를 큐로 — 넣은 시각을 찍는다(게임 스레드가 넘김 지연을 잰다)
         if (!events.empty()) {
-            std::lock_guard<std::mutex> lk(_queueMu);
-            for (NetworkEvent& ev : events) {
-                if (_events.size() >= _queueMax) { ++_eventsDropped; continue; }
-                ev.queuedMs = now;
-                _events.push_back(std::move(ev));
+            bool queued = false;
+            {
+                std::lock_guard<std::mutex> lk(_queueMu);
+                for (NetworkEvent& ev : events) {
+                    if (_events.size() >= _queueMax) { ++_eventsDropped; continue; }
+                    ev.queuedMs = now;
+                    _events.push_back(std::move(ev));
+                    queued = true;
+                }
             }
             events.clear();
+            // ★ 10-09 플랜 A 5d 자가검증 ② — 게임 루프를 깨운다(틱 마감 전이라도 받은 것을 바로 처리)
+            if (queued) SetEvent(static_cast<HANDLE>(_eventsReady));
         }
         // ★ 10-09 조각 5d-2c — 닫기면 키를 준 상대마다 `SERVER_CLOSE`(쌓인 요청 뒤에)
         if (stopping && _closeOnStop.load()) _network.CloseAll(out);

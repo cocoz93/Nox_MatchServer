@@ -2,7 +2,7 @@
 //   (`Docs/LAYERS_DESIGN.md` 「네트워크 스레드」 · 「조각 5d 설계」).
 //
 // ★ 10-09 조각 5d-2b — 게임 스레드와는 큐 둘로만 만난다.
-//   통신 층 → 게임 : 이벤트 큐(`SwapOutNetworkEvents` — 게임 스레드가 틱 앞에 통째로 바꿔 간다)
+//   통신 층 → 게임 : 이벤트 큐(`SwapOutNetworkEvents` — 게임 스레드가 틱 앞에 통째로 바꿔 간다 · 넣을 때 `EventsReadyHandle` 을 켠다)
 //   게임 → 통신 층 : 요청 큐(`PushRequests` — 게임 스레드가 틱 뒤에 그 틱의 요청을 한 묶음으로 넣고 깨운다)
 //   깨어나는 때 셋 — 소켓 읽기 · 요청이 들어옴 · 타이머 맨 앞 마감(`CUdpServer::NextTimerDue`).
 //   깨면 시계(통신 층 `Tick` — 마감 지난 타이머) → 쌓인 요청 → 받을 것 전부 → 이벤트를 큐로 → 나갈 것 전부.
@@ -65,6 +65,9 @@ public:
     void PushRequests(std::vector<NetworkRequest>& reqs);
     // 쌓인 이벤트를 통째로 꺼낸다(`into` 는 비어 있다고 보고 바꾼다).
     void SwapOutNetworkEvents(std::vector<NetworkEvent>& into);
+    // ★ 10-09 플랜 A 5d 자가검증 ② — 이벤트를 큐에 넣을 때 켜지는 이벤트(HANDLE · 자동으로 꺼짐). 게임 루프가 틱 마감 타이머와 함께
+    //   기다린다(`WaitForMultipleObjects`) — 옛 `Sleep(1)` 돌려 보기 대신. `Open` 뒤에 있다.
+    void* EventsReadyHandle() const { return _eventsReady; }
     CUdpStats LatestNetworkStats() const;
     CNetworkThreadStats LatestThreadStats() const;
 
@@ -83,6 +86,7 @@ private:
     uintptr_t _sock = ~static_cast<uintptr_t>(0);   // SOCKET(INVALID_SOCKET) — 머리에서 winsock 을 안 부르려고
     void* _sockEvent = nullptr;                     // WSAEVENT — 소켓 읽기
     void* _wakeEvent = nullptr;                     // 요청이 들어옴 · 멈춤
+    void* _eventsReady = nullptr;                   // 이벤트를 큐에 넣음 — 게임 루프가 기다린다
     uint16_t _port = 0;
     bool _wsaUp = false;
     bool _verbose = false;
