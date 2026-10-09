@@ -32,7 +32,9 @@ void CSyncHost::TakeOut(std::vector<OutPacket>& out) {
 }
 
 int64_t CSyncHost::DebugEnterGame(const std::string& address, uint16_t netCode, bool observer, CharClass cls) {
-    return _rooms.Game().DebugEnterGame(_network.OpenSession(address), address, netCode, observer, cls);
+    const int64_t sid = _network.OpenSession(address);
+    _rooms.AssignDirect(sid, CRoomManager::kFirstRoom);   // ★ 10-09 플랜 B 작업 6b — 세션표에도 적는다(닫힌 방식에서도 그 사람의 이벤트가 방 0 으로)
+    return _rooms.Game().DebugEnterGame(sid, address, netCode, observer, cls);
 }
 
 }  // namespace nox

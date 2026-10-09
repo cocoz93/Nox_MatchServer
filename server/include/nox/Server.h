@@ -2914,6 +2914,11 @@ public:
         auto it = sessions_.find(sessionId);
         return it == sessions_.end() ? 0 : ClockOf(it->second);
     }
+    // ★ 10-09 플랜 B 작업 6b — 세션 시작 프레임(`CONNECTED` 때 정함 · `Session::frame`). 방 관리자가 담아 둔 접속을 방에 넘겼는지 시험이 본다
+    uint32_t DebugSessionFrame(int64_t sessionId) const {
+        auto it = sessions_.find(sessionId);
+        return it == sessions_.end() ? 0 : it->second.frame;
+    }
     // 묶음 6-j(2) — 떠돌기가 **지금 고른 길목 번호**. 기억이 서는지 시험이 직접 본다
     uint32_t DebugAIArgWp(size_t i, int j) const {
         return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].argWp : 0;
