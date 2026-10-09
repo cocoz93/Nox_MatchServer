@@ -96,6 +96,7 @@ struct NetworkEvent {
     std::string addr;               // 그 세션의 주소 — 기록용
     std::vector<uint8_t> body;      // RECEIVED · JOIN_REQUESTED(오프코드 뺀 본문 97바이트 — `MsgServerTryJoin`)
     DisconnectReason reason = DisconnectReason::CLIENT_CLOSE;   // DISCONNECTED
+    uint32_t queuedMs = 0;          // ★ 10-09 조각 5d-2b — 네트워크 스레드가 큐에 넣은 시각(게임 스레드가 넘김 지연을 잰다 · 한 스레드 조립은 0)
     // CONNECTED — 덤프 재생이면 그때 서버가 정한 프레임·오브젝트 번호(`scripted`)
     bool scripted = false;
     uint32_t frame = 0;

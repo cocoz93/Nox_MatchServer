@@ -17,6 +17,7 @@ add_library(nox_proto STATIC
   server/src/Server.cpp
   server/src/UdpServer.cpp
   server/src/SyncHost.cpp
+  server/src/NetworkThread.cpp
   server/src/DumpSniff.cpp
   server/src/UpdateStream.cpp
   server/src/core/GameBalance.cpp
@@ -63,7 +64,7 @@ target_link_libraries(nox_lobby PRIVATE nox_lobby_core)
 add_executable(lobby_test server/tests/lobby_test.cpp)
 target_link_libraries(lobby_test PRIVATE nox_lobby_core)
 
-add_executable(proto_test server/tests/proto_test.cpp)
+add_executable(proto_test server/tests/proto_test.cpp server/tests/net_thread_test.cpp)
 target_link_libraries(proto_test PRIVATE nox_proto)
 target_compile_definitions(proto_test PRIVATE NOX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 

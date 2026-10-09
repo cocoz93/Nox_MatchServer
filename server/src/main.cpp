@@ -15,6 +15,7 @@
 #include <ws2tcpip.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
@@ -32,7 +33,7 @@
 #include "nox/Recording.h"
 #include "nox/ModeRules.h"
 #include "nox/Server.h"
-#include "nox/SyncHost.h"
+#include "nox/NetworkThread.h"
 #include "nox/MapFile.h"
 #include "nox/ThingDb.h"
 #include "nox/SpellNames.h"
@@ -551,6 +552,7 @@ int main(int argc, char** argv) {
             //   **틱 줄이 아예 안 나온다**(실측). 그래서 ③.5 「실물로 닫기」가 **사람 없이는 성립을 안 한다.**
             //   봇을 세우면 덫이 겨누고 갱신이 돌아 계수기가 살아난다 — 무인으로 판정할 수 있게 된다.
             //   ⚠ 봇 주소는 `addrOf` 에 없으므로 나가는 조각은 `flush` 에서 **조용히 버려진다**(main.cpp 의 `continue`).
+            //     (10-09 조각 5d-2b — 그 자리는 이제 네트워크 스레드의 보내기 `NetworkThread.cpp` ⑤)
             //     즉 망으로는 아무것도 안 나간다. 서버 안 상태와 계수기만 움직인다.
             BotWant bw;
             bw.x = std::atoi(argv[++i]);
@@ -669,9 +671,11 @@ int main(int argc, char** argv) {
     //   같은 로직을 대조 장치(server/src/replay.cpp)가 덤프로 돌려 채점한다.
     //
     // 서버 찾기에 답할 원본은 녹음을 쓰되, 이름만 인자로 바꿔 넣는다.
-    // ★ 10-09 조각 5d — 통신 층과 게임을 한 스레드에서 잇는 조립. 게임은 통신 층을 갖지 않는다(5d-2 에서 스레드 둘로)
-    nox::CSyncHost host;
-    nox::Server& srv = host.Game();
+    // ★ 10-09 조각 5d-2b — 스레드 둘. 네트워크 스레드(소켓 · 통신 층 — `CNetworkThread`)와 게임(이 스레드)이 큐 둘로만 만난다
+    //   (`Docs/LAYERS_DESIGN.md` 「네트워크 스레드」). 통신 층 설정과 봇 세션 번호는 스레드를 띄우기 전에 한다.
+    //   (5d-1b 까지는 한 스레드 조립 `CSyncHost` 였다 — 시험 · 덤프 재생은 그대로 그것을 쓴다)
+    nox::CNetworkThread net;
+    nox::Server srv;
 
     // ★★ **`--standalone` 은 맵이 있어야 성립한다.** 접속 묶음에 맵 이름과 CRC 를
     //   싣기 때문이다(`SetStandalone`). 맵이 없으면 `standalone_` 이 안 켜지고,
@@ -766,132 +770,60 @@ int main(int argc, char** argv) {
 
     // ★ 10-08 — 세계 차리기(맵·설정·접속 묶음)는 `BuildWorld`(`WorldBuild.cpp`)로 옮겼다.
     WorldExtras extras;
-    if (const int rc = BuildWorld(srv, host.Network(), opt, tmpl, extras)) return rc;
+    if (const int rc = BuildWorld(srv, net.Network(), opt, tmpl, extras)) return rc;
+    // 초당 `[성장]` 줄의 봇 번호 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
+    const int64_t bot0Sid = net.Network().SessionIdOf("bot0");
 
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        std::printf("WSAStartup 실패\n");
-        return 1;
-    }
-    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s == INVALID_SOCKET) {
-        std::printf("소켓 실패\n");
-        return 1;
-    }
-    BOOL yes = TRUE;
-    setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&yes), sizeof(yes));
-
-    sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(static_cast<uint16_t>(opt.port));
-    if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-        std::printf("bind 실패 (%d). 포트 %d 를 이미 누가 쓰고 있는가?\n",
-                    WSAGetLastError(), opt.port);
-        return 1;
+    // ★ 10-09 조각 5d-2b — 소켓은 네트워크 스레드가 연다(옛 이 자리의 `WSAStartup` · `socket` · `bind` — 실패 문구 그대로)
+    {
+        std::string netErr;
+        if (!net.Open("", static_cast<uint16_t>(opt.port), netErr)) {
+            std::printf("%s\n", netErr.c_str());
+            return 1;
+        }
     }
 
     std::printf("접속 대기 — UDP %d, 이름 \"%s\"\n", opt.port, opt.name.c_str());
     std::printf("답하는 것: 서버 찾기 · 접속 시도 · 접속 수락 · 핑\n");
     std::fflush(stdout);
 
-    // 주소를 문자열로 만든다. `Server` 는 이 문자열로 상대를 가른다.
-    auto keyOf = [](const sockaddr_in& a) {
-        char ip[64] = {};
-        inet_ntop(AF_INET, &a.sin_addr, ip, sizeof(ip));
-        char buf[96];
-        std::snprintf(buf, sizeof(buf), "%s:%d", ip, ntohs(a.sin_port));
-        return std::string(buf);
-    };
-
-    uint8_t in[2048];
-    std::map<std::string, sockaddr_in> addrOf;   // 문자열 → 진짜 주소
-    std::vector<nox::OutPacket> outs;
-    unsigned long long nRecv = 0, nSent = 0, nTicks = 0;
-
-    // 나갈 조각을 실제로 내보낸다. 틱과 수신 양쪽에서 쓴다.
-    auto flush = [&]() {
-        for (const auto& p : outs) {
-            auto it = addrOf.find(p.to);
-            if (it == addrOf.end()) continue;
-            sendto(s, reinterpret_cast<const char*>(p.data.data()),
-                   static_cast<int>(p.data.size()), 0,
-                   reinterpret_cast<sockaddr*>(&it->second), sizeof(it->second));
-            ++nSent;
-        }
-        outs.clear();
-    };
+    // ★ 10-09 조각 5d-2b — 받기 · 주소 · 보내기는 네트워크 스레드 몫이다(옛 `keyOf` · `addrOf` · `flush` 는 `NetworkThread.cpp`).
+    std::vector<nox::NetworkEvent> netEvents;
+    std::vector<nox::NetworkRequest> netRequests;
+    unsigned long long nTicks = 0;
+    // 초당 `[스레드]` 줄 — 이벤트 넘김 지연(큐에 넣은 때 → 게임이 처리한 때) · 틱 시간(`RunTick`)
+    unsigned long long evCount = 0, evLatSum = 0, tickRuns = 0;
+    uint32_t evLatMax = 0;
+    double tickMsSum = 0.0, tickMsMax = 0.0;
 
     // ★ 10-01 R2 — 맵을 다 넣었으니 처음 상태를 담아 둔다(판 다시 열 때 되돌릴 사본 · `Server::CaptureMapInitial`)
     srv.CaptureMapInitial();
     std::printf("[맵처음] 담음 — 바닥 물건 %zu · 문·오벨리스크 %zu\n", srv.WorldStaticCount(), srv.WorldPropCount());
     std::fflush(stdout);
+    net.SetVerbose(!opt.quiet);
+    net.Start();   // ★ 10-09 조각 5d-2b — 여기서부터 받기 · 보내기는 네트워크 스레드
 
-    // ★ `recvfrom` 을 그냥 부르면 패킷이 올 때까지 막혀서 **틱이 안 돈다.**
-    //   기다리는 시간을 틱 주기로 잘라 두고, 그 사이사이에 틱을 돌린다.
+    // ★ 10-09 조각 5d-2b — 게임 스레드. 쌓인 이벤트를 통째로 받아 처리하고(받은 조각 · 접속 · 닫기 · 접속 시도 · 시간 초과),
+    //   틱을 돌리고, 그 사이 쌓인 통신 요청을 통째로 넘긴다. 옛 이 자리는 `select`(5ms) · `recvfrom` 으로 직접 받았다.
+    //   받은 조각마다 찍던 `[받음]` · 열쇠 진단과 접속 제어 쪽 `[처음]` 은 네트워크 스레드가 찍는다.
     for (;;) {
-        fd_set rd;
-        FD_ZERO(&rd);
-        FD_SET(s, &rd);
-        timeval tv{};
-        tv.tv_usec = 5000;   // 5ms — 틱 주기보다 촘촘히 깨어난다
-        const int ready = select(0, &rd, nullptr, nullptr, &tv);
-
-        if (ready > 0 && FD_ISSET(s, &rd)) {
-            sockaddr_in from = {};
-            int fromLen = sizeof(from);
-            const int n = recvfrom(s, reinterpret_cast<char*>(in), sizeof(in), 0,
-                                   reinterpret_cast<sockaddr*>(&from), &fromLen);
-            if (n > 0) {
-                ++nRecv;
-                const std::string who = keyOf(from);
-                addrOf[who] = from;
-                const size_t got = host.OnPacket(who, in, static_cast<size_t>(n), outs);
-                const size_t made = outs.size();
-                flush();
-
-                // ★★ **클라가 처음 보낸 오프코드를 그때그때 알린다.**
-                //
-                //   왜 — 「어떤 조작이 무슨 메시지를 보내나」를 알 길이 없었다.
-                //   `0x73 TRY_GET`(줍기)이 왼버튼이 아니라는 것까지는 알아냈지만
-                //   **그럼 무엇이냐**는 짐작뿐이었고, 그래서 「사람이 눌러 봐야 한다」로 넘겼다.
-                //   이 한 줄이면 키를 하나씩 눌러 보며 **조작 ↔ 메시지 대응표**를 자동으로 만든다.
-                //
-                //   ⚠ `--quiet` 여도 찍는다. 드물게 나오고, 나오는 순간이 곧 답이다.
-                {
-                    static std::map<uint8_t, bool> told;
-                    // ★ 10-08 조각 3 — 접속 제어(0x20 미만) 오프코드는 통신 층이 센다. 둘 다 본다.
-                    for (const auto* seenMap : { &srv.seen(), &host.Network().seen() })
-                    for (const auto& kv : *seenMap) {
-                        if (told.count(kv.first)) continue;
-                        told[kv.first] = true;
-                        std::printf("[처음] 클라가 보낸 새 오프코드 0x%02x (%s)\n",
-                                    kv.first, nox::OpName(static_cast<nox::Op>(kv.first)));
-                        std::fflush(stdout);
-                    }
-                }
-
-                if (!opt.quiet) {
-                    // ★ 한 메시지도 못 읽었으면 그 바이트를 찍는다.
-        //   「0개」를 그냥 지나치면 파서가 멈춘 자리를 영영 못 본다.
-        if (got == 0 && n > 3) DumpHex("  [못 읽음]", in, static_cast<size_t>(n));
-        std::printf("[받음 %llu] %s  %d바이트 → 메시지 %zu개, 보낸 조각 %zu개\n",
-                                nRecv, who.c_str(), n, got, made);
-                    // ★ **뜯었는데 답이 없으면 무엇을 봤는지 찍는다.**
-                    //   2026-09-10: 접속 요청 158바이트가 「메시지 2개, 보낸 조각 0개」로
-                    //   나오는데 그 둘이 무엇인지 알 길이 없어 반나절을 짐작으로 보냈다.
-                    //   조각을 버린 것도 아니고(`[버림]` 0건) 크래시도 아닌데 답만 없었다.
-                    //   ⚠ 열쇠 상태를 같이 찍는다 — **복호가 어긋나면 쓰레기가
-                    //     그럴듯한 오프코드 두 개로 보인다.** 「메시지 2개」의 함정이 그것이다.
-                    if (got > 0 && made == 0 && n > 3) {
-                        std::printf("     ↳ 본 것:");
-                        for (uint8_t o : srv.LastFragOps())
-                            std::printf(" %02x(%s)", o, nox::OpName(static_cast<nox::Op>(o)));
-                        std::printf("  · 열쇠 %s 0x%02x\n",
-                                    host.Network().IsKeyed(who) ? "있음" : "없음", host.Network().KeyOf(who));
-                    }
-                    std::fflush(stdout);
-                }
+        net.SwapOutNetworkEvents(netEvents);
+        if (!netEvents.empty()) {
+            const uint32_t nowEv = static_cast<uint32_t>(GetTickCount64());
+            for (const nox::NetworkEvent& ev : netEvents) {
+                const uint32_t lat = nowEv - ev.queuedMs;
+                ++evCount; evLatSum += lat; if (lat > evLatMax) evLatMax = lat;
+                srv.OnNetworkEvent(ev);
+            }
+            netEvents.clear();
+            // ★★ **클라가 처음 보낸 오프코드를 그때그때 알린다** — 게임 오프코드 쪽(옛 받은 조각마다 찍던 줄 · ⚠ `--quiet` 여도 찍는다)
+            static std::map<uint8_t, bool> told;
+            for (const auto& kv : srv.seen()) {
+                if (told.count(kv.first)) continue;
+                told[kv.first] = true;
+                std::printf("[처음] 클라가 보낸 새 오프코드 0x%02x (%s)\n",
+                            kv.first, nox::OpName(static_cast<nox::Op>(kv.first)));
+                std::fflush(stdout);
             }
         }
 
@@ -989,7 +921,10 @@ int main(int argc, char** argv) {
             std::fflush(stdout);
         }
 
-        const int ticks = host.Tick(GetTickCount(), outs);
+        // 틱 앞 — 받은 조각에 대한 답 · 판 차리기가 쌓은 요청을 먼저 넘긴다
+        srv.SwapOutNetworkRequests(netRequests);
+        net.PushRequests(netRequests);
+        const int ticks = srv.BeginTick(GetTickCount());
         if (opt.debugCrashAfter > 0 && srv.frame() >= static_cast<uint32_t>(opt.debugCrashAfter)) {
             std::printf("[진단스위치] --debug-crash — 프레임 %u 에서 일부러 죽는다\n", srv.frame());
             std::fflush(stdout);
@@ -997,8 +932,16 @@ int main(int argc, char** argv) {
         }
         if (ticks > 0) {
             nTicks += static_cast<unsigned long long>(ticks);
-            const size_t made = outs.size();
-            flush();
+            const auto tickStart = std::chrono::steady_clock::now();
+            srv.RunTick(ticks);
+            const double tickMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tickStart).count();
+            tickMsSum += tickMs; ++tickRuns; if (tickMs > tickMsMax) tickMsMax = tickMs;
+            // 그 틱의 통신 요청을 한 묶음으로 넘긴다. `made` = 그 틱의 보내기 요청 수(옛 「나간 조각 수」 —
+            //   다시 보내기는 이제 네트워크 스레드 몫이라 빠진다). 초당 줄은 전처럼 이것이 0 이 아닐 때만 찍는다
+            srv.SwapOutNetworkRequests(netRequests);
+            size_t made = 0;
+            for (const nox::NetworkRequest& r : netRequests) if (r.type == nox::NetworkRequest::Type::SEND_MSG) ++made;
+            net.PushRequests(netRequests);
             // ★ 09-20 6-j(3) — 크리처 추적. **조용한 주행에서도 찍는다**(판정에 쓰는 줄이라)
             if (opt.tracePets > 0 && (srv.frame() % static_cast<uint32_t>(opt.tracePets)) == 0) {
                 for (size_t pi = 0; pi < srv.petCount(); ++pi) {
@@ -1047,7 +990,7 @@ int main(int argc, char** argv) {
             // 매 틱 찍으면 화면이 흐르니 1초에 한 번만.
             if (!opt.quiet && made > 0 && (srv.frame() % 30) == 0) {
                 // ★ 10-09 조각 5d-2a — 통신 층 지표는 사본으로 찍는다(5d-2 부터 네트워크 스레드 값이라 직접 읽지 않는다)
-                const nox::CUdpStats ns = host.Network().Stats();
+                const nox::CUdpStats ns = net.LatestNetworkStats();
                 // ★ 걸음·근접 누계를 같이 찍는다 — 클라가 보낸 조작이 **실제로 반영됐나**를
                 //   보는 유일한 자리다. 와이어에 걸음 코드가 152번 보여도 서버는 두 번만
                 //   밀 수 있다(2026-09-08 실측). 둘을 나란히 놓아야 그 어긋남이 보인다.
@@ -1213,6 +1156,18 @@ int main(int argc, char** argv) {
                             ns.sessionTimedOut,    // ★ 10-09 조각 5a — 통신 층이 시간 초과로 게임에 넘긴 세션 수
                             ns.joinRequested, ns.joinRejected,
                             ns.joinRespondNoSession);   // ★ 10-09 조각 5c — 접속 시도를 게임에 물은 수 · 거절 · 답할 때 세션이 없던 수
+                // ★ 10-09 조각 5d-2b — 스레드 둘의 지표(이 1초 동안). 「큐 버림」은 0 이 정상 · 넘김 지연은 틱 하나(33ms) 안이 정상
+                {
+                    const nox::CNetworkThreadStats ts = net.LatestThreadStats();
+                    std::printf("[스레드] 이벤트 넘김 지연 평균 %.1fms · 최대 %ums(%llu건) · 틱 시간 평균 %.2fms · 최대 %.2fms(%llu틱)"
+                                " · 네트워크 깨어남 %llu · 받음 %llu · 보냄 %llu · 한 번에 비운 최대 %llu · 받기 오류 %llu"
+                                " · 큐 버림(이벤트 %llu · 요청 %llu) · 큐 남음(이벤트 %zu · 요청 %zu)\n",
+                                evCount ? static_cast<double>(evLatSum) / static_cast<double>(evCount) : 0.0, evLatMax, evCount,
+                                tickRuns ? tickMsSum / static_cast<double>(tickRuns) : 0.0, tickMsMax, tickRuns,
+                                ts.wakes, ts.datagramsIn, ts.datagramsOut, ts.maxDatagramsPerWake, ts.recvErrors,
+                                ts.eventsDropped, ts.requestsDropped, ts.eventsQueued, ts.requestsQueued);
+                    evCount = evLatSum = tickRuns = 0; evLatMax = 0; tickMsSum = tickMsMax = 0.0;
+                }
 
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
                 std::printf("%s\n", srv.PositionsLine().c_str());
@@ -1311,7 +1266,7 @@ int main(int argc, char** argv) {
                 // ★ **성장 한 줄** — 진단 스위치(`--debug-xp`·`--debug-give-spell`)가 먹었는지
                 //   보는 유일한 자리다. 없을 때는 판 G 가 통째로 판정 불능이었다(조각 C 13·14번).
                 if (!opt.bots.empty()) {
-                    const int64_t b0 = host.Network().SessionIdOf("bot0");   // ★ 10-08 조각 4 — 세션 번호
+                    const int64_t b0 = bot0Sid;   // ★ 10-08 조각 4 — 세션 번호(10-09 조각 5d-2b — 스레드를 띄우기 전에 읽어 둔 것)
                     std::printf("[성장] 레벨 %d · 경험치 %.0f",
                                 srv.DebugLevel(b0), (double)srv.DebugExperience(b0));
                     if (opt.debugSpellId > 0)
@@ -1427,5 +1382,6 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
             }
         }
+        Sleep(1);   // ★ 10-09 조각 5d-2b — 옛 `select`(5ms) 자리. 틱은 `GetTickCount` 로 세므로 늦게 깨면 틱을 몰아서 돈다(전과 같다)
     }
 }

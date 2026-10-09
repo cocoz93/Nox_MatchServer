@@ -24594,6 +24594,14 @@ void TestUdpStats() {
     std::printf("  10-09 조각 5d-2a — 통신 층 지표 사본(Stats) — 조회와 같은 값 · 뜬 뒤 그대로\n");
 }
 
+// ── 10-09 플랜 A 조각 5d-2b — 네트워크 스레드(`CNetworkThread`) — 로컬 UDP 로 실제로 주고받는다 ─────────
+//   몸통은 `net_thread_test.cpp`(winsock 의 min/max 매크로를 이 파일과 떼려고). 깨어나는 때 셋(소켓 · 요청 · 타이머)과 멈춤.
+std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks();
+void TestNetworkThread() {
+    for (const auto& kv : RunNetworkThreadChecks()) Check(kv.first, kv.second.c_str());
+    std::printf("  10-09 조각 5d-2b — 네트워크 스레드: 소켓에 깨어 받고 · 요청에 깨어 보내고 · 타이머 마감에 깨어 다시 보내고 · 멈춤\n");
+}
+
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
 //   원본 `send_reliable.go`(2초 뒤 · 1초마다 살핌) · 정품 녹음 `CAP_GEN3`(확인 못 받은 접속 수락을 약 2.1초마다 다시 보냄).
 //   클라 확인 = 비신뢰 조각 머리 순번(「다음에 받을 순번」) — 그보다 앞은 지우고, 그 순번이 있으면 바로 다시 보낸다.
@@ -29761,6 +29769,7 @@ int main() {
     TestNetworkRequest();
     TestSyncHostOrder();
     TestUdpStats();
+    TestNetworkThread();
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
