@@ -160,6 +160,43 @@ struct CUdpSession {
     int lastAckSeen = -1;
 };
 
+// ★ 10-09 조각 5d-2a — 통신 층 지표 한 묶음. 조각 5d-2 부터는 네트워크 스레드가 이 사본(`CUdpServer::Stats`)을 넘기고
+//   게임 스레드는 사본으로 찍는다(다른 스레드 값을 직접 읽지 않는다 — `Docs/LAYERS_DESIGN.md` 「지표」).
+//   `CUdpServer` 의 조회 함수(`reliableHeard()` 등)도 이 묶음을 읽는다. 옛 멤버(`_reliableHeard` …)의 주석은 여기로 옮겼다.
+struct CUdpStats {
+    unsigned long long reliableHeard = 0;          // 신뢰 비트가 선 조각을 받은 수 (B-1b)
+    // 스트림 0~7 만 센다 — 그 위는 실제로 안 쓰인다(넘으면 안 센다는 뜻이니 로그에서 합이 안 맞으면 그것도 단서다)
+    unsigned long long ackValueHist[32] = {};      // 되받기로 실어 보낸 **값**의 분포(0~31)
+    unsigned long long recvRelStream[8] = {};      // 클라 → 서버 **신뢰**, 스트림별
+    unsigned long long sendRelStream[8] = {};      // 서버 → 클라 **신뢰**, 스트림별
+    unsigned long long sendPlainStream[8] = {};    // 서버 → 클라 **비신뢰**, 스트림별(되받기가 실리는 자리)
+    unsigned long long ackSeqApplied = 0;          // 되받기 가지를 탄 횟수 (0 이면 분기가 안 도는 것)
+    unsigned long long ackSeqDiffer = 0;           // ✖ 09-21 폐기 — 뜻 없는 견줌이었다(되받기 가지 주석)
+    unsigned long long ackSeqChanged = 0;          // 되받기 **값이 직전과 달라진** 횟수 — 0 이면 클라 순번이 멈춤
+    uint8_t ackLastSent = 0;                       // 마지막으로 실어 보낸 되받기 값
+    // ★ 10-08 조각 3b — 다시 보내기
+    unsigned long long reliableResent = 0;         // 다시 보낸 조각 수
+    unsigned long long reliableAcked = 0;          // 확인받아 지운 조각 수
+    unsigned long long reliableRetryMarked = 0;    // 클라가 「그 순번부터 다시」라고 해서 표시한 수
+    unsigned long long reliableQueueDropped = 0;   // 한도를 넘어 버린 수
+    // ★ 10-08 조각 4 · 4c · 10-09 조각 5a · 5c — 세션
+    unsigned long long sendNoSession = 0;
+    unsigned long long unannouncedSwept = 0;
+    unsigned long long sessionTimedOut = 0;
+    unsigned long long joinRequested = 0;
+    unsigned long long joinRejected = 0;
+    unsigned long long joinRespondNoSession = 0;
+    // 진단 — 접속 제어 조각만(게임 조각은 `nox::Server` 가 센다)
+    std::map<uint8_t, unsigned long long> seen;
+    unsigned long long stopped = 0;
+    std::map<uint8_t, unsigned long long> stoppedByOp;
+    unsigned long long handled = 0;
+    unsigned long long connectTailStops = 0;
+    // 사본을 뜰 때 센다(`CUdpServer::Stats`)
+    size_t reliablePending = 0;                    // 지금 확인을 기다리는 조각 수(모든 상대 합)
+    size_t timerCount = 0;                         // 힙에 든 타이머 항목 수(버릴 항목 포함)
+};
+
 class CUdpServer {
 public:
     // ── 설정 ────────────────────────────────────────────────
@@ -258,49 +295,51 @@ public:
         return it == _sessions.end() ? 0 : (it->second.keyed ? it->second.xorKey : 0);
     }
 
-    unsigned long long reliableHeard() const { return _reliableHeard; }
-    unsigned long long ackSeqApplied() const { return _ackSeqApplied; }
-    unsigned long long ackSeqDiffer() const { return _ackSeqDiffer; }
+    unsigned long long reliableHeard() const { return _stats.reliableHeard; }
+    unsigned long long ackSeqApplied() const { return _stats.ackSeqApplied; }
+    unsigned long long ackSeqDiffer() const { return _stats.ackSeqDiffer; }
     // ★ 2026-09-18 B-1b — **스트림별로 갈라 센다.** 합계만 보면
     //   「클라가 보낸 스트림」과 「서버가 답한 스트림」이 어긋나도 안 드러난다.
     //   되받기는 **같은 스트림에 실려야** 뜻이 있다(StreamSeq 가 스트림마다 따로다).
-    unsigned long long recvReliableOn(uint8_t st) const { return st < 8 ? _recvRelStream[st] : 0; }
-    unsigned long long sendReliableOn(uint8_t st) const { return st < 8 ? _sendRelStream[st] : 0; }
-    unsigned long long sendPlainOn(uint8_t st) const { return st < 8 ? _sendPlainStream[st] : 0; }
-    unsigned long long ackValueCount(uint8_t v) const { return v < 32 ? _ackValueHist[v] : 0; }
+    unsigned long long recvReliableOn(uint8_t st) const { return st < 8 ? _stats.recvRelStream[st] : 0; }
+    unsigned long long sendReliableOn(uint8_t st) const { return st < 8 ? _stats.sendRelStream[st] : 0; }
+    unsigned long long sendPlainOn(uint8_t st) const { return st < 8 ? _stats.sendPlainStream[st] : 0; }
+    unsigned long long ackValueCount(uint8_t v) const { return v < 32 ? _stats.ackValueHist[v] : 0; }
     // ★ 09-21 — **되받기 값이 올라가나**. 옛 `ackSeqDiffer` 는 서로 다른 둘을 견주던 숫자라 뜻이 없었다
     //   (`UdpServer.cpp` 되받기 가지 주석). 이것이 0 이면 클라의 신뢰 순번이 **멈춘** 것이다.
-    unsigned long long ackSeqChanged() const { return _ackSeqChanged; }
-    uint8_t ackLastSent() const { return _ackLastSent; }
+    unsigned long long ackSeqChanged() const { return _stats.ackSeqChanged; }
+    uint8_t ackLastSent() const { return _stats.ackLastSent; }
 
     // ★ 10-08 조각 3b — 다시 보내기 지표. 「보관」은 지금 확인을 기다리는 조각 수(모든 상대 합).
-    unsigned long long reliableResent() const { return _reliableResent; }
-    unsigned long long reliableAcked() const { return _reliableAcked; }
-    unsigned long long reliableRetryMarked() const { return _reliableRetryMarked; }
-    unsigned long long reliableQueueDropped() const { return _reliableQueueDropped; }
+    unsigned long long reliableResent() const { return _stats.reliableResent; }
+    unsigned long long reliableAcked() const { return _stats.reliableAcked; }
+    unsigned long long reliableRetryMarked() const { return _stats.reliableRetryMarked; }
+    unsigned long long reliableQueueDropped() const { return _stats.reliableQueueDropped; }
     size_t reliablePending() const {
         size_t n = 0;
         for (const auto& kv : _sessions) n += kv.second.reliableQueue.size();
         return n;
     }
     // ★ 10-08 조각 4 — 지운 세션 번호로 보내려 해 버린 수. 0 이 정상이다.
-    unsigned long long sendNoSession() const { return _sendNoSession; }
+    unsigned long long sendNoSession() const { return _stats.sendNoSession; }
     // ★ 10-08 조각 4c — 게임에 안 넘긴 채 조용해져 걷어낸 상대 수(서버 찾기·접속 시도만 한 상대).
-    unsigned long long unannouncedSwept() const { return _unannouncedSwept; }
+    unsigned long long unannouncedSwept() const { return _stats.unannouncedSwept; }
     // ★ 10-09 조각 5a — 시간 초과로 게임에 넘긴 세션 수(`DISCONNECTED` · TIMEOUT).
-    unsigned long long sessionTimedOut() const { return _sessionTimedOut; }
+    unsigned long long sessionTimedOut() const { return _stats.sessionTimedOut; }
     // ★ 10-09 조각 5c — 접속 시도를 게임에 물은 수 · 게임이 거절한 수 · 답이 왔을 때 세션이 이미 없던 수(0 이 정상)
-    unsigned long long joinRequested() const { return _joinRequested; }
-    unsigned long long joinRejected() const { return _joinRejected; }
-    unsigned long long joinRespondNoSession() const { return _joinRespondNoSession; }
+    unsigned long long joinRequested() const { return _stats.joinRequested; }
+    unsigned long long joinRejected() const { return _stats.joinRejected; }
+    unsigned long long joinRespondNoSession() const { return _stats.joinRespondNoSession; }
 
     // 접속 제어 조각만 센다(게임 조각은 `nox::Server` 의 같은 이름이 센다).
-    const std::map<uint8_t, unsigned long long>& seen() const { return _seen; }
-    unsigned long long stopped() const { return _stopped; }
-    const std::map<uint8_t, unsigned long long>& stoppedByOp() const { return _stoppedByOp; }
-    unsigned long long handled() const { return _handled; }
-    unsigned long long connectTailStops() const { return _connectTailStops; }
+    const std::map<uint8_t, unsigned long long>& seen() const { return _stats.seen; }
+    unsigned long long stopped() const { return _stats.stopped; }
+    const std::map<uint8_t, unsigned long long>& stoppedByOp() const { return _stats.stoppedByOp; }
+    unsigned long long handled() const { return _stats.handled; }
+    unsigned long long connectTailStops() const { return _stats.connectTailStops; }
     const std::vector<uint8_t>& LastFragOps() const { return _lastFragOps; }
+    // ★ 10-09 조각 5d-2a — 지표 사본(대기 조각 수 · 타이머 수까지 센 것). 다른 스레드에 넘길 때 쓴다
+    CUdpStats Stats() const;
 
 private:
     CUdpSession& SessionFor(const std::string& addr);
@@ -349,12 +388,7 @@ private:
     std::map<std::string, CUdpSession> _sessions;
     std::map<int64_t, std::string> _addrOf;   // 세션 번호 → 주소(`_sessions` 의 열쇠)
     int64_t _nextSessionId = 1;
-    unsigned long long _sendNoSession = 0;
-    unsigned long long _unannouncedSwept = 0;
-    unsigned long long _sessionTimedOut = 0;
-    unsigned long long _joinRequested = 0;
-    unsigned long long _joinRejected = 0;
-    unsigned long long _joinRespondNoSession = 0;
+    CUdpStats _stats;   // ★ 10-09 조각 5d-2a — 지표 한 묶음(사본은 `Stats`)
 
     std::vector<uint8_t> _infoBody;
     uint8_t _xorKey = 0x70;
@@ -363,16 +397,6 @@ private:
     std::vector<AcceptScript> _script;   // 접속 대본
     size_t _scriptAt = 0;
 
-    unsigned long long _reliableHeard = 0; // 신뢰 비트가 선 조각을 받은 수 (B-1b)
-    // 스트림 0~7 만 센다 — 그 위는 실제로 안 쓰인다(넘으면 안 센다는 뜻이니 로그에서 합이 안 맞으면 그것도 단서다)
-    unsigned long long _ackValueHist[32] = {};   // 되받기로 실어 보낸 **값**의 분포(0~31)
-    unsigned long long _recvRelStream[8] = {};   // 클라 → 서버 **신뢰**, 스트림별
-    unsigned long long _sendRelStream[8] = {};   // 서버 → 클라 **신뢰**, 스트림별
-    unsigned long long _sendPlainStream[8] = {}; // 서버 → 클라 **비신뢰**, 스트림별(되받기가 실리는 자리)
-    unsigned long long _ackSeqApplied = 0; // 되받기 가지를 탄 횟수 (0 이면 분기가 안 도는 것)
-    unsigned long long _ackSeqDiffer = 0;  // ✖ 09-21 폐기 — 뜻 없는 견줌이었다(되받기 가지 주석)
-    unsigned long long _ackSeqChanged = 0; // 되받기 **값이 직전과 달라진** 횟수 — 0 이면 클라 순번이 멈춤
-    uint8_t _ackLastSent = 0;              // 마지막으로 실어 보낸 되받기 값
     // B-1b 되받기 — ⚠ **기본 끔.** 09-18 실측에서 **효과가 없었다**(아래).
     //   켜려면 `--ack-seq`. 분기 자체는 도는 것을 계수기로 확인했으므로
     //   (되받기 37/다름 37) 배선이 아니라 **방식**이 틀린 것이다.
@@ -406,18 +430,9 @@ private:
     uint32_t _nowMs = 0;               // 마지막 Tick 의 시각 — 그 사이에 보낸 조각의 `retryAt` 기준
     bool _clockSet = false;            // 첫 Tick 에 시계를 잡았나(그 전에 건 타이머는 그때 다시 건다)
     std::vector<Timer> _timers;        // ★ 10-09 조각 5b — 최소 힙(`PushTimer` · 맨 앞이 가장 이른 마감)
-    unsigned long long _reliableResent = 0;       // 다시 보낸 조각 수
-    unsigned long long _reliableAcked = 0;        // 확인받아 지운 조각 수
-    unsigned long long _reliableRetryMarked = 0;  // 클라가 「그 순번부터 다시」라고 해서 표시한 수
-    unsigned long long _reliableQueueDropped = 0; // 한도를 넘어 버린 수
 
     // 진단 — 접속 제어 조각만(게임 조각은 `nox::Server` 가 센다)
-    std::map<uint8_t, unsigned long long> _seen;
-    unsigned long long _stopped = 0;
-    std::map<uint8_t, unsigned long long> _stoppedByOp;
     std::set<uint8_t> _stopSampleShown;
-    unsigned long long _handled = 0;
-    unsigned long long _connectTailStops = 0;
     std::vector<uint8_t> _lastFragOps;
 };
 

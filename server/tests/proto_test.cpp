@@ -24567,6 +24567,33 @@ void TestSyncHostOrder() {
     std::printf("  10-09 조각 5d-1b — 한 스레드 조립은 쌓인 게임 요청을 받기·틱보다 먼저 통신 층에 넘김(옛 그 자리 호출과 같은 차례)\n");
 }
 
+// ── 10-09 플랜 A 조각 5d-2a — 통신 층 지표 사본(`CUdpServer::Stats`) ─────────
+//   5d-2 부터 게임 스레드는 네트워크 스레드의 지표를 직접 읽지 않고 이 사본으로 찍는다.
+//   ① 사본 값이 조회 함수와 같다(대기 조각 수 · 타이머 수는 사본을 뜰 때 센다) ② 사본은 그 뒤 바뀌어도 그대로다
+void TestUdpStats() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    std::vector<uint8_t> tryJoin(100, 0);
+    tryJoin[2] = static_cast<uint8_t>(nox::Op::SERVER_TRY_JOIN);
+    nox::CUdpServer net;
+    net.SetXorKey(0);
+    std::vector<nox::OutPacket> o; std::vector<nox::NetworkEvent> ev;
+    net.Tick(1000, o, ev);
+    net.OnDatagram("10.10.9.51:10951", conn, sizeof(conn), o, ev);                 // 접속 수락 대기 1 · 타이머 둘(다시 보내기 · 시간 초과)
+    net.OnDatagram("10.10.9.52:10952", tryJoin.data(), tryJoin.size(), o, ev);     // 입장 요청 1 · 타이머 하나(접속 전 걷기)
+    const nox::CUdpStats s1 = net.Stats();
+    const bool same = s1.reliablePending == net.reliablePending() && s1.timerCount == net.TimerCount() &&
+                      s1.joinRequested == net.joinRequested() && s1.handled == net.handled() &&
+                      s1.sendRelStream[0] == net.sendReliableOn(0) && s1.seen.size() == net.seen().size();
+    net.Tick(3001, o, ev);                                                         // 접속 수락을 다시 보냄
+    const nox::CUdpStats s2 = net.Stats();
+    char m[220];
+    std::snprintf(m, sizeof(m), "① 사본 = 조회 %d · 대기 %zu · 타이머 %zu · 입장 요청 %llu ② 다시 보냄 사본1 %llu → 사본2 %llu",
+                  (int)same, s1.reliablePending, s1.timerCount, s1.joinRequested, s1.reliableResent, s2.reliableResent);
+    Check(same && s1.reliablePending == 1 && s1.timerCount == 3 && s1.joinRequested == 1 &&
+          s1.reliableResent == 0 && s2.reliableResent == 1, m);
+    std::printf("  10-09 조각 5d-2a — 통신 층 지표 사본(Stats) — 조회와 같은 값 · 뜬 뒤 그대로\n");
+}
+
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
 //   원본 `send_reliable.go`(2초 뒤 · 1초마다 살핌) · 정품 녹음 `CAP_GEN3`(확인 못 받은 접속 수락을 약 2.1초마다 다시 보냄).
 //   클라 확인 = 비신뢰 조각 머리 순번(「다음에 받을 순번」) — 그보다 앞은 지우고, 그 순번이 있으면 바로 다시 보낸다.
@@ -29733,6 +29760,7 @@ int main() {
     TestJoinBoundary();
     TestNetworkRequest();
     TestSyncHostOrder();
+    TestUdpStats();
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

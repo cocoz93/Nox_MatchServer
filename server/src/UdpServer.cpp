@@ -73,14 +73,14 @@ void CUdpServer::OnRequest(const NetworkRequest& r, std::vector<OutPacket>& out)
 void CUdpServer::RespondJoin(int64_t sessionId, bool accept, const std::vector<uint8_t>& rejectMsg,
                              std::vector<OutPacket>& out) {
     auto a = _addrOf.find(sessionId);
-    if (a == _addrOf.end()) { ++_joinRespondNoSession; return; }   // 답하는 사이 걷혔다
+    if (a == _addrOf.end()) { ++_stats.joinRespondNoSession; return; }   // 답하는 사이 걷혔다
     CUdpSession& s = _sessions.at(a->second);
     if (accept) {
         const uint8_t msg[1] = {static_cast<uint8_t>(Op::SERVER_JOIN_OK)};
         SendOn(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
         return;
     }
-    ++_joinRejected;
+    ++_stats.joinRejected;
     if (!rejectMsg.empty()) SendOn(s, /*reliable=*/false, /*stream=*/0, rejectMsg.data(), rejectMsg.size(), out);
 }
 
@@ -99,6 +99,13 @@ void CUdpServer::DebugTouch(int64_t sessionId) {
     s.heard = true;
     s.lastSeenMs = _nowMs;
     ArmIdle(s);
+}
+
+CUdpStats CUdpServer::Stats() const {
+    CUdpStats s = _stats;
+    s.reliablePending = reliablePending();
+    s.timerCount = _timers.size();
+    return s;
 }
 
 void CUdpServer::PushTimer(const Timer& t) {
@@ -155,8 +162,8 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
         if ((head.stream & 0x7F) != 0x7F) {
             s.lastRelStream = static_cast<int>(head.stream & 0x7F);
         }
-        ++_reliableHeard;
-        if ((head.stream & 0x7F) < 8) ++_recvRelStream[head.stream & 0x7F];
+        ++_stats.reliableHeard;
+        if ((head.stream & 0x7F) < 8) ++_stats.recvRelStream[head.stream & 0x7F];
     }
     // ★ 10-08 조각 3b — 클라의 **비신뢰** 조각 머리 순번은 「서버가 보낸 신뢰 가운데 다음에 받을 순번」이다.
     //   바뀔 때만 처리한다(원본 `conn.go:659-665` — `seq != dst.seqRecv` 이면 `SetCurrent(seq)`).
@@ -201,9 +208,9 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
             if (endsAtZero(probe.count(), probe.op())) break;
         }
         if (probe.stopped()) {
-            ++_stopped;
+            ++_stats.stopped;
             const uint8_t sop = static_cast<uint8_t>(probe.stopOp());
-            ++_stoppedByOp[sop];
+            ++_stats.stoppedByOp[sop];
             if (_stopSampleShown.insert(sop).second) {
                 const size_t rest = probe.stopRest();
                 const size_t base = (bodyLen >= rest) ? bodyLen - rest : 0;
@@ -222,7 +229,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
     _lastFragOps.clear();   // 진단 — 이 조각에서 무엇을 읽었는지 남긴다
     while (it.Next()) {
         ++count;
-        if (endsAtZero(count, it.op())) { ++_connectTailStops; break; }
+        if (endsAtZero(count, it.op())) { ++_stats.connectTailStops; break; }
         if (it.op() >= static_cast<uint8_t>(Op::CLIENT_ACCEPT)) {
             // 여기부터 끝까지 게임 몫(위 주석 · `readXxx`). 이 메시지부터는 게임이 센다.
             const uint8_t* rest = it.body() - 1;   // 이 메시지의 오프코드 자리(`MessageIter::Next`)
@@ -236,7 +243,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
             --count;
             break;
         }
-        ++_seen[it.op()];
+        ++_stats.seen[it.op()];
         if (_lastFragOps.size() < 16) _lastFragOps.push_back(it.op());
 
         switch (static_cast<Op>(it.op())) {
@@ -249,7 +256,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 msg[0] = static_cast<uint8_t>(Op::CLIENT_PONG);
                 std::memcpy(msg + 1, it.body(), 4);
                 SendOn(s, /*reliable=*/false, head.stream, msg, sizeof(msg), out);
-                ++_handled;
+                ++_stats.handled;
                 break;
             }
 
@@ -263,7 +270,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                     Ack(s, seq);
                     Resend(s, out);   // ★ 조각 5b — 표시된 것은 바로
                 }
-                ++_handled;
+                ++_stats.handled;
                 break;
             }
 
@@ -277,7 +284,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 s.announced = true;
                 ev.addr = from;
                 events.push_back(std::move(ev));
-                ++_handled;
+                ++_stats.handled;
                 break;
             }
 
@@ -303,7 +310,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                     t[3] = static_cast<uint8_t>(req.token >> 24);
                 }
                 SendOn(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size(), out);
-                ++_handled;
+                ++_stats.handled;
                 break;
             }
 
@@ -319,9 +326,9 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 ev.sessionId = s.sessionId;
                 ev.addr = from;
                 ev.body.assign(it.body(), it.body() + it.bodyLen());
-                ++_joinRequested;
+                ++_stats.joinRequested;
                 events.push_back(std::move(ev));
-                ++_handled;
+                ++_stats.handled;
                 break;
             }
 
@@ -333,7 +340,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 if (s.keyed) {
                     const uint8_t m4[1] = {static_cast<uint8_t>(Op::CODE4)};
                     SendOn(s, /*reliable=*/false, /*stream=*/0, m4, sizeof(m4), out);
-                    ++_handled;
+                    ++_stats.handled;
                     break;
                 }
                 // ★ 10-08 조각 3b — 접속 전 패킷(서버 찾기·접속 시도)이 머리 순번 0 으로 이 값을 이미 바꿔 놓았다.
@@ -373,7 +380,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 // ★ 이 조각까지는 평문이다. 키는 이 안에 실려 나간다.
                 SendOn(s, /*reliable=*/true, /*stream=*/0, msg, k, out);
                 s.keyed = true;   // 다음 조각부터 뒤집는다
-                ++_handled;
+                ++_stats.handled;
                 events.push_back(std::move(ev));
                 break;
             }
@@ -388,7 +395,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
 void CUdpServer::RequestSendMsg(int64_t sessionId, bool reliable, uint8_t stream,
                                 const uint8_t* msg, size_t n, std::vector<OutPacket>& out) {
     auto a = _addrOf.find(sessionId);
-    if (a == _addrOf.end()) { ++_sendNoSession; return; }   // 지운 세션 — 보낼 곳이 없다
+    if (a == _addrOf.end()) { ++_stats.sendNoSession; return; }   // 지운 세션 — 보낼 곳이 없다
     SendOn(_sessions.at(a->second), reliable, stream, msg, n, out);
 }
 
@@ -405,7 +412,7 @@ void CUdpServer::SendOn(CUdpSession& s, bool reliable, uint8_t stream,
     StreamSeq& q = s.seq[stream & 0x7F];
     {   // 스트림별로 갈라 센다 — 합계만으로는 「보낸 스트림 ↔ 답한 스트림」 어긋남을 못 본다
         const uint8_t st = static_cast<uint8_t>(stream & 0x7F);
-        if (st < 8) { if (reliable) ++_sendRelStream[st]; else ++_sendPlainStream[st]; }
+        if (st < 8) { if (reliable) ++_stats.sendRelStream[st]; else ++_stats.sendPlainStream[st]; }
     }
     if (reliable) {
         h.seq = q.next;
@@ -438,10 +445,10 @@ void CUdpServer::SendOn(CUdpSession& s, bool reliable, uint8_t stream,
         //   **엉뚱한 둘을 견준 숫자**였고, 그게 「B-1b 가 아직 안 됐다」로 읽혔다(B-1b 는 09-18 에 닫혔다).
         // ⭕ 뜻이 있는 것은 **되받기 값이 올라가나**다 — 안 올라가면 클라의 신뢰 순번이 멈춘 것이고,
         //   그러면 클라의 재전송 줄이 안 비워진다. 그래서 **직전에 보낸 되받기 값과** 견준다.
-        if (_ackSeqApplied != 0 && ack != _ackLastSent) ++_ackSeqChanged;
-        _ackLastSent = ack;
-        ++_ackSeqApplied;
-        if (ack < 32) ++_ackValueHist[ack];
+        if (_stats.ackSeqApplied != 0 && ack != _stats.ackLastSent) ++_stats.ackSeqChanged;
+        _stats.ackLastSent = ack;
+        ++_stats.ackSeqApplied;
+        if (ack < 32) ++_stats.ackValueHist[ack];
         h.seq = ack;
     } else if (false) {   // ⚠ 아래는 **죽은 가지**다. 지우지 않고 남긴 까닭은 주석에.
         // ★ 옛 B-1b — 비신뢰 답에 **클라가 보낸 마지막 신뢰 순번**을 싣되 **스트림을 안 가렸다.**
@@ -456,12 +463,12 @@ void CUdpServer::SendOn(CUdpSession& s, bool reliable, uint8_t stream,
         //   N+1 을 주어야 N 이하가 전부 지워진다.
         //   09-18 실측 — N 으로 37번 답했는데 준비 20 그대로였다(대조군과 동일).
         const uint8_t ack = static_cast<uint8_t>(q.recvSeq + 1);
-        if (ack != q.last) ++_ackSeqDiffer;
-        ++_ackSeqApplied;
+        if (ack != q.last) ++_stats.ackSeqDiffer;
+        ++_stats.ackSeqApplied;
         // ★ 2026-09-18 — **보낸 ack 값 자체를 센다.** 클라 쪽 로그에 0·2·3 만 찍히고
         //   4 가 안 보여서, 「우리가 4 를 안 보내나」와 「보내는데 클라가 안 읽나」를 갈라야 한다.
         //   값이 한두 개뿐이면 `recvSeq` 가 안 올라가는 것이다.
-        if (ack < 32) ++_ackValueHist[ack];
+        if (ack < 32) ++_stats.ackValueHist[ack];
         h.seq = ack;
     } else {
         h.seq = q.last;
@@ -484,7 +491,7 @@ void CUdpServer::SendOn(CUdpSession& s, bool reliable, uint8_t stream,
         s.reliableQueue.push_back(std::move(pr));
         if (s.reliableQueue.size() > kReliableQueueMax) {
             s.reliableQueue.erase(s.reliableQueue.begin());
-            ++_reliableQueueDropped;
+            ++_stats.reliableQueueDropped;
         }
         PushTimer(t);
     }
@@ -500,12 +507,12 @@ void CUdpServer::SendOn(CUdpSession& s, bool reliable, uint8_t stream,
 //   ackOlder — 그보다 앞 순번은 받았으니 지운다. 원본 그대로 바이트 크기로 견준다(순번이 255 를 넘어 돌 때의 처리는 원본도 없다 — `FIXME`).
 void CUdpServer::Ack(CUdpSession& s, uint8_t seq) {
     for (auto& p : s.reliableQueue)
-        if (p.seq == seq) { p.shouldSend = true; ++_reliableRetryMarked; }
+        if (p.seq == seq) { p.shouldSend = true; ++_stats.reliableRetryMarked; }
     const size_t before = s.reliableQueue.size();
     s.reliableQueue.erase(std::remove_if(s.reliableQueue.begin(), s.reliableQueue.end(),
                                          [seq](const CUdpSession::PendingReliable& p) { return p.seq < seq; }),
                           s.reliableQueue.end());
-    _reliableAcked += before - s.reliableQueue.size();
+    _stats.reliableAcked += before - s.reliableQueue.size();
 }
 
 // 「그 순번부터 다시」로 표시된 것을 내보낸다. 원본은 프레임마다 `FlushAndPoll` → `Resend` 를 부른다(`send.go:74`) —
@@ -525,7 +532,7 @@ void CUdpServer::ResendOne(CUdpSession& s, CUdpSession::PendingReliable& p, std:
     // (`conn.go:748-760` `writeTo` · 정품 녹음에서 다시 보낸 접속 수락이 키로 뒤집혀 있다).
     if (s.keyed) ApplyXor(o.data.data(), o.data.size(), s.xorKey);
     out.push_back(std::move(o));
-    ++_reliableResent;
+    ++_stats.reliableResent;
     Timer t;
     t.dueMs = p.retryAt;
     t.sessionId = s.sessionId;
@@ -562,11 +569,11 @@ void CUdpServer::OnIdleTimer(const Timer& t, std::vector<NetworkEvent>& events) 
     if (!s.announced) {
         _sessions.erase(a->second);
         _addrOf.erase(a);
-        ++_unannouncedSwept;
+        ++_stats.unannouncedSwept;
         return;
     }
     s.timeoutNotified = true;
-    ++_sessionTimedOut;
+    ++_stats.sessionTimedOut;
     NetworkEvent ev;
     ev.type = NetworkEvent::Type::DISCONNECTED;
     ev.reason = DisconnectReason::TIMEOUT;
