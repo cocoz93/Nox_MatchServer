@@ -2088,7 +2088,7 @@ void Server::StartQuest(int count, int centerX, int centerY, double spread) {
     SpawnQuestStage(false);   // 첫 스테이지 (알림은 판이 뜬 뒤 첫 틱에서)
 }
 
-// 지금 스테이지의 몬스터를 세운다. `out` 이 있으면 스테이지 알림도 보낸다.
+// 지금 스테이지의 몬스터를 세운다. `announce` 면 스테이지 알림도 보낸다.
 void Server::SpawnQuestStage(bool announce) {
     if (questStage_ >= kQuestStageCount) return;
     // ⚠ `QuestStage`(타입)는 멤버 함수 `QuestStage()` 와 이름이 겹쳐 클래스 안에서 가려진다.
@@ -2878,10 +2878,15 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
             if (stopSampleShown_.insert(sop).second) {
                 const size_t rest = probe.stopRest();
                 const size_t base = (bodyLen >= rest) ? bodyLen - rest : 0;
-                std::printf("[멈춤표본] op=%02x 남은 %zu |", sop, rest);
-                for (size_t q = 0; q < rest && q < 8; ++q)
-                    std::printf(" %02x", body[base + q]);
-                std::printf("\n");
+                // ★ 10-09 — 한 줄을 다 만든 뒤 한 번에 찍는다(나눠 찍으면 네트워크 스레드의 줄이 그 사이에 낀다)
+                char b[96];
+                std::snprintf(b, sizeof(b), "[멈춤표본] op=%02x 남은 %zu |", sop, rest);
+                std::string line = b;
+                for (size_t q = 0; q < rest && q < 8; ++q) {
+                    std::snprintf(b, sizeof(b), " %02x", body[base + q]);
+                    line += b;
+                }
+                std::printf("%s\n", line.c_str());
                 std::fflush(stdout);
             }
             return 0;
@@ -3919,10 +3924,15 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                     //   클라가 색을 0 으로 보내는 것이라면 우리 서버는 죄가 없다
                     if (info97 && joinInfo97Ok_ == 1) {
                         // ⚠ 09-19 — 앞 97B 가 **전부 0** 이었다. 자리가 틀린 것이니 본문을 통째로 본다
-                        std::printf("[접속정보97] len=%zu | ", it.bodyLen());
-                        for (size_t q = 0; q < it.bodyLen() && q < 200; ++q)
-                            std::printf("%02x ", it.body()[q]);
-                        std::printf("\n");
+                        // ★ 10-09 — 한 줄을 다 만든 뒤 한 번에 찍는다(나눠 찍으면 네트워크 스레드의 줄이 그 사이에 낀다)
+                        char b[64];
+                        std::snprintf(b, sizeof(b), "[접속정보97] len=%zu | ", it.bodyLen());
+                        std::string line = b;
+                        for (size_t q = 0; q < it.bodyLen() && q < 200; ++q) {
+                            std::snprintf(b, sizeof(b), "%02x ", it.body()[q]);
+                            line += b;
+                        }
+                        std::printf("%s\n", line.c_str());
                         std::fflush(stdout);
                     }
                     std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97, gameSettings_);
@@ -4077,7 +4087,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
 //
 // ⚠ **무늬 찾기로 하지 않는다.** 뜯어서(DecodeUpdate) 고치고 다시 짠다(EncodeUpdate).
 //   바이트열을 눈대중으로 찾으면 우연히 같은 자리를 건드린다.
-// 돌려주는 값 = 갈아 끼운 것이 있으면 참(그때만 out 이 채워진다).
+// 돌려주는 값 = 갈아 끼운 것이 있으면 참(그때만 `dst` 가 채워진다).
 // ★★★ 서두에 실린 **남의 번호**를 이 사람 번호로 바꾼다.
 //   `0xa4` 안의 사람 항목만 고치면 모자란다 — 장비·체력·부활은 `0xcc` 껍데기 안에
 //   **대상 번호를 앞 2바이트로** 달고 온다. 그 번호가 남의 것이면 클라는
@@ -17203,6 +17213,7 @@ void Server::RunTick(int ticks) {
             // ★ 정상 종료를 알린 사람은 **아래 문지기보다 먼저** 걷어낸다.
             //   「한 번도 못 받은 세션」 검사에 걸리면 `0x0a` 를 보내고도 안 나간다 —
             //   틱이 아직 0 이면 `lastSeenFrame` 도 0 이라 늘 걸린다(시험이 잡아냈다).
+            //   (10-09 조각 5a 전 이야기 — 그 문지기는 통신 층으로 갔고 `lastSeenFrame` 도 없어졌다. 지금 아래는 `timedOut` 하나)
             if (o.closing) { gone.push_back(kv.first); continue; }
             // ★ 10-09 조각 5a — 시간 초과 판정은 통신 층이 한다(`CUdpServer::Tick` → `DISCONNECTED` · TIMEOUT → `timedOut`).
             //   옛 판정 둘은 거기로 옮겼다 — 아직 한 번도 못 받은 세션(이제 막 만든 것)은 건드리지 않는다(`heard`) ·
@@ -17751,7 +17762,8 @@ void Server::RunTick(int ticks) {
     // ★ R4 — 이 틱에 바뀐 것들을 각자에게 보내고 목록을 비운다.
     //   정품의 「비트가 켜진 것만 보내고 곧바로 끈다」와 같은 자리다.
     FlushPending();
-    // 퀘스트 첫 스테이지 알림 — StartQuest 때는 out 이 없어 못 보냈다. 첫 틱에 한 번.
+    // 퀘스트 첫 스테이지 알림 — StartQuest 때는 출력 그릇(옛 `out`)이 없어 못 보냈다. 첫 틱에 한 번.
+    //   (10-09 플랜 A 5d 뒤로는 그 자리에서도 요청을 쌓을 수 있지만, 나가는 차례를 바꾸지 않으려고 그대로 둔다)
     if (questTotal_ > 0 && !questAnnounced_) {
         questAnnounced_ = true;
         if (questStage_ < kQuestStageCount) SendNotice(kQuestStages[questStage_].label);

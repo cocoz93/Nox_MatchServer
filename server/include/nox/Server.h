@@ -5,9 +5,10 @@
 // 들어온 바이트를 넣으면 나갈 바이트가 나오는 모양이라야
 // **덤프를 재생해 기계로 채점**할 수 있다 (server/src/replay.cpp).
 //
-//   [진짜 소켓]  main.cpp    ─┐
-//                             ├─▶  Server::OnPacket  ─▶  나갈 조각들
-//   [덤프 재생]  replay.cpp  ─┘
+//   [진짜 소켓]  main.cpp    ─▶  CNetworkThread(소켓 · CUdpServer) ⇄ 큐 둘 ⇄ nox::Server   — 스레드 둘
+//   [덤프 재생]  replay.cpp  ─▶  CSyncHost(CUdpServer + nox::Server)                       — 한 스레드
+//   (10-09 플랜 A 5d — 게임은 바이트가 아니라 일(`NetworkEvent`)을 받고 통신 요청(`NetworkRequest`)을 쌓는다.
+//    바이트 ↔ 일 · 요청 ↔ 바이트는 `CUdpServer` 몫. 옛 그림의 `Server::OnPacket` 은 없어졌다)
 //
 // 지금 답하는 것은 접속 절차 세 자리뿐이다. 그 밖의 오프코드는 세기만 한다.
 #pragma once
@@ -2346,7 +2347,7 @@ public:
     //   ★ `spread` — 가운데에서 이만큼 벌려 세운다. 기본은 실측 아닌 자리표시 300.
     //     실클라로 돌릴 때는 **근접 사거리 안**(45)에 세워야 걷지 않고도 시험이 된다.
     void StartQuest(int count, int centerX, int centerY, double spread = kQuestSpread);
-    // 지금 스테이지의 몬스터를 세운다. out 이 있으면 스테이지 알림도.
+    // 지금 스테이지의 몬스터를 세운다. `announce` 면 스테이지 알림도.
     void SpawnQuestStage(bool announce);   // ★ 10-09 조각 5d — 옛 `out` 포인터(있으면 알림을 냄) 자리
 
     // 서두(녹음본)에서 읽어 낸 스폰 자리. 모드를 차릴 때 기준으로 쓴다.
@@ -4402,8 +4403,8 @@ private:
     int DurBlinkCreate(DurSpell& d);                                      // spellBlink2_530310
     int DurBlinkTick(DurSpell& d);                                        // spellBlink1_530380
     // teleportToMB_4E7190 — 그 자리로 옮긴다(물리 자리·옛 자리칸 둘 다).
-    // ⚠ 사람을 옮기면 `out` 을 꼭 넘길 것 — `ea FORGET_DRAWABLES` 가 나가야 **제 캐릭터가 그려진다**
-    //   (09-20 실측 · 구현부 주석). 펫만 옮기는 자리는 null 이어도 된다
+    // ⚠ 사람을 옮기면 `forgetDrawables` 를 꼭 켤 것 — `ea FORGET_DRAWABLES` 가 나가야 **제 캐릭터가 그려진다**
+    //   (09-20 실측 · 구현부 주석). 펫만 옮기는 자리는 꺼도 된다
     void TeleportTarget(const Target& t, float x, float y, bool forgetDrawables = false);   // ★ 10-09 조각 5d — 옛 `out` 포인터(있으면 그 자리 그림을 잊게 함) 자리
     int DurShieldCreate(DurSpell& d);                                     // castShield1_52F5A0
     int DurShieldTick(DurSpell& d);                                       // sub_52F650

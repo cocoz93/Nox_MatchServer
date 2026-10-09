@@ -223,10 +223,15 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
             if (_stopSampleShown.insert(sop).second) {
                 const size_t rest = probe.stopRest();
                 const size_t base = (bodyLen >= rest) ? bodyLen - rest : 0;
-                std::printf("[멈춤표본] op=%02x 남은 %zu |", sop, rest);
-                for (size_t q = 0; q < rest && q < 8; ++q)
-                    std::printf(" %02x", body[base + q]);
-                std::printf("\n");
+                // ★ 10-09 — 한 줄을 다 만든 뒤 한 번에 찍는다(나눠 찍으면 게임 스레드의 줄이 그 사이에 낀다)
+                char b[96];
+                std::snprintf(b, sizeof(b), "[멈춤표본] op=%02x 남은 %zu |", sop, rest);
+                std::string line = b;
+                for (size_t q = 0; q < rest && q < 8; ++q) {
+                    std::snprintf(b, sizeof(b), " %02x", body[base + q]);
+                    line += b;
+                }
+                std::printf("%s\n", line.c_str());
                 std::fflush(stdout);
             }
             return 0;

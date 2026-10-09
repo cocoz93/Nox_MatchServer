@@ -1,12 +1,12 @@
 ﻿// main.cpp — 진짜 소켓을 `nox::Server` 에 붙인다.
 //
 // **여기에는 프로토콜이 없다.** 받은 바이트를 그대로 넘기고, 나온 바이트를 그대로 보낸다.
-// 서버가 무엇에 어떻게 답하는지는 전부 `server/src/Server.cpp` 에 있고,
+// 서버가 무엇에 어떻게 답하는지는 `server/src/UdpServer.cpp`(접속 제어 · 와이어)와 `server/src/Server.cpp`(게임)에 있고,
 // 같은 로직을 대조 장치(`server/src/replay.cpp`)가 덤프로 돌려 채점한다.
 //
-//   [진짜 소켓]  main.cpp    ─┐
-//                             ├─▶  Server::OnPacket  ─▶  나갈 조각들
-//   [덤프 재생]  replay.cpp  ─┘
+//   [진짜 소켓]  main.cpp    ─▶  CNetworkThread(소켓 · CUdpServer) ⇄ 큐 둘 ⇄ nox::Server   — 스레드 둘
+//   [덤프 재생]  replay.cpp  ─▶  CSyncHost(CUdpServer + nox::Server)                       — 한 스레드
+//   (10-09 플랜 A 5d — 옛 그림의 `Server::OnPacket` 은 없어졌다. `Docs/LAYERS_DESIGN.md`)
 //
 // 지금 답하는 것 = 서버 찾기 · 접속 시도 · 접속 수락 · 핑.
 //
@@ -132,46 +132,50 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
     static const char* const kName[nox::kAbilityCount] = { "", "광전사", "함성", "작살", "살금살금", "늑대눈" };
     using G = nox::AbilGate;
     using E = nox::AbilEnd;
-    std::printf("[능력별] 번호밖 %llu", srv.abilBadNum());
+    // ★ 10-09 — 줄 하나를 다 만든 뒤 한 번에 찍는다(나눠 찍으면 네트워크 스레드의 `[받음]` 이 그 사이에 낀다 — 10-09 실측
+    //   `… 돌진틱 0[받음 13366] …`)
+    std::string line;
+    char b[1024];
+    std::snprintf(b, sizeof(b), "[능력별] 번호밖 %llu", srv.abilBadNum()); line += b;
     for (uint8_t a = 1; a < nox::kAbilityCount; ++a) {
         unsigned long long sum = 0;
         for (size_t g = 0; g < nox::kAbilGateCount; ++g) sum += srv.abilGate(a, static_cast<G>(g));
-        std::printf(" | %u%s 들어옴 %llu%s = 실행 %llu + 거절{죽음 %llu·워리어아님 %llu·겹침 %llu",
-                    (unsigned)a, kName[a], srv.abilIn(a), sum == srv.abilIn(a) ? "" : " ⚠칸합불일치",
-                    srv.abilGate(a, G::Ok), srv.abilGate(a, G::Dead), srv.abilGate(a, G::NotWarrior),
-                    srv.abilGate(a, G::Exclusive));
+        std::snprintf(b, sizeof(b), " | %u%s 들어옴 %llu%s = 실행 %llu + 거절{죽음 %llu·워리어아님 %llu·겹침 %llu",
+                      (unsigned)a, kName[a], srv.abilIn(a), sum == srv.abilIn(a) ? "" : " ⚠칸합불일치",
+                      srv.abilGate(a, G::Ok), srv.abilGate(a, G::Dead), srv.abilGate(a, G::NotWarrior),
+                      srv.abilGate(a, G::Exclusive)); line += b;
         if (a <= 3) {                                        // 같이 못 켜는 셋만 「누가 막았나」가 있다
-            std::printf("(");
+            std::snprintf(b, sizeof(b), "("); line += b;
             bool first = true;
             for (uint8_t o = 1; o <= 3; ++o) {
                 if (o == a) continue;
-                std::printf("%s%s %llu", first ? "" : "·", kName[o], srv.abilBlockedBy(a, o));
+                std::snprintf(b, sizeof(b), "%s%s %llu", first ? "" : "·", kName[o], srv.abilBlockedBy(a, o)); line += b;
                 first = false;
             }
-            std::printf(")");
+            std::snprintf(b, sizeof(b), ")"); line += b;
         }
-        std::printf("·깃발 %llu", srv.abilGate(a, G::CtfFlag));   // ★ 2-b1
-        std::printf("·이미켜짐 %llu·상태12 %llu·안배움 %llu·짐넘침 %llu·쉬는중 %llu}"
-                    " 꺼짐{시간 %llu·사라짐 %llu·되돌림 %llu·전부 %llu·작살끊김 %llu·동작이끔 %llu}"
-                    " 소리부름{쓸때 %llu·꺼질때 %llu}",
-                    srv.abilGate(a, G::Already), srv.abilGate(a, G::MoveState), srv.abilGate(a, G::NotLearned),
-                    srv.abilGate(a, G::Overweight), srv.abilGate(a, G::Cooldown),
-                    srv.abilEnded(a, E::Expired), srv.abilEnded(a, E::Gone), srv.abilEnded(a, E::Reset),
-                    srv.abilEnded(a, E::CancelAll), srv.abilEnded(a, E::HarpoonBreak), srv.abilEnded(a, E::Disabled),
-                    srv.abilSoundUseCalls(a), srv.abilSoundOffCalls(a));
-        if (a == 4) std::printf(" 달리기막음 %llu", srv.treadBlockedRun());   // ★ 1-a — 살금살금이 걷기로 누른 틱
+        std::snprintf(b, sizeof(b), "·깃발 %llu", srv.abilGate(a, G::CtfFlag)); line += b;   // ★ 2-b1
+        std::snprintf(b, sizeof(b), "·이미켜짐 %llu·상태12 %llu·안배움 %llu·짐넘침 %llu·쉬는중 %llu}"
+                      " 꺼짐{시간 %llu·사라짐 %llu·되돌림 %llu·전부 %llu·작살끊김 %llu·동작이끔 %llu}"
+                      " 소리부름{쓸때 %llu·꺼질때 %llu}",
+                      srv.abilGate(a, G::Already), srv.abilGate(a, G::MoveState), srv.abilGate(a, G::NotLearned),
+                      srv.abilGate(a, G::Overweight), srv.abilGate(a, G::Cooldown),
+                      srv.abilEnded(a, E::Expired), srv.abilEnded(a, E::Gone), srv.abilEnded(a, E::Reset),
+                      srv.abilEnded(a, E::CancelAll), srv.abilEnded(a, E::HarpoonBreak), srv.abilEnded(a, E::Disabled),
+                      srv.abilSoundUseCalls(a), srv.abilSoundOffCalls(a)); line += b;
+        if (a == 4) { std::snprintf(b, sizeof(b), " 달리기막음 %llu", srv.treadBlockedRun()); line += b; }   // ★ 1-a — 살금살금이 걷기로 누른 틱
         // ★ 2-a1 — 함성 애니가 외치는 칸(2→3)을 넘은 수 · 애니가 끝나 켜짐 값을 내린 수
-        if (a == 2) std::printf(" 외침칸 %llu·애니끝 %llu·기절몬스터 %llu", srv.warcryShouts(), srv.abilValOff(), srv.warcryStunned());
-        if (a == 1) std::printf(" 돌진틱 %llu", srv.berserkChargeTicks());   // ★ 2-b1 — 광전사가 앞으로 민 틱
+        if (a == 2) { std::snprintf(b, sizeof(b), " 외침칸 %llu·애니끝 %llu·기절몬스터 %llu", srv.warcryShouts(), srv.abilValOff(), srv.warcryStunned()); line += b; }
+        if (a == 1) { std::snprintf(b, sizeof(b), " 돌진틱 %llu", srv.berserkChargeTicks()); line += b; }   // ★ 2-b1 — 광전사가 앞으로 민 틱
         if (a == 1) {                                        // ★ 2-b2 — 켜진 채 부딪힘 함수를 부른 수 = 갈래 합
             using B = nox::BerserkHit;
-            std::printf(" 부딪힘 %llu%s = {유닛 %llu·물체 %llu·벽세게 %llu·벽살짝 %llu·가벼워지나감 %llu·겹쳐지나감 %llu·문 %llu}",
-                        srv.berserkCollideCalls(), srv.BerserkHitSum() == srv.berserkCollideCalls() ? "" : " ⚠칸합불일치",
-                        srv.berserkHit(B::Unit), srv.berserkHit(B::Object), srv.berserkHit(B::WallHard),
-                        srv.berserkHit(B::WallSoft), srv.berserkHit(B::Light), srv.berserkHit(B::Overlap), srv.berserkHit(B::Door));
+            std::snprintf(b, sizeof(b), " 부딪힘 %llu%s = {유닛 %llu·물체 %llu·벽세게 %llu·벽살짝 %llu·가벼워지나감 %llu·겹쳐지나감 %llu·문 %llu}",
+                          srv.berserkCollideCalls(), srv.BerserkHitSum() == srv.berserkCollideCalls() ? "" : " ⚠칸합불일치",
+                          srv.berserkHit(B::Unit), srv.berserkHit(B::Object), srv.berserkHit(B::WallHard),
+                          srv.berserkHit(B::WallSoft), srv.berserkHit(B::Light), srv.berserkHit(B::Overlap), srv.berserkHit(B::Door)); line += b;
         }
     }
-    std::printf("\n");
+    std::printf("%s\n", line.c_str());
     using T = nox::HarpoonTouch;
     using H = nox::HarpoonEnd;
     // ★ 4-c3b2b — 닿음·끊김에 「피해안들어감」 · 끊길 때 따로 내는 기본 타격 소리(`532E20`) 칸
@@ -1108,21 +1112,30 @@ int main(int argc, char** argv) {
                     const auto& ms = srv.missileList();
                     std::map<unsigned, unsigned> byFrame;
                     for (const auto& mo : ms) ++byFrame[static_cast<unsigned>(mo.dir1 >> 3)];
-                    std::printf("[화살목록] %zu개 · 본디프레임 분포", ms.size());
-                    for (const auto& kv : byFrame) std::printf(" %u:%u", kv.first, kv.second);
+                    // ★ 10-09 — 여러 번에 나눠 만드는 줄은 다 만든 뒤 한 번에 찍는다(아래 `[소리]` · `[성장]` · `[피해]` ·
+                    //   `[발길질 차례]` · `[버림]` 도 같다). 나눠 찍으면 네트워크 스레드의 `[받음]` 이 그 사이에 낀다
+                    //   (10-09 실측 — `[버림] 조각 6400개 —[받음 6410] …`)
+                    char b[128];
+                    std::snprintf(b, sizeof(b), "[화살목록] %zu개 · 본디프레임 분포", ms.size());
+                    std::string line = b;
+                    for (const auto& kv : byFrame) {
+                        std::snprintf(b, sizeof(b), " %u:%u", kv.first, kv.second);
+                        line += b;
+                    }
                     size_t shown = 0;
                     for (const auto& mo : ms) {
                         if (shown++ >= 8) break;
                         // ⚠ 이 값은 **원래 방향에서 나온 프레임**이다. `--arrow-frame` 으로
                         //   못 박으면 와이어에는 그 값이 실리지만 여기 숫자는 안 바뀐다
                         //   (덮어쓰기는 보낼 때 `FillEntry` 호출부에서 한다).
-                        std::printf(" | %u (%d,%d) dir1=%u→본디프레임 %u",
-                                    static_cast<unsigned>(mo.netCode),
-                                    static_cast<int>(mo.posX), static_cast<int>(mo.posY),
-                                    static_cast<unsigned>(mo.dir1),
-                                    static_cast<unsigned>(mo.dir1 >> 3));
+                        std::snprintf(b, sizeof(b), " | %u (%d,%d) dir1=%u→본디프레임 %u",
+                                      static_cast<unsigned>(mo.netCode),
+                                      static_cast<int>(mo.posX), static_cast<int>(mo.posY),
+                                      static_cast<unsigned>(mo.dir1),
+                                      static_cast<unsigned>(mo.dir1 >> 3));
+                        line += b;
                     }
-                    std::printf("\n");
+                    std::printf("%s\n", line.c_str());
                 }
                 // ★★ B-1b — **신뢰 순번을 스트림별로 갈라 찍는다** (2026-09-18).
                 //   합계만 보면 「클라가 보낸 스트림」과 「서버가 답한 스트림」이 어긋나도
@@ -1272,28 +1285,38 @@ int main(int argc, char** argv) {
                 //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.
                 //   ⚠ 소리 셋은 합치지 말 것 — 「안 불렀다」·「불렀는데 표가 비어 버렸다」·
                 //     「담겼는데 거리에서 잘렸다」가 한 숫자면 묶음 10 이 통째로 판정 불능이 된다.
-                std::printf("[소리] 담김 %llu(표없어버림 %llu) · 나감 %llu · 음악 %llu",
-                            srv.soundsQueued(), srv.soundsDropped(), srv.soundsSent(), srv.musicSent());
-                // ★ **버린 소리는 번호까지 찍는다.** 수만 알면 「정답지대로 버린 것」(소리조각 0)과
-                //   「우리가 엉뚱한 번호를 부른 것」이 안 갈린다. 조각 E 에서 진단 판 하나만
-                //   「표없어버림 1」이 떴는데 **무엇인지 알 길이 없었다**.
-                if (!srv.soundsDroppedIds().empty()) {
-                    std::printf(" — 버린 번호");
-                    for (const auto& kv : srv.soundsDroppedIds())
-                        std::printf(" %u(%s)x%llu", (unsigned)kv.first, nox::SoundName(kv.first), kv.second);
+                {   // ★ 10-09 — 다 만든 뒤 한 번에 찍는다(위 `[화살목록]` 주석)
+                    char b[256];
+                    std::snprintf(b, sizeof(b), "[소리] 담김 %llu(표없어버림 %llu) · 나감 %llu · 음악 %llu",
+                                  srv.soundsQueued(), srv.soundsDropped(), srv.soundsSent(), srv.musicSent());
+                    std::string line = b;
+                    // ★ **버린 소리는 번호까지 찍는다.** 수만 알면 「정답지대로 버린 것」(소리조각 0)과
+                    //   「우리가 엉뚱한 번호를 부른 것」이 안 갈린다. 조각 E 에서 진단 판 하나만
+                    //   「표없어버림 1」이 떴는데 **무엇인지 알 길이 없었다**.
+                    if (!srv.soundsDroppedIds().empty()) {
+                        line += " — 버린 번호";
+                        for (const auto& kv : srv.soundsDroppedIds()) {
+                            std::snprintf(b, sizeof(b), " %u(%s)x%llu", (unsigned)kv.first, nox::SoundName(kv.first), kv.second);
+                            line += b;
+                        }
+                    }
+                    std::printf("%s\n", line.c_str());
                 }
-                std::printf("\n");
                 // ★ **성장 한 줄** — 진단 스위치(`--debug-xp`·`--debug-give-spell`)가 먹었는지
                 //   보는 유일한 자리다. 없을 때는 판 G 가 통째로 판정 불능이었다(조각 C 13·14번).
                 if (!opt.bots.empty()) {
                     const int64_t b0 = bot0Sid;   // ★ 10-08 조각 4 — 세션 번호(10-09 조각 5d-2b — 스레드를 띄우기 전에 읽어 둔 것)
-                    std::printf("[성장] 레벨 %d · 경험치 %.0f",
-                                srv.DebugLevel(b0), (double)srv.DebugExperience(b0));
-                    if (opt.debugSpellId > 0)
-                        std::printf(" · 준 주문 %d(%s) 레벨 %d", opt.debugSpellId,
-                                    nox::SpellName(static_cast<uint8_t>(opt.debugSpellId)),
-                                    srv.DebugSpellLvl(b0, static_cast<uint8_t>(opt.debugSpellId)));
-                    std::printf("\n");
+                    char b[256];   // ★ 10-09 — 다 만든 뒤 한 번에 찍는다(위 `[화살목록]` 주석)
+                    std::snprintf(b, sizeof(b), "[성장] 레벨 %d · 경험치 %.0f",
+                                  srv.DebugLevel(b0), (double)srv.DebugExperience(b0));
+                    std::string line = b;
+                    if (opt.debugSpellId > 0) {
+                        std::snprintf(b, sizeof(b), " · 준 주문 %d(%s) 레벨 %d", opt.debugSpellId,
+                                      nox::SpellName(static_cast<uint8_t>(opt.debugSpellId)),
+                                      srv.DebugSpellLvl(b0, static_cast<uint8_t>(opt.debugSpellId)));
+                        line += b;
+                    }
+                    std::printf("%s\n", line.c_str());
                 }
                 // ★ 조각 I — 체력은 **세 길**로 간다. 「41 남의 체력」만 찍던 때는
                 //   `피해 14 · 체력알림 1` 이 「안 보낸다」인지 「딴 길로 간다」인지 안 갈렸다.
@@ -1308,11 +1331,17 @@ int main(int argc, char** argv) {
                 if (!srv.damageStops().empty()) {
                     // ★ 09-20 — 주인 없는 둘의 갈래도 같이 찍는다(⑮ 덫 화살 ↔ 맵 몬스터).
                     //   둘 다 몬스터면 적이 아니고, 한쪽이 몬스터가 아니면(덫 화살) 적이다
-                    std::printf("[피해] 주인없음갈래(둘다몬스터 %llu·뿌리가몬스터아님 %llu) 막힌 곳 —",
-                                srv.wildBothMonster(), srv.wildRootNotMonster());
-                    for (const auto& kv : srv.damageStops())
-                        std::printf(" %s %llu", kv.first.c_str(), kv.second);
-                    std::printf("\n");
+                    char b[256];   // ★ 10-09 — 다 만든 뒤 한 번에 찍는다(위 `[화살목록]` 주석)
+                    std::snprintf(b, sizeof(b), "[피해] 주인없음갈래(둘다몬스터 %llu·뿌리가몬스터아님 %llu) 막힌 곳 —",
+                                  srv.wildBothMonster(), srv.wildRootNotMonster());
+                    std::string line = b;
+                    for (const auto& kv : srv.damageStops()) {
+                        std::snprintf(b, sizeof(b), " %llu", kv.second);
+                        line += ' ';
+                        line += kv.first;
+                        line += b;
+                    }
+                    std::printf("%s\n", line.c_str());
                 }
                 std::printf("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu"
                             " · 덫판정(통과 %llu·멂 %llu·방향 %llu·벽 %llu)"
@@ -1368,13 +1397,16 @@ int main(int argc, char** argv) {
                             srv.firstKick().px, srv.firstKick().py);
                 // ★ 09-21 밤 — 발길질을 **차례대로**. 깊이가 불어나면 되먹임이고, 안 불어나면 딴 원인이다
                 if (srv.kickSeqCount()) {
-                    std::printf("[발길질 차례] 모두 %zu회 중 앞 %zu회 —", srv.kickSeqTotal(), srv.kickSeqCount());
+                    char b[256];   // ★ 10-09 — 다 만든 뒤 한 번에 찍는다(위 `[화살목록]` 주석)
+                    std::snprintf(b, sizeof(b), "[발길질 차례] 모두 %zu회 중 앞 %zu회 —", srv.kickSeqTotal(), srv.kickSeqCount());
+                    std::string line = b;
                     for (size_t k = 0; k < srv.kickSeqCount(); ++k) {
                         const auto& q = srv.kickSeq(k);
-                        std::printf(" %zu)%s 깊이%.1f 속도%.1f 프레임%llu", k + 1,
-                                    q.kind == 3 ? "벽" : "물건", q.depth, q.speedBefore, q.frame);
+                        std::snprintf(b, sizeof(b), " %zu)%s 깊이%.1f 속도%.1f 프레임%llu", k + 1,
+                                      q.kind == 3 ? "벽" : "물건", q.depth, q.speedBefore, q.frame);
+                        line += b;
                     }
-                    std::printf("\n");
+                    std::printf("%s\n", line.c_str());
                 }
                 std::printf("[판끝멈춤] 멈춘 틱 %llu\n", srv.roundFrozenTicks());   // ★ 10-01 R1
                 std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
@@ -1389,13 +1421,16 @@ int main(int argc, char** argv) {
                             srv.spellsOnSelf(), srv.spellEffectDeferred());
                 // ★ 10-08 조각 3 — 접속 제어 조각의 버림은 통신 층이 센다. 둘을 합쳐 찍는다.
                 if (!srv.stoppedByOp().empty() || !ns.stoppedByOp.empty()) {
-                    std::printf("[버림] 조각 %llu개 —", srv.stopped() + ns.stopped);
+                    char b[128];   // ★ 10-09 — 다 만든 뒤 한 번에 찍는다(위 `[화살목록]` 주석)
+                    std::snprintf(b, sizeof(b), "[버림] 조각 %llu개 —", srv.stopped() + ns.stopped);
+                    std::string line = b;
                     for (const auto* byOp : { &srv.stoppedByOp(), &ns.stoppedByOp })
                     for (const auto& kv : *byOp) {
-                        std::printf(" %02x(%s)x%llu", kv.first,
-                                    nox::OpName(static_cast<nox::Op>(kv.first)), kv.second);
+                        std::snprintf(b, sizeof(b), " %02x(%s)x%llu", kv.first,
+                                      nox::OpName(static_cast<nox::Op>(kv.first)), kv.second);
+                        line += b;
                     }
-                    std::printf("\n");
+                    std::printf("%s\n", line.c_str());
                 }
                 // ★ 09-29 ③ — 게임 패킷 안의 0x00(0 채움)에서 읽기를 끝낸 수(전에는 하나하나 0x04 로 답했다)
                 std::printf("[0채움] 게임 패킷 안 0x00 에서 읽기 끝 %llu\n", srv.connectTailStops());

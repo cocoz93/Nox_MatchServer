@@ -189,20 +189,30 @@ void CNetworkThread::Run() {
             }
             if (_verbose) {
                 const size_t passed = events.size() - evBefore, made = out.size() - outBefore;
+                // ★ 10-09 — 여러 번에 나눠 만드는 줄은 다 만든 뒤 한 번에 찍는다(나눠 찍으면 게임 스레드의 줄이 그 사이에 낀다)
+                char b[64];
                 // 접속 제어도 못 읽고 게임에도 안 넘겼으면 그 바이트를 찍는다(옛 `[못 읽음]`)
                 if (ctl == 0 && passed == 0 && n > 3) {
-                    std::printf("  [못 읽음]");
-                    for (int i = 0; i < n && i < 32; ++i) std::printf(" %02x", in[i]);
-                    std::printf("\n");
+                    std::string line = "  [못 읽음]";
+                    for (int i = 0; i < n && i < 32; ++i) {
+                        std::snprintf(b, sizeof(b), " %02x", in[i]);
+                        line += b;
+                    }
+                    std::printf("%s\n", line.c_str());
                 }
                 // ★ 10-09 조각 5d-2b — 게임 메시지 수는 게임 스레드가 다음 틱에 읽으므로 여기서는 「게임으로 넘김」만 센다
                 std::printf("[받음 %llu] %s  %d바이트 → 접속 제어 %zu개 · 게임으로 넘김 %zu · 보낸 조각 %zu개\n",
                             _threadStats.datagramsIn, who.c_str(), n, ctl, passed, made);
                 // 뜯었는데 답이 없으면 무엇을 봤는지 · 열쇠 상태(옛 `main` 의 같은 줄 — 복호가 어긋나면 쓰레기가 오프코드로 보인다)
                 if (ctl > 0 && made == 0 && passed == 0 && n > 3) {
-                    std::printf("     ↳ 본 것:");
-                    for (uint8_t o : _network.LastFragOps()) std::printf(" %02x(%s)", o, OpName(static_cast<Op>(o)));
-                    std::printf("  · 열쇠 %s 0x%02x\n", _network.IsKeyed(who) ? "있음" : "없음", _network.KeyOf(who));
+                    std::string line = "     ↳ 본 것:";
+                    for (uint8_t o : _network.LastFragOps()) {
+                        std::snprintf(b, sizeof(b), " %02x(%s)", o, OpName(static_cast<Op>(o)));
+                        line += b;
+                    }
+                    std::snprintf(b, sizeof(b), "  · 열쇠 %s 0x%02x", _network.IsKeyed(who) ? "있음" : "없음", _network.KeyOf(who));
+                    line += b;
+                    std::printf("%s\n", line.c_str());
                 }
                 std::fflush(stdout);
             }
