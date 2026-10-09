@@ -53,6 +53,23 @@ void CUdpServer::RequestDisconnectSession(int64_t sessionId) {
     _addrOf.erase(it);
 }
 
+void CUdpServer::OnRequest(const NetworkRequest& r, std::vector<OutPacket>& out) {
+    switch (r.type) {
+        case NetworkRequest::Type::SEND_MSG:
+            RequestSendMsg(r.sessionId, r.reliable, r.stream, r.body.data(), r.body.size(), out);
+            break;
+        case NetworkRequest::Type::DISCONNECT_SESSION:
+            RequestDisconnectSession(r.sessionId);
+            break;
+        case NetworkRequest::Type::RESPOND_JOIN:
+            RespondJoin(r.sessionId, r.accept, r.body, out);
+            break;
+        case NetworkRequest::Type::SET_SESSION_TIMEOUT:
+            RequestSetSessionTimeout(r.sessionId, r.timeoutMs);
+            break;
+    }
+}
+
 void CUdpServer::RespondJoin(int64_t sessionId, bool accept, const std::vector<uint8_t>& rejectMsg,
                              std::vector<OutPacket>& out) {
     auto a = _addrOf.find(sessionId);

@@ -102,6 +102,25 @@ struct NetworkEvent {
     uint16_t netCode = 0;
 };
 
+// ★ 10-09 조각 5d — 게임 → 통신 층 요청 하나. 게임은 와이어 조각을 만들지 않고 이것을 쌓아 두고, 게임을 돌리는 쪽
+//   (한 스레드 조립 `CSyncHost` · 조각 5d-2 의 네트워크 스레드)이 꺼내 `CUdpServer::OnRequest` 로 넘긴다
+//   (`Docs/LAYERS_DESIGN.md` 「조각 5d 설계」). 이름은 `CUdpServer` 의 같은 이름 함수에 맞췄다.
+struct NetworkRequest {
+    enum class Type {
+        SEND_MSG,              // 몸통 하나를 그 세션에 — 머리·순번·되받기·XOR 은 통신 층(`RequestSendMsg`)
+        DISCONNECT_SESSION,    // 그 세션을 지운다(`RequestDisconnectSession`)
+        RESPOND_JOIN,          // 접속 시도에 답한다(`RespondJoin`)
+        SET_SESSION_TIMEOUT    // 시간 초과 한도(`RequestSetSessionTimeout`)
+    };
+    Type type = Type::SEND_MSG;
+    int64_t sessionId = 0;
+    bool reliable = false;           // SEND_MSG
+    uint8_t stream = 0;              // SEND_MSG
+    std::vector<uint8_t> body;       // SEND_MSG(몸통) · RESPOND_JOIN(거절 메시지 — 허락이면 빈 것)
+    bool accept = false;             // RESPOND_JOIN
+    uint32_t timeoutMs = 0;          // SET_SESSION_TIMEOUT
+};
+
 // ★ 10-09 조각 5a — 게임이 한도를 알리기 전의 시간 초과 한도(ms). 한도는 게임 규칙이라 게임이 정한다(`RequestSetSessionTimeout`).
 constexpr uint32_t kDefaultSessionTimeoutMs = 30000;
 
@@ -177,6 +196,9 @@ public:
     // 처음 0x20 이상이 나온 자리부터는 `RECEIVED` 로 게임에 넘긴다. 돌려주는 값 = 여기서 읽은 접속 제어 메시지 수.
     size_t OnDatagram(const std::string& from, const uint8_t* data, size_t n,
                       std::vector<OutPacket>& out, std::vector<NetworkEvent>& events);
+
+    // ★ 10-09 조각 5d — 게임이 쌓은 요청 하나를 처리한다(아래 같은 이름 함수로 나눠 보냄). 나갈 조각은 `out` 에.
+    void OnRequest(const NetworkRequest& r, std::vector<OutPacket>& out);
 
     // 게임이 만든 몸통 하나를 조각으로 — 머리 2바이트(신뢰·스트림·순번)를 붙이고 키를 줬으면 XOR.
     //   없는 세션이면 버리고 센다(`sendNoSession`).

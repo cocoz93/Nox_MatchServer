@@ -24452,6 +24452,78 @@ void TestJoinBoundary() {
     std::printf("  10-09 조각 5c — 접속 시도는 게임에 물어 답함(JOIN_REQUESTED → RespondJoin) · 허락·거절 · 걷힌 뒤 답 · 붙은 뒤엔 안 물음 · 사람 자리 안 만듦\n");
 }
 
+// ── 10-09 플랜 A 조각 5d-1a — 게임 → 통신 층 요청(`NetworkRequest`)을 `OnRequest` 하나로 받는다 ─────────
+//   게임은 와이어를 만들지 않고 요청을 쌓는다(조각 5d). 통신 층은 종류마다 같은 이름 함수로 나눠 보낸다.
+//   ① 보내기 — 신뢰는 순번을 쓰고 올림(접속 수락이 0 을 썼으니 1) · 비신뢰는 직전 신뢰 순번을 실음 · 몸통 그대로
+//   ② 접속 답 — 허락이면 JOIN_OK · 거절이면 실어 준 메시지
+//   ③ 한도 — 5초로 알리면 5.001초에 시간 초과
+//   ④ 끊기 — 세션이 지워지고 그 뒤 보내기는 버리고 센다
+void TestNetworkRequest() {
+    using Req = nox::NetworkRequest;
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    std::vector<uint8_t> tryJoin(100, 0);
+    tryJoin[2] = static_cast<uint8_t>(nox::Op::SERVER_TRY_JOIN);
+    char m[240];
+    nox::CUdpServer net;
+    net.SetXorKey(0);
+    std::vector<nox::OutPacket> o; std::vector<nox::NetworkEvent> got, ev;
+    net.Tick(1000, o, ev);
+    const std::string a = "10.10.9.31:10931";
+    net.OnDatagram(a, conn, sizeof(conn), o, got);                  // 1000 — 접속 수락이 스트림 0 신뢰 순번 0 을 썼다
+    const int64_t sa = net.SessionIdOf(a);
+    {
+        Req r;
+        r.type = Req::Type::SEND_MSG; r.sessionId = sa; r.reliable = true; r.stream = 0; r.body = { 0xc6 };
+        std::vector<nox::OutPacket> s1; net.OnRequest(r, s1);
+        r.reliable = false; r.body = { 0x27, 1, 2 };
+        std::vector<nox::OutPacket> s2; net.OnRequest(r, s2);
+        const bool rel = s1.size() == 1 && s1[0].to == a && s1[0].data.size() == 3 &&
+                         s1[0].data[0] == 0x80 && s1[0].data[1] == 1 && s1[0].data[2] == 0xc6;
+        const bool unrel = s2.size() == 1 && s2[0].data.size() == 5 && s2[0].data[0] == 0x00 && s2[0].data[1] == 1 &&
+                           s2[0].data[2] == 0x27 && s2[0].data[3] == 1 && s2[0].data[4] == 2;
+        std::snprintf(m, sizeof(m), "① 보내기 — 신뢰 조각 %zu개(머리 %02x %02x) · 비신뢰 조각 %zu개(머리 %02x %02x · 길이 %zu)",
+                      s1.size(), s1.empty() ? 0 : s1[0].data[0], s1.empty() ? 0 : s1[0].data[1],
+                      s2.size(), s2.empty() ? 0 : s2[0].data[0], s2.empty() ? 0 : s2[0].data[1], s2.empty() ? 0 : s2[0].data.size());
+        Check(rel && unrel, m);
+    }
+    {
+        const std::string b = "10.10.9.32:10932", c = "10.10.9.33:10933";
+        net.OnDatagram(b, tryJoin.data(), tryJoin.size(), o, got);
+        net.OnDatagram(c, tryJoin.data(), tryJoin.size(), o, got);
+        Req yes; yes.type = Req::Type::RESPOND_JOIN; yes.sessionId = net.SessionIdOf(b); yes.accept = true;
+        Req no; no.type = Req::Type::RESPOND_JOIN; no.sessionId = net.SessionIdOf(c); no.accept = false;
+        no.body = { static_cast<uint8_t>(nox::Op::SERVER_JOIN_FAIL) };
+        std::vector<nox::OutPacket> jy; net.OnRequest(yes, jy);
+        std::vector<nox::OutPacket> jn; net.OnRequest(no, jn);
+        const bool okYes = jy.size() == 1 && jy[0].to == b && jy[0].data.size() == 3 &&
+                           jy[0].data[2] == static_cast<uint8_t>(nox::Op::SERVER_JOIN_OK);
+        const bool okNo = jn.size() == 1 && jn[0].to == c && jn[0].data.size() == 3 &&
+                          jn[0].data[2] == static_cast<uint8_t>(nox::Op::SERVER_JOIN_FAIL);
+        std::snprintf(m, sizeof(m), "② 접속 답 — 허락 %d · 거절 %d(거절 셈 %llu)", (int)okYes, (int)okNo, net.joinRejected());
+        Check(okYes && okNo && net.joinRejected() == 1, m);
+    }
+    {
+        Req r; r.type = Req::Type::SET_SESSION_TIMEOUT; r.sessionId = sa; r.timeoutMs = 5000;
+        net.OnRequest(r, o);
+        auto timeouts = [&] { int n = 0; for (const auto& e : ev) if (e.type == nox::NetworkEvent::Type::DISCONNECTED && e.sessionId == sa) ++n; return n; };
+        net.Tick(6000, o, ev);
+        const int at6 = timeouts();
+        net.Tick(6001, o, ev);
+        std::snprintf(m, sizeof(m), "③ 한도 5초 — 6초 %d · 6.001초 %d", at6, timeouts());
+        Check(at6 == 0 && timeouts() == 1, m);
+    }
+    {
+        Req d; d.type = Req::Type::DISCONNECT_SESSION; d.sessionId = sa;
+        net.OnRequest(d, o);
+        Req r; r.type = Req::Type::SEND_MSG; r.sessionId = sa; r.body = { 0x27 };
+        std::vector<nox::OutPacket> s; net.OnRequest(r, s);
+        std::snprintf(m, sizeof(m), "④ 끊기 — 세션 %lld · 그 뒤 보내기 조각 %zu · 버린 셈 %llu",
+                      (long long)net.SessionIdOf(a), s.size(), net.sendNoSession());
+        Check(net.SessionIdOf(a) == nox::kNoSession && s.empty() && net.sendNoSession() == 1, m);
+    }
+    std::printf("  10-09 조각 5d-1a — 통신 요청 넷(보내기·접속 답·한도·끊기)을 OnRequest 하나로 받음\n");
+}
+
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
 //   원본 `send_reliable.go`(2초 뒤 · 1초마다 살핌) · 정품 녹음 `CAP_GEN3`(확인 못 받은 접속 수락을 약 2.1초마다 다시 보냄).
 //   클라 확인 = 비신뢰 조각 머리 순번(「다음에 받을 순번」) — 그보다 앞은 지우고, 그 순번이 있으면 바로 다시 보낸다.
@@ -29616,6 +29688,7 @@ int main() {
     TestSessionTimeout();
     TestTimerHeap();
     TestJoinBoundary();
+    TestNetworkRequest();
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();
