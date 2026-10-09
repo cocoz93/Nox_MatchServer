@@ -176,8 +176,12 @@ int CRoomManager::PickRoom(const std::string& name, const std::string& addr) {
     return r->second.roomId;
 }
 
+// 접속 시도를 받을지 — 입장 때 방을 고르는 기준(`PickRoom`)과 같아야 한다(받아 놓고 입장 때 끊지 않게).
+//   ★ 10-09 자가검증 — 처음엔 명단에 이름만 있으면 받아, 그 방이 닫혔으면 `JOIN_OK` 뒤 입장 때 끊었다. IP 는 입장 때 본다(접속 시도의 임시 포트)
 bool CRoomManager::RosterAccepts(const std::string& name) const {
-    return _roster.count(Lower(name)) != 0 || (_defaultRoom != kNoRoom && HasRoom(_defaultRoom));
+    auto r = _roster.find(Lower(name));
+    if (r != _roster.end()) return HasRoom(r->second.roomId);
+    return _defaultRoom != kNoRoom && HasRoom(_defaultRoom);
 }
 
 int CRoomManager::BeginTick(uint32_t nowMs) {

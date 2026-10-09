@@ -24902,7 +24902,24 @@ void TestRooms() {
         Check(rec.size() == 158 && rooms.RoomOfSession(sj) == r1 && rooms.Game(r1).inGameCount() == 1 &&
               rooms.Stats().acceptNoRoster == 0, m);
     }
-    std::printf("  10-09 플랜 B 작업 6b — 방 나누기: 명단 → 방 · 포트 바뀜 · 안 섞임 · 명단 밖 거절(0x13 사유 4) · IP · 방이 없는 세션 · 나감 · 방 닫기 · 기본 방 · 정품 입장 조각\n");
+    {   // ⑪ 명단의 방이 닫힌 이름 — 접속 시도에서 거절(받아 놓고 입장 때 끊지 않는다)
+        nox::CSyncHost srv;
+        srv.Network().SetXorKey(0);
+        RM& rooms = srv.Rooms();
+        const int r1 = rooms.CreateRoom();
+        rooms.SetRosterEntry("Alice", 0);
+        rooms.SetRosterEntry("Dave", r1);
+        rooms.CloseRoom(r1);
+        std::vector<nox::OutPacket> o;
+        const auto tj = TryJoinPkt("Dave");
+        srv.OnPacket("10.27.0.1:1001", tj.data(), tj.size(), o);
+        const std::vector<uint8_t> want = { kErr, static_cast<uint8_t>(nox::ConnectError::Closed) };
+        int errClosed = 0;
+        for (const auto& x : FlattenTo(o, "10.27.0.1:1001")) if (x == want) ++errClosed;
+        std::snprintf(m, sizeof(m), "⑪ 명단의 방이 닫힘 — 거절 %d · 받음 %d", errClosed, msgs(o, "10.27.0.1:1001", kOk, 1));
+        Check(errClosed == 1 && msgs(o, "10.27.0.1:1001", kOk, 1) == 0, m);
+    }
+    std::printf("  10-09 플랜 B 작업 6b — 방 나누기: 명단 → 방 · 포트 바뀜 · 안 섞임 · 명단 밖 거절(0x13 사유 4) · IP · 방이 없는 세션 · 나감 · 방 닫기 · 기본 방 · 정품 입장 조각 · 닫힌 방 이름\n");
 }
 
 // ── 10-08 플랜 A 조각 3b — 확인이 안 온 신뢰 조각을 다시 보낸다 ─────────
