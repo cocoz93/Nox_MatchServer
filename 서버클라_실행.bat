@@ -40,10 +40,12 @@ if not exist "%MAPFILE%" (
 rem 전 판 닫기 - 클라는 창 닫기 신호 먼저, 10초 안에 안 꺼지면 강제로
 call :closeapp Game.exe
 call :closeapp Game2.exe
-rem 서버는 콘솔 프로그램이라 창 닫기 신호를 못 받는다. 저장할 상태도 없어 바로 끈다
+rem 서버는 콘솔 프로그램이라 창 닫기 신호를 못 받는다. 그래서 닫기 이벤트(nox_server_stop_<pid>)를 켜서 정상 종료시킨다
+rem (사람마다 서버 닫힘 알림을 보내고 끝남 - 10-09 조각 5d-2c). 5초 안에 안 꺼지면 그때 강제로 끈다
 tasklist /fi "imagename eq nox_server.exe" | find /i "nox_server.exe" >nul
 if not errorlevel 1 (
   echo  전 판 서버 끄는 중
+  powershell -NoProfile -Command "Get-Process nox_server -ErrorAction SilentlyContinue | ForEach-Object { try { [Threading.EventWaitHandle]::OpenExisting('nox_server_stop_' + $_.Id).Set() | Out-Null } catch {} }; $t = 0; while ((Get-Process nox_server -ErrorAction SilentlyContinue) -and $t -lt 50) { Start-Sleep -Milliseconds 100; $t++ }"
   taskkill /f /im nox_server.exe >nul 2>&1
   timeout /t 1 /nobreak >nul
 )

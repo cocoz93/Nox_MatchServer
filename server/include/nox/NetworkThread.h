@@ -55,7 +55,9 @@ public:
     uint16_t Port() const { return _port; }
     void Start();
     // 깨워서 멈추고 스레드가 끝날 때까지 기다린다. 여러 번 불러도 된다.
-    void Stop();
+    //   ★ 10-09 조각 5d-2c — 멈추기 전 마지막으로 한 번 돈다 — 쌓인 요청을 처리해 보내고, `closeSessions` 면 키를 준 상대마다
+    //   `SERVER_CLOSE` 를 보낸다(`CUdpServer::CloseAll`). 그때는 받지 않고 타이머도 돌리지 않는다.
+    void Stop(bool closeSessions = false);
     bool Running() const { return _thread.joinable(); }
 
     // ── 게임 스레드에서 부른다(스레드 안전) ──
@@ -70,6 +72,8 @@ public:
     void SetVerbose(bool v) { _verbose = v; }
     // 시험용 — 타이머가 없을 때 기다리는 최대 시간(기본 `kMaxWaitMs`). 길게 두면 깨어난 까닭(요청 · 타이머)이 시각으로 갈린다. 시작 전에.
     void SetMaxWaitMs(uint32_t ms) { _maxWaitMs = ms; }
+    // 시험용 — 큐 한도(기본 `kQueueMax`). 작게 두어 넘칠 때 버리고 세는지 본다. 시작 전에.
+    void SetQueueMaxForTest(size_t n) { _queueMax = n; }
 
 private:
     void Run();
@@ -83,8 +87,10 @@ private:
     bool _wsaUp = false;
     bool _verbose = false;
     uint32_t _maxWaitMs = kMaxWaitMs;
+    size_t _queueMax = kQueueMax;
     std::thread _thread;
     std::atomic<bool> _stop{ false };
+    std::atomic<bool> _closeOnStop{ false };
 
     mutable std::mutex _queueMu;                    // 아래 넷을 지킨다
     std::vector<NetworkRequest> _requests;

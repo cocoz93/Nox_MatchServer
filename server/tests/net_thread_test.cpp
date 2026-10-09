@@ -41,6 +41,7 @@ bool IsAccept(const std::vector<uint8_t>& d) {   // 접속 수락 — 머리 2 +
 // ② 게임 요청(보내기)을 넣으면 깨어나 곧 보낸다 — 기다림 최대를 5초로 두었으니 깨우기가 없으면 다음 타이머(2초)까지 늦는다
 // ③ 확인이 없으면 접속 수락을 보낸 지 2초에 다시 받는다 — 타이머 마감에 깨어난다(깨지 않으면 5초)
 // ④ `Stop` — 스레드가 끝나고 두 번 불러도 된다
+// ⑤ 닫기 — 넣자마자 멈춘 요청도 나가고 `SERVER_CLOSE` 가 간다 ⑥ 큐 한도 — 넘친 요청·이벤트는 버리고 센다
 std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
     std::vector<std::pair<bool, std::string>> r;
     char m[240];
@@ -103,5 +104,86 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
     std::snprintf(m, sizeof(m), "④ 멈춤 — 스레드 끝남 %d · 두 번 불러도 됨", (int)stopped);
     r.push_back({ stopped && !net.Running(), m });
     closesocket(c);
+
+    // ⑤ ★ 10-09 조각 5d-2c — 닫기 — 요청을 넣자마자 `Stop(알림)` 해도 그 요청이 나가고, 그 뒤 `SERVER_CLOSE`(0x0b) 가 간다
+    {
+        nox::CNetworkThread n2;
+        n2.Network().SetXorKey(0);
+        std::string e2;
+        n2.Open("127.0.0.1", 0, e2);
+        n2.Start();
+        const SOCKET c2 = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        bind(c2, reinterpret_cast<sockaddr*>(&me), sizeof(me));
+        sockaddr_in to2 = me;
+        to2.sin_port = htons(n2.Port());
+        sendto(c2, reinterpret_cast<const char*>(conn), sizeof(conn), 0, reinterpret_cast<sockaddr*>(&to2), sizeof(to2));
+        const bool acc2 = IsAccept(RecvOne(c2, 1000));
+        int64_t sid2 = 0;
+        for (int i = 0; i < 100 && sid2 == 0; ++i) {
+            n2.SwapOutNetworkEvents(evs);
+            for (const auto& e : evs) if (e.type == nox::NetworkEvent::Type::CONNECTED) sid2 = e.sessionId;
+            evs.clear();
+            if (sid2 == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        // 접속 시도만 한 상대 하나 — 키를 안 받았으니 닫힘 알림이 안 가야 한다
+        const SOCKET c2b = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        bind(c2b, reinterpret_cast<sockaddr*>(&me), sizeof(me));
+        std::vector<uint8_t> tj(100, 0);
+        tj[2] = static_cast<uint8_t>(nox::Op::SERVER_TRY_JOIN);
+        sendto(c2b, reinterpret_cast<const char*>(tj.data()), static_cast<int>(tj.size()), 0, reinterpret_cast<sockaddr*>(&to2), sizeof(to2));
+        for (int i = 0; i < 100 && n2.LatestThreadStats().datagramsIn < 2; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::vector<nox::NetworkRequest> last(1);
+        last[0].type = nox::NetworkRequest::Type::SEND_MSG;
+        last[0].sessionId = sid2;
+        last[0].body = { 0x27, 9, 9 };
+        n2.PushRequests(last);
+        n2.Stop(/*closeSessions=*/true);
+        const bool unkeyedClosed = !RecvOne(c2b, 300).empty();
+        closesocket(c2b);
+        int got27 = 0, gotClose = 0;
+        for (int i = 0; i < 6; ++i) {
+            const std::vector<uint8_t> d = RecvOne(c2, 500);
+            if (d.empty()) break;
+            if (d.size() == 5 && d[2] == 0x27) ++got27;
+            if (d.size() == 3 && d[2] == static_cast<uint8_t>(nox::Op::SERVER_CLOSE)) ++gotClose;
+        }
+        const unsigned long long closeSent = n2.LatestNetworkStats().serverCloseSent;
+        std::snprintf(m, sizeof(m), "⑤ 닫기 — 접속 %d · 넣자마자 멈춘 요청 받음 %d · SERVER_CLOSE 받음 %d(셈 %llu) · 접속 시도만 한 상대가 받음 %d · 스레드 끝남 %d",
+                      (int)acc2, got27, gotClose, closeSent, (int)unkeyedClosed, (int)!n2.Running());
+        r.push_back({ acc2 && got27 == 1 && gotClose == 1 && closeSent == 1 && !unkeyedClosed && !n2.Running(), m });
+        closesocket(c2);
+    }
+
+    // ⑥ ★ 10-09 조각 5d-2c — 큐 한도 — 한도 3 에 요청 다섯(시작 전에 넣음) · 이벤트 다섯(접속 시도 다섯 · 게임이 안 꺼냄) → 둘씩 버리고 센다
+    {
+        nox::CNetworkThread n3;
+        n3.SetQueueMaxForTest(3);
+        std::string e3;
+        n3.Open("127.0.0.1", 0, e3);
+        std::vector<nox::NetworkRequest> many(5);
+        for (auto& q : many) { q.type = nox::NetworkRequest::Type::SEND_MSG; q.sessionId = 999; q.body = { 0x27 }; }
+        n3.PushRequests(many);
+        n3.Start();
+        const SOCKET c3 = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        bind(c3, reinterpret_cast<sockaddr*>(&me), sizeof(me));
+        sockaddr_in to3 = me;
+        to3.sin_port = htons(n3.Port());
+        std::vector<uint8_t> tryJoin(100, 0);
+        tryJoin[2] = static_cast<uint8_t>(nox::Op::SERVER_TRY_JOIN);
+        for (int i = 0; i < 5; ++i)
+            sendto(c3, reinterpret_cast<const char*>(tryJoin.data()), static_cast<int>(tryJoin.size()), 0,
+                   reinterpret_cast<sockaddr*>(&to3), sizeof(to3));
+        nox::CNetworkThreadStats ts;
+        for (int i = 0; i < 100; ++i) {
+            ts = n3.LatestThreadStats();
+            if (ts.datagramsIn >= 5) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        std::snprintf(m, sizeof(m), "⑥ 큐 한도 3 — 받음 %llu · 버림 이벤트 %llu · 요청 %llu · 큐에 남은 이벤트 %zu",
+                      ts.datagramsIn, ts.eventsDropped, ts.requestsDropped, ts.eventsQueued);
+        r.push_back({ ts.datagramsIn == 5 && ts.eventsDropped == 2 && ts.requestsDropped == 2 && ts.eventsQueued == 3, m });
+        n3.Stop();
+        closesocket(c3);
+    }
     return r;
 }

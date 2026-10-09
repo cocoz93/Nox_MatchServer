@@ -187,6 +187,7 @@ struct CUdpStats {
     unsigned long long joinRequested = 0;
     unsigned long long joinRejected = 0;
     unsigned long long joinRespondNoSession = 0;
+    unsigned long long serverCloseSent = 0;        // ★ 10-09 조각 5d-2c — 닫을 때 `SERVER_CLOSE` 를 보낸 상대 수
     // 진단 — 접속 제어 조각만(게임 조각은 `nox::Server` 가 센다)
     std::map<uint8_t, unsigned long long> seen;
     unsigned long long stopped = 0;
@@ -237,6 +238,11 @@ public:
 
     // ★ 10-09 조각 5d — 게임이 쌓은 요청 하나를 처리한다(아래 같은 이름 함수로 나눠 보냄). 나갈 조각은 `out` 에.
     void OnRequest(const NetworkRequest& r, std::vector<OutPacket>& out);
+
+    // ★ 10-09 조각 5d-2c — 서버를 닫는다 — 키를 준 상대마다 `SERVER_CLOSE`(비신뢰 1바이트)를 보낸다.
+    //   원본의 연결 닫기 메시지(`SendServerClose` `conn.go:172-182`)다. 원본 서버 닫기 처리기는 듣는 연결 하나에 보낸다
+    //   (`server/network.go:71-73` `s.lis`) — 사람마다 보내는지는 확인 못 했다. 우리는 사람마다 보낸다(30초 시간 초과를 안 기다리게).
+    void CloseAll(std::vector<OutPacket>& out);
 
     // 게임이 만든 몸통 하나를 조각으로 — 머리 2바이트(신뢰·스트림·순번)를 붙이고 키를 줬으면 XOR.
     //   없는 세션이면 버리고 센다(`sendNoSession`).

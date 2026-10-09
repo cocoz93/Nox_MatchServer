@@ -70,6 +70,15 @@ void CUdpServer::OnRequest(const NetworkRequest& r, std::vector<OutPacket>& out)
     }
 }
 
+void CUdpServer::CloseAll(std::vector<OutPacket>& out) {
+    const uint8_t msg[1] = { static_cast<uint8_t>(Op::SERVER_CLOSE) };
+    for (auto& kv : _sessions) {
+        if (!kv.second.keyed) continue;
+        SendOn(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg), out);
+        ++_stats.serverCloseSent;
+    }
+}
+
 void CUdpServer::RespondJoin(int64_t sessionId, bool accept, const std::vector<uint8_t>& rejectMsg,
                              std::vector<OutPacket>& out) {
     auto a = _addrOf.find(sessionId);

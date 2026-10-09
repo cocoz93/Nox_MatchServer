@@ -74,8 +74,9 @@ void CNetworkThread::Start() {
     _thread = std::thread([this] { Run(); });
 }
 
-void CNetworkThread::Stop() {
+void CNetworkThread::Stop(bool closeSessions) {
     if (!_thread.joinable()) return;
+    _closeOnStop.store(closeSessions);
     _stop.store(true);
     SetEvent(static_cast<HANDLE>(_wakeEvent));
     _thread.join();
@@ -86,7 +87,7 @@ void CNetworkThread::PushRequests(std::vector<NetworkRequest>& reqs) {
     {
         std::lock_guard<std::mutex> lk(_queueMu);
         for (NetworkRequest& r : reqs) {
-            if (_requests.size() >= kQueueMax) { ++_requestsDropped; continue; }
+            if (_requests.size() >= _queueMax) { ++_requestsDropped; continue; }
             _requests.push_back(std::move(r));
         }
     }
@@ -135,7 +136,7 @@ void CNetworkThread::Run() {
     std::set<uint8_t> told;                      // `[처음]` — 접속 제어 오프코드(게임 오프코드는 게임 스레드가 찍는다)
     uint8_t in[2048];
     Publish();
-    while (!_stop.load()) {
+    for (;;) {
         // 기다리는 시간 — 타이머 맨 앞 마감까지(없으면 `_maxWaitMs` — 기본 `kMaxWaitMs`)
         DWORD wait = _maxWaitMs;
         uint32_t due = 0;
@@ -144,14 +145,15 @@ void CNetworkThread::Run() {
             wait = d <= 0 ? 0 : std::min<DWORD>(static_cast<DWORD>(d), _maxWaitMs);
         }
         WSAWaitForMultipleEvents(2, evs, FALSE, wait, FALSE);
-        if (_stop.load()) break;
+        // ★ 10-09 조각 5d-2c — 멈추라면 마지막으로 한 번 — 쌓인 요청을 보내고(닫기면 `SERVER_CLOSE` 까지) 끝낸다. 받기 · 타이머는 안 한다
+        const bool stopping = _stop.load();
         ++_threadStats.wakes;
         WSANETWORKEVENTS ne;
         WSAEnumNetworkEvents(s, evs[0], &ne);    // 소켓 이벤트를 되돌린다(받을 것은 아래에서 다 비운다)
         const uint32_t now = NowMs();
 
         // ① 시계 — 마감 지난 타이머(다시 보내기 · 시간 초과 알림 · 접속 전 걷기)
-        _network.Tick(now, out, events);
+        if (!stopping) _network.Tick(now, out, events);
         // ② 쌓인 요청 — 게임이 지난 틱에 만든 것이라 이번에 받은 것보다 먼저(`CSyncHost` 의 「받기 앞 요청」과 같은 차례)
         {
             std::lock_guard<std::mutex> lk(_queueMu);
@@ -159,9 +161,9 @@ void CNetworkThread::Run() {
         }
         for (const NetworkRequest& r : reqs) _network.OnRequest(r, out);
         reqs.clear();
-        // ③ 받을 것 전부
+        // ③ 받을 것 전부(멈출 때는 안 받는다)
         unsigned long long got = 0;
-        for (;;) {
+        while (!stopping) {
             sockaddr_in from = {};
             int fromLen = sizeof(from);
             const int n = recvfrom(s, reinterpret_cast<char*>(in), sizeof(in), 0, reinterpret_cast<sockaddr*>(&from), &fromLen);
@@ -210,12 +212,14 @@ void CNetworkThread::Run() {
         if (!events.empty()) {
             std::lock_guard<std::mutex> lk(_queueMu);
             for (NetworkEvent& ev : events) {
-                if (_events.size() >= kQueueMax) { ++_eventsDropped; continue; }
+                if (_events.size() >= _queueMax) { ++_eventsDropped; continue; }
                 ev.queuedMs = now;
                 _events.push_back(std::move(ev));
             }
             events.clear();
         }
+        // ★ 10-09 조각 5d-2c — 닫기면 키를 준 상대마다 `SERVER_CLOSE`(쌓인 요청 뒤에)
+        if (stopping && _closeOnStop.load()) _network.CloseAll(out);
         // ⑤ 나갈 것 전부(주소를 모르는 상대 — 소켓 없는 봇 — 는 건너뛴다)
         for (const OutPacket& p : out) {
             auto it = addrOf.find(p.to);
@@ -225,12 +229,12 @@ void CNetworkThread::Run() {
             ++_threadStats.datagramsOut;
         }
         out.clear();
-        if (static_cast<uint32_t>(now - _lastPublishMs) >= kMaxWaitMs) {   // 지표 사본은 기다림 설정과 따로 0.25초마다
+        if (stopping || static_cast<uint32_t>(now - _lastPublishMs) >= kMaxWaitMs) {   // 지표 사본은 기다림 설정과 따로 0.25초마다 · 멈출 때 한 번 더
             _lastPublishMs = now;
             Publish();
         }
+        if (stopping) break;
     }
-    Publish();
 }
 
 }  // namespace nox

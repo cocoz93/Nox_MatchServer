@@ -15,6 +15,7 @@
 #include <ws2tcpip.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -360,6 +361,17 @@ unsigned long long AbilityFingerprint(const nox::Server& srv) {
 }
 
 }  // namespace
+
+// ★ 10-09 조각 5d-2c — 닫기 신호. 콘솔 Ctrl+C · Ctrl+Break · 창 닫기 · 로그오프 · 끄기가 오면 게임 루프가 다음 바퀴에 빠져나가
+//   정상 종료한다. 창 닫기 등은 이 함수가 돌아오는 순간 프로세스가 끝나므로 닫기 절차가 끝날 때까지(최대 4초) 기다린다.
+static std::atomic<bool> g_stopRequested{ false };
+static HANDLE g_shutdownDone = nullptr;
+static BOOL WINAPI OnConsoleCtrl(DWORD type) {
+    g_stopRequested.store(true);
+    if ((type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT) && g_shutdownDone)
+        WaitForSingleObject(g_shutdownDone, 4000);
+    return TRUE;
+}
 
 int main(int argc, char** argv) {
     // 한글 출력이 CP949 로 오독되지 않게. printf 는 /utf-8 로 컴파일된 UTF-8 을 낸다.
@@ -802,11 +814,19 @@ int main(int argc, char** argv) {
     std::fflush(stdout);
     net.SetVerbose(!opt.quiet);
     net.Start();   // ★ 10-09 조각 5d-2b — 여기서부터 받기 · 보내기는 네트워크 스레드
+    // ★ 10-09 조각 5d-2c — 닫기 신호 둘 — 콘솔(위 `OnConsoleCtrl`)과 이름 있는 이벤트 `nox_server_stop_<pid>`
+    //   (콘솔 프로그램은 `taskkill` 의 창 닫기 신호를 못 받는다 — `서버클라_실행.bat` 은 이 이벤트를 켜고, 안 꺼지면 그때 강제로 끈다)
+    g_shutdownDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    SetConsoleCtrlHandler(OnConsoleCtrl, TRUE);
+    wchar_t stopName[64];
+    swprintf(stopName, 64, L"nox_server_stop_%lu", GetCurrentProcessId());
+    HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, stopName);
 
     // ★ 10-09 조각 5d-2b — 게임 스레드. 쌓인 이벤트를 통째로 받아 처리하고(받은 조각 · 접속 · 닫기 · 접속 시도 · 시간 초과),
     //   틱을 돌리고, 그 사이 쌓인 통신 요청을 통째로 넘긴다. 옛 이 자리는 `select`(5ms) · `recvfrom` 으로 직접 받았다.
     //   받은 조각마다 찍던 `[받음]` · 열쇠 진단과 접속 제어 쪽 `[처음]` 은 네트워크 스레드가 찍는다.
     for (;;) {
+        if (g_stopRequested.load() || WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;   // ★ 5d-2c — 닫기 신호
         net.SwapOutNetworkEvents(netEvents);
         if (!netEvents.empty()) {
             const uint32_t nowEv = static_cast<uint32_t>(GetTickCount64());
@@ -1384,4 +1404,21 @@ int main(int argc, char** argv) {
         }
         Sleep(1);   // ★ 10-09 조각 5d-2b — 옛 `select`(5ms) 자리. 틱은 `GetTickCount` 로 세므로 늦게 깨면 틱을 몰아서 돈다(전과 같다)
     }
+    // ★ 10-09 조각 5d-2c — 정상 종료(`Docs/LAYERS_DESIGN.md` 「네트워크 스레드」) — 쌓인 요청을 넘기고 → 네트워크 스레드가 그것을 보낸 뒤
+    //   키를 준 사람마다 `SERVER_CLOSE` 를 보내고 멈춘다 → 끝(종료 코드 0). 지금 게임에는 닫을 때 저장할 것이 없다.
+    std::printf("[종료] 닫기 신호 — 쌓인 요청을 보내고 사람마다 SERVER_CLOSE 를 보낸 뒤 네트워크 스레드를 멈춘다\n");
+    std::fflush(stdout);
+    srv.SwapOutNetworkRequests(netRequests);
+    net.PushRequests(netRequests);
+    net.Stop(/*closeSessions=*/true);
+    {
+        const nox::CUdpStats ns = net.LatestNetworkStats();
+        const nox::CNetworkThreadStats ts = net.LatestThreadStats();
+        std::printf("[종료] 끝 — 서버 닫힘 알림 %llu명 · 보낸 조각 %llu · 큐 버림(이벤트 %llu · 요청 %llu)\n",
+                    ns.serverCloseSent, ts.datagramsOut, ts.eventsDropped, ts.requestsDropped);
+        std::fflush(stdout);
+    }
+    if (stopEvent) CloseHandle(stopEvent);
+    SetEvent(g_shutdownDone);
+    return 0;
 }
