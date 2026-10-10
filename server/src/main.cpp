@@ -11,6 +11,7 @@
 // 지금 답하는 것 = 서버 찾기 · 접속 시도 · 접속 수락 · 핑.
 //
 //   nox_server.exe [--port 18590] [--name "MY SERVER"] [--selftest] [--quiet]
+//                  --config <설정 파일>([token] key) | --no-join-token(토큰 검사 끄기 — 시험 도구 · LAN 실행)
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -36,6 +37,7 @@
 #include "nox/Server.h"
 #include "nox/NetworkThread.h"
 #include "nox/RoomManager.h"
+#include "nox/IniFile.h"
 #include "nox/Clock.h"
 #include "nox/MapFile.h"
 #include "nox/ThingDb.h"
@@ -397,6 +399,10 @@ int main(int argc, char** argv) {
             return SelfTest();
         } else if (a == "--quiet") {
             opt.quiet = true;
+        } else if (a == "--config" && i + 1 < argc) {
+            opt.configPath = argv[++i];
+        } else if (a == "--no-join-token") {
+            opt.noJoinToken = true;
         } else if (a == "--port" && i + 1 < argc) {
             opt.port = std::atoi(argv[++i]);
         } else if (a == "--name" && i + 1 < argc) {
@@ -788,6 +794,33 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
         return 0;
     }
+
+    // ★ 10-10 토큰 작업 2 — 입장 방식. 키가 없으면 뜨지 않는다 — 설정 하나 빠뜨린 서버가 아무나 받지 않게(`Docs/TOKEN_DESIGN.md`).
+    //   진단(위 `--dump-*`)과 `--selftest` 는 서버를 안 띄우므로 이보다 앞에서 끝난다.
+    if (opt.noJoinToken) {
+        rooms.SetOpenEntry();
+        std::printf("입장: 토큰 검사 끔(--no-join-token) — 모두 방 0. 녹음 재생 · 시험 도구 · LAN 실행용\n");
+    } else {
+        if (opt.configPath.empty()) {
+            std::printf("[멈춤] 입장 토큰 키가 없다 — --config <설정 파일>([token] key = 16진 64자).\n"
+                        "       시험 도구 · LAN 실행이면 --no-join-token(모두 방 0)\n");
+            return 2;
+        }
+        nox::CIniFile ini;
+        if (!ini.LoadFile(opt.configPath)) {
+            std::printf("[멈춤] 설정 파일을 못 읽었다 — %s\n", ini.Error().c_str());
+            return 2;
+        }
+        nox::JoinKey key{};
+        if (!nox::ParseJoinKey(ini.Get("token", "key"), key)) {
+            std::printf("[멈춤] 설정 파일의 [token] key 가 16진 64자가 아니다 — %s\n", opt.configPath.c_str());
+            return 2;
+        }
+        rooms.SetJoinKey(key);
+        rooms.SetLogJoins(true);
+        std::printf("입장: 토큰 방식 — 설정 %s\n", opt.configPath.c_str());
+    }
+    std::fflush(stdout);
 
     // ★ 10-08 — 세계 차리기(맵·설정·접속 묶음)는 `BuildWorld`(`WorldBuild.cpp`)로 옮겼다.
     WorldExtras extras;

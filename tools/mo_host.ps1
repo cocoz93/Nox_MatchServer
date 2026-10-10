@@ -57,7 +57,8 @@ try {
     if (Get-NetUDPEndpoint -LocalPort 18590 -ErrorAction SilentlyContinue) {
       Write-Host '게임 서버: 이미 떠 있음 (UDP 18590)'
     } else {
-      Start-Process -FilePath $serverExe -ArgumentList @('--port', '18590', '--standalone', '--map', "`"$map`"", '--mode', 'arena', '--quiet', '--aoi', '--friends')
+      # 10-10 토큰 작업 2 — 로비가 토큰을 내고(작업 3) 클라 DLL 이 싣기(작업 4) 전까지는 토큰 검사 끄기로 띄운다. 작업 4 에서 설정 파일로 바꾼다
+      Start-Process -FilePath $serverExe -ArgumentList @('--port', '18590', '--standalone', '--map', "`"$map`"", '--mode', 'arena', '--quiet', '--aoi', '--friends', '--no-join-token')
       Start-Sleep -Seconds 3
       if (-not (Get-NetUDPEndpoint -LocalPort 18590 -ErrorAction SilentlyContinue)) { throw '게임 서버가 뜨지 않았다 — 서버 창의 글을 보세요' }
       Write-Host '게임 서버: 띄움 (Estate 아레나, UDP 18590)'

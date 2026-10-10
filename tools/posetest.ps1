@@ -14,7 +14,7 @@ Get-Process opennox,opennox-server,nox_server -ErrorAction SilentlyContinue | St
 Start-Sleep -Milliseconds 800
 
 $mapArg = "`"$game\maps\Estate\Estate.map`""
-$srvArgs = @('--port','18590','--standalone','--map',$mapArg,'--mode','arena','--quiet','--anim-pose',"$Pose")
+$srvArgs = @('--port','18590','--standalone','--map',$mapArg,'--mode','arena','--quiet','--anim-pose',"$Pose",'--no-join-token')   # 10-10 토큰 작업 2
 $srv = Start-Process -FilePath (Join-Path $root 'build\Release\nox_server.exe') -ArgumentList $srvArgs `
   -PassThru -WindowStyle Minimized -RedirectStandardOutput (Join-Path $scratch "pose$Pose.srv.txt") `
   -RedirectStandardError (Join-Path $scratch "pose$Pose.srverr.txt")

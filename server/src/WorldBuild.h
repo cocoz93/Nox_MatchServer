@@ -20,6 +20,10 @@ struct ServerOptions {
     // 이름에 공백을 쓰지 않는다. Start-Process 등에서 인자가 쪼개진다.
     std::string name = "MY_SERVER";
     bool quiet = false;
+    // ★ 10-10 토큰 작업 2 — 입장 방식(`Docs/TOKEN_DESIGN.md`). 설정 파일의 `[token] key` 가 있어야 뜬다.
+    //   토큰 검사 끄기는 녹음 재생 · 시험 도구 · LAN 실행만 — 모두 방 0.
+    std::string configPath;     // `--config <파일>`
+    bool noJoinToken = false;   // `--no-join-token`
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)

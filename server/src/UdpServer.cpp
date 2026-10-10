@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "nox/ByteBuffer.h"
+#include "nox/JoinToken.h"
 #include "nox/Messages.h"
 #include "nox/MsgLen.h"
 #include "nox/Opcode.h"
@@ -153,6 +154,22 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
     // ⚠ 덤프 재생일 때는 이미 평문이라 풀면 안 된다 (SetInboundPlain 주석 참조).
     std::vector<uint8_t> buf(data, data + n);
     if (s.keyed && !_inboundPlain) ApplyXor(buf.data(), buf.size(), s.xorKey);
+
+    // ★ 10-10 토큰 작업 2 — 키 받기 전 데이터그램 끝의 입장 토큰 꼬리(`… 토큰 51 · NXT1`)를 쪼개기 전에 뗀다
+    //   (`Docs/TOKEN_DESIGN.md`). 녹스 패킷엔 길이 칸이 없어 남겨 두면 꼬리 바이트를 다음 메시지로 잘못 읽는다 — 길이 모르는 번호에서
+    //   멈춰 답을 안 하거나(아래 「깨끗하게 쪼개지는지」), 핑 같은 접속 제어로 처리한다. 둘째 자리 `00` 에서 끝나면 티가 안 나기도 한다
+    //   (10-10 처음 짠 시험이 그래서 못 잡았다 — `proto_test` `TestJoinTrailer`).
+    //   클라 DLL 이 접속 시도(`0x0e`)와 CONNECT(`ff 00 00`)에 붙인다. 키 받은 뒤의 암호문은 보지 않는다.
+    std::vector<uint8_t> joinToken;
+    if (!s.keyed) {
+        const uint8_t* tok = nullptr;
+        size_t kept = 0;
+        if (FindJoinTrailer(buf.data(), buf.size(), kWireHeaderSize + 1, tok, kept)) {
+            joinToken.assign(tok, tok + kJoinTokenSize);
+            buf.resize(kept);
+            ++_stats.joinTrailers;
+        }
+    }
 
     WireHeader head;
     if (!ReadWireHeader(buf.data(), buf.size(), head)) return 0;
@@ -340,6 +357,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 ev.sessionId = s.sessionId;
                 ev.addr = from;
                 ev.body.assign(it.body(), it.body() + it.bodyLen());
+                ev.token = joinToken;
                 ++_stats.joinRequested;
                 events.push_back(std::move(ev));
                 ++_stats.handled;
@@ -366,6 +384,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
                 ev.sessionId = s.sessionId;
                 s.announced = true;
                 ev.addr = from;
+                ev.token = joinToken;
                 if (_scriptAt < _script.size()) {
                     // 덤프 재생 — 그때 서버가 정한 값들을 그대로 쓴다.
                     //   프레임·오브젝트 번호는 게임 것이라 이벤트에 실어 넘긴다.

@@ -28,7 +28,7 @@ if (-not (Test-Path $서버)) { throw "서버가 없다: $서버 (먼저 빌드�
 
 # --quiet — 틱마다 찍던 진단 줄을 끈다. 게임에는 필요 없고 사람이 볼 땐 방해만 된다
 #   (그래도 접속·판끝 같은 드문 줄은 찍힌다 — `main.cpp:1805` 참조)
-$인자 = @('--port','18590','--standalone','--map',"`"$맵`"",'--mode','arena','--quiet')
+$인자 = @('--port','18590','--standalone','--map',"`"$맵`"",'--mode','arena','--quiet','--no-join-token')   # 10-10 토큰 작업 2 — 판정 판은 LAN 접속이라 토큰 검사 끄기
 $상대필요 = $false
 switch ($무엇) {
     '벽'       { $안내 = @(

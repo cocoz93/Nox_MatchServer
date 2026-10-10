@@ -42,6 +42,7 @@ add_library(nox_proto STATIC
   server/src/core/Gamedata.cpp
 )
 target_include_directories(nox_proto PUBLIC server/include)
+target_link_libraries(nox_proto PUBLIC nox_common)   # 입장 토큰 — 통신 층 꼬리 떼기 · 방 관리자 검증
 
 add_executable(nox_server server/src/main.cpp server/src/WorldBuild.cpp)
 target_link_libraries(nox_server PRIVATE nox_proto)

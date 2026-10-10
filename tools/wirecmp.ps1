@@ -32,7 +32,7 @@ if ($Ref) {
   $wait = 90
   "대조군 서버(opennox-server) pid=$($srv.Id)"
 } else {
-  $srvArgs = @('--port','18591','--map',"`"$mapFile`"")
+  $srvArgs = @('--port','18591','--map',"`"$mapFile`"",'--no-join-token')   # 10-10 토큰 작업 2 — 시험 도구는 토큰 검사 끄기
   if ($SrvExtra -ne '') { $srvArgs += ($SrvExtra -split '\s+' | Where-Object { $_ -ne '' }) }
   $srv = Start-Process -FilePath (Join-Path $root 'build\Release\nox_server.exe') -ArgumentList $srvArgs `
     -PassThru -WindowStyle Minimized -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr

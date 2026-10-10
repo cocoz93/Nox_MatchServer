@@ -2,42 +2,17 @@
 #include "nox/RoomManager.h"
 
 #include <chrono>
+#include <cstdio>
 
-#include "nox/ByteBuffer.h"
 #include "nox/Messages.h"
 #include "nox/Opcode.h"
 
 namespace nox {
 
 namespace {
-std::string Lower(std::string s) {
-    for (char& c : s) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
-    return s;
-}
-
 std::string IpOf(const std::string& addr) {   // "1.2.3.4:5678" → "1.2.3.4"
     const size_t colon = addr.rfind(':');
     return colon == std::string::npos ? addr : addr.substr(0, colon);
-}
-
-// 접속 시도 본문 97바이트(`MsgServerTryJoin` — 앞 1바이트 뒤 이름 50)에서 이름을 읽는다. 못 읽으면 false.
-bool NameFromTryJoin(const uint8_t* p, size_t n, std::string& name) {
-    if (n < MsgServerTryJoin::kSize) return false;
-    Reader r(p, MsgServerTryJoin::kSize);
-    MsgServerTryJoin m;
-    if (!m.Decode(r)) return false;
-    name = m.playerName;
-    return true;
-}
-
-// 입장(`CLIENT_ACCEPT`) 본문 — 사람 정보 `PlayerInfo`(이름 0-49 · 직업 66 · `GameBalance.h` 「직업은 66번」 표)에서 이름을 읽는다.
-//   ⚠ 10-09 작업 6b — 접속 시도와 **짜임이 다르다**(이름 자리가 1바이트 어긋남). 처음엔 같은 짜임으로 읽어 시험만 통과했다 —
-//     시험이 만든 패킷도 같은 착각으로 만들었기 때문. 정품 녹음 197개(`_evidence/`)의 입장 조각이 `20 4a 00 61 00 …`(이름이 바로 뒤)였다
-bool NameFromPlayerInfo(const uint8_t* p, size_t n, std::string& name) {
-    constexpr size_t kNameBytes = 50;
-    if (n < kNameBytes) return false;
-    Reader r(p, kNameBytes);
-    return r.FixedString16(name, kNameBytes);
 }
 }  // namespace
 
@@ -52,13 +27,13 @@ int CRoomManager::CreateRoom() {
 }
 
 bool CRoomManager::CloseRoom(int id) {
-    if (id == kFirstRoom || id == _defaultRoom) return false;
+    if (id == kFirstRoom) return false;
     auto it = _rooms.find(id);
     if (it == _rooms.end()) return false;
     PullRequests(*it->second);   // 그 방이 이미 낸 요청이 먼저
     const uint8_t closeMsg[1] = { static_cast<uint8_t>(Op::SERVER_CLOSE) };
     for (auto s = _seats.begin(); s != _seats.end();) {
-        if (s->second.roomId != id) { ++s; continue; }
+        if (s->second != id) { ++s; continue; }
         // 서버를 닫을 때와 같은 알림(플랜 A 조각 5d-2c `CloseAll` — 비신뢰 1바이트) 뒤에 끊는다
         RequestSendMsg(s->first, /*reliable=*/false, closeMsg, sizeof(closeMsg));
         RequestDisconnectSession(s->first);
@@ -70,20 +45,23 @@ bool CRoomManager::CloseRoom(int id) {
     return true;
 }
 
-void CRoomManager::SetRosterEntry(const std::string& name, int roomId, const std::string& ip) {
-    RosterEntry e;
-    e.roomId = roomId;
-    e.ip = ip;
-    _roster[Lower(name)] = e;
+void CRoomManager::SetJoinKey(const JoinKey& key) {
+    _key = key;
+    _hasKey = true;
+    _openEntry = false;
+}
+
+void CRoomManager::SetOpenEntry() {
+    _openEntry = true;
 }
 
 int CRoomManager::RoomOfSession(int64_t sessionId) const {
     auto it = _seats.find(sessionId);
-    return it == _seats.end() ? kNoRoom : it->second.roomId;
+    return it == _seats.end() ? kNoRoom : it->second;
 }
 
 void CRoomManager::AssignDirect(int64_t sessionId, int roomId) {
-    _seats[sessionId].roomId = roomId;
+    _seats[sessionId] = roomId;
 }
 
 size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
@@ -93,67 +71,32 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
         return 0;
     }
     auto it = _seats.find(ev.sessionId);
-    if (it != _seats.end()) {
-        if (it->second.roomId != kNoRoom) return Forward(it->second.roomId, ev);
-        return OnUnassigned(ev.sessionId, ev);
-    }
+    if (it != _seats.end()) return Forward(it->second, ev);
     // 세션표에 없는 세션
-    if (OpenMode()) {
+    if (_openEntry) {
         // 열린 방식 — 모두 방 0. `CONNECTED` 때 바로 넘겨 세션 시작 프레임이 플랜 A 끝과 같다(`ROOMS_DESIGN.md`)
         //   (`CONNECTED` 없이 오는 것 — 옛 동작대로 방 0 이 받는다)
-        _seats[ev.sessionId].roomId = kFirstRoom;
+        _seats[ev.sessionId] = kFirstRoom;
         if (ev.type == NetworkEvent::Type::CONNECTED) ++_stats.assigned;
         return Forward(kFirstRoom, ev);
     }
     if (ev.type == NetworkEvent::Type::CONNECTED) {
-        Seat& seat = _seats[ev.sessionId];   // 방은 입장 때 — 그때 이 이벤트부터 방에 넘긴다
-        seat.connected = ev;
-        return 0;
-    }
-    ++_stats.unassignedDropped;   // 닫힌 방식 — 접속도 안 한 세션의 이벤트
-    return 0;
-}
-
-// 방이 아직 없는 세션(닫힌 방식 · `CONNECTED` 뒤 · 입장 전)
-size_t CRoomManager::OnUnassigned(int64_t sessionId, const NetworkEvent& ev) {
-    switch (ev.type) {
-        case NetworkEvent::Type::RECEIVED: {
-            const bool isAccept = !ev.body.empty() && ev.body[0] == static_cast<uint8_t>(Op::CLIENT_ACCEPT);
-            std::string name;
-            if (!isAccept || !NameFromPlayerInfo(ev.body.data() + 1, ev.body.size() - 1, name)) {
-                ++_stats.unassignedDropped;   // 입장 전에 온 다른 게임 메시지 — 넘길 방이 없다
-                return 0;
-            }
-            const int roomId = PickRoom(name, ev.addr);
-            if (roomId == kNoRoom) {
-                RequestDisconnectSession(sessionId);
-                _seats.erase(sessionId);
-                return 0;
-            }
-            const NetworkEvent connected = _seats[sessionId].connected;   // 넘기는 동안 세션표가 바뀌어도 되게 떠 둔다
-            _seats[sessionId].roomId = roomId;
-            ++_stats.assigned;
-            Forward(roomId, connected);   // 담아 둔 접속부터 — 방은 이때 세션을 만든다(시작 프레임은 지금 값)
-            return Forward(roomId, ev);
+        // 토큰 방식 — 같은 토큰을 이번엔 써 버리고 그 방에 바로 넘긴다. 틀리면 끊는다(접속 수락은 통신 층이 이미 보냈다)
+        JoinToken tok;
+        const char* why = "";
+        const int roomId = AdmitByToken(ev, /*consume=*/true, tok, why);
+        if (roomId == kNoRoom) {
+            ++_stats.connectRejected;
+            RequestDisconnectSession(ev.sessionId);
+            LogJoin("CONNECT 끊음", ev, roomId, tok, why);
+            return 0;
         }
-        case NetworkEvent::Type::DISCONNECTED:
-            if (ev.reason == DisconnectReason::TIMEOUT) {
-                // 방이 하는 「자리 비우기」와 같은 차례 — 시간 초과 알림(신뢰) 뒤에 끊는다(`Server.cpp` 자리 비우기)
-                const uint8_t to[1] = { static_cast<uint8_t>(Op::TIMEOUT_NOTIFICATION) };
-                RequestSendMsg(sessionId, /*reliable=*/true, to, sizeof(to));
-                ++_stats.unassignedTimedOut;
-            } else {
-                ++_stats.unassignedClosed;
-            }
-            RequestDisconnectSession(sessionId);
-            _seats.erase(sessionId);
-            return 0;
-        case NetworkEvent::Type::CONNECTED:
-            _seats[sessionId].connected = ev;
-            return 0;
-        case NetworkEvent::Type::JOIN_REQUESTED:
-            return 0;   // 위에서 돌려보냈다
+        _seats[ev.sessionId] = roomId;
+        ++_stats.assigned;
+        LogJoin("방 배정", ev, roomId, tok, why);
+        return Forward(roomId, ev);
     }
+    ++_stats.droppedUnknown;   // 토큰 방식 — 방에 안 든 세션의 이벤트(끊은 세션에 늦게 온 것 등)
     return 0;
 }
 
@@ -164,24 +107,28 @@ size_t CRoomManager::Forward(int roomId, const NetworkEvent& ev) {
     return n;
 }
 
-int CRoomManager::PickRoom(const std::string& name, const std::string& addr) {
-    auto r = _roster.find(Lower(name));
-    if (r == _roster.end()) {
-        if (_defaultRoom != kNoRoom && HasRoom(_defaultRoom)) { ++_stats.assignedDefault; return _defaultRoom; }
-        ++_stats.acceptNoRoster;
-        return kNoRoom;
-    }
-    if (!r->second.ip.empty() && r->second.ip != IpOf(addr)) { ++_stats.acceptIpMismatch; return kNoRoom; }
-    if (!HasRoom(r->second.roomId)) { ++_stats.acceptNoRoom; return kNoRoom; }
-    return r->second.roomId;
+int CRoomManager::AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& tok, const char*& why) {
+    if (!_hasKey) { ++_stats.tokenNoKey; why = "키 없음(설정 빠짐)"; return kNoRoom; }
+    if (ev.token.empty()) { ++_stats.tokenMissing; why = "토큰 없음"; return kNoRoom; }
+    uint32_t ip = 0;
+    if (!ParseIpv4(IpOf(ev.addr), ip)) { ++_stats.tokenBadAddr; why = "주소"; return kNoRoom; }
+    const uint32_t now = _unixNow();
+    const JoinTokenCheck c = VerifyJoinToken(_key, ev.token.data(), ev.token.size(), now, ip, tok);
+    ++_stats.tokenCheck[static_cast<int>(c)];
+    if (c != JoinTokenCheck::Ok) { why = JoinTokenCheckName(c); return kNoRoom; }
+    if (!HasRoom(tok.roomId)) { ++_stats.tokenNoRoom; why = "방 없음"; return kNoRoom; }
+    if (consume && !_ledger.Consume(tok.nonce, tok.expiresAt, now)) { ++_stats.tokenReused; why = "이미 쓴 토큰"; return kNoRoom; }
+    return tok.roomId;
 }
 
-// 접속 시도를 받을지 — 입장 때 방을 고르는 기준(`PickRoom`)과 같아야 한다(받아 놓고 입장 때 끊지 않게).
-//   ★ 10-09 자가검증 — 처음엔 명단에 이름만 있으면 받아, 그 방이 닫혔으면 `JOIN_OK` 뒤 입장 때 끊었다. IP 는 입장 때 본다(접속 시도의 임시 포트)
-bool CRoomManager::RosterAccepts(const std::string& name) const {
-    auto r = _roster.find(Lower(name));
-    if (r != _roster.end()) return HasRoom(r->second.roomId);
-    return _defaultRoom != kNoRoom && HasRoom(_defaultRoom);
+// 입장 판정 한 줄(`SetLogJoins`) — 두 스레드가 한 표준 출력에 찍으므로 한 줄은 `printf` 한 번(플랜 A 자가검증 ①)
+void CRoomManager::LogJoin(const char* what, const NetworkEvent& ev, int roomId, const JoinToken& tok, const char* why) const {
+    if (!_logJoins) return;
+    if (roomId == kNoRoom)
+        std::printf("[입장] %s — %s · 까닭 %s\n", what, ev.addr.c_str(), why);
+    else
+        std::printf("[입장] %s — %s · 방 %d · 로비 이름 %s\n", what, ev.addr.c_str(), roomId, tok.account.c_str());
+    std::fflush(stdout);
 }
 
 int CRoomManager::BeginTick(uint32_t nowMs) {
@@ -236,19 +183,28 @@ void CRoomManager::SwapOutNetworkRequests(std::vector<NetworkRequest>& into) {
 
 // ★ 10-09 플랜 B 작업 6a — 옛 `Server::OnJoinRequested`(플랜 A 조각 5c) 자리. 받아 줄지는 게임 규칙이다
 //   (원본 `noxnetJoinCheck` `network.go:383` — 버전·인원·중복 일련번호·닫힌 판 명단 …).
-// ★ 10-09 작업 6b — 열린 방식은 늘 받는다(옛 동작). 닫힌 방식은 이름이 명단에 있어야(또는 기본 방이 있어야) 받고,
-//   아니면 `SERVER_ERROR` 사유 4(`ConnectError::Closed`) — 원본이 닫힌 판에서 이름 목록 밖을 돌려보내는 메시지(`network.go:443-453`).
-//   원본 거절 규칙의 나머지(버전·인원·밴)를 옮기는 것은 기능 일이라 따로 정한다.
+// ★ 10-10 토큰 작업 2 — 열린 방식은 늘 받는다(옛 동작). 토큰 방식은 꼬리의 토큰을 확인만 하고(쓰는 것은 CONNECT 때 —
+//   클라는 접속 시도를 다시 보낼 수 있다) 받거나 `SERVER_ERROR` 사유 4(`ConnectError::Closed`) — 원본이 닫힌 판에서
+//   이름 목록 밖을 돌려보내는 메시지(`network.go:443-453`)를 그대로 쓴다. 원본 거절 규칙의 나머지(버전·인원·밴)는 기능 일이라 따로.
 void CRoomManager::OnJoinRequested(const NetworkEvent& ev) {
-    std::string name;
-    if (OpenMode() || (NameFromTryJoin(ev.body.data(), ev.body.size(), name) && RosterAccepts(name))) {
+    if (_openEntry) {
         ++_stats.joinAccepted;
         RespondJoin(ev.sessionId, /*accept=*/true, {});
+        return;
+    }
+    JoinToken tok;
+    const char* why = "";
+    const int roomId = AdmitByToken(ev, /*consume=*/false, tok, why);
+    if (roomId != kNoRoom) {
+        ++_stats.joinAccepted;
+        RespondJoin(ev.sessionId, /*accept=*/true, {});
+        LogJoin("접속 시도 받음", ev, roomId, tok, why);
         return;
     }
     ++_stats.joinRejected;
     RespondJoin(ev.sessionId, /*accept=*/false,
                 { static_cast<uint8_t>(Op::SERVER_ERROR), static_cast<uint8_t>(ConnectError::Closed) });
+    LogJoin("접속 시도 거절", ev, roomId, tok, why);
 }
 
 void CRoomManager::RespondJoin(int64_t sessionId, bool accept, const std::vector<uint8_t>& rejectMsg) {

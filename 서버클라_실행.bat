@@ -59,8 +59,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem --no-join-token - 10-10 토큰 작업 2: LAN 목록으로 붙는 판이라 토큰 검사를 끈다(로비를 거치면 토큰을 쓴다)
 rem --aoi(걸어가면 바닥 물건 알림) --friends(내 소환수 파랑) - 10-01 사람 판 3 에서 정품으로 확인해 기본으로 붙임
-start "Nox 서버 - %MAP%" "%SERVER%" --port 18590 --standalone --map "%MAPFILE%" --mode arena --quiet --aoi --friends%EXTRA%
+start "Nox 서버 - %MAP%" "%SERVER%" --port 18590 --standalone --map "%MAPFILE%" --mode arena --quiet --aoi --friends --no-join-token%EXTRA%
 timeout /t 3 /nobreak >nul
 tasklist /fi "imagename eq nox_server.exe" | find /i "nox_server.exe" >nul
 if errorlevel 1 (

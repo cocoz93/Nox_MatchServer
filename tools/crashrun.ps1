@@ -29,8 +29,8 @@ if ($Ref) {
   $wait = 90
   "대조군 서버(opennox-server) pid=$($srv.Id)"
 } else {
-  if ($Judge) { $srvArgs = @('--port','18590','--standalone','--map',$mapArg,'--mode','arena') }
-  else        { $srvArgs = @('--no-spawn-invuln','--port','18590','--map',$mapArg) }
+  if ($Judge) { $srvArgs = @('--port','18590','--standalone','--map',$mapArg,'--mode','arena','--no-join-token') }
+  else        { $srvArgs = @('--no-spawn-invuln','--port','18590','--map',$mapArg,'--no-join-token') }   # 10-10 토큰 작업 2 — 시험 도구는 토큰 검사 끄기
   if ($SrvExtra -ne '') { $srvArgs += ($SrvExtra -split '\s+' | Where-Object { $_ -ne '' }) }
   $srv = Start-Process -FilePath (Join-Path $root 'build\Release\nox_server.exe') -ArgumentList $srvArgs `
     -PassThru -WindowStyle Minimized -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr

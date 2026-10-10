@@ -95,6 +95,7 @@ struct NetworkEvent {
     int64_t sessionId = 0;          // 게임이 사람을 가르는 번호(10-08 조각 4)
     std::string addr;               // 그 세션의 주소 — 기록용
     std::vector<uint8_t> body;      // RECEIVED · JOIN_REQUESTED(오프코드 뺀 본문 97바이트 — `MsgServerTryJoin`)
+    std::vector<uint8_t> token;     // ★ 10-10 토큰 작업 2 — JOIN_REQUESTED · CONNECTED: 그 데이터그램 꼬리의 입장 토큰 51바이트(없으면 빈 것)
     DisconnectReason reason = DisconnectReason::CLIENT_CLOSE;   // DISCONNECTED
     uint32_t queuedMs = 0;          // ★ 10-09 조각 5d-2b — 네트워크 스레드가 큐에 넣은 시각(게임 스레드가 넘김 지연을 잰다 · 한 스레드 조립은 0)
     // CONNECTED — 덤프 재생이면 그때 서버가 정한 프레임·오브젝트 번호(`scripted`)
@@ -185,6 +186,7 @@ struct CUdpStats {
     unsigned long long unannouncedSwept = 0;
     unsigned long long sessionTimedOut = 0;
     unsigned long long joinRequested = 0;
+    unsigned long long joinTrailers = 0;           // ★ 10-10 토큰 작업 2 — 키 받기 전 데이터그램에서 뗀 입장 토큰 꼬리 수
     unsigned long long joinRejected = 0;
     unsigned long long joinRespondNoSession = 0;
     unsigned long long serverCloseSent = 0;        // ★ 10-09 조각 5d-2c — 닫을 때 `SERVER_CLOSE` 를 보낸 상대 수

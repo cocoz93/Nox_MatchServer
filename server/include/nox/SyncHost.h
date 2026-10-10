@@ -22,6 +22,10 @@ namespace nox {
 
 class CSyncHost {
 public:
+    // ★ 10-10 토큰 작업 2 — 한 스레드 조립은 시험 · 녹음 재생·대조 · `--selftest` 몫이라 토큰 검사를 끈 채 시작한다
+    //   (녹음에는 토큰이 없다 — `Docs/TOKEN_DESIGN.md`). 토큰 길을 보는 시험은 `Rooms().SetJoinKey` 로 켠다.
+    CSyncHost() { _rooms.SetOpenEntry(); }
+
     CUdpServer& Network() { return _network; }
     const CUdpServer& Network() const { return _network; }
     CRoomManager& Rooms() { return _rooms; }
