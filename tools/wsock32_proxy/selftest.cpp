@@ -17,6 +17,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <string>
+
 static int g_fail = 0;
 
 static void Check(bool ok, const char* what)
@@ -135,6 +137,87 @@ int main(int argc, char** argv)
 
     hostent* h = gethostbyname("localhost");
     Check(h != NULL, "gethostbyname localhost");
+
+    // ── 10-10 토큰 작업 4 — 로비 연결(첫 보내기 CVERS) · NOXTOKEN 떼기 · 게임 서버로 가는 접속 시도·CONNECT 꼬리 ──
+    {
+        SOCKET game = socket(AF_INET, SOCK_DGRAM, 0), other = socket(AF_INET, SOCK_DGRAM, 0), cli = socket(AF_INET, SOCK_DGRAM, 0);
+        bind(game, (sockaddr*)&any, sizeof(any)); bind(other, (sockaddr*)&any, sizeof(any)); bind(cli, (sockaddr*)&any, sizeof(any));
+        RecvTimeout(game); RecvTimeout(other);
+        const u_short gamePort = PortOf(game), otherPort = PortOf(other);
+        unsigned char raw[51];
+        char hex[103];
+        for (int i = 0; i < 51; ++i) { raw[i] = (unsigned char)(i * 5 + 1); sprintf(hex + 2 * i, "%02x", raw[i]); }
+
+        SOCKET lsl = socket(AF_INET, SOCK_STREAM, 0);
+        bind(lsl, (sockaddr*)&any, sizeof(any)); listen(lsl, 1);
+        SOCKET lc = socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in toLobby = Loopback(PortOf(lsl));
+        Check(connect(lc, (sockaddr*)&toLobby, sizeof(toLobby)) == 0, "lobby: connect");
+        SOCKET lsv = accept(lsl, NULL, NULL);
+        RecvTimeout(lsv); RecvTimeout(lc);
+        const char cvers[] = "CVERS 11020 9472\r\n";
+        Check(send(lc, cvers, (int)strlen(cvers), 0) == (int)strlen(cvers), "lobby: send CVERS returns its own length");
+        std::string atLobby;
+        while (atLobby.find("CVERS") == std::string::npos) {
+            char b[256]; int r = recv(lsv, b, sizeof(b), 0);
+            if (r <= 0) break;
+            atLobby.append(b, r);
+        }
+        Check(atLobby == std::string("NOXCLIENT 1\r\n") + cvers, "lobby: NOXCLIENT 1 goes out before CVERS");
+
+        // 토큰 줄을 둘로 나눠 보낸다(TCP 가 줄을 자르는 경우) — 클라는 토큰 줄 없이 앞뒤 줄만 받아야 한다
+        const std::string line = std::string("NOXTOKEN 127.0.0.1:") + std::to_string(gamePort) + " " + hex + "\r\n";
+        const std::string part1 = ": 376 u\r\n" + line.substr(0, 20);
+        const std::string part2 = line.substr(20) + ":wn!u@h JOINGAME 1 32 37 1 0 2130706433 1 :#NoxOrigin's_game\r\n";
+        send(lsv, part1.data(), (int)part1.size(), 0);
+        Sleep(60);
+        send(lsv, part2.data(), (int)part2.size(), 0);
+        const std::string want = ": 376 u\r\n:wn!u@h JOINGAME 1 32 37 1 0 2130706433 1 :#NoxOrigin's_game\r\n";
+        std::string got;
+        while (got.size() < want.size()) {
+            char b[64]; int r = recv(lc, b, sizeof(b), 0);   // 작은 버퍼 — 줄이 여러 번에 나뉘어도
+            if (r <= 0) break;
+            got.append(b, r);
+        }
+        Check(got == want, "lobby: NOXTOKEN line removed even when split across TCP segments");
+
+        // 꼬리 — 게임 서버 주소로 가는 접속 시도·CONNECT 에만
+        char join[100]; memset(join, 0, sizeof(join)); join[2] = 0x0e; join[4] = 'J';
+        const unsigned char connPkt[3] = { 0xff, 0x00, 0x00 };
+        sockaddr_in toGame = Loopback(gamePort), toOther = Loopback(otherPort);
+        Check(sendto(cli, join, sizeof(join), 0, (sockaddr*)&toGame, sizeof(toGame)) == (int)sizeof(join), "tail: sendto returns caller length 100");
+        char gb[512]; int n1 = recvfrom(game, gb, sizeof(gb), 0, NULL, NULL);
+        Check(n1 == 155 && memcmp(gb, join, 100) == 0 && memcmp(gb + 100, raw, 51) == 0 && memcmp(gb + 151, "NXT1", 4) == 0,
+              "tail: join to game server = 100 + token 51 + NXT1");
+        sendto(cli, (const char*)connPkt, 3, 0, (sockaddr*)&toGame, sizeof(toGame));
+        int n2 = recvfrom(game, gb, sizeof(gb), 0, NULL, NULL);
+        Check(n2 == 58 && memcmp(gb, connPkt, 3) == 0 && memcmp(gb + 3, raw, 51) == 0, "tail: CONNECT to game server = 3 + tail 55");
+        sendto(cli, join, sizeof(join), 0, (sockaddr*)&toOther, sizeof(toOther));
+        int n3 = recvfrom(other, gb, sizeof(gb), 0, NULL, NULL);
+        Check(n3 == 100, "tail: join to another server = no tail");
+        char ping[12] = { 0, 0, 0x0c };
+        sendto(cli, ping, sizeof(ping), 0, (sockaddr*)&toGame, sizeof(toGame));
+        int n4 = recvfrom(game, gb, sizeof(gb), 0, NULL, NULL);
+        Check(n4 == 12, "tail: other packet to game server = unchanged");
+
+        // 로비 연결이 아닌 TCP — NOXTOKEN 처럼 보이는 줄도 그대로 온다
+        SOCKET pc = socket(AF_INET, SOCK_STREAM, 0);
+        Check(connect(pc, (sockaddr*)&toLobby, sizeof(toLobby)) == 0, "plain: connect");
+        SOCKET psv = accept(lsl, NULL, NULL);
+        RecvTimeout(pc);
+        const std::string fake = std::string("NOXTOKEN 1.2.3.4:5 ") + hex + "\r\n";
+        send(psv, fake.data(), (int)fake.size(), 0);
+        std::string pgot;
+        while (pgot.size() < fake.size()) {
+            char b[256]; int r = recv(pc, b, sizeof(b), 0);
+            if (r <= 0) break;
+            pgot.append(b, r);
+        }
+        Check(pgot == fake, "plain: non-lobby socket passes NOXTOKEN-looking line through");
+
+        closesocket(pc); closesocket(psv); closesocket(lc); closesocket(lsv); closesocket(lsl);
+        closesocket(game); closesocket(other); closesocket(cli);
+    }
 
     closesocket(sv); closesocket(c); closesocket(ls); closesocket(ua); closesocket(ub);
     WSACleanup();

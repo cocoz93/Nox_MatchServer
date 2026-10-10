@@ -4,11 +4,19 @@
 //   (2026-10-10 가져오기 표 실측 — Game.exe 23개 · WOLAPI.dll 30개, 전부 번호. sendto = 20번)
 // WSOCK32 는 KnownDLLs 가 아니어서(그 목록엔 WS2_32 만 있다) 게임 폴더에 두면 이것이 시스템 것보다 먼저 실린다.
 //
-// 이 판이 하는 일 — 아무것도 바꾸지 않는다.
-//   진짜 wsock32.dll 의 내보내기 75개를 같은 번호·같은 이름으로 내놓는다(wsock32.def).
-//   일곱 개(connect · recv · recvfrom · send · sendto · gethostbyname · WSAAsyncGetHostByName)는
-//   진짜를 부른 뒤 로그를 남기고, 나머지 68개는 진짜 함수로 바로 뛴다(Fwd_<번호>).
+// 진짜 wsock32.dll 의 내보내기 75개를 같은 번호·같은 이름으로 내놓는다(wsock32.def).
+//   여덟 개(connect · recv · recvfrom · send · sendto · closesocket · gethostbyname · WSAAsyncGetHostByName)는 이 파일이 받고,
+//   나머지 67개는 진짜 함수로 바로 뛴다(Fwd_<번호>).
 //   로그를 쓰는 동안 바뀐 마지막 오류 값은 되돌려 놓는다 — 게임은 connect 뒤 WSAGetLastError 로 WSAEWOULDBLOCK 을 본다.
+//
+// ★ 10-10 토큰 작업 4 — 입장 토큰을 싣는다(`Docs/TOKEN_DESIGN.md`). 로그와 상관없이 늘 한다.
+//   ① 로비 로그인 묶음의 첫 줄(`CVERS `)이 나가기 전에 `NOXCLIENT 1` 한 줄을 먼저 보낸다 — 로비는 이 줄이 없으면 로그인을 거절한다.
+//      그 소켓을 「로비 연결」로 적어 둔다
+//   ② 로비 연결의 받기에서 `NOXTOKEN <게임 서버 IP:포트> <토큰 16진>` 줄을 떼어 쥔다(`LobbyLineFilter.h` — 줄이 나뉘어 와도)
+//      로비 모듈(WOLAPI.dll)은 원래 답만 본다
+//   ③ 쥔 지 60초 안에 그 게임 서버 주소로 가는 접속 시도(100바이트 · 셋째 `0x0e`)와 CONNECT(`ff 00 00`)에
+//      꼬리(토큰 51 · `NXT1`)를 붙여 보낸다. 다른 주소(LAN 판 등)로 가는 것엔 안 붙인다 — 그 서버는 꼬리를 모른다
+//   ④ closesocket — 로비 연결 상태를 지운다(소켓 번호는 다시 쓰인다)
 //
 // 로그: 환경변수 NOX_HOOK_LOG_DIR 이 있을 때만 <그 폴더>\wsock_<exe>_<pid>.log 에 쓴다(dinput_proxy 와 같은 스위치).
 //       없으면 로그도 집계도 안 하고 진짜로 넘기기만 한다.
@@ -27,6 +35,11 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+
+#include <map>
+#include <string>
+
+#include "LobbyLineFilter.h"
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -231,7 +244,7 @@ extern "C" void* __stdcall Resolve(DWORD ord)
 // 넘김 — 인자는 건드리지 않고 진짜 함수로 뛴다. eax·ecx·edx 는 함수 입구에서 원래 버려도 되는 레지스터다
 #define FWD(n) extern "C" __declspec(naked) void Fwd_##n(void) { __asm push n __asm call Resolve __asm jmp eax }
 
-FWD(1) FWD(2) FWD(3) FWD(5) FWD(6) FWD(7) FWD(8) FWD(9) FWD(10) FWD(11) FWD(12) FWD(13) FWD(14) FWD(15)
+FWD(1) FWD(2) FWD(5) FWD(6) FWD(7) FWD(8) FWD(9) FWD(10) FWD(11) FWD(12) FWD(13) FWD(14) FWD(15)
 FWD(18) FWD(21) FWD(22) FWD(23) FWD(24) FWD(51) FWD(53) FWD(54) FWD(55) FWD(56) FWD(57)
 FWD(101) FWD(102) FWD(104) FWD(105) FWD(106) FWD(107) FWD(108) FWD(109) FWD(110) FWD(111) FWD(112)
 FWD(113) FWD(114) FWD(115) FWD(116) FWD(151) FWD(500) FWD(1000)
@@ -239,9 +252,102 @@ FWD(1100) FWD(1101) FWD(1102) FWD(1103) FWD(1104) FWD(1105) FWD(1106) FWD(1107) 
 FWD(1110) FWD(1111) FWD(1112) FWD(1113) FWD(1114) FWD(1115) FWD(1116) FWD(1117) FWD(1118) FWD(1119)
 FWD(1120) FWD(1130) FWD(1140) FWD(1141) FWD(1142)
 
-// ─────────────────────────────────────────────── 보는 일곱
+// ─────────────────────────────────────────────── 입장 토큰 (10-10 토큰 작업 4 — 머리 주석 ①~④)
+
+static const char kNoxClientHello[] = "NOXCLIENT 1\r\n";   // DLL 판 — 로비 `kNoxClientMinVersion` 이상이어야 로그인된다
+static const DWORD kTokenHoldMs = 60000;                   // 토큰을 쥐고 있는 시간(토큰 만료 30초보다 넉넉히 — 판정은 서버가 한다)
+static const size_t kTokenRaw = 51;                        // `JoinToken.h` kJoinTokenSize
+static CRITICAL_SECTION g_tokCs;
+static std::map<SOCKET, LobbyLineFilter*> g_lobby;         // 로비 연결(첫 보내기가 `CVERS `) → 줄 떼기 상태
+struct PendingToken {
+    bool have = false;
+    unsigned char ip[4] = {};    // 게임 서버 a.b.c.d
+    unsigned short port = 0;
+    unsigned char raw[kTokenRaw] = {};
+    DWORD tick = 0;
+};
+static PendingToken g_tok;
+
+static bool MarkLobby(SOCKET s)   // 새로 적었으면 true
+{
+    EnterCriticalSection(&g_tokCs);
+    const bool added = g_lobby.find(s) == g_lobby.end();
+    if (added) g_lobby[s] = new LobbyLineFilter();
+    LeaveCriticalSection(&g_tokCs);
+    return added;
+}
+
+static LobbyLineFilter* LobbyFilterOf(SOCKET s)
+{
+    EnterCriticalSection(&g_tokCs);
+    auto it = g_lobby.find(s);
+    LobbyLineFilter* f = it == g_lobby.end() ? NULL : it->second;
+    LeaveCriticalSection(&g_tokCs);
+    return f;   // 그 소켓을 받는 스레드만 쓴다 — closesocket 전까지 유효
+}
+
+static int HexNib(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// `NOXTOKEN a.b.c.d:port <16진 102자>` → g_tok
+static void OnTokenLine(const std::string& line, const char* who)
+{
+    unsigned a, b, c, d, port;
+    char hex[256] = {};
+    PendingToken t;
+    bool ok = sscanf(line.c_str(), "NOXTOKEN %u.%u.%u.%u:%u %255s", &a, &b, &c, &d, &port, hex) == 6 &&
+              a < 256 && b < 256 && c < 256 && d < 256 && port > 0 && port < 65536 && strlen(hex) == kTokenRaw * 2;
+    for (size_t i = 0; ok && i < kTokenRaw; ++i) {
+        const int hi = HexNib(hex[2 * i]), lo = HexNib(hex[2 * i + 1]);
+        if (hi < 0 || lo < 0) ok = false;
+        else t.raw[i] = static_cast<unsigned char>((hi << 4) | lo);
+    }
+    if (!ok) { Detail("NOXTOKEN 줄 꼴이 틀려 버림 — %.80s 부른 곳=%s", line.c_str(), who); return; }
+    t.have = true;
+    t.ip[0] = (unsigned char)a; t.ip[1] = (unsigned char)b; t.ip[2] = (unsigned char)c; t.ip[3] = (unsigned char)d;
+    t.port = (unsigned short)port;
+    t.tick = GetTickCount();
+    EnterCriticalSection(&g_tokCs);
+    g_tok = t;
+    LeaveCriticalSection(&g_tokCs);
+    Detail("NOXTOKEN 받음 — 게임 서버 %u.%u.%u.%u:%u 로 가는 접속 시도·CONNECT 에 붙인다 부른 곳=%s", a, b, c, d, port, who);
+}
+
+// 접속 시도(100바이트 · 셋째 0x0e) · CONNECT(ff 00 00) 이고, 쥔 토큰의 게임 서버로 가면 꼬리를 채운다
+static bool TailFor(const char* buf, int len, const struct sockaddr* to, int tolen, unsigned char tail[kTokenRaw + 4], const char*& why)
+{
+    const unsigned char* p = (const unsigned char*)buf;
+    const bool join = len == 100 && p[2] == 0x0e;
+    const bool conn = len == 3 && p[0] == 0xff && p[1] == 0x00 && p[2] == 0x00;
+    if (!join && !conn) { why = NULL; return false; }   // 다른 패킷 — 말할 것 없음
+    if (!to || tolen < (int)sizeof(sockaddr_in) || to->sa_family != AF_INET) { why = "주소 꼴"; return false; }
+    const sockaddr_in* in = (const sockaddr_in*)to;
+    const unsigned char* ip = (const unsigned char*)&in->sin_addr;
+    const unsigned short port = (unsigned short)((((const unsigned char*)&in->sin_port)[0] << 8) | ((const unsigned char*)&in->sin_port)[1]);
+    bool ok = false;
+    EnterCriticalSection(&g_tokCs);
+    if (!g_tok.have) why = "쥔 토큰 없음";
+    else if (GetTickCount() - g_tok.tick > kTokenHoldMs) why = "쥔 지 60초 넘음";
+    else if (memcmp(ip, g_tok.ip, 4) != 0 || port != g_tok.port) why = "토큰의 게임 서버가 아닌 주소";
+    else {
+        memcpy(tail, g_tok.raw, kTokenRaw);
+        memcpy(tail + kTokenRaw, "NXT1", 4);
+        ok = true;
+        why = join ? "접속 시도에 꼬리" : "CONNECT 에 꼬리";
+    }
+    LeaveCriticalSection(&g_tokCs);
+    return ok;
+}
+
+// ─────────────────────────────────────────────── 받는 여덟
 
 typedef int (WSAAPI* PFN_connect)(SOCKET, const struct sockaddr*, int);
+typedef int (WSAAPI* PFN_closesocket)(SOCKET);
 typedef int (WSAAPI* PFN_send)(SOCKET, const char*, int, int);
 typedef int (WSAAPI* PFN_recv)(SOCKET, char*, int, int);
 typedef int (WSAAPI* PFN_sendto)(SOCKET, const char*, int, int, const struct sockaddr*, int);
@@ -267,6 +373,15 @@ extern "C" int WSAAPI Hook_connect(SOCKET s, const struct sockaddr* name, int na
 extern "C" int WSAAPI Hook_send(SOCKET s, const char* buf, int len, int flags)
 {
     void* ret = _ReturnAddress();
+    // ① 로비 로그인 묶음의 첫 줄(CVERS)이 나가기 전에 DLL 판을 알린다. 이 소켓을 로비 연결로 적는다
+    if (buf && len >= 6 && memcmp(buf, "CVERS ", 6) == 0 && MarkLobby(s)) {
+        const int hr = ((PFN_send)Resolve(19))(s, kNoxClientHello, (int)strlen(kNoxClientHello), flags);
+        if (g_log[0]) {
+            DWORD err = GetLastError();
+            Detail("NOXCLIENT 알림 s=%u rc=%d(%d바이트) 부른 곳=%s", (unsigned)s, hr, (int)strlen(kNoxClientHello), ModOf(ret)->name);
+            SetLastError(err);
+        }
+    }
     int rc = ((PFN_send)Resolve(19))(s, buf, len, flags);
     if (g_log[0]) {
         DWORD err = GetLastError();
@@ -282,7 +397,16 @@ extern "C" int WSAAPI Hook_send(SOCKET s, const char* buf, int len, int flags)
 extern "C" int WSAAPI Hook_recv(SOCKET s, char* buf, int len, int flags)
 {
     void* ret = _ReturnAddress();
-    int rc = ((PFN_recv)Resolve(16))(s, buf, len, flags);
+    // ② 로비 연결이면 NOXTOKEN 줄을 떼고 넘긴다(엿보기 `MSG_PEEK` 는 줄 떼기와 맞지 않아 그대로 — 로비 모듈은 안 쓴다)
+    LobbyLineFilter* f = (flags & MSG_PEEK) ? NULL : LobbyFilterOf(s);
+    int rc;
+    if (f) {
+        const char* who = g_log[0] ? ModOf(ret)->name : "";
+        rc = f->Recv([&](char* b, int n) { return ((PFN_recv)Resolve(16))(s, b, n, flags); }, buf, len,
+                     [&](const std::string& line) { OnTokenLine(line, who); });
+    } else {
+        rc = ((PFN_recv)Resolve(16))(s, buf, len, flags);
+    }
     if (g_log[0]) {
         DWORD err = GetLastError();
         ModStat* m = ModOf(ret);
@@ -299,7 +423,21 @@ extern "C" int WSAAPI Hook_recv(SOCKET s, char* buf, int len, int flags)
 extern "C" int WSAAPI Hook_sendto(SOCKET s, const char* buf, int len, int flags, const struct sockaddr* to, int tolen)
 {
     void* ret = _ReturnAddress();
-    int rc = ((PFN_sendto)Resolve(20))(s, buf, len, flags, to, tolen);
+    // ③ 쥔 토큰의 게임 서버로 가는 접속 시도 · CONNECT 에 꼬리. 부른 쪽에는 원래 길이를 돌려준다(UDP 는 통째로 가거나 실패)
+    unsigned char tail[kTokenRaw + 4];
+    const char* why = NULL;
+    int rc;
+    bool tailed = false;
+    if (buf && len > 0 && TailFor(buf, len, to, tolen, tail, why)) {
+        char big[512];
+        memcpy(big, buf, (size_t)len);
+        memcpy(big + len, tail, sizeof(tail));
+        rc = ((PFN_sendto)Resolve(20))(s, big, len + (int)sizeof(tail), flags, to, tolen);
+        if (rc == len + (int)sizeof(tail)) rc = len;
+        tailed = true;
+    } else {
+        rc = ((PFN_sendto)Resolve(20))(s, buf, len, flags, to, tolen);
+    }
     if (g_log[0]) {
         DWORD err = GetLastError();
         ModStat* m = ModOf(ret);
@@ -309,9 +447,27 @@ extern "C" int WSAAPI Hook_sendto(SOCKET s, const char* buf, int len, int flags,
             char h[400]; Hex(buf, len, h, 128);
             Detail("sendto 0x0e(접속 시도) %s len=%d rc=%d 부른 곳=%s | %s", a, len, rc, m->name, h);
         }
+        if (why) {
+            char a[32]; AddrStr(to, tolen, a);
+            Detail("토큰 꼬리 %s — %s len=%d rc=%d", tailed ? "붙임" : "안 붙임", a, len, rc);
+            if (!tailed) Detail("  까닭: %s", why);
+            else Detail("  %s", why);
+        }
         SetLastError(err);
     }
     return rc;
+}
+
+// ④ 로비 연결 상태를 지운다 — 소켓 번호는 닫힌 뒤 다른 소켓에 다시 쓰인다
+extern "C" int WSAAPI Hook_closesocket(SOCKET s)
+{
+    LobbyLineFilter* f = NULL;
+    EnterCriticalSection(&g_tokCs);
+    auto it = g_lobby.find(s);
+    if (it != g_lobby.end()) { f = it->second; g_lobby.erase(it); }
+    LeaveCriticalSection(&g_tokCs);
+    delete f;
+    return ((PFN_closesocket)Resolve(3))(s);
 }
 
 extern "C" int WSAAPI Hook_recvfrom(SOCKET s, char* buf, int len, int flags, struct sockaddr* from, int* fromlen)
@@ -369,6 +525,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         InitializeCriticalSection(&g_logCs);
         InitializeCriticalSection(&g_statCs);
         InitializeCriticalSection(&g_resolveCs);
+        InitializeCriticalSection(&g_tokCs);
 
         char dir[MAX_PATH];
         if (GetEnvironmentVariableA("NOX_HOOK_LOG_DIR", dir, MAX_PATH)) {

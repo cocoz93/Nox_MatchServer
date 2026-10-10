@@ -10,6 +10,11 @@ if not exist wsock32.dll ( echo wsock32.dll missing - run build.bat & popd & exi
 cl /nologo /utf-8 /O2 /W3 /EHsc /MT selftest.cpp /Fe:selftest.exe /link wsock32.lib >nul
 if errorlevel 1 ( echo selftest build failed & popd & exit /b 1 )
 set RC=0
+rem line filter fuzz (same header as the DLL): every TCP split x every recv size
+cl /nologo /utf-8 /O2 /W3 /EHsc /MT linefilter_test.cpp /Fe:linefilter_test.exe >nul
+if errorlevel 1 ( echo linefilter_test build failed & popd & exit /b 1 )
+"%~dp0linefilter_test.exe"
+if errorlevel 1 set RC=1
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check_exports.ps1"
 if errorlevel 1 set RC=1
 set "LOGDIR=%TEMP%\wsock32_proxy_test"

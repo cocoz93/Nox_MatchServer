@@ -2,7 +2,7 @@ LIBRARY wsock32
 EXPORTS
     accept=Fwd_1                 @1
     bind=Fwd_2                   @2
-    closesocket=Fwd_3            @3
+    closesocket=Hook_closesocket @3
     connect=Hook_connect         @4
     getpeername=Fwd_5            @5
     getsockname=Fwd_6            @6
