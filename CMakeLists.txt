@@ -8,6 +8,18 @@ if (MSVC)
   add_compile_options(/W4 /permissive- /utf-8)
 endif()
 
+# 로비와 게임 서버가 같이 쓰는 것 — 입장 토큰 서명·검증 · 설정 파일 읽기(Docs/TOKEN_DESIGN.md).
+# 게임 규약(nox_proto)에도 로비(nox_lobby_core)에도 기대지 않는다.
+add_library(nox_common STATIC
+  server/src/common/JoinToken.cpp
+  server/src/common/IniFile.cpp
+)
+target_include_directories(nox_common PUBLIC server/include)
+target_link_libraries(nox_common PUBLIC bcrypt)
+
+add_executable(common_test server/tests/common_test.cpp)
+target_link_libraries(common_test PRIVATE nox_common)
+
 add_library(nox_proto STATIC
   server/src/Opcode.cpp
   server/src/MsgLen.cpp
@@ -73,6 +85,7 @@ enable_testing()
 add_test(NAME proto_test COMMAND proto_test)
 add_test(NAME server_selftest COMMAND nox_server --selftest)
 add_test(NAME lobby_unit COMMAND lobby_test)
+add_test(NAME common_unit COMMAND common_test)
 
 # 로비 녹음 대조 — 1단계 녹음(정품 클라 ↔ XWIS)이 정답지. 남의 이름·IP 가 들어 있어
 # `_evidence/` 에만 두므로(git 제외) 있을 때만 건다.
