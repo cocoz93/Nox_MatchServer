@@ -138,13 +138,24 @@ std::vector<std::string> Lines(const std::vector<nox::wol::Out>& out) {
 }
 
 // ── 로비 단위 시험 — 값이 설정대로 실리는지 (꼴은 --replay 가 녹음과 대조한다) ──
+//   ★ 10-10 토큰 작업 3 — 방 둘 · 클라 DLL 알림(`NOXCLIENT`) · 방 참가 앞의 `NOXTOKEN`(게임 서버 키로 풀리나) · 거절 갈래
+nox::JoinKey LobbyTestKey() {
+    nox::JoinKey k{};
+    for (size_t i = 0; i < k.size(); ++i) k[i] = static_cast<uint8_t>(0x30 + i);
+    return k;
+}
+constexpr uint32_t kLobbyTestNow = 1760064016;   // 시험 시계(유닉스 초)
+
 void LobbyUnitTests() {
     using namespace nox::wol;
     LobbyConfig cfg;
     cfg.gameServerIp = (192u << 24) | (0u << 16) | (2u << 8) | 10u;   // 192.0.2.10 (문서용 주소)
     cfg.room.map = "estate";
-    cfg.room.name = "Nox_Origin";
     cfg.room.maxPlayers = 31;
+    cfg.rooms = {{"NoxOrigin", 0}, {"NoxOrigin2", 1}};
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
     Lobby lb(cfg);
     const uint32_t loop = 0x7f000001;
     const uint32_t peer = (198u << 24) | (51u << 16) | (100u << 8) | 7u;   // 198.51.100.7 (문서용 주소)
@@ -162,50 +173,68 @@ void LobbyUnitTests() {
     Check(!out.empty() && out.back().closeAfter, "QUIT 답 뒤엔 끊는다");
     lb.OnClose(1);
 
-    // 4000 — 로그인 묶음 → 376, verchk → 379
+    // 4000 — DLL 알림 + 로그인 묶음 → 376, verchk → 379
     out.clear();
     lb.OnConnect(2, kLobbyPort, peer, loop);
-    for (const char* l : {"CVERS 11020 9472", "PASS supersecret", "NICK wn", "apgar 1234 0", "SERIAL 7726",
+    for (const char* l : {"NOXCLIENT 1", "CVERS 11020 9472", "PASS supersecret", "NICK wn", "apgar 1234 0", "SERIAL 7726",
                           "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33"})
         lb.OnLine(2, l, out);
     Check(out.size() >= 2 && out[out.size() - 2].line == ": 376 u" &&
               out.back().line == ": 379 u :none none none 1 32512 NONREQ",
-          "로그인 끝(376) 뒤 패치 없음(379)");
+          "DLL 알림 + 로그인 → 로그인 끝(376) 뒤 패치 없음(379)");
 
-    // 첫 목록(-1) = 방 1 + 채팅 로비 3, 방 줄에 게임 서버 IP · 방 정보는 풀리고 이름이 설정대로
+    // 첫 목록(-1) = 방 2 + 채팅 로비 3, 방 줄에 게임 서버 IP · 방 정보는 풀리고 이름이 방장 이름
     out.clear();
     lb.OnLine(2, "LIST -1 37", out);
     int n326 = 0, n327 = 0;
+    std::vector<std::string> names;
     for (const auto& o : out) {
         const auto t = Tokens(o.line);
         if (t.size() > 1 && t[1] == "326") {
             ++n326;
             Check(t.size() == 11 && t[9] == gameIp, "326 의 방장 주소 칸 = 게임 서버 IP");
             GameInfo g;
-            Check(t.size() == 11 && t[10].rfind("128:", 0) == 0 && Unpack(t[10].substr(4), g) &&
-                      g.name == "Nox_Origin" && g.map == "estate",
-                  "326 의 방 정보가 풀리고 이름·맵이 설정대로");
+            Check(t.size() == 11 && t[10].rfind("128:", 0) == 0 && Unpack(t[10].substr(4), g) && g.map == "estate",
+                  "326 의 방 정보가 풀리고 맵이 설정대로");
+            if (t.size() == 11 && Unpack(t[10].substr(4), g)) names.push_back(t[3] + "=" + g.name);   // `: 326 u #채널 …` — 채널은 넷째 칸
         }
         if (t.size() > 1 && t[1] == "327") ++n327;
     }
-    Check(n326 == 1 && n327 == 3, "LIST -1 37 = 방 1줄 + 채팅 로비 3줄");
+    Check(n326 == 2 && n327 == 3, "LIST -1 37 = 방 2줄 + 채팅 로비 3줄");
+    std::string seen;
+    for (const auto& n : names) seen += " [" + n + "]";
+    const std::string namesMsg = "방 차례 = 설정 차례 · 방 정보 이름 = 방장 이름 —" + seen;
+    Check(names.size() == 2 && names[0] == "#NoxOrigin's_game=NoxOrigin" && names[1] == "#NoxOrigin2's_game=NoxOrigin2",
+          namesMsg.c_str());
     out.clear();
     lb.OnLine(2, "LIST 37 37", out);
     n327 = 0;
     for (const auto& o : out)
         if (Tokens(o.line).size() > 1 && Tokens(o.line)[1] == "327") ++n327;
-    Check(n327 == 0 && out.size() == 3, "LIST 37 37 = 방 1줄만");
+    Check(n327 == 0 && out.size() == 4, "LIST 37 37 = 방 2줄만");
 
-    // 방 참가 — 353 에 방장(게임 서버 IP)과 나(내 IP)
+    // 방 참가(둘째 방) — 답 맨 앞에 NOXTOKEN(게임 서버 주소 · 키로 풀리는 토큰), 353 에 그 방의 방장과 나
     out.clear();
-    lb.OnLine(2, "JOINGAME #NoxOrigin's_game 1 ", out);
-    const std::string want353 = ": 353 u = #NoxOrigin's_game :@NoxOrigin,0," + gameIp + " wn,0," + std::to_string(peer);
+    lb.OnLine(2, "JOINGAME #NoxOrigin2's_game 1 ", out);
+    const auto first = out.empty() ? std::vector<std::string>{} : Tokens(out[0].line);
+    nox::JoinToken tok;
+    nox::JoinTokenCheck chk = nox::JoinTokenCheck::BadSize;
+    uint8_t raw[nox::kJoinTokenSize] = {};
+    if (first.size() == 3 && nox::ParseHex(first[2], raw, sizeof(raw)))
+        chk = nox::VerifyJoinToken(LobbyTestKey(), raw, sizeof(raw), kLobbyTestNow, peer, tok);
+    Check(first.size() == 3 && first[0] == "NOXTOKEN" && first[1] == "192.0.2.10:18590", "참가 답 맨 앞 = NOXTOKEN 게임 서버 주소");
+    Check(chk == nox::JoinTokenCheck::Ok && tok.roomId == 1 && tok.clientIp == peer && tok.account == "wn" &&
+              tok.expiresAt == kLobbyTestNow + nox::kJoinTokenLifetimeSec && tok.nonce == 0x0102030405060708ull,
+          "토큰이 게임 서버 키로 풀리고 방 1 · 내 IP · 로비 이름 · 만료 30초");
+    const std::string want353 = ": 353 u = #NoxOrigin2's_game :@NoxOrigin2,0," + gameIp + " wn,0," + std::to_string(peer);
     bool has353 = false;
     for (const auto& o : out) has353 = has353 || o.line == want353;
-    Check(has353, "JOINGAME 답 353 = 방장(게임 서버 IP) + 나(내 IP)");
+    Check(out.size() == 5 && Tokens(out[1].line).size() > 1 && Tokens(out[1].line)[1] == "JOINGAME" && has353,
+          "NOXTOKEN 뒤 원래 답 넷(JOINGAME · 332 · 353 · 366), 353 = 둘째 방 방장 + 나");
     out.clear();
     lb.OnLine(2, "JOINGAME #nobody's_game 1 ", out);
-    Check(out.empty(), "모르는 방 참가엔 답하지 않는다");
+    Check(out.empty(), "모르는 방 참가엔 답하지 않는다(토큰도 없음)");
+    Check(lb.Stats().tokensIssued == 1, "토큰 낸 수 1");
 
     // 모르는 명령 — 답 없음, 처음 한 번만 기록
     out.clear();
@@ -213,6 +242,22 @@ void LobbyUnitTests() {
     lb.OnLine(2, "PING abc", out);
     lb.OnLine(2, "PING def", out);
     Check(out.empty() && lb.TakeLog().size() == 1, "모르는 명령은 답 없이 처음 한 번만 기록");
+
+    // DLL 없는 로그인 · 판 낮음 · 로그인 전 참가 — 거절 갈래마다 센다
+    out.clear();
+    lb.OnConnect(3, kLobbyPort, peer, loop);
+    for (const char* l : {"CVERS 11020 9472", "NICK plain", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(3, l, out);
+    Check(out.size() == 1 && out[0].line.rfind("ERROR ", 0) == 0 && out[0].closeAfter && lb.Stats().loginNoClient == 1,
+          "NOXCLIENT 없는 로그인 → ERROR 하고 끊음(376 없음)");
+    out.clear();
+    lb.OnConnect(4, kLobbyPort, peer, loop);
+    for (const char* l : {"NOXCLIENT 0", "NICK old", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(4, l, out);
+    Check(out.size() == 1 && out[0].closeAfter && lb.Stats().loginOldClient == 1 && lb.Stats().loginNoClient == 1,
+          "DLL 판 0 → 「판 낮음」으로 따로 세고 끊음");
+    out.clear();
+    lb.OnConnect(5, kLobbyPort, peer, loop);
+    for (const char* l : {"NICK early", "JOINGAME #NoxOrigin's_game 1 "}) lb.OnLine(5, l, out);
+    Check(out.empty() && lb.Stats().joinNoClient == 1 && lb.Stats().tokensIssued == 1, "로그인 전 방 참가 → 답 없음 · 토큰 없음");
 }
 
 // ── 녹음 대조 ───────────────────────────────────────────────────────
@@ -477,10 +522,15 @@ int ReplayRecording(const char* path) {
             rc->xwis.push_back(Utf8ToLatin1(rest.substr(4)));
     }
 
-    // 녹음에서 정품 클라가 고른 방은 `#tak7's_game` — 고정 방의 방장 이름을 그것으로 맞춰 둔다
+    // 녹음에서 정품 클라가 고른 방은 `#tak7's_game` — 방 하나의 방장 이름을 그것으로 맞춰 둔다
+    // ★ 10-10 토큰 작업 3 — 로비는 토큰 방식 하나뿐이다. 녹음 속 클라에는 DLL 이 없었으므로, 실제 클라처럼 DLL 몫을 흉내 낸다:
+    //   4000 로그인 앞에 `NOXCLIENT 1` 을 끼우고, 나온 답에서 `NOXTOKEN` 줄을 떼어 센 뒤(녹음 속 방 참가 수와 같아야 한다)
+    //   나머지만 XWIS 원래 답과 견준다. 그래서 이 대조는 「DLL 이 줄을 뗀 뒤 정품 로비 모듈이 받는 것」을 본다.
     nox::wol::LobbyConfig cfg;
-    cfg.roomHost = "tak7";
+    cfg.rooms = {{"tak7", 0}};
+    cfg.joinKey = LobbyTestKey();
     nox::wol::Lobby lb(cfg);
+    int tokenLines = 0, joinGames = 0;
     const uint32_t loop = 0x7f000001;   // 녹음의 정품 클라는 127.0.0.1 에서 붙었다
 
     int compared = 0, skipped = 0, items = 0, diffs = 0, droppedPage = 0;
@@ -502,10 +552,19 @@ int ReplayRecording(const char* path) {
         }
         std::vector<nox::wol::Out> out;
         lb.OnConnect(rc.id, static_cast<uint16_t>(rc.port), loop, loop);
-        for (const auto& cl : rc.client) lb.OnLine(rc.id, cl, out);
+        if (rc.port == nox::wol::kLobbyPort) lb.OnLine(rc.id, "NOXCLIENT 1", out);   // DLL 이 로그인 앞에 끼우는 줄
+        for (const auto& cl : rc.client) {
+            lb.OnLine(rc.id, cl, out);
+            if (cl.rfind("JOINGAME ", 0) == 0) ++joinGames;
+        }
         lb.OnClose(rc.id);
+        std::vector<std::string> kept;   // DLL 이 `NOXTOKEN` 줄을 뗀 뒤 정품 로비 모듈이 받는 줄
+        for (const auto& l : Lines(out)) {
+            if (l.rfind("NOXTOKEN ", 0) == 0) ++tokenLines;
+            else kept.push_back(l);
+        }
         int oursPage = 0;
-        const auto ours = Normalize(Lines(out), oursPage);
+        const auto ours = Normalize(kept, oursPage);
         const auto xw = Normalize(rc.xwis, droppedPage);
         int d = oursPage;   // 로비는 PAGE 를 보내지 않는다 — 보냈다면 다름
         if (ours.size() != xw.size()) ++d;
@@ -534,7 +593,9 @@ int ReplayRecording(const char* path) {
     std::printf("녹음 %d줄 · 접속 %zu (대조 %d · 건너뜀 %d) · 대조한 답 묶음 %d · 일부러 뺀 PAGE %d · 다름 %d\n", lines,
                 conns.size(), compared, skipped, items, droppedPage, diffs);
     Check(compared > 0 && items > 0, "녹음에서 대조할 접속과 답을 찾았다");
-    Check(diffs == 0, "로비 답이 XWIS 원래 답과 종류·순서·꼴이 같다");
+    Check(diffs == 0, "로비 답이 XWIS 원래 답과 종류·순서·꼴이 같다(DLL 이 NOXTOKEN 을 뗀 뒤)");
+    std::printf("녹음 속 방 참가 %d · 낸 NOXTOKEN %d\n", joinGames, tokenLines);
+    Check(joinGames > 0 && tokenLines == joinGames, "녹음 속 방 참가마다 NOXTOKEN 하나");
     return 0;
 }
 

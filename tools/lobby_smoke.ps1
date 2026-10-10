@@ -42,8 +42,11 @@ function ReadUntil($k, [string]$stop) {
 }
 
 $log = Join-Path $env:TEMP ("lobby_smoke_{0}.txt" -f $PID)
+# ★ 10-10 토큰 작업 3 — 로비는 설정 파일(키 · 방 목록)이 있어야 뜬다. 키는 시험용 고정값(게임 서버와 맞출 일이 없다)
+$ini = Join-Path $env:TEMP ("lobby_smoke_{0}.ini" -f $PID)
+[IO.File]::WriteAllText($ini, "[token]`r`nkey = $('ab' * 32)`r`n[rooms]`r`nNoxOrigin = 0`r`n")
 $p = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -ArgumentList @(
-  '--bind', '127.0.0.1', '--servserv-port', $ServPort, '--lobby-port', $LobbyPort,
+  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--servserv-port', $ServPort, '--lobby-port', $LobbyPort,
   '--game-ip', $gameIp, '--seconds', '8', '--quiet')
 try {
   Write-Host "로비 찾기 :$ServPort"
@@ -66,8 +69,16 @@ try {
   $k.c.Close()
 
   Write-Host "로비 :$LobbyPort"
+  # DLL 없는 로그인(NOXCLIENT 없음) — ERROR 한 줄 뒤 로비가 끊는다
   $k = Open $LobbyPort
-  Send $k @('CVERS 11020 9472', 'PASS supersecret', 'NICK wn', 'apgar 1234 0', 'SERIAL 7726',
+  Send $k @('CVERS 11020 9472', 'NICK plain', 'USER UserName HostName irc.westwood.com :RealName')
+  $x = $k.r.ReadLine()
+  Check ($x -like 'ERROR *') "DLL 없는 로그인 → ERROR ($x)"
+  Check ($null -eq $k.r.ReadLine()) 'DLL 없는 로그인 뒤 로비가 끊는다'
+  $k.c.Close()
+
+  $k = Open $LobbyPort
+  Send $k @('NOXCLIENT 1', 'CVERS 11020 9472', 'PASS supersecret', 'NICK wn', 'apgar 1234 0', 'SERIAL 7726',
             'USER UserName HostName irc.westwood.com :RealName', 'verchk 32512 720916', 'SETOPT 17,33')
   $b = ReadUntil $k '379'
   Check ((($b | ForEach-Object { Kind $_ }) -contains '376') -and ((Kind $b[-1]) -eq '379')) "로그인 끝 376 · 패치 없음 379 (받은 줄 $($b.Count))"
@@ -92,7 +103,9 @@ try {
 
   Send $k @("JOINGAME $room 1 ")
   $g = ReadUntil $k '366'
-  Check ((($g | ForEach-Object { Kind $_ }) -join ',') -eq 'user:JOINGAME,332,353,366') '방 참가 JOINGAME · 332 · 353 · 366'
+  Check ((($g | ForEach-Object { Kind $_ }) -join ',') -eq '?,user:JOINGAME,332,353,366') '방 참가 NOXTOKEN · JOINGAME · 332 · 353 · 366'
+  $nt = $g[0].Split(' ')
+  Check ($nt.Count -eq 3 -and $nt[0] -eq 'NOXTOKEN' -and $nt[1] -eq "${gameIp}:18590" -and $nt[2] -match '^[0-9a-f]{102}$') "NOXTOKEN 게임 서버 주소 · 토큰 16진 102자 ($($g[0].Length)글자)"
   Check (($g | Where-Object { (Kind $_) -eq '353' }) -like "*:@NoxOrigin,0,$gameIpInt wn,0,2130706433") '353 에 방장(게임 서버 IP) · 나(127.0.0.1)'
 
   Send $k @('QUIT')
@@ -106,10 +119,11 @@ try {
 }
 $summary = Get-Content -LiteralPath $log -Encoding UTF8 | Where-Object { $_ -match '\[로비\] 끝' }
 Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $ini -ErrorAction SilentlyContinue
 Write-Host "로비 출력: $summary"
 # 0 은 「없었다」와 「못 읽었다」를 안 가른다 — 로비가 센 접속·줄 수를 같이 본다
-#   접속 = 로비 찾기 2(왕복 · CRLF) + 로비 1 · 보낸 클라 줄 = 5 + 1 + 15 = 21
-#   받은 답 = 로비 찾기 3 + 610 1 + 로그인 4 · 329 · 목록 6 · 입장 3 · 퇴장 1 · 목록 3 · 참가 4 · 607 = 27
-Check ($summary -match '접속 3 · 받은 줄 21 · 보낸 줄 27') '로비가 센 접속 3 · 받은 줄 21 · 보낸 줄 27'
+#   접속 = 로비 찾기 2(왕복 · CRLF) + DLL 없는 로그인 1 + 로비 1 · 보낸 클라 줄 = 5 + 1 + 3 + 16 = 25
+#   받은 답 = 로비 찾기 3 + 610 1 + ERROR 1 + 로그인 4 · 329 · 목록 6 · 입장 3 · 퇴장 1 · 목록 3 · 참가 5(NOXTOKEN 포함) · 607 = 29
+Check ($summary -match '접속 4 · 받은 줄 25 · 보낸 줄 29') '로비가 센 접속 4 · 받은 줄 25 · 보낸 줄 29'
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)
 exit $(if ($script:fails) { 1 } else { 0 })

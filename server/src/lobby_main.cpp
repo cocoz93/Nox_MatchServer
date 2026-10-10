@@ -1,8 +1,12 @@
 ﻿// lobby_main.cpp — 로비 서버 실행 파일 (MO 2단계, Docs/LOBBY_DESIGN.md).
 //
-//   nox_lobby.exe [--bind 0.0.0.0] [--servserv-port 4005] [--lobby-port 4000]
-//                 [--game-ip 127.0.0.1] [--room-host NoxOrigin] [--room-name Nox_Origin]
+//   nox_lobby.exe --config <설정 파일> [--bind 0.0.0.0] [--servserv-port 4005] [--lobby-port 4000]
+//                 [--game-ip 127.0.0.1] [--game-port 18590]
 //                 [--map estate] [--mode arena] [--max-players 31] [--seconds N] [--quiet]
+//
+// ★ 10-10 토큰 작업 3 — 설정 파일(`Docs/TOKEN_DESIGN.md`)
+//     [token] key = <16진 64자>           입장 토큰 서명 키 — 게임 서버 설정과 같은 값. 없으면 뜨지 않는다
+//     [rooms] <방장 이름> = <게임 방 번호>  목록에 싣는 방(차례대로) — 옛 --room-host · --room-name 자리
 //
 // 소켓만 맡는다 — 받은 줄은 nox::wol::Lobby 에 넘기고, 돌려받은 줄을 보낸다(게임 서버 main.cpp 루프와 같은 짜임).
 //   · 한 스레드 select() 루프. 듣기 소켓 둘(로비 찾기 · 로비) + 접속 소켓들
@@ -23,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "nox/IniFile.h"
 #include "nox/Lobby.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -80,6 +85,15 @@ std::string Printable(const std::string& s) {
     return r;
 }
 
+// ★ 10-10 토큰 작업 3 — 로비 기록(`TakeLog`)은 우리가 쓴 한글 문구다. 위처럼 0x7e 위를 다 거르면 「[토큰]」이 「[......]」로 찍혀
+//   사람이 못 읽는다. 제어 문자만 거른다(콘솔은 UTF-8 — `SetConsoleOutputCP`)
+std::string PrintableLog(const std::string& s) {
+    std::string r = s;
+    for (char& c : r)
+        if (static_cast<uint8_t>(c) < 0x20 || static_cast<uint8_t>(c) == 0x7f) c = '.';
+    return r;
+}
+
 SOCKET Listen(uint32_t bindIp, uint16_t port) {
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return s;
@@ -101,13 +115,13 @@ int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
 
     nox::wol::LobbyConfig cfg;
-    cfg.room.name = "Nox_Origin";
     cfg.room.map = "estate";
     cfg.room.maxPlayers = 31;
     cfg.room.resolution = 2;   // 녹음 다섯 방 중 셋이 1024x768
     uint32_t bindIp = INADDR_ANY;
     int seconds = 0;           // 0 이면 끝없이. 자체검사가 정해진 시간 뒤 스스로 끝나게 쓴다
     std::string mode = "arena";
+    std::string configPath;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -119,8 +133,8 @@ int main(int argc, char** argv) {
         else if (a == "--lobby-port" && hasNext) cfg.lobbyPort = static_cast<uint16_t>(std::atoi(argv[++i]));
         else if (a == "--game-ip" && hasNext) {
             if (!ParseIp(argv[++i], cfg.gameServerIp)) { Log("[실패] --game-ip 주소: %s\n", argv[i]); return 2; }
-        } else if (a == "--room-host" && hasNext) cfg.roomHost = argv[++i];
-        else if (a == "--room-name" && hasNext) cfg.room.name = argv[++i];
+        } else if (a == "--game-port" && hasNext) cfg.gameServerPort = static_cast<uint16_t>(std::atoi(argv[++i]));
+        else if (a == "--config" && hasNext) configPath = argv[++i];
         else if (a == "--map" && hasNext) cfg.room.map = argv[++i];
         else if (a == "--mode" && hasNext) mode = argv[++i];
         else if (a == "--max-players" && hasNext) cfg.room.maxPlayers = static_cast<uint8_t>(std::atoi(argv[++i]));
@@ -130,6 +144,27 @@ int main(int argc, char** argv) {
     uint16_t modeBits = 0;
     if (!ParseMode(mode, modeBits)) { Log("[실패] --mode: %s\n", mode.c_str()); return 2; }
     cfg.room.flags = static_cast<uint16_t>((cfg.room.flags & ~nox::wol::kMapTypeMask) | modeBits);
+
+    // ★ 10-10 토큰 작업 3 — 로비는 토큰 방식 하나뿐이라 키가 없으면 뜨지 않는다(`Docs/TOKEN_DESIGN.md`)
+    if (configPath.empty()) { Log("[멈춤] --config <설정 파일> 이 없다 — [token] key · [rooms] 가 있어야 뜬다\n"); return 2; }
+    nox::CIniFile ini;
+    if (!ini.LoadFile(configPath)) { Log("[멈춤] 설정 파일을 못 읽었다 — %s\n", ini.Error().c_str()); return 2; }
+    if (!nox::ParseJoinKey(ini.Get("token", "key"), cfg.joinKey)) {
+        Log("[멈춤] 설정 파일의 [token] key 가 16진 64자가 아니다 — %s\n", configPath.c_str());
+        return 2;
+    }
+    cfg.rooms.clear();
+    for (const auto& kv : ini.Section("rooms")) {
+        const int id = std::atoi(kv.second.c_str());
+        const bool digits = !kv.second.empty() && kv.second.find_first_not_of("0123456789") == std::string::npos;
+        if (!digits || id < 0 || id > 65535 || kv.first.find_first_of(" ',#") != std::string::npos) {
+            Log("[멈춤] 설정 파일의 [rooms] 줄이 틀렸다 — %s = %s (방장 이름 = 게임 방 번호, 이름에 빈칸·' , # 없이)\n",
+                kv.first.c_str(), kv.second.c_str());
+            return 2;
+        }
+        cfg.rooms.push_back({kv.first, static_cast<uint16_t>(id)});
+    }
+    if (cfg.rooms.empty()) { Log("[멈춤] 설정 파일에 [rooms] 가 없다 — 방장 이름 = 게임 방 번호 한 줄 이상\n"); return 2; }
 
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -141,9 +176,13 @@ int main(int argc, char** argv) {
     if (lsServ == INVALID_SOCKET || lsLobby == INVALID_SOCKET) return 1;
 
     nox::wol::Lobby lobby(cfg);
-    Log("[로비] 듣기 %s — 로비 찾기 :%u · 로비 :%u · 방 %s → 게임 서버 %s · 맵 %s · %s · 최대 %u\n",
-                nox::wol::IpDotted(bindIp).c_str(), cfg.servServPort, cfg.lobbyPort, lobby.RoomChannel().c_str(),
-                nox::wol::IpDotted(cfg.gameServerIp).c_str(), cfg.room.map.c_str(), mode.c_str(), cfg.room.maxPlayers);
+    std::string roomList;
+    for (const auto& r : lobby.Rooms())
+        roomList += (roomList.empty() ? "" : ", ") + nox::wol::Lobby::Channel(r) + "=게임 방 " + std::to_string(r.gameRoomId);
+    Log("[로비] 듣기 %s — 로비 찾기 :%u · 로비 :%u · 방 %s → 게임 서버 %s:%u · 맵 %s · %s · 최대 %u · 입장 토큰(설정 %s)\n",
+                nox::wol::IpDotted(bindIp).c_str(), cfg.servServPort, cfg.lobbyPort, roomList.c_str(),
+                nox::wol::IpDotted(cfg.gameServerIp).c_str(), cfg.gameServerPort, cfg.room.map.c_str(), mode.c_str(),
+                cfg.room.maxPlayers, configPath.c_str());
     std::fflush(stdout);
 
     std::map<int, Sock> socks;
@@ -240,7 +279,7 @@ int main(int argc, char** argv) {
                         ++nOut;
                         if (!g_quiet) Log("[c%d:%u] << %s\n", o.conn, t->second.port, Printable(o.line).c_str());
                     }
-                    for (const auto& l : lobby.TakeLog()) Log("[로비] %s\n", Printable(l).c_str());
+                    for (const auto& l : lobby.TakeLog()) Log("[로비] %s\n", PrintableLog(l).c_str());
                 }
             }
 

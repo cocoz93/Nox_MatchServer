@@ -71,6 +71,7 @@ add_library(nox_lobby_core STATIC
   server/src/lobby/Lobby.cpp
 )
 target_include_directories(nox_lobby_core PUBLIC server/include)
+target_link_libraries(nox_lobby_core PUBLIC nox_common)   # 입장 토큰 서명 · 설정 파일 읽기
 
 add_executable(nox_lobby server/src/lobby_main.cpp)
 target_link_libraries(nox_lobby PRIVATE nox_lobby_core)

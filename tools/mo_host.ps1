@@ -54,22 +54,35 @@ try {
     $fw = Invoke-Firewall 'Open' $extra
     if (-not ($fw -match '\[열림\]')) { throw '방화벽을 열지 못했다 — 여기서 멈춤(로비를 바깥용으로 띄우지 않음)' }
 
-    if (Get-NetUDPEndpoint -LocalPort 18590 -ErrorAction SilentlyContinue) {
-      Write-Host '게임 서버: 이미 떠 있음 (UDP 18590)'
+    # ★ 10-10 토큰 작업 3 — 로비와 게임 서버가 같은 설정 파일(입장 토큰 키 · 방 목록)을 쓴다. 없으면 키를 새로 만든다.
+    #   키는 비밀이라 git 밖 `config\`(.gitignore). 다른 PC 클라는 꾸러미의 wsock32.dll(작업 4)이 있어야 로비에 로그인된다
+    $cfgDir = Join-Path $repo 'config'
+    $cfg = Join-Path $cfgDir 'nox_mo.ini'
+    if (-not (Test-Path -LiteralPath $cfg)) {
+      New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+      $key = New-Object byte[] 32; (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($key)
+      $hex = -join ($key | ForEach-Object { $_.ToString('x2') })
+      [IO.File]::WriteAllText($cfg, "; Nox_Origin MO 설정 — 입장 토큰 키는 비밀(커밋 금지)`r`n[token]`r`nkey = $hex`r`n[rooms]`r`nNoxOrigin = 0`r`n", (New-Object Text.UTF8Encoding($false)))
+      Write-Host "설정: 새로 만듦 — $cfg"
     } else {
-      # 10-10 토큰 작업 2 — 로비가 토큰을 내고(작업 3) 클라 DLL 이 싣기(작업 4) 전까지는 토큰 검사 끄기로 띄운다. 작업 4 에서 설정 파일로 바꾼다
-      Start-Process -FilePath $serverExe -ArgumentList @('--port', '18590', '--standalone', '--map', "`"$map`"", '--mode', 'arena', '--quiet', '--aoi', '--friends', '--no-join-token')
+      Write-Host "설정: $cfg"
+    }
+
+    if (Get-NetUDPEndpoint -LocalPort 18590 -ErrorAction SilentlyContinue) {
+      Write-Host '게임 서버: 이미 떠 있음 (UDP 18590) — 같은 설정 파일로 띄운 것이어야 토큰이 맞는다'
+    } else {
+      Start-Process -FilePath $serverExe -ArgumentList @('--port', '18590', '--standalone', '--map', "`"$map`"", '--mode', 'arena', '--quiet', '--aoi', '--friends', '--config', "`"$cfg`"")
       Start-Sleep -Seconds 3
       if (-not (Get-NetUDPEndpoint -LocalPort 18590 -ErrorAction SilentlyContinue)) { throw '게임 서버가 뜨지 않았다 — 서버 창의 글을 보세요' }
       Write-Host '게임 서버: 띄움 (Estate 아레나, UDP 18590)'
     }
 
     Stop-Lobby   # 루프백(127.0.0.1)용으로 떠 있던 로비는 끄고 바깥용으로 다시 띄운다
-    Start-Process -FilePath $lobbyExe -ArgumentList @('--bind', '0.0.0.0', '--game-ip', $PublicIp, '--room-name', 'Nox_Origin', '--map', 'estate', '--mode', 'arena')
+    Start-Process -FilePath $lobbyExe -ArgumentList @('--config', "`"$cfg`"", '--bind', '0.0.0.0', '--game-ip', $PublicIp, '--map', 'estate', '--mode', 'arena')
     Start-Sleep -Seconds 1
     $listen = @(Get-NetTCPConnection -State Listen -LocalPort 4005, 4000 -ErrorAction SilentlyContinue | Where-Object LocalAddress -eq '0.0.0.0')
     if ($listen.Count -lt 2) { throw '로비가 0.0.0.0:4005 · 4000 으로 뜨지 않았다 — 로비 창의 글을 보세요' }
-    Write-Host "로비: 띄움 — 0.0.0.0:4005 · 4000 · 방 Nox_Origin → 게임 서버 $PublicIp`:18590"
+    Write-Host "로비: 띄움 — 0.0.0.0:4005 · 4000 · 방은 설정 파일 [rooms] → 게임 서버 $PublicIp`:18590"
     Write-Host '[열림] 이제 다른 PC 에서 2_PLAY.bat — 시험이 끝나면 꼭 서버_MO_닫기.bat'
   } else {
     Stop-Lobby
