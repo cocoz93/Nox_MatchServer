@@ -1302,8 +1302,8 @@ void Server::ContactCollide(const ContactRef& a1, const ContactRef& a2) {
         if (it != sessions_.end() && it->second.inGame) DoorCollide(static_cast<size_t>(a1.idx), it->second);
         return;
     }
-    if (a1.kind != 3 || a1.idx < 0 || static_cast<size_t>(a1.idx) >= obstacles_.size()) return;
-    const PhysBody& o = obstacles_[static_cast<size_t>(a1.idx)];
+    if (a1.kind != 3 || a1.idx < 0 || static_cast<size_t>(a1.idx) >= mt_->obstacles.size()) return;
+    const PhysBody& o = mt_->obstacles[static_cast<size_t>(a1.idx)];
     if (o.contactDmgAmount == 0) return;
     Target t;
     if (a2.kind == 1) {
@@ -1733,7 +1733,8 @@ bool Server::Damage(int64_t sessionId, int amount,
 // ★ 10-01 R2 — **맵 처음 상태 담아 두기 · 되돌리기**(원본은 판끝 10초 뒤 맵을 통째로 다시 읽는다 — `game.go:815~851·935~962`).
 //   우리는 맵을 시작 때 한 번 읽고(`main.cpp` 의 `srv.Set*`) 다시 읽는 길이 없어, 판 중에 바뀌는 맵 몫을 사본으로 담아 둔다.
 //   되돌림 6종 — 바닥 물건 `statics_` · 문·오벨리스크 `props_` · 비밀벽 `secretWalls_` · 쏘는 덫 `traps_` ·
-//     벽 칸 `wallTiles_`·`walls_`(부서짐 포함 · 길 찾기 격자 다시 굽기) · 맵 오브젝트 `mapObjects_`
+//     벽 칸 `wallTiles_`·`walls_`(부서짐 포함 · 길 찾기 격자 다시 굽기)
+//     (★ 10-12 작업 7e-3 — 옛 일곱째 맵 오브젝트 목록은 뺐다. 판 중에 쓰는 곳이 없어(7d 조사) 되돌릴 것이 없고, 이제 맵 표 `mt_`에 있다)
 //   비움 10종 — 크리처 `pets_`(맵에서 생기는 몬스터는 없다 — 소환·퀘스트·진단뿐 · `pets_` 넣는 자리 넷) · 나는 것 · 놓인 물체 · 지속 주문 ·
 //     시전 목록 · 들을 거리 · 낙하 대기 · 소리 대기 · 새로 놓인 물건 표시 · 투표
 //   안 건드림 — 장애물·시작점·길목·바닥·종류 표(판 중에 안 바뀜) · 사람 몫(가방·버프·자리 — R3) · 사람별 소개 기록(R4)
@@ -1745,7 +1746,6 @@ void Server::CaptureMapInitial() {
     mapInitial_.traps = traps_;
     mapInitial_.wallTiles = wallTiles_;
     mapInitial_.walls = walls_;
-    mapInitial_.mapObjects = mapObjects_;
     mapInitial_.captured = true;
     ++mapResetStat_[0];
 }
@@ -1758,7 +1758,6 @@ void Server::ResetWorldFromMap() {
         traps_ = mapInitial_.traps;
         wallTiles_ = mapInitial_.wallTiles;
         walls_ = mapInitial_.walls;
-        mapObjects_ = mapInitial_.mapObjects;
         AIPathBakeWalls();                                     // 부서졌던 벽이 길 찾기 격자에도 돌아오게
         ++mapResetStat_[1];
     } else {
@@ -1861,7 +1860,7 @@ void Server::ReopenMap() {
             um = useMapBody_;
             if (um.size() > kUseMapFrame + 3) PutU32(um.data() + kUseMapFrame, f);
         } else if (standalone_) {
-            um = BuildUseMap(saMapName_, saMapCrc_, f);
+            um = BuildUseMap(mt_->saMapName, mt_->saMapCrc, f);
         }
         if (um.empty()) { ++mapReopenStat_[1]; continue; }
         Emit(s, /*reliable=*/true, /*stream=*/0, um.data(), um.size());
@@ -3838,7 +3837,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                         s.x = static_cast<int>(fx);
                         s.y = static_cast<int>(fy);
                         ++spawnFromMap_;
-                        Log("[첫자리] 맵 시작점 %d,%d (시작점 %zu곳 중)\n", s.x, s.y, playerStarts_.size());
+                        Log("[첫자리] 맵 시작점 %d,%d (시작점 %zu곳 중)\n", s.x, s.y, mt_->playerStarts.size());
                     } else {
                         const int n = static_cast<int>(inGameCount());
                         s.x = spawnX_ + (n % 4) * spawnSpread_;
@@ -3972,7 +3971,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 if (!flags_.empty()) { AssignTeams(); SendTeamState(); }   // 8-b — 나눈 뒤 알린다
 
                 if (standalone_ && useMapBody_.empty()) {
-                    std::vector<uint8_t> um = BuildUseMap(saMapName_, saMapCrc_, s.frame);
+                    std::vector<uint8_t> um = BuildUseMap(mt_->saMapName, mt_->saMapCrc, s.frame);
                     Emit(s, /*reliable=*/true, /*stream=*/0, um.data(), um.size());
                     ++useMapSent_;                         // 1-a — 갈래 셋 중 하나(조립 쪽)
                     ++handled_;
@@ -5441,11 +5440,11 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
             double qx0, qy0, qx1, qy1;
             BodyRect(playerBody, m.bx, m.by, qx0, qy0, qx1, qy1);
             // 오브젝트 먼저(getUnitsInRect → sub_548220) — 상대 사각형과 겹칠 때만(`server/map.go:302`)
-            for (const auto& o : obstacles_) {
+            for (const auto& o : mt_->obstacles) {
                 double ox0, oy0, ox1, oy1;
                 BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;
-                const ContactRef other{ 3, kNoSession, static_cast<int>(&o - obstacles_.data()) };
+                const ContactRef other{ 3, kNoSession, static_cast<int>(&o - mt_->obstacles.data()) };
                 // ★ 09-21 — 갈래마다 따로 센다(아래 둘도 같다). 벽만 세다가 「0 = 튕김 없음」으로
                 //   읽을 뻔했다 — 사람 속도 54.8 을 만든 것은 벽이 아니라 이쪽이었다
                 const double bx0 = m.ax, by0 = m.ay;
@@ -5629,7 +5628,7 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
             //   짝은 같은 틱에 한 번만(`collSysAddCollision_548630` 겹 거름 `GAME5.c:1983~2011`) — 걸음 다섯 중 한 번이라도 밟으면 틱에 한 번.
             //   피해는 아래 닿음 처리에서(`:2062~2065`). 소환수는 이 적분을 안 탄다(AI 가 자리를 옮긴다) — 소환수 몫은 틱의 소환수 고리 뒤(09-27 S2)
             if (!(PlayerObjFlags(s) & 0x4000) && !s.observer && s.respawnAtFrame == 0 &&
-                floorGrid_.TileAt(static_cast<float>(s.posX), static_cast<float>(s.posY), floorEdges_).tile == 6) {
+                mt_->floorGrid.TileAt(static_cast<float>(s.posX), static_cast<float>(s.posY), mt_->floorEdges).tile == 6) {
                 AddContact(ContactRef{ 1, s.sessionId, -1 }, ContactRef{ 6, kNoSession, -1 });
             }
         }
@@ -5796,9 +5795,9 @@ bool Server::MapTraceVision(float x1, float y1, float x2, float y2) const {
 }
 bool Server::MapTraceVisionSkip(float x1, float y1, float x2, float y2, int skipObstacle) const {
     const float qx0 = std::min(x1, x2), qx1 = std::max(x1, x2), qy0 = std::min(y1, y2), qy1 = std::max(y1, y2);
-    for (size_t i = 0; i < obstacles_.size(); ++i) {
+    for (size_t i = 0; i < mt_->obstacles.size(); ++i) {
         if (static_cast<int>(i) == skipObstacle) continue;
-        const PhysBody& o = obstacles_[i];
+        const PhysBody& o = mt_->obstacles[i];
         if (!(o.flags & 0x10000)) continue;
         double ox0, oy0, ox1, oy1;
         BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
@@ -5865,25 +5864,25 @@ bool Server::PlayerSetState(Session& s, uint8_t st, uint32_t frame, bool cancelS
 //   적(나 말고 · IsEnemyTo)이 하나도 없거나 고른 곳이 없으면 무작위(randomInt(0, 수−1)). PlayerStart 가 없으면 (2000,2000).
 //   ⚠ PlayerStart 의 ENABLED 깃발·팀(sub_4F7CE0)은 맵 xfer 를 아직 안 읽어 모두 켜짐·팀 없음으로 본다(맵 묶음 9).
 bool Server::FindPlayerStart(const Session& s, float& x, float& y) {
-    if (playerStarts_.empty()) { x = 2000.0f; y = 2000.0f; return false; }
+    if (mt_->playerStarts.empty()) { x = 2000.0f; y = 2000.0f; return false; }
     bool noEnemy = true;                                   // v8
     int best = -1;                                         // j
     float bestD = 0.0f;                                    // v17
-    for (size_t i = 0; i < playerStarts_.size(); ++i) {
+    for (size_t i = 0; i < mt_->playerStarts.size(); ++i) {
         float nearest = 10000000.0f;                        // v15
         for (const auto& kv : sessions_) {
             const Session& o = kv.second;
             if (&o == &s || !o.inGame || !IsEnemyTo(s, o)) continue;
-            const double dx = playerStarts_[i].first - o.posX, dy = playerStarts_[i].second - o.posY;
+            const double dx = mt_->playerStarts[i].first - o.posX, dy = mt_->playerStarts[i].second - o.posY;
             const double d2 = dy * dy + dx * dx;
             if (d2 < nearest) nearest = static_cast<float>(d2);
             noEnemy = false;
         }
         if (nearest > bestD) { best = static_cast<int>(i); bestD = nearest; }
     }
-    if (noEnemy || best < 0) best = static_cast<int>(NextRandom(static_cast<uint32_t>(playerStarts_.size())));
-    x = playerStarts_[best].first;
-    y = playerStarts_[best].second;
+    if (noEnemy || best < 0) best = static_cast<int>(NextRandom(static_cast<uint32_t>(mt_->playerStarts.size())));
+    x = mt_->playerStarts[best].first;
+    y = mt_->playerStarts[best].second;
     return true;
 }
 
@@ -5972,7 +5971,7 @@ void Server::PlayerRespawn(Session& s, uint32_t frame) {
     // 온라인이면 무적 버프 23 을 5초(5 × 30 틱)
     ApplyEnchant(Target{ s.sessionId, -1 }, 23, 5 * static_cast<int>(kServerTickRate), 5);   // buffApplyTo(23, 5×FPS, 5) · GAME4.c:2201
     Log("[부활] 프레임 %u %s → (%.0f,%.0f) · 시작 지점 %zu곳 · 무적 %u틱\n", frame, AddrText(s.sessionId), sx, sy,
-                playerStarts_.size(), 5 * kServerTickRate);
+                mt_->playerStarts.size(), 5 * kServerTickRate);
     std::fflush(stdout);
 }
 
@@ -6092,7 +6091,7 @@ void Server::TryCollide(Session& s, uint16_t code) {
     uint16_t netCode = code;
     if (code & 0x8000) {                                   // extent → 그 오브젝트의 번호(없으면 0)
         netCode = 0;
-        for (const auto& m : mapObjects_) {
+        for (const auto& m : mt_->mapObjects) {
             if (m.extent == static_cast<uint32_t>(code & 0x7FFF)) { netCode = m.netCode; break; }
         }
     }
@@ -6109,8 +6108,8 @@ void Server::TryCollide(Session& s, uint16_t code) {
     for (size_t i = 0; !found && i < flags_.size(); ++i) {
         if (flags_[i].netCode == netCode) { type = flags_[i].type; found = true; }
     }
-    for (size_t i = 0; !found && i < mapObjects_.size(); ++i) {
-        if (mapObjects_[i].netCode == netCode) { type = mapObjects_[i].type; found = true; }
+    for (size_t i = 0; !found && i < mt_->mapObjects.size(); ++i) {
+        if (mt_->mapObjects[i].netCode == netCode) { type = mt_->mapObjects[i].type; found = true; }
     }
     if (!found) return;
     ++tryCollides_;
@@ -7565,11 +7564,11 @@ int Server::DurBlinkTick(DurSpell& d) {
         if (b->Has(14)) return 1;                            // 닻 — 소리 231(10)
     }
     float tx = 0, ty = 0;
-    if (!waypoints_.empty()) {
-        const auto& w = waypoints_[NextRandom(static_cast<uint32_t>(waypoints_.size()))];
+    if (!mt_->waypoints.empty()) {
+        const auto& w = mt_->waypoints[NextRandom(static_cast<uint32_t>(mt_->waypoints.size()))];
         tx = w.x; ty = w.y;
-    } else if (!playerStarts_.empty()) {                     // mapFindPlayerStart_4F7AB0
-        const auto& ps = playerStarts_[NextRandom(static_cast<uint32_t>(playerStarts_.size()))];
+    } else if (!mt_->playerStarts.empty()) {                     // mapFindPlayerStart_4F7AB0
+        const auto& ps = mt_->playerStarts[NextRandom(static_cast<uint32_t>(mt_->playerStarts.size()))];
         tx = ps.first; ty = ps.second;
     } else {
         return 1;                                            // 갈 데가 없다
@@ -7909,7 +7908,7 @@ void Server::AIPathIndexObjects() {
     if (frame_ - aiIndexFrame_ < 15) return;
     aiIndexFrame_ = frame_;
     ++aiIndexGen_;
-    for (const auto& o : obstacles_) {
+    for (const auto& o : mt_->obstacles) {
         const int gx = static_cast<int>(o.x / kWallCell);
         const int gy = static_cast<int>(o.y / kWallCell);
         AIIndexNode* n = AIPathIndexAt(gx, gy);
@@ -7977,7 +7976,7 @@ void Server::AIPathBakeWalls() {
 //   · 대각선 **이음매** 검사(`Sub_57B500` 벽 모서리 번호 + 문 열쇠) — 지금은 **두 직교 칸이 뚫려야** 대각을 준다
 //   · `sub_50B870`(벽 모서리) · `sub_50C830`(물칸 6번 타일)
 //   · `Sub_50AC20` 나르는 칸(구멍·전송·승강기)을 자식으로 얹기
-//   · 사람·소환수·문은 아직 `obstacles_` 에 없다(묶음 9)
+//   · 사람·소환수·문은 아직 `mt_->obstacles` 에 없다(묶음 9)
 
 // 이웃 여덟 (blob_587000.dat +234216, Point32 여덟 개를 그대로 읽음)
 static const int kAINb[8][2] = {
@@ -7986,13 +7985,13 @@ static const int kAINb[8][2] = {
 };
 
 // MapTraceObstacles(`server/map.go:453`) — 두 점 사이를 **장애물**이 막는가. 안 막으면 참.
-//   ⚠ 정답지는 사람·소환수(적이면 지나침)·문도 본다. 우리 `obstacles_` 에는 아직 안 움직이는 것만 있다
+//   ⚠ 정답지는 사람·소환수(적이면 지나침)·문도 본다. 우리 `mt_->obstacles` 에는 아직 안 움직이는 것만 있다
 bool Server::MapTraceObstacles(int skipObstacle, float x1, float y1, float x2, float y2) const {
     const float qx0 = std::min(x1, x2), qx1 = std::max(x1, x2);
     const float qy0 = std::min(y1, y2), qy1 = std::max(y1, y2);
-    for (size_t i = 0; i < obstacles_.size(); ++i) {
+    for (size_t i = 0; i < mt_->obstacles.size(); ++i) {
         if (static_cast<int>(i) == skipObstacle) continue;
-        const PhysBody& o = obstacles_[i];
+        const PhysBody& o = mt_->obstacles[i];
         if (!o.hasCollide) continue;                         // FlagNoCollide · AllowOverlap 자리
         double ox0, oy0, ox1, oy1;
         BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
@@ -8704,10 +8703,10 @@ void Server::OrderUnit(Session& src, uint16_t netCode, uint8_t order) {
 //   길목 칸을 돌려준다. 이웃은 blob `0x587000+234284` 의 **직교 넷**이다(대각 없음).
 //
 // ⚠ `sub_50B870`(벽 모서리)·`sub_50C830`(물칸)은 아직 안 옮겨 **지날 수 있는 것으로** 본다
-// ⚠ 우리 `waypoints_` 는 점멸(4-e)이 쓰려고 `flags2 & 0x80` 에 더해 `flags & 1`(켜짐)까지 걸러 담았다.
+// ⚠ 우리 `mt_->waypoints` 는 점멸(4-e)이 쓰려고 `flags2 & 0x80` 에 더해 `flags & 1`(켜짐)까지 걸러 담았다.
 //   정답지의 격자 찍기는 **0x80 만** 본다 — 꺼진 길목이 있으면 우리가 덜 찍는다
 void Server::AIPathBakeWaypoints() {
-    for (const auto& w : waypoints_) {
+    for (const auto& w : mt_->waypoints) {
         const int gx = static_cast<int>(w.x / kWallCell);
         const int gy = static_cast<int>(w.y / kWallCell);
         if (AIIndexNode* n = AIPathIndexAt(gx, gy)) n->flags |= 0x40;
@@ -8721,12 +8720,12 @@ void Server::AIPathBakeWaypoints() {
 //   `sub_545B00`  — 들른 길목을 **16칸 고리**에 적는다
 //   `sub_545C60`  — 지금 길목의 **이음** 중 최근에 안 들른 것을 **무작위로** 하나
 //
-// ⚠ 가면(mask)은 우리가 쓰는 자리에서 늘 0x80 이라 `waypoints_` 에 **있다 = 쓸 수 있다**로 둔다
+// ⚠ 가면(mask)은 우리가 쓰는 자리에서 늘 0x80 이라 `mt_->waypoints` 에 **있다 = 쓸 수 있다**로 둔다
 //   (넣기 전에 main.cpp 가 `flags&1`·`flags2&0x80` 으로 거른다). 걸러진 길목을 가리키는 이음은
 //   여기서 못 찾게 되는데, 그게 곧 정답지의 `sub_547EE0` 거짓이다
 const Waypoint* Server::WaypointById(uint32_t id) const {
     if (id == 0) return nullptr;
-    for (const auto& w : waypoints_) if (w.id == id) return &w;
+    for (const auto& w : mt_->waypoints) if (w.id == id) return &w;
     return nullptr;
 }
 
@@ -8767,7 +8766,7 @@ uint32_t Server::RoamNextWaypoint(const Creature& k, uint32_t cur) {
 }
 
 uint32_t Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY) {
-    if (waypoints_.empty()) return 0;
+    if (mt_->waypoints.empty()) return 0;
     ++aiIndexLast_;
     AIPathResetVisit();
     const int sx = static_cast<int>(k.x / kWallCell);
@@ -8785,7 +8784,7 @@ uint32_t Server::AIPathFindWaypoint(const Creature& k, float& outX, float& outY)
                 // ★ 09-20 — **칸 한가운데가 아니라 길목의 진짜 자리**를 준다.
                 //   한 칸은 23 이라 한가운데와 길목이 최대 16 어긋나는데, 도착 판정이 **8**(거리² 64)이다.
                 //   한가운데로 걸어가면 영영 도착이 안 서서 다음 길목으로 못 넘어간다
-                for (const auto& w : waypoints_) {
+                for (const auto& w : mt_->waypoints) {
                     if (static_cast<int>(w.x / kWallCell) != x1) continue;
                     if (static_cast<int>(w.y / kWallCell) != y1) continue;
                     outX = w.x;
@@ -8896,7 +8895,7 @@ bool Server::BodyContains(const PhysBody& o, float qx, float qy) const {
 //   ⚠ 그래서 **칸보다 작은 것은 칸 한가운데를 비켜 서면 안 찍힐 수 있다** — 정답지 그대로다.
 void Server::AIPathBakeObstacles() {
     static const float kS[3] = { 2.3f, 11.5f, 20.7f };
-    for (const auto& o : obstacles_) {
+    for (const auto& o : mt_->obstacles) {
         if (!o.hasCollide) continue;
         double ox0, oy0, ox1, oy1;
         BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
@@ -9439,8 +9438,8 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other) {
             cls = tb->second.cls; flags = tb->second.flags; mass = tb->second.mass;
             deadUnit = k.health == 0;
         } else if (other->kind == 3) {
-            if (other->idx < 0 || static_cast<size_t>(other->idx) >= obstacles_.size()) return;
-            const PhysBody& o = obstacles_[static_cast<size_t>(other->idx)];
+            if (other->idx < 0 || static_cast<size_t>(other->idx) >= mt_->obstacles.size()) return;
+            const PhysBody& o = mt_->obstacles[static_cast<size_t>(other->idx)];
             cls = o.cls; flags = o.flags; mass = o.mass;
         } else if (other->kind == 4) {
             // ★ 09-29 Z1-A — 문(UpdateProps 의 문짝 닿음). 몸을 모르면 DOOR+IMMOBILE · 무게 1(thing.bin 에 MASS 없음 → 정답지 기본 1)
@@ -12713,7 +12712,7 @@ bool Server::MonsterCheckDodgeables(Creature& k) {
         const float px = static_cast<float>(v * -dirY + k.x), py = static_cast<float>(v * dirX + k.y);
         if (!MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), px, py, 0x1)) continue;
         if (!MapTraceObstacles(-1, static_cast<float>(k.x), static_cast<float>(k.y), px, py)) continue;
-        if (floorGrid_.TileAt(px, py, floorEdges_).tile == 6) continue;
+        if (mt_->floorGrid.TileAt(px, py, mt_->floorEdges).tile == 6) continue;
         MonsterPopAttackActions(k);
         if (AIPush(k, 41)) k.aiStack[k.aiStackInd].argU32 = frame_ + static_cast<uint32_t>(kServerTickRate);
         if (AIPush(k, 9)) { k.aiStack[k.aiStackInd].argX = px; k.aiStack[k.aiStackInd].argY = py; k.aiStack[k.aiStackInd].argU32 = 0; }
@@ -12902,7 +12901,7 @@ bool Server::MonsterHearReact(Creature& k) {
     if (k.heardSnd == 0 || frame_ - k.heardFrame >= static_cast<uint32_t>(3 * kServerTickRate)) return false;
     const uint32_t sub = MonsterSubclass(k.type);
     bool acted = false;
-    if ((sub & 0x400) || floorGrid_.TileAt(k.heardX, k.heardY, floorEdges_).tile != 6) {
+    if ((sub & 0x400) || mt_->floorGrid.TileAt(k.heardX, k.heardY, mt_->floorEdges).tile != 6) {
         const int gx = static_cast<int>(static_cast<double>(k.heardX) / 23.0), gy = static_cast<int>(static_cast<double>(k.heardY) / 23.0);
         bool airborne = false;
         { const auto tb = gt_->typeBodies.find(k.type); if (tb != gt_->typeBodies.end()) airborne = (tb->second.flags & 0x4000) != 0; }
@@ -15241,7 +15240,7 @@ void Server::UpdateMissiles(uint32_t frame) {
             int64_t hSessionId = 0; int hIdx = -1;
             // ★★ 2026-09-16 — **닿은 것을 셋으로 가른다.** 전에는 `HitPlayer` 인가 아닌가로만
             //   갈라서, `HitObstacle` 의 **장애물 색인이 소환수 색인 자리로** 들어갔다
-            //   (`hIdx` 는 `obstacles_` 의 자리인데 `Target::pet` 은 `pets_` 의 자리다).
+            //   (`hIdx` 는 `mt_->obstacles` 의 자리인데 `Target::pet` 은 `pets_` 의 자리다).
             //   기둥에 맞은 화살이 **소환수 N번을 때렸다.** 실측 — 신전 판에서
             //   피해 14건 중 **13건이 크리처 갈래로 갔는데 크리처는 0마리**였다.
             //   소환수가 있는 판(퀘스트·코옵)이면 **엉뚱한 놈이 맞는다.**
@@ -15292,8 +15291,8 @@ void Server::UpdateMissiles(uint32_t frame) {
                     if (dy * dy + dx * dx > tb->second.r * tb->second.r) continue;
                     hk = HitPet; hIdx = static_cast<int>(k); hx = static_cast<float>(pets_[k].x); hy = static_cast<float>(pets_[k].y); any = true;
                 }
-                for (size_t k = 0; k < obstacles_.size(); ++k) {
-                    const PhysBody& o = obstacles_[k];
+                for (size_t k = 0; k < mt_->obstacles.size(); ++k) {
+                    const PhysBody& o = mt_->obstacles[k];
                     if (!passFlags(o.flags, false)) continue;
                     if (!BodyContains(o, qx, qy)) continue;
                     hk = HitObstacle; hIdx = static_cast<int>(k); hx = o.x; hy = o.y; any = true;
@@ -15501,7 +15500,7 @@ void Server::UpdateMissiles(uint32_t frame) {
                         if (hk == HitPlayer && hSessionId == m.owner) { hit(ArrowHit::Owner); }
                         else if (petDead) { hit(ArrowHit::Dead); }
                         else if (hk == HitObstacle) {
-                            if (obstacles_[static_cast<size_t>(hIdx)].damageFn == kDmgBlackPowder) hit(ArrowHit::NoHurt);
+                            if (mt_->obstacles[static_cast<size_t>(hIdx)].damageFn == kDmgBlackPowder) hit(ArrowHit::NoHurt);
                             else { hit(ArrowHit::Obstacle); DestroyMissile(i); erased = true; }
                         }
                         else {
@@ -16930,9 +16929,9 @@ void Server::HarpoonDefaultHitSound(const Target& t, uint16_t boltType) {
 // ★ 09-23 nine-defects 4-d4 — 발밑 바닥(`tileNFromPoint_411160`) → 재질(FLOR field_36) → 소리. 그 사람 자리에서(`EventObj(snd, u)`)
 //   칸 찾기가 −1 이거나 번호가 정의 밖이면 소리 없음(`object_update.go:162·202` 의 `ti >= 0 && ti < len(tiles)`)
 void Server::Footstep(const Session& s, bool run) {
-    const FloorGrid::Hit hit = floorGrid_.TileAt(static_cast<float>(s.posX), static_cast<float>(s.posY), floorEdges_);
+    const FloorGrid::Hit hit = mt_->floorGrid.TileAt(static_cast<float>(s.posX), static_cast<float>(s.posY), mt_->floorEdges);
     FootKind k = FootKind::NoTile;
-    if (hit.tile >= 0 && static_cast<size_t>(hit.tile) < floorMaterial_.size()) k = FootKindOf(floorMaterial_[static_cast<size_t>(hit.tile)]);
+    if (hit.tile >= 0 && static_cast<size_t>(hit.tile) < mt_->floorMaterial.size()) k = FootKindOf(mt_->floorMaterial[static_cast<size_t>(hit.tile)]);
     ++(run ? footRun_ : footWalk_)[static_cast<size_t>(k)];
     const char* nm = FootSoundName(k, run);
     if (!nm) return;
@@ -17017,8 +17016,8 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai) {
             tx = static_cast<float>(pets_[idx].x); ty = static_cast<float>(pets_[idx].y);
             tflags = PetObjFlags(pets_[idx]);                // ★ 10-01 시체 — 죽음 덧칠(0x8000 → 아래 0x8040 에 걸림 · `sub_538510` `GAME4_3.c:3716`)
         } else {
-            tx = obstacles_[idx].x; ty = obstacles_[idx].y;
-            tflags = obstacles_[idx].flags;
+            tx = mt_->obstacles[idx].x; ty = mt_->obstacles[idx].y;
+            tflags = mt_->obstacles[idx].flags;
         }
         if (!(TestTwoPointsAndDirection(ax, ay, s.facingPrev, tx, ty) & 1)) return;
         if (tflags & 0x8040) return;
@@ -17068,8 +17067,8 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai) {
             if (tb == gt_->typeBodies.end()) continue;
             if (gate(tb->second, static_cast<float>(k.x), static_cast<float>(k.y))) hits.push_back({ Pet, { kNoSession, k.netCode } });
         }
-        for (size_t i = 0; i < obstacles_.size(); ++i) {
-            if (gate(obstacles_[i], obstacles_[i].x, obstacles_[i].y)) hits.push_back({ Obstacle, { kNoSession, static_cast<uint16_t>(i) } });
+        for (size_t i = 0; i < mt_->obstacles.size(); ++i) {
+            if (gate(mt_->obstacles[i], mt_->obstacles[i].x, mt_->obstacles[i].y)) hits.push_back({ Obstacle, { kNoSession, static_cast<uint16_t>(i) } });
         }
         for (const auto& h : hits) {
             if (h.first == Pet) {
@@ -17141,8 +17140,8 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai) {
             kind = Pet; bestIdx = static_cast<int>(i);
         }
     }
-    for (size_t i = 0; i < obstacles_.size(); ++i) {
-        const PhysBody& o = obstacles_[i];
+    for (size_t i = 0; i < mt_->obstacles.size(); ++i) {
+        const PhysBody& o = mt_->obstacles[i];
         if (pick(o, o.x, o.y, false, static_cast<int>(i))) { kind = Obstacle; bestIdx = static_cast<int>(i); }
     }
     if (kind == None) return false;
@@ -17705,7 +17704,7 @@ void Server::RunTick(int ticks) {
         if (k.health == 0) continue;
         const auto tb = gt_->typeBodies.find(k.type);
         if (tb != gt_->typeBodies.end() && (tb->second.flags & 0x4000)) continue;
-        if (floorGrid_.TileAt(static_cast<float>(k.x), static_cast<float>(k.y), floorEdges_).tile != 6) continue;
+        if (mt_->floorGrid.TileAt(static_cast<float>(k.x), static_cast<float>(k.y), mt_->floorEdges).tile != 6) continue;
         ++lavaHurtsPet_;
         HurtTarget(Target{ kNoSession, static_cast<int>(i) }, 2, kNoSession, 12, nullptr, HitterNone());
     }
@@ -17879,7 +17878,7 @@ void Server::RunTick(int ticks) {
                 // 3-c: 받는 사람의 지금 프레임 · ★ 09-20 — 버프 비트는 **지금 값**을 싣는다
                 //   (박아 둔 `0x00800000` 때문에 클라가 접속 내내 무적으로 봤다 — `JoinBundle.h` 주석)
                 // ★ 09-20 — 맵 이름도 **지금 맵**으로. `b1` 에 `"estate"` 가 박혀 있었다
-                std::string mn = saMapName_;
+                std::string mn = mt_->saMapName;
                 if (mn.size() > 4 && mn.compare(mn.size() - 4, 4, ".map") == 0) mn.resize(mn.size() - 4);
                 const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode, s.charClass, s.tickFrame, s.tickFrame,
                                                                     s.buffs.bits, mn);

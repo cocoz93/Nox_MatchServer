@@ -1675,8 +1675,8 @@ public:
         const float px = w * 0.35354999f, py = h * 0.35354999f;
         b.boxLT = -px + py; b.boxLB = -px - py; b.boxRT = px + py; b.boxRB = px - py;
     }
-    void SetObstacles(std::vector<PhysBody> v) { obstacles_ = std::move(v); AIPathBakeObstacles(); }
-    size_t ObstacleCount() const { return obstacles_.size(); }
+    void SetObstacles(std::vector<PhysBody> v) { MtMut().obstacles = std::move(v); AIPathBakeObstacles(); }
+    size_t ObstacleCount() const { return mt_->obstacles.size(); }
     // 소환수 종류 번호 → 몸(모양·반지름·깃발·질량). main.cpp 가 thing.bin 에서 채운다.
     void SetTypeBody(uint16_t type, const PhysBody& b) { GtMut().typeBodies[type] = b; }
     // 사람 애니 칸 수 표(묶음 3-a) — main.cpp·시험이 thing.bin PlayerDraw STAT 에서 채운다.
@@ -2116,18 +2116,18 @@ public:
     // 진단 — N 틱마다 관전 아닌 첫 사람에게 주인 없는 것의 칼 피해 25(종류 0)를 준다(묶음 3-e 움찔·깎임 화면 판정용)
     void SetDebugHurtEvery(uint32_t ticks, bool front = false) { debugHurtEvery_ = ticks; debugHurtFront_ = front; }
     // ★ 묶음 3-c — 맵의 PlayerStart 자리(부활 자리 고르기 mapFindPlayerStart_4F7AB0). main.cpp 가 맵 오브젝트에서 채운다.
-    void SetPlayerStarts(std::vector<std::pair<float, float>> v) { playerStarts_ = std::move(v); }
+    void SetPlayerStarts(std::vector<std::pair<float, float>> v) { MtMut().playerStarts = std::move(v); }
     // ★ 맵 길목 — 점멸이 여기서 목적지를 고른다(`waypoint_579F00`). 비었으면 시작 지점으로 되돌아간다.
     //   자리만 주면 번호를 1부터 매기고 **이음은 없는** 길목이 된다(시험용).
     void SetWaypoints(std::vector<std::pair<float, float>> v) {
-        waypoints_.clear();
-        waypoints_.reserve(v.size());
+        MtMut().waypoints.clear();
+        MtMut().waypoints.reserve(v.size());
         for (size_t i = 0; i < v.size(); ++i) {
             Waypoint w;
             w.id = static_cast<uint32_t>(i + 1);
             w.x = v[i].first;
             w.y = v[i].second;
-            waypoints_.push_back(std::move(w));
+            MtMut().waypoints.push_back(std::move(w));
         }
         AIPathBakeWaypoints();
     }
@@ -2135,13 +2135,13 @@ public:
     //   ⚠ 넘기기 전에 `flags & 1`·`flags2 & 0x80` 으로 걸러 둘 것 —
     //     우리가 쓰는 가면(mask)은 어디서나 0x80 이라 **목록에 있다 = 쓸 수 있다**가 된다.
     //     이음이 걸러진 길목을 가리키면 찾기가 실패하는데, 그게 곧 정답지의 `sub_547EE0` 거짓이다
-    void SetWaypointsFull(std::vector<Waypoint> v) { waypoints_ = std::move(v); AIPathBakeWaypoints(); }
-    size_t WaypointCount() const { return waypoints_.size(); }
-    size_t PlayerStartCount() const { return playerStarts_.size(); }
+    void SetWaypointsFull(std::vector<Waypoint> v) { MtMut().waypoints = std::move(v); AIPathBakeWaypoints(); }
+    size_t WaypointCount() const { return mt_->waypoints.size(); }
+    size_t PlayerStartCount() const { return mt_->playerStarts.size(); }
     // 조각 E — 판을 아홉 개 돌리려면 맵마다 봇 자리를 알아야 한다. i 번째 시작 자리를 그대로 준다.
     bool PlayerStartAt(size_t i, float& x, float& y) const {
-        if (i >= playerStarts_.size()) return false;
-        x = playerStarts_[i].first; y = playerStarts_[i].second; return true;
+        if (i >= mt_->playerStarts.size()) return false;
+        x = mt_->playerStarts[i].first; y = mt_->playerStarts[i].second; return true;
     }
     // 자동 부활 서버 설정(nox_server_doPlayersAutoRespawn_40A5F0 · 0x5D4594+3584). 정답지 기본 0 — 클릭해야 살아난다.
     void SetAutoRespawn(bool on) { autoRespawn_ = on; }
@@ -2151,7 +2151,7 @@ public:
         uint32_t extent = 0;    // 맵 안 고유 번호 — 클라가 IMMOBILE·CLIENT_PERSIST 에 윗비트를 붙여 보낸다(`GAME5_2.c:893`)
         uint16_t type = 0;
     };
-    void SetMapObjects(std::vector<MapObjRef> v) { mapObjects_ = std::move(v); }
+    void SetMapObjects(std::vector<MapObjRef> v) { MtMut().mapObjects = std::move(v); }
     void SetCollideFn(uint16_t type, std::string fn) { GtMut().collideFn[type] = std::move(fn); }
     // 무기 클래스 비트 → 종류 번호(죽음 알림의 무기 그림). main 이 thing.bin 이름으로 채운다
     void SetWeaponWire(uint32_t classBits, uint16_t wire) { GtMut().weaponWire[classBits] = wire; }
@@ -2211,8 +2211,8 @@ public:
     // ⚠ 기본 꺼짐 — 실클라 검증(P5-c 졸업) 전에는 녹음 경로가 정본이다.
     void SetStandalone(const std::string& mapFileName, uint32_t mapCrc) {
         standalone_ = true;
-        saMapName_ = mapFileName;
-        saMapCrc_ = mapCrc;
+        MtMut().saMapName = mapFileName;
+        MtMut().saMapCrc = mapCrc;
     }
     size_t WorldStaticCount() const { return statics_.size(); }
 
@@ -2366,7 +2366,7 @@ public:
     //   왜 — ④ 화면 확인은 「볼 것이 있는 자리」까지 가야 하는데, 맵의 `PlayerStart` 가
     //   그 자리와 멀면 매번 한참을 걸어야 한다. G_Castle 은 시작이 (1244,645)이고
     //   발판·덫·상자·문이 다 모인 자리는 (2493,2532)라 **2,200 넘게 떨어져 있다.**
-    //   ⚠ 부활 자리는 `playerStarts_` 가 따로 고르므로 **첫 접속 자리만** 바뀐다.
+    //   ⚠ 부활 자리는 `mt_->playerStarts` 가 따로 고르므로 **첫 접속 자리만** 바뀐다.
     void SetSpawn(int x, int y) { spawnX_ = x; spawnY_ = y; spawnForced_ = true; }
 
     // ★ 시험용 — **스폰 자리를 아이템 자리로** 옮긴다. 없으면 false.
@@ -3921,7 +3921,7 @@ public:
     // ★ 4-c2 — thing.bin 재질(와이어 번호 색인) · 가슴갑옷(ARMOR + SUBCLASS BREASTPLATE)인가 · 사람 몸 종류(NewPlayer) 번호. main 이 넣는다
     // ★ 4-d4 — 발밑 바닥(맵 FloorMap + thing.bin EDGE·FLOR 재질). main 이 맵을 읽고 넣는다 — 비어 있으면 발소리 없음(바닥 없음으로 셈)
     void SetFloor(FloorGrid grid, std::vector<FloorGrid::EdgeDef> edges, std::vector<int32_t> materials) {
-        floorGrid_ = std::move(grid); floorEdges_ = std::move(edges); floorMaterial_ = std::move(materials);
+        MtMut().floorGrid = std::move(grid); MtMut().floorEdges = std::move(edges); MtMut().floorMaterial = std::move(materials);
     }
     // 재질 → 바닥 종류(`object_update.go:164~220` switch — 2·0x4000 소리 없음 · 8 나무 · 64 흙 · 128 물 · 0x400 눈 · 0x800 진흙 · 그 밖 돌)
     static FootKind FootKindOf(int32_t mat) {
@@ -4702,9 +4702,6 @@ private:
     unsigned long long monsterSndCount_[18][2] = {};   // ★ 09-26 M4a — 칸별 [모음에없음, 냄]
     unsigned long long monsterMeleeHitPlayed_ = 0, monsterMeleeHitNone_ = 0;   // ★ 09-24 H1 — 냄 · 모음에 없음
     // ★ 4-d4 — 발밑 바닥과 발소리 계수기(달리기·걷기 × 바닥 종류) · 살금살금으로 안 낸 걷기 소리 · 달릴 때 힘쓰는 소리
-    FloorGrid floorGrid_;
-    std::vector<FloorGrid::EdgeDef> floorEdges_;
-    std::vector<int32_t> floorMaterial_;
     unsigned long long footRun_[kFootKindCount] = {}, footWalk_[kFootKindCount] = {};
     unsigned long long footTreadSilent_ = 0, exertionLight_ = 0;
     unsigned long long hurtVoice_[kHurtVoiceCount] = {};   // ★ 09-24 「윽」
@@ -5406,8 +5403,6 @@ private:
     bool debugEnchantDone_ = false;
     uint32_t debugHurtEvery_ = 0;      // 진단 --debug-hurt-every (0 끔)
     bool debugHurtFront_ = false;      // 진단 --debug-hurt-front — 앞 30 에서 때린 것으로
-    std::vector<std::pair<float, float>> playerStarts_;
-    std::vector<Waypoint> waypoints_;   // 맵 길목(점멸 목적지 · 떠돌기 길)   // 묶음 3-c PlayerStart 자리
     bool autoRespawn_ = false;         // 묶음 3-c 자동 부활(정답지 기본 꺼짐)
     std::vector<CastEntry> castList_;              // 묶음 4-a 시전 목록 — [0] 이 머리(가장 나중에 넣은 것)
     Target spellTarget_;                           // 묶음 4-a playerinfo +3640(Obj3640) — 시전이 끝난 순간 고른 대상
@@ -5422,14 +5417,11 @@ private:
     unsigned long long acceptCount_ = 0;
     int64_t lastAcceptCaster_ = 0;
     unsigned long long spellEffectDeferred_ = 0;   // 효과 함수를 아직 안 옮긴 주문이 받아들여진 수
-    std::vector<MapObjRef> mapObjects_;            // 묶음 3-d 맵 오브젝트 번호·extent·종류
     unsigned long long tryCollides_ = 0;           // `0x7B` 를 받아 대상을 찾은 횟수
     unsigned long long tryCollideDeferred_ = 0;    // 그 가운데 충돌 함수를 아직 안 옮긴 것
     bool debugNoAutoFight_ = false;   // 시험용 — 틱의 자동 싸움 쌓기를 끔
     uint16_t debugOwnPetNetCode_ = 0; // 만든 임프의 번호 — 이동 루프가 이것만 건너뛴다(고정)
     bool standalone_ = false;
-    std::string saMapName_;
-    uint32_t saMapCrc_ = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
     std::vector<uint8_t> walls_;   // 256×256 벽 격자 (P3)
     std::vector<AIIndexNode> aiIndex_ = std::vector<AIIndexNode>(kAIIndexSize * kAIIndexSize);
     uint32_t aiIndexGen_ = 0;
@@ -5485,7 +5477,6 @@ private:
     //   게임이 요청 목록(`requests_`)에 쌓으므로 통로가 필요 없다
     std::vector<ListenRec> listens_;                              // ★ 09-29 B6 — 들을 거리(2프레임까지 산다 · 정답지 `listenHead`)
     uint32_t sightForceFrame_ = 0xFFFFFFFFu;   // dword_5d4594_2487684 — 이 프레임엔 모든 몬스터가 다시 훑는다(순간이동·살금살금 켜기 다음 프레임)
-    std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
     static constexpr int kPlayerAnimSlots = 55;     // ThingDb kPlayerAnimTypeCount 와 같은 길이
 public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바깥(서버가 뜰 때 표를 만드는 `BuildGameTables`)이 쓴다
     // ★ 10-12 플랜 B 작업 7e-1 — 게임 데이터 표(`Docs/ROOMS_DESIGN.md` 「작업 7e 다시 짜기」). thing.bin · gamedata.bin · modifier.bin ·
@@ -5534,12 +5525,35 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     // 같이 쓰는 표를 가리킨다(제 표는 버린다). 이 뒤에 넣으면 제 사본을 만들어 쓴다
     void UseGameTables(std::shared_ptr<const GameTables> t) { if (t) { gt_ = std::move(t); gtOwn_.reset(); } }
     bool SharesGameTables() const { return gtOwn_ == nullptr; }   // 같이 쓰는 표를 그대로 가리키나(넣기로 제 사본을 만들었으면 거짓)
+    // ★ 10-12 플랜 B 작업 7e-3 — 맵의 안 바뀌는 것(7d 조사 ②). 같은 맵의 방들이 한 벌을 같이 가리킨다(`mt_` — 7e-4).
+    //   게임 데이터 표(`GameTables`)와 같은 꼴 — 넣기 함수는 그대로 두고 `MtMut()`로 쓴다(같이 쓰는 표면 제 사본 · 쓸 때 복사).
+    //   필드 이름은 옛 멤버 이름에서 끝의 `_`를 뗀 것이다. 맵 오브젝트 목록은 판 중에 안 바뀌어 판 끝 되돌리기에서 뺐다
+    struct MapTables {
+        FloorGrid floorGrid;
+        std::vector<FloorGrid::EdgeDef> floorEdges;
+        std::vector<int32_t> floorMaterial;
+        std::vector<std::pair<float, float>> playerStarts;
+        std::vector<Waypoint> waypoints;   // 맵 길목(점멸 목적지 · 떠돌기 길)   // 묶음 3-c PlayerStart 자리
+        std::vector<MapObjRef> mapObjects;            // 묶음 3-d 맵 오브젝트 번호·extent·종류
+        std::string saMapName;
+        uint32_t saMapCrc = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
+        std::vector<PhysBody> obstacles;        // 묶음 2-c 장애물
+    };
+    std::shared_ptr<const MapTables> ShareMapTables() { mtOwn_.reset(); return mt_; }
+    void UseMapTables(std::shared_ptr<const MapTables> t) { if (t) { mt_ = std::move(t); mtOwn_.reset(); } }
+    bool SharesMapTables() const { return mtOwn_ == nullptr; }
 private:
     std::shared_ptr<GameTables> gtOwn_ = std::make_shared<GameTables>();   // 제 표 — 넣기가 쓴다(같이 쓰는 표를 가리키면 비어 있다)
     std::shared_ptr<const GameTables> gt_ = gtOwn_;                         // 읽는 표 — 제 것이거나 방들이 같이 쓰는 것
     GameTables& GtMut() {   // 쓸 때 복사
         if (!gtOwn_) { gtOwn_ = std::make_shared<GameTables>(*gt_); gt_ = gtOwn_; }
         return *gtOwn_;
+    }
+    std::shared_ptr<MapTables> mtOwn_ = std::make_shared<MapTables>();   // ★ 10-12 작업 7e-3 — 제 맵 표(넣기가 쓴다)
+    std::shared_ptr<const MapTables> mt_ = mtOwn_;                        //   읽는 맵 표 — 제 것이거나 같은 맵 방들이 같이 쓰는 것
+    MapTables& MtMut() {   // 쓸 때 복사
+        if (!mtOwn_) { mtOwn_ = std::make_shared<MapTables>(*mt_); mt_ = mtOwn_; }
+        return *mtOwn_;
     }
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
     // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
@@ -5684,7 +5698,6 @@ private:
         std::vector<ShootingTrap> traps;
         std::vector<WallTile> wallTiles;
         std::vector<uint8_t> walls;
-        std::vector<MapObjRef> mapObjects;
     } mapInitial_;
     unsigned long long mapResetStat_[3] = {};
     unsigned long long restartRespawned_ = 0;                     // ★ 10-01 R3
