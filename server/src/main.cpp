@@ -823,8 +823,12 @@ int main(int argc, char** argv) {
     std::fflush(stdout);
 
     // ★ 10-08 — 세계 차리기(맵·설정·접속 묶음)는 `BuildWorld`(`WorldBuild.cpp`)로 옮겼다.
+    // ★ 10-12 플랜 B 작업 7a — 방 몫(`BuildRoomWorld`)과 프로세스 몫(`ConfigureNetwork`)으로 나눴다.
+    //   방 몫이 먼저다 — 서버 찾기 답에 실을 맵 이름을 첫 방에서 받는다. 봇 세션은 통신 층이 연다(스레드를 띄우기 전이라 여기서 부른다)
     WorldExtras extras;
-    if (const int rc = BuildWorld(srv, net.Network(), opt, tmpl, extras)) return rc;
+    nox::CUdpServer& udp = net.Network();
+    if (const int rc = BuildRoomWorld(srv, opt, [&udp](const std::string& addr) { return udp.OpenSession(addr); }, extras)) return rc;
+    if (const int rc = ConfigureNetwork(udp, opt, tmpl, extras)) return rc;
     // 초당 `[성장]` 줄의 봇 번호 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
     const int64_t bot0Sid = net.Network().SessionIdOf("bot0");
 

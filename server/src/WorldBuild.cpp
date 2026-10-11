@@ -73,7 +73,7 @@ std::string DefaultDumpPath() {
 
 }  // namespace
 
-int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt, nox::MsgServerInfo& tmpl, WorldExtras& out) {
+int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSessionFn& openSession, WorldExtras& out) {
     // 실행 인자 — 옮긴 몸통이 쓰는 것만 같은 이름으로 받는다.
     const auto& mirror = opt.mirror;
     const auto& mirrorLimit = opt.mirrorLimit;
@@ -82,8 +82,6 @@ int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt,
     const auto& rawSnapshot = opt.rawSnapshot;
     const auto& noNewGear = opt.noNewGear;
     const auto& noSnapshot = opt.noSnapshot;
-    const auto& ackSeq = opt.ackSeq;
-    const auto& ackAnyStream = opt.ackAnyStream;
     const auto& noSpawnInvuln = opt.noSpawnInvuln;
     const auto& hudOff = opt.hudOff;
     const auto& peerOps = opt.peerOps;
@@ -1823,7 +1821,7 @@ int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt,
             std::string bare = nm;
             const size_t dot2 = bare.find('.');
             if (dot2 != std::string::npos) bare.resize(dot2);
-            if (!bare.empty() && bare.size() < 9) tmpl.mapName = bare;
+            if (!bare.empty() && bare.size() < 9) out.lanMapName = bare;   // ★ 10-12 작업 7a — 틀에 넣는 것은 프로세스 몫
             std::printf("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)\n",
                         nm.c_str(), mf.Crc());
         }
@@ -1936,6 +1934,12 @@ int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt,
             std::fflush(stdout);
         }
         for (size_t bi = 0; bi < bots.size(); ++bi) {
+            // ★ 10-12 작업 7a — 봇은 통신 층 세션이 있어야 선다. 세션을 여는 함수가 없으면(통신 스레드가 이미 도는 뒤에 차리는 방) 안 세운다
+            if (!openSession) {
+                std::printf("[진단스위치] 봇은 서버가 켜질 때 차린 방에만 선다 — 안 세움\n");
+                std::fflush(stdout);
+                break;
+            }
             // ★ 자리·번호·편을 정하는 **셈은 `ModeRules.h` 가 한다**(시험이 닿는 자리).
             //   여기 남는 것은 그 값을 서버에 **꽂는 배선**뿐이다.
             const nox::BotPlan plan =
@@ -1957,7 +1961,7 @@ int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt,
             if (bots[bi].cls == "wizard")        bc = nox::CharClass::Wizard;
             else if (bots[bi].cls == "conjurer") bc = nox::CharClass::Conjurer;
             const std::string bot = nox::BotAddr(bi);
-            const int64_t botSid = srv.DebugEnterGame(net.OpenSession(bot), bot, plan.netCode, /*observer=*/false, bc);   // ★ 10-08 조각 4 — 세션 번호
+            const int64_t botSid = srv.DebugEnterGame(openSession(bot), bot, plan.netCode, /*observer=*/false, bc);   // ★ 10-08 조각 4 — 세션 번호
             // ⚠ 자리는 **둘 다** 맞춰야 한다 — `DebugMoveTo` 는 `x`·`y` 만, `DebugSetPos` 는 `posX`·`posY` 만 옮긴다.
             //   덫 겨눔·소리 거리는 `posX`·`posY` 로 재고, 걸음·갱신은 `x`·`y` 를 본다(09-15 에 한 번 데었다)
             srv.DebugMoveTo(botSid, bx, by);
@@ -2032,15 +2036,7 @@ int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt,
                 std::printf("[시험] ⚠ 아이템이 없다 — 스윕이 무효다\n");
         }
     }
-    {
-        uint8_t info[256] = {};
-        nox::Writer w(info, sizeof(info));
-        if (!tmpl.Encode(w) || !w.ok()) {
-            std::printf("소개 원본을 만들지 못했다\n");
-            return 1;
-        }
-        net.SetInfoTemplate(info, w.written());
-    }
+    // ★ 10-12 작업 7a — 이 자리에 있던 서버 찾기 답의 틀 넣기(`SetInfoTemplate`)는 프로세스 몫이라 `ConfigureNetwork` 로 옮겼다.
 
     // ★★ 접속 뒤에 내려줄 것 — 접속 묶음(216바이트)과 맵 지정(41바이트).
     //    이게 비어 있으면 Server.cpp 의 CLIENT_ACCEPT 가 아무것도 안 보내고,
@@ -2071,13 +2067,9 @@ int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt,
                 const char* dot = static_cast<const char*>(memchr(mn, '.', mlen));
                 if (dot) mlen = static_cast<size_t>(dot - mn);
                 if (mlen > 0 && mlen < 9) {
-                    tmpl.mapName.assign(mn, mlen);
-                    uint8_t info2[256] = {};
-                    nox::Writer w2(info2, sizeof(info2));
-                    if (tmpl.Encode(w2) && w2.ok()) {
-                        net.SetInfoTemplate(info2, w2.written());
-                        std::printf("소개 맵 이름을 서두에 맞춤: %s\n", tmpl.mapName.c_str());
-                    }
+                    // ★ 10-12 작업 7a — 틀을 다시 만들어 넣는 것은 프로세스 몫(`ConfigureNetwork`)이 한 번에 한다
+                    out.lanMapName.assign(mn, mlen);
+                    std::printf("소개 맵 이름을 서두에 맞춤: %s\n", out.lanMapName.c_str());
                 }
             }
             srv.SetPostMap(setup.postMap);
@@ -2118,8 +2110,7 @@ int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt,
         srv.SetPatchSnapshot(!rawSnapshot);
         srv.SetSendUpdates(!noUpdate);
         srv.SetNotifyNewGear(!noNewGear);
-        net.SetAckRecvSeq(ackSeq);      // B-1b — 신뢰 순번 되받기(기본 끔 · `--ack-seq` 로 켬)
-        net.SetAckAnyStream(ackAnyStream);
+        // ★ 10-12 작업 7a — 신뢰 순번 되받기 둘(`SetAckRecvSeq` · `SetAckAnyStream`)은 통신 층 설정이라 `ConfigureNetwork` 로 옮겼다
         srv.SetNoSpawnInvuln(noSpawnInvuln);   // 화면 확인 우회 — 부활 무적 안 걸기
         srv.SetForceHudOn(!hudOff);
         if (spawnSpread > 0) srv.SetSpawnSpread(spawnSpread);
@@ -2143,5 +2134,21 @@ int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt,
             std::printf("남에게 넘길 오프코드 %zu개\n", ops.size());
         }
     }
+    return 0;
+}
+
+int ConfigureNetwork(nox::CUdpServer& net, const ServerOptions& opt, nox::MsgServerInfo& tmpl, const WorldExtras& firstRoom) {
+    // 서버 찾기 답의 틀 — 옛 자리에서는 방 차리기 중간에 한 번, 녹음 서두의 맵이면 한 번 더 넣었다(나중 것이 남는다).
+    //   통신 스레드를 띄우기 전이라 그 사이에 나가는 답이 없으므로 마지막 값을 한 번 넣는 것과 같다
+    if (!firstRoom.lanMapName.empty()) tmpl.mapName = firstRoom.lanMapName;
+    uint8_t info[256] = {};
+    nox::Writer w(info, sizeof(info));
+    if (!tmpl.Encode(w) || !w.ok()) {
+        std::printf("소개 원본을 만들지 못했다\n");
+        return 1;
+    }
+    net.SetInfoTemplate(info, w.written());
+    net.SetAckRecvSeq(opt.ackSeq);      // B-1b — 신뢰 순번 되받기(기본 끔 · `--ack-seq` 로 켬)
+    net.SetAckAnyStream(opt.ackAnyStream);
     return 0;
 }

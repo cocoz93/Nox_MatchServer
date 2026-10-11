@@ -50,6 +50,11 @@ if ($r) {
   Check $tokOk "토큰이 본문 41번(패킷 44번)에 그대로 돌아왔다"
   $name = [Text.Encoding]::ASCII.GetString($r[72..($r.Length-2)])
   Check ($name -eq 'SMOKE') "서버 이름이 인자대로 '$name'"
+  # ★ 10-12 플랜 B 작업 7a — 맵 이름 칸(본문 7번 · 패킷 10번 · 9바이트). 방 차리기가 정하고 프로세스 몫(`ConfigureNetwork`)이 틀에 넣는다.
+  #   독립 모드는 그 맵, 녹음 모드는 기본 덤프(`CAP_arena_0907_ok`)의 서두 맵 — 소개 원본 녹음의 맵(so_druid)이 아니어야 한다
+  $expMap = if ($Map) { [IO.Path]::GetFileNameWithoutExtension($Map).ToLower() } else { 'estate' }
+  $mapName = [Text.Encoding]::ASCII.GetString($r[10..18]).TrimEnd([char]0)
+  Check ($mapName -eq $expMap) "맵 이름이 '$expMap' ('$mapName')"
 }
 
 # ── 2. 접속 시도 — 지금은 조건 없이 받아준다

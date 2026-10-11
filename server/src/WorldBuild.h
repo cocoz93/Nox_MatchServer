@@ -5,6 +5,8 @@
 //   필드의 기본값과 주석은 `main()` 에 있던 것 그대로다.
 #pragma once
 
+#include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -132,8 +134,18 @@ struct WorldExtras {
     //   다른 자리**였다(CapFlag 실측 — 맵 1058,931·3841,3714 ↔ 우리 3828,2534·4104,2534).
     //   맵 로드 블록 밖에서도 봐야 해서 여기에 둔다.
     std::vector<std::pair<int, int>> mapFlagPos;
+    // ★ 10-12 플랜 B 작업 7a — 서버 찾기 답(`SERVER_INFO`)에 실을 맵 이름. 비면 녹음 틀 그대로.
+    //   독립 모드는 이 방의 맵, 녹음 모드는 서두의 맵 — 방 차리기가 정하고 프로세스 몫(`ConfigureNetwork`)이 쓴다
+    std::string lanMapName;
 };
 
-// 실행 인자대로 `srv` 에 세계를 차린다. 0 이면 다 됐고, 아니면 그 값으로 끝낸다(`main` 의 종료 코드).
-//   `tmpl`(서버 찾기 답의 틀)은 여기서 맵 이름을 채워 서버에 넘긴다.
-int BuildWorld(nox::Server& srv, nox::CUdpServer& net, const ServerOptions& opt, nox::MsgServerInfo& tmpl, WorldExtras& out);   // ★ 10-09 조각 5d — 통신 층 설정·봇 번호는 `net`
+// ★ 10-12 플랜 B 작업 7a — 옛 `BuildWorld` 를 방 몫과 프로세스 몫으로 나눴다(`Docs/ROOMS_DESIGN.md` 「작업 7·8 플랜」).
+//   방을 하나 더 차릴 때 프로세스 몫(통신 층 설정)까지 다시 하지 않게.
+//
+// 방 몫 — 실행 인자대로 `srv` 에 세계를 차린다(맵 · 규칙 · 물건 · 몬스터 · 접속 묶음). 0 이면 다 됐고, 아니면 그 값으로 끝낸다(`main` 의 종료 코드).
+//   봇(`--debug-bot`)은 통신 층 세션이 있어야 서므로 세션을 여는 함수를 받는다 — 비었으면 봇을 안 세운다
+using OpenSessionFn = std::function<int64_t(const std::string& addr)>;
+int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSessionFn& openSession, WorldExtras& out);
+// 프로세스 몫 — 통신 층 설정(서버 찾기 답의 틀 · 순번 되받기). 서버에 한 번, 첫 방을 차린 뒤.
+//   `tmpl`(서버 찾기 답의 틀)의 맵 이름은 첫 방의 `lanMapName` 으로 채운다
+int ConfigureNetwork(nox::CUdpServer& net, const ServerOptions& opt, nox::MsgServerInfo& tmpl, const WorldExtras& firstRoom);
