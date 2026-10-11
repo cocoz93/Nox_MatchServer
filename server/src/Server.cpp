@@ -181,6 +181,10 @@ void Server::Log(const char* fmt, ...) const {
     std::string out;
     size_t from = 0;
     for (size_t nl; (nl = logPending_.find('\n', from)) != std::string::npos; from = nl + 1) {
+        if (logCapture_) {   // ★ 10-12 작업 7e-4a — 담는 중이면 줄(줄바꿈 뺌)만 목록에. 태그는 다시 낼 때 그 방 것이 붙는다
+            logCapture_->emplace_back(logPending_, from, nl - from);
+            continue;
+        }
         if (logRoom_ >= 0) {
             char tag[24];
             std::snprintf(tag, sizeof(tag), "[방 %d] ", logRoom_);
@@ -190,7 +194,7 @@ void Server::Log(const char* fmt, ...) const {
     }
     if (from == 0) return;
     logPending_.erase(0, from);
-    std::fwrite(out.data(), 1, out.size(), stdout);
+    if (!out.empty()) std::fwrite(out.data(), 1, out.size(), stdout);
 }
 
 // ★ 09-30 한 틱 한 데이터그램 — 정답지는 원격 사람에게 **프레임마다 조각 하나**만 보낸다(`server.go:474~475` `FlushAndPoll` →
@@ -1739,25 +1743,21 @@ bool Server::Damage(int64_t sessionId, int amount,
 //     시전 목록 · 들을 거리 · 낙하 대기 · 소리 대기 · 새로 놓인 물건 표시 · 투표
 //   안 건드림 — 장애물·시작점·길목·바닥·종류 표(판 중에 안 바뀜) · 사람 몫(가방·버프·자리 — R3) · 사람별 소개 기록(R4)
 //   ⚠ 담기는 `main` 이 맵을 다 넣은 뒤 본 루프 앞에서 한 번(깃발·퀘스트 판 차리기는 루프 안이라 담지 않는다 — 깃발은 재시작 블록이 집으로)
+//   ★ 10-12 작업 7e-4a — 방은 담지 않고 맵 원본이 담아 둔 것을 같이 가리킨다(`AttachMap`). 담기는 방 밖 게임(시험 · 녹음 모드 · 맵 원본 만들기)만
 void Server::CaptureMapInitial() {
-    mapInitial_.statics = statics_;
-    mapInitial_.props = props_;
-    mapInitial_.secretWalls = secretWalls_;
-    mapInitial_.traps = traps_;
-    mapInitial_.wallTiles = wallTiles_;
-    mapInitial_.walls = walls_;
-    mapInitial_.captured = true;
+    mapInitial_ = ShareMapState();
     ++mapResetStat_[0];
 }
 
 void Server::ResetWorldFromMap() {
-    if (mapInitial_.captured) {
-        statics_ = mapInitial_.statics;
-        props_ = mapInitial_.props;
-        secretWalls_ = mapInitial_.secretWalls;
-        traps_ = mapInitial_.traps;
-        wallTiles_ = mapInitial_.wallTiles;
-        walls_ = mapInitial_.walls;
+    if (mapInitial_) {
+        const MapState& m = *mapInitial_;
+        statics_ = m.statics;
+        props_ = m.props;
+        secretWalls_ = m.secretWalls;
+        traps_ = m.traps;
+        wallTiles_ = m.wallTiles;
+        walls_ = m.walls;
         AIPathBakeWalls();                                     // 부서졌던 벽이 길 찾기 격자에도 돌아오게
         ++mapResetStat_[1];
     } else {
@@ -4814,7 +4814,7 @@ bool Server::MapTraceRay(float x1, float y1, float x2, float y2, uint8_t flags, 
 bool Server::CircleVsWalls(double bx, double by, double r, double mass,
                            double nx, double ny, double& vx, double& vy, double& ax, double& ay,
                            int* lastGx, int* lastGy) const {
-    if (!wallsOn_ || wallTiles_.empty()) return false;
+    if (!mt_->wallsOn || wallTiles_.empty()) return false;
     wallPushPerStepCur_ = 0;
     const int x0 = static_cast<int>(static_cast<float>(bx - r) * kInvGrid);
     const int y0 = static_cast<int>(static_cast<float>(by - r) * kInvGrid);

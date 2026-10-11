@@ -1470,7 +1470,7 @@ public:
     void SetWalls(const std::vector<std::pair<uint8_t, uint8_t>>& cells) {
         walls_.assign(256 * 256, 0);
         for (const auto& c : cells) walls_[c.second * 256 + c.first] = 1;
-        wallsOn_ = !cells.empty();
+        MtMut().wallsOn = !cells.empty();
         // ★ 모양을 모르는 칸은 **X 자(방향 2, 대각선 둘 다)** 로 둔다 — 시험이 칸 좌표만 준다.
         wallTiles_.assign(256 * 256, WallTile{});
         for (const auto& c : cells) {
@@ -1492,7 +1492,7 @@ public:
             w.present = true; w.dir = c.dir; w.tile = c.tile; w.flag80 = c.flag80;
             walls_[c.y * 256 + c.x] = 1;
         }
-        wallsOn_ = !cells.empty();
+        MtMut().wallsOn = !cells.empty();
         AIPathBakeWalls();   // 묶음 6-f(3) — 길 찾기 격자에도 같은 벽을 굽는다
     }
     void SetWallDefFlags(std::vector<uint32_t> f) { GtMut().wallDefFlags = std::move(f); }
@@ -1694,7 +1694,7 @@ public:
     // 진단 — 가장 가까운 벽 선분까지 거리(±3칸). 벽 없으면 −1. 칸·방향도 돌려준다.
     double DebugWallDistance(double x, double y, int* outGx = nullptr, int* outGy = nullptr, int* outDir = nullptr) const;
     bool WallAt(double x, double y) const {
-        if (!wallsOn_) return false;
+        if (!mt_->wallsOn) return false;
         const int cx = static_cast<int>(x / kWallCell);
         const int cy = static_cast<int>(y / kWallCell);
         if (cx < 0 || cx > 255 || cy < 0 || cy > 255) return true;   // 맵 밖 = 벽
@@ -2217,7 +2217,7 @@ public:
     size_t WorldStaticCount() const { return statics_.size(); }
 
     bool CanStand(double x, double y, double r) const {
-        if (!wallsOn_) return true;
+        if (!mt_->wallsOn) return true;
         return !WallAt(x - r, y) && !WallAt(x + r, y) && !WallAt(x, y - r) && !WallAt(x, y + r);
     }
 
@@ -3831,11 +3831,11 @@ public:
     unsigned long long bowShot(BowShot k) const { return k < BowShot::Count ? bowShot_[static_cast<size_t>(k)] : 0; }          // ★ 09-29
     unsigned long long arrowHit(ArrowHit k) const { return k < ArrowHit::Count ? arrowHit_[static_cast<size_t>(k)] : 0; }      // ★ 09-29
     unsigned long long weaponPick(WeaponPick k) const { return k < WeaponPick::Count ? weaponPick_[static_cast<size_t>(k)] : 0; }   // ★ 09-29
-    unsigned long long quiverFromMap() const { return quiverFromMap_; }   // ★ 09-29 — 맵 짐에서 화살 수를 읽어 실은 바닥 화살통
+    unsigned long long quiverFromMap() const { return mt_->quiverFromMap; }   // ★ 09-29 — 맵 짐에서 화살 수를 읽어 실은 바닥 화살통
     unsigned long long bowPoseEnded() const { return bowPoseEnded_; }     // ★ 09-29
     unsigned long long connectTailStops() const { return connectTailStops_; }   // ★ 09-29 ③
     int DebugArrowDamage(int64_t owner, uint16_t arrowType) const { return ArrowDamage(owner, arrowType); }   // ★ 09-29
-    void NoteQuiverFromMap() { ++quiverFromMap_; }
+    void NoteQuiverFromMap() { ++MtMut().quiverFromMap; }
     // ★ 09-29 — 시험용: 가방 물건의 재장전 칸·화살 수를 바꾼다
     bool DebugSetBowReload(int64_t sessionId, uint16_t nc, uint8_t v) {
         auto it = sessions_.find(sessionId); if (it == sessions_.end()) return false;
@@ -4678,7 +4678,6 @@ private:
     unsigned long long bowShot_[kBowShotCount] = {};       // ★ 09-29
     unsigned long long arrowHit_[kArrowHitCount] = {};     // ★ 09-29
     unsigned long long weaponPick_[kWeaponPickCount] = {}; // ★ 09-29
-    unsigned long long quiverFromMap_ = 0;                 // ★ 09-29
     unsigned long long bowPoseEnded_ = 0;                  // ★ 09-29 — 활 쏜 뒤 상태 14 → 13(1초)
     unsigned long long connectTailStops_ = 0;              // ★ 09-29 ③ — 게임 패킷 안 0x00 에서 읽기를 끝낸 수(전에는 0x04 로 답함)
     std::vector<uint16_t> giveItems_;                      // ★ 09-30 사람 판 시험용
@@ -5149,6 +5148,7 @@ private:
     std::map<int64_t, Session> sessions_;
     int logRoom_ = -1;                       // ★ 10-12 작업 7b — 방 번호(-1 = 방 밖 · 태그 없음)
     mutable std::string logPending_;         // ★ 10-12 작업 7b — 아직 줄이 안 끝난 글자
+    std::vector<std::string>* logCapture_ = nullptr;   // ★ 10-12 작업 7e-4a — 있으면 끝난 줄을 여기에(표준 출력 대신)
     std::map<uint8_t, unsigned long long> seen_;
     unsigned long long handled_ = 0;   // 답을 만든 메시지 수
     uint32_t nextJoinOrder_ = 0;       // 접속한 차례에 매기는 번호 (팀 나누기용)
@@ -5432,7 +5432,6 @@ private:
     int aiPathStatus_ = 0;                          // 0 닿음 · 1 자리 다 씀 · 2 깊이·훑을 곳 없음
     std::vector<std::pair<int, int>> aiPathCells_;  // 찾은 길(칸)
     std::vector<std::pair<float, float>> aiPathPts_;
-    bool wallsOn_ = false;
     // ★ 묶음 9-a — `secret` 은 `secretWalls_` 자리표(없으면 −1). 정답지 벽 구조의 `+28`(비밀벽 마디)과
     //   `Flags4 & 4`(비밀벽 깃발)를 한 칸으로 합친 것이다
     // ★ 09-22 — `door` 는 이 칸에 붙은 **문의 순번**(`props_` 색인). 정답지는 맵을 읽을 때
@@ -5538,10 +5537,50 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
         std::string saMapName;
         uint32_t saMapCrc = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
         std::vector<PhysBody> obstacles;        // 묶음 2-c 장애물
+        // ★ 10-12 작업 7e-4a — 맵을 차릴 때 정해지고 판 중에 안 바뀌는 값 둘(옛 멤버 `wallsOn_` · `quiverFromMap_`).
+        //   방이 원본을 가리키면 다시 셈하지 않고 이 값을 그대로 쓴다(7e-4 자가검증 ① ②)
+        bool wallsOn = false;                    // 맵 벽 칸이 있었나(`SetWallTiles` · `SetWalls` — 문이 붙인 벽은 안 셈)
+        unsigned long long quiverFromMap = 0;    // ★ 09-29 — 맵 짐에서 화살 수를 읽어 실은 바닥 화살통
     };
     std::shared_ptr<const MapTables> ShareMapTables() { mtOwn_.reset(); return mt_; }
     void UseMapTables(std::shared_ptr<const MapTables> t) { if (t) { mt_ = std::move(t); mtOwn_.reset(); } }
     bool SharesMapTables() const { return mtOwn_ == nullptr; }
+
+    // ★ 10-12 플랜 B 작업 7e-4a — 맵의 바뀌는 것 여섯의 처음 상태(7d 조사 ③). 판 끝에 여기로 되돌린다.
+    //   방은 같은 맵의 원본이 쥔 것을 같이 가리키고(`AttachMap`), 방 밖 게임(시험 · 녹음 모드)은 제 상태를 담는다(`CaptureMapInitial`)
+    struct MapState {
+        std::vector<WorldStatic> statics;
+        std::vector<WorldProp> props;
+        std::vector<SecretWall> secretWalls;
+        std::vector<ShootingTrap> traps;
+        std::vector<WallTile> wallTiles;
+        std::vector<uint8_t> walls;
+    };
+    // 지금 바뀌는 것 여섯을 담아 내놓는다(원본 만들기 — 게임 상태는 안 바꾼다)
+    std::shared_ptr<const MapState> ShareMapState() const {
+        return std::make_shared<const MapState>(MapState{ statics_, props_, secretWalls_, traps_, wallTiles_, walls_ });
+    }
+    // 원본에 붙는다 — 맵 표를 가리키고, 처음 상태를 제 사본으로 들고, 판 끝에 돌아갈 곳은 같이 쓰는 처음 상태로.
+    //   길 찾기 격자는 여기서 안 굽는다 — 맵 몫을 바꾸는 방 설정(`--no-obstacles` 등) 뒤에 `BakeMapPaths` 를 한 번
+    void AttachMap(std::shared_ptr<const MapTables> tables, std::shared_ptr<const MapState> initial) {
+        UseMapTables(std::move(tables));
+        if (!initial) return;
+        statics_ = initial->statics;
+        props_ = initial->props;
+        secretWalls_ = initial->secretWalls;
+        traps_ = initial->traps;
+        wallTiles_ = initial->wallTiles;
+        walls_ = initial->walls;
+        mapInitial_ = std::move(initial);
+        ++mapResetStat_[0];   // 「담음」 — 처음 상태를 쥐었다(옛 `CaptureMapInitial` 과 같은 뜻)
+    }
+    bool HasSharedMapInitial(const MapState* s) const { return mapInitial_.get() == s; }   // 시험용 — 돌아갈 곳이 그 원본인가
+    void BakeMapPaths() { AIPathBakeWalls(); }   // 길 찾기 격자(벽 칸 깃발을 지우고 장애물 · 길목을 다시 굽는다)
+    // 원본 만들기 — 맵 이름 · CRC 는 맵 표에, 독립 모드 깃발은 방에(옛 `SetStandalone`은 둘을 한 번에 — 방이 부르면 맵 표 사본이 생긴다)
+    void SetMapIdentity(const std::string& mapFileName, uint32_t mapCrc) { MtMut().saMapName = mapFileName; MtMut().saMapCrc = mapCrc; }
+    void SetStandaloneMode() { standalone_ = true; }
+    // 로그 담기 — 원본을 만드는 게임의 진단 줄을 표준 출력 대신 목록에(방을 만들 때 그 방 로그로 다시 낸다)
+    void SetLogCapture(std::vector<std::string>* sink) { logCapture_ = sink; }
 private:
     std::shared_ptr<GameTables> gtOwn_ = std::make_shared<GameTables>();   // 제 표 — 넣기가 쓴다(같이 쓰는 표를 가리키면 비어 있다)
     std::shared_ptr<const GameTables> gt_ = gtOwn_;                         // 읽는 표 — 제 것이거나 방들이 같이 쓰는 것
@@ -5690,15 +5729,8 @@ private:
     bool questAnnounced_ = false; // 첫 스테이지 알림을 보냈나
     std::vector<Creature> pets_;
     // ★ 10-01 R2 — 맵 처음 상태(판 중에 바뀌는 맵 몫 6종)의 사본 · `CaptureMapInitial` 이 채우고 `ResetWorldFromMap` 이 되돌린다
-    struct MapInitial {
-        bool captured = false;
-        std::vector<WorldStatic> statics;
-        std::vector<WorldProp> props;
-        std::vector<SecretWall> secretWalls;
-        std::vector<ShootingTrap> traps;
-        std::vector<WallTile> wallTiles;
-        std::vector<uint8_t> walls;
-    } mapInitial_;
+    // ★ 10-12 작업 7e-4a — 같이 쓸 수 있게 `shared_ptr<const MapState>`로(비었으면 안 담음 — 옛 `captured`). 방은 원본의 것을 가리킨다(`AttachMap`)
+    std::shared_ptr<const MapState> mapInitial_;
     unsigned long long mapResetStat_[3] = {};
     unsigned long long restartRespawned_ = 0;                     // ★ 10-01 R3
     unsigned long long mapReopenStat_[2] = {};                    // ★ 10-01 R4 — 0 USE_MAP 보냄 · 1 맵 정보 없어 못 보냄

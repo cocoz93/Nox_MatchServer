@@ -29986,6 +29986,71 @@ void TestGameTablesShare() {
     std::printf("  게임 데이터 표 같이 쓰기 — 넣으면 제 사본에(같이 쓰는 표 그대로)\n");
 }
 
+// ★ 10-12 플랜 B 작업 7e-4a — 맵 원본에 붙기(`Server::AttachMap` · `ShareMapState` · `SetLogCapture`).
+//   서버가 뜰 때 맵마다 원본을 한 벌 차리고, 방은 맵 표를 가리키며 바뀌는 것 여섯의 사본을 든다
+//   ① 붙은 두 방이 원본 값을 그대로 본다(벽 칸 · 벽 체력 · 바닥 물건 · `wallsOn` · `quiverFromMap` · 맵 표 같이 씀)
+//   ② a 가 벽을 부수고 바닥 물건을 비워도 b 와 원본의 처음 상태는 그대로 ③ a 를 되돌리면 같이 쓰는 처음 상태로
+//   ④ 방이 맵 표에 쓰면 a 의 사본에만(독립 모드 깃발은 맵 표에 안 씀) ⑤ 로그 담기 — 끝난 줄만 줄바꿈 빼고, 줄이 끝날 때까지는 모은다
+void TestMapAttach() {
+    nox::Server o;
+    o.SetWalls({ { 46, 44 }, { 48, 44 } });
+    o.SetWallDefFlags({ 1 });
+    nox::Server::WallDefExtra e; e.hitMat = 32; e.health = 150; e.breakSound = 0;
+    o.SetWallDefExtras({ e });
+    o.SetWallSpecials({ { 46, 44 } }, {});
+    nox::Server::WorldStatic w;
+    w.netCode = 500; w.type = 1170; w.x = 1000; w.y = 1000;
+    o.SetWorldStatics({ w });
+    o.NoteQuiverFromMap();
+    o.SetMapIdentity("Estate.map", 0x1234u);
+    const auto gt = o.ShareGameTables();
+    const auto tables = o.ShareMapTables();
+    const auto state = o.ShareMapState();
+    Check(tables && state && tables->saMapName == "Estate.map" && tables->saMapCrc == 0x1234u && tables->wallsOn && tables->quiverFromMap == 1 &&
+          state->statics.size() == 1, "원본 — 맵 표 · 처음 상태에 넣은 것이 없다");
+    nox::Server a, b;
+    for (nox::Server* r : { &a, &b }) { r->UseGameTables(gt); r->AttachMap(tables, state); r->BakeMapPaths(); }
+    const float wy = 44 * 23.0f + 11.5f, wx = 46 * 23.0f + 11.5f;
+    char msg[240];
+    std::snprintf(msg, sizeof(msg), "① 붙음 — 맵 표 같이 씀 %d·%d · 벽 칸 %d · 벽 체력 %d(150) · 바닥 물건 %zu(1) · 맵 화살통 %llu(1) · 담음 %llu(1) · 돌아갈 곳 원본 %d",
+                  (int)a.SharesMapTables(), (int)b.SharesMapTables(), (int)a.WallAt(wx, wy), a.DebugWallHp(46, 44), a.WorldStaticCount(),
+                  a.quiverFromMap(), a.mapResetStat(0), (int)a.HasSharedMapInitial(state.get()));
+    Check(a.SharesMapTables() && b.SharesMapTables() && a.WallAt(wx, wy) && a.DebugWallHp(46, 44) == 150 && a.WorldStaticCount() == 1 &&
+          a.quiverFromMap() == 1 && a.mapResetStat(0) == 1 && a.HasSharedMapInitial(state.get()), msg);
+    // ② a 만 바꾼다
+    a.DamageToMap(46, 44, 100, 2, nox::Server::WallHitter{});
+    a.DamageToMap(46, 44, 100, 2, nox::Server::WallHitter{});
+    a.SetWorldStatics({});
+    const size_t cell = 44 * 256 + 46;
+    std::snprintf(msg, sizeof(msg), "② a 만 — a 부서짐 %d(1) · b 부서짐 %d(0)·체력 %d(150)·벽 칸 %d(1)·바닥 물건 %zu(1) · 원본 부서짐 %d(0)·벽 칸 %d(1)·바닥 물건 %zu(1)",
+                  (int)a.DebugWallBroken(46, 44), (int)b.DebugWallBroken(46, 44), b.DebugWallHp(46, 44), (int)b.WallAt(wx, wy), b.WorldStaticCount(),
+                  (int)state->wallTiles[cell].broken, (int)state->walls[cell], state->statics.size());
+    Check(a.DebugWallBroken(46, 44) && a.WorldStaticCount() == 0 && !b.DebugWallBroken(46, 44) && b.DebugWallHp(46, 44) == 150 && b.WallAt(wx, wy) &&
+          b.WorldStaticCount() == 1 && !state->wallTiles[cell].broken && state->walls[cell] == 1 && state->statics.size() == 1, msg);
+    // ③ a 를 되돌린다
+    a.ResetWorldFromMap();
+    std::snprintf(msg, sizeof(msg), "③ 되돌림 — 부서짐 %d(0) · 체력 %d(150) · 벽 칸 %d(1) · 바닥 물건 %zu(1) · 되돌림 %llu(1) · 돌아갈 곳 원본 %d",
+                  (int)a.DebugWallBroken(46, 44), a.DebugWallHp(46, 44), (int)a.WallAt(wx, wy), a.WorldStaticCount(), a.mapResetStat(1),
+                  (int)a.HasSharedMapInitial(state.get()));
+    Check(!a.DebugWallBroken(46, 44) && a.DebugWallHp(46, 44) == 150 && a.WallAt(wx, wy) && a.WorldStaticCount() == 1 && a.mapResetStat(1) == 1 &&
+          a.HasSharedMapInitial(state.get()), msg);
+    // ④ 방 설정
+    a.SetStandaloneMode();
+    Check(a.SharesMapTables(), "④ 독립 모드 깃발이 맵 표 사본을 만들었다");
+    a.NoteQuiverFromMap();
+    Check(!a.SharesMapTables() && a.quiverFromMap() == 2 && tables->quiverFromMap == 1 && b.quiverFromMap() == 1 && b.SharesMapTables(),
+          "④ 방이 맵 표에 쓴 것이 같이 쓰는 표나 다른 방에 샜다");
+    // ⑤ 로그 담기
+    std::vector<std::string> lines;
+    o.SetLogCapture(&lines);
+    o.Log("가 %d\n", 1);
+    o.Log("나");
+    o.Log("다\n두\n");
+    o.SetLogCapture(nullptr);
+    Check(lines.size() == 3 && lines[0] == "가 1" && lines[1] == "나다" && lines[2] == "두", "⑤ 담은 줄이 틀렸다(줄 수 · 모으기 · 줄바꿈)");
+    std::printf("  맵 원본에 붙기 — 두 방이 같은 원본을 가리켜도 바뀌는 것은 제 사본 · 되돌리면 원본으로\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -30134,6 +30199,7 @@ int main() {
     TestRoundFreeze();
     TestReopenMap();
     TestGameTablesShare();   // ★ 10-12 플랜 B 작업 7e-2
+    TestMapAttach();         // ★ 10-12 플랜 B 작업 7e-4a
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();
