@@ -29963,6 +29963,29 @@ void TestMeasuredConstants() {
     std::printf("  실측값 못 박기 — 상수·길이 23자리\n");
 }
 
+// ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터 표 같이 쓰기 · 쓸 때 복사(`Server::ShareGameTables` · `UseGameTables` · `GtMut`).
+//   서버가 뜰 때 한 벌 만든 표를 방들이 가리키므로, 한 게임의 넣기가 같이 쓰는 표나 다른 게임의 표를 바꾸면 안 된다
+//   ① a 가 넣고 내놓음(얼림) ② b 가 가리키고 넣음 → b 의 사본에만 ③ 얼린 뒤 a 가 넣음 → a 의 사본에만 ④ 같이 쓰는 표는 처음 그대로
+void TestGameTablesShare() {
+    const nox::Server::PhysBody body{};
+    nox::Server a;
+    a.SetTypeBody(5, body);
+    const auto shared = a.ShareGameTables();
+    Check(shared && shared->typeBodies.size() == 1 && shared->typeBodies.count(5) == 1, "① 내놓은 표에 a 가 넣은 것이 없다");
+    nox::Server b;
+    b.UseGameTables(shared);
+    b.SetTypeBody(6, body);
+    Check(shared->typeBodies.size() == 1, "② 같이 쓰는 표가 b 의 넣기로 바뀌었다(쓸 때 복사 안 함)");
+    const auto bt = b.ShareGameTables();
+    Check(bt != shared && bt->typeBodies.count(5) == 1 && bt->typeBodies.count(6) == 1, "② b 의 사본에 같이 쓰던 것 · 넣은 것이 없다");
+    a.SetTypeBody(7, body);
+    Check(shared->typeBodies.size() == 1, "③ 얼린 표가 a 의 넣기로 바뀌었다");
+    const auto at = a.ShareGameTables();
+    Check(at->typeBodies.count(7) == 1 && at->typeBodies.count(6) == 0, "③ a 의 사본이 틀렸다(b 의 것이 섞이거나 제 것이 없음)");
+    Check(bt->typeBodies.count(7) == 0, "④ b 가 a 의 넣기를 본다");
+    std::printf("  게임 데이터 표 같이 쓰기 — 넣으면 제 사본에(같이 쓰는 표 그대로)\n");
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -30110,6 +30133,7 @@ int main() {
     TestCorpseGaps();
     TestRoundFreeze();
     TestReopenMap();
+    TestGameTablesShare();   // ★ 10-12 플랜 B 작업 7e-2
     TestAIEscort();
     TestCreatureOrder();
     TestAIGuardHunt();

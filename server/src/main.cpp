@@ -1186,6 +1186,8 @@ int main(int argc, char** argv) {
             opt.ctfSpan = std::atoi(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
             opt.dumpPath = argv[++i];
+        } else if (a == "--game-dir" && i + 1 < argc) {
+            opt.gameDir = argv[++i];   // ★ 10-12 작업 7e-2 — 게임 폴더(thing.bin 등). 기본 = GOG 설치 경로
         } else if (a == "--debug-crash" && i + 1 < argc) {
             // 진단 — N 틱 뒤 일부러 죽는다. 크래시 덤프가 실제로 남는지 보는 용도(10-08)
             opt.debugCrashAfter = std::atoi(argv[++i]);
@@ -1241,7 +1243,7 @@ int main(int argc, char** argv) {
     //     0x400000 → netSpriteUpdate · 0x200000 → (2 몬스터 / 4 사람 / 그밖 팬텀) · 0x100000 → 단순
     if (!opt.dumpThing.empty()) {
         nox::ThingDb tdb;
-        if (!tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+        if (!tdb.Load(opt.gameDir + "\\thing.bin")) {   // ★ 10-12 작업 7e-2 — 박힌 경로 대신 `--game-dir`
             std::printf("[멈춤] thing.bin 을 못 읽었다.\n");
             return 1;
         }
@@ -1342,7 +1344,14 @@ int main(int argc, char** argv) {
     run0.opt = &opt;
     WorldExtras& extras = run0.extras;
     nox::CUdpServer& udp = net.Network();
-    if (const int rc = BuildRoomWorld(srv, opt, [&udp](const std::string& addr) { return udp.OpenSession(addr); }, extras)) return rc;
+    // ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터는 맵 방이 있을 때만 서버가 뜰 때 한 번 읽어 표 한 벌로(녹음 모드는 지금처럼 표 없이)
+    GameFiles gameFiles;
+    std::shared_ptr<const nox::Server::GameTables> gameTables;
+    if (!opt.mapPath.empty()) {
+        LoadGameFiles(opt.gameDir, gameFiles);
+        gameTables = BuildGameTables(gameFiles);
+    }
+    if (const int rc = BuildRoomWorld(srv, opt, gameFiles, gameTables, [&udp](const std::string& addr) { return udp.OpenSession(addr); }, extras)) return rc;
     if (const int rc = ConfigureNetwork(udp, opt, tmpl, extras)) return rc;
     // 초당 `[성장]` 줄의 봇 번호 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
     run0.bot0Sid = net.Network().SessionIdOf("bot0");

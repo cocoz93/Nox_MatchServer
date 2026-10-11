@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -73,7 +74,815 @@ std::string DefaultDumpPath() {
 
 }  // namespace
 
-int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSessionFn& openSession, WorldExtras& out) {
+// ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터 파일 넷을 서버가 뜰 때 한 번 읽는다(옛 월드 차리기는 방마다 thing.bin 둘 · gamedata.bin 둘 ·
+//   soundset.bin · modifier.bin 을 읽었다 — 7d 조사). 표 만들기(`BuildGameTables`)와 방 차리기(`BuildRoomWorld`)가 빌려 쓴다
+void LoadGameFiles(const std::string& dir, GameFiles& f) {
+    f.dir = dir;
+    f.thingOk = f.thing.Load(dir + "\\thing.bin");
+    f.gamedataOk = f.gamedata.Load(dir + "\\gamedata.bin");
+    f.soundSetsOk = nox::LoadSoundSets(dir + "\\soundset.bin", f.soundSets, &f.soundSetsErr);
+    f.modifier = nox::DecryptFile(dir + "\\modifier.bin", nox::kKeyModifier);
+    std::printf("[게임데이터] %s — thing.bin %s · gamedata.bin %s · soundset.bin %s · modifier.bin %zu바이트 · 파일마다 한 번\n",
+                dir.c_str(), f.thingOk ? "읽음" : "⚠ 못 읽음", f.gamedataOk ? "읽음" : "⚠ 못 읽음",
+                f.soundSetsOk ? "읽음" : "⚠ 못 읽음", f.modifier.size());
+    std::fflush(stdout);
+}
+
+// ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터 표(`Server::GameTables`)를 한 벌 만든다. 옛 월드 차리기 안의 게임 데이터 넣기 29곳과
+//   그 진단 줄을 **글자 그대로** 옮겼다 — 표를 만드는 데만 쓰는 게임 하나(`srv`)에 넣고 그 표를 얼려 내놓는다. 이름(`srv` · `tdb` ·
+//   `wdb`)을 옛 자리와 같게 둬 옮긴 몸통을 바꾸지 않았다. 진단 줄은 방 밖 게임이라 태그가 없다(프로세스 몫 — 서버가 뜰 때 한 번)
+std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& files) {
+    nox::Server srv;
+    const nox::ThingDb& tdb = files.thing;
+    const nox::ThingDb& wdb = files.thing;
+    if (files.thingOk) {
+        // 벽 정의의 넣기 둘(옛 월드 차리기 벽 블록 — 그 블록의 진단 줄은 맵 칸과 같이 찍으므로 방 쪽에 남았다)
+        {
+            std::vector<uint32_t> flags;
+            for (const auto& d : wdb.Walls()) flags.push_back(d.flags);
+            srv.SetWallDefFlags(flags);
+            std::vector<nox::Server::WallDefExtra> ex;
+            for (const auto& d : wdb.Walls()) {
+                nox::Server::WallDefExtra e;
+                e.hitMat = d.hitMat;
+                e.health = d.health;
+                e.breakSound = d.breakSound.empty() ? 0 : nox::SoundByName(d.breakSound.c_str());
+                ex.push_back(e);
+            }
+            srv.SetWallDefExtras(std::move(ex));
+        }
+        // ★ 4-c3 — 주문이 **이름으로** 놓는 오브젝트의 와이어 종류를 넘겨준다
+        //   (정답지도 `getNameId("ToxicCloud")` 처럼 이름으로 찾는다). 못 찾으면 0 이라 안 놓인다
+        for (const char* nm : { "ToxicCloud", "MediumFlame", "Meteor", "MeteorShower", "MeteorExplode",
+                                "SmallFist", "MediumFist", "LargeFist",
+                                "SmallFlameCleanse", "MediumFlameCleanse", "FlameCleanse", "LargeFlameCleanse",
+                                "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse",
+                                "ArachnaphobiaFocus", "SmallSpider", "Pixie" }) {
+            const uint16_t w = tdb.WireByName(nm);
+            srv.SetNamedType(nm, w);
+            srv.Log("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");
+        }
+        // ★ 09-23 nine-defects 4-d1 — 바닥 정의(FLOR)의 재질 분포. 발소리가 이 값으로 갈린다(`object_update.go:164~220`)
+        {
+            std::map<int32_t, int> byMat;
+            for (const auto& f : tdb.Floors()) ++byMat[f.material];
+            srv.Log("[바닥] 정의 %zu개 · 재질별:", tdb.Floors().size());
+            for (const auto& kv : byMat) srv.Log(" 0x%x×%d", static_cast<unsigned>(kv.first), kv.second);
+            srv.Log("\n");
+        }
+        // ★ 4-c3 — 주문이 **날리는** 것(불덩이 셋). 빠르기·깃발·닿음 인자를 전부 thing.bin 에서 읽는다.
+        //   `COLLIDE = SparkExplosionCollide 192` 의 숫자가 터짐 크기를 다 정하므로 **짐작하지 않는다**.
+        //   ★ 묶음 6-g(3b) — **크리처가 쏘는 것**도 같은 자리에서 읽는다.
+        //     `ImpShot` 은 `SPEED = 400` · `COLLIDE = ProjectileCollide 5` 다
+        //     ★ 묶음 9-b — **쏘는 덫이 쏘는 것**도 여기서 읽는다.
+        //       `MercArcherArrow` 는 `SPEED = 800` · `COLLIDE = MonsterArrowCollide 10 10` 이다
+        //     ★ 09-29 — **사람이 쏘는 화살**(활 ArcherArrow · 석궁 ArcherBolt · 화살통 없는 WeakArcherArrow — `shootBowCrossbow2_539D80`)
+        for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "HarpoonBolt",
+                                "MercArcherArrow", "ArcherArrow", "ArcherBolt", "WeakArcherArrow" }) {
+            const uint16_t w = tdb.WireByName(nm);
+            const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
+            int amount = 0;
+            if (t2 && !t2->collideArgs.empty()) amount = std::atoi(t2->collideArgs.c_str());
+            if (t2) srv.SetProjType(nm, w, t2->speed, nox::ParseObjectFlags(t2->flagsRaw),
+                                    static_cast<uint8_t>(amount < 0 ? 0 : (amount > 255 ? 255 : amount)));
+            srv.Log("[날리기 종류] %s = %u · SPEED %d · 닿음 %s %d · 그리기 %s%s\n", nm, static_cast<unsigned>(w),
+                        t2 ? t2->speed : 0, t2 ? t2->collideFn.c_str() : "?", amount,
+                        // ⑫ — 클라는 이 이름으로 그리는 함수를 고른다(`drawFuncs[name]`).
+                        //   비어 있거나 모르는 이름이면 클라가 **아무것도 안 그린다**
+                        (t2 && !t2->drawFn.empty()) ? t2->drawFn.c_str() : "(없음)",
+                        t2 ? "" : " ⚠ 못 찾음");
+        }
+        // ★ 2026-09-18 ⑬ — **화살·쇠뇌살을 전수로 골라 서버에 알린다.**
+        //   이 종류만 갱신에 스프라이트 프레임이 한 바이트 더 붙는다(Server.h `AddArrowType`).
+        //   조건은 정답지 그대로 — `MISSILE`(클래스 0x1) **그리고** `ARROW|BOLT`(서브 0x30).
+        //   ⚠ 이름으로 못 박지 않는다 — 맵마다 다른 화살이 나올 수 있고,
+        //     「이름 여섯 개」로 박아 두었다가 빠뜨린 전례가 이 리포에 이미 있다.
+        {
+            size_t nArrow = 0;
+            std::string names;
+            for (uint16_t w = 1; w < nox::kThingCount; ++w) {
+                const nox::ThingInfo* t3 = tdb.ByWire(w);
+                if (!t3) continue;
+                if (!(nox::ParseObjectClass(t3->classRaw) & 0x1)) continue;          // MISSILE 아님
+                if (!(nox::WeaponClassBitsOf(t3->subclassRaw) & 0x30)) continue;     // ARROW|BOLT 아님
+                srv.AddArrowType(w);
+                ++nArrow;
+                if (nArrow <= 8) { if (!names.empty()) names += " "; names += t3->name; }
+            }
+            srv.Log("[화살 종류] %zu가지 (프레임 바이트가 붙는다)%s%s\n", nArrow,
+                        names.empty() ? "" : " — ", names.c_str());
+        }
+        // ★ 2026-09-15 묶음 10-a — **소리 표**. thing.bin `AUD ` 칸 927개가
+        //   이름표 1,023개에 **100% 맞물린다**(빗나감 0 · 전수 확인).
+        //   ⚠ 이 표가 없으면 **소리가 한 개도 안 나간다**(소리조각 수 0 이 정답지의 첫 문이다)
+        {
+            std::vector<nox::Server::SoundDefIn> sd;
+            size_t miss = 0, withSamples = 0;
+            for (const auto& d : tdb.Sounds()) {
+                const uint16_t id = nox::SoundByName(d.name.c_str());
+                if (id == 0) { ++miss; continue; }
+                nox::Server::SoundDefIn in;
+                in.id = id;
+                in.maxDist = d.maxDist;
+                in.merged = d.merged;
+                in.samples = d.samples;
+                in.flags = d.flags;
+                if (d.samples > 0) ++withSamples;
+                sd.push_back(in);
+            }
+            // ★★ 09-22 — **정품이 보내는데 thing.bin 에 없는 소리**를 손으로 채운다. 지금은 하나다.
+            //   사슬 — 사용자가 「마나석 소리가 안 난다」고 짚었다 → 정답지는 소리 **230**(ManaRecharge)을
+            //   낸다(`GAME4_3.c:6461`) → 그런데 thing.bin AUD **927개에 그 이름이 없다** →
+            //   그러면 조각 0 이라 `PlaySoundAt` 이 버린다 →
+            //   **대조군 서버에 계수기를 붙여 보니 정답지도 똑같이 0 으로 읽는다**
+            //   (`[AUD] 선언 927개 · 230 조각 0 · 237 조각 3`) →
+            //   **그런데 정품 와이어에는 230 이 10번 나간다**(`CAP_server_0906` 의 a6·a7 610건을 풀어 셈).
+            //   ⇒ 대전제상 **④ 정품이 ③ C 대조보다 위**다. 정품을 따른다.
+            //   거리 600 은 지어낸 값이 아니라 **정답지가 모든 소리에 주는 기본값**이다
+            //   (`server/audio_event.go:75` `p.MaxDist = 600`).
+            {
+                bool has230 = false;
+                for (const auto& in : sd) if (in.id == 230) { has230 = true; break; }
+                if (!has230) {
+                    nox::Server::SoundDefIn in;
+                    in.id = 230; in.maxDist = 600; in.merged = 0; in.samples = 1; in.flags = 0;
+                    sd.push_back(in);
+                    srv.Log("[소리·메움] 230(ManaRecharge) — thing.bin 에 없어 손으로 채움"
+                                "(정품 와이어 근거 · 거리 600 은 정답지 기본값)\n");
+                }
+            }
+            srv.SetSoundDefs(sd);
+            srv.Log("[소리] AUD %zu개 · 이름표에 맞물림 %zu · 소리조각 있는 것 %zu%s\n",
+                        tdb.Sounds().size(), sd.size(), withSamples,
+                        miss ? " ⚠ 이름표에 없는 것 있음" : "");
+            // ★ 09-29 B6 — 몬스터가 듣는 소리는 깃발이 0 이 아닌 것뿐이다(`unit_ai.go:290` NewSound) — 0x10 아군 것도 · 0x20 걷기(문턱 89) · 0x40 달리기(문턱 20)
+            {
+                size_t nf = 0, f10 = 0, f20 = 0, f40 = 0;
+                for (const auto& in : sd) {
+                    if (in.flags == 0) continue;
+                    ++nf; if (in.flags & 0x10) ++f10; if (in.flags & 0x20) ++f20; if (in.flags & 0x40) ++f40;
+                    if (std::getenv("NOX_DUMP_SOUND_FLAGS")) srv.Log("  [소리깃발] %u %s 깃발 0x%x 거리 %d\n", (unsigned)in.id, nox::SoundName(in.id), (unsigned)in.flags, in.maxDist);
+                }
+                srv.Log("[소리듣기] 깃발 있는 소리 %zu개 — 0x10 %zu · 0x20 %zu · 0x40 %zu\n", nf, f10, f20, f40);
+            }
+            // ★ 09-22 — **정품이 실제로 보낸 번호** 중 우리 표에 없는 것을 센다.
+            //   `_evidence/CAP_server_0906.txt` 의 `a6`·`a7` 610건을 풀어 얻은 번호들이다.
+            //   우리 표에 없으면 `PlaySoundAt` 이 조용히 버린다 — 「소리가 안 들린다」의 뿌리
+            {
+                const uint16_t seen[] = { 276,131,270,322,879,190,186,301,188,192,300,302,230,41,319,232,231,69 };
+                std::string missing;
+                for (uint16_t q : seen) {
+                    bool ok = false;
+                    for (const auto& in : sd) if (in.id == q && in.samples > 0) { ok = true; break; }
+                    if (!ok) { missing += " "; missing += std::to_string(q); missing += "("; missing += nox::SoundName(q); missing += ")"; }
+                }
+                srv.Log("[소리·정품이쓴것] %zu개 중 우리 표에 **없는 것**:%s\n",
+                            sizeof(seen) / sizeof(seen[0]), missing.empty() ? " (none)" : missing.c_str());
+            }
+            // ★ 09-22 사용자 보고(「소리가 안 들린다」) — **우리가 부르는 번호가 표에 있나**를 찍는다.
+            //   `PlaySoundAt` 은 소리조각이 0 이면 조용히 버리고, `maxDist` 가 0 이면 **거리에서 잘린다**.
+            //   둘은 증상이 같아서(안 들림) 숫자로 갈라야 한다
+            // ★ 09-23 nine-defects 4-b — **능력 소리 170~185**(쓸 때·켜짐·꺼질 때 × 다섯)를 한 줄로. 「조각 0 으로 선언」과
+            //   「표에 아예 없음」(230 같은 경우 — 정품이 따로 보낼 수 있다)을 가른다. `-` = 표에 없음
+            {
+                srv.Log("[소리·능력]");
+                for (uint16_t q = 170; q <= 185; ++q) {
+                    int samples = -1;
+                    for (const auto& in : sd) if (in.id == q) { samples = in.samples; break; }
+                    if (samples < 0) srv.Log(" %u(%s)-", (unsigned)q, nox::SoundName(q));
+                    else srv.Log(" %u(%s)%d", (unsigned)q, nox::SoundName(q), samples);
+                }
+                srv.Log("\n");
+            }
+            // ★ 09-23 nine-defects 4-c2 — 타격 소리 848~872(`<때린 것>Hit<맞는 쪽>`)의 조각 수 — 0 이면 불러도 버려진다
+            {
+                srv.Log("[소리·타격]");
+                size_t zero = 0;
+                for (uint16_t q = 848; q <= 872; ++q) {
+                    int samples = -1;
+                    for (const auto& in : sd) if (in.id == q) { samples = in.samples; break; }
+                    if (samples <= 0) { ++zero; srv.Log(" %u(%s)%s", (unsigned)q, nox::SoundName(q), samples < 0 ? "-" : "0"); }
+                }
+                srv.Log(" · 조각 0 또는 없음 %zu / 25\n", zero);
+            }
+            // ★ 09-23 nine-defects 4-c3b3a — soundset.bin(암호 5)의 몬스터 소리 모음. 때린 이가 몬스터면 그 모음의 「맞히는 소리」
+            //   (MELEE_ATTACK_HITTING_SOUND · +32)에 조각이 있을 때 맞는 쪽 소리를 안 낸다(`GAME3_2.c:7252~7254` — 4-c3b3b 에서 쓴다).
+            //   여기서는 읽히는지·몇 벌인지·부를 수 있는 소환수 열셋의 그 소리와 조각 수를 찍는다
+            {
+                    const std::vector<nox::SoundSet>& sets = files.soundSets;   // ★ 10-12 7e-2 — 서버가 뜰 때 읽은 것
+                    const std::string& err = files.soundSetsErr;
+                    const bool ok = files.soundSetsOk;
+                auto samplesOf = [&](const std::string& nm) {
+                    const uint16_t id = nm.empty() ? 0 : nox::SoundByName(nm.c_str());
+                    if (id == 0) return -1;
+                    for (const auto& in : sd) if (in.id == id) return in.samples;
+                    return -1;
+                };
+                size_t written = 0, withSamples2 = 0, nameless = 0;
+                for (const auto& s : sets) {
+                    const std::string& h = s.sound[nox::kSoundSetMeleeHitting];
+                    if (h.empty() || h == "NULL") continue;
+                    ++written;
+                    if (nox::SoundByName(h.c_str()) == 0) ++nameless;
+                    if (samplesOf(h) > 0) ++withSamples2;
+                }
+                srv.Log("[소리모음] %s · %zu벌 · 맞히는 소리 적힌 것 %zu(조각 있음 %zu · 이름표에 없음 %zu)",
+                            ok ? "읽음" : ("⚠ 못 읽음 " + err).c_str(), sets.size(), written, withSamples2, nameless);
+                srv.Log(" · 소환수:");
+                for (const auto& ms : nox::kMonsters) {
+                    const nox::SoundSet* s = nox::FindSoundSet(sets, ms.name);
+                    if (!s) { srv.Log(" %s=모음없음", ms.name); continue; }
+                    const std::string& h = s->sound[nox::kSoundSetMeleeHitting];
+                    srv.Log(" %s=%s(%d)", ms.name, h.empty() ? "(안 적힘)" : h.c_str(), samplesOf(h));
+                }
+                // ★ 4-c3b3b — 종류 번호별 「그 이름의 모음에 맞히는 소리가 있고 조각 1 이상」 표 → 서버(몬스터가 때릴 때 맞는 쪽 소리를 가른다)
+                std::vector<uint8_t> owns(tdb.Count() + 1, 0);
+                size_t nOwn = 0;
+                for (size_t w = 1; w <= tdb.Count(); ++w) {
+                    const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                    const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
+                    if (s && samplesOf(s->sound[nox::kSoundSetMeleeHitting]) > 0) { owns[w] = 1; ++nOwn; }
+                }
+                srv.Log(" · 종류 %zu개가 맞히는 소리를 가짐\n", nOwn);
+                srv.SetMonsterHitSounds(std::move(owns));
+                // ★ 09-24 H1 — 같은 칸의 **번호** 표(몬스터가 근접으로 때린 뒤 그 소리를 낸다 · `GAME4_3.c:2087~2094`)
+                std::vector<uint16_t> hitIds(tdb.Count() + 1, 0);
+                size_t nId = 0;
+                for (size_t w = 1; w <= tdb.Count(); ++w) {
+                    const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                    const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
+                    const std::string& h = s ? s->sound[nox::kSoundSetMeleeHitting] : std::string();
+                    if (h.empty() || h == "NULL") continue;
+                    hitIds[w] = nox::SoundByName(h.c_str());
+                    if (hitIds[w] != 0) ++nId;
+                }
+                srv.Log("[소리모음] 근접 맞히는 소리 번호 있는 종류 %zu개 · Bat=%u AlbinoSpider=%u SmallSpider=%u\n", nId,
+                            (unsigned)hitIds[tdb.WireByName("Bat")], (unsigned)hitIds[tdb.WireByName("AlbinoSpider")],
+                            (unsigned)hitIds[tdb.WireByName("SmallSpider")]);
+                srv.SetMonsterMeleeHitSoundIds(std::move(hitIds));
+                // ★ 09-26 M4a — 같은 꼴로 칸 넷 더: 근접 시작 5 · 쏘기 시작 9 · 쏘기 10 · 죽음 14(`kSoundSetFieldNames` 순서)
+                // ★ 09-29 B5 — **칸 전부**(맞히는 소리 7 은 위에서). ✖ 전에는 5·9·10·14·16 만 실어서 B2~B4a 가 부르는 칸
+                //   (도발 1 · 놀 때 3 · 교전 4 · 빗나감 8 · 도망 11 · 후퇴 12 · 다침 15)과 걸음 17 이 **실서버에서 한 번도 안 났다**
+                //   (시험은 「났음+번호 없음」을 합쳐 세어 못 잡았다 — 시험 표에는 번호를 안 싣기 때문)
+                srv.Log("[소리모음] 칸별 번호 있는 종류 —");
+                for (int field = 0; field < nox::kSoundSetFields; ++field) {
+                    if (field == nox::kSoundSetMeleeHitting) continue;
+                    std::vector<uint16_t> ids(tdb.Count() + 1, 0);
+                    size_t n = 0;
+                    for (size_t w = 1; w <= tdb.Count(); ++w) {
+                        const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                        const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
+                        const std::string& h = s ? s->sound[field] : std::string();
+                        if (h.empty() || h == "NULL") continue;
+                        ids[w] = nox::SoundByName(h.c_str());
+                        if (ids[w] != 0) ++n;
+                    }
+                    srv.Log(" %s %zu", nox::kSoundSetFieldNames[field], n);
+                    srv.SetMonsterSoundIds(field, std::move(ids));
+                }
+                srv.Log("\n");
+            }
+            // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
+            for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,
+                                nox::SoundByName("HumanMaleExertionHeavy"), nox::SoundByName("HumanFemaleExertionHeavy"),
+                                (uint16_t)879, (uint16_t)880, (uint16_t)881, (uint16_t)882, (uint16_t)883, (uint16_t)884 }) {
+                bool found = false;
+                for (const auto& in : sd)
+                    if (in.id == q) {
+                        srv.Log("[소리·쓰는것] %u(%s) — 조각 %d · 들리는거리 %d%s\n",
+                                    (unsigned)q, nox::SoundName(q), in.samples, in.maxDist,
+                                    (in.samples <= 0 || in.maxDist <= 0) ? "  ⚠ 이래서 안 들린다" : "");
+                        found = true; break;
+                    }
+                if (!found) {
+                    srv.Log("[소리·쓰는것] %u(%s) — ⚠ **표에 아예 없다**\n", (unsigned)q, nox::SoundName(q));
+                    // 이름이 다를 뿐일 수 있다 — 비슷한 이름을 같이 찍어 고를 수 있게 한다
+                    srv.Log("[소리·비슷한이름]");
+                    for (const auto& d : tdb.Sounds())
+                        if (d.name.find("Mana") != std::string::npos ||
+                            d.name.find("Recharge") != std::string::npos ||
+                            d.name.find("Obelisk") != std::string::npos)
+                            srv.Log(" %s(%u·조각%d)", d.name.c_str(),
+                                        (unsigned)nox::SoundByName(d.name.c_str()), d.samples);
+                    srv.Log("\n");
+                }
+            }
+        }
+        // ★ 09-27 B1 — 직업 기본 장비의 가방 항목 틀. 맵 물건(위)과 같은 칸 규칙으로 thing.bin 에서 채운다
+        //   (수식 갈래 · 장비 비트 · 무게). 서버는 접속 때 이 틀로 기본 장비를 가방에 싣는다(`Server::GiveDefaultGear`)
+        {
+            srv.Log("[기본장비] 가방 틀 —");
+            for (uint16_t gw : { nox::kItemStreetShirt, nox::kItemStreetPants, nox::kItemStreetSneakers,
+                                 nox::kItemWizardRobe, nox::kItemWoodenShield, nox::kItemLongsword }) {
+                const char* nm = nox::LoadoutItemName(gw);
+                const nox::ThingInfo* ti = tdb.ByWire(gw);
+                if (!nm || !ti || ti->name != nm) {   // 와이어 번호(종류표)와 thing.bin 이름이 어긋나면 싣지 않는다
+                    srv.Log(" %u(✗ 이름 다름)", (unsigned)gw);
+                    continue;
+                }
+                nox::Session::Carried c;
+                bool isW = false;
+                c.equipBit = nox::EquipBitFor(nm, &isW);
+                c.isWeapon = isW;
+                c.modifiable =
+                    ti->classRaw.find("WEAPON") != std::string::npos ||
+                    ti->classRaw.find("ARMOR")  != std::string::npos ||
+                    ti->classRaw.find("WAND")   != std::string::npos ||
+                    ti->classRaw.find("FLAG")   != std::string::npos;
+                c.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
+                c.weaponClass = ti->classRaw.find("WEAPON") != std::string::npos ||   // ★ 09-27 B3
+                                ti->classRaw.find("WAND")   != std::string::npos;
+                c.wandClass = ti->classRaw.find("WAND") != std::string::npos;          // ★ 09-27 B5
+                if (c.weaponClass) c.subclass = nox::WeaponClassBitsOf(ti->subclassRaw);
+                else if (ti->classRaw.find("ARMOR") != std::string::npos) c.subclass = nox::ParseArmorClass(ti->subclassRaw);   // ★ 09-28
+                c.dropFn = nox::DropFnOf(ti->dropFn);   // ★ 09-28 — 버리기 함수(로브·롱소드·나무방패는 갑옷무기 → 25초) · RESPAWN 은 기본 장비라 지운 채(`GAME3_3.c:7891`)
+                srv.Log(" %s(무게 %d%s · 비트 %#x%s · 부위 %#x · 버리기 %s)", nm, (int)c.weight, ti->hasWeight ? "" : "·WEIGHT없음",
+                            (unsigned)c.equipBit, c.isWeapon ? (c.weaponClass ? " · 무기" : " · 무기(클래스 아님)") : "",
+                            (unsigned)c.subclass, ti->dropFn.empty() ? "(없음)" : ti->dropFn.c_str());
+                srv.SetItemTemplate(gw, c);
+            }
+            srv.Log("\n");
+        }
+        // ★ 09-27 B3 — modifier.bin(암호 13) `WEAPON_DEFINITIONS` → 무기 들기의 직업(CLASSUSE)·힘(REQUIRED_STRENGTH) 관문.
+        //   복호본은 글자다 — `<이름>` 줄 · `KEY = VALUE;` 줄들 · `END` 줄(실측 — `nox_datadump modifier.bin --out`).
+        //   정답지 `server/modifiers.go:273~331` 이 같은 두 칸을 읽는다(CLASSUSE 는 `+` 로 이은 Warrior·Wizard·Conjurer → 비트 0·1·2 `:314`).
+        //   이름 → 종류 번호는 정답지처럼 이름으로(`ClientTypeByID` `:122`) · `ARMOR_DEFINITIONS` 부터는 갑옷이라 여기서 끊는다
+        {
+                const std::vector<uint8_t>& mb = files.modifier;   // ★ 10-12 7e-2 — 서버가 뜰 때 읽은 것
+            const std::string txt(mb.begin(), mb.end());
+            const size_t armorAt = txt.find("ARMOR_DEFINITIONS");
+            const std::string wsec = txt.substr(0, armorAt == std::string::npos ? txt.size() : armorAt);
+            auto trim = [](std::string v) {
+                while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r' || v.back() == ';')) v.pop_back();
+                size_t i = 0;
+                while (i < v.size() && (v[i] == ' ' || v[i] == '\t')) ++i;
+                return v.substr(i);
+            };
+            std::string cur;
+            uint8_t classes = 0;
+            int reqStr = 0;
+            int dmgMin = 0;          // ★ 09-29 — DAMAGE_MIN(+72) · DAMAGE_COEFFICIENT(+64) — 화살 피해 식(`calcBoltDamage_4EF1E0`)이 쓴다
+            double dmgCoeff = 0.0;   //   `0.0f;` 꼴도 있다(ArcherBolt) — atof 가 0 으로 읽는다
+            size_t nDef = 0, nNoWire = 0, nBadClass = 0;
+            size_t pos = 0;
+            while (pos < wsec.size()) {
+                size_t e = wsec.find('\n', pos);
+                if (e == std::string::npos) e = wsec.size();
+                const std::string line = trim(wsec.substr(pos, e - pos));
+                pos = e + 1;
+                if (line.empty() || line == "WEAPON_DEFINITIONS") continue;
+                if (line == "END") {
+                    if (!cur.empty()) {
+                        const uint16_t wire = tdb.WireByName(cur);
+                        if (wire == 0) ++nNoWire;
+                        else {
+                            srv.SetWeaponDef(wire, classes, static_cast<uint16_t>(reqStr < 0 ? 0 : reqStr),
+                                             static_cast<uint16_t>(dmgMin < 0 ? 0 : dmgMin), static_cast<float>(dmgCoeff));
+                            ++nDef;
+                        }
+                        if (cur == "Longsword" || cur == "GreatSword" || cur == "StaffWooden" || cur == "ForceWand" || cur == "Bow" ||
+                            cur == "CrossBow" || cur == "Quiver" || cur == "ArcherArrow" || cur == "ArcherBolt" || cur == "WeakArcherArrow")
+                            srv.Log("[무기정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 피해 최소 %d · 계수 %.3f\n",
+                                        cur.c_str(), (unsigned)wire, (unsigned)classes, reqStr, dmgMin, dmgCoeff);
+                    }
+                    cur.clear();
+                    continue;
+                }
+                const size_t eq = line.find('=');
+                if (eq == std::string::npos) { cur = line; classes = 0; reqStr = 0; dmgMin = 0; dmgCoeff = 0.0; continue; }   // 새 정의의 이름 줄
+                const std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
+                if (key == "DAMAGE_MIN") dmgMin = std::atoi(val.c_str());
+                else if (key == "DAMAGE_COEFFICIENT") dmgCoeff = std::atof(val.c_str());
+                if (key == "CLASSUSE") {
+                    size_t s0 = 0;
+                    while (s0 <= val.size()) {
+                        size_t s1 = val.find('+', s0);
+                        if (s1 == std::string::npos) s1 = val.size();
+                        const std::string tok = trim(val.substr(s0, s1 - s0));
+                        if (tok == "WARRIOR") classes |= 1;
+                        else if (tok == "WIZARD") classes |= 2;
+                        else if (tok == "CONJURER") classes |= 4;
+                        else ++nBadClass;   // 정답지는 모르는 이름이면 오류(`modParseBitList`)
+                        s0 = s1 + 1;
+                    }
+                } else if (key == "REQUIRED_STRENGTH") {
+                    reqStr = std::atoi(val.c_str());
+                }
+            }
+            srv.Log("[무기정의] modifier.bin %zu바이트 · 무기 %zu개 실음 · 종류표에 없음 %zu · 모르는 직업 이름 %zu\n",
+                        mb.size(), nDef, nNoWire, nBadClass);
+            // ★ 09-29 — `ARMOR_DEFINITIONS` → 갑옷 입기의 직업·힘 관문과 방어값(ARMOR_VALUE → `Modifier` +64 · `parseWeaponOrArmorDef412D40` `modifiers.go:325~329`).
+            //   절은 다음 절 이름(ENCHANTMENT·EFFECTIVENESS·MATERIAL) 줄에서 끝난다
+            if (armorAt != std::string::npos) {
+                std::string asec = txt.substr(armorAt);
+                for (const char* nextSec : { "\nENCHANTMENT", "\nEFFECTIVENESS", "\nMATERIAL" }) {
+                    const size_t cut = asec.find(nextSec);
+                    if (cut != std::string::npos) asec = asec.substr(0, cut);
+                }
+                std::string acur;
+                uint8_t aclasses = 0;
+                int areq = 0;
+                double aval = 0.0;
+                size_t nArm = 0, nArmNoWire = 0;
+                size_t apos = 0;
+                while (apos < asec.size()) {
+                    size_t e = asec.find('\n', apos);
+                    if (e == std::string::npos) e = asec.size();
+                    const std::string line = trim(asec.substr(apos, e - apos));
+                    apos = e + 1;
+                    if (line.empty() || line == "ARMOR_DEFINITIONS") continue;
+                    if (line == "END") {
+                        if (!acur.empty()) {
+                            const uint16_t wire = tdb.WireByName(acur);
+                            if (wire == 0) ++nArmNoWire;
+                            else { srv.SetArmorDef(wire, aclasses, static_cast<uint16_t>(areq < 0 ? 0 : areq), static_cast<float>(aval)); ++nArm; }
+                            if (acur == "StreetShirt" || acur == "StreetPants" || acur == "StreetSneakers" || acur == "WizardRobe" || acur == "WoodenShield" || acur == "SteelShield" || acur == "LeatherHelm")
+                                srv.Log("[갑옷정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 방어 %.3f\n", acur.c_str(), (unsigned)wire, (unsigned)aclasses, areq, aval);
+                        }
+                        acur.clear();
+                        continue;
+                    }
+                    const size_t eq = line.find('=');
+                    if (eq == std::string::npos) { acur = line; aclasses = 0; areq = 0; aval = 0.0; continue; }
+                    const std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
+                    if (key == "CLASSUSE") {
+                        size_t s0 = 0;
+                        while (s0 <= val.size()) {
+                            size_t s1 = val.find('+', s0);
+                            if (s1 == std::string::npos) s1 = val.size();
+                            const std::string tok = trim(val.substr(s0, s1 - s0));
+                            if (tok == "WARRIOR") aclasses |= 1;
+                            else if (tok == "WIZARD") aclasses |= 2;
+                            else if (tok == "CONJURER") aclasses |= 4;
+                            else ++nBadClass;
+                            s0 = s1 + 1;
+                        }
+                    } else if (key == "REQUIRED_STRENGTH") {
+                        areq = std::atoi(val.c_str());
+                    } else if (key == "ARMOR_VALUE") {
+                        aval = std::atof(val.c_str());
+                    }
+                }
+                srv.Log("[갑옷정의] 갑옷 %zu개 실음 · 종류표에 없음 %zu\n", nArm, nArmNoWire);
+            }
+        }
+        // ★ 09-28 B4b — 물건 몸 반지름(원 모양만 · +176). 죽을 때 떨굴 자리 간격 = 가장 큰 반지름 × 2 + 6(`GAME3_3.c:6730~6748`)
+        {
+            size_t nR = 0;
+            for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                const nox::ThingInfo* t2 = tdb.ByWire(w);
+                if (!t2 || !t2->hasWeight || t2->shapeKind != 2) continue;
+                srv.SetItemRadius(w, t2->radius);
+                ++nR;
+            }
+            const nox::ThingInfo* rb = tdb.ByWire(nox::kItemWizardRobe);
+            srv.Log("[물건몸] 원 모양 반지름 %zu종 · 로브 %s %.0f\n", nR,
+                        rb ? (rb->shapeKind == 2 ? "원" : "원아님") : "없음", rb ? rb->radius : 0.0f);
+        }
+        // 소환수 몸 — 몬스터 종류 전부(원만)
+        for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+            const nox::ThingInfo* t2 = tdb.ByWire(w);
+            // ★ 2026-09-13 묶음 3-e — COLLIDE 없는 몬스터·상자 몸도 싣는다. 공격 고르기(sub_5180B0)와 피해 함수는
+            //   충돌 함수와 무관하다. 걷기 충돌은 hasCollide 로 따로 거른다(`GAME5.c:1930` 둘 다 있어야 부딪힘).
+            // ★ 09-22 — **문 종류도 싣는다.** 문 여는 거리가 「사람 반지름 + 문 반지름」이라
+            //   그 몸이 필요하다. 전에는 몬스터만 실어 조회가 조용히 헛돌았다(기본값으로 떨어짐)
+            if (!t2) continue;
+            const bool isDoorType = (nox::ParseObjectClass(t2->classRaw) & 0x80) != 0;
+            if (!t2->isMonster && !isDoorType) continue;
+            nox::Server::PhysBody b;
+            b.shape = static_cast<uint8_t>((t2->shapeKind == 2 || t2->shapeKind == 3) ? t2->shapeKind : 0);
+            b.r = t2->radius;
+            if (b.shape == 3) nox::Server::CalcBox(b, t2->boxW, t2->boxH);
+            b.flags = nox::ParseObjectFlags(t2->flagsRaw);
+            b.cls = nox::ParseObjectClass(t2->classRaw);
+            b.mass = (t2->mass > 0.0f) ? t2->mass : 1.0f;   // 정답지 기본 1(`server/object_type.go:197`)
+            b.subclass = nox::Server::MonsterClassBitsOf(t2->subclassRaw);
+            b.damageFn = nox::Server::DamageFnOf(t2->damageFn);
+            b.hasCollide = t2->hasCollide;
+            srv.SetTypeBody(w, b);
+        }
+        // ★ 3-b — 날아다니는 몬스터(FLAGS AIRBORNE 0x4000) — 지진이 빼는 종류다. 이름 앞 몇 개를 같이 찍는다
+        {
+            size_t nFly = 0;
+            std::string names;
+            for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                const nox::ThingInfo* t2 = tdb.ByWire(w);
+                if (!t2 || !t2->isMonster || !(nox::ParseObjectFlags(t2->flagsRaw) & 0x4000)) continue;
+                if (nFly < 12) names += " " + t2->name;
+                ++nFly;
+            }
+            srv.Log("[나는몬스터] AIRBORNE 몬스터 %zu종 —%s%s\n", nFly, names.c_str(), nFly > 12 ? " …" : "");
+        }
+        // 충돌 함수 · 무기 그림 · Magic(옛 「TRY_COLLIDE 가 찾을 것」 블록의 게임 데이터 몫 — 맵 오브젝트 목록 · `[충돌 함수]` 줄은 방 쪽)
+        {
+            auto firstWord = [](const std::string& raw) {
+                size_t b = raw.find_first_not_of(" \t");
+                if (b == std::string::npos) return std::string();
+                size_t e = raw.find_first_of(" \t", b);
+                return raw.substr(b, e == std::string::npos ? std::string::npos : e - b);
+            };
+            for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                const nox::ThingInfo* t2 = tdb.ByWire(w);
+                if (!t2 || !t2->hasCollide) continue;
+                srv.SetCollideFn(w, firstWord(t2->collideRaw));
+            }
+            for (const auto& wp : nox::kWeapons) srv.SetWeaponWire(wp.classBits, tdb.WireByName(wp.name));
+            // ★ 4-a2 — 겨눈 주문이 날리는 "Magic"(SPEED · MASS)
+            if (const uint16_t mw = tdb.WireByName("Magic")) {
+                const nox::ThingInfo* mt = tdb.ByWire(mw);
+                if (mt) {
+                    srv.SetMagicType(mw, mt->hasSpeed ? mt->speed : 0, mt->mass, nox::ParseObjectFlags(mt->flagsRaw));
+                    srv.Log("[날리기] Magic 종류 %u · SPEED %d · MASS %.1f\n", mw, mt->speed, mt->mass);
+                }
+            }
+        }
+        // ★ 2026-09-13 묶음 3-a — 사람 애니 칸 수(PlayerDraw STAT). 맨손 공격이 끝나는 틱이 이 값이다.
+        for (int i = 0; i < nox::kPlayerAnimTypeCount; ++i)
+            srv.SetPlayerAnimFrames(i, tdb.PlayerAnim(i).frames, tdb.PlayerAnim(i).hold);
+        // ★ 09-29 B5 — 몬스터 애니 표(MonsterDraw STAT) — 걸음 소리가 애니 칸을 본다(`monsterMoveAudio_534030`)
+        {
+            for (size_t w = 1; w <= tdb.Count(); ++w) {
+                const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                if (!t || !t->hasMonsterDraw) continue;
+                for (int i = 0; i < 16; ++i)
+                    srv.SetMonsterAnim(static_cast<uint16_t>(w), i, t->monsterAnims[i].frames, t->monsterAnims[i].hold, t->monsterAnims[i].loop);
+            }
+            // ★ 09-29 B6 — 몬스터 아종 비트(SUBCLASS — libs `object/subclass_monster.go` 차례 · 0x200 IMMUNE_POISON · 0x400 IMMUNE_FIRE)
+            //   · 위험한 종류(조건 69 — CLASS FIRE · 독구름 두 이름 · CLASS DANGEROUS — `unitIsDangerous_547120`)
+            {
+                static const char* const kMonSub[] = {
+                    "SMALL_MONSTER", "MEDIUM_MONSTER", "LARGE_MONSTER", "SHOPKEEPER", "NPC", "FEMALE_NPC",
+                    "UNDEAD", "MONITOR", "MIGRATE", "IMMUNE_POISON", "IMMUNE_FIRE", "IMMUNE_ELECTRICITY",
+                    "IMMUNE_FEAR", "BOMBER", "NO_TARGET", "NO_SPELL_TARGET", "HAS_SOUL", "WARCRY_STUN",
+                    "LOOK_AROUND", "WOUNDED_NPC" };
+                auto hasTok = [](const std::string& raw, const char* tok) {
+                    size_t a = 0;
+                    while (a <= raw.size()) {
+                        size_t e = raw.find('+', a);
+                        if (e == std::string::npos) e = raw.size();
+                        std::string s = raw.substr(a, e - a);
+                        while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+                        while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+                        if (s == tok) return true;
+                        if (e == raw.size()) break;
+                        a = e + 1;
+                    }
+                    return false;
+                };
+                size_t nSub = 0, nFireImm = 0, dn[4] = {};
+                std::string fireImm;
+                for (size_t w = 1; w <= tdb.Count(); ++w) {
+                    const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
+                    if (!t) continue;
+                    if (t->isMonster) {
+                        uint32_t bits = 0;
+                        for (size_t i = 0; i < sizeof(kMonSub) / sizeof(kMonSub[0]); ++i) if (hasTok(t->subclassRaw, kMonSub[i])) bits |= 1u << i;
+                        if (bits) { srv.SetMonsterSubclass(static_cast<uint16_t>(w), bits); ++nSub; }
+                        if (bits & 0x400) { ++nFireImm; if (fireImm.size() < 80) { fireImm += ' '; fireImm += t->name; } }
+                    }
+                    uint8_t d = 0;
+                    if (hasTok(t->classRaw, "FIRE")) d = 1;
+                    else if (t->name == "ToxicCloud" || t->name == "SmallToxicCloud") d = 2;
+                    else if (hasTok(t->classRaw, "DANGEROUS")) d = 3;
+                    if (d) { srv.SetDangerType(static_cast<uint16_t>(w), d); ++dn[d]; }
+                }
+                srv.Log("[몬스터아종] 아종 비트 있는 몬스터 %zu · 불에 안 탐 %zu(%s) · 위험한 종류 불 %zu · 독구름 %zu · DANGEROUS %zu\n",
+                            nSub, nFireImm, fireImm.c_str(), dn[1], dn[2], dn[3]);
+            }
+            const nox::ThingInfo* lg = tdb.ByWire(tdb.WireByName("GiantLeech"));
+            srv.Log("[몬스터애니] MonsterDraw 종류 %zu개 · GiantLeech 걷기(12) %d칸/붙듦 %d/되풀이 %d · 근접(1) %d칸/붙듦 %d\n",
+                        srv.MonsterAnimTypes(),
+                        lg ? lg->monsterAnims[12].frames : -1, lg ? lg->monsterAnims[12].hold : -1, lg ? (int)lg->monsterAnims[12].loop : -1,
+                        lg ? lg->monsterAnims[1].frames : -1, lg ? lg->monsterAnims[1].hold : -1);
+            // ★ 09-29 B7 — 비홀더 시전 애니(7 CAST_SPELL) — 시전은 이 애니가 쏘기 칸(monster.bin +216 = 4)에 닿을 때(`mobActionCast_5413B0`)
+            const nox::ThingInfo* bh = tdb.ByWire(tdb.WireByName("Beholder"));
+            srv.Log("[몬스터애니] Beholder 시전(7) %d칸/붙듦 %d/되풀이 %d · 놀기(8) %d칸\n",
+                        bh ? bh->monsterAnims[7].frames : -1, bh ? bh->monsterAnims[7].hold : -1, bh ? (int)bh->monsterAnims[7].loop : -1,
+                        bh ? bh->monsterAnims[8].frames : -1);
+            // ★ 09-30 — 열셋의 근접(1)·쏘기(3)·죽어가기(9) 애니 — 근접은 때리는 칸(monster.bin +108)·쏘기는 쏘는 칸(+216)에서, 둘 다 애니가 끝나면 빠진다.
+            //   표 없음(MonsterDraw 없음)이면 근접·쏘기가 안 빠지고, 칸이 칸 수 밖이면 안 맞는다 — 그 수를 같이 센다
+            {
+                int noDraw = 0, meleeOut = 0, shotOut = 0, loopAtk = 0;   // 되풀이 애니면 끝(+483)이 안 와 근접·쏘기가 안 빠진다
+                for (const auto& ms : nox::kMonsters) {
+                    const nox::ThingInfo* t = tdb.ByWire(ms.wireType);
+                    if (!t || !t->hasMonsterDraw) { ++noDraw; srv.Log("[몬스터칸] %s 표 없음\n", ms.name); continue; }
+                    const int hitF = nox::MonsterMeleeFrameOf(ms.wireType), shotF = nox::MonsterMissileFrameOf(ms.wireType);
+                    const bool melee = nox::MeleeStrikeOf(ms.wireType).fn != nox::StrikeFn::None && ms.meleeRange > 0.0;
+                    const bool shoot = ms.missileName != nullptr;
+                    if (melee && hitF >= t->monsterAnims[1].frames) ++meleeOut;
+                    if (shoot && shotF >= t->monsterAnims[3].frames) ++shotOut;
+                    if ((melee && t->monsterAnims[1].loop) || (shoot && t->monsterAnims[3].loop)) ++loopAtk;
+                    srv.Log("[몬스터칸] %-17s 근접(1) %2d칸/붙듦 %d/되풀이 %d%s · 쏘기(3) %2d칸/붙듦 %d/되풀이 %d%s · 죽어가기(9) %2d칸/붙듦 %d/되풀이 %d\n",
+                                ms.name, t->monsterAnims[1].frames, t->monsterAnims[1].hold, (int)t->monsterAnims[1].loop,
+                                melee ? (" 때림칸 " + std::to_string(hitF)).c_str() : "",
+                                t->monsterAnims[3].frames, t->monsterAnims[3].hold, (int)t->monsterAnims[3].loop,
+                                shoot ? (" 쏨칸 " + std::to_string(shotF)).c_str() : "",
+                                t->monsterAnims[9].frames, t->monsterAnims[9].hold, (int)t->monsterAnims[9].loop);
+                }
+                srv.Log("[몬스터칸] 열셋 중 표 없음 %d · 때림칸이 칸 수 밖 %d · 쏨칸이 칸 수 밖 %d · 공격 애니가 되풀이 %d\n", noDraw, meleeOut, shotOut, loopAtk);
+            }
+        }
+        // ★ 09-23 2-a1 — 함성(46)·광전사(45) 애니 길이도 찍는다. 함성 애니가 끝나면 켜짐 값이 내려가 광전사·작살을 더는 안 막으므로
+        //   「함성 지속 120 중 얼마 동안 막나」가 이 값으로 정해진다(플랜 v2 에서 미확인이던 것)
+        //   ★ 3-a — 점프(3) 애니 길이 = 떠 있는 틱 수(칸 × (붙듦+1))
+        srv.Log("[애니] 사람 STAT %d개 — 주먹 %d칸/붙듦 %d · 훅 %d칸/붙듦 %d · 함성(46) %d칸/붙듦 %d · 광전사(45) %d칸/붙듦 %d · 점프(3) %d칸/붙듦 %d\n",
+                    tdb.PlayerAnimCount(),
+                    tdb.PlayerAnim(23).frames, tdb.PlayerAnim(23).hold,
+                    tdb.PlayerAnim(25).frames, tdb.PlayerAnim(25).hold,
+                    tdb.PlayerAnim(46).frames, tdb.PlayerAnim(46).hold,
+                    tdb.PlayerAnim(45).frames, tdb.PlayerAnim(45).hold,
+                    tdb.PlayerAnim(3).frames, tdb.PlayerAnim(3).hold);
+        // ★ 09-23 nine-defects 4-c1 — 재질(MATERIAL). 타격 소리가 「맞는 쪽 재질 × 때린 것 재질」로 갈린다(`server/sound.go:31~161`).
+        //   재질별 종류 수 + 우리 무기 표 여덟의 재질 + 갑옷(ARMOR) 재질 분포를 찍는다 — 읽혔다는 근거다
+        {
+            static const char* const kMat[15] = { "FLESH", "CLOTH", "ANIMAL_HIDE", "WOOD", "METAL", "STONE", "EARTH", "LIQUID",
+                                                  "GLASS", "PAPER", "SNOW", "MUD", "MAGIC", "DIAMOND", "NONE" };
+            size_t perBit[15] = {}, declared = 0, armorPerBit[15] = {}, armors = 0, unknown = 0, nullDecl = 0;
+            std::string unknownRaw;
+            for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                const nox::ThingInfo* t2 = tdb.ByWire(w);
+                if (!t2) continue;
+                if (!t2->materialRaw.empty()) ++declared;
+                const uint32_t m = nox::ParseMaterial(t2->materialRaw);
+                // 선언했는데 이름을 하나도 못 알아본 것 — 조용히 0 이 되면 「재질 없음」과 안 갈린다.
+                //   `NULL` 은 정답지가 **정상 값 0** 으로 받는다(libs `enum/enum.go:66`) — 따로 센다
+                if (!t2->materialRaw.empty() && m == 0) {
+                    if (t2->materialRaw == "NULL") ++nullDecl;
+                    else if (++unknown <= 3) unknownRaw += " " + t2->materialRaw;
+                }
+                const bool armor = (nox::ParseObjectClass(t2->classRaw) & 0x2000000) != 0;
+                if (armor) ++armors;
+                for (int b = 0; b < 15; ++b) if (m & (1u << b)) { ++perBit[b]; if (armor) ++armorPerBit[b]; }
+            }
+            srv.Log("[재질] MATERIAL 선언 %zu종 / %zu · NULL(재질 0) %zu · 못 읽은 이름 %zu%s —", declared, tdb.Count(), nullDecl,
+                        unknown, unknownRaw.c_str());
+            for (int b = 0; b < 15; ++b) if (perBit[b]) srv.Log(" %s %zu", kMat[b], perBit[b]);
+            srv.Log(" · 갑옷 %zu종:", armors);
+            for (int b = 0; b < 15; ++b) if (armorPerBit[b]) srv.Log(" %s %zu", kMat[b], armorPerBit[b]);
+            srv.Log(" · 무기:");
+            for (const auto& wp : nox::kWeapons) {
+                const nox::ThingInfo* t2 = tdb.ByWire(tdb.WireByName(wp.name));
+                srv.Log(" %s=%s", wp.name, t2 ? (t2->materialRaw.empty() ? "(없음→NONE)" : t2->materialRaw.c_str()) : "?");
+            }
+            const nox::ThingInfo* np = tdb.ByWire(tdb.WireByName("NewPlayer"));
+            srv.Log(" · NewPlayer=%s\n", np ? (np->materialRaw.empty() ? "(없음→NONE)" : np->materialRaw.c_str()) : "?");
+            // ★ 4-c2 — 타격 소리 표: 와이어 번호별 재질 · 가슴갑옷(ARMOR + BREASTPLATE)인가 · 사람 몸(NewPlayer) 번호
+            std::vector<uint32_t> matByWire(static_cast<size_t>(tdb.Count()) + 1, 0u);
+            std::vector<uint8_t> breastByWire(static_cast<size_t>(tdb.Count()) + 1, 0);
+            size_t nBreast = 0;
+            for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+                const nox::ThingInfo* t2 = tdb.ByWire(w);
+                if (!t2) continue;
+                matByWire[w] = nox::ParseMaterial(t2->materialRaw);
+                if ((nox::ParseObjectClass(t2->classRaw) & 0x2000000) && (nox::ParseArmorClass(t2->subclassRaw) & 0x4)) {
+                    breastByWire[w] = 1;
+                    ++nBreast;
+                }
+            }
+            const uint16_t npWire = tdb.WireByName("NewPlayer");
+            // 직업 기본 장비 여섯이 무엇으로 읽히나 — 와이어 번호가 thing.bin 색인과 같다는 것도 같이 본다(이름 → 번호 대조)
+            srv.Log("[타격소리표] 가슴갑옷 %zu종 · NewPlayer 번호 %u · 기본 장비:", nBreast, (unsigned)npWire);
+            const std::pair<const char*, uint16_t> kLoad[] = {
+                { "StreetShirt", nox::kItemStreetShirt }, { "StreetPants", nox::kItemStreetPants },
+                { "StreetSneakers", nox::kItemStreetSneakers }, { "WizardRobe", nox::kItemWizardRobe },
+                { "WoodenShield", nox::kItemWoodenShield }, { "Longsword", nox::kItemLongsword } };
+            for (const auto& ld : kLoad) {
+                const uint16_t w = tdb.WireByName(ld.first);
+                srv.Log(" %s(번호 %u%s·재질 0x%x%s)", ld.first, (unsigned)w, w == ld.second ? "" : " ⚠표와다름",
+                            w < matByWire.size() ? matByWire[w] : 0u, (w < breastByWire.size() && breastByWire[w]) ? "·가슴갑옷" : "");
+            }
+            // ★ 4-c3a — 부를 수 있는 소환수 열셋의 재질(맞으면 기본 타격 소리 `532E20` 가 이 재질로 간다 · 나무·돌·흙이면 부서지는 소리)
+            srv.Log(" · 소환수:");
+            for (const auto& ms : nox::kMonsters) {
+                const uint16_t w = tdb.WireByName(ms.name);
+                srv.Log(" %s=0x%x", ms.name, w < matByWire.size() ? matByWire[w] : 0u);
+            }
+            // ★ 4-c3b2 — 날아가는 것·놓인 것·맵 불이 맞히면 이 재질이 「때린 것」이다. NONE(0x4000)이면 사람은 표에 조합이 없어 소리 없음 · 소환수는 거름
+            srv.Log(" · 때린 물건:");
+            for (const char* nm : { "HarpoonBolt", "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "MercArcherArrow", "Pixie",
+                                    "ToxicCloud", "SmallFist", "MediumFist", "LargeFist", "MediumFlame", "FlameCleanse", "BlueFlameCleanse",
+                                    "SmallFlameImmobile", "MediumFlameImmobile", "FlameImmobile" }) {
+                const uint16_t w = tdb.WireByName(nm);
+                srv.Log(" %s=%s0x%x", nm, w ? "" : "⚠없음 ", w < matByWire.size() ? matByWire[w] : 0u);
+            }
+            srv.Log("\n");
+            srv.SetMaterialTables(std::move(matByWire), std::move(breastByWire), npWire);
+        }
+        // ★ 09-29 Z1-A — 열쇠 종류(잠김 1~4)의 와이어 번호(`DoorCheckKey` 는 이름으로 견준다)
+        srv.SetKeyTypes(tdb.WireByName("SilverKey"), tdb.WireByName("GoldKey"),
+                        tdb.WireByName("RubyKey"), tdb.WireByName("SapphireKey"));
+        srv.Log("[열쇠] 은 %u · 금 %u · 루비 %u · 사파이어 %u(와이어 번호 — 0 이면 못 찾음)\n",
+                    (unsigned)tdb.WireByName("SilverKey"), (unsigned)tdb.WireByName("GoldKey"),
+                    (unsigned)tdb.WireByName("RubyKey"), (unsigned)tdb.WireByName("SapphireKey"));
+        // ★ 주문 마나 비용 — 같은 파일의 SPEL 섹션에서 온다.
+        //   주문 번호(와이어)로 표를 만든다: 번호 → 속이름 → 마나.
+        //   ⚠ 여기가 0 이면 **모든 주문이 공짜**가 된다. 아래 로그로 바로 보인다.
+        // ★ 2026-09-13 묶음 4-a — 비용만이 아니라 **정의 전체**(깃발·음소)를 넣는다. 음소 나무가 여기서 자란다.
+        for (int id = 0; id < nox::kSpellCount; ++id) {
+            const char* nm2 = nox::SpellName(id);
+            if (!nm2 || !*nm2) continue;
+            for (const auto& sr : tdb.Spells()) {
+                if (sr.name != nm2) continue;
+                // ★ 10-f — 소리 셋도 같이 넣는다(이름 → 번호)
+                srv.SetSpellDef(static_cast<uint8_t>(id), sr.mana, sr.flags, sr.phonemes,
+                                nox::SoundByName(sr.castSound.c_str()),
+                                nox::SoundByName(sr.onSound.c_str()),
+                                nox::SoundByName(sr.offSound.c_str()));
+                // ★ 2026-09-18 ⑰ — **음소가 없는 주문**을 찍는다.
+                //   음소 나무를 못 따라가면 시전이 「모름」으로 끝난다(`Server.cpp:4731`).
+                //   컨저러 주먹(29)이 「받음 7 · 주문 0」 으로 끝난 까닭 후보다.
+                if (sr.phonemes.empty()) {
+                    srv.Log("[주문 음소없음] %d(%s)\n", id, nm2);
+                }
+                break;
+            }
+        }
+    }
+    // ★ 2026-09-20 묶음 10 — **능력 소리**를 thing.bin `ABIL` 칸에서 넣는다.
+    //   이름은 정답지 `server/spells_abil.go:196~199 AbilityNames` 차례 그대로(1~5).
+    //   전에는 이 칸을 통째로 건너뛰어 능력을 써도 소리가 한 건도 안 나갔다(⑧)
+    {
+        static const char* const kAbilNames[6] = {
+            "", "ABILITY_BERSERKER_CHARGE", "ABILITY_WARCRY",
+            "ABILITY_HARPOON", "ABILITY_TREAD_LIGHTLY", "ABILITY_EYE_OF_THE_WOLF",
+        };
+        int wired = 0;
+        for (uint8_t n = 1; n <= 5; ++n) {
+            for (const auto& ar : tdb.Abilities()) {
+                if (ar.name != kAbilNames[n]) continue;
+                srv.SetAbilitySound(n, nox::SoundByName(ar.useSound.c_str()),
+                                    nox::SoundByName(ar.offSound.c_str()));
+                if (nox::SoundByName(ar.useSound.c_str()) != 0) ++wired;
+                break;
+            }
+        }
+        srv.Log("[능력 소리] thing.bin ABIL %zu칸 · 다섯 중 %d개에 쓸 때 소리가 붙었다\n",
+                    tdb.Abilities().size(), wired);
+    }
+    srv.Log("[주문] 마나 표 %zu개 — 0 이면 thing.bin 을 못 읽은 것이고 주문이 공짜가 된다\n",
+                srv.SpellCostCount());
+    // ★ 09-29 B7 — 비홀더가 쥐는 주문 둘의 깃발(몬스터가 고르는 조건 0x10 · 겨눔 0x4 · 공격 0x20 · 지속 — `castSpell` 갈래)
+    srv.Log("[주문] 깃발 — 24(전기 광선) 0x%x · 4(점멸) 0x%x\n", srv.SpellFlags(24), srv.SpellFlags(4));
+    // ★ 2026-09-14 묶음 4-a4 — gamedata.bin(기획 상수 · 버프 길이 등). 태그 ARENA
+    {
+            const nox::Gamedata& gd = files.gamedata;   // ★ 10-12 7e-2 — 서버가 뜰 때 읽은 것
+            if (files.gamedataOk) {
+            srv.SetGamedata(gd);
+            srv.Log("[기획값] gamedata.bin %zu개 · ARENA TargetedSpellLifetime %.0f · InvulnerabilityEnchantDuration %.0f\n",
+                        gd.Count(), gd.Float("ARENA", "TargetedSpellLifetime"), gd.Float("ARENA", "InvulnerabilityEnchantDuration"));
+        } else {
+            srv.Log("[기획값] ⚠ gamedata.bin 못 읽음 — %s\n", gd.Error().c_str());
+        }
+    }
+    // ★ 09-23 nine-defects 2-a3 — **반주문 재료.** ① 지워지는 날아가는 것 = 클래스 `MISSILE` · 서브클래스 `MISSILE_COUNTERSPELL`
+    //   (정답지 `obj.SubClass().AsMissile().Has(MissileMissileCounterSpell)`) ② 반주문이 끄는 주문 = SPEL 깃발 `CAN_COUNTER`(0x40000).
+    //   ②를 이름으로 찍는다 — 함성 외침은 같은 틱에 기절(STUN)을 걸고 반주문을 부르므로, STUN 이 여기 있으면 기절이 도로 풀린다
+    {
+        auto hasTok = [](const std::string& raw, const char* tok) {
+            size_t st = 0;
+            while (st <= raw.size()) {
+                size_t e = raw.find('+', st);
+                if (e == std::string::npos) e = raw.size();
+                std::string t = raw.substr(st, e - st);
+                while (!t.empty() && t.back() == ' ') t.pop_back();
+                while (!t.empty() && t.front() == ' ') t.erase(t.begin());
+                if (t == tok) return true;
+                st = e + 1;
+            }
+            return false;
+        };
+        std::string mis;
+        for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+            const nox::ThingInfo* t2 = tdb.ByWire(w);
+            if (!t2 || !hasTok(t2->classRaw, "MISSILE") || !hasTok(t2->subclassRaw, "MISSILE_COUNTERSPELL")) continue;
+            srv.SetCounterMissileType(w);
+            if (srv.CounterMissileTypeCount() <= 8) { mis += " "; mis += t2->name; }
+        }
+        std::string spells;
+        int nSp = 0;
+        for (int id = 1; id < nox::kSpellCount; ++id) {
+            if (!(srv.SpellFlags(static_cast<uint8_t>(id)) & 0x40000)) continue;
+            ++nSp;
+            spells += " "; spells += nox::SpellName(id);
+        }
+        srv.Log("[반주문] 둘레 %.0f · 지워지는 날아가는 것 %zu종(앞 8:%s) · 끄는 주문 %d개 —%s\n",
+                    srv.BalanceFloat("CounterspellRange"), srv.CounterMissileTypeCount(), mis.c_str(), nSp, spells.c_str());
+        // ★ 2-a4 — 주문 쓰는 몬스터(monster.bin `CAN_CAST_SPELLS`, `GameBalance.h` 표) → 와이어 번호. 함성 무효화가 이것만 본다
+        int nCast = 0;
+        std::string miss;
+        for (const char* nm : nox::kMonstersCanCastSpells) {
+            const uint16_t w = tdb.WireByName(nm);
+            if (w) { srv.SetCastingMonsterType(w); ++nCast; }
+            else { miss += " "; miss += nm; }
+        }
+        srv.Log("[주문쓰는몬스터] %d / %zu종%s%s\n", nCast, sizeof(nox::kMonstersCanCastSpells) / sizeof(nox::kMonstersCanCastSpells[0]),
+                    miss.empty() ? "" : " · ⚠ thing.bin 에 없음:", miss.c_str());
+    }
+    return srv.ShareGameTables();
+}
+
+int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,
+                   const OpenSessionFn& openSession, WorldExtras& out) {
     // 실행 인자 — 옮긴 몸통이 쓰는 것만 같은 이름으로 받는다.
     const auto& mirror = opt.mirror;
     const auto& mirrorLimit = opt.mirrorLimit;
@@ -155,6 +964,12 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
     std::vector<std::pair<float, float>> trapPos;
     auto& mapFlagPos = out.mapFlagPos;
 
+    // ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터 표는 서버가 뜰 때 한 벌 만든 것을 가리킨다(`BuildGameTables`). 맵 방에는 있어야 한다
+    if (tables) srv.UseGameTables(std::move(tables));
+    else if (!mapPath.empty()) {
+        srv.Log("[멈춤] 게임 데이터 표 없이 맵 방을 차릴 수 없다(BuildGameTables 를 먼저)\n");
+        return 1;
+    }
     if (!mapPath.empty()) {
         nox::MapFile mf;
         if (!mf.Load(mapPath)) {
@@ -212,13 +1027,12 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
         }
         {
             // 벽 재질 깃발 — thing.bin WALL 섹션(0x2 = 막지 않음). 방향이 표(0~10) 밖인 벽 수도 찍는다.
-            nox::ThingDb wdb;
+            const nox::ThingDb& wdb = files.thing;   // ★ 10-12 작업 7e-2 — 서버가 뜰 때 읽은 것(옛 이 자리에서 thing.bin 을 읽었다)
             size_t badDir = 0;
             for (const auto& w : cells) if (w.dir > 10) ++badDir;
-            if (wdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            if (files.thingOk) {
                 std::vector<uint32_t> flags;
                 for (const auto& d : wdb.Walls()) flags.push_back(d.flags);
-                srv.SetWallDefFlags(flags);
                 // ★ 2-b2 — 광전사가 **세게** 부딪히는 재질(깃발 &5)이 몇 종이고, 그런 칸이 이 맵에 몇 개인가
                 size_t hardDefs = 0, hardCells = 0;
                 for (uint32_t f : flags) if (f & 0x5) ++hardDefs;
@@ -238,7 +1052,6 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         if (d.health > 0) ++withHp;
                         ex.push_back(e);
                     }
-                    srv.SetWallDefExtras(std::move(ex));
                     const auto destr = mf.ReadGridList("DestructableWalls", 1);
                     const auto win = mf.ReadGridList("WindowWalls", 2);
                     srv.SetWallSpecials(destr, win);
@@ -258,7 +1071,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
         //   ② 번호 = 맵 ObjectData 색인 + 75 (BluePotion 101→176 · FanChakram 105→180).
         //      클라가 맵을 읽으며 같은 번호를 만들어 두므로 이 번호라야 실체가 합쳐진다.
         //      ⚠ +75 는 estate 실측 — 다른 맵은 미확인.
-        nox::ThingDb tdb;
+        const nox::ThingDb& tdb = files.thing;   // ★ 10-12 작업 7e-2 — 서버가 뜰 때 읽은 것(옛 이 자리에서 thing.bin 을 다시 읽었다)
         size_t nStat = 0, nSkip = 0;
         std::map<std::string, int> notPickup;   // 아이템이 아니라 걸러진 것 — 이름별로
         size_t decayExemptKinds[4] = {};        // ★ 09-28 — 바닥 물건의 「10초 규칙 예외」 까닭별(없음·RESPAWN·FLAG·Glyph)
@@ -270,68 +1083,8 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
         //   어긋나는지 보려면 맵 쪽 좌표가 있어야 한다.
         std::vector<std::string> mapMatchObjs;
         std::map<std::string, int> noWeight;    // 아이템인데 WEIGHT 가 없어 걸러진 것
-        if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
-            // ★ 4-c3 — 주문이 **이름으로** 놓는 오브젝트의 와이어 종류를 넘겨준다
-            //   (정답지도 `getNameId("ToxicCloud")` 처럼 이름으로 찾는다). 못 찾으면 0 이라 안 놓인다
-            for (const char* nm : { "ToxicCloud", "MediumFlame", "Meteor", "MeteorShower", "MeteorExplode",
-                                    "SmallFist", "MediumFist", "LargeFist",
-                                    "SmallFlameCleanse", "MediumFlameCleanse", "FlameCleanse", "LargeFlameCleanse",
-                                    "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse",
-                                    "ArachnaphobiaFocus", "SmallSpider", "Pixie" }) {
-                const uint16_t w = tdb.WireByName(nm);
-                srv.SetNamedType(nm, w);
-                srv.Log("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");
-            }
-            // ★ 09-23 nine-defects 4-d1 — 바닥 정의(FLOR)의 재질 분포. 발소리가 이 값으로 갈린다(`object_update.go:164~220`)
-            {
-                std::map<int32_t, int> byMat;
-                for (const auto& f : tdb.Floors()) ++byMat[f.material];
-                srv.Log("[바닥] 정의 %zu개 · 재질별:", tdb.Floors().size());
-                for (const auto& kv : byMat) srv.Log(" 0x%x×%d", static_cast<unsigned>(kv.first), kv.second);
-                srv.Log("\n");
-            }
-            // ★ 4-c3 — 주문이 **날리는** 것(불덩이 셋). 빠르기·깃발·닿음 인자를 전부 thing.bin 에서 읽는다.
-            //   `COLLIDE = SparkExplosionCollide 192` 의 숫자가 터짐 크기를 다 정하므로 **짐작하지 않는다**.
-            //   ★ 묶음 6-g(3b) — **크리처가 쏘는 것**도 같은 자리에서 읽는다.
-            //     `ImpShot` 은 `SPEED = 400` · `COLLIDE = ProjectileCollide 5` 다
-            //     ★ 묶음 9-b — **쏘는 덫이 쏘는 것**도 여기서 읽는다.
-            //       `MercArcherArrow` 는 `SPEED = 800` · `COLLIDE = MonsterArrowCollide 10 10` 이다
-            //     ★ 09-29 — **사람이 쏘는 화살**(활 ArcherArrow · 석궁 ArcherBolt · 화살통 없는 WeakArcherArrow — `shootBowCrossbow2_539D80`)
-            for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "HarpoonBolt",
-                                    "MercArcherArrow", "ArcherArrow", "ArcherBolt", "WeakArcherArrow" }) {
-                const uint16_t w = tdb.WireByName(nm);
-                const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
-                int amount = 0;
-                if (t2 && !t2->collideArgs.empty()) amount = std::atoi(t2->collideArgs.c_str());
-                if (t2) srv.SetProjType(nm, w, t2->speed, nox::ParseObjectFlags(t2->flagsRaw),
-                                        static_cast<uint8_t>(amount < 0 ? 0 : (amount > 255 ? 255 : amount)));
-                srv.Log("[날리기 종류] %s = %u · SPEED %d · 닿음 %s %d · 그리기 %s%s\n", nm, static_cast<unsigned>(w),
-                            t2 ? t2->speed : 0, t2 ? t2->collideFn.c_str() : "?", amount,
-                            // ⑫ — 클라는 이 이름으로 그리는 함수를 고른다(`drawFuncs[name]`).
-                            //   비어 있거나 모르는 이름이면 클라가 **아무것도 안 그린다**
-                            (t2 && !t2->drawFn.empty()) ? t2->drawFn.c_str() : "(없음)",
-                            t2 ? "" : " ⚠ 못 찾음");
-            }
-            // ★ 2026-09-18 ⑬ — **화살·쇠뇌살을 전수로 골라 서버에 알린다.**
-            //   이 종류만 갱신에 스프라이트 프레임이 한 바이트 더 붙는다(Server.h `AddArrowType`).
-            //   조건은 정답지 그대로 — `MISSILE`(클래스 0x1) **그리고** `ARROW|BOLT`(서브 0x30).
-            //   ⚠ 이름으로 못 박지 않는다 — 맵마다 다른 화살이 나올 수 있고,
-            //     「이름 여섯 개」로 박아 두었다가 빠뜨린 전례가 이 리포에 이미 있다.
-            {
-                size_t nArrow = 0;
-                std::string names;
-                for (uint16_t w = 1; w < nox::kThingCount; ++w) {
-                    const nox::ThingInfo* t3 = tdb.ByWire(w);
-                    if (!t3) continue;
-                    if (!(nox::ParseObjectClass(t3->classRaw) & 0x1)) continue;          // MISSILE 아님
-                    if (!(nox::WeaponClassBitsOf(t3->subclassRaw) & 0x30)) continue;     // ARROW|BOLT 아님
-                    srv.AddArrowType(w);
-                    ++nArrow;
-                    if (nArrow <= 8) { if (!names.empty()) names += " "; names += t3->name; }
-                }
-                srv.Log("[화살 종류] %zu가지 (프레임 바이트가 붙는다)%s%s\n", nArrow,
-                            names.empty() ? "" : " — ", names.c_str());
-            }
+        if (files.thingOk) {
+            // ★ 10-12 플랜 B 작업 7e-2 — 이 자리의 게임 데이터 넣기와 그 진단 줄은 `BuildGameTables`(서버가 뜰 때 한 번)로 옮겼다
             std::vector<nox::Server::WorldStatic> st;
             std::vector<nox::Server::WorldProp> props;
             size_t propExtentTooBig = 0;   // ⑩ extent 가 15비트를 넘는 것(정적 조회로 못 가리킨다)
@@ -392,202 +1145,6 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 if (o.type == "Flag")
                     mapFlagPos.push_back({ static_cast<int>(o.x), static_cast<int>(o.y) });
             }
-            // ★ 2026-09-15 묶음 10-a — **소리 표**. thing.bin `AUD ` 칸 927개가
-            //   이름표 1,023개에 **100% 맞물린다**(빗나감 0 · 전수 확인).
-            //   ⚠ 이 표가 없으면 **소리가 한 개도 안 나간다**(소리조각 수 0 이 정답지의 첫 문이다)
-            {
-                std::vector<nox::Server::SoundDefIn> sd;
-                size_t miss = 0, withSamples = 0;
-                for (const auto& d : tdb.Sounds()) {
-                    const uint16_t id = nox::SoundByName(d.name.c_str());
-                    if (id == 0) { ++miss; continue; }
-                    nox::Server::SoundDefIn in;
-                    in.id = id;
-                    in.maxDist = d.maxDist;
-                    in.merged = d.merged;
-                    in.samples = d.samples;
-                    in.flags = d.flags;
-                    if (d.samples > 0) ++withSamples;
-                    sd.push_back(in);
-                }
-                // ★★ 09-22 — **정품이 보내는데 thing.bin 에 없는 소리**를 손으로 채운다. 지금은 하나다.
-                //   사슬 — 사용자가 「마나석 소리가 안 난다」고 짚었다 → 정답지는 소리 **230**(ManaRecharge)을
-                //   낸다(`GAME4_3.c:6461`) → 그런데 thing.bin AUD **927개에 그 이름이 없다** →
-                //   그러면 조각 0 이라 `PlaySoundAt` 이 버린다 →
-                //   **대조군 서버에 계수기를 붙여 보니 정답지도 똑같이 0 으로 읽는다**
-                //   (`[AUD] 선언 927개 · 230 조각 0 · 237 조각 3`) →
-                //   **그런데 정품 와이어에는 230 이 10번 나간다**(`CAP_server_0906` 의 a6·a7 610건을 풀어 셈).
-                //   ⇒ 대전제상 **④ 정품이 ③ C 대조보다 위**다. 정품을 따른다.
-                //   거리 600 은 지어낸 값이 아니라 **정답지가 모든 소리에 주는 기본값**이다
-                //   (`server/audio_event.go:75` `p.MaxDist = 600`).
-                {
-                    bool has230 = false;
-                    for (const auto& in : sd) if (in.id == 230) { has230 = true; break; }
-                    if (!has230) {
-                        nox::Server::SoundDefIn in;
-                        in.id = 230; in.maxDist = 600; in.merged = 0; in.samples = 1; in.flags = 0;
-                        sd.push_back(in);
-                        srv.Log("[소리·메움] 230(ManaRecharge) — thing.bin 에 없어 손으로 채움"
-                                    "(정품 와이어 근거 · 거리 600 은 정답지 기본값)\n");
-                    }
-                }
-                srv.SetSoundDefs(sd);
-                srv.Log("[소리] AUD %zu개 · 이름표에 맞물림 %zu · 소리조각 있는 것 %zu%s\n",
-                            tdb.Sounds().size(), sd.size(), withSamples,
-                            miss ? " ⚠ 이름표에 없는 것 있음" : "");
-                // ★ 09-29 B6 — 몬스터가 듣는 소리는 깃발이 0 이 아닌 것뿐이다(`unit_ai.go:290` NewSound) — 0x10 아군 것도 · 0x20 걷기(문턱 89) · 0x40 달리기(문턱 20)
-                {
-                    size_t nf = 0, f10 = 0, f20 = 0, f40 = 0;
-                    for (const auto& in : sd) {
-                        if (in.flags == 0) continue;
-                        ++nf; if (in.flags & 0x10) ++f10; if (in.flags & 0x20) ++f20; if (in.flags & 0x40) ++f40;
-                        if (std::getenv("NOX_DUMP_SOUND_FLAGS")) srv.Log("  [소리깃발] %u %s 깃발 0x%x 거리 %d\n", (unsigned)in.id, nox::SoundName(in.id), (unsigned)in.flags, in.maxDist);
-                    }
-                    srv.Log("[소리듣기] 깃발 있는 소리 %zu개 — 0x10 %zu · 0x20 %zu · 0x40 %zu\n", nf, f10, f20, f40);
-                }
-                // ★ 09-22 — **정품이 실제로 보낸 번호** 중 우리 표에 없는 것을 센다.
-                //   `_evidence/CAP_server_0906.txt` 의 `a6`·`a7` 610건을 풀어 얻은 번호들이다.
-                //   우리 표에 없으면 `PlaySoundAt` 이 조용히 버린다 — 「소리가 안 들린다」의 뿌리
-                {
-                    const uint16_t seen[] = { 276,131,270,322,879,190,186,301,188,192,300,302,230,41,319,232,231,69 };
-                    std::string missing;
-                    for (uint16_t q : seen) {
-                        bool ok = false;
-                        for (const auto& in : sd) if (in.id == q && in.samples > 0) { ok = true; break; }
-                        if (!ok) { missing += " "; missing += std::to_string(q); missing += "("; missing += nox::SoundName(q); missing += ")"; }
-                    }
-                    srv.Log("[소리·정품이쓴것] %zu개 중 우리 표에 **없는 것**:%s\n",
-                                sizeof(seen) / sizeof(seen[0]), missing.empty() ? " (none)" : missing.c_str());
-                }
-                // ★ 09-22 사용자 보고(「소리가 안 들린다」) — **우리가 부르는 번호가 표에 있나**를 찍는다.
-                //   `PlaySoundAt` 은 소리조각이 0 이면 조용히 버리고, `maxDist` 가 0 이면 **거리에서 잘린다**.
-                //   둘은 증상이 같아서(안 들림) 숫자로 갈라야 한다
-                // ★ 09-23 nine-defects 4-b — **능력 소리 170~185**(쓸 때·켜짐·꺼질 때 × 다섯)를 한 줄로. 「조각 0 으로 선언」과
-                //   「표에 아예 없음」(230 같은 경우 — 정품이 따로 보낼 수 있다)을 가른다. `-` = 표에 없음
-                {
-                    srv.Log("[소리·능력]");
-                    for (uint16_t q = 170; q <= 185; ++q) {
-                        int samples = -1;
-                        for (const auto& in : sd) if (in.id == q) { samples = in.samples; break; }
-                        if (samples < 0) srv.Log(" %u(%s)-", (unsigned)q, nox::SoundName(q));
-                        else srv.Log(" %u(%s)%d", (unsigned)q, nox::SoundName(q), samples);
-                    }
-                    srv.Log("\n");
-                }
-                // ★ 09-23 nine-defects 4-c2 — 타격 소리 848~872(`<때린 것>Hit<맞는 쪽>`)의 조각 수 — 0 이면 불러도 버려진다
-                {
-                    srv.Log("[소리·타격]");
-                    size_t zero = 0;
-                    for (uint16_t q = 848; q <= 872; ++q) {
-                        int samples = -1;
-                        for (const auto& in : sd) if (in.id == q) { samples = in.samples; break; }
-                        if (samples <= 0) { ++zero; srv.Log(" %u(%s)%s", (unsigned)q, nox::SoundName(q), samples < 0 ? "-" : "0"); }
-                    }
-                    srv.Log(" · 조각 0 또는 없음 %zu / 25\n", zero);
-                }
-                // ★ 09-23 nine-defects 4-c3b3a — soundset.bin(암호 5)의 몬스터 소리 모음. 때린 이가 몬스터면 그 모음의 「맞히는 소리」
-                //   (MELEE_ATTACK_HITTING_SOUND · +32)에 조각이 있을 때 맞는 쪽 소리를 안 낸다(`GAME3_2.c:7252~7254` — 4-c3b3b 에서 쓴다).
-                //   여기서는 읽히는지·몇 벌인지·부를 수 있는 소환수 열셋의 그 소리와 조각 수를 찍는다
-                {
-                    std::vector<nox::SoundSet> sets;
-                    std::string err;
-                    const bool ok = nox::LoadSoundSets("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\soundset.bin", sets, &err);
-                    auto samplesOf = [&](const std::string& nm) {
-                        const uint16_t id = nm.empty() ? 0 : nox::SoundByName(nm.c_str());
-                        if (id == 0) return -1;
-                        for (const auto& in : sd) if (in.id == id) return in.samples;
-                        return -1;
-                    };
-                    size_t written = 0, withSamples2 = 0, nameless = 0;
-                    for (const auto& s : sets) {
-                        const std::string& h = s.sound[nox::kSoundSetMeleeHitting];
-                        if (h.empty() || h == "NULL") continue;
-                        ++written;
-                        if (nox::SoundByName(h.c_str()) == 0) ++nameless;
-                        if (samplesOf(h) > 0) ++withSamples2;
-                    }
-                    srv.Log("[소리모음] %s · %zu벌 · 맞히는 소리 적힌 것 %zu(조각 있음 %zu · 이름표에 없음 %zu)",
-                                ok ? "읽음" : ("⚠ 못 읽음 " + err).c_str(), sets.size(), written, withSamples2, nameless);
-                    srv.Log(" · 소환수:");
-                    for (const auto& ms : nox::kMonsters) {
-                        const nox::SoundSet* s = nox::FindSoundSet(sets, ms.name);
-                        if (!s) { srv.Log(" %s=모음없음", ms.name); continue; }
-                        const std::string& h = s->sound[nox::kSoundSetMeleeHitting];
-                        srv.Log(" %s=%s(%d)", ms.name, h.empty() ? "(안 적힘)" : h.c_str(), samplesOf(h));
-                    }
-                    // ★ 4-c3b3b — 종류 번호별 「그 이름의 모음에 맞히는 소리가 있고 조각 1 이상」 표 → 서버(몬스터가 때릴 때 맞는 쪽 소리를 가른다)
-                    std::vector<uint8_t> owns(tdb.Count() + 1, 0);
-                    size_t nOwn = 0;
-                    for (size_t w = 1; w <= tdb.Count(); ++w) {
-                        const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
-                        const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
-                        if (s && samplesOf(s->sound[nox::kSoundSetMeleeHitting]) > 0) { owns[w] = 1; ++nOwn; }
-                    }
-                    srv.Log(" · 종류 %zu개가 맞히는 소리를 가짐\n", nOwn);
-                    srv.SetMonsterHitSounds(std::move(owns));
-                    // ★ 09-24 H1 — 같은 칸의 **번호** 표(몬스터가 근접으로 때린 뒤 그 소리를 낸다 · `GAME4_3.c:2087~2094`)
-                    std::vector<uint16_t> hitIds(tdb.Count() + 1, 0);
-                    size_t nId = 0;
-                    for (size_t w = 1; w <= tdb.Count(); ++w) {
-                        const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
-                        const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
-                        const std::string& h = s ? s->sound[nox::kSoundSetMeleeHitting] : std::string();
-                        if (h.empty() || h == "NULL") continue;
-                        hitIds[w] = nox::SoundByName(h.c_str());
-                        if (hitIds[w] != 0) ++nId;
-                    }
-                    srv.Log("[소리모음] 근접 맞히는 소리 번호 있는 종류 %zu개 · Bat=%u AlbinoSpider=%u SmallSpider=%u\n", nId,
-                                (unsigned)hitIds[tdb.WireByName("Bat")], (unsigned)hitIds[tdb.WireByName("AlbinoSpider")],
-                                (unsigned)hitIds[tdb.WireByName("SmallSpider")]);
-                    srv.SetMonsterMeleeHitSoundIds(std::move(hitIds));
-                    // ★ 09-26 M4a — 같은 꼴로 칸 넷 더: 근접 시작 5 · 쏘기 시작 9 · 쏘기 10 · 죽음 14(`kSoundSetFieldNames` 순서)
-                    // ★ 09-29 B5 — **칸 전부**(맞히는 소리 7 은 위에서). ✖ 전에는 5·9·10·14·16 만 실어서 B2~B4a 가 부르는 칸
-                    //   (도발 1 · 놀 때 3 · 교전 4 · 빗나감 8 · 도망 11 · 후퇴 12 · 다침 15)과 걸음 17 이 **실서버에서 한 번도 안 났다**
-                    //   (시험은 「났음+번호 없음」을 합쳐 세어 못 잡았다 — 시험 표에는 번호를 안 싣기 때문)
-                    srv.Log("[소리모음] 칸별 번호 있는 종류 —");
-                    for (int field = 0; field < nox::kSoundSetFields; ++field) {
-                        if (field == nox::kSoundSetMeleeHitting) continue;
-                        std::vector<uint16_t> ids(tdb.Count() + 1, 0);
-                        size_t n = 0;
-                        for (size_t w = 1; w <= tdb.Count(); ++w) {
-                            const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
-                            const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
-                            const std::string& h = s ? s->sound[field] : std::string();
-                            if (h.empty() || h == "NULL") continue;
-                            ids[w] = nox::SoundByName(h.c_str());
-                            if (ids[w] != 0) ++n;
-                        }
-                        srv.Log(" %s %zu", nox::kSoundSetFieldNames[field], n);
-                        srv.SetMonsterSoundIds(field, std::move(ids));
-                    }
-                    srv.Log("\n");
-                }
-                // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
-                for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,
-                                    nox::SoundByName("HumanMaleExertionHeavy"), nox::SoundByName("HumanFemaleExertionHeavy"),
-                                    (uint16_t)879, (uint16_t)880, (uint16_t)881, (uint16_t)882, (uint16_t)883, (uint16_t)884 }) {
-                    bool found = false;
-                    for (const auto& in : sd)
-                        if (in.id == q) {
-                            srv.Log("[소리·쓰는것] %u(%s) — 조각 %d · 들리는거리 %d%s\n",
-                                        (unsigned)q, nox::SoundName(q), in.samples, in.maxDist,
-                                        (in.samples <= 0 || in.maxDist <= 0) ? "  ⚠ 이래서 안 들린다" : "");
-                            found = true; break;
-                        }
-                    if (!found) {
-                        srv.Log("[소리·쓰는것] %u(%s) — ⚠ **표에 아예 없다**\n", (unsigned)q, nox::SoundName(q));
-                        // 이름이 다를 뿐일 수 있다 — 비슷한 이름을 같이 찍어 고를 수 있게 한다
-                        srv.Log("[소리·비슷한이름]");
-                        for (const auto& d : tdb.Sounds())
-                            if (d.name.find("Mana") != std::string::npos ||
-                                d.name.find("Recharge") != std::string::npos ||
-                                d.name.find("Obelisk") != std::string::npos)
-                                srv.Log(" %s(%u·조각%d)", d.name.c_str(),
-                                            (unsigned)nox::SoundByName(d.name.c_str()), d.samples);
-                        srv.Log("\n");
-                    }
-                }
-            }
             // ★ 2026-09-15 묶음 9-b — **쏘는 덫 여섯 종류**(전부 `UPDATE = SkullUpdate`).
             //   보는 쪽은 **맵이 아니라 `thing.bin` 의 `INIT = SkullInit <dx> <dy>`** 에 있다
             //   (오브젝트 초기자료는 종류의 것을 복사한 것 · `server/object.go:343~346`).
@@ -601,8 +1158,8 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 // ⭕ `ArrowTrapDamage` 는 gamedata.bin 실측 **25**(ARENA·SOLO 둘 다). 못 읽으면 0 — 지어내지 않는다
                 int arrowDmg = 0;
                 {
-                    nox::Gamedata gdTrap;
-                    if (gdTrap.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\gamedata.bin"))
+                    const nox::Gamedata& gdTrap = files.gamedata;   // ★ 10-12 작업 7e-2 — 서버가 뜰 때 읽은 것
+                    if (files.gamedataOk)
                         arrowDmg = static_cast<int>(gdTrap.Float("ARENA", "ArrowTrapDamage", 0.0));
                 }
                 std::vector<nox::Server::ShootingTrapIn> traps;
@@ -1060,165 +1617,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 std::fflush(stdout);
             }
 
-            // ★ 09-27 B1 — 직업 기본 장비의 가방 항목 틀. 맵 물건(위)과 같은 칸 규칙으로 thing.bin 에서 채운다
-            //   (수식 갈래 · 장비 비트 · 무게). 서버는 접속 때 이 틀로 기본 장비를 가방에 싣는다(`Server::GiveDefaultGear`)
-            {
-                srv.Log("[기본장비] 가방 틀 —");
-                for (uint16_t gw : { nox::kItemStreetShirt, nox::kItemStreetPants, nox::kItemStreetSneakers,
-                                     nox::kItemWizardRobe, nox::kItemWoodenShield, nox::kItemLongsword }) {
-                    const char* nm = nox::LoadoutItemName(gw);
-                    const nox::ThingInfo* ti = tdb.ByWire(gw);
-                    if (!nm || !ti || ti->name != nm) {   // 와이어 번호(종류표)와 thing.bin 이름이 어긋나면 싣지 않는다
-                        srv.Log(" %u(✗ 이름 다름)", (unsigned)gw);
-                        continue;
-                    }
-                    nox::Session::Carried c;
-                    bool isW = false;
-                    c.equipBit = nox::EquipBitFor(nm, &isW);
-                    c.isWeapon = isW;
-                    c.modifiable =
-                        ti->classRaw.find("WEAPON") != std::string::npos ||
-                        ti->classRaw.find("ARMOR")  != std::string::npos ||
-                        ti->classRaw.find("WAND")   != std::string::npos ||
-                        ti->classRaw.find("FLAG")   != std::string::npos;
-                    c.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
-                    c.weaponClass = ti->classRaw.find("WEAPON") != std::string::npos ||   // ★ 09-27 B3
-                                    ti->classRaw.find("WAND")   != std::string::npos;
-                    c.wandClass = ti->classRaw.find("WAND") != std::string::npos;          // ★ 09-27 B5
-                    if (c.weaponClass) c.subclass = nox::WeaponClassBitsOf(ti->subclassRaw);
-                    else if (ti->classRaw.find("ARMOR") != std::string::npos) c.subclass = nox::ParseArmorClass(ti->subclassRaw);   // ★ 09-28
-                    c.dropFn = nox::DropFnOf(ti->dropFn);   // ★ 09-28 — 버리기 함수(로브·롱소드·나무방패는 갑옷무기 → 25초) · RESPAWN 은 기본 장비라 지운 채(`GAME3_3.c:7891`)
-                    srv.Log(" %s(무게 %d%s · 비트 %#x%s · 부위 %#x · 버리기 %s)", nm, (int)c.weight, ti->hasWeight ? "" : "·WEIGHT없음",
-                                (unsigned)c.equipBit, c.isWeapon ? (c.weaponClass ? " · 무기" : " · 무기(클래스 아님)") : "",
-                                (unsigned)c.subclass, ti->dropFn.empty() ? "(없음)" : ti->dropFn.c_str());
-                    srv.SetItemTemplate(gw, c);
-                }
-                srv.Log("\n");
-            }
 
-            // ★ 09-27 B3 — modifier.bin(암호 13) `WEAPON_DEFINITIONS` → 무기 들기의 직업(CLASSUSE)·힘(REQUIRED_STRENGTH) 관문.
-            //   복호본은 글자다 — `<이름>` 줄 · `KEY = VALUE;` 줄들 · `END` 줄(실측 — `nox_datadump modifier.bin --out`).
-            //   정답지 `server/modifiers.go:273~331` 이 같은 두 칸을 읽는다(CLASSUSE 는 `+` 로 이은 Warrior·Wizard·Conjurer → 비트 0·1·2 `:314`).
-            //   이름 → 종류 번호는 정답지처럼 이름으로(`ClientTypeByID` `:122`) · `ARMOR_DEFINITIONS` 부터는 갑옷이라 여기서 끊는다
-            {
-                const std::vector<uint8_t> mb = nox::DecryptFile("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\modifier.bin", nox::kKeyModifier);
-                const std::string txt(mb.begin(), mb.end());
-                const size_t armorAt = txt.find("ARMOR_DEFINITIONS");
-                const std::string wsec = txt.substr(0, armorAt == std::string::npos ? txt.size() : armorAt);
-                auto trim = [](std::string v) {
-                    while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r' || v.back() == ';')) v.pop_back();
-                    size_t i = 0;
-                    while (i < v.size() && (v[i] == ' ' || v[i] == '\t')) ++i;
-                    return v.substr(i);
-                };
-                std::string cur;
-                uint8_t classes = 0;
-                int reqStr = 0;
-                int dmgMin = 0;          // ★ 09-29 — DAMAGE_MIN(+72) · DAMAGE_COEFFICIENT(+64) — 화살 피해 식(`calcBoltDamage_4EF1E0`)이 쓴다
-                double dmgCoeff = 0.0;   //   `0.0f;` 꼴도 있다(ArcherBolt) — atof 가 0 으로 읽는다
-                size_t nDef = 0, nNoWire = 0, nBadClass = 0;
-                size_t pos = 0;
-                while (pos < wsec.size()) {
-                    size_t e = wsec.find('\n', pos);
-                    if (e == std::string::npos) e = wsec.size();
-                    const std::string line = trim(wsec.substr(pos, e - pos));
-                    pos = e + 1;
-                    if (line.empty() || line == "WEAPON_DEFINITIONS") continue;
-                    if (line == "END") {
-                        if (!cur.empty()) {
-                            const uint16_t wire = tdb.WireByName(cur);
-                            if (wire == 0) ++nNoWire;
-                            else {
-                                srv.SetWeaponDef(wire, classes, static_cast<uint16_t>(reqStr < 0 ? 0 : reqStr),
-                                                 static_cast<uint16_t>(dmgMin < 0 ? 0 : dmgMin), static_cast<float>(dmgCoeff));
-                                ++nDef;
-                            }
-                            if (cur == "Longsword" || cur == "GreatSword" || cur == "StaffWooden" || cur == "ForceWand" || cur == "Bow" ||
-                                cur == "CrossBow" || cur == "Quiver" || cur == "ArcherArrow" || cur == "ArcherBolt" || cur == "WeakArcherArrow")
-                                srv.Log("[무기정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 피해 최소 %d · 계수 %.3f\n",
-                                            cur.c_str(), (unsigned)wire, (unsigned)classes, reqStr, dmgMin, dmgCoeff);
-                        }
-                        cur.clear();
-                        continue;
-                    }
-                    const size_t eq = line.find('=');
-                    if (eq == std::string::npos) { cur = line; classes = 0; reqStr = 0; dmgMin = 0; dmgCoeff = 0.0; continue; }   // 새 정의의 이름 줄
-                    const std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
-                    if (key == "DAMAGE_MIN") dmgMin = std::atoi(val.c_str());
-                    else if (key == "DAMAGE_COEFFICIENT") dmgCoeff = std::atof(val.c_str());
-                    if (key == "CLASSUSE") {
-                        size_t s0 = 0;
-                        while (s0 <= val.size()) {
-                            size_t s1 = val.find('+', s0);
-                            if (s1 == std::string::npos) s1 = val.size();
-                            const std::string tok = trim(val.substr(s0, s1 - s0));
-                            if (tok == "WARRIOR") classes |= 1;
-                            else if (tok == "WIZARD") classes |= 2;
-                            else if (tok == "CONJURER") classes |= 4;
-                            else ++nBadClass;   // 정답지는 모르는 이름이면 오류(`modParseBitList`)
-                            s0 = s1 + 1;
-                        }
-                    } else if (key == "REQUIRED_STRENGTH") {
-                        reqStr = std::atoi(val.c_str());
-                    }
-                }
-                srv.Log("[무기정의] modifier.bin %zu바이트 · 무기 %zu개 실음 · 종류표에 없음 %zu · 모르는 직업 이름 %zu\n",
-                            mb.size(), nDef, nNoWire, nBadClass);
-                // ★ 09-29 — `ARMOR_DEFINITIONS` → 갑옷 입기의 직업·힘 관문과 방어값(ARMOR_VALUE → `Modifier` +64 · `parseWeaponOrArmorDef412D40` `modifiers.go:325~329`).
-                //   절은 다음 절 이름(ENCHANTMENT·EFFECTIVENESS·MATERIAL) 줄에서 끝난다
-                if (armorAt != std::string::npos) {
-                    std::string asec = txt.substr(armorAt);
-                    for (const char* nextSec : { "\nENCHANTMENT", "\nEFFECTIVENESS", "\nMATERIAL" }) {
-                        const size_t cut = asec.find(nextSec);
-                        if (cut != std::string::npos) asec = asec.substr(0, cut);
-                    }
-                    std::string acur;
-                    uint8_t aclasses = 0;
-                    int areq = 0;
-                    double aval = 0.0;
-                    size_t nArm = 0, nArmNoWire = 0;
-                    size_t apos = 0;
-                    while (apos < asec.size()) {
-                        size_t e = asec.find('\n', apos);
-                        if (e == std::string::npos) e = asec.size();
-                        const std::string line = trim(asec.substr(apos, e - apos));
-                        apos = e + 1;
-                        if (line.empty() || line == "ARMOR_DEFINITIONS") continue;
-                        if (line == "END") {
-                            if (!acur.empty()) {
-                                const uint16_t wire = tdb.WireByName(acur);
-                                if (wire == 0) ++nArmNoWire;
-                                else { srv.SetArmorDef(wire, aclasses, static_cast<uint16_t>(areq < 0 ? 0 : areq), static_cast<float>(aval)); ++nArm; }
-                                if (acur == "StreetShirt" || acur == "StreetPants" || acur == "StreetSneakers" || acur == "WizardRobe" || acur == "WoodenShield" || acur == "SteelShield" || acur == "LeatherHelm")
-                                    srv.Log("[갑옷정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 방어 %.3f\n", acur.c_str(), (unsigned)wire, (unsigned)aclasses, areq, aval);
-                            }
-                            acur.clear();
-                            continue;
-                        }
-                        const size_t eq = line.find('=');
-                        if (eq == std::string::npos) { acur = line; aclasses = 0; areq = 0; aval = 0.0; continue; }
-                        const std::string key = trim(line.substr(0, eq)), val = trim(line.substr(eq + 1));
-                        if (key == "CLASSUSE") {
-                            size_t s0 = 0;
-                            while (s0 <= val.size()) {
-                                size_t s1 = val.find('+', s0);
-                                if (s1 == std::string::npos) s1 = val.size();
-                                const std::string tok = trim(val.substr(s0, s1 - s0));
-                                if (tok == "WARRIOR") aclasses |= 1;
-                                else if (tok == "WIZARD") aclasses |= 2;
-                                else if (tok == "CONJURER") aclasses |= 4;
-                                else ++nBadClass;
-                                s0 = s1 + 1;
-                            }
-                        } else if (key == "REQUIRED_STRENGTH") {
-                            areq = std::atoi(val.c_str());
-                        } else if (key == "ARMOR_VALUE") {
-                            aval = std::atof(val.c_str());
-                        }
-                    }
-                    srv.Log("[갑옷정의] 갑옷 %zu개 실음 · 종류표에 없음 %zu\n", nArm, nArmNoWire);
-                }
-            }
 
             // ★ 묶음 5 — 사람이 들 수 있는 무게의 **밑천**. thing.bin 의 사람 칸에서 읽는다.
             //   한도는 이것의 두 배다. 못 찾으면 그대로 두고(기본 100) 표시줄에 알린다.
@@ -1327,53 +1726,6 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     obs.clear();
                 }
                 srv.SetObstacles(std::move(obs));
-                // ★ 09-28 B4b — 물건 몸 반지름(원 모양만 · +176). 죽을 때 떨굴 자리 간격 = 가장 큰 반지름 × 2 + 6(`GAME3_3.c:6730~6748`)
-                {
-                    size_t nR = 0;
-                    for (uint16_t w = 1; w <= tdb.Count(); ++w) {
-                        const nox::ThingInfo* t2 = tdb.ByWire(w);
-                        if (!t2 || !t2->hasWeight || t2->shapeKind != 2) continue;
-                        srv.SetItemRadius(w, t2->radius);
-                        ++nR;
-                    }
-                    const nox::ThingInfo* rb = tdb.ByWire(nox::kItemWizardRobe);
-                    srv.Log("[물건몸] 원 모양 반지름 %zu종 · 로브 %s %.0f\n", nR,
-                                rb ? (rb->shapeKind == 2 ? "원" : "원아님") : "없음", rb ? rb->radius : 0.0f);
-                }
-                // 소환수 몸 — 몬스터 종류 전부(원만)
-                for (uint16_t w = 1; w <= tdb.Count(); ++w) {
-                    const nox::ThingInfo* t2 = tdb.ByWire(w);
-                    // ★ 2026-09-13 묶음 3-e — COLLIDE 없는 몬스터·상자 몸도 싣는다. 공격 고르기(sub_5180B0)와 피해 함수는
-                    //   충돌 함수와 무관하다. 걷기 충돌은 hasCollide 로 따로 거른다(`GAME5.c:1930` 둘 다 있어야 부딪힘).
-                    // ★ 09-22 — **문 종류도 싣는다.** 문 여는 거리가 「사람 반지름 + 문 반지름」이라
-                    //   그 몸이 필요하다. 전에는 몬스터만 실어 조회가 조용히 헛돌았다(기본값으로 떨어짐)
-                    if (!t2) continue;
-                    const bool isDoorType = (nox::ParseObjectClass(t2->classRaw) & 0x80) != 0;
-                    if (!t2->isMonster && !isDoorType) continue;
-                    nox::Server::PhysBody b;
-                    b.shape = static_cast<uint8_t>((t2->shapeKind == 2 || t2->shapeKind == 3) ? t2->shapeKind : 0);
-                    b.r = t2->radius;
-                    if (b.shape == 3) nox::Server::CalcBox(b, t2->boxW, t2->boxH);
-                    b.flags = nox::ParseObjectFlags(t2->flagsRaw);
-                    b.cls = nox::ParseObjectClass(t2->classRaw);
-                    b.mass = (t2->mass > 0.0f) ? t2->mass : 1.0f;   // 정답지 기본 1(`server/object_type.go:197`)
-                    b.subclass = nox::Server::MonsterClassBitsOf(t2->subclassRaw);
-                    b.damageFn = nox::Server::DamageFnOf(t2->damageFn);
-                    b.hasCollide = t2->hasCollide;
-                    srv.SetTypeBody(w, b);
-                }
-                // ★ 3-b — 날아다니는 몬스터(FLAGS AIRBORNE 0x4000) — 지진이 빼는 종류다. 이름 앞 몇 개를 같이 찍는다
-                {
-                    size_t nFly = 0;
-                    std::string names;
-                    for (uint16_t w = 1; w <= tdb.Count(); ++w) {
-                        const nox::ThingInfo* t2 = tdb.ByWire(w);
-                        if (!t2 || !t2->isMonster || !(nox::ParseObjectFlags(t2->flagsRaw) & 0x4000)) continue;
-                        if (nFly < 12) names += " " + t2->name;
-                        ++nFly;
-                    }
-                    srv.Log("[나는몬스터] AIRBORNE 몬스터 %zu종 —%s%s\n", nFly, names.c_str(), nFly > 12 ? " …" : "");
-                }
             }
             // ★ 2026-09-13 묶음 3-d — TRY_COLLIDE 가 찾을 것(맵 오브젝트 번호·extent·종류 · 종류별 충돌 함수 이름)
             //   · 죽음 알림의 무기 그림(무기 클래스 비트 → 종류 번호)
@@ -1401,194 +1753,12 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 for (uint16_t w = 1; w <= tdb.Count(); ++w) {
                     const nox::ThingInfo* t2 = tdb.ByWire(w);
                     if (!t2 || !t2->hasCollide) continue;
-                    srv.SetCollideFn(w, firstWord(t2->collideRaw));
                     ++nFn;
-                }
-                for (const auto& wp : nox::kWeapons) srv.SetWeaponWire(wp.classBits, tdb.WireByName(wp.name));
-                // ★ 4-a2 — 겨눈 주문이 날리는 "Magic"(SPEED · MASS)
-                if (const uint16_t mw = tdb.WireByName("Magic")) {
-                    const nox::ThingInfo* mt = tdb.ByWire(mw);
-                    if (mt) {
-                        srv.SetMagicType(mw, mt->hasSpeed ? mt->speed : 0, mt->mass, nox::ParseObjectFlags(mt->flagsRaw));
-                        srv.Log("[날리기] Magic 종류 %u · SPEED %d · MASS %.1f\n", mw, mt->speed, mt->mass);
-                    }
                 }
                 srv.Log("[충돌 함수] 종류 %zu개 · 맵 오브젝트 %zu개 —", nFn, refs.size());
                 for (const auto& kv : fnNames) srv.Log(" %sx%d", kv.first.c_str(), kv.second);
                 srv.Log("\n");
                 srv.SetMapObjects(std::move(refs));
-            }
-            // ★ 2026-09-13 묶음 3-a — 사람 애니 칸 수(PlayerDraw STAT). 맨손 공격이 끝나는 틱이 이 값이다.
-            for (int i = 0; i < nox::kPlayerAnimTypeCount; ++i)
-                srv.SetPlayerAnimFrames(i, tdb.PlayerAnim(i).frames, tdb.PlayerAnim(i).hold);
-            // ★ 09-29 B5 — 몬스터 애니 표(MonsterDraw STAT) — 걸음 소리가 애니 칸을 본다(`monsterMoveAudio_534030`)
-            {
-                for (size_t w = 1; w <= tdb.Count(); ++w) {
-                    const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
-                    if (!t || !t->hasMonsterDraw) continue;
-                    for (int i = 0; i < 16; ++i)
-                        srv.SetMonsterAnim(static_cast<uint16_t>(w), i, t->monsterAnims[i].frames, t->monsterAnims[i].hold, t->monsterAnims[i].loop);
-                }
-                // ★ 09-29 B6 — 몬스터 아종 비트(SUBCLASS — libs `object/subclass_monster.go` 차례 · 0x200 IMMUNE_POISON · 0x400 IMMUNE_FIRE)
-                //   · 위험한 종류(조건 69 — CLASS FIRE · 독구름 두 이름 · CLASS DANGEROUS — `unitIsDangerous_547120`)
-                {
-                    static const char* const kMonSub[] = {
-                        "SMALL_MONSTER", "MEDIUM_MONSTER", "LARGE_MONSTER", "SHOPKEEPER", "NPC", "FEMALE_NPC",
-                        "UNDEAD", "MONITOR", "MIGRATE", "IMMUNE_POISON", "IMMUNE_FIRE", "IMMUNE_ELECTRICITY",
-                        "IMMUNE_FEAR", "BOMBER", "NO_TARGET", "NO_SPELL_TARGET", "HAS_SOUL", "WARCRY_STUN",
-                        "LOOK_AROUND", "WOUNDED_NPC" };
-                    auto hasTok = [](const std::string& raw, const char* tok) {
-                        size_t a = 0;
-                        while (a <= raw.size()) {
-                            size_t e = raw.find('+', a);
-                            if (e == std::string::npos) e = raw.size();
-                            std::string s = raw.substr(a, e - a);
-                            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
-                            while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
-                            if (s == tok) return true;
-                            if (e == raw.size()) break;
-                            a = e + 1;
-                        }
-                        return false;
-                    };
-                    size_t nSub = 0, nFireImm = 0, dn[4] = {};
-                    std::string fireImm;
-                    for (size_t w = 1; w <= tdb.Count(); ++w) {
-                        const nox::ThingInfo* t = tdb.ByWire(static_cast<uint16_t>(w));
-                        if (!t) continue;
-                        if (t->isMonster) {
-                            uint32_t bits = 0;
-                            for (size_t i = 0; i < sizeof(kMonSub) / sizeof(kMonSub[0]); ++i) if (hasTok(t->subclassRaw, kMonSub[i])) bits |= 1u << i;
-                            if (bits) { srv.SetMonsterSubclass(static_cast<uint16_t>(w), bits); ++nSub; }
-                            if (bits & 0x400) { ++nFireImm; if (fireImm.size() < 80) { fireImm += ' '; fireImm += t->name; } }
-                        }
-                        uint8_t d = 0;
-                        if (hasTok(t->classRaw, "FIRE")) d = 1;
-                        else if (t->name == "ToxicCloud" || t->name == "SmallToxicCloud") d = 2;
-                        else if (hasTok(t->classRaw, "DANGEROUS")) d = 3;
-                        if (d) { srv.SetDangerType(static_cast<uint16_t>(w), d); ++dn[d]; }
-                    }
-                    srv.Log("[몬스터아종] 아종 비트 있는 몬스터 %zu · 불에 안 탐 %zu(%s) · 위험한 종류 불 %zu · 독구름 %zu · DANGEROUS %zu\n",
-                                nSub, nFireImm, fireImm.c_str(), dn[1], dn[2], dn[3]);
-                }
-                const nox::ThingInfo* lg = tdb.ByWire(tdb.WireByName("GiantLeech"));
-                srv.Log("[몬스터애니] MonsterDraw 종류 %zu개 · GiantLeech 걷기(12) %d칸/붙듦 %d/되풀이 %d · 근접(1) %d칸/붙듦 %d\n",
-                            srv.MonsterAnimTypes(),
-                            lg ? lg->monsterAnims[12].frames : -1, lg ? lg->monsterAnims[12].hold : -1, lg ? (int)lg->monsterAnims[12].loop : -1,
-                            lg ? lg->monsterAnims[1].frames : -1, lg ? lg->monsterAnims[1].hold : -1);
-                // ★ 09-29 B7 — 비홀더 시전 애니(7 CAST_SPELL) — 시전은 이 애니가 쏘기 칸(monster.bin +216 = 4)에 닿을 때(`mobActionCast_5413B0`)
-                const nox::ThingInfo* bh = tdb.ByWire(tdb.WireByName("Beholder"));
-                srv.Log("[몬스터애니] Beholder 시전(7) %d칸/붙듦 %d/되풀이 %d · 놀기(8) %d칸\n",
-                            bh ? bh->monsterAnims[7].frames : -1, bh ? bh->monsterAnims[7].hold : -1, bh ? (int)bh->monsterAnims[7].loop : -1,
-                            bh ? bh->monsterAnims[8].frames : -1);
-                // ★ 09-30 — 열셋의 근접(1)·쏘기(3)·죽어가기(9) 애니 — 근접은 때리는 칸(monster.bin +108)·쏘기는 쏘는 칸(+216)에서, 둘 다 애니가 끝나면 빠진다.
-                //   표 없음(MonsterDraw 없음)이면 근접·쏘기가 안 빠지고, 칸이 칸 수 밖이면 안 맞는다 — 그 수를 같이 센다
-                {
-                    int noDraw = 0, meleeOut = 0, shotOut = 0, loopAtk = 0;   // 되풀이 애니면 끝(+483)이 안 와 근접·쏘기가 안 빠진다
-                    for (const auto& ms : nox::kMonsters) {
-                        const nox::ThingInfo* t = tdb.ByWire(ms.wireType);
-                        if (!t || !t->hasMonsterDraw) { ++noDraw; srv.Log("[몬스터칸] %s 표 없음\n", ms.name); continue; }
-                        const int hitF = nox::MonsterMeleeFrameOf(ms.wireType), shotF = nox::MonsterMissileFrameOf(ms.wireType);
-                        const bool melee = nox::MeleeStrikeOf(ms.wireType).fn != nox::StrikeFn::None && ms.meleeRange > 0.0;
-                        const bool shoot = ms.missileName != nullptr;
-                        if (melee && hitF >= t->monsterAnims[1].frames) ++meleeOut;
-                        if (shoot && shotF >= t->monsterAnims[3].frames) ++shotOut;
-                        if ((melee && t->monsterAnims[1].loop) || (shoot && t->monsterAnims[3].loop)) ++loopAtk;
-                        srv.Log("[몬스터칸] %-17s 근접(1) %2d칸/붙듦 %d/되풀이 %d%s · 쏘기(3) %2d칸/붙듦 %d/되풀이 %d%s · 죽어가기(9) %2d칸/붙듦 %d/되풀이 %d\n",
-                                    ms.name, t->monsterAnims[1].frames, t->monsterAnims[1].hold, (int)t->monsterAnims[1].loop,
-                                    melee ? (" 때림칸 " + std::to_string(hitF)).c_str() : "",
-                                    t->monsterAnims[3].frames, t->monsterAnims[3].hold, (int)t->monsterAnims[3].loop,
-                                    shoot ? (" 쏨칸 " + std::to_string(shotF)).c_str() : "",
-                                    t->monsterAnims[9].frames, t->monsterAnims[9].hold, (int)t->monsterAnims[9].loop);
-                    }
-                    srv.Log("[몬스터칸] 열셋 중 표 없음 %d · 때림칸이 칸 수 밖 %d · 쏨칸이 칸 수 밖 %d · 공격 애니가 되풀이 %d\n", noDraw, meleeOut, shotOut, loopAtk);
-                }
-            }
-            // ★ 09-23 2-a1 — 함성(46)·광전사(45) 애니 길이도 찍는다. 함성 애니가 끝나면 켜짐 값이 내려가 광전사·작살을 더는 안 막으므로
-            //   「함성 지속 120 중 얼마 동안 막나」가 이 값으로 정해진다(플랜 v2 에서 미확인이던 것)
-            //   ★ 3-a — 점프(3) 애니 길이 = 떠 있는 틱 수(칸 × (붙듦+1))
-            srv.Log("[애니] 사람 STAT %d개 — 주먹 %d칸/붙듦 %d · 훅 %d칸/붙듦 %d · 함성(46) %d칸/붙듦 %d · 광전사(45) %d칸/붙듦 %d · 점프(3) %d칸/붙듦 %d\n",
-                        tdb.PlayerAnimCount(),
-                        tdb.PlayerAnim(23).frames, tdb.PlayerAnim(23).hold,
-                        tdb.PlayerAnim(25).frames, tdb.PlayerAnim(25).hold,
-                        tdb.PlayerAnim(46).frames, tdb.PlayerAnim(46).hold,
-                        tdb.PlayerAnim(45).frames, tdb.PlayerAnim(45).hold,
-                        tdb.PlayerAnim(3).frames, tdb.PlayerAnim(3).hold);
-            // ★ 09-23 nine-defects 4-c1 — 재질(MATERIAL). 타격 소리가 「맞는 쪽 재질 × 때린 것 재질」로 갈린다(`server/sound.go:31~161`).
-            //   재질별 종류 수 + 우리 무기 표 여덟의 재질 + 갑옷(ARMOR) 재질 분포를 찍는다 — 읽혔다는 근거다
-            {
-                static const char* const kMat[15] = { "FLESH", "CLOTH", "ANIMAL_HIDE", "WOOD", "METAL", "STONE", "EARTH", "LIQUID",
-                                                      "GLASS", "PAPER", "SNOW", "MUD", "MAGIC", "DIAMOND", "NONE" };
-                size_t perBit[15] = {}, declared = 0, armorPerBit[15] = {}, armors = 0, unknown = 0, nullDecl = 0;
-                std::string unknownRaw;
-                for (uint16_t w = 1; w <= tdb.Count(); ++w) {
-                    const nox::ThingInfo* t2 = tdb.ByWire(w);
-                    if (!t2) continue;
-                    if (!t2->materialRaw.empty()) ++declared;
-                    const uint32_t m = nox::ParseMaterial(t2->materialRaw);
-                    // 선언했는데 이름을 하나도 못 알아본 것 — 조용히 0 이 되면 「재질 없음」과 안 갈린다.
-                    //   `NULL` 은 정답지가 **정상 값 0** 으로 받는다(libs `enum/enum.go:66`) — 따로 센다
-                    if (!t2->materialRaw.empty() && m == 0) {
-                        if (t2->materialRaw == "NULL") ++nullDecl;
-                        else if (++unknown <= 3) unknownRaw += " " + t2->materialRaw;
-                    }
-                    const bool armor = (nox::ParseObjectClass(t2->classRaw) & 0x2000000) != 0;
-                    if (armor) ++armors;
-                    for (int b = 0; b < 15; ++b) if (m & (1u << b)) { ++perBit[b]; if (armor) ++armorPerBit[b]; }
-                }
-                srv.Log("[재질] MATERIAL 선언 %zu종 / %zu · NULL(재질 0) %zu · 못 읽은 이름 %zu%s —", declared, tdb.Count(), nullDecl,
-                            unknown, unknownRaw.c_str());
-                for (int b = 0; b < 15; ++b) if (perBit[b]) srv.Log(" %s %zu", kMat[b], perBit[b]);
-                srv.Log(" · 갑옷 %zu종:", armors);
-                for (int b = 0; b < 15; ++b) if (armorPerBit[b]) srv.Log(" %s %zu", kMat[b], armorPerBit[b]);
-                srv.Log(" · 무기:");
-                for (const auto& wp : nox::kWeapons) {
-                    const nox::ThingInfo* t2 = tdb.ByWire(tdb.WireByName(wp.name));
-                    srv.Log(" %s=%s", wp.name, t2 ? (t2->materialRaw.empty() ? "(없음→NONE)" : t2->materialRaw.c_str()) : "?");
-                }
-                const nox::ThingInfo* np = tdb.ByWire(tdb.WireByName("NewPlayer"));
-                srv.Log(" · NewPlayer=%s\n", np ? (np->materialRaw.empty() ? "(없음→NONE)" : np->materialRaw.c_str()) : "?");
-                // ★ 4-c2 — 타격 소리 표: 와이어 번호별 재질 · 가슴갑옷(ARMOR + BREASTPLATE)인가 · 사람 몸(NewPlayer) 번호
-                std::vector<uint32_t> matByWire(static_cast<size_t>(tdb.Count()) + 1, 0u);
-                std::vector<uint8_t> breastByWire(static_cast<size_t>(tdb.Count()) + 1, 0);
-                size_t nBreast = 0;
-                for (uint16_t w = 1; w <= tdb.Count(); ++w) {
-                    const nox::ThingInfo* t2 = tdb.ByWire(w);
-                    if (!t2) continue;
-                    matByWire[w] = nox::ParseMaterial(t2->materialRaw);
-                    if ((nox::ParseObjectClass(t2->classRaw) & 0x2000000) && (nox::ParseArmorClass(t2->subclassRaw) & 0x4)) {
-                        breastByWire[w] = 1;
-                        ++nBreast;
-                    }
-                }
-                const uint16_t npWire = tdb.WireByName("NewPlayer");
-                // 직업 기본 장비 여섯이 무엇으로 읽히나 — 와이어 번호가 thing.bin 색인과 같다는 것도 같이 본다(이름 → 번호 대조)
-                srv.Log("[타격소리표] 가슴갑옷 %zu종 · NewPlayer 번호 %u · 기본 장비:", nBreast, (unsigned)npWire);
-                const std::pair<const char*, uint16_t> kLoad[] = {
-                    { "StreetShirt", nox::kItemStreetShirt }, { "StreetPants", nox::kItemStreetPants },
-                    { "StreetSneakers", nox::kItemStreetSneakers }, { "WizardRobe", nox::kItemWizardRobe },
-                    { "WoodenShield", nox::kItemWoodenShield }, { "Longsword", nox::kItemLongsword } };
-                for (const auto& ld : kLoad) {
-                    const uint16_t w = tdb.WireByName(ld.first);
-                    srv.Log(" %s(번호 %u%s·재질 0x%x%s)", ld.first, (unsigned)w, w == ld.second ? "" : " ⚠표와다름",
-                                w < matByWire.size() ? matByWire[w] : 0u, (w < breastByWire.size() && breastByWire[w]) ? "·가슴갑옷" : "");
-                }
-                // ★ 4-c3a — 부를 수 있는 소환수 열셋의 재질(맞으면 기본 타격 소리 `532E20` 가 이 재질로 간다 · 나무·돌·흙이면 부서지는 소리)
-                srv.Log(" · 소환수:");
-                for (const auto& ms : nox::kMonsters) {
-                    const uint16_t w = tdb.WireByName(ms.name);
-                    srv.Log(" %s=0x%x", ms.name, w < matByWire.size() ? matByWire[w] : 0u);
-                }
-                // ★ 4-c3b2 — 날아가는 것·놓인 것·맵 불이 맞히면 이 재질이 「때린 것」이다. NONE(0x4000)이면 사람은 표에 조합이 없어 소리 없음 · 소환수는 거름
-                srv.Log(" · 때린 물건:");
-                for (const char* nm : { "HarpoonBolt", "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "MercArcherArrow", "Pixie",
-                                        "ToxicCloud", "SmallFist", "MediumFist", "LargeFist", "MediumFlame", "FlameCleanse", "BlueFlameCleanse",
-                                        "SmallFlameImmobile", "MediumFlameImmobile", "FlameImmobile" }) {
-                    const uint16_t w = tdb.WireByName(nm);
-                    srv.Log(" %s=%s0x%x", nm, w ? "" : "⚠없음 ", w < matByWire.size() ? matByWire[w] : 0u);
-                }
-                srv.Log("\n");
-                srv.SetMaterialTables(std::move(matByWire), std::move(breastByWire), npWire);
             }
             if (!props.empty()) {
                 srv.Log("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());
@@ -1655,120 +1825,12 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 if (!getenv("NOX_NO_DOOR_WALLS")) srv.AttachDoorWalls();   // A/B 스위치(09-22)
                 srv.Log("[문·벽] 문짝 가운데 칸에 벽을 붙였다 — 닫힌 문이 걸음을 막는다(밀어내기는 안 한다) · 옛 식(경첩 칸)과 칸이 다른 문 %zu(옛 칸에 맵 벽 %zu · 새 칸에 맵 벽 %zu)\n",
                             srv.DoorCellDiff(), srv.DoorCellOldHadWall(), srv.DoorCellNewHadWall());
-                // ★ 09-29 Z1-A — 열쇠 종류(잠김 1~4)의 와이어 번호(`DoorCheckKey` 는 이름으로 견준다)
-                srv.SetKeyTypes(tdb.WireByName("SilverKey"), tdb.WireByName("GoldKey"),
-                                tdb.WireByName("RubyKey"), tdb.WireByName("SapphireKey"));
-                srv.Log("[열쇠] 은 %u · 금 %u · 루비 %u · 사파이어 %u(와이어 번호 — 0 이면 못 찾음)\n",
-                            (unsigned)tdb.WireByName("SilverKey"), (unsigned)tdb.WireByName("GoldKey"),
-                            (unsigned)tdb.WireByName("RubyKey"), (unsigned)tdb.WireByName("SapphireKey"));
             }
 
-            // ★ 주문 마나 비용 — 같은 파일의 SPEL 섹션에서 온다.
-            //   주문 번호(와이어)로 표를 만든다: 번호 → 속이름 → 마나.
-            //   ⚠ 여기가 0 이면 **모든 주문이 공짜**가 된다. 아래 로그로 바로 보인다.
-            // ★ 2026-09-13 묶음 4-a — 비용만이 아니라 **정의 전체**(깃발·음소)를 넣는다. 음소 나무가 여기서 자란다.
-            for (int id = 0; id < nox::kSpellCount; ++id) {
-                const char* nm2 = nox::SpellName(id);
-                if (!nm2 || !*nm2) continue;
-                for (const auto& sr : tdb.Spells()) {
-                    if (sr.name != nm2) continue;
-                    // ★ 10-f — 소리 셋도 같이 넣는다(이름 → 번호)
-                    srv.SetSpellDef(static_cast<uint8_t>(id), sr.mana, sr.flags, sr.phonemes,
-                                    nox::SoundByName(sr.castSound.c_str()),
-                                    nox::SoundByName(sr.onSound.c_str()),
-                                    nox::SoundByName(sr.offSound.c_str()));
-                    // ★ 2026-09-18 ⑰ — **음소가 없는 주문**을 찍는다.
-                    //   음소 나무를 못 따라가면 시전이 「모름」으로 끝난다(`Server.cpp:4731`).
-                    //   컨저러 주먹(29)이 「받음 7 · 주문 0」 으로 끝난 까닭 후보다.
-                    if (sr.phonemes.empty()) {
-                        srv.Log("[주문 음소없음] %d(%s)\n", id, nm2);
-                    }
-                    break;
-                }
-            }
         }
-        // ★ 2026-09-20 묶음 10 — **능력 소리**를 thing.bin `ABIL` 칸에서 넣는다.
-        //   이름은 정답지 `server/spells_abil.go:196~199 AbilityNames` 차례 그대로(1~5).
-        //   전에는 이 칸을 통째로 건너뛰어 능력을 써도 소리가 한 건도 안 나갔다(⑧)
-        {
-            static const char* const kAbilNames[6] = {
-                "", "ABILITY_BERSERKER_CHARGE", "ABILITY_WARCRY",
-                "ABILITY_HARPOON", "ABILITY_TREAD_LIGHTLY", "ABILITY_EYE_OF_THE_WOLF",
-            };
-            int wired = 0;
-            for (uint8_t n = 1; n <= 5; ++n) {
-                for (const auto& ar : tdb.Abilities()) {
-                    if (ar.name != kAbilNames[n]) continue;
-                    srv.SetAbilitySound(n, nox::SoundByName(ar.useSound.c_str()),
-                                        nox::SoundByName(ar.offSound.c_str()));
-                    if (nox::SoundByName(ar.useSound.c_str()) != 0) ++wired;
-                    break;
-                }
-            }
-            srv.Log("[능력 소리] thing.bin ABIL %zu칸 · 다섯 중 %d개에 쓸 때 소리가 붙었다\n",
-                        tdb.Abilities().size(), wired);
-        }
+        // ★ 10-12 플랜 B 작업 7e-2 — 이 자리의 게임 데이터 넣기와 그 진단 줄은 `BuildGameTables`(서버가 뜰 때 한 번)로 옮겼다
         srv.Log("[맵] %s — 벽 %zu칸 · 정적 %zu개(변환 실패 %zu) · 충돌 켜짐\n",
                     mapPath.c_str(), ws.size(), nStat, nSkip);
-        srv.Log("[주문] 마나 표 %zu개 — 0 이면 thing.bin 을 못 읽은 것이고 주문이 공짜가 된다\n",
-                    srv.SpellCostCount());
-        // ★ 09-29 B7 — 비홀더가 쥐는 주문 둘의 깃발(몬스터가 고르는 조건 0x10 · 겨눔 0x4 · 공격 0x20 · 지속 — `castSpell` 갈래)
-        srv.Log("[주문] 깃발 — 24(전기 광선) 0x%x · 4(점멸) 0x%x\n", srv.SpellFlags(24), srv.SpellFlags(4));
-        // ★ 2026-09-14 묶음 4-a4 — gamedata.bin(기획 상수 · 버프 길이 등). 태그 ARENA
-        {
-            nox::Gamedata gd;
-            if (gd.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\gamedata.bin")) {
-                srv.SetGamedata(gd);
-                srv.Log("[기획값] gamedata.bin %zu개 · ARENA TargetedSpellLifetime %.0f · InvulnerabilityEnchantDuration %.0f\n",
-                            gd.Count(), gd.Float("ARENA", "TargetedSpellLifetime"), gd.Float("ARENA", "InvulnerabilityEnchantDuration"));
-            } else {
-                srv.Log("[기획값] ⚠ gamedata.bin 못 읽음 — %s\n", gd.Error().c_str());
-            }
-        }
-        // ★ 09-23 nine-defects 2-a3 — **반주문 재료.** ① 지워지는 날아가는 것 = 클래스 `MISSILE` · 서브클래스 `MISSILE_COUNTERSPELL`
-        //   (정답지 `obj.SubClass().AsMissile().Has(MissileMissileCounterSpell)`) ② 반주문이 끄는 주문 = SPEL 깃발 `CAN_COUNTER`(0x40000).
-        //   ②를 이름으로 찍는다 — 함성 외침은 같은 틱에 기절(STUN)을 걸고 반주문을 부르므로, STUN 이 여기 있으면 기절이 도로 풀린다
-        {
-            auto hasTok = [](const std::string& raw, const char* tok) {
-                size_t st = 0;
-                while (st <= raw.size()) {
-                    size_t e = raw.find('+', st);
-                    if (e == std::string::npos) e = raw.size();
-                    std::string t = raw.substr(st, e - st);
-                    while (!t.empty() && t.back() == ' ') t.pop_back();
-                    while (!t.empty() && t.front() == ' ') t.erase(t.begin());
-                    if (t == tok) return true;
-                    st = e + 1;
-                }
-                return false;
-            };
-            std::string mis;
-            for (uint16_t w = 1; w <= tdb.Count(); ++w) {
-                const nox::ThingInfo* t2 = tdb.ByWire(w);
-                if (!t2 || !hasTok(t2->classRaw, "MISSILE") || !hasTok(t2->subclassRaw, "MISSILE_COUNTERSPELL")) continue;
-                srv.SetCounterMissileType(w);
-                if (srv.CounterMissileTypeCount() <= 8) { mis += " "; mis += t2->name; }
-            }
-            std::string spells;
-            int nSp = 0;
-            for (int id = 1; id < nox::kSpellCount; ++id) {
-                if (!(srv.SpellFlags(static_cast<uint8_t>(id)) & 0x40000)) continue;
-                ++nSp;
-                spells += " "; spells += nox::SpellName(id);
-            }
-            srv.Log("[반주문] 둘레 %.0f · 지워지는 날아가는 것 %zu종(앞 8:%s) · 끄는 주문 %d개 —%s\n",
-                        srv.BalanceFloat("CounterspellRange"), srv.CounterMissileTypeCount(), mis.c_str(), nSp, spells.c_str());
-            // ★ 2-a4 — 주문 쓰는 몬스터(monster.bin `CAN_CAST_SPELLS`, `GameBalance.h` 표) → 와이어 번호. 함성 무효화가 이것만 본다
-            int nCast = 0;
-            std::string miss;
-            for (const char* nm : nox::kMonstersCanCastSpells) {
-                const uint16_t w = tdb.WireByName(nm);
-                if (w) { srv.SetCastingMonsterType(w); ++nCast; }
-                else { miss += " "; miss += nm; }
-            }
-            srv.Log("[주문쓰는몬스터] %d / %zu종%s%s\n", nCast, sizeof(nox::kMonstersCanCastSpells) / sizeof(nox::kMonstersCanCastSpells[0]),
-                        miss.empty() ? "" : " · ⚠ thing.bin 에 없음:", miss.c_str());
-        }
         // ★★ 2026-09-15 — **모드 깃발을 서버에 실제로 걸어 준다.**
         //   여기가 없어서 묶음 8 규칙(탈락전·왕죽이기·깃발 판 끝)이 시험에서만 켜졌다.
         //   `gameSettings_.gameFlags` 하나가 **두 군데**로 간다 —
@@ -2036,6 +2098,12 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 srv.Log("[시험] ⚠ 아이템이 없다 — 스윕이 무효다\n");
         }
     }
+    // ★ 10-12 플랜 B 작업 7e-2 — 이 방이 쓰는 게임 데이터 표를 한 줄로(켠 것을 찍는다). 같이 쓰는 표면 서버가 뜰 때 만든 것 그대로이고,
+    //   방 설정이 표에 넣었으면(`--give-items` 틀) 이 방만의 사본이다. 수가 0 이면 표를 못 받은 것이다
+    if (!mapPath.empty())
+        srv.Log("[게임데이터] 이 방의 표 — %s · 몬스터 애니 %zu종 · 주문 마나 %zu · 소리 %zu\n",
+                srv.SharesGameTables() ? "서버가 뜰 때 만든 것을 같이 씀" : "이 방만의 사본(방 설정이 넣음)",
+                srv.MonsterAnimTypes(), srv.SpellCostCount(), srv.SoundDefCount());
     // ★ 10-12 작업 7a — 이 자리에 있던 서버 찾기 답의 틀 넣기(`SetInfoTemplate`)는 프로세스 몫이라 `ConfigureNetwork` 로 옮겼다.
 
     // ★★ 접속 뒤에 내려줄 것 — 접속 묶음(216바이트)과 맵 지정(41바이트).

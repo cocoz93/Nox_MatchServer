@@ -5487,6 +5487,7 @@ private:
     uint32_t sightForceFrame_ = 0xFFFFFFFFu;   // dword_5d4594_2487684 — 이 프레임엔 모든 몬스터가 다시 훑는다(순간이동·살금살금 켜기 다음 프레임)
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
     static constexpr int kPlayerAnimSlots = 55;     // ThingDb kPlayerAnimTypeCount 와 같은 길이
+public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바깥(서버가 뜰 때 표를 만드는 `BuildGameTables`)이 쓴다
     // ★ 10-12 플랜 B 작업 7e-1 — 게임 데이터 표(`Docs/ROOMS_DESIGN.md` 「작업 7e 다시 짜기」). thing.bin · gamedata.bin · modifier.bin ·
     //   soundset.bin 에서 오고 판 중에 안 바뀐다(7d 조사). 방들이 한 벌을 같이 가리킨다(`gt_` — 7e-2). 넣기 함수는 그대로 두고
     //   `GtMut()`로 쓴다 — 같이 쓰는 표를 가리키는 게임이 넣으려 하면 제 사본을 만들어 쓴다(쓸 때 복사 · 같이 쓰는 표는 안 바뀐다).
@@ -5528,6 +5529,12 @@ private:
         std::map<uint16_t, PhysBody> typeBodies;   // 소환수 종류 → 몸
         int playerAnimFrames[kPlayerAnimSlots][2] = {};   // [칸 수, 붙드는 틱] — PlayerAnimFrames(i)
     };
+    // ★ 10-12 작업 7e-2 — 같이 쓰기. 내놓은 게임은 제 표를 얼린다(다음에 넣으면 제 사본에 쓴다 — 받은 쪽 표는 안 바뀐다)
+    std::shared_ptr<const GameTables> ShareGameTables() { gtOwn_.reset(); return gt_; }
+    // 같이 쓰는 표를 가리킨다(제 표는 버린다). 이 뒤에 넣으면 제 사본을 만들어 쓴다
+    void UseGameTables(std::shared_ptr<const GameTables> t) { if (t) { gt_ = std::move(t); gtOwn_.reset(); } }
+    bool SharesGameTables() const { return gtOwn_ == nullptr; }   // 같이 쓰는 표를 그대로 가리키나(넣기로 제 사본을 만들었으면 거짓)
+private:
     std::shared_ptr<GameTables> gtOwn_ = std::make_shared<GameTables>();   // 제 표 — 넣기가 쓴다(같이 쓰는 표를 가리키면 비어 있다)
     std::shared_ptr<const GameTables> gt_ = gtOwn_;                         // 읽는 표 — 제 것이거나 방들이 같이 쓰는 것
     GameTables& GtMut() {   // 쓸 때 복사

@@ -12,8 +12,11 @@
 #include <vector>
 
 #include "nox/Messages.h"
+#include "nox/Gamedata.h"
+#include "nox/Server.h"   // ★ 10-12 작업 7e-2 — `Server::GameTables`(게임 데이터 표 묶음)
+#include "nox/ThingDb.h"
 
-namespace nox { class Server; class CUdpServer; }
+namespace nox { class CUdpServer; }
 
 struct BotWant { int x = -1, y = -1; std::string cls = "warrior"; };
 
@@ -26,6 +29,8 @@ struct ServerOptions {
     //   토큰 검사 끄기는 녹음 재생 · 시험 도구 · LAN 실행만 — 모두 방 0.
     std::string configPath;     // `--config <파일>`
     bool noJoinToken = false;   // `--no-join-token`
+    // ★ 10-12 플랜 B 작업 7e-2 — 게임 폴더(thing.bin · gamedata.bin · soundset.bin · modifier.bin). 옛 자리는 이 경로를 코드에 박아 두었다
+    std::string gameDir = "C:\\Program Files\\GOG Galaxy\\Games\\Nox";   // `--game-dir <폴더>`
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)
@@ -145,7 +150,22 @@ struct WorldExtras {
 // 방 몫 — 실행 인자대로 `srv` 에 세계를 차린다(맵 · 규칙 · 물건 · 몬스터 · 접속 묶음). 0 이면 다 됐고, 아니면 그 값으로 끝낸다(`main` 의 종료 코드).
 //   봇(`--debug-bot`)은 통신 층 세션이 있어야 서므로 세션을 여는 함수를 받는다 — 비었으면 봇을 안 세운다
 using OpenSessionFn = std::function<int64_t(const std::string& addr)>;
-int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSessionFn& openSession, WorldExtras& out);
+
+// ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터 파일 넷(서버가 뜰 때 한 번 읽어 표 만들기와 방 차리기가 빌려 쓴다)
+struct GameFiles {
+    std::string dir;
+    nox::ThingDb thing;               bool thingOk = false;
+    nox::Gamedata gamedata;           bool gamedataOk = false;   // 못 읽었으면 `gamedata.Error()`
+    std::vector<nox::SoundSet> soundSets;  bool soundSetsOk = false;  std::string soundSetsErr;
+    std::vector<uint8_t> modifier;    // 복호본(못 읽었으면 비어 있다)
+};
+void LoadGameFiles(const std::string& dir, GameFiles& f);
+// 게임 데이터 표 한 벌 — 방들이 같이 가리킨다(`Server::UseGameTables`)
+std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& files);
+
+// 방 몫 — 맵 방이면 `tables`(위)가 있어야 한다. 게임 데이터 파일은 `files`에서 빌려 쓴다(방을 차릴 때 파일을 안 읽는다)
+int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,
+                   const OpenSessionFn& openSession, WorldExtras& out);
 // 프로세스 몫 — 통신 층 설정(서버 찾기 답의 틀 · 순번 되받기). 서버에 한 번, 첫 방을 차린 뒤.
 //   `tmpl`(서버 찾기 답의 틀)의 맵 이름은 첫 방의 `lanMapName` 으로 채운다
 int ConfigureNetwork(nox::CUdpServer& net, const ServerOptions& opt, nox::MsgServerInfo& tmpl, const WorldExtras& firstRoom);
