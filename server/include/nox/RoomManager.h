@@ -48,6 +48,8 @@ public:
     const Server& Game() const { return _game; }
     const CRoomLoad& Load() const { return _load; }
     void ResetLoad() { _load = CRoomLoad{}; }
+    // ★ 10-12 플랜 B 작업 7c — 이 방이 낸 보내기 요청(`SEND_MSG`) 누계. 초당 진단이 「이 방이 이번 틱에 보낸 것이 있나」를 본다
+    unsigned long long SendRequests() const { return _sendRequests; }
 
 private:
     friend class CRoomManager;
@@ -56,6 +58,7 @@ private:
     int _ticks = 0;            // 이번 `BeginTick` 이 정한 돌 틱 수(`RunTick` 이 쓴다)
     bool _wasRoundOver = false;   // 판 끝 이벤트 — 거짓 → 참으로 바뀔 때 한 번
     CRoomLoad _load;
+    unsigned long long _sendRequests = 0;   // ★ 10-12 작업 7c — 방 관리자가 요청을 옮길 때(`PullRequests`) 센다
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).
@@ -98,6 +101,9 @@ public:
     Server& Game(int roomId = kFirstRoom) { return Room(roomId).Game(); }
     const Server& Game(int roomId = kFirstRoom) const { return Room(roomId).Game(); }
     size_t RoomCount() const { return _rooms.size(); }
+    // ★ 10-12 플랜 B 작업 7c — 방을 번호 차례로 돈다(판 차리기 · 진단 · `[처음]` 모으기). 도는 동안 방을 만들거나 닫지 않는다
+    template <class F> void ForEachRoom(F&& f) { for (auto& kv : _rooms) f(*kv.second); }
+    template <class F> void ForEachRoom(F&& f) const { for (const auto& kv : _rooms) f(static_cast<const CRoom&>(*kv.second)); }
 
     // ── 방 만들기 · 닫기(실행 중에도) ──
     int CreateRoom();   // 돌려주는 값 = 새 방 id

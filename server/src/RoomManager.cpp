@@ -238,6 +238,7 @@ void CRoomManager::PullRequests(CRoom& room) {
     for (NetworkRequest& q : _pull) {
         // ★ 작업 6b — 나감. 방에서 사람이 빠지는 길(자리 비우기 · 내보내기)은 모두 이 끊기 요청으로 끝난다
         if (q.type == NetworkRequest::Type::DISCONNECT_SESSION && _seats.erase(q.sessionId) != 0) ++_stats.left;
+        if (q.type == NetworkRequest::Type::SEND_MSG) ++room._sendRequests;   // ★ 10-12 작업 7c — 방마다 보낸 수
         _requests.push_back(std::move(q));
     }
     _pull.clear();
