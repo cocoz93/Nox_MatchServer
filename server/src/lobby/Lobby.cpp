@@ -13,6 +13,12 @@ namespace {
 // XWIS 의 채팅 로비 셋 — 화면 이름 Brin · Ix · Dun Mir (opennox xwis.go:22-26). 녹음 LIST 답 그대로.
 const char* const kChatLobbies[] = {"#Lob_37_0", "#Lob_37_1", "#Lob_37_2"};
 
+// ★ 10-11 토큰 작업 5 — DLL 없는 클라의 인사말에 덧붙이는 줄(영문 — WOL 글자는 라틴 1)
+const char* const kNoClientMotd[] = {
+    "*** Nox_Origin client patch (wsock32.dll) is missing ***",
+    "You can chat, but joining a game needs the patch. Ask the server host.",
+};
+
 bool IsChatLobby(const std::string& ch) {
     for (const char* l : kChatLobbies)
         if (ch == l) return true;
@@ -130,18 +136,21 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         return;
     }
     if (cmd == "USER") {   // 로그인 묶음의 끝 — 인사(375 · 372…) 뒤 376 이 「로그인 끝」
-        // ★ 10-10 토큰 작업 3 — DLL 이 없거나 판이 낮으면 여기서 거절한다(토큰을 못 실으니 게임 서버에 못 들어간다).
-        //   `ERROR` 는 IRC 의 「끊는다」 줄 — 정품 화면에 무엇이 뜨는지는 사람 확인(`TOKEN_DESIGN.md` 미확인)
-        if (c.clientVer < kNoxClientMinVersion) {
+        // ★ 10-11 토큰 작업 5 — DLL 이 없거나 판이 낮아도 로그인은 받고, 인사말에 패치가 필요하다고 싣는다. 방 참가엔 토큰을 안 준다.
+        //   10-10 처음엔 `ERROR` 를 보내고 끊었는데, 정품 화면은 아무 말 없이 「Connecting to Westwood Online...」에서 멈췄다
+        //   (사람 확인 — 고장처럼 보인다). XWIS 도 손님 로그인을 끊지 않고 인사말에 경고를 실어 들여보낸다(10-06 녹음 c4:4000)
+        const bool noClient = c.clientVer < kNoxClientMinVersion;
+        if (noClient) {
             if (c.clientVer < 0) ++stats_.loginNoClient;
             else ++stats_.loginOldClient;
-            log_.push_back("[로그인 거절] " + c.nick + " — 클라 DLL " +
-                           (c.clientVer < 0 ? std::string("없음(NOXCLIENT 줄 없음)") : "판 " + std::to_string(c.clientVer) + " 낮음"));
-            out.push_back({conn, "ERROR :Closing Link: " + cfg_.serverName + " needs the Nox_Origin client patch (wsock32.dll)", true});
-            return;
+            log_.push_back("[로그인 안내] " + c.nick + " — 클라 DLL " +
+                           (c.clientVer < 0 ? std::string("없음(NOXCLIENT 줄 없음)") : "판 " + std::to_string(c.clientVer) + " 낮음") +
+                           " · 인사말로 알림 · 방 참가엔 토큰 없음");
         }
         out.push_back({conn, ": 375 u :- " + (cfg_.motd.empty() ? std::string() : cfg_.motd[0])});
         for (size_t i = 1; i < cfg_.motd.size(); ++i) out.push_back({conn, ": 372 u :- " + cfg_.motd[i]});
+        if (noClient)
+            for (const char* l : kNoClientMotd) out.push_back({conn, std::string(": 372 u :- ") + l});
         out.push_back({conn, ": 376 u"});
         return;
     }
@@ -194,33 +203,35 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
             log_.push_back("[모르는 방] " + std::string(line));
             return;
         }
-        if (c.clientVer < kNoxClientMinVersion) {   // 로그인(USER)을 건너뛰고 온 참가 — 토큰을 주지 않는다
-            ++stats_.joinNoClient;
-            log_.push_back("[참가 거절] " + c.nick + " — 클라 DLL 확인 전 방 참가");
-            return;
-        }
         const LobbyRoom& lr = cfg_.rooms[static_cast<size_t>(ri)];
         const std::string room = Channel(lr);
-        // ★ 10-10 토큰 작업 3 — 입장 토큰. 답 바로 앞 줄이어야 한다 — 클라는 답을 받고 1ms 뒤 게임 서버에 접속 시도를 보낸다
-        //   (10-10 로그). DLL 이 이 줄을 떼어 쥐고 접속 시도 · CONNECT 꼬리에 붙인다.
-        JoinToken tok;
-        tok.roomId = lr.gameRoomId;
-        tok.clientIp = c.peerIp;   // 게임 서버가 UDP 를 보낸 주소와 견준다 — 같은 공유기 뒤면 같은 바깥 주소
-        tok.expiresAt = cfg_.unixNow() + kJoinTokenLifetimeSec;
-        if (cfg_.nonce) tok.nonce = cfg_.nonce();
-        else RandomBytes(reinterpret_cast<uint8_t*>(&tok.nonce), sizeof(tok.nonce));
-        tok.account = c.nick;
-        uint8_t raw[kJoinTokenSize];
-        if (!SignJoinToken(cfg_.joinKey, tok, raw)) {
-            ++stats_.tokenSignFailed;
-            log_.push_back("[토큰 실패] 서명 — " + c.nick + " → " + room);
-            return;   // 답을 안 하면 클라는 방에 못 들어간 채 남는다 — 토큰 없이 게임 서버로 보내는 것보다 낫다
+        // ★ 10-11 토큰 작업 5 — 토큰은 DLL 이 있는 클라에게만. 없으면(로그인 전 참가 포함) 또는 서명이 실패하면 토큰 없이 원래 답만 —
+        //   클라는 게임 서버에서 `0x13` 사유 4 로 거절된다. 답을 안 하면 클라가 참가 화면에서 멈춘다(10-10 로그인 거절 때 멈춘 것과 같은 꼴)
+        if (c.clientVer < kNoxClientMinVersion) {
+            ++stats_.joinNoClient;
+            log_.push_back("[참가 — 토큰 없음] " + c.nick + " → " + room + " (클라 DLL 없음 — 게임 서버가 거절할 것)");
+        } else {
+            // ★ 10-10 토큰 작업 3 — 입장 토큰. 답 바로 앞 줄이어야 한다 — 클라는 답을 받고 1ms 뒤 게임 서버에 접속 시도를 보낸다
+            //   (10-10 로그). DLL 이 이 줄을 떼어 쥐고 접속 시도 · CONNECT 꼬리에 붙인다.
+            JoinToken tok;
+            tok.roomId = lr.gameRoomId;
+            tok.clientIp = c.peerIp;   // 게임 서버가 UDP 를 보낸 주소와 견준다 — 같은 공유기 뒤면 같은 바깥 주소
+            tok.expiresAt = cfg_.unixNow() + kJoinTokenLifetimeSec;
+            if (cfg_.nonce) tok.nonce = cfg_.nonce();
+            else RandomBytes(reinterpret_cast<uint8_t*>(&tok.nonce), sizeof(tok.nonce));
+            tok.account = c.nick;
+            uint8_t raw[kJoinTokenSize];
+            if (!SignJoinToken(cfg_.joinKey, tok, raw)) {
+                ++stats_.tokenSignFailed;
+                log_.push_back("[토큰 실패] 서명 — " + c.nick + " → " + room + " (토큰 없이 답함)");
+            } else {
+                ++stats_.tokensIssued;
+                out.push_back({conn, "NOXTOKEN " + IpDotted(cfg_.gameServerIp) + ":" + std::to_string(cfg_.gameServerPort) + " " +
+                                         ToHex(raw, sizeof(raw))});
+                log_.push_back("[토큰] " + c.nick + " → " + room + " (게임 방 " + std::to_string(lr.gameRoomId) + " · " +
+                               IpDotted(c.peerIp) + ")");
+            }
         }
-        ++stats_.tokensIssued;
-        out.push_back({conn, "NOXTOKEN " + IpDotted(cfg_.gameServerIp) + ":" + std::to_string(cfg_.gameServerPort) + " " +
-                                 ToHex(raw, sizeof(raw))});
-        log_.push_back("[토큰] " + c.nick + " → " + room + " (게임 방 " + std::to_string(lr.gameRoomId) + " · " +
-                       IpDotted(c.peerIp) + ")");
         members_[room].insert(conn);
         // `1 32 37 1 0 <내 IP> 1` — 녹음 그대로, 내 IP 만 바꾼다(앞 칸들 뜻 확인 안 함)
         out.push_back({conn, ":" + c.nick + "!u@h JOINGAME 1 32 37 1 0 " + std::to_string(c.peerIp) + " 1 :" + room});

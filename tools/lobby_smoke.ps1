@@ -69,12 +69,13 @@ try {
   $k.c.Close()
 
   Write-Host "로비 :$LobbyPort"
-  # DLL 없는 로그인(NOXCLIENT 없음) — ERROR 한 줄 뒤 로비가 끊는다
+  # DLL 없는 로그인(NOXCLIENT 없음) — 끊지 않고 로그인 끝(376)까지, 인사말에 패치 안내(10-11 — ERROR 로 끊으면 정품이 멈춘 듯 보였다)
   $k = Open $LobbyPort
   Send $k @('CVERS 11020 9472', 'NICK plain', 'USER UserName HostName irc.westwood.com :RealName')
-  $x = $k.r.ReadLine()
-  Check ($x -like 'ERROR *') "DLL 없는 로그인 → ERROR ($x)"
-  Check ($null -eq $k.r.ReadLine()) 'DLL 없는 로그인 뒤 로비가 끊는다'
+  $x = ReadUntil $k '376'
+  Check (($x | Where-Object { $_ -like ': 372 u :- `*`*`* Nox_Origin client patch*' }).Count -eq 1 -and (Kind $x[-1]) -eq '376') "DLL 없는 로그인 → 376 까지 · 인사말에 패치 안내 (받은 줄 $($x.Count))"
+  Send $k @('QUIT')
+  Check ((ReadUntil $k '607').Count -ge 1) 'DLL 없는 접속도 QUIT 답 607'
   $k.c.Close()
 
   $k = Open $LobbyPort
@@ -122,8 +123,8 @@ Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $ini -ErrorAction SilentlyContinue
 Write-Host "로비 출력: $summary"
 # 0 은 「없었다」와 「못 읽었다」를 안 가른다 — 로비가 센 접속·줄 수를 같이 본다
-#   접속 = 로비 찾기 2(왕복 · CRLF) + DLL 없는 로그인 1 + 로비 1 · 보낸 클라 줄 = 5 + 1 + 3 + 16 = 25
-#   받은 답 = 로비 찾기 3 + 610 1 + ERROR 1 + 로그인 4 · 329 · 목록 6 · 입장 3 · 퇴장 1 · 목록 3 · 참가 5(NOXTOKEN 포함) · 607 = 29
-Check ($summary -match '접속 4 · 받은 줄 25 · 보낸 줄 29') '로비가 센 접속 4 · 받은 줄 25 · 보낸 줄 29'
+#   접속 = 로비 찾기 2(왕복 · CRLF) + DLL 없는 로그인 1 + 로비 1 · 보낸 클라 줄 = 5 + 1 + 4 + 16 = 26
+#   받은 답 = 로비 찾기 3 + 610 1 + DLL 없는 로그인 6(375 · 372 · 안내 372 둘 · 376 · 607) + 로그인 4 · 329 · 목록 6 · 입장 3 · 퇴장 1 · 목록 3 · 참가 5(NOXTOKEN 포함) · 607 = 34
+Check ($summary -match '접속 4 · 받은 줄 26 · 보낸 줄 34') '로비가 센 접속 4 · 받은 줄 26 · 보낸 줄 34'
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)
 exit $(if ($script:fails) { 1 } else { 0 })

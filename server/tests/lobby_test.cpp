@@ -243,21 +243,42 @@ void LobbyUnitTests() {
     lb.OnLine(2, "PING def", out);
     Check(out.empty() && lb.TakeLog().size() == 1, "모르는 명령은 답 없이 처음 한 번만 기록");
 
-    // DLL 없는 로그인 · 판 낮음 · 로그인 전 참가 — 거절 갈래마다 센다
+    // DLL 없는 로그인 · 판 낮음 · 로그인 전 참가 — 갈래마다 센다
+    //   ★ 10-11 토큰 작업 5 — 끊지 않는다. 로그인은 받고 인사말(372)에 패치 안내 · 방 참가엔 토큰 없이 원래 답(게임 서버가 거절)
+    //   (10-10 처음엔 `ERROR` 로 끊었는데 정품 화면이 아무 말 없이 「Connecting…」에서 멈췄다)
+    auto hasLine = [](const std::vector<Out>& o, const std::string& prefix) {
+        for (const auto& x : o) if (x.line.rfind(prefix, 0) == 0) return true;
+        return false;
+    };
+    auto anyClose = [](const std::vector<Out>& o) {
+        for (const auto& x : o) if (x.closeAfter) return true;
+        return false;
+    };
     out.clear();
     lb.OnConnect(3, kLobbyPort, peer, loop);
     for (const char* l : {"CVERS 11020 9472", "NICK plain", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(3, l, out);
-    Check(out.size() == 1 && out[0].line.rfind("ERROR ", 0) == 0 && out[0].closeAfter && lb.Stats().loginNoClient == 1,
-          "NOXCLIENT 없는 로그인 → ERROR 하고 끊음(376 없음)");
+    Check(!out.empty() && out.back().line == ": 376 u" && hasLine(out, ": 372 u :- *** Nox_Origin client patch") && !anyClose(out) &&
+              !hasLine(out, "ERROR") && lb.Stats().loginNoClient == 1,
+          "NOXCLIENT 없는 로그인 → 끊지 않고 376 까지 · 인사말에 패치 안내");
+    out.clear();
+    lb.OnLine(3, "JOINGAME #NoxOrigin's_game 1 ", out);
+    Check(out.size() == 4 && !hasLine(out, "NOXTOKEN") && Tokens(out[0].line).size() > 1 && Tokens(out[0].line)[1] == "JOINGAME" &&
+              lb.Stats().joinNoClient == 1 && lb.Stats().tokensIssued == 1,
+          "DLL 없는 클라의 방 참가 → 원래 답 넷 · 토큰 없음");
     out.clear();
     lb.OnConnect(4, kLobbyPort, peer, loop);
     for (const char* l : {"NOXCLIENT 0", "NICK old", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(4, l, out);
-    Check(out.size() == 1 && out[0].closeAfter && lb.Stats().loginOldClient == 1 && lb.Stats().loginNoClient == 1,
-          "DLL 판 0 → 「판 낮음」으로 따로 세고 끊음");
+    Check(!out.empty() && out.back().line == ": 376 u" && hasLine(out, ": 372 u :- *** Nox_Origin client patch") && !anyClose(out) &&
+              lb.Stats().loginOldClient == 1 && lb.Stats().loginNoClient == 1,
+          "DLL 판 0 → 「판 낮음」으로 따로 세고 인사말 안내");
     out.clear();
     lb.OnConnect(5, kLobbyPort, peer, loop);
     for (const char* l : {"NICK early", "JOINGAME #NoxOrigin's_game 1 "}) lb.OnLine(5, l, out);
-    Check(out.empty() && lb.Stats().joinNoClient == 1 && lb.Stats().tokensIssued == 1, "로그인 전 방 참가 → 답 없음 · 토큰 없음");
+    Check(out.size() == 4 && !hasLine(out, "NOXTOKEN") && lb.Stats().joinNoClient == 2 && lb.Stats().tokensIssued == 1,
+          "로그인 전 방 참가 → 원래 답 넷 · 토큰 없음");
+    out.clear();
+    lb.OnLine(2, "JOINGAME #NoxOrigin's_game 1 ", out);   // DLL 있는 접속은 그대로 토큰
+    Check(out.size() == 5 && hasLine(out, "NOXTOKEN ") && lb.Stats().tokensIssued == 2, "DLL 있는 접속은 계속 토큰 + 원래 답 넷");
 }
 
 // ── 녹음 대조 ───────────────────────────────────────────────────────

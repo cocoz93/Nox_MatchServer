@@ -6,8 +6,9 @@
 // 2단계 범위 = 한 사람 한 바퀴: 로그인 → 방 목록 → 채팅 로비 입장 → 게임 버튼 → 고정 방 하나 참가.
 //   빠진 것 = 방 만들기 · 채팅 글 중계 · 같은 채널 다른 사람에게 입·퇴장 알리기(녹음이 없다 — 4단계).
 // ★ 10-10 토큰 작업 3 — 입장 토큰(`Docs/TOKEN_DESIGN.md`). 로비는 토큰 방식 하나뿐이다.
-//   · 클라 DLL(`tools/wsock32_proxy`)이 4000 로그인 앞에 `NOXCLIENT <판>` 한 줄을 끼운다. 로그인 끝(`USER`)에 그 줄이 없거나
-//     판이 낮으면 거절하고 끊는다 — DLL 없는 클라는 토큰을 못 싣는다
+//   · 클라 DLL(`tools/wsock32_proxy`)이 4000 로그인 앞에 `NOXCLIENT <판>` 한 줄을 끼운다. 그 줄이 없거나 판이 낮으면
+//     로그인은 받되 인사말(372)에 패치가 필요하다고 싣고, 방 참가엔 토큰 없이 답한다 — 클라는 게임 서버에서 거절된다.
+//     ★ 10-11 — 처음엔 로그인 끝(`USER`)에 `ERROR` 로 끊었는데 정품 화면은 아무 말 없이 「Connecting…」에서 멈췄다(사람 확인)
 //   · 방 참가(`JOINGAME`) 답 바로 앞에 `NOXTOKEN <게임 서버 IP:포트> <토큰 16진>` — DLL 이 떼어 쥐고 로비 모듈엔 원래 답만 간다.
 //     토큰 = 방(게임 방 번호) · 클라 IP(이 TCP 상대) · 만료 · 일회용 번호 · 로비 이름을 키로 서명(`JoinToken.h`)
 //   · 방은 여럿(설정 파일 `[rooms]` — 방장 이름 = 게임 방 번호). 방마다 채널 `#<방장>'s_game` · 방 정보 이름도 방장 이름
@@ -49,13 +50,13 @@ struct LobbyConfig {
     std::function<uint64_t()> nonce;                // 일회용 번호 — 비면 BCrypt 난수
 };
 
-// 로비의 셈 — 입장 토큰 갈래(받음 · 거절)
+// 로비의 셈 — 입장 토큰 갈래
 struct LobbyStats {
     unsigned long long tokensIssued = 0;     // `NOXTOKEN` 을 보냄
-    unsigned long long loginNoClient = 0;    // 로그인 거절 — `NOXCLIENT` 없음
-    unsigned long long loginOldClient = 0;   // 로그인 거절 — DLL 판이 낮음
-    unsigned long long joinNoClient = 0;     // 방 참가 거절 — DLL 확인(로그인) 전에 온 참가
-    unsigned long long tokenSignFailed = 0;  // 서명 실패(BCrypt) — 방 참가 답을 안 보냄
+    unsigned long long loginNoClient = 0;    // 로그인 — `NOXCLIENT` 없음(인사말로 알림)
+    unsigned long long loginOldClient = 0;   // 로그인 — DLL 판이 낮음(인사말로 알림)
+    unsigned long long joinNoClient = 0;     // 방 참가 — DLL 없음(로그인 전 참가 포함) · 토큰 없이 답함
+    unsigned long long tokenSignFailed = 0;  // 서명 실패(BCrypt) — 토큰 없이 답함
 };
 
 struct Out {
