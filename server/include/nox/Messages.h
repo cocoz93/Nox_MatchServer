@@ -150,12 +150,14 @@ struct MsgServerTryJoin {
     static constexpr size_t kSize = 97;
 
     uint8_t unk0 = 0;
-    std::string playerName;    // UTF-16LE, 50바이트 칸 (25자)
+    std::string playerName;    // UTF-16LE, 50바이트 칸 (25자) — 캐릭터 이름(로비 로그인 이름이 아니다 — 10-10 와이어 실측 `Jack`)
     uint8_t playerClass = 0;
     uint8_t playerLevel = 0;
-    std::string serial;        // 24바이트 칸
+    std::string serial;        // 24바이트 칸 — 로비(WOL)를 거치면 로비 로그인의 `SERIAL` 과 같은 값(10-10 실측, 레지스트리 `Westwood\Nox\Serial`)
     uint32_t version = 0;
     uint32_t team = 0;
+    // ★ 10-10 실측 — 로비(WOL)를 거친 접속이면 앞에 로비 로그인 이름(`wn9457`, 0 으로 끝남)이 들어 있다. 뒤 바이트는 찌꺼기.
+    //   LAN 접속(09-05 녹음)에선 0 뿐. 입장 확인은 이 칸이 아니라 입장 토큰으로 한다(`Docs/TOKEN_DESIGN.md`)
     uint8_t unk85[10] = {};
     uint8_t unk95 = 0;
     uint8_t unk96 = 0;
