@@ -18,6 +18,7 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -1381,6 +1382,10 @@ constexpr uint32_t kRoundRestartTicks = 300;
 
 class Server {
 public:
+    // ★ 10-12 작업 7e-1 — 값 복사 금지. 표를 `shared_ptr`로 들므로 복사하면 두 게임이 제 표 하나를 같이 고치게 된다(지금 복사하는 곳 없음)
+    Server() = default;
+    Server(const Server&) = delete;
+    Server& operator=(const Server&) = delete;
     // ★ 10-08 조각 3 — 서버 찾기 원본·XOR 키·접속 번호·접속 대본 설정은 통신 층으로 옮겼다
     //   (`Network()` 의 같은 이름 · `UdpServer.h`). 대본 형식 이름은 덤프 해석(`DumpSniff`)이 쓰므로 여기에도 둔다.
     using AcceptScript = nox::AcceptScript;
@@ -1490,10 +1495,10 @@ public:
         wallsOn_ = !cells.empty();
         AIPathBakeWalls();   // 묶음 6-f(3) — 길 찾기 격자에도 같은 벽을 굽는다
     }
-    void SetWallDefFlags(std::vector<uint32_t> f) { wallDefFlags_ = std::move(f); }
+    void SetWallDefFlags(std::vector<uint32_t> f) { GtMut().wallDefFlags = std::move(f); }
     // ★ 09-29 Z1-A — 벽 정의별 부수기 칸(`WallDefRaw` 주석) · 부서지는 벽·창문 칸(맵 두 구역 · `MapFile::ReadGridList`)
     struct WallDefExtra { uint16_t hitMat = 0; uint8_t health = 0; uint16_t breakSound = 0; };
-    void SetWallDefExtras(std::vector<WallDefExtra> e) { wallDefExtra_ = std::move(e); }
+    void SetWallDefExtras(std::vector<WallDefExtra> e) { GtMut().wallDefExtra = std::move(e); }
     // 정답지 `nox_server_mapRWDestructableWalls_429530`(`GAME1_2.c:1006~1014`) — 벽이 있는 칸마다 깃발 8 · 번호 = 그때까지 센 수(0 부터) ·
     //   `nox_server_mapRWWindowWalls_4292C0`(`:916~919`) — 깃발 0x40 · 체력은 모든 벽이 정의의 Health41(`:1322`)
     void SetWallSpecials(const std::vector<std::pair<uint32_t, uint32_t>>& destructible,
@@ -1520,7 +1525,7 @@ public:
     //   소리조각이 있는 것은 **810개**. 들리는 거리는 150~1500(기본 600)
     struct SoundDefIn { uint16_t id = 0; int maxDist = 600; uint8_t merged = 0; int samples = 0; uint16_t flags = 0; };
     void SetSoundDefs(const std::vector<SoundDefIn>& list);
-    size_t SoundDefCount() const { return soundDefs_.size(); }
+    size_t SoundDefCount() const { return gt_->soundDefs.size(); }
 
     // 소리 하나를 이 틱에 울린다 — `nox_xxx_audCreate_501A30`(자리) · `nox_xxx_aud_501960`(임자).
     //   `kind` 0 = 볼 수 있는 모두 · **1 = 같은 팀만**(code = 팀 번호) · **2 = 그 한 사람만**(code = 번호).
@@ -1673,11 +1678,11 @@ public:
     void SetObstacles(std::vector<PhysBody> v) { obstacles_ = std::move(v); AIPathBakeObstacles(); }
     size_t ObstacleCount() const { return obstacles_.size(); }
     // 소환수 종류 번호 → 몸(모양·반지름·깃발·질량). main.cpp 가 thing.bin 에서 채운다.
-    void SetTypeBody(uint16_t type, const PhysBody& b) { typeBodies_[type] = b; }
+    void SetTypeBody(uint16_t type, const PhysBody& b) { GtMut().typeBodies[type] = b; }
     // 사람 애니 칸 수 표(묶음 3-a) — main.cpp·시험이 thing.bin PlayerDraw STAT 에서 채운다.
     //   비어 있으면(0칸) 공격 상태가 첫 틱에 바로 판정하고 끝난다 — 정답지도 표가 0이면 그렇다.
     void SetPlayerAnimFrames(int i, int frames, int hold) {
-        if (i >= 0 && i < kPlayerAnimSlots) { playerAnimFrames_[i][0] = frames; playerAnimFrames_[i][1] = hold; }
+        if (i >= 0 && i < kPlayerAnimSlots) { GtMut().playerAnimFrames[i][0] = frames; GtMut().playerAnimFrames[i][1] = hold; }
     }
     // 시험용 — 선 추적(Flag1, 걸음과 같은 깃발)
     // 시험용 — 편 거르기(`OwnersEnemy`)를 그대로 부른다. 둘째·넷째는 **뿌리가 몬스터인가**
@@ -1827,7 +1832,7 @@ public:
     // ★ 09-29 Z1-A — 열쇠 종류의 와이어 번호. `DoorCheckKey`(`server/object_door.go:57~92`)는 KEY 클래스 물건을 **종류 이름**으로 견준다
     //   (1 SilverKey · 2 GoldKey · 3 RubyKey · 4 SapphireKey). 와이어 번호는 이름과 1:1 이라 번호로 견준다
     void SetKeyTypes(uint16_t silver, uint16_t gold, uint16_t ruby, uint16_t sapphire) {
-        keyWire_[1] = silver; keyWire_[2] = gold; keyWire_[3] = ruby; keyWire_[4] = sapphire;
+        GtMut().keyWire[1] = silver; GtMut().keyWire[2] = gold; GtMut().keyWire[3] = ruby; GtMut().keyWire[4] = sapphire;
     }
     // ★ 09-29 Z1-A — 문에 닿은 결과(`nox_xxx_collideDoor_4E8AC0` `GAME3_3.c:3383~3516` · 문짝 밀기 `GAME5.c:2191~2215`).
     //   닿음 = 갈래 합(Closed 제외 — Closed 는 「닫혀 있어서 봤다」의 수이고 그 아래 갈래로 다시 갈린다)
@@ -1864,10 +1869,10 @@ public:
     // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
     void SetMonsterAnim(uint16_t wire, int idx, int frames, int hold, bool loop) {
         if (idx < 0 || idx >= 16) return;
-        MonsterAnimRow& r = monsterAnims_[wire][static_cast<size_t>(idx)];
+        MonsterAnimRow& r = GtMut().monsterAnims[wire][static_cast<size_t>(idx)];
         r.frames = static_cast<uint8_t>(frames); r.hold = static_cast<uint8_t>(hold); r.loop = loop;
     }
-    size_t MonsterAnimTypes() const { return monsterAnims_.size(); }
+    size_t MonsterAnimTypes() const { return gt_->monsterAnims.size(); }
     int DebugPetAnimFrame(size_t i) const { return i < pets_.size() ? pets_[i].animFrame : -1; }
     int DebugPetAnimTick(size_t i) const { return i < pets_.size() ? pets_[i].animTick : -1; }
     bool DebugPetAnimDone(size_t i) const { return i < pets_.size() && pets_[i].animDone; }
@@ -1884,8 +1889,8 @@ public:
     bool DebugPetDurActive(uint8_t sp, uint16_t net) const { for (const auto& d : durSpells_) if (d.spell == sp && d.casterPet == net && !(d.flags88 & 1)) return true; return false; }
     uint16_t DebugPetNet(size_t i) const { return i < pets_.size() ? pets_[i].netCode : 0; }
     // 종류별 몬스터 아종 비트(thing.bin SUBCLASS — 0x200 IMMUNE_POISON · 0x400 IMMUNE_FIRE …) · 위험한 종류(1 불 FIRE · 2 독구름 · 3 DANGEROUS)
-    void SetMonsterSubclass(uint16_t wire, uint32_t bits) { monsterSubclass_[wire] = bits; }
-    void SetDangerType(uint16_t wire, uint8_t kind) { dangerTypes_[wire] = kind; }
+    void SetMonsterSubclass(uint16_t wire, uint32_t bits) { GtMut().monsterSubclass[wire] = bits; }
+    void SetDangerType(uint16_t wire, uint8_t kind) { GtMut().dangerTypes[wire] = kind; }
     size_t DebugListenCount() const { return listens_.size(); }
     int DebugPetHeardSnd(size_t i) const { return i < pets_.size() ? pets_[i].heardSnd : -1; }
     uint32_t DebugPetHeardFrame(size_t i) const { return i < pets_.size() ? pets_[i].heardFrame : 0; }
@@ -1894,8 +1899,8 @@ public:
         if (i < pets_.size()) { pets_[i].heardSnd = snd; pets_[i].heardFrame = frame; pets_[i].heardX = x; pets_[i].heardY = y; }
     }
     void DebugSetSoundDef(uint16_t id, uint16_t flags, int maxDist) {   // 시험용 — 소리 하나의 깃발·거리(조각 1)
-        if (id >= soundDefs_.size()) soundDefs_.resize(static_cast<size_t>(id) + 1);
-        soundDefs_[id].flags = flags; soundDefs_[id].maxDist = maxDist; soundDefs_[id].samples = 1;
+        if (id >= GtMut().soundDefs.size()) GtMut().soundDefs.resize(static_cast<size_t>(id) + 1);
+        GtMut().soundDefs[id].flags = flags; GtMut().soundDefs[id].maxDist = maxDist; GtMut().soundDefs[id].samples = 1;
     }
     void DebugSetPetHealth(size_t i, uint16_t hp) { if (i < pets_.size()) pets_[i].health = hp; }
     void DebugSetPetMoveAttempt(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].moveAttemptFrame = f; }
@@ -2028,7 +2033,7 @@ public:
         wallPushWorst_.gx = gx; wallPushWorst_.gy = gy; wallPushWorst_.dir = dir;
         const WallTile& w = wallTiles_[gy * 256 + gx];
         wallPushWorst_.tile = w.tile;
-        wallPushWorst_.f2 = (w.tile < wallDefFlags_.size()) ? wallDefFlags_[w.tile] : 0;
+        wallPushWorst_.f2 = (w.tile < gt_->wallDefFlags.size()) ? gt_->wallDefFlags[w.tile] : 0;
         wallPushWorst_.flag80 = w.flag80;
     }
     // ★★ 09-21 밤 — **맨 처음 크게 밀린 순간**을 딱 한 번만 적는다.
@@ -2147,9 +2152,9 @@ public:
         uint16_t type = 0;
     };
     void SetMapObjects(std::vector<MapObjRef> v) { mapObjects_ = std::move(v); }
-    void SetCollideFn(uint16_t type, std::string fn) { collideFn_[type] = std::move(fn); }
+    void SetCollideFn(uint16_t type, std::string fn) { GtMut().collideFn[type] = std::move(fn); }
     // 무기 클래스 비트 → 종류 번호(죽음 알림의 무기 그림). main 이 thing.bin 이름으로 채운다
-    void SetWeaponWire(uint32_t classBits, uint16_t wire) { weaponWire_[classBits] = wire; }
+    void SetWeaponWire(uint32_t classBits, uint16_t wire) { GtMut().weaponWire[classBits] = wire; }
     unsigned long long tryCollides() const { return tryCollides_; }
     unsigned long long tryCollideDeferred() const { return tryCollideDeferred_; }
     // 진단 — 첫 사람이 들어오고 N 틱 뒤 그 사람 팀을 한 번 바꾼다(RESET_FRIENDS 판정용). 0 이면 끔.
@@ -2751,14 +2756,14 @@ public:
     };
     int CastBuffSpell(uint8_t spell, int enc, int lvl, const Target& targ, const BuffConf& opts);   // castBuffSpell
     // gamedata.bin — main 이 읽어 넣는다(4-a4). 태그 = ARENA(협동 모드가 아니면 · serverBalance.Tag)
-    void SetGamedata(const Gamedata& g) { gamedata_ = g; hasGamedata_ = true; }
-    double BalanceFloat(const std::string& key) const { return gamedata_.Float("ARENA", key, 0.0); }
+    void SetGamedata(const Gamedata& g) { GtMut().gamedata = g; GtMut().hasGamedata = true; }
+    double BalanceFloat(const std::string& key) const { return gt_->gamedata.Float("ARENA", key, 0.0); }
     double BalanceFloatInd(const std::string& key, int i) const {
         if (i < 0) return 0.0;
-        const std::vector<double> arr = gamedata_.Array("ARENA", key);
+        const std::vector<double> arr = gt_->gamedata.Array("ARENA", key);
         return (static_cast<size_t>(i) < arr.size()) ? arr[static_cast<size_t>(i)] : 0.0;
     }
-    bool HasGamedata() const { return hasGamedata_; }
+    bool HasGamedata() const { return gt_->hasGamedata; }
     uint8_t DebugStaminaOf(int64_t sessionId) const {
         auto it = sessions_.find(sessionId);
         return it == sessions_.end() ? 0 : it->second.stamina;
@@ -3342,21 +3347,21 @@ public:
     //   **걸 때**는 겨눈 주문(TARGETED 0x4)이면 `켜짐`, 아니면 `시전` 소리를 **대상 자리**에서,
     //   **끝날 때**는 `꺼짐` 소리를 **시전한 사람 자리**에서 울린다
     uint16_t SpellSoundOn(uint8_t spell) const {
-        if (spell >= 137 || !spellDefs_[spell].valid) return 0;
-        const SpellDef& d = spellDefs_[spell];
+        if (spell >= 137 || !gt_->spellDefs[spell].valid) return 0;
+        const SpellDef& d = gt_->spellDefs[spell];
         return (d.flags & 0x4) ? d.onSound : d.castSound;   // things.SpellTargeted
     }
     uint16_t SpellSoundOff(uint8_t spell) const {
-        return (spell < 137 && spellDefs_[spell].valid) ? spellDefs_[spell].offSound : 0;
+        return (spell < 137 && gt_->spellDefs[spell].valid) ? gt_->spellDefs[spell].offSound : 0;
     }
-    uint32_t SpellFlags(uint8_t spell) const { return spell < 137 && spellDefs_[spell].valid ? spellDefs_[spell].flags : 0u; }
+    uint32_t SpellFlags(uint8_t spell) const { return spell < 137 && gt_->spellDefs[spell].valid ? gt_->spellDefs[spell].flags : 0u; }
     size_t CastPending() const { return castList_.size(); }
     // ★ 4-a2 — 겨눈 주문이 날리는 "Magic" 오브젝트(thing.bin). speedRaw = SPEED 원값(정답지 /32 · MISSILE ×2)
     // 이름 → 와이어 종류. thing.bin 을 읽는 쪽(main)이 넣어 준다(ThingDb::WireByName) — 시험은 손으로 넣는다
-    void SetNamedType(const std::string& name, uint16_t wire) { namedTypes_[name] = wire; }
+    void SetNamedType(const std::string& name, uint16_t wire) { GtMut().namedTypes[name] = wire; }
     uint16_t NamedType(const std::string& name) const {
-        auto it = namedTypes_.find(name);
-        return it == namedTypes_.end() ? 0 : it->second;
+        auto it = gt_->namedTypes.find(name);
+        return it == gt_->namedTypes.end() ? 0 : it->second;
     }
     // ★ 2026-09-18 ⑬ — **화살·쇠뇌살 종류.** 이 종류만 갱신에 「스프라이트 프레임」이 붙는다.
     //   정답지 `netSendPhantomPlrMb_5187E0`(GAME4_1.c:4198~4203) —
@@ -3365,8 +3370,8 @@ public:
     //     (`libs/object/subclass_weapon.go` 이름 순서 · 우리 `WeaponClassBitsOf` 와 같은 표).
     //   ⭕ 실측(`--dump-thing`) — `MercArcherArrow` = `ARROW` ⇒ 참 · `Fireball` = `MISSILE_COUNTERSPELL` ⇒ 거짓
     //   thing.bin 을 읽는 쪽(main)이 채운다. 시험은 손으로 넣는다.
-    void AddArrowType(uint16_t wire) { if (wire) arrowTypes_.insert(wire); }
-    bool IsArrowType(uint16_t wire) const { return arrowTypes_.count(wire) != 0; }
+    void AddArrowType(uint16_t wire) { if (wire) GtMut().arrowTypes.insert(wire); }
+    bool IsArrowType(uint16_t wire) const { return gt_->arrowTypes.count(wire) != 0; }
     size_t PlacedCount() const { return placed_.size(); }
     uint16_t DebugPlacedNetCode(size_t i) const { return i < placed_.size() ? placed_[i].netCode : 0; }
     bool DebugPlacedXY(size_t i, float& x, float& y) const {
@@ -3386,15 +3391,15 @@ public:
     struct ProjTypeInfo { uint16_t type = 0; float speed = 0; uint32_t flags = 0; uint8_t collideAmount = 0; };
     // ★ 09-23 nine-defects 2-a3 — 반주문에 지워지는 날아가는 것(thing.bin 서브클래스 `MISSILE_COUNTERSPELL`)의 종류.
     //   main 이 thing.bin 에서 넣고, 시험은 손으로 넣는다. Estate 기준 `Magic`·불덩이 셋·`Pixie` 다(`--dump-thing` 실측)
-    void SetCounterMissileType(uint16_t wire) { counterMissileTypes_.insert(wire); }
+    void SetCounterMissileType(uint16_t wire) { GtMut().counterMissileTypes.insert(wire); }
     // ★ 2-a4 — 주문 쓰는 몬스터 종류(monster.bin `CAN_CAST_SPELLS`). main 이 `kMonstersCanCastSpells` 이름을 와이어 번호로 바꿔 넣는다
-    void SetCastingMonsterType(uint16_t wire) { castingMonsterTypes_.insert(wire); }
+    void SetCastingMonsterType(uint16_t wire) { GtMut().castingMonsterTypes.insert(wire); }
     unsigned long long warcryCastsBroken() const { return warcryCastsBroken_; }    // ★ 2-a4 — 함성이 끊은 남의 시전
     unsigned long long warcryNullifiedMonsters() const { return warcryNullMon_; }  // ★ 2-a4 — 함성이 무효화를 건 몬스터
     unsigned long long warcryPeer(WarcryPeer k) const { return warcryPeer_[static_cast<size_t>(k)]; }   // ★ 09-24 H3
     unsigned long long WarcryPeerSum() const { unsigned long long n = 0; for (auto v : warcryPeer_) n += v; return n; }
     unsigned long long enchantSentAntiMagic() const { return enchantSentAnti_; }   // ★ 09-24 H3 — 반마법(29) 비트가 선 알림(0x5A) 수
-    size_t CounterMissileTypeCount() const { return counterMissileTypes_.size(); }
+    size_t CounterMissileTypeCount() const { return gt_->counterMissileTypes.size(); }
     unsigned long long counterCasts() const { return counterCasts_; }         // 반주문을 부른 수
     unsigned long long counterMissiles() const { return counterMissiles_; }   // 지운 날아가는 것
     unsigned long long counterDurs() const { return counterDurs_; }           // 끊은 지속 주문
@@ -3408,20 +3413,20 @@ public:
         p.speed = static_cast<float>(speedRaw) / 32.0f * 2.0f;   // SpeedBase = SPEED/32 · MISSILE 은 ×2
         p.flags = flags;
         p.collideAmount = collideAmount;
-        projTypes_[name] = p;
+        GtMut().projTypes[name] = p;
     }
     const ProjTypeInfo* ProjType(const std::string& name) const {
-        auto it = projTypes_.find(name);
-        return it == projTypes_.end() ? nullptr : &it->second;
+        auto it = gt_->projTypes.find(name);
+        return it == gt_->projTypes.end() ? nullptr : &it->second;
     }
     uint16_t DebugMissileType(size_t i) const { return i < missiles_.size() ? missiles_[i].type : 0; }
     float DebugMissileX(size_t i) const { return i < missiles_.size() ? missiles_[i].posX : 0.0f; }
     uint16_t DebugMissileNetCode(size_t i) const { return i < missiles_.size() ? missiles_[i].netCode : 0; }
     void SetMagicType(uint16_t type, int speedRaw, float mass, uint32_t flags) {
-        magicType_.type = type;
-        magicType_.flags = flags;                         // thing FLAGS(맞힘 거르기 sub_54E730)
-        magicType_.speed = static_cast<float>(speedRaw) / 32.0f * 2.0f;
-        magicType_.mass = mass > 0.0f ? mass : 1.0f;
+        GtMut().magicType.type = type;
+        GtMut().magicType.flags = flags;                         // thing FLAGS(맞힘 거르기 sub_54E730)
+        GtMut().magicType.speed = static_cast<float>(speedRaw) / 32.0f * 2.0f;
+        GtMut().magicType.mass = mass > 0.0f ? mass : 1.0f;
     }
     size_t MissileCount() const { return missiles_.size(); }
     unsigned long long spellEffectDeferred() const { return spellEffectDeferred_; }
@@ -3513,11 +3518,11 @@ public:
         auto it = sessions_.find(sessionId);
         return it != sessions_.end() && it->second.castFrame != 0;
     }
-    void SetSpellCost(uint8_t spell, uint8_t mana) { spellCost_[spell] = mana; }
-    size_t SpellCostCount() const { return spellCost_.size(); }
+    void SetSpellCost(uint8_t spell, uint8_t mana) { GtMut().spellCost[spell] = mana; }
+    size_t SpellCostCount() const { return gt_->spellCost.size(); }
     uint8_t SpellCost(uint8_t spell) const {
-        auto it = spellCost_.find(spell);
-        return it == spellCost_.end() ? 0 : it->second;
+        auto it = gt_->spellCost.find(spell);
+        return it == gt_->spellCost.end() ? 0 : it->second;
     }
     // 마나가 모자라 튕긴 시전 수 — 「눌렀는데 아무 일도 안 난다」를 로그로 가른다.
     unsigned long long spellsNoMana() const { return spellsNoMana_; }
@@ -3802,7 +3807,7 @@ public:
     unsigned long long wornLookSkipped() const { return wornLookSkipped_; } // ★ 09-29
     unsigned long long introRedrawSent() const { return introRedrawSent_; } // ★ 09-29
     // ★ 09-28 B4b — 물건 종류의 몸 반지름(+176 · thing.bin 원 모양). 죽을 때 떨굴 자리 간격을 가른다(`GAME3_3.c:6730~6748`)
-    void SetItemRadius(uint16_t type, float r) { itemRadius_[type] = r; }
+    void SetItemRadius(uint16_t type, float r) { GtMut().itemRadius[type] = r; }
     // ★ 09-28 — 줍고 저절로 입음: [0] 무기 듦 · [1] 갑옷 입음 · [2] 같은 부위 이미 입음(안 입음) · [3] 방패인데 두 손 무기(안 입음) · [4] 부위 모름(안 입음)
     unsigned long long autoEquip(size_t i) const { return i < 5 ? autoEquip_[i] : 0; }
     // 시험용 — 그 번호의 바닥 물건 자리(없으면 거짓)
@@ -3821,7 +3826,7 @@ public:
     //   정답지 `server/modifiers.go:314~320`(Classes62 · ReqStrength60). main 이 복호본을 읽어 채운다 — 없는 종류는 직업 검사에서 거절(`object_pickup.go:113~118`)
     //   ★ 09-29 — 화살 셋(ArcherArrow·ArcherBolt·WeakArcherArrow)은 피해 식 `calcBoltDamage_4EF1E0` 이 이 정의의 DAMAGE_MIN(+72)·DAMAGE_COEFFICIENT(+64)를 쓴다
     void SetWeaponDef(uint16_t wire, uint8_t classes, uint16_t reqStrength, uint16_t damageMin = 0, float coeff = 0.0f) {
-        weaponDef_[wire] = WeaponDef{ classes, reqStrength, damageMin, coeff };
+        GtMut().weaponDef[wire] = WeaponDef{ classes, reqStrength, damageMin, coeff };
     }
     unsigned long long bowShot(BowShot k) const { return k < BowShot::Count ? bowShot_[static_cast<size_t>(k)] : 0; }          // ★ 09-29
     unsigned long long arrowHit(ArrowHit k) const { return k < ArrowHit::Count ? arrowHit_[static_cast<size_t>(k)] : 0; }      // ★ 09-29
@@ -3843,11 +3848,11 @@ public:
         return false;
     }
     // ★ 09-29 — 갑옷 정의(modifier.bin `ARMOR_DEFINITIONS` — CLASSUSE · REQUIRED_STRENGTH · ARMOR_VALUE → `Modifier` +62·+60·+64)
-    void SetArmorDef(uint16_t wire, uint8_t classes, uint16_t reqStrength, float value) { armorDef_[wire] = ArmorDef{ classes, reqStrength, value }; }
-    size_t ArmorDefCount() const { return armorDef_.size(); }
+    void SetArmorDef(uint16_t wire, uint8_t classes, uint16_t reqStrength, float value) { GtMut().armorDef[wire] = ArmorDef{ classes, reqStrength, value }; }
+    size_t ArmorDefCount() const { return gt_->armorDef.size(); }
     unsigned long long armorGate(ArmorGate g) const { return g < ArmorGate::Count ? armorGate_[static_cast<size_t>(g)] : 0; }
     float DebugArmorValue(int64_t sessionId) const { auto it = sessions_.find(sessionId); return it == sessions_.end() ? 0.0f : ArmorValueOf(it->second); }
-    size_t WeaponDefCount() const { return weaponDef_.size(); }
+    size_t WeaponDefCount() const { return gt_->weaponDef.size(); }
     // 시험용 — 든 무기(09-27 B2): 비트 · 종류 번호 · 무기 칸 번호
     uint32_t DebugWeaponEquip(int64_t sessionId) const {
         auto it = sessions_.find(sessionId); return it == sessions_.end() ? 0u : WeaponEquipOf(it->second);
@@ -3960,20 +3965,20 @@ public:
     }
     unsigned long long exertionLight() const { return exertionLight_; }
     // ★ 4-c3b3b — 종류 번호별 「그 종류 이름의 소리 모음에 맞히는 소리가 있고 조각이 1 이상」(main 이 soundset.bin 으로 채운다)
-    void SetMonsterHitSounds(std::vector<uint8_t> byWire) { monsterHitSound_ = std::move(byWire); }
+    void SetMonsterHitSounds(std::vector<uint8_t> byWire) { GtMut().monsterHitSound = std::move(byWire); }
     // ★ 09-24 H1 — 종류 번호별 근접 「맞히는 소리」(+32 MELEE_ATTACK_HITTING_SOUND) 번호. 0 = 모음이 없거나 NULL(main 이 soundset.bin 으로 채운다)
     //   조각이 0 인 번호도 싣는다 — 그런 것은 `PlaySoundAt` 이 버린다(정답지 `aud_501960` 도 조각 0 이면 안 만든다)
-    void SetMonsterMeleeHitSoundIds(std::vector<uint16_t> byWire) { monsterSnd_[7] = std::move(byWire); }
+    void SetMonsterMeleeHitSoundIds(std::vector<uint16_t> byWire) { GtMut().monsterSnd[7] = std::move(byWire); }
     // ★ 09-26 M4a — 다른 칸도 같은 꼴로(근접 시작 5 · 쏘기 시작 9 · 쏘기 10 · 죽음 14 — 정답지 `aud_501960(모음+칸, 몬스터, 0, 0)`)
-    void SetMonsterSoundIds(int field, std::vector<uint16_t> byWire) { if (field >= 0 && field < 18) monsterSnd_[field] = std::move(byWire); }
+    void SetMonsterSoundIds(int field, std::vector<uint16_t> byWire) { if (field >= 0 && field < 18) GtMut().monsterSnd[field] = std::move(byWire); }
     // ★ 09-27 B1 — 기본 장비의 가방 항목 틀(와이어 번호 → 틀 · 번호·입음은 `GiveDefaultGear` 가 채운다). main 이 맵 물건과 같은 칸 규칙으로 thing.bin 에서 채운다
-    void SetItemTemplate(uint16_t wire, const Session::Carried& c) { itemTemplate_[wire] = c; }
+    void SetItemTemplate(uint16_t wire, const Session::Carried& c) { GtMut().itemTemplate[wire] = c; }
     unsigned long long monsterSnd(int field, bool played) const { return (field >= 0 && field < 18) ? monsterSndCount_[field][played ? 1 : 0] : 0; }
     unsigned long long monsterMeleeHitSnd(bool played) const { return played ? monsterMeleeHitPlayed_ : monsterMeleeHitNone_; }
     void SetMaterialTables(std::vector<uint32_t> matByWire, std::vector<uint8_t> breastplateByWire, uint16_t newPlayerWire) {
-        matByWire_ = std::move(matByWire); breastByWire_ = std::move(breastplateByWire); newPlayerWire_ = newPlayerWire;
+        GtMut().matByWire = std::move(matByWire); GtMut().breastByWire = std::move(breastplateByWire); GtMut().newPlayerWire = newPlayerWire;
     }
-    uint32_t MaterialOfWire(uint16_t w) const { return w < matByWire_.size() ? matByWire_[w] : 0u; }
+    uint32_t MaterialOfWire(uint16_t w) const { return w < gt_->matByWire.size() ? gt_->matByWire[w] : 0u; }
     void DebugGiveItemType(int64_t x, uint16_t type) {   // ★ 4-c2 시험용 — 종류만 있는 물건 하나를 쥐여 준다
         auto i = sessions_.find(x);
         if (i == sessions_.end()) return;
@@ -4010,10 +4015,10 @@ public:
     //   전에는 아예 안 보내서 ⑧ 「능력 소리」가 사람 몫으로 남아 있었다(들을 것이 없었다)
     void SetAbilitySound(uint8_t abil, uint16_t useSnd, uint16_t offSnd) {
         if (abil == 0 || abil >= 6) return;
-        abilSoundUse_[abil] = useSnd;
-        abilSoundOff_[abil] = offSnd;
+        GtMut().abilSoundUse[abil] = useSnd;
+        GtMut().abilSoundOff[abil] = offSnd;
     }
-    uint16_t AbilitySoundUse(uint8_t abil) const { return abil < 6 ? abilSoundUse_[abil] : 0; }
+    uint16_t AbilitySoundUse(uint8_t abil) const { return abil < 6 ? gt_->abilSoundUse[abil] : 0; }
     // ★ 09-23 — 합계는 능력별 부름의 합(쓸 때 + 꺼질 때)
     unsigned long long abilSoundSent() const {
         unsigned long long n = 0;
@@ -4128,7 +4133,7 @@ private:
                     int64_t by = 0, uint8_t dtype = 0, const AttackSrc* src = nullptr,
                     HitterRef hitter = HitterRef{});
     // ★ 4-c3b1 — 「때린 것」 도우미. 사람 몸 = NewPlayer 번호 · 주소가 사람이 아니면(몬스터가 때린 이 등) 아직 안 옮김(4-c3b3)
-    HitterRef HitterPlayerBody() const { HitterRef h; h.kind = HitterRef::Type; h.type = newPlayerWire_; return h; }
+    HitterRef HitterPlayerBody() const { HitterRef h; h.kind = HitterRef::Type; h.type = gt_->newPlayerWire; return h; }
     HitterRef HitterBySession(int64_t sessionId) const { return sessions_.count(sessionId) ? HitterPlayerBody() : HitterRef{}; }
     // ★ 4-c3b3b — 소환수(몬스터)면 때린 것·때린 이 둘 다 그 몸(감전 되갚기 a2 = a1 · 닿음 감전 a2 = a3 = a1)
     HitterRef HitterUnit(const Target& t) const {
@@ -4140,7 +4145,7 @@ private:
     static HitterRef HitterMonster(const Creature& k) { HitterRef h; h.kind = HitterRef::Type; h.type = k.type; h.monsterA2 = k.type; return h; }
     // ★ 4-c3b3b — 때린 이가 몬스터이고 그 소리 모음의 맞히는 소리에 조각이 있나(맞으면 맞는 쪽 소리를 안 낸다)
     bool MonsterHitSoundOwns(const HitterRef& h) const {
-        return h.monsterA2 != 0 && h.monsterA2 < monsterHitSound_.size() && monsterHitSound_[h.monsterA2] != 0;
+        return h.monsterA2 != 0 && h.monsterA2 < gt_->monsterHitSound.size() && gt_->monsterHitSound[h.monsterA2] != 0;
     }
     static HitterRef HitterNone() { HitterRef h; h.kind = HitterRef::None; return h; }
     // ★ 4-c3b2 — 때린 것 = 그 오브젝트 자신(날아가는 것·놓인 것·맵 불 — 정답지 a3 = a1). 종류를 모르면(0) 안 옮김으로 센다
@@ -4624,7 +4629,7 @@ private:
     bool MonsterHearReact(Creature& k);                       // `Sub_5466F0`
     bool MonsterLookAtHeard(Creature& k);                     // `sub_545DA0`
     bool LocationIsSafe(const Creature& k, float x, float y) const;   // 조건 69 · `unitIsDangerous_547120`
-    uint32_t MonsterSubclass(uint16_t wire) const { auto it = monsterSubclass_.find(wire); return it == monsterSubclass_.end() ? 0u : it->second; }
+    uint32_t MonsterSubclass(uint16_t wire) const { auto it = gt_->monsterSubclass.find(wire); return it == gt_->monsterSubclass.end() ? 0u : it->second; }
     // 크리처(사본이어도 — 번호로 찾는다)를 대상 꼴로 · 목록에 없으면 빈 것
     Target PetTarget(const Creature& k) const {
         for (size_t i = 0; i < pets_.size(); ++i) if (pets_[i].netCode == k.netCode) return Target{ kNoSession, static_cast<int>(i) };
@@ -4664,7 +4669,6 @@ private:
     unsigned long long decayShadowSent_ = 0;               // ★ 09-28 — 그때 보낸 `33 OBJECT_IN_SHADOWS` 건수
     unsigned long long deathDropKept_ = 0, deathDropSpiral_ = 0, deathDropAtBody_ = 0;   // ★ 09-28 B4b 죽을 때 갈래별
     unsigned long long respawnGearDeleted_ = 0, respawnGearGiven_ = 0, respawnGearNoTemplate_ = 0, respawnGearNotPorted_ = 0;   // ★ 09-28 B4b 부활 때
-    std::map<uint16_t, float> itemRadius_;                 // ★ 09-28 B4b 물건 종류 → 몸 반지름
     unsigned long long wornLookSent_ = 0, wornLookSkipped_ = 0;   // ★ 09-29 새로 온 사람에게 보낸 입은 것 겉모습 · 비트 몰라 뺀 것
     unsigned long long introRedrawSent_ = 0;                      // ★ 09-29 먼저 온 사람에게 보낸 새 사람의 `e9 … ff 01`
     unsigned long long autoEquip_[5] = {};                 // ★ 09-28 — 줍고 저절로 입음 갈래별(autoEquip 주석)
@@ -4680,11 +4684,8 @@ private:
     std::vector<uint16_t> giveItems_;                      // ★ 09-30 사람 판 시험용
     unsigned long long testItemsGiven_ = 0, testItemsNoTemplate_ = 0;
     void GiveTestItems();
-    std::map<uint16_t, WeaponDef> weaponDef_;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
     struct ArmorDef { uint8_t classes = 0; uint16_t reqStrength = 0; float value = 0.0f; };
-    std::map<uint16_t, ArmorDef> armorDef_;       // ★ 09-29 — 종류 번호 → modifier.bin 갑옷 정의
     unsigned long long armorGate_[kArmorGateCount] = {};
-    std::map<uint16_t, Session::Carried> itemTemplate_;   // ★ 09-27 B1 — 기본 장비 종류 틀
     unsigned long long jumpCodes_ = 0, jumpIn_ = 0, jumpGate_[kJumpGateCount] = {};   // ★ 3-a
     unsigned long long jumpForceTicks_ = 0, jumpHeldTicks_ = 0, jumpLanded_ = 0, airborneOffIdle_ = 0, recoilBlockedAirborne_ = 0;
     unsigned long long equakeSkipAirborne_ = 0, spellRefusedAirborne_ = 0;   // ★ 3-b
@@ -4698,12 +4699,6 @@ private:
     //   가슴갑옷을 안 본다) · 피해 종류 = 대상의 +524(마지막 피해 종류 — 이번에 피해가 안 들어갔으면 **그 전 값**)
     void HarpoonDefaultHitSound(const Target& t, uint16_t boltType);
     unsigned long long harpoonHitSoundCalls_ = 0, harpoonHitSoundWay_[kDefHitSoundWayCount] = {};
-    std::vector<uint32_t> matByWire_;
-    std::vector<uint8_t> breastByWire_;
-    std::vector<uint8_t> monsterHitSound_;   // ★ 4-c3b3b
-    // ★ 09-26 M4a — 소리 모음 칸(0~17 · ThingDb `kSoundSetFieldNames` 순서)별 「종류 번호 → 소리 번호」(0 = 없음).
-    //   칸 7(맞히는 소리)은 09-24 H1 의 표다(전에는 `monsterMeleeHitId_` 따로)
-    std::vector<uint16_t> monsterSnd_[18];
     unsigned long long monsterSndCount_[18][2] = {};   // ★ 09-26 M4a — 칸별 [모음에없음, 냄]
     unsigned long long monsterMeleeHitPlayed_ = 0, monsterMeleeHitNone_ = 0;   // ★ 09-24 H1 — 냄 · 모음에 없음
     // ★ 4-d4 — 발밑 바닥과 발소리 계수기(달리기·걷기 × 바닥 종류) · 살금살금으로 안 낸 걷기 소리 · 달릴 때 힘쓰는 소리
@@ -4714,7 +4709,6 @@ private:
     unsigned long long footTreadSilent_ = 0, exertionLight_ = 0;
     unsigned long long hurtVoice_[kHurtVoiceCount] = {};   // ★ 09-24 「윽」
     void Footstep(const Session& s, bool run);
-    uint16_t newPlayerWire_ = 0;
     // ★ 4-c2 — `nox_xxx_soundPlayerDamageSound_5328B0` — 맞는 사람의 가슴갑옷 재질(없으면 FLESH) × 때린 것(무기, 없으면 때린 이) 재질
     void PlayerDamageSound(const Session& victim, HitterRef hitter);
     // ★ 3-a — 사람의 오브젝트 깃발(+16). NewPlayer 는 FLAGS NULL 이고 지금 켜는 것은 AIRBORNE(0x4000) 하나다
@@ -4726,8 +4720,6 @@ private:
     void PlayerSetPos(Session& s, double x, double y);
     void WarcryShout(Session& s);   // ★ 2-a2 — 외침 효과(땅울림 · 몬스터 기절)
     int CastCounterSpell(Session& caster);   // ★ 2-a3 — castCounterSpell_52BBB0
-    std::set<uint16_t> counterMissileTypes_;
-    std::set<uint16_t> castingMonsterTypes_;   // ★ 2-a4
     unsigned long long warcryCastsBroken_ = 0, warcryNullMon_ = 0;
     unsigned long long warcryPeer_[kWarcryPeerCount] = {};   // ★ 09-24 H3
     unsigned long long enchantSentAnti_ = 0;                  // ★ 09-24 H3
@@ -4797,7 +4789,6 @@ private:
 
     // 묶음 10-a — 소리
     struct SoundDef { int maxDist = 0; uint8_t merged = 0; int samples = 0; uint16_t flags = 0; };
-    std::vector<SoundDef> soundDefs_;          // 색인 = 소리 번호(0 은 NULL)
     struct AudioEvent {
         uint16_t sound = 0;
         float x = 0, y = 0;
@@ -5207,8 +5198,6 @@ private:
     //   전에는 늘 덤프에서 온 고정값(bludeath 의 3864,2534)이라 **맵마다 엉뚱한 자리**였다
     bool spawnForced_ = false;
     // 주인 없는 둘의 갈래 — 둘 다 몬스터(적 아님) / 한쪽이 몬스터가 아님(적)
-    uint16_t abilSoundUse_[6] = {0, 0, 0, 0, 0, 0};
-    uint16_t abilSoundOff_[6] = {0, 0, 0, 0, 0, 0};
     // ★ 09-23 0-b — 능력 소리를 **부른** 횟수(버려졌는지는 `soundsDroppedIds_` 가 번호로 센다)
     unsigned long long abilSoundUseCalls_[kAbilityCount] = {};
     unsigned long long abilSoundOffCalls_[kAbilityCount] = {};
@@ -5284,7 +5273,6 @@ private:
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)
-    std::map<uint8_t, uint8_t> spellCost_;      // 주문 번호 → 마나 (thing.bin SPEL)
     unsigned long long spellsNoMana_ = 0;       // 마나가 모자라 튕긴 시전
     unsigned long long tryGets_ = 0;            // `0x73` 을 받은 횟수
     unsigned long long picked_ = 0;             // 실제로 집어 든 것
@@ -5421,17 +5409,11 @@ private:
     std::vector<std::pair<float, float>> playerStarts_;
     std::vector<Waypoint> waypoints_;   // 맵 길목(점멸 목적지 · 떠돌기 길)   // 묶음 3-c PlayerStart 자리
     bool autoRespawn_ = false;         // 묶음 3-c 자동 부활(정답지 기본 꺼짐)
-    SpellDef spellDefs_[137];                      // 묶음 4-a 주문 정의
-    std::vector<PhonemeNode> phonemeTree_ = std::vector<PhonemeNode>(1);   // [0] = 뿌리
     std::vector<CastEntry> castList_;              // 묶음 4-a 시전 목록 — [0] 이 머리(가장 나중에 넣은 것)
     Target spellTarget_;                           // 묶음 4-a playerinfo +3640(Obj3640) — 시전이 끝난 순간 고른 대상
     std::vector<MissileObj> missiles_;             // 묶음 4-a2 날아가는 오브젝트
     std::vector<PlacedObj> placed_;                // 묶음 4-c3 주문이 놓는 오브젝트(불꽃·독구름)
-    std::map<std::string, uint16_t> namedTypes_;   // 이름 → 와이어 종류(thing.bin 에서 받는다)
-    std::set<uint16_t> arrowTypes_;                // 화살·쇠뇌살 — 이 종류만 갱신에 프레임이 붙는다(AddArrowType 주석)
     std::list<DurSpell> durSpells_;                // 묶음 4-a3 지속 주문 목록 — 머리에 넣는다(Add)
-    Gamedata gamedata_;                            // 묶음 4-a4 gamedata.bin
-    bool hasGamedata_ = false;
     uint16_t durLastId_ = 0;                       // NewRaw lastID
     int debugDurCreateRet_ = 0;                    // 시험용 create 가 돌려줄 값
     int debugDurUpdateStopAt_ = 0;                 // 시험용 update 가 이 횟수째에 1(0 이면 늘 0)
@@ -5439,12 +5421,8 @@ private:
     Target lastAcceptTarget_;                      // 시험용 — 마지막 spellAccept 의 대상
     unsigned long long acceptCount_ = 0;
     int64_t lastAcceptCaster_ = 0;
-    MagicTypeInfo magicType_;                      // 묶음 4-a2 thing "Magic"
-    std::map<std::string, ProjTypeInfo> projTypes_;   // 묶음 4-c3 이름 → 날아가는 종류(불덩이 셋 …)
     unsigned long long spellEffectDeferred_ = 0;   // 효과 함수를 아직 안 옮긴 주문이 받아들여진 수
     std::vector<MapObjRef> mapObjects_;            // 묶음 3-d 맵 오브젝트 번호·extent·종류
-    std::map<uint16_t, std::string> collideFn_;    // 묶음 3-d 종류 → 충돌 함수 이름
-    std::map<uint32_t, uint16_t> weaponWire_;      // 묶음 3-d 무기 클래스 비트 → 종류 번호
     unsigned long long tryCollides_ = 0;           // `0x7B` 를 받아 대상을 찾은 횟수
     unsigned long long tryCollideDeferred_ = 0;    // 그 가운데 충돌 함수를 아직 안 옮긴 것
     bool debugNoAutoFight_ = false;   // 시험용 — 틱의 자동 싸움 쌓기를 끔
@@ -5474,13 +5452,10 @@ private:
     struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; int16_t secret = -1; int16_t door = -1;
                       bool breakable = false; bool broken = false; bool window = false; uint8_t hp = 0; uint16_t breakId = 0; };
     std::vector<WallTile> wallTiles_;        // 256×256 벽 모양 (묶음 2-b)
-    std::vector<uint32_t> wallDefFlags_;     // thing.bin WALL 순번 → 깃발
-    std::vector<WallDefExtra> wallDefExtra_; // ★ 09-29 Z1-A thing.bin WALL 순번 → 맞는 소리 재질·체력·부서지는 소리
     unsigned long long wallGate_[5] = {};    // ★ 09-29 Z1-A 벽 피해 갈래(wallGate 주석)
     // ★ 09-29 Z1-A 문 잠김(DoorTouch 주석)
     void DoorCollide(size_t di, Session& s);   // nox_xxx_collideDoor_4E8AC0(문, 사람)
     void DoorUnlockQuest(size_t di);            // sub_4E8390 — 퀘스트면 모두에게 `f0 0f <extent>`
-    uint16_t keyWire_[5] = {};
     uint32_t doorLockMsgFrame_ = 0;          // qword_5d4594_1567940 — 잠김 알림 1.5초 간격(정답지는 실시간 ms · 모든 문·사람이 하나를 같이 쓴다)
     unsigned long long doorTouch_[static_cast<size_t>(DoorTouch::Count)] = {};
     unsigned long long berserkDoorLocked_ = 0;
@@ -5504,19 +5479,61 @@ private:
     unsigned long long summonFxSent_[2] = {};                     // ★ 10-01 — 소환 효과 0 `7e` 시작 · 1 `7f` 끊김(소환 한 번에 하나씩)
     uint16_t summonFxNext_ = 0;                                   // ★ 10-01 — 다음 효과 번호(원본 0x5D4594+1570276 · 0xFDE8 에 닿으면 0)
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };
-    std::map<uint16_t, std::array<MonsterAnimRow, 16>> monsterAnims_;   // ★ 09-29 B5 — 갱신자료 +476 표(종류별)
     unsigned long long hearStat_[kHearStatCount] = {};            // ★ 09-29 B6
     unsigned long long castStat_[kCastStatCount] = {};            // ★ 09-29 B7
     // ★ 10-09 조각 5d — 옛 `aiOut_`(09-29 B7 크리처 틱 동안의 패킷 통로 — 끝내기·취소는 `out` 을 안 받는데 빔 끄기 패킷을 내야 했다)는 뺐다.
     //   게임이 요청 목록(`requests_`)에 쌓으므로 통로가 필요 없다
     std::vector<ListenRec> listens_;                              // ★ 09-29 B6 — 들을 거리(2프레임까지 산다 · 정답지 `listenHead`)
-    std::map<uint16_t, uint32_t> monsterSubclass_;                // ★ 09-29 B6 — 종류 → 몬스터 아종 비트
-    std::map<uint16_t, uint8_t> dangerTypes_;                     // ★ 09-29 B6 — 종류 → 위험 갈래(1 불 · 2 독구름 · 3 DANGEROUS)
     uint32_t sightForceFrame_ = 0xFFFFFFFFu;   // dword_5d4594_2487684 — 이 프레임엔 모든 몬스터가 다시 훑는다(순간이동·살금살금 켜기 다음 프레임)
     std::vector<PhysBody> obstacles_;        // 묶음 2-c 장애물
-    std::map<uint16_t, PhysBody> typeBodies_;   // 소환수 종류 → 몸
     static constexpr int kPlayerAnimSlots = 55;     // ThingDb kPlayerAnimTypeCount 와 같은 길이
-    int playerAnimFrames_[kPlayerAnimSlots][2] = {};   // [칸 수, 붙드는 틱] — PlayerAnimFrames(i)
+    // ★ 10-12 플랜 B 작업 7e-1 — 게임 데이터 표(`Docs/ROOMS_DESIGN.md` 「작업 7e 다시 짜기」). thing.bin · gamedata.bin · modifier.bin ·
+    //   soundset.bin 에서 오고 판 중에 안 바뀐다(7d 조사). 방들이 한 벌을 같이 가리킨다(`gt_` — 7e-2). 넣기 함수는 그대로 두고
+    //   `GtMut()`로 쓴다 — 같이 쓰는 표를 가리키는 게임이 넣으려 하면 제 사본을 만들어 쓴다(쓸 때 복사 · 같이 쓰는 표는 안 바뀐다).
+    //   필드 이름은 옛 멤버 이름에서 끝의 `_`를 뗀 것이다
+    struct GameTables {
+        std::map<uint16_t, float> itemRadius;                 // ★ 09-28 B4b 물건 종류 → 몸 반지름
+        std::map<uint16_t, WeaponDef> weaponDef;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
+        std::map<uint16_t, ArmorDef> armorDef;       // ★ 09-29 — 종류 번호 → modifier.bin 갑옷 정의
+        std::map<uint16_t, Session::Carried> itemTemplate;   // ★ 09-27 B1 — 기본 장비 종류 틀
+        std::vector<uint32_t> matByWire;
+        std::vector<uint8_t> breastByWire;
+        std::vector<uint8_t> monsterHitSound;   // ★ 4-c3b3b
+        // ★ 09-26 M4a — 소리 모음 칸(0~17 · ThingDb `kSoundSetFieldNames` 순서)별 「종류 번호 → 소리 번호」(0 = 없음).
+        //   칸 7(맞히는 소리)은 09-24 H1 의 표다(전에는 `monsterMeleeHitId_` 따로)
+        std::vector<uint16_t> monsterSnd[18];
+        uint16_t newPlayerWire = 0;
+        std::set<uint16_t> counterMissileTypes;
+        std::set<uint16_t> castingMonsterTypes;   // ★ 2-a4
+        std::vector<SoundDef> soundDefs;          // 색인 = 소리 번호(0 은 NULL)
+        uint16_t abilSoundUse[6] = {0, 0, 0, 0, 0, 0};
+        uint16_t abilSoundOff[6] = {0, 0, 0, 0, 0, 0};
+        std::map<uint8_t, uint8_t> spellCost;      // 주문 번호 → 마나 (thing.bin SPEL)
+        SpellDef spellDefs[137];                      // 묶음 4-a 주문 정의
+        std::vector<PhonemeNode> phonemeTree = std::vector<PhonemeNode>(1);   // [0] = 뿌리
+        std::map<std::string, uint16_t> namedTypes;   // 이름 → 와이어 종류(thing.bin 에서 받는다)
+        std::set<uint16_t> arrowTypes;                // 화살·쇠뇌살 — 이 종류만 갱신에 프레임이 붙는다(AddArrowType 주석)
+        Gamedata gamedata;                            // 묶음 4-a4 gamedata.bin
+        bool hasGamedata = false;
+        MagicTypeInfo magicType;                      // 묶음 4-a2 thing "Magic"
+        std::map<std::string, ProjTypeInfo> projTypes;   // 묶음 4-c3 이름 → 날아가는 종류(불덩이 셋 …)
+        std::map<uint16_t, std::string> collideFn;    // 묶음 3-d 종류 → 충돌 함수 이름
+        std::map<uint32_t, uint16_t> weaponWire;      // 묶음 3-d 무기 클래스 비트 → 종류 번호
+        std::vector<uint32_t> wallDefFlags;     // thing.bin WALL 순번 → 깃발
+        std::vector<WallDefExtra> wallDefExtra; // ★ 09-29 Z1-A thing.bin WALL 순번 → 맞는 소리 재질·체력·부서지는 소리
+        uint16_t keyWire[5] = {};
+        std::map<uint16_t, std::array<MonsterAnimRow, 16>> monsterAnims;   // ★ 09-29 B5 — 갱신자료 +476 표(종류별)
+        std::map<uint16_t, uint32_t> monsterSubclass;                // ★ 09-29 B6 — 종류 → 몬스터 아종 비트
+        std::map<uint16_t, uint8_t> dangerTypes;                     // ★ 09-29 B6 — 종류 → 위험 갈래(1 불 · 2 독구름 · 3 DANGEROUS)
+        std::map<uint16_t, PhysBody> typeBodies;   // 소환수 종류 → 몸
+        int playerAnimFrames[kPlayerAnimSlots][2] = {};   // [칸 수, 붙드는 틱] — PlayerAnimFrames(i)
+    };
+    std::shared_ptr<GameTables> gtOwn_ = std::make_shared<GameTables>();   // 제 표 — 넣기가 쓴다(같이 쓰는 표를 가리키면 비어 있다)
+    std::shared_ptr<const GameTables> gt_ = gtOwn_;                         // 읽는 표 — 제 것이거나 방들이 같이 쓰는 것
+    GameTables& GtMut() {   // 쓸 때 복사
+        if (!gtOwn_) { gtOwn_ = std::make_shared<GameTables>(*gt_); gt_ = gtOwn_; }
+        return *gtOwn_;
+    }
     // 남 항목의 덧붙이 값(자세로 보인다). 정품 표본은 0x30 인데 그 표본의 상대는
     // 화면 밖이었다 — 그려지는 값이 따로 있을 수 있어 손잡이로 뺐다.
     unsigned long long unitHealthSent_ = 0;

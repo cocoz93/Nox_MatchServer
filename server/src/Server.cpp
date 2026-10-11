@@ -1551,8 +1551,8 @@ bool Server::HurtTarget(const Target& t, int dmg,
     //   그 옆 일곱도 전부 침묵이었다. 「소환수가 왜 안 맞나」를 물을 눈이 없었다.
     if (i >= pets_.size()) { ++damageStops_["칸밖(소환수)"]; return false; };
     Creature& k = pets_[i];
-    const auto tb = typeBodies_.find(k.type);
-    const PhysBody* body = (tb != typeBodies_.end()) ? &tb->second : nullptr;
+    const auto tb = gt_->typeBodies.find(k.type);
+    const PhysBody* body = (tb != gt_->typeBodies.end()) ? &tb->second : nullptr;
     int amount = dmg;
     // ── 몬스터 피해 함수(thing.bin DAMAGE) ──
     if (body) {
@@ -2413,8 +2413,8 @@ void Server::UpdateProps() {
             //   거리는 **사람 반지름 + 그 문 종류의 반지름**이다. 종류를 모르면 42(10+32)
             double openAt = kDoorOpenDist;
             {
-                const auto tb = typeBodies_.find(p.type);
-                if (tb != typeBodies_.end() && tb->second.r > 0.0f)
+                const auto tb = gt_->typeBodies.find(p.type);
+                if (tb != gt_->typeBodies.end() && tb->second.r > 0.0f)
                     openAt = kBodyRadius + static_cast<double>(tb->second.r);
             }
             // ★ 09-22 — 「문 0」이 **안 열린 것**인지 **근처에 간 적이 없는 것**인지 갈라야 한다.
@@ -3302,8 +3302,8 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 //   (글 `weapon.c:WeaponEquipClassFail` + 소리 925 kind 2 · 정의가 없으면 못 쓰는 것 — `57B3D0`).
                 //   ⚠ 안 옮긴 것 — 같은 무기 거절(`CannotPickupDuplicateWeapon` — 게임 설정 비트 2 · 우리 설정 없음) · 퀘스트의 자연의 힘 지팡이 개수(`:5048~5057`)
                 if ((w.pickupFn == PickupFn::Weapon || w.pickupFn == PickupFn::Ammo) && !(questTotal_ > 0 || questStage_ > 0)) {
-                    const auto d = weaponDef_.find(w.type);
-                    const uint8_t classes = (d == weaponDef_.end()) ? 0 : d->second.classes;
+                    const auto d = gt_->weaponDef.find(w.type);
+                    const uint8_t classes = (d == gt_->weaponDef.end()) ? 0 : d->second.classes;
                     if (!(classes & (1u << static_cast<uint8_t>(s.charClass)))) {
                         SendPriMsg(s, "weapon.c:WeaponEquipClassFail");
                         PlaySoundAt(925, static_cast<float>(s.posX), static_cast<float>(s.posY), /*kind=*/2, s.netCode, s.sessionId);
@@ -3317,8 +3317,8 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 //   (글 `armor.c:ArmorEquipClassFail` + 소리 925 kind 2) · 정의가 없으면 못 입는 것(`57B3D0`)
                 //   ⚠ 안 옮긴 것 — 같은 갑옷 거절(`CannotPickupDuplicateArmor` — 게임 설정 비트 2 · `sub_409F40` — 우리 설정 없음)
                 if (w.equipBit != 0 && !w.isWeapon && !w.weaponClass && !(questTotal_ > 0 || questStage_ > 0)) {
-                    const auto d = armorDef_.find(w.type);
-                    const uint8_t classes = (d == armorDef_.end()) ? 0 : d->second.classes;
+                    const auto d = gt_->armorDef.find(w.type);
+                    const uint8_t classes = (d == gt_->armorDef.end()) ? 0 : d->second.classes;
                     if (!(classes & (1u << static_cast<uint8_t>(s.charClass)))) {
                         SendPriMsg(s, "armor.c:ArmorEquipClassFail");
                         PlaySoundAt(925, static_cast<float>(s.posX), static_cast<float>(s.posY), /*kind=*/2, s.netCode, s.sessionId);
@@ -4457,9 +4457,9 @@ void Server::DoorCollide(size_t di, Session& s) {
     }
     // 열쇠 찾기 — 가방 첫 물건부터(정답지 가방은 새 것이 머리 · 우리 벡터는 뒤가 새 것)
     size_t keyAt = s.inventory.size();
-    if (d.lock >= 1 && d.lock <= 4 && keyWire_[d.lock] != 0) {
+    if (d.lock >= 1 && d.lock <= 4 && gt_->keyWire[d.lock] != 0) {
         for (size_t i = s.inventory.size(); i-- > 0;)
-            if (s.inventory[i].type == keyWire_[d.lock]) { keyAt = i; break; }
+            if (s.inventory[i].type == gt_->keyWire[d.lock]) { keyAt = i; break; }
     }
     if (keyAt == s.inventory.size()) {
         if (quiet()) return;
@@ -4497,8 +4497,8 @@ void Server::DoorCollide(size_t di, Session& s) {
             WorldProp& o = props_[j];
             if (o.kind != PropKind::Door) continue;
             double r = 0.0;
-            auto tb = typeBodies_.find(o.type);
-            if (tb != typeBodies_.end()) r = static_cast<double>(tb->second.r);
+            auto tb = gt_->typeBodies.find(o.type);
+            if (tb != gt_->typeBodies.end()) r = static_cast<double>(tb->second.r);
             if (!(o.x - r < rx1 && o.x + r > rx0 && o.y - r < ry1 && o.y + r > ry0)) continue;
             int ox = 0, oy = 0;
             DoorWallCell(o, ox, oy);
@@ -4550,7 +4550,7 @@ void Server::SetWallSpecials(const std::vector<std::pair<uint32_t, uint32_t>>& d
     if (wallTiles_.empty()) return;
     for (auto& w : wallTiles_) {
         if (!w.present) continue;
-        w.hp = (w.tile < wallDefExtra_.size()) ? wallDefExtra_[w.tile].health : 0;
+        w.hp = (w.tile < gt_->wallDefExtra.size()) ? gt_->wallDefExtra[w.tile].health : 0;
     }
     uint16_t id = 0;
     for (const auto& g : destructible) {
@@ -4578,7 +4578,7 @@ int Server::DamageToMap(int gx, int gy, int dmg, uint8_t dtype, const WallHitter
     if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256 || wallTiles_.empty() || ((gx + gy) & 1)) { ++wallGate_[0]; return 0; }
     WallTile& w = wallTiles_[gy * 256 + gx];
     if (!w.present || w.door >= 0 || w.broken) { ++wallGate_[0]; return 0; }
-    const uint16_t hitMat = (w.tile < wallDefExtra_.size()) ? wallDefExtra_[w.tile].hitMat : 0;
+    const uint16_t hitMat = (w.tile < gt_->wallDefExtra.size()) ? gt_->wallDefExtra[w.tile].hitMat : 0;
     if (!w.breakable) {
         if (who.present) {
             const uint16_t snd = HitSoundFor(hitMat, who.material);
@@ -4609,7 +4609,7 @@ int Server::WallPreDestroy(int gx, int gy) {
     if (!w.present || !w.breakable || w.broken) return 0;
     w.hp = 0;
     const float px = static_cast<float>(gx) * 23.0f + 11.5f, py = static_cast<float>(gy) * 23.0f + 11.5f;
-    uint16_t snd = (w.tile < wallDefExtra_.size()) ? wallDefExtra_[w.tile].breakSound : 0;
+    uint16_t snd = (w.tile < gt_->wallDefExtra.size()) ? gt_->wallDefExtra[w.tile].breakSound : 0;
     if (snd == 0) snd = SoundByName("WallDestroyed");
     if (snd != 0) PlaySoundAt(snd, px, py);
     {
@@ -4641,7 +4641,7 @@ Server::WallHitter Server::WallHitterOfSession(int64_t sessionId) const {
     h.src = sessionId;                                            // ★ 09-29 B6 — 맞는 소리의 출처(몬스터가 들을 거리)
     h.x = static_cast<float>(it->second.posX); h.y = static_cast<float>(it->second.posY);
     h.dir = it->second.facing;
-    h.material = MaterialOfWire(newPlayerWire_);
+    h.material = MaterialOfWire(gt_->newPlayerWire);
     return h;
 }
 
@@ -4713,7 +4713,7 @@ bool Server::MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float
     //   마디 깃발 **2** 가 그 표다. 우리 추적 깃발은 `MapTraceFlag<N>` = 비트 `1 << (N−1)` 이다
     if ((flags & 0x80) && w.secret >= 0 && static_cast<size_t>(w.secret) < secretWalls_.size() &&
         (secretWalls_[static_cast<size_t>(w.secret)].flags & 0x2)) return false;
-    const uint32_t f2 = (w.tile < wallDefFlags_.size()) ? wallDefFlags_[w.tile] : 0;
+    const uint32_t f2 = (w.tile < gt_->wallDefFlags.size()) ? gt_->wallDefFlags[w.tile] : 0;
     if ((f2 & 0x2) || ((flags & 0x40) && !(f2 & 0x1))) return false;
     const float xl = std::min(x1, x2), xh = std::max(x1, x2);
     const float yl = std::min(y1, y2), yh = std::max(y1, y2);
@@ -5206,7 +5206,7 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
             {
                 const int a = static_cast<int>(s.netCode) + static_cast<int>(frame);
                 if (run) {
-                    const int frames = playerAnimFrames_[6][0], hold = playerAnimFrames_[6][1];
+                    const int frames = gt_->playerAnimFrames[6][0], hold = gt_->playerAnimFrames[6][1];
                     if (frames > 0) {
                         const int cur = a / (hold + 1) % frames, prev = (a - 1) / (hold + 1) % frames;
                         if (cur > prev && (cur == 2 || cur == 8)) Footstep(s, true);
@@ -5217,7 +5217,7 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
                     }
                 }
                 if (s.moveState == kPlayerStateWalk) {
-                    const int frames = playerAnimFrames_[4][0], hold = playerAnimFrames_[4][1];
+                    const int frames = gt_->playerAnimFrames[4][0], hold = gt_->playerAnimFrames[4][1];
                     if (frames > 0) {
                         const int cur = a / (hold + 1) % frames, prev = (a - 1) / (hold + 1) % frames;
                         if (cur != prev && (cur == 3 || cur == 9)) {
@@ -5243,12 +5243,12 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
             }
         } else if (canMove && s.moveState == 2) {
             // 시전(4-a) — `object_update.go:235~241` CAST_SPELL(21) 칸 = (프레임 − Field34) ÷ (붙듦+1) 을 u8 로 · 칸 수 넘으면 마지막 칸
-            const int frames = playerAnimFrames_[21][0], hold = playerAnimFrames_[21][1];
+            const int frames = gt_->playerAnimFrames[21][0], hold = gt_->playerAnimFrames[21][1];
             s.animFrame = static_cast<uint8_t>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
             if (static_cast<int>(s.animFrame) >= frames) s.animFrame = static_cast<uint8_t>(frames - 1);
         } else if (canMove && s.moveState == 30) {
             // 움찔(3-e) — `object_update.go:454~461` RECOIL(52) 칸이 끝나면 13
-            const int frames = playerAnimFrames_[52][0], hold = playerAnimFrames_[52][1];
+            const int frames = gt_->playerAnimFrames[52][0], hold = gt_->playerAnimFrames[52][1];
             s.animFrame = static_cast<uint8_t>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
             if (s.animFrame >= frames) PlayerSetState(s, kPlayerStateIdle, frame);
         } else if (canMove && s.moveState == 12) {
@@ -5256,7 +5256,7 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
             //   칸 = (프레임 − Field34) ÷ (붙듦+1) · 애니 3(JUMP) · **작살에 안 걸렸으면** 힘 = Direction1 × 2·SpeedCur(`=` — 덮어씀)
             //   칸 수에 닿으면 상태 0 · 떠 있음 끔 · Field34 = 프레임. **이 갈래는 ImplB 를 안 부른다**(`return …, false`)
             //   ⚠ 칸 번호(+236)는 안 적는다 — 상태 12 는 칸을 싣는 목록 밖이다(`PlayerAnimFrameSent`)
-            const int frames = playerAnimFrames_[3][0], hold = playerAnimFrames_[3][1];
+            const int frames = gt_->playerAnimFrames[3][0], hold = gt_->playerAnimFrames[3][1];
             const int idx = static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
             bool harpooned = false;
             for (const auto& kv2 : sessions_)
@@ -5289,24 +5289,24 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
         } else if (canMove && s.moveState == 14) {
             // ★ 09-29 — 활을 쏜 뒤(`object_update.go:340~346`) — 칸은 활 애니 33 의 마지막 · 상태 시작(Field34)에서 1초(틱 수)가 넘으면 13.
             //   전에는 이 갈래가 없어 활로 한 번 치면 상태 14 에 그대로 머물렀다
-            s.animFrame = static_cast<uint8_t>(playerAnimFrames_[33][0] - 1);
+            s.animFrame = static_cast<uint8_t>(gt_->playerAnimFrames[33][0] - 1);
             if (static_cast<int>(frame) - static_cast<int>(s.stateFrame) > static_cast<int>(kServerTickRate)) {
                 PlayerSetState(s, kPlayerStateIdle, frame);
                 ++bowPoseEnded_;
             }
         } else if (canMove && s.moveState == 15) {
             // 방패 올리는 중 — RAISE_SHIELD(40) 칸이 끝나면 16(`:346~353`)
-            const int frames = playerAnimFrames_[40][0], hold = playerAnimFrames_[40][1];
+            const int frames = gt_->playerAnimFrames[40][0], hold = gt_->playerAnimFrames[40][1];
             s.animFrame = static_cast<uint8_t>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
             if (s.animFrame >= frames) {
                 PlayerSetState(s, 16, frame);
                 s.animFrame = static_cast<uint8_t>(frames - 1);
             }
         } else if (canMove && s.moveState == 16) {
-            s.animFrame = static_cast<uint8_t>(playerAnimFrames_[40][0] - 1);   // 올린 채(`:354~357`)
+            s.animFrame = static_cast<uint8_t>(gt_->playerAnimFrames[40][0] - 1);   // 올린 채(`:354~357`)
         } else if (canMove && s.moveState == 17) {
             // 방패 내리는 중 — 칸을 거꾸로, 0 이면 13(`:358~370`)
-            const int frames = playerAnimFrames_[40][0], hold = playerAnimFrames_[40][1];
+            const int frames = gt_->playerAnimFrames[40][0], hold = gt_->playerAnimFrames[40][1];
             int v11 = frames - static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
             if (v11 >= frames) {
                 s.animFrame = static_cast<uint8_t>(frames - 1);
@@ -5321,7 +5321,7 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
             // 대검 막기 18·19·20(GREAT_SWORD_BLOCK_LEFT/RIGHT/DOWN 48·49·47) · 지팡이 막기 21(STAFF_BLOCK 30) — 칸 끝나면 13(`:371~398`)
             static const int kBlockAnim[4] = { 48, 49, 47, 30 };
             const int anim = kBlockAnim[s.moveState - 18];
-            const int frames = playerAnimFrames_[anim][0], hold = playerAnimFrames_[anim][1];
+            const int frames = gt_->playerAnimFrames[anim][0], hold = gt_->playerAnimFrames[anim][1];
             s.animFrame = static_cast<uint8_t>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1));
             if (s.animFrame >= frames) PlayerSetState(s, kPlayerStateIdle, frame);
         }
@@ -5484,8 +5484,8 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
                               s.posX, s.posY, -1, -1, -1, frame);
             }
             for (const auto& k : pets_) {
-                auto tb = typeBodies_.find(k.type);
-                if (tb == typeBodies_.end()) continue;   // 몸을 모르는 종류는 안 부딪힌다(지어내지 않는다)
+                auto tb = gt_->typeBodies.find(k.type);
+                if (tb == gt_->typeBodies.end()) continue;   // 몸을 모르는 종류는 안 부딪힌다(지어내지 않는다)
                 if (!tb->second.hasCollide || (tb->second.shape != 2 && tb->second.shape != 3)) continue;   // COLLIDE 없음 · 몸 없음
                 double ox0, oy0, ox1, oy1;
                 BodyRect(tb->second, k.x, k.y, ox0, oy0, ox1, oy1);
@@ -6114,8 +6114,8 @@ void Server::TryCollide(Session& s, uint16_t code) {
     }
     if (!found) return;
     ++tryCollides_;
-    const auto fn = collideFn_.find(type);
-    if (fn == collideFn_.end() || fn->second.empty()) return;   // +696 이 없으면 아무 일 없음
+    const auto fn = gt_->collideFn.find(type);
+    if (fn == gt_->collideFn.end() || fn->second.empty()) return;   // +696 이 없으면 아무 일 없음
     ++tryCollideDeferred_;
     Log("[충돌 요청] 프레임 %u %s → 번호 %u 종류 %u 충돌 함수 %s — 아직 안 옮김\n",
                 frame_, AddrText(s.sessionId), netCode, type, fn->second.c_str());
@@ -6133,7 +6133,7 @@ void Server::TryCollide(Session& s, uint16_t code) {
 void Server::SetSpellDef(uint8_t spell, uint8_t mana, uint32_t flags, const std::vector<uint8_t>& phonemes,
                          uint16_t castSound, uint16_t onSound, uint16_t offSound) {
     if (spell == 0 || spell >= 137) return;
-    SpellDef& d = spellDefs_[spell];
+    SpellDef& d = GtMut().spellDefs[spell];
     d.valid = true;
     d.enabled = true;
     d.mana = mana;
@@ -6142,20 +6142,20 @@ void Server::SetSpellDef(uint8_t spell, uint8_t mana, uint32_t flags, const std:
     d.onSound = onSound;
     d.offSound = offSound;
     d.phonemes.clear();
-    spellCost_[spell] = mana;
+    GtMut().spellCost[spell] = mana;
     if (phonemes.empty()) return;
     int leaf = 0;
     for (uint8_t ph : phonemes) {
         if (ph >= 9) return;
-        int next = phonemeTree_[static_cast<size_t>(leaf)].next[ph];
+        int next = gt_->phonemeTree[static_cast<size_t>(leaf)].next[ph];
         if (next < 0) {
-            phonemeTree_.push_back(PhonemeNode{});
-            next = static_cast<int>(phonemeTree_.size() - 1);
-            phonemeTree_[static_cast<size_t>(leaf)].next[ph] = next;
+            GtMut().phonemeTree.push_back(PhonemeNode{});
+            next = static_cast<int>(gt_->phonemeTree.size() - 1);
+            GtMut().phonemeTree[static_cast<size_t>(leaf)].next[ph] = next;
         }
         leaf = next;
     }
-    phonemeTree_[static_cast<size_t>(leaf)].ind = spell;
+    GtMut().phonemeTree[static_cast<size_t>(leaf)].ind = spell;
     d.phonemes = phonemes;
     d.phonemes.push_back(4);                               // spell.PhonEnd
 }
@@ -6171,8 +6171,8 @@ int Server::SpellPower(const Session& s, uint8_t spell) const {
 // sub_4FD0E0(`GAME4.c:2686`) — 꺼진 주문 10 · 사람이면 playerCheckSpellClass_57AEA0(`GAME5_2.c:1435`):
 //   위저드 0x2000000 · 컨저러 0x4000000 · 누구나 0x1000000 가 없으면 9 (워리어는 늘 9)
 int Server::SpellCheckClass(const Session& s, uint8_t spell) const {
-    if (spell >= 137 || !spellDefs_[spell].valid || !spellDefs_[spell].enabled) return 10;
-    const uint32_t fl = spellDefs_[spell].flags;
+    if (spell >= 137 || !gt_->spellDefs[spell].valid || !gt_->spellDefs[spell].enabled) return 10;
+    const uint32_t fl = gt_->spellDefs[spell].flags;
     uint32_t cls;
     if (s.charClass == CharClass::Wizard) cls = 0x2000000;
     else if (s.charClass == CharClass::Conjurer) cls = 0x4000000;
@@ -6205,7 +6205,7 @@ int Server::SpellManaTake(Session& s, uint8_t spell, int costKind) {
             30, 30, 60, 30, 15, 30, 85, 30, 30, 15, 60, 30, 30, 30, 30, 60, 60, 60, 60, 60 };
         cost = kSummonCost[spell - 75];
     } else {
-        cost = spellDefs_[spell].mana;
+        cost = gt_->spellDefs[spell].mana;
         if (costKind == 2) {
             // ManaCost(id, 2) — 함정에 넣을 때 에너지볼트·연쇄번개·마나폭탄은 gamedata 값(4-e 글리프에서)
         }
@@ -6377,12 +6377,12 @@ void Server::SpellCastByBook(uint32_t frame) {
             const uint8_t msg[2] = { static_cast<uint8_t>(Op::REPORT_SPELL_START), static_cast<uint8_t>(spell) };
             Emit(s, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg));   // Kind1 — 시전자에게만
         }
-        if (static_cast<uint32_t>(phonemeTree_[static_cast<size_t>(e.leaf)].ind) != spell) {
+        if (static_cast<uint32_t>(gt_->phonemeTree[static_cast<size_t>(e.leaf)].ind) != spell) {
             // 음소 하나 — 남에게 음소 소리(sub_4FC960 → 10) · 나무를 한 칸 · 사람이면 +184
             uint8_t ph = 0;
-            if (spell < 137 && e.phoneme < spellDefs_[spell].phonemes.size()) ph = spellDefs_[spell].phonemes[e.phoneme];
+            if (spell < 137 && e.phoneme < gt_->spellDefs[spell].phonemes.size()) ph = gt_->spellDefs[spell].phonemes[e.phoneme];
             int next = -1;
-            if (e.leaf >= 0 && ph < 9) next = phonemeTree_[static_cast<size_t>(e.leaf)].next[ph];
+            if (e.leaf >= 0 && ph < 9) next = gt_->phonemeTree[static_cast<size_t>(e.leaf)].next[ph];
             // PhonemeLeaf.Next 가 nil 이면 정답지는 nil 자리를 가리킨다 — 다음 비교에서 v7(nil 의 첫 u32) 을 읽는다.
             //   정의가 있는 주문은 음소를 끝까지 따라가면 반드시 그 주문 자리에 닿는다. 없으면 뿌리로 두어 「모름」으로 끝낸다.
             e.leaf = (next >= 0) ? next : 0;
@@ -6417,7 +6417,7 @@ void Server::PlayerSpell(Session& s) {
     bool unknown = true;                                   // ok2
     int err = 1;                                           // a1
     const int leaf = s.castLeaf;
-    const uint8_t spell = (leaf > 0) ? static_cast<uint8_t>(phonemeTree_[static_cast<size_t>(leaf)].ind) : 0;
+    const uint8_t spell = (leaf > 0) ? static_cast<uint8_t>(gt_->phonemeTree[static_cast<size_t>(leaf)].ind) : 0;
     const bool quest = (questTotal_ > 0 || questStage_ > 0);
     // ★ 2026-09-18 — **여기 갈래가 계수기 없이 새고 있었다.** 클라가 주문 29 를 5번 보내고
     //   서버도 5번 받았는데(`castAccepted_` = 5) 발사가 **0** 이고 거절 갈래도 **전부 0** 이었다.
@@ -6498,8 +6498,8 @@ bool Server::CastSpellByUser(uint8_t spell, int lvl, Session& s, const SpellArg&
 // spellAccept(spells.go:193~420)
 bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg& arg, int lvl) {
     if (spell == 0 || spell >= 137 || (obj3 == kNoSession)) return false;   // spellID 0 · obj3 == nil(날아가는 것의 주인이 사라짐)
-    if (!spellDefs_[spell].valid) return false;
-    const uint32_t fl = spellDefs_[spell].flags;
+    if (!gt_->spellDefs[spell].valid) return false;
+    const uint32_t fl = gt_->spellDefs[spell].flags;
     // Unk8(0x80) — 대상이 있는데 유닛이 아니면 거절 · 지금 대상은 사람·소환수(유닛)뿐
     // gameCaptureMagic_4FDC10 — CTF 에서 깃발 든 사람에게 CANT_HOLD_CROWN 주문 → 0 · 소리 PermanentFizzle(10)
     if (!arg.obj.none() && (arg.obj.sessionId != kNoSession) && (fl & 0x80000)) {
@@ -6710,8 +6710,8 @@ int Server::CastStun(int64_t obj3, const Target& targ, int lvl) {
     if ((targ.sessionId != kNoSession)) {
         buff = (sessions_.at(targ.sessionId).charClass != CharClass::Warrior) ? 5 : 4;
     } else {
-        const auto tb = typeBodies_.find(pets_[static_cast<size_t>(targ.pet)].type);
-        const float mass = (tb != typeBodies_.end()) ? tb->second.mass : 1.0f;
+        const auto tb = gt_->typeBodies.find(pets_[static_cast<size_t>(targ.pet)].type);
+        const float mass = (tb != gt_->typeBodies.end()) ? tb->second.mass : 1.0f;
         buff = (mass > 15.0f) ? 4 : 5;
     }
     ApplyEnchant(targ, buff, dur, lvl);
@@ -6750,7 +6750,7 @@ int Server::CastCurePoison(uint8_t spell, Session& a2, const Target& targ, int l
         return 1;
     }
     if (targ.sessionId != a2.sessionId) return 1;                     // 소리 → 10
-    SpellManaGive(a2, spellDefs_[spell].mana);          // sub_4FD030(대상, ManaCost(주문, 1))
+    SpellManaGive(a2, gt_->spellDefs[spell].mana);          // sub_4FD030(대상, ManaCost(주문, 1))
     return 1;
 }
 
@@ -6771,7 +6771,7 @@ int Server::CastLesserHeal(uint8_t spell, Session& caster, const Target& targ) {
         atMax = static_cast<int>(k.health) >= TuningFor(k.type).health;
     }
     if (atMax && targ.sessionId == caster.sessionId) {               // 최대 체력 && obj12(자기) == 대상 → 마나 되돌림
-        SpellManaGive(caster, spellDefs_[spell].mana);   // sub_4FD030(a3, ManaCost(spell, 1))
+        SpellManaGive(caster, gt_->spellDefs[spell].mana);   // sub_4FD030(a3, ManaCost(spell, 1))
         return 1;
     }
     double amount = BalanceFloat("LesserHealAmount");       // ARENA LesserHealAmount = 15(절대 HP)
@@ -8347,8 +8347,8 @@ size_t Server::petsWithPath() const {
 // nox_xxx_genPathToPoint_50B9A0 + MaybeAppendWorkPath — 낸 점을 크리처의 길로 옮겨 담는다
 int Server::CreatureGenPath(Creature& k, float tx, float ty) {
     uint32_t oflags = 0;
-    auto tb = typeBodies_.find(k.type);
-    if (tb != typeBodies_.end()) oflags = tb->second.flags;
+    auto tb = gt_->typeBodies.find(k.type);
+    if (tb != gt_->typeBodies.end()) oflags = tb->second.flags;
     const bool airborne = (oflags & 0x4000) != 0;
     AIPathFind(false, PathActor{ airborne, 0, -1 },
                static_cast<float>(k.x), static_cast<float>(k.y), tx, ty, PathFilter(), 0);
@@ -8382,8 +8382,8 @@ int Server::CreatureSetMovePath(Creature& k, float tx, float ty) {
     if (std::sqrt(ddx * ddx + ddy * ddy) + 0.01 <= 8.0) return 1;   // 목표까지 8 안이면 끝
 
     uint32_t oflags = 0;
-    auto tb = typeBodies_.find(k.type);
-    if (tb != typeBodies_.end()) oflags = tb->second.flags;
+    auto tb = gt_->typeBodies.find(k.type);
+    if (tb != gt_->typeBodies.end()) oflags = tb->second.flags;
     const uint8_t rayFlags = static_cast<uint8_t>((oflags >> 12) & 4);   // 깃발 0x4000 이면 4
     const bool clear = MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), tx, ty, rayFlags);
 
@@ -8589,7 +8589,7 @@ bool Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float
 //   번호가 0(모음 없음·NULL)이면 안 내고 「모음에없음」으로 센다 · 조각 0 인 번호는 `PlaySoundAt` 이 버린다(정답지도 조각 0 이면 안 만든다)
 bool Server::MonsterSound(const Creature& k, int field) {
     if (field < 0 || field >= 18) return false;
-    const auto& tbl = monsterSnd_[field];
+    const auto& tbl = gt_->monsterSnd[field];
     const uint16_t snd = (k.type < tbl.size()) ? tbl[k.type] : 0;
     ++monsterSndCount_[field][snd != 0 ? 1 : 0];
     if (snd == 0) return false;
@@ -9059,7 +9059,7 @@ bool Server::SpellGrantToPlayer(Session& s, uint8_t spell, uint8_t announce, boo
     if (member) {
         for (int i = 1; i < 137; ++i) {
             if (!(SpellFlags(static_cast<uint8_t>(i)) & member)) continue;
-            if (!spellDefs_[i].valid) continue;
+            if (!gt_->spellDefs[i].valid) continue;
             if (forceLevel) s.spellLvl[i] = forceLevel;
             else ++s.spellLvl[i];
             if (s.spellLvl[i] > 5) s.spellLvl[i] = 5;
@@ -9301,8 +9301,8 @@ bool Server::AbilityDo(Session& s, uint8_t abil) {
     AbilityEffect(s, abil);                          // 7-e — `do()`
     // ★ 09-20 묶음 10 — **쓸 때 소리**(정답지 `spells_abil.go:225~226` — `getSound(능력,0)`).
     //   소리 번호는 thing.bin `ABIL` 칸에서 읽어 넣는다(`SetAbilitySound`) — 지어내지 않는다
-    if (abilSoundUse_[abil] != 0) {
-        PlaySoundAt(abilSoundUse_[abil], static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, kNoSession, Target{ s.sessionId, -1 });
+    if (gt_->abilSoundUse[abil] != 0) {
+        PlaySoundAt(gt_->abilSoundUse[abil], static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, kNoSession, Target{ s.sessionId, -1 });
         ++abilSoundUseCalls_[abil];
     }
     return true;
@@ -9322,8 +9322,8 @@ void Server::AbilityUpdate(Session& s) {
             if (frame_ <= s.abilActiveUntil[i]) continue;               // 아직 남았다
             SendAbilityActive(s, i, false);
             // ★ 09-20 묶음 10 — **꺼질 때 소리**(정답지 `spells_abil.go:249~250` — `getSound(능력,2)`)
-            if (abilSoundOff_[i] != 0) {
-                PlaySoundAt(abilSoundOff_[i], static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, kNoSession, Target{ s.sessionId, -1 });
+            if (gt_->abilSoundOff[i] != 0) {
+                PlaySoundAt(gt_->abilSoundOff[i], static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, kNoSession, Target{ s.sessionId, -1 });
                 ++abilSoundOffCalls_[i];
             }
             if (i == 1) PlayerSetState(s, 13, frame_);                  // 광전사는 끝나면 상태 13
@@ -9434,8 +9434,8 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other) {
             if (other->idx < 0 || static_cast<size_t>(other->idx) >= pets_.size()) return;
             petIdx = other->idx;
             const Creature& k = pets_[static_cast<size_t>(petIdx)];
-            auto tb = typeBodies_.find(k.type);
-            if (tb == typeBodies_.end()) return;             // 몸 모르는 종류는 짝이 안 생긴다(위 적분)
+            auto tb = gt_->typeBodies.find(k.type);
+            if (tb == gt_->typeBodies.end()) return;             // 몸 모르는 종류는 짝이 안 생긴다(위 적분)
             cls = tb->second.cls; flags = tb->second.flags; mass = tb->second.mass;
             deadUnit = k.health == 0;
         } else if (other->kind == 3) {
@@ -9447,8 +9447,8 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other) {
             if (other->idx < 0 || static_cast<size_t>(other->idx) >= props_.size()) return;
             const WorldProp& d = props_[static_cast<size_t>(other->idx)];
             if (d.kind != PropKind::Door) return;
-            auto tb = typeBodies_.find(d.type);
-            if (tb != typeBodies_.end()) { cls = tb->second.cls; flags = tb->second.flags; mass = tb->second.mass; }
+            auto tb = gt_->typeBodies.find(d.type);
+            if (tb != gt_->typeBodies.end()) { cls = tb->second.cls; flags = tb->second.flags; mass = tb->second.mass; }
             else { cls = kClsDoor | 0x400000u; flags = 0; mass = 1.0; }
         } else {
             return;
@@ -9503,7 +9503,7 @@ void Server::PlayerBerserkCollide(Session& s, const ContactRef* other) {
             const WallTile& t = wallTiles_[static_cast<size_t>(s.lastWallGy) * 256 + static_cast<size_t>(s.lastWallGx)];
             if (t.present) w = &t;
         }
-        const uint32_t wf = (w && w->tile < wallDefFlags_.size()) ? wallDefFlags_[w->tile] : 0;
+        const uint32_t wf = (w && w->tile < gt_->wallDefFlags.size()) ? gt_->wallDefFlags[w->tile] : 0;
         if (w && !(wf & 0x5)) {
             hit(BerserkHit::WallSoft);
             PlayerSetPos(s, s.prevX, s.prevY);
@@ -9613,12 +9613,12 @@ void Server::AbilityEffect(Session& s, uint8_t abil) {
                 wp(ok && o.buffs.Has(29) ? WarcryPeer::Applied : WarcryPeer::Rejected);
             }
             // ★ 09-23 nine-defects 2-a4 — **몬스터도** 같은 둘레에서 본다(`spell_warcry.go:45~50`) — 단 **주문을 쓸 줄 알아야**
-            //   (`MonStatusCanCastSpells` = monster.bin `CAN_CAST_SPELLS`, 우리 `castingMonsterTypes_`). 전에는 사람만 봤다.
+            //   (`MonStatusCanCastSpells` = monster.bin `CAN_CAST_SPELLS`, 우리 `gt_->castingMonsterTypes`). 전에는 사람만 봤다.
             //   편 — 소환수의 편은 주인의 편이다(주인 없는 들짐승은 편 0). 정답지 `SameAs` 도 둘 다 0 이 아니고 같을 때만 같은 편이다
             for (size_t k = 0; k < pets_.size(); ++k) {
                 const Creature& c = pets_[k];
                 if (c.health == 0) continue;                       // 0x8000
-                if (castingMonsterTypes_.find(c.type) == castingMonsterTypes_.end()) continue;
+                if (gt_->castingMonsterTypes.find(c.type) == gt_->castingMonsterTypes.end()) continue;
                 uint8_t team = 0;
                 if ((c.owner != kNoSession)) {
                     auto oi = sessions_.find(c.owner);
@@ -9963,8 +9963,8 @@ void Server::HarpoonPull(const Session& owner, const Target& targ, float tx, flo
         const auto ts = sessions_.find(targ.sessionId);
         if (ts != sessions_.end()) mass = PlayerMassOf(ts->second);
     } else if (targ.pet >= 0 && static_cast<size_t>(targ.pet) < pets_.size()) {
-        const auto tb = typeBodies_.find(pets_[static_cast<size_t>(targ.pet)].type);
-        mass = (tb != typeBodies_.end() && tb->second.mass > 0.0f) ? tb->second.mass : 1.0;
+        const auto tb = gt_->typeBodies.find(pets_[static_cast<size_t>(targ.pet)].type);
+        mass = (tb != gt_->typeBodies.end() && tb->second.mass > 0.0f) ? tb->second.mass : 1.0;
     }
     if (mass <= 0.0) mass = 1.0;
     const double f = 10.0 * (-kHarpoonForce) / mass;
@@ -10796,10 +10796,10 @@ void Server::MusicEvent() {
 }
 
 void Server::SetSoundDefs(const std::vector<SoundDefIn>& list) {
-    soundDefs_.assign(kSoundCount, SoundDef{});
+    GtMut().soundDefs.assign(kSoundCount, SoundDef{});
     for (const SoundDefIn& in : list) {
         if (in.id == 0 || in.id >= kSoundCount) continue;
-        SoundDef& d = soundDefs_[in.id];
+        SoundDef& d = GtMut().soundDefs[in.id];
         d.maxDist = in.maxDist;
         d.merged = in.merged;
         d.samples = in.samples;
@@ -10809,8 +10809,8 @@ void Server::SetSoundDefs(const std::vector<SoundDefIn>& list) {
 
 // `soundFadePerc` — 0~100. 최대거리 밖이면 0(= 안 보낸다)
 int Server::SoundFadePerc(uint16_t id, float sx, float sy, double px, double py) const {
-    if (id == 0 || id >= soundDefs_.size()) return 0;
-    const int max = soundDefs_[id].maxDist;
+    if (id == 0 || id >= gt_->soundDefs.size()) return 0;
+    const int max = gt_->soundDefs[id].maxDist;
     if (max <= 0) return 0;
     const double dx = static_cast<double>(sx) - px;
     const double dy = static_cast<double>(sy) - py;
@@ -10827,7 +10827,7 @@ void Server::PlaySoundAt(uint16_t id, float x, float y, uint8_t kind, uint32_t c
                          int64_t owner, const Target& src) {
     // ⚠ **소리조각이 0 이면 아예 안 만든다** — `newAudioEventPos` 의 `Field12 <= 0` 문.
     //   thing.bin 을 안 읽었으면 표가 비어 있어 **한 개도 안 나간다**(정답지와 같다)
-    if (id == 0 || id >= soundDefs_.size() || soundDefs_[id].samples <= 0) { ++soundsDropped_; ++soundsDroppedIds_[id]; return; }
+    if (id == 0 || id >= gt_->soundDefs.size() || gt_->soundDefs[id].samples <= 0) { ++soundsDropped_; ++soundsDroppedIds_[id]; return; }
     AudioEvent e;
     e.sound = id;
     e.x = x;
@@ -10840,7 +10840,7 @@ void Server::PlaySoundAt(uint16_t id, float x, float y, uint8_t kind, uint32_t c
     // ★ 09-29 B6 — 몬스터가 들을 거리(`EventObj` → `onSound`(kind ≠ 2) → `NewSound` `unit_ai.go:289~312` · `server.go:652~656`)
     //   깃발 0 이면 버림 · 낸 것이 유닛이거나 유닛이 임자인 것만(`GetOwnerUnit() == nil` 이면 버림 — 자리 소리·문·판·공은 안 남는다)
     //   출처 = `src`(넘긴 유닛) · 없으면 `owner`(그 사람) · 자리 = 낸 것의 자리
-    if (kind != 2 && soundDefs_[id].flags != 0) {
+    if (kind != 2 && gt_->soundDefs[id].flags != 0) {
         ListenRec r;
         if (!src.none()) {
             if ((src.sessionId != kNoSession)) r.srcSessionId = src.sessionId;
@@ -10882,7 +10882,7 @@ void Server::FlushAudioEvents() {
         std::map<uint16_t, int> sent;
         for (size_t i : order) {
             const Cand& c = cand[i];
-            const uint8_t cap = soundDefs_[c.ev->sound].merged;
+            const uint8_t cap = gt_->soundDefs[c.ev->sound].merged;
             if (cap != 0 && ++sent[c.ev->sound] > cap) continue;
             const double dx = static_cast<double>(c.ev->x) - s.posX;
             const int8_t mv = static_cast<int8_t>(50 * static_cast<int>(dx) / kSoundPanHalfWidth);
@@ -11896,7 +11896,7 @@ void Server::AIUpdate(Creature& k, uint8_t act) {
             //   ★ 09-29 B3 — 함수가 0 이면 **빗나가는 소리**(+36 = 칸 8) — 기본은 대상을 찾았는데 시야가 막힌 때만 0 · 거미는 대상이 없어도 0.
             //   방패에 막혀도 정답지 함수는 1 이다(피해 함수만 부르고 결과를 안 본다)
             if (res) {
-                const uint16_t snd = (kSnap.type < monsterSnd_[7].size()) ? monsterSnd_[7][kSnap.type] : 0;   // ★ 09-26 M4a — 칸 7 표로 합침
+                const uint16_t snd = (kSnap.type < gt_->monsterSnd[7].size()) ? gt_->monsterSnd[7][kSnap.type] : 0;   // ★ 09-26 M4a — 칸 7 표로 합침
                 if (snd != 0) {
                     PlaySoundAt(snd, static_cast<float>(kSnap.x), static_cast<float>(kSnap.y), 0, 0, kNoSession, PetTarget(kSnap));
                     ++monsterMeleeHitPlayed_;
@@ -12441,8 +12441,8 @@ Target Server::MonsterPickMeleeTarget(const Creature& k, double meleeRange) cons
     double bestGap = meleeRange;
     double myR = 0.0;
     {
-        const auto tb = typeBodies_.find(k.type);
-        if (tb != typeBodies_.end()) myR = static_cast<double>(tb->second.r);
+        const auto tb = gt_->typeBodies.find(k.type);
+        if (tb != gt_->typeBodies.end()) myR = static_cast<double>(tb->second.r);
     }
     const double fx = DirVecX(k.facing), fy = DirVecY(k.facing);
     auto consider = [&](const Target& t, double tx, double ty, double tr) {
@@ -12461,8 +12461,8 @@ Target Server::MonsterPickMeleeTarget(const Creature& k, double meleeRange) cons
     for (size_t i = 0; i < pets_.size(); ++i) {
         if (&pets_[i] == &k) continue;
         double r = 0.0;
-        const auto tb = typeBodies_.find(pets_[i].type);
-        if (tb != typeBodies_.end()) r = static_cast<double>(tb->second.r);
+        const auto tb = gt_->typeBodies.find(pets_[i].type);
+        if (tb != gt_->typeBodies.end()) r = static_cast<double>(tb->second.r);
         consider(Target{ kNoSession, static_cast<int>(i) }, pets_[i].x, pets_[i].y, r);
     }
     return best;
@@ -12481,8 +12481,8 @@ void Server::ObjectApplyForce(float fromX, float fromY, const Target& t, double 
         if (it == sessions_.end() || it->second.respawnAtFrame != 0) return;   // 죽은 것은 안 밀린다
         mass = PlayerMassOf(it->second);
     } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
-        const auto tb = typeBodies_.find(pets_[static_cast<size_t>(t.pet)].type);
-        mass = (tb != typeBodies_.end() && tb->second.mass > 0.0f) ? tb->second.mass : 1.0;
+        const auto tb = gt_->typeBodies.find(pets_[static_cast<size_t>(t.pet)].type);
+        mass = (tb != gt_->typeBodies.end() && tb->second.mass > 0.0f) ? tb->second.mass : 1.0;
     }
     if (mass <= 0.0) mass = 1.0;
     const double f = 10.0 * force / mass;
@@ -12702,8 +12702,8 @@ void Server::MonsterBrain(Creature& k) {
 bool Server::MonsterCheckDodgeables(Creature& k) {
     double r = 0.0;
     {
-        const auto tb = typeBodies_.find(k.type);
-        if (tb != typeBodies_.end()) r = static_cast<double>(tb->second.r);
+        const auto tb = gt_->typeBodies.find(k.type);
+        if (tb != gt_->typeBodies.end()) r = static_cast<double>(tb->second.r);
     }
     const double dirX = DirVecX(k.facing), dirY = DirVecY(k.facing);
     for (int tries = 0; tries < 5; ++tries) {
@@ -12775,8 +12775,8 @@ int Server::MonsterAnimIndex(const Creature& k) const {
 
 // ★ 10-01 — 몸 깃발(+16) — thing.bin FLAGS 에 죽음 덧칠(`Creature::flagsSet`·`flagsClear`). 몸을 모르는 종류는 덧칠만
 uint32_t Server::PetObjFlags(const Creature& k) const {
-    const auto tb = typeBodies_.find(k.type);
-    const uint32_t base = (tb != typeBodies_.end()) ? tb->second.flags : 0u;
+    const auto tb = gt_->typeBodies.find(k.type);
+    const uint32_t base = (tb != gt_->typeBodies.end()) ? tb->second.flags : 0u;
     return (base | k.flagsSet) & ~k.flagsClear;
 }
 
@@ -12785,8 +12785,8 @@ uint32_t Server::PetObjFlags(const Creature& k) const {
 //   ⚠ NPC(아종 0x10)의 사람 애니 갈래는 우리 몬스터에 없다
 void Server::MonsterAnimUpdate(Creature& k) {
     if (k.animDone) return;
-    const auto it = monsterAnims_.find(k.type);
-    if (it == monsterAnims_.end()) { ++animStat_[static_cast<size_t>(AnimStat::NoTable)]; return; }   // +476 표 없음
+    const auto it = gt_->monsterAnims.find(k.type);
+    if (it == gt_->monsterAnims.end()) { ++animStat_[static_cast<size_t>(AnimStat::NoTable)]; return; }   // +476 표 없음
     const MonsterAnimRow& a = it->second[static_cast<size_t>(MonsterAnimIndex(k))];
     k.animFrames = a.frames;
     if (a.frames == 0) { k.animDone = true; ++animStat_[static_cast<size_t>(AnimStat::NoFrames)]; return; }
@@ -12810,8 +12810,8 @@ void Server::CountAttackTiming(const Creature& k, int kind, int frame) {
     if (!attackLagSeen_[kind] || lag < attackLagMin_[kind]) attackLagMin_[kind] = lag;
     if (!attackLagSeen_[kind] || lag > attackLagMax_[kind]) attackLagMax_[kind] = lag;
     attackLagSeen_[kind] = true;
-    const auto it = monsterAnims_.find(k.type);
-    const uint32_t hold = it == monsterAnims_.end() ? 0u : it->second[kind == 0 ? 1u : 3u].hold;
+    const auto it = gt_->monsterAnims.find(k.type);
+    const uint32_t hold = it == gt_->monsterAnims.end() ? 0u : it->second[kind == 0 ? 1u : 3u].hold;
     const uint32_t want = static_cast<uint32_t>(frame) * (hold + 1u);
     const bool onTime = lag == want || (want > 0 && lag == want - 1);
     ++attackTiming_[base + (onTime ? 0 : 1)];
@@ -12870,7 +12870,7 @@ void Server::MonsterListen(Creature& k) {
 //   ⚠ 방(폴리곤)이 다르면 안 듣는 갈래(`Sub_501C00` · `polygonIsPlayerInPolygon`)는 우리 맵에 방 자료가 없어 안 옮김
 bool Server::MonsterShouldListen(const Creature& k, const ListenRec& r) {
     if (k.heardFrame > frame_) { ++hearStat_[static_cast<size_t>(HearStat::Deaf)]; return false; }
-    const uint16_t flags = soundDefs_[r.snd].flags;
+    const uint16_t flags = gt_->soundDefs[r.snd].flags;
     Creature::SeenRef ref; ref.sessionId = r.srcSessionId; ref.petNet = r.srcIsPet ? r.srcNet : 0;
     Target pu;
     if (!SightResolve(ref, pu)) return flags != 0;
@@ -12883,7 +12883,7 @@ bool Server::MonsterShouldListen(const Creature& k, const ListenRec& r) {
 // `traceSound`(`unit_ai.go:362~375`) — 세기(`soundFadePerc` — 멀티는 끄는 문턱 0 · `game.go:349`)가 문턱(깃발 0x20 → 89 · 0x40 → 20 · 그 밖 50) 아래면 −1 ·
 //   몬스터→소리 자리 선 추적(5)이 막히면 반으로 깎아 다시 본다
 int Server::MonsterTraceSound(const Creature& k, const ListenRec& r) {
-    const uint16_t flags = soundDefs_[r.snd].flags;
+    const uint16_t flags = gt_->soundDefs[r.snd].flags;
     auto enough = [&](int p) { const int th = (flags & 0x20) ? 89 : ((flags & 0x40) ? 20 : 50); return p >= th; };
     int perc = SoundFadePerc(r.snd, r.x, r.y, k.x, k.y);
     if (!enough(perc)) { ++hearStat_[static_cast<size_t>(HearStat::Quiet)]; return -1; }
@@ -12905,7 +12905,7 @@ bool Server::MonsterHearReact(Creature& k) {
     if ((sub & 0x400) || floorGrid_.TileAt(k.heardX, k.heardY, floorEdges_).tile != 6) {
         const int gx = static_cast<int>(static_cast<double>(k.heardX) / 23.0), gy = static_cast<int>(static_cast<double>(k.heardY) / 23.0);
         bool airborne = false;
-        { const auto tb = typeBodies_.find(k.type); if (tb != typeBodies_.end()) airborne = (tb->second.flags & 0x4000) != 0; }
+        { const auto tb = gt_->typeBodies.find(k.type); if (tb != gt_->typeBodies.end()) airborne = (tb->second.flags & 0x4000) != 0; }
         if (WallDirAt(gx, gy) == -1 && AIPathCanPass(airborne, sub, gx, gy)) {
             acted = true;
             if (MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), k.heardX, k.heardY, 0x9)) {
@@ -12945,8 +12945,8 @@ bool Server::MonsterLookAtHeard(Creature& k) {
 bool Server::LocationIsSafe(const Creature& k, float x, float y) const {
     const uint32_t sub = MonsterSubclass(k.type);
     auto danger = [&](uint16_t type, float ox, float oy) {
-        const auto it = dangerTypes_.find(type);
-        if (it == dangerTypes_.end()) return false;
+        const auto it = gt_->dangerTypes.find(type);
+        if (it == gt_->dangerTypes.end()) return false;
         const float dx = ox - x, dy = oy - y;
         if (dx * dx + dy * dy > 50.0f * 50.0f) return false;
         switch (it->second) {
@@ -13091,15 +13091,15 @@ void Server::DurCancelForPet(uint8_t spell, uint16_t net) {
 
 // ★ 10-02 — 원본 거리 `nox_xxx_calcDistance_4E6C00`(`GAME3_3.c:2377~2420`) — **중심 거리에서 두 몸의 크기를 뺀다**
 //   (원 = 반지름 +176 · 상자 = 가로 +184·세로 +188 중 큰 쪽 절반) · 0.01 아래면 0.01
-//   사람(NewPlayer)은 원 반지름 `kPlayerRadius` 10 · 크리처는 종류 몸(`typeBodies_`) · ⚠ 상자 몸은 우리 몸 정보에 가로·세로가 없어 0 으로 두고 센다
+//   사람(NewPlayer)은 원 반지름 `kPlayerRadius` 10 · 크리처는 종류 몸(`gt_->typeBodies`) · ⚠ 상자 몸은 우리 몸 정보에 가로·세로가 없어 0 으로 두고 센다
 //   ⚠ 원본은 몬스터 판단 여러 곳(조건 거리·점멸·거리 두기 · `unit_ai.go:131~206` 등)에서 이 거리를 쓴다 — 우리는 거의 중심 거리로 옮겼다
 //     (작살은 09-24 H4 에 따로 고침) · 이 함수는 10-02 점멸·거리 두기부터 씀 · 나머지 자리는 따로 셀 것
 double Server::CalcDistanceEdge(const Creature& k, const Target& t, float tx, float ty) const {
     double d = std::sqrt((static_cast<double>(tx) - k.x) * (static_cast<double>(tx) - k.x) +
                          (static_cast<double>(ty) - k.y) * (static_cast<double>(ty) - k.y));
     auto half = [&](uint16_t type) -> double {
-        const auto it = typeBodies_.find(type);
-        if (it == typeBodies_.end()) return 0.0;
+        const auto it = gt_->typeBodies.find(type);
+        if (it == gt_->typeBodies.end()) return 0.0;
         if (it->second.shape == 2) return static_cast<double>(it->second.r);
         if (it->second.shape == 3) ++edgeDistBoxUnknown_;
         return 0.0;
@@ -13155,8 +13155,8 @@ bool Server::MonsterCanResumeAttack(const Creature& k) const {
 // `Nox_xxx_generateRetreatPath_50CA00`(`unit_ai_path.go:526~530`) — 길찾기 멀어지기 모드 · 거르기 = 그 칸 가운데 100 안에 적이 없음(`HasNoEnemiesAround`) · 깊이 6
 int Server::CreatureGenRetreatPath(Creature& k, float fromX, float fromY) {
     uint32_t oflags = 0;
-    auto tb = typeBodies_.find(k.type);
-    if (tb != typeBodies_.end()) oflags = tb->second.flags;
+    auto tb = gt_->typeBodies.find(k.type);
+    if (tb != gt_->typeBodies.end()) oflags = tb->second.flags;
     const bool airborne = (oflags & 0x4000) != 0;
     auto noEnemies = [&](int gx, int gy) {
         const double cx = gx * 23.0 + 11.5, cy = gy * 23.0 + 11.5;
@@ -13475,8 +13475,8 @@ bool Server::UsePotion(Session& s, const Session::Carried& c) {
 // SummonSize(`object_monster.go:652`) — thing.bin 몬스터 갈래로 정한다.
 //   `SMALL_MONSTER` 1 · `MEDIUM_MONSTER` 2 · `LARGE_MONSTER` 4. 모르면 1.
 int Server::SummonSizeOf(uint16_t type) const {
-    const auto tb = typeBodies_.find(type);
-    if (tb == typeBodies_.end()) return 1;
+    const auto tb = gt_->typeBodies.find(type);
+    if (tb == gt_->typeBodies.end()) return 1;
     const uint32_t sub = tb->second.subclass;
     if (sub & 0x4) return 4;                                 // LARGE_MONSTER
     if (sub & 0x2) return 2;                                 // MEDIUM_MONSTER
@@ -13633,8 +13633,8 @@ void Server::PushUnitsAround(float cx, float cy, float outer, float inner, float
     }
     for (auto& k : pets_) {
         if (k.dead) continue;                                // ★ 10-01 시체 — `isObjectMovable_52E020` +16 & 0x8068(DEAD 포함 · `GAME4_2.c:10468`)
-        const auto tb = typeBodies_.find(k.type);
-        const float mass = (tb != typeBodies_.end()) ? tb->second.mass : 1.0f;
+        const auto tb = gt_->typeBodies.find(k.type);
+        const float mass = (tb != gt_->typeBodies.end()) ? tb->second.mass : 1.0f;
         double fx = 0, fy = 0;
         apply(static_cast<float>(k.x), static_cast<float>(k.y), mass, fx, fy);
         // ⚠ 소환수는 아직 ForceVec 적분이 없다(걸음을 AI 가 직접 옮긴다) — 힘을 자리로 바로 옮겨 둔다
@@ -13768,8 +13768,8 @@ int Server::CastEarthquake(Session& caster, int lvl) {
     }
     for (size_t i = 0; i < pets_.size(); ++i) {
         // 날아다니는 종류(thing.bin FLAGS AIRBORNE — 박쥐·임프 따위). 몸 모르는 종류는 깃발도 모른다 → 안 뺀다
-        const auto tb = typeBodies_.find(pets_[i].type);
-        if (tb != typeBodies_.end() && (tb->second.flags & 0x4000)) {
+        const auto tb = gt_->typeBodies.find(pets_[i].type);
+        if (tb != gt_->typeBodies.end() && (tb->second.flags & 0x4000)) {
             if (inRange(pets_[i].x, pets_[i].y)) ++equakeSkipAirborne_;
             continue;
         }
@@ -14214,8 +14214,8 @@ void Server::SpawnCreature(uint16_t type, float x, float y, int64_t owner) {
     if ((owner == kNoSession)) k.aggression = 0.5f;   // ★ 09-29 B2 — 맵 몬스터 공격 성향 기본(unit_monster.go:124)
     if (type == kCarnivorousPlantType) {      // ★ 09-29 B4 — 식충식물 자체 시야 = 근접 사거리 + 몸 반지름 + 10(`unit_monster.go:21~24` — 되갚기 조건 63 의 자)
         const MonsterStats* pm = FindMonster(type);
-        const auto tb = typeBodies_.find(type);
-        k.sightRange = static_cast<float>((pm ? pm->meleeRange : 0.0) + (tb != typeBodies_.end() ? tb->second.r : 0.0f) + 10.0);
+        const auto tb = gt_->typeBodies.find(type);
+        k.sightRange = static_cast<float>((pm ? pm->meleeRange : 0.0) + (tb != gt_->typeBodies.end() ? tb->second.r : 0.0f) + 10.0);
     }
     k.type = type;
     k.netCode = nextShotNetCode_++;
@@ -14668,8 +14668,8 @@ Target Server::SpellFlySearchTarget(bool havePos, float px, float py, float mslX
     }
     for (size_t i = 0; i < pets_.size(); ++i) {
         if (pets_[i].dead) continue;                         // ★ 10-01 시체 — `FlagDestroyed|FlagDead`(`server/spells.go:426`)
-        const auto tb = typeBodies_.find(pets_[i].type);
-        if (tb != typeBodies_.end() && (tb->second.subclass & 0xC000)) continue;   // 몬스터 SUBCLASS 0x8000·0x4000
+        const auto tb = gt_->typeBodies.find(pets_[i].type);
+        if (tb != gt_->typeBodies.end() && (tb->second.subclass & 0xC000)) continue;   // 몬스터 SUBCLASS 0x8000·0x4000
         consider(Target{ kNoSession, static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y), &pets_[i].buffs, 0.0, 0.0);   // ⚠ 소환수 속도는 6
     }
     return found;
@@ -14677,7 +14677,7 @@ Target Server::SpellFlySearchTarget(bool havePos, float px, float py, float mslX
 
 // createSpellFly_4FDDA0(`GAME4.c:2880`)
 bool Server::CreateSpellFly(Session& s, Target target, uint8_t spell) {
-    if (magicType_.type == 0) return false;
+    if (gt_->magicType.type == 0) return false;
     if (target.none()) {
         // 사람 — 커서(playerinfo +2284/+2288) 둘레 600 에서 고른다(날아가는 것 = 시전자)
         target = SpellFlySearchTarget(true, static_cast<float>(s.aimX), static_cast<float>(s.aimY),
@@ -14692,13 +14692,13 @@ bool Server::CreateSpellFly(Session& s, Target target, uint8_t spell) {
     MissileObj m;
     m.netCode = nextShotNetCode_++;
     if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
-    m.type = magicType_.type;
-    m.flags = magicType_.flags;
+    m.type = gt_->magicType.type;
+    m.flags = gt_->magicType.flags;
     m.posX = m.newX = m.prevX = sx;
     m.posY = m.newY = m.prevY = sy;
     m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
     m.createdFrame = m.frame136 = frame_;
-    m.speed = magicType_.speed;
+    m.speed = gt_->magicType.speed;
     m.owner = s.sessionId;
     m.ud0 = s.sessionId;
     m.ud1 = target;
@@ -15284,8 +15284,8 @@ void Server::UpdateMissiles(uint32_t frame) {
                     //   나가자마자 제 몸에 맞는다. 정답지는 부모 사슬을 타고 올라가 가른다
                     //   (`findParentChainPlayer_4EC580`)
                     if (m.fromPet >= 0 && static_cast<int>(k) == m.fromPet) continue;
-                    const auto tb = typeBodies_.find(pets_[k].type);
-                    if (tb == typeBodies_.end() || !tb->second.hasCollide || tb->second.shape != 2) continue;
+                    const auto tb = gt_->typeBodies.find(pets_[k].type);
+                    if (tb == gt_->typeBodies.end() || !tb->second.hasCollide || tb->second.shape != 2) continue;
                     // ★ 10-01 시체 — 죽음 덧칠(0x80 끔 · 31 의 SHORT 0x10 ↔ 떠 있는 발사체 0x4000 은 안 맞음 · `sub_54E730` `GAME5.c:5701~5729` 는 DEAD 를 안 봄)
                     if (!passFlags(PetObjFlags(pets_[k]), (pets_[k].owner != kNoSession) && pets_[k].owner == m.owner)) continue;
                     const float dx = static_cast<float>(pets_[k].x) - qx, dy = static_cast<float>(pets_[k].y) - qy;
@@ -15411,7 +15411,7 @@ void Server::UpdateMissiles(uint32_t frame) {
                             reflectFrom(hx, hy);                     // 대검 가만 앞쪽 — 되받아침 + 상태 18~20(소리 890 → 10)
                             changeOwner();
                             PlayerSetState(t, static_cast<uint8_t>(18 + NextRandom(3)), frame);
-                            t.animFrame = static_cast<uint8_t>(playerAnimFrames_[PlayerAnimByte(t)][0] - 1);
+                            t.animFrame = static_cast<uint8_t>(gt_->playerAnimFrames[PlayerAnimByte(t)][0] - 1);
                         }
                         // LABEL_13 — ⚠ 반전(Inversion)은 든 물건의 마법부여 함수(아이템 5)
                         //   되받아치기 방패(27) 버프 · 앞쪽(날아가는 것 지금 자리 +56) → 주인·대상 맞바꿈(소리 122 → 10) · 되받아침 없이 그대로
@@ -15583,8 +15583,8 @@ void Server::UpdateMissiles(uint32_t frame) {
 void Server::GiveDefaultGear(Session& s) {
     const Loadout l = LoadoutFor(s.charClass);
     for (int g = 0; g < l.count && g < 4; ++g) {
-        const auto it = itemTemplate_.find(l.items[g]);
-        if (it == itemTemplate_.end()) { ++gearGiven_[0]; continue; }
+        const auto it = gt_->itemTemplate.find(l.items[g]);
+        if (it == gt_->itemTemplate.end()) { ++gearGiven_[0]; continue; }
         Session::Carried c = it->second;
         c.netCode = static_cast<uint16_t>(s.netCode + 1 + g);
         c.type = l.items[g];
@@ -15666,8 +15666,8 @@ void Server::DropAllItems(Session& s) {
         const Session::Carried& c = s.inventory[k];
         if (c.equipped && IsStreetClothes(c)) { ++deathDropKept_; continue; }
         order.push_back(c.netCode);
-        const auto r = itemRadius_.find(c.type);
-        if (r != itemRadius_.end() && r->second > maxR) maxR = r->second;
+        const auto r = gt_->itemRadius.find(c.type);
+        if (r != gt_->itemRadius.end() && r->second > maxR) maxR = r->second;
     }
     const double step = static_cast<double>(maxR) + maxR + 6.0;   // v13
     const double px = s.posX, py = s.posY;
@@ -15750,8 +15750,8 @@ void Server::RespawnGear(Session& s) {
         give.push_back(kItemWoodenShield);
     }
     for (uint16_t type : give) {
-        const auto it = itemTemplate_.find(type);
-        if (it == itemTemplate_.end()) { ++respawnGearNoTemplate_; continue; }   // 틀이 없으면 안 준다(무게를 짐작하지 않는다)
+        const auto it = gt_->itemTemplate.find(type);
+        if (it == gt_->itemTemplate.end()) { ++respawnGearNoTemplate_; continue; }   // 틀이 없으면 안 준다(무게를 짐작하지 않는다)
         Session::Carried c = it->second;
         c.netCode = nextShotNetCode_++;
         if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
@@ -15901,21 +15901,21 @@ void Server::ReportSecondaryWeapon(Session& s, uint16_t code) {
     const bool armor = IsArmorItem(*item);
     uint8_t classes = 0xFF;
     if (item->weaponClass) {
-        const auto d = weaponDef_.find(item->type);
-        classes = (d == weaponDef_.end()) ? 0 : d->second.classes;
+        const auto d = gt_->weaponDef.find(item->type);
+        classes = (d == gt_->weaponDef.end()) ? 0 : d->second.classes;
     } else if (armor) {
-        const auto d = armorDef_.find(item->type);
-        classes = (d == armorDef_.end()) ? 0 : d->second.classes;
+        const auto d = gt_->armorDef.find(item->type);
+        classes = (d == gt_->armorDef.end()) ? 0 : d->second.classes;
     } else if (item->isFood) {
         classes = ClassCanUseFood(s.charClass, item->foodBits) ? bit : 0;   // 같은 셈(`~(SUBCLASS >> 5) | 0xFE`)
     }
     bool strengthOk = false;
     if (armor) {
-        const auto d = armorDef_.find(item->type);
-        strengthOk = d != armorDef_.end() && s.strength >= static_cast<int>(d->second.reqStrength);
+        const auto d = gt_->armorDef.find(item->type);
+        strengthOk = d != gt_->armorDef.end() && s.strength >= static_cast<int>(d->second.reqStrength);
     } else {
-        const auto d = weaponDef_.find(item->type);
-        strengthOk = d != weaponDef_.end() && s.strength >= static_cast<int>(d->second.reqStrength);
+        const auto d = gt_->weaponDef.find(item->type);
+        strengthOk = d != gt_->weaponDef.end() && s.strength >= static_cast<int>(d->second.reqStrength);
     }
     if (!(classes & bit) || !strengthOk) {
         const uint8_t msg[4] = { static_cast<uint8_t>(Op::REPORT_SECONDARY_WEAPON), 0, 0, 1 };
@@ -15950,8 +15950,8 @@ bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound) {
         return gate(g);
     };
     // 직업 — `57B3D0` = (1 << 직업) & Classes62 · 무기 정의가 없으면 0(`object_pickup.go:113~118`)
-    const auto d = weaponDef_.find(item->type);
-    const uint8_t classes = (d == weaponDef_.end()) ? 0 : d->second.classes;
+    const auto d = gt_->weaponDef.find(item->type);
+    const uint8_t classes = (d == gt_->weaponDef.end()) ? 0 : d->second.classes;
     if (!(classes & (1u << static_cast<uint8_t>(s.charClass))))
         return refuse("weapon.c:WeaponEquipClassFail", EquipGate::ClassFail);
     // 힘 — `4F3180` = 힘 ≥ ReqStrength60(정의가 없으면 거짓 — 위에서 이미 걸러짐)
@@ -16077,8 +16077,8 @@ void Server::GiveTestItems() {
         if (frame_ < o.testItemsFrom) continue;
         o.testItemsGiven = true;
         for (uint16_t type : giveItems_) {
-            const auto it = itemTemplate_.find(type);
-            if (it == itemTemplate_.end()) { ++testItemsNoTemplate_; continue; }
+            const auto it = gt_->itemTemplate.find(type);
+            if (it == gt_->itemTemplate.end()) { ++testItemsNoTemplate_; continue; }
             Session::Carried c = it->second;
             c.netCode = nextShotNetCode_++;
             if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
@@ -16139,8 +16139,8 @@ void Server::PlayWeaponPickupSound(const Session& s, uint16_t snd) {
 //   힘은 쏜 이(+508)의 것 · 쏜 이가 없으면 30(`GAME3_3.c:5233~5237`). 솔로(깃발 2048)의 쇠뇌살 갈래는 우리 판에 없다.
 //   부르는 쪽이 `(long long)(값 + 0.5)`(`:5294` — qword_581450_9544 = 0.5)로 자른다 — 여기서 함께
 int Server::ArrowDamage(int64_t owner, uint16_t arrowType) const {
-    const auto d = weaponDef_.find(arrowType);
-    if (d == weaponDef_.end()) return 0;                                  // 정의가 없으면 정답지는 닿음 함수에서 바로 돌아간다(`:5223~5226`)
+    const auto d = gt_->weaponDef.find(arrowType);
+    if (d == gt_->weaponDef.end()) return 0;                                  // 정의가 없으면 정답지는 닿음 함수에서 바로 돌아간다(`:5223~5226`)
     int str = 30;
     auto it = sessions_.find(owner);
     if (it != sessions_.end()) str = it->second.strength;
@@ -16269,8 +16269,8 @@ bool Server::PlayerEquipArmor(Session& s, uint16_t nc, bool failSound) {
         if (failSound) PlaySoundAt(925, static_cast<float>(s.posX), static_cast<float>(s.posY), /*kind=*/2, s.netCode, s.sessionId);
         return gate(g);
     };
-    const auto d = armorDef_.find(item->type);
-    const uint8_t classes = (d == armorDef_.end()) ? 0 : d->second.classes;
+    const auto d = gt_->armorDef.find(item->type);
+    const uint8_t classes = (d == gt_->armorDef.end()) ? 0 : d->second.classes;
     if (!(classes & (1u << static_cast<uint8_t>(s.charClass)))) return refuse("armor.c:ArmorEquipClassFail", ArmorGate::ClassFail);
     if (s.strength < static_cast<int>(d->second.reqStrength)) return refuse("armor.c:ArmorEquipStrengthFail", ArmorGate::StrengthFail);
     if (sameNet != 0) { PlayerDequipArmor(s, sameNet); ++armorGate_[static_cast<size_t>(ArmorGate::Swapped)]; }
@@ -16313,8 +16313,8 @@ float Server::ArmorValueOf(const Session& s) const {
     float v = 0.0f;
     for (auto it = s.inventory.rbegin(); it != s.inventory.rend(); ++it) {
         if (!it->equipped || !IsArmorItem(*it)) continue;
-        const auto d = armorDef_.find(it->type);
-        v = (d != armorDef_.end() ? d->second.value : ItemArmorValue(it->type)) + v;
+        const auto d = gt_->armorDef.find(it->type);
+        v = (d != gt_->armorDef.end() ? d->second.value : ItemArmorValue(it->type)) + v;
     }
     if (v > 1.0) v = 1.0f;
     return v;
@@ -16324,8 +16324,8 @@ float Server::ArmorValueOf(const Session& s) const {
 //   ★ 09-27 B2 — 그 밖엔 무기 칸의 물건 종류(기본 장비를 못 실은 시험 서버만 직업 표)
 uint16_t Server::WeaponWireOf(const Session& s) const {
     if (s.debugWeapon >= 0) {
-        const auto it = weaponWire_.find(static_cast<uint32_t>(s.debugWeapon));
-        return it == weaponWire_.end() ? 0 : it->second;
+        const auto it = gt_->weaponWire.find(static_cast<uint32_t>(s.debugWeapon));
+        return it == gt_->weaponWire.end() ? 0 : it->second;
     }
     if (!s.gearInBag) return LoadoutFor(s.charClass).weapon;
     const Session::Carried* h = HeldWeapon(s);
@@ -16477,8 +16477,8 @@ Target Server::FindObjectAtCursor(const Session& s) const {
     for (size_t i = 0; i < pets_.size(); ++i) {
         const Creature& k = pets_[i];
         if (k.dead) continue;                                // ★ 10-01 시체 — `playerCursorScanFn_54AFB0` +16 & 0x8020(`GAME5.c:3587`)
-        auto tb = typeBodies_.find(k.type);
-        if (tb == typeBodies_.end() || tb->second.shape != 2) continue;   // 상자 몸 몬스터는 map_57B850(아직 없음)
+        auto tb = gt_->typeBodies.find(k.type);
+        if (tb == gt_->typeBodies.end() || tb->second.shape != 2) continue;   // 상자 몸 몬스터는 map_57B850(아직 없음)
         if (k.buffs.Has(0) && !s.buffs.Has(21)) continue;  // 투명이면 적외선일 때만(4-b1)
         if (consider(static_cast<float>(k.x), static_cast<float>(k.y), tb->second.r)) found = Target{ kNoSession, static_cast<int>(i) };
     }
@@ -16514,8 +16514,8 @@ void Server::WarcryShout(Session& s) {
         if (k.health == 0) continue;                         // 죽은 것(0x8000)
         const double dx = k.x - s.posX, dy = k.y - s.posY;
         if (dx * dx + dy * dy > r2) continue;
-        const auto tb = typeBodies_.find(k.type);
-        if (tb == typeBodies_.end() || !(tb->second.subclass & kWarcryStunBit)) continue;
+        const auto tb = gt_->typeBodies.find(k.type);
+        if (tb == gt_->typeBodies.end() || !(tb->second.subclass & kWarcryStunBit)) continue;
         ApplyEnchant(Target{ kNoSession, static_cast<int>(i) }, 5, 90, 3);
         ++warcryStunned_;
     }
@@ -16576,12 +16576,12 @@ int Server::CastCounterSpell(Session& caster) {
     for (size_t i = missiles_.size(); i-- > 0;) {
         if (i >= missiles_.size()) continue;                 // 불덩이가 터지며 목록이 줄었을 수 있다
         MissileObj& m = missiles_[i];
-        if (counterMissileTypes_.find(m.type) == counterMissileTypes_.end()) continue;
+        if (gt_->counterMissileTypes.find(m.type) == gt_->counterMissileTypes.end()) continue;
         if (!inRange(m.posX, m.posY)) continue;
         fx(m.posX, m.posY);
         ++counterMissiles_;
         const uint16_t nc = m.netCode;
-        if (m.type != magicType_.type && m.collideKind == 1) FireballExplode(m, Target{});   // SparkExplosionCollide(0,0)
+        if (m.type != gt_->magicType.type && m.collideKind == 1) FireballExplode(m, Target{});   // SparkExplosionCollide(0,0)
         // 픽시(2)·Magic·그 밖 — 대상 없는 닿음이 아무 일도 안 하거나 지우기뿐이다. 아직 남아 있으면 지운다
         if (i < missiles_.size() && missiles_[i].netCode == nc) DestroyMissile(i);
     }
@@ -16623,7 +16623,7 @@ int Server::CastCounterSpell(Session& caster) {
         strip(Target{ kNoSession, static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
     }
     // ④ 시전 소리
-    if (spellDefs_[13].valid && spellDefs_[13].castSound != 0) PlaySoundAt(spellDefs_[13].castSound, cx, cy, 0, 0, kNoSession, Target{ caster.sessionId, -1 });
+    if (gt_->spellDefs[13].valid && gt_->spellDefs[13].castSound != 0) PlaySoundAt(gt_->spellDefs[13].castSound, cx, cy, 0, 0, kNoSession, Target{ caster.sessionId, -1 });
     return 1;
 }
 
@@ -16638,8 +16638,8 @@ bool Server::PlayerAttack(Session& s, uint32_t frame) {
     const uint8_t prevFrame = s.animFrame;                  // v76 아래 바이트(+236 지난 틱 값)
     int frames = 0, hold = 0, idx = 0;
     auto range = [&](int anim) {
-        frames = (anim >= 0 && anim < kPlayerAnimSlots) ? playerAnimFrames_[anim][0] : 0;
-        hold = (anim >= 0 && anim < kPlayerAnimSlots) ? playerAnimFrames_[anim][1] : 0;
+        frames = (anim >= 0 && anim < kPlayerAnimSlots) ? gt_->playerAnimFrames[anim][0] : 0;
+        hold = (anim >= 0 && anim < kPlayerAnimSlots) ? gt_->playerAnimFrames[anim][1] : 0;
     };
     auto calcIdx = [&]() { idx = static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1)); };
     auto logJudge = [&](const AttackInfo& ai, bool hit, int anim) {
@@ -16903,7 +16903,7 @@ void Server::HarpoonDefaultHitSound(const Target& t, uint16_t boltType) {
     if ((t.sessionId != kNoSession)) {
         auto it = sessions_.find(t.sessionId);
         if (it == sessions_.end()) { ++harpoonHitSoundWay_[static_cast<size_t>(DefHitSoundWay::NotPorted)]; return; }
-        mat = MaterialOfWire(newPlayerWire_);
+        mat = MaterialOfWire(gt_->newPlayerWire);
         hasHp = true;
         dtype = it->second.lastDamageType;
         x = static_cast<float>(it->second.posX); y = static_cast<float>(it->second.posY);
@@ -16966,7 +16966,7 @@ void Server::PlayerDamageSound(const Session& victim, HitterRef h) {
     const uint32_t hitter = MaterialOfWire(h.type);
     uint32_t mat = 1;                                                     // FLESH
     auto consider = [&](uint16_t wire) {
-        if (wire == 0 || wire >= breastByWire_.size() || !breastByWire_[wire]) return;
+        if (wire == 0 || wire >= gt_->breastByWire.size() || !gt_->breastByWire[wire]) return;
         const uint32_t m = MaterialOfWire(wire);
         if (static_cast<int32_t>(m) > static_cast<int32_t>(mat)) mat = m;
     };
@@ -17064,8 +17064,8 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai) {
             if (gate(playerBody, static_cast<float>(o.posX), static_cast<float>(o.posY))) hits.push_back({ Player, { kv.first, uint16_t{0} } });
         }
         for (const auto& k : pets_) {
-            auto tb = typeBodies_.find(k.type);
-            if (tb == typeBodies_.end()) continue;
+            auto tb = gt_->typeBodies.find(k.type);
+            if (tb == gt_->typeBodies.end()) continue;
             if (gate(tb->second, static_cast<float>(k.x), static_cast<float>(k.y))) hits.push_back({ Pet, { kNoSession, k.netCode } });
         }
         for (size_t i = 0; i < obstacles_.size(); ++i) {
@@ -17132,8 +17132,8 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai) {
     }
     for (size_t i = 0; i < pets_.size(); ++i) {
         const Creature& k = pets_[i];
-        auto tb = typeBodies_.find(k.type);
-        if (tb == typeBodies_.end()) continue;                 // 몸을 모르는 종류(지어내지 않는다)
+        auto tb = gt_->typeBodies.find(k.type);
+        if (tb == gt_->typeBodies.end()) continue;                 // 몸을 모르는 종류(지어내지 않는다)
         const bool enemy = (k.owner == kNoSession) || (k.owner != s.sessionId && IsEnemyTo(s.sessionId, k.owner));
         PhysBody pb = tb->second;
         pb.flags = PetObjFlags(k);                             // ★ 10-01 시체 — 0x8049 에 걸림(`sub_5386A0` `GAME4_3.c:3783`)
@@ -17703,8 +17703,8 @@ void Server::RunTick(int ticks) {
     for (size_t i = frozen ? 0 : pets_.size(); i-- > 0;) {                                   // R1 — 판끝 동안 멈춤
         const Creature& k = pets_[i];
         if (k.health == 0) continue;
-        const auto tb = typeBodies_.find(k.type);
-        if (tb != typeBodies_.end() && (tb->second.flags & 0x4000)) continue;
+        const auto tb = gt_->typeBodies.find(k.type);
+        if (tb != gt_->typeBodies.end() && (tb->second.flags & 0x4000)) continue;
         if (floorGrid_.TileAt(static_cast<float>(k.x), static_cast<float>(k.y), floorEdges_).tile != 6) continue;
         ++lavaHurtsPet_;
         HurtTarget(Target{ kNoSession, static_cast<int>(i) }, 2, kNoSession, 12, nullptr, HitterNone());
