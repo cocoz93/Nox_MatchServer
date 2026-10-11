@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -26,7 +27,7 @@ namespace nox {
 // 정의는 아래 틱 앞에 있다. 접속 처리(첫 세계 스냅샷)에서 먼저 부르므로 여기서 알린다.
 static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCode,
                                int x, int y, std::vector<uint8_t>& dst,
-                               bool forceHudOn = false);
+                               bool forceHudOn = false, const Server* log = nullptr);   // ★ 10-12 작업 7b — 줄은 이 게임의 로그로
 
 // ★★ 첫 세계 스냅샷을 받아 두고, **그 머리 좌표를 스폰 자리로 삼는다.**
 //   서두가 찍힌 맵의 그 자리라야 사람이 스냅샷 속 다른 오브젝트들과 같은 동네에 선다.
@@ -157,6 +158,39 @@ static void TraceOutMsgs(FILE* f, const std::string& to, uint32_t frame, const u
         }
         pos += sz;
     }
+}
+
+// ★ 10-12 플랜 B 작업 7b — 방 로그(머리 주석은 `Server.h` `Log`). 끝난 줄들은 태그를 붙여 한 번의 쓰기로 낸다
+void Server::Log(const char* fmt, ...) const {
+    char small[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    va_list again;
+    va_copy(again, ap);
+    const int n = std::vsnprintf(small, sizeof(small), fmt, ap);
+    va_end(ap);
+    if (n > 0 && static_cast<size_t>(n) < sizeof(small)) {
+        logPending_.append(small, static_cast<size_t>(n));
+    } else if (n > 0) {
+        std::string big(static_cast<size_t>(n) + 1, '\0');
+        std::vsnprintf(&big[0], big.size(), fmt, again);
+        big.resize(static_cast<size_t>(n));
+        logPending_ += big;
+    }
+    va_end(again);
+    std::string out;
+    size_t from = 0;
+    for (size_t nl; (nl = logPending_.find('\n', from)) != std::string::npos; from = nl + 1) {
+        if (logRoom_ >= 0) {
+            char tag[24];
+            std::snprintf(tag, sizeof(tag), "[방 %d] ", logRoom_);
+            out += tag;
+        }
+        out.append(logPending_, from, nl + 1 - from);
+    }
+    if (from == 0) return;
+    logPending_.erase(0, from);
+    std::fwrite(out.data(), 1, out.size(), stdout);
 }
 
 // ★ 09-30 한 틱 한 데이터그램 — 정답지는 원격 사람에게 **프레임마다 조각 하나**만 보낸다(`server.go:474~475` `FlushAndPoll` →
@@ -382,7 +416,7 @@ void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n
     if (s.importantQ.size() >= kImportantQueueMax) {
         // 정답지는 넘치면 그 사람을 끊는다(`nox_xxx_importantCheckRate_4E52B0` → playerKickDueToRate).
         // 여기서는 끊지 않고 알리기만 한다 — 끊기 경로는 아직 옮기지 않았다.
-        std::printf("[중요] %s 대기열 %zu 개로 넘침 — 새 순번 %u 버림\n", AddrText(s.sessionId),
+        Log("[중요] %s 대기열 %zu 개로 넘침 — 새 순번 %u 버림\n", AddrText(s.sessionId),
                     s.importantQ.size(), static_cast<unsigned>(s.seqImpId - 1));
         return;
     }
@@ -401,7 +435,7 @@ void Server::EmitImportantRaw(Session& s, const uint8_t* msg, size_t n
         return;
     }
     if (s.importantQ.size() >= kImportantQueueMax) {
-        std::printf("[중요] %s 대기열 %zu 개로 넘침 — 맨 메시지 0x%02x 버림\n", AddrText(s.sessionId),
+        Log("[중요] %s 대기열 %zu 개로 넘침 — 맨 메시지 0x%02x 버림\n", AddrText(s.sessionId),
                     s.importantQ.size(), msg[0]);
         return;
     }
@@ -1399,7 +1433,7 @@ bool Server::HurtTarget(const Target& t, int dmg,
             const bool guardState = (st == 13 || st == 18 || st == 19 || st == 20);
             if (st == 16 && shield) {
                 if (dtype != 9 && dtype != 17) {
-                    std::printf("[막기] 프레임 %u %s 방패로 막음(종류 %u · 피해 %d)\n", frame_, AddrText(s.sessionId), dtype, dmg);
+                    Log("[막기] 프레임 %u %s 방패로 막음(종류 %u · 피해 %d)\n", frame_, AddrText(s.sessionId), dtype, dmg);
                     std::fflush(stdout);
                     { ++damageStops_["방패막기"]; return false; }        // `:338` 0
                 }
@@ -1412,7 +1446,7 @@ bool Server::HurtTarget(const Target& t, int dmg,
                             toArmor = true;
                         } else {
                             PlayerSetState(s, static_cast<uint8_t>(18 + NextRandom(3)), frame_);   // randomInt(18, 20)
-                            std::printf("[막기] 프레임 %u %s 대검으로 막음 → 상태 %u\n", frame_, AddrText(s.sessionId), s.moveState);
+                            Log("[막기] 프레임 %u %s 대검으로 막음 → 상태 %u\n", frame_, AddrText(s.sessionId), s.moveState);
                             std::fflush(stdout);
                             { ++damageStops_["대검막기"]; return false; }   // `:288` 0
                         }
@@ -1420,7 +1454,7 @@ bool Server::HurtTarget(const Target& t, int dmg,
                 }
                 if (!toArmor && (weap & 0x7FF8000) && (dtype == 0 || dtype == 11) && !src->missile && guardState) {
                     PlayerSetState(s, 21, frame_);
-                    std::printf("[막기] 프레임 %u %s 지팡이로 막음\n", frame_, AddrText(s.sessionId));
+                    Log("[막기] 프레임 %u %s 지팡이로 막음\n", frame_, AddrText(s.sessionId));
                     std::fflush(stdout);
                     { ++damageStops_["지팡이막기"]; return false; }      // `:322` 0
                 }
@@ -2102,7 +2136,7 @@ void Server::SpawnQuestStage(bool announce) {
         k.health = static_cast<uint16_t>(TuningFor(k.type).health);
         pets_.push_back(k);
     }
-    std::printf("[스테이지] %d/%d — %s (%d마리)\n",
+    Log("[스테이지] %d/%d — %s (%d마리)\n",
                 questStage_ + 1, kQuestStageCount, st.label, n);
     std::fflush(stdout);
     if (announce) SendNotice(st.label);
@@ -2869,7 +2903,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                     std::snprintf(b, sizeof(b), " %02x", body[base + q]);
                     line += b;
                 }
-                std::printf("%s\n", line.c_str());
+                Log("%s\n", line.c_str());
                 std::fflush(stdout);
             }
             return 0;
@@ -2924,7 +2958,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 ++readyHeard_;                             // 1-a — 갈래 셋 중 하나(삼키지 않게 따로)
                 if (!s.importantReady) {
                     s.importantReady = true;
-                    std::printf("[중요] 프레임 %u %s 준비 — 대기 %zu 개를 싣기 시작\n",
+                    Log("[중요] 프레임 %u %s 준비 — 대기 %zu 개를 싣기 시작\n",
                                 frame_, AddrText(s.sessionId), s.importantQ.size());
                 }
                 GameServerReadyMB(s);                 // network_server.go:99 → nox_xxx_gameServerReadyMB_4DD180
@@ -2943,7 +2977,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                         return p.sent && ((p.sentFrame ^ fr) & 0xFFFF) == 0;
                     }), s.importantQ.end());
                 if (s.importantAcked == 0 && before != s.importantQ.size())
-                    std::printf("[중요] 프레임 %u %s 첫 확인(시각 %u) — %zu 개 지움, 남은 %zu\n", frame_,
+                    Log("[중요] 프레임 %u %s 첫 확인(시각 %u) — %zu 개 지움, 남은 %zu\n", frame_,
                                 AddrText(s.sessionId), static_cast<unsigned>(fr & 0xFFFF),
                                 before - s.importantQ.size(), s.importantQ.size());
                 s.importantAcked += static_cast<uint32_t>(before - s.importantQ.size());
@@ -3668,7 +3702,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 {
                     const long long diff = static_cast<long long>(s.tickFrame) - static_cast<long long>(frame_);
                     if (!s.dbgTimerDiffSet || diff != s.dbgTimerDiff) {
-                        std::printf("[시계요청] %s 프레임 %u · 그 사람 시계 %u · 차(시계−도장) %lld\n",
+                        Log("[시계요청] %s 프레임 %u · 그 사람 시계 %u · 차(시계−도장) %lld\n",
                                     AddrText(s.sessionId), frame_, s.tickFrame, diff);
                         std::fflush(stdout);
                         s.dbgTimerDiff = diff;
@@ -3804,13 +3838,13 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                         s.x = static_cast<int>(fx);
                         s.y = static_cast<int>(fy);
                         ++spawnFromMap_;
-                        std::printf("[첫자리] 맵 시작점 %d,%d (시작점 %zu곳 중)\n", s.x, s.y, playerStarts_.size());
+                        Log("[첫자리] 맵 시작점 %d,%d (시작점 %zu곳 중)\n", s.x, s.y, playerStarts_.size());
                     } else {
                         const int n = static_cast<int>(inGameCount());
                         s.x = spawnX_ + (n % 4) * spawnSpread_;
                         s.y = spawnY_ + (n / 4) * spawnSpread_;
                         ++spawnFromDefault_;
-                        std::printf("[첫자리] 고정값 %d,%d (%s)\n", s.x, s.y,
+                        Log("[첫자리] 고정값 %d,%d (%s)\n", s.x, s.y,
                                     spawnForced_ ? "못 박음 — --spawn-at 또는 --item-at-spawn" : "맵에 시작점 없음");
                     }
                 }
@@ -3834,14 +3868,14 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                     // ★ **읽은 값을 찍는다** (2026-09-11). 화면에는 `Jack the Conjurer` 가
                     //   골라져 있는데 서버는 `마나0/0`(워리어 값)으로 봤다 — 어디서 어긋나는지
                     //   찍지 않으면 못 가른다. `원래 0x%02x` 가 51번 자리의 날바이트다.
-                    std::printf("[직업] 원래 0x%02x → %s · 레벨 %u · 본문 %zu바이트\n",
+                    Log("[직업] 원래 0x%02x → %s · 레벨 %u · 본문 %zu바이트\n",
                                 c,
                                 (c == 0 ? "워리어" : c == 1 ? "위저드" : c == 2 ? "컨저러" : "모름→워리어"),
                                 (unsigned)s.charLevel, it.bodyLen());
                     std::fflush(stdout);
                 } else {
                     // ⚠ 여기로 오면 직업을 **아예 못 읽는다** — 기본값(워리어)이 그대로 남는다.
-                    std::printf("[직업] ✗ 본문이 %zu바이트뿐이라 직업을 못 읽었다 (%zu 넘어야 한다)\n",
+                    Log("[직업] ✗ 본문이 %zu바이트뿐이라 직업을 못 읽었다 (%zu 넘어야 한다)\n",
                                 it.bodyLen(), kInfoClassAt);
                     std::fflush(stdout);
                 }
@@ -3915,7 +3949,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                             std::snprintf(b, sizeof(b), "%02x ", it.body()[q]);
                             line += b;
                         }
-                        std::printf("%s\n", line.c_str());
+                        Log("%s\n", line.c_str());
                         std::fflush(stdout);
                     }
                     std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97, gameSettings_);
@@ -4007,7 +4041,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 if (notifyNewGear_ && !firstSnapshot_.empty()) {
                     std::vector<uint8_t> patched;
                     const std::vector<uint8_t>& src =
-                        PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_)
+                        PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_, this)
                             ? patched : firstSnapshot_;
                     std::vector<uint8_t> gear;
                     size_t q = 0;
@@ -4164,7 +4198,7 @@ static BarePatchStat PatchBareTargets(std::vector<uint8_t>& buf, uint16_t from, 
 
 static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCode,
                                int x, int y, std::vector<uint8_t>& dst,
-                               bool forceHudOn) {
+                               bool forceHudOn, const Server* log) {
     dst.clear();
     dst.reserve(frag.size() + 16);
     bool any = false;
@@ -4233,9 +4267,13 @@ static bool PatchPreludePlayer(const std::vector<uint8_t>& frag, uint16_t netCod
     const BarePatchStat bst = PatchBareTargets(dst, origPlayer, netCode);
     // ★ 접속마다 한 줄. 「0 자리 고침」이 「고칠 게 없었다」인지 「거기까지 못 갔다」인지
     //   멈춘 자리를 같이 봐야 갈린다. [[feedback_zero_needs_stall_count]]
-    std::printf("서두 맨몸 대상 %d자리 고침 · 걷기 %zu/%zu 바이트 · 멈춘 오프코드 0x%02x\n",
-                bst.patched, bst.stoppedAt, bst.total,
-                bst.stoppedAt < dst.size() ? dst[bst.stoppedAt] : 0);
+    // ★ 10-12 작업 7b — 부른 게임의 로그로(방 태그). 게임이 없으면 그대로 표준 출력
+    char line[160];
+    std::snprintf(line, sizeof(line), "서두 맨몸 대상 %d자리 고침 · 걷기 %zu/%zu 바이트 · 멈춘 오프코드 0x%02x\n",
+                  bst.patched, bst.stoppedAt, bst.total,
+                  bst.stoppedAt < dst.size() ? dst[bst.stoppedAt] : 0);
+    if (log) log->Log("%s", line);
+    else std::fputs(line, stdout);
     return true;
 }
 
@@ -5933,7 +5971,7 @@ void Server::PlayerRespawn(Session& s, uint32_t frame) {
     ForgetDrawables(s);
     // 온라인이면 무적 버프 23 을 5초(5 × 30 틱)
     ApplyEnchant(Target{ s.sessionId, -1 }, 23, 5 * static_cast<int>(kServerTickRate), 5);   // buffApplyTo(23, 5×FPS, 5) · GAME4.c:2201
-    std::printf("[부활] 프레임 %u %s → (%.0f,%.0f) · 시작 지점 %zu곳 · 무적 %u틱\n", frame, AddrText(s.sessionId), sx, sy,
+    Log("[부활] 프레임 %u %s → (%.0f,%.0f) · 시작 지점 %zu곳 · 무적 %u틱\n", frame, AddrText(s.sessionId), sx, sy,
                 playerStarts_.size(), 5 * kServerTickRate);
     std::fflush(stdout);
 }
@@ -5975,7 +6013,7 @@ void Server::SendKillInform(Session& s) {
     for (auto& kv : sessions_) {
         if (kv.second.inGame) Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg));
     }
-    std::printf("[죽음 알림] 프레임 %u 죽은 %u · 죽인 %u · 종류 %u · 갈래 %u\n", frame_, s.netCode, killer, type, kind);
+    Log("[죽음 알림] 프레임 %u 죽은 %u · 죽인 %u · 종류 %u · 갈래 %u\n", frame_, s.netCode, killer, type, kind);
     std::fflush(stdout);
     s.killKind = 0;                                        // +304 = 0
     // ⚠ 갈래 2·종류 2 면 죽인 사람의 능력 1(광전사 돌진) 쉬는 시간을 지운다(sub_4FC0B0 · `GAME5.c:5052~5053`) → 묶음 7
@@ -6079,7 +6117,7 @@ void Server::TryCollide(Session& s, uint16_t code) {
     const auto fn = collideFn_.find(type);
     if (fn == collideFn_.end() || fn->second.empty()) return;   // +696 이 없으면 아무 일 없음
     ++tryCollideDeferred_;
-    std::printf("[충돌 요청] 프레임 %u %s → 번호 %u 종류 %u 충돌 함수 %s — 아직 안 옮김\n",
+    Log("[충돌 요청] 프레임 %u %s → 번호 %u 종류 %u 충돌 함수 %s — 아직 안 옮김\n",
                 frame_, AddrText(s.sessionId), netCode, type, fn->second.c_str());
     std::fflush(stdout);
 }
@@ -6245,7 +6283,7 @@ void Server::InformSpell(Session& s, uint8_t code, uint32_t val) {
     //   (`You cannot see that spot.` 따위), 서버 로그만 보면 왜 그 글씨가 떴는지 못 가른다.
     //   같은 (code,val) 쌍은 처음 한 번만 찍는다.
     if (informShown_.insert((static_cast<uint32_t>(code) << 24) | (val & 0xFFFFFF)).second) {
-        std::printf("[알림] %s code=%u val=%u\n", AddrText(s.sessionId), code, val);
+        Log("[알림] %s code=%u val=%u\n", AddrText(s.sessionId), code, val);
         std::fflush(stdout);
     }
     const uint8_t msg[6] = { static_cast<uint8_t>(Op::INFORM), code, static_cast<uint8_t>(val),
@@ -6269,7 +6307,7 @@ void Server::SendPriMsg(Session& s, const char* key) {
     //   클라 화면 글씨(`You cannot see that spot.` 따위)는 **로그보다 직접적인 단서**인데
     //   사진에만 있어 놓치기 쉽다. 같은 키가 쏟아지면 로그가 묻히므로 **키마다 처음 한 번만** 찍는다.
     if (priMsgShown_.insert(key).second) {
-        std::printf("[화면글씨] %s → %s\n", AddrText(s.sessionId), key);
+        Log("[화면글씨] %s → %s\n", AddrText(s.sessionId), key);
         std::fflush(stdout);
     }
     ++priMsgSent_;
@@ -6617,7 +6655,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
     if (SpellEffectPlaceholder(spell, s, arg)) return true;
     // 효과 함수를 아직 안 옮긴 주문 — 받아들인 것으로 친다(정답지 default: return true 와 같은 쪽) · 세고 적는다
     ++spellEffectDeferred_;
-    std::printf("[시전] 프레임 %u %s 주문 %u(%s) — 효과 함수 아직 안 옮김(묶음 4-b~4-f)\n", frame_, AddrText(s.sessionId),
+    Log("[시전] 프레임 %u %s 주문 %u(%s) — 효과 함수 아직 안 옮김(묶음 4-b~4-f)\n", frame_, AddrText(s.sessionId),
                 spell, SpellName(spell) ? SpellName(spell) : "?");
     std::fflush(stdout);
     return true;
@@ -9862,7 +9900,7 @@ void Server::HarpoonUpdate(Session& s) {
         if (dumpHarpoon_) {
             float dx0 = 0, dy0 = 0;
             if (TargetXY(s.harpoonTarget, dx0, dy0)) {
-                std::printf("[작살추적] 프레임 %u 주인 %.0f,%.0f 상대 %.0f,%.0f 거리 %.0f\n",
+                Log("[작살추적] 프레임 %u 주인 %.0f,%.0f 상대 %.0f,%.0f 거리 %.0f\n",
                             frame_, s.posX, s.posY, dx0, dy0,
                             std::sqrt((dx0 - s.posX) * (dx0 - s.posX) +
                                       (dy0 - s.posY) * (dy0 - s.posY)));
@@ -14675,7 +14713,7 @@ bool Server::CreateSpellFly(Session& s, Target target, uint8_t spell) {
         m.buffs.dur[21] = s.buffs.dur[21];
         m.buffs.power[21] = s.buffs.power[21];
     }
-    std::printf("[날리기] 프레임 %u %s 주문 %u(%s) Magic 번호 %u 자리 (%.1f,%.1f) 대상 %s\n", frame_, AddrText(s.sessionId), spell,
+    Log("[날리기] 프레임 %u %s 주문 %u(%s) Magic 번호 %u 자리 (%.1f,%.1f) 대상 %s\n", frame_, AddrText(s.sessionId), spell,
                 SpellName(spell) ? SpellName(spell) : "?", m.netCode, sx, sy,
                 target.none() ? "없음" : ((target.sessionId != kNoSession) ? AddrText(target.sessionId) : "소환수"));
     std::fflush(stdout);
@@ -16054,7 +16092,7 @@ void Server::GiveTestItems() {
             o.inventory.push_back(c);
             ++testItemsGiven_;
         }
-        std::printf("[시험물건] %s 가방에 %zu개 넣음(틀 없음 %llu)\n", AddrText(o.sessionId), giveItems_.size(), testItemsNoTemplate_);
+        Log("[시험물건] %s 가방에 %zu개 넣음(틀 없음 %llu)\n", AddrText(o.sessionId), giveItems_.size(), testItemsNoTemplate_);
         std::fflush(stdout);
     }
 }
@@ -16362,7 +16400,7 @@ void Server::EarthquakeSend(float x, float y, int jiggle) {
 // `GAME4.c:1588` playerInputAttack — 겨눈 것이 적(또는 빈 곳)일 때만.
 void Server::PlayerInputAttack(Session& s, uint32_t frame) {
     if (CursorOnFriend(s)) {                                // playerAimsAtEnemy_4F9DC0 가 0
-        std::printf("[공격] 프레임 %u %s 커서 아래가 편 — 안 때림\n", frame, AddrText(s.sessionId));
+        Log("[공격] 프레임 %u %s 커서 아래가 편 — 안 때림\n", frame, AddrText(s.sessionId));
         return;
     }
     const uint32_t equip = WeaponEquipOf(s);
@@ -16377,10 +16415,10 @@ void Server::PlayerInputAttack(Session& s, uint32_t frame) {
                 s.animFrame = 0;
                 const bool entered = PlayerSetState(s, kPlayerStateAttack, frame, /*cancelShield=*/true);
                 if (!entered) s.stamina = static_cast<uint8_t>(s.stamina + cost);   // sub_4F7DB0 되돌림
-                std::printf("[공격] 프레임 %u %s 무기 0x%X %s · 기력 %d 깎음 → %u\n", frame, AddrText(s.sessionId), equip,
+                Log("[공격] 프레임 %u %s 무기 0x%X %s · 기력 %d 깎음 → %u\n", frame, AddrText(s.sessionId), equip,
                             entered ? "상태 1 들어감" : "쉬는 시간이라 안 들어감(기력 되돌림)", cost, s.stamina);
             } else {
-                std::printf("[공격] 프레임 %u %s 무기 0x%X 기력 모자람 %u < %d\n", frame, AddrText(s.sessionId), equip, s.stamina, cost);
+                Log("[공격] 프레임 %u %s 무기 0x%X 기력 모자람 %u < %d\n", frame, AddrText(s.sessionId), equip, s.stamina, cost);
             }
             std::fflush(stdout);
         }
@@ -16392,7 +16430,7 @@ void Server::PlayerInputAttack(Session& s, uint32_t frame) {
     }
     if (s.moveState != kPlayerStateAttack) {
         const bool entered = PlayerSetState(s, kPlayerStateAttack, frame, /*cancelShield=*/true);
-        std::printf("[공격] 프레임 %u %s %s 애니 %u\n", frame, AddrText(s.sessionId),
+        Log("[공격] 프레임 %u %s %s 애니 %u\n", frame, AddrText(s.sessionId),
                     entered ? "상태 1 들어감" : "쉬는 시간이라 안 들어감", s.attackAnim);
         std::fflush(stdout);
     }
@@ -16606,7 +16644,7 @@ bool Server::PlayerAttack(Session& s, uint32_t frame) {
     auto calcIdx = [&]() { idx = static_cast<int>((frame - s.stateFrame) / static_cast<uint32_t>(hold + 1)); };
     auto logJudge = [&](const AttackInfo& ai, bool hit, int anim) {
         ++melees_;
-        std::printf("[공격] 프레임 %u %s 판정(시작 %u · 칸 %d/%d) 애니 %d 피해 %d 종류 %u 사거리 %.0f → %s\n", frame,
+        Log("[공격] 프레임 %u %s 판정(시작 %u · 칸 %d/%d) 애니 %d 피해 %d 종류 %u 사거리 %.0f → %s\n", frame,
                     AddrText(s.sessionId), s.stateFrame, idx, frames, anim, ai.dmg, ai.type, ai.range, hit ? "닿음" : "빗나감");
         std::fflush(stdout);
     };
@@ -17169,7 +17207,7 @@ void Server::RunTick(int ticks) {
             f.x = f.homeX; f.y = f.homeY; f.atHome = true;
         }
         ++roundsPlayed_;
-        std::printf("[판] 다시 엶 — %llu번째 판 (점수·깃발 초기화)\n", roundsPlayed_ + 1);
+        Log("[판] 다시 엶 — %llu번째 판 (점수·깃발 초기화)\n", roundsPlayed_ + 1);
         std::fflush(stdout);
     }
 
@@ -17221,7 +17259,7 @@ void Server::RunTick(int ticks) {
                     if (wasInGame) DropFlag(sessionId);
                 }
             }
-            std::printf("조용해서 내보냄: %s\n", AddrText(sessionId));
+            Log("조용해서 내보냄: %s\n", AddrText(sessionId));
             if (wasInGame) PlayerCancelSpells(sessionId);   // 오브젝트 지움 → playerCancelSpells(object.go:70, 4-a3)
                         // 10-d PlayerDisconnect: notify BEFORE erasing.
             //   timeout (reason 3): 0xC6 to that player, then 0xAE to the rest.
@@ -17278,7 +17316,7 @@ void Server::RunTick(int ticks) {
             front.x = static_cast<float>(s.posX) + std::cos(rad) * 30.0f;
             front.y = static_cast<float>(s.posY) + std::sin(rad) * 30.0f;
             HurtTarget(Target{ kv.first, -1 }, 25, kNoSession, 0, debugHurtFront_ ? &front : nullptr);
-            std::printf("[진단] 프레임 %u 에 %s 피해 25(종류 0) → 체력 %u→%u · 이월 %.2f · 상태 %u\n", frame_, AddrText(kv.first),
+            Log("[진단] 프레임 %u 에 %s 피해 25(종류 0) → 체력 %u→%u · 이월 %.2f · 상태 %u\n", frame_, AddrText(kv.first),
                         before, s.health, s.dmgRemainder, s.moveState);
             std::fflush(stdout);
             break;
@@ -17311,11 +17349,11 @@ void Server::RunTick(int ticks) {
                 auto si = sessions_.find(kv.first);
                 if (si != sessions_.end()) {
                     EnactUnitOrder(si->second, pets_.back(), debugPetOrder_);
-                    std::printf("[진단] 소환수에게 명령 %u(2가만히·3지켜·4따라와·5사냥)\n",
+                    Log("[진단] 소환수에게 명령 %u(2가만히·3지켜·4따라와·5사냥)\n",
                                 static_cast<unsigned>(debugPetOrder_));
                 }
             }
-            std::printf("[진단] 프레임 %u 에 %s %s 임프(번호 %u · 체력 %u)를 사람(%d,%d) 오른쪽 +%d 에 고정\n",
+            Log("[진단] 프레임 %u 에 %s %s 임프(번호 %u · 체력 %u)를 사람(%d,%d) 오른쪽 +%d 에 고정\n",
                         frame_, AddrText(kv.second.sessionId), debugPetWild_ ? "옆에 주인 없는" : "소유",
                         static_cast<unsigned>(k.netCode), static_cast<unsigned>(k.health),
                         kv.second.x, kv.second.y, debugPetWild_ ? debugDummyDx_ : 80);
@@ -17327,7 +17365,7 @@ void Server::RunTick(int ticks) {
         for (auto& kv : sessions_) {
             if (!kv.second.inGame || kv.second.observer) continue;
             ApplyEnchant(Target{ kv.first, -1 }, debugEnchantBuff_, 0, debugEnchantPower_);
-            std::printf("[진단] 프레임 %u 에 %s 버프 %d(세기 %d) 걸음 → 비트 0x%08X\n", frame_, AddrText(kv.first), debugEnchantBuff_,
+            Log("[진단] 프레임 %u 에 %s 버프 %d(세기 %d) 걸음 → 비트 0x%08X\n", frame_, AddrText(kv.first), debugEnchantBuff_,
                         debugEnchantPower_, kv.second.buffs.bits);
             std::fflush(stdout);
             debugEnchantDone_ = true;
@@ -17341,7 +17379,7 @@ void Server::RunTick(int ticks) {
             int side = 1;
             for (auto& k : pets_) { k.x = who->x + 300.0 * side; k.y = who->y; side = -side; }
             debugAwayDone_ = true;
-            std::printf("[진단] 프레임 %u 에 크리처 %zu 마리를 사람(%d,%d) 좌우 ±300 으로 옮김\n",
+            Log("[진단] 프레임 %u 에 크리처 %zu 마리를 사람(%d,%d) 좌우 ±300 으로 옮김\n",
                         frame_, pets_.size(), who->x, who->y);
             std::fflush(stdout);
         }
@@ -17355,7 +17393,7 @@ void Server::RunTick(int ticks) {
             if (!kv.second.inGame) continue;
             const uint8_t before = kv.second.team;
             kv.second.team = (before == 1) ? 2 : 1;
-            std::printf("[진단] 프레임 %u 에 %s 팀 %u → %u\n", frame_, AddrText(kv.second.sessionId),
+            Log("[진단] 프레임 %u 에 %s 팀 %u → %u\n", frame_, AddrText(kv.second.sessionId),
                         static_cast<unsigned>(before), static_cast<unsigned>(kv.second.team));
             std::fflush(stdout);
             break;
@@ -17371,7 +17409,7 @@ void Server::RunTick(int ticks) {
             if (!kv.second.inGame) continue;
             const uint8_t before = kv.second.team;
             kv.second.team = (before == 1) ? 2 : 1;
-            std::printf("[진단] 프레임 %u 에 %s 팀 %u → %u (되풀이)\n", frame_, AddrText(kv.second.sessionId),
+            Log("[진단] 프레임 %u 에 %s 팀 %u → %u (되풀이)\n", frame_, AddrText(kv.second.sessionId),
                         static_cast<unsigned>(before), static_cast<unsigned>(kv.second.team));
             std::fflush(stdout);
             break;
@@ -17392,7 +17430,7 @@ void Server::RunTick(int ticks) {
             else if ((victim == kNoSession)) { victim = kv.first; break; }
         }
         if ((killer != kNoSession) && (victim != kNoSession)) {
-            std::printf("[진단] 프레임 %u — %s 가 %s 를 죽인다(진단)\n",
+            Log("[진단] 프레임 %u — %s 가 %s 를 죽인다(진단)\n",
                         frame_, AddrText(killer), AddrText(victim));
             std::fflush(stdout);
             Damage(victim, 9999, killer, nullptr, /*ignoreInvuln=*/true);
@@ -17412,7 +17450,7 @@ void Server::RunTick(int ticks) {
             arg.x = static_cast<float>(o.posX) + static_cast<float>(debugFistDx_);
             arg.y = static_cast<float>(o.posY) + static_cast<float>(debugFistDy_);
             const int r = CastFist(o, arg, /*lvl=*/3);
-            std::printf("[진단] 프레임 %u 주먹 — 사람 %.0f,%.0f → 자리 %.0f,%.0f · 결과 %d(1이면 떴다)\n",
+            Log("[진단] 프레임 %u 주먹 — 사람 %.0f,%.0f → 자리 %.0f,%.0f · 결과 %d(1이면 떴다)\n",
                         frame_, o.posX, o.posY, arg.x, arg.y, r);
             std::fflush(stdout);
             debugFistDone_ = true;
@@ -17427,7 +17465,7 @@ void Server::RunTick(int ticks) {
         for (auto& kv : sessions_) {
             Session& o = kv.second;
             if (!o.inGame || o.observer || o.respawnAtFrame != 0) continue;
-            std::printf("[진단] 프레임 %u 순간이동 — %.0f,%.0f → %d,%d\n",
+            Log("[진단] 프레임 %u 순간이동 — %.0f,%.0f → %d,%d\n",
                         frame_, o.posX, o.posY, debugWarpX_, debugWarpY_);
             std::fflush(stdout);
             o.forceX = o.forceY = 0.0;
@@ -17444,7 +17482,7 @@ void Server::RunTick(int ticks) {
         frame_ >= firstInGameFrame_ + debugMobAfter_) {
         const size_t before = pets_.size();
         SpawnCreature(debugMobType_, static_cast<float>(debugMobX_), static_cast<float>(debugMobY_), kNoSession);
-        std::printf("[진단] 프레임 %u 몬스터 %u 를 %d,%d 에 세움 — 크리처 %zu → %zu\n",
+        Log("[진단] 프레임 %u 몬스터 %u 를 %d,%d 에 세움 — 크리처 %zu → %zu\n",
                     frame_, static_cast<unsigned>(debugMobType_), debugMobX_, debugMobY_, before, pets_.size());
         std::fflush(stdout);
         debugMobDone_ = true;
@@ -17456,7 +17494,7 @@ void Server::RunTick(int ticks) {
         const int before = SecretWallState(debugWallGx_, debugWallGy_);
         WallOpen(debugWallGx_, debugWallGy_);
         const int after = SecretWallState(debugWallGx_, debugWallGy_);
-        std::printf("[진단] 프레임 %u 비밀벽 %d,%d — 상태 %d → %d(4면 여는 중)\n",
+        Log("[진단] 프레임 %u 비밀벽 %d,%d — 상태 %d → %d(4면 여는 중)\n",
                     frame_, debugWallGx_, debugWallGy_, before, after);
         std::fflush(stdout);
         debugWallDone_ = true;
@@ -17472,7 +17510,7 @@ void Server::RunTick(int ticks) {
             Session& o = kv.second;
             if (!o.inGame || o.observer) continue;
             o.score = static_cast<int>(debugScoreVal_);
-            std::printf("[진단] 프레임 %u 에 %s 점수를 %d 로 (한도 %d)\n", frame_, AddrText(o.sessionId),
+            Log("[진단] 프레임 %u 에 %s 점수를 %d 로 (한도 %d)\n", frame_, AddrText(o.sessionId),
                         o.score, static_cast<int>(gameSettings_.limitValue));
             std::fflush(stdout);
             break;
@@ -17489,7 +17527,7 @@ void Server::RunTick(int ticks) {
             if (!kv.second.inGame) continue;
             const int before = kv.second.level;
             PlayerGiveExp(kv.second, debugXpAmount_);
-            std::printf("[진단] 프레임 %u 에 %s 경험치 +%.0f (레벨 %d → %d)\n", frame_,
+            Log("[진단] 프레임 %u 에 %s 경험치 +%.0f (레벨 %d → %d)\n", frame_,
                         AddrText(kv.second.sessionId), debugXpAmount_, before, kv.second.level);
             std::fflush(stdout);
             break;
@@ -17504,7 +17542,7 @@ void Server::RunTick(int ticks) {
         for (auto& kv : sessions_) {
             if (!kv.second.inGame) continue;
             const bool ok = SpellGrantToPlayer(kv.second, debugSpellId_, 1, false, 0);
-            std::printf("[진단] 프레임 %u 에 %s 주문 %u 주기 %s (칸 %u)\n", frame_,
+            Log("[진단] 프레임 %u 에 %s 주문 %u 주기 %s (칸 %u)\n", frame_,
                         AddrText(kv.second.sessionId), static_cast<unsigned>(debugSpellId_),
                         ok ? "됨" : "거절", static_cast<unsigned>(kv.second.spellLvl[debugSpellId_]));
             std::fflush(stdout);
@@ -17525,7 +17563,7 @@ void Server::RunTick(int ticks) {
             if (s.debugGuideAt == 0) { s.debugGuideAt = frame_ + 60; continue; }
             if (frame_ < s.debugGuideAt || s.guideLvl[1] != 0) continue;
             for (uint8_t g : kDebugGuides) GuideAward(s, g, false);
-            std::printf("[진단] 프레임 %u 에 %s 컨저러 안내서 넷(박쥐·흰거미 둘·거미) 줌\n", frame_, AddrText(s.sessionId));
+            Log("[진단] 프레임 %u 에 %s 컨저러 안내서 넷(박쥐·흰거미 둘·거미) 줌\n", frame_, AddrText(s.sessionId));
             std::fflush(stdout);
         }
     }
@@ -17847,7 +17885,7 @@ void Server::RunTick(int ticks) {
                                                                     s.buffs.bits, mn);
                 patched.insert(patched.end(), tail.begin(), tail.end());
             } else if (!(patchSnapshot_ &&
-                  PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_))) {
+                  PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_, this))) {
                 patched = firstSnapshot_;
             }
             // ★★★ **번호를 다시 매긴 뒤에 보낸다** — 안 그러면 이 뒤에 보내는
@@ -17950,10 +17988,10 @@ void Server::RunTick(int ticks) {
                 //     그건 **오픈녹스 클라** 이야기다 — 정품 클라는 `--peer-ops` 를 넓게 줘도 멀쩡했다.
                 if (peerSnapshot_ && !firstSnapshot_.empty()) {
                     std::vector<uint8_t> pa, pb;
-                    if (!PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, pa, forceHudOn_)) pa = firstSnapshot_;
+                    if (!PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, pa, forceHudOn_, this)) pa = firstSnapshot_;
                     RenumberSeq(o, pa);   // 받는 쪽은 o 다 — 번호도 o 의 것이라야 한다
                     Emit(o, /*reliable=*/true, /*stream=*/0, pa.data(), pa.size());
-                    if (!PatchPreludePlayer(firstSnapshot_, o.netCode, o.x, o.y, pb, forceHudOn_)) pb = firstSnapshot_;
+                    if (!PatchPreludePlayer(firstSnapshot_, o.netCode, o.x, o.y, pb, forceHudOn_, this)) pb = firstSnapshot_;
                     RenumberSeq(s, pb);
                     Emit(s, /*reliable=*/true, /*stream=*/0, pb.data(), pb.size());
                     ++handled_;
@@ -17984,7 +18022,7 @@ void Server::RunTick(int ticks) {
                 //   다른 번호·다른 자리를 말해 **딴 오브젝트로 본다**(2026-09-08 대조).
                 std::vector<uint8_t> patched;
                 const std::vector<uint8_t>& send =
-                    PatchPreludePlayer(m, s.netCode, s.x, s.y, patched, forceHudOn_) ? patched : m;
+                    PatchPreludePlayer(m, s.netCode, s.x, s.y, patched, forceHudOn_, this) ? patched : m;
                 // ★ 09-30 — 녹음 조각은 이미 한 데이터그램이다 — 묶지 않고 그대로
                 EmitNow(s, /*reliable=*/false, /*stream=*/0, send.data(), send.size());
                 ++bundleStat_[static_cast<size_t>(BundleStat::DirectMirror)];
@@ -18394,7 +18432,7 @@ void Server::RunTick(int ticks) {
                     static_cast<uint8_t>(friendly ? Op::OBJECT_FRIEND_ADD : Op::OBJECT_FRIEND_REMOVE),
                     static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8) };
                 EmitSeq(s, msg, sizeof(msg));
-                std::printf("[친구] 프레임 %u %s 에게 번호 %u %s\n", frame_, AddrText(s.sessionId),
+                Log("[친구] 프레임 %u %s 에게 번호 %u %s\n", frame_, AddrText(s.sessionId),
                             static_cast<unsigned>(nc), friendly ? "ADD" : "REMOVE");
                 if (friendly) s.friendsSent.insert(nc); else s.friendsSent.erase(nc);
             };

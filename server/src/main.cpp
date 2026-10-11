@@ -179,11 +179,11 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                           srv.berserkHit(B::WallSoft), srv.berserkHit(B::Light), srv.berserkHit(B::Overlap), srv.berserkHit(B::Door)); line += b;
         }
     }
-    std::printf("%s\n", line.c_str());
+    srv.Log("%s\n", line.c_str());
     using T = nox::HarpoonTouch;
     using H = nox::HarpoonEnd;
     // ★ 4-c3b2b — 닿음·끊김에 「피해안들어감」 · 끊길 때 따로 내는 기본 타격 소리(`532E20`) 칸
-    std::printf("[작살갈래] 쏨 %llu · 휘기{잡음 %llu·튼틱 %llu} · 닿음{주인없음 %llu·벽 %llu·자기 %llu·적아님 %llu·피해안들어감 %llu·걸림 %llu}"
+    srv.Log("[작살갈래] 쏨 %llu · 휘기{잡음 %llu·튼틱 %llu} · 닿음{주인없음 %llu·벽 %llu·자기 %llu·적아님 %llu·피해안들어감 %llu·걸림 %llu}"
                 " · 끊김{새로쏨 %llu·벽 %llu·적아님 %llu·피해안들어감 %llu·화살없음 %llu·주인죽음 %llu·상대사라짐 %llu·상대죽음 %llu"
                 "·멀어짐 %llu·다끌어옴 %llu·수명 %llu·안움직임 %llu·시야막힘 %llu·너무멀리날아감 %llu·휘던상대죽음 %llu·시험 %llu}"
                 " · 끊길때소리 %llu = {냄 %llu·부서짐 %llu·거름 %llu·표없음 %llu·안옮김 %llu}\n",
@@ -200,11 +200,11 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.harpoonHitSoundWay(nox::DefHitSoundWay::TableEmpty), srv.harpoonHitSoundWay(nox::DefHitSoundWay::NotPorted));
     // ★ 1-d — 맵 불 같은 장애물의 닿음 피해. 옆에 전체 피해(`hurts`)를 같이 찍는다 — 0 이 「안 닿았다」인지 「못 셌다」인지 가르려고
     //   ⚠ 「부름」은 양 1 짜리 불의 짝수 프레임(피해 0)까지 센다 — 정답지도 피해 함수를 0 으로 부른다
-    std::printf("[맵닿음] 장애물 닿음 피해 부름 %llu회 · 전체 피해 %llu회 · 사람 벽 짝 %llu회\n", srv.contactDamageHits(), srv.hurts(),
+    srv.Log("[맵닿음] 장애물 닿음 피해 부름 %llu회 · 전체 피해 %llu회 · 사람 벽 짝 %llu회\n", srv.contactDamageHits(), srv.hurts(),
                 srv.wallContacts());   // ★ 2-b2 — 벽 짝은 광전사 벽 갈래의 분모
     // ★ 3-a — 점프. 「코드7 받음」이 분모다 — 사람이 휠을 눌렀는데 0 이면 **7 이 점프라는 가정부터** 틀린 것이다
     using J = nox::JumpGate;
-    std::printf("[점프] 코드7 받음 %llu · 들어옴 %llu%s = {뜀 %llu·못움직임 %llu·광전사 %llu·함성 %llu·짐넘침 %llu·기력모자람 %llu}"
+    srv.Log("[점프] 코드7 받음 %llu · 들어옴 %llu%s = {뜀 %llu·못움직임 %llu·광전사 %llu·함성 %llu·짐넘침 %llu·기력모자람 %llu}"
                 " · 민틱 %llu · 작살에잡혀안민틱 %llu · 내려옴 %llu · 가만이끔 %llu · 움찔막음 %llu · 지진뺌 %llu · 시전막음 %llu\n",
                 srv.jumpCodes(), srv.jumpIn(), srv.JumpGateSum() == srv.jumpIn() ? "" : " ⚠칸합불일치",
                 srv.jumpGate(J::Ok), srv.jumpGate(J::CantMove), srv.jumpGate(J::Berserk), srv.jumpGate(J::Warcry),
@@ -215,7 +215,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
     // ★ 4-c2 — 사람이 맞을 때 소리 갈래(부름 = 합 · 「안옮김」 = 때린 것을 안 넘기는 자리 — 진단용 때리기 · 종류 모르는 오브젝트)
     // ★ 4-c3b3b — 「몬스터소리」 = 때린 이가 몬스터이고 그 소리 모음의 맞히는 소리에 조각이 있어 맞는 쪽 소리를 안 냄
     using HW = nox::HitSoundWay;
-    std::printf("[휘두름] 판정 %llu · 소리부름{879주먹 %llu·880롱소드 %llu·881칼 %llu·882망치 %llu·883도끼 %llu·884철퇴 %llu}"
+    srv.Log("[휘두름] 판정 %llu · 소리부름{879주먹 %llu·880롱소드 %llu·881칼 %llu·882망치 %llu·883도끼 %llu·884철퇴 %llu}"
                 " · 사람맞는소리 %llu%s = {냄 %llu·표없음 %llu·때린것없음 %llu·몬스터소리 %llu·안옮김 %llu}\n",
                 srv.melees(), srv.swingSound(879), srv.swingSound(880), srv.swingSound(881), srv.swingSound(882),
                 srv.swingSound(883), srv.swingSound(884), srv.hitSoundCalls(),
@@ -224,67 +224,67 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.hitSoundWay(HW::MonsterSound), srv.hitSoundWay(HW::NotPorted));
     // ★ 4-c3a — 소환수가 맞을 때 기본 타격 소리 갈래(부름 = 합)
     using DW = nox::DefHitSoundWay;
-    std::printf("[소환수맞는소리] 부름 %llu%s = {냄 %llu·부서짐 %llu·거름 %llu·표없음 %llu·몬스터소리 %llu·안옮김 %llu}\n", srv.defHitSoundCalls(),
+    srv.Log("[소환수맞는소리] 부름 %llu%s = {냄 %llu·부서짐 %llu·거름 %llu·표없음 %llu·몬스터소리 %llu·안옮김 %llu}\n", srv.defHitSoundCalls(),
                 srv.DefHitSoundWaySum() == srv.defHitSoundCalls() ? "" : " ⚠칸합불일치",
                 srv.defHitSoundWay(DW::Played), srv.defHitSoundWay(DW::Breakable), srv.defHitSoundWay(DW::Filtered),
                 srv.defHitSoundWay(DW::TableEmpty), srv.defHitSoundWay(DW::MonsterSound), srv.defHitSoundWay(DW::NotPorted));
     // ★ 09-24 H1 — 몬스터가 근접으로 때린 뒤 그 모음의 맞히는 소리(`GAME4_3.c:2087~2094`) · 「모음에없음」 = 번호 0(모음 없음·NULL)
-    std::printf("[몬스터근접소리] 때림 %llu = {맞히는소리 냄 %llu·모음에없음 %llu}\n",
+    srv.Log("[몬스터근접소리] 때림 %llu = {맞히는소리 냄 %llu·모음에없음 %llu}\n",
                 srv.monsterMeleeHitSnd(true) + srv.monsterMeleeHitSnd(false), srv.monsterMeleeHitSnd(true), srv.monsterMeleeHitSnd(false));
     // ★ 09-24 H3 — 함성이 둘레 사람을 본 경우(시전자 제외) · 「걸림」 = 반마법(29)이 섰다 · 알림 = 29 비트가 실린 0x5A 수(받는 사람마다 1)
     using WP = nox::WarcryPeer;
-    std::printf("[함성둘레] 사람 %llu = {밖·죽음 %llu·워리어 %llu·관전 %llu·같은편 %llu·멀리 %llu·안보임 %llu·거절 %llu·걸림 %llu} · 반마법 알림 %llu\n",
+    srv.Log("[함성둘레] 사람 %llu = {밖·죽음 %llu·워리어 %llu·관전 %llu·같은편 %llu·멀리 %llu·안보임 %llu·거절 %llu·걸림 %llu} · 반마법 알림 %llu\n",
                 srv.WarcryPeerSum(), srv.warcryPeer(WP::NotInGame), srv.warcryPeer(WP::Warrior), srv.warcryPeer(WP::Observer),
                 srv.warcryPeer(WP::SameTeam), srv.warcryPeer(WP::OutOfRange), srv.warcryPeer(WP::NoSight), srv.warcryPeer(WP::Rejected),
                 srv.warcryPeer(WP::Applied), srv.enchantSentAntiMagic());
     // ★ 09-26 M2·M3 — 닿으면 죽음 넘기기(넘김 · 시간이 남아 안 넘김) · 바닥 칸 6(용암) 피해 부름
-    std::printf("[닿음·바닥] 죽음 넘김 %llu · 안넘김 %llu · 용암 피해 %llu · 용암 피해(소환수) %llu\n", srv.deathPass(true), srv.deathPass(false),
+    srv.Log("[닿음·바닥] 죽음 넘김 %llu · 안넘김 %llu · 용암 피해 %llu · 용암 피해(소환수) %llu\n", srv.deathPass(true), srv.deathPass(false),
                 srv.lavaHurts(), srv.lavaHurtsPet());   // ★ 09-27 S2 — 소환수·맵 몬스터 몫
     // ★ 09-26 M4a — 몬스터 소리 모음 칸별 냄/모음에없음
-    std::printf("[몬스터소리] 근접시작 %llu/%llu · 쏘기시작 %llu/%llu · 쏘기 %llu/%llu · 죽음 %llu/%llu · 명령대답 %llu/%llu (냄/모음에없음)\n",
+    srv.Log("[몬스터소리] 근접시작 %llu/%llu · 쏘기시작 %llu/%llu · 쏘기 %llu/%llu · 죽음 %llu/%llu · 명령대답 %llu/%llu (냄/모음에없음)\n",
                 srv.monsterSnd(5, true), srv.monsterSnd(5, false), srv.monsterSnd(9, true), srv.monsterSnd(9, false),
                 srv.monsterSnd(10, true), srv.monsterSnd(10, false), srv.monsterSnd(14, true), srv.monsterSnd(14, false),
                 srv.monsterSnd(16, true), srv.monsterSnd(16, false));
     // ★ 09-28 박쥐 — 공격 사슬 가기(7)가 대상을 따라 자리를 고친 틱 수 · 대상이 안 보여 잊은 횟수
-    std::printf("[몬스터쫓기] 따라감 %llu · 잊음 %llu\n", srv.aiMoveTargetFollow(), srv.aiMoveTargetForgot());
+    srv.Log("[몬스터쫓기] 따라감 %llu · 잊음 %llu\n", srv.aiMoveTargetFollow(), srv.aiMoveTargetForgot());
     {   // ★ 09-29 B1 — 알아보기. 후보 = 적아님 + 이미 + 부채꼴밖 + 안보임 + 찼음 + 넣음 · 뺌 = 여섯 까닭 합
         using SS = nox::SightStat;
-        std::printf("[알아보기] 훑기 %llu · 후보 %llu = 적아님 %llu + 이미 %llu + 부채꼴밖 %llu + 안보임 %llu + 찼음 %llu + 넣음 %llu · "
+        srv.Log("[알아보기] 훑기 %llu · 후보 %llu = 적아님 %llu + 이미 %llu + 부채꼴밖 %llu + 안보임 %llu + 찼음 %llu + 넣음 %llu · "
                     "뺌 죽음 %llu · 버프 %llu · 멀어짐 %llu · 옮겨짐 %llu · 시야선 %llu · 밀림 %llu · 발견 소리 %llu\n",
                     srv.sightStat(SS::Scan), srv.sightStat(SS::Cand), srv.sightStat(SS::NotEnemy), srv.sightStat(SS::Already),
                     srv.sightStat(SS::Cone), srv.sightStat(SS::Los), srv.sightStat(SS::FullFar), srv.sightStat(SS::Added),
                     srv.sightStat(SS::LostGone), srv.sightStat(SS::LostCantSee), srv.sightStat(SS::LostFar), srv.sightStat(SS::LostMoved),
                     srv.sightStat(SS::LostRecheck), srv.sightStat(SS::LostReplaced), srv.sightStat(SS::Spot));
         using B2 = nox::B2Stat;   // ★ 09-29 B2 — 놀기·되갚기·소리
-        std::printf("[몬스터놀기] 맞음 %llu(다침소리 %llu) · 도발 %llu(쉼 %llu) · 놀때소리 %llu · 놀기{싸움 %llu·때린데봄 %llu·지난데봄 %llu·그대로 %llu} · "
+        srv.Log("[몬스터놀기] 맞음 %llu(다침소리 %llu) · 도발 %llu(쉼 %llu) · 놀때소리 %llu · 놀기{싸움 %llu·때린데봄 %llu·지난데봄 %llu·그대로 %llu} · "
                     "되갚기{싸움 %llu·적아님 %llu·떠돌기 %llu} · 싸움 시작 %llu · 끝 %llu\n",
                     srv.b2Stat(B2::Injured), srv.b2Stat(B2::InjuredSound), srv.b2Stat(B2::Taunt), srv.b2Stat(B2::TauntQuiet), srv.b2Stat(B2::IdleSound),
                     srv.b2Stat(B2::IdleFight), srv.b2Stat(B2::IdleLookDamager), srv.b2Stat(B2::IdleFaceBack), srv.b2Stat(B2::IdleStay),
                     srv.b2Stat(B2::RetFight), srv.b2Stat(B2::RetNotEnemy), srv.b2Stat(B2::RetRoam), srv.b2Stat(B2::FightStart), srv.b2Stat(B2::FightEnd));
         using MW = nox::MeleeStrikeWay;   // ★ 09-29 B3 — 근접 함수 끝남 갈래
-        std::printf("[몬스터근접] 맞힘 %llu · 대상없음 %llu · 시야막힘 %llu · 폭탄병 %llu · (독 %llu · 유령도망 %llu) · 빗나감소리 %llu\n",
+        srv.Log("[몬스터근접] 맞힘 %llu · 대상없음 %llu · 시야막힘 %llu · 폭탄병 %llu · (독 %llu · 유령도망 %llu) · 빗나감소리 %llu\n",
                     srv.meleeStrike(MW::Hit), srv.meleeStrike(MW::NoTarget), srv.meleeStrike(MW::Blocked), srv.meleeStrike(MW::Bomber),
                     srv.meleeStrike(MW::Poisoned), srv.meleeStrike(MW::GhostFlee), srv.meleeStrike(MW::MissSound));
         using AT = nox::AttackTiming;     // ★ 09-30 — 시작 → 칸 틱 수(기대 칸 × (붙듦+1) − 1 ~ 칸 × (붙듦+1))
-        std::printf("[몬스터시점] 근접 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu (틱 %d~%d) · 쏘기 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu (틱 %d~%d · 겨눌곳없음 %llu)\n",
+        srv.Log("[몬스터시점] 근접 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu (틱 %d~%d) · 쏘기 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu (틱 %d~%d · 겨눌곳없음 %llu)\n",
                     srv.attackTiming(AT::MeleeOnTime), srv.attackTiming(AT::MeleeOff), srv.attackTiming(AT::MeleeLastRepeat),
                     srv.attackLagMin(0), srv.attackLagMax(0),
                     srv.attackTiming(AT::ShotOnTime), srv.attackTiming(AT::ShotOff), srv.attackTiming(AT::ShotLastRepeat),
                     srv.attackLagMin(1), srv.attackLagMax(1), srv.shotNoAim());
         using BS2 = nox::BundleStat;      // ★ 09-30 한 틱 한 데이터그램
-        std::printf("[묶음] 낸 조각 %llu · 담음 시각 %llu·갱신 %llu·잡다 %llu·중요 %llu · 넘쳐 끊음 %llu(더 낸 조각 %llu · 혼자 넘음 %llu) · 곧바로 스트림 %llu·제어 %llu·게임밖 %llu·시험 %llu·채팅 %llu·서두 %llu\n",
+        srv.Log("[묶음] 낸 조각 %llu · 담음 시각 %llu·갱신 %llu·잡다 %llu·중요 %llu · 넘쳐 끊음 %llu(더 낸 조각 %llu · 혼자 넘음 %llu) · 곧바로 스트림 %llu·제어 %llu·게임밖 %llu·시험 %llu·채팅 %llu·서두 %llu\n",
                     srv.bundleStat(BS2::Datagrams), srv.bundleStat(BS2::InTs), srv.bundleStat(BS2::InUpd), srv.bundleStat(BS2::InMisc),
                     srv.bundleStat(BS2::InImp), srv.bundleStat(BS2::Overflow), srv.bundleStat(BS2::OverExtra), srv.bundleStat(BS2::OverSize),
                     srv.bundleStat(BS2::DirectStream), srv.bundleStat(BS2::DirectCtrl), srv.bundleStat(BS2::DirectNotInGame),
                     srv.bundleStat(BS2::DirectTest), srv.bundleStat(BS2::DirectChat), srv.bundleStat(BS2::DirectMirror));
         using BS = nox::BrainStat;   // ★ 09-29 B4 — 두뇌 반응 층
-        std::printf("[몬스터두뇌] 돎 %llu · 혼란 %llu · 두려움 %llu · 후퇴 %llu(반주문 %llu) · 도망 길 못냄 %llu · 지키기공격 %llu · 거리두기 %llu · "
+        srv.Log("[몬스터두뇌] 돎 %llu · 혼란 %llu · 두려움 %llu · 후퇴 %llu(반주문 %llu) · 도망 길 못냄 %llu · 지키기공격 %llu · 거리두기 %llu · "
                     "답답함 %llu(옆걸음 %llu · 기다림 %llu) · 먹기 %llu\n",
                     srv.brainStat(BS::Runs), srv.brainStat(BS::Confused), srv.brainStat(BS::Fear), srv.brainStat(BS::Retreat),
                     srv.brainStat(BS::RetreatAnti), srv.brainStat(BS::FleeNoPath), srv.brainStat(BS::AggroAtWill), srv.brainStat(BS::KeepDistance),
                     srv.brainStat(BS::Frustrated), srv.brainStat(BS::Sidestep), srv.brainStat(BS::WaitStuck), srv.brainStat(BS::Eat));
         using AS = nox::AnimStat;    // ★ 09-29 B5 — 애니 칸·걸음 소리
-        std::printf("[몬스터애니] 표없음 %llu · 칸0 %llu · 넘김 %llu(되풀이 %llu · 끝 %llu) · 걸음 부름 가기 %llu/도망 %llu/걷기 %llu · 칸맞음 %llu · 소리 %llu(번호없음 %llu)\n",
+        srv.Log("[몬스터애니] 표없음 %llu · 칸0 %llu · 넘김 %llu(되풀이 %llu · 끝 %llu) · 걸음 부름 가기 %llu/도망 %llu/걷기 %llu · 칸맞음 %llu · 소리 %llu(번호없음 %llu)\n",
                     srv.animStat(AS::NoTable), srv.animStat(AS::NoFrames), srv.animStat(AS::Advance), srv.animStat(AS::Wrap), srv.animStat(AS::Done),
                     srv.animStat(AS::StepMoveTo), srv.animStat(AS::StepFlee), srv.animStat(AS::StepWalk), srv.animStat(AS::StepHit),
                     srv.monsterSnd(17, true), srv.monsterSnd(17, false));
@@ -295,49 +295,49 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 all += srv.monsterAnimSent(i);
                 if (srv.monsterAnimSent(i)) row += " " + std::to_string(i) + ":" + std::to_string(srv.monsterAnimSent(i));
             }
-            std::printf("[몬스터애니보냄] 항목 %llu ·%s\n", all, row.empty() ? " (없음)" : row.c_str());
+            srv.Log("[몬스터애니보냄] 항목 %llu ·%s\n", all, row.empty() ? " (없음)" : row.c_str());
         }
         // ★ 10-01 — 주인에게 보낸 소유 알림(소환 끝 = 6c·dd 한 쌍 · 소환수 죽음 = 6d)
-        std::printf("[소유알림] 6c 얻음 %llu · dd 총체력 %llu · 6d 잃음 %llu\n",
+        srv.Log("[소유알림] 6c 얻음 %llu · dd 총체력 %llu · 6d 잃음 %llu\n",
                     srv.summonOwnSent(0), srv.summonOwnSent(1), srv.summonOwnSent(2));
         // ★ 10-01 — 소환 효과(부르기 시작 = 7e · 세우기 전에 끊김 = 7f) · 소환 한 번에 하나씩(보는 사람 수와 무관)
-        std::printf("[소환효과] 7e 시작 %llu · 7f 끊김 %llu\n", srv.summonFxSent(0), srv.summonFxSent(1));
+        srv.Log("[소환효과] 7e 시작 %llu · 7f 끊김 %llu\n", srv.summonFxSent(0), srv.summonFxSent(1));
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
-        std::printf("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
+        srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));
         // ★ 10-01 — 시체(죽어도 안 지움 → 썩어 지움 · DESTROY_WHEN_DEAD 는 31 에서 바로)
-        std::printf("[시체] 죽음 %llu · 썩어 지움 %llu · 즉시 지움 %llu · 동시 시체 최대 %llu\n",
+        srv.Log("[시체] 죽음 %llu · 썩어 지움 %llu · 즉시 지움 %llu · 동시 시체 최대 %llu\n",
                     srv.corpseStat(0), srv.corpseStat(1), srv.corpseStat(2), srv.corpseStat(3));
         using HS = nox::HearStat;    // ★ 09-29 B6 — 소리 듣기
-        std::printf("[소리듣기] 기록 %llu · 귀막힘 %llu · 아군무시 %llu · 작음 %llu · 벽반감 %llu(작아짐 %llu) · 들음 %llu · 가봄 %llu · 바라봄 %llu · 못감 %llu · 조건59 %llu · 조건69 %llu\n",
+        srv.Log("[소리듣기] 기록 %llu · 귀막힘 %llu · 아군무시 %llu · 작음 %llu · 벽반감 %llu(작아짐 %llu) · 들음 %llu · 가봄 %llu · 바라봄 %llu · 못감 %llu · 조건59 %llu · 조건69 %llu\n",
                     srv.hearStat(HS::Recorded), srv.hearStat(HS::Deaf), srv.hearStat(HS::NotListen), srv.hearStat(HS::Quiet), srv.hearStat(HS::WallHalved),
                     srv.hearStat(HS::WallQuiet), srv.hearStat(HS::Heard), srv.hearStat(HS::ReactGo), srv.hearStat(HS::ReactLook), srv.hearStat(HS::ReactSkip),
                     srv.hearStat(HS::Cond59), srv.hearStat(HS::Cond69));
         using CS = nox::CastStat;    // ★ 09-29 B7 — 몬스터 주문
-        std::printf("[몬스터주문] 고름 공격 %llu · 달아남 %llu · 제몸 %llu · 되받기 %llu · 가까워 점멸 %llu · 시전소리 %llu · 시전 %llu(반주문 %llu) · 받음 %llu · 안옮김 %llu · 빔맞힘 %llu · 움직여끊김 %llu\n",
+        srv.Log("[몬스터주문] 고름 공격 %llu · 달아남 %llu · 제몸 %llu · 되받기 %llu · 가까워 점멸 %llu · 시전소리 %llu · 시전 %llu(반주문 %llu) · 받음 %llu · 안옮김 %llu · 빔맞힘 %llu · 움직여끊김 %llu\n",
                     srv.castStat(CS::PickOffense), srv.castStat(CS::PickEscape), srv.castStat(CS::PickBuff), srv.castStat(CS::PickReact), srv.castStat(CS::BlinkNear),
                     srv.castStat(CS::InitSound), srv.castStat(CS::Cast), srv.castStat(CS::CastAnti), srv.castStat(CS::Accepted), srv.castStat(CS::NotPorted),
                     srv.castStat(CS::BeamHit), srv.castStat(CS::BeamMoved));
     }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
-    std::printf("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",
+    srv.Log("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",
                 srv.wallGate(0), srv.wallGate(1), srv.wallGate(2), srv.wallGate(3), srv.wallGate(4));
     // ★ 09-28 — 버릴 때 사라짐 시계(걸림 · 협동·퀘스트 · 예외 셋) · 시계가 다 돼 지운 수
     {
         using DG = nox::DecayGate;
-        std::printf("[버린물건사라짐] 10초 %llu · 25초 %llu · 안 걺(협동·퀘스트 %llu · RESPAWN %llu · FLAG %llu · Glyph %llu · 함수안옮김 %llu) · 지움 %llu(33 보냄 %llu)\n",
+        srv.Log("[버린물건사라짐] 10초 %llu · 25초 %llu · 안 걺(협동·퀘스트 %llu · RESPAWN %llu · FLAG %llu · Glyph %llu · 함수안옮김 %llu) · 지움 %llu(33 보냄 %llu)\n",
                     srv.decayGate(DG::Armed), srv.decayGate(DG::Armed25), srv.decayGate(DG::CoopOrQuest), srv.decayGate(DG::Respawn),
                     srv.decayGate(DG::FlagClass), srv.decayGate(DG::Glyph), srv.decayGate(DG::NotPorted), srv.decayExpired(),
                     srv.decayShadowSent());
     }
     // ★ 09-28 B4b — 죽을 때 가방 떨어뜨리기 · 부활 때 기본 장비
-    std::printf("[죽음가방] 남긴 평상복 %llu · 둘레에 %llu · 몸 자리에 %llu · [부활장비] 지움 %llu · 줌 %llu · 틀없음 %llu · 협동퀘스트안옮김 %llu"
+    srv.Log("[죽음가방] 남긴 평상복 %llu · 둘레에 %llu · 몸 자리에 %llu · [부활장비] 지움 %llu · 줌 %llu · 틀없음 %llu · 협동퀘스트안옮김 %llu"
                 " · [입은것겉모습] 보냄 %llu · 비트몰라뺌 %llu\n",
                 srv.deathDropKept(), srv.deathDropSpiral(), srv.deathDropAtBody(), srv.respawnGearDeleted(), srv.respawnGearGiven(),
                 srv.respawnGearNoTemplate(), srv.respawnGearNotPorted(), srv.wornLookSent(), srv.wornLookSkipped());
     // ★ 09-23 nine-defects 4-d4 — 발소리(달리기 RUN 2·8칸 · 걷기 WALK 3·9칸 × 발밑 바닥 종류). 「바닥없음」 = 칸 찾기 −1·정의 밖
     using FK = nox::FootKind;
-    std::printf("[발소리] 달리기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu}"
+    srv.Log("[발소리] 달리기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu}"
                 " · 걷기 %llu = {없음 %llu·나무 %llu·흙 %llu·물 %llu·눈 %llu·진흙 %llu·돌 %llu·바닥없음 %llu} · 살금살금으로 안냄 %llu · 달릴때힘쓰는소리 %llu\n",
                 srv.FootRunSum(), srv.footRun(FK::Silent), srv.footRun(FK::Wood), srv.footRun(FK::Dirt), srv.footRun(FK::Water),
                 srv.footRun(FK::Snow), srv.footRun(FK::Mud), srv.footRun(FK::Stone), srv.footRun(FK::NoTile),
@@ -345,7 +345,7 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.footWalk(FK::Snow), srv.footWalk(FK::Mud), srv.footWalk(FK::Stone), srv.footWalk(FK::NoTile),
                 srv.footTreadSilent(), srv.exertionLight());
     // ★ 09-24 — 맞은 사람의 「윽」(`object_update.go:80~107`)
-    std::printf("[신음] %llu = {가벼움 %llu·중간 %llu·심함 %llu·독 %llu}\n", srv.HurtVoiceSum(),
+    srv.Log("[신음] %llu = {가벼움 %llu·중간 %llu·심함 %llu·독 %llu}\n", srv.HurtVoiceSum(),
                 srv.hurtVoice(nox::HurtVoice::Light), srv.hurtVoice(nox::HurtVoice::Medium), srv.hurtVoice(nox::HurtVoice::Heavy),
                 srv.hurtVoice(nox::HurtVoice::Poison));
 }
@@ -862,7 +862,7 @@ int main(int argc, char** argv) {
 
     // ★ 10-01 R2 — 맵을 다 넣었으니 처음 상태를 담아 둔다(판 다시 열 때 되돌릴 사본 · `Server::CaptureMapInitial`)
     srv.CaptureMapInitial();
-    std::printf("[맵처음] 담음 — 바닥 물건 %zu · 문·오벨리스크 %zu\n", srv.WorldStaticCount(), srv.WorldPropCount());
+    srv.Log("[맵처음] 담음 — 바닥 물건 %zu · 문·오벨리스크 %zu\n", srv.WorldStaticCount(), srv.WorldPropCount());
     std::fflush(stdout);
     net.SetVerbose(!opt.quiet);
     net.Start();   // ★ 10-09 조각 5d-2b — 여기서부터 받기 · 보내기는 네트워크 스레드
@@ -929,7 +929,7 @@ int main(int argc, char** argv) {
             //   첫자리가 맵 PlayerStart 로 바뀐 뒤로는 **사람들의 실제 가운데**를 쓴다
             int mx = 0, my = 0;
             srv.PlayersCenter(mx, my);
-            std::printf("[모드] 판 자리 = 사람들 가운데 %d,%d\n", mx, my);
+            srv.Log("[모드] 판 자리 = 사람들 가운데 %d,%d\n", mx, my);
             // ★ 갈래는 `ModeRules.h` 가 **값으로** 정한다. 여기 `if/else` 로 두었을 때
             //   `else` 하나가 여섯 모드를 삼켰고 시험이 그것을 못 봤다(조각 E·G).
             const nox::ModeSetup setup = nox::ModeStartKind(opt.mode);
@@ -967,14 +967,14 @@ int main(int argc, char** argv) {
                 if (extras.mapFlagPos.size() >= 2) {
                     srv.StartCtf(extras.mapFlagPos[0].first, extras.mapFlagPos[0].second,
                                  extras.mapFlagPos[1].first, extras.mapFlagPos[1].second);
-                    std::printf("[모드] 깃발 자리 = **맵에 그려진 것**을 씀 (%d,%d)·(%d,%d)\n",
+                    srv.Log("[모드] 깃발 자리 = **맵에 그려진 것**을 씀 (%d,%d)·(%d,%d)\n",
                                 extras.mapFlagPos[0].first, extras.mapFlagPos[0].second,
                                 extras.mapFlagPos[1].first, extras.mapFlagPos[1].second);
                 } else {
                 const int redX  = placeFlag(mx - opt.ctfSpan, my, mx);
                 const int blueX = placeFlag(mx + opt.ctfSpan, my, mx);
                 srv.StartCtf(redX, my, blueX, my);
-                std::printf("[모드] 깃발 — (%d,%d)·(%d,%d), 득점 한도 %u%s\n",
+                srv.Log("[모드] 깃발 — (%d,%d)·(%d,%d), 득점 한도 %u%s\n",
                             redX, my, blueX, my, (unsigned)nox::kCaptureLimit,
                             (redX != mx - opt.ctfSpan || blueX != mx + opt.ctfSpan)
                                 ? "  ← 벽을 피해 당김" : "");
@@ -982,7 +982,7 @@ int main(int argc, char** argv) {
             } else if (setup == nox::ModeSetup::FlagBall) {
                 // 공은 가운데, 골대는 깃발과 같은 간격으로 양옆
                 srv.StartFlagBall(mx, my, mx - opt.ctfSpan, my, mx + opt.ctfSpan, my);
-                std::printf("[모드] 플래그볼 — 공 (%d,%d) · 골대 (%d,%d)·(%d,%d)\n",
+                srv.Log("[모드] 플래그볼 — 공 (%d,%d) · 골대 (%d,%d)·(%d,%d)\n",
                             mx, my, mx - opt.ctfSpan, my, mx + opt.ctfSpan, my);
             } else if (setup == nox::ModeSetup::Quest) {
                 srv.StartQuest(opt.questCount, mx, my, opt.questSpread);
@@ -990,7 +990,7 @@ int main(int argc, char** argv) {
                 //   정한다(`StartQuest` 주석 참조). 전에는 여기서 그 값을 「몬스터 N마리」로
                 //   찍어 **실제와 다른 수를 보여 줬다**(설정 4 · 실제 2).
                 //   ★ 실제로 몇 마리가 섰는지는 바로 위 `[스테이지]` 줄이 말한다.
-                std::printf("[모드] 퀘스트 — (%d,%d) 반경 %.0f · 마릿수는 위 [스테이지] 줄 참조\n",
+                srv.Log("[모드] 퀘스트 — (%d,%d) 반경 %.0f · 마릿수는 위 [스테이지] 줄 참조\n",
                             mx, my, opt.questSpread);
             } else {
                 // ★★ 여기가 비어 있어야 하는 모드들이다 — `elimination`·`kotr`·`chat`.
@@ -998,7 +998,7 @@ int main(int argc, char** argv) {
                 //   `--mode elimination` 을 켜면 퀘스트 몬스터 두 마리가 나와 사람을 때렸다
                 //   (조각 E 실측 — `[스테이지] 1/5` · 크리처 2마리 · 피해 4).
                 //   판 규칙은 게임플래그로 이미 켜져 있고, 여기서 더 놓을 것이 없다.
-                std::printf("[모드] %s — 판에 따로 놓는 것 없음(규칙은 gameFlags 로 이미 켜짐)\n",
+                srv.Log("[모드] %s — 판에 따로 놓는 것 없음(규칙은 gameFlags 로 이미 켜짐)\n",
                             opt.mode.c_str());
             }
             std::fflush(stdout);
@@ -1009,7 +1009,7 @@ int main(int argc, char** argv) {
         net.PushRequests(netRequests);
         const int ticks = rooms.BeginTick(nox::NowMs());   // ★ 10-09 자가검증 ② — 옛 `GetTickCount`(15.6ms 단위) 대신 `Clock.h`
         if (opt.debugCrashAfter > 0 && srv.frame() >= static_cast<uint32_t>(opt.debugCrashAfter)) {
-            std::printf("[진단스위치] --debug-crash — 프레임 %u 에서 일부러 죽는다\n", srv.frame());
+            srv.Log("[진단스위치] --debug-crash — 프레임 %u 에서 일부러 죽는다\n", srv.frame());
             std::fflush(stdout);
             CRASH("--debug-crash");
         }
@@ -1056,7 +1056,7 @@ int main(int argc, char** argv) {
                     //   그래서 **가장 가까운 벽까지 거리**를 옆에 같이 찍는다 — 이 값이 표본마다 변하면
                     //   벽 자료가 실려 있고 질의가 살아 있다는 뜻이다(0 옆에 지나간 양을 같이 읽는다).
                     const double wallDist = srv.DebugWallDistance(px, py);
-                    std::printf("[소환수길] 틱 %u · %zu번 (%d,%d) 맨위행동 %d 길목 %u"
+                    srv.Log("[소환수길] 틱 %u · %zu번 (%d,%d) 맨위행동 %d 길목 %u"
                                 " · 벽칸 %s(누적 %llu/%llu · 가장가까운벽 %.0f)"
                                 " · 이음탐 %llu 막다른길 %llu\n",
                                 srv.frame(), pi, static_cast<int>(px), static_cast<int>(py),
@@ -1106,7 +1106,7 @@ int main(int argc, char** argv) {
                                   " · 스테이지 %d · 이 웨이브 남음 %d(잡음 %d)",
                                   srv.QuestStage() + 1, srv.QuestLeft(), srv.QuestKilled());
                 }
-                std::printf("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
+                srv.Log("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
                             "걸음 %llu · 근접 %llu(클릭 %llu) · "
                             "주문 %llu(마나막힘 %llu) · 나는것 %zu(만든 %llu · 사라짐 %llu · 갱신에 %llu) · 피해 %llu · 별칭받음 %llu%s"
                             // ★ 09-21 — 되받기는 「몇 번 실었나」보다 **값이 올라가나**가 뜻이 있다.
@@ -1201,7 +1201,7 @@ int main(int argc, char** argv) {
                                       static_cast<unsigned>(mo.dir1 >> 3));
                         line += b;
                     }
-                    std::printf("%s\n", line.c_str());
+                    srv.Log("%s\n", line.c_str());
                 }
                 // ★★ B-1b — **신뢰 순번을 스트림별로 갈라 찍는다** (2026-09-18).
                 //   합계만 보면 「클라가 보낸 스트림」과 「서버가 답한 스트림」이 어긋나도
@@ -1272,7 +1272,7 @@ int main(int argc, char** argv) {
                 }
 
                 // ★ 자리 한 줄 — 하네스가 이걸 읽어 걸어갈 각을 잰다(Server.h PositionsLine 참조).
-                std::printf("%s\n", srv.PositionsLine().c_str());
+                srv.Log("%s\n", srv.PositionsLine().c_str());
 
                 // ★★ **무엇을 썼나 한 줄** (2026-09-12).
                 //   09-12 회귀에서 wizard 가 「주문 226」이었는데 **무엇을 226 번 썼는지
@@ -1288,7 +1288,7 @@ int main(int argc, char** argv) {
                                       (unsigned long long)kv.second);
                         sp += sb;
                     }
-                    std::printf("%s\n", sp.c_str());
+                    srv.Log("%s\n", sp.c_str());
                 }
 
                 // ★ **버린 것 한 줄** — 길이를 모르는 메시지를 만나면 그 조각을 통째로
@@ -1306,7 +1306,7 @@ int main(int argc, char** argv) {
                 // ★★ 조각 D(09-16) — **거절 갈래 넷을 갈라 찍는다.** 앞서 이 줄은
                 //   「요청 − 성공 − 멂」의 나머지를 **한 덩어리로 삼켜** 「왜 안 주워졌나」가
                 //   한도인지 무게인지 개수인지 직업인지 하나도 안 보였다(조각 C 2번).
-                std::printf("[물건] 줍기요청 %llu(성공 %llu·멂 %llu) · 쓰기 %llu(모르는갈래 %llu)"
+                srv.Log("[물건] 줍기요청 %llu(성공 %llu·멂 %llu) · 쓰기 %llu(모르는갈래 %llu)"
                             " · 입기 %llu · 벗기 %llu · 되돌림 %llu"
                             " · 거절(한도 %llu·무거움 %llu·개수 %llu·직업 %llu)"
                             " · 즉시마심 %llu · 금 %llu · 기본장비(실음 %llu·틀없음 %llu) · 표없는무기판정 %llu\n",
@@ -1317,20 +1317,20 @@ int main(int argc, char** argv) {
                             srv.drankOnPickup(), srv.goldPicked(),
                             srv.gearGiven(true), srv.gearGiven(false), srv.weaponNoStats());
                 // ★ 09-27 B3 — 무기 들기 관문별(정답지 `53A420` 순서)
-                std::printf("[무기들기] 무기아님 %llu · 이미 %llu · 함성광전사 %llu · 직업 %llu · 힘 %llu · 활없음 %llu · 내려놓기실패 %llu · 듦 %llu\n",
+                srv.Log("[무기들기] 무기아님 %llu · 이미 %llu · 함성광전사 %llu · 직업 %llu · 힘 %llu · 활없음 %llu · 내려놓기실패 %llu · 듦 %llu\n",
                             srv.equipGate(nox::EquipGate::NotWeapon), srv.equipGate(nox::EquipGate::Already),
                             srv.equipGate(nox::EquipGate::Ability), srv.equipGate(nox::EquipGate::ClassFail),
                             srv.equipGate(nox::EquipGate::StrengthFail), srv.equipGate(nox::EquipGate::BowNotFound),
                             srv.equipGate(nox::EquipGate::DequipFail), srv.equipGate(nox::EquipGate::Equipped));
                 // ★ 09-27 B4 — 무기 내려놓기(`53A140`) 나간 길별 + 공격 중 석궁 벗기 요청 버림
-                std::printf("[무기내려놓기] 무기아님 %llu · 든것아님 %llu · 화살통 %llu · 내려놓음 %llu · 공격중석궁 %llu"
+                srv.Log("[무기내려놓기] 무기아님 %llu · 든것아님 %llu · 화살통 %llu · 내려놓음 %llu · 공격중석궁 %llu"
                             " · (B5) 들때충전알림 %llu · 두손무기가벗긴방패 %llu · 내려놓으며끊은주문 %llu · (09-28) 방패가내려놓게한두손무기 %llu\n",
                             srv.dequipGate(nox::DequipGate::NotWeapon), srv.dequipGate(nox::DequipGate::NotHeld),
                             srv.dequipGate(nox::DequipGate::QuiverOff), srv.dequipGate(nox::DequipGate::Dequipped),
                             srv.dequipGate(nox::DequipGate::CrossbowAttacking),
                             srv.wandChargesOnEquip(), srv.twoHandShieldOff(), srv.wandSpellCut(), srv.shieldDropsTwoHand());
                 // ★ 09-29 — 활·석궁 쏘기 · 사람 화살 닿음 · 무기·화살통 줍기
-                std::printf("[활] 쏨 %llu · 앞막힘 %llu · 재장전중 %llu · 화살통바꿔듦 %llu · 화살통없음 %llu · 쏜뒤자세끝 %llu"
+                srv.Log("[활] 쏨 %llu · 앞막힘 %llu · 재장전중 %llu · 화살통바꿔듦 %llu · 화살통없음 %llu · 쏜뒤자세끝 %llu"
                             " · [화살닿음] 쏜이 %llu · 죽은것 %llu · 피해 %llu · 안들어감 %llu · 쇠뇌살뚫음 %llu · 장애물 %llu · 벽 %llu · 수명 %llu"
                             " · [무기줍기] 직업 %llu · 화살통합침 %llu · 화살통저절로 %llu · 충전알림 %llu · 소리 %llu · 맵화살통 %llu\n",
                             srv.bowShot(nox::BowShot::Shot), srv.bowShot(nox::BowShot::Blocked), srv.bowShot(nox::BowShot::Reloading),
@@ -1342,7 +1342,7 @@ int main(int argc, char** argv) {
                             srv.weaponPick(nox::WeaponPick::QuiverAutoEquip), srv.weaponPick(nox::WeaponPick::ChargesReport),
                             srv.weaponPick(nox::WeaponPick::Sound), srv.quiverFromMap());
                 // ★ 09-28 — 버리기(`TRY_DROP` → `drop_4ED810`) 나간 길별
-                std::printf("[버리기] 관전 %llu · 가방에없음 %llu · 벽 %llu · 버림 %llu"
+                srv.Log("[버리기] 관전 %llu · 가방에없음 %llu · 벽 %llu · 버림 %llu"
                             " · [줍고입음] 무기 %llu · 갑옷 %llu · 같은부위라안입음 %llu · 두손무기라방패안입음 %llu · 부위모름 %llu · [2d차림실음] %llu"
                             " · [2d정보] 녹음그대로 %llu · 진짜로덮음 %llu · 조립 %llu\n",
                             srv.dropGate(nox::DropGate::Observer), srv.dropGate(nox::DropGate::NotInBag),
@@ -1369,7 +1369,7 @@ int main(int argc, char** argv) {
                             line += b;
                         }
                     }
-                    std::printf("%s\n", line.c_str());
+                    srv.Log("%s\n", line.c_str());
                 }
                 // ★ **성장 한 줄** — 진단 스위치(`--debug-xp`·`--debug-give-spell`)가 먹었는지
                 //   보는 유일한 자리다. 없을 때는 판 G 가 통째로 판정 불능이었다(조각 C 13·14번).
@@ -1385,11 +1385,11 @@ int main(int argc, char** argv) {
                                       srv.DebugSpellLvl(b0, static_cast<uint8_t>(opt.debugSpellId)));
                         line += b;
                     }
-                    std::printf("%s\n", line.c_str());
+                    srv.Log("%s\n", line.c_str());
                 }
                 // ★ 조각 I — 체력은 **세 길**로 간다. 「41 남의 체력」만 찍던 때는
                 //   `피해 14 · 체력알림 1` 이 「안 보낸다」인지 「딴 길로 간다」인지 안 갈렸다.
-                std::printf("[싸움] 겨눔 %llu · 부딪힘 %llu(미룸 %llu) · 무적막힘 %llu"
+                srv.Log("[싸움] 겨눔 %llu · 부딪힘 %llu(미룸 %llu) · 무적막힘 %llu"
                             " · 체력 41남 %llu·42줄어듦 %llu(막힘 %llu)·43내것 %llu"
                             " · 마법알림 %llu · 소환수죽음 %llu\n",
                             srv.aims(), srv.tryCollides(), srv.tryCollideDeferred(),
@@ -1410,9 +1410,9 @@ int main(int argc, char** argv) {
                         line += kv.first;
                         line += b;
                     }
-                    std::printf("%s\n", line.c_str());
+                    srv.Log("%s\n", line.c_str());
                 }
-                std::printf("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu"
+                srv.Log("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu"
                             " · 덫판정(통과 %llu·멂 %llu·방향 %llu·벽 %llu)"
                             " · **떠돌기(이음탐 %llu·막다른길 %llu)**"
                             // ★ 09-21 — 벽 튕김 재기(사용자가 화면으로 짚음). 걷기 힘은 3.0 · 걷기 속도 6 이 정상
@@ -1475,10 +1475,10 @@ int main(int argc, char** argv) {
                                       q.kind == 3 ? "벽" : "물건", q.depth, q.speedBefore, q.frame);
                         line += b;
                     }
-                    std::printf("%s\n", line.c_str());
+                    srv.Log("%s\n", line.c_str());
                 }
-                std::printf("[판끝멈춤] 멈춘 틱 %llu\n", srv.roundFrozenTicks());   // ★ 10-01 R1
-                std::printf("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
+                srv.Log("[판끝멈춤] 멈춘 틱 %llu\n", srv.roundFrozenTicks());   // ★ 10-01 R1
+                srv.Log("[판] 판 수 %llu · 깃발알림 %llu · 말 %llu · 시계요청 %llu"
                             " · FX %llu · 겉모습 %llu(모르는 것 %llu)"
                             " · 문 %llu(되맞춤 %llu·가장가까이 %.0f) · 오벨리스크 %llu(옆인데줄것없음 %llu) · **밟는판(눌림 %llu·뗌 %llu)**"
                             " · **비밀벽(열림 %llu·닫힘 %llu)**"
@@ -1499,10 +1499,10 @@ int main(int argc, char** argv) {
                                       nox::OpName(static_cast<nox::Op>(kv.first)), kv.second);
                         line += b;
                     }
-                    std::printf("%s\n", line.c_str());
+                    srv.Log("%s\n", line.c_str());
                 }
                 // ★ 09-29 ③ — 게임 패킷 안의 0x00(0 채움)에서 읽기를 끝낸 수(전에는 하나하나 0x04 로 답했다)
-                std::printf("[0채움] 게임 패킷 안 0x00 에서 읽기 끝 %llu\n", srv.connectTailStops());
+                srv.Log("[0채움] 게임 패킷 안 0x00 에서 읽기 끝 %llu\n", srv.connectTailStops());
                 std::fflush(stdout);
             }
         }

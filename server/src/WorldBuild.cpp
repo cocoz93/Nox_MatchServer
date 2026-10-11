@@ -37,7 +37,7 @@
 namespace {
 
 // 재생 조각들이 무슨 메시지로 이뤄졌는지 센다. 이분법에 들어가기 전에 지형부터 본다.
-void MirrorStat(const std::vector<std::vector<uint8_t>>& v) {
+void MirrorStat(const nox::Server& srv, const std::vector<std::vector<uint8_t>>& v) {   // ★ 10-12 작업 7b — 줄은 방 로그로
     std::map<uint8_t, int> hist;
     int unparsed = 0;
     for (const auto& fr : v) {
@@ -53,9 +53,9 @@ void MirrorStat(const std::vector<std::vector<uint8_t>>& v) {
         }
         if (!ok) ++unparsed;
     }
-    std::printf("[재생 조각] %zu개 · 못 쪼갠 조각 %d개\n", v.size(), unparsed);
+    srv.Log("[재생 조각] %zu개 · 못 쪼갠 조각 %d개\n", v.size(), unparsed);
     for (const auto& kv : hist)
-        std::printf("   0x%02x %-30s %d\n", kv.first,
+        srv.Log("   0x%02x %-30s %d\n", kv.first,
                     nox::OpName(static_cast<nox::Op>(kv.first)), kv.second);
 }
 // 덤프 기본 자리 — exe 는 <리포>\build\Release\ 에 있으니 두 단 위가 리포다.
@@ -158,7 +158,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
     if (!mapPath.empty()) {
         nox::MapFile mf;
         if (!mf.Load(mapPath)) {
-            std::printf("맵을 못 읽음: %s (%s)\n", mapPath.c_str(), mf.Error().c_str());
+            srv.Log("맵을 못 읽음: %s (%s)\n", mapPath.c_str(), mf.Error().c_str());
             return 1;
         }
         const auto cells = mf.ReadWalls();
@@ -183,16 +183,16 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 sw.push_back(t);
             }
             srv.SetSecretWalls(sw);
-            std::printf("[맵] 비밀벽 %zu개 중 벽이 있는 칸 %zu개\n", sec.size(), srv.SecretWallCount());
+            srv.Log("[맵] 비밀벽 %zu개 중 벽이 있는 칸 %zu개\n", sec.size(), srv.SecretWallCount());
             // ★ 09-20 9-a — **세상 좌표**로 앞 8곳을 찍는다. `--spawn-at`·`--debug-warp` 에 넣을 값이다
             //   (칸 → 세상 = 칸 × 23 + 11.5 · `Server.cpp:8946` 과 같은 셈)
             if (!sec.empty()) {
-                std::printf("[비밀벽 자리]");
+                srv.Log("[비밀벽 자리]");
                 for (size_t k = 0; k < sec.size() && k < 8; ++k)
-                    std::printf(" (%d,%d 칸%d,%d)", static_cast<int>(sec[k].gx * 23 + 11),
+                    srv.Log(" (%d,%d 칸%d,%d)", static_cast<int>(sec[k].gx * 23 + 11),
                                 static_cast<int>(sec[k].gy * 23 + 11),
                                 static_cast<int>(sec[k].gx), static_cast<int>(sec[k].gy));
-                std::printf("  — 모두 %zu곳\n", sec.size());
+                srv.Log("  — 모두 %zu곳\n", sec.size());
                 // ★ 09-20 9-a — **스스로 여닫는 벽이 몇이나 되나.** 상태 기계는 깃발 4·8 이 정한다
                 //   (`Server.cpp:8968·8982`). 둘 다 0 이면 **맵 각본이 열어 주기 전엔 아무 일도 안 난다** —
                 //   각본은 플랜 v6 범위 밖이므로 그 맵에서는 9-a 를 걷기로 못 본다
@@ -203,7 +203,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     if ((w.flags & 4) && (w.flags & 8)) ++both;
                     if (w.state == 2 || w.state == 3) ++openNow;
                 }
-                std::printf("[비밀벽 깃발] 4(스스로 움직임) %zu · 8(열린 채 시작) %zu · 둘 다 %zu · 지금 열림 %zu\n",
+                srv.Log("[비밀벽 깃발] 4(스스로 움직임) %zu · 8(열린 채 시작) %zu · 둘 다 %zu · 지금 열림 %zu\n",
                             f4, f8, both, openNow);
                 // ⚠ 「설 자리」는 여기서 안 찾는다 — `CanStand` 는 **벽만** 보고 바닥은 못 봐서
                 //   **바닥 없는 암반**을 골랐다(09-20 에 세 번 당함). 길목(WayPoints)을 읽은 뒤에 찾는다
@@ -223,7 +223,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 size_t hardDefs = 0, hardCells = 0;
                 for (uint32_t f : flags) if (f & 0x5) ++hardDefs;
                 for (const auto& w : cells) if (w.tile < flags.size() && (flags[w.tile] & 0x5)) ++hardCells;
-                std::printf("[벽] 모양 %zu칸 · 재질 %zu종 · 방향 표 밖 %zu칸 · 광전사 세게(깃발&5) 재질 %zu종·%zu칸\n",
+                srv.Log("[벽] 모양 %zu칸 · 재질 %zu종 · 방향 표 밖 %zu칸 · 광전사 세게(깃발&5) 재질 %zu종·%zu칸\n",
                             cells.size(), flags.size(), badDir, hardDefs, hardCells);
                 // ★ 09-29 Z1-A — 벽 정의의 부수기 칸(맞는 소리 재질·체력·부서지는 소리) + 맵의 부서지는 벽·창문 칸
                 {
@@ -242,11 +242,11 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     const auto destr = mf.ReadGridList("DestructableWalls", 1);
                     const auto win = mf.ReadGridList("WindowWalls", 2);
                     srv.SetWallSpecials(destr, win);
-                    std::printf("[벽 부수기] 정의 체력 있는 것 %zu/%zu종 · 부서지는 소리 이름 못 찾음 %zu · 맵 부서지는 벽 %zu칸 · 창문 %zu칸\n",
+                    srv.Log("[벽 부수기] 정의 체력 있는 것 %zu/%zu종 · 부서지는 소리 이름 못 찾음 %zu · 맵 부서지는 벽 %zu칸 · 창문 %zu칸\n",
                                 withHp, wdb.Walls().size(), noSnd, destr.size(), win.size());
                 }
             } else {
-                std::printf("[벽] 모양 %zu칸 · ⚠ thing.bin 을 못 읽어 재질 깃발 없음(모두 막는 벽으로 봄)\n", cells.size());
+                srv.Log("[벽] 모양 %zu칸 · ⚠ thing.bin 을 못 읽어 재질 깃발 없음(모두 막는 벽으로 봄)\n", cells.size());
             }
         }
         // 정적 오브젝트 — **아이템만, 정품 번호로** (P4-d).
@@ -280,15 +280,15 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                                     "ArachnaphobiaFocus", "SmallSpider", "Pixie" }) {
                 const uint16_t w = tdb.WireByName(nm);
                 srv.SetNamedType(nm, w);
-                std::printf("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");
+                srv.Log("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");
             }
             // ★ 09-23 nine-defects 4-d1 — 바닥 정의(FLOR)의 재질 분포. 발소리가 이 값으로 갈린다(`object_update.go:164~220`)
             {
                 std::map<int32_t, int> byMat;
                 for (const auto& f : tdb.Floors()) ++byMat[f.material];
-                std::printf("[바닥] 정의 %zu개 · 재질별:", tdb.Floors().size());
-                for (const auto& kv : byMat) std::printf(" 0x%x×%d", static_cast<unsigned>(kv.first), kv.second);
-                std::printf("\n");
+                srv.Log("[바닥] 정의 %zu개 · 재질별:", tdb.Floors().size());
+                for (const auto& kv : byMat) srv.Log(" 0x%x×%d", static_cast<unsigned>(kv.first), kv.second);
+                srv.Log("\n");
             }
             // ★ 4-c3 — 주문이 **날리는** 것(불덩이 셋). 빠르기·깃발·닿음 인자를 전부 thing.bin 에서 읽는다.
             //   `COLLIDE = SparkExplosionCollide 192` 의 숫자가 터짐 크기를 다 정하므로 **짐작하지 않는다**.
@@ -305,7 +305,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 if (t2 && !t2->collideArgs.empty()) amount = std::atoi(t2->collideArgs.c_str());
                 if (t2) srv.SetProjType(nm, w, t2->speed, nox::ParseObjectFlags(t2->flagsRaw),
                                         static_cast<uint8_t>(amount < 0 ? 0 : (amount > 255 ? 255 : amount)));
-                std::printf("[날리기 종류] %s = %u · SPEED %d · 닿음 %s %d · 그리기 %s%s\n", nm, static_cast<unsigned>(w),
+                srv.Log("[날리기 종류] %s = %u · SPEED %d · 닿음 %s %d · 그리기 %s%s\n", nm, static_cast<unsigned>(w),
                             t2 ? t2->speed : 0, t2 ? t2->collideFn.c_str() : "?", amount,
                             // ⑫ — 클라는 이 이름으로 그리는 함수를 고른다(`drawFuncs[name]`).
                             //   비어 있거나 모르는 이름이면 클라가 **아무것도 안 그린다**
@@ -329,7 +329,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     ++nArrow;
                     if (nArrow <= 8) { if (!names.empty()) names += " "; names += t3->name; }
                 }
-                std::printf("[화살 종류] %zu가지 (프레임 바이트가 붙는다)%s%s\n", nArrow,
+                srv.Log("[화살 종류] %zu가지 (프레임 바이트가 붙는다)%s%s\n", nArrow,
                             names.empty() ? "" : " — ", names.c_str());
             }
             std::vector<nox::Server::WorldStatic> st;
@@ -340,29 +340,29 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
             size_t doorsExtra = 0, doorsTeam = 0, doorsAngleBad = 0, doorsAngleFixed = 0, doorsRestOdd = 0, doorsClosedDiff = 0;
             const auto objs = mf.ReadObjects();
             if (!mf.Error().empty())
-                std::printf("[맵] ⚠ 오브젝트 읽기가 도중에 멈춤: %s — 읽은 %zu개만 쓴다\n", mf.Error().c_str(), objs.size());
+                srv.Log("[맵] ⚠ 오브젝트 읽기가 도중에 멈춤: %s — 읽은 %zu개만 쓴다\n", mf.Error().c_str(), objs.size());
             // ★ 2026-09-13 묶음 3-c — 부활 자리(PlayerStart). 정답지 mapFindPlayerStart_4F7AB0 가 이 목록에서 고른다.
             {
                 std::vector<std::pair<float, float>> starts;
                 for (const auto& o : objs)
                     if (o.type == "PlayerStart") starts.push_back({ o.x, o.y });
-                std::printf("[부활 자리] PlayerStart %zu곳 —", starts.size());
+                srv.Log("[부활 자리] PlayerStart %zu곳 —", starts.size());
                 // ★ 09-20 — **좌표도 찍는다.** 화면 판정에서 「방 안에 선 자리」가 늘 필요한데
                 //   아무 데나 `--spawn-at` 하면 **바닥이 없는 암반**에 서서 화면이 통째로 검다(실측).
                 //   PlayerStart 는 맵이 보증하는 「설 수 있는 자리」다
                 for (size_t k = 0; k < starts.size() && k < 14; ++k)
-                    std::printf(" (%d,%d)", static_cast<int>(starts[k].first), static_cast<int>(starts[k].second));
-                std::printf("\n");
+                    srv.Log(" (%d,%d)", static_cast<int>(starts[k].first), static_cast<int>(starts[k].second));
+                srv.Log("\n");
                 // ★ 09-28 — 부서지는 벽·창문 칸 수와, 부활 자리마다 **가장 가까운 부서지는 벽**(세상 좌표 = 칸 × 23 + 11).
                 //   정품 서버 판에서 벽 부서짐 와이어를 녹음하려면 사람이 그 벽을 찾아가야 한다(Z1-A 준비)
                 {
                     const std::string errBefore = mf.Error();
                     const auto destr = mf.ReadGridList("DestructableWalls", 1);
                     const auto win = mf.ReadGridList("WindowWalls", 2);
-                    if (mf.Error() != errBefore) std::printf("[벽 칸 읽기] ⚠ %s\n", mf.Error().c_str());
-                    std::printf("[부서지는벽] %zu칸 · [창문벽] %zu칸", destr.size(), win.size());
+                    if (mf.Error() != errBefore) srv.Log("[벽 칸 읽기] ⚠ %s\n", mf.Error().c_str());
+                    srv.Log("[부서지는벽] %zu칸 · [창문벽] %zu칸", destr.size(), win.size());
                     if (!destr.empty()) {
-                        std::printf(" · 부활 자리마다 가장 가까운 부서지는 벽:");
+                        srv.Log(" · 부활 자리마다 가장 가까운 부서지는 벽:");
                         for (size_t k = 0; k < starts.size() && k < 8; ++k) {
                             double best = 1e18; int bx = 0, by = 0;
                             for (const auto& g : destr) {
@@ -370,11 +370,11 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                                 const double d2 = (wx - starts[k].first) * (wx - starts[k].first) + (wy - starts[k].second) * (wy - starts[k].second);
                                 if (d2 < best) { best = d2; bx = static_cast<int>(wx); by = static_cast<int>(wy); }
                             }
-                            std::printf(" [%d,%d → (%d,%d) %.0f]", static_cast<int>(starts[k].first), static_cast<int>(starts[k].second),
+                            srv.Log(" [%d,%d → (%d,%d) %.0f]", static_cast<int>(starts[k].first), static_cast<int>(starts[k].second),
                                         bx, by, std::sqrt(best));
                         }
                     }
-                    std::printf("\n");
+                    srv.Log("\n");
                 }
                 srv.SetPlayerStarts(std::move(starts));
             }
@@ -427,12 +427,12 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         nox::Server::SoundDefIn in;
                         in.id = 230; in.maxDist = 600; in.merged = 0; in.samples = 1; in.flags = 0;
                         sd.push_back(in);
-                        std::printf("[소리·메움] 230(ManaRecharge) — thing.bin 에 없어 손으로 채움"
+                        srv.Log("[소리·메움] 230(ManaRecharge) — thing.bin 에 없어 손으로 채움"
                                     "(정품 와이어 근거 · 거리 600 은 정답지 기본값)\n");
                     }
                 }
                 srv.SetSoundDefs(sd);
-                std::printf("[소리] AUD %zu개 · 이름표에 맞물림 %zu · 소리조각 있는 것 %zu%s\n",
+                srv.Log("[소리] AUD %zu개 · 이름표에 맞물림 %zu · 소리조각 있는 것 %zu%s\n",
                             tdb.Sounds().size(), sd.size(), withSamples,
                             miss ? " ⚠ 이름표에 없는 것 있음" : "");
                 // ★ 09-29 B6 — 몬스터가 듣는 소리는 깃발이 0 이 아닌 것뿐이다(`unit_ai.go:290` NewSound) — 0x10 아군 것도 · 0x20 걷기(문턱 89) · 0x40 달리기(문턱 20)
@@ -441,9 +441,9 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     for (const auto& in : sd) {
                         if (in.flags == 0) continue;
                         ++nf; if (in.flags & 0x10) ++f10; if (in.flags & 0x20) ++f20; if (in.flags & 0x40) ++f40;
-                        if (std::getenv("NOX_DUMP_SOUND_FLAGS")) std::printf("  [소리깃발] %u %s 깃발 0x%x 거리 %d\n", (unsigned)in.id, nox::SoundName(in.id), (unsigned)in.flags, in.maxDist);
+                        if (std::getenv("NOX_DUMP_SOUND_FLAGS")) srv.Log("  [소리깃발] %u %s 깃발 0x%x 거리 %d\n", (unsigned)in.id, nox::SoundName(in.id), (unsigned)in.flags, in.maxDist);
                     }
-                    std::printf("[소리듣기] 깃발 있는 소리 %zu개 — 0x10 %zu · 0x20 %zu · 0x40 %zu\n", nf, f10, f20, f40);
+                    srv.Log("[소리듣기] 깃발 있는 소리 %zu개 — 0x10 %zu · 0x20 %zu · 0x40 %zu\n", nf, f10, f20, f40);
                 }
                 // ★ 09-22 — **정품이 실제로 보낸 번호** 중 우리 표에 없는 것을 센다.
                 //   `_evidence/CAP_server_0906.txt` 의 `a6`·`a7` 610건을 풀어 얻은 번호들이다.
@@ -456,7 +456,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         for (const auto& in : sd) if (in.id == q && in.samples > 0) { ok = true; break; }
                         if (!ok) { missing += " "; missing += std::to_string(q); missing += "("; missing += nox::SoundName(q); missing += ")"; }
                     }
-                    std::printf("[소리·정품이쓴것] %zu개 중 우리 표에 **없는 것**:%s\n",
+                    srv.Log("[소리·정품이쓴것] %zu개 중 우리 표에 **없는 것**:%s\n",
                                 sizeof(seen) / sizeof(seen[0]), missing.empty() ? " (none)" : missing.c_str());
                 }
                 // ★ 09-22 사용자 보고(「소리가 안 들린다」) — **우리가 부르는 번호가 표에 있나**를 찍는다.
@@ -465,25 +465,25 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 // ★ 09-23 nine-defects 4-b — **능력 소리 170~185**(쓸 때·켜짐·꺼질 때 × 다섯)를 한 줄로. 「조각 0 으로 선언」과
                 //   「표에 아예 없음」(230 같은 경우 — 정품이 따로 보낼 수 있다)을 가른다. `-` = 표에 없음
                 {
-                    std::printf("[소리·능력]");
+                    srv.Log("[소리·능력]");
                     for (uint16_t q = 170; q <= 185; ++q) {
                         int samples = -1;
                         for (const auto& in : sd) if (in.id == q) { samples = in.samples; break; }
-                        if (samples < 0) std::printf(" %u(%s)-", (unsigned)q, nox::SoundName(q));
-                        else std::printf(" %u(%s)%d", (unsigned)q, nox::SoundName(q), samples);
+                        if (samples < 0) srv.Log(" %u(%s)-", (unsigned)q, nox::SoundName(q));
+                        else srv.Log(" %u(%s)%d", (unsigned)q, nox::SoundName(q), samples);
                     }
-                    std::printf("\n");
+                    srv.Log("\n");
                 }
                 // ★ 09-23 nine-defects 4-c2 — 타격 소리 848~872(`<때린 것>Hit<맞는 쪽>`)의 조각 수 — 0 이면 불러도 버려진다
                 {
-                    std::printf("[소리·타격]");
+                    srv.Log("[소리·타격]");
                     size_t zero = 0;
                     for (uint16_t q = 848; q <= 872; ++q) {
                         int samples = -1;
                         for (const auto& in : sd) if (in.id == q) { samples = in.samples; break; }
-                        if (samples <= 0) { ++zero; std::printf(" %u(%s)%s", (unsigned)q, nox::SoundName(q), samples < 0 ? "-" : "0"); }
+                        if (samples <= 0) { ++zero; srv.Log(" %u(%s)%s", (unsigned)q, nox::SoundName(q), samples < 0 ? "-" : "0"); }
                     }
-                    std::printf(" · 조각 0 또는 없음 %zu / 25\n", zero);
+                    srv.Log(" · 조각 0 또는 없음 %zu / 25\n", zero);
                 }
                 // ★ 09-23 nine-defects 4-c3b3a — soundset.bin(암호 5)의 몬스터 소리 모음. 때린 이가 몬스터면 그 모음의 「맞히는 소리」
                 //   (MELEE_ATTACK_HITTING_SOUND · +32)에 조각이 있을 때 맞는 쪽 소리를 안 낸다(`GAME3_2.c:7252~7254` — 4-c3b3b 에서 쓴다).
@@ -506,14 +506,14 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         if (nox::SoundByName(h.c_str()) == 0) ++nameless;
                         if (samplesOf(h) > 0) ++withSamples2;
                     }
-                    std::printf("[소리모음] %s · %zu벌 · 맞히는 소리 적힌 것 %zu(조각 있음 %zu · 이름표에 없음 %zu)",
+                    srv.Log("[소리모음] %s · %zu벌 · 맞히는 소리 적힌 것 %zu(조각 있음 %zu · 이름표에 없음 %zu)",
                                 ok ? "읽음" : ("⚠ 못 읽음 " + err).c_str(), sets.size(), written, withSamples2, nameless);
-                    std::printf(" · 소환수:");
+                    srv.Log(" · 소환수:");
                     for (const auto& ms : nox::kMonsters) {
                         const nox::SoundSet* s = nox::FindSoundSet(sets, ms.name);
-                        if (!s) { std::printf(" %s=모음없음", ms.name); continue; }
+                        if (!s) { srv.Log(" %s=모음없음", ms.name); continue; }
                         const std::string& h = s->sound[nox::kSoundSetMeleeHitting];
-                        std::printf(" %s=%s(%d)", ms.name, h.empty() ? "(안 적힘)" : h.c_str(), samplesOf(h));
+                        srv.Log(" %s=%s(%d)", ms.name, h.empty() ? "(안 적힘)" : h.c_str(), samplesOf(h));
                     }
                     // ★ 4-c3b3b — 종류 번호별 「그 이름의 모음에 맞히는 소리가 있고 조각 1 이상」 표 → 서버(몬스터가 때릴 때 맞는 쪽 소리를 가른다)
                     std::vector<uint8_t> owns(tdb.Count() + 1, 0);
@@ -523,7 +523,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         const nox::SoundSet* s = t ? nox::FindSoundSet(sets, t->name) : nullptr;
                         if (s && samplesOf(s->sound[nox::kSoundSetMeleeHitting]) > 0) { owns[w] = 1; ++nOwn; }
                     }
-                    std::printf(" · 종류 %zu개가 맞히는 소리를 가짐\n", nOwn);
+                    srv.Log(" · 종류 %zu개가 맞히는 소리를 가짐\n", nOwn);
                     srv.SetMonsterHitSounds(std::move(owns));
                     // ★ 09-24 H1 — 같은 칸의 **번호** 표(몬스터가 근접으로 때린 뒤 그 소리를 낸다 · `GAME4_3.c:2087~2094`)
                     std::vector<uint16_t> hitIds(tdb.Count() + 1, 0);
@@ -536,7 +536,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         hitIds[w] = nox::SoundByName(h.c_str());
                         if (hitIds[w] != 0) ++nId;
                     }
-                    std::printf("[소리모음] 근접 맞히는 소리 번호 있는 종류 %zu개 · Bat=%u AlbinoSpider=%u SmallSpider=%u\n", nId,
+                    srv.Log("[소리모음] 근접 맞히는 소리 번호 있는 종류 %zu개 · Bat=%u AlbinoSpider=%u SmallSpider=%u\n", nId,
                                 (unsigned)hitIds[tdb.WireByName("Bat")], (unsigned)hitIds[tdb.WireByName("AlbinoSpider")],
                                 (unsigned)hitIds[tdb.WireByName("SmallSpider")]);
                     srv.SetMonsterMeleeHitSoundIds(std::move(hitIds));
@@ -544,7 +544,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     // ★ 09-29 B5 — **칸 전부**(맞히는 소리 7 은 위에서). ✖ 전에는 5·9·10·14·16 만 실어서 B2~B4a 가 부르는 칸
                     //   (도발 1 · 놀 때 3 · 교전 4 · 빗나감 8 · 도망 11 · 후퇴 12 · 다침 15)과 걸음 17 이 **실서버에서 한 번도 안 났다**
                     //   (시험은 「났음+번호 없음」을 합쳐 세어 못 잡았다 — 시험 표에는 번호를 안 싣기 때문)
-                    std::printf("[소리모음] 칸별 번호 있는 종류 —");
+                    srv.Log("[소리모음] 칸별 번호 있는 종류 —");
                     for (int field = 0; field < nox::kSoundSetFields; ++field) {
                         if (field == nox::kSoundSetMeleeHitting) continue;
                         std::vector<uint16_t> ids(tdb.Count() + 1, 0);
@@ -557,10 +557,10 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                             ids[w] = nox::SoundByName(h.c_str());
                             if (ids[w] != 0) ++n;
                         }
-                        std::printf(" %s %zu", nox::kSoundSetFieldNames[field], n);
+                        srv.Log(" %s %zu", nox::kSoundSetFieldNames[field], n);
                         srv.SetMonsterSoundIds(field, std::move(ids));
                     }
-                    std::printf("\n");
+                    srv.Log("\n");
                 }
                 // ★ 09-23 nine-defects — 새로 부르게 된 번호도 같이 본다: 171 BerserkerCrash(2-b2) · 힘쓰는 소리 남·여(3-a) · 휘두르기 879~884(4-a)
                 for (uint16_t q : { (uint16_t)230, (uint16_t)237, (uint16_t)239, (uint16_t)307, (uint16_t)171,
@@ -569,22 +569,22 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     bool found = false;
                     for (const auto& in : sd)
                         if (in.id == q) {
-                            std::printf("[소리·쓰는것] %u(%s) — 조각 %d · 들리는거리 %d%s\n",
+                            srv.Log("[소리·쓰는것] %u(%s) — 조각 %d · 들리는거리 %d%s\n",
                                         (unsigned)q, nox::SoundName(q), in.samples, in.maxDist,
                                         (in.samples <= 0 || in.maxDist <= 0) ? "  ⚠ 이래서 안 들린다" : "");
                             found = true; break;
                         }
                     if (!found) {
-                        std::printf("[소리·쓰는것] %u(%s) — ⚠ **표에 아예 없다**\n", (unsigned)q, nox::SoundName(q));
+                        srv.Log("[소리·쓰는것] %u(%s) — ⚠ **표에 아예 없다**\n", (unsigned)q, nox::SoundName(q));
                         // 이름이 다를 뿐일 수 있다 — 비슷한 이름을 같이 찍어 고를 수 있게 한다
-                        std::printf("[소리·비슷한이름]");
+                        srv.Log("[소리·비슷한이름]");
                         for (const auto& d : tdb.Sounds())
                             if (d.name.find("Mana") != std::string::npos ||
                                 d.name.find("Recharge") != std::string::npos ||
                                 d.name.find("Obelisk") != std::string::npos)
-                                std::printf(" %s(%u·조각%d)", d.name.c_str(),
+                                srv.Log(" %s(%u·조각%d)", d.name.c_str(),
                                             (unsigned)nox::SoundByName(d.name.c_str()), d.samples);
-                        std::printf("\n");
+                        srv.Log("\n");
                     }
                 }
             }
@@ -624,7 +624,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     trapPos.push_back({ tr.x, tr.y });
                 }
                 if (!traps.empty()) {
-                    std::printf("[맵] 쏘는 덫 %zu개 · 화살 피해 %d\n", traps.size(), arrowDmg);
+                    srv.Log("[맵] 쏘는 덫 %zu개 · 화살 피해 %d\n", traps.size(), arrowDmg);
                     // ★ 2026-09-18 ⑫ — **덫이 어디 있는지** 한 줄로 찍는다.
                     //   「겨눈 덫 0」이 나왔을 때 「덫이 안 도는 것」과 「사람이 사정거리
                     //   밖인 것」을 못 가른다. 좌표가 있어야 갈린다(덫 사정 ±350).
@@ -632,17 +632,17 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     // ★ 09-20 ⑮ — **방향도 찍는다.** 덫은 겨눈 뒤 **제 방향으로만** 쏜다
                     //   (`TrapShoot` — 대상 쪽이 아니다). 화살 선 위에 세우려면 방향이 있어야 한다.
                     //   앞 여덟만 — 100개를 다 찍으면 로그가 안 읽힌다
-                    std::printf("[덫 자리]");
+                    srv.Log("[덫 자리]");
                     {
                         size_t k = 0;
                         for (const auto& tr : traps) {
-                            if (k < 8) std::printf(" %d,%d(방향%u)", static_cast<int>(tr.x), static_cast<int>(tr.y),
+                            if (k < 8) srv.Log(" %d,%d(방향%u)", static_cast<int>(tr.x), static_cast<int>(tr.y),
                                                    static_cast<unsigned>(tr.facing));
-                            else std::printf(" %d,%d", static_cast<int>(tr.x), static_cast<int>(tr.y));
+                            else srv.Log(" %d,%d", static_cast<int>(tr.x), static_cast<int>(tr.y));
                             ++k;
                         }
                     }
-                    std::printf("\n");
+                    srv.Log("\n");
                 }
                 srv.SetShootingTraps(traps);
             }
@@ -658,15 +658,15 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 {
                     size_t linkN = 0, deadEnd = 0;
                     for (const auto& w : allWps) { linkN += w.links.size(); if (w.links.empty()) ++deadEnd; }
-                    std::printf("[길목 이음] 길목 %zu개 · 나가는 이음 %zu개 · 막다른 길 %zu개\n",
+                    srv.Log("[길목 이음] 길목 %zu개 · 나가는 이음 %zu개 · 막다른 길 %zu개\n",
                                 allWps.size(), linkN, deadEnd);
                 }
-                std::printf("[길목] 점멸이 고를 수 있는 곳 %zu곳 —", wps.size());
+                srv.Log("[길목] 점멸이 고를 수 있는 곳 %zu곳 —", wps.size());
                 // ★ 09-20 — **좌표도 찍는다.** 길목은 맵 제작자가 「걸을 수 있다」고 찍어 둔 자리라
                 //   화면 판정에서 **설 자리**로 쓸 수 있다(`CanStand` 는 벽만 보고 바닥은 못 본다)
                 for (size_t k = 0; k < wps.size() && k < 12; ++k)
-                    std::printf(" (%d,%d)", static_cast<int>(wps[k].first), static_cast<int>(wps[k].second));
-                std::printf("\n");
+                    srv.Log(" (%d,%d)", static_cast<int>(wps[k].first), static_cast<int>(wps[k].second));
+                srv.Log("\n");
                 // ★ 09-23 nine-defects 4-d2 — 맵 바닥 칸(FloorMap)과 그 재질 분포(4-d1 바닥 정의로). 발소리가 이 재질로 갈린다
                 {
                     const auto floor = mf.ReadFloor();
@@ -679,15 +679,15 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                             if (s->image < tdb.Floors().size()) ++byMat[tdb.Floors()[s->image].material];
                             else ++badImg;
                         }
-                    std::printf("[바닥칸] %s · 칸 %zu · 쪽 %zu(번호가 정의 밖 %zu) · 재질별:", mf.Error().empty() ? "읽음" : ("⚠ " + mf.Error()).c_str(),
+                    srv.Log("[바닥칸] %s · 칸 %zu · 쪽 %zu(번호가 정의 밖 %zu) · 재질별:", mf.Error().empty() ? "읽음" : ("⚠ " + mf.Error()).c_str(),
                                 floor.size(), sides, badImg);
-                    for (const auto& kv : byMat) std::printf(" 0x%x×%zu", static_cast<unsigned>(kv.first), kv.second);
+                    for (const auto& kv : byMat) srv.Log(" 0x%x×%zu", static_cast<unsigned>(kv.first), kv.second);
                     // 두 쪽이 다 찼는데 재질이 다른 칸 — 두 쪽 읽는 순서가 틀렸다면 **소리가 바뀌는 칸**은 이것뿐이다
                     size_t bothDiff = 0;
                     for (const auto& c : floor)
                         if (c.first.present && c.second.present && c.first.image < tdb.Floors().size() && c.second.image < tdb.Floors().size() &&
                             tdb.Floors()[c.first.image].material != tdb.Floors()[c.second.image].material) ++bothDiff;
-                    std::printf(" · 두 쪽 재질이 다른 칸 %zu\n", bothDiff);
+                    srv.Log(" · 두 쪽 재질이 다른 칸 %zu\n", bothDiff);
                     // ★ 4-d3 — 칸 찾기를 **길목**(맵 제작자가 걸을 수 있다고 찍은 자리)마다 돌린다. 쪽이 빈 칸이 나오면
                     //   두 쪽 순서(4-d2)나 칸 찾기가 틀린 것이다 — 걸을 수 있는 자리는 바닥이 있어야 한다
                     nox::FloorGrid grid;
@@ -701,10 +701,10 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         ++why[static_cast<size_t>(hit.why)];
                         if (hit.tile >= 0 && static_cast<size_t>(hit.tile) < tdb.Floors().size()) ++wpMat[tdb.Floors()[static_cast<size_t>(hit.tile)].material];
                     }
-                    std::printf("[바닥칸·길목] 가장자리 정의 %zu개 · 길목 %zu곳 → 범위밖 %zu · 쪽빔 %zu · 쪽 %zu · 가장자리 %zu · 재질별:",
+                    srv.Log("[바닥칸·길목] 가장자리 정의 %zu개 · 길목 %zu곳 → 범위밖 %zu · 쪽빔 %zu · 쪽 %zu · 가장자리 %zu · 재질별:",
                                 edefs.size(), wps.size(), why[0], why[1], why[2], why[3]);
-                    for (const auto& kv : wpMat) std::printf(" 0x%x×%zu", static_cast<unsigned>(kv.first), kv.second);
-                    std::printf("\n");
+                    for (const auto& kv : wpMat) srv.Log(" 0x%x×%zu", static_cast<unsigned>(kv.first), kv.second);
+                    srv.Log("\n");
                     // ★ 09-27 V4 — 용암(바닥 **번호 6** — 서버 바닥 피해가 보는 값 · 재질 0x80 은 다른 바닥도 쓸 수 있다) 쪽 수와
                     //   그 위에 있는 길목(걸을 수 있다고 찍힌 자리)을 찍는다 — 용암 판에서 사람을 세울 자리
                     {
@@ -715,9 +715,9 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         for (const auto& wp : wps)
                             if (grid.TileAt(static_cast<float>(wp.first), static_cast<float>(wp.second), edefs).tile == 6)
                                 onLava.push_back({ static_cast<int>(wp.first), static_cast<int>(wp.second) });
-                        std::printf("[용암칸] 바닥 번호 6 쪽 %zu · 그 위 길목 %zu곳 —", lavaSides, onLava.size());
-                        for (size_t k = 0; k < onLava.size() && k < 8; ++k) std::printf(" (%d,%d)", onLava[k].first, onLava[k].second);
-                        std::printf("\n");
+                        srv.Log("[용암칸] 바닥 번호 6 쪽 %zu · 그 위 길목 %zu곳 —", lavaSides, onLava.size());
+                        for (size_t k = 0; k < onLava.size() && k < 8; ++k) srv.Log(" (%d,%d)", onLava[k].first, onLava[k].second);
+                        srv.Log("\n");
                     }
                     // ★ 4-d4 — 발소리가 쓰도록 서버에 넣는다
                     std::vector<int32_t> mats;
@@ -738,7 +738,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                             const double d2 = dx * dx + dy * dy;
                             if (d2 < best) { best = d2; bi = k; }
                         }
-                        std::printf("[비밀벽 설자리] 벽 칸%d,%d (%d,%d) ← 가장 가까운 길목 (%d,%d) 거리 %d\n",
+                        srv.Log("[비밀벽 설자리] 벽 칸%d,%d (%d,%d) ← 가장 가까운 길목 (%d,%d) 거리 %d\n",
                                     static_cast<int>(w.gx), static_cast<int>(w.gy),
                                     static_cast<int>(wx), static_cast<int>(wy),
                                     static_cast<int>(wps[bi].first), static_cast<int>(wps[bi].second),
@@ -758,7 +758,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                             const double dist = std::sqrt(dx * dx + dy * dy);
                             if (dist < 200.0 || dist > 500.0) continue;
                             if (srv.DebugTraceRay(wps[i].first, wps[i].second, wps[j].first, wps[j].second)) continue;  // 보이면 벽이 안 낀 것
-                            std::printf("[벽낀 짝] (%d,%d) ↔ (%d,%d) 거리 %d — 서로 안 보인다\n",
+                            srv.Log("[벽낀 짝] (%d,%d) ↔ (%d,%d) 거리 %d — 서로 안 보인다\n",
                                         static_cast<int>(wps[i].first), static_cast<int>(wps[i].second),
                                         static_cast<int>(wps[j].first), static_cast<int>(wps[j].second),
                                         static_cast<int>(dist));
@@ -781,7 +781,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         }
                         const int dist = static_cast<int>(std::sqrt(best));
                         if (dist > 350) continue;          // 덫 사정 밖이면 볼 수 없다
-                        std::printf("[덫 설자리] 덫 (%d,%d) ← 가장 가까운 길목 (%d,%d) 거리 %d\n",
+                        srv.Log("[덫 설자리] 덫 (%d,%d) ← 가장 가까운 길목 (%d,%d) 거리 %d\n",
                                     static_cast<int>(t.first), static_cast<int>(t.second),
                                     static_cast<int>(wps[bi].first), static_cast<int>(wps[bi].second), dist);
                         ++shown;
@@ -824,7 +824,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     //   (우리가 아는 문에 142 안으로 간 적 없음)의 후보다. 문 몸 싣기(아래 「문 종류도 싣는다」)도 같은 기준이다
                     const bool isDoor = (nox::ParseObjectClass(ti->classRaw) & 0x80) != 0;
                     if (!isDoor && objs[i].type.find("Door") != std::string::npos)   // 옛 기준과 갈리는 것은 드러낸다
-                        std::printf("[문아님] 이름에 Door 가 있지만 클래스 DOOR 가 아니다 — %s (%d,%d)\n",
+                        srv.Log("[문아님] 이름에 Door 가 있지만 클래스 DOOR 가 아니다 — %s (%d,%d)\n",
                                     objs[i].type.c_str(), static_cast<int>(objs[i].x), static_cast<int>(objs[i].y));
                     const bool isObelisk = objs[i].type.find("Obelisk") != std::string::npos;
                     // ★ 2026-09-15 묶음 9-c — **밟는 판**(`PressurePlate`).
@@ -884,7 +884,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                             wp.fine = static_cast<uint8_t>((static_cast<int>(dx.angle & 31) * 8) & 255);
                             // ⚠ 여는 거리는 **반지름을 같이 찍는다** — 진짜로 문 몸에서 나온 42 와
                             //   못 찾아 떨어진 기본값 42 가 숫자로는 똑같아서 구분이 안 된다
-                            std::printf("[문각도] 번호 %04x %s (%d,%d) — 닫힘 %u · 열림 %u · 여는거리 %.0f(문반지름 %s)\n",
+                            srv.Log("[문각도] 번호 %04x %s (%d,%d) — 닫힘 %u · 열림 %u · 여는거리 %.0f(문반지름 %s)\n",
                                         (unsigned)((objs[i].extent & 0x7FFFu) | 0x8000u), objs[i].type.c_str(),
                                         static_cast<int>(objs[i].x), static_cast<int>(objs[i].y),
                                         (unsigned)wp.angle, (unsigned)nox::DoorOpenAngle(wp.angle),
@@ -959,7 +959,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         for (size_t si = 0; si < tdb.Spells().size(); ++si)
                             if (tdb.Spells()[si].name == nm) { w2.wandSpell = static_cast<uint8_t>(si); break; }
                         if (w2.wandSpell == 0)
-                            std::printf("[완드] ⚠ %s 의 주문 %s 을 못 찾음\n", objs[i].type.c_str(), nm);
+                            srv.Log("[완드] ⚠ %s 의 주문 %s 을 못 찾음\n", objs[i].type.c_str(), nm);
                     }
                 }
                 w2.equipBit = ebit;
@@ -1047,29 +1047,29 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     else missing += " " + nm;
                 }
                 srv.SetGiveItems(give);
-                std::printf("[시험물건] 들어오면 가방에 %zu개 넣음%s%s\n", give.size(), missing.empty() ? "" : " · ⚠ 이 맵 바닥에 없어 못 줌:", missing.c_str());
+                srv.Log("[시험물건] 들어오면 가방에 %zu개 넣음%s%s\n", give.size(), missing.empty() ? "" : " · ⚠ 이 맵 바닥에 없어 못 줌:", missing.c_str());
             }
             if (!spawnAtItem.empty()) {   // ★ 09-27 B6
                 uint16_t nc = 0;
                 const uint16_t wire = tdb.WireByName(spawnAtItem);
                 if (wire != 0 && srv.DebugSpawnAtStaticType(wire, nc))
-                    std::printf("[시험] 스폰 자리를 %s(종류 %u · 번호 %u) 자리 (%d,%d) 로\n", spawnAtItem.c_str(),
+                    srv.Log("[시험] 스폰 자리를 %s(종류 %u · 번호 %u) 자리 (%d,%d) 로\n", spawnAtItem.c_str(),
                                 (unsigned)wire, (unsigned)nc, srv.spawnX(), srv.spawnY());
                 else
-                    std::printf("[시험] ⚠ 바닥에 %s 가 없다(종류 %u) — 이 판은 무효다\n", spawnAtItem.c_str(), (unsigned)wire);
+                    srv.Log("[시험] ⚠ 바닥에 %s 가 없다(종류 %u) — 이 판은 무효다\n", spawnAtItem.c_str(), (unsigned)wire);
                 std::fflush(stdout);
             }
 
             // ★ 09-27 B1 — 직업 기본 장비의 가방 항목 틀. 맵 물건(위)과 같은 칸 규칙으로 thing.bin 에서 채운다
             //   (수식 갈래 · 장비 비트 · 무게). 서버는 접속 때 이 틀로 기본 장비를 가방에 싣는다(`Server::GiveDefaultGear`)
             {
-                std::printf("[기본장비] 가방 틀 —");
+                srv.Log("[기본장비] 가방 틀 —");
                 for (uint16_t gw : { nox::kItemStreetShirt, nox::kItemStreetPants, nox::kItemStreetSneakers,
                                      nox::kItemWizardRobe, nox::kItemWoodenShield, nox::kItemLongsword }) {
                     const char* nm = nox::LoadoutItemName(gw);
                     const nox::ThingInfo* ti = tdb.ByWire(gw);
                     if (!nm || !ti || ti->name != nm) {   // 와이어 번호(종류표)와 thing.bin 이름이 어긋나면 싣지 않는다
-                        std::printf(" %u(✗ 이름 다름)", (unsigned)gw);
+                        srv.Log(" %u(✗ 이름 다름)", (unsigned)gw);
                         continue;
                     }
                     nox::Session::Carried c;
@@ -1088,12 +1088,12 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     if (c.weaponClass) c.subclass = nox::WeaponClassBitsOf(ti->subclassRaw);
                     else if (ti->classRaw.find("ARMOR") != std::string::npos) c.subclass = nox::ParseArmorClass(ti->subclassRaw);   // ★ 09-28
                     c.dropFn = nox::DropFnOf(ti->dropFn);   // ★ 09-28 — 버리기 함수(로브·롱소드·나무방패는 갑옷무기 → 25초) · RESPAWN 은 기본 장비라 지운 채(`GAME3_3.c:7891`)
-                    std::printf(" %s(무게 %d%s · 비트 %#x%s · 부위 %#x · 버리기 %s)", nm, (int)c.weight, ti->hasWeight ? "" : "·WEIGHT없음",
+                    srv.Log(" %s(무게 %d%s · 비트 %#x%s · 부위 %#x · 버리기 %s)", nm, (int)c.weight, ti->hasWeight ? "" : "·WEIGHT없음",
                                 (unsigned)c.equipBit, c.isWeapon ? (c.weaponClass ? " · 무기" : " · 무기(클래스 아님)") : "",
                                 (unsigned)c.subclass, ti->dropFn.empty() ? "(없음)" : ti->dropFn.c_str());
                     srv.SetItemTemplate(gw, c);
                 }
-                std::printf("\n");
+                srv.Log("\n");
             }
 
             // ★ 09-27 B3 — modifier.bin(암호 13) `WEAPON_DEFINITIONS` → 무기 들기의 직업(CLASSUSE)·힘(REQUIRED_STRENGTH) 관문.
@@ -1135,7 +1135,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                             }
                             if (cur == "Longsword" || cur == "GreatSword" || cur == "StaffWooden" || cur == "ForceWand" || cur == "Bow" ||
                                 cur == "CrossBow" || cur == "Quiver" || cur == "ArcherArrow" || cur == "ArcherBolt" || cur == "WeakArcherArrow")
-                                std::printf("[무기정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 피해 최소 %d · 계수 %.3f\n",
+                                srv.Log("[무기정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 피해 최소 %d · 계수 %.3f\n",
                                             cur.c_str(), (unsigned)wire, (unsigned)classes, reqStr, dmgMin, dmgCoeff);
                         }
                         cur.clear();
@@ -1162,7 +1162,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         reqStr = std::atoi(val.c_str());
                     }
                 }
-                std::printf("[무기정의] modifier.bin %zu바이트 · 무기 %zu개 실음 · 종류표에 없음 %zu · 모르는 직업 이름 %zu\n",
+                srv.Log("[무기정의] modifier.bin %zu바이트 · 무기 %zu개 실음 · 종류표에 없음 %zu · 모르는 직업 이름 %zu\n",
                             mb.size(), nDef, nNoWire, nBadClass);
                 // ★ 09-29 — `ARMOR_DEFINITIONS` → 갑옷 입기의 직업·힘 관문과 방어값(ARMOR_VALUE → `Modifier` +64 · `parseWeaponOrArmorDef412D40` `modifiers.go:325~329`).
                 //   절은 다음 절 이름(ENCHANTMENT·EFFECTIVENESS·MATERIAL) 줄에서 끝난다
@@ -1190,7 +1190,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                                 if (wire == 0) ++nArmNoWire;
                                 else { srv.SetArmorDef(wire, aclasses, static_cast<uint16_t>(areq < 0 ? 0 : areq), static_cast<float>(aval)); ++nArm; }
                                 if (acur == "StreetShirt" || acur == "StreetPants" || acur == "StreetSneakers" || acur == "WizardRobe" || acur == "WoodenShield" || acur == "SteelShield" || acur == "LeatherHelm")
-                                    std::printf("[갑옷정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 방어 %.3f\n", acur.c_str(), (unsigned)wire, (unsigned)aclasses, areq, aval);
+                                    srv.Log("[갑옷정의] %s(종류 %u) — 직업 비트 %u · 요구 힘 %d · 방어 %.3f\n", acur.c_str(), (unsigned)wire, (unsigned)aclasses, areq, aval);
                             }
                             acur.clear();
                             continue;
@@ -1216,7 +1216,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                             aval = std::atof(val.c_str());
                         }
                     }
-                    std::printf("[갑옷정의] 갑옷 %zu개 실음 · 종류표에 없음 %zu\n", nArm, nArmNoWire);
+                    srv.Log("[갑옷정의] 갑옷 %zu개 실음 · 종류표에 없음 %zu\n", nArm, nArmNoWire);
                 }
             }
 
@@ -1230,7 +1230,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 //     **찍어 보이기만** 하고 서버에 넣지 않는다. 실제 값은 `Session::carryCap` 이다.
                 const uint16_t pw = tdb.WireByName("NewPlayer");
                 const nox::ThingInfo* pt = pw ? tdb.ByWire(pw) : nullptr;
-                std::printf("[들 무게] thing.bin NewPlayer CARRYCAPACITY %d (오브젝트 기본값 — 사람은 힘에서 다시 셈: 위저드 %d → 한도 %d)\n",
+                srv.Log("[들 무게] thing.bin NewPlayer CARRYCAPACITY %d (오브젝트 기본값 — 사람은 힘에서 다시 셈: 위저드 %d → 한도 %d)\n",
                             pt ? pt->carryCap : -1,
                             nox::CarryCapacityOnline(nox::CharClass::Wizard),
                             nox::CarryCapacityOnline(nox::CharClass::Wizard) * 2);
@@ -1244,10 +1244,10 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     e.first = t3->weight;
                     ++e.second;
                 }
-                std::printf("[들 무게] 맵 물건 무게 —");
+                srv.Log("[들 무게] 맵 물건 무게 —");
                 for (const auto& kv : wsum)
-                    std::printf(" %s %d(×%d)", kv.first.c_str(), kv.second.first, kv.second.second);
-                std::printf("\n");
+                    srv.Log(" %s %d(×%d)", kv.first.c_str(), kv.second.first, kv.second.second);
+                srv.Log("\n");
             }
 
             // ★ 2026-09-13 묶음 2-c — **장애물**(오브젝트끼리 충돌). COLLIDE 가 있고 NO_COLLIDE 가 아닌
@@ -1283,7 +1283,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         const int amount = std::atoi(args.c_str());
                         const int kind = nox::DamageTypeByName(sp == std::string::npos ? std::string() : args.substr(sp + 1));
                         if (kind >= nox::kDamageTypeCount) {
-                            std::printf("[닿음피해] ⚠ %s — 종류 이름을 못 읽음(`%s`) · 피해를 안 싣는다\n", o.type.c_str(), args.c_str());
+                            srv.Log("[닿음피해] ⚠ %s — 종류 이름을 못 읽음(`%s`) · 피해를 안 싣는다\n", o.type.c_str(), args.c_str());
                         } else {
                             b.contactDmgAmount = static_cast<uint8_t>(amount);
                             b.contactDmgType = static_cast<uint8_t>(kind);
@@ -1301,29 +1301,29 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 if (!hazardNames.empty()) {
                     size_t n = 0;
                     for (const auto& kv : hazardNames) n += static_cast<size_t>(kv.second);
-                    std::printf("[닿음피해] 장애물 %zu개 —", n);
-                    for (const auto& kv : hazardNames) std::printf(" %sx%d", kv.first.c_str(), kv.second);
-                    std::printf(" · 자리(앞 %zu개)", hazardSpots.size());
-                    for (const auto& sp : hazardSpots) std::printf(" %s", sp.c_str());
-                    std::printf("\n");
+                    srv.Log("[닿음피해] 장애물 %zu개 —", n);
+                    for (const auto& kv : hazardNames) srv.Log(" %sx%d", kv.first.c_str(), kv.second);
+                    srv.Log(" · 자리(앞 %zu개)", hazardSpots.size());
+                    for (const auto& sp : hazardSpots) srv.Log(" %s", sp.c_str());
+                    srv.Log("\n");
                 }
-                std::printf("[장애물] %zu개 / %zu종 —", obs.size(), obsNames.size());
-                for (const auto& kv : obsNames) std::printf(" %sx%d", kv.first.c_str(), kv.second);
-                std::printf("\n");
+                srv.Log("[장애물] %zu개 / %zu종 —", obs.size(), obsNames.size());
+                for (const auto& kv : obsNames) srv.Log(" %sx%d", kv.first.c_str(), kv.second);
+                srv.Log("\n");
                 // ★ 09-20 ② — **상자 자리**를 따로 찍는다. 「몸이 막히나」를 보려면 좌표가 있어야 한다
                 {
                     size_t nChest = 0;
                     for (const auto& o : objs) {
                         if (o.type.find("Chest") == std::string::npos) continue;
-                        if (nChest == 0) std::printf("[상자 자리]");
-                        if (nChest < 6) std::printf(" %s(%d,%d)", o.type.c_str(),
+                        if (nChest == 0) srv.Log("[상자 자리]");
+                        if (nChest < 6) srv.Log(" %s(%d,%d)", o.type.c_str(),
                                                     static_cast<int>(o.x), static_cast<int>(o.y));
                         ++nChest;
                     }
-                    if (nChest) { std::printf("  — 모두 %zu개\n", nChest); std::fflush(stdout); }
+                    if (nChest) { srv.Log("  — 모두 %zu개\n", nChest); std::fflush(stdout); }
                 }
                 if (noObstacles) {
-                    std::printf("[진단스위치] --no-obstacles — 장애물 %zu개를 싣지 않음(대조군)\n", obs.size());
+                    srv.Log("[진단스위치] --no-obstacles — 장애물 %zu개를 싣지 않음(대조군)\n", obs.size());
                     obs.clear();
                 }
                 srv.SetObstacles(std::move(obs));
@@ -1337,7 +1337,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         ++nR;
                     }
                     const nox::ThingInfo* rb = tdb.ByWire(nox::kItemWizardRobe);
-                    std::printf("[물건몸] 원 모양 반지름 %zu종 · 로브 %s %.0f\n", nR,
+                    srv.Log("[물건몸] 원 모양 반지름 %zu종 · 로브 %s %.0f\n", nR,
                                 rb ? (rb->shapeKind == 2 ? "원" : "원아님") : "없음", rb ? rb->radius : 0.0f);
                 }
                 // 소환수 몸 — 몬스터 종류 전부(원만)
@@ -1372,7 +1372,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         if (nFly < 12) names += " " + t2->name;
                         ++nFly;
                     }
-                    std::printf("[나는몬스터] AIRBORNE 몬스터 %zu종 —%s%s\n", nFly, names.c_str(), nFly > 12 ? " …" : "");
+                    srv.Log("[나는몬스터] AIRBORNE 몬스터 %zu종 —%s%s\n", nFly, names.c_str(), nFly > 12 ? " …" : "");
                 }
             }
             // ★ 2026-09-13 묶음 3-d — TRY_COLLIDE 가 찾을 것(맵 오브젝트 번호·extent·종류 · 종류별 충돌 함수 이름)
@@ -1410,12 +1410,12 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     const nox::ThingInfo* mt = tdb.ByWire(mw);
                     if (mt) {
                         srv.SetMagicType(mw, mt->hasSpeed ? mt->speed : 0, mt->mass, nox::ParseObjectFlags(mt->flagsRaw));
-                        std::printf("[날리기] Magic 종류 %u · SPEED %d · MASS %.1f\n", mw, mt->speed, mt->mass);
+                        srv.Log("[날리기] Magic 종류 %u · SPEED %d · MASS %.1f\n", mw, mt->speed, mt->mass);
                     }
                 }
-                std::printf("[충돌 함수] 종류 %zu개 · 맵 오브젝트 %zu개 —", nFn, refs.size());
-                for (const auto& kv : fnNames) std::printf(" %sx%d", kv.first.c_str(), kv.second);
-                std::printf("\n");
+                srv.Log("[충돌 함수] 종류 %zu개 · 맵 오브젝트 %zu개 —", nFn, refs.size());
+                for (const auto& kv : fnNames) srv.Log(" %sx%d", kv.first.c_str(), kv.second);
+                srv.Log("\n");
                 srv.SetMapObjects(std::move(refs));
             }
             // ★ 2026-09-13 묶음 3-a — 사람 애니 칸 수(PlayerDraw STAT). 맨손 공격이 끝나는 틱이 이 값이다.
@@ -1468,17 +1468,17 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                         else if (hasTok(t->classRaw, "DANGEROUS")) d = 3;
                         if (d) { srv.SetDangerType(static_cast<uint16_t>(w), d); ++dn[d]; }
                     }
-                    std::printf("[몬스터아종] 아종 비트 있는 몬스터 %zu · 불에 안 탐 %zu(%s) · 위험한 종류 불 %zu · 독구름 %zu · DANGEROUS %zu\n",
+                    srv.Log("[몬스터아종] 아종 비트 있는 몬스터 %zu · 불에 안 탐 %zu(%s) · 위험한 종류 불 %zu · 독구름 %zu · DANGEROUS %zu\n",
                                 nSub, nFireImm, fireImm.c_str(), dn[1], dn[2], dn[3]);
                 }
                 const nox::ThingInfo* lg = tdb.ByWire(tdb.WireByName("GiantLeech"));
-                std::printf("[몬스터애니] MonsterDraw 종류 %zu개 · GiantLeech 걷기(12) %d칸/붙듦 %d/되풀이 %d · 근접(1) %d칸/붙듦 %d\n",
+                srv.Log("[몬스터애니] MonsterDraw 종류 %zu개 · GiantLeech 걷기(12) %d칸/붙듦 %d/되풀이 %d · 근접(1) %d칸/붙듦 %d\n",
                             srv.MonsterAnimTypes(),
                             lg ? lg->monsterAnims[12].frames : -1, lg ? lg->monsterAnims[12].hold : -1, lg ? (int)lg->monsterAnims[12].loop : -1,
                             lg ? lg->monsterAnims[1].frames : -1, lg ? lg->monsterAnims[1].hold : -1);
                 // ★ 09-29 B7 — 비홀더 시전 애니(7 CAST_SPELL) — 시전은 이 애니가 쏘기 칸(monster.bin +216 = 4)에 닿을 때(`mobActionCast_5413B0`)
                 const nox::ThingInfo* bh = tdb.ByWire(tdb.WireByName("Beholder"));
-                std::printf("[몬스터애니] Beholder 시전(7) %d칸/붙듦 %d/되풀이 %d · 놀기(8) %d칸\n",
+                srv.Log("[몬스터애니] Beholder 시전(7) %d칸/붙듦 %d/되풀이 %d · 놀기(8) %d칸\n",
                             bh ? bh->monsterAnims[7].frames : -1, bh ? bh->monsterAnims[7].hold : -1, bh ? (int)bh->monsterAnims[7].loop : -1,
                             bh ? bh->monsterAnims[8].frames : -1);
                 // ★ 09-30 — 열셋의 근접(1)·쏘기(3)·죽어가기(9) 애니 — 근접은 때리는 칸(monster.bin +108)·쏘기는 쏘는 칸(+216)에서, 둘 다 애니가 끝나면 빠진다.
@@ -1487,27 +1487,27 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     int noDraw = 0, meleeOut = 0, shotOut = 0, loopAtk = 0;   // 되풀이 애니면 끝(+483)이 안 와 근접·쏘기가 안 빠진다
                     for (const auto& ms : nox::kMonsters) {
                         const nox::ThingInfo* t = tdb.ByWire(ms.wireType);
-                        if (!t || !t->hasMonsterDraw) { ++noDraw; std::printf("[몬스터칸] %s 표 없음\n", ms.name); continue; }
+                        if (!t || !t->hasMonsterDraw) { ++noDraw; srv.Log("[몬스터칸] %s 표 없음\n", ms.name); continue; }
                         const int hitF = nox::MonsterMeleeFrameOf(ms.wireType), shotF = nox::MonsterMissileFrameOf(ms.wireType);
                         const bool melee = nox::MeleeStrikeOf(ms.wireType).fn != nox::StrikeFn::None && ms.meleeRange > 0.0;
                         const bool shoot = ms.missileName != nullptr;
                         if (melee && hitF >= t->monsterAnims[1].frames) ++meleeOut;
                         if (shoot && shotF >= t->monsterAnims[3].frames) ++shotOut;
                         if ((melee && t->monsterAnims[1].loop) || (shoot && t->monsterAnims[3].loop)) ++loopAtk;
-                        std::printf("[몬스터칸] %-17s 근접(1) %2d칸/붙듦 %d/되풀이 %d%s · 쏘기(3) %2d칸/붙듦 %d/되풀이 %d%s · 죽어가기(9) %2d칸/붙듦 %d/되풀이 %d\n",
+                        srv.Log("[몬스터칸] %-17s 근접(1) %2d칸/붙듦 %d/되풀이 %d%s · 쏘기(3) %2d칸/붙듦 %d/되풀이 %d%s · 죽어가기(9) %2d칸/붙듦 %d/되풀이 %d\n",
                                     ms.name, t->monsterAnims[1].frames, t->monsterAnims[1].hold, (int)t->monsterAnims[1].loop,
                                     melee ? (" 때림칸 " + std::to_string(hitF)).c_str() : "",
                                     t->monsterAnims[3].frames, t->monsterAnims[3].hold, (int)t->monsterAnims[3].loop,
                                     shoot ? (" 쏨칸 " + std::to_string(shotF)).c_str() : "",
                                     t->monsterAnims[9].frames, t->monsterAnims[9].hold, (int)t->monsterAnims[9].loop);
                     }
-                    std::printf("[몬스터칸] 열셋 중 표 없음 %d · 때림칸이 칸 수 밖 %d · 쏨칸이 칸 수 밖 %d · 공격 애니가 되풀이 %d\n", noDraw, meleeOut, shotOut, loopAtk);
+                    srv.Log("[몬스터칸] 열셋 중 표 없음 %d · 때림칸이 칸 수 밖 %d · 쏨칸이 칸 수 밖 %d · 공격 애니가 되풀이 %d\n", noDraw, meleeOut, shotOut, loopAtk);
                 }
             }
             // ★ 09-23 2-a1 — 함성(46)·광전사(45) 애니 길이도 찍는다. 함성 애니가 끝나면 켜짐 값이 내려가 광전사·작살을 더는 안 막으므로
             //   「함성 지속 120 중 얼마 동안 막나」가 이 값으로 정해진다(플랜 v2 에서 미확인이던 것)
             //   ★ 3-a — 점프(3) 애니 길이 = 떠 있는 틱 수(칸 × (붙듦+1))
-            std::printf("[애니] 사람 STAT %d개 — 주먹 %d칸/붙듦 %d · 훅 %d칸/붙듦 %d · 함성(46) %d칸/붙듦 %d · 광전사(45) %d칸/붙듦 %d · 점프(3) %d칸/붙듦 %d\n",
+            srv.Log("[애니] 사람 STAT %d개 — 주먹 %d칸/붙듦 %d · 훅 %d칸/붙듦 %d · 함성(46) %d칸/붙듦 %d · 광전사(45) %d칸/붙듦 %d · 점프(3) %d칸/붙듦 %d\n",
                         tdb.PlayerAnimCount(),
                         tdb.PlayerAnim(23).frames, tdb.PlayerAnim(23).hold,
                         tdb.PlayerAnim(25).frames, tdb.PlayerAnim(25).hold,
@@ -1536,18 +1536,18 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     if (armor) ++armors;
                     for (int b = 0; b < 15; ++b) if (m & (1u << b)) { ++perBit[b]; if (armor) ++armorPerBit[b]; }
                 }
-                std::printf("[재질] MATERIAL 선언 %zu종 / %zu · NULL(재질 0) %zu · 못 읽은 이름 %zu%s —", declared, tdb.Count(), nullDecl,
+                srv.Log("[재질] MATERIAL 선언 %zu종 / %zu · NULL(재질 0) %zu · 못 읽은 이름 %zu%s —", declared, tdb.Count(), nullDecl,
                             unknown, unknownRaw.c_str());
-                for (int b = 0; b < 15; ++b) if (perBit[b]) std::printf(" %s %zu", kMat[b], perBit[b]);
-                std::printf(" · 갑옷 %zu종:", armors);
-                for (int b = 0; b < 15; ++b) if (armorPerBit[b]) std::printf(" %s %zu", kMat[b], armorPerBit[b]);
-                std::printf(" · 무기:");
+                for (int b = 0; b < 15; ++b) if (perBit[b]) srv.Log(" %s %zu", kMat[b], perBit[b]);
+                srv.Log(" · 갑옷 %zu종:", armors);
+                for (int b = 0; b < 15; ++b) if (armorPerBit[b]) srv.Log(" %s %zu", kMat[b], armorPerBit[b]);
+                srv.Log(" · 무기:");
                 for (const auto& wp : nox::kWeapons) {
                     const nox::ThingInfo* t2 = tdb.ByWire(tdb.WireByName(wp.name));
-                    std::printf(" %s=%s", wp.name, t2 ? (t2->materialRaw.empty() ? "(없음→NONE)" : t2->materialRaw.c_str()) : "?");
+                    srv.Log(" %s=%s", wp.name, t2 ? (t2->materialRaw.empty() ? "(없음→NONE)" : t2->materialRaw.c_str()) : "?");
                 }
                 const nox::ThingInfo* np = tdb.ByWire(tdb.WireByName("NewPlayer"));
-                std::printf(" · NewPlayer=%s\n", np ? (np->materialRaw.empty() ? "(없음→NONE)" : np->materialRaw.c_str()) : "?");
+                srv.Log(" · NewPlayer=%s\n", np ? (np->materialRaw.empty() ? "(없음→NONE)" : np->materialRaw.c_str()) : "?");
                 // ★ 4-c2 — 타격 소리 표: 와이어 번호별 재질 · 가슴갑옷(ARMOR + BREASTPLATE)인가 · 사람 몸(NewPlayer) 번호
                 std::vector<uint32_t> matByWire(static_cast<size_t>(tdb.Count()) + 1, 0u);
                 std::vector<uint8_t> breastByWire(static_cast<size_t>(tdb.Count()) + 1, 0);
@@ -1563,42 +1563,42 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 }
                 const uint16_t npWire = tdb.WireByName("NewPlayer");
                 // 직업 기본 장비 여섯이 무엇으로 읽히나 — 와이어 번호가 thing.bin 색인과 같다는 것도 같이 본다(이름 → 번호 대조)
-                std::printf("[타격소리표] 가슴갑옷 %zu종 · NewPlayer 번호 %u · 기본 장비:", nBreast, (unsigned)npWire);
+                srv.Log("[타격소리표] 가슴갑옷 %zu종 · NewPlayer 번호 %u · 기본 장비:", nBreast, (unsigned)npWire);
                 const std::pair<const char*, uint16_t> kLoad[] = {
                     { "StreetShirt", nox::kItemStreetShirt }, { "StreetPants", nox::kItemStreetPants },
                     { "StreetSneakers", nox::kItemStreetSneakers }, { "WizardRobe", nox::kItemWizardRobe },
                     { "WoodenShield", nox::kItemWoodenShield }, { "Longsword", nox::kItemLongsword } };
                 for (const auto& ld : kLoad) {
                     const uint16_t w = tdb.WireByName(ld.first);
-                    std::printf(" %s(번호 %u%s·재질 0x%x%s)", ld.first, (unsigned)w, w == ld.second ? "" : " ⚠표와다름",
+                    srv.Log(" %s(번호 %u%s·재질 0x%x%s)", ld.first, (unsigned)w, w == ld.second ? "" : " ⚠표와다름",
                                 w < matByWire.size() ? matByWire[w] : 0u, (w < breastByWire.size() && breastByWire[w]) ? "·가슴갑옷" : "");
                 }
                 // ★ 4-c3a — 부를 수 있는 소환수 열셋의 재질(맞으면 기본 타격 소리 `532E20` 가 이 재질로 간다 · 나무·돌·흙이면 부서지는 소리)
-                std::printf(" · 소환수:");
+                srv.Log(" · 소환수:");
                 for (const auto& ms : nox::kMonsters) {
                     const uint16_t w = tdb.WireByName(ms.name);
-                    std::printf(" %s=0x%x", ms.name, w < matByWire.size() ? matByWire[w] : 0u);
+                    srv.Log(" %s=0x%x", ms.name, w < matByWire.size() ? matByWire[w] : 0u);
                 }
                 // ★ 4-c3b2 — 날아가는 것·놓인 것·맵 불이 맞히면 이 재질이 「때린 것」이다. NONE(0x4000)이면 사람은 표에 조합이 없어 소리 없음 · 소환수는 거름
-                std::printf(" · 때린 물건:");
+                srv.Log(" · 때린 물건:");
                 for (const char* nm : { "HarpoonBolt", "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "MercArcherArrow", "Pixie",
                                         "ToxicCloud", "SmallFist", "MediumFist", "LargeFist", "MediumFlame", "FlameCleanse", "BlueFlameCleanse",
                                         "SmallFlameImmobile", "MediumFlameImmobile", "FlameImmobile" }) {
                     const uint16_t w = tdb.WireByName(nm);
-                    std::printf(" %s=%s0x%x", nm, w ? "" : "⚠없음 ", w < matByWire.size() ? matByWire[w] : 0u);
+                    srv.Log(" %s=%s0x%x", nm, w ? "" : "⚠없음 ", w < matByWire.size() ? matByWire[w] : 0u);
                 }
-                std::printf("\n");
+                srv.Log("\n");
                 srv.SetMaterialTables(std::move(matByWire), std::move(breastByWire), npWire);
             }
             if (!props.empty()) {
-                std::printf("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());
+                srv.Log("[다루는 것] 문·오벨리스크 %zu개 — 다가가면 열리고, 옆에 서면 마나가 찬다\n", props.size());
                 // ★ 2026-09-18 ② — **자리를 찍는다.** 무인 걷기가 「문 0」으로 끝났을 때
                 //   「문이 안 열리는 것」과 「문 근처에 못 간 것」을 못 가른다.
                 //   이 좌표를 `--spawn-at` 에 넣으면 문 앞에서 시작할 수 있다.
-                std::printf("[문 자리] 앞 6개 —");
+                srv.Log("[문 자리] 앞 6개 —");
                 for (size_t k = 0; k < props.size() && k < 6; ++k)
-                    std::printf(" (%d,%d)", static_cast<int>(props[k].x), static_cast<int>(props[k].y));
-                std::printf("\n");
+                    srv.Log(" (%d,%d)", static_cast<int>(props[k].x), static_cast<int>(props[k].y));
+                srv.Log("\n");
                 // ★ 09-22 — **문 자리에 벽 칸이 있나.** 정답지 `Sub_57B500` 은 충돌에서 문을 무시하고(0x10 미설정)
                 //   추적에서는 열렸으면 통과시킨다. 그 갈래를 우리도 만들지 정하려고 **먼저 셌다.**
                 //   ⭕ Estate 실측 — 문 6개 중 **그 칸에 벽은 1개**, 둘레 한 칸까지는 6개.
@@ -1619,13 +1619,13 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                                 if (srv.DebugWallDirAt(cx + dx, cy + dy) >= 0) n = true;
                         if (n) ++near1;
                     }
-                    std::printf("[문·벽] 문 %zu개 중 **그 칸에 벽 %zu개 · 둘레 한 칸까지 %zu개**\n", nDoor, onWall, near1);
+                    srv.Log("[문·벽] 문 %zu개 중 **그 칸에 벽 %zu개 · 둘레 한 칸까지 %zu개**\n", nDoor, onWall, near1);
                 }
                 // ⑩ — 정적 조회(윗비트)를 쓰는 것이 몇이나 되나. **0 이면 뭔가 틀린 것**이다
                 {
                     size_t nStat = 0;
                     for (const auto& w : props) if (w.staticLookup) ++nStat;
-                    std::printf("[판·문 조회] 정적(윗비트) %zu개 / 모두 %zu개\n", nStat, props.size());
+                    srv.Log("[판·문 조회] 정적(윗비트) %zu개 / 모두 %zu개\n", nStat, props.size());
                 }
                 // ★ ④⑩ — **밟는 판**만 따로 찍는다. 그 위를 왕복해야 보는 항목이라
                 //   `--spawn-at` 에 넣을 좌표가 필요하다(문 자리에 섞이면 못 고른다).
@@ -1633,32 +1633,32 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     size_t nPlate = 0;
                     for (const auto& w : props) {
                         if (w.kind != nox::PropKind::Plate) continue;
-                        if (nPlate == 0) std::printf("[밟는 판 자리]");
-                        if (nPlate < 8) std::printf(" (%d,%d 번호%u)", static_cast<int>(w.x), static_cast<int>(w.y),
+                        if (nPlate == 0) srv.Log("[밟는 판 자리]");
+                        if (nPlate < 8) srv.Log(" (%d,%d 번호%u)", static_cast<int>(w.x), static_cast<int>(w.y),
                                                     static_cast<unsigned>(w.netCode));
                         ++nPlate;
                     }
-                    if (nPlate) std::printf("  — 모두 %zu개\n", nPlate);
+                    if (nPlate) srv.Log("  — 모두 %zu개\n", nPlate);
                 }
                 // ⑩ — 번호가 15비트를 넘으면 클라 정적 조회로 못 가리킨다. **0 이 아니면 알린다**
                 if (propExtentTooBig)
-                    std::printf("[판·문 번호] ⚠ extent 가 15비트를 넘는 것 %zu개 — 그것들은 클라가 못 찾는다\n",
+                    srv.Log("[판·문 번호] ⚠ extent 가 15비트를 넘는 것 %zu개 — 그것들은 클라가 못 찾는다\n",
                                 propExtentTooBig);
-                std::printf("[문 잠김] 문 %zu개 중 잠긴 것 %zu개 · 못 읽음 %zu — 종류 안잠김 %zu · 은 %zu · 금 %zu · 루비 %zu · 사파이어 %zu · 장치 %zu · 그밖 %zu\n",
+                srv.Log("[문 잠김] 문 %zu개 중 잠긴 것 %zu개 · 못 읽음 %zu — 종류 안잠김 %zu · 은 %zu · 금 %zu · 루비 %zu · 사파이어 %zu · 장치 %zu · 그밖 %zu\n",
                             doorsSeen, doorsLocked, doorsUnread, doorLockKinds[0], doorLockKinds[1], doorLockKinds[2],
                             doorLockKinds[3], doorLockKinds[4], doorLockKinds[5], doorLockKinds[6]);   // ★ 09-29 Z1-A
-                std::printf("[문 짐] 사이 자료 낀 문 %zu · 팀 있는 문 %zu · 각도 31 넘음 %zu · 옛 읽기와 각도 다름 %zu · 짐 끝 어긋남 %zu · 지금 각도≠닫힘 각도 %zu\n",
+                srv.Log("[문 짐] 사이 자료 낀 문 %zu · 팀 있는 문 %zu · 각도 31 넘음 %zu · 옛 읽기와 각도 다름 %zu · 짐 끝 어긋남 %zu · 지금 각도≠닫힘 각도 %zu\n",
                             doorsExtra, doorsTeam, doorsAngleBad, doorsAngleFixed, doorsRestOdd, doorsClosedDiff);
                 srv.SetWorldProps(std::move(props));
                 // ★ 09-22 묶음 9 — 문을 **제 칸의 벽으로** 붙인다(정답지 `doorAttachWall`).
                 //   벽과 문이 **둘 다 들어온 뒤**에 불러야 한다
                 if (!getenv("NOX_NO_DOOR_WALLS")) srv.AttachDoorWalls();   // A/B 스위치(09-22)
-                std::printf("[문·벽] 문짝 가운데 칸에 벽을 붙였다 — 닫힌 문이 걸음을 막는다(밀어내기는 안 한다) · 옛 식(경첩 칸)과 칸이 다른 문 %zu(옛 칸에 맵 벽 %zu · 새 칸에 맵 벽 %zu)\n",
+                srv.Log("[문·벽] 문짝 가운데 칸에 벽을 붙였다 — 닫힌 문이 걸음을 막는다(밀어내기는 안 한다) · 옛 식(경첩 칸)과 칸이 다른 문 %zu(옛 칸에 맵 벽 %zu · 새 칸에 맵 벽 %zu)\n",
                             srv.DoorCellDiff(), srv.DoorCellOldHadWall(), srv.DoorCellNewHadWall());
                 // ★ 09-29 Z1-A — 열쇠 종류(잠김 1~4)의 와이어 번호(`DoorCheckKey` 는 이름으로 견준다)
                 srv.SetKeyTypes(tdb.WireByName("SilverKey"), tdb.WireByName("GoldKey"),
                                 tdb.WireByName("RubyKey"), tdb.WireByName("SapphireKey"));
-                std::printf("[열쇠] 은 %u · 금 %u · 루비 %u · 사파이어 %u(와이어 번호 — 0 이면 못 찾음)\n",
+                srv.Log("[열쇠] 은 %u · 금 %u · 루비 %u · 사파이어 %u(와이어 번호 — 0 이면 못 찾음)\n",
                             (unsigned)tdb.WireByName("SilverKey"), (unsigned)tdb.WireByName("GoldKey"),
                             (unsigned)tdb.WireByName("RubyKey"), (unsigned)tdb.WireByName("SapphireKey"));
             }
@@ -1681,7 +1681,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     //   음소 나무를 못 따라가면 시전이 「모름」으로 끝난다(`Server.cpp:4731`).
                     //   컨저러 주먹(29)이 「받음 7 · 주문 0」 으로 끝난 까닭 후보다.
                     if (sr.phonemes.empty()) {
-                        std::printf("[주문 음소없음] %d(%s)\n", id, nm2);
+                        srv.Log("[주문 음소없음] %d(%s)\n", id, nm2);
                     }
                     break;
                 }
@@ -1705,24 +1705,24 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                     break;
                 }
             }
-            std::printf("[능력 소리] thing.bin ABIL %zu칸 · 다섯 중 %d개에 쓸 때 소리가 붙었다\n",
+            srv.Log("[능력 소리] thing.bin ABIL %zu칸 · 다섯 중 %d개에 쓸 때 소리가 붙었다\n",
                         tdb.Abilities().size(), wired);
         }
-        std::printf("[맵] %s — 벽 %zu칸 · 정적 %zu개(변환 실패 %zu) · 충돌 켜짐\n",
+        srv.Log("[맵] %s — 벽 %zu칸 · 정적 %zu개(변환 실패 %zu) · 충돌 켜짐\n",
                     mapPath.c_str(), ws.size(), nStat, nSkip);
-        std::printf("[주문] 마나 표 %zu개 — 0 이면 thing.bin 을 못 읽은 것이고 주문이 공짜가 된다\n",
+        srv.Log("[주문] 마나 표 %zu개 — 0 이면 thing.bin 을 못 읽은 것이고 주문이 공짜가 된다\n",
                     srv.SpellCostCount());
         // ★ 09-29 B7 — 비홀더가 쥐는 주문 둘의 깃발(몬스터가 고르는 조건 0x10 · 겨눔 0x4 · 공격 0x20 · 지속 — `castSpell` 갈래)
-        std::printf("[주문] 깃발 — 24(전기 광선) 0x%x · 4(점멸) 0x%x\n", srv.SpellFlags(24), srv.SpellFlags(4));
+        srv.Log("[주문] 깃발 — 24(전기 광선) 0x%x · 4(점멸) 0x%x\n", srv.SpellFlags(24), srv.SpellFlags(4));
         // ★ 2026-09-14 묶음 4-a4 — gamedata.bin(기획 상수 · 버프 길이 등). 태그 ARENA
         {
             nox::Gamedata gd;
             if (gd.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\gamedata.bin")) {
                 srv.SetGamedata(gd);
-                std::printf("[기획값] gamedata.bin %zu개 · ARENA TargetedSpellLifetime %.0f · InvulnerabilityEnchantDuration %.0f\n",
+                srv.Log("[기획값] gamedata.bin %zu개 · ARENA TargetedSpellLifetime %.0f · InvulnerabilityEnchantDuration %.0f\n",
                             gd.Count(), gd.Float("ARENA", "TargetedSpellLifetime"), gd.Float("ARENA", "InvulnerabilityEnchantDuration"));
             } else {
-                std::printf("[기획값] ⚠ gamedata.bin 못 읽음 — %s\n", gd.Error().c_str());
+                srv.Log("[기획값] ⚠ gamedata.bin 못 읽음 — %s\n", gd.Error().c_str());
             }
         }
         // ★ 09-23 nine-defects 2-a3 — **반주문 재료.** ① 지워지는 날아가는 것 = 클래스 `MISSILE` · 서브클래스 `MISSILE_COUNTERSPELL`
@@ -1756,7 +1756,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 ++nSp;
                 spells += " "; spells += nox::SpellName(id);
             }
-            std::printf("[반주문] 둘레 %.0f · 지워지는 날아가는 것 %zu종(앞 8:%s) · 끄는 주문 %d개 —%s\n",
+            srv.Log("[반주문] 둘레 %.0f · 지워지는 날아가는 것 %zu종(앞 8:%s) · 끄는 주문 %d개 —%s\n",
                         srv.BalanceFloat("CounterspellRange"), srv.CounterMissileTypeCount(), mis.c_str(), nSp, spells.c_str());
             // ★ 2-a4 — 주문 쓰는 몬스터(monster.bin `CAN_CAST_SPELLS`, `GameBalance.h` 표) → 와이어 번호. 함성 무효화가 이것만 본다
             int nCast = 0;
@@ -1766,7 +1766,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 if (w) { srv.SetCastingMonsterType(w); ++nCast; }
                 else { miss += " "; miss += nm; }
             }
-            std::printf("[주문쓰는몬스터] %d / %zu종%s%s\n", nCast, sizeof(nox::kMonstersCanCastSpells) / sizeof(nox::kMonstersCanCastSpells[0]),
+            srv.Log("[주문쓰는몬스터] %d / %zu종%s%s\n", nCast, sizeof(nox::kMonstersCanCastSpells) / sizeof(nox::kMonstersCanCastSpells[0]),
                         miss.empty() ? "" : " · ⚠ thing.bin 에 없음:", miss.c_str());
         }
         // ★★ 2026-09-15 — **모드 깃발을 서버에 실제로 걸어 준다.**
@@ -1778,38 +1778,38 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
         {
             const uint32_t gf = nox::ModeGameFlags(mode);
             srv.SetGameFlags(gf);
-            std::printf("[모드] %s — gameFlags 0x%05X (클라에 가는 값 0x%05X)\n",
+            srv.Log("[모드] %s — gameFlags 0x%05X (클라에 가는 값 0x%05X)\n",
                         mode.c_str(), gf, gf & 0x7FFF0u);
         }
         // ★ 아이템이 아니라 걸러진 것 — **맵에 무엇이 있는지 한 번은 봐야 한다.**
         //   문·오벨리스크·레버가 여기 있으면 그것이 다음에 살릴 것이다.
         // ★ 아이템인데 클라가 못 집는 것 — 있으면 이름을 찍는다(조용히 버리지 않는다)
         if (!noWeight.empty()) {
-            std::printf("[집기 불가] CLASS 는 아이템인데 WEIGHT 가 없어 뺀 것 —");
-            for (const auto& kv : noWeight) std::printf(" %sx%d", kv.first.c_str(), kv.second);
-            std::printf("\n");
+            srv.Log("[집기 불가] CLASS 는 아이템인데 WEIGHT 가 없어 뺀 것 —");
+            for (const auto& kv : noWeight) srv.Log(" %sx%d", kv.first.c_str(), kv.second);
+            srv.Log("\n");
         }
         // ★ 09-28 — 버린 물건 10초 사라짐의 예외가 맵 물건에 몇 개씩 붙었나(합 = 바닥 물건 수)
-        std::printf("[바닥물건 사라짐] 10초 규칙 걸림 %zu · 10초 예외(RESPAWN %zu · FLAG %zu · Glyph %zu) / %zu"
+        srv.Log("[바닥물건 사라짐] 10초 규칙 걸림 %zu · 10초 예외(RESPAWN %zu · FLAG %zu · Glyph %zu) / %zu"
                     " · 버리기 함수: 기본 %zu · 갑옷무기 %zu · 물약 %zu · 음식 %zu · 안옮김 %zu\n",
                     decayExemptKinds[0], decayExemptKinds[1], decayExemptKinds[2], decayExemptKinds[3], nStat,
                     dropFnKinds[0], dropFnKinds[1], dropFnKinds[2], dropFnKinds[3], dropFnKinds[4]);
-        std::printf("[화살통] 맵 짐 읽음 %zu · 못 읽음 %zu(0/0 으로 둠) · 화살 합 %zu · 최대 합 %zu · 짐 뒤 남은 바이트 합 %zu\n", ammoRead, ammoBad, ammoSum, ammoMaxSum, ammoRest);
+        srv.Log("[화살통] 맵 짐 읽음 %zu · 못 읽음 %zu(0/0 으로 둠) · 화살 합 %zu · 최대 합 %zu · 짐 뒤 남은 바이트 합 %zu\n", ammoRead, ammoBad, ammoSum, ammoMaxSum, ammoRest);
         if (!notPickup.empty()) {
             size_t total = 0;
             for (const auto& kv : notPickup) total += static_cast<size_t>(kv.second);
-            std::printf("[맵 밖] 아이템 아닌 것 %zu개 / %zu종 —", total, notPickup.size());
-            for (const auto& kv : notPickup) std::printf(" %sx%d", kv.first.c_str(), kv.second);
-            std::printf("\n");
+            srv.Log("[맵 밖] 아이템 아닌 것 %zu개 / %zu종 —", total, notPickup.size());
+            for (const auto& kv : notPickup) srv.Log(" %sx%d", kv.first.c_str(), kv.second);
+            srv.Log("\n");
         }
         // ★ 2026-09-18 ④⑯ — **맵에 그려진 판 물건의 자리**를 찍는다.
         //   우리 서버는 맵의 깃발을 **안 읽고** 제 자리에 놓으므로, 그림과 실물이
         //   얼마나 어긋나는지 보려면 **맵 쪽 좌표**가 있어야 한다.
         //   (확인표 ⑯ 은 「맵 깃발 4개」라고 적고 있었는데 실측은 2개였다 — 09-18 정정)
         if (!mapMatchObjs.empty()) {
-            std::printf("[맵 판물건] %zu개 —", mapMatchObjs.size());
-            for (const auto& t : mapMatchObjs) std::printf(" %s", t.c_str());
-            std::printf("\n");
+            srv.Log("[맵 판물건] %zu개 —", mapMatchObjs.size());
+            for (const auto& t : mapMatchObjs) srv.Log(" %s", t.c_str());
+            srv.Log("\n");
         }
         if (standalone) {
             std::string nm = mapPath;
@@ -1822,7 +1822,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
             const size_t dot2 = bare.find('.');
             if (dot2 != std::string::npos) bare.resize(dot2);
             if (!bare.empty() && bare.size() < 9) out.lanMapName = bare;   // ★ 10-12 작업 7a — 틀에 넣는 것은 프로세스 몫
-            std::printf("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)\n",
+            srv.Log("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)\n",
                         nm.c_str(), mf.Crc());
         }
         // ★★★★ **여기가 깨져 있었다** (2026-09-11 발견·수리).
@@ -1834,7 +1834,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
         //     본 것이 값을 했다.
         if (aoi) {
             srv.SetAoi(true);
-            std::printf("[시야] 정적 오브젝트를 반경 %d 안만 갱신에 실음\n",
+            srv.Log("[시야] 정적 오브젝트를 반경 %d 안만 갱신에 실음\n",
                         static_cast<int>(nox::kAoiRadius));
         }
         // ★ 켠 스위치를 찍는다 — 위 「여기가 깨져 있었다」 주석의 교훈.
@@ -1842,84 +1842,84 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
             const double hx = creatureAoiHalf < 0.0 ? 740.0 : creatureAoiHalf;
             const double hy = creatureAoiHalf < 0.0 ? 580.0 : creatureAoiHalf;
             srv.SetCreatureAoi(hx, hy);
-            std::printf("[크리처시야] 켬 — 들어옴 ±%d×±%d · 나감 ±%d×±%d (시야선 없음, 거리만)\n",
+            srv.Log("[크리처시야] 켬 — 들어옴 ±%d×±%d · 나감 ±%d×±%d (시야선 없음, 거리만)\n",
                         static_cast<int>(hx), static_cast<int>(hy),
                         static_cast<int>(hx * 1.2), static_cast<int>(hy * 1.2));
             std::fflush(stdout);
         }
         if (friends) {
             srv.SetFriends(true);
-            std::printf("[친구] 켬 — 자기 소환수·같은 팀을 OBJECT_FRIEND_ADD 로 알림 (적대 판정 부분 구현)\n");
+            srv.Log("[친구] 켬 — 자기 소환수·같은 팀을 OBJECT_FRIEND_ADD 로 알림 (적대 판정 부분 구현)\n");
             std::fflush(stdout);
         }
         if (autoRespawn) {
             srv.SetAutoRespawn(true);
-            std::printf("[설정] 자동 부활 켬 — 죽고 45틱 뒤 클릭 없이 살아난다\n");
+            srv.Log("[설정] 자동 부활 켬 — 죽고 45틱 뒤 클릭 없이 살아난다\n");
         }
         if (debugHurtEvery > 0) {
             srv.SetDebugHurtEvery(static_cast<uint32_t>(debugHurtEvery), debugHurtFront);
-            std::printf("[진단스위치] %d 틱마다 첫 사람에게 피해 25(종류 0 · 주인 없음)%s\n", debugHurtEvery,
+            srv.Log("[진단스위치] %d 틱마다 첫 사람에게 피해 25(종류 0 · 주인 없음)%s\n", debugHurtEvery,
                         debugHurtFront ? " · 앞 30 에서" : "");
         }
         if (debugEnchantB >= 0) {
             srv.SetDebugEnchant(debugEnchantB, debugEnchantP, static_cast<uint32_t>(debugEnchantN));
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 버프 %d(세기 %d) 끝없이\n", debugEnchantN, debugEnchantB, debugEnchantP);
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 버프 %d(세기 %d) 끝없이\n", debugEnchantN, debugEnchantB, debugEnchantP);
         }
         if (debugDummy > 0) {
             srv.SetDebugDummyAfter(static_cast<uint32_t>(debugDummy));
             srv.SetDebugDummyDx(debugDummyDx);
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주인 없는 임프 허수아비를 오른쪽 +%d 에 고정\n", debugDummy, debugDummyDx);
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주인 없는 임프 허수아비를 오른쪽 +%d 에 고정\n", debugDummy, debugDummyDx);
         }
         if (debugOwnPet > 0) {
             srv.SetDebugOwnPetAfter(static_cast<uint32_t>(debugOwnPet));
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 소유 임프를 사람 자리에 고정\n", debugOwnPet);
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 소유 임프를 사람 자리에 고정\n", debugOwnPet);
             std::fflush(stdout);
         }
         if (debugPetOrder > 0) {
             srv.SetDebugPetOrder(static_cast<uint8_t>(debugPetOrder));
-            std::printf("[진단스위치] 소환수에게 명령 %d 를 준다(2가만히·3지켜·4따라와·5사냥)\n", debugPetOrder);
+            srv.Log("[진단스위치] 소환수에게 명령 %d 를 준다(2가만히·3지켜·4따라와·5사냥)\n", debugPetOrder);
             std::fflush(stdout);
         }
         if (debugKillAfter > 0) {
             srv.SetDebugKill(static_cast<uint32_t>(debugKillAfter));
-            std::printf("[진단스위치] %d 틱 뒤 첫 사람이 둘째를 죽인다\n", debugKillAfter);
+            srv.Log("[진단스위치] %d 틱 뒤 첫 사람이 둘째를 죽인다\n", debugKillAfter);
         }
         if (debugFistAfter > 0) {
             srv.SetDebugFist(static_cast<uint32_t>(debugFistAfter), debugFistDx, debugFistDy);
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주먹을 그 사람 +(%d,%d) 에 떨어뜨린다\n",
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주먹을 그 사람 +(%d,%d) 에 떨어뜨린다\n",
                         debugFistAfter, debugFistDx, debugFistDy);
             std::fflush(stdout);
         }
         if (debugMobAfter > 0 && debugMobType > 0) {
             srv.SetDebugMob(static_cast<uint32_t>(debugMobAfter), static_cast<uint16_t>(debugMobType),
                             debugMobX, debugMobY);
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 몬스터 %d 를 %d,%d 에 세운다\n",
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 몬스터 %d 를 %d,%d 에 세운다\n",
                         debugMobAfter, debugMobType, debugMobX, debugMobY);
             std::fflush(stdout);
         }
         if (debugWallAfter > 0) {
             srv.SetDebugWall(static_cast<uint32_t>(debugWallAfter), debugWallGx, debugWallGy);
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 비밀벽 칸 %d,%d 을 연다\n",
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 비밀벽 칸 %d,%d 을 연다\n",
                         debugWallAfter, debugWallGx, debugWallGy);
             std::fflush(stdout);
         }
         if (debugWarpAfter > 0) {
             srv.SetDebugWarp(static_cast<uint32_t>(debugWarpAfter), debugWarpX, debugWarpY);
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 %d,%d 로 옮긴다\n",
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 %d,%d 로 옮긴다\n",
                         debugWarpAfter, debugWarpX, debugWarpY);
             std::fflush(stdout);
         }
         if (debugScoreAfter > 0) {
             srv.SetDebugScore(static_cast<uint32_t>(debugScoreAfter), static_cast<uint32_t>(debugScoreVal));
-            std::printf("[진단스위치] %d 틱 뒤 첫 사람 점수를 %d 로\n", debugScoreAfter, debugScoreVal);
+            srv.Log("[진단스위치] %d 틱 뒤 첫 사람 점수를 %d 로\n", debugScoreAfter, debugScoreVal);
         }
         if (debugTeamEvery > 0) {
             srv.SetDebugTeamEvery(static_cast<uint32_t>(debugTeamEvery));
-            std::printf("[진단스위치] %d 틱마다 첫 사람의 팀을 1<->2 로 오감\n", debugTeamEvery);
+            srv.Log("[진단스위치] %d 틱마다 첫 사람의 팀을 1<->2 로 오감\n", debugTeamEvery);
         }
         if (debugTeamAfter > 0) {
             srv.SetDebugTeamAfter(static_cast<uint32_t>(debugTeamAfter));
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 팀을 한 번 바꿈\n", debugTeamAfter);
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 그 사람 팀을 한 번 바꿈\n", debugTeamAfter);
             std::fflush(stdout);
         }
         if (spawnAtX >= 0 && spawnAtY >= 0) {
@@ -1929,14 +1929,14 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
             // ★ ①.5 — **걸을 수 있는 자리인지 같이 찍는다.** 09-16 에 발판 무리 한가운데를
             //   `CanStand` 확인 없이 골랐다가 「못 움직인다」를 불렀다. 값이 안 보이면 또 그런다.
             const bool standOk = srv.CanStand(spawnAtX, spawnAtY, nox::kPlayerRadius);
-            std::printf("[시작 자리] 손으로 지정 — (%d, %d) · 부활도 같은 자리 · 설 수 있나 %s\n",
+            srv.Log("[시작 자리] 손으로 지정 — (%d, %d) · 부활도 같은 자리 · 설 수 있나 %s\n",
                         spawnAtX, spawnAtY, standOk ? "예" : "**아니오**");
             std::fflush(stdout);
         }
         for (size_t bi = 0; bi < bots.size(); ++bi) {
             // ★ 10-12 작업 7a — 봇은 통신 층 세션이 있어야 선다. 세션을 여는 함수가 없으면(통신 스레드가 이미 도는 뒤에 차리는 방) 안 세운다
             if (!openSession) {
-                std::printf("[진단스위치] 봇은 서버가 켜질 때 차린 방에만 선다 — 안 세움\n");
+                srv.Log("[진단스위치] 봇은 서버가 켜질 때 차린 방에만 선다 — 안 세움\n");
                 std::fflush(stdout);
                 break;
             }
@@ -1946,7 +1946,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 nox::PlanBot(bi, bots[bi].x, bots[bi].y, srv.PlayerStartCount());
             if (!plan.place) {
                 if (bots[bi].x == 0 && bots[bi].y == 0) {
-                    std::printf("[진단스위치] 봇 자리 자동 — 이 맵엔 PlayerStart 가 없다. 봇 안 세움\n");
+                    srv.Log("[진단스위치] 봇 자리 자동 — 이 맵엔 PlayerStart 가 없다. 봇 안 세움\n");
                     std::fflush(stdout);
                 }
                 continue;
@@ -1967,36 +1967,36 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
             srv.DebugMoveTo(botSid, bx, by);
             srv.DebugSetPos(botSid, bx, by);
             srv.DebugSetTeam(botSid, plan.team);
-            std::printf("[진단스위치] 가짜 사람 세움 — (%d, %d) · 직업 %s · 번호 %u · 편 %d\n",
+            srv.Log("[진단스위치] 가짜 사람 세움 — (%d, %d) · 직업 %s · 번호 %u · 편 %d\n",
                         bx, by, bots[bi].cls.c_str(), (unsigned)plan.netCode, (int)plan.team);
             std::fflush(stdout);
         }
         if (debugXpAfter > 0) {
             srv.SetDebugXpAfter(static_cast<uint32_t>(debugXpAfter), static_cast<float>(debugXpAmount));
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 경험치 %.0f 한 번\n", debugXpAfter, debugXpAmount);
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 경험치 %.0f 한 번\n", debugXpAfter, debugXpAmount);
             std::fflush(stdout);
         }
         if (debugSpellAfter > 0 && debugSpellId > 0) {
             srv.SetDebugGiveSpellAfter(static_cast<uint32_t>(debugSpellAfter),
                                        static_cast<uint8_t>(debugSpellId));
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주문 %d(%s) 한 번\n", debugSpellAfter,
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 주문 %d(%s) 한 번\n", debugSpellAfter,
                         debugSpellId, nox::SpellName(static_cast<uint8_t>(debugSpellId)));
             std::fflush(stdout);
         }
         if (debugConjurerGuides) {
             srv.SetDebugConjurerGuides(true);
-            std::printf("[진단스위치] 들어온 컨저러에게 60틱 뒤 안내서 넷(1 박쥐·7·8 흰거미·24 거미)\n");
+            srv.Log("[진단스위치] 들어온 컨저러에게 60틱 뒤 안내서 넷(1 박쥐·7·8 흰거미·24 거미)\n");
             std::fflush(stdout);
         }
         if (creatureAwayAfter > 0) {
             srv.SetDebugCreatureAwayAfter(static_cast<uint32_t>(creatureAwayAfter));
-            std::printf("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 크리처를 좌우 ±300 으로 옮김\n", creatureAwayAfter);
+            srv.Log("[진단스위치] 첫 사람 들어오고 %d 틱 뒤 크리처를 좌우 ±300 으로 옮김\n", creatureAwayAfter);
             std::fflush(stdout);
         }
         if (spellStart) srv.SetNoSpellStart(false);
         // ★ 켠 스위치를 찍는다. 안 찍으면 「줬는데 안 먹었다」를 못 가른다.
         if (forcePose >= 0 || forceDir >= 0 || startHealth > 0) {
-            std::printf("[진단스위치] 자세=%d · 방향=%d · 시작체력=%d\n",
+            srv.Log("[진단스위치] 자세=%d · 방향=%d · 시작체력=%d\n",
                         forcePose, forceDir, startHealth);
             std::fflush(stdout);
         }
@@ -2004,25 +2004,25 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
         if (forceDir  >= 0) srv.SetForceAnimDir(forceDir);
         if (forceArrowFrame >= 0) {
             srv.SetForceArrowFrame(forceArrowFrame);
-            std::printf("[진단] 화살 프레임을 %d 로 못 박는다\n", forceArrowFrame);
+            srv.Log("[진단] 화살 프레임을 %d 로 못 박는다\n", forceArrowFrame);
         }
         if (forceHarpoon) srv.SetForceHarpoon(true);
         if (dumpHarpoon) srv.SetDumpHarpoon(true);
         if (secondNewPlayer) {
             srv.SetNoSecondNewPlayer(false);
-            std::printf("[진단] 옛 동작 — 관전 풀 때 2d NEW_PLAYER 를 다시 보낸다 (--2nd-newplayer)\n");
+            srv.Log("[진단] 옛 동작 — 관전 풀 때 2d NEW_PLAYER 를 다시 보낸다 (--2nd-newplayer)\n");
         }
         if (noSecondNewPlayer) {
             srv.SetNoSecondNewPlayer(true);
-            std::printf("[진단] 관전 풀 때 2d NEW_PLAYER 를 다시 안 보낸다 (--no-2nd-newplayer)\n");
+            srv.Log("[진단] 관전 풀 때 2d NEW_PLAYER 를 다시 안 보낸다 (--no-2nd-newplayer)\n");
         }
         if (arrowFreeze) {
             srv.SetArrowFreeze(true);
-            std::printf("[진단] 화살을 난 자리에 세워 둔다 (--arrow-freeze)\n");
+            srv.Log("[진단] 화살을 난 자리에 세워 둔다 (--arrow-freeze)\n");
         }
         if (arrowFrameAlt > 0) {
             srv.SetArrowFrameAlt(arrowFrameAlt);
-            std::printf("[진단] 화살 프레임을 %d 틱마다 0↔16 으로 번갈아 보낸다\n", arrowFrameAlt);
+            srv.Log("[진단] 화살 프레임을 %d 틱마다 0↔16 으로 번갈아 보낸다\n", arrowFrameAlt);
         }
         if (startHealth > 0) srv.SetStartHealth(startHealth);
         if (startMana > 0) srv.SetStartMana(startMana);
@@ -2030,10 +2030,10 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
             // 스폰 자리를 아이템 자리로. 걷기를 빼고 **조작만** 재려는 것이다.
             // ⚠ **아이템을 옮기는 것이 아니다** — 클라가 맵대로 만든 실체와 어긋난다.
             if (srv.DebugSpawnAtStatic())
-                std::printf("[시험] 스폰 자리를 아이템 자리(%d,%d)로 옮겼다 — 걷지 않고 줍기 조작을 잰다\n",
+                srv.Log("[시험] 스폰 자리를 아이템 자리(%d,%d)로 옮겼다 — 걷지 않고 줍기 조작을 잰다\n",
                             srv.spawnX(), srv.spawnY());
             else
-                std::printf("[시험] ⚠ 아이템이 없다 — 스윕이 무효다\n");
+                srv.Log("[시험] ⚠ 아이템이 없다 — 스윕이 무효다\n");
         }
     }
     // ★ 10-12 작업 7a — 이 자리에 있던 서버 찾기 답의 틀 넣기(`SetInfoTemplate`)는 프로세스 몫이라 `ConfigureNetwork` 로 옮겼다.
@@ -2069,7 +2069,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 if (mlen > 0 && mlen < 9) {
                     // ★ 10-12 작업 7a — 틀을 다시 만들어 넣는 것은 프로세스 몫(`ConfigureNetwork`)이 한 번에 한다
                     out.lanMapName.assign(mn, mlen);
-                    std::printf("소개 맵 이름을 서두에 맞춤: %s\n", out.lanMapName.c_str());
+                    srv.Log("소개 맵 이름을 서두에 맞춤: %s\n", out.lanMapName.c_str());
                 }
             }
             srv.SetPostMap(setup.postMap);
@@ -2088,23 +2088,23 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 std::vector<std::vector<uint8_t>> pre = setup.mirror;
                 if (pre.size() > 9) pre.resize(9);
                 srv.SetMirror(pre);
-                std::printf("서두 %zu개를 흘려보낸 뒤 내 생성으로 이어받는다\n", pre.size());
+                srv.Log("서두 %zu개를 흘려보낸 뒤 내 생성으로 이어받는다\n", pre.size());
             }
             if (mirror) {
                 std::vector<std::vector<uint8_t>> m = setup.mirror;
                 if (mirrorLimit > 0 && static_cast<size_t>(mirrorLimit) < m.size())
                     m.resize(static_cast<size_t>(mirrorLimit));
-                MirrorStat(m);
+                MirrorStat(srv, m);
                 srv.SetMirror(m);
             }
-            std::printf("덤프에서 뽑음 — 접속 묶음 %zu바이트 · 맵 지정 %zu바이트 · 뒤따르는 것 %zu개\n",
+            srv.Log("덤프에서 뽑음 — 접속 묶음 %zu바이트 · 맵 지정 %zu바이트 · 뒤따르는 것 %zu개\n",
                         setup.joinBody.size(), setup.useMapBody.size(), setup.postMap.size());
         } else if (standalone) {
-            std::printf("[독립 모드] 녹음 서두를 안 읽는다 — 접속 묶음·맵 지정·스냅샷 전부 조립\n");
+            srv.Log("[독립 모드] 녹음 서두를 안 읽는다 — 접속 묶음·맵 지정·스냅샷 전부 조립\n");
         } else {
-            std::printf("[경고] 접속 묶음·맵 지정을 못 얻었다. 클라는 접속만 되고 게임에 못 들어간다.\n");
-            std::printf("  찾아본 덤프: %s\n", dumpPath.empty() ? "(없음)" : dumpPath.c_str());
-            std::printf("  --dump <서버쪽 덤프> 로 지정할 것\n");
+            srv.Log("[경고] 접속 묶음·맵 지정을 못 얻었다. 클라는 접속만 되고 게임에 못 들어간다.\n");
+            srv.Log("  찾아본 덤프: %s\n", dumpPath.empty() ? "(없음)" : dumpPath.c_str());
+            srv.Log("  --dump <서버쪽 덤프> 로 지정할 것\n");
         }
         // ── 서두와 무관한 일반 설정 — 독립 모드에서도 적용돼야 하므로 밖에 둔다.
         srv.SetPatchSnapshot(!rawSnapshot);
@@ -2131,7 +2131,7 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const OpenSession
                 at = comma + 1;
             }
             srv.SetPeerOps(ops);
-            std::printf("남에게 넘길 오프코드 %zu개\n", ops.size());
+            srv.Log("남에게 넘길 오프코드 %zu개\n", ops.size());
         }
     }
     return 0;

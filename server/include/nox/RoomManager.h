@@ -39,7 +39,7 @@ struct CRoomLoad {
 // 방 하나 — 원본 재현 게임(`nox::Server`) 하나를 든다. MO 규칙(대기/진행/끝 · 판 시작 · 결과)은 여기에 쌓인다(작업 7 · 5단계).
 class CRoom {
 public:
-    explicit CRoom(int id) : _id(id) {}
+    explicit CRoom(int id) : _id(id) { _game.SetLogRoom(id); }   // ★ 10-12 작업 7b — 방에 든 게임의 줄 머리에 `[방 N]`
     CRoom(const CRoom&) = delete;
     CRoom& operator=(const CRoom&) = delete;
 

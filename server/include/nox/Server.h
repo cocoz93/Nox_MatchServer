@@ -3090,6 +3090,14 @@ public:
     void SetGameFlags(uint32_t f) { gameSettings_.gameFlags = f; }
     void SetMaxPlayers(uint8_t n) { gameSettings_.maxPlayers = n; }
 
+    // ★ 10-12 플랜 B 작업 7b — 방 로그(`Docs/ROOMS_DESIGN.md` 「작업 7·8 플랜」 7b).
+    //   방에 든 게임(`CRoom`이 `SetLogRoom`)은 줄 머리에 `[방 N] `을 붙인다 — 방이 하나여도(D2). 방 밖 게임(시험 · 대조 도구)은 안 붙인다.
+    //   줄 단위로 모았다가 줄이 끝나면(`\n`) 그 줄을 한 번에 쓴다 — 한 줄을 여러 번에 나눠 찍는 자리(세계 차리기)도
+    //   다른 스레드의 줄이 사이에 끼지 않는다(플랜 A 자가검증 ①). 꼴은 `printf`와 같다
+    void SetLogRoom(int roomId) { logRoom_ = roomId; }
+    int LogRoom() const { return logRoom_; }
+    void Log(_Printf_format_string_ const char* fmt, ...) const;
+
     size_t PlayerCount() const { size_t n = 0; for (const auto& kv : sessions_) if (kv.second.inGame) ++n; return n; }
     bool IsInGame(int64_t x) const { auto i = sessions_.find(x); return i != sessions_.end() && i->second.inGame; }
     void DebugKick(int64_t x) { KickPlayer(x); }
@@ -5151,6 +5159,8 @@ private:
     void FlushBundles();
 
     std::map<int64_t, Session> sessions_;
+    int logRoom_ = -1;                       // ★ 10-12 작업 7b — 방 번호(-1 = 방 밖 · 태그 없음)
+    mutable std::string logPending_;         // ★ 10-12 작업 7b — 아직 줄이 안 끝난 글자
     std::map<uint8_t, unsigned long long> seen_;
     unsigned long long handled_ = 0;   // 답을 만든 메시지 수
     uint32_t nextJoinOrder_ = 0;       // 접속한 차례에 매기는 번호 (팀 나누기용)
