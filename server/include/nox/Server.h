@@ -5574,7 +5574,7 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
         mapInitial_ = std::move(initial);
         ++mapResetStat_[0];   // 「담음」 — 처음 상태를 쥐었다(옛 `CaptureMapInitial` 과 같은 뜻)
     }
-    bool HasSharedMapInitial(const MapState* s) const { return mapInitial_.get() == s; }   // 시험용 — 돌아갈 곳이 그 원본인가
+    bool HasSharedMapInitial(const MapState* s) const { return mapInitial_.get() == s; }   // 돌아갈 곳이 그 원본인가(시험 · 방 한 줄 `[맵 원본]`)
     void BakeMapPaths() { AIPathBakeWalls(); }   // 길 찾기 격자(벽 칸 깃발을 지우고 장애물 · 길목을 다시 굽는다)
     // 원본 만들기 — 맵 이름 · CRC 는 맵 표에, 독립 모드 깃발은 방에(옛 `SetStandalone`은 둘을 한 번에 — 방이 부르면 맵 표 사본이 생긴다)
     void SetMapIdentity(const std::string& mapFileName, uint32_t mapCrc) { MtMut().saMapName = mapFileName; MtMut().saMapCrc = mapCrc; }

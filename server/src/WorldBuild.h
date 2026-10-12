@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -163,9 +164,38 @@ void LoadGameFiles(const std::string& dir, GameFiles& f);
 // 게임 데이터 표 한 벌 — 방들이 같이 가리킨다(`Server::UseGameTables`)
 std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& files);
 
-// 방 몫 — 맵 방이면 `tables`(위)가 있어야 한다. 게임 데이터 파일은 `files`에서 빌려 쓴다(방을 차릴 때 파일을 안 읽는다)
+// ★ 10-12 플랜 B 작업 7e-4b — 맵 원본(`Docs/ROOMS_DESIGN.md` 「7e-4 다시 짬」). 서버가 뜰 때 맵 목록의 맵마다 한 벌 차리고(`BuildMapOriginal`),
+//   방은 이것에 붙는다(`Server::AttachMap`) — 맵 표(판 중에 안 바뀌는 것)는 같이 가리키고, 처음 상태(판 중에 바뀌는 것 여섯)는
+//   제 사본으로 들고 판 끝에 여기로 되돌린다. 방을 차릴 때 맵 파일을 안 읽는다
+struct MapOriginal {
+    std::string key;        // 찾기 열쇠 — 맵 파일 이름 소문자 · 확장자 뗌(`MapKeyOf` — 로비가 보낼 이름과 같은 꼴)
+    std::string path;       // 읽은 파일
+    std::string fileName;   // 맵 파일 이름 소문자(확장자 포함 — 독립 모드의 접속 묶음 · USE_MAP)
+    uint32_t crc = 0;
+    std::shared_ptr<const nox::Server::MapTables> tables;
+    std::shared_ptr<const nox::Server::MapState> initial;
+    std::vector<std::pair<int, int>> mapFlagPos;   // 맵에 그려진 깃발 자리(방이 붙을 때 `WorldExtras::mapFlagPos` 로)
+    std::vector<std::string> log;                   // 차리며 찍은 진단 줄 — 방을 만들 때 그 방 로그로 다시 낸다
+};
+// 맵 목록 — 서버가 맡는 맵의 원본들(출처는 `MapListFromOptions` 의 확장 지점 주석)
+struct MapCatalog {
+    std::vector<std::shared_ptr<const MapOriginal>> maps;
+    std::vector<std::string> failed;   // 못 차린 맵 경로(까닭은 뜰 때 프로세스 줄로 찍었다)
+    std::shared_ptr<const MapOriginal> Find(const std::string& key) const;   // 없으면 nullptr
+};
+std::string MapKeyOf(const std::string& mapPath);
+std::vector<std::string> MapListFromOptions(const ServerOptions& opt);
+// 맵 원본 하나 — 못 읽으면 false(까닭은 `out.log`)
+bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables, const std::string& mapPath,
+                      MapOriginal& out);
+// 목록의 맵을 모두 차린다 · 뜰 때 한 줄(`[맵 원본] N개 — 열쇠 … · 실패 M`)
+MapCatalog BuildMapCatalog(const GameFiles& files, const std::shared_ptr<const nox::Server::GameTables>& tables,
+                           const std::vector<std::string>& paths);
+
+// 방 몫 — 맵 방이면 `tables`(위)가 있어야 하고 그 맵이 `maps`에 있어야 한다(없으면 멈춤).
+//   게임 데이터 파일은 `files`에서 빌려 쓴다(방을 차릴 때 파일을 안 읽는다)
 int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,
-                   const OpenSessionFn& openSession, WorldExtras& out);
+                   const MapCatalog& maps, const OpenSessionFn& openSession, WorldExtras& out);
 // 프로세스 몫 — 통신 층 설정(서버 찾기 답의 틀 · 순번 되받기). 서버에 한 번, 첫 방을 차린 뒤.
 //   `tmpl`(서버 찾기 답의 틀)의 맵 이름은 첫 방의 `lanMapName` 으로 채운다
 int ConfigureNetwork(nox::CUdpServer& net, const ServerOptions& opt, nox::MsgServerInfo& tmpl, const WorldExtras& firstRoom);

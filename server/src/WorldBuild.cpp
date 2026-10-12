@@ -881,100 +881,76 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
     return srv.ShareGameTables();
 }
 
-int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,
-                   const OpenSessionFn& openSession, WorldExtras& out) {
-    // 실행 인자 — 옮긴 몸통이 쓰는 것만 같은 이름으로 받는다.
-    const auto& mirror = opt.mirror;
-    const auto& mirrorLimit = opt.mirrorLimit;
-    const auto& prelude = opt.prelude;
-    const auto& noUpdate = opt.noUpdate;
-    const auto& rawSnapshot = opt.rawSnapshot;
-    const auto& noNewGear = opt.noNewGear;
-    const auto& noSnapshot = opt.noSnapshot;
-    const auto& noSpawnInvuln = opt.noSpawnInvuln;
-    const auto& hudOff = opt.hudOff;
-    const auto& peerOps = opt.peerOps;
-    const auto& introEveryTick = opt.introEveryTick;
-    const auto& spawnSpread = opt.spawnSpread;
-    const auto& peerFirst = opt.peerFirst;
-    const auto& peerSnapshot = opt.peerSnapshot;
-    const auto& peerType = opt.peerType;
-    const auto& peerPose = opt.peerPose;
-    const auto& mode = opt.mode;
-    const auto& mapPath = opt.mapPath;
-    const auto& standalone = opt.standalone;
-    const auto& aoi = opt.aoi;
-    const auto& creatureAoiHalf = opt.creatureAoiHalf;
-    const auto& creatureAwayAfter = opt.creatureAwayAfter;
-    const auto& friends = opt.friends;
-    const auto& debugDummy = opt.debugDummy;
-    const auto& debugDummyDx = opt.debugDummyDx;
-    const auto& debugEnchantB = opt.debugEnchantB;
-    const auto& debugEnchantP = opt.debugEnchantP;
-    const auto& debugEnchantN = opt.debugEnchantN;
-    const auto& debugHurtEvery = opt.debugHurtEvery;
-    const auto& debugHurtFront = opt.debugHurtFront;
-    const auto& autoRespawn = opt.autoRespawn;
-    const auto& debugOwnPet = opt.debugOwnPet;
-    const auto& debugPetOrder = opt.debugPetOrder;
-    const auto& debugMobAfter = opt.debugMobAfter;
-    const auto& debugMobType = opt.debugMobType;
-    const auto& debugMobX = opt.debugMobX;
-    const auto& debugMobY = opt.debugMobY;
-    const auto& debugTeamAfter = opt.debugTeamAfter;
-    const auto& debugTeamEvery = opt.debugTeamEvery;
-    const auto& debugFistAfter = opt.debugFistAfter;
-    const auto& debugFistDx = opt.debugFistDx;
-    const auto& debugFistDy = opt.debugFistDy;
-    const auto& debugWarpAfter = opt.debugWarpAfter;
-    const auto& debugWarpX = opt.debugWarpX;
-    const auto& debugWarpY = opt.debugWarpY;
-    const auto& debugWallAfter = opt.debugWallAfter;
-    const auto& debugWallGx = opt.debugWallGx;
-    const auto& debugWallGy = opt.debugWallGy;
-    const auto& debugKillAfter = opt.debugKillAfter;
-    const auto& debugScoreAfter = opt.debugScoreAfter;
-    const auto& debugScoreVal = opt.debugScoreVal;
-    const auto& spawnAtX = opt.spawnAtX;
-    const auto& spawnAtY = opt.spawnAtY;
-    const auto& bots = opt.bots;
-    const auto& debugXpAfter = opt.debugXpAfter;
-    const auto& debugXpAmount = opt.debugXpAmount;
-    const auto& debugSpellAfter = opt.debugSpellAfter;
-    const auto& debugSpellId = opt.debugSpellId;
-    const auto& debugConjurerGuides = opt.debugConjurerGuides;
-    const auto& noObstacles = opt.noObstacles;
-    const auto& itemAtSpawn = opt.itemAtSpawn;
-    const auto& spawnAtItem = opt.spawnAtItem;
-    const auto& giveItemNames = opt.giveItemNames;
-    const auto& startHealth = opt.startHealth;
-    const auto& startMana = opt.startMana;
-    const auto& forceDir = opt.forceDir;
-    const auto& forceArrowFrame = opt.forceArrowFrame;
-    const auto& arrowFreeze = opt.arrowFreeze;
-    const auto& noSecondNewPlayer = opt.noSecondNewPlayer;
-    const auto& secondNewPlayer = opt.secondNewPlayer;
-    const auto& forceHarpoon = opt.forceHarpoon;
-    const auto& dumpHarpoon = opt.dumpHarpoon;
-    const auto& arrowFrameAlt = opt.arrowFrameAlt;
-    const auto& forcePose = opt.forcePose;
-    const auto& spellStart = opt.spellStart;
-    std::string dumpPath = opt.dumpPath;   // 비었으면 아래에서 기본 덤프 자리로 채운다
+// ★ 10-12 플랜 B 작업 7e-4b — 맵 원본(`WorldBuild.h` `MapOriginal` 머리 주석 · `Docs/ROOMS_DESIGN.md` 「7e-4 다시 짬」)
+std::string MapKeyOf(const std::string& mapPath) {
+    std::string k = mapPath;
+    const size_t sl = k.find_last_of("\\/");
+    if (sl != std::string::npos) k = k.substr(sl + 1);
+    for (char& ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    const size_t dot = k.find('.');
+    if (dot != std::string::npos) k.resize(dot);
+    return k;
+}
+
+std::vector<std::string> MapListFromOptions(const ServerOptions& opt) {
+    // ★ 확장 지점 — 맵 목록의 출처. 지금은 실행 인자 `--map` 하나다(10-12 사용자 결정 — 맵을 다 쓰지 않으니 하나만).
+    //   늘릴 때 이 함수만 바꾼다 — `--maps a,b`(여러 맵) · 로비가 알려 주는 방 목록(작업 8) ·
+    //   게임 폴더 전부(`maps\<이름>\<이름>.map` — 157개면 개인 메모리 약 490MB · 뜨는 데 약 5초, 7e-4 파일럿)
+    std::vector<std::string> paths;
+    if (!opt.mapPath.empty()) paths.push_back(opt.mapPath);
+    return paths;
+}
+
+std::shared_ptr<const MapOriginal> MapCatalog::Find(const std::string& key) const {
+    for (const auto& m : maps)
+        if (m->key == key) return m;
+    return nullptr;
+}
+
+MapCatalog BuildMapCatalog(const GameFiles& files, const std::shared_ptr<const nox::Server::GameTables>& tables,
+                           const std::vector<std::string>& paths) {
+    MapCatalog cat;
+    for (const auto& p : paths) {
+        auto m = std::make_shared<MapOriginal>();
+        if (!BuildMapOriginal(files, tables, p, *m)) {
+            for (const auto& line : m->log) std::printf("%s\n", line.c_str());   // 못 읽은 까닭(원본 만들기가 담은 줄) — 방이 없으니 프로세스 줄로
+            cat.failed.push_back(p);
+            continue;
+        }
+        // ★ 확장 지점 — 목록이 늘면 열쇠(맵 파일 이름)가 같은 둘이 올 수 있다. 앞의 것을 쓰고 뒤의 것은 실패로 센다
+        if (cat.Find(m->key)) {
+            std::printf("[맵 원본] ⚠ 같은 열쇠 %s 가 이미 있다 — %s 는 안 씀\n", m->key.c_str(), p.c_str());
+            cat.failed.push_back(p);
+            continue;
+        }
+        cat.maps.push_back(std::move(m));
+    }
+    std::printf("[맵 원본] %zu개 —", cat.maps.size());
+    for (const auto& m : cat.maps) std::printf(" %s", m->key.c_str());
+    std::printf(" · 실패 %zu\n", cat.failed.size());
+    std::fflush(stdout);
+    return cat;
+}
+
+// 맵 원본 하나 — 옛 `BuildRoomWorld`의 맵 몫을 **글자 그대로** 옮겼다(만드는 데만 쓰는 게임 `srv`에 차린다 · `tdb` · `wdb`도 그대로).
+//   옮기지 않은 것 — 맵 몫 사이에 끼어 있던 방 설정 셋(`--give-items` 틀 · `--spawn-at-item` · `--no-obstacles`)과 그 뒤의 `[모드]` · 독립 모드는
+//   방(`BuildRoomWorld`)에. 진단 줄은 표준 출력 대신 `out.log`에 담는다 — 방을 만들 때 그 방 로그로 다시 낸다(옛 방 로그와 같은 줄)
+//   ⚠ 실행 인자를 안 받는다 — 맵 원본은 어느 방이 붙든 같아야 한다(`NOX_NO_DOOR_WALLS`는 프로세스 환경이라 그대로 둠)
+bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables, const std::string& mapPath,
+                      MapOriginal& out) {
+    nox::Server srv;
+    srv.SetLogCapture(&out.log);
+    srv.UseGameTables(std::move(tables));
+    out.path = mapPath;
+    out.key = MapKeyOf(mapPath);
     // ★ 09-20 9-b — 덫 자리를 바깥에 둔다. 길목을 읽은 **뒤**에 「덫 옆 설 자리」를 찍기 위함
     std::vector<std::pair<float, float>> trapPos;
-    auto& mapFlagPos = out.mapFlagPos;
-
-    // ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터 표는 서버가 뜰 때 한 벌 만든 것을 가리킨다(`BuildGameTables`). 맵 방에는 있어야 한다
-    if (tables) srv.UseGameTables(std::move(tables));
-    else if (!mapPath.empty()) {
-        srv.Log("[멈춤] 게임 데이터 표 없이 맵 방을 차릴 수 없다(BuildGameTables 를 먼저)\n");
-        return 1;
-    }
-    if (!mapPath.empty()) {
+    auto& mapFlagPos = out.mapFlagPos;   // 옛 자리는 방의 `WorldExtras::mapFlagPos` — 방이 붙을 때 옮겨 담는다
+    {
         nox::MapFile mf;
         if (!mf.Load(mapPath)) {
             srv.Log("맵을 못 읽음: %s (%s)\n", mapPath.c_str(), mf.Error().c_str());
-            return 1;
+            return false;
         }
         const auto cells = mf.ReadWalls();
         // ★ 2026-09-13 묶음 2-b — 벽 **모양**(방향·재질)까지 넘긴다. 칸 좌표만 넘기던 SetWalls 는 시험용으로 남는다.
@@ -1076,7 +1052,6 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& 
         std::map<std::string, int> notPickup;   // 아이템이 아니라 걸러진 것 — 이름별로
         size_t decayExemptKinds[4] = {};        // ★ 09-28 — 바닥 물건의 「10초 규칙 예외」 까닭별(없음·RESPAWN·FLAG·Glyph)
         size_t dropFnKinds[5] = {};             // ★ 09-28 — 바닥 물건의 버리기 함수 갈래별(Default·갑옷무기·물약·음식·안옮김)
-        std::set<uint16_t> giveTemplated;       // ★ 09-30 — `--give-items` 틀을 뜬 종류
         size_t ammoRead = 0, ammoBad = 0, ammoSum = 0, ammoMaxSum = 0, ammoRest = 0;   // ★ 09-29 — 화살통 짐: 읽음 · 못 읽음(0/0) · 화살 합 · 최대 합 · 짐 뒤 남은 바이트 합
         // ★ 2026-09-18 ④⑯ — 맵에 **그려진** 판 물건(깃발·왕관·공)의 자리.
         //   우리 서버는 맵 깃발을 안 읽고 제 자리에 놓으므로, 그림과 실물이 얼마나
@@ -1583,39 +1558,10 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& 
                     w2.dropFn = nox::DropFnOf(ti->dropFn);   // ★ 09-28 — 갑옷·무기·물약·음식은 25초로 다시 건다(RESPAWN 과 상관없이)
                     ++dropFnKinds[static_cast<size_t>(w2.dropFn)];
                 }
-                // ★ 09-30 — `--give-items` 에 든 종류면 이 바닥 물건으로 가방 틀을 뜬다(첫 것 하나 · 기본 장비 여섯은 부활 틀이라 뺀다)
-                if (!giveItemNames.empty() && !giveTemplated.count(wire) &&
-                    std::find(giveItemNames.begin(), giveItemNames.end(), objs[i].type) != giveItemNames.end() &&
-                    wire != nox::kItemStreetShirt && wire != nox::kItemStreetPants && wire != nox::kItemStreetSneakers &&
-                    wire != nox::kItemWizardRobe && wire != nox::kItemWoodenShield && wire != nox::kItemLongsword) {
-                    srv.SetItemTemplate(wire, nox::Server::CarriedFromStatic(w2));
-                    giveTemplated.insert(wire);
-                }
                 st.push_back(w2);
             }
             nStat = st.size();
             srv.SetWorldStatics(std::move(st));
-            if (!giveItemNames.empty()) {   // ★ 09-30 사람 판 시험용
-                std::vector<uint16_t> give;
-                std::string missing;
-                for (const auto& nm : giveItemNames) {
-                    const uint16_t gw = tdb.WireByName(nm);
-                    if (gw != 0 && giveTemplated.count(gw)) give.push_back(gw);
-                    else missing += " " + nm;
-                }
-                srv.SetGiveItems(give);
-                srv.Log("[시험물건] 들어오면 가방에 %zu개 넣음%s%s\n", give.size(), missing.empty() ? "" : " · ⚠ 이 맵 바닥에 없어 못 줌:", missing.c_str());
-            }
-            if (!spawnAtItem.empty()) {   // ★ 09-27 B6
-                uint16_t nc = 0;
-                const uint16_t wire = tdb.WireByName(spawnAtItem);
-                if (wire != 0 && srv.DebugSpawnAtStaticType(wire, nc))
-                    srv.Log("[시험] 스폰 자리를 %s(종류 %u · 번호 %u) 자리 (%d,%d) 로\n", spawnAtItem.c_str(),
-                                (unsigned)wire, (unsigned)nc, srv.spawnX(), srv.spawnY());
-                else
-                    srv.Log("[시험] ⚠ 바닥에 %s 가 없다(종류 %u) — 이 판은 무효다\n", spawnAtItem.c_str(), (unsigned)wire);
-                std::fflush(stdout);
-            }
 
 
 
@@ -1720,10 +1666,6 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& 
                         ++nChest;
                     }
                     if (nChest) { srv.Log("  — 모두 %zu개\n", nChest); std::fflush(stdout); }
-                }
-                if (noObstacles) {
-                    srv.Log("[진단스위치] --no-obstacles — 장애물 %zu개를 싣지 않음(대조군)\n", obs.size());
-                    obs.clear();
                 }
                 srv.SetObstacles(std::move(obs));
             }
@@ -1831,18 +1773,6 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& 
         // ★ 10-12 플랜 B 작업 7e-2 — 이 자리의 게임 데이터 넣기와 그 진단 줄은 `BuildGameTables`(서버가 뜰 때 한 번)로 옮겼다
         srv.Log("[맵] %s — 벽 %zu칸 · 정적 %zu개(변환 실패 %zu) · 충돌 켜짐\n",
                     mapPath.c_str(), ws.size(), nStat, nSkip);
-        // ★★ 2026-09-15 — **모드 깃발을 서버에 실제로 걸어 준다.**
-        //   여기가 없어서 묶음 8 규칙(탈락전·왕죽이기·깃발 판 끝)이 시험에서만 켜졌다.
-        //   `gameSettings_.gameFlags` 하나가 **두 군데**로 간다 —
-        //     ㉮ 판정: `DeathScoring`(0x100·0x10·0x400) · `RoundTimeUp`(0x60·0x400) ·
-        //        `CheckVictorySurvivors`(0x400) · `RoundCheckLimit`(0x400·0x200)
-        //     ㉯ 와이어: `BuildJoinBundle` 이 `& 0x7FFF0` 으로 가려 클라에 알린다(`JoinBundle.cpp:41`)
-        {
-            const uint32_t gf = nox::ModeGameFlags(mode);
-            srv.SetGameFlags(gf);
-            srv.Log("[모드] %s — gameFlags 0x%05X (클라에 가는 값 0x%05X)\n",
-                        mode.c_str(), gf, gf & 0x7FFF0u);
-        }
         // ★ 아이템이 아니라 걸러진 것 — **맵에 무엇이 있는지 한 번은 봐야 한다.**
         //   문·오벨리스크·레버가 여기 있으면 그것이 다음에 살릴 것이다.
         // ★ 아이템인데 클라가 못 집는 것 — 있으면 이름을 찍는다(조용히 버리지 않는다)
@@ -1873,19 +1803,193 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& 
             for (const auto& t : mapMatchObjs) srv.Log(" %s", t.c_str());
             srv.Log("\n");
         }
+        // ★ 10-12 작업 7e-4b — 원본이 내놓는 것. 맵 이름 · CRC 는 늘 맵 표에 넣는다(읽는 곳은 독립 모드뿐 — `BuildUseMap` · 스냅샷 꼬리)
+        //   이름은 옛 독립 모드 블록과 같은 꼴(파일 이름 소문자 · 확장자 포함)
+        std::string fileNm = mapPath;
+        const size_t fileSl = fileNm.find_last_of("\\/");
+        if (fileSl != std::string::npos) fileNm = fileNm.substr(fileSl + 1);
+        for (char& ch : fileNm) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        srv.SetMapIdentity(fileNm, mf.Crc());
+        out.fileName = fileNm;
+        out.crc = mf.Crc();
+        out.tables = srv.ShareMapTables();
+        out.initial = srv.ShareMapState();
+    }
+    srv.SetLogCapture(nullptr);
+    return true;
+}
+
+int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,
+                   const MapCatalog& maps, const OpenSessionFn& openSession, WorldExtras& out) {
+    // 실행 인자 — 옮긴 몸통이 쓰는 것만 같은 이름으로 받는다.
+    const auto& mirror = opt.mirror;
+    const auto& mirrorLimit = opt.mirrorLimit;
+    const auto& prelude = opt.prelude;
+    const auto& noUpdate = opt.noUpdate;
+    const auto& rawSnapshot = opt.rawSnapshot;
+    const auto& noNewGear = opt.noNewGear;
+    const auto& noSnapshot = opt.noSnapshot;
+    const auto& noSpawnInvuln = opt.noSpawnInvuln;
+    const auto& hudOff = opt.hudOff;
+    const auto& peerOps = opt.peerOps;
+    const auto& introEveryTick = opt.introEveryTick;
+    const auto& spawnSpread = opt.spawnSpread;
+    const auto& peerFirst = opt.peerFirst;
+    const auto& peerSnapshot = opt.peerSnapshot;
+    const auto& peerType = opt.peerType;
+    const auto& peerPose = opt.peerPose;
+    const auto& mode = opt.mode;
+    const auto& mapPath = opt.mapPath;
+    const auto& standalone = opt.standalone;
+    const auto& aoi = opt.aoi;
+    const auto& creatureAoiHalf = opt.creatureAoiHalf;
+    const auto& creatureAwayAfter = opt.creatureAwayAfter;
+    const auto& friends = opt.friends;
+    const auto& debugDummy = opt.debugDummy;
+    const auto& debugDummyDx = opt.debugDummyDx;
+    const auto& debugEnchantB = opt.debugEnchantB;
+    const auto& debugEnchantP = opt.debugEnchantP;
+    const auto& debugEnchantN = opt.debugEnchantN;
+    const auto& debugHurtEvery = opt.debugHurtEvery;
+    const auto& debugHurtFront = opt.debugHurtFront;
+    const auto& autoRespawn = opt.autoRespawn;
+    const auto& debugOwnPet = opt.debugOwnPet;
+    const auto& debugPetOrder = opt.debugPetOrder;
+    const auto& debugMobAfter = opt.debugMobAfter;
+    const auto& debugMobType = opt.debugMobType;
+    const auto& debugMobX = opt.debugMobX;
+    const auto& debugMobY = opt.debugMobY;
+    const auto& debugTeamAfter = opt.debugTeamAfter;
+    const auto& debugTeamEvery = opt.debugTeamEvery;
+    const auto& debugFistAfter = opt.debugFistAfter;
+    const auto& debugFistDx = opt.debugFistDx;
+    const auto& debugFistDy = opt.debugFistDy;
+    const auto& debugWarpAfter = opt.debugWarpAfter;
+    const auto& debugWarpX = opt.debugWarpX;
+    const auto& debugWarpY = opt.debugWarpY;
+    const auto& debugWallAfter = opt.debugWallAfter;
+    const auto& debugWallGx = opt.debugWallGx;
+    const auto& debugWallGy = opt.debugWallGy;
+    const auto& debugKillAfter = opt.debugKillAfter;
+    const auto& debugScoreAfter = opt.debugScoreAfter;
+    const auto& debugScoreVal = opt.debugScoreVal;
+    const auto& spawnAtX = opt.spawnAtX;
+    const auto& spawnAtY = opt.spawnAtY;
+    const auto& bots = opt.bots;
+    const auto& debugXpAfter = opt.debugXpAfter;
+    const auto& debugXpAmount = opt.debugXpAmount;
+    const auto& debugSpellAfter = opt.debugSpellAfter;
+    const auto& debugSpellId = opt.debugSpellId;
+    const auto& debugConjurerGuides = opt.debugConjurerGuides;
+    const auto& noObstacles = opt.noObstacles;
+    const auto& itemAtSpawn = opt.itemAtSpawn;
+    const auto& spawnAtItem = opt.spawnAtItem;
+    const auto& giveItemNames = opt.giveItemNames;
+    const auto& startHealth = opt.startHealth;
+    const auto& startMana = opt.startMana;
+    const auto& forceDir = opt.forceDir;
+    const auto& forceArrowFrame = opt.forceArrowFrame;
+    const auto& arrowFreeze = opt.arrowFreeze;
+    const auto& noSecondNewPlayer = opt.noSecondNewPlayer;
+    const auto& secondNewPlayer = opt.secondNewPlayer;
+    const auto& forceHarpoon = opt.forceHarpoon;
+    const auto& dumpHarpoon = opt.dumpHarpoon;
+    const auto& arrowFrameAlt = opt.arrowFrameAlt;
+    const auto& forcePose = opt.forcePose;
+    const auto& spellStart = opt.spellStart;
+    std::string dumpPath = opt.dumpPath;   // 비었으면 아래에서 기본 덤프 자리로 채운다
+
+    // ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터 표는 서버가 뜰 때 한 벌 만든 것을 가리킨다(`BuildGameTables`). 맵 방에는 있어야 한다
+    if (tables) srv.UseGameTables(std::move(tables));
+    else if (!mapPath.empty()) {
+        srv.Log("[멈춤] 게임 데이터 표 없이 맵 방을 차릴 수 없다(BuildGameTables 를 먼저)\n");
+        return 1;
+    }
+    std::shared_ptr<const MapOriginal> map;   // ★ 10-12 작업 7e-4b — 이 방이 붙은 맵 원본(맵 방만)
+    if (!mapPath.empty()) {
+        // ★ 10-12 플랜 B 작업 7e-4b — 맵 몫(벽 · 물건 · 문 · 장애물 · 길목 …)은 서버가 뜰 때 맵 원본으로 차려 두었다(`BuildMapOriginal`).
+        //   방은 찾아 붙는다 — 맵 표는 같이 가리키고, 판 중에 바뀌는 것 여섯은 제 사본 · 판 끝에 돌아갈 곳은 원본의 처음 상태
+        //   ★ 확장 지점 — 찾기 열쇠. 지금은 실행 인자의 맵 경로에서 뽑는다. 작업 8 에서는 로비가 보낸 맵 이름(같은 꼴 — `MapKeyOf`)
+        map = maps.Find(MapKeyOf(mapPath));
+        if (!map) {
+            srv.Log("[멈춤] 맵 목록에 없는 맵 — %s(열쇠 %s) · 서버가 뜰 때 읽은 맵에만 방을 차린다\n", mapPath.c_str(), MapKeyOf(mapPath).c_str());
+            return 1;
+        }
+        srv.AttachMap(map->tables, map->initial);
+        for (const auto& line : map->log) srv.Log("%s\n", line.c_str());   // 원본을 차리며 찍은 진단 줄 — 옛 방 로그와 같은 줄
+        out.mapFlagPos = map->mapFlagPos;
+        // 맵 몫 사이에 끼어 있던 방 설정 셋 — 옛 자리처럼 thing.bin 을 읽었을 때만(셋 다 맵 몫의 `if (files.thingOk)` 안에 있었다)
+        if (files.thingOk) {
+            const nox::ThingDb& tdb = files.thing;
+            // ★ 09-30 — `--give-items` 에 든 종류면 바닥 물건으로 가방 틀을 뜬다(첫 것 하나 · 기본 장비 여섯은 부활 틀이라 뺀다)
+            //   ★ 10-12 작업 7e-4b — 옛 자리는 바닥 물건을 넣는 고리 안(맵 오브젝트 이름으로 견줌). 같은 차례(원본의 바닥 물건 차례)를
+            //     종류 번호로 견준다 — 번호는 thing.bin 에서 그 이름의 첫 칸이라(`ThingDb::WireByName`) 두 견주기가 같은 것을 고른다
+            std::set<uint16_t> giveTemplated;       // ★ 09-30 — `--give-items` 틀을 뜬 종류
+            if (!giveItemNames.empty()) {
+                std::set<uint16_t> giveWires;
+                for (const auto& nm : giveItemNames)
+                    if (const uint16_t gw = tdb.WireByName(nm)) giveWires.insert(gw);
+                for (const auto& w2 : map->initial->statics) {
+                    const uint16_t wire = w2.type;
+                    if (!giveWires.count(wire) || giveTemplated.count(wire) ||
+                        wire == nox::kItemStreetShirt || wire == nox::kItemStreetPants || wire == nox::kItemStreetSneakers ||
+                        wire == nox::kItemWizardRobe || wire == nox::kItemWoodenShield || wire == nox::kItemLongsword) continue;
+                    srv.SetItemTemplate(wire, nox::Server::CarriedFromStatic(w2));
+                    giveTemplated.insert(wire);
+                }
+            }
+            if (!giveItemNames.empty()) {   // ★ 09-30 사람 판 시험용
+                std::vector<uint16_t> give;
+                std::string missing;
+                for (const auto& nm : giveItemNames) {
+                    const uint16_t gw = tdb.WireByName(nm);
+                    if (gw != 0 && giveTemplated.count(gw)) give.push_back(gw);
+                    else missing += " " + nm;
+                }
+                srv.SetGiveItems(give);
+                srv.Log("[시험물건] 들어오면 가방에 %zu개 넣음%s%s\n", give.size(), missing.empty() ? "" : " · ⚠ 이 맵 바닥에 없어 못 줌:", missing.c_str());
+            }
+            if (!spawnAtItem.empty()) {   // ★ 09-27 B6
+                uint16_t nc = 0;
+                const uint16_t wire = tdb.WireByName(spawnAtItem);
+                if (wire != 0 && srv.DebugSpawnAtStaticType(wire, nc))
+                    srv.Log("[시험] 스폰 자리를 %s(종류 %u · 번호 %u) 자리 (%d,%d) 로\n", spawnAtItem.c_str(),
+                                (unsigned)wire, (unsigned)nc, srv.spawnX(), srv.spawnY());
+                else
+                    srv.Log("[시험] ⚠ 바닥에 %s 가 없다(종류 %u) — 이 판은 무효다\n", spawnAtItem.c_str(), (unsigned)wire);
+                std::fflush(stdout);
+            }
+            // 옛 자리는 장애물을 넣기 바로 앞(모은 목록을 비움). 방은 원본의 것을 가리키다가 빈 목록을 제 사본으로 넣는다
+            if (noObstacles) {
+                srv.Log("[진단스위치] --no-obstacles — 장애물 %zu개를 싣지 않음(대조군)\n", map->tables->obstacles.size());
+                srv.SetObstacles({});
+            }
+        }
+        srv.BakeMapPaths();   // 길 찾기 격자 — 붙이기는 안 굽는다(`Server::AttachMap`). 맵 몫을 바꾸는 방 설정(위 `--no-obstacles`) 뒤에 한 번
+        // ★★ 2026-09-15 — **모드 깃발을 서버에 실제로 걸어 준다.**
+        //   여기가 없어서 묶음 8 규칙(탈락전·왕죽이기·깃발 판 끝)이 시험에서만 켜졌다.
+        //   `gameSettings_.gameFlags` 하나가 **두 군데**로 간다 —
+        //     ㉮ 판정: `DeathScoring`(0x100·0x10·0x400) · `RoundTimeUp`(0x60·0x400) ·
+        //        `CheckVictorySurvivors`(0x400) · `RoundCheckLimit`(0x400·0x200)
+        //     ㉯ 와이어: `BuildJoinBundle` 이 `& 0x7FFF0` 으로 가려 클라에 알린다(`JoinBundle.cpp:41`)
+        {
+            const uint32_t gf = nox::ModeGameFlags(mode);
+            srv.SetGameFlags(gf);
+            srv.Log("[모드] %s — gameFlags 0x%05X (클라에 가는 값 0x%05X)\n",
+                        mode.c_str(), gf, gf & 0x7FFF0u);
+        }
         if (standalone) {
-            std::string nm = mapPath;
-            const size_t sl = nm.find_last_of("\\/");
-            if (sl != std::string::npos) nm = nm.substr(sl + 1);
-            for (char& ch : nm) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-            srv.SetStandalone(nm, mf.Crc());
+            // ★ 10-12 작업 7e-4b — 맵 이름 · CRC 는 원본이 맵 표에 넣어 두었다(`BuildMapOriginal`). 방은 독립 모드 깃발만 켠다
+            //   (옛 `SetStandalone`은 둘을 한 번에 — 방이 부르면 맵 표 사본이 생겨 같이 쓰기가 깨진다)
+            const std::string& nm = map->fileName;
+            srv.SetStandaloneMode();
             // 소개(SERVER_INFO)의 맵 이름도 이 맵으로 — 칸이 9바이트라 확장자를 뗀다.
             std::string bare = nm;
             const size_t dot2 = bare.find('.');
             if (dot2 != std::string::npos) bare.resize(dot2);
             if (!bare.empty() && bare.size() < 9) out.lanMapName = bare;   // ★ 10-12 작업 7a — 틀에 넣는 것은 프로세스 몫
             srv.Log("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)\n",
-                        nm.c_str(), mf.Crc());
+                        nm.c_str(), map->crc);
         }
         // ★★★★ **여기가 깨져 있었다** (2026-09-11 발견·수리).
         //   아래 세 뭉치가 **`if (aoi)` 블록 안에** 들어가 있었다 — 즉 `--aoi` 를 안 주면
@@ -2104,6 +2208,13 @@ int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& 
         srv.Log("[게임데이터] 이 방의 표 — %s · 몬스터 애니 %zu종 · 주문 마나 %zu · 소리 %zu\n",
                 srv.SharesGameTables() ? "서버가 뜰 때 만든 것을 같이 씀" : "이 방만의 사본(방 설정이 넣음)",
                 srv.MonsterAnimTypes(), srv.SpellCostCount(), srv.SoundDefCount());
+    // ★ 10-12 플랜 B 작업 7e-4b — 이 방이 붙은 맵 원본을 한 줄로. 맵 표를 같이 쓰나(방 설정이 맵 표에 넣으면 이 방만의 사본) ·
+    //   판 끝에 원본의 처음 상태로 돌아가나 · 받은 바닥 물건 · 문 수 — 붙이기가 안 되면 시작 로그 대조가 잡게(7e-2 에서 배운 것)
+    if (map)
+        srv.Log("[맵 원본] 이 방의 맵 — %s · 맵 표 %s · 판 끝 되돌리기 %s · 바닥 물건 %zu · 문·오벨리스크 %zu · 비밀벽 %zu\n",
+                map->key.c_str(), srv.SharesMapTables() ? "서버가 뜰 때 만든 것을 같이 씀" : "이 방만의 사본(방 설정이 넣음)",
+                srv.HasSharedMapInitial(map->initial.get()) ? "원본의 처음 상태로" : "⚠ 원본 아님",
+                srv.WorldStaticCount(), srv.WorldPropCount(), srv.SecretWallCount());
     // ★ 10-12 작업 7a — 이 자리에 있던 서버 찾기 답의 틀 넣기(`SetInfoTemplate`)는 프로세스 몫이라 `ConfigureNetwork` 로 옮겼다.
 
     // ★★ 접속 뒤에 내려줄 것 — 접속 묶음(216바이트)과 맵 지정(41바이트).

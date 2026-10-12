@@ -1347,11 +1347,13 @@ int main(int argc, char** argv) {
     // ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터는 맵 방이 있을 때만 서버가 뜰 때 한 번 읽어 표 한 벌로(녹음 모드는 지금처럼 표 없이)
     GameFiles gameFiles;
     std::shared_ptr<const nox::Server::GameTables> gameTables;
+    MapCatalog maps;   // ★ 10-12 플랜 B 작업 7e-4b — 서버가 맡는 맵의 원본들(방은 이것에 붙는다)
     if (!opt.mapPath.empty()) {
         LoadGameFiles(opt.gameDir, gameFiles);
         gameTables = BuildGameTables(gameFiles);
+        maps = BuildMapCatalog(gameFiles, gameTables, MapListFromOptions(opt));   // 목록의 출처는 `MapListFromOptions` 주석(지금 `--map` 하나)
     }
-    if (const int rc = BuildRoomWorld(srv, opt, gameFiles, gameTables, [&udp](const std::string& addr) { return udp.OpenSession(addr); }, extras)) return rc;
+    if (const int rc = BuildRoomWorld(srv, opt, gameFiles, gameTables, maps, [&udp](const std::string& addr) { return udp.OpenSession(addr); }, extras)) return rc;
     if (const int rc = ConfigureNetwork(udp, opt, tmpl, extras)) return rc;
     // 초당 `[성장]` 줄의 봇 번호 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
     run0.bot0Sid = net.Network().SessionIdOf("bot0");
@@ -1385,7 +1387,9 @@ int main(int argc, char** argv) {
     unsigned long long loopTurns = 0;
 
     // ★ 10-01 R2 — 맵을 다 넣었으니 처음 상태를 담아 둔다(판 다시 열 때 되돌릴 사본 · `Server::CaptureMapInitial`)
-    srv.CaptureMapInitial();
+    // ★ 10-12 플랜 B 작업 7e-4b — 맵 방은 맵 원본이 담아 둔 처음 상태를 같이 가리킨다(`Server::AttachMap` — 담기 셈도 거기서).
+    //   제 것을 담는 것은 맵 없는 방(녹음 모드)뿐
+    if (opt.mapPath.empty()) srv.CaptureMapInitial();
     srv.Log("[맵처음] 담음 — 바닥 물건 %zu · 문·오벨리스크 %zu\n", srv.WorldStaticCount(), srv.WorldPropCount());
     std::fflush(stdout);
     net.SetVerbose(!opt.quiet);
