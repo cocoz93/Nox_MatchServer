@@ -5548,6 +5548,9 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
 
     // ★ 10-12 플랜 B 작업 7e-4a — 맵의 바뀌는 것 여섯의 처음 상태(7d 조사 ③). 판 끝에 여기로 되돌린다.
     //   방은 같은 맵의 원본이 쥔 것을 같이 가리키고(`AttachMap`), 방 밖 게임(시험 · 녹음 모드)은 제 상태를 담는다(`CaptureMapInitial`)
+    //   ⚠ 판 중에 바뀌는 맵 상태를 새로 만들면 여기에 칸을 더하고 같이 고칠 곳 셋 — `ShareMapState` · `AttachMap` · `ResetWorldFromMap`(`Server.cpp`)의
+    //     복사 줄과 그 위 머리 주석의 「되돌림 N종」 목록. 빠뜨리면 그 상태는 맵 원본을 만든 게임에만 있고 방에서는 비며, 판 끝에도 안 돌아온다.
+    //     판 중에 안 바뀌는 맵 값은 여기가 아니라 `MapTables`(방들이 같이 가리킴)
     struct MapState {
         std::vector<WorldStatic> statics;
         std::vector<WorldProp> props;
