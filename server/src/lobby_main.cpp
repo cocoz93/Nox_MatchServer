@@ -1,6 +1,6 @@
 ﻿// lobby_main.cpp — 로비 서버 실행 파일 (MO 2단계, Docs/LOBBY_DESIGN.md).
 //
-//   nox_lobby.exe --config <설정 파일> [--bind 0.0.0.0] [--servserv-port 4005] [--lobby-port 4000]
+//   nox_lobby.exe --config <설정 파일> [--bind 0.0.0.0] [--lobby-port 4000]
 //                 [--game-ip 127.0.0.1] [--game-port 18590]
 //                 [--map estate] [--mode arena] [--max-players 31] [--seconds N] [--quiet]
 //
@@ -9,8 +9,9 @@
 //     [rooms] <방장 이름> = <게임 방 번호>  목록에 싣는 방(차례대로) — 옛 --room-host · --room-name 자리
 //
 // 소켓만 맡는다 — 받은 줄은 nox::wol::Lobby 에 넘기고, 돌려받은 줄을 보낸다(게임 서버 main.cpp 루프와 같은 짜임).
-//   · 한 스레드 루프. 듣기 둘(로비 찾기 · 로비)과 접속들은 TCP 줄 부품(`nox::CTcpLines` — 작업 8a)이 든다
+//   · 한 스레드 루프. 듣기(로비 4000)와 접속들은 TCP 줄 부품(`nox::CTcpLines` — 작업 8a)이 든다
 //     (옛 이 자리의 `select` 루프 · 논블로킹 보내기 버퍼 · CRLF 줄 나누기를 그리로 옮겼다)
+//   · ★ 10-14 작업 8b — 로비 찾기(4005)는 라우터 `nox_router` 가 받는다(옛 이 실행 파일이 둘 다 들었다)
 //
 // ⚠ --bind 를 0.0.0.0 으로 두면 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다.
 //   같은 PC 시험(hosts → 127.0.0.1)은 --bind 127.0.0.1 로 충분하다.
@@ -95,6 +96,7 @@ int main(int argc, char** argv) {
     cfg.room.maxPlayers = 31;
     cfg.room.resolution = 2;   // 녹음 다섯 방 중 셋이 1024x768
     uint32_t bindIp = INADDR_ANY;
+    uint16_t lobbyPort = nox::wol::kLobbyPort;
     int seconds = 0;           // 0 이면 끝없이. 자체검사가 정해진 시간 뒤 스스로 끝나게 쓴다
     std::string mode = "arena";
     std::string configPath;
@@ -105,8 +107,7 @@ int main(int argc, char** argv) {
         if (a == "--quiet") g_quiet = true;
         else if (a == "--bind" && hasNext) {
             if (!ParseIp(argv[++i], bindIp)) { Log("[실패] --bind 주소: %s\n", argv[i]); return 2; }
-        } else if (a == "--servserv-port" && hasNext) cfg.servServPort = static_cast<uint16_t>(std::atoi(argv[++i]));
-        else if (a == "--lobby-port" && hasNext) cfg.lobbyPort = static_cast<uint16_t>(std::atoi(argv[++i]));
+        } else if (a == "--lobby-port" && hasNext) lobbyPort = static_cast<uint16_t>(std::atoi(argv[++i]));
         else if (a == "--game-ip" && hasNext) {
             if (!ParseIp(argv[++i], cfg.gameServerIp)) { Log("[실패] --game-ip 주소: %s\n", argv[i]); return 2; }
         } else if (a == "--game-port" && hasNext) cfg.gameServerPort = static_cast<uint16_t>(std::atoi(argv[++i]));
@@ -142,10 +143,10 @@ int main(int argc, char** argv) {
     }
     if (cfg.rooms.empty()) { Log("[멈춤] 설정 파일에 [rooms] 가 없다 — 방장 이름 = 게임 방 번호 한 줄 이상\n"); return 2; }
 
-    nox::CTcpLines tcp;   // ★ 10-14 작업 8a — 듣기 둘 · 접속들(옛 이 자리의 `WSAStartup` · `Listen` 둘)
+    nox::CTcpLines tcp;   // ★ 10-14 작업 8a — 듣기 · 접속들(옛 이 자리의 `WSAStartup` · `Listen`)
     {
         std::string err;
-        if (!tcp.Listen(bindIp, cfg.servServPort, err) || !tcp.Listen(bindIp, cfg.lobbyPort, err)) {
+        if (!tcp.Listen(bindIp, lobbyPort, err)) {
             Log("[실패] %s\n", err.c_str());
             return 1;
         }
@@ -155,8 +156,8 @@ int main(int argc, char** argv) {
     std::string roomList;
     for (const auto& r : lobby.Rooms())
         roomList += (roomList.empty() ? "" : ", ") + nox::wol::Lobby::Channel(r) + "=게임 방 " + std::to_string(r.gameRoomId);
-    Log("[로비] 듣기 %s — 로비 찾기 :%u · 로비 :%u · 방 %s → 게임 서버 %s:%u · 맵 %s · %s · 최대 %u · 입장 토큰(설정 %s)\n",
-                nox::wol::IpDotted(bindIp).c_str(), cfg.servServPort, cfg.lobbyPort, roomList.c_str(),
+    Log("[로비] 듣기 %s — 로비 :%u · 방 %s → 게임 서버 %s:%u · 맵 %s · %s · 최대 %u · 입장 토큰(설정 %s)\n",
+                nox::wol::IpDotted(bindIp).c_str(), lobbyPort, roomList.c_str(),
                 nox::wol::IpDotted(cfg.gameServerIp).c_str(), cfg.gameServerPort, cfg.room.map.c_str(), mode.c_str(),
                 cfg.room.maxPlayers, configPath.c_str());
     std::fflush(stdout);
@@ -171,7 +172,7 @@ int main(int argc, char** argv) {
         switch (e.type) {
         case nox::TcpLineEvent::Type::OPENED:
             ++nConn;
-            lobby.OnConnect(e.conn, e.port, e.peerIp, e.localIp);
+            lobby.OnConnect(e.conn, e.peerIp, e.localIp);
             if (!g_quiet)
                 Log("[c%d:%u] 접속 %s → 내 쪽 %s\n", e.conn, e.port, nox::wol::IpDotted(e.peerIp).c_str(),
                     nox::wol::IpDotted(e.localIp).c_str());

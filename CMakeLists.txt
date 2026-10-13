@@ -70,12 +70,17 @@ target_link_libraries(nox_datadump PRIVATE nox_proto)
 add_library(nox_lobby_core STATIC
   server/src/lobby/WolGameInfo.cpp
   server/src/lobby/Lobby.cpp
+  server/src/lobby/Router.cpp
 )
 target_include_directories(nox_lobby_core PUBLIC server/include)
 target_link_libraries(nox_lobby_core PUBLIC nox_common)   # 입장 토큰 서명 · 설정 파일 읽기
 
 add_executable(nox_lobby server/src/lobby_main.cpp)
 target_link_libraries(nox_lobby PRIVATE nox_lobby_core)
+
+# 라우터(목표 구조 v3 첫 층 — 작업 8b) — 4005 로비 찾기 · 605 로 채널 주소
+add_executable(nox_router server/src/router_main.cpp)
+target_link_libraries(nox_router PRIVATE nox_lobby_core)
 
 add_executable(lobby_test server/tests/lobby_test.cpp)
 target_link_libraries(lobby_test PRIVATE nox_lobby_core)
@@ -124,6 +129,10 @@ if (NOX_POWERSHELL AND WIN32)
   add_test(NAME lobby_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                    -File ${CMAKE_SOURCE_DIR}/tools/lobby_smoke.ps1 -Exe $<TARGET_FILE:nox_lobby>)
+  # 라우터 소켓 왕복(작업 8b) — 605 의 채널 주소(설정 없음 = 붙은 주소 · 설정 있음 = 그 주소) · CRLF · QUIT 뒤 끊기
+  add_test(NAME router_smoke
+           COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                   -File ${CMAKE_SOURCE_DIR}/tools/router_smoke.ps1 -Exe $<TARGET_FILE:nox_router>)
   if (EXISTS "${NOX_SMOKE_MAP}")
     add_test(NAME socket_smoke_standalone
              COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass

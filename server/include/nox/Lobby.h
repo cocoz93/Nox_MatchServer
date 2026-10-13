@@ -12,6 +12,7 @@
 //   · 방 참가(`JOINGAME`) 답 바로 앞에 `NOXTOKEN <게임 서버 IP:포트> <토큰 16진>` — DLL 이 떼어 쥐고 로비 모듈엔 원래 답만 간다.
 //     토큰 = 방(게임 방 번호) · 클라 IP(이 TCP 상대) · 만료 · 일회용 번호 · 로비 이름을 키로 서명(`JoinToken.h`)
 //   · 방은 여럿(설정 파일 `[rooms]` — 방장 이름 = 게임 방 번호). 방마다 채널 `#<방장>'s_game` · 방 정보 이름도 방장 이름
+// ★ 10-14 플랜 B 작업 8b — 로비 찾기(4005 — 610 · 605 · 607)는 라우터(`Router.h` · `nox_router`)로 떼어 냈다. 로비는 4000 만 받는다
 #pragma once
 
 #include <cstdint>
@@ -37,9 +38,6 @@ struct LobbyRoom {
 };
 
 struct LobbyConfig {
-    std::string serverName = "Nox_Origin";          // 605 답의 '0:<이름>'
-    uint16_t servServPort = kServServPort;          // 이 포트로 들어온 접속은 「로비 찾기」로 다룬다
-    uint16_t lobbyPort = kLobbyPort;                // 605 답으로 알려 주는 로비 포트
     std::vector<std::string> motd{"Welcome to Nox_Origin!", ""};  // 첫 줄은 375, 나머지는 372
     std::vector<LobbyRoom> rooms{{"NoxOrigin", 0}};  // ★ 10-10 — 목록에 싣는 차례대로(옛 고정 방 하나 `roomHost` 자리)
     uint32_t gameServerIp = 0x7f000001;             // 게임 서버 IPv4 정수(a<<24|b<<16|c<<8|d) — 326·353·NOXTOKEN 에 같은 값
@@ -69,8 +67,8 @@ class Lobby {
 public:
     explicit Lobby(LobbyConfig cfg);
 
-    // port = 받은 포트(4005/4000) · peerIp = 상대 IPv4 · localIp = 클라가 붙은 내 쪽 IPv4(605 답에 싣는다)
-    void OnConnect(int conn, uint16_t port, uint32_t peerIp, uint32_t localIp);
+    // peerIp = 상대 IPv4 · localIp = 클라가 붙은 내 쪽 IPv4
+    void OnConnect(int conn, uint32_t peerIp, uint32_t localIp);
     void OnLine(int conn, std::string_view line, std::vector<Out>& out);
     void OnClose(int conn);
 
@@ -83,7 +81,6 @@ public:
 
 private:
     struct Conn {
-        uint16_t port = 0;
         uint32_t peerIp = 0;
         uint32_t localIp = 0;
         std::string nick;
@@ -91,7 +88,6 @@ private:
         int clientVer = -1;  // ★ 10-10 — `NOXCLIENT <판>`(줄이 없으면 -1 — 「판 낮음」과 따로 센다)
     };
 
-    void OnServServ(int conn, Conn& c, const std::string& cmd, std::string_view line, std::vector<Out>& out);
     void OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<std::string>& t,
                 std::string_view line, std::vector<Out>& out);
     void SendList(int conn, bool withChat, std::vector<Out>& out);

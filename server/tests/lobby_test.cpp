@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "nox/Lobby.h"
+#include "nox/Router.h"
 #include "nox/WolGameInfo.h"
 
 namespace {
@@ -162,20 +163,9 @@ void LobbyUnitTests() {
     const std::string gameIp = std::to_string(cfg.gameServerIp);
     std::vector<Out> out;
 
-    // 4005 — 로비 주소는 「클라가 붙은 내 쪽 주소」, QUIT 뒤엔 끊는다
-    lb.OnConnect(1, kServServPort, peer, loop);
-    for (const char* l : {"verchk 32512 65556", "verchk 9472 65538", "lobcount 9472",
-                          "whereto wn 1234 9472 65538 7726", "QUIT"})
-        lb.OnLine(1, l, out);
-    const std::vector<std::string> want4005 = {": 610 u 1",
-                                               ": 605 u :127.0.0.1 4000 '0:Nox_Origin' -8 36.1083 -115.0582", ": 607"};
-    Check(Lines(out) == want4005, "4005 답이 610 · 605(내 쪽 주소 127.0.0.1:4000) · 607");
-    Check(!out.empty() && out.back().closeAfter, "QUIT 답 뒤엔 끊는다");
-    lb.OnClose(1);
-
     // 4000 — DLL 알림 + 로그인 묶음 → 376, verchk → 379
-    out.clear();
-    lb.OnConnect(2, kLobbyPort, peer, loop);
+    //   (★ 10-14 작업 8b — 4005 로비 찾기는 라우터로 — `RouterUnitTests`)
+    lb.OnConnect(2, peer, loop);
     for (const char* l : {"NOXCLIENT 1", "CVERS 11020 9472", "PASS supersecret", "NICK wn", "apgar 1234 0", "SERIAL 7726",
                           "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33"})
         lb.OnLine(2, l, out);
@@ -255,7 +245,7 @@ void LobbyUnitTests() {
         return false;
     };
     out.clear();
-    lb.OnConnect(3, kLobbyPort, peer, loop);
+    lb.OnConnect(3, peer, loop);
     for (const char* l : {"CVERS 11020 9472", "NICK plain", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(3, l, out);
     Check(!out.empty() && out.back().line == ": 376 u" && hasLine(out, ": 372 u :- *** Nox_Origin client patch") && !anyClose(out) &&
               !hasLine(out, "ERROR") && lb.Stats().loginNoClient == 1,
@@ -266,19 +256,56 @@ void LobbyUnitTests() {
               lb.Stats().joinNoClient == 1 && lb.Stats().tokensIssued == 1,
           "DLL 없는 클라의 방 참가 → 원래 답 넷 · 토큰 없음");
     out.clear();
-    lb.OnConnect(4, kLobbyPort, peer, loop);
+    lb.OnConnect(4, peer, loop);
     for (const char* l : {"NOXCLIENT 0", "NICK old", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(4, l, out);
     Check(!out.empty() && out.back().line == ": 376 u" && hasLine(out, ": 372 u :- *** Nox_Origin client patch") && !anyClose(out) &&
               lb.Stats().loginOldClient == 1 && lb.Stats().loginNoClient == 1,
           "DLL 판 0 → 「판 낮음」으로 따로 세고 인사말 안내");
     out.clear();
-    lb.OnConnect(5, kLobbyPort, peer, loop);
+    lb.OnConnect(5, peer, loop);
     for (const char* l : {"NICK early", "JOINGAME #NoxOrigin's_game 1 "}) lb.OnLine(5, l, out);
     Check(out.size() == 4 && !hasLine(out, "NOXTOKEN") && lb.Stats().joinNoClient == 2 && lb.Stats().tokensIssued == 1,
           "로그인 전 방 참가 → 원래 답 넷 · 토큰 없음");
     out.clear();
     lb.OnLine(2, "JOINGAME #NoxOrigin's_game 1 ", out);   // DLL 있는 접속은 그대로 토큰
     Check(out.size() == 5 && hasLine(out, "NOXTOKEN ") && lb.Stats().tokensIssued == 2, "DLL 있는 접속은 계속 토큰 + 원래 답 넷");
+}
+
+// ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
+void RouterUnitTests() {
+    using namespace nox::wol;
+    const uint32_t loop = 0x7f000001;
+    const uint32_t peer = (198u << 24) | (51u << 16) | (100u << 8) | 7u;   // 198.51.100.7 (문서용 주소)
+    const char* const five[] = {"verchk 32512 65556", "verchk 9472 65538", "lobcount 9472", "whereto wn 1234 9472 65538 7726", "QUIT"};
+    std::vector<Out> out;
+
+    // 채널 주소 설정 없음 — 「클라가 붙은 내 쪽 주소」:4000, QUIT 뒤엔 끊는다(옛 로비 4005 답과 같다)
+    Router a{RouterConfig{}};
+    a.OnConnect(1, peer, loop);
+    for (const char* l : five) a.OnLine(1, l, out);
+    const std::vector<std::string> wantA = {": 610 u 1", ": 605 u :127.0.0.1 4000 '0:Nox_Origin' -8 36.1083 -115.0582", ": 607"};
+    Check(Lines(out) == wantA, "라우터 4005 답 = 610 · 605(내 쪽 주소 127.0.0.1:4000) · 607");
+    Check(!out.empty() && out.back().closeAfter && !out.front().closeAfter, "QUIT 답 뒤에만 끊는다");
+    a.OnClose(1);
+
+    // 채널 주소 설정 있음 — 그 주소 · 포트 · 이름
+    RouterConfig c;
+    c.channelIp = (192u << 24) | (0u << 16) | (2u << 8) | 10u;   // 192.0.2.10 (문서용 주소)
+    c.channelPort = 4100;
+    c.serverName = "Chan";
+    Router b{c};
+    out.clear();
+    b.OnConnect(7, peer, loop);
+    b.OnLine(7, "whereto wn 1234 9472 65538 7726", out);
+    Check(Lines(out) == std::vector<std::string>{": 605 u :192.0.2.10 4100 '0:Chan' -8 36.1083 -115.0582"},
+          "채널 주소를 설정하면 605 = 그 주소 · 포트 · 이름");
+
+    // 모르는 명령 — 답 없음, 처음 한 번만 기록 · 모르는 접속 번호는 무시
+    out.clear();
+    b.OnLine(7, "PING abc", out);
+    b.OnLine(7, "ping def", out);
+    b.OnLine(99, "lobcount 9472", out);
+    Check(out.empty() && b.TakeLog().size() == 1, "모르는 명령은 답 없이 처음 한 번만 기록 · 모르는 접속은 무시");
 }
 
 // ── 녹음 대조 ───────────────────────────────────────────────────────
@@ -551,7 +578,9 @@ int ReplayRecording(const char* path) {
     cfg.rooms = {{"tak7", 0}};
     cfg.joinKey = LobbyTestKey();
     nox::wol::Lobby lb(cfg);
-    int tokenLines = 0, joinGames = 0;
+    // ★ 10-14 작업 8b — 4005 접속(로비 찾기)은 라우터가 받는다. 채널 주소 설정이 없으니 605 는 「붙은 주소」:4000(옛 로비와 같은 답)
+    nox::wol::Router rt{nox::wol::RouterConfig{}};
+    int tokenLines = 0, joinGames = 0, routerConns = 0;
     const uint32_t loop = 0x7f000001;   // 녹음의 정품 클라는 127.0.0.1 에서 붙었다
 
     int compared = 0, skipped = 0, items = 0, diffs = 0, droppedPage = 0;
@@ -572,13 +601,20 @@ int ReplayRecording(const char* path) {
             continue;
         }
         std::vector<nox::wol::Out> out;
-        lb.OnConnect(rc.id, static_cast<uint16_t>(rc.port), loop, loop);
-        if (rc.port == nox::wol::kLobbyPort) lb.OnLine(rc.id, "NOXCLIENT 1", out);   // DLL 이 로그인 앞에 끼우는 줄
-        for (const auto& cl : rc.client) {
-            lb.OnLine(rc.id, cl, out);
-            if (cl.rfind("JOINGAME ", 0) == 0) ++joinGames;
+        if (rc.port == nox::wol::kServServPort) {
+            ++routerConns;
+            rt.OnConnect(rc.id, loop, loop);
+            for (const auto& cl : rc.client) rt.OnLine(rc.id, cl, out);
+            rt.OnClose(rc.id);
+        } else {
+            lb.OnConnect(rc.id, loop, loop);
+            if (rc.port == nox::wol::kLobbyPort) lb.OnLine(rc.id, "NOXCLIENT 1", out);   // DLL 이 로그인 앞에 끼우는 줄
+            for (const auto& cl : rc.client) {
+                lb.OnLine(rc.id, cl, out);
+                if (cl.rfind("JOINGAME ", 0) == 0) ++joinGames;
+            }
+            lb.OnClose(rc.id);
         }
-        lb.OnClose(rc.id);
         std::vector<std::string> kept;   // DLL 이 `NOXTOKEN` 줄을 뗀 뒤 정품 로비 모듈이 받는 줄
         for (const auto& l : Lines(out)) {
             if (l.rfind("NOXTOKEN ", 0) == 0) ++tokenLines;
@@ -610,10 +646,12 @@ int ReplayRecording(const char* path) {
         }
     }
     for (const auto& l : lb.TakeLog()) std::printf("  로비 기록: %s\n", l.c_str());
+    for (const auto& l : rt.TakeLog()) std::printf("  라우터 기록: %s\n", l.c_str());
     // 0 은 「없었다」와 「못 읽었다」를 안 가른다 — 지나간 양을 같이 찍는다
-    std::printf("녹음 %d줄 · 접속 %zu (대조 %d · 건너뜀 %d) · 대조한 답 묶음 %d · 일부러 뺀 PAGE %d · 다름 %d\n", lines,
-                conns.size(), compared, skipped, items, droppedPage, diffs);
+    std::printf("녹음 %d줄 · 접속 %zu (대조 %d · 건너뜀 %d · 그 가운데 라우터 %d) · 대조한 답 묶음 %d · 일부러 뺀 PAGE %d · 다름 %d\n",
+                lines, conns.size(), compared, skipped, routerConns, items, droppedPage, diffs);
     Check(compared > 0 && items > 0, "녹음에서 대조할 접속과 답을 찾았다");
+    Check(routerConns == 5, "녹음의 4005 접속 다섯을 라우터가 받았다");
     Check(diffs == 0, "로비 답이 XWIS 원래 답과 종류·순서·꼴이 같다(DLL 이 NOXTOKEN 을 뗀 뒤)");
     std::printf("녹음 속 방 참가 %d · 낸 NOXTOKEN %d\n", joinGames, tokenLines);
     Check(joinGames > 0 && tokenLines == joinGames, "녹음 속 방 참가마다 NOXTOKEN 하나");
@@ -630,6 +668,7 @@ int main(int argc, char** argv) {
     } else {
         UnitTests();
         LobbyUnitTests();
+        RouterUnitTests();
     }
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;

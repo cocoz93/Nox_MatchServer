@@ -3,9 +3,10 @@
 #   -Mode Open [-PublicIp a.b.c.d] [-AllowIp a.b.c.d]
 #       ① 방화벽 열기(tools\mo_firewall.ps1 — 승인 창 1회, -AllowIp 를 주면 그 주소만)
 #       ② 게임 서버(UDP 18590)가 안 떠 있으면 띄운다 — 서버클라_실행.bat 과 같은 실행값(Estate 아레나)
-#       ③ 로비를 바깥용으로 다시 띄운다 — --bind 0.0.0.0 · 게임 서버 주소 = 이 PC 공인 IP
+#       ③ 라우터(4005)와 로비(4000)를 바깥용으로 다시 띄운다 — --bind 0.0.0.0 · 게임 서버 주소 = 이 PC 공인 IP
+#          (★ 10-14 작업 8b — 4005 는 라우터 `nox_router` 가 받는다. 채널 주소 설정이 없어 「클라가 붙은 주소」:4000 을 알려 준다)
 #   -Mode Close
-#       ① 로비 끄기 ② 방화벽 닫기(승인 창 1회). 게임 서버는 그대로 둔다(서버 창을 닫으면 꺼진다)
+#       ① 라우터 · 로비 끄기 ② 방화벽 닫기(승인 창 1회). 게임 서버는 그대로 둔다(서버 창을 닫으면 꺼진다)
 #
 # ⚠ 이 PC는 공유기 없이 공인 IP 가 직접 붙어 있어, 여는 동안 세 포트가 인터넷에 드러난다 — 시험이 끝나면 꼭 닫기.
 #   로비 · 게임 서버는 시간 제한 · 접속 상한 · 낯선 패킷 시험이 없다(Docs/LOBBY_DESIGN.md 「다른 PC용 꾸러미」 절).
@@ -13,6 +14,7 @@ param([ValidateSet('Open', 'Close')][string]$Mode = 'Open', [string]$PublicIp = 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $lobbyExe = Join-Path $repo 'build\Release\nox_lobby.exe'
+$routerExe = Join-Path $repo 'build\Release\nox_router.exe'
 $serverExe = Join-Path $repo 'build\Release\nox_server.exe'
 $map = 'C:\Program Files\GOG Galaxy\Games\Nox\maps\Estate\Estate.map'
 $firewall = Join-Path $PSScriptRoot 'mo_firewall.ps1'
@@ -33,11 +35,11 @@ function Get-PublicIpCandidates {
       $_.IPAddress -notmatch '^(10\.|127\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)' } | ForEach-Object IPAddress)
 }
 
-# 로비는 창도 저장할 상태도 없는 콘솔 프로그램이라 바로 끈다(서버클라_실행.bat 이 nox_server 를 끄는 것과 같다)
+# 로비 · 라우터는 창도 저장할 상태도 없는 콘솔 프로그램이라 바로 끈다(서버클라_실행.bat 이 nox_server 를 끄는 것과 같다)
 function Stop-Lobby {
-  Get-Process nox_lobby -ErrorAction SilentlyContinue | ForEach-Object {
+  Get-Process nox_lobby, nox_router -ErrorAction SilentlyContinue | ForEach-Object {
     Stop-Process -Id $_.Id -Force
-    Write-Host "로비: 떠 있던 것 끔 (pid $($_.Id))"
+    Write-Host "$($_.ProcessName): 떠 있던 것 끔 (pid $($_.Id))"
   }
 }
 
@@ -77,18 +79,19 @@ try {
       Write-Host '게임 서버: 띄움 (Estate 아레나, UDP 18590)'
     }
 
-    Stop-Lobby   # 루프백(127.0.0.1)용으로 떠 있던 로비는 끄고 바깥용으로 다시 띄운다
+    Stop-Lobby   # 루프백(127.0.0.1)용으로 떠 있던 로비 · 라우터는 끄고 바깥용으로 다시 띄운다
+    Start-Process -FilePath $routerExe -ArgumentList @('--config', "`"$cfg`"", '--bind', '0.0.0.0')
     Start-Process -FilePath $lobbyExe -ArgumentList @('--config', "`"$cfg`"", '--bind', '0.0.0.0', '--game-ip', $PublicIp, '--map', 'estate', '--mode', 'arena')
     Start-Sleep -Seconds 1
     $listen = @(Get-NetTCPConnection -State Listen -LocalPort 4005, 4000 -ErrorAction SilentlyContinue | Where-Object LocalAddress -eq '0.0.0.0')
-    if ($listen.Count -lt 2) { throw '로비가 0.0.0.0:4005 · 4000 으로 뜨지 않았다 — 로비 창의 글을 보세요' }
-    Write-Host "로비: 띄움 — 0.0.0.0:4005 · 4000 · 방은 설정 파일 [rooms] → 게임 서버 $PublicIp`:18590"
+    if ($listen.Count -lt 2) { throw '라우터 · 로비가 0.0.0.0:4005 · 4000 으로 뜨지 않았다 — 두 창의 글을 보세요' }
+    Write-Host "라우터: 띄움 — 0.0.0.0:4005 · 로비: 띄움 — 0.0.0.0:4000 · 방은 설정 파일 [rooms] → 게임 서버 $PublicIp`:18590"
     Write-Host '[열림] 이제 다른 PC 에서 2_PLAY.bat — 시험이 끝나면 꼭 서버_MO_닫기.bat'
   } else {
     Stop-Lobby
     $fw = Invoke-Firewall 'Close' @()
     if (-not ($fw -match '\[닫힘\]')) { throw '방화벽을 닫지 못했다 — 다시 실행하거나 mo_firewall.ps1 -Mode Close 를 직접' }
-    Write-Host '[닫힘] 로비 끔 · 방화벽 규칙 지움 — 게임 서버 창은 필요 없으면 닫으세요'
+    Write-Host '[닫힘] 라우터 · 로비 끔 · 방화벽 규칙 지움 — 게임 서버 창은 필요 없으면 닫으세요'
   }
 } catch {
   Write-Host "[실패] $($_.Exception.Message)"

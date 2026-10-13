@@ -1,10 +1,11 @@
 ﻿# lobby_smoke.ps1 — 로비 서버 소켓 왕복 (MO 2단계, Docs/LOBBY_DESIGN.md 「시험」의 lobby_smoke).
 #
-# nox_lobby 를 시험용 포트(14005·14000)로 띄우고, 정품 클라가 보내는 순서(1단계 녹음) 그대로 TCP 로 말해 본다.
-#   로비 찾기 → 605 가 로비 주소·포트를 알려 주나 → 로그인 376 · 379 → 목록(방 1줄 · 방장 주소)
+# nox_lobby 를 시험용 포트(14000)로 띄우고, 정품 클라가 보내는 순서(1단계 녹음) 그대로 TCP 로 말해 본다.
+#   로그인 376 · 379 → 목록(방 1줄 · 방장 주소)
 #   → 채팅 로비 입·퇴장 → 게임 방 목록 → 방 참가(353 에 방장 주소) → QUIT 607
 # 로비 로직의 꼴은 lobby_replay 가 녹음과 대조한다. 여기서는 소켓(accept · 줄 나누기 · 보내기 · 끊기)만 본다.
-param([int]$ServPort = 14005, [int]$LobbyPort = 14000, [string]$Exe = '')
+# ★ 10-14 작업 8b — 로비 찾기(4005 · 605)는 라우터로 떼어 냈다 — 그 왕복 · 답 줄 CRLF 날바이트 확인은 router_smoke.ps1
+param([int]$LobbyPort = 14000, [string]$Exe = '')
 $ErrorActionPreference = 'Stop'
 if (-not $Exe) { $Exe = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\Release\nox_lobby.exe' }
 $gameIp = '192.0.2.10'; $gameIpInt = '3221225994'   # 문서용 주소 — 192<<24 | 0<<16 | 2<<8 | 10
@@ -46,28 +47,9 @@ $log = Join-Path $env:TEMP ("lobby_smoke_{0}.txt" -f $PID)
 $ini = Join-Path $env:TEMP ("lobby_smoke_{0}.ini" -f $PID)
 [IO.File]::WriteAllText($ini, "[token]`r`nkey = $('ab' * 32)`r`n[rooms]`r`nNoxOrigin = 0`r`n")
 $p = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -ArgumentList @(
-  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--servserv-port', $ServPort, '--lobby-port', $LobbyPort,
+  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort,
   '--game-ip', $gameIp, '--seconds', '8', '--quiet')
 try {
-  Write-Host "로비 찾기 :$ServPort"
-  $k = Open $ServPort
-  Send $k @('verchk 32512 65556', 'verchk 9472 65538', 'lobcount 9472', 'whereto wn 1234 9472 65538 7726', 'QUIT')
-  $a = ReadUntil $k '607'
-  Check ((($a | ForEach-Object { Kind $_ }) -join ',') -eq '610,605,607') "답 순서 610 · 605 · 607 (받은 줄 $($a.Count))"
-  Check (($a | Where-Object { (Kind $_) -eq '605' }) -like "*:127.0.0.1 $LobbyPort '0:*") "605 가 로비 주소 127.0.0.1:$LobbyPort 를 알려 준다"
-  Check ($null -eq $k.r.ReadLine()) 'QUIT 뒤 로비가 끊는다'
-  $k.c.Close()
-
-  # 줄 끝 바이트 — 위 ReadLine 은 LF 만 와도 줄로 받으므로 CRLF 는 날바이트로 본다.
-  #   정품 클라는 1단계 때 중계기가 CRLF 로 넘긴 줄을 받아 동작했다(wol_relay.ps1 이 줄마다 "`r`n")
-  $k = Open $ServPort
-  Send $k @('lobcount 9472')
-  Start-Sleep -Milliseconds 300
-  $buf = New-Object byte[] 64
-  $n = $k.c.GetStream().Read($buf, 0, $buf.Length)
-  Check ($latin1.GetString($buf, 0, $n) -ceq ": 610 u 1`r`n") '답 줄이 CRLF 로 끝난다 (610 날바이트)'
-  $k.c.Close()
-
   Write-Host "로비 :$LobbyPort"
   # DLL 없는 로그인(NOXCLIENT 없음) — 끊지 않고 로그인 끝(376)까지, 인사말에 패치 안내(10-11 — ERROR 로 끊으면 정품이 멈춘 듯 보였다)
   $k = Open $LobbyPort
@@ -123,8 +105,9 @@ Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $ini -ErrorAction SilentlyContinue
 Write-Host "로비 출력: $summary"
 # 0 은 「없었다」와 「못 읽었다」를 안 가른다 — 로비가 센 접속·줄 수를 같이 본다
-#   접속 = 로비 찾기 2(왕복 · CRLF) + DLL 없는 로그인 1 + 로비 1 · 보낸 클라 줄 = 5 + 1 + 4 + 16 = 26
-#   받은 답 = 로비 찾기 3 + 610 1 + DLL 없는 로그인 6(375 · 372 · 안내 372 둘 · 376 · 607) + 로그인 4 · 329 · 목록 6 · 입장 3 · 퇴장 1 · 목록 3 · 참가 5(NOXTOKEN 포함) · 607 = 34
-Check ($summary -match '접속 4 · 받은 줄 26 · 보낸 줄 34') '로비가 센 접속 4 · 받은 줄 26 · 보낸 줄 34'
+#   접속 = DLL 없는 로그인 1 + 로비 1 · 보낸 클라 줄 = 4 + 16 = 20
+#   받은 답 = DLL 없는 로그인 6(375 · 372 · 안내 372 둘 · 376 · 607) + 로그인 4 · 329 · 목록 6 · 입장 3 · 퇴장 1 · 목록 3 · 참가 5(NOXTOKEN 포함) · 607 = 30
+#   (★ 10-14 작업 8b 전 = 로비 찾기 둘을 더해 접속 4 · 받은 줄 26 · 보낸 줄 34)
+Check ($summary -match '접속 2 · 받은 줄 20 · 보낸 줄 30') '로비가 센 접속 2 · 받은 줄 20 · 보낸 줄 30'
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)
 exit $(if ($script:fails) { 1 } else { 0 })

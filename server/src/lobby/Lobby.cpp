@@ -74,9 +74,8 @@ bool Lobby::IsRoomHost(const std::string& name) const {
     return false;
 }
 
-void Lobby::OnConnect(int conn, uint16_t port, uint32_t peerIp, uint32_t localIp) {
+void Lobby::OnConnect(int conn, uint32_t peerIp, uint32_t localIp) {
     Conn c;
-    c.port = port;
     c.peerIp = peerIp;
     c.localIp = localIp;
     conns_[conn] = c;
@@ -98,28 +97,7 @@ void Lobby::OnLine(int conn, std::string_view line, std::vector<Out>& out) {
     if (it == conns_.end() || line.empty()) return;
     const auto t = Split(line);
     const std::string cmd = Upper(t[0]);
-    if (it->second.port == cfg_.servServPort) OnServServ(conn, it->second, cmd, line, out);
-    else OnChat(conn, it->second, cmd, t, line, out);
-}
-
-// 4005 — 로비 서버 찾기. 녹음: verchk ×2 · lobcount · whereto · QUIT → 610 · 605 · 607
-void Lobby::OnServServ(int conn, Conn& c, const std::string& cmd, std::string_view line, std::vector<Out>& out) {
-    if (cmd == "VERCHK") return;   // 4005 에선 XWIS 도 답하지 않았다
-    if (cmd == "LOBCOUNT") {
-        out.push_back({conn, ": 610 u 1"});
-        return;
-    }
-    if (cmd == "WHERETO") {
-        // 로비 주소 = 클라가 우리에게 붙은 주소. 뒤의 `-8 36.1083 -115.0582` 는 XWIS 그대로(뜻 확인 안 함)
-        out.push_back({conn, ": 605 u :" + IpDotted(c.localIp) + " " + std::to_string(cfg_.lobbyPort) + " '0:" +
-                                 cfg_.serverName + "' -8 36.1083 -115.0582"});
-        return;
-    }
-    if (cmd == "QUIT") {
-        out.push_back({conn, ": 607", true});
-        return;
-    }
-    Unknown(cmd, line);
+    OnChat(conn, it->second, cmd, t, line, out);   // ★ 10-14 작업 8b — 4005(로비 찾기)는 라우터(`Router.cpp`)로 옮겼다
 }
 
 // 4000 — 로그인 · 목록 · 채팅 로비 · 방 참가
