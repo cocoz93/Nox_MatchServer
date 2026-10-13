@@ -9,9 +9,8 @@
 //     [rooms] <방장 이름> = <게임 방 번호>  목록에 싣는 방(차례대로) — 옛 --room-host · --room-name 자리
 //
 // 소켓만 맡는다 — 받은 줄은 nox::wol::Lobby 에 넘기고, 돌려받은 줄을 보낸다(게임 서버 main.cpp 루프와 같은 짜임).
-//   · 한 스레드 select() 루프. 듣기 소켓 둘(로비 찾기 · 로비) + 접속 소켓들
-//   · 접속 소켓은 논블로킹 — 상대가 안 읽어도 루프가 막히지 않게 보내기 버퍼에 쌓고 쓰기 가능할 때 보낸다
-//   · 줄은 CRLF 로 가른다(LF 만 와도 받는다)
+//   · 한 스레드 루프. 듣기 둘(로비 찾기 · 로비)과 접속들은 TCP 줄 부품(`nox::CTcpLines` — 작업 8a)이 든다
+//     (옛 이 자리의 `select` 루프 · 논블로킹 보내기 버퍼 · CRLF 줄 나누기를 그리로 옮겼다)
 //
 // ⚠ --bind 를 0.0.0.0 으로 두면 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다.
 //   같은 PC 시험(hosts → 127.0.0.1)은 --bind 127.0.0.1 로 충분하다.
@@ -29,21 +28,13 @@
 
 #include "nox/IniFile.h"
 #include "nox/Lobby.h"
+#include "nox/TcpLines.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
 namespace {
 
-struct Sock {
-    SOCKET s = INVALID_SOCKET;
-    uint16_t port = 0;        // 들어온 듣기 포트
-    std::string in;           // 아직 줄이 안 끝난 받은 바이트
-    std::string out;          // 아직 못 보낸 바이트
-    bool closing = false;     // 보내기 버퍼를 다 비우면 끊는다(QUIT 답)
-};
-
 bool g_quiet = false;
-constexpr size_t kMaxLine = 4096;   // 줄바꿈 없이 이만큼 오면 끊는다 — 규약상 이렇게 긴 줄은 없다
 
 // 줄마다 시각을 붙인다 — 10-07 사람 확인에서 마지막 「끊음」이 게임 중인지 게임을 닫을 때인지 기록만으로 못 가렸다
 void Log(const char* fmt, ...) {
@@ -92,21 +83,6 @@ std::string PrintableLog(const std::string& s) {
     for (char& c : r)
         if (static_cast<uint8_t>(c) < 0x20 || static_cast<uint8_t>(c) == 0x7f) c = '.';
     return r;
-}
-
-SOCKET Listen(uint32_t bindIp, uint16_t port) {
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) return s;
-    sockaddr_in a{};
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(bindIp);
-    a.sin_port = htons(port);
-    if (bind(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == SOCKET_ERROR || listen(s, SOMAXCONN) == SOCKET_ERROR) {
-        Log("[실패] %u 포트를 열 수 없다 (WSA %d)\n", port, WSAGetLastError());
-        closesocket(s);
-        return INVALID_SOCKET;
-    }
-    return s;
 }
 
 }  // namespace
@@ -166,14 +142,14 @@ int main(int argc, char** argv) {
     }
     if (cfg.rooms.empty()) { Log("[멈춤] 설정 파일에 [rooms] 가 없다 — 방장 이름 = 게임 방 번호 한 줄 이상\n"); return 2; }
 
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        Log("WSAStartup 실패\n");
-        return 1;
+    nox::CTcpLines tcp;   // ★ 10-14 작업 8a — 듣기 둘 · 접속들(옛 이 자리의 `WSAStartup` · `Listen` 둘)
+    {
+        std::string err;
+        if (!tcp.Listen(bindIp, cfg.servServPort, err) || !tcp.Listen(bindIp, cfg.lobbyPort, err)) {
+            Log("[실패] %s\n", err.c_str());
+            return 1;
+        }
     }
-    const SOCKET lsServ = Listen(bindIp, cfg.servServPort);
-    const SOCKET lsLobby = Listen(bindIp, cfg.lobbyPort);
-    if (lsServ == INVALID_SOCKET || lsLobby == INVALID_SOCKET) return 1;
 
     nox::wol::Lobby lobby(cfg);
     std::string roomList;
@@ -185,122 +161,57 @@ int main(int argc, char** argv) {
                 cfg.room.maxPlayers, configPath.c_str());
     std::fflush(stdout);
 
-    std::map<int, Sock> socks;
-    int nextId = 1;
     unsigned long long nIn = 0, nOut = 0, nConn = 0;
     const auto start = std::chrono::steady_clock::now();
+    std::vector<nox::TcpLineEvent> evs;
+    std::vector<nox::wol::Out> outs;
 
-    auto closeConn = [&](int id, const char* why) {
-        auto it = socks.find(id);
-        if (it == socks.end()) return;
-        closesocket(it->second.s);
-        lobby.OnClose(id);
-        if (!g_quiet) Log("[c%d:%u] 끊음 — %s\n", id, it->second.port, why);
-        socks.erase(it);
+    // 사건 하나 — 새 접속 · 받은 줄(로비에 넘기고 돌려받은 줄을 보내기 버퍼에) · 끊김
+    auto onEvent = [&](const nox::TcpLineEvent& e) {
+        switch (e.type) {
+        case nox::TcpLineEvent::Type::OPENED:
+            ++nConn;
+            lobby.OnConnect(e.conn, e.port, e.peerIp, e.localIp);
+            if (!g_quiet)
+                Log("[c%d:%u] 접속 %s → 내 쪽 %s\n", e.conn, e.port, nox::wol::IpDotted(e.peerIp).c_str(),
+                    nox::wol::IpDotted(e.localIp).c_str());
+            break;
+        case nox::TcpLineEvent::Type::LINE:
+            ++nIn;
+            if (!g_quiet) Log("[c%d:%u] >> %s\n", e.conn, e.port, Printable(e.line).c_str());
+            outs.clear();
+            lobby.OnLine(e.conn, e.line, outs);
+            for (const auto& o : outs) {
+                if (!tcp.Send(o.conn, o.line, o.closeAfter)) continue;
+                ++nOut;
+                if (!g_quiet) Log("[c%d:%u] << %s\n", o.conn, e.port, Printable(o.line).c_str());
+            }
+            for (const auto& l : lobby.TakeLog()) Log("[로비] %s\n", PrintableLog(l).c_str());
+            break;
+        case nox::TcpLineEvent::Type::CLOSED:
+            lobby.OnClose(e.conn);
+            if (!g_quiet) Log("[c%d:%u] 끊음 — %s\n", e.conn, e.port, e.why);
+            break;
+        case nox::TcpLineEvent::Type::REFUSED:
+            Log("[로비] 접속이 너무 많아 끊음 (한도 %zu)\n", nox::CTcpLines::kMaxConns);
+            break;
+        }
     };
 
     for (;;) {
         if (seconds > 0 && std::chrono::steady_clock::now() - start >= std::chrono::seconds(seconds)) break;
-
-        fd_set rd, wr;
-        FD_ZERO(&rd);
-        FD_ZERO(&wr);
-        FD_SET(lsServ, &rd);
-        FD_SET(lsLobby, &rd);
-        for (const auto& kv : socks) {
-            FD_SET(kv.second.s, &rd);
-            if (!kv.second.out.empty()) FD_SET(kv.second.s, &wr);
-        }
-        timeval tv{};
-        tv.tv_usec = 100000;   // 100ms — 로비엔 틱이 없다. --seconds 확인용으로만 깨어난다
-        if (select(0, &rd, &wr, nullptr, &tv) <= 0) continue;
-
-        // 새 접속
-        for (const SOCKET ls : {lsServ, lsLobby}) {
-            if (!FD_ISSET(ls, &rd)) continue;
-            sockaddr_in peer{};
-            int plen = sizeof(peer);
-            const SOCKET s = accept(ls, reinterpret_cast<sockaddr*>(&peer), &plen);
-            if (s == INVALID_SOCKET) continue;
-            if (socks.size() >= static_cast<size_t>(FD_SETSIZE - 2)) {   // select 한 번에 담을 수 있는 소켓 수(FD_SETSIZE)를 넘기지 않는다
-                closesocket(s);
-                Log("[로비] 접속이 너무 많아 끊음 (FD_SETSIZE %d)\n", FD_SETSIZE);
-                continue;
-            }
-            u_long nb = 1;
-            ioctlsocket(s, FIONBIO, &nb);
-            sockaddr_in local{};
-            int llen = sizeof(local);
-            getsockname(s, reinterpret_cast<sockaddr*>(&local), &llen);
-            const uint16_t port = (ls == lsServ) ? cfg.servServPort : cfg.lobbyPort;
-            const int id = nextId++;
-            ++nConn;
-            Sock k;
-            k.s = s;
-            k.port = port;
-            socks[id] = k;
-            lobby.OnConnect(id, port, ntohl(peer.sin_addr.s_addr), ntohl(local.sin_addr.s_addr));
-            if (!g_quiet)
-                Log("[c%d:%u] 접속 %s → 내 쪽 %s\n", id, port, nox::wol::IpDotted(ntohl(peer.sin_addr.s_addr)).c_str(),
-                            nox::wol::IpDotted(ntohl(local.sin_addr.s_addr)).c_str());
-        }
-
-        std::vector<int> ids;
-        for (const auto& kv : socks) ids.push_back(kv.first);
-        for (const int id : ids) {
-            auto it = socks.find(id);
-            if (it == socks.end()) continue;
-            Sock& k = it->second;
-
-            if (FD_ISSET(k.s, &rd)) {
-                char buf[4096];
-                const int n = recv(k.s, buf, sizeof(buf), 0);
-                if (n == 0) { closeConn(id, "상대가 닫음"); continue; }
-                if (n < 0) {
-                    if (WSAGetLastError() != WSAEWOULDBLOCK) { closeConn(id, "받기 오류"); continue; }
-                } else {
-                    k.in.append(buf, static_cast<size_t>(n));
-                    std::vector<nox::wol::Out> outs;
-                    size_t nl;
-                    while ((nl = k.in.find('\n')) != std::string::npos) {
-                        std::string line = k.in.substr(0, nl);
-                        k.in.erase(0, nl + 1);
-                        if (!line.empty() && line.back() == '\r') line.pop_back();
-                        ++nIn;
-                        if (!g_quiet) Log("[c%d:%u] >> %s\n", id, k.port, Printable(line).c_str());
-                        lobby.OnLine(id, line, outs);
-                    }
-                    if (k.in.size() > kMaxLine) { closeConn(id, "줄이 너무 길다"); continue; }
-                    for (const auto& o : outs) {
-                        auto t = socks.find(o.conn);
-                        if (t == socks.end()) continue;
-                        t->second.out += o.line + "\r\n";
-                        if (o.closeAfter) t->second.closing = true;
-                        ++nOut;
-                        if (!g_quiet) Log("[c%d:%u] << %s\n", o.conn, t->second.port, Printable(o.line).c_str());
-                    }
-                    for (const auto& l : lobby.TakeLog()) Log("[로비] %s\n", PrintableLog(l).c_str());
-                }
-            }
-
-            it = socks.find(id);
-            if (it == socks.end()) continue;
-            if (!it->second.out.empty()) {   // 쓰기 가능 여부와 관계없이 한 번 시도 — 막히면 WOULDBLOCK 으로 다음 차례
-                Sock& w = it->second;
-                const int n = send(w.s, w.out.data(), static_cast<int>(w.out.size()), 0);
-                if (n > 0) w.out.erase(0, static_cast<size_t>(n));
-                else if (n < 0 && WSAGetLastError() != WSAEWOULDBLOCK) { closeConn(id, "보내기 오류"); continue; }
-            }
-            it = socks.find(id);
-            if (it != socks.end() && it->second.closing && it->second.out.empty()) closeConn(id, "QUIT");
-        }
+        // 100ms — 로비엔 틱이 없다. --seconds 확인용으로만 깨어난다
+        WaitForSingleObject(static_cast<HANDLE>(tcp.WaitHandle()), 100);
+        evs.clear();
+        tcp.Poll(evs);
+        for (const auto& e : evs) onEvent(e);
+        evs.clear();
+        tcp.Flush(evs);   // 보내기 오류 · QUIT 답 뒤 끊기가 여기서 나온다
+        for (const auto& e : evs) onEvent(e);
         std::fflush(stdout);
     }
 
-    for (auto& kv : socks) closesocket(kv.second.s);
-    closesocket(lsServ);
-    closesocket(lsLobby);
-    WSACleanup();
+    tcp.CloseAll();
     Log("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu\n", nConn, nIn, nOut);
     return 0;
 }

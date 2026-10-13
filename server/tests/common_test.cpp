@@ -6,13 +6,17 @@
 //   ④ 꼬리 찾기 — 접속 시도(100바이트)·CONNECT(3바이트) 뒤 55바이트
 //   ⑤ 일회용 장부
 //   ⑥ 설정 파일 — 구역·주석·BOM·대소문자·차례 · 틀린 꼴은 줄 번호와 함께 실패
+//   ⑦ TCP 줄 부품(작업 8a) — 루프백 접속 · 줄 나누기(CRLF · LF · 나뉘어 온 줄) · 보내기 CRLF · 끊김 갈래 넷(본체는 `tcp_lines_test.cpp`)
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "nox/IniFile.h"
 #include "nox/JoinToken.h"
+
+std::vector<std::pair<bool, std::string>> RunTcpLinesChecks();   // tcp_lines_test.cpp
 
 namespace {
 
@@ -227,6 +231,13 @@ void TestIni() {
     Check(!bad.LoadFile("C:\\없는\\경로\\nox.ini"), "없는 파일 → 실패");
 }
 
+void TestTcpLines() {
+    std::printf("⑦ TCP 줄 부품\n");
+    const auto r = RunTcpLinesChecks();
+    for (const auto& c : r) Check(c.first, c.second.c_str());
+    Check(r.size() == 14, "TCP 줄 부품 확인 수 14(본체가 끝까지 돌았나)");
+}
+
 }  // namespace
 
 int main() {
@@ -236,6 +247,7 @@ int main() {
     TestTrailer();
     TestLedger();
     TestIni();
+    TestTcpLines();
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }
