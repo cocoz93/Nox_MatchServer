@@ -47,7 +47,7 @@
 #endif
 #include "nox/NoxCrypt.h"   // ★ 09-27 B3 — modifier.bin 복호
 
-#include "WorldBuild.h"
+#include "nox/WorldBuild.h"
 // ★ 10-08 — 크래시 덤프(ServerCore 사본). 넣기만 하면 전역 인스턴스가 처리기를 건다 —
 //   덤프는 exe 옆 `CrashDump\` 에 남고 프로세스는 종료 코드 1 로 끝난다(`Docs/LAYERS_DESIGN.md` 조각 2).
 //   사본은 원본 그대로 두므로, 그쪽 처리기의 안 쓰는 매개변수 경고(C4100)만 여기서 끈다.

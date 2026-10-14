@@ -33,7 +33,7 @@
 #endif
 #include "nox/NoxCrypt.h"   // ★ 09-27 B3 — modifier.bin 복호
 
-#include "WorldBuild.h"
+#include "nox/WorldBuild.h"
 
 namespace {
 

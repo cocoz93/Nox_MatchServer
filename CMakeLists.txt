@@ -33,6 +33,7 @@ add_library(nox_proto STATIC
   server/src/NetworkThread.cpp
   server/src/RoomManager.cpp
   server/src/DumpSniff.cpp
+  server/src/WorldBuild.cpp   # ★ 10-14 작업 9b — 세계 차리기 · 방 설정 · 맵 원본(방 관리자가 방을 차리려고 본체로)
   server/src/UpdateStream.cpp
   server/src/core/GameBalance.cpp
   server/src/core/NoxCrypt.cpp
@@ -45,7 +46,7 @@ add_library(nox_proto STATIC
 target_include_directories(nox_proto PUBLIC server/include)
 target_link_libraries(nox_proto PUBLIC nox_common)   # 입장 토큰 — 통신 층 꼬리 떼기 · 방 관리자 검증
 
-add_executable(nox_server server/src/main.cpp server/src/WorldBuild.cpp)
+add_executable(nox_server server/src/main.cpp)
 target_link_libraries(nox_server PRIVATE nox_proto)
 
 add_executable(nox_proxy server/src/proxy.cpp)
