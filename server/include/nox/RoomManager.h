@@ -26,6 +26,7 @@
 #include "nox/JoinToken.h"
 #include "nox/Server.h"
 #include "nox/UdpServer.h"
+#include "nox/WorldBuild.h"   // ★ 10-14 작업 9c — 방 설정(`RoomSettings`) · 세계 차리기 결과(`WorldExtras`)
 
 namespace nox {
 
@@ -37,6 +38,8 @@ struct CRoomLoad {
 };
 
 // 방 하나 — 원본 재현 게임(`nox::Server`) 하나를 든다. MO 규칙(대기/진행/끝 · 판 시작 · 결과)은 여기에 쌓인다(작업 7 · 5단계).
+// ★ 10-14 플랜 B 작업 9c — 방 설정 · 세계 차리기 결과 · 판 차리기 · 진단 상태도 방이 든다(옛 `main.cpp` 의 `RoomRun` — 방 번호를 열쇠로
+//   `main` 이 따로 들어 방 하나의 정본이 둘이었다). 판 차리기 · 틱 뒤 진단 몸통은 `RoomTick.cpp`
 class CRoom {
 public:
     explicit CRoom(int id) : _id(id) { _game.SetLogRoom(id); }   // ★ 10-12 작업 7b — 방에 든 게임의 줄 머리에 `[방 N]`
@@ -51,6 +54,20 @@ public:
     // ★ 10-12 플랜 B 작업 7c — 이 방이 낸 보내기 요청(`SEND_MSG`) 누계. 초당 진단이 「이 방이 이번 틱에 보낸 것이 있나」를 본다
     unsigned long long SendRequests() const { return _sendRequests; }
 
+    // ── ★ 10-14 작업 9c — 방 설정 · 세계 차리기 결과 ──
+    const RoomSettings& Settings() const { return _settings; }
+    void SetSettings(const RoomSettings& s) { _settings = s; }
+    WorldExtras& Extras() { return _extras; }               // 월드 차리기가 채운다
+    const WorldExtras& Extras() const { return _extras; }
+    void SetBotSession(int64_t sid) { _bot0Sid = sid; }     // `[성장]` 줄의 봇 세션 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
+
+    // ── ★ 10-14 작업 9c — 판 차리기 · 틱 뒤 진단(`RoomTick.cpp` — 옛 `main` 의 `StartModeIfReady` · `RoomTickDiagnostics`) ──
+    void StartModeIfReady();
+    // 틱 앞에 보낸 수를 적어 두고(`MarkSendSeen`) 틱 뒤 차이(`SendsSinceMark`)를 진단의 `made` 로 넘긴다
+    void MarkSendSeen() { _sendSeen = _sendRequests; }
+    size_t SendsSinceMark() const { return static_cast<size_t>(_sendRequests - _sendSeen); }
+    void TickDiagnostics(size_t made);
+
 private:
     friend class CRoomManager;
     int _id;
@@ -59,6 +76,15 @@ private:
     bool _wasRoundOver = false;   // 판 끝 이벤트 — 거짓 → 참으로 바뀔 때 한 번
     CRoomLoad _load;
     unsigned long long _sendRequests = 0;   // ★ 10-12 작업 7c — 방 관리자가 요청을 옮길 때(`PullRequests`) 센다
+    // ★ 10-14 작업 9c — 옛 `RoomRun` 의 칸(주석 그대로)
+    RoomSettings _settings;                    // 이 방의 설정(실행 인자로 차린 방 = 실행 인자의 방 설정)
+    WorldExtras _extras;                       // 월드 차리기가 남긴 것(맵 깃발 자리 · 서버 찾기 답의 맵 이름)
+    int64_t _bot0Sid = -1;                     // `[성장]` 줄의 봇 세션 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
+    bool _modeStarted = false;
+    unsigned long long _tracePetsInWall = 0;   // ③ 크리처가 **벽 칸 안**에 있던 표본 수
+    unsigned long long _tracePetsSamples = 0;  // 그 분모 — 0 옆에 늘 지나간 양을 같이 읽는다
+    unsigned long long _lastAbilFp = 0;        // 조용한 주행의 능력 갈래 지문(옛 루프 안 `static`)
+    unsigned long long _sendSeen = 0;          // 틱 앞에 본 이 방의 보내기 요청 누계 — 이 틱의 `made` = 틱 뒤 − 이것
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).

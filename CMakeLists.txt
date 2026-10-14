@@ -32,6 +32,7 @@ add_library(nox_proto STATIC
   server/src/SyncHost.cpp
   server/src/NetworkThread.cpp
   server/src/RoomManager.cpp
+  server/src/RoomTick.cpp     # ★ 10-14 작업 9c — 방의 판 차리기 · 틱 뒤 진단(옛 main 의 RoomRun 몫)
   server/src/DumpSniff.cpp
   server/src/WorldBuild.cpp   # ★ 10-14 작업 9b — 세계 차리기 · 방 설정 · 맵 원본(방 관리자가 방을 차리려고 본체로)
   server/src/UpdateStream.cpp
