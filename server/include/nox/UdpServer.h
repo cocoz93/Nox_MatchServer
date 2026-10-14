@@ -89,7 +89,12 @@ struct NetworkEvent {
         CONNECTED,      // 키를 줬다(SERVER_CONNECT 처리 뒤)
         DISCONNECTED,   // 끊겼다 — 까닭은 `reason`(10-09 조각 5a 전에는 0x0A CLIENT_CLOSE 하나뿐)
         RECEIVED,       // 게임 메시지 — 처음 0x20 이상 오프코드가 나온 자리부터 조각 끝까지(머리를 뗀 평문)
-        JOIN_REQUESTED  // ★ 10-09 조각 5c — 접속 시도(0x0E TRY_JOIN). 받아 줄지는 게임이 정해 `RespondJoin` 으로 답한다
+        JOIN_REQUESTED, // ★ 10-09 조각 5c — 접속 시도(0x0E TRY_JOIN). 받아 줄지는 게임이 정해 `RespondJoin` 으로 답한다
+        // ★ 10-14 플랜 B 작업 8c — 로비 TCP(채널의 4000 · `CNetworkThread::OpenLobby`). 같은 큐로 오지만 방 · 게임 몫이 아니다 —
+        //   게임 스레드가 로비(`CLobby`)로 보낸다. 세션 번호가 없고 `lobbyConn` 으로 가른다
+        LOBBY_OPENED,   // 새 TCP 접속(`lobbyConn` · `lobbyPeerIp` · `lobbyLocalIp`)
+        LOBBY_LINE,     // 받은 줄 하나(`lobbyLine` — 줄 끝 CR LF 를 뗀 것)
+        LOBBY_CLOSED    // 끊김(`lobbyWhy` — `CTcpLines::kWhy*`)
     };
     Type type = Type::RECEIVED;
     int64_t sessionId = 0;          // 게임이 사람을 가르는 번호(10-08 조각 4)
@@ -102,7 +107,29 @@ struct NetworkEvent {
     bool scripted = false;
     uint32_t frame = 0;
     uint16_t netCode = 0;
+    // LOBBY_* — ★ 10-14 작업 8c
+    int lobbyConn = 0;              // TCP 접속 번호(1부터 · `CTcpLines`)
+    std::string lobbyLine;          // LOBBY_LINE
+    uint32_t lobbyPeerIp = 0;       // LOBBY_OPENED — 상대 IPv4
+    uint32_t lobbyLocalIp = 0;      // LOBBY_OPENED — 상대가 붙은 내 쪽 IPv4
+    const char* lobbyWhy = "";      // LOBBY_CLOSED — 정적 글자(`CTcpLines::kWhy*`)
 };
+
+// ★ 10-14 작업 8c — 로비 TCP 사건인가(방 · 게임 몫이 아니다). 갈래를 늘리면 여기 하나만 고친다
+inline bool IsLobbyEvent(NetworkEvent::Type t) {
+    switch (t) {
+        case NetworkEvent::Type::LOBBY_OPENED:
+        case NetworkEvent::Type::LOBBY_LINE:
+        case NetworkEvent::Type::LOBBY_CLOSED:
+            return true;
+        case NetworkEvent::Type::CONNECTED:
+        case NetworkEvent::Type::DISCONNECTED:
+        case NetworkEvent::Type::RECEIVED:
+        case NetworkEvent::Type::JOIN_REQUESTED:
+            return false;
+    }
+    return false;
+}
 
 // ★ 10-09 조각 5d — 게임 → 통신 층 요청 하나. 게임은 와이어 조각을 만들지 않고 이것을 쌓아 두고, 게임을 돌리는 쪽
 //   (한 스레드 조립 `CSyncHost` · 조각 5d-2 의 네트워크 스레드)이 꺼내 `CUdpServer::OnRequest` 로 넘긴다
@@ -112,7 +139,8 @@ struct NetworkRequest {
         SEND_MSG,              // 몸통 하나를 그 세션에 — 머리·순번·되받기·XOR 은 통신 층(`RequestSendMsg`)
         DISCONNECT_SESSION,    // 그 세션을 지운다(`RequestDisconnectSession`)
         RESPOND_JOIN,          // 접속 시도에 답한다(`RespondJoin`)
-        SET_SESSION_TIMEOUT    // 시간 초과 한도(`RequestSetSessionTimeout`)
+        SET_SESSION_TIMEOUT,   // 시간 초과 한도(`RequestSetSessionTimeout`)
+        LOBBY_SEND             // ★ 10-14 작업 8c — 로비 TCP 줄 하나(CRLF 는 붙여 보낸다). 네트워크 스레드가 TCP 로 보낸다 — 통신 층(UDP) 몫이 아니다
     };
     Type type = Type::SEND_MSG;
     int64_t sessionId = 0;
@@ -121,6 +149,9 @@ struct NetworkRequest {
     std::vector<uint8_t> body;       // SEND_MSG(몸통) · RESPOND_JOIN(거절 메시지 — 허락이면 빈 것)
     bool accept = false;             // RESPOND_JOIN
     uint32_t timeoutMs = 0;          // SET_SESSION_TIMEOUT
+    int lobbyConn = 0;               // LOBBY_SEND — TCP 접속 번호
+    std::string lobbyLine;           // LOBBY_SEND
+    bool lobbyCloseAfter = false;    // LOBBY_SEND — 이 줄까지 보낸 뒤 끊는다(로비의 QUIT 답)
 };
 
 // ★ 10-09 조각 5a — 게임이 한도를 알리기 전의 시간 초과 한도(ms). 한도는 게임 규칙이라 게임이 정한다(`RequestSetSessionTimeout`).

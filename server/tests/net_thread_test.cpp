@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <utility>
@@ -187,6 +188,83 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
         r.push_back({ ts.datagramsIn == 5 && ts.eventsDropped == 2 && ts.requestsDropped == 2 && ts.eventsQueued == 3, m });
         n3.Stop();
         closesocket(c3);
+    }
+
+    // ⑦ ★ 10-14 작업 8c — 로비 TCP — 새 접속 · 받은 줄이 같은 이벤트 큐로(게임 루프를 깨우는 신호도) · `LOBBY_SEND` 는 TCP 로
+    //   (CRLF · 보낸 뒤 끊기 → 끊김 이벤트) · 끊긴 접속으로 보낸 줄은 센다 · 로비 사건엔 세션 번호가 없다
+    {
+        nox::CNetworkThread n4;
+        n4.SetMaxWaitMs(5000);   // 깨우기 없이 지나가면 늦게 나와 아래 시간 조건에 걸린다
+        std::string e4;
+        const bool opened = n4.Open("127.0.0.1", 0, e4) && n4.OpenLobby(0x7f000001u, 0, e4) && n4.LobbyPort() != 0;
+        n4.Start();
+        const SOCKET t = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in from2 = me;   // 127.0.0.2 에서 붙는다 — 상대 주소와 내 쪽 주소가 뒤바뀌면 걸리게
+        inet_pton(AF_INET, "127.0.0.2", &from2.sin_addr);
+        bind(t, reinterpret_cast<sockaddr*>(&from2), sizeof(from2));
+        sockaddr_in lt = me;
+        lt.sin_port = htons(n4.LobbyPort());
+        const bool connected = connect(t, reinterpret_cast<sockaddr*>(&lt), sizeof(lt)) == 0;
+        DWORD rto = 2000;
+        setsockopt(t, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rto), sizeof(rto));
+        // 사건이 `want` 개 쌓일 때까지 큐를 꺼낸다(2초 한도)
+        std::vector<nox::NetworkEvent> lev;
+        auto drain = [&](size_t want) {
+            for (int i = 0; i < 200 && lev.size() < want; ++i) {
+                std::vector<nox::NetworkEvent> got4;
+                n4.SwapOutNetworkEvents(got4);
+                for (auto& e : got4) lev.push_back(std::move(e));
+                if (lev.size() < want) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        };
+        const bool ready = WaitForSingleObject(static_cast<HANDLE>(n4.EventsReadyHandle()), 2000) == WAIT_OBJECT_0;
+        drain(1);
+        const bool openOk = lev.size() == 1 && lev[0].type == nox::NetworkEvent::Type::LOBBY_OPENED && lev[0].lobbyConn > 0 &&
+                            lev[0].lobbyPeerIp == 0x7f000002u && lev[0].lobbyLocalIp == 0x7f000001u && lev[0].sessionId == 0 &&
+                            lev[0].queuedMs != 0;
+        const int lconn = lev.empty() ? 0 : lev[0].lobbyConn;
+        std::snprintf(m, sizeof(m), "⑦-1 로비 TCP — 열림 %d · 접속 %d · 깨우는 신호 %d · LOBBY_OPENED(번호 · 양쪽 주소 · 세션 번호 없음 · 넣은 시각) %d",
+                      (int)opened, (int)connected, (int)ready, (int)openOk);
+        r.push_back({ opened && connected && ready && openOk, m });
+
+        lev.clear();
+        const char lines[] = "NICK wn\r\nLIST -1 37\n";
+        send(t, lines, static_cast<int>(sizeof(lines) - 1), 0);
+        drain(2);
+        const bool lineOk = lev.size() == 2 && lev[0].type == nox::NetworkEvent::Type::LOBBY_LINE && lev[0].lobbyLine == "NICK wn" &&
+                            lev[1].lobbyLine == "LIST -1 37" && lev[0].lobbyConn == lconn;
+        std::snprintf(m, sizeof(m), "⑦-2 받은 줄 둘 → LOBBY_LINE 둘(CR 뗌 · 같은 접속 번호) %d", (int)lineOk);
+        r.push_back({ lineOk, m });
+
+        lev.clear();
+        std::vector<nox::NetworkRequest> lq(3);
+        lq[0].type = nox::NetworkRequest::Type::LOBBY_SEND; lq[0].lobbyConn = lconn; lq[0].lobbyLine = ": 321 u:";
+        lq[1].type = nox::NetworkRequest::Type::LOBBY_SEND; lq[1].lobbyConn = lconn; lq[1].lobbyLine = ": 607"; lq[1].lobbyCloseAfter = true;
+        lq[2].type = nox::NetworkRequest::Type::LOBBY_SEND; lq[2].lobbyConn = lconn + 100; lq[2].lobbyLine = "x";
+        const uint32_t pushAt4 = Now();
+        n4.PushRequests(lq);
+        std::string recv4;
+        char rb[256];
+        for (;;) {
+            const int n = recv(t, rb, sizeof(rb), 0);
+            if (n <= 0) break;
+            recv4.append(rb, static_cast<size_t>(n));
+        }
+        const uint32_t lat4 = Now() - pushAt4;
+        drain(1);
+        const bool closeOk = lev.size() == 1 && lev[0].type == nox::NetworkEvent::Type::LOBBY_CLOSED && lev[0].lobbyConn == lconn &&
+                             std::strcmp(lev[0].lobbyWhy, nox::CTcpLines::kWhyCloseAfter) == 0;
+        std::snprintf(m, sizeof(m), "⑦-3 LOBBY_SEND → 받은 바이트 CRLF 둘 %d · 그 뒤 끊김(%ums — 깨우기면 100ms 안) · LOBBY_CLOSED(보낸 뒤 끊기) %d",
+                      (int)(recv4 == ": 321 u:\r\n: 607\r\n"), lat4, (int)closeOk);
+        r.push_back({ recv4 == ": 321 u:\r\n: 607\r\n" && lat4 < 100 && closeOk, m });
+
+        n4.Stop();
+        const nox::CNetworkThreadStats ls = n4.LatestThreadStats();
+        std::snprintf(m, sizeof(m), "⑦-4 셈 — 열림 %llu · 받은 줄 %llu · 보낸 줄 %llu · 없는 접속으로 %llu · 끊김 %llu · 한도 %llu",
+                      ls.lobbyOpened, ls.lobbyLinesIn, ls.lobbyLinesOut, ls.lobbySendNoConn, ls.lobbyClosed, ls.lobbyRefused);
+        r.push_back({ ls.lobbyOpened == 1 && ls.lobbyLinesIn == 2 && ls.lobbyLinesOut == 2 && ls.lobbySendNoConn == 1 &&
+                          ls.lobbyClosed == 1 && ls.lobbyRefused == 0, m });
+        closesocket(t);
     }
     return r;
 }

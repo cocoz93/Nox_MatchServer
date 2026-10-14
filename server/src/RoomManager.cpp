@@ -70,6 +70,11 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
         OnJoinRequested(ev);
         return 0;
     }
+    // ★ 10-14 작업 8c — 로비 TCP 사건은 로비 몫이다(세션 번호가 없다). 여기로 오면 세지만 세션표에 안 넣는다
+    if (IsLobbyEvent(ev.type)) {
+        ++_stats.lobbyEventsMisrouted;
+        return 0;
+    }
     auto it = _seats.find(ev.sessionId);
     if (it != _seats.end()) return Forward(it->second, ev);
     // 세션표에 없는 세션

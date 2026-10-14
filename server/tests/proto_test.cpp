@@ -24598,7 +24598,27 @@ void TestUdpStats() {
 //   몸통은 `net_thread_test.cpp`(winsock 의 min/max 매크로를 이 파일과 떼려고). 깨어나는 때 셋(소켓 · 요청 · 타이머)과 멈춤.
 std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks();
 void TestNetworkThread() {
-    for (const auto& kv : RunNetworkThreadChecks()) Check(kv.first, kv.second.c_str());
+    const auto checks = RunNetworkThreadChecks();
+    for (const auto& kv : checks) Check(kv.first, kv.second.c_str());
+    Check(checks.size() == 10, "네트워크 스레드 확인 수 10(① ~ ⑥ 여섯 + ⑦ 로비 TCP 넷 — 본체가 끝까지 돌았나)");
+
+    // ★ 10-14 작업 8c — 로비 TCP 사건(세션 번호 없음)은 방 관리자 · 게임에 와도 자리를 만들지 않는다(나누는 자리가 틀려도 세션 0 이 안 생기게)
+    nox::CRoomManager rooms;
+    rooms.SetOpenEntry();   // 열린 방식 — 모르는 세션을 방 0 에 앉히는 갈래가 있는 쪽
+    size_t read = 0;
+    for (const auto t : { nox::NetworkEvent::Type::LOBBY_OPENED, nox::NetworkEvent::Type::LOBBY_LINE,
+                          nox::NetworkEvent::Type::LOBBY_CLOSED }) {
+        nox::NetworkEvent e;
+        e.type = t;
+        e.lobbyConn = 3;
+        e.lobbyLine = "LIST -1 37";
+        read += rooms.OnNetworkEvent(e);
+        read += rooms.Game().OnNetworkEvent(e);
+    }
+    char m[200];
+    std::snprintf(m, sizeof(m), "로비 사건 셋 — 세션표 %zu · 방 0 세션 %zu · 읽은 게임 메시지 %zu · 잘못 온 셈 %llu",
+                  rooms.SeatCount(), rooms.Game().SessionCount(), read, rooms.Stats().lobbyEventsMisrouted);
+    Check(rooms.SeatCount() == 0 && rooms.Game().SessionCount() == 0 && read == 0 && rooms.Stats().lobbyEventsMisrouted == 3, m);
     std::printf("  10-09 조각 5d-2b — 네트워크 스레드: 소켓에 깨어 받고 · 요청에 깨어 보내고 · 타이머 마감에 깨어 다시 보내고 · 멈춤\n");
 }
 

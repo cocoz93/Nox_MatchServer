@@ -84,6 +84,7 @@ struct CRoomStats {
     unsigned long long left = 0;               // 방이 끊은 세션(나감 · 내보냄 · 시간 초과 — 끊기 요청)
     unsigned long long roomsClosed = 0;
     unsigned long long closedRoomSessions = 0; // 방을 닫으며 내보낸 세션
+    unsigned long long lobbyEventsMisrouted = 0;   // ★ 10-14 작업 8c — 로비 TCP 사건이 여기로 옴(게임 스레드의 나누는 자리가 틀림 — 0 이 정상)
 };
 
 class CRoomManager {

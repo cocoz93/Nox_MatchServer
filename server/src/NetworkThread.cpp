@@ -11,6 +11,7 @@
 #include <set>
 
 #include "nox/Clock.h"
+#include "nox/JoinToken.h"   // `Ipv4ToString`
 #include "nox/Opcode.h"
 
 #pragma comment(lib, "ws2_32.lib")
@@ -72,6 +73,43 @@ bool CNetworkThread::Open(const std::string& ip, uint16_t port, std::string& err
     return true;
 }
 
+bool CNetworkThread::OpenLobby(uint32_t bindIp, uint16_t port, std::string& err) {
+    if (_thread.joinable()) { err = "시작한 뒤에는 로비를 열 수 없다"; return false; }
+    if (!_lobby.Listen(bindIp, port, err)) return false;
+    _lobbyOpen = true;
+    return true;
+}
+
+void CNetworkThread::LobbyToEvents(const std::vector<TcpLineEvent>& in, std::vector<NetworkEvent>& out) {
+    for (const TcpLineEvent& e : in) {
+        NetworkEvent ev;
+        ev.lobbyConn = e.conn;
+        switch (e.type) {
+            case TcpLineEvent::Type::OPENED:
+                ++_threadStats.lobbyOpened;
+                ev.type = NetworkEvent::Type::LOBBY_OPENED;
+                ev.lobbyPeerIp = e.peerIp;
+                ev.lobbyLocalIp = e.localIp;
+                ev.addr = Ipv4ToString(e.peerIp) + ":tcp" + std::to_string(e.port);   // 기록용(세션 주소와 겹치지 않게)
+                break;
+            case TcpLineEvent::Type::LINE:
+                ++_threadStats.lobbyLinesIn;
+                ev.type = NetworkEvent::Type::LOBBY_LINE;
+                ev.lobbyLine = e.line;
+                break;
+            case TcpLineEvent::Type::CLOSED:
+                ++_threadStats.lobbyClosed;
+                ev.type = NetworkEvent::Type::LOBBY_CLOSED;
+                ev.lobbyWhy = e.why;
+                break;
+            case TcpLineEvent::Type::REFUSED:
+                ++_threadStats.lobbyRefused;   // 접속 번호가 없어 게임에 넘길 것이 없다
+                continue;
+        }
+        out.push_back(std::move(ev));
+    }
+}
+
 void CNetworkThread::Start() {
     _stop.store(false);
     _thread = std::thread([this] { Run(); });
@@ -131,11 +169,14 @@ void CNetworkThread::Publish() {
 
 void CNetworkThread::Run() {
     const SOCKET s = static_cast<SOCKET>(_sock);
-    WSAEVENT evs[2] = { static_cast<WSAEVENT>(_sockEvent), static_cast<WSAEVENT>(_wakeEvent) };
+    // ★ 10-14 작업 8c — 로비를 열었으면 TCP 일 이벤트도 같이 기다린다
+    WSAEVENT evs[3] = { static_cast<WSAEVENT>(_sockEvent), static_cast<WSAEVENT>(_wakeEvent), static_cast<WSAEVENT>(_lobby.WaitHandle()) };
+    const DWORD nEvs = _lobbyOpen ? 3 : 2;
     std::map<std::string, sockaddr_in> addrOf;   // 주소 글자 → 진짜 주소(이 스레드 것)
     std::vector<OutPacket> out;
     std::vector<NetworkEvent> events;
     std::vector<NetworkRequest> reqs;
+    std::vector<TcpLineEvent> tcpEvs;
     std::set<uint8_t> told;                      // `[처음]` — 접속 제어 오프코드(게임 오프코드는 게임 스레드가 찍는다)
     uint8_t in[2048];
     Publish();
@@ -147,7 +188,7 @@ void CNetworkThread::Run() {
             const int32_t d = static_cast<int32_t>(due - NowMs());
             wait = d <= 0 ? 0 : std::min<DWORD>(static_cast<DWORD>(d), _maxWaitMs);
         }
-        WSAWaitForMultipleEvents(2, evs, FALSE, wait, FALSE);
+        WSAWaitForMultipleEvents(nEvs, evs, FALSE, wait, FALSE);
         // ★ 10-09 조각 5d-2c — 멈추라면 마지막으로 한 번 — 쌓인 요청을 보내고(닫기면 `SERVER_CLOSE` 까지) 끝낸다. 받기 · 타이머는 안 한다
         const bool stopping = _stop.load();
         ++_threadStats.wakes;
@@ -162,8 +203,21 @@ void CNetworkThread::Run() {
             std::lock_guard<std::mutex> lk(_queueMu);
             reqs.swap(_requests);
         }
-        for (const NetworkRequest& r : reqs) _network.OnRequest(r, out);
+        for (const NetworkRequest& r : reqs) {
+            if (r.type == NetworkRequest::Type::LOBBY_SEND) {   // ★ 10-14 작업 8c — 로비 줄은 TCP 로(통신 층 몫이 아니다)
+                if (_lobby.Send(r.lobbyConn, r.lobbyLine, r.lobbyCloseAfter)) ++_threadStats.lobbyLinesOut;
+                else ++_threadStats.lobbySendNoConn;
+                continue;
+            }
+            _network.OnRequest(r, out);
+        }
         reqs.clear();
+        // ★ 10-14 작업 8c — 로비 줄을 보낸다(막히면 남겨 두고 TCP 일 이벤트에 다시) · 보낸 뒤 끊기(QUIT 답)는 끊김 이벤트로
+        if (_lobbyOpen) {
+            tcpEvs.clear();
+            _lobby.Flush(tcpEvs);
+            LobbyToEvents(tcpEvs, events);
+        }
         // ③ 받을 것 전부(멈출 때는 안 받는다)
         unsigned long long got = 0;
         while (!stopping) {
@@ -221,6 +275,12 @@ void CNetworkThread::Run() {
             }
         }
         if (got > _threadStats.maxDatagramsPerWake) _threadStats.maxDatagramsPerWake = got;
+        // ③.5 ★ 10-14 작업 8c — 로비 TCP — 새 접속 · 받은 줄 · 끊김(멈출 때는 안 받는다)
+        if (_lobbyOpen && !stopping) {
+            tcpEvs.clear();
+            _lobby.Poll(tcpEvs);
+            LobbyToEvents(tcpEvs, events);
+        }
         // ④ 이벤트를 큐로 — 넣은 시각을 찍는다(게임 스레드가 넘김 지연을 잰다)
         if (!events.empty()) {
             bool queued = false;
@@ -252,7 +312,10 @@ void CNetworkThread::Run() {
             _lastPublishMs = now;
             Publish();
         }
-        if (stopping) break;
+        if (stopping) {
+            _lobby.CloseAll();   // ★ 10-14 작업 8c — 남은 줄은 위 `Flush` 에서 보냈다. 로비 접속을 닫는다(게임 스레드는 이미 멈춤)
+            break;
+        }
     }
 }
 

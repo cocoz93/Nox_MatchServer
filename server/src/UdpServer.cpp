@@ -68,6 +68,8 @@ void CUdpServer::OnRequest(const NetworkRequest& r, std::vector<OutPacket>& out)
         case NetworkRequest::Type::SET_SESSION_TIMEOUT:
             RequestSetSessionTimeout(r.sessionId, r.timeoutMs);
             break;
+        case NetworkRequest::Type::LOBBY_SEND:
+            break;   // ★ 10-14 작업 8c — 로비 TCP 몫. 네트워크 스레드가 이 요청을 TCP 로 보내고 여기로 넘기지 않는다
     }
 }
 
