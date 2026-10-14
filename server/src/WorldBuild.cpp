@@ -897,7 +897,7 @@ std::vector<std::string> MapListFromOptions(const ServerOptions& opt) {
     //   늘릴 때 이 함수만 바꾼다 — `--maps a,b`(여러 맵) · 로비가 알려 주는 방 목록(작업 8) ·
     //   게임 폴더 전부(`maps\<이름>\<이름>.map` — 157개면 개인 메모리 약 490MB · 뜨는 데 약 5초, 7e-4 파일럿)
     std::vector<std::string> paths;
-    if (!opt.mapPath.empty()) paths.push_back(opt.mapPath);
+    if (!opt.room.mapPath.empty()) paths.push_back(opt.room.mapPath);
     return paths;
 }
 
@@ -1819,7 +1819,7 @@ bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server:
     return true;
 }
 
-int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,
+int BuildRoomWorld(nox::Server& srv, const RoomSettings& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,
                    const MapCatalog& maps, const OpenSessionFn& openSession, WorldExtras& out) {
     // 실행 인자 — 옮긴 몸통이 쓰는 것만 같은 이름으로 받는다.
     const auto& mirror = opt.mirror;

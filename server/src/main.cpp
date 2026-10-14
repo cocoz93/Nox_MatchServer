@@ -371,7 +371,7 @@ unsigned long long AbilityFingerprint(const nox::Server& srv) {
 // ★ 10-12 플랜 B 작업 7c — 방마다 main 이 드는 것(판 차리기 · 진단). 방(`CRoom`)은 라이브러리라 실행 인자 묶음과
 //   이 파일의 진단 도우미를 모른다 — 그래서 이 상태는 실행 파일 쪽에 방 번호로 둔다(옛 `main` 의 「루프가 들고 다니는 상태」)
 struct RoomRun {
-    const ServerOptions* opt = nullptr;     // 이 방의 설정(실행 인자로 차린 방 = 실행 인자)
+    const RoomSettings* opt = nullptr;      // 이 방의 설정(실행 인자로 차린 방 = 실행 인자의 방 설정 · ★ 10-14 작업 9a)
     WorldExtras extras;                     // 월드 차리기가 남긴 것(맵 깃발 자리 · 서버 찾기 답의 맵 이름)
     int64_t bot0Sid = -1;                   // `[성장]` 줄의 봇 세션 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
     bool modeStarted = false;
@@ -383,7 +383,7 @@ struct RoomRun {
 
 // ★ 10-12 플랜 B 작업 7c — 판 차리기(옛 `main` 게임 루프 안 블록을 그대로 옮김). 방마다 부른다
 void StartModeIfReady(nox::Server& srv, RoomRun& rr) {
-    const ServerOptions& opt = *rr.opt;
+    const RoomSettings& opt = *rr.opt;
     const WorldExtras& extras = rr.extras;
     bool& modeStarted = rr.modeStarted;
     // ★★ **판을 차리는 자리** — 사람이 다 들어온 뒤라야 한다.
@@ -484,7 +484,7 @@ void StartModeIfReady(nox::Server& srv, RoomRun& rr) {
 // ★ 10-12 플랜 B 작업 7c — 방 하나의 틱 뒤 진단(옛 `main` 게임 루프 안 블록을 옮김). `made` = 이 틱에 이 방이 낸 보내기 요청 수.
 //   통신 층 · 스레드 지표 줄(`[순번·스트림]` · `[다시보냄]` · `[세션]` · `[스레드]`)과 옛 `[틱]` · `[버림]`의 통신 층 칸은 `main` 의 프로세스 몫 줄로 갔다
 void RoomTickDiagnostics(nox::Server& srv, RoomRun& rr, size_t made) {
-    const ServerOptions& opt = *rr.opt;
+    const RoomSettings& opt = *rr.opt;
     unsigned long long& tracePetsInWall = rr.tracePetsInWall;
     unsigned long long& tracePetsSamples = rr.tracePetsSamples;
     const int64_t bot0Sid = rr.bot0Sid;
@@ -909,7 +909,8 @@ int main(int argc, char** argv) {
         if (a == "--selftest") {
             return SelfTest();
         } else if (a == "--quiet") {
-            opt.quiet = true;
+            opt.quiet = true;   // ★ 10-14 작업 9a — 프로세스 줄과 방 진단 줄 둘 다
+            opt.room.quiet = true;
         } else if (a == "--config" && i + 1 < argc) {
             opt.configPath = argv[++i];
         } else if (a == "--no-join-token") {
@@ -919,37 +920,37 @@ int main(int argc, char** argv) {
         } else if (a == "--name" && i + 1 < argc) {
             opt.name = argv[++i];
         } else if (a == "--prelude") {
-            opt.prelude = true;
+            opt.room.prelude = true;
         } else if (a == "--no-update") {
             // ★ 진단용 — 상태 갱신을 끈다. Server.h 의 SetSendUpdates 주석 참조.
-            opt.noUpdate = true;
+            opt.room.noUpdate = true;
         } else if (a == "--raw-snapshot") {
-            opt.rawSnapshot = true;
+            opt.room.rawSnapshot = true;
         } else if (a == "--peer-ops" && i + 1 < argc) {
-            opt.peerOps = argv[++i];
+            opt.room.peerOps = argv[++i];
         } else if (a == "--intro-every-tick") {
-            opt.introEveryTick = true;
+            opt.room.introEveryTick = true;
         } else if (a == "--alias-intro") {
             // 진단용 — 이미 소개한 사람을 별칭으로 보낸다. 지금은 아무도 안 그려진다.
-            opt.introEveryTick = false;
+            opt.room.introEveryTick = false;
         } else if (a == "--peer-type" && i + 1 < argc) {
-            opt.peerType = std::atoi(argv[++i]);
+            opt.room.peerType = std::atoi(argv[++i]);
         } else if (a == "--peer-snapshot") {
-            opt.peerSnapshot = true;
+            opt.room.peerSnapshot = true;
         } else if (a == "--peer-first") {
-            opt.peerFirst = true;
+            opt.room.peerFirst = true;
         } else if (a == "--peer-pose" && i + 1 < argc) {
-            opt.peerPose = (int)std::strtol(argv[++i], nullptr, 16);
+            opt.room.peerPose = (int)std::strtol(argv[++i], nullptr, 16);
         } else if (a == "--spawn-spread" && i + 1 < argc) {
-            opt.spawnSpread = std::atoi(argv[++i]);
+            opt.room.spawnSpread = std::atoi(argv[++i]);
         } else if (a == "--hud-off") {
-            opt.hudOff = true;
+            opt.room.hudOff = true;
         } else if (a == "--no-snapshot") {
-            opt.noSnapshot = true;
+            opt.room.noSnapshot = true;
         } else if (a == "--no-spawn-invuln") {
             // 부활 무적을 아예 안 건다. CLIENT_READY 되풀이로 무적이 안 풀려
             // 화면 확인이 막히는 것을 **원인 규명과 따로** 우회한다(Server.h 주석).
-            opt.noSpawnInvuln = true;
+            opt.room.noSpawnInvuln = true;
         } else if (a == "--ack-any-stream") {
             // B-1b — 되받기를 **스트림 가리지 않고** 비신뢰에 싣는다.
             //   까닭 — 클라는 스트림 0 패킷의 seq 만 읽는다(09-18 실측. Server::Emit 주석).
@@ -966,29 +967,29 @@ int main(int argc, char** argv) {
             opt.ackSeq = true;
         } else if (a == "--no-newgear") {
             // ★ 진단용 — 새 사람 장비 알림을 끈다. Server.h 의 SetNotifyNewGear 주석 참조.
-            opt.noNewGear = true;
+            opt.room.noNewGear = true;
         } else if (a == "--mirror") {
-            opt.mirror = true;
+            opt.room.mirror = true;
         } else if (a == "--mirror-limit" && i + 1 < argc) {
-            opt.mirror = true;
-            opt.mirrorLimit = std::atoi(argv[++i]);
+            opt.room.mirror = true;
+            opt.room.mirrorLimit = std::atoi(argv[++i]);
         } else if (a == "--mode" && i + 1 < argc) {
-            opt.mode = argv[++i];
-            if (nox::ModeGameFlags(opt.mode) == 0) {
-                std::printf("모르는 모드: %s\n", opt.mode.c_str());
+            opt.room.mode = argv[++i];
+            if (nox::ModeGameFlags(opt.room.mode) == 0) {
+                std::printf("모르는 모드: %s\n", opt.room.mode.c_str());
                 std::printf("  판이 도는 것   arena · ctf · quest\n");
                 std::printf("  규칙만 선 것   elimination · kotr · flagball · chat · coop · coopteam\n");
                 return 2;
             }
         } else if (a == "--quest-count" && i + 1 < argc) {
-            opt.questCount = std::atoi(argv[++i]);
+            opt.room.questCount = std::atoi(argv[++i]);
         } else if (a == "--quest-spread" && i + 1 < argc) {
-            opt.questSpread = std::atof(argv[++i]);
+            opt.room.questSpread = std::atof(argv[++i]);
         } else if (a == "--map" && i + 1 < argc) {
-            opt.mapPath = argv[++i];
+            opt.room.mapPath = argv[++i];
         } else if (a == "--standalone") {
             // 독립 모드 — 녹음 없이 접속 묶음·USE_MAP·스냅샷을 조립(P5-c-2). --map 필수.
-            opt.standalone = true;
+            opt.room.standalone = true;
         } else if (a == "--dump-sections") {
             // 진단 — 맵 섹션 목록만 찍고 끝낸다(--map 필수). 서버를 안 띄운다.
             opt.dumpSections = true;
@@ -1001,86 +1002,86 @@ int main(int argc, char** argv) {
             opt.dumpThing = argv[++i];
         } else if (a == "--start-mana" && i + 1 < argc) {
             // 진단 — 들어올 때 마나를 채운다. 비싼 주문을 무인으로 쏘려면 필요하다.
-            opt.startMana = std::atoi(argv[++i]);
+            opt.room.startMana = std::atoi(argv[++i]);
         } else if (a == "--start-health" && i + 1 < argc) {
             // 진단 — 들어올 때 체력을 낮춘다. 죽음·부활을 재려고.
-            opt.startHealth = std::atoi(argv[++i]);
+            opt.room.startHealth = std::atoi(argv[++i]);
         } else if (a == "--arrow-frame-alt" && i + 1 < argc) {
             // 진단 ⑬ — N 틱마다 화살 프레임을 0↔16 으로 번갈아 보낸다.
             //   한 판 안에서 바꿔야 배경·화살 자리가 그대로라 픽셀 대조가 깨끗하다.
-            opt.arrowFrameAlt = std::atoi(argv[++i]);
+            opt.room.arrowFrameAlt = std::atoi(argv[++i]);
         } else if (a == "--arrow-freeze") {
             // 진단 ⑬ — 화살을 난 자리에 세워 둔다. `--arrow-frame` 과 짝으로 쓴다.
-            opt.arrowFreeze = true;
+            opt.room.arrowFreeze = true;
         } else if (a == "--2nd-newplayer") {
             // 옛 동작 — 관전 풀 때 `2d NEW_PLAYER` 를 **다시 보낸다**(09-19 이전 기본값).
             //   ⚠ 그러면 자기 장비가 화면에서 사라진다. 되돌릴 일이 있을 때만 쓸 것
-            opt.secondNewPlayer = true;
+            opt.room.secondNewPlayer = true;
         } else if (a == "--harpoon-force") {
-            opt.forceHarpoon = true;
+            opt.room.forceHarpoon = true;
         } else if (a == "--dump-harpoon") {
-            opt.dumpHarpoon = true;
+            opt.room.dumpHarpoon = true;
         } else if (a == "--no-2nd-newplayer") {
             // 진단 — 관전 풀 때 `2d NEW_PLAYER` 를 다시 안 보낸다(정답지는 안 보낸다)
-            opt.noSecondNewPlayer = true;
+            opt.room.noSecondNewPlayer = true;
         } else if (a == "--dump-arrows") {
             // 진단 ⑬ — 틱 로그마다 화살 목록(번호·자리·방향·실은 프레임)과
             //   **프레임 분포**를 찍는다. 화면 기울기와 1:1 로 맞대려는 것이고,
             //   「각도가 하나뿐인가」는 분포 한 줄로 갈린다.
-            opt.dumpArrows = true;
+            opt.room.dumpArrows = true;
         } else if (a == "--arrow-frame" && i + 1 < argc) {
             // 진단 ⑬ — 화살 스프라이트 프레임을 못 박는다(0~31). 같은 자리에서
             //   프레임만 바꿔 찍어 화면이 실제로 달라지는지 픽셀로 대조하려고.
-            opt.forceArrowFrame = std::atoi(argv[++i]);
+            opt.room.forceArrowFrame = std::atoi(argv[++i]);
         } else if (a == "--anim-dir" && i + 1 < argc) {
             // 진단 — 사람 항목 덧붙이의 방향 3비트를 못 박는다(0~7).
-            opt.forceDir = std::atoi(argv[++i]);
+            opt.room.forceDir = std::atoi(argv[++i]);
         } else if (a == "--anim-pose" && i + 1 < argc) {
             // 진단 — 사람 자세 번호를 못 박는다(0 서기 · 2 죽음 · 4 걷기).
-            opt.forcePose = std::atoi(argv[++i]);
+            opt.room.forcePose = std::atoi(argv[++i]);
         } else if (a == "--spell-start") {
             // ★ 시전 알림(0x70)을 **켠다.** 기본은 끔 — Server.h 의 noSpellStart_ 주석 참조.
-            opt.spellStart = true;
+            opt.room.spellStart = true;
         } else if (a == "--creature-aoi") {
             // 크리처 시야 판정 — 정답지 기본 사각형(화면절반+100 = 740×580)을 넘으면 안 싣고 사라짐을 보낸다.
-            opt.creatureAoiHalf = -1.0;
+            opt.room.creatureAoiHalf = -1.0;
         } else if (a == "--creature-aoi-half" && i + 1 < argc) {
             // 진단 — 위를 **판정용 정사각형 반폭 N** 으로 켠다. 작게 주면 몬스터가 사각형 밖에서 시작해
             //   「안 보이다가 다가오면 나타난다」를 화면으로 볼 수 있다.
-            opt.creatureAoiHalf = std::atof(argv[++i]);
+            opt.room.creatureAoiHalf = std::atof(argv[++i]);
         } else if (a == "--creature-away-after" && i + 1 < argc) {
             // 진단 — 「사라짐」을 화면으로 보려고 크리처를 사각형 밖으로 옮긴다. 걷기를 빼 버린다.
-            opt.creatureAwayAfter = std::atoi(argv[++i]);
+            opt.room.creatureAwayAfter = std::atoi(argv[++i]);
         } else if (a == "--friends") {
             // 친구 알림 — 자기 소환수·같은 팀을 친구로 알린다. 클라는 커서·선택 원 색을 이것으로 가른다.
-            opt.friends = true;
+            opt.room.friends = true;
         } else if (a == "--debug-own-pet" && i + 1 < argc) {
             // 진단 — 친구 판정용. 소환 조작을 빼 버리고 그 사람 소유 임프를 사람 자리에 고정한다.
-            opt.debugOwnPet = std::atoi(argv[++i]);
+            opt.room.debugOwnPet = std::atoi(argv[++i]);
         } else if (a == "--auto-respawn") {
             // 자동 부활 서버 설정(정답지 기본 꺼짐 — 죽은 뒤 클릭해야 살아난다 · 묶음 3-c)
-            opt.autoRespawn = true;
+            opt.room.autoRespawn = true;
         } else if (a == "--debug-hurt-front") {
             // 진단 — 위 피해를 바라보는 쪽 30 앞에서 때린 것으로(방패 막기 판정 · 묶음 3-e2)
-            opt.debugHurtFront = true;
+            opt.room.debugHurtFront = true;
         } else if (a == "--debug-hurt-every" && i + 1 < argc) {
             // 진단 — 피해 함수 판정용(묶음 3-e). N 틱마다 첫 사람에게 피해 25(움찔 문턱 20 넘김).
-            opt.debugHurtEvery = std::atoi(argv[++i]);
+            opt.room.debugHurtEvery = std::atoi(argv[++i]);
         } else if (a == "--debug-dummy" && i + 1 < argc) {
             // 진단 — 주먹 판정용(묶음 3-a). 첫 사람 N 틱 뒤 주인 없는 임프를 오른쪽 +25 에 고정(맞으면 깎이고 죽는다).
-            opt.debugDummy = std::atoi(argv[++i]);
+            opt.room.debugDummy = std::atoi(argv[++i]);
         } else if (a == "--debug-pet-order" && i + 1 < argc) {
             // 진단 — `--debug-own-pet` 소환수에게 명령을 준다(2 가만히·3 지켜·4 따라와·**5 사냥**).
             //   ⚠ 명령이 없으면 주인 있는 크리처는 **한 칸도 안 움직인다**(09-20 실측)
-            opt.debugPetOrder = std::atoi(argv[++i]);
+            opt.room.debugPetOrder = std::atoi(argv[++i]);
         } else if (a == "--debug-dummy-dx" && i + 1 < argc) {
             // 진단 — 허수아비 오른쪽 거리(기본 25). 묶음 4-a2 날리기 화면 — 멀리 두면 Magic 이 날아가는 게 보인다.
-            opt.debugDummyDx = std::atoi(argv[++i]);
+            opt.room.debugDummyDx = std::atoi(argv[++i]);
         } else if (a == "--debug-enchant" && i + 3 < argc) {
             // 진단 — 묶음 4-b 화면 판정. 첫 사람(관전 푼 뒤)에게 버프 B 를 세기 P 로 N 틱 뒤 끝없이 건다.
-            opt.debugEnchantB = std::atoi(argv[++i]);
-            opt.debugEnchantP = std::atoi(argv[++i]);
-            opt.debugEnchantN = std::atoi(argv[++i]);
+            opt.room.debugEnchantB = std::atoi(argv[++i]);
+            opt.room.debugEnchantP = std::atoi(argv[++i]);
+            opt.room.debugEnchantN = std::atoi(argv[++i]);
         } else if (a == "--debug-bot" && i + 2 < argc) {
             // ★★ 2026-09-16 신설 — **가짜 사람**을 세운다.
             //   왜 — 계수기가 `made > 0` 일 때만 찍히는데, 사람이 없으면 내보낼 게 없어
@@ -1093,76 +1094,76 @@ int main(int argc, char** argv) {
             bw.x = std::atoi(argv[++i]);
             bw.y = std::atoi(argv[++i]);
             if (i + 1 < argc && argv[i + 1][0] != '-') bw.cls = argv[++i];
-            opt.bots.push_back(bw);
+            opt.room.bots.push_back(bw);
         } else if (a == "--spawn-at" && i + 2 < argc) {
             // ④ 화면 확인용 — 볼 것이 있는 자리에서 바로 시작한다(걸어가는 시간을 없앤다).
-            opt.spawnAtX = std::atoi(argv[++i]);
-            opt.spawnAtY = std::atoi(argv[++i]);
+            opt.room.spawnAtX = std::atoi(argv[++i]);
+            opt.room.spawnAtY = std::atoi(argv[++i]);
         } else if (a == "--debug-xp" && i + 2 < argc) {
             // 진단 — ④대기 ⑨. 첫 사람에게 N 틱 뒤 경험치를 한 번 준다(HUD 막대가 차는지).
-            opt.debugXpAfter = std::atoi(argv[++i]);
-            opt.debugXpAmount = std::atof(argv[++i]);
+            opt.room.debugXpAfter = std::atoi(argv[++i]);
+            opt.room.debugXpAmount = std::atof(argv[++i]);
         } else if (a == "--debug-give-spell" && i + 2 < argc) {
             // 진단 — ④대기 ⑨. 첫 사람에게 N 틱 뒤 주문 하나를 준다(주문책이 느는지).
-            opt.debugSpellAfter = std::atoi(argv[++i]);
-            opt.debugSpellId = std::atoi(argv[++i]);
+            opt.room.debugSpellAfter = std::atoi(argv[++i]);
+            opt.room.debugSpellId = std::atoi(argv[++i]);
         } else if (a == "--debug-conjurer-guides") {
             // 진단 — 09-24 사람 판. 들어온 컨저러에게 박쥐·흰거미 둘·거미 안내서를 준다(부를 짐승이 있어야 「물릴 때 소리」를 본다).
-            opt.debugConjurerGuides = true;
+            opt.room.debugConjurerGuides = true;
         } else if (a == "--debug-team-after" && i + 1 < argc) {
             // 진단 — RESET_FRIENDS 판정용. 첫 사람의 팀을 N 틱 뒤 한 번 바꾼다.
-            opt.debugTeamAfter = std::atoi(argv[++i]);
+            opt.room.debugTeamAfter = std::atoi(argv[++i]);
         } else if (a == "--fill-colors") {
             // 진단 — 빈 캐릭터 색을 정품 녹음 실측값으로 메운다(기본 끔).
             //   ⚠ 켜면 **살색 피부가 드러나 정답지와 달라진다**(09-19 화면 대조)
             nox::fillColorsOn = true;
         } else if (a == "--debug-fist" && i + 3 < argc) {
             // 진단 — N틱 뒤 **서버가 직접** 첫 사람 자리 + (dx,dy) 에 주먹을 떨어뜨린다(⑰ 촬영용)
-            opt.debugFistAfter = std::atoi(argv[++i]);
-            opt.debugFistDx = std::atoi(argv[++i]);
-            opt.debugFistDy = std::atoi(argv[++i]);
+            opt.room.debugFistAfter = std::atoi(argv[++i]);
+            opt.room.debugFistDx = std::atoi(argv[++i]);
+            opt.room.debugFistDy = std::atoi(argv[++i]);
         } else if (a == "--debug-mob" && i + 4 < argc) {
             // 진단 — N틱 뒤 그 자리에 맵 몬스터 하나(종류 와이어 · 예 1358 거머리)를 세운다(⑮ 촬영용).
             //   ⚠ 퀘스트 스폰은 **사람 자리 기준**이라 몬스터가 사람에게 붙는다 — 이건 자리를 못 박는다
-            opt.debugMobAfter = std::atoi(argv[++i]);
-            opt.debugMobType = std::atoi(argv[++i]);
-            opt.debugMobX = std::atoi(argv[++i]);
-            opt.debugMobY = std::atoi(argv[++i]);
+            opt.room.debugMobAfter = std::atoi(argv[++i]);
+            opt.room.debugMobType = std::atoi(argv[++i]);
+            opt.room.debugMobX = std::atoi(argv[++i]);
+            opt.room.debugMobY = std::atoi(argv[++i]);
         } else if (a == "--trace-pets" && i + 1 < argc) {
             // 진단 — N틱마다 크리처의 **자리·맨 위 행동·고른 길목**을 찍는다(⑥ 6-j(3) 주행용).
             //   ⚠ 「안 움직인다」를 보려면 **자리와 고른 길목을 같이** 봐야 한다.
             //     자리만 보면 「길이 막혔나」와 「같은 곳을 또 골랐나」가 안 갈린다(09-20 에 그 함정에 빠졌다)
-            opt.tracePets = std::atoi(argv[++i]);
+            opt.room.tracePets = std::atoi(argv[++i]);
         } else if (a == "--debug-wall" && i + 3 < argc) {
             // 진단 — N틱 뒤 그 **칸**(gx,gy)의 비밀벽을 연다(9-a — 클라가 그려 주나만 본다)
-            opt.debugWallAfter = std::atoi(argv[++i]);
-            opt.debugWallGx = std::atoi(argv[++i]);
-            opt.debugWallGy = std::atoi(argv[++i]);
+            opt.room.debugWallAfter = std::atoi(argv[++i]);
+            opt.room.debugWallGx = std::atoi(argv[++i]);
+            opt.room.debugWallGy = std::atoi(argv[++i]);
         } else if (a == "--debug-warp" && i + 3 < argc) {
             // 진단 — N틱 뒤 첫 사람을 그 자리로 한 번 옮긴다(문·밟는 판처럼 「다가가야」 보는 것용)
-            opt.debugWarpAfter = std::atoi(argv[++i]);
-            opt.debugWarpX = std::atoi(argv[++i]);
-            opt.debugWarpY = std::atoi(argv[++i]);
+            opt.room.debugWarpAfter = std::atoi(argv[++i]);
+            opt.room.debugWarpX = std::atoi(argv[++i]);
+            opt.room.debugWarpY = std::atoi(argv[++i]);
         } else if (a == "--debug-kill" && i + 1 < argc) {
             // 진단 — N틱 뒤 첫 사람이 둘째를 죽인 것으로 친다(킬→점수→판끝 사슬 확인용)
-            opt.debugKillAfter = std::atoi(argv[++i]);
+            opt.room.debugKillAfter = std::atoi(argv[++i]);
         } else if (a == "--debug-score" && i + 2 < argc) {
             // 진단 — N틱 뒤 첫 사람의 점수를 <점수> 로 만든다(판 끝 사슬 확인용)
-            opt.debugScoreAfter = std::atoi(argv[++i]);
-            opt.debugScoreVal = std::atoi(argv[++i]);
+            opt.room.debugScoreAfter = std::atoi(argv[++i]);
+            opt.room.debugScoreVal = std::atoi(argv[++i]);
         } else if (a == "--debug-team-every" && i + 1 < argc) {
             // 진단 ④ — N틱마다 첫 사람의 팀을 1↔2 로 오간다(친구 ADD 뒤 REMOVE 도 보려고)
-            opt.debugTeamEvery = std::atoi(argv[++i]);
+            opt.room.debugTeamEvery = std::atoi(argv[++i]);
         } else if (a == "--no-obstacles") {
             // 진단 — 장애물(오브젝트끼리 충돌)을 싣지 않는다. 묶음 2-c 화면 판정의 대조군.
-            opt.noObstacles = true;
+            opt.room.noObstacles = true;
         } else if (a == "--aoi") {
             // 시야 반경(P4-b) — 갱신 스트림에 맵 정적 오브젝트를 반경 안만 싣는다. --map 필수.
-            opt.aoi = true;
+            opt.room.aoi = true;
         } else if (a == "--spawn-at-item" && i + 1 < argc) {
             // ★ 09-27 B6 — 이름으로 고른 바닥 물건(첫 것) 자리로 스폰하고 그 번호를 찍는다.
             //   자동 클라(`NOX_AUTO_CODES`)가 그 번호로 줍기·입기를 보내 무기 들기 관문을 **진짜 와이어로** 탄다
-            opt.spawnAtItem = argv[++i];
+            opt.room.spawnAtItem = argv[++i];
         } else if (a == "--give-items" && i + 1 < argc) {
             // ★ 09-30 사람 판 시험용 — `Bow,Quiver,Quiver,CrossBow` 처럼 쉼표로. 들어온 사람마다 세계를 받은 지 2초 뒤 가방에 넣는다.
             //   틀은 이 맵의 바닥 물건에서 뜬다(맵에 없는 종류는 못 준다) · 기본 장비 여섯 종류는 부활 틀을 건드리지 않게 뺀다
@@ -1170,7 +1171,7 @@ int main(int argc, char** argv) {
             for (size_t p = 0; p <= list.size();) {
                 const size_t e = list.find(',', p);
                 const std::string nm = list.substr(p, e == std::string::npos ? std::string::npos : e - p);
-                if (!nm.empty()) opt.giveItemNames.push_back(nm);
+                if (!nm.empty()) opt.room.giveItemNames.push_back(nm);
                 if (e == std::string::npos) break;
                 p = e + 1;
             }
@@ -1181,16 +1182,16 @@ int main(int argc, char** argv) {
             //   걸어가는 길이 자꾸 어긋난다(2026-09-10 스윕 1차: 도착 실패로 127유닛 밖에서
             //   재는 바람에 30가지가 전부 0건으로 나왔다. 그건 「없었다」가 아니라 「못 쟀다」다).
             //   재는 대상은 **조작**이지 걷기가 아니니, 걷기를 빼 버린다.
-            opt.itemAtSpawn = true;
+            opt.room.itemAtSpawn = true;
         } else if (a == "--ctf-span" && i + 1 < argc) {
-            opt.ctfSpan = std::atoi(argv[++i]);
+            opt.room.ctfSpan = std::atoi(argv[++i]);
         } else if (a == "--dump" && i + 1 < argc) {
-            opt.dumpPath = argv[++i];
+            opt.room.dumpPath = argv[++i];
         } else if (a == "--game-dir" && i + 1 < argc) {
             opt.gameDir = argv[++i];   // ★ 10-12 작업 7e-2 — 게임 폴더(thing.bin 등). 기본 = GOG 설치 경로
         } else if (a == "--debug-crash" && i + 1 < argc) {
             // 진단 — N 틱 뒤 일부러 죽는다. 크래시 덤프가 실제로 남는지 보는 용도(10-08)
-            opt.debugCrashAfter = std::atoi(argv[++i]);
+            opt.room.debugCrashAfter = std::atoi(argv[++i]);
         } else {
             std::printf("모르는 인자: %s\n", a.c_str());
             return 2;
@@ -1224,7 +1225,7 @@ int main(int argc, char** argv) {
     // ⚠ 2026-09-10 — 이걸로 실클라 회귀 네 판을 날렸다. 증상이 「접속 요청 158바이트에
     //   답이 0개」였는데 로그 어디에도 까닭이 없어 코드 회귀를 의심하고 이분법까지 돌렸다.
     //   **안 되는 것을 조용히 지나가게 두면 다음 사람이 반나절을 쓴다.** 여기서 죽인다.
-    if (opt.standalone && opt.mapPath.empty()) {
+    if (opt.room.standalone && opt.room.mapPath.empty()) {
         std::printf("[멈춤] --standalone 에는 --map 이 있어야 한다.\n"
                     "       맵이 없으면 접속 묶음을 만들 수 없어 **아무도 못 들어온다**\n"
                     "       (클라가 접속 요청을 되풀이하다 20초 뒤 조용히 끊는다).\n"
@@ -1232,7 +1233,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    if (opt.dumpSections && opt.mapPath.empty()) {
+    if (opt.dumpSections && opt.room.mapPath.empty()) {
         std::printf("[멈춤] --dump-sections 에는 --map 이 있어야 한다.\n");
         return 2;
     }
@@ -1295,11 +1296,11 @@ int main(int argc, char** argv) {
     //   ⚠ 10-08 — 세계 차리기를 `BuildWorld` 로 옮기면서 이 진단만 여기 남겼다(서버를 안 띄우는 일이라).
     if (opt.dumpSections) {
         nox::MapFile mf;
-        if (!mf.Load(opt.mapPath)) {
-            std::printf("맵을 못 읽음: %s (%s)\n", opt.mapPath.c_str(), mf.Error().c_str());
+        if (!mf.Load(opt.room.mapPath)) {
+            std::printf("맵을 못 읽음: %s (%s)\n", opt.room.mapPath.c_str(), mf.Error().c_str());
             return 1;
         }
-        std::string base = opt.mapPath;
+        std::string base = opt.room.mapPath;
         const size_t sl = base.find_last_of("\\/");
         if (sl != std::string::npos) base = base.substr(sl + 1);
         for (const auto& s : mf.Sections())
@@ -1341,19 +1342,19 @@ int main(int argc, char** argv) {
     // ★ 10-12 플랜 B 작업 7c — 방마다 main 이 드는 것(`RoomRun` — 판 차리기 · 진단). 지금은 실행 인자의 방(방 0) 하나
     std::map<int, RoomRun> roomRuns;
     RoomRun& run0 = roomRuns[nox::CRoomManager::kFirstRoom];
-    run0.opt = &opt;
+    run0.opt = &opt.room;
     WorldExtras& extras = run0.extras;
     nox::CUdpServer& udp = net.Network();
     // ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터는 맵 방이 있을 때만 서버가 뜰 때 한 번 읽어 표 한 벌로(녹음 모드는 지금처럼 표 없이)
     GameFiles gameFiles;
     std::shared_ptr<const nox::Server::GameTables> gameTables;
     MapCatalog maps;   // ★ 10-12 플랜 B 작업 7e-4b — 서버가 맡는 맵의 원본들(방은 이것에 붙는다)
-    if (!opt.mapPath.empty()) {
+    if (!opt.room.mapPath.empty()) {
         LoadGameFiles(opt.gameDir, gameFiles);
         gameTables = BuildGameTables(gameFiles);
         maps = BuildMapCatalog(gameFiles, gameTables, MapListFromOptions(opt));   // 목록의 출처는 `MapListFromOptions` 주석(지금 `--map` 하나)
     }
-    if (const int rc = BuildRoomWorld(srv, opt, gameFiles, gameTables, maps, [&udp](const std::string& addr) { return udp.OpenSession(addr); }, extras)) return rc;
+    if (const int rc = BuildRoomWorld(srv, opt.room, gameFiles, gameTables, maps, [&udp](const std::string& addr) { return udp.OpenSession(addr); }, extras)) return rc;
     if (const int rc = ConfigureNetwork(udp, opt, tmpl, extras)) return rc;
     // 초당 `[성장]` 줄의 봇 번호 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
     run0.bot0Sid = net.Network().SessionIdOf("bot0");
@@ -1389,7 +1390,7 @@ int main(int argc, char** argv) {
     // ★ 10-01 R2 — 맵을 다 넣었으니 처음 상태를 담아 둔다(판 다시 열 때 되돌릴 사본 · `Server::CaptureMapInitial`)
     // ★ 10-12 플랜 B 작업 7e-4b — 맵 방은 맵 원본이 담아 둔 처음 상태를 같이 가리킨다(`Server::AttachMap` — 담기 셈도 거기서).
     //   제 것을 담는 것은 맵 없는 방(녹음 모드)뿐
-    if (opt.mapPath.empty()) srv.CaptureMapInitial();
+    if (opt.room.mapPath.empty()) srv.CaptureMapInitial();
     srv.Log("[맵처음] 담음 — 바닥 물건 %zu · 문·오벨리스크 %zu\n", srv.WorldStaticCount(), srv.WorldPropCount());
     std::fflush(stdout);
     net.SetVerbose(!opt.quiet);

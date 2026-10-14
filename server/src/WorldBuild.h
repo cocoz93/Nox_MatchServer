@@ -21,17 +21,12 @@ namespace nox { class CUdpServer; }
 
 struct BotWant { int x = -1, y = -1; std::string cls = "warrior"; };
 
-struct ServerOptions {
-    int port = nox::kGamePort;
-    // 이름에 공백을 쓰지 않는다. Start-Process 등에서 인자가 쪼개진다.
-    std::string name = "MY_SERVER";
-    bool quiet = false;
-    // ★ 10-10 토큰 작업 2 — 입장 방식(`Docs/TOKEN_DESIGN.md`). 설정 파일의 `[token] key` 가 있어야 뜬다.
-    //   토큰 검사 끄기는 녹음 재생 · 시험 도구 · LAN 실행만 — 모두 방 0.
-    std::string configPath;     // `--config <파일>`
-    bool noJoinToken = false;   // `--no-join-token`
-    // ★ 10-12 플랜 B 작업 7e-2 — 게임 폴더(thing.bin · gamedata.bin · soundset.bin · modifier.bin). 옛 자리는 이 경로를 코드에 박아 두었다
-    std::string gameDir = "C:\\Program Files\\GOG Galaxy\\Games\\Nox";   // `--game-dir <폴더>`
+// ★ 10-14 플랜 B 작업 9a — 실행 인자 묶음을 둘로 갈랐다(`Docs/ROOMS_DESIGN.md` 목표 구조 v3 「누가 무엇을 맡나」 — 채널 `main`).
+//   방 설정(`RoomSettings`)   = 방 하나의 판 · 규칙 · 녹음 · 진단 손잡이. 방이 든다 — 단독 모드는 실행 인자로 하나, 로비는 방을 만들 때
+//   프로세스 설정(`ServerOptions`) = 포트 · 이름 · 설정 파일 · 게임 폴더 · 통신 층 손잡이 · 서버를 안 띄우는 진단 + 실행 인자의 방 설정 하나
+//   필드의 기본값과 주석은 옛 한 묶음 그대로 옮겼다.
+struct RoomSettings {
+    bool quiet = false;   // 방 진단 줄(초당 줄 등)을 줄인다 — `--quiet` 가 프로세스 설정의 같은 이름과 같이 켠다
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)
@@ -45,8 +40,6 @@ struct ServerOptions {
     bool noNewGear = false;
     // 첫 세계 스냅샷을 아예 안 보낸다. HUD 실종이 이 배선 탓인지 가르는 시험용.
     bool noSnapshot = false;
-    bool ackSeq = true;        // B-1b — 신뢰 순번 되받기(**기본 켬** — 정품 녹음 근거는 Server::Emit 주석)
-    bool ackAnyStream = true;  // B-1b — 되받기를 스트림 0 비신뢰에(**기본 켬**)
     bool noSpawnInvuln = false;  // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인 우회로
     // 서두 안 cc(6a … 01) 의 상태를 0 으로 뒤집는 것을 **끈다**(녹음본 값 그대로).
     // 기본은 뒤집는 쪽이다 — Server.h 의 SetForceHudOn 주석 참조.
@@ -71,11 +64,6 @@ struct ServerOptions {
     // ★ 독립 서버 P3 — .map 을 직접 읽어 벽 충돌을 켤다. 비면 종전처럼 벽 없음.
     std::string mapPath;
     bool standalone = false;
-    // 진단 — 맵 섹션 목록(이름·크기)만 찍고 **서버를 안 띄우고 끝낸다**. 157개를 배치로 돌리려고.
-    //   왜 서버가 해야 하나 — .map 은 Blowfish 로 암호화돼 있어 바깥 도구로는 못 읽고,
-    //   복호와 섹션 워커가 이미 여기 있다(MapFile::Load 가 **모든 섹션**을 담는다. 쓰는 건 5개뿐).
-    bool dumpSections = false;
-    std::string dumpThing;      // 진단 --dump-thing — 종류 하나의 클래스·서브클래스를 찍는다
     bool aoi = false;
     double creatureAoiHalf = 0.0;   // 크리처 시야 판정 반폭 — 0 꺼짐 · <0 정답지 기본(740×580) · >0 판정용 정사각형
     int creatureAwayAfter = 0;      // 진단 — 첫 사람 들어오고 N 틱 뒤 크리처를 ±300 으로 옮김 (0 끔)
@@ -131,6 +119,27 @@ struct ServerOptions {
     double questSpread = 300.0;
     // ★ 깃발 진영을 가운데에서 이만큼씩 벌린다. 사람이 **걸어가 뺏어 와야** 판이 된다.
     int ctfSpan = 220;
+};
+
+struct ServerOptions {
+    int port = nox::kGamePort;
+    // 이름에 공백을 쓰지 않는다. Start-Process 등에서 인자가 쪼개진다.
+    std::string name = "MY_SERVER";
+    bool quiet = false;   // 프로세스 줄(초당 통신 층 · 스레드 줄 · 받은 조각마다 한 줄)을 줄인다
+    // ★ 10-10 토큰 작업 2 — 입장 방식(`Docs/TOKEN_DESIGN.md`). 설정 파일의 `[token] key` 가 있어야 뜬다.
+    //   토큰 검사 끄기는 녹음 재생 · 시험 도구 · LAN 실행만 — 모두 방 0.
+    std::string configPath;     // `--config <파일>`
+    bool noJoinToken = false;   // `--no-join-token`
+    // ★ 10-12 플랜 B 작업 7e-2 — 게임 폴더(thing.bin · gamedata.bin · soundset.bin · modifier.bin). 옛 자리는 이 경로를 코드에 박아 두었다
+    std::string gameDir = "C:\\Program Files\\GOG Galaxy\\Games\\Nox";   // `--game-dir <폴더>`
+    bool ackSeq = true;        // B-1b — 신뢰 순번 되받기(**기본 켬** — 정품 녹음 근거는 Server::Emit 주석)
+    bool ackAnyStream = true;  // B-1b — 되받기를 스트림 0 비신뢰에(**기본 켬**)
+    // 진단 — 맵 섹션 목록(이름·크기)만 찍고 **서버를 안 띄우고 끝낸다**. 157개를 배치로 돌리려고.
+    //   왜 서버가 해야 하나 — .map 은 Blowfish 로 암호화돼 있어 바깥 도구로는 못 읽고,
+    //   복호와 섹션 워커가 이미 여기 있다(MapFile::Load 가 **모든 섹션**을 담는다. 쓰는 건 5개뿐).
+    bool dumpSections = false;
+    std::string dumpThing;      // 진단 --dump-thing — 종류 하나의 클래스·서브클래스를 찍는다
+    RoomSettings room;          // 실행 인자로 차리는 방 하나(단독 모드 · 녹음 모드)
 };
 
 // 세계를 차리며 얻어 루프가 다시 쓰는 것.
@@ -194,7 +203,7 @@ MapCatalog BuildMapCatalog(const GameFiles& files, const std::shared_ptr<const n
 
 // 방 몫 — 맵 방이면 `tables`(위)가 있어야 하고 그 맵이 `maps`에 있어야 한다(없으면 멈춤).
 //   게임 데이터 파일은 `files`에서 빌려 쓴다(방을 차릴 때 파일을 안 읽는다)
-int BuildRoomWorld(nox::Server& srv, const ServerOptions& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,
+int BuildRoomWorld(nox::Server& srv, const RoomSettings& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,
                    const MapCatalog& maps, const OpenSessionFn& openSession, WorldExtras& out);
 // 프로세스 몫 — 통신 층 설정(서버 찾기 답의 틀 · 순번 되받기). 서버에 한 번, 첫 방을 차린 뒤.
 //   `tmpl`(서버 찾기 답의 틀)의 맵 이름은 첫 방의 `lanMapName` 으로 채운다
