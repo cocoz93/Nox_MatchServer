@@ -24769,6 +24769,64 @@ void UseTokens(nox::CSyncHost& srv) {
 }
 }  // namespace
 
+// ── ★ 10-14 플랜 B 작업 9e — 돌고 있는 방의 사실 · 빈 방 닫기 ─────────
+//   ① 사실 — 이름 · 맵 열쇠(파일 이름 소문자 · 확장자 뗌) · 모드 · 게임 안 사람 · 세션표 수
+//   ② 비면 닫는 방 — 빈 채 30초 전엔 그대로, 30초에 닫힘 · 끄면 안 닫힘
+//   ③ 사람이 있으면 시간이 지나도 안 닫힘 → 나가면(내보내기 — 끊기 요청) 그때부터 30초
+void TestRoomFacts() {
+    using RM = nox::CRoomManager;
+    char m[260];
+    RM rooms;
+    RoomSettings sa;
+    sa.roomName = "A의 게임";
+    sa.mapPath = "C:\\Nox\\maps\\So_LOD\\So_LOD.map";
+    sa.mode = "chat";
+    sa.closeWhenEmpty = true;
+    const int a = rooms.CreateRoom(sa);
+    const int b = rooms.CreateRoom(RoomSettings{});   // 실행 인자의 방처럼 — 이름 없음 · 녹음 · 안 닫음
+    RoomSettings sc = sa;
+    sc.roomName = "C";
+    const int c = rooms.CreateRoom(sc);
+    const uint32_t t0 = 100000;
+    rooms.BeginTick(t0);                                 // A · C 가 빈 때를 잰다(둘 다 빔) — C 는 아래에서 사람이 들어 다시 재야 한다
+    rooms.AssignDirect(31, c);
+    rooms.Game(c).DebugEnterGame(31, "10.40.0.1:4001", 0x30);
+    const std::vector<nox::RoomFact> f = rooms.ListRooms();
+    std::snprintf(m, sizeof(m), "① 사실 — 방 %zu개 · A[%s · %s · %s · %zu · %zu] · B[이름 %zu자 · 맵 %zu자 · %s] · C[사람 %zu · 세션 %zu]",
+                  f.size(), f.empty() ? "" : f[0].name.c_str(), f.empty() ? "" : f[0].mapKey.c_str(), f.empty() ? "" : f[0].mode.c_str(),
+                  f.empty() ? 0 : f[0].players, f.empty() ? 0 : f[0].seats, f.size() < 2 ? 0 : f[1].name.size(),
+                  f.size() < 2 ? 0 : f[1].mapKey.size(), f.size() < 2 ? "" : f[1].mode.c_str(), f.size() < 3 ? 0 : f[2].players,
+                  f.size() < 3 ? 0 : f[2].seats);
+    Check(f.size() == 3 && f[0].roomId == a && f[0].name == "A의 게임" && f[0].mapKey == "so_lod" && f[0].mode == "chat" &&
+          f[0].players == 0 && f[0].seats == 0 && f[1].roomId == b && f[1].name.empty() && f[1].mapKey.empty() &&
+          f[1].mode == "arena" && f[2].roomId == c && f[2].players == 1 && f[2].seats == 1, m);
+
+    rooms.BeginTick(t0 + RM::kEmptyRoomCloseMs - 1);
+    const bool aBefore = rooms.HasRoom(a);
+    rooms.BeginTick(t0 + RM::kEmptyRoomCloseMs);
+    std::snprintf(m, sizeof(m), "② 빈 방 닫기 — 30초 전 A %d · 30초에 A %d · B(안 닫음) %d · C(사람 있음) %d · 빈 방 닫음 %llu",
+                  (int)aBefore, (int)rooms.HasRoom(a), (int)rooms.HasRoom(b), (int)rooms.HasRoom(c), rooms.Stats().emptyRoomsClosed);
+    Check(aBefore && !rooms.HasRoom(a) && rooms.HasRoom(b) && rooms.HasRoom(c) && rooms.Stats().emptyRoomsClosed == 1, m);
+
+    rooms.BeginTick(t0 + 5 * RM::kEmptyRoomCloseMs);
+    const bool cStays = rooms.HasRoom(c);
+    if (cStays) rooms.Game(c).DebugKickPlayer(31);   // 닫혔으면 만지지 않는다(시험이 죽지 않고 실패로 보이게)
+    std::vector<nox::NetworkRequest> rq;
+    rooms.SwapOutNetworkRequests(rq);                    // 끊기 요청을 옮기며 세션표에서 지운다
+    const uint32_t t1 = t0 + 6 * RM::kEmptyRoomCloseMs;
+    rooms.BeginTick(t1);                                 // 나간 뒤 처음 — 여기서부터 잰다(들기 전 t0 부터가 아니다)
+    const bool cAtLeave = rooms.HasRoom(c);
+    rooms.BeginTick(t1 + RM::kEmptyRoomCloseMs - 1);
+    const bool cAfterLeave = rooms.HasRoom(c);
+    rooms.BeginTick(t1 + RM::kEmptyRoomCloseMs);
+    std::snprintf(m, sizeof(m), "③ 사람 있는 동안 C %d · 나간 뒤 세션표 %zu · 나간 직후 C %d · 29.999초 C %d · 30초 C %d · B %d · 빈 방 닫음 %llu",
+                  (int)cStays, rooms.SeatCount(), (int)cAtLeave, (int)cAfterLeave, (int)rooms.HasRoom(c), (int)rooms.HasRoom(b),
+                  rooms.Stats().emptyRoomsClosed);
+    Check(cStays && rooms.SeatCount() == 0 && cAtLeave && cAfterLeave && !rooms.HasRoom(c) && rooms.HasRoom(b) &&
+          rooms.Stats().emptyRoomsClosed == 2, m);
+    std::printf("  10-14 플랜 B 작업 9e — 돌고 있는 방의 사실 · 빈 방 닫기(빈 채 30초 · 사람 있으면 안 닫음 · 실행 인자의 방은 안 닫음)\n");
+}
+
 void TestRooms() {
     const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
     const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
@@ -30349,6 +30407,7 @@ int main() {
     TestNetworkThread();
     TestRoomManager();
     TestRooms();
+    TestRoomFacts();
     TestJoinTrailer();
     TestReliableResend();
     TestNewPlayerGearBits();

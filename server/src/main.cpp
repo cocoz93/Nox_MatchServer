@@ -607,6 +607,7 @@ int main(int argc, char** argv) {
     world.maps = &maps;
     world.openSession = [&udp](const std::string& addr) { return udp.OpenSession(addr); };
     rooms.SetWorldData(world);
+    rooms.SetLogRooms(true);   // ★ 10-14 작업 9e — 방을 만들고 닫을 때 한 줄(`[방] N 만듦` · `닫음`)
     int buildRc = 0;
     const int roomId = rooms.CreateRoom(opt.room, &buildRc);
     if (roomId == nox::CRoomManager::kNoRoom) return buildRc;

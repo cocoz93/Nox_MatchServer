@@ -89,6 +89,9 @@ private:
     unsigned long long _tracePetsSamples = 0;  // 그 분모 — 0 옆에 늘 지나간 양을 같이 읽는다
     unsigned long long _lastAbilFp = 0;        // 조용한 주행의 능력 갈래 지문(옛 루프 안 `static`)
     unsigned long long _sendSeen = 0;          // 틱 앞에 본 이 방의 보내기 요청 누계 — 이 틱의 `made` = 틱 뒤 − 이것
+    // ★ 10-14 작업 9e — 빈 방 닫기(방 관리자가 쓴다): 빈 채가 된 때
+    bool _emptyArmed = false;
+    uint32_t _emptySinceMs = 0;
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).
@@ -116,13 +119,27 @@ struct CRoomStats {
     unsigned long long roomBuildFailed = 0;    // ★ 10-14 작업 9d — 세계 차리기가 실패해 안 만든 방
     unsigned long long openNoRoom = 0;         // ★ 10-14 작업 9d — 열린 방식인데 정해 준 방이 없어 거절 · 끊음
     unsigned long long roomsClosed = 0;
+    unsigned long long emptyRoomsClosed = 0;   // ★ 10-14 작업 9e — 그 가운데 빈 방이라 닫은 것
     unsigned long long closedRoomSessions = 0; // 방을 닫으며 내보낸 세션
     unsigned long long lobbyEventsMisrouted = 0;   // ★ 10-14 작업 8c — 로비 TCP 사건이 여기로 옴(게임 스레드의 나누는 자리가 틀림 — 0 이 정상)
+};
+
+// ★ 10-14 플랜 B 작업 9e — 돌고 있는 방 하나의 사실. 로비가 목록을 그린다 — 목록의 정본은 방 관리자의 이것 하나
+//   (설정 파일에 방을 적지 않는다 — `Docs/ROOMS_DESIGN.md` 원칙 「방 목록의 정본은 돌고 있는 방」)
+struct RoomFact {
+    int roomId = -1;
+    std::string name;      // 방 설정의 이름(`RoomSettings::roomName`)
+    std::string mapKey;    // 맵 열쇠(`MapKeyOf` — 녹음 모드는 빈 것)
+    std::string mode;      // 방 설정의 모드(`arena` · `chat` …)
+    size_t players = 0;    // 게임 안 사람 수(`Server::inGameCount`)
+    size_t seats = 0;      // 세션표에서 이 방 세션 수(들어오는 중 포함)
 };
 
 class CRoomManager {
 public:
     static constexpr int kNoRoom = -1;
+    // ★ 10-14 작업 9e — 빈 방 닫기까지(`RoomSettings::closeWhenEmpty`). 입장 토큰 수명 — 방을 만든 사람이 토큰을 받고 들어올 동안은 둔다
+    static constexpr uint32_t kEmptyRoomCloseMs = kJoinTokenLifetimeSec * 1000;
 
     CRoomManager() = default;   // ★ 10-14 작업 9d — 방 없이 시작한다(옛 「방 0 을 만든다」)
     CRoomManager(const CRoomManager&) = delete;
@@ -145,6 +162,9 @@ public:
     int CreateRoom(const RoomSettings& settings, int* buildRc = nullptr);
     // 그 방의 사람마다 `SERVER_CLOSE` 를 보내고 끊은 뒤 방을 지운다. 없는 방이면 false.
     bool CloseRoom(int id);
+    // ★ 10-14 작업 9e — 돌고 있는 방의 사실(번호 차례) · 방을 만들고 닫을 때 한 줄씩 찍는다(`main` 이 켠다 — 시험은 조용히)
+    std::vector<RoomFact> ListRooms() const;
+    void SetLogRooms(bool on) { _logRooms = on; }
 
     // ── 입장 방식 ── (머리 주석 「10-10 토큰 작업 2」)
     void SetJoinKey(const JoinKey& key);   // 토큰 방식 — 실제 서버
@@ -162,6 +182,7 @@ public:
     // 통신 층 이벤트 하나. 돌려주는 값 = 방의 게임이 읽은 게임 메시지 수(`Server::OnNetworkEvent`).
     size_t OnNetworkEvent(const NetworkEvent& ev);
     // 방마다 게임 시계를 돌려 돌 틱 수를 정해 둔다. 돌려주는 값 = 방들 가운데 가장 많은 틱 수(0 이면 이번에 도는 방이 없다).
+    //   ★ 10-14 작업 9e — 그 앞에 빈 방 닫기(`closeWhenEmpty` 방이 빈 채 `kEmptyRoomCloseMs` 지남)
     int BeginTick(uint32_t nowMs);
     // `BeginTick` 이 정한 틱 수대로 방마다 게임 일을 한다(부하를 재고 판 끝을 알린다).
     void RunTick();
@@ -184,6 +205,8 @@ private:
     void RequestSendMsg(int64_t sessionId, bool reliable, const uint8_t* msg, size_t n);
     void RequestDisconnectSession(int64_t sessionId);
     void PullRequests(CRoom& room);   // 방의 요청 목록을 방 관리자 목록 뒤로 옮긴다(끊기 요청이면 세션표에서 지운다)
+    void CloseEmptyRooms(uint32_t nowMs);   // ★ 10-14 작업 9e
+    std::map<int, size_t> SeatCounts() const;   // 방 → 세션표의 세션 수(한 번 훑기)
 
     std::map<int, std::unique_ptr<CRoom>> _rooms;
     int _nextRoomId = 0;
@@ -191,6 +214,7 @@ private:
     int _openRoom = kNoRoom;                      // ★ 10-14 작업 9d — 열린 방식의 방
     WorldData _world;                             // ★ 10-14 작업 9d — 방을 차릴 때 쓰는 읽기 전용 데이터
     bool _hasWorld = false;
+    bool _logRooms = false;                       // ★ 10-14 작업 9e
     bool _hasKey = false;
     JoinKey _key{};
     CJoinTokenLedger _ledger;

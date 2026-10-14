@@ -34,7 +34,67 @@ int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
     ++_nextRoomId;
     _rooms.emplace(id, std::move(room));
     ++_stats.roomsCreated;
+    if (_logRooms) {   // ★ 10-14 작업 9e — 한 줄은 `printf` 한 번(두 스레드가 한 표준 출력에 찍는다)
+        std::printf("[방] %d 만듦 — 이름 %s · 맵 %s · 모드 %s%s\n", id, settings.roomName.empty() ? "(없음)" : settings.roomName.c_str(),
+                    settings.mapPath.empty() ? "(녹음)" : MapKeyOf(settings.mapPath).c_str(), settings.mode.c_str(),
+                    settings.closeWhenEmpty ? " · 비면 닫음" : "");
+        std::fflush(stdout);
+    }
     return id;
+}
+
+std::map<int, size_t> CRoomManager::SeatCounts() const {
+    std::map<int, size_t> n;
+    for (const auto& kv : _seats) ++n[kv.second];
+    return n;
+}
+
+std::vector<RoomFact> CRoomManager::ListRooms() const {
+    const std::map<int, size_t> seats = SeatCounts();
+    std::vector<RoomFact> r;
+    r.reserve(_rooms.size());
+    for (const auto& kv : _rooms) {
+        const CRoom& room = *kv.second;
+        RoomFact f;
+        f.roomId = room._id;
+        f.name = room._settings.roomName;
+        f.mapKey = room._settings.mapPath.empty() ? std::string() : MapKeyOf(room._settings.mapPath);
+        f.mode = room._settings.mode;
+        f.players = room._game.inGameCount();
+        const auto it = seats.find(room._id);
+        f.seats = it == seats.end() ? 0 : it->second;
+        r.push_back(std::move(f));
+    }
+    return r;
+}
+
+// ★ 10-14 작업 9e — 비면 닫는 방(로비가 만든 방)이 빈 채 `kEmptyRoomCloseMs` 지나면 닫는다. 빈 때는 처음 빈 것을 본 `BeginTick` 의 시각
+void CRoomManager::CloseEmptyRooms(uint32_t nowMs) {
+    std::vector<int> toClose;
+    const std::map<int, size_t> seats = SeatCounts();
+    for (auto& kv : _rooms) {
+        CRoom& room = *kv.second;
+        if (!room._settings.closeWhenEmpty) continue;
+        const auto it = seats.find(room._id);
+        if (it != seats.end() && it->second > 0) {
+            room._emptyArmed = false;
+            continue;
+        }
+        if (!room._emptyArmed) {
+            room._emptyArmed = true;
+            room._emptySinceMs = nowMs;
+            continue;
+        }
+        if (static_cast<uint32_t>(nowMs - room._emptySinceMs) >= kEmptyRoomCloseMs) toClose.push_back(room._id);
+    }
+    for (const int id : toClose) {
+        CloseRoom(id);
+        ++_stats.emptyRoomsClosed;
+        if (_logRooms) {
+            std::printf("[방] %d 닫음 — 빈 채 %u초\n", id, kEmptyRoomCloseMs / 1000);
+            std::fflush(stdout);
+        }
+    }
 }
 
 bool CRoomManager::CloseRoom(int id) {
@@ -158,6 +218,7 @@ void CRoomManager::LogJoin(const char* what, const NetworkEvent& ev, int roomId,
 }
 
 int CRoomManager::BeginTick(uint32_t nowMs) {
+    CloseEmptyRooms(nowMs);   // ★ 10-14 작업 9e
     int most = 0;
     for (auto& kv : _rooms) {
         CRoom& room = *kv.second;
