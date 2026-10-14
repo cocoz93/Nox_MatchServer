@@ -4,7 +4,7 @@
 |---|---|
 | `build.ps1` | Release 빌드 + 자체검사(ctest — 녹음 덤프·게임 맵이 있으면 6개) |
 | `smoke.ps1` | 자체검사 `socket_smoke`(녹음 기반 모드)·`socket_smoke_standalone`(독립 모드, `-Map`)의 본체. **CMakeLists.txt 소켓 왕복 절이 부른다** |
-| `lobby_smoke.ps1` | 자체검사 `lobby_smoke`(로비 서버 `nox_lobby` 소켓 왕복 — 시험용 포트 14000)의 본체. 같은 절이 부른다 |
+| `lobby_smoke.ps1` | 자체검사 `lobby_smoke`(채널 `nox_server --lobby-port` 안 로비 소켓 왕복 — 시험용 포트 14000 · 옛 `nox_lobby` 는 10-14 작업 8d 에 없앰)의 본체. 같은 절이 부른다 |
 | `router_smoke.ps1` | 자체검사 `router_smoke`(라우터 `nox_router` 4005 왕복 — 시험용 포트 14005 · 14006, 채널 주소 설정 없음/있음)의 본체. 같은 절이 부른다 |
 
 한글이 들어가므로 **UTF-8 BOM 이 필수**다(없으면 CP949 로 오독해 파싱부터 실패).

@@ -147,17 +147,30 @@ nox::JoinKey LobbyTestKey() {
 }
 constexpr uint32_t kLobbyTestNow = 1760064016;   // 시험 시계(유닉스 초)
 
+// ★ 10-14 작업 8d — 로비는 방 목록을 갖지 않고 채널이 준다(`ILobbyRooms`). 시험은 가짜 — 옛 설정 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리
+struct FakeRooms final : nox::wol::ILobbyRooms {
+    std::vector<nox::wol::LobbyRoom> rooms;
+    std::vector<nox::wol::LobbyRoom> LobbyRooms() const override { return rooms; }
+};
+nox::wol::LobbyRoom FakeRoom(uint16_t id, const char* creator) {
+    nox::wol::LobbyRoom r;
+    r.gameRoomId = id;
+    r.creator = creator;
+    return r;
+}
+
 void LobbyUnitTests() {
     using namespace nox::wol;
     LobbyConfig cfg;
     cfg.gameServerIp = (192u << 24) | (0u << 16) | (2u << 8) | 10u;   // 192.0.2.10 (문서용 주소)
     cfg.room.map = "estate";
     cfg.room.maxPlayers = 31;
-    cfg.rooms = {{"NoxOrigin", 0}, {"NoxOrigin2", 1}};
+    FakeRooms fake;
+    fake.rooms = {FakeRoom(0, "NoxOrigin"), FakeRoom(1, "NoxOrigin2")};
     cfg.joinKey = LobbyTestKey();
     cfg.unixNow = [] { return kLobbyTestNow; };
     cfg.nonce = [] { return 0x0102030405060708ull; };
-    Lobby lb(cfg);
+    Lobby lb(cfg, fake);
     const uint32_t loop = 0x7f000001;
     const uint32_t peer = (198u << 24) | (51u << 16) | (100u << 8) | 7u;   // 198.51.100.7 (문서용 주소)
     const std::string gameIp = std::to_string(cfg.gameServerIp);
@@ -269,6 +282,65 @@ void LobbyUnitTests() {
     out.clear();
     lb.OnLine(2, "JOINGAME #NoxOrigin's_game 1 ", out);   // DLL 있는 접속은 그대로 토큰
     Check(out.size() == 5 && hasLine(out, "NOXTOKEN ") && lb.Stats().tokensIssued == 2, "DLL 있는 접속은 계속 토큰 + 원래 답 넷");
+}
+
+// ── ★ 10-14 작업 8d — 채널 안 로비: 방은 채널이 그 순간 주는 것 · 방 정보 = 방의 이름 · 맵 · 모드 · 인원 · 게임 서버 주소 = 붙은 내 쪽 주소 ──
+void ChannelLobbyUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;   // 게임 서버 주소 0 = 이 접속이 붙은 내 쪽 주소(채널이 곧 게임 서버)
+    cfg.room.maxPlayers = 31;
+    cfg.gameServerPort = 18590;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    FakeRooms fake;
+    LobbyRoom r = FakeRoom(7, "wn");
+    r.name = "wn game";
+    r.map = "so_lod";
+    r.mode = "chat";
+    r.players = 2;
+    fake.rooms = {r};
+    Lobby lb(cfg, fake);
+    const uint32_t local = (203u << 24) | (0u << 16) | (113u << 8) | 5u;   // 203.0.113.5 — 채널이 붙은 주소(문서용)
+    const uint32_t peer = (198u << 24) | (51u << 16) | (100u << 8) | 7u;
+    std::vector<Out> out;
+    lb.OnConnect(1, peer, local);
+    for (const char* l : {"NOXCLIENT 1", "NICK wn", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(1, l, out);
+    out.clear();
+    lb.OnLine(1, "LIST 37 37", out);
+    GameInfo g;
+    std::string chan, ipCol;
+    int n326 = 0;
+    for (const auto& o : out) {
+        const auto t = Tokens(o.line);
+        if (t.size() == 11 && t[1] == "326") {
+            ++n326;
+            chan = t[3];
+            ipCol = t[9];
+            Unpack(t[10].substr(4), g);
+        }
+    }
+    Check(n326 == 1 && chan == "#wn's_game" && ipCol == std::to_string(local), "326 = 만든 사람 채널 · 방장 주소 칸 = 붙은 내 쪽 주소");
+    Check(g.name == "wn game" && g.map == "so_lod" && (g.flags & kMapTypeMask) == kMapChat && g.players == 2 && g.maxPlayers == 31,
+          "방 정보 = 방의 이름 · 맵 · 모드(chat) · 인원 + 틀의 최대 인원");
+    out.clear();
+    lb.OnLine(1, "JOINGAME #wn's_game 1 ", out);
+    const auto first = out.empty() ? std::vector<std::string>{} : Tokens(out[0].line);
+    nox::JoinToken tok;
+    uint8_t raw[nox::kJoinTokenSize] = {};
+    nox::JoinTokenCheck chk = nox::JoinTokenCheck::BadSize;
+    if (first.size() == 3 && nox::ParseHex(first[2], raw, sizeof(raw)))
+        chk = nox::VerifyJoinToken(LobbyTestKey(), raw, sizeof(raw), kLobbyTestNow, peer, tok);
+    Check(first.size() == 3 && first[1] == "203.0.113.5:18590" && chk == nox::JoinTokenCheck::Ok && tok.roomId == 7,
+          "NOXTOKEN = 붙은 내 쪽 주소 · 그 방 번호");
+    // 방이 사라지면(방 관리자가 닫음) 다음 목록에서 빠지고 참가엔 답하지 않는다
+    fake.rooms.clear();
+    out.clear();
+    lb.OnLine(1, "LIST 37 37", out);
+    const bool emptyList = out.size() == 2 && Tokens(out[0].line)[1] == "321" && Tokens(out[1].line)[1] == "323";
+    out.clear();
+    lb.OnLine(1, "JOINGAME #wn's_game 1 ", out);
+    Check(emptyList && out.empty() && lb.Stats().tokensIssued == 1, "방이 사라지면 목록 0줄 · 참가엔 답 없음(토큰 없음)");
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
@@ -575,9 +647,11 @@ int ReplayRecording(const char* path) {
     //   4000 로그인 앞에 `NOXCLIENT 1` 을 끼우고, 나온 답에서 `NOXTOKEN` 줄을 떼어 센 뒤(녹음 속 방 참가 수와 같아야 한다)
     //   나머지만 XWIS 원래 답과 견준다. 그래서 이 대조는 「DLL 이 줄을 뗀 뒤 정품 로비 모듈이 받는 것」을 본다.
     nox::wol::LobbyConfig cfg;
-    cfg.rooms = {{"tak7", 0}};
+    cfg.gameServerIp = 0x7f000001;   // 옛 로비 기본값(따로 뜬 로비 — 127.0.0.1) 그대로 · ★ 10-14 작업 8d 기본값은 0(붙은 주소)
+    FakeRooms fake;
+    fake.rooms = {FakeRoom(0, "tak7")};
     cfg.joinKey = LobbyTestKey();
-    nox::wol::Lobby lb(cfg);
+    nox::wol::Lobby lb(cfg, fake);
     // ★ 10-14 작업 8b — 4005 접속(로비 찾기)은 라우터가 받는다. 채널 주소 설정이 없으니 605 는 「붙은 주소」:4000(옛 로비와 같은 답)
     nox::wol::Router rt{nox::wol::RouterConfig{}};
     int tokenLines = 0, joinGames = 0, routerConns = 0;
@@ -668,6 +742,7 @@ int main(int argc, char** argv) {
     } else {
         UnitTests();
         LobbyUnitTests();
+        ChannelLobbyUnitTests();
         RouterUnitTests();
     }
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

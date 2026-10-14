@@ -125,4 +125,19 @@ bool Unpack(std::string_view payload, GameInfo& out) {
     return true;
 }
 
+// ★ 10-14 작업 8d — 옛 `lobby_main.cpp` `ParseMode` 의 표 그대로(우리 서버의 `coopteam` 은 WOL 표에 없다 — 모르는 이름)
+bool ModeFlagsOf(std::string_view mode, uint16_t& bits) {
+    static const struct { const char* name; uint16_t bits; } kModes[] = {
+        {"kotr", kMapKotr},   {"ctf", kMapCtf},     {"flagball", kMapFlagBall}, {"chat", kMapChat},
+        {"arena", kMapArena}, {"elimination", kMapElimination}, {"coop", kMapCoop}, {"quest", kMapQuest},
+    };
+    for (const auto& m : kModes) {
+        if (mode == m.name) {
+            bits = m.bits;
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace nox::wol

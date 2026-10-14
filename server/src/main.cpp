@@ -12,6 +12,7 @@
 //
 //   nox_server.exe [--port 18590] [--name "MY SERVER"] [--selftest] [--quiet]
 //                  --config <설정 파일>([token] key) | --no-join-token(토큰 검사 끄기 — 시험 도구 · LAN 실행)
+//                  [--lobby-port 4000 [--lobby-bind 127.0.0.1]] — ★ 10-14 작업 8d 채널 안 로비(토큰 방식만 · 방 없이 시작 · 옛 `nox_lobby`)
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -37,6 +38,7 @@
 #include "nox/Server.h"
 #include "nox/NetworkThread.h"
 #include "nox/RoomManager.h"
+#include "nox/ChannelLobby.h"   // ★ 10-14 작업 8d — 채널 안 로비
 #include "nox/IniFile.h"
 #include "nox/Clock.h"
 #include "nox/MapFile.h"
@@ -162,6 +164,10 @@ int main(int argc, char** argv) {
             opt.configPath = argv[++i];
         } else if (a == "--no-join-token") {
             opt.noJoinToken = true;
+        } else if (a == "--lobby-port" && i + 1 < argc) {
+            opt.lobbyPort = std::atoi(argv[++i]);   // ★ 10-14 작업 8d — 채널 안 로비
+        } else if (a == "--lobby-bind" && i + 1 < argc) {
+            opt.lobbyBind = argv[++i];
         } else if (a == "--port" && i + 1 < argc) {
             opt.port = std::atoi(argv[++i]);
         } else if (a == "--name" && i + 1 < argc) {
@@ -558,6 +564,11 @@ int main(int argc, char** argv) {
 
     // ★ 10-10 토큰 작업 2 — 입장 방식. 키가 없으면 뜨지 않는다 — 설정 하나 빠뜨린 서버가 아무나 받지 않게(`Docs/TOKEN_DESIGN.md`).
     //   진단(위 `--dump-*`)과 `--selftest` 는 서버를 안 띄우므로 이보다 앞에서 끝난다.
+    nox::JoinKey joinKey{};   // ★ 10-14 작업 8d — 채널 안 로비가 같은 키로 토큰을 서명한다(옛 이 블록 안 지역 `key`)
+    if (opt.lobbyPort != 0 && opt.noJoinToken) {
+        std::printf("[멈춤] --lobby-port 는 토큰 방식에서만 된다 — 로비가 방 참가 때 입장 토큰을 낸다(--no-join-token 과 같이 못 씀)\n");
+        return 2;
+    }
     if (opt.noJoinToken) {
         // ★ 10-14 작업 9d — 열린 방식의 방은 아래에서 실행 인자의 방을 만든 뒤 정한다(그 방이 처음 만든 방이라 번호 0)
         std::printf("입장: 토큰 검사 끔(--no-join-token) — 모두 방 0. 녹음 재생 · 시험 도구 · LAN 실행용\n");
@@ -572,12 +583,11 @@ int main(int argc, char** argv) {
             std::printf("[멈춤] 설정 파일을 못 읽었다 — %s\n", ini.Error().c_str());
             return 2;
         }
-        nox::JoinKey key{};
-        if (!nox::ParseJoinKey(ini.Get("token", "key"), key)) {
+        if (!nox::ParseJoinKey(ini.Get("token", "key"), joinKey)) {
             std::printf("[멈춤] 설정 파일의 [token] key 가 16진 64자가 아니다 — %s\n", opt.configPath.c_str());
             return 2;
         }
-        rooms.SetJoinKey(key);
+        rooms.SetJoinKey(joinKey);
         rooms.SetLogJoins(true);
         std::printf("입장: 토큰 방식 — 설정 %s\n", opt.configPath.c_str());
     }
@@ -608,16 +618,21 @@ int main(int argc, char** argv) {
     world.openSession = [&udp](const std::string& addr) { return udp.OpenSession(addr); };
     rooms.SetWorldData(world);
     rooms.SetLogRooms(true);   // ★ 10-14 작업 9e — 방을 만들고 닫을 때 한 줄(`[방] N 만듦` · `닫음`)
-    int buildRc = 0;
-    const int roomId = rooms.CreateRoom(opt.room, &buildRc);
-    if (roomId == nox::CRoomManager::kNoRoom) return buildRc;
+    // ★ 10-14 작업 8d — 로비 방식(`--lobby-port`)은 방 없이 시작한다 — 방은 로비가 만든다(작업 10 · `Docs/ROOMS_DESIGN.md` 흐름 1)
+    nox::CRoom* room0 = nullptr;
+    if (opt.lobbyPort == 0) {
+        int buildRc = 0;
+        const int roomId = rooms.CreateRoom(opt.room, &buildRc);
+        if (roomId == nox::CRoomManager::kNoRoom) return buildRc;
+        if (opt.noJoinToken) rooms.SetOpenEntry(roomId);
+        room0 = &rooms.Room(roomId);
+    }
     world.openSession = nullptr;
     rooms.SetWorldData(world);
-    if (opt.noJoinToken) rooms.SetOpenEntry(roomId);
-    nox::CRoom& room0 = rooms.Room(roomId);
-    if (const int rc = ConfigureNetwork(udp, opt, tmpl, room0.Extras())) return rc;
+    const WorldExtras noRoom;   // 로비 방식 — 서버 찾기 답의 맵 이름은 녹음 틀 그대로
+    if (const int rc = ConfigureNetwork(udp, opt, tmpl, room0 ? room0->Extras() : noRoom)) return rc;
     // 초당 `[성장]` 줄의 봇 번호 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
-    room0.SetBotSession(net.Network().SessionIdOf("bot0"));
+    if (room0) room0->SetBotSession(net.Network().SessionIdOf("bot0"));
 
     // ★ 10-09 조각 5d-2b — 소켓은 네트워크 스레드가 연다(옛 이 자리의 `WSAStartup` · `socket` · `bind` — 실패 문구 그대로)
     {
@@ -626,6 +641,29 @@ int main(int argc, char** argv) {
             std::printf("%s\n", netErr.c_str());
             return 1;
         }
+    }
+    // ★ 10-14 플랜 B 작업 8d — 채널 안 로비. TCP 소켓은 네트워크 스레드가 들고(`OpenLobby`) 로비 규약은 이 스레드(`CChannelLobby`)
+    std::unique_ptr<nox::CChannelLobby> lobby;
+    if (opt.lobbyPort != 0) {
+        uint32_t lobbyBindIp = 0;
+        if (!opt.lobbyBind.empty() && !nox::ParseIpv4(opt.lobbyBind, lobbyBindIp)) {
+            std::printf("[멈춤] --lobby-bind 주소: %s\n", opt.lobbyBind.c_str());
+            return 2;
+        }
+        std::string lobbyErr;
+        if (!net.OpenLobby(lobbyBindIp, static_cast<uint16_t>(opt.lobbyPort), lobbyErr)) {
+            std::printf("[멈춤] 로비 TCP 를 못 열었다 — %s\n", lobbyErr.c_str());
+            return 1;
+        }
+        nox::wol::LobbyConfig lc;
+        lc.joinKey = joinKey;
+        lc.gameServerPort = static_cast<uint16_t>(opt.port);
+        lc.room.maxPlayers = 31;   // 옛 `nox_lobby` 기본값 그대로(방 최대 인원은 아직 안 정함 — `ROOMS_DESIGN.md` 「안 정한 것」)
+        lc.room.resolution = 2;    // 녹음 다섯 방 중 셋이 1024x768
+        lobby = std::make_unique<nox::CChannelLobby>(rooms, lc);
+        lobby->SetVerbose(!opt.quiet);
+        std::printf("로비: TCP %s:%d — 방 없이 시작(방은 로비가 만든다) · 게임 서버 주소 = 붙은 내 쪽 주소\n",
+                    opt.lobbyBind.empty() ? "0.0.0.0" : opt.lobbyBind.c_str(), opt.lobbyPort);
     }
 
     std::printf("접속 대기 — UDP %d, 이름 \"%s\"\n", opt.port, opt.name.c_str());
@@ -674,6 +712,7 @@ int main(int argc, char** argv) {
     std::map<uint8_t, bool> told;            // ★ 10-12 작업 7c — `[처음]` 줄을 낸 오프코드(프로세스 몫 — 옛 루프 안 `static`)
     unsigned long long procMade = 0;         // ★ 10-12 작업 7c — 이 1초 동안 낸 보내기 요청(프로세스 몫 초당 줄의 문턱)
     uint32_t procLastMs = nox::NowMs();      //   그 줄을 마지막으로 찍은 때
+    std::vector<nox::NetworkRequest> lobbyRequests;   // ★ 10-14 작업 8d — 로비가 낸 줄(`LOBBY_SEND`)
     for (;;) {
         if (g_stopRequested.load() || WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;   // ★ 5d-2c — 닫기 신호
         ++loopTurns;
@@ -683,9 +722,15 @@ int main(int argc, char** argv) {
             for (const nox::NetworkEvent& ev : netEvents) {
                 const uint32_t lat = nowEv - ev.queuedMs;
                 ++evCount; evLatSum += lat; if (lat > evLatMax) evLatMax = lat;
+                // ★ 10-14 작업 8d — 로비 TCP 사건은 로비로, 나머지는 방 관리자로(같은 큐로 오는 것을 여기서 나눈다)
+                if (nox::IsLobbyEvent(ev.type)) {
+                    if (lobby) lobby->OnNetworkEvent(ev, lobbyRequests);
+                    continue;
+                }
                 rooms.OnNetworkEvent(ev);
             }
             netEvents.clear();
+            net.PushRequests(lobbyRequests);   // 로비 답은 틱을 기다리지 않고 바로(빈 것이면 아무것도 안 한다)
             // ★★ **클라가 처음 보낸 오프코드를 그때그때 알린다** — 게임 오프코드 쪽(옛 받은 조각마다 찍던 줄 · ⚠ `--quiet` 여도 찍는다)
             // ★ 10-12 플랜 B 작업 7c — 방마다 본 것을 모아 프로세스 몫 한 줄로(옛 꼴은 방 0 것만 읽었다). `told` 는 루프 밖(옛 `static`)
             rooms.ForEachRoom([&](const nox::CRoom& room) {
@@ -862,6 +907,11 @@ int main(int argc, char** argv) {
         const nox::CNetworkThreadStats ts = net.LatestThreadStats();
         std::printf("[종료] 끝 — 서버 닫힘 알림 %llu명 · 보낸 조각 %llu · 큐 버림(이벤트 %llu · 요청 %llu)\n",
                     ns.serverCloseSent, ts.datagramsOut, ts.eventsDropped, ts.requestsDropped);
+        // ★ 10-14 작업 8d — 채널 안 로비의 셈(옛 `nox_lobby` 의 끝 줄 · 0 옆에 지나간 양 — 네트워크 스레드가 센 TCP 줄 수도)
+        if (lobby)
+            std::printf("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu · 토큰 %llu · TCP(받음 %llu · 보냄 %llu · 끊긴 접속으로 %llu · 한도 %llu)\n",
+                        lobby->Stats().opened, lobby->Stats().linesIn, lobby->Stats().linesOut, lobby->LobbyStats().tokensIssued,
+                        ts.lobbyLinesIn, ts.lobbyLinesOut, ts.lobbySendNoConn, ts.lobbyRefused);
         std::fflush(stdout);
     }
     if (stopEvent) CloseHandle(stopEvent);

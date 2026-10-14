@@ -54,24 +54,29 @@ std::string IpDotted(uint32_t ip) {
            std::to_string((ip >> 8) & 0xff) + "." + std::to_string(ip & 0xff);
 }
 
-Lobby::Lobby(LobbyConfig cfg) : cfg_(std::move(cfg)) {
-    for (const LobbyRoom& r : cfg_.rooms) {
-        GameInfo g = cfg_.room;
-        g.name = r.host;   // ★ 10-10 — 방이 여럿이라 목록에서 갈리게 방장 이름을 방 이름으로
-        roomInfo_.push_back(Pack(g));
-    }
-}
+Lobby::Lobby(LobbyConfig cfg, const ILobbyRooms& rooms) : cfg_(std::move(cfg)), rooms_(rooms) {}
 
-int Lobby::RoomIndexOf(const std::string& channel) const {
-    for (size_t i = 0; i < cfg_.rooms.size(); ++i)
-        if (Channel(cfg_.rooms[i]) == channel) return static_cast<int>(i);
-    return -1;
+const LobbyRoom* Lobby::FindRoom(const std::vector<LobbyRoom>& rooms, const std::string& channel) {
+    for (const LobbyRoom& r : rooms)
+        if (Channel(r) == channel) return &r;
+    return nullptr;
 }
 
 bool Lobby::IsRoomHost(const std::string& name) const {
-    for (const LobbyRoom& r : cfg_.rooms)
-        if (r.host == name) return true;
+    for (const LobbyRoom& r : rooms_.LobbyRooms())
+        if (r.creator == name) return true;
     return false;
+}
+
+// ★ 10-14 작업 8d — 방 정보 = 틀 + 그 방의 이름 · 맵 · 모드 · 인원(옛 「방마다 이름만 방장 이름으로」 — 10-10)
+std::string Lobby::RoomInfo(const LobbyRoom& r) const {
+    GameInfo g = cfg_.room;
+    g.name = r.name.empty() ? r.creator : r.name;
+    if (!r.map.empty()) g.map = r.map;
+    uint16_t bits = 0;
+    if (ModeFlagsOf(r.mode, bits)) g.flags = static_cast<uint16_t>((g.flags & ~kMapTypeMask) | bits);
+    g.players = r.players;
+    return Pack(g);
 }
 
 void Lobby::OnConnect(int conn, uint32_t peerIp, uint32_t localIp) {
@@ -165,7 +170,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         }
         members_[t[1]].insert(conn);
         out.push_back({conn, ":" + c.nick + "!u@h JOIN :0,0 " + t[1]});
-        out.push_back({conn, ": 353 u * " + t[1] + " :" + Members353(t[1], false)});
+        out.push_back({conn, ": 353 u * " + t[1] + " :" + Members353(t[1], std::string(), 0)});
         out.push_back({conn, ": 366 u " + t[1] + " :"});
         return;
     }
@@ -176,13 +181,15 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         return;
     }
     if (cmd == "JOINGAME") {   // 방 참가 — 방장 주소가 353 에 실린다(326 과 같은 값)
-        const int ri = t.size() < 2 ? -1 : RoomIndexOf(t[1]);
-        if (ri < 0) {
+        const std::vector<LobbyRoom> rooms = rooms_.LobbyRooms();   // ★ 10-14 작업 8d — 그 순간의 돌고 있는 방
+        const LobbyRoom* found = t.size() < 2 ? nullptr : FindRoom(rooms, t[1]);
+        if (!found) {
             log_.push_back("[모르는 방] " + std::string(line));
             return;
         }
-        const LobbyRoom& lr = cfg_.rooms[static_cast<size_t>(ri)];
+        const LobbyRoom& lr = *found;
         const std::string room = Channel(lr);
+        const uint32_t gameIp = GameServerIp(c);
         // ★ 10-11 토큰 작업 5 — 토큰은 DLL 이 있는 클라에게만. 없으면(로그인 전 참가 포함) 또는 서명이 실패하면 토큰 없이 원래 답만 —
         //   클라는 게임 서버에서 `0x13` 사유 4 로 거절된다. 답을 안 하면 클라가 참가 화면에서 멈춘다(10-10 로그인 거절 때 멈춘 것과 같은 꼴)
         if (c.clientVer < kNoxClientMinVersion) {
@@ -204,7 +211,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
                 log_.push_back("[토큰 실패] 서명 — " + c.nick + " → " + room + " (토큰 없이 답함)");
             } else {
                 ++stats_.tokensIssued;
-                out.push_back({conn, "NOXTOKEN " + IpDotted(cfg_.gameServerIp) + ":" + std::to_string(cfg_.gameServerPort) + " " +
+                out.push_back({conn, "NOXTOKEN " + IpDotted(gameIp) + ":" + std::to_string(cfg_.gameServerPort) + " " +
                                          ToHex(raw, sizeof(raw))});
                 log_.push_back("[토큰] " + c.nick + " → " + room + " (게임 방 " + std::to_string(lr.gameRoomId) + " · " +
                                IpDotted(c.peerIp) + ")");
@@ -213,8 +220,8 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         members_[room].insert(conn);
         // `1 32 37 1 0 <내 IP> 1` — 녹음 그대로, 내 IP 만 바꾼다(앞 칸들 뜻 확인 안 함)
         out.push_back({conn, ":" + c.nick + "!u@h JOINGAME 1 32 37 1 0 " + std::to_string(c.peerIp) + " 1 :" + room});
-        out.push_back({conn, ": 332 u " + room + " " + roomInfo_[static_cast<size_t>(ri)]});   // 방 정보가 ':' 로 시작한다
-        out.push_back({conn, ": 353 u = " + room + " :" + Members353(room, true)});
+        out.push_back({conn, ": 332 u " + room + " " + RoomInfo(lr)});   // 방 정보가 ':' 로 시작한다
+        out.push_back({conn, ": 353 u = " + room + " :" + Members353(room, lr.creator, gameIp)});
         out.push_back({conn, ": 366 u " + room + " :"});
         return;
     }
@@ -229,11 +236,14 @@ void Lobby::SendList(int conn, bool withChat, std::vector<Out>& out) {
     out.push_back({conn, ": 321 u:"});
     // 셋째 칸 = 채널 안 사람 수로 보인다(녹음: 전용 서버 방 Anwserver 는 덩어리 인원 0 인데 이 칸 1) → 가짜 방장 1 + 참가자
     // `41681088` 은 뜻 모름 — 녹음 다섯 방 중 셋의 값(나머지 13893824 · 13894208)
-    for (size_t i = 0; i < cfg_.rooms.size(); ++i) {   // ★ 10-10 — 방마다 한 줄(설정 차례)
-        const std::string room = Channel(cfg_.rooms[i]);
+    // ★ 10-14 작업 8d — 방마다 한 줄(돌고 있는 방 · 방 번호 차례 — 옛 설정 차례). 방장 주소 칸 = 이 접속이 붙은 채널 주소
+    const auto ci = conns_.find(conn);
+    const uint32_t gameIp = ci == conns_.end() ? cfg_.gameServerIp : GameServerIp(ci->second);
+    for (const LobbyRoom& lr : rooms_.LobbyRooms()) {
+        const std::string room = Channel(lr);
         const size_t users = 1 + members_[room].size();
         out.push_back({conn, ": 326 u " + room + " " + std::to_string(users) + " 0 37 1 41681088 " +
-                                 std::to_string(cfg_.gameServerIp) + " " + std::string(kListPrefix) + roomInfo_[i]});
+                                 std::to_string(gameIp) + " " + std::string(kListPrefix) + RoomInfo(lr)});
     }
     if (withChat)
         for (const char* l : kChatLobbies)
@@ -242,12 +252,11 @@ void Lobby::SendList(int conn, bool withChat, std::vector<Out>& out) {
 }
 
 // 353 의 이름 목록. 채팅 로비 = `<이름>,0,0` · 게임 방 = `@<방장>,0,<게임 서버 IP> <이름>,0,<그 사람 IP>`
-std::string Lobby::Members353(const std::string& channel, bool gameRoom) const {
+//   ★ 10-14 작업 8d — 게임 방이면 `host`(방을 만든 사람)가 비어 있지 않다 · `gameIp` = 이 접속이 붙은 채널 주소
+std::string Lobby::Members353(const std::string& channel, const std::string& host, uint32_t gameIp) const {
+    const bool gameRoom = !host.empty();
     std::string r;
-    if (gameRoom) {
-        const int ri = RoomIndexOf(channel);
-        if (ri >= 0) r = "@" + cfg_.rooms[static_cast<size_t>(ri)].host + ",0," + std::to_string(cfg_.gameServerIp);
-    }
+    if (gameRoom) r = "@" + host + ",0," + std::to_string(gameIp);
     const auto m = members_.find(channel);
     if (m == members_.end()) return r;
     for (int id : m->second) {

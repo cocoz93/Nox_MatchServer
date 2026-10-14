@@ -33,6 +33,9 @@ struct RoomSettings {
     std::string roomName;
     // ★ 10-14 작업 9e — 빈 채로 `CRoomManager::kEmptyRoomCloseMs` 가 지나면 방 관리자가 닫는다(로비가 만든 방). 실행 인자의 방은 끔
     bool closeWhenEmpty = false;
+    // ★ 10-14 작업 8d — 방을 만든 사람의 로비 이름(작업 10 — 그 사람이 방장). 로비 채널 `#<이름>'s_game` 의 열쇠라 방이 사는 동안 안 바뀐다.
+    //   실행 인자의 방은 비어 있다 — 로비 목록에 안 나온다
+    std::string creator;
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)
@@ -145,6 +148,10 @@ struct ServerOptions {
     //   복호와 섹션 워커가 이미 여기 있다(MapFile::Load 가 **모든 섹션**을 담는다. 쓰는 건 5개뿐).
     bool dumpSections = false;
     std::string dumpThing;      // 진단 --dump-thing — 종류 하나의 클래스·서브클래스를 찍는다
+    // ★ 10-14 플랜 B 작업 8d — 채널 안 로비(TCP · `CChannelLobby`). 0 이면 로비 없음(단독 모드 · 녹음 모드 — 실행 인자의 방 하나).
+    //   켜면 토큰 방식만 되고 실행 인자의 방을 만들지 않는다 — 방은 로비가 만든다(작업 10)
+    int lobbyPort = 0;          // `--lobby-port <포트>`(정품 클라는 4000)
+    std::string lobbyBind;      // `--lobby-bind <IPv4>` — 비면 모든 주소(같은 PC 시험은 127.0.0.1)
     RoomSettings room;          // 실행 인자로 차리는 방 하나(단독 모드 · 녹음 모드)
 };
 

@@ -1,7 +1,7 @@
 ﻿# mo_firewall.ps1 — 바깥 PC 접속 시험 때만 방화벽을 연다 (MO 바깥 접속, Docs/LOBBY_DESIGN.md).
 #
-#   -Mode Open [-AllowIp a.b.c.d] : 들어오는 허용 규칙 셋 — nox_router.exe TCP 4005 · nox_lobby.exe TCP 4000 · nox_server.exe UDP 18590 (규칙 이름 앞 "NoxMO ")
-#                                   ★ 10-14 작업 8b — 4005 는 라우터가 받는다(옛 규칙 = nox_lobby.exe 4005·4000 하나)
+#   -Mode Open [-AllowIp a.b.c.d] : 들어오는 허용 규칙 셋 — nox_router.exe TCP 4005 · nox_server.exe TCP 4000(채널 안 로비) · nox_server.exe UDP 18590 (규칙 이름 앞 "NoxMO ")
+#                                   ★ 10-14 작업 8b — 4005 는 라우터가 받는다(옛 규칙 = nox_lobby.exe 4005·4000 하나) · 8d — 4000 은 채널(nox_server)
 #                                   -AllowIp 를 주면 그 주소에서 오는 것만 받는다(없으면 아무 주소 — 10-07 「잠깐 켤 동안은 열어도」)
 #   -Mode Close : 이름이 "NoxMO " 로 시작하는 규칙만 지운다
 #   -Mode Show  : 지금 있는 녹스 관련 규칙을 적기만 한다
@@ -30,14 +30,13 @@ $log = New-Object System.Collections.Generic.List[string]
 function Say($s) { $log.Add($s) }
 try {
   $router = Join-Path $repo 'build\Release\nox_router.exe'
-  $lobby = Join-Path $repo 'build\Release\nox_lobby.exe'
   $server = Join-Path $repo 'build\Release\nox_server.exe'
   if ($Mode -eq 'Open') {
     if ($AllowIp -and $AllowIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { throw "-AllowIp 꼴이 아니다: $AllowIp" }
     $remote = if ($AllowIp) { $AllowIp } else { 'Any' }
     Get-NetFirewallRule -DisplayName 'NoxMO *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
     New-NetFirewallRule -DisplayName 'NoxMO router TCP 4005' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4005 -Program $router -RemoteAddress $remote -Profile Any | Out-Null
-    New-NetFirewallRule -DisplayName 'NoxMO lobby TCP 4000' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4000 -Program $lobby -RemoteAddress $remote -Profile Any | Out-Null
+    New-NetFirewallRule -DisplayName 'NoxMO channel lobby TCP 4000' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4000 -Program $server -RemoteAddress $remote -Profile Any | Out-Null
     New-NetFirewallRule -DisplayName 'NoxMO server UDP 18590' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 18590 -Program $server -RemoteAddress $remote -Profile Any | Out-Null
     Say "[열림] NoxMO 규칙 셋 — 받는 주소 $remote"
   } elseif ($Mode -eq 'Close') {

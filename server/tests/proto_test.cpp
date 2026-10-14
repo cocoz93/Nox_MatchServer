@@ -19,6 +19,7 @@
 #include "nox/Messages.h"
 #include "nox/Server.h"
 #include "nox/SyncHost.h"
+#include "nox/ChannelLobby.h"   // ★ 10-14 작업 8d — 채널 안 로비 시험
 #include "nox/Gamedata.h"
 #include "nox/UpdateStream.h"
 #include "nox/SpellNames.h"
@@ -24827,6 +24828,94 @@ void TestRoomFacts() {
     std::printf("  10-14 플랜 B 작업 9e — 돌고 있는 방의 사실 · 빈 방 닫기(빈 채 30초 · 사람 있으면 안 닫음 · 실행 인자의 방은 안 닫음)\n");
 }
 
+// ── ★ 10-14 플랜 B 작업 8d — 채널 안 로비(`CChannelLobby`): 로비 TCP 사건 → 로비 규약 → `LOBBY_SEND` 요청 ─────────
+//   ① 목록 = 방 관리자의 돌고 있는 방 가운데 만든 사람이 있는 방만(실행 인자의 방은 안 나옴) · 방 정보 = 그 방의 이름 · 맵 · 모드
+//   ② 참가 → `NOXTOKEN`(붙은 내 쪽 주소 · 그 방 번호) · 방이 닫히면 다음 목록에서 빠짐 ③ 로비 사건이 아니면 아무것도 안 함 · 끊김
+void TestChannelLobby() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    char m[260];
+    nox::CRoomManager rooms;
+    const int plain = rooms.CreateRoom(RoomSettings{});   // 실행 인자의 방처럼 — 만든 사람 없음
+    RoomSettings s;
+    s.creator = "wn";
+    s.roomName = "wn game";
+    s.mapPath = "C:\\Nox\\maps\\So_LOD\\So_LOD.map";
+    s.mode = "chat";
+    s.closeWhenEmpty = true;
+    const int made = rooms.CreateRoom(s);
+    nox::wol::LobbyConfig lc;
+    for (size_t i = 0; i < lc.joinKey.size(); ++i) lc.joinKey[i] = static_cast<uint8_t>(i + 1);
+    lc.gameServerPort = 18590;
+    lc.room.maxPlayers = 31;
+    nox::CChannelLobby lobby(rooms, lc);
+    const uint32_t local = 0xCB007105u;   // 203.0.113.5
+    const uint32_t peer = 0xC6336407u;    // 198.51.100.7
+    std::vector<Rq> rq;
+    auto ev = [](Ev::Type t, int conn, const char* line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = conn;
+        if (line) e.lobbyLine = line;
+        return e;
+    };
+    Ev open = ev(Ev::Type::LOBBY_OPENED, 4, nullptr);
+    open.lobbyPeerIp = peer;
+    open.lobbyLocalIp = local;
+    lobby.OnNetworkEvent(open, rq);
+    for (const char* l : {"NOXCLIENT 1", "NICK wn", "USER UserName HostName irc.westwood.com :RealName"})
+        lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, l), rq);
+    rq.clear();
+    lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, "LIST 37 37"), rq);
+    int n326 = 0;
+    bool sendOk = true;
+    std::string chan, info;
+    for (const Rq& r : rq) {
+        sendOk = sendOk && r.type == Rq::Type::LOBBY_SEND && r.lobbyConn == 4 && !r.lobbyCloseAfter;
+        if (r.lobbyLine.rfind(": 326 ", 0) == 0) {
+            ++n326;
+            const size_t a = r.lobbyLine.find('#');
+            chan = r.lobbyLine.substr(a, r.lobbyLine.find(' ', a) - a);
+            info = r.lobbyLine.substr(r.lobbyLine.find("128:") + 4);
+        }
+    }
+    nox::wol::GameInfo g;
+    const bool unpacked = nox::wol::Unpack(info, g);
+    std::snprintf(m, sizeof(m), "① 목록 — 요청 %zu개(LOBBY_SEND %d) · 방 줄 %d · 채널 %s · 방 정보 [%s · %s · 종류 0x%04x]",
+                  rq.size(), (int)sendOk, n326, chan.c_str(), g.name.c_str(), g.map.c_str(), g.flags & nox::wol::kMapTypeMask);
+    Check(sendOk && rq.size() == 3 && n326 == 1 && chan == "#wn's_game" && unpacked && g.name == "wn game" && g.map == "so_lod" &&
+          (g.flags & nox::wol::kMapTypeMask) == nox::wol::kMapChat, m);
+
+    rq.clear();
+    lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, "JOINGAME #wn's_game 1 "), rq);
+    nox::JoinToken tok;
+    nox::JoinTokenCheck chk = nox::JoinTokenCheck::BadSize;
+    std::string tokLine = rq.empty() ? std::string() : rq[0].lobbyLine;
+    const size_t sp2 = tokLine.rfind(' ');
+    uint8_t raw[nox::kJoinTokenSize] = {};
+    if (tokLine.rfind("NOXTOKEN 203.0.113.5:18590 ", 0) == 0 && nox::ParseHex(tokLine.substr(sp2 + 1), raw, sizeof(raw)))
+        chk = nox::VerifyJoinToken(lc.joinKey, raw, sizeof(raw), nox::UnixNow(), peer, tok);
+    const bool closed = rooms.CloseRoom(made);
+    std::vector<Rq> after;
+    lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, "LIST 37 37"), after);
+    std::snprintf(m, sizeof(m), "② 참가 — 요청 %zu개 · 토큰 %s · 방 %d(만든 방 %d) · 닫은 뒤 목록 요청 %zu개(321 · 323)",
+                  rq.size(), nox::JoinTokenCheckName(chk), (int)tok.roomId, made, after.size());
+    Check(rq.size() == 5 && chk == nox::JoinTokenCheck::Ok && tok.roomId == made && closed && after.size() == 2, m);
+
+    std::vector<Rq> none;
+    Ev game; game.type = Ev::Type::RECEIVED; game.sessionId = 9;
+    lobby.OnNetworkEvent(game, none);
+    lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, "QUIT"), none);
+    const bool quitClose = none.size() == 1 && none[0].lobbyLine == ": 607" && none[0].lobbyCloseAfter;
+    lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_CLOSED, 4, nullptr), none);
+    std::snprintf(m, sizeof(m), "③ 게임 사건은 무시 · QUIT → 607 보낸 뒤 끊기 %d · 셈(접속 %llu · 받은 줄 %llu · 낸 줄 %llu · 끊김 %llu) · 실행 인자 방 %d 그대로 %d",
+                  (int)quitClose, lobby.Stats().opened, lobby.Stats().linesIn, lobby.Stats().linesOut, lobby.Stats().closed, plain,
+                  (int)rooms.HasRoom(plain));
+    Check(quitClose && lobby.Stats().opened == 1 && lobby.Stats().linesIn == 7 && lobby.Stats().closed == 1 &&
+          lobby.Stats().linesOut == 3 + 3 + 5 + 2 + 1 && rooms.HasRoom(plain), m);   // 로그인 375·372·376 · 목록 · 참가 · 목록 · 607
+    std::printf("  10-14 플랜 B 작업 8d — 채널 안 로비: 목록 = 만든 사람 있는 돌고 있는 방 · 참가 토큰 = 그 방 · 닫히면 빠짐 · 로비 사건만\n");
+}
+
 void TestRooms() {
     const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
     const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
@@ -30408,6 +30497,7 @@ int main() {
     TestRoomManager();
     TestRooms();
     TestRoomFacts();
+    TestChannelLobby();
     TestJoinTrailer();
     TestReliableResend();
     TestNewPlayerGearBits();

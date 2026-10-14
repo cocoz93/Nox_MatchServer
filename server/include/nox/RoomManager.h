@@ -129,6 +129,7 @@ struct CRoomStats {
 struct RoomFact {
     int roomId = -1;
     std::string name;      // 방 설정의 이름(`RoomSettings::roomName`)
+    std::string creator;   // ★ 10-14 작업 8d — 방을 만든 사람의 로비 이름(`RoomSettings::creator` — 비면 로비 목록에 안 나옴)
     std::string mapKey;    // 맵 열쇠(`MapKeyOf` — 녹음 모드는 빈 것)
     std::string mode;      // 방 설정의 모드(`arena` · `chat` …)
     size_t players = 0;    // 게임 안 사람 수(`Server::inGameCount`)

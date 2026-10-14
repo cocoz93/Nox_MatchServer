@@ -13,6 +13,9 @@
 //     토큰 = 방(게임 방 번호) · 클라 IP(이 TCP 상대) · 만료 · 일회용 번호 · 로비 이름을 키로 서명(`JoinToken.h`)
 //   · 방은 여럿(설정 파일 `[rooms]` — 방장 이름 = 게임 방 번호). 방마다 채널 `#<방장>'s_game` · 방 정보 이름도 방장 이름
 // ★ 10-14 플랜 B 작업 8b — 로비 찾기(4005 — 610 · 605 · 607)는 라우터(`Router.h` · `nox_router`)로 떼어 냈다. 로비는 4000 만 받는다
+// ★ 10-14 플랜 B 작업 8d — 로비는 채널(`nox_server`) 안 게임 스레드에서 돈다(`CChannelLobby` 가 로비 TCP 사건을 넘긴다).
+//   방 목록은 갖지 않는다 — 채널이 주는 돌고 있는 방(`ILobbyRooms`)으로 그린다(위 `[rooms]` 줄은 옛 설명 — 설정 파일 방 목록 없앰).
+//   방 정보의 이름 · 맵 · 모드 · 인원도 그 방에서. 게임 서버 주소는 이 접속이 붙은 내 쪽 주소(채널 = 게임 서버 · IP 하나에 채널 하나)
 #pragma once
 
 #include <cstdint>
@@ -32,17 +35,31 @@ constexpr uint16_t kServServPort = 4005;  // 정품 모듈에 박힌 첫 주소�
 constexpr uint16_t kLobbyPort    = 4000;  // 605 답으로 알려 주는 로비 포트(XWIS 와 같게)
 constexpr int kNoxClientMinVersion = 1;   // ★ 10-10 — DLL 이 알리는 판. 이보다 낮거나 없으면 로그인 거절
 
+// ★ 10-14 플랜 B 작업 8d — 로비가 그리는 방 하나. 채널이 방 관리자의 돌고 있는 방(`CRoomManager::ListRooms`)에서 채운다
+//   (옛 설정 파일 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리)
 struct LobbyRoom {
-    std::string host;          // 방장(가짜 사용자) — 채널 `#<방장>'s_game` · 방 정보의 이름
     uint16_t gameRoomId = 0;   // 게임 서버의 방 번호 — 입장 토큰에 싣는다
+    std::string creator;       // 방을 만든 사람의 로비 이름 — 채널 `#<만든 사람>'s_game` · 353 의 방장 자리(@)
+    std::string name;          // 방 이름 — 방 정보의 이름 칸(비면 만든 사람 이름 — 옛 「방 정보 이름도 방장 이름」)
+    std::string map;           // 맵 열쇠(소문자 · 확장자 없음) — 방 정보의 맵 칸(비면 틀의 맵)
+    std::string mode;          // 방 설정의 모드 — 방 정보 깃발의 맵 종류(`ModeFlagsOf` · 모르는 이름이면 틀의 깃발)
+    uint8_t players = 0;       // 게임 안 사람 수 — 방 정보의 인원
+};
+
+// 채널이 로비에게 주는 방 — 로비는 목록을 그리거나 방 참가를 볼 때마다 묻는다(그 순간의 돌고 있는 방 · 방 번호 차례)
+class ILobbyRooms {
+public:
+    virtual ~ILobbyRooms() = default;
+    virtual std::vector<LobbyRoom> LobbyRooms() const = 0;
 };
 
 struct LobbyConfig {
     std::vector<std::string> motd{"Welcome to Nox_Origin!", ""};  // 첫 줄은 375, 나머지는 372
-    std::vector<LobbyRoom> rooms{{"NoxOrigin", 0}};  // ★ 10-10 — 목록에 싣는 차례대로(옛 고정 방 하나 `roomHost` 자리)
-    uint32_t gameServerIp = 0x7f000001;             // 게임 서버 IPv4 정수(a<<24|b<<16|c<<8|d) — 326·353·NOXTOKEN 에 같은 값
+    // 게임 서버 IPv4 정수(a<<24|b<<16|c<<8|d) — 326·353·NOXTOKEN 에 같은 값.
+    //   ★ 10-14 작업 8d — 0 이면 이 접속이 붙은 내 쪽 주소(채널이 곧 게임 서버). 옛 기본값 127.0.0.1(따로 뜬 로비 몫)
+    uint32_t gameServerIp = 0;
     uint16_t gameServerPort = 18590;                // ★ 10-10 — NOXTOKEN 줄의 게임 서버 포트(DLL 이 이 주소로 가는 패킷에만 꼬리를 붙인다)
-    GameInfo room;                                  // 방 정보 틀(맵·모드·인원) — 방마다 이름만 방장 이름으로 바꿔 싣는다. nox_server 실행값과 맞출 것
+    GameInfo room;                                  // 방 정보 틀 — 방마다 이름 · 맵 · 모드 · 인원을 그 방 것으로 바꿔 싣는다(★ 8d)
     JoinKey joinKey{};                              // ★ 10-10 — 입장 토큰 서명 키(설정 파일 `[token] key` — 게임 서버와 같은 값)
     std::function<uint32_t()> unixNow = UnixNow;    // 토큰 만료의 기준 시각 — 시험이 정해 보려고
     std::function<uint64_t()> nonce;                // 일회용 번호 — 비면 BCrypt 난수
@@ -65,7 +82,8 @@ struct Out {
 
 class Lobby {
 public:
-    explicit Lobby(LobbyConfig cfg);
+    // ★ 10-14 작업 8d — 방은 `rooms` 가 준다(채널 · 시험의 가짜). 로비보다 오래 살아야 한다
+    Lobby(LobbyConfig cfg, const ILobbyRooms& rooms);
 
     // peerIp = 상대 IPv4 · localIp = 클라가 붙은 내 쪽 IPv4
     void OnConnect(int conn, uint32_t peerIp, uint32_t localIp);
@@ -75,8 +93,7 @@ public:
     // 소켓 루프가 찍을 기록(처음 본 명령 등). 꺼내면 비운다.
     std::vector<std::string> TakeLog();
 
-    static std::string Channel(const LobbyRoom& r) { return "#" + r.host + "'s_game"; }
-    const std::vector<LobbyRoom>& Rooms() const { return cfg_.rooms; }
+    static std::string Channel(const LobbyRoom& r) { return "#" + r.creator + "'s_game"; }
     const LobbyStats& Stats() const { return stats_; }
 
 private:
@@ -91,13 +108,16 @@ private:
     void OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<std::string>& t,
                 std::string_view line, std::vector<Out>& out);
     void SendList(int conn, bool withChat, std::vector<Out>& out);
-    std::string Members353(const std::string& channel, bool gameRoom) const;
-    int RoomIndexOf(const std::string& channel) const;   // 채널 → `cfg_.rooms` 자리(없으면 -1)
+    std::string Members353(const std::string& channel, const std::string& host, uint32_t gameIp) const;
+    // ★ 10-14 작업 8d — 채널 → 그 방(`rooms` 에서 · 없으면 nullptr)
+    static const LobbyRoom* FindRoom(const std::vector<LobbyRoom>& rooms, const std::string& channel);
     bool IsRoomHost(const std::string& name) const;
+    std::string RoomInfo(const LobbyRoom& r) const;          // 방 정보 덩어리(`Pack` — 86바이트, ':' 로 시작)
+    uint32_t GameServerIp(const Conn& c) const { return cfg_.gameServerIp ? cfg_.gameServerIp : c.localIp; }
     void Unknown(const std::string& cmd, std::string_view line);
 
     LobbyConfig cfg_;
-    std::vector<std::string> roomInfo_;             // 방마다 Pack(이름만 바꾼 cfg_.room) — 86바이트, ':' 로 시작
+    const ILobbyRooms& rooms_;                      // ★ 10-14 작업 8d — 옛 `roomInfo_`(설정 방마다 미리 싼 방 정보) 자리
     LobbyStats stats_;
     std::map<int, Conn> conns_;
     std::map<std::string, std::set<int>> members_;  // 채널 → 들어와 있는 접속

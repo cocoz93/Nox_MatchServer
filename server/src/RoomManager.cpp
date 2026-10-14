@@ -58,6 +58,7 @@ std::vector<RoomFact> CRoomManager::ListRooms() const {
         RoomFact f;
         f.roomId = room._id;
         f.name = room._settings.roomName;
+        f.creator = room._settings.creator;
         f.mapKey = room._settings.mapPath.empty() ? std::string() : MapKeyOf(room._settings.mapPath);
         f.mode = room._settings.mode;
         f.players = room._game.inGameCount();

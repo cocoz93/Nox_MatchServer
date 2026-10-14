@@ -75,4 +75,8 @@ bool UnpackRaw(std::string_view payload, Raw& raw);
 std::string Pack(const GameInfo& g);
 bool Unpack(std::string_view payload, GameInfo& out);
 
+// 모드 이름(`arena` · `chat` …) → 깃발 칸의 맵 종류(`kMap*`). 모르는 이름이면 false.
+//   ★ 10-14 플랜 B 작업 8d — 옛 `lobby_main.cpp` 의 `ParseMode` 를 옮겼다(채널이 방 설정의 모드로 방 정보를 그린다)
+bool ModeFlagsOf(std::string_view mode, uint16_t& bits);
+
 }  // namespace nox::wol
