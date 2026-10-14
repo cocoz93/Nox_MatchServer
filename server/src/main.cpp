@@ -462,8 +462,8 @@ int main(int argc, char** argv) {
     nox::CNetworkThread net;
     // ★ 10-09 플랜 B 작업 6a — 게임 스레드는 방 관리자(`CRoomManager`)를 돌린다. 지금은 방 하나(방 0)라 동작은 그대로이고,
     //   `srv` 는 방 0 의 게임이다(세계 차리기 · 진단 줄). 이벤트 · 틱 · 요청 · 다음 틱 시각은 방 관리자를 거친다
+    // ★ 10-14 플랜 B 작업 9d — 방 관리자는 방 없이 시작한다. 실행 인자의 방은 아래에서 같은 입구(`CreateRoom`)로 만든다(`srv` 없앰)
     nox::CRoomManager rooms;
-    nox::Server& srv = rooms.Game();
 
     // ★★ **`--standalone` 은 맵이 있어야 성립한다.** 접속 묶음에 맵 이름과 CRC 를
     //   싣기 때문이다(`SetStandalone`). 맵이 없으면 `standalone_` 이 안 켜지고,
@@ -559,7 +559,7 @@ int main(int argc, char** argv) {
     // ★ 10-10 토큰 작업 2 — 입장 방식. 키가 없으면 뜨지 않는다 — 설정 하나 빠뜨린 서버가 아무나 받지 않게(`Docs/TOKEN_DESIGN.md`).
     //   진단(위 `--dump-*`)과 `--selftest` 는 서버를 안 띄우므로 이보다 앞에서 끝난다.
     if (opt.noJoinToken) {
-        rooms.SetOpenEntry();
+        // ★ 10-14 작업 9d — 열린 방식의 방은 아래에서 실행 인자의 방을 만든 뒤 정한다(그 방이 처음 만든 방이라 번호 0)
         std::printf("입장: 토큰 검사 끔(--no-join-token) — 모두 방 0. 녹음 재생 · 시험 도구 · LAN 실행용\n");
     } else {
         if (opt.configPath.empty()) {
@@ -588,9 +588,6 @@ int main(int argc, char** argv) {
     //   방 몫이 먼저다 — 서버 찾기 답에 실을 맵 이름을 첫 방에서 받는다. 봇 세션은 통신 층이 연다(스레드를 띄우기 전이라 여기서 부른다)
     // ★ 10-12 플랜 B 작업 7c — 방마다 main 이 드는 것(`RoomRun` — 판 차리기 · 진단). 지금은 실행 인자의 방(방 0) 하나
     // ★ 10-14 작업 9c — 그 상태는 방(`CRoom`)이 든다 — 방 설정 · 세계 차리기 결과 · 판 차리기 · 진단
-    nox::CRoom& room0 = rooms.Room(nox::CRoomManager::kFirstRoom);
-    room0.SetSettings(opt.room);
-    WorldExtras& extras = room0.Extras();
     nox::CUdpServer& udp = net.Network();
     // ★ 10-12 플랜 B 작업 7e-2 — 게임 데이터는 맵 방이 있을 때만 서버가 뜰 때 한 번 읽어 표 한 벌로(녹음 모드는 지금처럼 표 없이)
     GameFiles gameFiles;
@@ -601,8 +598,23 @@ int main(int argc, char** argv) {
         gameTables = BuildGameTables(gameFiles);
         maps = BuildMapCatalog(gameFiles, gameTables, MapListFromOptions(opt));   // 목록의 출처는 `MapListFromOptions` 주석(지금 `--map` 하나)
     }
-    if (const int rc = BuildRoomWorld(srv, room0.Settings(), gameFiles, gameTables, maps, [&udp](const std::string& addr) { return udp.OpenSession(addr); }, extras)) return rc;
-    if (const int rc = ConfigureNetwork(udp, opt, tmpl, extras)) return rc;
+    // ★ 10-14 플랜 B 작업 9d — 방 만들기 입구 하나(`CreateRoom`) — 방 관리자가 읽기 전용 데이터를 가리키고 방 설정으로 세계까지 차린다.
+    //   실행 인자의 방(단독 모드 · 녹음 모드)도 이 입구로. 봇 세션은 통신 층이 여는데 그것은 네트워크 스레드를 띄우기 전에만 된다 —
+    //   그래서 이 방을 만든 뒤 여는 함수를 비운다(뒤에 만드는 방은 봇을 안 세운다)
+    WorldData world;
+    world.files = &gameFiles;
+    world.tables = gameTables;
+    world.maps = &maps;
+    world.openSession = [&udp](const std::string& addr) { return udp.OpenSession(addr); };
+    rooms.SetWorldData(world);
+    int buildRc = 0;
+    const int roomId = rooms.CreateRoom(opt.room, &buildRc);
+    if (roomId == nox::CRoomManager::kNoRoom) return buildRc;
+    world.openSession = nullptr;
+    rooms.SetWorldData(world);
+    if (opt.noJoinToken) rooms.SetOpenEntry(roomId);
+    nox::CRoom& room0 = rooms.Room(roomId);
+    if (const int rc = ConfigureNetwork(udp, opt, tmpl, room0.Extras())) return rc;
     // 초당 `[성장]` 줄의 봇 번호 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
     room0.SetBotSession(net.Network().SessionIdOf("bot0"));
 
@@ -634,12 +646,7 @@ int main(int argc, char** argv) {
     // 게임 루프가 돈 바퀴 수 — 틱(30) + 이벤트로 깬 수 근처여야 한다. 기다림이 빠지면(헛돎) 수만 단위로 뛴다
     unsigned long long loopTurns = 0;
 
-    // ★ 10-01 R2 — 맵을 다 넣었으니 처음 상태를 담아 둔다(판 다시 열 때 되돌릴 사본 · `Server::CaptureMapInitial`)
-    // ★ 10-12 플랜 B 작업 7e-4b — 맵 방은 맵 원본이 담아 둔 처음 상태를 같이 가리킨다(`Server::AttachMap` — 담기 셈도 거기서).
-    //   제 것을 담는 것은 맵 없는 방(녹음 모드)뿐
-    if (opt.room.mapPath.empty()) srv.CaptureMapInitial();
-    srv.Log("[맵처음] 담음 — 바닥 물건 %zu · 문·오벨리스크 %zu\n", srv.WorldStaticCount(), srv.WorldPropCount());
-    std::fflush(stdout);
+    // ★ 10-14 작업 9d — 맵 처음 상태 담기 · `[맵처음]` 줄은 방 차리기 끝으로 옮겼다(`BuildRoom` — 방마다)
     net.SetVerbose(!opt.quiet);
     net.Start();   // ★ 10-09 조각 5d-2b — 여기서부터 받기 · 보내기는 네트워크 스레드
     // ★ 10-09 조각 5d-2c — 닫기 신호 둘 — 콘솔(위 `OnConsoleCtrl`)과 이름 있는 이벤트 `nox_server_stop_<pid>`

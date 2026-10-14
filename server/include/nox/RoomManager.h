@@ -12,6 +12,10 @@
 //       `CONNECTED` 는 같은 토큰을 써 버리고(일회용) 그 방에 바로 넘긴다. 틀리면 끊는다 — 통신 층은 CONNECT 에 이미
 //       접속 수락을 보냈다(`UdpServer.cpp` SERVER_CONNECT). 클라는 접속 시도와 CONNECT 를 다른 포트에서 보내므로 둘 다에 꼬리가 있다
 //     · 열린 방식(`SetOpenEntry` — 토큰 검사 끄기) — 모두 방 0. 녹음 재생·대조와 시험 도구만 켠다(`CSyncHost` 가 켠다)
+//       (★ 10-14 작업 9d — 「방 0」 대신 정해 준 방 하나. 그 방이 없으면 받지 않는다)
+// ★ 10-14 플랜 B 작업 9d — 방 만들기 입구는 하나(`CreateRoom(방 설정)`). 읽기 전용 데이터(`SetWorldData`)를 받았으면 세계까지 차린다 —
+//   받지 않은 방 관리자(시험 · 한 스레드 조립)는 빈 방(부르는 쪽이 게임을 직접 차린다). 특별한 방 번호가 없다(방 0 자동 생성 ·
+//   「방 0 은 못 닫음」 없앰 — `Docs/ROOMS_DESIGN.md` 원칙)
 //     · 둘 다 안 정했으면 모두 거절한다(설정 하나 빠뜨린 서버가 아무나 받지 않게)
 #pragma once
 
@@ -108,6 +112,9 @@ struct CRoomStats {
     unsigned long long tokenReused = 0;        // 일회용 번호를 이미 씀(`CONNECTED`)
     unsigned long long droppedUnknown = 0;     // 토큰 방식에서 세션표에 없는 세션의 다른 이벤트를 버림
     unsigned long long left = 0;               // 방이 끊은 세션(나감 · 내보냄 · 시간 초과 — 끊기 요청)
+    unsigned long long roomsCreated = 0;       // ★ 10-14 작업 9d — 만든 방(세계 차리기까지 된 것)
+    unsigned long long roomBuildFailed = 0;    // ★ 10-14 작업 9d — 세계 차리기가 실패해 안 만든 방
+    unsigned long long openNoRoom = 0;         // ★ 10-14 작업 9d — 열린 방식인데 정해 준 방이 없어 거절 · 끊음
     unsigned long long roomsClosed = 0;
     unsigned long long closedRoomSessions = 0; // 방을 닫으며 내보낸 세션
     unsigned long long lobbyEventsMisrouted = 0;   // ★ 10-14 작업 8c — 로비 TCP 사건이 여기로 옴(게임 스레드의 나누는 자리가 틀림 — 0 이 정상)
@@ -115,31 +122,33 @@ struct CRoomStats {
 
 class CRoomManager {
 public:
-    static constexpr int kFirstRoom = 0;
     static constexpr int kNoRoom = -1;
 
-    CRoomManager();   // 방 0 을 만든다
+    CRoomManager() = default;   // ★ 10-14 작업 9d — 방 없이 시작한다(옛 「방 0 을 만든다」)
     CRoomManager(const CRoomManager&) = delete;
     CRoomManager& operator=(const CRoomManager&) = delete;
 
     CRoom& Room(int id) { return *_rooms.at(id); }
     const CRoom& Room(int id) const { return *_rooms.at(id); }
     bool HasRoom(int id) const { return _rooms.count(id) != 0; }
-    Server& Game(int roomId = kFirstRoom) { return Room(roomId).Game(); }
-    const Server& Game(int roomId = kFirstRoom) const { return Room(roomId).Game(); }
+    Server& Game(int roomId) { return Room(roomId).Game(); }
+    const Server& Game(int roomId) const { return Room(roomId).Game(); }
     size_t RoomCount() const { return _rooms.size(); }
     // ★ 10-12 플랜 B 작업 7c — 방을 번호 차례로 돈다(판 차리기 · 진단 · `[처음]` 모으기). 도는 동안 방을 만들거나 닫지 않는다
     template <class F> void ForEachRoom(F&& f) { for (auto& kv : _rooms) f(*kv.second); }
     template <class F> void ForEachRoom(F&& f) const { for (const auto& kv : _rooms) f(static_cast<const CRoom&>(*kv.second)); }
 
     // ── 방 만들기 · 닫기(실행 중에도) ──
-    int CreateRoom();   // 돌려주는 값 = 새 방 id
-    // 그 방의 사람마다 `SERVER_CLOSE` 를 보내고 끊은 뒤 방을 지운다. 방 0 은 못 닫는다(false).
+    // ★ 10-14 작업 9d — 읽기 전용 데이터(서버가 뜰 때 한 번 · 부르는 쪽이 든다). 받으면 `CreateRoom` 이 세계까지 차린다
+    void SetWorldData(const WorldData& d) { _world = d; _hasWorld = true; }
+    // 방 하나를 만든다 — 방 설정을 들고 세계까지(`BuildRoom`). 돌려주는 값 = 새 방 번호 · 실패면 `kNoRoom`(`buildRc` = 세계 차리기의 값)
+    int CreateRoom(const RoomSettings& settings, int* buildRc = nullptr);
+    // 그 방의 사람마다 `SERVER_CLOSE` 를 보내고 끊은 뒤 방을 지운다. 없는 방이면 false.
     bool CloseRoom(int id);
 
     // ── 입장 방식 ── (머리 주석 「10-10 토큰 작업 2」)
     void SetJoinKey(const JoinKey& key);   // 토큰 방식 — 실제 서버
-    void SetOpenEntry();                   // 토큰 검사 끄기 — 모두 방 0. 녹음 재생·대조와 시험 도구만
+    void SetOpenEntry(int roomId);         // 토큰 검사 끄기 — 모두 그 방. 녹음 재생·대조와 시험 도구 · LAN 실행만
     bool OpenEntry() const { return _openEntry; }
     void SetUnixClock(std::function<uint32_t()> now) { _unixNow = std::move(now); }   // 시험이 만료를 정해 보려고
     void SetLogJoins(bool on) { _logJoins = on; }   // 입장 판정을 한 줄씩 찍는다(`main` 이 켠다 — 시험은 조용히)
@@ -177,8 +186,11 @@ private:
     void PullRequests(CRoom& room);   // 방의 요청 목록을 방 관리자 목록 뒤로 옮긴다(끊기 요청이면 세션표에서 지운다)
 
     std::map<int, std::unique_ptr<CRoom>> _rooms;
-    int _nextRoomId = kFirstRoom + 1;
+    int _nextRoomId = 0;
     bool _openEntry = false;
+    int _openRoom = kNoRoom;                      // ★ 10-14 작업 9d — 열린 방식의 방
+    WorldData _world;                             // ★ 10-14 작업 9d — 방을 차릴 때 쓰는 읽기 전용 데이터
+    bool _hasWorld = false;
     bool _hasKey = false;
     JoinKey _key{};
     CJoinTokenLedger _ledger;

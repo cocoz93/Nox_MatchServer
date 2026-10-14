@@ -24604,7 +24604,8 @@ void TestNetworkThread() {
 
     // ★ 10-14 작업 8c — 로비 TCP 사건(세션 번호 없음)은 방 관리자 · 게임에 와도 자리를 만들지 않는다(나누는 자리가 틀려도 세션 0 이 안 생기게)
     nox::CRoomManager rooms;
-    rooms.SetOpenEntry();   // 열린 방식 — 모르는 세션을 방 0 에 앉히는 갈래가 있는 쪽
+    const int r0 = rooms.CreateRoom(RoomSettings{});   // ★ 10-14 작업 9d — 방 관리자는 방 없이 시작한다
+    rooms.SetOpenEntry(r0);   // 열린 방식 — 모르는 세션을 방 0 에 앉히는 갈래가 있는 쪽
     size_t read = 0;
     for (const auto t : { nox::NetworkEvent::Type::LOBBY_OPENED, nox::NetworkEvent::Type::LOBBY_LINE,
                           nox::NetworkEvent::Type::LOBBY_CLOSED }) {
@@ -24613,12 +24614,12 @@ void TestNetworkThread() {
         e.lobbyConn = 3;
         e.lobbyLine = "LIST -1 37";
         read += rooms.OnNetworkEvent(e);
-        read += rooms.Game().OnNetworkEvent(e);
+        read += rooms.Game(r0).OnNetworkEvent(e);
     }
     char m[200];
     std::snprintf(m, sizeof(m), "로비 사건 셋 — 세션표 %zu · 방 0 세션 %zu · 읽은 게임 메시지 %zu · 잘못 온 셈 %llu",
-                  rooms.SeatCount(), rooms.Game().SessionCount(), read, rooms.Stats().lobbyEventsMisrouted);
-    Check(rooms.SeatCount() == 0 && rooms.Game().SessionCount() == 0 && read == 0 && rooms.Stats().lobbyEventsMisrouted == 3, m);
+                  rooms.SeatCount(), rooms.Game(r0).SessionCount(), read, rooms.Stats().lobbyEventsMisrouted);
+    Check(rooms.SeatCount() == 0 && rooms.Game(r0).SessionCount() == 0 && read == 0 && rooms.Stats().lobbyEventsMisrouted == 3, m);
     std::printf("  10-09 조각 5d-2b — 네트워크 스레드: 소켓에 깨어 받고 · 요청에 깨어 보내고 · 타이머 마감에 깨어 다시 보내고 · 멈춤\n");
 }
 
@@ -24642,18 +24643,20 @@ void TestRoomManager() {
     };
     {
         nox::CRoomManager rooms;
-        rooms.SetOpenEntry();   // ★ 10-10 토큰 작업 2 — 혼자 쓰는 방 관리자의 기본은 「모두 거절」이다
+        const int r0 = rooms.CreateRoom(RoomSettings{});   // ★ 10-14 작업 9d — 방 관리자는 방 없이 시작한다
+        rooms.SetOpenEntry(r0);   // ★ 10-10 토큰 작업 2 — 혼자 쓰는 방 관리자의 기본은 「모두 거절」이다
         rooms.OnNetworkEvent(joinEv(5));
         std::vector<Rq> rq; rooms.SwapOutNetworkRequests(rq);
         const bool one = rq.size() == 1 && rq[0].type == Rq::Type::RESPOND_JOIN && rq[0].sessionId == 5 &&
                          rq[0].accept && rq[0].body.empty();
         std::snprintf(m, sizeof(m), "① 접속 시도 — 요청 %zu개(접속 답 허락 %d) · 방 0 세션 %zu · 방 수 %zu",
-                      rq.size(), (int)one, rooms.Game().SessionCount(), rooms.RoomCount());
-        Check(one && rooms.Game().SessionCount() == 0 && rooms.RoomCount() == 1, m);
+                      rq.size(), (int)one, rooms.Game(r0).SessionCount(), rooms.RoomCount());
+        Check(one && rooms.Game(r0).SessionCount() == 0 && rooms.RoomCount() == 1, m);
     }
     {
         nox::CRoomManager rooms;
-        rooms.SetOpenEntry();   // ★ 10-10 토큰 작업 2 — 혼자 쓰는 방 관리자의 기본은 「모두 거절」이다
+        const int r0 = rooms.CreateRoom(RoomSettings{});   // ★ 10-14 작업 9d — 방 관리자는 방 없이 시작한다
+        rooms.SetOpenEntry(r0);   // ★ 10-10 토큰 작업 2 — 혼자 쓰는 방 관리자의 기본은 「모두 거절」이다
         Ev c; c.type = Ev::Type::CONNECTED; c.sessionId = 11; c.addr = "10.10.9.61:10961";
         rooms.OnNetworkEvent(c);
         Ev a; a.type = Ev::Type::RECEIVED; a.sessionId = 11; a.addr = c.addr;
@@ -24668,14 +24671,15 @@ void TestRoomManager() {
     }
     {
         nox::CRoomManager rooms;
-        rooms.SetOpenEntry();   // ★ 10-10 토큰 작업 2 — 혼자 쓰는 방 관리자의 기본은 「모두 거절」이다
+        const int r0 = rooms.CreateRoom(RoomSettings{});   // ★ 10-14 작업 9d — 방 관리자는 방 없이 시작한다
+        rooms.SetOpenEntry(r0);   // ★ 10-10 토큰 작업 2 — 혼자 쓰는 방 관리자의 기본은 「모두 거절」이다
         uint32_t due0 = 0;
         const bool before = rooms.NextTickDue(due0);
         const int t0 = rooms.BeginTick(1000);
         uint32_t due = 0, gameDue = 0;
         const bool after = rooms.NextTickDue(due);
-        rooms.Game().NextTickDue(gameDue);
-        rooms.Game().DebugEnterGame(21, "10.10.9.62:10962", 0x2a);
+        rooms.Game(r0).NextTickDue(gameDue);
+        rooms.Game(r0).DebugEnterGame(21, "10.10.9.62:10962", 0x2a);
         std::vector<Rq> drop; rooms.SwapOutNetworkRequests(drop);   // 세우며 쌓인 것은 버린다
         const int t1 = rooms.BeginTick(1034);
         rooms.RunTick();
@@ -24803,7 +24807,7 @@ void TestRooms() {
         nox::CSyncHost srv;
         UseTokens(srv);
         RM& rooms = srv.Rooms();
-        const int r1 = rooms.CreateRoom();
+        const int r1 = rooms.CreateRoom(RoomSettings{});
         std::vector<nox::OutPacket> t; srv.Tick(1000, t); srv.Tick(1033, t); srv.Tick(1066, t);   // 프레임 2 — CONNECT 때 넘겼으면 세션 시작 프레임이 지금 값
         std::vector<nox::OutPacket> oa, ob;
         const int64_t sa = join(srv, Trailer(0, "10.20.0.1", 101), "10.20.0.1:1001", "10.20.0.1:1002", oa);
@@ -24847,17 +24851,18 @@ void TestRooms() {
               rooms.RoomOfSession(sb) == RM::kNoRoom && srv.Network().SessionIdOf("10.20.0.2:2002") == nox::kNoSession &&
               rooms.Stats().left == 2 && rooms.Game(0).inGameCount() == 0 && rooms.Game(r1).inGameCount() == 1, m);
         // ⑧ 방 만들기 · 닫기 — 방 2 에 C → 닫으면 C 에게 서버 닫힘 · 세션표 · 통신 층에서 빠짐 · 방 0 · 1 그대로
-        const int r2 = rooms.CreateRoom();
+        const int r2 = rooms.CreateRoom(RoomSettings{});
         std::vector<nox::OutPacket> oc; const int64_t sc = join(srv, Trailer(r2, "10.20.0.3", 104), "10.20.0.3:3001", "10.20.0.3:3002", oc);
         const bool inR2 = rooms.RoomOfSession(sc) == r2 && rooms.Game(r2).inGameCount() == 1;
-        const bool closed0 = rooms.CloseRoom(0);
+        // ★ 10-14 작업 9d — 옛 「방 0 은 못 닫음」 확인(`closed0`)은 뺐다 — 특별한 방 번호가 없다(아래 ⑮)
         const bool closed2 = rooms.CloseRoom(r2);
+        const bool closedAgain = rooms.CloseRoom(r2);
         std::vector<nox::OutPacket> o3; srv.TakeOut(o3);
-        std::snprintf(m, sizeof(m), "⑧ 방 만들기 · 닫기 — 방 2 에 듦 %d · 방 0 닫기 %d · 방 2 닫기 %d · C 서버 닫힘 %d · C 방 %d · C 통신 세션 %lld · 방 수 %zu · 방 1 사람 %zu",
-                      (int)inR2, (int)closed0, (int)closed2, msgs(o3, "10.20.0.3:3002", static_cast<uint8_t>(nox::Op::SERVER_CLOSE), 1),
+        std::snprintf(m, sizeof(m), "⑧ 방 만들기 · 닫기 — 방 2 에 듦 %d · 방 2 닫기 %d · 다시 닫기 %d · C 서버 닫힘 %d · C 방 %d · C 통신 세션 %lld · 방 수 %zu · 방 1 사람 %zu",
+                      (int)inR2, (int)closed2, (int)closedAgain, msgs(o3, "10.20.0.3:3002", static_cast<uint8_t>(nox::Op::SERVER_CLOSE), 1),
                       rooms.RoomOfSession(sc), (long long)srv.Network().SessionIdOf("10.20.0.3:3002"), rooms.RoomCount(),
                       rooms.Game(r1).inGameCount());
-        Check(inR2 && !closed0 && closed2 && msgs(o3, "10.20.0.3:3002", static_cast<uint8_t>(nox::Op::SERVER_CLOSE), 1) == 1 &&
+        Check(inR2 && closed2 && !closedAgain && msgs(o3, "10.20.0.3:3002", static_cast<uint8_t>(nox::Op::SERVER_CLOSE), 1) == 1 &&
               rooms.RoomOfSession(sc) == RM::kNoRoom && srv.Network().SessionIdOf("10.20.0.3:3002") == nox::kNoSession &&
               rooms.RoomCount() == 2 && !rooms.HasRoom(r2) && rooms.Game(r1).inGameCount() == 1, m);
         // ⑪ 토큰의 방이 닫힘 — 접속 시도에서 거절(받아 놓고 CONNECT 때 끊지 않는다)
@@ -24872,7 +24877,7 @@ void TestRooms() {
         nox::CSyncHost srv;
         UseTokens(srv);
         RM& rooms = srv.Rooms();
-        rooms.CreateRoom();
+        rooms.CreateRoom(RoomSettings{});
         std::vector<nox::OutPacket> o;
         join(srv, Trailer(0, "10.21.0.1", 201), "10.21.0.1:1001", "10.21.0.1:1002", o);
         join(srv, Trailer(0, "10.21.0.2", 202), "10.21.0.2:2001", "10.21.0.2:2002", o);
@@ -24988,6 +24993,7 @@ void TestRooms() {
     {   // ⑭ 아무것도 안 정한 방 관리자 — 키도 열린 방식도 없으면 모두 거절(설정 빠짐)
         using Ev = nox::NetworkEvent;
         nox::CRoomManager rooms;
+        const int r0 = rooms.CreateRoom(RoomSettings{});   // ★ 10-14 작업 9d — 방 관리자는 방 없이 시작한다
         Ev j; j.type = Ev::Type::JOIN_REQUESTED; j.sessionId = 1; j.addr = "10.29.0.1:1001"; j.body.assign(97, 0);
         j.token = std::vector<uint8_t>(nox::kJoinTokenSize, 0);
         rooms.OnNetworkEvent(j);
@@ -24997,8 +25003,32 @@ void TestRooms() {
         const bool rejected = rq.size() == 2 && rq[0].type == nox::NetworkRequest::Type::RESPOND_JOIN && !rq[0].accept &&
                               rq[1].type == nox::NetworkRequest::Type::DISCONNECT_SESSION && rq[1].sessionId == 2;
         std::snprintf(m, sizeof(m), "⑭ 아무것도 안 정함 — 열림 %d · 요청 %zu개(거절·끊기 %d) · 키 없음 %llu · 방 0 세션 %zu",
-                      (int)rooms.OpenEntry(), rq.size(), (int)rejected, rooms.Stats().tokenNoKey, rooms.Game().SessionCount());
-        Check(!rooms.OpenEntry() && rejected && rooms.Stats().tokenNoKey == 2 && rooms.Game().SessionCount() == 0, m);
+                      (int)rooms.OpenEntry(), rq.size(), (int)rejected, rooms.Stats().tokenNoKey, rooms.Game(r0).SessionCount());
+        Check(!rooms.OpenEntry() && rejected && rooms.Stats().tokenNoKey == 2 && rooms.Game(r0).SessionCount() == 0, m);
+    }
+    {   // ⑮ ★ 10-14 작업 9d — 특별한 방 없음 — 방 관리자는 방 없이 시작 · 열린 방식의 방(처음 만든 방 = 0)도 닫힌다 ·
+        //   닫힌 뒤 접속 시도는 거절(토큰의 방이 닫혔을 때와 같은 답) · CONNECT 는 끊음 · 방 번호는 이어서(닫힌 번호를 다시 안 씀)
+        using Ev = nox::NetworkEvent;
+        nox::CRoomManager rooms;
+        const size_t none = rooms.RoomCount();
+        const int a = rooms.CreateRoom(RoomSettings{});
+        rooms.SetOpenEntry(a);
+        const bool closedA = rooms.CloseRoom(a);
+        const int b = rooms.CreateRoom(RoomSettings{});
+        Ev j; j.type = Ev::Type::JOIN_REQUESTED; j.sessionId = 1; j.addr = "10.30.0.1:1001"; j.body.assign(97, 0);
+        rooms.OnNetworkEvent(j);
+        Ev c; c.type = Ev::Type::CONNECTED; c.sessionId = 2; c.addr = "10.30.0.1:1002";
+        rooms.OnNetworkEvent(c);
+        std::vector<nox::NetworkRequest> rq; rooms.SwapOutNetworkRequests(rq);
+        const bool rejected = rq.size() == 2 && rq[0].type == nox::NetworkRequest::Type::RESPOND_JOIN && !rq[0].accept &&
+                              rq[0].body.size() == 2 && rq[0].body[0] == static_cast<uint8_t>(nox::Op::SERVER_ERROR) &&
+                              rq[0].body[1] == static_cast<uint8_t>(nox::ConnectError::Closed) &&
+                              rq[1].type == nox::NetworkRequest::Type::DISCONNECT_SESSION && rq[1].sessionId == 2;
+        std::snprintf(m, sizeof(m), "⑮ 특별한 방 없음 — 처음 방 수 %zu · 첫 방 %d 닫기 %d · 다음 방 %d · 거절·끊기 %d · 세션표 %zu · 방 없음 셈 %llu · 만듦 %llu · 닫음 %llu",
+                      none, a, (int)closedA, b, (int)rejected, rooms.SeatCount(), rooms.Stats().openNoRoom, rooms.Stats().roomsCreated,
+                      rooms.Stats().roomsClosed);
+        Check(none == 0 && a == 0 && closedA && b == 1 && rejected && rooms.SeatCount() == 0 && rooms.Stats().openNoRoom == 2 &&
+              rooms.Stats().roomsCreated == 2 && rooms.Stats().roomsClosed == 1 && rooms.Game(b).SessionCount() == 0, m);
     }
     std::printf("  10-09 플랜 B 작업 6b · 10-10 토큰 작업 2 — 방 나누기: 토큰 → 방 · 포트 바뀜 · 안 섞임 · 토큰 없음·IP·일회용·만료·서명·닫힌 방 거절 · 나감 · 방 닫기 · 정품 접속 시도 · 키 받은 뒤 · 열린 방식 · 설정 빠짐\n");
 }

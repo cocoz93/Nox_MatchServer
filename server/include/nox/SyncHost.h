@@ -24,16 +24,19 @@ class CSyncHost {
 public:
     // ★ 10-10 토큰 작업 2 — 한 스레드 조립은 시험 · 녹음 재생·대조 · `--selftest` 몫이라 토큰 검사를 끈 채 시작한다
     //   (녹음에는 토큰이 없다 — `Docs/TOKEN_DESIGN.md`). 토큰 길을 보는 시험은 `Rooms().SetJoinKey` 로 켠다.
-    CSyncHost() { _rooms.SetOpenEntry(); }
+    // ★ 10-14 플랜 B 작업 9d — 방 관리자가 방 없이 시작하므로 여기서 방 하나를 만든다(같은 입구 `CreateRoom` · 읽기 전용 데이터가 없어
+    //   빈 방 — 시험 · 덤프 재생이 게임을 직접 차린다). 처음 만든 방이라 번호는 0
+    CSyncHost() : _roomId(_rooms.CreateRoom(RoomSettings{})) { _rooms.SetOpenEntry(_roomId); }
 
     CUdpServer& Network() { return _network; }
     const CUdpServer& Network() const { return _network; }
     CRoomManager& Rooms() { return _rooms; }
-    Server& Game() { return _rooms.Game(); }
-    const Server& Game() const { return _rooms.Game(); }
+    int RoomId() const { return _roomId; }
+    Server& Game() { return _rooms.Game(_roomId); }
+    const Server& Game() const { return _rooms.Game(_roomId); }
     // 시험 편의 — `host->X` 는 (방 0 의) 게임의 `X`
-    Server* operator->() { return &_rooms.Game(); }
-    const Server* operator->() const { return &_rooms.Game(); }
+    Server* operator->() { return &_rooms.Game(_roomId); }
+    const Server* operator->() const { return &_rooms.Game(_roomId); }
 
     // 받은 데이터그램 하나 — 통신 층 → 일 → 게임 → 요청 → 통신 층. 나간 조각은 `out` 에 붙인다.
     //   돌려주는 값 = 이 조각에서 읽은 메시지 수(통신 층이 읽은 접속 제어 + 게임이 읽은 게임 메시지).
@@ -53,6 +56,7 @@ public:
 private:
     CUdpServer _network;
     CRoomManager _rooms;
+    int _roomId;                             // ★ 10-14 작업 9d — 만들 때 만든 방(`_rooms` 뒤에 선언 — 초기화 차례)
     std::vector<NetworkRequest> _requests;   // `TakeOut` 이 쓰는 그릇(다시 씀)
 };
 

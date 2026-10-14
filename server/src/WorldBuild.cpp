@@ -2316,6 +2316,21 @@ int BuildRoomWorld(nox::Server& srv, const RoomSettings& opt, const GameFiles& f
     return 0;
 }
 
+// ★ 10-14 플랜 B 작업 9d — 방 하나 차리기(방 만들기 입구 `CRoomManager::CreateRoom` 이 부른다). 뒤 두 줄은 옛 `main` 의
+//   「맵을 다 넣었으니 처음 상태를 담아 둔다」 자리(네트워크 스레드를 띄우기 바로 앞)에서 옮겼다 — 방을 차리는 일이라 방 차리기 끝으로
+int BuildRoom(nox::Server& srv, const RoomSettings& s, const WorldData& d, WorldExtras& out) {
+    static const GameFiles kNoFiles;
+    static const MapCatalog kNoMaps;
+    if (const int rc = BuildRoomWorld(srv, s, d.files ? *d.files : kNoFiles, d.tables, d.maps ? *d.maps : kNoMaps, d.openSession, out)) return rc;
+    // ★ 10-01 R2 — 맵을 다 넣었으니 처음 상태를 담아 둔다(판 다시 열 때 되돌릴 사본 · `Server::CaptureMapInitial`)
+    // ★ 10-12 플랜 B 작업 7e-4b — 맵 방은 맵 원본이 담아 둔 처음 상태를 같이 가리킨다(`Server::AttachMap` — 담기 셈도 거기서).
+    //   제 것을 담는 것은 맵 없는 방(녹음 모드)뿐
+    if (s.mapPath.empty()) srv.CaptureMapInitial();
+    srv.Log("[맵처음] 담음 — 바닥 물건 %zu · 문·오벨리스크 %zu\n", srv.WorldStaticCount(), srv.WorldPropCount());
+    std::fflush(stdout);
+    return 0;
+}
+
 int ConfigureNetwork(nox::CUdpServer& net, const ServerOptions& opt, nox::MsgServerInfo& tmpl, const WorldExtras& firstRoom) {
     // 서버 찾기 답의 틀 — 옛 자리에서는 방 차리기 중간에 한 번, 녹음 서두의 맵이면 한 번 더 넣었다(나중 것이 남는다).
     //   통신 스레드를 띄우기 전이라 그 사이에 나가는 답이 없으므로 마지막 값을 한 번 넣는 것과 같다

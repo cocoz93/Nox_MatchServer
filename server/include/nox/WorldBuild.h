@@ -203,6 +203,19 @@ bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server:
 MapCatalog BuildMapCatalog(const GameFiles& files, const std::shared_ptr<const nox::Server::GameTables>& tables,
                            const std::vector<std::string>& paths);
 
+// ★ 10-14 플랜 B 작업 9d — 방을 차릴 때 쓰는 읽기 전용 데이터(서버가 뜰 때 한 번 · `main` 이 든다). 방 관리자가 가리키고
+//   방 만들기 입구(`CRoomManager::CreateRoom`)가 방마다 `BuildRoom` 에 넘긴다
+struct WorldData {
+    const GameFiles* files = nullptr;
+    std::shared_ptr<const nox::Server::GameTables> tables;
+    const MapCatalog* maps = nullptr;
+    // 봇 세션을 여는 함수 — 통신 층을 이 스레드가 만질 수 있을 때(네트워크 스레드를 띄우기 전)만. 비면 봇을 안 세운다
+    OpenSessionFn openSession;
+};
+// 방 하나 차리기 — 세계(`BuildRoomWorld`) → 맵 없는 방(녹음 모드)은 처음 상태를 제 것으로 담기 → `[맵처음]` 줄.
+//   0 이면 다 됐고 아니면 `main` 의 종료 코드(`BuildRoomWorld` 와 같다)
+int BuildRoom(nox::Server& srv, const RoomSettings& s, const WorldData& d, WorldExtras& out);
+
 // 방 몫 — 맵 방이면 `tables`(위)가 있어야 하고 그 맵이 `maps`에 있어야 한다(없으면 멈춤).
 //   게임 데이터 파일은 `files`에서 빌려 쓴다(방을 차릴 때 파일을 안 읽는다)
 int BuildRoomWorld(nox::Server& srv, const RoomSettings& opt, const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables,

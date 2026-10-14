@@ -16,20 +16,31 @@ std::string IpOf(const std::string& addr) {   // "1.2.3.4:5678" → "1.2.3.4"
 }
 }  // namespace
 
-CRoomManager::CRoomManager() {
-    _rooms.emplace(kFirstRoom, std::make_unique<CRoom>(kFirstRoom));
-}
-
-int CRoomManager::CreateRoom() {
-    const int id = _nextRoomId++;
-    _rooms.emplace(id, std::make_unique<CRoom>(id));
+// ★ 10-14 플랜 B 작업 9d — 방 만들기 입구(옛 빈 방 만들기 + `main` 이 방 0 에만 세계를 차리던 것). 방 번호는 세계 차리기가 된 뒤에 매긴다
+int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
+    const int id = _nextRoomId;
+    auto room = std::make_unique<CRoom>(id);
+    room->SetSettings(settings);
+    if (_hasWorld) {
+        const int rc = BuildRoom(room->_game, room->_settings, _world, room->_extras);
+        if (buildRc) *buildRc = rc;
+        if (rc != 0) {
+            ++_stats.roomBuildFailed;
+            return kNoRoom;
+        }
+    } else if (buildRc) {
+        *buildRc = 0;
+    }
+    ++_nextRoomId;
+    _rooms.emplace(id, std::move(room));
+    ++_stats.roomsCreated;
     return id;
 }
 
 bool CRoomManager::CloseRoom(int id) {
-    if (id == kFirstRoom) return false;
     auto it = _rooms.find(id);
     if (it == _rooms.end()) return false;
+    // ★ 10-14 작업 9d — 열린 방식의 방을 닫으면 그 뒤로는 받지 않는다(받는 자리가 `HasRoom` 으로 본다 · 방 번호는 다시 안 쓴다)
     PullRequests(*it->second);   // 그 방이 이미 낸 요청이 먼저
     const uint8_t closeMsg[1] = { static_cast<uint8_t>(Op::SERVER_CLOSE) };
     for (auto s = _seats.begin(); s != _seats.end();) {
@@ -51,8 +62,9 @@ void CRoomManager::SetJoinKey(const JoinKey& key) {
     _openEntry = false;
 }
 
-void CRoomManager::SetOpenEntry() {
+void CRoomManager::SetOpenEntry(int roomId) {
     _openEntry = true;
+    _openRoom = roomId;
 }
 
 int CRoomManager::RoomOfSession(int64_t sessionId) const {
@@ -81,9 +93,18 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
     if (_openEntry) {
         // 열린 방식 — 모두 방 0. `CONNECTED` 때 바로 넘겨 세션 시작 프레임이 플랜 A 끝과 같다(`ROOMS_DESIGN.md`)
         //   (`CONNECTED` 없이 오는 것 — 옛 동작대로 방 0 이 받는다)
-        _seats[ev.sessionId] = kFirstRoom;
+        // ★ 10-14 작업 9d — 「방 0」 대신 정해 준 방. 그 방이 없으면(닫힘) 받지 않는다 — `CONNECTED` 는 끊고 나머지는 버린다
+        if (!HasRoom(_openRoom)) {
+            ++_stats.openNoRoom;
+            if (ev.type == NetworkEvent::Type::CONNECTED) {
+                ++_stats.connectRejected;
+                RequestDisconnectSession(ev.sessionId);
+            }
+            return 0;
+        }
+        _seats[ev.sessionId] = _openRoom;
         if (ev.type == NetworkEvent::Type::CONNECTED) ++_stats.assigned;
-        return Forward(kFirstRoom, ev);
+        return Forward(_openRoom, ev);
     }
     if (ev.type == NetworkEvent::Type::CONNECTED) {
         // 토큰 방식 — 같은 토큰을 이번엔 써 버리고 그 방에 바로 넘긴다. 틀리면 끊는다(접속 수락은 통신 층이 이미 보냈다)
@@ -193,6 +214,13 @@ void CRoomManager::SwapOutNetworkRequests(std::vector<NetworkRequest>& into) {
 //   이름 목록 밖을 돌려보내는 메시지(`network.go:443-453`)를 그대로 쓴다. 원본 거절 규칙의 나머지(버전·인원·밴)는 기능 일이라 따로.
 void CRoomManager::OnJoinRequested(const NetworkEvent& ev) {
     if (_openEntry) {
+        if (!HasRoom(_openRoom)) {   // ★ 10-14 작업 9d — 정해 준 방이 없으면(닫힘) 거절 — 토큰의 방이 닫혔을 때와 같은 답
+            ++_stats.openNoRoom;
+            ++_stats.joinRejected;
+            RespondJoin(ev.sessionId, /*accept=*/false,
+                        { static_cast<uint8_t>(Op::SERVER_ERROR), static_cast<uint8_t>(ConnectError::Closed) });
+            return;
+        }
         ++_stats.joinAccepted;
         RespondJoin(ev.sessionId, /*accept=*/true, {});
         return;
