@@ -148,16 +148,28 @@ nox::JoinKey LobbyTestKey() {
 constexpr uint32_t kLobbyTestNow = 1760064016;   // 시험 시계(유닉스 초)
 
 // ★ 10-14 작업 8d — 로비는 방 목록을 갖지 않고 채널이 준다(`ILobbyRooms`). 시험은 가짜 — 옛 설정 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리
-struct FakeRooms final : nox::wol::ILobbyRooms {
-    std::vector<nox::wol::LobbyRoom> rooms;
-    std::vector<nox::wol::LobbyRoom> LobbyRooms() const override { return rooms; }
-};
 nox::wol::LobbyRoom FakeRoom(uint16_t id, const char* creator) {
     nox::wol::LobbyRoom r;
     r.gameRoomId = id;
     r.creator = creator;
     return r;
 }
+struct FakeRooms final : nox::wol::ILobbyRooms {
+    std::vector<nox::wol::LobbyRoom> rooms;
+    bool canCreate = true;   // ★ 10-14 작업 10a — 새 방 만들기가 되나(채널이 대기 맵 없음 · 세계 차리기 실패면 false)
+    int created = 0;
+    std::vector<nox::wol::LobbyRoom> LobbyRooms() const override { return rooms; }
+    bool CreateRoomFor(const std::string& creator, nox::wol::LobbyRoom& out) override {
+        if (!canCreate) return false;
+        ++created;
+        out = FakeRoom(static_cast<uint16_t>(100 + created), creator.c_str());
+        out.name = creator + "의 게임";   // UTF-8(이 파일은 /utf-8) — 채널의 `RoomNameFor` 와 같은 꼴
+        out.map = "so_lod";
+        out.mode = "chat";
+        rooms.push_back(out);
+        return true;
+    }
+};
 
 void LobbyUnitTests() {
     using namespace nox::wol;
@@ -305,7 +317,8 @@ void ChannelLobbyUnitTests() {
     const uint32_t peer = (198u << 24) | (51u << 16) | (100u << 8) | 7u;
     std::vector<Out> out;
     lb.OnConnect(1, peer, local);
-    for (const char* l : {"NOXCLIENT 1", "NICK wn", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(1, l, out);
+    // 접속 이름은 방을 만든 사람(wn)과 다르게 — 같으면 사라진 뒤 참가가 「새 방」(작업 10a)이 된다
+    for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(1, l, out);
     out.clear();
     lb.OnLine(1, "LIST 37 37", out);
     GameInfo g;
@@ -341,6 +354,94 @@ void ChannelLobbyUnitTests() {
     out.clear();
     lb.OnLine(1, "JOINGAME #wn's_game 1 ", out);
     Check(emptyList && out.empty() && lb.Stats().tokensIssued == 1, "방이 사라지면 목록 0줄 · 참가엔 답 없음(토큰 없음)");
+}
+
+// ── ★ 10-14 작업 10a — 「새 방」: 제 이름 채널로 온 없는 방 참가 → 채널에 만들게 하고 그 방으로 참가 · 방 이름은 접속의 코드페이지로 ──
+void NewRoomUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;
+    cfg.room.maxPlayers = 31;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    FakeRooms fake;
+    Lobby lb(cfg, fake);
+    const uint32_t local = 0x7f000001, peer = 0x7f000001;
+    std::vector<Out> out;
+    auto login = [&](int conn, const char* nick, bool dll, const char* codepage) {
+        lb.OnConnect(conn, peer, local);
+        std::vector<Out> o;
+        if (dll) lb.OnLine(conn, "NOXCLIENT 1", o);
+        lb.OnLine(conn, std::string("NICK ") + nick, o);
+        lb.OnLine(conn, "USER UserName HostName irc.westwood.com :RealName", o);
+        if (codepage) lb.OnLine(conn, std::string("SETCODEPAGE ") + codepage, o);
+    };
+    auto kinds = [](const std::vector<Out>& o) {
+        std::string k;
+        for (const auto& x : o) {
+            const auto t = Tokens(x.line);
+            k += (k.empty() ? "" : ",") + (t.size() > 1 && t[0] == ":" ? t[1] : t.size() > 1 && !t[0].empty() && t[0][0] == ':' ? "user:" + t[1] : t[0]);
+        }
+        return k;
+    };
+    auto nameIn326 = [](const std::vector<Out>& o) {
+        for (const auto& x : o) {
+            const auto t = Tokens(x.line);
+            GameInfo g;
+            if (t.size() == 11 && t[1] == "326" && Unpack(t[10].substr(4), g)) return g.name;
+        }
+        return std::string("(없음)");
+    };
+
+    login(1, "wn", true, "949");
+    lb.OnLine(1, "JOINGAME #wn's_game 1 ", out);
+    const auto tk = out.empty() ? std::vector<std::string>{} : Tokens(out[0].line);
+    nox::JoinToken tok;
+    uint8_t raw[nox::kJoinTokenSize] = {};
+    nox::JoinTokenCheck chk = nox::JoinTokenCheck::BadSize;
+    if (tk.size() == 3 && nox::ParseHex(tk[2], raw, sizeof(raw))) chk = nox::VerifyJoinToken(LobbyTestKey(), raw, sizeof(raw), kLobbyTestNow, peer, tok);
+    bool host353 = false;
+    for (const auto& o : out) host353 = host353 || o.line.find(":@wn,0,") != std::string::npos;
+    Check(fake.created == 1 && kinds(out) == "NOXTOKEN,user:JOINGAME,332,353,366" && chk == nox::JoinTokenCheck::Ok && tok.roomId == 101 &&
+              host353 && lb.Stats().roomsCreated == 1,
+          "제 이름 채널의 없는 방 → 새 방(101) · NOXTOKEN · 원래 답 넷 · 353 방장 = 만든 사람");
+
+    out.clear();
+    lb.OnLine(1, "LIST 37 37", out);
+    const std::string ko = nameIn326(out);
+    Check(ko == "wn\xC0\xC7 \xB0\xD4\xC0\xD3", "코드페이지 949 접속 — 방 이름 「wn의 게임」을 CP949 로(7바이트 한글 + 공백)");
+    login(2, "bob", true, "1252");
+    out.clear();
+    lb.OnLine(2, "LIST 37 37", out);
+    Check(nameIn326(out) == "wn? ??", "코드페이지 1252 접속 — 한글은 '?'(그 코드페이지에 없는 글자)");
+
+    out.clear();
+    lb.OnLine(2, "JOINGAME #wn's_game 1 ", out);
+    const auto tk2 = out.empty() ? std::vector<std::string>{} : Tokens(out[0].line);
+    nox::JoinToken tok2;
+    uint8_t raw2[nox::kJoinTokenSize] = {};
+    if (tk2.size() == 3 && nox::ParseHex(tk2[2], raw2, sizeof(raw2))) nox::VerifyJoinToken(LobbyTestKey(), raw2, sizeof(raw2), kLobbyTestNow, peer, tok2);
+    Check(fake.created == 1 && out.size() == 5 && tok2.roomId == 101, "남의 방(있음) 참가 — 새로 안 만들고 그 방 토큰");
+    out.clear();
+    lb.OnLine(2, "JOINGAME #carol's_game 1 ", out);
+    Check(fake.created == 1 && out.empty(), "남의 이름 채널의 없는 방 — 안 만들고 답 없음");
+
+    login(3, "plain", false, "949");
+    out.clear();
+    lb.OnLine(3, "JOINGAME #plain's_game 1 ", out);
+    Check(fake.created == 1 && out.empty() && lb.Stats().newRoomNoClient == 1, "DLL 없는 클라의 새 방 — 안 만들고 답 없음(들어올 수 없는 방)");
+
+    fake.canCreate = false;
+    login(4, "dave", true, "949");
+    out.clear();
+    lb.OnLine(4, "JOINGAME #dave's_game 1 ", out);
+    Check(out.empty() && lb.Stats().roomCreateFailed == 1 && lb.Stats().roomsCreated == 1, "채널이 못 만들면 답 없음 · 실패 셈");
+
+    // 이름 칸 15바이트 — 넘치면 글자 단위로 뒤에서 자른다(두 바이트 글자를 반으로 안 자름)
+    fake.rooms.back().name = "abcdefghijk의 게임";   // 11 + 7 = 18바이트(CP949)
+    out.clear();
+    lb.OnLine(1, "LIST 37 37", out);
+    Check(nameIn326(out) == "abcdefghijk\xC0\xC7 ", "이름 칸 15바이트 — 「게」(2바이트)가 넘쳐 「abcdefghijk의 」 14바이트");
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
@@ -743,6 +844,7 @@ int main(int argc, char** argv) {
         UnitTests();
         LobbyUnitTests();
         ChannelLobbyUnitTests();
+        NewRoomUnitTests();
         RouterUnitTests();
     }
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

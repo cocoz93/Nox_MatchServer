@@ -2,6 +2,10 @@
 //   표 = Docs/LOBBY_DESIGN.md 「명령 → 답」 · 녹음 = _evidence/_wol_record_20261006/relay_log_20261006_233255.txt
 #include "nox/Lobby.h"
 
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>   // ★ 10-14 작업 10a — 방 이름 UTF-8 → 클라 코드페이지(MultiByteToWideChar · WideCharToMultiByte)
+
 #include <cctype>
 #include <cstdlib>
 #include <utility>
@@ -47,6 +51,31 @@ std::string Upper(std::string s) {
     return s;
 }
 
+// ★ 10-14 작업 10a — UTF-8 → 코드페이지 바이트. `maxBytes` 를 넘으면 글자 단위로 뒤에서 자른다(두 바이트 글자를 반으로 안 자른다).
+//   영문만이면 바꾸지 않는다(옛 동작 그대로). 그 코드페이지에 없는 글자는 '?'(윈도 기본)
+std::string ToCodepage(const std::string& utf8, int codepage, size_t maxBytes) {
+    bool ascii = true;
+    for (char ch : utf8)
+        if (static_cast<uint8_t>(ch) >= 0x80) ascii = false;
+    if (ascii) return utf8.substr(0, maxBytes);
+    const int wn = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+    if (wn <= 0) return utf8.substr(0, maxBytes);
+    std::wstring w(static_cast<size_t>(wn), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), &w[0], wn);
+    const UINT cp = static_cast<UINT>(codepage > 0 ? codepage : kDefaultCodepage);
+    for (size_t n = w.size(); n > 0; --n) {
+        const int bn = WideCharToMultiByte(cp, 0, w.data(), static_cast<int>(n), nullptr, 0, nullptr, nullptr);
+        if (bn <= 0) break;
+        if (static_cast<size_t>(bn) > maxBytes) continue;
+        std::string out(static_cast<size_t>(bn), '\0');
+        WideCharToMultiByte(cp, 0, w.data(), static_cast<int>(n), &out[0], bn, nullptr, nullptr);
+        return out;
+    }
+    return {};
+}
+
+constexpr size_t kNameBytes = 15;   // 방 정보 이름 칸(`WolGameInfo.h` — 앞 15바이트만 실린다)
+
 }  // namespace
 
 std::string IpDotted(uint32_t ip) {
@@ -54,7 +83,7 @@ std::string IpDotted(uint32_t ip) {
            std::to_string((ip >> 8) & 0xff) + "." + std::to_string(ip & 0xff);
 }
 
-Lobby::Lobby(LobbyConfig cfg, const ILobbyRooms& rooms) : cfg_(std::move(cfg)), rooms_(rooms) {}
+Lobby::Lobby(LobbyConfig cfg, ILobbyRooms& rooms) : cfg_(std::move(cfg)), rooms_(rooms) {}
 
 const LobbyRoom* Lobby::FindRoom(const std::vector<LobbyRoom>& rooms, const std::string& channel) {
     for (const LobbyRoom& r : rooms)
@@ -69,9 +98,9 @@ bool Lobby::IsRoomHost(const std::string& name) const {
 }
 
 // ★ 10-14 작업 8d — 방 정보 = 틀 + 그 방의 이름 · 맵 · 모드 · 인원(옛 「방마다 이름만 방장 이름으로」 — 10-10)
-std::string Lobby::RoomInfo(const LobbyRoom& r) const {
+std::string Lobby::RoomInfo(const LobbyRoom& r, int codepage) const {
     GameInfo g = cfg_.room;
-    g.name = r.name.empty() ? r.creator : r.name;
+    g.name = ToCodepage(r.name.empty() ? r.creator : r.name, codepage, kNameBytes);   // ★ 10-14 작업 10a
     if (!r.map.empty()) g.map = r.map;
     uint16_t bits = 0;
     if (ModeFlagsOf(r.mode, bits)) g.flags = static_cast<uint16_t>((g.flags & ~kMapTypeMask) | bits);
@@ -183,6 +212,26 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
     if (cmd == "JOINGAME") {   // 방 참가 — 방장 주소가 353 에 실린다(326 과 같은 값)
         const std::vector<LobbyRoom> rooms = rooms_.LobbyRooms();   // ★ 10-14 작업 8d — 그 순간의 돌고 있는 방
         const LobbyRoom* found = t.size() < 2 ? nullptr : FindRoom(rooms, t[1]);
+        // ★ 10-14 플랜 B 작업 10a — 「새 방」: 없는 방인데 채널이 제 이름 채널(`#<내 닉>'s_game` — 원작 `Host Game` 과 같은 꼴)이면
+        //   그 사람이 방장인 방을 만들고 그 방으로 참가시킨다(`Docs/ROOMS_DESIGN.md` 흐름 3 · 결정 4 — 정품 `Host Game` 을 DLL 이 이 참가로 돌린다).
+        //   남의 이름 채널 · 없는 방은 예전처럼 답하지 않는다. DLL 없는 클라에겐 안 만든다(토큰이 없어 들어올 수 없는 방이 30초 남는다)
+        LobbyRoom created;
+        if (!found && t.size() >= 2 && !c.nick.empty() && t[1] == "#" + c.nick + "'s_game") {
+            if (c.clientVer < kNoxClientMinVersion) {
+                ++stats_.newRoomNoClient;
+                log_.push_back("[새 방 — 안 만듦] " + c.nick + " — 클라 DLL 없음(토큰이 없어 들어올 수 없다)");
+                return;
+            }
+            if (!rooms_.CreateRoomFor(c.nick, created)) {
+                ++stats_.roomCreateFailed;
+                log_.push_back("[새 방 — 실패] " + c.nick + " — 채널이 방을 못 만듦(위 [방] 줄 · 대기 맵 확인)");
+                return;
+            }
+            ++stats_.roomsCreated;
+            log_.push_back("[새 방] " + c.nick + " → " + Channel(created) + " (게임 방 " + std::to_string(created.gameRoomId) + " · 맵 " +
+                           created.map + ")");
+            found = &created;
+        }
         if (!found) {
             log_.push_back("[모르는 방] " + std::string(line));
             return;
@@ -220,7 +269,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         members_[room].insert(conn);
         // `1 32 37 1 0 <내 IP> 1` — 녹음 그대로, 내 IP 만 바꾼다(앞 칸들 뜻 확인 안 함)
         out.push_back({conn, ":" + c.nick + "!u@h JOINGAME 1 32 37 1 0 " + std::to_string(c.peerIp) + " 1 :" + room});
-        out.push_back({conn, ": 332 u " + room + " " + RoomInfo(lr)});   // 방 정보가 ':' 로 시작한다
+        out.push_back({conn, ": 332 u " + room + " " + RoomInfo(lr, c.codepage)});   // 방 정보가 ':' 로 시작한다
         out.push_back({conn, ": 353 u = " + room + " :" + Members353(room, lr.creator, gameIp)});
         out.push_back({conn, ": 366 u " + room + " :"});
         return;
@@ -239,11 +288,12 @@ void Lobby::SendList(int conn, bool withChat, std::vector<Out>& out) {
     // ★ 10-14 작업 8d — 방마다 한 줄(돌고 있는 방 · 방 번호 차례 — 옛 설정 차례). 방장 주소 칸 = 이 접속이 붙은 채널 주소
     const auto ci = conns_.find(conn);
     const uint32_t gameIp = ci == conns_.end() ? cfg_.gameServerIp : GameServerIp(ci->second);
+    const int codepage = ci == conns_.end() ? 0 : ci->second.codepage;   // ★ 10-14 작업 10a — 방 이름을 그 접속의 코드페이지로
     for (const LobbyRoom& lr : rooms_.LobbyRooms()) {
         const std::string room = Channel(lr);
         const size_t users = 1 + members_[room].size();
         out.push_back({conn, ": 326 u " + room + " " + std::to_string(users) + " 0 37 1 41681088 " +
-                                 std::to_string(gameIp) + " " + std::string(kListPrefix) + RoomInfo(lr)});
+                                 std::to_string(gameIp) + " " + std::string(kListPrefix) + RoomInfo(lr, codepage)});
     }
     if (withChat)
         for (const char* l : kChatLobbies)

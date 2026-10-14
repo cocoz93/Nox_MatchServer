@@ -24913,6 +24913,61 @@ void TestChannelLobby() {
                   (int)rooms.HasRoom(plain));
     Check(quitClose && lobby.Stats().opened == 1 && lobby.Stats().linesIn == 7 && lobby.Stats().closed == 1 &&
           lobby.Stats().linesOut == 3 + 3 + 5 + 2 + 1 && rooms.HasRoom(plain), m);   // 로그인 375·372·376 · 목록 · 참가 · 목록 · 607
+
+    // ④ ★ 10-14 작업 10a — 새 방: 틀(진단 · 시야 손잡이) + 만든 사람 · 이름 「닉의 게임」(닉 8바이트까지) · 대기 맵 후보 하나 · 채팅 · 비면 닫음.
+    //   방 관리자는 읽기 전용 데이터가 없어 빈 방(세계 없음) — 방 설정이 제대로 실리는지만 본다. 대기 맵 후보가 없으면 안 만든다
+    {
+        nox::CRoomManager r2;
+        RoomSettings tmpl;
+        tmpl.aoi = true;
+        tmpl.quiet = true;
+        tmpl.bots.push_back(BotWant{});
+        const std::vector<std::string> waits = {"C:\\Nox\\maps\\So_LOD\\So_LOD.map", "C:\\Nox\\maps\\Estate\\Estate.map"};
+        nox::CChannelLobby cl(r2, lc, tmpl, waits);
+        cl.SetSeed(7);
+        nox::CChannelLobby none2(r2, lc);   // 대기 맵 후보 없음
+        std::vector<Rq> q1, q2;
+        Ev o1 = ev(Ev::Type::LOBBY_OPENED, 5, nullptr);
+        o1.lobbyPeerIp = peer;
+        o1.lobbyLocalIp = local;
+        cl.OnNetworkEvent(o1, q1);
+        none2.OnNetworkEvent(o1, q2);
+        for (const char* l : {"NOXCLIENT 1", "NICK averylongnick", "USER UserName HostName irc.westwood.com :RealName"}) {
+            cl.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, l), q1);
+            none2.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, l), q2);
+        }
+        q1.clear();
+        q2.clear();
+        none2.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, "JOINGAME #averylongnick's_game 1 "), q2);
+        const size_t roomsAfterNone = r2.RoomCount();
+        cl.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, "JOINGAME #averylongnick's_game 1 "), q1);
+        const auto facts = r2.ListRooms();
+        const bool one = facts.size() == 1;
+        const RoomSettings* rs = one ? &r2.Room(facts[0].roomId).Settings() : nullptr;
+        const bool mapOk = one && (facts[0].mapKey == "so_lod" || facts[0].mapKey == "estate");
+        std::snprintf(m, sizeof(m), "④ 새 방 — 후보 없는 로비 답 %zu · 방 %zu · 만든 뒤 방 %zu · 답 %zu · 만든 사람 %s · 이름 %zu바이트 · 맵 %s · 모드 %s · 비면 닫음 %d · 독립 %d · 시야 %d · 봇 %zu",
+                      q2.size(), roomsAfterNone, facts.size(), q1.size(), one ? facts[0].creator.c_str() : "", one ? facts[0].name.size() : 0,
+                      one ? facts[0].mapKey.c_str() : "", one ? facts[0].mode.c_str() : "", rs ? (int)rs->closeWhenEmpty : -1,
+                      rs ? (int)rs->standalone : -1, rs ? (int)rs->aoi : -1, rs ? rs->bots.size() : 99);
+        Check(q2.empty() && roomsAfterNone == 0 && one && q1.size() == 5 && q1[0].lobbyLine.rfind("NOXTOKEN ", 0) == 0 &&
+                  facts[0].creator == "averylongnick" && facts[0].name == "averylon의 게임" && mapOk && facts[0].mode == "chat" &&
+                  rs && rs->closeWhenEmpty && rs->standalone && rs->aoi && rs->quiet && rs->bots.empty(),
+              m);
+        // 대기 맵은 후보에서 무작위 — 씨앗을 바꿔 가며 여럿 만들면 둘 다 나온다(하나만 늘 나오면 무작위가 아니다)
+        std::set<std::string> seen;
+        for (uint32_t seed = 0; seed < 16; ++seed) {
+            nox::CRoomManager r3;
+            nox::CChannelLobby c3(r3, lc, tmpl, waits);
+            c3.SetSeed(seed);
+            std::vector<Rq> q3;
+            c3.OnNetworkEvent(o1, q3);
+            for (const char* l : {"NOXCLIENT 1", "NICK wn", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #wn's_game 1 "})
+                c3.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, l), q3);
+            for (const auto& f : r3.ListRooms()) seen.insert(f.mapKey);
+        }
+        std::snprintf(m, sizeof(m), "④ 대기 맵 무작위 — 씨앗 16개에 나온 맵 %zu가지", seen.size());
+        Check(seen.size() == 2, m);
+    }
     std::printf("  10-14 플랜 B 작업 8d — 채널 안 로비: 목록 = 만든 사람 있는 돌고 있는 방 · 참가 토큰 = 그 방 · 닫히면 빠짐 · 로비 사건만\n");
 }
 

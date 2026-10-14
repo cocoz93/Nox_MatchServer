@@ -168,6 +168,16 @@ int main(int argc, char** argv) {
             opt.lobbyPort = std::atoi(argv[++i]);   // ★ 10-14 작업 8d — 채널 안 로비
         } else if (a == "--lobby-bind" && i + 1 < argc) {
             opt.lobbyBind = argv[++i];
+        } else if (a == "--wait-maps" && i + 1 < argc) {
+            // ★ 10-14 작업 10a — 대기 맵 후보(쉼표로 · 맵 열쇠 또는 .map 경로) — 로비가 새 방을 그 가운데 하나에 차린다
+            const std::string list = argv[++i];
+            for (size_t p = 0; p <= list.size();) {
+                const size_t e = list.find(',', p);
+                const std::string nm = list.substr(p, e == std::string::npos ? std::string::npos : e - p);
+                if (!nm.empty()) opt.waitMaps.push_back(nm);
+                if (e == std::string::npos) break;
+                p = e + 1;
+            }
         } else if (a == "--port" && i + 1 < argc) {
             opt.port = std::atoi(argv[++i]);
         } else if (a == "--name" && i + 1 < argc) {
@@ -603,7 +613,7 @@ int main(int argc, char** argv) {
     GameFiles gameFiles;
     std::shared_ptr<const nox::Server::GameTables> gameTables;
     MapCatalog maps;   // ★ 10-12 플랜 B 작업 7e-4b — 서버가 맡는 맵의 원본들(방은 이것에 붙는다)
-    if (!opt.room.mapPath.empty()) {
+    if (!opt.room.mapPath.empty() || opt.lobbyPort != 0) {   // ★ 10-14 작업 10a — 로비 방식은 대기 맵을 차려 둔다(새 방이 붙는다)
         LoadGameFiles(opt.gameDir, gameFiles);
         gameTables = BuildGameTables(gameFiles);
         maps = BuildMapCatalog(gameFiles, gameTables, MapListFromOptions(opt));   // 목록의 출처는 `MapListFromOptions` 주석(지금 `--map` 하나)
@@ -660,10 +670,23 @@ int main(int argc, char** argv) {
         lc.gameServerPort = static_cast<uint16_t>(opt.port);
         lc.room.maxPlayers = 31;   // 옛 `nox_lobby` 기본값 그대로(방 최대 인원은 아직 안 정함 — `ROOMS_DESIGN.md` 「안 정한 것」)
         lc.room.resolution = 2;    // 녹음 다섯 방 중 셋이 1024x768
-        lobby = std::make_unique<nox::CChannelLobby>(rooms, lc);
+        // ★ 10-14 작업 10a — 새 방의 틀 = 실행 인자의 방 설정(진단 · 시야 손잡이 — 맵 · 모드 · 이름 · 만든 사람은 로비가 정한다).
+        //   대기 맵 후보는 서버가 뜰 때 차린 맵 원본에 있는 것만(못 읽은 맵은 빼고 한 줄)
+        std::vector<std::string> waitMaps;
+        std::string waitKeys;
+        for (const std::string& w : WaitMapPaths(opt)) {
+            if (!maps.Find(MapKeyOf(w))) {
+                std::printf("[로비] 대기 맵 후보 빠짐 — %s(맵 원본에 없음 · 위 [맵 원본] 줄)\n", w.c_str());
+                continue;
+            }
+            waitMaps.push_back(w);
+            waitKeys += (waitKeys.empty() ? "" : ", ") + MapKeyOf(w);
+        }
+        lobby = std::make_unique<nox::CChannelLobby>(rooms, lc, opt.room, waitMaps);
         lobby->SetVerbose(!opt.quiet);
-        std::printf("로비: TCP %s:%d — 방 없이 시작(방은 로비가 만든다) · 게임 서버 주소 = 붙은 내 쪽 주소\n",
-                    opt.lobbyBind.empty() ? "0.0.0.0" : opt.lobbyBind.c_str(), opt.lobbyPort);
+        std::printf("로비: TCP %s:%d — 방 없이 시작(방은 로비가 만든다) · 게임 서버 주소 = 붙은 내 쪽 주소 · 대기 맵 %zu개 %s\n",
+                    opt.lobbyBind.empty() ? "0.0.0.0" : opt.lobbyBind.c_str(), opt.lobbyPort, waitMaps.size(),
+                    waitKeys.empty() ? "(없음 — 새 방을 못 만든다)" : waitKeys.c_str());
     }
 
     std::printf("접속 대기 — UDP %d, 이름 \"%s\"\n", opt.port, opt.name.c_str());

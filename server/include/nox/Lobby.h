@@ -40,7 +40,7 @@ constexpr int kNoxClientMinVersion = 1;   // ★ 10-10 — DLL 이 알리는 판
 struct LobbyRoom {
     uint16_t gameRoomId = 0;   // 게임 서버의 방 번호 — 입장 토큰에 싣는다
     std::string creator;       // 방을 만든 사람의 로비 이름 — 채널 `#<만든 사람>'s_game` · 353 의 방장 자리(@)
-    std::string name;          // 방 이름 — 방 정보의 이름 칸(비면 만든 사람 이름 — 옛 「방 정보 이름도 방장 이름」)
+    std::string name;          // 방 이름(UTF-8) — 방 정보의 이름 칸(비면 만든 사람 이름 — 옛 「방 정보 이름도 방장 이름」) · 실을 때 접속의 코드페이지로
     std::string map;           // 맵 열쇠(소문자 · 확장자 없음) — 방 정보의 맵 칸(비면 틀의 맵)
     std::string mode;          // 방 설정의 모드 — 방 정보 깃발의 맵 종류(`ModeFlagsOf` · 모르는 이름이면 틀의 깃발)
     uint8_t players = 0;       // 게임 안 사람 수 — 방 정보의 인원
@@ -51,7 +51,13 @@ class ILobbyRooms {
 public:
     virtual ~ILobbyRooms() = default;
     virtual std::vector<LobbyRoom> LobbyRooms() const = 0;
+    // ★ 10-14 플랜 B 작업 10a — 「새 방」 — 그 사람이 만든 사람(방장)인 방을 하나 만든다(채널이 방 관리자의 만들기 입구로).
+    //   만들었으면 true · `out` 에 그 방. 실패(대기 맵 없음 · 세계 차리기 실패)면 false
+    virtual bool CreateRoomFor(const std::string& creator, LobbyRoom& out) = 0;
 };
+
+// ★ 10-14 작업 10a — 방 이름을 실을 때 쓰는 코드페이지(클라가 `SETCODEPAGE` 를 안 보냈을 때). 정품 클라는 949 를 보낸다(1단계 녹음 셋 모두)
+constexpr int kDefaultCodepage = 949;
 
 struct LobbyConfig {
     std::vector<std::string> motd{"Welcome to Nox_Origin!", ""};  // 첫 줄은 375, 나머지는 372
@@ -72,6 +78,9 @@ struct LobbyStats {
     unsigned long long loginOldClient = 0;   // 로그인 — DLL 판이 낮음(인사말로 알림)
     unsigned long long joinNoClient = 0;     // 방 참가 — DLL 없음(로그인 전 참가 포함) · 토큰 없이 답함
     unsigned long long tokenSignFailed = 0;  // 서명 실패(BCrypt) — 토큰 없이 답함
+    unsigned long long roomsCreated = 0;     // ★ 10-14 작업 10a — 「새 방」 참가로 방을 만듦
+    unsigned long long roomCreateFailed = 0; // ★ 10-14 작업 10a — 「새 방」인데 채널이 못 만듦(답 없음 · 기록)
+    unsigned long long newRoomNoClient = 0;  // ★ 10-14 작업 10a — 「새 방」인데 DLL 이 없어 안 만듦(답 없음 · 기록 — 들어올 수 없는 방이라)
 };
 
 struct Out {
@@ -83,7 +92,7 @@ struct Out {
 class Lobby {
 public:
     // ★ 10-14 작업 8d — 방은 `rooms` 가 준다(채널 · 시험의 가짜). 로비보다 오래 살아야 한다
-    Lobby(LobbyConfig cfg, const ILobbyRooms& rooms);
+    Lobby(LobbyConfig cfg, ILobbyRooms& rooms);
 
     // peerIp = 상대 IPv4 · localIp = 클라가 붙은 내 쪽 IPv4
     void OnConnect(int conn, uint32_t peerIp, uint32_t localIp);
@@ -112,12 +121,13 @@ private:
     // ★ 10-14 작업 8d — 채널 → 그 방(`rooms` 에서 · 없으면 nullptr)
     static const LobbyRoom* FindRoom(const std::vector<LobbyRoom>& rooms, const std::string& channel);
     bool IsRoomHost(const std::string& name) const;
-    std::string RoomInfo(const LobbyRoom& r) const;          // 방 정보 덩어리(`Pack` — 86바이트, ':' 로 시작)
+    // 방 정보 덩어리(`Pack` — 86바이트, ':' 로 시작). ★ 10-14 작업 10a — 방 이름(UTF-8)은 그 접속의 코드페이지로 바꿔 싣는다
+    std::string RoomInfo(const LobbyRoom& r, int codepage) const;
     uint32_t GameServerIp(const Conn& c) const { return cfg_.gameServerIp ? cfg_.gameServerIp : c.localIp; }
     void Unknown(const std::string& cmd, std::string_view line);
 
     LobbyConfig cfg_;
-    const ILobbyRooms& rooms_;                      // ★ 10-14 작업 8d — 옛 `roomInfo_`(설정 방마다 미리 싼 방 정보) 자리
+    ILobbyRooms& rooms_;                      // ★ 10-14 작업 8d — 옛 `roomInfo_`(설정 방마다 미리 싼 방 정보) 자리
     LobbyStats stats_;
     std::map<int, Conn> conns_;
     std::map<std::string, std::set<int>> members_;  // 채널 → 들어와 있는 접속

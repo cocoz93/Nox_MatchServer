@@ -896,9 +896,28 @@ std::vector<std::string> MapListFromOptions(const ServerOptions& opt) {
     // ★ 확장 지점 — 맵 목록의 출처. 지금은 실행 인자 `--map` 하나다(10-12 사용자 결정 — 맵을 다 쓰지 않으니 하나만).
     //   늘릴 때 이 함수만 바꾼다 — `--maps a,b`(여러 맵) · 로비가 알려 주는 방 목록(작업 8) ·
     //   게임 폴더 전부(`maps\<이름>\<이름>.map` — 157개면 개인 메모리 약 490MB · 뜨는 데 약 5초, 7e-4 파일럿)
+    // ★ 10-14 플랜 B 작업 10a — 로비 방식이면 대기 맵 후보도(로비가 새 방을 그 가운데 하나에 차린다 · 방을 만들 때 맵 파일을 안 읽는다)
     std::vector<std::string> paths;
     if (!opt.room.mapPath.empty()) paths.push_back(opt.room.mapPath);
+    for (const std::string& w : WaitMapPaths(opt)) {
+        bool dup = false;
+        for (const std::string& p : paths) dup = dup || MapKeyOf(p) == MapKeyOf(w);
+        if (!dup) paths.push_back(w);
+    }
     return paths;
+}
+
+std::vector<std::string> WaitMapPaths(const ServerOptions& opt) {
+    std::vector<std::string> r;
+    if (opt.lobbyPort == 0) return r;
+    const std::vector<std::string> keys = opt.waitMaps.empty() ? std::vector<std::string>{"So_LOD"} : opt.waitMaps;
+    for (const std::string& k : keys) {   // `.map` 으로 끝나면 파일 경로 그대로, 아니면 맵 열쇠(게임 폴더의 맵)
+        std::string low = k;
+        for (char& ch : low) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        const bool isFile = low.size() > 4 && low.compare(low.size() - 4, 4, ".map") == 0;
+        r.push_back(isFile ? k : opt.gameDir + "\\maps\\" + k + "\\" + k + ".map");
+    }
+    return r;
 }
 
 std::shared_ptr<const MapOriginal> MapCatalog::Find(const std::string& key) const {

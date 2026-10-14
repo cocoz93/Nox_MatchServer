@@ -152,6 +152,9 @@ struct ServerOptions {
     //   켜면 토큰 방식만 되고 실행 인자의 방을 만들지 않는다 — 방은 로비가 만든다(작업 10)
     int lobbyPort = 0;          // `--lobby-port <포트>`(정품 클라는 4000)
     std::string lobbyBind;      // `--lobby-bind <IPv4>` — 비면 모든 주소(같은 PC 시험은 127.0.0.1)
+    // ★ 10-14 작업 10a — 대기 맵 후보(`--wait-maps a,b` — 맵 열쇠 또는 .map 경로). 로비가 새 방을 만들 때 하나를 무작위로.
+    //   비면 로비 방식에서 `So_LOD` 하나(정품으로 확인한 대기 맵 — `Docs/ROOMS_DESIGN.md` 「10-13 정한 것」 · 확인한 맵을 하나씩 더한다)
+    std::vector<std::string> waitMaps;
     RoomSettings room;          // 실행 인자로 차리는 방 하나(단독 모드 · 녹음 모드)
 };
 
@@ -207,6 +210,8 @@ struct MapCatalog {
 };
 std::string MapKeyOf(const std::string& mapPath);
 std::vector<std::string> MapListFromOptions(const ServerOptions& opt);
+// ★ 10-14 작업 10a — 대기 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것). 열쇠는 `<게임 폴더>\maps\<열쇠>\<열쇠>.map`
+std::vector<std::string> WaitMapPaths(const ServerOptions& opt);
 // 맵 원본 하나 — 못 읽으면 false(까닭은 `out.log`)
 bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables, const std::string& mapPath,
                       MapOriginal& out);

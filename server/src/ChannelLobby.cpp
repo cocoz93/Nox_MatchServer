@@ -21,22 +21,54 @@ std::string Printable(const std::string& s, bool ours) {
 
 }  // namespace
 
-CChannelLobby::CChannelLobby(CRoomManager& rooms, wol::LobbyConfig cfg) : _rooms(rooms), _lobby(std::move(cfg), *this) {}
+CChannelLobby::CChannelLobby(CRoomManager& rooms, wol::LobbyConfig cfg, RoomSettings roomTemplate, std::vector<std::string> waitMaps)
+    : _rooms(rooms), _lobby(std::move(cfg), *this), _template(std::move(roomTemplate)), _waitMaps(std::move(waitMaps)),
+      _rng(std::random_device{}()) {}
+
+std::string CChannelLobby::RoomNameFor(const std::string& nick) {
+    return nick.substr(0, kRoomNameNickBytes) + "의 게임";   // 이 파일은 UTF-8(`/utf-8`) — 로비가 클라 코드페이지(949)로 바꾼다
+}
+
+bool CChannelLobby::ToLobbyRoom(const RoomFact& f, wol::LobbyRoom& lr) {
+    if (f.creator.empty()) return false;   // 로비가 만들지 않은 방(실행 인자의 방) — 목록에 안 낸다
+    lr.gameRoomId = static_cast<uint16_t>(f.roomId);
+    lr.creator = f.creator;
+    lr.name = f.name;
+    lr.map = f.mapKey;
+    lr.mode = f.mode;
+    lr.players = static_cast<uint8_t>(std::min<size_t>(f.players, 255));
+    return true;
+}
 
 std::vector<wol::LobbyRoom> CChannelLobby::LobbyRooms() const {
     std::vector<wol::LobbyRoom> r;
     for (const RoomFact& f : _rooms.ListRooms()) {
-        if (f.creator.empty()) continue;   // 로비가 만들지 않은 방(실행 인자의 방) — 목록에 안 낸다
         wol::LobbyRoom lr;
-        lr.gameRoomId = static_cast<uint16_t>(f.roomId);
-        lr.creator = f.creator;
-        lr.name = f.name;
-        lr.map = f.mapKey;
-        lr.mode = f.mode;
-        lr.players = static_cast<uint8_t>(std::min<size_t>(f.players, 255));
-        r.push_back(std::move(lr));
+        if (ToLobbyRoom(f, lr)) r.push_back(std::move(lr));
     }
     return r;
+}
+
+// ★ 10-14 작업 10a — 새 방: 틀 + 만든 사람 · 이름 · 대기 맵(무작위) · 채팅 모드 · 비면 닫음 → 방 관리자의 만들기 입구
+bool CChannelLobby::CreateRoomFor(const std::string& creator, wol::LobbyRoom& out) {
+    if (_waitMaps.empty()) {
+        std::printf("[로비] 새 방을 못 만듦 — 대기 맵 후보가 없다(--wait-maps)\n");
+        std::fflush(stdout);
+        return false;
+    }
+    RoomSettings s = _template;
+    s.creator = creator;
+    s.roomName = RoomNameFor(creator);
+    s.mapPath = _waitMaps[std::uniform_int_distribution<size_t>(0, _waitMaps.size() - 1)(_rng)];
+    s.mode = "chat";        // 대기 = 원작 채팅 모드 맵(결정 1 — 싸움 막기는 작업 13)
+    s.standalone = true;    // 맵을 직접 차린다(녹음 서두 없음)
+    s.closeWhenEmpty = true;
+    s.bots.clear();         // 봇은 실행 인자의 방 몫(네트워크 스레드를 띄운 뒤라 세울 수도 없다)
+    const int id = _rooms.CreateRoom(s);
+    if (id == CRoomManager::kNoRoom) return false;
+    for (const RoomFact& f : _rooms.ListRooms())
+        if (f.roomId == id) return ToLobbyRoom(f, out);
+    return false;
 }
 
 void CChannelLobby::OnNetworkEvent(const NetworkEvent& ev, std::vector<NetworkRequest>& out) {
