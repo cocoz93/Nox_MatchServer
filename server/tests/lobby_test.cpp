@@ -437,6 +437,20 @@ void NewRoomUnitTests() {
     lb.OnLine(4, "JOINGAME #dave's_game 1 ", out);
     Check(out.empty() && lb.Stats().roomCreateFailed == 1 && lb.Stats().roomsCreated == 1, "채널이 못 만들면 답 없음 · 실패 셈");
 
+    // 같은 이름으로 다시 만든 방 — 옛 방(닫힘)의 채널 구성원(wn · bob)을 비우고 새로 든 wn 만(326 사람 수 = 가짜 방장 1 + 1)
+    fake.canCreate = true;
+    fake.rooms.clear();   // 방 관리자가 101 을 닫았다
+    out.clear();
+    lb.OnLine(1, "JOINGAME #wn's_game 1 ", out);
+    out.clear();
+    lb.OnLine(2, "LIST 37 37", out);
+    std::string users;
+    for (const auto& o : out) {
+        const auto t = Tokens(o.line);
+        if (t.size() == 11 && t[1] == "326") users = t[4];
+    }
+    Check(fake.created == 2 && users == "2", "같은 이름으로 다시 만든 방 — 옛 채널 구성원 비움(326 사람 수 2)");
+
     // 이름 칸 15바이트 — 넘치면 글자 단위로 뒤에서 자른다(두 바이트 글자를 반으로 안 자름)
     fake.rooms.back().name = "abcdefghijk의 게임";   // 11 + 7 = 18바이트(CP949)
     out.clear();

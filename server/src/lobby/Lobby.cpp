@@ -230,6 +230,8 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
             ++stats_.roomsCreated;
             log_.push_back("[새 방] " + c.nick + " → " + Channel(created) + " (게임 방 " + std::to_string(created.gameRoomId) + " · 맵 " +
                            created.map + ")");
+            // 같은 이름 채널의 옛 방(닫힘)에 들어 있던 접속은 새 방 구성원이 아니다 — 남겨 두면 326 의 사람 수 칸이 부푼다
+            members_.erase(Channel(created));
             found = &created;
         }
         if (!found) {
