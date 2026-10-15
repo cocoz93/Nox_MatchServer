@@ -10,7 +10,7 @@
 //   로그를 쓰는 동안 바뀐 마지막 오류 값은 되돌려 놓는다 — 게임은 connect 뒤 WSAGetLastError 로 WSAEWOULDBLOCK 을 본다.
 //
 // ★ 10-10 토큰 작업 4 — 입장 토큰을 싣는다(`Docs/TOKEN_DESIGN.md`). 로그와 상관없이 늘 한다.
-//   ① 로비 로그인 묶음의 첫 줄(`CVERS `)이 나가기 전에 `NOXCLIENT 1` 한 줄을 먼저 보낸다 — 로비는 이 줄이 없으면 로그인을 거절한다.
+//   ① 로비 로그인 묶음의 첫 줄(`CVERS `)이 나가기 전에 `NOXCLIENT <판>`(10-16 부터 2) 한 줄을 먼저 보낸다 — 로비는 이 줄이 없으면 로그인을 거절한다.
 //      그 소켓을 「로비 연결」로 적어 둔다
 //   ② 로비 연결의 받기에서 `NOXTOKEN <게임 서버 IP:포트> <토큰 16진>` 줄을 떼어 쥔다(`LobbyLineFilter.h` — 줄이 나뉘어 와도)
 //      로비 모듈(WOLAPI.dll)은 원래 답만 본다
@@ -18,10 +18,17 @@
 //      꼬리(토큰 51 · `NXT1`)를 붙여 보낸다. 다른 주소(LAN 판 등)로 가는 것엔 안 붙인다 — 그 서버는 꼬리를 모른다
 //   ④ closesocket — 로비 연결 상태를 지운다(소켓 번호는 다시 쓰인다)
 //
-// ★ 10-16 작업 11 시험 — 환경변수 NOX_MYROOM_LINE=1 일 때만(없으면 예전과 같다)
+// ★ 10-16 플랜 B 작업 11 — 정품 `Host Game` → 우리 채널에 내 방을 만들고 들어가기(`Docs/ROOMS_DESIGN.md` 결정 4 · 작업 11)
+//   켜는 조건 = 판 확인(Game.exe PE 시각 · 이미지 크기 · 실린 자리 — 아래 메모리 칸이 그 판의 것) 그리고 **우리 로비**
+//   (`NOXCLIENT 2` 에 로비가 `NOXSERVER 1` 로 답함 — ② 처럼 떼어 낸다). 그 줄이 없는 로비(XWIS 등)에선 아무것도 안 돌린다 —
+//   원작 Host Game 이 그대로 산다. 끄기: 환경변수 NOX_NO_HOSTGAME=1
 //   ⑤ 로비가 보내는 방 목록의 끝 줄 바로 앞에 「내 방」 줄(`326` · 채널 `#<내 닉>'s_game`)을 끼운다. 닉은 로그인 묶음의 `NICK` 줄에서 본다.
 //      정품 클라는 받은 목록에 있는 채널에만 방 참가를 보낸다(10-15 대조) — 이 줄이 있어야 그 채널로 참가가 나가고,
-//      채널은 없는 방이면 그 자리에서 만든다(`Lobby.cpp` JOINGAME 「새 방」). 그 채널이 이미 목록에 있으면 안 끼운다
+//      채널은 없는 방이면 그 자리에서 만든다(`Lobby.cpp` JOINGAME 「새 방」). 그 채널이 이미 목록에 있으면 안 끼운다.
+//      제 이름 방은 정품이 제 화면 목록에 안 그린다(10-16) — 그래서 ⑥ 은 항목을 베끼지 않고 짓는다
+//   ⑥ Host Game 을 누르고 캐릭터 창이 뜨면 「내 방」 목록 항목 · WOL 채널을 지어(`HostGameEntry.h`) 고른 항목으로 넣고
+//      「만들기」를 「들어가기」로 바꾼다 — 다섯 칸(10-13~16 외부 도구 memhost3~5 가 정품에서 쓴 칸). 50ms 마다 보는 스레드 하나
+//   ⑦ 시험용 — 환경변수 NOX_MYROOM_LINE=1 이면 판 확인 없이 ⑤ 만 켠다(selftest.exe 가 줄 끼우기를 보려고 · ⑥ 은 판 확인 없이 안 돈다)
 //
 // 로그: 환경변수 NOX_HOOK_LOG_DIR 이 있을 때만 <그 폴더>\wsock_<exe>_<pid>.log 에 쓴다(dinput_proxy 와 같은 스위치).
 //       없으면 로그도 집계도 안 하고 진짜로 넘기기만 한다.
@@ -45,8 +52,8 @@
 #include <string>
 #include <vector>
 
+#include "HostGameEntry.h"     // ⑤ · ⑥ 내 방 정보 · 항목 · 채널 짓기(방 정보 포장은 서버와 같은 WolGameInfo — build.bat 이 같이 빌드)
 #include "LobbyLineFilter.h"
-#include "nox/WolGameInfo.h"   // 방 정보 덩어리 포장 — 서버와 같은 코드(build.bat 이 WolGameInfo.cpp 를 같이 빌드)
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -261,7 +268,8 @@ FWD(1120) FWD(1130) FWD(1140) FWD(1141) FWD(1142)
 
 // ─────────────────────────────────────────────── 입장 토큰 (10-10 토큰 작업 4 — 머리 주석 ①~④)
 
-static const char kNoxClientHello[] = "NOXCLIENT 1\r\n";   // DLL 판 — 로비 `kNoxClientMinVersion` 이상이어야 로그인된다
+// DLL 판 — 로비 `kNoxClientMinVersion` 이상이어야 로그인된다 · ★ 10-16 판 2 = `NOXSERVER` 떼기 · ⑤ · ⑥(`kNoxClientHostGameVersion`)
+static const char kNoxClientHello[] = "NOXCLIENT 2\r\n";
 static const DWORD kTokenHoldMs = 60000;                   // 토큰을 쥐고 있는 시간(토큰 만료 30초보다 넉넉히 — 판정은 서버가 한다)
 static const size_t kTokenRaw = 51;                        // `JoinToken.h` kJoinTokenSize
 static CRITICAL_SECTION g_tokCs;
@@ -274,10 +282,13 @@ struct PendingToken {
     DWORD tick = 0;
 };
 static PendingToken g_tok;
-static bool g_myRoom = false;   // ⑤ 내 방 줄 끼우기(환경변수 NOX_MYROOM_LINE=1)
-static std::string g_nick;      // ⑤ 로비 로그인의 `NICK <닉>` — g_tokCs 로 지킨다
+static bool g_listOn = false;           // ⑤ 줄 끼우기를 걸어 두나(판 확인 통과 또는 ⑦ 시험 스위치 · 끄기 스위치 없음)
+static bool g_hostGameOn = false;       // ⑥ Host Game 돌리기 스레드(판 확인 통과 · 끄기 스위치 없음)
+static volatile LONG g_ourLobby = 0;    // ⑤ · ⑥ 지금 로비 연결이 `NOXSERVER` 를 보냈나 — 새 로비 연결마다 0
+static volatile LONG g_lobbyIp = 0;     // 그 로비 연결의 상대 IPv4(a<<24|b<<16|c<<8|d) — 채널이 곧 게임 서버
+static std::string g_nick;              // ⑤ · ⑥ 로비 로그인의 `NICK <닉>` — g_tokCs 로 지킨다
 
-static std::string MyRoomLine(SOCKET s, const std::vector<std::string>& items);
+static std::string MyRoomLine(const std::vector<std::string>& items);
 
 static bool MarkLobby(SOCKET s)   // 새로 적었으면 true
 {
@@ -285,8 +296,9 @@ static bool MarkLobby(SOCKET s)   // 새로 적었으면 true
     const bool added = g_lobby.find(s) == g_lobby.end();
     if (added) {
         LobbyLineFilter* f = new LobbyLineFilter();
-        if (g_myRoom) f->onListEnd = [s](const std::vector<std::string>& items) { return MyRoomLine(s, items); };
+        if (g_listOn) f->onListEnd = [](const std::vector<std::string>& items) { return MyRoomLine(items); };
         g_lobby[s] = f;
+        InterlockedExchange(&g_ourLobby, 0);   // 새 로비 연결 — 표시 줄을 다시 받아야 켠다
     }
     LeaveCriticalSection(&g_tokCs);
     return added;
@@ -333,6 +345,26 @@ static void OnTokenLine(const std::string& line, const char* who)
     Detail("NOXTOKEN 받음 — 게임 서버 %u.%u.%u.%u:%u 로 가는 접속 시도·CONNECT 에 붙인다 부른 곳=%s", a, b, c, d, port, who);
 }
 
+// ② 떼어 낸 줄 — 토큰이면 쥐고, 우리 로비 표시(`NOXSERVER`)면 그 연결의 상대 주소를 적고 ⑤ · ⑥ 을 켠다
+static void OnControlLine(SOCKET s, const std::string& line, const char* who)
+{
+    if (line.compare(0, strlen(LobbyLineFilter::kServerMark), LobbyLineFilter::kServerMark) != 0) { OnTokenLine(line, who); return; }
+    typedef int (WSAAPI* PFN_getpeername)(SOCKET, struct sockaddr*, int*);
+    const DWORD err = GetLastError();
+    sockaddr_in peer = {};
+    int plen = (int)sizeof(peer);
+    if (((PFN_getpeername)Resolve(5))(s, (struct sockaddr*)&peer, &plen) == 0 && peer.sin_family == AF_INET) {
+        const unsigned char* b = (const unsigned char*)&peer.sin_addr;
+        InterlockedExchange(&g_lobbyIp, (LONG)(((DWORD)b[0] << 24) | ((DWORD)b[1] << 16) | ((DWORD)b[2] << 8) | b[3]));
+        InterlockedExchange(&g_ourLobby, 1);
+        Log("우리 로비 표시 받음(%s) — 로비 %u.%u.%u.%u · 내 방 줄 %s · Host Game 돌리기 %s", line.c_str(), b[0], b[1], b[2], b[3],
+            g_listOn ? "켬" : "끔", g_hostGameOn ? "켬" : "끔");
+    } else {
+        Log("우리 로비 표시 받음(%s) — 로비 연결의 상대 주소를 못 읽어 켜지 않음 err=%lu", line.c_str(), GetLastError());
+    }
+    SetLastError(err);
+}
+
 // ⑤ 보내는 로비 글에서 `NICK <닉>` 줄을 찾아 둔다 — 로그인 묶음은 여러 줄이 한 번에 나간다
 static void NoteNick(const char* buf, int len)
 {
@@ -349,43 +381,109 @@ static void NoteNick(const char* buf, int len)
     }
 }
 
-// ⑤ 방 목록 끝 바로 앞에 끼울 `326` 줄. 칸 꼴은 `Lobby::SendList` 와 같다 — 방장 주소 칸 = 이 로비 연결의 상대(채널이 곧 게임 서버)
-//   방 정보 = `main.cpp` 의 로비 틀(최대 31 · 1024x768) + 이름 「<닉>'s game」 · 대기 맵(채팅 · 서버 기본 대기 맵 So_LOD — 목록에 보이는 값일 뿐,
-//   들어간 방의 맵은 채널이 정한다). 닉을 아직 못 봤거나 그 채널이 이미 목록에 있으면 빈 글자(안 끼움)
-static std::string MyRoomLine(SOCKET s, const std::vector<std::string>& items)
+static std::string NickNow()
 {
-    typedef int (WSAAPI* PFN_getpeername)(SOCKET, struct sockaddr*, int*);
-    const DWORD err = GetLastError();
     EnterCriticalSection(&g_tokCs);
     const std::string nick = g_nick;
     LeaveCriticalSection(&g_tokCs);
-    std::string line;
+    return nick;
+}
+
+static std::string Dotted(DWORD ip)
+{
+    char a[16];
+    sprintf(a, "%lu.%lu.%lu.%lu", (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
+    return a;
+}
+
+// ⑤ 방 목록 끝 바로 앞에 끼울 `326` 줄. 칸 꼴은 `Lobby::SendList` 와 같다 — 방장 주소 칸 = 이 로비 연결의 상대(채널이 곧 게임 서버)
+//   방 정보 = `hostgame::MyRoomInfo`(⑥ 의 항목과 같은 값). 우리 로비가 아니거나 · 닉을 아직 못 봤거나 · 그 채널이 이미 목록에 있으면 빈 글자(안 끼움)
+//   목록은 창이 열려 있는 동안 몇 초마다 다시 오므로 기록은 상세 줄(상한 있음)로만
+static std::string MyRoomLine(const std::vector<std::string>& items)
+{
+    if (!g_ourLobby) return std::string();
+    const std::string nick = NickNow();
     const std::string channel = "#" + nick + "'s_game";
     bool listed = false;
     for (const std::string& l : items) listed = listed || l.find(" " + channel + " ") != std::string::npos;
-    sockaddr_in peer = {};
-    int plen = (int)sizeof(peer);
-    if (nick.empty()) {
-        Log("내 방 줄 — 안 끼움(로비 닉을 아직 못 봄)");
-    } else if (listed) {
-        Log("내 방 줄 — 안 끼움(%s 가 이미 목록에 있음 · 목록 %u줄)", channel.c_str(), (unsigned)items.size());
-    } else if (((PFN_getpeername)Resolve(5))(s, (struct sockaddr*)&peer, &plen) != 0 || peer.sin_family != AF_INET) {
-        Log("내 방 줄 — 안 끼움(로비 연결의 상대 주소를 못 읽음 err=%lu)", GetLastError());
-    } else {
-        const unsigned char* b = (const unsigned char*)&peer.sin_addr;
-        const unsigned long ip = ((unsigned long)b[0] << 24) | ((unsigned long)b[1] << 16) | ((unsigned long)b[2] << 8) | b[3];
-        nox::wol::GameInfo g;
-        g.maxPlayers = 31;
-        g.resolution = 2;
-        g.name = nick + "'s game";   // 이름 칸 15바이트 — 넘치면 포장이 자른다
-        g.map = "so_lod";
-        g.flags = (uint16_t)((g.flags & ~nox::wol::kMapTypeMask) | nox::wol::kMapChat);
-        line = ": 326 u " + channel + " 1 0 37 1 41681088 " + std::to_string(ip) + " " + std::string(nox::wol::kListPrefix) +
-               nox::wol::Pack(g) + "\r\n";
-        Log("내 방 줄 끼움 — %s · 방장 주소 %u.%u.%u.%u · 그 목록의 방 %u줄", channel.c_str(), b[0], b[1], b[2], b[3], (unsigned)items.size());
+    if (nick.empty()) { Detail("내 방 줄 — 안 끼움(로비 닉을 아직 못 봄)"); return std::string(); }
+    if (listed) { Detail("내 방 줄 — 안 끼움(%s 가 이미 목록에 있음 · 목록 %u줄)", channel.c_str(), (unsigned)items.size()); return std::string(); }
+    const DWORD ip = (DWORD)g_lobbyIp;
+    Detail("내 방 줄 끼움 — %s · 방장 주소 %s · 그 목록의 방 %u줄", channel.c_str(), Dotted(ip).c_str(), (unsigned)items.size());
+    return ": 326 u " + channel + " 1 0 " + std::to_string(hostgame::kChannelType) + " 1 " + std::to_string(hostgame::kLocation) + " " +
+           std::to_string((unsigned long)ip) + " " + std::string(nox::wol::kListPrefix) + nox::wol::Pack(hostgame::MyRoomInfo(nick)) + "\r\n";
+}
+
+// ─────────────────────────────────────────────── ⑥ Host Game → 내 방 들어가기 (10-16 작업 11)
+
+// 이 판 Game.exe(GOG — 10-16 Game.exe · Game2.exe 둘 다 이 값)의 메모리 칸. 10-13 디스어셈블로 찾고 memhost3~5 가 정품에서 써서 확인했다
+static const DWORD kGameTimeStamp = 0x3978A3FE;
+static const DWORD kGameImageSize = 0x57E000;
+static const DWORD kGameBase = 0x400000;
+static const uintptr_t kCreateOrJoin = 0x69905C;   // 1 = Host Game(만들기) · 0 = 들어가기
+static const uintptr_t kNetMode = 0x59A13C;        // 1 = 인터넷(WOL)
+static const uintptr_t kSelEntry = 0x698EB4;       // 고른 목록 항목
+static const uintptr_t kSelValid = 0x699064;       // 고름 유효
+static const uintptr_t kJoinGate = 0x699058;       // 들어가기 문
+static const uintptr_t kSelPort = 0x698EA0;        // 고른 방 포트(16비트)
+static const uintptr_t kCharWin = 0x711500;        // 캐릭터 창(+4 = 창 깃발 — 0x810 이면 닫히는 중 · 0xACACACAC 는 풀린 메모리)
+static const DWORD kAliveMs = 400;                 // 캐릭터 창이 뜨고 이만큼 지나서 쓴다(memhost4 와 같음)
+
+static bool GameBuildOk()
+{
+    const BYTE* base = (const BYTE*)GetModuleHandleA(NULL);
+    const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)base;
+    if (!base || dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+    const IMAGE_NT_HEADERS32* nt = (const IMAGE_NT_HEADERS32*)(base + dos->e_lfanew);
+    return nt->Signature == IMAGE_NT_SIGNATURE && nt->FileHeader.TimeDateStamp == kGameTimeStamp &&
+           nt->OptionalHeader.SizeOfImage == kGameImageSize && (DWORD)(uintptr_t)base == kGameBase;
+}
+
+static bool ReadSelf(uintptr_t a, DWORD* v)   // 풀렸을지 모르는 곳(창 포인터 너머)은 이걸로 — 실패하면 false
+{
+    SIZE_T n = 0;
+    return ReadProcessMemory(GetCurrentProcess(), (LPCVOID)a, v, sizeof(*v), &n) && n == sizeof(*v);
+}
+
+static unsigned char g_hgEntry[hostgame::kEntrySize];       // 지은 항목 · 채널 — 들어가는 동안 정품이 가리킨다(프로세스 끝까지 둔다)
+static unsigned char g_hgChannel[hostgame::kChannelSize];
+
+static DWORD WINAPI HostGameThread(LPVOID)
+{
+    bool done = false;
+    DWORD prevCoj = 0, aliveSince = 0;
+    for (;;) {
+        Sleep(50);
+        const DWORD coj = *(volatile DWORD*)kCreateOrJoin;
+        const DWORD netMode = *(volatile DWORD*)kNetMode;
+        if (done && coj == 1 && prevCoj != 1) done = false;   // Host Game 을 다시 눌렀다
+        prevCoj = coj;
+        const DWORD win = *(volatile DWORD*)kCharWin;
+        DWORD flags = 0;
+        const bool alive = win && ReadSelf(win + 4, &flags) && flags != 0xACACACAC && (flags & 0x810) == 0;
+        if (!alive) aliveSince = 0;
+        else if (!aliveSince) aliveSince = GetTickCount() | 1;
+        if (done || coj != 1 || netMode != 1 || !alive || GetTickCount() - aliveSince < kAliveMs) continue;
+        done = true;
+        if (!g_ourLobby) { Log("Host Game — 우리 로비가 아님(표시 줄 없음) · 원작 만들기 그대로"); continue; }
+        const std::string nick = NickNow();
+        const std::string chan = nick + "'s_game";
+        if (nick.empty() || chan.size() >= hostgame::kChannelNameSize) {
+            Log("Host Game — 돌리지 않음(닉 「%s」 — 비었거나 채널 이름 칸 16자를 넘음)", nick.c_str());
+            continue;
+        }
+        const DWORD ip = (DWORD)g_lobbyIp;
+        const nox::wol::Raw raw = nox::wol::Marshal(hostgame::MyRoomInfo(nick));
+        hostgame::BuildChannel(g_hgChannel, chan, 1, ip, raw);
+        hostgame::BuildEntry(g_hgEntry, (uint32_t)(uintptr_t)g_hgEntry, (uint32_t)(uintptr_t)g_hgChannel, Dotted(ip), raw);
+        *(volatile DWORD*)kSelEntry = (DWORD)(uintptr_t)g_hgEntry;
+        *(volatile DWORD*)kSelValid = 1;
+        *(volatile DWORD*)kJoinGate = 1;
+        *(volatile WORD*)kSelPort = hostgame::kGamePort;
+        *(volatile DWORD*)kCreateOrJoin = 0;
+        Log("Host Game → 내 방 들어가기로 돌림 — 채널 #%s · 게임 서버 %s:%u · 항목 %p", chan.c_str(), Dotted(ip).c_str(),
+            (unsigned)hostgame::kGamePort, (void*)g_hgEntry);
     }
-    SetLastError(err);
-    return line;
 }
 
 // 접속 시도(100바이트 · 셋째 0x0e) · CONNECT(ff 00 00) 이고, 쥔 토큰의 게임 서버로 가면 꼬리를 채운다
@@ -452,7 +550,7 @@ extern "C" int WSAAPI Hook_send(SOCKET s, const char* buf, int len, int flags)
             SetLastError(err);
         }
     }
-    if (g_myRoom && buf && len > 0 && LobbyFilterOf(s)) NoteNick(buf, len);   // ⑤
+    if ((g_listOn || g_hostGameOn) && buf && len > 0 && LobbyFilterOf(s)) NoteNick(buf, len);   // ⑤ · ⑥
     int rc = ((PFN_send)Resolve(19))(s, buf, len, flags);
     if (g_log[0]) {
         DWORD err = GetLastError();
@@ -474,7 +572,7 @@ extern "C" int WSAAPI Hook_recv(SOCKET s, char* buf, int len, int flags)
     if (f) {
         const char* who = g_log[0] ? ModOf(ret)->name : "";
         rc = f->Recv([&](char* b, int n) { return ((PFN_recv)Resolve(16))(s, b, n, flags); }, buf, len,
-                     [&](const std::string& line) { OnTokenLine(line, who); });
+                     [&](const std::string& line) { OnControlLine(s, line, who); });
     } else {
         rc = ((PFN_recv)Resolve(16))(s, buf, len, flags);
     }
@@ -597,8 +695,14 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         InitializeCriticalSection(&g_statCs);
         InitializeCriticalSection(&g_resolveCs);
         InitializeCriticalSection(&g_tokCs);
-        char on[8] = { 0 };
-        g_myRoom = GetEnvironmentVariableA("NOX_MYROOM_LINE", on, sizeof(on)) && on[0] == '1';   // ⑤
+        char sw[8] = { 0 };
+        const bool off = GetEnvironmentVariableA("NOX_NO_HOSTGAME", sw, sizeof(sw)) && sw[0] == '1';   // ⑤ · ⑥ 끄기
+        sw[0] = 0;
+        const bool forceList = GetEnvironmentVariableA("NOX_MYROOM_LINE", sw, sizeof(sw)) && sw[0] == '1';   // ⑦ 시험
+        const bool gameOk = GameBuildOk();
+        g_hostGameOn = gameOk && !off;
+        g_listOn = (gameOk || forceList) && !off;
+        if (g_hostGameOn) CloseHandle(CreateThread(NULL, 0, HostGameThread, NULL, 0, NULL));
 
         char dir[MAX_PATH];
         if (GetEnvironmentVariableA("NOX_HOOK_LOG_DIR", dir, MAX_PATH)) {
@@ -609,7 +713,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
             char self[MAX_PATH]; self[0] = 0;
             GetModuleFileNameA(h, self, MAX_PATH);
             Log("=== wsock32 프록시(통과만) 붙음 ===  exe=%s  나=%s", exe, self);
-            Log("내 방 줄 끼우기(NOX_MYROOM_LINE) = %s", g_myRoom ? "켬" : "끔");
+            Log("Host Game 돌리기 = %s · 내 방 줄 = %s (판 확인 %s · 끄기 NOX_NO_HOSTGAME %s · 시험 NOX_MYROOM_LINE %s) — 둘 다 우리 로비 표시를 받아야 움직임",
+                g_hostGameOn ? "켬" : "끔", g_listOn ? "켬" : "끔", gameOk ? "통과" : "다른 판", off ? "켬" : "끔", forceList ? "켬" : "끔");
             CloseHandle(CreateThread(NULL, 0, SummaryThread, NULL, 0, NULL));
         }
     }

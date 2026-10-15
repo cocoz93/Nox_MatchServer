@@ -15,17 +15,29 @@ cl /nologo /utf-8 /O2 /W3 /EHsc /MT linefilter_test.cpp /Fe:linefilter_test.exe 
 if errorlevel 1 ( echo linefilter_test build failed & popd & exit /b 1 )
 "%~dp0linefilter_test.exe"
 if errorlevel 1 set RC=1
+rem host game entry/channel builder vs the bytes dumped from the genuine client (10-16 pilot)
+cl /nologo /utf-8 /std:c++17 /O2 /W3 /EHsc /MT /I ..\..\server\include hostgame_test.cpp ..\..\server\src\lobby\WolGameInfo.cpp /Fe:hostgame_test.exe >nul
+if errorlevel 1 ( echo hostgame_test build failed & popd & exit /b 1 )
+"%~dp0hostgame_test.exe"
+if errorlevel 1 set RC=1
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check_exports.ps1"
 if errorlevel 1 set RC=1
 set "LOGDIR=%TEMP%\wsock32_proxy_test"
 if exist "%LOGDIR%" rmdir /s /q "%LOGDIR%"
 mkdir "%LOGDIR%"
+set "NOX_MYROOM_LINE="
+set "NOX_NO_HOSTGAME="
 set "NOX_HOOK_LOG_DIR=%LOGDIR%"
 "%~dp0selftest.exe" log "%LOGDIR%"
 if errorlevel 1 set RC=1
 set "NOX_HOOK_LOG_DIR="
 "%~dp0selftest.exe" nolog "%LOGDIR%"
 if errorlevel 1 set RC=1
+rem 4) my-room line forced on (test switch - this exe is not Game.exe, so only the switch turns it on)
+set "NOX_MYROOM_LINE=1"
+"%~dp0selftest.exe" nolog "%LOGDIR%"
+if errorlevel 1 set RC=1
+set "NOX_MYROOM_LINE="
 popd
 if %RC%==0 ( echo TEST PASS ) else ( echo TEST FAIL )
 exit /b %RC%

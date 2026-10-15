@@ -10,6 +10,7 @@
 // ★ 10-16 작업 11 시험 — 방 목록 끝(`: 323 `) 바로 앞에 줄 하나를 끼운다(onListEnd 가 있을 때만 — 없으면 예전과 바이트까지 같다).
 //   10-15 대조: 정품 클라는 받은 목록에 있는 채널에만 방 참가(JOINGAME)를 보낸다 → Host Game 을 「내 방 들어가기」로 돌리려면
 //   내 방 채널이 목록에 있어야 한다. 목록 줄(`: 326 `)과 끝 줄도 토큰 줄처럼 줄 끝까지 쥐었다가 판단한다.
+// ★ 10-16 작업 11 — 「우리 로비」 표시 줄 `NOXSERVER …` 도 토큰 줄과 똑같이 떼어 onToken 으로 넘긴다(로비 모듈은 모르는 줄).
 #pragma once
 
 #include <algorithm>
@@ -22,6 +23,7 @@ class LobbyLineFilter {
 public:
     static constexpr const char* kMark = "NOXTOKEN ";
     static constexpr size_t kMarkLen = 9;
+    static constexpr const char* kServerMark = "NOXSERVER ";   // ★ 10-16 — 떼는 줄 둘째(우리 로비 표시)
     static constexpr const char* kListItem = ": 326 ";   // 방 목록 한 줄(우리 로비의 꼴 — `Lobby::SendList`)
     static constexpr const char* kListEnd = ": 323 ";    // 방 목록 끝
 
@@ -93,9 +95,9 @@ private:
 
     // 줄 머리 i 가 어느 표시인가 — 표시 전체가 맞으면 그 종류 · 남은 바이트가 표시보다 짧은데 앞이 맞으면 More(더 와야 안다)
     Kind KindAt(const std::string& d, size_t i) const {
-        static const char* const marks[] = { kMark, kListItem, kListEnd };
-        static const Kind kinds[] = { Kind::Token, Kind::ListItem, Kind::ListEnd };
-        const size_t count = onListEnd ? 3 : 1;   // 끼우기가 꺼져 있으면 토큰 줄만 본다(예전 그대로)
+        static const char* const marks[] = { kMark, kServerMark, kListItem, kListEnd };
+        static const Kind kinds[] = { Kind::Token, Kind::Token, Kind::ListItem, Kind::ListEnd };
+        const size_t count = onListEnd ? 4 : 2;   // 끼우기가 꺼져 있으면 떼는 줄 둘만 본다
         bool more = false;
         for (size_t m = 0; m < count; ++m) {
             const size_t len = std::strlen(marks[m]);

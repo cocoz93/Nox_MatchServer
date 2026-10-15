@@ -8,6 +8,7 @@
 //   ⑤ 줄 가운데의 NOXTOKEN · NOX 로 시작하는 다른 줄은 건드리지 않는다
 //   ⑥ ★ 10-16 끼우기를 켜면 — 방 목록 끝(`: 323 `) 바로 앞마다 끼울 줄이 한 번씩 들어가고, 그때 넘긴 목록 줄 수가 맞다.
 //      끄면 목록 줄도 그대로 지나간다(①과 같은 기대값). 줄 가운데의 `: 323` · `: 32` 로만 끝나는 줄은 건드리지 않는다
+//   ⑦ ★ 10-16 「우리 로비」 표시 `NOXSERVER …` 줄도 토큰 줄처럼 떼어 차례대로 넘긴다 · `NOXSERVERX` 같은 다른 줄은 그대로
 #include <cstdio>
 #include <cstring>
 #include <random>
@@ -48,7 +49,7 @@ static std::string Expected(const std::string& s, bool insert) {
         const std::string line = s.substr(i, end - i);
         if (insert && StartsWith(line, LobbyLineFilter::kListItem)) ++items;
         if (insert && StartsWith(line, LobbyLineFilter::kListEnd)) { out += InsertLine(items); items = 0; }
-        if (line.compare(0, LobbyLineFilter::kMarkLen, LobbyLineFilter::kMark) != 0) out += line;
+        if (!StartsWith(line, LobbyLineFilter::kMark) && !StartsWith(line, LobbyLineFilter::kServerMark)) out += line;
         i = end;
     }
     return out;
@@ -62,12 +63,12 @@ static bool RunOne(const std::string& stream, const std::vector<size_t>& cuts, i
     net.Tick();
     LobbyLineFilter f;
     if (insert) f.onListEnd = [](const std::vector<std::string>& items) { return InsertLine(items.size()); };
-    std::string got, tokenLine;
+    std::string got, tokenLine;   // tokenLine = 떼어 낸 줄들을 | 로 이은 것(차례 대조)
     int tokens = 0;
     for (int guard = 0; guard < 1000000; ++guard) {
         char buf[4096];
         const int r = f.Recv([&](char* b, int n) { return net.Recv(b, n); }, buf, len,
-                             [&](const std::string& l) { tokenLine = l; ++tokens; });
+                             [&](const std::string& l) { tokenLine += (tokens ? "|" : "") + l; ++tokens; });
         ++calls;
         if (r == WOULDBLOCK) { ++wouldblocks; net.Tick(); continue; }   // 로비 모듈은 다음 틀에 다시 부른다
         if (r == 0) {
@@ -78,13 +79,15 @@ static bool RunOne(const std::string& stream, const std::vector<size_t>& cuts, i
         got.append(buf, static_cast<size_t>(r));
     }
     if (got != Expected(stream, insert)) { std::printf("① 받은 바이트가 다름 len=%d 끼우기=%d\n", len, insert ? 1 : 0); return false; }
-    if (tokens != 1 || tokenLine != wantLine) { std::printf("② 토큰 줄 %d개 [%s]\n", tokens, tokenLine.c_str()); return false; }
+    if (tokens != 2 || tokenLine != wantLine) { std::printf("② 토큰 줄 %d개 [%s]\n", tokens, tokenLine.c_str()); return false; }
     return true;
 }
 
 int main() {
     const std::string tokLine = "NOXTOKEN 127.0.0.1:18590 0100007f00000184" + std::string(86, 'a');
     const std::string stream =
+        "NOXSERVER 1\r\n"                                          // ⑦ 떼어 낼 줄(로비가 맨 먼저 보낸다)
+        "NOXSERVERX 1\r\n"                                         // ⑦ 표시와 앞만 같은 다른 줄
         ": 328 u wn9457`949\r\n"
         "NOX\r\n"                                                  // ⑤ 표시의 앞부분만 같은 다른 줄
         ": 999 u NOXTOKEN 가운데 낀 것은 그대로\r\n"                // ⑤ 줄 가운데
@@ -102,13 +105,15 @@ int main() {
         ": 323 u:\r\n"
         ": 321 u:\r\n"
         ": 323 u:\r\n";
+    const std::string want = "NOXSERVER 1|" + tokLine;   // 떼어 낸 줄 둘의 차례
     const int lens[] = { 1, 2, 3, 5, 8, 9, 10, 16, 64, 256, 512, 4096 };
     long long runs = 0, calls = 0, wb = 0;
     int fails = 0;
     // 기대값이 정말 끼움을 담는가(시험이 아무것도 안 보는 것을 막는다) — 끼울 줄 둘(줄 2 · 줄 0)
     const std::string withIns = Expected(stream, true);
     if (withIns.find(InsertLine(2) + ": 323 u:") == std::string::npos || withIns.find(InsertLine(0) + ": 323 u:") == std::string::npos ||
-        Expected(stream, false).find("INS ") != std::string::npos) {
+        Expected(stream, false).find("INS ") != std::string::npos ||
+        Expected(stream, false).find("NOXSERVER 1\r\n") != std::string::npos || Expected(stream, false).find("NOXSERVERX 1\r\n") == std::string::npos) {
         std::printf("기대값이 끼움을 안 담음\n");
         ++fails;
     }
@@ -117,21 +122,21 @@ int main() {
         for (size_t c = 1; c <= stream.size(); ++c) {   // 모든 고정 조각 크기 × 모든 recv 크기
             std::vector<size_t> cuts;
             for (size_t p = c; p < stream.size(); p += c) cuts.push_back(p);
-            for (int len : lens) { ++runs; if (!RunOne(stream, cuts, len, tokLine, insert, calls, wb)) ++fails; }
+            for (int len : lens) { ++runs; if (!RunOne(stream, cuts, len, want, insert, calls, wb)) ++fails; }
         }
         const size_t tpos = stream.find(tokLine);   // 토큰 줄 안의 모든 한 자리 자르기(두 조각)
         for (size_t p = tpos; p <= tpos + tokLine.size() + 2; ++p)
-            for (int len : lens) { ++runs; if (!RunOne(stream, { p }, len, tokLine, insert, calls, wb)) ++fails; }
+            for (int len : lens) { ++runs; if (!RunOne(stream, { p }, len, want, insert, calls, wb)) ++fails; }
         const size_t lpos = stream.find(": 321 u:");   // 목록 둘 안의 모든 한 자리 자르기(두 조각)
         for (size_t p = lpos; p <= stream.size(); ++p)
-            for (int len : lens) { ++runs; if (!RunOne(stream, { p }, len, tokLine, insert, calls, wb)) ++fails; }
+            for (int len : lens) { ++runs; if (!RunOne(stream, { p }, len, want, insert, calls, wb)) ++fails; }
         std::mt19937 rng(insert ? 20261016 : 20261010);   // 무작위 자르기 2만 판
         for (int k = 0; k < 20000; ++k) {
             std::vector<size_t> cuts;
             for (size_t p = 1; p < stream.size(); ++p) if (rng() % 7 == 0) cuts.push_back(p);
             const int len = lens[rng() % (sizeof(lens) / sizeof(lens[0]))];
             ++runs;
-            if (!RunOne(stream, cuts, len, tokLine, insert, calls, wb)) ++fails;
+            if (!RunOne(stream, cuts, len, want, insert, calls, wb)) ++fails;
         }
     }
     std::printf("linefilter runs=%lld recv-calls=%lld wouldblock=%lld fail=%d\n", runs, calls, wb, fails);
