@@ -29,7 +29,7 @@ struct BotWant { int x = -1, y = -1; std::string cls = "warrior"; };
 //   필드의 기본값과 주석은 옛 한 묶음 그대로 옮겼다.
 struct RoomSettings {
     bool quiet = false;   // 방 진단 줄(초당 줄 등)을 줄인다 — `--quiet` 가 프로세스 설정의 같은 이름과 같이 켠다
-    // ★ 10-14 플랜 B 작업 9e — 목록에 싣는 방 이름(로비가 만든 방 = 「방장 닉네임의 게임」 — 작업 10). 실행 인자의 방은 비어 있다
+    // ★ 10-14 플랜 B 작업 9e — 목록에 싣는 방 이름(로비가 만든 방 = 「<방장 닉네임>'s game」 — 작업 10 · 10-16 영문). 실행 인자의 방은 비어 있다
     std::string roomName;
     // ★ 10-14 작업 9e — 빈 채로 `CRoomManager::kEmptyRoomCloseMs` 가 지나면 방 관리자가 닫는다(로비가 만든 방). 실행 인자의 방은 끔
     bool closeWhenEmpty = false;

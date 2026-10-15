@@ -7,7 +7,7 @@
 //     실행 인자의 방(단독 모드)은 로비 목록에 안 나온다. 방 목록의 정본은 방 관리자 하나다(설정 파일 `[rooms]` 없앰)
 // 소켓도 시간도 모른다 — 게임 스레드 한 곳에서만 부른다.
 // ★ 10-14 플랜 B 작업 10a — 「새 방」(로비가 `CreateRoomFor` 로 묻는다): 방 틀(실행 인자의 방 설정 — 진단 · 시야 손잡이)에
-//   만든 사람 · 이름 「<닉>의 게임」 · 대기 맵(후보에서 무작위) · 채팅 모드 · 비면 닫음을 넣어 방 관리자의 만들기 입구로(`CreateRoom`).
+//   만든 사람 · 이름 「<닉>'s game」(10-16 — 옛 「<닉>의 게임」) · 대기 맵(후보에서 무작위) · 채팅 모드 · 비면 닫음을 넣어 방 관리자의 만들기 입구로(`CreateRoom`).
 //   만든 사람 = 방장(`Docs/ROOMS_DESIGN.md` 결정 4 · 「10-13 정한 것」)
 #pragma once
 
@@ -32,14 +32,15 @@ struct CChannelLobbyStats {
 
 class CChannelLobby final : private wol::ILobbyRooms {
 public:
-    // ★ 10-14 작업 10a — 방 이름 「<닉>의 게임」에서 닉은 이만큼(바이트)까지 — 이름 칸 15바이트 = 닉 8 + 「의 게임」 CP949 7
+    // ★ 10-14 작업 10a — 방 이름 「<닉>'s game」에서 닉은 이만큼(바이트)까지 — 이름 칸 15바이트 = 닉 8 + 「's game」 7
+    //   (10-16 영문으로 바꿈 — 옛 「의 게임」도 CP949 7바이트라 값은 그대로)
     static constexpr size_t kRoomNameNickBytes = 8;
 
     // `rooms` 는 이 객체보다 오래 산다. `roomTemplate` = 새 방의 틀 · `waitMaps` = 대기 맵 후보(맵 파일 경로 — 방 관리자의 맵 목록에 있어야 한다)
     CChannelLobby(CRoomManager& rooms, wol::LobbyConfig cfg, RoomSettings roomTemplate = {}, std::vector<std::string> waitMaps = {});
     // 대기 맵 고르기의 씨앗(시험이 정해 보려고 — 기본은 `std::random_device`)
     void SetSeed(uint32_t seed) { _rng.seed(seed); }
-    // 「<닉>의 게임」(UTF-8 — 로비가 접속의 코드페이지로 바꿔 싣는다) · 닉이 길면 닉 쪽을 자른다
+    // 「<닉>'s game」(로비가 접속의 코드페이지로 바꿔 싣는다 — 닉이 한글이면 그 부분만) · 닉이 길면 닉 쪽을 자른다
     static std::string RoomNameFor(const std::string& nick);
     CChannelLobby(const CChannelLobby&) = delete;
     CChannelLobby& operator=(const CChannelLobby&) = delete;

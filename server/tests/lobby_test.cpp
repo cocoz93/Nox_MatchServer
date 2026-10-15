@@ -163,7 +163,7 @@ struct FakeRooms final : nox::wol::ILobbyRooms {
         if (!canCreate) return false;
         ++created;
         out = FakeRoom(static_cast<uint16_t>(100 + created), creator.c_str());
-        out.name = creator + "의 게임";   // UTF-8(이 파일은 /utf-8) — 채널의 `RoomNameFor` 와 같은 꼴
+        out.name = creator + "의 게임";   // UTF-8(이 파일은 /utf-8) — 한글 이름의 코드페이지 바꾸기를 보려고(채널의 `RoomNameFor` 는 10-16 부터 영문)
         out.map = "so_lod";
         out.mode = "chat";
         rooms.push_back(out);

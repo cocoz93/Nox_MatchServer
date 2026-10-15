@@ -24914,7 +24914,7 @@ void TestChannelLobby() {
     Check(quitClose && lobby.Stats().opened == 1 && lobby.Stats().linesIn == 7 && lobby.Stats().closed == 1 &&
           lobby.Stats().linesOut == 3 + 3 + 5 + 2 + 1 && rooms.HasRoom(plain), m);   // 로그인 375·372·376 · 목록 · 참가 · 목록 · 607
 
-    // ④ ★ 10-14 작업 10a — 새 방: 틀(진단 · 시야 손잡이) + 만든 사람 · 이름 「닉의 게임」(닉 8바이트까지) · 대기 맵 후보 하나 · 채팅 · 비면 닫음.
+    // ④ ★ 10-14 작업 10a — 새 방: 틀(진단 · 시야 손잡이) + 만든 사람 · 이름 「닉's game」(닉 8바이트까지 · 10-16 영문) · 대기 맵 후보 하나 · 채팅 · 비면 닫음.
     //   방 관리자는 읽기 전용 데이터가 없어 빈 방(세계 없음) — 방 설정이 제대로 실리는지만 본다. 대기 맵 후보가 없으면 안 만든다
     {
         nox::CRoomManager r2;
@@ -24950,7 +24950,7 @@ void TestChannelLobby() {
                       one ? facts[0].mapKey.c_str() : "", one ? facts[0].mode.c_str() : "", rs ? (int)rs->closeWhenEmpty : -1,
                       rs ? (int)rs->standalone : -1, rs ? (int)rs->aoi : -1, rs ? rs->bots.size() : 99);
         Check(q2.empty() && roomsAfterNone == 0 && one && q1.size() == 5 && q1[0].lobbyLine.rfind("NOXTOKEN ", 0) == 0 &&
-                  facts[0].creator == "averylongnick" && facts[0].name == "averylon의 게임" && mapOk && facts[0].mode == "chat" &&
+                  facts[0].creator == "averylongnick" && facts[0].name == "averylon's game" && mapOk && facts[0].mode == "chat" &&
                   rs && rs->closeWhenEmpty && rs->standalone && rs->aoi && rs->quiet && rs->bots.empty(),
               m);
         // 대기 맵은 후보에서 무작위 — 씨앗을 바꿔 가며 여럿 만들면 둘 다 나온다(하나만 늘 나오면 무작위가 아니다)

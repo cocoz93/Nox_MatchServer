@@ -160,7 +160,7 @@ $all = @(Get-Content -LiteralPath $log -Encoding UTF8)
 $summary = $all | Where-Object { $_ -match '\[로비\] 끝' }
 $unknown = @($all | Where-Object { $_ -match "\[로비\] \[모르는 방\] JOINGAME #nobody's_game" }).Count
 $newRoomLog = @($all | Where-Object { $_ -match "\[로비\] \[새 방\] wn → #wn's_game \(게임 방 0 · 맵 so_lod\)" }).Count
-$roomMade = @($all | Where-Object { $_ -match '^\[방\] 0 만듦 — 이름 wn의 게임 · 맵 so_lod · 모드 chat · 비면 닫음' }).Count
+$roomMade = @($all | Where-Object { $_ -match "^\[방\] 0 만듦 — 이름 wn's game · 맵 so_lod · 모드 chat · 비면 닫음" }).Count
 $joinOk = @($all | Where-Object { $_ -match '^\[입장\] 접속 시도 받음 — 127\.0\.0\.1:\d+ · 방 0 · 로비 이름 wn$' }).Count
 $joinNo = @($all | Where-Object { $_ -match '^\[입장\] 접속 시도 거절 — 127\.0\.0\.1:\d+ · 까닭 ' }).Count
 Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
@@ -175,7 +175,7 @@ Check ($unknown -eq 1) "로비 기록 [모르는 방] 한 줄 ($unknown)"
 #   (★ 10-14 작업 8d 전 nox_lobby = 설정 방 하나가 있어 목록 둘에 326 이 한 줄씩 · 참가 5 → 받은 줄 20 · 보낸 줄 30)
 if ($haveWaitMap) {
   Check ($summary -match '접속 3 · 받은 줄 29 · 보낸 줄 44 · 토큰 2 · TCP\(받음 29 · 보냄 44 · 끊긴 접속으로 0 · 한도 0\)') '로비 셈 = TCP 셈 — 접속 3 · 받은 줄 29 · 보낸 줄 44 · 토큰 2'
-  Check ($newRoomLog -eq 1 -and $roomMade -eq 1) "채널 기록 — [새 방] wn $newRoomLog 줄 · [방] 0 만듦(wn의 게임 · so_lod · chat · 비면 닫음) $roomMade 줄"
+  Check ($newRoomLog -eq 1 -and $roomMade -eq 1) "채널 기록 — [새 방] wn $newRoomLog 줄 · [방] 0 만듦(wn's game · so_lod · chat · 비면 닫음) $roomMade 줄"
   Check ($joinOk -eq 1 -and $joinNo -eq 1) "입장 판정 — 접속 시도 받음(방 0 · wn) $joinOk · 거절 $joinNo"
 } else {
   Check ($summary -match '접속 2 · 받은 줄 21 · 보낸 줄 24 · 토큰 0 · TCP\(받음 21 · 보냄 24 · 끊긴 접속으로 0 · 한도 0\)') '로비 셈 = TCP 셈 — 접속 2 · 받은 줄 21 · 보낸 줄 24'

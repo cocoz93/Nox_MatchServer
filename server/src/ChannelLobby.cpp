@@ -26,7 +26,8 @@ CChannelLobby::CChannelLobby(CRoomManager& rooms, wol::LobbyConfig cfg, RoomSett
       _rng(std::random_device{}()) {}
 
 std::string CChannelLobby::RoomNameFor(const std::string& nick) {
-    return nick.substr(0, kRoomNameNickBytes) + "의 게임";   // 이 파일은 UTF-8(`/utf-8`) — 로비가 클라 코드페이지(949)로 바꾼다
+    // ★ 10-16 — 영문(10-15 정품 확인 23 — 정품 목록에서 「의 게임」 한글이 깨짐 · `Docs/ROOMS_DESIGN.md` 「새 방 이름」의 대안 그대로)
+    return nick.substr(0, kRoomNameNickBytes) + "'s game";
 }
 
 bool CChannelLobby::ToLobbyRoom(const RoomFact& f, wol::LobbyRoom& lr) {
