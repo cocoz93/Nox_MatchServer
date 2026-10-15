@@ -18,6 +18,11 @@
 //      꼬리(토큰 51 · `NXT1`)를 붙여 보낸다. 다른 주소(LAN 판 등)로 가는 것엔 안 붙인다 — 그 서버는 꼬리를 모른다
 //   ④ closesocket — 로비 연결 상태를 지운다(소켓 번호는 다시 쓰인다)
 //
+// ★ 10-16 작업 11 시험 — 환경변수 NOX_MYROOM_LINE=1 일 때만(없으면 예전과 같다)
+//   ⑤ 로비가 보내는 방 목록의 끝 줄 바로 앞에 「내 방」 줄(`326` · 채널 `#<내 닉>'s_game`)을 끼운다. 닉은 로그인 묶음의 `NICK` 줄에서 본다.
+//      정품 클라는 받은 목록에 있는 채널에만 방 참가를 보낸다(10-15 대조) — 이 줄이 있어야 그 채널로 참가가 나가고,
+//      채널은 없는 방이면 그 자리에서 만든다(`Lobby.cpp` JOINGAME 「새 방」). 그 채널이 이미 목록에 있으면 안 끼운다
+//
 // 로그: 환경변수 NOX_HOOK_LOG_DIR 이 있을 때만 <그 폴더>\wsock_<exe>_<pid>.log 에 쓴다(dinput_proxy 와 같은 스위치).
 //       없으면 로그도 집계도 안 하고 진짜로 넘기기만 한다.
 //       상세 줄 = 접속 시도(UDP 3번째 바이트 0x0e)의 바이트 전부 · TCP connect/send/recv · 이름 찾기
@@ -38,8 +43,10 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 #include "LobbyLineFilter.h"
+#include "nox/WolGameInfo.h"   // 방 정보 덩어리 포장 — 서버와 같은 코드(build.bat 이 WolGameInfo.cpp 를 같이 빌드)
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -267,12 +274,20 @@ struct PendingToken {
     DWORD tick = 0;
 };
 static PendingToken g_tok;
+static bool g_myRoom = false;   // ⑤ 내 방 줄 끼우기(환경변수 NOX_MYROOM_LINE=1)
+static std::string g_nick;      // ⑤ 로비 로그인의 `NICK <닉>` — g_tokCs 로 지킨다
+
+static std::string MyRoomLine(SOCKET s, const std::vector<std::string>& items);
 
 static bool MarkLobby(SOCKET s)   // 새로 적었으면 true
 {
     EnterCriticalSection(&g_tokCs);
     const bool added = g_lobby.find(s) == g_lobby.end();
-    if (added) g_lobby[s] = new LobbyLineFilter();
+    if (added) {
+        LobbyLineFilter* f = new LobbyLineFilter();
+        if (g_myRoom) f->onListEnd = [s](const std::vector<std::string>& items) { return MyRoomLine(s, items); };
+        g_lobby[s] = f;
+    }
     LeaveCriticalSection(&g_tokCs);
     return added;
 }
@@ -316,6 +331,61 @@ static void OnTokenLine(const std::string& line, const char* who)
     g_tok = t;
     LeaveCriticalSection(&g_tokCs);
     Detail("NOXTOKEN 받음 — 게임 서버 %u.%u.%u.%u:%u 로 가는 접속 시도·CONNECT 에 붙인다 부른 곳=%s", a, b, c, d, port, who);
+}
+
+// ⑤ 보내는 로비 글에서 `NICK <닉>` 줄을 찾아 둔다 — 로그인 묶음은 여러 줄이 한 번에 나간다
+static void NoteNick(const char* buf, int len)
+{
+    for (int i = 0; i + 5 <= len; ++i) {
+        if ((i > 0 && buf[i - 1] != '\n') || memcmp(buf + i, "NICK ", 5) != 0) continue;
+        int e = i + 5;
+        while (e < len && buf[e] != '\r' && buf[e] != '\n' && buf[e] != ' ') ++e;
+        if (e == i + 5) continue;
+        const std::string nick(buf + i + 5, (size_t)(e - (i + 5)));
+        EnterCriticalSection(&g_tokCs);
+        g_nick = nick;
+        LeaveCriticalSection(&g_tokCs);
+        Log("로비 닉 = %s — 내 방 줄의 채널 이름", nick.c_str());
+    }
+}
+
+// ⑤ 방 목록 끝 바로 앞에 끼울 `326` 줄. 칸 꼴은 `Lobby::SendList` 와 같다 — 방장 주소 칸 = 이 로비 연결의 상대(채널이 곧 게임 서버)
+//   방 정보 = `main.cpp` 의 로비 틀(최대 31 · 1024x768) + 이름 「<닉>'s game」 · 대기 맵(채팅 · 서버 기본 대기 맵 So_LOD — 목록에 보이는 값일 뿐,
+//   들어간 방의 맵은 채널이 정한다). 닉을 아직 못 봤거나 그 채널이 이미 목록에 있으면 빈 글자(안 끼움)
+static std::string MyRoomLine(SOCKET s, const std::vector<std::string>& items)
+{
+    typedef int (WSAAPI* PFN_getpeername)(SOCKET, struct sockaddr*, int*);
+    const DWORD err = GetLastError();
+    EnterCriticalSection(&g_tokCs);
+    const std::string nick = g_nick;
+    LeaveCriticalSection(&g_tokCs);
+    std::string line;
+    const std::string channel = "#" + nick + "'s_game";
+    bool listed = false;
+    for (const std::string& l : items) listed = listed || l.find(" " + channel + " ") != std::string::npos;
+    sockaddr_in peer = {};
+    int plen = (int)sizeof(peer);
+    if (nick.empty()) {
+        Log("내 방 줄 — 안 끼움(로비 닉을 아직 못 봄)");
+    } else if (listed) {
+        Log("내 방 줄 — 안 끼움(%s 가 이미 목록에 있음 · 목록 %u줄)", channel.c_str(), (unsigned)items.size());
+    } else if (((PFN_getpeername)Resolve(5))(s, (struct sockaddr*)&peer, &plen) != 0 || peer.sin_family != AF_INET) {
+        Log("내 방 줄 — 안 끼움(로비 연결의 상대 주소를 못 읽음 err=%lu)", GetLastError());
+    } else {
+        const unsigned char* b = (const unsigned char*)&peer.sin_addr;
+        const unsigned long ip = ((unsigned long)b[0] << 24) | ((unsigned long)b[1] << 16) | ((unsigned long)b[2] << 8) | b[3];
+        nox::wol::GameInfo g;
+        g.maxPlayers = 31;
+        g.resolution = 2;
+        g.name = nick + "'s game";   // 이름 칸 15바이트 — 넘치면 포장이 자른다
+        g.map = "so_lod";
+        g.flags = (uint16_t)((g.flags & ~nox::wol::kMapTypeMask) | nox::wol::kMapChat);
+        line = ": 326 u " + channel + " 1 0 37 1 41681088 " + std::to_string(ip) + " " + std::string(nox::wol::kListPrefix) +
+               nox::wol::Pack(g) + "\r\n";
+        Log("내 방 줄 끼움 — %s · 방장 주소 %u.%u.%u.%u · 그 목록의 방 %u줄", channel.c_str(), b[0], b[1], b[2], b[3], (unsigned)items.size());
+    }
+    SetLastError(err);
+    return line;
 }
 
 // 접속 시도(100바이트 · 셋째 0x0e) · CONNECT(ff 00 00) 이고, 쥔 토큰의 게임 서버로 가면 꼬리를 채운다
@@ -382,6 +452,7 @@ extern "C" int WSAAPI Hook_send(SOCKET s, const char* buf, int len, int flags)
             SetLastError(err);
         }
     }
+    if (g_myRoom && buf && len > 0 && LobbyFilterOf(s)) NoteNick(buf, len);   // ⑤
     int rc = ((PFN_send)Resolve(19))(s, buf, len, flags);
     if (g_log[0]) {
         DWORD err = GetLastError();
@@ -526,6 +597,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         InitializeCriticalSection(&g_statCs);
         InitializeCriticalSection(&g_resolveCs);
         InitializeCriticalSection(&g_tokCs);
+        char on[8] = { 0 };
+        g_myRoom = GetEnvironmentVariableA("NOX_MYROOM_LINE", on, sizeof(on)) && on[0] == '1';   // ⑤
 
         char dir[MAX_PATH];
         if (GetEnvironmentVariableA("NOX_HOOK_LOG_DIR", dir, MAX_PATH)) {
@@ -536,6 +609,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
             char self[MAX_PATH]; self[0] = 0;
             GetModuleFileNameA(h, self, MAX_PATH);
             Log("=== wsock32 프록시(통과만) 붙음 ===  exe=%s  나=%s", exe, self);
+            Log("내 방 줄 끼우기(NOX_MYROOM_LINE) = %s", g_myRoom ? "켬" : "끔");
             CloseHandle(CreateThread(NULL, 0, SummaryThread, NULL, 0, NULL));
         }
     }
