@@ -34,6 +34,10 @@ namespace nox::wol {
 constexpr uint16_t kServServPort = 4005;  // 정품 모듈에 박힌 첫 주소의 포트(WOLAPI.dll "TCP;servserv.westwood.com;4005")
 constexpr uint16_t kLobbyPort    = 4000;  // 605 답으로 알려 주는 로비 포트(XWIS 와 같게)
 constexpr int kNoxClientMinVersion = 1;   // ★ 10-10 — DLL 이 알리는 판. 이보다 낮거나 없으면 로그인 거절
+// ★ 10-16 작업 11 — 이 판부터 DLL 이 `NOXSERVER` 줄을 떼어 「우리 로비」로 알아보고 Host Game 을 내 방 참가로 돌린다.
+//   로비는 `NOXCLIENT` 가 이 판 이상이면 곧바로 `NOXSERVER 1` 한 줄로 답한다(낮은 판 DLL 은 이 줄을 못 떼므로 안 보낸다).
+//   DLL 은 이 줄을 못 받은 로비(XWIS 등)에선 아무것도 돌리지 않는다 — 원작 Host Game 이 그대로 산다
+constexpr int kNoxClientHostGameVersion = 2;
 
 // ★ 10-14 플랜 B 작업 8d — 로비가 그리는 방 하나. 채널이 방 관리자의 돌고 있는 방(`CRoomManager::ListRooms`)에서 채운다
 //   (옛 설정 파일 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리)

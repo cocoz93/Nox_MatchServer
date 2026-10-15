@@ -145,6 +145,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
     }
     if (cmd == "NOXCLIENT") {   // ★ 10-10 토큰 작업 3 — 클라 DLL 의 알림(정품 클라는 이 줄을 모른다 — DLL 이 로그인 앞에 끼운다)
         c.clientVer = t.size() > 1 ? std::atoi(t[1].c_str()) : 0;
+        if (c.clientVer >= kNoxClientHostGameVersion) out.push_back({conn, "NOXSERVER 1"});   // ★ 10-16 작업 11 — 우리 로비 표시
         return;
     }
     if (cmd == "USER") {   // 로그인 묶음의 끝 — 인사(375 · 372…) 뒤 376 이 「로그인 끝」

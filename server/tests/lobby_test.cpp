@@ -294,6 +294,15 @@ void LobbyUnitTests() {
     out.clear();
     lb.OnLine(2, "JOINGAME #NoxOrigin's_game 1 ", out);   // DLL 있는 접속은 그대로 토큰
     Check(out.size() == 5 && hasLine(out, "NOXTOKEN ") && lb.Stats().tokensIssued == 2, "DLL 있는 접속은 계속 토큰 + 원래 답 넷");
+
+    // ★ 10-16 작업 11 — 우리 로비 표시: DLL 판 2 이상이면 NOXCLIENT 에 곧바로 NOXSERVER 1 한 줄 · 판 1 은 답 없음(그 DLL 은 이 줄을 못 뗀다)
+    std::vector<Out> o2, o1;
+    lb.OnConnect(6, peer, loop);
+    lb.OnLine(6, "NOXCLIENT 2", o2);
+    lb.OnConnect(7, peer, loop);
+    lb.OnLine(7, "NOXCLIENT 1", o1);
+    Check(o2.size() == 1 && o2[0].conn == 6 && o2[0].line == "NOXSERVER 1" && !o2[0].closeAfter && o1.empty(),
+          "NOXCLIENT 2 → NOXSERVER 1 한 줄 · NOXCLIENT 1 → 답 없음");
 }
 
 // ── ★ 10-14 작업 8d — 채널 안 로비: 방은 채널이 그 순간 주는 것 · 방 정보 = 방의 이름 · 맵 · 모드 · 인원 · 게임 서버 주소 = 붙은 내 쪽 주소 ──
