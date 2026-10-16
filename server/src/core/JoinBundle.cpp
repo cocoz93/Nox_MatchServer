@@ -22,7 +22,9 @@ inline void PutU32(uint8_t* p, uint32_t v) {
 }
 
 // 2d NEW_PLAYER 에서 정보 97B **뒤에 붙는 29B** — 실측 그대로 (join216.bin 187~215).
-//   12번 자리의 `01` 은 클라 쪽 2d 파싱의 116번(Field2152)에 닿는다 — 뜻은 미상.
+//   12번 자리의 `01` 은 2d 의 112번(= 3 + 97 + 12) — **상태 플래그**(`kNewPlayerStatusAt` · 관전 비트 1)다.
+//   ✖ 10-16 정정 — 여기 「116번(Field2152) · 뜻 미상」이라 적혀 있었다. 클라 파싱은 112번을 `Field3680 |=` 로 읽는다
+//     (`network_client.go:320`) — 116번은 꼬리 16번 자리다
 //   ⚠ 처음에 `01` 을 꼬리 맨 앞에 뒀다가 시험이 「187 에서 2자리 다름」으로 잡았다 —
 //     이 상수는 **손으로 옮겨 적지 말고 녹음본에서 뽑을 것.**
 const uint8_t kNewPlayerTail[29] = {
@@ -63,13 +65,16 @@ std::vector<uint8_t> BuildGameSettings2(const GameSettings& g) {
 }
 
 std::vector<uint8_t> BuildJoinBundle(uint16_t netCode, uint32_t frame,
-                                     const uint8_t* info97, const GameSettings& g) {
+                                     const uint8_t* info97, const GameSettings& g, JoinStart start) {
     std::vector<uint8_t> m;
     m.reserve(kJoinBundleSize);
 
-    // a9 INFORM — 갈래 0x0c(관전 시작), 값 1
-    const uint8_t a9[6] = { 0xa9, 0x0c, 0x01, 0x00, 0x00, 0x00 };
-    m.insert(m.end(), a9, a9 + 6);
+    // a9 INFORM — 갈래 0x0c(관전 시작), 값 = 「공격 키를 누르세요」 글을 붙이나(`PlayerGoObserver` 의 notify)
+    //   ★ 10-16 — 바로 노는 사람에게는 안 보낸다(원작은 관전으로 안 보내니 이 알림도 없다 · `ModeRules.h` ④)
+    if (start != JoinStart::Play) {
+        const uint8_t a9[6] = { 0xa9, 0x0c, static_cast<uint8_t>(start == JoinStart::Observe ? 1 : 0), 0x00, 0x00, 0x00 };
+        m.insert(m.end(), a9, a9 + 6);
+    }
 
     // 28 FULL_TIMESTAMP
     uint8_t t28[5] = { 0x28 };
@@ -91,7 +96,9 @@ std::vector<uint8_t> BuildJoinBundle(uint16_t netCode, uint32_t frame,
     }
 
     // 2d NEW_PLAYER — 번호 + 정보 97 + 꼬리 29
-    const std::vector<uint8_t> np = BuildNewPlayer(netCode, info97);
+    std::vector<uint8_t> np = BuildNewPlayer(netCode, info97);
+    // ★ 10-16 — 상태 자리(꼬리의 `01` = 관전 비트)는 관전일 때만. 바로 노는 사람은 0(원작 `Field3680 & 0x423` 이 0)
+    if (start == JoinStart::Play) np[kNewPlayerStatusAt] = 0;
     m.insert(m.end(), np.begin(), np.end());
 
     return m;

@@ -150,4 +150,42 @@ inline BotPlan PlanBot(size_t index, int wantX, int wantY, size_t startCount) {
 // 봇 주소 — `DebugEnterGame` 이 주소 문자열로 사람을 가른다.
 inline std::string BotAddr(size_t index) { return "bot" + std::to_string(index); }
 
+// ── ④ 막 들어온 사람이 무엇으로 시작하나 — 관전 / 바로 놀기 ─────────────
+//
+// ★ 10-16 사람 판 — 대기 방(채팅)에 들어오면 캐릭터가 파랗게 깜빡이고 **클릭해야 남에게 보였다.**
+//   우리는 모드와 상관없이 모두 관전(`Session::observer = true`)으로 시작했다.
+// 원작 `player.go:411~433`(접속 처리 끝) 갈래를 차례대로 옮긴다 —
+//   ① 퀘스트(0x1000)   → 관전 · 「공격 키」 글 없음(`PlayerGoObserver(pl, false, true)`)
+//   ② 협동팀(0x200)    → 바로(상태 알림만 — `netReportPlayerStatus_417630`)
+//   ③ 호스트 사람 + 그림 없음 → 관전 — ⚠ 우리 서버에는 호스트 사람이 없어 안 옮긴다
+//   ④ 채팅(0x80)       → 바로. 팀 채팅(`Sub_40A740` — 채팅이고 팀 설정 53번 바이트 < 0)이면서
+//                         팀에 못 드는 사람(`Sub_40AA70 == 0`)만 관전 — ⚠ 우리에겐 팀 채팅 설정이 없어 늘 바로
+//   ⑤ 협동(0x800)이 아니면 → 관전 · 「공격 키를 누르세요」(`PlayerGoObserver(pl, true, true)`)
+//   ⑥ 협동              → 바로
+// 관전으로 보내는 것이 와이어에 남기는 것은 둘 — 접속 묶음 맨 앞 `a9 0c <글 여부>`(「관전 중」 글 · `inform.c` 0xC)와
+//   `2d` 112번 자리의 상태 비트 1(`Field3680 & 0x423` · 남의 화면은 이 비트가 서면 그 몸을 안 그린다).
+//   바로 노는 사람에게는 둘 다 없다
+enum class JoinStart {
+    Play,           // 관전 없이 바로
+    Observe,        // 관전 + 「공격 키를 누르세요」
+    ObserveQuiet,   // 관전 · 그 글은 없음(퀘스트)
+};
+
+inline JoinStart JoinStartFor(uint32_t gameFlags) {
+    if (gameFlags & 0x1000u) return JoinStart::ObserveQuiet;   // ① 퀘스트
+    if (gameFlags & 0x200u) return JoinStart::Play;            // ② 협동팀
+    if (gameFlags & 0x80u) return JoinStart::Play;             // ④ 채팅
+    if (!(gameFlags & 0x800u)) return JoinStart::Observe;      // ⑤ 협동이 아니면
+    return JoinStart::Play;                                    // ⑥ 협동
+}
+
+inline const char* JoinStartName(JoinStart js) {
+    switch (js) {
+        case JoinStart::Play:         return "바로";
+        case JoinStart::Observe:      return "관전";
+        case JoinStart::ObserveQuiet: return "관전(글 없음)";
+    }
+    return "?";
+}
+
 }  // namespace nox

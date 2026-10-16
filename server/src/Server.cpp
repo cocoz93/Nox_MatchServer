@@ -4025,7 +4025,17 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                         Log("%s\n", line.c_str());
                         std::fflush(stdout);
                     }
-                    std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97, gameSettings_);
+                    // ★ 10-16 — 관전으로 시작할지는 모드가 정한다(원작 `player.go:411~433` · `ModeRules.h` ④).
+                    //   전에는 모두 관전이라 대기 방(채팅)에서도 **클릭해야 남에게 보였다**(10-16 사람 판)
+                    //   ⚠ 첫 입장에서만 정한다 — 수락이 다시 와도(이 블록은 거르지 않고 다시 돈다) 이미 노는 사람을 관전으로 되돌리지 않는다
+                    const JoinStart js = JoinStartFor(gameSettings_.gameFlags);
+                    if (!s.inGame) {
+                        s.observer = (js != JoinStart::Play);
+                        ++joinStart_[static_cast<size_t>(js)];
+                        Log("[입장] %s — %s(모드 깃발 0x%05X)\n", AddrText(s.sessionId), JoinStartName(js),
+                            static_cast<unsigned>(gameSettings_.gameFlags));
+                    }
+                    std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97, gameSettings_, js);
                     Emit(s, /*reliable=*/true, /*stream=*/0, jb.data(), jb.size());
                     ++handled_;
                 }

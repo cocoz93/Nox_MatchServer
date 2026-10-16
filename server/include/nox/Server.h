@@ -4056,6 +4056,9 @@ public:
     unsigned long long spawnFromDefault() const { return spawnFromDefault_; }
     unsigned long long joinInfo97Ok() const { return joinInfo97Ok_; }
     unsigned long long joinInfo97Null() const { return joinInfo97Null_; }
+    // ★ 10-16 — 독립 모드 입장이 무엇으로 시작했나(`JoinStart` 갈래마다 · 녹음 묶음 입장은 안 셈)
+    unsigned long long joinStart(JoinStart js) const { return joinStart_[static_cast<size_t>(js)]; }
+    bool IsObserver(int64_t x) const { auto i = sessions_.find(x); return i != sessions_.end() && i->second.observer; }
     size_t acceptBodyLenLast() const { return acceptBodyLenLast_; }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
@@ -5261,6 +5264,7 @@ private:
     unsigned long long harpoonSteerTicks_ = 0;                   // ★ 1-b — 그쪽으로 튼 틱
     unsigned long long joinInfo97Ok_ = 0;     // 97B 를 그대로 실었다
     unsigned long long joinInfo97Null_ = 0;   // **없어서 0 으로 채웠다**(색이 검정이 된다)
+    unsigned long long joinStart_[3] = {};    // ★ 10-16 — `JoinStart` 차례(바로 · 관전 · 관전 글 없음)
     size_t acceptBodyLenLast_ = 0;            // 마지막 CLIENT_ACCEPT 본문 길이
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long newPlayerGearBits_ = 0;   // ★ 09-28 — 2d 104·108 에 지금 갑옷·무기 비트를 실은 횟수
@@ -5900,13 +5904,7 @@ constexpr size_t kJoinNetCodeB = 88; // 2d NEW_PLAYER 의 번호 (LE16)
 constexpr size_t kJoinNewPlayerAt = 87;
 constexpr size_t kJoinNewPlayerLen = 129;
 
-// ★★ `2d NEW_PLAYER` 안 **상태 플래그**(4바이트, LE). 오픈녹스 원본에서 자리를 얻었다:
-//   `nox_xxx_netNewPlayerMakePacket_4DDA90` 이 `buf[112] = Field3680 & 0x423` 을 쓴다.
-//     bit0 = **HUD 를 안 그린다**(`nox_client_onClientStatusA`: `v&1` → renderGUI=false)
-//     bit1 = 관전 중 (`observeClear` 가 이 비트를 보고 카메라를 푼다)
-//   내가 서두에서 베껴 쓰던 값이 `01 00 00 00` 이라 **HUD 가 영영 안 떴다**(2026-09-09 실측).
-//   정품은 같은 사람에게 `2d` 를 두 번 보낸다 — 처음 `01`, 놀기 시작할 때 `00`.
-constexpr size_t kNewPlayerStatusAt = 112;
+// `2d` 안 상태 플래그 자리(`kNewPlayerStatusAt` · 112)는 10-16 에 `JoinBundle.h` 로 옮겼다 — 접속 묶음 조립도 쓴다
 
 // ★ NEW_PLAYER 안의 플레이어 정보 97바이트는 **거의 그대로 클라가 보낸 것**이다.
 //   `0x20 CLIENT_ACCEPT` 본문의 앞 97바이트와 견주니 —

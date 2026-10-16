@@ -26019,6 +26019,129 @@ void TestChatModeNoFight() {
     std::printf("  10-16 플랜 B 작업 13c — 채팅 모드 싸움 막기: 근접 · 주문 · 능력 · 방패(아레나 대조군은 다 일어남)\n");
 }
 
+// ── ★ 10-16 사람 판 결함 ① — 채팅 모드(대기 맵)에서는 관전 없이 바로 논다(원작 `player.go:411~433` · `ModeRules.h` ④) ─────────
+//   증상 — 대기 방에 들어오면 파랗게 깜빡이고 클릭해야 남에게 보였다(모두 관전으로 시작)
+//   ① 아홉 모드 전수 — 갈래별 개수(바로 3 · 관전 5 · 글 없는 관전 1)와 이름 셋
+//   ② 묶음 바이트 — 바로 = `a9` 없음 · 210B · `2d` 상태 0 / 관전 = 녹음 그대로 216B / 글 없는 관전 = `a9 0c 00`
+//   ③ 진짜 접속 경로(`CLIENT_ACCEPT`) — 채팅: 관전 아님 · 묶음에 `a9` 없음 · 상태 0 · 나중 사람 소개 `2d`·`6a` 도 0
+//      아레나(대조군): 관전 · `a9 0c 01` · 상태 1 · 소개도 1
+void TestJoinStartByMode() {
+    char m[300];
+    // ①
+    size_t n = 0;
+    const char* const* names = nox::ModeNames(n);
+    int cnt[3] = {};
+    for (size_t i = 0; i < n; ++i) {
+        switch (nox::JoinStartFor(nox::ModeGameFlags(names[i]))) {
+            case nox::JoinStart::Play:         ++cnt[0]; break;
+            case nox::JoinStart::Observe:      ++cnt[1]; break;
+            case nox::JoinStart::ObserveQuiet: ++cnt[2]; break;
+        }
+    }
+    std::snprintf(m, sizeof(m), "① 아홉 모드 — 바로 %d(3 · chat·coopteam·coop) · 관전 %d(5) · 글 없는 관전 %d(1 · quest)", cnt[0], cnt[1], cnt[2]);
+    Check(cnt[0] == 3 && cnt[1] == 5 && cnt[2] == 1, m);
+    Check(nox::JoinStartFor(nox::ModeGameFlags("chat")) == nox::JoinStart::Play, "① 채팅이 바로가 아니다");
+    Check(nox::JoinStartFor(nox::ModeGameFlags("arena")) == nox::JoinStart::Observe, "① 아레나가 관전이 아니다");
+    Check(nox::JoinStartFor(nox::ModeGameFlags("quest")) == nox::JoinStart::ObserveQuiet, "① 퀘스트가 글 없는 관전이 아니다");
+
+    // ②
+    {
+        const auto play = nox::BuildJoinBundle(700, 1, nullptr, nox::GameSettings{}, nox::JoinStart::Play);
+        const auto obs  = nox::BuildJoinBundle(700, 1, nullptr, nox::GameSettings{}, nox::JoinStart::Observe);
+        const auto qui  = nox::BuildJoinBundle(700, 1, nullptr, nox::GameSettings{}, nox::JoinStart::ObserveQuiet);
+        const size_t npPlay = play.size() - nox::kNewPlayerSize, npObs = obs.size() - nox::kNewPlayerSize;
+        std::snprintf(m, sizeof(m), "② 묶음 — 바로 %zuB 첫 %02x 상태 %u · 관전 %zuB 첫 %02x %02x %02x 상태 %u · 글 없음 %02x %02x %02x 상태 %u",
+                      play.size(), play[0], play[npPlay + nox::kNewPlayerStatusAt],
+                      obs.size(), obs[0], obs[1], obs[2], obs[npObs + nox::kNewPlayerStatusAt],
+                      qui[0], qui[1], qui[2], qui[npObs + nox::kNewPlayerStatusAt]);
+        Check(play.size() == nox::kJoinBundleSize - 6 && play[0] == 0x28 && play[npPlay] == 0x2d && play[npPlay + nox::kNewPlayerStatusAt] == 0 &&
+              obs.size() == nox::kJoinBundleSize && obs[0] == 0xa9 && obs[1] == 0x0c && obs[2] == 1 && obs[npObs] == 0x2d &&
+              obs[npObs + nox::kNewPlayerStatusAt] == 1 &&
+              qui.size() == nox::kJoinBundleSize && qui[0] == 0xa9 && qui[1] == 0x0c && qui[2] == 0 && qui[npObs + nox::kNewPlayerStatusAt] == 1, m);
+    }
+
+    // ③
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    struct R {
+        bool obsA = true, obsB = true;
+        int bundleA = 0;            // A 가 받은 접속 묶음 수
+        int a9A = -1;               // 묶음 맨 앞 `a9 0c` 의 값(-1 = 없음)
+        int stA = -1;               // 묶음 안 `2d` 상태 자리
+        int introB = -1;            // A 가 받은 B 소개 `2d` 의 상태(-1 = 못 받음)
+        int status6aB = -1;         // A 가 받은 B 의 `6a` 상태(-1 = 못 받음)
+        unsigned long long play = 0, observe = 0;
+    };
+    auto run = [&](const char* mode) {
+        R r;
+        nox::CSyncHost srv;
+        srv.Network().SetXorKey(0);
+        srv->SetStandalone("so_lod.map", 0x18d8f4d9u);
+        srv->SetGameFlags(nox::ModeGameFlags(mode));
+        const std::string a = "10.9.16.1:11601", b = "10.9.16.2:11602";
+        std::vector<nox::OutPacket> t; srv.Tick(100000, t); srv.Tick(100034, t);
+        std::vector<uint8_t> acc(156, 0);
+        acc[0] = 0x01; acc[1] = 0x05; acc[2] = static_cast<uint8_t>(nox::Op::CLIENT_ACCEPT);
+        std::vector<nox::OutPacket> oa;
+        srv.OnPacket(a, conn, sizeof(conn), oa);
+        srv.OnPacket(a, acc.data(), acc.size(), oa);
+        uint16_t codeB = 0;
+        for (const auto& p : oa) {
+            if (p.to != a) continue;
+            const std::vector<uint8_t> bd = Body(p);
+            const size_t off = (!bd.empty() && bd[0] == 0xa9) ? 6 : 0;
+            if (bd.size() < off + 87 + nox::kNewPlayerSize - 6 || bd[off] != 0x28 || bd[off + 5] != 0x2c) continue;
+            ++r.bundleA;
+            r.a9A = off ? bd[2] : -1;
+            r.stA = bd[off + 81 + nox::kNewPlayerStatusAt];
+        }
+        std::vector<nox::OutPacket> ob;
+        srv.OnPacket(b, conn, sizeof(conn), ob);
+        srv.OnPacket(b, acc.data(), acc.size(), ob);
+        for (const auto& p : ob) {
+            if (p.to != b) continue;
+            const std::vector<uint8_t> bd = Body(p);
+            const size_t off = (!bd.empty() && bd[0] == 0xa9) ? 6 : 0;
+            if (bd.size() < off + 12 || bd[off] != 0x28 || bd[off + 5] != 0x2c) continue;
+            codeB = static_cast<uint16_t>(bd[off + 6] | (bd[off + 7] << 8));
+        }
+        const int64_t sa = srv.Network().SessionIdOf(a), sb = srv.Network().SessionIdOf(b);
+        r.obsA = srv->IsObserver(sa);
+        r.obsB = srv->IsObserver(sb);
+        // 소개(`2d`·`6a`)는 중요 대기열로 간다 — 클라 준비(`c0`)를 친 뒤 틱을 돌려 내보낸다
+        srv->DebugImportantReal(sa, /*ready=*/true);
+        srv->DebugImportantReal(sb, /*ready=*/true);
+        std::vector<nox::OutPacket> o;
+        uint32_t now = 100034;
+        for (int k = 0; k < 10; ++k) { now += 34; srv.Tick(now, o); }
+        // 한 데이터그램에 중요 메시지 여럿이 실린다 — `cc <순번2> <길이> <속>` 을 바이트로 훑는다(속 길이까지 맞아야 센다)
+        for (const auto& p : o) {
+            if (p.to != a) continue;
+            const std::vector<uint8_t> bd = Body(p);
+            for (size_t q = 0; q + 7 <= bd.size(); ++q) {
+                if (bd[q] != static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) continue;
+                const size_t len = bd[q + 3];
+                if (q + 4 + len > bd.size() || static_cast<uint16_t>(bd[q + 5] | (bd[q + 6] << 8)) != codeB) continue;
+                const uint8_t op = bd[q + 4];
+                if (op == static_cast<uint8_t>(nox::Op::NEW_PLAYER) && len == nox::kNewPlayerSize) r.introB = bd[q + 4 + nox::kNewPlayerStatusAt];
+                if (op == static_cast<uint8_t>(nox::Op::REPORT_CLIENT_STATUS) && len == 7) r.status6aB = bd[q + 4 + 3];
+            }
+        }
+        r.play = srv->joinStart(nox::JoinStart::Play);
+        r.observe = srv->joinStart(nox::JoinStart::Observe);
+        return r;
+    };
+    const R ch = run("chat"), ar = run("arena");
+    std::snprintf(m, sizeof(m), "③ 채팅 — 관전 A %d B %d · 묶음 %d · a9 %d(-1) · 상태 %d(0) · B 소개 2d %d(0) · 6a %d(0) · 셈 바로 %llu(2) 관전 %llu(0)",
+                  (int)ch.obsA, (int)ch.obsB, ch.bundleA, ch.a9A, ch.stA, ch.introB, ch.status6aB, ch.play, ch.observe);
+    Check(!ch.obsA && !ch.obsB && ch.bundleA == 1 && ch.a9A == -1 && ch.stA == 0 && ch.introB == 0 && ch.status6aB == 0 &&
+          ch.play == 2 && ch.observe == 0, m);
+    std::snprintf(m, sizeof(m), "③ 아레나(대조군) — 관전 A %d B %d · 묶음 %d · a9 %d(1) · 상태 %d(1) · B 소개 2d %d(1) · 6a %d(1) · 셈 바로 %llu(0) 관전 %llu(2)",
+                  (int)ar.obsA, (int)ar.obsB, ar.bundleA, ar.a9A, ar.stA, ar.introB, ar.status6aB, ar.play, ar.observe);
+    Check(ar.obsA && ar.obsB && ar.bundleA == 1 && ar.a9A == 1 && ar.stA == 1 && ar.introB == 1 && ar.status6aB == 1 &&
+          ar.play == 0 && ar.observe == 2, m);
+    std::printf("  10-16 결함 ① — 입장 첫 상태: 채팅·협동·협동팀 바로 · 퀘스트 글 없는 관전 · 그 밖 관전(묶음 a9·2d 상태 · 소개까지)\n");
+}
+
 // ── 10-10 토큰 작업 2 — 통신 층의 꼬리 떼기(`CUdpServer::OnDatagram`) ─────────
 //   방 관리자를 거치지 않고 통신 층이 낸 이벤트와 셈을 바로 본다.
 //   ⚠ 처음 짠 방 시험(`TestRooms`)은 꼬리를 안 떼도 통과했다 — 시험 토큰의 일회용 번호(101 등)에 0 바이트가 많아, 꼬리를 메시지로
@@ -31340,6 +31463,7 @@ int main() {
     TestRoomMatchSwitch();
     TestRoomMatchSwitchRealMaps();
     TestChatModeNoFight();
+    TestJoinStartByMode();
     TestRoomFacts();
     TestChannelLobby();
     TestLobbyMapPaths();

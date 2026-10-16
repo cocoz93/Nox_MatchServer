@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "nox/GameBalance.h"   // CharClass
+#include "nox/ModeRules.h"     // JoinStart — 묶음 맨 앞 `a9`·`2d` 상태 자리가 이것으로 갈린다
 
 namespace nox {
 
@@ -68,12 +69,24 @@ constexpr size_t kJoinBundleSize = 216;
 constexpr size_t kUseMapSize = 41;
 constexpr size_t kNewPlayerSize = 129;   // 2d + 번호2 + 정보97 + 꼬리29
 
+// ★★ `2d NEW_PLAYER` 안 **상태 플래그**(4바이트, LE). 오픈녹스 원본에서 자리를 얻었다:
+//   `nox_xxx_netNewPlayerMakePacket_4DDA90` 이 `buf[112] = Field3680 & 0x423` 을 쓴다.
+//     bit0 = **HUD 를 안 그린다**(`nox_client_onClientStatusA`: `v&1` → renderGUI=false)
+//     bit1 = 관전 중 (`observeClear` 가 이 비트를 보고 카메라를 푼다)
+//   내가 서두에서 베껴 쓰던 값이 `01 00 00 00` 이라 **HUD 가 영영 안 떴다**(2026-09-09 실측).
+//   정품은 같은 사람에게 `2d` 를 두 번 보낸다 — 처음 `01`, 놀기 시작할 때 `00`.
+// ★ 10-16 — `Server.h` 에서 옮겼다. 접속 묶음 조립(`BuildJoinBundle`)도 이 자리를 쓴다(바로 노는 사람은 0)
+constexpr size_t kNewPlayerStatusAt = 112;
 
 // 접속 묶음 216B. info97 이 null 이면 그 97자리는 0 — **실전에서는 꼭 채울 것**
 // (이름·직업·외모가 전부 여기서 나온다).
+// ★ 10-16 — `start` 가 묶음 맨 앞 `a9 0c` 와 `2d` 상태 자리를 정한다(`JoinStartFor` · `ModeRules.h` ④).
+//   관전 = 녹음 그대로(`a9 0c 01` · 상태 1 — 216B) · 관전(글 없음) = `a9 0c 00` · 상태 1 ·
+//   바로 = `a9` 없음 · 상태 0(210B — 원작은 관전으로 안 보내니 `a9` 를 안 보낸다)
 std::vector<uint8_t> BuildJoinBundle(uint16_t netCode, uint32_t frame,
                                      const uint8_t* info97,
-                                     const GameSettings& g = GameSettings{});
+                                     const GameSettings& g = GameSettings{},
+                                     JoinStart start = JoinStart::Observe);
 
 // USE_MAP 41B. mapName 은 "estate.map" 꼴(32자 미만).
 std::vector<uint8_t> BuildUseMap(const std::string& mapName, uint32_t mapCrc,
