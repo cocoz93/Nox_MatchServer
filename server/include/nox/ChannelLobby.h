@@ -35,6 +35,8 @@ public:
     // ★ 10-14 작업 10a — 방 이름 「<닉>'s game」에서 닉은 이만큼(바이트)까지 — 이름 칸 15바이트 = 닉 8 + 「's game」 7
     //   (10-16 영문으로 바꿈 — 옛 「의 게임」도 CP949 7바이트라 값은 그대로)
     static constexpr size_t kRoomNameNickBytes = 8;
+    // ★ 10-16 작업 12a — 로비가 만든 방의 최대 인원(`Docs/ROOMS_DESIGN.md` 「10-16 정한 것」 — 옛 목록 표시 31 은 판을 보고 고른 값이 아니었다)
+    static constexpr int kRoomMaxPlayers = 8;
 
     // `rooms` 는 이 객체보다 오래 산다. `roomTemplate` = 새 방의 틀 · `waitMaps` = 대기 맵 후보(맵 파일 경로 — 방 관리자의 맵 목록에 있어야 한다)
     CChannelLobby(CRoomManager& rooms, wol::LobbyConfig cfg, RoomSettings roomTemplate = {}, std::vector<std::string> waitMaps = {});

@@ -16,6 +16,14 @@ std::string IpOf(const std::string& addr) {   // "1.2.3.4:5678" → "1.2.3.4"
 }
 }  // namespace
 
+const char* RoomPhaseName(RoomPhase p) {
+    switch (p) {
+        case RoomPhase::Waiting: return "대기";
+        case RoomPhase::Playing: return "판";
+    }
+    return "?";
+}
+
 // ★ 10-14 플랜 B 작업 9d — 방 만들기 입구(옛 빈 방 만들기 + `main` 이 방 0 에만 세계를 차리던 것). 방 번호는 세계 차리기가 된 뒤에 매긴다
 int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
     const int id = _nextRoomId;
@@ -64,6 +72,8 @@ std::vector<RoomFact> CRoomManager::ListRooms() const {
         f.players = room._game.inGameCount();
         const auto it = seats.find(room._id);
         f.seats = it == seats.end() ? 0 : it->second;
+        f.maxPlayers = room._settings.maxPlayers;   // ★ 10-16 작업 12a
+        f.phase = room._phase;
         r.push_back(std::move(f));
     }
     return r;
@@ -135,6 +145,65 @@ int CRoomManager::RoomOfSession(int64_t sessionId) const {
 
 void CRoomManager::AssignDirect(int64_t sessionId, int roomId) {
     _seats[sessionId] = roomId;
+    if (HasRoom(roomId)) AddMember(Room(roomId), sessionId, std::string());   // ★ 10-16 작업 12a — 구성원 = 세션표의 이 방 세션
+}
+
+size_t CRoomManager::SeatsIn(int roomId) const {
+    size_t n = 0;
+    for (const auto& kv : _seats) if (kv.second == roomId) ++n;
+    return n;
+}
+
+// ★ 10-16 작업 12a — 방 규칙. 판 중(결정 3)이면 원작이 닫힌 판에 쓰는 사유(`network.go:443-453`) · 꽉 찼으면 원작 인원 초과 사유(`network.go:409·418·427`)
+bool CRoomManager::RoomAdmits(int roomId, const char*& why, ConnectError& err) {
+    const CRoom& room = Room(roomId);
+    switch (room._phase) {
+        case RoomPhase::Waiting: break;
+        case RoomPhase::Playing:
+            ++_stats.rejectPlaying;
+            why = "판 중";
+            err = ConnectError::Closed;
+            return false;
+    }
+    const int max = room._settings.maxPlayers;
+    if (max > 0 && SeatsIn(roomId) >= static_cast<size_t>(max)) {
+        ++_stats.rejectFull;
+        why = "꽉 참";
+        err = ConnectError::Full;
+        return false;
+    }
+    return true;
+}
+
+void CRoomManager::AddMember(CRoom& room, int64_t sessionId, const std::string& account) {
+    const bool wasEmpty = room._members.empty();
+    room._members.push_back(RoomMember{ sessionId, account });
+    if (wasEmpty) {
+        ++_stats.hostChanges;
+        LogHost(room, "첫 사람");
+    }
+}
+
+void CRoomManager::RemoveMember(CRoom& room, int64_t sessionId) {
+    auto& ms = room._members;
+    for (size_t i = 0; i < ms.size(); ++i) {
+        if (ms[i].sessionId != sessionId) continue;
+        ms.erase(ms.begin() + static_cast<long>(i));
+        if (i == 0 && !ms.empty()) {   // 방장이 나갔다 — 다음 사람(들어온 차례)
+            ++_stats.hostChanges;
+            LogHost(room, "방장이 나감");
+        }
+        return;
+    }
+}
+
+void CRoomManager::LogHost(const CRoom& room, const char* why) const {
+    if (!_logRooms) return;
+    const RoomMember* h = room.Host();
+    if (!h) return;
+    std::printf("[방] %d 방장 → %s(세션 %lld) — %s\n", room._id, h->account.empty() ? "(이름 없음)" : h->account.c_str(),
+                static_cast<long long>(h->sessionId), why);
+    std::fflush(stdout);
 }
 
 size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
@@ -163,7 +232,18 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
             }
             return 0;
         }
+        if (ev.type == NetworkEvent::Type::CONNECTED) {
+            // ★ 10-16 작업 12a — 방 규칙(판 중 · 꽉 참) — 접속 시도 뒤에 바뀌었을 수 있다
+            const char* why = "";
+            ConnectError err = ConnectError::Closed;
+            if (!RoomAdmits(_openRoom, why, err)) {
+                ++_stats.connectRejected;
+                RequestDisconnectSession(ev.sessionId);
+                return 0;
+            }
+        }
         _seats[ev.sessionId] = _openRoom;
+        AddMember(Room(_openRoom), ev.sessionId, std::string());   // ★ 10-16 작업 12a — 세션표에 넣는 곳마다(구성원 = 세션표의 이 방 세션)
         if (ev.type == NetworkEvent::Type::CONNECTED) ++_stats.assigned;
         return Forward(_openRoom, ev);
     }
@@ -171,7 +251,8 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
         // 토큰 방식 — 같은 토큰을 이번엔 써 버리고 그 방에 바로 넘긴다. 틀리면 끊는다(접속 수락은 통신 층이 이미 보냈다)
         JoinToken tok;
         const char* why = "";
-        const int roomId = AdmitByToken(ev, /*consume=*/true, tok, why);
+        ConnectError err = ConnectError::Closed;
+        const int roomId = AdmitByToken(ev, /*consume=*/true, tok, why, err);
         if (roomId == kNoRoom) {
             ++_stats.connectRejected;
             RequestDisconnectSession(ev.sessionId);
@@ -180,6 +261,7 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
         }
         _seats[ev.sessionId] = roomId;
         ++_stats.assigned;
+        AddMember(Room(roomId), ev.sessionId, tok.account);   // ★ 10-16 작업 12a
         LogJoin("방 배정", ev, roomId, tok, why);
         return Forward(roomId, ev);
     }
@@ -194,7 +276,8 @@ size_t CRoomManager::Forward(int roomId, const NetworkEvent& ev) {
     return n;
 }
 
-int CRoomManager::AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& tok, const char*& why) {
+int CRoomManager::AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& tok, const char*& why, ConnectError& err) {
+    err = ConnectError::Closed;   // 토큰이 틀린 갈래는 모두 이 사유(10-10 — 원작이 명단 밖을 돌려보내는 메시지)
     if (!_hasKey) { ++_stats.tokenNoKey; why = "키 없음(설정 빠짐)"; return kNoRoom; }
     if (ev.token.empty()) { ++_stats.tokenMissing; why = "토큰 없음"; return kNoRoom; }
     uint32_t ip = 0;
@@ -204,6 +287,7 @@ int CRoomManager::AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& 
     ++_stats.tokenCheck[static_cast<int>(c)];
     if (c != JoinTokenCheck::Ok) { why = JoinTokenCheckName(c); return kNoRoom; }
     if (!HasRoom(tok.roomId)) { ++_stats.tokenNoRoom; why = "방 없음"; return kNoRoom; }
+    if (!RoomAdmits(tok.roomId, why, err)) return kNoRoom;   // ★ 10-16 작업 12a — 일회용 번호를 쓰기 전에(거절된 토큰은 안 씀)
     if (consume && !_ledger.Consume(tok.nonce, tok.expiresAt, now)) { ++_stats.tokenReused; why = "이미 쓴 토큰"; return kNoRoom; }
     return tok.roomId;
 }
@@ -283,13 +367,22 @@ void CRoomManager::OnJoinRequested(const NetworkEvent& ev) {
                         { static_cast<uint8_t>(Op::SERVER_ERROR), static_cast<uint8_t>(ConnectError::Closed) });
             return;
         }
+        // ★ 10-16 작업 12a — 방 규칙(판 중 · 꽉 참)
+        const char* why = "";
+        ConnectError err = ConnectError::Closed;
+        if (!RoomAdmits(_openRoom, why, err)) {
+            ++_stats.joinRejected;
+            RespondJoin(ev.sessionId, /*accept=*/false, { static_cast<uint8_t>(Op::SERVER_ERROR), static_cast<uint8_t>(err) });
+            return;
+        }
         ++_stats.joinAccepted;
         RespondJoin(ev.sessionId, /*accept=*/true, {});
         return;
     }
     JoinToken tok;
     const char* why = "";
-    const int roomId = AdmitByToken(ev, /*consume=*/false, tok, why);
+    ConnectError err = ConnectError::Closed;
+    const int roomId = AdmitByToken(ev, /*consume=*/false, tok, why, err);
     if (roomId != kNoRoom) {
         ++_stats.joinAccepted;
         RespondJoin(ev.sessionId, /*accept=*/true, {});
@@ -297,8 +390,7 @@ void CRoomManager::OnJoinRequested(const NetworkEvent& ev) {
         return;
     }
     ++_stats.joinRejected;
-    RespondJoin(ev.sessionId, /*accept=*/false,
-                { static_cast<uint8_t>(Op::SERVER_ERROR), static_cast<uint8_t>(ConnectError::Closed) });
+    RespondJoin(ev.sessionId, /*accept=*/false, { static_cast<uint8_t>(Op::SERVER_ERROR), static_cast<uint8_t>(err) });
     LogJoin("접속 시도 거절", ev, roomId, tok, why);
 }
 
@@ -332,7 +424,10 @@ void CRoomManager::PullRequests(CRoom& room) {
     room._game.SwapOutNetworkRequests(_pull);
     for (NetworkRequest& q : _pull) {
         // ★ 작업 6b — 나감. 방에서 사람이 빠지는 길(자리 비우기 · 내보내기)은 모두 이 끊기 요청으로 끝난다
-        if (q.type == NetworkRequest::Type::DISCONNECT_SESSION && _seats.erase(q.sessionId) != 0) ++_stats.left;
+        if (q.type == NetworkRequest::Type::DISCONNECT_SESSION && _seats.erase(q.sessionId) != 0) {
+            ++_stats.left;
+            RemoveMember(room, q.sessionId);   // ★ 10-16 작업 12a — 방장이면 다음 사람
+        }
         if (q.type == NetworkRequest::Type::SEND_MSG) ++room._sendRequests;   // ★ 10-12 작업 7c — 방마다 보낸 수
         _requests.push_back(std::move(q));
     }

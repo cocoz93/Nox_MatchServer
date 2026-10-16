@@ -28,11 +28,22 @@
 #include <vector>
 
 #include "nox/JoinToken.h"
+#include "nox/Messages.h"   // ★ 10-16 작업 12a — 거절 사유(`ConnectError`)
 #include "nox/Server.h"
 #include "nox/UdpServer.h"
 #include "nox/WorldBuild.h"   // ★ 10-14 작업 9c — 방 설정(`RoomSettings`) · 세계 차리기 결과(`WorldExtras`)
 
 namespace nox {
+
+// ★ 10-16 작업 12a — 방의 판 상태(`Docs/ROOMS_DESIGN.md` 결정 1 — 대기 = 채팅 모드 맵 · 판 = 대전 맵). 늘어나면 `switch` 로 갈래를 셀 것
+enum class RoomPhase : uint8_t { Waiting, Playing };
+const char* RoomPhaseName(RoomPhase p);
+
+// ★ 10-16 작업 12a — 방 구성원 한 사람(들어온 차례로 든다). 방장 = 맨 앞(결정 2 「먼저 들어온 사람」 · 「10-13 정한 것」 방장 넘김)
+struct RoomMember {
+    int64_t sessionId = -1;
+    std::string account;   // 입장 토큰의 로비 이름(열린 방식은 빈 것)
+};
 
 // 방 하나가 틱을 도는 데 쓴 시간(부하 — `CRoom::Load`). 방 워커를 둘지 가르는 근거(`ROOMS_DESIGN.md` 「대규모 확장 경로」)
 struct CRoomLoad {
@@ -72,6 +83,12 @@ public:
     size_t SendsSinceMark() const { return static_cast<size_t>(_sendRequests - _sendSeen); }
     void TickDiagnostics(size_t made);
 
+    // ── ★ 10-16 작업 12a — 판 상태 · 구성원 · 방장(구성원은 방 관리자가 입장 · 나감 때 고친다) ──
+    RoomPhase Phase() const { return _phase; }
+    void SetPhase(RoomPhase p) { _phase = p; }
+    const std::vector<RoomMember>& Members() const { return _members; }
+    const RoomMember* Host() const { return _members.empty() ? nullptr : &_members.front(); }
+
 private:
     friend class CRoomManager;
     int _id;
@@ -92,6 +109,9 @@ private:
     // ★ 10-14 작업 9e — 빈 방 닫기(방 관리자가 쓴다): 빈 채가 된 때
     bool _emptyArmed = false;
     uint32_t _emptySinceMs = 0;
+    // ★ 10-16 작업 12a
+    RoomPhase _phase = RoomPhase::Waiting;
+    std::vector<RoomMember> _members;          // 들어온 차례 — 세션표(`CRoomManager::_seats`)의 이 방 세션과 같은 사람들
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).
@@ -122,6 +142,10 @@ struct CRoomStats {
     unsigned long long emptyRoomsClosed = 0;   // ★ 10-14 작업 9e — 그 가운데 빈 방이라 닫은 것
     unsigned long long closedRoomSessions = 0; // 방을 닫으며 내보낸 세션
     unsigned long long lobbyEventsMisrouted = 0;   // ★ 10-14 작업 8c — 로비 TCP 사건이 여기로 옴(게임 스레드의 나누는 자리가 틀림 — 0 이 정상)
+    // ★ 10-16 작업 12a — 방 규칙으로 거절(토큰은 맞음 — 접속 시도와 CONNECT 를 합쳐 셈) · 방장 바뀜
+    unsigned long long rejectPlaying = 0;      // 판 중(결정 3) — `ConnectError::Closed`
+    unsigned long long rejectFull = 0;         // 방 최대 인원(`RoomSettings::maxPlayers`) — `ConnectError::Full`
+    unsigned long long hostChanges = 0;        // 방장이 생기거나 바뀜(첫 사람 포함 · 마지막 사람이 나가 비는 것은 안 셈)
 };
 
 // ★ 10-14 플랜 B 작업 9e — 돌고 있는 방 하나의 사실. 로비가 목록을 그린다 — 목록의 정본은 방 관리자의 이것 하나
@@ -134,6 +158,8 @@ struct RoomFact {
     std::string mode;      // 방 설정의 모드(`arena` · `chat` …)
     size_t players = 0;    // 게임 안 사람 수(`Server::inGameCount`)
     size_t seats = 0;      // 세션표에서 이 방 세션 수(들어오는 중 포함)
+    int maxPlayers = 0;    // ★ 10-16 작업 12a — 방 설정의 최대 인원(0 = 제한 없음)
+    RoomPhase phase = RoomPhase::Waiting;   // ★ 10-16 작업 12a
 };
 
 class CRoomManager {
@@ -199,8 +225,16 @@ private:
     void OnJoinRequested(const NetworkEvent& ev);
     size_t Forward(int roomId, const NetworkEvent& ev);
     // 토큰으로 방을 정한다 — 접속 시도(확인만)와 `CONNECTED`(`consume` — 일회용 번호를 씀)가 같이 쓴다.
-    //   못 받으면 `kNoRoom` · `why` = 까닭(셈은 안에서)
-    int AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& tok, const char*& why);
+    //   못 받으면 `kNoRoom` · `why` = 까닭(셈은 안에서) · `err` = 접속 시도 거절에 실을 사유(★ 10-16 작업 12a — 방 규칙이면 그 사유)
+    int AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& tok, const char*& why, ConnectError& err);
+    // ★ 10-16 작업 12a — 방 규칙(판 중 · 최대 인원)으로 받을 수 있나. 못 받으면 false · `why` · `err`(셈은 안에서).
+    //   토큰 방식과 열린 방식이 같이 쓴다 — 방 안 세션은 아직 세션표에 없는 이 사람을 안 셈
+    bool RoomAdmits(int roomId, const char*& why, ConnectError& err);
+    size_t SeatsIn(int roomId) const;
+    // ★ 10-16 작업 12a — 구성원 넣기 · 빼기(방장이 바뀌면 셈 · 한 줄)
+    void AddMember(CRoom& room, int64_t sessionId, const std::string& account);
+    void RemoveMember(CRoom& room, int64_t sessionId);
+    void LogHost(const CRoom& room, const char* why) const;
     void LogJoin(const char* what, const NetworkEvent& ev, int roomId, const JoinToken& tok, const char* why) const;
     void RespondJoin(int64_t sessionId, bool accept, const std::vector<uint8_t>& rejectMsg);
     void RequestSendMsg(int64_t sessionId, bool reliable, const uint8_t* msg, size_t n);

@@ -36,6 +36,8 @@ struct RoomSettings {
     // ★ 10-14 작업 8d — 방을 만든 사람의 로비 이름(작업 10 — 그 사람이 방장). 로비 채널 `#<이름>'s_game` 의 열쇠라 방이 사는 동안 안 바뀐다.
     //   실행 인자의 방은 비어 있다 — 로비 목록에 안 나온다
     std::string creator;
+    // ★ 10-16 작업 12a — 방 최대 인원(세션표의 이 방 세션 수로 셈 · 0 = 제한 없음). 로비가 만든 방은 `CChannelLobby::kRoomMaxPlayers`
+    int maxPlayers = 0;
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)

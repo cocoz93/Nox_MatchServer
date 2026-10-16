@@ -64,6 +64,7 @@ bool CChannelLobby::CreateRoomFor(const std::string& creator, wol::LobbyRoom& ou
     s.mode = "chat";        // 대기 = 원작 채팅 모드 맵(결정 1 — 싸움 막기는 작업 13)
     s.standalone = true;    // 맵을 직접 차린다(녹음 서두 없음)
     s.closeWhenEmpty = true;
+    s.maxPlayers = kRoomMaxPlayers;   // ★ 10-16 작업 12a
     s.bots.clear();         // 봇은 실행 인자의 방 몫(네트워크 스레드를 띄운 뒤라 세울 수도 없다)
     const int id = _rooms.CreateRoom(s);
     if (id == CRoomManager::kNoRoom) return false;
