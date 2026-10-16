@@ -39,7 +39,9 @@ public:
     static constexpr int kRoomMaxPlayers = 8;
 
     // `rooms` 는 이 객체보다 오래 산다. `roomTemplate` = 새 방의 틀 · `waitMaps` = 대기 맵 후보(맵 파일 경로 — 방 관리자의 맵 목록에 있어야 한다)
-    CChannelLobby(CRoomManager& rooms, wol::LobbyConfig cfg, RoomSettings roomTemplate = {}, std::vector<std::string> waitMaps = {});
+    //   ★ 10-16 작업 13a — `battleMaps` = 대전 맵 후보(같은 꼴 · 새 방마다 하나를 방 설정 `battleMapPath` 에 — 비면 그 방은 판을 못 연다)
+    CChannelLobby(CRoomManager& rooms, wol::LobbyConfig cfg, RoomSettings roomTemplate = {}, std::vector<std::string> waitMaps = {},
+                  std::vector<std::string> battleMaps = {});
     // 대기 맵 고르기의 씨앗(시험이 정해 보려고 — 기본은 `std::random_device`)
     void SetSeed(uint32_t seed) { _rng.seed(seed); }
     // 「<닉>'s game」(로비가 접속의 코드페이지로 바꿔 싣는다 — 닉이 한글이면 그 부분만) · 닉이 길면 닉 쪽을 자른다
@@ -64,6 +66,7 @@ private:
     wol::Lobby _lobby;          // 방은 이 객체가 준다(`ILobbyRooms`)
     RoomSettings _template;     // ★ 10-14 작업 10a — 새 방의 틀
     std::vector<std::string> _waitMaps;
+    std::vector<std::string> _battleMaps;   // ★ 10-16 작업 13a
     std::mt19937 _rng;
     bool _verbose = false;
     CChannelLobbyStats _stats;

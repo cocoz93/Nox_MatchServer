@@ -38,6 +38,10 @@ struct RoomSettings {
     std::string creator;
     // ★ 10-16 작업 12a — 방 최대 인원(세션표의 이 방 세션 수로 셈 · 0 = 제한 없음). 로비가 만든 방은 `CChannelLobby::kRoomMaxPlayers`
     int maxPlayers = 0;
+    // ★ 10-16 작업 13a — 판(`!start`)을 돌릴 대전 맵(맵 파일 경로 — 서버가 뜰 때 읽은 맵 원본에 있어야 한다)과 그 모드.
+    //   비면 판을 못 연다. 로비가 만든 방은 대전 맵 후보(`--battle-maps` · 기본 `Estate`)에서 하나. 대기 맵 = 위 `mapPath`(방을 만든 맵)
+    std::string battleMapPath;
+    std::string battleMode = "arena";
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)
@@ -157,6 +161,9 @@ struct ServerOptions {
     // ★ 10-14 작업 10a — 대기 맵 후보(`--wait-maps a,b` — 맵 열쇠 또는 .map 경로). 로비가 새 방을 만들 때 하나를 무작위로.
     //   비면 로비 방식에서 `So_LOD` 하나(정품으로 확인한 대기 맵 — `Docs/ROOMS_DESIGN.md` 「10-13 정한 것」 · 확인한 맵을 하나씩 더한다)
     std::vector<std::string> waitMaps;
+    // ★ 10-16 작업 13a — 대전 맵 후보(`--battle-maps a,b` — 같은 꼴). 비면 로비 방식에서 `Estate` 하나(10-13 정품으로 채팅 → 대전 전환을 본 맵 ·
+    //   `Docs/ROOMS_DESIGN.md` 「10-16 정한 것」)
+    std::vector<std::string> battleMaps;
     RoomSettings room;          // 실행 인자로 차리는 방 하나(단독 모드 · 녹음 모드)
 };
 
@@ -214,6 +221,8 @@ std::string MapKeyOf(const std::string& mapPath);
 std::vector<std::string> MapListFromOptions(const ServerOptions& opt);
 // ★ 10-14 작업 10a — 대기 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것). 열쇠는 `<게임 폴더>\maps\<열쇠>\<열쇠>.map`
 std::vector<std::string> WaitMapPaths(const ServerOptions& opt);
+// ★ 10-16 작업 13a — 대전 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것 · 꼴은 위와 같다)
+std::vector<std::string> BattleMapPaths(const ServerOptions& opt);
 // 맵 원본 하나 — 못 읽으면 false(까닭은 `out.log`)
 bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server::GameTables> tables, const std::string& mapPath,
                       MapOriginal& out);

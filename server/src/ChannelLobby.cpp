@@ -21,9 +21,10 @@ std::string Printable(const std::string& s, bool ours) {
 
 }  // namespace
 
-CChannelLobby::CChannelLobby(CRoomManager& rooms, wol::LobbyConfig cfg, RoomSettings roomTemplate, std::vector<std::string> waitMaps)
+CChannelLobby::CChannelLobby(CRoomManager& rooms, wol::LobbyConfig cfg, RoomSettings roomTemplate, std::vector<std::string> waitMaps,
+                             std::vector<std::string> battleMaps)
     : _rooms(rooms), _lobby(std::move(cfg), *this), _template(std::move(roomTemplate)), _waitMaps(std::move(waitMaps)),
-      _rng(std::random_device{}()) {}
+      _battleMaps(std::move(battleMaps)), _rng(std::random_device{}()) {}
 
 std::string CChannelLobby::RoomNameFor(const std::string& nick) {
     // ★ 10-16 — 영문(10-15 정품 확인 23 — 정품 목록에서 「의 게임」 한글이 깨짐 · `Docs/ROOMS_DESIGN.md` 「새 방 이름」의 대안 그대로)
@@ -64,6 +65,10 @@ bool CChannelLobby::CreateRoomFor(const std::string& creator, wol::LobbyRoom& ou
     s.roomName = RoomNameFor(creator);
     s.mapPath = _waitMaps[std::uniform_int_distribution<size_t>(0, _waitMaps.size() - 1)(_rng)];
     s.mode = "chat";        // 대기 = 원작 채팅 모드 맵(결정 1 — 싸움 막기는 작업 13)
+    // ★ 10-16 작업 13a — 대전 맵(후보에서 무작위 · 없으면 빈 것 — `!start` 가 「대전 맵 없음」) · 아레나(「10-16 정한 것」)
+    s.battleMapPath = _battleMaps.empty() ? std::string()
+                                          : _battleMaps[std::uniform_int_distribution<size_t>(0, _battleMaps.size() - 1)(_rng)];
+    s.battleMode = "arena";
     s.standalone = true;    // 맵을 직접 차린다(녹음 서두 없음)
     s.closeWhenEmpty = true;
     s.maxPlayers = kRoomMaxPlayers;   // ★ 10-16 작업 12a

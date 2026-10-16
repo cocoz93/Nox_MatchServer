@@ -178,6 +178,16 @@ int main(int argc, char** argv) {
                 if (e == std::string::npos) break;
                 p = e + 1;
             }
+        } else if (a == "--battle-maps" && i + 1 < argc) {
+            // ★ 10-16 작업 13a — 대전 맵 후보(같은 꼴) — 로비가 새 방마다 하나를 정해 두고 `!start` 때 그 맵으로 바꾼다
+            const std::string list = argv[++i];
+            for (size_t p = 0; p <= list.size();) {
+                const size_t e = list.find(',', p);
+                const std::string nm = list.substr(p, e == std::string::npos ? std::string::npos : e - p);
+                if (!nm.empty()) opt.battleMaps.push_back(nm);
+                if (e == std::string::npos) break;
+                p = e + 1;
+            }
         } else if (a == "--port" && i + 1 < argc) {
             opt.port = std::atoi(argv[++i]);
         } else if (a == "--name" && i + 1 < argc) {
@@ -684,11 +694,23 @@ int main(int argc, char** argv) {
             waitMaps.push_back(w);
             waitKeys += (waitKeys.empty() ? "" : ", ") + MapKeyOf(w);
         }
-        lobby = std::make_unique<nox::CChannelLobby>(rooms, lc, opt.room, waitMaps);
+        // ★ 10-16 작업 13a — 대전 맵 후보도 같은 걸름(못 읽은 맵은 빼고 한 줄) · 없으면 방은 만들되 `!start` 가 「대전 맵 없음」
+        std::vector<std::string> battleMaps;
+        std::string battleKeys;
+        for (const std::string& b : BattleMapPaths(opt)) {
+            if (!maps.Find(MapKeyOf(b))) {
+                std::printf("[로비] 대전 맵 후보 빠짐 — %s(맵 원본에 없음 · 위 [맵 원본] 줄)\n", b.c_str());
+                continue;
+            }
+            battleMaps.push_back(b);
+            battleKeys += (battleKeys.empty() ? "" : ", ") + MapKeyOf(b);
+        }
+        lobby = std::make_unique<nox::CChannelLobby>(rooms, lc, opt.room, waitMaps, battleMaps);
         lobby->SetVerbose(!opt.quiet);
-        std::printf("로비: TCP %s:%d — 방 없이 시작(방은 로비가 만든다) · 게임 서버 주소 = 붙은 내 쪽 주소 · 대기 맵 %zu개 %s\n",
+        std::printf("로비: TCP %s:%d — 방 없이 시작(방은 로비가 만든다) · 게임 서버 주소 = 붙은 내 쪽 주소 · 대기 맵 %zu개 %s · 대전 맵 %zu개 %s\n",
                     opt.lobbyBind.empty() ? "0.0.0.0" : opt.lobbyBind.c_str(), opt.lobbyPort, waitMaps.size(),
-                    waitKeys.empty() ? "(없음 — 새 방을 못 만든다)" : waitKeys.c_str());
+                    waitKeys.empty() ? "(없음 — 새 방을 못 만든다)" : waitKeys.c_str(), battleMaps.size(),
+                    battleKeys.empty() ? "(없음 — 판을 못 연다)" : battleKeys.c_str());
     }
 
     std::printf("접속 대기 — UDP %d, 이름 \"%s\"\n", opt.port, opt.name.c_str());

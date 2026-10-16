@@ -25001,8 +25001,57 @@ void TestChannelLobby() {
         }
         std::snprintf(m, sizeof(m), "④ 대기 맵 무작위 — 씨앗 16개에 나온 맵 %zu가지", seen.size());
         Check(seen.size() == 2, m);
+        // ★ 10-16 작업 13a — 대전 맵: 후보가 있으면 하나를 방 설정에(무작위 · 씨앗 16개에 둘 다) · 아레나 / 후보가 없으면 빈 것
+        const std::vector<std::string> battles = {"C:\\Nox\\maps\\Estate\\Estate.map", "C:\\Nox\\maps\\Arena2\\Arena2.map"};
+        std::set<std::string> seenB;
+        bool modeOk = true;
+        for (uint32_t seed = 0; seed < 16; ++seed) {
+            nox::CRoomManager r4;
+            nox::CChannelLobby c4(r4, lc, tmpl, waits, battles);
+            c4.SetSeed(seed);
+            std::vector<Rq> q4;
+            c4.OnNetworkEvent(o1, q4);
+            for (const char* l : {"NOXCLIENT 1", "NICK wn", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #wn's_game 1 "})
+                c4.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, l), q4);
+            for (const auto& f : r4.ListRooms()) {
+                const RoomSettings& st = r4.Room(f.roomId).Settings();
+                seenB.insert(st.battleMapPath);
+                modeOk = modeOk && st.battleMode == "arena";
+            }
+        }
+        const std::string noBattle = rs ? rs->battleMapPath : std::string("?");   // 위 `cl` 은 대전 맵 후보 없이 만들었다
+        std::snprintf(m, sizeof(m), "④ 대전 맵 — 씨앗 16개에 나온 대전 맵 %zu가지(후보 안 %d) · 아레나 %d · 후보 없으면 [%s]", seenB.size(),
+                      (int)(seenB.size() == 2 && seenB.count(battles[0]) && seenB.count(battles[1])), (int)modeOk, noBattle.c_str());
+        Check(seenB.size() == 2 && seenB.count(battles[0]) == 1 && seenB.count(battles[1]) == 1 && modeOk && noBattle.empty(), m);
     }
     std::printf("  10-14 플랜 B 작업 8d — 채널 안 로비: 목록 = 만든 사람 있는 돌고 있는 방 · 참가 토큰 = 그 방 · 닫히면 빠짐 · 로비 사건만\n");
+}
+
+// ── ★ 10-16 플랜 B 작업 13a — 로비 방식의 맵 후보 · 맵 목록 ─────────
+//   ① 로비가 아니면 후보 없음 · 맵 목록 = 실행 인자의 맵 하나 ② 기본 = 대기 So_LOD · 대전 Estate(게임 폴더의 맵) · 맵 목록에 둘 다
+//   ③ 준 후보(열쇠 · .map 경로) · 맵 목록은 열쇠가 같으면 하나만
+void TestLobbyMapPaths() {
+    char m[300];
+    ServerOptions off;
+    off.room.mapPath = "C:\\X\\a.map";
+    const auto list0 = MapListFromOptions(off);
+    std::snprintf(m, sizeof(m), "① 로비 아님 — 대기 %zu · 대전 %zu · 맵 목록 %zu", WaitMapPaths(off).size(), BattleMapPaths(off).size(), list0.size());
+    Check(WaitMapPaths(off).empty() && BattleMapPaths(off).empty() && list0.size() == 1 && list0[0] == off.room.mapPath, m);
+    ServerOptions on;
+    on.lobbyPort = 4000;
+    on.gameDir = "G";
+    const auto w = WaitMapPaths(on), b = BattleMapPaths(on), list1 = MapListFromOptions(on);
+    std::snprintf(m, sizeof(m), "② 기본 — 대기 [%s] · 대전 [%s] · 맵 목록 %zu", w.empty() ? "" : w[0].c_str(), b.empty() ? "" : b[0].c_str(), list1.size());
+    Check(w.size() == 1 && w[0] == "G\\maps\\So_LOD\\So_LOD.map" && b.size() == 1 && b[0] == "G\\maps\\Estate\\Estate.map" &&
+          list1.size() == 2 && list1[0] == w[0] && list1[1] == b[0], m);
+    ServerOptions given = on;
+    given.battleMaps = {"So_LOD", "D:\\m\\x.map"};
+    const auto b2 = BattleMapPaths(given), list2 = MapListFromOptions(given);
+    std::snprintf(m, sizeof(m), "③ 준 후보 — 대전 %zu [%s · %s] · 맵 목록 %zu(열쇠 같은 So_LOD 하나)", b2.size(), b2.size() > 0 ? b2[0].c_str() : "",
+                  b2.size() > 1 ? b2[1].c_str() : "", list2.size());
+    Check(b2.size() == 2 && b2[0] == "G\\maps\\So_LOD\\So_LOD.map" && b2[1] == "D:\\m\\x.map" && list2.size() == 2 &&
+          list2[0] == "G\\maps\\So_LOD\\So_LOD.map" && list2[1] == "D:\\m\\x.map", m);
+    std::printf("  10-16 플랜 B 작업 13a — 로비 맵 후보: 로비 아니면 없음 · 기본 대기 So_LOD · 대전 Estate · 준 후보 · 맵 목록 겹침 하나\n");
 }
 
 void TestRooms() {
@@ -30847,6 +30896,7 @@ int main() {
     TestRoomChatCommands();
     TestRoomFacts();
     TestChannelLobby();
+    TestLobbyMapPaths();
     TestJoinTrailer();
     TestReliableResend();
     TestNewPlayerGearBits();
