@@ -4,6 +4,7 @@
 //   (`Docs/ROOMS_DESIGN.md` 원칙 「방의 상태는 방 안에만」 · 「실행 파일에만 있는 코드는 조립뿐」). 몸통은 글자 그대로 —
 //   옛 인자 `srv` · `rr` 자리는 첫머리의 같은 이름 별칭(방의 게임 · 방 설정 · 방 멤버)이 받는다.
 //   진단 도우미 둘(`PrintAbilityBreakdown` · `AbilityFingerprint`)도 같이 옮겼다 — 이 두 함수만 쓴다
+#include <algorithm>
 #include <cstdio>
 #include <string>
 
@@ -841,6 +842,8 @@ void nox::CRoom::StartMatch() {
     const std::shared_ptr<const MapOriginal> battle = FindMap(_settings.battleMapPath);
     const std::shared_ptr<const MapOriginal> wait = FindMap(_settings.mapPath);
     if (!battle || !wait) return;   // 부르는 쪽이 `CanStartMatch` 로 걸렀다
+    // ★ 10-16 작업 13d — 시험 손잡이 — 점수 한도(전환이 보내는 `af` 에 실리게 먼저). 대기 맵으로 돌아가도 그대로 둔다(채팅 모드는 점수가 안 오른다 — 13c)
+    if (_settings.battleScoreLimit > 0) _game.SetLimitValue(static_cast<uint8_t>(std::min(_settings.battleScoreLimit, 255)));
     _game.SwitchMap(battle->tables, battle->initial, nox::ModeGameFlags(_settings.battleMode));
     _game.SetNextRoundMap(wait->tables, wait->initial, nox::ModeGameFlags(_settings.mode));   // 판 끝 → 대기 맵(판 끝 A)
     _curMapKey = battle->key;

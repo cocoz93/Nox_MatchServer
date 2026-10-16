@@ -24773,10 +24773,12 @@ std::shared_ptr<MapOriginal> FakeMapOriginal(const std::string& key, uint32_t cr
     return m;
 }
 // 로비가 만든 방처럼 — 대기 맵 원본에 붙은 독립 모드 · 채팅 · 대전 맵(열쇠가 목록에 없으면 빈 것) · 최대 8 · 맵 목록
-int MakeLobbyLikeRoom(nox::CRoomManager& rooms, const MapCatalog& cat, const std::string& waitKey, const std::string& battleKey) {
+int MakeLobbyLikeRoom(nox::CRoomManager& rooms, const MapCatalog& cat, const std::string& waitKey, const std::string& battleKey,
+                      int battleScoreLimit = 0) {
     const auto wait = cat.Find(waitKey);
     const auto battle = cat.Find(battleKey);
     RoomSettings rs;
+    rs.battleScoreLimit = battleScoreLimit;   // ★ 10-16 작업 13d
     rs.mapPath = wait ? wait->path : std::string();
     rs.mode = "chat";
     rs.battleMapPath = battle ? battle->path : std::string();
@@ -25784,6 +25786,25 @@ void TestRoomMatchSwitch() {
                   rooms.Game(rNo).mapSwitches(), useMapTo(o4, C, "so_lod.map"));
     Check(textTo(o4, C, "No battle map") == 1 && rooms.Room(rNo).CmdCount(O::NoMap) == 1 && rooms.Room(rNo).Phase() == nox::RoomPhase::Waiting &&
           rooms.Game(rNo).mapSwitches() == 0 && useMapTo(o4, C, "so_lod.map") == 0, m);
+    // ⑥ ★ 13d 시험 손잡이 — 판 점수 한도 1 이면 판을 열 때 한도 1(전환의 `af` 18번 칸에도) · 손잡이 없는 방은 15 그대로
+    const int rLim = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", /*battleScoreLimit=*/1);
+    const std::string E = "10.43.0.5:5002", F = "10.43.0.6:6002";
+    std::vector<nox::OutPacket> je;
+    join(srv, TrailerAs("erin", rLim, "10.43.0.5", 435), "10.43.0.5:5001", E, je);
+    join(srv, TrailerAs("frank", rLim, "10.43.0.6", 436), "10.43.0.6:6001", F, je);
+    now += 34; srv.Tick(now, je);
+    const uint8_t limBefore = rooms.Game(rLim).Settings().limitValue;
+    const auto o6 = say(E, "!start");
+    int afLimit = -1;
+    for (const auto& x : FlattenTo(o6, E))
+        for (size_t i = 0; i + 20 <= x.size(); ++i)
+            if (x[i] == static_cast<uint8_t>(nox::Op::GAME_SETTINGS) && x[i + 5] == 0x9a && x[i + 6] == 0x03 && x[i + 7] == 0x01 && x[i + 8] == 0x00)
+                afLimit = x[i + 18];
+    std::snprintf(m, sizeof(m), "⑥ 점수 한도 손잡이 — 판 전 %d · 판 %d · af 한도 칸 %d · 방 %s · 손잡이 없는 방 %d",
+                  (int)limBefore, (int)rooms.Game(rLim).Settings().limitValue, afLimit, nox::RoomPhaseName(rooms.Room(rLim).Phase()),
+                  (int)game.Settings().limitValue);
+    Check(limBefore == 15 && rooms.Game(rLim).Settings().limitValue == 1 && afLimit == 1 && rooms.Room(rLim).Phase() == nox::RoomPhase::Playing &&
+          game.Settings().limitValue == 15, m);
     std::printf("  10-16 플랜 B 작업 13b — 판 열기: !start → 대전 맵(USE_MAP · af 아레나 · 시작 자리) · 판 끝 → 대기 맵(af 채팅 · 알림) · 두 바퀴 · 같은 연결 · 대전 맵 없음\n");
 }
 

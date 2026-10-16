@@ -42,6 +42,9 @@ struct RoomSettings {
     //   비면 판을 못 연다. 로비가 만든 방은 대전 맵 후보(`--battle-maps` · 기본 `Estate`)에서 하나. 대기 맵 = 위 `mapPath`(방을 만든 맵)
     std::string battleMapPath;
     std::string battleMode = "arena";
+    // ★ 10-16 작업 13d — 진단(시험 손잡이) `--battle-score-limit N` — 판을 열 때 점수 한도를 N 으로(0 = 그대로 · 원작 15).
+    //   정품 확인에서 판 끝(→ 대기 맵)을 한 킬로 보려고. 판 끝 조건 결정(「10-16 정한 것」 — 지금 서버 그대로)은 안 바꾼다
+    int battleScoreLimit = 0;
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)

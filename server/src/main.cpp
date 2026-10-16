@@ -424,6 +424,9 @@ int main(int argc, char** argv) {
             // 진단 — N틱 뒤 첫 사람의 점수를 <점수> 로 만든다(판 끝 사슬 확인용)
             opt.room.debugScoreAfter = std::atoi(argv[++i]);
             opt.room.debugScoreVal = std::atoi(argv[++i]);
+        } else if (a == "--battle-score-limit" && i + 1 < argc) {
+            // ★ 10-16 작업 13d — 진단 — 판(`!start`)의 점수 한도를 N 으로(0 = 그대로) · 방 틀이라 로비가 만든 방에도 실린다
+            opt.room.battleScoreLimit = std::atoi(argv[++i]);
         } else if (a == "--debug-team-every" && i + 1 < argc) {
             // 진단 ④ — N틱마다 첫 사람의 팀을 1↔2 로 오간다(친구 ADD 뒤 REMOVE 도 보려고)
             opt.room.debugTeamEvery = std::atoi(argv[++i]);
