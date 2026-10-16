@@ -192,6 +192,10 @@ void CRoomManager::RemoveMember(CRoom& room, int64_t sessionId) {
         if (i == 0 && !ms.empty()) {   // 방장이 나갔다 — 다음 사람(들어온 차례)
             ++_stats.hostChanges;
             LogHost(room, "방장이 나감");
+            // ★ 10-16 작업 12b — 남은 사람에게 알림(게임 요청으로 쌓여 다음 옮기기 때 나간다)
+            char line[96];
+            std::snprintf(line, sizeof(line), "%s is now the host.", ms.front().account.empty() ? "Next player" : ms.front().account.c_str());
+            room._game.SendNotice(line);
         }
         return;
     }
@@ -272,6 +276,7 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
 size_t CRoomManager::Forward(int roomId, const NetworkEvent& ev) {
     CRoom& room = Room(roomId);
     const size_t n = room._game.OnNetworkEvent(ev);
+    room.HandleChatCommands();   // ★ 10-16 작업 12b — 그 이벤트에 든 채팅 명령(알림은 게임 요청으로 쌓여 아래에서 같이 옮겨진다)
     PullRequests(room);   // 처리한 차례대로 — 다음 이벤트에서 방 관리자가 낼 요청(접속 답)보다 앞에 둔다
     return n;
 }

@@ -25396,6 +25396,117 @@ void TestRoomRules() {
     std::printf("  10-16 플랜 B 작업 12a — 방 규칙: 구성원 차례 · 방장 = 맨 앞 · 방장 넘김 · 꽉 참(사유 11 · 토큰 안 씀) · 판 중(사유 4) · CONNECT 때 다시 봄 · 방 사실 · 열린 방식\n");
 }
 
+// ── ★ 10-16 플랜 B 작업 12b — 채팅 명령 `!start` ─────────
+//   ① 혼자 → 인원 모자람(그 사람에게만) ② 방장 아닌 사람 → 방장 아님(방장 이름) ③ 보통 말은 그대로 퍼짐 · 명령 글자는 안 퍼짐
+//   ④ 모르는 명령 ⑤ 방장 · 둘 · UTF-16 대문자 `!START` → 판 · 모두에게 알림 ⑥ 판 중 다시 → 대기 아님
+//   ⑦ 방장이 나가면 남은 사람에게 「새 방장」 알림 ⑧ 갈래 셈의 합 = 게임이 쌓은 명령 수
+void TestRoomChatCommands() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
+    using O = nox::CRoom::CmdOutcome;
+    char m[360];
+    auto join = [&](nox::CSyncHost& h, const std::vector<uint8_t>& tail, const std::string& p1, const std::string& p2,
+                    std::vector<nox::OutPacket>& out) {
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        h.OnPacket(p1, tj.data(), tj.size(), out);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        h.OnPacket(p2, cn.data(), cn.size(), out);
+        const int64_t sid = h.Network().SessionIdOf(p2);
+        const auto ac = AcceptPkt("Jack");
+        h.OnPacket(p2, ac.data(), ac.size(), out);
+        return sid;
+    };
+    // 클라가 보내는 꼴(머리 10 + 글자) — utf16 이면 깃발 0 · 크기 칸 = 글자 수 · 글자마다 2바이트
+    auto chat = [](const std::string& text, bool utf16) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::TEXT_MESSAGE));
+        p.push_back(0); p.push_back(0);
+        p.push_back(utf16 ? 0x00 : 0x02);
+        p.push_back(0); p.push_back(0); p.push_back(0); p.push_back(0);
+        p.push_back(static_cast<uint8_t>(text.size()));
+        p.push_back(0); p.push_back(0);
+        for (const char c : text) { p.push_back(static_cast<uint8_t>(c)); if (utf16) p.push_back(0); }
+        return p;
+    };
+    // 그 주소로 간 글자 한 줄(0xa8) 가운데 `has` 가 든 것의 수 — 알림은 틱 끝 묶음 조각 안에 들어가므로(`Emit` → `FlushBundles`)
+    //   조각 첫 바이트만 보지 않고 조각 안의 `a8 … <크기> 0 0 <글자>` 를 모두 훑는다(글자에 `has` 가 든 것만 센다)
+    auto textTo = [](const std::vector<nox::OutPacket>& out, const std::string& to, const char* has) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to)) {
+            for (size_t i = 0; i + 11 <= x.size(); ++i) {
+                if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
+                const size_t len = x[i + 8];
+                if (i + 11 + len > x.size()) continue;
+                const std::string text(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len));
+                if (text.find(has) != std::string::npos) ++n;
+            }
+        }
+        return n;
+    };
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    nox::CRoomManager& rooms = srv.Rooms();
+    RoomSettings rs;
+    rs.maxPlayers = 8;
+    const int r = rooms.CreateRoom(rs);
+    nox::CRoom& room = rooms.Room(r);
+    uint32_t now = 1000;
+    std::vector<nox::OutPacket> t0; srv.Tick(now, t0); now += 33; srv.Tick(now, t0);
+    auto say = [&](const std::string& from, const std::string& text, bool utf16) {   // 말하고 한 틱(알림은 틱 끝에 나간다)
+        std::vector<nox::OutPacket> out;
+        const auto p = chat(text, utf16);
+        srv.OnPacket(from, p.data(), p.size(), out);
+        now += 34;
+        srv.Tick(now, out);
+        return out;
+    };
+    const std::string A = "10.42.0.1:1002", B = "10.42.0.2:2002";
+    std::vector<nox::OutPacket> o;
+    join(srv, TrailerAs("alice", r, "10.42.0.1", 421), "10.42.0.1:1001", A, o);
+    now += 34; srv.Tick(now, o);
+    // ① 혼자
+    const auto o1 = say(A, "!start", false);
+    const int tooFew = textTo(o1, A, "at least 2");
+    join(srv, TrailerAs("bob", r, "10.42.0.2", 422), "10.42.0.2:2001", B, o);
+    now += 34; srv.Tick(now, o);
+    // ② 방장 아닌 사람
+    const auto o2 = say(B, "!start", false);
+    const int notHostB = textTo(o2, B, "Only the host (alice)"), notHostA = textTo(o2, A, "Only the host");
+    // ③ 보통 말 · 명령 글자는 안 퍼짐(②에서 alice 에게 「!start」 가 안 갔다)
+    const unsigned long long chats0 = rooms.Game(r).chats();
+    const auto o3 = say(A, "hello", false);
+    const int helloB = textTo(o3, B, "hello"), cmdEchoA = textTo(o2, A, "!start");
+    // ④ 모르는 명령
+    const auto o4 = say(A, "!foo bar", false);
+    const int unknownA = textTo(o4, A, "Unknown command");
+    std::snprintf(m, sizeof(m), "①~④ 혼자 인원 모자람 %d · 방장 아님 B %d(A 에게 %d) · 명령 글자 퍼짐 %d · 보통 말 B 에게 %d(채팅 +%llu) · 모르는 명령 %d · 상태 %s",
+                  tooFew, notHostB, notHostA, cmdEchoA, helloB, rooms.Game(r).chats() - chats0, unknownA, nox::RoomPhaseName(room.Phase()));
+    Check(tooFew == 1 && notHostB == 1 && notHostA == 0 && cmdEchoA == 0 && helloB == 1 && rooms.Game(r).chats() - chats0 == 1 &&
+          unknownA == 1 && room.Phase() == nox::RoomPhase::Waiting, m);
+    // ⑤ 방장 · 둘 · UTF-16 대문자
+    const auto o5 = say(A, "!START", true);
+    const int startA = textTo(o5, A, "Match starting!"), startB = textTo(o5, B, "Match starting!");
+    const nox::RoomPhase after5 = room.Phase();
+    // ⑥ 판 중 다시
+    const auto o6 = say(A, "!start", false);
+    const int already = textTo(o6, A, "already in progress");
+    // ⑦ 방장이 나가면 bob 에게 「새 방장」 알림(나감은 틱에서 · 알림은 다음 옮기기)
+    std::vector<nox::OutPacket> o7;
+    srv.OnPacket(A, leave, sizeof(leave), o7);
+    now += 34; srv.Tick(now, o7);
+    now += 34; srv.Tick(now, o7);
+    const int newHost = textTo(o7, B, "bob is now the host.");
+    unsigned long long sum = 0;
+    for (size_t i = 0; i < static_cast<size_t>(O::kCount); ++i) sum += room.CmdCount(static_cast<O>(i));
+    std::snprintf(m, sizeof(m), "⑤~⑧ 시작 알림 A %d · B %d · 상태 %s · 판 중 다시 %d · 새 방장 알림 %d · 셈 시작 %llu · 방장아님 %llu · 대기아님 %llu · 모자람 %llu · 모름 %llu (합 %llu = 쌓은 명령 %llu)",
+                  startA, startB, nox::RoomPhaseName(after5), already, newHost, room.CmdCount(O::Started), room.CmdCount(O::NotHost),
+                  room.CmdCount(O::NotWaiting), room.CmdCount(O::TooFew), room.CmdCount(O::Unknown), sum, rooms.Game(r).chatCommandsQueued());
+    Check(startA == 1 && startB == 1 && after5 == nox::RoomPhase::Playing && already == 1 && newHost == 1 &&
+          room.CmdCount(O::Started) == 1 && room.CmdCount(O::NotHost) == 1 && room.CmdCount(O::NotWaiting) == 1 &&
+          room.CmdCount(O::TooFew) == 1 && room.CmdCount(O::Unknown) == 1 && sum == 5 && rooms.Game(r).chatCommandsQueued() == 5, m);
+    std::printf("  10-16 플랜 B 작업 12b — 채팅 명령: !start(방장 · 대기 · 2명) · 인원 모자람 · 방장 아님 · 모르는 명령 · 판 중 · UTF-16 · 명령은 안 퍼짐 · 새 방장 알림\n");
+}
+
 // ── 10-10 토큰 작업 2 — 통신 층의 꼬리 떼기(`CUdpServer::OnDatagram`) ─────────
 //   방 관리자를 거치지 않고 통신 층이 낸 이벤트와 셈을 바로 본다.
 //   ⚠ 처음 짠 방 시험(`TestRooms`)은 꼬리를 안 떼도 통과했다 — 시험 토큰의 일회용 번호(101 등)에 0 바이트가 많아, 꼬리를 메시지로
@@ -30713,6 +30824,7 @@ int main() {
     TestRoomManager();
     TestRooms();
     TestRoomRules();
+    TestRoomChatCommands();
     TestRoomFacts();
     TestChannelLobby();
     TestJoinTrailer();

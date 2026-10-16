@@ -3558,6 +3558,23 @@ public:
     // 클라가 판 시계를 물어본 횟수. 전에는 이 조각을 통째로 버려 **0으로 보였다.**
     unsigned long long timerAsks() const { return timerAsks_; }
     unsigned long long chats() const { return chats_; }
+    // 글자 한 줄을 모두에게 — `0xa8 TEXT_MESSAGE`. 짜임은 실측이다.
+    //
+    // ⚠ **문구는 우리가 지은 것**이다. 진짜 녹스는 시스템 문구를 `0xa9` 갈래 15 로
+    //   **CSF 열쇠**만 보내고 클라가 `nox.csf` 에서 찾는다(PROTOCOL.md 「알림」 절).
+    //   퀘스트 완료에 해당하는 열쇠를 모르므로, **아는 통로인 채팅**으로 대신 알린다.
+    // ★ 10-16 작업 12b — 방(`CRoom` — 판 시작 · 방장 알림)이 부르므로 비공개 구역에서 여기로 옮겼다
+    void SendNotice(const char* text);
+    // ★ 10-16 작업 12b — 그 사람에게만(게임 안이 아니면 안 보냄 · 짜임은 `SendNotice` 와 같다)
+    void SendNoticeTo(int64_t sessionId, const char* text);
+    // ★ 10-16 플랜 B 작업 12b — 채팅 명령(`!` 로 시작하는 말). 게임은 퍼뜨리지 않고 쌓아 두고 방(`CRoom`)이 꺼내 처리한다 —
+    //   판 시작 같은 방 규칙은 방 몫이다(`Docs/ROOMS_DESIGN.md` 결정 2). 글자는 ASCII 로 바꿔 담는다(UTF-16 이면 아래 바이트 · 밖의 글자는 '?')
+    struct ChatCommand {
+        int64_t sessionId = -1;
+        std::string text;
+    };
+    void SwapOutChatCommands(std::vector<ChatCommand>& into) { into.swap(chatCommands_); chatCommands_.clear(); }
+    unsigned long long chatCommandsQueued() const { return chatCommandsQueued_; }
     // 몇 판을 마쳤나. 0 이면 아직 한 판도 안 끝난 것이다.
     unsigned long long roundsPlayed() const { return roundsPlayed_; }
     unsigned long long roundFrozenTicks() const { return roundFrozenTicks_; }   // ★ 10-01 R1 — 판끝이라 세계를 멈춘 틱 수
@@ -4950,12 +4967,7 @@ private:
     void SendFlagInform(InformCode code, uint16_t playerNetCode, uint8_t team
 );
 
-    // 글자 한 줄을 모두에게 — `0xa8 TEXT_MESSAGE`. 짜임은 실측이다.
-    //
-    // ⚠ **문구는 우리가 지은 것**이다. 진짜 녹스는 시스템 문구를 `0xa9` 갈래 15 로
-    //   **CSF 열쇠**만 보내고 클라가 `nox.csf` 에서 찾는다(PROTOCOL.md 「알림」 절).
-    //   퀘스트 완료에 해당하는 열쇠를 모르므로, **아는 통로인 채팅**으로 대신 알린다.
-    void SendNotice(const char* text);
+    // ★ 10-16 작업 12b — `SendNotice`(글자 한 줄을 모두에게)는 방이 부르므로 공개 구역으로 옮겼다(`chats()` 아래)
 
     // 깃발을 들고 있으면 그 자리에 떨어뜨린다 (죽었을 때).
     void DropFlag(int64_t who);
@@ -5288,6 +5300,8 @@ private:
     unsigned long long dequipped_ = 0;
     unsigned long long timerAsks_ = 0;          // `0xd4` 를 받은 횟수
     unsigned long long chats_ = 0;              // 되돌려 방송한 채팅 수
+    std::vector<ChatCommand> chatCommands_;     // ★ 10-16 작업 12b — 방이 꺼내 갈 채팅 명령
+    unsigned long long chatCommandsQueued_ = 0; // 쌓은 채팅 명령 수(퍼뜨린 채팅 `chats_` 에는 안 듦)
     unsigned long long aims_ = 0;               // `0xac` 로 받은 겨눔 수
     unsigned long long hurts_ = 0;              // 닿은 피해 전부 (근접+투사체+소환수)
 

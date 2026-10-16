@@ -89,6 +89,14 @@ public:
     const std::vector<RoomMember>& Members() const { return _members; }
     const RoomMember* Host() const { return _members.empty() ? nullptr : &_members.front(); }
 
+    // ── ★ 10-16 작업 12b — 채팅 명령(`RoomTick.cpp`). 방 관리자가 게임에 이벤트를 넘긴 뒤 부른다 — 게임이 쌓은 명령(`Server::SwapOutChatCommands`)을 처리 ──
+    //   `!start` = 방장 · 대기 · 게임 안 사람 `kMinPlayers` 이상이면 판(맵 전환은 작업 13). 결과는 갈래마다 센다
+    enum class CmdOutcome : uint8_t { Started, NotHost, NotWaiting, TooFew, Unknown, kCount };
+    static const char* CmdOutcomeName(CmdOutcome o);
+    static constexpr size_t kMinPlayers = 2;   // 판을 돌릴 최소 인원(`Docs/ROOMS_DESIGN.md` 「10-13 정한 것」)
+    void HandleChatCommands();
+    unsigned long long CmdCount(CmdOutcome o) const { return _cmd[static_cast<size_t>(o)]; }
+
 private:
     friend class CRoomManager;
     int _id;
@@ -112,6 +120,9 @@ private:
     // ★ 10-16 작업 12a
     RoomPhase _phase = RoomPhase::Waiting;
     std::vector<RoomMember> _members;          // 들어온 차례 — 세션표(`CRoomManager::_seats`)의 이 방 세션과 같은 사람들
+    // ★ 10-16 작업 12b
+    unsigned long long _cmd[static_cast<size_t>(CmdOutcome::kCount)] = {};
+    std::vector<Server::ChatCommand> _cmdBuf;   // 다시 쓰는 그릇
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).

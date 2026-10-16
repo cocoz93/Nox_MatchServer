@@ -2207,6 +2207,29 @@ void Server::SendNotice(const char* text) {
     }
 }
 
+// ★ 10-16 작업 12b — `SendNotice` 의 한 사람 판(같은 짜임)
+void Server::SendNoticeTo(int64_t sessionId, const char* text) {
+    const size_t n = std::strlen(text);
+    if (n == 0 || n > 200) return;
+    auto it = sessions_.find(sessionId);
+    if (it == sessions_.end() || !it->second.inGame) return;
+    Session& s = it->second;
+    std::vector<uint8_t> msg;
+    msg.reserve(11 + n);
+    msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
+    msg.push_back(static_cast<uint8_t>(s.netCode));
+    msg.push_back(static_cast<uint8_t>(s.netCode >> 8));
+    msg.push_back(0x02);                       // 깃발 = UTF-8 (그래야 한 글자 한 바이트)
+    msg.push_back(static_cast<uint8_t>(s.x));
+    msg.push_back(static_cast<uint8_t>(s.x >> 8));
+    msg.push_back(static_cast<uint8_t>(s.y));
+    msg.push_back(static_cast<uint8_t>(s.y >> 8));
+    msg.push_back(static_cast<uint8_t>(n));
+    msg.push_back(0); msg.push_back(0);        // 지속 = 0
+    msg.insert(msg.end(), text, text + n);
+    Emit(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size());
+}
+
 void Server::StartCtf(int redX, int redY, int blueX, int blueY) {
     flags_.clear();
     caps_[0] = caps_[1] = caps_[2] = 0;
@@ -3680,9 +3703,27 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 if (!s.inGame || it.bodyLen() < 10) break;
                 const uint8_t* b = it.body();
                 size_t sz = b[7];
-                if ((b[2] & 0x02) == 0 && (b[2] & 0x08) == 0) sz *= 2;   // UTF-16 이면 두 배
+                const bool utf16 = (b[2] & 0x02) == 0 && (b[2] & 0x08) == 0;
+                if (utf16) sz *= 2;   // UTF-16 이면 두 배
                 if (sz > it.bodyLen() - 10) sz = it.bodyLen() - 10;
                 if (sz == 0 || sz > kChatMaxBytes) { ++handled_; break; }
+                // ★ 10-16 작업 12b — `!` 로 시작하면 명령 — 퍼뜨리지 않고 방이 꺼내 가게 쌓는다(`SwapOutChatCommands`)
+                {
+                    std::string ascii;
+                    const size_t step = utf16 ? 2 : 1;
+                    for (size_t k = 0; k + step <= sz; k += step) {
+                        const uint8_t lo = b[10 + k];
+                        const uint8_t hi = utf16 ? b[10 + k + 1] : 0;
+                        if (lo == 0 && hi == 0) break;   // 끝표
+                        ascii.push_back((hi == 0 && lo < 0x80) ? static_cast<char>(lo) : '?');
+                    }
+                    if (!ascii.empty() && ascii[0] == '!') {
+                        chatCommands_.push_back(ChatCommand{ s.sessionId, ascii });
+                        ++chatCommandsQueued_;
+                        ++handled_;
+                        break;
+                    }
+                }
                 BroadcastChat(s, b + 10, sz);
                 ++chats_;
                 ++handled_;

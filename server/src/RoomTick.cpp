@@ -763,3 +763,65 @@ void nox::CRoom::TickDiagnostics(size_t made) {
         std::fflush(stdout);
     }
 }
+
+const char* nox::CRoom::CmdOutcomeName(CmdOutcome o) {
+    switch (o) {
+        case CmdOutcome::Started: return "시작";
+        case CmdOutcome::NotHost: return "방장 아님";
+        case CmdOutcome::NotWaiting: return "대기 아님";
+        case CmdOutcome::TooFew: return "인원 모자람";
+        case CmdOutcome::Unknown: return "모르는 명령";
+        case CmdOutcome::kCount: break;
+    }
+    return "?";
+}
+
+// ★ 10-16 플랜 B 작업 12b — 채팅 명령. 알림 문구는 영문(정품 글꼴 · 코드페이지 걱정 없이 — 방 이름을 영문으로 바꾼 10-16 과 같은 까닭)
+void nox::CRoom::HandleChatCommands() {
+    _game.SwapOutChatCommands(_cmdBuf);
+    for (const Server::ChatCommand& c : _cmdBuf) {
+        // 첫 낱말만 · 소문자
+        std::string word;
+        for (const char ch : c.text) {
+            if (ch == ' ') break;
+            word.push_back((ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch);
+        }
+        CmdOutcome r = CmdOutcome::Unknown;
+        if (word == "!start") {
+            const RoomMember* h = Host();
+            if (!h || h->sessionId != c.sessionId) r = CmdOutcome::NotHost;
+            else if (_phase != RoomPhase::Waiting) r = CmdOutcome::NotWaiting;
+            else if (_game.inGameCount() < kMinPlayers) r = CmdOutcome::TooFew;
+            else r = CmdOutcome::Started;
+        }
+        ++_cmd[static_cast<size_t>(r)];
+        char line[160];
+        switch (r) {
+            case CmdOutcome::Started:
+                _phase = RoomPhase::Playing;
+                _game.SendNotice("Match starting!");
+                break;
+            case CmdOutcome::NotHost: {
+                const RoomMember* h = Host();
+                std::snprintf(line, sizeof(line), "Only the host (%s) can start.", h && !h->account.empty() ? h->account.c_str() : "?");
+                _game.SendNoticeTo(c.sessionId, line);
+                break;
+            }
+            case CmdOutcome::NotWaiting:
+                _game.SendNoticeTo(c.sessionId, "A match is already in progress.");
+                break;
+            case CmdOutcome::TooFew:
+                std::snprintf(line, sizeof(line), "Need at least %zu players to start.", kMinPlayers);
+                _game.SendNoticeTo(c.sessionId, line);
+                break;
+            case CmdOutcome::Unknown:
+                _game.SendNoticeTo(c.sessionId, "Unknown command. Host: !start");
+                break;
+            case CmdOutcome::kCount:
+                break;
+        }
+        _game.Log("[명령] %s — 세션 %lld · %s · 상태 %s · 게임 안 %zu\n", word.c_str(), static_cast<long long>(c.sessionId), CmdOutcomeName(r),
+                  RoomPhaseName(_phase), _game.inGameCount());
+    }
+    _cmdBuf.clear();
+}
