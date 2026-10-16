@@ -110,6 +110,8 @@ public:
     static constexpr size_t kMinPlayers = 2;   // 판을 돌릴 최소 인원(`Docs/ROOMS_DESIGN.md` 「10-13 정한 것」)
     void HandleChatCommands();
     unsigned long long CmdCount(CmdOutcome o) const { return _cmd[static_cast<size_t>(o)]; }
+    // ★ 10-16 결함 ④ — 판 중에 게임 안 사람이 `kMinPlayers` 밑으로(나감 · 시간 초과) 내려가 대기 맵으로 돌린 수
+    unsigned long long MatchAborts() const { return _matchAborts; }
 
 private:
     friend class CRoomManager;
@@ -118,6 +120,9 @@ private:
     bool CanStartMatch() const { return FindMap(_settings.battleMapPath) && FindMap(_settings.mapPath); }
     void StartMatch();
     void OnRoundRestarted();
+    // ★ 10-16 결함 ④ — 판 중인데 게임 안 사람이 `kMinPlayers` 밑이면 대기 맵으로 바로(판 끝 쉬는 중이면 그 흐름에 맡김 — 어차피 대기 맵으로 연다).
+    //   원작에는 없는 규칙(원작 아레나는 혼자 남아도 점수 한도까지 돈다) — 「판 단위 대전」 방이라 혼자 남은 판은 끝낸다(10-16 사용자 결정)
+    void CheckMatchHeadcount();
     int _id;
     Server _game;
     int _ticks = 0;            // 이번 `BeginTick` 이 정한 돌 틱 수(`RunTick` 이 쓴다)
@@ -147,6 +152,7 @@ private:
     const MapCatalog* _maps = nullptr;
     std::string _curMapKey;
     std::string _curMode;
+    unsigned long long _matchAborts = 0;   // ★ 10-16 결함 ④
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).

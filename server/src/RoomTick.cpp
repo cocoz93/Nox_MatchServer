@@ -865,3 +865,24 @@ void nox::CRoom::OnRoundRestarted() {
     _game.SendNotice("Back to the waiting room. Host: !start");
     _game.Log("[판] 끝 — 대기 맵 %s 로 돌아옴(지금 맵 %s)\n", _curMapKey.c_str(), _game.MapFileName().c_str());
 }
+
+// ★ 10-16 결함 ④ — 머리 주석은 `RoomManager.h` `CheckMatchHeadcount`. 방 관리자가 틱 뒤(나감을 걷어 낸 뒤 · 판 끝 처리 뒤) 부른다
+void nox::CRoom::CheckMatchHeadcount() {
+    switch (_phase) {
+        case RoomPhase::Waiting: return;
+        case RoomPhase::Playing: break;
+    }
+    if (_game.RoundOver()) return;                          // 판 끝 쉬는 중 — 다시 열 때 걸어 둔 대기 맵으로 간다(`OnRoundRestarted`)
+    const size_t left = _game.inGameCount();
+    if (left >= kMinPlayers) return;
+    const std::shared_ptr<const MapOriginal> wait = FindMap(_settings.mapPath);
+    if (!wait) return;                                      // 판을 열 때 `CanStartMatch` 가 봤다 — 여기 올 일 없음
+    _game.SwitchMap(wait->tables, wait->initial, nox::ModeGameFlags(_settings.mode));
+    _game.ClearNextRoundMap();                              // 그 맵으로 이미 왔다 — 다음 판 끝에 또 바꾸지 않게
+    _phase = RoomPhase::Waiting;
+    _curMapKey = wait->key;
+    _curMode = _settings.mode;
+    ++_matchAborts;
+    _game.SendNotice("Not enough players. Back to the waiting room. Host: !start");
+    _game.Log("[판] 사람 모자람(게임 안 %zu < %zu) — 대기 맵 %s 로\n", left, kMinPlayers, wait->key.c_str());
+}

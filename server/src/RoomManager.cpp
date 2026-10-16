@@ -352,6 +352,7 @@ void CRoomManager::RunTick() {
         }
         if (!over && room._wasRoundOver) room.OnRoundRestarted();   // ★ 10-16 작업 13b — 판 끝 뒤 다시 열림(판이었으면 대기로)
         room._wasRoundOver = over;
+        room.CheckMatchHeadcount();   // ★ 10-16 결함 ④ — 나감은 위 옮기기(`PullRequests`)에서 구성원에서도 빠졌다 · 돌렸으면 그 요청은 다음 옮기기 때
     }
 }
 

@@ -5624,6 +5624,8 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
         nextRoundFlags_ = gameFlags;
     }
     bool HasNextRoundMap() const { return nextRoundTables_ != nullptr; }
+    // ★ 10-16 결함 ④ — 걸어 둔 다음 판 맵을 버린다(방이 판을 그 맵으로 이미 끝냈을 때 — 사람 모자람)
+    void ClearNextRoundMap() { nextRoundTables_.reset(); nextRoundInitial_.reset(); nextRoundFlags_ = 0; }
     const std::string& MapFileName() const { return mt_->saMapName; }   // 지금 맵(`USE_MAP` 에 실리는 이름)
     unsigned long long mapSwitches() const { return mapSwitches_; }
     unsigned long long gameSettingsResent() const { return gameSettingsResent_; }   // 맵을 바꾸며 다시 보낸 `af`·`b0` 쌍(사람 수)
