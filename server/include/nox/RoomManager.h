@@ -71,7 +71,15 @@ public:
 
     // ── ★ 10-14 작업 9c — 방 설정 · 세계 차리기 결과 ──
     const RoomSettings& Settings() const { return _settings; }
-    void SetSettings(const RoomSettings& s) { _settings = s; }
+    void SetSettings(const RoomSettings& s) {
+        _settings = s;
+        _curMapKey = s.mapPath.empty() ? std::string() : MapKeyOf(s.mapPath);   // ★ 10-16 작업 13b — 지금 맵 · 모드 = 방을 만든 맵 · 모드
+        _curMode = s.mode;
+    }
+    // ★ 10-16 작업 13b — 판을 열 때 붙을 맵 원본(서버가 뜰 때 읽은 맵 목록 — 방 관리자가 만들 때 준다 · 시험은 직접)
+    void SetMapCatalog(const MapCatalog* maps) { _maps = maps; }
+    const std::string& CurrentMapKey() const { return _curMapKey; }   // 지금 맵 열쇠(판 중이면 대전 맵) — 로비 목록이 그린다
+    const std::string& CurrentMode() const { return _curMode; }
     WorldExtras& Extras() { return _extras; }               // 월드 차리기가 채운다
     const WorldExtras& Extras() const { return _extras; }
     void SetBotSession(int64_t sid) { _bot0Sid = sid; }     // `[성장]` 줄의 봇 세션 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
@@ -90,8 +98,9 @@ public:
     const RoomMember* Host() const { return _members.empty() ? nullptr : &_members.front(); }
 
     // ── ★ 10-16 작업 12b — 채팅 명령(`RoomTick.cpp`). 방 관리자가 게임에 이벤트를 넘긴 뒤 부른다 — 게임이 쌓은 명령(`Server::SwapOutChatCommands`)을 처리 ──
-    //   `!start` = 방장 · 대기 · 게임 안 사람 `kMinPlayers` 이상이면 판(맵 전환은 작업 13). 결과는 갈래마다 센다
-    enum class CmdOutcome : uint8_t { Started, NotHost, NotWaiting, TooFew, Unknown, kCount };
+    //   `!start` = 방장 · 대기 · 게임 안 사람 `kMinPlayers` 이상이면 판 — 대전 맵으로 바꾼다(★ 13b · 대전 맵 · 대기 맵 원본이 없으면 `NoMap`).
+    //   결과는 갈래마다 센다
+    enum class CmdOutcome : uint8_t { Started, NotHost, NotWaiting, TooFew, NoMap, Unknown, kCount };
     static const char* CmdOutcomeName(CmdOutcome o);
     static constexpr size_t kMinPlayers = 2;   // 판을 돌릴 최소 인원(`Docs/ROOMS_DESIGN.md` 「10-13 정한 것」)
     void HandleChatCommands();
@@ -99,6 +108,11 @@ public:
 
 private:
     friend class CRoomManager;
+    // ★ 10-16 작업 13b — 판 열기(대전 맵으로 · 대기 맵을 다음 판 맵으로 걸어 둠) · 판 끝 뒤 다시 열림(방 관리자가 판 끝 참 → 거짓을 보고 부른다)
+    std::shared_ptr<const MapOriginal> FindMap(const std::string& path) const;
+    bool CanStartMatch() const { return FindMap(_settings.battleMapPath) && FindMap(_settings.mapPath); }
+    void StartMatch();
+    void OnRoundRestarted();
     int _id;
     Server _game;
     int _ticks = 0;            // 이번 `BeginTick` 이 정한 돌 틱 수(`RunTick` 이 쓴다)
@@ -123,6 +137,10 @@ private:
     // ★ 10-16 작업 12b
     unsigned long long _cmd[static_cast<size_t>(CmdOutcome::kCount)] = {};
     std::vector<Server::ChatCommand> _cmdBuf;   // 다시 쓰는 그릇
+    // ★ 10-16 작업 13b
+    const MapCatalog* _maps = nullptr;
+    std::string _curMapKey;
+    std::string _curMode;
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).

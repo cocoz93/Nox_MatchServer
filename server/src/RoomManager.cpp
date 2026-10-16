@@ -29,6 +29,7 @@ int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
     const int id = _nextRoomId;
     auto room = std::make_unique<CRoom>(id);
     room->SetSettings(settings);
+    room->SetMapCatalog(_hasWorld ? _world.maps : nullptr);   // ★ 10-16 작업 13b — 판을 열 때 붙을 맵 원본
     if (_hasWorld) {
         const int rc = BuildRoom(room->_game, room->_settings, _world, room->_extras);
         if (buildRc) *buildRc = rc;
@@ -67,8 +68,8 @@ std::vector<RoomFact> CRoomManager::ListRooms() const {
         f.roomId = room._id;
         f.name = room._settings.roomName;
         f.creator = room._settings.creator;
-        f.mapKey = room._settings.mapPath.empty() ? std::string() : MapKeyOf(room._settings.mapPath);
-        f.mode = room._settings.mode;
+        f.mapKey = room._curMapKey;   // ★ 10-16 작업 13b — 지금 맵 · 모드(판 중이면 대전 맵 — 옛 값 = 방 설정의 맵 · 모드)
+        f.mode = room._curMode;
         f.players = room._game.inGameCount();
         const auto it = seats.find(room._id);
         f.seats = it == seats.end() ? 0 : it->second;
@@ -337,6 +338,7 @@ void CRoomManager::RunTick() {
             e.roomId = room._id;
             _roomEvents.push_back(e);
         }
+        if (!over && room._wasRoundOver) room.OnRoundRestarted();   // ★ 10-16 작업 13b — 판 끝 뒤 다시 열림(판이었으면 대기로)
         room._wasRoundOver = over;
     }
 }

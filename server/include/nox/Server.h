@@ -5598,7 +5598,29 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     void SetStandaloneMode() { standalone_ = true; }
     // 로그 담기 — 원본을 만드는 게임의 진단 줄을 표준 출력 대신 목록에(방을 만들 때 그 방 로그로 다시 낸다)
     void SetLogCapture(std::vector<std::string>* sink) { logCapture_ = sink; }
+    // ★ 10-16 플랜 B 작업 13b — 다른 맵으로 다시 열기(접속 유지 · 원작 `Server.SwitchMap` → `mapExitAndCheckNext` — `server.go:900` · `game.go:1104`).
+    //   새 맵 원본에 붙고(`AttachMap`) 모드 깃발을 바꾼 뒤 `ReopenMap` 몸통(세계 되돌리기 — 길 찾기 격자도 · 새로 들어온 것처럼 · 사람 몫 ·
+    //   `USE_MAP` — 이름 · CRC 는 새 맵 표에서) → 사람마다 `af`·`b0` 게임 설정. 원작은 `af`·`b0` 를 다음 바퀴에 보낸다(`gameloop.go:647`) —
+    //   클라는 `af` 로 모드 깃발을 통째로 바꾼다(`cdecode.c:2095` — 시각이 지난 `af` 보다 커야 받음 · 우리는 `USE_MAP` 과 같은 시각)
+    void SwitchMap(std::shared_ptr<const MapTables> tables, std::shared_ptr<const MapState> initial, uint32_t gameFlags);
+    // 다음 판 다시 열기(판 끝 `kRoundRestartTicks` 뒤)를 같은 맵 대신 이 맵으로 — 한 번 쓰면 비운다.
+    //   방이 판을 열 때 대기 맵을 걸어 둔다(`Docs/ROOMS_DESIGN.md` 결정 1 「판 끝 A — 같은 연결로 대기 맵」)
+    void SetNextRoundMap(std::shared_ptr<const MapTables> tables, std::shared_ptr<const MapState> initial, uint32_t gameFlags) {
+        nextRoundTables_ = std::move(tables);
+        nextRoundInitial_ = std::move(initial);
+        nextRoundFlags_ = gameFlags;
+    }
+    bool HasNextRoundMap() const { return nextRoundTables_ != nullptr; }
+    const std::string& MapFileName() const { return mt_->saMapName; }   // 지금 맵(`USE_MAP` 에 실리는 이름)
+    unsigned long long mapSwitches() const { return mapSwitches_; }
+    unsigned long long gameSettingsResent() const { return gameSettingsResent_; }   // 맵을 바꾸며 다시 보낸 `af`·`b0` 쌍(사람 수)
 private:
+    // ★ 10-16 작업 13b
+    std::shared_ptr<const MapTables> nextRoundTables_;
+    std::shared_ptr<const MapState> nextRoundInitial_;
+    uint32_t nextRoundFlags_ = 0;
+    unsigned long long mapSwitches_ = 0;
+    unsigned long long gameSettingsResent_ = 0;
     std::shared_ptr<GameTables> gtOwn_ = std::make_shared<GameTables>();   // 제 표 — 넣기가 쓴다(같이 쓰는 표를 가리키면 비어 있다)
     std::shared_ptr<const GameTables> gt_ = gtOwn_;                         // 읽는 표 — 제 것이거나 방들이 같이 쓰는 것
     GameTables& GtMut() {   // 쓸 때 복사

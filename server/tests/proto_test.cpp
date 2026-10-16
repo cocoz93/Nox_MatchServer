@@ -24758,6 +24758,38 @@ std::vector<uint8_t> Trailer(int room, const std::string& ip, uint64_t nonce, ui
     v.insert(v.end(), nox::kJoinTrailerMagic, nox::kJoinTrailerMagic + 4);
     return v;
 }
+// ★ 10-16 작업 13b — 시험용 맵 원본(맵 파일 없이 — 이름 · CRC · 시작 자리 하나). 방은 붙고, 판을 열 때 대전 맵 원본으로 바꾼다
+std::shared_ptr<MapOriginal> FakeMapOriginal(const std::string& key, uint32_t crc, float sx, float sy) {
+    nox::Server mk;
+    mk.SetMapIdentity(key + ".map", crc);
+    mk.SetPlayerStarts({ { sx, sy } });
+    auto m = std::make_shared<MapOriginal>();
+    m->key = key;
+    m->path = "C:\\T\\" + key + "\\" + key + ".map";
+    m->fileName = key + ".map";
+    m->crc = crc;
+    m->tables = mk.ShareMapTables();
+    m->initial = mk.ShareMapState();
+    return m;
+}
+// 로비가 만든 방처럼 — 대기 맵 원본에 붙은 독립 모드 · 채팅 · 대전 맵(열쇠가 목록에 없으면 빈 것) · 최대 8 · 맵 목록
+int MakeLobbyLikeRoom(nox::CRoomManager& rooms, const MapCatalog& cat, const std::string& waitKey, const std::string& battleKey) {
+    const auto wait = cat.Find(waitKey);
+    const auto battle = cat.Find(battleKey);
+    RoomSettings rs;
+    rs.mapPath = wait ? wait->path : std::string();
+    rs.mode = "chat";
+    rs.battleMapPath = battle ? battle->path : std::string();
+    rs.battleMode = "arena";
+    rs.maxPlayers = 8;
+    const int r = rooms.CreateRoom(rs);
+    nox::CRoom& room = rooms.Room(r);
+    room.SetMapCatalog(&cat);
+    room.Game().SetStandaloneMode();
+    if (wait) room.Game().AttachMap(wait->tables, wait->initial);
+    room.Game().SetGameFlags(nox::ModeGameFlags("chat"));
+    return r;
+}
 // ★ 10-16 작업 12a — 로비 이름을 정한 꼬리(구성원 · 방장 시험)
 std::vector<uint8_t> TrailerAs(const std::string& account, int room, const std::string& ip, uint64_t nonce) {
     nox::JoinToken t;
@@ -25515,9 +25547,11 @@ void TestRoomChatCommands() {
     nox::CSyncHost srv;
     UseTokens(srv);
     nox::CRoomManager& rooms = srv.Rooms();
-    RoomSettings rs;
-    rs.maxPlayers = 8;
-    const int r = rooms.CreateRoom(rs);
+    // ★ 10-16 작업 13b — 시작이 대전 맵으로 바꾸므로 맵 원본이 있는 방(로비가 만든 방처럼)
+    MapCatalog cat;
+    cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+    cat.maps.push_back(FakeMapOriginal("estate", 0x22222222u, 3000.0f, 3000.0f));
+    const int r = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate");
     nox::CRoom& room = rooms.Room(r);
     uint32_t now = 1000;
     std::vector<nox::OutPacket> t0; srv.Tick(now, t0); now += 33; srv.Tick(now, t0);
@@ -25574,6 +25608,298 @@ void TestRoomChatCommands() {
           room.CmdCount(O::Started) == 1 && room.CmdCount(O::NotHost) == 1 && room.CmdCount(O::NotWaiting) == 1 &&
           room.CmdCount(O::TooFew) == 1 && room.CmdCount(O::Unknown) == 1 && sum == 5 && rooms.Game(r).chatCommandsQueued() == 5, m);
     std::printf("  10-16 플랜 B 작업 12b — 채팅 명령: !start(방장 · 대기 · 2명) · 인원 모자람 · 방장 아님 · 모르는 명령 · 판 중 · UTF-16 · 명령은 안 퍼짐 · 새 방장 알림\n");
+}
+
+// ── ★ 10-16 플랜 B 작업 13b — 판 열기 = 대전 맵으로 전환(접속 유지) · 판 끝 = 대기 맵으로(판 끝 A) ─────────
+//   ① `!start` → 두 사람 모두에게 `USE_MAP`(estate.map) · `af`(아레나 깃발 · 시각이 접속 때 `af` 보다 큼) · 대전 맵 시작 자리 · 방 판 · 목록 estate/arena
+//   ② 판 끝 → 다시 열기 때 대기 맵으로 — `USE_MAP`(so_lod.map) · `af`(채팅 깃발) · 방 대기 · 목록 so_lod/chat · 알림 · 걸어 둔 맵 비움
+//   ③ 두 바퀴 — 다시 `!start` 가 됨 ④ 대전 맵 원본이 없는 방 → 맵 없음(대기 그대로) ⑤ 같은 연결 — 세션 번호가 처음과 같다
+void TestRoomMatchSwitch() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    using O = nox::CRoom::CmdOutcome;
+    char m[420];
+    auto join = [&](nox::CSyncHost& h, const std::vector<uint8_t>& tail, const std::string& p1, const std::string& p2,
+                    std::vector<nox::OutPacket>& out) {
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        h.OnPacket(p1, tj.data(), tj.size(), out);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        h.OnPacket(p2, cn.data(), cn.size(), out);
+        const int64_t sid = h.Network().SessionIdOf(p2);
+        const auto ac = AcceptPkt("Jack");
+        h.OnPacket(p2, ac.data(), ac.size(), out);
+        return sid;
+    };
+    auto chat = [](const std::string& text) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::TEXT_MESSAGE));
+        p.push_back(0); p.push_back(0); p.push_back(0x02);
+        p.push_back(0); p.push_back(0); p.push_back(0); p.push_back(0);
+        p.push_back(static_cast<uint8_t>(text.size()));
+        p.push_back(0); p.push_back(0);
+        for (const char c : text) p.push_back(static_cast<uint8_t>(c));
+        return p;
+    };
+    // 그 주소로 간 메시지 안에서(묶음 · 신뢰 껍데기 무관) `USE_MAP <이름>\0` 의 수
+    auto useMapTo = [](const std::vector<nox::OutPacket>& out, const std::string& to, const std::string& name) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i + 2 + name.size() <= x.size(); ++i)
+                if (x[i] == static_cast<uint8_t>(nox::Op::USE_MAP) && std::memcmp(x.data() + i + 1, name.data(), name.size()) == 0 &&
+                    x[i + 1 + name.size()] == 0) ++n;
+        return n;
+    };
+    // `af <시각 4> 9a 03 01 00 <깃발 4>` — 수 · 마지막 것의 시각과 깃발
+    auto afTo = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint32_t& frame, uint32_t& flags) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i + 13 <= x.size(); ++i) {
+                if (x[i] != static_cast<uint8_t>(nox::Op::GAME_SETTINGS) || x[i + 5] != 0x9a || x[i + 6] != 0x03 || x[i + 7] != 0x01 || x[i + 8] != 0x00)
+                    continue;
+                ++n;
+                frame = static_cast<uint32_t>(x[i + 1]) | (static_cast<uint32_t>(x[i + 2]) << 8) | (static_cast<uint32_t>(x[i + 3]) << 16) |
+                        (static_cast<uint32_t>(x[i + 4]) << 24);
+                flags = static_cast<uint32_t>(x[i + 9]) | (static_cast<uint32_t>(x[i + 10]) << 8) | (static_cast<uint32_t>(x[i + 11]) << 16) |
+                        (static_cast<uint32_t>(x[i + 12]) << 24);
+            }
+        return n;
+    };
+    auto textTo = [](const std::vector<nox::OutPacket>& out, const std::string& to, const char* has) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i + 11 <= x.size(); ++i) {
+                if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
+                const size_t len = x[i + 8];
+                if (i + 11 + len > x.size()) continue;
+                if (std::string(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len)).find(has) != std::string::npos) ++n;
+            }
+        return n;
+    };
+    auto fact = [](const nox::CRoomManager& rooms, int r) {
+        for (const auto& f : rooms.ListRooms()) if (f.roomId == r) return f;
+        return nox::RoomFact{};
+    };
+    const uint32_t kArena = nox::ModeGameFlags("arena") & 0x7FFF0u, kChat = nox::ModeGameFlags("chat") & 0x7FFF0u;
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    nox::CRoomManager& rooms = srv.Rooms();
+    MapCatalog cat;
+    cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+    cat.maps.push_back(FakeMapOriginal("estate", 0x22222222u, 3000.0f, 3000.0f));
+    const int r = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate");
+    const int rNo = MakeLobbyLikeRoom(rooms, cat, "so_lod", "");   // ④ 대전 맵 없음
+    nox::CRoom& room = rooms.Room(r);
+    nox::Server& game = rooms.Game(r);
+    uint32_t now = 1000;
+    std::vector<nox::OutPacket> t0; srv.Tick(now, t0); now += 33; srv.Tick(now, t0);
+    const std::string A = "10.43.0.1:1002", B = "10.43.0.2:2002";
+    std::vector<nox::OutPacket> ja, jb;
+    const int64_t sa = join(srv, TrailerAs("alice", r, "10.43.0.1", 431), "10.43.0.1:1001", A, ja);
+    const int64_t sb = join(srv, TrailerAs("bob", r, "10.43.0.2", 432), "10.43.0.2:2001", B, jb);
+    now += 34; srv.Tick(now, ja);
+    uint32_t joinAfFrame = 0, joinAfFlags = 0;
+    const int joinAf = afTo(ja, A, joinAfFrame, joinAfFlags);
+    // 첫 클릭 = 관전 풀기(조작 코드 6) — 관전자는 다시 열 때 자리를 안 옮긴다(`RestartPlayers` · 원본 `ListUnits` — 유닛 있는 사람만)
+    {
+        const auto click = InputPacket(6);
+        std::vector<nox::OutPacket> oc;
+        srv.OnPacket(A, click.data(), click.size(), oc);
+        srv.OnPacket(B, click.data(), click.size(), oc);
+        now += 34; srv.Tick(now, oc);
+        now += 34; srv.Tick(now, oc);
+    }
+    // `af` 가운데 그 깃발이고 시각이 `after` 보다 큰 것의 수(시험 클라는 신뢰 확인을 안 보내 다시 보낸 것까지 섞인다)
+    auto afWith = [&](const std::vector<nox::OutPacket>& out, const std::string& to, uint32_t want, uint32_t after) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i + 13 <= x.size(); ++i) {
+                if (x[i] != static_cast<uint8_t>(nox::Op::GAME_SETTINGS) || x[i + 5] != 0x9a || x[i + 6] != 0x03 || x[i + 7] != 0x01 || x[i + 8] != 0x00)
+                    continue;
+                const uint32_t fr = static_cast<uint32_t>(x[i + 1]) | (static_cast<uint32_t>(x[i + 2]) << 8) | (static_cast<uint32_t>(x[i + 3]) << 16) |
+                                    (static_cast<uint32_t>(x[i + 4]) << 24);
+                const uint32_t fl = static_cast<uint32_t>(x[i + 9]) | (static_cast<uint32_t>(x[i + 10]) << 8) | (static_cast<uint32_t>(x[i + 11]) << 16) |
+                                    (static_cast<uint32_t>(x[i + 12]) << 24);
+                if (fl == want && fr > after) ++n;
+            }
+        return n;
+    };
+    auto say = [&](const std::string& from, const std::string& text) {
+        std::vector<nox::OutPacket> out;
+        const auto p = chat(text);
+        srv.OnPacket(from, p.data(), p.size(), out);
+        now += 34;
+        srv.Tick(now, out);
+        return out;
+    };
+    // 맵 시작 자리(하나) 근처인가 — 둘이 같은 자리에 서서 몸끼리 밀어 몇 칸 벌어진다(시작 자리 둘 사이는 2000 이라 60 이면 가른다)
+    auto near = [&](int64_t sid, double c) {
+        const double dx = game.DebugPosX(sid) - c, dy = game.DebugPosY(sid) - c;
+        return dx * dx + dy * dy < 60.0 * 60.0;
+    };
+    // ① 판 열기
+    const auto o1 = say(A, "!start");
+    uint32_t fA = 0, flA = 0, fB = 0, flB = 0;
+    const int afA = afTo(o1, A, fA, flA), afB = afTo(o1, B, fB, flB);
+    const auto f1 = fact(rooms, r);
+    std::snprintf(m, sizeof(m), "① 판 열기 — USE_MAP estate A %d B %d · af A %d(깃발 0x%05X · 시각 %u > 접속 af %d개 시각 %u) B %d(0x%05X) · 자리 A %.0f,%.0f B %.0f,%.0f · 방 %s · 목록 %s/%s · 전환 %llu · 걸어 둔 맵 %d · af 다시 보냄 %llu · 맵 %s",
+                  useMapTo(o1, A, "estate.map"), useMapTo(o1, B, "estate.map"), afA, flA, fA, joinAf, joinAfFrame, afB, flB,
+                  game.DebugPosX(sa), game.DebugPosY(sa), game.DebugPosX(sb), game.DebugPosY(sb), nox::RoomPhaseName(room.Phase()),
+                  f1.mapKey.c_str(), f1.mode.c_str(), game.mapSwitches(), (int)game.HasNextRoundMap(), game.gameSettingsResent(), game.MapFileName().c_str());
+    Check(useMapTo(o1, A, "estate.map") == 1 && useMapTo(o1, B, "estate.map") == 1 && afA == 1 && afB == 1 && flA == kArena && flB == kArena &&
+          joinAf == 1 && fA > joinAfFrame && near(sa, 3000.0) && near(sb, 3000.0) &&
+          room.Phase() == nox::RoomPhase::Playing && f1.mapKey == "estate" && f1.mode == "arena" && game.mapSwitches() == 1 &&
+          game.HasNextRoundMap() && game.gameSettingsResent() == 2 && game.MapFileName() == "estate.map", m);
+    // ② 판 끝 → 다시 열기 때 대기 맵으로
+    game.DebugEndRound();
+    std::vector<nox::OutPacket> o2;
+    for (int k = 0; k < 40 && room.Phase() == nox::RoomPhase::Playing; ++k) { now += 500; srv.Tick(now, o2); }
+    now += 34; srv.Tick(now, o2);   // 대기 알림은 다음 옮기기 때
+    const int af2 = afWith(o2, A, kChat, fA), af2b = afWith(o2, B, kChat, fA);
+    const auto fct2 = fact(rooms, r);
+    std::snprintf(m, sizeof(m), "② 판 끝 — USE_MAP so_lod A %d B %d · 채팅 af(시각 > %u) A %d B %d · 자리 A %.0f,%.0f · 방 %s · 목록 %s/%s · 알림 A %d B %d · 전환 %llu · 걸어 둔 맵 %d · 맵 %s",
+                  useMapTo(o2, A, "so_lod.map"), useMapTo(o2, B, "so_lod.map"), fA, af2, af2b, game.DebugPosX(sa), game.DebugPosY(sa),
+                  nox::RoomPhaseName(room.Phase()), fct2.mapKey.c_str(), fct2.mode.c_str(), textTo(o2, A, "Back to the waiting room"),
+                  textTo(o2, B, "Back to the waiting room"), game.mapSwitches(), (int)game.HasNextRoundMap(), game.MapFileName().c_str());
+    Check(useMapTo(o2, A, "so_lod.map") >= 1 && useMapTo(o2, B, "so_lod.map") >= 1 && af2 >= 1 && af2b >= 1 &&
+          near(sa, 1000.0) && near(sb, 1000.0) && room.Phase() == nox::RoomPhase::Waiting &&
+          fct2.mapKey == "so_lod" && fct2.mode == "chat" && textTo(o2, A, "Back to the waiting room") == 1 &&
+          textTo(o2, B, "Back to the waiting room") == 1 && game.mapSwitches() == 2 && !game.HasNextRoundMap() && game.MapFileName() == "so_lod.map", m);
+    // ③ 두 바퀴 · ⑤ 같은 연결
+    const auto o3 = say(A, "!start");
+    std::snprintf(m, sizeof(m), "③⑤ 두 바퀴 — USE_MAP estate A %d · 방 %s · 전환 %llu · 시작 셈 %llu · 같은 연결(세션 A %lld→%lld · B %lld→%lld · 방 %d·%d)",
+                  useMapTo(o3, A, "estate.map"), nox::RoomPhaseName(room.Phase()), game.mapSwitches(), room.CmdCount(O::Started), (long long)sa,
+                  (long long)srv.Network().SessionIdOf(A), (long long)sb, (long long)srv.Network().SessionIdOf(B), rooms.RoomOfSession(sa),
+                  rooms.RoomOfSession(sb));
+    Check(useMapTo(o3, A, "estate.map") >= 1 && game.MapFileName() == "estate.map" && room.Phase() == nox::RoomPhase::Playing &&
+          game.mapSwitches() == 3 && room.CmdCount(O::Started) == 2 &&
+          srv.Network().SessionIdOf(A) == sa && srv.Network().SessionIdOf(B) == sb && rooms.RoomOfSession(sa) == r && rooms.RoomOfSession(sb) == r, m);
+    // ④ 대전 맵 없는 방
+    const std::string C = "10.43.0.3:3002", D = "10.43.0.4:4002";
+    std::vector<nox::OutPacket> jc;
+    join(srv, TrailerAs("carol", rNo, "10.43.0.3", 433), "10.43.0.3:3001", C, jc);
+    join(srv, TrailerAs("dave", rNo, "10.43.0.4", 434), "10.43.0.4:4001", D, jc);
+    now += 34; srv.Tick(now, jc);
+    const auto o4 = say(C, "!start");
+    std::snprintf(m, sizeof(m), "④ 대전 맵 없음 — 알림 %d · 맵 없음 셈 %llu · 방 %s · 전환 %llu · USE_MAP %d",
+                  textTo(o4, C, "No battle map"), rooms.Room(rNo).CmdCount(O::NoMap), nox::RoomPhaseName(rooms.Room(rNo).Phase()),
+                  rooms.Game(rNo).mapSwitches(), useMapTo(o4, C, "so_lod.map"));
+    Check(textTo(o4, C, "No battle map") == 1 && rooms.Room(rNo).CmdCount(O::NoMap) == 1 && rooms.Room(rNo).Phase() == nox::RoomPhase::Waiting &&
+          rooms.Game(rNo).mapSwitches() == 0 && useMapTo(o4, C, "so_lod.map") == 0, m);
+    std::printf("  10-16 플랜 B 작업 13b — 판 열기: !start → 대전 맵(USE_MAP · af 아레나 · 시작 자리) · 판 끝 → 대기 맵(af 채팅 · 알림) · 두 바퀴 · 같은 연결 · 대전 맵 없음\n");
+}
+
+// ── ★ 10-16 작업 13b 실물 — 진짜 맵 파일(So_LOD · Estate)로 서버처럼 차린 방에서 판 열기 · 판 끝(게임이 깔려 있을 때만) ─────────
+//   서버가 뜰 때와 같은 길(`LoadGameFiles` → `BuildGameTables` → `BuildMapCatalog`) · 방은 로비가 만드는 설정 그대로 방 관리자의 만들기 입구로.
+//   본다 — `USE_MAP` 의 이름 · CRC 가 맵 원본 값 · 사람 자리가 그 맵의 PlayerStart 가운데 하나 근처 · 바닥 물건 · 문 수가 그 맵 원본의 처음 상태
+void TestRoomMatchSwitchRealMaps() {
+    const std::string dir = "C:\\Program Files\\GOG Galaxy\\Games\\Nox";
+    const std::string waitPath = dir + "\\maps\\So_LOD\\So_LOD.map", battlePath = dir + "\\maps\\Estate\\Estate.map";
+    if (FILE* f = std::fopen(battlePath.c_str(), "rb")) std::fclose(f);
+    else { std::printf("  10-16 작업 13b 실물 — Estate.map 없음, 건너뜀\n"); return; }
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    char m[420];
+    GameFiles files;
+    LoadGameFiles(dir, files);
+    const auto tables = BuildGameTables(files);
+    const MapCatalog cat = BuildMapCatalog(files, tables, { waitPath, battlePath });
+    const auto wait = cat.Find("so_lod"), battle = cat.Find("estate");
+    Check(wait && battle, "실물 — 맵 원본 둘(so_lod · estate)을 못 차림");
+    if (!wait || !battle) return;
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    nox::CRoomManager& rooms = srv.Rooms();
+    WorldData wd;
+    wd.files = &files;
+    wd.tables = tables;
+    wd.maps = &cat;
+    rooms.SetWorldData(wd);
+    RoomSettings rs;   // `CChannelLobby::CreateRoomFor` 와 같은 칸
+    rs.creator = "alice";
+    rs.roomName = "alice's game";
+    rs.mapPath = waitPath;
+    rs.mode = "chat";
+    rs.standalone = true;
+    rs.closeWhenEmpty = true;
+    rs.maxPlayers = 8;
+    rs.battleMapPath = battlePath;
+    rs.battleMode = "arena";
+    rs.quiet = true;
+    const int r = rooms.CreateRoom(rs);
+    Check(r != nox::CRoomManager::kNoRoom, "실물 — 방을 못 차림");
+    if (r == nox::CRoomManager::kNoRoom) return;
+    nox::CRoom& room = rooms.Room(r);
+    nox::Server& game = rooms.Game(r);
+    auto join = [&](const std::vector<uint8_t>& tail, const std::string& p1, const std::string& p2, std::vector<nox::OutPacket>& out) {
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        srv.OnPacket(p1, tj.data(), tj.size(), out);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        srv.OnPacket(p2, cn.data(), cn.size(), out);
+        const int64_t sid = srv.Network().SessionIdOf(p2);
+        const auto ac = AcceptPkt("Jack");
+        srv.OnPacket(p2, ac.data(), ac.size(), out);
+        return sid;
+    };
+    // `USE_MAP <이름 32> <CRC 4>` — 그 이름의 것이 있으면 CRC 를 돌려준다(없으면 0)
+    auto useMapCrc = [](const std::vector<nox::OutPacket>& out, const std::string& to, const std::string& name) {
+        uint32_t crc = 0;
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i + 1 + 32 + 4 <= x.size(); ++i)
+                if (x[i] == static_cast<uint8_t>(nox::Op::USE_MAP) && std::memcmp(x.data() + i + 1, name.data(), name.size()) == 0 &&
+                    x[i + 1 + name.size()] == 0)
+                    crc = static_cast<uint32_t>(x[i + 33]) | (static_cast<uint32_t>(x[i + 34]) << 8) | (static_cast<uint32_t>(x[i + 35]) << 16) |
+                          (static_cast<uint32_t>(x[i + 36]) << 24);
+        return crc;
+    };
+    // 지금 맵 표의 PlayerStart 가운데 가장 가까운 것까지의 거리
+    auto nearestStart = [&](int64_t sid) {
+        double best = 1e18;
+        for (size_t i = 0; i < game.PlayerStartCount(); ++i) {
+            float x = 0.0f, y = 0.0f;
+            if (!game.PlayerStartAt(i, x, y)) continue;
+            const double dx = game.DebugPosX(sid) - x, dy = game.DebugPosY(sid) - y;
+            best = std::min(best, std::sqrt(dx * dx + dy * dy));
+        }
+        return best;
+    };
+    uint32_t now = 1000;
+    std::vector<nox::OutPacket> o; srv.Tick(now, o); now += 33; srv.Tick(now, o);
+    const std::string A = "10.44.0.1:1002", B = "10.44.0.2:2002";
+    const int64_t sa = join(TrailerAs("alice", r, "10.44.0.1", 441), "10.44.0.1:1001", A, o);
+    const int64_t sb = join(TrailerAs("bob", r, "10.44.0.2", 442), "10.44.0.2:2001", B, o);
+    const auto click = InputPacket(6);
+    srv.OnPacket(A, click.data(), click.size(), o);
+    srv.OnPacket(B, click.data(), click.size(), o);
+    now += 34; srv.Tick(now, o); now += 34; srv.Tick(now, o);
+    const size_t staticsWait = game.WorldStaticCount();
+    // 판 열기
+    std::vector<nox::OutPacket> o1;
+    std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+    for (const uint8_t b : { static_cast<uint8_t>(nox::Op::TEXT_MESSAGE), uint8_t{0}, uint8_t{0}, uint8_t{0x02}, uint8_t{0}, uint8_t{0}, uint8_t{0},
+                             uint8_t{0}, uint8_t{6}, uint8_t{0}, uint8_t{0} }) p.push_back(b);
+    for (const char c : std::string("!start")) p.push_back(static_cast<uint8_t>(c));
+    srv.OnPacket(A, p.data(), p.size(), o1);
+    now += 34; srv.Tick(now, o1);
+    const uint32_t crcA = useMapCrc(o1, A, battle->fileName);
+    const double dA = nearestStart(sa), dB = nearestStart(sb);
+    std::snprintf(m, sizeof(m), "실물 ① 판 열기 — USE_MAP %s CRC %08x(원본 %08x) · 시작 자리까지 A %.0f B %.0f(PlayerStart %zu곳) · 바닥 물건 %zu(원본 %zu · 대기 맵 %zu) · 문 %zu(원본 %zu) · 방 %s",
+                  battle->fileName.c_str(), crcA, battle->crc, dA, dB, game.PlayerStartCount(), game.WorldStaticCount(), battle->initial->statics.size(),
+                  staticsWait, game.WorldPropCount(), battle->initial->props.size(), nox::RoomPhaseName(room.Phase()));
+    Check(crcA == battle->crc && crcA != 0 && dA < 60.0 && dB < 60.0 && game.PlayerStartCount() == battle->tables->playerStarts.size() &&
+          game.WorldStaticCount() == battle->initial->statics.size() && game.WorldPropCount() == battle->initial->props.size() &&
+          room.Phase() == nox::RoomPhase::Playing, m);
+    std::printf("    %s\n", m);   // 실물 값은 통과해도 찍는다(진행 기록에 옮긴다)
+    // 판 끝 → 대기 맵
+    game.DebugEndRound();
+    std::vector<nox::OutPacket> o2;
+    for (int k = 0; k < 40 && room.Phase() == nox::RoomPhase::Playing; ++k) { now += 500; srv.Tick(now, o2); }
+    const uint32_t crcW = useMapCrc(o2, A, wait->fileName);
+    const double dA2 = nearestStart(sa);
+    std::snprintf(m, sizeof(m), "실물 ② 판 끝 — USE_MAP %s CRC %08x(원본 %08x) · 시작 자리까지 A %.0f(PlayerStart %zu곳) · 바닥 물건 %zu(원본 %zu) · 방 %s",
+                  wait->fileName.c_str(), crcW, wait->crc, dA2, game.PlayerStartCount(), game.WorldStaticCount(), wait->initial->statics.size(),
+                  nox::RoomPhaseName(room.Phase()));
+    Check(crcW == wait->crc && crcW != 0 && dA2 < 60.0 && game.PlayerStartCount() == wait->tables->playerStarts.size() &&
+          game.WorldStaticCount() == wait->initial->statics.size() && room.Phase() == nox::RoomPhase::Waiting, m);
+    std::printf("    %s\n", m);
+    std::printf("  10-16 플랜 B 작업 13b 실물 — So_LOD ↔ Estate: USE_MAP 이름 · CRC = 맵 원본 · 시작 자리 · 바닥 물건 · 문 = 그 맵 처음 상태\n");
 }
 
 // ── 10-10 토큰 작업 2 — 통신 층의 꼬리 떼기(`CUdpServer::OnDatagram`) ─────────
@@ -30894,6 +31220,8 @@ int main() {
     TestRooms();
     TestRoomRules();
     TestRoomChatCommands();
+    TestRoomMatchSwitch();
+    TestRoomMatchSwitchRealMaps();
     TestRoomFacts();
     TestChannelLobby();
     TestLobbyMapPaths();

@@ -770,6 +770,7 @@ const char* nox::CRoom::CmdOutcomeName(CmdOutcome o) {
         case CmdOutcome::NotHost: return "방장 아님";
         case CmdOutcome::NotWaiting: return "대기 아님";
         case CmdOutcome::TooFew: return "인원 모자람";
+        case CmdOutcome::NoMap: return "맵 없음";
         case CmdOutcome::Unknown: return "모르는 명령";
         case CmdOutcome::kCount: break;
     }
@@ -792,14 +793,18 @@ void nox::CRoom::HandleChatCommands() {
             if (!h || h->sessionId != c.sessionId) r = CmdOutcome::NotHost;
             else if (_phase != RoomPhase::Waiting) r = CmdOutcome::NotWaiting;
             else if (_game.inGameCount() < kMinPlayers) r = CmdOutcome::TooFew;
+            else if (!CanStartMatch()) r = CmdOutcome::NoMap;   // ★ 13b — 대전 맵 · 대기 맵 원본이 맵 목록에 있어야
             else r = CmdOutcome::Started;
         }
         ++_cmd[static_cast<size_t>(r)];
         char line[160];
         switch (r) {
             case CmdOutcome::Started:
-                _phase = RoomPhase::Playing;
                 _game.SendNotice("Match starting!");
+                StartMatch();   // ★ 13b — 대전 맵으로(접속 유지) · 판
+                break;
+            case CmdOutcome::NoMap:
+                _game.SendNoticeTo(c.sessionId, "No battle map on this server.");
                 break;
             case CmdOutcome::NotHost: {
                 const RoomMember* h = Host();
@@ -824,4 +829,36 @@ void nox::CRoom::HandleChatCommands() {
                   RoomPhaseName(_phase), _game.inGameCount());
     }
     _cmdBuf.clear();
+}
+
+// ★ 10-16 플랜 B 작업 13b — 판 열기 · 판 끝 뒤 대기로(`Docs/ROOMS_DESIGN.md` 결정 1 · 「10-16 조사」)
+std::shared_ptr<const MapOriginal> nox::CRoom::FindMap(const std::string& path) const {
+    if (!_maps || path.empty()) return nullptr;
+    return _maps->Find(MapKeyOf(path));
+}
+
+void nox::CRoom::StartMatch() {
+    const std::shared_ptr<const MapOriginal> battle = FindMap(_settings.battleMapPath);
+    const std::shared_ptr<const MapOriginal> wait = FindMap(_settings.mapPath);
+    if (!battle || !wait) return;   // 부르는 쪽이 `CanStartMatch` 로 걸렀다
+    _game.SwitchMap(battle->tables, battle->initial, nox::ModeGameFlags(_settings.battleMode));
+    _game.SetNextRoundMap(wait->tables, wait->initial, nox::ModeGameFlags(_settings.mode));   // 판 끝 → 대기 맵(판 끝 A)
+    _curMapKey = battle->key;
+    _curMode = _settings.battleMode;
+    _phase = RoomPhase::Playing;
+    _game.Log("[판] 시작 — 대전 맵 %s(%s) · 끝나면 대기 맵 %s · 사람 %zu\n", battle->key.c_str(), _settings.battleMode.c_str(), wait->key.c_str(),
+              _game.inGameCount());
+}
+
+void nox::CRoom::OnRoundRestarted() {
+    switch (_phase) {
+        case RoomPhase::Waiting: return;   // 대기 중에 판 끝이 났다(점수 한도 등) — 게임이 같은 맵을 다시 열었다. 방 상태는 그대로
+        case RoomPhase::Playing: break;
+    }
+    // 게임이 걸어 둔 다음 판 맵(대기 맵)으로 이미 바꿨다(`Server` 판 다시 열기 자리) — 방 상태만 대기로
+    _phase = RoomPhase::Waiting;
+    _curMapKey = _settings.mapPath.empty() ? std::string() : MapKeyOf(_settings.mapPath);
+    _curMode = _settings.mode;
+    _game.SendNotice("Back to the waiting room. Host: !start");
+    _game.Log("[판] 끝 — 대기 맵 %s 로 돌아옴(지금 맵 %s)\n", _curMapKey.c_str(), _game.MapFileName().c_str());
 }

@@ -1869,6 +1869,27 @@ void Server::ReopenMap() {
     }
 }
 
+// ★ 10-16 플랜 B 작업 13b — 다른 맵으로 다시 열기(머리 주석은 `Server.h` `SwitchMap`)
+//   ⚠ 원작은 `af`·`b0` 를 맵을 다 읽은 다음 바퀴에 보낸다(`gameloop.go:647-649`). 우리는 같은 틱에 `USE_MAP` 뒤로 신뢰 순서대로 —
+//     클라가 받는 차례는 같다(`USE_MAP` → `af`). 같은 틱이어도 되는지는 정품 확인 몫(`Docs/ROOMS_DESIGN.md` 10-16 조사 「미확인」)
+void Server::SwitchMap(std::shared_ptr<const MapTables> tables, std::shared_ptr<const MapState> initial, uint32_t gameFlags) {
+    AttachMap(std::move(tables), std::move(initial));
+    SetGameFlags(gameFlags);
+    ReopenMap();   // 세계 되돌리기(`ResetWorldFromMap`)가 길 찾기 격자도 굽는다 · 시작 자리는 새 맵 표의 것(`RestartPlayers`)
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) continue;
+        const uint32_t f = s.tickFrame + 1;   // `ReopenMap` 의 `USE_MAP` 과 같은 시각 — 접속 묶음의 `af`(접속 프레임)보다 크다
+        const std::vector<uint8_t> af = BuildGameSettings(gameSettings_, f);
+        Emit(s, /*reliable=*/true, /*stream=*/0, af.data(), af.size());
+        const std::vector<uint8_t> b0 = BuildGameSettings2(gameSettings_);
+        Emit(s, /*reliable=*/true, /*stream=*/0, b0.data(), b0.size());
+        ++gameSettingsResent_;
+    }
+    ++mapSwitches_;
+    Log("[맵 전환] %s · 모드 깃발 0x%05X · 사람 %zu\n", mt_->saMapName.c_str(), gameFlags, inGameCount());
+}
+
 void Server::SendRoundWinner(uint8_t op, uint16_t who, uint8_t reason) {
     for (auto& kv : sessions_) {
         Session& o = kv.second;
@@ -17240,7 +17261,16 @@ void Server::RunTick(int ticks) {
         caps_[0] = caps_[1] = caps_[2] = 0;
         // ★ 10-01 R4 — 맵을 다시 연다(세계 처음 상태 · 사람별 새로 들어온 것처럼 · 사람 몫 · 모두에게 `USE_MAP`) — `ReopenMap` 머리 주석.
         //   퀘스트 웨이브보다 **앞**이어야 한다 — 세계 되돌리기가 크리처를 비우므로 뒤에 두면 새 웨이브까지 지운다
-        ReopenMap();
+        // ★ 10-16 작업 13b — 방이 걸어 둔 다음 판 맵이 있으면 그 맵으로(판 끝 A — 대전 맵 → 대기 맵) · 한 번 쓰면 비운다
+        if (nextRoundTables_) {
+            std::shared_ptr<const MapTables> t = std::move(nextRoundTables_);
+            std::shared_ptr<const MapState> in = std::move(nextRoundInitial_);
+            nextRoundTables_.reset();
+            nextRoundInitial_.reset();
+            SwitchMap(std::move(t), std::move(in), nextRoundFlags_);
+        } else {
+            ReopenMap();
+        }
         // 퀘스트는 스테이지 1 부터 다시. 새 웨이브가 다음 틱에 밀려온다.
         if (questTotal_ > 0) {
             questStage_ = 0;
