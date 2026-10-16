@@ -34,8 +34,10 @@ std::string CChannelLobby::RoomNameFor(const std::string& nick) {
 bool CChannelLobby::ToLobbyRoom(const RoomFact& f, wol::LobbyRoom& lr) {
     if (f.creator.empty()) return false;   // 로비가 만들지 않은 방(실행 인자의 방) — 목록에 안 낸다
     lr.gameRoomId = static_cast<uint16_t>(f.roomId);
-    lr.creator = f.creator;
-    lr.name = f.name;
+    // ★ 10-16 결함 ② — 채널 · 목록 이름은 **지금 방장**(`RoomFact::host`). 만든 사람에 묶어 두면 판 중에 나간 옛 방장의
+    //   `Host Game`(제 이름 채널)이 그 방(판 중)으로 가 거절됐다. 방장이 만든 사람이면 방 설정의 이름 그대로
+    lr.host = f.host.empty() ? f.creator : f.host;
+    lr.name = lr.host == f.creator ? f.name : RoomNameFor(lr.host);
     lr.map = f.mapKey;
     lr.mode = f.mode;
     lr.players = static_cast<uint8_t>(std::min<size_t>(f.players, 255));

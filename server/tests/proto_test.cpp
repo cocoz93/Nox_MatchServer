@@ -25352,6 +25352,130 @@ void TestRooms() {
     std::printf("  10-09 플랜 B 작업 6b · 10-10 토큰 작업 2 — 방 나누기: 토큰 → 방 · 포트 바뀜 · 안 섞임 · 토큰 없음·IP·일회용·만료·서명·닫힌 방 거절 · 나감 · 방 닫기 · 정품 접속 시도 · 키 받은 뒤 · 열린 방식 · 설정 빠짐\n");
 }
 
+// ── ★ 10-16 사람 판 결함 ② — 방장이 바뀌면 채널 · 목록 이름도 새 방장 이름(`CRoom::HostName` · `ChannelLobby::ToLobbyRoom`) ─────────
+//   증상 — 판 중에 방장이 나간 뒤 다시 `Host Game` → 「서버 닫힘」. 채널이 만든 사람 이름에 묶여 제 이름 채널이 그 방(판 중)을 가리켰다
+//   ① 로비 `Host Game`(제 이름 채널 참가)으로 방 · 둘이 토큰으로 들어옴 · 목록 채널 = 만든 사람
+//   ② 판 중에 방장(alice)이 나감 → 목록 채널 · 이름 = bob · 이름 바뀜 셈 1
+//   ③ alice 가 다시 `Host Game` → **새 방**(토큰의 방 번호가 새 방 · 방 수 +1) — 판 중인 옛 방이 아니다
+//   ④ 마지막 사람이 나가 비어도 이름은 마지막 방장(bob) — 빈 이름 채널 · 만든 사람 이름(alice — 새 방과 겹침)으로 안 돌아감
+void TestHostRename() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
+    char m[360];
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    nox::CRoomManager& rooms = srv.Rooms();
+    nox::wol::LobbyConfig lc;
+    for (size_t i = 0; i < lc.joinKey.size(); ++i) lc.joinKey[i] = static_cast<uint8_t>(i + 1);
+    lc.gameServerPort = 18590;
+    const std::vector<std::string> waits = {"C:\\Nox\\maps\\So_LOD\\So_LOD.map"};
+    nox::CChannelLobby lobby(rooms, lc, RoomSettings{}, waits);
+    const uint32_t local = 0xCB007105u, peer = 0xC6336407u;
+    auto ev = [](Ev::Type t, int c, const char* line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = c;
+        if (line) e.lobbyLine = line;
+        return e;
+    };
+    std::vector<Rq> rq;
+    Ev open = ev(Ev::Type::LOBBY_OPENED, 5, nullptr);
+    open.lobbyPeerIp = peer;
+    open.lobbyLocalIp = local;
+    lobby.OnNetworkEvent(open, rq);
+    for (const char* l : {"NOXCLIENT 1", "NICK alice", "USER UserName HostName irc.westwood.com :RealName"})
+        lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, l), rq);
+    // 참가 답의 토큰 → 방 번호(-1 = 토큰 없음)
+    auto tokenRoom = [&](const std::vector<Rq>& q) {
+        for (const Rq& r : q) {
+            if (r.lobbyLine.rfind("NOXTOKEN ", 0) != 0) continue;
+            uint8_t raw[nox::kJoinTokenSize] = {};
+            nox::JoinToken tok;
+            if (nox::ParseHex(r.lobbyLine.substr(r.lobbyLine.rfind(' ') + 1), raw, sizeof(raw)) &&
+                nox::VerifyJoinToken(lc.joinKey, raw, sizeof(raw), nox::UnixNow(), peer, tok) == nox::JoinTokenCheck::Ok)
+                return static_cast<int>(tok.roomId);
+        }
+        return -1;
+    };
+    // 목록의 방 줄(326) 채널 · 방 정보 이름
+    auto listed = [&](std::vector<std::pair<std::string, std::string>>& out) {
+        std::vector<Rq> l;
+        lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, "LIST 37 37"), l);
+        out.clear();
+        for (const Rq& r : l) {
+            if (r.lobbyLine.rfind(": 326 ", 0) != 0) continue;
+            const size_t a = r.lobbyLine.find('#');
+            nox::wol::GameInfo g;
+            nox::wol::Unpack(r.lobbyLine.substr(r.lobbyLine.find("128:") + 4), g);
+            out.emplace_back(r.lobbyLine.substr(a, r.lobbyLine.find(' ', a) - a), g.name);
+        }
+    };
+    auto join = [&](const std::string& account, int room, const std::string& ip, uint64_t nonce, std::vector<nox::OutPacket>& out) {
+        const auto tail = TrailerAs(account, room, ip, nonce);
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        srv.OnPacket(ip + ":1", tj.data(), tj.size(), out);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        srv.OnPacket(ip + ":2", cn.data(), cn.size(), out);
+        const auto ac = AcceptPkt("Jack");
+        srv.OnPacket(ip + ":2", ac.data(), ac.size(), out);
+    };
+    std::vector<nox::OutPacket> t0; srv.Tick(1000, t0); srv.Tick(1033, t0);
+    // ①
+    std::vector<Rq> q1;
+    lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, "JOINGAME #alice's_game 1 "), q1);
+    const int r = tokenRoom(q1);
+    std::vector<nox::OutPacket> o;
+    if (r >= 0) {
+        join("alice", r, "10.41.0.1", 411, o);
+        join("bob", r, "10.41.0.2", 412, o);
+    }
+    srv.Tick(1066, o);   // 방 시계를 세운다 — 방이 위 틱 뒤에 생겨 첫 틱은 기준만 잡는다(안 세우면 뒤 틱의 나감 처리가 안 돈다)
+    std::vector<std::pair<std::string, std::string>> l1, l2, l4;
+    listed(l1);
+    const size_t members1 = r >= 0 && rooms.HasRoom(r) ? rooms.Room(r).Members().size() : 0;
+    std::snprintf(m, sizeof(m), "① 새 방 %d · 구성원 %zu · 목록 %zu줄 채널 %s 이름 %s", r, members1, l1.size(),
+                  l1.empty() ? "" : l1[0].first.c_str(), l1.empty() ? "" : l1[0].second.c_str());
+    Check(r >= 0 && members1 == 2 && l1.size() == 1 && l1[0].first == "#alice's_game" && l1[0].second == "alice's game", m);
+    if (r < 0) return;
+    // ②
+    rooms.Room(r).SetPhase(nox::RoomPhase::Playing);
+    std::vector<nox::OutPacket> ol; srv.OnPacket("10.41.0.1:2", leave, sizeof(leave), ol); srv.Tick(1100, ol);
+    listed(l2);
+    std::snprintf(m, sizeof(m), "② 판 중 방장 나감 — 방장 %s · 목록 %zu줄 채널 %s 이름 %s · 이름 바뀜 %llu",
+                  rooms.Room(r).Host() ? rooms.Room(r).Host()->account.c_str() : "(없음)", l2.size(),
+                  l2.empty() ? "" : l2[0].first.c_str(), l2.empty() ? "" : l2[0].second.c_str(), rooms.Stats().hostRenames);
+    Check(l2.size() == 1 && l2[0].first == "#bob's_game" && l2[0].second == "bob's game" && rooms.Stats().hostRenames == 1, m);
+    // ③
+    const size_t before = rooms.RoomCount();
+    std::vector<Rq> q3;
+    lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, "JOINGAME #alice's_game 1 "), q3);
+    const int r3 = tokenRoom(q3);
+    std::snprintf(m, sizeof(m), "③ 옛 방장 다시 Host Game — 토큰 방 %d(옛 방 %d 아님) · 방 수 %zu → %zu · 그 방 상태 %s", r3, r, before,
+                  rooms.RoomCount(), r3 >= 0 && rooms.HasRoom(r3) ? nox::RoomPhaseName(rooms.Room(r3).Phase()) : "-");
+    Check(r3 >= 0 && r3 != r && rooms.RoomCount() == before + 1 && rooms.Room(r3).Phase() == nox::RoomPhase::Waiting, m);
+    // ④
+    std::vector<nox::OutPacket> ol2; srv.OnPacket("10.41.0.2:2", leave, sizeof(leave), ol2); srv.Tick(1200, ol2);
+    listed(l4);
+    std::string chanOld;
+    for (const auto& kv : l4) if (kv.first != "#alice's_game") chanOld = kv.first;
+    std::snprintf(m, sizeof(m), "④ 옛 방 빔 — 방장 %s · 이름 %s · 목록 %zu줄 · 옛 방 채널 %s", rooms.Room(r).Host() ? "있음" : "없음",
+                  rooms.Room(r).HostName().c_str(), l4.size(), chanOld.c_str());
+    Check(rooms.Room(r).Host() == nullptr && rooms.Room(r).HostName() == "bob" && l4.size() == 2 && chanOld == "#bob's_game", m);
+    // ⑤ 이름 없는 사람(열린 방식 — `AssignDirect`)이 방장이 돼도 이름은 그대로(빈 이름 채널 `#'s_game` 이 안 생긴다)
+    {
+        nox::CRoomManager r5;
+        RoomSettings rs;
+        rs.creator = "carol";
+        const int id = r5.CreateRoom(rs);
+        r5.AssignDirect(77, id);
+        std::snprintf(m, sizeof(m), "⑤ 이름 없는 방장 — 방장 이름 %s(carol) · 이름 바뀜 %llu(0)", r5.Room(id).HostName().c_str(), r5.Stats().hostRenames);
+        Check(r5.Room(id).Host() && r5.Room(id).HostName() == "carol" && r5.Stats().hostRenames == 0, m);
+    }
+    std::printf("  10-16 결함 ② — 방장이 바뀌면 채널 · 목록 이름도 새 방장 · 옛 방장의 Host Game 은 새 방 · 빈 방은 마지막 방장 이름\n");
+}
+
 // ── ★ 10-16 플랜 B 작업 12a — 방 규칙: 구성원 · 방장 · 판 중 / 꽉 참 거절 ─────────
 //   ① 구성원 = 들어온 차례 · 로비 이름(토큰) · 방장 = 맨 앞 ② 방장이 나가면 다음 사람 · 방장 아닌 사람이 나가면 그대로
 //   ③ 꽉 참 → 접속 시도에 사유 11 · 거절된 토큰은 안 씀(자리가 나면 같은 토큰으로 들어옴) ④ 판 중 → 사유 4 · 대기로 돌면 받음
@@ -31459,6 +31583,7 @@ int main() {
     TestRoomManager();
     TestRooms();
     TestRoomRules();
+    TestHostRename();
     TestRoomChatCommands();
     TestRoomMatchSwitch();
     TestRoomMatchSwitchRealMaps();

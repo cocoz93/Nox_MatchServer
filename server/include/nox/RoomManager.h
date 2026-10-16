@@ -75,6 +75,7 @@ public:
         _settings = s;
         _curMapKey = s.mapPath.empty() ? std::string() : MapKeyOf(s.mapPath);   // ★ 10-16 작업 13b — 지금 맵 · 모드 = 방을 만든 맵 · 모드
         _curMode = s.mode;
+        _hostName = s.creator;   // ★ 10-16 결함 ② — 첫 방장 이름은 만든 사람(들어오기 전에도 목록 · 채널이 그 이름)
     }
     // ★ 10-16 작업 13b — 판을 열 때 붙을 맵 원본(서버가 뜰 때 읽은 맵 목록 — 방 관리자가 만들 때 준다 · 시험은 직접)
     void SetMapCatalog(const MapCatalog* maps) { _maps = maps; }
@@ -96,6 +97,10 @@ public:
     void SetPhase(RoomPhase p) { _phase = p; }
     const std::vector<RoomMember>& Members() const { return _members; }
     const RoomMember* Host() const { return _members.empty() ? nullptr : &_members.front(); }
+    // ★ 10-16 결함 ② — 방장의 로비 이름. 방장이 바뀌면(이름 있는 사람일 때) 따라가고, 방이 비어도 마지막 방장 이름이 남는다.
+    //   로비가 채널 `#<방장>'s_game` · 목록 이름을 이것으로 짓는다 — 만든 사람 이름에 묶여 있어 판 중에 나간 옛 방장의
+    //   `Host Game`(제 이름 채널)이 그 방(판 중)으로 가 「서버 닫힘」(사유 4)을 받았다(10-16 사람 판)
+    const std::string& HostName() const { return _hostName; }
 
     // ── ★ 10-16 작업 12b — 채팅 명령(`RoomTick.cpp`). 방 관리자가 게임에 이벤트를 넘긴 뒤 부른다 — 게임이 쌓은 명령(`Server::SwapOutChatCommands`)을 처리 ──
     //   `!start` = 방장 · 대기 · 게임 안 사람 `kMinPlayers` 이상이면 판 — 대전 맵으로 바꾼다(★ 13b · 대전 맵 · 대기 맵 원본이 없으면 `NoMap`).
@@ -134,6 +139,7 @@ private:
     // ★ 10-16 작업 12a
     RoomPhase _phase = RoomPhase::Waiting;
     std::vector<RoomMember> _members;          // 들어온 차례 — 세션표(`CRoomManager::_seats`)의 이 방 세션과 같은 사람들
+    std::string _hostName;                     // ★ 10-16 결함 ② — `HostName`
     // ★ 10-16 작업 12b
     unsigned long long _cmd[static_cast<size_t>(CmdOutcome::kCount)] = {};
     std::vector<Server::ChatCommand> _cmdBuf;   // 다시 쓰는 그릇
@@ -175,6 +181,7 @@ struct CRoomStats {
     unsigned long long rejectPlaying = 0;      // 판 중(결정 3) — `ConnectError::Closed`
     unsigned long long rejectFull = 0;         // 방 최대 인원(`RoomSettings::maxPlayers`) — `ConnectError::Full`
     unsigned long long hostChanges = 0;        // 방장이 생기거나 바뀜(첫 사람 포함 · 마지막 사람이 나가 비는 것은 안 셈)
+    unsigned long long hostRenames = 0;        // ★ 10-16 결함 ② — 방장 이름(채널 이름)이 다른 이름으로 바뀜
 };
 
 // ★ 10-14 플랜 B 작업 9e — 돌고 있는 방 하나의 사실. 로비가 목록을 그린다 — 목록의 정본은 방 관리자의 이것 하나
@@ -183,6 +190,7 @@ struct RoomFact {
     int roomId = -1;
     std::string name;      // 방 설정의 이름(`RoomSettings::roomName`)
     std::string creator;   // ★ 10-14 작업 8d — 방을 만든 사람의 로비 이름(`RoomSettings::creator` — 비면 로비 목록에 안 나옴)
+    std::string host;      // ★ 10-16 결함 ② — 지금 방장의 로비 이름(`CRoom::HostName` — 처음엔 만든 사람 · 비어도 마지막 방장)
     std::string mapKey;    // 맵 열쇠(`MapKeyOf` — 녹음 모드는 빈 것)
     std::string mode;      // 방 설정의 모드(`arena` · `chat` …)
     size_t players = 0;    // 게임 안 사람 수(`Server::inGameCount`)
@@ -263,6 +271,7 @@ private:
     // ★ 10-16 작업 12a — 구성원 넣기 · 빼기(방장이 바뀌면 셈 · 한 줄)
     void AddMember(CRoom& room, int64_t sessionId, const std::string& account);
     void RemoveMember(CRoom& room, int64_t sessionId);
+    void NoteHostName(CRoom& room);   // ★ 10-16 결함 ② — `CRoom::HostName` 을 지금 방장으로(이름 있는 사람일 때)
     void LogHost(const CRoom& room, const char* why) const;
     void LogJoin(const char* what, const NetworkEvent& ev, int roomId, const JoinToken& tok, const char* why) const;
     void RespondJoin(int64_t sessionId, bool accept, const std::vector<uint8_t>& rejectMsg);

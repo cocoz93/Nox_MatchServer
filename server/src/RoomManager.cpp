@@ -68,6 +68,7 @@ std::vector<RoomFact> CRoomManager::ListRooms() const {
         f.roomId = room._id;
         f.name = room._settings.roomName;
         f.creator = room._settings.creator;
+        f.host = room._hostName;      // ★ 10-16 결함 ②
         f.mapKey = room._curMapKey;   // ★ 10-16 작업 13b — 지금 맵 · 모드(판 중이면 대전 맵 — 옛 값 = 방 설정의 맵 · 모드)
         f.mode = room._curMode;
         f.players = room._game.inGameCount();
@@ -181,8 +182,18 @@ void CRoomManager::AddMember(CRoom& room, int64_t sessionId, const std::string& 
     room._members.push_back(RoomMember{ sessionId, account });
     if (wasEmpty) {
         ++_stats.hostChanges;
+        NoteHostName(room);
         LogHost(room, "첫 사람");
     }
+}
+
+// ★ 10-16 결함 ② — 방장 이름(`CRoom::HostName`)을 지금 방장으로. 이름 없는 사람(열린 방식)이 방장이면 그대로 둔다 —
+//   로비가 짓는 채널 이름이 빈 이름(`#'s_game`)이 되지 않게
+void CRoomManager::NoteHostName(CRoom& room) {
+    const RoomMember* h = room.Host();
+    if (!h || h->account.empty() || h->account == room._hostName) return;
+    room._hostName = h->account;
+    ++_stats.hostRenames;
 }
 
 void CRoomManager::RemoveMember(CRoom& room, int64_t sessionId) {
@@ -192,6 +203,7 @@ void CRoomManager::RemoveMember(CRoom& room, int64_t sessionId) {
         ms.erase(ms.begin() + static_cast<long>(i));
         if (i == 0 && !ms.empty()) {   // 방장이 나갔다 — 다음 사람(들어온 차례)
             ++_stats.hostChanges;
+            NoteHostName(room);
             LogHost(room, "방장이 나감");
             // ★ 10-16 작업 12b — 남은 사람에게 알림(게임 요청으로 쌓여 다음 옮기기 때 나간다)
             char line[96];

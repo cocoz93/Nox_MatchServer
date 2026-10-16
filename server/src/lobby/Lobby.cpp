@@ -93,14 +93,14 @@ const LobbyRoom* Lobby::FindRoom(const std::vector<LobbyRoom>& rooms, const std:
 
 bool Lobby::IsRoomHost(const std::string& name) const {
     for (const LobbyRoom& r : rooms_.LobbyRooms())
-        if (r.creator == name) return true;
+        if (r.host == name) return true;
     return false;
 }
 
 // ★ 10-14 작업 8d — 방 정보 = 틀 + 그 방의 이름 · 맵 · 모드 · 인원(옛 「방마다 이름만 방장 이름으로」 — 10-10)
 std::string Lobby::RoomInfo(const LobbyRoom& r, int codepage) const {
     GameInfo g = cfg_.room;
-    g.name = ToCodepage(r.name.empty() ? r.creator : r.name, codepage, kNameBytes);   // ★ 10-14 작업 10a
+    g.name = ToCodepage(r.name.empty() ? r.host : r.name, codepage, kNameBytes);   // ★ 10-14 작업 10a
     if (!r.map.empty()) g.map = r.map;
     uint16_t bits = 0;
     if (ModeFlagsOf(r.mode, bits)) g.flags = static_cast<uint16_t>((g.flags & ~kMapTypeMask) | bits);
@@ -275,7 +275,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         // `1 32 37 1 0 <내 IP> 1` — 녹음 그대로, 내 IP 만 바꾼다(앞 칸들 뜻 확인 안 함)
         out.push_back({conn, ":" + c.nick + "!u@h JOINGAME 1 32 37 1 0 " + std::to_string(c.peerIp) + " 1 :" + room});
         out.push_back({conn, ": 332 u " + room + " " + RoomInfo(lr, c.codepage)});   // 방 정보가 ':' 로 시작한다
-        out.push_back({conn, ": 353 u = " + room + " :" + Members353(room, lr.creator, gameIp)});
+        out.push_back({conn, ": 353 u = " + room + " :" + Members353(room, lr.host, gameIp)});
         out.push_back({conn, ": 366 u " + room + " :"});
         return;
     }

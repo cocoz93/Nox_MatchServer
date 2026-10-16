@@ -43,8 +43,9 @@ constexpr int kNoxClientHostGameVersion = 2;
 //   (옛 설정 파일 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리)
 struct LobbyRoom {
     uint16_t gameRoomId = 0;   // 게임 서버의 방 번호 — 입장 토큰에 싣는다
-    std::string creator;       // 방을 만든 사람의 로비 이름 — 채널 `#<만든 사람>'s_game` · 353 의 방장 자리(@)
-    std::string name;          // 방 이름(UTF-8) — 방 정보의 이름 칸(비면 만든 사람 이름 — 옛 「방 정보 이름도 방장 이름」) · 실을 때 접속의 코드페이지로
+    std::string host;          // 방장의 로비 이름 — 채널 `#<방장>'s_game` · 353 의 방장 자리(@)
+                               //   ★ 10-16 결함 ② — 옛 이름 `creator`(만든 사람). 방장이 바뀌면 채널도 따라간다(채널이 `RoomFact::host` 로 채움)
+    std::string name;          // 방 이름(UTF-8) — 방 정보의 이름 칸(비면 방장 이름 — 옛 「방 정보 이름도 방장 이름」) · 실을 때 접속의 코드페이지로
     std::string map;           // 맵 열쇠(소문자 · 확장자 없음) — 방 정보의 맵 칸(비면 틀의 맵)
     std::string mode;          // 방 설정의 모드 — 방 정보 깃발의 맵 종류(`ModeFlagsOf` · 모르는 이름이면 틀의 깃발)
     uint8_t players = 0;       // 게임 안 사람 수 — 방 정보의 인원
@@ -108,7 +109,7 @@ public:
     // 소켓 루프가 찍을 기록(처음 본 명령 등). 꺼내면 비운다.
     std::vector<std::string> TakeLog();
 
-    static std::string Channel(const LobbyRoom& r) { return "#" + r.creator + "'s_game"; }
+    static std::string Channel(const LobbyRoom& r) { return "#" + r.host + "'s_game"; }
     const LobbyStats& Stats() const { return stats_; }
 
 private:

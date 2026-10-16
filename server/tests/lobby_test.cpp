@@ -148,10 +148,10 @@ nox::JoinKey LobbyTestKey() {
 constexpr uint32_t kLobbyTestNow = 1760064016;   // 시험 시계(유닉스 초)
 
 // ★ 10-14 작업 8d — 로비는 방 목록을 갖지 않고 채널이 준다(`ILobbyRooms`). 시험은 가짜 — 옛 설정 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리
-nox::wol::LobbyRoom FakeRoom(uint16_t id, const char* creator) {
+nox::wol::LobbyRoom FakeRoom(uint16_t id, const char* host) {
     nox::wol::LobbyRoom r;
     r.gameRoomId = id;
-    r.creator = creator;
+    r.host = host;   // ★ 10-16 결함 ② — 옛 `creator`(채널 · 353 방장 자리는 지금 방장)
     return r;
 }
 struct FakeRooms final : nox::wol::ILobbyRooms {
