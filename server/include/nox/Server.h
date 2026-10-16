@@ -781,6 +781,17 @@ struct Target {
 //    그래서 한 사람이 세션 둘로 보인다. 지금은 그대로 둔다.
 //    ★ 10-08 조각 4c — 이제 게임에는 이벤트(접속·게임 메시지·닫기)가 온 세션만 든다. 접속 시도만 한 옛 포트는
 //      통신 층에만 있다가 30초 뒤 걷힌다(`CUdpServer::Tick`) — 게임 쪽에서는 한 사람이 하나로 보인다.
+// ★ 10-16 결함 ③ 조사 — 사람이 왜 나가나. 옛 깃발 둘(`closing` · `timedOut`)을 하나로 — 「자리 비우기」가 까닭마다 줄 · 셈을 가른다
+//   (전에는 셋 다 「조용해서 내보냄」 한 문구라 사람 판 뒤에 「나간 것을 서버가 알았나」를 못 갈랐다)
+enum class LeaveBy : uint8_t {
+    None,       // 안 나감
+    CloseMsg,   // `0x0a CLIENT_CLOSE` — 접속을 닫는다(통신 층 `DISCONNECTED` · CLIENT_CLOSE · 원작 클라 `SendClientClose`)
+    Outgoing,   // `0xae OUTGOING_CLIENT` — 판에서 빠진다(게임 메시지)
+    Timeout,    // 통신 층 시간 초과(`DISCONNECTED` · TIMEOUT — 판에 들면 90초 · 아니면 30초 조용) — 이 사람에게만 `TIMEOUT_NOTIFICATION`
+    kCount
+};
+const char* LeaveByName(LeaveBy b);
+
 struct Session {
     int64_t sessionId = 0;        // 세션 번호(10-08 조각 4 — 전에는 주소 글자)
     std::string addrText;    // 그 세션의 주소 — 기록용
@@ -915,10 +926,10 @@ struct Session {
     //   `playerAddGold_4FA590` 이 더하고 `playerSubGold_4FA5D0` 이 뺀다(0 아래로는 안 내려간다).
     uint32_t  gold      = 0;
 
-    // `0x0a CLIENT_CLOSE` 를 받았다 — 다음 틱에 걷어낸다(30초 타임아웃을 안 기다린다).
-    bool closing = false;
-    // ★ 10-09 조각 5a — 통신 층이 시간 초과를 알렸다(`DISCONNECTED` · TIMEOUT). 다음 「자리 비우기」가 `TIMEOUT_NOTIFICATION` 을 보내고 걷어낸다.
-    bool timedOut = false;
+    // 나간다는 것을 알았다 — 다음 틱 「자리 비우기」가 걷어낸다(나감 알림이면 30초 타임아웃을 안 기다린다).
+    //   ★ 10-09 조각 5a — 시간 초과도 통신 층이 알린다(`DISCONNECTED` · TIMEOUT) — 그때만 `TIMEOUT_NOTIFICATION` 을 보낸다.
+    //   ★ 10-16 — 옛 `closing`(0a · ae) · `timedOut` 을 까닭 하나로(`LeaveBy` · 넣기는 `MarkLeave` — 나감 알림이 시간 초과를 이긴다)
+    LeaveBy leaveBy = LeaveBy::None;
 
     // ★ **겨눈 자리** — `0xac MOUSE` 가 나르는 월드 좌표다(⭕ 정품 표본 18,700+).
     //   투사체가 여기를 향해 난다. 겨눔이 없거나 낡았으면 몸 방향으로 되돌아간다.
@@ -3484,7 +3495,7 @@ public:
     }
     void DebugSetClosing(int64_t sessionId) {
         auto i = sessions_.find(sessionId);
-        if (i != sessions_.end()) i->second.closing = true;
+        if (i != sessions_.end()) MarkLeave(i->second, LeaveBy::CloseMsg);
     }
     // ★ 10-09 조각 5d — 옛 `DebugTouch`(10-d 시험용 · 받은 시각 적기)는 통신 층 일이라 `CSyncHost::DebugTouch` 로 옮겼다
     void DebugLeave(int64_t sessionId) { auto it = sessions_.find(sessionId); if (it != sessions_.end()) SetInGame(it->second, false); }
@@ -4056,6 +4067,12 @@ public:
     unsigned long long spawnFromDefault() const { return spawnFromDefault_; }
     unsigned long long joinInfo97Ok() const { return joinInfo97Ok_; }
     unsigned long long joinInfo97Null() const { return joinInfo97Null_; }
+    // ★ 10-16 결함 ③ 조사 — 「자리 비우기」가 걷어 낸 사람의 까닭별 수(`LeaveBy`)
+    unsigned long long leaveBy(LeaveBy b) const { return leaveBy_[static_cast<size_t>(b)]; }
+    // 나간 까닭을 적는다 — 먼저 온 것이 남되, 나감 알림(0a · ae)은 시간 초과를 이긴다(옛 `closing` 이 `timedOut` 보다 먼저 보이던 차례)
+    static void MarkLeave(Session& s, LeaveBy why) {
+        if (s.leaveBy == LeaveBy::None || (s.leaveBy == LeaveBy::Timeout && why != LeaveBy::Timeout)) s.leaveBy = why;
+    }
     // ★ 10-16 — 독립 모드 입장이 무엇으로 시작했나(`JoinStart` 갈래마다 · 녹음 묶음 입장은 안 셈)
     unsigned long long joinStart(JoinStart js) const { return joinStart_[static_cast<size_t>(js)]; }
     bool IsObserver(int64_t x) const { auto i = sessions_.find(x); return i != sessions_.end() && i->second.observer; }
@@ -5265,6 +5282,7 @@ private:
     unsigned long long joinInfo97Ok_ = 0;     // 97B 를 그대로 실었다
     unsigned long long joinInfo97Null_ = 0;   // **없어서 0 으로 채웠다**(색이 검정이 된다)
     unsigned long long joinStart_[3] = {};    // ★ 10-16 — `JoinStart` 차례(바로 · 관전 · 관전 글 없음)
+    unsigned long long leaveBy_[static_cast<size_t>(LeaveBy::kCount)] = {};   // ★ 10-16 — `LeaveBy` 차례(None 칸은 0)
     size_t acceptBodyLenLast_ = 0;            // 마지막 CLIENT_ACCEPT 본문 길이
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long newPlayerGearBits_ = 0;   // ★ 09-28 — 2d 104·108 에 지금 갑옷·무기 비트를 실은 횟수

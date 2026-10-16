@@ -77,6 +77,18 @@ void PutU32(uint8_t* p, uint32_t v) {
 
 }  // namespace
 
+// ★ 10-16 결함 ③ 조사 — 「자리 비우기」 줄의 까닭(`Server.h` `LeaveBy`)
+const char* LeaveByName(LeaveBy b) {
+    switch (b) {
+        case LeaveBy::None:     return "까닭 없음";
+        case LeaveBy::CloseMsg: return "접속 닫기(0a)";
+        case LeaveBy::Outgoing: return "판에서 빠짐(ae)";
+        case LeaveBy::Timeout:  return "시간 초과(조용함)";
+        case LeaveBy::kCount:   break;
+    }
+    return "?";
+}
+
 Session& Server::SessionFor(int64_t sessionId) {
     auto it = sessions_.find(sessionId);
     if (it != sessions_.end()) return it->second;
@@ -2893,8 +2905,8 @@ size_t Server::OnNetworkEvent(const NetworkEvent& ev) {
             // `0x0a CLIENT_CLOSE` — 게임 메시지 `0xae OUTGOING_CLIENT` 와 같은 길이다(OnGameMessages 의 「정상 종료 알림」 주석).
             // ★ 10-09 조각 5a — 시간 초과도 이 이벤트로 온다(통신 층 감시). 걷어내기는 둘 다 Tick 「자리 비우기」가 한다.
             switch (ev.reason) {
-                case DisconnectReason::CLIENT_CLOSE: s.closing = true; break;
-                case DisconnectReason::TIMEOUT:      s.timedOut = true; break;
+                case DisconnectReason::CLIENT_CLOSE: MarkLeave(s, LeaveBy::CloseMsg); break;
+                case DisconnectReason::TIMEOUT:      MarkLeave(s, LeaveBy::Timeout); break;
             }
             return 0;
         case NetworkEvent::Type::RECEIVED:
@@ -3805,7 +3817,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
             //   클라가 깨끗하게 못 나갔다. 그것이 「재접속 안 됨」으로 보였다.
             //   ★ 10-08 조각 3 — `0x0a` 는 접속 제어라 통신 층이 받아 `DISCONNECTED` 로 넘긴다(`OnNetworkEvent`).
             case Op::OUTGOING_CLIENT: {
-                s.closing = true;
+                MarkLeave(s, LeaveBy::Outgoing);
                 ++handled_;
                 break;
             }
@@ -17336,11 +17348,11 @@ void Server::RunTick(int ticks) {
             //   「한 번도 못 받은 세션」 검사에 걸리면 `0x0a` 를 보내고도 안 나간다 —
             //   틱이 아직 0 이면 `lastSeenFrame` 도 0 이라 늘 걸린다(시험이 잡아냈다).
             //   (10-09 조각 5a 전 이야기 — 그 문지기는 통신 층으로 갔고 `lastSeenFrame` 도 없어졌다. 지금 아래는 `timedOut` 하나)
-            if (o.closing) { gone.push_back(kv.first); continue; }
             // ★ 10-09 조각 5a — 시간 초과 판정은 통신 층이 한다(`CUdpServer::Tick` → `DISCONNECTED` · TIMEOUT → `timedOut`).
             //   옛 판정 둘은 거기로 옮겼다 — 아직 한 번도 못 받은 세션(이제 막 만든 것)은 건드리지 않는다(`heard`) ·
             //   ★ 10-d — 정답지(`server.go:440`)는 **입력을 받는 중**이면 90초, 아니면 30초이다(한도는 `SetInGame` 이 알림).
-            if (o.timedOut) gone.push_back(kv.first);
+            // ★ 10-16 — 옛 `closing` · `timedOut` 둘이 `leaveBy` 하나가 됐다(까닭은 아래 줄 · 셈에)
+            if (o.leaveBy != LeaveBy::None) gone.push_back(kv.first);
         }
         for (int64_t sessionId : gone) {
             // ★ 나갔다고 **알린다.** 전에는 조용히 지우기만 해서 남은 사람들 화면에
@@ -17350,24 +17362,29 @@ void Server::RunTick(int ticks) {
             //   ⚠ 지우기 **전에** 번호를 떠 둔다. 지운 뒤에는 읽을 자리가 없다.
             uint16_t netCode = 0;
             bool wasInGame = false;
+            LeaveBy why = LeaveBy::None;
             {
                 auto g = sessions_.find(sessionId);
                 if (g != sessions_.end()) {
                     netCode   = g->second.netCode;
                     wasInGame = g->second.inGame;
+                    why       = g->second.leaveBy;
                     // 깃발을 들고 있었으면 그 자리에 떨군다 — 안 그러면 깃발이
                     // 사라진 사람 손에 남아 판이 영영 안 끝난다.
                     if (wasInGame) DropFlag(sessionId);
                 }
             }
-            Log("조용해서 내보냄: %s\n", AddrText(sessionId));
+            // ★ 10-16 — 옛 「조용해서 내보냄」 한 문구를 까닭별로(10-16 사람 판 결함 ③ — 나간 것을 서버가 알았나 · 어떻게 알았나)
+            ++leaveBy_[static_cast<size_t>(why)];
+            Log("[나감] %s — %s · 번호 %u · 게임 안 %s\n", AddrText(sessionId), LeaveByName(why), static_cast<unsigned>(netCode),
+                wasInGame ? "예" : "아니오");
             if (wasInGame) PlayerCancelSpells(sessionId);   // 오브젝트 지움 → playerCancelSpells(object.go:70, 4-a3)
                         // 10-d PlayerDisconnect: notify BEFORE erasing.
             //   timeout (reason 3): 0xC6 to that player, then 0xAE to the rest.
             //   a player that announced a clean quit (closing) is not a timeout.
             {
                 auto g = sessions_.find(sessionId);
-                if (g != sessions_.end() && !g->second.closing) {
+                if (g != sessions_.end() && why == LeaveBy::Timeout) {
                     const uint8_t to[1] = { static_cast<uint8_t>(Op::TIMEOUT_NOTIFICATION) };
                     Emit(g->second, /*reliable=*/true, /*stream=*/0, to, sizeof(to));
                 }

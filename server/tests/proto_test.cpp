@@ -25825,6 +25825,7 @@ void TestRoomMatchSwitch() {
     uint32_t joinAfFrame = 0, joinAfFlags = 0;
     const int joinAf = afTo(ja, A, joinAfFrame, joinAfFlags);
     // 첫 클릭 = 관전 풀기(조작 코드 6) — 관전자는 다시 열 때 자리를 안 옮긴다(`RestartPlayers` · 원본 `ListUnits` — 유닛 있는 사람만)
+    //   ★ 10-16 결함 ① 뒤로는 채팅 방에 들면 관전이 아니다(`JoinStartFor`) — 이 클릭은 막힌 근접(13c)이라 아무 일 없다. 옛 자리라 남겨 둔다
     {
         const auto click = InputPacket(6);
         std::vector<nox::OutPacket> oc;
@@ -28510,6 +28511,58 @@ void TestLeaveNotify() {
 
     std::printf("  10-d — 떠남 알림: c5 1바이트(쫓겨나는 그 사람만) · ae 3바이트(나머지에게) · "
                 "c6 1바이트 · 시간 초과는 판에 들면 90초 아니면 30초\n");
+}
+
+// ── ★ 10-16 결함 ③ 조사 — 나간 까닭을 가른다(`LeaveBy` · 「자리 비우기」의 `[나감]` 줄 · 셈) ─────────
+//   옛 「조용해서 내보냄」은 세 길이 한 문구라 사람 판 뒤에 「나간 것을 서버가 알았나」를 못 갈랐다
+//   ① `0a`(통신 층 접속 닫기) ② `ae`(게임 메시지) ③ 시간 초과(판 밖 30초) — 서버를 따로 세워 **그 칸만** 1 · 사람 0 · `c6` 는 ③ 에만
+//   ④ 차례 — 나감 알림은 시간 초과를 이기고(옛 `closing` 이 먼저) 시간 초과는 나감 알림을 못 덮는다 · 먼저 온 나감 알림이 남는다
+void TestLeaveReasons() {
+    using LB = nox::LeaveBy;
+    const std::string a = "10.16.3.1:1631";
+    char m[260];
+    auto c6To = [&](const std::vector<nox::OutPacket>& out) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, a)) if (x.size() == 1 && x[0] == static_cast<uint8_t>(nox::Op::TIMEOUT_NOTIFICATION)) ++n;
+        return n;
+    };
+    struct R { unsigned long long by[4] = {}; size_t left = 99; int c6 = -1; };
+    auto run = [&](int route) {
+        R r;
+        nox::CSyncHost srv;
+        srv.Network().SetXorKey(0);
+        std::vector<nox::OutPacket> t; srv.Tick(100000, t); srv.Tick(100100, t);
+        const int64_t sid = srv.DebugEnterGame(a, 1631);
+        srv.DebugTouch(sid);
+        std::vector<nox::OutPacket> out;
+        uint32_t now = 100100;
+        switch (route) {
+            case 0: { const uint8_t p[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_CLOSE) }; srv.OnPacket(a, p, sizeof(p), out); break; }
+            case 1: { const uint8_t p[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) }; srv.OnPacket(a, p, sizeof(p), out); break; }
+            default: srv->DebugLeave(sid); now = 131200; break;   // 판 밖 — 한도 30초
+        }
+        now += 34; srv.Tick(now, out);
+        for (int k = 0; k < 4; ++k) r.by[k] = srv->leaveBy(static_cast<LB>(k));
+        r.left = srv->SessionCount();
+        r.c6 = c6To(out);
+        return r;
+    };
+    const R r0 = run(0), r1 = run(1), r2 = run(2);
+    std::snprintf(m, sizeof(m), "①②③ 까닭별 셈(없음·0a·ae·시간 초과) — 0a [%llu %llu %llu %llu] 사람 %zu c6 %d · ae [%llu %llu %llu %llu] 사람 %zu c6 %d · 시간 초과 [%llu %llu %llu %llu] 사람 %zu c6 %d",
+                  r0.by[0], r0.by[1], r0.by[2], r0.by[3], r0.left, r0.c6, r1.by[0], r1.by[1], r1.by[2], r1.by[3], r1.left, r1.c6,
+                  r2.by[0], r2.by[1], r2.by[2], r2.by[3], r2.left, r2.c6);
+    Check(r0.by[0] == 0 && r0.by[1] == 1 && r0.by[2] == 0 && r0.by[3] == 0 && r0.left == 0 && r0.c6 == 0 &&
+          r1.by[0] == 0 && r1.by[1] == 0 && r1.by[2] == 1 && r1.by[3] == 0 && r1.left == 0 && r1.c6 == 0 &&
+          r2.by[0] == 0 && r2.by[1] == 0 && r2.by[2] == 0 && r2.by[3] == 1 && r2.left == 0 && r2.c6 == 1, m);
+    // ④
+    nox::Session s1, s2, s3;
+    nox::Server::MarkLeave(s1, LB::Timeout);  nox::Server::MarkLeave(s1, LB::Outgoing);
+    nox::Server::MarkLeave(s2, LB::CloseMsg); nox::Server::MarkLeave(s2, LB::Timeout);
+    nox::Server::MarkLeave(s3, LB::Outgoing); nox::Server::MarkLeave(s3, LB::CloseMsg);
+    std::snprintf(m, sizeof(m), "④ 차례 — 시간 초과 뒤 ae → %s · 0a 뒤 시간 초과 → %s · ae 뒤 0a → %s", nox::LeaveByName(s1.leaveBy),
+                  nox::LeaveByName(s2.leaveBy), nox::LeaveByName(s3.leaveBy));
+    Check(s1.leaveBy == LB::Outgoing && s2.leaveBy == LB::CloseMsg && s3.leaveBy == LB::Outgoing, m);
+    std::printf("  10-16 결함 ③ 조사 — 나간 까닭: 0a · ae · 시간 초과를 줄 · 셈으로 가름(c6 는 시간 초과에만) · 나감 알림이 시간 초과를 이김\n");
 }
 
 // ── 묶음 10-e — 일지·장 끝·관리자 답 ─────────────────────────────────
@@ -31722,6 +31775,7 @@ int main() {
     TestMissileBlockMore();
     TestDebugXpAndSpell();
     TestLeaveNotify();
+    TestLeaveReasons();
     TestJournalAndSysop();
     TestSpellSounds();
     TestPickupAndAbilSounds();
