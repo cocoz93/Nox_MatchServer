@@ -24857,6 +24857,7 @@ void TestChannelLobby() {
     s.mapPath = "C:\\Nox\\maps\\So_LOD\\So_LOD.map";
     s.mode = "chat";
     s.closeWhenEmpty = true;
+    s.maxPlayers = 8;   // ★ 10-16 작업 12c
     const int made = rooms.CreateRoom(s);
     nox::wol::LobbyConfig lc;
     for (size_t i = 0; i < lc.joinKey.size(); ++i) lc.joinKey[i] = static_cast<uint8_t>(i + 1);
@@ -24899,6 +24900,24 @@ void TestChannelLobby() {
                   rq.size(), (int)sendOk, n326, chan.c_str(), g.name.c_str(), g.map.c_str(), g.flags & nox::wol::kMapTypeMask);
     Check(sendOk && rq.size() == 3 && n326 == 1 && chan == "#wn's_game" && unpacked && g.name == "wn game" && g.map == "so_lod" &&
           (g.flags & nox::wol::kMapTypeMask) == nox::wol::kMapChat, m);
+    {   // ★ 10-16 작업 12c — 방 사실 → 방 정보: 최대 인원 = 방 설정 · 판 중이면 닫힘(access 1) · 대기로 돌면 열림
+        auto infoNow = [&](nox::wol::GameInfo& out) {
+            std::vector<Rq> l;
+            lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, "LIST 37 37"), l);
+            for (const Rq& r : l)
+                if (r.lobbyLine.rfind(": 326 ", 0) == 0) return nox::wol::Unpack(r.lobbyLine.substr(r.lobbyLine.find("128:") + 4), out);
+            return false;
+        };
+        nox::wol::GameInfo gw, gp, gb;
+        const bool okW = infoNow(gw);
+        rooms.Room(made).SetPhase(nox::RoomPhase::Playing);
+        const bool okP = infoNow(gp);
+        rooms.Room(made).SetPhase(nox::RoomPhase::Waiting);
+        const bool okB = infoNow(gb);
+        std::snprintf(m, sizeof(m), "①' 방 정보 — 대기 최대 %d 닫힘 %d · 판 중 최대 %d 닫힘 %d · 대기로 돌면 닫힘 %d", gw.maxPlayers, gw.access,
+                      gp.maxPlayers, gp.access, gb.access);
+        Check(okW && okP && okB && gw.maxPlayers == 8 && gw.access == 0 && gp.maxPlayers == 8 && gp.access == 1 && gb.access == 0, m);
+    }
 
     rq.clear();
     lobby.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, "JOINGAME #wn's_game 1 "), rq);
@@ -24925,8 +24944,9 @@ void TestChannelLobby() {
     std::snprintf(m, sizeof(m), "③ 게임 사건은 무시 · QUIT → 607 보낸 뒤 끊기 %d · 셈(접속 %llu · 받은 줄 %llu · 낸 줄 %llu · 끊김 %llu) · 실행 인자 방 %d 그대로 %d",
                   (int)quitClose, lobby.Stats().opened, lobby.Stats().linesIn, lobby.Stats().linesOut, lobby.Stats().closed, plain,
                   (int)rooms.HasRoom(plain));
-    Check(quitClose && lobby.Stats().opened == 1 && lobby.Stats().linesIn == 7 && lobby.Stats().closed == 1 &&
-          lobby.Stats().linesOut == 3 + 3 + 5 + 2 + 1 && rooms.HasRoom(plain), m);   // 로그인 375·372·376 · 목록 · 참가 · 목록 · 607
+    // ★ 10-16 작업 12c — ①' 목록 세 번(받은 줄 +3 · 낸 줄 321·326·323 × 3)을 더했다
+    Check(quitClose && lobby.Stats().opened == 1 && lobby.Stats().linesIn == 7 + 3 && lobby.Stats().closed == 1 &&
+          lobby.Stats().linesOut == 3 + 3 + 3 * 3 + 5 + 2 + 1 && rooms.HasRoom(plain), m);   // 로그인 375·372·376 · 목록 · ①' 목록 셋 · 참가 · 목록 · 607
 
     // ④ ★ 10-14 작업 10a — 새 방: 틀(진단 · 시야 손잡이) + 만든 사람 · 이름 「닉's game」(닉 8바이트까지 · 10-16 영문) · 대기 맵 후보 하나 · 채팅 · 비면 닫음.
     //   방 관리자는 읽기 전용 데이터가 없어 빈 방(세계 없음) — 방 설정이 제대로 실리는지만 본다. 대기 맵 후보가 없으면 안 만든다

@@ -38,6 +38,8 @@ bool CChannelLobby::ToLobbyRoom(const RoomFact& f, wol::LobbyRoom& lr) {
     lr.map = f.mapKey;
     lr.mode = f.mode;
     lr.players = static_cast<uint8_t>(std::min<size_t>(f.players, 255));
+    lr.maxPlayers = static_cast<uint8_t>(std::min(std::max(f.maxPlayers, 0), 255));   // ★ 10-16 작업 12c
+    lr.playing = f.phase == RoomPhase::Playing;
     return true;
 }
 

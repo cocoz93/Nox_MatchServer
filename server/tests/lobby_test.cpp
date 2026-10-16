@@ -343,8 +343,27 @@ void ChannelLobbyUnitTests() {
         }
     }
     Check(n326 == 1 && chan == "#wn's_game" && ipCol == std::to_string(local), "326 = 만든 사람 채널 · 방장 주소 칸 = 붙은 내 쪽 주소");
-    Check(g.name == "wn game" && g.map == "so_lod" && (g.flags & kMapTypeMask) == kMapChat && g.players == 2 && g.maxPlayers == 31,
-          "방 정보 = 방의 이름 · 맵 · 모드(chat) · 인원 + 틀의 최대 인원");
+    Check(g.name == "wn game" && g.map == "so_lod" && (g.flags & kMapTypeMask) == kMapChat && g.players == 2 && g.maxPlayers == 31 &&
+          g.access == 0,
+          "방 정보 = 방의 이름 · 맵 · 모드(chat) · 인원 + 틀의 최대 인원 · 열림");
+    {   // ★ 10-16 작업 12c — 방의 최대 인원이 있으면 그 값 · 판 중이면 닫힘(access 1)
+        LobbyRoom r2 = r;
+        r2.maxPlayers = 8;
+        r2.playing = true;
+        FakeRooms fake2;
+        fake2.rooms = {r2};
+        Lobby lb2(cfg, fake2);
+        std::vector<Out> o2;
+        lb2.OnConnect(1, peer, local);
+        for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName", "LIST 37 37"}) lb2.OnLine(1, l, o2);
+        GameInfo g2;
+        int n2 = 0;
+        for (const auto& o : o2) {
+            const auto t = Tokens(o.line);
+            if (t.size() == 11 && t[1] == "326") { ++n2; Unpack(t[10].substr(4), g2); }
+        }
+        Check(n2 == 1 && g2.maxPlayers == 8 && g2.access == 1 && g2.players == 2, "방 정보 = 방의 최대 인원(8) · 판 중 닫힘(access 1)");
+    }
     out.clear();
     lb.OnLine(1, "JOINGAME #wn's_game 1 ", out);
     const auto first = out.empty() ? std::vector<std::string>{} : Tokens(out[0].line);

@@ -105,6 +105,8 @@ std::string Lobby::RoomInfo(const LobbyRoom& r, int codepage) const {
     uint16_t bits = 0;
     if (ModeFlagsOf(r.mode, bits)) g.flags = static_cast<uint16_t>((g.flags & ~kMapTypeMask) | bits);
     g.players = r.players;
+    if (r.maxPlayers != 0) g.maxPlayers = r.maxPlayers;   // ★ 10-16 작업 12c
+    if (r.playing) g.access = 1;                          // ★ 10-16 작업 12c — 닫힘(정품 목록이 어떻게 그리는지는 정품 확인)
     return Pack(g);
 }
 

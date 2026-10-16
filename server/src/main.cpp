@@ -668,7 +668,9 @@ int main(int argc, char** argv) {
         nox::wol::LobbyConfig lc;
         lc.joinKey = joinKey;
         lc.gameServerPort = static_cast<uint16_t>(opt.port);
-        lc.room.maxPlayers = 31;   // 옛 `nox_lobby` 기본값 그대로(방 최대 인원은 아직 안 정함 — `ROOMS_DESIGN.md` 「안 정한 것」)
+        // ★ 10-16 작업 12c — 틀의 최대 인원(옛 `nox_lobby` 기본값 31). 로비가 만든 방은 방 설정의 값(`CChannelLobby::kRoomMaxPlayers`)이
+        //   방 정보에 실리므로 이 값은 그 값이 없는 방에만 — 같은 값으로 둔다(`ROOMS_DESIGN.md` 「10-16 정한 것」)
+        lc.room.maxPlayers = static_cast<uint8_t>(nox::CChannelLobby::kRoomMaxPlayers);
         lc.room.resolution = 2;    // 녹음 다섯 방 중 셋이 1024x768
         // ★ 10-14 작업 10a — 새 방의 틀 = 실행 인자의 방 설정(진단 · 시야 손잡이 — 맵 · 모드 · 이름 · 만든 사람은 로비가 정한다).
         //   대기 맵 후보는 서버가 뜰 때 차린 맵 원본에 있는 것만(못 읽은 맵은 빼고 한 줄)
