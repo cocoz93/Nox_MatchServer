@@ -25902,6 +25902,102 @@ void TestRoomMatchSwitchRealMaps() {
     std::printf("  10-16 플랜 B 작업 13b 실물 — So_LOD ↔ Estate: USE_MAP 이름 · CRC = 맵 원본 · 시작 자리 · 바닥 물건 · 문 = 그 맵 처음 상태\n");
 }
 
+// ── ★ 10-16 플랜 B 작업 13c — 채팅 모드(대기 맵) 싸움 막기 ─────────
+//   같은 조작을 아레나 깃발 / 채팅 깃발로 두 번 — 아레나에서는 일어나고(대조군) 채팅에서는 안 일어나야 「막았다」
+//   ① 근접 — 맨손 한 대 ② 주문 — 불덩이 ③ 능력 — `7a 4` ④ 방패 — 나무 방패 든 워리어가 가만히 있으면 8틱째 올림
+void TestChatModeNoFight() {
+    const std::string a = "10.0.0.1:1000", b = "10.0.0.2:1000";
+    using CB = nox::Server::ChatBlock;
+    char m[360];
+    struct R {
+        int dmg = 0;
+        size_t missiles = 0;
+        int abilCd = 0;
+        int shieldUp = -1;
+        unsigned long long blocked[4] = {};
+    };
+    auto run = [&](bool chat) {
+        const uint32_t flags = nox::ModeGameFlags(chat ? "chat" : "arena");
+        R r;
+        {   // ① 근접(TestMelee ① 과 같은 차림)
+            nox::CSyncHost srv;
+            for (int i = 23; i <= 25; ++i) srv->SetPlayerAnimFrames(i, 8, 0);
+            srv.DebugEnterGame(a, 728);
+            srv.DebugEnterGame(b, 729);
+            srv->DebugMoveTo(Sid(srv, b), 1025, 1000);
+            srv->SetGameFlags(flags);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            const auto pkt = InputPacket(6);
+            srv.OnPacket(a, pkt.data(), pkt.size(), out);
+            for (int t = 0; t < 14; ++t) { ms += 33; srv.Tick(ms, out); }
+            r.dmg = nox::kDefaultMaxHealth - srv->HealthOf(Sid(srv, b));
+            r.blocked[0] = srv->chatBlocked(CB::Melee);
+        }
+        {   // ② 주문(TestSpellDamage ① 과 같은 차림)
+            nox::CSyncHost srv;
+            RegAllSpells(srv);
+            RegSpell(srv, 27, 0);
+            RegFireballTypes(srv);
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+            srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+            srv->DebugSetClass(Sid(srv, a), nox::CharClass::Wizard);
+            srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+            srv->DebugMoveTo(Sid(srv, b), 1300, 1000);
+            srv->SetGameFlags(flags);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            ms += 34; srv.Tick(ms, out);
+            CastAndWait(srv, a, 27, /*onSelf=*/false, ms, out);
+            r.missiles = srv->missiles();
+            r.blocked[1] = srv->chatBlocked(CB::Spell);
+        }
+        {   // ③ 능력(TestAbilities ⑨ 와 같은 차림)
+            nox::CSyncHost srv;
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+            srv->SetGameFlags(flags);
+            std::vector<nox::OutPacket> out;
+            srv->DebugAbilAward(Sid(srv, a), 4, false);
+            srv.TakeOut(out);
+            std::vector<uint8_t> p(nox::kWireHeaderSize + 2, 0);
+            p[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::TRY_ABILITY);
+            p[nox::kWireHeaderSize + 1] = 4;
+            srv.OnPacket(a, p.data(), p.size(), out);
+            r.abilCd = srv->DebugAbilCooldown(Sid(srv, a), 4);
+            r.blocked[2] = srv->chatBlocked(CB::Ability);
+        }
+        {   // ④ 방패(TestShieldBlock ① 과 같은 차림)
+            nox::CSyncHost srv;
+            srv->SetPlayerAnimFrames(40, 6, 1);
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+            srv.DebugEnterGame(b, 729);
+            srv->DebugMoveTo(Sid(srv, b), 5000, 5000);
+            srv->SetGameFlags(flags);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            for (int t = 1; t <= 30 && r.shieldUp < 0; ++t) {
+                ms += 33; srv.Tick(ms, out);
+                if (srv->DebugStateOf(Sid(srv, a)) == 15) r.shieldUp = t;
+            }
+            r.blocked[3] = srv->chatBlocked(CB::Shield);
+        }
+        return r;
+    };
+    const R ar = run(false), ch = run(true);
+    std::snprintf(m, sizeof(m), "13c 대조(아레나) — 근접 피해 %d · 불덩이 %zu · 능력 쉬는 시간 %d · 방패 %d틱째 · 막음 근접 %llu 주문 %llu 능력 %llu 방패 %llu",
+                  ar.dmg, ar.missiles, ar.abilCd, ar.shieldUp, ar.blocked[0], ar.blocked[1], ar.blocked[2], ar.blocked[3]);
+    Check(ar.dmg > 0 && ar.missiles == 1 && ar.abilCd == 30 && ar.shieldUp == 8 && ar.blocked[0] == 0 && ar.blocked[1] == 0 &&
+          ar.blocked[2] == 0 && ar.blocked[3] == 0, m);
+    std::snprintf(m, sizeof(m), "13c 채팅 — 근접 피해 %d · 불덩이 %zu · 능력 쉬는 시간 %d · 방패 %d틱째 · 막음 근접 %llu 주문 %llu 능력 %llu 방패 %llu",
+                  ch.dmg, ch.missiles, ch.abilCd, ch.shieldUp, ch.blocked[0], ch.blocked[1], ch.blocked[2], ch.blocked[3]);
+    Check(ch.dmg == 0 && ch.missiles == 0 && ch.abilCd == 0 && ch.shieldUp < 0 && ch.blocked[0] >= 1 && ch.blocked[1] == 1 &&
+          ch.blocked[2] == 1 && ch.blocked[3] > 0, m);
+    std::printf("  10-16 플랜 B 작업 13c — 채팅 모드 싸움 막기: 근접 · 주문 · 능력 · 방패(아레나 대조군은 다 일어남)\n");
+}
+
 // ── 10-10 토큰 작업 2 — 통신 층의 꼬리 떼기(`CUdpServer::OnDatagram`) ─────────
 //   방 관리자를 거치지 않고 통신 층이 낸 이벤트와 셈을 바로 본다.
 //   ⚠ 처음 짠 방 시험(`TestRooms`)은 꼬리를 안 떼도 통과했다 — 시험 토큰의 일회용 번호(101 등)에 0 바이트가 많아, 꼬리를 메시지로
@@ -31222,6 +31318,7 @@ int main() {
     TestRoomChatCommands();
     TestRoomMatchSwitch();
     TestRoomMatchSwitchRealMaps();
+    TestChatModeNoFight();
     TestRoomFacts();
     TestChannelLobby();
     TestLobbyMapPaths();

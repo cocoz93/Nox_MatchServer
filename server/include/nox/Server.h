@@ -3575,6 +3575,12 @@ public:
     };
     void SwapOutChatCommands(std::vector<ChatCommand>& into) { into.swap(chatCommands_); chatCommands_.clear(); }
     unsigned long long chatCommandsQueued() const { return chatCommandsQueued_; }
+    // ★ 10-16 플랜 B 작업 13c — 채팅 모드(게임 깃발 0x80 · 대기 맵)면 싸움을 막는다. 원작 자리와 짝 —
+    //   근접 `object_update.go:543` · 주문 요청 `sdecode.c:227` · 능력 요청 `network_server.go:95` · 방패 올리기 `object_update.go:333`.
+    //   원작의 손짓 음소(`server/object_player.go:235`)와 조작 코드 28~30 주문(`object_update.go:581·592·603`)은 우리가 아직 안 받는 코드라 입구가 없다
+    bool ChatMode() const { return (gameSettings_.gameFlags & 0x80u) != 0; }
+    enum class ChatBlock : uint8_t { Melee, Spell, Ability, Shield, kCount };
+    unsigned long long chatBlocked(ChatBlock b) const { return chatBlocked_[static_cast<size_t>(b)]; }   // 막은 수(방패는 막은 틱 수)
     // 몇 판을 마쳤나. 0 이면 아직 한 판도 안 끝난 것이다.
     unsigned long long roundsPlayed() const { return roundsPlayed_; }
     unsigned long long roundFrozenTicks() const { return roundFrozenTicks_; }   // ★ 10-01 R1 — 판끝이라 세계를 멈춘 틱 수
@@ -5300,6 +5306,7 @@ private:
     unsigned long long dequipped_ = 0;
     unsigned long long timerAsks_ = 0;          // `0xd4` 를 받은 횟수
     unsigned long long chats_ = 0;              // 되돌려 방송한 채팅 수
+    unsigned long long chatBlocked_[static_cast<size_t>(ChatBlock::kCount)] = {};   // ★ 10-16 작업 13c
     std::vector<ChatCommand> chatCommands_;     // ★ 10-16 작업 12b — 방이 꺼내 갈 채팅 명령
     unsigned long long chatCommandsQueued_ = 0; // 쌓은 채팅 명령 수(퍼뜨린 채팅 `chats_` 에는 안 듦)
     unsigned long long aims_ = 0;               // `0xac` 로 받은 겨눔 수

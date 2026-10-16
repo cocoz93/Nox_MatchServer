@@ -3234,6 +3234,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 ++abilHeard_;                      // ★ 받은 것 자체를 먼저 센다
                 if (!s.inGame || it.bodyLen() != 1) { ++abilBadPacket_; break; }
                 if (s.observer) { ++abilObserver_; }
+                else if (ChatMode()) ++chatBlocked_[static_cast<size_t>(ChatBlock::Ability)];   // ★ 10-16 작업 13c — 채팅 모드
                 else AbilityDo(s, it.body()[0]);
                 ++handled_;
                 break;
@@ -3831,6 +3832,11 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 // ★ 09-23 nine-defects 3-b — 협동(2048)이 아니면 **떠 있는 동안(+16 & 0x4000) 시전 거절** · 알림 없음(`sdecode.c:221~226`)
                 if (!(gameSettings_.gameFlags & 0x800u) && (PlayerObjFlags(s) & 0x4000)) {
                     if (ok) ++spellRefusedAirborne_;
+                    ok = false;
+                }
+                // ★ 10-16 작업 13c — 게임 깃발 128(채팅 모드)이면 넣지 않는다 · 알림 없음(`sdecode.c:227` `!check(128) && v34`)
+                if (ok && ChatMode()) {
+                    ++chatBlocked_[static_cast<size_t>(ChatBlock::Spell)];
                     ok = false;
                 }
                 if (ok) {                                  // 게임 깃발 128(Chat 모드) 아님
@@ -5345,13 +5351,18 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
             jumpedImplA = true;
         } else if (canMove && s.moveState == kPlayerStateIdle) {
             // 가만(13) — `object_update.go:327~338` 방패를 들었으면 들어오는 투사체가 있거나 가만히 30/4 틱을 넘기면 올리기(15)
-            //   ⚠ 웨이포인트(sub_4F9A80)는 묶음 6 · 채팅 모드는 없음
+            //   ⚠ 웨이포인트(sub_4F9A80)는 묶음 6 · 채팅 모드는 아래(★ 10-16 작업 13c — 옛 주석 「채팅 모드는 없음」)
             // ★ 3-a — 머리에서 깃발 &= 0xFFFFBFFE(`:329`) — 떠 있음(0x4000)을 끈다(0x1 BELOW 는 사람에게 안 켜진다)
             if (s.airborne) { s.airborne = false; ++airborneOffIdle_; }
             if ((ArmorEquipOf(s) & 0x3000000) &&
                 !(!IncomingMissile(s) && (frame - s.stateFrame) <= kServerTickRate / 4)) {
-                PlayerSetState(s, 15, frame);
-                s.animFrame = 0;
+                // ★ 10-16 작업 13c — 채팅 모드면 안 올린다(`:333` 첫 갈래 `HasGame(GameModeChat)` → 그대로 둠)
+                if (ChatMode()) {
+                    ++chatBlocked_[static_cast<size_t>(ChatBlock::Shield)];
+                } else {
+                    PlayerSetState(s, 15, frame);
+                    s.animFrame = 0;
+                }
             }
         } else if (canMove && s.moveState == 14) {
             // ★ 09-29 — 활을 쏜 뒤(`object_update.go:340~346`) — 칸은 활 애니 33 의 마지막 · 상태 시작(Field34)에서 1초(틱 수)가 넘으면 13.
@@ -5459,7 +5470,11 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
                 }
             }
             // CCAction(`:536~544`) — playerCanAttack(버프 25 없음 · 상태 23 아님) → 공 차기 아니면 playerInputAttack
-            if (!jumpedImplB && s.actionThisTick && !orientationOnly && !s.buffs.Has(25) && s.moveState != 23) PlayerInputAttack(s, frame);
+            if (!jumpedImplB && s.actionThisTick && !orientationOnly && !s.buffs.Has(25) && s.moveState != 23) {
+                // ★ 10-16 작업 13c — 채팅 모드면 안 친다(`object_update.go:543` — playerCanAttack 다음에 `!GameModeChat`)
+                if (ChatMode()) ++chatBlocked_[static_cast<size_t>(ChatBlock::Melee)];
+                else PlayerInputAttack(s, frame);
+            }
         }
         // ★ 09-23 nine-defects 1-a — **살금살금 끄기**(`object_update.go:616~621` LABEL_247).
         //   이번 틱 ImplA 가 걷기·달리기 갈래를 탔는데(`v68`) 조작을 거친 뒤 상태가 걷기·달리기가 아니면 끈다 —
