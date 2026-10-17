@@ -792,6 +792,16 @@ enum class LeaveBy : uint8_t {
 };
 const char* LeaveByName(LeaveBy b);
 
+// ★ 10-17 결함 ③ — 판에서 빠진(`ae`) 사람의 남은 연결. 게임 자리(`Session`)는 지우고 통신 층 연결만 둔다 —
+//   원작은 `ae` 때 판에서만 빼고(`network_server.go:111-114` → `player.go:637-708`) 연결은 `0a`(`netstr/conn.go:518`) ·
+//   시간 초과(`server.go:444-452`)에 닫는다. 그동안 틱마다 시각(`27`)이 가고(`server.go:456-463`) 그 머리에 확인이 실린다.
+//   게임 자리를 남기지 않는 까닭 — 게임 쪽 `sessions_.find` 117곳(주인 찾기 11곳 — 소환수 · 투사체 …)이 「있음」으로 볼 수 있다
+struct LeftLink {
+    uint32_t tickFrame = 0;   // 그 사람 시계(`Session::tickFrame`) — 이어서 센다
+    uint16_t netCode = 0;     // 기록용
+    std::string addr;         // 기록용(`Session::addrText`)
+};
+
 struct Session {
     int64_t sessionId = 0;        // 세션 번호(10-08 조각 4 — 전에는 주소 글자)
     std::string addrText;    // 그 세션의 주소 — 기록용
@@ -929,7 +939,9 @@ struct Session {
     // 나간다는 것을 알았다 — 다음 틱 「자리 비우기」가 걷어낸다(나감 알림이면 30초 타임아웃을 안 기다린다).
     //   ★ 10-09 조각 5a — 시간 초과도 통신 층이 알린다(`DISCONNECTED` · TIMEOUT) — 그때만 `TIMEOUT_NOTIFICATION` 을 보낸다.
     //   ★ 10-16 — 옛 `closing`(0a · ae) · `timedOut` 을 까닭 하나로(`LeaveBy` · 넣기는 `MarkLeave` — 나감 알림이 시간 초과를 이긴다)
+    //   ★ 10-17 결함 ③ — `ae` 는 이 칸이 아니라 `exitAsked` 에 적는다(판에서만 빠짐 · 연결은 둠 — `LeftLink`). 이 칸은 연결 닫기(`0a` · 시간 초과)만
     LeaveBy leaveBy = LeaveBy::None;
+    bool exitAsked = false;
 
     // ★ **겨눈 자리** — `0xac MOUSE` 가 나르는 월드 좌표다(⭕ 정품 표본 18,700+).
     //   투사체가 여기를 향해 난다. 겨눔이 없거나 낡았으면 몸 방향으로 되돌아간다.
@@ -1565,6 +1577,10 @@ public:
     // ⚠ `SERVER_QUIT_ACK`(0xC8)은 **서버가 보내는 것이 아니다** — 클라가 `SERVER_QUIT` 에 되보내는 답이다
     //   (`network_client.go:140`). 서버는 **받아서** 끊는다(`network_server.go:104`)
     void SendOutgoingClient(uint16_t netCode, int64_t except);
+    // ★ 10-17 결함 ③ — 판에 남은 사람 화면에서 그 몸을 지운다(`2e` 사람 목록 · `31` 세계 — 「자리 비우기」 두 단계가 같이 씀)
+    void BroadcastPlayerGone(uint16_t netCode);
+    // ★ 10-17 결함 ③ — 남은 연결(`LeftLink`)을 닫는다(`0a` · 시간 초과 — 시간 초과면 `c6`) · 통신 층에 끊기 요청(→ 방 자리 · 방장 넘김)
+    void CloseLeftLink(int64_t sessionId, DisconnectReason reason);
 
     // ── 묶음 10-e 일지·장 끝·관리자 답 ────────────────────────────────
     //
@@ -4069,10 +4085,17 @@ public:
     unsigned long long joinInfo97Null() const { return joinInfo97Null_; }
     // ★ 10-16 결함 ③ 조사 — 「자리 비우기」가 걷어 낸 사람의 까닭별 수(`LeaveBy`)
     unsigned long long leaveBy(LeaveBy b) const { return leaveBy_[static_cast<size_t>(b)]; }
+    unsigned long long closedAfterOut() const { return closedAfterOut_; }
     // 나간 까닭을 적는다 — 먼저 온 것이 남되, 나감 알림(0a · ae)은 시간 초과를 이긴다(옛 `closing` 이 `timedOut` 보다 먼저 보이던 차례)
+    // ★ 10-17 결함 ③ — 칸이 둘이다. `ae`(판에서 빠짐)는 `exitAsked` 에, `0a` · 시간 초과(연결 닫기)는 `leaveBy` 에.
+    //   ⚠ 한 칸이던 때는 `ae` 뒤 같은 틱의 `0a` 가 묻혔다(먼저 온 것이 남는다) — 연결을 두는 지금은 그러면 30초 남는다(`TestOutgoingKeepsLink` ⓕ)
     static void MarkLeave(Session& s, LeaveBy why) {
+        if (why == LeaveBy::Outgoing) { s.exitAsked = true; return; }
         if (s.leaveBy == LeaveBy::None || (s.leaveBy == LeaveBy::Timeout && why != LeaveBy::Timeout)) s.leaveBy = why;
     }
+    // ★ 10-17 결함 ③ — 판에서 빠지고 연결만 남은 수(`LeftLink`)
+    size_t LeftLinkCount() const { return leftLinks_.size(); }
+    unsigned long long leftLinkIgnored() const { return leftLinkIgnored_; }
     // ★ 10-16 — 독립 모드 입장이 무엇으로 시작했나(`JoinStart` 갈래마다 · 녹음 묶음 입장은 안 셈)
     unsigned long long joinStart(JoinStart js) const { return joinStart_[static_cast<size_t>(js)]; }
     bool IsObserver(int64_t x) const { auto i = sessions_.find(x); return i != sessions_.end() && i->second.observer; }
@@ -5283,6 +5306,9 @@ private:
     unsigned long long joinInfo97Null_ = 0;   // **없어서 0 으로 채웠다**(색이 검정이 된다)
     unsigned long long joinStart_[3] = {};    // ★ 10-16 — `JoinStart` 차례(바로 · 관전 · 관전 글 없음)
     unsigned long long leaveBy_[static_cast<size_t>(LeaveBy::kCount)] = {};   // ★ 10-16 — `LeaveBy` 차례(None 칸은 0)
+    unsigned long long closedAfterOut_ = 0;   // ★ 10-17 — 연결을 닫을 때 이미 판에서 빠졌거나(`ae`) 같은 틱에 빠진 사람 수
+    std::map<int64_t, LeftLink> leftLinks_;   // ★ 10-17 결함 ③ — 판에서 빠지고 연결만 남은 사람(세션 번호 → 시계 · 기록)
+    unsigned long long leftLinkIgnored_ = 0;  // ★ 10-17 — 남은 연결에서 받고 버린 이벤트(닫기 말고 — 게임 자리를 다시 안 만든다)
     size_t acceptBodyLenLast_ = 0;            // 마지막 CLIENT_ACCEPT 본문 길이
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long newPlayerGearBits_ = 0;   // ★ 09-28 — 2d 104·108 에 지금 갑옷·무기 비트를 실은 횟수

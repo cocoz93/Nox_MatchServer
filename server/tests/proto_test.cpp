@@ -24816,6 +24816,14 @@ void UseTokens(nox::CSyncHost& srv) {
     srv.Rooms().SetJoinKey(RoomsKey());
     srv.Rooms().SetUnixClock([] { return kRoomsNow; });
 }
+// ★ 10-17 결함 ③ — 정품 클라의 나가기 차례 그대로 `ae`(판에서 빠짐) → `0a`(접속 닫기)(`gameloop.go:828-835` → `:690-703`).
+//   `ae` 만이면 게임 자리만 빠지고 연결 · 방 자리는 `0a` · 시간 초과까지 남는다(`LeftLink` · `TestOutgoingKeepsLink`)
+void LeaveAndClose(nox::CSyncHost& srv, const std::string& from, std::vector<nox::OutPacket>& out) {
+    const uint8_t ae[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
+    const uint8_t close0a[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_CLOSE) };
+    srv.OnPacket(from, ae, sizeof(ae), out);
+    srv.OnPacket(from, close0a, sizeof(close0a), out);
+}
 }  // namespace
 
 // ── ★ 10-14 플랜 B 작업 9e — 돌고 있는 방의 사실 · 빈 방 닫기 ─────────
@@ -25157,7 +25165,7 @@ void TestRooms() {
         Check(rooms.Game(0).petCount() > 0 && rooms.Game(r1).petCount() == 0 && rooms.Game(0).RoundOver() &&
               !rooms.Game(r1).RoundOver() && over0, m);
         // ⑦ 다시 들어오기 · 나감 두 길 — A 는 `0xae` 로 나가 같은 포트에서 새 토큰(방 1)으로 다시 · B 는 내보내기
-        std::vector<nox::OutPacket> o1; srv.OnPacket("10.20.0.1:1002", leave, sizeof(leave), o1);
+        std::vector<nox::OutPacket> o1; LeaveAndClose(srv, "10.20.0.1:1002", o1);
         srv.Tick(1200, o1);
         const int64_t sa2 = join(srv, Trailer(r1, "10.20.0.1", 103), "10.20.0.1:1003", "10.20.0.1:1002", o1);
         rooms.Game(r1).DebugKickPlayer(sb);
@@ -25362,7 +25370,6 @@ void TestHostRename() {
     using Ev = nox::NetworkEvent;
     using Rq = nox::NetworkRequest;
     const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
-    const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
     char m[360];
     nox::CSyncHost srv;
     UseTokens(srv);
@@ -25441,7 +25448,7 @@ void TestHostRename() {
     if (r < 0) return;
     // ②
     rooms.Room(r).SetPhase(nox::RoomPhase::Playing);
-    std::vector<nox::OutPacket> ol; srv.OnPacket("10.41.0.1:2", leave, sizeof(leave), ol); srv.Tick(1100, ol);
+    std::vector<nox::OutPacket> ol; LeaveAndClose(srv, "10.41.0.1:2", ol); srv.Tick(1100, ol);
     listed(l2);
     std::snprintf(m, sizeof(m), "② 판 중 방장 나감 — 방장 %s · 목록 %zu줄 채널 %s 이름 %s · 이름 바뀜 %llu",
                   rooms.Room(r).Host() ? rooms.Room(r).Host()->account.c_str() : "(없음)", l2.size(),
@@ -25456,7 +25463,7 @@ void TestHostRename() {
                   rooms.RoomCount(), r3 >= 0 && rooms.HasRoom(r3) ? nox::RoomPhaseName(rooms.Room(r3).Phase()) : "-");
     Check(r3 >= 0 && r3 != r && rooms.RoomCount() == before + 1 && rooms.Room(r3).Phase() == nox::RoomPhase::Waiting, m);
     // ④
-    std::vector<nox::OutPacket> ol2; srv.OnPacket("10.41.0.2:2", leave, sizeof(leave), ol2); srv.Tick(1200, ol2);
+    std::vector<nox::OutPacket> ol2; LeaveAndClose(srv, "10.41.0.2:2", ol2); srv.Tick(1200, ol2);
     listed(l4);
     std::string chanOld;
     for (const auto& kv : l4) if (kv.first != "#alice's_game") chanOld = kv.first;
@@ -25482,7 +25489,6 @@ void TestHostRename() {
 //   ⑤ 접속 시도 뒤 판이 시작됨 → CONNECT 때 끊음(세션표 · 구성원에 안 듦) ⑥ 방 사실에 최대 인원 · 판 상태 ⑦ 열린 방식도 같은 규칙
 void TestRoomRules() {
     const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
-    const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
     using RM = nox::CRoomManager;
     using P = nox::RoomPhase;
     char m[320];
@@ -25545,7 +25551,7 @@ void TestRoomRules() {
         tryJoin(srv, carolTail, "10.40.0.3:3001", oc);
         const int full1 = errTo(oc, "10.40.0.3:3001", nox::ConnectError::Full), ok1 = okTo(oc, "10.40.0.3:3001");
         // ② 방장(alice)이 나감 → bob
-        std::vector<nox::OutPacket> ol; srv.OnPacket("10.40.0.1:1002", leave, sizeof(leave), ol); srv.Tick(1100, ol);
+        std::vector<nox::OutPacket> ol; LeaveAndClose(srv, "10.40.0.1:1002", ol); srv.Tick(1100, ol);
         const nox::RoomMember* h2 = room.Host();
         const bool hostBob = h2 && h2->sessionId == sb && h2->account == "bob";
         const unsigned long long changes2 = rooms.Stats().hostChanges;
@@ -25558,7 +25564,7 @@ void TestRoomRules() {
         Check(full1 == 1 && ok1 == 0 && rooms.Stats().rejectFull == 1 && hostBob && changes2 == 2 && rooms.RoomOfSession(sc) == r &&
               names(room) == "bob,carol" && rooms.Stats().tokenReused == 0, m);
         // ② 뒤 — 방장 아닌 사람(carol)이 나가면 방장 그대로
-        std::vector<nox::OutPacket> ol2; srv.OnPacket("10.40.0.3:3004", leave, sizeof(leave), ol2); srv.Tick(1200, ol2);
+        std::vector<nox::OutPacket> ol2; LeaveAndClose(srv, "10.40.0.3:3004", ol2); srv.Tick(1200, ol2);
         const nox::RoomMember* h3 = room.Host();
         // ④ 판 중 — dave 거절(사유 4) · 대기로 돌면 받음
         room.SetPhase(P::Playing);
@@ -25592,10 +25598,10 @@ void TestRoomRules() {
                       rooms.Stats().tokenReused);
         Check(rooms.RoomOfSession(sd2) == r && names(room) == "bob,dave" && rooms.Stats().tokenReused == 0, m);
         // 방장(bob)이 나가면 dave · 마지막 사람이 나가면 방장 없음(빈 방 — 셈은 안 늚)
-        std::vector<nox::OutPacket> ol3; srv.OnPacket("10.40.0.2:2002", leave, sizeof(leave), ol3); srv.Tick(1300, ol3);
+        std::vector<nox::OutPacket> ol3; LeaveAndClose(srv, "10.40.0.2:2002", ol3); srv.Tick(1300, ol3);
         const nox::RoomMember* h4 = room.Host();
         const bool hostDave = h4 && h4->sessionId == sd2 && h4->account == "dave";
-        std::vector<nox::OutPacket> ol4; srv.OnPacket("10.40.0.4:4006", leave, sizeof(leave), ol4); srv.Tick(1400, ol4);
+        std::vector<nox::OutPacket> ol4; LeaveAndClose(srv, "10.40.0.4:4006", ol4); srv.Tick(1400, ol4);
         std::snprintf(m, sizeof(m), "② 방장 bob 나감 → dave %d · 마지막 사람 나감 → 방장 %s · 구성원 %zu · 방장 바뀜 %llu",
                       (int)hostDave, room.Host() ? "있음" : "없음", room.Members().size(), rooms.Stats().hostChanges);
         Check(hostDave && room.Host() == nullptr && room.Members().empty() && rooms.Stats().hostChanges == 3, m);
@@ -25629,7 +25635,6 @@ void TestRoomRules() {
 //   ⑦ 방장이 나가면 남은 사람에게 「새 방장」 알림 ⑧ 갈래 셈의 합 = 게임이 쌓은 명령 수
 void TestRoomChatCommands() {
     const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
-    const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
     using O = nox::CRoom::CmdOutcome;
     char m[360];
     auto join = [&](nox::CSyncHost& h, const std::vector<uint8_t>& tail, const std::string& p1, const std::string& p2,
@@ -25721,7 +25726,7 @@ void TestRoomChatCommands() {
     const int already = textTo(o6, A, "already in progress");
     // ⑦ 방장이 나가면 bob 에게 「새 방장」 알림(나감은 틱에서 · 알림은 다음 옮기기)
     std::vector<nox::OutPacket> o7;
-    srv.OnPacket(A, leave, sizeof(leave), o7);
+    LeaveAndClose(srv, A, o7);
     now += 34; srv.Tick(now, o7);
     now += 34; srv.Tick(now, o7);
     const int newHost = textTo(o7, B, "bob is now the host.");
@@ -28517,6 +28522,7 @@ void TestLeaveNotify() {
 //   옛 「조용해서 내보냄」은 세 길이 한 문구라 사람 판 뒤에 「나간 것을 서버가 알았나」를 못 갈랐다
 //   ① `0a`(통신 층 접속 닫기) ② `ae`(게임 메시지) ③ 시간 초과(판 밖 30초) — 서버를 따로 세워 **그 칸만** 1 · 사람 0 · `c6` 는 ③ 에만
 //   ④ 차례 — 나감 알림은 시간 초과를 이기고(옛 `closing` 이 먼저) 시간 초과는 나감 알림을 못 덮는다 · 먼저 온 나감 알림이 남는다
+//      (★ 10-17 정정 — `ae` 는 칸이 따로라(`exitAsked`) 「먼저 온 나감 알림이 남는다」는 `0a` · 시간 초과 사이에만 · ④ 안 주석)
 void TestLeaveReasons() {
     using LB = nox::LeaveBy;
     const std::string a = "10.16.3.1:1631";
@@ -28555,14 +28561,146 @@ void TestLeaveReasons() {
           r1.by[0] == 0 && r1.by[1] == 0 && r1.by[2] == 1 && r1.by[3] == 0 && r1.left == 0 && r1.c6 == 0 &&
           r2.by[0] == 0 && r2.by[1] == 0 && r2.by[2] == 0 && r2.by[3] == 1 && r2.left == 0 && r2.c6 == 1, m);
     // ④
+    // ★ 10-17 결함 ③ — `ae` 는 연결 닫기 까닭 칸(`leaveBy`)이 아니라 `exitAsked` 에 적는다 — 둘이 한 틱에 와도 어느 쪽도 안 묻힌다
+    //   (옛 기대 「시간 초과 뒤 ae → ae · ae 뒤 0a → ae」는 한 칸일 때 것 — 그때 `0a` 가 묻혀도 괜찮았던 것은 `ae` 때 연결까지 지웠기 때문)
     nox::Session s1, s2, s3;
     nox::Server::MarkLeave(s1, LB::Timeout);  nox::Server::MarkLeave(s1, LB::Outgoing);
     nox::Server::MarkLeave(s2, LB::CloseMsg); nox::Server::MarkLeave(s2, LB::Timeout);
     nox::Server::MarkLeave(s3, LB::Outgoing); nox::Server::MarkLeave(s3, LB::CloseMsg);
-    std::snprintf(m, sizeof(m), "④ 차례 — 시간 초과 뒤 ae → %s · 0a 뒤 시간 초과 → %s · ae 뒤 0a → %s", nox::LeaveByName(s1.leaveBy),
-                  nox::LeaveByName(s2.leaveBy), nox::LeaveByName(s3.leaveBy));
-    Check(s1.leaveBy == LB::Outgoing && s2.leaveBy == LB::CloseMsg && s3.leaveBy == LB::Outgoing, m);
+    std::snprintf(m, sizeof(m), "④ 차례 — 시간 초과 뒤 ae → %s · ae %d · 0a 뒤 시간 초과 → %s · ae %d · ae 뒤 0a → %s · ae %d",
+                  nox::LeaveByName(s1.leaveBy), (int)s1.exitAsked, nox::LeaveByName(s2.leaveBy), (int)s2.exitAsked,
+                  nox::LeaveByName(s3.leaveBy), (int)s3.exitAsked);
+    Check(s1.leaveBy == LB::Timeout && s1.exitAsked && s2.leaveBy == LB::CloseMsg && !s2.exitAsked &&
+          s3.leaveBy == LB::CloseMsg && s3.exitAsked, m);
     std::printf("  10-16 결함 ③ 조사 — 나간 까닭: 0a · ae · 시간 초과를 줄 · 셈으로 가름(c6 는 시간 초과에만) · 나감 알림이 시간 초과를 이김\n");
+}
+
+// ── ★ 10-17 결함 ③ — 판에서 빠진 클라에게 확인을 돌려준다(원작 차례 · `개인 메모` ①) ─────────
+//   원작 — `ae` 는 판에서만 뺀다(`network_server.go:111-114` → `player.go:637-708`). 연결은 `0a`(`internal/netstr/conn.go:518`) ·
+//          시간 초과(`server.go:444-452` → `player.go:92-99`)에 닫는다. 빠진 뒤에도 매 프레임 시각(`27`)이 가고(`server.go:456-463`)
+//          그 머리에 확인이 실려 클라의 기다림(`client/network.go:104-114` `WaitServerResponse`)이 풀린다
+//   ⓐ 다음 틱 남은 사람에게 `ae` · `31` 하나씩 ⓑ 나간 클라에게 틱마다 확인(스트림 0 비신뢰 머리 = `ae` 순번 + 1) · 통신 층 세션 ·
+//      방 자리 남음 ⓔ 그 틱에 판 사람 수 1 ⓒ `0a` → 세션 · 통신 층 · 방 자리 빠짐 · 남에게 `ae` 다시 안 감 · 셈(판에서 빠짐 1 ·
+//      접속 닫기 1 · 빠진 뒤 닫힘 1) ⓓ `ae` 뒤 조용 → 25초엔 남고 35초엔 시간 초과(판 밖 30초 — 90초 아님) · `c6` 하나
+//   ⓕ `ae` 와 `0a` 가 한 틱 안에 오면 그 틱에 다 빠짐(옛 `MarkLeave` 「먼저 온 나감 알림이 남는다」에 `0a` 가 묻히면 30초 남는다)
+void TestOutgoingKeepsLink() {
+    using LB = nox::LeaveBy;
+    const int kNoRoom = nox::CRoomManager::kNoRoom;
+    const std::string a = "10.17.1.1:1711";
+    const std::string b = "10.17.1.2:1712";
+    char m[420];
+    const uint8_t aeSeq = 9;
+    const uint8_t ae[3] = { 0x80 | 1, aeSeq, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };   // 클라는 신뢰 · 스트림 1(`TestReliableAckStream`)
+    const uint8_t close0a[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_CLOSE) };
+    struct Run { nox::CSyncHost srv; int64_t sa = 0, sb = 0; uint32_t now = 100000; };
+    auto setup = [&](Run& r) {
+        UseTokens(r.srv);
+        std::vector<nox::OutPacket> t;
+        r.srv.Tick(r.now, t); r.now += 100; r.srv.Tick(r.now, t);
+        r.sa = r.srv.DebugEnterGame(a, 1711);
+        r.sb = r.srv.DebugEnterGame(b, 1712);
+        r.srv.DebugTouch(r.sa); r.srv.DebugTouch(r.sb);
+        r.now += 34; r.srv.Tick(r.now, t);
+    };
+    auto tick = [&](Run& r, std::vector<nox::OutPacket>& out, int n) { for (int k = 0; k < n; ++k) { r.now += 34; r.srv.Tick(r.now, out); } };
+    auto acksTo = [&](const std::vector<nox::OutPacket>& out) {   // 나간 클라에게 간 스트림 0 비신뢰 가운데 머리 순번이 `ae` 순번 + 1
+        int n = 0;
+        for (const auto& pk : out)
+            if (pk.to == a && pk.data.size() >= 2 && (pk.data[0] & 0x80) == 0 && (pk.data[0] & 0x7F) == 0 &&
+                pk.data[1] == static_cast<uint8_t>(aeSeq + 1)) ++n;
+        return n;
+    };
+    auto countTo = [&](const std::vector<nox::OutPacket>& out, const std::string& who, nox::Op op, size_t len) {
+        size_t n = 0;
+        for (const auto& x : FlattenTo(out, who)) if (x.size() == len && x[0] == static_cast<uint8_t>(op)) ++n;
+        return n;
+    };
+    // ⓐ ⓑ ⓔ ⓒ
+    {
+        Run r; setup(r);
+        std::vector<nox::OutPacket> o1;
+        r.srv.OnPacket(a, ae, sizeof(ae), o1);
+        tick(r, o1, 1);
+        const size_t toBae = countTo(o1, b, nox::Op::OUTGOING_CLIENT, 3), toB31 = countTo(o1, b, nox::Op::DESTROY_OBJECT, 3);
+        const size_t inGame = r.srv->PlayerCount();
+        tick(r, o1, 2);
+        const int acks = acksTo(o1);
+        const bool netAlive = r.srv.Network().SessionIdOf(a) == r.sa;
+        const bool seated = r.srv.Rooms().RoomOfSession(r.sa) != kNoRoom;
+        const size_t sess = r.srv->SessionCount(), links = r.srv->LeftLinkCount();
+        std::snprintf(m, sizeof(m), "ⓐⓑⓔ ae 뒤 세 틱 — 남에게 ae %zu · 31 %zu · 판 사람 %zu · 나간 클라 확인 %d · 통신 층 %d · 방 자리 %d · 게임 자리 %zu · 남은 연결 %zu",
+                      toBae, toB31, inGame, acks, (int)netAlive, (int)seated, sess, links);
+        // 게임 자리는 지우고(게임 쪽 117곳이 「있음」으로 안 보게) 연결만 남는다(`LeftLink`)
+        Check(toBae == 1 && toB31 == 1 && inGame == 1 && acks >= 3 && netAlive && seated && sess == 1 && links == 1, m);
+        // ⓑ' 남은 연결로 게임 메시지가 와도 게임 자리를 다시 안 만든다(세고 버림)
+        const uint8_t chatter[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_READY) };
+        r.srv.OnPacket(a, chatter, sizeof(chatter), o1);
+        tick(r, o1, 1);
+        std::snprintf(m, sizeof(m), "ⓑ' 남은 연결에서 받음 — 게임 자리 %zu · 남은 연결 %zu · 버림 %llu",
+                      r.srv->SessionCount(), r.srv->LeftLinkCount(), r.srv->leftLinkIgnored());
+        Check(r.srv->SessionCount() == 1 && r.srv->LeftLinkCount() == 1 && r.srv->leftLinkIgnored() == 1, m);
+        std::vector<nox::OutPacket> o2;
+        r.srv.OnPacket(a, close0a, sizeof(close0a), o2);
+        tick(r, o2, 1);
+        std::snprintf(m, sizeof(m), "ⓒ 0a 뒤 — 세션 %zu · 남은 연결 %zu · 통신 층 %lld · 방 자리 %d · 남에게 ae %zu · 셈 판에서 빠짐 %llu · 접속 닫기 %llu · 시간 초과 %llu · 빠진 뒤 닫힘 %llu",
+                      r.srv->SessionCount(), r.srv->LeftLinkCount(), (long long)r.srv.Network().SessionIdOf(a), r.srv.Rooms().RoomOfSession(r.sa),
+                      countTo(o2, b, nox::Op::OUTGOING_CLIENT, 3), r.srv->leaveBy(LB::Outgoing), r.srv->leaveBy(LB::CloseMsg),
+                      r.srv->leaveBy(LB::Timeout), r.srv->closedAfterOut());
+        Check(r.srv->SessionCount() == 1 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(a) == 0 &&
+              r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
+              countTo(o2, b, nox::Op::OUTGOING_CLIENT, 3) == 0 && r.srv->leaveBy(LB::Outgoing) == 1 &&
+              r.srv->leaveBy(LB::CloseMsg) == 1 && r.srv->leaveBy(LB::Timeout) == 0 && r.srv->closedAfterOut() == 1, m);
+    }
+    // ⓓ
+    {
+        Run r; setup(r);
+        std::vector<nox::OutPacket> o;
+        r.srv.OnPacket(a, ae, sizeof(ae), o);
+        tick(r, o, 1);
+        tick(r, o, 735);                                   // `ae` 뒤 약 25초
+        const bool at25 = r.srv.Network().SessionIdOf(a) == r.sa && r.srv->LeftLinkCount() == 1 &&
+                          r.srv.Rooms().RoomOfSession(r.sa) != kNoRoom;
+        o.clear();
+        tick(r, o, 300);                                   // 약 35초
+        const size_t c6 = countTo(o, a, nox::Op::TIMEOUT_NOTIFICATION, 1);
+        std::snprintf(m, sizeof(m), "ⓓ ae 뒤 조용 — 25초 남음 %d · 35초 남은 연결 %zu · 통신 층 %lld · 방 자리 %d · c6 %zu · 셈 시간 초과 %llu · 빠진 뒤 닫힘 %llu · 판 사람 %zu",
+                      (int)at25, r.srv->LeftLinkCount(), (long long)r.srv.Network().SessionIdOf(a), r.srv.Rooms().RoomOfSession(r.sa), c6,
+                      r.srv->leaveBy(LB::Timeout), r.srv->closedAfterOut(), r.srv->PlayerCount());
+        Check(at25 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(a) == 0 && r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
+              c6 == 1 && r.srv->leaveBy(LB::Timeout) == 1 && r.srv->closedAfterOut() == 1 && r.srv->PlayerCount() == 1, m);
+    }
+    // ⓕ
+    {
+        Run r; setup(r);
+        std::vector<nox::OutPacket> o;
+        r.srv.OnPacket(a, ae, sizeof(ae), o);
+        r.srv.OnPacket(a, close0a, sizeof(close0a), o);
+        tick(r, o, 1);
+        std::snprintf(m, sizeof(m), "ⓕ ae · 0a 한 틱 — 세션 %zu · 통신 층 %lld · 방 자리 %d · 남에게 ae %zu · 31 %zu · 셈 판에서 빠짐 %llu · 접속 닫기 %llu · 빠진 뒤 닫힘 %llu",
+                      r.srv->SessionCount(), (long long)r.srv.Network().SessionIdOf(a), r.srv.Rooms().RoomOfSession(r.sa),
+                      countTo(o, b, nox::Op::OUTGOING_CLIENT, 3), countTo(o, b, nox::Op::DESTROY_OBJECT, 3), r.srv->leaveBy(LB::Outgoing),
+                      r.srv->leaveBy(LB::CloseMsg), r.srv->closedAfterOut());
+        Check(r.srv->SessionCount() == 1 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(a) == 0 &&
+              r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
+              countTo(o, b, nox::Op::OUTGOING_CLIENT, 3) == 1 && countTo(o, b, nox::Op::DESTROY_OBJECT, 3) == 1 &&
+              r.srv->leaveBy(LB::Outgoing) == 1 && r.srv->leaveBy(LB::CloseMsg) == 1 && r.srv->closedAfterOut() == 1, m);
+    }
+    // ⓖ 판 끝 쉬는 중엔 남은 연결에도 시각이 안 간다(원작 `updateRemotePlayers` 가 안 돎 — R1 `frozen`) · 풀리면 바로 간다
+    {
+        Run r; setup(r);
+        r.srv->DebugSetRoundOver(true);                    // 다시 열 때를 안 걸어 계속 쉬는 중
+        std::vector<nox::OutPacket> o;
+        r.srv.OnPacket(a, ae, sizeof(ae), o);
+        tick(r, o, 3);
+        const int during = acksTo(o);
+        const size_t linkDuring = r.srv->LeftLinkCount();
+        r.srv->DebugSetRoundOver(false);
+        o.clear();
+        tick(r, o, 1);
+        std::snprintf(m, sizeof(m), "ⓖ 판 끝 쉬는 중 — 확인 %d · 남은 연결 %zu → 풀린 뒤 확인 %d", during, linkDuring, acksTo(o));
+        Check(during == 0 && linkDuring == 1 && acksTo(o) >= 1, m);
+    }
+    std::printf("  10-17 결함 ③ — ae 는 판에서만 빼고 연결은 둠(틱마다 시각에 확인) · 0a · 시간 초과(판 밖 30초)에 닫음 · 한 틱에 둘이면 다 빠짐\n");
 }
 
 // ── 묶음 10-e — 일지·장 끝·관리자 답 ─────────────────────────────────
@@ -31776,6 +31914,7 @@ int main() {
     TestDebugXpAndSpell();
     TestLeaveNotify();
     TestLeaveReasons();
+    TestOutgoingKeepsLink();
     TestJournalAndSysop();
     TestSpellSounds();
     TestPickupAndAbilSounds();

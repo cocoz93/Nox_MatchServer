@@ -2885,6 +2885,13 @@ size_t Server::OnNetworkEvent(const NetworkEvent& ev) {
     if (ev.type == NetworkEvent::Type::JOIN_REQUESTED) return 0;
     // ★ 10-14 작업 8c — 로비 TCP 사건도 자리를 만들지 않는다(세션 번호가 없다 — 게임 스레드가 로비로 보내 게임엔 안 온다)
     if (IsLobbyEvent(ev.type)) return 0;
+    // ★ 10-17 결함 ③ — 판에서 빠지고 연결만 남은 사람(`LeftLink`). 게임 자리를 다시 만들지 않는다(`SessionFor` 앞) —
+    //   닫기(`0a` · 시간 초과)만 받고 나머지는 세고 버린다(원작도 빠진 사람의 게임 메시지로 판에 다시 넣지 않는다)
+    if (leftLinks_.count(ev.sessionId) != 0) {
+        if (ev.type == NetworkEvent::Type::DISCONNECTED) CloseLeftLink(ev.sessionId, ev.reason);
+        else ++leftLinkIgnored_;
+        return 0;
+    }
     Session& s = SessionFor(ev.sessionId);
     if (s.addrText.empty()) s.addrText = ev.addr;   // ★ 10-09 조각 5d — 주소(기록용)는 이벤트가 나른다
     switch (ev.type) {
@@ -3816,6 +3823,8 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
             //   전에는 길이를 2 로 잘못 알아 조각째 버렸고(2026-09-11 63건), 답이 없으니
             //   클라가 깨끗하게 못 나갔다. 그것이 「재접속 안 됨」으로 보였다.
             //   ★ 10-08 조각 3 — `0x0a` 는 접속 제어라 통신 층이 받아 `DISCONNECTED` 로 넘긴다(`OnNetworkEvent`).
+            // ★ 10-17 결함 ③ — 판에서만 뺀다. 「자리 비우기」가 게임 자리를 지우고 연결은 남긴다(`LeftLink` — 틱마다 시각에 확인)
+            //   ✖ 전에는 연결까지 지워 그 답(확인)이 한 번도 안 갔다
             case Op::OUTGOING_CLIENT: {
                 MarkLeave(s, LeaveBy::Outgoing);
                 ++handled_;
@@ -10844,6 +10853,44 @@ void Server::SendOutgoingClient(uint16_t netCode, int64_t except
     }
 }
 
+// ★ 10-17 결함 ③ — 「자리 비우기」의 몸 지우기 둘을 두 단계(판에서 빼기 · 연결 닫기)가 같이 쓰게 뺐다(내용 · 차례 그대로).
+//   나간 사람은 받는 쪽에 없어야 한다 — 부르기 전에 세션을 지웠거나(연결 닫기) 판 밖으로 돌렸다(판에서 빼기 · `Broadcast` 는 판 안만)
+//     `2e PLAYER_QUIT`(껍데기 안)  = 사람 목록·점수판에서 뺀다
+//     `31 DESTROY_OBJECT`(생)      = 세계에서 몸을 지운다
+void Server::BroadcastPlayerGone(uint16_t netCode) {
+    uint8_t quit[3] = {
+        static_cast<uint8_t>(Op::PLAYER_QUIT),
+        static_cast<uint8_t>(netCode),
+        static_cast<uint8_t>(netCode >> 8),
+    };
+    Broadcast(/*viaSeq=*/true, quit, sizeof(quit));
+
+    uint8_t bye[3] = {
+        static_cast<uint8_t>(Op::DESTROY_OBJECT),
+        static_cast<uint8_t>(netCode),
+        static_cast<uint8_t>(netCode >> 8),
+    };
+    Broadcast(/*viaSeq=*/false, bye, sizeof(bye));
+}
+
+// ★ 10-17 결함 ③ — 남은 연결 닫기. `0a`(원작 `netstr/conn.go:518-530`) · 시간 초과(원작 `server.go:444-452` — 그 사람에게 `c6` 를
+//   신뢰로 보내고 끊음). 게임 자리 · 몸 지우기는 `ae` 때 이미 했다 — 남에게 다시 알리지 않는다
+void Server::CloseLeftLink(int64_t sessionId, DisconnectReason reason) {
+    auto l = leftLinks_.find(sessionId);
+    if (l == leftLinks_.end()) return;
+    const LeaveBy why = reason == DisconnectReason::TIMEOUT ? LeaveBy::Timeout : LeaveBy::CloseMsg;
+    if (why == LeaveBy::Timeout) {
+        const uint8_t to[1] = { static_cast<uint8_t>(Op::TIMEOUT_NOTIFICATION) };
+        RequestSendMsg(sessionId, /*reliable=*/true, /*stream=*/0, to, sizeof(to));
+    }
+    ++leaveBy_[static_cast<size_t>(why)];
+    ++closedAfterOut_;
+    Log("[나감] %s — %s · 번호 %u · 게임 안 아니오 · 판에서 빠진 뒤\n", l->second.addr.c_str(), LeaveByName(why),
+        static_cast<unsigned>(l->second.netCode));
+    leftLinks_.erase(l);
+    RequestDisconnectSession(sessionId);   // → 방 관리자가 자리 · 구성원 빼기 · 방장 넘김(`RoomManager.cpp` `PullRequests`)
+}
+
 // ── 묶음 10-e 일지·장 끝 ─────────────────────────────────────────────
 //
 // `d5 <갈래> <이름 64바이트> <u16>` **68바이트**.
@@ -17352,7 +17399,8 @@ void Server::RunTick(int ticks) {
             //   옛 판정 둘은 거기로 옮겼다 — 아직 한 번도 못 받은 세션(이제 막 만든 것)은 건드리지 않는다(`heard`) ·
             //   ★ 10-d — 정답지(`server.go:440`)는 **입력을 받는 중**이면 90초, 아니면 30초이다(한도는 `SetInGame` 이 알림).
             // ★ 10-16 — 옛 `closing` · `timedOut` 둘이 `leaveBy` 하나가 됐다(까닭은 아래 줄 · 셈에)
-            if (o.leaveBy != LeaveBy::None) gone.push_back(kv.first);
+            // ★ 10-17 결함 ③ — `ae` 만 온 사람(`exitAsked`)도 걷는다 — 게임 자리만 지우고 연결은 남긴다(아래 `keepLink`)
+            if (o.leaveBy != LeaveBy::None || o.exitAsked) gone.push_back(kv.first);
         }
         for (int64_t sessionId : gone) {
             // ★ 나갔다고 **알린다.** 전에는 조용히 지우기만 해서 남은 사람들 화면에
@@ -17363,21 +17411,38 @@ void Server::RunTick(int ticks) {
             uint16_t netCode = 0;
             bool wasInGame = false;
             LeaveBy why = LeaveBy::None;
+            bool asked = false;
+            LeftLink link;
             {
                 auto g = sessions_.find(sessionId);
                 if (g != sessions_.end()) {
                     netCode   = g->second.netCode;
                     wasInGame = g->second.inGame;
                     why       = g->second.leaveBy;
+                    asked     = g->second.exitAsked;
+                    link.tickFrame = g->second.tickFrame;
+                    link.netCode   = netCode;
+                    link.addr      = g->second.addrText;
                     // 깃발을 들고 있었으면 그 자리에 떨군다 — 안 그러면 깃발이
                     // 사라진 사람 손에 남아 판이 영영 안 끝난다.
                     if (wasInGame) DropFlag(sessionId);
                 }
             }
+            // ★ 10-17 결함 ③ — `ae` 만 왔으면(연결 닫기 까닭 없음) 판에서만 뺀다 — 원작 `ae` 는 `nox_xxx_playerDisconnFinish_4DE530` 만
+            //   (`network_server.go:111-114`). 연결은 `0a` · 시간 초과에 닫는다(`CloseLeftLink`). `ae` 와 닫기가 한 틱에 왔으면 여기서 다 닫는다
+            const bool keepLink = why == LeaveBy::None;
             // ★ 10-16 — 옛 「조용해서 내보냄」 한 문구를 까닭별로(10-16 사람 판 결함 ③ — 나간 것을 서버가 알았나 · 어떻게 알았나)
-            ++leaveBy_[static_cast<size_t>(why)];
-            Log("[나감] %s — %s · 번호 %u · 게임 안 %s\n", AddrText(sessionId), LeaveByName(why), static_cast<unsigned>(netCode),
-                wasInGame ? "예" : "아니오");
+            if (asked) ++leaveBy_[static_cast<size_t>(LeaveBy::Outgoing)];
+            if (!keepLink) {
+                ++leaveBy_[static_cast<size_t>(why)];
+                if (asked) ++closedAfterOut_;
+            }
+            if (keepLink)
+                Log("[판에서 빠짐] %s — 번호 %u · 게임 안 %s · 연결은 0a · 시간 초과(30초)까지 둠\n", AddrText(sessionId),
+                    static_cast<unsigned>(netCode), wasInGame ? "예" : "아니오");
+            else
+                Log("[나감] %s — %s · 번호 %u · 게임 안 %s%s\n", AddrText(sessionId), LeaveByName(why), static_cast<unsigned>(netCode),
+                    wasInGame ? "예" : "아니오", asked ? " · 판에서 빠짐(ae)과 같은 틱" : "");
             if (wasInGame) PlayerCancelSpells(sessionId);   // 오브젝트 지움 → playerCancelSpells(object.go:70, 4-a3)
                         // 10-d PlayerDisconnect: notify BEFORE erasing.
             //   timeout (reason 3): 0xC6 to that player, then 0xAE to the rest.
@@ -17391,23 +17456,15 @@ void Server::RunTick(int ticks) {
             }
             SendOutgoingClient(netCode, sessionId);
             sessions_.erase(sessionId);
-            RequestDisconnectSession(sessionId);   // ★ 10-08 조각 3 — 통신 층의 키·순번도 같이 버린다
-
-            if (wasInGame && netCode != 0) {
-                uint8_t quit[3] = {
-                    static_cast<uint8_t>(Op::PLAYER_QUIT),
-                    static_cast<uint8_t>(netCode),
-                    static_cast<uint8_t>(netCode >> 8),
-                };
-                Broadcast(/*viaSeq=*/true, quit, sizeof(quit));
-
-                uint8_t bye[3] = {
-                    static_cast<uint8_t>(Op::DESTROY_OBJECT),
-                    static_cast<uint8_t>(netCode),
-                    static_cast<uint8_t>(netCode >> 8),
-                };
-                Broadcast(/*viaSeq=*/false, bye, sizeof(bye));
+            if (keepLink) {
+                // ★ 10-17 결함 ③ — 연결은 남긴다. 판 밖이니 한도 30초(원작 상태 16 지움 `player.go:706` → `server.go:440-443`)
+                leftLinks_[sessionId] = link;
+                RequestSetSessionTimeout(sessionId, kSessionTimeoutMs);
+            } else {
+                RequestDisconnectSession(sessionId);   // ★ 10-08 조각 3 — 통신 층의 키·순번도 같이 버린다
             }
+
+            if (wasInGame && netCode != 0) BroadcastPlayerGone(netCode);
         }
     }
 
@@ -17941,6 +17998,19 @@ void Server::RunTick(int ticks) {
         if (!alive.empty()) {
             latencyCursor_ = (latencyCursor_ + 1) % alive.size();
             latencyPick = alive[latencyCursor_];
+        }
+    }
+
+    // ★ 10-17 결함 ③ — 판에서 빠지고 연결만 남은 사람에게는 시각(`27`) 하나만. 그 조각 머리에 확인(`ae` 순번 + 1)이 실려
+    //   클라의 기다림(`client/network.go:104-114`)이 풀린다 — 원작 `updateRemotePlayers` 가 판 안 상태(3)가 아닌 사람에게 시각만 넣는 갈래
+    //   (`server.go:456-463`). 판 끝 동안은 원작도 이 고리가 안 돈다(R1 — 아래 `frozen` 과 같은 까닭)
+    if (!frozen) {
+        for (auto& kv : leftLinks_) {
+            LeftLink& l = kv.second;
+            ++l.tickFrame;
+            const uint8_t ts[3] = { static_cast<uint8_t>(Op::TIMESTAMP), static_cast<uint8_t>(l.tickFrame),
+                                    static_cast<uint8_t>(l.tickFrame >> 8) };
+            RequestSendMsg(kv.first, /*reliable=*/false, /*stream=*/0, ts, sizeof(ts));
         }
     }
 
