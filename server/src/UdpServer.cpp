@@ -18,6 +18,18 @@
 
 namespace nox {
 
+namespace {
+// ★ 10-17 덤 — 처음 보는 주소에서 받아 줄 첫 조각인가. 접속 전 몫만(평문 — 키는 접속 수락 때 생긴다):
+//   접속(`00`) · 서버 찾기(`0c`) · 접속 시도 ~ 수락 범위(`0e`~`14`). 원작 `internal/netstr/conn.go:623-643` —
+//   그 밖(접속 닫기 `0a` · 핑 · 게임 메시지 …)은 그 주소에 연결이 있을 때만 받고(`hasConnWithIndAndAddr`) 아니면 상태 없이 버린다
+bool OpensSession(const uint8_t* data, size_t n) {
+    if (n < kWireHeaderSize + 1) return false;
+    const uint8_t op = data[kWireHeaderSize];
+    return op == static_cast<uint8_t>(Op::SERVER_CONNECT) || op == static_cast<uint8_t>(Op::SERVER_DISCOVER) ||
+           (op >= static_cast<uint8_t>(Op::SERVER_TRY_JOIN) && op <= static_cast<uint8_t>(Op::SERVER_JOIN_OK));
+}
+}  // namespace
+
 // ★ 10-08 조각 4 — 처음 보는 주소에 세션 번호를 매긴다. 게임은 이 번호로만 사람을 가른다(`Docs/LAYERS_DESIGN.md` 조각 4).
 //   지운 뒤 같은 주소로 다시 오면 새 번호다.
 CUdpSession& CUdpServer::SessionFor(const std::string& addr) {
@@ -147,6 +159,13 @@ void CUdpServer::ArmIdle(CUdpSession& s) {
 
 size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size_t n,
                               std::vector<OutPacket>& out, std::vector<NetworkEvent>& events) {
+    // ★ 10-17 덤 — 지운 주소에서 늦게 온 조각(나간 클라의 `0a` · 키 걸린 게임 조각)이 빈 세션을 만들면, 키가 없어 게임 메시지로 잘못 읽히고
+    //   「게임에 넘김」이 붙은 채 방 관리자는 모르는 세션이라 버리기만 해서(`RoomManager.cpp` `droppedUnknown`) 아무도 안 지웠다
+    //   (`proto_test` `TestLateDatagramAfterDrop` — 61초 뒤에도 남음). 처음 보는 주소는 접속 전 몫만 받는다(`OpensSession`)
+    if (_sessions.count(from) == 0 && !OpensSession(data, n)) {
+        ++_stats.droppedNoSession;
+        return 0;
+    }
     CUdpSession& s = SessionFor(from);
     s.lastSeenMs = _nowMs;   // ★ 조각 4c — 접속 전 상대 걷어내기의 근거(`Tick`)
     s.heard = true;          // ★ 조각 5a — 시간 초과 감시도 이 시각으로 센다(접속 제어만 실린 조각 — 핑 등 — 도 「살아 있다」)

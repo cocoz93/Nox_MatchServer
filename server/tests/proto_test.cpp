@@ -25223,14 +25223,18 @@ void TestRooms() {
         const int64_t afterConn = srv.Network().SessionIdOf("10.22.0.9:9002");
         const auto ac = AcceptPkt("Mallory");
         srv.OnPacket("10.22.0.9:9002", ac.data(), ac.size(), o2);   // 끊긴 주소의 입장 — 새 세션이 생기지만 방은 없다(버림)
-        std::snprintf(m, sizeof(m), "④ 토큰 없음 — 거절(0x13 사유 4) %d · 받음 %d · CONNECT 뒤 통신 세션 %lld · 방 0 세션 %zu · 거절 %llu · 끊음 %llu · 토큰 없음 %llu · 버림 %llu",
+        // ★ 10-17 덤 — 옛 기대(「새 세션이 생기지만 방은 없다」 · 방 관리자 버림 1)는 아무도 안 지우는 빈 세션을 남겼다(`TestLateDatagramAfterDrop`).
+        //   이제 통신 층이 처음 보는 주소의 접속 밖 조각(여기선 게임 메시지 `CLIENT_ACCEPT`)을 세션 없이 버린다 → 통신 층 버림 1 · 방 관리자 버림 0 · 그 주소 세션 없음
+        const int64_t afterAccept = srv.Network().SessionIdOf("10.22.0.9:9002");
+        std::snprintf(m, sizeof(m), "④ 토큰 없음 — 거절(0x13 사유 4) %d · 받음 %d · CONNECT 뒤 통신 세션 %lld · 방 0 세션 %zu · 거절 %llu · 끊음 %llu · 토큰 없음 %llu · 방 관리자 버림 %llu · 통신 층 버림 %llu · 입장 뒤 통신 세션 %lld",
                       errClosedTo(o, "10.22.0.9:9001"), msgs(o, "10.22.0.9:9001", kOk, 1), (long long)afterConn,
                       rooms.Game(0).SessionCount(), rooms.Stats().joinRejected, rooms.Stats().connectRejected, rooms.Stats().tokenMissing,
-                      rooms.Stats().droppedUnknown);
+                      rooms.Stats().droppedUnknown, srv.Network().Stats().droppedNoSession, (long long)afterAccept);
         Check(errClosedTo(o, "10.22.0.9:9001") == 1 && msgs(o, "10.22.0.9:9001", kOk, 1) == 0 &&
               afterConn == nox::kNoSession && rooms.Game(0).SessionCount() == 0 &&
               rooms.Stats().joinRejected == 1 && rooms.Stats().connectRejected == 1 && rooms.Stats().tokenMissing == 2 &&
-              rooms.Stats().assigned == 0 && rooms.Stats().droppedUnknown == 1, m);
+              rooms.Stats().assigned == 0 && rooms.Stats().droppedUnknown == 0 && srv.Network().Stats().droppedNoSession == 1 &&
+              afterAccept == nox::kNoSession, m);
     }
     {   // ⑤ IP 다름 — 10.23.0.1 의 토큰을 10.23.0.9 에서 → 접속 시도 거절 · CONNECT 끊김 / 제 IP 에서 → 방 0
         nox::CSyncHost srv;
@@ -28703,6 +28707,53 @@ void TestOutgoingKeepsLink() {
     std::printf("  10-17 결함 ③ — ae 는 판에서만 빼고 연결은 둠(틱마다 시각에 확인) · 0a · 시간 초과(판 밖 30초)에 닫음 · 한 틱에 둘이면 다 빠짐\n");
 }
 
+// ── ★ 10-17 덤 — 지운 주소에서 늦게 온 데이터그램이 통신 층에 빈 세션을 남기나(재현 시험 · `nox-planB-finish-plan.md` 「덤」) ─────────
+//   원작 — 처음 보는 주소의 접속 밖 패킷은 상태를 안 만들고 버린다(`internal/netstr/conn.go:635-643` `hasConnWithIndAndAddr` 거짓 → `continueX`)
+//   우리(고치기 전) — `SessionFor` 가 무조건 만들었다(`UdpServer.cpp` `SessionFor`) · 토큰 방식 방 관리자는 모르는 세션을 세고 버리기만(`RoomManager.cpp` `droppedUnknown`)
+//     → 10-17 재현: 두 꼴 모두 받을 때 세션 2 · 61초 뒤에도 2(아무도 안 지움)
+//   두 꼴 — ① 평문 `0a`(키 0 · 접속 제어로 읽힘) ② 키 0x70 암호문 꼴 `0a ^ 70` = `7a`(게임 메시지로 읽힘)
+//   지운 뒤 늦은 것 하나 → 받을 때부터 세션 없음 · 버림 셈 1 · 61초 뒤에도 없음(대조군 — 지운 직후엔 없음 · 새 주소의 접속 시도 · 서버 찾기는 세션이 생김)
+void TestLateDatagramAfterDrop() {
+    const std::string a = "10.17.2.1:1721";
+    const std::string c = "10.17.2.3:1723";
+    char m[360];
+    const std::string d = "10.17.2.4:1724";
+    struct R { int64_t afterDrop = -1, atLate = -1, after61 = -1, joinCtl = 0, discCtl = 0; unsigned long long dropped = 0; };
+    auto run = [&](uint8_t op) {
+        R r;
+        nox::CSyncHost srv;
+        UseTokens(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t now = 100000; srv.Tick(now, out); now += 100; srv.Tick(now, out);
+        const int64_t sa = srv.DebugEnterGame(a, 1721);
+        srv.DebugTouch(sa);
+        srv->DebugSetClosing(sa);                          // 접속 닫기로 걷힘
+        now += 34; srv.Tick(now, out);
+        r.afterDrop = srv.Network().SessionIdOf(a);
+        const uint8_t late[3] = { 0x00, 0x05, op };
+        srv.OnPacket(a, late, sizeof(late), out);
+        r.atLate = srv.Network().SessionIdOf(a);
+        r.dropped = srv.Network().Stats().droppedNoSession;
+        const std::vector<uint8_t> tj = TryJoinPkt("ctl");  // 대조군 — 새 주소의 접속 시도는 받아 준다
+        srv.OnPacket(c, tj.data(), tj.size(), out);
+        r.joinCtl = srv.Network().SessionIdOf(c);
+        // 대조군 둘 — 정품 클라의 첫 조각인 서버 찾기(`_evidence/20260905_server_bidir.txt` 첫 RECV 바이트 그대로)도 받아 준다
+        const uint8_t disc[12] = { 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe4, 0x54, 0x39, 0x05 };
+        srv.OnPacket(d, disc, sizeof(disc), out);
+        r.discCtl = srv.Network().SessionIdOf(d);
+        for (int t = 0; t < 1800; ++t) { now += 34; srv.Tick(now, out); }
+        r.after61 = srv.Network().SessionIdOf(a);
+        return r;
+    };
+    const R p = run(static_cast<uint8_t>(nox::Op::CLIENT_CLOSE)), x = run(static_cast<uint8_t>(nox::Op::CLIENT_CLOSE) ^ 0x70);
+    std::snprintf(m, sizeof(m), "덤 — 평문 0a: 지운 직후 %lld · 받을 때 %lld · 버림 %llu · 61초 %lld · 접속 시도 %lld · 서버 찾기 %lld / 암호문 꼴 7a: 지운 직후 %lld · 받을 때 %lld · 버림 %llu · 61초 %lld · 접속 시도 %lld · 서버 찾기 %lld",
+                  (long long)p.afterDrop, (long long)p.atLate, p.dropped, (long long)p.after61, (long long)p.joinCtl, (long long)p.discCtl,
+                  (long long)x.afterDrop, (long long)x.atLate, x.dropped, (long long)x.after61, (long long)x.joinCtl, (long long)x.discCtl);
+    Check(p.afterDrop == 0 && x.afterDrop == 0 && p.atLate == 0 && x.atLate == 0 && p.dropped == 1 && x.dropped == 1 &&
+          p.after61 == 0 && x.after61 == 0 && p.joinCtl != 0 && x.joinCtl != 0 && p.discCtl != 0 && x.discCtl != 0, m);
+    std::printf("  10-17 덤 — 지운 주소의 늦은 데이터그램: %s\n", m);
+}
+
 // ── 묶음 10-e — 일지·장 끝·관리자 답 ─────────────────────────────────
 //
 // 정답지 `netSendJournalAdd/Remove/Update_4D9440·4A0·500`(`GAME3_2.c:4731~4761`) ·
@@ -31915,6 +31966,7 @@ int main() {
     TestLeaveNotify();
     TestLeaveReasons();
     TestOutgoingKeepsLink();
+    TestLateDatagramAfterDrop();
     TestJournalAndSysop();
     TestSpellSounds();
     TestPickupAndAbilSounds();

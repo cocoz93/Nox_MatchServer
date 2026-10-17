@@ -218,6 +218,7 @@ struct CUdpStats {
     unsigned long long sessionTimedOut = 0;
     unsigned long long joinRequested = 0;
     unsigned long long joinTrailers = 0;           // ★ 10-10 토큰 작업 2 — 키 받기 전 데이터그램에서 뗀 입장 토큰 꼬리 수
+    unsigned long long droppedNoSession = 0;       // ★ 10-17 덤 — 처음 보는 주소의 접속 밖 첫 조각을 세션 없이 버린 수(`OpensSession`)
     unsigned long long joinRejected = 0;
     unsigned long long joinRespondNoSession = 0;
     unsigned long long serverCloseSent = 0;        // ★ 10-09 조각 5d-2c — 닫을 때 `SERVER_CLOSE` 를 보낸 상대 수
