@@ -28672,6 +28672,17 @@ void TestOutgoingKeepsLink() {
                       r.srv->leaveBy(LB::Timeout), r.srv->closedAfterOut(), r.srv->PlayerCount());
         Check(at25 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(a) == 0 && r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
               c6 == 1 && r.srv->leaveBy(LB::Timeout) == 1 && r.srv->closedAfterOut() == 1 && r.srv->PlayerCount() == 1, m);
+        // ⓓ' 교차(덤 `494ce5a` 와) — 시간 초과로 닫은 뒤에도 클라가 살아 보내면(늦은 `0a` · 게임 조각) 빈 세션을 안 만든다
+        const unsigned long long dropBefore = r.srv.Network().Stats().droppedNoSession;
+        const uint8_t lateGame[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_READY) };
+        r.srv.OnPacket(a, close0a, sizeof(close0a), o);
+        r.srv.OnPacket(a, lateGame, sizeof(lateGame), o);
+        tick(r, o, 1);
+        std::snprintf(m, sizeof(m), "ⓓ' 닫은 뒤 늦은 둘 — 통신 층 %lld · 버림 %llu → %llu · 게임 자리 %zu · 남은 연결 %zu",
+                      (long long)r.srv.Network().SessionIdOf(a), dropBefore, r.srv.Network().Stats().droppedNoSession, r.srv->SessionCount(),
+                      r.srv->LeftLinkCount());
+        Check(r.srv.Network().SessionIdOf(a) == 0 && r.srv.Network().Stats().droppedNoSession == dropBefore + 2 &&
+              r.srv->SessionCount() == 1 && r.srv->LeftLinkCount() == 0, m);
     }
     // ⓕ
     {
