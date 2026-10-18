@@ -50,7 +50,7 @@ $log = Join-Path $env:TEMP ("lobby_smoke_{0}.txt" -f $PID)
 $ini = Join-Path $env:TEMP ("lobby_smoke_{0}.ini" -f $PID)
 [IO.File]::WriteAllText($ini, "[token]`r`nkey = $('ab' * 32)`r`n")
 $p = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -ArgumentList @(
-  '--port', $UdpPort, '--config', "`"$ini`"", '--lobby-port', $LobbyPort, '--lobby-bind', '127.0.0.1', '--quiet')
+  '--port', $UdpPort, '--config', "`"$ini`"", '--lobby-port', $LobbyPort, '--lobby-bind', '127.0.0.1', '--quiet', '--no-results')   # ★ 10-19 판 결과 기록 끄기
 $null = $p.Handle   # 종료 코드를 읽으려면 미리 잡아 둔다
 try {
   Write-Host "채널 로비 :$LobbyPort"

@@ -167,6 +167,9 @@ struct ServerOptions {
     // ★ 10-16 작업 13a — 대전 맵 후보(`--battle-maps a,b` — 같은 꼴). 비면 로비 방식에서 `Estate` 하나(10-13 정품으로 채팅 → 대전 전환을 본 맵 ·
     //   `Docs/ROOMS_DESIGN.md` 「10-16 정한 것」)
     std::vector<std::string> battleMaps;
+    // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록(`Docs/MATCH_RESULT_DESIGN.md` 「10-19 정한 것」). 기본 켜짐 — 비면 실행 파일 옆 `results\matches.jsonl`
+    std::string resultsPath;    // `--results <파일>`
+    bool noResults = false;     // `--no-results` — 실행 파일을 띄우는 시험(ctest)만
     RoomSettings room;          // 실행 인자로 차리는 방 하나(단독 모드 · 녹음 모드)
 };
 

@@ -23,7 +23,9 @@
 #include <cstdlib>
 #include <cctype>
 #include <cstring>
+#include <filesystem>   // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록 파일 경로
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -39,6 +41,7 @@
 #include "nox/NetworkThread.h"
 #include "nox/RoomManager.h"
 #include "nox/ChannelLobby.h"   // ★ 10-14 작업 8d — 채널 안 로비
+#include "nox/MatchRecorder.h"  // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기
 #include "nox/IniFile.h"
 #include "nox/Clock.h"
 #include "nox/MapFile.h"
@@ -164,6 +167,10 @@ int main(int argc, char** argv) {
             opt.configPath = argv[++i];
         } else if (a == "--no-join-token") {
             opt.noJoinToken = true;
+        } else if (a == "--results" && i + 1 < argc) {
+            opt.resultsPath = argv[++i];   // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록 파일
+        } else if (a == "--no-results") {
+            opt.noResults = true;          // ★ 10-19 — 판 결과 기록 끄기(실행 파일 시험만)
         } else if (a == "--lobby-port" && i + 1 < argc) {
             opt.lobbyPort = std::atoi(argv[++i]);   // ★ 10-14 작업 8d — 채널 안 로비
         } else if (a == "--lobby-bind" && i + 1 < argc) {
@@ -716,6 +723,48 @@ int main(int argc, char** argv) {
                     battleKeys.empty() ? "(없음 — 판을 못 연다)" : battleKeys.c_str());
     }
 
+    // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기(`Docs/MATCH_RESULT_DESIGN.md` 「10-19 정한 것」 — 기본 켜짐 · 실행 파일 옆 `results\matches.jsonl`).
+    //   게임 스레드는 판 결과를 넘기기만 하고 쓰기는 기록기 스레드가 한다(`MatchRecorder.h` 머리 주석)
+    std::unique_ptr<nox::CMatchRecorder> recorder;
+    if (opt.noResults) {
+        std::printf("[결과 기록] 꺼짐(--no-results) — 판 결과는 출력 줄로만\n");
+    } else {
+        std::filesystem::path rp;
+        if (!opt.resultsPath.empty()) {
+            rp = std::filesystem::path(opt.resultsPath);   // 실행 인자는 코드페이지 바이트 — 경로 객체가 그 뜻으로 읽는다
+        } else {
+            wchar_t exePath[MAX_PATH];
+            const DWORD n = GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            rp = (n > 0 && n < MAX_PATH) ? std::filesystem::path(exePath).parent_path() : std::filesystem::current_path();
+            rp /= L"results";
+            rp /= L"matches.jsonl";
+        }
+        const std::string u8 = rp.u8string();
+        recorder = std::make_unique<nox::CMatchRecorder>(u8);
+        if (recorder->Start()) std::printf("[결과 기록] → %s\n", u8.c_str());
+        else std::printf("[결과 기록] 파일을 못 엶 — %s(판마다 다시 열어 보고 못 쓰면 셈)\n", u8.c_str());
+    }
+    std::fflush(stdout);
+    // 방 이벤트 꺼내기 — 판 결과는 출력 한 줄 + 기록기. 틱 뒤마다 · 끝낼 때 한 번(꺼내지 않으면 판마다 쌓이기만 했다 — 10-19 전)
+    std::vector<nox::RoomEvent> roomEvents;
+    unsigned long long matchResults = 0;
+    auto drainRoomEvents = [&]() {
+        rooms.SwapOutRoomEvents(roomEvents);
+        for (const nox::RoomEvent& e : roomEvents) {
+            switch (e.type) {
+                case nox::RoomEvent::Type::ROUND_OVER:
+                    break;   // 판 결과와 따로 난다(대기 중 판 끝 · 시험 손잡이 포함) — 지금 받는 쪽 없음
+                case nox::RoomEvent::Type::MATCH_RESULT:
+                    ++matchResults;
+                    std::printf("%s\n", nox::FormatMatchResultLine(e.result).c_str());
+                    std::fflush(stdout);
+                    if (recorder) recorder->Push(e.result);
+                    break;
+            }
+        }
+        roomEvents.clear();
+    };
+
     std::printf("접속 대기 — UDP %d, 이름 \"%s\"\n", opt.port, opt.name.c_str());
     std::printf("답하는 것: 서버 찾기 · 접속 시도 · 접속 수락 · 핑\n");
     std::fflush(stdout);
@@ -830,6 +879,7 @@ int main(int argc, char** argv) {
             size_t made = 0;
             for (const nox::NetworkRequest& r : netRequests) if (r.type == nox::NetworkRequest::Type::SEND_MSG) ++made;
             net.PushRequests(netRequests);
+            drainRoomEvents();   // ★ 10-19 MO 5단계 작업 3 — 판 결과(판 끝 · 중단)는 `RunTick` 안에서만 생긴다
             // ★ 10-12 플랜 B 작업 7c — 방마다 진단(`RoomTickDiagnostics` — 옛 이 자리의 블록을 옮김)
             rooms.ForEachRoom([&](nox::CRoom& room) { room.TickDiagnostics(room.SendsSinceMark()); });
             // ★ 10-12 플랜 B 작업 7c — 프로세스 몫 초당 줄(통신 층 · 스레드 지표). 방 줄과 따로 1초마다 — 방마다 프레임이 달라
@@ -964,6 +1014,17 @@ int main(int argc, char** argv) {
                         ts.lobbyLinesIn, ts.lobbyLinesOut, ts.lobbySendNoConn, ts.lobbyRefused);
         std::fflush(stdout);
     }
+    // ★ 10-19 MO 5단계 작업 3 — 남은 판 결과를 넘기고 기록기 큐를 다 쓴 뒤 닫는다(0 옆에 지나간 양 — 받음 · 씀 · 실패)
+    drainRoomEvents();
+    if (recorder) {
+        recorder->Stop();
+        const nox::CMatchRecorder::Stats rs = recorder->GetStats();
+        std::printf("[결과 기록] 끝 — 판 결과 %llu · 받음 %llu · 씀 %llu · 실패 %llu · %s\n", matchResults, rs.pushed, rs.written, rs.writeFailed,
+                    recorder->Path().c_str());
+    } else {
+        std::printf("[결과 기록] 끝 — 판 결과 %llu(기록 꺼짐)\n", matchResults);
+    }
+    std::fflush(stdout);
     if (stopEvent) CloseHandle(stopEvent);
     if (tickTimer) CloseHandle(tickTimer);
     SetEvent(g_shutdownDone);

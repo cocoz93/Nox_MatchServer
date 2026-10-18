@@ -16,7 +16,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $repo 'build\Release\nox_server.exe'
 if (-not (Test-Path $exe)) { Write-Host "[FAIL] 서버가 없다: $exe"; exit 1 }
 
-$srvArgs = @('--port', $Port, '--name', 'SMOKE', '--quiet', '--no-join-token')   # 10-10 토큰 작업 2 — 시험 도구는 토큰 검사 끄기
+$srvArgs = @('--port', $Port, '--name', 'SMOKE', '--quiet', '--no-join-token', '--no-results')   # 10-10 토큰 작업 2 — 시험 도구는 토큰 검사 끄기 · 10-19 판 결과 기록 끄기
 if ($Map) {
   if (-not (Test-Path -LiteralPath $Map)) { Write-Host "[FAIL] 맵이 없다: $Map"; exit 1 }
   # Start-Process 는 인자를 빈칸으로 잇기만 한다 — 빈칸 든 경로는 따옴표로 싸서 넘긴다.

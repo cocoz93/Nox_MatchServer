@@ -34,6 +34,7 @@ add_library(nox_proto STATIC
   server/src/RoomManager.cpp
   server/src/RoomTick.cpp     # ★ 10-14 작업 9c — 방의 판 차리기 · 틱 뒤 진단(옛 main 의 RoomRun 몫)
   server/src/ChannelLobby.cpp # ★ 10-14 작업 8d — 채널 안 로비(로비 TCP 사건 ↔ 로비 규약 ↔ 방 관리자)
+  server/src/MatchRecorder.cpp # ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기(줄 짓기 · 기록 스레드)
   server/src/DumpSniff.cpp
   server/src/WorldBuild.cpp   # ★ 10-14 작업 9b — 세계 차리기 · 방 설정 · 맵 원본(방 관리자가 방을 차리려고 본체로)
   server/src/UpdateStream.cpp

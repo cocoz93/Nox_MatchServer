@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <chrono>
 #include <cstring>
+#include <filesystem>   // ★ 10-19 MO 5단계 작업 3 — 기록기 시험의 임시 폴더
 #include <fstream>
 #include <map>
 #include <set>
@@ -20,6 +22,7 @@
 #include "nox/Server.h"
 #include "nox/SyncHost.h"
 #include "nox/ChannelLobby.h"   // ★ 10-14 작업 8d — 채널 안 로비 시험
+#include "nox/MatchRecorder.h"  // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기 시험
 #include "nox/Gamedata.h"
 #include "nox/UpdateStream.h"
 #include "nox/SpellNames.h"
@@ -26254,6 +26257,135 @@ void TestMatchResult() {
     std::printf("  MO 5단계 작업 2 — 판 결과: 판 끝 · 다음 판 번호 · 중단 · 판 끝 깃발만 · 대기 중 판 끝 · 겹친 판 끝(갈래마다 셈)\n");
 }
 
+// ── ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기(`MatchRecorder.h`) ─────────
+//   ① 한 줄(JSON) · 사람이 읽는 줄 — 정답 문자열 그대로(이스케이프 · 빈 이름 null/#번호 · 나감 · 한글 UTF-8 그대로 · UTF-8 아닌 바이트 \u00XX)
+//   ② 승자 갈래 넷(사람 · 팀 · 비김 · 없음) + 중단 — 칸 꼴
+//   ③ 기록 스레드 — 임시 파일에 셋 → 끝낼 때 다 씀 · 다시 열어 하나 더 → 덧붙임(넷) · 줄 = 지은 줄
+//   ④ 못 쓰는 자리 — 열기 실패 false · 판마다 실패 셈(판은 계속)
+void TestMatchRecorder() {
+    char m[512];
+    nox::MatchResult r;
+    r.epoch = 1760780000u; r.roomId = 3; r.matchNo = 2;
+    r.roomName = "Jack's \"game\"";
+    r.mapKey = "estate"; r.mode = "arena";
+    r.startUnix = 1760780123u; r.endUnix = 1760780456u; r.frames = 9990;
+    r.reason = nox::RoundEndReason::ScorePlayer;
+    r.winner = nox::RoundWinnerKind::Player; r.winnerId = 728; r.winnerAccount = "Jack";
+    r.limit = 15; r.timeLimitFrames = 0;
+    auto pl = [](const std::string& acc, uint16_t nc, int32_t score, uint32_t deaths, bool left) {
+        nox::MatchPlayer p; p.account = acc; p.netCode = nc; p.score = score; p.deaths = deaths; p.left = left; return p;
+    };
+    r.players.push_back(pl("Jack", 728, 15, 3, false));
+    r.players.push_back(pl("", 729, 7, 15, false));
+    r.players.push_back(pl("Tom", 730, 0, 0, true));
+    r.players.push_back(pl("한글", 731, 0, 0, false));
+    r.players.push_back(pl(std::string("\xB0\xA1"), 732, 0, 0, true));   // CP949 「가」 — UTF-8 아님
+    nox::RoundTeamScore t; t.id = 1; t.score = 4; t.caps = 2;
+    r.teams.push_back(t);
+    // ①
+    const std::string wantJson =
+        "{\"match\":\"1760780000-3-2\",\"room\":3,\"roomName\":\"Jack's \\\"game\\\"\",\"map\":\"estate\",\"mode\":\"arena\","
+        "\"start\":1760780123,\"end\":1760780456,\"frames\":9990,\"sec\":333,\"endReason\":\"score_player\","
+        "\"winner\":{\"kind\":\"player\",\"id\":728,\"account\":\"Jack\"},\"limit\":15,\"timeLimitSec\":0,"
+        "\"players\":[{\"account\":\"Jack\",\"netCode\":728,\"state\":\"finished\",\"team\":0,\"score\":15,\"deaths\":3},"
+        "{\"account\":null,\"netCode\":729,\"state\":\"finished\",\"team\":0,\"score\":7,\"deaths\":15},"
+        "{\"account\":\"Tom\",\"netCode\":730,\"state\":\"left\"},"
+        "{\"account\":\"한글\",\"netCode\":731,\"state\":\"finished\",\"team\":0,\"score\":0,\"deaths\":0},"
+        "{\"account\":\"\\u00b0\\u00a1\",\"netCode\":732,\"state\":\"left\"}],"
+        "\"teams\":[{\"id\":1,\"score\":4,\"caps\":2}]}";
+    const std::string gotJson = nox::FormatMatchResultJson(r);
+    if (gotJson != wantJson) std::printf("      [지은 줄] %s\n", gotJson.c_str());
+    Check(gotJson == wantJson, "① 한 줄(JSON)이 정답과 다르다");
+    const std::string wantLine = std::string("[판 결과] 1760780000-3-2 · 방 3 「Jack's \"game\"」 · estate(arena) · score_player · 승자 Jack · 333초") +
+                                 " · Jack 15/3 · #729 7/15 · Tom 나감 · 한글 0/0 · \xB0\xA1 나감";
+    const std::string gotLine = nox::FormatMatchResultLine(r);
+    if (gotLine != wantLine) std::printf("      [지은 사람 줄] %s\n", gotLine.c_str());
+    Check(gotLine == wantLine, "① 사람이 읽는 줄이 정답과 다르다");
+    // ①' UTF-8 꼴이지만 틀린 것 — 겹친 꼴(`C0 AF` = '/') · 대리 자리(`ED A0 80`)는 바이트마다 \u00XX(돌연변이 R8 이 살아남아 더함)
+    {
+        nox::MatchResult u;
+        u.players.push_back(pl(std::string("\xC0\xAF"), 1, 0, 0, true));
+        u.players.push_back(pl(std::string("\xED\xA0\x80"), 2, 0, 0, true));
+        const std::string j = nox::FormatMatchResultJson(u);
+        const bool over = j.find("\"account\":\"\\u00c0\\u00af\"") != std::string::npos;
+        const bool surr = j.find("\"account\":\"\\u00ed\\u00a0\\u0080\"") != std::string::npos;
+        std::snprintf(m, sizeof(m), "①' 틀린 UTF-8 — 겹친 꼴 %d · 대리 자리 %d", (int)over, (int)surr);
+        Check(over && surr, m);
+    }
+    // ② 승자 갈래 · 중단
+    auto has = [](const std::string& s, const char* part) { return s.find(part) != std::string::npos; };
+    nox::MatchResult w = r;
+    w.winner = nox::RoundWinnerKind::Team; w.winnerId = 1; w.reason = nox::RoundEndReason::ScoreTeam;
+    const std::string jt = nox::FormatMatchResultJson(w), lt = nox::FormatMatchResultLine(w);
+    w.winner = nox::RoundWinnerKind::Draw; w.winnerId = 0; w.reason = nox::RoundEndReason::TimeUp;
+    const std::string jd = nox::FormatMatchResultJson(w), ld = nox::FormatMatchResultLine(w);
+    w.winner = nox::RoundWinnerKind::None; w.reason = nox::RoundEndReason::QuestComplete;
+    const std::string jn = nox::FormatMatchResultJson(w), ln = nox::FormatMatchResultLine(w);
+    w.aborted = true;
+    const std::string ja = nox::FormatMatchResultJson(w), la = nox::FormatMatchResultLine(w);
+    w.winner = nox::RoundWinnerKind::Player; w.winnerId = 729; w.winnerAccount.clear(); w.aborted = false;
+    const std::string jp = nox::FormatMatchResultJson(w), lp = nox::FormatMatchResultLine(w);
+    std::snprintf(m, sizeof(m), "② 승자 갈래 — 팀 %d%d · 비김 %d%d · 없음 %d%d · 중단 %d%d · 이름 없는 사람 %d%d",
+                  has(jt, "\"endReason\":\"score_team\",\"winner\":{\"kind\":\"team\",\"id\":1}"), has(lt, "승자 팀 1"),
+                  has(jd, "\"endReason\":\"time_up\",\"winner\":{\"kind\":\"draw\"}"), has(ld, " · 비김 · "),
+                  has(jn, "\"endReason\":\"quest_complete\",\"winner\":{\"kind\":\"none\"}"), has(ln, " · 승자 없음 · "),
+                  has(ja, "\"endReason\":\"aborted\",\"winner\":{\"kind\":\"none\"}"), has(la, " · aborted · "),
+                  has(jp, "\"winner\":{\"kind\":\"player\",\"id\":729,\"account\":null}"), has(lp, "승자 #729"));
+    Check(has(jt, "\"endReason\":\"score_team\",\"winner\":{\"kind\":\"team\",\"id\":1}") && has(lt, "승자 팀 1") &&
+          has(jd, "\"endReason\":\"time_up\",\"winner\":{\"kind\":\"draw\"}") && has(ld, " · 비김 · ") &&
+          has(jn, "\"endReason\":\"quest_complete\",\"winner\":{\"kind\":\"none\"}") && has(ln, " · 승자 없음 · ") &&
+          has(ja, "\"endReason\":\"aborted\",\"winner\":{\"kind\":\"none\"}") && has(la, " · aborted · ") &&
+          has(jp, "\"winner\":{\"kind\":\"player\",\"id\":729,\"account\":null}") && has(lp, "승자 #729"), m);
+    // ③ 기록 스레드 — 임시 폴더
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() /
+        ("nox_match_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const std::filesystem::path file = dir / "sub" / "matches.jsonl";
+    auto readLines = [](const std::filesystem::path& p) {
+        std::vector<std::string> v;
+        std::ifstream f(p, std::ios::binary);
+        std::string line;
+        while (std::getline(f, line)) v.push_back(line);
+        return v;
+    };
+    {
+        nox::CMatchRecorder rec(file.u8string());
+        const bool started = rec.Start();
+        nox::MatchResult a = r, b = r, c = r;
+        b.matchNo = 3; c.matchNo = 4; c.aborted = true;
+        rec.Push(a); rec.Push(b); rec.Push(c);
+        rec.Stop();
+        const auto lines = readLines(file);
+        const nox::CMatchRecorder::Stats s = rec.GetStats();
+        std::snprintf(m, sizeof(m), "③ 기록 스레드 — 열기 %d · 줄 %zu · 받음 %llu · 씀 %llu · 실패 %llu", (int)started, lines.size(), s.pushed, s.written,
+                      s.writeFailed);
+        Check(started && lines.size() == 3 && lines[0] == nox::FormatMatchResultJson(a) && lines[1] == nox::FormatMatchResultJson(b) &&
+              lines[2] == nox::FormatMatchResultJson(c) && s.pushed == 3 && s.written == 3 && s.writeFailed == 0, m);
+        // 다시 열어 하나 더 — 덧붙임(앞 줄을 안 지움)
+        rec.Start();
+        nox::MatchResult d = r; d.matchNo = 5;
+        rec.Push(d);
+        rec.Stop();
+        const auto lines2 = readLines(file);
+        std::snprintf(m, sizeof(m), "③' 덧붙임 — 줄 %zu · 받음 %llu · 씀 %llu", lines2.size(), rec.GetStats().pushed, rec.GetStats().written);
+        Check(lines2.size() == 4 && lines2[0] == lines[0] && lines2[3] == nox::FormatMatchResultJson(d) && rec.GetStats().written == 4, m);
+    }
+    // ④ 못 쓰는 자리 — 폴더 자리에 파일이 있다
+    {
+        const std::filesystem::path blocker = dir / "blocker";
+        { std::ofstream f(blocker, std::ios::binary); f << "x"; }
+        nox::CMatchRecorder rec((blocker / "m.jsonl").u8string());
+        const bool started = rec.Start();
+        rec.Push(r);
+        rec.Stop();
+        const nox::CMatchRecorder::Stats s = rec.GetStats();
+        std::snprintf(m, sizeof(m), "④ 못 쓰는 자리 — 열기 %d · 받음 %llu · 씀 %llu · 실패 %llu", (int)started, s.pushed, s.written, s.writeFailed);
+        Check(!started && s.pushed == 1 && s.written == 0 && s.writeFailed == 1, m);
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::printf("  MO 5단계 작업 3 — 판 결과 기록기: 한 줄 정답 · 승자 갈래 · 기록 스레드(끝낼 때 다 씀 · 덧붙임) · 못 쓰는 자리 셈\n");
+}
+
 // ── ★ 10-16 작업 13b 실물 — 진짜 맵 파일(So_LOD · Estate)로 서버처럼 차린 방에서 판 열기 · 판 끝(게임이 깔려 있을 때만) ─────────
 //   서버가 뜰 때와 같은 길(`LoadGameFiles` → `BuildGameTables` → `BuildMapCatalog`) · 방은 로비가 만드는 설정 그대로 방 관리자의 만들기 입구로.
 //   본다 — `USE_MAP` 의 이름 · CRC 가 맵 원본 값 · 사람 자리가 그 맵의 PlayerStart 가운데 하나 근처 · 바닥 물건 · 문 수가 그 맵 원본의 처음 상태
@@ -32360,6 +32492,7 @@ int main() {
     TestRoomMatchSwitchRealMaps();
     TestMatchHeadcount();
     TestMatchResult();   // ★ 10-19 MO 5단계 작업 2
+    TestMatchRecorder();   // ★ 10-19 MO 5단계 작업 3
     TestChatModeNoFight();
     TestJoinStartByMode();
     TestRoomFacts();
