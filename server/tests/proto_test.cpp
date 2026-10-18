@@ -26231,7 +26231,27 @@ void TestMatchResult() {
         Check(game.RoundOutcomeSeq() == 1 && rs.empty() && room.WaitingRoundEnds() == 1 && room.RoundEndsNoOutcome() == 0 &&
               room.Phase() == nox::RoomPhase::Waiting && room.MatchResultsMade() == 0, m);
     }
-    std::printf("  MO 5단계 작업 2 — 판 결과: 판 끝 · 다음 판 번호 · 중단 · 판 끝 깃발만 · 대기 중 판 끝(갈래마다 셈)\n");
+    // ⑥ 방이 보기 전에 판 끝이 두 번(게임 기록은 한 칸) — 결과는 마지막 것 하나 · 덮인 것은 「번호 건너뜀」 셈 1(교차 대조 P1 ↔ P2)
+    {
+        Setup s;
+        make(s, 5, 2, true);
+        nox::CRoom& room = s.srv.Rooms().Room(s.r);
+        nox::Server& game = s.srv.Rooms().Game(s.r);
+        (void)results(s);
+        game.DebugSetScore(Sid(s.srv, s.addr[0]), 15);
+        game.DebugRoundCheck();                    // 판 끝 ① — 방은 아직 안 봄(틱 밖)
+        game.DebugSetRoundOver(false);             // 판 끝 깃발만 내림(다시 열기 없이)
+        game.DebugSetScore(Sid(s.srv, s.addr[0]), 0);
+        game.DebugSetScore(Sid(s.srv, s.addr[1]), 15);
+        game.DebugRoundCheck();                    // 판 끝 ② — 같은 칸을 덮음
+        ticks(s, 1);
+        const auto rs = results(s);
+        std::snprintf(m, sizeof(m), "⑥ 판 끝 둘이 겹침 — 기록 번호 %llu · 결과 %zu · 승자 %s · 번호 건너뜀 %llu", game.RoundOutcomeSeq(), rs.size(),
+                      rs.size() == 1 ? rs[0].winnerAccount.c_str() : "-", room.OutcomesSkipped());
+        Check(game.RoundOutcomeSeq() == 2 && rs.size() == 1 && rs[0].winnerAccount == "p2" && room.OutcomesSkipped() == 1 &&
+              room.MatchResultsMade() == 1, m);
+    }
+    std::printf("  MO 5단계 작업 2 — 판 결과: 판 끝 · 다음 판 번호 · 중단 · 판 끝 깃발만 · 대기 중 판 끝 · 겹친 판 끝(갈래마다 셈)\n");
 }
 
 // ── ★ 10-16 작업 13b 실물 — 진짜 맵 파일(So_LOD · Estate)로 서버처럼 차린 방에서 판 열기 · 판 끝(게임이 깔려 있을 때만) ─────────
