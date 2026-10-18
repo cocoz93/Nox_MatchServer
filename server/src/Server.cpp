@@ -1121,8 +1121,7 @@ void Server::KillPet(size_t idx) {
                 ++questStage_;
                 SpawnQuestStage(true);   // 다음 웨이브가 밀려온다
             } else {
-                roundOver_ = true;
-                restartAtFrame_ = frame_ + kRoundRestartTicks;
+                EndRound(RoundEndReason::QuestComplete, RoundWinnerKind::None, 0);   // ★ 10-19 MO 5단계 작업 1
                 SendNotice("Quest complete");
             }
         }
@@ -1927,8 +1926,7 @@ void Server::RoundCheckLimit() {
     if (limit == 0) return;                              // ③
     for (const Team& t : teams_) {                       // ④ 팀이 먼저다
         if (t.score < limit) continue;
-        roundOver_ = true;
-        restartAtFrame_ = frame_ + kRoundRestartTicks;
+        EndRound(RoundEndReason::ScoreTeam, t.id == 0 ? RoundWinnerKind::Draw : RoundWinnerKind::Team, t.id);   // ★ 10-19 MO 5단계 작업 1
         SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_TEAM_WINNER), t.id, 0);
         return;
     }
@@ -1936,11 +1934,85 @@ void Server::RoundCheckLimit() {
         Session& o = kv.second;
         if (!o.inGame || o.observer) continue;           // +3680 & 1
         if (o.score < limit) continue;
-        roundOver_ = true;
-        restartAtFrame_ = frame_ + kRoundRestartTicks;
+        EndRound(RoundEndReason::ScorePlayer, o.netCode == 0 ? RoundWinnerKind::Draw : RoundWinnerKind::Player, o.netCode);
         SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER), o.netCode, 0);
         return;
     }
+}
+
+// ★ 10-19 MO 5단계 작업 1 — 판 끝 한 입구(머리 주석은 `Server.h` `EndRound`). 예전 일곱 자리의 두 줄 + 그 순간의 기록 · 까닭별 셈
+void Server::EndRound(RoundEndReason why, RoundWinnerKind winner, uint16_t winnerId) {
+    roundOver_ = true;
+    restartAtFrame_ = frame_ + kRoundRestartTicks;
+    ++roundEnds_[static_cast<size_t>(why)];
+    ++roundOutcomeSeq_;
+    lastOutcome_.reason = why;
+    lastOutcome_.winner = winner;
+    lastOutcome_.winnerId = winnerId;
+    lastOutcome_.frame = frame_;
+    lastOutcome_.limit = gameSettings_.limitValue;
+    lastOutcome_.timeLimitFrames = gameSettings_.timeLimitFrames;
+    SnapshotStandings(lastOutcome_.players, lastOutcome_.teams);
+}
+
+void Server::SnapshotStandings(std::vector<RoundStanding>& players, std::vector<RoundTeamScore>& teams) const {
+    players.clear();
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame) continue;
+        RoundStanding r;
+        r.sessionId = kv.first;
+        r.netCode = o.netCode;
+        r.team = o.team;
+        r.score = o.score;
+        r.deaths = o.deaths;
+        r.observer = o.observer;
+        players.push_back(r);
+    }
+    teams.clear();
+    for (const Team& t : teams_) {
+        RoundTeamScore r;
+        r.id = t.id;
+        r.score = t.score;
+        r.caps = t.id < 3 ? caps_[t.id] : 0;
+        teams.push_back(r);
+    }
+    // 깃발 득점은 팀 기록(`teams_`)이 없어도 쌓인다(깃발 판은 사람의 팀 칸으로만 센다 — `UpdateFlags`) — 빠진 팀은 득점만으로 더한다
+    for (uint8_t id = 1; id < 3; ++id) {
+        if (caps_[id] == 0) continue;
+        bool have = false;
+        for (const RoundTeamScore& r : teams) if (r.id == id) have = true;
+        if (have) continue;
+        RoundTeamScore r;
+        r.id = id;
+        r.caps = caps_[id];
+        teams.push_back(r);
+    }
+}
+
+const char* RoundEndReasonName(RoundEndReason r) {
+    switch (r) {
+        case RoundEndReason::ScoreTeam:     return "score_team";
+        case RoundEndReason::ScorePlayer:   return "score_player";
+        case RoundEndReason::FlagCapture:   return "flag_capture";
+        case RoundEndReason::FlagBall:      return "flag_ball";
+        case RoundEndReason::TimeUp:        return "time_up";
+        case RoundEndReason::Survivors:     return "survivors";
+        case RoundEndReason::QuestComplete: return "quest_complete";
+        case RoundEndReason::kCount:        break;
+    }
+    return "?";
+}
+
+const char* RoundWinnerKindName(RoundWinnerKind k) {
+    switch (k) {
+        case RoundWinnerKind::None:   return "none";
+        case RoundWinnerKind::Player: return "player";
+        case RoundWinnerKind::Team:   return "team";
+        case RoundWinnerKind::Draw:   return "draw";
+        case RoundWinnerKind::kCount: break;
+    }
+    return "?";
 }
 
 // 판 시계 — 짜임은 실측이다(PROTOCOL.md 「판 시계」 절).
@@ -2813,8 +2885,7 @@ void Server::UpdateFlags() {
                 if (s.team < 3) ++caps_[s.team];
                 SendFlagInform(InformCode::FlagCapture, s.netCode, s.team);
                 if (!roundOver_ && caps_[s.team] >= kCaptureLimit) {
-                    roundOver_ = true;
-                    restartAtFrame_ = frame_ + kRoundRestartTicks;
+                    EndRound(RoundEndReason::FlagCapture, s.team == 0 ? RoundWinnerKind::Draw : RoundWinnerKind::Team, s.team);   // ★ 10-19 MO 5단계 작업 1
                     SendFlagWinner(s.team);
                 }
             }
@@ -10391,8 +10462,7 @@ void Server::UpdateBall() {
             if (limit > 0) {
                 for (const Team& t : teams_) {
                     if (t.score < limit) continue;
-                    roundOver_ = true;
-                    restartAtFrame_ = frame_ + kRoundRestartTicks;
+                    EndRound(RoundEndReason::FlagBall, t.id == 0 ? RoundWinnerKind::Draw : RoundWinnerKind::Team, t.id);   // ★ 10-19 MO 5단계 작업 1
                     SendFlagBallWinner(t.id);
                     return;
                 }
@@ -11199,7 +11269,8 @@ void Server::RoundTimeUp() {
     const uint32_t f = gameSettings_.gameFlags;
     // ⚠ 「판 끝」 깃발(`setGameFlags_40A4D0(8)`)은 **갈래 안에서** 선다 —
     //   세 갈래 어디에도 안 걸리는 모드면 깃발도 안 서고 알림도 없다(`GAME4.c:6919~6930`)
-    auto markOver = [&]() { roundOver_ = true; restartAtFrame_ = frame_ + kRoundRestartTicks; };
+    // ★ 10-19 MO 5단계 작업 1 — 판 끝은 한 입구로(`EndRound`). 승자는 아래 갈래가 보내는 그대로
+    auto markOver = [&](RoundWinnerKind k, uint16_t id) { EndRound(RoundEndReason::TimeUp, k, id); };
 
     if (f & 0x60u) {                                      // 96 — 깃발 판·플래그볼
         int32_t best = -1;                                // ⚠ `sub_5099B0` 은 **−1** 에서 시작한다
@@ -11212,7 +11283,7 @@ void Server::RoundTimeUp() {
             who = t.id;
         }
         if (tie) who = 0;                                 // 동점이면 무승부
-        markOver();
+        markOver(who == 0 ? RoundWinnerKind::Draw : RoundWinnerKind::Team, who);
         if (f & 0x40u) SendFlagBallWinner(who);      // 플래그볼 — 까닭 늘 0
         else           SendFlagWinner(who);          // 깃발 판 — 까닭 1(그 함수가 넣는다)
         return;
@@ -11247,7 +11318,10 @@ void Server::RoundTimeUp() {
         best = v;
         player = o.netCode;
     }
-    markOver();
+    if (tie)              markOver(RoundWinnerKind::Draw, 0);
+    else if (player != 0) markOver(RoundWinnerKind::Player, player);
+    else if (team != 0)   markOver(RoundWinnerKind::Team, team);
+    else                  markOver(RoundWinnerKind::None, 0);   // 셋 다 아니면 알림도 없다(아래)
     if (tie)             SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_TEAM_WINNER), 0, 1);
     else if (player != 0) SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER), player, 1);
     else if (team != 0)   SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_TEAM_WINNER), team, 1);
@@ -11291,8 +11365,10 @@ void Server::CheckVictorySurvivors() {
         for (const auto& kv : sessions_) if (kv.second.inGame && !kv.second.observer) ++head;
     }
     if (head <= 1) return;
-    roundOver_ = true;
-    restartAtFrame_ = frame_ + kRoundRestartTicks;
+    // ★ 10-19 MO 5단계 작업 1 — 판 끝은 한 입구로. 승자는 아래가 보내는 그대로(번호 0 = 비김)
+    if (team != 0)      EndRound(RoundEndReason::Survivors, RoundWinnerKind::Team, team);
+    else if (lone != 0) EndRound(RoundEndReason::Survivors, RoundWinnerKind::Player, lone);
+    else                EndRound(RoundEndReason::Survivors, RoundWinnerKind::Draw, 0);
     if (team != 0)      SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_TEAM_WINNER), team, 0);
     else if (lone != 0) SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER), lone, 0);
     else                SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER), 0, 0);

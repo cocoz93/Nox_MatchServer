@@ -31706,6 +31706,188 @@ void TestMapAttach() {
     std::printf("  맵 원본에 붙기 — 두 방이 같은 원본을 가리켜도 바뀌는 것은 제 사본 · 되돌리면 원본으로\n");
 }
 
+// ★ 10-19 MO 5단계 작업 1 — 판 끝 한 입구(`Server::EndRound`). 판 끝 갈래 일곱이 **각각** 기록을 하나 남기고
+//   그 까닭 셈만 1 이 되는지 — 갈래는 개수로 본다(`Docs/MATCH_RESULT_DESIGN.md` 「판 끝 갈래 일곱」).
+//   승자는 클라에 보낸 그대로(번호 0 = 비김 · 안 보냄 = 없음). 판 끝 순간 점수 사진은 다시 열기(점수 0)에 안 지워진다
+void TestRoundOutcome() {
+    const std::string a = "10.8.19.1:1901";
+    const std::string b = "10.8.19.2:1902";
+    auto mk = [&](nox::CSyncHost& srv, uint32_t flags) {
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        if (flags != 0) {
+            nox::GameSettings g = srv->Settings();
+            g.gameFlags = flags;
+            srv->SetGameSettings(g);
+        }
+        std::vector<nox::OutPacket> w;
+        srv.Tick(0, w);
+    };
+    // 기록 하나 · 그 까닭 셈만 1(나머지 0) · 승자
+    int reasonsSeen[static_cast<size_t>(nox::RoundEndReason::kCount)] = {};
+    auto one = [&](nox::CSyncHost& srv, nox::RoundEndReason why, nox::RoundWinnerKind kind, uint16_t id, const char* what) {
+        const nox::RoundOutcome& o = srv->LastRoundOutcome();
+        unsigned long long sum = 0;
+        for (size_t i = 0; i < static_cast<size_t>(nox::RoundEndReason::kCount); ++i) sum += srv->RoundEndCount(static_cast<nox::RoundEndReason>(i));
+        const bool ok = srv->RoundOver() && srv->RoundOutcomeSeq() == 1 && sum == 1 && srv->RoundEndCount(why) == 1 &&
+                        o.reason == why && o.winner == kind && o.winnerId == id;
+        if (!ok)
+            std::printf("      [%s] 끝 %d · 번호 %llu · 셈 합 %llu · 까닭 %s · 승자 %s %u\n", what, srv->RoundOver() ? 1 : 0, srv->RoundOutcomeSeq(), sum,
+                        nox::RoundEndReasonName(o.reason), nox::RoundWinnerKindName(o.winner), o.winnerId);
+        Check(ok, what);
+        if (ok) ++reasonsSeen[static_cast<size_t>(why)];
+    };
+
+    // ① 점수 한도 — 사람. 사진에 둘 다 · 점수 · 다시 열어 점수가 0 이 돼도 사진은 그대로
+    {
+        nox::CSyncHost srv; mk(srv, 0);
+        std::vector<nox::OutPacket> out;
+        srv->DebugSetScore(Sid(srv, a), 14);
+        srv->DebugSetScore(Sid(srv, b), 6);
+        srv->DebugRoundCheck(); srv.TakeOut(out);
+        Check(srv->RoundOutcomeSeq() == 0, "① 한도 밑인데 기록이 남았다");
+        srv->DebugSetScore(Sid(srv, a), 15);
+        srv->DebugRoundCheck(); srv.TakeOut(out);
+        one(srv, nox::RoundEndReason::ScorePlayer, nox::RoundWinnerKind::Player, 728, "① 점수 한도 — 사람");
+        const nox::RoundOutcome& o = srv->LastRoundOutcome();
+        int found = 0;
+        for (const nox::RoundStanding& p : o.players) {
+            if (p.netCode == 728 && p.sessionId == Sid(srv, a) && p.score == 15) ++found;
+            if (p.netCode == 729 && p.sessionId == Sid(srv, b) && p.score == 6) ++found;
+        }
+        Check(o.players.size() == 2 && found == 2, "① 점수 사진이 틀렸다(두 사람 · 15 · 6)");
+        Check(o.limit == 15 && o.frame == srv->frame(), "① 한도 · 프레임이 안 실렸다");
+        srv->DebugRoundCheck(); srv.TakeOut(out);
+        Check(srv->RoundOutcomeSeq() == 1, "① 끝난 판을 또 기록했다");
+        srv.Tick(33u * (nox::kRoundRestartTicks + 2), out);   // 다시 열기(점수 0)
+        Check(!srv->RoundOver() && srv->KillsOf(Sid(srv, a)) == 0, "① 다시 열리지 않았다(이 시험의 전제)");
+        Check(srv->RoundOutcomeSeq() == 1 && srv->LastRoundOutcome().players.size() == 2, "① 다시 열기가 기록을 바꿨다");
+        int still = 0;
+        for (const nox::RoundStanding& p : srv->LastRoundOutcome().players) if (p.netCode == 728 && p.score == 15) ++still;
+        Check(still == 1, "① 다시 열기가 사진의 점수를 지웠다");
+    }
+    // ② 점수 한도 — 팀이 먼저
+    {
+        nox::CSyncHost srv; mk(srv, 0);
+        std::vector<nox::OutPacket> out;
+        srv->DebugSetTeam(Sid(srv, a), 1);
+        srv->DebugSendTeamState(); srv.TakeOut(out);
+        srv->DebugTeamChangeScore(1, 15); srv.TakeOut(out);
+        srv->DebugRoundCheck(); srv.TakeOut(out);
+        one(srv, nox::RoundEndReason::ScoreTeam, nox::RoundWinnerKind::Team, 1, "② 점수 한도 — 팀");
+        int t1 = 0;
+        for (const nox::RoundTeamScore& t : srv->LastRoundOutcome().teams) if (t.id == 1 && t.score == 15) ++t1;
+        Check(t1 == 1, "② 팀 점수 사진이 틀렸다");
+    }
+    // ③ 깃발 — 진짜로 들고 와서 한도까지(`UpdateFlags`)
+    {
+        nox::CSyncHost srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv->StartCtf(1000, 1000, 2000, 1000);
+        srv->DebugSetTeam(Sid(srv, a), 1);
+        srv->DebugSetTeam(Sid(srv, b), 2);
+        srv->DebugMoveTo(Sid(srv, b), 1500, 1500);   // 빨강 깃발 제자리에서 치운다(`TestCtf` 머리 주석)
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(0, out);
+        for (int i = 0; i < nox::kCaptureLimit; ++i) {
+            srv->DebugMoveTo(Sid(srv, a), 2000, 1000);
+            ms += 33; srv.Tick(ms, out);
+            srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+            ms += 33; srv.Tick(ms, out);
+        }
+        one(srv, nox::RoundEndReason::FlagCapture, nox::RoundWinnerKind::Team, 1, "③ 깃발 한도");
+        int caps = 0;
+        for (const nox::RoundTeamScore& t : srv->LastRoundOutcome().teams) if (t.id == 1) caps = t.caps;
+        Check(caps == nox::kCaptureLimit, "③ 깃발 득점 사진이 틀렸다");
+    }
+    // ④ 공 — 진짜로 골대에 넣어 한도까지(`UpdateBall`)
+    {
+        nox::CSyncHost srv;
+        srv.DebugEnterGame(a, 728);
+        srv.DebugEnterGame(b, 729);
+        srv->StartFlagBall(1000, 1000, 1000, 1400, 1000, 600);
+        srv->DebugSetPos(Sid(srv, b), 5000, 5000);   // 둘째가 공을 줍지 않게(`TestFlagBall` 머리 주석)
+        std::vector<nox::OutPacket> out;
+        srv->DebugSendTeamState(); srv.TakeOut(out);
+        srv->DebugSetTeam(Sid(srv, a), 1);
+        srv.Tick(0, out);
+        srv->DebugTeamChangeScore(1, 14); srv.TakeOut(out);
+        srv->DebugSetPos(Sid(srv, a), 1000, 1000);
+        srv->DebugUpdateBall(); srv.TakeOut(out);
+        srv->DebugSetPos(Sid(srv, a), 1000, 600);
+        srv->DebugUpdateBall(); srv.TakeOut(out);
+        one(srv, nox::RoundEndReason::FlagBall, nox::RoundWinnerKind::Team, 1, "④ 공 한도");
+    }
+    // ⑤ 시간 한도 — 아레나 점수 높은 사람 · 비김 · 알릴 것 없음
+    {
+        nox::CSyncHost srv; mk(srv, 0x100u);
+        std::vector<nox::OutPacket> out;
+        srv->DebugSetScore(Sid(srv, a), 3);
+        srv->DebugSetScore(Sid(srv, b), 1);
+        srv->DebugRoundTimeUp(); srv.TakeOut(out);
+        one(srv, nox::RoundEndReason::TimeUp, nox::RoundWinnerKind::Player, 728, "⑤ 시간 한도 — 사람");
+    }
+    {
+        nox::CSyncHost srv; mk(srv, 0x100u);
+        std::vector<nox::OutPacket> out;
+        srv->DebugSetScore(Sid(srv, a), 2);
+        srv->DebugSetScore(Sid(srv, b), 2);
+        srv->DebugRoundTimeUp(); srv.TakeOut(out);
+        one(srv, nox::RoundEndReason::TimeUp, nox::RoundWinnerKind::Draw, 0, "⑤' 시간 한도 — 비김");
+    }
+    {
+        nox::CSyncHost srv;
+        srv.DebugEnterGame(a, 728, /*observer=*/true);   // 셀 사람이 없다 — 팀도 안 만듦
+        srv.DebugEnterGame(b, 729, /*observer=*/true);
+        nox::GameSettings g = srv->Settings(); g.gameFlags = 0x100u; srv->SetGameSettings(g);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        srv->DebugRoundTimeUp(); srv.TakeOut(out);
+        one(srv, nox::RoundEndReason::TimeUp, nox::RoundWinnerKind::None, 0, "⑤'' 시간 한도 — 알릴 것 없음");
+    }
+    // ⑥ 탈락전 — 혼자 남음 · 아무도 안 남음(번호 0 = 비김)
+    {
+        nox::CSyncHost srv; mk(srv, 0x400u);
+        std::vector<nox::OutPacket> out;
+        srv->DebugSetDeaths(Sid(srv, b), 15);
+        srv->DebugCheckVictory(); srv.TakeOut(out);
+        one(srv, nox::RoundEndReason::Survivors, nox::RoundWinnerKind::Player, 728, "⑥ 탈락전 — 혼자 남음");
+    }
+    {
+        nox::CSyncHost srv; mk(srv, 0x400u);
+        std::vector<nox::OutPacket> out;
+        srv->DebugSetDeaths(Sid(srv, a), 15);
+        srv->DebugSetDeaths(Sid(srv, b), 15);
+        srv->DebugCheckVictory(); srv.TakeOut(out);
+        one(srv, nox::RoundEndReason::Survivors, nox::RoundWinnerKind::Draw, 0, "⑥' 탈락전 — 아무도 안 남음");
+    }
+    // ⑦ 퀘스트 — 마지막 스테이지까지(`KillPet`)
+    {
+        nox::CSyncHost srv;
+        srv.DebugEnterGame(a, 728);
+        srv->StartQuest(0, 1000, 1000);
+        std::vector<nox::OutPacket> out;
+        srv.Tick(0, out);
+        int guard = 0;
+        while (!srv->RoundOver() && guard++ < 200) { srv->DebugKillOneWild(); srv.TakeOut(out); }
+        one(srv, nox::RoundEndReason::QuestComplete, nox::RoundWinnerKind::None, 0, "⑦ 퀘스트 완료");
+    }
+    // ⑧ 판 끝 깃발만 세우는 시험 손잡이는 기록을 안 남긴다
+    {
+        nox::CSyncHost srv; mk(srv, 0);
+        srv->DebugEndRound();
+        Check(srv->RoundOver() && srv->RoundOutcomeSeq() == 0, "⑧ 시험 손잡이 판 끝이 기록을 남겼다");
+    }
+    // 갈래 일곱이 모두 한 번 이상 지나갔나(개수)
+    int covered = 0;
+    for (int n : reasonsSeen) if (n > 0) ++covered;
+    Check(covered == static_cast<int>(nox::RoundEndReason::kCount), "판 끝 갈래 중 안 지나간 것이 있다");
+    std::printf("  판 끝 한 입구 — 갈래 %d/%d · 승자는 보낸 그대로 · 사진은 다시 열기에 안 지워짐\n", covered,
+                static_cast<int>(nox::RoundEndReason::kCount));
+}
+
 int main() {
     std::printf("게임 포트 %u/UDP\n\n", nox::kGamePort);
 
@@ -31898,6 +32080,7 @@ int main() {
     TestVote();
     TestModeScoring();
     TestRoundTimeUp();
+    TestRoundOutcome();   // ★ 10-19 MO 5단계 작업 1
     TestSecretWall();
     TestShootingTrap();
     TestPressurePlate();

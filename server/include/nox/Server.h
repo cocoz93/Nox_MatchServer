@@ -1403,6 +1403,40 @@ constexpr uint8_t kAnimRun = 6;    // ⭕ 정답지 상태 5(달리기) → 6 (`
 //   (원본은 밀리초 시계 · 우리는 틱으로 센다 — 틱이 밀리면 조금 늦을 수 있음)
 constexpr uint32_t kRoundRestartTicks = 300;
 
+// ★ 10-19 MO 5단계 작업 1 — 판 끝 까닭(`Docs/MATCH_RESULT_DESIGN.md` 「판 끝 갈래 일곱」). 판을 끝내는 자리는 `Server::EndRound` 하나 —
+//   일곱 자리가 판 끝 깃발을 따로 세우면 한 자리를 빠뜨렸을 때 그 갈래 결과만 조용히 안 남는다.
+//   늘리면 `RoundEndReasonName` 의 `switch` 와 시험(`TestRoundOutcome`)의 갈래 수를 같이 늘릴 것
+enum class RoundEndReason : uint8_t { ScoreTeam, ScorePlayer, FlagCapture, FlagBall, TimeUp, Survivors, QuestComplete, kCount };
+const char* RoundEndReasonName(RoundEndReason r);
+// 클라에 알린 승자 — **보낸 그대로**: 번호 0 을 보냈으면 비김(클라가 무승부로 띄움) · 아무것도 안 보냈으면 없음
+enum class RoundWinnerKind : uint8_t { None, Player, Team, Draw, kCount };
+const char* RoundWinnerKindName(RoundWinnerKind k);
+// 판 끝 순간 게임 안 사람 하나(관전자 포함 — `observer`)
+struct RoundStanding {
+    int64_t sessionId = -1;
+    uint16_t netCode = 0;
+    uint8_t team = 0;        // 0 = 무소속 · 1 = 빨강 · 2 = 파랑
+    int32_t score = 0;
+    uint32_t deaths = 0;
+    bool observer = false;
+};
+struct RoundTeamScore {
+    uint8_t id = 0;
+    int32_t score = 0;       // 팀 점수(`Team::score`)
+    uint16_t caps = 0;       // 깃발 득점(`caps_` — 1·2 팀만)
+};
+// 판 끝 기록 — `EndRound` 가 그 순간에 찍는다. 방(`CRoom`)이 로비 이름을 붙여 판 결과로 만든다
+struct RoundOutcome {
+    RoundEndReason reason = RoundEndReason::ScorePlayer;
+    RoundWinnerKind winner = RoundWinnerKind::None;
+    uint16_t winnerId = 0;          // 사람이면 `netCode` · 팀이면 팀 번호 · 그 밖은 0
+    uint32_t frame = 0;             // 판이 끝난 프레임
+    uint32_t limit = 0;             // 점수 한도(`GameSettings::limitValue`)
+    uint32_t timeLimitFrames = 0;   // 시간 한도(0 = 없음)
+    std::vector<RoundStanding> players;
+    std::vector<RoundTeamScore> teams;
+};
+
 class Server {
 public:
     // ★ 10-12 작업 7e-1 — 값 복사 금지. 표를 `shared_ptr`로 들므로 복사하면 두 게임이 제 표 하나를 같이 고치게 된다(지금 복사하는 곳 없음)
@@ -2868,6 +2902,14 @@ public:
     }
     // 판이 끝났나 (점수 한도에 닿았나).
     bool RoundOver() const { return roundOver_; }
+    // ★ 10-19 MO 5단계 작업 1 — 판 끝 기록(`EndRound`). 판이 끝날 때마다 번호가 1 오르고 마지막 기록이 바뀐다 — 한 칸이라 쌓이지 않는다.
+    //   방은 틱마다 번호가 바뀌었나로 새 판 끝을 안다 — 한 칸이라 한 틱 안에 판 끝이 두 번 나면 앞 것은 덮이고, 방은 번호 차이로 그것을 센다.
+    //   판 끝 깃발만 세우는 시험 손잡이(`DebugEndRound` · `DebugSetRoundOver`)는 기록을 안 남긴다
+    unsigned long long RoundOutcomeSeq() const { return roundOutcomeSeq_; }
+    const RoundOutcome& LastRoundOutcome() const { return lastOutcome_; }
+    unsigned long long RoundEndCount(RoundEndReason r) const { return roundEnds_[static_cast<size_t>(r)]; }
+    // 지금 게임 안 사람 · 팀의 점수 사진(판 끝 기록과 같은 모양) — 방이 판을 중단할 때(대기 맵으로 바꾸기 전에) 쓴다
+    void SnapshotStandings(std::vector<RoundStanding>& players, std::vector<RoundTeamScore>& teams) const;
 
     // 지금 살아 있나. 없는 상대면 거짓.
     bool IsAlive(int64_t sessionId) const {
@@ -3686,8 +3728,9 @@ public:
         for (int i = 0; i < n; ++i) {
             ++caps_[it->second.team];
             if (!roundOver_ && caps_[it->second.team] >= kCaptureLimit) {
-                roundOver_ = true;
-                restartAtFrame_ = frame_ + kRoundRestartTicks;
+                // ★ 10-19 MO 5단계 작업 1 — 판 끝은 한 입구로(`UpdateFlags` 와 같은 까닭 · 승자 — 알림은 예전처럼 안 보낸다)
+                const uint8_t t = it->second.team;
+                EndRound(RoundEndReason::FlagCapture, t == 0 ? RoundWinnerKind::Draw : RoundWinnerKind::Team, t);
             }
         }
     }
@@ -4898,6 +4941,9 @@ private:
     // 묶음 8-c — 판 끝 알림(0x58 혼자 · 0x59 팀)
     void SendRoundWinner(uint8_t op, uint16_t who, uint8_t reason);
     void RoundCheckLimit();
+    // ★ 10-19 MO 5단계 작업 1 — 판 끝 한 입구. 판 끝 깃발 · 다시 열 프레임(예전에 일곱 자리가 따로 세우던 두 줄) + 판 끝 기록 · 까닭별 셈.
+    //   보내는 것은 없다 — 승자 알림은 부르는 자리가 예전 차례 그대로 뒤에 보낸다(와이어 그대로)
+    void EndRound(RoundEndReason why, RoundWinnerKind winner, uint16_t winnerId);
 
     // 묶음 8-b — 팀 메시지(0xC4). 팀 기록은 정답지 팀 오브젝트의 칸을 그대로 옮긴 것
     struct Team {
@@ -5816,6 +5862,10 @@ private:
     std::vector<BallGoal> goals_;
     std::vector<std::pair<double, double>> ballStarts_;
     bool roundOver_ = false;
+    // ★ 10-19 MO 5단계 작업 1 — 판 끝 기록(`EndRound`) · 까닭별 셈
+    unsigned long long roundOutcomeSeq_ = 0;
+    RoundOutcome lastOutcome_;
+    unsigned long long roundEnds_[static_cast<size_t>(RoundEndReason::kCount)] = {};
     bool timerLastRoundOver_ = false;   // 09-21 — 판 끝 상태가 **바뀐 틱**에만 시계를 보낸다
     std::vector<Flag> flags_;
     uint16_t caps_[3] = {0, 0, 0};   // 팀별 득점 (1·2 만 쓴다)
