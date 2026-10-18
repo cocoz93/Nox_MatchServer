@@ -29,6 +29,8 @@ int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
     const int id = _nextRoomId;
     auto room = std::make_unique<CRoom>(id);
     room->SetSettings(settings);
+    room->SetUnixClock(_unixNow);   // ★ 10-19 MO 5단계 작업 2 — 판 결과 시각 · 판 번호 앞자리
+    room->SetEpoch(_epoch);
     room->SetMapCatalog(_hasWorld ? _world.maps : nullptr);   // ★ 10-16 작업 13b — 판을 열 때 붙을 맵 원본
     if (_hasWorld) {
         const int rc = BuildRoom(room->_game, room->_settings, _world, room->_extras);
@@ -343,17 +345,36 @@ void CRoomManager::RunTick() {
         if (ms > room._load.tickMsMax) room._load.tickMsMax = ms;
         room._ticks = 0;
         PullRequests(room);
+        // ★ 10-19 MO 5단계 작업 2 — 게임의 판 끝 기록을 판 상태가 바뀌기 전에(판 끝 → 대기는 아래 `OnRoundRestarted`) 꺼낸다
+        const bool gotOutcome = room.CollectRoundOutcome();
         const bool over = room._game.RoundOver();
         if (over && !room._wasRoundOver) {
             RoomEvent e;
             e.type = RoomEvent::Type::ROUND_OVER;
             e.roomId = room._id;
             _roomEvents.push_back(e);
+            if (!gotOutcome && room._phase == RoomPhase::Playing) ++room._roundEndsNoOutcome;   // 판 끝 깃발만 섰다(시험 손잡이)
         }
         if (!over && room._wasRoundOver) room.OnRoundRestarted();   // ★ 10-16 작업 13b — 판 끝 뒤 다시 열림(판이었으면 대기로)
         room._wasRoundOver = over;
         room.CheckMatchHeadcount();   // ★ 10-16 결함 ④ — 나감은 위 옮기기(`PullRequests`)에서 구성원에서도 빠졌다 · 돌렸으면 그 요청은 다음 옮기기 때
+        PullResults(room);            // ★ 10-19 MO 5단계 작업 2 — 판 끝 · 중단 결과
     }
+}
+
+void CRoomManager::PullResults(CRoom& room) {
+    for (MatchResult& r : room._results) {
+        RoomEvent e;
+        e.type = RoomEvent::Type::MATCH_RESULT;
+        e.roomId = room._id;
+        e.result = std::move(r);
+        _roomEvents.push_back(std::move(e));
+    }
+    room._results.clear();
+}
+
+const char* MatchEndName(const MatchResult& r) {
+    return r.aborted ? "aborted" : RoundEndReasonName(r.reason);
 }
 
 bool CRoomManager::NextTickDue(uint32_t& due) const {

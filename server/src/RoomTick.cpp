@@ -849,8 +849,99 @@ void nox::CRoom::StartMatch() {
     _curMapKey = battle->key;
     _curMode = _settings.battleMode;
     _phase = RoomPhase::Playing;
+    // ★ 10-19 MO 5단계 작업 2 — 판 결과용: 판 번호 · 시작 프레임(프레임은 맵을 바꿔도 안 되돌아감) · 시각 · 명단(게임 안 사람 + 로비 이름)
+    ++_matchNo;
+    _matchStartFrame = _game.frame();
+    _matchStartUnix = _unixNow();
+    _matchMapKey = battle->key;
+    _matchMode = _settings.battleMode;
+    _roster.clear();
+    std::vector<RoundStanding> ps;
+    std::vector<RoundTeamScore> ts;
+    _game.SnapshotStandings(ps, ts);
+    for (const RoundStanding& p : ps) {
+        RosterEntry e;
+        e.sessionId = p.sessionId;
+        e.netCode = p.netCode;
+        for (const RoomMember& m : _members) if (m.sessionId == p.sessionId) e.account = m.account;
+        _roster.push_back(std::move(e));
+    }
     _game.Log("[판] 시작 — 대전 맵 %s(%s) · 끝나면 대기 맵 %s · 사람 %zu\n", battle->key.c_str(), _settings.battleMode.c_str(), wait->key.c_str(),
               _game.inGameCount());
+}
+
+// ★ 10-19 MO 5단계 작업 2 — 머리 주석은 `RoomManager.h` `CollectRoundOutcome`. 방 관리자가 틱 뒤(판 상태를 바꾸기 전에) 부른다
+bool nox::CRoom::CollectRoundOutcome() {
+    const unsigned long long seq = _game.RoundOutcomeSeq();
+    if (seq == _seenOutcomeSeq) return false;
+    if (seq - _seenOutcomeSeq > 1) _outcomesSkipped += seq - _seenOutcomeSeq - 1;   // 한 칸이라 앞 것은 덮였다
+    _seenOutcomeSeq = seq;
+    switch (_phase) {
+        case RoomPhase::Waiting:
+            ++_waitingRoundEnds;   // 대기 맵(채팅 모드)의 판 끝 — 판 결과가 아니다
+            return true;
+        case RoomPhase::Playing:
+            break;
+    }
+    PushMatchResult(false, _game.LastRoundOutcome());
+    return true;
+}
+
+// 판 결과 하나 — 명단 차례로 사람마다 끝에 게임 안에 있었나(점수) · 없었나(나감), 명단 밖인데 게임 안에 있던 사람은 뒤에
+void nox::CRoom::PushMatchResult(bool aborted, const RoundOutcome& o) {
+    MatchResult r;
+    r.epoch = _epoch;
+    r.roomId = _id;
+    r.matchNo = _matchNo;
+    r.roomName = _settings.roomName;
+    r.mapKey = _matchMapKey;
+    r.mode = _matchMode;
+    r.startUnix = _matchStartUnix;
+    r.endUnix = _unixNow();
+    r.frames = o.frame - _matchStartFrame;
+    r.aborted = aborted;
+    r.reason = o.reason;
+    r.winner = aborted ? RoundWinnerKind::None : o.winner;
+    r.winnerId = aborted ? 0 : o.winnerId;
+    r.limit = o.limit;
+    r.timeLimitFrames = o.timeLimitFrames;
+    r.teams = o.teams;
+    std::vector<bool> used(o.players.size(), false);
+    for (const RosterEntry& e : _roster) {
+        MatchPlayer p;
+        p.account = e.account;
+        p.sessionId = e.sessionId;
+        p.netCode = e.netCode;
+        p.left = true;
+        for (size_t i = 0; i < o.players.size(); ++i) {
+            if (used[i] || o.players[i].sessionId != e.sessionId) continue;
+            used[i] = true;
+            p.left = false;
+            p.team = o.players[i].team;
+            p.score = o.players[i].score;
+            p.deaths = o.players[i].deaths;
+            p.observer = o.players[i].observer;
+        }
+        r.players.push_back(std::move(p));
+    }
+    for (size_t i = 0; i < o.players.size(); ++i) {
+        if (used[i]) continue;
+        const RoundStanding& s = o.players[i];
+        MatchPlayer p;
+        for (const RoomMember& m : _members) if (m.sessionId == s.sessionId) p.account = m.account;
+        p.sessionId = s.sessionId;
+        p.netCode = s.netCode;
+        p.team = s.team;
+        p.score = s.score;
+        p.deaths = s.deaths;
+        p.observer = s.observer;
+        r.players.push_back(std::move(p));
+    }
+    if (r.winner == RoundWinnerKind::Player)
+        for (const MatchPlayer& p : r.players)
+            if (p.netCode == r.winnerId && !p.left) r.winnerAccount = p.account;
+    ++_matchResultsMade;
+    _results.push_back(std::move(r));
 }
 
 void nox::CRoom::OnRoundRestarted() {
@@ -877,6 +968,15 @@ void nox::CRoom::CheckMatchHeadcount() {
     if (left >= kMinPlayers) return;
     const std::shared_ptr<const MapOriginal> wait = FindMap(_settings.mapPath);
     if (!wait) return;                                      // 판을 열 때 `CanStartMatch` 가 봤다 — 여기 올 일 없음
+    // ★ 10-19 MO 5단계 작업 2 — 중단 결과는 대기 맵으로 바꾸기 **앞에서**(바꾸면 `ReopenMap` → `RestartPlayers` 가 점수를 지운다)
+    {
+        RoundOutcome now;
+        now.frame = _game.frame();
+        now.limit = _game.Settings().limitValue;
+        now.timeLimitFrames = _game.Settings().timeLimitFrames;
+        _game.SnapshotStandings(now.players, now.teams);
+        PushMatchResult(true, now);
+    }
     _game.SwitchMap(wait->tables, wait->initial, nox::ModeGameFlags(_settings.mode));
     _game.ClearNextRoundMap();                              // 그 맵으로 이미 왔다 — 다음 판 끝에 또 바꾸지 않게
     _phase = RoomPhase::Waiting;

@@ -26061,6 +26061,179 @@ void TestMatchHeadcount() {
     std::printf("  10-16 결함 ④ — 판 중 한 명만 남으면 대기 맵으로(둘 남으면 그대로 · 판 끝 쉬는 중이면 다시 열기에 맡김)\n");
 }
 
+// ── ★ 10-19 MO 5단계 작업 2 — 판 결과(`CRoom` · 방 이벤트 `MATCH_RESULT`) ─────────
+//   ① 판 끝(점수 한도) — 결과 하나 · 승자 로비 이름 · 끝까지 둘 점수 · 나간 하나는 `left` · 판 번호 1 · 맵 · 모드
+//   ② 같은 방 다음 판 — 판 번호 2 · 명단은 그 판을 열 때 사람
+//   ③ 중단 — `aborted` · 승자 없음 · 남은 사람 점수는 대기 맵으로 바꾸기 앞의 값 · 나간 사람 `left`
+//   ④ 판 끝 깃발만(시험 손잡이) — 결과 0 · 「기록 없는 판 끝」 셈 1
+//   ⑤ 대기 중 판 끝 — 결과 0 · 「대기 중 판 끝」 셈 1
+//   갈래는 개수로 본다 — 결과 수 = 판 끝 + 중단 · 셈 칸마다 그 갈래만 오른다
+void TestMatchResult() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    char m[420];
+    auto chat = [](const std::string& text) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::TEXT_MESSAGE));
+        p.push_back(0); p.push_back(0); p.push_back(0x02);
+        p.push_back(0); p.push_back(0); p.push_back(0); p.push_back(0);
+        p.push_back(static_cast<uint8_t>(text.size()));
+        p.push_back(0); p.push_back(0);
+        for (const char c : text) p.push_back(static_cast<uint8_t>(c));
+        return p;
+    };
+    MapCatalog cat;
+    cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+    cat.maps.push_back(FakeMapOriginal("estate", 0x22222222u, 3000.0f, 3000.0f));
+    struct Setup {
+        nox::CSyncHost srv;
+        int r = -1;
+        uint32_t now = 1000;
+        std::vector<std::string> addr;
+    };
+    // 방 하나 · 사람 n 명(로비 이름 p1 … pn) · start 면 첫 사람이 `!start`
+    auto make = [&](Setup& s, int k, int n, bool start) {
+        UseTokens(s.srv);
+        s.r = MakeLobbyLikeRoom(s.srv.Rooms(), cat, "so_lod", "estate");
+        std::vector<nox::OutPacket> t; s.srv.Tick(s.now, t); s.now += 33; s.srv.Tick(s.now, t);
+        for (int i = 1; i <= n; ++i) {
+            const std::string ip = "10.45." + std::to_string(k) + "." + std::to_string(i);
+            const auto tail = TrailerAs("p" + std::to_string(i), s.r, ip, static_cast<uint64_t>(4500 + 10 * k + i));
+            const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+            s.srv.OnPacket(ip + ":1", tj.data(), tj.size(), t);
+            const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+            s.srv.OnPacket(ip + ":2", cn.data(), cn.size(), t);
+            const auto ac = AcceptPkt("Jack");
+            s.srv.OnPacket(ip + ":2", ac.data(), ac.size(), t);
+            s.addr.push_back(ip + ":2");
+        }
+        s.now += 34; s.srv.Tick(s.now, t);
+        if (start) {
+            const auto p = chat("!start");
+            s.srv.OnPacket(s.addr[0], p.data(), p.size(), t);
+            s.now += 34; s.srv.Tick(s.now, t);
+        }
+    };
+    auto ticks = [&](Setup& s, int n) {
+        std::vector<nox::OutPacket> t;
+        for (int k = 0; k < n; ++k) { s.now += 34; s.srv.Tick(s.now, t); }
+    };
+    // 방 이벤트에서 판 결과만(꺼내면 비워진다)
+    auto results = [&](Setup& s) {
+        std::vector<nox::RoomEvent> ev;
+        s.srv.Rooms().SwapOutRoomEvents(ev);
+        std::vector<nox::MatchResult> out;
+        for (nox::RoomEvent& e : ev) if (e.type == nox::RoomEvent::Type::MATCH_RESULT) out.push_back(std::move(e.result));
+        return out;
+    };
+    auto who = [](const nox::MatchResult& r, const std::string& account) -> const nox::MatchPlayer* {
+        for (const nox::MatchPlayer& p : r.players) if (p.account == account) return &p;
+        return nullptr;
+    };
+    auto endRoundByScore = [&](Setup& s, size_t i, int32_t score) {
+        nox::Server& game = s.srv.Rooms().Game(s.r);
+        game.DebugSetScore(Sid(s.srv, s.addr[i]), score);
+        game.DebugRoundCheck();
+        ticks(s, 1);
+    };
+    // ① ②
+    {
+        Setup s;
+        make(s, 1, 3, true);
+        nox::CRoom& room = s.srv.Rooms().Room(s.r);
+        nox::Server& game = s.srv.Rooms().Game(s.r);
+        std::vector<nox::OutPacket> o;
+        LeaveAndClose(s.srv, s.addr[2], o);
+        ticks(s, 3);
+        game.DebugSetScore(Sid(s.srv, s.addr[1]), 4);
+        (void)results(s);   // 앞 이벤트를 비운다
+        endRoundByScore(s, 0, 15);
+        const auto rs = results(s);
+        const nox::MatchResult* r = rs.size() == 1 ? &rs[0] : nullptr;
+        const nox::MatchPlayer* p1 = r ? who(*r, "p1") : nullptr;
+        const nox::MatchPlayer* p2 = r ? who(*r, "p2") : nullptr;
+        const nox::MatchPlayer* p3 = r ? who(*r, "p3") : nullptr;
+        std::snprintf(m, sizeof(m), "① 판 끝 — 결과 %zu · 끝 %s · 승자 %s %s · 판 %llu · 맵 %s/%s · 사람 %zu · p1 %d/%d · p2 %d/%d · p3 나감 %d · 프레임 %u · 시각 %u",
+                      rs.size(), r ? nox::MatchEndName(*r) : "-", r ? nox::RoundWinnerKindName(r->winner) : "-", r ? r->winnerAccount.c_str() : "-",
+                      r ? r->matchNo : 0ull, r ? r->mapKey.c_str() : "-", r ? r->mode.c_str() : "-", r ? r->players.size() : 0u,
+                      p1 ? p1->score : -1, p1 ? (int)p1->left : -1, p2 ? p2->score : -1, p2 ? (int)p2->left : -1, p3 ? (int)p3->left : -1,
+                      r ? r->frames : 0u, r ? r->startUnix : 0u);
+        Check(r && !r->aborted && std::string(nox::MatchEndName(*r)) == "score_player" && r->winner == nox::RoundWinnerKind::Player &&
+              r->winnerAccount == "p1" && r->matchNo == 1 && r->roomId == s.r && r->epoch == s.srv.Rooms().Epoch() && r->mapKey == "estate" &&
+              r->mode == "arena" && r->players.size() == 3 && p1 && p1->score == 15 && !p1->left && p2 && p2->score == 4 && !p2->left && p3 &&
+              p3->left && p3->score == 0 && r->frames > 0 && r->startUnix == kRoomsNow && r->endUnix == kRoomsNow && r->limit == 15, m);
+        Check(room.MatchResultsMade() == 1 && room.WaitingRoundEnds() == 0 && room.RoundEndsNoOutcome() == 0 && room.OutcomesSkipped() == 0,
+              "① 셈 — 결과 1 · 나머지 갈래 0 이어야");
+        // 판 끝 쉬는 동안 더 안 나온다 · 다시 열려 대기로
+        for (int k = 0; k < 40 && room.Phase() == nox::RoomPhase::Playing; ++k) { s.now += 500; std::vector<nox::OutPacket> t; s.srv.Tick(s.now, t); }
+        const auto none = results(s);
+        Check(none.empty() && room.Phase() == nox::RoomPhase::Waiting, "① 다시 열기까지 결과가 더 나왔거나 대기로 안 돌아옴");
+        // ② 다음 판
+        std::vector<nox::OutPacket> t;
+        const auto p = chat("!start");
+        s.srv.OnPacket(s.addr[0], p.data(), p.size(), t);
+        ticks(s, 1);
+        endRoundByScore(s, 1, 15);
+        const auto rs2 = results(s);
+        const nox::MatchResult* r2 = rs2.size() == 1 ? &rs2[0] : nullptr;
+        std::snprintf(m, sizeof(m), "② 다음 판 — 결과 %zu · 판 %llu · 승자 %s · 사람 %zu · 연 판 %llu",
+                      rs2.size(), r2 ? r2->matchNo : 0ull, r2 ? r2->winnerAccount.c_str() : "-", r2 ? r2->players.size() : 0u, room.MatchesStarted());
+        Check(r2 && r2->matchNo == 2 && r2->winnerAccount == "p2" && r2->players.size() == 2 && !who(*r2, "p3") && room.MatchesStarted() == 2 &&
+              room.MatchResultsMade() == 2, m);
+    }
+    // ③ 중단
+    {
+        Setup s;
+        make(s, 2, 2, true);
+        nox::CRoom& room = s.srv.Rooms().Room(s.r);
+        nox::Server& game = s.srv.Rooms().Game(s.r);
+        game.DebugSetScore(Sid(s.srv, s.addr[0]), 3);
+        (void)results(s);
+        std::vector<nox::OutPacket> o;
+        LeaveAndClose(s.srv, s.addr[1], o);
+        ticks(s, 3);
+        const auto rs = results(s);
+        const nox::MatchResult* r = rs.size() == 1 ? &rs[0] : nullptr;
+        const nox::MatchPlayer* p1 = r ? who(*r, "p1") : nullptr;
+        const nox::MatchPlayer* p2 = r ? who(*r, "p2") : nullptr;
+        std::snprintf(m, sizeof(m), "③ 중단 — 결과 %zu · 끝 %s · 승자 %s · p1 %d/%d · p2 나감 %d · 중단 셈 %llu · 방 %s · 지금 점수 %d",
+                      rs.size(), r ? nox::MatchEndName(*r) : "-", r ? nox::RoundWinnerKindName(r->winner) : "-", p1 ? p1->score : -1,
+                      p1 ? (int)p1->left : -1, p2 ? (int)p2->left : -1, room.MatchAborts(), nox::RoomPhaseName(room.Phase()),
+                      game.KillsOf(Sid(s.srv, s.addr[0])));
+        Check(r && r->aborted && std::string(nox::MatchEndName(*r)) == "aborted" && r->winner == nox::RoundWinnerKind::None && r->winnerAccount.empty() &&
+              p1 && p1->score == 3 && !p1->left && p2 && p2->left && room.MatchAborts() == 1 && room.Phase() == nox::RoomPhase::Waiting &&
+              game.KillsOf(Sid(s.srv, s.addr[0])) == 0 && room.MatchResultsMade() == 1, m);
+    }
+    // ④ 판 끝 깃발만
+    {
+        Setup s;
+        make(s, 3, 2, true);
+        nox::CRoom& room = s.srv.Rooms().Room(s.r);
+        (void)results(s);
+        s.srv.Rooms().Game(s.r).DebugEndRound();
+        ticks(s, 2);
+        const auto rs = results(s);
+        std::snprintf(m, sizeof(m), "④ 판 끝 깃발만 — 결과 %zu · 기록 없는 판 끝 %llu · 대기 중 판 끝 %llu", rs.size(), room.RoundEndsNoOutcome(),
+                      room.WaitingRoundEnds());
+        Check(rs.empty() && room.RoundEndsNoOutcome() == 1 && room.WaitingRoundEnds() == 0 && room.MatchResultsMade() == 0, m);
+    }
+    // ⑤ 대기 중 판 끝
+    {
+        Setup s;
+        make(s, 4, 2, false);
+        nox::CRoom& room = s.srv.Rooms().Room(s.r);
+        nox::Server& game = s.srv.Rooms().Game(s.r);
+        (void)results(s);
+        endRoundByScore(s, 0, 15);
+        const auto rs = results(s);
+        std::snprintf(m, sizeof(m), "⑤ 대기 중 판 끝 — 게임 판 끝 %d · 기록 번호 %llu · 결과 %zu · 대기 중 판 끝 %llu · 기록 없는 판 끝 %llu · 방 %s",
+                      (int)game.RoundOver(), game.RoundOutcomeSeq(), rs.size(), room.WaitingRoundEnds(), room.RoundEndsNoOutcome(),
+                      nox::RoomPhaseName(room.Phase()));
+        Check(game.RoundOutcomeSeq() == 1 && rs.empty() && room.WaitingRoundEnds() == 1 && room.RoundEndsNoOutcome() == 0 &&
+              room.Phase() == nox::RoomPhase::Waiting && room.MatchResultsMade() == 0, m);
+    }
+    std::printf("  MO 5단계 작업 2 — 판 결과: 판 끝 · 다음 판 번호 · 중단 · 판 끝 깃발만 · 대기 중 판 끝(갈래마다 셈)\n");
+}
+
 // ── ★ 10-16 작업 13b 실물 — 진짜 맵 파일(So_LOD · Estate)로 서버처럼 차린 방에서 판 열기 · 판 끝(게임이 깔려 있을 때만) ─────────
 //   서버가 뜰 때와 같은 길(`LoadGameFiles` → `BuildGameTables` → `BuildMapCatalog`) · 방은 로비가 만드는 설정 그대로 방 관리자의 만들기 입구로.
 //   본다 — `USE_MAP` 의 이름 · CRC 가 맵 원본 값 · 사람 자리가 그 맵의 PlayerStart 가운데 하나 근처 · 바닥 물건 · 문 수가 그 맵 원본의 처음 상태
@@ -26173,6 +26346,29 @@ void TestRoomMatchSwitchRealMaps() {
     Check(crcW == wait->crc && crcW != 0 && dA2 < 60.0 && game.PlayerStartCount() == wait->tables->playerStarts.size() &&
           game.WorldStaticCount() == wait->initial->statics.size() && room.Phase() == nox::RoomPhase::Waiting, m);
     std::printf("    %s\n", m);
+    // ★ 10-19 MO 5단계 작업 2 실물 — 위 판 끝은 깃발만(결과 없음 · 셈 1). 다시 판을 열어 점수 한도로 끝내면 결과 하나(진짜 맵 · 로비 이름)
+    {
+        std::vector<nox::RoomEvent> drop; rooms.SwapOutRoomEvents(drop);
+        std::vector<nox::OutPacket> o3;
+        srv.OnPacket(A, p.data(), p.size(), o3);   // 같은 `!start`
+        now += 34; srv.Tick(now, o3);
+        game.DebugSetScore(sa, 15);
+        game.DebugRoundCheck();
+        now += 34; srv.Tick(now, o3);
+        std::vector<nox::RoomEvent> ev; rooms.SwapOutRoomEvents(ev);
+        std::vector<const nox::MatchResult*> got;
+        for (const nox::RoomEvent& e : ev) if (e.type == nox::RoomEvent::Type::MATCH_RESULT) got.push_back(&e.result);
+        const nox::MatchResult* res = got.size() == 1 ? got[0] : nullptr;
+        int alice = -1, bob = -1;
+        if (res) for (const nox::MatchPlayer& q : res->players) { if (q.account == "alice") alice = q.score; if (q.account == "bob") bob = q.score; }
+        std::snprintf(m, sizeof(m), "실물 ③ 판 결과 — 결과 %zu · 판 %llu · 맵 %s(%s) · 방 이름 %s · 끝 %s · 승자 %s · alice %d · bob %d · 프레임 %u · 기록 없는 판 끝 %llu",
+                      got.size(), res ? res->matchNo : 0ull, res ? res->mapKey.c_str() : "-", res ? res->mode.c_str() : "-", res ? res->roomName.c_str() : "-",
+                      res ? nox::MatchEndName(*res) : "-", res ? res->winnerAccount.c_str() : "-", alice, bob, res ? res->frames : 0u, room.RoundEndsNoOutcome());
+        Check(res && res->matchNo == 2 && res->mapKey == "estate" && res->mode == "arena" && res->roomName == "alice's game" &&
+              std::string(nox::MatchEndName(*res)) == "score_player" && res->winnerAccount == "alice" && alice == 15 && bob == 0 &&
+              room.RoundEndsNoOutcome() == 1, m);
+        std::printf("    %s\n", m);
+    }
     std::printf("  10-16 플랜 B 작업 13b 실물 — So_LOD ↔ Estate: USE_MAP 이름 · CRC = 맵 원본 · 시작 자리 · 바닥 물건 · 문 = 그 맵 처음 상태\n");
 }
 
@@ -32143,6 +32339,7 @@ int main() {
     TestRoomMatchSwitch();
     TestRoomMatchSwitchRealMaps();
     TestMatchHeadcount();
+    TestMatchResult();   // ★ 10-19 MO 5단계 작업 2
     TestChatModeNoFight();
     TestJoinStartByMode();
     TestRoomFacts();

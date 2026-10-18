@@ -45,6 +45,40 @@ struct RoomMember {
     std::string account;   // 입장 토큰의 로비 이름(열린 방식은 빈 것)
 };
 
+// ★ 10-19 MO 5단계 작업 2 — 판 결과(판 하나 = 기록 한 줄 · `Docs/MATCH_RESULT_DESIGN.md`). 방이 짓고 방 관리자가 방 이벤트로 내보낸다
+struct MatchPlayer {
+    std::string account;      // 로비 이름(열린 방식은 빈 것 — 기록기가 `netCode` 로 적는다 · 10-19 결정)
+    int64_t sessionId = -1;
+    uint16_t netCode = 0;
+    uint8_t team = 0;
+    int32_t score = 0;        // `left` 면 0(안 적는다)
+    uint32_t deaths = 0;
+    bool observer = false;
+    bool left = false;        // 판을 열 때 게임 안에 있었는데 끝에 없음 — 이름 + 나감 · 점수 없음(10-19 결정)
+};
+struct MatchResult {
+    uint32_t epoch = 0;                 // 채널이 뜬 유닉스 초 — 판 번호 = <epoch>-<roomId>-<matchNo>(프로세스를 넘어 유일)
+    int roomId = -1;
+    unsigned long long matchNo = 0;     // 그 방의 몇 번째 판(1부터)
+    std::string roomName;
+    std::string mapKey;                 // 판을 연 대전 맵
+    std::string mode;                   // 판을 연 대전 모드
+    uint32_t startUnix = 0;
+    uint32_t endUnix = 0;
+    uint32_t frames = 0;                // 판을 열고 끝날 때까지 프레임(30 = 1초)
+    bool aborted = false;               // 사람 모자람(`CheckMatchHeadcount`) — 그러면 까닭은 안 쓰고 승자는 없음
+    RoundEndReason reason = RoundEndReason::ScorePlayer;
+    RoundWinnerKind winner = RoundWinnerKind::None;
+    uint16_t winnerId = 0;              // 사람이면 `netCode` · 팀이면 팀 번호
+    std::string winnerAccount;          // 승자가 사람이면 그 로비 이름(없으면 빈 것)
+    uint32_t limit = 0;
+    uint32_t timeLimitFrames = 0;
+    std::vector<MatchPlayer> players;   // 판을 열 때 명단 차례 · 명단 밖인데 끝에 게임 안에 있으면 뒤에
+    std::vector<RoundTeamScore> teams;
+};
+// 끝난 까닭의 이름 — 중단이면 `aborted`, 아니면 `RoundEndReasonName`(갈래 여덟)
+const char* MatchEndName(const MatchResult& r);
+
 // 방 하나가 틱을 도는 데 쓴 시간(부하 — `CRoom::Load`). 방 워커를 둘지 가르는 근거(`ROOMS_DESIGN.md` 「대규모 확장 경로」)
 struct CRoomLoad {
     unsigned long long tickRuns = 0;   // `RunTick` 부른 수
@@ -113,6 +147,16 @@ public:
     // ★ 10-16 결함 ④ — 판 중에 게임 안 사람이 `kMinPlayers` 밑으로(나감 · 시간 초과) 내려가 대기 맵으로 돌린 수
     unsigned long long MatchAborts() const { return _matchAborts; }
 
+    // ── ★ 10-19 MO 5단계 작업 2 — 판 결과. 판을 열 때 명단 · 판 번호 · 시각, 판이 끝나면(게임의 판 끝 기록 번호가 바뀜) 또는
+    //   중단되면 결과 하나를 짓는다. 방 관리자가 틱 뒤 옮긴다(방 이벤트 `MATCH_RESULT`). 갈래마다 센다 ──
+    unsigned long long MatchesStarted() const { return _matchNo; }
+    unsigned long long MatchResultsMade() const { return _matchResultsMade; }   // 지은 결과(끝 + 중단)
+    unsigned long long WaitingRoundEnds() const { return _waitingRoundEnds; }   // 대기 중 판 끝 — 결과 아님(셈만)
+    unsigned long long RoundEndsNoOutcome() const { return _roundEndsNoOutcome; }   // 판 중 판 끝인데 게임 기록이 없음(판 끝 깃발만 세운 시험 손잡이)
+    unsigned long long OutcomesSkipped() const { return _outcomesSkipped; }     // 한 번에 번호가 2 이상 뛰어 덮인 판 끝
+    void SetUnixClock(std::function<uint32_t()> now) { _unixNow = std::move(now); }
+    void SetEpoch(uint32_t e) { _epoch = e; }
+
 private:
     friend class CRoomManager;
     // ★ 10-16 작업 13b — 판 열기(대전 맵으로 · 대기 맵을 다음 판 맵으로 걸어 둠) · 판 끝 뒤 다시 열림(방 관리자가 판 끝 참 → 거짓을 보고 부른다)
@@ -123,6 +167,14 @@ private:
     // ★ 10-16 결함 ④ — 판 중인데 게임 안 사람이 `kMinPlayers` 밑이면 대기 맵으로 바로(판 끝 쉬는 중이면 그 흐름에 맡김 — 어차피 대기 맵으로 연다).
     //   원작에는 없는 규칙(원작 아레나는 혼자 남아도 점수 한도까지 돈다) — 「판 단위 대전」 방이라 혼자 남은 판은 끝낸다(10-16 사용자 결정)
     void CheckMatchHeadcount();
+    // ★ 10-19 MO 5단계 작업 2 — 게임의 판 끝 기록 번호가 바뀌었으면 꺼낸다(판 중이면 결과 · 대기 중이면 셈만). 새 기록이 있었으면 참
+    bool CollectRoundOutcome();
+    void PushMatchResult(bool aborted, const RoundOutcome& o);   // 중단은 `o` 의 까닭 · 승자를 안 본다
+    struct RosterEntry {
+        int64_t sessionId = -1;
+        std::string account;
+        uint16_t netCode = 0;
+    };
     int _id;
     Server _game;
     int _ticks = 0;            // 이번 `BeginTick` 이 정한 돌 틱 수(`RunTick` 이 쓴다)
@@ -153,13 +205,30 @@ private:
     std::string _curMapKey;
     std::string _curMode;
     unsigned long long _matchAborts = 0;   // ★ 10-16 결함 ④
+    // ★ 10-19 MO 5단계 작업 2
+    std::function<uint32_t()> _unixNow = UnixNow;
+    uint32_t _epoch = 0;
+    unsigned long long _matchNo = 0;
+    uint32_t _matchStartFrame = 0;
+    uint32_t _matchStartUnix = 0;
+    std::string _matchMapKey;
+    std::string _matchMode;
+    std::vector<RosterEntry> _roster;            // 판을 열 때 게임 안 사람(들어온 차례 아님 — 게임 세션 차례)
+    unsigned long long _seenOutcomeSeq = 0;      // 마지막으로 본 게임의 판 끝 기록 번호
+    std::vector<MatchResult> _results;           // 방 관리자가 옮긴다(`CRoomManager::PullResults`)
+    unsigned long long _matchResultsMade = 0;
+    unsigned long long _waitingRoundEnds = 0;
+    unsigned long long _roundEndsNoOutcome = 0;
+    unsigned long long _outcomesSkipped = 0;
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).
+// ★ 10-19 MO 5단계 작업 2 — `MATCH_RESULT` = 판 결과 하나(`result`). `ROUND_OVER` 는 대기 중 판 끝 · 시험 손잡이에도 난다(결과와 따로)
 struct RoomEvent {
-    enum class Type { ROUND_OVER };
+    enum class Type { ROUND_OVER, MATCH_RESULT };
     Type type = Type::ROUND_OVER;
     int roomId = 0;
+    MatchResult result;   // `MATCH_RESULT` 일 때만
 };
 
 // 방 관리자의 셈 — 갈래마다 하나씩. 토큰 확인 갈래는 접속 시도와 CONNECT 를 합쳐 센다(어느 쪽인지는 받음·거절·끊음 셈으로).
@@ -240,7 +309,12 @@ public:
     void SetJoinKey(const JoinKey& key);   // 토큰 방식 — 실제 서버
     void SetOpenEntry(int roomId);         // 토큰 검사 끄기 — 모두 그 방. 녹음 재생·대조와 시험 도구 · LAN 실행만
     bool OpenEntry() const { return _openEntry; }
-    void SetUnixClock(std::function<uint32_t()> now) { _unixNow = std::move(now); }   // 시험이 만료를 정해 보려고
+    // 시험이 만료를 정해 보려고. ★ 10-19 MO 5단계 작업 2 — 방들의 판 결과 시각도 이 시계(있는 방 · 앞으로 만들 방)
+    void SetUnixClock(std::function<uint32_t()> now) {
+        _unixNow = std::move(now);
+        for (auto& kv : _rooms) kv.second->SetUnixClock(_unixNow);
+    }
+    uint32_t Epoch() const { return _epoch; }   // ★ 10-19 — 방 관리자를 만든 유닉스 초(판 번호 앞자리)
     void SetLogJoins(bool on) { _logJoins = on; }   // 입장 판정을 한 줄씩 찍는다(`main` 이 켠다 — 시험은 조용히)
 
     // ── 세션표 ──
@@ -284,6 +358,7 @@ private:
     void RequestSendMsg(int64_t sessionId, bool reliable, const uint8_t* msg, size_t n);
     void RequestDisconnectSession(int64_t sessionId);
     void PullRequests(CRoom& room);   // 방의 요청 목록을 방 관리자 목록 뒤로 옮긴다(끊기 요청이면 세션표에서 지운다)
+    void PullResults(CRoom& room);    // ★ 10-19 MO 5단계 작업 2 — 방이 지은 판 결과를 방 이벤트(`MATCH_RESULT`)로
     void CloseEmptyRooms(uint32_t nowMs);   // ★ 10-14 작업 9e
     std::map<int, size_t> SeatCounts() const;   // 방 → 세션표의 세션 수(한 번 훑기)
 
@@ -303,6 +378,7 @@ private:
     std::vector<NetworkRequest> _requests;
     std::vector<NetworkRequest> _pull;            // `PullRequests` 가 쓰는 그릇(다시 씀)
     std::vector<RoomEvent> _roomEvents;
+    uint32_t _epoch = UnixNow();                  // ★ 10-19 MO 5단계 작업 2 — 판 번호 앞자리(방을 만들 때 넘긴다)
     CRoomStats _stats;
 };
 
