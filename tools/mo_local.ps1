@@ -6,7 +6,7 @@
 #       ③ 라우터 nox_router 127.0.0.1:4005 → ④ 로비 nox_lobby 127.0.0.1:4000(게임 서버 연결 127.0.0.1:4010)
 #       ⑤ 게임 서버 nox_server UDP 18590 --lobby 127.0.0.1:4010(로비 기록에서 등록 확인 — 방 없이 시작 · 새 방은 로비가 묻는다)
 #          -BattleScoreLimit N 이면 `--battle-score-limit N`(판 점수 한도 시험 손잡이 — 옛 사람 판 start_rooms_check.ps1 과 같은 이름 · 1 이면 한 킬로 판 끝)
-#       ⑥ 클라 DLL — 게임 폴더 wsock32.dll 이 빌드한 tools\wsock32_proxy\wsock32.dll 과 다르면 바꿔 끼운다(바꾸기 전 것은 _out\mo_local\wsock32.dll.<md5> 로 한 번 떠 둠 ·
+#       ⑥ 클라 DLL — 게임 폴더 wsock32.dll 이 빌드한 client_mod\wsock32_proxy\wsock32.dll 과 다르면 바꿔 끼운다(바꾸기 전 것은 _out\mo_local\wsock32.dll.<md5> 로 한 번 떠 둠 ·
 #          되돌리기 = 그 파일을 게임 폴더 wsock32.dll 로 복사). -KeepDll 이면 안 바꾼다
 #       ⑦ 클라1 Game.exe · 클라2 Game2.exe(-OneClient 면 클라1 만 · -NoClients 면 안 띄움). DLL 기록(NOX_HOOK_LOG_DIR)도 같은 기록 폴더에
 #       기록 = _out\mo_local\<월일_시분초>\ — router.log · lobby.log · server.log · 판 결과는 게임 서버 실행 파일 옆 results\matches.jsonl
@@ -82,9 +82,9 @@ try {
   Write-Host "서버: 라우터 127.0.0.1:4005 · 로비 127.0.0.1:4000 · 게임 서버 UDP 18590(로비에 등록됨) — 기록 $logDir"
 
   if (-not $KeepDll) {
-    $built = Join-Path $PSScriptRoot 'wsock32_proxy\wsock32.dll'
+    $built = Join-Path $repo 'client_mod\wsock32_proxy\wsock32.dll'
     $inGame = Join-Path $game 'wsock32.dll'
-    if (-not (Test-Path -LiteralPath $built)) { throw "클라 DLL 빌드가 없다 — tools\wsock32_proxy\build.bat 먼저: $built" }
+    if (-not (Test-Path -LiteralPath $built)) { throw "클라 DLL 빌드가 없다 — client_mod\wsock32_proxy\build.bat 먼저: $built" }
     $hb = (Get-FileHash -Algorithm MD5 -LiteralPath $built).Hash
     $hg = if (Test-Path -LiteralPath $inGame) { (Get-FileHash -Algorithm MD5 -LiteralPath $inGame).Hash } else { '' }
     if ($hb -ne $hg) {
