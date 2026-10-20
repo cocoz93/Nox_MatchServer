@@ -14,6 +14,7 @@ add_library(nox_common STATIC
   server/src/common/JoinToken.cpp
   server/src/common/IniFile.cpp
   server/src/common/TcpLines.cpp
+  server/src/common/LobbyLink.cpp   # ★ 10-20 MO 6단계 v2 작업 1 — 로비 ↔ 게임 서버 연결 규약(줄 · 확인 서명 · 키 파생)
 )
 target_include_directories(nox_common PUBLIC server/include)
 target_link_libraries(nox_common PUBLIC bcrypt ws2_32)
