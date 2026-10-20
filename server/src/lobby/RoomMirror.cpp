@@ -199,6 +199,11 @@ RoomRequest RoomMirror::RequestRoom(uint32_t req, const std::string& creator, Lo
     return RoomRequest::Pending;
 }
 
+void RoomMirror::CancelRoom(uint32_t req) {
+    for (auto& kv : servers_)
+        if (kv.second.asked.erase(req)) ++stats_.cancelled;
+}
+
 void RoomMirror::TakeOut(std::vector<Out>& out) {
     for (Out& o : pendingOut_) out.push_back(std::move(o));
     pendingOut_.clear();

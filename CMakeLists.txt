@@ -74,6 +74,7 @@ target_link_libraries(nox_datadump PRIVATE nox_proto)
 
 # 로비 규약(MO 2단계, Docs/LOBBY_DESIGN.md) — 게임 규약 라이브러리(nox_proto)에 기대지 않는다.
 # ★ 10-14 작업 8d — 로비 프로세스 nox_lobby 는 없앴다(채널 nox_server 안 게임 스레드에서 돈다 — ChannelLobby.cpp)
+# ★ 10-20 v2 작업 3c — 되살림(아래 nox_lobby). 채널 안 로비는 작업 4 에서 걷는다
 add_library(nox_lobby_core STATIC
   server/src/lobby/WolGameInfo.cpp
   server/src/lobby/Lobby.cpp
@@ -86,6 +87,11 @@ target_link_libraries(nox_lobby_core PUBLIC nox_common)   # 입장 토큰 서명
 # 라우터(목표 구조 v3 첫 층 — 작업 8b) — 4005 로비 찾기 · 605 로 채널 주소
 add_executable(nox_router server/src/router_main.cpp)
 target_link_libraries(nox_router PRIVATE nox_lobby_core)
+
+# ★ 10-20 MO 6단계 v2 작업 3c — 로비 프로세스(목표 구조 v2 — 로비 하나 + 게임 서버 여럿 · Docs/LOBBY_SPLIT_DESIGN.md).
+#   클라 4000 · 게임 서버 연결 4010(내부) · 10-14 작업 8d 에 없앤 nox_lobby 를 되살림
+add_executable(nox_lobby server/src/lobby_main.cpp)
+target_link_libraries(nox_lobby PRIVATE nox_lobby_core)
 
 add_executable(lobby_test server/tests/lobby_test.cpp)
 target_link_libraries(lobby_test PRIVATE nox_lobby_core)
@@ -134,6 +140,10 @@ if (NOX_POWERSHELL AND WIN32)
   add_test(NAME lobby_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                    -File ${CMAKE_SOURCE_DIR}/tools/lobby_smoke.ps1 -Exe $<TARGET_FILE:nox_server>)
+  # ★ 10-20 MO 6단계 v2 작업 3c — 로비 프로세스 nox_lobby 소켓 왕복 + 가짜 게임 서버(연결 확인 · 등록 · 방 알림 · 새 방 · 판 결과 · 끊김)
+  add_test(NAME nox_lobby_smoke
+           COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                   -File ${CMAKE_SOURCE_DIR}/tools/nox_lobby_smoke.ps1 -Exe $<TARGET_FILE:nox_lobby>)
   # 라우터 소켓 왕복(작업 8b) — 605 의 채널 주소(설정 없음 = 붙은 주소 · 설정 있음 = 그 주소) · CRLF · QUIT 뒤 끊기
   add_test(NAME router_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass

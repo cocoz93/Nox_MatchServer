@@ -723,6 +723,8 @@ void MirrorUnitTests() {
     cfg.joinKey = LobbyTestKey();
     cfg.unixNow = [] { return kLobbyTestNow; };
     cfg.nonce = [] { return 0x0102030405060708ull; };
+    uint32_t clock = 1000;   // 미룬 답 한도(⑪)
+    cfg.nowMs = [&clock] { return clock; };
     RoomMirror mirror(LobbyTestKey());
     Lobby lb(cfg, mirror);
     mirror.Attach(lb);
@@ -964,6 +966,39 @@ void MirrorUnitTests() {
     const MirrorStats& ms = mirror.Stats();
     Check(ms.linksOpened == 8 && ms.linksClosed == 7 && ms.authOk == 5 && ms.authFailed == 3 && ms.registered + ms.registerRejected + ms.outOfOrder == 5,
           "셈 — 붙음 8 = 끊김 7 + 살아 있음 1 · 확인 8 = 맞음 5 + 틀림 3 · 확인된 5 = 등록 3 + 거절 1 + 차례 틀림 1");
+
+    // ⑪ ★ 작업 3c — 로비가 접은 요청(시간 초과 · 클라 끊김) → 거울 기다림 장부에서 지움(`CancelRoom`) · 늦은 CREATED 는 안 물은 답 ·
+    //   게임 서버가 끊길 때 이미 접은 요청을 다시 실패로 넘기지 않음(nox_lobby_smoke 에서 나온 어긋남)
+    auto host = [&](int conn, const char* nick) {
+        lb.OnConnect(conn, peer, local);
+        std::vector<Out> o;
+        for (const std::string l : {std::string("NOXCLIENT 2"), std::string("NICK ") + nick, std::string("USER UserName HostName irc.westwood.com :RealName"),
+                                    "JOINGAME #" + std::string(nick) + "'s_game 1 "})
+            lb.OnLine(conn, l, o);
+        std::vector<Out> s;
+        mirror.TakeOut(s);
+        nox::LinkLine ll;
+        return s.size() == 1 && nox::ParseLinkLine(s[0].line, ll) == nox::LinkParse::Ok ? ll.req : 0u;
+    };
+    const uint32_t reqHal = host(6, "hal");
+    clock += kRoomRequestTimeoutMs;
+    lb.Tick();
+    const uint32_t reqIvy = host(7, "ivy");
+    out.clear();
+    lb.OnClose(7, out);
+    Check(reqHal && reqIvy && lb.Stats().roomRequestTimeout == 1 && lb.Stats().roomRequestDropped == 1 && mirror.Stats().cancelled == 2,
+          "⑪ 시간 초과 · 클라 끊김 → 거울 장부에서도 지움(2)");
+    const auto late0 = lb.Stats().lateRoomReply;
+    const auto unknown0 = mirror.Stats().unknownReplies;
+    send(a2, nox::LinkRoomLine(room(3, "hal", 0)));
+    send(a2, nox::LinkCreated(reqHal, 3));
+    Check(out.empty() && mirror.Stats().unknownReplies == unknown0 + 1 && lb.Stats().lateRoomReply == late0,
+          "⑪ 접은 요청의 늦은 CREATED → 거울이 안 물은 답으로 버림(로비까지 안 감)");
+    const auto failedOnClose0 = mirror.Stats().failedOnClose;
+    const auto failed0 = lb.Stats().roomCreateFailed;
+    mirror.OnLinkClose(a2.conn);
+    Check(mirror.Stats().failedOnClose == failedOnClose0 && lb.Stats().roomCreateFailed == failed0 && lb.Stats().lateRoomReply == late0,
+          "⑪ 게임 서버가 끊겨도 접은 요청을 다시 실패로 안 넘김");
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──

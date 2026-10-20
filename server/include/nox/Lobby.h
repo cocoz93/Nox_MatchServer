@@ -87,6 +87,9 @@ public:
     // ★ 10-14 플랜 B 작업 10a — 「새 방」 — 그 사람이 만든 사람(방장)인 방을 하나 만든다.
     //   ★ 10-20 v2 작업 3a — 옛 `CreateRoomFor`(그 자리에서 만들고 bool). 이제 다른 프로세스에 물을 수 있어 결과가 셋(`RoomRequest`)
     virtual RoomRequest RequestRoom(uint32_t req, const std::string& creator, LobbyRoom& out, std::string& why) = 0;
+    // ★ 10-20 v2 작업 3c — 로비가 기다림을 접은 요청(시간 초과 · 클라 끊김). 거울은 그 요청을 기다림 장부에서 지운다
+    //   (안 지우면 게임 서버가 끊길 때 이미 접은 요청을 「실패」로 다시 넘긴다 — nox_lobby_smoke 에서 나옴). 늦게 온 답은 「안 물은 답」으로 버린다
+    virtual void CancelRoom(uint32_t /*req*/) {}
 };
 
 // ★ 10-20 v2 작업 3a — 미룬 새 방 답을 기다리는 한도. 근거 없는 값 — 같은 PC 연결 왕복은 ms 단위 · 정품이 얼마나 기다리는지는 미확인

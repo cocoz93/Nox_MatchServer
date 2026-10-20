@@ -37,6 +37,8 @@
 namespace nox {
 
 constexpr size_t kLinkNonceBytes = 16;
+// ★ 작업 3c — 로비가 게임 서버 연결을 듣는 기본 포트(내부 — 기본 127.0.0.1 에만). 클라 4000 · 라우터 4005 와 겹치지 않는 값(근거는 그뿐)
+constexpr uint16_t kLobbyLinkPort = 4010;
 // 줄 한도(CRLF 빼고) — 받는 쪽 `CTcpLines` 는 줄 끝을 못 본 바이트가 `kMaxLine` 을 넘으면 끊는다.
 //   줄 끝 CR 과 LF 가 따로 도착하면 CR 까지 쌓이므로 한 바이트를 뺀다
 constexpr size_t kLinkMaxLine = CTcpLines::kMaxLine - 1;

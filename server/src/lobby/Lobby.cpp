@@ -137,6 +137,7 @@ void Lobby::OnClose(int conn, std::vector<Out>& out) {
         }
         ++stats_.roomRequestDropped;
         log_.push_back("[새 방 — 버림] 요청 " + std::to_string(it->first) + " — 기다리는 동안 클라가 끊음");
+        rooms_.CancelRoom(it->first);   // ★ 작업 3c — 공급자(거울)의 기다림 장부에서도
         it = pending_.erase(it);
     }
     conns_.erase(conn);
@@ -182,6 +183,7 @@ void Lobby::Tick() {
         const auto c = conns_.find(it->second.conn);
         log_.push_back("[새 방 — 시간 초과] " + (c == conns_.end() ? std::string("?") : c->second.nick) + " — 요청 " +
                        std::to_string(it->first) + " 에 " + std::to_string(kRoomRequestTimeoutMs) + "ms 안에 답 없음(답 없음)");
+        rooms_.CancelRoom(it->first);   // ★ 작업 3c — 공급자(거울)의 기다림 장부에서도
         it = pending_.erase(it);
     }
 }

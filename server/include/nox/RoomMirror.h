@@ -45,6 +45,7 @@ struct MirrorStats {
     unsigned long long createdNoRoom = 0;     // CREATED 인데 그 방의 ROOM 이 먼저 안 옴(실패로 넘김)
     unsigned long long unknownReplies = 0;    // 이 게임 서버에 안 물은 요청의 답(버림)
     unsigned long long failedOnClose = 0;     // 연결이 끊겨 실패로 넘긴 기다리던 요청
+    unsigned long long cancelled = 0;         // ★ 작업 3c — 로비가 접은 요청(시간 초과 · 클라 끊김)을 기다림 장부에서 지움
     unsigned long long results = 0;           // RESULT(판 결과 — 7단계 전엔 한 줄 찍고 셈)
 };
 
@@ -65,6 +66,7 @@ public:
     // ILobbyRooms
     std::vector<LobbyRoom> LobbyRooms() const override;
     RoomRequest RequestRoom(uint32_t req, const std::string& creator, LobbyRoom& out, std::string& why) override;
+    void CancelRoom(uint32_t req) override;   // ★ 작업 3c — 로비가 접은 요청을 기다림 장부에서 지운다
 
     const MirrorStats& Stats() const { return stats_; }
     size_t ServerCount() const;   // 등록된 게임 서버 수
