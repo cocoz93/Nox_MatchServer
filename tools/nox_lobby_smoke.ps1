@@ -4,8 +4,8 @@
 #   ① 가짜 게임 서버 — HELLO 받음 → AUTH(연결 키 서명) → REGISTER(127.0.0.2:18590) → ROOM(alice 방) · 서명 틀린 둘째는 BYE 뒤 끊김
 #   ② 클라 — 로그인 → 목록에 alice 방(방장 주소 칸 = 등록 주소 127.0.0.2) → 대화방 둘이서 채팅 한 줄
 #   ③ 새 방 — 클라 JOINGAME #wn's_game → 게임 서버에 CREATE(만든 사람 wn) → ROOM + CREATED → 클라에 미룬 참가 답(NOXTOKEN 127.0.0.2:18590)
-#   ③-2 답 없는 새 방 — 로비 한도 5초에 시간 초과(실행 파일 루프의 Tick)
-#   ④ 판 결과 RESULT → 로비 기록 [판 결과] · 게임 서버 끊김 → 목록 0줄 · QUIT 607
+#   ③-2 답 없는 새 방 — 로비 한도 5초에 시간 초과(실행 파일 루프의 Tick) → ★ 10-20 클라에 거절 471(시간 초과)
+#   ④ 판 결과 RESULT → 로비 기록 [판 결과] · 게임 서버 끊김 → 목록 0줄 → ★ 10-20 그때 새 방 → 거절 471(곧바로 실패 — 사람 확인 50 의 꼴) · QUIT 607
 #   끝 줄의 셈(접속 · 줄 · 토큰 · 새 방 · 게임 서버 확인 · 등록 · 판 결과)을 대조한다 — 0 은 「없었다」와 「못 읽었다」를 안 가르므로 지나간 양을 같이 본다
 # 로비 로직의 갈래는 lobby_test(MirrorUnitTests · PendingRoomUnitTests · ChatUnitTests)가 본다. 여기서는 실행 파일의 소켓 · 사건 가르기 · 루프만.
 param([int]$LobbyPort = 14200, [int]$LinkPort = 14210, [string]$Exe = '')
@@ -113,6 +113,9 @@ try {
   $create2 = ReadOne $g
   Check ($create2 -match '^CREATE \d+ bob$') "둘째 새 방 → CREATE(bob) — 게임 서버는 답하지 않음 ($create2)"
   Start-Sleep -Milliseconds 5600
+  # ★ 10-20 거절 답 — 한도에 접히면 기다리던 bob 에게 471 한 줄(그 전엔 답이 없어 정품이 「서버 접속 시도중...」에서 멈췄다 — 사람 확인 50)
+  $rj1 = ReadOne $k2
+  Check ($rj1 -eq ": 471 u #bob's_game :Cannot create game (game server timed out)") "시간 초과 → bob 에 거절 471 한 줄(참가 채널 · 시간 초과) ($rj1)"
 
   # ④ 판 결과 · 끊김
   Send $g @('RESULT {"match":"1760000000-1-1","roomName":"wn''s game"}')
@@ -122,6 +125,10 @@ try {
   Send $k @('LIST 37 37')
   $l2 = ReadUntil $k '323'
   Check ((($l2 | ForEach-Object { Kind $_ }) -join ',') -eq '321,323') "게임 서버 끊김 → 목록 0줄 ($($l2.Count)줄)"
+  # ★ 10-20 거절 답 — 게임 서버가 하나도 없을 때 새 방(사람 확인 50 과 같은 꼴) → 묻지 않고 곧바로 거절 471
+  Send $k @("JOINGAME #wn's_game 1 ")
+  $rj2 = ReadOne $k
+  Check ($rj2 -eq ": 471 u #wn's_game :Cannot create game (request failed)") "게임 서버 없음 → 새 방에 곧바로 거절 471 한 줄 ($rj2)"
   Send $k @('QUIT')
   Check ((ReadUntil $k '607').Count -eq 1) 'QUIT 답 607'
   $k.c.Close(); $k2.c.Close()
@@ -138,10 +145,12 @@ Check (@($all | Where-Object { $_ -match '\[판 결과\] \{"match":"1760000000-1
 Check (@($all | Where-Object { $_ -match '\[게임 서버\] c\d+ 127\.0\.0\.2:18590 등록 — 실행 1760000000' }).Count -eq 1) '로비 기록 — 게임 서버 등록 한 줄'
 Check (@($all | Where-Object { $_ -match '127\.0\.0\.2:18590 끊김 — 방 2개 목록에서 내림 · 기다리던 새 방 0개 실패' }).Count -eq 1) '로비 기록 — 끊김에 방 둘 내림(시간 초과로 접은 요청은 기다림에 없음)'
 Check (@($all | Where-Object { $_ -match "\[로비\] \[새 방 — 시간 초과\] bob — 요청 \d+ 에 5000ms 안에 답 없음" }).Count -eq 1) '로비 기록 — 답 없는 새 방 시간 초과 한 줄'
-# 클라 줄 — wn 5 + LIST + 대화방 + JOINGAME + LIST + QUIT = 10 · bob 3 + JOIN + PRIVMSG + JOINGAME(답 없음) = 6 → 16
-#   보낸 줄 — wn 로그인(NOXSERVER · 375 · 372 · 376 · 329 = 5) · 목록 3 · 대화방 3 + 들어옴 1 + 채팅 1 · 참가 5 · 목록 2 · 607 → 21 ·
-#     bob 로그인 4 · 대화방 3 · 시간 초과 거절 471 1(★ 10-20) · wn 이 끊길 때 대화방 PART 알림 1 → 9 · 합 30
-Check ($end.Count -eq 2 -and $end[0] -match '접속 2 · 받은 줄 16 · 보낸 줄 30 · 토큰 1 · 새 방 1\(물음 2 · 실패 0 · 시간 초과 1 · 버림 0\) · 채팅 1') '끝 줄 — 클라 셈(접속 2 · 받은 줄 16 · 보낸 줄 30 · 토큰 1 · 새 방 1 · 물음 2 · 시간 초과 1)'
+Check (@($all | Where-Object { $_ -match '\[로비\] \[새 방 — 실패\] wn — 등록된 게임 서버 없음 \(거절 471\)' }).Count -eq 1) '로비 기록 — 게임 서버 없음 새 방 실패 한 줄(거절 471)'
+# 클라 줄 — wn 5 + LIST + 대화방 + JOINGAME + LIST + JOINGAME(게임 서버 없음) + QUIT = 11 · bob 3 + JOIN + PRIVMSG + JOINGAME(답 없음) = 6 → 17
+#   보낸 줄 — wn 로그인(NOXSERVER · 375 · 372 · 376 · 329 = 5) · 목록 3 · 대화방 3 + 들어옴 1 + 채팅 1 · 참가 5 · 목록 2 · 거절 471 1(★ 10-20) · 607 → 22 ·
+#     bob 로그인 4 · 대화방 3 · 시간 초과 거절 471 1(★ 10-20) · wn 이 끊길 때 대화방 PART 알림 1 → 9 · 합 31
+#   새 방 — 물음 2(만듦 1 · 시간 초과 1) + 곧바로 실패 1(게임 서버 없음 — 묻지 않음) · 참가 거절 2 = 곧바로 실패 1 + 시간 초과 1
+Check ($end.Count -eq 2 -and $end[0] -match '접속 2 · 받은 줄 17 · 보낸 줄 31 · 토큰 1 · 새 방 1\(물음 2 · 실패 1 · 시간 초과 1 · 버림 0\) · 채팅 1 · 참가 거절 2\(곧바로 실패 1 · 게임 서버 실패 0 · 시간 초과 1 · 없는 방 0\)') '끝 줄 — 클라 셈(접속 2 · 받은 줄 17 · 보낸 줄 31 · 토큰 1 · 새 방 1 · 물음 2 · 실패 1 · 시간 초과 1 · 참가 거절 2)'
 Check ($end.Count -eq 2 -and $end[1] -match '게임 서버 연결 2\(확인 1 · 확인 실패 1 · 등록 1 · 등록 거절 0 · 차례 틀림 0\) · 연결 줄 받음 7 · 보냄 5 · 방 알림 2 · 사라짐 0 · 못 읽는 줄 0 · 판 결과 1') '끝 줄 — 연결 셈(연결 2 · 확인 1 · 실패 1 · 받음 7 · 보냄 5 · 방 알림 2 · 판 결과 1)'
 Remove-Item -LiteralPath $log, $ini -ErrorAction SilentlyContinue
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)
