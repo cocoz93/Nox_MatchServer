@@ -9,7 +9,7 @@ namespace nox {
 
 namespace {
 
-const char* const kWords[] = {"HELLO", "AUTH", "REGISTER", "ROOM", "ROOM_GONE", "CREATE", "CREATED", "CREATE_FAILED", "RESULT"};
+const char* const kWords[] = {"HELLO", "AUTH", "REGISTER", "ROOM", "ROOM_GONE", "CREATE", "CREATED", "CREATE_FAILED", "RESULT", "BYE"};
 static_assert(sizeof(kWords) / sizeof(kWords[0]) == static_cast<size_t>(LinkKind::kCount), "낱말 표 = 갈래 수");
 
 constexpr uint32_t kMaxRoomId = 0xffff;   // 입장 토큰의 방 칸이 16비트(`JoinToken.h`)
@@ -152,6 +152,8 @@ std::string LinkCreateFailed(uint32_t req, const std::string& reason) {
     return std::string(kWords[7]) + " " + std::to_string(req) + " " + EncodeLinkText(reason);
 }
 
+std::string LinkBye(const std::string& reason) { return std::string(kWords[9]) + " " + EncodeLinkText(reason); }
+
 bool LinkResult(const std::string& json, std::string& line) {
     if (json.empty() || json.find_first_of("\r\n") != std::string::npos) return false;
     std::string l = std::string(kWords[8]) + " " + json;
@@ -215,6 +217,9 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
             if (!want(3)) return LinkParse::FieldCount;
             if (!ParseNum(t[1], 0xffffffffu, out.req)) return LinkParse::BadNumber;
             return DecodeLinkText(t[2], out.text) ? LinkParse::Ok : LinkParse::BadText;
+        case LinkKind::Bye:
+            if (!want(2)) return LinkParse::FieldCount;
+            return DecodeLinkText(t[1], out.text) ? LinkParse::Ok : LinkParse::BadText;
         case LinkKind::Created:
             if (!want(3)) return LinkParse::FieldCount;
             return ParseNum(t[1], 0xffffffffu, out.req) && ParseNum(t[2], kMaxRoomId, out.room.id) ? LinkParse::Ok

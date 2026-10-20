@@ -78,6 +78,7 @@ add_library(nox_lobby_core STATIC
   server/src/lobby/WolGameInfo.cpp
   server/src/lobby/Lobby.cpp
   server/src/lobby/Router.cpp
+  server/src/lobby/RoomMirror.cpp   # ★ 10-20 MO 6단계 v2 작업 3a-2 — 로비의 방 거울(게임 서버 연결 · 등록 · 방 알림 · 새 방 요청)
 )
 target_include_directories(nox_lobby_core PUBLIC server/include)
 target_link_libraries(nox_lobby_core PUBLIC nox_common)   # 입장 토큰 서명 · 설정 파일 읽기

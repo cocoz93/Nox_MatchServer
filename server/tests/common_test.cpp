@@ -8,7 +8,7 @@
 //   ⑥ 설정 파일 — 구역·주석·BOM·대소문자·차례 · 틀린 꼴은 줄 번호와 함께 실패
 //   ⑦ TCP 줄 부품(작업 8a) — 루프백 접속 · 줄 나누기(CRLF · LF · 나뉘어 온 줄) · 보내기 CRLF · 끊김 갈래 넷(본체는 `tcp_lines_test.cpp`)
 //     ★ 10-20 v2 작업 2 — 바깥으로 붙기: 붙는 중 쌓은 줄 · 왕복 · 상대가 닫음 · 듣는 이 없음(붙지 못함) · 붙는 중 닫기 · 곧바로 실패
-//   ⑧ 로비 연결 규약(MO 6단계 v2 작업 1 — `LobbyLink.h`) — 줄 갈래 아홉 왕복 · 글 칸(한글 · 빈칸 · 빈 글) · 읽기 실패 갈래 여덟 ·
+//   ⑧ 로비 연결 규약(MO 6단계 v2 작업 1 — `LobbyLink.h`) — 줄 갈래 열 왕복(★ 작업 3a-2 BYE 더함) · 글 칸(한글 · 빈칸 · 빈 글) · 읽기 실패 갈래 여덟 ·
 //     판 결과 줄 한도 · 키 파생(고정 값 · 실행 번호 · 주소 · 포트마다 다름 · 다른 게임 서버 키의 토큰은 서명 실패) · 확인 서명
 #include <cstdio>
 #include <cstring>
@@ -257,7 +257,7 @@ void TestLobbyLink() {
     Check(nox::DecodeLinkText("a%20b%25c%7ed", dec) && dec == "a b%c~d", "글 칸 풀기(소문자 16진도)");
     Check(nox::DecodeLinkText("~", dec) && dec.empty(), "글 칸 풀기: ~ → 빈 글");
 
-    // 줄 갈래 아홉 — 지은 줄을 읽어 넣은 값이 그대로 나오나 · 갈래마다 센다
+    // 줄 갈래 열 — 지은 줄을 읽어 넣은 값이 그대로 나오나 · 갈래마다 센다
     unsigned kinds[static_cast<int>(K::kCount)] = {};
     nox::LinkLine l;
     auto parse = [&](const std::string& line) {
@@ -303,9 +303,12 @@ void TestLobbyLink() {
     std::string resLine;
     Check(nox::LinkResult(json, resLine) && parse(resLine) == P::Ok && l.kind == K::Result && l.text == json,
           "RESULT 왕복(빈칸 든 JSON 꼬리 전체)");
+    Check(parse(nox::LinkBye("same address")) == P::Ok && l.kind == K::Bye && l.text == "same address" &&
+              nox::LinkBye("") == "BYE ~",
+          "BYE 왕복(빈칸 든 까닭 · 빈 까닭 ~)");
     unsigned kindsSeen = 0;
     for (unsigned c : kinds) kindsSeen += c ? 1 : 0;
-    Check(kindsSeen == static_cast<unsigned>(K::kCount), "줄 갈래 아홉이 모두 읽힘");
+    Check(kindsSeen == static_cast<unsigned>(K::kCount), "줄 갈래 열이 모두 읽힘");
     for (int k = 0; k < static_cast<int>(K::kCount); ++k)
         Check(nox::LinkKindWord(static_cast<K>(k))[0] != '?', "갈래마다 낱말 있음");
 

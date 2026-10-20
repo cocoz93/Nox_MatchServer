@@ -17,6 +17,7 @@
 
 #include "nox/Lobby.h"
 #include "nox/LobbyLink.h"
+#include "nox/RoomMirror.h"
 #include "nox/Router.h"
 #include "nox/WolGameInfo.h"
 
@@ -631,6 +632,259 @@ void PendingRoomUnitTests() {
           "⑥ 물음 4 = 만듦 + 실패 + 시간 초과 + 버림(요청마다 한 갈래로 끝남)");
 }
 
+// ── ★ 10-20 MO 6단계 v2 작업 3a-2 — 로비의 방 거울(`RoomMirror`) + 가짜 게임 서버(연결 줄을 `LobbyLink` 로 지어 넣는다) ──
+//   확인(HELLO · AUTH) · 등록 차례 · 같은 주소 거절 · 방 알림 → 목록 · 새 방(골라 묻기 → ROOM + CREATED → 미룬 참가 답 · 그 게임 서버 키) ·
+//   실패 답 · 안 물은 답 · ROOM 없는 CREATED · 기다리는 중 연결 끊김 · 게임 서버 없음 · 판 결과 · 못 읽는 줄 · 다시 붙어 등록
+void MirrorUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;
+    cfg.room.maxPlayers = 31;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    RoomMirror mirror(LobbyTestKey());
+    Lobby lb(cfg, mirror);
+    mirror.Attach(lb);
+    std::vector<Out> out;
+    const uint32_t local = 0x7f000001, peer = 0x7f000001;
+
+    // 가짜 게임 서버 — 연결 접속 번호(클라 접속과 안 겹치게 100 대) · 등록 값
+    struct Gs {
+        int conn;
+        uint32_t epoch, ip;
+        uint16_t port;
+        std::string nonce;
+    };
+    auto open = [&](Gs& g) {
+        out.clear();
+        mirror.OnLinkOpen(g.conn, out);
+        nox::LinkLine l;
+        if (out.size() == 1 && nox::ParseLinkLine(out[0].line, l) == nox::LinkParse::Ok && l.kind == nox::LinkKind::Hello) g.nonce = l.text;
+        return out.size() == 1 && out[0].conn == g.conn && !out[0].closeAfter && g.nonce.size() == 32;
+    };
+    auto send = [&](const Gs& g, const std::string& line) {
+        out.clear();
+        mirror.OnLinkLine(g.conn, line, out);
+    };
+    auto authReg = [&](Gs& g) {
+        send(g, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(LobbyTestKey()), g.nonce)));
+        const bool authQuiet = out.empty();
+        send(g, nox::LinkRegister(g.epoch, g.ip, g.port));
+        return authQuiet && out.empty();
+    };
+    auto byeTo = [&](int conn) {
+        nox::LinkLine l;
+        return out.size() == 1 && out[0].conn == conn && out[0].closeAfter && nox::ParseLinkLine(out[0].line, l) == nox::LinkParse::Ok &&
+               l.kind == nox::LinkKind::Bye;
+    };
+    auto room = [](uint32_t id, const char* host, uint32_t players) {
+        nox::LinkRoom r;
+        r.id = id;
+        r.players = players;
+        r.maxPlayers = 8;
+        r.name = std::string(host) + "'s game";
+        r.creator = host;
+        r.host = host;
+        r.map = "so_lod";
+        r.mode = "chat";
+        return r;
+    };
+
+    // ① 확인 — 붙자마자 HELLO · 서명 틀림 → BYE 뒤 끊기 · 그 뒤 줄은 버림 · 첫 줄이 AUTH 아님 → 끊기
+    Gs bad{101, 1, 0, 18590, {}};
+    Check(open(bad), "① 붙자마자 HELLO 한 줄(일회용 값 16진 32자)");
+    send(bad, nox::LinkAuth(std::string(64, '0')));
+    const bool byeBad = byeTo(101);
+    send(bad, nox::LinkRegister(1, 0, 18590));
+    Check(byeBad && out.empty() && mirror.Stats().authFailed == 1 && mirror.ServerCount() == 0,
+          "① 서명 틀림 → BYE 뒤 끊기 · 끊김 전 줄은 버림(BYE 하나)");
+    mirror.OnLinkClose(101);
+    Gs bad2{102, 1, 0, 18590, {}};
+    open(bad2);
+    send(bad2, nox::LinkRegister(1, 0, 18590));
+    Check(byeTo(102) && mirror.Stats().authFailed == 2, "① 첫 줄이 AUTH 아님 → 확인 실패로 끊기");
+    mirror.OnLinkClose(102);
+    {   // 다른 키(설정이 다른 게임 서버)의 서명
+        nox::JoinKey other = LobbyTestKey();
+        other[0] ^= 1;
+        Gs bad3{103, 1, 0, 18590, {}};
+        open(bad3);
+        send(bad3, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(other), bad3.nonce)));
+        Check(byeTo(103) && mirror.Stats().authFailed == 3, "① 다른 토큰 키에서 뽑은 서명 → 끊기");
+        mirror.OnLinkClose(103);
+    }
+
+    // ② 등록 차례 — 확인 뒤 REGISTER 전 다른 줄 → 끊기 · 바른 차례 → 등록
+    Gs early{104, 1, 0, 18590, {}};
+    open(early);
+    send(early, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(LobbyTestKey()), early.nonce)));
+    send(early, nox::LinkRoomLine(room(0, "x", 0)));
+    Check(byeTo(104) && mirror.Stats().outOfOrder == 1 && mirror.Stats().authOk == 1, "② 확인 뒤 등록 전 ROOM → 끊기");
+    mirror.OnLinkClose(104);
+    const uint32_t ipA = (10u << 24) | 1u, ipB = (10u << 24) | 2u;   // 10.0.0.1 · 10.0.0.2
+    Gs a{110, 1760000000u, ipA, 18590, {}}, b{111, 1760000005u, ipB, 18590, {}};
+    open(a);
+    open(b);
+    Check(authReg(a) && authReg(b) && mirror.ServerCount() == 2 && mirror.Stats().registered == 2, "② 게임 서버 둘 확인 · 등록(답 없음)");
+
+    // ③ 같은 주소 · 포트 둘째 등록 → 거절(키가 같아지고 IP 하나에 게임 서버 하나) · 포트가 다르면 받음
+    Gs dup{112, 1760000009u, ipA, 18590, {}};
+    open(dup);
+    send(dup, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(LobbyTestKey()), dup.nonce)));
+    send(dup, nox::LinkRegister(dup.epoch, dup.ip, dup.port));
+    Check(byeTo(112) && mirror.Stats().registerRejected == 1 && mirror.ServerCount() == 2, "③ 같은 주소 · 포트 둘째 등록 → BYE 뒤 끊기");
+    mirror.OnLinkClose(112);
+
+    // ④ 방 알림 → 목록 · 바뀜 · 사라짐 — 방마다 그 게임 서버 주소 · 포트 · 키
+    send(a, nox::LinkRoomLine(room(0, "alice", 1)));
+    send(a, nox::LinkRoomLine(room(1, "amy", 2)));
+    send(b, nox::LinkRoomLine(room(0, "bea", 3)));
+    std::vector<LobbyRoom> lr = mirror.LobbyRooms();
+    const nox::JoinKey keyA = nox::GameServerTokenKey(LobbyTestKey(), a.epoch, a.ip, a.port);
+    const nox::JoinKey keyB = nox::GameServerTokenKey(LobbyTestKey(), b.epoch, b.ip, b.port);
+    Check(lr.size() == 3 && lr[0].host == "alice" && lr[0].gameIp == ipA && lr[0].gamePort == 18590 && lr[0].ownTokenKey && lr[0].tokenKey == keyA &&
+              lr[2].host == "bea" && lr[2].gameIp == ipB && lr[2].tokenKey == keyB && lr[2].players == 3 && lr[2].maxPlayers == 8 &&
+              lr[2].name == "bea's game" && lr[2].map == "so_lod",
+          "④ 방 알림 셋 → 목록 셋 · 방마다 그 게임 서버 주소 · 포트 · 등록 값으로 뽑은 키");
+    nox::LinkRoom up = room(1, "amy", 4);
+    up.playing = true;
+    send(a, nox::LinkRoomLine(up));
+    send(a, nox::LinkRoomGone(0));
+    send(a, nox::LinkRoomGone(9));
+    lr = mirror.LobbyRooms();
+    Check(lr.size() == 2 && lr[0].host == "amy" && lr[0].players == 4 && lr[0].playing && mirror.Stats().roomGoneUnknown == 1,
+          "④ ROOM 다시 → 바뀜(인원 · 판 중) · ROOM_GONE → 빠짐 · 없는 방의 ROOM_GONE 셈");
+    {   // 방장 칸이 비어 오면 만든 사람(옛 `CChannelLobby::ToLobbyRoom` 의 「방장 없으면 만든 사람」)
+        nox::LinkRoom noHost = room(5, "hal", 0);
+        noHost.host.clear();
+        send(b, nox::LinkRoomLine(noHost));
+        const auto l2 = mirror.LobbyRooms();
+        Check(l2.size() == 3 && l2[2].host == "hal", "④ 방장 칸 빈 방 → 채널 · 353 방장 = 만든 사람");
+        send(b, nox::LinkRoomGone(5));
+    }
+    lb.OnConnect(1, peer, local);
+    {
+        std::vector<Out> o;
+        for (const char* l : {"NOXCLIENT 2", "NICK carl", "USER UserName HostName irc.westwood.com :RealName", "LIST 37 37"}) lb.OnLine(1, l, o);
+        std::vector<std::string> cols;
+        for (const auto& x : o) {
+            const auto t = Tokens(x.line);
+            if (t.size() == 11 && t[1] == "326") cols.push_back(t[3] + "@" + t[9]);
+        }
+        Check(cols.size() == 2 && cols[0] == "#amy's_game@" + std::to_string(ipA) && cols[1] == "#bea's_game@" + std::to_string(ipB),
+              "④ 클라 목록 = 거울 · 방장 주소 칸 = 그 방의 게임 서버");
+    }
+
+    // ⑤ 새 방 — 방이 적은 게임 서버에 CREATE(a · b 방 하나씩 — 같으면 먼저 붙은 a) · ROOM + CREATED → 미룬 참가 답 · 그 게임 서버 키
+    out.clear();
+    lb.OnLine(1, "JOINGAME #carl's_game 1 ", out);
+    std::vector<Out> sent;
+    mirror.TakeOut(sent);
+    nox::LinkLine cl;
+    const bool asked = sent.size() == 1 && nox::ParseLinkLine(sent[0].line, cl) == nox::LinkParse::Ok && cl.kind == nox::LinkKind::Create &&
+                       cl.text == "carl";
+    Check(out.empty() && asked && sent[0].conn == a.conn && lb.PendingRooms() == 1, "⑤ 새 방 → 클라엔 아직 줄 없음 · 방 수 같으면 먼저 붙은 게임 서버에 CREATE(만든 사람)");
+    send(a, nox::LinkRoomLine(room(7, "carl", 0)));
+    send(a, nox::LinkCreated(cl.req, 7));
+    const auto tk = out.empty() ? std::vector<std::string>{} : Tokens(out[0].line);
+    uint8_t raw[nox::kJoinTokenSize] = {};
+    nox::JoinToken tok;
+    Check(out.size() == 5 && out[0].conn == 1 && tk.size() == 3 && tk[0] == "NOXTOKEN" && tk[1] == "10.0.0.1:18590" &&
+              nox::ParseHex(tk[2], raw, sizeof(raw)) &&
+              nox::VerifyJoinToken(keyA, raw, sizeof(raw), kLobbyTestNow, peer, tok) == nox::JoinTokenCheck::Ok && tok.roomId == 7 &&
+              nox::VerifyJoinToken(keyB, raw, sizeof(raw), kLobbyTestNow, peer, tok) == nox::JoinTokenCheck::BadMac &&
+              lb.PendingRooms() == 0 && mirror.Stats().createdReplies == 1,
+          "⑤ ROOM + CREATED → 클라에 참가 답(NOXTOKEN 그 게임 서버 주소 · 그 키로만 풀림 · 다른 게임 서버 키는 서명 실패)");
+    lb.OnConnect(2, peer, local);
+    {
+        std::vector<Out> o;
+        for (const char* l : {"NOXCLIENT 2", "NICK dan", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #dan's_game 1 "})
+            lb.OnLine(2, l, o);
+    }
+    sent.clear();
+    mirror.TakeOut(sent);
+    Check(sent.size() == 1 && sent[0].conn == b.conn, "⑤ 다음 새 방 → 방이 적은 게임 서버(b)");
+
+    // ⑥ 실패 답 → 로비 실패(답 없음) · 안 물은 요청의 답 → 버림
+    nox::LinkLine dl;
+    nox::ParseLinkLine(sent.empty() ? std::string() : sent[0].line, dl);
+    send(b, nox::LinkCreateFailed(dl.req, "no wait map"));
+    Check(out.empty() && lb.PendingRooms() == 0 && lb.Stats().roomCreateFailed == 1 && mirror.Stats().createFailedReplies == 1,
+          "⑥ CREATE_FAILED → 로비 실패 셈 · 답 없음");
+    send(b, nox::LinkCreated(dl.req, 3));
+    send(a, nox::LinkCreated(4242, 3));
+    Check(out.empty() && mirror.Stats().unknownReplies == 2, "⑥ 끝난 요청 · 안 물은 요청의 답 → 버림 셈 2");
+
+    // ⑦ ROOM 없이 CREATED → 들일 수 없는 방 — 실패로
+    lb.OnConnect(3, peer, local);
+    {
+        std::vector<Out> o;
+        for (const char* l : {"NOXCLIENT 2", "NICK eve", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #eve's_game 1 "})
+            lb.OnLine(3, l, o);
+    }
+    sent.clear();
+    mirror.TakeOut(sent);
+    nox::LinkLine el;
+    nox::ParseLinkLine(sent.empty() ? std::string() : sent[0].line, el);
+    const Gs& eg = sent.empty() || sent[0].conn == a.conn ? a : b;
+    send(eg, nox::LinkCreated(el.req, 55));
+    Check(out.empty() && mirror.Stats().createdNoRoom == 1 && lb.Stats().roomCreateFailed == 2 && lb.PendingRooms() == 0,
+          "⑦ ROOM 없이 CREATED → 실패로(답 없음)");
+
+    // ⑧ 기다리는 중 연결 끊김 → 로비 한도를 안 기다리고 곧바로 실패 · 그 게임 서버의 방이 목록에서 빠짐
+    lb.OnConnect(4, peer, local);
+    {
+        std::vector<Out> o;
+        for (const char* l : {"NOXCLIENT 2", "NICK fay", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #fay's_game 1 "})
+            lb.OnLine(4, l, o);
+    }
+    sent.clear();
+    mirror.TakeOut(sent);
+    const int target = sent.empty() ? 0 : sent[0].conn;
+    const size_t before = mirror.LobbyRooms().size();
+    const size_t targetRooms = target == a.conn ? 2 : 1;   // a = alice 빠짐 뒤 amy · carl / b = bea
+    mirror.OnLinkClose(target);
+    Check(lb.PendingRooms() == 0 && lb.Stats().roomCreateFailed == 3 && mirror.Stats().failedOnClose == 1 &&
+              mirror.LobbyRooms().size() == before - targetRooms && mirror.ServerCount() == 1,
+          "⑧ 기다리는 중 연결 끊김 → 곧바로 실패 · 그 게임 서버 방이 목록에서 빠짐");
+
+    // ⑨ 게임 서버 없음 → 곧바로 실패(묻지 않음)
+    const int other = target == a.conn ? b.conn : a.conn;
+    mirror.OnLinkClose(other);
+    lb.OnConnect(5, peer, local);
+    {
+        std::vector<Out> o;
+        for (const char* l : {"NOXCLIENT 2", "NICK gus", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(5, l, o);
+        o.clear();   // 로그인 답은 빼고 참가의 답만 본다
+        lb.OnLine(5, "JOINGAME #gus's_game 1 ", o);
+        sent.clear();
+        mirror.TakeOut(sent);
+        Check(o.size() == 0 && sent.empty() && mirror.Stats().noServer == 1 && lb.Stats().roomCreateFailed == 4 && mirror.LobbyRooms().empty(),
+              "⑨ 등록된 게임 서버 없음 → 곧바로 실패 · CREATE 없음 · 목록 0");
+    }
+
+    // ⑩ 다시 붙어 등록(같은 주소 — 옛 연결은 끊김) · 판 결과 · 못 읽는 줄은 버리고 연결은 둠 · 게임 서버가 보낼 리 없는 줄도
+    Gs a2{120, 1760000100u, ipA, 18590, {}};
+    open(a2);
+    Check(authReg(a2) && mirror.ServerCount() == 1, "⑩ 끊긴 뒤 같은 주소로 다시 등록 → 받음");
+    const std::string json = "{\"match\":\"1760000100-0-1\",\"roomName\":\"a b\"}";
+    std::string resLine;
+    nox::LinkResult(json, resLine);
+    send(a2, resLine);
+    const auto res = mirror.TakeResults();
+    Check(out.empty() && res.size() == 1 && res[0] == json && mirror.Stats().results == 1, "⑩ RESULT → 판 결과 JSON 그대로 · 셈");
+    send(a2, "ROOM 1 2");
+    const bool badKept = out.empty() && mirror.ServerCount() == 1;
+    send(a2, nox::LinkCreate(1, "x"));
+    Check(badKept && out.empty() && mirror.Stats().badLines == 2 && mirror.ServerCount() == 1,
+          "⑩ 못 읽는 줄 · 게임 서버가 보낼 리 없는 줄(CREATE) → 버림 셈 · 연결 그대로");
+
+    // 셈 맞추기 — 붙음 = 끊김 + 살아 있음 · 확인 = 맞음 + 틀림 + (확인 전 끊김 없음)
+    const MirrorStats& ms = mirror.Stats();
+    Check(ms.linksOpened == 8 && ms.linksClosed == 7 && ms.authOk == 5 && ms.authFailed == 3 && ms.registered + ms.registerRejected + ms.outOfOrder == 5,
+          "셈 — 붙음 8 = 끊김 7 + 살아 있음 1 · 확인 8 = 맞음 5 + 틀림 3 · 확인된 5 = 등록 3 + 거절 1 + 차례 틀림 1");
+}
+
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
 void RouterUnitTests() {
     using namespace nox::wol;
@@ -1033,6 +1287,7 @@ int main(int argc, char** argv) {
         ChannelLobbyUnitTests();
         NewRoomUnitTests();
         PendingRoomUnitTests();   // ★ 10-20 v2 작업 3a
+        MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
         RouterUnitTests();
     }
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

@@ -15,6 +15,7 @@
 //   로비 → 게임 서버  CREATE <요청 번호> <만든 사람>
 //   게임 서버 → 로비  CREATED <요청 번호> <방>  ·  CREATE_FAILED <요청 번호> <까닭>       답 앞에 그 방의 `ROOM` 이 먼저 간다
 //   게임 서버 → 로비  RESULT <판 결과 JSON 한 줄>                                     파일 기록기와 같은 줄(`FormatMatchResultJson`)
+//   로비 → 게임 서버  BYE <까닭>                                                     ★ 작업 3a-2 — 끊기 직전(확인 실패 · 같은 주소 등록 · 차례 틀림)
 // 글 칸(이름 · 맵 · 까닭)은 빈칸 · `%` · `~` · 제어 바이트만 `%XX` 로 바꾸고, 빈 글은 `~` 하나 — 한글(UTF-8)은 그대로 읽힌다.
 //
 // 키 — 설정 파일의 토큰 키(`[token] key`) 하나에서 이름을 붙여 뽑는다(설정 칸을 늘리지 않는다)
@@ -53,13 +54,13 @@ struct LinkRoom {
     std::string mode;           // 방 설정의 모드(`chat` · `arena` …)
 };
 
-enum class LinkKind : uint8_t { Hello, Auth, Register, Room, RoomGone, Create, Created, CreateFailed, Result, kCount };
+enum class LinkKind : uint8_t { Hello, Auth, Register, Room, RoomGone, Create, Created, CreateFailed, Result, Bye, kCount };
 const char* LinkKindWord(LinkKind k);   // 줄 앞 낱말(`HELLO` …)
 
 // 읽은 줄 하나 — 갈래에 따라 쓰는 칸만 채운다
 struct LinkLine {
     LinkKind kind = LinkKind::kCount;
-    std::string text;      // Hello = 일회용 값 16진 · Auth = 서명 16진 · Create = 만든 사람 · CreateFailed = 까닭 · Result = JSON
+    std::string text;      // Hello = 일회용 값 16진 · Auth = 서명 16진 · Create = 만든 사람 · CreateFailed · Bye = 까닭 · Result = JSON
     uint32_t epoch = 0;    // Register — 실행 번호(게임 서버가 뜬 유닉스 초)
     uint32_t ip = 0;       // Register — 0 = 로비 쪽 주소
     uint16_t port = 0;     // Register
@@ -91,6 +92,7 @@ std::string LinkRoomGone(uint32_t id);
 std::string LinkCreate(uint32_t req, const std::string& creator);
 std::string LinkCreated(uint32_t req, uint32_t id);
 std::string LinkCreateFailed(uint32_t req, const std::string& reason);
+std::string LinkBye(const std::string& reason);
 // 판 결과 줄 — JSON 에 줄바꿈이 있거나(한 줄이 아님) 비었거나 줄이 `kLinkMaxLine` 을 넘으면 false(안 보낸다 — 파일 기록기엔 남는다)
 bool LinkResult(const std::string& json, std::string& line);
 inline bool LinkLineFits(const std::string& line) { return line.size() <= kLinkMaxLine; }

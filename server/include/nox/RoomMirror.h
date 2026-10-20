@@ -1,0 +1,100 @@
+﻿// RoomMirror.h — 로비의 방 거울(MO 6단계 v2 작업 3a-2 — `Docs/LOBBY_SPLIT_DESIGN.md` 「원칙」).
+//
+// 왜 — v2 에서 방은 게임 서버(`nox_server`)에 산다. 로비(`nox_lobby`)는 게임 서버들이 연결(`LobbyLink.h`)로 알려 준 방으로 목록을 그린다.
+//   · 방 목록의 정본은 게임 서버의 돌고 있는 방 — 거울은 알림(`ROOM` · `ROOM_GONE`)으로만 바뀐다. 어긋나면 입장 최종 판단은 게임 서버(v3 원칙 그대로)
+//   · 맵 목록의 주인은 게임 서버 — 새 방은 만든 사람만 넘기고(`CREATE`) 게임 서버가 맵을 골라 만든 뒤 답한다(`CREATED`)
+//   · 연결은 게임 서버가 붙는다. 붙자마자 일회용 값(`HELLO`) → 같은 설정 키를 쥐었는지 서명(`AUTH`) → 등록(`REGISTER`) 차례만 받는다
+//   · 게임 서버마다 토큰 키가 따로(`GameServerTokenKey` — 등록 줄 값 그대로) — 그 게임 서버 방의 입장 토큰은 그 키로 서명한다
+//   · 연결이 끊기면 그 게임 서버의 방을 목록에서 내리고 기다리던 새 방 요청은 곧바로 실패(로비 한도까지 안 기다림). 다시 붙어 등록하면 돌려놓는다
+//
+// 로비 규약(`Lobby`)의 방 공급자(`ILobbyRooms`)다. 소켓도 시간도 모른다 — 연결 사건을 넣으면 보낼 줄을 `out` 에 덧붙인다.
+//   새 방 요청(`RequestRoom`)은 로비가 클라 줄을 처리하는 도중에 부르므로 그 `CREATE` 줄은 쌓아 두고 `TakeOut` 으로 꺼낸다.
+//   게임 서버의 답(`CREATED` · `CREATE_FAILED`)은 붙인 로비(`Attach`)에 곧바로 넘긴다 — 미룬 참가 답이 같은 `out` 에 실린다.
+//   클라 접속과 연결 접속은 같은 TCP 줄 부품의 접속 번호를 쓴다(번호가 겹치지 않는다 — 부르는 쪽이 듣기 포트로 가른다).
+#pragma once
+
+#include <cstdint>
+#include <map>
+#include <set>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "nox/Lobby.h"
+#include "nox/LobbyLink.h"
+
+namespace nox::wol {
+
+// 거울의 셈 — 갈래마다
+struct MirrorStats {
+    unsigned long long linksOpened = 0;       // 연결 접속
+    unsigned long long linksClosed = 0;       // 연결 끊김(어느 단계든)
+    unsigned long long authOk = 0;            // 확인 서명 맞음
+    unsigned long long authFailed = 0;        // 확인 서명 틀림 · 첫 줄이 AUTH 아님(끊음)
+    unsigned long long registered = 0;        // 등록 받음
+    unsigned long long registerRejected = 0;  // 같은 주소 · 포트로 이미 등록됨(끊음)
+    unsigned long long outOfOrder = 0;        // 등록 전 다른 줄(끊음)
+    unsigned long long badLines = 0;          // 등록 뒤 못 읽는 줄 · 게임 서버가 보낼 리 없는 줄(버림 — 연결은 둠)
+    unsigned long long roomLines = 0;         // ROOM
+    unsigned long long roomGoneLines = 0;     // ROOM_GONE
+    unsigned long long roomGoneUnknown = 0;   // 거울에 없는 방의 ROOM_GONE
+    unsigned long long noServer = 0;          // 새 방 — 등록된 게임 서버 없음(곧바로 실패)
+    unsigned long long createsSent = 0;       // CREATE 보냄
+    unsigned long long createdReplies = 0;    // CREATED → 로비에
+    unsigned long long createFailedReplies = 0; // CREATE_FAILED → 로비에
+    unsigned long long createdNoRoom = 0;     // CREATED 인데 그 방의 ROOM 이 먼저 안 옴(실패로 넘김)
+    unsigned long long unknownReplies = 0;    // 이 게임 서버에 안 물은 요청의 답(버림)
+    unsigned long long failedOnClose = 0;     // 연결이 끊겨 실패로 넘긴 기다리던 요청
+    unsigned long long results = 0;           // RESULT(판 결과 — 7단계 전엔 한 줄 찍고 셈)
+};
+
+class RoomMirror final : public ILobbyRooms {
+public:
+    // `tokenKey` = 설정 파일의 토큰 키(`[token] key`) — 연결 확인 키 · 게임 서버 토큰 키를 이것에서 뽑는다
+    explicit RoomMirror(const JoinKey& tokenKey);
+    // 게임 서버의 새 방 답을 넘길 로비(로비가 이 거울을 방 공급자로 쥐므로 만든 뒤에 붙인다)
+    void Attach(Lobby& lobby) { lobby_ = &lobby; }
+
+    void OnLinkOpen(int conn, std::vector<Out>& out);                         // HELLO 를 보낸다
+    void OnLinkLine(int conn, std::string_view line, std::vector<Out>& out);
+    void OnLinkClose(int conn);                                               // 그 게임 서버의 방 내림 · 기다리던 요청 실패
+    void TakeOut(std::vector<Out>& out);                                      // `RequestRoom` 이 쌓은 CREATE 줄
+    std::vector<std::string> TakeLog();
+    std::vector<std::string> TakeResults();                                   // RESULT 의 JSON(받은 차례)
+
+    // ILobbyRooms
+    std::vector<LobbyRoom> LobbyRooms() const override;
+    RoomRequest RequestRoom(uint32_t req, const std::string& creator, LobbyRoom& out, std::string& why) override;
+
+    const MirrorStats& Stats() const { return stats_; }
+    size_t ServerCount() const;   // 등록된 게임 서버 수
+    size_t RoomCount() const;     // 거울의 방 수(모든 게임 서버)
+
+private:
+    enum class Stage : uint8_t { WaitAuth, WaitRegister, Registered, Closing };   // Closing = BYE 를 보내고 끊김을 기다림(그 뒤 줄은 버림)
+    struct Server {
+        Stage stage = Stage::WaitAuth;
+        std::string nonce;               // 보낸 일회용 값(16진)
+        uint32_t epoch = 0;              // 등록 — 실행 번호
+        uint32_t ip = 0;                 // 등록 — 클라가 붙을 주소(0 = 로비 쪽 주소)
+        uint16_t port = 0;               // 등록 — UDP 포트
+        JoinKey tokenKey{};              // 등록 값으로 뽑은 그 게임 서버의 토큰 키
+        std::map<uint32_t, LinkRoom> rooms;
+        std::set<uint32_t> asked;        // 이 게임 서버에 물은 새 방 요청
+    };
+
+    void Bye(int conn, const std::string& why, std::vector<Out>& out);   // BYE 줄 뒤 끊기
+    std::string Name(int conn, const Server& s) const;                    // 기록용 「c5 10.0.0.5:18590」
+    LobbyRoom ToLobbyRoom(const Server& s, const LinkRoom& r) const;
+
+    JoinKey tokenKey_;
+    JoinKey authKey_;
+    Lobby* lobby_ = nullptr;
+    std::map<int, Server> servers_;   // 연결 접속 번호 → 게임 서버(차례 = 붙은 차례)
+    std::vector<Out> pendingOut_;
+    std::vector<std::string> log_;
+    std::vector<std::string> results_;
+    MirrorStats stats_;
+};
+
+}  // namespace nox::wol
