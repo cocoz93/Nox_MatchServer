@@ -4,8 +4,12 @@
 |---|---|
 | `build.ps1` | Release 빌드 + 자체검사(ctest — 녹음 덤프·게임 맵이 있으면 6개) |
 | `smoke.ps1` | 자체검사 `socket_smoke`(녹음 기반 모드)·`socket_smoke_standalone`(독립 모드, `-Map`)의 본체. **CMakeLists.txt 소켓 왕복 절이 부른다** |
-| `lobby_smoke.ps1` | 자체검사 `lobby_smoke`(채널 `nox_server --lobby-port` 안 로비 소켓 왕복 — 시험용 포트 14000 · 옛 `nox_lobby` 는 10-14 작업 8d 에 없앰)의 본체. 같은 절이 부른다 |
+| `lobby_smoke.ps1` | 자체검사 `lobby_smoke`(★ 10-20 v2 — 로비 `nox_lobby` + 게임 서버 `nox_server --lobby` 소켓 왕복 · 새 방 미룬 답 · UDP 접속 시도에 게임 서버 실행 키 · 빈 방 닫힘 → 목록에서 빠짐 · 시험용 포트 14000 · 14010 · 옛 꼴 = 채널 `--lobby-port`)의 본체. 같은 절이 부른다 |
+| `nox_lobby_smoke.ps1` | 자체검사 `nox_lobby_smoke`(★ 10-20 v2 — 로비 혼자 + 이 스크립트가 가짜 게임 서버 — 연결 확인 · 등록 · 방 알림 · 새 방 · 답 없는 새 방 시간 초과 · 판 결과 · 끊김 · 포트 14200 · 14210)의 본체 |
+| `v2_split_smoke.ps1` | 자체검사 `v2_split_smoke`(★ 10-20 v2 — 로비 하나 + 게임 서버 둘 127.0.0.1 · 127.0.0.2 — 남의 게임 서버 토큰 거절 · 게임 서버 · 로비 껐다 켜기 · 포트 14400 · 14410 · UDP 18611)의 본체 |
 | `router_smoke.ps1` | 자체검사 `router_smoke`(라우터 `nox_router` 4005 왕복 — 시험용 포트 14005 · 14006, 채널 주소 설정 없음/있음)의 본체. 같은 절이 부른다 |
+| `mo_local.ps1` | ★ 10-20 v2 — 이 PC 하나에서 정품 클라로 보는 판(사람 확인). `-Mode Start` = 라우터 127.0.0.1:4005 · 로비 127.0.0.1:4000 · 게임 서버 `--lobby` · 클라1 · 클라2(기록 `_out\mo_local\<시각>\`) · `-Mode Stop` = 닫기 이벤트로 끔. `hosts_lobby.ps1 -Mode On` 이 먼저 |
+| `mo_host.ps1` | 다른 PC 를 붙이는 판(`서버_MO_열기.bat` · `서버_MO_닫기.bat`) — 방화벽 · 로비(0.0.0.0:4000) · 게임 서버 · 라우터(0.0.0.0:4005) |
 
 한글이 들어가므로 **UTF-8 BOM 이 필수**다(없으면 CP949 로 오독해 파싱부터 실패).
 Windows PowerShell 5.1 기준.

@@ -1,5 +1,6 @@
 ﻿# hosts_lobby.ps1 — 이 PC의 정품 녹스 웨스트우드 온라인을 우리 로비(nox_lobby)로 돌리거나 되돌린다.
 #   ★ 10-14 플랜 B 작업 8b · 8d — 「우리 로비」 = 라우터 nox_router(servserv 4005) + 채널 nox_server --lobby-port(4000). nox_lobby 는 없앴다
+#   ★ 10-20 v2 작업 6 — 「우리 로비」 = 라우터(4005) + 로비 nox_lobby(4000 — 다시 따로 된 프로세스) + 게임 서버 nox_server --lobby. 같은 PC 판 = mo_local.ps1
 #
 #   -Mode On  [-Ip 127.0.0.1] : hosts 에 주석 한 줄 + "<Ip> servserv.westwood.com" · "<Ip> irc.westwood.com" (표시 NOX_MO_LOBBY)
 #   -Mode Off                 : 표시가 붙은 줄만 지운다 → 녹스 인터넷 메뉴가 진짜 XWIS 로 간다
