@@ -93,8 +93,27 @@ public:
 };
 
 // ★ 10-20 v2 작업 3a — 미룬 새 방 답을 기다리는 한도. 근거 없는 값 — 같은 PC 연결 왕복은 ms 단위 · 정품이 얼마나 기다리는지는 미확인
-//   (넘으면 지금 실패와 같은 꼴 — 답 없음 · 정품은 참가 화면에 머문다 `Lobby.cpp` JOINGAME 주석)
+//   (넘으면 실패와 같은 꼴 — ★ 10-20 거절 답 뒤로는 `471` · 그 전엔 답이 없어 정품이 참가 화면에 머물렀다)
 constexpr uint32_t kRoomRequestTimeoutMs = 5000;
+
+// ★ 10-20 거절 답(`Docs/LOBBY_SPLIT_DESIGN.md` 「거절 답 플랜」) — 방 참가(`JOINGAME`)를 받아 줄 수 없는 까닭.
+//   왜 — 답을 안 하면 정품이 「서버 접속 시도중...」에서 멈춘다(사람 확인 50). 정품이 받아 주는 거절 답은 `471` 하나뿐이다 —
+//   정품 로비 모듈이 참가를 기다릴 때(`WOLAPI.dll` 상태 칸 1) 471 을 「채널 가득」(`0x8004006e`)으로 바꿔 게임에 넘기고,
+//   게임 목록 화면(WOL 상태 8)은 그 값에만 「억세스 불가! — 서버가 다 찼습니다.」 창을 띄운 뒤 목록으로 돌아간다(`Game.exe` `0x41de91`).
+//   474 · 475 · 478 은 그 화면에서 버려져 멈춤이 그대로다. 그래서 까닭이 무엇이든 숫자는 471 이고, 진짜 까닭은 로비 기록 · 셈 · 줄 끝 글에 남긴다
+//   (정적 분석 근거 = `개인 메모` 「1 조사」)
+//   ✕ DLL 없는 클라의 원래 `Host Game`(방 만들기 — 상태 칸 2)은 정품 게임 쪽이 실패 값을 전부 버려(`Game.exe` `0x40c1d0`) 받아 줄 답이 없다 — 그 갈래는 답을 안 한다
+enum class JoinReject : uint8_t {
+    RequestFailed,   // 새 방 · 곧바로 실패(등록된 게임 서버 없음 · 대기 맵 없음 …)
+    CreateFailed,    // 새 방 · 물은 게임 서버가 실패로 답함(연결 끊김 · CREATE_FAILED · 만든 방의 ROOM 이 안 옴)
+    Timeout,         // 새 방 · 한도(`kRoomRequestTimeoutMs`) 안에 답 없음
+    NoSuchRoom,      // 없는 방(목록이 낡음 · 남의 이름 채널)
+    kCount
+};
+constexpr size_t kJoinRejectCount = static_cast<size_t>(JoinReject::kCount);
+constexpr int kJoinRejectNumeric = 471;   // 정품이 받아 주는 유일한 거절 숫자(위 주석)
+// 거절 줄 끝 글(ASCII — 정품 화면엔 안 나오고 정품 기록 · DLL 기록에만 남는다)
+const char* JoinRejectText(JoinReject why);
 
 // ★ 10-14 작업 10a — 방 이름을 실을 때 쓰는 코드페이지(클라가 `SETCODEPAGE` 를 안 보냈을 때). 정품 클라는 949 를 보낸다(1단계 녹음 셋 모두)
 constexpr int kDefaultCodepage = 949;
@@ -120,11 +139,11 @@ struct LobbyStats {
     unsigned long long joinNoClient = 0;     // 방 참가 — DLL 없음(로그인 전 참가 포함) · 토큰 없이 답함
     unsigned long long tokenSignFailed = 0;  // 서명 실패(BCrypt) — 토큰 없이 답함
     unsigned long long roomsCreated = 0;     // ★ 10-14 작업 10a — 「새 방」 참가로 방을 만듦
-    unsigned long long roomCreateFailed = 0; // ★ 10-14 작업 10a — 「새 방」인데 채널이 못 만듦(답 없음 · 기록) · ★ 10-20 — 미룬 요청의 실패 답 포함
+    unsigned long long roomCreateFailed = 0; // ★ 10-14 작업 10a — 「새 방」인데 채널이 못 만듦(기록 · ★ 10-20 거절 답 `471`) · ★ 10-20 — 미룬 요청의 실패 답 포함
     unsigned long long newRoomNoClient = 0;  // ★ 10-14 작업 10a — 「새 방」인데 DLL 이 없어 안 만듦(답 없음 · 기록 — 들어올 수 없는 방이라)
     // ★ 10-20 v2 작업 3a — 미룬 새 방 답의 갈래(요청 하나는 만듦 · 실패 · 시간 초과 · 클라 끊김 중 하나로 끝난다)
     unsigned long long roomsRequested = 0;   // 게임 서버에 물음(`Pending`)
-    unsigned long long roomRequestTimeout = 0; // 한도 안에 답이 안 옴(답 없음)
+    unsigned long long roomRequestTimeout = 0; // 한도 안에 답이 안 옴(★ 10-20 거절 답 `471`)
     unsigned long long roomRequestDropped = 0; // 기다리는 동안 클라가 끊음(답 버림 — 방은 게임 서버가 빈 방으로 닫는다)
     unsigned long long lateRoomReply = 0;    // 끝난 요청(시간 초과 · 끊김)의 답이 늦게 옴(버림)
     unsigned long long joinWhilePending = 0; // 새 방을 기다리는 접속이 또 참가(무시 — 답이 둘이 되지 않게)
@@ -133,6 +152,13 @@ struct LobbyStats {
     unsigned long long chatDelivered = 0;    // 받은 사람 줄 수(글 하나 × 채널의 다른 사람)
     unsigned long long chatNotMember = 0;    // 들어가 있지 않은 채널로 보냄(거름)
     unsigned long long chatMalformed = 0;    // ` :` 글 칸이 없음(처음 본 명령처럼 한 번 기록)
+    // ★ 10-20 거절 답 — 보낸 `471` 을 까닭마다(`JoinReject` 차례). 보내는 자리는 `RejectJoin` 하나 · 부르는 자리 넷이 까닭을 고른다
+    unsigned long long joinRejected[kJoinRejectCount] = {};
+    unsigned long long JoinRejectedTotal() const {
+        unsigned long long n = 0;
+        for (const unsigned long long v : joinRejected) n += v;
+        return n;
+    }
 };
 
 struct Out {
@@ -153,9 +179,10 @@ public:
     void OnClose(int conn, std::vector<Out>& out);
     // ★ 10-20 v2 작업 3a — 미룬 새 방의 답(`RequestRoom` 이 `Pending` 을 돌려준 `req`). 끝난 요청이면 버리고 센다
     void OnRoomCreated(uint32_t req, const LobbyRoom& room, std::vector<Out>& out);
-    void OnRoomCreateFailed(uint32_t req, const std::string& why);
+    // ★ 10-20 거절 답 — 실패 · 시간 초과도 기다리던 클라에게 `471` 을 보내므로 보낼 줄(`out`)을 받는다
+    void OnRoomCreateFailed(uint32_t req, const std::string& why, std::vector<Out>& out);
     // 미룬 답의 시간 초과를 본다 — 소켓 루프가 자주(줄이 없어도) 부른다
-    void Tick();
+    void Tick(std::vector<Out>& out);
     size_t PendingRooms() const { return pending_.size(); }
 
     // 소켓 루프가 찍을 기록(처음 본 명령 등). 꺼내면 비운다.
@@ -189,6 +216,8 @@ private:
     // 방 참가 답(토큰 · JOINGAME · 332 · 353 · 366) — ★ 10-20 v2 작업 3a 미룬 새 방 답도 이 하나로
     void ReplyJoin(int conn, const Conn& c, const LobbyRoom& lr, std::vector<Out>& out);
     void JoinNewRoom(int conn, const Conn& c, const LobbyRoom& created, std::vector<Out>& out);
+    // ★ 10-20 거절 답 — `: 471 u <채널> :<까닭 글>` 한 줄 · 까닭 셈(`LobbyStats::joinRejected`)
+    void RejectJoin(int conn, const std::string& channel, JoinReject why, std::vector<Out>& out);
     void Unknown(const std::string& cmd, std::string_view line);
 
     LobbyConfig cfg_;
@@ -198,6 +227,7 @@ private:
     struct PendingRoom {
         int conn = 0;
         uint32_t deadlineMs = 0;
+        std::string channel;   // ★ 10-20 거절 답 — 실패 · 시간 초과 때 거절 줄에 싣는 참가 채널
     };
     std::map<uint32_t, PendingRoom> pending_;
     uint32_t nextReq_ = 1;

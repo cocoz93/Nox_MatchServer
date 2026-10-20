@@ -157,21 +157,24 @@ void Lobby::OnRoomCreated(uint32_t req, const LobbyRoom& room, std::vector<Out>&
     JoinNewRoom(conn, c->second, room, out);
 }
 
-void Lobby::OnRoomCreateFailed(uint32_t req, const std::string& why) {
+void Lobby::OnRoomCreateFailed(uint32_t req, const std::string& why, std::vector<Out>& out) {
     const auto p = pending_.find(req);
     if (p == pending_.end()) {
         ++stats_.lateRoomReply;
         log_.push_back("[새 방 — 늦은 답] 요청 " + std::to_string(req) + " 실패(" + why + ") — 끝난 요청 · 버림");
         return;
     }
-    const auto c = conns_.find(p->second.conn);
+    const int conn = p->second.conn;
+    const auto c = conns_.find(conn);
     ++stats_.roomCreateFailed;
     log_.push_back("[새 방 — 실패] " + (c == conns_.end() ? std::string("?") : c->second.nick) + " — " + why + " (요청 " +
-                   std::to_string(req) + " · 답 없음)");
+                   std::to_string(req) + " · 거절 471)");
+    // ★ 10-20 거절 답 — 기다리던 클라에게 471(끊긴 접속의 요청은 `OnClose` 가 이미 지웠다 — 찾지 못하면 보낼 곳이 없다)
+    if (c != conns_.end()) RejectJoin(conn, p->second.channel, JoinReject::CreateFailed, out);
     pending_.erase(p);
 }
 
-void Lobby::Tick() {
+void Lobby::Tick(std::vector<Out>& out) {
     if (pending_.empty()) return;
     const uint32_t now = cfg_.nowMs();
     for (auto it = pending_.begin(); it != pending_.end();) {
@@ -182,7 +185,8 @@ void Lobby::Tick() {
         ++stats_.roomRequestTimeout;
         const auto c = conns_.find(it->second.conn);
         log_.push_back("[새 방 — 시간 초과] " + (c == conns_.end() ? std::string("?") : c->second.nick) + " — 요청 " +
-                       std::to_string(it->first) + " 에 " + std::to_string(kRoomRequestTimeoutMs) + "ms 안에 답 없음(답 없음)");
+                       std::to_string(it->first) + " 에 " + std::to_string(kRoomRequestTimeoutMs) + "ms 안에 답 없음(거절 471)");
+        if (c != conns_.end()) RejectJoin(it->second.conn, it->second.channel, JoinReject::Timeout, out);   // ★ 10-20 거절 답
         rooms_.CancelRoom(it->first);   // ★ 작업 3c — 공급자(거울)의 기다림 장부에서도
         it = pending_.erase(it);
     }
@@ -195,6 +199,24 @@ void Lobby::JoinNewRoom(int conn, const Conn& c, const LobbyRoom& created, std::
                    created.map + ")");
     members_.erase(Channel(created));
     ReplyJoin(conn, c, created, out);
+}
+
+// ★ 10-20 거절 답 — 까닭이 무엇이든 숫자는 471(정품이 받아 주는 유일한 것 — `Lobby.h` `JoinReject` 주석). 꼴은 다른 숫자 답과 같은 `: <숫자> u <채널> :<글>`
+//   (정품 로비 모듈은 명령 칸 숫자와 제 기다림 상태로만 가른다 — 나머지 칸은 일반 오류 글로 엮기만 하고 471 갈래에선 안 쓴다 · `WOLAPI.dll` `0x210096d3`)
+void Lobby::RejectJoin(int conn, const std::string& channel, JoinReject why, std::vector<Out>& out) {
+    ++stats_.joinRejected[static_cast<size_t>(why)];
+    out.push_back({conn, ": " + std::to_string(kJoinRejectNumeric) + " u " + channel + " :" + JoinRejectText(why)});
+}
+
+const char* JoinRejectText(JoinReject why) {
+    switch (why) {
+        case JoinReject::RequestFailed: return "Cannot create game (request failed)";
+        case JoinReject::CreateFailed:  return "Cannot create game (game server refused)";
+        case JoinReject::Timeout:       return "Cannot create game (game server timed out)";
+        case JoinReject::NoSuchRoom:    return "No such game";
+        case JoinReject::kCount:        break;
+    }
+    return "?";
 }
 
 // 방 참가 답 — 방장 주소가 353 에 실린다(326 과 같은 값). ★ 10-20 v2 작업 3a — 옛 JOINGAME 갈래의 몸통(미룬 새 방 답도 이것)
@@ -361,7 +383,8 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         const LobbyRoom* found = t.size() < 2 ? nullptr : FindRoom(rooms, t[1]);
         // ★ 10-14 플랜 B 작업 10a — 「새 방」: 없는 방인데 채널이 제 이름 채널(`#<내 닉>'s_game` — 원작 `Host Game` 과 같은 꼴)이면
         //   그 사람이 방장인 방을 만들고 그 방으로 참가시킨다(`Docs/ROOMS_DESIGN.md` 흐름 3 · 결정 4 — 정품 `Host Game` 을 DLL 이 이 참가로 돌린다).
-        //   남의 이름 채널 · 없는 방은 예전처럼 답하지 않는다. DLL 없는 클라에겐 안 만든다(토큰이 없어 들어올 수 없는 방이 30초 남는다)
+        //   남의 이름 채널 · 없는 방은 ★ 10-20 거절 답 `471`(그 전엔 답을 안 해 정품이 참가 화면에서 멈췄다 — 사람 확인 50).
+        //   DLL 없는 클라에겐 안 만든다(토큰이 없어 들어올 수 없는 방이 30초 남는다) — 답도 안 한다(그 클라의 원래 방 만들기엔 정품이 받아 줄 거절 답이 없다 · `Lobby.h` `JoinReject`)
         if (!found && t.size() >= 2 && !c.nick.empty() && t[1] == "#" + c.nick + "'s_game") {
             if (c.clientVer < kNoxClientMinVersion) {
                 ++stats_.newRoomNoClient;
@@ -384,18 +407,20 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
                     return;
                 case RoomRequest::Failed:
                     ++stats_.roomCreateFailed;
-                    log_.push_back("[새 방 — 실패] " + c.nick + " — " + why + " (답 없음)");
+                    log_.push_back("[새 방 — 실패] " + c.nick + " — " + why + " (거절 471)");
+                    RejectJoin(conn, t[1], JoinReject::RequestFailed, out);   // ★ 10-20 거절 답(사람 확인 50 — 게임 서버 없음)
                     return;
                 case RoomRequest::Pending:
                     ++stats_.roomsRequested;
-                    pending_[req] = PendingRoom{conn, cfg_.nowMs() + kRoomRequestTimeoutMs};
+                    pending_[req] = PendingRoom{conn, cfg_.nowMs() + kRoomRequestTimeoutMs, t[1]};
                     log_.push_back("[새 방 — 물음] " + c.nick + " — 요청 " + std::to_string(req) + "(답이 오면 참가 답)");
                     return;
             }
             return;
         }
         if (!found) {
-            log_.push_back("[모르는 방] " + std::string(line));
+            log_.push_back("[모르는 방] " + std::string(line) + " (거절 471)");
+            RejectJoin(conn, t.size() >= 2 ? t[1] : std::string("*"), JoinReject::NoSuchRoom, out);   // ★ 10-20 거절 답
             return;
         }
         ReplyJoin(conn, c, *found, out);

@@ -34,6 +34,13 @@ void Check(bool ok, const char* what) {
     }
 }
 
+// ★ 10-20 거절 답 — `out` 이 그 접속에 거절 한 줄뿐인가(숫자 471 · 채널 칸 · 까닭 글까지). 471 은 상수 대신 글자로 — 정품이 받아 주는 숫자가 정답지다
+bool OnlyReject(const std::vector<nox::wol::Out>& out, int conn, const std::string& channel, nox::wol::JoinReject why) {
+    return out.size() == 1 && out[0].conn == conn && !out[0].closeAfter &&
+           out[0].line == ": 471 u " + channel + " :" + nox::wol::JoinRejectText(why);
+}
+unsigned long long Rejected(const nox::wol::LobbyStats& s, nox::wol::JoinReject why) { return s.joinRejected[static_cast<size_t>(why)]; }
+
 std::string FromHex(const char* hex) {
     std::string out;
     for (size_t i = 0; hex[i] && hex[i + 1]; i += 2) {
@@ -263,7 +270,18 @@ void LobbyUnitTests() {
           "NOXTOKEN 뒤 원래 답 넷(JOINGAME · 332 · 353 · 366), 353 = 둘째 방 방장 + 나");
     out.clear();
     lb.OnLine(2, "JOINGAME #nobody's_game 1 ", out);
-    Check(out.empty(), "모르는 방 참가엔 답하지 않는다(토큰도 없음)");
+    Check(OnlyReject(out, 2, "#nobody's_game", JoinReject::NoSuchRoom) && Rejected(lb.Stats(), JoinReject::NoSuchRoom) == 1,
+          "모르는 방 참가 → 거절 471 한 줄(토큰 없음 · ★ 10-20 — 그 전엔 답 없음)");
+    {   // 까닭 글은 까닭마다 다르다(시험이 글을 같은 함수로 견주므로 글끼리 뒤바뀌면 위 확인으론 안 보인다) · 줄을 깨는 글자 없음
+        std::set<std::string> texts;
+        bool clean = true;
+        for (size_t i = 0; i < kJoinRejectCount; ++i) {
+            const std::string s = JoinRejectText(static_cast<JoinReject>(i));
+            texts.insert(s);
+            clean = clean && !s.empty() && s != "?" && s.find_first_of("\r\n") == std::string::npos;
+        }
+        Check(texts.size() == kJoinRejectCount && clean, "거절 까닭 글 넷이 서로 다르고 빈 글 · 줄바꿈 없음");
+    }
     Check(lb.Stats().tokensIssued == 1, "토큰 낸 수 1");
 
     // 모르는 명령 — 답 없음, 처음 한 번만 기록
@@ -389,14 +407,15 @@ void ChannelLobbyUnitTests() {
         chk = nox::VerifyJoinToken(LobbyTestKey(), raw, sizeof(raw), kLobbyTestNow, peer, tok);
     Check(first.size() == 3 && first[1] == "203.0.113.5:18590" && chk == nox::JoinTokenCheck::Ok && tok.roomId == 7,
           "NOXTOKEN = 붙은 내 쪽 주소 · 그 방 번호");
-    // 방이 사라지면(방 관리자가 닫음) 다음 목록에서 빠지고 참가엔 답하지 않는다
+    // 방이 사라지면(방 관리자가 닫음) 다음 목록에서 빠지고 참가엔 거절(★ 10-20 — 그 전엔 답하지 않았다)
     fake.rooms.clear();
     out.clear();
     lb.OnLine(1, "LIST 37 37", out);
     const bool emptyList = out.size() == 2 && Tokens(out[0].line)[1] == "321" && Tokens(out[1].line)[1] == "323";
     out.clear();
     lb.OnLine(1, "JOINGAME #wn's_game 1 ", out);
-    Check(emptyList && out.empty() && lb.Stats().tokensIssued == 1, "방이 사라지면 목록 0줄 · 참가엔 답 없음(토큰 없음)");
+    Check(emptyList && OnlyReject(out, 1, "#wn's_game", JoinReject::NoSuchRoom) && lb.Stats().tokensIssued == 1,
+          "방이 사라지면 목록 0줄 · 참가엔 거절 471(토큰 없음)");
 }
 
 // ── ★ 10-14 작업 10a — 「새 방」: 제 이름 채널로 온 없는 방 참가 → 채널에 만들게 하고 그 방으로 참가 · 방 이름은 접속의 코드페이지로 ──
@@ -467,18 +486,20 @@ void NewRoomUnitTests() {
     Check(fake.created == 1 && out.size() == 5 && tok2.roomId == 101, "남의 방(있음) 참가 — 새로 안 만들고 그 방 토큰");
     out.clear();
     lb.OnLine(2, "JOINGAME #carol's_game 1 ", out);
-    Check(fake.created == 1 && out.empty(), "남의 이름 채널의 없는 방 — 안 만들고 답 없음");
+    Check(fake.created == 1 && OnlyReject(out, 2, "#carol's_game", JoinReject::NoSuchRoom), "남의 이름 채널의 없는 방 — 안 만들고 거절 471");
 
     login(3, "plain", false, "949");
     out.clear();
     lb.OnLine(3, "JOINGAME #plain's_game 1 ", out);
-    Check(fake.created == 1 && out.empty() && lb.Stats().newRoomNoClient == 1, "DLL 없는 클라의 새 방 — 안 만들고 답 없음(들어올 수 없는 방)");
+    Check(fake.created == 1 && out.empty() && lb.Stats().newRoomNoClient == 1 && lb.Stats().JoinRejectedTotal() == 1,
+          "DLL 없는 클라의 새 방 — 안 만들고 답 없음(들어올 수 없는 방 · 그 클라의 원래 방 만들기엔 정품이 받아 줄 거절 답이 없다)");
 
     fake.canCreate = false;
     login(4, "dave", true, "949");
     out.clear();
     lb.OnLine(4, "JOINGAME #dave's_game 1 ", out);
-    Check(out.empty() && lb.Stats().roomCreateFailed == 1 && lb.Stats().roomsCreated == 1, "채널이 못 만들면 답 없음 · 실패 셈");
+    Check(OnlyReject(out, 4, "#dave's_game", JoinReject::RequestFailed) && lb.Stats().roomCreateFailed == 1 && lb.Stats().roomsCreated == 1,
+          "채널이 못 만들면 거절 471(곧바로 실패) · 실패 셈");
 
     // 같은 이름으로 다시 만든 방 — 옛 방(닫힘)의 채널 구성원(wn · bob)을 비우고 새로 든 wn 만(326 사람 수 = 가짜 방장 1 + 1)
     fake.canCreate = true;
@@ -585,27 +606,31 @@ void PendingRoomUnitTests() {
               nox::VerifyJoinToken(LobbyTestKey(), raw, sizeof(raw), kLobbyTestNow, peer, tok) == nox::JoinTokenCheck::Ok,
           "② 키 없는 방 → 옛 동작(붙은 내 쪽 주소 · 설정 포트 · 설정 토큰 키)");
 
-    // ③ 실패 답 → 답 없음 · 실패 셈 · 기다림 0
+    // ③ 실패 답 → 거절 471(★ 10-20 — 그 전엔 답 없음) · 실패 셈 · 기다림 0
     login(3, "carol");
     out.clear();
     lb.OnLine(3, "JOINGAME #carol's_game 1 ", out);
-    lb.OnRoomCreateFailed(fake.asked.back(), "대기 맵 없음");
-    Check(out.empty() && lb.PendingRooms() == 0 && lb.Stats().roomCreateFailed == 1, "③ 실패 답 → 답 없음 · 실패 셈 1 · 기다림 0");
+    const bool quietBeforeFail = out.empty();
+    lb.OnRoomCreateFailed(fake.asked.back(), "대기 맵 없음", out);
+    Check(quietBeforeFail && OnlyReject(out, 3, "#carol's_game", JoinReject::CreateFailed) && lb.PendingRooms() == 0 && lb.Stats().roomCreateFailed == 1,
+          "③ 실패 답 → 기다리던 클라에 거절 471 한 줄(참가 채널 · 게임 서버 실패) · 실패 셈 1 · 기다림 0");
 
     // ④ 시간 초과 — 한도 1ms 전엔 남고 한도에 접힘(32비트 시계가 도는 자리) · 그 뒤 온 답은 늦은 답(버림)
     login(4, "dave");
     out.clear();
     lb.OnLine(4, "JOINGAME #dave's_game 1 ", out);
     const uint32_t reqDave = fake.asked.back();
-    lb.Tick();   // 한도 시각은 32비트를 넘어 0 근처로 돌았고 지금은 아직 안 돎 — 그냥 크기로 견주면 여기서 바로 접힌다
-    const bool waitingAtStart = lb.PendingRooms() == 1;
+    lb.Tick(out);   // 한도 시각은 32비트를 넘어 0 근처로 돌았고 지금은 아직 안 돎 — 그냥 크기로 견주면 여기서 바로 접힌다
+    const bool waitingAtStart = lb.PendingRooms() == 1 && out.empty();
     clock += kRoomRequestTimeoutMs - 1;
-    lb.Tick();
-    const bool stillWaiting = lb.PendingRooms() == 1 && lb.Stats().roomRequestTimeout == 0;
+    lb.Tick(out);
+    const bool stillWaiting = lb.PendingRooms() == 1 && lb.Stats().roomRequestTimeout == 0 && out.empty();
     clock += 1;
-    lb.Tick();
-    Check(waitingAtStart && stillWaiting && lb.PendingRooms() == 0 && lb.Stats().roomRequestTimeout == 1 && out.empty(),
-          "④ 한도 1ms 전엔 기다림 · 한도에 시간 초과(답 없음) — 시계가 32비트를 넘어 돌아도");
+    lb.Tick(out);
+    Check(waitingAtStart && stillWaiting && lb.PendingRooms() == 0 && lb.Stats().roomRequestTimeout == 1 &&
+              OnlyReject(out, 4, "#dave's_game", JoinReject::Timeout),
+          "④ 한도 1ms 전엔 기다림(줄 없음) · 한도에 시간 초과 → 거절 471 한 줄 — 시계가 32비트를 넘어 돌아도");
+    out.clear();
     lb.OnRoomCreated(reqDave, made("dave"), out);
     Check(out.empty() && lb.Stats().lateRoomReply == 1 && lb.Stats().roomsCreated == 1, "④ 시간 초과 뒤 온 답 → 늦은 답(버림 · 참가 답 없음)");
 
@@ -620,8 +645,8 @@ void PendingRoomUnitTests() {
     lb.OnClose(5, out);
     Check(lb.PendingRooms() == 0 && lb.Stats().roomRequestDropped == 1, "⑤ 기다리는 중 클라가 끊음 → 버림 셈 1");
     lb.OnRoomCreated(reqErin, made("erin"), out);
-    lb.OnRoomCreateFailed(9999, "모르는 요청");
-    Check(out.empty() && lb.Stats().lateRoomReply == 3, "⑤ 끊긴 뒤 온 답 · 모르는 요청의 실패 → 늦은 답(버림)");
+    lb.OnRoomCreateFailed(9999, "모르는 요청", out);
+    Check(out.empty() && lb.Stats().lateRoomReply == 3, "⑤ 끊긴 뒤 온 답 · 모르는 요청의 실패 → 늦은 답(버림 · 거절 줄도 없음)");
 
     // ⑥ 요청 번호는 겹치지 않는다(답이 엉뚱한 접속에 가지 않게)
     std::set<uint32_t> uniq(fake.asked.begin(), fake.asked.end());
@@ -630,6 +655,10 @@ void PendingRoomUnitTests() {
     const LobbyStats& s = lb.Stats();
     Check(s.roomsRequested == 4 && s.roomsRequested == s.roomsCreated + s.roomCreateFailed + s.roomRequestTimeout + s.roomRequestDropped,
           "⑥ 물음 4 = 만듦 + 실패 + 시간 초과 + 버림(요청마다 한 갈래로 끝남)");
+    // ★ 10-20 거절 답 — 거절은 실패 · 시간 초과마다 하나(만듦 · 버림 · 늦은 답 · 기다리는 중 또 참가엔 없음)
+    Check(s.JoinRejectedTotal() == 2 && Rejected(s, JoinReject::CreateFailed) == 1 && Rejected(s, JoinReject::Timeout) == 1 &&
+              s.JoinRejectedTotal() == s.roomCreateFailed + s.roomRequestTimeout,
+          "⑥ 거절 2 = 게임 서버 실패 1 + 시간 초과 1(실패 + 시간 초과와 같은 수)");
 }
 
 // ── ★ 10-20 MO 6단계 v2 작업 3b — 채팅 채널: 같은 채널 사람에게 드나듦 · 글 · 다른 채널엔 안 감 · 안 들어간 채널 글은 거름 ──
@@ -781,12 +810,12 @@ void MirrorUnitTests() {
     send(bad, nox::LinkRegister(1, 0, 18590));
     Check(byeBad && out.empty() && mirror.Stats().authFailed == 1 && mirror.ServerCount() == 0,
           "① 서명 틀림 → BYE 뒤 끊기 · 끊김 전 줄은 버림(BYE 하나)");
-    mirror.OnLinkClose(101);
+    mirror.OnLinkClose(101, out);
     Gs bad2{102, 1, 0, 18590, {}};
     open(bad2);
     send(bad2, nox::LinkRegister(1, 0, 18590));
     Check(byeTo(102) && mirror.Stats().authFailed == 2, "① 첫 줄이 AUTH 아님 → 확인 실패로 끊기");
-    mirror.OnLinkClose(102);
+    mirror.OnLinkClose(102, out);
     {   // 다른 키(설정이 다른 게임 서버)의 서명
         nox::JoinKey other = LobbyTestKey();
         other[0] ^= 1;
@@ -794,7 +823,7 @@ void MirrorUnitTests() {
         open(bad3);
         send(bad3, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(other), bad3.nonce)));
         Check(byeTo(103) && mirror.Stats().authFailed == 3, "① 다른 토큰 키에서 뽑은 서명 → 끊기");
-        mirror.OnLinkClose(103);
+        mirror.OnLinkClose(103, out);
     }
 
     // ② 등록 차례 — 확인 뒤 REGISTER 전 다른 줄 → 끊기 · 바른 차례 → 등록
@@ -803,7 +832,7 @@ void MirrorUnitTests() {
     send(early, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(LobbyTestKey()), early.nonce)));
     send(early, nox::LinkRoomLine(room(0, "x", 0)));
     Check(byeTo(104) && mirror.Stats().outOfOrder == 1 && mirror.Stats().authOk == 1, "② 확인 뒤 등록 전 ROOM → 끊기");
-    mirror.OnLinkClose(104);
+    mirror.OnLinkClose(104, out);
     const uint32_t ipA = (10u << 24) | 1u, ipB = (10u << 24) | 2u;   // 10.0.0.1 · 10.0.0.2
     Gs a{110, 1760000000u, ipA, 18590, {}}, b{111, 1760000005u, ipB, 18590, {}};
     open(a);
@@ -816,7 +845,7 @@ void MirrorUnitTests() {
     send(dup, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(LobbyTestKey()), dup.nonce)));
     send(dup, nox::LinkRegister(dup.epoch, dup.ip, dup.port));
     Check(byeTo(112) && mirror.Stats().registerRejected == 1 && mirror.ServerCount() == 2, "③ 같은 주소 · 포트 둘째 등록 → BYE 뒤 끊기");
-    mirror.OnLinkClose(112);
+    mirror.OnLinkClose(112, out);
 
     // ④ 방 알림 → 목록 · 바뀜 · 사라짐 — 방마다 그 게임 서버 주소 · 포트 · 키
     send(a, nox::LinkRoomLine(room(0, "alice", 1)));
@@ -888,12 +917,13 @@ void MirrorUnitTests() {
     mirror.TakeOut(sent);
     Check(sent.size() == 1 && sent[0].conn == b.conn, "⑤ 다음 새 방 → 방이 적은 게임 서버(b)");
 
-    // ⑥ 실패 답 → 로비 실패(답 없음) · 안 물은 요청의 답 → 버림
+    // ⑥ 실패 답 → 로비 실패(★ 10-20 — 클라에 거절 471) · 안 물은 요청의 답 → 버림
     nox::LinkLine dl;
     nox::ParseLinkLine(sent.empty() ? std::string() : sent[0].line, dl);
     send(b, nox::LinkCreateFailed(dl.req, "no wait map"));
-    Check(out.empty() && lb.PendingRooms() == 0 && lb.Stats().roomCreateFailed == 1 && mirror.Stats().createFailedReplies == 1,
-          "⑥ CREATE_FAILED → 로비 실패 셈 · 답 없음");
+    Check(OnlyReject(out, 2, "#dan's_game", JoinReject::CreateFailed) && lb.PendingRooms() == 0 && lb.Stats().roomCreateFailed == 1 &&
+              mirror.Stats().createFailedReplies == 1,
+          "⑥ CREATE_FAILED → 로비 실패 셈 · 기다리던 클라(c2)에 거절 471");
     send(b, nox::LinkCreated(dl.req, 3));
     send(a, nox::LinkCreated(4242, 3));
     Check(out.empty() && mirror.Stats().unknownReplies == 2, "⑥ 끝난 요청 · 안 물은 요청의 답 → 버림 셈 2");
@@ -911,8 +941,9 @@ void MirrorUnitTests() {
     nox::ParseLinkLine(sent.empty() ? std::string() : sent[0].line, el);
     const Gs& eg = sent.empty() || sent[0].conn == a.conn ? a : b;
     send(eg, nox::LinkCreated(el.req, 55));
-    Check(out.empty() && mirror.Stats().createdNoRoom == 1 && lb.Stats().roomCreateFailed == 2 && lb.PendingRooms() == 0,
-          "⑦ ROOM 없이 CREATED → 실패로(답 없음)");
+    Check(OnlyReject(out, 3, "#eve's_game", JoinReject::CreateFailed) && mirror.Stats().createdNoRoom == 1 && lb.Stats().roomCreateFailed == 2 &&
+              lb.PendingRooms() == 0,
+          "⑦ ROOM 없이 CREATED → 실패로(기다리던 클라 c3 에 거절 471)");
 
     // ⑧ 기다리는 중 연결 끊김 → 로비 한도를 안 기다리고 곧바로 실패 · 그 게임 서버의 방이 목록에서 빠짐
     lb.OnConnect(4, peer, local);
@@ -926,14 +957,17 @@ void MirrorUnitTests() {
     const int target = sent.empty() ? 0 : sent[0].conn;
     const size_t before = mirror.LobbyRooms().size();
     const size_t targetRooms = target == a.conn ? 2 : 1;   // a = alice 빠짐 뒤 amy · carl / b = bea
-    mirror.OnLinkClose(target);
-    Check(lb.PendingRooms() == 0 && lb.Stats().roomCreateFailed == 3 && mirror.Stats().failedOnClose == 1 &&
-              mirror.LobbyRooms().size() == before - targetRooms && mirror.ServerCount() == 1,
-          "⑧ 기다리는 중 연결 끊김 → 곧바로 실패 · 그 게임 서버 방이 목록에서 빠짐");
+    out.clear();
+    mirror.OnLinkClose(target, out);
+    Check(OnlyReject(out, 4, "#fay's_game", JoinReject::CreateFailed) && lb.PendingRooms() == 0 && lb.Stats().roomCreateFailed == 3 &&
+              mirror.Stats().failedOnClose == 1 && mirror.LobbyRooms().size() == before - targetRooms && mirror.ServerCount() == 1,
+          "⑧ 기다리는 중 연결 끊김 → 곧바로 실패(클라 c4 에 거절 471) · 그 게임 서버 방이 목록에서 빠짐");
 
     // ⑨ 게임 서버 없음 → 곧바로 실패(묻지 않음)
     const int other = target == a.conn ? b.conn : a.conn;
-    mirror.OnLinkClose(other);
+    out.clear();
+    mirror.OnLinkClose(other, out);
+    Check(out.empty(), "⑨ 기다리는 요청이 없는 게임 서버 끊김 → 거절 줄 없음");
     lb.OnConnect(5, peer, local);
     {
         std::vector<Out> o;
@@ -942,8 +976,9 @@ void MirrorUnitTests() {
         lb.OnLine(5, "JOINGAME #gus's_game 1 ", o);
         sent.clear();
         mirror.TakeOut(sent);
-        Check(o.size() == 0 && sent.empty() && mirror.Stats().noServer == 1 && lb.Stats().roomCreateFailed == 4 && mirror.LobbyRooms().empty(),
-              "⑨ 등록된 게임 서버 없음 → 곧바로 실패 · CREATE 없음 · 목록 0");
+        Check(OnlyReject(o, 5, "#gus's_game", JoinReject::RequestFailed) && sent.empty() && mirror.Stats().noServer == 1 &&
+                  lb.Stats().roomCreateFailed == 4 && mirror.LobbyRooms().empty(),
+              "⑨ 등록된 게임 서버 없음 → 곧바로 실패(거절 471 · 사람 확인 50 의 갈래) · CREATE 없음 · 목록 0");
     }
 
     // ⑩ 다시 붙어 등록(같은 주소 — 옛 연결은 끊김) · 판 결과 · 못 읽는 줄은 버리고 연결은 둠 · 게임 서버가 보낼 리 없는 줄도
@@ -982,7 +1017,9 @@ void MirrorUnitTests() {
     };
     const uint32_t reqHal = host(6, "hal");
     clock += kRoomRequestTimeoutMs;
-    lb.Tick();
+    out.clear();
+    lb.Tick(out);
+    Check(OnlyReject(out, 6, "#hal's_game", JoinReject::Timeout), "⑪ 시간 초과 → 클라 c6 에 거절 471");
     const uint32_t reqIvy = host(7, "ivy");
     out.clear();
     lb.OnClose(7, out);
@@ -996,9 +1033,16 @@ void MirrorUnitTests() {
           "⑪ 접은 요청의 늦은 CREATED → 거울이 안 물은 답으로 버림(로비까지 안 감)");
     const auto failedOnClose0 = mirror.Stats().failedOnClose;
     const auto failed0 = lb.Stats().roomCreateFailed;
-    mirror.OnLinkClose(a2.conn);
-    Check(mirror.Stats().failedOnClose == failedOnClose0 && lb.Stats().roomCreateFailed == failed0 && lb.Stats().lateRoomReply == late0,
-          "⑪ 게임 서버가 끊겨도 접은 요청을 다시 실패로 안 넘김");
+    out.clear();
+    mirror.OnLinkClose(a2.conn, out);
+    Check(out.empty() && mirror.Stats().failedOnClose == failedOnClose0 && lb.Stats().roomCreateFailed == failed0 && lb.Stats().lateRoomReply == late0,
+          "⑪ 게임 서버가 끊겨도 접은 요청을 다시 실패로 안 넘김(거절 줄도 없음)");
+    // ★ 10-20 거절 답 셈 — 요청마다 거절은 하나: 게임 서버 실패 3(⑥ ⑦ ⑧) + 곧바로 실패 1(⑨) + 시간 초과 1(⑪) · 끊긴 클라(ivy)엔 없음
+    const LobbyStats& ls = lb.Stats();
+    Check(ls.JoinRejectedTotal() == 5 && Rejected(ls, JoinReject::CreateFailed) == 3 && Rejected(ls, JoinReject::RequestFailed) == 1 &&
+              Rejected(ls, JoinReject::Timeout) == 1 && Rejected(ls, JoinReject::NoSuchRoom) == 0 &&
+              ls.JoinRejectedTotal() == ls.roomCreateFailed + ls.roomRequestTimeout,
+          "셈 — 거절 5 = 게임 서버 실패 3 + 곧바로 실패 1 + 시간 초과 1(실패 4 + 시간 초과 1 과 같은 수)");
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──

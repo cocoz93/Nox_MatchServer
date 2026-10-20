@@ -140,8 +140,8 @@ Check (@($all | Where-Object { $_ -match '127\.0\.0\.2:18590 끊김 — 방 2개
 Check (@($all | Where-Object { $_ -match "\[로비\] \[새 방 — 시간 초과\] bob — 요청 \d+ 에 5000ms 안에 답 없음" }).Count -eq 1) '로비 기록 — 답 없는 새 방 시간 초과 한 줄'
 # 클라 줄 — wn 5 + LIST + 대화방 + JOINGAME + LIST + QUIT = 10 · bob 3 + JOIN + PRIVMSG + JOINGAME(답 없음) = 6 → 16
 #   보낸 줄 — wn 로그인(NOXSERVER · 375 · 372 · 376 · 329 = 5) · 목록 3 · 대화방 3 + 들어옴 1 + 채팅 1 · 참가 5 · 목록 2 · 607 → 21 ·
-#     bob 로그인 4 · 대화방 3 · wn 이 끊길 때 대화방 PART 알림 1 → 8 · 합 29
-Check ($end.Count -eq 2 -and $end[0] -match '접속 2 · 받은 줄 16 · 보낸 줄 29 · 토큰 1 · 새 방 1\(물음 2 · 실패 0 · 시간 초과 1 · 버림 0\) · 채팅 1') '끝 줄 — 클라 셈(접속 2 · 받은 줄 16 · 보낸 줄 29 · 토큰 1 · 새 방 1 · 물음 2 · 시간 초과 1)'
+#     bob 로그인 4 · 대화방 3 · 시간 초과 거절 471 1(★ 10-20) · wn 이 끊길 때 대화방 PART 알림 1 → 9 · 합 30
+Check ($end.Count -eq 2 -and $end[0] -match '접속 2 · 받은 줄 16 · 보낸 줄 30 · 토큰 1 · 새 방 1\(물음 2 · 실패 0 · 시간 초과 1 · 버림 0\) · 채팅 1') '끝 줄 — 클라 셈(접속 2 · 받은 줄 16 · 보낸 줄 30 · 토큰 1 · 새 방 1 · 물음 2 · 시간 초과 1)'
 Check ($end.Count -eq 2 -and $end[1] -match '게임 서버 연결 2\(확인 1 · 확인 실패 1 · 등록 1 · 등록 거절 0 · 차례 틀림 0\) · 연결 줄 받음 7 · 보냄 5 · 방 알림 2 · 사라짐 0 · 못 읽는 줄 0 · 판 결과 1') '끝 줄 — 연결 셈(연결 2 · 확인 1 · 실패 1 · 받음 7 · 보냄 5 · 방 알림 2 · 판 결과 1)'
 Remove-Item -LiteralPath $log, $ini -ErrorAction SilentlyContinue
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)

@@ -200,7 +200,7 @@ int main(int argc, char** argv) {
                 break;
             case nox::TcpLineEvent::Type::CLOSED:
                 if (link) {
-                    mirror.OnLinkClose(e.conn);
+                    mirror.OnLinkClose(e.conn, outs);   // ★ 10-20 — 기다리던 새 방은 클라에게 거절 답(471)
                     linkConns.erase(e.conn);
                 } else {
                     lobby.OnClose(e.conn, outs);
@@ -222,7 +222,7 @@ int main(int argc, char** argv) {
         evs.clear();
         tcp.Poll(evs);
         for (const auto& e : evs) onEvent(e);
-        lobby.Tick();
+        lobby.Tick(outs);   // ★ 10-20 — 시간 초과는 클라에게 거절 답(471)
         sendOuts();
         evs.clear();
         tcp.Flush(evs);   // 보내기 오류 · QUIT 답 · BYE 뒤 끊기가 여기서 나온다
@@ -234,9 +234,14 @@ int main(int argc, char** argv) {
     if (stopEvent) CloseHandle(stopEvent);
     const nox::wol::LobbyStats& ls = lobby.Stats();
     const nox::wol::MirrorStats& ms = mirror.Stats();
-    Log("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu · 토큰 %llu · 새 방 %llu(물음 %llu · 실패 %llu · 시간 초과 %llu · 버림 %llu) · 채팅 %llu\n",
+    // ★ 10-20 거절 답 — 참가 거절(471) 합과 까닭 넷(`JoinReject` 차례 — 곧바로 실패 · 게임 서버 실패 · 시간 초과 · 없는 방)
+    using nox::wol::JoinReject;
+    const auto jr = [&ls](JoinReject w) { return ls.joinRejected[static_cast<size_t>(w)]; };
+    Log("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu · 토큰 %llu · 새 방 %llu(물음 %llu · 실패 %llu · 시간 초과 %llu · 버림 %llu) · 채팅 %llu"
+        " · 참가 거절 %llu(곧바로 실패 %llu · 게임 서버 실패 %llu · 시간 초과 %llu · 없는 방 %llu)\n",
         nConn, nIn, nOut, ls.tokensIssued, ls.roomsCreated, ls.roomsRequested, ls.roomCreateFailed, ls.roomRequestTimeout,
-        ls.roomRequestDropped, ls.chatMessages);
+        ls.roomRequestDropped, ls.chatMessages, ls.JoinRejectedTotal(), jr(JoinReject::RequestFailed), jr(JoinReject::CreateFailed),
+        jr(JoinReject::Timeout), jr(JoinReject::NoSuchRoom));
     Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu · 보냄 %llu · "
         "방 알림 %llu · 사라짐 %llu · 못 읽는 줄 %llu · 판 결과 %llu\n",
         nLinks, ms.authOk, ms.authFailed, ms.registered, ms.registerRejected, ms.outOfOrder, linkIn, linkOut, ms.roomLines,

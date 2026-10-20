@@ -3,7 +3,7 @@
 # ★ 10-20 v2 — 로비 nox_lobby(클라 TCP · 게임 서버 연결 포트)와 게임 서버 nox_server --lobby(로비에 붙음 · 방 없이 시작)를 띄우고,
 #   정품 클라가 보내는 순서(1단계 녹음) 그대로 TCP 로 말해 본다. 옛 꼴(10-14 작업 8d — 채널 안 로비 nox_server --lobby-port)을 v2 로 바꿨다.
 #   DLL 없는 로그인(인사말 안내) → 로그인 376 · 379 → 목록(방 0줄 · 채팅 로비 5) → 채팅 로비 입·퇴장 → 게임 방 목록(0줄)
-#   → 없는 방 참가(답 없음 · 로비 기록) → 「새 방」(로비가 게임 서버에 묻고 미룬 참가 답 — NOXTOKEN 게임 서버 주소)
+#   → 없는 방 참가(★ 10-20 거절 471 · 로비 기록) → 「새 방」(로비가 게임 서버에 묻고 미룬 참가 답 — NOXTOKEN 게임 서버 주소)
 #   → 다른 사람이 목록에서 그 방 → UDP 접속 시도 + 토큰 꼬리 → JOIN_OK(게임 서버가 「이 실행」 키로 확인) · 서명 바꾼 토큰 거절 → QUIT 607
 # 로비 로직의 꼴은 lobby_replay 가 녹음과 대조하고 갈래는 lobby_test 가 본다. 여기서는 두 실행 파일의 소켓 · 연결 · 키가 맞물리는지만.
 # 끝은 — 게임 서버는 닫기 이벤트(nox_server_stop_<pid>) · 로비는 --seconds. 강제 종료는 응답이 없을 때만
@@ -109,10 +109,11 @@ try {
   $l2 = ReadUntil $k '323'
   Check ((($l2 | ForEach-Object { Kind $_ }) -join ',') -eq '321,323') '게임 방 목록 = 0줄(321 · 323 만)'
 
-  # 없는 방 참가 — 로비는 답하지 않는다(로비 기록에 [모르는 방]). 바로 SETCODEPAGE 를 보내 그 답(329)이 첫 줄인지로 「답 없음」을 본다
+  # 없는 방 참가 — ★ 10-20 로비는 거절 471 한 줄(로비 기록에 [모르는 방] — 그 전엔 답하지 않았다). 바로 SETCODEPAGE 를 보내
+  #   그 답(329) 앞에 471 한 줄만 있는지로 「거절 하나」를 본다
   Send $k @("JOINGAME #nobody's_game 1 ", 'SETCODEPAGE 949')
   $q = ReadUntil $k '329'
-  Check ($q.Count -eq 1 -and (Kind $q[0]) -eq '329') "없는 방(남의 이름 채널) 참가엔 답 없음 (받은 줄 $($q.Count))"
+  Check ($q.Count -eq 2 -and $q[0] -eq ": 471 u #nobody's_game :No such game" -and (Kind $q[1]) -eq '329') "없는 방(남의 이름 채널) 참가 → 거절 471 한 줄 ($($q -join ' | '))"
 
   if ($haveWaitMap) {
     # 「새 방」 — 제 이름 채널(#wn's_game)로 온 없는 방 참가 → 로비가 게임 서버에 묻고(CREATE) 게임 서버가 만들어 답하면(ROOM · CREATED) 미룬 참가 답
@@ -217,18 +218,21 @@ Check ($p.ExitCode -eq 0 -and $lp.ExitCode -eq 0) "종료 코드 — 게임 서�
 Check ($unknown -eq 1) "로비 기록 [모르는 방] 한 줄 ($unknown)"
 # 0 은 「없었다」와 「못 읽었다」를 안 가른다 — 로비가 센 접속 · 줄 수와 게임 서버 연결 셈을 같이 본다
 #   대기 맵 없음 — 접속 2(DLL 없는 로그인 · wn) · 보낸 클라 줄 = 4 + 17 = 21
-#     받은 답 = DLL 없는 로그인 6(375 · 372 · 안내 372 둘 · 376 · 607) + 로그인 4 · 329 · 목록 7(321 · 327 다섯 · 323) · 입장 3 · 퇴장 1 · 목록 2 · 없는 방 0 · 329 · 607 = 26
-#   대기 맵 있음 — 위에 wn 새 방 참가 5 · 목록 3(321 · 326 · 323)과 bob 접속(줄 6 — 로그인 3 · 목록 3 · 참가 5 · 607) → 접속 3 · 받은 줄 29 · 보낸 줄 46 · 토큰 2
+#     받은 답 = DLL 없는 로그인 6(375 · 372 · 안내 372 둘 · 376 · 607) + 로그인 4 · 329 · 목록 7(321 · 327 다섯 · 323) · 입장 3 · 퇴장 1 · 목록 2 · 없는 방 1(★ 10-20 거절 471) · 329 · 607 = 27
+#   대기 맵 있음 — 위에 wn 새 방 참가 5 · 목록 3(321 · 326 · 323)과 bob 접속(줄 6 — 로그인 3 · 목록 3 · 참가 5 · 607) → 접속 3 · 받은 줄 29 · 보낸 줄 47 · 토큰 2
 #     ★ 4c — 빈 방 닫힘 기다리기의 목록 다시 보기 — 받은 줄 +번 · 보낸 줄 +2(321 · 323)×번 +1(326)×방 있던 번
+#   ★ 10-20 거절 답 — 끝 줄의 참가 거절 = 없는 방 1 하나(새 방은 만들어짐)
+$rejectOne = $summary.Count -eq 1 -and $summary[0] -match '참가 거절 1\(곧바로 실패 0 · 게임 서버 실패 0 · 시간 초과 0 · 없는 방 1\)'
+Check $rejectOne "로비 셈 — 참가 거절 1(없는 방 1)"
 if ($haveWaitMap) {
-  $inN = 29 + $script:polls; $outN = 46 + 2 * $script:polls + $script:withRoom
+  $inN = 29 + $script:polls; $outN = 47 + 2 * $script:polls + $script:withRoom
   Check ($summary.Count -eq 1 -and $summary[0] -match "접속 3 · 받은 줄 $inN · 보낸 줄 $outN · 토큰 2 · 새 방 1\(물음 1 · 실패 0 · 시간 초과 0 · 버림 0\)") "로비 셈 — 접속 3 · 받은 줄 $inN · 보낸 줄 $outN · 토큰 2 · 새 방 1(물음 1)"
   Check ($newRoomLog -eq 1 -and $roomMade -eq 1) "기록 — 로비 [새 방] wn $newRoomLog 줄 · 게임 서버 [방] 0 만듦(wn's game · so_lod · chat · 비면 닫음) $roomMade 줄"
   Check ($joinOk -eq 1 -and $joinNo -eq 1) "입장 판정 — 접속 시도 받음(방 0 · wn) $joinOk · 거절 $joinNo"
   Check ($gsSummary.Count -eq 1 -and $gsSummary[0] -match '붙음 1 · 끊김 0 · 등록 1 · 방 알림 \d+ · 사라짐 1 · 새 방 물음 1\(만듦 1 · 실패 0\)') '게임 서버 연결 셈 — 붙음 1 · 등록 1 · 사라짐 1(빈 방 닫힘) · 새 방 물음 1(만듦 1)'
   Check ($linkSummary.Count -eq 1 -and $linkSummary[0] -match '방 알림 \d+ · 사라짐 1 ·') '로비 셈 — 게임 서버의 ROOM_GONE 1(빈 방 닫힘)'
 } else {
-  Check ($summary.Count -eq 1 -and $summary[0] -match '접속 2 · 받은 줄 21 · 보낸 줄 26 · 토큰 0') '로비 셈 — 접속 2 · 받은 줄 21 · 보낸 줄 26'
+  Check ($summary.Count -eq 1 -and $summary[0] -match '접속 2 · 받은 줄 21 · 보낸 줄 27 · 토큰 0') '로비 셈 — 접속 2 · 받은 줄 21 · 보낸 줄 27'
 }
 Check ($linkSummary.Count -eq 1 -and $linkSummary[0] -match '게임 서버 연결 1\(확인 1 · 확인 실패 0 · 등록 1 · 등록 거절 0 · 차례 틀림 0\)') '로비 셈 — 게임 서버 연결 1(확인 1 · 등록 1)'
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)

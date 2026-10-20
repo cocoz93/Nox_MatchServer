@@ -28,7 +28,7 @@ void RoomMirror::OnLinkOpen(int conn, std::vector<Out>& out) {
     log_.push_back("[게임 서버] c" + std::to_string(conn) + " 붙음 — 확인 기다림");
 }
 
-void RoomMirror::OnLinkClose(int conn) {
+void RoomMirror::OnLinkClose(int conn, std::vector<Out>& out) {
     const auto it = servers_.find(conn);
     if (it == servers_.end()) return;
     ++stats_.linksClosed;
@@ -42,7 +42,7 @@ void RoomMirror::OnLinkClose(int conn) {
     servers_.erase(it);   // 로비에 넘기기 전에 지운다 — 로비가 곧바로 목록을 다시 그려도 끊긴 방이 안 나온다
     for (const uint32_t req : asked) {
         ++stats_.failedOnClose;
-        if (lobby_) lobby_->OnRoomCreateFailed(req, "게임 서버 연결 끊김");
+        if (lobby_) lobby_->OnRoomCreateFailed(req, "게임 서버 연결 끊김", out);
     }
 }
 
@@ -118,7 +118,7 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
             }
             if (l.kind == LinkKind::CreateFailed) {
                 ++stats_.createFailedReplies;
-                if (lobby_) lobby_->OnRoomCreateFailed(l.req, "게임 서버 " + Name(conn, s) + " — " + l.text);
+                if (lobby_) lobby_->OnRoomCreateFailed(l.req, "게임 서버 " + Name(conn, s) + " — " + l.text, out);
                 return;
             }
             const auto r = s.rooms.find(l.room.id);
@@ -126,7 +126,7 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
                 ++stats_.createdNoRoom;
                 log_.push_back("[게임 서버] " + Name(conn, s) + " 요청 " + std::to_string(l.req) + " 의 방 " + std::to_string(l.room.id) +
                                " 이 거울에 없음(ROOM 이 먼저 안 옴) — 실패로");
-                if (lobby_) lobby_->OnRoomCreateFailed(l.req, "만든 방의 ROOM 이 안 옴");
+                if (lobby_) lobby_->OnRoomCreateFailed(l.req, "만든 방의 ROOM 이 안 옴", out);
                 return;
             }
             ++stats_.createdReplies;

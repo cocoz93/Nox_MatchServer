@@ -58,7 +58,7 @@ public:
 
     void OnLinkOpen(int conn, std::vector<Out>& out);                         // HELLO 를 보낸다
     void OnLinkLine(int conn, std::string_view line, std::vector<Out>& out);
-    void OnLinkClose(int conn);                                               // 그 게임 서버의 방 내림 · 기다리던 요청 실패
+    void OnLinkClose(int conn, std::vector<Out>& out);                        // 그 게임 서버의 방 내림 · 기다리던 요청 실패(★ 10-20 — 클라에게 거절 답)
     void TakeOut(std::vector<Out>& out);                                      // `RequestRoom` 이 쌓은 CREATE 줄
     std::vector<std::string> TakeLog();
     std::vector<std::string> TakeResults();                                   // RESULT 의 JSON(받은 차례)
