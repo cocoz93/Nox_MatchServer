@@ -161,6 +161,10 @@ struct ServerOptions {
     //   켜면 토큰 방식만 되고 실행 인자의 방을 만들지 않는다 — 방은 로비가 만든다(작업 10)
     int lobbyPort = 0;          // `--lobby-port <포트>`(정품 클라는 4000)
     std::string lobbyBind;      // `--lobby-bind <IPv4>` — 비면 모든 주소(같은 PC 시험은 127.0.0.1)
+    // ★ 10-20 MO 6단계 v2 작업 4b — 로비 프로세스(`nox_lobby`)에 붙기(`CLobbyClient`). 켜면 토큰 방식만 · 방 없이 시작(방은 로비가 묻는다)
+    std::string lobbyAddr;      // `--lobby <IPv4>[:<포트>]` — 로비 연결 포트(기본 `kLobbyLinkPort` 4010)
+    std::string registerIp;     // `--register-ip <IPv4>` — 로비에 알리는 「클라가 붙을 이 게임 서버 주소」(비면 0 = 클라가 로비에 붙은 로비 쪽 주소 — 같은 PC)
+    std::string bindIp;         // `--bind <IPv4>` — UDP 를 묶을 주소(비면 모든 주소). 같은 PC 둘째 게임 서버는 127.0.0.2 처럼 따로
     // ★ 10-14 작업 10a — 대기 맵 후보(`--wait-maps a,b` — 맵 열쇠 또는 .map 경로). 로비가 새 방을 만들 때 하나를 무작위로.
     //   비면 로비 방식에서 `So_LOD` 하나(정품으로 확인한 대기 맵 — `Docs/ROOMS_DESIGN.md` 「10-13 정한 것」 · 확인한 맵을 하나씩 더한다)
     std::vector<std::string> waitMaps;
@@ -226,6 +230,8 @@ struct MapCatalog {
 std::string MapKeyOf(const std::string& mapPath);
 std::vector<std::string> MapListFromOptions(const ServerOptions& opt);
 // ★ 10-14 작업 10a — 대기 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것). 열쇠는 `<게임 폴더>\maps\<열쇠>\<열쇠>.map`
+// ★ 10-20 v2 작업 4b — 로비 방식(채널 안 로비 `--lobby-port` 또는 로비에 붙기 `--lobby`) — 방 없이 시작 · 대기 · 대전 맵 후보를 차려 둔다
+inline bool LobbyMode(const ServerOptions& opt) { return opt.lobbyPort != 0 || !opt.lobbyAddr.empty(); }
 std::vector<std::string> WaitMapPaths(const ServerOptions& opt);
 // ★ 10-16 작업 13a — 대전 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것 · 꼴은 위와 같다)
 std::vector<std::string> BattleMapPaths(const ServerOptions& opt);

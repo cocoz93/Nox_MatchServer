@@ -21,7 +21,8 @@
 #include "nox/Messages.h"
 #include "nox/Server.h"
 #include "nox/SyncHost.h"
-#include "nox/ChannelLobby.h"   // ★ 10-14 작업 8d — 채널 안 로비 시험
+#include "nox/ChannelLobby.h"
+#include "nox/LobbyClient.h"   // ★ 10-20 v2 작업 4b   // ★ 10-14 작업 8d — 채널 안 로비 시험
 #include "nox/MatchRecorder.h"  // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기 시험
 #include "nox/Gamedata.h"
 #include "nox/UpdateStream.h"
@@ -25072,6 +25073,179 @@ void TestChannelLobby() {
     std::printf("  10-14 플랜 B 작업 8d — 채널 안 로비: 목록 = 만든 사람 있는 돌고 있는 방 · 참가 토큰 = 그 방 · 닫히면 빠짐 · 로비 사건만\n");
 }
 
+// ── ★ 10-20 MO 6단계 v2 작업 4b — 게임 서버의 로비 연결(`CLobbyClient`): 로비 사건 → 연결 줄(`LOBBY_SEND`) ─────────
+//   ① 붙음 → HELLO 에 AUTH(연결 키 서명) · REGISTER(실행 번호 · 등록 주소 · 포트) · 로비 방만 ROOM(실행 인자의 방은 안 나감)
+//   ② 틱 뒤 — 안 바뀌면 줄 없음 · 판 상태 바뀜 → ROOM · 닫힘 → ROOM_GONE
+//   ③ CREATE → 방 만들기(옛 채널 안 로비의 새 방 칸 그대로) → 그 방 ROOM 먼저 · CREATED · 대기 맵 없으면 CREATE_FAILED
+//   ④ 판 결과 → RESULT(등록 뒤만 · 줄 한도) ⑤ 끊김 → 아무것도 안 보냄 · 옛 접속 줄 무시 · 다시 붙으면 처음부터(방 전부 다시)
+//   ⑥ 차례에 안 맞는 줄 · 못 읽는 줄 · BYE · 로비 사건 아닌 것 ⑦ 토큰 키 = 등록 줄 값으로 뽑은 키
+void TestLobbyClient() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    char m[300];
+    nox::CRoomManager rooms;
+    const int plain = rooms.CreateRoom(RoomSettings{});   // 실행 인자의 방처럼 — 만든 사람 없음(로비에 안 알림)
+    RoomSettings s;
+    s.creator = "wn";
+    s.roomName = "wn game";
+    s.mapPath = "C:\\Nox\\maps\\So_LOD\\So_LOD.map";
+    s.mode = "chat";
+    s.closeWhenEmpty = true;
+    s.maxPlayers = 8;
+    const int made = rooms.CreateRoom(s);
+    nox::CLobbyClient::Config cfg;
+    for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 1);
+    cfg.epoch = 1760000000u;
+    cfg.registerIp = 0x7f000002u;
+    cfg.port = 18590;
+    RoomSettings tmpl;
+    tmpl.aoi = true;
+    tmpl.bots.push_back(BotWant{});
+    const std::vector<std::string> waits = {"C:\\Nox\\maps\\So_LOD\\So_LOD.map"};
+    const std::vector<std::string> battles = {"C:\\Nox\\maps\\Estate\\Estate.map"};
+    nox::CLobbyClient lc(rooms, cfg, tmpl, waits, battles);
+    lc.SetSeed(3);
+    auto ev = [](Ev::Type t, int c, const std::string& line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = c;
+        e.lobbyLine = line;
+        e.lobbyWhy = "test";
+        return e;
+    };
+    auto lines = [](const std::vector<Rq>& q) {
+        std::vector<std::string> v;
+        for (const Rq& r : q) v.push_back(r.type == Rq::Type::LOBBY_SEND ? r.lobbyLine : std::string("?"));
+        return v;
+    };
+    const std::string nonce = "00112233445566778899aabbccddeeff";
+    std::vector<Rq> rq;
+
+    // ① 붙음 → HELLO → AUTH · REGISTER · 로비 방 ROOM
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, 7, ""), rq);
+    const bool quietOpen = rq.empty() && !lc.Registered();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 7, nox::LinkHello(nonce)), rq);
+    auto l1 = lines(rq);
+    bool connOk = true;
+    for (const Rq& r : rq) connOk = connOk && r.lobbyConn == 7 && !r.lobbyCloseAfter;
+    const std::string wantRoom = "ROOM " + std::to_string(made) + " 0 8 0 wn%20game wn wn so_lod chat";
+    const bool authOk = l1.size() == 3 && l1[0].rfind("AUTH ", 0) == 0 &&
+                        nox::CheckLinkAuth(nox::LinkAuthKey(cfg.tokenKey), nonce, l1[0].substr(5));
+    std::snprintf(m, sizeof(m), "① 붙음 → 줄 없음 %d · HELLO → 줄 %zu(AUTH 서명 %d · %s · %s) · 접속 번호 %d · 등록 %d",
+                  (int)quietOpen, l1.size(), (int)authOk, l1.size() > 1 ? l1[1].c_str() : "", l1.size() > 2 ? l1[2].c_str() : "", (int)connOk,
+                  (int)lc.Registered());
+    Check(quietOpen && authOk && l1[1] == "REGISTER 1760000000 127.0.0.2 18590" && l1[2] == wantRoom && connOk && lc.Registered(), m);
+
+    // ② 틱 뒤 — 안 바뀜 · 판 상태 · 닫힘
+    rq.clear();
+    lc.AfterTick(rq);
+    const bool still = rq.empty();
+    rooms.Room(made).SetPhase(nox::RoomPhase::Playing);
+    lc.AfterTick(rq);
+    auto l2 = lines(rq);
+    rq.clear();
+    rooms.Room(plain).SetPhase(nox::RoomPhase::Playing);   // 실행 인자의 방이 바뀌어도 로비엔 안 감
+    lc.AfterTick(rq);
+    const bool plainQuiet = rq.empty();
+    rooms.Room(made).SetPhase(nox::RoomPhase::Waiting);
+    rooms.CloseRoom(made);
+    lc.AfterTick(rq);
+    auto l2b = lines(rq);
+    std::snprintf(m, sizeof(m), "② 틱 뒤 — 안 바뀜 줄 없음 %d · 판 중 [%s] · 실행 인자 방 바뀜 줄 없음 %d · 닫힘 [%s]", (int)still,
+                  l2.empty() ? "" : l2[0].c_str(), (int)plainQuiet, l2b.empty() ? "" : l2b[0].c_str());
+    Check(still && l2.size() == 1 && l2[0] == "ROOM " + std::to_string(made) + " 0 8 1 wn%20game wn wn so_lod chat" && plainQuiet &&
+              l2b.size() == 1 && l2b[0] == "ROOM_GONE " + std::to_string(made), m);
+
+    // ③ CREATE → 새 방(틀 · 만든 사람 · 이름 · 대기 맵 · 채팅 · 대전 맵 · 비면 닫음 · 최대 8 · 봇 없음) → ROOM 먼저 · CREATED
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 7, nox::LinkCreate(42, "averylongnick")), rq);
+    auto l3 = lines(rq);
+    int newId = -1;
+    for (const auto& f : rooms.ListRooms())
+        if (f.creator == "averylongnick") newId = f.roomId;
+    const RoomSettings* rs = newId >= 0 ? &rooms.Room(newId).Settings() : nullptr;
+    std::snprintf(m, sizeof(m), "③ CREATE → 방 %d · 줄 %zu [%s | %s] · 이름 %s · 모드 %s · 대전 %s · 비면 닫음 %d · 최대 %d · 시야 %d · 봇 %zu",
+                  newId, l3.size(), l3.empty() ? "" : l3[0].c_str(), l3.size() > 1 ? l3[1].c_str() : "", rs ? rs->roomName.c_str() : "",
+                  rs ? rs->mode.c_str() : "", rs ? rs->battleMapPath.c_str() : "", rs ? (int)rs->closeWhenEmpty : -1, rs ? rs->maxPlayers : -1,
+                  rs ? (int)rs->aoi : -1, rs ? rs->bots.size() : 99);
+    Check(newId >= 0 && l3.size() == 2 && l3[0] == "ROOM " + std::to_string(newId) + " 0 8 0 averylon's%20game averylongnick averylongnick so_lod chat" &&
+              l3[1] == "CREATED 42 " + std::to_string(newId) && rs && rs->roomName == "averylon's game" && rs->mode == "chat" &&
+              rs->battleMapPath == battles[0] && rs->battleMode == "arena" && rs->closeWhenEmpty && rs->standalone &&
+              rs->maxPlayers == nox::CLobbyClient::kRoomMaxPlayers && rs->aoi && rs->bots.empty(),
+          m);
+    rq.clear();
+    lc.AfterTick(rq);
+    const bool noDup = rq.empty();   // 만들며 보낸 ROOM 은 지난번 보낸 것에 들어가 틱 뒤에 다시 안 감
+    {
+        nox::CRoomManager r2;
+        nox::CLobbyClient none(r2, cfg);   // 대기 맵 후보 없음
+        std::vector<Rq> q2;
+        none.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, 1, ""), q2);
+        none.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 1, nox::LinkHello(nonce)), q2);
+        q2.clear();
+        none.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 1, nox::LinkCreate(9, "bob")), q2);
+        nox::LinkLine fl;
+        const bool failOk = q2.size() == 1 && nox::ParseLinkLine(q2[0].lobbyLine, fl) == nox::LinkParse::Ok && fl.kind == nox::LinkKind::CreateFailed &&
+                            fl.req == 9 && r2.RoomCount() == 0 && none.Stats().createFailed == 1;
+        std::snprintf(m, sizeof(m), "③ 만든 뒤 틱 뒤 다시 안 보냄 %d · 대기 맵 없음 → CREATE_FAILED(요청 9 · 까닭 %s) %d", (int)noDup,
+                      fl.text.c_str(), (int)failOk);
+        Check(noDup && failOk, m);
+    }
+
+    // ④ 판 결과 — 등록 뒤 RESULT · 줄 한도 넘음 · 줄바꿈 → 안 보냄(셈)
+    rq.clear();
+    lc.OnMatchResult("{\"match\":\"1760000000-0-1\"}", rq);
+    auto l4 = lines(rq);
+    rq.clear();
+    lc.OnMatchResult(std::string(nox::kLinkMaxLine, 'x'), rq);
+    lc.OnMatchResult("{\n}", rq);
+    std::snprintf(m, sizeof(m), "④ 판 결과 — [%s] · 한도 넘음 · 줄바꿈 → 안 보냄 %d · 셈(보냄 %llu · 못 보냄 %llu)",
+                  l4.empty() ? "" : l4[0].c_str(), (int)rq.empty(), lc.Stats().results, lc.Stats().resultsNotSent);
+    Check(l4.size() == 1 && l4[0] == "RESULT {\"match\":\"1760000000-0-1\"}" && rq.empty() && lc.Stats().results == 1 &&
+              lc.Stats().resultsNotSent == 2, m);
+
+    // ⑤ 끊김 → 아무것도 안 보냄 · 옛 접속 줄 무시 · 다시 붙으면 처음부터(방 전부 다시)
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_CLOSED, 7, ""), rq);
+    rooms.Room(newId).SetPhase(nox::RoomPhase::Playing);
+    lc.AfterTick(rq);   // 끊긴 동안 바뀜 — 안 보냄
+    rooms.Room(newId).SetPhase(nox::RoomPhase::Waiting);   // 되돌림 — 다시 붙을 때 지난번 보낸 것과 같아도 전부 가야 한다(로비 거울이 끊김에 내렸다)
+    lc.OnMatchResult("{}", rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 7, nox::LinkCreate(43, "x")), rq);
+    const bool downQuiet = rq.empty() && !lc.Registered() && lc.Stats().resultsNotSent == 3 && lc.Stats().creates == 1;
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, 8, ""), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 8, nox::LinkHello(nonce)), rq);
+    auto l5 = lines(rq);
+    bool conn8 = true;
+    for (const Rq& r : rq) conn8 = conn8 && r.lobbyConn == 8;
+    std::snprintf(m, sizeof(m), "⑤ 끊김 → 줄 없음 %d · 다시 붙음 → 줄 %zu(AUTH · REGISTER · 방 %s) · 새 접속 번호 %d · 셈(붙음 %llu · 끊김 %llu · 등록 %llu)",
+                  (int)downQuiet, l5.size(), l5.size() > 2 ? l5[2].c_str() : "", (int)conn8, lc.Stats().linksUp, lc.Stats().linksDown,
+                  lc.Stats().registers);
+    Check(downQuiet && l5.size() == 3 && l5[0].rfind("AUTH ", 0) == 0 && l5[1] == "REGISTER 1760000000 127.0.0.2 18590" &&
+              l5[2] == "ROOM " + std::to_string(newId) + " 0 8 0 averylon's%20game averylongnick averylongnick so_lod chat" && conn8 &&
+              lc.Stats().linksUp == 2 && lc.Stats().linksDown == 1 && lc.Stats().registers == 2, m);
+
+    // ⑥ 차례에 안 맞는 줄(두 번째 HELLO · 로비가 보낼 리 없는 ROOM) · 못 읽는 줄 · BYE · 게임 사건
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 8, nox::LinkHello(nonce)), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 8, "ROOM 1 2"), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 8, nox::LinkRoomGone(1)), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 8, nox::LinkBye("same address")), rq);
+    Ev game;
+    game.type = Ev::Type::RECEIVED;
+    game.sessionId = 9;
+    lc.OnNetworkEvent(game, rq);
+    std::snprintf(m, sizeof(m), "⑥ 두 번째 HELLO · 못 읽는 줄 · ROOM_GONE · BYE · 게임 사건 → 줄 없음 %d · 못 읽음 %llu · BYE %llu · 실행 인자 방 %d 그대로 %d",
+                  (int)rq.empty(), lc.Stats().badLines, lc.Stats().byes, plain, (int)rooms.HasRoom(plain));
+    Check(rq.empty() && lc.Stats().badLines == 3 && lc.Stats().byes == 1 && rooms.HasRoom(plain), m);
+
+    // ⑦ 토큰 키 = 등록 줄 값으로 뽑은 키(로비 거울이 같은 식으로 뽑는다)
+    const nox::JoinKey tk = nox::CLobbyClient::TokenKeyFor(cfg);
+    Check(tk == nox::GameServerTokenKey(cfg.tokenKey, 1760000000u, 0x7f000002u, 18590) && tk != cfg.tokenKey,
+          "⑦ 토큰 키 = GameServerTokenKey(설정 키 · 실행 번호 · 등록 주소 · 포트)");
+    std::printf("  10-20 MO 6단계 v2 작업 4b — 게임 서버의 로비 연결: 확인 · 등록 · 로비 방만 알림 · 바뀐 방만 · 새 방 · 판 결과 · 다시 붙기\n");
+}
+
 // ── ★ 10-16 플랜 B 작업 13a — 로비 방식의 맵 후보 · 맵 목록 ─────────
 //   ① 로비가 아니면 후보 없음 · 맵 목록 = 실행 인자의 맵 하나 ② 기본 = 대기 So_LOD · 대전 Estate(게임 폴더의 맵) · 맵 목록에 둘 다
 //   ③ 준 후보(열쇠 · .map 경로) · 맵 목록은 열쇠가 같으면 하나만
@@ -32497,6 +32671,7 @@ int main() {
     TestJoinStartByMode();
     TestRoomFacts();
     TestChannelLobby();
+    TestLobbyClient();   // ★ 10-20 v2 작업 4b
     TestLobbyMapPaths();
     TestJoinTrailer();
     TestReliableResend();

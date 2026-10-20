@@ -35,6 +35,7 @@ add_library(nox_proto STATIC
   server/src/RoomManager.cpp
   server/src/RoomTick.cpp     # ★ 10-14 작업 9c — 방의 판 차리기 · 틱 뒤 진단(옛 main 의 RoomRun 몫)
   server/src/ChannelLobby.cpp # ★ 10-14 작업 8d — 채널 안 로비(로비 TCP 사건 ↔ 로비 규약 ↔ 방 관리자)
+  server/src/LobbyClient.cpp  # ★ 10-20 MO 6단계 v2 작업 4b — 게임 서버의 로비 연결(확인 · 등록 · 방 알림 · 새 방 · 판 결과)
   server/src/MatchRecorder.cpp # ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기(줄 짓기 · 기록 스레드)
   server/src/DumpSniff.cpp
   server/src/WorldBuild.cpp   # ★ 10-14 작업 9b — 세계 차리기 · 방 설정 · 맵 원본(방 관리자가 방을 차리려고 본체로)
@@ -137,9 +138,10 @@ if (NOX_POWERSHELL AND WIN32)
   # 맵은 게임 설치본에 있고 git 에 안 들어가므로 있을 때만 건다. 포트는 위와 겹치지 않게.
   set(NOX_SMOKE_MAP "C:/Program Files/GOG Galaxy/Games/Nox/maps/estate/Estate.map" CACHE FILEPATH "독립 모드 소켓 왕복에 쓸 맵")
   # 로비 소켓 왕복 — 로비 로직의 꼴은 lobby_replay 가 보고, 여기서는 accept·줄 나누기·보내기·끊기만 본다.
+  # ★ 10-20 v2 작업 4b — 로비 프로세스(nox_lobby) + 게임 서버(nox_server --lobby) 둘을 띄워 연결 · 새 방 · 토큰 키가 맞물리는지
   add_test(NAME lobby_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
-                   -File ${CMAKE_SOURCE_DIR}/tools/lobby_smoke.ps1 -Exe $<TARGET_FILE:nox_server>)
+                   -File ${CMAKE_SOURCE_DIR}/tools/lobby_smoke.ps1 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby>)
   # ★ 10-20 MO 6단계 v2 작업 3c — 로비 프로세스 nox_lobby 소켓 왕복 + 가짜 게임 서버(연결 확인 · 등록 · 방 알림 · 새 방 · 판 결과 · 끊김)
   add_test(NAME nox_lobby_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass

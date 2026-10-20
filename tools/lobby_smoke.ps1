@@ -1,15 +1,17 @@
-﻿# lobby_smoke.ps1 — 채널 안 로비 소켓 왕복 (MO 2단계 Docs/LOBBY_DESIGN.md 「시험」 · ★ 10-14 플랜 B 작업 8d 채널로 옮김).
+﻿# lobby_smoke.ps1 — 로비 프로세스 + 게임 서버 소켓 왕복 (MO 2단계 Docs/LOBBY_DESIGN.md 「시험」 · ★ 10-20 MO 6단계 v2 작업 4b Docs/LOBBY_SPLIT_DESIGN.md).
 #
-# nox_server 를 로비 방식(--lobby-port 14000 · 토큰 방식 · 방 없이 시작)으로 띄우고, 정품 클라가 보내는 순서(1단계 녹음) 그대로 TCP 로 말해 본다.
-#   DLL 없는 로그인(인사말 안내) → 로그인 376 · 379 → 목록(방 0줄 · 채팅 로비 5 — ★ 10-20 v2 작업 3b) → 채팅 로비 입·퇴장 → 게임 방 목록(0줄)
-#   → 없는 방 참가(답 없음 · 로비 기록) → QUIT 607 · 끊김
-# 로비 로직의 꼴은 lobby_replay 가 녹음과 대조한다. 여기서는 채널의 소켓(네트워크 스레드 TCP · 같은 큐 · 게임 스레드 로비)만 본다.
-# ★ 10-14 작업 8b — 로비 찾기(4005 · 605)는 라우터로 떼어 냈다 — 그 왕복 · 답 줄 CRLF 날바이트 확인은 router_smoke.ps1
-# ★ 10-14 작업 8d — 옛 nox_lobby(따로 뜬 로비 · 설정 [rooms] 의 방 하나 · --seconds 로 스스로 끝남) 대신 채널. 방은 로비가 만드는 것만
-#   목록에 나오므로(작업 10) 여기서는 0줄이다. 끝은 닫기 이벤트(nox_server_stop_<pid>) — 강제 종료는 응답이 없을 때만
-param([int]$LobbyPort = 14000, [int]$UdpPort = 18591, [string]$Exe = '')
+# ★ 10-20 v2 — 로비 nox_lobby(클라 TCP · 게임 서버 연결 포트)와 게임 서버 nox_server --lobby(로비에 붙음 · 방 없이 시작)를 띄우고,
+#   정품 클라가 보내는 순서(1단계 녹음) 그대로 TCP 로 말해 본다. 옛 꼴(10-14 작업 8d — 채널 안 로비 nox_server --lobby-port)을 v2 로 바꿨다.
+#   DLL 없는 로그인(인사말 안내) → 로그인 376 · 379 → 목록(방 0줄 · 채팅 로비 5) → 채팅 로비 입·퇴장 → 게임 방 목록(0줄)
+#   → 없는 방 참가(답 없음 · 로비 기록) → 「새 방」(로비가 게임 서버에 묻고 미룬 참가 답 — NOXTOKEN 게임 서버 주소)
+#   → 다른 사람이 목록에서 그 방 → UDP 접속 시도 + 토큰 꼬리 → JOIN_OK(게임 서버가 「이 실행」 키로 확인) · 서명 바꾼 토큰 거절 → QUIT 607
+# 로비 로직의 꼴은 lobby_replay 가 녹음과 대조하고 갈래는 lobby_test 가 본다. 여기서는 두 실행 파일의 소켓 · 연결 · 키가 맞물리는지만.
+# 끝은 — 게임 서버는 닫기 이벤트(nox_server_stop_<pid>) · 로비는 --seconds. 강제 종료는 응답이 없을 때만
+param([int]$LobbyPort = 14000, [int]$LinkPort = 14010, [int]$UdpPort = 18591, [string]$Exe = '', [string]$LobbyExe = '')
 $ErrorActionPreference = 'Stop'
-if (-not $Exe) { $Exe = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\Release\nox_server.exe' }
+$bin = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\Release'
+if (-not $Exe) { $Exe = Join-Path $bin 'nox_server.exe' }
+if (-not $LobbyExe) { $LobbyExe = Join-Path (Split-Path -Parent $Exe) 'nox_lobby.exe' }
 $script:checks = 0; $script:fails = 0
 function Check($ok, $what) {
   $script:checks++
@@ -41,19 +43,39 @@ function ReadUntil($k, [string]$stop) {
     if ((Kind $l) -eq $stop) { return ,$got }
   }
 }
+# 실행 중인 프로세스의 출력 파일을 읽는다(다른 프로세스가 쓰는 중 — 읽기 공유로 연다)
+function ReadLog([string]$path) {
+  try {
+    $fs = New-Object System.IO.FileStream($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    $sr = New-Object System.IO.StreamReader($fs, [Text.Encoding]::UTF8)
+    $t = $sr.ReadToEnd(); $sr.Close(); return $t
+  } catch { return '' }
+}
 
-# ★ 10-14 작업 10a — 새 방의 대기 맵(채널의 기본 후보 So_LOD). 게임 설치본에 있어야 새 방 · UDP 접속 시도를 본다(없으면 건너뛰고 셈도 그만큼)
+# ★ 10-14 작업 10a — 새 방의 대기 맵(게임 서버의 기본 후보 So_LOD). 게임 설치본에 있어야 새 방 · UDP 접속 시도를 본다(없으면 건너뛰고 셈도 그만큼)
 $waitMap = 'C:\Program Files\GOG Galaxy\Games\Nox\maps\So_LOD\So_LOD.map'
 $haveWaitMap = Test-Path -LiteralPath $waitMap
 $log = Join-Path $env:TEMP ("lobby_smoke_{0}.txt" -f $PID)
-# ★ 10-10 토큰 작업 3 — 토큰 키가 있어야 뜬다. 키는 시험용 고정값(★ 8d — 옛 [rooms] 는 없앴다)
+$llog = Join-Path $env:TEMP ("lobby_smoke_lobby_{0}.txt" -f $PID)
+# ★ 10-10 토큰 작업 3 — 토큰 키가 있어야 뜬다. 키는 시험용 고정값 — 로비 · 게임 서버가 같은 설정을 쥔다(연결 확인 · 게임 서버 키를 이것에서 뽑는다)
 $ini = Join-Path $env:TEMP ("lobby_smoke_{0}.ini" -f $PID)
 [IO.File]::WriteAllText($ini, "[token]`r`nkey = $('ab' * 32)`r`n")
+$lp = Start-Process -FilePath $LobbyExe -PassThru -WindowStyle Hidden -RedirectStandardOutput $llog -ArgumentList @(
+  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '25', '--quiet')
+$null = $lp.Handle
 $p = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -ArgumentList @(
-  '--port', $UdpPort, '--config', "`"$ini`"", '--lobby-port', $LobbyPort, '--lobby-bind', '127.0.0.1', '--quiet', '--no-results')   # ★ 10-19 판 결과 기록 끄기
+  '--port', $UdpPort, '--config', "`"$ini`"", '--lobby', "127.0.0.1:$LinkPort", '--quiet', '--no-results')   # ★ 10-19 판 결과 기록 끄기
 $null = $p.Handle   # 종료 코드를 읽으려면 미리 잡아 둔다
 try {
-  Write-Host "채널 로비 :$LobbyPort"
+  Write-Host "로비 :$LobbyPort · 게임 서버 연결 :$LinkPort · 게임 서버 UDP :$UdpPort"
+  # 게임 서버가 로비에 등록할 때까지(로비 기록 한 줄 — 10초 한도)
+  $registered = $false
+  for ($i = 0; $i -lt 100 -and -not $registered; $i++) {
+    Start-Sleep -Milliseconds 100
+    $registered = (ReadLog $llog) -match "\[게임 서버\] c\d+ \(로비 쪽 주소\):$UdpPort 등록 — 실행 \d+"
+  }
+  Check $registered '게임 서버가 로비에 붙어 등록(로비 기록 — 등록 주소 0 = 로비 쪽 주소)'
+
   # DLL 없는 로그인(NOXCLIENT 없음) — 끊지 않고 로그인 끝(376)까지, 인사말에 패치 안내(10-11 — ERROR 로 끊으면 정품이 멈춘 듯 보였다)
   $k = Open $LobbyPort
   Send $k @('CVERS 11020 9472', 'NICK plain', 'USER UserName HostName irc.westwood.com :RealName')
@@ -74,7 +96,7 @@ try {
   Send $k @('LIST -1 37')
   $l1 = ReadUntil $k '323'
   $n326 = @($l1 | Where-Object { (Kind $_) -eq '326' }).Count; $n327 = @($l1 | Where-Object { (Kind $_) -eq '327' }).Count
-  Check ($n326 -eq 0 -and $n327 -eq 5 -and (Kind $l1[0]) -eq '321') "첫 목록 = 방 $n326(방 없이 시작) · 채팅 로비 $n327"
+  Check ($n326 -eq 0 -and $n327 -eq 5 -and (Kind $l1[0]) -eq '321') "첫 목록 = 방 $n326(게임 서버가 방 없이 시작) · 채팅 로비 $n327"
 
   Send $k @('JOIN #Lob_37_0 zot0blat')
   $j = ReadUntil $k '366'
@@ -92,13 +114,13 @@ try {
   Check ($q.Count -eq 1 -and (Kind $q[0]) -eq '329') "없는 방(남의 이름 채널) 참가엔 답 없음 (받은 줄 $($q.Count))"
 
   if ($haveWaitMap) {
-    # ★ 10-14 작업 10a — 「새 방」 — 제 이름 채널(#wn's_game)로 온 없는 방 참가 → 채널이 방을 만들고 그 방 토큰(정품 Host Game 을 DLL 이 이 참가로 돌린다)
+    # 「새 방」 — 제 이름 채널(#wn's_game)로 온 없는 방 참가 → 로비가 게임 서버에 묻고(CREATE) 게임 서버가 만들어 답하면(ROOM · CREATED) 미룬 참가 답
     Send $k @("JOINGAME #wn's_game 1 ")
     $g = ReadUntil $k '366'
     Check ((($g | ForEach-Object { Kind $_ }) -join ',') -eq '?,user:JOINGAME,332,353,366') "새 방 — NOXTOKEN · JOINGAME · 332 · 353 · 366 (받은 줄 $($g.Count))"
     $nt = $g[0].Split(' ')
-    Check ($nt.Count -eq 3 -and $nt[0] -eq 'NOXTOKEN' -and $nt[1] -eq "127.0.0.1:$UdpPort" -and $nt[2] -match '^[0-9a-f]{102}$') "NOXTOKEN = 붙은 채널 주소 127.0.0.1:$UdpPort · 토큰 16진 102자"
-    Check (($g | Where-Object { (Kind $_) -eq '353' }) -like '*:@wn,0,2130706433 wn,0,2130706433') '353 방장 = 만든 사람(wn) · 게임 서버 = 붙은 채널 주소'
+    Check ($nt.Count -eq 3 -and $nt[0] -eq 'NOXTOKEN' -and $nt[1] -eq "127.0.0.1:$UdpPort" -and $nt[2] -match '^[0-9a-f]{102}$') "NOXTOKEN = 게임 서버 127.0.0.1:$UdpPort(등록 주소 0 → 클라가 로비에 붙은 주소 · 등록 포트) · 토큰 16진 102자"
+    Check (($g | Where-Object { (Kind $_) -eq '353' }) -like '*:@wn,0,2130706433 wn,0,2130706433') '353 방장 = 만든 사람(wn) · 게임 서버 = 127.0.0.1'
     $tokA = $nt[2]
     Send $k @('LIST 37 37')
     $l3all = ReadUntil $k '323'   # 함수가 배열을 한 덩어리로 돌려주므로 변수에 받은 뒤 거른다
@@ -121,7 +143,8 @@ try {
     $null = ReadUntil $k2 '607'
     $k2.c.Close()
 
-    # UDP 접속 시도 + 토큰 꼬리(DLL 이 붙이는 꼴 — 토큰 51 + NXT1) → 0x14 SERVER_JOIN_OK. 서명 한 바이트를 바꾼 토큰은 받지 않는다
+    # UDP 접속 시도 + 토큰 꼬리(DLL 이 붙이는 꼴 — 토큰 51 + NXT1) → 0x14 SERVER_JOIN_OK — 로비가 게임 서버의 「이 실행」 키로 서명했고
+    #   게임 서버가 같은 식으로 뽑은 키로 확인한다(LobbyLink.h 「키」). 서명 한 바이트를 바꾼 토큰은 받지 않는다
     $tryJoinHex = '00000e004a00610063006b00000000000000000000000000000000001c13616e01980309000000000000000049018501f07a' +
                   '69000000020a3132333435363738393031323334353637383930000000009a030100000000007465737465720000d0af0000'   # 정품 접속 시도 100바이트(proto_test RecordedTryJoin)
     function HexBytes([string]$h) { $b = New-Object byte[] ($h.Length / 2); for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [Convert]::ToByte($h.Substring($i * 2, 2), 16) }; return ,$b }
@@ -147,38 +170,43 @@ try {
   Send $k @('QUIT')
   $q2 = ReadUntil $k '607'
   Check ($q2.Count -eq 1 -and (Kind $q2[0]) -eq '607') "QUIT 답 607 (받은 줄 $($q2.Count))"
-  Check ($null -eq $k.r.ReadLine()) 'QUIT 뒤 채널이 끊는다'
+  Check ($null -eq $k.r.ReadLine()) 'QUIT 뒤 로비가 끊는다'
   $k.c.Close()
 } catch {
   Check $false "예외: $($_.Exception.Message)"
 } finally {
-  # 닫기 이벤트로 끝낸다(nox_server 는 스스로 안 끝난다). 응답이 없을 때만 강제 종료
+  # 게임 서버는 닫기 이벤트로 끝낸다(스스로 안 끝난다) · 로비는 --seconds 로 끝난다. 응답이 없을 때만 강제 종료
   try { [void][Threading.EventWaitHandle]::OpenExisting("nox_server_stop_$($p.Id)").Set() } catch { }
-  if (-not $p.WaitForExit(15000)) { Check $false '채널이 닫기 이벤트 뒤에 끝나지 않음 — 강제 종료'; Stop-Process -Id $p.Id -Force }
+  if (-not $p.WaitForExit(15000)) { Check $false '게임 서버가 닫기 이벤트 뒤에 끝나지 않음 — 강제 종료'; Stop-Process -Id $p.Id -Force }
+  if (-not $lp.WaitForExit(30000)) { Check $false '로비가 --seconds 뒤에 끝나지 않음 — 강제 종료'; Stop-Process -Id $lp.Id -Force }
 }
 $all = @(Get-Content -LiteralPath $log -Encoding UTF8)
-$summary = $all | Where-Object { $_ -match '\[로비\] 끝' }
-$unknown = @($all | Where-Object { $_ -match "\[로비\] \[모르는 방\] JOINGAME #nobody's_game" }).Count
-$newRoomLog = @($all | Where-Object { $_ -match "\[로비\] \[새 방\] wn → #wn's_game \(게임 방 0 · 맵 so_lod\)" }).Count
+$lall = @(Get-Content -LiteralPath $llog -Encoding UTF8)
+$summary = @($lall | Where-Object { $_ -match '\[로비\] 끝 — 접속' })
+$linkSummary = @($lall | Where-Object { $_ -match '\[로비\] 끝 — 게임 서버 연결' })
+$gsSummary = @($all | Where-Object { $_ -match '\[로비 연결\] 끝' })
+$unknown = @($lall | Where-Object { $_ -match "\[로비\] \[모르는 방\] JOINGAME #nobody's_game" }).Count
+$newRoomLog = @($lall | Where-Object { $_ -match "\[로비\] \[새 방\] wn → #wn's_game \(게임 방 0 · 맵 so_lod\)" }).Count
 $roomMade = @($all | Where-Object { $_ -match "^\[방\] 0 만듦 — 이름 wn's game · 맵 so_lod · 모드 chat · 비면 닫음" }).Count
 $joinOk = @($all | Where-Object { $_ -match '^\[입장\] 접속 시도 받음 — 127\.0\.0\.1:\d+ · 방 0 · 로비 이름 wn$' }).Count
 $joinNo = @($all | Where-Object { $_ -match '^\[입장\] 접속 시도 거절 — 127\.0\.0\.1:\d+ · 까닭 ' }).Count
-Remove-Item -LiteralPath $log -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $ini -ErrorAction SilentlyContinue
-Write-Host "채널 출력: $summary"
-Check ($p.ExitCode -eq 0) "채널 종료 코드 0 ($($p.ExitCode))"
+Remove-Item -LiteralPath $log, $llog, $ini -ErrorAction SilentlyContinue
+Write-Host "로비 출력: $($summary -join ' | ') | $($linkSummary -join ' | ')"
+Write-Host "게임 서버 출력: $($gsSummary -join ' | ')"
+Check ($p.ExitCode -eq 0 -and $lp.ExitCode -eq 0) "종료 코드 — 게임 서버 $($p.ExitCode) · 로비 $($lp.ExitCode)"
 Check ($unknown -eq 1) "로비 기록 [모르는 방] 한 줄 ($unknown)"
-# 0 은 「없었다」와 「못 읽었다」를 안 가른다 — 로비가 센 접속·줄 수를 네트워크 스레드가 센 TCP 줄 수와 같이 본다
+# 0 은 「없었다」와 「못 읽었다」를 안 가른다 — 로비가 센 접속 · 줄 수와 게임 서버 연결 셈을 같이 본다
 #   대기 맵 없음 — 접속 2(DLL 없는 로그인 · wn) · 보낸 클라 줄 = 4 + 17 = 21
-#     받은 답 = DLL 없는 로그인 6(375 · 372 · 안내 372 둘 · 376 · 607) + 로그인 4 · 329 · 목록 7(321 · 327 다섯 · 323 — ★ 10-20 v2 작업 3b 대화방 다섯) · 입장 3 · 퇴장 1 · 목록 2 · 없는 방 0 · 329 · 607 = 26
-#   대기 맵 있음(★ 10-14 작업 10a) — 위에 wn 새 방 참가 5 · 목록 3(321 · 326 · 323)과 bob 접속(줄 6 — 로그인 3 · 목록 3 · 참가 5 · 607) → 접속 3 · 받은 줄 29 · 보낸 줄 46 · 토큰 2
-#   (★ 10-14 작업 8d 전 nox_lobby = 설정 방 하나가 있어 목록 둘에 326 이 한 줄씩 · 참가 5 → 받은 줄 20 · 보낸 줄 30)
+#     받은 답 = DLL 없는 로그인 6(375 · 372 · 안내 372 둘 · 376 · 607) + 로그인 4 · 329 · 목록 7(321 · 327 다섯 · 323) · 입장 3 · 퇴장 1 · 목록 2 · 없는 방 0 · 329 · 607 = 26
+#   대기 맵 있음 — 위에 wn 새 방 참가 5 · 목록 3(321 · 326 · 323)과 bob 접속(줄 6 — 로그인 3 · 목록 3 · 참가 5 · 607) → 접속 3 · 받은 줄 29 · 보낸 줄 46 · 토큰 2
 if ($haveWaitMap) {
-  Check ($summary -match '접속 3 · 받은 줄 29 · 보낸 줄 46 · 토큰 2 · TCP\(받음 29 · 보냄 46 · 끊긴 접속으로 0 · 한도 0\)') '로비 셈 = TCP 셈 — 접속 3 · 받은 줄 29 · 보낸 줄 46 · 토큰 2'
-  Check ($newRoomLog -eq 1 -and $roomMade -eq 1) "채널 기록 — [새 방] wn $newRoomLog 줄 · [방] 0 만듦(wn's game · so_lod · chat · 비면 닫음) $roomMade 줄"
+  Check ($summary.Count -eq 1 -and $summary[0] -match '접속 3 · 받은 줄 29 · 보낸 줄 46 · 토큰 2 · 새 방 1\(물음 1 · 실패 0 · 시간 초과 0 · 버림 0\)') '로비 셈 — 접속 3 · 받은 줄 29 · 보낸 줄 46 · 토큰 2 · 새 방 1(물음 1)'
+  Check ($newRoomLog -eq 1 -and $roomMade -eq 1) "기록 — 로비 [새 방] wn $newRoomLog 줄 · 게임 서버 [방] 0 만듦(wn's game · so_lod · chat · 비면 닫음) $roomMade 줄"
   Check ($joinOk -eq 1 -and $joinNo -eq 1) "입장 판정 — 접속 시도 받음(방 0 · wn) $joinOk · 거절 $joinNo"
+  Check ($gsSummary.Count -eq 1 -and $gsSummary[0] -match '붙음 1 · 끊김 0 · 등록 1 · 방 알림 \d+ · 사라짐 0 · 새 방 물음 1\(만듦 1 · 실패 0\)') '게임 서버 연결 셈 — 붙음 1 · 등록 1 · 새 방 물음 1(만듦 1)'
 } else {
-  Check ($summary -match '접속 2 · 받은 줄 21 · 보낸 줄 26 · 토큰 0 · TCP\(받음 21 · 보냄 26 · 끊긴 접속으로 0 · 한도 0\)') '로비 셈 = TCP 셈 — 접속 2 · 받은 줄 21 · 보낸 줄 26'
+  Check ($summary.Count -eq 1 -and $summary[0] -match '접속 2 · 받은 줄 21 · 보낸 줄 26 · 토큰 0') '로비 셈 — 접속 2 · 받은 줄 21 · 보낸 줄 26'
 }
+Check ($linkSummary.Count -eq 1 -and $linkSummary[0] -match '게임 서버 연결 1\(확인 1 · 확인 실패 0 · 등록 1 · 등록 거절 0 · 차례 틀림 0\)') '로비 셈 — 게임 서버 연결 1(확인 1 · 등록 1)'
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)
 exit $(if ($script:fails) { 1 } else { 0 })

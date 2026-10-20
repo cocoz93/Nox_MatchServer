@@ -914,7 +914,7 @@ namespace {
 // 로비 방식의 맵 후보 — `.map` 으로 끝나면 파일 경로 그대로, 아니면 맵 열쇠(게임 폴더의 맵). 로비 방식이 아니면 빈 것
 std::vector<std::string> LobbyMapPaths(const ServerOptions& opt, const std::vector<std::string>& given, const char* fallbackKey) {
     std::vector<std::string> r;
-    if (opt.lobbyPort == 0) return r;
+    if (!LobbyMode(opt)) return r;   // ★ 10-20 v2 작업 4b — 로비에 붙기(--lobby)도
     const std::vector<std::string> keys = given.empty() ? std::vector<std::string>{fallbackKey} : given;
     for (const std::string& k : keys) {
         std::string low = k;
