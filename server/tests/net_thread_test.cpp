@@ -190,82 +190,7 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
         closesocket(c3);
     }
 
-    // ⑦ ★ 10-14 작업 8c — 로비 TCP — 새 접속 · 받은 줄이 같은 이벤트 큐로(게임 루프를 깨우는 신호도) · `LOBBY_SEND` 는 TCP 로
-    //   (CRLF · 보낸 뒤 끊기 → 끊김 이벤트) · 끊긴 접속으로 보낸 줄은 센다 · 로비 사건엔 세션 번호가 없다
-    {
-        nox::CNetworkThread n4;
-        n4.SetMaxWaitMs(5000);   // 깨우기 없이 지나가면 늦게 나와 아래 시간 조건에 걸린다
-        std::string e4;
-        const bool opened = n4.Open("127.0.0.1", 0, e4) && n4.OpenLobby(0x7f000001u, 0, e4) && n4.LobbyPort() != 0;
-        n4.Start();
-        const SOCKET t = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        sockaddr_in from2 = me;   // 127.0.0.2 에서 붙는다 — 상대 주소와 내 쪽 주소가 뒤바뀌면 걸리게
-        inet_pton(AF_INET, "127.0.0.2", &from2.sin_addr);
-        bind(t, reinterpret_cast<sockaddr*>(&from2), sizeof(from2));
-        sockaddr_in lt = me;
-        lt.sin_port = htons(n4.LobbyPort());
-        const bool connected = connect(t, reinterpret_cast<sockaddr*>(&lt), sizeof(lt)) == 0;
-        DWORD rto = 2000;
-        setsockopt(t, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rto), sizeof(rto));
-        // 사건이 `want` 개 쌓일 때까지 큐를 꺼낸다(2초 한도)
-        std::vector<nox::NetworkEvent> lev;
-        auto drain = [&](size_t want) {
-            for (int i = 0; i < 200 && lev.size() < want; ++i) {
-                std::vector<nox::NetworkEvent> got4;
-                n4.SwapOutNetworkEvents(got4);
-                for (auto& e : got4) lev.push_back(std::move(e));
-                if (lev.size() < want) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
-        };
-        const bool ready = WaitForSingleObject(static_cast<HANDLE>(n4.EventsReadyHandle()), 2000) == WAIT_OBJECT_0;
-        drain(1);
-        const bool openOk = lev.size() == 1 && lev[0].type == nox::NetworkEvent::Type::LOBBY_OPENED && lev[0].lobbyConn > 0 &&
-                            lev[0].lobbyPeerIp == 0x7f000002u && lev[0].lobbyLocalIp == 0x7f000001u && lev[0].sessionId == 0 &&
-                            lev[0].queuedMs != 0;
-        const int lconn = lev.empty() ? 0 : lev[0].lobbyConn;
-        std::snprintf(m, sizeof(m), "⑦-1 로비 TCP — 열림 %d · 접속 %d · 깨우는 신호 %d · LOBBY_OPENED(번호 · 양쪽 주소 · 세션 번호 없음 · 넣은 시각) %d",
-                      (int)opened, (int)connected, (int)ready, (int)openOk);
-        r.push_back({ opened && connected && ready && openOk, m });
-
-        lev.clear();
-        const char lines[] = "NICK wn\r\nLIST -1 37\n";
-        send(t, lines, static_cast<int>(sizeof(lines) - 1), 0);
-        drain(2);
-        const bool lineOk = lev.size() == 2 && lev[0].type == nox::NetworkEvent::Type::LOBBY_LINE && lev[0].lobbyLine == "NICK wn" &&
-                            lev[1].lobbyLine == "LIST -1 37" && lev[0].lobbyConn == lconn;
-        std::snprintf(m, sizeof(m), "⑦-2 받은 줄 둘 → LOBBY_LINE 둘(CR 뗌 · 같은 접속 번호) %d", (int)lineOk);
-        r.push_back({ lineOk, m });
-
-        lev.clear();
-        std::vector<nox::NetworkRequest> lq(3);
-        lq[0].type = nox::NetworkRequest::Type::LOBBY_SEND; lq[0].lobbyConn = lconn; lq[0].lobbyLine = ": 321 u:";
-        lq[1].type = nox::NetworkRequest::Type::LOBBY_SEND; lq[1].lobbyConn = lconn; lq[1].lobbyLine = ": 607"; lq[1].lobbyCloseAfter = true;
-        lq[2].type = nox::NetworkRequest::Type::LOBBY_SEND; lq[2].lobbyConn = lconn + 100; lq[2].lobbyLine = "x";
-        const uint32_t pushAt4 = Now();
-        n4.PushRequests(lq);
-        std::string recv4;
-        char rb[256];
-        for (;;) {
-            const int n = recv(t, rb, sizeof(rb), 0);
-            if (n <= 0) break;
-            recv4.append(rb, static_cast<size_t>(n));
-        }
-        const uint32_t lat4 = Now() - pushAt4;
-        drain(1);
-        const bool closeOk = lev.size() == 1 && lev[0].type == nox::NetworkEvent::Type::LOBBY_CLOSED && lev[0].lobbyConn == lconn &&
-                             std::strcmp(lev[0].lobbyWhy, nox::CTcpLines::kWhyCloseAfter) == 0;
-        std::snprintf(m, sizeof(m), "⑦-3 LOBBY_SEND → 받은 바이트 CRLF 둘 %d · 그 뒤 끊김(%ums — 깨우기면 100ms 안) · LOBBY_CLOSED(보낸 뒤 끊기) %d",
-                      (int)(recv4 == ": 321 u:\r\n: 607\r\n"), lat4, (int)closeOk);
-        r.push_back({ recv4 == ": 321 u:\r\n: 607\r\n" && lat4 < 100 && closeOk, m });
-
-        n4.Stop();
-        const nox::CNetworkThreadStats ls = n4.LatestThreadStats();
-        std::snprintf(m, sizeof(m), "⑦-4 셈 — 열림 %llu · 받은 줄 %llu · 보낸 줄 %llu · 없는 접속으로 %llu · 끊김 %llu · 한도 %llu",
-                      ls.lobbyOpened, ls.lobbyLinesIn, ls.lobbyLinesOut, ls.lobbySendNoConn, ls.lobbyClosed, ls.lobbyRefused);
-        r.push_back({ ls.lobbyOpened == 1 && ls.lobbyLinesIn == 2 && ls.lobbyLinesOut == 2 && ls.lobbySendNoConn == 1 &&
-                          ls.lobbyClosed == 1 && ls.lobbyRefused == 0, m });
-        closesocket(t);
-    }
+    // ⑦ ★ 10-14 작업 8c — 로비 TCP 듣기(채널의 4000 — `OpenLobby`) 시험은 ★ 10-20 v2 작업 4b-2 에서 듣기와 같이 걷었다(⑧ 이 로비에 붙기)
 
     // ⑧ ★ 10-20 MO 6단계 v2 작업 4a — 로비에 붙기(`ConnectLobby`) — 게임 서버가 로비 연결 포트에 붙는다.
     //   붙음 → LOBBY_OPENED · 줄 왕복 · 로비가 끊음 → LOBBY_CLOSED → 다시 붙기 간격 뒤 새 접속 · 듣는 이 없음 → 게임엔 사건 없이 셈만 ·
@@ -273,10 +198,8 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
     {
         nox::CNetworkThread bad1, bad2;
         std::string e5;
-        const bool refuse = !bad1.ConnectLobby(0, 4010, e5) && bad1.Open("127.0.0.1", 0, e5) && bad1.OpenLobby(0x7f000001u, 0, e5) &&
-                            !bad1.ConnectLobby(0x7f000001u, 4010, e5) && bad2.ConnectLobby(0x7f000001u, 4010, e5) &&
-                            !bad2.OpenLobby(0x7f000001u, 0, e5);
-        std::snprintf(m, sizeof(m), "⑧-1 주소 0 · 듣기 뒤 붙기 · 붙기 뒤 듣기 → 거절 %d", (int)refuse);
+        const bool refuse = !bad1.ConnectLobby(0, 4010, e5) && !bad1.ConnectLobby(0x7f000001u, 0, e5) && bad2.ConnectLobby(0x7f000001u, 4010, e5);
+        std::snprintf(m, sizeof(m), "⑧-1 주소 0 · 포트 0 → 거절 · 바른 주소 → 받음 %d", (int)refuse);
         r.push_back({ refuse, m });
 
         nox::CTcpLines srv;
@@ -336,17 +259,25 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
         se.clear();
         drain5(2, 3000);   // 끊김 + 다시 붙음
         pollSrv(1, 3000);
-        const bool again = ev5.size() == 2 && ev5[0].type == nox::NetworkEvent::Type::LOBBY_CLOSED && ev5[0].lobbyConn == c1 &&
+        const bool reconnected = ev5.size() == 2 && ev5[0].type == nox::NetworkEvent::Type::LOBBY_CLOSED && ev5[0].lobbyConn == c1 &&
                            ev5[1].type == nox::NetworkEvent::Type::LOBBY_OPENED && ev5[1].lobbyConn != c1 && se.size() == 1 &&
                            se[0].type == nox::TcpLineEvent::Type::OPENED;
-        std::snprintf(m, sizeof(m), "⑧-4 로비가 끊음 → LOBBY_CLOSED → 다시 붙기(새 접속 번호 · 로비 쪽 새 접속) %d · 사건 %zu", (int)again, ev5.size());
-        r.push_back({ again, m });
+        std::snprintf(m, sizeof(m), "⑧-4 로비가 끊음 → LOBBY_CLOSED → 다시 붙기(새 접속 번호 · 로비 쪽 새 접속) %d · 사건 %zu", (int)reconnected, ev5.size());
+        r.push_back({ reconnected, m });
+        // 끊긴 옛 접속으로 보낸 줄 — 버리고 센다(끊김과 게임 스레드의 줄이 엇갈리면 생긴다 — 옛 ⑦ 의 「없는 접속으로」 셈)
+        std::vector<nox::NetworkRequest> stale(1);
+        stale[0].type = nox::NetworkRequest::Type::LOBBY_SEND;
+        stale[0].lobbyConn = c1;
+        stale[0].lobbyLine = "late";
+        n5.PushRequests(stale);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
         n5.Stop();
         const nox::CNetworkThreadStats s5 = n5.LatestThreadStats();
-        std::snprintf(m, sizeof(m), "⑧-5 셈 — 시도 %llu · 붙음 %llu · 못 붙음 %llu · 끊김 %llu · 받은 줄 %llu · 보낸 줄 %llu",
-                      s5.lobbyConnects, s5.lobbyOpened, s5.lobbyConnectFailed, s5.lobbyClosed, s5.lobbyLinesIn, s5.lobbyLinesOut);
+        std::snprintf(m, sizeof(m), "⑧-5 셈 — 시도 %llu · 붙음 %llu · 못 붙음 %llu · 끊김 %llu · 받은 줄 %llu · 보낸 줄 %llu · 옛 접속으로 %llu",
+                      s5.lobbyConnects, s5.lobbyOpened, s5.lobbyConnectFailed, s5.lobbyClosed, s5.lobbyLinesIn, s5.lobbyLinesOut,
+                      s5.lobbySendNoConn);
         r.push_back({ s5.lobbyConnects == 2 && s5.lobbyOpened == 2 && s5.lobbyConnectFailed == 0 && s5.lobbyClosed == 1 &&
-                          s5.lobbyLinesIn == 1 && s5.lobbyLinesOut == 1, m });
+                          s5.lobbyLinesIn == 1 && s5.lobbyLinesOut == 1 && s5.lobbySendNoConn == 1, m });
 
         // 듣는 이 없는 포트 — 게임 스레드에 사건이 안 가고(붙기 전 끊김은 못 붙음으로 셈) 다시 시도한다
         uint16_t dead = 0;

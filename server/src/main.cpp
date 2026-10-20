@@ -12,7 +12,6 @@
 //
 //   nox_server.exe [--port 18590] [--name "MY SERVER"] [--selftest] [--quiet]
 //                  --config <설정 파일>([token] key) | --no-join-token(토큰 검사 끄기 — 시험 도구 · LAN 실행)
-//                  [--lobby-port 4000 [--lobby-bind 127.0.0.1]] — ★ 10-14 작업 8d 채널 안 로비(토큰 방식만 · 방 없이 시작 · 옛 `nox_lobby`)
 //                  [--lobby 127.0.0.1[:4010] [--register-ip a.b.c.d]] [--bind a.b.c.d] — ★ 10-20 v2 작업 4b 로비 프로세스에 붙기(`LobbyClient.h`)
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -41,7 +40,6 @@
 #include "nox/Server.h"
 #include "nox/NetworkThread.h"
 #include "nox/RoomManager.h"
-#include "nox/ChannelLobby.h"   // ★ 10-14 작업 8d — 채널 안 로비
 #include "nox/LobbyClient.h"    // ★ 10-20 v2 작업 4b — 로비 프로세스에 붙기
 #include "nox/MatchRecorder.h"  // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기
 #include "nox/IniFile.h"
@@ -173,10 +171,6 @@ int main(int argc, char** argv) {
             opt.resultsPath = argv[++i];   // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록 파일
         } else if (a == "--no-results") {
             opt.noResults = true;          // ★ 10-19 — 판 결과 기록 끄기(실행 파일 시험만)
-        } else if (a == "--lobby-port" && i + 1 < argc) {
-            opt.lobbyPort = std::atoi(argv[++i]);   // ★ 10-14 작업 8d — 채널 안 로비
-        } else if (a == "--lobby-bind" && i + 1 < argc) {
-            opt.lobbyBind = argv[++i];
         } else if (a == "--lobby" && i + 1 < argc) {
             opt.lobbyAddr = argv[++i];     // ★ 10-20 v2 작업 4b — 로비 프로세스 연결 포트
         } else if (a == "--register-ip" && i + 1 < argc) {
@@ -602,18 +596,14 @@ int main(int argc, char** argv) {
 
     // ★ 10-10 토큰 작업 2 — 입장 방식. 키가 없으면 뜨지 않는다 — 설정 하나 빠뜨린 서버가 아무나 받지 않게(`Docs/TOKEN_DESIGN.md`).
     //   진단(위 `--dump-*`)과 `--selftest` 는 서버를 안 띄우므로 이보다 앞에서 끝난다.
-    nox::JoinKey joinKey{};   // ★ 10-14 작업 8d — 채널 안 로비가 같은 키로 토큰을 서명한다(옛 이 블록 안 지역 `key`)
-    if (opt.lobbyPort != 0 && opt.noJoinToken) {
-        std::printf("[멈춤] --lobby-port 는 토큰 방식에서만 된다 — 로비가 방 참가 때 입장 토큰을 낸다(--no-join-token 과 같이 못 씀)\n");
-        return 2;
-    }
-    // ★ 10-20 MO 6단계 v2 작업 4b — 로비 프로세스에 붙기(`--lobby`). 토큰 방식만 · 채널 안 로비와 같이 못 씀.
+    nox::JoinKey joinKey{};   // ★ 10-20 v2 — 로비에 붙으면 이 키에서 연결 확인 키 · 이 게임 서버 토큰 키를 뽑는다(옛 이 블록 안 지역 `key`)
+    // ★ 10-20 MO 6단계 v2 작업 4b — 로비 프로세스에 붙기(`--lobby`). 토큰 방식만.
     //   로비 주소 · 등록 주소는 토큰 키를 뽑는 데 들어가므로 키보다 먼저 읽는다
     uint32_t lobbyIp = 0, registerIp = 0, bindIp = 0;
     uint16_t lobbyLinkPort = nox::kLobbyLinkPort;
     if (!opt.lobbyAddr.empty()) {
-        if (opt.noJoinToken || opt.lobbyPort != 0) {
-            std::printf("[멈춤] --lobby 는 토큰 방식에서만 · --lobby-port(채널 안 로비)와 같이 못 쓴다\n");
+        if (opt.noJoinToken) {
+            std::printf("[멈춤] --lobby 는 토큰 방식에서만 된다 — 로비가 방 참가 때 입장 토큰을 낸다(--no-join-token 과 같이 못 씀)\n");
             return 2;
         }
         const size_t colon = opt.lobbyAddr.find(':');
@@ -715,7 +705,7 @@ int main(int argc, char** argv) {
         }
     }
     // ★ 10-14 작업 10a — 새 방의 대기 맵 후보는 서버가 뜰 때 차린 맵 원본에 있는 것만(못 읽은 맵은 빼고 한 줄)
-    //   ★ 10-20 v2 작업 4b — 채널 안 로비 블록에서 꺼냄(로비에 붙기도 같은 후보를 쓴다)
+    //   ★ 10-20 v2 작업 4b — 옛 채널 안 로비 블록에서 꺼냄(4b-2 에서 그 블록 걷음)
     std::vector<std::string> waitMaps;
     std::string waitKeys;
     for (const std::string& w : WaitMapPaths(opt)) {
@@ -737,35 +727,8 @@ int main(int argc, char** argv) {
         battleMaps.push_back(b);
         battleKeys += (battleKeys.empty() ? "" : ", ") + MapKeyOf(b);
     }
-    // ★ 10-14 플랜 B 작업 8d — 채널 안 로비. TCP 소켓은 네트워크 스레드가 들고(`OpenLobby`) 로비 규약은 이 스레드(`CChannelLobby`)
-    std::unique_ptr<nox::CChannelLobby> lobby;
-    if (opt.lobbyPort != 0) {
-        uint32_t lobbyBindIp = 0;
-        if (!opt.lobbyBind.empty() && !nox::ParseIpv4(opt.lobbyBind, lobbyBindIp)) {
-            std::printf("[멈춤] --lobby-bind 주소: %s\n", opt.lobbyBind.c_str());
-            return 2;
-        }
-        std::string lobbyErr;
-        if (!net.OpenLobby(lobbyBindIp, static_cast<uint16_t>(opt.lobbyPort), lobbyErr)) {
-            std::printf("[멈춤] 로비 TCP 를 못 열었다 — %s\n", lobbyErr.c_str());
-            return 1;
-        }
-        nox::wol::LobbyConfig lc;
-        lc.joinKey = joinKey;
-        lc.gameServerPort = static_cast<uint16_t>(opt.port);
-        // ★ 10-16 작업 12c — 틀의 최대 인원(옛 `nox_lobby` 기본값 31). 로비가 만든 방은 방 설정의 값(`CChannelLobby::kRoomMaxPlayers`)이
-        //   방 정보에 실리므로 이 값은 그 값이 없는 방에만 — 같은 값으로 둔다(`ROOMS_DESIGN.md` 「10-16 정한 것」)
-        lc.room.maxPlayers = static_cast<uint8_t>(nox::CChannelLobby::kRoomMaxPlayers);
-        lc.room.resolution = 2;    // 녹음 다섯 방 중 셋이 1024x768
-        // ★ 10-14 작업 10a — 새 방의 틀 = 실행 인자의 방 설정(진단 · 시야 손잡이 — 맵 · 모드 · 이름 · 만든 사람은 로비가 정한다).
-        //   대기 · 대전 맵 후보는 위(★ 10-20 블록 밖으로 꺼냄)
-        lobby = std::make_unique<nox::CChannelLobby>(rooms, lc, opt.room, waitMaps, battleMaps);
-        lobby->SetVerbose(!opt.quiet);
-        std::printf("로비: TCP %s:%d — 방 없이 시작(방은 로비가 만든다) · 게임 서버 주소 = 붙은 내 쪽 주소 · 대기 맵 %zu개 %s · 대전 맵 %zu개 %s\n",
-                    opt.lobbyBind.empty() ? "0.0.0.0" : opt.lobbyBind.c_str(), opt.lobbyPort, waitMaps.size(),
-                    waitKeys.empty() ? "(없음 — 새 방을 못 만든다)" : waitKeys.c_str(), battleMaps.size(),
-                    battleKeys.empty() ? "(없음 — 판을 못 연다)" : battleKeys.c_str());
-    }
+    // ★ 10-14 플랜 B 작업 8d — 채널 안 로비(`CChannelLobby` · `--lobby-port`)는 ★ 10-20 v2 작업 4b-2 에서 걷었다 —
+    //   로비는 따로 된 프로세스(`nox_lobby`)이고 이 게임 서버는 그 연결 포트에 붙는다(아래)
     // ★ 10-20 MO 6단계 v2 작업 4b — 로비 프로세스에 붙기(`--lobby`). 네트워크 스레드가 로비 연결 포트에 붙고(끊기면 다시)
     //   게임 스레드의 `CLobbyClient` 가 확인 · 등록 · 방 알림 · 새 방 · 판 결과를 맡는다(`LobbyClient.h` 머리)
     std::unique_ptr<nox::CLobbyClient> lobbyClient;
@@ -887,8 +850,7 @@ int main(int argc, char** argv) {
                 ++evCount; evLatSum += lat; if (lat > evLatMax) evLatMax = lat;
                 // ★ 10-14 작업 8d — 로비 TCP 사건은 로비로, 나머지는 방 관리자로(같은 큐로 오는 것을 여기서 나눈다)
                 if (nox::IsLobbyEvent(ev.type)) {
-                    if (lobby) lobby->OnNetworkEvent(ev, lobbyRequests);
-                    if (lobbyClient) lobbyClient->OnNetworkEvent(ev, lobbyRequests);   // ★ 10-20 v2 작업 4b
+                    if (lobbyClient) lobbyClient->OnNetworkEvent(ev, lobbyRequests);   // ★ 10-20 v2 작업 4b(옛 채널 안 로비 자리)
                     continue;
                 }
                 rooms.OnNetworkEvent(ev);
@@ -1077,19 +1039,14 @@ int main(int argc, char** argv) {
         const nox::CNetworkThreadStats ts = net.LatestThreadStats();
         std::printf("[종료] 끝 — 서버 닫힘 알림 %llu명 · 보낸 조각 %llu · 큐 버림(이벤트 %llu · 요청 %llu)\n",
                     ns.serverCloseSent, ts.datagramsOut, ts.eventsDropped, ts.requestsDropped);
-        // ★ 10-14 작업 8d — 채널 안 로비의 셈(옛 `nox_lobby` 의 끝 줄 · 0 옆에 지나간 양 — 네트워크 스레드가 센 TCP 줄 수도)
-        if (lobby)
-            std::printf("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu · 토큰 %llu · TCP(받음 %llu · 보냄 %llu · 끊긴 접속으로 %llu · 한도 %llu)\n",
-                        lobby->Stats().opened, lobby->Stats().linesIn, lobby->Stats().linesOut, lobby->LobbyStats().tokensIssued,
-                        ts.lobbyLinesIn, ts.lobbyLinesOut, ts.lobbySendNoConn, ts.lobbyRefused);
         // ★ 10-20 v2 작업 4b — 로비 연결의 셈(0 옆에 지나간 양 — 네트워크 스레드가 센 TCP 줄 · 시도 수도)
         if (lobbyClient) {
             const nox::CLobbyClientStats& ls = lobbyClient->Stats();
             std::printf("[로비 연결] 끝 — 붙음 %llu · 끊김 %llu · 등록 %llu · 방 알림 %llu · 사라짐 %llu · 새 방 물음 %llu(만듦 %llu · 실패 %llu) · "
-                        "판 결과 %llu(못 보냄 %llu) · BYE %llu · 못 읽음 %llu · TCP(받음 %llu · 보냄 %llu · 시도 %llu · 못 붙음 %llu)\n",
+                        "판 결과 %llu(못 보냄 %llu) · BYE %llu · 못 읽음 %llu · TCP(받음 %llu · 보냄 %llu · 끊긴 접속으로 %llu · 시도 %llu · 못 붙음 %llu)\n",
                         ls.linksUp, ls.linksDown, ls.registers, ls.roomLines, ls.roomGoneLines, ls.creates, ls.created, ls.createFailed,
-                        ls.results, ls.resultsNotSent, ls.byes, ls.badLines, ts.lobbyLinesIn, ts.lobbyLinesOut, ts.lobbyConnects,
-                        ts.lobbyConnectFailed);
+                        ls.results, ls.resultsNotSent, ls.byes, ls.badLines, ts.lobbyLinesIn, ts.lobbyLinesOut, ts.lobbySendNoConn,
+                        ts.lobbyConnects, ts.lobbyConnectFailed);
         }
         std::fflush(stdout);
     }

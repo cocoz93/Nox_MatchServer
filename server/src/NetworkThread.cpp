@@ -73,17 +73,8 @@ bool CNetworkThread::Open(const std::string& ip, uint16_t port, std::string& err
     return true;
 }
 
-bool CNetworkThread::OpenLobby(uint32_t bindIp, uint16_t port, std::string& err) {
-    if (_thread.joinable()) { err = "시작한 뒤에는 로비를 열 수 없다"; return false; }
-    if (_lobbyPort != 0) { err = "로비에 붙기와 로비 듣기는 같이 못 쓴다"; return false; }
-    if (!_lobby.Listen(bindIp, port, err)) return false;
-    _lobbyOpen = true;
-    return true;
-}
-
 bool CNetworkThread::ConnectLobby(uint32_t ip, uint16_t port, std::string& err) {
     if (_thread.joinable()) { err = "시작한 뒤에는 로비에 붙기를 정할 수 없다"; return false; }
-    if (_lobbyOpen) { err = "로비 듣기와 로비에 붙기는 같이 못 쓴다"; return false; }
     if (ip == 0 || port == 0) { err = "로비 주소가 0"; return false; }
     _lobbyIp = ip;
     _lobbyPort = port;
@@ -149,8 +140,7 @@ void CNetworkThread::LobbyToEvents(const std::vector<TcpLineEvent>& in, std::vec
                 ev.lobbyWhy = e.why;
                 break;
             case TcpLineEvent::Type::REFUSED:
-                ++_threadStats.lobbyRefused;   // 접속 번호가 없어 게임에 넘길 것이 없다
-                continue;
+                continue;   // 듣기에서만 생긴다 — ★ 10-20 4b-2 듣기를 걷어 안 생긴다(갈래는 사건 종류라 남김)
         }
         out.push_back(std::move(ev));
     }
@@ -215,9 +205,9 @@ void CNetworkThread::Publish() {
 
 void CNetworkThread::Run() {
     const SOCKET s = static_cast<SOCKET>(_sock);
-    // ★ 10-14 작업 8c — 로비를 열었으면 TCP 일 이벤트도 같이 기다린다 · ★ 10-20 v2 작업 4a — 로비에 붙을 때도
+    // ★ 10-14 작업 8c — 로비 TCP 일 이벤트도 같이 기다린다 · ★ 10-20 v2 작업 4a — 로비에 붙을 때(4b-2 부터 이것 하나)
     WSAEVENT evs[3] = { static_cast<WSAEVENT>(_sockEvent), static_cast<WSAEVENT>(_wakeEvent), static_cast<WSAEVENT>(_lobby.WaitHandle()) };
-    const bool lobbyTcp = _lobbyOpen || _lobbyPort != 0;
+    const bool lobbyTcp = _lobbyPort != 0;
     const DWORD nEvs = lobbyTcp ? 3 : 2;
     std::map<std::string, sockaddr_in> addrOf;   // 주소 글자 → 진짜 주소(이 스레드 것)
     std::vector<OutPacket> out;
@@ -258,7 +248,7 @@ void CNetworkThread::Run() {
         }
         for (const NetworkRequest& r : reqs) {
             if (r.type == NetworkRequest::Type::LOBBY_SEND) {   // ★ 10-14 작업 8c — 로비 줄은 TCP 로(통신 층 몫이 아니다)
-                if (_lobby.Send(r.lobbyConn, r.lobbyLine, r.lobbyCloseAfter)) ++_threadStats.lobbyLinesOut;
+                if (_lobby.Send(r.lobbyConn, r.lobbyLine)) ++_threadStats.lobbyLinesOut;
                 else ++_threadStats.lobbySendNoConn;
                 continue;
             }

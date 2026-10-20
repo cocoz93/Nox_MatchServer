@@ -90,9 +90,9 @@ struct NetworkEvent {
         DISCONNECTED,   // 끊겼다 — 까닭은 `reason`(10-09 조각 5a 전에는 0x0A CLIENT_CLOSE 하나뿐)
         RECEIVED,       // 게임 메시지 — 처음 0x20 이상 오프코드가 나온 자리부터 조각 끝까지(머리를 뗀 평문)
         JOIN_REQUESTED, // ★ 10-09 조각 5c — 접속 시도(0x0E TRY_JOIN). 받아 줄지는 게임이 정해 `RespondJoin` 으로 답한다
-        // ★ 10-14 플랜 B 작업 8c — 로비 TCP(채널의 4000 · `CNetworkThread::OpenLobby`). 같은 큐로 오지만 방 · 게임 몫이 아니다 —
-        //   게임 스레드가 로비(`CLobby`)로 보낸다. 세션 번호가 없고 `lobbyConn` 으로 가른다
-        LOBBY_OPENED,   // 새 TCP 접속(`lobbyConn` · `lobbyPeerIp` · `lobbyLocalIp`)
+        // ★ 10-14 플랜 B 작업 8c — 로비 TCP. 같은 큐로 오지만 방 · 게임 몫이 아니다 — 세션 번호가 없고 `lobbyConn` 으로 가른다.
+        //   ★ 10-20 v2 작업 4b-2 — 이제 로비 프로세스와의 연결(`CNetworkThread::ConnectLobby`) · 게임 스레드가 `CLobbyClient` 로 보낸다
+        LOBBY_OPENED,   // 새 TCP 접속(`lobbyConn` · `lobbyPeerIp` · `lobbyLocalIp`) — ★ 10-20 로비에 붙음
         LOBBY_LINE,     // 받은 줄 하나(`lobbyLine` — 줄 끝 CR LF 를 뗀 것)
         LOBBY_CLOSED    // 끊김(`lobbyWhy` — `CTcpLines::kWhy*`)
     };
@@ -151,7 +151,6 @@ struct NetworkRequest {
     uint32_t timeoutMs = 0;          // SET_SESSION_TIMEOUT
     int lobbyConn = 0;               // LOBBY_SEND — TCP 접속 번호
     std::string lobbyLine;           // LOBBY_SEND
-    bool lobbyCloseAfter = false;    // LOBBY_SEND — 이 줄까지 보낸 뒤 끊는다(로비의 QUIT 답)
 };
 
 // ★ 10-09 조각 5a — 게임이 한도를 알리기 전의 시간 초과 한도(ms). 한도는 게임 규칙이라 게임이 정한다(`RequestSetSessionTimeout`).

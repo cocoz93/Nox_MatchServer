@@ -34,7 +34,6 @@ add_library(nox_proto STATIC
   server/src/NetworkThread.cpp
   server/src/RoomManager.cpp
   server/src/RoomTick.cpp     # ★ 10-14 작업 9c — 방의 판 차리기 · 틱 뒤 진단(옛 main 의 RoomRun 몫)
-  server/src/ChannelLobby.cpp # ★ 10-14 작업 8d — 채널 안 로비(로비 TCP 사건 ↔ 로비 규약 ↔ 방 관리자)
   server/src/LobbyClient.cpp  # ★ 10-20 MO 6단계 v2 작업 4b — 게임 서버의 로비 연결(확인 · 등록 · 방 알림 · 새 방 · 판 결과)
   server/src/MatchRecorder.cpp # ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기(줄 짓기 · 기록 스레드)
   server/src/DumpSniff.cpp
@@ -50,7 +49,7 @@ add_library(nox_proto STATIC
 )
 target_include_directories(nox_proto PUBLIC server/include)
 target_link_libraries(nox_proto PUBLIC nox_common)   # 입장 토큰 — 통신 층 꼬리 떼기 · 방 관리자 검증
-target_link_libraries(nox_proto PUBLIC nox_lobby_core)   # ★ 10-14 작업 8d — 채널 안 로비가 로비 규약(`wol::Lobby`)을 쓴다
+# ★ 10-20 v2 작업 4b-2 — 채널 안 로비를 걷어 nox_proto 는 로비 규약(nox_lobby_core)에 더 기대지 않는다(게임 서버는 연결 줄 LobbyLink 만 — nox_common)
 
 add_executable(nox_server server/src/main.cpp)
 target_link_libraries(nox_server PRIVATE nox_proto)
@@ -75,7 +74,7 @@ target_link_libraries(nox_datadump PRIVATE nox_proto)
 
 # 로비 규약(MO 2단계, Docs/LOBBY_DESIGN.md) — 게임 규약 라이브러리(nox_proto)에 기대지 않는다.
 # ★ 10-14 작업 8d — 로비 프로세스 nox_lobby 는 없앴다(채널 nox_server 안 게임 스레드에서 돈다 — ChannelLobby.cpp)
-# ★ 10-20 v2 작업 3c — 되살림(아래 nox_lobby). 채널 안 로비는 작업 4 에서 걷는다
+# ★ 10-20 v2 작업 3c — 되살림(아래 nox_lobby) · 작업 4b-2 — 채널 안 로비(ChannelLobby.cpp) 걷음
 add_library(nox_lobby_core STATIC
   server/src/lobby/WolGameInfo.cpp
   server/src/lobby/Lobby.cpp
@@ -98,7 +97,7 @@ add_executable(lobby_test server/tests/lobby_test.cpp)
 target_link_libraries(lobby_test PRIVATE nox_lobby_core)
 
 add_executable(proto_test server/tests/proto_test.cpp server/tests/net_thread_test.cpp)
-target_link_libraries(proto_test PRIVATE nox_proto)
+target_link_libraries(proto_test PRIVATE nox_proto nox_lobby_core)   # ★ 10-20 v2 작업 4b-2 — 로비 · 게임 서버를 메모리로 잇는 시험(TestHostRename)
 target_compile_definitions(proto_test PRIVATE NOX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
 enable_testing()

@@ -36,7 +36,7 @@ struct RoomSettings {
     // ★ 10-14 작업 8d — 방을 만든 사람의 로비 이름(작업 10 — 그 사람이 방장). 로비 채널 `#<이름>'s_game` 의 열쇠라 방이 사는 동안 안 바뀐다.
     //   실행 인자의 방은 비어 있다 — 로비 목록에 안 나온다
     std::string creator;
-    // ★ 10-16 작업 12a — 방 최대 인원(세션표의 이 방 세션 수로 셈 · 0 = 제한 없음). 로비가 만든 방은 `CChannelLobby::kRoomMaxPlayers`
+    // ★ 10-16 작업 12a — 방 최대 인원(세션표의 이 방 세션 수로 셈 · 0 = 제한 없음). 로비가 만든 방은 `CLobbyClient::kRoomMaxPlayers`
     int maxPlayers = 0;
     // ★ 10-16 작업 13a — 판(`!start`)을 돌릴 대전 맵(맵 파일 경로 — 서버가 뜰 때 읽은 맵 원본에 있어야 한다)과 그 모드.
     //   비면 판을 못 연다. 로비가 만든 방은 대전 맵 후보(`--battle-maps` · 기본 `Estate`)에서 하나. 대기 맵 = 위 `mapPath`(방을 만든 맵)
@@ -157,10 +157,7 @@ struct ServerOptions {
     //   복호와 섹션 워커가 이미 여기 있다(MapFile::Load 가 **모든 섹션**을 담는다. 쓰는 건 5개뿐).
     bool dumpSections = false;
     std::string dumpThing;      // 진단 --dump-thing — 종류 하나의 클래스·서브클래스를 찍는다
-    // ★ 10-14 플랜 B 작업 8d — 채널 안 로비(TCP · `CChannelLobby`). 0 이면 로비 없음(단독 모드 · 녹음 모드 — 실행 인자의 방 하나).
-    //   켜면 토큰 방식만 되고 실행 인자의 방을 만들지 않는다 — 방은 로비가 만든다(작업 10)
-    int lobbyPort = 0;          // `--lobby-port <포트>`(정품 클라는 4000)
-    std::string lobbyBind;      // `--lobby-bind <IPv4>` — 비면 모든 주소(같은 PC 시험은 127.0.0.1)
+    // ★ 10-14 플랜 B 작업 8d — 채널 안 로비(`--lobby-port` · `--lobby-bind`)는 ★ 10-20 v2 작업 4b-2 에서 걷었다 — 로비는 따로 된 프로세스(아래 `--lobby`)
     // ★ 10-20 MO 6단계 v2 작업 4b — 로비 프로세스(`nox_lobby`)에 붙기(`CLobbyClient`). 켜면 토큰 방식만 · 방 없이 시작(방은 로비가 묻는다)
     std::string lobbyAddr;      // `--lobby <IPv4>[:<포트>]` — 로비 연결 포트(기본 `kLobbyLinkPort` 4010)
     std::string registerIp;     // `--register-ip <IPv4>` — 로비에 알리는 「클라가 붙을 이 게임 서버 주소」(비면 0 = 클라가 로비에 붙은 로비 쪽 주소 — 같은 PC)
@@ -230,8 +227,8 @@ struct MapCatalog {
 std::string MapKeyOf(const std::string& mapPath);
 std::vector<std::string> MapListFromOptions(const ServerOptions& opt);
 // ★ 10-14 작업 10a — 대기 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것). 열쇠는 `<게임 폴더>\maps\<열쇠>\<열쇠>.map`
-// ★ 10-20 v2 작업 4b — 로비 방식(채널 안 로비 `--lobby-port` 또는 로비에 붙기 `--lobby`) — 방 없이 시작 · 대기 · 대전 맵 후보를 차려 둔다
-inline bool LobbyMode(const ServerOptions& opt) { return opt.lobbyPort != 0 || !opt.lobbyAddr.empty(); }
+// ★ 10-20 v2 작업 4b — 로비 방식(로비에 붙기 `--lobby` — 4b-2 부터 이것 하나) — 방 없이 시작 · 대기 · 대전 맵 후보를 차려 둔다
+inline bool LobbyMode(const ServerOptions& opt) { return !opt.lobbyAddr.empty(); }
 std::vector<std::string> WaitMapPaths(const ServerOptions& opt);
 // ★ 10-16 작업 13a — 대전 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것 · 꼴은 위와 같다)
 std::vector<std::string> BattleMapPaths(const ServerOptions& opt);
