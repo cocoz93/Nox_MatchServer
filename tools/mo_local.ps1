@@ -1,10 +1,11 @@
 ﻿# mo_local.ps1 — 이 PC 하나에서 정품 클라로 v2(로비 · 게임 서버 나눔)를 보는 판 (MO 6단계 v2 작업 6 · Docs/LOBBY_SPLIT_DESIGN.md 「사람(맨 끝 한 장)」).
 #
-#   -Mode Start [-NoClients] [-OneClient]
+#   -Mode Start [-NoClients] [-OneClient] [-KeepDll] [-BattleScoreLimit N]
 #       ① hosts 확인 — servserv.westwood.com 이 127.0.0.1 이어야 정품 인터넷 메뉴가 우리 라우터로 온다(아니면 tools\hosts_lobby.ps1 -Mode On 안내 후 멈춤)
 #       ② 설정 config\nox_mo.ini(없으면 입장 토큰 키를 새로 — git 밖 · 비밀)
 #       ③ 라우터 nox_router 127.0.0.1:4005 → ④ 로비 nox_lobby 127.0.0.1:4000(게임 서버 연결 127.0.0.1:4010)
 #       ⑤ 게임 서버 nox_server UDP 18590 --lobby 127.0.0.1:4010(로비 기록에서 등록 확인 — 방 없이 시작 · 새 방은 로비가 묻는다)
+#          -BattleScoreLimit N 이면 `--battle-score-limit N`(판 점수 한도 시험 손잡이 — 옛 사람 판 start_rooms_check.ps1 과 같은 이름 · 1 이면 한 킬로 판 끝)
 #       ⑥ 클라 DLL — 게임 폴더 wsock32.dll 이 빌드한 tools\wsock32_proxy\wsock32.dll 과 다르면 바꿔 끼운다(바꾸기 전 것은 _out\mo_local\wsock32.dll.<md5> 로 한 번 떠 둠 ·
 #          되돌리기 = 그 파일을 게임 폴더 wsock32.dll 로 복사). -KeepDll 이면 안 바꾼다
 #       ⑦ 클라1 Game.exe · 클라2 Game2.exe(-OneClient 면 클라1 만 · -NoClients 면 안 띄움). DLL 기록(NOX_HOOK_LOG_DIR)도 같은 기록 폴더에
@@ -15,7 +16,7 @@
 #
 # 왜 — 10-20 v2 로 로비와 게임 서버가 다른 프로세스가 됐다. 옛 사람 판은 채널 하나(nox_server --lobby-port)만 띄웠다.
 #   다른 PC 를 붙이는 판은 mo_host.ps1(서버_MO_열기.bat) — 이것은 같은 PC 루프백 전용(바깥에 안 엶)
-param([ValidateSet('Start', 'Stop')][string]$Mode = 'Start', [switch]$NoClients, [switch]$OneClient, [switch]$KeepDll)
+param([ValidateSet('Start', 'Stop')][string]$Mode = 'Start', [switch]$NoClients, [switch]$OneClient, [switch]$KeepDll, [int]$BattleScoreLimit = 0)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $repo 'build\Release'
@@ -65,7 +66,9 @@ try {
   $ok = $false
   for ($i = 0; $i -lt 50 -and -not $ok; $i++) { Start-Sleep -Milliseconds 200; $ok = [bool](Get-NetTCPConnection -State Listen -LocalPort 4000 -ErrorAction SilentlyContinue) }
   if (-not $ok) { throw "로비가 TCP 4000 을 못 열었다 — $logDir\lobby.log" }
-  Launch 'nox_server.exe' "--port 18590 --lobby 127.0.0.1:4010 --config `"$cfg`" --aoi --friends" (Join-Path $logDir 'server.log')
+  $gsArgs = "--port 18590 --lobby 127.0.0.1:4010 --config `"$cfg`" --aoi --friends"
+  if ($BattleScoreLimit -gt 0) { $gsArgs += " --battle-score-limit $BattleScoreLimit" }
+  Launch 'nox_server.exe' $gsArgs (Join-Path $logDir 'server.log')
   $reg = $false
   for ($i = 0; $i -lt 60 -and -not $reg; $i++) {
     Start-Sleep -Milliseconds 250
