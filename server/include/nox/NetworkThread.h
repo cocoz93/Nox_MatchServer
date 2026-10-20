@@ -11,6 +11,9 @@
 // ★ 10-14 플랜 B 작업 8c — 로비 TCP(채널의 4000 — `OpenLobby`)도 이 스레드가 든다(목표 구조 v3 — 소켓은 네트워크 스레드 하나).
 //   TCP 줄 부품(`CTcpLines`)의 새 접속 · 받은 줄 · 끊김을 같은 이벤트 큐로(`LOBBY_*`) · 요청 `LOBBY_SEND` 를 TCP 로 보낸다.
 //   깨어나는 때에 「TCP 일」이 하나 더해진다. 줄을 해석하지 않는다 — 로비 규약은 게임 스레드의 로비 몫
+// ★ 10-20 MO 6단계 v2 작업 4a(`Docs/LOBBY_SPLIT_DESIGN.md`) — 로비가 따로 된 프로세스가 되어 게임 서버가 로비 연결 포트에 **붙는다**(`ConnectLobby`).
+//   같은 사건 · 요청(`LOBBY_*` · `LOBBY_SEND` — 이제 「로비와의 TCP」)을 쓴다. 이 스레드가 붙고, 끊기거나 못 붙으면 몇 초 뒤 다시 붙는다 —
+//   게임 스레드는 붙은 뒤의 사건만 본다(못 붙은 시도는 셈만). 다시 붙으면 게임 스레드가 확인 · 등록 · 방 알림을 처음부터 다시 한다
 #pragma once
 
 #include <atomic>
@@ -44,6 +47,9 @@ struct CNetworkThreadStats {
     unsigned long long lobbySendNoConn = 0;       // 이미 끊긴 접속으로 보내려다 버린 줄 — 끊김과 답이 엇갈리면 생긴다
     unsigned long long lobbyClosed = 0;           // 끊김(까닭 무관)
     unsigned long long lobbyRefused = 0;          // 접속 수 한도로 받자마자 끊음 — 0 이 정상
+    // ★ 10-20 v2 작업 4a — 로비에 붙기(`ConnectLobby`)
+    unsigned long long lobbyConnects = 0;         // 붙기 시도
+    unsigned long long lobbyConnectFailed = 0;    // 못 붙음(상대가 안 들음 · 닿지 않음 · 붙는 시간 한도) — 게임엔 안 넘기고 다시 시도
 };
 
 class CNetworkThread {
@@ -68,6 +74,13 @@ public:
     bool OpenLobby(uint32_t bindIp, uint16_t port, std::string& err);
     uint16_t LobbyPort() const { return _lobby.ListenPort(0); }
     bool LobbyOpen() const { return _lobbyOpen; }
+    // ★ 10-20 v2 작업 4a — 로비 연결 포트에 붙는다(시작 전에만 · `OpenLobby` 와 같이 못 씀 · 주소 0 · 포트 0 은 false).
+    //   끊기거나 못 붙으면 `kLobbyRetryMs` 뒤 다시 · 붙는 중 `kLobbyConnectTimeoutMs` 를 넘기면 접고 다시
+    static constexpr uint32_t kLobbyRetryMs = 3000;            // 근거 없는 값 — 로비를 다시 켜는 사람이 기다릴 만한 몇 초
+    static constexpr uint32_t kLobbyConnectTimeoutMs = 5000;   // 닿지 않는 주소(다른 PC)는 OS 붙기 한도(약 21초)까지 걸려 그보다 짧게
+    bool ConnectLobby(uint32_t ip, uint16_t port, std::string& err);
+    // 시험용 — 다시 붙기 간격(기본 `kLobbyRetryMs`). 시작 전에.
+    void SetLobbyRetryMsForTest(uint32_t ms) { _lobbyRetryMs = ms; }
     void Start();
     // 깨워서 멈추고 스레드가 끝날 때까지 기다린다. 여러 번 불러도 된다.
     //   ★ 10-09 조각 5d-2c — 멈추기 전 마지막으로 한 번 돈다 — 쌓인 요청을 처리해 보내고, `closeSessions` 면 키를 준 상대마다
@@ -98,10 +111,20 @@ private:
     void Publish();
     // TCP 줄 부품의 사건 → 이벤트(`LOBBY_*`) · 셈
     void LobbyToEvents(const std::vector<TcpLineEvent>& in, std::vector<NetworkEvent>& out);
+    // ★ 10-20 v2 작업 4a — 로비에 붙기 · 다시 붙기 · 붙는 시간 한도
+    void LobbyConnectTick(uint32_t now, std::vector<NetworkEvent>& events);
 
     CUdpServer _network;
     CTcpLines _lobby;                               // ★ 10-14 작업 8c — 로비 TCP(이 스레드 혼자 만진다 · 시작 전 `OpenLobby`)
     bool _lobbyOpen = false;
+    // ★ 10-20 v2 작업 4a — 붙을 로비(포트 0 = 안 붙음) · 지금 접속 · 붙음 · 다음 시도 시각 · 붙기 시작 시각
+    uint32_t _lobbyIp = 0;
+    uint16_t _lobbyPort = 0;
+    int _lobbyConn = 0;
+    bool _lobbyUp = false;
+    uint32_t _lobbyTryAt = 0;
+    uint32_t _lobbyConnStartMs = 0;
+    uint32_t _lobbyRetryMs = kLobbyRetryMs;
     uintptr_t _sock = ~static_cast<uintptr_t>(0);   // SOCKET(INVALID_SOCKET) — 머리에서 winsock 을 안 부르려고
     void* _sockEvent = nullptr;                     // WSAEVENT — 소켓 읽기
     void* _wakeEvent = nullptr;                     // 요청이 들어옴 · 멈춤

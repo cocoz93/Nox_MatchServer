@@ -75,15 +75,61 @@ bool CNetworkThread::Open(const std::string& ip, uint16_t port, std::string& err
 
 bool CNetworkThread::OpenLobby(uint32_t bindIp, uint16_t port, std::string& err) {
     if (_thread.joinable()) { err = "시작한 뒤에는 로비를 열 수 없다"; return false; }
+    if (_lobbyPort != 0) { err = "로비에 붙기와 로비 듣기는 같이 못 쓴다"; return false; }
     if (!_lobby.Listen(bindIp, port, err)) return false;
     _lobbyOpen = true;
     return true;
+}
+
+bool CNetworkThread::ConnectLobby(uint32_t ip, uint16_t port, std::string& err) {
+    if (_thread.joinable()) { err = "시작한 뒤에는 로비에 붙기를 정할 수 없다"; return false; }
+    if (_lobbyOpen) { err = "로비 듣기와 로비에 붙기는 같이 못 쓴다"; return false; }
+    if (ip == 0 || port == 0) { err = "로비 주소가 0"; return false; }
+    _lobbyIp = ip;
+    _lobbyPort = port;
+    _lobbyTryAt = NowMs();   // 시작하자마자 붙는다
+    return true;
+}
+
+void CNetworkThread::LobbyConnectTick(uint32_t now, std::vector<NetworkEvent>& events) {
+    if (_lobbyPort == 0) return;
+    if (_lobbyConn == 0) {
+        if (static_cast<int32_t>(now - _lobbyTryAt) < 0) return;   // 다음 시도 전(32비트 시계가 돌아도 맞게)
+        ++_threadStats.lobbyConnects;
+        std::string err;
+        _lobbyConn = _lobby.Connect(_lobbyIp, _lobbyPort, err);
+        _lobbyConnStartMs = now;
+        if (_lobbyConn == 0) {   // 곧바로 실패(소켓 · 한도) — 사건이 안 오므로 여기서 센다
+            ++_threadStats.lobbyConnectFailed;
+            _lobbyTryAt = now + _lobbyRetryMs;
+        }
+        return;
+    }
+    if (!_lobbyUp && now - _lobbyConnStartMs >= kLobbyConnectTimeoutMs) {   // 붙는 중 한도 — 접고(끊김 사건 → 못 붙음 셈) 다시
+        std::vector<TcpLineEvent> tcpEvs;
+        _lobby.Close(_lobbyConn, tcpEvs);
+        LobbyToEvents(tcpEvs, events);
+    }
 }
 
 void CNetworkThread::LobbyToEvents(const std::vector<TcpLineEvent>& in, std::vector<NetworkEvent>& out) {
     for (const TcpLineEvent& e : in) {
         NetworkEvent ev;
         ev.lobbyConn = e.conn;
+        // ★ 10-20 v2 작업 4a — 로비에 붙은 접속 — 붙기 전 끊김(못 붙음)은 게임에 안 넘기고 세고 다시 시도를 잡는다
+        if (e.outbound && e.conn == _lobbyConn) {
+            if (e.type == TcpLineEvent::Type::OPENED) _lobbyUp = true;
+            if (e.type == TcpLineEvent::Type::CLOSED) {
+                const bool wasUp = _lobbyUp;
+                _lobbyConn = 0;
+                _lobbyUp = false;
+                _lobbyTryAt = NowMs() + _lobbyRetryMs;
+                if (!wasUp) {
+                    ++_threadStats.lobbyConnectFailed;
+                    continue;
+                }
+            }
+        }
         switch (e.type) {
             case TcpLineEvent::Type::OPENED:
                 ++_threadStats.lobbyOpened;
@@ -169,9 +215,10 @@ void CNetworkThread::Publish() {
 
 void CNetworkThread::Run() {
     const SOCKET s = static_cast<SOCKET>(_sock);
-    // ★ 10-14 작업 8c — 로비를 열었으면 TCP 일 이벤트도 같이 기다린다
+    // ★ 10-14 작업 8c — 로비를 열었으면 TCP 일 이벤트도 같이 기다린다 · ★ 10-20 v2 작업 4a — 로비에 붙을 때도
     WSAEVENT evs[3] = { static_cast<WSAEVENT>(_sockEvent), static_cast<WSAEVENT>(_wakeEvent), static_cast<WSAEVENT>(_lobby.WaitHandle()) };
-    const DWORD nEvs = _lobbyOpen ? 3 : 2;
+    const bool lobbyTcp = _lobbyOpen || _lobbyPort != 0;
+    const DWORD nEvs = lobbyTcp ? 3 : 2;
     std::map<std::string, sockaddr_in> addrOf;   // 주소 글자 → 진짜 주소(이 스레드 것)
     std::vector<OutPacket> out;
     std::vector<NetworkEvent> events;
@@ -187,6 +234,12 @@ void CNetworkThread::Run() {
         if (_network.NextTimerDue(due)) {
             const int32_t d = static_cast<int32_t>(due - NowMs());
             wait = d <= 0 ? 0 : std::min<DWORD>(static_cast<DWORD>(d), _maxWaitMs);
+        }
+        // ★ 10-20 v2 작업 4a — 로비 다시 붙기 · 붙는 시간 한도에 맞춰 깬다(붙어 있으면 기다릴 시각 없음)
+        if (_lobbyPort != 0 && !_lobbyUp) {
+            const uint32_t at = _lobbyConn == 0 ? _lobbyTryAt : _lobbyConnStartMs + kLobbyConnectTimeoutMs;
+            const int32_t d = static_cast<int32_t>(at - NowMs());
+            wait = d <= 0 ? 0 : std::min<DWORD>(static_cast<DWORD>(d), wait);
         }
         WSAWaitForMultipleEvents(nEvs, evs, FALSE, wait, FALSE);
         // ★ 10-09 조각 5d-2c — 멈추라면 마지막으로 한 번 — 쌓인 요청을 보내고(닫기면 `SERVER_CLOSE` 까지) 끝낸다. 받기 · 타이머는 안 한다
@@ -213,11 +266,12 @@ void CNetworkThread::Run() {
         }
         reqs.clear();
         // ★ 10-14 작업 8c — 로비 줄을 보낸다(막히면 남겨 두고 TCP 일 이벤트에 다시) · 보낸 뒤 끊기(QUIT 답)는 끊김 이벤트로
-        if (_lobbyOpen) {
+        if (lobbyTcp) {
             tcpEvs.clear();
             _lobby.Flush(tcpEvs);
             LobbyToEvents(tcpEvs, events);
         }
+        if (!stopping) LobbyConnectTick(now, events);   // ★ 10-20 v2 작업 4a
         // ③ 받을 것 전부(멈출 때는 안 받는다)
         unsigned long long got = 0;
         while (!stopping) {
@@ -276,7 +330,7 @@ void CNetworkThread::Run() {
         }
         if (got > _threadStats.maxDatagramsPerWake) _threadStats.maxDatagramsPerWake = got;
         // ③.5 ★ 10-14 작업 8c — 로비 TCP — 새 접속 · 받은 줄 · 끊김(멈출 때는 안 받는다)
-        if (_lobbyOpen && !stopping) {
+        if (lobbyTcp && !stopping) {
             tcpEvs.clear();
             _lobby.Poll(tcpEvs);
             LobbyToEvents(tcpEvs, events);

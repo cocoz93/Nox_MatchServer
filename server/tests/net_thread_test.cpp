@@ -266,5 +266,111 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
                           ls.lobbyClosed == 1 && ls.lobbyRefused == 0, m });
         closesocket(t);
     }
+
+    // ⑧ ★ 10-20 MO 6단계 v2 작업 4a — 로비에 붙기(`ConnectLobby`) — 게임 서버가 로비 연결 포트에 붙는다.
+    //   붙음 → LOBBY_OPENED · 줄 왕복 · 로비가 끊음 → LOBBY_CLOSED → 다시 붙기 간격 뒤 새 접속 · 듣는 이 없음 → 게임엔 사건 없이 셈만 ·
+    //   듣기와 붙기는 같이 못 씀 · 주소 0 거절
+    {
+        nox::CNetworkThread bad1, bad2;
+        std::string e5;
+        const bool refuse = !bad1.ConnectLobby(0, 4010, e5) && bad1.Open("127.0.0.1", 0, e5) && bad1.OpenLobby(0x7f000001u, 0, e5) &&
+                            !bad1.ConnectLobby(0x7f000001u, 4010, e5) && bad2.ConnectLobby(0x7f000001u, 4010, e5) &&
+                            !bad2.OpenLobby(0x7f000001u, 0, e5);
+        std::snprintf(m, sizeof(m), "⑧-1 주소 0 · 듣기 뒤 붙기 · 붙기 뒤 듣기 → 거절 %d", (int)refuse);
+        r.push_back({ refuse, m });
+
+        nox::CTcpLines srv;
+        std::vector<nox::TcpLineEvent> se;
+        const bool listening = srv.Listen(0x7f000001u, 0, e5);
+        auto pollSrv = [&](size_t want, int ms) {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+            while (se.size() < want && std::chrono::steady_clock::now() < until) {
+                WaitForSingleObject(static_cast<HANDLE>(srv.WaitHandle()), 20);
+                srv.Poll(se);
+                srv.Flush(se);
+            }
+        };
+        nox::CNetworkThread n5;
+        n5.SetLobbyRetryMsForTest(300);
+        n5.SetMaxWaitMs(5000);   // 다시 붙기 시각에 스스로 깨야 아래 3초 안에 붙는다(기본 0.25초 깨기에 기대지 않게)
+        const bool started = n5.Open("127.0.0.1", 0, e5) && n5.ConnectLobby(0x7f000001u, srv.ListenPort(0), e5);
+        n5.Start();
+        std::vector<nox::NetworkEvent> ev5;
+        auto drain5 = [&](size_t want, int ms) {
+            for (int i = 0; i < ms / 10 && ev5.size() < want; ++i) {
+                std::vector<nox::NetworkEvent> got5;
+                n5.SwapOutNetworkEvents(got5);
+                for (auto& e : got5) ev5.push_back(std::move(e));
+                if (ev5.size() < want) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        };
+        pollSrv(1, 2000);
+        drain5(1, 2000);
+        const int sconn = se.empty() ? 0 : se[0].conn;
+        const int c1 = ev5.empty() ? 0 : ev5[0].lobbyConn;
+        const bool up = listening && started && se.size() == 1 && se[0].type == nox::TcpLineEvent::Type::OPENED && ev5.size() == 1 &&
+                        ev5[0].type == nox::NetworkEvent::Type::LOBBY_OPENED && c1 > 0 && ev5[0].lobbyPeerIp == 0x7f000001u &&
+                        ev5[0].sessionId == 0;
+        std::snprintf(m, sizeof(m), "⑧-2 시작하자마자 붙음 — 로비 쪽 접속 %zu · 게임 쪽 LOBBY_OPENED(상대 127.0.0.1 · 세션 번호 없음) %d", se.size(), (int)up);
+        r.push_back({ up, m });
+
+        se.clear();
+        ev5.clear();
+        srv.Send(sconn, "HELLO abc");
+        srv.Flush(se);
+        drain5(1, 2000);
+        std::vector<nox::NetworkRequest> rq5(1);
+        rq5[0].type = nox::NetworkRequest::Type::LOBBY_SEND;
+        rq5[0].lobbyConn = c1;
+        rq5[0].lobbyLine = "AUTH x";
+        n5.PushRequests(rq5);
+        pollSrv(1, 2000);
+        const bool lines = ev5.size() == 1 && ev5[0].type == nox::NetworkEvent::Type::LOBBY_LINE && ev5[0].lobbyLine == "HELLO abc" &&
+                           ev5[0].lobbyConn == c1 && se.size() == 1 && se[0].type == nox::TcpLineEvent::Type::LINE && se[0].line == "AUTH x";
+        std::snprintf(m, sizeof(m), "⑧-3 줄 왕복 — 로비 → LOBBY_LINE · LOBBY_SEND → 로비 %d", (int)lines);
+        r.push_back({ lines, m });
+
+        se.clear();
+        ev5.clear();
+        srv.Close(sconn, se);
+        se.clear();
+        drain5(2, 3000);   // 끊김 + 다시 붙음
+        pollSrv(1, 3000);
+        const bool again = ev5.size() == 2 && ev5[0].type == nox::NetworkEvent::Type::LOBBY_CLOSED && ev5[0].lobbyConn == c1 &&
+                           ev5[1].type == nox::NetworkEvent::Type::LOBBY_OPENED && ev5[1].lobbyConn != c1 && se.size() == 1 &&
+                           se[0].type == nox::TcpLineEvent::Type::OPENED;
+        std::snprintf(m, sizeof(m), "⑧-4 로비가 끊음 → LOBBY_CLOSED → 다시 붙기(새 접속 번호 · 로비 쪽 새 접속) %d · 사건 %zu", (int)again, ev5.size());
+        r.push_back({ again, m });
+        n5.Stop();
+        const nox::CNetworkThreadStats s5 = n5.LatestThreadStats();
+        std::snprintf(m, sizeof(m), "⑧-5 셈 — 시도 %llu · 붙음 %llu · 못 붙음 %llu · 끊김 %llu · 받은 줄 %llu · 보낸 줄 %llu",
+                      s5.lobbyConnects, s5.lobbyOpened, s5.lobbyConnectFailed, s5.lobbyClosed, s5.lobbyLinesIn, s5.lobbyLinesOut);
+        r.push_back({ s5.lobbyConnects == 2 && s5.lobbyOpened == 2 && s5.lobbyConnectFailed == 0 && s5.lobbyClosed == 1 &&
+                          s5.lobbyLinesIn == 1 && s5.lobbyLinesOut == 1, m });
+
+        // 듣는 이 없는 포트 — 게임 스레드에 사건이 안 가고(붙기 전 끊김은 못 붙음으로 셈) 다시 시도한다
+        uint16_t dead = 0;
+        {
+            nox::CTcpLines tmp;
+            std::string e6;
+            if (tmp.Listen(0x7f000001u, 0, e6)) dead = tmp.ListenPort(0);
+        }
+        nox::CNetworkThread n6;
+        n6.SetLobbyRetryMsForTest(300);
+        const bool s6 = n6.Open("127.0.0.1", 0, e5) && n6.ConnectLobby(0x7f000001u, dead, e5);
+        n6.Start();
+        nox::CNetworkThreadStats t6;
+        for (int i = 0; i < 80; ++i) {   // 윈도 루프백 거절은 한 번에 1~2초 — 둘째 시도까지
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            t6 = n6.LatestThreadStats();
+            if (t6.lobbyConnects >= 2) break;
+        }
+        std::vector<nox::NetworkEvent> ev6;
+        n6.SwapOutNetworkEvents(ev6);
+        n6.Stop();
+        std::snprintf(m, sizeof(m), "⑧-6 듣는 이 없음 — 시도 %llu · 못 붙음 %llu · 붙음 %llu · 게임에 간 사건 %zu",
+                      t6.lobbyConnects, t6.lobbyConnectFailed, t6.lobbyOpened, ev6.size());
+        r.push_back({ s6 && dead != 0 && t6.lobbyConnects >= 2 && t6.lobbyConnectFailed >= 1 && t6.lobbyOpened == 0 && ev6.empty(), m });
+    }
     return r;
 }

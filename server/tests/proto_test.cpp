@@ -24604,7 +24604,7 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks();
 void TestNetworkThread() {
     const auto checks = RunNetworkThreadChecks();
     for (const auto& kv : checks) Check(kv.first, kv.second.c_str());
-    Check(checks.size() == 10, "네트워크 스레드 확인 수 10(① ~ ⑥ 여섯 + ⑦ 로비 TCP 넷 — 본체가 끝까지 돌았나)");
+    Check(checks.size() == 16, "네트워크 스레드 확인 수 16(① ~ ⑥ 여섯 + ⑦ 로비 TCP 넷 + ★ 10-20 ⑧ 로비에 붙기 여섯 — 본체가 끝까지 돌았나)");
 
     // ★ 10-14 작업 8c — 로비 TCP 사건(세션 번호 없음)은 방 관리자 · 게임에 와도 자리를 만들지 않는다(나누는 자리가 틀려도 세션 0 이 안 생기게)
     nox::CRoomManager rooms;
