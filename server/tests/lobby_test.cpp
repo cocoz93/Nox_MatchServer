@@ -617,7 +617,7 @@ void PendingRoomUnitTests() {
     lb.OnLine(5, "JOINGAME #erin's_game 1 ", out);
     Check(out.empty() && fake.asked.size() == 4 && lb.Stats().joinWhilePending == 1 && lb.PendingRooms() == 1,
           "⑤ 기다리는 중 또 참가 → 새로 안 묻고 무시");
-    lb.OnClose(5);
+    lb.OnClose(5, out);
     Check(lb.PendingRooms() == 0 && lb.Stats().roomRequestDropped == 1, "⑤ 기다리는 중 클라가 끊음 → 버림 셈 1");
     lb.OnRoomCreated(reqErin, made("erin"), out);
     lb.OnRoomCreateFailed(9999, "모르는 요청");
@@ -696,6 +696,21 @@ void ChatUnitTests() {
     out.clear();
     lb.OnLine(1, "JOIN #Lob_37_5 x", out);
     Check(out.empty(), "다섯 밖 대화방 → 모르는 채널(답 없음)");
+
+    // 끊김 — 대화방 남은 사람에게 PART(QUIT 꼴은 정품 미확인) · 게임 방 채널은 안 알림
+    out.clear();
+    lb.OnLine(2, "JOIN #Lob_37_3 zot0blat", out);
+    out.clear();
+    lb.OnClose(2, out);
+    Check(out.size() == 1 && out[0].conn == 1 && out[0].line == ":ben!u@h PART #Lob_37_3", "끊김 → 같은 대화방 남은 사람에게 PART 한 줄");
+    fake.rooms = {FakeRoom(9, "zed")};
+    lb.OnLine(1, "NOXCLIENT 1", out);
+    lb.OnLine(3, "NOXCLIENT 1", out);
+    lb.OnLine(1, "JOINGAME #zed's_game 1 ", out);
+    lb.OnLine(3, "JOINGAME #zed's_game 1 ", out);
+    out.clear();
+    lb.OnClose(3, out);
+    Check(out.empty(), "끊김 — 게임 방 채널 · 혼자 있던 대화방엔 알림 없음");
 }
 
 // ── ★ 10-20 MO 6단계 v2 작업 3a-2 — 로비의 방 거울(`RoomMirror`) + 가짜 게임 서버(연결 줄을 `LobbyLink` 로 지어 넣는다) ──
@@ -1295,7 +1310,7 @@ int ReplayRecording(const char* path) {
                 lb.OnLine(rc.id, cl, out);
                 if (cl.rfind("JOINGAME ", 0) == 0) ++joinGames;
             }
-            lb.OnClose(rc.id);
+            lb.OnClose(rc.id, out);   // ★ 10-20 v2 작업 3b — 대화방 남은 사람에게 PART(녹음은 접속을 하나씩 돌려 남은 사람 없음)
         }
         std::vector<std::string> kept;   // DLL 이 `NOXTOKEN` 줄을 뗀 뒤 정품 로비 모듈이 받는 줄
         for (const auto& l : Lines(out)) {

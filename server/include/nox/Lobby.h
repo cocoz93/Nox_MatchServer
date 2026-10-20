@@ -146,7 +146,8 @@ public:
     // peerIp = 상대 IPv4 · localIp = 클라가 붙은 내 쪽 IPv4
     void OnConnect(int conn, uint32_t peerIp, uint32_t localIp);
     void OnLine(int conn, std::string_view line, std::vector<Out>& out);
-    void OnClose(int conn);
+    // ★ 10-20 v2 작업 3b — 끊긴 사람을 들어가 있던 대화방의 남은 사람들에게 PART 로 알린다(`out`)
+    void OnClose(int conn, std::vector<Out>& out);
     // ★ 10-20 v2 작업 3a — 미룬 새 방의 답(`RequestRoom` 이 `Pending` 을 돌려준 `req`). 끝난 요청이면 버리고 센다
     void OnRoomCreated(uint32_t req, const LobbyRoom& room, std::vector<Out>& out);
     void OnRoomCreateFailed(uint32_t req, const std::string& why);

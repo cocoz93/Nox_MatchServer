@@ -112,11 +112,13 @@ void CChannelLobby::OnNetworkEvent(const NetworkEvent& ev, std::vector<NetworkRe
             return;
         case NetworkEvent::Type::LOBBY_CLOSED:
             ++_stats.closed;
-            _lobby.OnClose(ev.lobbyConn);
+            _outs.clear();
+            _lobby.OnClose(ev.lobbyConn, _outs);   // ★ 10-20 v2 작업 3b — 대화방 남은 사람들에게 PART
             if (_verbose) {
                 std::printf("[로비 c%d] 끊음 — %s\n", ev.lobbyConn, ev.lobbyWhy);
                 std::fflush(stdout);
             }
+            Flush(out);
             return;
         case NetworkEvent::Type::CONNECTED:
         case NetworkEvent::Type::DISCONNECTED:

@@ -121,8 +121,14 @@ void Lobby::OnConnect(int conn, uint32_t peerIp, uint32_t localIp) {
     conns_[conn] = c;
 }
 
-void Lobby::OnClose(int conn) {
-    for (auto& kv : members_) kv.second.erase(conn);
+void Lobby::OnClose(int conn, std::vector<Out>& out) {
+    // ★ 10-20 v2 작업 3b — 끊기면 대화방 남은 사람들에게 PART(드나듦 알림의 나머지 반 — 안 알리면 그 이름이 사용자 목록에 남는다).
+    //   QUIT 줄 꼴은 정품이 받는지 미확인이라 이미 쓰는 PART 꼴로 · 게임 방 채널은 정품이 그 화면에 없어 안 알림
+    const auto ci = conns_.find(conn);
+    for (auto& kv : members_) {
+        if (kv.second.erase(conn) == 0 || !IsChatLobby(kv.first) || ci == conns_.end()) continue;
+        for (int other : kv.second) out.push_back({other, ":" + ci->second.nick + "!u@h PART " + kv.first});
+    }
     // ★ 10-20 v2 작업 3a — 기다리던 새 방 답은 버린다(방은 게임 서버가 만들면 아무도 안 들어와 빈 방 30초로 닫힌다)
     for (auto it = pending_.begin(); it != pending_.end();) {
         if (it->second.conn != conn) {
