@@ -141,6 +141,11 @@ if (NOX_POWERSHELL AND WIN32)
   add_test(NAME lobby_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                    -File ${CMAKE_SOURCE_DIR}/tools/lobby_smoke.ps1 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby>)
+  # ★ 10-20 MO 6단계 v2 작업 4c — 로비 하나 + 게임 서버 둘(127.0.0.1 · 127.0.0.2) — 토큰이 그 게임 서버 그 실행에만 맞나 ·
+  #   게임 서버 껐다 켜기(목록 내림 · 옛 토큰 거절) · 로비 껐다 켜기(방이 목록에 돌아옴). 대기 맵(So_LOD)이 없으면 건너뜀
+  add_test(NAME v2_split_smoke
+           COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                   -File ${CMAKE_SOURCE_DIR}/tools/v2_split_smoke.ps1 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby>)
   # ★ 10-20 MO 6단계 v2 작업 3c — 로비 프로세스 nox_lobby 소켓 왕복 + 가짜 게임 서버(연결 확인 · 등록 · 방 알림 · 새 방 · 판 결과 · 끊김)
   add_test(NAME nox_lobby_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass

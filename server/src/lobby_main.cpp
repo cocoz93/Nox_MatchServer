@@ -12,6 +12,8 @@
 //   · 게임 서버 연결(4010 · 기본 127.0.0.1 — 바깥에 안 엶) 줄은 방 거울(`wol::RoomMirror` — 확인 · 등록 · 방 알림 · 새 방 답 · 판 결과)에
 //   · 둘은 같은 접속 번호 공간이라 돌려받은 줄(`wol::Out`)을 그대로 보낸다. 사건이 어느 듣기에서 왔는지는 듣기 포트로 가른다
 //   · 새 방 답을 기다리는 동안에도 다른 줄을 그대로 받는다 — 시간 초과는 루프가 100ms 마다 `Lobby::Tick`
+//   · 닫기 신호 둘 — 콘솔(Ctrl+C · 창 닫기)과 이름 있는 이벤트 `nox_lobby_stop_<pid>`(창 없이 띄운 도구가 켠다 — `nox_server_stop_<pid>` 와 같은 꼴).
+//     끝 줄(셈)을 찍고 나간다 — 강제 종료로 셈을 잃지 않게
 //
 // 설정 파일 — `[token] key = <16진 64자>`(입장 토큰 키 — 게임 서버와 같은 값. 연결 확인 키 · 게임 서버별 토큰 키도 이것에서 뽑는다)
 // ⚠ --bind 0.0.0.0 은 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다. 같은 PC 시험은 --bind 127.0.0.1 로 충분하다.
@@ -140,6 +142,9 @@ int main(int argc, char** argv) {
     nox::wol::RoomMirror mirror(cfg.joinKey);
     nox::wol::Lobby lobby(cfg, mirror);
     mirror.Attach(lobby);
+    wchar_t stopName[64];
+    swprintf(stopName, 64, L"nox_lobby_stop_%lu", GetCurrentProcessId());
+    HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, stopName);
     Log("[로비] 듣기 — 클라 %s:%u · 게임 서버 연결 %s:%u · 방은 게임 서버가 알린 것만 · 입장 토큰(설정 %s)\n",
         nox::wol::IpDotted(bindIp).c_str(), lobbyPort, nox::wol::IpDotted(linkBindIp).c_str(), linkPort, configPath.c_str());
     std::fflush(stdout);
@@ -211,6 +216,7 @@ int main(int argc, char** argv) {
 
     while (!g_stop) {
         if (seconds > 0 && std::chrono::steady_clock::now() - start >= std::chrono::seconds(seconds)) break;
+        if (stopEvent && WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;
         // 100ms — 미룬 새 방 답의 시간 초과(`Tick`) · --seconds · 닫기 신호를 보려고 깨어난다
         WaitForSingleObject(static_cast<HANDLE>(tcp.WaitHandle()), 100);
         evs.clear();
@@ -225,6 +231,7 @@ int main(int argc, char** argv) {
     }
 
     tcp.CloseAll();
+    if (stopEvent) CloseHandle(stopEvent);
     const nox::wol::LobbyStats& ls = lobby.Stats();
     const nox::wol::MirrorStats& ms = mirror.Stats();
     Log("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu · 토큰 %llu · 새 방 %llu(물음 %llu · 실패 %llu · 시간 초과 %llu · 버림 %llu) · 채팅 %llu\n",

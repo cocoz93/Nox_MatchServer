@@ -907,11 +907,6 @@ int main(int argc, char** argv) {
             for (const nox::NetworkRequest& r : netRequests) if (r.type == nox::NetworkRequest::Type::SEND_MSG) ++made;
             net.PushRequests(netRequests);
             drainRoomEvents();   // ★ 10-19 MO 5단계 작업 3 — 판 결과(판 끝 · 중단)는 `RunTick` 안에서만 생긴다
-            // ★ 10-20 v2 작업 4b — 방 사실이 바뀐 방만 로비에(인원 · 방장 · 판 상태 · 맵 · 빈 방 닫힘)
-            if (lobbyClient) {
-                lobbyClient->AfterTick(lobbyRequests);
-                net.PushRequests(lobbyRequests);
-            }
             // ★ 10-12 플랜 B 작업 7c — 방마다 진단(`RoomTickDiagnostics` — 옛 이 자리의 블록을 옮김)
             rooms.ForEachRoom([&](nox::CRoom& room) { room.TickDiagnostics(room.SendsSinceMark()); });
             // ★ 10-12 플랜 B 작업 7c — 프로세스 몫 초당 줄(통신 층 · 스레드 지표). 방 줄과 따로 1초마다 — 방마다 프레임이 달라
@@ -1011,6 +1006,12 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
             }
         }
+        // ★ 10-20 v2 작업 4b · 4c — 방 사실이 바뀐 방만 로비에(인원 · 방장 · 판 상태 · 맵 · 빈 방 닫힘). 틱 블록 밖 — 바퀴마다.
+        //   틱 블록 안에 두었더니 마지막 방이 닫힌 뒤 틱이 안 돌아(`BeginTick` 은 방이 없으면 0) 닫힘이 로비에 안 갔다(10-20 lobby_smoke 실물)
+        if (lobbyClient) {
+            lobbyClient->AfterTick(lobbyRequests);
+            net.PushRequests(lobbyRequests);
+        }
         // ★ 10-09 플랜 A 5d 자가검증 ② — 기다림. 옛 `Sleep(1)`(5d-2b — 실제로는 약 15.5ms 잠)은 받은 것을 평균 8ms 늦게 처리했고
         //   틱 간격이 16~48ms로 흔들렸다(10-09 실측). 마감이 이미 지났으면 기다리지 않고 바로 다음 바퀴(밀린 틱을 몰아서 돈다)
         uint32_t tickDue = 0;
@@ -1025,6 +1026,11 @@ int main(int argc, char** argv) {
                 else
                     WaitForSingleObject(waits[0], static_cast<DWORD>(left));   // 타이머가 없으면 이벤트만 시간 한도로(헛돌지 않게)
             }
+        } else {
+            // ★ 10-20 v2 작업 4c — 방이 하나도 없으면 틱 마감이 없다 — 이벤트(로비 줄 · 접속 시도)나 한 틱 길이까지 기다린다(닫기 신호도 그 안에).
+            //   옛 꼴은 기다리지 않고 헛돌았다(10-20 실측 — 방 없는 게임 서버가 5초에 CPU 4.8초). 로비 방식은 방 없이 시작해 늘 이 꼴로 쉰다
+            constexpr DWORD kIdleWaitMs = 33;   // 한 틱(30Hz)
+            WaitForSingleObject(static_cast<HANDLE>(net.EventsReadyHandle()), kIdleWaitMs);
         }
     }
     // ★ 10-09 조각 5d-2c — 정상 종료(`Docs/LAYERS_DESIGN.md` 「네트워크 스레드」) — 쌓인 요청을 넘기고 → 네트워크 스레드가 그것을 보낸 뒤
