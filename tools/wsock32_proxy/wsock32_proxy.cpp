@@ -23,12 +23,17 @@
 //   F. 정품은 받은 방 목록에 있는 채널에만 참가를 보내고, 제 이름 방은 화면 목록에 안 그린다(10-15 · 10-16)
 //      → 목록 끝에 「내 방」 줄을 끼우고(⑤), 목록 항목은 베끼지 않고 짓는다(⑥ · `HostGameEntry.h`)
 //   G. 메모리 칸 주소는 Game.exe 판마다 다르다
-//      → 판 확인(PE 시각 · 이미지 크기 · 실린 자리)이 맞을 때만 E · F 를 켠다
+//      → 판 확인(PE 시각 · 이미지 크기 · 실린 자리)이 맞을 때만 E · F · I 를 켠다
 //   H. 이 DLL 은 다른 로비(XWIS 등)에 붙을 때도 실린다
 //      → 로비가 `NOXSERVER 1` 로 답한 「우리 로비」에서만 E · F 를 켠다 — 아니면 원작 그대로
+//   I. ★ 10-20 v2 작업 5 — 대화방 화면 오른쪽 위 채널 목록의 빈 칸(항목 아래)을 누르면 정품이 죽는다 — 목록 칸 글자(창 메시지 0x4016)를
+//      범위 확인 없이 읽는다(0x44790A~0x44793D · 범위 밖이면 0 → `cmp word ptr [eax],0` 접근 위반 0x44793D · v2 시범 정적 분석).
+//      v2 는 배틀넷 꼴로 채팅 채널을 쓰므로(사용자 10-20) 사람이 그 목록을 자주 누른다
+//      → 그 자리 9바이트(0x44793A)를 작은 동굴로 돌려 칸 글자가 0 이면 목록만 다시 그리고 끝낸다(⑧ · 판 확인만 — 우리 로비와 무관한 정품 화면 결함 ·
+//        v2 시범 사람 확인 43 ⭕ — 빈 칸을 눌러도 안 죽고 DLL 기록에 「가드가 막음」)
 //
 //   그래서 — 정품의 화면 · 버튼 · 프로토콜은 그대로 쓰고, 정품이 못 하는 「누가 몇 번 방인지 알리기」와 「우리 서버에 방 만들기」만
-//   이 DLL 이 통신 길목과 메모리 다섯 칸으로 메운다.
+//   이 DLL 이 통신 길목과 메모리 다섯 칸으로 메운다. 정품 화면 결함 하나(I)는 코드 9바이트를 돌려 막는다.
 //   서버 쪽 짝 — 토큰 짓기 · 검증 `server/include/nox/JoinToken.h` · 로비 줄과 새 방 `server/src/lobby/Lobby.cpp` · 꼬리 떼기 `server/src/UdpServer.cpp`
 // ────────────────────────────────────────────────────────────────────────────────────────
 //
@@ -61,6 +66,10 @@
 //   ⑥ Host Game 을 누르고 캐릭터 창이 뜨면 「내 방」 목록 항목 · WOL 채널을 지어(`HostGameEntry.h`) 고른 항목으로 넣고
 //      「만들기」를 「들어가기」로 바꾼다 — 다섯 칸(10-13~16 외부 도구 memhost3~5 가 정품에서 쓴 칸). 50ms 마다 보는 스레드 하나
 //   ⑦ 시험용 — 환경변수 NOX_MYROOM_LINE=1 이면 판 확인 없이 ⑤ 만 켠다(selftest.exe 가 줄 끼우기를 보려고 · ⑥ 은 판 확인 없이 안 돈다)
+//
+// ★ 10-20 MO 6단계 v2 작업 5 — ⑧ 대화방 목록 빈 칸 가드(위 I · `Docs/LOBBY_SPLIT_DESIGN.md` 작업 5 · v2 시범의 ⑧ 을 본판으로 —
+//   시범의 시작 신호 · 버튼 대신 누르기 · 메시지 훅은 안 가져옴). 판 확인이 맞고 그 자리 바이트가 정품 그대로일 때 DLL 이 실리며 붙인다.
+//   막은 횟수는 로그의 10초 요약에 한 줄. 끄기: 환경변수 NOX_NO_CHANGUARD=1(정품이 죽는지 다시 보는 회차용)
 //
 // 로그: 환경변수 NOX_HOOK_LOG_DIR 이 있을 때만 <그 폴더>\wsock_<exe>_<pid>.log 에 쓴다(dinput_proxy 와 같은 스위치).
 //       없으면 로그도 집계도 안 하고 진짜로 넘기기만 한다.
@@ -213,6 +222,8 @@ static void Count(ModStat* m, Fn fn, int bytes)
     LeaveCriticalSection(&g_statCs);
 }
 
+static volatile LONG g_chanGuardHits = 0;   // ★ 10-20 v2 작업 5 — ⑧ 가드가 막은 횟수(동굴 코드가 센다)
+
 static DWORD WINAPI SummaryThread(LPVOID)
 {
     static ModStat last[kMaxMods];
@@ -233,6 +244,9 @@ static DWORD WINAPI SummaryThread(LPVOID)
             Log("%s", line);
         }
         memcpy(last, now, sizeof(last));
+        static LONG guardSeen = 0;   // ★ 10-20 v2 작업 5 — ⑧ 가드가 막은 횟수가 늘었으면 한 줄
+        const LONG hits = g_chanGuardHits;
+        if (hits != guardSeen) { Log("⑧ 대화방 목록 가드가 막음 — 빈 칸 클릭 누적 %ld번", hits); guardSeen = hits; }
     }
 }
 
@@ -719,6 +733,37 @@ extern "C" HANDLE WSAAPI Hook_WSAAsyncGetHostByName(HWND hWnd, u_int wMsg, const
 
 // ─────────────────────────────────────────────── 들고 나기
 
+// ★ 10-20 MO 6단계 v2 작업 5 — ⑧ 대화방 목록 빈 칸 가드(머리 주석 I). 0x44793A 의 `add esp,10h` · `cmp word ptr [eax],0` · `je 447992`
+//   (9바이트)를 동굴로 돌린다 — eax(칸 글자)가 0 이면 센 뒤 447992(목록 다시 그리고 끝) · 아니면 원래 비교 그대로 이어 447943 으로.
+//   v2 시범(10-19)의 InstallChanGuard 그대로 — 사람 확인 43 ⭕
+static void Put32(unsigned char* p, DWORD v) { memcpy(p, &v, 4); }
+static void InstallChanGuard()
+{
+    unsigned char* site = (unsigned char*)0x44793A;
+    static const unsigned char orig[9] = { 0x83, 0xC4, 0x10, 0x66, 0x83, 0x38, 0x00, 0x74, 0x4F };
+    if (memcmp(site, orig, sizeof(orig)) != 0) { Log("⑧ 대화방 목록 가드 — 자리 바이트가 정품과 달라 안 붙임"); return; }
+    unsigned char* cave = (unsigned char*)VirtualAlloc(NULL, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!cave) { Log("⑧ 대화방 목록 가드 — 동굴 메모리 실패 err=%lu", GetLastError()); return; }
+    unsigned char* p = cave;
+    *p++ = 0x83; *p++ = 0xC4; *p++ = 0x10;                                   // add esp,10h
+    *p++ = 0x85; *p++ = 0xC0;                                                // test eax,eax
+    *p++ = 0x75; unsigned char* jnz = p++;                                   // jnz ok
+    *p++ = 0xF0; *p++ = 0xFF; *p++ = 0x05; Put32(p, (DWORD)(uintptr_t)&g_chanGuardHits); p += 4;   // lock inc [hits]
+    *p++ = 0xE9; Put32(p, 0x447992 - (DWORD)(uintptr_t)(p + 4)); p += 4;      // jmp 447992
+    *jnz = (unsigned char)(p - (jnz + 1));
+    *p++ = 0x66; *p++ = 0x83; *p++ = 0x38; *p++ = 0x00;                       // ok: cmp word ptr [eax],0
+    *p++ = 0x0F; *p++ = 0x84; Put32(p, 0x447992 - (DWORD)(uintptr_t)(p + 4)); p += 4;   // je 447992
+    *p++ = 0xE9; Put32(p, 0x447943 - (DWORD)(uintptr_t)(p + 4)); p += 4;      // jmp 447943
+    DWORD old = 0;
+    if (!VirtualProtect(site, sizeof(orig), PAGE_EXECUTE_READWRITE, &old)) { Log("⑧ 대화방 목록 가드 — 보호 바꾸기 실패 err=%lu", GetLastError()); return; }
+    site[0] = 0xE9;
+    Put32(site + 1, (DWORD)(uintptr_t)cave - (DWORD)(uintptr_t)(site + 5));
+    for (int i = 5; i < 9; ++i) site[i] = 0x90;
+    VirtualProtect(site, sizeof(orig), old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof(orig));
+    Log("⑧ 대화방 목록 가드 붙임 — 0x44793A → 동굴 %p(%d바이트)", (void*)cave, (int)(p - cave));
+}
+
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH) {
@@ -735,6 +780,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         g_hostGameOn = gameOk && !off;
         g_listOn = (gameOk || forceList) && !off;
         if (g_hostGameOn) CloseHandle(CreateThread(NULL, 0, HostGameThread, NULL, 0, NULL));
+        sw[0] = 0;
+        const bool noGuard = GetEnvironmentVariableA("NOX_NO_CHANGUARD", sw, sizeof(sw)) && sw[0] == '1';   // ★ 10-20 v2 작업 5 — ⑧ 끄기
 
         char dir[MAX_PATH];
         if (GetEnvironmentVariableA("NOX_HOOK_LOG_DIR", dir, MAX_PATH)) {
@@ -747,8 +794,10 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
             Log("=== wsock32 프록시(통과만) 붙음 ===  exe=%s  나=%s", exe, self);
             Log("Host Game 돌리기 = %s · 내 방 줄 = %s (판 확인 %s · 끄기 NOX_NO_HOSTGAME %s · 시험 NOX_MYROOM_LINE %s) — 둘 다 우리 로비 표시를 받아야 움직임",
                 g_hostGameOn ? "켬" : "끔", g_listOn ? "켬" : "끔", gameOk ? "통과" : "다른 판", off ? "켬" : "끔", forceList ? "켬" : "끔");
+            Log("⑧ 대화방 목록 가드 = %s", !gameOk ? "안 붙임(다른 판)" : noGuard ? "끔(NOX_NO_CHANGUARD)" : "붙임");
             CloseHandle(CreateThread(NULL, 0, SummaryThread, NULL, 0, NULL));
         }
+        if (gameOk && !noGuard) InstallChanGuard();   // ★ 10-20 v2 작업 5 — 로그 파일을 정한 뒤(붙임 · 안 붙임 줄이 기록에 남게)
     }
     return TRUE;
 }
