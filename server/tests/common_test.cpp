@@ -7,6 +7,7 @@
 //   ⑤ 일회용 장부
 //   ⑥ 설정 파일 — 구역·주석·BOM·대소문자·차례 · 틀린 꼴은 줄 번호와 함께 실패
 //   ⑦ TCP 줄 부품(작업 8a) — 루프백 접속 · 줄 나누기(CRLF · LF · 나뉘어 온 줄) · 보내기 CRLF · 끊김 갈래 넷(본체는 `tcp_lines_test.cpp`)
+//     ★ 10-20 v2 작업 2 — 바깥으로 붙기: 붙는 중 쌓은 줄 · 왕복 · 상대가 닫음 · 듣는 이 없음(붙지 못함) · 붙는 중 닫기 · 곧바로 실패
 //   ⑧ 로비 연결 규약(MO 6단계 v2 작업 1 — `LobbyLink.h`) — 줄 갈래 아홉 왕복 · 글 칸(한글 · 빈칸 · 빈 글) · 읽기 실패 갈래 여덟 ·
 //     판 결과 줄 한도 · 키 파생(고정 값 · 실행 번호 · 주소 · 포트마다 다름 · 다른 게임 서버 키의 토큰은 서명 실패) · 확인 서명
 #include <cstdio>
@@ -238,7 +239,7 @@ void TestTcpLines() {
     std::printf("⑦ TCP 줄 부품\n");
     const auto r = RunTcpLinesChecks();
     for (const auto& c : r) Check(c.first, c.second.c_str());
-    Check(r.size() == 14, "TCP 줄 부품 확인 수 14(본체가 끝까지 돌았나)");
+    Check(r.size() == 25, "TCP 줄 부품 확인 수 25(본체가 끝까지 돌았나 — 듣기 14 + ★ 10-20 바깥으로 붙기 11)");
 }
 
 void TestLobbyLink() {

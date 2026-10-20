@@ -1,4 +1,4 @@
-﻿// tcp_lines_test.cpp — TCP 줄 부품(`nox::CTcpLines` — 작업 8a) 시험. 루프백 TCP 로 실제로 주고받는다.
+﻿// tcp_lines_test.cpp — TCP 줄 부품(`nox::CTcpLines` — 작업 8a · ★ 10-20 v2 작업 2 바깥으로 붙기) 시험. 루프백 TCP 로 실제로 주고받는다.
 //   `common_test.cpp` 와 따로 둔 까닭 — winsock(windows.h)의 `far` 매크로가 그쪽 토큰 시험 본문과 부딪힌다(`net_thread_test.cpp` 와 같은 꼴).
 //   결과는 (통과, 한 줄) 목록으로 돌려주고, `common_test.cpp` 의 `TestTcpLines` 가 `Check` 로 센다.
 #define NOMINMAX
@@ -143,12 +143,111 @@ void TestTcpLines() {
     Check(t.ConnCount() == 0, "남은 접속 0");
 }
 
+// ── ★ 10-20 MO 6단계 v2 작업 2 — 바깥으로 붙기(`Connect`). 두 부품(듣는 쪽 · 붙는 쪽)을 같이 훑는다 ──
+size_t CountType(const std::vector<nox::TcpLineEvent>& ev, nox::TcpLineEvent::Type t) {
+    size_t n = 0;
+    for (const auto& e : ev) n += e.type == t ? 1 : 0;
+    return n;
+}
+
+const nox::TcpLineEvent* FindType(const std::vector<nox::TcpLineEvent>& ev, nox::TcpLineEvent::Type t) {
+    for (const auto& e : ev)
+        if (e.type == t) return &e;
+    return nullptr;
+}
+
+// 이벤트 둘 중 하나를 기다리고 둘 다 훑고 보낸다 — `done` 이 참이거나 `ms` 가 지나면 끝
+template <class F>
+void PollBoth(nox::CTcpLines& a, nox::CTcpLines& b, std::vector<nox::TcpLineEvent>& ea, std::vector<nox::TcpLineEvent>& eb, F done,
+              int ms = 2000) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    HANDLE h[2] = {static_cast<HANDLE>(a.WaitHandle()), static_cast<HANDLE>(b.WaitHandle())};
+    while (!done() && std::chrono::steady_clock::now() < until) {
+        WaitForMultipleObjects(2, h, FALSE, 50);
+        a.Poll(ea);
+        b.Poll(eb);
+        a.Flush(ea);
+        b.Flush(eb);
+    }
+}
+
+void TestConnect() {
+    using E = nox::TcpLineEvent;
+    nox::CTcpLines srv, cli;
+    std::string err;
+    Check(srv.Listen(0x7f000001u, 0, err), "붙기 — 듣는 쪽 열기");
+    const uint16_t port = srv.ListenPort(0);
+    std::vector<E> es, ec;
+
+    const int id = cli.Connect(0x7f000001u, port, err);
+    Check(id != 0 && cli.Has(id) && cli.Send(id, "early"), "붙기 시작 → 접속 번호 · 붙는 중에도 보내기 버퍼에 쌓음");
+    PollBoth(srv, cli, es, ec, [&] { return CountType(ec, E::Type::OPENED) && CountType(es, E::Type::LINE); });
+    const E* co = FindType(ec, E::Type::OPENED);
+    Check(co && ec.size() == 1 && co->conn == id && co->outbound && co->port == port && co->peerIp == 0x7f000001u &&
+              co->localIp == 0x7f000001u,
+          "붙음 → OPENED 하나(바깥 · 상대 포트 · 상대 127.0.0.1 · 내 쪽 127.0.0.1)");
+    const E* so = FindType(es, E::Type::OPENED);
+    const E* sl = FindType(es, E::Type::LINE);
+    Check(so && !so->outbound && sl && sl->line == "early" && !sl->outbound, "붙는 중 쌓은 줄이 붙은 뒤 상대에 감(듣는 쪽 사건은 바깥 아님)");
+    const int sc = so ? so->conn : 0;
+    es.clear();
+    ec.clear();
+
+    Check(srv.Send(sc, "from srv") && cli.Send(id, "from cli"), "양쪽 보내기");
+    PollBoth(srv, cli, es, ec, [&] { return CountType(ec, E::Type::LINE) && CountType(es, E::Type::LINE); });
+    const E* cl = FindType(ec, E::Type::LINE);
+    sl = FindType(es, E::Type::LINE);
+    Check(cl && cl->line == "from srv" && cl->conn == id && cl->outbound && sl && sl->line == "from cli",
+          "줄 왕복 — 붙은 쪽 LINE 도 바깥 표시");
+    es.clear();
+    ec.clear();
+
+    srv.Close(sc, es);
+    PollBoth(srv, cli, es, ec, [&] { return CountType(ec, E::Type::CLOSED) != 0; });
+    const E* cc = FindType(ec, E::Type::CLOSED);
+    Check(cc && ec.size() == 1 && cc->conn == id && cc->outbound && std::strcmp(cc->why, nox::CTcpLines::kWhyPeerClosed) == 0 &&
+              !cli.Has(id),
+          "상대가 닫음 → CLOSED(바깥 · 「상대가 닫음」) · 접속 사라짐");
+    es.clear();
+    ec.clear();
+
+    // 아무도 안 듣는 포트 — 잠깐 열었다 닫은 포트(윈도 루프백은 거절을 몇 번 다시 시도해 1~2초 걸린다)
+    uint16_t deadPort = 0;
+    {
+        nox::CTcpLines tmp;
+        std::string e2;
+        if (tmp.Listen(0x7f000001u, 0, e2)) deadPort = tmp.ListenPort(0);
+    }
+    // 붙는 동안 줄을 쌓아 두고 `Flush` 를 여러 번 — 붙기 전 보내기를 건너뛰어야 까닭이 「보내기 오류」가 아니라 「붙지 못함」
+    const int id2 = cli.Connect(0x7f000001u, deadPort, err);
+    cli.Send(id2, "never");
+    PollBoth(srv, cli, es, ec, [&] { return CountType(ec, E::Type::CLOSED) != 0; }, 8000);
+    cc = FindType(ec, E::Type::CLOSED);
+    Check(deadPort && id2 != 0 && cc && ec.size() == 1 && cc->conn == id2 && cc->outbound &&
+              std::strcmp(cc->why, nox::CTcpLines::kWhyConnectFailed) == 0 && !cli.Has(id2),
+          "듣는 이 없는 포트(줄 쌓아 둠) → CLOSED 「붙지 못함」 하나(OPENED 없음 · 보내기 오류 아님)");
+    ec.clear();
+
+    const int id3 = cli.Connect(0x7f000001u, deadPort, err);
+    Check(id3 != 0 && cli.Send(id3, "lost") && cli.Close(id3, ec) && ec.size() == 1 &&
+              std::strcmp(ec[0].why, nox::CTcpLines::kWhyLocal) == 0 && ec[0].outbound,
+          "붙는 중 이쪽에서 닫음 → CLOSED 「이쪽에서 닫음」 하나");
+    PollBoth(srv, cli, es, ec, [] { return false; }, 300);
+    Check(ec.size() == 1 && es.empty(), "닫은 뒤 그 접속 사건 없음 · 듣는 쪽엔 아무것도 안 옴");
+
+    std::string err0, errP;
+    Check(cli.Connect(0, port, err0) == 0 && !err0.empty() && cli.Connect(0x7f000001u, 0, errP) == 0 && !errP.empty() &&
+              cli.ConnCount() == 0,
+          "주소 0.0.0.0 · 포트 0 → 곧바로 0 · 까닭 · 접속 안 남음");
+}
+
 }  // namespace
 
 std::vector<std::pair<bool, std::string>> RunTcpLinesChecks() {
     std::vector<std::pair<bool, std::string>> r;
     g_out = &r;
     TestTcpLines();
+    TestConnect();   // ★ 10-20 v2 작업 2
     g_out = nullptr;
     return r;
 }

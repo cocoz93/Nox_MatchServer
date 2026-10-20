@@ -7,6 +7,9 @@
 //   · 줄은 LF 로 가르고 끝의 CR 을 뗀다(LF 만 와도 받는다). 보낼 때는 CRLF 를 붙인다
 //   · 보내기는 버퍼에 쌓고 `Flush` 에서 보낸다 — 상대가 안 읽어도 부르는 쪽이 막히지 않는다(막히면 다음 `Flush` 에)
 //   · 줄을 해석하지 않는다 — 받은 줄을 사건으로 내놓고, 부르는 쪽이 준 줄을 보낼 뿐이다
+// ★ 10-20 MO 6단계 v2 작업 2(`Docs/LOBBY_SPLIT_DESIGN.md`) — 바깥으로 붙기(`Connect`). 게임 서버가 로비 연결 포트에 붙는다.
+//   막지 않는다 — 붙으면 `OPENED`(`outbound`) · 못 붙으면 `CLOSED`(까닭 「붙지 못함」). 붙는 동안 `Send` 한 줄은 쌓였다가 붙은 뒤 나간다.
+//   다시 붙기 · 붙는 시간 한도는 부르는 쪽 몫(끊김을 보고 몇 초 뒤 다시 `Connect` · 오래 걸리면 `Close`)
 //
 // 한 스레드에서만 부른다(만든 스레드와 같지 않아도 된다).
 #pragma once
@@ -29,7 +32,8 @@ struct TcpLineEvent {
     };
     Type type = Type::LINE;
     int conn = 0;               // 접속 번호(1부터 · 다시 안 씀)
-    uint16_t port = 0;          // 들어온 듣기 포트
+    uint16_t port = 0;          // 들어온 듣기 포트(★ 10-20 — 바깥으로 붙은 접속은 상대 포트)
+    bool outbound = false;      // ★ 10-20 v2 작업 2 — 이쪽이 `Connect` 로 붙은 접속(OPENED · LINE · CLOSED 모두)
     uint32_t peerIp = 0;        // OPENED — 상대 IPv4(a<<24|b<<16|c<<8|d)
     uint32_t localIp = 0;       // OPENED — 상대가 붙은 내 쪽 IPv4(로비 주소를 알려 줄 때 쓴다)
     std::string line;           // LINE
@@ -48,6 +52,7 @@ public:
     static constexpr const char* kWhyLineTooLong = "줄이 너무 길다";
     static constexpr const char* kWhyCloseAfter = "보낸 뒤 끊기";   // `Send(…, closeAfter)` 의 줄을 다 보냄(로비의 QUIT 답)
     static constexpr const char* kWhyLocal = "이쪽에서 닫음";      // `Close`
+    static constexpr const char* kWhyConnectFailed = "붙지 못함"; // ★ 10-20 — `Connect` 가 끝내 못 붙음(상대가 안 들음 · 닿지 않음)
 
     CTcpLines();
     ~CTcpLines();
@@ -58,6 +63,9 @@ public:
     //   실패하면 false · `err` 에 까닭
     bool Listen(uint32_t bindIp, uint16_t port, std::string& err);
     uint16_t ListenPort(size_t i) const { return i < _listeners.size() ? _listeners[i].port : 0; }
+    // ★ 10-20 v2 작업 2 — 바깥으로 붙기를 시작한다(막지 않음). 접속 번호를 돌려준다 — 결과는 뒤의 `Poll` 이 `OPENED` · `CLOSED` 로.
+    //   소켓을 못 만들거나 곧바로 틀린 주소면 0 · `err` 에 까닭(사건 없음). 접속 수 한도도 0
+    int Connect(uint32_t ip, uint16_t port, std::string& err);
     // 소켓 일(새 접속 · 받을 것 · 다시 보낼 수 있음 · 끊김)이 생기면 켜지는 이벤트(WSAEVENT). 수동으로 꺼지는 이벤트라 `Poll` 이 끈다
     void* WaitHandle() const { return _event; }
 
@@ -86,9 +94,13 @@ private:
         std::string in;          // 아직 줄이 안 끝난 받은 바이트
         std::string out;         // 아직 못 보낸 바이트
         bool closeAfter = false; // 보내기 버퍼를 다 비우면 끊는다
+        bool outbound = false;   // ★ 10-20 — `Connect` 로 붙음
+        bool connecting = false; // ★ 10-20 — 붙는 중(받기 · 보내기를 건너뛴다 — 붙기 전 `recv` · `send` 는 오류다)
+        uint32_t peerIp = 0;     // ★ 10-20 — 붙을 상대(OPENED 에 싣는다)
     };
 
     void Accept(const Listener& l, std::vector<TcpLineEvent>& out);
+    void CheckConnect(int conn, std::vector<TcpLineEvent>& out);   // ★ 10-20 — 붙는 중인 접속이 붙었나 · 못 붙었나
     void Drain(int conn, std::vector<TcpLineEvent>& out);   // 받을 것을 다 받아 줄로 · 끊기면 지운다
     void Drop(int conn, const char* why, std::vector<TcpLineEvent>& out);
 
