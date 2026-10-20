@@ -5,7 +5,9 @@
 #       ② 설정 config\nox_mo.ini(없으면 입장 토큰 키를 새로 — git 밖 · 비밀)
 #       ③ 라우터 nox_router 127.0.0.1:4005 → ④ 로비 nox_lobby 127.0.0.1:4000(게임 서버 연결 127.0.0.1:4010)
 #       ⑤ 게임 서버 nox_server UDP 18590 --lobby 127.0.0.1:4010(로비 기록에서 등록 확인 — 방 없이 시작 · 새 방은 로비가 묻는다)
-#       ⑥ 클라1 Game.exe · 클라2 Game2.exe(-OneClient 면 클라1 만 · -NoClients 면 안 띄움). DLL 기록(NOX_HOOK_LOG_DIR)도 같은 기록 폴더에
+#       ⑥ 클라 DLL — 게임 폴더 wsock32.dll 이 빌드한 tools\wsock32_proxy\wsock32.dll 과 다르면 바꿔 끼운다(바꾸기 전 것은 _out\mo_local\wsock32.dll.<md5> 로 한 번 떠 둠 ·
+#          되돌리기 = 그 파일을 게임 폴더 wsock32.dll 로 복사). -KeepDll 이면 안 바꾼다
+#       ⑦ 클라1 Game.exe · 클라2 Game2.exe(-OneClient 면 클라1 만 · -NoClients 면 안 띄움). DLL 기록(NOX_HOOK_LOG_DIR)도 같은 기록 폴더에
 #       기록 = _out\mo_local\<월일_시분초>\ — router.log · lobby.log · server.log · 판 결과는 게임 서버 실행 파일 옆 results\matches.jsonl
 #   -Mode Stop
 #       게임 서버 · 로비 = 닫기 이벤트(nox_server_stop_<pid> · nox_lobby_stop_<pid> — 끝 줄 셈을 찍고 나감 · 응답 없을 때만 강제)
@@ -13,7 +15,7 @@
 #
 # 왜 — 10-20 v2 로 로비와 게임 서버가 다른 프로세스가 됐다. 옛 사람 판은 채널 하나(nox_server --lobby-port)만 띄웠다.
 #   다른 PC 를 붙이는 판은 mo_host.ps1(서버_MO_열기.bat) — 이것은 같은 PC 루프백 전용(바깥에 안 엶)
-param([ValidateSet('Start', 'Stop')][string]$Mode = 'Start', [switch]$NoClients, [switch]$OneClient)
+param([ValidateSet('Start', 'Stop')][string]$Mode = 'Start', [switch]$NoClients, [switch]$OneClient, [switch]$KeepDll)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $repo 'build\Release'
@@ -76,6 +78,25 @@ try {
   if (-not $reg) { throw "게임 서버가 로비에 등록하지 않았다 — $logDir\server.log · lobby.log" }
   Write-Host "서버: 라우터 127.0.0.1:4005 · 로비 127.0.0.1:4000 · 게임 서버 UDP 18590(로비에 등록됨) — 기록 $logDir"
 
+  if (-not $KeepDll) {
+    $built = Join-Path $PSScriptRoot 'wsock32_proxy\wsock32.dll'
+    $inGame = Join-Path $game 'wsock32.dll'
+    if (-not (Test-Path -LiteralPath $built)) { throw "클라 DLL 빌드가 없다 — tools\wsock32_proxy\build.bat 먼저: $built" }
+    $hb = (Get-FileHash -Algorithm MD5 -LiteralPath $built).Hash
+    $hg = if (Test-Path -LiteralPath $inGame) { (Get-FileHash -Algorithm MD5 -LiteralPath $inGame).Hash } else { '' }
+    if ($hb -ne $hg) {
+      if ($hg) {
+        $bak = Join-Path $repo "_out\mo_local\wsock32.dll.$hg"
+        if (-not (Test-Path -LiteralPath $bak)) { Copy-Item -LiteralPath $inGame -Destination $bak }
+        Write-Host "클라 DLL: 게임 폴더 것($hg)을 떠 둠 — $bak"
+      }
+      Copy-Item -LiteralPath $built -Destination $inGame -Force
+      if ((Get-FileHash -Algorithm MD5 -LiteralPath $inGame).Hash -ne $hb) { throw '게임 폴더 DLL 을 바꿔 끼우지 못했다' }
+      Write-Host "클라 DLL: 빌드한 것으로 바꿈($hb)"
+    } else {
+      Write-Host "클라 DLL: 게임 폴더 것 = 빌드한 것($hb)"
+    }
+  }
   if (-not $NoClients) {
     $env:NOX_HOOK_LOG_DIR = $logDir   # 클라 DLL 기록도 같은 폴더에
     $c1 = Start-Process -FilePath (Join-Path $game 'Game.exe') -WorkingDirectory $game -PassThru
