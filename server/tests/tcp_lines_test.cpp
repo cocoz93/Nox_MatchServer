@@ -131,6 +131,30 @@ void TestTcpLines() {
     closesocket(c);
     ev.clear();
 
+    // ★ 10-20 v2 교차 대조 — 연결 규약 줄 한도(`kLinkMaxLine` 4095 = `kMaxLine` - 1)의 근거: 줄 끝 CR 과 LF 가 따로 오면
+    //   CR 까지 쌓인 채 한도를 본다 → 4095 + CR 은 받고 4096 + CR 은 끊는다
+    auto crThenLf = [&](size_t len) {
+        std::vector<E> e2;
+        SOCKET s2 = ConnectLoop(port);
+        PollUntil(t, e2, 1);
+        e2.clear();
+        SendRaw(s2, std::string(len, 'b') + "\r");
+        Sleep(100);
+        t.Poll(e2);   // CR 까지 받은 채로 한 번 훑는다
+        SendRaw(s2, "\n");
+        PollUntil(t, e2, 1);
+        closesocket(s2);
+        PollUntil(t, e2, 2);
+        return e2;
+    };
+    {
+        const auto e4095 = crThenLf(4095);
+        const auto e4096 = crThenLf(4096);
+        Check(!e4095.empty() && e4095[0].type == E::Type::LINE && e4095[0].line.size() == 4095, "4095 + CR · LF 따로 → 줄 하나(4095)");
+        Check(!e4096.empty() && e4096[0].type == E::Type::CLOSED && std::strcmp(e4096[0].why, nox::CTcpLines::kWhyLineTooLong) == 0,
+              "4096 + CR · LF 따로 → 끊음(줄 너무 김)");
+    }
+
     c = ConnectLoop(port);
     PollUntil(t, ev, 1);
     conn = ev.empty() ? 0 : ev[0].conn;
