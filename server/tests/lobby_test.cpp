@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "nox/Lobby.h"
+#include "nox/LobbyLink.h"
 #include "nox/Router.h"
 #include "nox/WolGameInfo.h"
 
@@ -157,17 +158,30 @@ nox::wol::LobbyRoom FakeRoom(uint16_t id, const char* host) {
 struct FakeRooms final : nox::wol::ILobbyRooms {
     std::vector<nox::wol::LobbyRoom> rooms;
     bool canCreate = true;   // ★ 10-14 작업 10a — 새 방 만들기가 되나(채널이 대기 맵 없음 · 세계 차리기 실패면 false)
+    bool ask = false;        // ★ 10-20 v2 작업 3a — 게임 서버에 묻는 꼴(`Pending`)로 답하나(거울 흉내 — 답은 시험이 `OnRoomCreated` 로)
     int created = 0;
+    std::vector<uint32_t> asked;   // 물은 요청 번호
     std::vector<nox::wol::LobbyRoom> LobbyRooms() const override { return rooms; }
-    bool CreateRoomFor(const std::string& creator, nox::wol::LobbyRoom& out) override {
-        if (!canCreate) return false;
-        ++created;
-        out = FakeRoom(static_cast<uint16_t>(100 + created), creator.c_str());
-        out.name = creator + "의 게임";   // UTF-8(이 파일은 /utf-8) — 한글 이름의 코드페이지 바꾸기를 보려고(채널의 `RoomNameFor` 는 10-16 부터 영문)
-        out.map = "so_lod";
-        out.mode = "chat";
+    nox::wol::RoomRequest RequestRoom(uint32_t req, const std::string& creator, nox::wol::LobbyRoom& out, std::string& why) override {
+        if (ask) {
+            asked.push_back(req);
+            return nox::wol::RoomRequest::Pending;
+        }
+        if (!canCreate) {
+            why = "가짜 — 못 만듦";
+            return nox::wol::RoomRequest::Failed;
+        }
+        out = Make(creator);
         rooms.push_back(out);
-        return true;
+        return nox::wol::RoomRequest::Created;
+    }
+    nox::wol::LobbyRoom Make(const std::string& creator) {
+        ++created;
+        nox::wol::LobbyRoom r = FakeRoom(static_cast<uint16_t>(100 + created), creator.c_str());
+        r.name = creator + "의 게임";   // UTF-8(이 파일은 /utf-8) — 한글 이름의 코드페이지 바꾸기를 보려고(채널의 `RoomNameFor` 는 10-16 부터 영문)
+        r.map = "so_lod";
+        r.mode = "chat";
+        return r;
     }
 };
 
@@ -484,6 +498,137 @@ void NewRoomUnitTests() {
     out.clear();
     lb.OnLine(1, "LIST 37 37", out);
     Check(nameIn326(out) == "abcdefghijk\xC0\xC7 ", "이름 칸 15바이트 — 「게」(2바이트)가 넘쳐 「abcdefghijk의 」 14바이트");
+}
+
+// ── ★ 10-20 MO 6단계 v2 작업 3a — 미룬 새 방 답: 게임 서버에 묻고(`Pending`) 답이 오면 참가 답 · 갈래(만듦 · 실패 · 시간 초과 · 끊김 · 늦은 답 ·
+//   기다리는 중 또 참가) · 방마다 게임 서버 주소 · 포트 · 토큰 키 ──
+void PendingRoomUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;
+    cfg.room.maxPlayers = 31;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    uint32_t clock = 0xfffff000u;   // 32비트 시계가 도는 자리(한도 계산이 돌아도 맞나)
+    cfg.nowMs = [&clock] { return clock; };
+    FakeRooms fake;
+    fake.ask = true;
+    Lobby lb(cfg, fake);
+    const uint32_t local = 0x7f000001, peer = 0x7f000001;
+    const uint32_t gsIp = (10u << 24) | 5u;   // 10.0.0.5 — 게임 서버가 등록한 주소
+    const nox::JoinKey gsKey = nox::GameServerTokenKey(LobbyTestKey(), 1760000000u, gsIp, 18600);
+    auto login = [&](int conn, const char* nick) {
+        lb.OnConnect(conn, peer, local);
+        std::vector<Out> o;
+        for (const std::string l : {std::string("NOXCLIENT 2"), std::string("NICK ") + nick,
+                                    std::string("USER UserName HostName irc.westwood.com :RealName"), std::string("SETCODEPAGE 949")})
+            lb.OnLine(conn, l, o);
+    };
+    auto made = [&](const std::string& creator) {   // 게임 서버가 만든 방(그 게임 서버 주소 · 포트 · 키)
+        LobbyRoom r = fake.Make(creator);
+        r.gameIp = gsIp;
+        r.gamePort = 18600;
+        r.ownTokenKey = true;
+        r.tokenKey = gsKey;
+        return r;
+    };
+    auto kindsOf = [](const std::vector<Out>& o) {
+        std::string k;
+        for (const auto& x : o) {
+            const auto t = Tokens(x.line);
+            k += (k.empty() ? "" : ",") + (t.size() > 1 && t[0] == ":" ? t[1] : t.size() > 1 && !t[0].empty() && t[0][0] == ':' ? "user:" + t[1] : t[0]);
+        }
+        return k;
+    };
+    std::vector<Out> out;
+
+    // ① 물음 → 답 전엔 아무 줄도 안 감 → 답이 오면 참가 답(줄 차례는 곧바로 만든 때와 같음) · 토큰은 그 게임 서버 키로만 풀림
+    login(1, "wn");
+    lb.OnLine(1, "JOINGAME #wn's_game 1 ", out);
+    Check(out.empty() && fake.asked.size() == 1 && lb.PendingRooms() == 1 && lb.Stats().roomsRequested == 1 && lb.Stats().roomsCreated == 0,
+          "① 새 방 물음 → 답 전엔 줄 없음 · 기다림 1");
+    LobbyRoom r1 = made("wn");
+    fake.rooms.push_back(r1);   // 거울은 `CREATED` 앞의 `ROOM` 으로 먼저 채워진다
+    lb.OnRoomCreated(fake.asked[0], r1, out);
+    const auto tk = out.empty() ? std::vector<std::string>{} : Tokens(out[0].line);
+    uint8_t raw[nox::kJoinTokenSize] = {};
+    nox::JoinToken tok;
+    const bool hexOk = tk.size() == 3 && nox::ParseHex(tk[2], raw, sizeof(raw));
+    Check(kindsOf(out) == "NOXTOKEN,user:JOINGAME,332,353,366" && lb.PendingRooms() == 0 && lb.Stats().roomsCreated == 1,
+          "① 답 → NOXTOKEN · 원래 답 넷(곧바로 만든 때와 같은 차례) · 기다림 0");
+    Check(hexOk && tk[1] == "10.0.0.5:18600" &&
+              nox::VerifyJoinToken(gsKey, raw, sizeof(raw), kLobbyTestNow, peer, tok) == nox::JoinTokenCheck::Ok && tok.roomId == r1.gameRoomId &&
+              nox::VerifyJoinToken(LobbyTestKey(), raw, sizeof(raw), kLobbyTestNow, peer, tok) == nox::JoinTokenCheck::BadMac,
+          "① NOXTOKEN = 그 게임 서버 주소:포트 · 토큰은 그 게임 서버 키로만 풀림(설정 토큰 키로는 서명 실패)");
+    bool host353 = false;
+    for (const auto& o : out) host353 = host353 || o.line.find(":@wn,0," + std::to_string(gsIp) + " ") != std::string::npos;
+    Check(host353, "① 353 방장 자리 주소 = 그 게임 서버 주소");
+
+    // ② 목록 — 방마다 그 방의 게임 서버 주소(옛 꼴은 접속마다 하나) · 남의 방 참가도 그 게임 서버 키
+    LobbyRoom other = FakeRoom(5, "eve");   // 채널 안 로비 꼴(주소 · 키 없음) — 붙은 내 쪽 주소 · 설정 키
+    fake.rooms.push_back(other);
+    out.clear();
+    lb.OnLine(1, "LIST 37 37", out);
+    std::vector<std::string> ipCols;
+    for (const auto& o : out) {
+        const auto t = Tokens(o.line);
+        if (t.size() == 11 && t[1] == "326") ipCols.push_back(t[3] + "@" + t[9]);
+    }
+    Check(ipCols.size() == 2 && ipCols[0] == "#wn's_game@" + std::to_string(gsIp) && ipCols[1] == "#eve's_game@" + std::to_string(local),
+          "② 326 방장 주소 칸 = 방마다 그 방의 게임 서버(등록 주소 · 없으면 붙은 내 쪽 주소)");
+    login(2, "bob");
+    out.clear();
+    lb.OnLine(2, "JOINGAME #eve's_game 1 ", out);
+    const auto tk2 = out.empty() ? std::vector<std::string>{} : Tokens(out[0].line);
+    Check(tk2.size() == 3 && tk2[1] == "127.0.0.1:18590" && nox::ParseHex(tk2[2], raw, sizeof(raw)) &&
+              nox::VerifyJoinToken(LobbyTestKey(), raw, sizeof(raw), kLobbyTestNow, peer, tok) == nox::JoinTokenCheck::Ok,
+          "② 키 없는 방 → 옛 동작(붙은 내 쪽 주소 · 설정 포트 · 설정 토큰 키)");
+
+    // ③ 실패 답 → 답 없음 · 실패 셈 · 기다림 0
+    login(3, "carol");
+    out.clear();
+    lb.OnLine(3, "JOINGAME #carol's_game 1 ", out);
+    lb.OnRoomCreateFailed(fake.asked.back(), "대기 맵 없음");
+    Check(out.empty() && lb.PendingRooms() == 0 && lb.Stats().roomCreateFailed == 1, "③ 실패 답 → 답 없음 · 실패 셈 1 · 기다림 0");
+
+    // ④ 시간 초과 — 한도 1ms 전엔 남고 한도에 접힘(32비트 시계가 도는 자리) · 그 뒤 온 답은 늦은 답(버림)
+    login(4, "dave");
+    out.clear();
+    lb.OnLine(4, "JOINGAME #dave's_game 1 ", out);
+    const uint32_t reqDave = fake.asked.back();
+    lb.Tick();   // 한도 시각은 32비트를 넘어 0 근처로 돌았고 지금은 아직 안 돎 — 그냥 크기로 견주면 여기서 바로 접힌다
+    const bool waitingAtStart = lb.PendingRooms() == 1;
+    clock += kRoomRequestTimeoutMs - 1;
+    lb.Tick();
+    const bool stillWaiting = lb.PendingRooms() == 1 && lb.Stats().roomRequestTimeout == 0;
+    clock += 1;
+    lb.Tick();
+    Check(waitingAtStart && stillWaiting && lb.PendingRooms() == 0 && lb.Stats().roomRequestTimeout == 1 && out.empty(),
+          "④ 한도 1ms 전엔 기다림 · 한도에 시간 초과(답 없음) — 시계가 32비트를 넘어 돌아도");
+    lb.OnRoomCreated(reqDave, made("dave"), out);
+    Check(out.empty() && lb.Stats().lateRoomReply == 1 && lb.Stats().roomsCreated == 1, "④ 시간 초과 뒤 온 답 → 늦은 답(버림 · 참가 답 없음)");
+
+    // ⑤ 기다리는 중 또 참가 → 무시(답이 둘이 되지 않게) · 기다리는 중 클라가 끊음 → 버림 · 그 뒤 답은 늦은 답
+    login(5, "erin");
+    out.clear();
+    lb.OnLine(5, "JOINGAME #erin's_game 1 ", out);
+    const uint32_t reqErin = fake.asked.back();
+    lb.OnLine(5, "JOINGAME #erin's_game 1 ", out);
+    Check(out.empty() && fake.asked.size() == 4 && lb.Stats().joinWhilePending == 1 && lb.PendingRooms() == 1,
+          "⑤ 기다리는 중 또 참가 → 새로 안 묻고 무시");
+    lb.OnClose(5);
+    Check(lb.PendingRooms() == 0 && lb.Stats().roomRequestDropped == 1, "⑤ 기다리는 중 클라가 끊음 → 버림 셈 1");
+    lb.OnRoomCreated(reqErin, made("erin"), out);
+    lb.OnRoomCreateFailed(9999, "모르는 요청");
+    Check(out.empty() && lb.Stats().lateRoomReply == 3, "⑤ 끊긴 뒤 온 답 · 모르는 요청의 실패 → 늦은 답(버림)");
+
+    // ⑥ 요청 번호는 겹치지 않는다(답이 엉뚱한 접속에 가지 않게)
+    std::set<uint32_t> uniq(fake.asked.begin(), fake.asked.end());
+    Check(uniq.size() == fake.asked.size() && fake.asked.size() == 4, "⑥ 요청 번호 넷이 모두 다름");
+    // 셈 맞추기 — 물음 4 = 만듦 1 + 실패 1 + 시간 초과 1 + 버림 1
+    const LobbyStats& s = lb.Stats();
+    Check(s.roomsRequested == 4 && s.roomsRequested == s.roomsCreated + s.roomCreateFailed + s.roomRequestTimeout + s.roomRequestDropped,
+          "⑥ 물음 4 = 만듦 + 실패 + 시간 초과 + 버림(요청마다 한 갈래로 끝남)");
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
@@ -887,6 +1032,7 @@ int main(int argc, char** argv) {
         LobbyUnitTests();
         ChannelLobbyUnitTests();
         NewRoomUnitTests();
+        PendingRoomUnitTests();   // ★ 10-20 v2 작업 3a
         RouterUnitTests();
     }
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

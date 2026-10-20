@@ -56,6 +56,16 @@ std::vector<wol::LobbyRoom> CChannelLobby::LobbyRooms() const {
 }
 
 // ★ 10-14 작업 10a — 새 방: 틀 + 만든 사람 · 이름 · 대기 맵(무작위) · 채팅 모드 · 비면 닫음 → 방 관리자의 만들기 입구
+// ★ 10-20 v2 작업 3a — 로비의 새 틀(`RequestRoom` — 결과 셋)에 맞춤. 같은 프로세스라 늘 그 자리에서 답한다(물음 없음) ·
+//   방에 게임 서버 주소 · 키를 안 실어 옛 동작(붙은 내 쪽 주소 · 설정 토큰 키) 그대로. 작업 4 에서 이 객체를 걷는다
+wol::RoomRequest CChannelLobby::RequestRoom(uint32_t /*req*/, const std::string& creator, wol::LobbyRoom& out, std::string& why) {
+    if (!CreateRoomFor(creator, out)) {
+        why = _waitMaps.empty() ? "대기 맵 후보 없음(--wait-maps)" : "채널이 방을 못 만듦(위 [방] 줄)";
+        return wol::RoomRequest::Failed;
+    }
+    return wol::RoomRequest::Created;
+}
+
 bool CChannelLobby::CreateRoomFor(const std::string& creator, wol::LobbyRoom& out) {
     if (_waitMaps.empty()) {
         std::printf("[로비] 새 방을 못 만듦 — 대기 맵 후보가 없다(--wait-maps)\n");

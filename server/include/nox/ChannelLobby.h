@@ -58,7 +58,9 @@ public:
 
 private:
     std::vector<wol::LobbyRoom> LobbyRooms() const override;
-    bool CreateRoomFor(const std::string& creator, wol::LobbyRoom& out) override;   // ★ 10-14 작업 10a
+    // ★ 10-20 v2 작업 3a — 로비의 새 방 요청(늘 그 자리에서 Created · Failed — 같은 프로세스)
+    wol::RoomRequest RequestRoom(uint32_t req, const std::string& creator, wol::LobbyRoom& out, std::string& why) override;
+    bool CreateRoomFor(const std::string& creator, wol::LobbyRoom& out);   // ★ 10-14 작업 10a
     void Flush(std::vector<NetworkRequest>& out);   // 로비가 돌려준 줄 → 요청 · 로비 기록 찍기
     static bool ToLobbyRoom(const RoomFact& f, wol::LobbyRoom& out);   // 만든 사람이 있는 방만 true
 

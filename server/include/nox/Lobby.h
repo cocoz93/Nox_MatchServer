@@ -22,6 +22,11 @@
 // ★ 10-14 플랜 B 작업 8d — 로비는 채널(`nox_server`) 안 게임 스레드에서 돈다(`CChannelLobby` 가 로비 TCP 사건을 넘긴다).
 //   방 목록은 갖지 않는다 — 채널이 주는 돌고 있는 방(`ILobbyRooms`)으로 그린다(위 `[rooms]` 줄은 옛 설명 — 설정 파일 방 목록 없앰).
 //   방 정보의 이름 · 맵 · 모드 · 인원도 그 방에서. 게임 서버 주소는 이 접속이 붙은 내 쪽 주소(채널 = 게임 서버 · IP 하나에 채널 하나)
+// ★ 10-20 MO 6단계 v2 작업 3a(`Docs/LOBBY_SPLIT_DESIGN.md`) — 로비가 다시 따로 된 프로세스(`nox_lobby`)가 되며 방은 다른 프로세스(게임 서버)에 산다.
+//   · 「새 방」은 묻고 기다린다 — `ILobbyRooms::RequestRoom` 이 곧바로 답하거나(채널 안 로비) 「물었음」을 돌려주고(게임 서버 거울),
+//     답이 오면 `OnRoomCreated` · `OnRoomCreateFailed` 가 미뤄 둔 참가 답을 마저 보낸다. 답이 안 오면 `Tick` 이 시간 초과로 접는다.
+//     로비는 게임 서버를 기다리지 않는다 — 기다리는 동안 다른 접속의 줄을 그대로 받는다(7단계 로그인 DB 답도 같은 틀)
+//   · 방마다 게임 서버 주소 · 포트 · 토큰 키(`LobbyRoom::gameIp` · `gamePort` · `tokenKey`) — 토큰은 그 방이 사는 게임 서버의 키로 서명한다
 #pragma once
 
 #include <cstdint>
@@ -32,6 +37,7 @@
 #include <string_view>
 #include <vector>
 
+#include "nox/Clock.h"
 #include "nox/JoinToken.h"
 #include "nox/WolGameInfo.h"
 
@@ -57,17 +63,34 @@ struct LobbyRoom {
     uint8_t players = 0;       // 게임 안 사람 수 — 방 정보의 인원
     uint8_t maxPlayers = 0;    // ★ 10-16 작업 12c — 방의 최대 인원(방 설정 · 0 이면 틀의 값)
     bool playing = false;      // ★ 10-16 작업 12c — 판 중이면 방 정보 `access` 1(닫힘 — 원작 칸 · 들어오면 게임 서버가 사유 4 로 거절)
+    // ★ 10-20 v2 작업 3a — 그 방이 사는 게임 서버. 비워 두면(채널 안 로비) 옛 동작 — 주소 = 설정 · 붙은 내 쪽 주소 · 포트 = 설정 · 키 = 설정 토큰 키
+    uint32_t gameIp = 0;       // 326 · 353 · NOXTOKEN 의 게임 서버 주소(0 = 옛 동작)
+    uint16_t gamePort = 0;     // NOXTOKEN 의 포트(0 = `LobbyConfig::gameServerPort`)
+    bool ownTokenKey = false;  // `tokenKey` 를 쓰나(false = `LobbyConfig::joinKey`)
+    JoinKey tokenKey{};        // 그 게임 서버의 그 실행의 토큰 키(`GameServerTokenKey` — `LobbyLink.h`)
+};
+
+// ★ 10-20 v2 작업 3a — 새 방 요청의 곧바른 결과
+enum class RoomRequest : uint8_t {
+    Created,   // 곧바로 만듦(`out`) — 채널 안 로비
+    Failed,    // 못 만듦(`why`) — 대기 맵 없음 · 게임 서버 없음 …
+    Pending,   // 게임 서버에 물었음 — 답은 뒤에 `Lobby::OnRoomCreated` · `OnRoomCreateFailed` 로(같은 `req`)
 };
 
 // 채널이 로비에게 주는 방 — 로비는 목록을 그리거나 방 참가를 볼 때마다 묻는다(그 순간의 돌고 있는 방 · 방 번호 차례)
+//   ★ 10-20 v2 — 로비 프로세스에선 게임 서버들의 알림으로 채운 거울(`RoomMirror`)이 준다
 class ILobbyRooms {
 public:
     virtual ~ILobbyRooms() = default;
     virtual std::vector<LobbyRoom> LobbyRooms() const = 0;
-    // ★ 10-14 플랜 B 작업 10a — 「새 방」 — 그 사람이 만든 사람(방장)인 방을 하나 만든다(채널이 방 관리자의 만들기 입구로).
-    //   만들었으면 true · `out` 에 그 방. 실패(대기 맵 없음 · 세계 차리기 실패)면 false
-    virtual bool CreateRoomFor(const std::string& creator, LobbyRoom& out) = 0;
+    // ★ 10-14 플랜 B 작업 10a — 「새 방」 — 그 사람이 만든 사람(방장)인 방을 하나 만든다.
+    //   ★ 10-20 v2 작업 3a — 옛 `CreateRoomFor`(그 자리에서 만들고 bool). 이제 다른 프로세스에 물을 수 있어 결과가 셋(`RoomRequest`)
+    virtual RoomRequest RequestRoom(uint32_t req, const std::string& creator, LobbyRoom& out, std::string& why) = 0;
 };
+
+// ★ 10-20 v2 작업 3a — 미룬 새 방 답을 기다리는 한도. 근거 없는 값 — 같은 PC 연결 왕복은 ms 단위 · 정품이 얼마나 기다리는지는 미확인
+//   (넘으면 지금 실패와 같은 꼴 — 답 없음 · 정품은 참가 화면에 머문다 `Lobby.cpp` JOINGAME 주석)
+constexpr uint32_t kRoomRequestTimeoutMs = 5000;
 
 // ★ 10-14 작업 10a — 방 이름을 실을 때 쓰는 코드페이지(클라가 `SETCODEPAGE` 를 안 보냈을 때). 정품 클라는 949 를 보낸다(1단계 녹음 셋 모두)
 constexpr int kDefaultCodepage = 949;
@@ -82,6 +105,7 @@ struct LobbyConfig {
     JoinKey joinKey{};                              // ★ 10-10 — 입장 토큰 서명 키(설정 파일 `[token] key` — 게임 서버와 같은 값)
     std::function<uint32_t()> unixNow = UnixNow;    // 토큰 만료의 기준 시각 — 시험이 정해 보려고
     std::function<uint64_t()> nonce;                // 일회용 번호 — 비면 BCrypt 난수
+    std::function<uint32_t()> nowMs = NowMs;        // ★ 10-20 v2 작업 3a — 미룬 답 한도의 시계(ms · 32비트로 돈다) — 시험이 정해 보려고
 };
 
 // 로비의 셈 — 입장 토큰 갈래
@@ -92,8 +116,14 @@ struct LobbyStats {
     unsigned long long joinNoClient = 0;     // 방 참가 — DLL 없음(로그인 전 참가 포함) · 토큰 없이 답함
     unsigned long long tokenSignFailed = 0;  // 서명 실패(BCrypt) — 토큰 없이 답함
     unsigned long long roomsCreated = 0;     // ★ 10-14 작업 10a — 「새 방」 참가로 방을 만듦
-    unsigned long long roomCreateFailed = 0; // ★ 10-14 작업 10a — 「새 방」인데 채널이 못 만듦(답 없음 · 기록)
+    unsigned long long roomCreateFailed = 0; // ★ 10-14 작업 10a — 「새 방」인데 채널이 못 만듦(답 없음 · 기록) · ★ 10-20 — 미룬 요청의 실패 답 포함
     unsigned long long newRoomNoClient = 0;  // ★ 10-14 작업 10a — 「새 방」인데 DLL 이 없어 안 만듦(답 없음 · 기록 — 들어올 수 없는 방이라)
+    // ★ 10-20 v2 작업 3a — 미룬 새 방 답의 갈래(요청 하나는 만듦 · 실패 · 시간 초과 · 클라 끊김 중 하나로 끝난다)
+    unsigned long long roomsRequested = 0;   // 게임 서버에 물음(`Pending`)
+    unsigned long long roomRequestTimeout = 0; // 한도 안에 답이 안 옴(답 없음)
+    unsigned long long roomRequestDropped = 0; // 기다리는 동안 클라가 끊음(답 버림 — 방은 게임 서버가 빈 방으로 닫는다)
+    unsigned long long lateRoomReply = 0;    // 끝난 요청(시간 초과 · 끊김)의 답이 늦게 옴(버림)
+    unsigned long long joinWhilePending = 0; // 새 방을 기다리는 접속이 또 참가(무시 — 답이 둘이 되지 않게)
 };
 
 struct Out {
@@ -111,6 +141,12 @@ public:
     void OnConnect(int conn, uint32_t peerIp, uint32_t localIp);
     void OnLine(int conn, std::string_view line, std::vector<Out>& out);
     void OnClose(int conn);
+    // ★ 10-20 v2 작업 3a — 미룬 새 방의 답(`RequestRoom` 이 `Pending` 을 돌려준 `req`). 끝난 요청이면 버리고 센다
+    void OnRoomCreated(uint32_t req, const LobbyRoom& room, std::vector<Out>& out);
+    void OnRoomCreateFailed(uint32_t req, const std::string& why);
+    // 미룬 답의 시간 초과를 본다 — 소켓 루프가 자주(줄이 없어도) 부른다
+    void Tick();
+    size_t PendingRooms() const { return pending_.size(); }
 
     // 소켓 루프가 찍을 기록(처음 본 명령 등). 꺼내면 비운다.
     std::vector<std::string> TakeLog();
@@ -136,12 +172,25 @@ private:
     bool IsRoomHost(const std::string& name) const;
     // 방 정보 덩어리(`Pack` — 86바이트, ':' 로 시작). ★ 10-14 작업 10a — 방 이름(UTF-8)은 그 접속의 코드페이지로 바꿔 싣는다
     std::string RoomInfo(const LobbyRoom& r, int codepage) const;
-    uint32_t GameServerIp(const Conn& c) const { return cfg_.gameServerIp ? cfg_.gameServerIp : c.localIp; }
+    // ★ 10-20 v2 작업 3a — 그 방의 게임 서버 주소(방에 있으면 그것 · 없으면 옛 동작 — 설정 · 이 접속이 붙은 내 쪽 주소)
+    uint32_t GameServerIp(const Conn& c, const LobbyRoom& r) const {
+        return r.gameIp ? r.gameIp : cfg_.gameServerIp ? cfg_.gameServerIp : c.localIp;
+    }
+    // 방 참가 답(토큰 · JOINGAME · 332 · 353 · 366) — ★ 10-20 v2 작업 3a 미룬 새 방 답도 이 하나로
+    void ReplyJoin(int conn, const Conn& c, const LobbyRoom& lr, std::vector<Out>& out);
+    void JoinNewRoom(int conn, const Conn& c, const LobbyRoom& created, std::vector<Out>& out);
     void Unknown(const std::string& cmd, std::string_view line);
 
     LobbyConfig cfg_;
     ILobbyRooms& rooms_;                      // ★ 10-14 작업 8d — 옛 `roomInfo_`(설정 방마다 미리 싼 방 정보) 자리
     LobbyStats stats_;
+    // ★ 10-20 v2 작업 3a — 미룬 새 방 답(요청 번호 → 기다리는 접속 · 한도 시각)
+    struct PendingRoom {
+        int conn = 0;
+        uint32_t deadlineMs = 0;
+    };
+    std::map<uint32_t, PendingRoom> pending_;
+    uint32_t nextReq_ = 1;
     std::map<int, Conn> conns_;
     std::map<std::string, std::set<int>> members_;  // 채널 → 들어와 있는 접속
     std::set<std::string> unknownSeen_;
