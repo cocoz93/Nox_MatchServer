@@ -230,7 +230,7 @@ void LobbyUnitTests() {
         }
         if (t.size() > 1 && t[1] == "327") ++n327;
     }
-    Check(n326 == 2 && n327 == 3, "LIST -1 37 = 방 2줄 + 채팅 로비 3줄");
+    Check(n326 == 2 && n327 == 5, "LIST -1 37 = 방 2줄 + 채팅 로비 5줄(★ 10-20 v2 작업 3b — XWIS 셋 + 갈라바 · 그록 토르)");
     std::string seen;
     for (const auto& n : names) seen += " [" + n + "]";
     const std::string namesMsg = "방 차례 = 설정 차례 · 방 정보 이름 = 방장 이름 —" + seen;
@@ -630,6 +630,72 @@ void PendingRoomUnitTests() {
     const LobbyStats& s = lb.Stats();
     Check(s.roomsRequested == 4 && s.roomsRequested == s.roomsCreated + s.roomCreateFailed + s.roomRequestTimeout + s.roomRequestDropped,
           "⑥ 물음 4 = 만듦 + 실패 + 시간 초과 + 버림(요청마다 한 갈래로 끝남)");
+}
+
+// ── ★ 10-20 MO 6단계 v2 작업 3b — 채팅 채널: 같은 채널 사람에게 드나듦 · 글 · 다른 채널엔 안 감 · 안 들어간 채널 글은 거름 ──
+void ChatUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;
+    cfg.joinKey = LobbyTestKey();
+    FakeRooms fake;
+    Lobby lb(cfg, fake);
+    const uint32_t ip = 0x7f000001;
+    for (int conn : {1, 2, 3}) {
+        lb.OnConnect(conn, ip, ip);
+        std::vector<Out> o;
+        lb.OnLine(conn, std::string("NICK ") + (conn == 1 ? "amy" : conn == 2 ? "ben" : "cy"), o);
+    }
+    auto to = [](const std::vector<Out>& o, int conn) {
+        std::vector<std::string> v;
+        for (const auto& x : o)
+            if (x.conn == conn) v.push_back(x.line);
+        return v;
+    };
+    std::vector<Out> out;
+    lb.OnLine(1, "JOIN #Lob_37_3 zot0blat", out);
+    Check(out.size() == 3 && to(out, 1).size() == 3, "혼자 들어감 → 본인에게만 JOIN · 353 · 366");
+    out.clear();
+    lb.OnLine(2, "JOIN #Lob_37_3 zot0blat", out);
+    const auto a1 = to(out, 1), b1 = to(out, 2);
+    Check(a1.size() == 1 && a1[0] == ":ben!u@h JOIN :0,0 #Lob_37_3" && b1.size() == 3 && b1[1].find("amy,0,0") != std::string::npos &&
+              b1[1].find("ben,0,0") != std::string::npos,
+          "둘째가 들어감 → 먼저 있던 사람에게 JOIN 한 줄 · 본인 353 에 둘");
+    out.clear();
+    lb.OnLine(3, "JOIN #Lob_37_0 zot0blat", out);
+    Check(out.size() == 3 && to(out, 3).size() == 3, "다른 채널 입장 → 그 채널 사람에게만(다른 채널엔 안 감)");
+
+    out.clear();
+    lb.OnLine(1, "PRIVMSG #Lob_37_3 :hello there", out);
+    Check(out.size() == 1 && out[0].conn == 2 && out[0].line == ":amy!u@h PRIVMSG #Lob_37_3 :hello there" && lb.Stats().chatMessages == 1 &&
+              lb.Stats().chatDelivered == 1,
+          "글 → 같은 채널의 다른 사람에게만(보낸 사람 · 다른 채널엔 안 감 · 빈칸 든 글 그대로)");
+    out.clear();
+    lb.OnLine(3, "PRIVMSG #Lob_37_3 :peek", out);
+    Check(out.empty() && lb.Stats().chatNotMember == 1, "안 들어간 채널로 글 → 거름(셈)");
+    lb.OnLine(1, "PRIVMSG #Lob_37_3", out);
+    lb.OnLine(1, "PRIVMSG", out);
+    Check(out.empty() && lb.Stats().chatMalformed == 2, "글 칸 없는 PRIVMSG → 답 없음(셈)");
+
+    out.clear();
+    lb.OnLine(2, "PART #Lob_37_3", out);
+    const auto a2 = to(out, 1), b2 = to(out, 2);
+    Check(a2.size() == 1 && a2[0] == ":ben!u@h PART #Lob_37_3" && b2.size() == 1, "나감 → 남은 사람에게 PART 한 줄 · 본인에게도");
+    out.clear();
+    lb.OnLine(1, "PRIVMSG #Lob_37_3 :alone", out);
+    Check(out.empty() && lb.Stats().chatMessages == 2 && lb.Stats().chatDelivered == 1, "혼자 남은 채널 글 → 받는 사람 0");
+
+    out.clear();
+    lb.OnLine(1, "LIST -1 37", out);
+    std::vector<std::string> chans;
+    for (const auto& o : out) {
+        const auto tk = Tokens(o.line);
+        if (tk.size() > 4 && tk[1] == "327") chans.push_back(tk[3] + "=" + tk[4]);
+    }
+    Check(chans.size() == 5 && chans[0] == "#Lob_37_0=1" && chans[3] == "#Lob_37_3=1" && chans[4] == "#Lob_37_4=0",
+          "목록의 대화방 다섯 · 사람 수 칸 = 그 채널 사람 수");
+    out.clear();
+    lb.OnLine(1, "JOIN #Lob_37_5 x", out);
+    Check(out.empty(), "다섯 밖 대화방 → 모르는 채널(답 없음)");
 }
 
 // ── ★ 10-20 MO 6단계 v2 작업 3a-2 — 로비의 방 거울(`RoomMirror`) + 가짜 게임 서버(연결 줄을 `LobbyLink` 로 지어 넣는다) ──
@@ -1288,6 +1354,7 @@ int main(int argc, char** argv) {
         NewRoomUnitTests();
         PendingRoomUnitTests();   // ★ 10-20 v2 작업 3a
         MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
+        ChatUnitTests();          // ★ 10-20 v2 작업 3b
         RouterUnitTests();
     }
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

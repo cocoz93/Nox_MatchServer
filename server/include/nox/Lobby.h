@@ -27,6 +27,7 @@
 //     답이 오면 `OnRoomCreated` · `OnRoomCreateFailed` 가 미뤄 둔 참가 답을 마저 보낸다. 답이 안 오면 `Tick` 이 시간 초과로 접는다.
 //     로비는 게임 서버를 기다리지 않는다 — 기다리는 동안 다른 접속의 줄을 그대로 받는다(7단계 로그인 DB 답도 같은 틀)
 //   · 방마다 게임 서버 주소 · 포트 · 토큰 키(`LobbyRoom::gameIp` · `gamePort` · `tokenKey`) — 토큰은 그 방이 사는 게임 서버의 키로 서명한다
+// ★ 10-20 v2 작업 3b — 채팅 채널(배틀넷 꼴): 대화방 다섯 · 같은 채널 사람에게 드나듦 알림 · 글(`PRIVMSG`) 전달 — 위 2단계 「빠진 것」 중 둘을 채움
 #pragma once
 
 #include <cstdint>
@@ -124,6 +125,11 @@ struct LobbyStats {
     unsigned long long roomRequestDropped = 0; // 기다리는 동안 클라가 끊음(답 버림 — 방은 게임 서버가 빈 방으로 닫는다)
     unsigned long long lateRoomReply = 0;    // 끝난 요청(시간 초과 · 끊김)의 답이 늦게 옴(버림)
     unsigned long long joinWhilePending = 0; // 새 방을 기다리는 접속이 또 참가(무시 — 답이 둘이 되지 않게)
+    // ★ 10-20 v2 작업 3b — 채팅(`PRIVMSG`)
+    unsigned long long chatMessages = 0;     // 같은 채널에 넘긴 글
+    unsigned long long chatDelivered = 0;    // 받은 사람 줄 수(글 하나 × 채널의 다른 사람)
+    unsigned long long chatNotMember = 0;    // 들어가 있지 않은 채널로 보냄(거름)
+    unsigned long long chatMalformed = 0;    // ` :` 글 칸이 없음(처음 본 명령처럼 한 번 기록)
 };
 
 struct Out {

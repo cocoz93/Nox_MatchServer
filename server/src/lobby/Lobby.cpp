@@ -15,7 +15,11 @@ namespace nox::wol {
 namespace {
 
 // XWIS 의 채팅 로비 셋 — 화면 이름 Brin · Ix · Dun Mir (opennox xwis.go:22-26). 녹음 LIST 답 그대로.
-const char* const kChatLobbies[] = {"#Lob_37_0", "#Lob_37_1", "#Lob_37_2"};
+// ★ 10-20 MO 6단계 v2 작업 3b — 대화방 다섯(배틀넷 꼴 채팅 채널 — 사용자 10-20 「스타처럼 채팅 채널 → 로비에서 방 고르기」).
+//   정품 대화방 목록은 이름이 `Lob_37_` 로 시작하는 것만 그리고 화면 이름은 정품 고정 표(csf `Nox_Lobby_<n+1>` 53개)에서 온다
+//   (Game.exe 0x41E8F0~0x41E917 · v2 시범 정적 분석) → 방마다 이름을 지을 수 없어 넷째 · 다섯째(정품 화면 갈라바 · 그록 토르)를 더함.
+//   v2 시범(사람 확인 43)에서 정품 목록에 다섯이 뜨고 들어가 채팅이 됨
+const char* const kChatLobbies[] = {"#Lob_37_0", "#Lob_37_1", "#Lob_37_2", "#Lob_37_3", "#Lob_37_4"};
 
 // ★ 10-11 토큰 작업 5 — DLL 없는 클라의 인사말에 덧붙이는 줄(영문 — WOL 글자는 라틴 1)
 const char* const kNoClientMotd[] = {
@@ -303,6 +307,9 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
             log_.push_back("[모르는 채널] " + std::string(line));
             return;
         }
+        // ★ 10-20 v2 작업 3b — 같은 대화방 사람들에게도 들어옴을 알린다(전에는 본인에게만 — v2 시범 줄 그대로)
+        for (int other : members_[t[1]])
+            if (other != conn) out.push_back({other, ":" + c.nick + "!u@h JOIN :0,0 " + t[1]});
         members_[t[1]].insert(conn);
         out.push_back({conn, ":" + c.nick + "!u@h JOIN :0,0 " + t[1]});
         out.push_back({conn, ": 353 u * " + t[1] + " :" + Members353(t[1], std::string(), 0)});
@@ -311,8 +318,34 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
     }
     if (cmd == "PART") {
         if (t.size() < 2) return;
-        if (auto m = members_.find(t[1]); m != members_.end()) m->second.erase(conn);
+        if (auto m = members_.find(t[1]); m != members_.end()) {
+            m->second.erase(conn);
+            for (int other : m->second) out.push_back({other, ":" + c.nick + "!u@h PART " + t[1]});   // ★ 10-20 v2 작업 3b — 남은 사람들에게도
+        }
         out.push_back({conn, ":" + c.nick + "!u@h PART " + t[1]});
+        return;
+    }
+    if (cmd == "PRIVMSG") {   // ★ 10-20 v2 작업 3b — 채팅을 같은 채널 사람들에게(보낸 사람에겐 안 돌려줌 — 정품이 제 글을 스스로 그린다 · v2 시범)
+        const size_t colon = line.find(" :");
+        if (t.size() < 3 || colon == std::string_view::npos) {
+            ++stats_.chatMalformed;
+            Unknown(cmd, line);
+            return;
+        }
+        const std::string& ch = t[1];
+        const auto m = members_.find(ch);
+        if (m == members_.end() || !m->second.count(conn)) {   // 들어가 있지 않은 채널엔 못 보낸다(남의 채널 엿보내기 막기)
+            ++stats_.chatNotMember;
+            log_.push_back("[채팅 — 거름] " + c.nick + " → " + ch + " (들어가 있지 않은 채널)");
+            return;
+        }
+        const std::string text(line.substr(colon + 2));
+        ++stats_.chatMessages;
+        for (int other : m->second) {
+            if (other == conn) continue;
+            out.push_back({other, ":" + c.nick + "!u@h PRIVMSG " + ch + " :" + text});
+            ++stats_.chatDelivered;
+        }
         return;
     }
     if (cmd == "JOINGAME") {   // 방 참가 — 방장 주소가 353 에 실린다(326 과 같은 값)
