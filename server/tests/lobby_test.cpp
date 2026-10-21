@@ -323,8 +323,9 @@ void LobbyUnitTests() {
     out.clear();
     lb.OnConnect(5, peer, loop);
     for (const char* l : {"NICK early", "JOINGAME #NoxOrigin's_game 1 "}) lb.OnLine(5, l, out);
-    Check(out.size() == 4 && !hasLine(out, "NOXTOKEN") && lb.Stats().joinNoClient == 2 && lb.Stats().tokensIssued == 1,
-          "로그인 전 방 참가 → 원래 답 넷 · 토큰 없음");
+    // ★ 7단계 조각 6 — 옛 꼴은 원래 답 넷(토큰 없음)이었다. 이제 로그인 확인 전 참가는 거절 471 한 줄(토큰 · 새 방은 확인됨만 · 검사 지적 2)
+    Check(OnlyReject(out, 5, "#NoxOrigin's_game", JoinReject::NotLoggedIn) && lb.Stats().joinNoClient == 1 && lb.Stats().tokensIssued == 1,
+          "로그인 전 방 참가 → 거절 471 한 줄(토큰 없음 · 원래 답 없음)");
     out.clear();
     lb.OnLine(2, "JOINGAME #NoxOrigin's_game 1 ", out);   // DLL 있는 접속은 그대로 토큰
     Check(out.size() == 5 && hasLine(out, "NOXTOKEN ") && lb.Stats().tokensIssued == 2, "DLL 있는 접속은 계속 토큰 + 원래 답 넷");
@@ -1313,6 +1314,169 @@ void MirrorSaveUnitTests() {
           "④ 저장소 실패 → 줄 없음 · 답 전에 끊김 → 버림 · 묻지 않은 답 → 버림 · 저장소 없는 거울 → 기록만");
 }
 
+// ── ★ 7단계 조각 6 — 로그인 미룸(`Lobby` + 저장소 — `Docs/ACCOUNT_DB_DESIGN.md` 차이 3 · 4 · 5 · 6 · 7) ──
+//   ① 정품 로그인 묶음(USER 뒤 verchk · SETOPT · SETCODEPAGE 까지 한 번에) → 답 전엔 NOXSERVER 뿐 · 답 뒤 나온 줄 = 저장소 없는 옛 로비와 바이트까지 같음
+//   ② 토큰은 확인됨만 — 맞은 로그인은 토큰 · 저장소 실패 → 안내 + 376 · 방 참가 471(로그인 안 됨)
+//   ③ 확인 답 한도 — 1ms 앞 그대로 · 한도에 안내 + 376 + 쌓인 줄 · 늦은 답은 버림
+//   ④ 이름 — 17바이트 · 빈 이름 → 묻지 않고 안내 + 376 ⑤ 로그인 마감 — USER 없는 접속 30초에 끊는 줄 하나(한 번) · 로그인 끝난 접속은 안 끊음
+//   ⑥ 확인 중 끊김 → 답은 늦은 답 ⑦ 쌓기 한도(넘은 줄은 버리고 셈) ⑧ 두 번째 USER → 인사 다시 안 함 ⑨ 셈 맞추기
+void LoginUnitTests() {
+    using namespace nox::wol;
+    uint32_t clock = 0xfffff000u;   // 32비트가 넘어가는 자리 근처(한도를 뺄셈으로 재는지)
+    const uint32_t t0 = clock;
+    auto makeCfg = [&]() {
+        LobbyConfig cfg;
+        cfg.gameServerIp = 0x7f000001u;
+        cfg.joinKey = LobbyTestKey();
+        cfg.unixNow = [] { return kLobbyTestNow; };
+        cfg.nonce = [] { return 0x0102030405060708ull; };
+        cfg.nowMs = [&clock] { return clock; };
+        return cfg;
+    };
+    FakeRooms fake;
+    fake.rooms = {FakeRoom(0, "host1")};
+    Lobby lb(makeCfg(), fake);
+    CMemoryLobbyStore store;
+    lb.AttachStore(store);
+    Lobby old(makeCfg(), fake);   // 저장소 없는 옛 꼴 — 줄 차례의 정답지
+    std::vector<Out> out;
+    const uint32_t peer = 0x7f000001u;
+    auto feed = [&](Lobby& l, int conn, std::initializer_list<const char*> lines) {
+        out.clear();
+        for (const char* s : lines) l.OnLine(conn, s, out);
+    };
+    auto pump = [&]() {   // 저장소 답(로비 루프 한 자리)
+        std::vector<StoreAnswer> ans;
+        store.TakeAnswers(ans);
+        out.clear();
+        for (const StoreAnswer& a : ans) lb.OnStoreAnswer(a, out);
+        return ans.size();
+    };
+    auto lines = [](const std::vector<Out>& o) {
+        std::vector<std::string> v;
+        for (const Out& x : o) v.push_back(x.line);
+        return v;
+    };
+    auto has = [](const std::vector<Out>& o, const std::string& prefix) {
+        for (const Out& x : o)
+            if (x.line.rfind(prefix, 0) == 0) return true;
+        return false;
+    };
+    const auto bundle = {"NOXCLIENT 2", "CVERS 11020 9472", "PASS supersecret", "NICK wn", "apgar 1234 0", "SERIAL 7726",
+                         "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33", "SETCODEPAGE 949"};
+
+    // ①
+    lb.OnConnect(1, peer, peer);
+    feed(lb, 1, bundle);
+    const auto before = lines(out);
+    const bool deferred = before.size() == 1 && before[0] == "NOXSERVER 1" && lb.PendingLogins() == 1 && lb.Stats().loginChecks == 1;
+    pump();
+    const auto after = lines(out);
+    old.OnConnect(1, peer, peer);
+    feed(old, 1, bundle);
+    auto want = lines(out);
+    std::vector<std::string> got = before;
+    got.insert(got.end(), after.begin(), after.end());
+    Check(deferred && got == want && want.size() == 6 && want[3] == ": 376 u" && want[4].rfind(": 379 ", 0) == 0 && want[5] == ": 329 u 949" &&
+              lb.Stats().heldLines == 3 && lb.Stats().loginOk == 1 && lb.Stats().loginCreated == 1 && store.AccountId("wn") == 1 && lb.PendingLogins() == 0,
+          "① 정품 묶음 → 답 전 NOXSERVER 뿐 · 답 뒤 줄 = 옛 로비와 바이트 · 차례(376 → 379 → 329)까지 같음 · 쌓은 줄 셋 · 새 계정");
+
+    // ②
+    feed(lb, 1, {"JOINGAME #host1's_game 1 "});
+    const bool tokenOk = has(out, "NOXTOKEN ") && lb.Stats().tokensIssued == 1;
+    store.SetFailLogins(true);
+    lb.OnConnect(2, peer, peer);
+    feed(lb, 2, {"NOXCLIENT 2", "NICK bob", "USER UserName HostName irc.westwood.com :RealName"});
+    pump();
+    store.SetFailLogins(false);
+    const bool failWelcome = out.size() >= 3 && out.back().line == ": 376 u" && has(out, ": 372 u :- *** Login failed: Account service unavailable") &&
+                             lb.Stats().loginFailed == 1;
+    feed(lb, 2, {"JOINGAME #host1's_game 1 "});
+    Check(tokenOk && failWelcome && OnlyReject(out, 2, "#host1's_game", JoinReject::NotLoggedIn) && lb.Stats().tokensIssued == 1,
+          "② 맞은 로그인 → 토큰 · 저장소 실패 → 안내 + 376(로그인은 끝) · 그 접속의 방 참가 → 471 한 줄(토큰 없음)");
+
+    // ③
+    lb.OnConnect(3, peer, peer);
+    clock = t0 + 1000;
+    feed(lb, 3, {"NICK cat", "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916"});
+    clock = t0 + 1000 + kLoginCheckTimeoutMs - 1;
+    out.clear();
+    lb.Tick(out);
+    const bool waitOk = out.empty();
+    clock = t0 + 1000 + kLoginCheckTimeoutMs;
+    out.clear();
+    lb.Tick(out);
+    const bool timedOut = out.size() >= 3 && has(out, ": 372 u :- *** Login failed: Account service unavailable") && out[out.size() - 2].line == ": 376 u" &&
+                          out.back().line.rfind(": 379 ", 0) == 0 && lb.Stats().loginTimeout == 1;
+    const auto late0 = lb.Stats().loginLateAnswer;
+    pump();
+    Check(waitOk && timedOut && out.empty() && lb.Stats().loginLateAnswer == late0 + 1,
+          "③ 확인 한도 1ms 앞 그대로 · 한도에 안내 + 376 + 쌓인 verchk(379) · 늦은 답은 버림");
+
+    // ④
+    lb.OnConnect(4, peer, peer);
+    const auto checks0 = lb.Stats().loginChecks;
+    feed(lb, 4, {"NICK abcdefghijklmnopq", "USER UserName HostName irc.westwood.com :RealName"});   // 17바이트
+    const bool longName = out.back().line == ": 376 u" && has(out, ": 372 u :- *** Login failed: Name must be 1-16 bytes");
+    lb.OnConnect(5, peer, peer);
+    feed(lb, 5, {"USER UserName HostName irc.westwood.com :RealName"});
+    Check(longName && out.back().line == ": 376 u" && lb.Stats().loginBadName == 2 && lb.Stats().loginChecks == checks0 && store.AccountId("abcdefghijklmnopq") == 0,
+          "④ 17바이트 · 빈 이름 → 묻지 않고 안내 + 376(계정 안 만듦)");
+    feed(lb, 4, {"NICK abcdefghijklmnop", "JOINGAME #host1's_game 1 "});   // 로그인 뒤 이름만 바꿔도 실패한 로그인 그대로
+    const bool stillOut = OnlyReject(out, 4, "#host1's_game", JoinReject::NotLoggedIn);
+
+    // ⑤
+    lb.OnConnect(6, peer, peer);   // clock = t0 + 6000 — 말없음
+    const uint32_t c6 = clock;
+    clock = c6 + kLoginDeadlineMs - 1;
+    out.clear();
+    lb.Tick(out);
+    bool earlyClose = false;
+    for (const Out& o : out) earlyClose = earlyClose || o.conn == 6;
+    clock = c6 + kLoginDeadlineMs;
+    out.clear();
+    lb.Tick(out);
+    int closes = 0;
+    for (const Out& o : out) closes += (o.conn == 6 && o.closeAfter && o.line.rfind("ERROR ", 0) == 0) ? 1 : 0;
+    const bool otherQuiet = out.size() == 1;   // 로그인을 끝낸 1 ~ 5 는 마감과 상관없음
+    out.clear();
+    lb.Tick(out);
+    Check(stillOut && !earlyClose && closes == 1 && otherQuiet && out.empty() && lb.Stats().loginDeadlineClosed == 1,
+          "⑤ 로그인 마감 1ms 앞 그대로 · 마감에 끊는 줄 하나(ERROR · 보낸 뒤 끊기) · 다시 안 함 · 로그인 끝난 접속은 안 끊음 · ④ 실패 접속은 이름을 바꿔도 471");
+    lb.OnClose(6, out);
+
+    // ⑥
+    lb.OnConnect(7, peer, peer);
+    feed(lb, 7, {"NICK dan", "USER UserName HostName irc.westwood.com :RealName"});
+    out.clear();
+    const size_t pendingBefore = lb.PendingLogins();
+    lb.OnClose(7, out);
+    const bool erasedAtClose = pendingBefore == 1 && lb.PendingLogins() == 0;   // 답을 돌리기 전에 — 돌리면 어차피 지워진다
+    const auto late1 = lb.Stats().loginLateAnswer;
+    pump();
+    Check(erasedAtClose && out.empty() && lb.PendingLogins() == 0 && lb.Stats().loginLateAnswer == late1 + 1,
+          "⑥ 확인 중 끊김 → 그 자리에서 기다림에서 지움 · 답은 늦은 답(줄 없음)");
+
+    // ⑦
+    lb.OnConnect(8, peer, peer);
+    feed(lb, 8, {"NICK eve", "USER UserName HostName irc.westwood.com :RealName"});
+    const auto held0 = lb.Stats().heldLines;
+    for (size_t i = 0; i < kMaxHeldLines + 6; ++i) lb.OnLine(8, "SETOPT 17,33", out);
+    pump();
+    Check(lb.Stats().heldDropped == 6 && lb.Stats().heldLines == held0 + kMaxHeldLines && out.back().line == ": 376 u",
+          "⑦ 쌓기 한도 — 넘은 6줄 버림 · 한도만큼 넘김");
+
+    // ⑧
+    feed(lb, 8, {"USER UserName HostName irc.westwood.com :RealName"});
+    Check(out.empty() && lb.PendingLogins() == 0, "⑧ 두 번째 USER → 인사 다시 안 함 · 확인 안 물음");
+
+    // ⑨ 셈 — 확인 요청 = 맞음 + 실패 + 시간 초과 + 끊김(⑥) · USER = 확인 요청 + 이름 틀림(첫 USER 만)
+    const LobbyStats& s = lb.Stats();
+    Check(s.loginChecks == 5 && s.loginOk == 2 && s.loginFailed == 1 && s.loginTimeout == 1 && s.loginBadName == 2 && s.loginNoStore == 0 &&
+              s.loginChecks == s.loginOk + s.loginFailed + s.loginTimeout + 1,
+          "⑨ 셈 — 확인 5 = 맞음 2 + 실패 1 + 시간 초과 1 + 끊김 1 · 이름 틀림 2 · 저장소 없음 0");
+}
+
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
 void RouterUnitTests() {
     using namespace nox::wol;
@@ -1622,6 +1786,10 @@ int ReplayRecording(const char* path) {
     fake.rooms = {FakeRoom(0, "tak7")};
     cfg.joinKey = LobbyTestKey();
     nox::wol::Lobby lb(cfg, fake);
+    // ★ 7단계 조각 6 — 로비 실행 파일과 같은 길(저장소를 붙여 로그인을 미룸). 접속 하나의 줄을 몰아 넣고 답은 끊기 직전에 한 번 —
+    //   USER 뒤 줄이 전부 쌓였다가 넘어가므로 「쌓기 · 답 뒤 차례」가 XWIS 원래 답과 같은지를 녹음으로 본다
+    nox::wol::CMemoryLobbyStore store;
+    lb.AttachStore(store);
     // ★ 10-14 작업 8b — 4005 접속(로비 찾기)은 라우터가 받는다. 채널 주소 설정이 없으니 605 는 「붙은 주소」:4000(옛 로비와 같은 답)
     nox::wol::Router rt{nox::wol::RouterConfig{}};
     int tokenLines = 0, joinGames = 0, routerConns = 0;
@@ -1657,6 +1825,9 @@ int ReplayRecording(const char* path) {
                 lb.OnLine(rc.id, cl, out);
                 if (cl.rfind("JOINGAME ", 0) == 0) ++joinGames;
             }
+            std::vector<nox::wol::StoreAnswer> ans;   // ★ 7단계 조각 6 — 계정 확인 답(쌓인 줄이 여기서 넘어간다)
+            store.TakeAnswers(ans);
+            for (const auto& a : ans) lb.OnStoreAnswer(a, out);
             lb.OnClose(rc.id, out);   // ★ 10-20 v2 작업 3b — 대화방 남은 사람에게 PART(녹음은 접속을 하나씩 돌려 남은 사람 없음)
         }
         std::vector<std::string> kept;   // DLL 이 `NOXTOKEN` 줄을 뗀 뒤 정품 로비 모듈이 받는 줄
@@ -1719,6 +1890,7 @@ int main(int argc, char** argv) {
         LinkAliveUnitTests();     // ★ 7단계 조각 2
         LobbyStoreUnitTests();    // ★ 7단계 조각 4
         MirrorSaveUnitTests();    // ★ 7단계 조각 5
+        LoginUnitTests();         // ★ 7단계 조각 6
         ChatUnitTests();          // ★ 10-20 v2 작업 3b
         RouterUnitTests();
     }

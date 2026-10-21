@@ -118,6 +118,7 @@ void Lobby::OnConnect(int conn, uint32_t peerIp, uint32_t localIp) {
     Conn c;
     c.peerIp = peerIp;
     c.localIp = localIp;
+    c.loginDueMs = cfg_.nowMs() + kLoginDeadlineMs;   // ★ 7단계 조각 6 — 로그인 마감
     conns_[conn] = c;
 }
 
@@ -140,6 +141,8 @@ void Lobby::OnClose(int conn, std::vector<Out>& out) {
         rooms_.CancelRoom(it->first);   // ★ 작업 3c — 공급자(거울)의 기다림 장부에서도
         it = pending_.erase(it);
     }
+    // ★ 7단계 조각 6 — 기다리던 계정 확인 답은 늦은 답으로 버린다(저장소 쪽 일은 그대로 끝난다 — 마지막 로그인 시각만 적힘)
+    if (ci != conns_.end() && ci->second.login == LoginState::Checking) loginPending_.erase(ci->second.loginReq);
     conns_.erase(conn);
 }
 
@@ -175,8 +178,24 @@ void Lobby::OnRoomCreateFailed(uint32_t req, const std::string& why, std::vector
 }
 
 void Lobby::Tick(std::vector<Out>& out) {
-    if (pending_.empty()) return;
     const uint32_t now = cfg_.nowMs();
+    // ★ 7단계 조각 6 — 계정 확인 한도(실패 길) · 로그인 마감(끊기). 32비트 시계가 돌아도 맞게
+    for (auto& kv : conns_) {
+        Conn& c = kv.second;
+        if (c.closing || static_cast<int32_t>(now - c.loginDueMs) < 0) continue;
+        if (c.login == LoginState::Checking) {
+            ++stats_.loginTimeout;
+            loginPending_.erase(c.loginReq);
+            log_.push_back("[로그인 — 시간 초과] " + c.nick + " — " + std::to_string(kLoginCheckTimeoutMs) + "ms 안에 계정 확인 답 없음(안내 + 376)");
+            FinishLogin(kv.first, c, LoginState::Failed, "Account service unavailable - try again later.", out);
+        } else if (c.login == LoginState::Waiting) {
+            ++stats_.loginDeadlineClosed;
+            c.closing = true;
+            log_.push_back("[로그인 — 마감] c" + std::to_string(kv.first) + " — " + std::to_string(kLoginDeadlineMs / 1000) + "초 안에 USER 없음 · 끊음");
+            out.push_back({kv.first, "ERROR :Closing Link (login timeout)", true});
+        }
+    }
+    if (pending_.empty()) return;
     for (auto it = pending_.begin(); it != pending_.end();) {
         if (static_cast<int32_t>(now - it->second.deadlineMs) < 0) {   // 32비트 시계가 돌아도 맞게
             ++it;
@@ -214,9 +233,61 @@ const char* JoinRejectText(JoinReject why) {
         case JoinReject::CreateFailed:  return "Cannot create game (game server refused)";
         case JoinReject::Timeout:       return "Cannot create game (game server timed out)";
         case JoinReject::NoSuchRoom:    return "No such game";
+        case JoinReject::NotLoggedIn:   return "Not logged in";
         case JoinReject::kCount:        break;
     }
     return "?";
+}
+
+// ★ 7단계 조각 6 — 인사 + 쌓아 둔 뒷줄. 실패도 XWIS 꼴로 로그인은 끝낸다(376) — 답을 안 하면 정품이 「Connecting…」에서 멈춘다(10-10)
+void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const char* failNotice, std::vector<Out>& out) {
+    c.login = result;
+    c.loginReq = 0;
+    out.push_back({conn, ": 375 u :- " + (cfg_.motd.empty() ? std::string() : cfg_.motd[0])});
+    for (size_t i = 1; i < cfg_.motd.size(); ++i) out.push_back({conn, ": 372 u :- " + cfg_.motd[i]});
+    if (c.clientVer < kNoxClientMinVersion)
+        for (const char* l : kNoClientMotd) out.push_back({conn, std::string(": 372 u :- ") + l});
+    if (failNotice) {
+        out.push_back({conn, std::string(": 372 u :- *** Login failed: ") + failNotice + " ***"});
+        out.push_back({conn, ": 372 u :- You can chat, but joining a game needs a successful login."});
+    }
+    out.push_back({conn, ": 376 u"});
+    // 쌓아 둔 줄을 받은 차례대로(그 사이 끊김은 없다 — 이 함수는 한 바퀴 안). 넘기는 동안 다시 쌓이지 않는다(로그인이 끝났다)
+    std::vector<std::string> held;
+    held.swap(c.held);
+    stats_.heldLines += held.size();
+    for (const std::string& l : held) OnLine(conn, l, out);
+}
+
+void Lobby::OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out) {
+    const auto p = loginPending_.find(a.req);
+    if (a.kind != StoreAnswerKind::Login || p == loginPending_.end()) {
+        ++stats_.loginLateAnswer;   // 끝난 요청(한도 · 끊김) — 저장소는 그대로 일을 끝냈다
+        return;
+    }
+    const int conn = p->second;
+    loginPending_.erase(p);
+    const auto ci = conns_.find(conn);
+    if (ci == conns_.end() || ci->second.login != LoginState::Checking || ci->second.loginReq != a.req) {
+        ++stats_.loginLateAnswer;
+        return;
+    }
+    Conn& c = ci->second;
+    switch (a.login) {
+        case LoginResult::Ok:
+            ++stats_.loginOk;
+            if (a.created) ++stats_.loginCreated;
+            c.accountId = a.accountId;
+            log_.push_back("[로그인] " + c.nick + " — 계정 " + std::to_string(a.accountId) + (a.created ? "(새로 만듦)" : ""));
+            FinishLogin(conn, c, LoginState::Ok, nullptr, out);
+            return;
+        case LoginResult::Failed:
+        case LoginResult::kCount:
+            break;
+    }
+    ++stats_.loginFailed;
+    log_.push_back("[로그인 — 실패] " + c.nick + " — " + (a.why.empty() ? std::string("저장소 실패") : a.why) + "(안내 + 376)");
+    FinishLogin(conn, c, LoginState::Failed, "Account service unavailable - try again later.", out);
 }
 
 // 방 참가 답 — 방장 주소가 353 에 실린다(326 과 같은 값). ★ 10-20 v2 작업 3a — 옛 JOINGAME 갈래의 몸통(미룬 새 방 답도 이것)
@@ -268,6 +339,15 @@ std::vector<std::string> Lobby::TakeLog() {
 void Lobby::OnLine(int conn, std::string_view line, std::vector<Out>& out) {
     auto it = conns_.find(conn);
     if (it == conns_.end() || line.empty()) return;
+    // ★ 7단계 조각 6 — 계정 확인 중이면 뒷줄은 쌓아 둔다(답 뒤 `FinishLogin` 이 차례대로 — 녹음 차례 376 → 379 → 329)
+    if (it->second.login == LoginState::Checking) {
+        if (it->second.held.size() >= kMaxHeldLines) {
+            ++stats_.heldDropped;
+            return;
+        }
+        it->second.held.emplace_back(line);
+        return;
+    }
     const auto t = Split(line);
     const std::string cmd = Upper(t[0]);
     OnChat(conn, it->second, cmd, t, line, out);   // ★ 10-14 작업 8b — 4005(로비 찾기)는 라우터(`Router.cpp`)로 옮겼다
@@ -291,6 +371,10 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         // ★ 10-11 토큰 작업 5 — DLL 이 없거나 판이 낮아도 로그인은 받고, 인사말에 패치가 필요하다고 싣는다. 방 참가엔 토큰을 안 준다.
         //   10-10 처음엔 `ERROR` 를 보내고 끊었는데, 정품 화면은 아무 말 없이 「Connecting to Westwood Online...」에서 멈췄다
         //   (사람 확인 — 고장처럼 보인다). XWIS 도 손님 로그인을 끊지 않고 인사말에 경고를 실어 들여보낸다(10-06 녹음 c4:4000)
+        if (c.login != LoginState::Waiting) {   // ★ 7단계 조각 6 — 두 번째 USER(로그인은 한 번) — 처음 본 명령처럼 한 번만 기록
+            Unknown("USER(두 번째)", line);
+            return;
+        }
         const bool noClient = c.clientVer < kNoxClientMinVersion;
         if (noClient) {
             if (c.clientVer < 0) ++stats_.loginNoClient;
@@ -299,11 +383,25 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
                            (c.clientVer < 0 ? std::string("없음(NOXCLIENT 줄 없음)") : "판 " + std::to_string(c.clientVer) + " 낮음") +
                            " · 인사말로 알림 · 방 참가엔 토큰 없음");
         }
-        out.push_back({conn, ": 375 u :- " + (cfg_.motd.empty() ? std::string() : cfg_.motd[0])});
-        for (size_t i = 1; i < cfg_.motd.size(); ++i) out.push_back({conn, ": 372 u :- " + cfg_.motd[i]});
-        if (noClient)
-            for (const char* l : kNoClientMotd) out.push_back({conn, std::string(": 372 u :- ") + l});
-        out.push_back({conn, ": 376 u"});
+        // ★ 7단계 조각 6 — 계정 확인(아이디만 — 처음 보는 이름이면 저장소가 만든다). 저장소를 안 붙였으면 옛 꼴로 곧바로
+        if (!store_) {
+            ++stats_.loginNoStore;
+            FinishLogin(conn, c, LoginState::Ok, nullptr, out);
+            return;
+        }
+        if (c.nick.empty() || c.nick.size() > kMaxNickBytes) {   // 토큰 이름 칸 16바이트 — 자르면 남의 계정과 겹칠 수 있다
+            ++stats_.loginBadName;
+            log_.push_back("[로그인 — 이름] c" + std::to_string(conn) + " 이름 " + std::to_string(c.nick.size()) + "바이트(1~" +
+                           std::to_string(kMaxNickBytes) + ") — 안내 + 376");
+            FinishLogin(conn, c, LoginState::Failed, "Name must be 1-16 bytes - log in with a shorter name.", out);
+            return;
+        }
+        ++stats_.loginChecks;
+        c.login = LoginState::Checking;
+        c.loginReq = nextLoginReq_++;
+        c.loginDueMs = cfg_.nowMs() + kLoginCheckTimeoutMs;
+        loginPending_[c.loginReq] = conn;
+        store_->CheckLogin(c.loginReq, c.nick);
         return;
     }
     if (cmd == "VERCHK") {   // 패치 확인 — 「패치 없음」 글자 그대로
@@ -379,6 +477,14 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         return;
     }
     if (cmd == "JOINGAME") {   // 방 참가 — 방장 주소가 353 에 실린다(326 과 같은 값)
+        // ★ 7단계 조각 6 — 토큰 · 새 방은 로그인 확인됨만(USER 없이 NICK + JOINGAME 만 보내도 토큰이 나가던 것 · 검사 지적 2).
+        //   정품은 376 을 받은 뒤에야 참가하므로 이 갈래는 실패한 로그인 · 규약 밖 클라 몫 — 471(정품이 받아 주는 거절)
+        if (c.login != LoginState::Ok) {
+            log_.push_back("[참가 — 로그인 안 됨] " + (c.nick.empty() ? "c" + std::to_string(conn) : c.nick) + " → " +
+                           (t.size() >= 2 ? t[1] : std::string("*")) + " (거절 471)");
+            RejectJoin(conn, t.size() >= 2 ? t[1] : std::string("*"), JoinReject::NotLoggedIn, out);
+            return;
+        }
         const std::vector<LobbyRoom> rooms = rooms_.LobbyRooms();   // ★ 10-14 작업 8d — 그 순간의 돌고 있는 방
         const LobbyRoom* found = t.size() < 2 ? nullptr : FindRoom(rooms, t[1]);
         // ★ 10-14 플랜 B 작업 10a — 「새 방」: 없는 방인데 채널이 제 이름 채널(`#<내 닉>'s_game` — 원작 `Host Game` 과 같은 꼴)이면

@@ -201,6 +201,17 @@ try {
 $all = @(Get-Content -LiteralPath $log -Encoding UTF8)
 $end = @($all | Where-Object { $_ -match '\[로비\] 끝 — ' })
 Write-Host ($end -join "`n")
+# ★ 7단계 조각 6 — 끝 줄 넷(접속 · 로그인 · 게임 서버 연결 · 판 저장)을 머리글로 고른다(차례로 고르면 줄이 늘 때마다 밀린다)
+$endOf = @{}
+foreach ($head in '접속', '로그인 확인', '게임 서버 연결', '판 저장 요청') {
+  $endOf[$head] = @($end | Where-Object { $_ -match ('\[로비\] 끝 — ' + $head + ' ') }) -join "`n"
+}
+# 로그인 — wn · bob 둘 다 확인 · 새 계정 · 쌓은 줄은 wn 의 SETCODEPAGE 하나(USER 와 같은 묶음으로 갔을 때 — TCP 가 나눠 보내면 0)
+$okLogin = $false
+if ($endOf['로그인 확인'] -match '로그인 확인 2\(맞음 2 · 그중 새 계정 2 · 실패 0 · 시간 초과 0 · 끝날 때 남음 0\) · 이름 틀림 0 · 저장소 없음 0 · 늦은 답 0 · 쌓았다 넘긴 줄 (\d+)\(버림 0\) · 마감 끊음 0') {
+  $okLogin = [int]$Matches[1] -le 1
+}
+Check $okLogin '끝 줄 — 로그인(확인 2 · 맞음 2 · 새 계정 2 · 실패 · 시간 초과 · 이름 틀림 · 저장소 없음 · 늦은 답 0 · 쌓은 줄 0~1 · 마감 끊음 0)'
 Check ($p.ExitCode -eq 0) "로비 종료 코드 0 ($($p.ExitCode))"
 Check (@($all | Where-Object { $_ -match '\[판 결과\] \{"match":"1760000000-1-1"' }).Count -eq 2) '로비 기록 [판 결과] 같은 판 두 줄(JSON 그대로 · ★ 7단계 — 다시 보낸 것도 찍고 저장소가 dup 으로 가름)'
 Check (@($all | Where-Object { $_ -match '127\.0\.0\.2:18590 판 결과를 못 읽음\(빠진 칸 · 칸 room\) — SAVED bad' }).Count -eq 1 -and
@@ -217,16 +228,16 @@ Check (@($all | Where-Object { $_ -match '등록 거절 — 127\.0\.0\.3:18590' 
 #   보낸 줄 — wn 로그인(NOXSERVER · 375 · 372 · 376 · 329 = 5) · 목록 3 · 대화방 3 + 들어옴 1 + 채팅 1 · 참가 5 · 목록 2 · 거절 471 1(★ 10-20) ·
 #     ★ ⑤ 목록 3(g2 방) + 목록 2 · 607 → 27 · bob 로그인 4 · 대화방 3 · 시간 초과 거절 471 1(★ 10-20) · wn 이 끊길 때 대화방 PART 알림 1 → 9 · 합 36
 #   새 방 — 물음 2(만듦 1 · 시간 초과 1) + 곧바로 실패 1(게임 서버 없음 — 묻지 않음) · 참가 거절 2 = 곧바로 실패 1 + 시간 초과 1
-Check ($end.Count -eq 3 -and $end[0] -match '접속 2 · 받은 줄 19 · 보낸 줄 36 · 토큰 1 · 새 방 1\(물음 2 · 실패 1 · 시간 초과 1 · 버림 0\) · 채팅 1 · 참가 거절 2\(곧바로 실패 1 · 게임 서버 실패 0 · 시간 초과 1 · 없는 방 0\)') '끝 줄 — 클라 셈(접속 2 · 받은 줄 19 · 보낸 줄 36 · 토큰 1 · 새 방 1 · 물음 2 · 실패 1 · 시간 초과 1 · 참가 거절 2)'
+Check ($end.Count -eq 4 -and $endOf['접속'] -match '접속 2 · 받은 줄 19 · 보낸 줄 36 · 토큰 1 · 새 방 1\(물음 2 · 실패 1 · 시간 초과 1 · 버림 0\) · 채팅 1 · 참가 거절 2\(곧바로 실패 1 · 게임 서버 실패 0 · 시간 초과 1 · 없는 방 0 · 로그인 안 됨 0\)') '끝 줄 — 클라 셈(접속 2 · 받은 줄 19 · 보낸 줄 36 · 토큰 1 · 새 방 1 · 물음 2 · 실패 1 · 시간 초과 1 · 참가 거절 2)'
 # 연결 — 게임 서버 g · 서명 틀린 것 · ★ ⑤ g2 · g3 · g4 = 5 · 받음 = g 9(★ 7단계 조각 5 — RESULT 넷) + 틀린 것 1 + g2 3 + g3 2 + g4 2 = 17(가짜는 PING 을 안 보냄) ·
 #   보냄(PING 뺌) = HELLO 5 + BYE 3(서명 틀림 · g3 같은 주소 · g2 무소식) + CREATE 2 + SAVED 3(ok · dup · bad) = 13 · PING = g(③-2 에서 5.6초를 기다림) 1 이상 + g2(15초) 2 → 3 이상
 $linkOk = $false
-if ($end.Count -eq 3 -and $end[1] -match '게임 서버 연결 5\(확인 4 · 확인 실패 1 · 등록 3 · 등록 거절 1 · 차례 틀림 0\) · 연결 줄 받음 17\(PING 0\) · 보냄 (\d+)\(PING (\d+)\) · 방 알림 3 · 사라짐 0 · 못 읽는 줄 0 · 판 결과 4 · 무소식 끊음 1') {
+if ($end.Count -eq 4 -and $endOf['게임 서버 연결'] -match '게임 서버 연결 5\(확인 4 · 확인 실패 1 · 등록 3 · 등록 거절 1 · 차례 틀림 0\) · 연결 줄 받음 17\(PING 0\) · 보냄 (\d+)\(PING (\d+)\) · 방 알림 3 · 사라짐 0 · 못 읽는 줄 0 · 판 결과 4 · 무소식 끊음 1') {
   $linkOk = ([int]$Matches[1] - [int]$Matches[2]) -eq 13 -and [int]$Matches[2] -ge 3
 }
 Check $linkOk '끝 줄 — 연결 셈(연결 5 · 확인 4 · 실패 1 · 등록 3 · 거절 1 · 받음 17 · 보냄 PING 빼고 13 · PING 3 이상 · 방 알림 3 · 판 결과 4 · 무소식 끊음 1)'
 # ★ 7단계 조각 5 — 판 결과 넷 = 저장 요청 2(ok 1 · dup 1) + 못 읽음 2(빠진 칸 1 → bad · 문법 1 → 판 번호도 없음)
-Check ($end.Count -eq 3 -and $end[2] -match '판 저장 요청 2\(SAVED ok 1 · dup 1 · 실패 0 · 끊긴 뒤 답 0 · 모르는 답 0 · 끝날 때 남음 0\) · 못 읽음 2\(문법 1 · 빠진 칸 1 · 타입 0 · 값 0 · SAVED bad 1 · 판 번호도 못 읽음 1\) · 저장소 없음 0') '끝 줄 — 판 저장(요청 2 · ok 1 · dup 1 · 못 읽음 2 — 문법 1 · 빠진 칸 1 · bad 1 · 판 번호 없음 1)'
+Check ($end.Count -eq 4 -and $endOf['판 저장 요청'] -match '판 저장 요청 2\(SAVED ok 1 · dup 1 · 실패 0 · 끊긴 뒤 답 0 · 모르는 답 0 · 끝날 때 남음 0\) · 못 읽음 2\(문법 1 · 빠진 칸 1 · 타입 0 · 값 0 · SAVED bad 1 · 판 번호도 못 읽음 1\) · 저장소 없음 0') '끝 줄 — 판 저장(요청 2 · ok 1 · dup 1 · 못 읽음 2 — 문법 1 · 빠진 칸 1 · bad 1 · 판 번호 없음 1)'
 Remove-Item -LiteralPath $log, $ini -ErrorAction SilentlyContinue
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)
 exit $(if ($script:fails) { 1 } else { 0 })

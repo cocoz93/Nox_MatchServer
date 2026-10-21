@@ -148,6 +148,7 @@ int main(int argc, char** argv) {
     nox::wol::CMemoryLobbyStore memStore;
     nox::wol::ILobbyStore& store = memStore;
     mirror.AttachStore(store);
+    lobby.AttachStore(store);   // ★ 7단계 조각 6 — 로그인은 계정 확인 답을 받고 끝낸다
     std::vector<nox::wol::StoreAnswer> answers;
     wchar_t stopName[64];
     swprintf(stopName, 64, L"nox_lobby_stop_%lu", GetCurrentProcessId());
@@ -234,7 +235,7 @@ int main(int argc, char** argv) {
         for (const nox::wol::StoreAnswer& a : answers) {
             switch (a.kind) {
                 case nox::wol::StoreAnswerKind::SaveMatch: mirror.OnStoreAnswer(a, outs); break;
-                case nox::wol::StoreAnswerKind::Login: break;   // 조각 6(로그인 미룸) 전엔 요청이 없다
+                case nox::wol::StoreAnswerKind::Login: lobby.OnStoreAnswer(a, outs); break;   // ★ 7단계 조각 6
                 case nox::wol::StoreAnswerKind::kCount: break;
             }
         }
@@ -259,10 +260,15 @@ int main(int argc, char** argv) {
     using nox::wol::JoinReject;
     const auto jr = [&ls](JoinReject w) { return ls.joinRejected[static_cast<size_t>(w)]; };
     Log("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu · 토큰 %llu · 새 방 %llu(물음 %llu · 실패 %llu · 시간 초과 %llu · 버림 %llu) · 채팅 %llu"
-        " · 참가 거절 %llu(곧바로 실패 %llu · 게임 서버 실패 %llu · 시간 초과 %llu · 없는 방 %llu)\n",
+        " · 참가 거절 %llu(곧바로 실패 %llu · 게임 서버 실패 %llu · 시간 초과 %llu · 없는 방 %llu · 로그인 안 됨 %llu)\n",
         nConn, nIn, nOut, ls.tokensIssued, ls.roomsCreated, ls.roomsRequested, ls.roomCreateFailed, ls.roomRequestTimeout,
         ls.roomRequestDropped, ls.chatMessages, ls.JoinRejectedTotal(), jr(JoinReject::RequestFailed), jr(JoinReject::CreateFailed),
-        jr(JoinReject::Timeout), jr(JoinReject::NoSuchRoom));
+        jr(JoinReject::Timeout), jr(JoinReject::NoSuchRoom), jr(JoinReject::NotLoggedIn));
+    // ★ 7단계 조각 6 — 로그인(USER 하나 = 확인 요청 · 이름 틀림 · 저장소 없음 중 하나 · 요청 하나 = 맞음 · 실패 · 시간 초과 · 끊김 중 하나)
+    Log("[로비] 끝 — 로그인 확인 %llu(맞음 %llu · 그중 새 계정 %llu · 실패 %llu · 시간 초과 %llu · 끝날 때 남음 %zu) · 이름 틀림 %llu · 저장소 없음 %llu · "
+        "늦은 답 %llu · 쌓았다 넘긴 줄 %llu(버림 %llu) · 마감 끊음 %llu\n",
+        ls.loginChecks, ls.loginOk, ls.loginCreated, ls.loginFailed, ls.loginTimeout, lobby.PendingLogins(), ls.loginBadName, ls.loginNoStore,
+        ls.loginLateAnswer, ls.heldLines, ls.heldDropped, ls.loginDeadlineClosed);
     // ★ 7단계 — 보냄 · 받음은 PING 을 넣은 수(괄호가 그중 PING) · 무소식 끊음 = 받은 줄이 한도 동안 없어 끊은 게임 서버 연결
     Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu(PING %llu) · "
         "보냄 %llu(PING %llu) · 방 알림 %llu · 사라짐 %llu · 못 읽는 줄 %llu · 판 결과 %llu · 무소식 끊음 %llu\n",

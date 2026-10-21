@@ -28,6 +28,13 @@
 //     로비는 게임 서버를 기다리지 않는다 — 기다리는 동안 다른 접속의 줄을 그대로 받는다(7단계 로그인 DB 답도 같은 틀)
 //   · 방마다 게임 서버 주소 · 포트 · 토큰 키(`LobbyRoom::gameIp` · `gamePort` · `tokenKey`) — 토큰은 그 방이 사는 게임 서버의 키로 서명한다
 // ★ 10-20 v2 작업 3b — 채팅 채널(배틀넷 꼴): 대화방 다섯 · 같은 채널 사람에게 드나듦 알림 · 글(`PRIVMSG`) 전달 — 위 2단계 「빠진 것」 중 둘을 채움
+// ★ 7단계 조각 6(`Docs/ACCOUNT_DB_DESIGN.md`) — 로그인은 저장소(`ILobbyStore` — `AttachStore`)의 계정 확인 답을 받고 끝낸다(아이디만 — 결정 2).
+//   · `USER`(로그인 묶음의 끝)에 확인 요청 → 답이 오면 375 · 372 · 376. 그 사이 그 접속의 뒷줄(verchk · SETOPT · SETCODEPAGE …)은 쌓았다가
+//     답 뒤 차례대로 — 정품은 USER 와 같은 묶음에 뒷줄을 미리 보내므로 녹음 차례(376 → 379 → 329)를 지키려면 쌓아야 한다
+//   · 실패(저장소가 답을 못 냄 · 한도 · 이름 길이)는 XWIS 꼴 부드러운 실패 — 안내 372 + 376(로그인은 끝) · 방 참가는 471(결정 4)
+//   · 토큰 · 새 방은 「확인됨」만(`USER` 없이 `NICK` + `JOINGAME` 만 보내도 토큰이 나가던 것 — 10-19 검사 지적 2)
+//   · 로그인 마감 — 붙고 `kLoginDeadlineMs` 안에 `USER` 가 없으면 끊는다(접속만 하고 말없는 접속이 끝없이 남던 것 — 검사 지적 8)
+//   · 저장소를 안 붙이면 옛 꼴(USER 에 곧바로 들여보냄 — 시험 · 녹음 대조용). 로비 실행 파일은 늘 붙인다(DB 또는 메모리 가짜)
 #pragma once
 
 #include <cstdint>
@@ -40,6 +47,7 @@
 
 #include "nox/Clock.h"
 #include "nox/JoinToken.h"
+#include "nox/LobbyStore.h"
 #include "nox/WolGameInfo.h"
 
 namespace nox::wol {
@@ -95,6 +103,11 @@ public:
 // ★ 10-20 v2 작업 3a — 미룬 새 방 답을 기다리는 한도. 근거 없는 값 — 같은 PC 연결 왕복은 ms 단위 · 정품이 얼마나 기다리는지는 미확인
 //   (넘으면 실패와 같은 꼴 — ★ 10-20 거절 답 뒤로는 `471` · 그 전엔 답이 없어 정품이 참가 화면에 머물렀다)
 constexpr uint32_t kRoomRequestTimeoutMs = 5000;
+// ★ 7단계 조각 6 — 로그인. 셋 다 근거 없는 값(정품이 376 을 얼마나 기다리는지 미확인 — 맨 끝 사람 판에서 DB 답 시간과 같이 기록)
+constexpr uint32_t kLoginCheckTimeoutMs = 5000;   // 계정 확인 답 한도(넘으면 실패 길)
+constexpr uint32_t kLoginDeadlineMs = 30000;      // 붙고 USER 까지 한도(정품은 로그인 줄을 한 묶음으로 보낸다)
+constexpr size_t kMaxHeldLines = 64;              // 확인 중에 쌓는 뒷줄 한도(녹음 접속 하나가 많아야 18줄 — 넘으면 버리고 센다)
+constexpr size_t kMaxNickBytes = 16;              // 계정 이름 한도 = 입장 토큰 이름 칸(`JoinToken.h`) — 넘으면 실패 길
 
 // ★ 10-20 거절 답(`Docs/LOBBY_SPLIT_DESIGN.md` 「거절 답 플랜」) — 방 참가(`JOINGAME`)를 받아 줄 수 없는 까닭.
 //   왜 — 답을 안 하면 정품이 「서버 접속 시도중...」에서 멈춘다(사람 확인 50). 정품이 받아 주는 거절 답은 `471` 하나뿐이다 —
@@ -109,6 +122,7 @@ enum class JoinReject : uint8_t {
     CreateFailed,    // 새 방 · 물은 게임 서버가 실패로 답함(연결 끊김 · CREATE_FAILED · 만든 방의 ROOM 이 안 옴)
     Timeout,         // 새 방 · 한도(`kRoomRequestTimeoutMs`) 안에 답 없음
     NoSuchRoom,      // 없는 방(목록이 낡음 · 남의 이름 채널)
+    NotLoggedIn,     // ★ 7단계 조각 6 — 로그인이 안 끝났거나 실패(토큰 · 새 방은 확인됨만)
     kCount
 };
 constexpr size_t kJoinRejectCount = static_cast<size_t>(JoinReject::kCount);
@@ -155,6 +169,18 @@ struct LobbyStats {
     unsigned long long chatMalformed = 0;    // ` :` 글 칸이 없음(처음 본 명령처럼 한 번 기록)
     // ★ 10-20 거절 답 — 보낸 `471` 을 까닭마다(`JoinReject` 차례). 보내는 자리는 `RejectJoin` 하나 · 부르는 자리 넷이 까닭을 고른다
     unsigned long long joinRejected[kJoinRejectCount] = {};
+    // ★ 7단계 조각 6 — 로그인(USER 하나는 확인 요청 · 이름 틀림 · 저장소 없음(옛 꼴) 중 하나 · 요청 하나는 맞음 · 실패 · 한도 · 끊김 중 하나)
+    unsigned long long loginChecks = 0;      // 저장소에 계정 확인 요청
+    unsigned long long loginOk = 0;          // 답 Ok — 들여보냄
+    unsigned long long loginCreated = 0;     // 그중 처음 보는 이름이라 계정을 만듦
+    unsigned long long loginFailed = 0;      // 답 Failed(DB 끊김 등) — 실패 길
+    unsigned long long loginTimeout = 0;     // `kLoginCheckTimeoutMs` 안에 답 없음 — 실패 길
+    unsigned long long loginBadName = 0;     // 이름이 비었거나 `kMaxNickBytes` 넘음 — 묻지 않고 실패 길
+    unsigned long long loginNoStore = 0;     // 저장소를 안 붙인 로비 — 옛 꼴로 곧바로 들여보냄
+    unsigned long long loginLateAnswer = 0;  // 끝난 요청(한도 · 끊김)의 답(버림)
+    unsigned long long heldLines = 0;        // 확인 중에 쌓았다가 답 뒤 넘긴 줄
+    unsigned long long heldDropped = 0;      // 쌓는 한도를 넘어 버린 줄
+    unsigned long long loginDeadlineClosed = 0;   // `kLoginDeadlineMs` 안에 USER 가 없어 끊음
     unsigned long long JoinRejectedTotal() const {
         unsigned long long n = 0;
         for (const unsigned long long v : joinRejected) n += v;
@@ -183,8 +209,13 @@ public:
     // ★ 10-20 거절 답 — 실패 · 시간 초과도 기다리던 클라에게 `471` 을 보내므로 보낼 줄(`out`)을 받는다
     void OnRoomCreateFailed(uint32_t req, const std::string& why, std::vector<Out>& out);
     // 미룬 답의 시간 초과를 본다 — 소켓 루프가 자주(줄이 없어도) 부른다
+    //   ★ 7단계 조각 6 — 계정 확인 한도 · 로그인 마감도
     void Tick(std::vector<Out>& out);
     size_t PendingRooms() const { return pending_.size(); }
+    // ★ 7단계 조각 6 — 계정 확인을 물을 저장소(로비보다 오래 산다 · 안 붙이면 옛 꼴) · 저장소 답 하나(갈래 Login 만)
+    void AttachStore(ILobbyStore& store) { store_ = &store; }
+    void OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out);
+    size_t PendingLogins() const { return loginPending_.size(); }
 
     // 소켓 루프가 찍을 기록(처음 본 명령 등). 꺼내면 비운다.
     std::vector<std::string> TakeLog();
@@ -193,12 +224,20 @@ public:
     const LobbyStats& Stats() const { return stats_; }
 
 private:
+    // ★ 7단계 조각 6 — 로그인 단계(대기 = USER 전 · 확인 중 = 저장소 답 기다림 · 확인됨 · 실패 = 부드러운 실패로 들여보냄)
+    enum class LoginState : uint8_t { Waiting, Checking, Ok, Failed };
     struct Conn {
         uint32_t peerIp = 0;
         uint32_t localIp = 0;
         std::string nick;
         int codepage = 0;
         int clientVer = -1;  // ★ 10-10 — `NOXCLIENT <판>`(줄이 없으면 -1 — 「판 낮음」과 따로 센다)
+        LoginState login = LoginState::Waiting;
+        uint32_t loginReq = 0;          // 확인 중 — 저장소 요청 번호
+        uint32_t loginDueMs = 0;        // 확인 중 — 답 한도 · 대기 — 로그인 마감(붙은 때 + kLoginDeadlineMs)
+        bool closing = false;           // 마감으로 끊는 줄을 보냄(끊김 사건까지 다시 안 함)
+        uint64_t accountId = 0;         // 확인됨 — 계정 번호
+        std::vector<std::string> held;  // 확인 중에 온 뒷줄(답 뒤 차례대로)
     };
 
     void OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<std::string>& t,
@@ -219,6 +258,8 @@ private:
     void JoinNewRoom(int conn, const Conn& c, const LobbyRoom& created, std::vector<Out>& out);
     // ★ 10-20 거절 답 — `: 471 u <채널> :<까닭 글>` 한 줄 · 까닭 셈(`LobbyStats::joinRejected`)
     void RejectJoin(int conn, const std::string& channel, JoinReject why, std::vector<Out>& out);
+    // ★ 7단계 조각 6 — 인사(375 · 372 … · 376). `failNotice` 가 있으면 실패 길(안내 줄 덧붙임). 끝나면 쌓아 둔 뒷줄을 차례대로
+    void FinishLogin(int conn, Conn& c, LoginState result, const char* failNotice, std::vector<Out>& out);
     void Unknown(const std::string& cmd, std::string_view line);
 
     LobbyConfig cfg_;
@@ -232,6 +273,9 @@ private:
     };
     std::map<uint32_t, PendingRoom> pending_;
     uint32_t nextReq_ = 1;
+    ILobbyStore* store_ = nullptr;                // ★ 7단계 조각 6
+    std::map<uint32_t, int> loginPending_;        // 계정 확인 요청 번호 → 접속
+    uint32_t nextLoginReq_ = 1;
     std::map<int, Conn> conns_;
     std::map<std::string, std::set<int>> members_;  // 채널 → 들어와 있는 접속
     std::set<std::string> unknownSeen_;
