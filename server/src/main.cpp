@@ -784,8 +784,9 @@ int main(int argc, char** argv) {
                     std::printf("%s\n", nox::FormatMatchResultLine(e.result).c_str());
                     std::fflush(stdout);
                     if (recorder) recorder->Push(e.result);
-                    // ★ 10-20 v2 작업 4b — 로비에도(연결 줄 RESULT · 7단계에서 로비가 DB 에). 연결이 없으면 셈만 — 파일엔 있다
-                    if (lobbyClient) lobbyClient->OnMatchResult(nox::FormatMatchResultJson(e.result), lobbyRequests);
+                    // ★ 10-20 v2 작업 4b — 로비에도(연결 줄 RESULT · 7단계에서 로비가 DB 에)
+                    //   ★ 7단계 조각 3 — 로비의 SAVED 까지 쥔다(연결이 없으면 붙어 등록할 때 · 판 번호로 짝)
+                    if (lobbyClient) lobbyClient->OnMatchResult(nox::MatchIdOf(e.result), nox::FormatMatchResultJson(e.result), lobbyRequests);
                     break;
             }
         }
@@ -1050,10 +1051,13 @@ int main(int argc, char** argv) {
             const nox::CLobbyClientStats& ls = lobbyClient->Stats();
             std::printf("[로비 연결] 끝 — 붙음 %llu · 끊김 %llu · 등록 %llu · 방 알림 %llu · 사라짐 %llu · 새 방 물음 %llu(만듦 %llu · 실패 %llu) · "
                         "판 결과 %llu(못 보냄 %llu) · BYE %llu · 못 읽음 %llu · TCP(받음 %llu · 보냄 %llu · 끊긴 접속으로 %llu · 시도 %llu · 못 붙음 %llu) · "
-                        "PING(받음 %llu · 보냄 %llu) · 무소식 끊음 %llu(끊기 요청 %llu)\n",   // ★ 7단계 — 살아 있음
+                        "PING(받음 %llu · 보냄 %llu) · 무소식 끊음 %llu(끊기 요청 %llu) · "   // ★ 7단계 — 살아 있음
+                        "판 결과 SAVED(ok %llu · dup %llu · bad %llu · 모르는 판 %llu) · 쥐었다 보냄 %llu · 다시 %llu · 버림 %llu · 쥔 채 끝 %zu\n",   // ★ 7단계 조각 3
                         ls.linksUp, ls.linksDown, ls.registers, ls.roomLines, ls.roomGoneLines, ls.creates, ls.created, ls.createFailed,
                         ls.results, ls.resultsNotSent, ls.byes, ls.badLines, ts.lobbyLinesIn, ts.lobbyLinesOut, ts.lobbySendNoConn,
-                        ts.lobbyConnects, ts.lobbyConnectFailed, ls.pingsIn, ls.pingsOut, ls.deadLinks, ts.lobbyCloseRequests);
+                        ts.lobbyConnects, ts.lobbyConnectFailed, ls.pingsIn, ls.pingsOut, ls.deadLinks, ts.lobbyCloseRequests,
+                        ls.savedOk, ls.savedDup, ls.savedBad, ls.savedUnknown, ls.resultsHeldDown, ls.resultsResent, ls.resultsDropped,
+                        lobbyClient->HeldResults());
         }
         std::fflush(stdout);
     }

@@ -113,6 +113,12 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
             std::printf("[로비 연결] 등록 — 실행 %u · 클라가 붙을 주소 %s:%u\n", _cfg.epoch,
                         _cfg.registerIp ? Ipv4ToString(_cfg.registerIp).c_str() : "(로비 쪽 주소)", _cfg.port);
             SendChanged(out);   // 붙을 때 지난번 보낸 것을 비웠으므로 로비 방 전부
+            // ★ 7단계 조각 3 — 쥔 판 결과 전부(끊긴 동안 끝난 판 · 보냈는데 답을 못 받은 판 — 로비는 판 번호로 겹침을 거른다)
+            if (!_held.empty()) {
+                const uint32_t now = _nowMs();
+                for (HeldResult& h : _held) SendHeld(h, now, out);
+                std::printf("[로비 연결] 쥔 판 결과 %zu개를 보냄(SAVED 를 기다림)\n", _held.size());
+            }
             return;
         case LinkKind::Create:
             if (_stage != Stage::Registered) break;
@@ -125,6 +131,25 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
         case LinkKind::Ping:   // ★ 7단계 — 받은 시각은 사건에서 적었다(어느 단계든)
             ++_stats.pingsIn;
             return;
+        case LinkKind::Saved: {   // ★ 7단계 조각 3 — 셋 다 지운다(bad 는 다시 보내도 같다 — 파일엔 있다)
+            const auto it = std::find_if(_held.begin(), _held.end(), [&l](const HeldResult& h) { return h.match == l.text; });
+            if (it == _held.end()) {
+                ++_stats.savedUnknown;   // 다시 보낸 판의 둘째 답 등 — 찍지 않고 셈만
+                return;
+            }
+            switch (l.saved) {
+                case SaveOutcome::Ok: ++_stats.savedOk; break;
+                case SaveOutcome::Dup: ++_stats.savedDup; break;
+                case SaveOutcome::Bad:
+                    ++_stats.savedBad;
+                    std::printf("[로비 연결] 로비가 판 결과를 못 읽어 버림 — %s(파일 기록기엔 있음)\n", Printable(l.text).c_str());
+                    std::fflush(stdout);
+                    break;
+                case SaveOutcome::kCount: break;
+            }
+            _held.erase(it);
+            return;
+        }
         case LinkKind::Auth:
         case LinkKind::Register:
         case LinkKind::Room:
@@ -132,7 +157,6 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
         case LinkKind::Created:
         case LinkKind::CreateFailed:
         case LinkKind::Result:
-        case LinkKind::Saved:
         case LinkKind::kCount:
             break;
     }
@@ -229,19 +253,41 @@ void CLobbyClient::LinkTick(std::vector<NetworkRequest>& out) {
         Send(LinkPing(), out);
         _nextPingMs = now + kLinkPingEveryMs;
     }
+    // ★ 7단계 조각 3 — 붙어 있어도 답이 없는 판은 다시(로비는 DB 에 못 넣으면 답을 안 한다 · 겹침은 로비가 거른다)
+    if (_stage == Stage::Registered)
+        for (HeldResult& h : _held)
+            if (now - h.sentMs >= kResultResendMs) SendHeld(h, now, out);
 }
 
-void CLobbyClient::OnMatchResult(const std::string& json, std::vector<NetworkRequest>& out) {
+void CLobbyClient::SendHeld(HeldResult& h, uint32_t now, std::vector<NetworkRequest>& out) {
+    if (h.sends++ == 0) ++_stats.results;
+    else ++_stats.resultsResent;
+    h.sentMs = now;
+    Send(h.line, out);
+}
+
+void CLobbyClient::OnMatchResult(const std::string& match, const std::string& json, std::vector<NetworkRequest>& out) {
     std::string line;
-    if (_stage != Stage::Registered || !LinkResult(json, line)) {
+    if (!LinkResult(json, line)) {   // 줄로 못 지음 — 다시 보내도 같다
         ++_stats.resultsNotSent;
-        std::printf("[로비 연결] 판 결과를 로비에 못 보냄 — %s(파일 기록기엔 있음)\n",
-                    _stage != Stage::Registered ? "연결 없음 · 등록 전" : "줄 한도 · 줄바꿈");
+        std::printf("[로비 연결] 판 결과를 로비에 못 보냄 — 줄 한도 · 줄바꿈 %s(파일 기록기엔 있음)\n", Printable(match).c_str());
         std::fflush(stdout);
         return;
     }
-    ++_stats.results;
-    Send(line, out);
+    if (_held.size() >= kMaxHeldResults) {
+        ++_stats.resultsDropped;
+        std::printf("[로비 연결] 쥔 판 결과가 %zu개 — 가장 옛 판 %s 를 버림(파일 기록기엔 있음)\n", _held.size(), Printable(_held.front().match).c_str());
+        std::fflush(stdout);
+        _held.pop_front();
+    }
+    _held.push_back(HeldResult{match, std::move(line)});
+    if (_stage != Stage::Registered) {
+        ++_stats.resultsHeldDown;
+        std::printf("[로비 연결] 판 결과를 쥠 — %s(연결 없음 · 등록 전 — 붙어 등록하면 보냄)\n", Printable(match).c_str());
+        std::fflush(stdout);
+        return;
+    }
+    SendHeld(_held.back(), _nowMs(), out);
 }
 
 }  // namespace nox

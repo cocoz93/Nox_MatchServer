@@ -25012,38 +25012,41 @@ void TestLobbyClient() {
         Check(noDup && failOk, m);
     }
 
-    // ④ 판 결과 — 등록 뒤 RESULT · 줄 한도 넘음 · 줄바꿈 → 안 보냄(셈)
+    // ④ 판 결과 — 등록 뒤 RESULT(SAVED 까지 쥠 — ★ 7단계 조각 3) · 줄 한도 넘음 · 줄바꿈 → 안 보냄 · 안 쥠(셈)
     rq.clear();
-    lc.OnMatchResult("{\"match\":\"1760000000-0-1\"}", rq);
+    lc.OnMatchResult("1760000000-0-1", "{\"match\":\"1760000000-0-1\"}", rq);
     auto l4 = lines(rq);
     rq.clear();
-    lc.OnMatchResult(std::string(nox::kLinkMaxLine, 'x'), rq);
-    lc.OnMatchResult("{\n}", rq);
-    std::snprintf(m, sizeof(m), "④ 판 결과 — [%s] · 한도 넘음 · 줄바꿈 → 안 보냄 %d · 셈(보냄 %llu · 못 보냄 %llu)",
-                  l4.empty() ? "" : l4[0].c_str(), (int)rq.empty(), lc.Stats().results, lc.Stats().resultsNotSent);
+    lc.OnMatchResult("1760000000-0-2", std::string(nox::kLinkMaxLine, 'x'), rq);
+    lc.OnMatchResult("1760000000-0-3", "{\n}", rq);
+    std::snprintf(m, sizeof(m), "④ 판 결과 — [%s] · 한도 넘음 · 줄바꿈 → 안 보냄 %d · 셈(보냄 %llu · 못 보냄 %llu · 쥔 것 %zu)",
+                  l4.empty() ? "" : l4[0].c_str(), (int)rq.empty(), lc.Stats().results, lc.Stats().resultsNotSent, lc.HeldResults());
     Check(l4.size() == 1 && l4[0] == "RESULT {\"match\":\"1760000000-0-1\"}" && rq.empty() && lc.Stats().results == 1 &&
-              lc.Stats().resultsNotSent == 2, m);
+              lc.Stats().resultsNotSent == 2 && lc.HeldResults() == 1, m);
 
     // ⑤ 끊김 → 아무것도 안 보냄 · 옛 접속 줄 무시 · 다시 붙으면 처음부터(방 전부 다시)
+    //   ★ 7단계 조각 3 — 끊긴 동안 끝난 판은 쥐었다가 · 다시 붙으면 방 다음에 쥔 판 결과 전부(④ 에서 SAVED 를 못 받은 판도 다시)
     rq.clear();
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_CLOSED, 7, ""), rq);
     rooms.Room(newId).SetPhase(nox::RoomPhase::Playing);
     lc.AfterTick(rq);   // 끊긴 동안 바뀜 — 안 보냄
     rooms.Room(newId).SetPhase(nox::RoomPhase::Waiting);   // 되돌림 — 다시 붙을 때 지난번 보낸 것과 같아도 전부 가야 한다(로비 거울이 끊김에 내렸다)
-    lc.OnMatchResult("{}", rq);
+    lc.OnMatchResult("x-0-1", "{}", rq);
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 7, nox::LinkCreate(43, "x")), rq);
-    const bool downQuiet = rq.empty() && !lc.Registered() && lc.Stats().resultsNotSent == 3 && lc.Stats().creates == 1;
+    const bool downQuiet = rq.empty() && !lc.Registered() && lc.Stats().resultsNotSent == 2 && lc.Stats().resultsHeldDown == 1 &&
+                           lc.HeldResults() == 2 && lc.Stats().creates == 1;
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, 8, ""), rq);
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 8, nox::LinkHello(nonce)), rq);
     auto l5 = lines(rq);
     bool conn8 = true;
     for (const Rq& r : rq) conn8 = conn8 && r.lobbyConn == 8;
-    std::snprintf(m, sizeof(m), "⑤ 끊김 → 줄 없음 %d · 다시 붙음 → 줄 %zu(AUTH · REGISTER · 방 %s) · 새 접속 번호 %d · 셈(붙음 %llu · 끊김 %llu · 등록 %llu)",
-                  (int)downQuiet, l5.size(), l5.size() > 2 ? l5[2].c_str() : "", (int)conn8, lc.Stats().linksUp, lc.Stats().linksDown,
-                  lc.Stats().registers);
-    Check(downQuiet && l5.size() == 3 && l5[0].rfind("AUTH ", 0) == 0 && l5[1] == "REGISTER 1760000000 127.0.0.2 18590" &&
-              l5[2] == "ROOM " + std::to_string(newId) + " 0 8 0 averylon's%20game averylongnick averylongnick so_lod chat" && conn8 &&
-              lc.Stats().linksUp == 2 && lc.Stats().linksDown == 1 && lc.Stats().registers == 2, m);
+    std::snprintf(m, sizeof(m), "⑤ 끊김 → 줄 없음 %d · 다시 붙음 → 줄 %zu(AUTH · REGISTER · 방 %s · 판 결과 %s · %s) · 새 접속 번호 %d · 셈(붙음 %llu · 끊김 %llu · 등록 %llu · 판 결과 처음 %llu · 다시 %llu)",
+                  (int)downQuiet, l5.size(), l5.size() > 2 ? l5[2].c_str() : "", l5.size() > 3 ? l5[3].c_str() : "", l5.size() > 4 ? l5[4].c_str() : "",
+                  (int)conn8, lc.Stats().linksUp, lc.Stats().linksDown, lc.Stats().registers, lc.Stats().results, lc.Stats().resultsResent);
+    Check(downQuiet && l5.size() == 5 && l5[0].rfind("AUTH ", 0) == 0 && l5[1] == "REGISTER 1760000000 127.0.0.2 18590" &&
+              l5[2] == "ROOM " + std::to_string(newId) + " 0 8 0 averylon's%20game averylongnick averylongnick so_lod chat" &&
+              l5[3] == "RESULT {\"match\":\"1760000000-0-1\"}" && l5[4] == "RESULT {}" && conn8 && lc.Stats().linksUp == 2 &&
+              lc.Stats().linksDown == 1 && lc.Stats().registers == 2 && lc.Stats().results == 2 && lc.Stats().resultsResent == 1, m);
 
     // ⑥ 차례에 안 맞는 줄(두 번째 HELLO · 로비가 보낼 리 없는 ROOM) · 못 읽는 줄 · BYE · 게임 사건
     rq.clear();
@@ -25148,6 +25151,115 @@ void TestLobbyClientAlive() {
                   (int)downQuiet, (int)waitQuiet, (int)closeNoHello, lc.Stats().pingsOut, lc.Stats().deadLinks);
     Check(downQuiet && waitQuiet && closeNoHello && lc.Stats().pingsOut == 2, m);
     std::printf("  7단계 조각 2 — 게임 서버 쪽 살아 있음: 등록 뒤 PING · 로비 PING 셈 · 받은 줄 한도 → LOBBY_CLOSE 한 번 · HELLO 없는 접속도\n");
+}
+
+// ── ★ 7단계 조각 3 — 판 결과를 로비의 SAVED 까지 쥐기(`CLobbyClient` — `Docs/ACCOUNT_DB_DESIGN.md` 원칙 「소켓에 쓴 것은 받은 것이 아니다」) ──
+//   ① 보낸 판은 SAVED 전까지 쥠 · 답 없이 `kResultResendMs` 면 다시(1ms 앞은 안 감) ② SAVED ok · dup · bad 셋 다 지움 · 쥐지 않은 판의 SAVED 는 셈만
+//   ③ 끊긴 동안 받은 판 → 쥠(줄 없음) → 다시 붙어 등록하면 방 다음에 보냄(처음 보냄으로 셈) ④ 한도를 넘으면 가장 옛것을 버림(셈)
+//   시계는 32비트가 넘어가는 자리 근처에서 시작 · 로비 PING 을 넣어 살아 있음 한도에 안 끊기게
+void TestLobbyClientHeld() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    using O = nox::SaveOutcome;
+    char m[300];
+    nox::CRoomManager rooms;
+    nox::CLobbyClient::Config cfg;
+    for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 11);
+    cfg.epoch = 1760000000u;
+    cfg.registerIp = 0x7f000002u;
+    cfg.port = 18590;
+    nox::CLobbyClient lc(rooms, cfg);
+    uint32_t clock = 0xfffff000u;
+    const uint32_t t0 = clock;
+    lc.SetClock([&clock] { return clock; });
+    auto ev = [](Ev::Type t, int c, const std::string& line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = c;
+        e.lobbyLine = line;
+        e.lobbyWhy = "test";
+        return e;
+    };
+    std::vector<Rq> rq;
+    int conn = 0;
+    auto connect = [&](int c) {
+        conn = c;
+        lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, c, ""), rq);
+        lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, c, nox::LinkHello("00112233445566778899aabbccddeeff")), rq);
+    };
+    auto lobby = [&](const std::string& line) { lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, conn, line), rq); };
+    // 그 때로 가서 로비 PING 을 받은 뒤 틱 뒤(살아 있음 한도에 안 끊기게) — 나온 RESULT 줄만
+    auto results = [&](uint32_t ms) {
+        clock = t0 + ms;
+        rq.clear();
+        lobby(nox::LinkPing());
+        lc.AfterTick(rq);
+        std::vector<std::string> v;
+        for (const Rq& r : rq)
+            if (r.type == Rq::Type::LOBBY_SEND && r.lobbyLine.rfind("RESULT ", 0) == 0) v.push_back(r.lobbyLine.substr(7));
+        return v;
+    };
+    auto json = [](const char* id) { return std::string("{\"match\":\"") + id + "\"}"; };
+
+    // ① 보냄 → 쥠 · 1ms 앞 안 감 · 한도에 다시 · 같은 때 또 안 감
+    connect(5);
+    rq.clear();
+    lc.OnMatchResult("m1", json("m1"), rq);
+    const bool sent1 = rq.size() == 1 && rq[0].lobbyLine == "RESULT " + json("m1") && lc.HeldResults() == 1;
+    const bool before = results(nox::CLobbyClient::kResultResendMs - 1).empty();
+    const auto again = results(nox::CLobbyClient::kResultResendMs);
+    const bool once = results(nox::CLobbyClient::kResultResendMs).empty();
+    std::snprintf(m, sizeof(m), "① 보냄 · 쥠 %d · 한도 1ms 앞 안 감 %d · 한도에 다시 %zu줄 · 같은 때 또 안 감 %d · 셈(처음 %llu · 다시 %llu)", (int)sent1,
+                  (int)before, again.size(), (int)once, lc.Stats().results, lc.Stats().resultsResent);
+    Check(sent1 && before && again.size() == 1 && again[0] == json("m1") && once && lc.Stats().results == 1 && lc.Stats().resultsResent == 1, m);
+
+    // ② SAVED — ok 지움 · 같은 판 둘째 SAVED(다시 보낸 것의 답)는 모르는 판 · dup · bad 도 지움 · 지운 판은 다시 안 감
+    rq.clear();
+    lobby(nox::LinkSavedLine("m1", O::Ok));
+    lobby(nox::LinkSavedLine("m1", O::Dup));
+    lc.OnMatchResult("m2", json("m2"), rq);
+    lc.OnMatchResult("m3", json("m3"), rq);
+    lobby(nox::LinkSavedLine("m3", O::Dup));
+    lobby(nox::LinkSavedLine("m2", O::Bad));
+    const bool savedAll = lc.HeldResults() == 0 && lc.Stats().savedOk == 1 && lc.Stats().savedDup == 1 && lc.Stats().savedBad == 1 &&
+                          lc.Stats().savedUnknown == 1 && lc.Stats().badLines == 0;
+    const bool noMore = results(3 * nox::CLobbyClient::kResultResendMs).empty();
+    std::snprintf(m, sizeof(m), "② SAVED ok · dup · bad 셋 다 지움(쥔 것 %zu) · 늦은 둘째 답 모르는 판 %llu · 못 읽음 %llu · 지운 판 다시 안 감 %d", lc.HeldResults(),
+                  lc.Stats().savedUnknown, lc.Stats().badLines, (int)noMore);
+    Check(savedAll && noMore, m);
+
+    // ③ 끊김 → 끝난 판은 쥠(줄 없음) → 다시 붙어 등록 → AUTH · REGISTER 다음에 그 판(처음 보냄)
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_CLOSED, 5, ""), rq);
+    lc.OnMatchResult("m4", json("m4"), rq);
+    const bool heldDown = rq.empty() && lc.HeldResults() == 1 && lc.Stats().resultsHeldDown == 1;
+    const auto first0 = lc.Stats().results;
+    connect(6);
+    std::vector<std::string> l3;
+    for (const Rq& r : rq) l3.push_back(r.lobbyLine);
+    std::snprintf(m, sizeof(m), "③ 끊긴 동안 판 → 쥠 · 줄 없음 %d · 다시 붙음 → 줄 %zu(셋째 [%s]) · 처음 보냄 셈 +%llu", (int)heldDown, l3.size(),
+                  l3.size() > 2 ? l3[2].c_str() : "", lc.Stats().results - first0);
+    Check(heldDown && l3.size() == 3 && l3[0].rfind("AUTH ", 0) == 0 && l3[1].rfind("REGISTER ", 0) == 0 && l3[2] == "RESULT " + json("m4") &&
+              lc.Stats().results == first0 + 1 && lc.Stats().resultsResent == 1, m);
+
+    // ④ 한도 — 끊긴 동안 한도 + 1 판 → 가장 옛것(m4) 버림 · 다시 붙으면 남은 한도만큼 · 첫 줄은 그다음 판
+    lobby(nox::LinkSavedLine("m4", O::Ok));
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_CLOSED, 6, ""), rq);
+    for (size_t i = 0; i <= nox::CLobbyClient::kMaxHeldResults; ++i) {
+        const std::string id = "h" + std::to_string(i);
+        lc.OnMatchResult(id, json(id.c_str()), rq);
+    }
+    const bool capped = lc.HeldResults() == nox::CLobbyClient::kMaxHeldResults && lc.Stats().resultsDropped == 1;
+    rq.clear();
+    connect(7);
+    size_t resLines = 0;
+    std::string firstRes;
+    for (const Rq& r : rq)
+        if (r.lobbyLine.rfind("RESULT ", 0) == 0 && resLines++ == 0) firstRes = r.lobbyLine.substr(7);
+    std::snprintf(m, sizeof(m), "④ 한도 %zu + 1 → 쥔 것 %zu · 버림 %llu · 다시 붙음 → 판 결과 %zu줄 · 첫 줄 %s", nox::CLobbyClient::kMaxHeldResults, lc.HeldResults(),
+                  lc.Stats().resultsDropped, resLines, firstRes.c_str());
+    Check(capped && resLines == nox::CLobbyClient::kMaxHeldResults && firstRes == json("h1"), m);
+    std::printf("  7단계 조각 3 — 판 결과를 SAVED 까지 쥠: 답 없으면 30초 다시 · ok/dup/bad 지움 · 끊긴 동안 쥐었다 등록 뒤 · 한도 넘으면 옛것 버림\n");
 }
 
 // ── ★ 10-16 플랜 B 작업 13a — 로비 방식의 맵 후보 · 맵 목록 ─────────
@@ -32630,6 +32742,7 @@ int main() {
     TestRoomFacts();
     TestLobbyClient();   // ★ 10-20 v2 작업 4b(옛 TestChannelLobby 자리)
     TestLobbyClientAlive();   // ★ 7단계 조각 2
+    TestLobbyClientHeld();    // ★ 7단계 조각 3
     TestLobbyMapPaths();
     TestJoinTrailer();
     TestReliableResend();

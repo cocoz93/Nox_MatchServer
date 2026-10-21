@@ -16,11 +16,14 @@
 //
 // ★ 7단계 — 살아 있음(`PING` · `LobbyLink.h`). 로비 PC 가 전원째 꺼지면 끊김 신호가 안 와 이 게임 서버는 붙은 줄로 안다 —
 //   받은 줄이 `kLinkDeadMs` 동안 없으면 네트워크 스레드에 끊으라고 하고(`LOBBY_CLOSE`) 끊김 길(다시 붙기)로 간다
+// ★ 7단계 조각 3 — 판 결과는 로비의 `SAVED` 까지 쥔다(아래 `kResultResendMs`). 로비가 꺼진 동안 끝난 판도 다시 붙으면 간다
+//   (10-21 사용자 「7단계 설계에서 넣자」 — 옛 꼴은 연결이 없으면 셈만 하고 버렸다 · 사람 판 49)
 //
 // 소켓은 모른다 — 게임 스레드 한 곳에서만 부른다(로비 사건 · 틱 뒤 · 판 결과). 시간은 살아 있음 몫만(`SetClock` · 기본 `NowMs`).
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <random>
@@ -45,8 +48,16 @@ struct CLobbyClientStats {
     unsigned long long creates = 0;          // CREATE 받음
     unsigned long long created = 0;          // 방을 만들어 CREATED
     unsigned long long createFailed = 0;     // 못 만들어 CREATE_FAILED
-    unsigned long long results = 0;          // RESULT 보냄
-    unsigned long long resultsNotSent = 0;   // 판 결과를 못 보냄(연결 없음 · 등록 전 · 줄 한도) — 파일 기록기엔 있다
+    unsigned long long results = 0;          // RESULT 처음 보냄(판 하나에 한 번)
+    // ★ 7단계 조각 3 — 옛 뜻은 「연결 없음 · 등록 전 · 줄 한도」. 이제 연결 없음 · 등록 전은 쥐었다가 보낸다(`resultsHeldDown`)
+    unsigned long long resultsNotSent = 0;   // 줄로 못 지음(줄 한도 · 줄바꿈) — 쥐지 않는다(파일 기록기엔 있다)
+    unsigned long long resultsHeldDown = 0;  // ★ 7단계 조각 3 — 연결 없음 · 등록 전에 받아 쥠(붙어 등록하면 보냄)
+    unsigned long long resultsResent = 0;    // 다시 보냄(다시 붙어 등록한 직후 · 답 없이 `kResultResendMs`)
+    unsigned long long savedOk = 0;          // SAVED ok — 로비가 새로 넣음 · 쥔 것을 지움
+    unsigned long long savedDup = 0;         // SAVED dup — 로비에 이미 있음(다시 보낸 것) · 지움
+    unsigned long long savedBad = 0;         // SAVED bad — 로비가 못 읽어 버림 · 지움(다시 보내도 같다 — 파일엔 있다)
+    unsigned long long savedUnknown = 0;     // 쥐고 있지 않은 판의 SAVED(다시 보낸 것의 늦은 둘째 답 등 — 버림)
+    unsigned long long resultsDropped = 0;   // 쥔 것이 `kMaxHeldResults` 를 넘어 가장 옛것을 버림(파일엔 있다)
     unsigned long long byes = 0;             // 로비가 BYE(끊기 직전 까닭)
     unsigned long long badLines = 0;         // 못 읽는 줄 · 차례에 안 맞는 줄(버림)
     // ★ 7단계 — 살아 있음
@@ -62,6 +73,10 @@ public:
     static constexpr size_t kRoomNameNickBytes = 8;
     // ★ 10-16 작업 12a — 로비가 만든 방의 최대 인원(`Docs/ROOMS_DESIGN.md` 「10-16 정한 것」) · ★ 10-20 옛 `CChannelLobby` 에서 옮김
     static constexpr int kRoomMaxPlayers = 8;
+    // ★ 7단계 조각 3 — 판 결과는 로비가 「DB 에 넣음」(`SAVED`)이라 답할 때까지 쥔다(`Docs/ACCOUNT_DB_DESIGN.md` 원칙 —
+    //   소켓에 쓴 것은 받은 것이 아니다: 반쯤 열린 연결에 쓴 줄은 사라진다). 둘 다 근거 없는 값
+    static constexpr uint32_t kResultResendMs = 30000;   // 붙어 있어도 이만큼 답이 없으면 다시(로비 쪽 DB 가 잠깐 죽음 — 로비는 답을 안 한다)
+    static constexpr size_t kMaxHeldResults = 1000;      // 넘으면 가장 옛것을 버리고 센다(쥐는 곳은 메모리 — 게임 서버가 꺼지면 파일에만 남는다)
 
     struct Config {
         JoinKey tokenKey{};       // 설정 파일의 토큰 키 — 연결 확인 키 · 이 게임 서버 토큰 키를 이것에서 뽑는다
@@ -88,7 +103,9 @@ public:
     //   ★ 7단계 — 살아 있음도 여기서(바퀴마다 불린다 — 방이 없어도 한 틱 길이마다 깬다 `main.cpp`)
     void AfterTick(std::vector<NetworkRequest>& out);
     // 판 결과 JSON 한 줄(`FormatMatchResultJson`) → RESULT(등록 뒤에만 · 줄 한도 안에서만 — 아니면 셈만)
-    void OnMatchResult(const std::string& json, std::vector<NetworkRequest>& out);
+    //   ★ 7단계 조각 3 — `match` = 판 번호(`MatchIdOf` — `SAVED` 와 짝). 쥐었다가 등록 뒤에 보내고 `SAVED` 에 지운다 · 줄로 못 지으면 셈만
+    void OnMatchResult(const std::string& match, const std::string& json, std::vector<NetworkRequest>& out);
+    size_t HeldResults() const { return _held.size(); }   // 아직 `SAVED` 를 못 받은 판 결과
 
     bool Registered() const { return _stage == Stage::Registered; }
     const CLobbyClientStats& Stats() const { return _stats; }
@@ -107,6 +124,14 @@ private:
     void SendChanged(std::vector<NetworkRequest>& out);
     // ★ 7단계 — 등록 뒤 PING · 받은 줄이 한도 동안 없으면 `LOBBY_CLOSE`(한 접속에 한 번)
     void LinkTick(std::vector<NetworkRequest>& out);
+    // ★ 7단계 조각 3 — 쥔 판 결과 하나를 보낸다(처음이면 `results` · 다시면 `resultsResent`)
+    struct HeldResult {
+        std::string match;      // 판 번호(`SAVED` 짝)
+        std::string line;       // 지어 둔 RESULT 줄
+        uint32_t sentMs = 0;    // 마지막으로 보낸 때
+        unsigned sends = 0;     // 보낸 수(0 = 아직 — 연결 없음 · 등록 전에 받음)
+    };
+    void SendHeld(HeldResult& h, uint32_t now, std::vector<NetworkRequest>& out);
 
     CRoomManager& _rooms;
     Config _cfg;
@@ -123,6 +148,7 @@ private:
     uint32_t _lastRecvMs = 0;                 // ★ 7단계 — 이 접속에서 마지막으로 줄을 받은 때(붙은 때부터)
     uint32_t _nextPingMs = 0;
     bool _closeAsked = false;                 // 이 접속에 `LOBBY_CLOSE` 를 이미 냄(끊김 사건까지 다시 안 냄)
+    std::deque<HeldResult> _held;             // ★ 7단계 조각 3 — `SAVED` 를 못 받은 판 결과(받은 차례 — 한도를 넘으면 앞에서 버림)
     CLobbyClientStats _stats;
 };
 
