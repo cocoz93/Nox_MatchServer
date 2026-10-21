@@ -82,8 +82,26 @@ function Gs([string[]]$lines) {
 $log = Join-Path $env:TEMP ("nox_lobby_smoke_{0}.txt" -f $PID)
 $ini = Join-Path $env:TEMP ("nox_lobby_smoke_{0}.ini" -f $PID)
 [IO.File]::WriteAllText($ini, "[token]`r`nkey = $keyHex`r`n")
+
+# ⓪ ★ 7단계 조각 8 — 저장소를 못 고르면 로비가 안 뜬다(포트도 안 잡음 · 종료 코드 2 · 까닭 한 줄)
+#   [db] 없음 + --no-db 없음 · [db] 가 닫힌 포트(127.0.0.1:1 — 붙기가 곧바로 거절됨)
+function Refused([string]$iniText, [string]$pattern, [string]$what) {
+  $i0 = Join-Path $env:TEMP ("nox_lobby_smoke_{0}_r.ini" -f $PID); $l0 = Join-Path $env:TEMP ("nox_lobby_smoke_{0}_r.txt" -f $PID)
+  [IO.File]::WriteAllText($i0, $iniText)
+  $r = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $l0 -ArgumentList @(
+    '--config', "`"$i0`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '5')
+  $null = $r.Handle
+  $done = $r.WaitForExit(10000)
+  if (-not $done) { Stop-Process -Id $r.Id -Force }
+  $t = if (Test-Path -LiteralPath $l0) { [IO.File]::ReadAllText($l0, [Text.Encoding]::UTF8) } else { '' }
+  Check ($done -and $r.ExitCode -eq 2 -and $t -match $pattern -and $t -notmatch '듣기 —') "⓪ $what → 안 뜸(종료 코드 $(if ($done) { $r.ExitCode } else { '끝나지 않음' }) · 포트 안 잡음)"
+  Remove-Item -LiteralPath $i0, $l0 -ErrorAction SilentlyContinue
+}
+Refused "[token]`r`nkey = $keyHex`r`n" '\[멈춤\] 설정 파일에 \[db\] user 가 없다' '[db] 없음 · --no-db 없음'
+Refused "[token]`r`nkey = $keyHex`r`n[db]`r`nhost = 127.0.0.1`r`nport = 1`r`nuser = nobody`r`npassword = x`r`n" '\[멈춤\] DB 127\.0\.0\.1:1/nox_mo — 붙기' '[db] 가 닫힌 포트'
+
 $p = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -ArgumentList @(
-  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '90')   # ★ 7단계 — 끝은 닫기 이벤트(⑤ 가 15초를 기다림) · --seconds 는 안전 한도
+  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '90', '--no-db')   # ★ 7단계 — 끝은 닫기 이벤트(⑤ 가 15초를 기다림) · --seconds 는 안전 한도 · 메모리 저장소
 $null = $p.Handle   # 종료 코드를 읽으려면 미리 잡아 둔다
 try {
   Write-Host "로비 :$LobbyPort · 게임 서버 연결 :$LinkPort"

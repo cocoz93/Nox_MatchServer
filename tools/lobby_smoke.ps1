@@ -62,7 +62,7 @@ $llog = Join-Path $env:TEMP ("lobby_smoke_lobby_{0}.txt" -f $PID)
 $ini = Join-Path $env:TEMP ("lobby_smoke_{0}.ini" -f $PID)
 [IO.File]::WriteAllText($ini, "[token]`r`nkey = $('ab' * 32)`r`n")
 $lp = Start-Process -FilePath $LobbyExe -PassThru -WindowStyle Hidden -RedirectStandardOutput $llog -ArgumentList @(
-  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '150', '--quiet')   # ★ 4c — 빈 방 닫힘을 기다릴 만큼 넉넉히(끝은 닫기 이벤트)
+  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '150', '--quiet', '--no-db')   # ★ 7단계 — 메모리 저장소   # ★ 4c — 빈 방 닫힘을 기다릴 만큼 넉넉히(끝은 닫기 이벤트)
 $null = $lp.Handle
 $p = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -ArgumentList @(
   '--port', $UdpPort, '--config', "`"$ini`"", '--lobby', "127.0.0.1:$LinkPort", '--quiet', '--no-results')   # ★ 10-19 판 결과 기록 끄기

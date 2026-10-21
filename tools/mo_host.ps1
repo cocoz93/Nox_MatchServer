@@ -1,6 +1,7 @@
 ﻿# mo_host.ps1 — 다른 PC가 붙을 수 있게 이 PC의 MO 서버를 연다/닫는다 (리포 맨 위 서버_MO_열기.bat · 서버_MO_닫기.bat 이 부른다).
 #
-#   -Mode Open [-PublicIp a.b.c.d] [-AllowIp a.b.c.d]
+#   -Mode Open [-PublicIp a.b.c.d] [-AllowIp a.b.c.d] [-NoDb]
+#       ★ 7단계 — 로비는 설정 [db](MySQL)에 붙어야 뜬다. -NoDb 면 메모리 저장소(--no-db — 계정 · 판 기록이 로비와 같이 사라짐)
 #       ① 방화벽 열기(tools\mo_firewall.ps1 — 승인 창 1회, -AllowIp 를 주면 그 주소만)
 #       ② ★ 10-20 v2 작업 6 — 로비(nox_lobby — 클라 TCP 4000 · 게임 서버 연결 127.0.0.1:4010)가 안 떠 있으면 띄운다
 #       ③ ★ 10-20 v2 — 게임 서버(nox_server — UDP 18590 · --lobby 127.0.0.1:4010 · 방 없이 시작 · 새 방은 로비가 묻는다)가 안 떠 있으면 띄운다.
@@ -13,7 +14,7 @@
 #
 # ⚠ 이 PC는 공유기 없이 공인 IP 가 직접 붙어 있어, 여는 동안 세 포트가 인터넷에 드러난다 — 시험이 끝나면 꼭 닫기.
 #   로비 · 게임 서버는 시간 제한 · 접속 상한 · 낯선 패킷 시험이 없다(Docs/LOBBY_DESIGN.md 「다른 PC용 꾸러미」 절).
-param([ValidateSet('Open', 'Close')][string]$Mode = 'Open', [string]$PublicIp = '', [string]$AllowIp = '')
+param([ValidateSet('Open', 'Close')][string]$Mode = 'Open', [string]$PublicIp = '', [string]$AllowIp = '', [switch]$NoDb)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $routerExe = Join-Path $repo 'build\Release\nox_router.exe'
@@ -81,9 +82,11 @@ try {
     } elseif ($l4000.Count -ge 1) {
       throw "TCP 4000 을 다른 프로그램이 듣는다(옛 채널 nox_server --lobby-port 이거나 루프백 로비) — 그 창을 닫고 다시 실행하세요"
     } else {
-      Start-Process -FilePath $lobbyExe -ArgumentList @('--config', "`"$cfg`"", '--bind', '0.0.0.0', '--lobby-port', '4000', '--link-bind', '127.0.0.1', '--link-port', '4010', '--quiet')
+      $lobbyArgs = @('--config', "`"$cfg`"", '--bind', '0.0.0.0', '--lobby-port', '4000', '--link-bind', '127.0.0.1', '--link-port', '4010', '--quiet')
+      if ($NoDb) { $lobbyArgs += '--no-db' }   # ★ 7단계
+      Start-Process -FilePath $lobbyExe -ArgumentList $lobbyArgs
       Start-Sleep -Seconds 2
-      if (-not (Get-NetTCPConnection -State Listen -LocalPort 4000 -ErrorAction SilentlyContinue)) { throw '로비가 뜨지 않았다 — 로비 창의 글을 보세요' }
+      if (-not (Get-NetTCPConnection -State Listen -LocalPort 4000 -ErrorAction SilentlyContinue)) { throw '로비가 뜨지 않았다 — 로비 창의 글을 보세요(★ 7단계 — [멈춤] DB 면 사람 1회 config\db_setup.sql 또는 -NoDb)' }
       Write-Host '로비: 띄움 (클라 TCP 0.0.0.0:4000 · 게임 서버 연결 127.0.0.1:4010)'
     }
     # 게임 서버 — UDP 18590 을 든 nox_server 가 있으면 그것을 쓴다(로비에 붙어 있는지는 로비 창의 「등록」 줄로 본다)

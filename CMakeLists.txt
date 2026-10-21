@@ -111,6 +111,10 @@ if (EXISTS "${NOX_MYSQL_DIR}/include/mysql.h" AND EXISTS "${NOX_MYSQL_DIR}/lib/l
   target_include_directories(db_test PRIVATE "${NOX_MYSQL_DIR}/include")   # 시험은 표를 깔고 대조하려고 MySQL 을 직접 쓴다
   target_link_libraries(db_test PRIVATE nox_db)
   add_custom_command(TARGET db_test POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NOX_MYSQL_DLLS} $<TARGET_FILE_DIR:db_test>)
+  # ★ 7단계 조각 8 — 로비가 DB 워커를 쓴다([db] · --no-db 면 메모리 저장소)
+  target_link_libraries(nox_lobby PRIVATE nox_db)
+  target_compile_definitions(nox_lobby PRIVATE NOX_HAVE_MYSQL=1)
+  add_custom_command(TARGET nox_lobby POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NOX_MYSQL_DLLS} $<TARGET_FILE_DIR:nox_lobby>)
 else()
   set(NOX_HAVE_MYSQL OFF)
   message(WARNING "MySQL 이 없다(${NOX_MYSQL_DIR}) — 로비 DB 워커 · db_test 없이 빌드(NOX_MYSQL_DIR 로 폴더를 줄 수 있다)")

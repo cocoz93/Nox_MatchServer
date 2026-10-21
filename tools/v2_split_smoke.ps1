@@ -99,7 +99,7 @@ function StartGs([string]$ip, [string]$log) {
 }
 function StartLobby([string]$log) {
   $p = Start-Process -FilePath $LobbyExe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -ArgumentList @(
-    '--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '120', '--quiet')
+    '--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '120', '--quiet', '--no-db')   # ★ 7단계 — 메모리 저장소
   $null = $p.Handle
   return $p
 }

@@ -1,7 +1,7 @@
 ﻿// lobby_main.cpp — 로비 프로세스 `nox_lobby` (MO 6단계 v2 작업 3c — `Docs/LOBBY_SPLIT_DESIGN.md`).
 //
 //   nox_lobby.exe --config <설정 파일> [--bind 0.0.0.0] [--lobby-port 4000]
-//                 [--link-bind 127.0.0.1] [--link-port 4010] [--seconds N] [--quiet]
+//                 [--link-bind 127.0.0.1] [--link-port 4010] [--seconds N] [--quiet] [--no-db]
 //
 // 왜 다시 따로 된 프로세스인가 — 목표 구조 v2(사용자 10-20 「좋아 v2로가자」): 로비 하나가 전체 상태(로그인 · 채팅 채널 · 게임 목록 ·
 //   나중 계정 · 친구 · 매칭)를 쥐고, 게임 서버(`nox_server`)는 판만 돌려 늘리고 줄인다. 10-14 작업 8d 가 이 실행 파일을 없애고
@@ -17,6 +17,8 @@
 //     끝 줄(셈)을 찍고 나간다 — 강제 종료로 셈을 잃지 않게
 //
 // 설정 파일 — `[token] key = <16진 64자>`(입장 토큰 키 — 게임 서버와 같은 값. 연결 확인 키 · 게임 서버별 토큰 키도 이것에서 뽑는다)
+//   ★ 7단계 조각 8 — `[db]` host · port · user · password · database(계정 · 판 기록의 정본 MySQL — `Docs/ACCOUNT_DB_DESIGN.md`).
+//     없거나 못 붙거나 표 버전이 다르면 뜨지 않는다(토큰 키와 같은 꼴). `--no-db` = 메모리 저장소(시험 · 끝나면 기록이 사라짐 — 정할 것 b)
 // ⚠ --bind 0.0.0.0 은 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다. 같은 PC 시험은 --bind 127.0.0.1 로 충분하다.
 //   연결 포트는 기본 127.0.0.1 — 게임 서버가 다른 PC 면 --link-bind 로 내부 주소를 준다(바깥 주소에 열지 말 것)
 #include <winsock2.h>
@@ -27,12 +29,16 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "nox/IniFile.h"
 #include "nox/Lobby.h"
+#if NOX_HAVE_MYSQL
+#include "nox/DbWorker.h"   // ★ 7단계 조각 8 — MySQL 머리 파일은 안 끌어온다(DbWorker.cpp 에만)
+#endif
 #include "nox/LobbyLink.h"
 #include "nox/LobbyStore.h"
 #include "nox/RoomMirror.h"
@@ -104,6 +110,7 @@ int main(int argc, char** argv) {
     uint16_t linkPort = nox::kLobbyLinkPort;
     int seconds = 0;   // 0 이면 끝없이. 자체검사가 정해진 시간 뒤 스스로 끝나게 쓴다
     std::string configPath;
+    bool noDb = false;   // ★ 7단계 조각 8
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -117,6 +124,7 @@ int main(int argc, char** argv) {
         } else if (a == "--link-port" && hasNext) linkPort = static_cast<uint16_t>(std::atoi(argv[++i]));
         else if (a == "--config" && hasNext) configPath = argv[++i];
         else if (a == "--seconds" && hasNext) seconds = std::atoi(argv[++i]);
+        else if (a == "--no-db") noDb = true;
         else { Log("[실패] 모르는 인자: %s\n", a.c_str()); return 2; }
     }
     if (lobbyPort == 0 || linkPort == 0 || lobbyPort == linkPort) {
@@ -132,6 +140,42 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    // ★ 7단계 조각 8 — 저장소(계정 · 판 기록). 포트를 열기 전에 — 못 뜨면 포트도 안 잡는다
+    nox::wol::CMemoryLobbyStore memStore;
+    nox::wol::ILobbyStore* storePtr = &memStore;
+#if NOX_HAVE_MYSQL
+    std::unique_ptr<nox::db::CDbWorker> dbWorker;
+#endif
+    if (noDb) {
+        Log("[로비] 저장소 = 메모리(--no-db) — 계정 · 판 기록은 로비가 끝나면 사라진다\n");
+    } else {
+#if NOX_HAVE_MYSQL
+        nox::db::DbConfig dc;
+        if (!ini.Get("db", "host").empty()) dc.host = ini.Get("db", "host");
+        if (!ini.Get("db", "port").empty()) dc.port = static_cast<uint16_t>(std::atoi(ini.Get("db", "port").c_str()));
+        dc.user = ini.Get("db", "user");
+        dc.password = ini.Get("db", "password");   // 찍지 않는다
+        dc.database = ini.Get("db", "database").empty() ? std::string("nox_mo") : ini.Get("db", "database");
+        if (dc.user.empty()) {
+            Log("[멈춤] 설정 파일에 [db] user 가 없다(%s) — DB 없이 띄우려면 --no-db(계정 · 판 기록이 끝나면 사라짐)\n", configPath.c_str());
+            return 2;
+        }
+        dbWorker = std::make_unique<nox::db::CDbWorker>(dc);
+        std::string err;
+        if (!dbWorker->Start(err)) {
+            Log("[멈춤] DB %s:%u/%s — %s(사람 1회 config/db_setup.sql 을 돌렸나 · DB 없이 띄우려면 --no-db)\n", dc.host.c_str(), dc.port,
+                dc.database.c_str(), err.c_str());
+            return 2;
+        }
+        storePtr = dbWorker.get();
+        Log("[로비] 저장소 = DB %s:%u/%s(계정 · 판 기록 · 표 버전 %u)\n", dc.host.c_str(), dc.port, dc.database.c_str(), nox::db::kSchemaVersion);
+#else
+        Log("[멈춤] 이 로비는 MySQL 없이 빌드됐다(CMake NOX_MYSQL_DIR) — --no-db 로만 뜬다\n");
+        return 2;
+#endif
+    }
+    nox::wol::ILobbyStore& store = *storePtr;
+
     nox::CTcpLines tcp;
     {
         std::string err;
@@ -144,9 +188,7 @@ int main(int argc, char** argv) {
     nox::wol::RoomMirror mirror(cfg.joinKey);
     nox::wol::Lobby lobby(cfg, mirror);
     mirror.Attach(lobby);
-    // ★ 7단계 조각 5 — 저장소(계정 · 판 기록). 조각 8 전까지는 메모리 가짜뿐(답은 다음 바퀴 — DB 와 같은 미룬 답 길)
-    nox::wol::CMemoryLobbyStore memStore;
-    nox::wol::ILobbyStore& store = memStore;
+    // ★ 7단계 조각 5 — 저장소(계정 · 판 기록 — 위에서 고름: DB 워커 · --no-db 면 메모리 가짜. 답은 둘 다 다음 바퀴 이후)
     mirror.AttachStore(store);
     lobby.AttachStore(store);   // ★ 7단계 조각 6 — 로그인은 계정 확인 답을 받고 끝낸다
     std::vector<nox::wol::StoreAnswer> answers;
@@ -254,6 +296,17 @@ int main(int argc, char** argv) {
 
     tcp.CloseAll();
     if (stopEvent) CloseHandle(stopEvent);
+#if NOX_HAVE_MYSQL
+    // ★ 7단계 조각 8 — 남은 일(판 저장)을 다 넣고 닫는다 · 셈(요청 하나 = 아래 갈래 중 하나)
+    if (dbWorker) {
+        dbWorker->Stop();
+        const nox::db::DbStats ds = dbWorker->Stats();
+        Log("[로비] 끝 — DB 요청 %llu(로그인 맞음 %llu · 그중 만듦 %llu · 로그인 실패 %llu · 판 Saved %llu · Duplicate %llu · Invalid %llu · 판 실패 %llu) · "
+            "붙음 %llu · 못 붙음 %llu · 끊겨 다시 %llu · 한 번에 꺼낸 일 최대 %zu%s%s\n",
+            ds.requests, ds.loginOk, ds.loginCreated, ds.loginFailed, ds.saved, ds.duplicates, ds.invalid, ds.saveFailed, ds.connects,
+            ds.connectFailed, ds.retries, ds.queueMax, ds.lastError.empty() ? "" : " · 마지막 오류 ", ds.lastError.c_str());
+    }
+#endif
     const nox::wol::LobbyStats& ls = lobby.Stats();
     const nox::wol::MirrorStats& ms = mirror.Stats();
     // ★ 10-20 거절 답 — 참가 거절(471) 합과 까닭 넷(`JoinReject` 차례 — 곧바로 실패 · 게임 서버 실패 · 시간 초과 · 없는 방)
