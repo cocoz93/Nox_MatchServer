@@ -23,7 +23,21 @@ enum class StoreAnswerKind : uint8_t { Login, SaveMatch, kCount };
 // 계정 확인 — 실패는 저장소가 답을 못 낸 것(DB 끊김 · 시간 초과). 이름 규칙(길이 등)은 로비가 묻기 전에 가른다
 enum class LoginResult : uint8_t { Ok, Failed, kCount };
 // 판 저장 — 못 넣음(Failed)이면 로비는 SAVED 를 안 보낸다(게임 서버가 30초 뒤 다시 · `LobbyClient.h` `kResultResendMs`)
-enum class SaveResult : uint8_t { Saved, Duplicate, Failed, kCount };
+//   ★ 7단계 조각 7 — Invalid = 저장소 칸에 안 맞는 판(글 길이 · UTF-8 아닌 원문 · 사람 수). 다시 보내도 같으므로 로비는 SAVED bad
+//     (Failed 로 두면 게임 서버가 30초마다 끝없이 다시 보낸다 — MySQL 엄격 모드는 넘는 글을 거절한다)
+enum class SaveResult : uint8_t { Saved, Duplicate, Invalid, Failed, kCount };
+
+// 판 기록 표 칸 한도(바이트 — `tools/db/001_init.sql` 과 같은 값 · 글 칸은 ASCII 라 글자 수 = 바이트 수)
+constexpr size_t kMatchKeyBytes = 48;
+constexpr size_t kRoomNameBytes = 64;
+constexpr size_t kMapKeyBytes = 64;
+constexpr size_t kModeBytes = 32;
+constexpr size_t kEndReasonBytes = 32;
+constexpr size_t kWinnerKindBytes = 8;
+constexpr size_t kAccountNameBytes = 16;   // accounts.name · match_players.name · matches.winner_name
+constexpr size_t kMaxMatchPlayers = 255;   // match_players.seat TINYINT UNSIGNED
+// 판 하나가 저장소 칸에 맞나(안 맞으면 `why` 에 처음 걸린 칸) — 메모리 가짜 · DB 워커가 같은 잣대로
+bool MatchFitsStore(const MatchRecord& rec, const std::string& rawJson, std::string& why);
 
 // 판을 보낸 게임 서버 — 등록 주소 · 포트(판 번호는 게임 서버 하나 안에서만 유일해 이것과 묶어 겹침을 가른다)
 struct MatchSource {

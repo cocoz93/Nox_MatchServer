@@ -205,6 +205,12 @@ void RoomMirror::OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out) {
             ++stats_.savedDup;
             out.push_back({ps.conn, LinkSavedLine(ps.match, SaveOutcome::Dup)});
             return;
+        case SaveResult::Invalid:   // ★ 7단계 조각 7 — 저장소 칸에 안 맞음(다시 보내도 같다 — 파일 기록기엔 있다)
+            ++stats_.saveInvalid;
+            ++stats_.savedBad;
+            log_.push_back("[게임 서버] " + Name(ps.conn, sv->second) + " 판 " + ps.match + " 저장소가 못 받음 — " + a.why + "(SAVED bad)");
+            out.push_back({ps.conn, LinkSavedLine(ps.match, SaveOutcome::Bad)});
+            return;
         case SaveResult::Failed:
             ++stats_.saveFailed;
             log_.push_back("[게임 서버] " + Name(ps.conn, sv->second) + " 판 " + ps.match + " 저장 실패 — " + a.why +

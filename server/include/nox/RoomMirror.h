@@ -67,7 +67,8 @@ struct MirrorStats {
     unsigned long long saveRequests = 0;      // 저장소에 판 저장 요청
     unsigned long long savedOk = 0;           // 답 Saved → SAVED ok
     unsigned long long savedDup = 0;          // 답 Duplicate → SAVED dup
-    unsigned long long savedBad = 0;          // 못 읽음 · 판 번호는 읽음 → 곧바로 SAVED bad
+    unsigned long long savedBad = 0;          // SAVED bad 보냄(못 읽음 · 판 번호는 읽음 → 곧바로 · ★ 7단계 조각 7 저장소가 못 받음)
+    unsigned long long saveInvalid = 0;       // ★ 7단계 조각 7 — 답 Invalid(저장소 칸에 안 맞음) → SAVED bad
     unsigned long long saveFailed = 0;        // 답 Failed — SAVED 안 보냄(게임 서버가 다시)
     unsigned long long saveConnGone = 0;      // 답이 왔는데 그 연결이 이미 끊김(버림 — 게임 서버가 다시 붙으면 다시 보내 dup)
     unsigned long long saveAnswerUnknown = 0; // 묻지 않은 요청 번호의 답(버림)

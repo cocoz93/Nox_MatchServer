@@ -1210,6 +1210,35 @@ void LobbyStoreUnitTests() {
     st.TakeAnswers(ans);
     Check(failed && ans.size() == 1 && ans[0].save == SaveResult::Saved && st.MatchCount() == 3,
           "④ 실패 스위치 — 로그인 · 판 저장 Failed(까닭 글 · 안 넣음) · 끄면 같은 판이 Saved");
+
+    // ⑤ ★ 7단계 조각 7 — 저장소 칸에 안 맞는 판 → Invalid(DB 워커와 같은 잣대 `MatchFitsStore` · 안 넣음) · 한도 꼭 맞으면 Saved
+    ans.clear();
+    nox::MatchRecord fit = rec;
+    fit.match = "1760000000-0-9";
+    fit.roomName = std::string(kRoomNameBytes, 'r');
+    fit.players[0].account = std::string(kAccountNameBytes, 'a');
+    st.SaveMatch(30, a, fit, "{}");
+    nox::MatchRecord longRoom = fit;
+    longRoom.match = "1760000000-0-10";
+    longRoom.roomName += "r";
+    st.SaveMatch(31, a, longRoom, "{}");
+    nox::MatchRecord longName = fit;
+    longName.match = "1760000000-0-11";
+    longName.players[1].account = std::string(kAccountNameBytes + 1, 'b');
+    st.SaveMatch(32, a, longName, "{}");
+    nox::MatchRecord many = fit;
+    many.match = "1760000000-0-12";
+    many.players.resize(kMaxMatchPlayers + 1);
+    st.SaveMatch(33, a, many, "{}");
+    nox::MatchRecord badRaw = fit;
+    badRaw.match = "1760000000-0-13";
+    st.SaveMatch(34, a, badRaw, std::string("{\"x\":\"\xb0\"}"));
+    st.TakeAnswers(ans);
+    bool whys = ans.size() == 5;
+    for (size_t i = 1; whys && i < ans.size(); ++i) whys = !ans[i].why.empty();
+    Check(ans.size() == 5 && ans[0].save == SaveResult::Saved && ans[1].save == SaveResult::Invalid && ans[2].save == SaveResult::Invalid &&
+              ans[3].save == SaveResult::Invalid && ans[4].save == SaveResult::Invalid && whys && st.MatchCount() == 4,
+          "⑤ 칸 한도 꼭 맞음 Saved · 방 이름 65 · 이름 17 · 사람 256 · UTF-8 아닌 원문 → Invalid(까닭 글 · 안 넣음)");
 }
 
 // ── ★ 7단계 조각 5 — 로비 판 저장(`RoomMirror` RESULT → 저장소 → SAVED) ──
@@ -1312,6 +1341,14 @@ void MirrorSaveUnitTests() {
     bare.OnLinkLine(401, line, out);
     Check(failQuiet && goneQuiet && strayQuiet && out.empty() && bare.Stats().noStore == 1 && bare.TakeResults().size() == 1 && mirror.PendingSaves() == 0,
           "④ 저장소 실패 → 줄 없음 · 답 전에 끊김 → 버림 · 묻지 않은 답 → 버림 · 저장소 없는 거울 → 기록만");
+
+    // ⑤ ★ 7단계 조각 7 — 저장소가 못 받는 판(Invalid — 방 이름 65바이트) → SAVED bad(다시 보내도 같다)
+    const std::string longRoom = std::string(m1).replace(m1.find("wn's game"), 9, std::string(65, 'r'));
+    const auto bad0 = mirror.Stats().savedBad;
+    result(301, std::string(longRoom).replace(longRoom.find("0-1\""), 4, "0-7\""));
+    pump();
+    Check(only(301, "SAVED 1760000000-0-7 bad") && mirror.Stats().saveInvalid == 1 && mirror.Stats().savedBad == bad0 + 1,
+          "⑤ 저장소가 못 받는 판(방 이름 65바이트) → SAVED bad · 셈");
 }
 
 // ── ★ 7단계 조각 6 — 로그인 미룸(`Lobby` + 저장소 — `Docs/ACCOUNT_DB_DESIGN.md` 차이 3 · 4 · 5 · 6 · 7) ──

@@ -276,10 +276,12 @@ int main(int argc, char** argv) {
         ms.roomLines, ms.roomGoneLines, ms.badLines, ms.results, ms.deadLinks);
     // ★ 7단계 조각 5 — 판 결과 한 줄 = 저장 요청 · 못 읽음 · 저장소 없음 중 하나 · 요청 하나 = ok · dup · 실패 · 끊긴 뒤 · 아직(끝날 때 남음) 중 하나
     Log("[로비] 끝 — 판 저장 요청 %llu(SAVED ok %llu · dup %llu · 실패 %llu · 끊긴 뒤 답 %llu · 모르는 답 %llu · 끝날 때 남음 %zu) · "
-        "못 읽음 %llu(문법 %llu · 빠진 칸 %llu · 타입 %llu · 값 %llu · SAVED bad %llu · 판 번호도 못 읽음 %llu) · 저장소 없음 %llu\n",
+        "못 읽음 %llu(문법 %llu · 빠진 칸 %llu · 타입 %llu · 값 %llu · SAVED bad %llu · 판 번호도 못 읽음 %llu) · 저장소 없음 %llu · "
+        "저장소가 못 받음 %llu(SAVED bad)\n",   // ★ 7단계 조각 7 — SAVED bad 합 = 못 읽음 쪽 + 저장소가 못 받음
         ms.saveRequests, ms.savedOk, ms.savedDup, ms.saveFailed, ms.saveConnGone, ms.saveAnswerUnknown, mirror.PendingSaves(),
         ms.UnreadableTotal(), ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Syntax)],
         ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Missing)], ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Type)],
-        ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Value)], ms.savedBad, ms.unreadableNoMatch, ms.noStore);
+        ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Value)], ms.savedBad - ms.saveInvalid, ms.unreadableNoMatch, ms.noStore,
+        ms.saveInvalid);
     return 0;
 }
