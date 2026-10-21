@@ -123,6 +123,8 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
         case LinkKind::Created:
         case LinkKind::CreateFailed:
         case LinkKind::Result:
+        case LinkKind::Ping:
+        case LinkKind::Saved:
         case LinkKind::kCount:
             break;
     }

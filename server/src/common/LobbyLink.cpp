@@ -9,8 +9,11 @@ namespace nox {
 
 namespace {
 
-const char* const kWords[] = {"HELLO", "AUTH", "REGISTER", "ROOM", "ROOM_GONE", "CREATE", "CREATED", "CREATE_FAILED", "RESULT", "BYE"};
+const char* const kWords[] = {"HELLO", "AUTH", "REGISTER", "ROOM", "ROOM_GONE", "CREATE", "CREATED", "CREATE_FAILED", "RESULT", "BYE",
+                              "PING", "SAVED"};
 static_assert(sizeof(kWords) / sizeof(kWords[0]) == static_cast<size_t>(LinkKind::kCount), "낱말 표 = 갈래 수");
+const char* const kSaveWords[] = {"ok", "dup", "bad"};
+static_assert(sizeof(kSaveWords) / sizeof(kSaveWords[0]) == static_cast<size_t>(SaveOutcome::kCount), "SAVED 끝 칸 표 = 갈래 수");
 
 constexpr uint32_t kMaxRoomId = 0xffff;   // 입장 토큰의 방 칸이 16비트(`JoinToken.h`)
 
@@ -70,6 +73,11 @@ JoinKey Derive(const JoinKey& tokenKey, const std::string& label) {
 const char* LinkKindWord(LinkKind k) {
     const size_t i = static_cast<size_t>(k);
     return i < static_cast<size_t>(LinkKind::kCount) ? kWords[i] : "?";
+}
+
+const char* SaveOutcomeWord(SaveOutcome o) {
+    const size_t i = static_cast<size_t>(o);
+    return i < static_cast<size_t>(SaveOutcome::kCount) ? kSaveWords[i] : "?";
 }
 
 const char* LinkParseName(LinkParse p) {
@@ -154,6 +162,12 @@ std::string LinkCreateFailed(uint32_t req, const std::string& reason) {
 
 std::string LinkBye(const std::string& reason) { return std::string(kWords[9]) + " " + EncodeLinkText(reason); }
 
+std::string LinkPing() { return kWords[10]; }
+
+std::string LinkSavedLine(const std::string& match, SaveOutcome outcome) {
+    return std::string(kWords[11]) + " " + EncodeLinkText(match) + " " + SaveOutcomeWord(outcome);
+}
+
 bool LinkResult(const std::string& json, std::string& line) {
     if (json.empty() || json.find_first_of("\r\n") != std::string::npos) return false;
     std::string l = std::string(kWords[8]) + " " + json;
@@ -224,6 +238,18 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
             if (!want(3)) return LinkParse::FieldCount;
             return ParseNum(t[1], 0xffffffffu, out.req) && ParseNum(t[2], kMaxRoomId, out.room.id) ? LinkParse::Ok
                                                                                                     : LinkParse::BadNumber;
+        case LinkKind::Ping:
+            return want(1) ? LinkParse::Ok : LinkParse::FieldCount;
+        case LinkKind::Saved: {
+            if (!want(3)) return LinkParse::FieldCount;
+            // 판 번호가 비면 지울 것을 못 찾는다 · 끝 칸은 낱말 셋 중 하나(모르는 낱말도 글 칸 실패로 센다)
+            if (!DecodeLinkText(t[1], out.text) || out.text.empty()) return LinkParse::BadText;
+            size_t o = 0;
+            while (o < static_cast<size_t>(SaveOutcome::kCount) && t[2] != kSaveWords[o]) ++o;
+            if (o == static_cast<size_t>(SaveOutcome::kCount)) return LinkParse::BadText;
+            out.saved = static_cast<SaveOutcome>(o);
+            return LinkParse::Ok;
+        }
         case LinkKind::Result:
         case LinkKind::kCount:
             break;

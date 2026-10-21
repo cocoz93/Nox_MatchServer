@@ -8,7 +8,7 @@
 //   ⑥ 설정 파일 — 구역·주석·BOM·대소문자·차례 · 틀린 꼴은 줄 번호와 함께 실패
 //   ⑦ TCP 줄 부품(작업 8a) — 루프백 접속 · 줄 나누기(CRLF · LF · 나뉘어 온 줄) · 보내기 CRLF · 끊김 갈래 넷(본체는 `tcp_lines_test.cpp`)
 //     ★ 10-20 v2 작업 2 — 바깥으로 붙기: 붙는 중 쌓은 줄 · 왕복 · 상대가 닫음 · 듣는 이 없음(붙지 못함) · 붙는 중 닫기 · 곧바로 실패
-//   ⑧ 로비 연결 규약(MO 6단계 v2 작업 1 — `LobbyLink.h`) — 줄 갈래 열 왕복(★ 작업 3a-2 BYE 더함) · 글 칸(한글 · 빈칸 · 빈 글) · 읽기 실패 갈래 여덟 ·
+//   ⑧ 로비 연결 규약(MO 6단계 v2 작업 1 — `LobbyLink.h`) — 줄 갈래 열둘 왕복(★ 작업 3a-2 BYE · ★ 7단계 PING · SAVED 더함) · 글 칸(한글 · 빈칸 · 빈 글) · 읽기 실패 갈래 여덟 ·
 //     판 결과 줄 한도 · 키 파생(고정 값 · 실행 번호 · 주소 · 포트마다 다름 · 다른 게임 서버 키의 토큰은 서명 실패) · 확인 서명
 #include <cstdio>
 #include <cstring>
@@ -306,9 +306,25 @@ void TestLobbyLink() {
     Check(parse(nox::LinkBye("same address")) == P::Ok && l.kind == K::Bye && l.text == "same address" &&
               nox::LinkBye("") == "BYE ~",
           "BYE 왕복(빈칸 든 까닭 · 빈 까닭 ~)");
+    // ★ 7단계 — 살아 있음 · 판 결과 저장 답(끝 칸 셋 각각 · 개수로)
+    Check(nox::LinkPing() == "PING" && parse(nox::LinkPing()) == P::Ok && l.kind == K::Ping, "PING 왕복(칸 없음)");
+    using O = nox::SaveOutcome;
+    unsigned outcomes[static_cast<int>(O::kCount)] = {};
+    for (int o = 0; o < static_cast<int>(O::kCount); ++o) {
+        const std::string line = nox::LinkSavedLine("1792499245-0-1", static_cast<O>(o));
+        if (parse(line) == P::Ok && l.kind == K::Saved && l.text == "1792499245-0-1" && l.saved == static_cast<O>(o))
+            ++outcomes[o];
+    }
+    Check(nox::LinkSavedLine("1792499245-0-1", O::Dup) == "SAVED 1792499245-0-1 dup", "SAVED 꼴(판 번호 · 끝 칸 낱말)");
+    unsigned outcomeKinds = 0;
+    for (unsigned c : outcomes) outcomeKinds += c ? 1 : 0;
+    Check(outcomeKinds == static_cast<unsigned>(O::kCount), "SAVED 왕복 — 끝 칸 셋(ok · dup · bad)이 모두 읽힘");
+    Check(parse(nox::LinkSavedLine("a b", O::Ok)) == P::Ok && l.text == "a b", "SAVED 판 번호도 글 칸(빈칸 든 값 왕복)");
+    for (int o = 0; o < static_cast<int>(O::kCount); ++o)
+        Check(nox::SaveOutcomeWord(static_cast<O>(o))[0] != '?', "SAVED 끝 칸마다 낱말 있음");
     unsigned kindsSeen = 0;
     for (unsigned c : kinds) kindsSeen += c ? 1 : 0;
-    Check(kindsSeen == static_cast<unsigned>(K::kCount), "줄 갈래 열이 모두 읽힘");
+    Check(kindsSeen == static_cast<unsigned>(K::kCount), "줄 갈래 열둘이 모두 읽힘");
     for (int k = 0; k < static_cast<int>(K::kCount); ++k)
         Check(nox::LinkKindWord(static_cast<K>(k))[0] != '?', "갈래마다 낱말 있음");
 
@@ -320,10 +336,16 @@ void TestLobbyLink() {
         return p == want;
     };
     Check(bad("", P::Empty), "빈 줄 → 빈 줄");
-    Check(bad("PING 1", P::UnknownWord) && bad("room 1", P::UnknownWord), "모르는 낱말 · 소문자 → 모르는 낱말");
+    Check(bad("NOPE 1", P::UnknownWord) && bad("room 1", P::UnknownWord) && bad("ping", P::UnknownWord),
+          "모르는 낱말 · 소문자 → 모르는 낱말");
     Check(bad("ROOM_GONE 1 2", P::FieldCount) && bad("ROOM_GONE  1", P::FieldCount) && bad("CREATED 1 2 ", P::FieldCount) &&
-              bad("RESULT", P::FieldCount) && bad("RESULT ", P::FieldCount) && bad("ROOM 1 2 8 0 a b c d", P::FieldCount),
-          "칸 수 — 남음 · 빈칸 둘 · 꼬리 빈칸 · 빈 결과 · ROOM 아홉 칸");
+              bad("RESULT", P::FieldCount) && bad("RESULT ", P::FieldCount) && bad("ROOM 1 2 8 0 a b c d", P::FieldCount) &&
+              bad("PING 1", P::FieldCount) && bad("PING ", P::FieldCount) && bad("SAVED 1-0-1", P::FieldCount) &&
+              bad("SAVED 1-0-1 ok x", P::FieldCount),
+          "칸 수 — 남음 · 빈칸 둘 · 꼬리 빈칸 · 빈 결과 · ROOM 아홉 칸 · PING 칸 있음 · SAVED 둘 · 넷");
+    Check(bad("SAVED 1-0-1 OK", P::BadText) && bad("SAVED 1-0-1 maybe", P::BadText) && bad("SAVED ~ ok", P::BadText) &&
+              bad("SAVED a~b ok", P::BadText),
+          "SAVED 글 칸 — 끝 칸 대문자 · 모르는 낱말 · 빈 판 번호 · 날 ~");
     Check(bad("ROOM_GONE 65536", P::BadNumber) && bad("ROOM_GONE 01", P::BadNumber) && bad("ROOM_GONE -1", P::BadNumber) &&
               bad("ROOM_GONE +1", P::BadNumber) && bad("CREATED 4294967296 1", P::BadNumber) &&
               bad("REGISTER 1 0.0.0.0 0", P::BadNumber) && bad("REGISTER 1 0.0.0.0 65536", P::BadNumber) &&

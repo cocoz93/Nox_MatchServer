@@ -142,6 +142,8 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
         case LinkKind::Register:
         case LinkKind::Create:
         case LinkKind::Bye:
+        case LinkKind::Ping:
+        case LinkKind::Saved:
         case LinkKind::kCount:
             break;
     }
