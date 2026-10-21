@@ -10,7 +10,7 @@ RoomMirror::RoomMirror(const JoinKey& tokenKey) : tokenKey_(tokenKey), authKey_(
 
 std::string RoomMirror::Name(int conn, const Server& s) const {
     std::string n = "c" + std::to_string(conn);
-    if (s.stage == Stage::Registered) n += " " + (s.ip ? IpDotted(s.ip) : std::string("(로비 쪽 주소)")) + ":" + std::to_string(s.port);
+    if (s.registered) n += " " + (s.ip ? IpDotted(s.ip) : std::string("(로비 쪽 주소)")) + ":" + std::to_string(s.port);
     return n;
 }
 
@@ -23,6 +23,8 @@ void RoomMirror::OnLinkOpen(int conn, std::vector<Out>& out) {
     ++stats_.linksOpened;
     Server s;
     s.nonce = NewLinkNonceHex();
+    s.lastRecvMs = nowMs_();   // 붙은 때부터 잰다 — 확인 줄도 안 보내는 접속도 한도에 끊긴다
+    s.nextPingMs = s.lastRecvMs + kLinkPingEveryMs;
     out.push_back({conn, LinkHello(s.nonce)});
     servers_[conn] = std::move(s);
     log_.push_back("[게임 서버] c" + std::to_string(conn) + " 붙음 — 확인 기다림");
@@ -33,7 +35,7 @@ void RoomMirror::OnLinkClose(int conn, std::vector<Out>& out) {
     if (it == servers_.end()) return;
     ++stats_.linksClosed;
     Server& s = it->second;
-    if (s.stage == Stage::Registered)
+    if (s.registered)   // ★ 7단계 — 무소식으로 BYE 를 보낸(닫는 중) 게임 서버도 등록했던 것(옛 조건 `stage == Registered` 는 닫는 중을 「등록 전」으로 찍었다)
         log_.push_back("[게임 서버] " + Name(conn, s) + " 끊김 — 방 " + std::to_string(s.rooms.size()) + "개 목록에서 내림 · 기다리던 새 방 " +
                        std::to_string(s.asked.size()) + "개 실패");
     else
@@ -51,6 +53,7 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
     if (it == servers_.end()) return;
     Server& s = it->second;
     if (s.stage == Stage::Closing) return;   // BYE 를 보냈다 — 끊김까지 온 줄은 버린다(BYE 가 둘이 되지 않게)
+    s.lastRecvMs = nowMs_();   // ★ 7단계 — 어떤 줄이든(못 읽는 줄도) 살아 있다는 뜻
     LinkLine l;
     const LinkParse p = ParseLinkLine(line, l);
 
@@ -86,6 +89,7 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
         }
         ++stats_.registered;
         s.stage = Stage::Registered;
+        s.registered = true;
         s.epoch = l.epoch;
         s.ip = l.ip;
         s.port = l.port;
@@ -137,18 +141,40 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
             ++stats_.results;
             results_.push_back(l.text);
             return;
+        case LinkKind::Ping:   // ★ 7단계 — 받은 시각은 위에서 적었다
+            ++stats_.pingsIn;
+            return;
         case LinkKind::Hello:
         case LinkKind::Auth:
         case LinkKind::Register:
         case LinkKind::Create:
         case LinkKind::Bye:
-        case LinkKind::Ping:
         case LinkKind::Saved:
         case LinkKind::kCount:
             break;
     }
     ++stats_.badLines;
     log_.push_back("[게임 서버] " + Name(conn, s) + " 등록 뒤 맞지 않는 줄 — 버림: " + std::string(line.substr(0, 80)));
+}
+
+void RoomMirror::Tick(std::vector<Out>& out) {
+    const uint32_t now = nowMs_();
+    for (auto& kv : servers_) {
+        Server& s = kv.second;
+        if (s.stage == Stage::Closing) continue;   // BYE 를 보냈다 — 끊김 사건을 기다린다
+        if (now - s.lastRecvMs >= kLinkDeadMs) {   // 32비트 시계가 돌아도 맞게(뺄셈)
+            ++stats_.deadLinks;
+            log_.push_back("[게임 서버] " + Name(kv.first, s) + " " + std::to_string(kLinkDeadMs / 1000) +
+                           "초 동안 받은 줄 없음 — 끊음(방 " + std::to_string(s.rooms.size()) + "개를 끊김에 내림)");
+            Bye(kv.first, "no line for " + std::to_string(kLinkDeadMs / 1000) + "s", out);
+            continue;
+        }
+        if (s.stage == Stage::Registered && static_cast<int32_t>(now - s.nextPingMs) >= 0) {
+            ++stats_.pingsOut;
+            out.push_back({kv.first, LinkPing()});
+            s.nextPingMs = now + kLinkPingEveryMs;
+        }
+    }
 }
 
 LobbyRoom RoomMirror::ToLobbyRoom(const Server& s, const LinkRoom& r) const {

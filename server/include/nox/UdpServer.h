@@ -140,6 +140,7 @@ struct NetworkRequest {
         DISCONNECT_SESSION,    // 그 세션을 지운다(`RequestDisconnectSession`)
         RESPOND_JOIN,          // 접속 시도에 답한다(`RespondJoin`)
         SET_SESSION_TIMEOUT,   // 시간 초과 한도(`RequestSetSessionTimeout`)
+        LOBBY_CLOSE,           // ★ 7단계 — 로비 TCP 접속을 이쪽에서 끊는다(`lobbyConn` — 살아 있음 한도를 넘김). 끊김은 `LOBBY_CLOSED` 로 돌아온다
         LOBBY_SEND             // ★ 10-14 작업 8c — 로비 TCP 줄 하나(CRLF 는 붙여 보낸다). 네트워크 스레드가 TCP 로 보낸다 — 통신 층(UDP) 몫이 아니다
     };
     Type type = Type::SEND_MSG;

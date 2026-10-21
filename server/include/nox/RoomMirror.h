@@ -7,19 +7,25 @@
 //   · 게임 서버마다 토큰 키가 따로(`GameServerTokenKey` — 등록 줄 값 그대로) — 그 게임 서버 방의 입장 토큰은 그 키로 서명한다
 //   · 연결이 끊기면 그 게임 서버의 방을 목록에서 내리고 기다리던 새 방 요청은 곧바로 실패(로비 한도까지 안 기다림). 다시 붙어 등록하면 돌려놓는다
 //
-// 로비 규약(`Lobby`)의 방 공급자(`ILobbyRooms`)다. 소켓도 시간도 모른다 — 연결 사건을 넣으면 보낼 줄을 `out` 에 덧붙인다.
+//   · ★ 7단계 — 살아 있음(`PING` · `LobbyLink.h`). 전원째 꺼진 게임 서버는 끊김 신호가 안 와 등록된 채로 남는다 — 그 방이 목록에 남고
+//     다시 켠 그 게임 서버는 「같은 주소」로 거절됐다(6단계 미결). 받은 줄이 `kLinkDeadMs` 동안 없으면 BYE 뒤 끊고 위 끊김 길로 간다
+//
+// 로비 규약(`Lobby`)의 방 공급자(`ILobbyRooms`)다. 소켓은 모른다 — 연결 사건을 넣으면 보낼 줄을 `out` 에 덧붙인다.
+//   시간은 살아 있음 몫만 — 시계(`SetClock` · 기본 `NowMs`)를 받고 소켓 루프가 자주(줄이 없어도) `Tick` 을 부른다.
 //   새 방 요청(`RequestRoom`)은 로비가 클라 줄을 처리하는 도중에 부르므로 그 `CREATE` 줄은 쌓아 두고 `TakeOut` 으로 꺼낸다.
 //   게임 서버의 답(`CREATED` · `CREATE_FAILED`)은 붙인 로비(`Attach`)에 곧바로 넘긴다 — 미룬 참가 답이 같은 `out` 에 실린다.
 //   클라 접속과 연결 접속은 같은 TCP 줄 부품의 접속 번호를 쓴다(번호가 겹치지 않는다 — 부르는 쪽이 듣기 포트로 가른다).
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "nox/Clock.h"
 #include "nox/Lobby.h"
 #include "nox/LobbyLink.h"
 
@@ -47,6 +53,10 @@ struct MirrorStats {
     unsigned long long failedOnClose = 0;     // 연결이 끊겨 실패로 넘긴 기다리던 요청
     unsigned long long cancelled = 0;         // ★ 작업 3c — 로비가 접은 요청(시간 초과 · 클라 끊김)을 기다림 장부에서 지움
     unsigned long long results = 0;           // RESULT(판 결과 — 7단계 전엔 한 줄 찍고 셈)
+    // ★ 7단계 — 살아 있음
+    unsigned long long pingsIn = 0;           // PING 받음(등록 뒤)
+    unsigned long long pingsOut = 0;          // PING 보냄(등록된 게임 서버에 `kLinkPingEveryMs` 마다)
+    unsigned long long deadLinks = 0;         // 받은 줄이 `kLinkDeadMs` 동안 없어 끊음(어느 단계든 — 등록 전 말없는 접속도)
 };
 
 class RoomMirror final : public ILobbyRooms {
@@ -55,10 +65,14 @@ public:
     explicit RoomMirror(const JoinKey& tokenKey);
     // 게임 서버의 새 방 답을 넘길 로비(로비가 이 거울을 방 공급자로 쥐므로 만든 뒤에 붙인다)
     void Attach(Lobby& lobby) { lobby_ = &lobby; }
+    // ★ 7단계 — 살아 있음의 시계(ms · 32비트로 돈다). 시험이 정해 보려고 — 붙기 전에 건다
+    void SetClock(std::function<uint32_t()> nowMs) { nowMs_ = std::move(nowMs); }
 
     void OnLinkOpen(int conn, std::vector<Out>& out);                         // HELLO 를 보낸다
     void OnLinkLine(int conn, std::string_view line, std::vector<Out>& out);
     void OnLinkClose(int conn, std::vector<Out>& out);                        // 그 게임 서버의 방 내림 · 기다리던 요청 실패(★ 10-20 — 클라에게 거절 답)
+    // ★ 7단계 — 등록된 게임 서버에 PING · 받은 줄이 한도 동안 없는 접속은 BYE 뒤 끊기(끊김 사건은 소켓이 `OnLinkClose` 로)
+    void Tick(std::vector<Out>& out);
     void TakeOut(std::vector<Out>& out);                                      // `RequestRoom` 이 쌓은 CREATE 줄
     std::vector<std::string> TakeLog();
     std::vector<std::string> TakeResults();                                   // RESULT 의 JSON(받은 차례)
@@ -83,6 +97,9 @@ private:
         JoinKey tokenKey{};              // 등록 값으로 뽑은 그 게임 서버의 토큰 키
         std::map<uint32_t, LinkRoom> rooms;
         std::set<uint32_t> asked;        // 이 게임 서버에 물은 새 방 요청
+        bool registered = false;         // ★ 7단계 — 등록한 적 있음(무소식 끊기는 등록된 게임 서버에도 BYE 를 보낸다 — 끊김 기록 · 이름에 주소를 남긴다)
+        uint32_t lastRecvMs = 0;         // ★ 7단계 — 마지막으로 줄을 받은 때(붙은 때부터)
+        uint32_t nextPingMs = 0;         // ★ 7단계 — 다음 PING 시각
     };
 
     void Bye(int conn, const std::string& why, std::vector<Out>& out);   // BYE 줄 뒤 끊기
@@ -92,6 +109,7 @@ private:
     JoinKey tokenKey_;
     JoinKey authKey_;
     Lobby* lobby_ = nullptr;
+    std::function<uint32_t()> nowMs_ = NowMs;
     std::map<int, Server> servers_;   // 연결 접속 번호 → 게임 서버(차례 = 붙은 차례)
     std::vector<Out> pendingOut_;
     std::vector<std::string> log_;

@@ -252,6 +252,13 @@ void CNetworkThread::Run() {
                 else ++_threadStats.lobbySendNoConn;
                 continue;
             }
+            if (r.type == NetworkRequest::Type::LOBBY_CLOSE) {   // ★ 7단계 — 살아 있음 한도를 넘긴 접속. 끊김 사건 → 다시 붙기는 끊김과 같은 길
+                ++_threadStats.lobbyCloseRequests;
+                tcpEvs.clear();
+                _lobby.Close(r.lobbyConn, tcpEvs);   // 이미 끊긴 접속이면 사건 없음(끊김 사건이 먼저 갔다)
+                LobbyToEvents(tcpEvs, events);
+                continue;
+            }
             _network.OnRequest(r, out);
         }
         reqs.clear();

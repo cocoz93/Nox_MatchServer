@@ -1049,10 +1049,11 @@ int main(int argc, char** argv) {
         if (lobbyClient) {
             const nox::CLobbyClientStats& ls = lobbyClient->Stats();
             std::printf("[로비 연결] 끝 — 붙음 %llu · 끊김 %llu · 등록 %llu · 방 알림 %llu · 사라짐 %llu · 새 방 물음 %llu(만듦 %llu · 실패 %llu) · "
-                        "판 결과 %llu(못 보냄 %llu) · BYE %llu · 못 읽음 %llu · TCP(받음 %llu · 보냄 %llu · 끊긴 접속으로 %llu · 시도 %llu · 못 붙음 %llu)\n",
+                        "판 결과 %llu(못 보냄 %llu) · BYE %llu · 못 읽음 %llu · TCP(받음 %llu · 보냄 %llu · 끊긴 접속으로 %llu · 시도 %llu · 못 붙음 %llu) · "
+                        "PING(받음 %llu · 보냄 %llu) · 무소식 끊음 %llu(끊기 요청 %llu)\n",   // ★ 7단계 — 살아 있음
                         ls.linksUp, ls.linksDown, ls.registers, ls.roomLines, ls.roomGoneLines, ls.creates, ls.created, ls.createFailed,
                         ls.results, ls.resultsNotSent, ls.byes, ls.badLines, ts.lobbyLinesIn, ts.lobbyLinesOut, ts.lobbySendNoConn,
-                        ts.lobbyConnects, ts.lobbyConnectFailed);
+                        ts.lobbyConnects, ts.lobbyConnectFailed, ls.pingsIn, ls.pingsOut, ls.deadLinks, ts.lobbyCloseRequests);
         }
         std::fflush(stdout);
     }

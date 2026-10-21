@@ -24606,7 +24606,7 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks();
 void TestNetworkThread() {
     const auto checks = RunNetworkThreadChecks();
     for (const auto& kv : checks) Check(kv.first, kv.second.c_str());
-    Check(checks.size() == 12, "네트워크 스레드 확인 수 12(① ~ ⑥ 여섯 + ★ 10-20 ⑧ 로비에 붙기 여섯 · ⑦ 로비 듣기는 4b-2 에서 걷음 — 본체가 끝까지 돌았나)");
+    Check(checks.size() == 13, "네트워크 스레드 확인 수 13(① ~ ⑥ 여섯 + ★ 10-20 ⑧ 로비에 붙기 여섯 + ★ 7단계 ⑧-4b 끊기 요청 · ⑦ 로비 듣기는 4b-2 에서 걷음 — 본체가 끝까지 돌았나)");
 
     // ★ 10-14 작업 8c — 로비 TCP 사건(세션 번호 없음)은 방 관리자 · 게임에 와도 자리를 만들지 않는다(나누는 자리가 틀려도 세션 0 이 안 생기게)
     nox::CRoomManager rooms;
@@ -24924,6 +24924,7 @@ void TestLobbyClient() {
     const std::vector<std::string> battles = {"C:\\Nox\\maps\\Estate\\Estate.map"};
     nox::CLobbyClient lc(rooms, cfg, tmpl, waits, battles);
     lc.SetSeed(3);
+    lc.SetClock([] { return 1000u; });   // ★ 7단계 — 시계를 멈춰 둔다(살아 있음 PING · 끊기는 아래 TestLobbyClientAlive 몫)
     auto ev = [](Ev::Type t, int c, const std::string& line) {
         Ev e;
         e.type = t;
@@ -25063,6 +25064,90 @@ void TestLobbyClient() {
     Check(tk == nox::GameServerTokenKey(cfg.tokenKey, 1760000000u, 0x7f000002u, 18590) && tk != cfg.tokenKey,
           "⑦ 토큰 키 = GameServerTokenKey(설정 키 · 실행 번호 · 등록 주소 · 포트)");
     std::printf("  10-20 MO 6단계 v2 작업 4b — 게임 서버의 로비 연결: 확인 · 등록 · 로비 방만 알림 · 바뀐 방만 · 새 방 · 판 결과 · 다시 붙기\n");
+}
+
+// ── ★ 7단계 조각 2 — 게임 서버 쪽 연결 살아 있음(`CLobbyClient::LinkTick` — `Docs/ACCOUNT_DB_DESIGN.md`) ─────────
+//   ① 등록 뒤 `kLinkPingEveryMs` 마다 PING 한 줄(한도 전 · 같은 때 다시 없음) ② 로비의 PING → 셈만(맞지 않는 줄 아님)
+//   ③ 받은 줄이 `kLinkDeadMs` 동안 없으면 LOBBY_CLOSE 한 번(끊김 사건 전까지 다시 안 냄) ④ 끊긴 동안 아무것도 안 냄 ·
+//   다시 붙었는데 HELLO 가 안 옴(멈춘 로비의 대기 줄에 붙음) → 붙은 때부터 재서 끊음
+//   시계는 32비트가 넘어가는 자리 근처에서 시작한다(한도를 뺄셈으로 재는지)
+void TestLobbyClientAlive() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    char m[300];
+    nox::CRoomManager rooms;
+    nox::CLobbyClient::Config cfg;
+    for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 7);
+    cfg.epoch = 1760000000u;
+    cfg.registerIp = 0x7f000002u;
+    cfg.port = 18590;
+    nox::CLobbyClient lc(rooms, cfg);
+    uint32_t clock = 0xfffff000u;
+    const uint32_t t0 = clock;
+    lc.SetClock([&clock] { return clock; });
+    auto ev = [](Ev::Type t, int c, const std::string& line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = c;
+        e.lobbyLine = line;
+        e.lobbyWhy = "test";
+        return e;
+    };
+    std::vector<Rq> rq;
+    auto at = [&](uint32_t ms) {
+        clock = t0 + ms;
+        rq.clear();
+        lc.AfterTick(rq);
+    };
+    auto onlyPing = [&](int conn) {
+        return rq.size() == 1 && rq[0].type == Rq::Type::LOBBY_SEND && rq[0].lobbyConn == conn && rq[0].lobbyLine == nox::LinkPing();
+    };
+    auto onlyClose = [&](int conn) { return rq.size() == 1 && rq[0].type == Rq::Type::LOBBY_CLOSE && rq[0].lobbyConn == conn; };
+
+    // ① 붙음 + HELLO(t0) → 한도 1ms 앞 없음 · 한도에 PING 한 줄 · 같은 때 다시 없음
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, 5, ""), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, nox::LinkHello("00112233445566778899aabbccddeeff")), rq);
+    const bool registered = lc.Registered();
+    at(nox::kLinkPingEveryMs - 1);
+    const bool early = rq.empty();
+    at(nox::kLinkPingEveryMs);
+    const bool first = onlyPing(5);
+    at(nox::kLinkPingEveryMs);
+    std::snprintf(m, sizeof(m), "① 등록 %d · 한도 앞 없음 %d · 한도에 PING 한 줄 %d · 같은 때 다시 없음 %d · 보냄 셈 %llu", (int)registered, (int)early,
+                  (int)first, (int)rq.empty(), lc.Stats().pingsOut);
+    Check(registered && early && first && rq.empty() && lc.Stats().pingsOut == 1, m);
+
+    // ② 로비의 PING(6000) → 셈만 · 답 없음 · 못 읽음 셈 그대로
+    clock = t0 + 6000;
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 5, nox::LinkPing()), rq);
+    std::snprintf(m, sizeof(m), "② 로비 PING → 줄 없음 %d · 받음 셈 %llu · 못 읽음 %llu", (int)rq.empty(), lc.Stats().pingsIn, lc.Stats().badLines);
+    Check(rq.empty() && lc.Stats().pingsIn == 1 && lc.Stats().badLines == 0, m);
+
+    // ③ 마지막 받은 줄(6000)에서 한도 1ms 앞 = PING 만(끊기 아님) · 한도 = LOBBY_CLOSE 한 번 · 사건 전 다시 안 냄
+    at(6000 + nox::kLinkDeadMs - 1);
+    const bool alive = onlyPing(5);
+    at(6000 + nox::kLinkDeadMs);
+    const bool closeOnce = onlyClose(5) && lc.Stats().deadLinks == 1;
+    at(6000 + nox::kLinkDeadMs + nox::kLinkPingEveryMs);
+    std::snprintf(m, sizeof(m), "③ 한도 1ms 앞 PING 만 %d · 한도에 LOBBY_CLOSE(접속 5) 한 번 %d · 사건 전 다시 없음 %d", (int)alive, (int)closeOnce,
+                  (int)rq.empty());
+    Check(alive && closeOnce && rq.empty(), m);
+
+    // ④ 끊김 사건 → 아무것도 안 냄 · 다시 붙었는데 HELLO 가 안 옴 → 붙은 때부터 한도에 끊음(PING 은 등록 뒤만)
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_CLOSED, 5, ""), rq);
+    at(30000);
+    const bool downQuiet = rq.empty() && !lc.Registered();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, 6, ""), rq);
+    at(30000 + nox::kLinkDeadMs - 1);
+    const bool waitQuiet = rq.empty();   // 등록 전 — PING 도 끊기도 없음
+    at(30000 + nox::kLinkDeadMs);
+    const bool closeNoHello = onlyClose(6) && lc.Stats().deadLinks == 2;
+    std::snprintf(m, sizeof(m), "④ 끊긴 동안 없음 %d · HELLO 없는 접속 한도 앞 없음 %d · 한도에 LOBBY_CLOSE(접속 6) %d · 셈(보냄 %llu · 끊기 %llu)",
+                  (int)downQuiet, (int)waitQuiet, (int)closeNoHello, lc.Stats().pingsOut, lc.Stats().deadLinks);
+    Check(downQuiet && waitQuiet && closeNoHello && lc.Stats().pingsOut == 2, m);
+    std::printf("  7단계 조각 2 — 게임 서버 쪽 살아 있음: 등록 뒤 PING · 로비 PING 셈 · 받은 줄 한도 → LOBBY_CLOSE 한 번 · HELLO 없는 접속도\n");
 }
 
 // ── ★ 10-16 플랜 B 작업 13a — 로비 방식의 맵 후보 · 맵 목록 ─────────
@@ -32544,6 +32629,7 @@ int main() {
     TestJoinStartByMode();
     TestRoomFacts();
     TestLobbyClient();   // ★ 10-20 v2 작업 4b(옛 TestChannelLobby 자리)
+    TestLobbyClientAlive();   // ★ 7단계 조각 2
     TestLobbyMapPaths();
     TestJoinTrailer();
     TestReliableResend();

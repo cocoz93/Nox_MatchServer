@@ -53,7 +53,8 @@ void CLobbyClient::Send(const std::string& line, std::vector<NetworkRequest>& ou
     r.lobbyConn = _conn;
     r.lobbyLine = line;
     out.push_back(std::move(r));
-    if (_verbose) std::printf("[로비 연결] << %s\n", Printable(line).c_str());
+    // ★ 7단계 — 살아 있음 줄은 5초마다라 찍지 않고 셈만(끝 줄 PING)
+    if (_verbose && line != LinkPing()) std::printf("[로비 연결] << %s\n", Printable(line).c_str());
 }
 
 void CLobbyClient::OnNetworkEvent(const NetworkEvent& ev, std::vector<NetworkRequest>& out) {
@@ -63,12 +64,16 @@ void CLobbyClient::OnNetworkEvent(const NetworkEvent& ev, std::vector<NetworkReq
             _conn = ev.lobbyConn;
             _stage = Stage::WaitHello;
             _sent.clear();
+            _lastRecvMs = _nowMs();   // ★ 7단계 — 붙은 때부터 잰다(HELLO 도 안 오는 로비 — 멈춘 로비의 대기 줄에 붙음 — 도 한도에 끊는다)
+            _nextPingMs = _lastRecvMs + kLinkPingEveryMs;
+            _closeAsked = false;
             std::printf("[로비 연결] 붙음 — 로비 %s · 확인 기다림\n", Ipv4ToString(ev.lobbyPeerIp).c_str());
             std::fflush(stdout);
             return;
         case NetworkEvent::Type::LOBBY_LINE:
             if (ev.lobbyConn != _conn) return;   // 끊긴 옛 접속의 남은 줄
-            if (_verbose) std::printf("[로비 연결] >> %s\n", Printable(ev.lobbyLine).c_str());
+            _lastRecvMs = _nowMs();               // ★ 7단계 — 어떤 줄이든 살아 있다는 뜻
+            if (_verbose && ev.lobbyLine != LinkPing()) std::printf("[로비 연결] >> %s\n", Printable(ev.lobbyLine).c_str());
             OnLine(ev.lobbyLine, out);
             std::fflush(stdout);
             return;
@@ -79,6 +84,7 @@ void CLobbyClient::OnNetworkEvent(const NetworkEvent& ev, std::vector<NetworkReq
             std::fflush(stdout);
             _conn = 0;
             _stage = Stage::Down;   // 지난번 보낸 것은 다시 붙을 때 비운다(끊긴 동안은 아무것도 안 보낸다)
+            _closeAsked = false;
             return;
         case NetworkEvent::Type::CONNECTED:
         case NetworkEvent::Type::DISCONNECTED:
@@ -116,6 +122,9 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
             ++_stats.byes;
             std::printf("[로비 연결] 로비가 끊음 — %s(설정 키 · 등록 주소 확인)\n", Printable(l.text).c_str());
             return;
+        case LinkKind::Ping:   // ★ 7단계 — 받은 시각은 사건에서 적었다(어느 단계든)
+            ++_stats.pingsIn;
+            return;
         case LinkKind::Auth:
         case LinkKind::Register:
         case LinkKind::Room:
@@ -123,7 +132,6 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
         case LinkKind::Created:
         case LinkKind::CreateFailed:
         case LinkKind::Result:
-        case LinkKind::Ping:
         case LinkKind::Saved:
         case LinkKind::kCount:
             break;
@@ -197,7 +205,31 @@ void CLobbyClient::SendChanged(std::vector<NetworkRequest>& out) {
     _sent.swap(now);
 }
 
-void CLobbyClient::AfterTick(std::vector<NetworkRequest>& out) { SendChanged(out); }
+void CLobbyClient::AfterTick(std::vector<NetworkRequest>& out) {
+    LinkTick(out);
+    SendChanged(out);
+}
+
+void CLobbyClient::LinkTick(std::vector<NetworkRequest>& out) {
+    if (_conn == 0 || _closeAsked) return;
+    const uint32_t now = _nowMs();
+    if (now - _lastRecvMs >= kLinkDeadMs) {   // 32비트 시계가 돌아도 맞게(뺄셈)
+        ++_stats.deadLinks;
+        _closeAsked = true;
+        std::printf("[로비 연결] %u초 동안 받은 줄 없음 — 끊고 다시 붙음(로비가 멈췄거나 로비 PC 가 꺼짐)\n", kLinkDeadMs / 1000);
+        std::fflush(stdout);
+        NetworkRequest r;
+        r.type = NetworkRequest::Type::LOBBY_CLOSE;
+        r.lobbyConn = _conn;
+        out.push_back(std::move(r));
+        return;
+    }
+    if (_stage == Stage::Registered && static_cast<int32_t>(now - _nextPingMs) >= 0) {
+        ++_stats.pingsOut;
+        Send(LinkPing(), out);
+        _nextPingMs = now + kLinkPingEveryMs;
+    }
+}
 
 void CLobbyClient::OnMatchResult(const std::string& json, std::vector<NetworkRequest>& out) {
     std::string line;

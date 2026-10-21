@@ -5,7 +5,9 @@
 #   ② 토큰은 그 게임 서버의 그 실행에만 맞음 — A 방 0 토큰을 B(방 0 이 있음)에 내면 거절 · 제 게임 서버엔 JOIN_OK
 #   ③ 게임 서버 A 껐다 켜기 → 로비 목록에서 A 방이 빠짐 · 다시 등록 · 옛 A 토큰은 새 A 에 거절(새 실행 키) · 새 방 토큰은 받음
 #   ④ 로비 껐다 켜기 → 게임 서버 둘이 다시 붙어 등록하고 방을 다시 알림 → 새 로비 목록에 방이 돌아옴
-# 빈 방은 30초에 닫히므로(접속 시도만 하고 안 들어감) ①~④를 그 안에 끝낸다. 끝은 모두 닫기 이벤트 — 강제 종료는 응답이 없을 때만
+#   ⑤ ★ 7단계 살아 있음(게임 서버 쪽) — 로비를 멈춰 세움(NtSuspendProcess — 로비 PC 전원 꺼짐 흉내: 끊김 신호가 안 온다) →
+#     두 게임 서버가 15초 무소식에 끊고 다시 붙음 → 로비를 풀면 다시 등록(멈춘 로비의 대기 줄에 붙은 접속도 HELLO 를 받음)
+# 빈 방은 30초에 닫히므로(접속 시도만 하고 안 들어감) ①~④를 그 안에 끝낸다(⑤ 는 방을 안 본다). 끝은 모두 닫기 이벤트 — 강제 종료는 응답이 없을 때만
 param([int]$LobbyPort = 14400, [int]$LinkPort = 14410, [int]$UdpPort = 18611, [string]$Exe = '', [string]$LobbyExe = '')
 $ErrorActionPreference = 'Stop'
 $bin = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\Release'
@@ -101,6 +103,11 @@ function StartLobby([string]$log) {
   $null = $p.Handle
   return $p
 }
+# ★ 7단계 ⑤ — 프로세스 멈춰 세우기 · 풀기(멈춘 프로세스도 OS 는 TCP 를 살려 두어 상대에게 끊김 신호가 안 간다)
+Add-Type -Namespace NoxSmoke -Name Proc -MemberDefinition @'
+[DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr h);
+[DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr h);
+'@
 function StopProc($p, [string]$kind) {
   try { [void][Threading.EventWaitHandle]::OpenExisting("$($kind)_stop_$($p.Id)").Set() } catch { }
   if (-not $p.WaitForExit(15000)) { Check $false "$kind $($p.Id) 이 닫기 이벤트 뒤에 끝나지 않음 — 강제 종료"; Stop-Process -Id $p.Id -Force }
@@ -156,17 +163,37 @@ try {
   $rooms2 = @(ListRooms $dave | Sort-Object)
   Check (($rooms2 -join ',') -eq (@("#$($hostOnB)'s_game", "#carol's_game") | Sort-Object) -join ',') "④ 새 로비 목록에 게임 서버 방이 돌아옴 ($($rooms2 -join ','))"
   $dave.c.Close()
+
+  # ⑤ ★ 7단계 — 로비 멈춰 세우기 → 두 게임 서버 무소식 끊기 → 풀면 다시 등록
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  [void][NoxSmoke.Proc]::NtSuspendProcess($lp2.Handle)
+  $lobbySuspended = $true
+  $deadA = WaitLog $ga2 '\[로비 연결\] 15초 동안 받은 줄 없음' 1 25
+  $deadB = WaitLog $gb '\[로비 연결\] 15초 동안 받은 줄 없음' 1 5
+  $waited = [int]$sw.Elapsed.TotalSeconds
+  [void][NoxSmoke.Proc]::NtResumeProcess($lp2.Handle)
+  $lobbySuspended = $false
+  Check ($deadA -and $deadB) "⑤ 로비를 멈춰 세우면 두 게임 서버가 15초 무소식에 끊음(기록 한 줄씩 · ${waited}초)"
+  Check (WaitLog $l2 "등록 — 실행" 4 15) '⑤ 로비를 풀면 두 게임 서버가 다시 붙어 등록(새 로비 기록 넷째)'
 } catch {
   Check $false "예외: $($_.Exception.Message)"
 } finally {
+  if ($lobbySuspended) { [void][NoxSmoke.Proc]::NtResumeProcess($lp2.Handle) }   # 멈춘 채면 닫기 이벤트를 못 받는다
   foreach ($x in @($pa2, $pb)) { if ($x) { StopProc $x 'nox_server' } }
   if ($pa -and -not $pa.HasExited) { StopProc $pa 'nox_server' }
   foreach ($x in @($lp2, $lp)) { if ($x -and -not $x.HasExited) { StopProc $x 'nox_lobby' } }
 }
 $tl1 = ReadLog $l1; $tl2 = ReadLog $l2; $tb2 = ReadLog $gb; $ta2 = ReadLog $ga2
-Check ($tl2 -match '게임 서버 연결 2\(확인 2 · 확인 실패 0 · 등록 2 · 등록 거절 0 · 차례 틀림 0\)') '끝 줄 — 새 로비: 게임 서버 연결 2(확인 2 · 등록 2)'
-Check ($tb2 -match '\[로비 연결\] 끝 — 붙음 2 · 끊김 1 · 등록 2') '끝 줄 — B: 붙음 2(로비 둘) · 끊김 1 · 등록 2'
-Check ($ta2 -match '\[로비 연결\] 끝 — 붙음 2 · 끊김 1 · 등록 2') '끝 줄 — 다시 켠 A: 붙음 2 · 끊김 1 · 등록 2'
+# ★ 7단계 ⑤ — 새 로비: ④ 에 둘 + ⑤ 에 다시 둘 = 등록 4 · 로비 쪽은 멈췄던 것이라 무소식 끊음 0(풀린 뒤 옛 연결은 끊김 사건으로 받음) · 게임 서버 PING 을 받음
+$okL2 = $false
+if ($tl2 -match '게임 서버 연결 (\d+)\(확인 (\d+) · 확인 실패 0 · 등록 4 · 등록 거절 0 · 차례 틀림 0\) · 연결 줄 받음 \d+\(PING (\d+)\).* · 무소식 끊음 0') {
+  $okL2 = [int]$Matches[1] -ge 4 -and [int]$Matches[2] -eq 4 -and [int]$Matches[3] -ge 1
+}
+Check $okL2 '끝 줄 — 새 로비: 확인 4 · 등록 4 · 거절 0 · PING 받음 1 이상 · 무소식 끊음 0'
+# 게임 서버 — ④ 로비 둘 + ⑤ 무소식 끊고 다시 붙음 = 붙음 3 · 끊김 2 · 등록 3 · 무소식 끊음 1(끊기 요청 1) · PING 보냄 1 이상
+$gsEnd = '\[로비 연결\] 끝 — 붙음 3 · 끊김 2 · 등록 3 · .* · PING\(받음 (\d+) · 보냄 (\d+)\) · 무소식 끊음 1\(끊기 요청 1\)'
+Check ($tb2 -match $gsEnd -and [int]$Matches[2] -ge 1) '끝 줄 — B: 붙음 3(로비 둘 + ⑤ 다시) · 끊김 2 · 등록 3 · PING 보냄 · 무소식 끊음 1(끊기 요청 1)'
+Check ($ta2 -match $gsEnd -and [int]$Matches[2] -ge 1) '끝 줄 — 다시 켠 A: 붙음 3 · 끊김 2 · 등록 3 · PING 보냄 · 무소식 끊음 1(끊기 요청 1)'
 Check ($tl1 -match '끊김 — 방 1개 목록에서 내림') '로비 기록 — A 를 끌 때 방 하나 내림'
 Remove-Item -LiteralPath $ini, $l1, $l2, $ga1, $ga2, $gb -ErrorAction SilentlyContinue
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)

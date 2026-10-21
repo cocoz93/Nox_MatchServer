@@ -12,6 +12,7 @@
 //   · 게임 서버 연결(4010 · 기본 127.0.0.1 — 바깥에 안 엶) 줄은 방 거울(`wol::RoomMirror` — 확인 · 등록 · 방 알림 · 새 방 답 · 판 결과)에
 //   · 둘은 같은 접속 번호 공간이라 돌려받은 줄(`wol::Out`)을 그대로 보낸다. 사건이 어느 듣기에서 왔는지는 듣기 포트로 가른다
 //   · 새 방 답을 기다리는 동안에도 다른 줄을 그대로 받는다 — 시간 초과는 루프가 100ms 마다 `Lobby::Tick`
+//     (★ 7단계 — 게임 서버 살아 있음 `RoomMirror::Tick` 도 같은 자리)
 //   · 닫기 신호 둘 — 콘솔(Ctrl+C · 창 닫기)과 이름 있는 이벤트 `nox_lobby_stop_<pid>`(창 없이 띄운 도구가 켠다 — `nox_server_stop_<pid>` 와 같은 꼴).
 //     끝 줄(셈)을 찍고 나간다 — 강제 종료로 셈을 잃지 않게
 //
@@ -154,6 +155,7 @@ int main(int argc, char** argv) {
     std::vector<nox::TcpLineEvent> evs;
     std::vector<nox::wol::Out> outs;
     std::set<int> linkConns;   // 게임 서버 연결의 접속 번호(보낸 줄을 클라 · 연결로 따로 센다)
+    const std::string pingLine = nox::LinkPing();
 
     // 돌려받은 줄을 보내기 버퍼에 — 클라 줄 · 연결 줄이 섞여 있다(번호 공간이 같다)
     auto sendOuts = [&]() {
@@ -163,7 +165,8 @@ int main(int argc, char** argv) {
             const bool toLink = linkConns.count(o.conn) != 0;
             if (toLink) ++linkOut;
             else ++nOut;
-            if (!g_quiet) Log("[%s c%d] << %s\n", toLink ? "연결" : "로비", o.conn, Printable(o.line).c_str());
+            // ★ 7단계 — 살아 있음 줄은 5초마다라 기록엔 안 찍고 셈만(끝 줄 PING)
+            if (!g_quiet && !(toLink && o.line == pingLine)) Log("[%s c%d] << %s\n", toLink ? "연결" : "로비", o.conn, Printable(o.line).c_str());
         }
         outs.clear();
         for (const auto& l : lobby.TakeLog()) Log("[로비] %s\n", PrintableLog(l).c_str());
@@ -190,7 +193,7 @@ int main(int argc, char** argv) {
             case nox::TcpLineEvent::Type::LINE:
                 if (link) {
                     ++linkIn;
-                    if (!g_quiet) Log("[연결 c%d] >> %s\n", e.conn, PrintableLog(e.line).c_str());
+                    if (!g_quiet && e.line != pingLine) Log("[연결 c%d] >> %s\n", e.conn, PrintableLog(e.line).c_str());
                     mirror.OnLinkLine(e.conn, e.line, outs);
                 } else {
                     ++nIn;
@@ -223,6 +226,7 @@ int main(int argc, char** argv) {
         tcp.Poll(evs);
         for (const auto& e : evs) onEvent(e);
         lobby.Tick(outs);   // ★ 10-20 — 시간 초과는 클라에게 거절 답(471)
+        mirror.Tick(outs);  // ★ 7단계 — 게임 서버 살아 있음(PING · 받은 줄이 한도 동안 없으면 BYE 뒤 끊기 → 끊김 사건에 방 내림)
         sendOuts();
         evs.clear();
         tcp.Flush(evs);   // 보내기 오류 · QUIT 답 · BYE 뒤 끊기가 여기서 나온다
@@ -242,9 +246,10 @@ int main(int argc, char** argv) {
         nConn, nIn, nOut, ls.tokensIssued, ls.roomsCreated, ls.roomsRequested, ls.roomCreateFailed, ls.roomRequestTimeout,
         ls.roomRequestDropped, ls.chatMessages, ls.JoinRejectedTotal(), jr(JoinReject::RequestFailed), jr(JoinReject::CreateFailed),
         jr(JoinReject::Timeout), jr(JoinReject::NoSuchRoom));
-    Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu · 보냄 %llu · "
-        "방 알림 %llu · 사라짐 %llu · 못 읽는 줄 %llu · 판 결과 %llu\n",
-        nLinks, ms.authOk, ms.authFailed, ms.registered, ms.registerRejected, ms.outOfOrder, linkIn, linkOut, ms.roomLines,
-        ms.roomGoneLines, ms.badLines, ms.results);
+    // ★ 7단계 — 보냄 · 받음은 PING 을 넣은 수(괄호가 그중 PING) · 무소식 끊음 = 받은 줄이 한도 동안 없어 끊은 게임 서버 연결
+    Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu(PING %llu) · "
+        "보냄 %llu(PING %llu) · 방 알림 %llu · 사라짐 %llu · 못 읽는 줄 %llu · 판 결과 %llu · 무소식 끊음 %llu\n",
+        nLinks, ms.authOk, ms.authFailed, ms.registered, ms.registerRejected, ms.outOfOrder, linkIn, ms.pingsIn, linkOut, ms.pingsOut,
+        ms.roomLines, ms.roomGoneLines, ms.badLines, ms.results, ms.deadLinks);
     return 0;
 }

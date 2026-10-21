@@ -46,6 +46,7 @@ struct CNetworkThreadStats {
     unsigned long long lobbyLinesIn = 0;          // 받은 줄
     unsigned long long lobbyLinesOut = 0;         // 보내기 버퍼에 넣은 줄(`LOBBY_SEND`)
     unsigned long long lobbySendNoConn = 0;       // 이미 끊긴 접속으로 보내려다 버린 줄 — 끊김과 답이 엇갈리면 생긴다
+    unsigned long long lobbyCloseRequests = 0;    // ★ 7단계 — 게임 스레드가 끊으라고 한 수(`LOBBY_CLOSE` — 살아 있음 한도)
     unsigned long long lobbyClosed = 0;           // 끊김(까닭 무관)
     // ★ 10-20 v2 작업 4a — 로비에 붙기(`ConnectLobby`)
     unsigned long long lobbyConnects = 0;         // 붙기 시도

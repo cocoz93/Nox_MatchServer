@@ -47,6 +47,11 @@ constexpr uint16_t kLobbyLinkPort = 4010;
 // 줄 한도(CRLF 빼고) — 받는 쪽 `CTcpLines` 는 줄 끝을 못 본 바이트가 `kMaxLine` 을 넘으면 끊는다.
 //   줄 끝 CR 과 LF 가 따로 도착하면 CR 까지 쌓이므로 한 바이트를 뺀다
 constexpr size_t kLinkMaxLine = CTcpLines::kMaxLine - 1;
+// ★ 7단계 — 살아 있음(`PING`). 양쪽 같은 값. 근거 없는 값 — 같은 PC · 내부망 기준 · 다시 붙기 3초 · 붙는 한도 5초(`NetworkThread.h`)와
+//   어울리는 몇 초. 다른 줄을 보냈어도 이만큼마다 하나 — 보내는 자리를 하나로 둔다(줄을 보내는 자리마다 시각을 적으면 하나를 빠뜨린다)
+constexpr uint32_t kLinkPingEveryMs = 5000;
+// 이만큼 받은 줄이 하나도 없으면 끊는다(PING 셋을 잃을 만큼). 로비는 그 게임 서버 방을 목록에서 내리고 · 게임 서버는 다시 붙는다
+constexpr uint32_t kLinkDeadMs = 15000;
 
 // 게임 서버가 알리는 방 하나 — 로비가 그리는 칸만(`RoomFact` 에서 게임 서버가 채운다)
 struct LinkRoom {

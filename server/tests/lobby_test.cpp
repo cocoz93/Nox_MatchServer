@@ -1045,6 +1045,107 @@ void MirrorUnitTests() {
           "셈 — 거절 5 = 게임 서버 실패 3 + 곧바로 실패 1 + 시간 초과 1(실패 4 + 시간 초과 1 과 같은 수)");
 }
 
+// ── ★ 7단계 — 게임 서버 연결 살아 있음(`RoomMirror::Tick` — `Docs/ACCOUNT_DB_DESIGN.md` 조각 2) ──
+//   ① 등록된 게임 서버에만 `kLinkPingEveryMs` 마다 PING 한 줄(그 전엔 없음 · 등록 전 접속엔 없음)
+//   ② 게임 서버의 PING · 어떤 줄이든 받으면 한도를 다시 잰다(PING 은 맞지 않는 줄로 안 셈)
+//   ③ 받은 줄이 `kLinkDeadMs` 동안 없으면 BYE 뒤 끊기(한 번 — 끊김 사건까지 다시 안 함) · 말없는 등록 전 접속도
+//   ④ 끊김에 그 방이 목록에서 빠짐 · 끊기 전엔 거절되던 같은 주소 다시 등록이 받힘(6단계 미결 — 전원째 꺼진 게임 서버)
+//   시계는 32비트가 넘어가는 자리 근처에서 시작한다(한도를 뺄셈으로 재는지)
+void LinkAliveUnitTests() {
+    using namespace nox::wol;
+    uint32_t clock = 0xfffff000u;
+    const uint32_t t0 = clock;
+    RoomMirror mirror(LobbyTestKey());
+    mirror.SetClock([&clock] { return clock; });
+    std::vector<Out> out;
+    const uint32_t ipA = (10u << 24) | 1u;
+    auto open = [&](int conn) {
+        out.clear();
+        mirror.OnLinkOpen(conn, out);
+        nox::LinkLine l;
+        return out.size() == 1 && nox::ParseLinkLine(out[0].line, l) == nox::LinkParse::Ok ? l.text : std::string();
+    };
+    auto send = [&](int conn, const std::string& line) {
+        out.clear();
+        mirror.OnLinkLine(conn, line, out);
+    };
+    auto reg = [&](int conn, uint32_t epoch) {
+        const std::string nonce = open(conn);
+        send(conn, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(LobbyTestKey()), nonce)));
+        send(conn, nox::LinkRegister(epoch, ipA, 18590));
+    };
+    auto tick = [&](uint32_t at) {
+        clock = t0 + at;
+        out.clear();
+        mirror.Tick(out);
+    };
+    auto onlyPing = [&](int conn) { return out.size() == 1 && out[0].conn == conn && !out[0].closeAfter && out[0].line == nox::LinkPing(); };
+    nox::LinkRoom room;
+    room.name = "a's game";
+    room.creator = room.host = "a";
+    room.map = "so_lod";
+    room.mode = "chat";
+
+    // ① PING — 등록 직후엔 없음 · 한도 1ms 앞 없음 · 한도에 한 줄 · 같은 때 다시 불러도 하나
+    reg(201, 1760000000u);
+    send(201, nox::LinkRoomLine(room));
+    tick(nox::kLinkPingEveryMs - 1);
+    const bool early = out.empty();
+    tick(nox::kLinkPingEveryMs);
+    const bool first = onlyPing(201);
+    tick(nox::kLinkPingEveryMs);
+    Check(early && first && out.empty() && mirror.Stats().pingsOut == 1, "① 등록된 게임 서버에 PING — 한도 전 없음 · 한도에 한 줄 · 같은 때 다시 없음");
+
+    // ② 게임 서버의 PING → 셈만(답 없음 · 맞지 않는 줄 아님) · 등록 전 접속(202)엔 PING 이 안 감
+    clock = t0 + 6000;
+    send(201, nox::LinkPing());
+    const bool pingQuiet = out.empty() && mirror.Stats().pingsIn == 1 && mirror.Stats().badLines == 0;
+    open(202);   // 붙기만 하고 말없음(6000)
+    tick(2 * nox::kLinkPingEveryMs);
+    Check(pingQuiet && onlyPing(201), "② PING 받음 → 셈만 · 다음 PING 은 등록된 201 에만(말없는 등록 전 202 엔 없음)");
+
+    // 같은 주소 둘째 등록 — 201 이 살아 있다고 보는 동안은 거절(6단계의 거절 그대로)
+    clock = t0 + 2 * nox::kLinkPingEveryMs;
+    reg(203, 1760000009u);
+    const bool rejected = out.size() == 1 && out[0].closeAfter && mirror.Stats().registerRejected == 1;
+    mirror.OnLinkClose(203, out);
+    Check(rejected && mirror.ServerCount() == 1, "② 201 이 살아 있는 동안 같은 주소 다시 등록 → 거절");
+
+    // ③ 한도 — 마지막 받은 줄(201 = 6000 · 202 = 붙은 6000)에서 1ms 앞은 그대로 · 한도에 둘 다 BYE 뒤 끊기 · 다시 불러도 안 늘어남
+    //   BYE 를 보낸 게임 서버는 끊김 사건 전이라도 목록 · 등록 수에서 곧바로 빠진다(닫는 중)
+    //   이 때는 202 가 붙은 지 PING 간격을 넘겼다 — 그래도 PING 은 등록된 201 에만(등록 전 접속엔 없음)
+    tick(6000 + nox::kLinkDeadMs - 1);
+    const bool alive = onlyPing(201) && mirror.Stats().deadLinks == 0 && mirror.LobbyRooms().size() == 1;
+    tick(6000 + nox::kLinkDeadMs);
+    const bool listedGone = mirror.LobbyRooms().empty() && mirror.ServerCount() == 0;
+    std::set<int> byeTo;
+    for (const Out& o : out) {
+        nox::LinkLine l;
+        if (o.closeAfter && nox::ParseLinkLine(o.line, l) == nox::LinkParse::Ok && l.kind == nox::LinkKind::Bye) byeTo.insert(o.conn);
+    }
+    const bool dead = out.size() == 2 && byeTo == std::set<int>{201, 202} && mirror.Stats().deadLinks == 2;
+    tick(6000 + nox::kLinkDeadMs + 5000);
+    bool logged = false;
+    for (const std::string& l : mirror.TakeLog()) logged = logged || l.find("초 동안 받은 줄 없음 — 끊음") != std::string::npos;
+    Check(alive && dead && listedGone && out.empty() && mirror.Stats().deadLinks == 2 && logged,
+          "③ 한도 1ms 앞 그대로(방 1) · 한도에 201 · 202(등록 전 말없음) BYE 뒤 끊기 · 그 자리에서 목록 0 · 다시 안 함 · 기록");
+
+    // ④ 끊김 사건 → 거울에서 지움 · 같은 주소 다시 등록이 받힘
+    mirror.OnLinkClose(201, out);
+    mirror.OnLinkClose(202, out);
+    const bool closed = out.empty() && mirror.Stats().linksClosed == 3;   // 203(거절) · 201 · 202
+    // 닫는 중(BYE 보냄)이던 201 도 등록했던 게임 서버로 기록(주소 · 방 수) — 202 는 등록 전
+    int closeLog201 = 0, closeLog202 = 0;
+    for (const std::string& l : mirror.TakeLog()) {
+        closeLog201 += l.find("c201 10.0.0.1:18590 끊김 — 방 1개 목록에서 내림") != std::string::npos ? 1 : 0;
+        closeLog202 += l.find("c202 끊김(등록 전)") != std::string::npos ? 1 : 0;
+    }
+    Check(closeLog201 == 1 && closeLog202 == 1, "④ 끊김 기록 — 무소식으로 끊은 201 은 주소 · 방 수 · 등록 전 202 는 「등록 전」");
+    reg(204, 1760000100u);
+    Check(closed && out.empty() && mirror.ServerCount() == 1 && mirror.Stats().registerRejected == 1,
+          "④ 끊김 사건 셋째까지 거절 줄 없음 · 같은 주소 다시 등록 → 받음(거절 셈 그대로 1)");
+}
+
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
 void RouterUnitTests() {
     using namespace nox::wol;
@@ -1448,6 +1549,7 @@ int main(int argc, char** argv) {
         NewRoomUnitTests();
         PendingRoomUnitTests();   // ★ 10-20 v2 작업 3a
         MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
+        LinkAliveUnitTests();     // ★ 7단계 조각 2
         ChatUnitTests();          // ★ 10-20 v2 작업 3b
         RouterUnitTests();
     }

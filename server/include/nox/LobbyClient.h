@@ -14,15 +14,20 @@
 // 입장 토큰 키 — 로비는 이 게임 서버 방의 토큰을 「이 게임 서버의 이 실행」 키로 서명한다(`TokenKeyFor` = `GameServerTokenKey` —
 //   등록 줄 값 그대로). 방 관리자에 이 키를 건다(`main`). 그래서 다른 게임 서버 · 다시 켠 이 게임 서버엔 옛 토큰이 안 맞는다
 //
-// 소켓도 시간도 모른다 — 게임 스레드 한 곳에서만 부른다(로비 사건 · 틱 뒤 · 판 결과).
+// ★ 7단계 — 살아 있음(`PING` · `LobbyLink.h`). 로비 PC 가 전원째 꺼지면 끊김 신호가 안 와 이 게임 서버는 붙은 줄로 안다 —
+//   받은 줄이 `kLinkDeadMs` 동안 없으면 네트워크 스레드에 끊으라고 하고(`LOBBY_CLOSE`) 끊김 길(다시 붙기)로 간다
+//
+// 소켓은 모른다 — 게임 스레드 한 곳에서만 부른다(로비 사건 · 틱 뒤 · 판 결과). 시간은 살아 있음 몫만(`SetClock` · 기본 `NowMs`).
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <random>
 #include <string>
 #include <vector>
 
+#include "nox/Clock.h"
 #include "nox/LobbyLink.h"
 #include "nox/RoomManager.h"
 #include "nox/UdpServer.h"
@@ -44,6 +49,10 @@ struct CLobbyClientStats {
     unsigned long long resultsNotSent = 0;   // 판 결과를 못 보냄(연결 없음 · 등록 전 · 줄 한도) — 파일 기록기엔 있다
     unsigned long long byes = 0;             // 로비가 BYE(끊기 직전 까닭)
     unsigned long long badLines = 0;         // 못 읽는 줄 · 차례에 안 맞는 줄(버림)
+    // ★ 7단계 — 살아 있음
+    unsigned long long pingsIn = 0;          // PING 받음
+    unsigned long long pingsOut = 0;         // PING 보냄(등록 뒤 `kLinkPingEveryMs` 마다)
+    unsigned long long deadLinks = 0;        // 받은 줄이 `kLinkDeadMs` 동안 없어 끊으라고 함(`LOBBY_CLOSE`)
 };
 
 class CLobbyClient {
@@ -69,12 +78,14 @@ public:
                  std::vector<std::string> battleMaps = {});
     void SetSeed(uint32_t seed) { _rng.seed(seed); }   // 맵 고르기 씨앗(시험이 정해 보려고)
     void SetVerbose(bool v) { _verbose = v; }           // 연결 줄을 한 줄씩 찍는가(`--quiet` 반대). 기록(`[로비 연결]`)은 늘 찍는다
+    void SetClock(std::function<uint32_t()> nowMs) { _nowMs = std::move(nowMs); }   // ★ 7단계 — 살아 있음의 시계(시험이 정해 보려고)
     // 「<닉>'s game」 · 닉이 길면 닉 쪽을 자른다(옛 `CChannelLobby::RoomNameFor`)
     static std::string RoomNameFor(const std::string& nick);
 
     // 로비 사건 하나(`IsLobbyEvent`) → 보낼 줄을 `out` 뒤에 요청(`LOBBY_SEND`)으로. 로비 사건이 아니면 아무것도 안 한다
     void OnNetworkEvent(const NetworkEvent& ev, std::vector<NetworkRequest>& out);
     // 틱 뒤 — 방 사실이 지난번 보낸 것과 다른 방만 ROOM · 사라진 방은 ROOM_GONE(등록 뒤에만)
+    //   ★ 7단계 — 살아 있음도 여기서(바퀴마다 불린다 — 방이 없어도 한 틱 길이마다 깬다 `main.cpp`)
     void AfterTick(std::vector<NetworkRequest>& out);
     // 판 결과 JSON 한 줄(`FormatMatchResultJson`) → RESULT(등록 뒤에만 · 줄 한도 안에서만 — 아니면 셈만)
     void OnMatchResult(const std::string& json, std::vector<NetworkRequest>& out);
@@ -94,6 +105,8 @@ private:
     static bool ToLinkRoom(const RoomFact& f, LinkRoom& out);
     // 지난번 보낸 것(`_sent`)과 다른 방만 ROOM · 사라진 방은 ROOM_GONE — 붙을 때 · 끊길 때 `_sent` 를 비워 다시 붙으면 전부 간다
     void SendChanged(std::vector<NetworkRequest>& out);
+    // ★ 7단계 — 등록 뒤 PING · 받은 줄이 한도 동안 없으면 `LOBBY_CLOSE`(한 접속에 한 번)
+    void LinkTick(std::vector<NetworkRequest>& out);
 
     CRoomManager& _rooms;
     Config _cfg;
@@ -106,6 +119,10 @@ private:
     Stage _stage = Stage::Down;
     int _conn = 0;                            // 로비 연결 접속 번호(네트워크 스레드 `CTcpLines` 것)
     std::map<uint32_t, std::string> _sent;    // 방 번호 → 지난번 보낸 ROOM 줄(바뀜 견주기)
+    std::function<uint32_t()> _nowMs = NowMs;
+    uint32_t _lastRecvMs = 0;                 // ★ 7단계 — 이 접속에서 마지막으로 줄을 받은 때(붙은 때부터)
+    uint32_t _nextPingMs = 0;
+    bool _closeAsked = false;                 // 이 접속에 `LOBBY_CLOSE` 를 이미 냄(끊김 사건까지 다시 안 냄)
     CLobbyClientStats _stats;
 };
 
