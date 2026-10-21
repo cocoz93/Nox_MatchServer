@@ -10,6 +10,10 @@
 //   · ★ 7단계 — 살아 있음(`PING` · `LobbyLink.h`). 전원째 꺼진 게임 서버는 끊김 신호가 안 와 등록된 채로 남는다 — 그 방이 목록에 남고
 //     다시 켠 그 게임 서버는 「같은 주소」로 거절됐다(6단계 미결). 받은 줄이 `kLinkDeadMs` 동안 없으면 BYE 뒤 끊고 위 끊김 길로 간다
 //
+//   · ★ 7단계 조각 5 — 판 결과(`RESULT`)를 읽어(`MatchRecord.h`) 저장소(`ILobbyStore` — `AttachStore`)에 넣고 답이 오면 그 연결에
+//     `SAVED <판 번호> ok|dup`. 못 읽으면 곧바로 `SAVED … bad`(판 번호도 못 읽으면 답할 수 없어 셈만) · 저장소가 못 넣으면 답을 안 한다
+//     (게임 서버가 30초 뒤 다시 보낸다 — `LobbyClient.h` `kResultResendMs`) · 겹침은 저장소가 (등록 주소 · 포트 · 판 번호)로 가른다
+//
 // 로비 규약(`Lobby`)의 방 공급자(`ILobbyRooms`)다. 소켓은 모른다 — 연결 사건을 넣으면 보낼 줄을 `out` 에 덧붙인다.
 //   시간은 살아 있음 몫만 — 시계(`SetClock` · 기본 `NowMs`)를 받고 소켓 루프가 자주(줄이 없어도) `Tick` 을 부른다.
 //   새 방 요청(`RequestRoom`)은 로비가 클라 줄을 처리하는 도중에 부르므로 그 `CREATE` 줄은 쌓아 두고 `TakeOut` 으로 꺼낸다.
@@ -28,6 +32,8 @@
 #include "nox/Clock.h"
 #include "nox/Lobby.h"
 #include "nox/LobbyLink.h"
+#include "nox/LobbyStore.h"
+#include "nox/MatchRecord.h"
 
 namespace nox::wol {
 
@@ -57,6 +63,22 @@ struct MirrorStats {
     unsigned long long pingsIn = 0;           // PING 받음(등록 뒤)
     unsigned long long pingsOut = 0;          // PING 보냄(등록된 게임 서버에 `kLinkPingEveryMs` 마다)
     unsigned long long deadLinks = 0;         // 받은 줄이 `kLinkDeadMs` 동안 없어 끊음(어느 단계든 — 등록 전 말없는 접속도)
+    // ★ 7단계 조각 5 — 판 저장(RESULT 하나는 저장 요청 · 못 읽음 · 저장소 없음 중 하나)
+    unsigned long long saveRequests = 0;      // 저장소에 판 저장 요청
+    unsigned long long savedOk = 0;           // 답 Saved → SAVED ok
+    unsigned long long savedDup = 0;          // 답 Duplicate → SAVED dup
+    unsigned long long savedBad = 0;          // 못 읽음 · 판 번호는 읽음 → 곧바로 SAVED bad
+    unsigned long long saveFailed = 0;        // 답 Failed — SAVED 안 보냄(게임 서버가 다시)
+    unsigned long long saveConnGone = 0;      // 답이 왔는데 그 연결이 이미 끊김(버림 — 게임 서버가 다시 붙으면 다시 보내 dup)
+    unsigned long long saveAnswerUnknown = 0; // 묻지 않은 요청 번호의 답(버림)
+    unsigned long long noStore = 0;           // 저장소를 안 붙인 거울(시험 · 옛 꼴) — 기록만
+    unsigned long long unreadable[static_cast<size_t>(MatchJsonParse::kCount)] = {};   // 못 읽은 판 결과 — 갈래마다(Ok 칸은 안 씀)
+    unsigned long long unreadableNoMatch = 0; // 그중 판 번호도 못 읽음(답 없음)
+    unsigned long long UnreadableTotal() const {
+        unsigned long long n = 0;
+        for (const unsigned long long v : unreadable) n += v;
+        return n;
+    }
 };
 
 class RoomMirror final : public ILobbyRooms {
@@ -73,6 +95,10 @@ public:
     void OnLinkClose(int conn, std::vector<Out>& out);                        // 그 게임 서버의 방 내림 · 기다리던 요청 실패(★ 10-20 — 클라에게 거절 답)
     // ★ 7단계 — 등록된 게임 서버에 PING · 받은 줄이 한도 동안 없는 접속은 BYE 뒤 끊기(끊김 사건은 소켓이 `OnLinkClose` 로)
     void Tick(std::vector<Out>& out);
+    // ★ 7단계 조각 5 — 판 결과를 넣을 저장소(거울보다 오래 산다 · 안 붙이면 판 결과는 기록만) · 저장소 답 하나(갈래 SaveMatch 만)
+    void AttachStore(ILobbyStore& store) { store_ = &store; }
+    void OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out);
+    size_t PendingSaves() const { return saves_.size(); }
     void TakeOut(std::vector<Out>& out);                                      // `RequestRoom` 이 쌓은 CREATE 줄
     std::vector<std::string> TakeLog();
     std::vector<std::string> TakeResults();                                   // RESULT 의 JSON(받은 차례)
@@ -110,6 +136,13 @@ private:
     JoinKey authKey_;
     Lobby* lobby_ = nullptr;
     std::function<uint32_t()> nowMs_ = NowMs;
+    ILobbyStore* store_ = nullptr;
+    struct PendingSave {
+        int conn = 0;          // 판 결과를 보낸 연결(접속 번호는 다시 안 쓴다 — 끊겼으면 그 게임 서버의 그 연결이 아니다)
+        std::string match;     // SAVED 에 실을 판 번호
+    };
+    std::map<uint32_t, PendingSave> saves_;   // 저장 요청 번호 → 답할 곳
+    uint32_t nextSaveReq_ = 1;
     std::map<int, Server> servers_;   // 연결 접속 번호 → 게임 서버(차례 = 붙은 차례)
     std::vector<Out> pendingOut_;
     std::vector<std::string> log_;

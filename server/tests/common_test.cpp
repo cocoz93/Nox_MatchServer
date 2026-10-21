@@ -513,6 +513,11 @@ void TestMatchRecord() {
               badWith("\"caps\":2", "\"caps\":70000", P::Value, "caps") && badWith("\"room\":0", "\"room\":2147483648", P::Value, "room") &&
               badWith("\"endReason\":\"score_player\"", "\"endReason\":\"\"", P::Value, "endReason"),
           "값 — 빈 판 번호 · netCode 65536 · 음수 시각 · 모르는 state · 모르는 승자 · \\u0100 · 팀 256 · 깃발 70000 · 방 int32 넘음 · 빈 끝 까닭");
+    // ★ 7단계 조각 5 — 실패해도 `match` 는 믿는다(맨 먼저 읽음 — 로비가 SAVED bad 에 실음) · 문법 틀림이면 빈 것
+    nox::ParseMatchRecordJson("{\"match\":\"1760000000-0-9\",\"room\":\"x\"}", r);
+    const bool keptMatch = r.match == "1760000000-0-9";
+    nox::ParseMatchRecordJson("{\"match\":\"1760000000-0-9\",", r);
+    Check(keptMatch && r.match.empty(), "실패해도 판 번호는 남음(타입 틀림) · 문법 틀림이면 빈 것");
     unsigned failKinds = 0;
     for (int i = 1; i < static_cast<int>(P::kCount); ++i) failKinds += seen[i] ? 1 : 0;
     Check(failKinds == static_cast<unsigned>(P::kCount) - 1 && seen[static_cast<int>(P::Ok)] == 0 && missingSpots == 0,

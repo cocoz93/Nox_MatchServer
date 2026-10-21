@@ -67,7 +67,8 @@ struct MatchRecord {
     std::vector<MatchRecordTeam> teams;   // 팀 판만(칸이 없으면 빈 것)
 };
 
-// 실패면 `out` 은 어디까지 채웠는지 모른다 — 쓰지 말 것. `field` 에 처음 걸린 칸 이름(기록용 · 없어도 됨)
+// 실패면 `out` 은 어디까지 채웠는지 모른다 — 쓰지 말 것. 단 `match` 만은 믿어도 된다(★ 7단계 조각 5 — 칸 가운데 맨 먼저 읽고,
+//   비었으면 못 읽은 것 — 로비가 「못 읽음」 답 `SAVED <판 번호> bad` 에 싣는다). `field` 에 처음 걸린 칸 이름(기록용 · 없어도 됨)
 MatchJsonParse ParseMatchRecordJson(std::string_view json, MatchRecord& out, std::string* field = nullptr);
 
 }  // namespace nox

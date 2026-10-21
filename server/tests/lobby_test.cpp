@@ -991,7 +991,10 @@ void MirrorUnitTests() {
     nox::LinkResult(json, resLine);
     send(a2, resLine);
     const auto res = mirror.TakeResults();
-    Check(out.empty() && res.size() == 1 && res[0] == json && mirror.Stats().results == 1, "⑩ RESULT → 판 결과 JSON 그대로 · 셈");
+    // ★ 7단계 조각 5 — 이 줄은 칸이 모자라(room 없음) 못 읽음 → 곧바로 SAVED bad(옛 꼴은 줄 없음). 판 저장 갈래는 MirrorSaveUnitTests
+    Check(out.size() == 1 && out[0].conn == a2.conn && out[0].line == "SAVED 1760000100-0-1 bad" && res.size() == 1 && res[0] == json &&
+              mirror.Stats().results == 1,
+          "⑩ RESULT → 판 결과 JSON 그대로 · 셈 · ★ 7단계 칸 모자람 → SAVED bad");
     send(a2, "ROOM 1 2");
     const bool badKept = out.empty() && mirror.ServerCount() == 1;
     send(a2, nox::LinkCreate(1, "x"));
@@ -1206,6 +1209,108 @@ void LobbyStoreUnitTests() {
     st.TakeAnswers(ans);
     Check(failed && ans.size() == 1 && ans[0].save == SaveResult::Saved && st.MatchCount() == 3,
           "④ 실패 스위치 — 로그인 · 판 저장 Failed(까닭 글 · 안 넣음) · 끄면 같은 판이 Saved");
+}
+
+// ── ★ 7단계 조각 5 — 로비 판 저장(`RoomMirror` RESULT → 저장소 → SAVED) ──
+//   ① 온전한 판 → 그 자리엔 줄 없음(저장 요청) → 답 → 그 연결에 SAVED ok · 저장소에 (등록 주소 · 포트 · 판 번호)로 들어감
+//   ② 같은 판 다시 → dup · 다른 게임 서버의 같은 판 번호 → ok(따로)
+//   ③ 못 읽음 — 판 번호 있음 → 곧바로 SAVED bad(저장 요청 없음) · 판 번호도 없음 → 줄 없음 · 갈래마다 셈
+//   ④ 저장소 실패 → 줄 없음(게임 서버가 다시) · 답 전에 연결 끊김 → 버림 · 묻지 않은 답 → 버림 · 저장소 없는 거울 → 기록만
+void MirrorSaveUnitTests() {
+    using namespace nox::wol;
+    RoomMirror mirror(LobbyTestKey());
+    CMemoryLobbyStore store;
+    mirror.AttachStore(store);
+    std::vector<Out> out;
+    auto reg = [&](int conn, uint32_t ip) {
+        out.clear();
+        mirror.OnLinkOpen(conn, out);
+        nox::LinkLine l;
+        nox::ParseLinkLine(out.empty() ? std::string() : out[0].line, l);
+        out.clear();
+        mirror.OnLinkLine(conn, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(LobbyTestKey()), l.text)), out);
+        mirror.OnLinkLine(conn, nox::LinkRegister(1760000000u, ip, 18590), out);
+    };
+    auto result = [&](int conn, const std::string& json) {
+        out.clear();
+        std::string line;
+        nox::LinkResult(json, line);
+        mirror.OnLinkLine(conn, line, out);
+    };
+    // 저장소 답을 꺼내 거울에 넘김(로비 루프 한 자리) — 나온 줄
+    auto pump = [&]() {
+        std::vector<StoreAnswer> ans;
+        store.TakeAnswers(ans);
+        out.clear();
+        for (const StoreAnswer& a : ans) mirror.OnStoreAnswer(a, out);
+        return ans.size();
+    };
+    auto only = [&](int conn, const std::string& line) { return out.size() == 1 && out[0].conn == conn && !out[0].closeAfter && out[0].line == line; };
+    const std::string m1 =
+        "{\"match\":\"1760000000-0-1\",\"room\":0,\"roomName\":\"wn's game\",\"map\":\"so_lod\",\"mode\":\"chat\",\"start\":1,\"end\":2,\"frames\":30,"
+        "\"sec\":1,\"endReason\":\"score_player\",\"winner\":{\"kind\":\"player\",\"id\":2,\"account\":\"bob\"},\"limit\":1,\"timeLimitSec\":0,"
+        "\"players\":[{\"account\":\"wn\",\"netCode\":1,\"state\":\"finished\",\"team\":0,\"score\":0,\"deaths\":1}]}";
+    const uint32_t ipA = (10u << 24) | 1u, ipB = (10u << 24) | 2u;
+    reg(301, ipA);
+    reg(302, ipB);
+
+    // ①
+    result(301, m1);
+    const bool asked = out.empty() && mirror.PendingSaves() == 1 && mirror.Stats().saveRequests == 1;
+    const size_t n1 = pump();
+    const nox::MatchRecord* stored = store.FindMatch(MatchSource{ipA, 18590}, "1760000000-0-1");
+    Check(asked && n1 == 1 && only(301, "SAVED 1760000000-0-1 ok") && stored && stored->roomName == "wn's game" && stored->players.size() == 1 &&
+              mirror.PendingSaves() == 0 && mirror.Stats().savedOk == 1 && mirror.TakeResults().size() == 1,
+          "① 온전한 판 → 그 자리 줄 없음 · 답 뒤 그 연결에 SAVED ok · 저장소에 (등록 주소 · 포트 · 판 번호) · 기록용 JSON 그대로");
+
+    // ②
+    result(301, m1);
+    pump();
+    const bool dup = only(301, "SAVED 1760000000-0-1 dup") && mirror.Stats().savedDup == 1;
+    result(302, m1);
+    pump();
+    Check(dup && only(302, "SAVED 1760000000-0-1 ok") && store.MatchCount() == 2 && mirror.Stats().savedOk == 2,
+          "② 같은 판 다시 → dup · 다른 게임 서버의 같은 판 번호 → ok(따로 · 저장소 판 둘)");
+
+    // ③
+    result(301, "{\"match\":\"1760000000-0-9\",\"room\":\"x\"}");
+    const bool bad = only(301, "SAVED 1760000000-0-9 bad") && mirror.PendingSaves() == 0 && mirror.Stats().savedBad == 1 &&
+                     mirror.Stats().unreadable[static_cast<size_t>(nox::MatchJsonParse::Type)] == 1;
+    result(301, "{\"match\":");
+    Check(bad && out.empty() && mirror.Stats().unreadable[static_cast<size_t>(nox::MatchJsonParse::Syntax)] == 1 && mirror.Stats().unreadableNoMatch == 1 &&
+              mirror.Stats().UnreadableTotal() == 2 && mirror.Stats().saveRequests == 3 && pump() == 0,
+          "③ 못 읽음 — 판 번호 있음(타입) → 곧바로 SAVED bad · 판 번호도 없음(문법) → 줄 없음 · 둘 다 저장 요청 없음");
+
+    // ④
+    store.SetFailSaves(true);
+    const std::string m2 = std::string(m1).replace(m1.find("0-1\""), 4, "0-2\"");
+    result(301, m2);
+    pump();
+    const bool failQuiet = out.empty() && mirror.Stats().saveFailed == 1;
+    store.SetFailSaves(false);
+    result(302, m2);
+    mirror.OnLinkClose(302, out);
+    pump();
+    const bool goneQuiet = out.empty() && mirror.Stats().saveConnGone == 1;
+    StoreAnswer stray;
+    stray.kind = StoreAnswerKind::SaveMatch;
+    stray.req = 9999;
+    out.clear();
+    mirror.OnStoreAnswer(stray, out);
+    const bool strayQuiet = out.empty() && mirror.Stats().saveAnswerUnknown == 1;
+    RoomMirror bare(LobbyTestKey());   // 저장소를 안 붙임 — 옛 꼴(기록만)
+    out.clear();
+    bare.OnLinkOpen(401, out);
+    nox::LinkLine hl;
+    nox::ParseLinkLine(out.empty() ? std::string() : out[0].line, hl);
+    out.clear();
+    bare.OnLinkLine(401, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(LobbyTestKey()), hl.text)), out);
+    bare.OnLinkLine(401, nox::LinkRegister(1, ipA, 18590), out);
+    std::string line;
+    nox::LinkResult(m1, line);
+    bare.OnLinkLine(401, line, out);
+    Check(failQuiet && goneQuiet && strayQuiet && out.empty() && bare.Stats().noStore == 1 && bare.TakeResults().size() == 1 && mirror.PendingSaves() == 0,
+          "④ 저장소 실패 → 줄 없음 · 답 전에 끊김 → 버림 · 묻지 않은 답 → 버림 · 저장소 없는 거울 → 기록만");
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
@@ -1613,6 +1718,7 @@ int main(int argc, char** argv) {
         MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
         LinkAliveUnitTests();     // ★ 7단계 조각 2
         LobbyStoreUnitTests();    // ★ 7단계 조각 4
+        MirrorSaveUnitTests();    // ★ 7단계 조각 5
         ChatUnitTests();          // ★ 10-20 v2 작업 3b
         RouterUnitTests();
     }

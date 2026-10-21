@@ -137,10 +137,35 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
             if (lobby_) lobby_->OnRoomCreated(l.req, ToLobbyRoom(s, r->second), out);
             return;
         }
-        case LinkKind::Result:
+        case LinkKind::Result: {
             ++stats_.results;
-            results_.push_back(l.text);
+            results_.push_back(l.text);   // 기록용(`lobby_main` 이 [판 결과] 한 줄)
+            // ★ 7단계 조각 5 — 읽어 저장소에 · 못 읽으면 곧바로 bad(같은 줄을 다시 보내도 같다 — 파일 기록기엔 있다)
+            MatchRecord rec;
+            std::string field;
+            const MatchJsonParse jp = ParseMatchRecordJson(l.text, rec, &field);
+            if (jp != MatchJsonParse::Ok) {
+                ++stats_.unreadable[static_cast<size_t>(jp)];
+                log_.push_back("[게임 서버] " + Name(conn, s) + " 판 결과를 못 읽음(" + MatchJsonParseName(jp) + (field.empty() ? "" : " · 칸 " + field) +
+                               ") — " + (rec.match.empty() ? "판 번호도 못 읽어 답 없음" : "SAVED bad"));
+                if (rec.match.empty()) {
+                    ++stats_.unreadableNoMatch;
+                } else {
+                    ++stats_.savedBad;
+                    out.push_back({conn, LinkSavedLine(rec.match, SaveOutcome::Bad)});
+                }
+                return;
+            }
+            if (!store_) {
+                ++stats_.noStore;
+                return;
+            }
+            const uint32_t req = nextSaveReq_++;
+            saves_[req] = PendingSave{conn, rec.match};
+            ++stats_.saveRequests;
+            store_->SaveMatch(req, MatchSource{s.ip, s.port}, rec, l.text);
             return;
+        }
         case LinkKind::Ping:   // ★ 7단계 — 받은 시각은 위에서 적었다
             ++stats_.pingsIn;
             return;
@@ -155,6 +180,40 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
     }
     ++stats_.badLines;
     log_.push_back("[게임 서버] " + Name(conn, s) + " 등록 뒤 맞지 않는 줄 — 버림: " + std::string(line.substr(0, 80)));
+}
+
+void RoomMirror::OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out) {
+    const auto it = saves_.find(a.req);
+    if (a.kind != StoreAnswerKind::SaveMatch || it == saves_.end()) {
+        ++stats_.saveAnswerUnknown;
+        return;
+    }
+    const PendingSave ps = std::move(it->second);
+    saves_.erase(it);
+    const auto sv = servers_.find(ps.conn);
+    if (sv == servers_.end() || sv->second.stage != Stage::Registered) {   // 끊김 · 닫는 중 — 다시 붙으면 게임 서버가 다시 보낸다(dup)
+        ++stats_.saveConnGone;
+        log_.push_back("[게임 서버] c" + std::to_string(ps.conn) + " 판 " + ps.match + " 저장 답이 끊긴 뒤 옴 — 버림");
+        return;
+    }
+    switch (a.save) {
+        case SaveResult::Saved:
+            ++stats_.savedOk;
+            out.push_back({ps.conn, LinkSavedLine(ps.match, SaveOutcome::Ok)});
+            return;
+        case SaveResult::Duplicate:
+            ++stats_.savedDup;
+            out.push_back({ps.conn, LinkSavedLine(ps.match, SaveOutcome::Dup)});
+            return;
+        case SaveResult::Failed:
+            ++stats_.saveFailed;
+            log_.push_back("[게임 서버] " + Name(ps.conn, sv->second) + " 판 " + ps.match + " 저장 실패 — " + a.why +
+                           "(SAVED 안 보냄 — 게임 서버가 다시)");
+            return;
+        case SaveResult::kCount:
+            break;
+    }
+    ++stats_.saveAnswerUnknown;   // 갈래 없는 답 — 저장소 결함
 }
 
 void RoomMirror::Tick(std::vector<Out>& out) {

@@ -34,6 +34,7 @@
 #include "nox/IniFile.h"
 #include "nox/Lobby.h"
 #include "nox/LobbyLink.h"
+#include "nox/LobbyStore.h"
 #include "nox/RoomMirror.h"
 #include "nox/TcpLines.h"
 
@@ -143,6 +144,11 @@ int main(int argc, char** argv) {
     nox::wol::RoomMirror mirror(cfg.joinKey);
     nox::wol::Lobby lobby(cfg, mirror);
     mirror.Attach(lobby);
+    // ★ 7단계 조각 5 — 저장소(계정 · 판 기록). 조각 8 전까지는 메모리 가짜뿐(답은 다음 바퀴 — DB 와 같은 미룬 답 길)
+    nox::wol::CMemoryLobbyStore memStore;
+    nox::wol::ILobbyStore& store = memStore;
+    mirror.AttachStore(store);
+    std::vector<nox::wol::StoreAnswer> answers;
     wchar_t stopName[64];
     swprintf(stopName, 64, L"nox_lobby_stop_%lu", GetCurrentProcessId());
     HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, stopName);
@@ -222,6 +228,17 @@ int main(int argc, char** argv) {
         if (stopEvent && WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;
         // 100ms — 미룬 새 방 답의 시간 초과(`Tick`) · --seconds · 닫기 신호를 보려고 깨어난다
         WaitForSingleObject(static_cast<HANDLE>(tcp.WaitHandle()), 100);
+        // ★ 7단계 조각 5 — 저장소 답을 바퀴 맨 앞에서(지난 바퀴 요청의 답 — 메모리 가짜도 「다음 바퀴에 답」이 된다 · 정할 것 b)
+        answers.clear();
+        store.TakeAnswers(answers);
+        for (const nox::wol::StoreAnswer& a : answers) {
+            switch (a.kind) {
+                case nox::wol::StoreAnswerKind::SaveMatch: mirror.OnStoreAnswer(a, outs); break;
+                case nox::wol::StoreAnswerKind::Login: break;   // 조각 6(로그인 미룸) 전엔 요청이 없다
+                case nox::wol::StoreAnswerKind::kCount: break;
+            }
+        }
+        if (!answers.empty()) sendOuts();
         evs.clear();
         tcp.Poll(evs);
         for (const auto& e : evs) onEvent(e);
@@ -251,5 +268,12 @@ int main(int argc, char** argv) {
         "보냄 %llu(PING %llu) · 방 알림 %llu · 사라짐 %llu · 못 읽는 줄 %llu · 판 결과 %llu · 무소식 끊음 %llu\n",
         nLinks, ms.authOk, ms.authFailed, ms.registered, ms.registerRejected, ms.outOfOrder, linkIn, ms.pingsIn, linkOut, ms.pingsOut,
         ms.roomLines, ms.roomGoneLines, ms.badLines, ms.results, ms.deadLinks);
+    // ★ 7단계 조각 5 — 판 결과 한 줄 = 저장 요청 · 못 읽음 · 저장소 없음 중 하나 · 요청 하나 = ok · dup · 실패 · 끊긴 뒤 · 아직(끝날 때 남음) 중 하나
+    Log("[로비] 끝 — 판 저장 요청 %llu(SAVED ok %llu · dup %llu · 실패 %llu · 끊긴 뒤 답 %llu · 모르는 답 %llu · 끝날 때 남음 %zu) · "
+        "못 읽음 %llu(문법 %llu · 빠진 칸 %llu · 타입 %llu · 값 %llu · SAVED bad %llu · 판 번호도 못 읽음 %llu) · 저장소 없음 %llu\n",
+        ms.saveRequests, ms.savedOk, ms.savedDup, ms.saveFailed, ms.saveConnGone, ms.saveAnswerUnknown, mirror.PendingSaves(),
+        ms.UnreadableTotal(), ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Syntax)],
+        ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Missing)], ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Type)],
+        ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Value)], ms.savedBad, ms.unreadableNoMatch, ms.noStore);
     return 0;
 }
