@@ -25,6 +25,7 @@
 #include "nox/LobbyClient.h"   // ★ 10-20 v2 작업 4b
 #include "nox/RoomMirror.h"
 #include "nox/MatchRecorder.h"  // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기 시험
+#include "nox/MatchRecord.h"    // ★ 7단계 조각 4 — 판 결과 읽개(쓰개 ↔ 읽개 왕복)
 #include "nox/Gamedata.h"
 #include "nox/UpdateStream.h"
 #include "nox/SpellNames.h"
@@ -25262,6 +25263,127 @@ void TestLobbyClientHeld() {
     std::printf("  7단계 조각 3 — 판 결과를 SAVED 까지 쥠: 답 없으면 30초 다시 · ok/dup/bad 지움 · 끊긴 동안 쥐었다 등록 뒤 · 한도 넘으면 옛것 버림\n");
 }
 
+// ── ★ 7단계 조각 4 — 판 결과 쓰개(`FormatMatchResultJson` · nox_proto) ↔ 읽개(`ParseMatchRecordJson` · nox_common) 왕복 ─────────
+//   판 다섯(사람 승 · 팀 승 · 중단 · 비김 · 이름 없는 승자) · 칸 전부 대조. 이름 바이트 — 949(UTF-8 아님) · 한글 UTF-8 · 따옴표 · 역빗금 ·
+//   제어 바이트 · 8명(나감 · 관전 · 음수 점수) · 최대 칸 값(netCode 65535 · 점수 int32 끝 · 시각 uint32 끝)
+void TestMatchRecordRoundTrip() {
+    using nox::MatchPlayer;
+    using nox::MatchResult;
+    using nox::RoundEndReason;
+    using nox::RoundTeamScore;
+    using nox::RoundWinnerKind;
+    char m[300];
+    auto player = [](const char* acc, uint16_t net, uint8_t team, int32_t score, uint32_t deaths, bool obs, bool left) {
+        MatchPlayer p;
+        p.account = acc;
+        p.netCode = net;
+        p.team = team;
+        p.score = left ? 0 : score;
+        p.deaths = left ? 0 : deaths;
+        p.observer = obs;
+        p.left = left;
+        return p;
+    };
+    std::vector<MatchResult> cases;
+    {   // ① 사람 승 — 949 이름 · 한글 방 이름 · 8명
+        MatchResult r;
+        r.epoch = 1760000000u;
+        r.roomId = 3;
+        r.matchNo = 12;
+        r.roomName = "\xEC\xB2\xA0\xEC\x88\x98 \"q\" \\ game";   // 철수 "q" \ game
+        r.mapKey = "estate";
+        r.mode = "arena";
+        r.startUnix = 1760000100u;
+        r.endUnix = 0xffffffffu;
+        r.frames = 510;
+        r.reason = RoundEndReason::ScorePlayer;
+        r.winner = RoundWinnerKind::Player;
+        r.winnerId = 65535;
+        r.winnerAccount = std::string("\xb0\xc7\xb1\xe2", 4);   // 949 바이트(UTF-8 아님)
+        r.limit = 1;
+        r.timeLimitFrames = 300 * 30;
+        r.players = {player("\xb0\xc7\xb1\xe2", 65535, 0, 2147483647, 0, false, false), player("bob", 2, 0, -2147483647 - 1, 4294967295u, false, false),
+                     player("", 3, 0, 0, 0, false, true), player("obs", 4, 0, 0, 0, true, false), player("a\x01" "b", 5, 1, 1, 1, false, false),
+                     player("\xEC\x95\x84", 6, 2, -1, 2, false, false), player("x", 7, 0, 3, 3, false, true), player("y", 8, 0, 0, 0, false, false)};
+        cases.push_back(r);
+    }
+    {   // ② 팀 승 — 팀 점수 · 깃발
+        MatchResult r;
+        r.epoch = 1760000001u;
+        r.roomId = 0;
+        r.matchNo = 1;
+        r.roomName = "t";
+        r.mapKey = "capflag";
+        r.mode = "ctf";
+        r.reason = RoundEndReason::FlagCapture;
+        r.winner = RoundWinnerKind::Team;
+        r.winnerId = 2;
+        r.players = {player("p", 1, 1, 0, 0, false, false), player("q", 2, 2, 5, 1, false, false)};
+        r.teams = {RoundTeamScore{1, 0, 0}, RoundTeamScore{2, 5, 65535}};
+        cases.push_back(r);
+    }
+    {   // ③ 중단(사람 모자람) — 까닭 aborted · 승자 없음
+        MatchResult r;
+        r.epoch = 1760000002u;
+        r.roomId = 7;
+        r.matchNo = 2;
+        r.aborted = true;
+        r.winner = RoundWinnerKind::None;
+        r.players = {player("solo", 9, 0, 0, 0, false, false), player("gone", 10, 0, 0, 0, false, true)};
+        cases.push_back(r);
+    }
+    {   // ④ 비김 · 사람 없음
+        MatchResult r;
+        r.epoch = 1760000003u;
+        r.roomId = 1;
+        r.matchNo = 3;
+        r.reason = RoundEndReason::TimeUp;
+        r.winner = RoundWinnerKind::Draw;
+        cases.push_back(r);
+    }
+    {   // ⑤ 사람 승인데 승자 이름 없음(로비를 안 거친 사람) → null
+        MatchResult r;
+        r.epoch = 1760000004u;
+        r.roomId = 2;
+        r.matchNo = 4;
+        r.reason = RoundEndReason::Survivors;
+        r.winner = RoundWinnerKind::Player;
+        r.winnerId = 11;
+        r.players = {player("", 11, 0, 1, 0, false, false)};
+        cases.push_back(r);
+    }
+    unsigned ok = 0;
+    for (size_t c = 0; c < cases.size(); ++c) {
+        const MatchResult& r = cases[c];
+        const std::string json = nox::FormatMatchResultJson(r);
+        nox::MatchRecord rec;
+        std::string field;
+        const nox::MatchJsonParse p = nox::ParseMatchRecordJson(json, rec, &field);
+        bool same = p == nox::MatchJsonParse::Ok && rec.match == nox::MatchIdOf(r) && rec.room == r.roomId && rec.roomName == r.roomName &&
+                    rec.map == r.mapKey && rec.mode == r.mode && rec.start == r.startUnix && rec.end == r.endUnix && rec.frames == r.frames &&
+                    rec.sec == r.frames / 30u && rec.endReason == nox::MatchEndName(r) && rec.winnerKind == nox::RoundWinnerKindName(r.winner) &&
+                    rec.hasWinnerId == (r.winner == RoundWinnerKind::Player || r.winner == RoundWinnerKind::Team) &&
+                    (!rec.hasWinnerId || rec.winnerId == r.winnerId) &&
+                    rec.hasWinnerAccount == (r.winner == RoundWinnerKind::Player && !r.winnerAccount.empty()) &&
+                    (!rec.hasWinnerAccount || rec.winnerAccount == r.winnerAccount) && rec.limit == r.limit &&
+                    rec.timeLimitSec == r.timeLimitFrames / 30u && rec.players.size() == r.players.size() && rec.teams.size() == r.teams.size();
+        for (size_t i = 0; same && i < r.players.size(); ++i) {
+            const MatchPlayer& a = r.players[i];
+            const nox::MatchRecordPlayer& b = rec.players[i];
+            same = b.hasAccount == !a.account.empty() && b.account == a.account && b.netCode == a.netCode && b.left == a.left &&
+                   (a.left || (b.team == a.team && b.score == a.score && b.deaths == a.deaths && b.observer == a.observer));
+        }
+        for (size_t i = 0; same && i < r.teams.size(); ++i)
+            same = rec.teams[i].id == r.teams[i].id && rec.teams[i].score == r.teams[i].score && rec.teams[i].caps == r.teams[i].caps;
+        std::snprintf(m, sizeof(m), "%zu 판 결과 왕복 — 읽기 %s%s%s · 칸 전부 같음 %d · 줄 %zu바이트", c + 1, nox::MatchJsonParseName(p), field.empty() ? "" : " 칸 ",
+                      field.c_str(), (int)same, json.size());
+        Check(same, m);
+        ok += same ? 1 : 0;
+    }
+    Check(ok == cases.size() && cases.size() == 5, "판 결과 왕복 — 판 다섯 모두 칸 전부 같음(사람 승 · 팀 승 · 중단 · 비김 · 이름 없는 승자)");
+    std::printf("  7단계 조각 4 — 판 결과 쓰개 ↔ 읽개 왕복: 949 · 한글 · 따옴표 · 역빗금 · 제어 바이트 · 8명 · 팀 · 최대 칸 값\n");
+}
+
 // ── ★ 10-16 플랜 B 작업 13a — 로비 방식의 맵 후보 · 맵 목록 ─────────
 //   ① 로비가 아니면 후보 없음 · 맵 목록 = 실행 인자의 맵 하나 ② 기본 = 대기 So_LOD · 대전 Estate(게임 폴더의 맵) · 맵 목록에 둘 다
 //   ③ 준 후보(열쇠 · .map 경로) · 맵 목록은 열쇠가 같으면 하나만
@@ -32743,6 +32865,7 @@ int main() {
     TestLobbyClient();   // ★ 10-20 v2 작업 4b(옛 TestChannelLobby 자리)
     TestLobbyClientAlive();   // ★ 7단계 조각 2
     TestLobbyClientHeld();    // ★ 7단계 조각 3
+    TestMatchRecordRoundTrip();   // ★ 7단계 조각 4
     TestLobbyMapPaths();
     TestJoinTrailer();
     TestReliableResend();

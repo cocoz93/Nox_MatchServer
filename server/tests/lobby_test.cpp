@@ -17,6 +17,7 @@
 
 #include "nox/Lobby.h"
 #include "nox/LobbyLink.h"
+#include "nox/LobbyStore.h"
 #include "nox/RoomMirror.h"
 #include "nox/Router.h"
 #include "nox/WolGameInfo.h"
@@ -1146,6 +1147,67 @@ void LinkAliveUnitTests() {
           "④ 끊김 사건 셋째까지 거절 줄 없음 · 같은 주소 다시 등록 → 받음(거절 셈 그대로 1)");
 }
 
+// ── ★ 7단계 조각 4 — 저장소 경계의 메모리 가짜(`CMemoryLobbyStore` — `--no-db` · 시험 · 정할 것 b) ──
+//   ① 답은 다음 `TakeAnswers` 에(부를 때 곧바로 안 남) · 갈래 · 요청 번호 그대로
+//   ② 로그인 — 처음 이름 → 만듦(번호 1) · 같은 이름 → 같은 번호 · 대소문자 다르면 다른 계정(바이트 그대로) · 949 바이트 이름
+//   ③ 판 저장 — 새 판 Saved · 같은 (게임 서버 · 판 번호) Duplicate · 다른 게임 서버의 같은 판 번호는 Saved(따로) · 넣은 칸 그대로
+//   ④ 실패 스위치 — 로그인 · 판 저장 Failed(까닭 글) · 실패한 판은 안 넣음 · 끄면 다시 됨
+void LobbyStoreUnitTests() {
+    using namespace nox::wol;
+    CMemoryLobbyStore st;
+    std::vector<StoreAnswer> ans;
+    st.CheckLogin(7, "wn");
+    const bool notYet = st.AccountCount() == 1;   // 계정은 곧바로 만들지만 답은 다음 꺼내기에
+    st.TakeAnswers(ans);
+    Check(notYet && ans.size() == 1 && ans[0].kind == StoreAnswerKind::Login && ans[0].req == 7 && ans[0].login == LoginResult::Ok &&
+              ans[0].created && ans[0].accountId == 1,
+          "① 답은 꺼낼 때 · 갈래 Login · 요청 번호 7 · 처음 이름 → 만듦(번호 1)");
+    ans.clear();
+    st.TakeAnswers(ans);
+    const bool emptied = ans.empty();
+    st.CheckLogin(8, "wn");
+    st.CheckLogin(9, "Wn");
+    st.CheckLogin(10, std::string("\xb0\xc7", 2));
+    st.TakeAnswers(ans);
+    Check(emptied && ans.size() == 3 && ans[0].req == 8 && !ans[0].created && ans[0].accountId == 1 && ans[1].created && ans[1].accountId == 2 &&
+              ans[2].created && ans[2].accountId == 3 && st.AccountId(std::string("\xb0\xc7", 2)) == 3 && st.AccountId("x") == 0,
+          "② 꺼낸 뒤 빔 · 같은 이름 같은 번호 · 대소문자 다르면 다른 계정 · 949 바이트 이름 · 없는 이름 0");
+
+    nox::MatchRecord rec;
+    rec.match = "1760000000-0-1";
+    rec.roomName = "wn's game";
+    rec.players.resize(2);
+    rec.players[0].account = "wn";
+    const MatchSource a{0x0a000001u, 18590}, b{0x0a000002u, 18590};
+    ans.clear();
+    st.SaveMatch(1, a, rec, "{}");
+    st.SaveMatch(2, a, rec, "{}");
+    st.SaveMatch(3, b, rec, "{}");
+    st.TakeAnswers(ans);
+    const nox::MatchRecord* got = st.FindMatch(a, "1760000000-0-1");
+    Check(ans.size() == 3 && ans[0].kind == StoreAnswerKind::SaveMatch && ans[0].req == 1 && ans[0].save == SaveResult::Saved &&
+              ans[1].save == SaveResult::Duplicate && ans[2].save == SaveResult::Saved && st.MatchCount() == 2 && got &&
+              got->roomName == "wn's game" && got->players.size() == 2 && got->players[0].account == "wn" && !st.FindMatch(b, "x"),
+          "③ 새 판 Saved · 같은 게임 서버 같은 판 Duplicate · 다른 게임 서버 같은 판 번호 Saved · 넣은 칸 그대로");
+
+    ans.clear();
+    st.SetFailLogins(true);
+    st.SetFailSaves(true);
+    st.CheckLogin(20, "new");
+    rec.match = "1760000000-0-2";
+    st.SaveMatch(21, a, rec, "{}");
+    st.TakeAnswers(ans);
+    const bool failed = ans.size() == 2 && ans[0].login == LoginResult::Failed && !ans[0].why.empty() && ans[0].accountId == 0 &&
+                        ans[1].save == SaveResult::Failed && !ans[1].why.empty() && st.AccountId("new") == 0 && st.MatchCount() == 2;
+    st.SetFailLogins(false);
+    st.SetFailSaves(false);
+    ans.clear();
+    st.SaveMatch(22, a, rec, "{}");
+    st.TakeAnswers(ans);
+    Check(failed && ans.size() == 1 && ans[0].save == SaveResult::Saved && st.MatchCount() == 3,
+          "④ 실패 스위치 — 로그인 · 판 저장 Failed(까닭 글 · 안 넣음) · 끄면 같은 판이 Saved");
+}
+
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
 void RouterUnitTests() {
     using namespace nox::wol;
@@ -1550,6 +1612,7 @@ int main(int argc, char** argv) {
         PendingRoomUnitTests();   // ★ 10-20 v2 작업 3a
         MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
         LinkAliveUnitTests();     // ★ 7단계 조각 2
+        LobbyStoreUnitTests();    // ★ 7단계 조각 4
         ChatUnitTests();          // ★ 10-20 v2 작업 3b
         RouterUnitTests();
     }

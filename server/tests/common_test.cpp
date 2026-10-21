@@ -10,6 +10,7 @@
 //     ★ 10-20 v2 작업 2 — 바깥으로 붙기: 붙는 중 쌓은 줄 · 왕복 · 상대가 닫음 · 듣는 이 없음(붙지 못함) · 붙는 중 닫기 · 곧바로 실패
 //   ⑧ 로비 연결 규약(MO 6단계 v2 작업 1 — `LobbyLink.h`) — 줄 갈래 열둘 왕복(★ 작업 3a-2 BYE · ★ 7단계 PING · SAVED 더함) · 글 칸(한글 · 빈칸 · 빈 글) · 읽기 실패 갈래 여덟 ·
 //     판 결과 줄 한도 · 키 파생(고정 값 · 실행 번호 · 주소 · 포트마다 다름 · 다른 게임 서버 키의 토큰은 서명 실패) · 확인 서명
+//   ⑨ ★ 7단계 조각 4 — 판 결과 JSON 읽기(`MatchRecord.h`) — 칸 · 바이트 되돌리기 · 실패 갈래 다섯(개수로)
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -19,6 +20,7 @@
 #include "nox/IniFile.h"
 #include "nox/JoinToken.h"
 #include "nox/LobbyLink.h"
+#include "nox/MatchRecord.h"
 
 std::vector<std::pair<bool, std::string>> RunTcpLinesChecks();   // tcp_lines_test.cpp
 
@@ -423,6 +425,101 @@ void TestLobbyLink() {
 
 }  // namespace
 
+// ⑨ ★ 7단계 조각 4 — 판 결과 JSON 읽기(`MatchRecord.h`). 쓰개 ↔ 읽개 왕복은 proto_test(쓰개가 nox_proto) — 여기는 읽개 혼자:
+//   기준 줄(쓰개 꼴 그대로 손으로) → 칸 · 바이트 되돌리기 · null · 빈칸 · 모르는 칸 · 한 칸씩 틀어 실패 갈래 다섯이 모두 나오나(개수로) · 걸린 칸 이름
+void TestMatchRecord() {
+    std::printf("⑨ 판 결과 JSON 읽기\n");
+    using P = nox::MatchJsonParse;
+    const std::string base =
+        "{\"match\":\"1760000000-0-1\",\"room\":0,\"roomName\":\"wn's game\",\"map\":\"estate\",\"mode\":\"arena\",\"start\":1760000010,"
+        "\"end\":1760000027,\"frames\":510,\"sec\":17,\"endReason\":\"score_player\",\"winner\":{\"kind\":\"player\",\"id\":2,\"account\":\"bob\"},"
+        "\"limit\":1,\"timeLimitSec\":0,\"players\":[{\"account\":\"wn\",\"netCode\":1,\"state\":\"finished\",\"team\":0,\"score\":-1,\"deaths\":1},"
+        "{\"account\":\"bob\",\"netCode\":2,\"state\":\"finished\",\"team\":0,\"score\":1,\"deaths\":0,\"observer\":true},"
+        "{\"account\":null,\"netCode\":3,\"state\":\"left\"}],\"teams\":[{\"id\":1,\"score\":3,\"caps\":2}]}";
+    nox::MatchRecord r;
+    std::string field;
+    Check(nox::ParseMatchRecordJson(base, r, &field) == P::Ok && field.empty(), "기준 줄 → 통과");
+    Check(r.match == "1760000000-0-1" && r.room == 0 && r.roomName == "wn's game" && r.map == "estate" && r.mode == "arena" &&
+              r.start == 1760000010u && r.end == 1760000027u && r.frames == 510 && r.sec == 17 && r.endReason == "score_player" &&
+              r.limit == 1 && r.timeLimitSec == 0,
+          "판 칸 — 번호 · 방 · 이름 · 맵 · 모드 · 시각 · 프레임 · 끝 까닭 · 한도");
+    Check(r.winnerKind == "player" && r.hasWinnerId && r.winnerId == 2 && r.hasWinnerAccount && r.winnerAccount == "bob", "승자 — player · id · 이름");
+    Check(r.players.size() == 3 && r.players[0].hasAccount && r.players[0].account == "wn" && r.players[0].netCode == 1 && !r.players[0].left &&
+              r.players[0].score == -1 && r.players[0].deaths == 1 && !r.players[0].observer && r.players[1].observer && r.players[1].score == 1 &&
+              !r.players[2].hasAccount && r.players[2].netCode == 3 && r.players[2].left && r.players[2].deaths == 0,
+          "사람 셋 — 이름 · 음수 점수 · 관전 · 이름 null · 나감(점수 칸 없음)");
+    Check(r.teams.size() == 1 && r.teams[0].id == 1 && r.teams[0].score == 3 && r.teams[0].caps == 2, "팀 하나 — 번호 · 점수 · 깃발");
+
+    // 바이트 되돌리기 — \u00XX → 바이트(코드페이지 949 이름 · 제어 바이트) · UTF-8 은 그대로 · 이스케이프
+    auto with = [&](const std::string& from, const std::string& to, bool& found) {
+        std::string s = base;
+        const size_t at = s.find(from);
+        found = at != std::string::npos;
+        if (found) s.replace(at, from.size(), to);
+        return s;
+    };
+    bool found = false;
+    Check(nox::ParseMatchRecordJson(with("\"account\":\"wn\"", "\"account\":\"\\u00b0\\u00c7\\u0001\"", found), r) == P::Ok && found &&
+              r.players[0].account == std::string("\xb0\xc7\x01", 3),
+          "\\u00XX → 바이트 그대로(949 이름 · 제어 바이트)");
+    Check(nox::ParseMatchRecordJson(with("\"roomName\":\"wn's game\"", "\"roomName\":\"\xEC\xB2\xA0\\\"\\\\\\/x\"", found), r) == P::Ok && found &&
+              r.roomName == "\xEC\xB2\xA0\"\\/x",
+          "UTF-8 바이트 그대로 · \\\" · \\\\ · \\/");
+    Check(nox::ParseMatchRecordJson(with("\"winner\":{\"kind\":\"player\",\"id\":2,\"account\":\"bob\"}", "\"winner\":{\"kind\":\"none\"}", found), r) == P::Ok &&
+              found && r.winnerKind == "none" && !r.hasWinnerId && !r.hasWinnerAccount,
+          "승자 none — id · 이름 없음");
+    Check(nox::ParseMatchRecordJson(with("\"account\":\"bob\"}", "\"account\":null}", found), r) == P::Ok && found && r.hasWinnerId && !r.hasWinnerAccount,
+          "승자 player 이름 null");
+    Check(nox::ParseMatchRecordJson(with(",\"teams\":[{\"id\":1,\"score\":3,\"caps\":2}]", ",\"new\":{\"x\":[1,2]}", found), r) == P::Ok && found &&
+              r.teams.empty(),
+          "팀 칸 없음 → 빈 것 · 모르는 칸은 넘김");
+    Check(nox::ParseMatchRecordJson(" \r\n" + with("\"room\":0,", "\"room\" : 0 ,\t", found) + "\n", r) == P::Ok && found, "빈칸 · 줄바꿈 둘레");
+
+    // 실패 — 한 칸씩 틀어 갈래마다 한 번 이상(개수로) · 틀린 줄이 통과한 적 없음 · 걸린 칸 이름
+    unsigned seen[static_cast<int>(P::kCount)] = {};
+    unsigned missingSpots = 0;   // 시험 자리(바꿀 글)를 기준 줄에서 못 찾음 — 이 시험이 기준 줄을 그대로 보는 것
+    auto bad = [&](const std::string& json, P want, const char* wantField = nullptr) {
+        std::string fld;
+        const P p = nox::ParseMatchRecordJson(json, r, &fld);
+        ++seen[static_cast<int>(p)];
+        return p == want && (!wantField || fld == wantField);
+    };
+    auto badWith = [&](const std::string& from, const std::string& to, P want, const char* wantField = nullptr) {
+        bool f = false;
+        const std::string s = with(from, to, f);
+        if (!f) ++missingSpots;
+        return f && bad(s, want, wantField);
+    };
+    Check(bad("", P::Syntax) && bad("{", P::Syntax) && bad(base + "x", P::Syntax) && bad("{\"a\":1,}", P::Syntax) &&
+              badWith("\"room\":0", "\"room\":01", P::Syntax) && badWith("\"frames\":510", "\"frames\":5.1", P::Syntax) &&
+              badWith("\"sec\":17", "\"sec\":1e3", P::Syntax) && badWith("\"map\":\"estate\"", "\"map\":\"es\ttate\"", P::Syntax) &&
+              badWith("\"map\":\"estate\"", "\"map\":\"es\\xtate\"", P::Syntax) && badWith("\"map\":\"estate\"", "\"map\":\"estate\",\"map\":\"x\"", P::Syntax) &&
+              badWith("\"limit\":1", "\"limit\":99999999999999999999", P::Syntax) && bad("{\"a\":[[[[[[[[[[1]]]]]]]]]]}", P::Syntax) &&
+              bad("{\"match\":\"x", P::Syntax),
+          "문법 — 빈 줄 · 안 닫힘 · 꼬리 · 꼬리 쉼표 · 앞 0 · 소수 · 지수 · 날 탭 · 모르는 이스케이프 · 같은 열쇠 둘 · int64 넘음 · 깊이 · 안 닫힌 글");
+    Check(badWith("\"match\":\"1760000000-0-1\",", "", P::Missing, "match") && badWith("\"netCode\":1,", "", P::Missing, "netCode") &&
+              badWith("\"deaths\":1}", "\"x\":1}", P::Missing, "deaths") && badWith("\"kind\":\"player\",\"id\":2,", "\"kind\":\"player\",", P::Missing, "id") &&
+              badWith("\"players\":[", "\"people\":[", P::Missing, "players"),
+          "빠진 칸 — 판 번호 · netCode · 끝까지 남은 사람의 죽은 수 · player 승자의 id · players(걸린 칸 이름까지)");
+    Check(badWith("\"match\":\"1760000000-0-1\"", "\"match\":1", P::Type, "match") && badWith("\"players\":[", "\"players\":{\"a\":[", P::Syntax) &&
+              bad("[]", P::Type, "(바깥)") && badWith("\"account\":\"wn\"", "\"account\":1", P::Type, "account") &&
+              badWith("\"observer\":true", "\"observer\":\"yes\"", P::Type, "observer") &&
+              badWith("\"teams\":[{\"id\":1,\"score\":3,\"caps\":2}]", "\"teams\":{}", P::Type, "teams"),
+          "타입 — 판 번호 수 · 바깥이 배열 · 이름 수 · 관전 글 · teams 객체(players 를 객체로 바꾸면 괄호가 안 맞아 문법)");
+    Check(badWith("\"match\":\"1760000000-0-1\"", "\"match\":\"\"", P::Value, "match") && badWith("\"netCode\":1,", "\"netCode\":65536,", P::Value, "netCode") &&
+              badWith("\"start\":1760000010", "\"start\":-1", P::Value, "start") && badWith("\"state\":\"left\"", "\"state\":\"gone\"", P::Value) &&
+              badWith("\"kind\":\"player\"", "\"kind\":\"x\"", P::Value, "winner.kind") && badWith("\"account\":\"wn\"", "\"account\":\"\\u0100\"", P::Value) &&
+              badWith("\"team\":0,\"score\":-1", "\"team\":256,\"score\":-1", P::Value, "team") &&
+              badWith("\"caps\":2", "\"caps\":70000", P::Value, "caps") && badWith("\"room\":0", "\"room\":2147483648", P::Value, "room") &&
+              badWith("\"endReason\":\"score_player\"", "\"endReason\":\"\"", P::Value, "endReason"),
+          "값 — 빈 판 번호 · netCode 65536 · 음수 시각 · 모르는 state · 모르는 승자 · \\u0100 · 팀 256 · 깃발 70000 · 방 int32 넘음 · 빈 끝 까닭");
+    unsigned failKinds = 0;
+    for (int i = 1; i < static_cast<int>(P::kCount); ++i) failKinds += seen[i] ? 1 : 0;
+    Check(failKinds == static_cast<unsigned>(P::kCount) - 1 && seen[static_cast<int>(P::Ok)] == 0 && missingSpots == 0,
+          "실패 갈래 넷(문법 · 빠진 칸 · 타입 · 값)이 모두 나옴 · 틀린 줄이 통과한 적 없음 · 시험 자리를 모두 찾음");
+    for (int i = 0; i < static_cast<int>(P::kCount); ++i) Check(nox::MatchJsonParseName(static_cast<P>(i))[0] != '?', "읽기 갈래마다 이름 있음");
+}
+
 int main() {
     TestHmac();
     TestText();
@@ -432,6 +529,7 @@ int main() {
     TestIni();
     TestTcpLines();
     TestLobbyLink();
+    TestMatchRecord();   // ★ 7단계 조각 4
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }
