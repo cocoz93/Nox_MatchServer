@@ -179,6 +179,11 @@ if (NOX_POWERSHELL AND WIN32)
   add_test(NAME nox_lobby_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                    -File ${CMAKE_SOURCE_DIR}/tools/nox_lobby_smoke.ps1 -Exe $<TARGET_FILE:nox_lobby>)
+  # ★ 10-21 MO 7단계 조각 8b — 판 하나를 끝까지(패킷 클라 둘 로그인 → 새 방 · 참가 → 게임 안 → `!start` → 진단 죽임 → 판 결과 →
+  #   로비 저장(--no-db 메모리) → SAVED ok → 게임 서버가 쥔 것을 지움). 대기 맵(So_LOD)이 없으면 건너뜀 · DB 행은 -Db(사람 1회 뒤)
+  add_test(NAME match_smoke
+           COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                   -File ${CMAKE_SOURCE_DIR}/tools/match_smoke.ps1 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby>)
   # 라우터 소켓 왕복(작업 8b) — 605 의 채널 주소(설정 없음 = 붙은 주소 · 설정 있음 = 그 주소) · CRLF · QUIT 뒤 끊기
   add_test(NAME router_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
