@@ -3,8 +3,9 @@
 //   db_test <설정 파일> <tools/db/001_init.sql>
 //   설정 [db] 의 test_database 에 표를 새로 깔고(그 DB 만 표 만들기 권한 — `config/db_setup.sql` · 정할 것 a) 워커를 그 DB 로 띄운다.
 //   설정이 없거나 붙지 못하면(사람 1회 전) 종료 코드 77 — ctest 「건너뜀」(통과로 안 보이게 `SKIP_RETURN_CODE`)
-//   ① 로그인 — 처음 이름 만듦 · 같은 이름 같은 번호 · 대소문자 다르면 다른 계정 · 949 바이트 이름이 바이트 그대로 · 마지막 로그인 적힘
+//   ① 로그인 — 처음 이름 만듦 · 같은 이름 같은 번호 · 대소문자 다르면 다른 계정 · 949 바이트 이름이 바이트 그대로 · 마지막 로그인 적힘(1 로 돌려 두고 다시)
 //   ② 판 저장 — Saved · 읽어 칸 전부 대조(판 · 사람 · 계정 번호 · NULL 칸 · 원문) · 같은 판 Duplicate(행 그대로) · 다른 게임 서버의 같은 판 번호 Saved
+//      · 사람 행이 실패하면 판 행도 안 남음(한 트랜잭션 — 시험 표에 CHECK 를 잠깐 걸어 둘째 사람을 실패시킴)
 //   ③ 칸 한도 → Invalid(DB 에 안 감) ④ 끊김 — 같은 계정으로 워커 연결을 KILL → 다음 요청이 다시 붙어 성공(retries 1)
 //   ⑤ 표 버전이 다르면 Start 실패 ⑥ 끝낼 때 남은 일을 다 함(Stop 직전에 넣은 판 셋이 다 들어감) ⑦ 셈
 #ifdef _WIN32
@@ -61,6 +62,11 @@ struct Admin {
         mysql_options(m, MYSQL_SET_CHARSET_NAME, "utf8mb4");
         if (!mysql_real_connect(m, c.host.c_str(), c.user.c_str(), c.password.c_str(), c.database.c_str(), c.port, nullptr, CLIENT_MULTI_STATEMENTS)) {
             err = std::string(mysql_error(m)) + " (" + std::to_string(mysql_errno(m)) + ")";
+            return false;
+        }
+        // 잠금 기다림 한도 — 기본은 표 잠금 1년 · 행 잠금 50초라, 워커가 트랜잭션을 열어 둔 채면(커밋 빠짐) 아래 ALTER 가 실패 대신 멈춘다(10-21 돌연변이 D10)
+        if (mysql_query(m, "SET SESSION lock_wait_timeout = 5, innodb_lock_wait_timeout = 5") != 0) {
+            err = std::string("잠금 한도 — ") + mysql_error(m);
             return false;
         }
         return true;
@@ -203,6 +209,13 @@ int main(int argc, char** argv) {
     const auto acc = ad.Rows("SELECT HEX(name), created_unix > 0, last_login_unix >= created_unix FROM accounts ORDER BY id");
     Check(acc.size() == 3 && acc[0][0] == Hex("wn") && acc[1][0] == Hex("Wn") && acc[2][0] == "B0C7" && acc[0][1] == "1" && acc[0][2] == "1",
           "① 계정 표 — 이름 바이트 그대로(B0C7) · 만든 때 · 마지막 로그인");
+    // 만들 때 두 칸이 같은 시각이라 위 확인은 UPDATE 를 빼도 참 — 칸을 1 로 돌려 두고 다시 로그인해 적히는지 본다(10-21 돌연변이 D2 가 살아남음)
+    Check(ad.Run("UPDATE accounts SET last_login_unix = 1 WHERE name = 'wn'"), "① 마지막 로그인을 1 로");
+    w.CheckLogin(5, "wn");
+    auto a1b = WaitAnswers(w, 1);
+    Check(a1b.size() == 1 && a1b[0].login == LoginResult::Ok && !a1b[0].created && !a1.empty() && a1b[0].accountId == a1[0].accountId &&
+              ad.One("SELECT last_login_unix >= created_unix FROM accounts WHERE name = 'wn'") == "1",
+          "① 다시 로그인 → 같은 번호 · 마지막 로그인 적힘(1 로 돌려 둔 칸)");
 
     // ②
     const MatchSource srcA{0x0a000001u, 18590}, srcB{0x0a000002u, 18590};
@@ -235,6 +248,20 @@ int main(int argc, char** argv) {
     Check(a3.size() == 2 && a3[0].save == SaveResult::Duplicate && a3[1].save == SaveResult::Saved && ad.One("SELECT COUNT(*) FROM matches") == "2" &&
               ad.One("SELECT COUNT(*) FROM match_players") == "8",
           "② 같은 판 다시 → Duplicate(행 그대로) · 다른 게임 서버의 같은 판 번호 → Saved(판 둘 · 사람 여덟)");
+    // 한 트랜잭션 — 시험 표에 CHECK 를 걸어 둘째 사람 넣기를 실패시킨다(10-21 돌연변이 D9 · autocommit 이 살아남음).
+    //   바로 뒤 판까지 넣는 것은 ROLLBACK 을 빠뜨린 경우를 잡으려고 — 열린 트랜잭션은 다음 START TRANSACTION 이 커밋해 버린다
+    Check(ad.Run("ALTER TABLE match_players ADD CONSTRAINT ck_db_test CHECK (net_code <> 4242)"), "② 시험용 CHECK 걸기");
+    nox::MatchRecord half = Sample("1760000000-3-4");
+    half.players[1].netCode = 4242;
+    w.SaveMatch(15, srcA, half, "{}");
+    w.SaveMatch(16, srcA, Sample("1760000000-3-5"), "{}");
+    auto a6 = WaitAnswers(w, 2);
+    Check(a6.size() == 2 && a6[0].save == SaveResult::Failed && !a6[0].why.empty() && a6[1].save == SaveResult::Saved &&
+              ad.One("SELECT COUNT(*) FROM matches WHERE match_key = '1760000000-3-4'") == "0" && ad.One("SELECT COUNT(*) FROM matches") == "3" &&
+              ad.One("SELECT COUNT(*) FROM match_players") == "12",
+          "② 둘째 사람 넣기 실패 → Failed · 판 행 · 첫 사람 행 안 남음(한 트랜잭션) · 다음 판 Saved(판 셋 · 사람 열둘) " +
+              (a6.empty() ? std::string() : a6[0].why));
+    Check(ad.Run("ALTER TABLE match_players DROP CHECK ck_db_test"), "② 시험용 CHECK 풀기");
 
     // ③
     nox::MatchRecord big = Sample("1760000000-3-2");
@@ -243,7 +270,7 @@ int main(int argc, char** argv) {
     w.SaveMatch(14, srcA, Sample("1760000000-3-3"), std::string("{\"x\":\"\xb0\"}"));   // UTF-8 아닌 원문
     auto a4 = WaitAnswers(w, 2);
     Check(a4.size() == 2 && a4[0].save == SaveResult::Invalid && !a4[0].why.empty() && a4[1].save == SaveResult::Invalid &&
-              ad.One("SELECT COUNT(*) FROM matches") == "2",
+              ad.One("SELECT COUNT(*) FROM matches") == "3",
           "③ 방 이름 65바이트 · UTF-8 아닌 원문 → Invalid(DB 에 안 감)");
 
     // ④
@@ -272,13 +299,14 @@ int main(int argc, char** argv) {
     w.Stop();
     std::vector<StoreAnswer> left;
     w.TakeAnswers(left);
-    Check(left.size() == 3 && ad.One("SELECT COUNT(*) FROM matches") == "5", "⑥ Stop 직전에 넣은 판 셋 — 다 들어가고 답 셋");
+    Check(left.size() == 3 && ad.One("SELECT COUNT(*) FROM matches") == "6", "⑥ Stop 직전에 넣은 판 셋 — 다 들어가고 답 셋");
 
-    // ⑦ 셈 — 요청 = 로그인 5(1 · 2 · 3 · 4 · 20) + 판 8(10 · 11 · 12 · 13 · 14 · 30 · 31 · 32) · 판 = Saved 5 + Duplicate 1 + Invalid 2 + 실패 0
+    // ⑦ 셈 — 요청 = 로그인 6(1 · 2 · 3 · 4 · 5 · 20) + 판 10(10 · 11 · 12 · 15 · 16 · 13 · 14 · 30 · 31 · 32)
+    //   · 판 = Saved 6 + Duplicate 1 + Invalid 2 + 실패 1(CHECK — 끊김이 아니라 다시 안 함 · 다시는 ④ 의 1 뿐)
     const nox::db::DbStats s = w.Stats();
-    Check(s.requests == 13 && s.loginOk == 5 && s.loginCreated == 3 && s.loginFailed == 0 && s.saved == 5 && s.duplicates == 1 && s.invalid == 2 &&
-              s.saveFailed == 0 && s.retries == 1,
-          "⑦ 셈 — 요청 13 = 로그인 5(만듦 3) + 판 8(Saved 5 · Duplicate 1 · Invalid 2 · 실패 0) · 다시 1");
+    Check(s.requests == 16 && s.loginOk == 6 && s.loginCreated == 3 && s.loginFailed == 0 && s.saved == 6 && s.duplicates == 1 && s.invalid == 2 &&
+              s.saveFailed == 1 && s.retries == 1,
+          "⑦ 셈 — 요청 16 = 로그인 6(만듦 3) + 판 10(Saved 6 · Duplicate 1 · Invalid 2 · 실패 1) · 다시 1");
     std::printf("  ④ KILL 뒤 처음 걸린 오류: %s\n", s4.lastError.c_str());   // 끊김 번호가 무엇으로 오는지(`IsLost` 갈래 확인용)
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;
