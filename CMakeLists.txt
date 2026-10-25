@@ -16,6 +16,8 @@ add_library(nox_common STATIC
   server/src/common/TcpLines.cpp
   server/src/common/LobbyLink.cpp   # ★ 10-20 MO 6단계 v2 작업 1 — 로비 ↔ 게임 서버 연결 규약(줄 · 확인 서명 · 키 파생)
   server/src/common/MatchRecord.cpp # ★ 7단계 조각 4 — 판 결과 JSON 읽기(로비가 DB 칸으로 나눔 · 쓰개는 nox_proto)
+  server/src/common/LoginToken.cpp  # ★ 로그인 암호 조각 1 — 로그인 토큰(로그인 서버가 짓고 로비가 봄 · Docs/LOGIN_AUTH_DESIGN.md)
+  server/src/common/AccountRules.cpp # ★ 로그인 암호 조각 1 — 이름 · 암호 규칙 · PBKDF2(로그인 서버)
 )
 target_include_directories(nox_common PUBLIC server/include)
 target_link_libraries(nox_common PUBLIC bcrypt ws2_32)
@@ -131,7 +133,7 @@ add_test(NAME lobby_unit COMMAND lobby_test)
 add_test(NAME common_unit COMMAND common_test)
 # ★ 7단계 조각 7 — 진짜 MySQL 의 시험 DB(nox_mo_test). 설정 [db] 가 없거나 못 붙으면 77 = 「건너뜀」(통과로 안 보이게)
 if (NOX_HAVE_MYSQL)
-  add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql")
+  add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql" "${CMAKE_SOURCE_DIR}/tools/db/002_auth.sql")
   set_tests_properties(db_test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 

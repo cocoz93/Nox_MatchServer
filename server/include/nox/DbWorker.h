@@ -25,7 +25,8 @@
 
 namespace nox::db {
 
-constexpr uint32_t kSchemaVersion = 1;   // `tools/db/001_init.sql` 의 schema_version — 표를 바꾸면 SQL 파일과 같이 올린다
+constexpr uint32_t kSchemaVersion = 2;   // `tools/db/` SQL 파일을 차례로 돌린 schema_version — 표를 바꾸면 SQL 파일과 같이 올린다
+                                         //   ★ 로그인 암호 조각 1 — 2 = `002_auth.sql`(pass_iter · 로비는 그 칸을 안 씀)
 
 struct DbConfig {
     std::string host = "127.0.0.1";

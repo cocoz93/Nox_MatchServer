@@ -11,15 +11,21 @@
 //   ⑧ 로비 연결 규약(MO 6단계 v2 작업 1 — `LobbyLink.h`) — 줄 갈래 열둘 왕복(★ 작업 3a-2 BYE · ★ 7단계 PING · SAVED 더함) · 글 칸(한글 · 빈칸 · 빈 글) · 읽기 실패 갈래 여덟 ·
 //     판 결과 줄 한도 · 키 파생(고정 값 · 실행 번호 · 주소 · 포트마다 다름 · 다른 게임 서버 키의 토큰은 서명 실패) · 확인 서명
 //   ⑨ ★ 7단계 조각 4 — 판 결과 JSON 읽기(`MatchRecord.h`) — 칸 · 바이트 되돌리기 · 실패 갈래 다섯(개수로)
+//   ⑩ ★ 로그인 암호 조각 1 — 로그인 토큰(`LoginToken.h`) — 바이트 배치 · 왕복 · 검증 갈래 여덟(개수로) · 이름 16바이트
+//   ⑪ ★ 로그인 암호 조각 1 — 이름 · 암호 규칙(`AccountRules.h`) — 갈래 넷 · 일곱(개수로) · 경계 · PBKDF2 RFC 7914 11절 시험 값 둘 · 소금 · 확인
+//   ⑫ ★ 로그인 암호 조각 1 — 로그인 줄 꼴(`LoginLine.h`) — apgar 가르기 갈래 다섯(개수로) · 까닭 이름 왕복 · 기록 가림
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "nox/AccountRules.h"
 #include "nox/IniFile.h"
 #include "nox/JoinToken.h"
 #include "nox/LobbyLink.h"
+#include "nox/LoginLine.h"
+#include "nox/LoginToken.h"
 #include "nox/MatchRecord.h"
 
 std::vector<std::pair<bool, std::string>> RunTcpLinesChecks();   // tcp_lines_test.cpp
@@ -525,6 +531,216 @@ void TestMatchRecord() {
     for (int i = 0; i < static_cast<int>(P::kCount); ++i) Check(nox::MatchJsonParseName(static_cast<P>(i))[0] != '?', "읽기 갈래마다 이름 있음");
 }
 
+// ⑩ 로그인 토큰
+void TestLoginToken() {
+    std::printf("⑩ 로그인 토큰\n");
+    nox::JoinKey key = TestKey();
+    key[5] ^= 0x5a;   // 입장 토큰 키와 다른 값(실제로도 따로)
+    const uint32_t now = 1761400000;   // 10-26 무렵
+    const uint32_t ip = 0x7f000001u;
+
+    nox::LoginToken t;
+    t.accountId = 0x0102030405060708ull;
+    t.clientIp = ip;
+    t.expiresAt = now + nox::kLoginTokenLifetimeSec;
+    t.nonce = 0x1122334455667788ull;
+    t.name = "alice9";
+    uint8_t raw[nox::kLoginTokenSize];
+    Check(nox::kLoginTokenSize == 57, "크기 57바이트(플랜 「로그인 토큰 57바이트」)");
+    Check(nox::SignLoginToken(key, t, raw), "서명");
+
+    // 바이트 배치 — LoginToken.h 머리와 같아야 로그인 서버 · 로비가 서로 다른 판으로 빌드돼도 맞는다
+    Check(raw[0] == 1 && raw[1] == 0x08 && raw[8] == 0x01, "배치: 판 1 · 계정 번호 작은 끝수");
+    Check(raw[9] == 0x7f && raw[10] == 0 && raw[11] == 0 && raw[12] == 1, "배치: IP 127.0.0.1 차례대로");
+    Check(raw[13] == static_cast<uint8_t>(t.expiresAt) && raw[16] == static_cast<uint8_t>(t.expiresAt >> 24), "배치: 만료 작은 끝수");
+    Check(raw[17] == 0x88 && raw[24] == 0x11, "배치: 일회용 번호 작은 끝수");
+    Check(std::memcmp(raw + 25, "alice9", 6) == 0 && raw[31] == 0 && raw[40] == 0, "배치: 이름 · 0 채움");
+
+    nox::LoginToken got;
+    Check(nox::VerifyLoginToken(key, raw, sizeof(raw), now, ip, "alice9", got) == nox::LoginTokenCheck::Ok, "맞는 토큰 → 통과");
+    Check(got.accountId == t.accountId && got.clientIp == ip && got.expiresAt == t.expiresAt && got.nonce == t.nonce &&
+              got.name == "alice9" && got.version == nox::kLoginTokenVersion,
+          "풀린 값이 넣은 값과 같음");
+
+    unsigned seen[static_cast<int>(nox::LoginTokenCheck::kCount)] = {};
+    auto run = [&](const uint8_t* d, size_t n, uint32_t at, uint32_t from, const std::string& nick, const nox::JoinKey& k) {
+        nox::LoginToken o;
+        const nox::LoginTokenCheck r = nox::VerifyLoginToken(k, d, n, at, from, nick, o);
+        ++seen[static_cast<int>(r)];
+        return r;
+    };
+    using C = nox::LoginTokenCheck;
+    Check(run(raw, sizeof(raw), now, ip, "alice9", key) == C::Ok, "통과");
+    Check(run(raw, sizeof(raw) - 1, now, ip, "alice9", key) == C::BadSize && run(nullptr, 0, now, ip, "alice9", key) == C::BadSize,
+          "56바이트 · 빈 것 → 크기");
+    {
+        nox::LoginToken v2 = t;
+        v2.version = 2;
+        uint8_t r2[nox::kLoginTokenSize];
+        nox::SignLoginToken(key, v2, r2);
+        Check(run(r2, sizeof(r2), now, ip, "alice9", key) == C::BadVersion, "판 2 → 판");
+    }
+    {
+        uint8_t r3[nox::kLoginTokenSize];
+        std::memcpy(r3, raw, sizeof(r3));
+        r3[1] ^= 0x01;   // 계정 번호 바꿔치기
+        Check(run(r3, sizeof(r3), now, ip, "alice9", key) == C::BadMac, "계정 번호 바꿔치기 → 서명");
+        std::memcpy(r3, raw, sizeof(r3));
+        r3[25] = 'b';    // 이름 바꿔치기(서명이 먼저 막음)
+        Check(run(r3, sizeof(r3), now, ip, "blice9", key) == C::BadMac, "이름 바꿔치기 → 서명");
+        std::memcpy(r3, raw, sizeof(r3));
+        r3[nox::kLoginTokenSize - 1] ^= 0x80;
+        Check(run(r3, sizeof(r3), now, ip, "alice9", key) == C::BadMac, "서명 끝 바이트 → 서명");
+        Check(run(raw, sizeof(raw), now, ip, "alice9", TestKey()) == C::BadMac, "입장 토큰 키로 확인 → 서명(키가 따로)");
+    }
+    Check(run(raw, sizeof(raw), t.expiresAt, ip, "alice9", key) == C::Ok, "만료 바로 그 초 → 통과");
+    Check(run(raw, sizeof(raw), t.expiresAt + 1, ip, "alice9", key) == C::Expired, "만료 1초 뒤 → 만료");
+    {
+        nox::LoginToken far = t;
+        far.expiresAt = now + nox::kLoginTokenMaxAheadSec + 1;
+        uint8_t r4[nox::kLoginTokenSize];
+        nox::SignLoginToken(key, far, r4);
+        Check(run(r4, sizeof(r4), now, ip, "alice9", key) == C::TooFarAhead, "만료가 121초 뒤 → 너무 멂");
+        far.expiresAt = now + nox::kLoginTokenMaxAheadSec;
+        nox::SignLoginToken(key, far, r4);
+        Check(run(r4, sizeof(r4), now, ip, "alice9", key) == C::Ok, "만료가 120초 뒤 → 통과");
+    }
+    Check(run(raw, sizeof(raw), now, 0x7f000002u, "alice9", key) == C::IpMismatch, "다른 IP → IP 다름");
+    Check(run(raw, sizeof(raw), now, ip, "Alice9", key) == C::NameMismatch && run(raw, sizeof(raw), now, ip, "alice", key) == C::NameMismatch,
+          "다른 이름(대소문자 · 앞부분) → 이름 다름");
+
+    unsigned kinds = 0;
+    for (unsigned c : seen) kinds += c ? 1 : 0;
+    Check(kinds == static_cast<unsigned>(C::kCount), "검증 갈래 여덟이 모두 나옴");
+    for (int i = 0; i < static_cast<int>(C::kCount); ++i) Check(nox::LoginTokenCheckName(static_cast<C>(i))[0] != '?', "갈래마다 이름 있음");
+
+    nox::LoginToken longName = t;
+    longName.name = "abcdefghijklmnopqrstu";
+    nox::SignLoginToken(key, longName, raw);
+    Check(nox::VerifyLoginToken(key, raw, sizeof(raw), now, ip, "abcdefghijklmnop", got) == C::Ok && got.name == "abcdefghijklmnop",
+          "이름 21자 → 앞 16자 · 꽉 찬 16바이트도 0 없이 읽힘");
+}
+
+// ⑪ 이름 · 암호 규칙 · PBKDF2
+std::string Pbkdf2Hex(const std::string& pw, const std::string& salt, uint32_t c, size_t n) {
+    std::vector<uint8_t> out(n);
+    if (!nox::Pbkdf2Sha256(pw, reinterpret_cast<const uint8_t*>(salt.data()), salt.size(), c, out.data(), out.size())) return "(실패)";
+    return nox::ToHex(out.data(), out.size());
+}
+
+void TestAccountRules() {
+    std::printf("⑪ 이름 · 암호 규칙 · PBKDF2\n");
+    {
+        using N = nox::NameCheck;
+        unsigned seen[static_cast<int>(N::kCount)] = {};
+        auto run = [&](const std::string& s) {
+            const N r = nox::CheckAccountName(s);
+            ++seen[static_cast<int>(r)];
+            return r;
+        };
+        Check(run("a") == N::Ok && run("Zz09xY123") == N::Ok, "이름 1자 · 9자(영문 대소 · 숫자) → 통과");
+        Check(run("") == N::Empty, "빈 이름");
+        Check(run("abcdefghij") == N::TooLong, "10자 → 너무 김");
+        Check(run("ab cd") == N::BadChar && run("ab_c") == N::BadChar && run("\xb0\xa1") == N::BadChar && run("a.b") == N::BadChar,
+              "빈칸 · 밑줄 · 949 한글 · 점 → 영문 · 숫자 밖");
+        unsigned kinds = 0;
+        for (unsigned c : seen) kinds += c ? 1 : 0;
+        Check(kinds == static_cast<unsigned>(N::kCount), "이름 갈래 넷이 모두 나옴");
+        for (int i = 0; i < static_cast<int>(N::kCount); ++i) Check(nox::NameCheckName(static_cast<N>(i))[0] != '?', "이름 갈래마다 이름 있음");
+    }
+    {
+        using P = nox::PasswordCheck;
+        unsigned seen[static_cast<int>(P::kCount)] = {};
+        auto run = [&](const std::string& s) {
+            const P r = nox::CheckPassword(s);
+            ++seen[static_cast<int>(r)];
+            return r;
+        };
+        Check(run("ab12") == P::Ok && run("abcdefghijklmn12") == P::Ok && run("a1!@#$%^&*()~`") == P::Ok && run("A9") != P::Ok,
+              "4자 · 16자 · 특수문자 섞음 → 통과 · 2자는 아님");
+        Check(run("ab1") == P::TooShort, "3자 → 너무 짧음");
+        Check(run("abcdefghijklmno12") == P::TooLong, "17자 → 너무 김");
+        Check(run("ab 12") == P::HasSpace, "빈칸");
+        Check(run("ab12\xb0\xa1") == P::BadChar && run(std::string("ab12\t", 5)) == P::BadChar && run(std::string("ab1\x7f", 4)) == P::BadChar,
+              "949 한글 · 탭 · DEL → 쓸 수 없는 글자");
+        Check(run("123456") == P::NoLetter && run("1234!") == P::NoLetter, "숫자 · 특수문자만 → 영문 없음");
+        Check(run("abcdef") == P::NoDigit && run("abc!!") == P::NoDigit, "영문 · 특수문자만 → 숫자 없음");
+        unsigned kinds = 0;
+        for (unsigned c : seen) kinds += c ? 1 : 0;
+        Check(kinds == static_cast<unsigned>(P::kCount), "암호 갈래 일곱이 모두 나옴");
+        for (int i = 0; i < static_cast<int>(P::kCount); ++i) Check(nox::PasswordCheckName(static_cast<P>(i))[0] != '?', "암호 갈래마다 이름 있음");
+    }
+    // RFC 7914 11절(PBKDF2-HMAC-SHA-256 시험 값 — 10-26 rfc-editor.org 원문 대조)
+    Check(Pbkdf2Hex("passwd", "salt", 1, 64) ==
+              "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc"
+              "49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783",
+          "RFC 7914 11절 1번(c=1)");
+    Check(Pbkdf2Hex("Password", "NaCl", 80000, 64) ==
+              "4ddcd8f60b98be21830cee5ef22701f9641a4418d04c0414aeff08876b34ab56"
+              "a1d425a1225833549adb841b51c9b3176a272bdebba1d078478f62b397f33c8d",
+          "RFC 7914 11절 2번(c=80000)");
+    Check(Pbkdf2Hex("x", "salt", 0, 32) == "(실패)", "반복 0 → 실패");
+
+    nox::PasswordRecord a, b;
+    Check(nox::MakePasswordRecord("ab12cd", 1000, a) && nox::MakePasswordRecord("ab12cd", 1000, b), "기록 만들기 둘(반복 1000 — 시험만 짧게)");
+    Check(a.salt != b.salt && a.hash != b.hash && a.iterations == 1000, "같은 암호도 소금이 달라 해시가 다름");
+    Check(nox::VerifyPassword("ab12cd", a) && nox::VerifyPassword("ab12cd", b), "맞는 암호 → 맞음");
+    Check(!nox::VerifyPassword("ab12ce", a) && !nox::VerifyPassword("AB12cd", a) && !nox::VerifyPassword("", a), "끝 글자 · 대소문자 · 빈 것 → 틀림");
+    nox::PasswordRecord bad = a;
+    bad.iterations = 999;
+    Check(!nox::VerifyPassword("ab12cd", bad), "반복 수가 다르면 틀림(행마다 반복 수를 씀)");
+    bad.iterations = 0;
+    Check(!nox::VerifyPassword("ab12cd", bad), "반복 0 행 → 틀림");
+    bad.iterations = nox::kPbkdf2IterationsMax + 1;
+    Check(!nox::VerifyPassword("ab12cd", bad), "반복이 한도를 넘는 행 → 확인 안 함");
+}
+
+// ⑫ 로그인 줄 꼴
+void TestLoginLine() {
+    std::printf("⑫ 로그인 줄 꼴\n");
+    using A = nox::ApgarKind;
+    unsigned seen[static_cast<int>(A::kCount)] = {};
+    std::string payload;
+    auto run = [&](const std::string& s) {
+        const A r = nox::ClassifyApgar(s, payload);
+        ++seen[static_cast<int>(r)];
+        return r;
+    };
+    Check(run("") == A::Missing && payload.empty(), "빈 인자 → 없음");
+    Check(run("NXL1" + std::string(114, 'a')) == A::Token && payload == std::string(114, 'a'), "NXL1… → 토큰 · 16진만 남음");
+    Check(run("NXL1") == A::Token && payload.empty(), "NXL1 만 → 토큰(빈 것 — 로비가 크기로 거절)");
+    Check(run("NXL!wrong_password") == A::Fail && payload == "wrong_password", "NXL!… → 실패 표시 · 까닭만 남음");
+    Check(run("None") == A::Guest, "None → 손님");
+    Check(run("1234") == A::Plain && run("none") == A::Plain && run("nxl1abc") == A::Plain, "평문 · 소문자 none · 소문자 nxl1 → 평문");
+    unsigned kinds = 0;
+    for (unsigned c : seen) kinds += c ? 1 : 0;
+    Check(kinds == static_cast<unsigned>(A::kCount), "apgar 갈래 다섯이 모두 나옴");
+
+    unsigned roundTrips = 0;
+    for (int i = 0; i < static_cast<int>(nox::LoginFail::kCount); ++i) {
+        nox::LoginFail f = nox::LoginFail::kCount;
+        const char* n = nox::LoginFailName(static_cast<nox::LoginFail>(i));
+        if (n[0] != '?' && std::strchr(n, ' ') == nullptr && nox::ParseLoginFail(n, f) && f == static_cast<nox::LoginFail>(i)) ++roundTrips;
+    }
+    nox::LoginFail f = nox::LoginFail::kCount;
+    Check(roundTrips == static_cast<unsigned>(nox::LoginFail::kCount) && !nox::ParseLoginFail("nope", f) && !nox::ParseLoginFail("", f),
+          "까닭 다섯 이름 왕복(빈칸 없음) · 모르는 이름 · 빈 것은 못 풂");
+
+    using nox::RedactLoginLine;
+    Check(RedactLoginLine("apgar 1234 0") == "apgar *** 0", "평문 암호 가림");
+    Check(RedactLoginLine("APGAR s3cr3t! 0") == "APGAR *** 0", "대문자 명령도 가림");
+    Check(RedactLoginLine("apgar NXL1" + std::string(114, 'f') + " 0") == "apgar NXL1*** 0", "토큰은 표시만 남기고 가림");
+    Check(RedactLoginLine("apgar NXL!no_account 0") == "apgar NXL!no_account 0", "실패 표시는 그대로");
+    Check(RedactLoginLine("apgar None 0") == "apgar None 0", "손님은 그대로");
+    Check(RedactLoginLine("apgar 1234 0\r\n") == "apgar *** 0\r\n" && RedactLoginLine("apgar 1234\r\n") == "apgar ***\r\n",
+          "줄 끝 CRLF 는 남김(인자가 마지막 칸이어도)");
+    Check(RedactLoginLine("whereto alice9 pw12 9472 65538 123") == "whereto alice9 *** 9472 65538 123", "whereto 셋째 칸 가림");
+    Check(RedactLoginLine("apgar") == "apgar" && RedactLoginLine("whereto alice9") == "whereto alice9", "칸이 모자라면 그대로");
+    Check(RedactLoginLine("NICK alice9") == "NICK alice9" && RedactLoginLine("apgarx 1234 0") == "apgarx 1234 0" &&
+              RedactLoginLine("PRIVMSG #c :apgar 1234 0") == "PRIVMSG #c :apgar 1234 0",
+          "그 밖 줄 · 비슷한 명령 · 글 안의 apgar 는 그대로");
+}
+
 int main() {
     TestHmac();
     TestText();
@@ -535,6 +751,9 @@ int main() {
     TestTcpLines();
     TestLobbyLink();
     TestMatchRecord();   // ★ 7단계 조각 4
+    TestLoginToken();    // ★ 로그인 암호 조각 1
+    TestAccountRules();
+    TestLoginLine();
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

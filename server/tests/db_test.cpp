@@ -1,6 +1,6 @@
 ﻿// db_test.cpp — 로비 DB 워커(`CDbWorker`) 시험 — 진짜 MySQL 의 시험 DB 에 붙는다(MO 7단계 조각 7 · `Docs/ACCOUNT_DB_DESIGN.md`).
 //
-//   db_test <설정 파일> <tools/db/001_init.sql>
+//   db_test <설정 파일> <tools/db/001_init.sql> [<002_auth.sql> …](★ 로그인 암호 조각 1 — SQL 파일을 차례로 깐다)
 //   설정 [db] 의 test_database 에 표를 새로 깔고(그 DB 만 표 만들기 권한 — `config/db_setup.sql` · 정할 것 a) 워커를 그 DB 로 띄운다.
 //   설정이 없거나 붙지 못하면(사람 1회 전) 종료 코드 77 — ctest 「건너뜀」(통과로 안 보이게 `SKIP_RETURN_CODE`)
 //   ① 로그인 — 처음 이름 만듦 · 같은 이름 같은 번호 · 대소문자 다르면 다른 계정 · 949 바이트 이름이 바이트 그대로 · 마지막 로그인 적힘(1 로 돌려 두고 다시)
@@ -165,7 +165,7 @@ nox::MatchRecord Sample(const std::string& match) {
 int main(int argc, char** argv) {
     using namespace nox::wol;
     if (argc < 3) {
-        std::printf("쓰는 법: db_test <설정 파일> <001_init.sql>\n");
+        std::printf("쓰는 법: db_test <설정 파일> <001_init.sql> [<002_auth.sql> …]\n");
         return 2;
     }
     nox::CIniFile ini;
@@ -186,12 +186,15 @@ int main(int argc, char** argv) {
         std::printf("[건너뜀] 시험 DB %s 에 못 붙음 — %s(사람 1회 config/db_setup.sql 전이면 이 꼴)\n", cfg.database.c_str(), err.c_str());
         return 77;
     }
-    std::ifstream f(argv[2], std::ios::binary);
-    std::stringstream ss;
-    ss << f.rdbuf();
-    const std::string schema = ss.str();
-    Check(!schema.empty() && ad.Run("DROP TABLE IF EXISTS match_players, matches, accounts, schema_version") && ad.Run(schema),
-          "표 새로 깔기(시험 DB · 001_init.sql 그대로)");
+    bool laid = ad.Run("DROP TABLE IF EXISTS match_players, matches, accounts, schema_version");
+    for (int i = 2; i < argc; ++i) {
+        std::ifstream f(argv[i], std::ios::binary);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        const std::string schema = ss.str();
+        laid = laid && !schema.empty() && ad.Run(schema);
+    }
+    Check(laid, "표 새로 깔기(시험 DB · SQL 파일 " + std::to_string(argc - 2) + "개 그대로 차례로)");
 
     nox::db::CDbWorker w(cfg);
     Check(w.Start(err), "워커 뜸(붙기 · 표 버전 · 준비된 문장) " + err);
@@ -290,7 +293,7 @@ int main(int argc, char** argv) {
         std::string e2;
         Check(!w2.Start(e2) && e2.find("표 버전 99") != std::string::npos, "⑤ 표 버전이 다르면 Start 실패(" + e2 + ")");
     }
-    Check(ad.Run("UPDATE schema_version SET version = 1 WHERE id = 1"), "⑤ 표 버전 되돌림");
+    Check(ad.Run("UPDATE schema_version SET version = " + std::to_string(nox::db::kSchemaVersion) + " WHERE id = 1"), "⑤ 표 버전 되돌림");
 
     // ⑥ 끝낼 때 남은 일
     w.SaveMatch(30, srcA, Sample("1760000000-3-30"), "{}");
