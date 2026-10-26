@@ -25,6 +25,11 @@ cl /nologo /utf-8 /std:c++17 /O2 /W3 /EHsc /MT /I ..\..\server\include login_rew
 if errorlevel 1 ( echo login_rewrite_test build failed & popd & exit /b 1 )
 "%~dp0login_rewrite_test.exe"
 if errorlevel 1 set RC=1
+rem login server client (WinHTTP) vs a fake HTTP server: request encoding, reply classes, unreachable cases, total deadline (10-26 login auth piece 5)
+cl /nologo /utf-8 /std:c++17 /O2 /W3 /EHsc /MT /I ..\..\server\include auth_client_test.cpp /Fe:auth_client_test.exe >nul
+if errorlevel 1 ( echo auth_client_test build failed & popd & exit /b 1 )
+"%~dp0auth_client_test.exe"
+if errorlevel 1 set RC=1
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check_exports.ps1"
 if errorlevel 1 set RC=1
 set "LOGDIR=%TEMP%\wsock32_proxy_test"
