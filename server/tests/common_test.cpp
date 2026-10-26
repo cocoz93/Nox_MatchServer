@@ -656,10 +656,11 @@ void TestAccountRules() {
             ++seen[static_cast<int>(r)];
             return r;
         };
-        Check(run("ab12") == P::Ok && run("abcdefghijklmn12") == P::Ok && run("a1!@#$%^&*()~`") == P::Ok && run("A9") != P::Ok,
-              "4자 · 16자 · 특수문자 섞음 → 통과 · 2자는 아님");
+        Check(run("ab12") == P::Ok && run("abcdef12") == P::Ok && run("a1!@#$%~") == P::Ok && run("a1^&*()`") == P::Ok &&
+                  run("A9") != P::Ok,
+              "4자 · 8자 · 특수문자 섞음 → 통과 · 2자는 아님");
         Check(run("ab1") == P::TooShort, "3자 → 너무 짧음");
-        Check(run("abcdefghijklmno12") == P::TooLong, "17자 → 너무 김");
+        Check(run("abcdefg12") == P::TooLong, "9자 → 너무 김");
         Check(run("ab 12") == P::HasSpace, "빈칸");
         Check(run("ab12\xb0\xa1") == P::BadChar && run(std::string("ab12\t", 5)) == P::BadChar && run(std::string("ab1\x7f", 4)) == P::BadChar,
               "949 한글 · 탭 · DEL → 쓸 수 없는 글자");

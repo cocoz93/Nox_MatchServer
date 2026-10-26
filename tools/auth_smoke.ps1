@@ -83,7 +83,7 @@ function Req([string]$method, [string]$path, [string]$body) {
     return @{ status = [int]$resp.StatusCode; body = $rd.ReadToEnd(); ms = $sw.ElapsedMilliseconds }
   }
 }
-$pw = 'Sm0ke!pw12'
+$pw = 'Sm0k!p12'
 $pwLegacy = 'Leg4cyPw'
 try {
   Write-Host '① 가입'
@@ -107,7 +107,7 @@ try {
   Check ($r.status -eq 200 -and $r.body -cmatch '^NXL1[0-9a-f]{114}$') "됨 200 NXL1 + 16진 114자 ($($r.status) · 길이 $($r.body.Length) · $($r.ms) ms)"
   $r = Req 'POST' '/login' "name=legacy1&password=$pwLegacy"
   Check ($r.status -eq 200 -and $r.body.StartsWith('NXL1')) "옛 행 계정 로그인 200 ($($r.status))"
-  $r = Req 'POST' '/login' "name=smoke1&password=Sm0ke!pw13"
+  $r = Req 'POST' '/login' "name=smoke1&password=Sm0k!p13"
   Check ($r.status -eq 401 -and $r.body -ceq 'NXL!wrong_password') "암호 틀림 401 ($($r.status) $($r.body))"
   $r = Req 'POST' '/login' "name=nobody9&password=ab12cd"
   Check ($r.status -eq 401 -and $r.body -ceq 'NXL!no_account') "계정 없음 401 ($($r.status) $($r.body))"
@@ -130,7 +130,7 @@ try {
 Write-Host '④ 기록'
 $text = [IO.File]::ReadAllText($log)
 Check ($p.ExitCode -eq 0) "종료 코드 0 ($($p.ExitCode))"
-Check (-not $text.Contains($pw) -and -not $text.Contains($pwLegacy) -and -not $text.Contains('Sm0ke%21')) '기록에 친 암호 글자 0곳'
+Check (-not $text.Contains($pw) -and -not $text.Contains($pwLegacy) -and -not $text.Contains('Sm0k%21')) '기록에 친 암호 글자 0곳'
 Check (-not ($text -match 'NXL1[0-9a-f]{20}')) '기록에 토큰 0곳'
 $m = [regex]::Match($text, '끝 — 요청 (\d+)\(')
 Check ($m.Success -and [int]$m.Groups[1].Value -eq $script:sent) "끝 줄 요청 $($m.Groups[1].Value) = 보낸 $($script:sent)"

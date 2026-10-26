@@ -181,11 +181,11 @@ void TestSignupLogin() {
         for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + 1)) ++n;
         return n;
     };
-    Check(count(r.body, "maxlength=\"16\"") == 2 && count(r.body, "minlength=\"4\"") == 2 && count(r.body, "maxlength=\"9\"") == 1,
-          "칸 한도 — 암호 둘 4~16 · 이름 9(칸마다 셈 — 한 칸만 바뀌어도 걸리게)");
-    Check(r.status == 200 && IsPage(r) && Has(r.body, "maxlength=\"9\"") && Has(r.body, "maxlength=\"16\"") &&
+    Check(count(r.body, "maxlength=\"8\"") == 2 && count(r.body, "minlength=\"4\"") == 2 && count(r.body, "maxlength=\"9\"") == 1,
+          "칸 한도 — 암호 둘 4~8 · 이름 9(칸마다 셈 — 한 칸만 바뀌어도 걸리게)");
+    Check(r.status == 200 && IsPage(r) && Has(r.body, "maxlength=\"9\"") && Has(r.body, "maxlength=\"8\"") &&
               Has(r.body, "action=\"/signup\"") && Has(r.body, "name=\"password2\"") && !Has(r.body, "<script"),
-          "양식 — 칸 한도 9 · 16 · 보내는 곳 · 확인 칸 · 스크립트 없음");
+          "양식 — 칸 한도 9 · 8 · 보내는 곳 · 확인 칸 · 스크립트 없음");
     getPage.path = "/";
     Check(g.Do(getPage, O::SignupPage, "GET /").status == 200, "/ 도 양식");
     Check(g.Do(Post("/", ""), O::BadMethod, "POST /").status == 405, "POST / 405");
@@ -210,7 +210,7 @@ void TestSignupLogin() {
             {"name=abcdefghij&password=ab12&password2=ab12", O::SignupBadName, "9자까지"},
             {"name=a.b&password=ab12&password2=ab12", O::SignupBadName, "영문 · 숫자만"},
             {"name=gina&password=ab1&password2=ab1", O::SignupBadPassword, "4자 이상"},
-            {"name=gina&password=abcdefghijklmno12&password2=abcdefghijklmno12", O::SignupBadPassword, "16자까지"},
+            {"name=gina&password=abcdefg12&password2=abcdefg12", O::SignupBadPassword, "8자까지"},
             {"name=gina&password=ab+12&password2=ab+12", O::SignupBadPassword, "빈칸은"},
             {"name=gina&password=ab12%B0%A1&password2=ab12%B0%A1", O::SignupBadPassword, "특수문자만 됩니다"},   // 「한글 안 됨」은 양식 도움말에도 있어 못 가름
             {"name=gina&password=123456&password2=123456", O::SignupBadPassword, "영문을 하나"},

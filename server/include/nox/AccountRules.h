@@ -2,8 +2,8 @@
 //
 // 왜 이 규칙인가 — 정품 로그인 창 칸이 정한다(`wolapi.wnd` 원본 기준 · 화면 미확인)
 //   · 이름 = 영문 · 숫자 1~9자(d) — 이름 칸에 9자까지 쳐지고 한글은 못 칠 것으로 봄. 그래서 바이트 = ASCII 라 949 바꾸기가 없다
-//   · 암호 = 4~16자 · 영문 + 숫자 꼭 · 특수문자는 써도 됨 · 빈칸 금지(e · g) — 로그인 줄을 빈칸으로 나누므로.
-//     16자는 DLL 이 암호 칸 한도를 늘려서(e) — 정품 칸 그대로면 8자
+//   · 암호 = 4~8자 · 영문 + 숫자 꼭 · 특수문자는 써도 됨 · 빈칸 금지(e · g) — 로그인 줄을 빈칸으로 나누므로.
+//     8자는 정품 암호 칸 한도 그대로(e) — 칸을 늘리는 길은 정품 실행 파일을 고쳐야 해서 접음(10-26)
 // 해시 = PBKDF2-HMAC-SHA256(f) · 소금 16 · 결과 32 · 반복 수는 행마다 적어 둔다(나중에 수를 올려도 옛 행을 그대로 확인)
 // 로그인 서버(nox_auth)가 쓴다. 로비는 이름 규칙을 안 본다 — 토큰의 이름이 이미 이 규칙을 지났다
 #pragma once
@@ -17,7 +17,7 @@ namespace nox {
 
 constexpr size_t kAccountNameMax = 9;
 constexpr size_t kPasswordMin = 4;
-constexpr size_t kPasswordMax = 16;
+constexpr size_t kPasswordMax = 8;
 constexpr uint32_t kPbkdf2Iterations = 600000;   // f — OWASP 암호 저장 권고(기억 · 조각 2 에서 이 PC 시간을 잼)
 constexpr uint32_t kPbkdf2IterationsMax = 10000000;   // 저장된 행의 반복 수가 이보다 크면 확인을 안 함(틀린 행 하나가 일꾼을 오래 잡지 않게)
 constexpr size_t kPasswordSaltSize = 16;

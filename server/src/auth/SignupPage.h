@@ -83,10 +83,10 @@ inline std::string SignupFormPage(const std::string& message = "", bool error = 
          "\">\n"
          "<p class=\"hint\">영문 · 숫자 1~9자</p>\n"
          "<label for=\"password\">암호</label>\n"
-         "<input id=\"password\" name=\"password\" type=\"password\" required minlength=\"4\" maxlength=\"16\">\n"
-         "<p class=\"hint\">4~16자 · 영문과 숫자를 꼭 섞기 · 특수문자 써도 됨 · 빈칸 · 한글 안 됨</p>\n"
+         "<input id=\"password\" name=\"password\" type=\"password\" required minlength=\"4\" maxlength=\"8\">\n"
+         "<p class=\"hint\">4~8자 · 영문과 숫자를 꼭 섞기 · 특수문자 써도 됨 · 빈칸 · 한글 안 됨</p>\n"
          "<label for=\"password2\">암호 확인</label>\n"
-         "<input id=\"password2\" name=\"password2\" type=\"password\" required minlength=\"4\" maxlength=\"16\">\n"
+         "<input id=\"password2\" name=\"password2\" type=\"password\" required minlength=\"4\" maxlength=\"8\">\n"
          "<button type=\"submit\">가입</button>\n"
          "</form>\n";
     h += signup_page_detail::Tail();

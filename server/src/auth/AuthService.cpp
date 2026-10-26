@@ -133,7 +133,7 @@ static const char* NameMessage(NameCheck c) {
 static const char* PasswordMessage(PasswordCheck c) {
     switch (c) {
     case PasswordCheck::TooShort: return "암호는 4자 이상입니다.";
-    case PasswordCheck::TooLong: return "암호는 16자까지입니다.";
+    case PasswordCheck::TooLong: return "암호는 8자까지입니다.";
     case PasswordCheck::HasSpace: return "암호에 빈칸은 안 됩니다.";
     case PasswordCheck::BadChar: return "암호는 영문 · 숫자 · 특수문자만 됩니다(한글 안 됨).";
     case PasswordCheck::NoLetter: return "암호에 영문을 하나 이상 넣어 주세요.";

@@ -48,7 +48,7 @@ const char* PasswordCheckName(PasswordCheck c) {
 }
 
 // 길이는 바이트로 센다 — 통과하는 글자는 찍히는 ASCII 뿐이라 통과한 암호는 글자 수 = 바이트 수
-//   (길이를 먼저 보므로 16바이트를 넘는 한글 암호는 BadChar 가 아니라 TooLong — 둘 다 거절이라 까닭 글만 다름)
+//   (길이를 먼저 보므로 8바이트를 넘는 한글 암호는 BadChar 가 아니라 TooLong — 둘 다 거절이라 까닭 글만 다름)
 PasswordCheck CheckPassword(const std::string& password) {
     if (password.size() < kPasswordMin) return PasswordCheck::TooShort;
     if (password.size() > kPasswordMax) return PasswordCheck::TooLong;
