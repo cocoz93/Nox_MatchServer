@@ -8,6 +8,7 @@
 //   ⑤ 바꿀 줄과 겹치지 않는 덜 온 줄은 쥐지 않고 바로 내보낸다 · 바꿀 줄의 덜 온 몫은 쥔다 · 너무 길면 안 쥔다
 //   ⑥ onLogin 이 못 쓸 글(빈 글 · 빈칸)을 돌려주면 `NXL!server_error`
 //   ⑦ 진짜 send 가 진짜 오류면 Flush 가 -1 을 돌리고 쥔 것을 버린다
+//   ⑧ 기록 모드(Log) — 조각이 어디서 잘려도 `apgar` 인자 · `whereto` 암호 칸이 `***` 로 · onLogin 안 불림 · 로그인 뒤 같은 꼴 줄도 가림 · 손님은 그대로
 #include <algorithm>
 #include <cstdio>
 #include <random>
@@ -82,8 +83,9 @@ static bool RunOne(const Case& c, const std::vector<size_t>& cuts, int sockMode)
     for (int guard = 0; guard < 100000 && !rw.Pending().empty(); ++guard) flush();   // recv 훅이 부르는 몫 — 막힘이 풀릴 때까지
     bool ok = true;
     if (s.wire != c.want) { std::printf("[%s] ① 선에 나간 바이트가 다름 sock=%d (%zu / %zu)\n", c.label, sockMode, s.wire.size(), c.want.size()); ok = false; }
-    if (calls != c.logins) { std::printf("[%s] ② onLogin %d번 (기대 %d)\n", c.label, calls, c.logins); ok = false; }
-    if (c.logins == 1 && (seenName != c.gotName || seenPw != c.gotPw)) {
+    const bool logMode = c.mode == CLoginRewriter::Mode::Log;   // 기록용은 onLogin 을 안 부른다
+    if (calls != (logMode ? 0 : c.logins)) { std::printf("[%s] ② onLogin %d번 (기대 %d)\n", c.label, calls, logMode ? 0 : c.logins); ok = false; }
+    if (!logMode && c.logins == 1 && (seenName != c.gotName || seenPw != c.gotPw)) {
         std::printf("[%s] ② onLogin 인자 [%s] [%s]\n", c.label, seenName.c_str(), seenPw.c_str());
         ok = false;
     }
@@ -101,12 +103,14 @@ static std::vector<Case> Cases()
     std::vector<Case> v;
     // NOOP 줄은 가운데에 바꿀 줄 머리와 같은 글이 낀 줄 — 조각이 거기서 잘려 나머지가 줄 머리처럼 보여도 건드리면 안 된다
     const std::string head = "CVERS 11020 9472\r\nPASS supersecret\r\nNOOP x apgar pw99 0\r\nNOOP x nick bob\r\nNOOP x user q\r\nNICK wn9457\r\n";
-    const std::string tail =
+    const std::string tailMid =
         "SERIAL 00000000000000000000\r\n"
         "USER UserName HostName irc.westwood.com :RealName\r\n"
         "verchk 32512 720916\r\n"
-        "SETOPT 17,33\r\n"
-        "NICK later\r\napgar zz99 0\r\nJOIN #Lob_37_0 zot0blat\r\n";   // 로그인 뒤 — 같은 꼴 줄도 안 건드림
+        "SETOPT 17,33\r\n";
+    const std::string after = "NICK later\r\n";      // 로그인 뒤 — 같은 꼴 줄도 안 건드림(Log 모드만 계속 가림)
+    const std::string tail = tailMid + after + "apgar zz99 0\r\nJOIN #Lob_37_0 zot0blat\r\n";
+    const std::string tailLog = tailMid + after + "apgar *** 0\r\nJOIN #Lob_37_0 zot0blat\r\n";
     v.push_back({ "로비", M::Lobby, head + "apgar ab12cd 0\r\n" + tail, head + "apgar " + kTok + " 0\r\n" + tail, 1, 0, 0, "wn9457", "ab12cd" });
     v.push_back({ "로비 손님", M::Lobby, head + "apgar None 0\r\n" + tail, head + "apgar None 0\r\n" + tail, 0, 1, 0, "", "" });
     v.push_back({ "로비 대소문자", M::Lobby, "nick Wn1\r\nAPGAR pw12 0\r\nuser x\r\nAPGAR later 0\r\n",
@@ -117,6 +121,13 @@ static std::vector<Case> Cases()
     v.push_back({ "라우터", M::Router, rIn + "whereto wn9457 ab12cd 9472 65538 00000000000000000000\r\nQUIT\r\nwhereto zz pw99 1\r\n",
                   rIn + "whereto wn9457 x 9472 65538 00000000000000000000\r\nQUIT\r\nwhereto zz pw99 1\r\n", 0, 0, 1, "", "" });
     v.push_back({ "라우터 손님", M::Router, rIn + "whereto   9472 65538 00000000000000000000\r\nQUIT\r\n",
+                  rIn + "whereto   9472 65538 00000000000000000000\r\nQUIT\r\n", 0, 0, 0, "", "" });
+    // 기록용 — 암호 칸이 `***` · onLogin 은 안 불림 · 끝나지 않고 계속 가림(로그인 뒤 같은 꼴 줄도) · 손님은 그대로
+    v.push_back({ "기록 로비", M::Log, head + "apgar ab12cd 0\r\n" + tail, head + "apgar *** 0\r\n" + tailLog, 2, 0, 0, "", "" });
+    v.push_back({ "기록 로비 손님", M::Log, head + "apgar None 0\r\n" + tail, head + "apgar None 0\r\n" + tailLog, 1, 1, 0, "", "" });
+    v.push_back({ "기록 라우터", M::Log, rIn + "whereto wn9457 ab12cd 9472 65538 00000000000000000000\r\nQUIT\r\nwhereto zz pw99 1\r\n",
+                  rIn + "whereto wn9457 *** 9472 65538 00000000000000000000\r\nQUIT\r\nwhereto zz *** 1\r\n", 0, 0, 2, "", "" });
+    v.push_back({ "기록 라우터 손님", M::Log, rIn + "whereto   9472 65538 00000000000000000000\r\nQUIT\r\n",
                   rIn + "whereto   9472 65538 00000000000000000000\r\nQUIT\r\n", 0, 0, 0, "", "" });
     return v;
 }
@@ -129,7 +140,11 @@ int main()
     for (const Case& c : cases) {
         // 기대값이 정말 바뀐 줄을 담는가(시험이 아무것도 안 보는 것을 막는다)
         if (c.logins == 1) Check(c.want.find(c.gotPw) == std::string::npos || c.gotPw.empty(), "기대값에 원래 암호가 없음");
-        if (c.router == 1) Check(c.want.find("ab12cd") == std::string::npos, "라우터 기대값에 원래 암호가 없음");
+        if (c.router >= 1 && c.mode == CLoginRewriter::Mode::Router) Check(c.want.find("ab12cd") == std::string::npos, "라우터 기대값에 원래 암호가 없음");   // 줄이 지난 뒤 같은 꼴 줄(pw99)은 일부러 그대로 통과
+        if (c.mode == CLoginRewriter::Mode::Log)   // 기록은 계속 가린다 — 어느 줄에도 원래 암호가 없어야
+            Check(c.want.find("ab12cd") == std::string::npos && c.want.find("zz99") == std::string::npos &&
+                      (c.router == 0 || c.want.find("pw99") == std::string::npos),   // 로비 묶음의 NOOP 줄에 낀 pw99 는 로그인 줄이 아니라 그대로
+                  "기록 기대값에 원래 암호가 없음");
         for (const int sm : sockModes) {
             for (size_t k = 1; k <= c.in.size(); ++k) {   // 모든 고정 조각 크기
                 std::vector<size_t> cuts;

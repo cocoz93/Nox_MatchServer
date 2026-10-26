@@ -62,6 +62,26 @@ static bool FileHas(const char* path, const char* needle)
     return strstr(buf, needle) != NULL;
 }
 
+// 로그 파일에서 lineMark 가 든 줄 가운데 needle 도 든 줄이 있나. 이 시험은 한 프로세스에서 서버 쪽까지 맡아 「서버가 받은 글」이 recv 줄로 찍히므로
+//   (실제 클라는 서버가 로그인 줄을 되돌려 주지 않는다) 암호 검사는 보낸 쪽 줄(` send s=`)만 본다
+static bool FileLineHas(const char* path, const char* lineMark, const char* needle)
+{
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    static char buf[1 << 20];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    for (char* line = buf; *line;) {
+        char* end = strchr(line, '\n');
+        if (end) *end = 0;
+        if (strstr(line, lineMark) && strstr(line, needle)) return true;
+        if (!end) break;
+        line = end + 1;
+    }
+    return false;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 3 || (strcmp(argv[1], "log") != 0 && strcmp(argv[1], "nolog") != 0)) {
@@ -123,7 +143,7 @@ int main(int argc, char** argv)
         sv = accept(ls, NULL, NULL);
         Check(sv != INVALID_SOCKET, "accept");
         RecvTimeout(sv);
-        const char line[] = "whereto wn9457 1234 9472 65538 00000000000000000000\r\n";
+        const char line[] = "whereto wn9457 pw7Kx9 9472 65538 00000000000000000000\r\n";   // 암호 칸 pw7Kx9 — 로그에 남으면 안 된다(아래 log 검사)
         Check(send(c, line, (int)strlen(line), 0) == (int)strlen(line), "send line");
         char rbuf[256]; int got2 = 0;
         while (got2 < (int)strlen(line)) {
@@ -191,6 +211,20 @@ int main(int argc, char** argv)
             char b[64]; int r = recv(lsv, b, sizeof(b), 0);
             if (r <= 0) break;
             atLobby2.append(b, r);
+        }
+        // ★ 로그인 암호 조각 5 — 암호 줄이 두 번에 걸쳐 나가도(정품은 묶음을 64바이트씩 쪼갠다) 선에는 바이트 그대로 가고, 기록에는 암호가 안 남는다(아래 log 검사)
+        {
+            const char a1[] = "apgar Sec7", a2[] = "ret9 0\r\n";
+            send(lc, a1, (int)strlen(a1), 0);
+            send(lc, a2, (int)strlen(a2), 0);
+            const std::string wantA = std::string(a1) + a2;
+            std::string wireA;
+            while (wireA.size() < wantA.size()) {
+                char b[64]; int r = recv(lsv, b, sizeof(b), 0);
+                if (r <= 0) break;
+                wireA.append(b, r);
+            }
+            Check(wireA == wantA, "login line split across two sends: wire bytes unchanged (log redaction never touches the wire)");
         }
         // 표시 줄 전의 목록 — 우리 로비인지 아직 모르니 스위치가 켜져 있어도 끼우지 않는다(XWIS 에선 이 상태가 계속된다)
         const std::string before = ": 321 u:\r\n: 323 u:\r\n";
@@ -275,6 +309,11 @@ int main(int argc, char** argv)
         Check(FileHas(logPath, "send s="), "log: send");
         Check(FileHas(logPath, "recv s="), "log: recv");
         Check(FileHas(logPath, "whereto wn9457"), "log: send text preview");
+        // ★ 로그인 암호 조각 5 — 기록에 암호가 없고, 가린 자리가 보인다(apgar 줄은 두 번에 걸쳐 갔다)
+        Check(FileLineHas(logPath, " send s=", "whereto wn9457") && FileLineHas(logPath, " send s=", "apgar"), "log: the send lines under test exist (so the next check can fail)");
+        Check(!FileLineHas(logPath, " send s=", "pw7Kx9") && !FileLineHas(logPath, " send s=", "Sec7") && !FileLineHas(logPath, " send s=", "ret9"),
+              "log: no password text on send lines (whereto field · apgar line split in two sends)");
+        Check(FileHas(logPath, "whereto wn9457 *** 9472") && FileHas(logPath, "apgar *** 0"), "log: password fields masked");
         Check(FileHas(logPath, "gethostbyname \"localhost\""), "log: gethostbyname");
         Check(FileHas(logPath, "부른 곳=selftest.exe"), "log: caller module name");
     } else {

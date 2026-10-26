@@ -6,10 +6,12 @@
 //   (`_evidence/_rooms_check_20261015/wsock_Game.exe_23936.log:14`). 그래서 줄 끝(\n)이 올 때까지 쥐고 있다가 줄째 판단한다.
 //   다만 바꿀 줄의 머리와 겹치지 않는 줄은 덜 와도 바로 내보낸다(로비 모듈 기다림을 늘리지 않으려고).
 //
-// 모드 둘
+// 모드 셋
 //   Lobby  — `NICK <이름>` 을 기억해 두고, `apgar <암호> 0` 의 암호 자리를 onLogin(이름, 암호) 이 돌려준 글로 바꾼다.
 //            손님(`None`)은 그대로 · `USER` 줄이 지나면 더 안 본다(로그인 묶음은 거기까지)
 //   Router — `whereto <이름> <암호> …` 의 암호 칸을 `x` 로 바꾼다(라우터는 암호를 안 쓴다). 손님(빈 칸)은 그대로 · 그 줄이 지나면 더 안 본다
+//   Log    — 기록에 찍을 글용. `apgar` 인자와 `whereto` 암호 칸을 `***` 로 가린다(onLogin 안 부름). 어느 소켓인지 몰라도 되고 끝없이 본다.
+//            조각이 줄 가운데서 잘려도 가려진다(한 줄짜리 `RedactLoginLine` 으로는 못 가림) — 가린 글은 줄 끝이 올 때까지 늦게 나온다
 //
 // 길이 — 바꾼 줄은 길이가 달라진다. 게임(부르는 쪽)에는 늘 원래 길이를 돌려주고, 실제로 나가는 몫은 여기 쌓는다(Pending).
 //   Flush 가 진짜 send 로 내보내고, 막지 않는 소켓이 일부만 받거나 WOULDBLOCK 이면 남은 몫을 쥐고 있다가 다음 Flush 에 이어 보낸다
@@ -25,7 +27,7 @@
 
 class CLoginRewriter {
 public:
-    enum class Mode { Lobby, Router };
+    enum class Mode { Lobby, Router, Log };
 
     explicit CLoginRewriter(Mode mode) : mode_(mode) {}
 
@@ -102,8 +104,9 @@ private:
     bool Watched(const std::string& partial) const {
         static const char* const lobby[] = { "nick ", "apgar ", "user " };
         static const char* const router[] = { "whereto " };
-        const char* const* marks = mode_ == Mode::Lobby ? lobby : router;
-        const size_t count = mode_ == Mode::Lobby ? 3 : 1;
+        static const char* const log[] = { "apgar ", "whereto " };
+        const char* const* marks = mode_ == Mode::Lobby ? lobby : mode_ == Mode::Router ? router : log;
+        const size_t count = mode_ == Mode::Lobby ? 3 : mode_ == Mode::Router ? 1 : 2;
         for (size_t m = 0; m < count; ++m) {
             const std::string mark = marks[m];
             const size_t n = (std::min)(partial.size(), mark.size());
@@ -147,10 +150,21 @@ private:
                 LobbyApgar(body, eol);
                 return;
             }
-        } else if (StartsWithNoCase(body, "whereto ")) {
-            done_ = true;
-            RouterWhereto(body, eol);
-            return;
+        } else if (mode_ == Mode::Router) {
+            if (StartsWithNoCase(body, "whereto ")) {
+                done_ = true;
+                RouterWhereto(body, eol);
+                return;
+            }
+        } else {   // Log — 두 줄 다 가리고 끝없이 본다
+            if (StartsWithNoCase(body, "apgar ")) {
+                LobbyApgar(body, eol);
+                return;
+            }
+            if (StartsWithNoCase(body, "whereto ")) {
+                RouterWhereto(body, eol);
+                return;
+            }
         }
         out_ += line;
     }
@@ -168,8 +182,13 @@ private:
             out_ += body + eol;
             return;
         }
-        std::string token = onLogin ? onLogin(name_, arg) : std::string();
-        if (!ValidToken(token)) token = std::string(nox::kLoginFailMark) + nox::LoginFailName(nox::LoginFail::ServerError);
+        std::string token;
+        if (mode_ == Mode::Log) {
+            token = std::string(nox::kRedacted);
+        } else {
+            token = onLogin ? onLogin(name_, arg) : std::string();
+            if (!ValidToken(token)) token = std::string(nox::kLoginFailMark) + nox::LoginFailName(nox::LoginFail::ServerError);
+        }
         ++logins_;
         out_ += body.substr(0, 6) + token + body.substr(e) + eol;
     }
@@ -188,7 +207,7 @@ private:
             return;
         }
         ++routerRewrites_;
-        out_ += body.substr(0, pwBegin) + "x" + body.substr(pwEnd) + eol;
+        out_ += body.substr(0, pwBegin) + (mode_ == Mode::Log ? std::string(nox::kRedacted) : std::string("x")) + body.substr(pwEnd) + eol;
     }
 
     Mode mode_;

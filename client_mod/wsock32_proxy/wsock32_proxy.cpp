@@ -84,6 +84,7 @@
 // 로그: 환경변수 NOX_HOOK_LOG_DIR 이 있을 때만 <그 폴더>\wsock_<exe>_<pid>.log 에 쓴다(dinput_proxy 와 같은 스위치).
 //       없으면 로그도 집계도 안 하고 진짜로 넘기기만 한다.
 //       상세 줄 = 접속 시도(UDP 3번째 바이트 0x0e)의 바이트 전부 · TCP connect/send/recv · 이름 찾기
+//       ★ 로그인 암호 조각 5 — 보낸 글의 미리 보기는 `apgar` 인자 · `whereto` 암호 칸을 `***` 로 가린 글(`LoginRewriter.h` Log 모드 · 가린 줄은 줄 끝이 올 때까지 늦게 나옴)
 //       10초마다 = 부른 모듈별 호출 수·바이트 요약
 // 빌드: build.bat (x86 필수 — Game.exe 가 32비트다) · 시험: test.bat
 // 놓는 곳: 게임 폴더 · 되돌리기: 이 파일을 지우면 끝
@@ -105,6 +106,7 @@
 
 #include "HostGameEntry.h"     // ⑤ · ⑥ 내 방 정보 · 항목 · 채널 짓기(방 정보 포장은 서버와 같은 WolGameInfo — build.bat 이 같이 빌드)
 #include "LobbyLineFilter.h"
+#include "LoginRewriter.h"     // ★ 로그인 암호 조각 5 — 기록에 찍는 보낸 글에서 암호 칸 가리기(Log 모드)
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -346,7 +348,8 @@ struct PendingToken {
     DWORD tick = 0;
 };
 static PendingToken g_tok;
-static bool g_listOn = false;           // ⑤ 줄 끼우기를 걸어 두나(판 확인 통과 또는 ⑦ 시험 스위치 · 끄기 스위치 없음)
+static std::map<SOCKET, CLoginRewriter*> g_logRedact;   // ★ 조각 5 — 기록용 줄 상태(소켓마다 · 기록을 켰을 때만 생김) · g_tokCs 로 지킨다
+static bool g_listOn = false;          // ⑤ 줄 끼우기를 걸어 두나(판 확인 통과 또는 ⑦ 시험 스위치 · 끄기 스위치 없음)
 static bool g_hostGameOn = false;       // ⑥ Host Game 돌리기 스레드(판 확인 통과 · 끄기 스위치 없음)
 static volatile LONG g_ourLobby = 0;    // ⑤ · ⑥ 지금 로비 연결이 `NOXSERVER` 를 보냈나 — 새 로비 연결마다 0
 static volatile LONG g_lobbyIp = 0;     // 그 로비 연결의 상대 IPv4(a<<24|b<<16|c<<8|d) — 채널이 곧 게임 서버
@@ -366,6 +369,21 @@ static bool MarkLobby(SOCKET s)   // 새로 적었으면 true
     }
     LeaveCriticalSection(&g_tokCs);
     return added;
+}
+
+// ★ 조각 5 — 보낸 바이트를 기록에 찍을 글로. `apgar` 인자 · `whereto` 암호 칸이 `***` 로 가려진다.
+//   정품은 로그인 묶음을 64바이트씩 쪼개 보내므로(암호 줄이 두 번에 걸칠 수 있다) 소켓마다 줄 상태를 쥔다 —
+//   가린 글은 줄 끝이 올 때까지 늦게 나온다. 소켓이 로비인지 라우터인지 몰라도 되게 둘 다 가린다
+static std::string RedactedForLog(SOCKET s, const char* buf, int len)
+{
+    std::string out;
+    EnterCriticalSection(&g_tokCs);
+    CLoginRewriter*& rw = g_logRedact[s];
+    if (!rw) rw = new CLoginRewriter(CLoginRewriter::Mode::Log);
+    rw->Feed(buf, len);
+    rw->Flush([&](const char* b, int n) { out.append(b, static_cast<size_t>(n)); return n; }, [] { return false; });
+    LeaveCriticalSection(&g_tokCs);
+    return out;
 }
 
 static LobbyLineFilter* LobbyFilterOf(SOCKET s)
@@ -673,7 +691,8 @@ extern "C" int WSAAPI Hook_send(SOCKET s, const char* buf, int len, int flags)
         DWORD err = GetLastError();
         ModStat* m = ModOf(ret);
         Count(m, F_SEND, rc);
-        char p[512]; Preview(buf, len, p, 400);
+        const std::string shown = (buf && len > 0) ? RedactedForLog(s, buf, len) : std::string();   // ★ 조각 5 — 암호 칸 가림
+        char p[512]; Preview(shown.data(), (int)shown.size(), p, 400);
         Detail("send s=%u len=%d rc=%d 부른 곳=%s | %s", (unsigned)s, len, rc, m->name, p);
         SetLastError(err);
     }
@@ -749,11 +768,15 @@ extern "C" int WSAAPI Hook_sendto(SOCKET s, const char* buf, int len, int flags,
 extern "C" int WSAAPI Hook_closesocket(SOCKET s)
 {
     LobbyLineFilter* f = NULL;
+    CLoginRewriter* lr = NULL;
     EnterCriticalSection(&g_tokCs);
     auto it = g_lobby.find(s);
     if (it != g_lobby.end()) { f = it->second; g_lobby.erase(it); }
+    auto lit = g_logRedact.find(s);   // ★ 조각 5 — 소켓 번호는 다시 쓰이므로 기록용 줄 상태도 지운다
+    if (lit != g_logRedact.end()) { lr = lit->second; g_logRedact.erase(lit); }
     LeaveCriticalSection(&g_tokCs);
     delete f;
+    delete lr;
     return ((PFN_closesocket)Resolve(3))(s);
 }
 
