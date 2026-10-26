@@ -216,6 +216,8 @@ int main(int argc, char** argv)
         {
             const char a1[] = "apgar Sec7", a2[] = "ret9 0\r\n";
             send(lc, a1, (int)strlen(a1), 0);
+            const char oth[] = "NOOP interleaved\r\n";
+            send(c, oth, (int)strlen(oth), 0);   // 다른 소켓의 보내기가 끼어들어도 로비 소켓의 덜 온 줄 상태와 섞이면 안 된다
             send(lc, a2, (int)strlen(a2), 0);
             const std::string wantA = std::string(a1) + a2;
             std::string wireA;
@@ -314,6 +316,7 @@ int main(int argc, char** argv)
         Check(!FileLineHas(logPath, " send s=", "pw7Kx9") && !FileLineHas(logPath, " send s=", "Sec7") && !FileLineHas(logPath, " send s=", "ret9"),
               "log: no password text on send lines (whereto field · apgar line split in two sends)");
         Check(FileHas(logPath, "whereto wn9457 *** 9472") && FileHas(logPath, "apgar *** 0"), "log: password fields masked");
+        Check(FileLineHas(logPath, " send s=", "NOOP interleaved"), "log: another socket's line is shown as is while the lobby socket holds a half apgar line (per-socket state)");
         Check(FileHas(logPath, "gethostbyname \"localhost\""), "log: gethostbyname");
         Check(FileHas(logPath, "부른 곳=selftest.exe"), "log: caller module name");
     } else {
