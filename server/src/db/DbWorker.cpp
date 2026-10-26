@@ -15,9 +15,8 @@ namespace {
 
 uint32_t NowUnix() { return static_cast<uint32_t>(std::time(nullptr)); }
 
+// ★ 로그인 암호 조각 4 — 계정 만들기 · 마지막 로그인은 로그인 서버 몫(정할 것 a). 로비는 판 사람의 계정 번호를 이름으로 찾기만
 constexpr const char* kSelAccount = "SELECT id FROM accounts WHERE name = ?";
-constexpr const char* kInsAccount = "INSERT INTO accounts (name, created_unix, last_login_unix) VALUES (?, ?, ?)";
-constexpr const char* kUpdLogin = "UPDATE accounts SET last_login_unix = ? WHERE id = ?";
 constexpr const char* kInsMatch =
     "INSERT INTO matches (server_ip, server_port, match_key, room_id, room_name, map_key, mode, start_unix, end_unix, frames, end_reason, "
     "winner_kind, winner_id, winner_name, score_limit, time_limit_sec, raw_json, saved_unix) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
@@ -29,15 +28,13 @@ constexpr const char* kInsPlayer =
 struct CDbWorker::Conn {
     MYSQL* m = nullptr;
     MYSQL_STMT* selAccount = nullptr;
-    MYSQL_STMT* insAccount = nullptr;
-    MYSQL_STMT* updLogin = nullptr;
     MYSQL_STMT* insMatch = nullptr;
     MYSQL_STMT* insPlayer = nullptr;
     unsigned lastErrno = 0;
     std::string lastError;
 
     ~Conn() {
-        for (MYSQL_STMT* s : {selAccount, insAccount, updLogin, insMatch, insPlayer})
+        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer})
             if (s) mysql_stmt_close(s);
         if (m) mysql_close(m);
     }
@@ -100,8 +97,7 @@ bool CDbWorker::Connect(std::string& err) {
         }
         return false;
     }
-    if (!c->Prepare(c->selAccount, kSelAccount) || !c->Prepare(c->insAccount, kInsAccount) || !c->Prepare(c->updLogin, kUpdLogin) ||
-        !c->Prepare(c->insMatch, kInsMatch) || !c->Prepare(c->insPlayer, kInsPlayer)) {
+    if (!c->Prepare(c->selAccount, kSelAccount) || !c->Prepare(c->insMatch, kInsMatch) || !c->Prepare(c->insPlayer, kInsPlayer)) {
         err = "준비된 문장 — " + c->lastError + "(표 모양이 SQL 파일과 다른가)";
         return false;
     }
@@ -146,19 +142,6 @@ void CDbWorker::Stop() {
     if (thread_.joinable()) thread_.join();   // 워커가 남은 일을 다 하고 나간다
     Drop();
     started_ = false;
-}
-
-void CDbWorker::CheckLogin(uint32_t req, const std::string& name) {
-    Job j;
-    j.kind = wol::StoreAnswerKind::Login;
-    j.req = req;
-    j.name = name;
-    {
-        std::lock_guard<std::mutex> lk(mu_);
-        queue_.push_back(std::move(j));
-        ++stats_.requests;
-    }
-    cv_.notify_one();
 }
 
 void CDbWorker::SaveMatch(uint32_t req, const wol::MatchSource& src, const MatchRecord& rec, const std::string& rawJson) {
@@ -236,39 +219,6 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
         c.lastErrno = 0;
         const uint32_t now = NowUnix();
         switch (j.kind) {
-            case wol::StoreAnswerKind::Login: {
-                uint64_t id = 0;
-                if (!c.FindAccount(j.name, id)) break;
-                if (id != 0) {
-                    MYSQL_BIND p[2] = {};
-                    U32(p[0], now);
-                    U64(p[1], id);
-                    if (mysql_stmt_bind_param(c.updLogin, p) != 0 || mysql_stmt_execute(c.updLogin) != 0) {
-                        c.StmtFail(c.updLogin, "마지막 로그인 적기");
-                        break;
-                    }
-                    a.accountId = id;
-                    ok = true;
-                    break;
-                }
-                MYSQL_BIND p[3] = {};
-                unsigned long len = 0;
-                Bin(p[0], j.name, len);
-                U32(p[1], now);
-                U32(p[2], now);
-                if (mysql_stmt_bind_param(c.insAccount, p) != 0 || mysql_stmt_execute(c.insAccount) != 0) {
-                    c.StmtFail(c.insAccount, "계정 만들기");
-                    if (c.lastErrno == ER_DUP_ENTRY && c.FindAccount(j.name, id) && id != 0) {   // 그 사이 다른 로비가 만들었다(로비 여럿 대비)
-                        a.accountId = id;
-                        ok = true;
-                    }
-                    break;
-                }
-                a.accountId = mysql_stmt_insert_id(c.insAccount);
-                a.created = true;
-                ok = true;
-                break;
-            }
             case wol::StoreAnswerKind::SaveMatch: {
                 const MatchRecord& r = j.rec;
                 if (mysql_query(c.m, "START TRANSACTION") != 0) {
@@ -359,14 +309,8 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
         }
         if (ok || duplicate) {
             std::lock_guard<std::mutex> lk(mu_);
-            if (j.kind == wol::StoreAnswerKind::Login) {
-                a.login = wol::LoginResult::Ok;
-                ++stats_.loginOk;
-                if (a.created) ++stats_.loginCreated;
-            } else {
-                a.save = duplicate ? wol::SaveResult::Duplicate : wol::SaveResult::Saved;
-                ++(duplicate ? stats_.duplicates : stats_.saved);
-            }
+            a.save = duplicate ? wol::SaveResult::Duplicate : wol::SaveResult::Saved;
+            ++(duplicate ? stats_.duplicates : stats_.saved);
             return a;
         }
         a.why = c.lastError;
@@ -379,13 +323,8 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
         }
     }
     std::lock_guard<std::mutex> lk(mu_);
-    if (j.kind == wol::StoreAnswerKind::Login) {
-        a.login = wol::LoginResult::Failed;
-        ++stats_.loginFailed;
-    } else {
-        a.save = wol::SaveResult::Failed;
-        ++stats_.saveFailed;
-    }
+    a.save = wol::SaveResult::Failed;
+    ++stats_.saveFailed;
     return a;
 }
 

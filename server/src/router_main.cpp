@@ -25,6 +25,7 @@
 
 #include "nox/IniFile.h"
 #include "nox/JoinToken.h"   // `ParseIpv4`
+#include "nox/LoginLine.h"   // ★ 로그인 암호 조각 4 — 기록 가림
 #include "nox/Router.h"
 #include "nox/TcpLines.h"
 
@@ -124,7 +125,7 @@ int main(int argc, char** argv) {
             break;
         case nox::TcpLineEvent::Type::LINE:
             ++nIn;
-            if (!g_quiet) Log("[c%d:%u] >> %s\n", e.conn, e.port, Printable(e.line, false).c_str());
+            if (!g_quiet) Log("[c%d:%u] >> %s\n", e.conn, e.port, Printable(nox::RedactLoginLine(e.line), false).c_str());   // ★ 로그인 암호 조각 4 — whereto 암호 가림
             outs.clear();
             router.OnLine(e.conn, e.line, outs);
             for (const auto& o : outs) {

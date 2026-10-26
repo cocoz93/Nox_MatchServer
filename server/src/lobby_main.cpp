@@ -1,7 +1,7 @@
 ﻿// lobby_main.cpp — 로비 프로세스 `nox_lobby` (MO 6단계 v2 작업 3c — `Docs/LOBBY_SPLIT_DESIGN.md`).
 //
 //   nox_lobby.exe --config <설정 파일> [--bind 0.0.0.0] [--lobby-port 4000]
-//                 [--link-bind 127.0.0.1] [--link-port 4010] [--seconds N] [--quiet] [--no-db]
+//                 [--link-bind 127.0.0.1] [--link-port 4010] [--seconds N] [--quiet] [--no-db] [--no-auth]
 //
 // 왜 다시 따로 된 프로세스인가 — 목표 구조 v2(사용자 10-20 「좋아 v2로가자」): 로비 하나가 전체 상태(로그인 · 채팅 채널 · 게임 목록 ·
 //   나중 계정 · 친구 · 매칭)를 쥐고, 게임 서버(`nox_server`)는 판만 돌려 늘리고 줄인다. 10-14 작업 8d 가 이 실행 파일을 없애고
@@ -19,6 +19,8 @@
 // 설정 파일 — `[token] key = <16진 64자>`(입장 토큰 키 — 게임 서버와 같은 값. 연결 확인 키 · 게임 서버별 토큰 키도 이것에서 뽑는다)
 //   ★ 7단계 조각 8 — `[db]` host · port · user · password · database(계정 · 판 기록의 정본 MySQL — `Docs/ACCOUNT_DB_DESIGN.md`).
 //     없거나 못 붙거나 표 버전이 다르면 뜨지 않는다(토큰 키와 같은 꼴). `--no-db` = 메모리 저장소(시험 · 끝나면 기록이 사라짐 — 정할 것 b)
+//   ★ 로그인 암호 조각 4 — `[auth] key`(로그인 서버와 같은 값)가 있으면 로그인은 로그인 토큰(`Docs/LOGIN_AUTH_DESIGN.md`) · `port`(가입 페이지 안내).
+//     없거나 `--no-auth` 면 아이디만(시험용 · 정할 것 c — 다른 PC 판 `mo_host`). 받은 줄 기록은 `apgar` 인자를 가린다(`RedactLoginLine`)
 // ⚠ --bind 0.0.0.0 은 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다. 같은 PC 시험은 --bind 127.0.0.1 로 충분하다.
 //   연결 포트는 기본 127.0.0.1 — 게임 서버가 다른 PC 면 --link-bind 로 내부 주소를 준다(바깥 주소에 열지 말 것)
 #include <winsock2.h>
@@ -111,6 +113,7 @@ int main(int argc, char** argv) {
     int seconds = 0;   // 0 이면 끝없이. 자체검사가 정해진 시간 뒤 스스로 끝나게 쓴다
     std::string configPath;
     bool noDb = false;   // ★ 7단계 조각 8
+    bool noAuth = false; // ★ 로그인 암호 조각 4
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -125,6 +128,7 @@ int main(int argc, char** argv) {
         else if (a == "--config" && hasNext) configPath = argv[++i];
         else if (a == "--seconds" && hasNext) seconds = std::atoi(argv[++i]);
         else if (a == "--no-db") noDb = true;
+        else if (a == "--no-auth") noAuth = true;
         else { Log("[실패] 모르는 인자: %s\n", a.c_str()); return 2; }
     }
     if (lobbyPort == 0 || linkPort == 0 || lobbyPort == linkPort) {
@@ -139,6 +143,17 @@ int main(int argc, char** argv) {
         Log("[멈춤] 설정 파일의 [token] key 가 16진 64자가 아니다 — %s\n", configPath.c_str());
         return 2;
     }
+    // ★ 로그인 암호 조각 4 — 로그인 토큰 키(있으면 암호 판). 틀린 꼴이면 뜨지 않는다(조용히 아이디만으로 떨어지지 않게)
+    if (!noAuth && !ini.Get("auth", "key").empty()) {
+        if (!nox::ParseJoinKey(ini.Get("auth", "key"), cfg.loginKey)) {
+            Log("[멈춤] 설정 파일의 [auth] key 가 16진 64자가 아니다 — %s\n", configPath.c_str());
+            return 2;
+        }
+        cfg.authOn = true;
+        if (!ini.Get("auth", "port").empty()) cfg.authPort = static_cast<uint16_t>(std::atoi(ini.Get("auth", "port").c_str()));
+    }
+    Log(cfg.authOn ? "[로비] 로그인 = 로그인 토큰(로그인 서버 :%u · 가입 https://<로비 주소>:%u/signup)\n"
+                   : "[로비] 로그인 = 아이디만(시험용 — [auth] key 없음 또는 --no-auth)\n", cfg.authPort, cfg.authPort);
 
     // ★ 7단계 조각 8 — 저장소(계정 · 판 기록). 포트를 열기 전에 — 못 뜨면 포트도 안 잡는다
     nox::wol::CMemoryLobbyStore memStore;
@@ -189,8 +204,7 @@ int main(int argc, char** argv) {
     nox::wol::Lobby lobby(cfg, mirror);
     mirror.Attach(lobby);
     // ★ 7단계 조각 5 — 저장소(계정 · 판 기록 — 위에서 고름: DB 워커 · --no-db 면 메모리 가짜. 답은 둘 다 다음 바퀴 이후)
-    mirror.AttachStore(store);
-    lobby.AttachStore(store);   // ★ 7단계 조각 6 — 로그인은 계정 확인 답을 받고 끝낸다
+    mirror.AttachStore(store);   // ★ 로그인 암호 조각 4 — 로비 로그인은 저장소에 안 묻는다(판 저장만)
     std::vector<nox::wol::StoreAnswer> answers;
     wchar_t stopName[64];
     swprintf(stopName, 64, L"nox_lobby_stop_%lu", GetCurrentProcessId());
@@ -246,7 +260,7 @@ int main(int argc, char** argv) {
                     mirror.OnLinkLine(e.conn, e.line, outs);
                 } else {
                     ++nIn;
-                    if (!g_quiet) Log("[로비 c%d] >> %s\n", e.conn, Printable(e.line).c_str());
+                    if (!g_quiet) Log("[로비 c%d] >> %s\n", e.conn, Printable(nox::RedactLoginLine(e.line)).c_str());   // ★ 조각 4 — 암호 · 토큰 가림
                     lobby.OnLine(e.conn, e.line, outs);
                 }
                 break;
@@ -277,7 +291,6 @@ int main(int argc, char** argv) {
         for (const nox::wol::StoreAnswer& a : answers) {
             switch (a.kind) {
                 case nox::wol::StoreAnswerKind::SaveMatch: mirror.OnStoreAnswer(a, outs); break;
-                case nox::wol::StoreAnswerKind::Login: lobby.OnStoreAnswer(a, outs); break;   // ★ 7단계 조각 6
                 case nox::wol::StoreAnswerKind::kCount: break;
             }
         }
@@ -301,9 +314,9 @@ int main(int argc, char** argv) {
     if (dbWorker) {
         dbWorker->Stop();
         const nox::db::DbStats ds = dbWorker->Stats();
-        Log("[로비] 끝 — DB 요청 %llu(로그인 맞음 %llu · 그중 만듦 %llu · 로그인 실패 %llu · 판 Saved %llu · Duplicate %llu · Invalid %llu · 판 실패 %llu) · "
+        Log("[로비] 끝 — DB 요청 %llu(판 Saved %llu · Duplicate %llu · Invalid %llu · 판 실패 %llu) · "   // ★ 로그인 암호 조각 4 — 로그인 걷음
             "붙음 %llu · 못 붙음 %llu · 끊겨 다시 %llu · 한 번에 꺼낸 일 최대 %zu%s%s\n",
-            ds.requests, ds.loginOk, ds.loginCreated, ds.loginFailed, ds.saved, ds.duplicates, ds.invalid, ds.saveFailed, ds.connects,
+            ds.requests, ds.saved, ds.duplicates, ds.invalid, ds.saveFailed, ds.connects,
             ds.connectFailed, ds.retries, ds.queueMax, ds.lastError.empty() ? "" : " · 마지막 오류 ", ds.lastError.c_str());
     }
 #endif
@@ -317,11 +330,18 @@ int main(int argc, char** argv) {
         nConn, nIn, nOut, ls.tokensIssued, ls.roomsCreated, ls.roomsRequested, ls.roomCreateFailed, ls.roomRequestTimeout,
         ls.roomRequestDropped, ls.chatMessages, ls.JoinRejectedTotal(), jr(JoinReject::RequestFailed), jr(JoinReject::CreateFailed),
         jr(JoinReject::Timeout), jr(JoinReject::NoSuchRoom), jr(JoinReject::NotLoggedIn));
-    // ★ 7단계 조각 6 — 로그인(USER 하나 = 확인 요청 · 이름 틀림 · 저장소 없음 중 하나 · 요청 하나 = 맞음 · 실패 · 시간 초과 · 끊김 중 하나)
-    Log("[로비] 끝 — 로그인 확인 %llu(맞음 %llu · 그중 새 계정 %llu · 실패 %llu · 시간 초과 %llu · 끝날 때 남음 %zu) · 이름 틀림 %llu · 저장소 없음 %llu · "
-        "늦은 답 %llu · 쌓았다 넘긴 줄 %llu(버림 %llu) · 마감 끊음 %llu\n",
-        ls.loginChecks, ls.loginOk, ls.loginCreated, ls.loginFailed, ls.loginTimeout, lobby.PendingLogins(), ls.loginBadName, ls.loginNoStore,
-        ls.loginLateAnswer, ls.heldLines, ls.heldDropped, ls.loginDeadlineClosed);
+    // ★ 로그인 암호 조각 4 — 로그인(USER 하나 = 아래 갈래 중 하나 · 합 = 로그인) · 토큰 갈래(`LoginTokenCheck` 차례) · 실패 까닭(`LoginFail` 차례)
+    {
+        std::string tok, fail;
+        for (size_t i = 0; i < static_cast<size_t>(nox::LoginTokenCheck::kCount); ++i)
+            tok += std::string(i ? " · " : "") + nox::LoginTokenCheckName(static_cast<nox::LoginTokenCheck>(i)) + " " + std::to_string(ls.loginToken[i]);
+        for (size_t i = 0; i < static_cast<size_t>(nox::LoginFail::kCount); ++i)
+            fail += std::string(i ? " · " : "") + nox::LoginFailName(static_cast<nox::LoginFail>(i)) + " " + std::to_string(ls.loginFail[i]);
+        Log("[로비] 끝 — 로그인 %llu(토큰 [%s] · 다시 쓴 토큰 %llu · 실패 표시 [%s] · 모르는 까닭 %llu · 손님 %llu · 평문 %llu · apgar 없음 %llu · "
+            "이름 틀림 %llu · 아이디만 %llu) · 옛 접속 끊음 %llu · 로그인된 계정 %zu · 대화방 보기만 %llu · 마감 끊음 %llu\n",
+            ls.LoginTotal(), tok.c_str(), ls.loginReplay, fail.c_str(), ls.loginFailUnknown, ls.loginGuest, ls.loginPlain, ls.loginMissing,
+            ls.loginBadName, ls.loginNoAuth, ls.loginKickedOld, lobby.AccountsOnline(), ls.chatViewOnly, ls.loginDeadlineClosed);
+    }
     // ★ 7단계 — 보냄 · 받음은 PING 을 넣은 수(괄호가 그중 PING) · 무소식 끊음 = 받은 줄이 한도 동안 없어 끊은 게임 서버 연결
     Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu(PING %llu) · "
         "보냄 %llu(PING %llu) · 방 알림 %llu · 사라짐 %llu · 못 읽는 줄 %llu · 판 결과 %llu · 무소식 끊음 %llu\n",

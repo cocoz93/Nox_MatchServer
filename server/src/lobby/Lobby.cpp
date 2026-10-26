@@ -141,8 +141,11 @@ void Lobby::OnClose(int conn, std::vector<Out>& out) {
         rooms_.CancelRoom(it->first);   // ★ 작업 3c — 공급자(거울)의 기다림 장부에서도
         it = pending_.erase(it);
     }
-    // ★ 7단계 조각 6 — 기다리던 계정 확인 답은 늦은 답으로 버린다(저장소 쪽 일은 그대로 끝난다 — 마지막 로그인 시각만 적힘)
-    if (ci != conns_.end() && ci->second.login == LoginState::Checking) loginPending_.erase(ci->second.loginReq);
+    // ★ 로그인 암호 조각 4 — 계정 장부에서 이 접속을 지운다(새 접속이 이미 차지했으면 그대로 — 끊긴 쪽이 옛 접속)
+    if (ci != conns_.end() && ci->second.accountId != 0) {
+        const auto a = accountConn_.find(ci->second.accountId);
+        if (a != accountConn_.end() && a->second == conn) accountConn_.erase(a);
+    }
     conns_.erase(conn);
 }
 
@@ -179,16 +182,11 @@ void Lobby::OnRoomCreateFailed(uint32_t req, const std::string& why, std::vector
 
 void Lobby::Tick(std::vector<Out>& out) {
     const uint32_t now = cfg_.nowMs();
-    // ★ 7단계 조각 6 — 계정 확인 한도(실패 길) · 로그인 마감(끊기). 32비트 시계가 돌아도 맞게
+    // ★ 7단계 조각 6 — 로그인 마감(끊기). 32비트 시계가 돌아도 맞게 · ★ 로그인 암호 조각 4 — 계정 확인 한도는 걷음
     for (auto& kv : conns_) {
         Conn& c = kv.second;
         if (c.closing || static_cast<int32_t>(now - c.loginDueMs) < 0) continue;
-        if (c.login == LoginState::Checking) {
-            ++stats_.loginTimeout;
-            loginPending_.erase(c.loginReq);
-            log_.push_back("[로그인 — 시간 초과] " + c.nick + " — " + std::to_string(kLoginCheckTimeoutMs) + "ms 안에 계정 확인 답 없음(안내 + 376)");
-            FinishLogin(kv.first, c, LoginState::Failed, "Account service unavailable - try again later.", out);
-        } else if (c.login == LoginState::Waiting) {
+        if (c.login == LoginState::Waiting) {
             ++stats_.loginDeadlineClosed;
             c.closing = true;
             log_.push_back("[로그인 — 마감] c" + std::to_string(kv.first) + " — " + std::to_string(kLoginDeadlineMs / 1000) + "초 안에 USER 없음 · 끊음");
@@ -239,55 +237,113 @@ const char* JoinRejectText(JoinReject why) {
     return "?";
 }
 
-// ★ 7단계 조각 6 — 인사 + 쌓아 둔 뒷줄. 실패도 XWIS 꼴로 로그인은 끝낸다(376) — 답을 안 하면 정품이 「Connecting…」에서 멈춘다(10-10)
-void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const char* failNotice, std::vector<Out>& out) {
+// ★ 7단계 조각 6 — 인사. 실패도 XWIS 꼴로 로그인은 끝낸다(376) — 답을 안 하면 정품이 「Connecting…」에서 멈춘다(10-10)
+//   ★ 로그인 암호 조각 4 — 뒷줄 쌓기 걷음(곧바로 답하므로 정품 묶음의 뒷줄은 받은 차례대로 376 뒤에 온다)
+void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const std::string& failNotice, std::vector<Out>& out) {
     c.login = result;
-    c.loginReq = 0;
     out.push_back({conn, ": 375 u :- " + (cfg_.motd.empty() ? std::string() : cfg_.motd[0])});
     for (size_t i = 1; i < cfg_.motd.size(); ++i) out.push_back({conn, ": 372 u :- " + cfg_.motd[i]});
     if (c.clientVer < kNoxClientMinVersion)
         for (const char* l : kNoClientMotd) out.push_back({conn, std::string(": 372 u :- ") + l});
-    if (failNotice) {
-        out.push_back({conn, std::string(": 372 u :- *** Login failed: ") + failNotice + " ***"});
-        out.push_back({conn, ": 372 u :- You can chat, but joining a game needs a successful login."});
+    if (!failNotice.empty()) {
+        out.push_back({conn, ": 372 u :- *** Login failed: " + failNotice + " ***"});
+        out.push_back({conn, cfg_.authOn ? std::string(": 372 u :- Chat rooms are view-only and games are closed until you log in.")
+                                         : std::string(": 372 u :- You can chat, but joining a game needs a successful login.")});
     }
     out.push_back({conn, ": 376 u"});
-    // 쌓아 둔 줄을 받은 차례대로(그 사이 끊김은 없다 — 이 함수는 한 바퀴 안). 넘기는 동안 다시 쌓이지 않는다(로그인이 끝났다)
-    std::vector<std::string> held;
-    held.swap(c.held);
-    stats_.heldLines += held.size();
-    for (const std::string& l : held) OnLine(conn, l, out);
 }
 
-void Lobby::OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out) {
-    const auto p = loginPending_.find(a.req);
-    if (a.kind != StoreAnswerKind::Login || p == loginPending_.end()) {
-        ++stats_.loginLateAnswer;   // 끝난 요청(한도 · 끊김) — 저장소는 그대로 일을 끝냈다
-        return;
+std::string Lobby::SignupUrl(const Conn& c) const {
+    return "https://" + IpDotted(c.localIp) + ":" + std::to_string(cfg_.authPort) + "/signup";
+}
+
+// ★ 로그인 암호 조각 4 — 같은 계정의 옛 접속을 끊는다(정할 것 b). 끊는 줄은 마감 끊기와 같은 꼴(`Tick`) · 대화방 PART 는 끊김 사건의 `OnClose` 가
+void Lobby::TakeAccount(int conn, Conn& c, uint64_t accountId, std::vector<Out>& out) {
+    c.accountId = accountId;
+    int& owner = accountConn_[accountId];
+    if (owner != 0 && owner != conn) {
+        const auto old = conns_.find(owner);
+        if (old != conns_.end() && !old->second.closing) {
+            ++stats_.loginKickedOld;
+            old->second.closing = true;
+            log_.push_back("[로그인 — 옛 접속 끊음] " + c.nick + " — 계정 " + std::to_string(accountId) + " · c" + std::to_string(owner) + " → c" +
+                           std::to_string(conn));
+            out.push_back({owner, "ERROR :Closing Link (logged in elsewhere)", true});
+        }
     }
-    const int conn = p->second;
-    loginPending_.erase(p);
-    const auto ci = conns_.find(conn);
-    if (ci == conns_.end() || ci->second.login != LoginState::Checking || ci->second.loginReq != a.req) {
-        ++stats_.loginLateAnswer;
-        return;
-    }
-    Conn& c = ci->second;
-    switch (a.login) {
-        case LoginResult::Ok:
-            ++stats_.loginOk;
-            if (a.created) ++stats_.loginCreated;
-            c.accountId = a.accountId;
-            log_.push_back("[로그인] " + c.nick + " — 계정 " + std::to_string(a.accountId) + (a.created ? "(새로 만듦)" : ""));
-            FinishLogin(conn, c, LoginState::Ok, nullptr, out);
+    owner = conn;
+}
+
+// ★ 로그인 암호 조각 4 — `apgar` 자리를 가른다(`LoginLine.h`) → 갈래 하나를 세고 인사. 세는 자리는 이 함수와 USER 갈래(이름 · 키 없음)뿐
+void Lobby::CheckLoginToken(int conn, Conn& c, std::vector<Out>& out) {
+    std::string payload;
+    const ApgarKind kind = ClassifyApgar(c.apgar, payload);
+    c.apgar.clear();   // 다 봤으면 쥐지 않는다
+    const char* tooOld = "Client patch is too old for password login - get the new wsock32.dll.";
+    switch (kind) {
+        case ApgarKind::Token: {
+            uint8_t raw[kLoginTokenSize];
+            LoginToken t;
+            const uint32_t now = cfg_.unixNow();
+            const LoginTokenCheck r = ParseHex(payload, raw, sizeof(raw))
+                                          ? VerifyLoginToken(cfg_.loginKey, raw, sizeof(raw), now, c.peerIp, c.nick, t)
+                                          : LoginTokenCheck::BadSize;
+            if (r == LoginTokenCheck::Ok && !loginNonces_.Consume(t.nonce, t.expiresAt, now)) {
+                ++stats_.loginReplay;
+                log_.push_back("[로그인 — 다시 쓴 토큰] " + c.nick + " — 일회용 번호를 이미 씀(안내 + 376)");
+                FinishLogin(conn, c, LoginState::Failed, "Login token was already used - log in again.", out);
+                return;
+            }
+            ++stats_.loginToken[static_cast<size_t>(r)];
+            if (r != LoginTokenCheck::Ok) {
+                log_.push_back("[로그인 — 토큰 거절] " + c.nick + " — " + LoginTokenCheckName(r) + "(안내 + 376)");
+                FinishLogin(conn, c, LoginState::Failed, "Login token rejected - log in again.", out);
+                return;
+            }
+            TakeAccount(conn, c, t.accountId, out);
+            log_.push_back("[로그인] " + c.nick + " — 계정 " + std::to_string(t.accountId) + "(토큰)");
+            FinishLogin(conn, c, LoginState::Ok, std::string(), out);
             return;
-        case LoginResult::Failed:
-        case LoginResult::kCount:
+        }
+        case ApgarKind::Fail: {
+            LoginFail f = LoginFail::kCount;
+            if (!ParseLoginFail(payload, f)) {
+                ++stats_.loginFailUnknown;
+                log_.push_back("[로그인 — 실패 표시] " + c.nick + " — 모르는 까닭(안내 + 376)");
+                FinishLogin(conn, c, LoginState::Failed, "Login failed - get the new client patch.", out);
+                return;
+            }
+            ++stats_.loginFail[static_cast<size_t>(f)];
+            std::string notice;
+            switch (f) {
+                case LoginFail::WrongPassword: notice = "Wrong password."; break;
+                case LoginFail::NoAccount: notice = "No such account - sign up at " + SignupUrl(c); break;
+                case LoginFail::ServerError: notice = "Login server error - try again later."; break;
+                case LoginFail::Unreachable: notice = "Cannot reach the login server - try again later."; break;
+                case LoginFail::BadInput: notice = "Name: letters/digits 1-9. Password: 4-16, a letter and a digit, no spaces."; break;
+                case LoginFail::kCount: notice = "Login failed."; break;
+            }
+            log_.push_back("[로그인 — 실패 표시] " + c.nick + " — " + LoginFailName(f) + "(안내 + 376)");
+            FinishLogin(conn, c, LoginState::Failed, notice, out);
+            return;
+        }
+        case ApgarKind::Guest:
+            ++stats_.loginGuest;
+            log_.push_back("[로그인 — 손님] c" + std::to_string(conn) + " — 암호 판엔 손님 없음(안내 + 376)");
+            FinishLogin(conn, c, LoginState::Failed, "Guest login is off - sign up at " + SignupUrl(c), out);
+            return;
+        case ApgarKind::Plain:
+            ++stats_.loginPlain;
+            log_.push_back("[로그인 — 평문] " + c.nick + " — 클라 DLL 판 " + std::to_string(c.clientVer) + "(토큰 없음 · 안내 + 376)");
+            FinishLogin(conn, c, LoginState::Failed, c.clientVer < kNoxClientAuthVersion ? tooOld : "Login token missing - log in again.", out);
+            return;
+        case ApgarKind::Missing:
+        case ApgarKind::kCount:
             break;
     }
-    ++stats_.loginFailed;
-    log_.push_back("[로그인 — 실패] " + c.nick + " — " + (a.why.empty() ? std::string("저장소 실패") : a.why) + "(안내 + 376)");
-    FinishLogin(conn, c, LoginState::Failed, "Account service unavailable - try again later.", out);
+    ++stats_.loginMissing;
+    log_.push_back("[로그인 — apgar 없음] " + c.nick + "(안내 + 376)");
+    FinishLogin(conn, c, LoginState::Failed, c.clientVer < kNoxClientAuthVersion ? tooOld : "Login token missing - log in again.", out);
 }
 
 // 방 참가 답 — 방장 주소가 353 에 실린다(326 과 같은 값). ★ 10-20 v2 작업 3a — 옛 JOINGAME 갈래의 몸통(미룬 새 방 답도 이것)
@@ -339,15 +395,6 @@ std::vector<std::string> Lobby::TakeLog() {
 void Lobby::OnLine(int conn, std::string_view line, std::vector<Out>& out) {
     auto it = conns_.find(conn);
     if (it == conns_.end() || line.empty()) return;
-    // ★ 7단계 조각 6 — 계정 확인 중이면 뒷줄은 쌓아 둔다(답 뒤 `FinishLogin` 이 차례대로 — 녹음 차례 376 → 379 → 329)
-    if (it->second.login == LoginState::Checking) {
-        if (it->second.held.size() >= kMaxHeldLines) {
-            ++stats_.heldDropped;
-            return;
-        }
-        it->second.held.emplace_back(line);
-        return;
-    }
     const auto t = Split(line);
     const std::string cmd = Upper(t[0]);
     OnChat(conn, it->second, cmd, t, line, out);   // ★ 10-14 작업 8b — 4005(로비 찾기)는 라우터(`Router.cpp`)로 옮겼다
@@ -357,7 +404,11 @@ void Lobby::OnLine(int conn, std::string_view line, std::vector<Out>& out) {
 void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<std::string>& t,
                    std::string_view line, std::vector<Out>& out) {
     // 답이 없는 줄(녹음 그대로). 이름·암호는 검사하지 않는다 — 2단계는 아무 이름이나 받는다
-    if (cmd == "CVERS" || cmd == "PASS" || cmd == "APGAR" || cmd == "SERIAL" || cmd == "SETOPT") return;
+    if (cmd == "CVERS" || cmd == "PASS" || cmd == "SERIAL" || cmd == "SETOPT") return;
+    if (cmd == "APGAR") {   // ★ 로그인 암호 조각 4 — 인자를 USER 까지 쥔다(DLL 이 로그인 토큰 · 실패 표시로 바꿔 실음 · 기록에 안 찍음)
+        c.apgar = t.size() > 1 ? t[1] : std::string();
+        return;
+    }
     if (cmd == "NICK") {
         if (t.size() > 1) c.nick = t[1];
         return;
@@ -383,12 +434,6 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
                            (c.clientVer < 0 ? std::string("없음(NOXCLIENT 줄 없음)") : "판 " + std::to_string(c.clientVer) + " 낮음") +
                            " · 인사말로 알림 · 방 참가엔 토큰 없음");
         }
-        // ★ 7단계 조각 6 — 계정 확인(아이디만 — 처음 보는 이름이면 저장소가 만든다). 저장소를 안 붙였으면 옛 꼴로 곧바로
-        if (!store_) {
-            ++stats_.loginNoStore;
-            FinishLogin(conn, c, LoginState::Ok, nullptr, out);
-            return;
-        }
         if (c.nick.empty() || c.nick.size() > kMaxNickBytes) {   // 토큰 이름 칸 16바이트 — 자르면 남의 계정과 겹칠 수 있다
             ++stats_.loginBadName;
             log_.push_back("[로그인 — 이름] c" + std::to_string(conn) + " 이름 " + std::to_string(c.nick.size()) + "바이트(1~" +
@@ -396,12 +441,13 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
             FinishLogin(conn, c, LoginState::Failed, "Name must be 1-16 bytes - log in with a shorter name.", out);
             return;
         }
-        ++stats_.loginChecks;
-        c.login = LoginState::Checking;
-        c.loginReq = nextLoginReq_++;
-        c.loginDueMs = cfg_.nowMs() + kLoginCheckTimeoutMs;
-        loginPending_[c.loginReq] = conn;
-        store_->CheckLogin(c.loginReq, c.nick);
+        // ★ 로그인 암호 조각 4 — 키가 없으면 아이디만(조각 6 이전 꼴 · 시험용 — 정할 것 c) · 있으면 토큰(정할 것 a — DB 안 물음)
+        if (!cfg_.authOn) {
+            ++stats_.loginNoAuth;
+            FinishLogin(conn, c, LoginState::Ok, std::string(), out);
+            return;
+        }
+        CheckLoginToken(conn, c, out);
         return;
     }
     if (cmd == "VERCHK") {   // 패치 확인 — 「패치 없음」 글자 그대로
@@ -435,10 +481,18 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
             log_.push_back("[모르는 채널] " + std::string(line));
             return;
         }
-        // ★ 10-20 v2 작업 3b — 같은 대화방 사람들에게도 들어옴을 알린다(전에는 본인에게만 — v2 시범 줄 그대로)
-        for (int other : members_[t[1]])
-            if (other != conn) out.push_back({other, ":" + c.nick + "!u@h JOIN :0,0 " + t[1]});
-        members_[t[1]].insert(conn);
+        // ★ 로그인 암호 조각 4 — 암호 판에서 로그인 안 된 접속은 보기만(본인에게만 들어옴 답 — 남에게 이름이 안 보이고 구성원이 아니라 글이 걸러짐).
+        //   답을 안 하면 정품이 들어가기 화면에서 멈출 수 있어 거절 대신 이 꼴(정품이 대화방 거절을 어떻게 그리는지 미확인)
+        const bool viewOnly = cfg_.authOn && c.login != LoginState::Ok;
+        if (viewOnly) {
+            ++stats_.chatViewOnly;
+            log_.push_back("[대화방 — 보기만] " + (c.nick.empty() ? "c" + std::to_string(conn) : c.nick) + " → " + t[1] + " (로그인 안 됨)");
+        } else {
+            // ★ 10-20 v2 작업 3b — 같은 대화방 사람들에게도 들어옴을 알린다(전에는 본인에게만 — v2 시범 줄 그대로)
+            for (int other : members_[t[1]])
+                if (other != conn) out.push_back({other, ":" + c.nick + "!u@h JOIN :0,0 " + t[1]});
+            members_[t[1]].insert(conn);
+        }
         out.push_back({conn, ":" + c.nick + "!u@h JOIN :0,0 " + t[1]});
         out.push_back({conn, ": 353 u * " + t[1] + " :" + Members353(t[1], std::string(), 0)});
         out.push_back({conn, ": 366 u " + t[1] + " :"});

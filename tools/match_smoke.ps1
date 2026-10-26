@@ -1,7 +1,7 @@
 ﻿# match_smoke.ps1 — 판 하나를 끝까지 치러 판 결과가 로비 저장까지 가는지 본다 (MO 7단계 조각 8b · Docs/ACCOUNT_DB_DESIGN.md 「실물 판」).
 #
 # 로비(nox_lobby) + 게임 서버(nox_server --lobby · 점수 한도 1 · 진단 죽임) + 패킷 클라 둘(alice · bob — 정품 클라 없이):
-#   ① 로비 로그인(계정 확인 답까지 미룸 — 조각 6) → alice 새 방(정품 Host Game 이 DLL 로 돌아오는 꼴 JOINGAME #alice's_game) · bob 그 방
+#   ① 로비 로그인(아이디만 — ★ 로그인 암호 조각 4 · 토큰 판은 조각 6 -Auth) → alice 새 방(정품 Host Game 이 DLL 로 돌아오는 꼴 JOINGAME #alice's_game) · bob 그 방
 #   ② UDP 접속 시도 + 토큰 꼬리 → JOIN_OK · CONNECT + 토큰 꼬리 → 수락 + 키 · 게임 진입(0x20) + 준비(0xc0) → 상태 갱신이 옴(대기 맵)
 #   ③ alice(방장 — 먼저 들어옴) 채팅 `!start`(TEXT_MESSAGE 0xA8 · `Server.cpp` 「채팅」) → 로비 거울에 판 중(ROOM … 1)
 #   ④ 진단 죽임(첫 사람이 둘째를 · `--debug-kill`) → 점수 한도 1 → 판 끝 → RESULT → 로비 저장 → SAVED ok → 게임 서버가 쥔 것을 지움
@@ -158,6 +158,7 @@ if ($Db) {
 $llog = Join-Path $tmp 'lobby.txt'; $glog = Join-Path $tmp 'server.txt'; $res = Join-Path $tmp 'matches.jsonl'
 $lobbyArgs = @('--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '120')   # 연결 줄을 찍게 --quiet 없이
 if (-not $Db) { $lobbyArgs += '--no-db' }
+$lobbyArgs += '--no-auth'   # ★ 로그인 암호 조각 4 — 패킷 클라는 토큰이 없다(설정에 [auth] 가 있어도 아이디만 · 토큰 판은 조각 6)
 $lp = Start-Process -FilePath $LobbyExe -PassThru -WindowStyle Hidden -RedirectStandardOutput $llog -ArgumentList $lobbyArgs
 $null = $lp.Handle
 Start-Sleep -Milliseconds 500
@@ -220,8 +221,7 @@ Check ($j -and $j.endReason -eq 'score_player' -and $j.winner.kind -eq 'player' 
   "판 결과 — 끝 까닭 $($j.endReason) · 승자 $($j.winner.account) · 사람 $($accs -join ',')"
 Check ($tl -match '판 저장 요청 1\(SAVED ok 1 · dup 0 · 실패 0 · 끊긴 뒤 답 0 · 모르는 답 0 · 끝날 때 남음 0\)') '로비 끝 줄 — 판 저장 요청 1(SAVED ok 1)'
 Check ($tg -match '판 결과 SAVED\(ok 1 · dup 0 · bad 0 · 모르는 판 0\)' -and $tg -match '쥔 채 끝 0') '게임 서버 끝 줄 — SAVED ok 1 · 쥔 채 끝 0'
-if ($Db) { Check ($tl -match '로그인 확인 2\(맞음 2 ') '로비 끝 줄 — 로그인 확인 2(맞음 2 — DB 는 두 번째 판부터 계정이 이미 있다)' }
-else { Check ($tl -match '로그인 확인 2\(맞음 2 · 그중 새 계정 2') '로비 끝 줄 — 로그인 확인 2(새 계정 2)' }
+Check ($tl -match '끝 — 로그인 2\(토큰 \[[^\]1-9]*\] .* 아이디만 2\) · 옛 접속 끊음 0') '로비 끝 줄 — 로그인 2(아이디만 2 · 토큰 갈래 0 — ★ 로그인 암호 조각 4)'
 
 if ($Db) {
   # DB 행 — 판 번호로 찾음(시험마다 실행 번호가 달라 겹치지 않는다)

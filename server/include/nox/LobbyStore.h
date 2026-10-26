@@ -7,6 +7,8 @@
 //     메모리 가짜도 답을 다음 바퀴에 낸다(10-21 정할 것 b — 소켓 시험이 DB 와 같은 미룸 · 뒷줄 쌓기 · SAVED 길을 지나게)
 //   · 요청 번호는 부르는 쪽이 매긴다 — 갈래마다 따로라 답에 갈래가 실린다
 //   · 계정 이름은 바이트 그대로 같음으로 찾는다(대소문자를 가린다 — 정품 로비가 `Wn` · `wn` 을 같게 보는지 미확인 · 계획 차이 6)
+//   ★ 로그인 암호 조각 4(`Docs/LOGIN_AUTH_DESIGN.md` 정할 것 a) — 로그인(계정 확인 · 만들기)을 걷어냄. 계정은 로그인 서버(nox_auth)가 쥐고
+//     로비는 서명 토큰만 본다 → 이 경계는 판 저장만(`RoomMirror`). 판 사람의 계정 번호는 저장소가 이름으로 찾는다(없으면 NULL)
 #pragma once
 
 #include <cstdint>
@@ -19,9 +21,7 @@
 
 namespace nox::wol {
 
-enum class StoreAnswerKind : uint8_t { Login, SaveMatch, kCount };
-// 계정 확인 — 실패는 저장소가 답을 못 낸 것(DB 끊김 · 시간 초과). 이름 규칙(길이 등)은 로비가 묻기 전에 가른다
-enum class LoginResult : uint8_t { Ok, Failed, kCount };
+enum class StoreAnswerKind : uint8_t { SaveMatch, kCount };   // ★ 로그인 암호 조각 4 — Login 갈래 걷음
 // 판 저장 — 못 넣음(Failed)이면 로비는 SAVED 를 안 보낸다(게임 서버가 30초 뒤 다시 · `LobbyClient.h` `kResultResendMs`)
 //   ★ 7단계 조각 7 — Invalid = 저장소 칸에 안 맞는 판(글 길이 · UTF-8 아닌 원문 · 사람 수). 다시 보내도 같으므로 로비는 SAVED bad
 //     (Failed 로 두면 게임 서버가 30초마다 끝없이 다시 보낸다 — MySQL 엄격 모드는 넘는 글을 거절한다)
@@ -48,9 +48,6 @@ struct MatchSource {
 struct StoreAnswer {
     StoreAnswerKind kind = StoreAnswerKind::kCount;
     uint32_t req = 0;
-    LoginResult login = LoginResult::kCount;   // Login
-    uint64_t accountId = 0;                    // Login Ok — 계정 번호
-    bool created = false;                      // Login Ok — 처음 보는 이름이라 만듦(아이디만 — 결정 2)
     SaveResult save = SaveResult::kCount;      // SaveMatch
     std::string why;                           // 실패 까닭(기록용)
 };
@@ -58,8 +55,6 @@ struct StoreAnswer {
 class ILobbyStore {
 public:
     virtual ~ILobbyStore() = default;
-    // 이름으로 계정 찾기 · 없으면 만들기 · 마지막 로그인 적기
-    virtual void CheckLogin(uint32_t req, const std::string& name) = 0;
     // 판 하나(한 트랜잭션) — 같은 (게임 서버 · 판 번호)가 이미 있으면 Duplicate · `rawJson` = 받은 줄 그대로(파일 줄 대조용)
     virtual void SaveMatch(uint32_t req, const MatchSource& src, const MatchRecord& rec, const std::string& rawJson) = 0;
     virtual void TakeAnswers(std::vector<StoreAnswer>& out) = 0;   // 덧붙인다
@@ -68,26 +63,19 @@ public:
 // 메모리 가짜 — 답은 다음 `TakeAnswers` 에(DB 워커의 「다른 스레드가 나중에」를 바퀴 하나로 흉내)
 class CMemoryLobbyStore final : public ILobbyStore {
 public:
-    void CheckLogin(uint32_t req, const std::string& name) override;
     void SaveMatch(uint32_t req, const MatchSource& src, const MatchRecord& rec, const std::string& rawJson) override;
     void TakeAnswers(std::vector<StoreAnswer>& out) override;
 
     // 시험 손잡이 — 저장소가 답을 못 내는 길(DB 끊김 흉내)
-    void SetFailLogins(bool on) { failLogins_ = on; }
     void SetFailSaves(bool on) { failSaves_ = on; }
 
-    size_t AccountCount() const { return accounts_.size(); }
-    uint64_t AccountId(const std::string& name) const;   // 0 = 없음
     size_t MatchCount() const { return matches_.size(); }
     const MatchRecord* FindMatch(const MatchSource& src, const std::string& match) const;   // 없으면 nullptr
 
 private:
     using MatchKey = std::tuple<uint32_t, uint16_t, std::string>;
     std::vector<StoreAnswer> pending_;
-    std::map<std::string, uint64_t> accounts_;
-    uint64_t nextAccount_ = 1;
     std::map<MatchKey, MatchRecord> matches_;
-    bool failLogins_ = false;
     bool failSaves_ = false;
 };
 

@@ -34,6 +34,7 @@ void Check(bool ok, const char* what) {
         std::printf("  [실패] %s\n", what);
     }
 }
+void Check(bool ok, const std::string& what) { Check(ok, what.c_str()); }   // ★ 로그인 암호 조각 4 — 개수를 글에 싣는 확인
 
 // ★ 10-20 거절 답 — `out` 이 그 접속에 거절 한 줄뿐인가(숫자 471 · 채널 칸 · 까닭 글까지). 471 은 상수 대신 글자로 — 정품이 받아 주는 숫자가 정답지다
 bool OnlyReject(const std::vector<nox::wol::Out>& out, int conn, const std::string& channel, nox::wol::JoinReject why) {
@@ -1152,30 +1153,13 @@ void LinkAliveUnitTests() {
 }
 
 // ── ★ 7단계 조각 4 — 저장소 경계의 메모리 가짜(`CMemoryLobbyStore` — `--no-db` · 시험 · 정할 것 b) ──
-//   ① 답은 다음 `TakeAnswers` 에(부를 때 곧바로 안 남) · 갈래 · 요청 번호 그대로
-//   ② 로그인 — 처음 이름 → 만듦(번호 1) · 같은 이름 → 같은 번호 · 대소문자 다르면 다른 계정(바이트 그대로) · 949 바이트 이름
+//   ①② ★ 로그인 암호 조각 4 — 로그인 갈래 걷음(답은 다음 `TakeAnswers` 에 — 아래 ③ 이 봄)
 //   ③ 판 저장 — 새 판 Saved · 같은 (게임 서버 · 판 번호) Duplicate · 다른 게임 서버의 같은 판 번호는 Saved(따로) · 넣은 칸 그대로
-//   ④ 실패 스위치 — 로그인 · 판 저장 Failed(까닭 글) · 실패한 판은 안 넣음 · 끄면 다시 됨
+//   ④ 실패 스위치 — 판 저장 Failed(까닭 글) · 실패한 판은 안 넣음 · 끄면 다시 됨
 void LobbyStoreUnitTests() {
     using namespace nox::wol;
     CMemoryLobbyStore st;
     std::vector<StoreAnswer> ans;
-    st.CheckLogin(7, "wn");
-    const bool notYet = st.AccountCount() == 1;   // 계정은 곧바로 만들지만 답은 다음 꺼내기에
-    st.TakeAnswers(ans);
-    Check(notYet && ans.size() == 1 && ans[0].kind == StoreAnswerKind::Login && ans[0].req == 7 && ans[0].login == LoginResult::Ok &&
-              ans[0].created && ans[0].accountId == 1,
-          "① 답은 꺼낼 때 · 갈래 Login · 요청 번호 7 · 처음 이름 → 만듦(번호 1)");
-    ans.clear();
-    st.TakeAnswers(ans);
-    const bool emptied = ans.empty();
-    st.CheckLogin(8, "wn");
-    st.CheckLogin(9, "Wn");
-    st.CheckLogin(10, std::string("\xb0\xc7", 2));
-    st.TakeAnswers(ans);
-    Check(emptied && ans.size() == 3 && ans[0].req == 8 && !ans[0].created && ans[0].accountId == 1 && ans[1].created && ans[1].accountId == 2 &&
-              ans[2].created && ans[2].accountId == 3 && st.AccountId(std::string("\xb0\xc7", 2)) == 3 && st.AccountId("x") == 0,
-          "② 꺼낸 뒤 빔 · 같은 이름 같은 번호 · 대소문자 다르면 다른 계정 · 949 바이트 이름 · 없는 이름 0");
 
     nox::MatchRecord rec;
     rec.match = "1760000000-0-1";
@@ -1187,29 +1171,28 @@ void LobbyStoreUnitTests() {
     st.SaveMatch(1, a, rec, "{}");
     st.SaveMatch(2, a, rec, "{}");
     st.SaveMatch(3, b, rec, "{}");
+    const bool notYet = st.MatchCount() == 2;   // 넣기는 곧바로지만 답은 다음 꺼내기에
+    std::vector<StoreAnswer> none;
     st.TakeAnswers(ans);
+    st.TakeAnswers(none);
     const nox::MatchRecord* got = st.FindMatch(a, "1760000000-0-1");
-    Check(ans.size() == 3 && ans[0].kind == StoreAnswerKind::SaveMatch && ans[0].req == 1 && ans[0].save == SaveResult::Saved &&
+    Check(notYet && none.empty() && ans.size() == 3 && ans[0].kind == StoreAnswerKind::SaveMatch && ans[0].req == 1 && ans[0].save == SaveResult::Saved &&
               ans[1].save == SaveResult::Duplicate && ans[2].save == SaveResult::Saved && st.MatchCount() == 2 && got &&
               got->roomName == "wn's game" && got->players.size() == 2 && got->players[0].account == "wn" && !st.FindMatch(b, "x"),
           "③ 새 판 Saved · 같은 게임 서버 같은 판 Duplicate · 다른 게임 서버 같은 판 번호 Saved · 넣은 칸 그대로");
 
     ans.clear();
-    st.SetFailLogins(true);
     st.SetFailSaves(true);
-    st.CheckLogin(20, "new");
     rec.match = "1760000000-0-2";
     st.SaveMatch(21, a, rec, "{}");
     st.TakeAnswers(ans);
-    const bool failed = ans.size() == 2 && ans[0].login == LoginResult::Failed && !ans[0].why.empty() && ans[0].accountId == 0 &&
-                        ans[1].save == SaveResult::Failed && !ans[1].why.empty() && st.AccountId("new") == 0 && st.MatchCount() == 2;
-    st.SetFailLogins(false);
+    const bool failed = ans.size() == 1 && ans[0].req == 21 && ans[0].save == SaveResult::Failed && !ans[0].why.empty() && st.MatchCount() == 2;
     st.SetFailSaves(false);
     ans.clear();
     st.SaveMatch(22, a, rec, "{}");
     st.TakeAnswers(ans);
     Check(failed && ans.size() == 1 && ans[0].save == SaveResult::Saved && st.MatchCount() == 3,
-          "④ 실패 스위치 — 로그인 · 판 저장 Failed(까닭 글 · 안 넣음) · 끄면 같은 판이 Saved");
+          "④ 실패 스위치 — 판 저장 Failed(까닭 글 · 안 넣음) · 끄면 같은 판이 Saved");
 
     // ⑤ ★ 7단계 조각 7 — 저장소 칸에 안 맞는 판 → Invalid(DB 워커와 같은 잣대 `MatchFitsStore` · 안 넣음) · 한도 꼭 맞으면 Saved
     ans.clear();
@@ -1351,167 +1334,261 @@ void MirrorSaveUnitTests() {
           "⑤ 저장소가 못 받는 판(방 이름 65바이트) → SAVED bad · 셈");
 }
 
-// ── ★ 7단계 조각 6 — 로그인 미룸(`Lobby` + 저장소 — `Docs/ACCOUNT_DB_DESIGN.md` 차이 3 · 4 · 5 · 6 · 7) ──
-//   ① 정품 로그인 묶음(USER 뒤 verchk · SETOPT · SETCODEPAGE 까지 한 번에) → 답 전엔 NOXSERVER 뿐 · 답 뒤 나온 줄 = 저장소 없는 옛 로비와 바이트까지 같음
-//   ② 토큰은 확인됨만 — 맞은 로그인은 토큰 · 저장소 실패 → 안내 + 376 · 방 참가 471(로그인 안 됨)
-//   ③ 확인 답 한도 — 1ms 앞 그대로 · 한도에 안내 + 376 + 쌓인 줄 · 늦은 답은 버림
-//   ④ 이름 — 17바이트 · 빈 이름 → 묻지 않고 안내 + 376 ⑤ 로그인 마감 — USER 없는 접속 30초에 끊는 줄 하나(한 번) · 로그인 끝난 접속은 안 끊음
-//   ⑥ 확인 중 끊김 → 답은 늦은 답 ⑦ 쌓기 한도(넘은 줄은 버리고 셈) ⑧ 두 번째 USER → 인사 다시 안 함 ⑨ 셈 맞추기
+// ── ★ 로그인 암호 조각 4 — 로그인 토큰(`Lobby` — `Docs/LOGIN_AUTH_DESIGN.md` 차이 5 · 6 · 정할 것 a · b · c) ──
+//   (7단계 조각 6 의 「저장소에 묻고 답 기다리기」 시험을 갈음 — 그 길은 걷어냈다)
+//   ① 아이디만(키 없음) — 정품 묶음 → NOXSERVER · 인사 · 376 → 379 → 329 차례 · 평문 apgar 를 안 봄 · 방 참가 토큰
+//   ② 암호 판 맞는 토큰 — 같은 차례 · 안내 없음 · 계정 번호 · 방 참가 토큰
+//   ③ 토큰 갈래 일곱(크기 · 판 · 서명 · 만료 · 너무 멂 · IP · 이름) — 안내 + 376 · 방 참가 471 · 다시 쓴 토큰
+//   ④ 실패 표시 까닭 다섯(계정 없음은 가입 주소) · 모르는 까닭 · 손님 · 평문(DLL 판 2 · 3) · apgar 없음
+//   ⑤ 같은 계정 새 접속 → 옛 접속에 끊는 줄 하나(정할 것 b) · 장부 · 옛 접속이 끊겨도 새 접속은 장부에
+//   ⑥ 로그인 실패 접속의 대화방 = 보기만(남에게 들어옴 안 알림 · 구성원 아님 · 글 거름)
+//   ⑦ 이름 17바이트 · 빈 이름 · 로그인 마감 · 두 번째 USER ⑧ 셈 — USER 수 = 갈래 합 · 갈래가 다 나옴
 void LoginUnitTests() {
     using namespace nox::wol;
-    uint32_t clock = 0xfffff000u;   // 32비트가 넘어가는 자리 근처(한도를 뺄셈으로 재는지)
-    const uint32_t t0 = clock;
-    auto makeCfg = [&]() {
+    uint32_t clock = 0xfffff000u;   // 32비트가 넘어가는 자리 근처(마감을 뺄셈으로 재는지)
+    nox::JoinKey loginKey = LobbyTestKey();
+    loginKey[0] ^= 0x77;            // 입장 토큰 키와 다른 값
+    uint64_t nextNonce = 100;
+    auto makeCfg = [&](bool auth) {
         LobbyConfig cfg;
         cfg.gameServerIp = 0x7f000001u;
         cfg.joinKey = LobbyTestKey();
         cfg.unixNow = [] { return kLobbyTestNow; };
         cfg.nonce = [] { return 0x0102030405060708ull; };
         cfg.nowMs = [&clock] { return clock; };
+        cfg.authOn = auth;
+        cfg.loginKey = loginKey;
         return cfg;
+    };
+    // 로그인 서버가 짓는 것과 같은 토큰(`AuthService.cpp`) — 바꿀 칸만 고쳐 쓴다
+    struct Tok {
+        uint64_t account = 7;
+        uint32_t ip = 0x7f000001u;
+        uint32_t expires = kLobbyTestNow + nox::kLoginTokenLifetimeSec;
+        uint64_t nonce = 0;
+        std::string name = "wn";
+        uint8_t version = nox::kLoginTokenVersion;
+        bool otherKey = false;
+    };
+    auto apgar = [&](Tok t) {
+        nox::LoginToken lt;
+        lt.version = t.version;
+        lt.accountId = t.account;
+        lt.clientIp = t.ip;
+        lt.expiresAt = t.expires;
+        lt.nonce = t.nonce ? t.nonce : nextNonce++;
+        lt.name = t.name;
+        uint8_t raw[nox::kLoginTokenSize];
+        nox::SignLoginToken(t.otherKey ? LobbyTestKey() : loginKey, lt, raw);
+        return "apgar NXL1" + nox::ToHex(raw, sizeof(raw)) + " 0";
     };
     FakeRooms fake;
     fake.rooms = {FakeRoom(0, "host1")};
-    Lobby lb(makeCfg(), fake);
-    CMemoryLobbyStore store;
-    lb.AttachStore(store);
-    Lobby old(makeCfg(), fake);   // 저장소 없는 옛 꼴 — 줄 차례의 정답지
     std::vector<Out> out;
     const uint32_t peer = 0x7f000001u;
-    auto feed = [&](Lobby& l, int conn, std::initializer_list<const char*> lines) {
+    auto feed = [&](Lobby& l, int conn, const std::vector<std::string>& ls) {
         out.clear();
-        for (const char* s : lines) l.OnLine(conn, s, out);
+        for (const std::string& s : ls) l.OnLine(conn, s, out);
     };
-    auto pump = [&]() {   // 저장소 답(로비 루프 한 자리)
-        std::vector<StoreAnswer> ans;
-        store.TakeAnswers(ans);
-        out.clear();
-        for (const StoreAnswer& a : ans) lb.OnStoreAnswer(a, out);
-        return ans.size();
-    };
-    auto lines = [](const std::vector<Out>& o) {
-        std::vector<std::string> v;
-        for (const Out& x : o) v.push_back(x.line);
-        return v;
-    };
-    auto has = [](const std::vector<Out>& o, const std::string& prefix) {
-        for (const Out& x : o)
+    auto has = [&](const std::string& prefix) {
+        for (const Out& x : out)
             if (x.line.rfind(prefix, 0) == 0) return true;
         return false;
     };
-    const auto bundle = {"NOXCLIENT 2", "CVERS 11020 9472", "PASS supersecret", "NICK wn", "apgar 1234 0", "SERIAL 7726",
-                         "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33", "SETCODEPAGE 949"};
+    auto lines = [&]() {
+        std::vector<std::string> v;
+        for (const Out& x : out) v.push_back(x.line);
+        return v;
+    };
+    const std::string user = "USER UserName HostName irc.westwood.com :RealName";
+    auto bundle = [&](const std::string& ver, const std::string& nick, const std::string& apgarLine) {
+        std::vector<std::string> b = {"NOXCLIENT " + ver, "CVERS 11020 9472", "PASS supersecret", "NICK " + nick};
+        if (!apgarLine.empty()) b.push_back(apgarLine);
+        b.insert(b.end(), {"SERIAL 7726", user, "verchk 32512 720916", "SETOPT 17,33", "SETCODEPAGE 949"});
+        return b;
+    };
+    // 정품 묶음 답의 차례 — NOXSERVER · 375 · (372 …) · 376 → 379 → 329 · 실패 안내 없음
+    auto welcomeOk = [&]() {
+        const auto v = lines();
+        size_t i376 = v.size();
+        for (size_t i = 0; i < v.size(); ++i)
+            if (v[i] == ": 376 u") i376 = i;
+        return v.size() >= 5 && v[0] == "NOXSERVER 1" && v[1].rfind(": 375 ", 0) == 0 && i376 + 3 == v.size() &&
+               v[i376 + 1].rfind(": 379 ", 0) == 0 && v[i376 + 2] == ": 329 u 949" && !has(": 372 u :- *** Login failed");
+    };
+    auto failWith = [&](const std::string& text) {
+        const auto v = lines();
+        bool notice = false, ended = false;
+        for (const std::string& l : v) {
+            notice = notice || (l.rfind(": 372 u :- *** Login failed: ", 0) == 0 && l.find(text) != std::string::npos);
+            ended = ended || l == ": 376 u";
+        }
+        return notice && ended && has(": 372 u :- Chat rooms are view-only");
+    };
+    unsigned users = 0;   // 첫 USER 수(셈 맞추기)
 
     // ①
-    lb.OnConnect(1, peer, peer);
-    feed(lb, 1, bundle);
-    const auto before = lines(out);
-    const bool deferred = before.size() == 1 && before[0] == "NOXSERVER 1" && lb.PendingLogins() == 1 && lb.Stats().loginChecks == 1;
-    pump();
-    const auto after = lines(out);
-    old.OnConnect(1, peer, peer);
-    feed(old, 1, bundle);
-    auto want = lines(out);
-    std::vector<std::string> got = before;
-    got.insert(got.end(), after.begin(), after.end());
-    Check(deferred && got == want && want.size() == 6 && want[3] == ": 376 u" && want[4].rfind(": 379 ", 0) == 0 && want[5] == ": 329 u 949" &&
-              lb.Stats().heldLines == 3 && lb.Stats().loginOk == 1 && lb.Stats().loginCreated == 1 && store.AccountId("wn") == 1 && lb.PendingLogins() == 0,
-          "① 정품 묶음 → 답 전 NOXSERVER 뿐 · 답 뒤 줄 = 옛 로비와 바이트 · 차례(376 → 379 → 329)까지 같음 · 쌓은 줄 셋 · 새 계정");
+    Lobby plain(makeCfg(false), fake);
+    plain.OnConnect(1, peer, peer);
+    feed(plain, 1, bundle("2", "wn", "apgar 1234 0"));
+    const bool plainOk = welcomeOk() && plain.Stats().loginNoAuth == 1 && plain.Stats().LoginTotal() == 1;
+    feed(plain, 1, {"JOINGAME #host1's_game 1 "});
+    Check(plainOk && has("NOXTOKEN ") && plain.AccountsOnline() == 0,
+          "① 아이디만 — 묶음 차례 376 → 379 → 329 · 평문 apgar 안 봄 · 방 참가 토큰 · 계정 장부 없음");
 
+    Lobby lb(makeCfg(true), fake);
     // ②
+    lb.OnConnect(1, peer, peer);
+    feed(lb, 1, bundle("3", "wn", apgar(Tok{})));
+    ++users;
+    const bool tokOk = welcomeOk() && lb.Stats().loginToken[0] == 1 && lb.AccountsOnline() == 1;
     feed(lb, 1, {"JOINGAME #host1's_game 1 "});
-    const bool tokenOk = has(out, "NOXTOKEN ") && lb.Stats().tokensIssued == 1;
-    store.SetFailLogins(true);
-    lb.OnConnect(2, peer, peer);
-    feed(lb, 2, {"NOXCLIENT 2", "NICK bob", "USER UserName HostName irc.westwood.com :RealName"});
-    pump();
-    store.SetFailLogins(false);
-    const bool failWelcome = out.size() >= 3 && out.back().line == ": 376 u" && has(out, ": 372 u :- *** Login failed: Account service unavailable") &&
-                             lb.Stats().loginFailed == 1;
-    feed(lb, 2, {"JOINGAME #host1's_game 1 "});
-    Check(tokenOk && failWelcome && OnlyReject(out, 2, "#host1's_game", JoinReject::NotLoggedIn) && lb.Stats().tokensIssued == 1,
-          "② 맞은 로그인 → 토큰 · 저장소 실패 → 안내 + 376(로그인은 끝) · 그 접속의 방 참가 → 471 한 줄(토큰 없음)");
+    Check(tokOk && has("NOXTOKEN "), "② 맞는 토큰 — 묶음 차례 그대로 · 안내 없음 · 장부 하나 · 방 참가 토큰");
 
-    // ③
-    lb.OnConnect(3, peer, peer);
-    clock = t0 + 1000;
-    feed(lb, 3, {"NICK cat", "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916"});
-    clock = t0 + 1000 + kLoginCheckTimeoutMs - 1;
-    out.clear();
-    lb.Tick(out);
-    const bool waitOk = out.empty();
-    clock = t0 + 1000 + kLoginCheckTimeoutMs;
-    out.clear();
-    lb.Tick(out);
-    const bool timedOut = out.size() >= 3 && has(out, ": 372 u :- *** Login failed: Account service unavailable") && out[out.size() - 2].line == ": 376 u" &&
-                          out.back().line.rfind(": 379 ", 0) == 0 && lb.Stats().loginTimeout == 1;
-    const auto late0 = lb.Stats().loginLateAnswer;
-    pump();
-    Check(waitOk && timedOut && out.empty() && lb.Stats().loginLateAnswer == late0 + 1,
-          "③ 확인 한도 1ms 앞 그대로 · 한도에 안내 + 376 + 쌓인 verchk(379) · 늦은 답은 버림");
+    // ③ 토큰 갈래 — 접속마다 하나
+    int conn = 10;
+    auto tryLogin = [&](const std::string& ver, const std::string& nick, const std::string& apgarLine, uint32_t from = 0x7f000001u) {
+        ++conn;
+        lb.OnConnect(conn, from, peer);
+        feed(lb, conn, bundle(ver, nick, apgarLine));
+        ++users;
+        return conn;
+    };
+    struct Case {
+        const char* what;
+        Tok t;
+        std::string nick;
+        uint32_t from;
+        std::string raw;   // 비어 있지 않으면 apgar 줄 그대로
+    };
+    Tok far;
+    far.expires = kLobbyTestNow + nox::kLoginTokenMaxAheadSec + 1;
+    Tok gone;
+    gone.expires = kLobbyTestNow - 1;
+    Tok v2;
+    v2.version = 2;
+    Tok other;
+    other.otherKey = true;
+    const Case cases[] = {
+        {"크기(16진 셋)", Tok{}, "wn", peer, "apgar NXL1abc 0"},
+        {"판 2", v2, "wn", peer, ""},
+        {"서명(입장 토큰 키)", other, "wn", peer, ""},
+        {"만료", gone, "wn", peer, ""},
+        {"만료가 너무 멂", far, "wn", peer, ""},
+        {"IP 다름", Tok{}, "wn", 0x7f000002u, ""},
+        {"이름 다름(남의 토큰)", Tok{}, "eve", peer, ""},
+    };
+    unsigned rejected = 0;
+    for (const Case& c : cases) {
+        const int k = tryLogin("3", c.nick, c.raw.empty() ? apgar(c.t) : c.raw, c.from);
+        const bool notice = failWith("Login token rejected");
+        feed(lb, k, {"JOINGAME #host1's_game 1 "});
+        const bool closed = OnlyReject(out, k, "#host1's_game", JoinReject::NotLoggedIn);
+        rejected += (notice && closed) ? 1 : 0;
+        if (!(notice && closed)) std::printf("    (③ %s — 안내 %d · 471 %d)\n", c.what, notice, closed);
+    }
+    Check(rejected == 7, "③ 토큰 갈래 일곱 — 안내 + 376 · 방 참가 471 (" + std::to_string(rejected) + "/7)");
+    Tok once;
+    once.nonce = 4242;
+    once.name = "fay";
+    once.account = 8;
+    tryLogin("3", "fay", apgar(once));
+    const bool firstOk = !has(": 372 u :- *** Login failed");
+    tryLogin("3", "fay", apgar(once));
+    Check(firstOk && failWith("already used") && lb.Stats().loginReplay == 1, "③ 같은 토큰 두 번 — 처음 들어감 · 둘째 다시 쓴 토큰");
 
     // ④
-    lb.OnConnect(4, peer, peer);
-    const auto checks0 = lb.Stats().loginChecks;
-    feed(lb, 4, {"NICK abcdefghijklmnopq", "USER UserName HostName irc.westwood.com :RealName"});   // 17바이트
-    const bool longName = out.back().line == ": 376 u" && has(out, ": 372 u :- *** Login failed: Name must be 1-16 bytes");
-    lb.OnConnect(5, peer, peer);
-    feed(lb, 5, {"USER UserName HostName irc.westwood.com :RealName"});
-    Check(longName && out.back().line == ": 376 u" && lb.Stats().loginBadName == 2 && lb.Stats().loginChecks == checks0 && store.AccountId("abcdefghijklmnopq") == 0,
-          "④ 17바이트 · 빈 이름 → 묻지 않고 안내 + 376(계정 안 만듦)");
-    feed(lb, 4, {"NICK abcdefghijklmnop", "JOINGAME #host1's_game 1 "});   // 로그인 뒤 이름만 바꿔도 실패한 로그인 그대로
-    const bool stillOut = OnlyReject(out, 4, "#host1's_game", JoinReject::NotLoggedIn);
+    const struct {
+        const char* fail;
+        const char* text;
+    } fails[] = {{"wrong_password", "Wrong password."},
+                 {"no_account", "sign up at https://127.0.0.1:8443/signup"},
+                 {"server_error", "Login server error"},
+                 {"unreachable", "Cannot reach the login server"},
+                 {"bad_input", "letters/digits 1-9"},
+                 {"what", "get the new client patch"}};
+    unsigned failShown = 0;
+    for (const auto& f : fails) {
+        tryLogin("3", "gus", std::string("apgar NXL!") + f.fail + " 0");
+        failShown += failWith(f.text) ? 1 : 0;
+    }
+    tryLogin("3", "gus", "apgar None 0");
+    const bool guest = failWith("Guest login is off - sign up at https://127.0.0.1:8443/signup");
+    tryLogin("2", "gus", "apgar 1234 0");
+    const bool old2 = failWith("too old for password login");
+    tryLogin("3", "gus", "apgar 1234 0");
+    const bool plain3 = failWith("Login token missing");
+    tryLogin("3", "gus", "");
+    const bool missing = failWith("Login token missing");
+    Check(failShown == 6 && guest && old2 && plain3 && missing,
+          "④ 실패 표시 다섯(계정 없음 = 가입 주소) · 모르는 까닭 · 손님 · 평문(DLL 판 2 = 판 낮음 · 판 3 = 토큰 없음) · apgar 없음 — 안내 (" +
+              std::to_string(failShown) + "/6)");
 
-    // ⑤
-    lb.OnConnect(6, peer, peer);   // clock = t0 + 6000 — 말없음
-    const uint32_t c6 = clock;
-    clock = c6 + kLoginDeadlineMs - 1;
-    out.clear();
-    lb.Tick(out);
-    bool earlyClose = false;
-    for (const Out& o : out) earlyClose = earlyClose || o.conn == 6;
-    clock = c6 + kLoginDeadlineMs;
-    out.clear();
-    lb.Tick(out);
-    int closes = 0;
-    for (const Out& o : out) closes += (o.conn == 6 && o.closeAfter && o.line.rfind("ERROR ", 0) == 0) ? 1 : 0;
-    const bool otherQuiet = out.size() == 1;   // 로그인을 끝낸 1 ~ 5 는 마감과 상관없음
-    out.clear();
-    lb.Tick(out);
-    Check(stillOut && !earlyClose && closes == 1 && otherQuiet && out.empty() && lb.Stats().loginDeadlineClosed == 1,
-          "⑤ 로그인 마감 1ms 앞 그대로 · 마감에 끊는 줄 하나(ERROR · 보낸 뒤 끊기) · 다시 안 함 · 로그인 끝난 접속은 안 끊음 · ④ 실패 접속은 이름을 바꿔도 471");
-    lb.OnClose(6, out);
+    // ⑤ 정할 것 b — 같은 계정(7) 새 접속
+    const int k5 = tryLogin("3", "wn", apgar(Tok{}));
+    int kicks = 0;
+    for (const Out& o : out) kicks += (o.conn == 1 && o.closeAfter && o.line == "ERROR :Closing Link (logged in elsewhere)") ? 1 : 0;
+    const bool newIn = !has(": 372 u :- *** Login failed") && lb.Stats().loginKickedOld == 1;
+    std::vector<Out> closeOut;
+    lb.OnClose(1, closeOut);   // 소켓 루프가 끊는 줄을 보낸 뒤 끊김 사건
+    feed(lb, k5, {"JOINGAME #host1's_game 1 "});
+    const bool stillIn = has("NOXTOKEN ");
+    const size_t online = lb.AccountsOnline();
+    lb.OnClose(k5, closeOut);
+    Check(kicks == 1 && newIn && stillIn && online == 2 && lb.AccountsOnline() == 1,
+          "⑤ 같은 계정 새 접속 → 옛 접속에 끊는 줄 하나 · 새 접속 들어감 · 옛 접속 끊김이 새 접속 장부를 안 지움(계정 7 · 8 → 둘) · 새 접속 끊기면 지움");
 
-    // ⑥
-    lb.OnConnect(7, peer, peer);
-    feed(lb, 7, {"NICK dan", "USER UserName HostName irc.westwood.com :RealName"});
-    out.clear();
-    const size_t pendingBefore = lb.PendingLogins();
-    lb.OnClose(7, out);
-    const bool erasedAtClose = pendingBefore == 1 && lb.PendingLogins() == 0;   // 답을 돌리기 전에 — 돌리면 어차피 지워진다
-    const auto late1 = lb.Stats().loginLateAnswer;
-    pump();
-    Check(erasedAtClose && out.empty() && lb.PendingLogins() == 0 && lb.Stats().loginLateAnswer == late1 + 1,
-          "⑥ 확인 중 끊김 → 그 자리에서 기다림에서 지움 · 답은 늦은 답(줄 없음)");
+    // ⑥ 보기만 — 로그인된 hal 이 대화방에 있고, 실패한 접속이 들어옴
+    Tok halTok;
+    halTok.name = "hal";
+    halTok.account = 9;
+    const int kHal = tryLogin("3", "hal", apgar(halTok));
+    feed(lb, kHal, {"JOIN #Lob_37_0 zot0blat"});
+    const int kBad = tryLogin("3", "ivy", "apgar NXL!wrong_password 0");
+    feed(lb, kBad, {"JOIN #Lob_37_0 zot0blat"});
+    bool toHal = false, toSelf = false;
+    for (const Out& o : out) {
+        toHal = toHal || o.conn == kHal;
+        toSelf = toSelf || (o.conn == kBad && o.line == ":ivy!u@h JOIN :0,0 #Lob_37_0");
+    }
+    const bool selfDone = has(": 366 u #Lob_37_0");
+    feed(lb, kBad, {"PRIVMSG #Lob_37_0 :hello"});
+    bool spoke = false;
+    for (const Out& o : out) spoke = spoke || o.conn == kHal;
+    feed(lb, kHal, {"PART #Lob_37_0", "JOIN #Lob_37_0 zot0blat"});
+    bool listed = false;
+    for (const Out& o : out) listed = listed || (o.line.rfind(": 353 ", 0) == 0 && o.line.find("ivy") != std::string::npos);
+    Check(!toHal && toSelf && selfDone && !spoke && !listed && lb.Stats().chatViewOnly == 1,
+          "⑥ 로그인 실패 접속의 대화방 = 보기만 — 본인에게만 들어옴 답 · 남에게 안 알림 · 글 거름 · 사람 목록에 없음");
 
     // ⑦
-    lb.OnConnect(8, peer, peer);
-    feed(lb, 8, {"NICK eve", "USER UserName HostName irc.westwood.com :RealName"});
-    const auto held0 = lb.Stats().heldLines;
-    for (size_t i = 0; i < kMaxHeldLines + 6; ++i) lb.OnLine(8, "SETOPT 17,33", out);
-    pump();
-    Check(lb.Stats().heldDropped == 6 && lb.Stats().heldLines == held0 + kMaxHeldLines && out.back().line == ": 376 u",
-          "⑦ 쌓기 한도 — 넘은 6줄 버림 · 한도만큼 넘김");
+    tryLogin("3", "abcdefghijklmnopq", apgar(Tok{}));   // 17바이트
+    const bool longName = failWith("Name must be 1-16 bytes");
+    const int kDead = ++conn;
+    lb.OnConnect(kDead, peer, peer);   // 말없음
+    clock += kLoginDeadlineMs - 1;
+    out.clear();
+    lb.Tick(out);
+    bool early = false;
+    for (const Out& o : out) early = early || o.conn == kDead;
+    clock += 1;
+    out.clear();
+    lb.Tick(out);
+    const bool deadline = out.size() == 1 && out[0].conn == kDead && out[0].closeAfter && lb.Stats().loginDeadlineClosed == 1;
+    feed(lb, kHal, {user});
+    Check(longName && !early && deadline && out.empty(),
+          "⑦ 17바이트 이름 → 안내 · 로그인 마감 1ms 앞 그대로 · 마감에 끊는 줄 하나 · 두 번째 USER → 아무것도 안 함");
 
-    // ⑧
-    feed(lb, 8, {"USER UserName HostName irc.westwood.com :RealName"});
-    Check(out.empty() && lb.PendingLogins() == 0, "⑧ 두 번째 USER → 인사 다시 안 함 · 확인 안 물음");
-
-    // ⑨ 셈 — 확인 요청 = 맞음 + 실패 + 시간 초과 + 끊김(⑥) · USER = 확인 요청 + 이름 틀림(첫 USER 만)
+    // ⑧ 셈 — 첫 USER 하나 = 갈래 하나 · 토큰 갈래(통과 포함 여덟) · 실패 까닭 다섯이 다 나옴
     const LobbyStats& s = lb.Stats();
-    Check(s.loginChecks == 5 && s.loginOk == 2 && s.loginFailed == 1 && s.loginTimeout == 1 && s.loginBadName == 2 && s.loginNoStore == 0 &&
-              s.loginChecks == s.loginOk + s.loginFailed + s.loginTimeout + 1,
-          "⑨ 셈 — 확인 5 = 맞음 2 + 실패 1 + 시간 초과 1 + 끊김 1 · 이름 틀림 2 · 저장소 없음 0");
+    unsigned tokenKinds = 0, failKinds = 0;
+    for (const auto v : s.loginToken) tokenKinds += v ? 1 : 0;
+    for (const auto v : s.loginFail) failKinds += v ? 1 : 0;
+    Check(s.LoginTotal() == users && tokenKinds == static_cast<unsigned>(nox::LoginTokenCheck::kCount) &&
+              s.loginToken[static_cast<size_t>(nox::LoginTokenCheck::Ok)] >= 4 && failKinds == static_cast<unsigned>(nox::LoginFail::kCount) &&
+              s.loginFailUnknown == 1 && s.loginGuest == 1 && s.loginPlain == 2 && s.loginMissing == 1 && s.loginBadName == 1 && s.loginNoAuth == 0,
+          "⑧ 셈 — 로그인 " + std::to_string(s.LoginTotal()) + " = 첫 USER " + std::to_string(users) +
+              " · 토큰 거절 갈래 일곱 · 실패 까닭 다섯 · 모르는 1 · 손님 1 · 평문 2 · 없음 1 · 이름 1");
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
@@ -1823,10 +1900,8 @@ int ReplayRecording(const char* path) {
     fake.rooms = {FakeRoom(0, "tak7")};
     cfg.joinKey = LobbyTestKey();
     nox::wol::Lobby lb(cfg, fake);
-    // ★ 7단계 조각 6 — 로비 실행 파일과 같은 길(저장소를 붙여 로그인을 미룸). 접속 하나의 줄을 몰아 넣고 답은 끊기 직전에 한 번 —
-    //   USER 뒤 줄이 전부 쌓였다가 넘어가므로 「쌓기 · 답 뒤 차례」가 XWIS 원래 답과 같은지를 녹음으로 본다
-    nox::wol::CMemoryLobbyStore store;
-    lb.AttachStore(store);
+    // ★ 로그인 암호 조각 4 — 저장소에 묻는 로그인을 걷어냄. 녹음 속 클라는 평문 apgar 라 아이디만(`authOn` false — 키 없는 로비)으로 대조한다
+    //   (암호 판 로비의 줄 차례는 `LoginUnitTests` ② 가 이 녹음과 같은 묶음 꼴로 본다)
     // ★ 10-14 작업 8b — 4005 접속(로비 찾기)은 라우터가 받는다. 채널 주소 설정이 없으니 605 는 「붙은 주소」:4000(옛 로비와 같은 답)
     nox::wol::Router rt{nox::wol::RouterConfig{}};
     int tokenLines = 0, joinGames = 0, routerConns = 0;
@@ -1862,9 +1937,6 @@ int ReplayRecording(const char* path) {
                 lb.OnLine(rc.id, cl, out);
                 if (cl.rfind("JOINGAME ", 0) == 0) ++joinGames;
             }
-            std::vector<nox::wol::StoreAnswer> ans;   // ★ 7단계 조각 6 — 계정 확인 답(쌓인 줄이 여기서 넘어간다)
-            store.TakeAnswers(ans);
-            for (const auto& a : ans) lb.OnStoreAnswer(a, out);
             lb.OnClose(rc.id, out);   // ★ 10-20 v2 작업 3b — 대화방 남은 사람에게 PART(녹음은 접속을 하나씩 돌려 남은 사람 없음)
         }
         std::vector<std::string> kept;   // DLL 이 `NOXTOKEN` 줄을 뗀 뒤 정품 로비 모듈이 받는 줄

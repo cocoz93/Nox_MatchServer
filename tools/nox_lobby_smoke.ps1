@@ -123,7 +123,7 @@ try {
 
   # ② 클라 — 로그인 · 목록 · 채팅
   $k = Open $LobbyPort $latin1
-  Send $k @('NOXCLIENT 2', 'CVERS 11020 9472', 'NICK wn', 'USER UserName HostName irc.westwood.com :RealName', 'SETCODEPAGE 949')
+  Send $k @('NOXCLIENT 2', 'CVERS 11020 9472', 'NICK wn', 'apgar s3cr3t9 0', 'USER UserName HostName irc.westwood.com :RealName', 'SETCODEPAGE 949')   # ★ 로그인 암호 조각 4 — 평문 apgar(아이디만 판은 안 봄 · 기록에선 가림)
   $null = ReadUntil $k '329'
   Send $k @('LIST 37 37')
   $l1all = ReadUntil $k '323'   # 함수가 배열을 한 덩어리로 돌려주므로 변수에 받은 뒤 거른다(lobby_smoke.ps1 과 같은 꼴)
@@ -217,19 +217,21 @@ try {
   if (-not $p.WaitForExit(15000)) { Check $false '로비가 닫기 이벤트 뒤에 끝나지 않음 — 강제 종료'; Stop-Process -Id $p.Id -Force }
 }
 $all = @(Get-Content -LiteralPath $log -Encoding UTF8)
+# ★ 로그인 암호 조각 4 — 받은 줄 기록에서 apgar 인자(암호)를 가림 — 친 암호가 기록 어디에도 없음
+Check (@($all | Where-Object { $_ -match '>> apgar \*\*\* 0' }).Count -eq 1 -and @($all | Where-Object { $_ -match 's3cr3t9' }).Count -eq 0) '기록 — apgar 암호 가림(*** 한 줄 · 친 암호 0줄)'
 $end = @($all | Where-Object { $_ -match '\[로비\] 끝 — ' })
 Write-Host ($end -join "`n")
 # ★ 7단계 조각 6 — 끝 줄 넷(접속 · 로그인 · 게임 서버 연결 · 판 저장)을 머리글로 고른다(차례로 고르면 줄이 늘 때마다 밀린다)
 $endOf = @{}
-foreach ($head in '접속', '로그인 확인', '게임 서버 연결', '판 저장 요청') {
+foreach ($head in '접속', '로그인', '게임 서버 연결', '판 저장 요청') {   # ★ 로그인 암호 조각 4 — 「로그인 확인」 줄이 「로그인」 줄로
   $endOf[$head] = @($end | Where-Object { $_ -match ('\[로비\] 끝 — ' + $head + ' ') }) -join "`n"
 }
-# 로그인 — wn · bob 둘 다 확인 · 새 계정 · 쌓은 줄은 wn 의 SETCODEPAGE 하나(USER 와 같은 묶음으로 갔을 때 — TCP 가 나눠 보내면 0)
+# ★ 로그인 암호 조각 4 — 로그인 wn · bob 둘 다 아이디만(이 시험 설정엔 [auth] 가 없다) · 토큰 · 실패 표시 갈래 0 · 끊음 · 보기만 0
 $okLogin = $false
-if ($endOf['로그인 확인'] -match '로그인 확인 2\(맞음 2 · 그중 새 계정 2 · 실패 0 · 시간 초과 0 · 끝날 때 남음 0\) · 이름 틀림 0 · 저장소 없음 0 · 늦은 답 0 · 쌓았다 넘긴 줄 (\d+)\(버림 0\) · 마감 끊음 0') {
-  $okLogin = [int]$Matches[1] -le 1
+if ($endOf['로그인'] -match '로그인 2\(토큰 \[[^\]1-9]*\] · 다시 쓴 토큰 0 · 실패 표시 \[[^\]1-9]*\] · 모르는 까닭 0 · 손님 0 · 평문 0 · apgar 없음 0 · 이름 틀림 0 · 아이디만 2\) · 옛 접속 끊음 0 · 로그인된 계정 0 · 대화방 보기만 0 · 마감 끊음 0') {
+  $okLogin = $true
 }
-Check $okLogin '끝 줄 — 로그인(확인 2 · 맞음 2 · 새 계정 2 · 실패 · 시간 초과 · 이름 틀림 · 저장소 없음 · 늦은 답 0 · 쌓은 줄 0~1 · 마감 끊음 0)'
+Check $okLogin '끝 줄 — 로그인 2(아이디만 2 · 토큰 · 실패 표시 갈래 0 · 손님 · 평문 · 없음 · 이름 틀림 0 · 옛 접속 끊음 · 보기만 · 마감 끊음 0)'
 Check ($p.ExitCode -eq 0) "로비 종료 코드 0 ($($p.ExitCode))"
 Check (@($all | Where-Object { $_ -match '\[판 결과\] \{"match":"1760000000-1-1"' }).Count -eq 2) '로비 기록 [판 결과] 같은 판 두 줄(JSON 그대로 · ★ 7단계 — 다시 보낸 것도 찍고 저장소가 dup 으로 가름)'
 Check (@($all | Where-Object { $_ -match '127\.0\.0\.2:18590 판 결과를 못 읽음\(빠진 칸 · 칸 room\) — SAVED bad' }).Count -eq 1 -and
@@ -246,7 +248,7 @@ Check (@($all | Where-Object { $_ -match '등록 거절 — 127\.0\.0\.3:18590' 
 #   보낸 줄 — wn 로그인(NOXSERVER · 375 · 372 · 376 · 329 = 5) · 목록 3 · 대화방 3 + 들어옴 1 + 채팅 1 · 참가 5 · 목록 2 · 거절 471 1(★ 10-20) ·
 #     ★ ⑤ 목록 3(g2 방) + 목록 2 · 607 → 27 · bob 로그인 4 · 대화방 3 · 시간 초과 거절 471 1(★ 10-20) · wn 이 끊길 때 대화방 PART 알림 1 → 9 · 합 36
 #   새 방 — 물음 2(만듦 1 · 시간 초과 1) + 곧바로 실패 1(게임 서버 없음 — 묻지 않음) · 참가 거절 2 = 곧바로 실패 1 + 시간 초과 1
-Check ($end.Count -eq 4 -and $endOf['접속'] -match '접속 2 · 받은 줄 19 · 보낸 줄 36 · 토큰 1 · 새 방 1\(물음 2 · 실패 1 · 시간 초과 1 · 버림 0\) · 채팅 1 · 참가 거절 2\(곧바로 실패 1 · 게임 서버 실패 0 · 시간 초과 1 · 없는 방 0 · 로그인 안 됨 0\)') '끝 줄 — 클라 셈(접속 2 · 받은 줄 19 · 보낸 줄 36 · 토큰 1 · 새 방 1 · 물음 2 · 실패 1 · 시간 초과 1 · 참가 거절 2)'
+Check ($end.Count -eq 4 -and $endOf['접속'] -match '접속 2 · 받은 줄 20 · 보낸 줄 36 · 토큰 1 · 새 방 1\(물음 2 · 실패 1 · 시간 초과 1 · 버림 0\) · 채팅 1 · 참가 거절 2\(곧바로 실패 1 · 게임 서버 실패 0 · 시간 초과 1 · 없는 방 0 · 로그인 안 됨 0\)') '끝 줄 — 클라 셈(접속 2 · 받은 줄 20(★ 조각 4 apgar 한 줄 더함) · 보낸 줄 36 · 토큰 1 · 새 방 1 · 물음 2 · 실패 1 · 시간 초과 1 · 참가 거절 2)'
 # 연결 — 게임 서버 g · 서명 틀린 것 · ★ ⑤ g2 · g3 · g4 = 5 · 받음 = g 9(★ 7단계 조각 5 — RESULT 넷) + 틀린 것 1 + g2 3 + g3 2 + g4 2 = 17(가짜는 PING 을 안 보냄) ·
 #   보냄(PING 뺌) = HELLO 5 + BYE 3(서명 틀림 · g3 같은 주소 · g2 무소식) + CREATE 2 + SAVED 3(ok · dup · bad) = 13 · PING = g(③-2 에서 5.6초를 기다림) 1 이상 + g2(15초) 2 → 3 이상
 $linkOk = $false

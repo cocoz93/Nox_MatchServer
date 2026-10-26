@@ -46,7 +46,7 @@ $ini = Join-Path $env:TEMP ("router_smoke_{0}.ini" -f $PID)
 $p1 = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log1 -ArgumentList @(
   '--bind', '127.0.0.1', '--port', $Port, '--seconds', '6', '--quiet')
 $p2 = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log2 -ArgumentList @(
-  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--port', $Port2, '--seconds', '6', '--quiet')
+  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--port', $Port2, '--seconds', '6')   # ★ 로그인 암호 조각 4 — 받은 줄을 찍게(whereto 암호 가림을 봄)
 try {
   Write-Host "① 설정 없음 :$Port"
   $k = Open $Port
@@ -79,7 +79,10 @@ try {
   }
 }
 $s1 = Get-Content -LiteralPath $log1 -Encoding UTF8 | Where-Object { $_ -match '\[라우터\] 끝' }
-$s2 = Get-Content -LiteralPath $log2 -Encoding UTF8 | Where-Object { $_ -match '\[라우터\] 끝' }
+$all2 = @(Get-Content -LiteralPath $log2 -Encoding UTF8)
+$s2 = $all2 | Where-Object { $_ -match '\[라우터\] 끝' }
+# ★ 로그인 암호 조각 4 — 받은 줄 기록에서 whereto 셋째 칸(암호)을 가림(`RedactLoginLine`) — 친 암호 1234 가 기록에 없음
+Check (@($all2 | Where-Object { $_ -match '>> whereto wn \*\*\* 9472 65538 7726' }).Count -eq 1 -and @($all2 | Where-Object { $_ -match 'whereto wn 1234' }).Count -eq 0) '기록 — whereto 암호 칸 가림(*** 한 줄 · 1234 0줄)'
 Remove-Item -LiteralPath $log1, $log2, $ini -ErrorAction SilentlyContinue
 Write-Host "라우터 출력: $s1 / $s2"
 # 0 은 「없었다」와 「못 읽었다」를 안 가른다 — 라우터가 센 접속 · 줄 수를 같이 본다

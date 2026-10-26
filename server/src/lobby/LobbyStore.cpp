@@ -57,27 +57,6 @@ bool MatchFitsStore(const MatchRecord& rec, const std::string& rawJson, std::str
     return true;
 }
 
-void CMemoryLobbyStore::CheckLogin(uint32_t req, const std::string& name) {
-    StoreAnswer a;
-    a.kind = StoreAnswerKind::Login;
-    a.req = req;
-    if (failLogins_) {
-        a.login = LoginResult::Failed;
-        a.why = "메모리 저장소 — 로그인 실패 시험 스위치";
-    } else {
-        a.login = LoginResult::Ok;
-        const auto it = accounts_.find(name);
-        if (it == accounts_.end()) {
-            a.accountId = nextAccount_++;
-            a.created = true;
-            accounts_.emplace(name, a.accountId);
-        } else {
-            a.accountId = it->second;
-        }
-    }
-    pending_.push_back(std::move(a));
-}
-
 void CMemoryLobbyStore::SaveMatch(uint32_t req, const MatchSource& src, const MatchRecord& rec, const std::string& rawJson) {
     StoreAnswer a;
     a.kind = StoreAnswerKind::SaveMatch;
@@ -97,11 +76,6 @@ void CMemoryLobbyStore::SaveMatch(uint32_t req, const MatchSource& src, const Ma
 void CMemoryLobbyStore::TakeAnswers(std::vector<StoreAnswer>& out) {
     for (StoreAnswer& a : pending_) out.push_back(std::move(a));
     pending_.clear();
-}
-
-uint64_t CMemoryLobbyStore::AccountId(const std::string& name) const {
-    const auto it = accounts_.find(name);
-    return it == accounts_.end() ? 0 : it->second;
 }
 
 const MatchRecord* CMemoryLobbyStore::FindMatch(const MatchSource& src, const std::string& match) const {

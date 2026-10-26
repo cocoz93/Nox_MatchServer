@@ -35,6 +35,13 @@
 //   · 토큰 · 새 방은 「확인됨」만(`USER` 없이 `NICK` + `JOINGAME` 만 보내도 토큰이 나가던 것 — 10-19 검사 지적 2)
 //   · 로그인 마감 — 붙고 `kLoginDeadlineMs` 안에 `USER` 가 없으면 끊는다(접속만 하고 말없는 접속이 끝없이 남던 것 — 검사 지적 8)
 //   · 저장소를 안 붙이면 옛 꼴(USER 에 곧바로 들여보냄 — 시험 · 녹음 대조용). 로비 실행 파일은 늘 붙인다(DB 또는 메모리 가짜)
+// ★ 로그인 암호 조각 4(`Docs/LOGIN_AUTH_DESIGN.md`) — 위 조각 6 의 계정 확인 길(저장소에 묻고 답 기다리기 · 뒷줄 쌓기 · 한도)을 걷어냄(정할 것 a).
+//   계정은 로그인 서버(nox_auth)가 쥐고, 클라 DLL 이 `apgar` 자리에 로그인 서버가 서명한 토큰(`NXL1…`)을 싣는다(`LoginLine.h` · `LoginToken.h`).
+//   · `USER` 에서 그 토큰의 서명 · 만료 · IP · 이름 · 일회용을 곧바로 본다(DB 안 물음 · 기다림 없음) → 375 · 372 · 376
+//   · 안 되면 XWIS 꼴 부드러운 실패(안내 372 + 376) — DLL 이 실은 까닭(`NXL!<까닭>` — 암호 틀림 · 계정 없음 → 가입 페이지 주소 …) · 토큰 갈래 · 손님 · 평문(DLL 낮음)
+//     실패한 접속은 대화방을 볼 수만 있다(남에게 이름이 안 보이고 글을 못 보냄 — 확인 안 된 이름이 대화방에 서지 않게 · 정할 것 c) · 게임 참가는 471
+//   · 같은 계정이 또 들어오면 옛 접속을 끊는다(정할 것 b — 클라가 죽어 반쯤 열린 옛 연결이 남아도 다시 들어오게)
+//   · `[auth] key` 가 없으면(`LobbyConfig::authOn` false) 아이디만 — 조각 6 이전 꼴(시험용 · 정할 것 c)
 #pragma once
 
 #include <cstdint>
@@ -47,7 +54,8 @@
 
 #include "nox/Clock.h"
 #include "nox/JoinToken.h"
-#include "nox/LobbyStore.h"
+#include "nox/LoginLine.h"
+#include "nox/LoginToken.h"
 #include "nox/WolGameInfo.h"
 
 namespace nox::wol {
@@ -59,6 +67,9 @@ constexpr int kNoxClientMinVersion = 1;   // ★ 10-10 — DLL 이 알리는 판
 //   로비는 `NOXCLIENT` 가 이 판 이상이면 곧바로 `NOXSERVER 1` 한 줄로 답한다(낮은 판 DLL 은 이 줄을 못 떼므로 안 보낸다).
 //   DLL 은 이 줄을 못 받은 로비(XWIS 등)에선 아무것도 돌리지 않는다 — 원작 Host Game 이 그대로 산다
 constexpr int kNoxClientHostGameVersion = 2;
+// ★ 로그인 암호 조각 4 — 이 판부터 DLL 이 `apgar` 자리를 로그인 토큰으로 바꿔 싣는다(낮은 판은 평문 — 암호 판 로비는 실패 안내)
+constexpr int kNoxClientAuthVersion = 3;
+constexpr uint16_t kDefaultAuthPort = 8443;   // 로그인 서버(nox_auth) — 가입 페이지 주소 안내에 씀(`[auth] port`)
 
 // ★ 10-14 플랜 B 작업 8d — 로비가 그리는 방 하나. 채널이 방 관리자의 돌고 있는 방(`CRoomManager::ListRooms`)에서 채운다
 //   (옛 설정 파일 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리)
@@ -103,10 +114,9 @@ public:
 // ★ 10-20 v2 작업 3a — 미룬 새 방 답을 기다리는 한도. 근거 없는 값 — 같은 PC 연결 왕복은 ms 단위 · 정품이 얼마나 기다리는지는 미확인
 //   (넘으면 실패와 같은 꼴 — ★ 10-20 거절 답 뒤로는 `471` · 그 전엔 답이 없어 정품이 참가 화면에 머물렀다)
 constexpr uint32_t kRoomRequestTimeoutMs = 5000;
-// ★ 7단계 조각 6 — 로그인. 셋 다 근거 없는 값(정품이 376 을 얼마나 기다리는지 미확인 — 맨 끝 사람 판에서 DB 답 시간과 같이 기록)
-constexpr uint32_t kLoginCheckTimeoutMs = 5000;   // 계정 확인 답 한도(넘으면 실패 길)
+// ★ 7단계 조각 6 — 로그인. 근거 없는 값(정품이 로그인 묶음을 얼마나 오래 나눠 보내는지 미확인)
+//   ★ 로그인 암호 조각 4 — 계정 확인 답 한도 · 뒷줄 쌓기 한도는 걷음(기다릴 답이 없음)
 constexpr uint32_t kLoginDeadlineMs = 30000;      // 붙고 USER 까지 한도(정품은 로그인 줄을 한 묶음으로 보낸다)
-constexpr size_t kMaxHeldLines = 64;              // 확인 중에 쌓는 뒷줄 한도(녹음 접속 하나가 많아야 18줄 — 넘으면 버리고 센다)
 constexpr size_t kMaxNickBytes = 16;              // 계정 이름 한도 = 입장 토큰 이름 칸(`JoinToken.h`) — 넘으면 실패 길
 
 // ★ 10-20 거절 답(`Docs/LOBBY_SPLIT_DESIGN.md` 「거절 답 플랜」) — 방 참가(`JOINGAME`)를 받아 줄 수 없는 까닭.
@@ -144,6 +154,10 @@ struct LobbyConfig {
     std::function<uint32_t()> unixNow = UnixNow;    // 토큰 만료의 기준 시각 — 시험이 정해 보려고
     std::function<uint64_t()> nonce;                // 일회용 번호 — 비면 BCrypt 난수
     std::function<uint32_t()> nowMs = NowMs;        // ★ 10-20 v2 작업 3a — 미룬 답 한도의 시계(ms · 32비트로 돈다) — 시험이 정해 보려고
+    // ★ 로그인 암호 조각 4 — 로그인 토큰(`[auth] key` 가 있으면 켬 — 없으면 아이디만 · 정할 것 c)
+    bool authOn = false;
+    JoinKey loginKey{};                             // 로그인 서버와 같은 값 · 입장 토큰 키와 따로
+    uint16_t authPort = kDefaultAuthPort;           // 가입 페이지 주소 안내(https://<이 접속이 붙은 내 쪽 주소>:<포트>/signup)
 };
 
 // 로비의 셈 — 입장 토큰 갈래
@@ -169,18 +183,26 @@ struct LobbyStats {
     unsigned long long chatMalformed = 0;    // ` :` 글 칸이 없음(처음 본 명령처럼 한 번 기록)
     // ★ 10-20 거절 답 — 보낸 `471` 을 까닭마다(`JoinReject` 차례). 보내는 자리는 `RejectJoin` 하나 · 부르는 자리 넷이 까닭을 고른다
     unsigned long long joinRejected[kJoinRejectCount] = {};
-    // ★ 7단계 조각 6 — 로그인(USER 하나는 확인 요청 · 이름 틀림 · 저장소 없음(옛 꼴) 중 하나 · 요청 하나는 맞음 · 실패 · 한도 · 끊김 중 하나)
-    unsigned long long loginChecks = 0;      // 저장소에 계정 확인 요청
-    unsigned long long loginOk = 0;          // 답 Ok — 들여보냄
-    unsigned long long loginCreated = 0;     // 그중 처음 보는 이름이라 계정을 만듦
-    unsigned long long loginFailed = 0;      // 답 Failed(DB 끊김 등) — 실패 길
-    unsigned long long loginTimeout = 0;     // `kLoginCheckTimeoutMs` 안에 답 없음 — 실패 길
-    unsigned long long loginBadName = 0;     // 이름이 비었거나 `kMaxNickBytes` 넘음 — 묻지 않고 실패 길
-    unsigned long long loginNoStore = 0;     // 저장소를 안 붙인 로비 — 옛 꼴로 곧바로 들여보냄
-    unsigned long long loginLateAnswer = 0;  // 끝난 요청(한도 · 끊김)의 답(버림)
-    unsigned long long heldLines = 0;        // 확인 중에 쌓았다가 답 뒤 넘긴 줄
-    unsigned long long heldDropped = 0;      // 쌓는 한도를 넘어 버린 줄
+    // ★ 로그인 암호 조각 4 — 로그인(USER 하나는 아래 갈래 중 하나로 끝난다 · 세는 자리 = USER 갈래(이름 · 키 없음) · `CheckLoginToken`)
+    //   이름 틀림 · 아이디만(키 없음) · 토큰(검증 갈래별 — 통과 포함) · 다시 쓴 토큰 · 실패 표시(까닭별 · 모르는 까닭) · 손님 · 평문 · apgar 없음
+    unsigned long long loginBadName = 0;     // 이름이 비었거나 `kMaxNickBytes` 넘음 — 실패 길
+    unsigned long long loginNoAuth = 0;      // `[auth] key` 없는 로비 — 아이디만으로 곧바로 들여보냄(시험용 · 정할 것 c)
+    unsigned long long loginToken[static_cast<size_t>(LoginTokenCheck::kCount)] = {};   // 토큰 검증 갈래(Ok = 들여보냄)
+    unsigned long long loginReplay = 0;      // 서명은 맞는데 일회용 번호를 이미 씀 — 실패 길
+    unsigned long long loginFail[static_cast<size_t>(LoginFail::kCount)] = {};          // DLL 이 실은 실패 까닭
+    unsigned long long loginFailUnknown = 0; // `NXL!` 뒤 모르는 까닭
+    unsigned long long loginGuest = 0;       // `apgar None` — 암호 판엔 손님 없음
+    unsigned long long loginPlain = 0;       // 평문 암호(DLL 없음 · 판 낮음)
+    unsigned long long loginMissing = 0;     // `apgar` 줄 없음
+    unsigned long long loginKickedOld = 0;   // 같은 계정 새 접속이 옛 접속을 끊음(정할 것 b)
+    unsigned long long chatViewOnly = 0;     // 로그인 실패 접속의 대화방 입장 — 보기만(이름 안 알림)
     unsigned long long loginDeadlineClosed = 0;   // `kLoginDeadlineMs` 안에 USER 가 없어 끊음
+    unsigned long long LoginTotal() const {   // USER 로 끝난 로그인 수(위 갈래 합 — 끊음 · 보기만 빼고)
+        unsigned long long n = loginBadName + loginNoAuth + loginReplay + loginFailUnknown + loginGuest + loginPlain + loginMissing;
+        for (const unsigned long long v : loginToken) n += v;
+        for (const unsigned long long v : loginFail) n += v;
+        return n;
+    }
     unsigned long long JoinRejectedTotal() const {
         unsigned long long n = 0;
         for (const unsigned long long v : joinRejected) n += v;
@@ -212,10 +234,8 @@ public:
     //   ★ 7단계 조각 6 — 계정 확인 한도 · 로그인 마감도
     void Tick(std::vector<Out>& out);
     size_t PendingRooms() const { return pending_.size(); }
-    // ★ 7단계 조각 6 — 계정 확인을 물을 저장소(로비보다 오래 산다 · 안 붙이면 옛 꼴) · 저장소 답 하나(갈래 Login 만)
-    void AttachStore(ILobbyStore& store) { store_ = &store; }
-    void OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out);
-    size_t PendingLogins() const { return loginPending_.size(); }
+    // ★ 로그인 암호 조각 4 — 로그인된 계정 수(계정 → 접속 장부 · 끊길 때 지움)
+    size_t AccountsOnline() const { return accountConn_.size(); }
 
     // 소켓 루프가 찍을 기록(처음 본 명령 등). 꺼내면 비운다.
     std::vector<std::string> TakeLog();
@@ -224,8 +244,9 @@ public:
     const LobbyStats& Stats() const { return stats_; }
 
 private:
-    // ★ 7단계 조각 6 — 로그인 단계(대기 = USER 전 · 확인 중 = 저장소 답 기다림 · 확인됨 · 실패 = 부드러운 실패로 들여보냄)
-    enum class LoginState : uint8_t { Waiting, Checking, Ok, Failed };
+    // ★ 7단계 조각 6 — 로그인 단계(대기 = USER 전 · 확인됨 · 실패 = 부드러운 실패로 들여보냄)
+    //   ★ 로그인 암호 조각 4 — 「확인 중」(저장소 답 기다림) 걷음
+    enum class LoginState : uint8_t { Waiting, Ok, Failed };
     struct Conn {
         uint32_t peerIp = 0;
         uint32_t localIp = 0;
@@ -233,11 +254,10 @@ private:
         int codepage = 0;
         int clientVer = -1;  // ★ 10-10 — `NOXCLIENT <판>`(줄이 없으면 -1 — 「판 낮음」과 따로 센다)
         LoginState login = LoginState::Waiting;
-        uint32_t loginReq = 0;          // 확인 중 — 저장소 요청 번호
-        uint32_t loginDueMs = 0;        // 확인 중 — 답 한도 · 대기 — 로그인 마감(붙은 때 + kLoginDeadlineMs)
-        bool closing = false;           // 마감으로 끊는 줄을 보냄(끊김 사건까지 다시 안 함)
-        uint64_t accountId = 0;         // 확인됨 — 계정 번호
-        std::vector<std::string> held;  // 확인 중에 온 뒷줄(답 뒤 차례대로)
+        uint32_t loginDueMs = 0;        // 대기 — 로그인 마감(붙은 때 + kLoginDeadlineMs)
+        bool closing = false;           // 끊는 줄을 보냄(마감 · 옛 접속 — 끊김 사건까지 다시 안 함)
+        uint64_t accountId = 0;         // 확인됨 — 계정 번호(토큰 · 아이디만이면 0)
+        std::string apgar;              // ★ 조각 4 — 로그인 묶음 `apgar <인자>` 의 인자(USER 까지 쥠 · 기록에 안 찍음)
     };
 
     void OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<std::string>& t,
@@ -258,8 +278,13 @@ private:
     void JoinNewRoom(int conn, const Conn& c, const LobbyRoom& created, std::vector<Out>& out);
     // ★ 10-20 거절 답 — `: 471 u <채널> :<까닭 글>` 한 줄 · 까닭 셈(`LobbyStats::joinRejected`)
     void RejectJoin(int conn, const std::string& channel, JoinReject why, std::vector<Out>& out);
-    // ★ 7단계 조각 6 — 인사(375 · 372 … · 376). `failNotice` 가 있으면 실패 길(안내 줄 덧붙임). 끝나면 쌓아 둔 뒷줄을 차례대로
-    void FinishLogin(int conn, Conn& c, LoginState result, const char* failNotice, std::vector<Out>& out);
+    // ★ 7단계 조각 6 — 인사(375 · 372 … · 376). `failNotice` 가 있으면 실패 길(안내 줄 덧붙임)
+    void FinishLogin(int conn, Conn& c, LoginState result, const std::string& failNotice, std::vector<Out>& out);
+    // ★ 로그인 암호 조각 4 — USER 에서 `apgar` 를 가르고 토큰을 본다 → 갈래 하나를 세고 FinishLogin
+    void CheckLoginToken(int conn, Conn& c, std::vector<Out>& out);
+    // 같은 계정의 옛 접속을 끊는다(정할 것 b) · 새 접속을 장부에
+    void TakeAccount(int conn, Conn& c, uint64_t accountId, std::vector<Out>& out);
+    std::string SignupUrl(const Conn& c) const;   // https://<붙은 내 쪽 주소>:<authPort>/signup
     void Unknown(const std::string& cmd, std::string_view line);
 
     LobbyConfig cfg_;
@@ -273,9 +298,8 @@ private:
     };
     std::map<uint32_t, PendingRoom> pending_;
     uint32_t nextReq_ = 1;
-    ILobbyStore* store_ = nullptr;                // ★ 7단계 조각 6
-    std::map<uint32_t, int> loginPending_;        // 계정 확인 요청 번호 → 접속
-    uint32_t nextLoginReq_ = 1;
+    CJoinTokenLedger loginNonces_;                // ★ 로그인 암호 조각 4 — 로그인 토큰 일회용 번호(입장 토큰 장부와 따로 — 게임 서버가 씀)
+    std::map<uint64_t, int> accountConn_;         // ★ 조각 4 — 계정 → 로그인된 접속(정할 것 b)
     std::map<int, Conn> conns_;
     std::map<std::string, std::set<int>> members_;  // 채널 → 들어와 있는 접속
     std::set<std::string> unknownSeen_;

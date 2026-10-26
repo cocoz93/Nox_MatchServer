@@ -3,10 +3,10 @@
 // 왜 — 계정 · 판 기록의 정본은 MySQL(결정 1). 로비 스레드는 DB 를 기다리지 않는다 — 요청은 큐에 넣고 곧바로 돌아오며,
 //   전용 스레드 하나가 MySQL 연결 하나로 차례대로 실행해 답 큐에 넣는다. 로비 루프가 바퀴마다 꺼낸다(`ILobbyStore` — 메모리 가짜와 같은 경계).
 //   꼴은 MMO_Zone DB 워커(`MMO_Zone/MMOServer/MMOServer/DB/DBWorker.h` — 전용 스레드 · 큐 통째로 꺼내기 · 준비된 문장 · 끊기면 다시 붙기)를 따른다
-//   · 연결 하나 · 스레드 하나 — 로비 하나 · 소수 시험이라 더 둘 까닭이 아직 없다(로그인과 판 저장이 같은 차례를 탄다)
+//   · 연결 하나 · 스레드 하나 — 로비 하나 · 소수 시험이라 더 둘 까닭이 아직 없다(★ 로그인 암호 조각 4 — 로그인은 걷어 내고 판 저장만)
 //   · 서버 계정은 표를 못 만든다(정할 것 a) — 뜰 때 `schema_version` 이 `kSchemaVersion` 인지와 준비된 문장이 모두 준비되는지로 표 모양을 본다.
 //     못 붙거나 다르면 `Start` 가 실패 — 로비가 안 뜬다(토큰 키가 없을 때와 같은 꼴)
-//   · 끊기면(2006 · 2013) 그 자리에서 한 번 다시 붙어 같은 일을 다시 한다. 그래도 안 되면 그 일은 실패 답(로그인 → 실패 길 · 판 → 게임 서버가 다시)
+//   · 끊기면(2006 · 2013) 그 자리에서 한 번 다시 붙어 같은 일을 다시 한다. 그래도 안 되면 그 일은 실패 답(판 → 게임 서버가 다시)
 //   · 판은 한 트랜잭션(matches 한 행 + match_players) · 같은 (게임 서버 · 판 번호)는 열쇠 겹침(1062)으로 Duplicate
 //   · 끝낼 때(`Stop`) 큐에 남은 일을 다 하고 닫는다(판 결과를 잃지 않게)
 // MySQL 머리 파일은 이 파일 밖(.cpp)에만 — 부르는 쪽(로비 실행 파일 · 시험)은 MySQL 을 모른다
@@ -28,10 +28,7 @@ namespace nox::db {
 
 // 셈 — 요청 하나는 아래 갈래 중 하나로 끝난다(시험은 개수로 본다)
 struct DbStats {
-    unsigned long long requests = 0;        // 받은 요청(로그인 + 판)
-    unsigned long long loginOk = 0;         // 찾음 · 만듦
-    unsigned long long loginCreated = 0;    // 그중 만듦
-    unsigned long long loginFailed = 0;     // 다시 붙어도 안 됨 · 그 밖 오류
+    unsigned long long requests = 0;        // 받은 요청(판 — ★ 로그인 암호 조각 4 로그인 걷음)
     unsigned long long saved = 0;
     unsigned long long duplicates = 0;
     unsigned long long invalid = 0;         // 칸에 안 맞음(`MatchFitsStore`) — DB 에 안 감
@@ -56,7 +53,6 @@ public:
     void Stop();
 
     // ILobbyStore — 요청은 곧바로 돌아온다 · 답은 워커가 넣고 로비가 꺼낸다
-    void CheckLogin(uint32_t req, const std::string& name) override;
     void SaveMatch(uint32_t req, const wol::MatchSource& src, const MatchRecord& rec, const std::string& rawJson) override;
     void TakeAnswers(std::vector<wol::StoreAnswer>& out) override;
 
@@ -67,7 +63,6 @@ private:
     struct Job {
         wol::StoreAnswerKind kind = wol::StoreAnswerKind::kCount;
         uint32_t req = 0;
-        std::string name;
         wol::MatchSource src;
         MatchRecord rec;
         std::string raw;
