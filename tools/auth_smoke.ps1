@@ -96,7 +96,11 @@ try {
   $r = Req 'POST' '/signup' "name=smoke2&password=ab12cd&password2=ab12ce"
   Check ($r.status -eq 400) "확인 다름 400 ($($r.status))"
   $r = Req 'POST' '/signup' "name=legacy1&password=$pwLegacy&password2=$pwLegacy"
-  Check ($r.status -eq 201 -and $r.body -eq "created $legacyId") "옛 행에 암호 201 · 번호 그대로 ($($r.status) $($r.body) · 옛 번호 $legacyId)"
+  Check ($r.status -eq 201 -and $r.body.Contains('예전 이 이름의 기록')) "옛 행에 암호 201 · 결과 화면 ($($r.status))"
+  $now = [int](Sql "SELECT id FROM accounts WHERE name = 'legacy1' AND pass_hash IS NOT NULL;")
+  Check ($now -eq $legacyId) "옛 행 번호 그대로 · 암호 들어감 ($now = $legacyId)"
+  $r = Req 'GET' '/signup' ''
+  Check ($r.status -eq 200 -and $r.body.Contains('<form method="post" action="/signup"')) "GET /signup 양식 200 ($($r.status))"
 
   Write-Host '② 로그인'
   $r = Req 'POST' '/login' "name=smoke1&password=$([uri]::EscapeDataString($pw))"

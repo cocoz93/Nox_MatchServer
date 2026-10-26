@@ -8,6 +8,8 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace nox::auth {
 
@@ -23,6 +25,7 @@ struct HttpResponse {
     int status = 200;
     std::string contentType = "text/plain; charset=utf-8";
     std::string body;
+    std::vector<std::pair<std::string, std::string>> headers;   // ★ 조각 3 — 그 밖 머리(콘텐츠 보안 정책 등 · 이름 · 값 ASCII)
 };
 
 enum class ReceiveResult : uint8_t {

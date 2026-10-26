@@ -200,6 +200,15 @@ bool CHttpSysServer::Send(uint64_t id, const HttpResponse& r, std::string& err) 
     auto& cc = resp.Headers.KnownHeaders[HttpHeaderCacheControl];
     cc.pRawValue = kNoStore;
     cc.RawValueLength = static_cast<USHORT>(sizeof(kNoStore) - 1);
+    std::vector<HTTP_UNKNOWN_HEADER> extra(r.headers.size());
+    for (size_t i = 0; i < r.headers.size(); ++i) {
+        extra[i].pName = r.headers[i].first.c_str();
+        extra[i].NameLength = static_cast<USHORT>(r.headers[i].first.size());
+        extra[i].pRawValue = r.headers[i].second.c_str();
+        extra[i].RawValueLength = static_cast<USHORT>(r.headers[i].second.size());
+    }
+    resp.Headers.UnknownHeaderCount = static_cast<USHORT>(extra.size());
+    resp.Headers.pUnknownHeaders = extra.empty() ? nullptr : extra.data();
     HTTP_DATA_CHUNK chunk = {};
     if (!r.body.empty()) {
         chunk.DataChunkType = HttpDataChunkFromMemory;

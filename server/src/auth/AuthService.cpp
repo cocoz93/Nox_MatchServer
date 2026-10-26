@@ -1,6 +1,7 @@
 ﻿// AuthService.cpp — 로그인 서버의 판단. 설명은 `AuthService.h` 머리.
 #include "AuthService.h"
 
+#include "SignupPage.h"
 #include "nox/LoginLine.h"
 #include "nox/LoginToken.h"
 
@@ -23,6 +24,7 @@ const char* AuthOutcomeName(AuthOutcome o) {
     case AuthOutcome::LoginBadInput: return "로그인 — 규칙 밖";
     case AuthOutcome::LoginFailed: return "로그인 — 실패";
     case AuthOutcome::BadForm: return "폼 틀림";
+    case AuthOutcome::SignupPage: return "가입 양식";
     case AuthOutcome::NotFound: return "없는 길";
     case AuthOutcome::BadMethod: return "방식 다름";
     case AuthOutcome::kCount: break;
@@ -80,24 +82,66 @@ std::array<uint64_t, kAuthOutcomeCount> CAuthService::Stats() const {
     return s;
 }
 
+// ★ 조각 3 — 화면 답(가입 양식 · 결과)의 머리 — 스크립트 금지 · 바깥 자원 금지 · 폼은 이 서버로만 · 다른 사이트 안에 못 끼움
+static HttpResponse Page(int status, std::string html) {
+    HttpResponse r;
+    r.status = status;
+    r.contentType = "text/html; charset=utf-8";
+    r.body = std::move(html);
+    r.headers.emplace_back("Content-Security-Policy",
+                           "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
+    return r;
+}
+
 HttpResponse CAuthService::Handle(const HttpRequest& req, IAccountStore& db, AuthOutcome* outcome) {
     AuthOutcome o = AuthOutcome::NotFound;
     HttpResponse r;
-    if (req.path == "/login" || req.path == "/signup") {
-        if (req.method != "POST") {
+    const bool page = req.path == "/" || req.path == "/signup";
+    if (req.path == "/login" || page) {
+        if (req.method == "POST" && req.path != "/") {
+            r = req.path == "/login" ? Login(req, db, o) : Signup(req, db, o);
+        } else if (req.method == "GET" && page) {
+            o = AuthOutcome::SignupPage;
+            r = Page(200, SignupFormPage());
+        } else {
             o = AuthOutcome::BadMethod;
             r.status = 405;
-            r.body = "POST only";
-        } else {
-            r = req.path == "/login" ? Login(req, db, o) : Signup(req, db, o);
+            r.body = "method not allowed";
         }
     } else {
         r.status = 404;
         r.body = "not found";
     }
+    r.headers.emplace_back("X-Content-Type-Options", "nosniff");
     stats_[static_cast<size_t>(o)].fetch_add(1, std::memory_order_relaxed);   // 세는 자리는 여기 하나
     if (outcome) *outcome = o;
     return r;
+}
+
+// ★ 조각 3 — 규칙 갈래마다 가입 화면의 안내 글(Ok · kCount 는 여기 안 오지만 빠짐없이 적고 기본 글로 떨어지게)
+static const char* NameMessage(NameCheck c) {
+    switch (c) {
+    case NameCheck::Empty: return "이름을 넣어 주세요.";
+    case NameCheck::TooLong: return "이름은 9자까지입니다.";
+    case NameCheck::BadChar: return "이름은 영문 · 숫자만 됩니다.";
+    case NameCheck::Ok:
+    case NameCheck::kCount: break;
+    }
+    return "이름을 확인해 주세요.";
+}
+
+static const char* PasswordMessage(PasswordCheck c) {
+    switch (c) {
+    case PasswordCheck::TooShort: return "암호는 4자 이상입니다.";
+    case PasswordCheck::TooLong: return "암호는 16자까지입니다.";
+    case PasswordCheck::HasSpace: return "암호에 빈칸은 안 됩니다.";
+    case PasswordCheck::BadChar: return "암호는 영문 · 숫자 · 특수문자만 됩니다(한글 안 됨).";
+    case PasswordCheck::NoLetter: return "암호에 영문을 하나 이상 넣어 주세요.";
+    case PasswordCheck::NoDigit: return "암호에 숫자를 하나 이상 넣어 주세요.";
+    case PasswordCheck::Ok:
+    case PasswordCheck::kCount: break;
+    }
+    return "암호를 확인해 주세요.";
 }
 
 static HttpResponse LoginFailReply(int status, LoginFail why) {
@@ -153,34 +197,26 @@ HttpResponse CAuthService::Login(const HttpRequest& req, IAccountStore& db, Auth
     return r;
 }
 
+// ★ 조각 3 — 답 본문은 결과 화면(실패면 안내 + 양식 · 이름은 다시 채움 · 암호는 안 채움)
 HttpResponse CAuthService::Signup(const HttpRequest& req, IAccountStore& db, AuthOutcome& o) {
-    HttpResponse r;
     std::map<std::string, std::string> form;
     if (!ParseForm(req.body, form) || !form.count("name") || !form.count("password") || !form.count("password2")) {
         o = AuthOutcome::BadForm;
-        r.status = 400;
-        r.body = "bad form";
-        return r;
+        return Page(400, SignupFormPage("양식이 틀렸습니다 — 다시 넣어 주세요.", true));
     }
     const std::string& name = form["name"];
     const std::string& pw = form["password"];
     if (const NameCheck nc = CheckAccountName(name); nc != NameCheck::Ok) {
         o = AuthOutcome::SignupBadName;
-        r.status = 400;
-        r.body = std::string("name: ") + NameCheckName(nc);
-        return r;
+        return Page(400, SignupFormPage(NameMessage(nc), true, name));
     }
     if (const PasswordCheck pc = CheckPassword(pw); pc != PasswordCheck::Ok) {
         o = AuthOutcome::SignupBadPassword;
-        r.status = 400;
-        r.body = std::string("password: ") + PasswordCheckName(pc);
-        return r;
+        return Page(400, SignupFormPage(PasswordMessage(pc), true, name));
     }
     if (pw != form["password2"]) {
         o = AuthOutcome::SignupMismatch;
-        r.status = 400;
-        r.body = "password2: 다름";
-        return r;
+        return Page(400, SignupFormPage("암호 확인이 다릅니다.", true, name));
     }
     PasswordRecord rec;
     uint64_t id = 0;
@@ -189,21 +225,15 @@ HttpResponse CAuthService::Signup(const HttpRequest& req, IAccountStore& db, Aut
     case InsertResult::Created:
     case InsertResult::Claimed:
         o = ir == InsertResult::Created ? AuthOutcome::SignupCreated : AuthOutcome::SignupClaimed;
-        r.status = 201;
-        r.body = "created " + std::to_string(id);
-        return r;
+        return Page(201, SignupDonePage(name, ir == InsertResult::Claimed));
     case InsertResult::Duplicate:
         o = AuthOutcome::SignupDuplicate;
-        r.status = 409;
-        r.body = "name: 이미 있음";
-        return r;
+        return Page(409, SignupFormPage("이미 있는 이름입니다 — 다른 이름을 골라 주세요.", true, name));
     case InsertResult::Failed:
     case InsertResult::kCount: break;
     }
     o = AuthOutcome::SignupFailed;
-    r.status = 503;
-    r.body = "server error";
-    return r;
+    return Page(503, SignupFormPage("서버가 지금 가입을 못 받습니다 — 잠시 뒤 다시 해 주세요.", true, name));
 }
 
 }  // namespace nox::auth

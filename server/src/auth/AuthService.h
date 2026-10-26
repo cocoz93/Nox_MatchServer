@@ -5,8 +5,10 @@
 // 길
 //   · POST /login  — 폼 `name` · `password` → 본문 한 줄 `NXL1<토큰 16진>`(200) 또는 `NXL!<까닭>`(`LoginLine.h`).
 //     DLL 은 받은 글을 그대로 `apgar` 자리에 넣는다(JSON 없음 — 클래스 설계 「설계하며 고른 것」)
-//   · POST /signup — 폼 `name` · `password` · `password2` → 201 · 409 · 400 · 503(가입 페이지 화면은 조각 3)
+//   · POST /signup — 폼 `name` · `password` · `password2` → 201 · 409 · 400 · 503 · 본문은 결과 화면(★ 조각 3 `SignupPage.h`)
+//   · GET / · /signup — 가입 양식(★ 조각 3)
 //   · 그 밖 — 404 · 길은 맞는데 방식이 다르면 405
+// 화면 답에는 콘텐츠 보안 정책(스크립트 금지 · 폼은 이 서버로만)을 · 모든 답에 `nosniff` 를 싣는다
 // 이름 · 암호 규칙(`AccountRules.h`)에 안 맞으면 해시도 DB 도 안 간다
 #pragma once
 
@@ -46,6 +48,7 @@ enum class AuthOutcome : uint8_t {
     LoginBadInput,       // 이름 · 암호 규칙 밖 · 폼이 틀림
     LoginFailed,         // DB · 서명 실패
     BadForm,             // 가입 폼이 틀림(`%` 꼴 · 칸 없음)
+    SignupPage,          // ★ 조각 3 — GET 가입 양식
     NotFound,
     BadMethod,
     kCount
