@@ -20,6 +20,11 @@ cl /nologo /utf-8 /std:c++17 /O2 /W3 /EHsc /MT /I ..\..\server\include hostgame_
 if errorlevel 1 ( echo hostgame_test build failed & popd & exit /b 1 )
 "%~dp0hostgame_test.exe"
 if errorlevel 1 set RC=1
+rem login line rewriter (same header as the DLL): every TCP split x every send acceptance pattern (10-26 login auth piece 5)
+cl /nologo /utf-8 /std:c++17 /O2 /W3 /EHsc /MT /I ..\..\server\include login_rewrite_test.cpp /Fe:login_rewrite_test.exe >nul
+if errorlevel 1 ( echo login_rewrite_test build failed & popd & exit /b 1 )
+"%~dp0login_rewrite_test.exe"
+if errorlevel 1 set RC=1
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0check_exports.ps1"
 if errorlevel 1 set RC=1
 set "LOGDIR=%TEMP%\wsock32_proxy_test"
