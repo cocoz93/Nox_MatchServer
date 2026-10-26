@@ -1,12 +1,7 @@
 ﻿// DbWorker.cpp — 로비의 DB 워커. 설명은 `DbWorker.h` 머리 · 표는 `tools/db/001_init.sql`.
 #include "nox/DbWorker.h"
 
-#ifdef _WIN32
-#include <winsock2.h>   // mysql.h 앞에 — 구버전 winsock 자동 include 충돌 차단(MMO_Zone DBWorker.cpp 와 같은 꼴)
-#endif
-#include <errmsg.h>         // CR_SERVER_GONE_ERROR · CR_SERVER_LOST(끊김)
-#include <mysql.h>
-#include <mysqld_error.h>   // ER_DUP_ENTRY(열쇠 겹침 — 같은 판 · 같은 이름)
+#include "MySqlBind.h"   // ★ 로그인 암호 조각 2 — 라이브러리 초기화 · 끊김 · 자리 묶기 · 붙기(로그인 서버와 같이 씀)
 
 #include <cstdlib>
 #include <cstring>
@@ -18,35 +13,7 @@ namespace nox::db {
 
 namespace {
 
-std::once_flag g_libOnce;   // mysql_library_init 은 스레드를 띄우기 전 한 번(끝낼 때 짝을 안 맞춘다 — 프로세스가 끝나며 거둠)
-bool g_libOk = false;
-
 uint32_t NowUnix() { return static_cast<uint32_t>(std::time(nullptr)); }
-
-// 끊김 — 다시 붙으면 될 수 있는 것. KILL 당한 연결의 다음 문장이 어느 번호로 오는지는 db_test ④ 가 기록에 찍는다(미확인 — 셋 다 받음)
-bool IsLost(unsigned e) {
-    return e == CR_SERVER_GONE_ERROR || e == CR_SERVER_LOST || e == CR_SERVER_LOST_EXTENDED || e == ER_SESSION_WAS_KILLED ||
-           e == ER_CLIENT_INTERACTION_TIMEOUT;
-}
-
-// 문장 자리(?) 묶기 — MYSQL_BIND 는 0 으로 비운 뒤 칸만 채운다(라이브러리가 나머지를 쓴다)
-void Bin(MYSQL_BIND& b, const std::string& s, unsigned long& len) {   // VARBINARY — 바이트 그대로(글자표 바꾸기 없음)
-    len = static_cast<unsigned long>(s.size());
-    b.buffer_type = MYSQL_TYPE_BLOB;
-    b.buffer = const_cast<char*>(s.data());
-    b.buffer_length = len;
-    b.length = &len;
-}
-void Txt(MYSQL_BIND& b, const std::string& s, unsigned long& len) {   // VARCHAR · MEDIUMTEXT(utf8mb4)
-    Bin(b, s, len);
-    b.buffer_type = MYSQL_TYPE_STRING;
-}
-void U8(MYSQL_BIND& b, const uint8_t& v) { b.buffer_type = MYSQL_TYPE_TINY; b.buffer = const_cast<uint8_t*>(&v); b.is_unsigned = true; }
-void U16(MYSQL_BIND& b, const uint16_t& v) { b.buffer_type = MYSQL_TYPE_SHORT; b.buffer = const_cast<uint16_t*>(&v); b.is_unsigned = true; }
-void U32(MYSQL_BIND& b, const uint32_t& v) { b.buffer_type = MYSQL_TYPE_LONG; b.buffer = const_cast<uint32_t*>(&v); b.is_unsigned = true; }
-void I32(MYSQL_BIND& b, const int32_t& v) { b.buffer_type = MYSQL_TYPE_LONG; b.buffer = const_cast<int32_t*>(&v); }
-void U64(MYSQL_BIND& b, const uint64_t& v) { b.buffer_type = MYSQL_TYPE_LONGLONG; b.buffer = const_cast<uint64_t*>(&v); b.is_unsigned = true; }
-void Null(MYSQL_BIND& b, bool& isNull) { b.buffer_type = MYSQL_TYPE_NULL; isNull = true; b.is_null = &isNull; }
 
 constexpr const char* kSelAccount = "SELECT id FROM accounts WHERE name = ?";
 constexpr const char* kInsAccount = "INSERT INTO accounts (name, created_unix, last_login_unix) VALUES (?, ?, ?)";
@@ -123,38 +90,14 @@ void CDbWorker::NoteError(const std::string& e) {
 bool CDbWorker::Connect(std::string& err) {
     Drop();
     auto c = std::make_unique<Conn>();
-    c->m = mysql_init(nullptr);
+    bool connectFailed = false;
+    c->m = OpenChecked(cfg_, err, connectFailed);   // 붙기 + 표 버전(`MySqlBind.h`)
     if (!c->m) {
-        err = "mysql_init 실패";
-        return false;
-    }
-    unsigned ct = cfg_.connectTimeoutSec, rw = cfg_.rwTimeoutSec;
-    mysql_options(c->m, MYSQL_OPT_CONNECT_TIMEOUT, &ct);
-    mysql_options(c->m, MYSQL_OPT_READ_TIMEOUT, &rw);
-    mysql_options(c->m, MYSQL_OPT_WRITE_TIMEOUT, &rw);
-    mysql_options(c->m, MYSQL_SET_CHARSET_NAME, "utf8mb4");
-    bool getKey = true;   // caching_sha2_password — TLS 가 없을 때도 첫 접속이 되게(서버 공개키로 암호를 싸 보냄)
-    mysql_options(c->m, MYSQL_OPT_GET_SERVER_PUBLIC_KEY, &getKey);
-    if (!mysql_real_connect(c->m, cfg_.host.c_str(), cfg_.user.c_str(), cfg_.password.c_str(), cfg_.database.c_str(), cfg_.port, nullptr, 0)) {
-        c->ConnFail("붙기");
-        err = c->lastError;
-        std::lock_guard<std::mutex> lk(mu_);
-        ++stats_.connectFailed;
-        stats_.lastError = err;
-        return false;
-    }
-    // 표 버전 — 서버 계정은 표를 못 만든다(정할 것 a). 다르면 사람이 SQL 파일을 돌려야 한다
-    if (mysql_query(c->m, "SELECT version FROM schema_version WHERE id = 1") != 0) {
-        c->ConnFail("표 버전 읽기(schema_version — tools/db/001_init.sql 을 돌렸나)");
-        err = c->lastError;
-        return false;
-    }
-    MYSQL_RES* res = mysql_store_result(c->m);
-    MYSQL_ROW row = res ? mysql_fetch_row(res) : nullptr;
-    const long ver = row && row[0] ? std::strtol(row[0], nullptr, 10) : -1;
-    if (res) mysql_free_result(res);
-    if (ver != static_cast<long>(kSchemaVersion)) {
-        err = "표 버전 " + std::to_string(ver) + " — 이 로비는 " + std::to_string(kSchemaVersion) + " 을 안다(tools/db/ 의 SQL 파일 차례 확인)";
+        if (connectFailed) {
+            std::lock_guard<std::mutex> lk(mu_);
+            ++stats_.connectFailed;
+            stats_.lastError = err;
+        }
         return false;
     }
     if (!c->Prepare(c->selAccount, kSelAccount) || !c->Prepare(c->insAccount, kInsAccount) || !c->Prepare(c->updLogin, kUpdLogin) ||
@@ -179,8 +122,7 @@ void CDbWorker::Drop() {
 
 bool CDbWorker::Start(std::string& err) {
     if (started_) return true;
-    std::call_once(g_libOnce, [] { g_libOk = mysql_library_init(0, nullptr, nullptr) == 0; });
-    if (!g_libOk) {
+    if (!LibInit()) {
         err = "mysql_library_init 실패";
         return false;
     }

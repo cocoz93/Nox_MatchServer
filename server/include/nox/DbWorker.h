@@ -20,23 +20,11 @@
 #include <thread>
 #include <vector>
 
+#include "nox/DbConfig.h"   // ★ 로그인 암호 조각 2 — 표 버전 · 붙을 곳(로그인 서버와 같이 씀)
 #include "nox/LobbyStore.h"
 #include "nox/MatchRecord.h"
 
 namespace nox::db {
-
-constexpr uint32_t kSchemaVersion = 2;   // `tools/db/` SQL 파일을 차례로 돌린 schema_version — 표를 바꾸면 SQL 파일과 같이 올린다
-                                         //   ★ 로그인 암호 조각 1 — 2 = `002_auth.sql`(pass_iter · 로비는 그 칸을 안 씀)
-
-struct DbConfig {
-    std::string host = "127.0.0.1";
-    uint16_t port = 3306;
-    std::string user;
-    std::string password;            // 기록에 안 찍는다
-    std::string database;
-    unsigned connectTimeoutSec = 2;  // 근거 없는 값 둘 — 로그인 답 한도(`kLoginCheckTimeoutMs` 5초)보다 짧게(10-19 검사 지적 7)
-    unsigned rwTimeoutSec = 3;
-};
 
 // 셈 — 요청 하나는 아래 갈래 중 하나로 끝난다(시험은 개수로 본다)
 struct DbStats {

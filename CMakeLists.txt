@@ -100,6 +100,12 @@ target_link_libraries(nox_lobby PRIVATE nox_lobby_core)
 add_executable(lobby_test server/tests/lobby_test.cpp)
 target_link_libraries(lobby_test PRIVATE nox_lobby_core)
 
+# ★ 로그인 암호 조각 2 — 로그인 서버의 판단(가입 · 로그인 · Docs/LOGIN_AUTH_DESIGN.md). 소켓 · DB 없이 시험된다(auth_test — 메모리 저장소)
+add_library(nox_auth_core STATIC server/src/auth/AuthService.cpp server/src/auth/AccountStore.cpp)
+target_link_libraries(nox_auth_core PUBLIC nox_common)
+add_executable(auth_test server/tests/auth_test.cpp)
+target_link_libraries(auth_test PRIVATE nox_auth_core)
+
 # ★ 7단계 조각 7 — 로비 DB 워커(MySQL · Docs/ACCOUNT_DB_DESIGN.md). MySQL 이 없으면 경고 + DB 없이 빌드(로비는 --no-db 만 — 조각 8)
 set(NOX_MYSQL_DIR "C:/Program Files/MySQL/MySQL Server 8.0" CACHE PATH "MySQL 폴더 — include/mysql.h · lib/libmysql.lib · lib/libmysql.dll · bin/libssl · libcrypto")
 if (EXISTS "${NOX_MYSQL_DIR}/include/mysql.h" AND EXISTS "${NOX_MYSQL_DIR}/lib/libmysql.lib")
@@ -117,6 +123,11 @@ if (EXISTS "${NOX_MYSQL_DIR}/include/mysql.h" AND EXISTS "${NOX_MYSQL_DIR}/lib/l
   target_link_libraries(nox_lobby PRIVATE nox_db)
   target_compile_definitions(nox_lobby PRIVATE NOX_HAVE_MYSQL=1)
   add_custom_command(TARGET nox_lobby POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NOX_MYSQL_DLLS} $<TARGET_FILE_DIR:nox_lobby>)
+  # ★ 로그인 암호 조각 2 — 로그인 서버 nox_auth(http.sys · 일꾼마다 MySQL 연결). MySQL 이 없으면 안 만든다(계정 정본이 DB)
+  add_executable(nox_auth server/src/auth/auth_main.cpp server/src/auth/HttpSysServer.cpp server/src/auth/MySqlAccountStore.cpp)
+  target_include_directories(nox_auth PRIVATE "${NOX_MYSQL_DIR}/include")
+  target_link_libraries(nox_auth PRIVATE nox_auth_core "${NOX_MYSQL_DIR}/lib/libmysql.lib" httpapi)
+  add_custom_command(TARGET nox_auth POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NOX_MYSQL_DLLS} $<TARGET_FILE_DIR:nox_auth>)
 else()
   set(NOX_HAVE_MYSQL OFF)
   message(WARNING "MySQL 이 없다(${NOX_MYSQL_DIR}) — 로비 DB 워커 · db_test 없이 빌드(NOX_MYSQL_DIR 로 폴더를 줄 수 있다)")
@@ -131,6 +142,7 @@ add_test(NAME proto_test COMMAND proto_test)
 add_test(NAME server_selftest COMMAND nox_server --selftest)
 add_test(NAME lobby_unit COMMAND lobby_test)
 add_test(NAME common_unit COMMAND common_test)
+add_test(NAME auth_unit COMMAND auth_test)   # ★ 로그인 암호 조각 2
 # ★ 7단계 조각 7 — 진짜 MySQL 의 시험 DB(nox_mo_test). 설정 [db] 가 없거나 못 붙으면 77 = 「건너뜀」(통과로 안 보이게)
 if (NOX_HAVE_MYSQL)
   add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql" "${CMAKE_SOURCE_DIR}/tools/db/002_auth.sql")
@@ -186,6 +198,13 @@ if (NOX_POWERSHELL AND WIN32)
   add_test(NAME match_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                    -File ${CMAKE_SOURCE_DIR}/tools/match_smoke.ps1 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby>)
+  # ★ 로그인 암호 조각 2 — 로그인 서버를 진짜로 띄워 HTTPS 가입 · 로그인(시험 DB · 8443). 사람 1회(인증서 · nox_auth 사용자) 전이면 77 = 「건너뜀」
+  if (NOX_HAVE_MYSQL)
+    add_test(NAME auth_smoke
+             COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                     -File ${CMAKE_SOURCE_DIR}/tools/auth_smoke.ps1 -Exe $<TARGET_FILE:nox_auth>)
+    set_tests_properties(auth_smoke PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
   # 라우터 소켓 왕복(작업 8b) — 605 의 채널 주소(설정 없음 = 붙은 주소 · 설정 있음 = 그 주소) · CRLF · QUIT 뒤 끊기
   add_test(NAME router_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
