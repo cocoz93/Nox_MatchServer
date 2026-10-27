@@ -57,6 +57,9 @@
 //   ③ 쥔 지 60초 안에 그 게임 서버 주소로 가는 접속 시도(100바이트 · 셋째 `0x0e`)와 CONNECT(`ff 00 00`)에
 //      꼬리(토큰 51 · `NXT1`)를 붙여 보낸다. 다른 주소(LAN 판 등)로 가는 것엔 안 붙인다 — 그 서버는 꼬리를 모른다
 //   ④ closesocket — 로비 연결 상태를 지운다(소켓 번호는 다시 쓰인다)
+//   ★ 로그인 암호 조각 5 의 3 — `NOXCLIENT 3`. 로비 연결의 보내기는 `CLoginRewriter`(Lobby 모드)를 거친다: `NICK` 을 기억해 두고 `apgar <암호> 0` 의 암호 자리를
+//      로그인 서버(nox_auth · 로비 IP:8443 · `AuthClient.h`)가 준 로그인 토큰(또는 실패 표시)으로 바꿔 보낸다. 평문 암호는 TLS 안에서만 나간다(`Docs/LOGIN_AUTH_DESIGN.md`).
+//      게임엔 원래 길이를 돌려준다. 라우터 쪽(`whereto` 암호 칸 지우기)은 다음 조각(4번)
 //
 // ★ 10-16 플랜 B 작업 11 — 정품 `Host Game` → 우리 채널에 내 방을 만들고 들어가기(`Docs/ROOMS_DESIGN.md` 결정 4 · 작업 11)
 //   켜는 조건 = 판 확인(Game.exe PE 시각 · 이미지 크기 · 실린 자리 — 아래 메모리 칸이 그 판의 것) 그리고 **우리 로비**
@@ -106,7 +109,8 @@
 
 #include "HostGameEntry.h"     // ⑤ · ⑥ 내 방 정보 · 항목 · 채널 짓기(방 정보 포장은 서버와 같은 WolGameInfo — build.bat 이 같이 빌드)
 #include "LobbyLineFilter.h"
-#include "LoginRewriter.h"     // ★ 로그인 암호 조각 5 — 기록에 찍는 보낸 글에서 암호 칸 가리기(Log 모드)
+#include "LoginRewriter.h"     // ★ 로그인 암호 조각 5 — 기록에 찍는 보낸 글에서 암호 칸 가리기(Log 모드) · 로비 연결의 apgar 자리 바꿔쓰기(Lobby 모드)
+#include "AuthClient.h"        // ★ 로그인 암호 조각 5 의 3 — 로그인 서버(nox_auth)에 이름 · 암호를 묻는 부품(WinHTTP)
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -335,7 +339,7 @@ FWD(1120) FWD(1130) FWD(1140) FWD(1141) FWD(1142)
 // ─────────────────────────────────────────────── 입장 토큰 (10-10 토큰 작업 4 — 머리 주석 ①~④)
 
 // DLL 판 — 로비 `kNoxClientMinVersion` 이상이어야 로그인된다 · ★ 10-16 판 2 = `NOXSERVER` 떼기 · ⑤ · ⑥(`kNoxClientHostGameVersion`)
-static const char kNoxClientHello[] = "NOXCLIENT 2\r\n";
+static const char kNoxClientHello[] = "NOXCLIENT 3\r\n";   // ★ 판 3 = 로그인 암호(`kNoxClientAuthVersion`) — 로비가 이 판 이상만 암호 판으로 봄
 static const DWORD kTokenHoldMs = 60000;                   // 토큰을 쥐고 있는 시간(토큰 만료 30초보다 넉넉히 — 판정은 서버가 한다)
 static const size_t kTokenRaw = 51;                        // `JoinToken.h` kJoinTokenSize
 static CRITICAL_SECTION g_tokCs;
@@ -349,6 +353,7 @@ struct PendingToken {
 };
 static PendingToken g_tok;
 static std::map<SOCKET, CLoginRewriter*> g_logRedact;   // ★ 조각 5 — 기록용 줄 상태(소켓마다 · 기록을 켰을 때만 생김) · g_tokCs 로 지킨다
+static std::map<SOCKET, CLoginRewriter*> g_loginRw;     // ★ 조각 5 의 3 — 로비 연결마다 로그인 줄 바꿔쓰기(Lobby 모드 · 늘 생김) · g_tokCs 로 지킨다
 static bool g_listOn = false;          // ⑤ 줄 끼우기를 걸어 두나(판 확인 통과 또는 ⑦ 시험 스위치 · 끄기 스위치 없음)
 static bool g_hostGameOn = false;       // ⑥ Host Game 돌리기 스레드(판 확인 통과 · 끄기 스위치 없음)
 static volatile LONG g_ourLobby = 0;    // ⑤ · ⑥ 지금 로비 연결이 `NOXSERVER` 를 보냈나 — 새 로비 연결마다 0
@@ -356,6 +361,7 @@ static volatile LONG g_lobbyIp = 0;     // 그 로비 연결의 상대 IPv4(a<<2
 static std::string g_nick;              // ⑤ · ⑥ 로비 로그인의 `NICK <닉>` — g_tokCs 로 지킨다
 
 static std::string MyRoomLine(const std::vector<std::string>& items);
+static std::string AuthLogin(SOCKET s, const std::string& name, const std::string& password);
 
 static bool MarkLobby(SOCKET s)   // 새로 적었으면 true
 {
@@ -365,6 +371,11 @@ static bool MarkLobby(SOCKET s)   // 새로 적었으면 true
         LobbyLineFilter* f = new LobbyLineFilter();
         if (g_listOn) f->onListEnd = [](const std::vector<std::string>& items) { return MyRoomLine(items); };
         g_lobby[s] = f;
+        CLoginRewriter* rw = new CLoginRewriter(CLoginRewriter::Mode::Lobby);   // ★ 조각 5 의 3 — 이 연결의 apgar 줄을 로그인 토큰으로
+        rw->onLogin = [s](const std::string& name, const std::string& password) { return AuthLogin(s, name, password); };
+        CLoginRewriter*& old = g_loginRw[s];
+        delete old;   // 닫힘 없이 같은 번호가 다시 CVERS 를 보낸 경우(closesocket 이 지우므로 드묾)
+        old = rw;
         InterlockedExchange(&g_ourLobby, 0);   // 새 로비 연결 — 표시 줄을 다시 받아야 켠다
     }
     LeaveCriticalSection(&g_tokCs);
@@ -386,6 +397,37 @@ static std::string RedactedForLog(SOCKET s, const char* buf, int len)
     return out;
 }
 
+// ★ 조각 5 의 3 — 로비 연결의 이름 · 암호를 로그인 서버(nox_auth)에 묻고 `apgar` 자리에 넣을 글 한 줄(`NXL1…` 또는 `NXL!…`)을 받아 온다.
+//   주소 = 이 로비 연결의 상대 IP : 8443(서버 `kDefaultAuthPort`) · 환경변수 NOX_AUTH_URL(예: https://host:8443/login)이 있으면 그것.
+//   게임 주 스레드가 최대 3초 막힌다(`AuthClient.h`). TLS 검사를 끄지 않으므로 믿을 수 없는 서버(XWIS 등 우리 로비가 아닌 곳)에는 본문(암호)이 나가기 전에 멈춘다
+static std::string AuthLogin(SOCKET s, const std::string& name, const std::string& password)
+{
+    std::wstring url;
+    wchar_t over[512];
+    const DWORD en = GetEnvironmentVariableW(L"NOX_AUTH_URL", over, 512);
+    if (en > 0 && en < 512) {
+        url = over;
+    } else {
+        typedef int (WSAAPI* PFN_getpeername)(SOCKET, struct sockaddr*, int*);
+        sockaddr_in peer = {};
+        int plen = (int)sizeof(peer);
+        if (((PFN_getpeername)Resolve(5))(s, (struct sockaddr*)&peer, &plen) != 0 || peer.sin_family != AF_INET) {
+            if (g_log[0]) Detail("로그인 서버 호출 못 함 — 로비 연결의 상대 주소를 못 읽음 s=%u", (unsigned)s);
+            return authclient::detail::FailLine(nox::LoginFail::Unreachable);
+        }
+        const unsigned char* b = (const unsigned char*)&peer.sin_addr;
+        wchar_t buf[64];
+        swprintf(buf, 64, L"https://%u.%u.%u.%u:8443/login", b[0], b[1], b[2], b[3]);
+        url = buf;
+    }
+    const authclient::Result r = authclient::Login(url, name, password);
+    if (g_log[0]) {
+        const bool token = std::string_view(r.line).substr(0, nox::kLoginTokenMark.size()) == nox::kLoginTokenMark;
+        Detail("로그인 서버 호출 s=%u 상태=%d 오류=%lu %lums → %s", (unsigned)s, r.status, r.error, r.ms, token ? "로그인 토큰(NXL1…)" : r.line.c_str());   // 토큰 글은 기록에 안 남김
+    }
+    return r.line;
+}
+
 static LobbyLineFilter* LobbyFilterOf(SOCKET s)
 {
     EnterCriticalSection(&g_tokCs);
@@ -393,6 +435,15 @@ static LobbyLineFilter* LobbyFilterOf(SOCKET s)
     LobbyLineFilter* f = it == g_lobby.end() ? NULL : it->second;
     LeaveCriticalSection(&g_tokCs);
     return f;   // 그 소켓을 받는 스레드만 쓴다 — closesocket 전까지 유효
+}
+
+static CLoginRewriter* LoginRewriterOf(SOCKET s)   // 로비 연결이 아니면 NULL · 그 소켓을 보내는 스레드만 쓴다(LobbyFilterOf 와 같은 가정)
+{
+    EnterCriticalSection(&g_tokCs);
+    auto it = g_loginRw.find(s);
+    CLoginRewriter* r = it == g_loginRw.end() ? NULL : it->second;
+    LeaveCriticalSection(&g_tokCs);
+    return r;
 }
 
 static int HexNib(char c)
@@ -686,7 +737,18 @@ extern "C" int WSAAPI Hook_send(SOCKET s, const char* buf, int len, int flags)
         }
     }
     if ((g_listOn || g_hostGameOn) && buf && len > 0 && LobbyFilterOf(s)) NoteNick(buf, len);   // ⑤ · ⑥
-    int rc = ((PFN_send)Resolve(19))(s, buf, len, flags);
+    int rc;
+    CLoginRewriter* lw = (buf && len > 0) ? LoginRewriterOf(s) : NULL;
+    if (lw) {
+        // ★ 로그인 암호 조각 5 의 3 — 로비 연결은 줄 단위로 거쳐 간다. `apgar` 암호 자리가 로그인 토큰으로 바뀌어 나가고(길이가 달라진다),
+        //   게임에는 늘 원래 길이를 돌려준다. 막지 않는 소켓이 일부만 받으면 남은 몫을 쥐고 다음 보내기에 이어 보낸다(Flush)
+        lw->Feed(buf, len);
+        const int fr = lw->Flush([&](const char* b, int n) { return ((PFN_send)Resolve(19))(s, b, n, flags); },
+                                 [] { return GetLastError() == WSAEWOULDBLOCK; });
+        rc = fr < 0 ? SOCKET_ERROR : len;
+    } else {
+        rc = ((PFN_send)Resolve(19))(s, buf, len, flags);
+    }
     if (g_log[0]) {
         DWORD err = GetLastError();
         ModStat* m = ModOf(ret);
@@ -769,14 +831,18 @@ extern "C" int WSAAPI Hook_closesocket(SOCKET s)
 {
     LobbyLineFilter* f = NULL;
     CLoginRewriter* lr = NULL;
+    CLoginRewriter* lw = NULL;
     EnterCriticalSection(&g_tokCs);
     auto it = g_lobby.find(s);
     if (it != g_lobby.end()) { f = it->second; g_lobby.erase(it); }
+    auto wit = g_loginRw.find(s);   // ★ 조각 5 의 3 — 로그인 줄 바꿔쓰기 상태도 소켓 번호와 함께 지운다
+    if (wit != g_loginRw.end()) { lw = wit->second; g_loginRw.erase(wit); }
     auto lit = g_logRedact.find(s);   // ★ 조각 5 — 소켓 번호는 다시 쓰이므로 기록용 줄 상태도 지운다
     if (lit != g_logRedact.end()) { lr = lit->second; g_logRedact.erase(lit); }
     LeaveCriticalSection(&g_tokCs);
     delete f;
     delete lr;
+    delete lw;
     return ((PFN_closesocket)Resolve(3))(s);
 }
 

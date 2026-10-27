@@ -51,6 +51,40 @@ static u_short PortOf(SOCKET s)
     return ntohs(a.sin_port);
 }
 
+// ★ 로그인 암호 조각 5 의 3 — 가짜 로그인 서버(평문 HTTP · 한 번만 받는다). 요청 전체를 request 에 담고 reply 를 200 으로 돌려준다
+struct FakeAuth {
+    SOCKET ls = INVALID_SOCKET;
+    std::string request;
+    std::string reply;
+};
+
+static DWORD WINAPI FakeAuthMain(LPVOID p)
+{
+    FakeAuth* f = (FakeAuth*)p;
+    SOCKET c = accept(f->ls, NULL, NULL);
+    if (c == INVALID_SOCKET) return 1;
+    RecvTimeout(c);
+    std::string req;
+    for (;;) {
+        const size_t he = req.find("\r\n\r\n");
+        if (he != std::string::npos) {
+            size_t cl = 0;
+            const size_t k = req.find("Content-Length:");
+            if (k != std::string::npos) cl = (size_t)atoi(req.c_str() + k + 15);
+            if (req.size() >= he + 4 + cl) break;
+        }
+        char b[512]; int r = recv(c, b, sizeof(b), 0);
+        if (r <= 0) break;
+        req.append(b, r);
+    }
+    f->request = req;
+    const std::string resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + std::to_string(f->reply.size()) +
+                             "\r\nConnection: close\r\n\r\n" + f->reply;
+    send(c, resp.data(), (int)resp.size(), 0);
+    closesocket(c);
+    return 0;
+}
+
 static bool FileHas(const char* path, const char* needle)
 {
     FILE* f = fopen(path, "rb");
@@ -184,7 +218,7 @@ int main(int argc, char** argv)
             if (r <= 0) break;
             atLobby.append(b, r);
         }
-        Check(atLobby == std::string("NOXCLIENT 2\r\n") + cvers, "lobby: NOXCLIENT 2 goes out before CVERS");
+        Check(atLobby == std::string("NOXCLIENT 3\r\n") + cvers, "lobby: NOXCLIENT 3 goes out before CVERS");
 
         // 토큰 줄을 둘로 나눠 보낸다(TCP 가 줄을 자르는 경우) — 클라는 토큰 줄 없이 앞뒤 줄만 받아야 한다
         const std::string line = std::string("NOXTOKEN 127.0.0.1:") + std::to_string(gamePort) + " " + hex + "\r\n";
@@ -212,21 +246,49 @@ int main(int argc, char** argv)
             if (r <= 0) break;
             atLobby2.append(b, r);
         }
-        // ★ 로그인 암호 조각 5 — 암호 줄이 두 번에 걸쳐 나가도(정품은 묶음을 64바이트씩 쪼갠다) 선에는 바이트 그대로 가고, 기록에는 암호가 안 남는다(아래 log 검사)
+        // ★ 로그인 암호 조각 5 의 3 — 암호 줄이 두 번에 걸쳐 나가도(정품은 묶음을 64바이트씩 쪼갠다) 평문 암호는 선(로비 연결)에 안 나가고,
+        //   로그인 서버로 간 요청에만 실리며, 선에는 apgar 자리가 서버 답(토큰)으로 바뀐 줄이 간다. 게임엔 원래 길이를 돌려준다. 기록에는 암호가 안 남는다(아래 log 검사)
         {
+            SOCKET als = socket(AF_INET, SOCK_STREAM, 0);
+            bind(als, (sockaddr*)&any, sizeof(any)); listen(als, 1);
+            FakeAuth fa;
+            fa.ls = als;
+            fa.reply = "NXL1" + std::string(114, 'a');
+            const std::string url = "http://127.0.0.1:" + std::to_string(PortOf(als)) + "/login";
+            SetEnvironmentVariableA("NOX_AUTH_URL", url.c_str());
+            HANDLE th = CreateThread(NULL, 0, FakeAuthMain, &fa, 0, NULL);
             const char a1[] = "apgar Sec7", a2[] = "ret9 0\r\n";
-            send(lc, a1, (int)strlen(a1), 0);
+            Check(send(lc, a1, (int)strlen(a1), 0) == (int)strlen(a1), "login: half apgar line — caller gets its own length");
             const char oth[] = "NOOP interleaved\r\n";
             send(c, oth, (int)strlen(oth), 0);   // 다른 소켓의 보내기가 끼어들어도 로비 소켓의 덜 온 줄 상태와 섞이면 안 된다
-            send(lc, a2, (int)strlen(a2), 0);
-            const std::string wantA = std::string(a1) + a2;
+            Check(send(lc, a2, (int)strlen(a2), 0) == (int)strlen(a2), "login: rest of the apgar line — caller gets its own length though the wire line is longer");
+            const std::string wantA = "apgar " + fa.reply + " 0\r\n";
             std::string wireA;
             while (wireA.size() < wantA.size()) {
                 char b[64]; int r = recv(lsv, b, sizeof(b), 0);
                 if (r <= 0) break;
                 wireA.append(b, r);
             }
-            Check(wireA == wantA, "login line split across two sends: wire bytes unchanged (log redaction never touches the wire)");
+            WaitForSingleObject(th, 5000); CloseHandle(th);
+            closesocket(als);
+            Check(wireA == wantA, "login: apgar field replaced by the login server's token on the lobby wire");
+            Check(wireA.find("Sec7ret9") == std::string::npos, "login: plain password never on the lobby wire");
+            Check(fa.request.find("POST /login") == 0 && fa.request.find("name=selftst") != std::string::npos && fa.request.find("password=Sec7ret9") != std::string::npos,
+                  "login: login server got POST /login with NICK name and the whole password (joined across two sends)");
+
+            // 로그인 서버에 못 닿으면 실패 표시가 apgar 자리에 간다(안 닫히는 포트 1)
+            SetEnvironmentVariableA("NOX_AUTH_URL", "http://127.0.0.1:1/login");
+            const char a3[] = "apgar Other999 0\r\n";
+            Check(send(lc, a3, (int)strlen(a3), 0) == (int)strlen(a3), "login: unreachable case — caller gets its own length");
+            const std::string wantU = "apgar NXL!unreachable 0\r\n";
+            std::string wireU;
+            while (wireU.size() < wantU.size()) {
+                char b[64]; int r = recv(lsv, b, sizeof(b), 0);
+                if (r <= 0) break;
+                wireU.append(b, r);
+            }
+            Check(wireU == wantU, "login: login server unreachable -> apgar field = NXL!unreachable (password not sent anywhere)");
+            SetEnvironmentVariableA("NOX_AUTH_URL", NULL);
         }
         // 표시 줄 전의 목록 — 우리 로비인지 아직 모르니 스위치가 켜져 있어도 끼우지 않는다(XWIS 에선 이 상태가 계속된다)
         const std::string before = ": 321 u:\r\n: 323 u:\r\n";
@@ -292,6 +354,46 @@ int main(int argc, char** argv)
         }
         Check(pgot == fake, "plain: non-lobby socket passes NOXTOKEN-looking line through");
 
+        // ★ 로그인 암호 조각 5 의 3 — 로비 소켓의 진짜 보내기 오류는 게임에 오류로 간다 · 닫힌 로비 소켓 번호를 다시 받은 소켓은 로비가 아니다(바꿔쓰기 상태가 남으면 안 됨)
+        {
+            SOCKET l2 = socket(AF_INET, SOCK_STREAM, 0);
+            Check(connect(l2, (sockaddr*)&toLobby, sizeof(toLobby)) == 0, "login2: connect");
+            SOCKET s2 = accept(lsl, NULL, NULL);
+            send(l2, cvers, (int)strlen(cvers), 0);   // 로비 연결로 적힘
+            shutdown(l2, SD_SEND);
+            const char nk[] = "NICK errcase\r\n";
+            const int er = send(l2, nk, (int)strlen(nk), 0);
+            const int ee = WSAGetLastError();
+            Check(er == SOCKET_ERROR && ee == WSAESHUTDOWN, "login: real send error on a lobby socket comes back to the caller as SOCKET_ERROR (WSAESHUTDOWN)");
+            const SOCKET old = l2;
+            closesocket(l2); closesocket(s2);
+            SOCKET reuse = INVALID_SOCKET, spare[64];
+            int ns = 0;
+            for (int i = 0; i < 64; ++i) {
+                SOCKET t = socket(AF_INET, SOCK_STREAM, 0);
+                if (t == old) { reuse = t; break; }
+                spare[ns++] = t;
+            }
+            for (int i = 0; i < ns; ++i) closesocket(spare[i]);
+            if (reuse == INVALID_SOCKET) {
+                printf("SKIP  login: closed lobby socket number not handed out again in 64 tries\n");
+            } else {
+                connect(reuse, (sockaddr*)&toLobby, sizeof(toLobby));
+                SOCKET s3 = accept(lsl, NULL, NULL);
+                RecvTimeout(s3);
+                const char ap[] = "apgar Plain1 0\r\n";
+                send(reuse, ap, (int)strlen(ap), 0);
+                std::string w;
+                while (w.size() < strlen(ap)) {
+                    char b[64]; int r = recv(s3, b, sizeof(b), 0);
+                    if (r <= 0) break;
+                    w.append(b, r);
+                }
+                Check(w == ap, "login: a socket that got a closed lobby socket's number is not a lobby socket (apgar passes unchanged)");
+                closesocket(reuse); closesocket(s3);
+            }
+        }
+
         closesocket(pc); closesocket(psv); closesocket(lc); closesocket(lsv); closesocket(lsl);
         closesocket(game); closesocket(other); closesocket(cli);
     }
@@ -316,6 +418,10 @@ int main(int argc, char** argv)
         Check(!FileLineHas(logPath, " send s=", "pw7Kx9") && !FileLineHas(logPath, " send s=", "Sec7") && !FileLineHas(logPath, " send s=", "ret9"),
               "log: no password text on send lines (whereto field · apgar line split in two sends)");
         Check(FileHas(logPath, "whereto wn9457 *** 9472") && FileHas(logPath, "apgar *** 0"), "log: password fields masked");
+        // ★ 조각 5 의 3 — 로그인 서버를 부른 줄은 있고(상태 · 걸린 시간), 로그인 토큰 글은 기록에 없다(보낸 글은 원본이 가려져 찍힌다)
+        Check(FileHas(logPath, "로그인 서버 호출") && FileHas(logPath, "NXL!unreachable"), "log: login server call lines exist (token case and unreachable case)");
+        //   (이 시험은 가짜 로그인 서버도 같은 프로세스라 그 서버의 send 줄엔 토큰이 찍힌다 — 클라 쪽 줄인 「로그인 서버 호출」 줄만 본다. 보낸 글 쪽은 위 「apgar *** 0」 검사가 맡는다)
+        Check(FileLineHas(logPath, "로그인 서버 호출", "NXL1") && !FileLineHas(logPath, "로그인 서버 호출", "aaaaaaaa"), "log: login server call line says a token came back but never prints its text");
         Check(FileLineHas(logPath, " send s=", "NOOP interleaved"), "log: another socket's line is shown as is while the lobby socket holds a half apgar line (per-socket state)");
         Check(FileHas(logPath, "gethostbyname \"localhost\""), "log: gethostbyname");
         Check(FileHas(logPath, "부른 곳=selftest.exe"), "log: caller module name");
