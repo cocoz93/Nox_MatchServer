@@ -4,6 +4,7 @@
 #       ★ 7단계 — 로비는 설정 [db](MySQL)에 붙어야 뜬다. -NoDb 면 메모리 저장소(--no-db — 계정 · 판 기록이 로비와 같이 사라짐)
 #       ① 방화벽 열기(tools\mo_firewall.ps1 — 승인 창 1회, -AllowIp 를 주면 그 주소만)
 #       ② ★ 10-20 v2 작업 6 — 로비(nox_lobby — 클라 TCP 4000 · 게임 서버 연결 127.0.0.1:4010)가 안 떠 있으면 띄운다
+#          ★ 로그인 암호 조각 6 — 로비는 --no-auth(아이디만 · 설정에 [auth] 가 있어도). 로그인 서버(nox_auth)는 이 판에 안 띄운다
 #       ③ ★ 10-20 v2 — 게임 서버(nox_server — UDP 18590 · --lobby 127.0.0.1:4010 · 방 없이 시작 · 새 방은 로비가 묻는다)가 안 떠 있으면 띄운다.
 #          같은 PC 라 등록 주소 0 — 로비가 클라가 붙은 주소(공인 IP)를 게임 서버 주소로 알려 준다. 게임 서버를 다른 PC 에 두면 --register-ip 가 있어야 한다
 #       ④ 라우터(4005)를 바깥용으로 다시 띄운다 — --bind 0.0.0.0
@@ -84,6 +85,7 @@ try {
     } else {
       $lobbyArgs = @('--config', "`"$cfg`"", '--bind', '0.0.0.0', '--lobby-port', '4000', '--link-bind', '127.0.0.1', '--link-port', '4010', '--quiet')
       if ($NoDb) { $lobbyArgs += '--no-db' }   # ★ 7단계
+      $lobbyArgs += '--no-auth'   # ★ 로그인 암호 조각 6 — 다른 PC 판은 아이디만(정할 것 c · 로그인 서버 인증서 이름이 127.0.0.1 · localhost 뿐이라 바깥 PC 의 DLL 이 못 믿음 — 공개 때 도메인 · 공인 인증서로)
       Start-Process -FilePath $lobbyExe -ArgumentList $lobbyArgs
       Start-Sleep -Seconds 2
       if (-not (Get-NetTCPConnection -State Listen -LocalPort 4000 -ErrorAction SilentlyContinue)) { throw '로비가 뜨지 않았다 — 로비 창의 글을 보세요(★ 7단계 — [멈춤] DB 면 사람 1회 config\db_setup.sql 또는 -NoDb)' }

@@ -4,15 +4,17 @@
 #       ★ 7단계 — 로비는 설정 [db](MySQL — 사람 1회 config\db_setup.sql)에 붙어야 뜬다. -NoDb 면 메모리 저장소(--no-db — 계정 · 판 기록이 로비와 같이 사라짐)
 #       ① hosts 확인 — servserv.westwood.com 이 127.0.0.1 이어야 정품 인터넷 메뉴가 우리 라우터로 온다(아니면 tools\hosts_lobby.ps1 -Mode On 안내 후 멈춤)
 #       ② 설정 config\nox_mo.ini(없으면 입장 토큰 키를 새로 — git 밖 · 비밀)
-#       ③ 라우터 nox_router 127.0.0.1:4005 → ④ 로비 nox_lobby 127.0.0.1:4000(게임 서버 연결 127.0.0.1:4010)
+#       ③ 라우터 nox_router 127.0.0.1:4005 → ③.5 ★ 로그인 암호 조각 6 — 로그인 서버 nox_auth https 8443(설정에 [auth] key 가 있고 -NoAuth 가 아닐 때 ·
+#          사람 1회 config\auth_setup.sql · tools\auth_setup.ps1 전이면 뜨지 않아 멈춤 — 그때는 -NoAuth) → ④ 로비 nox_lobby 127.0.0.1:4000(게임 서버 연결 127.0.0.1:4010 ·
+#          -NoAuth 면 --no-auth = 아이디만)
 #       ⑤ 게임 서버 nox_server UDP 18590 --lobby 127.0.0.1:4010(로비 기록에서 등록 확인 — 방 없이 시작 · 새 방은 로비가 묻는다)
 #          -BattleScoreLimit N 이면 `--battle-score-limit N`(판 점수 한도 시험 손잡이 — 옛 사람 판 start_rooms_check.ps1 과 같은 이름 · 1 이면 한 킬로 판 끝)
 #       ⑥ 클라 DLL — 게임 폴더 wsock32.dll 이 빌드한 client_mod\wsock32_proxy\wsock32.dll 과 다르면 바꿔 끼운다(바꾸기 전 것은 _out\mo_local\wsock32.dll.<md5> 로 한 번 떠 둠 ·
 #          되돌리기 = 그 파일을 게임 폴더 wsock32.dll 로 복사). -KeepDll 이면 안 바꾼다
 #       ⑦ 클라1 Game.exe · 클라2 Game2.exe(-OneClient 면 클라1 만 · -NoClients 면 안 띄움). DLL 기록(NOX_HOOK_LOG_DIR)도 같은 기록 폴더에
-#       기록 = _out\mo_local\<월일_시분초>\ — router.log · lobby.log · server.log · 판 결과는 게임 서버 실행 파일 옆 results\matches.jsonl
+#       기록 = _out\mo_local\<월일_시분초>\ — router.log · auth.log · lobby.log · server.log · 판 결과는 게임 서버 실행 파일 옆 results\matches.jsonl
 #   -Mode Stop
-#       게임 서버 · 로비 = 닫기 이벤트(nox_server_stop_<pid> · nox_lobby_stop_<pid> — 끝 줄 셈을 찍고 나감 · 응답 없을 때만 강제)
+#       게임 서버 · 로비 · 로그인 서버 = 닫기 이벤트(nox_server_stop_<pid> · nox_lobby_stop_<pid> · nox_auth_stop_<pid> — 끝 줄 셈을 찍고 나감 · 응답 없을 때만 강제)
 #       라우터 = 끔(상태 · 셈이 없는 콘솔 — mo_host.ps1 과 같음). 클라는 사람이 게임 메뉴로 끈다
 #
 # 왜 — 10-20 v2 로 로비와 게임 서버가 다른 프로세스가 됐다. 옛 사람 판은 채널 하나(nox_server --lobby-port)만 띄웠다.
@@ -24,7 +26,7 @@ $bin = Join-Path $repo 'build\Release'
 $game = 'C:\Program Files\GOG Galaxy\Games\Nox'
 
 function Stop-Servers {
-  foreach ($kind in @('nox_server', 'nox_lobby')) {
+  foreach ($kind in @('nox_server', 'nox_lobby', 'nox_auth')) {   # ★ 로그인 암호 조각 6 — nox_auth 도 같은 꼴의 닫기 이벤트
     foreach ($p in @(Get-Process $kind -ErrorAction SilentlyContinue)) {
       try { [void][Threading.EventWaitHandle]::OpenExisting("$($kind)_stop_$($p.Id)").Set() } catch { }
       if (-not $p.WaitForExit(8000)) { Stop-Process -Id $p.Id -Force; Write-Host "$kind pid $($p.Id) — 닫기 이벤트에 답이 없어 강제 종료" }
@@ -63,6 +65,24 @@ try {
     Start-Process -FilePath cmd.exe -ArgumentList "/c `"`"$(Join-Path $bin $exe)`" $argLine > `"$log`" 2>&1`"" -WindowStyle Minimized
   }
   Launch 'nox_router.exe' "--bind 127.0.0.1" (Join-Path $logDir 'router.log')
+  # ★ 로그인 암호 조각 6 — 로그인 서버. 설정에 [auth] key 가 있으면 로비가 로그인 토큰을 요구하므로 같이 띄운다(DLL 이 로비 IP:8443 에 묻는다)
+  $authOn = -not $NoAuth -and ([IO.File]::ReadAllText($cfg) -match '(?m)^\[auth\]')
+  if ($authOn) {
+    $authLog = Join-Path $logDir 'auth.log'
+    Launch 'nox_auth.exe' "--config `"$cfg`"" $authLog
+    $up = $false
+    for ($i = 0; $i -lt 75 -and -not $up; $i++) {
+      Start-Sleep -Milliseconds 200
+      try {
+        $fs = New-Object IO.FileStream($authLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $sr = New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8); $t = $sr.ReadToEnd(); $sr.Close()
+        $up = $t -match '듣기 https'
+        if (-not $up -and -not (Get-Process nox_auth -ErrorAction SilentlyContinue) -and $i -gt 5) { break }   # 뜨다 멈춤(까닭은 기록에)
+      } catch { }
+    }
+    if (-not $up) { Stop-Servers; throw "로그인 서버가 안 떴다 — $authLog (사람 1회 config\auth_setup.sql · tools\auth_setup.ps1 전이면 -NoAuth 로)" }
+    Write-Host '로그인 서버: nox_auth https://127.0.0.1:8443 (가입 /signup)'
+  }
   $lobbyArgs = "--config `"$cfg`" --bind 127.0.0.1 --lobby-port 4000 --link-bind 127.0.0.1 --link-port 4010"
   if ($NoDb) { $lobbyArgs += ' --no-db' }   # ★ 7단계
   if ($NoAuth) { $lobbyArgs += ' --no-auth' }   # ★ 로그인 암호 — 설정에 [auth] 가 있어도 아이디만(DLL 이 토큰을 아직 못 붙이는 동안 접속 시험용)
