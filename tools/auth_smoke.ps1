@@ -53,6 +53,7 @@ $legacyId = [int](Sql "SELECT id FROM accounts WHERE name = 'legacy1';")
 $log = Join-Path $env:TEMP ("auth_smoke_{0}.txt" -f $PID)
 $p = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -ArgumentList @(
   '--config', "`"$Config`"", '--test-db', '--workers', '2', '--seconds', '60')
+$null = $p.Handle  # 핸들을 미리 잡아야 끝난 뒤 ExitCode 가 비지 않음
 $listening = $false
 for ($i = 0; $i -lt 150 -and -not $p.HasExited; $i++) {
   Start-Sleep -Milliseconds 100
@@ -79,8 +80,9 @@ function Req([string]$method, [string]$path, [string]$body) {
   } catch [System.Net.WebException] {
     $resp = $_.Exception.Response
     if (-not $resp) { return @{ status = 0; body = $_.Exception.Message; ms = $sw.ElapsedMilliseconds } }
-    $rd = New-Object IO.StreamReader($resp.GetResponseStream())
-    return @{ status = [int]$resp.StatusCode; body = $rd.ReadToEnd(); ms = $sw.ElapsedMilliseconds }
+    # PowerShell 5.1 은 오류 응답 본문을 ErrorDetails 로 먼저 읽어 가 스트림이 비어 있음
+    $text = if ($_.ErrorDetails) { $_.ErrorDetails.Message } else { (New-Object IO.StreamReader($resp.GetResponseStream())).ReadToEnd() }
+    return @{ status = [int]$resp.StatusCode; body = $text; ms = $sw.ElapsedMilliseconds }
   }
 }
 $pw = 'Sm0k!p12'
