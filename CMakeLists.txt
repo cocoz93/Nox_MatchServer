@@ -204,6 +204,12 @@ if (NOX_POWERSHELL AND WIN32)
              COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                      -File ${CMAKE_SOURCE_DIR}/tools/auth_smoke.ps1 -Exe $<TARGET_FILE:nox_auth>)
     set_tests_properties(auth_smoke PROPERTIES SKIP_RETURN_CODE 77)
+    # ★ 로그인 암호 조각 6b — 판 하나를 로그인 토큰으로(nox_auth --test-db 가입 · /login → apgar 토큰 → 로비 토큰 확인 → 판 끝까지). 사람 1회 전이면 77
+    add_test(NAME match_smoke_auth
+             COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                     -File ${CMAKE_SOURCE_DIR}/tools/match_smoke.ps1 -Auth -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby> -AuthExe $<TARGET_FILE:nox_auth>
+                     -LobbyPort 14700 -LinkPort 14710 -UdpPort 18741)
+    set_tests_properties(match_smoke_auth PROPERTIES SKIP_RETURN_CODE 77)
   endif()
   # 라우터 소켓 왕복(작업 8b) — 605 의 채널 주소(설정 없음 = 붙은 주소 · 설정 있음 = 그 주소) · CRLF · QUIT 뒤 끊기
   add_test(NAME router_smoke
