@@ -394,6 +394,33 @@ int main(int argc, char** argv)
             }
         }
 
+        // ★ 로그인 암호 조각 5 의 4 — 라우터(상대 포트 4005)로 가는 whereto 의 암호 칸은 선에 x 로(두 번에 나눠 보내도). 다른 포트로 가는 같은 줄은 위 「recv same line」이 그대로임을 본다
+        {
+            SOCKET rl = socket(AF_INET, SOCK_STREAM, 0);
+            sockaddr_in r4 = Loopback(4005);
+            if (bind(rl, (sockaddr*)&r4, sizeof(r4)) != 0 || listen(rl, 1) != 0) {
+                printf("SKIP  router: 127.0.0.1:4005 busy (nox_router running?)\n");
+            } else {
+                SOCKET rcl = socket(AF_INET, SOCK_STREAM, 0);
+                Check(connect(rcl, (sockaddr*)&r4, sizeof(r4)) == 0, "router: connect to port 4005");
+                SOCKET rsv = accept(rl, NULL, NULL);
+                RecvTimeout(rsv);
+                const char w1[] = "verchk 9472 65538\r\nwhereto rtnm pw", w2[] = "Rt55 9472 65538 7726\r\nQUIT\r\n";
+                Check(send(rcl, w1, (int)strlen(w1), 0) == (int)strlen(w1) && send(rcl, w2, (int)strlen(w2), 0) == (int)strlen(w2),
+                      "router: caller gets its own lengths");
+                const std::string wantR = "verchk 9472 65538\r\nwhereto rtnm x 9472 65538 7726\r\nQUIT\r\n";
+                std::string wireR;
+                while (wireR.size() < wantR.size()) {
+                    char b[64]; int r = recv(rsv, b, sizeof(b), 0);
+                    if (r <= 0) break;
+                    wireR.append(b, r);
+                }
+                Check(wireR == wantR, "router: whereto password field goes out as x (line split across two sends)");
+                closesocket(rcl); closesocket(rsv);
+            }
+            closesocket(rl);
+        }
+
         closesocket(pc); closesocket(psv); closesocket(lc); closesocket(lsv); closesocket(lsl);
         closesocket(game); closesocket(other); closesocket(cli);
     }

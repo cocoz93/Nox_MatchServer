@@ -59,7 +59,9 @@
 //   ④ closesocket — 로비 연결 상태를 지운다(소켓 번호는 다시 쓰인다)
 //   ★ 로그인 암호 조각 5 의 3 — `NOXCLIENT 3`. 로비 연결의 보내기는 `CLoginRewriter`(Lobby 모드)를 거친다: `NICK` 을 기억해 두고 `apgar <암호> 0` 의 암호 자리를
 //      로그인 서버(nox_auth · 로비 IP:8443 · `AuthClient.h`)가 준 로그인 토큰(또는 실패 표시)으로 바꿔 보낸다. 평문 암호는 TLS 안에서만 나간다(`Docs/LOGIN_AUTH_DESIGN.md`).
-//      게임엔 원래 길이를 돌려준다. 라우터 쪽(`whereto` 암호 칸 지우기)은 다음 조각(4번)
+//      게임엔 원래 길이를 돌려준다
+//   ★ 조각 5 의 4 — 라우터 연결(connect 상대 포트 4005)의 보내기도 `CLoginRewriter`(Router 모드)를 거친다: `whereto <이름> <암호> …` 의 암호 칸을 `x` 로.
+//      라우터는 암호를 안 쓰므로(로비 주소만 알려 줌) 평문 암호가 거기로 나갈 까닭이 없다. 손님(빈 칸)은 그대로
 //
 // ★ 10-16 플랜 B 작업 11 — 정품 `Host Game` → 우리 채널에 내 방을 만들고 들어가기(`Docs/ROOMS_DESIGN.md` 결정 4 · 작업 11)
 //   켜는 조건 = 판 확인(Game.exe PE 시각 · 이미지 크기 · 실린 자리 — 아래 메모리 칸이 그 판의 것) 그리고 **우리 로비**
@@ -353,7 +355,7 @@ struct PendingToken {
 };
 static PendingToken g_tok;
 static std::map<SOCKET, CLoginRewriter*> g_logRedact;   // ★ 조각 5 — 기록용 줄 상태(소켓마다 · 기록을 켰을 때만 생김) · g_tokCs 로 지킨다
-static std::map<SOCKET, CLoginRewriter*> g_loginRw;     // ★ 조각 5 의 3 — 로비 연결마다 로그인 줄 바꿔쓰기(Lobby 모드 · 늘 생김) · g_tokCs 로 지킨다
+static std::map<SOCKET, CLoginRewriter*> g_loginRw;     // ★ 조각 5 의 3 · 4 — 로비 연결(Lobby 모드) · 라우터 연결(Router 모드)마다 로그인 줄 바꿔쓰기(늘 생김) · g_tokCs 로 지킨다
 static bool g_listOn = false;          // ⑤ 줄 끼우기를 걸어 두나(판 확인 통과 또는 ⑦ 시험 스위치 · 끄기 스위치 없음)
 static bool g_hostGameOn = false;       // ⑥ Host Game 돌리기 스레드(판 확인 통과 · 끄기 스위치 없음)
 static volatile LONG g_ourLobby = 0;    // ⑤ · ⑥ 지금 로비 연결이 `NOXSERVER` 를 보냈나 — 새 로비 연결마다 0
@@ -435,6 +437,18 @@ static LobbyLineFilter* LobbyFilterOf(SOCKET s)
     LobbyLineFilter* f = it == g_lobby.end() ? NULL : it->second;
     LeaveCriticalSection(&g_tokCs);
     return f;   // 그 소켓을 받는 스레드만 쓴다 — closesocket 전까지 유효
+}
+
+// ★ 조각 5 의 4 — 라우터 연결(정품 servserv.westwood.com:4005 → 우리 nox_router)로 적는다. 그 소켓의 whereto 암호 칸이 x 로 나간다
+static const unsigned short kRouterPort = 4005;
+static void MarkRouter(SOCKET s)
+{
+    CLoginRewriter* rw = new CLoginRewriter(CLoginRewriter::Mode::Router);
+    EnterCriticalSection(&g_tokCs);
+    CLoginRewriter*& old = g_loginRw[s];
+    delete old;   // 같은 소켓이 다시 connect 한 경우
+    old = rw;
+    LeaveCriticalSection(&g_tokCs);
 }
 
 static CLoginRewriter* LoginRewriterOf(SOCKET s)   // 로비 연결이 아니면 NULL · 그 소켓을 보내는 스레드만 쓴다(LobbyFilterOf 와 같은 가정)
@@ -712,6 +726,10 @@ typedef HANDLE (WSAAPI* PFN_WSAAsyncGetHostByName)(HWND, u_int, const char*, cha
 extern "C" int WSAAPI Hook_connect(SOCKET s, const struct sockaddr* name, int namelen)
 {
     void* ret = _ReturnAddress();
+    if (name && namelen >= (int)sizeof(sockaddr_in) && name->sa_family == AF_INET) {   // ★ 조각 5 의 4 — 라우터 연결이면 whereto 암호 칸 지우기
+        const unsigned char* pp = (const unsigned char*)&((const sockaddr_in*)name)->sin_port;
+        if (((pp[0] << 8) | pp[1]) == kRouterPort) MarkRouter(s);
+    }
     int rc = ((PFN_connect)Resolve(4))(s, name, namelen);
     if (g_log[0]) {
         DWORD err = GetLastError();
@@ -740,7 +758,7 @@ extern "C" int WSAAPI Hook_send(SOCKET s, const char* buf, int len, int flags)
     int rc;
     CLoginRewriter* lw = (buf && len > 0) ? LoginRewriterOf(s) : NULL;
     if (lw) {
-        // ★ 로그인 암호 조각 5 의 3 — 로비 연결은 줄 단위로 거쳐 간다. `apgar` 암호 자리가 로그인 토큰으로 바뀌어 나가고(길이가 달라진다),
+        // ★ 로그인 암호 조각 5 의 3 · 4 — 로비 · 라우터 연결은 줄 단위로 거쳐 간다. `apgar` 암호 자리가 로그인 토큰으로(로비) · `whereto` 암호 칸이 x 로(라우터) 바뀌어 나가고(길이가 달라진다),
         //   게임에는 늘 원래 길이를 돌려준다. 막지 않는 소켓이 일부만 받으면 남은 몫을 쥐고 다음 보내기에 이어 보낸다(Flush)
         lw->Feed(buf, len);
         const int fr = lw->Flush([&](const char* b, int n) { return ((PFN_send)Resolve(19))(s, b, n, flags); },
