@@ -2562,7 +2562,7 @@ void Server::UpdateProps() {
             // ★ 10-02 — 위 밀림(닿음 · 각속도)과 아래 용수철(걸음마다 돌리기 · 경첩 한계)은 **사람 걸음 적분의 걸음마다**로 옮겼다
             //   (`UpdatePlayers` 의 문짝 고리 · 걸음 끝 문 돌리기 — 정답지 `updateCollide` 의 자리 `server.go:146~151`).
             //   닿음 짝의 닿음 함수(PlayerCollide · DoorCollide)는 짝 처리(`nox_xxx_collide_548740` 자리)가 부른다.
-            //   ✖ 여기(틱 끝 한 번)에 두었을 때는 — 걸음 안에서 문짝이 사람을 밀어내게 한 뒤(`d6a695f`) 틱 끝에는 사람이 이미 안 닿아
+            //   ✖ 여기(틱 끝 한 번)에 두었을 때는 — 걸음 안에서 문짝이 사람을 밀어내게 한 뒤(`6e7e38b`) 틱 끝에는 사람이 이미 안 닿아
             //     문이 안 되밀렸고, 0.5초마다 2씩 닫히며 **막고 선 사람을 밀어내고 점점 닫혔다**(10-02 사람 판)
             //   닿은 사람 전부를 보는 것(전에는 경첩에 가장 가까운 한 사람 · 시험 TestDoorHeldOpenByBody ③)도 그쪽 고리가 맡는다
             // 용수철 — 각속도로 미세각(0~255)을 돌린다. 한 걸음에 최대 4(정답지 `sub_548B60`),
@@ -5723,7 +5723,7 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
                 p.lastPushFrame = frame;                           // +44(`:2170`) — 이 걸음 적분의 틱(`DoorAutoClose` 와 같은 시계)
                 // ★ 10-02 — **같은 걸음에 사람도 문을 민다**(정답지 `GAME5.c:1863` → `sub_5488B0(문, 사람, 0)` `:2191~2215`) —
                 //   각속도 += (사람 반지름 − 거리) × 사람 무게(+120) · 부호는 문선의 어느 쪽인가. 아래 걸음 끝 `sub_548B60` 이 돌리고 지운다.
-                //   ✖ 처음 고침(`d6a695f`)은 이 밀림을 문 갱신(틱 끝 한 번)에 두었다 — 그때는 사람이 이미 문짝 밖으로 밀려나 있어 문이 안 되밀리고,
+                //   ✖ 처음 고침(`6e7e38b`)은 이 밀림을 문 갱신(틱 끝 한 번)에 두었다 — 그때는 사람이 이미 문짝 밖으로 밀려나 있어 문이 안 되밀리고,
                 //     0.5초마다 2씩 닫히며 사람을 밀어내 **문이 점점 닫혔다**(10-02 사람 판 「문 막고 있어도 점점 닫힘」)
                 //   팀 문이 닫혀 있고 다른 팀이면 못 민다 — 1초에 한 번 「GateLockedMechanism」(+136) · 잠김(+1)이면 안 돈다
                 {
@@ -5819,7 +5819,7 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
         }
         // ★ 10-02 — 걸음마다 문 돌리기(정답지 `updateCollide` 의 `sub_548B60` — `server.go:148~151` 다섯 걸음 각각 적분 뒤 · `GAME5.c:2235~2285`):
         //   한 걸음에 |2 × 각속도 + 0.5| 만큼(최대 4) · 경첩 한계(닫힘 ±12 눈금)면 그쪽으로 안 돎 · **돌린 뒤 각속도를 지운다**(+32 = 0)
-        //   ✖ 전에는 문 갱신(`UpdateProps`)이 틱 끝에 한 번 잰 각속도를 다섯 번 되풀이해 돌렸다 — 걸음 안에서 문짝이 사람을 밀어내게 된 뒤(`d6a695f`)로는
+        //   ✖ 전에는 문 갱신(`UpdateProps`)이 틱 끝에 한 번 잰 각속도를 다섯 번 되풀이해 돌렸다 — 걸음 안에서 문짝이 사람을 밀어내게 된 뒤(`6e7e38b`)로는
         //     틱 끝에 이미 안 닿아 각속도가 0 이었다
         for (auto& p : props_) {
             if (p.kind != PropKind::Door || p.spin == 0.0) continue;
@@ -11853,7 +11853,7 @@ void Server::AIUpdate(Creature& k, uint8_t act) {
             //   빠지면 아래에 깔아 둔 **죽음(31)** 이 드러난다
             // ★ 09-30 — 애니 칸(B5)으로 원본대로 **죽어가기 애니(9)가 끝나면** 뺀다. ✖ 전에는 애니 칸이 없던 때의 대신으로 첫 갱신에 바로 뺐다
             // ❌ 정정(10-01) — 「우리는 체력이 0 이면 곧바로 지운다 · 30 은 실제 판에서 안 쌓인다」는 이제 틀림:
-            //   `KillPet` 이 죽음 함수가 되어 31·30 을 쌓는다(시체 · `959b8f1`)
+            //   `KillPet` 이 죽음 함수가 되어 31·30 을 쌓는다(시체 · `25519f8`)
             if (k.animDone) AIPop(k);
             break;
         case 31:     // ── 묶음 6-j 죽음 — `mobActionDead2_544EC0`
@@ -17674,7 +17674,7 @@ void Server::RunTick(int ticks) {
     //   그래서 `Damage` 를 직접 불러 죽인다 — 그 함수가 킬 처리·점수·`RoundCheckLimit` 까지 한다
     if (debugKillAfter_ > 0 && !debugKillDone_ && firstInGameFrame_ != 0 &&
         frame_ >= firstInGameFrame_ + debugKillAfter_) {
-        // ★ 10-19 — 처음값 `kNoSession`(`ba276f7` 이 빈 문자열 → 세션 번호로 바꾸며 처음값을 빠뜨려 아래 비교가 쓰레기 값을 봤다 · 경고 C4700)
+        // ★ 10-19 — 처음값 `kNoSession`(`73a6990` 이 빈 문자열 → 세션 번호로 바꾸며 처음값을 빠뜨려 아래 비교가 쓰레기 값을 봤다 · 경고 C4700)
         int64_t killer = kNoSession, victim = kNoSession;
         for (auto& kv : sessions_) {
             if (!kv.second.inGame || kv.second.observer) continue;
@@ -18006,7 +18006,7 @@ void Server::RunTick(int ticks) {
 
     // ★ 09-14 갱신 알림 정답지화 — 접속 직후 HUD(`45`·`43`·`dd`·`de`)를 다섯 번 되풀이하던 자리표시를 걷어냈다.
     //   정답지는 스냅샷 꼬리(첫 playerReportAnything 몫 dd·de·48·43 — SnapshotTail.cpp #21·#22)뿐이고, 그 뒤는 바뀔 때만(PlayerReportAnything).
-    //   되풀이가 필요했던 까닭(cc 가 접속 직후 막힘)은 1273d96 대기열로 해소됐다.
+    //   되풀이가 필요했던 까닭(cc 가 접속 직후 막힘)은 0c37204 대기열로 해소됐다.
 
     if (!frozen) {                                            // R1 — 판끝 동안 멈춤
     UpdateFlags();

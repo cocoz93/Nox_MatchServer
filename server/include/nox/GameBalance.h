@@ -113,7 +113,7 @@ inline double SpeedBaseOnline(CharClass c) { return static_cast<double>(SpeedOnl
 //   접속 준비 때 `ef STAT_MULTIPLIERS` 로 클라에 보내는 그 값이다.
 //   ⚠⚠ **2026-09-14 정정** — 정답지 전역 `warriorMaxHealth_587000_312784` 따위는 이름과 달리
 //     **최대 체력이 아니라 이 배수**다(`legacy/player.go:58` → `Players.Mult.Warrior.Health`).
-//     이름만 보고 최대 체력으로 읽어 LesserHeal 회복량을 75~150배 부풀렸다(ebbc32a 결함).
+//     이름만 보고 최대 체력으로 읽어 LesserHeal 회복량을 75~150배 부풀렸다(9618996 결함).
 //   ⚠ 퀘스트는 `DefaultStatMult` 로 체력 3배(`server/player.go:101`) — 그 모드를 붙이면 여기가 갈린다.
 inline float ClassHealthMult(CharClass) { return 1.0f; }
 // 마나 쪽 배수 — 같은 표의 다른 칸(`Players.Mult.<직업>.Mana`). 아레나는 마찬가지로 1.0.
