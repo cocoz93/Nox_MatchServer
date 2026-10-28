@@ -338,10 +338,10 @@ int main(int argc, char** argv) {
         for (size_t i = 0; i < static_cast<size_t>(nox::LoginFail::kCount); ++i)
             fail += std::string(i ? " · " : "") + nox::LoginFailName(static_cast<nox::LoginFail>(i)) + " " + std::to_string(ls.loginFail[i]);
         Log("[로비] 끝 — 로그인 %llu(토큰 [%s] · 다시 쓴 토큰 %llu · 실패 표시 [%s] · 모르는 까닭 %llu · 손님 %llu · 평문 %llu · apgar 없음 %llu · "
-            "이름 틀림 %llu · 아이디만 %llu) · 옛 접속 끊음 %llu · 로그인된 계정 %zu · 대화방 보기만 %llu · 마감 끊음 %llu · 실패 끊음 %llu\n",
+            "이름 틀림 %llu · 아이디만 %llu) · 옛 접속 끊음 %llu · 로그인된 계정 %zu · 대화방 보기만 %llu · 마감 끊음 %llu · 거절 378 %llu(뒤 끊음 %llu)\n",
             ls.LoginTotal(), tok.c_str(), ls.loginReplay, fail.c_str(), ls.loginFailUnknown, ls.loginGuest, ls.loginPlain, ls.loginMissing,
             ls.loginBadName, ls.loginNoAuth, ls.loginKickedOld, lobby.AccountsOnline(), ls.chatViewOnly, ls.loginDeadlineClosed,
-            ls.loginFailClosed);
+            ls.loginRejected, ls.loginRejectClosed);
     }
     // ★ 7단계 — 보냄 · 받음은 PING 을 넣은 수(괄호가 그중 PING) · 무소식 끊음 = 받은 줄이 한도 동안 없어 끊은 게임 서버 연결
     Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu(PING %llu) · "

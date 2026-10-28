@@ -1338,10 +1338,11 @@ void MirrorSaveUnitTests() {
 //   (7단계 조각 6 의 「저장소에 묻고 답 기다리기」 시험을 갈음 — 그 길은 걷어냈다)
 //   ① 아이디만(키 없음) — 정품 묶음 → NOXSERVER · 인사 · 376 → 379 → 329 차례 · 평문 apgar 를 안 봄 · 방 참가 토큰
 //   ② 암호 판 맞는 토큰 — 같은 차례 · 안내 없음 · 계정 번호 · 방 참가 토큰
-//   ③ 토큰 갈래 일곱(크기 · 판 · 서명 · 만료 · 너무 멂 · IP · 이름) — 안내 + 376 + 끊음(★ 10-28) · 뒷줄 무시 · 다시 쓴 토큰
+//   ③ 토큰 갈래 일곱(크기 · 판 · 서명 · 만료 · 너무 멂 · IP · 이름) — 거절 378(★ 10-28) · 뒷줄 무시 · 다시 쓴 토큰
 //   ④ 실패 표시 까닭 다섯(계정 없음은 가입 주소) · 모르는 까닭 · 손님 · 평문(DLL 판 2 · 3) · apgar 없음
 //   ⑤ 같은 계정 새 접속 → 옛 접속에 끊는 줄 하나(정할 것 b) · 장부 · 옛 접속이 끊겨도 새 접속은 장부에
-//   ⑥ 로그인 실패 접속은 끊고 뒷줄 무시(★ 10-28) · USER 전 접속의 대화방 = 보기만(남에게 들어옴 안 알림 · 구성원 아님 · 글 거름)
+//   ⑥ 로그인 실패 접속은 거절 378 · 뒷줄 무시(★ 10-28) · USER 전 접속의 대화방 = 보기만(남에게 들어옴 안 알림 · 구성원 아님 · 글 거름)
+//   ⑥b 거절 뒤 클라가 안 끊으면 한도에 끊음
 //   ⑦ 이름 17바이트 · 빈 이름 · 로그인 마감 · 두 번째 USER ⑧ 셈 — USER 수 = 갈래 합 · 갈래가 다 나옴
 void LoginUnitTests() {
     using namespace nox::wol;
@@ -1416,15 +1417,13 @@ void LoginUnitTests() {
         return v.size() >= 5 && v[0] == "NOXSERVER 1" && v[1].rfind(": 375 ", 0) == 0 && i376 + 3 == v.size() &&
                v[i376 + 1].rfind(": 379 ", 0) == 0 && v[i376 + 2] == ": 329 u 949" && !has(": 372 u :- *** Login failed");
     };
-    // ★ 10-28 — 실패는 안내 + 376 뒤 끊는 줄 하나로 끝난다(뒷줄 verchk · SETCODEPAGE 엔 답 없음)
+    // ★ 10-28 — 실패는 인사(375 · 376) 없이 `378` 한 줄로 끝난다(뒷줄 verchk · SETCODEPAGE 엔 답 없음 · 곧바로 안 끊음)
     auto failWith = [&](const std::string& text) {
         const auto v = lines();
-        bool notice = false;
-        for (const std::string& l : v) notice = notice || (l.rfind(": 372 u :- *** Login failed: ", 0) == 0 && l.find(text) != std::string::npos);
         unsigned closes = 0;
         for (const Out& x : out) closes += x.closeAfter ? 1 : 0;
-        return notice && !has(": 372 u :- You can chat") && v.size() >= 2 && v[v.size() - 2] == ": 376 u" && v.back() == "ERROR :Closing Link (login failed)" && out.back().closeAfter &&
-               closes == 1;
+        return !v.empty() && v.back().rfind(": 378 u :", 0) == 0 && v.back().find(text) != std::string::npos && !has(": 375 ") &&
+               !has(": 376 ") && !has(": 372 ") && !has(": 379 ") && !has(": 329 ") && closes == 0;
     };
     unsigned users = 0;   // 첫 USER 수(셈 맞추기)
 
@@ -1484,11 +1483,11 @@ void LoginUnitTests() {
         const int k = tryLogin("3", c.nick, c.raw.empty() ? apgar(c.t) : c.raw, c.from);
         const bool notice = failWith("Login token rejected");
         feed(lb, k, {"JOINGAME #host1's_game 1 "});
-        const bool ignored = out.empty();   // ★ 10-28 — 끊는 접속의 뒷줄엔 답 없음(전엔 471)
+        const bool ignored = out.empty();   // ★ 10-28 — 거절한 접속의 뒷줄엔 답 없음(전엔 471)
         rejected += (notice && ignored) ? 1 : 0;
-        if (!(notice && ignored)) std::printf("    (③ %s — 안내 · 끊음 %d · 뒷줄 무시 %d)\n", c.what, notice, ignored);
+        if (!(notice && ignored)) std::printf("    (③ %s — 거절 378 %d · 뒷줄 무시 %d)\n", c.what, notice, ignored);
     }
-    Check(rejected == 7, "③ 토큰 갈래 일곱 — 안내 + 376 + 끊음 · 방 참가 무시 (" + std::to_string(rejected) + "/7)");
+    Check(rejected == 7, "③ 토큰 갈래 일곱 — 거절 378 · 방 참가 무시 (" + std::to_string(rejected) + "/7)");
     Tok once;
     once.nonce = 4242;
     once.name = "fay";
@@ -1567,7 +1566,29 @@ void LoginUnitTests() {
     std::vector<Out> preClose;
     lb.OnClose(kBad, preClose);   // ⑦ 로그인 마감 셈에 안 끼게
     Check(failClosed && failIgnored && !toHal && toSelf && selfDone && !spoke && !listed && lb.Stats().chatViewOnly == 1,
-          "⑥ 로그인 실패 → 끊음 · 그 뒷줄(대화방 · 글) 무시 / USER 전 접속의 대화방 = 보기만 — 본인에게만 들어옴 답 · 남에게 안 알림 · 글 거름 · 사람 목록에 없음");
+          "⑥ 로그인 실패 → 거절 378 · 그 뒷줄(대화방 · 글) 무시 / USER 전 접속의 대화방 = 보기만 — 본인에게만 들어옴 답 · 남에게 안 알림 · 글 거름 · 사람 목록에 없음");
+
+    // ⑥b 거절 뒤 한도 — 클라가 안 끊으면 `kLoginRejectCloseMs` 에 끊는 줄 하나(1ms 앞엔 그대로). 지금까지 거절한 접속은 다 같은 시각이라 같이 끊긴다
+    const int kSlow = tryLogin("3", "jay", "apgar NXL!wrong_password 0");
+    clock += kLoginRejectCloseMs - 1;
+    out.clear();
+    lb.Tick(out);
+    const bool rejectEarly = !out.empty();
+    clock += 1;
+    out.clear();
+    lb.Tick(out);
+    unsigned rejectCloses = 0, slowCloses = 0;
+    for (const Out& o : out) {
+        const bool closeLine = o.closeAfter && o.line == "ERROR :Closing Link (login failed)";
+        rejectCloses += closeLine ? 1 : 0;
+        slowCloses += (closeLine && o.conn == kSlow) ? 1 : 0;
+    }
+    const bool allClosed = rejectCloses == out.size() && lb.Stats().loginRejectClosed == lb.Stats().loginRejected && slowCloses == 1;
+    out.clear();
+    lb.Tick(out);
+    Check(!rejectEarly && allClosed && out.empty(),
+          "⑥b 거절 뒤 한도 1ms 앞 그대로 · 한도에 거절한 접속마다 끊는 줄 하나 (" + std::to_string(rejectCloses) + "/" +
+              std::to_string(lb.Stats().loginRejected) + ") · 다음 틱엔 다시 안 함");
 
     // ⑦
     tryLogin("3", "abcdefghijklmnopq", apgar(Tok{}));   // 17바이트
@@ -1595,9 +1616,9 @@ void LoginUnitTests() {
     Check(s.LoginTotal() == users && tokenKinds == static_cast<unsigned>(nox::LoginTokenCheck::kCount) &&
               s.loginToken[static_cast<size_t>(nox::LoginTokenCheck::Ok)] >= 4 && failKinds == static_cast<unsigned>(nox::LoginFail::kCount) &&
               s.loginFailUnknown == 1 && s.loginGuest == 1 && s.loginPlain == 2 && s.loginMissing == 1 && s.loginBadName == 1 && s.loginNoAuth == 0 &&
-              s.loginFailClosed == users - s.loginToken[static_cast<size_t>(nox::LoginTokenCheck::Ok)],
+              s.loginRejected == users - s.loginToken[static_cast<size_t>(nox::LoginTokenCheck::Ok)],
           "⑧ 셈 — 로그인 " + std::to_string(s.LoginTotal()) + " = 첫 USER " + std::to_string(users) +
-              " · 토큰 거절 갈래 일곱 · 실패 까닭 다섯 · 모르는 1 · 손님 1 · 평문 2 · 없음 1 · 이름 1 · 실패 끊음 " + std::to_string(s.loginFailClosed) +
+              " · 토큰 거절 갈래 일곱 · 실패 까닭 다섯 · 모르는 1 · 손님 1 · 평문 2 · 없음 1 · 이름 1 · 거절 378 " + std::to_string(s.loginRejected) +
               " = USER − 통과");
 }
 

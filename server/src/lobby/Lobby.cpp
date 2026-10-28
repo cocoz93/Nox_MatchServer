@@ -191,6 +191,12 @@ void Lobby::Tick(std::vector<Out>& out) {
             c.closing = true;
             log_.push_back("[로그인 — 마감] c" + std::to_string(kv.first) + " — " + std::to_string(kLoginDeadlineMs / 1000) + "초 안에 USER 없음 · 끊음");
             out.push_back({kv.first, "ERROR :Closing Link (login timeout)", true});
+        } else if (c.login == LoginState::Rejected) {   // ★ 10-28 — 378 뒤 클라가 스스로 안 끊음
+            ++stats_.loginRejectClosed;
+            c.closing = true;
+            log_.push_back("[로그인 — 거절 뒤 끊음] c" + std::to_string(kv.first) + " — 378 뒤 " + std::to_string(kLoginRejectCloseMs / 1000) +
+                           "초 안에 클라가 안 끊음");
+            out.push_back({kv.first, "ERROR :Closing Link (login failed)", true});
         }
     }
     if (pending_.empty()) return;
@@ -240,6 +246,18 @@ const char* JoinRejectText(JoinReject why) {
 // ★ 7단계 조각 6 — 인사. 실패도 XWIS 꼴로 로그인은 끝낸다(376) — 답을 안 하면 정품이 「Connecting…」에서 멈춘다(10-10)
 //   ★ 로그인 암호 조각 4 — 뒷줄 쌓기 걷음(곧바로 답하므로 정품 묶음의 뒷줄은 받은 차례대로 376 뒤에 온다)
 void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const std::string& failNotice, std::vector<Out>& out) {
+    // ★ 10-28 사람 확인 54 — 암호 판의 실패는 로비에 들이지 않는다. 인사(375 · 376) 대신 `378` 한 줄 — 정품 로비 모듈이 378 을
+    //   「암호 틀림」(`0x80040065` — `WOLAPI.dll` `0x210096d3` → `0x21009784`)으로 게임에 넘기고, 게임이 「틀린 아이디 또는 패스워드.」
+    //   (`nox.csf` `Wol.c:InvalidPass` · `Game.exe` `0x41cf50` 분기표 `0x41d1a4`) 창을 띄운다. 433(이름 사용 중 — 같은 함수 표 자리 +0x38)이
+    //   창을 띄우고 클라가 스스로 끊은 것(10-11 사람 확인)과 같은 길 — 정적 분석. 376 뒤에 끊으면 클라가 로비에 들어가 채널 목록을 기다리며 멈췄다(10-28).
+    //   글 칸은 정품이 안 쓴다(창 글은 클라 것) — 까닭은 기록 · 셈에. 클라가 안 끊으면 `kLoginRejectCloseMs` 뒤 `Tick` 이 끊는다
+    if (result == LoginState::Failed && cfg_.authOn) {
+        c.login = LoginState::Rejected;
+        c.loginDueMs = cfg_.nowMs() + kLoginRejectCloseMs;
+        ++stats_.loginRejected;   // 기록 줄은 부른 쪽(까닭과 함께)
+        out.push_back({conn, ": 378 u :" + failNotice});
+        return;
+    }
     c.login = result;
     out.push_back({conn, ": 375 u :- " + (cfg_.motd.empty() ? std::string() : cfg_.motd[0])});
     for (size_t i = 1; i < cfg_.motd.size(); ++i) out.push_back({conn, ": 372 u :- " + cfg_.motd[i]});
@@ -250,14 +268,6 @@ void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const std::string&
         if (!cfg_.authOn) out.push_back({conn, ": 372 u :- You can chat, but joining a game needs a successful login."});
     }
     out.push_back({conn, ": 376 u"});
-    // ★ 10-28 사람 확인 54 — 암호 판의 실패는 들여보내지 않는다(전엔 보기만으로 들여보냄 — 아무 암호나 들어온 것처럼 보였다).
-    //   끊는 줄은 376 뒤 — 376 없이 끊으면 정품이 「Connecting…」에서 멈췄고(10-11) · 로그인 뒤 끊기(옛 접속 끊음 — 사람 확인 55)는 멈추지 않았다
-    if (result == LoginState::Failed && cfg_.authOn) {
-        ++stats_.loginFailClosed;
-        c.closing = true;
-        log_.push_back("[로그인 — 실패 끊음] c" + std::to_string(conn) + " " + c.nick);
-        out.push_back({conn, "ERROR :Closing Link (login failed)", true});
-    }
 }
 
 std::string Lobby::SignupUrl(const Conn& c) const {
@@ -297,13 +307,13 @@ void Lobby::CheckLoginToken(int conn, Conn& c, std::vector<Out>& out) {
                                           : LoginTokenCheck::BadSize;
             if (r == LoginTokenCheck::Ok && !loginNonces_.Consume(t.nonce, t.expiresAt, now)) {
                 ++stats_.loginReplay;
-                log_.push_back("[로그인 — 다시 쓴 토큰] " + c.nick + " — 일회용 번호를 이미 씀(안내 + 376)");
+                log_.push_back("[로그인 — 다시 쓴 토큰] " + c.nick + " — 일회용 번호를 이미 씀(거절 378)");
                 FinishLogin(conn, c, LoginState::Failed, "Login token was already used - log in again.", out);
                 return;
             }
             ++stats_.loginToken[static_cast<size_t>(r)];
             if (r != LoginTokenCheck::Ok) {
-                log_.push_back("[로그인 — 토큰 거절] " + c.nick + " — " + LoginTokenCheckName(r) + "(안내 + 376)");
+                log_.push_back("[로그인 — 토큰 거절] " + c.nick + " — " + LoginTokenCheckName(r) + "(거절 378)");
                 FinishLogin(conn, c, LoginState::Failed, "Login token rejected - log in again.", out);
                 return;
             }
@@ -316,7 +326,7 @@ void Lobby::CheckLoginToken(int conn, Conn& c, std::vector<Out>& out) {
             LoginFail f = LoginFail::kCount;
             if (!ParseLoginFail(payload, f)) {
                 ++stats_.loginFailUnknown;
-                log_.push_back("[로그인 — 실패 표시] " + c.nick + " — 모르는 까닭(안내 + 376)");
+                log_.push_back("[로그인 — 실패 표시] " + c.nick + " — 모르는 까닭(거절 378)");
                 FinishLogin(conn, c, LoginState::Failed, "Login failed - get the new client patch.", out);
                 return;
             }
@@ -330,18 +340,18 @@ void Lobby::CheckLoginToken(int conn, Conn& c, std::vector<Out>& out) {
                 case LoginFail::BadInput: notice = "Name: letters/digits 1-9. Password: 4-16, a letter and a digit, no spaces."; break;
                 case LoginFail::kCount: notice = "Login failed."; break;
             }
-            log_.push_back("[로그인 — 실패 표시] " + c.nick + " — " + LoginFailName(f) + "(안내 + 376)");
+            log_.push_back("[로그인 — 실패 표시] " + c.nick + " — " + LoginFailName(f) + "(거절 378)");
             FinishLogin(conn, c, LoginState::Failed, notice, out);
             return;
         }
         case ApgarKind::Guest:
             ++stats_.loginGuest;
-            log_.push_back("[로그인 — 손님] c" + std::to_string(conn) + " — 암호 판엔 손님 없음(안내 + 376)");
+            log_.push_back("[로그인 — 손님] c" + std::to_string(conn) + " — 암호 판엔 손님 없음(거절 378)");
             FinishLogin(conn, c, LoginState::Failed, "Guest login is off - sign up at " + SignupUrl(c), out);
             return;
         case ApgarKind::Plain:
             ++stats_.loginPlain;
-            log_.push_back("[로그인 — 평문] " + c.nick + " — 클라 DLL 판 " + std::to_string(c.clientVer) + "(토큰 없음 · 안내 + 376)");
+            log_.push_back("[로그인 — 평문] " + c.nick + " — 클라 DLL 판 " + std::to_string(c.clientVer) + "(토큰 없음 · 거절 378)");
             FinishLogin(conn, c, LoginState::Failed, c.clientVer < kNoxClientAuthVersion ? tooOld : "Login token missing - log in again.", out);
             return;
         case ApgarKind::Missing:
@@ -349,7 +359,7 @@ void Lobby::CheckLoginToken(int conn, Conn& c, std::vector<Out>& out) {
             break;
     }
     ++stats_.loginMissing;
-    log_.push_back("[로그인 — apgar 없음] " + c.nick + "(안내 + 376)");
+    log_.push_back("[로그인 — apgar 없음] " + c.nick + "(거절 378)");
     FinishLogin(conn, c, LoginState::Failed, c.clientVer < kNoxClientAuthVersion ? tooOld : "Login token missing - log in again.", out);
 }
 
@@ -402,7 +412,8 @@ std::vector<std::string> Lobby::TakeLog() {
 void Lobby::OnLine(int conn, std::string_view line, std::vector<Out>& out) {
     auto it = conns_.find(conn);
     if (it == conns_.end() || line.empty()) return;
-    if (it->second.closing) return;   // ★ 10-28 — 끊는 줄을 보낸 접속의 뒷줄(같은 묶음의 verchk · SETCODEPAGE …)엔 답하지 않는다(끊는 줄 뒤에 답이 붙지 않게)
+    // ★ 10-28 — 끊는 줄을 보낸 접속 · 로그인을 거절한 접속의 뒷줄(같은 묶음의 verchk · SETCODEPAGE …)엔 답하지 않는다
+    if (it->second.closing || it->second.login == LoginState::Rejected) return;
     const auto t = Split(line);
     const std::string cmd = Upper(t[0]);
     OnChat(conn, it->second, cmd, t, line, out);   // ★ 10-14 작업 8b — 4005(로비 찾기)는 라우터(`Router.cpp`)로 옮겼다
@@ -445,7 +456,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         if (c.nick.empty() || c.nick.size() > kMaxNickBytes) {   // 토큰 이름 칸 16바이트 — 자르면 남의 계정과 겹칠 수 있다
             ++stats_.loginBadName;
             log_.push_back("[로그인 — 이름] c" + std::to_string(conn) + " 이름 " + std::to_string(c.nick.size()) + "바이트(1~" +
-                           std::to_string(kMaxNickBytes) + ") — 안내 + 376");
+                           std::to_string(kMaxNickBytes) + ") — " + (cfg_.authOn ? "거절 378" : "안내 + 376"));
             FinishLogin(conn, c, LoginState::Failed, "Name must be 1-16 bytes - log in with a shorter name.", out);
             return;
         }
@@ -491,7 +502,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         }
         // ★ 로그인 암호 조각 4 — 암호 판에서 로그인 안 된 접속은 보기만(본인에게만 들어옴 답 — 남에게 이름이 안 보이고 구성원이 아니라 글이 걸러짐).
         //   답을 안 하면 정품이 들어가기 화면에서 멈출 수 있어 거절 대신 이 꼴(정품이 대화방 거절을 어떻게 그리는지 미확인)
-        //   ★ 10-28 — 실패한 로그인은 끊으므로(`FinishLogin`) 여기 오는 것은 USER 전 접속뿐(규약 밖 클라)
+        //   ★ 10-28 — 실패한 로그인은 거절하고 뒷줄을 안 받으므로(`FinishLogin` · `OnLine`) 여기 오는 것은 USER 전 접속뿐(규약 밖 클라)
         const bool viewOnly = cfg_.authOn && c.login != LoginState::Ok;
         if (viewOnly) {
             ++stats_.chatViewOnly;
