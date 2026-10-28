@@ -1505,7 +1505,7 @@ void LoginUnitTests() {
                  {"no_account", "sign up at https://127.0.0.1:8443/signup"},
                  {"server_error", "Login server error"},
                  {"unreachable", "Cannot reach the login server"},
-                 {"bad_input", "letters/digits 1-9"},
+                 {"bad_input", "letters/digits 1-9. Password: 4-8,"},
                  {"what", "get the new client patch"}};
     unsigned failShown = 0;
     for (const auto& f : fails) {

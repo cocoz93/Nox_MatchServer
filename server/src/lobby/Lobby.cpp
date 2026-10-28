@@ -337,7 +337,7 @@ void Lobby::CheckLoginToken(int conn, Conn& c, std::vector<Out>& out) {
                 case LoginFail::NoAccount: notice = "No such account - sign up at " + SignupUrl(c); break;
                 case LoginFail::ServerError: notice = "Login server error - try again later."; break;
                 case LoginFail::Unreachable: notice = "Cannot reach the login server - try again later."; break;
-                case LoginFail::BadInput: notice = "Name: letters/digits 1-9. Password: 4-16, a letter and a digit, no spaces."; break;
+                case LoginFail::BadInput: notice = "Name: letters/digits 1-9. Password: 4-8, a letter and a digit, no spaces."; break;
                 case LoginFail::kCount: notice = "Login failed."; break;
             }
             log_.push_back("[로그인 — 실패 표시] " + c.nick + " — " + LoginFailName(f) + "(거절 378)");
