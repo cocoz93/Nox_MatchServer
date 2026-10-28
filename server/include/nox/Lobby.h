@@ -40,6 +40,7 @@
 //   · `USER` 에서 그 토큰의 서명 · 만료 · IP · 이름 · 일회용을 곧바로 본다(DB 안 물음 · 기다림 없음) → 375 · 372 · 376
 //   · 안 되면 XWIS 꼴 부드러운 실패(안내 372 + 376) — DLL 이 실은 까닭(`NXL!<까닭>` — 암호 틀림 · 계정 없음 → 가입 페이지 주소 …) · 토큰 갈래 · 손님 · 평문(DLL 낮음)
 //     실패한 접속은 대화방을 볼 수만 있다(남에게 이름이 안 보이고 글을 못 보냄 — 확인 안 된 이름이 대화방에 서지 않게 · 정할 것 c) · 게임 참가는 471
+//     ★ 10-28 — 실패는 376 뒤 `ERROR :Closing Link (login failed)` 로 끊는다(들여보내지 않음 — 사람 확인 54). 보기만은 USER 전 접속에만 남음
 //   · 같은 계정이 또 들어오면 옛 접속을 끊는다(정할 것 b — 클라가 죽어 반쯤 열린 옛 연결이 남아도 다시 들어오게)
 //   · `[auth] key` 가 없으면(`LobbyConfig::authOn` false) 아이디만 — 조각 6 이전 꼴(시험용 · 정할 것 c)
 #pragma once
@@ -195,8 +196,9 @@ struct LobbyStats {
     unsigned long long loginPlain = 0;       // 평문 암호(DLL 없음 · 판 낮음)
     unsigned long long loginMissing = 0;     // `apgar` 줄 없음
     unsigned long long loginKickedOld = 0;   // 같은 계정 새 접속이 옛 접속을 끊음(정할 것 b)
-    unsigned long long chatViewOnly = 0;     // 로그인 실패 접속의 대화방 입장 — 보기만(이름 안 알림)
+    unsigned long long chatViewOnly = 0;     // 로그인 안 된 접속의 대화방 입장 — 보기만(이름 안 알림 · ★ 10-28 실패는 끊으므로 USER 전 접속만)
     unsigned long long loginDeadlineClosed = 0;   // `kLoginDeadlineMs` 안에 USER 가 없어 끊음
+    unsigned long long loginFailClosed = 0;  // ★ 10-28 암호 판 로그인 실패 — 안내 + 376 뒤 끊음(위 실패 갈래들의 합과 같아야 한다)
     unsigned long long LoginTotal() const {   // USER 로 끝난 로그인 수(위 갈래 합 — 끊음 · 보기만 빼고)
         unsigned long long n = loginBadName + loginNoAuth + loginReplay + loginFailUnknown + loginGuest + loginPlain + loginMissing;
         for (const unsigned long long v : loginToken) n += v;
@@ -255,7 +257,7 @@ private:
         int clientVer = -1;  // ★ 10-10 — `NOXCLIENT <판>`(줄이 없으면 -1 — 「판 낮음」과 따로 센다)
         LoginState login = LoginState::Waiting;
         uint32_t loginDueMs = 0;        // 대기 — 로그인 마감(붙은 때 + kLoginDeadlineMs)
-        bool closing = false;           // 끊는 줄을 보냄(마감 · 옛 접속 — 끊김 사건까지 다시 안 함)
+        bool closing = false;           // 끊는 줄을 보냄(마감 · 옛 접속 · ★ 10-28 로그인 실패 — 끊김 사건까지 다시 안 함 · 뒷줄 안 받음)
         uint64_t accountId = 0;         // 확인됨 — 계정 번호(토큰 · 아이디만이면 0)
         std::string apgar;              // ★ 조각 4 — 로그인 묶음 `apgar <인자>` 의 인자(USER 까지 쥠 · 기록에 안 찍음)
     };

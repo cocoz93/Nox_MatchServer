@@ -247,10 +247,17 @@ void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const std::string&
         for (const char* l : kNoClientMotd) out.push_back({conn, std::string(": 372 u :- ") + l});
     if (!failNotice.empty()) {
         out.push_back({conn, ": 372 u :- *** Login failed: " + failNotice + " ***"});
-        out.push_back({conn, cfg_.authOn ? std::string(": 372 u :- Chat rooms are view-only and games are closed until you log in.")
-                                         : std::string(": 372 u :- You can chat, but joining a game needs a successful login.")});
+        if (!cfg_.authOn) out.push_back({conn, ": 372 u :- You can chat, but joining a game needs a successful login."});
     }
     out.push_back({conn, ": 376 u"});
+    // ★ 10-28 사람 확인 54 — 암호 판의 실패는 들여보내지 않는다(전엔 보기만으로 들여보냄 — 아무 암호나 들어온 것처럼 보였다).
+    //   끊는 줄은 376 뒤 — 376 없이 끊으면 정품이 「Connecting…」에서 멈췄고(10-11) · 로그인 뒤 끊기(옛 접속 끊음 — 사람 확인 55)는 멈추지 않았다
+    if (result == LoginState::Failed && cfg_.authOn) {
+        ++stats_.loginFailClosed;
+        c.closing = true;
+        log_.push_back("[로그인 — 실패 끊음] c" + std::to_string(conn) + " " + c.nick);
+        out.push_back({conn, "ERROR :Closing Link (login failed)", true});
+    }
 }
 
 std::string Lobby::SignupUrl(const Conn& c) const {
@@ -395,6 +402,7 @@ std::vector<std::string> Lobby::TakeLog() {
 void Lobby::OnLine(int conn, std::string_view line, std::vector<Out>& out) {
     auto it = conns_.find(conn);
     if (it == conns_.end() || line.empty()) return;
+    if (it->second.closing) return;   // ★ 10-28 — 끊는 줄을 보낸 접속의 뒷줄(같은 묶음의 verchk · SETCODEPAGE …)엔 답하지 않는다(끊는 줄 뒤에 답이 붙지 않게)
     const auto t = Split(line);
     const std::string cmd = Upper(t[0]);
     OnChat(conn, it->second, cmd, t, line, out);   // ★ 10-14 작업 8b — 4005(로비 찾기)는 라우터(`Router.cpp`)로 옮겼다
@@ -483,6 +491,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         }
         // ★ 로그인 암호 조각 4 — 암호 판에서 로그인 안 된 접속은 보기만(본인에게만 들어옴 답 — 남에게 이름이 안 보이고 구성원이 아니라 글이 걸러짐).
         //   답을 안 하면 정품이 들어가기 화면에서 멈출 수 있어 거절 대신 이 꼴(정품이 대화방 거절을 어떻게 그리는지 미확인)
+        //   ★ 10-28 — 실패한 로그인은 끊으므로(`FinishLogin`) 여기 오는 것은 USER 전 접속뿐(규약 밖 클라)
         const bool viewOnly = cfg_.authOn && c.login != LoginState::Ok;
         if (viewOnly) {
             ++stats_.chatViewOnly;
