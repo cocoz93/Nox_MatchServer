@@ -1692,7 +1692,7 @@ bool Server::Damage(int64_t sessionId, int amount,
     DeathScoring(s);   // 8-f — 모드로 갈린다(전에는 늘 아레나였다)
 
     // ★ 09-28 B4b — 퀘스트가 아니면 가방을 몸 둘레에 떨군다(`GAME5.c:5093~5095` — 점수 셈 뒤 · 죽음 알림 `netNotifyPlayerDied` 앞).
-    //   정품 녹음 18:55:55.9 도 죽은 쪽에 `4d` 넷 → `e8` 차례다. 사용자 결정 09-28 「정할 것 셋 다 원본대로」
+    //   정품 녹음 18:55:55.9 도 죽은 쪽에 `4d` 넷 → `e8` 차례다. 09-28 결정 「정할 것 셋 다 원본대로」
     //   DEAD 깃발(+16 0x8000)은 정답지가 이보다 먼저 세운다(`:5065~5067`) — 벗을 때 남에게 안 알리는 갈래가 그 깃발을 본다(`DropCarriedToWorld` dead)
     if (!(questTotal_ > 0 || questStage_ > 0)) DropAllItems(s);
 
@@ -2205,7 +2205,7 @@ void Server::FlushPending() {
 // 퀘스트를 연다 — **스테이지 1 부터.** `count` 는 이제 안 쓴다(스테이지 표가 정한다).
 //
 // ★★ 전에는 「몬스터 N 마리 세우고 다 잡으면 끝」이었다. 정품 NoxQuest 는 웨이브가
-//   밀려오고 스테이지가 오른다(사용자 결정, 2026-09-11). 스테이지 표는 `GameBalance.h`.
+//   밀려오고 스테이지가 오른다(2026-09-11 결정). 스테이지 표는 `GameBalance.h`.
 void Server::StartQuest(int count, int centerX, int centerY, double spread) {
     (void)count;
     questCenterX_ = centerX;
@@ -2553,7 +2553,7 @@ void Server::UpdateProps() {
             // ★★★ 09-22 묶음 9 — **문은 사람이 밀어서 돈다**(정답지 `GAME5.c:2193~2207`):
             //       각속도 += (사람 반지름 − 거리) × **사람 무게**(+120) · 부호는 문선의 어느 쪽인가
             //       그 뒤 용수철 목록(`sub_548B60`)이 걸음마다 각도를 돌린다
-            //   ⇒ 「휙 열린다」가 아니라 **밀린 만큼 돈다.** 사용자가 짚은 자리다
+            //   ⇒ 「휙 열린다」가 아니라 **밀린 만큼 돈다.** 화면에서 짚은 자리다
             // ⚠⚠ **문 중심이 아니라 「문짝 선분」까지의 거리다.** 여기를 틀리면 문이 떤다 —
             //   중심은 문이 돌아도 안 움직이니 밀림이 **영영 안 끝나고**, 미는 부호가 뒤집혀
             //   각도가 오르내린다(실측: 미세각 216 ↔ 236 왕복).
@@ -2588,7 +2588,7 @@ void Server::UpdateProps() {
             if (coarseNow == coarseBefore) continue;   // 거친각이 안 바뀌면 안 보낸다
             if (want && !p.open) ++doorsOpened_;
             p.open = want;
-            // ★★ 09-22 사용자 보고 — **끼익 소리가 없다**(정품 기억과 대조). 실제로 안 보내고 있었다.
+            // ★★ 09-22 화면 확인 — **끼익 소리가 없다**(정품 기억과 대조). 실제로 안 보내고 있었다.
             //   정답지 `nox_xxx_updateDoor_53AC50`(`GAME4_3.c:5236·5257`) — 재질로 갈리고 기본은
             //   **열 때 237 · 닫힐 때 239**(쇠 241/243 · 열쇠문 247/248 · 창살 1014/1015).
             //   ⚠ 우리는 아직 재질을 안 읽어 나무 기본만 낸다 — Estate 의 문 둘은 둘 다 나무다
@@ -2648,7 +2648,7 @@ void Server::UpdateProps() {
             --p.charge;
             PlayerManaAdd(*nearest, kObeliskManaPerTick);   // playerManaAdd_4EEB80 — `45` 는 다음 틱 PlayerReportAnything(+4 ≠ +6)
             ++obeliskMana_;
-            // ★★ 09-22 사용자 보고 — **마나 찰 때 소리가 없다**. 실제로 안 보내고 있었다.
+            // ★★ 09-22 화면 확인 — **마나 찰 때 소리가 없다**. 실제로 안 보내고 있었다.
             //   정답지 `nox_xxx_updateObelisk_53C580`(`GAME4_3.c:6461~6464`) — 소리 **230** 을
             //   **`fps/2` 프레임에 한 번**(30틱이면 15프레임 = 0.5초) 마나석 자리에서 낸다.
             //   ⚠ 마나를 주는 주기(`kObeliskEveryTicks`)와 **다른 주기**다 — 그래서 따로 센다
@@ -2690,7 +2690,7 @@ void Server::UpdateProps() {
         if (o.doorTold.size() != props_.size()) o.doorTold.assign(props_.size(), 0);
         for (size_t i = 0; i < props_.size(); ++i) {
             const WorldProp& p = props_[i];
-            // ★★ 09-21 — **마나석도 같은 결함이었다**(사용자가 화면으로 짚음):
+            // ★★ 09-21 — **마나석도 같은 결함이었다**(화면에서 짚음):
             //   「마나를 안 뽑았는데 불이 꺼져 있다」. 클라는 마나석 밝기를 `b3` 로만 정하는데
             //   (`cdecode.c:2236` — 밝기 = 16×값/10 · 그림칸 = 8×값/50), 우리는 **마나를 줄 때만** 보냈다.
             //   ⇒ **아무도 안 쓴 마나석은 영영 어두운 채**로 남는다. 대조군은 접속 직후 한 번 준다

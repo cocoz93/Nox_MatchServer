@@ -480,7 +480,7 @@ enum class DecayGate : uint8_t { Armed = 0, Armed25, CoopOrQuest, Respawn, FlagC
 constexpr size_t kDecayGateCount = static_cast<size_t>(DecayGate::Count);
 
 // ✖ **2026-09-22 정정 — 「70칸 안에 들면 열린다」는 우리가 지어낸 값이었다.**
-//   사용자가 화면으로 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
+//   화면에서 짚었다: 「문에 어떤 충돌도 없이 그냥 휙 지나가 버린다」.
 //   70 이면 **닿기 한참 전에 이미 열려** 부딪힐 일이 없다.
 //   ⭕ 정답지는 거리가 아니라 **부딪히면 연다** — `nox_xxx_collideDoor_4E8AC0`(`GAME3_3.c:3384`)는
 //     문의 **collide 함수**다. 부딪힘 조건은 두 몸이 겹치는 것이고, 둘 다 thing.bin 의 원이다:
@@ -496,7 +496,7 @@ constexpr int kSoundPanHalfWidth = 320;
 constexpr double kObeliskDist = 50.0;
 // 오벨리스크가 한 틱에 채우는 마나.
 // ✖ **2026-09-22 정정 — 「여섯 틱에 1」은 우리가 지어낸 값이었고 6배 느렸다.**
-//   사용자가 화면에서 「마나 차는 속도가 너무 느리다」고 짚었다.
+//   화면에서 「마나 차는 속도가 너무 느리다」고 짚었다.
 //   ⭕ 정답지 `nox_xxx_updateObelisk_53C580`(`GAME4_3.c:6418`) — 온라인에서는 `v12 = 1` 이고
 //     오벨리스크 갱신은 **틱마다** 돈다. 즉 **틱당 1 · 초당 30** 이다
 //     (깃발 4096 인 모드에서만 그 직업 최대 마나를 한 번에 채운다 — 우리 모드가 아니다).
@@ -1046,7 +1046,7 @@ struct Session {
     //   ⭕ 번호표는 소스 확증(`draw_debug.go:294` debugStates) —
     //     0 IDLE · 1 DIE · 2 DEAD · 3 JUMP · **4 WALK** · 6 RUN
     //   지금까지 늘 `0x40`(하위4비트=0=IDLE)을 보내 **걸어도 선 자세**였다.
-    //   사용자가 말한 「걷기·뛰기 애니메이션 없음」이 이것이다.
+    //   화면에서 본 「걷기·뛰기 애니메이션 없음」이 이것이다.
     //   ⚠ 정품이 걷는 표본은 없다(덤프 6개 전수 정지). 그래서 **실험으로** 확인한다.
     double animPrevX = 0, animPrevY = 0;
     bool animMoving = false;
@@ -2014,7 +2014,7 @@ public:
     unsigned long long doorResync() const { return doorResync_; }
     unsigned long long obeliskTold() const { return obeliskTold_; }
     // ★ 09-21 벽 튕김 재기 — 사람이 벽에 밀려난 걸음 수와 **그때 더해진 가속의 최대**.
-    //   사용자가 화면으로 짚었다(「벽에 부딪힐 때 원래 저렇게 튕기지 않았던 것 같다」).
+    //   화면에서 짚었다(「벽에 부딪힐 때 원래 저렇게 튕기지 않았던 것 같다」).
     //   벽 밀어내기 식·상수(100)·감쇠·반지름은 전수로 정답지와 맞다 — 그래서 **세서** 가른다.
     //   가속 100 은 걷기 힘(3.0)의 33배다. 그게 실제로 얼마나 자주·얼마나 크게 나오나를 본다
     unsigned long long wallPushSteps() const { return wallPushSteps_; }

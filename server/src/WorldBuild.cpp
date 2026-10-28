@@ -191,7 +191,7 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                 sd.push_back(in);
             }
             // ★★ 09-22 — **정품이 보내는데 thing.bin 에 없는 소리**를 손으로 채운다. 지금은 하나다.
-            //   사슬 — 사용자가 「마나석 소리가 안 난다」고 짚었다 → 정답지는 소리 **230**(ManaRecharge)을
+            //   사슬 — 화면에서 「마나석 소리가 안 난다」고 짚었다 → 정답지는 소리 **230**(ManaRecharge)을
             //   낸다(`GAME4_3.c:6461`) → 그런데 thing.bin AUD **927개에 그 이름이 없다** →
             //   그러면 조각 0 이라 `PlaySoundAt` 이 버린다 →
             //   **대조군 서버에 계수기를 붙여 보니 정답지도 똑같이 0 으로 읽는다**
@@ -239,7 +239,7 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                 srv.Log("[소리·정품이쓴것] %zu개 중 우리 표에 **없는 것**:%s\n",
                             sizeof(seen) / sizeof(seen[0]), missing.empty() ? " (none)" : missing.c_str());
             }
-            // ★ 09-22 사용자 보고(「소리가 안 들린다」) — **우리가 부르는 번호가 표에 있나**를 찍는다.
+            // ★ 09-22 화면 확인(「소리가 안 들린다」) — **우리가 부르는 번호가 표에 있나**를 찍는다.
             //   `PlaySoundAt` 은 소리조각이 0 이면 조용히 버리고, `maxDist` 가 0 이면 **거리에서 잘린다**.
             //   둘은 증상이 같아서(안 들림) 숫자로 갈라야 한다
             // ★ 09-23 nine-defects 4-b — **능력 소리 170~185**(쓸 때·켜짐·꺼질 때 × 다섯)를 한 줄로. 「조각 0 으로 선언」과
@@ -893,7 +893,7 @@ std::string MapKeyOf(const std::string& mapPath) {
 }
 
 std::vector<std::string> MapListFromOptions(const ServerOptions& opt) {
-    // ★ 확장 지점 — 맵 목록의 출처. 지금은 실행 인자 `--map` 하나다(10-12 사용자 결정 — 맵을 다 쓰지 않으니 하나만).
+    // ★ 확장 지점 — 맵 목록의 출처. 지금은 실행 인자 `--map` 하나다(10-12 결정 — 맵을 다 쓰지 않으니 하나만).
     //   늘릴 때 이 함수만 바꾼다 — `--maps a,b`(여러 맵) · 로비가 알려 주는 방 목록(작업 8) ·
     //   게임 폴더 전부(`maps\<이름>\<이름>.map` — 157개면 개인 메모리 약 490MB · 뜨는 데 약 5초, 7e-4 파일럿)
     // ★ 10-14 플랜 B 작업 10a — 로비 방식이면 대기 맵 후보도(로비가 새 방을 그 가운데 하나에 차린다 · 방을 만들 때 맵 파일을 안 읽는다)

@@ -1,10 +1,10 @@
 ﻿param([string]$Tag = 'wc1', [switch]$Ref, [int]$Secs = 120, [string]$Map = 'Estate', [switch]$NoWalk, [string]$SrvExtra = '')
 # -SrvExtra — 우리 서버에 덧붙일 인자(공백으로 가름 · 대조군에는 안 붙음). 예: '--spawn-at 2466 2838 --debug-mob 150 1382 2566 2838'
-# ★ 09-29 — 와이어 대조 녹음(리포 지침 「같은 클라·같은 자동화로 **서버만 바꿔**」). 양쪽 다 중계기를 끼운다(`Docs/PROTOCOL.md:1438~1444`).
+# ★ 09-29 — 와이어 대조 녹음(원칙 「같은 클라·같은 자동화로 **서버만 바꿔**」). 양쪽 다 중계기를 끼운다(`Docs/PROTOCOL.md:1438~1444`).
 #     우리  : 자동 클라 → 중계기(18590 · 기록) → nox_server(18591)
 #     대조군: 자동 클라 → 중계기(18590 · 기록) → opennox-server(18591)
 #   기록 = `_evidence\_runs\<Tag>.cap.txt` → `build\Release\nox_opcount.exe <기록>` 으로 번호별로 센다.
-#   crashrun.ps1 과 달리 **이미 떠 있는 녹스 프로세스를 죽이지 않는다** — 있으면 멈춘다(사용자가 쓰는 중일 수 있다)
+#   crashrun.ps1 과 달리 **이미 떠 있는 녹스 프로세스를 죽이지 않는다** — 있으면 멈춘다(사람이 쓰는 중일 수 있다)
 #   끝낼 때는 창 닫기 먼저, 응답이 없을 때만 강제 종료. 정품 설정(nox.cfg · Version 65538)은 주행 뒤 해시로 보고 바뀌었으면 되돌린다
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
