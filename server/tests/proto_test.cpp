@@ -29386,7 +29386,7 @@ void TestOutgoingKeepsLink() {
                       r.srv->leaveBy(LB::Timeout), r.srv->closedAfterOut(), r.srv->PlayerCount());
         Check(at25 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(a) == 0 && r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
               c6 == 1 && r.srv->leaveBy(LB::Timeout) == 1 && r.srv->closedAfterOut() == 1 && r.srv->PlayerCount() == 1, m);
-        // ⓓ' 교차(덤 `61e6e1c` 와) — 시간 초과로 닫은 뒤에도 클라가 살아 보내면(늦은 `0a` · 게임 조각) 빈 세션을 안 만든다
+        // ⓓ' 교차(덤 `130e327` 와) — 시간 초과로 닫은 뒤에도 클라가 살아 보내면(늦은 `0a` · 게임 조각) 빈 세션을 안 만든다
         const unsigned long long dropBefore = r.srv.Network().Stats().droppedNoSession;
         const uint8_t lateGame[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_READY) };
         r.srv.OnPacket(a, close0a, sizeof(close0a), o);

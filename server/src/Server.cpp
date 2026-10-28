@@ -17674,7 +17674,7 @@ void Server::RunTick(int ticks) {
     //   그래서 `Damage` 를 직접 불러 죽인다 — 그 함수가 킬 처리·점수·`RoundCheckLimit` 까지 한다
     if (debugKillAfter_ > 0 && !debugKillDone_ && firstInGameFrame_ != 0 &&
         frame_ >= firstInGameFrame_ + debugKillAfter_) {
-        // ★ 10-19 — 처음값 `kNoSession`(`e7f77f2` 이 빈 문자열 → 세션 번호로 바꾸며 처음값을 빠뜨려 아래 비교가 쓰레기 값을 봤다 · 경고 C4700)
+        // ★ 10-19 — 처음값 `kNoSession`(`ba276f7` 이 빈 문자열 → 세션 번호로 바꾸며 처음값을 빠뜨려 아래 비교가 쓰레기 값을 봤다 · 경고 C4700)
         int64_t killer = kNoSession, victim = kNoSession;
         for (auto& kv : sessions_) {
             if (!kv.second.inGame || kv.second.observer) continue;
