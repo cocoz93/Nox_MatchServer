@@ -21968,7 +21968,7 @@ void TestDoorHeldOpenByBody() {
         Check(srv->DebugPropFine(311) != 0, msg);
     }
     // ④ 다 연 문짝으로 **10초 내내** 걸어 미는 사람 — 문이 조금씩도 안 닫혀야 한다(10-02 사람 판 「막고 있어도 점점 닫힘」)
-    //   ✖ `9d5dee4` 은 문짝이 사람을 밀어내는 것만 걸음 안에 두고 사람이 문을 미는 것은 틱 끝 한 번이라, 틱 끝엔 이미 안 닿아 문이 안 되밀리고
+    //   ✖ `d6a695f` 은 문짝이 사람을 밀어내는 것만 걸음 안에 두고 사람이 문을 미는 것은 틱 끝 한 번이라, 틱 끝엔 이미 안 닿아 문이 안 되밀리고
     //     0.5초마다 2씩 닫히며 사람을 밀어 **점점 닫혔다**. 정답지는 같은 걸음에서 둘 다(`GAME5.c:1847·1863`)
     {
         nox::CSyncHost srv; std::vector<nox::OutPacket> out;
@@ -21992,7 +21992,7 @@ void TestDoorHeldOpenByBody() {
     // ⑤ 다 연 문 앞(닫히는 길)에 **10초 가만히 선** 사람 — 몸은 안 밀리고 문만 되밀려 안 닫힌다(10-02 정품 호스트 판 · 위 ⑤ 주석)
     //   ⓐ 경첩 위 25(1000,975 — 문짝이 미세각 32 에서 지나는 자리) ⓑ 다 연 문짝에 닿아 선 자리(1016,990 — 거리 10 · 문이 아예 안 돎)
     //   ⓒ **사람 판 자리** — 다 연 문짝(미세각 96)에서는 거리 11 로 안 닿고, 2 닫히면(94 · 문짝 끝 1032,998) 거리 9.98 로 닿는 자리(1016,989)
-    //   ✖ `9d5dee4`·고치는 중의 판은 몸이 밀려 문이 점점 닫혔다(ⓐ 미세각 0·14 · ⓑ 32·62 · 몸 9~33 밀림)
+    //   ✖ `d6a695f`·고치는 중의 판은 몸이 밀려 문이 점점 닫혔다(ⓐ 미세각 0·14 · ⓑ 32·62 · 몸 9~33 밀림)
     for (int variant = 0; variant < 3; ++variant) {
         nox::CSyncHost srv; std::vector<nox::OutPacket> out;
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
@@ -29386,7 +29386,7 @@ void TestOutgoingKeepsLink() {
                       r.srv->leaveBy(LB::Timeout), r.srv->closedAfterOut(), r.srv->PlayerCount());
         Check(at25 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(a) == 0 && r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
               c6 == 1 && r.srv->leaveBy(LB::Timeout) == 1 && r.srv->closedAfterOut() == 1 && r.srv->PlayerCount() == 1, m);
-        // ⓓ' 교차(덤 `0134023` 와) — 시간 초과로 닫은 뒤에도 클라가 살아 보내면(늦은 `0a` · 게임 조각) 빈 세션을 안 만든다
+        // ⓓ' 교차(덤 `61e6e1c` 와) — 시간 초과로 닫은 뒤에도 클라가 살아 보내면(늦은 `0a` · 게임 조각) 빈 세션을 안 만든다
         const unsigned long long dropBefore = r.srv.Network().Stats().droppedNoSession;
         const uint8_t lateGame[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_READY) };
         r.srv.OnPacket(a, close0a, sizeof(close0a), o);

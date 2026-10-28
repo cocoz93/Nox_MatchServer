@@ -26,7 +26,7 @@
 // 놓는 곳: 게임 폴더. 실행파일 폴더가 DLL 검색 1순위라 시스템 것보다 먼저 잡힌다.
 // 되돌리기: 이 파일을 지우면 마우스 Acquire 실패로 게임이 꺼질 수 있다(위) —
 //           지울 거면 ddraw.ini 의 no_dinput_hook 을 false 로 같이 돌릴 것.
-// 옛 판(자동 조작 통로 포함)은 git 4285794 직전.
+// 옛 판(자동 조작 통로 포함)은 git a60abee 직전.
 
 #define DIRECTINPUT_VERSION 0x0700
 #define WIN32_LEAN_AND_MEAN
