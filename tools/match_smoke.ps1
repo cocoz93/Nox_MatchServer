@@ -223,7 +223,9 @@ if ($Auth) {
     } catch [System.Net.WebException] {
       $resp = $_.Exception.Response
       if (-not $resp) { return @{ status = 0; body = $_.Exception.Message } }
-      return @{ status = [int]$resp.StatusCode; body = (New-Object IO.StreamReader($resp.GetResponseStream())).ReadToEnd() }
+      # PowerShell 5.1 은 오류 응답 본문을 ErrorDetails 로 먼저 읽어 가 스트림이 비어 있음
+      $text = if ($_.ErrorDetails) { $_.ErrorDetails.Message } else { (New-Object IO.StreamReader($resp.GetResponseStream())).ReadToEnd() }
+      return @{ status = [int]$resp.StatusCode; body = $text }
     }
   }
   $authOk = $true
