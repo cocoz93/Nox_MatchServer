@@ -7,6 +7,8 @@
 //   ④ 한도는 처음부터 끝까지 — 헤더는 한도 안에 오고 본문이 늦어 합이 한도를 넘으면 unreachable (단계마다 한도를 새로 주면 통과해 버린다)
 //   ⑤ 넘겨주기(302)를 따라가지 않는다 — 서버가 요청을 한 번만 받는다
 //   ⑥ 토큰 길이 상수가 서버의 kLoginTokenSize 와 같다
+//   ⑦ ★ 10-28 지문 고정 — 평문 주소 · 꼴이 틀린 지문은 붙지 않음(요청 0) · SHA-256 · 대문자 지문
+//   ⑧ ★ 10-28 실제 nox_auth 에 지문 고정(NOX_AUTH_LIVE_PIN 이 있고 8443 이 떠 있을 때만 — 아니면 건너뜀)
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -392,6 +394,63 @@ int main()
         srv.Set(s);
         const authclient::Result ok = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
         Check(ok.line == s.body && ok.ms >= 550, "④ 600ms 늦은 답은 한도 안이면 받음");
+    }
+
+    // ⑦ ★ 10-28 지문 고정 — 붙기 전에 막히는 갈래(가짜 서버가 요청을 하나도 못 받아야 한다) · SHA-256 · 지문 꼴
+    {
+        const std::string pin(64, 'a');
+        Script s;
+        s.body = Tok();
+        srv.Set(s);
+        const authclient::Result plain = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo, pin);
+        Check(plain.line == kUnreachable && plain.error == ERROR_WINHTTP_SECURE_FAILURE && srv.Last().count == 0,
+              "⑦ 지문을 줬는데 평문(http) 주소 → 붙지 않음 · 요청 0");
+        const char* const bad[] = {"", "a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" /*63*/, "?"};
+        int refused = 0;
+        for (const char* b : bad) {
+            if (!*b) continue;   // 빈 지문 = 옛 길(위 ①~⑤ 가 그 길)
+            const authclient::Result r = authclient::Login(UrlFor("https", srv.Port()), "wn9457", "ab12cd", kTo, b);
+            refused += (r.line == kUnreachable && r.error == ERROR_INVALID_PARAMETER) ? 1 : 0;
+        }
+        std::string g = pin;
+        g[10] = 'g';
+        const authclient::Result r = authclient::Login(UrlFor("https", srv.Port()), "wn9457", "ab12cd", kTo, g);
+        refused += (r.line == kUnreachable && r.error == ERROR_INVALID_PARAMETER) ? 1 : 0;
+        Check(refused == 4 && srv.Last().count == 0, "⑦ 꼴이 틀린 지문(1자 · 63자 · ? · 16진 아닌 글자) → 옛 길로 안 물러서고 unreachable · 요청 0");
+        unsigned char p[authclient::kPinBytes];
+        const bool up = authclient::detail::ParsePin(std::string(64, 'F'), p) && p[0] == 0xff && p[31] == 0xff;
+        Check(up, "⑦ 대문자 16진 지문도 받음");
+        unsigned char h[authclient::kPinBytes];
+        const unsigned char abc[] = {'a', 'b', 'c'};
+        unsigned char want[authclient::kPinBytes];
+        authclient::detail::ParsePin("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", want);
+        Check(authclient::detail::Sha256(abc, 3, h) && memcmp(h, want, sizeof(h)) == 0, "⑦ SHA-256(\"abc\") = FIPS 180-2 예시 값");
+    }
+
+    // ⑧ ★ 10-28 실제 로그인 서버(nox_auth · 자작 인증서)에 지문 고정 — test.bat 이 tools\auth_pin.ps1 로 NOX_AUTH_LIVE_PIN 을 넣는다.
+    //   127.0.0.2 는 인증서 이름(localhost · 127.0.0.1)에 없다 = 다른 PC 가 공인 IP 로 붙는 꼴. 지문 없이는 막히고 지문으로만 통과해야 한다.
+    //   계정 없는 이름으로 묻는다 — 401 no_account 가 오면 본문(이름 · 암호)이 서버에 닿은 것
+    {
+        char live[80] = {};
+        const DWORD n = GetEnvironmentVariableA("NOX_AUTH_LIVE_PIN", live, sizeof(live));
+        const std::string pin = n > 0 && n < sizeof(live) ? std::string(live, n) : std::string();
+        const std::wstring here = L"https://127.0.0.1:8443/login", other = L"https://127.0.0.2:8443/login";
+        const std::string kNoAccount = "NXL!no_account";
+        const authclient::Result probe = pin.empty() ? authclient::Result() : authclient::Login(here, "zz9pin", "ab12cd", kTo, pin);
+        if (pin.empty() || probe.error == ERROR_WINHTTP_CANNOT_CONNECT) {
+            std::printf("  ⑧ 실제 로그인 서버 — 건너뜀(%s)\n", pin.empty() ? "NOX_AUTH_LIVE_PIN 없음 · 사람 1회 전" : "8443 안 떠 있음");
+        } else {
+            Check(probe.line == kNoAccount && probe.status == 401, "⑧ 맞는 지문 · 127.0.0.1 → 본문이 닿음(401 no_account)");
+            const authclient::Result o = authclient::Login(other, "zz9pin", "ab12cd", kTo, pin);
+            Check(o.line == kNoAccount && o.status == 401, "⑧ 맞는 지문 · 인증서 이름에 없는 주소(127.0.0.2) → 통과(다른 PC 꼴)");
+            const authclient::Result noPin = authclient::Login(other, "zz9pin", "ab12cd", kTo);
+            Check(noPin.line == kUnreachable && noPin.status == 0, "⑧ 지문 없이 인증서 이름에 없는 주소 → 윈도 검사에 막힘(옛 길 그대로)");
+            std::string wrong = pin;
+            wrong[0] = wrong[0] == '0' ? '1' : '0';
+            const authclient::Result w = authclient::Login(here, "zz9pin", "ab12cd", kTo, wrong);
+            Check(w.line == kUnreachable && w.status == 0 && w.error == ERROR_WINHTTP_SECURE_INVALID_CERT,
+                  "⑧ 틀린 지문 → 본문 쓰기 전에 멈춤(SECURE_INVALID_CERT · 상태 0)");
+        }
     }
 
     srv.Stop();

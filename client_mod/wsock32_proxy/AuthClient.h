@@ -10,17 +10,24 @@
 //   WinHTTP 의 단계별 시간 제한은 합을 보장하지 않는다(10-26 시험 — 한도 1초에 응답 없음이 1.9초 · 헤더 0.7초 + 본문 0.7초가 그대로 성공).
 //   그래서 호출은 일꾼 스레드가 하고, 부른 쪽은 마감까지만 기다린다. 마감이 오면 핸들을 닫아 일꾼의 호출을 끊는다
 // TLS — 검사를 끄지 않는다(자작 인증서는 사람 1회 `auth_setup.ps1` 이 믿는 루트에 넣는다) · 프록시 안 탐 · 넘겨주기(리다이렉트) 안 따라감(암호가 딴 데로 가지 않게)
+//   ★ 10-28 다른 PC — 지문 고정(`pinHex` = 서버 인증서 DER 의 SHA-256 16진 64자). 주면 윈도의 믿는 루트 · 이름 검사 대신 지문으로 서버를 가른다
+//   (다른 PC 엔 자작 인증서를 그 PC 루트에 넣지 않고 · 서버 주소(공인 IP)가 인증서 이름에 없어도 됨). 머리만 먼저 보내 TLS 인사를 끝내고
+//   지문이 맞을 때만 본문(암호)을 쓴다 — 틀리면 암호는 선에 안 나감. 지문을 줬는데 평문(http) 주소면 아예 안 붙는다. 안 주면 옛 길 그대로
+//   (틀린 지문이면 상대는 본문 없는 `POST /login` 머리만 받을 수 있다 — 10-28 실측 nox_auth 기록 「400 규칙 밖」. 머리엔 이름 · 암호가 없다)
 #pragma once
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <bcrypt.h>
+#include <wincrypt.h>   // ★ 10-28 PCCERT_CONTEXT(지문 고정) — WIN32_LEAN_AND_MEAN 이 빼므로 따로
 #include <winhttp.h>
 
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -30,10 +37,13 @@
 #include "nox/LoginLine.h"
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "crypt32.lib")
 
 namespace authclient {
 
 constexpr DWORD kTimeoutMs = 3000;
+constexpr size_t kPinBytes = 32;       // ★ 10-28 지문 = 서버 인증서(DER)의 SHA-256 — 16진 64자로 받는다(`tools/auth_pin.ps1` 이 찍는 값)
 constexpr size_t kTokenHexLen = 114;   // LoginToken.h kLoginTokenSize(57) × 2 — auth_client_test 가 static_assert 로 대조한다
 constexpr size_t kMaxReply = 1024;     // 이보다 긴 답은 로그인 서버의 답이 아니다
 
@@ -93,6 +103,41 @@ inline std::string Classify(int status, const std::string& rawBody)
     return FailLine(nox::LoginFail::ServerError);
 }
 
+// ★ 10-28 지문 — 16진 64자(대소문자) → 32바이트. 꼴이 틀리면 false(빈칸 · 콜론 안 받음)
+inline bool ParsePin(const std::string& hex, unsigned char out[kPinBytes])
+{
+    if (hex.size() != 2 * kPinBytes) return false;
+    auto nib = [](char c) { return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10; };
+    for (size_t i = 0; i < kPinBytes; ++i) {
+        if (!IsHex(hex[2 * i]) || !IsHex(hex[2 * i + 1])) return false;
+        out[i] = static_cast<unsigned char>(nib(hex[2 * i]) << 4 | nib(hex[2 * i + 1]));
+    }
+    return true;
+}
+
+inline bool Sha256(const unsigned char* p, DWORD n, unsigned char out[kPinBytes])
+{
+    BCRYPT_ALG_HANDLE alg = NULL;
+    BCRYPT_HASH_HANDLE h = NULL;
+    bool ok = BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, NULL, 0) == 0 && BCryptCreateHash(alg, &h, NULL, 0, NULL, 0, 0) == 0 &&
+              BCryptHashData(h, const_cast<PUCHAR>(p), n, 0) == 0 && BCryptFinishHash(h, out, static_cast<ULONG>(kPinBytes), 0) == 0;
+    if (h) BCryptDestroyHash(h);
+    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+    return ok;
+}
+
+// 이 요청의 서버 인증서가 지문과 같나 — TLS 인사가 끝난 뒤(WinHttpSendRequest 뒤)에 부른다
+inline bool ServerCertMatches(HINTERNET req, const unsigned char pin[kPinBytes])
+{
+    PCCERT_CONTEXT cert = NULL;
+    DWORD sz = sizeof(cert);
+    if (!WinHttpQueryOption(req, WINHTTP_OPTION_SERVER_CERT_CONTEXT, &cert, &sz) || !cert) return false;
+    unsigned char got[kPinBytes];
+    const bool ok = Sha256(cert->pbCertEncoded, cert->cbCertEncoded, got) && memcmp(got, pin, kPinBytes) == 0;   // 지문은 비밀이 아니라 일정 시간 비교 불필요
+    CertFreeCertificateContext(cert);
+    return ok;
+}
+
 // 일꾼과 부른 쪽이 같이 쥐는 상태 — 일꾼이 늦게 끝나도 살아 있게 shared_ptr 로 둔다
 struct Shared {
     std::mutex mu;
@@ -104,6 +149,8 @@ struct Shared {
     std::wstring url;
     std::string name, password;
     DWORD timeoutMs = kTimeoutMs;
+    bool pinned = false;                 // ★ 10-28 지문 고정
+    unsigned char pin[kPinBytes] = {};
 
     // 새 핸들을 맡긴다. 이미 닫힌 뒤면(마감이 먼저 옴) 바로 닫고 false
     bool Keep(HINTERNET& slot, HINTERNET h)
@@ -155,6 +202,7 @@ inline void Work(Shared& s)
     if (!WinHttpCrackUrl(s.url.c_str(), 0, 0, &uc)) return bail(GetLastError());
     const bool https = uc.nScheme == INTERNET_SCHEME_HTTPS;
     if (!https && uc.nScheme != INTERNET_SCHEME_HTTP) return bail(ERROR_WINHTTP_UNRECOGNIZED_SCHEME);
+    if (s.pinned && !https) return bail(ERROR_WINHTTP_SECURE_FAILURE);   // ★ 10-28 지문을 줬는데 평문 주소 — 붙지도 않는다
 
     HINTERNET h = WinHttpOpen(L"NoxOrigin-Client/1", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     DWORD err = GetLastError();
@@ -169,12 +217,28 @@ inline void Work(Shared& s)
     WinHttpSetOption(s.req, WINHTTP_OPTION_DISABLE_FEATURE, &noRedirect, sizeof(noRedirect));
     const int to = static_cast<int>(s.timeoutMs);
     WinHttpSetTimeouts(s.req, to, to, to, to);   // 일꾼이 스스로도 끝나게(합 한도는 부른 쪽이 지킨다)
+    if (s.pinned) {   // ★ 10-28 — 윈도의 인증서 검사(믿는 루트 · 이름 · 기한 · 용도)를 지문 비교로 갈음한다. 비교는 본문 쓰기 앞
+        DWORD flags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                      SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        if (!WinHttpSetOption(s.req, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags))) return bail(GetLastError());
+    }
 
     std::string body = "name=" + UrlEncode(s.name) + "&password=" + UrlEncode(s.password);
     SecureZeroMemory(&s.password[0], s.password.size());   // 암호 글은 인코딩한 뒤 바로 지운다
     static const wchar_t kHeader[] = L"Content-Type: application/x-www-form-urlencoded";
-    const BOOL sent = WinHttpSendRequest(s.req, kHeader, static_cast<DWORD>(-1), &body[0], static_cast<DWORD>(body.size()),
-                                         static_cast<DWORD>(body.size()), 0);
+    BOOL sent;
+    if (s.pinned) {
+        // 머리만 먼저(TLS 인사 + 요청 줄) → 서버 인증서 지문이 맞을 때만 본문(암호)을 쓴다
+        sent = WinHttpSendRequest(s.req, kHeader, static_cast<DWORD>(-1), WINHTTP_NO_REQUEST_DATA, 0, static_cast<DWORD>(body.size()), 0);
+        if (sent && !ServerCertMatches(s.req, s.pin)) {
+            SecureZeroMemory(&body[0], body.size());
+            return bail(ERROR_WINHTTP_SECURE_INVALID_CERT);
+        }
+        DWORD wrote = 0;
+        if (sent) sent = WinHttpWriteData(s.req, &body[0], static_cast<DWORD>(body.size()), &wrote) && wrote == body.size();
+    } else {
+        sent = WinHttpSendRequest(s.req, kHeader, static_cast<DWORD>(-1), &body[0], static_cast<DWORD>(body.size()), static_cast<DWORD>(body.size()), 0);
+    }
     err = sent ? 0 : GetLastError();
     SecureZeroMemory(&body[0], body.size());
     if (!sent) return bail(err);
@@ -207,10 +271,21 @@ inline void Work(Shared& s)
 }  // namespace detail
 
 // url 예: L"https://127.0.0.1:8443/login". 막는 호출 — timeoutMs 안에 돌아온다(스레드 정리까지 조금 넘을 수 있다)
-inline Result Login(const std::wstring& url, const std::string& name, const std::string& password, DWORD timeoutMs = kTimeoutMs)
+//   ★ 10-28 pinHex — 비면 옛 길(윈도 인증서 검사) · 있으면 지문 고정(머리 주석). 꼴이 틀린 지문이면 붙지 않고 unreachable(옛 길로 안 물러섬)
+inline Result Login(const std::wstring& url, const std::string& name, const std::string& password, DWORD timeoutMs = kTimeoutMs,
+                    const std::string& pinHex = std::string())
 {
     const ULONGLONG t0 = GetTickCount64();
     auto s = std::make_shared<detail::Shared>();
+    if (!pinHex.empty()) {
+        if (!detail::ParsePin(pinHex, s->pin)) {
+            Result bad;
+            bad.line = detail::FailLine(nox::LoginFail::Unreachable);
+            bad.error = ERROR_INVALID_PARAMETER;
+            return bad;
+        }
+        s->pinned = true;
+    }
     s->url = url;
     s->name = name;
     s->password = password;

@@ -402,8 +402,12 @@ static std::string RedactedForLog(SOCKET s, const char* buf, int len)
 // ★ 조각 5 의 3 — 로비 연결의 이름 · 암호를 로그인 서버(nox_auth)에 묻고 `apgar` 자리에 넣을 글 한 줄(`NXL1…` 또는 `NXL!…`)을 받아 온다.
 //   주소 = 이 로비 연결의 상대 IP : 8443(서버 `kDefaultAuthPort`) · 환경변수 NOX_AUTH_URL(예: https://host:8443/login)이 있으면 그것.
 //   게임 주 스레드가 최대 3초 막힌다(`AuthClient.h`). TLS 검사를 끄지 않으므로 믿을 수 없는 서버(XWIS 등 우리 로비가 아닌 곳)에는 본문(암호)이 나가기 전에 멈춘다
+//   ★ 10-28 다른 PC — 환경변수 NOX_AUTH_PIN(서버 인증서 SHA-256 16진 64자 · 꾸러미 2_PLAY 가 넣음)이 있으면 윈도 검사 대신 그 지문으로 가른다
 static std::string AuthLogin(SOCKET s, const std::string& name, const std::string& password)
 {
+    char pin[80] = {};
+    const DWORD pn = GetEnvironmentVariableA("NOX_AUTH_PIN", pin, sizeof(pin));
+    const std::string pinHex = pn > 0 && pn < sizeof(pin) ? std::string(pin, pn) : std::string(pn ? "?" : "");   // 너무 길면 틀린 꼴로 넘겨 붙지 않게
     std::wstring url;
     wchar_t over[512];
     const DWORD en = GetEnvironmentVariableW(L"NOX_AUTH_URL", over, 512);
@@ -422,10 +426,11 @@ static std::string AuthLogin(SOCKET s, const std::string& name, const std::strin
         swprintf(buf, 64, L"https://%u.%u.%u.%u:8443/login", b[0], b[1], b[2], b[3]);
         url = buf;
     }
-    const authclient::Result r = authclient::Login(url, name, password);
+    const authclient::Result r = authclient::Login(url, name, password, authclient::kTimeoutMs, pinHex);
     if (g_log[0]) {
         const bool token = std::string_view(r.line).substr(0, nox::kLoginTokenMark.size()) == nox::kLoginTokenMark;
-        Detail("로그인 서버 호출 s=%u 상태=%d 오류=%lu %lums → %s", (unsigned)s, r.status, r.error, r.ms, token ? "로그인 토큰(NXL1…)" : r.line.c_str());   // 토큰 글은 기록에 안 남김
+        Detail("로그인 서버 호출 s=%u 상태=%d 오류=%lu %lums 지문=%s → %s", (unsigned)s, r.status, r.error, r.ms, pinHex.empty() ? "없음" : "고정",
+               token ? "로그인 토큰(NXL1…)" : r.line.c_str());   // 토큰 글은 기록에 안 남김
     }
     return r.line;
 }
