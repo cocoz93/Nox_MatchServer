@@ -131,11 +131,14 @@ try {
   }
   # ★ 10-29 — 로그인 뒤 국가 고르기 창 안 띄우기. WOLAPI 가 아이디 칸마다 국가를 HKCR\Wchat\Nick<n>\Locale(기본값 "%d")에 두고,
   #   Game.exe 는 그 값이 없으면 창을 연다. 고른 값을 HKCR 에 쓰다 실패해 매번 뜨므로 사용자 쪽(HKCU\Software\Classes)에 20(South Korea)을 미리 둔다.
-  #   서버는 이 값을 안 쓴다. 이미 있으면 안 건드림
+  #   서버는 이 값을 안 쓴다
   #   칸 번호 = 아이디 칸 + 1 — 「아이디 기억」을 끄면 칸이 128(Game.exe 0x44a956)이라 Nick129, 켜면 Nick1~128 → 0~129 전부
+  #   ★ 10-30 — 있어도 20 이 아니면 다시 씀. 「아이디 기억」을 끈 로그인은 끝에 그 칸(Nick129)의 이름과 국가를 0 으로 지운다
+  #   (Game.exe 0x41fa94 → 0x41fab0 → 0x40da80 Locale 0) — 「없을 때만」이면 다음 실행에 창이 다시 뜬다
   for ($n = 0; $n -le 129; $n++) {
     $k = "HKCU:\Software\Classes\Wchat\Nick$n\Locale"
-    if (-not (Test-Path -LiteralPath $k)) { New-Item -Path $k -Force | Out-Null; Set-Item -LiteralPath $k -Value '20' }
+    if (-not (Test-Path -LiteralPath $k)) { New-Item -Path $k -Force | Out-Null }
+    if ((Get-Item -LiteralPath $k).GetValue('') -ne '20') { Set-Item -LiteralPath $k -Value '20' }
   }
   if (-not $NoClients) {
     $env:NOX_HOOK_LOG_DIR = $logDir   # 클라 DLL 기록도 같은 폴더에
