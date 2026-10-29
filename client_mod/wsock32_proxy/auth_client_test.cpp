@@ -436,18 +436,21 @@ int main()
         const std::string pin = n > 0 && n < sizeof(live) ? std::string(live, n) : std::string();
         const std::wstring here = L"https://127.0.0.1:8443/login", other = L"https://127.0.0.2:8443/login";
         const std::string kNoAccount = "NXL!no_account";
-        const authclient::Result probe = pin.empty() ? authclient::Result() : authclient::Login(here, "zz9pin", "ab12cd", kTo, pin);
+        // ★ 10-29 — 8443 이 꺼져 있으면 윈도가 거절을 약 2초 되풀이한 뒤에야 CANNOT_CONNECT 를 준다(실측 2,031ms).
+        //   kTo(1.5초)로는 마감이 먼저 와 TIMEOUT 이 되어 건너뜀에 안 걸리고 아래 셋이 실패했다 — 그래서 이 묶음만 5초
+        const DWORD kLiveTo = 5000;
+        const authclient::Result probe = pin.empty() ? authclient::Result() : authclient::Login(here, "zz9pin", "ab12cd", kLiveTo, pin);
         if (pin.empty() || probe.error == ERROR_WINHTTP_CANNOT_CONNECT) {
             std::printf("  ⑧ 실제 로그인 서버 — 건너뜀(%s)\n", pin.empty() ? "NOX_AUTH_LIVE_PIN 없음 · 사람 1회 전" : "8443 안 떠 있음");
         } else {
             Check(probe.line == kNoAccount && probe.status == 401, "⑧ 맞는 지문 · 127.0.0.1 → 본문이 닿음(401 no_account)");
-            const authclient::Result o = authclient::Login(other, "zz9pin", "ab12cd", kTo, pin);
+            const authclient::Result o = authclient::Login(other, "zz9pin", "ab12cd", kLiveTo, pin);
             Check(o.line == kNoAccount && o.status == 401, "⑧ 맞는 지문 · 인증서 이름에 없는 주소(127.0.0.2) → 통과(다른 PC 꼴)");
-            const authclient::Result noPin = authclient::Login(other, "zz9pin", "ab12cd", kTo);
+            const authclient::Result noPin = authclient::Login(other, "zz9pin", "ab12cd", kLiveTo);
             Check(noPin.line == kUnreachable && noPin.status == 0, "⑧ 지문 없이 인증서 이름에 없는 주소 → 윈도 검사에 막힘(옛 길 그대로)");
             std::string wrong = pin;
             wrong[0] = wrong[0] == '0' ? '1' : '0';
-            const authclient::Result w = authclient::Login(here, "zz9pin", "ab12cd", kTo, wrong);
+            const authclient::Result w = authclient::Login(here, "zz9pin", "ab12cd", kLiveTo, wrong);
             Check(w.line == kUnreachable && w.status == 0 && w.error == ERROR_WINHTTP_SECURE_INVALID_CERT,
                   "⑧ 틀린 지문 → 본문 쓰기 전에 멈춤(SECURE_INVALID_CERT · 상태 0)");
         }
