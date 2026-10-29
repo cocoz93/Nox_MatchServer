@@ -169,7 +169,7 @@ $llog = Join-Path $tmp 'lobby.txt'; $glog = Join-Path $tmp 'server.txt'; $res = 
 
 # ★ 로그인 암호 조각 6b — 로그인 서버 판 준비(로비 · 게임 서버보다 먼저 — 사람 1회 전이면 아무것도 안 띄운 채 77)
 $ap = $null
-$pwA = 'Al1ce!pw'; $pwB = 'B0bpass9'   # 정품 암호 칸 8자 안(40d1f28) · 글자 + 숫자
+$pwA = 'Al1ce!pw'; $pwB = 'B0bpass9'   # 정품 암호 칸 8자 안(ed85fab) · 글자 + 숫자
 $tokA = ''; $tokB = ''
 $authStart = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 if ($Auth) {
