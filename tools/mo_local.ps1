@@ -124,6 +124,13 @@ try {
       Write-Host "클라 DLL: 게임 폴더 것 = 빌드한 것($hb)"
     }
   }
+  # ★ 10-29 — 로그인 뒤 국가 고르기 창 안 띄우기. WOLAPI 가 아이디 칸마다 국가를 HKCR\Wchat\Nick<n>\Locale(기본값 "%d")에 두고,
+  #   Game.exe 는 그 값이 없으면 창을 연다. 고른 값을 HKCR 에 쓰다 실패해 매번 뜨므로 사용자 쪽(HKCU\Software\Classes)에 20(South Korea)을 미리 둔다.
+  #   서버는 이 값을 안 쓴다. 칸 번호는 몰라 0~9 전부 · 이미 있으면 안 건드림
+  for ($n = 0; $n -le 9; $n++) {
+    $k = "HKCU:\Software\Classes\Wchat\Nick$n\Locale"
+    if (-not (Test-Path -LiteralPath $k)) { New-Item -Path $k -Force | Out-Null; Set-Item -LiteralPath $k -Value '20' }
+  }
   if (-not $NoClients) {
     $env:NOX_HOOK_LOG_DIR = $logDir   # 클라 DLL 기록도 같은 폴더에
     $c1 = Start-Process -FilePath (Join-Path $game 'Game.exe') -WorkingDirectory $game -PassThru
