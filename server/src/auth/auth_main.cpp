@@ -40,12 +40,15 @@ bool g_quiet = false;
 std::atomic<bool> g_stop{false};
 std::mutex g_logMu;
 
+HANDLE g_shutdownDone = nullptr;
+
+// 창 닫기 · 로그오프 · 끄기는 이 함수가 돌아오는 순간 프로세스가 끝나므로 끝 줄을 다 찍을 때까지(최대 4초) 기다린다
+//   — 10-29 고치기 전엔 창 닫기 3회 모두 끝 줄 0(게임 서버 `main.cpp` · 로비 `lobby_main.cpp` 의 `OnConsoleCtrl` 과 같은 꼴)
 BOOL WINAPI OnConsoleCtrl(DWORD type) {
-    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT) {
-        g_stop = true;
-        return TRUE;
-    }
-    return FALSE;
+    g_stop = true;
+    if ((type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT) && g_shutdownDone)
+        WaitForSingleObject(g_shutdownDone, 4000);
+    return TRUE;
 }
 
 void Log(const char* fmt, ...) {
@@ -70,6 +73,7 @@ std::string Ip(uint32_t ip) {
 
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
+    g_shutdownDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     SetConsoleCtrlHandler(OnConsoleCtrl, TRUE);
     using namespace nox::auth;
 
@@ -201,5 +205,7 @@ int main(int argc, char** argv) {
     }
     Log("[로그인 서버] 끝 — 요청 %llu(%s) · 너무 큼 %llu · 받기 오류 %llu · 보내기 실패 %llu · DB 끊겨 다시 %llu\n", total, parts.c_str(),
         tooLarge.load(), recvErrors.load(), sendFailed.load(), retries.load());
+    std::fflush(stdout);
+    SetEvent(g_shutdownDone);   // 창 닫기로 기다리던 `OnConsoleCtrl` 을 놓아 준다
     return 0;
 }
