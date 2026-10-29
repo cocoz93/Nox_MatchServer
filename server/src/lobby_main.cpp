@@ -53,13 +53,16 @@ namespace {
 bool g_quiet = false;
 std::atomic<bool> g_stop{false};
 
+HANDLE g_shutdownDone = nullptr;
+
 // 콘솔 창 닫기 · Ctrl+C — 루프가 다음 바퀴에 끝 줄을 찍고 나간다(강제 종료로 셈을 잃지 않게)
+//   창 닫기 · 로그오프 · 끄기는 이 함수가 돌아오는 순간 프로세스가 끝나므로 끝 줄을 다 찍을 때까지(최대 4초) 기다린다
+//   — 10-29 고치기 전엔 창 닫기 3회 모두 끝 줄 0(게임 서버 `main.cpp` 의 `OnConsoleCtrl` 과 같은 꼴)
 BOOL WINAPI OnConsoleCtrl(DWORD type) {
-    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT) {
-        g_stop = true;
-        return TRUE;
-    }
-    return FALSE;
+    g_stop = true;
+    if ((type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT || type == CTRL_SHUTDOWN_EVENT) && g_shutdownDone)
+        WaitForSingleObject(g_shutdownDone, 4000);
+    return TRUE;
 }
 
 // 줄마다 시각을 붙인다 — 10-07 사람 확인에서 마지막 「끊음」이 게임 중인지 게임을 닫을 때인지 기록만으로 못 가렸다(옛 lobby_main 그대로)
@@ -100,6 +103,7 @@ std::string PrintableLog(const std::string& s) {
 
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
+    g_shutdownDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     SetConsoleCtrlHandler(OnConsoleCtrl, TRUE);
 
     nox::wol::LobbyConfig cfg;
@@ -357,5 +361,7 @@ int main(int argc, char** argv) {
         ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Missing)], ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Type)],
         ms.unreadable[static_cast<size_t>(nox::MatchJsonParse::Value)], ms.savedBad - ms.saveInvalid, ms.unreadableNoMatch, ms.noStore,
         ms.saveInvalid);
+    std::fflush(stdout);
+    SetEvent(g_shutdownDone);   // 창 닫기로 기다리던 `OnConsoleCtrl` 을 놓아 준다
     return 0;
 }
