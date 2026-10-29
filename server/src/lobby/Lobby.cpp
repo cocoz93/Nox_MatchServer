@@ -628,9 +628,12 @@ void Lobby::SendList(int conn, bool withChat, std::vector<Out>& out) {
         out.push_back({conn, ": 326 u " + room + " " + std::to_string(users) + " 0 37 1 41681088 " +
                                  std::to_string(gameIp) + " " + std::string(kListPrefix) + RoomInfo(lr, codepage)});
     }
+    // ★ 10-29 — 대화방 사람 수도 +1(위 방 줄과 같은 꼴). 정품은 채널마다 이 칸에서 시작해 들어옴 +1 · 나감 −1 로 세고
+    //   0 이 되면 그 채널을 목록에서 지운다(Game.exe 0x41ee40 · 0x41eed4 → 0x41ea70 · 되살리는 길은 새 LIST 뿐).
+    //   빈 채널을 0 으로 주면 한 번 들어갔다 나오는 것만으로 채널이 사라졌다
     if (withChat)
         for (const char* l : kChatLobbies)
-            out.push_back({conn, ": 327 u " + std::string(l) + " " + std::to_string(members_[l].size()) + " 0 388"});
+            out.push_back({conn, ": 327 u " + std::string(l) + " " + std::to_string(1 + members_[l].size()) + " 0 388"});
     out.push_back({conn, ": 323 u:"});
 }
 

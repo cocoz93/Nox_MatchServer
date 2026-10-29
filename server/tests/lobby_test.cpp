@@ -723,8 +723,8 @@ void ChatUnitTests() {
         const auto tk = Tokens(o.line);
         if (tk.size() > 4 && tk[1] == "327") chans.push_back(tk[3] + "=" + tk[4]);
     }
-    Check(chans.size() == 5 && chans[0] == "#Lob_37_0=1" && chans[3] == "#Lob_37_3=1" && chans[4] == "#Lob_37_4=0",
-          "목록의 대화방 다섯 · 사람 수 칸 = 그 채널 사람 수");
+    Check(chans.size() == 5 && chans[0] == "#Lob_37_0=2" && chans[3] == "#Lob_37_3=2" && chans[4] == "#Lob_37_4=1",
+          "목록의 대화방 다섯 · 사람 수 칸 = 그 채널 사람 수 + 1(빈 채널도 1 — 정품이 0 되면 지움)");
     out.clear();
     lb.OnLine(1, "JOIN #Lob_37_5 x", out);
     Check(out.empty(), "다섯 밖 대화방 → 모르는 채널(답 없음)");
