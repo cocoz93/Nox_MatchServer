@@ -71,13 +71,18 @@ try {
     $authLog = Join-Path $logDir 'auth.log'
     Launch 'nox_auth.exe' "--config `"$cfg`"" $authLog
     $up = $false
+    $seen = $false
     for ($i = 0; $i -lt 75 -and -not $up; $i++) {
       Start-Sleep -Milliseconds 200
       try {
         $fs = New-Object IO.FileStream($authLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
         $sr = New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8); $t = $sr.ReadToEnd(); $sr.Close()
         $up = $t -match '듣기 https'
-        if (-not $up -and -not (Get-Process nox_auth -ErrorAction SilentlyContinue) -and $i -gt 5) { break }   # 뜨다 멈춤(까닭은 기록에)
+        # 뜨다 멈춤(까닭은 기록에) — 한 번 본 프로세스가 사라졌을 때만.
+        # 10-29 22:18 판: nox_auth 가 띄운 뒤 2.9초에야 시작해, 옛 조건(1.2초쯤 안 보이면 멈춤)이 뜬 서버를 실패로 봤다
+        $alive = [bool](Get-Process nox_auth -ErrorAction SilentlyContinue)
+        if ($alive) { $seen = $true }
+        if (-not $up -and $seen -and -not $alive) { break }
       } catch { }
     }
     if (-not $up) { Stop-Servers; throw "로그인 서버가 안 떴다 — $authLog (사람 1회 config\auth_setup.sql · tools\auth_setup.ps1 전이면 -NoAuth 로)" }
