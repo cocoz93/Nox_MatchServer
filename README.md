@@ -106,5 +106,6 @@
 
 - 이 리포는 EA(Electronic Arts)와 관계없는 개인 학습 프로젝트다. 「Nox」는 EA의 상표이고, 게임 녹스의 저작권은 © 2000 Westwood Studios에 있다
 - 서버 코드는 [opennox](https://github.com/opennox/opennox)(GPL-3.0)를 참고해 짰다. 일부는 opennox에 든 디컴파일 C(`src/legacy/*.c`)와 대조하며 거의 그대로 옮겼다 — 출처는 `THIRD_PARTY.md`
+- 그래서 이 리포의 코드도 **GPL-3.0**(`LICENSE`)으로 낸다
 - 게임 자산(그림·소리·맵·글)과 데이터 파일 복호 키는 들어 있지 않다. 돌리려면 정품 녹스(GOG 판매본)가 있어야 한다
 - 불법 복제를 돕지 않는다
