@@ -5,7 +5,7 @@ rem   서버클라_실행.bat G_Lava     다른 맵 (게임 폴더 maps 아래 폴더 이름)
 rem   서버클라_실행.bat Estate --spawn-at-item GreatSword   맵 뒤의 인자는 서버 옵션으로 그대로 넘긴다
 rem 서버를 끄려면 서버 창을 닫는다
 rem 전 판의 서버·정품 클라가 떠 있으면 먼저 닫고 새로 띄운다
-rem Game2.exe 는 다중 실행 막이를 푼 정품 사본이다(원본 Game.exe 는 그대로)
+rem Game2.exe 는 한 PC 시험용으로, 클라 둘을 같이 띄우려고 다중 실행 막이만 푼 사본이다(원본 Game.exe 는 그대로)
 setlocal
 set "ROOT=%~dp0"
 set "GAME=C:\Program Files\GOG Galaxy\Games\Nox"
