@@ -74,13 +74,15 @@ function LoginJoin([string]$nick, [string]$channel, [string]$apgar = '') {
   $hello = @("NOXCLIENT $(if ($apgar) { 3 } else { 2 })", "NICK $nick")
   if ($apgar) { $hello += "apgar $apgar 0" }
   Send $k ($hello + @('USER UserName HostName irc.westwood.com :RealName'))
-  $null = ReadUntil $k '376'
+  $h = ReadUntil $k '376'   # ★ 레이팅 조각 4 — 인사 줄(점수 줄을 본다)
   Send $k @("JOINGAME $channel 1 ")
   $g = ReadUntil $k '366'
   $tok = ''
   if ($g.Count -ge 1 -and $g[0].StartsWith('NOXTOKEN ')) { $tok = $g[0].Split(' ')[2] }
-  return @{ k = $k; tok = $tok; lines = $g }
+  return @{ k = $k; tok = $tok; lines = $g; hello = $h }
 }
+# ★ 레이팅 조각 4 — 로그인 공지의 점수 줄(로비가 코드페이지 949 바이트로 보냄 → 이 스크립트는 라틴 1 로 읽으므로 같은 바이트로 견줌)
+function RatingLine([string]$text) { return ': 372 u :- ' + $latin1.GetString([Text.Encoding]::GetEncoding(949).GetBytes($text)) }
 
 # ── 패킷 클라 ──────────────────────────────────────────────
 $tryJoinHex = '00000e004a00610063006b00000000000000000000000000000000001c13616e01980309000000000000000049018501f07a' +
@@ -265,6 +267,10 @@ try {
   $a = LoginJoin 'alice' "#alice's_game" $tokA   # ★ 조각 6b — -Auth 가 아니면 토큰이 빈 것 = 아이디만 옛 꼴
   $b = LoginJoin 'bob' "#alice's_game" $tokB
   Check ($a.tok.Length -eq 102 -and $b.tok.Length -eq 102) "① 로그인 → alice 새 방 · bob 그 방 — 토큰 둘($($a.tok.Length) · $($b.tok.Length))"
+  if ($Auth) {   # ★ 레이팅 조각 4 — 토큰 로그인은 점수를 묻는다(판 전이라 둘 다 랭크 판 없음 · 376 바로 앞 줄)
+    $none = RatingLine '내 점수 1000 · 랭크 판 없음'
+    Check ($a.hello.Count -ge 2 -and $a.hello[-2] -ceq $none -and $b.hello[-2] -ceq $none) "① 로그인 공지 — alice · bob 「내 점수 1000 · 랭크 판 없음」(376 바로 앞)"
+  }
 
   # ② — alice 먼저(방장 = 먼저 들어온 사람)
   $ca = NewClient 'alice' $a.tok; $cb = NewClient 'bob' $b.tok
@@ -286,6 +292,16 @@ try {
   $null = Pump { (ReadLog $llog) -match '<< SAVED \S+ ' } 5   # 로비가 SAVED 를 보낸 것을 보고(저장소 답은 다음 바퀴)
   $null = Pump { $false } 1   # SAVED 가 게임 서버에 닿을 틈
   $a.k.c.Close(); $b.k.c.Close()
+  if ($Auth) {   # ★ 레이팅 조각 4
+    Start-Sleep -Milliseconds 500   # 로비가 옛 접속 끊김을 먼저 보게(안 그러면 「옛 접속 끊음」 갈래로 샌다 — 로비 바퀴 100ms) — 판 뒤 alice 가 다시 로그인(새 토큰 — 일회용) → 랭크 판이면 이긴 점수 · 일반 판이면 그대로
+    $tokA2 = (AuthReq '/login' "name=alice&password=$([uri]::EscapeDataString($pwA))").body
+    $k2 = Open $LobbyPort
+    Send $k2 @('NOXCLIENT 3', 'NICK alice', "apgar $tokA2 0", 'USER UserName HostName irc.westwood.com :RealName')
+    $h2 = ReadUntil $k2 '376'
+    $k2.c.Close()
+    $want = if ($Ranked) { RatingLine '내 점수 1010 · 랭크 1위' } else { RatingLine '내 점수 1000 · 랭크 판 없음' }
+    Check ($h2.Count -ge 2 -and $h2[-2] -ceq $want) "④ 판 뒤 alice 다시 로그인 — 공지 「$(if ($Ranked) { '내 점수 1010 · 랭크 1위' } else { '내 점수 1000 · 랭크 판 없음' })」(받은 줄 $($h2.Count))"
+  }
 } catch {
   Check $false "예외: $($_.Exception.Message)"
 } finally {
@@ -311,8 +327,12 @@ Check ($tl -match '판 저장 요청 1\(SAVED ok 1 · dup 0 · 실패 0 · 끊�
 Check ($tg -match '판 결과 SAVED\(ok 1 · dup 0 · bad 0 · 모르는 판 0\)' -and $tg -match '쥔 채 끝 0') '게임 서버 끝 줄 — SAVED ok 1 · 쥔 채 끝 0'
 if ($Auth) {
   # ★ 로그인 암호 조각 6b — 토큰으로 둘 다 통과 · 아이디만 0 · 시험 DB 마지막 로그인 · 기록 셋에 친 암호 · 토큰 글 0곳
-  Check ($tl -match '끝 — 로그인 2\(토큰 \[통과 2 · 크기 0 · 판 0 · 서명 0 · 만료 0 · 만료가 너무 멂 0 · IP 다름 0 · 이름 다름 0\] · 다시 쓴 토큰 0 .* 아이디만 0\) · 옛 접속 끊음 0') `
-    '로비 끝 줄 — 로그인 2(토큰 통과 2 · 다른 토큰 갈래 0 · 다시 쓴 토큰 0 · 아이디만 0)'
+  Check ($tl -match '끝 — 로그인 3\(토큰 \[통과 3 · 크기 0 · 판 0 · 서명 0 · 만료 0 · 만료가 너무 멂 0 · IP 다름 0 · 이름 다름 0\] · 다시 쓴 토큰 0 .* 아이디만 0\) · 옛 접속 끊음 0') `
+    '로비 끝 줄 — 로그인 3(토큰 통과 3 — 판 뒤 alice 다시 로그인 포함 · 다른 토큰 갈래 0 · 다시 쓴 토큰 0 · 아이디만 0)'
+  # ★ 레이팅 조각 4 — 점수 물음 셋(판 전 둘 = 판 없음 · 판 뒤 alice 하나 = 랭크면 점수 줄)
+  $wantRating = if ($Ranked) { '점수 물음 3\(점수 줄 1 · 랭크 판 없음 2 · 못 읽음 0 · 시간 초과 0 · 끊김 0 · 끝날 때 남음 0\) · 늦은 답 0' } `
+                else { '점수 물음 3\(점수 줄 0 · 랭크 판 없음 3 · 못 읽음 0 · 시간 초과 0 · 끊김 0 · 끝날 때 남음 0\) · 늦은 답 0' }
+  Check ($tl -match $wantRating) '로비 끝 줄 — 점수 물음 3(판 뒤 alice 만 점수 줄 · 못 읽음 · 시간 초과 · 끊김 · 늦은 답 0)'
   $ll = @(Sql "SELECT COUNT(*) FROM accounts WHERE name IN ('alice','bob') AND last_login_unix >= $authStart;")
   Check ($ll.Count -ge 1 -and "$($ll[0])".Trim() -eq '2') "시험 DB accounts — alice · bob 마지막 로그인이 이번 판 시각 뒤($($ll -join ' '))"
   $ta = ReadLog $alog

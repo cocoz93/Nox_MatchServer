@@ -1661,6 +1661,110 @@ void LoginUnitTests() {
           "⑧ 셈 — 로그인 " + std::to_string(s.LoginTotal()) + " = 첫 USER " + std::to_string(users) +
               " · 토큰 거절 갈래 일곱 · 실패 까닭 다섯 · 모르는 1 · 손님 1 · 평문 2 · 없음 1 · 이름 1 · 거절 378 " + std::to_string(s.loginRejected) +
               " = USER − 통과");
+
+    // ⑨ ★ 레이팅 조각 4 — 저장소를 붙인 로비. 토큰 통과 → 점수 물음 → 답까지 인사를 미루고 뒷줄은 쌓음 →
+    //   375 · (372 …) · 372 점수 줄(코드페이지 949 바이트) · 376 → 379 → 329. 못 읽음 · 시간 초과 = 점수 줄 없이 · 끊김 · 늦은 답 · 쌓기 한도
+    {
+        CMemoryLobbyStore st;
+        nox::MatchRecord m;   // 랭크 판 하나 — wn 이김(1010) · bob 짐(990)
+        m.match = "r-1";
+        m.ranked = true;
+        m.endReason = "score_player";
+        m.winnerKind = "player";
+        m.hasWinnerId = true;
+        m.players.resize(2);
+        m.players[0].hasAccount = m.players[1].hasAccount = true;
+        m.players[0].account = "wn";
+        m.players[0].score = 1;
+        m.players[1].account = "bob";
+        st.SaveMatch(1, MatchSource{1, 1}, m, "{}");
+        std::vector<StoreAnswer> ans;
+        st.TakeAnswers(ans);
+        Lobby rl(makeCfg(true), fake);
+        rl.AttachStore(&st);
+        auto pump = [&]() {   // 저장소 답을 로비로(소켓 루프의 한 바퀴)
+            ans.clear();
+            st.TakeAnswers(ans);
+            out.clear();
+            for (const StoreAnswer& a : ans) rl.OnRatingAnswer(a, out);
+        };
+        // 인사 차례 — 375 · … · 점수 줄(있으면 376 바로 앞) · 376 → 379 → 329
+        auto greeted = [&](const std::string& ratingBytes) {
+            const auto v = lines();
+            size_t i376 = v.size();
+            for (size_t i = 0; i < v.size(); ++i)
+                if (v[i] == ": 376 u") i376 = i;
+            if (v.empty() || v[0].rfind(": 375 ", 0) != 0 || i376 == v.size() || i376 + 3 != v.size() || v[i376 + 1].rfind(": 379 ", 0) != 0 ||
+                v[i376 + 2] != ": 329 u 949")
+                return false;
+            const bool hasRating = i376 >= 1 && v[i376 - 1] == ": 372 u :- " + ratingBytes;
+            bool anyRating = false;
+            for (const auto& l : v) anyRating = anyRating || l.find("\xB3\xBB ") != std::string::npos;   // 「내 」
+            return ratingBytes.empty() ? !anyRating : hasRating;
+        };
+        const std::string kNae = "\xB3\xBB", kJeomsu = "\xC1\xA1\xBC\xF6", kDot = "\xA1\xA4", kRank = "\xB7\xA9\xC5\xA9", kWi = "\xC0\xA7",
+                          kPan = "\xC6\xC7", kEopseum = "\xBE\xF8\xC0\xBD";
+        auto ratingLine = [&](const char* score, const char* rank) {
+            return kNae + " " + kJeomsu + " " + score + " " + kDot + " " + kRank + " " + rank + kWi;
+        };
+
+        // a) wn — 묶음을 다 보내도 NOXSERVER 만(뒷줄 셋은 쌓임) → 답 → 점수 줄 「내 점수 1010 · 랭크 1위」
+        rl.OnConnect(1, peer, peer);
+        feed(rl, 1, bundle("3", "wn", apgar(Tok{})));
+        const bool waitedA = lines() == std::vector<std::string>{"NOXSERVER 1"} && rl.PendingRatings() == 1 && rl.Stats().ratingAsked == 1;
+        pump();
+        Check(waitedA && greeted(ratingLine("1010", "1")) && rl.PendingRatings() == 0 && rl.Stats().heldLines == 3,
+              "⑨ 점수 기다림 — 답 전엔 NOXSERVER 만 · 답 뒤 375 … 「내 점수 1010 · 랭크 1위」(949 바이트) · 376 → 379 → 329 · 쌓은 뒷줄 3");
+        // b) bob — 990 · 2위
+        rl.OnConnect(2, peer, peer);
+        feed(rl, 2, bundle("3", "bob", apgar(Tok{8, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "bob"})));
+        pump();
+        Check(greeted(ratingLine("990", "2")), "⑨ 점수 줄 「내 점수 990 · 랭크 2위」");
+        // c) cat — 랭크 판 없음
+        rl.OnConnect(3, peer, peer);
+        feed(rl, 3, bundle("3", "cat", apgar(Tok{9, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "cat"})));
+        pump();
+        Check(greeted(kNae + " " + kJeomsu + " 1000 " + kDot + " " + kRank + " " + kPan + " " + kEopseum),
+              "⑨ 랭크 판 없음 줄 「내 점수 1000 · 랭크 판 없음」");
+        // d) 못 읽음 — 점수 줄 없이 376(로그인은 됨)
+        st.SetFailRatings(true);
+        rl.OnConnect(4, peer, peer);
+        feed(rl, 4, bundle("3", "dan", apgar(Tok{10, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "dan"})));
+        pump();
+        st.SetFailRatings(false);
+        Check(greeted(std::string()) && rl.Stats().ratingFailed == 1, "⑨ 저장소 못 읽음 — 점수 줄 없이 376 → 379 → 329");
+        // e) 시간 초과 — 한도 1ms 앞 그대로 · 한도에 점수 줄 없이 376 · 그 뒤 온 답은 늦은 답
+        st.SetHoldRatings(true);
+        rl.OnConnect(5, peer, peer);
+        feed(rl, 5, bundle("3", "eve", apgar(Tok{11, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "eve"})));
+        st.SetHoldRatings(false);
+        clock += kRatingTimeoutMs - 1;
+        out.clear();
+        rl.Tick(out);
+        const bool notYet = out.empty() && rl.PendingRatings() == 1;
+        clock += 1;
+        out.clear();
+        rl.Tick(out);
+        const bool timedOut = greeted(std::string()) && rl.Stats().ratingTimeout == 1 && rl.PendingRatings() == 0;
+        out.clear();
+        rl.OnRatingAnswer(StoreAnswer{StoreAnswerKind::Rating, 5}, out);   // 끝난 물음(요청 5 는 eve 의 번호)
+        Check(notYet && timedOut && out.empty() && rl.Stats().ratingLate == 1,
+              "⑨ 시간 초과 — 1ms 앞 그대로 · 한도에 점수 줄 없이 376 → 379 → 329 · 늦은 답 버림");
+        // f) 기다리는 동안 끊김 → 답은 늦은 답 · 쌓기 한도
+        rl.OnConnect(6, peer, peer);
+        feed(rl, 6, bundle("3", "fay", apgar(Tok{12, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "fay"})));
+        std::vector<std::string> flood(kMaxHeldLines, "VERCHK 32512 720916");
+        feed(rl, 6, flood);
+        const bool dropped = rl.Stats().heldDropped == 3;   // 묶음 뒷줄 3 + 64 → 한도 64 를 넘은 3
+        rl.OnClose(6, out);
+        pump();
+        const LobbyStats& rs = rl.Stats();
+        Check(dropped && out.empty() && rs.ratingClosed == 1 && rs.ratingLate == 2 && rl.PendingRatings() == 0,
+              "⑨ 기다리는 동안 끊김 — 답 버림(늦은 답) · 쌓기 한도 64 넘은 줄 버림");
+        Check(rs.ratingAsked == 6 && rs.RatingTotal() == rs.ratingAsked && rs.ratingShown == 2 && rs.ratingNoGames == 1 && rs.ratingFailed == 1 &&
+                  rs.ratingTimeout == 1 && rs.ratingClosed == 1,
+              "⑨ 셈 — 물음 6 = 점수 줄 2 · 판 없음 1 · 못 읽음 1 · 시간 초과 1 · 끊김 1");
+    }
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──

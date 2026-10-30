@@ -209,6 +209,7 @@ int main(int argc, char** argv) {
     mirror.Attach(lobby);
     // ★ 7단계 조각 5 — 저장소(계정 · 판 기록 — 위에서 고름: DB 워커 · --no-db 면 메모리 가짜. 답은 둘 다 다음 바퀴 이후)
     mirror.AttachStore(store);   // ★ 로그인 암호 조각 4 — 로비 로그인은 저장소에 안 묻는다(판 저장만)
+    lobby.AttachStore(&store);   // ★ 레이팅 조각 4 — 토큰 로그인이 로그인 공지의 점수를 묻는다
     std::vector<nox::wol::StoreAnswer> answers;
     wchar_t stopName[64];
     swprintf(stopName, 64, L"nox_lobby_stop_%lu", GetCurrentProcessId());
@@ -295,7 +296,7 @@ int main(int argc, char** argv) {
         for (const nox::wol::StoreAnswer& a : answers) {
             switch (a.kind) {
                 case nox::wol::StoreAnswerKind::SaveMatch: mirror.OnStoreAnswer(a, outs); break;
-                case nox::wol::StoreAnswerKind::Rating: break;   // ★ 레이팅 조각 3 — 요청하는 자리는 조각 4(로그인 공지)
+                case nox::wol::StoreAnswerKind::Rating: lobby.OnRatingAnswer(a, outs); break;   // ★ 레이팅 조각 4 — 로그인 공지
                 case nox::wol::StoreAnswerKind::kCount: break;
             }
         }
@@ -348,6 +349,11 @@ int main(int argc, char** argv) {
             ls.loginBadName, ls.loginNoAuth, ls.loginKickedOld, lobby.AccountsOnline(), ls.chatViewOnly, ls.loginDeadlineClosed,
             ls.loginRejected, ls.loginRejectClosed);
     }
+    // ★ 레이팅 조각 4 — 점수 물음 하나 = 점수 줄 · 랭크 판 없음 · 못 읽음 · 시간 초과 · 끊김 중 하나(합 = 물음 · 끝날 때 남음은 따로)
+    Log("[로비] 끝 — 점수 물음 %llu(점수 줄 %llu · 랭크 판 없음 %llu · 못 읽음 %llu · 시간 초과 %llu · 끊김 %llu · 끝날 때 남음 %zu) · "
+        "늦은 답 %llu · 쌓은 뒷줄 %llu(버림 %llu)\n",
+        ls.ratingAsked, ls.ratingShown, ls.ratingNoGames, ls.ratingFailed, ls.ratingTimeout, ls.ratingClosed, lobby.PendingRatings(), ls.ratingLate,
+        ls.heldLines, ls.heldDropped);
     // ★ 7단계 — 보냄 · 받음은 PING 을 넣은 수(괄호가 그중 PING) · 무소식 끊음 = 받은 줄이 한도 동안 없어 끊은 게임 서버 연결
     Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu(PING %llu) · "
         "보냄 %llu(PING %llu) · 방 알림 %llu · 사라짐 %llu · 못 읽는 줄 %llu · 판 결과 %llu · 무소식 끊음 %llu\n",

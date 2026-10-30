@@ -146,6 +146,11 @@ void Lobby::OnClose(int conn, std::vector<Out>& out) {
         const auto a = accountConn_.find(ci->second.accountId);
         if (a != accountConn_.end() && a->second == conn) accountConn_.erase(a);
     }
+    // ★ 레이팅 조각 4 — 점수를 기다리던 접속 — 답은 늦은 답으로 버린다(저장소는 읽기만 해서 남는 일 없음)
+    if (ci != conns_.end() && ci->second.login == LoginState::Rating) {
+        ratingPending_.erase(ci->second.ratingReq);
+        ++stats_.ratingClosed;
+    }
     conns_.erase(conn);
 }
 
@@ -186,7 +191,12 @@ void Lobby::Tick(std::vector<Out>& out) {
     for (auto& kv : conns_) {
         Conn& c = kv.second;
         if (c.closing || static_cast<int32_t>(now - c.loginDueMs) < 0) continue;
-        if (c.login == LoginState::Waiting) {
+        if (c.login == LoginState::Rating) {   // ★ 레이팅 조각 4 — 점수 답이 한도 안에 안 옴 → 점수 줄 없이 로그인 끝
+            ++stats_.ratingTimeout;
+            ratingPending_.erase(c.ratingReq);
+            log_.push_back("[로그인 — 점수 시간 초과] " + c.nick + " — " + std::to_string(kRatingTimeoutMs) + "ms 안에 저장소 답 없음(점수 줄 없이 376)");
+            FinishLogin(kv.first, c, LoginState::Ok, std::string(), out);
+        } else if (c.login == LoginState::Waiting) {
             ++stats_.loginDeadlineClosed;
             c.closing = true;
             log_.push_back("[로그인 — 마감] c" + std::to_string(kv.first) + " — " + std::to_string(kLoginDeadlineMs / 1000) + "초 안에 USER 없음 · 끊음");
@@ -245,7 +255,10 @@ const char* JoinRejectText(JoinReject why) {
 
 // ★ 7단계 조각 6 — 인사. 실패도 XWIS 꼴로 로그인은 끝낸다(376) — 답을 안 하면 정품이 「Connecting…」에서 멈춘다(10-10)
 //   ★ 로그인 암호 조각 4 — 뒷줄 쌓기 걷음(곧바로 답하므로 정품 묶음의 뒷줄은 받은 차례대로 376 뒤에 온다)
-void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const std::string& failNotice, std::vector<Out>& out) {
+//   ★ 레이팅 조각 4 — 점수를 기다리는 토큰 로그인은 다시 쌓는다(`OnLine` · `BeginOkLogin`)
+void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const std::string& failNotice, std::vector<Out>& out,
+                        const std::string& ratingLine) {
+    c.ratingReq = 0;
     // ★ 10-28 사람 확인 54 — 암호 판의 실패는 로비에 들이지 않는다. 인사(375 · 376) 대신 `378` 한 줄 — 정품 로비 모듈이 378 을
     //   「암호 틀림」(`0x80040065` — `WOLAPI.dll` `0x210096d3` → `0x21009784`)으로 게임에 넘기고, 게임이 「틀린 아이디 또는 패스워드.」
     //   (`nox.csf` `Wol.c:InvalidPass` · `Game.exe` `0x41cf50` 분기표 `0x41d1a4`) 창을 띄운다. 433(이름 사용 중 — 같은 함수 표 자리 +0x38)이
@@ -267,7 +280,57 @@ void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const std::string&
         out.push_back({conn, ": 372 u :- *** Login failed: " + failNotice + " ***"});
         if (!cfg_.authOn) out.push_back({conn, ": 372 u :- You can chat, but joining a game needs a successful login."});
     }
+    if (!ratingLine.empty()) out.push_back({conn, ": 372 u :- " + ratingLine});   // ★ 레이팅 조각 4 — 정품은 공지를 로비 채팅창에 줄로(`Game.exe` 0x40c180 → 0x446e90)
     out.push_back({conn, ": 376 u"});
+    // ★ 레이팅 조각 4 — 쌓아 둔 뒷줄을 받은 차례대로(이 함수는 한 바퀴 안 — 그 사이 끊김 없음). 넘기는 동안 다시 쌓이지 않는다(로그인이 끝났다)
+    std::vector<std::string> held;
+    held.swap(c.held);
+    stats_.heldLines += held.size();
+    for (const std::string& l : held) OnLine(conn, l, out);
+}
+
+// ★ 레이팅 조각 4 — 토큰 로그인 통과 뒤. 저장소가 있으면 점수를 묻고 인사를 미룬다(`kRatingTimeoutMs`) · 없으면 곧바로
+void Lobby::BeginOkLogin(int conn, Conn& c, std::vector<Out>& out) {
+    if (!store_) {
+        FinishLogin(conn, c, LoginState::Ok, std::string(), out);
+        return;
+    }
+    c.login = LoginState::Rating;
+    c.ratingReq = nextRatingReq_++;
+    c.loginDueMs = cfg_.nowMs() + kRatingTimeoutMs;
+    ratingPending_[c.ratingReq] = conn;
+    ++stats_.ratingAsked;
+    store_->GetRating(c.ratingReq, c.nick);
+}
+
+void Lobby::OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out) {
+    const auto p = ratingPending_.find(a.req);
+    if (a.kind != StoreAnswerKind::Rating || p == ratingPending_.end()) {
+        ++stats_.ratingLate;   // 끝난 물음(한도 · 끊김) · 안 물은 답
+        return;
+    }
+    const int conn = p->second;
+    ratingPending_.erase(p);
+    const auto ci = conns_.find(conn);
+    if (ci == conns_.end() || ci->second.login != LoginState::Rating || ci->second.ratingReq != a.req) {
+        ++stats_.ratingLate;
+        return;
+    }
+    Conn& c = ci->second;
+    std::string line;   // UTF-8 — 아래에서 코드페이지 바이트로(로그인 때는 SETCODEPAGE 전이라 기본값 949 · `Lobby.h` kDefaultCodepage)
+    if (!a.ratingOk) {
+        ++stats_.ratingFailed;
+        log_.push_back("[로그인 — 점수 못 읽음] " + c.nick + " — " + (a.why.empty() ? std::string("저장소 실패") : a.why) + "(점수 줄 없이 376)");
+    } else if (a.ratingFound) {
+        ++stats_.ratingShown;
+        line = "내 점수 " + std::to_string(a.rating) + " · 랭크 " + std::to_string(a.rank) + "위";
+        log_.push_back("[로그인 — 점수] " + c.nick + " — " + std::to_string(a.rating) + " · " + std::to_string(a.rank) + "위");
+    } else {
+        ++stats_.ratingNoGames;
+        line = "내 점수 " + std::to_string(a.rating) + " · 랭크 판 없음";
+        log_.push_back("[로그인 — 점수] " + c.nick + " — 랭크 판 없음");
+    }
+    FinishLogin(conn, c, LoginState::Ok, std::string(), out, line.empty() ? line : ToCodepage(line, c.codepage, std::string::npos));
 }
 
 std::string Lobby::SignupUrl(const Conn& c) const {
@@ -319,7 +382,7 @@ void Lobby::CheckLoginToken(int conn, Conn& c, std::vector<Out>& out) {
             }
             TakeAccount(conn, c, t.accountId, out);
             log_.push_back("[로그인] " + c.nick + " — 계정 " + std::to_string(t.accountId) + "(토큰)");
-            FinishLogin(conn, c, LoginState::Ok, std::string(), out);
+            BeginOkLogin(conn, c, out);   // ★ 레이팅 조각 4 — 점수를 물은 뒤 인사(저장소 없으면 곧바로)
             return;
         }
         case ApgarKind::Fail: {
@@ -414,6 +477,15 @@ void Lobby::OnLine(int conn, std::string_view line, std::vector<Out>& out) {
     if (it == conns_.end() || line.empty()) return;
     // ★ 10-28 — 끊는 줄을 보낸 접속 · 로그인을 거절한 접속의 뒷줄(같은 묶음의 verchk · SETCODEPAGE …)엔 답하지 않는다
     if (it->second.closing || it->second.login == LoginState::Rejected) return;
+    // ★ 레이팅 조각 4 — 점수를 기다리는 중이면 뒷줄은 쌓아 둔다(답 뒤 `FinishLogin` 이 차례대로 — 녹음 차례 376 → 379 → 329)
+    if (it->second.login == LoginState::Rating) {
+        if (it->second.held.size() >= kMaxHeldLines) {
+            ++stats_.heldDropped;
+            return;
+        }
+        it->second.held.emplace_back(line);
+        return;
+    }
     const auto t = Split(line);
     const std::string cmd = Upper(t[0]);
     OnChat(conn, it->second, cmd, t, line, out);   // ★ 10-14 작업 8b — 4005(로비 찾기)는 라우터(`Router.cpp`)로 옮겼다

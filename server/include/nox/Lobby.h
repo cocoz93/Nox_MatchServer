@@ -56,6 +56,7 @@
 
 #include "nox/Clock.h"
 #include "nox/JoinToken.h"
+#include "nox/LobbyStore.h"   // ★ 레이팅 조각 4 — 로그인 공지의 점수를 묻는다
 #include "nox/LoginLine.h"
 #include "nox/LoginToken.h"
 #include "nox/WolGameInfo.h"
@@ -123,6 +124,11 @@ constexpr size_t kMaxNickBytes = 16;              // 계정 이름 한도 = 입�
 // ★ 10-28 — 로그인 거절(378) 뒤 클라가 스스로 끊기를 기다리는 한도. 근거 = 433 답엔 클라가 33ms 뒤 끊음(10-11) · 464 엔 11~34초 멈춘 뒤 끊음 —
 //   378 은 433 과 같은 길이라 곧바로 끊을 것으로 봄. 이 값은 그 짐작이 틀렸을 때 접속이 남지 않게 하는 안전판
 constexpr uint32_t kLoginRejectCloseMs = 10000;
+// ★ 레이팅 조각 4(`Docs/RATING_DESIGN.md` 「로그인 때 읽기」) — 토큰 로그인이면 저장소에 점수 · 순위를 묻고 그 답까지 인사(375 … 376)를 미룬다.
+//   그 사이 같은 접속의 뒷줄(verchk · SETCODEPAGE …)은 쌓았다가 376 뒤 차례대로(7단계 조각 6 에 있던 것 — 로그인 암호 조각 4 에서 걷었다가 되살림).
+//   한도 · 쌓기 한도는 옛 값 그대로 — 근거 없는 값(같은 PC DB 왕복은 ms 단위 · 녹음 접속 하나의 뒷줄은 많아야 18줄). 넘으면 점수 줄 없이 로그인을 끝낸다
+constexpr uint32_t kRatingTimeoutMs = 5000;
+constexpr size_t kMaxHeldLines = 64;
 
 // ★ 10-20 거절 답(`Docs/LOBBY_SPLIT_DESIGN.md` 「거절 답 플랜」) — 방 참가(`JOINGAME`)를 받아 줄 수 없는 까닭.
 //   왜 — 답을 안 하면 정품이 「서버 접속 시도중...」에서 멈춘다(사람 확인 50). 정품이 받아 주는 거절 답은 `471` 하나뿐이다 —
@@ -204,6 +210,17 @@ struct LobbyStats {
     unsigned long long loginDeadlineClosed = 0;   // `kLoginDeadlineMs` 안에 USER 가 없어 끊음
     unsigned long long loginRejected = 0;    // ★ 10-28 암호 판 로그인 실패 — 378 로 거절(위 실패 갈래들의 합과 같아야 한다)
     unsigned long long loginRejectClosed = 0;   // ★ 10-28 378 뒤 `kLoginRejectCloseMs` 안에 클라가 안 끊어 끊음
+    // ★ 레이팅 조각 4 — 점수 물음 하나는 아래 다섯 중 하나로 끝난다(시험은 합을 본다 — `RatingTotal`)
+    unsigned long long ratingAsked = 0;      // 토큰 로그인이 저장소에 물음
+    unsigned long long ratingShown = 0;      // 답 — 점수 · 순위 줄
+    unsigned long long ratingNoGames = 0;    // 답 — 랭크 판 없음 줄
+    unsigned long long ratingFailed = 0;     // 답 — 저장소가 못 읽음(줄 없이 로그인 끝)
+    unsigned long long ratingTimeout = 0;    // `kRatingTimeoutMs` 안에 답 없음(줄 없이 로그인 끝)
+    unsigned long long ratingClosed = 0;     // 기다리는 동안 클라가 끊음
+    unsigned long long ratingLate = 0;       // 끝난 물음의 답 · 안 물은 답(버림 — 위 다섯에 안 듦)
+    unsigned long long heldLines = 0;        // 기다리는 동안 쌓았다가 376 뒤 넘긴 줄
+    unsigned long long heldDropped = 0;      // 쌓기 한도를 넘어 버린 줄
+    unsigned long long RatingTotal() const { return ratingShown + ratingNoGames + ratingFailed + ratingTimeout + ratingClosed; }
     unsigned long long LoginTotal() const {   // USER 로 끝난 로그인 수(위 갈래 합 — 끊음 · 보기만 빼고)
         unsigned long long n = loginBadName + loginNoAuth + loginReplay + loginFailUnknown + loginGuest + loginPlain + loginMissing;
         for (const unsigned long long v : loginToken) n += v;
@@ -243,6 +260,11 @@ public:
     size_t PendingRooms() const { return pending_.size(); }
     // ★ 로그인 암호 조각 4 — 로그인된 계정 수(계정 → 접속 장부 · 끊길 때 지움)
     size_t AccountsOnline() const { return accountConn_.size(); }
+    // ★ 레이팅 조각 4 — 점수를 물을 저장소(없으면 묻지 않고 곧바로 인사 — 시험 · 녹음 대조). 로비보다 오래 살아야 한다
+    void AttachStore(ILobbyStore* store) { store_ = store; }
+    // 저장소 답 Rating(소켓 루프가 꺼내 넘긴다) — 끝난 물음이면 버리고 센다
+    void OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out);
+    size_t PendingRatings() const { return ratingPending_.size(); }
 
     // 소켓 루프가 찍을 기록(처음 본 명령 등). 꺼내면 비운다.
     std::vector<std::string> TakeLog();
@@ -254,7 +276,8 @@ private:
     // ★ 7단계 조각 6 — 로그인 단계(대기 = USER 전 · 확인됨 · 실패 = 부드러운 실패로 들여보냄)
     //   ★ 로그인 암호 조각 4 — 「확인 중」(저장소 답 기다림) 걷음
     //   ★ 10-28 — 거절 = 암호 판 실패(378 보냄 · 뒷줄 안 받음 · 한도 뒤 끊음). 실패는 이제 아이디만 판의 이름 틀림만
-    enum class LoginState : uint8_t { Waiting, Ok, Failed, Rejected };
+    //   ★ 레이팅 조각 4 — 점수 기다림(토큰은 통과 · 저장소 답까지 인사를 미룸 · 뒷줄 쌓음 · 한도 `kRatingTimeoutMs`)
+    enum class LoginState : uint8_t { Waiting, Rating, Ok, Failed, Rejected };
     struct Conn {
         uint32_t peerIp = 0;
         uint32_t localIp = 0;
@@ -263,6 +286,9 @@ private:
         int clientVer = -1;  // ★ 10-10 — `NOXCLIENT <판>`(줄이 없으면 -1 — 「판 낮음」과 따로 센다)
         LoginState login = LoginState::Waiting;
         uint32_t loginDueMs = 0;        // 대기 — 로그인 마감(붙은 때 + kLoginDeadlineMs) · ★ 10-28 거절 — 끊는 때(378 + kLoginRejectCloseMs)
+                                        //   · ★ 레이팅 조각 4 점수 기다림 — 한도(물은 때 + kRatingTimeoutMs)
+        uint32_t ratingReq = 0;         // ★ 레이팅 조각 4 — 점수 기다림의 저장소 요청 번호
+        std::vector<std::string> held;  // ★ 레이팅 조각 4 — 점수 기다림 중에 온 뒷줄(376 뒤 차례대로)
         bool closing = false;           // 끊는 줄을 보냄(마감 · 옛 접속 · ★ 10-28 거절 뒤 — 끊김 사건까지 다시 안 함 · 뒷줄 안 받음)
         uint64_t accountId = 0;         // 확인됨 — 계정 번호(토큰 · 아이디만이면 0)
         std::string apgar;              // ★ 조각 4 — 로그인 묶음 `apgar <인자>` 의 인자(USER 까지 쥠 · 기록에 안 찍음)
@@ -287,7 +313,11 @@ private:
     // ★ 10-20 거절 답 — `: 471 u <채널> :<까닭 글>` 한 줄 · 까닭 셈(`LobbyStats::joinRejected`)
     void RejectJoin(int conn, const std::string& channel, JoinReject why, std::vector<Out>& out);
     // ★ 7단계 조각 6 — 인사(375 · 372 … · 376). `failNotice` 가 있으면 실패 길(안내 줄 덧붙임)
-    void FinishLogin(int conn, Conn& c, LoginState result, const std::string& failNotice, std::vector<Out>& out);
+    //   ★ 레이팅 조각 4 — `ratingLine`(코드페이지 바이트)이 있으면 376 앞 372 한 줄 · 끝나면 쌓아 둔 뒷줄을 차례대로
+    void FinishLogin(int conn, Conn& c, LoginState result, const std::string& failNotice, std::vector<Out>& out,
+                     const std::string& ratingLine = std::string());
+    // ★ 레이팅 조각 4 — 토큰 로그인 통과 뒤 — 저장소가 있으면 점수를 묻고 기다림 · 없으면 곧바로 인사
+    void BeginOkLogin(int conn, Conn& c, std::vector<Out>& out);
     // ★ 로그인 암호 조각 4 — USER 에서 `apgar` 를 가르고 토큰을 본다 → 갈래 하나를 세고 FinishLogin
     void CheckLoginToken(int conn, Conn& c, std::vector<Out>& out);
     // 같은 계정의 옛 접속을 끊는다(정할 것 b) · 새 접속을 장부에
@@ -308,6 +338,9 @@ private:
     uint32_t nextReq_ = 1;
     CJoinTokenLedger loginNonces_;                // ★ 로그인 암호 조각 4 — 로그인 토큰 일회용 번호(입장 토큰 장부와 따로 — 게임 서버가 씀)
     std::map<uint64_t, int> accountConn_;         // ★ 조각 4 — 계정 → 로그인된 접속(정할 것 b)
+    ILobbyStore* store_ = nullptr;                // ★ 레이팅 조각 4 — 점수를 물을 저장소(없으면 안 물음)
+    std::map<uint32_t, int> ratingPending_;       // 점수 요청 번호 → 기다리는 접속
+    uint32_t nextRatingReq_ = 1;
     std::map<int, Conn> conns_;
     std::map<std::string, std::set<int>> members_;  // 채널 → 들어와 있는 접속
     std::set<std::string> unknownSeen_;
