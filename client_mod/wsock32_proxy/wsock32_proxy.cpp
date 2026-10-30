@@ -253,6 +253,7 @@ static volatile LONG g_chanGuardNoRange = 0;   // ★ 10-21 — 0 아니면 동�
 static bool g_chanGuardOn = false;          // ★ 10-21 — ⑧ 동굴을 붙였나(⑨ 시험 줄에 적는다)
 
 static void RankSummary();
+static void MenuSummary();   // ★ 매칭 손보기 8 — ⑫
 
 static DWORD WINAPI SummaryThread(LPVOID)
 {
@@ -266,6 +267,7 @@ static DWORD WINAPI SummaryThread(LPVOID)
             passSeen = pass; guardSeen = hits; faultSeen = faults;
         }
         RankSummary();   // ★ 랭크 매칭 조각 2 — ⑩ 셈이 바뀌었으면 한 줄
+        MenuSummary();   // ★ 매칭 손보기 8 — ⑫ 도
         if (tick % 10) continue;   // 모듈 요약은 10초마다
         ModStat now[kMaxMods];
         int n;
@@ -829,8 +831,11 @@ static volatile LONG g_rankTokenEnds = 0;  // ③ 토큰 → 기다림 끝
 
 static bool MsgBoxOpen()
 {
+    // ★ 10-30 — 정품 판이 아니면(시험 exe) 늘 닫힘. 그 주소가 시험 exe 의 다른 메모리에 걸려 0 이 아닌 값을 읽으면
+    //   「떠 있음」이 되어 selftest 의 LEAVE 확인이 가끔 실패했다(test.bat 두 번에 한 번 — 매칭 손보기 8b 빌드 때)
+    if (!g_rankOn) return false;
     DWORD v = 0;
-    return ReadSelf(kMsgBox, &v) && v != 0;   // 못 읽으면 닫힘(정품 밖 시험 exe)
+    return ReadSelf(kMsgBox, &v) && v != 0;   // 못 읽으면 닫힘
 }
 
 // 로비 소켓으로 나가는 보내기 하나 — 그 앞에 끼울 줄(없으면 빈 글)
@@ -894,6 +899,86 @@ static void RankWaitText()
     Log("⑪ 기다림 글(누적 %ld) — 알림창 %#lx 글을 「상대 찾는 중...」으로", n, box);
 }
 
+// ─────────────────────────────────────────────── ⑫ 메뉴바 — 필터 창 「완료」 · 「리스트」 칸 숨김 (매칭 손보기 8 · Docs/MATCH_UX_REVIEW.md)
+// 정품은 「필터」를 누르면 필터 화면으로 가며 「리스트 갱신」 · 「랭크 매칭」(10006~10007)을 끄고, 목록으로 돌아오는 길은 「리스트」(10004)뿐이다.
+//   ① 필터 창(`[0x699024]` · 10022 — 게임 목록 창의 자식: `0x43778c` 이 `0x49c2c0([0x699018])` · 그 안에서 `filter.wnd` + 처리 함수 `0x49c5b0`)을 DLL 함수로 감싼다.
+//      「완료」(10090 — 창 파일은 tools/ui_apply.ps1)를 누르면 게임 목록 창의 원래 처리 함수에 「리스트」 누름을 넣는다 — 정품 「리스트」 길 그대로
+//      (`0x439f69` — `[0x69905c]` 0 · `0x437f60` 목록 보임 · 필터 숨김 · 10006~10007 켬 · `0x437470` 목록 다시 받기 · 누름 소리 `0x439aa7`.
+//      OpenNox 이름 기준 `[0x69905c]` = 만들기 · 참가 표시, 필터 숨길 때 부르는 `0x49bfb0` = 필터 칸 값 저장 `sub_489870`).
+//      그 뒤 두 라디오(묶음 3 — 리스트 · 필터)의 눌림 비트(창 +0x24 의 4)를 정품 라디오 누름처럼 바꾼다(`0x4a78b6` 눌려 있으면 알림 없음 ·
+//      `0x4a78f2` 같은 묶음 지움 · `0x4a7903` 제 것 켬) — 안 바꾸면 「필터」가 눌린 채라 다시 눌러도 필터 화면으로 안 감
+//   ② 「리스트」 칸을 숨긴다(「완료」가 생겨 할 일이 없음 — 셋째 칸을 나중 버튼 자리로). Game.exe 엔 10004 를 번호로 찾는 곳이 없어(32비트 값 0건)
+//      정품이 다시 보이게 할 길은 창을 새로 만들 때뿐으로 보지만, 받기 때마다 보고 보이면 다시 숨긴다(셈 · 기록은 창마다 처음 한 번)
+// 우리 로비 · 인터넷 모드에서만(⑩ 과 같은 자리 — 받기 훅 · 게임 주 스레드). 「완료」는 DLL 없는 클라 · LAN 에선 아무 일도 안 함(정품 함수 기본 갈래)
+static const uintptr_t kFilterWin = 0x699024;      // 필터 창(없으면 0)
+static const uintptr_t kFilterProc = 0x49c5b0;     // 그 창의 원래 처리 함수(0x17 · 0x4007 — 10015~10028 갈래 표)
+static const DWORD kBtnList = 10004, kBtnFilter = 10005, kBtnDone = 10090;
+static const DWORD kRadioOn = 4;                   // 창 +0x24 — 라디오 눌림
+static volatile LONG g_menuFilterWrapped = 0;      // 감싼 필터 창
+static volatile LONG g_menuFilterSkip = 0;         // 처리 함수 칸이 원래 함수가 아니라 안 감싼 필터 창
+static volatile LONG g_menuDone = 0;               // 「완료」 → 「리스트」 길
+static volatile LONG g_menuDoneMiss = 0;           // 「완료」인데 게임 목록 창 · 「리스트」 버튼을 못 찾음(아무것도 안 함)
+static volatile LONG g_menuListHidden = 0;         // 「리스트」 칸 숨김(보여서 숨긴 횟수)
+static volatile LONG g_menuListMiss = 0;           // 게임 목록 창에서 「리스트」 버튼을 못 찾음(창마다 한 번)
+
+static int __cdecl RankFilterProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
+{
+    const PFN_wndproc4 orig = (PFN_wndproc4)kFilterProc;
+    DWORD id = 0;
+    if (msg != kMsgClick || !a3 || !ReadSelf(a3, &id) || id != kBtnDone) return orig(win, msg, a3, a4);
+    const DWORD world = *(volatile DWORD*)kListWin;
+    const DWORD list = world ? ((PFN_findchild)kFindChild)(world, kBtnList) : 0;
+    if (!list) {
+        InterlockedIncrement(&g_menuDoneMiss);
+        Log("⑫ 「완료」 누름 — 게임 목록 창 %#lx 의 「리스트」(10004)를 못 찾아 아무것도 안 함", world);
+        return 0;
+    }
+    ((PFN_wndproc4)kListProc)(world, kMsgClick, list, a4);
+    const DWORD filter = ((PFN_findchild)kFindChild)(world, kBtnFilter);
+    *(volatile DWORD*)(list + 0x24) |= kRadioOn;
+    if (filter) *(volatile DWORD*)(filter + 0x24) &= ~kRadioOn;
+    const LONG n = InterlockedIncrement(&g_menuDone);
+    Log("⑫ 「완료」 누름(누적 %ld) — 필터 창 %#lx → 「리스트」 누름을 게임 목록 창에 넣음 · 라디오 리스트 켬 · 필터 %s", n, win, filter ? "끔" : "못 찾음");
+    return 0;
+}
+
+// 받기 훅(⑩ 자리) — 게임 목록 창이 있을 때마다
+static void RankMenuTick(DWORD world)
+{
+    static DWORD loggedWorld = 0;   // 「리스트」 숨김 · 못 찾음 기록은 창마다 처음 한 번
+    const DWORD list = ((PFN_findchild)kFindChild)(world, kBtnList);
+    DWORD flags = 0;
+    if (!list) {
+        if (loggedWorld != world) {
+            loggedWorld = world;
+            InterlockedIncrement(&g_menuListMiss);
+            Log("⑫ 게임 목록 창 %#lx — 「리스트」(10004)를 못 찾음 · 그대로", world);
+        }
+    } else if (ReadSelf(list + 4, &flags) && !(flags & kWinHidden)) {
+        ((PFN_sethidden)kSetHidden)(list, 1);
+        const LONG n = InterlockedIncrement(&g_menuListHidden);
+        if (loggedWorld != world) {
+            loggedWorld = world;
+            Log("⑫ 게임 목록 창 %#lx — 「리스트」(10004 창 %#lx) 숨김(누적 %ld) · 그때 깃발 %#lx", world, list, n, flags);
+        }
+    }
+    DWORD filter = 0, proc = 0;
+    if (!ReadSelf(kFilterWin, &filter) || !filter || !ReadSelf(filter + kProcSlot, &proc) || proc == (DWORD)(uintptr_t)RankFilterProc) return;
+    if (proc != kFilterProc) {
+        static DWORD skipped = 0;   // 같은 창엔 한 번만 찍는다
+        if (skipped != filter) {
+            skipped = filter;
+            InterlockedIncrement(&g_menuFilterSkip);
+            Log("⑫ 필터 창 %#lx — 처리 함수 칸이 %#lx(원래 %#lx 아님) · 안 감쌈", filter, proc, (DWORD)kFilterProc);
+        }
+        return;
+    }
+    *(volatile DWORD*)(filter + kProcSlot) = (DWORD)(uintptr_t)RankFilterProc;
+    const DWORD done = ((PFN_findchild)kFindChild)(filter, kBtnDone);
+    const LONG n = InterlockedIncrement(&g_menuFilterWrapped);
+    Log("⑫ 필터 창 %#lx 감쌈(누적 %ld) — 「완료」(10090) %s", filter, n, done ? "있음" : "없음(창 파일 안 고침 — tools/ui_apply.ps1)");
+}
+
 // 1초마다(요약 스레드) — ⑩ · ⑪ 셈 중 하나라도 바뀌었으면 한 줄. 누름 갈래의 합 = 감싼 창에 온 누름 전부 · 표시 = 창 닫힘 + 잡힘 + 기다림
 static void RankSummary()
 {
@@ -907,14 +992,27 @@ static void RankSummary()
         now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9], now[10], now[11], now[12], now[13], now[14]);
 }
 
+// ★ ⑫ — 메뉴바 셈(따로 한 줄 — 바뀌었을 때만)
+static void MenuSummary()
+{
+    static LONG seen[6] = {};
+    const LONG now[6] = { g_menuFilterWrapped, g_menuFilterSkip, g_menuDone, g_menuDoneMiss, g_menuListHidden, g_menuListMiss };
+    if (memcmp(seen, now, sizeof(now)) == 0) return;
+    memcpy(seen, now, sizeof(now));
+    Log("⑫ 메뉴바 셈 — 감싼 필터 창 %ld · 안 감쌈 %ld | 「완료」 → 리스트 %ld · 못 찾음 %ld | 「리스트」 숨김 %ld · 못 찾음 %ld",
+        now[0], now[1], now[2], now[3], now[4], now[5]);
+}
+
 // 받기 훅에서 — 새 게임 목록 창이면 감싸고 10007 을 보이게
 static void RankUiTick()
 {
     if (GetCurrentThreadId() != g_mainTid || !g_ourLobby || *(volatile DWORD*)kNetMode != 1) return;
     RankWaitText();   // ★ ⑪ ④ 기다림 창 글
     const DWORD win = *(volatile DWORD*)kListWin;
+    if (!win) return;
+    RankMenuTick(win);   // ★ 매칭 손보기 8 — ⑫ 필터 창 감싸기 · 「리스트」 칸 숨김
     DWORD proc = 0;
-    if (!win || !ReadSelf(win + kProcSlot, &proc) || proc == (DWORD)(uintptr_t)RankListProc) return;
+    if (!ReadSelf(win + kProcSlot, &proc) || proc == (DWORD)(uintptr_t)RankListProc) return;
     if (proc != kListProc) {
         static DWORD skipped = 0;   // 같은 창엔 한 번만 찍는다
         if (skipped != win) {
