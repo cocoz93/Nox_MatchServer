@@ -52,6 +52,11 @@ set "NOX_MYROOM_LINE=1"
 "%~dp0selftest.exe" nolog "%LOGDIR%"
 if errorlevel 1 set RC=1
 set "NOX_MYROOM_LINE="
+rem 5) rank join mark forced on (test switch - rank match piece 3): NOXRANK JOIN before own JOINGAME, LEAVE after the wait window (always closed here)
+set "NOX_TEST_RANKMARK=1"
+"%~dp0selftest.exe" nolog "%LOGDIR%"
+if errorlevel 1 set RC=1
+set "NOX_TEST_RANKMARK="
 popd
 if %RC%==0 ( echo TEST PASS ) else ( echo TEST FAIL )
 exit /b %RC%

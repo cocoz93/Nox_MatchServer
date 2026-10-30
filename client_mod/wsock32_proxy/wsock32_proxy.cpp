@@ -89,6 +89,8 @@
 //
 // ★ 랭크 매칭 조각 2(`Docs/RANK_MATCH_PLAN.md`) — ⑩ 게임 목록 여섯째 칸(10007 · 글자는 tools/ui_apply.ps1 이 「랭크 매칭」으로) 누름을
 //   랭크 표시 + 「게임 호스트하기」 누름으로 바꾼다(게임 목록 창 처리 함수 칸을 감쌈 — 아래 ⑩ 절). 켜는 조건 = ⑥ 과 같음(판 확인 · 우리 로비 · NOX_NO_HOSTGAME)
+// ★ 랭크 매칭 조각 3 — ⑪ 그 뒤 내 방 참가 줄 앞에 `NOXRANK JOIN`(로비가 새 방 대신 줄에 세움) · 「서버 접속 시도중...」 창이 닫히면 다음 보내기 앞에
+//   `NOXRANK LEAVE`(로비가 줄에서 뺌) · 참가 토큰이 오면 기다림 끝(아래 ⑪ 절). DLL 판 4. 시험 스위치 NOX_TEST_RANKMARK=1(판 확인 없이 내 방 참가마다)
 //
 // 로그: 환경변수 NOX_HOOK_LOG_DIR 이 있을 때만 <그 폴더>\wsock_<exe>_<pid>.log 에 쓴다(dinput_proxy 와 같은 스위치).
 //       없으면 로그도 집계도 안 하고 진짜로 넘기기만 한다.
@@ -348,7 +350,9 @@ FWD(1120) FWD(1130) FWD(1140) FWD(1141) FWD(1142)
 // ─────────────────────────────────────────────── 입장 토큰 (10-10 토큰 작업 4 — 머리 주석 ①~④)
 
 // DLL 판 — 로비 `kNoxClientMinVersion` 이상이어야 로그인된다 · ★ 10-16 판 2 = `NOXSERVER` 떼기 · ⑤ · ⑥(`kNoxClientHostGameVersion`)
-static const char kNoxClientHello[] = "NOXCLIENT 3\r\n";   // ★ 판 3 = 로그인 암호(`kNoxClientAuthVersion`) — 로비가 이 판 이상만 암호 판으로 봄
+//   ★ 판 3 = 로그인 암호(`kNoxClientAuthVersion`) — 로비가 이 판 이상만 암호 판으로 봄
+//   ★ 판 4 = 랭크 매칭(`kNoxClientRankVersion`) — ⑪ `NOXRANK JOIN` · `NOXRANK LEAVE` 를 보냄 · 로비는 이 판 이상의 표시만 믿음
+static const char kNoxClientHello[] = "NOXCLIENT 4\r\n";
 static const DWORD kTokenHoldMs = 60000;                   // 토큰을 쥐고 있는 시간(토큰 만료 30초보다 넉넉히 — 판정은 서버가 한다)
 static const size_t kTokenRaw = 51;                        // `JoinToken.h` kJoinTokenSize
 static CRITICAL_SECTION g_tokCs;
@@ -371,6 +375,7 @@ static std::string g_nick;              // ⑤ · ⑥ 로비 로그인의 `NICK 
 
 static std::string MyRoomLine(const std::vector<std::string>& items);
 static std::string AuthLogin(SOCKET s, const std::string& name, const std::string& password);
+static void RankOnToken();   // ★ 랭크 매칭 조각 3 — ⑪
 
 static bool MarkLobby(SOCKET s)   // 새로 적었으면 true
 {
@@ -502,6 +507,7 @@ static void OnTokenLine(const std::string& line, const char* who)
     g_tok = t;
     LeaveCriticalSection(&g_tokCs);
     Detail("NOXTOKEN 받음 — 게임 서버 %u.%u.%u.%u:%u 로 가는 접속 시도·CONNECT 에 붙인다 부른 곳=%s", a, b, c, d, port, who);
+    RankOnToken();   // ★ 랭크 매칭 조각 3 — ⑪ ③ 줄 서 있었으면 잡힌 것
 }
 
 // ② 떼어 낸 줄 — 토큰이면 쥐고, 우리 로비 표시(`NOXSERVER`)면 그 연결의 상대 주소를 적고 ⑤ · ⑥ 을 켠다
@@ -757,21 +763,82 @@ static int __cdecl RankListProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
             InterlockedIncrement(&g_rankHostClicks);
             if (InterlockedExchange(&g_rankArmed, 0)) Log("⑩ 게임 호스트하기 누름 — 남아 있던 랭크 표시 끔(일반 방)");
             return orig(win, msg, a3, a4);
-        default:
+        default:   // ★ 조각 3 — 다른 누름도 남은 표시를 끈다(퀘스트 호스트 · 목록 줄 고르기 … 랭크를 누른 뒤 캐릭터 고르기에서 뒤로 나온 경우)
             InterlockedIncrement(&g_rankOtherClicks);
+            if (InterlockedExchange(&g_rankArmed, 0)) Log("⑩ 다른 누름(번호 %lu) — 남아 있던 랭크 표시 끔", id);
             return orig(win, msg, a3, a4);
     }
 }
 
-// 1초마다(요약 스레드) — ⑩ 셈 중 하나라도 바뀌었으면 한 줄. 누름 갈래의 합 = 감싼 창에 온 누름 전부
+// ─────────────────────────────────────────────── ⑪ 랭크 참가 표시 · 기다림 창 닫힘 알림 (랭크 매칭 조각 3)
+// 랭크도 로비엔 Host Game 과 같은 참가 줄(`JOINGAME #<닉>'s_game 1 `)로 간다 — 사람 확인을 거친 길 그대로(목록에 새 채널 줄을 끼우지 않는다 —
+//   정품은 받은 목록에 있는 채널에만 참가를 보내고 · 제 이름 방을 안 그리는 기준을 모른다). 다른 것은 그 줄 바로 앞의 표시 한 줄뿐:
+//   ① 랭크 표시(⑩)가 켜져 있고 로비로 내 방 참가 줄이 나가면 그 보내기 앞에 `NOXRANK JOIN` → 로비가 새 방 대신 줄에 세운다. 「기다림」 켬
+//      (정품은 참가 줄 하나를 보내기 한 번에 낸다 — 10-20 · 10-29 기록 `send … len=23 | JOINGAME #1's_game 1 \r\n`)
+//   ② 기다리는 동안 로비로 나가는 보내기마다 「서버 접속 시도중...」 창을 본다 — 정품 공용 알림창 `[0x69cba4]`(띄움 `0x43b1b0` → `0x449590` ·
+//      닫으면 0 `0x449f80`). 닫혀 있으면 그 보내기 앞에 `NOXRANK LEAVE` · 기다림 끔.
+//      취소 = 단추 0xfa2 → 목록 창 `0x439c3b` → 창 닫음(`0x43a4e0`) → 목록 다시(`0x4375b0` → LIST) — 그래서 그 LIST 앞에 실린다(정적 분석 · 정품 화면 미확인)
+//   ③ 로비 참가 답의 토큰(`NOXTOKEN`)이 오면 기다림 끔(잡혔다 — 창은 판으로 가며 닫힌다)
+//   보내는 자리는 게임이 그 소켓에 보내는 순간뿐(따로 스레드에서 쓰지 않는다 — 로비 모듈의 줄과 섞이지 않게)
+// 시험 스위치 NOX_TEST_RANKMARK=1 — 판 확인 없이 내 방 참가마다 ① (selftest — 그 exe 엔 알림창 칸이 없어 「닫힘」으로 읽힌다)
+static const uintptr_t kMsgBox = 0x69cba4;
+static const char kRankJoinLine[] = "NOXRANK JOIN\r\n";
+static const char kRankLeaveLine[] = "NOXRANK LEAVE\r\n";
+static bool g_rankMarkTest = false;
+static volatile LONG g_rankWaiting = 0;    // ① 뒤 · ② · ③ 전
+static volatile LONG g_rankMarked = 0;     // ① 참가 줄 앞 표시
+static volatile LONG g_rankLeaves = 0;     // ② 창 닫힘 → LEAVE
+static volatile LONG g_rankTokenEnds = 0;  // ③ 토큰 → 기다림 끝
+
+static bool MsgBoxOpen()
+{
+    DWORD v = 0;
+    return ReadSelf(kMsgBox, &v) && v != 0;   // 못 읽으면 닫힘(정품 밖 시험 exe)
+}
+
+// 로비 소켓으로 나가는 보내기 하나 — 그 앞에 끼울 줄(없으면 빈 글)
+static std::string RankPrefix(const char* buf, int len)
+{
+    if (!g_ourLobby) return std::string();
+    const std::string nick = NickNow();
+    const std::string own = "JOINGAME #" + nick + "'s_game ";
+    if (!nick.empty() && len >= (int)own.size() && memcmp(buf, own.data(), own.size()) == 0) {
+        const bool armed = g_rankMarkTest || InterlockedExchange(&g_rankArmed, 0) != 0;
+        if (!armed) return std::string();
+        InterlockedExchange(&g_rankWaiting, 1);
+        const LONG n = InterlockedIncrement(&g_rankMarked);
+        Log("⑪ 랭크 참가(누적 %ld) — 내 방 참가 줄 앞에 NOXRANK JOIN · 기다림 켬(알림창 %s)", n, MsgBoxOpen() ? "떠 있음" : "없음");
+        return kRankJoinLine;
+    }
+    if (g_rankWaiting && !MsgBoxOpen() && InterlockedExchange(&g_rankWaiting, 0)) {
+        char p[64];
+        Preview(buf, len < 40 ? len : 40, p, sizeof(p));
+        const LONG n = InterlockedIncrement(&g_rankLeaves);
+        Log("⑪ 기다림 창 닫힘(누적 %ld) — 다음 보내기(%s) 앞에 NOXRANK LEAVE · 기다림 끔", n, p);
+        return kRankLeaveLine;
+    }
+    return std::string();
+}
+
+// ③ — OnTokenLine 이 부른다
+static void RankOnToken()
+{
+    if (!InterlockedExchange(&g_rankWaiting, 0)) return;
+    const LONG n = InterlockedIncrement(&g_rankTokenEnds);
+    Log("⑪ 랭크 잡힘(누적 %ld) — 참가 토큰 받음 · 기다림 끔", n);
+}
+
+// 1초마다(요약 스레드) — ⑩ · ⑪ 셈 중 하나라도 바뀌었으면 한 줄. 누름 갈래의 합 = 감싼 창에 온 누름 전부 · 표시 = 창 닫힘 + 잡힘 + 기다림
 static void RankSummary()
 {
-    static LONG seen[8] = {};
-    const LONG now[8] = { g_rankWrapped, g_rankWrapSkip, g_rankClicks, g_rankNotOurs, g_rankNoHost, g_rankHostClicks, g_rankOtherClicks, g_rankArmed };
+    static LONG seen[12] = {};
+    const LONG now[12] = { g_rankWrapped, g_rankWrapSkip, g_rankClicks, g_rankNotOurs, g_rankNoHost, g_rankHostClicks, g_rankOtherClicks, g_rankArmed,
+                           g_rankMarked, g_rankLeaves, g_rankTokenEnds, g_rankWaiting };
     if (memcmp(seen, now, sizeof(now)) == 0) return;
     memcpy(seen, now, sizeof(now));
-    Log("⑩ 랭크 매칭 셈 — 감싼 창 %ld · 안 감쌈 %ld | 누름: 랭크 %ld · 우리 로비 아님 %ld · 10002 못 찾음 %ld · 게임 호스트하기 %ld · 그 밖 %ld | 랭크 표시 %ld",
-        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7]);
+    Log("⑩ 랭크 매칭 셈 — 감싼 창 %ld · 안 감쌈 %ld | 누름: 랭크 %ld · 우리 로비 아님 %ld · 10002 못 찾음 %ld · 게임 호스트하기 %ld · 그 밖 %ld | 랭크 표시 %ld"
+        " || ⑪ 참가 표시 %ld = 창 닫힘 LEAVE %ld + 잡힘 %ld + 기다리는 중 %ld",
+        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9], now[10], now[11]);
 }
 
 // 받기 훅에서 — 새 게임 목록 창이면 감싸고 10007 을 보이게
@@ -868,17 +935,23 @@ extern "C" int WSAAPI Hook_send(SOCKET s, const char* buf, int len, int flags)
             SetLastError(err);
         }
     }
-    if ((g_listOn || g_hostGameOn) && buf && len > 0 && LobbyFilterOf(s)) NoteNick(buf, len);   // ⑤ · ⑥
+    const bool lobbySock = buf && len > 0 && LobbyFilterOf(s);
+    if ((g_listOn || g_hostGameOn || g_rankMarkTest) && lobbySock) NoteNick(buf, len);   // ⑤ · ⑥ · ⑪
+    // ★ 랭크 매칭 조각 3 — ⑪ 이 보내기 앞에 끼울 표시 줄(랭크 참가 · 기다림 창 닫힘)
+    const std::string rankPre = ((g_rankOn || g_rankMarkTest) && lobbySock) ? RankPrefix(buf, len) : std::string();
     int rc;
     CLoginRewriter* lw = (buf && len > 0) ? LoginRewriterOf(s) : NULL;
     if (lw) {
         // ★ 로그인 암호 조각 5 의 3 · 4 — 로비 · 라우터 연결은 줄 단위로 거쳐 간다. `apgar` 암호 자리가 로그인 토큰으로(로비) · `whereto` 암호 칸이 x 로(라우터) 바뀌어 나가고(길이가 달라진다),
         //   게임에는 늘 원래 길이를 돌려준다. 막지 않는 소켓이 일부만 받으면 남은 몫을 쥐고 다음 보내기에 이어 보낸다(Flush)
+        //   ★ 랭크 매칭 조각 3 — 끼울 줄도 같은 줄 상태에 먼저 넣는다(쥔 몫이 있으면 그 뒤로 — 차례가 안 바뀌게)
+        if (!rankPre.empty()) lw->Feed(rankPre.data(), (int)rankPre.size());
         lw->Feed(buf, len);
         const int fr = lw->Flush([&](const char* b, int n) { return ((PFN_send)Resolve(19))(s, b, n, flags); },
                                  [] { return GetLastError() == WSAEWOULDBLOCK; });
         rc = fr < 0 ? SOCKET_ERROR : len;
     } else {
+        if (!rankPre.empty()) ((PFN_send)Resolve(19))(s, rankPre.data(), (int)rankPre.size(), flags);   // 로비 소켓엔 늘 줄 상태가 있어 여기 안 옴(안전망)
         rc = ((PFN_send)Resolve(19))(s, buf, len, flags);
     }
     if (g_log[0]) {
@@ -1103,6 +1176,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         const bool gameOk = GameBuildOk();
         g_hostGameOn = gameOk && !off;
         g_rankOn = g_hostGameOn;   // ★ 랭크 매칭 조각 2 — ⑩ 은 ⑥ 길을 탄다
+        sw[0] = 0;
+        g_rankMarkTest = !off && GetEnvironmentVariableA("NOX_TEST_RANKMARK", sw, sizeof(sw)) && sw[0] == '1';   // ★ 조각 3 — ⑪ 시험
         g_listOn = (gameOk || forceList) && !off;
         if (g_hostGameOn) CloseHandle(CreateThread(NULL, 0, HostGameThread, NULL, 0, NULL));
         sw[0] = 0;
@@ -1124,6 +1199,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
                 g_hostGameOn ? "켬" : "끔", g_listOn ? "켬" : "끔", g_rankOn ? "켬" : "끔", gameOk ? "통과" : "다른 판", off ? "켬" : "끔", forceList ? "켬" : "끔");
             Log("⑧ 대화방 목록 가드 = %s · ⑨ 시험(NOX_TEST_CHANGUARD) = %s · 실은 스레드 %lu", !gameOk ? "안 붙임(다른 판)" : noGuard ? "끔(NOX_NO_CHANGUARD)" : "붙임",
                 g_testGuard ? "켬" : "끔", g_mainTid);
+            Log("⑪ 랭크 참가 표시 시험(NOX_TEST_RANKMARK) = %s", g_rankMarkTest ? "켬" : "끔");
             CloseHandle(CreateThread(NULL, 0, SummaryThread, NULL, 0, NULL));
         }
         if (gameOk && !noGuard) InstallChanGuard();   // ★ 10-20 v2 작업 5 — 로그 파일을 정한 뒤(붙임 · 안 붙임 줄이 기록에 남게)

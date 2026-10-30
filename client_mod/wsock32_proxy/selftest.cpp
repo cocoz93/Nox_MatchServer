@@ -218,7 +218,7 @@ int main(int argc, char** argv)
             if (r <= 0) break;
             atLobby.append(b, r);
         }
-        Check(atLobby == std::string("NOXCLIENT 3\r\n") + cvers, "lobby: NOXCLIENT 3 goes out before CVERS");
+        Check(atLobby == std::string("NOXCLIENT 4\r\n") + cvers, "lobby: NOXCLIENT 4 goes out before CVERS");
 
         // 토큰 줄을 둘로 나눠 보낸다(TCP 가 줄을 자르는 경우) — 클라는 토큰 줄 없이 앞뒤 줄만 받아야 한다
         const std::string line = std::string("NOXTOKEN 127.0.0.1:") + std::to_string(gamePort) + " " + hex + "\r\n";
@@ -319,6 +319,50 @@ int main(int argc, char** argv)
                   "myroom: own 326 line (nick from NICK · lobby peer ip) inserted before 323");
         else
             Check(lgot == ": 321 u:\r\n: 323 u:\r\n", "myroom off: list passes unchanged");
+
+        // ★ 랭크 매칭 조각 3 — ⑪ 내 방 참가 줄 앞 NOXRANK JOIN · 기다림 창이 닫혀 있으면(이 exe 엔 알림창 칸이 없어 늘 닫힘) 다음 보내기 앞 NOXRANK LEAVE ·
+        //   토큰이 오면 기다림 끝(LEAVE 없음). 스위치 NOX_TEST_RANKMARK=1 일 때만 표시 · 꺼져 있으면 셋 다 그대로 나가야 한다
+        {
+            const char* rsw = getenv("NOX_TEST_RANKMARK");
+            const bool rankOn = rsw && rsw[0] == '1';
+            auto sendAndRead = [&](const std::string& out, const std::string& tail) {
+                send(lc, out.data(), (int)out.size(), 0);
+                std::string w;
+                while (w.size() < tail.size() || w.compare(w.size() - tail.size(), tail.size(), tail) != 0) {
+                    char b[64]; int r = recv(lsv, b, sizeof(b), 0);
+                    if (r <= 0) break;
+                    w.append(b, r);
+                }
+                return w;
+            };
+            const std::string joinOwn = "JOINGAME #selftst's_game 1 \r\n", joinOther = "JOINGAME #other's_game 1 \r\n", listLine = "LIST 37 37\r\n";
+            // ① 남의 방 참가 — 표시 없음 · 기다림 안 켬(다음 LIST 에도 LEAVE 없음)
+            std::string w = sendAndRead(joinOther, joinOther);
+            Check(w == joinOther, "rank: join to another room passes unchanged");
+            w = sendAndRead(listLine, listLine);
+            Check(w == listLine, "rank: LIST after another room join passes unchanged");
+            // ② 내 방 참가 → 토큰 답 → LIST — 표시 하나 · LEAVE 없음
+            w = sendAndRead(joinOwn, joinOwn);
+            Check(w == (rankOn ? "NOXRANK JOIN\r\n" + joinOwn : joinOwn), rankOn ? "rank: NOXRANK JOIN goes out right before own JOINGAME" : "rank off: own JOINGAME passes unchanged");
+            const std::string tokLine = std::string("NOXTOKEN 127.0.0.1:") + std::to_string(gamePort) + " " + hex + "\r\n: 366 u #selftst's_game :\r\n";
+            send(lsv, tokLine.data(), (int)tokLine.size(), 0);
+            std::string tgot;
+            while (tgot.find(": 366 u") == std::string::npos) {
+                char b[64]; int r = recv(lc, b, sizeof(b), 0);
+                if (r <= 0) break;
+                tgot.append(b, r);
+            }
+            Check(tgot == ": 366 u #selftst's_game :\r\n", "rank: NOXTOKEN for the rank join removed");
+            w = sendAndRead(listLine, listLine);
+            Check(w == listLine, "rank: LIST after the token passes unchanged (matched — no LEAVE)");
+            // ③ 내 방 참가 → (창 닫힘) LIST → LIST — 첫 LIST 앞에만 LEAVE
+            w = sendAndRead(joinOwn, joinOwn);
+            Check(w == (rankOn ? "NOXRANK JOIN\r\n" + joinOwn : joinOwn), rankOn ? "rank: second own JOINGAME marked again" : "rank off: second own JOINGAME passes unchanged");
+            w = sendAndRead(listLine, listLine);
+            Check(w == (rankOn ? "NOXRANK LEAVE\r\n" + listLine : listLine), rankOn ? "rank: NOXRANK LEAVE goes out before the first send after the wait window closed" : "rank off: LIST passes unchanged");
+            w = sendAndRead(listLine, listLine);
+            Check(w == listLine, "rank: only one LEAVE (next LIST passes unchanged)");
+        }
 
         // 꼬리 — 게임 서버 주소로 가는 접속 시도·CONNECT 에만
         char join[100]; memset(join, 0, sizeof(join)); join[2] = 0x0e; join[4] = 'J';
