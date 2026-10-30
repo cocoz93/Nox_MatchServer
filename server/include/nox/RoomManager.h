@@ -113,6 +113,7 @@ public:
         _hostName = s.creator;   // ★ 10-16 결함 ② — 첫 방장 이름은 만든 사람(들어오기 전에도 목록 · 채널이 그 이름)
         _rankWait = s.ranked && !s.roster.empty() ? RankWait::Arriving : RankWait::None;   // ★ 랭크 매칭 조각 6
         _rankArmed = false;
+        _rankSettling = false;
     }
     // ★ 10-16 작업 13b — 판을 열 때 붙을 맵 원본(서버가 뜰 때 읽은 맵 목록 — 방 관리자가 만들 때 준다 · 시험은 직접)
     void SetMapCatalog(const MapCatalog* maps) { _maps = maps; }
@@ -238,6 +239,9 @@ private:
     RankWait _rankWait = RankWait::None;
     bool _rankArmed = false;
     uint32_t _rankSinceMs = 0;
+    // ★ 10-30 — 시작 조건(다 옴 · 한도에 최소 이상)이 선 뒤 쉬는 중 · 그 시각(`CRoomManager::kRankSettleMs`)
+    bool _rankSettling = false;
+    uint32_t _rankSettleSinceMs = 0;
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).
@@ -309,6 +313,9 @@ public:
     // ★ 랭크 매칭 조각 6 — 랭크 방의 도착 한도(방을 처음 본 틱부터). 기본값 근거 = 입장 토큰 수명(`Docs/RANK_MATCH_PLAN.md` 「기본값으로 둔 것」) —
     //   토큰이 만료되면 어차피 못 들어오므로 그보다 길 까닭이 없다. 빈 방 닫기와 같은 틱에 닿으면 판정이 먼저(`BeginTick`)
     static constexpr uint32_t kRankArriveMs = kJoinTokenLifetimeSec * 1000;
+    // ★ 10-30 — 시작 조건이 서고 판을 열기까지 쉬는 시간. 마지막 사람의 준비 틱에 대전 맵으로 바꾸면 그 클라가 맨몸 · 체력바 0 이었다
+    //   (10-30 사람 판 — 늦게 온 쪽만 · 대기 맵 0틱). 일반 방은 방장이 다들 자리 잡은 한참 뒤 `!start` 라 이 틈이 없다 — 그 꼴을 흉내 냄
+    static constexpr uint32_t kRankSettleMs = 3000;
 
     CRoomManager() = default;   // ★ 10-14 작업 9d — 방 없이 시작한다(옛 「방 0 을 만든다」)
     CRoomManager(const CRoomManager&) = delete;
@@ -371,6 +378,7 @@ public:
     // ★ 랭크 매칭 조각 6 — 도착 한도(기본 `kRankArriveMs`). 시험이 짧게 — 30초를 한 번에 건너뛰면 들어와 있는 가짜 클라가 시간 초과로 끊긴다
     void SetRankArriveMs(uint32_t ms) { _rankArriveMs = ms; }
     uint32_t RankArriveMs() const { return _rankArriveMs; }
+    void SetRankSettleMs(uint32_t ms) { _rankSettleMs = ms; }   // ★ 10-30 — 시작 전 쉬기(기본 `kRankSettleMs` · 0 = 곧바로)
 
 private:
     void OnJoinRequested(const NetworkEvent& ev);
@@ -417,6 +425,7 @@ private:
     std::vector<RoomEvent> _roomEvents;
     uint32_t _epoch = UnixNow();                  // ★ 10-19 MO 5단계 작업 2 — 판 번호 앞자리(방을 만들 때 넘긴다)
     uint32_t _rankArriveMs = kRankArriveMs;       // ★ 랭크 매칭 조각 6
+    uint32_t _rankSettleMs = kRankSettleMs;       // ★ 10-30
     CRoomStats _stats;
 };
 

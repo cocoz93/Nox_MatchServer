@@ -107,13 +107,28 @@ void CRoomManager::CheckRankRooms(uint32_t nowMs) {
         const size_t want = room._settings.roster.size();
         const bool all = arrived >= want;
         const bool due = static_cast<uint32_t>(nowMs - room._rankSinceMs) >= _rankArriveMs;
-        if (!all && !due) continue;
+        if (!all && !due) {
+            room._rankSettling = false;   // ★ 10-30 — 쉬는 중에 누가 빠지면 다시 처음부터
+            continue;
+        }
         // 갈래 넷 — 시작 둘(다 옴 · 한도에 최소 이상) · 랭크 풂 둘(한도에 모자람 · 맵 없음). 랭크를 풀면 일반 방(빈 방이면 곧 빈 방 닫기가 닫는다)
         enum class Decision : uint8_t { StartAll, StartDeadline, Unranked, NoMap };
         const Decision d = !all && arrived < CRoom::kMinPlayers ? Decision::Unranked
                            : !room.CanStartMatch()              ? Decision::NoMap
                            : all                                ? Decision::StartAll
                                                                 : Decision::StartDeadline;
+        // ★ 10-30 — 시작 둘은 그 상태가 `_rankSettleMs` 이어진 뒤에 연다(머리 주석 `kRankSettleMs`). 랭크 풂 둘은 곧바로
+        if ((d == Decision::StartAll || d == Decision::StartDeadline) && _rankSettleMs > 0) {
+            if (!room._rankSettling) {
+                room._rankSettling = true;
+                room._rankSettleSinceMs = nowMs;
+                if (_logRooms) {
+                    std::printf("[방] %d 랭크 — 시작 조건 섬(게임 안 명단 %zu / %zu) · %u초 쉬고 판\n", room._id, arrived, want, _rankSettleMs / 1000);
+                    std::fflush(stdout);
+                }
+            }
+            if (static_cast<uint32_t>(nowMs - room._rankSettleSinceMs) < _rankSettleMs) continue;
+        }
         const char* what = "?";
         bool start = false;
         switch (d) {

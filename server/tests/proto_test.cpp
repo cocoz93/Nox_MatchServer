@@ -26862,6 +26862,7 @@ void TestRankRoom() {
     UseTokens(srv);
     RM& rooms = srv.Rooms();
     rooms.SetRankArriveMs(3000);   // 30초를 건너뛰면 들어와 있는 가짜 클라가 시간 초과로 끊긴다(값만 짧게 · 규칙은 같음)
+    rooms.SetRankSettleMs(0);      // ★ 10-30 — ①~⑦ 은 도착 규칙만 본다(시작 전 쉬기는 ⑧)
     MapCatalog cat;
     cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
     cat.maps.push_back(FakeMapOriginal("estate", 0x22222222u, 3000.0f, 3000.0f));
@@ -26963,6 +26964,28 @@ void TestRankRoom() {
                   s.rankRooms, s.rankStartAll, s.rankStartDeadline, s.rankUnranked, s.rankNoMap, s.rankClosedWaiting, rooms.RankWaiting());
     Check(s.rankRooms == 5 &&
               s.rankRooms == s.rankStartAll + s.rankStartDeadline + s.rankUnranked + s.rankNoMap + s.rankClosedWaiting + rooms.RankWaiting(),
+          m);
+
+    // ⑧ ★ 10-30 시작 전 쉬기 — 다 와도 `kRankSettleMs` 전엔 대기 맵 · 지나면 판(위 ①~⑦ 은 쉬기 0 으로 옛 규칙만 봄)
+    rooms.SetRankSettleMs(nox::CRoomManager::kRankSettleMs);
+    const int r6 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"mia", "ned"});
+    now += 34; srv.Tick(now, o);
+    join(srv, TrailerAs("mia", r6, "10.66.0.1", 661), "10.66.0.1:1001", "10.66.0.1:1002", o);
+    join(srv, TrailerAs("ned", r6, "10.66.0.2", 662), "10.66.0.2:2001", "10.66.0.2:2002", o);
+    now += 34; srv.Tick(now, o);
+    const uint32_t settleFrom = now;
+    const unsigned long long allBefore = rooms.Stats().rankStartAll;
+    bool heldWhole = true;   // 쉬는 동안 줄곧 대기 맵인가
+    while (now - settleFrom + 34 < nox::CRoomManager::kRankSettleMs) {
+        now += 34; srv.Tick(now, o);
+        if (rooms.Room(r6).Phase() != nox::RoomPhase::Waiting || rooms.Room(r6).RankState() != W::Arriving) heldWhole = false;
+    }
+    for (int i = 0; i < 4; ++i) { now += 34; srv.Tick(now, o); }
+    std::snprintf(m, sizeof(m), "⑧ 시작 전 쉬기 %ums — 쉬는 동안 대기 %d(%ums) · 뒤 판 %s · 상태 %d · 다 옴 셈 %llu → %llu",
+                  nox::CRoomManager::kRankSettleMs, (int)heldWhole, now - settleFrom, nox::RoomPhaseName(rooms.Room(r6).Phase()),
+                  (int)rooms.Room(r6).RankState(), allBefore, rooms.Stats().rankStartAll);
+    Check(heldWhole && rooms.Room(r6).Phase() == nox::RoomPhase::Playing && rooms.Room(r6).RankState() == W::Started &&
+              rooms.Stats().rankStartAll == allBefore + 1,
           m);
 }
 
