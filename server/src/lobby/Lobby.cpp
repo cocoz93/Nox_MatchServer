@@ -242,6 +242,25 @@ void Lobby::Tick(std::vector<Out>& out) {
         it = rankPending_.erase(it);
         RankRequeue(req, group);
     }
+    // ★ 매칭 손보기 6 — 수락 한도. 수락 안 한 사람은 줄에서 빼고 `NOXRANK EXPIRED`(DLL 이 창을 정품 취소 길로 닫음) · 수락한 사람은 줄 앞에
+    for (auto it = rankFound_.begin(); it != rankFound_.end();) {
+        if (static_cast<int32_t>(now - it->second.deadlineMs) < 0) {
+            ++it;
+            continue;
+        }
+        const uint32_t req = it->first;
+        const std::vector<int> conns = it->second.conns;
+        ++it;   // 아래 `RankFoundBreak` 가 이 칸을 지운다
+        for (int id : conns) {
+            const auto ci = conns_.find(id);
+            if (ci == conns_.end() || ci->second.rankReq != req || ci->second.rank != Conn::Rank::Found) continue;
+            ci->second.rank = Conn::Rank::None;
+            ++stats_.rankExpired;
+            out.push_back({id, "NOXRANK EXPIRED"});
+            log_.push_back("[랭크 — 수락 한도] " + ci->second.nick + " — " + std::to_string(kRankAcceptMs / 1000) + "초 안에 수락 안 함 · 줄에서 뺌");
+        }
+        RankFoundBreak(req, -1, out);
+    }
     RankPump(out);
     if (pending_.empty()) return;
     for (auto it = pending_.begin(); it != pending_.end();) {
@@ -317,6 +336,16 @@ void Lobby::RankRemove(int conn, RankLeave why, std::vector<Out>& out) {
             ++stats_.rankLeftRequested[w];
             log_.push_back("[랭크 — 빠짐] " + c.nick + " — " + RankLeaveName(why) + " · 방 요청 " + std::to_string(c.rankReq) + " 중(방이 서도 답 안 함)");
             return;
+        case Conn::Rank::Found:      // ★ 매칭 손보기 6 — 찾음 · 수락 뒤 빠짐 = 거절(창의 「아니오」 · 취소 → LEAVE · LIST · 끊김) — 남은 사람을 줄 앞에
+        case Conn::Rank::Accepted: {
+            const uint32_t req = c.rankReq;
+            c.rank = Conn::Rank::None;
+            ++stats_.rankDeclined[w];
+            log_.push_back("[랭크 — 거절] " + c.nick + " — " + RankLeaveName(why) + " · 찾음 " + std::to_string(req) + " 풀어 남은 사람 줄 앞에");
+            RankFoundBreak(req, conn, out);
+            RankPump(out);
+            return;
+        }
         case Conn::Rank::None:
             if (why == RankLeave::Dll) {
                 ++stats_.rankLeaveStray;
@@ -393,17 +422,35 @@ void Lobby::RankRequest(size_t count, bool full, std::vector<Out>& out) {
 // 방이 섰다 — 묶인 사람 가운데 아직 요청 중인 사람마다 제 채널로 참가 답(토큰은 그 방). 채널 = 그 사람이 보낸 `#<닉>'s_game` ·
 //   353 방장 = 그 사람 — 사람 확인을 거친 Host Game 답 꼴 그대로(정품이 다른 채널 이름의 답을 받는지는 미확인이라 안 씀)
 void Lobby::RankReply(uint32_t req, const std::vector<int>& group, const LobbyRoom& room, std::vector<Out>& out) {
+    // ★ 매칭 손보기 6 — 아직 요청 중인 사람이 둘 이상이고 다 판 5 DLL 이면 참가 답 대신 수락 단계(`NOXRANK FOUND <초>`)
+    {
+        std::vector<int> live;
+        bool allNew = true;
+        for (int id : group) {
+            const auto ci = conns_.find(id);
+            if (ci == conns_.end() || ci->second.rank != Conn::Rank::Requested || ci->second.rankReq != req) continue;
+            live.push_back(id);
+            allNew = allNew && ci->second.clientVer >= kNoxClientAcceptVersion;
+        }
+        if (allNew && live.size() >= 2) {
+            const std::string line = "NOXRANK FOUND " + std::to_string(kRankAcceptMs / 1000);
+            for (int id : live) {
+                conns_[id].rank = Conn::Rank::Found;
+                out.push_back({id, line});
+            }
+            rankFound_[req] = RankFoundGroup{live, room, cfg_.nowMs() + kRankAcceptMs};
+            ++stats_.rankFoundGroups;
+            stats_.rankFound += live.size();
+            log_.push_back("[랭크 — 찾음] 요청 " + std::to_string(req) + " → 게임 방 " + std::to_string(room.gameRoomId) + " · " + RankNames(live) +
+                           " · 수락 기다림 " + std::to_string(kRankAcceptMs / 1000) + "초");
+            return;
+        }
+    }
     size_t sent = 0;
     for (int id : group) {
         const auto ci = conns_.find(id);
         if (ci == conns_.end() || ci->second.rank != Conn::Rank::Requested || ci->second.rankReq != req) continue;   // 요청 중 빠짐
-        Conn& c = ci->second;
-        c.rank = Conn::Rank::None;
-        LobbyRoom mine = room;
-        mine.host = c.nick;
-        members_.erase(Channel(mine));   // 같은 이름 채널의 옛 방 구성원(`JoinNewRoom` 과 같은 까닭)
-        ReplyJoin(id, c, mine, out);
-        ++stats_.rankMatched;
+        RankJoinReply(id, ci->second, room, out);
         ++sent;
     }
     log_.push_back("[랭크 — 방] 요청 " + std::to_string(req) + " → 게임 방 " + std::to_string(room.gameRoomId) + " · 명단 " + RankNames(group) +
@@ -426,6 +473,65 @@ void Lobby::RankRequeue(uint32_t req, const std::vector<int>& group) {
     rankRestDueMs_ = cfg_.nowMs() + kRankRetryMs;
     rankGathering_ = true;
     rankGatherDueMs_ = rankRestDueMs_;
+}
+
+// ★ 매칭 손보기 6 — 참가 답 하나(제 채널 · 353 방장 = 그 사람 · 토큰은 그 방 — 옛 `RankReply` 안 몫 그대로)
+void Lobby::RankJoinReply(int id, Conn& c, const LobbyRoom& room, std::vector<Out>& out) {
+    c.rank = Conn::Rank::None;
+    LobbyRoom mine = room;
+    mine.host = c.nick;
+    members_.erase(Channel(mine));   // 같은 이름 채널의 옛 방 구성원(`JoinNewRoom` 과 같은 까닭)
+    ReplyJoin(id, c, mine, out);
+    ++stats_.rankMatched;
+}
+
+// ★ 매칭 손보기 6 — 찾음 창의 「예」. 묶음이 다 수락이면 각자 참가 답
+void Lobby::RankAccept(int /*conn*/, Conn& c, std::vector<Out>& out) {
+    const auto g = c.rank == Conn::Rank::Found ? rankFound_.find(c.rankReq) : rankFound_.end();
+    if (g == rankFound_.end()) {
+        ++stats_.rankAcceptStray;
+        log_.push_back("[랭크 — 수락 버림] " + c.nick + " — 찾음 중이 아님");
+        return;
+    }
+    c.rank = Conn::Rank::Accepted;
+    ++stats_.rankAccepted;
+    for (int id : g->second.conns) {
+        const auto ci = conns_.find(id);
+        if (ci == conns_.end() || ci->second.rank != Conn::Rank::Accepted) {
+            log_.push_back("[랭크 — 수락] " + c.nick + " — 찾음 " + std::to_string(g->first) + " 남 기다림");
+            return;
+        }
+    }
+    const RankFoundGroup fg = std::move(g->second);
+    const uint32_t req = g->first;
+    rankFound_.erase(g);
+    for (int id : fg.conns) {
+        RankJoinReply(id, conns_[id], fg.room, out);
+        ++stats_.rankAcceptMatched;
+    }
+    log_.push_back("[랭크 — 다 수락] 찾음 " + std::to_string(req) + " → 게임 방 " + std::to_string(fg.room.gameRoomId) + " · 참가 답 " + RankNames(fg.conns));
+}
+
+// ★ 매칭 손보기 6 — 묶음 풀기(누가 거절 · 한도). `except` 말고 찾음 · 수락 중인 사람을 줄 맨 앞에(원래 차례 · 쉬지 않음) + `NOXRANK WAIT`.
+//   한도면 부르는 쪽이 수락 안 한 사람을 먼저 빼고 부른다. 선 게임 서버 방은 그대로 둔다 — 아무도 안 들어오면 도착 한도 뒤 랭크를 풀고 빈 방 닫기가 닫는다
+void Lobby::RankFoundBreak(uint32_t req, int except, std::vector<Out>& out) {
+    const auto g = rankFound_.find(req);
+    if (g == rankFound_.end()) return;
+    const std::vector<int> conns = std::move(g->second.conns);
+    rankFound_.erase(g);
+    std::vector<int> back;
+    for (int id : conns) {
+        if (id == except) continue;
+        const auto ci = conns_.find(id);
+        if (ci == conns_.end() || ci->second.rankReq != req ||
+            (ci->second.rank != Conn::Rank::Found && ci->second.rank != Conn::Rank::Accepted)) continue;
+        ci->second.rank = Conn::Rank::Queued;
+        back.push_back(id);
+        out.push_back({id, "NOXRANK WAIT"});
+    }
+    rankQueue_.insert(rankQueue_.begin(), back.begin(), back.end());
+    stats_.rankFoundRequeued += back.size();
+    if (!back.empty()) log_.push_back("[랭크 — 찾음 풂] 요청 " + std::to_string(req) + " — " + RankNames(back) + " 줄 앞에(WAIT)");
 }
 
 // ★ 10-20 거절 답 — 까닭이 무엇이든 숫자는 471(정품이 받아 주는 유일한 것 — `Lobby.h` `JoinReject` 주석). 꼴은 다른 숫자 답과 같은 `: <숫자> u <채널> :<글>`
@@ -718,6 +824,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         const std::string sub = t.size() > 1 ? Upper(t[1]) : std::string();
         if (sub == "JOIN") c.rankNext = true;
         else if (sub == "LEAVE") RankRemove(conn, RankLeave::Dll, out);
+        else if (sub == "ACCEPT") RankAccept(conn, c, out);   // ★ 매칭 손보기 6 — 판 5 DLL · 찾음 창의 「예」
         else Unknown("NOXRANK " + sub, line);
         return;
     }

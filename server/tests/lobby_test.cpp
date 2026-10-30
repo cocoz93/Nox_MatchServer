@@ -670,6 +670,134 @@ void PendingRoomUnitTests() {
 
 // ── ★ 랭크 매칭 조각 4 — 줄: 줄 섬 · 모음(최소 + 모으기 시간) · 최대 즉시 · 빠짐 셋(창 닫힘 · LIST · 끊김) · 요청 중 빠짐 ·
 //    방 실패 · 시간 초과(줄 앞에 되돌림 · 쉬고 다시) · 곧바로 실패 · 곧바로 섬 · 표시 버림 · 낮은 판 · 참가 무시 · 셈의 합 ──
+// ★ 매칭 손보기 6 — 수락 단계(판 5 DLL 끼리 · `Lobby.h` `kNoxClientAcceptVersion`)
+//   ① 방이 서면 둘 다 `NOXRANK FOUND 10`(참가 답 없음) · 하나 수락 → 아직 · 둘 다 수락 → 각자 참가 답
+//   ② 하나 수락 뒤 다른 쪽 LEAVE(창의 「아니오」 · 취소) → 수락한 쪽 `NOXRANK WAIT` · 줄 맨 앞 · 다음 사람과 다시 찾음
+//   ③ 한도 — 1ms 앞 그대로 · 한도에 수락 안 한 쪽 `NOXRANK EXPIRED`(줄에서 빠짐) · 수락한 쪽 WAIT
+//   ④ 판 4 가 섞이면 옛 길(곧바로 참가 답) ⑤ 찾음 중이 아닌 ACCEPT → 버림 ⑥ 찾음 중 끊김 → 남은 쪽 WAIT ⑦ 셈의 합
+void RankAcceptUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;
+    cfg.room.maxPlayers = 31;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    uint32_t clock = 0xfffff000u;   // 32비트 시계가 도는 자리
+    cfg.nowMs = [&clock] { return clock; };
+    cfg.rankMin = cfg.rankMax = 2;
+    FakeRooms fake;   // 곧바로 섬(`Created`)
+    Lobby lb(cfg, fake);
+    const uint32_t local = 0x7f000001, peer = 0x7f000001;
+    auto login = [&](int conn, const std::string& nick, int ver) {
+        lb.OnConnect(conn, peer, local);
+        std::vector<Out> o;
+        for (const std::string l : {"NOXCLIENT " + std::to_string(ver), "NICK " + nick, std::string("USER UserName HostName irc.westwood.com :RealName")})
+            lb.OnLine(conn, l, o);
+    };
+    auto rankJoin = [&](int conn, const std::string& nick, std::vector<Out>& o) {
+        lb.OnLine(conn, "NOXRANK JOIN", o);
+        lb.OnLine(conn, "JOINGAME #" + nick + "'s_game 1 ", o);
+    };
+    auto has = [](const std::vector<Out>& o, int conn, const std::string& line) {
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line == line ? 1 : 0;
+        return n;
+    };
+    auto tokens = [](const std::vector<Out>& o, int conn) {
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line.rfind("NOXTOKEN ", 0) == 0 ? 1 : 0;
+        return n;
+    };
+    const std::string found = "NOXRANK FOUND " + std::to_string(kRankAcceptMs / 1000);
+    const LobbyStats& s = lb.Stats();
+
+    // ①
+    login(1, "amy", 5);
+    login(2, "bob", 5);
+    std::vector<Out> o1;
+    rankJoin(1, "amy", o1);
+    rankJoin(2, "bob", o1);
+    const bool bothFound = has(o1, 1, found) == 1 && has(o1, 2, found) == 1 && tokens(o1, 1) == 0 && tokens(o1, 2) == 0 && lb.RankFoundPending() == 1;
+    std::vector<Out> oa;
+    lb.OnLine(1, "NOXRANK ACCEPT", oa);
+    const bool waitOther = oa.empty() && lb.RankFoundPending() == 1;
+    lb.OnLine(2, "NOXRANK ACCEPT", oa);
+    Check(bothFound && waitOther && tokens(oa, 1) == 1 && tokens(oa, 2) == 1 && lb.RankFoundPending() == 0 && s.rankAcceptMatched == 2 && s.rankMatched == 2,
+          "★ ① 판 5 둘 → 둘 다 FOUND(참가 답 없음) · 하나 수락은 그대로 · 둘 다 수락 → 각자 참가 답(토큰)");
+
+    // ②
+    login(3, "cat", 5);
+    login(4, "dan", 5);
+    login(5, "eve", 5);
+    std::vector<Out> o2;
+    rankJoin(3, "cat", o2);
+    rankJoin(4, "dan", o2);
+    lb.OnLine(3, "NOXRANK ACCEPT", o2);
+    o2.clear();
+    lb.OnLine(4, "NOXRANK LEAVE", o2);
+    const bool catBack = has(o2, 3, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 1 && lb.RankFoundPending() == 0 &&
+                         s.rankDeclined[static_cast<size_t>(RankLeave::Dll)] == 1 && s.rankFoundRequeued == 1;
+    o2.clear();
+    rankJoin(5, "eve", o2);
+    Check(catBack && has(o2, 3, found) == 1 && has(o2, 5, found) == 1 && has(o2, 4, found) == 0 && lb.RankFoundPending() == 1 &&
+              fake.asks.back().roster == std::vector<std::string>{"cat", "eve"},
+          "★ ② 수락 뒤 상대가 LEAVE(거절) → 수락한 cat 에 WAIT · 줄 맨 앞 → 다음 eve 와 다시 찾음(명단 cat · eve)");
+    // 마무리 — 둘 다 수락
+    std::vector<Out> o2b;
+    lb.OnLine(3, "NOXRANK ACCEPT", o2b);
+    lb.OnLine(5, "NOXRANK ACCEPT", o2b);
+
+    // ③
+    login(6, "fay", 5);
+    login(7, "gus", 5);
+    std::vector<Out> o3;
+    rankJoin(6, "fay", o3);
+    rankJoin(7, "gus", o3);
+    lb.OnLine(6, "NOXRANK ACCEPT", o3);
+    clock += kRankAcceptMs - 1;
+    o3.clear();
+    lb.Tick(o3);
+    const bool heldBefore = o3.empty() && lb.RankFoundPending() == 1;
+    clock += 1;
+    lb.Tick(o3);
+    Check(heldBefore && has(o3, 7, "NOXRANK EXPIRED") == 1 && has(o3, 6, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 1 && s.rankExpired == 1 &&
+              lb.RankFoundPending() == 0,
+          "★ ③ 수락 한도 1ms 앞 그대로 · 한도에 수락 안 한 gus EXPIRED(줄에서 빠짐) · 수락한 fay WAIT(줄 맨 앞)");
+
+    // ④ — fay(5, 줄에 남음) + hal(4) → 옛 길(곧바로 참가 답)
+    login(8, "hal", 4);
+    std::vector<Out> o4;
+    rankJoin(8, "hal", o4);
+    const unsigned long long groups0 = s.rankFoundGroups;
+    Check(tokens(o4, 6) == 1 && tokens(o4, 8) == 1 && has(o4, 6, found) == 0 && s.rankFoundGroups == groups0,
+          "★ ④ 판 4 가 섞인 묶음 → 옛 길(찾음 없이 곧바로 참가 답)");
+
+    // ⑤
+    std::vector<Out> o5;
+    lb.OnLine(8, "NOXRANK ACCEPT", o5);   // 판 4(참가 답 받음 — 찾음 아님)
+    login(9, "ivy", 5);
+    lb.OnLine(9, "NOXRANK ACCEPT", o5);   // 판 5 · 줄에도 없음
+    Check(o5.empty() && s.rankAcceptStray == 2, "★ ⑤ 찾음 중이 아닌 접속의 ACCEPT(판 4 참가 뒤 · 판 5 줄 밖) → 둘 다 수락 버림 셈 · 줄 없음");
+
+    // ⑥
+    login(10, "jon", 5);
+    std::vector<Out> o6;
+    rankJoin(9, "ivy", o6);
+    rankJoin(10, "jon", o6);
+    o6.clear();
+    lb.OnClose(9, o6);
+    Check(has(o6, 10, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 1 && s.rankDeclined[static_cast<size_t>(RankLeave::Closed)] == 1,
+          "★ ⑥ 찾음 중 ivy 끊김 → 거절(끊김) · 남은 jon WAIT · 줄 맨 앞");
+
+    // ⑦ 셈의 합 — 찾음 한 사람 = 다 수락 참가 + 되돌림 + 거절 + 한도 + 아직 찾음
+    char m[300];
+    std::snprintf(m, sizeof(m), "★ ⑦ 찾음 %llu = 다 수락 %llu + 되돌림 %llu + 거절 %llu + 한도 %llu (+ 끝날 때 찾음 %zu묶음)", s.rankFound, s.rankAcceptMatched,
+                  s.rankFoundRequeued, s.RankDeclinedTotal(), s.rankExpired, lb.RankFoundPending());
+    Check(s.rankFound == s.rankAcceptMatched + s.rankFoundRequeued + s.RankDeclinedTotal() + s.rankExpired && lb.RankFoundPending() == 0 &&
+              s.rankFound == 10 && s.rankFoundGroups == 5,
+          m);
+}
+
 void RankQueueUnitTests() {
     using namespace nox::wol;
     LobbyConfig cfg;
@@ -2511,6 +2639,7 @@ int main(int argc, char** argv) {
         NewRoomUnitTests();
         PendingRoomUnitTests();   // ★ 10-20 v2 작업 3a
         RankQueueUnitTests();     // ★ 랭크 매칭 조각 4
+        RankAcceptUnitTests();    // ★ 매칭 손보기 6
         MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
         LinkAliveUnitTests();     // ★ 7단계 조각 2
         LobbyStoreUnitTests();    // ★ 7단계 조각 4
