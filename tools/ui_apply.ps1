@@ -10,7 +10,7 @@
 #   window\noxworld.wnd  10007(원래 「찾기」) 버튼의 글자 열쇠 Noxworld.wnd:Find → Noxworld.wnd:RankMatch
 #   nox.csf              새 열쇠 Noxworld.wnd:RankMatch = 「랭크 매칭」 한 묶음을 끝에 더하고 머리의 열쇠 수 · 글 수를 +1
 #   window\filter.wnd    ★ 매칭 손보기 8(`Docs/MATCH_UX_REVIEW.md`) — 필터 창(10022) 아래에 「완료」 버튼 10090 하나(누름은 DLL 이 「리스트」 길로).
-#                        그림 · 글자는 정품 것(UIButtonLg 셋 · WolFind.wnd:Done = 「완료」 — 글자 파일 손 안 댐) · 자리 = 창 384x424 아래 가운데 157,390 70x20.
+#                        그림 · 글자는 정품 것(UIButtonLg 셋 · WolFind.wnd:Done = 「완료」 — 글자 파일 손 안 댐) · 자리 = 창 384x424 아래 가운데 157,372 70x20(10-30 사용자가 본 시안 `filter_done_button.png` 자리).
 #                        사용자 필터 묶음(10012 · 처음엔 숨김)의 높이 280 → 220 — 내용은 y200+10 에서 끝나는데 상자가 창 끝(405)까지라 버튼 자리와 겹침.
 #                        OpenNox 기준 그리기는 나중에 붙은 자식부터(`window.go` drawRecursive) — 겹치면 먼저 쓴 10012 가 버튼 위에 그려질 수 있어 겹침을 없앰
 # 왜 이 꼴인가
@@ -43,7 +43,7 @@ $filterHeadNew = '10012 30 125 340 220 USER (Parent);'
 $filterTail = "`tEND`r`n  END`r`nEND`r`n"
 $doneBlock = (@(
   "`tWINDOW",
-  "`t  10090 157 390 70 20 PUSHBUTTON (Done);",
+  "`t  10090 157 372 70 20 PUSHBUTTON (Done);",
   "`t  STATUS = ENABLED+IMAGE;",
   "`t  STYLE = MOUSETRACK;",
   "`t  SELECTEDIMAGE = UIButtonLgLit;",
@@ -53,7 +53,7 @@ $doneBlock = (@(
   "`t  DISABLEDIMAGE = UIButtonLgDis;",
   "`t  TEXT = WolFind.wnd:Done;",
   "`tEND") -join "`r`n") + "`r`n"
-$doneId = '10090 157 390 70 20 PUSHBUTTON (Done);'
+$doneId = '10090 157 372 70 20 PUSHBUTTON (Done);'
 
 function Count-Of([string]$hay, [string]$needle) { ([regex]::Matches($hay, [regex]::Escape($needle))).Count }
 
