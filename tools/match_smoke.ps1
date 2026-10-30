@@ -89,12 +89,22 @@ function RatingLine([string]$text) { return ': 372 u :- ' + $text }
 # ★ 랭크 매칭 조각 6 — 로그인 → 랭크 줄 서기(DLL 판 4 꼴 — 참가 줄 앞 `NOXRANK JOIN`). 답은 묶인 뒤에 오므로 여기선 안 읽는다
 function LoginRank([string]$nick, [string]$apgar = '') {
   $k = Open $LobbyPort
-  $hello = @('NOXCLIENT 4', "NICK $nick")
+  $hello = @('NOXCLIENT 5', "NICK $nick")   # ★ 매칭 손보기 6 — 판 5(수락 단계 · `AcceptFound`)
   if ($apgar) { $hello += "apgar $apgar 0" }
   Send $k ($hello + @('USER UserName HostName irc.westwood.com :RealName'))
   $h = ReadUntil $k '376'
   Send $k @('NOXRANK JOIN', "JOINGAME #$nick's_game 1 ")
   return @{ k = $k; tok = ''; lines = @(); hello = $h }
+}
+function AcceptFound($x) {   # ★ 매칭 손보기 6 — 판 5: 로비의 찾음 줄을 기다렸다가 ACCEPT(정품이면 DLL 창의 「예」) · 본 줄 수
+  $n = 0
+  while ($true) {
+    try { $l = $x.k.r.ReadLine() } catch { break }
+    if ($null -eq $l) { break }
+    $n++
+    if ($l -ceq 'NOXRANK FOUND 10') { Send $x.k @('NOXRANK ACCEPT'); return $true }
+  }
+  return $false
 }
 function RankReply($x) {   # 묶인 뒤 온 참가 답(NOXTOKEN · JOINGAME · 332 · 353 · 366)
   $g = ReadUntil $x.k '366'
@@ -290,6 +300,8 @@ try {
     $a.k.c.Client.Blocking = $true
     $quiet = -not $a.k.c.GetStream().DataAvailable   # 한 사람만 섰을 땐 답이 없다(묶이기 전)
     $b = LoginRank 'bob' $tokB
+    $foundA = AcceptFound $a; $foundB = AcceptFound $b   # ★ 매칭 손보기 6 — 둘 다 찾음 → 수락 → 참가 답
+    Check ($foundA -and $foundB) "① 랭크 줄 — 판 5 둘이 묶이자 둘 다 「NOXRANK FOUND 10」 → ACCEPT(alice $foundA · bob $foundB)"
     RankReply $a; RankReply $b
     $chanA = @($a.lines | Where-Object { $_ -like ":alice!u@h JOINGAME * :#alice's_game" }).Count
     $chanB = @($b.lines | Where-Object { $_ -like ":bob!u@h JOINGAME * :#bob's_game" }).Count
@@ -380,8 +392,10 @@ Check ($j -and $j.endReason -eq 'score_player' -and $j.winner.kind -eq 'player' 
   "판 결과 — 끝 까닭 $($j.endReason) · 승자 $($j.winner.account) · 사람 $($accs -join ',')"
 Check ($j -and $j.ranked -is [bool] -and $j.ranked -eq ([bool]$Ranked -or [bool]$Rank)) "판 결과 — 랭크 $($j.ranked)(기대 $([bool]$Ranked -or [bool]$Rank) · -Ranked = --ranked-all · -Rank = 랭크 줄)"   # ★ 레이팅 조각 2 · 랭크 매칭 조각 6
 if ($Rank) {   # ★ 랭크 매칭 조각 6 — 로비 · 게임 서버 기록과 끝 줄(명단 · 판 끝 뒤 일반 방 · 셈)
-  Check ($tl -match '\[랭크 — 방\] 요청 \d+ → 게임 방 \d+ · 명단 alice,bob · 참가 답 2명' -and $tg -match '\[로비 연결\] 랭크 방 \d+ — 요청 \d+ · 명단 alice,bob\(2명\)' -and
-         $tg -match '\[방\] \d+ 랭크 — 명단 alice,bob\(2명\)') '랭크 — 로비 [랭크 — 방] 명단 alice,bob · 참가 답 2 · 게임 서버 CREATE 꼬리 명단 · [방] 랭크 방 줄'
+  # ★ 매칭 손보기 6 — 판 5 둘이라 수락 길: 로비 기록이 [랭크 — 찾음] → [랭크 — 다 수락](옛 [랭크 — 방] … 참가 답 줄 대신)
+  Check ($tl -match '\[랭크 — 찾음\] 요청 \d+ → 게임 방 \d+ · alice,bob · 수락 기다림 10초' -and $tl -match '\[랭크 — 다 수락\] 찾음 \d+ → 게임 방 \d+ · 참가 답 alice,bob' -and
+         $tg -match '\[로비 연결\] 랭크 방 \d+ — 요청 \d+ · 명단 alice,bob\(2명\)' -and
+         $tg -match '\[방\] \d+ 랭크 — 명단 alice,bob\(2명\)') '랭크 — 로비 [랭크 — 찾음] alice,bob → [랭크 — 다 수락] 참가 답 · 게임 서버 CREATE 꼬리 명단 · [방] 랭크 방 줄'
   Check ($tg -match '랭크 판 판 끝 — 이 방은 이제 일반 방') '랭크 — 판 끝 뒤 그 방은 일반 방(게임 서버 기록)'
   # ★ 매칭 손보기 5 — 쉬기 시작에 상대 알림(명단 차례 · 점수 — 이 판은 로그인 점수를 안 물어 둘 다 시작 점수 1000 · CREATE 랭크 칸 2 로 옴)
   Check ($tg -match '시작 조건 섬\(게임 안 명단 2 / 2\) · 3초 쉬고 판 · 알림 「Ranked: alice \(1000\) vs bob \(1000\)」') '랭크 — 쉬기 시작에 상대 알림 「Ranked: alice (1000) vs bob (1000)」(게임 서버 기록)'
@@ -390,6 +404,7 @@ if ($Rank) {   # ★ 랭크 매칭 조각 6 — 로비 · 게임 서버 기록�
   Check ($tl -match '끝 — 랭크 줄 섬 2 · 빠짐\(줄\) 창 닫힘 0 · LIST 0 · 끊김 0 · 빠짐\(요청 중\) 창 닫힘 0 · LIST 0 · 끊김 0 · 빠짐 알림 버림 0 · 묶임 2\(최대 1묶음 · 모으기 끝 0묶음\) · 참가 답 2 · 되돌림 0 · 끝날 때 줄 0 · 랭크 방 요청 1\(섬 1 · 실패 0 · 시간 초과 0 · 끝날 때 기다림 0\)') `
     '로비 끝 줄 — 랭크 줄 섬 2 · 묶임 2(최대 1묶음) · 참가 답 2 · 랭크 방 요청 1(섬 1)'
   Check ($tl -match '참가 무시 0 · 목록에서 뺀 랭크 방 1') '로비 끝 줄 — 목록에서 뺀 랭크 방 1(carl 의 LIST 한 번 · ★ 매칭 손보기 7)'
+  Check ($tl -match '찾음 2명\(1묶음 · 수락 2 · 다 수락 참가 2 · 되돌림 0 · 거절 0 · 한도 0 · 수락 버림 0 · 끝날 때 0묶음\)') '로비 끝 줄 — 찾음 2명(1묶음) · 수락 2 · 다 수락 참가 2(★ 매칭 손보기 6)'
   Check ($tg -match '새 방 물음 1\(만듦 1 · 실패 0\) · 그중 랭크 1') '게임 서버 끝 줄 — 새 방 물음 1(만듦 1) · 그중 랭크 1'
 }
 Check ($tl -match '판 저장 요청 1\(SAVED ok 1 · dup 0 · 실패 0 · 끊긴 뒤 답 0 · 모르는 답 0 · 끝날 때 남음 0\)') '로비 끝 줄 — 판 저장 요청 1(SAVED ok 1)'
