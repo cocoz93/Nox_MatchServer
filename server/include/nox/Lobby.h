@@ -313,7 +313,7 @@ private:
     // ★ 10-20 거절 답 — `: 471 u <채널> :<까닭 글>` 한 줄 · 까닭 셈(`LobbyStats::joinRejected`)
     void RejectJoin(int conn, const std::string& channel, JoinReject why, std::vector<Out>& out);
     // ★ 7단계 조각 6 — 인사(375 · 372 … · 376). `failNotice` 가 있으면 실패 길(안내 줄 덧붙임)
-    //   ★ 레이팅 조각 4 — `ratingLine`(코드페이지 바이트)이 있으면 376 앞 372 한 줄 · 끝나면 쌓아 둔 뒷줄을 차례대로
+    //   ★ 레이팅 조각 4 — `ratingLine`(ASCII — 한글은 정품 공지 줄에서 깨짐)이 있으면 376 앞 372 한 줄 · 끝나면 쌓아 둔 뒷줄을 차례대로
     void FinishLogin(int conn, Conn& c, LoginState result, const std::string& failNotice, std::vector<Out>& out,
                      const std::string& ratingLine = std::string());
     // ★ 레이팅 조각 4 — 토큰 로그인 통과 뒤 — 저장소가 있으면 점수를 묻고 기다림 · 없으면 곧바로 인사

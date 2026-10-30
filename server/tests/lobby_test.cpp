@@ -1663,7 +1663,7 @@ void LoginUnitTests() {
               " = USER − 통과");
 
     // ⑨ ★ 레이팅 조각 4 — 저장소를 붙인 로비. 토큰 통과 → 점수 물음 → 답까지 인사를 미루고 뒷줄은 쌓음 →
-    //   375 · (372 …) · 372 점수 줄(코드페이지 949 바이트) · 376 → 379 → 329. 못 읽음 · 시간 초과 = 점수 줄 없이 · 끊김 · 늦은 답 · 쌓기 한도
+    //   375 · (372 …) · 372 점수 줄(ASCII — ★ 10-30 한글은 정품에서 깨짐) · 376 → 379 → 329. 못 읽음 · 시간 초과 = 점수 줄 없이 · 끊김 · 늦은 답 · 쌓기 한도
     {
         CMemoryLobbyStore st;
         nox::MatchRecord m;   // 랭크 판 하나 — wn 이김(1010) · bob 짐(990)
@@ -1699,14 +1699,11 @@ void LoginUnitTests() {
                 return false;
             const bool hasRating = i376 >= 1 && v[i376 - 1] == ": 372 u :- " + ratingBytes;
             bool anyRating = false;
-            for (const auto& l : v) anyRating = anyRating || l.find("\xB3\xBB ") != std::string::npos;   // 「내 」
+            for (const auto& l : v) anyRating = anyRating || l.find(":- Rating ") != std::string::npos;
             return ratingBytes.empty() ? !anyRating : hasRating;
         };
-        const std::string kNae = "\xB3\xBB", kJeomsu = "\xC1\xA1\xBC\xF6", kDot = "\xA1\xA4", kRank = "\xB7\xA9\xC5\xA9", kWi = "\xC0\xA7",
-                          kPan = "\xC6\xC7", kEopseum = "\xBE\xF8\xC0\xBD";
-        auto ratingLine = [&](const char* score, const char* rank) {
-            return kNae + " " + kJeomsu + " " + score + " " + kDot + " " + kRank + " " + rank + kWi;
-        };
+        // 영문(ASCII) — ★ 10-30 사람 확인 59 한글 공지 줄이 정품에서 깨짐(`Lobby.cpp` `OnRatingAnswer`)
+        auto ratingLine = [&](const char* score, const char* rank) { return std::string("Rating ") + score + " - Rank #" + rank; };
 
         // a) wn — 묶음을 다 보내도 NOXSERVER 만(뒷줄 셋은 쌓임) → 답 → 점수 줄 「내 점수 1010 · 랭크 1위」
         rl.OnConnect(1, peer, peer);
@@ -1714,18 +1711,17 @@ void LoginUnitTests() {
         const bool waitedA = lines() == std::vector<std::string>{"NOXSERVER 1"} && rl.PendingRatings() == 1 && rl.Stats().ratingAsked == 1;
         pump();
         Check(waitedA && greeted(ratingLine("1010", "1")) && rl.PendingRatings() == 0 && rl.Stats().heldLines == 3,
-              "⑨ 점수 기다림 — 답 전엔 NOXSERVER 만 · 답 뒤 375 … 「내 점수 1010 · 랭크 1위」(949 바이트) · 376 → 379 → 329 · 쌓은 뒷줄 3");
+              "⑨ 점수 기다림 — 답 전엔 NOXSERVER 만 · 답 뒤 375 … 「Rating 1010 - Rank #1」 · 376 → 379 → 329 · 쌓은 뒷줄 3");
         // b) bob — 990 · 2위
         rl.OnConnect(2, peer, peer);
         feed(rl, 2, bundle("3", "bob", apgar(Tok{8, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "bob"})));
         pump();
-        Check(greeted(ratingLine("990", "2")), "⑨ 점수 줄 「내 점수 990 · 랭크 2위」");
+        Check(greeted(ratingLine("990", "2")), "⑨ 점수 줄 「Rating 990 - Rank #2」");
         // c) cat — 랭크 판 없음
         rl.OnConnect(3, peer, peer);
         feed(rl, 3, bundle("3", "cat", apgar(Tok{9, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "cat"})));
         pump();
-        Check(greeted(kNae + " " + kJeomsu + " 1000 " + kDot + " " + kRank + " " + kPan + " " + kEopseum),
-              "⑨ 랭크 판 없음 줄 「내 점수 1000 · 랭크 판 없음」");
+        Check(greeted("Rating 1000 - No ranked games yet"), "⑨ 랭크 판 없음 줄 「Rating 1000 - No ranked games yet」");
         // d) 못 읽음 — 점수 줄 없이 376(로그인은 됨)
         st.SetFailRatings(true);
         rl.OnConnect(4, peer, peer);

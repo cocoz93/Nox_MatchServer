@@ -317,20 +317,22 @@ void Lobby::OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out) {
         return;
     }
     Conn& c = ci->second;
-    std::string line;   // UTF-8 — 아래에서 코드페이지 바이트로(로그인 때는 SETCODEPAGE 전이라 기본값 949 · `Lobby.h` kDefaultCodepage)
+    // 영문(ASCII)만 — ★ 10-30 사람 확인 59 — 한글(949 바이트) 공지 줄이 정품 채팅창에서 깨짐. 정품은 공지 줄을 `%S` 로 넓은 글자로 바꿔 그리는데
+    //   (`Game.exe` 0x446950 · 형식 0x59fb04) 이 변환이 949 를 따르지 않는 것으로 봄(채팅 줄은 한글이 나옴 — 다른 길). 가운뎃점도 ASCII 아님 → `-`
+    std::string line;
     if (!a.ratingOk) {
         ++stats_.ratingFailed;
         log_.push_back("[로그인 — 점수 못 읽음] " + c.nick + " — " + (a.why.empty() ? std::string("저장소 실패") : a.why) + "(점수 줄 없이 376)");
     } else if (a.ratingFound) {
         ++stats_.ratingShown;
-        line = "내 점수 " + std::to_string(a.rating) + " · 랭크 " + std::to_string(a.rank) + "위";
+        line = "Rating " + std::to_string(a.rating) + " - Rank #" + std::to_string(a.rank);
         log_.push_back("[로그인 — 점수] " + c.nick + " — " + std::to_string(a.rating) + " · " + std::to_string(a.rank) + "위");
     } else {
         ++stats_.ratingNoGames;
-        line = "내 점수 " + std::to_string(a.rating) + " · 랭크 판 없음";
+        line = "Rating " + std::to_string(a.rating) + " - No ranked games yet";
         log_.push_back("[로그인 — 점수] " + c.nick + " — 랭크 판 없음");
     }
-    FinishLogin(conn, c, LoginState::Ok, std::string(), out, line.empty() ? line : ToCodepage(line, c.codepage, std::string::npos));
+    FinishLogin(conn, c, LoginState::Ok, std::string(), out, line);
 }
 
 std::string Lobby::SignupUrl(const Conn& c) const {

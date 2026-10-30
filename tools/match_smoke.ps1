@@ -81,8 +81,8 @@ function LoginJoin([string]$nick, [string]$channel, [string]$apgar = '') {
   if ($g.Count -ge 1 -and $g[0].StartsWith('NOXTOKEN ')) { $tok = $g[0].Split(' ')[2] }
   return @{ k = $k; tok = $tok; lines = $g; hello = $h }
 }
-# ★ 레이팅 조각 4 — 로그인 공지의 점수 줄(로비가 코드페이지 949 바이트로 보냄 → 이 스크립트는 라틴 1 로 읽으므로 같은 바이트로 견줌)
-function RatingLine([string]$text) { return ': 372 u :- ' + $latin1.GetString([Text.Encoding]::GetEncoding(949).GetBytes($text)) }
+# ★ 레이팅 조각 4 — 로그인 공지의 점수 줄(영문 ASCII — ★ 10-30 한글은 정품 공지 줄에서 깨짐)
+function RatingLine([string]$text) { return ': 372 u :- ' + $text }
 
 # ── 패킷 클라 ──────────────────────────────────────────────
 $tryJoinHex = '00000e004a00610063006b00000000000000000000000000000000001c13616e01980309000000000000000049018501f07a' +
@@ -268,8 +268,8 @@ try {
   $b = LoginJoin 'bob' "#alice's_game" $tokB
   Check ($a.tok.Length -eq 102 -and $b.tok.Length -eq 102) "① 로그인 → alice 새 방 · bob 그 방 — 토큰 둘($($a.tok.Length) · $($b.tok.Length))"
   if ($Auth) {   # ★ 레이팅 조각 4 — 토큰 로그인은 점수를 묻는다(판 전이라 둘 다 랭크 판 없음 · 376 바로 앞 줄)
-    $none = RatingLine '내 점수 1000 · 랭크 판 없음'
-    Check ($a.hello.Count -ge 2 -and $a.hello[-2] -ceq $none -and $b.hello[-2] -ceq $none) "① 로그인 공지 — alice · bob 「내 점수 1000 · 랭크 판 없음」(376 바로 앞)"
+    $none = RatingLine 'Rating 1000 - No ranked games yet'
+    Check ($a.hello.Count -ge 2 -and $a.hello[-2] -ceq $none -and $b.hello[-2] -ceq $none) "① 로그인 공지 — alice · bob 「Rating 1000 - No ranked games yet」(376 바로 앞)"
   }
 
   # ② — alice 먼저(방장 = 먼저 들어온 사람)
@@ -299,8 +299,8 @@ try {
     Send $k2 @('NOXCLIENT 3', 'NICK alice', "apgar $tokA2 0", 'USER UserName HostName irc.westwood.com :RealName')
     $h2 = ReadUntil $k2 '376'
     $k2.c.Close()
-    $want = if ($Ranked) { RatingLine '내 점수 1010 · 랭크 1위' } else { RatingLine '내 점수 1000 · 랭크 판 없음' }
-    Check ($h2.Count -ge 2 -and $h2[-2] -ceq $want) "④ 판 뒤 alice 다시 로그인 — 공지 「$(if ($Ranked) { '내 점수 1010 · 랭크 1위' } else { '내 점수 1000 · 랭크 판 없음' })」(받은 줄 $($h2.Count))"
+    $want = if ($Ranked) { RatingLine 'Rating 1010 - Rank #1' } else { RatingLine 'Rating 1000 - No ranked games yet' }
+    Check ($h2.Count -ge 2 -and $h2[-2] -ceq $want) "④ 판 뒤 alice 다시 로그인 — 공지 「$(if ($Ranked) { 'Rating 1010 - Rank #1' } else { 'Rating 1000 - No ranked games yet' })」(받은 줄 $($h2.Count))"
   }
 } catch {
   Check $false "예외: $($_.Exception.Message)"
