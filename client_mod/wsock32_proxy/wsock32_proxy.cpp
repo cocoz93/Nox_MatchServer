@@ -731,6 +731,11 @@ static volatile LONG g_rankNotOurs = 0;            // 10007 누름인데 우리 
 static volatile LONG g_rankNoHost = 0;             // 10007 누름인데 10002 버튼을 못 찾음(아무것도 안 함)
 static volatile LONG g_rankHostClicks = 0;         // 사람이 누른 10002(넘김 · 남은 표시 끔)
 static volatile LONG g_rankOtherClicks = 0;        // 그 밖의 누름(넘김)
+static volatile LONG g_rankInnerClicks = 0;        // 그중 대신 넣은 10002 를 원래 함수가 처리하는 동안 온 것(표시 그대로)
+// 대신 넣은 10002 처리 중 — 정품 Host Game 은 지역을 안 골랐으면(`[0x587000+87412]` = -1) 세계 지도 칸(10054~10057) 하나를 무작위로 골라
+//   이 창에 누름을 곧바로 다시 넣는다(OpenNox `noxworld.c:850-857` — OpenNox 는 `if (0)` 으로 껐지만 정품은 탐).
+//   그 누름이 「다른 누름」 갈래로 표시를 꺼 랭크가 일반 방으로 샜다(10-30 사람 판 — 같은 1/1000초에 10055 · 10057). 게임 주 스레드만 씀
+static bool g_rankInjecting = false;
 
 typedef int(__cdecl* PFN_wndproc4)(DWORD win, DWORD msg, DWORD a3, DWORD a4);
 typedef DWORD(__cdecl* PFN_findchild)(DWORD win, DWORD id);
@@ -757,7 +762,10 @@ static int __cdecl RankListProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
             const LONG n = InterlockedIncrement(&g_rankClicks);
             InterlockedExchange(&g_rankArmed, 1);
             Log("⑩ 랭크 매칭 누름(누적 %ld) — 랭크 표시 켬 · 게임 호스트하기(10002 창 %#lx) 누름을 대신 넣음", n, host);
-            return orig(win, kMsgClick, host, a4);
+            g_rankInjecting = true;
+            const int r = orig(win, kMsgClick, host, a4);
+            g_rankInjecting = false;
+            return r;
         }
         case kBtnHost:
             InterlockedIncrement(&g_rankHostClicks);
@@ -765,7 +773,12 @@ static int __cdecl RankListProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
             return orig(win, msg, a3, a4);
         default:   // ★ 조각 3 — 다른 누름도 남은 표시를 끈다(퀘스트 호스트 · 목록 줄 고르기 … 랭크를 누른 뒤 캐릭터 고르기에서 뒤로 나온 경우)
             InterlockedIncrement(&g_rankOtherClicks);
-            if (InterlockedExchange(&g_rankArmed, 0)) Log("⑩ 다른 누름(번호 %lu) — 남아 있던 랭크 표시 끔", id);
+            if (g_rankInjecting) {
+                InterlockedIncrement(&g_rankInnerClicks);
+                Log("⑩ 게임 호스트하기 안의 누름(번호 %lu) — 랭크 표시 그대로", id);
+            } else if (InterlockedExchange(&g_rankArmed, 0)) {
+                Log("⑩ 다른 누름(번호 %lu) — 남아 있던 랭크 표시 끔", id);
+            }
             return orig(win, msg, a3, a4);
     }
 }
@@ -831,14 +844,14 @@ static void RankOnToken()
 // 1초마다(요약 스레드) — ⑩ · ⑪ 셈 중 하나라도 바뀌었으면 한 줄. 누름 갈래의 합 = 감싼 창에 온 누름 전부 · 표시 = 창 닫힘 + 잡힘 + 기다림
 static void RankSummary()
 {
-    static LONG seen[12] = {};
-    const LONG now[12] = { g_rankWrapped, g_rankWrapSkip, g_rankClicks, g_rankNotOurs, g_rankNoHost, g_rankHostClicks, g_rankOtherClicks, g_rankArmed,
-                           g_rankMarked, g_rankLeaves, g_rankTokenEnds, g_rankWaiting };
+    static LONG seen[13] = {};
+    const LONG now[13] = { g_rankWrapped, g_rankWrapSkip, g_rankClicks, g_rankNotOurs, g_rankNoHost, g_rankHostClicks, g_rankOtherClicks, g_rankInnerClicks,
+                           g_rankArmed, g_rankMarked, g_rankLeaves, g_rankTokenEnds, g_rankWaiting };
     if (memcmp(seen, now, sizeof(now)) == 0) return;
     memcpy(seen, now, sizeof(now));
-    Log("⑩ 랭크 매칭 셈 — 감싼 창 %ld · 안 감쌈 %ld | 누름: 랭크 %ld · 우리 로비 아님 %ld · 10002 못 찾음 %ld · 게임 호스트하기 %ld · 그 밖 %ld | 랭크 표시 %ld"
+    Log("⑩ 랭크 매칭 셈 — 감싼 창 %ld · 안 감쌈 %ld | 누름: 랭크 %ld · 우리 로비 아님 %ld · 10002 못 찾음 %ld · 게임 호스트하기 %ld · 그 밖 %ld(그중 호스트 안 %ld) | 랭크 표시 %ld"
         " || ⑪ 참가 표시 %ld = 창 닫힘 LEAVE %ld + 잡힘 %ld + 기다리는 중 %ld",
-        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9], now[10], now[11]);
+        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9], now[10], now[11], now[12]);
 }
 
 // 받기 훅에서 — 새 게임 목록 창이면 감싸고 10007 을 보이게
