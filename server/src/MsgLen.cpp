@@ -387,6 +387,10 @@ int MsgBodyLenByDir(uint8_t op, bool fromClient) {
         //   서버→클라는 `aa` 1바이트 + 껍데기 목록이라 판독기가 따로 걷는다(`opcount.cpp`) — 표의 5 는 그쪽 몫으로 둔다
         case 0xAA: return fromClient ? 4 : kMsgBodyLen[op];
 
+        // ★ 매칭 손보기 2 — 클라→서버 `0xc8 SERVER_QUIT_ACK` 는 **본문 0**(원본 서버 `network_server.go:104~106` `return 1` ·
+        //   클라가 짜는 쪽 `network_client.go:236~238` 한 바이트). 표의 −1 이면 그 조각째 버린다 — 서버 종료(`c7`)를 보내기 시작해 필요해짐
+        case 0xC8: return fromClient ? 0 : kMsgBodyLen[op];
+
         default: return kMsgBodyLen[op];
     }
 }

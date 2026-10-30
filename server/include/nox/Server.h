@@ -5721,11 +5721,24 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     const std::string& MapFileName() const { return mt_->saMapName; }   // 지금 맵(`USE_MAP` 에 실리는 이름)
     unsigned long long mapSwitches() const { return mapSwitches_; }
     unsigned long long gameSettingsResent() const { return gameSettingsResent_; }   // 맵을 바꾸며 다시 보낸 `af`·`b0` 쌍(사람 수)
+    // ★ 매칭 손보기 2(`Docs/MATCH_UX_REVIEW.md`) — 다음 판 다시 열기 때 맵을 바꾸기 **앞에** 게임 안 사람마다 `SERVER_QUIT`(0xC7) — 한 번 쓰면 비운다.
+    //   방이 랭크 판 끝에 건다(판 끝 쉬는 `kRoundRestartTicks` 동안 결과를 본 뒤 나감 — 상대와 같은 방에 남지 않게).
+    //   ⭕ 와이어 — 1바이트 · 모두에게 · 정품은 `NetSendPacketXxx0(159, …, 0, 1)` = 중요 · 순번 없음(`server/network.go:410~414`).
+    //     ⚠ 우리는 신뢰 길(`USE_MAP` 과 같은) — 같은 틱의 맵 바꾸기가 중요 대기열을 비운다(`RejoinReset`)
+    //   ⭕ 정품 클라 — 답 `SERVER_QUIT_ACK`(0xC8) 한 바이트를 보내고 캐릭터를 저장한 뒤 게임에서 나감(`network_client.go:235~240` → `gui_quit.go:104`).
+    //     나간 뒤 어느 화면으로 가는지는 GOG 판 화면 미확인. 클라가 안 나가도 다시 열기는 그대로 해(대기 맵 · 일반 방) 옛 동작으로 남는다
+    void QuitAtRestart() { quitAtRestart_ = true; }
+    bool QuitAtRestartArmed() const { return quitAtRestart_; }
+    unsigned long long serverQuitSent() const { return serverQuitSent_; }   // 보낸 사람 수(누적)
+    unsigned long long serverQuitAcks() const { return serverQuitAcks_; }   // 받은 답(0xC8) 수(누적)
 private:
     // ★ 10-16 작업 13b
     std::shared_ptr<const MapTables> nextRoundTables_;
     std::shared_ptr<const MapState> nextRoundInitial_;
     uint32_t nextRoundFlags_ = 0;
+    bool quitAtRestart_ = false;                 // ★ 매칭 손보기 2
+    unsigned long long serverQuitSent_ = 0;
+    unsigned long long serverQuitAcks_ = 0;
     unsigned long long mapSwitches_ = 0;
     unsigned long long gameSettingsResent_ = 0;
     std::shared_ptr<GameTables> gtOwn_ = std::make_shared<GameTables>();   // 제 표 — 넣기가 쓴다(같이 쓰는 표를 가리키면 비어 있다)

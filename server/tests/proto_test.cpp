@@ -26987,6 +26987,46 @@ void TestRankRoom() {
     Check(heldWhole && rooms.Room(r6).Phase() == nox::RoomPhase::Playing && rooms.Room(r6).RankState() == W::Started &&
               rooms.Stats().rankStartAll == allBefore + 1,
           m);
+
+    // ⑨ ★ 매칭 손보기 2 — 랭크 판 끝(점수 한도) → 내보내기 걸림 · 쉬는 시간이 끝나는 틱에 게임 안 둘에게 `c7` 한 바이트가 `USE_MAP` 앞에 ·
+    //   그 뒤 옛 길(대기 · 일반 방) · 클라 답 `c8`(본문 0) 셈 · 중단으로 끝난 ⑥ 의 r1 은 안 걸림
+    {
+        nox::Server& g6 = rooms.Game(r6);
+        const std::string M = "10.66.0.1:1002", N = "10.66.0.2:2002";
+        const unsigned long long sent0 = g6.serverQuitSent();
+        g6.DebugSetScore(Sid(srv, M), 15);
+        g6.DebugRoundCheck();
+        now += 34; srv.Tick(now, o);
+        const bool armedNow = g6.RoundOver() && g6.QuitAtRestartArmed() && rooms.Room(r6).RankQuitArmed() == 1;
+        // 쉬는 시간 끝까지 — 그 틱의 나간 것만 모은다
+        std::vector<nox::OutPacket> oq;
+        int guard = 0;
+        while (g6.RoundOver() && guard++ < 400) {
+            oq.clear();
+            now += 34; srv.Tick(now, oq);
+        }
+        auto order = [&](const std::string& to) {   // `c7` · `USE_MAP` 의 첫 자리(없으면 -1)
+            int q = -1, u = -1, i = 0;
+            for (const auto& x : FlattenTo(oq, to)) {
+                if (q < 0 && x.size() == 1 && x[0] == static_cast<uint8_t>(nox::Op::SERVER_QUIT)) q = i;
+                if (u < 0 && !x.empty() && x[0] == static_cast<uint8_t>(nox::Op::USE_MAP)) u = i;
+                ++i;
+            }
+            return std::make_pair(q, u);
+        };
+        const auto om = order(M), on = order(N);
+        const uint8_t ack[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::SERVER_QUIT_ACK) };
+        std::vector<nox::OutPacket> oa;
+        srv.OnPacket(M, ack, sizeof(ack), oa);
+        std::snprintf(m, sizeof(m), "⑨ 랭크 판 끝 → 걸림 %d · 쉬는 시간 %d틱 · mia c7@%d USE_MAP@%d · ned c7@%d USE_MAP@%d · 보낸 %llu(전 %llu) · 걸린 채 %d · "
+                      "판 상태 %s · 랭크 %d · 답 c8 %llu · 중단 r1 걸림 %llu",
+                      (int)armedNow, guard, om.first, om.second, on.first, on.second, g6.serverQuitSent(), sent0, (int)g6.QuitAtRestartArmed(),
+                      nox::RoomPhaseName(rooms.Room(r6).Phase()), (int)rooms.Room(r6).RankState(), g6.serverQuitAcks(), rooms.Room(r1).RankQuitArmed());
+        Check(armedNow && om.first >= 0 && om.second > om.first && on.first >= 0 && on.second > on.first && g6.serverQuitSent() == sent0 + 2 &&
+                  !g6.QuitAtRestartArmed() && rooms.Room(r6).Phase() == nox::RoomPhase::Waiting && rooms.Room(r6).RankState() == W::None &&
+                  g6.serverQuitAcks() == 1 && rooms.Room(r1).RankQuitArmed() == 0,
+              m);
+    }
 }
 
 void TestRoomMatchSwitchRealMaps() {

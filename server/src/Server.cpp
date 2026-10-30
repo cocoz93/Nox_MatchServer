@@ -3093,6 +3093,10 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
             //   ⇒ 되받기를 **스트림 0 비신뢰**로 옮기니 **18~25 → 2** 로 떨어졌다(`Server::Emit`).
             //   ⚠ 이 되풀이가 **영구 무적의 뿌리**이기도 했다 — 아래 `GameServerReadyMB` 가
             //     올 때마다 5초 무적을 다시 걸었기 때문이다.
+            case Op::SERVER_QUIT_ACK:   // ★ 매칭 손보기 2 — 서버 종료(`c7`)의 답. 원본 서버는 호스트 쪽 셈만 한다(`save.go:245` serverQuitAck) — 세고 남김
+                ++serverQuitAcks_;
+                Log("[나감] %s 서버 종료 답(0xc8) — 누적 %llu\n", AddrText(s.sessionId), serverQuitAcks_);
+                break;
             case Op::CLIENT_READY:
                 ++readyHeard_;                             // 1-a — 갈래 셋 중 하나(삼키지 않게 따로)
                 if (!s.importantReady) {
@@ -17419,6 +17423,21 @@ void Server::RunTick(int ticks) {
             kv.second.deaths = 0;
         }
         caps_[0] = caps_[1] = caps_[2] = 0;
+        // ★ 매칭 손보기 2 — 방이 걸어 둔 내보내기(랭크 판 끝) — 맵을 바꾸는 `USE_MAP` 보다 앞에(`QuitAtRestart` 머리 주석).
+        //   ⚠ 정품은 중요 길(`aa` 봉투)인데 여기선 `USE_MAP` 과 같은 신뢰 길 — 바로 뒤 맵 바꾸기가 사람마다 중요 대기열을 비운다(`RejoinReset`).
+        //     같은 신뢰 길이라 클라가 받는 차례도 `c7` → `USE_MAP` 그대로
+        if (quitAtRestart_) {
+            quitAtRestart_ = false;
+            const uint8_t quit = static_cast<uint8_t>(Op::SERVER_QUIT);
+            size_t sent = 0;
+            for (auto& kv : sessions_) {
+                if (!kv.second.inGame) continue;
+                Emit(kv.second, /*reliable=*/true, /*stream=*/0, &quit, 1);
+                ++sent;
+            }
+            serverQuitSent_ += sent;
+            Log("[판] 서버 종료(0xC7) — 게임 안 %zu명에게(판 끝 쉬는 시간 끝 · 맵 바꾸기 앞)\n", sent);
+        }
         // ★ 10-01 R4 — 맵을 다시 연다(세계 처음 상태 · 사람별 새로 들어온 것처럼 · 사람 몫 · 모두에게 `USE_MAP`) — `ReopenMap` 머리 주석.
         //   퀘스트 웨이브보다 **앞**이어야 한다 — 세계 되돌리기가 크리처를 비우므로 뒤에 두면 새 웨이브까지 지운다
         // ★ 10-16 작업 13b — 방이 걸어 둔 다음 판 맵이 있으면 그 맵으로(판 끝 A — 대전 맵 → 대기 맵) · 한 번 쓰면 비운다

@@ -889,6 +889,13 @@ bool nox::CRoom::CollectRoundOutcome() {
             break;
     }
     PushMatchResult(false, _game.LastRoundOutcome());
+    // ★ 매칭 손보기 2 — 랭크로 연 판이면 쉬는 시간이 끝날 때 모두 내보낸다(`Server::QuitAtRestart` — 상대와 같은 방에 남지 않게).
+    //   방은 그 뒤 옛 길대로 대기 맵 · 일반 방(`OnRoundRestarted` → `EndRankedMatch`) — 다 나가면 빈 방 닫기
+    if (_rankWait == RankWait::Started) {
+        _game.QuitAtRestart();
+        ++_rankQuitArmed;
+        _game.Log("[판] 랭크 판 끝 — 쉬는 시간 뒤 모두 내보냄(서버 종료 0xC7)\n");
+    }
     return true;
 }
 

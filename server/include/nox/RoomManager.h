@@ -167,6 +167,8 @@ public:
     //   랭크는 그렇게 연 판 하나만 — 끝나거나 중단되면 일반 방(같은 사람끼리 `!start` 로 점수를 쌓지 않게). 판정은 방 관리자가 틱 앞에(`BeginTick`) ──
     enum class RankWait : uint8_t { None, Arriving, Started };
     RankWait RankState() const { return _rankWait; }
+    // ★ 매칭 손보기 2 — 랭크 판 끝에 쉬는 시간 뒤 내보내기(`Server::QuitAtRestart`)를 건 수
+    unsigned long long RankQuitArmed() const { return _rankQuitArmed; }
     // 명단 가운데 지금 게임 안에 든 사람 수(같은 이름은 한 번)
     size_t RankArrived() const;
 
@@ -242,6 +244,7 @@ private:
     // ★ 10-30 — 시작 조건(다 옴 · 한도에 최소 이상)이 선 뒤 쉬는 중 · 그 시각(`CRoomManager::kRankSettleMs`)
     bool _rankSettling = false;
     uint32_t _rankSettleSinceMs = 0;
+    unsigned long long _rankQuitArmed = 0;   // ★ 매칭 손보기 2
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).
