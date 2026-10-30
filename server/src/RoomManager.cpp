@@ -172,7 +172,8 @@ void CRoomManager::CheckRankRooms(uint32_t nowMs) {
         }
         room._rankWait = CRoom::RankWait::Started;
         room._game.SendNotice("Ranked match starting!");
-        room.StartMatch();
+        // ★ 매칭 손보기 3 — 한 맵 랭크 방(대기 맵 = 대전 맵 — `CLobbyClient` 가 `SetRankOneMap` 일 때 그렇게 만든다)이면 제자리에서
+        room.StartMatch(_rankOneMap && !room._settings.mapPath.empty() && room._settings.mapPath == room._settings.battleMapPath);
     }
 }
 

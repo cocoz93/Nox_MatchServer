@@ -181,7 +181,8 @@ private:
     // ★ 10-16 작업 13b — 판 열기(대전 맵으로 · 대기 맵을 다음 판 맵으로 걸어 둠) · 판 끝 뒤 다시 열림(방 관리자가 판 끝 참 → 거짓을 보고 부른다)
     std::shared_ptr<const MapOriginal> FindMap(const std::string& path) const;
     bool CanStartMatch() const { return FindMap(_settings.battleMapPath) && FindMap(_settings.mapPath); }
-    void StartMatch();
+    // ★ 매칭 손보기 3 — `inPlace` 면 맵을 안 바꾼다(`Server::RestartInPlace` — 한 맵 랭크 방 · 방 관리자 `SetRankOneMap`) · 다음 판 맵도 안 걸어 둠(같은 맵 다시 열기)
+    void StartMatch(bool inPlace = false);
     void OnRoundRestarted();
     // ★ 10-16 결함 ④ — 판 중인데 게임 안 사람이 `kMinPlayers` 밑이면 대기 맵으로 바로(판 끝 쉬는 중이면 그 흐름에 맡김 — 어차피 대기 맵으로 연다).
     //   원작에는 없는 규칙(원작 아레나는 혼자 남아도 점수 한도까지 돈다) — 「판 단위 대전」 방이라 혼자 남은 판은 끝낸다(10-16 결정)
@@ -387,6 +388,10 @@ public:
     void SetRankArriveMs(uint32_t ms) { _rankArriveMs = ms; }
     uint32_t RankArriveMs() const { return _rankArriveMs; }
     void SetRankSettleMs(uint32_t ms) { _rankSettleMs = ms; }   // ★ 10-30 — 시작 전 쉬기(기본 `kRankSettleMs` · 0 = 곧바로)
+    // ★ 매칭 손보기 3(파일럿 — 기본 꺼짐 · 게임 서버 `--rank-one-map`) — 랭크 방을 처음부터 대전 맵 · 대전 모드로 만들고(`CLobbyClient`)
+    //   다 오면 맵을 다시 싣지 않고 그 자리에서 판(`CRoom::StartMatch(true)`). 정품이 따라오는지는 사람 판 몸(순간이동 그림 · 가방)
+    void SetRankOneMap(bool on) { _rankOneMap = on; }
+    bool RankOneMap() const { return _rankOneMap; }
 
 private:
     void OnJoinRequested(const NetworkEvent& ev);
@@ -434,6 +439,7 @@ private:
     uint32_t _epoch = UnixNow();                  // ★ 10-19 MO 5단계 작업 2 — 판 번호 앞자리(방을 만들 때 넘긴다)
     uint32_t _rankArriveMs = kRankArriveMs;       // ★ 랭크 매칭 조각 6
     uint32_t _rankSettleMs = kRankSettleMs;       // ★ 10-30
+    bool _rankOneMap = false;                     // ★ 매칭 손보기 3
     CRoomStats _stats;
 };
 

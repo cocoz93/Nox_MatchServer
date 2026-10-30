@@ -843,14 +843,19 @@ std::shared_ptr<const MapOriginal> nox::CRoom::FindMap(const std::string& path) 
     return _maps->Find(MapKeyOf(path));
 }
 
-void nox::CRoom::StartMatch() {
+void nox::CRoom::StartMatch(bool inPlace) {
     const std::shared_ptr<const MapOriginal> battle = FindMap(_settings.battleMapPath);
     const std::shared_ptr<const MapOriginal> wait = FindMap(_settings.mapPath);
     if (!battle || !wait) return;   // 부르는 쪽이 `CanStartMatch` 로 걸렀다
     // ★ 10-16 작업 13d — 시험 손잡이 — 점수 한도(전환이 보내는 `af` 에 실리게 먼저). 대기 맵으로 돌아가도 그대로 둔다(채팅 모드는 점수가 안 오른다 — 13c)
     if (_settings.battleScoreLimit > 0) _game.SetLimitValue(static_cast<uint8_t>(std::min(_settings.battleScoreLimit, 255)));
-    _game.SwitchMap(battle->tables, battle->initial, nox::ModeGameFlags(_settings.battleMode));
-    _game.SetNextRoundMap(wait->tables, wait->initial, nox::ModeGameFlags(_settings.mode));   // 판 끝 → 대기 맵(판 끝 A)
+    if (inPlace) {   // ★ 매칭 손보기 3 — 한 맵 랭크 방(이미 대전 맵 · 대전 모드) — 맵을 안 바꾸고 점수 · 부활만 · 판 끝엔 같은 맵 다시 열기
+        _game.RestartInPlace();
+        _game.ClearNextRoundMap();
+    } else {
+        _game.SwitchMap(battle->tables, battle->initial, nox::ModeGameFlags(_settings.battleMode));
+        _game.SetNextRoundMap(wait->tables, wait->initial, nox::ModeGameFlags(_settings.mode));   // 판 끝 → 대기 맵(판 끝 A)
+    }
     _curMapKey = battle->key;
     _curMode = _settings.battleMode;
     _phase = RoomPhase::Playing;

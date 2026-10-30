@@ -156,6 +156,7 @@ struct ServerOptions {
     //   토큰 검사 끄기는 녹음 재생 · 시험 도구 · LAN 실행만 — 모두 방 0.
     std::string configPath;     // `--config <파일>`
     bool noJoinToken = false;   // `--no-join-token`
+    bool rankOneMap = false;    // ★ 매칭 손보기 3 — `--rank-one-map`(파일럿 — 랭크 방 한 맵 · 제자리 판 · `CRoomManager::SetRankOneMap`)
     // ★ 10-12 플랜 B 작업 7e-2 — 게임 폴더(thing.bin · gamedata.bin · soundset.bin · modifier.bin). 옛 자리는 이 경로를 코드에 박아 두었다
     std::string gameDir = "C:\\Program Files\\GOG Galaxy\\Games\\Nox";   // `--game-dir <폴더>`
     bool ackSeq = true;        // B-1b — 신뢰 순번 되받기(**기본 켬** — 정품 녹음 근거는 Server::Emit 주석)

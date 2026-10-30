@@ -5727,6 +5727,13 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     //     ⚠ 우리는 신뢰 길(`USE_MAP` 과 같은) — 같은 틱의 맵 바꾸기가 중요 대기열을 비운다(`RejoinReset`)
     //   ⭕ 정품 클라 — 답 `SERVER_QUIT_ACK`(0xC8) 한 바이트를 보내고 캐릭터를 저장한 뒤 게임에서 나감(`network_client.go:235~240` → `gui_quit.go:104`).
     //     나간 뒤 어느 화면으로 가는지는 GOG 판 화면 미확인. 클라가 안 나가도 다시 열기는 그대로 해(대기 맵 · 일반 방) 옛 동작으로 남는다
+    // ★ 매칭 손보기 3(`Docs/MATCH_UX_REVIEW.md` — 파일럿 · 방 관리자 `SetRankOneMap` 이 켤 때만) — 맵을 다시 싣지 않고 판을 연다.
+    //   게임 안 사람마다 점수 · 죽음 0 · 표식 칸 비움 · (관전자 빼고) 죽은 뒤 부활 길 그대로(`PlayerRespawn` — 체력 · `e9 … 01` · 가방 정리 +
+    //   기본 장비 · 시작 자리 옮기기 · 무적 5초) · 모두에게 `4e` · 팀 점수 · 깃발 셈 0. 세계(바닥 물건 · 문 · 크리처)는 안 되돌린다 —
+    //   클라가 맵을 안 지우므로 서버만 되돌리면 어긋난다. 기다리는 동안 주운 물건은 부활 가방 정리가 알림 없이 지운다(정품 부활과 같은 길 —
+    //   정품 클라가 산 사람의 `e9` 에 가방을 어떻게 하는지는 화면 미확인 · 파일럿 몫)
+    void RestartInPlace();
+    unsigned long long inPlaceStarts() const { return inPlaceStarts_; }
     void QuitAtRestart() { quitAtRestart_ = true; }
     bool QuitAtRestartArmed() const { return quitAtRestart_; }
     unsigned long long serverQuitSent() const { return serverQuitSent_; }   // 보낸 사람 수(누적)
@@ -5737,6 +5744,7 @@ private:
     std::shared_ptr<const MapState> nextRoundInitial_;
     uint32_t nextRoundFlags_ = 0;
     bool quitAtRestart_ = false;                 // ★ 매칭 손보기 2
+    unsigned long long inPlaceStarts_ = 0;       // ★ 매칭 손보기 3
     unsigned long long serverQuitSent_ = 0;
     unsigned long long serverQuitAcks_ = 0;
     unsigned long long mapSwitches_ = 0;

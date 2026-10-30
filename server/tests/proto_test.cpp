@@ -25266,6 +25266,75 @@ void TestLobbyClientHeld() {
     std::printf("  7단계 조각 3 — 판 결과를 SAVED 까지 쥠: 답 없으면 30초 다시 · ok/dup/bad 지움 · 끊긴 동안 쥐었다 등록 뒤 · 한도 넘으면 옛것 버림\n");
 }
 
+// ── ★ 매칭 손보기 3(파일럿) — 한 맵 랭크 방(대기 맵 = 대전 맵) + `SetRankOneMap` → 다 오면 맵을 다시 안 싣고 제자리 판 ──
+//   ① 판 · 랭크 시작 · 맵 바꾸기 0(전과 같음) · 제자리 시작 1 · 다음 판 맵 안 걸림 ② 그 틱에 두 사람 다 `e9 <내 번호>`(부활) · 점수 0
+//   ③ 스위치를 끈 같은 꼴의 방은 옛 길(맵 바꾸기 1 · 제자리 0)
+void TestRankOneMap() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    const uint8_t readyPkt[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_READY) };
+    char m[400];
+    auto run = [&](bool oneMap, const char* tag, int k) {
+        nox::CSyncHost srv;
+        UseTokens(srv);
+        MapCatalog cat;
+        cat.maps.push_back(FakeMapOriginal("estate", 0x22222222u, 3000.0f, 3000.0f));
+        nox::CRoomManager& rooms = srv.Rooms();
+        rooms.SetRankSettleMs(0);
+        rooms.SetRankOneMap(oneMap);
+        const std::string n1 = std::string("u") + tag, n2 = std::string("v") + tag;
+        const int r = MakeLobbyLikeRoom(rooms, cat, "estate", "estate", 0, {n1, n2});
+        uint32_t now = 1000;
+        std::vector<nox::OutPacket> o;
+        srv.Tick(now, o);
+        now += 33; srv.Tick(now, o);
+        auto join = [&](const std::string& account, const std::string& ip, uint64_t nonce) {
+            const auto tail = TrailerAs(account, r, ip, nonce);
+            const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+            srv.OnPacket(ip + ":1", tj.data(), tj.size(), o);
+            const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+            srv.OnPacket(ip + ":2", cn.data(), cn.size(), o);
+            const auto ac = AcceptPkt("Jack");
+            srv.OnPacket(ip + ":2", ac.data(), ac.size(), o);
+            srv.OnPacket(ip + ":2", readyPkt, sizeof(readyPkt), o);
+            return ip + ":2";
+        };
+        const std::string ipA = "10.73." + std::to_string(k) + ".1", ipB = "10.73." + std::to_string(k) + ".2";
+        const std::string A = join(n1, ipA, 730 + 10 * k), B = join(n2, ipB, 731 + 10 * k);
+        nox::Server& g = rooms.Game(r);
+        for (int i = 0; i < 6 && rooms.Room(r).Phase() == nox::RoomPhase::Waiting; ++i) {   // 처음 갱신이 나간 뒤에 판이 서게 몇 틱
+            g.DebugSetScore(Sid(srv, A), 3);
+            o.clear();
+            now += 34; srv.Tick(now, o);
+        }
+        std::vector<nox::RoundStanding> ps;
+        std::vector<nox::RoundTeamScore> ts;
+        g.SnapshotStandings(ps, ts);
+        auto netOf = [&](int64_t sid) -> int {
+            for (const auto& p : ps) if (p.sessionId == sid) return p.netCode;
+            return -1;
+        };
+        auto respawnTo = [&](const std::string& to, int net) {   // 그 틱에 그 사람에게 간 `e9 <번호>`
+            if (net < 0) return 0;
+            const uint8_t pat[3] = { static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN), static_cast<uint8_t>(net), static_cast<uint8_t>(net >> 8) };
+            int n = 0;
+            for (const auto& x : FlattenTo(o, to))
+                for (size_t i = 0; i + 3 <= x.size(); ++i) n += std::memcmp(x.data() + i, pat, 3) == 0 ? 1 : 0;
+            return n;
+        };
+        struct R { bool playing; unsigned long long switches, inPlace; bool nextMap; int eA, eB; int scoreA; };
+        return R{ rooms.Room(r).Phase() == nox::RoomPhase::Playing && rooms.Room(r).RankState() == nox::CRoom::RankWait::Started, g.mapSwitches(),
+                  g.inPlaceStarts(), g.HasNextRoundMap(), respawnTo(A, netOf(Sid(srv, A))), respawnTo(B, netOf(Sid(srv, B))), g.DebugScore(Sid(srv, A)) };
+    };
+    const auto on = run(true, "on", 1);
+    const auto off = run(false, "off", 2);
+    std::snprintf(m, sizeof(m), "한 맵 랭크 — 켬: 판 %d · 맵 바꾸기 %llu · 제자리 %llu · 다음 판 맵 %d · e9 A %d · B %d · A 점수 %d | 끔: 판 %d · 맵 바꾸기 %llu · 제자리 %llu",
+                  (int)on.playing, on.switches, on.inPlace, (int)on.nextMap, on.eA, on.eB, on.scoreA, (int)off.playing, off.switches, off.inPlace);
+    Check(on.playing && on.switches == 0 && on.inPlace == 1 && !on.nextMap && on.eA >= 1 && on.eB >= 1 && on.scoreA == 0 && off.playing &&
+              off.switches == 1 && off.inPlace == 0,
+          m);
+    std::printf("  매칭 손보기 3 — 한 맵 랭크 방(파일럿 스위치): 맵 안 바꾸고 제자리 판 · 둘 다 부활 e9 · 점수 0 · 스위치 끄면 옛 길\n");
+}
+
 // ── ★ 매칭 손보기 1 — SAVED ok 꼬리 → 그 판 방의 그 이름 사람에게 점수 알림(`CLobbyClient::NoticeRatings`) ──
 //   ① 방에 있는 이름(amy) → 그 사람에게만 `TEXT_MESSAGE` 「Rating 1000 -> 1010 (+10)」 · 같은 방 bob 엔 없음 · 방에 없는 이름(zed) → 셈만
 //   ② 판의 방 번호 모름(-1) → 「방 없음」 셈(사람 수만큼) · 알림 0 ③ 꼬리 없는 ok → 알림 0 ④ 글 꼴(+ · − · 0)
@@ -33278,6 +33347,7 @@ int main() {
     TestLobbyClientAlive();   // ★ 7단계 조각 2
     TestLobbyClientHeld();    // ★ 7단계 조각 3
     TestLobbyClientRatingNotice();   // ★ 매칭 손보기 1
+    TestRankOneMap();                // ★ 매칭 손보기 3
     TestMatchRecordRoundTrip();   // ★ 7단계 조각 4
     TestLobbyMapPaths();
     TestJoinTrailer();

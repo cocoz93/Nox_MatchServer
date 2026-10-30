@@ -167,6 +167,8 @@ int main(int argc, char** argv) {
             opt.configPath = argv[++i];
         } else if (a == "--no-join-token") {
             opt.noJoinToken = true;
+        } else if (a == "--rank-one-map") {
+            opt.rankOneMap = true;   // ★ 매칭 손보기 3 — 파일럿(기본 꺼짐)
         } else if (a == "--results" && i + 1 < argc) {
             opt.resultsPath = argv[++i];   // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록 파일
         } else if (a == "--no-results") {
@@ -682,6 +684,7 @@ int main(int argc, char** argv) {
     world.openSession = [&udp](const std::string& addr) { return udp.OpenSession(addr); };
     rooms.SetWorldData(world);
     rooms.SetLogRooms(true);   // ★ 10-14 작업 9e — 방을 만들고 닫을 때 한 줄(`[방] N 만듦` · `닫음`)
+    rooms.SetRankOneMap(opt.rankOneMap);   // ★ 매칭 손보기 3
     // ★ 10-14 작업 8d — 로비 방식(`--lobby-port`)은 방 없이 시작한다 — 방은 로비가 만든다(작업 10 · `Docs/ROOMS_DESIGN.md` 흐름 1)
     // ★ 10-20 v2 작업 4b — 로비에 붙기(`--lobby`)도 방 없이 시작한다(새 방은 로비가 묻고 `CLobbyClient` 가 만든다)
     nox::CRoom* room0 = nullptr;

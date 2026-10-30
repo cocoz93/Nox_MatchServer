@@ -1833,6 +1833,26 @@ void Server::RestartPlayers() {
     for (Team& t : teams_) t.score = 0;
 }
 
+// ★ 매칭 손보기 3 — 머리 주석은 `Server.h` `RestartInPlace`. `RestartPlayers` 와 달리 클라가 맵을 안 지우므로 알림을 직접 낸다(부활 길)
+void Server::RestartInPlace() {
+    size_t n = 0;
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame) continue;
+        s.score = 0;
+        s.deaths = 0;
+        for (int i = 0; i < 4; ++i) s.markSet[i] = false;
+        if (s.observer) continue;
+        PlayerRespawn(s, frame_);
+        ++n;
+    }
+    for (auto& kv : sessions_) if (kv.second.inGame) SendLesson(kv.second);
+    for (Team& t : teams_) t.score = 0;
+    caps_[0] = caps_[1] = caps_[2] = 0;
+    ++inPlaceStarts_;
+    Log("[판] 제자리 시작 — 맵 다시 싣기 없이 %zu명 부활(점수 0 · 시작 자리)\n", n);
+}
+
 // ★ 10-01 R4 — **사람별로 「새로 들어온 것처럼」** — 클라는 `USE_MAP` 에서 다 지운다(`network_client.go:241~258` `gameClearAll`)
 //   스냅샷 기다림(`snapshotIn` — 0 에서 준비 `c0` 를 기다린다 · 아래 스냅샷 자리) · 준비 깃발 끔 · 중요 대기열 비움(결정 ②) ·
 //   첫 갱신 · 별칭 · 정적 소개 · 비밀벽 앎 · 보이는 크리처 · 친구 알림 · 문 알림 · 체력 알림 · 바뀐 것 알림 — 11종(접속 때 처음 값)

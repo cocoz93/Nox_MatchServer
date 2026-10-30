@@ -1,6 +1,6 @@
 ﻿# mo_local.ps1 — 이 PC 하나에서 정품 클라로 v2(로비 · 게임 서버 나눔)를 보는 판 (MO 6단계 v2 작업 6 · Docs/LOBBY_SPLIT_DESIGN.md 「사람(맨 끝 한 장)」).
 #
-#   -Mode Start [-NoClients] [-OneClient] [-KeepDll] [-BattleScoreLimit N] [-RankedAll] [-NoDb] [-NoAuth]
+#   -Mode Start [-NoClients] [-OneClient] [-KeepDll] [-BattleScoreLimit N] [-RankedAll] [-RankOneMap] [-NoDb] [-NoAuth]
 #       ★ 7단계 — 로비는 설정 [db](MySQL — 사람 1회 config\db_setup.sql)에 붙어야 뜬다. -NoDb 면 메모리 저장소(--no-db — 계정 · 판 기록이 로비와 같이 사라짐)
 #       ① hosts 확인 — servserv.westwood.com 이 127.0.0.1 이어야 정품 인터넷 메뉴가 우리 라우터로 온다(아니면 tools\hosts_lobby.ps1 -Mode On 안내 후 멈춤)
 #       ② 설정 config\nox_mo.ini(없으면 입장 토큰 키를 새로 — git 밖 · 비밀)
@@ -10,6 +10,7 @@
 #       ⑤ 게임 서버 nox_server UDP 18590 --lobby 127.0.0.1:4010(로비 기록에서 등록 확인 — 방 없이 시작 · 새 방은 로비가 묻는다)
 #          -BattleScoreLimit N 이면 `--battle-score-limit N`(판 점수 한도 시험 손잡이 — 옛 사람 판 start_rooms_check.ps1 과 같은 이름 · 1 이면 한 킬로 판 끝)
 #          -RankedAll 이면 `--ranked-all`(★ 레이팅 — 모든 방을 랭크로 · 매칭 전 점수 검증용 · Docs/RATING_DESIGN.md)
+#          -RankOneMap 이면 `--rank-one-map`(★ 매칭 손보기 3 파일럿 — 랭크 방을 처음부터 대전 맵으로 · 다 오면 맵을 다시 안 싣고 판)
 #       ⑥ 클라 DLL — 게임 폴더 wsock32.dll 이 빌드한 client_mod\wsock32_proxy\wsock32.dll 과 다르면 바꿔 끼운다(바꾸기 전 것은 _out\mo_local\wsock32.dll.<md5> 로 한 번 떠 둠 ·
 #          되돌리기 = 그 파일을 게임 폴더 wsock32.dll 로 복사). -KeepDll 이면 안 바꾼다
 #          ★ 랭크 매칭 조각 1 — 같은 자리에서 tools\ui_apply.ps1(게임 목록 여섯째 칸 「랭크 매칭」 글자 · ★ 매칭 손보기 8 필터 창 「완료」 버튼 ·
@@ -22,7 +23,7 @@
 #
 # 왜 — 10-20 v2 로 로비와 게임 서버가 다른 프로세스가 됐다. 옛 사람 판은 채널 하나(nox_server --lobby-port)만 띄웠다.
 #   다른 PC 를 붙이는 판은 mo_host.ps1(서버_MO_열기.bat) — 이것은 같은 PC 루프백 전용(바깥에 안 엶)
-param([ValidateSet('Start', 'Stop')][string]$Mode = 'Start', [switch]$NoClients, [switch]$OneClient, [switch]$KeepDll, [int]$BattleScoreLimit = 0, [switch]$RankedAll, [switch]$NoDb, [switch]$NoAuth)
+param([ValidateSet('Start', 'Stop')][string]$Mode = 'Start', [switch]$NoClients, [switch]$OneClient, [switch]$KeepDll, [int]$BattleScoreLimit = 0, [switch]$RankedAll, [switch]$RankOneMap, [switch]$NoDb, [switch]$NoAuth)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $repo 'build\Release'
@@ -101,6 +102,7 @@ try {
   $gsArgs = "--port 18590 --lobby 127.0.0.1:4010 --config `"$cfg`" --aoi --friends"
   if ($BattleScoreLimit -gt 0) { $gsArgs += " --battle-score-limit $BattleScoreLimit" }
   if ($RankedAll) { $gsArgs += ' --ranked-all' }
+  if ($RankOneMap) { $gsArgs += ' --rank-one-map' }   # ★ 매칭 손보기 3 — 파일럿(랭크 방 한 맵 · 제자리 판)
   Launch 'nox_server.exe' $gsArgs (Join-Path $logDir 'server.log')
   $reg = $false
   for ($i = 0; $i -lt 60 -and -not $reg; $i++) {

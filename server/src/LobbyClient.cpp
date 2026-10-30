@@ -213,6 +213,11 @@ int CLobbyClient::CreateRoomFor(const std::string& creator, bool ranked, const s
     s.battleMapPath = _battleMaps.empty() ? std::string()
                                           : _battleMaps[std::uniform_int_distribution<size_t>(0, _battleMaps.size() - 1)(_rng)];
     s.battleMode = "arena";
+    // ★ 매칭 손보기 3(파일럿 · `--rank-one-map`) — 랭크 방은 처음부터 대전 맵 · 대전 모드(대기 맵 = 대전 맵 → 방 관리자가 제자리 판)
+    if (ranked && _rooms.RankOneMap() && !s.battleMapPath.empty()) {
+        s.mapPath = s.battleMapPath;
+        s.mode = s.battleMode;
+    }
     s.standalone = true;    // 맵을 직접 차린다(녹음 서두 없음)
     s.closeWhenEmpty = true;
     s.maxPlayers = kRoomMaxPlayers;   // ★ 10-16 작업 12a
