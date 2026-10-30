@@ -16,7 +16,7 @@ $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   throw '관리자 PowerShell 에서 돌려야 함(시작 → PowerShell 우클릭 → 관리자 권한으로 실행)'
 }
-$friendly = 'Nox_Origin auth (local)'
+$friendly = 'Nox Online auth (local)'
 $appId = '{6b1e3c52-8f0a-4c11-9a57-2d4e0b7a91c3}'   # 묶음 주인 표시(아무 GUID — 이 스크립트가 고정)
 $ipport = "0.0.0.0:$Port"
 $url = "https://+:$Port/"

@@ -53,7 +53,7 @@ try {
   Send $k $five
   $a = ReadUntil $k '607'
   Check ((($a | ForEach-Object { Kind $_ }) -join ',') -eq '610,605,607') "답 순서 610 · 605 · 607 (받은 줄 $($a.Count))"
-  Check (($a | Where-Object { (Kind $_) -eq '605' }) -ceq ": 605 u :127.0.0.1 4000 '0:Nox_Origin' -8 36.1083 -115.0582") '605 = 붙은 주소 127.0.0.1:4000 · 이름 Nox_Origin'
+  Check (($a | Where-Object { (Kind $_) -eq '605' }) -ceq ": 605 u :127.0.0.1 4000 '0:Nox_Online' -8 36.1083 -115.0582") '605 = 붙은 주소 127.0.0.1:4000 · 이름 Nox_Online'
   Check ($null -eq $k.r.ReadLine()) 'QUIT 뒤 라우터가 끊는다'
   $k.c.Close()
   # 줄 끝 바이트 — ReadLine 은 LF 만 와도 줄로 받으므로 CRLF 는 날바이트로 본다

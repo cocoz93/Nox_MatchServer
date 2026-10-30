@@ -20,7 +20,7 @@
 namespace nox::wol {
 
 struct RouterConfig {
-    std::string serverName = "Nox_Origin";   // 605 답의 '0:<이름>'
+    std::string serverName = "Nox_Online";   // 605 답의 '0:<이름>'
     // 605 로 알려 줄 채널 주소. 0 이면 「클라가 라우터에 붙은 주소」 — 라우터와 채널이 같은 PC 일 때(설정 `[router] channel` 이 없을 때)
     uint32_t channelIp = 0;
     uint16_t channelPort = kLobbyPort;

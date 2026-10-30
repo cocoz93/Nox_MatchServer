@@ -307,7 +307,7 @@ void LobbyUnitTests() {
     out.clear();
     lb.OnConnect(3, peer, loop);
     for (const char* l : {"CVERS 11020 9472", "NICK plain", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(3, l, out);
-    Check(!out.empty() && out.back().line == ": 376 u" && hasLine(out, ": 372 u :- *** Nox_Origin client patch") && !anyClose(out) &&
+    Check(!out.empty() && out.back().line == ": 376 u" && hasLine(out, ": 372 u :- *** Nox Online client patch") && !anyClose(out) &&
               !hasLine(out, "ERROR") && lb.Stats().loginNoClient == 1,
           "NOXCLIENT 없는 로그인 → 끊지 않고 376 까지 · 인사말에 패치 안내");
     out.clear();
@@ -318,7 +318,7 @@ void LobbyUnitTests() {
     out.clear();
     lb.OnConnect(4, peer, loop);
     for (const char* l : {"NOXCLIENT 0", "NICK old", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(4, l, out);
-    Check(!out.empty() && out.back().line == ": 376 u" && hasLine(out, ": 372 u :- *** Nox_Origin client patch") && !anyClose(out) &&
+    Check(!out.empty() && out.back().line == ": 376 u" && hasLine(out, ": 372 u :- *** Nox Online client patch") && !anyClose(out) &&
               lb.Stats().loginOldClient == 1 && lb.Stats().loginNoClient == 1,
           "DLL 판 0 → 「판 낮음」으로 따로 세고 인사말 안내");
     out.clear();
@@ -1634,7 +1634,7 @@ void RouterUnitTests() {
     Router a{RouterConfig{}};
     a.OnConnect(1, peer, loop);
     for (const char* l : five) a.OnLine(1, l, out);
-    const std::vector<std::string> wantA = {": 610 u 1", ": 605 u :127.0.0.1 4000 '0:Nox_Origin' -8 36.1083 -115.0582", ": 607"};
+    const std::vector<std::string> wantA = {": 610 u 1", ": 605 u :127.0.0.1 4000 '0:Nox_Online' -8 36.1083 -115.0582", ": 607"};
     Check(Lines(out) == wantA, "라우터 4005 답 = 610 · 605(내 쪽 주소 127.0.0.1:4000) · 607");
     Check(!out.empty() && out.back().closeAfter && !out.front().closeAfter, "QUIT 답 뒤에만 끊는다");
     a.OnClose(1);
@@ -1864,8 +1864,17 @@ bool MembersShape(const std::string& l) {
 int ShapeDiffs(const Item& ours, const Item& xw) {
     static const std::set<std::string> kFixed = {"610", "605", "607", "376", "379", "329", "328", "366",
                                                  "user:JOIN", "user:PART", "user:JOINGAME", "332", "375"};
+    // ★ 10-30 — 375 의 끝 칸(인사말)은 자유 글 — 낱말 수가 아니라 `:- ` 뒤에 글이 있는지만 본다(인사말 「Nox Online」 으로 낱말이 늘어 걸림)
+    const auto fixedTokens = [](const Item& it) {
+        std::string l = it.lines[0];
+        if (it.kind == "375") {
+            const size_t at = l.find(" :- ");
+            if (at != std::string::npos && at + 4 < l.size()) l = l.substr(0, at + 3) + " _";
+        }
+        return Tokens(l).size();
+    };
     int d = 0;
-    if (kFixed.count(ours.kind) && Tokens(ours.lines[0]).size() != Tokens(xw.lines[0]).size()) {
+    if (kFixed.count(ours.kind) && fixedTokens(ours) != fixedTokens(xw)) {
         std::printf("    칸 수 다름 [%s]\n      우리 %s\n      XWIS %s\n", ours.kind.c_str(), ours.lines[0].c_str(),
                     xw.lines[0].c_str());
         ++d;

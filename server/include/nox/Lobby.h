@@ -149,7 +149,7 @@ const char* JoinRejectText(JoinReject why);
 constexpr int kDefaultCodepage = 949;
 
 struct LobbyConfig {
-    std::vector<std::string> motd{"Welcome to Nox_Origin!", ""};  // 첫 줄은 375, 나머지는 372
+    std::vector<std::string> motd{"Welcome to Nox Online!", ""};  // 첫 줄은 375, 나머지는 372
     // 게임 서버 IPv4 정수(a<<24|b<<16|c<<8|d) — 326·353·NOXTOKEN 에 같은 값.
     //   ★ 10-14 작업 8d — 0 이면 이 접속이 붙은 내 쪽 주소(채널이 곧 게임 서버). 옛 기본값 127.0.0.1(따로 뜬 로비 몫)
     uint32_t gameServerIp = 0;

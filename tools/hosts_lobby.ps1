@@ -38,7 +38,7 @@ try {
   while ($lines.Count -gt 0 -and $lines[-1] -eq '') { $lines = @($lines | Select-Object -First ($lines.Count - 1)) }
   if ($Mode -eq 'On') {
     # hosts 엔 ASCII 만 — 주석도 영어로 둔다
-    $lines += "# NOX_MO_LOBBY Nox_Origin MO lobby test ({0:yyyy-MM-dd}) - revert: powershell -ExecutionPolicy Bypass -File `"{1}`" -Mode Off" -f (Get-Date), (Join-Path $PSScriptRoot 'hosts_lobby.ps1')
+    $lines += "# NOX_MO_LOBBY Nox Online MO lobby test ({0:yyyy-MM-dd}) - revert: powershell -ExecutionPolicy Bypass -File `"{1}`" -Mode Off" -f (Get-Date), (Join-Path $PSScriptRoot 'hosts_lobby.ps1')
     $lines += "$Ip servserv.westwood.com # NOX_MO_LOBBY"
     $lines += "$Ip irc.westwood.com # NOX_MO_LOBBY"
   }

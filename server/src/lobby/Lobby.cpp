@@ -23,7 +23,7 @@ const char* const kChatLobbies[] = {"#Lob_37_0", "#Lob_37_1", "#Lob_37_2", "#Lob
 
 // ★ 10-11 토큰 작업 5 — DLL 없는 클라의 인사말에 덧붙이는 줄(영문 — WOL 글자는 라틴 1)
 const char* const kNoClientMotd[] = {
-    "*** Nox_Origin client patch (wsock32.dll) is missing ***",
+    "*** Nox Online client patch (wsock32.dll) is missing ***",
     "You can chat, but joining a game needs the patch. Ask the server host.",
 };
 

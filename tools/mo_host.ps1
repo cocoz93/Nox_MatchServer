@@ -79,7 +79,7 @@ try {
       New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
       $key = New-Object byte[] 32; (New-Object Security.Cryptography.RNGCryptoServiceProvider).GetBytes($key)
       $hex = -join ($key | ForEach-Object { $_.ToString('x2') })
-      [IO.File]::WriteAllText($cfg, "; Nox_Origin MO 설정 — 입장 토큰 키는 비밀(커밋 금지)`r`n[token]`r`nkey = $hex`r`n", (New-Object Text.UTF8Encoding($false)))
+      [IO.File]::WriteAllText($cfg, "; Nox Online MO 설정 — 입장 토큰 키는 비밀(커밋 금지)`r`n[token]`r`nkey = $hex`r`n", (New-Object Text.UTF8Encoding($false)))
       Write-Host "설정: 새로 만듦 — $cfg"
     } else {
       Write-Host "설정: $cfg"

@@ -81,7 +81,7 @@ try {
   $k = Open $LobbyPort
   Send $k @('CVERS 11020 9472', 'NICK plain', 'USER UserName HostName irc.westwood.com :RealName')
   $x = ReadUntil $k '376'
-  Check (($x | Where-Object { $_ -like ': 372 u :- `*`*`* Nox_Origin client patch*' }).Count -eq 1 -and (Kind $x[-1]) -eq '376') "DLL 없는 로그인 → 376 까지 · 인사말에 패치 안내 (받은 줄 $($x.Count))"
+  Check (($x | Where-Object { $_ -like ': 372 u :- `*`*`* Nox Online client patch*' }).Count -eq 1 -and (Kind $x[-1]) -eq '376') "DLL 없는 로그인 → 376 까지 · 인사말에 패치 안내 (받은 줄 $($x.Count))"
   Send $k @('QUIT')
   Check ((ReadUntil $k '607').Count -ge 1) 'DLL 없는 접속도 QUIT 답 607'
   $k.c.Close()
