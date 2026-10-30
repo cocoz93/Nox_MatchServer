@@ -874,29 +874,54 @@ static void RankOnToken()
 //   정품 글(「서버 접속 시도중...」)은 그대로 두고 랭크 기다림 창만 — 일반 방 참가도 같은 창을 쓰기 때문
 //   글 칸 = 알림창 자식 4004(OpenNox `gui_dialog.go` guiDialogTextID) · 바꾸기 = 그 칸 처리 함수(+0x178)에 0x4001(글 · -1)
 //   정품 글 칸은 글을 베끼지 않고 포인터만 쥔다(OpenNox `widget_static_text.go:141`) → DLL 안의 고정 글을 넘긴다. 받기 훅(게임 주 스레드)에서만
+// ★ 매칭 손보기 4(`Docs/MATCH_UX_REVIEW.md`) — 글 뒤에 지난 시간 「상대 찾는 중... 0:15」 · 1초마다 고친다(시각은 DLL 혼자 — 창이 뜬 때부터).
+//   글 칸이 포인터만 쥐므로 DLL 안 버퍼를 제자리에서 고치고 같은 0x4001 을 다시 보낸다(글 칸이 길이 · 줄을 미리 셈해 두는지 몰라 — 다시 보내면 그 셈도 새로).
+//   받기 훅은 기다리는 동안 초당 약 30번 돈다(10-30 사람 판 DLL 기록 — WOLAPI recv 10초 297회 · 글 바꿈이 참가 줄과 같은 1/1000초)
 static const DWORD kDlgTextId = 4004;
 static const DWORD kMsgSetText = 0x4001;
-static const wchar_t kRankWaitText[] = L"상대 찾는 중...";
-static volatile LONG g_rankTextSet = 0;    // ④ 글 바꿈
+static wchar_t g_rankWaitBuf[48];          // 정품 글 칸이 쥐는 글(게임 주 스레드만 씀)
+static volatile LONG g_rankTextSet = 0;    // ④ 글 바꿈(창마다 처음 한 번)
 static volatile LONG g_rankTextMiss = 0;   // ④ 글 칸 · 처리 함수를 못 찾음
+static volatile LONG g_rankTextTicks = 0;  // ★ ④ 지난 시간 고침(초가 바뀔 때마다)
 
 static void RankWaitText()
 {
-    static DWORD done = 0;   // 글을 바꾼 알림창(기다림마다 한 번)
-    if (!g_rankWaiting) { done = 0; return; }
-    DWORD box = 0;
-    if (!ReadSelf(kMsgBox, &box) || !box || box == done) return;
-    done = box;
-    const DWORD text = ((PFN_findchild)kFindChild)(box, kDlgTextId);
-    DWORD proc = 0;
-    if (!text || !ReadSelf(text + kProcSlot, &proc) || !proc) {
-        InterlockedIncrement(&g_rankTextMiss);
-        Log("⑪ 기다림 글 — 알림창 %#lx 의 글 칸(4004) · 처리 함수를 못 찾아 그대로", box);
+    static DWORD done = 0;     // 글을 바꾼 알림창(기다림마다 한 번)
+    static DWORD text = 0, proc = 0, since = 0, shownSec = 0;
+    if (!g_rankWaiting) {
+        if (text) Log("⑪ 기다림 끝 — 지난 시간 %lu초 · 글 고침 누적 %ld번", (GetTickCount() - since) / 1000, g_rankTextTicks);
+        done = 0;
+        text = 0;
         return;
     }
-    ((PFN_wndproc4)proc)(text, kMsgSetText, (DWORD)(uintptr_t)kRankWaitText, (DWORD)-1);
-    const LONG n = InterlockedIncrement(&g_rankTextSet);
-    Log("⑪ 기다림 글(누적 %ld) — 알림창 %#lx 글을 「상대 찾는 중...」으로", n, box);
+    DWORD box = 0;
+    if (!ReadSelf(kMsgBox, &box) || !box) return;
+    const DWORD now = GetTickCount();
+    if (box != done) {
+        done = box;
+        text = ((PFN_findchild)kFindChild)(box, kDlgTextId);
+        proc = 0;
+        if (!text || !ReadSelf(text + kProcSlot, &proc) || !proc) {
+            text = 0;
+            InterlockedIncrement(&g_rankTextMiss);
+            Log("⑪ 기다림 글 — 알림창 %#lx 의 글 칸(4004) · 처리 함수를 못 찾아 그대로", box);
+            return;
+        }
+        since = now;
+        shownSec = 0;
+        swprintf(g_rankWaitBuf, sizeof(g_rankWaitBuf) / sizeof(g_rankWaitBuf[0]), L"상대 찾는 중... 0:00");
+        ((PFN_wndproc4)proc)(text, kMsgSetText, (DWORD)(uintptr_t)g_rankWaitBuf, (DWORD)-1);
+        const LONG n = InterlockedIncrement(&g_rankTextSet);
+        Log("⑪ 기다림 글(누적 %ld) — 알림창 %#lx 글을 「상대 찾는 중... 0:00」으로(1초마다 지난 시간)", n, box);
+        return;
+    }
+    if (!text) return;   // 이 창은 글 칸을 못 찾았다
+    const DWORD sec = (now - since) / 1000;
+    if (sec == shownSec) return;
+    shownSec = sec;
+    swprintf(g_rankWaitBuf, sizeof(g_rankWaitBuf) / sizeof(g_rankWaitBuf[0]), L"상대 찾는 중... %lu:%02lu", sec / 60, sec % 60);
+    ((PFN_wndproc4)proc)(text, kMsgSetText, (DWORD)(uintptr_t)g_rankWaitBuf, (DWORD)-1);
+    InterlockedIncrement(&g_rankTextTicks);
 }
 
 // ─────────────────────────────────────────────── ⑫ 메뉴바 — 필터 창 「완료」 · 「리스트」 칸 숨김 (매칭 손보기 8 · Docs/MATCH_UX_REVIEW.md)
