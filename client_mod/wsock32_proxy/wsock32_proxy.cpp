@@ -87,6 +87,9 @@
 //      ③ 가드가 있으면 범위 검사만 잠깐 끄고 ② 한 번 더 — 안전망이 받는지.
 //      가드가 있으면 안 죽고 막음 +2 · 안전망 +1 · NOX_NO_CHANGUARD=1 과 같이 켜면 ② 에서 0x44793D 로 죽어야 맞다 — 사람은 로그인만
 //
+// ★ 랭크 매칭 조각 2(`Docs/RANK_MATCH_PLAN.md`) — ⑩ 게임 목록 여섯째 칸(10007 · 글자는 tools/ui_apply.ps1 이 「랭크 매칭」으로) 누름을
+//   랭크 표시 + 「게임 호스트하기」 누름으로 바꾼다(게임 목록 창 처리 함수 칸을 감쌈 — 아래 ⑩ 절). 켜는 조건 = ⑥ 과 같음(판 확인 · 우리 로비 · NOX_NO_HOSTGAME)
+//
 // 로그: 환경변수 NOX_HOOK_LOG_DIR 이 있을 때만 <그 폴더>\wsock_<exe>_<pid>.log 에 쓴다(dinput_proxy 와 같은 스위치).
 //       없으면 로그도 집계도 안 하고 진짜로 넘기기만 한다.
 //       상세 줄 = 접속 시도(UDP 3번째 바이트 0x0e)의 바이트 전부 · TCP connect/send/recv · 이름 찾기
@@ -247,6 +250,8 @@ static volatile LONG g_chanGuardFault = 0;  // ★ 10-21 — ⑧ 그래도 그 �
 static volatile LONG g_chanGuardNoRange = 0;   // ★ 10-21 — 0 아니면 동굴이 범위 검사를 건너뜀(⑨ 시험 ③ 이 안전망을 보려고 잠깐만)
 static bool g_chanGuardOn = false;          // ★ 10-21 — ⑧ 동굴을 붙였나(⑨ 시험 줄에 적는다)
 
+static void RankSummary();
+
 static DWORD WINAPI SummaryThread(LPVOID)
 {
     static ModStat last[kMaxMods];
@@ -258,6 +263,7 @@ static DWORD WINAPI SummaryThread(LPVOID)
             Log("⑧ 대화방 목록 가드 — 지나감 누적 %ld번 · 막음(칸 범위 밖) 누적 %ld번 · 안전망 누적 %ld번", pass, hits, faults);
             passSeen = pass; guardSeen = hits; faultSeen = faults;
         }
+        RankSummary();   // ★ 랭크 매칭 조각 2 — ⑩ 셈이 바뀌었으면 한 줄
         if (tick % 10) continue;   // 모듈 요약은 10초마다
         ModStat now[kMaxMods];
         int n;
@@ -692,6 +698,108 @@ static void ChanGuardTest()
     }
 }
 
+// ─────────────────────────────────────────────── ⑩ 랭크 매칭 — 게임 목록 여섯째 칸 누름 (랭크 매칭 조각 2 · Docs/RANK_MATCH_PLAN.md)
+// 게임 목록 창(`[0x699018]` · 처리 함수 칸 +0x178 = 0x439a30 — 만들 때 `0x437884` 가 `0x488bd0` 으로 넣음)을 DLL 함수로 감싼다.
+//   버튼 누름은 창 메시지 0x4007 로 온다(셋째 인자 = 눌린 버튼 창 · 번호는 창 +0 — `0x4889b0` · 갈래 `0x439a59`~`0x439a76`).
+//   10007(원래 「찾기」 — 글자는 tools/ui_apply.ps1 이 「랭크 매칭」으로)이면 랭크 표시를 켜고 「게임 호스트하기」(10002) 누름을 원래 함수에 대신 넣는다.
+//   그 뒤는 Host Game 과 같은 길(캐릭터 고르기 → ⑥ 내 방 들어가기). 랭크 표시는 ⑪ 이 그 참가 줄 앞에 `NOXRANK JOIN` 을 끼울 때 쓴다(조각 3).
+//   나머지 메시지는 원래 함수로. 사람이 진짜 10002 를 누르면 남은 표시를 끈다(캐릭터 고르기에서 뒤로 나와 일반 방을 만들 때 랭크로 새지 않게)
+// 감싸는 자리 = 받기(recv) 훅 — 게임 주 스레드에서만(목록 창은 만들자마자 LIST 를 보내 곧 답이 온다). 칸 값이 원래 함수일 때만 바꾼다
+//   (창이 같은 주소에 다시 만들어져도 칸 값으로 가른다)
+// 10007 숨김 — 정품이 WOL 모드 목록을 만들 때 스스로 보이게 한다(`0x437948` · 숨김 비트 0x10). 감쌀 때 그 비트를 기록에 찍고, 켜져 있으면 끈다
+//   (10-30 사용자 「찾기 버튼이 안 보인다」와 정적 분석이 어긋남 — 이 줄로 가린다)
+static const uintptr_t kListWin = 0x699018;        // 게임 목록 창(없으면 0)
+static const uintptr_t kListProc = 0x439a30;       // 그 창의 원래 처리 함수
+static const uintptr_t kFindChild = 0x4889d0;      // (창, 번호) → 자식 창(재귀)
+static const uintptr_t kSetHidden = 0x488510;      // (창, 0 이면 보임 · 아니면 숨김)
+static const DWORD kProcSlot = 0x178;
+static const DWORD kBtnHost = 10002, kBtnRank = 10007;
+static const DWORD kMsgClick = 0x4007;
+static const DWORD kWinHidden = 0x10;
+static bool g_rankOn = false;                      // 판 확인 통과 · ⑥ 켬(⑥ 길을 타므로 같이 켜고 같이 끈다)
+static volatile LONG g_rankArmed = 0;              // 랭크 매칭을 눌렀다 — ⑪ 이 다음 내 방 참가 줄에 표시를 끼우고 끈다
+static volatile LONG g_rankWrapped = 0;            // 감싼 목록 창 수
+static volatile LONG g_rankWrapSkip = 0;           // 처리 함수 칸이 원래 함수가 아니라 안 감싼 창 수
+static volatile LONG g_rankClicks = 0;             // 10007 누름 → 랭크(가로챔)
+static volatile LONG g_rankNotOurs = 0;            // 10007 누름인데 우리 로비가 아님 → 원래 「찾기」로 넘김
+static volatile LONG g_rankNoHost = 0;             // 10007 누름인데 10002 버튼을 못 찾음(아무것도 안 함)
+static volatile LONG g_rankHostClicks = 0;         // 사람이 누른 10002(넘김 · 남은 표시 끔)
+static volatile LONG g_rankOtherClicks = 0;        // 그 밖의 누름(넘김)
+
+typedef int(__cdecl* PFN_wndproc4)(DWORD win, DWORD msg, DWORD a3, DWORD a4);
+typedef DWORD(__cdecl* PFN_findchild)(DWORD win, DWORD id);
+typedef int(__cdecl* PFN_sethidden)(DWORD win, DWORD hide);
+
+static int __cdecl RankListProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
+{
+    const PFN_wndproc4 orig = (PFN_wndproc4)kListProc;
+    DWORD id = 0;
+    if (msg != kMsgClick || !a3 || !ReadSelf(a3, &id)) return orig(win, msg, a3, a4);
+    switch (id) {
+        case kBtnRank: {
+            if (!g_ourLobby) {
+                InterlockedIncrement(&g_rankNotOurs);
+                Log("⑩ 10007 누름 — 우리 로비가 아님 · 원래 「찾기」로 넘김");
+                return orig(win, msg, a3, a4);
+            }
+            const DWORD host = ((PFN_findchild)kFindChild)(win, kBtnHost);
+            if (!host) {
+                InterlockedIncrement(&g_rankNoHost);
+                Log("⑩ 랭크 매칭 누름 — 게임 호스트하기(10002) 버튼을 못 찾아 아무것도 안 함");
+                return 0;
+            }
+            const LONG n = InterlockedIncrement(&g_rankClicks);
+            InterlockedExchange(&g_rankArmed, 1);
+            Log("⑩ 랭크 매칭 누름(누적 %ld) — 랭크 표시 켬 · 게임 호스트하기(10002 창 %#lx) 누름을 대신 넣음", n, host);
+            return orig(win, kMsgClick, host, a4);
+        }
+        case kBtnHost:
+            InterlockedIncrement(&g_rankHostClicks);
+            if (InterlockedExchange(&g_rankArmed, 0)) Log("⑩ 게임 호스트하기 누름 — 남아 있던 랭크 표시 끔(일반 방)");
+            return orig(win, msg, a3, a4);
+        default:
+            InterlockedIncrement(&g_rankOtherClicks);
+            return orig(win, msg, a3, a4);
+    }
+}
+
+// 1초마다(요약 스레드) — ⑩ 셈 중 하나라도 바뀌었으면 한 줄. 누름 갈래의 합 = 감싼 창에 온 누름 전부
+static void RankSummary()
+{
+    static LONG seen[8] = {};
+    const LONG now[8] = { g_rankWrapped, g_rankWrapSkip, g_rankClicks, g_rankNotOurs, g_rankNoHost, g_rankHostClicks, g_rankOtherClicks, g_rankArmed };
+    if (memcmp(seen, now, sizeof(now)) == 0) return;
+    memcpy(seen, now, sizeof(now));
+    Log("⑩ 랭크 매칭 셈 — 감싼 창 %ld · 안 감쌈 %ld | 누름: 랭크 %ld · 우리 로비 아님 %ld · 10002 못 찾음 %ld · 게임 호스트하기 %ld · 그 밖 %ld | 랭크 표시 %ld",
+        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7]);
+}
+
+// 받기 훅에서 — 새 게임 목록 창이면 감싸고 10007 을 보이게
+static void RankUiTick()
+{
+    if (GetCurrentThreadId() != g_mainTid || !g_ourLobby || *(volatile DWORD*)kNetMode != 1) return;
+    const DWORD win = *(volatile DWORD*)kListWin;
+    DWORD proc = 0;
+    if (!win || !ReadSelf(win + kProcSlot, &proc) || proc == (DWORD)(uintptr_t)RankListProc) return;
+    if (proc != kListProc) {
+        static DWORD skipped = 0;   // 같은 창엔 한 번만 찍는다
+        if (skipped != win) {
+            skipped = win;
+            InterlockedIncrement(&g_rankWrapSkip);
+            Log("⑩ 게임 목록 창 %#lx — 처리 함수 칸이 %#lx(원래 %#lx 아님) · 안 감쌈", win, proc, (DWORD)kListProc);
+        }
+        return;
+    }
+    const DWORD rank = ((PFN_findchild)kFindChild)(win, kBtnRank);
+    DWORD flags = 0;
+    const bool read = rank && ReadSelf(rank + 4, &flags);
+    if (read && (flags & kWinHidden)) ((PFN_sethidden)kSetHidden)(rank, 0);
+    *(volatile DWORD*)(win + kProcSlot) = (DWORD)(uintptr_t)RankListProc;
+    const LONG n = InterlockedIncrement(&g_rankWrapped);
+    const char* what = !rank ? "못 찾음" : !read ? "깃발 못 읽음" : (flags & kWinHidden) ? "숨김이었음 → 보이게 함" : "이미 보임(정품 0x437948)";
+    Log("⑩ 게임 목록 창 %#lx 감쌈(누적 %ld) — 10007 %s · 그때 깃발 %#lx", win, n, what, flags);
+}
+
 // 접속 시도(100바이트 · 셋째 0x0e) · CONNECT(ff 00 00) 이고, 쥔 토큰의 게임 서버로 가면 꼬리를 채운다
 static bool TailFor(const char* buf, int len, const struct sockaddr* to, int tolen, unsigned char tail[kTokenRaw + 4], const char*& why)
 {
@@ -789,6 +897,7 @@ extern "C" int WSAAPI Hook_recv(SOCKET s, char* buf, int len, int flags)
 {
     void* ret = _ReturnAddress();
     if (g_testGuard) ChanGuardTest();   // ★ 10-21 ⑨ — 받기 전에(넘길 버퍼가 아직 없을 때)
+    if (g_rankOn) RankUiTick();         // ★ 랭크 매칭 조각 2 — ⑩ 새 게임 목록 창 감싸기(게임 주 스레드에서만)
     // ② 로비 연결이면 NOXTOKEN 줄을 떼고 넘긴다(엿보기 `MSG_PEEK` 는 줄 떼기와 맞지 않아 그대로 — 로비 모듈은 안 쓴다)
     LobbyLineFilter* f = (flags & MSG_PEEK) ? NULL : LobbyFilterOf(s);
     int rc;
@@ -993,6 +1102,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         const bool forceList = GetEnvironmentVariableA("NOX_MYROOM_LINE", sw, sizeof(sw)) && sw[0] == '1';   // ⑦ 시험
         const bool gameOk = GameBuildOk();
         g_hostGameOn = gameOk && !off;
+        g_rankOn = g_hostGameOn;   // ★ 랭크 매칭 조각 2 — ⑩ 은 ⑥ 길을 탄다
         g_listOn = (gameOk || forceList) && !off;
         if (g_hostGameOn) CloseHandle(CreateThread(NULL, 0, HostGameThread, NULL, 0, NULL));
         sw[0] = 0;
@@ -1010,8 +1120,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
             char self[MAX_PATH]; self[0] = 0;
             GetModuleFileNameA(h, self, MAX_PATH);
             Log("=== wsock32 프록시(통과만) 붙음 ===  exe=%s  나=%s", exe, self);
-            Log("Host Game 돌리기 = %s · 내 방 줄 = %s (판 확인 %s · 끄기 NOX_NO_HOSTGAME %s · 시험 NOX_MYROOM_LINE %s) — 둘 다 우리 로비 표시를 받아야 움직임",
-                g_hostGameOn ? "켬" : "끔", g_listOn ? "켬" : "끔", gameOk ? "통과" : "다른 판", off ? "켬" : "끔", forceList ? "켬" : "끔");
+            Log("Host Game 돌리기 = %s · 내 방 줄 = %s · ⑩ 랭크 매칭 = %s (판 확인 %s · 끄기 NOX_NO_HOSTGAME %s · 시험 NOX_MYROOM_LINE %s) — 셋 다 우리 로비 표시를 받아야 움직임",
+                g_hostGameOn ? "켬" : "끔", g_listOn ? "켬" : "끔", g_rankOn ? "켬" : "끔", gameOk ? "통과" : "다른 판", off ? "켬" : "끔", forceList ? "켬" : "끔");
             Log("⑧ 대화방 목록 가드 = %s · ⑨ 시험(NOX_TEST_CHANGUARD) = %s · 실은 스레드 %lu", !gameOk ? "안 붙임(다른 판)" : noGuard ? "끔(NOX_NO_CHANGUARD)" : "붙임",
                 g_testGuard ? "켬" : "끔", g_mainTid);
             CloseHandle(CreateThread(NULL, 0, SummaryThread, NULL, 0, NULL));
