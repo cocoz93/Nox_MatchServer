@@ -43,8 +43,19 @@ int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
         *buildRc = 0;
     }
     ++_nextRoomId;
+    const bool rank = room->_rankWait == CRoom::RankWait::Arriving;   // ★ 랭크 매칭 조각 6
     _rooms.emplace(id, std::move(room));
     ++_stats.roomsCreated;
+    if (rank) {
+        ++_stats.rankRooms;
+        if (_logRooms) {
+            std::string names;
+            for (const std::string& n : settings.roster) names += (names.empty() ? "" : ",") + n;
+            std::printf("[방] %d 랭크 — 명단 %s(%zu명) · 도착 한도 %u초 · 최대 인원 %d\n", id, names.c_str(), settings.roster.size(),
+                        _rankArriveMs / 1000, settings.maxPlayers);
+            std::fflush(stdout);
+        }
+    }
     if (_logRooms) {   // ★ 10-14 작업 9e — 한 줄은 `printf` 한 번(두 스레드가 한 표준 출력에 찍는다)
         std::printf("[방] %d 만듦 — 이름 %s · 맵 %s · 모드 %s%s\n", id, settings.roomName.empty() ? "(없음)" : settings.roomName.c_str(),
                     settings.mapPath.empty() ? "(녹음)" : MapKeyOf(settings.mapPath).c_str(), settings.mode.c_str(),
@@ -83,6 +94,73 @@ std::vector<RoomFact> CRoomManager::ListRooms() const {
     return r;
 }
 
+// ★ 랭크 매칭 조각 6 — 도착 기다리는 랭크 방(머리 주석은 `RoomManager.h` `CRoom::RankWait`). 한도는 처음 본 `BeginTick` 의 시각부터
+void CRoomManager::CheckRankRooms(uint32_t nowMs) {
+    for (auto& kv : _rooms) {
+        CRoom& room = *kv.second;
+        if (room._rankWait != CRoom::RankWait::Arriving) continue;
+        if (!room._rankArmed) {
+            room._rankArmed = true;
+            room._rankSinceMs = nowMs;
+        }
+        const size_t arrived = room.RankArrived();
+        const size_t want = room._settings.roster.size();
+        const bool all = arrived >= want;
+        const bool due = static_cast<uint32_t>(nowMs - room._rankSinceMs) >= _rankArriveMs;
+        if (!all && !due) continue;
+        // 갈래 넷 — 시작 둘(다 옴 · 한도에 최소 이상) · 랭크 풂 둘(한도에 모자람 · 맵 없음). 랭크를 풀면 일반 방(빈 방이면 곧 빈 방 닫기가 닫는다)
+        enum class Decision : uint8_t { StartAll, StartDeadline, Unranked, NoMap };
+        const Decision d = !all && arrived < CRoom::kMinPlayers ? Decision::Unranked
+                           : !room.CanStartMatch()              ? Decision::NoMap
+                           : all                                ? Decision::StartAll
+                                                                : Decision::StartDeadline;
+        const char* what = "?";
+        bool start = false;
+        switch (d) {
+            case Decision::StartAll:
+                ++_stats.rankStartAll;
+                what = "명단이 다 옴 — 판";
+                start = true;
+                break;
+            case Decision::StartDeadline:
+                ++_stats.rankStartDeadline;
+                what = "도착 한도 — 온 사람으로 판";
+                start = true;
+                break;
+            case Decision::Unranked:
+                ++_stats.rankUnranked;
+                what = "도착 한도 — 모자라 랭크 풂(일반 방)";
+                room._game.SendNotice("Not enough players arrived. Unranked room now. Host: !start");
+                break;
+            case Decision::NoMap:
+                ++_stats.rankNoMap;
+                what = "대전 맵 · 대기 맵 원본 없음 — 랭크 풂(일반 방)";
+                room._game.SendNotice("No battle map on this server. Unranked room now.");
+                break;
+        }
+        if (_logRooms) {
+            std::printf("[방] %d 랭크 — %s(게임 안 명단 %zu / %zu · %u초)\n", room._id, what, arrived, want,
+                        static_cast<uint32_t>(nowMs - room._rankSinceMs) / 1000);
+            std::fflush(stdout);
+        }
+        if (!start) {
+            room._settings.ranked = false;
+            room._settings.roster.clear();
+            room._rankWait = CRoom::RankWait::None;
+            continue;
+        }
+        room._rankWait = CRoom::RankWait::Started;
+        room._game.SendNotice("Ranked match starting!");
+        room.StartMatch();
+    }
+}
+
+size_t CRoomManager::RankWaiting() const {
+    size_t n = 0;
+    for (const auto& kv : _rooms) n += kv.second->_rankWait == CRoom::RankWait::Arriving ? 1 : 0;
+    return n;
+}
+
 // ★ 10-14 작업 9e — 비면 닫는 방(로비가 만든 방)이 빈 채 `kEmptyRoomCloseMs` 지나면 닫는다. 빈 때는 처음 빈 것을 본 `BeginTick` 의 시각
 void CRoomManager::CloseEmptyRooms(uint32_t nowMs) {
     std::vector<int> toClose;
@@ -115,6 +193,7 @@ void CRoomManager::CloseEmptyRooms(uint32_t nowMs) {
 bool CRoomManager::CloseRoom(int id) {
     auto it = _rooms.find(id);
     if (it == _rooms.end()) return false;
+    if (it->second->_rankWait == CRoom::RankWait::Arriving) ++_stats.rankClosedWaiting;   // ★ 랭크 매칭 조각 6
     // ★ 10-14 작업 9d — 열린 방식의 방을 닫으면 그 뒤로는 받지 않는다(받는 자리가 `HasRoom` 으로 본다 · 방 번호는 다시 안 쓴다)
     PullRequests(*it->second);   // 그 방이 이미 낸 요청이 먼저
     const uint8_t closeMsg[1] = { static_cast<uint8_t>(Op::SERVER_CLOSE) };
@@ -159,7 +238,7 @@ size_t CRoomManager::SeatsIn(int roomId) const {
 }
 
 // ★ 10-16 작업 12a — 방 규칙. 판 중(결정 3)이면 원작이 닫힌 판에 쓰는 사유(`network.go:443-453`) · 꽉 찼으면 원작 인원 초과 사유(`network.go:409·418·427`)
-bool CRoomManager::RoomAdmits(int roomId, const char*& why, ConnectError& err) {
+bool CRoomManager::RoomAdmits(int roomId, const std::string& account, const char*& why, ConnectError& err) {
     const CRoom& room = Room(roomId);
     switch (room._phase) {
         case RoomPhase::Waiting: break;
@@ -168,6 +247,17 @@ bool CRoomManager::RoomAdmits(int roomId, const char*& why, ConnectError& err) {
             why = "판 중";
             err = ConnectError::Closed;
             return false;
+    }
+    // ★ 랭크 매칭 조각 6 — 판 전 랭크 방은 명단 안 이름만(목록에서 그 방을 골라 들어오는 남 · 같은 사유 — 원작이 닫힌 판의 명단 밖에 쓰는 것)
+    if (room._rankWait == CRoom::RankWait::Arriving && !account.empty()) {
+        bool listed = false;
+        for (const std::string& n : room._settings.roster) listed = listed || n == account;
+        if (!listed) {
+            ++_stats.rejectRoster;
+            why = "랭크 명단 밖";
+            err = ConnectError::Closed;
+            return false;
+        }
     }
     const int max = room._settings.maxPlayers;
     if (max > 0 && SeatsIn(roomId) >= static_cast<size_t>(max)) {
@@ -255,7 +345,7 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
             // ★ 10-16 작업 12a — 방 규칙(판 중 · 꽉 참) — 접속 시도 뒤에 바뀌었을 수 있다
             const char* why = "";
             ConnectError err = ConnectError::Closed;
-            if (!RoomAdmits(_openRoom, why, err)) {
+            if (!RoomAdmits(_openRoom, std::string(), why, err)) {
                 ++_stats.connectRejected;
                 RequestDisconnectSession(ev.sessionId);
                 return 0;
@@ -307,7 +397,7 @@ int CRoomManager::AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& 
     ++_stats.tokenCheck[static_cast<int>(c)];
     if (c != JoinTokenCheck::Ok) { why = JoinTokenCheckName(c); return kNoRoom; }
     if (!HasRoom(tok.roomId)) { ++_stats.tokenNoRoom; why = "방 없음"; return kNoRoom; }
-    if (!RoomAdmits(tok.roomId, why, err)) return kNoRoom;   // ★ 10-16 작업 12a — 일회용 번호를 쓰기 전에(거절된 토큰은 안 씀)
+    if (!RoomAdmits(tok.roomId, tok.account, why, err)) return kNoRoom;   // ★ 10-16 작업 12a — 일회용 번호를 쓰기 전에(거절된 토큰은 안 씀)
     if (consume && !_ledger.Consume(tok.nonce, tok.expiresAt, now)) { ++_stats.tokenReused; why = "이미 쓴 토큰"; return kNoRoom; }
     return tok.roomId;
 }
@@ -323,6 +413,7 @@ void CRoomManager::LogJoin(const char* what, const NetworkEvent& ev, int roomId,
 }
 
 int CRoomManager::BeginTick(uint32_t nowMs) {
+    CheckRankRooms(nowMs);    // ★ 랭크 매칭 조각 6 — 도착 판정이 빈 방 닫기보다 먼저(같은 틱에 닿으면 판정 · 셈이 남게)
     CloseEmptyRooms(nowMs);   // ★ 10-14 작업 9e
     int most = 0;
     for (auto& kv : _rooms) {
@@ -355,9 +446,11 @@ void CRoomManager::RunTick() {
             _roomEvents.push_back(e);
             if (!gotOutcome && room._phase == RoomPhase::Playing) ++room._roundEndsNoOutcome;   // 판 끝 깃발만 섰다(시험 손잡이)
         }
+        const bool rankLive = room._rankWait == CRoom::RankWait::Started;   // ★ 랭크 매칭 조각 6 — 판 끝 · 중단이 일반 방으로 돌리는 것을 센다
         if (!over && room._wasRoundOver) room.OnRoundRestarted();   // ★ 10-16 작업 13b — 판 끝 뒤 다시 열림(판이었으면 대기로)
         room._wasRoundOver = over;
         room.CheckMatchHeadcount();   // ★ 10-16 결함 ④ — 나감은 위 옮기기(`PullRequests`)에서 구성원에서도 빠졌다 · 돌렸으면 그 요청은 다음 옮기기 때
+        if (rankLive && room._rankWait == CRoom::RankWait::None) ++_stats.rankEnded;
         PullResults(room);            // ★ 10-19 MO 5단계 작업 2 — 판 끝 · 중단 결과
     }
 }
@@ -411,7 +504,7 @@ void CRoomManager::OnJoinRequested(const NetworkEvent& ev) {
         // ★ 10-16 작업 12a — 방 규칙(판 중 · 꽉 참)
         const char* why = "";
         ConnectError err = ConnectError::Closed;
-        if (!RoomAdmits(_openRoom, why, err)) {
+        if (!RoomAdmits(_openRoom, std::string(), why, err)) {
             ++_stats.joinRejected;
             RespondJoin(ev.sessionId, /*accept=*/false, { static_cast<uint8_t>(Op::SERVER_ERROR), static_cast<uint8_t>(err) });
             return;

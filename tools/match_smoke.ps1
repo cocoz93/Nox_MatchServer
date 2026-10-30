@@ -13,10 +13,13 @@
 #          더 보는 것 = 로비 끝 줄 토큰 통과 2 · 아이디만 0 · 시험 DB accounts 마지막 로그인 둘 · 세 기록(로비 · 게임 서버 · 로그인 서버)에 친 암호 · 토큰 글 0곳.
 #          사람 1회(인증서 · nox_auth DB 사용자 — tools\auth_setup.ps1 · config\auth_setup.sql) 전이면 종료 코드 77 = ctest 「건너뜀」(auth_smoke 와 같음) · -Db 와 같이 못 씀(계정이 시험 DB)
 #   -Ranked — ★ 레이팅 조각 2 — 게임 서버를 `--ranked-all` 로(판 결과 `ranked` 가 true 인지 · 없으면 false 인지 본다)
+#   -Rank — ★ 랭크 매칭 조각 6 — ① 을 랭크 줄로: 로비 `--rank-min 2 --rank-max 2` · alice · bob 이 DLL 판 4 꼴(`NOXCLIENT 4` · `NOXRANK JOIN` + 내 방 참가)로 줄 섬 →
+#          둘이 차는 순간 묶여 랭크 방(CREATE 꼬리 명단) → 각자 제 채널(#alice's_game · #bob's_game)로 같은 방 토큰 · ③ 은 `!start` 없이 명단이 다 게임에 들면 저절로 판 ·
+#          판 결과 ranked true · 판 끝 뒤 그 방은 일반 방(게임 서버 기록) · 로비 끝 줄 랭크 셈
 # 패킷 꼴은 smoke.ps1(접속 · 게임 진입 · 클릭) · v2_split_smoke.ps1(정품 접속 시도 100바이트 + 토큰 꼬리)과 같다.
 #   클라 머리 둘째 바이트 = 받은 서버 신뢰 순번(되받기) — smoke.ps1 은 짧아 고정값이지만 판은 수십 초라 따라간다 · 0.5초마다 핑
 # 끝은 닫기 이벤트(게임 서버 · 로비 — 끝 줄 셈을 찍고 나감) · 강제 종료는 응답이 없을 때만
-param([int]$LobbyPort = 14600, [int]$LinkPort = 14610, [int]$UdpPort = 18641, [switch]$Db, [switch]$Auth, [switch]$Ranked, [string]$Exe = '', [string]$LobbyExe = '', [string]$AuthExe = '', [switch]$KeepLogs)
+param([int]$LobbyPort = 14600, [int]$LinkPort = 14610, [int]$UdpPort = 18641, [switch]$Db, [switch]$Auth, [switch]$Ranked, [switch]$Rank, [string]$Exe = '', [string]$LobbyExe = '', [string]$AuthExe = '', [switch]$KeepLogs)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $repo 'build\Release'
@@ -83,6 +86,22 @@ function LoginJoin([string]$nick, [string]$channel, [string]$apgar = '') {
 }
 # ★ 레이팅 조각 4 — 로그인 공지의 점수 줄(영문 ASCII — ★ 10-30 한글은 정품 공지 줄에서 깨짐)
 function RatingLine([string]$text) { return ': 372 u :- ' + $text }
+# ★ 랭크 매칭 조각 6 — 로그인 → 랭크 줄 서기(DLL 판 4 꼴 — 참가 줄 앞 `NOXRANK JOIN`). 답은 묶인 뒤에 오므로 여기선 안 읽는다
+function LoginRank([string]$nick, [string]$apgar = '') {
+  $k = Open $LobbyPort
+  $hello = @('NOXCLIENT 4', "NICK $nick")
+  if ($apgar) { $hello += "apgar $apgar 0" }
+  Send $k ($hello + @('USER UserName HostName irc.westwood.com :RealName'))
+  $h = ReadUntil $k '376'
+  Send $k @('NOXRANK JOIN', "JOINGAME #$nick's_game 1 ")
+  return @{ k = $k; tok = ''; lines = @(); hello = $h }
+}
+function RankReply($x) {   # 묶인 뒤 온 참가 답(NOXTOKEN · JOINGAME · 332 · 353 · 366)
+  $g = ReadUntil $x.k '366'
+  $x.lines = $g
+  if ($g.Count -ge 1 -and $g[0].StartsWith('NOXTOKEN ')) { $x.tok = $g[0].Split(' ')[2] }
+}
+function RoomOf([string]$hex) { if ($hex.Length -lt 6) { return -1 }; [Convert]::ToInt32($hex.Substring(2, 2), 16) + 256 * [Convert]::ToInt32($hex.Substring(4, 2), 16) }
 
 # ── 패킷 클라 ──────────────────────────────────────────────
 $tryJoinHex = '00000e004a00610063006b00000000000000000000000000000000001c13616e01980309000000000000000049018501f07a' +
@@ -247,6 +266,7 @@ if ($Auth) {
 $lobbyArgs = @('--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '120')   # 연결 줄을 찍게 --quiet 없이
 if (-not $Db) { $lobbyArgs += '--no-db' }
 if (-not $Auth) { $lobbyArgs += '--no-auth' }   # ★ 로그인 암호 조각 4 — 패킷 클라는 토큰이 없다(설정에 [auth] 가 있어도 아이디만) · ★ 조각 6b -Auth 면 토큰 확인
+if ($Rank) { $lobbyArgs += @('--rank-min', '2', '--rank-max', '2') }   # ★ 랭크 매칭 조각 6 — 둘이 차는 순간 묶음(모으기 시간 안 기다림)
 $lp = Start-Process -FilePath $LobbyExe -PassThru -WindowStyle Hidden -RedirectStandardOutput $llog -ArgumentList $lobbyArgs
 $null = $lp.Handle
 Start-Sleep -Milliseconds 500
@@ -264,9 +284,25 @@ try {
   Check ((ReadLog $llog) -match '등록 — 실행') '게임 서버가 로비에 등록'
 
   # ①
-  $a = LoginJoin 'alice' "#alice's_game" $tokA   # ★ 조각 6b — -Auth 가 아니면 토큰이 빈 것 = 아이디만 옛 꼴
-  $b = LoginJoin 'bob' "#alice's_game" $tokB
-  Check ($a.tok.Length -eq 102 -and $b.tok.Length -eq 102) "① 로그인 → alice 새 방 · bob 그 방 — 토큰 둘($($a.tok.Length) · $($b.tok.Length))"
+  if ($Rank) {   # ★ 랭크 매칭 조각 6 — alice 가 먼저 줄 섬(방장 = 명단 첫 사람) · bob 이 서는 순간 묶임
+    $a = LoginRank 'alice' $tokA
+    Start-Sleep -Milliseconds 300
+    $a.k.c.Client.Blocking = $true
+    $quiet = -not $a.k.c.GetStream().DataAvailable   # 한 사람만 섰을 땐 답이 없다(묶이기 전)
+    $b = LoginRank 'bob' $tokB
+    RankReply $a; RankReply $b
+    $chanA = @($a.lines | Where-Object { $_ -like ":alice!u@h JOINGAME * :#alice's_game" }).Count
+    $chanB = @($b.lines | Where-Object { $_ -like ":bob!u@h JOINGAME * :#bob's_game" }).Count
+    $hostA = @($a.lines | Where-Object { $_ -like ": 353 u = #alice's_game :@alice,0,*" }).Count
+    $hostB = @($b.lines | Where-Object { $_ -like ": 353 u = #bob's_game :@bob,0,*" }).Count
+    Check ($quiet -and $a.tok.Length -eq 102 -and $b.tok.Length -eq 102 -and (RoomOf $a.tok) -eq (RoomOf $b.tok) -and (RoomOf $a.tok) -ge 0 -and
+           $chanA -eq 1 -and $chanB -eq 1 -and $hostA -eq 1 -and $hostB -eq 1) `
+      "① 랭크 줄 — alice 혼자일 땐 답 없음 $quiet · bob 이 서자 둘 다 참가 답(각자 제 채널 $chanA · $chanB · 353 방장 = 자기 $hostA · $hostB) · 같은 방 토큰(방 $(RoomOf $a.tok) · $(RoomOf $b.tok))"
+  } else {
+    $a = LoginJoin 'alice' "#alice's_game" $tokA   # ★ 조각 6b — -Auth 가 아니면 토큰이 빈 것 = 아이디만 옛 꼴
+    $b = LoginJoin 'bob' "#alice's_game" $tokB
+    Check ($a.tok.Length -eq 102 -and $b.tok.Length -eq 102) "① 로그인 → alice 새 방 · bob 그 방 — 토큰 둘($($a.tok.Length) · $($b.tok.Length))"
+  }
   if ($Auth) {   # ★ 레이팅 조각 4 — 토큰 로그인은 점수를 묻는다(판 전이라 둘 다 랭크 판 없음 · 376 바로 앞 줄)
     $none = RatingLine 'Rating 1000 - No ranked games yet'
     Check ($a.hello.Count -ge 2 -and $a.hello[-2] -ceq $none -and $b.hello[-2] -ceq $none) "① 로그인 공지 — alice · bob 「Rating 1000 - No ranked games yet」(376 바로 앞)"
@@ -278,19 +314,30 @@ try {
   $ea = Enter $ca
   $eb = Enter $cb
   Check ($ea.joined -and $ea.accepted -and $eb.joined -and $eb.accepted) "② 접속 시도 → JOIN_OK · CONNECT → 수락 + 키 — alice $($ea.joined)/$($ea.accepted) · bob $($eb.joined)/$($eb.accepted)"
-  $inGame = Pump { $ca.upd -ge 3 -and $cb.upd -ge 3 } 6
-  Check $inGame "② 둘 다 게임 안 — 상태 갱신 alice $($ca.upd) · bob $($cb.upd)"
+  if ($Rank) {   # ★ 랭크 매칭 조각 6 — 둘이 준비하는 순간 판이 열려 맵이 바뀐다(이 패킷 클라는 바뀐 맵에 준비를 다시 안 보내 갱신이 멎는다) → 서버 기록으로
+    $inGame = Pump { (ReadLog $glog) -match '\[방\] \d+ 랭크 — 명단이 다 옴' } 6
+    Check $inGame "② 둘 다 게임 안 · 준비 — 게임 서버 [방] 랭크 「명단이 다 옴」(상태 갱신 alice $($ca.upd) · bob $($cb.upd) — 참고)"
+  } else {
+    $inGame = Pump { $ca.upd -ge 3 -and $cb.upd -ge 3 } 6
+    Check $inGame "② 둘 다 게임 안 — 상태 갱신 alice $($ca.upd) · bob $($cb.upd)"
+  }
 
   # ③
-  Chat $ca '!start'
-  $playing = Pump { (ReadLog $llog) -match '>> ROOM \d+ 2 \d+ 1 ' } 8
-  Check $playing '③ 방장 alice `!start` → 로비 거울에 판 중(ROOM … 사람 2 · 판 중 1)'
+  if ($Rank) {   # ★ 랭크 매칭 조각 6 — 명단(alice · bob)이 다 게임에 들면 저절로 판(`!start` 없음)
+    $playing = Pump { (ReadLog $llog) -match '>> ROOM \d+ 2 \d+ 1 ' } 8
+    Check ($playing -and (ReadLog $glog) -match '\[방\] \d+ 랭크 — 명단이 다 옴 — 판\(게임 안 명단 2 / 2') '③ 랭크 — 명단이 다 게임에 들자 저절로 판(`!start` 없음 · 게임 서버 [방] 랭크 줄) → 로비 거울에 판 중(ROOM … 사람 2 · 판 중 1)'
+  } else {
+    Chat $ca '!start'
+    $playing = Pump { (ReadLog $llog) -match '>> ROOM \d+ 2 \d+ 1 ' } 8
+    Check $playing '③ 방장 alice `!start` → 로비 거울에 판 중(ROOM … 사람 2 · 판 중 1)'
+  }
 
   # ④ — 진단 죽임은 첫 사람이 게임에 든 뒤 300틱(약 10초)
   $saved = Pump { (ReadLog $llog) -match '\[판 결과\] \{"match"' } 25
   Check $saved '④ 판 끝 → 로비가 판 결과를 받음([판 결과] 줄)'
   $null = Pump { (ReadLog $llog) -match '<< SAVED \S+ ' } 5   # 로비가 SAVED 를 보낸 것을 보고(저장소 답은 다음 바퀴)
   $null = Pump { $false } 1   # SAVED 가 게임 서버에 닿을 틈
+  if ($Rank) { $null = Pump { (ReadLog $glog) -match '이 방은 이제 일반 방' } 20 }   # ★ 랭크 매칭 조각 6 — 판 끝 쉬는 시간 뒤 다시 열릴 때 일반 방으로
   $a.k.c.Close(); $b.k.c.Close()
   if ($Auth) {   # ★ 레이팅 조각 4
     Start-Sleep -Milliseconds 500   # 로비가 옛 접속 끊김을 먼저 보게(안 그러면 「옛 접속 끊음」 갈래로 샌다 — 로비 바퀴 100ms) — 판 뒤 alice 가 다시 로그인(새 토큰 — 일회용) → 랭크 판이면 이긴 점수 · 일반 판이면 그대로
@@ -299,8 +346,8 @@ try {
     Send $k2 @('NOXCLIENT 3', 'NICK alice', "apgar $tokA2 0", 'USER UserName HostName irc.westwood.com :RealName')
     $h2 = ReadUntil $k2 '376'
     $k2.c.Close()
-    $want = if ($Ranked) { RatingLine 'Rating 1010 - Rank #1' } else { RatingLine 'Rating 1000 - No ranked games yet' }
-    Check ($h2.Count -ge 2 -and $h2[-2] -ceq $want) "④ 판 뒤 alice 다시 로그인 — 공지 「$(if ($Ranked) { 'Rating 1010 - Rank #1' } else { 'Rating 1000 - No ranked games yet' })」(받은 줄 $($h2.Count))"
+    $want = if ($Ranked -or $Rank) { RatingLine 'Rating 1010 - Rank #1' } else { RatingLine 'Rating 1000 - No ranked games yet' }
+    Check ($h2.Count -ge 2 -and $h2[-2] -ceq $want) "④ 판 뒤 alice 다시 로그인 — 공지 「$(if ($Ranked -or $Rank) { 'Rating 1010 - Rank #1' } else { 'Rating 1000 - No ranked games yet' })」(받은 줄 $($h2.Count))"
   }
 } catch {
   Check $false "예외: $($_.Exception.Message)"
@@ -322,7 +369,15 @@ $j = $null; try { $j = $fileLines[0] | ConvertFrom-Json } catch { }
 $accs = @(); if ($j) { $accs = @($j.players | ForEach-Object { $_.account }) }
 Check ($j -and $j.endReason -eq 'score_player' -and $j.winner.kind -eq 'player' -and $j.winner.account -eq 'alice' -and ($accs -contains 'alice') -and ($accs -contains 'bob')) `
   "판 결과 — 끝 까닭 $($j.endReason) · 승자 $($j.winner.account) · 사람 $($accs -join ',')"
-Check ($j -and $j.ranked -is [bool] -and $j.ranked -eq [bool]$Ranked) "판 결과 — 랭크 $($j.ranked)(기대 $([bool]$Ranked) · -Ranked = --ranked-all)"   # ★ 레이팅 조각 2
+Check ($j -and $j.ranked -is [bool] -and $j.ranked -eq ([bool]$Ranked -or [bool]$Rank)) "판 결과 — 랭크 $($j.ranked)(기대 $([bool]$Ranked -or [bool]$Rank) · -Ranked = --ranked-all · -Rank = 랭크 줄)"   # ★ 레이팅 조각 2 · 랭크 매칭 조각 6
+if ($Rank) {   # ★ 랭크 매칭 조각 6 — 로비 · 게임 서버 기록과 끝 줄(명단 · 판 끝 뒤 일반 방 · 셈)
+  Check ($tl -match '\[랭크 — 방\] 요청 \d+ → 게임 방 \d+ · 명단 alice,bob · 참가 답 2명' -and $tg -match '\[로비 연결\] 랭크 방 \d+ — 요청 \d+ · 명단 alice,bob\(2명\)' -and
+         $tg -match '\[방\] \d+ 랭크 — 명단 alice,bob\(2명\)') '랭크 — 로비 [랭크 — 방] 명단 alice,bob · 참가 답 2 · 게임 서버 CREATE 꼬리 명단 · [방] 랭크 방 줄'
+  Check ($tg -match '랭크 판 판 끝 — 이 방은 이제 일반 방') '랭크 — 판 끝 뒤 그 방은 일반 방(게임 서버 기록)'
+  Check ($tl -match '끝 — 랭크 줄 섬 2 · 빠짐\(줄\) 창 닫힘 0 · LIST 0 · 끊김 0 · 빠짐\(요청 중\) 창 닫힘 0 · LIST 0 · 끊김 0 · 빠짐 알림 버림 0 · 묶임 2\(최대 1묶음 · 모으기 끝 0묶음\) · 참가 답 2 · 되돌림 0 · 끝날 때 줄 0 · 랭크 방 요청 1\(섬 1 · 실패 0 · 시간 초과 0 · 끝날 때 기다림 0\)') `
+    '로비 끝 줄 — 랭크 줄 섬 2 · 묶임 2(최대 1묶음) · 참가 답 2 · 랭크 방 요청 1(섬 1)'
+  Check ($tg -match '새 방 물음 1\(만듦 1 · 실패 0\) · 그중 랭크 1') '게임 서버 끝 줄 — 새 방 물음 1(만듦 1) · 그중 랭크 1'
+}
 Check ($tl -match '판 저장 요청 1\(SAVED ok 1 · dup 0 · 실패 0 · 끊긴 뒤 답 0 · 모르는 답 0 · 끝날 때 남음 0\)') '로비 끝 줄 — 판 저장 요청 1(SAVED ok 1)'
 Check ($tg -match '판 결과 SAVED\(ok 1 · dup 0 · bad 0 · 모르는 판 0\)' -and $tg -match '쥔 채 끝 0') '게임 서버 끝 줄 — SAVED ok 1 · 쥔 채 끝 0'
 if ($Auth) {

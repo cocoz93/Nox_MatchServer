@@ -111,6 +111,8 @@ public:
         _curMapKey = s.mapPath.empty() ? std::string() : MapKeyOf(s.mapPath);   // ★ 10-16 작업 13b — 지금 맵 · 모드 = 방을 만든 맵 · 모드
         _curMode = s.mode;
         _hostName = s.creator;   // ★ 10-16 결함 ② — 첫 방장 이름은 만든 사람(들어오기 전에도 목록 · 채널이 그 이름)
+        _rankWait = s.ranked && !s.roster.empty() ? RankWait::Arriving : RankWait::None;   // ★ 랭크 매칭 조각 6
+        _rankArmed = false;
     }
     // ★ 10-16 작업 13b — 판을 열 때 붙을 맵 원본(서버가 뜰 때 읽은 맵 목록 — 방 관리자가 만들 때 준다 · 시험은 직접)
     void SetMapCatalog(const MapCatalog* maps) { _maps = maps; }
@@ -140,7 +142,8 @@ public:
     // ── ★ 10-16 작업 12b — 채팅 명령(`RoomTick.cpp`). 방 관리자가 게임에 이벤트를 넘긴 뒤 부른다 — 게임이 쌓은 명령(`Server::SwapOutChatCommands`)을 처리 ──
     //   `!start` = 방장 · 대기 · 게임 안 사람 `kMinPlayers` 이상이면 판 — 대전 맵으로 바꾼다(★ 13b · 대전 맵 · 대기 맵 원본이 없으면 `NoMap`).
     //   결과는 갈래마다 센다
-    enum class CmdOutcome : uint8_t { Started, NotHost, NotWaiting, TooFew, NoMap, Unknown, kCount };
+    //   ★ 랭크 매칭 조각 6 — `RankAuto` = 명단 도착을 기다리는 랭크 방(판은 저절로 시작 — 방장도 못 엶)
+    enum class CmdOutcome : uint8_t { Started, NotHost, NotWaiting, TooFew, NoMap, RankAuto, Unknown, kCount };
     static const char* CmdOutcomeName(CmdOutcome o);
     static constexpr size_t kMinPlayers = 2;   // 판을 돌릴 최소 인원(`Docs/ROOMS_DESIGN.md` 「10-13 정한 것」)
     void HandleChatCommands();
@@ -158,6 +161,14 @@ public:
     void SetUnixClock(std::function<uint32_t()> now) { _unixNow = std::move(now); }
     void SetEpoch(uint32_t e) { _epoch = e; }
 
+    // ── ★ 랭크 매칭 조각 6(`Docs/RANK_MATCH_PLAN.md`) — 로비 랭크 줄이 묶은 방(방 설정 ranked + 명단). 판 전엔 명단 밖 입장을 거절하고,
+    //   명단이 다 게임 안에 들면 저절로 판 · 방이 선 뒤 도착 한도(`kRankArriveMs`)에 `kMinPlayers` 이상이면 온 사람으로 · 밑이면 랭크를 푼다(일반 방).
+    //   랭크는 그렇게 연 판 하나만 — 끝나거나 중단되면 일반 방(같은 사람끼리 `!start` 로 점수를 쌓지 않게). 판정은 방 관리자가 틱 앞에(`BeginTick`) ──
+    enum class RankWait : uint8_t { None, Arriving, Started };
+    RankWait RankState() const { return _rankWait; }
+    // 명단 가운데 지금 게임 안에 든 사람 수(같은 이름은 한 번)
+    size_t RankArrived() const;
+
 private:
     friend class CRoomManager;
     // ★ 10-16 작업 13b — 판 열기(대전 맵으로 · 대기 맵을 다음 판 맵으로 걸어 둠) · 판 끝 뒤 다시 열림(방 관리자가 판 끝 참 → 거짓을 보고 부른다)
@@ -170,6 +181,8 @@ private:
     void CheckMatchHeadcount();
     // ★ 10-19 MO 5단계 작업 2 — 게임의 판 끝 기록 번호가 바뀌었으면 꺼낸다(판 중이면 결과 · 대기 중이면 셈만). 새 기록이 있었으면 참
     bool CollectRoundOutcome();
+    // ★ 랭크 매칭 조각 6 — 랭크로 연 판이 끝남 · 중단 → 일반 방(방 설정 ranked · 명단을 지움). 판 결과는 그 앞에 지었다
+    void EndRankedMatch(const char* why);
     void PushMatchResult(bool aborted, const RoundOutcome& o);   // 중단은 `o` 의 까닭 · 승자를 안 본다
     struct RosterEntry {
         int64_t sessionId = -1;
@@ -221,6 +234,10 @@ private:
     unsigned long long _waitingRoundEnds = 0;
     unsigned long long _roundEndsNoOutcome = 0;
     unsigned long long _outcomesSkipped = 0;
+    // ★ 랭크 매칭 조각 6 — 도착 기다림(방 설정이 랭크 + 명단이면 `SetSettings` 가 켬) · 한도는 방 관리자가 처음 본 틱 시각부터
+    RankWait _rankWait = RankWait::None;
+    bool _rankArmed = false;
+    uint32_t _rankSinceMs = 0;
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).
@@ -258,6 +275,15 @@ struct CRoomStats {
     unsigned long long rejectFull = 0;         // 방 최대 인원(`RoomSettings::maxPlayers`) — `ConnectError::Full`
     unsigned long long hostChanges = 0;        // 방장이 생기거나 바뀜(첫 사람 포함 · 마지막 사람이 나가 비는 것은 안 셈)
     unsigned long long hostRenames = 0;        // ★ 10-16 결함 ② — 방장 이름(채널 이름)이 다른 이름으로 바뀜
+    // ★ 랭크 매칭 조각 6 — 랭크 방(명단 있는 방) 하나는 아래 다섯 중 하나로 도착 기다림을 끝낸다(살아 있는 방의 기다림은 `RankWaiting`)
+    unsigned long long rankRooms = 0;          // 명단 있는 랭크 방을 만듦
+    unsigned long long rankStartAll = 0;       // 명단이 다 게임 안에 듦 → 판
+    unsigned long long rankStartDeadline = 0;  // 도착 한도에 `kMinPlayers` 이상 → 온 사람으로 판
+    unsigned long long rankUnranked = 0;       // 도착 한도에 모자람 → 랭크 풂(일반 방)
+    unsigned long long rankNoMap = 0;          // 시작할 때 대전 맵 · 대기 맵 원본이 없음 → 랭크 풂(일반 방)
+    unsigned long long rankClosedWaiting = 0;  // 기다리는 동안 방이 닫힘
+    unsigned long long rankEnded = 0;          // 랭크로 연 판이 끝나거나 중단돼 일반 방이 됨
+    unsigned long long rejectRoster = 0;       // 판 전 랭크 방에 명단 밖 이름(토큰 · 접속 시도와 CONNECT 를 합쳐 셈) — `ConnectError::Closed`
 };
 
 // ★ 10-14 플랜 B 작업 9e — 돌고 있는 방 하나의 사실. 로비가 목록을 그린다 — 목록의 정본은 방 관리자의 이것 하나
@@ -280,6 +306,9 @@ public:
     static constexpr int kNoRoom = -1;
     // ★ 10-14 작업 9e — 빈 방 닫기까지(`RoomSettings::closeWhenEmpty`). 입장 토큰 수명 — 방을 만든 사람이 토큰을 받고 들어올 동안은 둔다
     static constexpr uint32_t kEmptyRoomCloseMs = kJoinTokenLifetimeSec * 1000;
+    // ★ 랭크 매칭 조각 6 — 랭크 방의 도착 한도(방을 처음 본 틱부터). 기본값 근거 = 입장 토큰 수명(`Docs/RANK_MATCH_PLAN.md` 「기본값으로 둔 것」) —
+    //   토큰이 만료되면 어차피 못 들어오므로 그보다 길 까닭이 없다. 빈 방 닫기와 같은 틱에 닿으면 판정이 먼저(`BeginTick`)
+    static constexpr uint32_t kRankArriveMs = kJoinTokenLifetimeSec * 1000;
 
     CRoomManager() = default;   // ★ 10-14 작업 9d — 방 없이 시작한다(옛 「방 0 을 만든다」)
     CRoomManager(const CRoomManager&) = delete;
@@ -338,16 +367,23 @@ public:
     void SwapOutNetworkRequests(std::vector<NetworkRequest>& into);
     void SwapOutRoomEvents(std::vector<RoomEvent>& into) { into.swap(_roomEvents); _roomEvents.clear(); }
     const CRoomStats& Stats() const { return _stats; }
+    size_t RankWaiting() const;   // ★ 랭크 매칭 조각 6 — 도착을 기다리는 랭크 방 수
+    // ★ 랭크 매칭 조각 6 — 도착 한도(기본 `kRankArriveMs`). 시험이 짧게 — 30초를 한 번에 건너뛰면 들어와 있는 가짜 클라가 시간 초과로 끊긴다
+    void SetRankArriveMs(uint32_t ms) { _rankArriveMs = ms; }
+    uint32_t RankArriveMs() const { return _rankArriveMs; }
 
 private:
     void OnJoinRequested(const NetworkEvent& ev);
+    // ★ 랭크 매칭 조각 6 — 도착 기다리는 랭크 방마다 판정(`BeginTick` 앞 — 빈 방 닫기보다 먼저)
+    void CheckRankRooms(uint32_t nowMs);
     size_t Forward(int roomId, const NetworkEvent& ev);
     // 토큰으로 방을 정한다 — 접속 시도(확인만)와 `CONNECTED`(`consume` — 일회용 번호를 씀)가 같이 쓴다.
     //   못 받으면 `kNoRoom` · `why` = 까닭(셈은 안에서) · `err` = 접속 시도 거절에 실을 사유(★ 10-16 작업 12a — 방 규칙이면 그 사유)
     int AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& tok, const char*& why, ConnectError& err);
     // ★ 10-16 작업 12a — 방 규칙(판 중 · 최대 인원)으로 받을 수 있나. 못 받으면 false · `why` · `err`(셈은 안에서).
     //   토큰 방식과 열린 방식이 같이 쓴다 — 방 안 세션은 아직 세션표에 없는 이 사람을 안 셈
-    bool RoomAdmits(int roomId, const char*& why, ConnectError& err);
+    //   ★ 랭크 매칭 조각 6 — `account` = 토큰의 로비 이름(열린 방식은 빈 것 — 명단을 안 본다). 판 전 랭크 방은 명단 안 이름만
+    bool RoomAdmits(int roomId, const std::string& account, const char*& why, ConnectError& err);
     size_t SeatsIn(int roomId) const;
     // ★ 10-16 작업 12a — 구성원 넣기 · 빼기(방장이 바뀌면 셈 · 한 줄)
     void AddMember(CRoom& room, int64_t sessionId, const std::string& account);
@@ -380,6 +416,7 @@ private:
     std::vector<NetworkRequest> _pull;            // `PullRequests` 가 쓰는 그릇(다시 씀)
     std::vector<RoomEvent> _roomEvents;
     uint32_t _epoch = UnixNow();                  // ★ 10-19 MO 5단계 작업 2 — 판 번호 앞자리(방을 만들 때 넘긴다)
+    uint32_t _rankArriveMs = kRankArriveMs;       // ★ 랭크 매칭 조각 6
     CRoomStats _stats;
 };
 

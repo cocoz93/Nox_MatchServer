@@ -211,6 +211,8 @@ int CLobbyClient::CreateRoomFor(const std::string& creator, bool ranked, const s
     s.standalone = true;    // 맵을 직접 차린다(녹음 서두 없음)
     s.closeWhenEmpty = true;
     s.maxPlayers = kRoomMaxPlayers;   // ★ 10-16 작업 12a
+    // ★ 랭크 매칭 조각 6 — 랭크 방은 명단 전부를 받는다(일반 방 8 은 10-16 사용자 결정 · 랭크 최대는 로비 설정 — 기본 12 · 10-30 사용자)
+    if (ranked && roster.size() > static_cast<size_t>(s.maxPlayers)) s.maxPlayers = static_cast<int>(roster.size());
     s.bots.clear();         // 봇은 실행 인자의 방 몫(네트워크 스레드를 띄운 뒤라 세울 수도 없다)
     const int id = _rooms.CreateRoom(s);
     if (id == CRoomManager::kNoRoom) why = "방 차리기 실패(게임 서버 [방] 줄)";

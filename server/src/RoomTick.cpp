@@ -772,6 +772,7 @@ const char* nox::CRoom::CmdOutcomeName(CmdOutcome o) {
         case CmdOutcome::NotWaiting: return "대기 아님";
         case CmdOutcome::TooFew: return "인원 모자람";
         case CmdOutcome::NoMap: return "맵 없음";
+        case CmdOutcome::RankAuto: return "랭크 — 저절로 시작";
         case CmdOutcome::Unknown: return "모르는 명령";
         case CmdOutcome::kCount: break;
     }
@@ -792,6 +793,7 @@ void nox::CRoom::HandleChatCommands() {
         if (word == "!start") {
             const RoomMember* h = Host();
             if (!h || h->sessionId != c.sessionId) r = CmdOutcome::NotHost;
+            else if (_rankWait == RankWait::Arriving) r = CmdOutcome::RankAuto;   // ★ 랭크 매칭 조각 6 — 명단 도착을 기다리는 중
             else if (_phase != RoomPhase::Waiting) r = CmdOutcome::NotWaiting;
             else if (_game.inGameCount() < kMinPlayers) r = CmdOutcome::TooFew;
             else if (!CanStartMatch()) r = CmdOutcome::NoMap;   // ★ 13b — 대전 맵 · 대기 맵 원본이 맵 목록에 있어야
@@ -815,6 +817,9 @@ void nox::CRoom::HandleChatCommands() {
             }
             case CmdOutcome::NotWaiting:
                 _game.SendNoticeTo(c.sessionId, "A match is already in progress.");
+                break;
+            case CmdOutcome::RankAuto:
+                _game.SendNoticeTo(c.sessionId, "Ranked match starts automatically when everyone arrives.");
                 break;
             case CmdOutcome::TooFew:
                 std::snprintf(line, sizeof(line), "Need at least %zu players to start.", kMinPlayers);
@@ -956,6 +961,38 @@ void nox::CRoom::OnRoundRestarted() {
     _curMode = _settings.mode;
     _game.SendNotice("Back to the waiting room. Host: !start");
     _game.Log("[판] 끝 — 대기 맵 %s 로 돌아옴(지금 맵 %s)\n", _curMapKey.c_str(), _game.MapFileName().c_str());
+    EndRankedMatch("판 끝");   // ★ 랭크 매칭 조각 6 — 판 결과(ranked)는 판 끝에 이미 지었다(`CollectRoundOutcome`)
+}
+
+// ★ 랭크 매칭 조각 6 — 머리 주석은 `RoomManager.h` `EndRankedMatch`. 랭크로 연 판이 아니면(일반 · `--ranked-all` 시험 방) 아무것도 안 한다
+void nox::CRoom::EndRankedMatch(const char* why) {
+    if (_rankWait != RankWait::Started) return;
+    _rankWait = RankWait::None;
+    _settings.ranked = false;
+    _settings.roster.clear();
+    _game.SendNotice("Ranked match over. This is a normal room now.");
+    _game.Log("[판] 랭크 판 %s — 이 방은 이제 일반 방\n", why);
+}
+
+// ★ 랭크 매칭 조각 6 — 명단 가운데 지금 게임 안에 들고 준비까지 마친 사람(세션 → 구성원의 로비 이름 → 명단). 같은 이름이 둘이면 한 번.
+//   준비까지 — 게임 안(`inGame`)은 입장(0x20)에서 바로 켜지는데 클라는 그 뒤 대기 맵을 다 싣고서야 준비(0xc0)를 보낸다.
+//   준비 전에 판을 열면 맵을 싣는 중에 대전 맵으로 바뀐다(10-30 match_smoke -Rank — 마지막 사람의 입장 틱에 판이 열림)
+size_t nox::CRoom::RankArrived() const {
+    std::vector<RoundStanding> ps;
+    std::vector<RoundTeamScore> ts;
+    _game.SnapshotStandings(ps, ts);
+    std::vector<bool> seen(_settings.roster.size(), false);
+    size_t n = 0;
+    for (const RoundStanding& p : ps)
+        for (const RoomMember& m : _members) {
+            if (m.sessionId != p.sessionId || m.account.empty() || !_game.ClientReady(p.sessionId)) continue;
+            for (size_t i = 0; i < _settings.roster.size(); ++i)
+                if (!seen[i] && _settings.roster[i] == m.account) {
+                    seen[i] = true;
+                    ++n;
+                }
+        }
+    return n;
 }
 
 // ★ 10-16 결함 ④ — 머리 주석은 `RoomManager.h` `CheckMatchHeadcount`. 방 관리자가 틱 뒤(나감을 걷어 낸 뒤 · 판 끝 처리 뒤) 부른다
@@ -986,4 +1023,5 @@ void nox::CRoom::CheckMatchHeadcount() {
     ++_matchAborts;
     _game.SendNotice("Not enough players. Back to the waiting room. Host: !start");
     _game.Log("[판] 사람 모자람(게임 안 %zu < %zu) — 대기 맵 %s 로\n", left, kMinPlayers, wait->key.c_str());
+    EndRankedMatch("중단");   // ★ 랭크 매칭 조각 6 — 중단 결과(ranked)는 위에서 지었다
 }

@@ -24780,11 +24780,13 @@ std::shared_ptr<MapOriginal> FakeMapOriginal(const std::string& key, uint32_t cr
 }
 // 로비가 만든 방처럼 — 대기 맵 원본에 붙은 독립 모드 · 채팅 · 대전 맵(열쇠가 목록에 없으면 빈 것) · 최대 8 · 맵 목록
 int MakeLobbyLikeRoom(nox::CRoomManager& rooms, const MapCatalog& cat, const std::string& waitKey, const std::string& battleKey,
-                      int battleScoreLimit = 0) {
+                      int battleScoreLimit = 0, const std::vector<std::string>& roster = {}) {
     const auto wait = cat.Find(waitKey);
     const auto battle = cat.Find(battleKey);
     RoomSettings rs;
     rs.battleScoreLimit = battleScoreLimit;   // ★ 10-16 작업 13d
+    rs.ranked = !roster.empty();              // ★ 랭크 매칭 조각 6 — 명단이 있으면 로비 랭크 줄이 묶은 방
+    rs.roster = roster;
     rs.mapPath = wait ? wait->path : std::string();
     rs.mode = "chat";
     rs.battleMapPath = battle ? battle->path : std::string();
@@ -26757,6 +26759,213 @@ void TestMatchRecorder() {
 // ── ★ 10-16 작업 13b 실물 — 진짜 맵 파일(So_LOD · Estate)로 서버처럼 차린 방에서 판 열기 · 판 끝(게임이 깔려 있을 때만) ─────────
 //   서버가 뜰 때와 같은 길(`LoadGameFiles` → `BuildGameTables` → `BuildMapCatalog`) · 방은 로비가 만드는 설정 그대로 방 관리자의 만들기 입구로.
 //   본다 — `USE_MAP` 의 이름 · CRC 가 맵 원본 값 · 사람 자리가 그 맵의 PlayerStart 가운데 하나 근처 · 바닥 물건 · 문 수가 그 맵 원본의 처음 상태
+// ── ★ 랭크 매칭 조각 6 — 게임 서버의 로비 연결이 받은 랭크 CREATE → 방 설정(ranked · 명단 · 최대 인원 = max(8, 명단 수)) ─────────
+void TestLobbyClientRank() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    char m[400];
+    nox::CRoomManager rooms;
+    nox::CLobbyClient::Config cfg;
+    for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 1);
+    cfg.epoch = 1760000000u;
+    cfg.registerIp = 0x7f000002u;
+    cfg.port = 18590;
+    const std::vector<std::string> waits = {"C:\\Nox\\maps\\So_LOD\\So_LOD.map"};
+    const std::vector<std::string> battles = {"C:\\Nox\\maps\\Estate\\Estate.map"};
+    nox::CLobbyClient lc(rooms, cfg, RoomSettings{}, waits, battles);
+    lc.SetSeed(3);
+    lc.SetClock([] { return 1000u; });
+    auto ev = [](Ev::Type t, const std::string& line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = 7;
+        e.lobbyLine = line;
+        e.lobbyWhy = "test";
+        return e;
+    };
+    std::vector<Rq> rq;
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, ""), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkHello("00112233445566778899aabbccddeeff")), rq);
+    rq.clear();
+    std::vector<std::string> ten;
+    for (int i = 0; i < 10; ++i) ten.push_back("p" + std::to_string(i));
+    auto roomOf = [&](const std::string& creator) {
+        for (const auto& f : rooms.ListRooms()) if (f.creator == creator) return f.roomId;
+        return -1;
+    };
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkCreate(50, "p0", true, ten)), rq);
+    std::vector<std::string> l1;
+    for (const Rq& r : rq) l1.push_back(r.lobbyLine);
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkCreate(51, "q0", true, {"q0", "q1", "q2"})), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkCreate(52, "r0")), rq);
+    const int r10 = roomOf("p0"), r3 = roomOf("q0"), rN = roomOf("r0");
+    const RoomSettings* s10 = r10 >= 0 ? &rooms.Room(r10).Settings() : nullptr;
+    const RoomSettings* s3 = r3 >= 0 ? &rooms.Room(r3).Settings() : nullptr;
+    const RoomSettings* sN = rN >= 0 ? &rooms.Room(rN).Settings() : nullptr;
+    using W = nox::CRoom::RankWait;
+    std::snprintf(m, sizeof(m), "랭크 CREATE — 명단 10 → 방 %d [%s] 랭크 %d · 명단 %zu · 최대 %d | 명단 3 → 최대 %d · 랭크 %d | 일반 → 랭크 %d · 명단 %zu · 최대 %d | 셈 물음 %llu · 랭크 %llu · 랭크 방 %llu",
+                  r10, l1.empty() ? "" : l1[0].c_str(), s10 ? (int)s10->ranked : -1, s10 ? s10->roster.size() : 0, s10 ? s10->maxPlayers : -1,
+                  s3 ? s3->maxPlayers : -1, s3 ? (int)s3->ranked : -1, sN ? (int)sN->ranked : -1, sN ? sN->roster.size() : 99, sN ? sN->maxPlayers : -1,
+                  lc.Stats().creates, lc.Stats().createsRanked, rooms.Stats().rankRooms);
+    Check(s10 && s3 && sN && l1.size() == 2 && l1[0] == "ROOM " + std::to_string(r10) + " 0 10 0 p0's%20game p0 p0 so_lod chat" &&
+              l1[1] == "CREATED 50 " + std::to_string(r10) && s10->ranked && s10->roster == ten && s10->maxPlayers == 10 &&
+              rooms.Room(r10).RankState() == W::Arriving && s3->ranked && s3->roster.size() == 3 &&
+              s3->maxPlayers == nox::CLobbyClient::kRoomMaxPlayers && rooms.Room(r3).RankState() == W::Arriving && !sN->ranked &&
+              sN->roster.empty() && sN->maxPlayers == nox::CLobbyClient::kRoomMaxPlayers && rooms.Room(rN).RankState() == W::None &&
+              lc.Stats().creates == 3 && lc.Stats().createsRanked == 2 && lc.Stats().created == 3 && rooms.Stats().rankRooms == 2,
+          m);
+}
+
+// ── ★ 랭크 매칭 조각 6 — 랭크 방: 판 전 명단 밖 거절 · 기다리는 중 !start 막음 · 다섯 갈래(다 옴 · 한도에 최소 이상 · 한도에 모자람 ·
+//    맵 없음 · 기다리는 중 닫힘) · 랭크 판 중단 → 결과 ranked · 일반 방으로 · 셈의 합 ─────────
+void TestRankRoom() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    using O = nox::CRoom::CmdOutcome;
+    using W = nox::CRoom::RankWait;
+    using RM = nox::CRoomManager;
+    char m[480];
+    auto tryJoin = [&](nox::CSyncHost& h, const std::vector<uint8_t>& tail, const std::string& p1, std::vector<nox::OutPacket>& out) {
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        h.OnPacket(p1, tj.data(), tj.size(), out);
+    };
+    // 들어와 준비까지(`ready` 거짓이면 입장만 — 게임 안이지만 맵을 싣는 중)
+    const uint8_t readyPkt[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_READY) };
+    auto join = [&](nox::CSyncHost& h, const std::vector<uint8_t>& tail, const std::string& p1, const std::string& p2,
+                    std::vector<nox::OutPacket>& out, bool ready = true) {
+        tryJoin(h, tail, p1, out);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        h.OnPacket(p2, cn.data(), cn.size(), out);
+        const int64_t sid = h.Network().SessionIdOf(p2);
+        const auto ac = AcceptPkt("Jack");
+        h.OnPacket(p2, ac.data(), ac.size(), out);
+        if (ready) h.OnPacket(p2, readyPkt, sizeof(readyPkt), out);
+        return sid;
+    };
+    auto chat = [](const std::string& text) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::TEXT_MESSAGE));
+        p.push_back(0); p.push_back(0); p.push_back(0x02);
+        p.push_back(0); p.push_back(0); p.push_back(0); p.push_back(0);
+        p.push_back(static_cast<uint8_t>(text.size()));
+        p.push_back(0); p.push_back(0);
+        for (const char c : text) p.push_back(static_cast<uint8_t>(c));
+        return p;
+    };
+    auto errTo = [](const std::vector<nox::OutPacket>& out, const std::string& to, nox::ConnectError e) {
+        const std::vector<uint8_t> want = { static_cast<uint8_t>(nox::Op::SERVER_ERROR), static_cast<uint8_t>(e) };
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to)) if (x == want) ++n;
+        return n;
+    };
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    RM& rooms = srv.Rooms();
+    rooms.SetRankArriveMs(3000);   // 30초를 건너뛰면 들어와 있는 가짜 클라가 시간 초과로 끊긴다(값만 짧게 · 규칙은 같음)
+    MapCatalog cat;
+    cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+    cat.maps.push_back(FakeMapOriginal("estate", 0x22222222u, 3000.0f, 3000.0f));
+    const int r1 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"amy", "bob"});          // ① 다 옴
+    const int r2 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"cat", "dan", "eve"});   // ② 한도에 둘
+    const int r3 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"fay", "gus"});          // ③ 한도에 하나
+    const int r4 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "", 0, {"ivy", "jon"});                // ④ 대전 맵 없음
+    const int r5 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"kim", "lee"});          // ⑤ 기다리는 중 닫힘
+    uint32_t now = 1000;
+    const uint32_t armed = now;
+    std::vector<nox::OutPacket> o;
+    srv.Tick(now, o);   // 랭크 방들의 도착 한도 시계가 여기서 선다(처음 본 틱)
+    now += 33; srv.Tick(now, o);
+    const bool allWaiting = rooms.RankWaiting() == 5 && rooms.Stats().rankRooms == 5;
+
+    // ① amy 들어옴 → 기다림(1/2) · amy 의 !start 막음 · 명단 밖 carol 거절(사유 4) · bob 들어옴 → 다음 틱에 판
+    const std::string A = "10.61.0.1:1002";
+    const int64_t sa = join(srv, TrailerAs("amy", r1, "10.61.0.1", 611), "10.61.0.1:1001", A, o);
+    now += 34; srv.Tick(now, o);
+    const bool oneOfTwo = rooms.Room(r1).RankState() == W::Arriving && rooms.Room(r1).RankArrived() == 1 && rooms.Room(r1).Phase() == nox::RoomPhase::Waiting;
+    {
+        const auto c = chat("!start");
+        std::vector<nox::OutPacket> oc;
+        srv.OnPacket(A, c.data(), c.size(), oc);
+    }
+    std::vector<nox::OutPacket> oCarol;
+    tryJoin(srv, TrailerAs("carol", r1, "10.61.0.3", 613), "10.61.0.3:3001", oCarol);
+    const int carolClosed = errTo(oCarol, "10.61.0.3:3001", nox::ConnectError::Closed);
+    // bob 은 입장만(게임 안 · 맵 싣는 중) → 아직 도착 아님 · 준비를 보내면 다음 틱에 판
+    const std::string B = "10.61.0.2:2002";
+    join(srv, TrailerAs("bob", r1, "10.61.0.2", 612), "10.61.0.2:2001", B, o, /*ready=*/false);
+    now += 34; srv.Tick(now, o);
+    const bool notReadyHeld = rooms.Room(r1).RankArrived() == 1 && rooms.Game(r1).inGameCount() == 2 && rooms.Room(r1).RankState() == W::Arriving;
+    srv.OnPacket(B, readyPkt, sizeof(readyPkt), o);
+    now += 34; srv.Tick(now, o);
+    std::snprintf(m, sizeof(m), "① 랭크 방 다섯 기다림 %d · amy 만 → 1/2 기다림 %d · !start 막음 %llu · 명단 밖 carol 사유4 %d(명단 밖 셈 %llu) · bob 준비 전 그대로 %d · 준비 뒤 판 %s · 상태 %d · 다 옴 셈 %llu",
+                  (int)allWaiting, (int)oneOfTwo, rooms.Room(r1).CmdCount(O::RankAuto), carolClosed, rooms.Stats().rejectRoster, (int)notReadyHeld,
+                  nox::RoomPhaseName(rooms.Room(r1).Phase()), (int)rooms.Room(r1).RankState(), rooms.Stats().rankStartAll);
+    Check(allWaiting && oneOfTwo && notReadyHeld && rooms.Room(r1).CmdCount(O::RankAuto) == 1 && rooms.Room(r1).CmdCount(O::Started) == 0 && carolClosed == 1 &&
+              rooms.Stats().rejectRoster >= 1 && rooms.Room(r1).Phase() == nox::RoomPhase::Playing && rooms.Room(r1).RankState() == W::Started &&
+              rooms.Stats().rankStartAll == 1 && rooms.Room(r1).Settings().ranked,
+          m);
+
+    // ④ 대전 맵 없음 — 다 와도 판을 못 엶 → 랭크 풂 · ⑤ 기다리는 중 방 닫힘
+    const unsigned long long noMapBefore = rooms.Stats().rankNoMap;
+    join(srv, TrailerAs("ivy", r4, "10.64.0.1", 641), "10.64.0.1:1001", "10.64.0.1:1002", o);
+    join(srv, TrailerAs("jon", r4, "10.64.0.2", 642), "10.64.0.2:2001", "10.64.0.2:2002", o);
+    rooms.CloseRoom(r5);
+    now += 34; srv.Tick(now, o);
+    std::snprintf(m, sizeof(m), "④ 맵 없음 셈 %llu(전 %llu) · 상태 %d · 랭크 %d · 판 상태 %s | ⑤ 닫힘 셈 %llu · 기다리는 방 %zu",
+                  rooms.Stats().rankNoMap, noMapBefore, (int)rooms.Room(r4).RankState(), (int)rooms.Room(r4).Settings().ranked,
+                  nox::RoomPhaseName(rooms.Room(r4).Phase()), rooms.Stats().rankClosedWaiting, rooms.RankWaiting());
+    Check(noMapBefore == 0 && rooms.Stats().rankNoMap == 1 && rooms.Room(r4).RankState() == W::None && !rooms.Room(r4).Settings().ranked &&
+              rooms.Room(r4).Phase() == nox::RoomPhase::Waiting && rooms.Stats().rankClosedWaiting == 1 && rooms.RankWaiting() == 2,   // ② · ③ 은 아직 한도 전
+          m);
+
+    // ② · ③ 도착 한도 — 한도 1ms 전엔 그대로 · 한도에 ② 둘(명단 셋 중) → 온 사람으로 판 · ③ 하나 → 랭크 풂(일반 방 · 명단 밖도 받음)
+    join(srv, TrailerAs("cat", r2, "10.62.0.1", 621), "10.62.0.1:1001", "10.62.0.1:1002", o);
+    join(srv, TrailerAs("dan", r2, "10.62.0.2", 622), "10.62.0.2:2001", "10.62.0.2:2002", o);
+    join(srv, TrailerAs("fay", r3, "10.63.0.1", 631), "10.63.0.1:1001", "10.63.0.1:1002", o);
+    now = armed + rooms.RankArriveMs() - 1; srv.Tick(now, o);
+    const bool heldBeforeDue = rooms.Room(r2).RankState() == W::Arriving && rooms.Room(r3).RankState() == W::Arriving &&
+                               rooms.Room(r2).RankArrived() == 2 && rooms.Room(r3).RankArrived() == 1;
+    now = armed + rooms.RankArriveMs(); srv.Tick(now, o);
+    std::vector<nox::OutPacket> oHal;
+    tryJoin(srv, TrailerAs("hal", r3, "10.63.0.8", 638), "10.63.0.8:8001", oHal);
+    const int halClosed = errTo(oHal, "10.63.0.8:8001", nox::ConnectError::Closed);
+    std::snprintf(m, sizeof(m), "②③ 한도 1ms 전 그대로 %d · 한도에 ② %s · 상태 %d · 한도 셈 %llu | ③ 상태 %d · 랭크 %d · 명단 %zu · 풂 셈 %llu · 명단 밖 hal 거절 %d",
+                  (int)heldBeforeDue, nox::RoomPhaseName(rooms.Room(r2).Phase()), (int)rooms.Room(r2).RankState(), rooms.Stats().rankStartDeadline,
+                  (int)rooms.Room(r3).RankState(), (int)rooms.Room(r3).Settings().ranked, rooms.Room(r3).Settings().roster.size(),
+                  rooms.Stats().rankUnranked, halClosed);
+    Check(heldBeforeDue && rooms.Room(r2).Phase() == nox::RoomPhase::Playing && rooms.Room(r2).RankState() == W::Started &&
+              rooms.Stats().rankStartDeadline == 1 && rooms.Room(r3).RankState() == W::None && !rooms.Room(r3).Settings().ranked &&
+              rooms.Room(r3).Settings().roster.empty() && rooms.Room(r3).Phase() == nox::RoomPhase::Waiting && rooms.Stats().rankUnranked == 1 &&
+              halClosed == 0,
+          m);
+
+    // ⑥ 랭크 판 중단(amy 나감 → 혼자 남음) → 결과 ranked · aborted → 일반 방(설정 ranked 끔 · 명단 지움) · 끝 셈
+    std::vector<nox::RoomEvent> drop;
+    rooms.SwapOutRoomEvents(drop);
+    std::vector<nox::OutPacket> ol;
+    LeaveAndClose(srv, A, ol);
+    now += 34; srv.Tick(now, ol);
+    std::vector<nox::RoomEvent> ev;
+    rooms.SwapOutRoomEvents(ev);
+    int rankedAborts = 0;
+    for (const nox::RoomEvent& e : ev)
+        if (e.type == nox::RoomEvent::Type::MATCH_RESULT && e.roomId == r1 && e.result.ranked && e.result.aborted) ++rankedAborts;
+    std::snprintf(m, sizeof(m), "⑥ amy(세션 %lld) 나감 → 랭크 중단 결과 %d · 상태 %d · 설정 랭크 %d · 명단 %zu · 판 상태 %s · 끝 셈 %llu",
+                  (long long)sa, rankedAborts, (int)rooms.Room(r1).RankState(), (int)rooms.Room(r1).Settings().ranked, rooms.Room(r1).Settings().roster.size(),
+                  nox::RoomPhaseName(rooms.Room(r1).Phase()), rooms.Stats().rankEnded);
+    Check(rankedAborts == 1 && rooms.Room(r1).RankState() == W::None && !rooms.Room(r1).Settings().ranked && rooms.Room(r1).Settings().roster.empty() &&
+              rooms.Room(r1).Phase() == nox::RoomPhase::Waiting && rooms.Stats().rankEnded == 1,
+          m);
+
+    // ⑦ 셈의 합 — 랭크 방 = 다 옴 + 한도 + 풂 + 맵 없음 + 닫힘 + 기다리는 중
+    const nox::CRoomStats& s = rooms.Stats();
+    std::snprintf(m, sizeof(m), "⑦ 랭크 방 %llu = 다 옴 %llu + 한도 %llu + 풂 %llu + 맵 없음 %llu + 닫힘 %llu + 기다림 %zu",
+                  s.rankRooms, s.rankStartAll, s.rankStartDeadline, s.rankUnranked, s.rankNoMap, s.rankClosedWaiting, rooms.RankWaiting());
+    Check(s.rankRooms == 5 &&
+              s.rankRooms == s.rankStartAll + s.rankStartDeadline + s.rankUnranked + s.rankNoMap + s.rankClosedWaiting + rooms.RankWaiting(),
+          m);
+}
+
 void TestRoomMatchSwitchRealMaps() {
     const std::string dir = "C:\\Program Files\\GOG Galaxy\\Games\\Nox";
     const std::string waitPath = dir + "\\maps\\So_LOD\\So_LOD.map", battlePath = dir + "\\maps\\Estate\\Estate.map";
@@ -32857,6 +33066,8 @@ int main() {
     TestHostRename();
     TestRoomChatCommands();
     TestRoomMatchSwitch();
+    TestLobbyClientRank();   // ★ 랭크 매칭 조각 6
+    TestRankRoom();          // ★ 랭크 매칭 조각 6
     TestRoomMatchSwitchRealMaps();
     TestMatchHeadcount();
     TestMatchResult();   // ★ 10-19 MO 5단계 작업 2

@@ -3667,6 +3667,8 @@ public:
     unsigned long long mapReopenStat(int i) const { return i >= 0 && i < 2 ? mapReopenStat_[i] : 0; }   // 0 USE_MAP 보냄(사람 수) · 1 맵 정보 없어 못 보냄
     int DebugSnapshotIn(int64_t a) const { auto it = sessions_.find(a); return it == sessions_.end() ? -99 : it->second.snapshotIn; }
     bool DebugImportantReady(int64_t a) const { auto it = sessions_.find(a); return it != sessions_.end() && it->second.importantReady; }
+    // ★ 랭크 매칭 조각 6 — 그 세션이 준비(`CLIENT_READY` — 클라가 맵을 다 실음)를 보냈나. 랭크 방의 「도착」은 이것까지(`CRoom::RankArrived`)
+    bool ClientReady(int64_t a) const { auto it = sessions_.find(a); return it != sessions_.end() && it->second.importantReady; }
     unsigned long long restartRespawned() const { return restartRespawned_; }   // 다시 열며 되살린 사람 수(관전자 뺌)
     bool DebugMarkSet(int64_t a, int i) const { auto it = sessions_.find(a); return it != sessions_.end() && i >= 0 && i < 4 && it->second.markSet[i]; }
     void DebugSetMark(int64_t a, int i) { auto it = sessions_.find(a); if (it != sessions_.end() && i >= 0 && i < 4) it->second.markSet[i] = true; }

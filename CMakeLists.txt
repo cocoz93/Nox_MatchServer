@@ -199,6 +199,12 @@ if (NOX_POWERSHELL AND WIN32)
   add_test(NAME match_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                    -File ${CMAKE_SOURCE_DIR}/tools/match_smoke.ps1 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby>)
+  # ★ 랭크 매칭 조각 6 — 같은 판을 랭크 줄로(DLL 판 4 꼴 NOXRANK JOIN · 로비 최소 = 최대 = 2 → 묶음 · CREATE 명단 · 각자 제 채널 · 같은 방 토큰 →
+  #   명단이 다 들면 저절로 판 · 결과 ranked · 판 끝 뒤 일반 방). 대기 맵(So_LOD)이 없으면 건너뜀
+  add_test(NAME match_smoke_rank
+           COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                   -File ${CMAKE_SOURCE_DIR}/tools/match_smoke.ps1 -Rank -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby>
+                   -LobbyPort 14800 -LinkPort 14810 -UdpPort 18841)
   # ★ 로그인 암호 조각 2 — 로그인 서버를 진짜로 띄워 HTTPS 가입 · 로그인(시험 DB · 8443). 사람 1회(인증서 · nox_auth 사용자) 전이면 77 = 「건너뜀」
   if (NOX_HAVE_MYSQL)
     add_test(NAME auth_smoke
