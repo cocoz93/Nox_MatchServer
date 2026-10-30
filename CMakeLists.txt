@@ -18,6 +18,7 @@ add_library(nox_common STATIC
   server/src/common/MatchRecord.cpp # ★ 7단계 조각 4 — 판 결과 JSON 읽기(로비가 DB 칸으로 나눔 · 쓰개는 nox_proto)
   server/src/common/LoginToken.cpp  # ★ 로그인 암호 조각 1 — 로그인 토큰(로그인 서버가 짓고 로비가 봄 · Docs/LOGIN_AUTH_DESIGN.md)
   server/src/common/AccountRules.cpp # ★ 로그인 암호 조각 1 — 이름 · 암호 규칙 · PBKDF2(로그인 서버)
+  server/src/common/Rating.cpp       # ★ 레이팅 조각 1 — 판 하나 → 자리별 점수 증감(Docs/RATING_DESIGN.md)
 )
 target_include_directories(nox_common PUBLIC server/include)
 target_link_libraries(nox_common PUBLIC bcrypt ws2_32)

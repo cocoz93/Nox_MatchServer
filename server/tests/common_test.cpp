@@ -27,6 +27,7 @@
 #include "nox/LoginLine.h"
 #include "nox/LoginToken.h"
 #include "nox/MatchRecord.h"
+#include "nox/Rating.h"
 
 std::vector<std::pair<bool, std::string>> RunTcpLinesChecks();   // tcp_lines_test.cpp
 
@@ -742,6 +743,101 @@ void TestLoginLine() {
           "그 밖 줄 · 비슷한 명령 · 글 안의 apgar 는 그대로");
 }
 
+// ★ 레이팅 조각 1 — 판 하나 → 자리별 증감(`Rating.h`). 갈래(RatingCase) 다섯을 모두 지나는지 개수로 본다
+void TestRating() {
+    std::printf("⑬ 레이팅 증감\n");
+    using RC = nox::RatingCase;
+    size_t seen[static_cast<size_t>(RC::kCount)] = {};
+    auto pl = [](bool account, bool left, uint8_t team, int32_t score, bool observer = false) {
+        nox::MatchRecordPlayer p;
+        p.hasAccount = account;
+        p.account = account ? "a" : "";
+        p.left = left;
+        p.team = left ? 0 : team;
+        p.score = left ? 0 : score;
+        p.observer = observer;
+        return p;
+    };
+    auto rec = [](bool ranked, const char* endReason, const char* winner, uint32_t winnerId, std::vector<nox::MatchRecordPlayer> ps) {
+        nox::MatchRecord m;
+        m.ranked = ranked;
+        m.endReason = endReason;
+        m.winnerKind = winner;
+        m.hasWinnerId = std::string(winner) == "player" || std::string(winner) == "team";
+        m.winnerId = winnerId;
+        m.players = std::move(ps);
+        return m;
+    };
+    // 자리별 기대 — 반영 안 함은 kNo
+    constexpr int kNo = 9999;
+    auto same = [&](const nox::MatchRecord& m, RC kind, const std::vector<int>& want) {
+        const nox::RatingResult r = nox::RatingDeltas(m);
+        if (r.kind < RC::kCount) ++seen[static_cast<size_t>(r.kind)];
+        if (r.kind != kind || r.seats.size() != want.size()) return false;
+        for (size_t i = 0; i < want.size(); ++i) {
+            const bool rated = want[i] != kNo;
+            if (r.seats[i].rated != rated || (rated && r.seats[i].delta != want[i])) return false;
+        }
+        return true;
+    };
+
+    Check(same(rec(false, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1), pl(true, true, 0, 0)}), RC::NotRanked,
+               {kNo, kNo, kNo}),
+          "일반 판 — 승자가 있어도 아무도 반영 안 함");
+    Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 5), pl(true, true, 0, 0), pl(true, false, 0, 9, true), pl(false, false, 0, 1)}),
+               RC::Aborted, {0, 0, kNo, kNo}),
+          "중단 — 끝까지 · 나감 모두 0 · 관전자 · 계정 없음은 반영 안 함");
+    Check(same(rec(true, "time_up", "draw", 0, {pl(true, false, 1, 2), pl(true, true, 0, 0), pl(true, false, 2, 2, true)}), RC::NoWinner,
+               {0, -10, kNo}),
+          "비김 — 끝까지 0 · 나감 −10 · 관전자 반영 안 함");
+    Check(same(rec(true, "time_up", "none", 0, {pl(true, false, 0, 0), pl(false, true, 0, 0)}), RC::NoWinner, {0, kNo}),
+          "승자 없음 — 끝까지 0 · 계정 없는 나감은 반영 안 함");
+    Check(same(rec(true, "score_team", "team", 1,
+                   {pl(true, false, 1, 3), pl(true, false, 2, 5), pl(true, true, 0, 0), pl(true, false, 0, 1), pl(true, false, 1, 0, true),
+                    pl(false, false, 2, 1)}),
+               RC::Team, {10, -10, -10, kNo, kNo, kNo}),
+          "팀 판 — 이긴 팀 +10 · 진 팀 −10 · 나감 −10 · 무소속 · 관전자 · 계정 없음 반영 안 함");
+    Check(same(rec(true, "score_team", "team", 2, {pl(true, false, 1, 3), pl(true, false, 2, 0)}), RC::Team, {-10, 10}),
+          "팀 판 — 이긴 팀 번호를 점수가 아니라 승자 칸으로 가름");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1)}), RC::Player, {10, -10}),
+          "각자 판 둘 — +10 · −10");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 1), pl(true, false, 0, 7), pl(true, false, 0, 4), pl(true, false, 0, -1)}),
+               RC::Player, {-3, 10, 3, -10}),
+          "각자 판 넷 — 순위대로 10 · 3 · −3 · −10(1/3 씩 · 반올림 · 명단 차례와 무관)");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 5), pl(true, false, 0, 5), pl(true, false, 0, 1)}), RC::Player,
+               {5, 5, -10}),
+          "각자 판 같은 점수 — 순위 평균(0.5 → +5)");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 2), pl(true, false, 0, 2), pl(true, false, 0, 2)}), RC::Player,
+               {0, 0, 0}),
+          "각자 판 모두 같은 점수 — 모두 0");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(false, false, 0, 2), pl(true, false, 0, 1)}), RC::Player,
+               {10, kNo, -10}),
+          "각자 판 계정 없는 사람 — 순위 자리는 차지(가운데) · 점수는 반영 안 함");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1), pl(true, false, 0, 99, true)}), RC::Player,
+               {10, -10, kNo}),
+          "각자 판 관전자 — 점수가 높아도 순위에 안 듦");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, true, 0, 0), pl(true, false, 0, 1)}), RC::Player,
+               {10, -10, -10}),
+          "각자 판 나감 −10 · 나간 사람은 순위에 안 듦(남은 둘이 ±10)");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, true, 0, 0)}), RC::Player, {0, -10}),
+          "각자 판 끝까지 한 사람 하나 — 상대가 없어 0 · 나감 −10");
+
+    // 총합 — 각자 판(나감 없음)은 순위가 대칭이라 0
+    {
+        const nox::RatingResult r = nox::RatingDeltas(
+            rec(true, "score_player", "player", 1,
+                {pl(true, false, 0, 6), pl(true, false, 0, 5), pl(true, false, 0, 4), pl(true, false, 0, 3), pl(true, false, 0, 2), pl(true, false, 0, 1)}));
+        int sum = 0;
+        for (const auto& s : r.seats) sum += s.delta;
+        Check(r.seats.size() == 6 && sum == 0 && r.seats[0].delta == 10 && r.seats[1].delta == 6 && r.seats[5].delta == -10,
+              "각자 판 여섯 — 10 · 6 · 2 · −2 · −6 · −10 · 총합 0");
+    }
+    size_t kinds = 0;
+    for (size_t c : seen) kinds += c > 0 ? 1 : 0;
+    Check(kinds == static_cast<size_t>(RC::kCount), "갈래 다섯을 모두 지남");
+    Check(std::string(nox::RatingCaseName(RC::Player)) == "player" && std::string(nox::RatingCaseName(RC::kCount)) == "?", "갈래 이름");
+}
+
 int main() {
     TestHmac();
     TestText();
@@ -755,6 +851,7 @@ int main() {
     TestLoginToken();    // ★ 로그인 암호 조각 1
     TestAccountRules();
     TestLoginLine();
+    TestRating();        // ★ 레이팅 조각 1
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

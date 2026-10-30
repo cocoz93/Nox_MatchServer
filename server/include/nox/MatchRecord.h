@@ -63,6 +63,7 @@ struct MatchRecord {
     std::string winnerAccount;
     uint32_t limit = 0;
     uint32_t timeLimitSec = 0;
+    bool ranked = false;            // ★ 레이팅 — 랭크 판(점수를 매김 · `Rating.h`). 칸이 없으면 false(옛 게임 서버와 섞여도 안 깨짐)
     std::vector<MatchRecordPlayer> players;
     std::vector<MatchRecordTeam> teams;   // 팀 판만(칸이 없으면 빈 것)
 };
