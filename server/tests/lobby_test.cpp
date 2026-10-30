@@ -992,6 +992,7 @@ void MirrorUnitTests() {
     cfg.nonce = [] { return 0x0102030405060708ull; };
     uint32_t clock = 1000;   // 미룬 답 한도(⑪)
     cfg.nowMs = [&clock] { return clock; };
+    cfg.rankMin = cfg.rankMax = 2;   // ★ 매칭 손보기 7 — ⑫ 둘이 서는 순간 묶음(앞 갈래엔 랭크 줄 없음)
     RoomMirror mirror(LobbyTestKey());
     Lobby lb(cfg, mirror);
     mirror.Attach(lb);
@@ -1284,6 +1285,75 @@ void MirrorUnitTests() {
               Rejected(ls, JoinReject::Timeout) == 1 && Rejected(ls, JoinReject::NoSuchRoom) == 0 &&
               ls.JoinRejectedTotal() == ls.roomCreateFailed + ls.roomRequestTimeout,
           "셈 — 거절 5 = 게임 서버 실패 3 + 곧바로 실패 1 + 시간 초과 1(실패 4 + 시간 초과 1 과 같은 수)");
+
+    // ⑫ ★ 매칭 손보기 7 — 랭크 줄로 선 방은 남의 목록(326)에 안 실림 · ROOM 이 다시 와도(인원 바뀜) 그대로 ·
+    //   ROOM_GONE 뒤 같은 번호로 온 일반 방은 보임 · 랭크 요청이 실패한 뒤 그 요청의 늦은 답 방도 보임(표시는 CREATED 를 받은 랭크 요청에만)
+    Gs a3{121, 1760000200u, ipA, 18590, {}};
+    open(a3);
+    Check(authReg(a3) && mirror.ServerCount() == 1, "⑫ 새 게임 서버 등록");
+    auto login4 = [&](int conn, const char* nick) {
+        lb.OnConnect(conn, peer, local);
+        std::vector<Out> o;
+        for (const std::string l : {std::string("NOXCLIENT 4"), std::string("NICK ") + nick, std::string("USER UserName HostName irc.westwood.com :RealName")})
+            lb.OnLine(conn, l, o);
+    };
+    auto listed = [&](int conn) {   // 그 접속이 받은 목록의 방 채널
+        std::vector<Out> o;
+        lb.OnLine(conn, "LIST 37 37", o);
+        std::string chans;
+        for (const auto& x : o) {
+            const auto t = Tokens(x.line);
+            if (t.size() == 11 && t[1] == "326") chans += (chans.empty() ? "" : ",") + t[3];
+        }
+        return chans;
+    };
+    auto rankAsk = [&](int c1, const char* n1, int c2, const char* n2) {   // 둘이 랭크 줄에 서면 묶여 CREATE(랭크 꼬리) 한 줄
+        login4(c1, n1);
+        login4(c2, n2);
+        std::vector<Out> o;
+        lb.OnLine(c1, "NOXRANK JOIN", o);
+        lb.OnLine(c1, "JOINGAME #" + std::string(n1) + "'s_game 1 ", o);
+        lb.OnLine(c2, "NOXRANK JOIN", o);
+        lb.OnLine(c2, "JOINGAME #" + std::string(n2) + "'s_game 1 ", o);
+        std::vector<Out> s;
+        mirror.TakeOut(s);
+        nox::LinkLine ll;
+        return s.size() == 1 && s[0].conn == a3.conn && nox::ParseLinkLine(s[0].line, ll) == nox::LinkParse::Ok && ll.kind == nox::LinkKind::Create &&
+                       ll.ranked && ll.roster.size() == 2
+                   ? ll.req
+                   : 0u;
+    };
+    const uint32_t reqJay = rankAsk(8, "jay", 9, "kim");
+    login4(10, "lee");
+    send(a3, nox::LinkRoomLine(room(20, "jay", 0)));
+    send(a3, nox::LinkRoomLine(room(21, "mo", 1)));   // 견줄 일반 방
+    send(a3, nox::LinkCreated(reqJay, 20));
+    size_t tokens = 0;
+    for (const auto& x : out) tokens += (x.conn == 8 || x.conn == 9) && x.line.rfind("NOXTOKEN ", 0) == 0 ? 1 : 0;
+    const std::string l1 = listed(10);
+    Check(reqJay && tokens == 2 && l1 == "#mo's_game" && lb.Stats().rankRoomsHidden == 1,
+          "⑫ 랭크 방(20) → 명단 둘엔 참가 답 · 셋째 사람 목록엔 일반 방(21)만 = " + l1 + " · 뺀 셈 1");
+    send(a3, nox::LinkRoomLine(room(20, "jay", 2)));
+    const std::string l2 = listed(10);
+    Check(l2 == "#mo's_game" && lb.Stats().rankRoomsHidden == 2, "⑫ 랭크 방 ROOM 다시(인원 2) → 그대로 빠짐 = " + l2 + " · 뺀 셈 2");
+    send(a3, nox::LinkRoomGone(20));
+    send(a3, nox::LinkRoomLine(room(20, "ned", 0)));
+    const std::string l3 = listed(10);
+    Check(l3 == "#ned's_game,#mo's_game" && lb.Stats().rankRoomsHidden == 2, "⑫ ROOM_GONE 뒤 같은 번호 일반 방 → 보임 = " + l3);
+    const uint32_t reqOli = rankAsk(11, "oli", 12, "pat");
+    send(a3, nox::LinkCreateFailed(reqOli, "no wait map"));
+    clock += kRankRetryMs;   // 쉬는 시간 뒤 다시 묻는 CREATE 는 버림(이 갈래는 실패한 요청의 표시만 본다)
+    out.clear();
+    lb.Tick(out);
+    std::vector<Out> again;
+    mirror.TakeOut(again);
+    send(a3, nox::LinkRoomLine(room(22, "oli", 0)));
+    send(a3, nox::LinkCreated(reqOli, 22));   // 끝난 요청 — 안 물은 답(랭크 표시 안 붙음)
+    send(a3, nox::LinkRoomLine(room(23, "quinn", 0)));
+    const std::string l4 = listed(10);
+    Check(reqOli && again.size() == 1 && l4.find("#quinn's_game") != std::string::npos && l4.find("#oli's_game") != std::string::npos &&
+              lb.Stats().rankRoomsHidden == 2,
+          "⑫ 랭크 요청 실패 → 그 요청 번호의 늦은 답 방도 · 새 일반 방도 보임 = " + l4);
 }
 
 // ── ★ 7단계 — 게임 서버 연결 살아 있음(`RoomMirror::Tick` — `Docs/ACCOUNT_DB_DESIGN.md` 조각 2) ──

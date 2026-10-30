@@ -391,11 +391,12 @@ int main(int argc, char** argv) {
         const auto lr = [&ls](RankLeave w) { return ls.rankLeftRequested[static_cast<size_t>(w)]; };
         Log("[로비] 끝 — 랭크 줄 섬 %llu · 빠짐(줄) 창 닫힘 %llu · LIST %llu · 끊김 %llu · 빠짐(요청 중) 창 닫힘 %llu · LIST %llu · 끊김 %llu · "
             "빠짐 알림 버림 %llu · 묶임 %llu(최대 %llu묶음 · 모으기 끝 %llu묶음) · 참가 답 %llu · 되돌림 %llu · 끝날 때 줄 %zu · "
-            "랭크 방 요청 %llu(섬 %llu · 실패 %llu · 시간 초과 %llu · 끝날 때 기다림 %zu) · 표시 버림 %llu · 낮은 판 표시 %llu · 참가 무시 %llu\n",
+            "랭크 방 요청 %llu(섬 %llu · 실패 %llu · 시간 초과 %llu · 끝날 때 기다림 %zu) · 표시 버림 %llu · 낮은 판 표시 %llu · 참가 무시 %llu · "
+            "목록에서 뺀 랭크 방 %llu\n",
             ls.rankQueued, lq(RankLeave::Dll), lq(RankLeave::List), lq(RankLeave::Closed), lr(RankLeave::Dll), lr(RankLeave::List),
             lr(RankLeave::Closed), ls.rankLeaveStray, ls.rankGrouped, ls.rankGroupFull, ls.rankGroupGather, ls.rankMatched, ls.rankRequeued,
             lobby.RankQueueSize(), ls.rankRequests, ls.rankRoomsCreated, ls.rankRoomFailed, ls.rankRoomTimeout, lobby.RankRequestsPending(),
-            ls.rankMarkDropped, ls.rankOldClient, ls.rankDupJoin);
+            ls.rankMarkDropped, ls.rankOldClient, ls.rankDupJoin, ls.rankRoomsHidden);
     }
     // ★ 7단계 — 보냄 · 받음은 PING 을 넣은 수(괄호가 그중 PING) · 무소식 끊음 = 받은 줄이 한도 동안 없어 끊은 게임 서버 연결
     Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu(PING %llu) · "

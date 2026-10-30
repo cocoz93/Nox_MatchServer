@@ -99,6 +99,8 @@ struct LobbyRoom {
     uint16_t gamePort = 0;     // NOXTOKEN 의 포트(0 = `LobbyConfig::gameServerPort`)
     bool ownTokenKey = false;  // `tokenKey` 를 쓰나(false = `LobbyConfig::joinKey`)
     JoinKey tokenKey{};        // 그 게임 서버의 그 실행의 토큰 키(`GameServerTokenKey` — `LobbyLink.h`)
+    // ★ 매칭 손보기 7(`Docs/MATCH_UX_REVIEW.md`) — 로비가 랭크 줄로 청해 선 방. 목록(`LIST`)에서 뺀다 — 명단 밖 사람은 들어가도 게임 서버가 거절(사유 4)
+    bool ranked = false;
 };
 
 // ★ 10-20 v2 작업 3a — 새 방 요청의 곧바른 결과
@@ -272,6 +274,7 @@ struct LobbyStats {
     unsigned long long rankMarkDropped = 0;     // NOXRANK JOIN 뒤 내 방 참가가 아닌 줄(표시 버림 — 그 줄은 원래대로)
     unsigned long long rankOldClient = 0;       // 판 4 밑 DLL 의 NOXRANK(무시)
     unsigned long long rankDupJoin = 0;         // 줄에 있거나 요청 중인 접속의 방 참가(무시 — 답이 둘이 되지 않게)
+    unsigned long long rankRoomsHidden = 0;     // ★ 매칭 손보기 7 — 목록 줄(326)에서 뺀 랭크 방(LIST 한 번에 방마다 하나)
     unsigned long long RankLeftTotal() const {
         unsigned long long n = 0;
         for (size_t i = 0; i < kRankLeaveCount; ++i) n += rankLeft[i] + rankLeftRequested[i];

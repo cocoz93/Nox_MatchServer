@@ -298,6 +298,15 @@ try {
     Check ($quiet -and $a.tok.Length -eq 102 -and $b.tok.Length -eq 102 -and (RoomOf $a.tok) -eq (RoomOf $b.tok) -and (RoomOf $a.tok) -ge 0 -and
            $chanA -eq 1 -and $chanB -eq 1 -and $hostA -eq 1 -and $hostB -eq 1) `
       "① 랭크 줄 — alice 혼자일 땐 답 없음 $quiet · bob 이 서자 둘 다 참가 답(각자 제 채널 $chanA · $chanB · 353 방장 = 자기 $hostA · $hostB) · 같은 방 토큰(방 $(RoomOf $a.tok) · $(RoomOf $b.tok))"
+    # ★ 매칭 손보기 7 — 셋째 사람(carl)의 목록에 랭크 방 줄(326)이 없음(방은 게임 서버에 있음 — 로비 끝 줄 「목록에서 뺀 랭크 방 1」)
+    $k3 = Open $LobbyPort
+    Send $k3 @('NOXCLIENT 2', 'NICK carl', 'USER UserName HostName irc.westwood.com :RealName')
+    $null = ReadUntil $k3 '376'
+    Send $k3 @('LIST 37 37')
+    $l3 = ReadUntil $k3 '323'
+    $k3.c.Close()
+    $rows3 = @($l3 | Where-Object { $_ -like ': 326 *' }).Count
+    Check ($l3.Count -ge 2 -and $rows3 -eq 0) "① 셋째 사람 carl 목록 — 방 줄 $rows3(기대 0 · 받은 줄 $($l3.Count))"
   } else {
     $a = LoginJoin 'alice' "#alice's_game" $tokA   # ★ 조각 6b — -Auth 가 아니면 토큰이 빈 것 = 아이디만 옛 꼴
     $b = LoginJoin 'bob' "#alice's_game" $tokB
@@ -376,6 +385,7 @@ if ($Rank) {   # ★ 랭크 매칭 조각 6 — 로비 · 게임 서버 기록�
   Check ($tg -match '랭크 판 판 끝 — 이 방은 이제 일반 방') '랭크 — 판 끝 뒤 그 방은 일반 방(게임 서버 기록)'
   Check ($tl -match '끝 — 랭크 줄 섬 2 · 빠짐\(줄\) 창 닫힘 0 · LIST 0 · 끊김 0 · 빠짐\(요청 중\) 창 닫힘 0 · LIST 0 · 끊김 0 · 빠짐 알림 버림 0 · 묶임 2\(최대 1묶음 · 모으기 끝 0묶음\) · 참가 답 2 · 되돌림 0 · 끝날 때 줄 0 · 랭크 방 요청 1\(섬 1 · 실패 0 · 시간 초과 0 · 끝날 때 기다림 0\)') `
     '로비 끝 줄 — 랭크 줄 섬 2 · 묶임 2(최대 1묶음) · 참가 답 2 · 랭크 방 요청 1(섬 1)'
+  Check ($tl -match '참가 무시 0 · 목록에서 뺀 랭크 방 1') '로비 끝 줄 — 목록에서 뺀 랭크 방 1(carl 의 LIST 한 번 · ★ 매칭 손보기 7)'
   Check ($tg -match '새 방 물음 1\(만듦 1 · 실패 0\) · 그중 랭크 1') '게임 서버 끝 줄 — 새 방 물음 1(만듦 1) · 그중 랭크 1'
 }
 Check ($tl -match '판 저장 요청 1\(SAVED ok 1 · dup 0 · 실패 0 · 끊긴 뒤 답 0 · 모르는 답 0 · 끝날 때 남음 0\)') '로비 끝 줄 — 판 저장 요청 1(SAVED ok 1)'
@@ -396,7 +406,8 @@ if ($Auth) {
   Check (-not $all.Contains($pwA) -and -not $all.Contains($pwB) -and -not $all.Contains([uri]::EscapeDataString($pwA))) '기록 셋에 친 암호 글자 0곳'
   Check (-not ($all -match 'NXL1[0-9a-f]{20}')) '기록 셋에 로그인 토큰 글 0곳'
 } else {
-  Check ($tl -match '끝 — 로그인 2\(토큰 \[[^\]1-9]*\] .* 아이디만 2\) · 옛 접속 끊음 0') '로비 끝 줄 — 로그인 2(아이디만 2 · 토큰 갈래 0 — ★ 로그인 암호 조각 4)'
+  $nLogin = if ($Rank) { 3 } else { 2 }   # ★ 매칭 손보기 7 — -Rank 는 목록을 볼 carl 하나 더
+  Check ($tl -match "끝 — 로그인 $nLogin\(토큰 \[[^\]1-9]*\] .* 아이디만 $nLogin\) · 옛 접속 끊음 0") "로비 끝 줄 — 로그인 $nLogin(아이디만 $nLogin · 토큰 갈래 0 — ★ 로그인 암호 조각 4)"
 }
 
 if ($Db) {

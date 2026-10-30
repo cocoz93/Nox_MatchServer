@@ -112,6 +112,7 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
         case LinkKind::RoomGone:
             ++stats_.roomGoneLines;
             if (s.rooms.erase(l.room.id) == 0) ++stats_.roomGoneUnknown;
+            s.rankRooms.erase(l.room.id);   // ★ 매칭 손보기 7 — 같은 번호가 다음에 일반 방으로 와도 보이게
             return;
         case LinkKind::Created:
         case LinkKind::CreateFailed: {
@@ -120,6 +121,7 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
                 log_.push_back("[게임 서버] " + Name(conn, s) + " 안 물은 요청 " + std::to_string(l.req) + " 의 답 — 버림");
                 return;
             }
+            const bool rankedAsk = s.askedRanked.erase(l.req) != 0;   // ★ 매칭 손보기 7
             if (l.kind == LinkKind::CreateFailed) {
                 ++stats_.createFailedReplies;
                 if (lobby_) lobby_->OnRoomCreateFailed(l.req, "게임 서버 " + Name(conn, s) + " — " + l.text, out);
@@ -134,6 +136,7 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
                 return;
             }
             ++stats_.createdReplies;
+            if (rankedAsk) s.rankRooms.insert(l.room.id);
             if (lobby_) lobby_->OnRoomCreated(l.req, ToLobbyRoom(s, r->second), out);
             return;
         }
@@ -256,6 +259,7 @@ LobbyRoom RoomMirror::ToLobbyRoom(const Server& s, const LinkRoom& r) const {
     lr.gamePort = s.port;
     lr.ownTokenKey = true;
     lr.tokenKey = s.tokenKey;
+    lr.ranked = s.rankRooms.count(r.id) != 0;   // ★ 매칭 손보기 7
     return lr;
 }
 
@@ -286,6 +290,7 @@ RoomRequest RoomMirror::RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom&
     }
     Server& s = servers_[best];
     s.asked.insert(req);
+    if (ask.ranked) s.askedRanked.insert(req);   // ★ 매칭 손보기 7 — 답(CREATED)의 방에 랭크 표시
     ++stats_.createsSent;
     // ★ 랭크 매칭 조각 5 — 랭크 요청이면 꼬리(랭크 · 명단)까지. 일반은 옛 꼴 그대로
     pendingOut_.push_back({best, LinkCreate(req, ask.creator, ask.ranked, ask.roster)});
@@ -297,8 +302,10 @@ RoomRequest RoomMirror::RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom&
 }
 
 void RoomMirror::CancelRoom(uint32_t req) {
-    for (auto& kv : servers_)
+    for (auto& kv : servers_) {
+        kv.second.askedRanked.erase(req);
         if (kv.second.asked.erase(req)) ++stats_.cancelled;
+    }
 }
 
 void RoomMirror::TakeOut(std::vector<Out>& out) {

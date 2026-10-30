@@ -124,6 +124,8 @@ private:
         JoinKey tokenKey{};              // 등록 값으로 뽑은 그 게임 서버의 토큰 키
         std::map<uint32_t, LinkRoom> rooms;
         std::set<uint32_t> asked;        // 이 게임 서버에 물은 새 방 요청
+        std::set<uint32_t> askedRanked;  // ★ 매칭 손보기 7 — 그중 랭크 요청(`asked` 와 같이 지운다)
+        std::set<uint32_t> rankRooms;    // ★ 매칭 손보기 7 — 랭크 요청으로 선 방 번호(CREATED 때 · ROOM 이 다시 와도 그대로 · ROOM_GONE 에 지움)
         bool registered = false;         // ★ 7단계 — 등록한 적 있음(무소식 끊기는 등록된 게임 서버에도 BYE 를 보낸다 — 끊김 기록 · 이름에 주소를 남긴다)
         uint32_t lastRecvMs = 0;         // ★ 7단계 — 마지막으로 줄을 받은 때(붙은 때부터)
         uint32_t nextPingMs = 0;         // ★ 7단계 — 다음 PING 시각

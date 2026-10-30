@@ -927,6 +927,10 @@ void Lobby::SendList(int conn, bool withChat, std::vector<Out>& out) {
     const auto ci = conns_.find(conn);
     const int codepage = ci == conns_.end() ? 0 : ci->second.codepage;   // ★ 10-14 작업 10a — 방 이름을 그 접속의 코드페이지로
     for (const LobbyRoom& lr : rooms_.LobbyRooms()) {
+        if (lr.ranked) {   // ★ 매칭 손보기 7 — 랭크 방은 명단 사람만(참가 답은 줄이 보냄) — 남의 목록엔 안 실음
+            ++stats_.rankRoomsHidden;
+            continue;
+        }
         // ★ 10-20 v2 작업 3a — 방마다 그 방의 게임 서버 주소(옛 꼴은 접속마다 주소 하나를 모든 방에)
         const uint32_t gameIp = ci == conns_.end() ? (lr.gameIp ? lr.gameIp : cfg_.gameServerIp) : GameServerIp(ci->second, lr);
         const std::string room = Channel(lr);
