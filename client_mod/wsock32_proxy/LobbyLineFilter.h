@@ -24,6 +24,7 @@ public:
     static constexpr const char* kMark = "NOXTOKEN ";
     static constexpr size_t kMarkLen = 9;
     static constexpr const char* kServerMark = "NOXSERVER ";   // ★ 10-16 — 떼는 줄 둘째(우리 로비 표시)
+    static constexpr const char* kRankMark = "NOXRANK ";       // ★ 매칭 손보기 6 — 떼는 줄 셋째(로비의 수락 단계 — FOUND · WAIT · EXPIRED)
     static constexpr const char* kListItem = ": 326 ";   // 방 목록 한 줄(우리 로비의 꼴 — `Lobby::SendList`)
     static constexpr const char* kListEnd = ": 323 ";    // 방 목록 끝
 
@@ -95,9 +96,9 @@ private:
 
     // 줄 머리 i 가 어느 표시인가 — 표시 전체가 맞으면 그 종류 · 남은 바이트가 표시보다 짧은데 앞이 맞으면 More(더 와야 안다)
     Kind KindAt(const std::string& d, size_t i) const {
-        static const char* const marks[] = { kMark, kServerMark, kListItem, kListEnd };
-        static const Kind kinds[] = { Kind::Token, Kind::Token, Kind::ListItem, Kind::ListEnd };
-        const size_t count = onListEnd ? 4 : 2;   // 끼우기가 꺼져 있으면 떼는 줄 둘만 본다
+        static const char* const marks[] = { kMark, kServerMark, kRankMark, kListItem, kListEnd };
+        static const Kind kinds[] = { Kind::Token, Kind::Token, Kind::Token, Kind::ListItem, Kind::ListEnd };
+        const size_t count = onListEnd ? 5 : 3;   // 끼우기가 꺼져 있으면 떼는 줄 셋만 본다
         bool more = false;
         for (size_t m = 0; m < count; ++m) {
             const size_t len = std::strlen(marks[m]);

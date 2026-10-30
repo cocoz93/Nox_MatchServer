@@ -218,7 +218,7 @@ int main(int argc, char** argv)
             if (r <= 0) break;
             atLobby.append(b, r);
         }
-        Check(atLobby == std::string("NOXCLIENT 4\r\n") + cvers, "lobby: NOXCLIENT 4 goes out before CVERS");
+        Check(atLobby == std::string("NOXCLIENT 5\r\n") + cvers, "lobby: NOXCLIENT 5 goes out before CVERS");   // ★ 매칭 손보기 6 — 판 5(수락 단계)
 
         // 토큰 줄을 둘로 나눠 보낸다(TCP 가 줄을 자르는 경우) — 클라는 토큰 줄 없이 앞뒤 줄만 받아야 한다
         const std::string line = std::string("NOXTOKEN 127.0.0.1:") + std::to_string(gamePort) + " " + hex + "\r\n";

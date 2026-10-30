@@ -49,7 +49,8 @@ static std::string Expected(const std::string& s, bool insert) {
         const std::string line = s.substr(i, end - i);
         if (insert && StartsWith(line, LobbyLineFilter::kListItem)) ++items;
         if (insert && StartsWith(line, LobbyLineFilter::kListEnd)) { out += InsertLine(items); items = 0; }
-        if (!StartsWith(line, LobbyLineFilter::kMark) && !StartsWith(line, LobbyLineFilter::kServerMark)) out += line;
+        if (!StartsWith(line, LobbyLineFilter::kMark) && !StartsWith(line, LobbyLineFilter::kServerMark) && !StartsWith(line, LobbyLineFilter::kRankMark))
+            out += line;
         i = end;
     }
     return out;
@@ -79,7 +80,8 @@ static bool RunOne(const std::string& stream, const std::vector<size_t>& cuts, i
         got.append(buf, static_cast<size_t>(r));
     }
     if (got != Expected(stream, insert)) { std::printf("① 받은 바이트가 다름 len=%d 끼우기=%d\n", len, insert ? 1 : 0); return false; }
-    if (tokens != 2 || tokenLine != wantLine) { std::printf("② 토큰 줄 %d개 [%s]\n", tokens, tokenLine.c_str()); return false; }
+    // ★ 매칭 손보기 6 — 떼는 줄 셋(NOXSERVER · NOXTOKEN · NOXRANK)
+    if (tokens != 3 || tokenLine != wantLine) { std::printf("② 토큰 줄 %d개 [%s]\n", tokens, tokenLine.c_str()); return false; }
     return true;
 }
 
@@ -92,6 +94,8 @@ int main() {
         "NOX\r\n"                                                  // ⑤ 표시의 앞부분만 같은 다른 줄
         ": 999 u NOXTOKEN 가운데 낀 것은 그대로\r\n"                // ⑤ 줄 가운데
         + tokLine + "\r\n"                                         // 떼어 낼 줄
+        "NOXRANK FOUND 10\r\n"                                     // ★ 매칭 손보기 6 — 떼어 낼 줄 셋째
+        "NOXRANKX 1\r\n"                                           // ★ 표시와 앞만 같은 다른 줄(그대로)
         ":wn9457!u@h JOINGAME 1 32 37 1 0 2130706433 1 :#NoxOrigin's_game\r\n"
         ": 332 u #NoxOrigin's_game :G1P3....\r\n"
         ": 353 u = #NoxOrigin's_game :@NoxOrigin,0,2130706433 wn9457,0,2130706433\r\n"
@@ -105,7 +109,7 @@ int main() {
         ": 323 u:\r\n"
         ": 321 u:\r\n"
         ": 323 u:\r\n";
-    const std::string want = "NOXSERVER 1|" + tokLine;   // 떼어 낸 줄 둘의 차례
+    const std::string want = "NOXSERVER 1|" + tokLine + "|NOXRANK FOUND 10";   // 떼어 낸 줄 셋의 차례(★ 매칭 손보기 6 — NOXRANK 더함)
     const int lens[] = { 1, 2, 3, 5, 8, 9, 10, 16, 64, 256, 512, 4096 };
     long long runs = 0, calls = 0, wb = 0;
     int fails = 0;
