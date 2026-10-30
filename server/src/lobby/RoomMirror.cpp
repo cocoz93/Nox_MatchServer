@@ -203,6 +203,7 @@ void RoomMirror::OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out) {
         case SaveResult::Saved:
             ++stats_.savedOk;
             out.push_back({ps.conn, LinkSavedLine(ps.match, SaveOutcome::Ok, a.changes)});   // ★ 매칭 손보기 1 — 랭크 판이면 사람별 새 점수 꼬리
+            if (lobby_) lobby_->OnRatingsChanged(a.changes);   // ★ 매칭 손보기 5 — 로비가 쥔 점수도(다음 랭크 방 요청의 명단 점수)
             return;
         case SaveResult::Duplicate:
             ++stats_.savedDup;
@@ -293,7 +294,7 @@ RoomRequest RoomMirror::RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom&
     if (ask.ranked) s.askedRanked.insert(req);   // ★ 매칭 손보기 7 — 답(CREATED)의 방에 랭크 표시
     ++stats_.createsSent;
     // ★ 랭크 매칭 조각 5 — 랭크 요청이면 꼬리(랭크 · 명단)까지. 일반은 옛 꼴 그대로
-    pendingOut_.push_back({best, LinkCreate(req, ask.creator, ask.ranked, ask.roster)});
+    pendingOut_.push_back({best, LinkCreate(req, ask.creator, ask.ranked, ask.roster, ask.ratings)});   // ★ 매칭 손보기 5 — 명단 점수도
     std::string names;
     for (const std::string& n : ask.roster) names += (names.empty() ? "" : ",") + n;
     log_.push_back("[게임 서버] " + Name(best, s) + " 에 새 방 요청 " + std::to_string(req) + " — 만든 사람 " + ask.creator +

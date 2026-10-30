@@ -127,7 +127,8 @@ private:
     void OnCreate(const LinkLine& l, std::vector<NetworkRequest>& out);
     // 새 방 — 틀 + 만든 사람 · 이름 · 대기 맵(무작위) · 채팅 모드 · 비면 닫음 → 방 관리자의 만들기 입구(옛 `CChannelLobby::CreateRoomFor`)
     //   ★ 랭크 매칭 조각 5 — 랭크면 ranked 켬 · 명단을 방 설정에(틀이 이미 랭크면 그대로 랭크 — `--ranked-all`)
-    int CreateRoomFor(const std::string& creator, bool ranked, const std::vector<std::string>& roster, std::string& why);
+    int CreateRoomFor(const std::string& creator, bool ranked, const std::vector<std::string>& roster, std::string& why,
+                      const std::vector<int32_t>& ratings = {});   // ★ 매칭 손보기 5 — 명단 점수(같은 수일 때만)
     // 로비 방 = 만든 사람이 있는 방만(실행 인자의 방은 로비 목록에 안 낸다). 채널 · 목록 이름은 지금 방장
     static bool ToLinkRoom(const RoomFact& f, LinkRoom& out);
     // 지난번 보낸 것(`_sent`)과 다른 방만 ROOM · 사라진 방은 ROOM_GONE — 붙을 때 · 끊길 때 `_sent` 를 비워 다시 붙으면 전부 간다

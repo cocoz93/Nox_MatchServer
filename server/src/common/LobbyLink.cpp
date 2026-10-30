@@ -157,9 +157,15 @@ std::string LinkRoomLine(const LinkRoom& r) {
 
 std::string LinkRoomGone(uint32_t id) { return std::string(kWords[4]) + " " + std::to_string(id); }
 
-std::string LinkCreate(uint32_t req, const std::string& creator, bool ranked, const std::vector<std::string>& roster) {
+std::string LinkCreate(uint32_t req, const std::string& creator, bool ranked, const std::vector<std::string>& roster,
+                       const std::vector<int32_t>& ratings) {
     std::string l = std::string(kWords[5]) + " " + std::to_string(req) + " " + EncodeLinkText(creator);
     if (!ranked && roster.empty()) return l;   // 옛 꼴(일반 새 방)
+    if (ranked && !roster.empty() && ratings.size() == roster.size()) {   // ★ 매칭 손보기 5 — 랭크 칸 2 · 이름 · 점수 쌍
+        l += " 2";
+        for (size_t i = 0; i < roster.size(); ++i) l += " " + EncodeLinkText(roster[i]) + " " + std::to_string(ratings[i]);
+        return l;
+    }
     l += ranked ? " 1" : " 0";
     if (roster.empty()) return l + " " + EncodeLinkText(creator);
     for (const std::string& n : roster) l += " " + EncodeLinkText(n);
@@ -244,18 +250,26 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
             if (!want(2)) return LinkParse::FieldCount;
             return ParseNum(t[1], kMaxRoomId, out.room.id) ? LinkParse::Ok : LinkParse::BadNumber;
         case LinkKind::Create:   // ★ 랭크 매칭 조각 5 — 꼬리(랭크 · 명단 1~kLinkMaxRoster)가 붙을 수 있다 · 없으면 옛 꼴
-            if (t.size() != 3 && (t.size() < 5 || t.size() > 4 + kLinkMaxRoster)) return LinkParse::FieldCount;
+            if (t.size() != 3 && (t.size() < 5 || t.size() > 4 + 2 * kLinkMaxRoster)) return LinkParse::FieldCount;
             if (!ParseNum(t[1], 0xffffffffu, out.req)) return LinkParse::BadNumber;
             if (t.size() > 3) {
                 for (size_t i = 3; i < t.size(); ++i)
                     if (t[i].empty()) return LinkParse::FieldCount;   // 빈칸 둘 · 꼬리 빈칸(칸 수가 바뀌는 줄이라 칸 수로 센다)
                 uint32_t ranked = 0;
-                if (!ParseNum(t[3], 1, ranked)) return LinkParse::BadNumber;
+                if (!ParseNum(t[3], 2, ranked)) return LinkParse::BadNumber;
                 out.ranked = ranked != 0;
-                for (size_t i = 4; i < t.size(); ++i) {
+                // ★ 매칭 손보기 5 — 랭크 칸 2 = 이름 · 점수 쌍(쌍 수 1~kLinkMaxRoster) · 0 · 1 은 이름만(1~kLinkMaxRoster)
+                const size_t step = ranked == 2 ? 2 : 1;
+                if ((t.size() - 4) % step != 0 || (t.size() - 4) / step > kLinkMaxRoster) return LinkParse::FieldCount;
+                for (size_t i = 4; i < t.size(); i += step) {
                     std::string n;
                     if (!DecodeLinkText(t[i], n) || n.empty()) return LinkParse::BadText;   // 빈 이름은 명단 칸이 아니다
                     out.roster.push_back(std::move(n));
+                    if (step == 2) {
+                        int32_t r = 0;
+                        if (!ParseSigned(t[i + 1], r)) return LinkParse::BadNumber;
+                        out.rosterRatings.push_back(r);
+                    }
                 }
             }
             return DecodeLinkText(t[2], out.text) ? LinkParse::Ok : LinkParse::BadText;

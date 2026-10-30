@@ -1002,6 +1002,35 @@ size_t nox::CRoom::RankArrived() const {
     return n;
 }
 
+// ★ 매칭 손보기 5 — 머리 주석은 `RoomManager.h` `RankVsText`. 「게임 안 + 준비」는 `RankArrived` 와 같은 잣대
+std::string nox::CRoom::RankVsText() const {
+    std::vector<RoundStanding> ps;
+    std::vector<RoundTeamScore> ts;
+    _game.SnapshotStandings(ps, ts);
+    std::vector<bool> here(_settings.roster.size(), false);
+    for (const RoundStanding& p : ps)
+        for (const RoomMember& m : _members) {
+            if (m.sessionId != p.sessionId || m.account.empty() || !_game.ClientReady(p.sessionId)) continue;
+            for (size_t i = 0; i < _settings.roster.size(); ++i)
+                if (_settings.roster[i] == m.account) here[i] = true;
+        }
+    const size_t kMax = 200;   // `Server::SendNotice` 한도
+    std::string t = "Ranked:";
+    size_t shown = 0;
+    for (size_t i = 0; i < _settings.roster.size(); ++i) {
+        if (!here[i]) continue;
+        std::string one = (shown ? " vs " : " ") + _settings.roster[i];
+        if (i < _settings.rosterRatings.size()) one += " (" + std::to_string(_settings.rosterRatings[i]) + ")";
+        if (t.size() + one.size() + 4 > kMax) {   // 「 ...」 자리를 남긴다
+            t += " ...";
+            break;
+        }
+        t += one;
+        ++shown;
+    }
+    return t;
+}
+
 // ★ 10-16 결함 ④ — 머리 주석은 `RoomManager.h` `CheckMatchHeadcount`. 방 관리자가 틱 뒤(나감을 걷어 낸 뒤 · 판 끝 처리 뒤) 부른다
 void nox::CRoom::CheckMatchHeadcount() {
     switch (_phase) {

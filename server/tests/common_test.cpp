@@ -322,6 +322,23 @@ void TestLobbyLink() {
         Check(parse(full) == P::Ok && l.roster.size() == nox::kLinkMaxRoster && nox::LinkLineFits(full) &&
                   nox::ParseLinkLine(nox::LinkCreate(10, "p0", true, many), l) == P::FieldCount,
               "CREATE 명단 31 은 읽힘(줄 한도 안) · 32 는 칸 수 실패");
+        // ★ 매칭 손보기 5 — 랭크 칸 2(이름 · 점수 쌍) 왕복 · 점수 수가 명단과 다르면 옛 꼴(랭크 1 · 점수 없음) · 랭크 아니면 점수 안 실음 · 한도 31 쌍
+        const std::string r2 = nox::LinkCreate(11, "amy", true, {"amy", "b o"}, {1010, -5});
+        Check(r2 == "CREATE 11 amy 2 amy 1010 b%20o -5" && parse(r2) == P::Ok && l.ranked && l.roster == std::vector<std::string>{"amy", "b o"} &&
+                  l.rosterRatings == std::vector<int32_t>{1010, -5},
+              "★ CREATE 랭크 칸 2 왕복(명단 둘 · 점수 둘 — 음수)");
+        Check(nox::LinkCreate(12, "amy", true, {"amy", "bob"}, {1000}) == "CREATE 12 amy 1 amy bob" &&
+                  parse(nox::LinkCreate(12, "amy", true, {"amy", "bob"}, {1000})) == P::Ok && l.rosterRatings.empty() &&
+                  nox::LinkCreate(13, "amy", false, {"amy"}, {1000}) == "CREATE 13 amy 0 amy",
+              "★ CREATE 점수 수가 명단과 다름 → 옛 꼴(랭크 1) · 랭크 0 은 점수 안 실음");
+        std::vector<std::string> names(nox::kLinkMaxRoster, std::string(16, '~'));
+        std::vector<int32_t> rs(nox::kLinkMaxRoster, -2147483647 - 1);
+        const std::string r31 = nox::LinkCreate(4294967295u, std::string(16, '~'), true, names, rs);
+        names.push_back("x");
+        rs.push_back(1);
+        Check(nox::LinkLineFits(r31) && parse(r31) == P::Ok && l.roster.size() == nox::kLinkMaxRoster && l.rosterRatings.size() == nox::kLinkMaxRoster &&
+                  nox::ParseLinkLine(nox::LinkCreate(1, "a", true, names, rs), l) == P::FieldCount,
+              "★ CREATE 랭크 칸 2 — 31 쌍(이름 16바이트 전부 %XX · int32 맨 아래)도 줄 한도 안 · 32 쌍은 칸 수 실패");
     }
     Check(parse(nox::LinkCreated(42, 3)) == P::Ok && l.kind == K::Created && l.req == 42 && l.room.id == 3, "CREATED 왕복");
     Check(parse(nox::LinkCreateFailed(43, "no wait map")) == P::Ok && l.kind == K::CreateFailed && l.req == 43 &&
@@ -384,9 +401,13 @@ void TestLobbyLink() {
               bad("PING 1", P::FieldCount) && bad("PING ", P::FieldCount) && bad("SAVED 1-0-1", P::FieldCount) &&
               bad("SAVED 1-0-1 ok x", P::FieldCount) && bad("CREATE 7 amy 1", P::FieldCount) && bad("CREATE 7 amy 1 ", P::FieldCount),
           "칸 수 — 남음 · 빈칸 둘 · 꼬리 빈칸 · 빈 결과 · ROOM 아홉 칸 · PING 칸 있음 · SAVED 둘 · 넷 · ★ CREATE 랭크만 있고 명단 없음");
-    Check(bad("CREATE 7 amy 2 amy", P::BadNumber) && bad("CREATE 7 amy x amy", P::BadNumber) && bad("CREATE 7 amy 1 ~", P::BadText) &&
+    // ★ 매칭 손보기 5 — 랭크 칸 2 가 뜻을 얻어 「칸 밖」 보기를 2 → 3 으로
+    Check(bad("CREATE 7 amy 3 amy", P::BadNumber) && bad("CREATE 7 amy x amy", P::BadNumber) && bad("CREATE 7 amy 1 ~", P::BadText) &&
               bad("CREATE 7 amy 1 bob a~b", P::BadText),
-          "★ CREATE 꼬리 — 랭크 칸 0/1 밖 · 수 아님 → 수 실패 · 빈 이름 · 날 ~ → 글 칸 실패");
+          "★ CREATE 꼬리 — 랭크 칸 0~2 밖 · 수 아님 → 수 실패 · 빈 이름 · 날 ~ → 글 칸 실패");
+    Check(bad("CREATE 7 amy 2 amy", P::FieldCount) && bad("CREATE 7 amy 2 amy 1000 bob", P::FieldCount) && bad("CREATE 7 amy 2 amy x", P::BadNumber) &&
+              bad("CREATE 7 amy 2 amy -0", P::BadNumber) && bad("CREATE 7 amy 2 ~ 1000", P::BadText),
+          "★ CREATE 랭크 칸 2 — 쌍이 안 맞음(홀수) → 칸 수 · 점수 수 아님 · -0 → 수 · 빈 이름 → 글 칸");
     Check(bad("SAVED 1-0-1 OK", P::BadText) && bad("SAVED 1-0-1 maybe", P::BadText) && bad("SAVED ~ ok", P::BadText) &&
               bad("SAVED a~b ok", P::BadText),
           "SAVED 글 칸 — 끝 칸 대문자 · 모르는 낱말 · 빈 판 번호 · 날 ~");

@@ -51,6 +51,8 @@ struct RoomSettings {
     bool ranked = false;
     // ★ 랭크 매칭 조각 5 — 로비 랭크 줄이 묶은 명단(로비 이름 · 줄 차례). 비면 명단 없는 방(일반 · `--ranked-all` 시험 방)
     std::vector<std::string> roster;
+    // ★ 매칭 손보기 5 — 명단 사람마다 점수(로비가 CREATE 랭크 칸 2 로 실음 · 같은 차례). 비면 점수 모름(판 시작 알림에 이름만)
+    std::vector<int32_t> rosterRatings;
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)

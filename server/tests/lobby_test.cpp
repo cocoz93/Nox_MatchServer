@@ -1307,6 +1307,7 @@ void MirrorUnitTests() {
         }
         return chans;
     };
+    std::vector<int32_t> lastRatings;
     auto rankAsk = [&](int c1, const char* n1, int c2, const char* n2) {   // 둘이 랭크 줄에 서면 묶여 CREATE(랭크 꼬리) 한 줄
         login4(c1, n1);
         login4(c2, n2);
@@ -1318,12 +1319,13 @@ void MirrorUnitTests() {
         std::vector<Out> s;
         mirror.TakeOut(s);
         nox::LinkLine ll;
-        return s.size() == 1 && s[0].conn == a3.conn && nox::ParseLinkLine(s[0].line, ll) == nox::LinkParse::Ok && ll.kind == nox::LinkKind::Create &&
-                       ll.ranked && ll.roster.size() == 2
-                   ? ll.req
-                   : 0u;
+        const bool okLine = s.size() == 1 && s[0].conn == a3.conn && nox::ParseLinkLine(s[0].line, ll) == nox::LinkParse::Ok &&
+                            ll.kind == nox::LinkKind::Create && ll.ranked && ll.roster.size() == 2;
+        lastRatings = ll.rosterRatings;   // ★ 매칭 손보기 5 — CREATE 랭크 칸 2 의 명단 점수
+        return okLine ? ll.req : 0u;
     };
     const uint32_t reqJay = rankAsk(8, "jay", 9, "kim");
+    const std::vector<int32_t> jayRatings = lastRatings;
     login4(10, "lee");
     send(a3, nox::LinkRoomLine(room(20, "jay", 0)));
     send(a3, nox::LinkRoomLine(room(21, "mo", 1)));   // 견줄 일반 방
@@ -1340,7 +1342,11 @@ void MirrorUnitTests() {
     send(a3, nox::LinkRoomLine(room(20, "ned", 0)));
     const std::string l3 = listed(10);
     Check(l3 == "#ned's_game,#mo's_game" && lb.Stats().rankRoomsHidden == 2, "⑫ ROOM_GONE 뒤 같은 번호 일반 방 → 보임 = " + l3);
+    lb.OnRatingsChanged({{"oli", 1234, 10}});   // ★ 매칭 손보기 5 — 판 저장 답이 고친 점수(거울이 SAVED ok 때 넘김)
     const uint32_t reqOli = rankAsk(11, "oli", 12, "pat");
+    Check(jayRatings == std::vector<int32_t>{1000, 1000} && lastRatings == std::vector<int32_t>{1234, 1000} && lb.RatingOf("oli") == 1234 &&
+              lb.RatingOf("nobody") == nox::kRatingStart,
+          "★ ⑫ 랭크 방 요청 CREATE 에 명단 점수 — 점수 모름 = 시작 점수(1000 · 1000) · 판 저장 답으로 고친 oli 1234 · 없는 이름 1000");
     send(a3, nox::LinkCreateFailed(reqOli, "no wait map"));
     clock += kRankRetryMs;   // 쉬는 시간 뒤 다시 묻는 CREATE 는 버림(이 갈래는 실패한 요청의 표시만 본다)
     out.clear();
@@ -1686,6 +1692,9 @@ void MirrorSaveUnitTests() {
         "\"sec\":1,\"endReason\":\"score_player\",\"winner\":{\"kind\":\"player\",\"id\":2,\"account\":\"bob\"},\"limit\":1,\"timeLimitSec\":0,\"ranked\":true,"
         "\"players\":[{\"account\":\"wn\",\"netCode\":1,\"state\":\"finished\",\"team\":0,\"score\":0,\"deaths\":1},"
         "{\"account\":\"bob\",\"netCode\":2,\"state\":\"finished\",\"team\":0,\"score\":1,\"deaths\":0}]}";
+    LobbyConfig watchCfg;
+    Lobby watcher(watchCfg, mirror);   // ★ 매칭 손보기 5 — 거울이 SAVED ok 때 로비가 쥔 점수도 고치나(이 시험의 거울엔 여기서부터 붙임)
+    mirror.Attach(watcher);
     result(301, duel);
     pump();
     const bool tail1 = only(301, "SAVED 1760000000-0-20 ok wn 990 -10 bob 1010 10");
@@ -1697,6 +1706,7 @@ void MirrorSaveUnitTests() {
     pump();
     Check(tail1 && dupBare && only(301, "SAVED 1760000000-0-21 ok wn 980 -10 bob 1020 10"),
           ("⑥ 랭크 판 ok → 꼬리(wn 990 −10 · bob 1010 +10) = " + seen1 + " · 같은 판 dup → 꼬리 없음 · 두 판째 → 쌓인 점수(980 · 1020)").c_str());
+    Check(watcher.RatingOf("wn") == 980 && watcher.RatingOf("bob") == 1020, "★ ⑥ 거울이 SAVED ok 때 로비에도 넘김 — 로비가 쥔 점수 wn 980 · bob 1020");
 }
 
 // ── ★ 로그인 암호 조각 4 — 로그인 토큰(`Lobby` — `Docs/LOGIN_AUTH_DESIGN.md` 차이 5 · 6 · 정할 것 a · b · c) ──

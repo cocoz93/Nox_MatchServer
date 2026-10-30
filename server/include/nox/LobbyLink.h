@@ -14,6 +14,7 @@
 //   게임 서버 → 로비  ROOM_GONE <방>
 //   로비 → 게임 서버  CREATE <요청 번호> <만든 사람> [<랭크 0|1> <이름 1> … <이름 n>]      ★ 랭크 매칭 조각 5 — 꼬리가 없으면 옛 꼴(일반 새 방).
 //                                                                                    꼬리 = 랭크 · 명단(줄 차례 · 1~`kLinkMaxRoster` 명)
+//                     CREATE <요청 번호> <만든 사람> 2 <이름 1> <점수 1> … <이름 n> <점수 n>    ★ 매칭 손보기 5 — 랭크 칸 2 = 랭크 + 사람마다 점수(부호 있는 십진)
 //   게임 서버 → 로비  CREATED <요청 번호> <방>  ·  CREATE_FAILED <요청 번호> <까닭>       답 앞에 그 방의 `ROOM` 이 먼저 간다
 //   게임 서버 → 로비  RESULT <판 결과 JSON 한 줄>                                     파일 기록기와 같은 줄(`FormatMatchResultJson`)
 //   로비 → 게임 서버  BYE <까닭>                                                     ★ 작업 3a-2 — 끊기 직전(확인 실패 · 같은 주소 등록 · 차례 틀림)
@@ -58,6 +59,7 @@ constexpr uint32_t kLinkPingEveryMs = 5000;
 constexpr uint32_t kLinkDeadMs = 15000;
 // ★ 랭크 매칭 조각 5 — CREATE 명단 한도(로비 랭크 줄 최대의 위 한도 `kRankMaxLimit` 와 같은 31 — 방 정보 틀의 최대 인원).
 //   한 줄 길이 — 이름 16바이트를 `%XX` 로 다 바꿔도 31 × 49 ≈ 1.5KB 라 줄 한도(4KB) 안
+//   ★ 매칭 손보기 5 · 1 — 점수 칸(부호 있는 십진 11자까지)이 붙어도 31 × 61 ≈ 1.9KB(common_test 가 맨 끝 값으로 잼)
 constexpr size_t kLinkMaxRoster = 31;
 
 // 게임 서버가 알리는 방 하나 — 로비가 그리는 칸만(`RoomFact` 에서 게임 서버가 채운다)
@@ -100,6 +102,7 @@ struct LinkLine {
     bool ranked = false;                       // ★ 랭크 매칭 조각 5 — Create 꼬리(옛 꼴이면 false · 명단 빔)
     std::vector<std::string> roster;
     std::vector<LinkRatingChange> ratings;     // ★ 매칭 손보기 1 — Saved 꼬리(옛 꼴이면 빔)
+    std::vector<int32_t> rosterRatings;        // ★ 매칭 손보기 5 — Create 랭크 칸 2 의 사람마다 점수(명단과 같은 차례 · 1 이면 빔)
 };
 
 // 읽기 실패 까닭 — 갈래마다 따로 센다(시험은 개수로 본다)
@@ -124,7 +127,9 @@ std::string LinkRegister(uint32_t epoch, uint32_t ip, uint16_t port);
 std::string LinkRoomLine(const LinkRoom& r);
 std::string LinkRoomGone(uint32_t id);
 // ★ 랭크 매칭 조각 5 — 랭크도 아니고 명단도 없으면 옛 꼴. 랭크인데 명단이 비면 만든 사람 하나를 명단으로
-std::string LinkCreate(uint32_t req, const std::string& creator, bool ranked = false, const std::vector<std::string>& roster = {});
+//   ★ 매칭 손보기 5 — 랭크이고 `ratings` 가 명단과 같은 수면 랭크 칸 2(이름 · 점수 쌍) · 아니면 옛 꼴(점수 없음)
+std::string LinkCreate(uint32_t req, const std::string& creator, bool ranked = false, const std::vector<std::string>& roster = {},
+                       const std::vector<int32_t>& ratings = {});
 std::string LinkCreated(uint32_t req, uint32_t id);
 std::string LinkCreateFailed(uint32_t req, const std::string& reason);
 std::string LinkBye(const std::string& reason);

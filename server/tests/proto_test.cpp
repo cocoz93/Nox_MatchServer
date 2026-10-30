@@ -24780,13 +24780,14 @@ std::shared_ptr<MapOriginal> FakeMapOriginal(const std::string& key, uint32_t cr
 }
 // 로비가 만든 방처럼 — 대기 맵 원본에 붙은 독립 모드 · 채팅 · 대전 맵(열쇠가 목록에 없으면 빈 것) · 최대 8 · 맵 목록
 int MakeLobbyLikeRoom(nox::CRoomManager& rooms, const MapCatalog& cat, const std::string& waitKey, const std::string& battleKey,
-                      int battleScoreLimit = 0, const std::vector<std::string>& roster = {}) {
+                      int battleScoreLimit = 0, const std::vector<std::string>& roster = {}, const std::vector<int32_t>& ratings = {}) {
     const auto wait = cat.Find(waitKey);
     const auto battle = cat.Find(battleKey);
     RoomSettings rs;
     rs.battleScoreLimit = battleScoreLimit;   // ★ 10-16 작업 13d
     rs.ranked = !roster.empty();              // ★ 랭크 매칭 조각 6 — 명단이 있으면 로비 랭크 줄이 묶은 방
     rs.roster = roster;
+    rs.rosterRatings = ratings;               // ★ 매칭 손보기 5
     rs.mapPath = wait ? wait->path : std::string();
     rs.mode = "chat";
     rs.battleMapPath = battle ? battle->path : std::string();
@@ -27058,7 +27059,7 @@ void TestRankRoom() {
 
     // ⑧ ★ 10-30 시작 전 쉬기 — 다 와도 `kRankSettleMs` 전엔 대기 맵 · 지나면 판(위 ①~⑦ 은 쉬기 0 으로 옛 규칙만 봄)
     rooms.SetRankSettleMs(nox::CRoomManager::kRankSettleMs);
-    const int r6 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"mia", "ned"});
+    const int r6 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"mia", "ned"}, {1000, 1010});   // ★ 매칭 손보기 5 — 명단 점수
     now += 34; srv.Tick(now, o);
     join(srv, TrailerAs("mia", r6, "10.66.0.1", 661), "10.66.0.1:1001", "10.66.0.1:1002", o);
     join(srv, TrailerAs("ned", r6, "10.66.0.2", 662), "10.66.0.2:2001", "10.66.0.2:2002", o);
@@ -27077,6 +27078,48 @@ void TestRankRoom() {
     Check(heldWhole && rooms.Room(r6).Phase() == nox::RoomPhase::Playing && rooms.Room(r6).RankState() == W::Started &&
               rooms.Stats().rankStartAll == allBefore + 1,
           m);
+    {   // ★ 매칭 손보기 5 — 상대 알림은 쉬기 시작에 한 번(⑧ — 명단 차례 · 점수 · 아직 대기 맵). 쉬기 0(①~⑦ 시험만)은 알림 없음 ·
+        //   랭크 풀(③) · 맵 없음(④)도 없음. 쉬기는 설정·실행 인자가 없고 시험만 0 으로 바꾼다(`SetRankSettleMs`)
+        auto textTo = [](const std::vector<nox::OutPacket>& out, const std::string& to, const char* has) {
+            int n = 0;
+            for (const auto& x : FlattenTo(out, to)) {
+                for (size_t i = 0; i + 11 <= x.size(); ++i) {
+                    if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
+                    const size_t len = x[i + 8];
+                    if (i + 11 + len > x.size()) continue;
+                    const std::string text(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len));
+                    if (text.find(has) != std::string::npos) ++n;
+                }
+            }
+            return n;
+        };
+        const int vsM = textTo(o, "10.66.0.1:1002", "Ranked: mia (1000) vs ned (1010)"), vsN = textTo(o, "10.66.0.2:2002", "Ranked: mia (1000) vs ned (1010)");
+        std::snprintf(m, sizeof(m), "★ 상대 알림 — ⑧ mia %d · ned %d · 보낸 수 r6 %llu · r1 %llu · r2 %llu · r3 %llu · r4 %llu",
+                      vsM, vsN, rooms.Room(r6).RankVsSent(), rooms.Room(r1).RankVsSent(), rooms.Room(r2).RankVsSent(), rooms.Room(r3).RankVsSent(),
+                      rooms.Room(r4).RankVsSent());
+        Check(vsM == 1 && vsN == 1 && rooms.Room(r6).RankVsSent() == 1 && rooms.Room(r1).RankVsSent() == 0 && rooms.Room(r2).RankVsSent() == 0 &&
+                  rooms.Room(r3).RankVsSent() == 0 && rooms.Room(r4).RankVsSent() == 0,
+              m);
+    }
+    {   // ★ 매칭 손보기 5 — 긴 명단(16바이트 이름 여덟 · int32 맨 아래 점수) → 알림 한도 200바이트 안 · 끝 「 ...」
+        std::vector<std::string> names;
+        std::vector<int32_t> rs;
+        for (int i = 0; i < 8; ++i) {
+            names.push_back(std::string(15, 'n') + static_cast<char>('a' + i));
+            rs.push_back(-2147483647 - 1);
+        }
+        const int r7 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, names, rs);
+        now += 34; srv.Tick(now, o);
+        for (int i = 0; i < 8; ++i) {
+            const std::string ip = "10.67.0." + std::to_string(i + 1);
+            join(srv, TrailerAs(names[i], r7, ip, 671 + i), ip + ":1001", ip + ":1002", o);
+        }
+        const std::string vs = rooms.Room(r7).RankVsText();
+        const std::string head = "Ranked: " + names[0] + " (-2147483648) vs " + names[1];
+        std::snprintf(m, sizeof(m), "★ 긴 명단 알림 %zu바이트 · 끝 「 ...」 %d · 앞 두 사람 %d · 도착 %zu", vs.size(),
+                      (int)(vs.size() >= 4 && vs.compare(vs.size() - 4, 4, " ...") == 0), (int)(vs.rfind(head, 0) == 0), rooms.Room(r7).RankArrived());
+        Check(vs.size() <= 200 && vs.size() >= 4 && vs.compare(vs.size() - 4, 4, " ...") == 0 && vs.rfind(head, 0) == 0 && rooms.Room(r7).RankArrived() == 8, m);
+    }
 
     // ⑨ ★ 매칭 손보기 2 — 랭크 판 끝(점수 한도) → 내보내기 걸림 · 쉬는 시간이 끝나는 틱에 게임 안 둘에게 `c7` 한 바이트가 `USE_MAP` 앞에 ·
     //   그 뒤 옛 길(대기 · 일반 방) · 클라 답 `c8`(본문 0) 셈 · 중단으로 끝난 ⑥ 의 r1 은 안 걸림
@@ -27095,11 +27138,14 @@ void TestRankRoom() {
             oq.clear();
             now += 34; srv.Tick(now, oq);
         }
-        auto order = [&](const std::string& to) {   // `c7` · `USE_MAP` 의 첫 자리(없으면 -1)
+        // `c7` · 대기 맵(so_lod) `USE_MAP` 의 첫 자리(없으면 -1). 대전 맵(estate) `USE_MAP` 은 가짜 클라가 확인을 안 해 같은 틱에 다시 실릴 수 있어 가른다
+        const std::string waitName = "so_lod";
+        auto order = [&](const std::string& to) {
             int q = -1, u = -1, i = 0;
             for (const auto& x : FlattenTo(oq, to)) {
                 if (q < 0 && x.size() == 1 && x[0] == static_cast<uint8_t>(nox::Op::SERVER_QUIT)) q = i;
-                if (u < 0 && !x.empty() && x[0] == static_cast<uint8_t>(nox::Op::USE_MAP)) u = i;
+                if (u < 0 && !x.empty() && x[0] == static_cast<uint8_t>(nox::Op::USE_MAP) &&
+                    std::search(x.begin(), x.end(), waitName.begin(), waitName.end()) != x.end()) u = i;
                 ++i;
             }
             return std::make_pair(q, u);

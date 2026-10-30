@@ -171,6 +171,10 @@ public:
     unsigned long long RankQuitArmed() const { return _rankQuitArmed; }
     // 명단 가운데 지금 게임 안에 든 사람 수(같은 이름은 한 번)
     size_t RankArrived() const;
+    // ★ 매칭 손보기 5 — 판 시작 알림 글 「Ranked: amy (1000) vs bob (1010)」(명단 차례 · 게임 안 + 준비한 사람만 · 점수 모르면 이름만).
+    //   영문 ASCII(게임 안 알림의 한글은 정품 화면 미확인) · 알림 한도(`Server::SendNotice` 200바이트)를 넘으면 들어가는 데까지 + 「 ...」
+    std::string RankVsText() const;
+    unsigned long long RankVsSent() const { return _rankVsSent; }
 
 private:
     friend class CRoomManager;
@@ -245,6 +249,7 @@ private:
     bool _rankSettling = false;
     uint32_t _rankSettleSinceMs = 0;
     unsigned long long _rankQuitArmed = 0;   // ★ 매칭 손보기 2
+    unsigned long long _rankVsSent = 0;      // ★ 매칭 손보기 5 — 판 시작 알림을 보낸 수
 };
 
 // 방이 바깥에 알리는 것(4단계 인원 갱신 · 5단계 결과 기록이 쓴다). 나감은 세션표 변화로 본다(위 머리 주석).

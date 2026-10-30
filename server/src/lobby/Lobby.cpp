@@ -363,6 +363,7 @@ void Lobby::RankRequest(size_t count, bool full, std::vector<Out>& out) {
         c.rank = Conn::Rank::Requested;
         c.rankReq = req;
         ask.roster.push_back(c.nick);
+        ask.ratings.push_back(RatingOf(c.nick));   // ★ 매칭 손보기 5 — 게임 서버가 판 시작 전 「Ranked: … vs …」에
     }
     ask.creator = ask.roster.front();
     ++stats_.rankRequests;
@@ -513,6 +514,7 @@ void Lobby::OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out) {
     // 영문(ASCII)만 — ★ 10-30 사람 확인 59 — 한글(949 바이트) 공지 줄이 정품 채팅창에서 깨짐. 정품은 공지 줄을 `%S` 로 넓은 글자로 바꿔 그리는데
     //   (`Game.exe` 0x446950 · 형식 0x59fb04) 이 변환이 949 를 따르지 않는 것으로 봄(채팅 줄은 한글이 나옴 — 다른 길). 가운뎃점도 ASCII 아님 → `-`
     std::string line;
+    if (a.ratingOk) ratingOf_[c.nick] = a.rating;   // ★ 매칭 손보기 5 — 랭크 방 요청의 명단 점수(판 없음이면 시작 점수 그대로)
     if (!a.ratingOk) {
         ++stats_.ratingFailed;
         log_.push_back("[로그인 — 점수 못 읽음] " + c.nick + " — " + (a.why.empty() ? std::string("저장소 실패") : a.why) + "(점수 줄 없이 376)");
@@ -526,6 +528,16 @@ void Lobby::OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out) {
         log_.push_back("[로그인 — 점수] " + c.nick + " — 랭크 판 없음");
     }
     FinishLogin(conn, c, LoginState::Ok, std::string(), out, line);
+}
+
+// ★ 매칭 손보기 5 — 머리 주석은 `Lobby.h`
+void Lobby::OnRatingsChanged(const std::vector<LinkRatingChange>& changes) {
+    for (const LinkRatingChange& c : changes) ratingOf_[c.account] = c.after;
+}
+
+int32_t Lobby::RatingOf(const std::string& account) const {
+    const auto it = ratingOf_.find(account);
+    return it == ratingOf_.end() ? kRatingStart : it->second;
 }
 
 std::string Lobby::SignupUrl(const Conn& c) const {

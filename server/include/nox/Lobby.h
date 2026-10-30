@@ -115,6 +115,7 @@ struct RoomAsk {
     std::string creator;               // 방장(랭크면 명단 첫 사람 = 줄에 먼저 선 사람)
     std::vector<std::string> roster;   // 랭크 — 들어올 사람의 로비 이름 전부(차례 = 줄 차례) · 일반은 비움
     bool ranked = false;
+    std::vector<int32_t> ratings;      // ★ 매칭 손보기 5 — 명단 사람마다 점수(같은 차례 · 로비가 쥔 값 — 모르면 시작 점수) · 일반은 비움
 };
 
 // 채널이 로비에게 주는 방 — 로비는 목록을 그리거나 방 참가를 볼 때마다 묻는다(그 순간의 돌고 있는 방 · 방 번호 차례)
@@ -324,6 +325,10 @@ public:
     // 저장소 답 Rating(소켓 루프가 꺼내 넘긴다) — 끝난 물음이면 버리고 센다
     void OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out);
     size_t PendingRatings() const { return ratingPending_.size(); }
+    // ★ 매칭 손보기 5 — 판 저장이 고친 점수(거울이 SAVED ok 를 지을 때 넘긴다) → 로비가 쥔 점수(랭크 방 요청의 명단 점수)
+    void OnRatingsChanged(const std::vector<LinkRatingChange>& changes);
+    // 로비가 쥔 그 이름의 점수 — 로그인 점수 답 · 판 저장 답에서. 모르면(점수를 안 물은 로그인 · 읽기 실패) 시작 점수
+    int32_t RatingOf(const std::string& account) const;
     // ★ 랭크 매칭 조각 4 — 줄 선 사람 수 · 답을 기다리는 랭크 방 요청 수(그 요청에 묶인 사람은 줄 수에 안 듦)
     size_t RankQueueSize() const { return rankQueue_.size(); }
     size_t RankRequestsPending() const { return rankPending_.size(); }
@@ -415,6 +420,7 @@ private:
     std::map<uint64_t, int> accountConn_;         // ★ 조각 4 — 계정 → 로그인된 접속(정할 것 b)
     ILobbyStore* store_ = nullptr;                // ★ 레이팅 조각 4 — 점수를 물을 저장소(없으면 안 물음)
     std::map<uint32_t, int> ratingPending_;       // 점수 요청 번호 → 기다리는 접속
+    std::map<std::string, int32_t> ratingOf_;     // ★ 매칭 손보기 5 — 계정 이름 → 점수(`RatingOf`)
     uint32_t nextRatingReq_ = 1;
     // ★ 랭크 매칭 조각 4 — 줄(선 차례) · 모으기 시계 · 되돌린 뒤 쉬는 시계 · 답을 기다리는 랭크 방 요청(번호 → 묶인 접속 · 한도)
     std::vector<int> rankQueue_;

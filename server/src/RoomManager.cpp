@@ -122,8 +122,14 @@ void CRoomManager::CheckRankRooms(uint32_t nowMs) {
             if (!room._rankSettling) {
                 room._rankSettling = true;
                 room._rankSettleSinceMs = nowMs;
+                // ★ 매칭 손보기 5 — 상대 알림은 쉬기 시작에(아직 대기 맵 · 다 실은 뒤 — 맵을 바꾸는 틱에 내면 싣는 중이라 못 볼 수 있음).
+                //   쉬는 중에 누가 빠졌다 다시 서면 또 낸다(그때 사람이 바뀌었을 수 있음)
+                const std::string vs = room.RankVsText();
+                room._game.SendNotice(vs.c_str());
+                ++room._rankVsSent;
                 if (_logRooms) {
-                    std::printf("[방] %d 랭크 — 시작 조건 섬(게임 안 명단 %zu / %zu) · %u초 쉬고 판\n", room._id, arrived, want, _rankSettleMs / 1000);
+                    std::printf("[방] %d 랭크 — 시작 조건 섬(게임 안 명단 %zu / %zu) · %u초 쉬고 판 · 알림 「%s」\n", room._id, arrived, want,
+                                _rankSettleMs / 1000, vs.c_str());
                     std::fflush(stdout);
                 }
             }
