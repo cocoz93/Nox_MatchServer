@@ -17,11 +17,18 @@ uint32_t NowUnix() { return static_cast<uint32_t>(std::time(nullptr)); }
 
 // ★ 로그인 암호 조각 4 — 계정 만들기 · 마지막 로그인은 로그인 서버 몫(정할 것 a). 로비는 판 사람의 계정 번호를 이름으로 찾기만
 constexpr const char* kSelAccount = "SELECT id FROM accounts WHERE name = ?";
+// ★ 레이팅 조각 3 — matches.ranked · match_players.rating_delta(`003_rating.sql`)
 constexpr const char* kInsMatch =
     "INSERT INTO matches (server_ip, server_port, match_key, room_id, room_name, map_key, mode, start_unix, end_unix, frames, end_reason, "
-    "winner_kind, winner_id, winner_name, score_limit, time_limit_sec, raw_json, saved_unix) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+    "winner_kind, winner_id, winner_name, score_limit, time_limit_sec, ranked, raw_json, saved_unix) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 constexpr const char* kInsPlayer =
-    "INSERT INTO match_players (match_id, seat, account_id, name, net_code, state, team, score, deaths, observer) VALUES (?,?,?,?,?,?,?,?,?,?)";
+    "INSERT INTO match_players (match_id, seat, account_id, name, net_code, state, team, score, deaths, observer, rating_delta) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+// ★ 레이팅 조각 3 — 점수 올리기(행이 없으면 시작 점수 + 증감으로 만든다) · 이름으로 점수 · 그보다 높은 사람 수
+constexpr const char* kUpsRating =
+    "INSERT INTO ratings (account_id, rating, updated_unix) VALUES (?,?,?) ON DUPLICATE KEY UPDATE rating = rating + ?, updated_unix = ?";
+constexpr const char* kSelRating = "SELECT r.rating FROM accounts a JOIN ratings r ON r.account_id = a.id WHERE a.name = ?";
+constexpr const char* kSelRank = "SELECT COUNT(*) FROM ratings WHERE rating > ?";
 
 }  // namespace
 
@@ -30,11 +37,14 @@ struct CDbWorker::Conn {
     MYSQL_STMT* selAccount = nullptr;
     MYSQL_STMT* insMatch = nullptr;
     MYSQL_STMT* insPlayer = nullptr;
+    MYSQL_STMT* upsRating = nullptr;   // ★ 레이팅 조각 3
+    MYSQL_STMT* selRating = nullptr;
+    MYSQL_STMT* selRank = nullptr;
     unsigned lastErrno = 0;
     std::string lastError;
 
     ~Conn() {
-        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer})
+        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer, upsRating, selRating, selRank})
             if (s) mysql_stmt_close(s);
         if (m) mysql_close(m);
     }
@@ -73,6 +83,52 @@ struct CDbWorker::Conn {
         if (f != 0 && f != MYSQL_NO_DATA) return StmtFail(selAccount, "계정 찾기 꺼내기");
         return true;
     }
+    // ★ 레이팅 조각 3 — 점수 고치기(판 저장 트랜잭션 안에서 부른다)
+    bool AddRating(uint64_t accountId, int32_t delta, uint32_t now) {
+        MYSQL_BIND p[5] = {};
+        int32_t first = kRatingStart + delta;
+        U64(p[0], accountId);
+        I32(p[1], first);
+        U32(p[2], now);
+        I32(p[3], delta);
+        U32(p[4], now);
+        if (mysql_stmt_bind_param(upsRating, p) != 0 || mysql_stmt_execute(upsRating) != 0) return StmtFail(upsRating, "점수 고치기");
+        return true;
+    }
+    // ★ 레이팅 조각 3 — 이름으로 점수 · 순위(행이 없으면 found false). 실패면 false(lastErrno)
+    bool ReadRating(const std::string& name, bool& found, int32_t& rating, uint32_t& rank) {
+        found = false;
+        rating = kRatingStart;
+        rank = 0;
+        MYSQL_BIND p[1] = {};
+        unsigned long len = 0;
+        Bin(p[0], name, len);
+        int32_t got = 0;
+        MYSQL_BIND r[1] = {};
+        I32(r[0], got);
+        if (mysql_stmt_bind_param(selRating, p) != 0 || mysql_stmt_bind_result(selRating, r) != 0) return StmtFail(selRating, "점수 읽기 묶기");
+        if (mysql_stmt_execute(selRating) != 0) return StmtFail(selRating, "점수 읽기");
+        if (mysql_stmt_store_result(selRating) != 0) return StmtFail(selRating, "점수 읽기 받기");
+        const int f = mysql_stmt_fetch(selRating);
+        mysql_stmt_free_result(selRating);
+        if (f == MYSQL_NO_DATA) return true;
+        if (f != 0) return StmtFail(selRating, "점수 읽기 꺼내기");
+        found = true;
+        rating = got;
+        MYSQL_BIND q[1] = {};
+        I32(q[0], rating);
+        uint64_t higher = 0;
+        MYSQL_BIND s[1] = {};
+        U64(s[0], higher);
+        if (mysql_stmt_bind_param(selRank, q) != 0 || mysql_stmt_bind_result(selRank, s) != 0) return StmtFail(selRank, "순위 묶기");
+        if (mysql_stmt_execute(selRank) != 0) return StmtFail(selRank, "순위");
+        if (mysql_stmt_store_result(selRank) != 0) return StmtFail(selRank, "순위 받기");
+        const int g = mysql_stmt_fetch(selRank);
+        mysql_stmt_free_result(selRank);
+        if (g != 0) return StmtFail(selRank, "순위 꺼내기");
+        rank = static_cast<uint32_t>(higher + 1);
+        return true;
+    }
 };
 
 CDbWorker::CDbWorker(DbConfig cfg) : cfg_(std::move(cfg)) {}
@@ -97,7 +153,8 @@ bool CDbWorker::Connect(std::string& err) {
         }
         return false;
     }
-    if (!c->Prepare(c->selAccount, kSelAccount) || !c->Prepare(c->insMatch, kInsMatch) || !c->Prepare(c->insPlayer, kInsPlayer)) {
+    if (!c->Prepare(c->selAccount, kSelAccount) || !c->Prepare(c->insMatch, kInsMatch) || !c->Prepare(c->insPlayer, kInsPlayer) ||
+        !c->Prepare(c->upsRating, kUpsRating) || !c->Prepare(c->selRating, kSelRating) || !c->Prepare(c->selRank, kSelRank)) {
         err = "준비된 문장 — " + c->lastError + "(표 모양이 SQL 파일과 다른가)";
         return false;
     }
@@ -155,6 +212,19 @@ void CDbWorker::SaveMatch(uint32_t req, const wol::MatchSource& src, const Match
         std::lock_guard<std::mutex> lk(mu_);
         queue_.push_back(std::move(j));
         ++stats_.requests;
+    }
+    cv_.notify_one();
+}
+
+void CDbWorker::GetRating(uint32_t req, const std::string& account) {
+    Job j;
+    j.kind = wol::StoreAnswerKind::Rating;
+    j.req = req;
+    j.account = account;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        queue_.push_back(std::move(j));
+        ++stats_.ratingRequests;
     }
     cv_.notify_one();
 }
@@ -225,9 +295,10 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                     c.ConnFail("트랜잭션 열기");
                     break;
                 }
-                MYSQL_BIND p[18] = {};
+                MYSQL_BIND p[19] = {};
                 unsigned long lMatch = 0, lRoom = 0, lMap = 0, lMode = 0, lEnd = 0, lKind = 0, lWin = 0, lRaw = 0;
                 bool nullWinId = false, nullWinName = false;
+                const uint8_t ranked = r.ranked ? 1 : 0;   // ★ 레이팅 조각 3
                 U32(p[0], j.src.ip);
                 U16(p[1], j.src.port);
                 Txt(p[2], r.match, lMatch);
@@ -246,8 +317,9 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                 else Null(p[13], nullWinName);
                 U32(p[14], r.limit);
                 U32(p[15], r.timeLimitSec);
-                Txt(p[16], j.raw, lRaw);
-                U32(p[17], now);
+                U8(p[16], ranked);
+                Txt(p[17], j.raw, lRaw);
+                U32(p[18], now);
                 if (mysql_stmt_bind_param(c.insMatch, p) != 0 || mysql_stmt_execute(c.insMatch) != 0) {
                     c.StmtFail(c.insMatch, "판 넣기");
                     duplicate = c.lastErrno == ER_DUP_ENTRY;   // 같은 (게임 서버 · 판 번호) — 다시 보낸 판
@@ -255,7 +327,10 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                     break;
                 }
                 const uint64_t matchId = mysql_stmt_insert_id(c.insMatch);
+                // ★ 레이팅 조각 3 — 자리별 증감(`Rating.h`). 계정을 못 찾은 사람(이름만 있고 계정 행 없음)은 반영 안 함(NULL)
+                const RatingResult rr = RatingDeltas(r);
                 bool rowsOk = true;
+                unsigned long long ratingRows = 0;
                 for (size_t seat = 0; rowsOk && seat < r.players.size(); ++seat) {
                     const MatchRecordPlayer& pl = r.players[seat];
                     uint64_t accountId = 0;
@@ -263,12 +338,14 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                         rowsOk = false;
                         break;
                     }
-                    MYSQL_BIND q[10] = {};
+                    const bool rated = rr.seats[seat].rated && accountId != 0;
+                    const int32_t delta = rr.seats[seat].delta;
+                    MYSQL_BIND q[11] = {};
                     const uint8_t seat8 = static_cast<uint8_t>(seat);
                     const uint8_t observer = pl.observer ? 1 : 0;
                     const std::string state = pl.left ? "left" : "finished";
                     unsigned long lName = 0, lState = 0;
-                    bool nullAcc = false, nullName = false, nullTeam = false, nullScore = false, nullDeaths = false;
+                    bool nullAcc = false, nullName = false, nullTeam = false, nullScore = false, nullDeaths = false, nullDelta = false;
                     U64(q[0], matchId);
                     U8(q[1], seat8);
                     if (accountId != 0) U64(q[2], accountId);
@@ -287,9 +364,14 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                         U32(q[8], pl.deaths);
                     }
                     U8(q[9], observer);
+                    if (rated) I32(q[10], delta);
+                    else Null(q[10], nullDelta);
                     if (mysql_stmt_bind_param(c.insPlayer, q) != 0 || mysql_stmt_execute(c.insPlayer) != 0) {
                         c.StmtFail(c.insPlayer, "판 사람 넣기");
                         rowsOk = false;
+                    } else if (rated) {
+                        if (c.AddRating(accountId, delta, now)) ++ratingRows;
+                        else rowsOk = false;
                     }
                 }
                 if (!rowsOk) {
@@ -302,6 +384,19 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                     break;
                 }
                 ok = true;
+                if (ratingRows) {
+                    std::lock_guard<std::mutex> lk(mu_);
+                    stats_.ratingRows += ratingRows;
+                }
+                break;
+            }
+            case wol::StoreAnswerKind::Rating: {   // ★ 레이팅 조각 3 — 읽기만(트랜잭션 없음)
+                if (c.ReadRating(j.account, a.ratingFound, a.rating, a.rank)) {
+                    a.ratingOk = true;
+                    std::lock_guard<std::mutex> lk(mu_);
+                    ++stats_.ratingReads;
+                    return a;
+                }
                 break;
             }
             case wol::StoreAnswerKind::kCount:
@@ -323,6 +418,10 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
         }
     }
     std::lock_guard<std::mutex> lk(mu_);
+    if (j.kind == wol::StoreAnswerKind::Rating) {   // ★ 레이팅 조각 3 — 못 읽음(ratingOk false) · 로비는 점수 줄 없이 로그인을 끝낸다
+        ++stats_.ratingFailed;
+        return a;
+    }
     a.save = wol::SaveResult::Failed;
     ++stats_.saveFailed;
     return a;

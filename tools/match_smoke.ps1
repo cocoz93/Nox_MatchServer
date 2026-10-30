@@ -198,8 +198,9 @@ if ($Auth) {
     if ($LASTEXITCODE -ne 0) { throw "SQL 실패: $out" }
     return $out
   }
-  $schema = 'DROP TABLE IF EXISTS match_players, matches, accounts, schema_version;' + "`n" +
-    [IO.File]::ReadAllText((Join-Path $repo 'tools\db\001_init.sql')) + "`n" + [IO.File]::ReadAllText((Join-Path $repo 'tools\db\002_auth.sql'))
+  $schema = 'DROP TABLE IF EXISTS ratings, match_players, matches, accounts, schema_version;' + "`n" +
+    [IO.File]::ReadAllText((Join-Path $repo 'tools\db\001_init.sql')) + "`n" + [IO.File]::ReadAllText((Join-Path $repo 'tools\db\002_auth.sql')) + "`n" +
+    [IO.File]::ReadAllText((Join-Path $repo 'tools\db\003_rating.sql'))   # ★ 레이팅 조각 3 — 표 버전 3(로그인 서버도 본다)
   try { Sql $schema | Out-Null } catch { Skip "시험 DB $testDb 표 깔기 못 함 — $_" }
   $ap = Start-Process -FilePath $AuthExe -PassThru -WindowStyle Hidden -RedirectStandardOutput $alog -ArgumentList @(
     '--config', "`"$ini`"", '--test-db', '--workers', '2', '--seconds', '150')

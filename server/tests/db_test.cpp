@@ -8,6 +8,7 @@
 //      · 사람 행이 실패하면 판 행도 안 남음(한 트랜잭션 — 시험 표에 CHECK 를 잠깐 걸어 둘째 사람을 실패시킴)
 //   ③ 칸 한도 → Invalid(DB 에 안 감) ④ 끊김 — 같은 계정으로 워커 연결을 KILL → 다음 요청이 다시 붙어 성공(retries 1)
 //   ⑤ 표 버전이 다르면 Start 실패 ⑥ 끝낼 때 남은 일을 다 함(Stop 직전에 넣은 판 셋이 다 들어감) ⑦ 셈
+//   ⑧ ★ 레이팅 조각 3(⑤ 와 ⑥ 사이) — 랭크 판 점수 · 겹친 판 안 셈 · 일반 판 NULL · 점수 · 순위 읽기 · 읽기 실패
 #ifdef _WIN32
 #include <winsock2.h>
 #endif
@@ -186,7 +187,7 @@ int main(int argc, char** argv) {
         std::printf("[건너뜀] 시험 DB %s 에 못 붙음 — %s(사람 1회 config/db_setup.sql 전이면 이 꼴)\n", cfg.database.c_str(), err.c_str());
         return 77;
     }
-    bool laid = ad.Run("DROP TABLE IF EXISTS match_players, matches, accounts, schema_version");
+    bool laid = ad.Run("DROP TABLE IF EXISTS ratings, match_players, matches, accounts, schema_version");   // ★ 레이팅 조각 3 — ratings 가 accounts 를 가리켜 먼저
     for (int i = 2; i < argc; ++i) {
         std::ifstream f(argv[i], std::ios::binary);
         std::stringstream ss;
@@ -281,6 +282,50 @@ int main(int argc, char** argv) {
     }
     Check(ad.Run("UPDATE schema_version SET version = " + std::to_string(nox::db::kSchemaVersion) + " WHERE id = 1"), "⑤ 표 버전 되돌림");
 
+    // ⑧ ★ 레이팅 조각 3 — 랭크 판이 같은 트랜잭션에서 점수를 고치나 · 겹친 판은 안 고치나 · 일반 판은 NULL · 점수 · 순위 읽기
+    Check(ad.One("SELECT COUNT(*) FROM matches WHERE ranked <> 0") == "0" && ad.One("SELECT COUNT(*) FROM match_players WHERE rating_delta IS NOT NULL") == "0" &&
+              ad.One("SELECT COUNT(*) FROM ratings") == "0",
+          "⑧ 일반 판 넷 — ranked 0 · rating_delta 모두 NULL · ratings 빈 표");
+    nox::MatchRecord rk1 = Sample("1760000000-3-40");   // wn(−1) · 949 관전 · ghost(계정 행 없음 · 최대 점수) · 이름 없는 나감
+    rk1.ranked = true;
+    nox::MatchRecord rk2 = Sample("1760000000-3-41");   // wn 3 · Wn 1 → wn +10 · Wn −10
+    rk2.ranked = true;
+    rk2.winnerAccount = "wn";
+    rk2.players.resize(2);
+    rk2.players[0].score = 3;
+    rk2.players[1].account = "Wn";
+    rk2.players[1].observer = false;
+    rk2.players[1].score = 1;
+    w.SaveMatch(40, srcA, rk1, "{}");
+    w.SaveMatch(41, srcA, rk2, "{}");
+    w.SaveMatch(42, srcA, rk1, "{}");   // 겹친 판 — 점수 그대로여야
+    auto a8 = WaitAnswers(w, 3);
+    Check(a8.size() == 3 && a8[0].save == SaveResult::Saved && a8[1].save == SaveResult::Saved && a8[2].save == SaveResult::Duplicate,
+          "⑧ 랭크 판 둘 Saved · 같은 판 다시 Duplicate");
+    const auto rt = ad.Rows("SELECT a.name, r.rating FROM ratings r JOIN accounts a ON a.id = r.account_id ORDER BY r.rating DESC, a.id");
+    Check(rt.size() == 2 && rt[0][0] == "wn" && rt[0][1] == "1000" && rt[1][0] == "Wn" && rt[1][1] == "990",
+          "⑧ ratings — wn 1000(−10 뒤 +10 · 겹친 판 안 셈) · Wn 990 · 계정 행 없는 ghost · 관전자 949 · 이름 없는 사람은 행 없음");
+    const std::string mk1 = ad.One("SELECT id FROM matches WHERE match_key = '1760000000-3-40'");
+    const auto d1 = ad.Rows("SELECT seat, IFNULL(rating_delta,'NULL') FROM match_players WHERE match_id = " + mk1 + " ORDER BY seat");
+    Check(ad.One("SELECT ranked FROM matches WHERE id = " + mk1) == "1" && d1.size() == 4 && d1[0][1] == "-10" && d1[1][1] == "NULL" &&
+              d1[2][1] == "NULL" && d1[3][1] == "NULL",
+          "⑧ 랭크 판 행 — ranked 1 · rating_delta wn −10 · 관전 · 계정 없음(+10 이어도) · 이름 없음 NULL");
+    w.GetRating(50, "wn");
+    w.GetRating(51, "Wn");
+    w.GetRating(52, std::string("\xb0\xc7", 2));   // 계정은 있으나 랭크 판 없음(관전만)
+    w.GetRating(53, "nobody");
+    auto a9 = WaitAnswers(w, 4);
+    Check(a9.size() == 4 && a9[0].kind == StoreAnswerKind::Rating && a9[0].req == 50 && a9[0].ratingOk && a9[0].ratingFound && a9[0].rating == 1000 &&
+              a9[0].rank == 1 && a9[1].ratingOk && a9[1].ratingFound && a9[1].rating == 990 && a9[1].rank == 2 && a9[2].ratingOk && !a9[2].ratingFound &&
+              a9[2].rating == nox::kRatingStart && a9[2].rank == 0 && a9[3].ratingOk && !a9[3].ratingFound,
+          "⑧ 점수 읽기 — wn 1000 · 1위 · Wn 990 · 2위 · 랭크 판 없는 계정 · 없는 이름 = 찾음 없음(1000 · 순위 0)");
+    Check(ad.Run("RENAME TABLE ratings TO ratings_off"), "⑧ 시험용 — ratings 를 잠깐 치움");
+    w.GetRating(54, "wn");
+    auto a10 = WaitAnswers(w, 1);
+    Check(a10.size() == 1 && a10[0].kind == StoreAnswerKind::Rating && !a10[0].ratingOk && !a10[0].why.empty(),
+          "⑧ 점수 읽기 실패 → ratingOk false · 까닭 " + (a10.empty() ? std::string() : a10[0].why));
+    Check(ad.Run("RENAME TABLE ratings_off TO ratings"), "⑧ ratings 되돌림");
+
     // ⑥ 끝낼 때 남은 일
     w.SaveMatch(30, srcA, Sample("1760000000-3-30"), "{}");
     w.SaveMatch(31, srcA, Sample("1760000000-3-31"), "{}");
@@ -288,14 +333,15 @@ int main(int argc, char** argv) {
     w.Stop();
     std::vector<StoreAnswer> left;
     w.TakeAnswers(left);
-    Check(left.size() == 3 && ad.One("SELECT COUNT(*) FROM matches") == "7", "⑥ Stop 직전에 넣은 판 셋 — 다 들어가고 답 셋(판 일곱)");
+    Check(left.size() == 3 && ad.One("SELECT COUNT(*) FROM matches") == "9", "⑥ Stop 직전에 넣은 판 셋 — 다 들어가고 답 셋(판 아홉)");
 
-    // ⑦ 셈 — 요청 = 판 11(10 · 11 · 12 · 15 · 16 · 13 · 14 · 20 · 30 · 31 · 32) — ★ 로그인 암호 조각 4 로그인 걷음
-    //   · 판 = Saved 7 + Duplicate 1 + Invalid 2 + 실패 1(CHECK — 끊김이 아니라 다시 안 함 · 다시는 ④ 의 1 뿐)
+    // ⑦ 셈 — 요청 = 판 14(10 · 11 · 12 · 15 · 16 · 13 · 14 · 20 · 40 · 41 · 42 · 30 · 31 · 32) — ★ 로그인 암호 조각 4 로그인 걷음
+    //   · 판 = Saved 9 + Duplicate 2 + Invalid 2 + 실패 1(CHECK — 끊김이 아니라 다시 안 함 · 다시는 ④ 의 1 뿐)
+    //   · ★ 레이팅 조각 3 — 점수 읽기 5(50~54) = 읽음 4 + 실패 1 · 고친 점수 행 3(판 40 의 wn · 판 41 의 wn · Wn)
     const nox::db::DbStats s = w.Stats();
-    Check(s.requests == 11 && s.saved == 7 && s.duplicates == 1 && s.invalid == 2 && s.saveFailed == 1 && s.retries == 1 &&
-              ad.One("SELECT COUNT(*) FROM accounts") == "3",
-          "⑦ 셈 — 요청 11 = Saved 7 · Duplicate 1 · Invalid 2 · 실패 1 · 다시 1 · 로비가 계정을 안 만듦(셋 그대로)");
+    Check(s.requests == 14 && s.saved == 9 && s.duplicates == 2 && s.invalid == 2 && s.saveFailed == 1 && s.retries == 1 &&
+              s.ratingRequests == 5 && s.ratingReads == 4 && s.ratingFailed == 1 && s.ratingRows == 3 && ad.One("SELECT COUNT(*) FROM accounts") == "3",
+          "⑦ 셈 — 요청 14 = Saved 9 · Duplicate 2 · Invalid 2 · 실패 1 · 다시 1 · 점수 읽기 5 = 읽음 4 + 실패 1 · 점수 행 3 · 로비가 계정을 안 만듦(셋 그대로)");
     std::printf("  ④ KILL 뒤 처음 걸린 오류: %s\n", s4.lastError.c_str());   // 끊김 번호가 무엇으로 오는지(`IsLost` 갈래 확인용)
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;

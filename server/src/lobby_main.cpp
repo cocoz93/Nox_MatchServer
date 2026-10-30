@@ -295,6 +295,7 @@ int main(int argc, char** argv) {
         for (const nox::wol::StoreAnswer& a : answers) {
             switch (a.kind) {
                 case nox::wol::StoreAnswerKind::SaveMatch: mirror.OnStoreAnswer(a, outs); break;
+                case nox::wol::StoreAnswerKind::Rating: break;   // ★ 레이팅 조각 3 — 요청하는 자리는 조각 4(로그인 공지)
                 case nox::wol::StoreAnswerKind::kCount: break;
             }
         }

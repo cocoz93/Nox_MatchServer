@@ -1222,6 +1222,47 @@ void LobbyStoreUnitTests() {
     Check(ans.size() == 5 && ans[0].save == SaveResult::Saved && ans[1].save == SaveResult::Invalid && ans[2].save == SaveResult::Invalid &&
               ans[3].save == SaveResult::Invalid && ans[4].save == SaveResult::Invalid && whys && st.MatchCount() == 4,
           "⑤ 칸 한도 꼭 맞음 Saved · 방 이름 65 · 이름 17 · 사람 256 · UTF-8 아닌 원문 → Invalid(까닭 글 · 안 넣음)");
+
+    // ⑥ ★ 레이팅 조각 3 — 랭크 판만 점수(DB 워커와 같은 `RatingDeltas`) · 겹친 판 안 셈 · 점수 · 순위 읽기 · 읽기 실패 스위치
+    CMemoryLobbyStore rs;
+    auto duel = [](const char* match, bool ranked, const char* win, const char* lose) {
+        nox::MatchRecord m;
+        m.match = match;
+        m.ranked = ranked;
+        m.endReason = "score_player";
+        m.winnerKind = "player";
+        m.hasWinnerId = true;
+        m.players.resize(2);
+        m.players[0].hasAccount = m.players[1].hasAccount = true;
+        m.players[0].account = win;
+        m.players[0].score = 1;
+        m.players[1].account = lose;
+        return m;
+    };
+    rs.SaveMatch(40, a, duel("r-1", false, "wn", "bob"), "{}");   // 일반 판
+    rs.SaveMatch(41, a, duel("r-2", true, "wn", "bob"), "{}");
+    rs.SaveMatch(42, a, duel("r-2", true, "wn", "bob"), "{}");    // 겹친 판
+    rs.SaveMatch(43, a, duel("r-3", true, "cat", "wn"), "{}");
+    int32_t vWn = 0, vBob = 0, vCat = 0;
+    const bool rated = rs.FindRating("wn", vWn) && rs.FindRating("bob", vBob) && rs.FindRating("cat", vCat);
+    Check(rated && vWn == 1000 && vBob == 990 && vCat == 1010, "⑥ 랭크 판만 점수 · 겹친 판 안 셈 — wn 1000(+10 −10) · bob 990 · cat 1010");
+    ans.clear();
+    rs.TakeAnswers(ans);
+    ans.clear();
+    rs.GetRating(50, "cat");
+    rs.GetRating(51, "bob");
+    rs.GetRating(52, "nobody");
+    rs.SetFailRatings(true);
+    rs.GetRating(53, "cat");
+    rs.SetFailRatings(false);
+    rs.SetHoldRatings(true);
+    rs.GetRating(54, "cat");   // 답 없음(로그인 한도 시험용)
+    rs.SetHoldRatings(false);
+    rs.TakeAnswers(ans);
+    Check(ans.size() == 4 && ans[0].kind == StoreAnswerKind::Rating && ans[0].req == 50 && ans[0].ratingOk && ans[0].ratingFound && ans[0].rating == 1010 &&
+              ans[0].rank == 1 && ans[1].rating == 990 && ans[1].rank == 3 && ans[2].ratingOk && !ans[2].ratingFound && ans[2].rating == nox::kRatingStart &&
+              ans[2].rank == 0 && ans[3].req == 53 && !ans[3].ratingOk && !ans[3].why.empty(),
+          "⑥ 점수 읽기 — cat 1010 · 1위 · bob 990 · 3위 · 없는 이름 1000 · 순위 0 · 실패 스위치 ratingOk false · 붙잡기 스위치는 답 없음");
 }
 
 // ── ★ 7단계 조각 5 — 로비 판 저장(`RoomMirror` RESULT → 저장소 → SAVED) ──

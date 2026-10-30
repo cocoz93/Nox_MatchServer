@@ -146,7 +146,7 @@ add_test(NAME common_unit COMMAND common_test)
 add_test(NAME auth_unit COMMAND auth_test)   # ★ 로그인 암호 조각 2
 # ★ 7단계 조각 7 — 진짜 MySQL 의 시험 DB(nox_mo_test). 설정 [db] 가 없거나 못 붙으면 77 = 「건너뜀」(통과로 안 보이게)
 if (NOX_HAVE_MYSQL)
-  add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql" "${CMAKE_SOURCE_DIR}/tools/db/002_auth.sql")
+  add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql" "${CMAKE_SOURCE_DIR}/tools/db/002_auth.sql" "${CMAKE_SOURCE_DIR}/tools/db/003_rating.sql")
   set_tests_properties(db_test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 

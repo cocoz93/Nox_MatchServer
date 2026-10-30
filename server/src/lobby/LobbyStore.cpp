@@ -69,8 +69,46 @@ void CMemoryLobbyStore::SaveMatch(uint32_t req, const MatchSource& src, const Ma
     } else {
         const auto ins = matches_.emplace(MatchKey{src.ip, src.port, rec.match}, rec);
         a.save = ins.second ? SaveResult::Saved : SaveResult::Duplicate;
+        if (ins.second) {   // ★ 레이팅 조각 3 — 새 판만(겹친 판은 DB 처럼 안 고침) · 계정 표가 없어 이름 있는 사람 = 계정
+            const RatingResult rr = RatingDeltas(rec);
+            for (size_t i = 0; i < rec.players.size(); ++i) {
+                if (!rr.seats[i].rated) continue;
+                const auto it = ratings_.emplace(rec.players[i].account, kRatingStart).first;
+                it->second += rr.seats[i].delta;
+            }
+        }
     }
     pending_.push_back(std::move(a));
+}
+
+// ★ 레이팅 조각 3 — 순위 = 나보다 점수 높은 사람 수 + 1(DB 워커와 같은 잣대)
+void CMemoryLobbyStore::GetRating(uint32_t req, const std::string& account) {
+    if (holdRatings_) return;
+    StoreAnswer a;
+    a.kind = StoreAnswerKind::Rating;
+    a.req = req;
+    if (failRatings_) {
+        a.why = "메모리 저장소 — 점수 읽기 실패 시험 스위치";
+    } else {
+        a.ratingOk = true;
+        a.rating = kRatingStart;
+        const auto it = ratings_.find(account);
+        if (it != ratings_.end()) {
+            a.ratingFound = true;
+            a.rating = it->second;
+            a.rank = 1;
+            for (const auto& kv : ratings_)
+                if (kv.second > it->second) ++a.rank;
+        }
+    }
+    pending_.push_back(std::move(a));
+}
+
+bool CMemoryLobbyStore::FindRating(const std::string& account, int32_t& rating) const {
+    const auto it = ratings_.find(account);
+    if (it == ratings_.end()) return false;
+    rating = it->second;
+    return true;
 }
 
 void CMemoryLobbyStore::TakeAnswers(std::vector<StoreAnswer>& out) {

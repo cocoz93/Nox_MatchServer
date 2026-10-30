@@ -8,6 +8,7 @@
 //     못 붙거나 다르면 `Start` 가 실패 — 로비가 안 뜬다(토큰 키가 없을 때와 같은 꼴)
 //   · 끊기면(2006 · 2013) 그 자리에서 한 번 다시 붙어 같은 일을 다시 한다. 그래도 안 되면 그 일은 실패 답(판 → 게임 서버가 다시)
 //   · 판은 한 트랜잭션(matches 한 행 + match_players) · 같은 (게임 서버 · 판 번호)는 열쇠 겹침(1062)으로 Duplicate
+//     ★ 레이팅 조각 3 — 랭크 판이면 같은 트랜잭션에서 ratings 도(겹친 판 · 실패한 판은 되돌려져 점수도 안 바뀜) · 점수 읽기 요청(로그인 공지)
 //   · 끝낼 때(`Stop`) 큐에 남은 일을 다 하고 닫는다(판 결과를 잃지 않게)
 // MySQL 머리 파일은 이 파일 밖(.cpp)에만 — 부르는 쪽(로비 실행 파일 · 시험)은 MySQL 을 모른다
 #pragma once
@@ -28,7 +29,7 @@ namespace nox::db {
 
 // 셈 — 요청 하나는 아래 갈래 중 하나로 끝난다(시험은 개수로 본다)
 struct DbStats {
-    unsigned long long requests = 0;        // 받은 요청(판 — ★ 로그인 암호 조각 4 로그인 걷음)
+    unsigned long long requests = 0;        // 받은 판 저장 요청(★ 로그인 암호 조각 4 로그인 걷음 · 점수 읽기는 아래 따로)
     unsigned long long saved = 0;
     unsigned long long duplicates = 0;
     unsigned long long invalid = 0;         // 칸에 안 맞음(`MatchFitsStore`) — DB 에 안 감
@@ -36,6 +37,11 @@ struct DbStats {
     unsigned long long connects = 0;        // 붙음(처음 + 다시)
     unsigned long long connectFailed = 0;
     unsigned long long retries = 0;         // 끊김을 만나 다시 붙고 같은 일을 다시 함
+    // ★ 레이팅 조각 3 — 점수 읽기 요청 = 읽음 + 실패 · 판 저장이 고친 점수 행(랭크 판 · 계정 있는 사람 · 커밋된 것만)
+    unsigned long long ratingRequests = 0;
+    unsigned long long ratingReads = 0;
+    unsigned long long ratingFailed = 0;
+    unsigned long long ratingRows = 0;
     size_t queueMax = 0;                    // 한 번에 꺼낸 일의 최대
     std::string lastError;                  // 마지막 오류 글(기록용 — 비밀번호는 안 실린다)
 };
@@ -54,6 +60,7 @@ public:
 
     // ILobbyStore — 요청은 곧바로 돌아온다 · 답은 워커가 넣고 로비가 꺼낸다
     void SaveMatch(uint32_t req, const wol::MatchSource& src, const MatchRecord& rec, const std::string& rawJson) override;
+    void GetRating(uint32_t req, const std::string& account) override;   // ★ 레이팅 조각 3
     void TakeAnswers(std::vector<wol::StoreAnswer>& out) override;
 
     DbStats Stats() const;
@@ -66,6 +73,7 @@ private:
         wol::MatchSource src;
         MatchRecord rec;
         std::string raw;
+        std::string account;   // ★ 레이팅 조각 3 — Rating
     };
     struct Conn;   // MYSQL* · 준비된 문장들(.cpp 에만)
 
