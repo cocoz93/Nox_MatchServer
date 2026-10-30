@@ -468,6 +468,30 @@ static void MarkRouter(SOCKET s)
     LeaveCriticalSection(&g_tokCs);
 }
 
+// ★ 10-30 — 국가 고르기 창 막기(같은 PC 두 클라 판). mo_local 이 띄울 때 `HKCU\Software\Classes\Wchat\Nick0~129\Locale` 을 20 으로 두지만,
+//   「아이디 기억」을 끈 로그인은 끝에 Nick129 의 국가를 0 으로 지운다(Game.exe `0x41fa94` → `0x40da80`) → 뒤에 로그인하는 다른 클라가 0 을 읽어 창이 뜸
+//   (10-30 사람 판 — 판 뒤 Nick129 만 0). 로그인(라우터 연결)마다 20 이 아닌 칸을 다시 20 으로. 서버는 이 값을 안 쓴다
+#pragma comment(lib, "advapi32.lib")
+static void KeepCountry()
+{
+    int fixed = 0, fail = 0;
+    for (int n = 0; n <= 129; n++) {
+        wchar_t path[64];
+        swprintf_s(path, L"Software\\Classes\\Wchat\\Nick%d\\Locale", n);
+        HKEY k = NULL;
+        if (RegCreateKeyExW(HKEY_CURRENT_USER, path, 0, NULL, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &k, NULL) != ERROR_SUCCESS) { fail++; continue; }
+        wchar_t v[8] = {};
+        DWORD type = 0, sz = sizeof(v) - sizeof(wchar_t);
+        const bool is20 = RegQueryValueExW(k, NULL, NULL, &type, (BYTE*)v, &sz) == ERROR_SUCCESS && type == REG_SZ && wcscmp(v, L"20") == 0;
+        if (!is20) {
+            if (RegSetValueExW(k, NULL, 0, REG_SZ, (const BYTE*)L"20", 3 * sizeof(wchar_t)) == ERROR_SUCCESS) fixed++;
+            else fail++;
+        }
+        RegCloseKey(k);
+    }
+    Log("국가 칸 — 로그인(라우터 연결) 앞 Nick0~129 Locale 20 확인 · 다시 씀 %d · 실패 %d", fixed, fail);
+}
+
 static CLoginRewriter* LoginRewriterOf(SOCKET s)   // 로비 연결이 아니면 NULL · 그 소켓을 보내는 스레드만 쓴다(LobbyFilterOf 와 같은 가정)
 {
     EnterCriticalSection(&g_tokCs);
@@ -841,23 +865,53 @@ static void RankOnToken()
     Log("⑪ 랭크 잡힘(누적 %ld) — 참가 토큰 받음 · 기다림 끔", n);
 }
 
+// ④ 기다리는 동안 알림창 글을 「상대 찾는 중...」으로(10-30 사용자 「서버 접속 시도중이라기보다는 상대 찾는중이라고 하는게낫지않을까」).
+//   정품 글(「서버 접속 시도중...」)은 그대로 두고 랭크 기다림 창만 — 일반 방 참가도 같은 창을 쓰기 때문
+//   글 칸 = 알림창 자식 4004(OpenNox `gui_dialog.go` guiDialogTextID) · 바꾸기 = 그 칸 처리 함수(+0x178)에 0x4001(글 · -1)
+//   정품 글 칸은 글을 베끼지 않고 포인터만 쥔다(OpenNox `widget_static_text.go:141`) → DLL 안의 고정 글을 넘긴다. 받기 훅(게임 주 스레드)에서만
+static const DWORD kDlgTextId = 4004;
+static const DWORD kMsgSetText = 0x4001;
+static const wchar_t kRankWaitText[] = L"상대 찾는 중...";
+static volatile LONG g_rankTextSet = 0;    // ④ 글 바꿈
+static volatile LONG g_rankTextMiss = 0;   // ④ 글 칸 · 처리 함수를 못 찾음
+
+static void RankWaitText()
+{
+    static DWORD done = 0;   // 글을 바꾼 알림창(기다림마다 한 번)
+    if (!g_rankWaiting) { done = 0; return; }
+    DWORD box = 0;
+    if (!ReadSelf(kMsgBox, &box) || !box || box == done) return;
+    done = box;
+    const DWORD text = ((PFN_findchild)kFindChild)(box, kDlgTextId);
+    DWORD proc = 0;
+    if (!text || !ReadSelf(text + kProcSlot, &proc) || !proc) {
+        InterlockedIncrement(&g_rankTextMiss);
+        Log("⑪ 기다림 글 — 알림창 %#lx 의 글 칸(4004) · 처리 함수를 못 찾아 그대로", box);
+        return;
+    }
+    ((PFN_wndproc4)proc)(text, kMsgSetText, (DWORD)(uintptr_t)kRankWaitText, (DWORD)-1);
+    const LONG n = InterlockedIncrement(&g_rankTextSet);
+    Log("⑪ 기다림 글(누적 %ld) — 알림창 %#lx 글을 「상대 찾는 중...」으로", n, box);
+}
+
 // 1초마다(요약 스레드) — ⑩ · ⑪ 셈 중 하나라도 바뀌었으면 한 줄. 누름 갈래의 합 = 감싼 창에 온 누름 전부 · 표시 = 창 닫힘 + 잡힘 + 기다림
 static void RankSummary()
 {
-    static LONG seen[13] = {};
-    const LONG now[13] = { g_rankWrapped, g_rankWrapSkip, g_rankClicks, g_rankNotOurs, g_rankNoHost, g_rankHostClicks, g_rankOtherClicks, g_rankInnerClicks,
-                           g_rankArmed, g_rankMarked, g_rankLeaves, g_rankTokenEnds, g_rankWaiting };
+    static LONG seen[15] = {};
+    const LONG now[15] = { g_rankWrapped, g_rankWrapSkip, g_rankClicks, g_rankNotOurs, g_rankNoHost, g_rankHostClicks, g_rankOtherClicks, g_rankInnerClicks,
+                           g_rankArmed, g_rankMarked, g_rankLeaves, g_rankTokenEnds, g_rankWaiting, g_rankTextSet, g_rankTextMiss };
     if (memcmp(seen, now, sizeof(now)) == 0) return;
     memcpy(seen, now, sizeof(now));
     Log("⑩ 랭크 매칭 셈 — 감싼 창 %ld · 안 감쌈 %ld | 누름: 랭크 %ld · 우리 로비 아님 %ld · 10002 못 찾음 %ld · 게임 호스트하기 %ld · 그 밖 %ld(그중 호스트 안 %ld) | 랭크 표시 %ld"
-        " || ⑪ 참가 표시 %ld = 창 닫힘 LEAVE %ld + 잡힘 %ld + 기다리는 중 %ld",
-        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9], now[10], now[11], now[12]);
+        " || ⑪ 참가 표시 %ld = 창 닫힘 LEAVE %ld + 잡힘 %ld + 기다리는 중 %ld | 기다림 글 바꿈 %ld · 못 찾음 %ld",
+        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9], now[10], now[11], now[12], now[13], now[14]);
 }
 
 // 받기 훅에서 — 새 게임 목록 창이면 감싸고 10007 을 보이게
 static void RankUiTick()
 {
     if (GetCurrentThreadId() != g_mainTid || !g_ourLobby || *(volatile DWORD*)kNetMode != 1) return;
+    RankWaitText();   // ★ ⑪ ④ 기다림 창 글
     const DWORD win = *(volatile DWORD*)kListWin;
     DWORD proc = 0;
     if (!win || !ReadSelf(win + kProcSlot, &proc) || proc == (DWORD)(uintptr_t)RankListProc) return;
@@ -922,7 +976,10 @@ extern "C" int WSAAPI Hook_connect(SOCKET s, const struct sockaddr* name, int na
     void* ret = _ReturnAddress();
     if (name && namelen >= (int)sizeof(sockaddr_in) && name->sa_family == AF_INET) {   // ★ 조각 5 의 4 — 라우터 연결이면 whereto 암호 칸 지우기
         const unsigned char* pp = (const unsigned char*)&((const sockaddr_in*)name)->sin_port;
-        if (((pp[0] << 8) | pp[1]) == kRouterPort) MarkRouter(s);
+        if (((pp[0] << 8) | pp[1]) == kRouterPort) {
+            MarkRouter(s);
+            KeepCountry();   // ★ 10-30 — 다른 클라가 지운 국가 칸 되살리기
+        }
     }
     int rc = ((PFN_connect)Resolve(4))(s, name, namelen);
     if (g_log[0]) {
