@@ -275,6 +275,8 @@ MatchJsonParse ParseMatchRecordJson(std::string_view json, MatchRecord& out, std
     f.Str(root, "endReason", out.endReason, /*nonEmpty=*/true);
     f.Int(root, "limit", out.limit);
     f.Int(root, "timeLimitSec", out.timeLimitSec);
+    // ★ 레이팅 조각 2 — 랭크 판. 없으면 false(옛 게임 서버 줄 · DB 에 남은 옛 원문)
+    if (const JVal* rk = f.Get(root, "ranked", JVal::T::Bool, /*required=*/false)) out.ranked = rk->b;
 
     // 승자 — 갈래마다 실리는 칸이 다르다(`FormatMatchResultJson` 의 switch)
     if (const JVal* w = f.Get(root, "winner", JVal::T::Obj)) {

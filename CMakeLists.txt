@@ -206,9 +206,10 @@ if (NOX_POWERSHELL AND WIN32)
                      -File ${CMAKE_SOURCE_DIR}/tools/auth_smoke.ps1 -Exe $<TARGET_FILE:nox_auth>)
     set_tests_properties(auth_smoke PROPERTIES SKIP_RETURN_CODE 77)
     # ★ 로그인 암호 조각 6b — 판 하나를 로그인 토큰으로(nox_auth --test-db 가입 · /login → apgar 토큰 → 로비 토큰 확인 → 판 끝까지). 사람 1회 전이면 77
+    #   ★ 레이팅 조각 2 — 이 판은 랭크(-Ranked = 게임 서버 --ranked-all) · match_smoke 는 일반 판(랭크 false)
     add_test(NAME match_smoke_auth
              COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
-                     -File ${CMAKE_SOURCE_DIR}/tools/match_smoke.ps1 -Auth -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby> -AuthExe $<TARGET_FILE:nox_auth>
+                     -File ${CMAKE_SOURCE_DIR}/tools/match_smoke.ps1 -Auth -Ranked -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby> -AuthExe $<TARGET_FILE:nox_auth>
                      -LobbyPort 14700 -LinkPort 14710 -UdpPort 18741)
     set_tests_properties(match_smoke_auth PROPERTIES SKIP_RETURN_CODE 77)
   endif()

@@ -456,6 +456,21 @@ void TestMatchRecord() {
               !r.players[2].hasAccount && r.players[2].netCode == 3 && r.players[2].left && r.players[2].deaths == 0,
           "사람 셋 — 이름 · 음수 점수 · 관전 · 이름 null · 나감(점수 칸 없음)");
     Check(r.teams.size() == 1 && r.teams[0].id == 1 && r.teams[0].score == 3 && r.teams[0].caps == 2, "팀 하나 — 번호 · 점수 · 깃발");
+    // ★ 레이팅 조각 2 — 랭크 칸(없으면 false · 참거짓만)
+    Check(!r.ranked, "랭크 칸 없음 → false(옛 줄)");
+    {
+        std::string s = base;
+        s.insert(s.find("\"players\""), "\"ranked\":true,");
+        nox::MatchRecord rr;
+        Check(nox::ParseMatchRecordJson(s, rr) == P::Ok && rr.ranked, "랭크 칸 true");
+        std::string s0 = base;
+        s0.insert(s0.find("\"players\""), "\"ranked\":false,");
+        Check(nox::ParseMatchRecordJson(s0, rr) == P::Ok && !rr.ranked, "랭크 칸 false");
+        std::string s1 = base;
+        s1.insert(s1.find("\"players\""), "\"ranked\":1,");
+        std::string why;
+        Check(nox::ParseMatchRecordJson(s1, rr, &why) == P::Type && why == "ranked", "랭크 칸이 수 → 타입 틀림");
+    }
 
     // 바이트 되돌리기 — \u00XX → 바이트(코드페이지 949 이름 · 제어 바이트) · UTF-8 은 그대로 · 이스케이프
     auto with = [&](const std::string& from, const std::string& to, bool& found) {

@@ -12,10 +12,11 @@
 #          alice · bob 이 HTTPS 로 가입 → /login 으로 토큰(NXL1…) → 로비 로그인 묶음 `NOXCLIENT 3` · `apgar <토큰> 0`(DLL 이 바꿔 보낸 꼴) — 로비는 --no-auth 없이 설정 [auth] key 로 확인.
 #          더 보는 것 = 로비 끝 줄 토큰 통과 2 · 아이디만 0 · 시험 DB accounts 마지막 로그인 둘 · 세 기록(로비 · 게임 서버 · 로그인 서버)에 친 암호 · 토큰 글 0곳.
 #          사람 1회(인증서 · nox_auth DB 사용자 — tools\auth_setup.ps1 · config\auth_setup.sql) 전이면 종료 코드 77 = ctest 「건너뜀」(auth_smoke 와 같음) · -Db 와 같이 못 씀(계정이 시험 DB)
+#   -Ranked — ★ 레이팅 조각 2 — 게임 서버를 `--ranked-all` 로(판 결과 `ranked` 가 true 인지 · 없으면 false 인지 본다)
 # 패킷 꼴은 smoke.ps1(접속 · 게임 진입 · 클릭) · v2_split_smoke.ps1(정품 접속 시도 100바이트 + 토큰 꼬리)과 같다.
 #   클라 머리 둘째 바이트 = 받은 서버 신뢰 순번(되받기) — smoke.ps1 은 짧아 고정값이지만 판은 수십 초라 따라간다 · 0.5초마다 핑
 # 끝은 닫기 이벤트(게임 서버 · 로비 — 끝 줄 셈을 찍고 나감) · 강제 종료는 응답이 없을 때만
-param([int]$LobbyPort = 14600, [int]$LinkPort = 14610, [int]$UdpPort = 18641, [switch]$Db, [switch]$Auth, [string]$Exe = '', [string]$LobbyExe = '', [string]$AuthExe = '', [switch]$KeepLogs)
+param([int]$LobbyPort = 14600, [int]$LinkPort = 14610, [int]$UdpPort = 18641, [switch]$Db, [switch]$Auth, [switch]$Ranked, [string]$Exe = '', [string]$LobbyExe = '', [string]$AuthExe = '', [switch]$KeepLogs)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $repo 'build\Release'
@@ -246,9 +247,10 @@ if (-not $Auth) { $lobbyArgs += '--no-auth' }   # ★ 로그인 암호 조각 4 
 $lp = Start-Process -FilePath $LobbyExe -PassThru -WindowStyle Hidden -RedirectStandardOutput $llog -ArgumentList $lobbyArgs
 $null = $lp.Handle
 Start-Sleep -Milliseconds 500
-$gp = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $glog -ArgumentList @(
-  '--port', $UdpPort, '--bind', '127.0.0.1', '--config', "`"$ini`"", '--lobby', "127.0.0.1:$LinkPort", '--quiet',
+$gsArgs = @('--port', $UdpPort, '--bind', '127.0.0.1', '--config', "`"$ini`"", '--lobby', "127.0.0.1:$LinkPort", '--quiet',
   '--battle-score-limit', '1', '--debug-kill', '300', '--results', "`"$res`"")
+if ($Ranked) { $gsArgs += '--ranked-all' }
+$gp = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $glog -ArgumentList $gsArgs
 $null = $gp.Handle
 $clients = @()
 $started = (Get-Date)
@@ -303,6 +305,7 @@ $j = $null; try { $j = $fileLines[0] | ConvertFrom-Json } catch { }
 $accs = @(); if ($j) { $accs = @($j.players | ForEach-Object { $_.account }) }
 Check ($j -and $j.endReason -eq 'score_player' -and $j.winner.kind -eq 'player' -and $j.winner.account -eq 'alice' -and ($accs -contains 'alice') -and ($accs -contains 'bob')) `
   "판 결과 — 끝 까닭 $($j.endReason) · 승자 $($j.winner.account) · 사람 $($accs -join ',')"
+Check ($j -and $j.ranked -is [bool] -and $j.ranked -eq [bool]$Ranked) "판 결과 — 랭크 $($j.ranked)(기대 $([bool]$Ranked) · -Ranked = --ranked-all)"   # ★ 레이팅 조각 2
 Check ($tl -match '판 저장 요청 1\(SAVED ok 1 · dup 0 · 실패 0 · 끊긴 뒤 답 0 · 모르는 답 0 · 끝날 때 남음 0\)') '로비 끝 줄 — 판 저장 요청 1(SAVED ok 1)'
 Check ($tg -match '판 결과 SAVED\(ok 1 · dup 0 · bad 0 · 모르는 판 0\)' -and $tg -match '쥔 채 끝 0') '게임 서버 끝 줄 — SAVED ok 1 · 쥔 채 끝 0'
 if ($Auth) {

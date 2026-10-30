@@ -905,6 +905,7 @@ void nox::CRoom::PushMatchResult(bool aborted, const RoundOutcome& o) {
     r.winnerId = aborted ? 0 : o.winnerId;
     r.limit = o.limit;
     r.timeLimitFrames = o.timeLimitFrames;
+    r.ranked = _settings.ranked;   // ★ 레이팅 조각 2
     r.teams = o.teams;
     std::vector<bool> used(o.players.size(), false);
     for (const RosterEntry& e : _roster) {

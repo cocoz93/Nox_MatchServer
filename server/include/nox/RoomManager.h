@@ -73,6 +73,7 @@ struct MatchResult {
     std::string winnerAccount;          // 승자가 사람이면 그 로비 이름(없으면 빈 것)
     uint32_t limit = 0;
     uint32_t timeLimitFrames = 0;
+    bool ranked = false;                // ★ 레이팅 조각 2 — 방 설정 `RoomSettings::ranked` 그대로
     std::vector<MatchPlayer> players;   // 판을 열 때 명단 차례 · 명단 밖인데 끝에 게임 안에 있으면 뒤에
     std::vector<RoundTeamScore> teams;
 };

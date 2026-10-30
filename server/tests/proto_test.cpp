@@ -25318,6 +25318,7 @@ void TestMatchRecordRoundTrip() {
         r.reason = RoundEndReason::FlagCapture;
         r.winner = RoundWinnerKind::Team;
         r.winnerId = 2;
+        r.ranked = true;   // ★ 레이팅 조각 2 — 랭크 칸 왕복(나머지 넷은 false)
         r.players = {player("p", 1, 1, 0, 0, false, false), player("q", 2, 2, 5, 1, false, false)};
         r.teams = {RoundTeamScore{1, 0, 0}, RoundTeamScore{2, 5, 65535}};
         cases.push_back(r);
@@ -25366,7 +25367,8 @@ void TestMatchRecordRoundTrip() {
                     (!rec.hasWinnerId || rec.winnerId == r.winnerId) &&
                     rec.hasWinnerAccount == (r.winner == RoundWinnerKind::Player && !r.winnerAccount.empty()) &&
                     (!rec.hasWinnerAccount || rec.winnerAccount == r.winnerAccount) && rec.limit == r.limit &&
-                    rec.timeLimitSec == r.timeLimitFrames / 30u && rec.players.size() == r.players.size() && rec.teams.size() == r.teams.size();
+                    rec.timeLimitSec == r.timeLimitFrames / 30u && rec.ranked == r.ranked && rec.players.size() == r.players.size() &&
+                    rec.teams.size() == r.teams.size();
         for (size_t i = 0; same && i < r.players.size(); ++i) {
             const MatchPlayer& a = r.players[i];
             const nox::MatchRecordPlayer& b = rec.players[i];
@@ -26652,7 +26654,7 @@ void TestMatchRecorder() {
     const std::string wantJson =
         "{\"match\":\"1760780000-3-2\",\"room\":3,\"roomName\":\"Jack's \\\"game\\\"\",\"map\":\"estate\",\"mode\":\"arena\","
         "\"start\":1760780123,\"end\":1760780456,\"frames\":9990,\"sec\":333,\"endReason\":\"score_player\","
-        "\"winner\":{\"kind\":\"player\",\"id\":728,\"account\":\"Jack\"},\"limit\":15,\"timeLimitSec\":0,"
+        "\"winner\":{\"kind\":\"player\",\"id\":728,\"account\":\"Jack\"},\"limit\":15,\"timeLimitSec\":0,\"ranked\":false,"
         "\"players\":[{\"account\":\"Jack\",\"netCode\":728,\"state\":\"finished\",\"team\":0,\"score\":15,\"deaths\":3},"
         "{\"account\":null,\"netCode\":729,\"state\":\"finished\",\"team\":0,\"score\":7,\"deaths\":15},"
         "{\"account\":\"Tom\",\"netCode\":730,\"state\":\"left\"},"

@@ -115,6 +115,7 @@ std::string FormatMatchResultJson(const MatchResult& r) {
     o += "},";
     PutKeyNumber(o, "limit", r.limit); o += ',';
     PutKeyNumber(o, "timeLimitSec", r.timeLimitFrames / 30u); o += ',';
+    o += r.ranked ? "\"ranked\":true," : "\"ranked\":false,";   // ★ 레이팅 조각 2 — 로비가 랭크 판만 점수를 매긴다(`Rating.h`)
     o += "\"players\":[";
     for (size_t i = 0; i < r.players.size(); ++i) {
         const MatchPlayer& p = r.players[i];
