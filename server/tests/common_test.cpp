@@ -302,8 +302,27 @@ void TestLobbyLink() {
     room.playing = false;
     Check(parse(nox::LinkRoomLine(room)) == P::Ok && !l.room.playing, "ROOM 판 중 0");
     Check(parse(nox::LinkRoomGone(7)) == P::Ok && l.kind == K::RoomGone && l.room.id == 7, "ROOM_GONE 왕복");
-    Check(parse(nox::LinkCreate(42, "\xEC\xB2\xA0 x")) == P::Ok && l.kind == K::Create && l.req == 42 && l.text == "\xEC\xB2\xA0 x",
-          "CREATE 왕복(빈칸 든 이름)");
+    Check(parse(nox::LinkCreate(42, "\xEC\xB2\xA0 x")) == P::Ok && l.kind == K::Create && l.req == 42 && l.text == "\xEC\xB2\xA0 x" &&
+              !l.ranked && l.roster.empty() && nox::LinkCreate(42, "a") == "CREATE 42 a",
+          "CREATE 왕복(빈칸 든 이름) · 옛 꼴 = 일반(랭크 아님 · 명단 빔)");
+    // ★ 랭크 매칭 조각 5 — 꼬리(랭크 · 명단) — 쓰개 ↔ 읽개 칸 전부 · 명단 한도 31 · 랭크인데 명단이 비면 만든 사람 하나
+    {
+        const std::string rl = nox::LinkCreate(7, "amy", true, {"amy", "b o", "\xEC\xB2\xA0"});
+        Check(rl == "CREATE 7 amy 1 amy b%20o \xEC\xB2\xA0" && parse(rl) == P::Ok && l.kind == K::Create && l.req == 7 && l.text == "amy" && l.ranked &&
+                  l.roster == std::vector<std::string>{"amy", "b o", "\xEC\xB2\xA0"},
+              "CREATE 꼬리 왕복(랭크 1 · 명단 셋 — 빈칸 · 한글)");
+        Check(nox::LinkCreate(8, "amy", true, {}) == "CREATE 8 amy 1 amy" && parse(nox::LinkCreate(8, "amy", true, {})) == P::Ok && l.ranked &&
+                  l.roster == std::vector<std::string>{"amy"},
+              "CREATE 랭크인데 명단 빔 → 만든 사람 하나가 명단");
+        Check(parse(nox::LinkCreate(9, "amy", false, {"amy", "bob"})) == P::Ok && !l.ranked && l.roster.size() == 2, "CREATE 꼬리 랭크 0 · 명단 둘");
+        std::vector<std::string> many;
+        for (size_t i = 0; i < nox::kLinkMaxRoster; ++i) many.push_back("p" + std::to_string(i));
+        const std::string full = nox::LinkCreate(10, "p0", true, many);
+        many.push_back("over");
+        Check(parse(full) == P::Ok && l.roster.size() == nox::kLinkMaxRoster && nox::LinkLineFits(full) &&
+                  nox::ParseLinkLine(nox::LinkCreate(10, "p0", true, many), l) == P::FieldCount,
+              "CREATE 명단 31 은 읽힘(줄 한도 안) · 32 는 칸 수 실패");
+    }
     Check(parse(nox::LinkCreated(42, 3)) == P::Ok && l.kind == K::Created && l.req == 42 && l.room.id == 3, "CREATED 왕복");
     Check(parse(nox::LinkCreateFailed(43, "no wait map")) == P::Ok && l.kind == K::CreateFailed && l.req == 43 &&
               l.text == "no wait map",
@@ -350,8 +369,11 @@ void TestLobbyLink() {
     Check(bad("ROOM_GONE 1 2", P::FieldCount) && bad("ROOM_GONE  1", P::FieldCount) && bad("CREATED 1 2 ", P::FieldCount) &&
               bad("RESULT", P::FieldCount) && bad("RESULT ", P::FieldCount) && bad("ROOM 1 2 8 0 a b c d", P::FieldCount) &&
               bad("PING 1", P::FieldCount) && bad("PING ", P::FieldCount) && bad("SAVED 1-0-1", P::FieldCount) &&
-              bad("SAVED 1-0-1 ok x", P::FieldCount),
-          "칸 수 — 남음 · 빈칸 둘 · 꼬리 빈칸 · 빈 결과 · ROOM 아홉 칸 · PING 칸 있음 · SAVED 둘 · 넷");
+              bad("SAVED 1-0-1 ok x", P::FieldCount) && bad("CREATE 7 amy 1", P::FieldCount) && bad("CREATE 7 amy 1 ", P::FieldCount),
+          "칸 수 — 남음 · 빈칸 둘 · 꼬리 빈칸 · 빈 결과 · ROOM 아홉 칸 · PING 칸 있음 · SAVED 둘 · 넷 · ★ CREATE 랭크만 있고 명단 없음");
+    Check(bad("CREATE 7 amy 2 amy", P::BadNumber) && bad("CREATE 7 amy x amy", P::BadNumber) && bad("CREATE 7 amy 1 ~", P::BadText) &&
+              bad("CREATE 7 amy 1 bob a~b", P::BadText),
+          "★ CREATE 꼬리 — 랭크 칸 0/1 밖 · 수 아님 → 수 실패 · 빈 이름 · 날 ~ → 글 칸 실패");
     Check(bad("SAVED 1-0-1 OK", P::BadText) && bad("SAVED 1-0-1 maybe", P::BadText) && bad("SAVED ~ ok", P::BadText) &&
               bad("SAVED a~b ok", P::BadText),
           "SAVED 글 칸 — 끝 칸 대문자 · 모르는 낱말 · 빈 판 번호 · 날 ~");

@@ -122,7 +122,7 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
             return;
         case LinkKind::Create:
             if (_stage != Stage::Registered) break;
-            OnCreate(l.req, l.text, out);
+            OnCreate(l, out);
             return;
         case LinkKind::Bye:
             ++_stats.byes;
@@ -164,16 +164,24 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
     std::printf("[로비 연결] 차례에 안 맞는 줄 — 버림: %s\n", Printable(line.substr(0, 80)).c_str());
 }
 
-void CLobbyClient::OnCreate(uint32_t req, const std::string& creator, std::vector<NetworkRequest>& out) {
+void CLobbyClient::OnCreate(const LinkLine& l, std::vector<NetworkRequest>& out) {
+    const uint32_t req = l.req;
+    const std::string& creator = l.text;
     ++_stats.creates;
+    if (l.ranked) ++_stats.createsRanked;
     std::string why;
-    const int id = creator.empty() ? CRoomManager::kNoRoom : CreateRoomFor(creator, why);
+    const int id = creator.empty() ? CRoomManager::kNoRoom : CreateRoomFor(creator, l.ranked, l.roster, why);
     if (creator.empty()) why = "만든 사람 없음";
     if (id == CRoomManager::kNoRoom) {
         ++_stats.createFailed;
         std::printf("[로비 연결] 새 방 실패 — 요청 %u · 만든 사람 %s · %s\n", req, Printable(creator).c_str(), why.c_str());
         Send(LinkCreateFailed(req, why), out);
         return;
+    }
+    if (l.ranked) {   // ★ 랭크 매칭 조각 5 — 명단은 기록에(판 시작 규칙은 방이 — 조각 6)
+        std::string names;
+        for (const std::string& n : l.roster) names += (names.empty() ? "" : ",") + n;
+        std::printf("[로비 연결] 랭크 방 %d — 요청 %u · 명단 %s(%zu명)\n", id, req, Printable(names).c_str(), l.roster.size());
     }
     // 규약 — 답 앞에 그 방의 ROOM(로비 거울이 그 방을 먼저 알아야 참가 답 · 토큰을 낸다)
     SendChanged(out);
@@ -184,13 +192,15 @@ void CLobbyClient::OnCreate(uint32_t req, const std::string& creator, std::vecto
 // ★ 10-14 작업 10a — 새 방: 틀 + 만든 사람 · 이름 · 대기 맵(무작위) · 채팅 모드 · 비면 닫음 → 방 관리자의 만들기 입구
 // ★ 10-20 v2 작업 4b — 옛 `CChannelLobby::CreateRoomFor` 몸통 그대로(로비가 이제 다른 프로세스라 연결 줄 `CREATE` 로 묻는다).
 //   못 만든 까닭은 `CREATE_FAILED` 로 로비 기록에 실린다
-int CLobbyClient::CreateRoomFor(const std::string& creator, std::string& why) {
+int CLobbyClient::CreateRoomFor(const std::string& creator, bool ranked, const std::vector<std::string>& roster, std::string& why) {
     if (_waitMaps.empty()) {
         why = "대기 맵 후보 없음(--wait-maps)";
         return CRoomManager::kNoRoom;
     }
     RoomSettings s = _template;
     s.creator = creator;
+    s.ranked = s.ranked || ranked;   // ★ 랭크 매칭 조각 5 — 틀이 랭크(`--ranked-all` 시험)면 그대로
+    s.roster = roster;
     s.roomName = RoomNameFor(creator);
     s.mapPath = _waitMaps[std::uniform_int_distribution<size_t>(0, _waitMaps.size() - 1)(_rng)];
     s.mode = "chat";        // 대기 = 원작 채팅 모드 맵(결정 1 — 싸움 막기는 작업 13)

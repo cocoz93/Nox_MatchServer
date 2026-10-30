@@ -1053,11 +1053,12 @@ int main(int argc, char** argv) {
         if (lobbyClient) {
             const nox::CLobbyClientStats& ls = lobbyClient->Stats();
             std::printf("[로비 연결] 끝 — 붙음 %llu · 끊김 %llu · 등록 %llu · 방 알림 %llu · 사라짐 %llu · 새 방 물음 %llu(만듦 %llu · 실패 %llu) · "
+                        "그중 랭크 %llu · "   // ★ 랭크 매칭 조각 5
                         "판 결과 %llu(못 보냄 %llu) · BYE %llu · 못 읽음 %llu · TCP(받음 %llu · 보냄 %llu · 끊긴 접속으로 %llu · 시도 %llu · 못 붙음 %llu) · "
                         "PING(받음 %llu · 보냄 %llu) · 무소식 끊음 %llu(끊기 요청 %llu) · "   // ★ 7단계 — 살아 있음
                         "판 결과 SAVED(ok %llu · dup %llu · bad %llu · 모르는 판 %llu) · 쥐었다 보냄 %llu · 다시 %llu · 버림 %llu · 쥔 채 끝 %zu\n",   // ★ 7단계 조각 3
                         ls.linksUp, ls.linksDown, ls.registers, ls.roomLines, ls.roomGoneLines, ls.creates, ls.created, ls.createFailed,
-                        ls.results, ls.resultsNotSent, ls.byes, ls.badLines, ts.lobbyLinesIn, ts.lobbyLinesOut, ts.lobbySendNoConn,
+                        ls.createsRanked, ls.results, ls.resultsNotSent, ls.byes, ls.badLines, ts.lobbyLinesIn, ts.lobbyLinesOut, ts.lobbySendNoConn,
                         ts.lobbyConnects, ts.lobbyConnectFailed, ls.pingsIn, ls.pingsOut, ls.deadLinks, ts.lobbyCloseRequests,
                         ls.savedOk, ls.savedDup, ls.savedBad, ls.savedUnknown, ls.resultsHeldDown, ls.resultsResent, ls.resultsDropped,
                         lobbyClient->HeldResults());

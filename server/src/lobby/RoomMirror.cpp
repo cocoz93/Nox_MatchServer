@@ -287,8 +287,12 @@ RoomRequest RoomMirror::RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom&
     Server& s = servers_[best];
     s.asked.insert(req);
     ++stats_.createsSent;
-    pendingOut_.push_back({best, LinkCreate(req, ask.creator)});   // ★ 랭크 매칭 조각 4 — 명단 · ranked 는 조각 5 에서 줄에 싣는다
-    log_.push_back("[게임 서버] " + Name(best, s) + " 에 새 방 요청 " + std::to_string(req) + " — 만든 사람 " + ask.creator);
+    // ★ 랭크 매칭 조각 5 — 랭크 요청이면 꼬리(랭크 · 명단)까지. 일반은 옛 꼴 그대로
+    pendingOut_.push_back({best, LinkCreate(req, ask.creator, ask.ranked, ask.roster)});
+    std::string names;
+    for (const std::string& n : ask.roster) names += (names.empty() ? "" : ",") + n;
+    log_.push_back("[게임 서버] " + Name(best, s) + " 에 새 방 요청 " + std::to_string(req) + " — 만든 사람 " + ask.creator +
+                   (ask.ranked ? " · 랭크 명단 " + names : std::string()));
     return RoomRequest::Pending;
 }
 

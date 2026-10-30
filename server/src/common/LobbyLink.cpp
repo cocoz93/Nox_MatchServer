@@ -148,8 +148,13 @@ std::string LinkRoomLine(const LinkRoom& r) {
 
 std::string LinkRoomGone(uint32_t id) { return std::string(kWords[4]) + " " + std::to_string(id); }
 
-std::string LinkCreate(uint32_t req, const std::string& creator) {
-    return std::string(kWords[5]) + " " + std::to_string(req) + " " + EncodeLinkText(creator);
+std::string LinkCreate(uint32_t req, const std::string& creator, bool ranked, const std::vector<std::string>& roster) {
+    std::string l = std::string(kWords[5]) + " " + std::to_string(req) + " " + EncodeLinkText(creator);
+    if (!ranked && roster.empty()) return l;   // 옛 꼴(일반 새 방)
+    l += ranked ? " 1" : " 0";
+    if (roster.empty()) return l + " " + EncodeLinkText(creator);
+    for (const std::string& n : roster) l += " " + EncodeLinkText(n);
+    return l;
 }
 
 std::string LinkCreated(uint32_t req, uint32_t id) {
@@ -226,7 +231,22 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
         case LinkKind::RoomGone:
             if (!want(2)) return LinkParse::FieldCount;
             return ParseNum(t[1], kMaxRoomId, out.room.id) ? LinkParse::Ok : LinkParse::BadNumber;
-        case LinkKind::Create:
+        case LinkKind::Create:   // ★ 랭크 매칭 조각 5 — 꼬리(랭크 · 명단 1~kLinkMaxRoster)가 붙을 수 있다 · 없으면 옛 꼴
+            if (t.size() != 3 && (t.size() < 5 || t.size() > 4 + kLinkMaxRoster)) return LinkParse::FieldCount;
+            if (!ParseNum(t[1], 0xffffffffu, out.req)) return LinkParse::BadNumber;
+            if (t.size() > 3) {
+                for (size_t i = 3; i < t.size(); ++i)
+                    if (t[i].empty()) return LinkParse::FieldCount;   // 빈칸 둘 · 꼬리 빈칸(칸 수가 바뀌는 줄이라 칸 수로 센다)
+                uint32_t ranked = 0;
+                if (!ParseNum(t[3], 1, ranked)) return LinkParse::BadNumber;
+                out.ranked = ranked != 0;
+                for (size_t i = 4; i < t.size(); ++i) {
+                    std::string n;
+                    if (!DecodeLinkText(t[i], n) || n.empty()) return LinkParse::BadText;   // 빈 이름은 명단 칸이 아니다
+                    out.roster.push_back(std::move(n));
+                }
+            }
+            return DecodeLinkText(t[2], out.text) ? LinkParse::Ok : LinkParse::BadText;
         case LinkKind::CreateFailed:
             if (!want(3)) return LinkParse::FieldCount;
             if (!ParseNum(t[1], 0xffffffffu, out.req)) return LinkParse::BadNumber;

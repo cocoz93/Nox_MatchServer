@@ -46,6 +46,7 @@ struct CLobbyClientStats {
     unsigned long long roomLines = 0;        // ROOM 보냄
     unsigned long long roomGoneLines = 0;    // ROOM_GONE 보냄
     unsigned long long creates = 0;          // CREATE 받음
+    unsigned long long createsRanked = 0;    // ★ 랭크 매칭 조각 5 — 그중 랭크(꼬리 랭크 1)
     unsigned long long created = 0;          // 방을 만들어 CREATED
     unsigned long long createFailed = 0;     // 못 만들어 CREATE_FAILED
     unsigned long long results = 0;          // RESULT 처음 보냄(판 하나에 한 번)
@@ -115,9 +116,11 @@ private:
 
     void Send(const std::string& line, std::vector<NetworkRequest>& out);
     void OnLine(const std::string& line, std::vector<NetworkRequest>& out);
-    void OnCreate(uint32_t req, const std::string& creator, std::vector<NetworkRequest>& out);
+    // ★ 랭크 매칭 조각 5 — CREATE 줄 전체(꼬리의 랭크 · 명단까지)
+    void OnCreate(const LinkLine& l, std::vector<NetworkRequest>& out);
     // 새 방 — 틀 + 만든 사람 · 이름 · 대기 맵(무작위) · 채팅 모드 · 비면 닫음 → 방 관리자의 만들기 입구(옛 `CChannelLobby::CreateRoomFor`)
-    int CreateRoomFor(const std::string& creator, std::string& why);
+    //   ★ 랭크 매칭 조각 5 — 랭크면 ranked 켬 · 명단을 방 설정에(틀이 이미 랭크면 그대로 랭크 — `--ranked-all`)
+    int CreateRoomFor(const std::string& creator, bool ranked, const std::vector<std::string>& roster, std::string& why);
     // 로비 방 = 만든 사람이 있는 방만(실행 인자의 방은 로비 목록에 안 낸다). 채널 · 목록 이름은 지금 방장
     static bool ToLinkRoom(const RoomFact& f, LinkRoom& out);
     // 지난번 보낸 것(`_sent`)과 다른 방만 ROOM · 사라진 방은 ROOM_GONE — 붙을 때 · 끊길 때 `_sent` 를 비워 다시 붙으면 전부 간다

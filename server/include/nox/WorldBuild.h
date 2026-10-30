@@ -47,7 +47,10 @@ struct RoomSettings {
     int battleScoreLimit = 0;
     // ★ 레이팅 조각 2 — 랭크 방(판 결과에 `ranked` · 로비가 점수를 매김 · `Docs/RATING_DESIGN.md`). 매칭이 생기면 매칭이 방을 만들 때 켠다.
     //   그 전엔 시험 손잡이 `--ranked-all`(방 틀이라 로비가 만든 방에도 실린다)
+    //   ★ 랭크 매칭 조각 5 — 로비의 랭크 줄이 묶은 요청(`CREATE` 꼬리)이면 켠다
     bool ranked = false;
+    // ★ 랭크 매칭 조각 5 — 로비 랭크 줄이 묶은 명단(로비 이름 · 줄 차례). 비면 명단 없는 방(일반 · `--ranked-all` 시험 방)
+    std::vector<std::string> roster;
     std::string dumpPath;   // 접속 묶음·맵 지정을 뽑아올 덤프
     bool mirror = false;    // 진단 — 정품이 보냈던 조각을 그대로 재생
     int mirrorLimit = 0;    // 이분법용 — 앞 N 개만 재생 (0 이면 전부)
