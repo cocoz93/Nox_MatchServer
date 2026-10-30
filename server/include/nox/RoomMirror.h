@@ -106,7 +106,7 @@ public:
 
     // ILobbyRooms
     std::vector<LobbyRoom> LobbyRooms() const override;
-    RoomRequest RequestRoom(uint32_t req, const std::string& creator, LobbyRoom& out, std::string& why) override;
+    RoomRequest RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom& out, std::string& why) override;
     void CancelRoom(uint32_t req) override;   // ★ 작업 3c — 로비가 접은 요청을 기다림 장부에서 지운다
 
     const MirrorStats& Stats() const { return stats_; }

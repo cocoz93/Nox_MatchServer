@@ -6,6 +6,7 @@
 #define NOMINMAX
 #include <windows.h>   // ★ 10-14 작업 10a — 방 이름 UTF-8 → 클라 코드페이지(MultiByteToWideChar · WideCharToMultiByte)
 
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <utility>
@@ -123,6 +124,7 @@ void Lobby::OnConnect(int conn, uint32_t peerIp, uint32_t localIp) {
 }
 
 void Lobby::OnClose(int conn, std::vector<Out>& out) {
+    RankRemove(conn, RankLeave::Closed, out);   // ★ 랭크 매칭 조각 4 — 줄 · 요청에서 빼고(남은 사람으로 모으기를 다시 본다) 접속을 지운다
     // ★ 10-20 v2 작업 3b — 끊기면 대화방 남은 사람들에게 PART(드나듦 알림의 나머지 반 — 안 알리면 그 이름이 사용자 목록에 남는다).
     //   QUIT 줄 꼴은 정품이 받는지 미확인이라 이미 쓰는 PART 꼴로 · 게임 방 채널은 정품이 그 화면에 없어 안 알림
     const auto ci = conns_.find(conn);
@@ -155,6 +157,13 @@ void Lobby::OnClose(int conn, std::vector<Out>& out) {
 }
 
 void Lobby::OnRoomCreated(uint32_t req, const LobbyRoom& room, std::vector<Out>& out) {
+    if (const auto g = rankPending_.find(req); g != rankPending_.end()) {   // ★ 랭크 매칭 조각 4 — 랭크 방
+        const std::vector<int> group = std::move(g->second.conns);
+        rankPending_.erase(g);
+        ++stats_.rankRoomsCreated;
+        RankReply(req, group, room, out);
+        return;
+    }
     const auto p = pending_.find(req);
     if (p == pending_.end()) {
         ++stats_.lateRoomReply;
@@ -169,6 +178,15 @@ void Lobby::OnRoomCreated(uint32_t req, const LobbyRoom& room, std::vector<Out>&
 }
 
 void Lobby::OnRoomCreateFailed(uint32_t req, const std::string& why, std::vector<Out>& out) {
+    if (const auto g = rankPending_.find(req); g != rankPending_.end()) {   // ★ 랭크 매칭 조각 4 — 줄 앞에 되돌림(정품은 아직 답을 못 받아 기다리는 중)
+        const std::vector<int> group = std::move(g->second.conns);
+        rankPending_.erase(g);
+        ++stats_.rankRoomFailed;
+        log_.push_back("[랭크 — 방 실패] 요청 " + std::to_string(req) + " — " + why + " · 줄 앞에 되돌림");
+        RankRequeue(req, group);
+        RankPump(out);   // 쉬는 중이라 곧바로 다시 묻지는 않는다
+        return;
+    }
     const auto p = pending_.find(req);
     if (p == pending_.end()) {
         ++stats_.lateRoomReply;
@@ -209,6 +227,22 @@ void Lobby::Tick(std::vector<Out>& out) {
             out.push_back({kv.first, "ERROR :Closing Link (login failed)", true});
         }
     }
+    // ★ 랭크 매칭 조각 4 — 랭크 방 요청의 시간 초과(줄 앞에 되돌림) · 모으기 시간 · 쉬는 시간
+    for (auto it = rankPending_.begin(); it != rankPending_.end();) {
+        if (static_cast<int32_t>(now - it->second.deadlineMs) < 0) {
+            ++it;
+            continue;
+        }
+        ++stats_.rankRoomTimeout;
+        log_.push_back("[랭크 — 방 시간 초과] 요청 " + std::to_string(it->first) + " 에 " + std::to_string(kRoomRequestTimeoutMs) +
+                       "ms 안에 답 없음 · 줄 앞에 되돌림");
+        rooms_.CancelRoom(it->first);
+        const uint32_t req = it->first;
+        const std::vector<int> group = std::move(it->second.conns);
+        it = rankPending_.erase(it);
+        RankRequeue(req, group);
+    }
+    RankPump(out);
     if (pending_.empty()) return;
     for (auto it = pending_.begin(); it != pending_.end();) {
         if (static_cast<int32_t>(now - it->second.deadlineMs) < 0) {   // 32비트 시계가 돌아도 맞게
@@ -232,6 +266,165 @@ void Lobby::JoinNewRoom(int conn, const Conn& c, const LobbyRoom& created, std::
                    created.map + ")");
     members_.erase(Channel(created));
     ReplyJoin(conn, c, created, out);
+}
+
+// ★ 랭크 매칭 조각 4 — 줄 ───────────────────────────────────────────────────────────────
+
+const char* RankLeaveName(RankLeave why) {
+    switch (why) {
+        case RankLeave::Dll:    return "창 닫힘(DLL)";
+        case RankLeave::List:   return "LIST";
+        case RankLeave::Closed: return "끊김";
+        case RankLeave::kCount: break;
+    }
+    return "?";
+}
+
+std::string Lobby::RankNames(const std::vector<int>& conns) const {
+    std::string r;
+    for (int id : conns) {
+        const auto c = conns_.find(id);
+        r += (r.empty() ? "" : ",") + (c == conns_.end() ? "c" + std::to_string(id) : c->second.nick);
+    }
+    return r;
+}
+
+void Lobby::RankEnqueue(int conn, Conn& c, std::vector<Out>& out) {
+    c.rank = Conn::Rank::Queued;
+    rankQueue_.push_back(conn);
+    ++stats_.rankQueued;
+    log_.push_back("[랭크 — 줄 섬] " + c.nick + " (줄 " + std::to_string(rankQueue_.size()) + "명 · 최소 " + std::to_string(cfg_.rankMin) +
+                   " · 최대 " + std::to_string(cfg_.rankMax) + ")");
+    RankPump(out);
+}
+
+// 줄에 있으면 빼고 남은 사람으로 모으기를 다시 본다 · 요청 중이면 그 사람만 표시를 지운다(방이 서도 답을 안 보낸다) · 둘 다 아니면 DLL 알림만 센다
+void Lobby::RankRemove(int conn, RankLeave why, std::vector<Out>& out) {
+    const auto ci = conns_.find(conn);
+    if (ci == conns_.end()) return;
+    Conn& c = ci->second;
+    const size_t w = static_cast<size_t>(why);
+    switch (c.rank) {
+        case Conn::Rank::Queued:
+            rankQueue_.erase(std::find(rankQueue_.begin(), rankQueue_.end(), conn));
+            c.rank = Conn::Rank::None;
+            ++stats_.rankLeft[w];
+            log_.push_back("[랭크 — 빠짐] " + c.nick + " — " + RankLeaveName(why) + " (줄 " + std::to_string(rankQueue_.size()) + "명)");
+            RankPump(out);
+            return;
+        case Conn::Rank::Requested:
+            c.rank = Conn::Rank::None;
+            ++stats_.rankLeftRequested[w];
+            log_.push_back("[랭크 — 빠짐] " + c.nick + " — " + RankLeaveName(why) + " · 방 요청 " + std::to_string(c.rankReq) + " 중(방이 서도 답 안 함)");
+            return;
+        case Conn::Rank::None:
+            if (why == RankLeave::Dll) {
+                ++stats_.rankLeaveStray;
+                log_.push_back("[랭크 — 빠짐 알림 버림] " + c.nick + " — 줄에도 요청에도 없음(잡힌 뒤 · 거절 뒤 창이 닫힘)");
+            }
+            return;
+    }
+}
+
+// 모으기 — 최대가 차면 곧바로(여러 묶음이면 여러 번) · 최소가 차면 모으기 시간을 재고 끝나면 그때 줄 전부 · 최소 밑이면 시계를 끔.
+//   방 요청이 실패 · 시간 초과로 되돌린 뒤엔 쉬는 시간 동안 안 묶는다(게임 서버가 없을 때 한 바퀴 안에서 도는 것을 막음)
+void Lobby::RankPump(std::vector<Out>& out) {
+    const uint32_t now = cfg_.nowMs();
+    if (rankResting_) {
+        if (static_cast<int32_t>(now - rankRestDueMs_) < 0) return;
+        rankResting_ = false;
+    }
+    while (!rankResting_ && rankQueue_.size() >= cfg_.rankMax) RankRequest(cfg_.rankMax, true, out);
+    if (rankResting_) return;
+    if (rankQueue_.size() < cfg_.rankMin) {
+        if (rankGathering_) log_.push_back("[랭크 — 모으기 멈춤] 줄 " + std::to_string(rankQueue_.size()) + "명 — 최소 밑");
+        rankGathering_ = false;
+        return;
+    }
+    if (!rankGathering_) {
+        rankGathering_ = true;
+        rankGatherDueMs_ = now + cfg_.rankGatherMs;
+        log_.push_back("[랭크 — 모으기 시작] 줄 " + std::to_string(rankQueue_.size()) + "명 · " + std::to_string(cfg_.rankGatherMs) + "ms 더 모음");
+    }
+    if (static_cast<int32_t>(now - rankGatherDueMs_) < 0) return;
+    rankGathering_ = false;
+    RankRequest(rankQueue_.size(), false, out);
+}
+
+// 줄 앞 `count` 명을 묶어 랭크 방을 요청한다
+void Lobby::RankRequest(size_t count, bool full, std::vector<Out>& out) {
+    const std::vector<int> group(rankQueue_.begin(), rankQueue_.begin() + static_cast<std::ptrdiff_t>(count));
+    rankQueue_.erase(rankQueue_.begin(), rankQueue_.begin() + static_cast<std::ptrdiff_t>(count));
+    const uint32_t req = nextReq_++;
+    RoomAsk ask;
+    ask.ranked = true;
+    for (int id : group) {
+        Conn& c = conns_[id];   // 줄엔 살아 있는 접속만 있다(끊김은 `OnClose` 가 먼저 뺀다)
+        c.rank = Conn::Rank::Requested;
+        c.rankReq = req;
+        ask.roster.push_back(c.nick);
+    }
+    ask.creator = ask.roster.front();
+    ++stats_.rankRequests;
+    stats_.rankGrouped += group.size();
+    ++(full ? stats_.rankGroupFull : stats_.rankGroupGather);
+    LobbyRoom created;
+    std::string why;
+    switch (rooms_.RequestRoom(req, ask, created, why)) {
+        case RoomRequest::Created:
+            log_.push_back("[랭크 — 묶음] 요청 " + std::to_string(req) + " " + (full ? "최대" : "모으기 끝") + " — " + RankNames(group) + " · 곧바로 섬");
+            ++stats_.rankRoomsCreated;
+            RankReply(req, group, created, out);
+            return;
+        case RoomRequest::Failed:
+            ++stats_.rankRoomFailed;
+            log_.push_back("[랭크 — 묶음] 요청 " + std::to_string(req) + " — " + RankNames(group) + " · 실패(" + why + ") · 줄 앞에 되돌림");
+            RankRequeue(req, group);
+            return;
+        case RoomRequest::Pending:
+            rankPending_[req] = RankGroup{group, cfg_.nowMs() + kRoomRequestTimeoutMs};
+            log_.push_back("[랭크 — 묶음] 요청 " + std::to_string(req) + " " + (full ? "최대" : "모으기 끝") + " — " + RankNames(group) +
+                           " · 게임 서버에 물음");
+            return;
+    }
+}
+
+// 방이 섰다 — 묶인 사람 가운데 아직 요청 중인 사람마다 제 채널로 참가 답(토큰은 그 방). 채널 = 그 사람이 보낸 `#<닉>'s_game` ·
+//   353 방장 = 그 사람 — 사람 확인을 거친 Host Game 답 꼴 그대로(정품이 다른 채널 이름의 답을 받는지는 미확인이라 안 씀)
+void Lobby::RankReply(uint32_t req, const std::vector<int>& group, const LobbyRoom& room, std::vector<Out>& out) {
+    size_t sent = 0;
+    for (int id : group) {
+        const auto ci = conns_.find(id);
+        if (ci == conns_.end() || ci->second.rank != Conn::Rank::Requested || ci->second.rankReq != req) continue;   // 요청 중 빠짐
+        Conn& c = ci->second;
+        c.rank = Conn::Rank::None;
+        LobbyRoom mine = room;
+        mine.host = c.nick;
+        members_.erase(Channel(mine));   // 같은 이름 채널의 옛 방 구성원(`JoinNewRoom` 과 같은 까닭)
+        ReplyJoin(id, c, mine, out);
+        ++stats_.rankMatched;
+        ++sent;
+    }
+    log_.push_back("[랭크 — 방] 요청 " + std::to_string(req) + " → 게임 방 " + std::to_string(room.gameRoomId) + " · 명단 " + RankNames(group) +
+                   " · 참가 답 " + std::to_string(sent) + "명");
+}
+
+// 실패 · 시간 초과 — 아직 요청 중인 사람을 줄 맨 앞에(원래 차례 그대로) · 쉬는 시간 시작. 이미 모은 사람들이라 모으기 시계는
+//   쉬는 시간 끝에 맞춰 둔다(쉬고 나면 최소 이상이면 곧바로 다시 묶음 — 모으기 시간을 또 기다리지 않음)
+void Lobby::RankRequeue(uint32_t req, const std::vector<int>& group) {
+    std::vector<int> back;
+    for (int id : group) {
+        const auto ci = conns_.find(id);
+        if (ci == conns_.end() || ci->second.rank != Conn::Rank::Requested || ci->second.rankReq != req) continue;
+        ci->second.rank = Conn::Rank::Queued;
+        back.push_back(id);
+    }
+    rankQueue_.insert(rankQueue_.begin(), back.begin(), back.end());
+    stats_.rankRequeued += back.size();
+    rankResting_ = true;
+    rankRestDueMs_ = cfg_.nowMs() + kRankRetryMs;
+    rankGathering_ = true;
+    rankGatherDueMs_ = rankRestDueMs_;
 }
 
 // ★ 10-20 거절 답 — 까닭이 무엇이든 숫자는 471(정품이 받아 주는 유일한 것 — `Lobby.h` `JoinReject` 주석). 꼴은 다른 숫자 답과 같은 `: <숫자> u <채널> :<글>`
@@ -496,8 +689,26 @@ void Lobby::OnLine(int conn, std::string_view line, std::vector<Out>& out) {
 // 4000 — 로그인 · 목록 · 채팅 로비 · 방 참가
 void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<std::string>& t,
                    std::string_view line, std::vector<Out>& out) {
+    // ★ 랭크 매칭 조각 4 — 랭크 표시는 바로 다음 줄(내 방 참가)에만 걸린다. 다른 줄이 끼면 표시를 버린다(그 줄은 원래대로)
+    if (c.rankNext && cmd != "JOINGAME" && cmd != "NOXRANK") {
+        c.rankNext = false;
+        ++stats_.rankMarkDropped;
+        log_.push_back("[랭크 — 표시 버림] " + c.nick + " — NOXRANK JOIN 다음 줄이 " + cmd);
+    }
     // 답이 없는 줄(녹음 그대로). 이름·암호는 검사하지 않는다 — 2단계는 아무 이름이나 받는다
     if (cmd == "CVERS" || cmd == "PASS" || cmd == "SERIAL" || cmd == "SETOPT") return;
+    if (cmd == "NOXRANK") {   // ★ 랭크 매칭 조각 4 — 클라 DLL 판 4 의 표시(정품 클라는 모른다 — DLL 이 끼운다 · `wsock32_proxy.cpp` ⑪)
+        if (c.clientVer < kNoxClientRankVersion) {
+            ++stats_.rankOldClient;
+            Unknown("NOXRANK(판 " + std::to_string(c.clientVer) + ")", line);
+            return;
+        }
+        const std::string sub = t.size() > 1 ? Upper(t[1]) : std::string();
+        if (sub == "JOIN") c.rankNext = true;
+        else if (sub == "LEAVE") RankRemove(conn, RankLeave::Dll, out);
+        else Unknown("NOXRANK " + sub, line);
+        return;
+    }
     if (cmd == "APGAR") {   // ★ 로그인 암호 조각 4 — 인자를 USER 까지 쥔다(DLL 이 로그인 토큰 · 실패 표시로 바꿔 실음 · 기록에 안 찍음)
         c.apgar = t.size() > 1 ? t[1] : std::string();
         return;
@@ -566,6 +777,8 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         return;
     }
     if (cmd == "LIST") {   // `LIST -1 37` = 채팅 로비 + 게임 방, `LIST 37 37` = 게임 방만(녹음: 게임 버튼 뒤 목록엔 327 이 없다)
+        // ★ 랭크 매칭 조각 4 — 줄 선 접속의 목록 다시 받기 = 기다림을 그만둠(정품 취소 뒤 목록 화면이 LIST 를 보낸다 · 사람 확인 50)
+        if (c.rank != Conn::Rank::None) RankRemove(conn, RankLeave::List, out);
         SendList(conn, t.size() > 1 && t[1] == "-1", out);
         return;
     }
@@ -625,6 +838,8 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         return;
     }
     if (cmd == "JOINGAME") {   // 방 참가 — 방장 주소가 353 에 실린다(326 과 같은 값)
+        const bool rankMark = c.rankNext;   // ★ 랭크 매칭 조각 4 — 바로 앞 줄이 `NOXRANK JOIN`
+        c.rankNext = false;
         // ★ 7단계 조각 6 — 토큰 · 새 방은 로그인 확인됨만(USER 없이 NICK + JOINGAME 만 보내도 토큰이 나가던 것 · 검사 지적 2).
         //   정품은 376 을 받은 뒤에야 참가하므로 이 갈래는 실패한 로그인 · 규약 밖 클라 몫 — 471(정품이 받아 주는 거절)
         if (c.login != LoginState::Ok) {
@@ -633,13 +848,28 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
             RejectJoin(conn, t.size() >= 2 ? t[1] : std::string("*"), JoinReject::NotLoggedIn, out);
             return;
         }
+        // ★ 랭크 매칭 조각 4 — 줄에 있거나 랭크 방을 기다리는 접속의 참가는 무시(답이 둘이 되지 않게 — 정품은 기다리는 동안 다시 안 보냄)
+        if (c.rank != Conn::Rank::None) {
+            ++stats_.rankDupJoin;
+            log_.push_back("[랭크 — 참가 무시] " + c.nick + " — 줄에 있음 · 랭크 방을 기다리는 중");
+            return;
+        }
+        const bool ownChannel = t.size() >= 2 && !c.nick.empty() && t[1] == "#" + c.nick + "'s_game";
+        if (rankMark) {
+            if (ownChannel) {   // 줄 서기 — 답은 묶여 방이 선 뒤(한도 없음 · 빠짐은 DLL 알림 · LIST · 끊김)
+                RankEnqueue(conn, c, out);
+                return;
+            }
+            ++stats_.rankMarkDropped;
+            log_.push_back("[랭크 — 표시 버림] " + c.nick + " — 내 방 참가가 아님(" + (t.size() >= 2 ? t[1] : std::string("*")) + ")");
+        }
         const std::vector<LobbyRoom> rooms = rooms_.LobbyRooms();   // ★ 10-14 작업 8d — 그 순간의 돌고 있는 방
         const LobbyRoom* found = t.size() < 2 ? nullptr : FindRoom(rooms, t[1]);
         // ★ 10-14 플랜 B 작업 10a — 「새 방」: 없는 방인데 채널이 제 이름 채널(`#<내 닉>'s_game` — 원작 `Host Game` 과 같은 꼴)이면
         //   그 사람이 방장인 방을 만들고 그 방으로 참가시킨다(`Docs/ROOMS_DESIGN.md` 흐름 3 · 결정 4 — 정품 `Host Game` 을 DLL 이 이 참가로 돌린다).
         //   남의 이름 채널 · 없는 방은 ★ 10-20 거절 답 `471`(그 전엔 답을 안 해 정품이 참가 화면에서 멈췄다 — 사람 확인 50).
         //   DLL 없는 클라에겐 안 만든다(토큰이 없어 들어올 수 없는 방이 30초 남는다) — 답도 안 한다(그 클라의 원래 방 만들기엔 정품이 받아 줄 거절 답이 없다 · `Lobby.h` `JoinReject`)
-        if (!found && t.size() >= 2 && !c.nick.empty() && t[1] == "#" + c.nick + "'s_game") {
+        if (!found && ownChannel) {
             if (c.clientVer < kNoxClientMinVersion) {
                 ++stats_.newRoomNoClient;
                 log_.push_back("[새 방 — 안 만듦] " + c.nick + " — 클라 DLL 없음(토큰이 없어 들어올 수 없다)");
@@ -655,7 +885,9 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
             const uint32_t req = nextReq_++;
             LobbyRoom created;
             std::string why;
-            switch (rooms_.RequestRoom(req, c.nick, created, why)) {
+            RoomAsk ask;   // ★ 랭크 매칭 조각 4 — 일반 새 방 = 만든 사람 하나
+            ask.creator = c.nick;
+            switch (rooms_.RequestRoom(req, ask, created, why)) {
                 case RoomRequest::Created:
                     JoinNewRoom(conn, c, created, out);
                     return;

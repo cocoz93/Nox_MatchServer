@@ -2,6 +2,7 @@
 //
 //   nox_lobby.exe --config <설정 파일> [--bind 0.0.0.0] [--lobby-port 4000]
 //                 [--link-bind 127.0.0.1] [--link-port 4010] [--seconds N] [--quiet] [--no-db] [--no-auth]
+//                 [--rank-min N] [--rank-max N] [--rank-gather-sec N]
 //
 // 왜 다시 따로 된 프로세스인가 — 목표 구조 v2(10-20 결정): 로비 하나가 전체 상태(로그인 · 채팅 채널 · 게임 목록 ·
 //   나중 계정 · 친구 · 매칭)를 쥐고, 게임 서버(`nox_server`)는 판만 돌려 늘리고 줄인다. 10-14 작업 8d 가 이 실행 파일을 없애고
@@ -21,6 +22,8 @@
 //     없거나 못 붙거나 표 버전이 다르면 뜨지 않는다(토큰 키와 같은 꼴). `--no-db` = 메모리 저장소(시험 · 끝나면 기록이 사라짐 — 정할 것 b)
 //   ★ 로그인 암호 조각 4 — `[auth] key`(로그인 서버와 같은 값)가 있으면 로그인은 로그인 토큰(`Docs/LOGIN_AUTH_DESIGN.md`) · `port`(가입 페이지 안내).
 //     없거나 `--no-auth` 면 아이디만(시험용 · 정할 것 c — 다른 PC 판 `mo_host`). 받은 줄 기록은 `apgar` 인자를 가린다(`RedactLoginLine`)
+//   ★ 랭크 매칭 조각 4 — `[rank] min · max · gather_sec`(랭크 줄 — 기본 2 · 12 · 30 · `Docs/RANK_MATCH_PLAN.md`). 같은 이름의 실행 인자가 설정보다 앞선다.
+//     2 ≤ 최소 ≤ 최대 ≤ 31 · 모으기 0~3600초가 아니면 뜨지 않는다(조용히 기본값으로 떨어지지 않게). 부하 실험은 최소 = 최대 = 12
 // ⚠ --bind 0.0.0.0 은 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다. 같은 PC 시험은 --bind 127.0.0.1 로 충분하다.
 //   연결 포트는 기본 127.0.0.1 — 게임 서버가 다른 PC 면 --link-bind 로 내부 주소를 준다(바깥 주소에 열지 말 것)
 #include <winsock2.h>
@@ -118,6 +121,7 @@ int main(int argc, char** argv) {
     std::string configPath;
     bool noDb = false;   // ★ 7단계 조각 8
     bool noAuth = false; // ★ 로그인 암호 조각 4
+    std::string argRankMin, argRankMax, argRankGather;   // ★ 랭크 매칭 조각 4 — 비면 설정 파일 · 그것도 없으면 기본값
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -133,6 +137,9 @@ int main(int argc, char** argv) {
         else if (a == "--seconds" && hasNext) seconds = std::atoi(argv[++i]);
         else if (a == "--no-db") noDb = true;
         else if (a == "--no-auth") noAuth = true;
+        else if (a == "--rank-min" && hasNext) argRankMin = argv[++i];
+        else if (a == "--rank-max" && hasNext) argRankMax = argv[++i];
+        else if (a == "--rank-gather-sec" && hasNext) argRankGather = argv[++i];
         else { Log("[실패] 모르는 인자: %s\n", a.c_str()); return 2; }
     }
     if (lobbyPort == 0 || linkPort == 0 || lobbyPort == linkPort) {
@@ -158,6 +165,28 @@ int main(int argc, char** argv) {
     }
     Log(cfg.authOn ? "[로비] 로그인 = 로그인 토큰(로그인 서버 :%u · 가입 https://<로비 주소>:%u/signup)\n"
                    : "[로비] 로그인 = 아이디만(시험용 — [auth] key 없음 또는 --no-auth)\n", cfg.authPort, cfg.authPort);
+    // ★ 랭크 매칭 조각 4 — 랭크 줄(실행 인자 > 설정 `[rank]` > 기본값). 틀린 값이면 뜨지 않는다
+    {
+        auto pick = [&ini](const std::string& arg, const char* key, uint32_t def, uint32_t& v) {
+            const std::string s = !arg.empty() ? arg : ini.Get("rank", key);
+            if (s.empty()) { v = def; return true; }
+            char* end = nullptr;
+            const unsigned long n = std::strtoul(s.c_str(), &end, 10);
+            if (!end || *end != '\0' || s[0] == '-' || n > 0xFFFFFFFFul) return false;
+            v = static_cast<uint32_t>(n);
+            return true;
+        };
+        uint32_t gatherSec = 0;
+        if (!pick(argRankMin, "min", nox::wol::kRankMinDefault, cfg.rankMin) || !pick(argRankMax, "max", nox::wol::kRankMaxDefault, cfg.rankMax) ||
+            !pick(argRankGather, "gather_sec", nox::wol::kRankGatherMsDefault / 1000, gatherSec) || cfg.rankMin < 2 || cfg.rankMin > cfg.rankMax ||
+            cfg.rankMax > nox::wol::kRankMaxLimit || gatherSec > 3600) {
+            Log("[멈춤] 랭크 줄 설정 — 2 ≤ 최소 ≤ 최대 ≤ %u · 모으기 0~3600초여야 한다([rank] min · max · gather_sec 또는 --rank-*)\n",
+                nox::wol::kRankMaxLimit);
+            return 2;
+        }
+        cfg.rankGatherMs = gatherSec * 1000;
+        Log("[로비] 랭크 줄 — 최소 %u · 최대 %u · 최소가 차면 %u초 더 모음 · 기다림 한도 없음\n", cfg.rankMin, cfg.rankMax, gatherSec);
+    }
 
     // ★ 7단계 조각 8 — 저장소(계정 · 판 기록). 포트를 열기 전에 — 못 뜨면 포트도 안 잡는다
     nox::wol::CMemoryLobbyStore memStore;
@@ -354,6 +383,20 @@ int main(int argc, char** argv) {
         "늦은 답 %llu · 쌓은 뒷줄 %llu(버림 %llu)\n",
         ls.ratingAsked, ls.ratingShown, ls.ratingNoGames, ls.ratingFailed, ls.ratingTimeout, ls.ratingClosed, lobby.PendingRatings(), ls.ratingLate,
         ls.heldLines, ls.heldDropped);
+    // ★ 랭크 매칭 조각 4 — 줄 섬 = 빠짐(줄) + 묶임 + 끝날 때 줄(되돌림은 다시 줄) · 묶임 = 참가 답 + 되돌림 + 빠짐(요청 중) + 끝날 때 요청 중 ·
+    //   요청 = 섬 + 실패 + 시간 초과 + 끝날 때 기다림
+    {
+        using nox::wol::RankLeave;
+        const auto lq = [&ls](RankLeave w) { return ls.rankLeft[static_cast<size_t>(w)]; };
+        const auto lr = [&ls](RankLeave w) { return ls.rankLeftRequested[static_cast<size_t>(w)]; };
+        Log("[로비] 끝 — 랭크 줄 섬 %llu · 빠짐(줄) 창 닫힘 %llu · LIST %llu · 끊김 %llu · 빠짐(요청 중) 창 닫힘 %llu · LIST %llu · 끊김 %llu · "
+            "빠짐 알림 버림 %llu · 묶임 %llu(최대 %llu묶음 · 모으기 끝 %llu묶음) · 참가 답 %llu · 되돌림 %llu · 끝날 때 줄 %zu · "
+            "랭크 방 요청 %llu(섬 %llu · 실패 %llu · 시간 초과 %llu · 끝날 때 기다림 %zu) · 표시 버림 %llu · 낮은 판 표시 %llu · 참가 무시 %llu\n",
+            ls.rankQueued, lq(RankLeave::Dll), lq(RankLeave::List), lq(RankLeave::Closed), lr(RankLeave::Dll), lr(RankLeave::List),
+            lr(RankLeave::Closed), ls.rankLeaveStray, ls.rankGrouped, ls.rankGroupFull, ls.rankGroupGather, ls.rankMatched, ls.rankRequeued,
+            lobby.RankQueueSize(), ls.rankRequests, ls.rankRoomsCreated, ls.rankRoomFailed, ls.rankRoomTimeout, lobby.RankRequestsPending(),
+            ls.rankMarkDropped, ls.rankOldClient, ls.rankDupJoin);
+    }
     // ★ 7단계 — 보냄 · 받음은 PING 을 넣은 수(괄호가 그중 PING) · 무소식 끊음 = 받은 줄이 한도 동안 없어 끊은 게임 서버 연결
     Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu(PING %llu) · "
         "보냄 %llu(PING %llu) · 방 알림 %llu · 사라짐 %llu · 못 읽는 줄 %llu · 판 결과 %llu · 무소식 끊음 %llu\n",

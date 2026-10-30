@@ -44,6 +44,11 @@
 //     뒷줄 안 받음 · 클라가 안 끊으면 `kLoginRejectCloseMs` 뒤 끊음. 보기만은 USER 전 접속에만 남음
 //   · 같은 계정이 또 들어오면 옛 접속을 끊는다(정할 것 b — 클라가 죽어 반쯤 열린 옛 연결이 남아도 다시 들어오게)
 //   · `[auth] key` 가 없으면(`LobbyConfig::authOn` false) 아이디만 — 조각 6 이전 꼴(시험용 · 정할 것 c)
+// ★ 랭크 매칭 조각 4(`Docs/RANK_MATCH_PLAN.md`) — 줄 세우기. DLL 판 4 의 `NOXRANK JOIN` 바로 뒤 내 방 참가(`JOINGAME #<닉>'s_game` — Host Game 과 같은 줄)는
+//   새 방 대신 줄에 세우고 답을 미룬다(정품은 「서버 접속 시도중...」 창에서 기다림 — 한도 없음). 최소가 차면 모으기 시간 뒤 · 최대가 차면 곧바로
+//   그 사람들을 묶어 랭크 방을 요청하고(`RoomAsk` 명단 · ranked), 방이 서면 묶인 사람마다 **제가 보낸 채널**로 참가 답 + 그 방 토큰
+//   (353 방장 = 그 사람 — Host Game 답 꼴 그대로 · 토큰만 공용 방). 줄에서 빼는 것 셋 — `NOXRANK LEAVE`(창 닫힘) · `LIST` · 끊김
+//   · 정품의 목록 자동 새로고침(2분)은 알림창이 떠 있으면 `LIST` 를 안 보낸다(`Game.exe` `0x437470` → `0x44a020`) — 기다리는 동안 `LIST` 는 안 옴(정적 분석)
 #pragma once
 
 #include <cstdint>
@@ -72,6 +77,9 @@ constexpr int kNoxClientMinVersion = 1;   // ★ 10-10 — DLL 이 알리는 판
 constexpr int kNoxClientHostGameVersion = 2;
 // ★ 로그인 암호 조각 4 — 이 판부터 DLL 이 `apgar` 자리를 로그인 토큰으로 바꿔 싣는다(낮은 판은 평문 — 암호 판 로비는 실패 안내)
 constexpr int kNoxClientAuthVersion = 3;
+// ★ 랭크 매칭 조각 4(`Docs/RANK_MATCH_PLAN.md`) — 이 판부터 DLL 이 게임 목록 「랭크 매칭」 참가 줄 앞에 `NOXRANK JOIN`,
+//   「서버 접속 시도중...」 창이 닫히면 다음 줄 앞에 `NOXRANK LEAVE` 를 끼운다(`wsock32_proxy.cpp` ⑪). 낮은 판의 표시는 안 믿는다
+constexpr int kNoxClientRankVersion = 4;
 constexpr uint16_t kDefaultAuthPort = 8443;   // 로그인 서버(nox_auth) — 가입 페이지 주소 안내에 씀(`[auth] port`)
 
 // ★ 10-14 플랜 B 작업 8d — 로비가 그리는 방 하나. 채널이 방 관리자의 돌고 있는 방(`CRoomManager::ListRooms`)에서 채운다
@@ -100,6 +108,13 @@ enum class RoomRequest : uint8_t {
     Pending,   // 게임 서버에 물었음 — 답은 뒤에 `Lobby::OnRoomCreated` · `OnRoomCreateFailed` 로(같은 `req`)
 };
 
+// ★ 랭크 매칭 조각 4 — 새 방 요청의 꼴. 일반 = 만든 사람 하나(제 이름 채널 참가 — Host Game) · 랭크 = 줄에서 묶은 명단 · ranked
+struct RoomAsk {
+    std::string creator;               // 방장(랭크면 명단 첫 사람 = 줄에 먼저 선 사람)
+    std::vector<std::string> roster;   // 랭크 — 들어올 사람의 로비 이름 전부(차례 = 줄 차례) · 일반은 비움
+    bool ranked = false;
+};
+
 // 채널이 로비에게 주는 방 — 로비는 목록을 그리거나 방 참가를 볼 때마다 묻는다(그 순간의 돌고 있는 방 · 방 번호 차례)
 //   ★ 10-20 v2 — 로비 프로세스에선 게임 서버들의 알림으로 채운 거울(`RoomMirror`)이 준다
 class ILobbyRooms {
@@ -108,7 +123,8 @@ public:
     virtual std::vector<LobbyRoom> LobbyRooms() const = 0;
     // ★ 10-14 플랜 B 작업 10a — 「새 방」 — 그 사람이 만든 사람(방장)인 방을 하나 만든다.
     //   ★ 10-20 v2 작업 3a — 옛 `CreateRoomFor`(그 자리에서 만들고 bool). 이제 다른 프로세스에 물을 수 있어 결과가 셋(`RoomRequest`)
-    virtual RoomRequest RequestRoom(uint32_t req, const std::string& creator, LobbyRoom& out, std::string& why) = 0;
+    //   ★ 랭크 매칭 조각 4 — 만든 사람 하나 → 요청 꼴(`RoomAsk` — 랭크 명단 · ranked)
+    virtual RoomRequest RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom& out, std::string& why) = 0;
     // ★ 10-20 v2 작업 3c — 로비가 기다림을 접은 요청(시간 초과 · 클라 끊김). 거울은 그 요청을 기다림 장부에서 지운다
     //   (안 지우면 게임 서버가 끊길 때 이미 접은 요청을 「실패」로 다시 넘긴다 — nox_lobby_smoke 에서 나옴). 늦게 온 답은 「안 물은 답」으로 버린다
     virtual void CancelRoom(uint32_t /*req*/) {}
@@ -129,6 +145,19 @@ constexpr uint32_t kLoginRejectCloseMs = 10000;
 //   한도 · 쌓기 한도는 옛 값 그대로 — 근거 없는 값(같은 PC DB 왕복은 ms 단위 · 녹음 접속 하나의 뒷줄은 많아야 18줄). 넘으면 점수 줄 없이 로그인을 끝낸다
 constexpr uint32_t kRatingTimeoutMs = 5000;
 constexpr size_t kMaxHeldLines = 64;
+// ★ 랭크 매칭 조각 4 — 줄 세우기 기본값(`Docs/RANK_MATCH_PLAN.md` 정한 것 1 — 10-30 사용자). 설정 `[rank]` 로 바꾼다 · 부하 실험은 최소 = 최대 = 12
+//   최소가 차면 모으기 시간만큼 더 기다렸다가 그때 줄 선 사람 전부(최대까지)로 · 최대가 차면 곧바로. 기다림 한도는 없다(정한 것 2 — 빠짐은 DLL 알림 · LIST · 끊김)
+constexpr uint32_t kRankMinDefault = 2;
+constexpr uint32_t kRankMaxDefault = 12;
+constexpr uint32_t kRankGatherMsDefault = 30000;
+constexpr uint32_t kRankMaxLimit = 31;   // 설정 최대의 위 한도 — 방 정보 틀의 최대 인원(로비 틀 31 · `hostgame::MyRoomInfo`)
+// 랭크 방 요청이 실패 · 시간 초과로 사람들을 줄 앞에 되돌린 뒤 다시 묻기까지 쉬는 시간. 근거 없는 값 — 게임 서버 다시 붙기 3초 ·
+//   붙는 한도 5초(`NetworkThread.h`)와 어울리게. 안 쉬면 게임 서버가 없을 때 곧바로 실패 → 되돌림 → 다시 물음이 한 바퀴 안에서 돈다
+constexpr uint32_t kRankRetryMs = 5000;
+// 랭크 줄에서 빠진 까닭(`LobbyStats::rankLeft` 차례) — 「서버 접속 시도중...」 창 닫힘(DLL) · 목록 다시 받기(LIST) · 접속 끊김
+enum class RankLeave : uint8_t { Dll, List, Closed, kCount };
+constexpr size_t kRankLeaveCount = static_cast<size_t>(RankLeave::kCount);
+const char* RankLeaveName(RankLeave why);
 
 // ★ 10-20 거절 답(`Docs/LOBBY_SPLIT_DESIGN.md` 「거절 답 플랜」) — 방 참가(`JOINGAME`)를 받아 줄 수 없는 까닭.
 //   왜 — 답을 안 하면 정품이 「서버 접속 시도중...」에서 멈춘다(사람 확인 50). 정품이 받아 주는 거절 답은 `471` 하나뿐이다 —
@@ -169,6 +198,10 @@ struct LobbyConfig {
     bool authOn = false;
     JoinKey loginKey{};                             // 로그인 서버와 같은 값 · 입장 토큰 키와 따로
     uint16_t authPort = kDefaultAuthPort;           // 가입 페이지 주소 안내(https://<이 접속이 붙은 내 쪽 주소>:<포트>/signup)
+    // ★ 랭크 매칭 조각 4 — 줄 세우기(설정 `[rank] min · max · gather_sec` · 2 ≤ 최소 ≤ 최대 ≤ `kRankMaxLimit` 는 부르는 쪽이 본다)
+    uint32_t rankMin = kRankMinDefault;
+    uint32_t rankMax = kRankMaxDefault;
+    uint32_t rankGatherMs = kRankGatherMsDefault;
 };
 
 // 로비의 셈 — 입장 토큰 갈래
@@ -221,6 +254,29 @@ struct LobbyStats {
     unsigned long long heldLines = 0;        // 기다리는 동안 쌓았다가 376 뒤 넘긴 줄
     unsigned long long heldDropped = 0;      // 쌓기 한도를 넘어 버린 줄
     unsigned long long RatingTotal() const { return ratingShown + ratingNoGames + ratingFailed + ratingTimeout + ratingClosed; }
+    // ★ 랭크 매칭 조각 4 — 줄. 줄 선 사람 하나는 「빠짐(줄에서 · 까닭 셋)」 · 「묶임(방 요청에 실림)」 중 하나로 줄을 떠나고(되돌림은 다시 줄),
+    //   묶인 사람 하나는 「참가 답」 · 「되돌림(요청 실패 · 시간 초과)」 · 「빠짐(요청 중)」 중 하나로 끝난다. 시험은 이 합을 본다
+    unsigned long long rankQueued = 0;          // 줄 섬(NOXRANK JOIN 바로 뒤 내 방 참가)
+    unsigned long long rankLeft[kRankLeaveCount] = {};          // 줄에서 빠짐(까닭별)
+    unsigned long long rankLeftRequested[kRankLeaveCount] = {}; // 방 요청 중 빠짐(까닭별 — 방이 서도 참가 답을 안 보냄)
+    unsigned long long rankLeaveStray = 0;      // NOXRANK LEAVE 인데 줄에도 요청에도 없음(잡힌 뒤 창이 닫힘 · 거절 뒤 — 버림)
+    unsigned long long rankGrouped = 0;         // 묶여 방 요청에 실린 사람(되돌린 뒤 다시 묶이면 또 셈)
+    unsigned long long rankGroupFull = 0;       // 묶은 까닭 — 최대가 참(곧바로)
+    unsigned long long rankGroupGather = 0;     // 묶은 까닭 — 최소가 찬 뒤 모으기 시간 끝
+    unsigned long long rankRequests = 0;        // 랭크 방 요청(묶음) = 섬 + 실패 + 시간 초과 + 기다리는 중
+    unsigned long long rankRoomsCreated = 0;    // 방이 섬
+    unsigned long long rankRoomFailed = 0;      // 곧바로 실패 · 게임 서버 실패
+    unsigned long long rankRoomTimeout = 0;     // 한도(`kRoomRequestTimeoutMs`) 안에 답 없음
+    unsigned long long rankRequeued = 0;        // 실패 · 시간 초과로 줄 앞에 되돌린 사람
+    unsigned long long rankMatched = 0;         // 참가 답(토큰)을 보낸 사람
+    unsigned long long rankMarkDropped = 0;     // NOXRANK JOIN 뒤 내 방 참가가 아닌 줄(표시 버림 — 그 줄은 원래대로)
+    unsigned long long rankOldClient = 0;       // 판 4 밑 DLL 의 NOXRANK(무시)
+    unsigned long long rankDupJoin = 0;         // 줄에 있거나 요청 중인 접속의 방 참가(무시 — 답이 둘이 되지 않게)
+    unsigned long long RankLeftTotal() const {
+        unsigned long long n = 0;
+        for (size_t i = 0; i < kRankLeaveCount; ++i) n += rankLeft[i] + rankLeftRequested[i];
+        return n;
+    }
     unsigned long long LoginTotal() const {   // USER 로 끝난 로그인 수(위 갈래 합 — 끊음 · 보기만 빼고)
         unsigned long long n = loginBadName + loginNoAuth + loginReplay + loginFailUnknown + loginGuest + loginPlain + loginMissing;
         for (const unsigned long long v : loginToken) n += v;
@@ -265,6 +321,9 @@ public:
     // 저장소 답 Rating(소켓 루프가 꺼내 넘긴다) — 끝난 물음이면 버리고 센다
     void OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out);
     size_t PendingRatings() const { return ratingPending_.size(); }
+    // ★ 랭크 매칭 조각 4 — 줄 선 사람 수 · 답을 기다리는 랭크 방 요청 수(그 요청에 묶인 사람은 줄 수에 안 듦)
+    size_t RankQueueSize() const { return rankQueue_.size(); }
+    size_t RankRequestsPending() const { return rankPending_.size(); }
 
     // 소켓 루프가 찍을 기록(처음 본 명령 등). 꺼내면 비운다.
     std::vector<std::string> TakeLog();
@@ -292,6 +351,10 @@ private:
         bool closing = false;           // 끊는 줄을 보냄(마감 · 옛 접속 · ★ 10-28 거절 뒤 — 끊김 사건까지 다시 안 함 · 뒷줄 안 받음)
         uint64_t accountId = 0;         // 확인됨 — 계정 번호(토큰 · 아이디만이면 0)
         std::string apgar;              // ★ 조각 4 — 로그인 묶음 `apgar <인자>` 의 인자(USER 까지 쥠 · 기록에 안 찍음)
+        // ★ 랭크 매칭 조각 4 — `NOXRANK JOIN` 을 받음(바로 다음 줄이 내 방 참가여야 줄 서기) · 줄 상태 · 묶인 요청 번호
+        bool rankNext = false;
+        enum class Rank : uint8_t { None, Queued, Requested } rank = Rank::None;
+        uint32_t rankReq = 0;
     };
 
     void OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<std::string>& t,
@@ -324,6 +387,15 @@ private:
     void TakeAccount(int conn, Conn& c, uint64_t accountId, std::vector<Out>& out);
     std::string SignupUrl(const Conn& c) const;   // https://<붙은 내 쪽 주소>:<authPort>/signup
     void Unknown(const std::string& cmd, std::string_view line);
+    // ★ 랭크 매칭 조각 4 — 줄 서기 · 빠지기(줄 · 요청 중 · 둘 다 아니면 버림) · 모으기(최소 · 최대 · 모으기 시간 · 되돌린 뒤 쉼) ·
+    //   묶어 방 요청 · 방이 서면 묶인 사람마다 제 채널(`#<닉>'s_game`)로 참가 답 · 실패 · 시간 초과면 줄 앞에 되돌림
+    void RankEnqueue(int conn, Conn& c, std::vector<Out>& out);
+    void RankRemove(int conn, RankLeave why, std::vector<Out>& out);
+    void RankPump(std::vector<Out>& out);
+    void RankRequest(size_t count, bool full, std::vector<Out>& out);
+    void RankReply(uint32_t req, const std::vector<int>& group, const LobbyRoom& room, std::vector<Out>& out);
+    void RankRequeue(uint32_t req, const std::vector<int>& group);
+    std::string RankNames(const std::vector<int>& conns) const;
 
     LobbyConfig cfg_;
     ILobbyRooms& rooms_;                      // ★ 10-14 작업 8d — 옛 `roomInfo_`(설정 방마다 미리 싼 방 정보) 자리
@@ -341,6 +413,17 @@ private:
     ILobbyStore* store_ = nullptr;                // ★ 레이팅 조각 4 — 점수를 물을 저장소(없으면 안 물음)
     std::map<uint32_t, int> ratingPending_;       // 점수 요청 번호 → 기다리는 접속
     uint32_t nextRatingReq_ = 1;
+    // ★ 랭크 매칭 조각 4 — 줄(선 차례) · 모으기 시계 · 되돌린 뒤 쉬는 시계 · 답을 기다리는 랭크 방 요청(번호 → 묶인 접속 · 한도)
+    std::vector<int> rankQueue_;
+    bool rankGathering_ = false;
+    uint32_t rankGatherDueMs_ = 0;
+    bool rankResting_ = false;
+    uint32_t rankRestDueMs_ = 0;
+    struct RankGroup {
+        std::vector<int> conns;
+        uint32_t deadlineMs = 0;
+    };
+    std::map<uint32_t, RankGroup> rankPending_;
     std::map<int, Conn> conns_;
     std::map<std::string, std::set<int>> members_;  // 채널 → 들어와 있는 접속
     std::set<std::string> unknownSeen_;

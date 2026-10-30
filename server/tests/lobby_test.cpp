@@ -171,8 +171,11 @@ struct FakeRooms final : nox::wol::ILobbyRooms {
     bool ask = false;        // ★ 10-20 v2 작업 3a — 게임 서버에 묻는 꼴(`Pending`)로 답하나(거울 흉내 — 답은 시험이 `OnRoomCreated` 로)
     int created = 0;
     std::vector<uint32_t> asked;   // 물은 요청 번호
+    std::vector<nox::wol::RoomAsk> asks;   // ★ 랭크 매칭 조각 4 — 받은 요청 꼴(갈래와 무관하게 전부 · 명단 · ranked)
+    std::vector<uint32_t> cancelled;       // ★ 랭크 매칭 조각 4 — 로비가 접은 요청
     std::vector<nox::wol::LobbyRoom> LobbyRooms() const override { return rooms; }
-    nox::wol::RoomRequest RequestRoom(uint32_t req, const std::string& creator, nox::wol::LobbyRoom& out, std::string& why) override {
+    nox::wol::RoomRequest RequestRoom(uint32_t req, const nox::wol::RoomAsk& a, nox::wol::LobbyRoom& out, std::string& why) override {
+        asks.push_back(a);
         if (ask) {
             asked.push_back(req);
             return nox::wol::RoomRequest::Pending;
@@ -181,10 +184,11 @@ struct FakeRooms final : nox::wol::ILobbyRooms {
             why = "가짜 — 못 만듦";
             return nox::wol::RoomRequest::Failed;
         }
-        out = Make(creator);
+        out = Make(a.creator);
         rooms.push_back(out);
         return nox::wol::RoomRequest::Created;
     }
+    void CancelRoom(uint32_t req) override { cancelled.push_back(req); }
     nox::wol::LobbyRoom Make(const std::string& creator) {
         ++created;
         nox::wol::LobbyRoom r = FakeRoom(static_cast<uint16_t>(100 + created), creator.c_str());
@@ -662,6 +666,237 @@ void PendingRoomUnitTests() {
     Check(s.JoinRejectedTotal() == 2 && Rejected(s, JoinReject::CreateFailed) == 1 && Rejected(s, JoinReject::Timeout) == 1 &&
               s.JoinRejectedTotal() == s.roomCreateFailed + s.roomRequestTimeout,
           "⑥ 거절 2 = 게임 서버 실패 1 + 시간 초과 1(실패 + 시간 초과와 같은 수)");
+}
+
+// ── ★ 랭크 매칭 조각 4 — 줄: 줄 섬 · 모음(최소 + 모으기 시간) · 최대 즉시 · 빠짐 셋(창 닫힘 · LIST · 끊김) · 요청 중 빠짐 ·
+//    방 실패 · 시간 초과(줄 앞에 되돌림 · 쉬고 다시) · 곧바로 실패 · 곧바로 섬 · 표시 버림 · 낮은 판 · 참가 무시 · 셈의 합 ──
+void RankQueueUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;
+    cfg.room.maxPlayers = 31;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    uint32_t clock = 0xfffff000u;   // 32비트 시계가 도는 자리
+    cfg.nowMs = [&clock] { return clock; };
+    cfg.rankMin = 2;
+    cfg.rankMax = 3;
+    cfg.rankGatherMs = 30000;
+    FakeRooms fake;
+    fake.ask = true;
+    Lobby lb(cfg, fake);
+    const uint32_t local = 0x7f000001, peer = 0x7f000001;
+    auto login = [&](int conn, const std::string& nick, int ver = 4) {
+        lb.OnConnect(conn, peer, local);
+        std::vector<Out> o;
+        for (const std::string l : {"NOXCLIENT " + std::to_string(ver), "NICK " + nick, std::string("USER UserName HostName irc.westwood.com :RealName"),
+                                    std::string("SETCODEPAGE 949")})
+            lb.OnLine(conn, l, o);
+    };
+    auto rankJoin = [&](int conn, const std::string& nick, std::vector<Out>& o) {
+        lb.OnLine(conn, "NOXRANK JOIN", o);
+        lb.OnLine(conn, "JOINGAME #" + nick + "'s_game 1 ", o);
+    };
+    // 접속 하나가 받은 줄의 종류(`NOXTOKEN,user:JOINGAME,332,353,366`)
+    auto kindsFor = [](const std::vector<Out>& o, int conn) {
+        std::string k;
+        for (const auto& x : o) {
+            if (x.conn != conn) continue;
+            const auto t = Tokens(x.line);
+            k += (k.empty() ? "" : ",") + (t.size() > 1 && t[0] == ":" ? t[1] : t.size() > 1 && !t[0].empty() && t[0][0] == ':' ? "user:" + t[1] : t[0]);
+        }
+        return k;
+    };
+    // 그 접속의 참가 답이 제 채널 · 353 방장 = 그 사람 · 토큰이 게임 방 `room` 으로 풀리나
+    auto joinedOwn = [&](const std::vector<Out>& o, int conn, const std::string& nick, uint16_t room) {
+        bool chan = false, host = false, tokOk = false;
+        for (const auto& x : o) {
+            if (x.conn != conn) continue;
+            const auto t = Tokens(x.line);
+            if (t.size() == 3 && t[0] == "NOXTOKEN") {
+                uint8_t raw[nox::kJoinTokenSize] = {};
+                nox::JoinToken tok;
+                tokOk = nox::ParseHex(t[2], raw, sizeof(raw)) &&
+                        nox::VerifyJoinToken(LobbyTestKey(), raw, sizeof(raw), kLobbyTestNow, peer, tok) == nox::JoinTokenCheck::Ok && tok.roomId == room &&
+                        tok.account == nick;
+            }
+            chan = chan || x.line == ":" + nick + "!u@h JOINGAME 1 32 37 1 0 " + std::to_string(peer) + " 1 :#" + nick + "'s_game";
+            host = host || x.line.find(": 353 u = #" + nick + "'s_game :@" + nick + ",0,") == 0;
+        }
+        return chan && host && tokOk;
+    };
+    auto made = [&](const std::string& creator) {
+        LobbyRoom r = fake.Make(creator);
+        fake.rooms.push_back(r);
+        return r;
+    };
+    std::vector<Out> out;
+
+    // ① 줄 섬 — 답 없음 · 줄 1 · 최소(2) 밑이라 요청 없음
+    login(1, "amy");
+    rankJoin(1, "amy", out);
+    Check(out.empty() && lb.RankQueueSize() == 1 && fake.asks.empty() && lb.Stats().rankQueued == 1 && lb.Stats().roomsRequested == 0,
+          "① 랭크 표시 + 내 방 참가 → 답 없음 · 줄 1 · 새 방 요청 없음");
+
+    // ② 모음 — 둘째가 서면 모으기 시작 · 한도 1ms 전엔 안 묶음 · 한도에 묶어 요청(명단 = 줄 차례 · ranked · 방장 = 첫 사람)
+    login(2, "bob");
+    rankJoin(2, "bob", out);
+    const bool noAskAtMin = out.empty() && fake.asks.empty() && lb.RankQueueSize() == 2;
+    clock += cfg.rankGatherMs - 1;
+    lb.Tick(out);
+    const bool noAskBeforeDue = out.empty() && fake.asks.empty();
+    clock += 1;
+    lb.Tick(out);
+    Check(noAskAtMin && noAskBeforeDue && fake.asks.size() == 1 && fake.asks[0].ranked && fake.asks[0].creator == "amy" &&
+              fake.asks[0].roster == std::vector<std::string>{"amy", "bob"} && lb.RankQueueSize() == 0 && lb.RankRequestsPending() == 1 &&
+              out.empty() && lb.Stats().rankGroupGather == 1,
+          "② 최소가 차도 곧바로 안 묶음 · 모으기 한도 1ms 전엔 그대로 · 한도에 묶어 랭크 요청(명단 amy,bob · 방장 amy) — 시계가 32비트를 넘어 돌아도");
+    const uint32_t req2 = fake.asked.back();
+    const LobbyRoom r2 = made("amy");
+    lb.OnRoomCreated(req2, r2, out);
+    Check(kindsFor(out, 1) == "NOXTOKEN,user:JOINGAME,332,353,366" && kindsFor(out, 2) == "NOXTOKEN,user:JOINGAME,332,353,366" &&
+              joinedOwn(out, 1, "amy", r2.gameRoomId) && joinedOwn(out, 2, "bob", r2.gameRoomId) && lb.RankRequestsPending() == 0 &&
+              lb.Stats().rankMatched == 2 && lb.Stats().roomsCreated == 0,
+          "② 방이 서면 둘 다 참가 답 — 각자 제 채널 #<닉>'s_game · 353 방장 = 그 사람 · 토큰은 같은 게임 방(일반 새 방 셈은 그대로 0)");
+
+    // ③ 최대(3) 즉시 — 셋째가 서는 순간 묶음(모으기 시간 안 기다림)
+    out.clear();
+    login(3, "cat");
+    login(4, "dan");
+    login(5, "eve");
+    rankJoin(3, "cat", out);
+    rankJoin(4, "dan", out);
+    const size_t asksBefore = fake.asks.size();
+    rankJoin(5, "eve", out);
+    Check(asksBefore == 1 && fake.asks.size() == 2 && fake.asks[1].roster == std::vector<std::string>{"cat", "dan", "eve"} &&
+              lb.RankQueueSize() == 0 && lb.Stats().rankGroupFull == 1 && out.empty(),
+          "③ 최대가 차는 순간 곧바로 묶음(cat,dan,eve) — 모으기 시간 안 기다림");
+    lb.OnRoomCreated(fake.asked.back(), made("cat"), out);
+    out.clear();
+
+    // ④ 빠짐 셋 — 창 닫힘(DLL) · LIST · 끊김. 빠지면 남은 사람으로 모으기를 다시 본다(최소 밑이면 멈춤 · 나중에 다시 차면 시계를 새로)
+    login(6, "fay");
+    login(7, "gus");
+    rankJoin(6, "fay", out);
+    rankJoin(7, "gus", out);   // 모으기 시작
+    clock += 10000;
+    lb.OnLine(6, "NOXRANK LEAVE", out);   // 줄 1 — 모으기 멈춤
+    lb.OnLine(7, "LIST 37 37", out);      // 줄 0 · 목록 답은 그대로
+    bool listReplied = false;
+    for (const auto& o : out) listReplied = listReplied || (o.conn == 7 && o.line == ": 323 u:");
+    login(8, "hal");
+    rankJoin(8, "hal", out);
+    rankJoin(6, "fay", out);   // 다시 줄 — 모으기 시계는 새로(옛 시계가 남았으면 20초 뒤 묶인다)
+    clock += 20000;
+    lb.Tick(out);
+    const bool freshClock = fake.asks.size() == 2 && lb.RankQueueSize() == 2;
+    lb.OnClose(8, out);   // 줄 1
+    clock += 20000;
+    lb.Tick(out);
+    lb.OnLine(7, "NOXRANK LEAVE", out);   // 줄에도 요청에도 없음 — 버림
+    const LobbyStats& s4 = lb.Stats();
+    Check(listReplied && freshClock && fake.asks.size() == 2 && lb.RankQueueSize() == 1 &&
+              s4.rankLeft[static_cast<size_t>(RankLeave::Dll)] == 1 && s4.rankLeft[static_cast<size_t>(RankLeave::List)] == 1 &&
+              s4.rankLeft[static_cast<size_t>(RankLeave::Closed)] == 1 && s4.rankLeaveStray == 1,
+          "④ 빠짐 셋(창 닫힘 · LIST · 끊김) 하나씩 · LIST 엔 목록 답 · 다시 차면 모으기 시계를 새로 · 빠진 뒤 최소 밑이면 안 묶음 · 줄 밖의 창 닫힘은 버림");
+    lb.OnClose(6, out);   // 줄 0 으로 정리
+    out.clear();
+
+    // ⑤ 요청 중 빠짐 — 방이 서도 빠진 사람엔 답 없음 · 남은 사람만
+    login(9, "ivy");
+    login(10, "jon");
+    rankJoin(9, "ivy", out);
+    rankJoin(10, "jon", out);
+    clock += cfg.rankGatherMs;
+    lb.Tick(out);
+    const uint32_t req5 = fake.asked.back();
+    lb.OnLine(9, "NOXRANK LEAVE", out);
+    const LobbyRoom r5 = made("ivy");
+    lb.OnRoomCreated(req5, r5, out);
+    Check(fake.asks.back().roster == std::vector<std::string>{"ivy", "jon"} && kindsFor(out, 9).empty() && joinedOwn(out, 10, "jon", r5.gameRoomId) &&
+              lb.Stats().rankLeftRequested[static_cast<size_t>(RankLeave::Dll)] == 1,
+          "⑤ 요청 중 창 닫힘 → 방이 서도 그 사람엔 답 없음 · 남은 jon 만 참가 답");
+    out.clear();
+
+    // ⑥ 방 실패 → 줄 앞에 되돌림(차례 그대로 · 거절 줄 없음) → 쉬는 동안 안 물음 → 쉬고 나면 곧바로 다시 묶음(모으기 시간 또 안 기다림)
+    login(11, "kim");
+    login(12, "lee");
+    rankJoin(11, "kim", out);
+    rankJoin(12, "lee", out);
+    clock += cfg.rankGatherMs;
+    lb.Tick(out);
+    lb.OnRoomCreateFailed(fake.asked.back(), "대기 맵 없음", out);
+    const bool requeued = out.empty() && lb.RankQueueSize() == 2 && lb.RankRequestsPending() == 0 && lb.Stats().rankRoomFailed == 1;
+    const size_t asksAtFail = fake.asks.size();
+    clock += kRankRetryMs - 1;
+    lb.Tick(out);
+    const bool restHeld = fake.asks.size() == asksAtFail;
+    clock += 1;
+    lb.Tick(out);
+    Check(requeued && restHeld && fake.asks.size() == asksAtFail + 1 && fake.asks.back().roster == std::vector<std::string>{"kim", "lee"} &&
+              lb.Stats().rankRequeued == 2,
+          "⑥ 방 실패 → 거절 줄 없이 줄 앞에 되돌림 · 쉬는 시간 1ms 전엔 안 물음 · 끝나면 곧바로 같은 차례로 다시 묶음");
+    // ⑦ 시간 초과 → 거울에 접음 알림 · 되돌림 · 그 뒤 온 답은 늦은 답(참가 답 없음)
+    const uint32_t req7 = fake.asked.back();
+    clock += kRoomRequestTimeoutMs - 1;
+    lb.Tick(out);
+    const bool waiting7 = lb.RankRequestsPending() == 1 && lb.Stats().rankRoomTimeout == 0;
+    clock += 1;
+    lb.Tick(out);
+    const bool timedOut = lb.RankRequestsPending() == 0 && lb.Stats().rankRoomTimeout == 1 && lb.RankQueueSize() == 2 &&
+                          !fake.cancelled.empty() && fake.cancelled.back() == req7;
+    lb.OnRoomCreated(req7, made("kim"), out);
+    Check(waiting7 && timedOut && out.empty() && lb.Stats().lateRoomReply == 1,
+          "⑦ 한도 1ms 전엔 기다림 · 한도에 시간 초과 → 거울에 접음 알림 · 줄 앞에 되돌림 · 늦게 온 답은 버림(참가 답 없음)");
+    // ⑧ 곧바로 실패(게임 서버 없음) → 되돌리고 쉼(한 바퀴 안에서 다시 묻지 않음) · 곧바로 섬 → 그 자리에서 참가 답
+    fake.ask = false;
+    fake.canCreate = false;
+    clock += kRankRetryMs;
+    const size_t asks8 = fake.asks.size();
+    lb.Tick(out);
+    const bool failedOnce = fake.asks.size() == asks8 + 1 && lb.RankQueueSize() == 2 && lb.Stats().rankRoomFailed == 2;
+    fake.canCreate = true;
+    clock += kRankRetryMs;
+    lb.Tick(out);
+    Check(failedOnce && fake.asks.size() == asks8 + 2 && joinedOwn(out, 11, "kim", fake.rooms.back().gameRoomId) &&
+              joinedOwn(out, 12, "lee", fake.rooms.back().gameRoomId) && lb.RankQueueSize() == 0,
+          "⑧ 곧바로 실패 → 한 번만 묻고 되돌려 쉼 · 곧바로 섬 → 그 자리에서 둘 다 참가 답");
+    fake.ask = true;
+    out.clear();
+
+    // ⑨ 표시 버림 · 낮은 판 · 참가 무시
+    login(13, "max");
+    lb.OnLine(13, "NOXRANK JOIN", out);
+    lb.OnLine(13, "LIST 37 37", out);                 // 표시 다음 줄이 참가가 아님 → 버림
+    lb.OnLine(13, "JOINGAME #max's_game 1 ", out);   // 표시 없음 → 일반 새 방
+    const bool markDropped = lb.Stats().rankMarkDropped == 1 && lb.Stats().roomsRequested == 1 && lb.RankQueueSize() == 0;
+    login(14, "ned", 3);
+    lb.OnLine(14, "NOXRANK JOIN", out);              // 판 3 — 안 믿음
+    lb.OnLine(14, "JOINGAME #ned's_game 1 ", out);   // 일반 새 방
+    const bool oldIgnored = lb.Stats().rankOldClient == 1 && lb.Stats().roomsRequested == 2 && lb.RankQueueSize() == 0;
+    login(15, "oli");
+    rankJoin(15, "oli", out);
+    rankJoin(15, "oli", out);                         // 줄에 있는 접속이 또 → 무시
+    lb.OnLine(15, "JOINGAME #oli's_game 1 ", out);   // 표시 없는 참가도 무시
+    // 줄 섬 14 = amy bob · cat dan eve · fay gus hal fay(다시) · ivy jon · kim lee · oli (max · ned 는 일반 새 방)
+    Check(markDropped && oldIgnored && lb.Stats().rankDupJoin == 2 && lb.RankQueueSize() == 1 && lb.Stats().rankQueued == 14,
+          "⑨ 표시 다음 줄이 참가가 아니면 표시 버림(그 뒤 참가는 일반 새 방) · 판 3 의 표시는 안 믿음 · 줄에 있는 접속의 참가는 무시 · 줄 섬 14");
+    lb.OnClose(15, out);
+
+    // ⑩ 셈의 합 — 줄 들어옴(섬 + 되돌림) = 나감(빠짐 · 줄) + 묶임 + 남음 · 묶임 = 참가 답 + 되돌림 + 빠짐(요청 중) · 요청 = 섬 + 실패 + 시간 초과 + 기다림
+    const LobbyStats& s = lb.Stats();
+    unsigned long long leftQ = 0, leftR = 0;
+    for (size_t i = 0; i < kRankLeaveCount; ++i) {
+        leftQ += s.rankLeft[i];
+        leftR += s.rankLeftRequested[i];
+    }
+    Check(s.rankQueued + s.rankRequeued == leftQ + s.rankGrouped + lb.RankQueueSize() && s.rankGrouped == s.rankMatched + s.rankRequeued + leftR &&
+              s.rankRequests == s.rankRoomsCreated + s.rankRoomFailed + s.rankRoomTimeout + lb.RankRequestsPending() &&
+              s.rankRequests == s.rankGroupFull + s.rankGroupGather && s.RankLeftTotal() == leftQ + leftR,
+          "⑩ 셈의 합 — 줄 들어옴 = 나감 + 묶임 + 남음 · 묶임 = 참가 답 + 되돌림 + 요청 중 빠짐 · 요청 = 섬 + 실패 + 시간 초과 + 기다림 = 최대 + 모으기 끝");
+    std::printf("  랭크 셈 — 줄 섬 %llu · 되돌림 %llu · 빠짐(줄) %llu · 빠짐(요청 중) %llu · 묶임 %llu · 참가 답 %llu · 요청 %llu(섬 %llu · 실패 %llu · 시간 초과 %llu)\n",
+                s.rankQueued, s.rankRequeued, leftQ, leftR, s.rankGrouped, s.rankMatched, s.rankRequests, s.rankRoomsCreated, s.rankRoomFailed,
+                s.rankRoomTimeout);
 }
 
 // ── ★ 10-20 MO 6단계 v2 작업 3b — 채팅 채널: 같은 채널 사람에게 드나듦 · 글 · 다른 채널엔 안 감 · 안 들어간 채널 글은 거름 ──
@@ -2176,6 +2411,7 @@ int main(int argc, char** argv) {
         ChannelLobbyUnitTests();
         NewRoomUnitTests();
         PendingRoomUnitTests();   // ★ 10-20 v2 작업 3a
+        RankQueueUnitTests();     // ★ 랭크 매칭 조각 4
         MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
         LinkAliveUnitTests();     // ★ 7단계 조각 2
         LobbyStoreUnitTests();    // ★ 7단계 조각 4

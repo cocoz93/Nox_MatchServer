@@ -269,7 +269,7 @@ std::vector<LobbyRoom> RoomMirror::LobbyRooms() const {
 }
 
 // 새 방을 놓을 게임 서버 = 방이 가장 적은 곳(같으면 먼저 붙은 곳). 부하 보고는 범위 밖(플랜 「범위 밖」)
-RoomRequest RoomMirror::RequestRoom(uint32_t req, const std::string& creator, LobbyRoom& /*out*/, std::string& why) {
+RoomRequest RoomMirror::RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom& /*out*/, std::string& why) {
     int best = 0;
     size_t bestRooms = 0;
     for (const auto& kv : servers_) {
@@ -287,8 +287,8 @@ RoomRequest RoomMirror::RequestRoom(uint32_t req, const std::string& creator, Lo
     Server& s = servers_[best];
     s.asked.insert(req);
     ++stats_.createsSent;
-    pendingOut_.push_back({best, LinkCreate(req, creator)});
-    log_.push_back("[게임 서버] " + Name(best, s) + " 에 새 방 요청 " + std::to_string(req) + " — 만든 사람 " + creator);
+    pendingOut_.push_back({best, LinkCreate(req, ask.creator)});   // ★ 랭크 매칭 조각 4 — 명단 · ranked 는 조각 5 에서 줄에 싣는다
+    log_.push_back("[게임 서버] " + Name(best, s) + " 에 새 방 요청 " + std::to_string(req) + " — 만든 사람 " + ask.creator);
     return RoomRequest::Pending;
 }
 
