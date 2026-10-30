@@ -12,7 +12,8 @@
 #          -RankedAll 이면 `--ranked-all`(★ 레이팅 — 모든 방을 랭크로 · 매칭 전 점수 검증용 · Docs/RATING_DESIGN.md)
 #       ⑥ 클라 DLL — 게임 폴더 wsock32.dll 이 빌드한 client_mod\wsock32_proxy\wsock32.dll 과 다르면 바꿔 끼운다(바꾸기 전 것은 _out\mo_local\wsock32.dll.<md5> 로 한 번 떠 둠 ·
 #          되돌리기 = 그 파일을 게임 폴더 wsock32.dll 로 복사). -KeepDll 이면 안 바꾼다
-#          ★ 랭크 매칭 조각 1 — 같은 자리에서 tools\ui_apply.ps1(게임 목록 여섯째 칸 「랭크 매칭」 글자 · 되돌리기 = -Mode Restore) · -KeepDll 이면 이것도 안 함
+#          ★ 랭크 매칭 조각 1 — 같은 자리에서 tools\ui_apply.ps1(게임 목록 여섯째 칸 「랭크 매칭」 글자 · ★ 매칭 손보기 8 필터 창 「완료」 버튼 ·
+#          되돌리기 = -Mode Restore) · -KeepDll 이면 이것도 안 함
 #       ⑦ 클라1 Game.exe · 클라2 Game2.exe(-OneClient 면 클라1 만 · -NoClients 면 안 띄움). DLL 기록(NOX_HOOK_LOG_DIR)도 같은 기록 폴더에
 #       기록 = _out\mo_local\<월일_시분초>\ — router.log · auth.log · lobby.log · server.log · 판 결과는 게임 서버 실행 파일 옆 results\matches.jsonl
 #   -Mode Stop
@@ -133,7 +134,7 @@ try {
     }
     # ★ 랭크 매칭 조각 1 — 게임 목록 여섯째 칸 「랭크 매칭」 글자(창 파일 · 글자 파일). 이미 적용이면 그대로 · 원본 사본은 _out\ui_backup
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'ui_apply.ps1') -GameDir $game
-    if ($LASTEXITCODE -ne 0) { throw '랭크 매칭 버튼 글자 적용 실패 — tools\ui_apply.ps1 -Mode Check 로 상태 확인' }
+    if ($LASTEXITCODE -ne 0) { throw '랭크 매칭 버튼 글자 · 필터 「완료」 버튼 적용 실패 — tools\ui_apply.ps1 -Mode Check 로 상태 확인' }
   }
   # ★ 10-29 — 로그인 뒤 국가 고르기 창 안 띄우기. WOLAPI 가 아이디 칸마다 국가를 HKCR\Wchat\Nick<n>\Locale(기본값 "%d")에 두고,
   #   Game.exe 는 그 값이 없으면 창을 연다. 고른 값을 HKCR 에 쓰다 실패해 매번 뜨므로 사용자 쪽(HKCU\Software\Classes)에 20(South Korea)을 미리 둔다.
