@@ -350,6 +350,19 @@ void TestLobbyLink() {
     Check(parse(nox::LinkSavedLine("a b", O::Ok)) == P::Ok && l.text == "a b", "SAVED 판 번호도 글 칸(빈칸 든 값 왕복)");
     for (int o = 0; o < static_cast<int>(O::kCount); ++o)
         Check(nox::SaveOutcomeWord(static_cast<O>(o))[0] != '?', "SAVED 끝 칸마다 낱말 있음");
+    {   // ★ 매칭 손보기 1 — SAVED 꼬리(사람마다 이름 · 새 점수 · 증감) 왕복 · 음수 · 0 · 빈칸 든 한글 이름 · 옛 꼴은 꼬리 빔 · 한도 31명
+        const std::vector<nox::LinkRatingChange> rc = {{"alice", 1010, 10}, {"밥 b", 990, -10}, {"c", -5, -10}, {"d", 1000, 0}};
+        const std::string sl = nox::LinkSavedLine("1-0-1", O::Ok, rc);
+        bool same = parse(sl) == P::Ok && l.saved == O::Ok && l.text == "1-0-1" && l.ratings.size() == rc.size();
+        for (size_t i = 0; same && i < rc.size(); ++i)
+            same = l.ratings[i].account == rc[i].account && l.ratings[i].after == rc[i].after && l.ratings[i].delta == rc[i].delta;
+        Check(same && sl == "SAVED 1-0-1 ok alice 1010 10 밥%20b 990 -10 c -5 -10 d 1000 0", "★ SAVED 꼬리 왕복(넷 · 음수 · 0 · 빈칸 든 한글 이름) · 꼴");
+        Check(parse(nox::LinkSavedLine("1-0-1", O::Ok)) == P::Ok && l.ratings.empty(), "★ SAVED 꼬리 없음 = 옛 꼴(사람 0)");
+        const std::vector<nox::LinkRatingChange> many(nox::kLinkMaxRoster + 1, nox::LinkRatingChange{std::string(16, '~'), -2147483647 - 1, -10});
+        const std::string ml = nox::LinkSavedLine("1792499245-65535-4294967295", O::Ok, many);
+        Check(nox::LinkLineFits(ml) && parse(ml) == P::Ok && l.ratings.size() == nox::kLinkMaxRoster && l.ratings[0].after == -2147483647 - 1,
+              "★ SAVED 꼬리 한도 31명 — 넘는 사람은 안 실음 · 이름 16바이트 전부 %XX · int32 맨 아래 값이어도 줄 한도 안");
+    }
     unsigned kindsSeen = 0;
     for (unsigned c : kinds) kindsSeen += c ? 1 : 0;
     Check(kindsSeen == static_cast<unsigned>(K::kCount), "줄 갈래 열둘이 모두 읽힘");
@@ -377,6 +390,12 @@ void TestLobbyLink() {
     Check(bad("SAVED 1-0-1 OK", P::BadText) && bad("SAVED 1-0-1 maybe", P::BadText) && bad("SAVED ~ ok", P::BadText) &&
               bad("SAVED a~b ok", P::BadText),
           "SAVED 글 칸 — 끝 칸 대문자 · 모르는 낱말 · 빈 판 번호 · 날 ~");
+    Check(bad("SAVED 1-0-1 ok a 1000", P::FieldCount) && bad("SAVED 1-0-1 ok a 1000 10 ", P::FieldCount) &&
+              bad("SAVED 1-0-1 ok a 1000 -0", P::BadNumber) && bad("SAVED 1-0-1 ok a x 10", P::BadNumber) &&
+              bad("SAVED 1-0-1 ok a 1000 +10", P::BadNumber) && bad("SAVED 1-0-1 ok a 2147483648 0", P::BadNumber) &&
+              bad("SAVED 1-0-1 ok a -2147483649 0", P::BadNumber) && bad("SAVED 1-0-1 ok ~ 1000 10", P::BadText) &&
+              bad("SAVED 1-0-1 ok a~b 1000 10", P::BadText),
+          "★ SAVED 꼬리 — 세 칸 아님 · 꼬리 빈칸 → 칸 수 · -0 · 수 아님 · + 붙음 · int32 위 · 아래 밖 → 수 · 빈 이름 · 날 ~ → 글 칸");
     Check(bad("ROOM_GONE 65536", P::BadNumber) && bad("ROOM_GONE 01", P::BadNumber) && bad("ROOM_GONE -1", P::BadNumber) &&
               bad("ROOM_GONE +1", P::BadNumber) && bad("CREATED 4294967296 1", P::BadNumber) &&
               bad("REGISTER 1 0.0.0.0 0", P::BadNumber) && bad("REGISTER 1 0.0.0.0 65536", P::BadNumber) &&

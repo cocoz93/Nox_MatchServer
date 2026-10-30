@@ -202,7 +202,7 @@ void RoomMirror::OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out) {
     switch (a.save) {
         case SaveResult::Saved:
             ++stats_.savedOk;
-            out.push_back({ps.conn, LinkSavedLine(ps.match, SaveOutcome::Ok)});
+            out.push_back({ps.conn, LinkSavedLine(ps.match, SaveOutcome::Ok, a.changes)});   // ★ 매칭 손보기 1 — 랭크 판이면 사람별 새 점수 꼬리
             return;
         case SaveResult::Duplicate:
             ++stats_.savedDup;

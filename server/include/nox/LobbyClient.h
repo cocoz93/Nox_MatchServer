@@ -58,6 +58,10 @@ struct CLobbyClientStats {
     unsigned long long savedDup = 0;         // SAVED dup — 로비에 이미 있음(다시 보낸 것) · 지움
     unsigned long long savedBad = 0;         // SAVED bad — 로비가 못 읽어 버림 · 지움(다시 보내도 같다 — 파일엔 있다)
     unsigned long long savedUnknown = 0;     // 쥐고 있지 않은 판의 SAVED(다시 보낸 것의 늦은 둘째 답 등 — 버림)
+    // ★ 매칭 손보기 1 — SAVED ok 꼬리의 사람 하나는 아래 셋 중 하나(시험은 합을 본다)
+    unsigned long long ratingNotices = 0;    // 그 판의 방에서 그 이름의 사람에게 점수 알림(세션마다 — 같은 이름이 둘이면 둘)
+    unsigned long long ratingNoRoom = 0;     // 판의 방이 이미 닫힘 · 방 번호 모름(알림 없음)
+    unsigned long long ratingNotHere = 0;    // 방엔 그 이름의 사람이 없음(나감 — 알림 없음)
     unsigned long long resultsDropped = 0;   // 쥔 것이 `kMaxHeldResults` 를 넘어 가장 옛것을 버림(파일엔 있다)
     unsigned long long byes = 0;             // 로비가 BYE(끊기 직전 까닭)
     unsigned long long badLines = 0;         // 못 읽는 줄 · 차례에 안 맞는 줄(버림)
@@ -105,7 +109,10 @@ public:
     void AfterTick(std::vector<NetworkRequest>& out);
     // 판 결과 JSON 한 줄(`FormatMatchResultJson`) → RESULT(등록 뒤에만 · 줄 한도 안에서만 — 아니면 셈만)
     //   ★ 7단계 조각 3 — `match` = 판 번호(`MatchIdOf` — `SAVED` 와 짝). 쥐었다가 등록 뒤에 보내고 `SAVED` 에 지운다 · 줄로 못 지으면 셈만
-    void OnMatchResult(const std::string& match, const std::string& json, std::vector<NetworkRequest>& out);
+    //   ★ 매칭 손보기 1 — `roomId` = 그 판의 방(`SAVED` 꼬리의 점수 알림을 보낼 곳 · -1 = 모름 — 알림 없음)
+    void OnMatchResult(const std::string& match, const std::string& json, std::vector<NetworkRequest>& out, int roomId = -1);
+    // ★ 매칭 손보기 1 — 점수 알림 글(영문 ASCII — 게임 안 알림의 한글은 정품 화면 미확인) 「Rating 1000 -> 1010 (+10)」
+    static std::string RatingNoticeText(int32_t after, int32_t delta);
     size_t HeldResults() const { return _held.size(); }   // 아직 `SAVED` 를 못 받은 판 결과
 
     bool Registered() const { return _stage == Stage::Registered; }
@@ -133,7 +140,10 @@ private:
         std::string line;       // 지어 둔 RESULT 줄
         uint32_t sentMs = 0;    // 마지막으로 보낸 때
         unsigned sends = 0;     // 보낸 수(0 = 아직 — 연결 없음 · 등록 전에 받음)
+        int roomId = -1;        // ★ 매칭 손보기 1 — 그 판의 방(점수 알림)
     };
+    // ★ 매칭 손보기 1 — SAVED ok 꼬리 → 그 방의 그 이름 사람마다 알림
+    void NoticeRatings(int roomId, const std::vector<LinkRatingChange>& ratings);
     void SendHeld(HeldResult& h, uint32_t now, std::vector<NetworkRequest>& out);
 
     CRoomManager& _rooms;

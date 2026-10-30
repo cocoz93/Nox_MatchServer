@@ -302,6 +302,16 @@ int main(int argc, char** argv) {
     auto a8 = WaitAnswers(w, 3);
     Check(a8.size() == 3 && a8[0].save == SaveResult::Saved && a8[1].save == SaveResult::Saved && a8[2].save == SaveResult::Duplicate,
           "⑧ 랭크 판 둘 Saved · 같은 판 다시 Duplicate");
+    {   // ★ 매칭 손보기 1 — 답의 점수 바뀐 사람(커밋 뒤 다시 읽은 새 점수 · 판 사람 차례) · 겹친 판은 빔
+        auto ch = [&](size_t i) {
+            std::string s;
+            if (i < a8.size())
+                for (const auto& c : a8[i].changes) s += (s.empty() ? "" : ",") + c.account + ":" + std::to_string(c.after) + ":" + std::to_string(c.delta);
+            return s;
+        };
+        Check(ch(0) == "wn:990:-10" && ch(1) == "wn:1000:10,Wn:990:-10" && ch(2).empty(),
+              "★ ⑧ 답의 점수 바뀐 사람 — 첫 판 " + ch(0) + " · 둘째 판 " + ch(1) + " · 겹친 판 빔(" + ch(2) + ")");
+    }
     const auto rt = ad.Rows("SELECT a.name, r.rating FROM ratings r JOIN accounts a ON a.id = r.account_id ORDER BY r.rating DESC, a.id");
     Check(rt.size() == 2 && rt[0][0] == "wn" && rt[0][1] == "1000" && rt[1][0] == "Wn" && rt[1][1] == "990",
           "⑧ ratings — wn 1000(−10 뒤 +10 · 겹친 판 안 셈) · Wn 990 · 계정 행 없는 ghost · 관전자 949 · 이름 없는 사람은 행 없음");

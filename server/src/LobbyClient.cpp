@@ -138,7 +138,10 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
                 return;
             }
             switch (l.saved) {
-                case SaveOutcome::Ok: ++_stats.savedOk; break;
+                case SaveOutcome::Ok:
+                    ++_stats.savedOk;
+                    NoticeRatings(it->roomId, l.ratings);   // ★ 매칭 손보기 1 — 랭크 판이면 꼬리(판 끝 쉬는 동안 온다 — 방은 아직 있음)
+                    break;
                 case SaveOutcome::Dup: ++_stats.savedDup; break;
                 case SaveOutcome::Bad:
                     ++_stats.savedBad;
@@ -278,7 +281,7 @@ void CLobbyClient::SendHeld(HeldResult& h, uint32_t now, std::vector<NetworkRequ
     Send(h.line, out);
 }
 
-void CLobbyClient::OnMatchResult(const std::string& match, const std::string& json, std::vector<NetworkRequest>& out) {
+void CLobbyClient::OnMatchResult(const std::string& match, const std::string& json, std::vector<NetworkRequest>& out, int roomId) {
     std::string line;
     if (!LinkResult(json, line)) {   // 줄로 못 지음 — 다시 보내도 같다
         ++_stats.resultsNotSent;
@@ -293,6 +296,7 @@ void CLobbyClient::OnMatchResult(const std::string& match, const std::string& js
         _held.pop_front();
     }
     _held.push_back(HeldResult{match, std::move(line)});
+    _held.back().roomId = roomId;   // ★ 매칭 손보기 1
     if (_stage != Stage::Registered) {
         ++_stats.resultsHeldDown;
         std::printf("[로비 연결] 판 결과를 쥠 — %s(연결 없음 · 등록 전 — 붙어 등록하면 보냄)\n", Printable(match).c_str());
@@ -300,6 +304,38 @@ void CLobbyClient::OnMatchResult(const std::string& match, const std::string& js
         return;
     }
     SendHeld(_held.back(), _nowMs(), out);
+}
+
+// ★ 매칭 손보기 1 — 머리 주석은 `LobbyClient.h`. 증감은 부호를 붙여(+10 · -10 · +0)
+std::string CLobbyClient::RatingNoticeText(int32_t after, int32_t delta) {
+    char b[64];
+    std::snprintf(b, sizeof(b), "Rating %ld -> %ld (%+ld)", static_cast<long>(after) - static_cast<long>(delta), static_cast<long>(after),
+                  static_cast<long>(delta));
+    return b;
+}
+
+void CLobbyClient::NoticeRatings(int roomId, const std::vector<LinkRatingChange>& ratings) {
+    if (ratings.empty()) return;
+    if (roomId < 0 || !_rooms.HasRoom(roomId)) {
+        _stats.ratingNoRoom += ratings.size();
+        std::printf("[로비 연결] 점수 알림 %zu명 — 판의 방 %d 이 없음(닫힘) · 안 보냄\n", ratings.size(), roomId);
+        std::fflush(stdout);
+        return;
+    }
+    CRoom& room = _rooms.Room(roomId);
+    for (const LinkRatingChange& c : ratings) {
+        const std::string text = RatingNoticeText(c.after, c.delta);
+        size_t n = 0;
+        for (const RoomMember& m : room.Members()) {
+            if (m.account != c.account) continue;
+            room.Game().SendNoticeTo(m.sessionId, text.c_str());
+            ++n;
+        }
+        if (n == 0) ++_stats.ratingNotHere;
+        _stats.ratingNotices += n;
+        std::printf("[로비 연결] 방 %d 점수 알림 — %s 「%s」 %zu명\n", roomId, Printable(c.account).c_str(), text.c_str(), n);
+    }
+    std::fflush(stdout);
 }
 
 }  // namespace nox

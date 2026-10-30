@@ -331,6 +331,7 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                 const RatingResult rr = RatingDeltas(r);
                 bool rowsOk = true;
                 unsigned long long ratingRows = 0;
+                std::vector<std::pair<std::string, int32_t>> changed;   // ★ 매칭 손보기 1 — 점수를 고친 사람(이름 · 증감 — 커밋 뒤 새 점수를 읽는다)
                 for (size_t seat = 0; rowsOk && seat < r.players.size(); ++seat) {
                     const MatchRecordPlayer& pl = r.players[seat];
                     uint64_t accountId = 0;
@@ -370,8 +371,12 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                         c.StmtFail(c.insPlayer, "판 사람 넣기");
                         rowsOk = false;
                     } else if (rated) {
-                        if (c.AddRating(accountId, delta, now)) ++ratingRows;
-                        else rowsOk = false;
+                        if (c.AddRating(accountId, delta, now)) {
+                            ++ratingRows;
+                            changed.emplace_back(pl.account, delta);
+                        } else {
+                            rowsOk = false;
+                        }
                     }
                 }
                 if (!rowsOk) {
@@ -384,6 +389,13 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                     break;
                 }
                 ok = true;
+                // ★ 매칭 손보기 1 — 고친 점수를 다시 읽어 답에(로비가 `SAVED` 꼬리로). 못 읽으면 그 사람만 빼고 저장은 그대로 Saved
+                for (const auto& rp : changed) {
+                    bool found = false;
+                    int32_t after = 0;
+                    uint32_t rank = 0;
+                    if (c.ReadRating(rp.first, found, after, rank) && found) a.changes.push_back({rp.first, after, rp.second});
+                }
                 if (ratingRows) {
                     std::lock_guard<std::mutex> lk(mu_);
                     stats_.ratingRows += ratingRows;

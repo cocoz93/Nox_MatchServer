@@ -75,6 +75,7 @@ void CMemoryLobbyStore::SaveMatch(uint32_t req, const MatchSource& src, const Ma
                 if (!rr.seats[i].rated) continue;
                 const auto it = ratings_.emplace(rec.players[i].account, kRatingStart).first;
                 it->second += rr.seats[i].delta;
+                a.changes.push_back({rec.players[i].account, it->second, rr.seats[i].delta});   // ★ 매칭 손보기 1
             }
         }
     }

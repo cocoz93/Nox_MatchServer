@@ -18,6 +18,7 @@
 #include <tuple>
 #include <vector>
 
+#include "nox/LobbyLink.h"   // ★ 매칭 손보기 1 — `LinkRatingChange`
 #include "nox/MatchRecord.h"
 #include "nox/Rating.h"
 
@@ -58,6 +59,9 @@ struct StoreAnswer {
     bool ratingFound = false;
     int32_t rating = 0;
     uint32_t rank = 0;                         // 나보다 점수 높은 사람 수 + 1(같은 점수는 같은 순위)
+    // ★ 매칭 손보기 1 — SaveMatch 가 Saved(새로 넣음)이고 점수를 고친 사람(반영한 자리 — `RatingSeat::rated` · 계정 있음 · 판 사람 차례).
+    //   새 점수는 커밋 뒤 다시 읽은 값 — 못 읽은 사람은 뺀다(저장은 그대로 Saved). 로비가 `SAVED` 꼬리로 게임 서버에 넘긴다
+    std::vector<LinkRatingChange> changes;
 };
 
 class ILobbyStore {

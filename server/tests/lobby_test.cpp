@@ -1678,6 +1678,25 @@ void MirrorSaveUnitTests() {
     pump();
     Check(only(301, "SAVED 1760000000-0-7 bad") && mirror.Stats().saveInvalid == 1 && mirror.Stats().savedBad == bad0 + 1,
           "⑤ 저장소가 못 받는 판(방 이름 65바이트) → SAVED bad · 셈");
+
+    // ⑥ ★ 매칭 손보기 1 — 랭크 판 ok → SAVED 꼬리(점수를 고친 사람마다 이름 · 새 점수 · 증감 — 판 사람 차례) · 같은 판 다시(dup) → 꼬리 없음 ·
+    //   일반 판 ok → 꼬리 없음(위 ①) · 두 판째 → 새 점수가 쌓인 값
+    const std::string duel =
+        "{\"match\":\"1760000000-0-20\",\"room\":0,\"roomName\":\"r\",\"map\":\"estate\",\"mode\":\"arena\",\"start\":1,\"end\":2,\"frames\":30,"
+        "\"sec\":1,\"endReason\":\"score_player\",\"winner\":{\"kind\":\"player\",\"id\":2,\"account\":\"bob\"},\"limit\":1,\"timeLimitSec\":0,\"ranked\":true,"
+        "\"players\":[{\"account\":\"wn\",\"netCode\":1,\"state\":\"finished\",\"team\":0,\"score\":0,\"deaths\":1},"
+        "{\"account\":\"bob\",\"netCode\":2,\"state\":\"finished\",\"team\":0,\"score\":1,\"deaths\":0}]}";
+    result(301, duel);
+    pump();
+    const bool tail1 = only(301, "SAVED 1760000000-0-20 ok wn 990 -10 bob 1010 10");
+    const std::string seen1 = out.empty() ? std::string("-") : out[0].line;
+    result(301, duel);
+    pump();
+    const bool dupBare = only(301, "SAVED 1760000000-0-20 dup");
+    result(301, std::string(duel).replace(duel.find("0-20\""), 5, "0-21\""));
+    pump();
+    Check(tail1 && dupBare && only(301, "SAVED 1760000000-0-21 ok wn 980 -10 bob 1020 10"),
+          ("⑥ 랭크 판 ok → 꼬리(wn 990 −10 · bob 1010 +10) = " + seen1 + " · 같은 판 dup → 꼬리 없음 · 두 판째 → 쌓인 점수(980 · 1020)").c_str());
 }
 
 // ── ★ 로그인 암호 조각 4 — 로그인 토큰(`Lobby` — `Docs/LOGIN_AUTH_DESIGN.md` 차이 5 · 6 · 정할 것 a · b · c) ──

@@ -45,6 +45,15 @@ bool ParseNum(std::string_view s, uint32_t max, uint32_t& out) {
     return true;
 }
 
+// ★ 매칭 손보기 1 — 부호 있는 십진(`-` 하나 + `ParseNum` 꼴 · `-0` 은 틀림) · int32 범위
+bool ParseSigned(std::string_view s, int32_t& out) {
+    const bool neg = !s.empty() && s[0] == '-';
+    uint32_t v = 0;
+    if (!ParseNum(neg ? s.substr(1) : s, neg ? 0x80000000u : 0x7fffffffu, v) || (neg && v == 0)) return false;
+    out = neg ? static_cast<int32_t>(0u - v) : static_cast<int32_t>(v);
+    return true;
+}
+
 bool IsHexText(std::string_view s, size_t len) {
     if (s.size() != len) return false;
     for (const char ch : s)
@@ -169,8 +178,11 @@ std::string LinkBye(const std::string& reason) { return std::string(kWords[9]) +
 
 std::string LinkPing() { return kWords[10]; }
 
-std::string LinkSavedLine(const std::string& match, SaveOutcome outcome) {
-    return std::string(kWords[11]) + " " + EncodeLinkText(match) + " " + SaveOutcomeWord(outcome);
+std::string LinkSavedLine(const std::string& match, SaveOutcome outcome, const std::vector<LinkRatingChange>& ratings) {
+    std::string l = std::string(kWords[11]) + " " + EncodeLinkText(match) + " " + SaveOutcomeWord(outcome);
+    for (size_t i = 0; i < ratings.size() && i < kLinkMaxRoster; ++i)   // ★ 매칭 손보기 1 — 사람마다 이름 · 새 점수 · 증감
+        l += " " + EncodeLinkText(ratings[i].account) + " " + std::to_string(ratings[i].after) + " " + std::to_string(ratings[i].delta);
+    return l;
 }
 
 bool LinkResult(const std::string& json, std::string& line) {
@@ -261,13 +273,22 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
         case LinkKind::Ping:
             return want(1) ? LinkParse::Ok : LinkParse::FieldCount;
         case LinkKind::Saved: {
-            if (!want(3)) return LinkParse::FieldCount;
+            // ★ 매칭 손보기 1 — 꼬리(사람마다 세 칸 · 1~kLinkMaxRoster 명)가 붙을 수 있다 · 없으면 옛 꼴
+            if (t.size() < 3 || (t.size() - 3) % 3 != 0 || t.size() > 3 + 3 * kLinkMaxRoster) return LinkParse::FieldCount;
+            for (size_t i = 3; i < t.size(); ++i)
+                if (t[i].empty()) return LinkParse::FieldCount;   // 빈칸 둘 · 꼬리 빈칸
             // 판 번호가 비면 지울 것을 못 찾는다 · 끝 칸은 낱말 셋 중 하나(모르는 낱말도 글 칸 실패로 센다)
             if (!DecodeLinkText(t[1], out.text) || out.text.empty()) return LinkParse::BadText;
             size_t o = 0;
             while (o < static_cast<size_t>(SaveOutcome::kCount) && t[2] != kSaveWords[o]) ++o;
             if (o == static_cast<size_t>(SaveOutcome::kCount)) return LinkParse::BadText;
             out.saved = static_cast<SaveOutcome>(o);
+            for (size_t i = 3; i < t.size(); i += 3) {
+                LinkRatingChange c;
+                if (!DecodeLinkText(t[i], c.account) || c.account.empty()) return LinkParse::BadText;
+                if (!ParseSigned(t[i + 1], c.after) || !ParseSigned(t[i + 2], c.delta)) return LinkParse::BadNumber;
+                out.ratings.push_back(std::move(c));
+            }
             return LinkParse::Ok;
         }
         case LinkKind::Result:

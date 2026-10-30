@@ -19,9 +19,11 @@
 //   로비 → 게임 서버  BYE <까닭>                                                     ★ 작업 3a-2 — 끊기 직전(확인 실패 · 같은 주소 등록 · 차례 틀림)
 //   양쪽             PING                                                           ★ 7단계(`Docs/ACCOUNT_DB_DESIGN.md`) — 살아 있음. 전원째 꺼진 상대는
 //                                                                                    끊김 신호가 안 와 연결이 끊긴 것을 「받은 줄이 없다」로만 안다
-//   로비 → 게임 서버  SAVED <판 번호> <ok|dup|bad>                                   ★ 7단계 — 판 결과를 DB 에 넣은 뒤. ok 새로 넣음 · dup 이미 있음 ·
+//   로비 → 게임 서버  SAVED <판 번호> <ok|dup|bad> [<이름> <새 점수> <증감>]…          ★ 7단계 — 판 결과를 DB 에 넣은 뒤. ok 새로 넣음 · dup 이미 있음 ·
 //                                                                                    bad 못 읽어 버림 — 게임 서버는 셋 다 「저장 안 됨」에서 지운다
 //                                                                                    (소켓에 쓴 것은 받은 것이 아니라 이 답까지 쥔다)
+//                                                                                    ★ 매칭 손보기 1 — ok 이고 랭크 판이면 점수가 바뀐 사람마다 세 칸
+//                                                                                    (1~`kLinkMaxRoster` 명 · 점수 · 증감은 부호 있는 십진) — 꼬리 없으면 옛 꼴
 // 글 칸(이름 · 맵 · 까닭 · 판 번호)은 빈칸 · `%` · `~` · 제어 바이트만 `%XX` 로 바꾸고, 빈 글은 `~` 하나 — 한글(UTF-8)은 그대로 읽힌다.
 //
 // 키 — 설정 파일의 토큰 키(`[token] key`) 하나에서 이름을 붙여 뽑는다(설정 칸을 늘리지 않는다)
@@ -78,6 +80,13 @@ const char* LinkKindWord(LinkKind k);   // 줄 앞 낱말(`HELLO` …)
 enum class SaveOutcome : uint8_t { Ok, Dup, Bad, kCount };
 const char* SaveOutcomeWord(SaveOutcome o);   // `ok` · `dup` · `bad`
 
+// ★ 매칭 손보기 1 — `SAVED` 꼬리 한 사람(판 저장 트랜잭션이 고친 점수)
+struct LinkRatingChange {
+    std::string account;   // 로비 이름(판 사람의 계정 이름 그대로)
+    int32_t after = 0;     // 고친 뒤 점수
+    int32_t delta = 0;     // 이 판의 증감(`Rating.h` `RatingDeltas`)
+};
+
 // 읽은 줄 하나 — 갈래에 따라 쓰는 칸만 채운다
 struct LinkLine {
     LinkKind kind = LinkKind::kCount;
@@ -90,6 +99,7 @@ struct LinkLine {
     SaveOutcome saved = SaveOutcome::kCount;   // Saved
     bool ranked = false;                       // ★ 랭크 매칭 조각 5 — Create 꼬리(옛 꼴이면 false · 명단 빔)
     std::vector<std::string> roster;
+    std::vector<LinkRatingChange> ratings;     // ★ 매칭 손보기 1 — Saved 꼬리(옛 꼴이면 빔)
 };
 
 // 읽기 실패 까닭 — 갈래마다 따로 센다(시험은 개수로 본다)
@@ -119,7 +129,8 @@ std::string LinkCreated(uint32_t req, uint32_t id);
 std::string LinkCreateFailed(uint32_t req, const std::string& reason);
 std::string LinkBye(const std::string& reason);
 std::string LinkPing();
-std::string LinkSavedLine(const std::string& match, SaveOutcome outcome);   // 판 번호는 글 칸(빈 글이면 받는 쪽이 글 칸 실패)
+// 판 번호는 글 칸(빈 글이면 받는 쪽이 글 칸 실패) · ★ 매칭 손보기 1 — `ratings` 가 있으면 꼬리(앞 `kLinkMaxRoster` 명까지 — 넘는 사람은 안 실음)
+std::string LinkSavedLine(const std::string& match, SaveOutcome outcome, const std::vector<LinkRatingChange>& ratings = {});
 // 판 결과 줄 — JSON 에 줄바꿈이 있거나(한 줄이 아님) 비었거나 줄이 `kLinkMaxLine` 을 넘으면 false(안 보낸다 — 파일 기록기엔 남는다)
 bool LinkResult(const std::string& json, std::string& line);
 inline bool LinkLineFits(const std::string& line) { return line.size() <= kLinkMaxLine; }

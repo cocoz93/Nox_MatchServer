@@ -25265,6 +25265,96 @@ void TestLobbyClientHeld() {
     std::printf("  7단계 조각 3 — 판 결과를 SAVED 까지 쥠: 답 없으면 30초 다시 · ok/dup/bad 지움 · 끊긴 동안 쥐었다 등록 뒤 · 한도 넘으면 옛것 버림\n");
 }
 
+// ── ★ 매칭 손보기 1 — SAVED ok 꼬리 → 그 판 방의 그 이름 사람에게 점수 알림(`CLobbyClient::NoticeRatings`) ──
+//   ① 방에 있는 이름(amy) → 그 사람에게만 `TEXT_MESSAGE` 「Rating 1000 -> 1010 (+10)」 · 같은 방 bob 엔 없음 · 방에 없는 이름(zed) → 셈만
+//   ② 판의 방 번호 모름(-1) → 「방 없음」 셈(사람 수만큼) · 알림 0 ③ 꼬리 없는 ok → 알림 0 ④ 글 꼴(+ · − · 0)
+void TestLobbyClientRatingNotice() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    using O = nox::SaveOutcome;
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    const uint8_t readyPkt[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_READY) };
+    char m[400];
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    MapCatalog cat;
+    cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+    const int r = MakeLobbyLikeRoom(srv.Rooms(), cat, "so_lod", "");
+    uint32_t now = 1000;
+    std::vector<nox::OutPacket> o;
+    srv.Tick(now, o);
+    now += 33; srv.Tick(now, o);
+    auto join = [&](const std::string& account, const std::string& ip, uint64_t nonce) {
+        const auto tail = TrailerAs(account, r, ip, nonce);
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        srv.OnPacket(ip + ":1", tj.data(), tj.size(), o);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        srv.OnPacket(ip + ":2", cn.data(), cn.size(), o);
+        const auto ac = AcceptPkt("Jack");
+        srv.OnPacket(ip + ":2", ac.data(), ac.size(), o);
+        srv.OnPacket(ip + ":2", readyPkt, sizeof(readyPkt), o);
+        return ip + ":2";
+    };
+    const std::string A = join("amy", "10.71.0.1", 711), B = join("bob", "10.71.0.2", 712);
+    for (int i = 0; i < 3; ++i) { now += 34; srv.Tick(now, o); }
+    nox::CLobbyClient::Config cfg;
+    for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 11);
+    cfg.epoch = 1760000000u;
+    cfg.port = 18590;
+    nox::CLobbyClient lc(srv.Rooms(), cfg);
+    std::vector<Rq> rq;
+    auto ev = [](Ev::Type t, const std::string& line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = 5;
+        e.lobbyLine = line;
+        e.lobbyWhy = "test";
+        return e;
+    };
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, ""), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkHello("00112233445566778899aabbccddeeff")), rq);
+    auto lobby = [&](const std::string& line) { lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, line), rq); };
+    // 그 사람에게 간 「Rating …」 알림 수(틱 한 번 뒤 나간 것에서 — 조각 안 어느 자리든 · 다른 시험의 `textTo` 꼴)
+    auto notices = [&](const std::vector<nox::OutPacket>& out, const std::string& to, const std::string& has) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to)) {
+            for (size_t i = 0; i + 11 <= x.size(); ++i) {
+                if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
+                const size_t len = x[i + 8];
+                if (i + 11 + len > x.size()) continue;
+                const std::string text(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len));
+                if (text.find(has) != std::string::npos) ++n;
+            }
+        }
+        return n;
+    };
+
+    // ①
+    lc.OnMatchResult("1760000000-0-1", "{\"match\":\"1760000000-0-1\"}", rq, r);
+    lobby(nox::LinkSavedLine("1760000000-0-1", O::Ok, {{"amy", 1010, 10}, {"zed", 990, -10}}));
+    std::vector<nox::OutPacket> o1;
+    now += 34; srv.Tick(now, o1);
+    const int toA = notices(o1, A, "Rating 1000 -> 1010 (+10)"), toB = notices(o1, B, "Rating ");
+    // ②
+    lc.OnMatchResult("1760000000-0-2", "{\"match\":\"1760000000-0-2\"}", rq, -1);
+    lobby(nox::LinkSavedLine("1760000000-0-2", O::Ok, {{"amy", 1020, 10}, {"bob", 980, -10}}));
+    // ③
+    lc.OnMatchResult("1760000000-0-3", "{\"match\":\"1760000000-0-3\"}", rq, r);
+    lobby(nox::LinkSavedLine("1760000000-0-3", O::Ok));
+    std::vector<nox::OutPacket> o2;
+    now += 34; srv.Tick(now, o2);
+    const int later = notices(o2, A, "Rating ") + notices(o2, B, "Rating ");
+    const nox::CLobbyClientStats& s = lc.Stats();
+    std::snprintf(m, sizeof(m), "① amy 알림 %d · bob 0 = %d · 알림 셈 %llu · 방에 없음(zed) %llu | ② 방 모름 %llu | ③ 꼬리 없음 → 뒤 알림 %d · ok 셈 %llu · 쥔 것 %zu",
+                  toA, toB, s.ratingNotices, s.ratingNotHere, s.ratingNoRoom, later, s.savedOk, lc.HeldResults());
+    Check(toA == 1 && toB == 0 && s.ratingNotices == 1 && s.ratingNotHere == 1 && s.ratingNoRoom == 2 && later == 0 && s.savedOk == 3 && lc.HeldResults() == 0, m);
+    // ④
+    Check(nox::CLobbyClient::RatingNoticeText(1010, 10) == "Rating 1000 -> 1010 (+10)" && nox::CLobbyClient::RatingNoticeText(990, -10) == "Rating 1000 -> 990 (-10)" &&
+              nox::CLobbyClient::RatingNoticeText(1000, 0) == "Rating 1000 -> 1000 (+0)",
+          "④ 점수 알림 글 꼴 — +10 · -10 · +0");
+    std::printf("  매칭 손보기 1 — SAVED 꼬리 → 판의 방 그 이름 사람에게 점수 알림(영문) · 방에 없음 · 방 모름 셈 · 꼬리 없으면 0\n");
+}
+
 // ── ★ 7단계 조각 4 — 판 결과 쓰개(`FormatMatchResultJson` · nox_proto) ↔ 읽개(`ParseMatchRecordJson` · nox_common) 왕복 ─────────
 //   판 다섯(사람 승 · 팀 승 · 중단 · 비김 · 이름 없는 승자) · 칸 전부 대조. 이름 바이트 — 949(UTF-8 아님) · 한글 UTF-8 · 따옴표 · 역빗금 ·
 //   제어 바이트 · 8명(나감 · 관전 · 음수 점수) · 최대 칸 값(netCode 65535 · 점수 int32 끝 · 시각 uint32 끝)
@@ -33141,6 +33231,7 @@ int main() {
     TestLobbyClient();   // ★ 10-20 v2 작업 4b(옛 TestChannelLobby 자리)
     TestLobbyClientAlive();   // ★ 7단계 조각 2
     TestLobbyClientHeld();    // ★ 7단계 조각 3
+    TestLobbyClientRatingNotice();   // ★ 매칭 손보기 1
     TestMatchRecordRoundTrip();   // ★ 7단계 조각 4
     TestLobbyMapPaths();
     TestJoinTrailer();
