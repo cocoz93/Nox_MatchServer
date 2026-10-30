@@ -81,7 +81,7 @@ constexpr int kNoxClientAuthVersion = 3;
 //   「서버 접속 시도중...」 창이 닫히면 다음 줄 앞에 `NOXRANK LEAVE` 를 끼운다(`wsock32_proxy.cpp` ⑪). 낮은 판의 표시는 안 믿는다
 constexpr int kNoxClientRankVersion = 4;
 // ★ 매칭 손보기 6(`Docs/MATCH_UX_REVIEW.md`) — 이 판부터 DLL 이 로비의 `NOXRANK FOUND` 에 기다림 창을 「수락?」 예 · 아니오로 바꾸고 예면 `NOXRANK ACCEPT`.
-//   묶음의 방이 서면 묶인 사람이 다 이 판 이상일 때만 수락 단계(하나라도 낮으면 옛 길 — 곧바로 참가 답)
+//   묶음의 방이 서면 아직 요청 중인 사람이 둘 이상이고 다 이 판 이상일 때만 수락 단계(하나라도 낮거나 한 사람만 남았으면 옛 길 — 곧바로 참가 답)
 constexpr int kNoxClientAcceptVersion = 5;
 // 수락 한도 — 플랜 「10초 무응답」. 넘으면 수락한 사람은 줄 앞에 되돌리고(`NOXRANK WAIT`) 안 한 사람은 줄에서 뺀다(`NOXRANK EXPIRED`)
 constexpr uint32_t kRankAcceptMs = 10000;
