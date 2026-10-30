@@ -470,7 +470,7 @@ static void MarkRouter(SOCKET s)
 
 // ★ 10-30 — 국가 고르기 창 막기(같은 PC 두 클라 판). mo_local 이 띄울 때 `HKCU\Software\Classes\Wchat\Nick0~129\Locale` 을 20 으로 두지만,
 //   「아이디 기억」을 끈 로그인은 끝에 Nick129 의 국가를 0 으로 지운다(Game.exe `0x41fa94` → `0x40da80`) → 뒤에 로그인하는 다른 클라가 0 을 읽어 창이 뜸
-//   (10-30 사람 판 — 판 뒤 Nick129 만 0). 로그인(라우터 연결)마다 20 이 아닌 칸을 다시 20 으로. 서버는 이 값을 안 쓴다
+//   (10-30 사람 판 — 판 뒤 Nick129 만 0). 「로그인」 누름의 국가 읽기 바로 앞(InstallCountryHook)에서 20 이 아닌 칸을 다시 20 으로. 서버는 이 값을 안 쓴다
 #pragma comment(lib, "advapi32.lib")
 static void KeepCountry()
 {
@@ -489,7 +489,7 @@ static void KeepCountry()
         }
         RegCloseKey(k);
     }
-    Log("국가 칸 — 로그인(라우터 연결) 앞 Nick0~129 Locale 20 확인 · 다시 씀 %d · 실패 %d", fixed, fail);
+    Log("국가 칸 — 국가 읽기 앞 Nick0~129 Locale 20 확인 · 다시 씀 %d · 실패 %d", fixed, fail);
 }
 
 static CLoginRewriter* LoginRewriterOf(SOCKET s)   // 로비 연결이 아니면 NULL · 그 소켓을 보내는 스레드만 쓴다(LobbyFilterOf 와 같은 가정)
@@ -976,10 +976,7 @@ extern "C" int WSAAPI Hook_connect(SOCKET s, const struct sockaddr* name, int na
     void* ret = _ReturnAddress();
     if (name && namelen >= (int)sizeof(sockaddr_in) && name->sa_family == AF_INET) {   // ★ 조각 5 의 4 — 라우터 연결이면 whereto 암호 칸 지우기
         const unsigned char* pp = (const unsigned char*)&((const sockaddr_in*)name)->sin_port;
-        if (((pp[0] << 8) | pp[1]) == kRouterPort) {
-            MarkRouter(s);
-            KeepCountry();   // ★ 10-30 — 다른 클라가 지운 국가 칸 되살리기
-        }
+        if (((pp[0] << 8) | pp[1]) == kRouterPort) MarkRouter(s);
     }
     int rc = ((PFN_connect)Resolve(4))(s, name, namelen);
     if (g_log[0]) {
@@ -1231,6 +1228,32 @@ static void InstallChanGuard()
     Log("⑧ 대화방 목록 가드 붙임 — 0x44793A → 동굴 %p(%d바이트 · 칸 범위 검사 · 안전망 자리 %p)", (void*)cave, (int)(p - cave), g_chanGuardCmp);
 }
 
+// ★ 10-30 — 국가 칸 읽기를 DLL 로 돌림. 정품은 「로그인」 누름 처리 안에서 라우터에 붙기 전에 읽는다 —
+//   `0x44a9df call 0x40da50`((칸+1, &국가) · cdecl · WOLAPI 를 부름) → 0 이면 국가 고르기 창(`0x44a9f6 call 0x4b4a80`)
+//   라우터 연결에서 되살린 첫 판은 늦었다(10-30 사람 판 2 — 클라2 로그인 실패 뒤 Nick129 0 · 클라1 은 연결 없이 창). 그 call 하나의 대상만 바꾼다
+static const uintptr_t kCountryCall = 0x44a9df, kCountryRead = 0x40da50;
+typedef int(__cdecl* PFN_countryread)(int nick, int* out);
+
+static int __cdecl CountryRead(int nick, int* out)
+{
+    KeepCountry();
+    return ((PFN_countryread)kCountryRead)(nick, out);
+}
+
+static void InstallCountryHook()
+{
+    unsigned char* site = (unsigned char*)kCountryCall;
+    DWORD rel = 0;
+    memcpy(&rel, site + 1, 4);
+    if (site[0] != 0xE8 || (DWORD)(uintptr_t)(site + 5) + rel != (DWORD)kCountryRead) { Log("국가 칸 — 0x44a9df 가 정품 `call 0x40da50` 이 아니라 안 붙임"); return; }
+    DWORD old = 0;
+    if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &old)) { Log("국가 칸 — 보호 바꾸기 실패 err=%lu", GetLastError()); return; }
+    Put32(site + 1, (DWORD)(uintptr_t)CountryRead - (DWORD)(uintptr_t)(site + 5));
+    VirtualProtect(site, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    Log("국가 칸 — 로그인 누름의 국가 읽기(0x44a9df)를 DLL 로 돌림(읽기 앞에 Nick0~129 를 20 으로)");
+}
+
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH) {
@@ -1273,6 +1296,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
             CloseHandle(CreateThread(NULL, 0, SummaryThread, NULL, 0, NULL));
         }
         if (gameOk && !noGuard) InstallChanGuard();   // ★ 10-20 v2 작업 5 — 로그 파일을 정한 뒤(붙임 · 안 붙임 줄이 기록에 남게)
+        if (gameOk) InstallCountryHook();             // ★ 10-30 — 두 클라 판 국가 고르기 창
     }
     return TRUE;
 }
