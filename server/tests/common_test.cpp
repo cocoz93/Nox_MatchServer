@@ -862,8 +862,14 @@ void TestRating() {
                {kNo, kNo, kNo}),
           "일반 판 — 승자가 있어도 아무도 반영 안 함");
     Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 5), pl(true, true, 0, 0), pl(true, false, 0, 9, true), pl(false, false, 0, 1)}),
-               RC::Aborted, {0, 0, kNo, kNo}),
-          "중단 — 끝까지 · 나감 모두 0 · 관전자 · 계정 없음은 반영 안 함");
+               RC::Aborted, {10, -10, kNo, kNo}),
+          "중단 — 끝까지 +10 · 나감 −10(★ 10-31) · 관전자 · 계정 없음은 반영 안 함");
+    Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 0), pl(true, false, 0, 3)}), RC::Aborted, {0, 0}),
+          "중단 — 나간 사람이 없으면 모두 0");
+    Check(same(rec(true, "aborted", "none", 0, {pl(true, true, 0, 0), pl(true, true, 0, 0)}), RC::Aborted, {-10, -10}),
+          "중단 — 둘 다 나가면 둘 다 −10");
+    Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 0), pl(false, true, 0, 0)}), RC::Aborted, {10, kNo}),
+          "중단 — 계정 없는 사람이 나가도 남은 사람 +10");
     Check(same(rec(true, "time_up", "draw", 0, {pl(true, false, 1, 2), pl(true, true, 0, 0), pl(true, false, 2, 2, true)}), RC::NoWinner,
                {0, -10, kNo}),
           "비김 — 끝까지 0 · 나감 −10 · 관전자 반영 안 함");

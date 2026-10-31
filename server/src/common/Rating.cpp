@@ -41,10 +41,18 @@ RatingResult RatingDeltas(const MatchRecord& rec) {
         case RatingCase::NotRanked:
         case RatingCase::kCount:
             return r;
-        case RatingCase::Aborted:
-            for (size_t i = 0; i < rec.players.size(); ++i)
-                if (Eligible(rec.players[i])) r.seats[i] = {true, 0};
+        case RatingCase::Aborted: {
+            // ★ 10-31 — 중단은 판 도중 2명 밑으로 떨어질 때뿐(`RoomTick.cpp` `CheckMatchHeadcount`)이라 1대1 에선 나가면 늘 중단 —
+            //   옛 「모두 0」이면 지기 직전에 나가도 손해가 없었다(10-31 사람 판). 나간 사람(계정 없어도) 이 있으면 나감 −10 · 남은 사람 +10
+            bool anyLeft = false;
+            for (const MatchRecordPlayer& p : rec.players) anyLeft = anyLeft || p.left;
+            for (size_t i = 0; i < rec.players.size(); ++i) {
+                const MatchRecordPlayer& p = rec.players[i];
+                if (!Eligible(p)) continue;
+                r.seats[i] = {true, p.left ? -kRatingStep : anyLeft ? kRatingStep : 0};
+            }
             return r;
+        }
         case RatingCase::NoWinner:
             for (size_t i = 0; i < rec.players.size(); ++i)
                 if (Eligible(rec.players[i])) r.seats[i] = {true, rec.players[i].left ? -kRatingStep : 0};
