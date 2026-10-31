@@ -101,6 +101,10 @@ Session& Server::SessionFor(int64_t sessionId) {
 
 void Server::SetInGame(Session& s, bool inGame) {
     s.inGame = inGame;
+    if (!inGame) {   // ★ 10-31 — 게임을 나가면 소개 기록도 지움(같은 세션이 다시 들어오면 다시 소개 · Session::introGot)
+        s.introGot.clear();
+        for (auto& kv : sessions_) kv.second.introGot.erase(s.sessionId);
+    }
     RequestSetSessionTimeout(s.sessionId, inGame ? kSessionTimeoutMsInGame : kSessionTimeoutMs);
 }
 
@@ -351,6 +355,15 @@ void Server::EmitNewPlayer(Session& to, const Session& who, uint8_t status
     }
     EmitSeq(to, np.data(), np.size());
     ++handled_;
+}
+
+// ★ 10-31 — 남 소개는 맵 한 번에 한 번만(Session::introGot 주석 — 클라가 `2d` 마다 입장문을 띄운다)
+bool Server::IntroduceOnce(Session& to, const Session& who, uint8_t status) {
+    if (to.snapshotIn >= 0) { ++introOnce_[2]; return false; }   // 맵을 싣는 중 — 그 사람 스냅샷 자리에서 소개가 다시 돈다
+    if (!to.introGot.insert(who.sessionId).second) { ++introOnce_[1]; return false; }
+    EmitNewPlayer(to, who, status);
+    ++introOnce_[0];
+    return true;
 }
 
 // `6a REPORT_CLIENT_STATUS <번호2> <상태4>` 한 통. 받는 쪽 한 명에게.
@@ -1863,6 +1876,7 @@ void Server::RejoinReset(Session& s) {
     s.importantQ.clear();
     s.sentFirstUpdate = false;
     s.pendingIntro = false;
+    s.introGot.clear();   // ★ 10-31 — 새 맵에서는 옛 길대로 스냅샷 자리에서 다시 한 번씩 소개
     s.aliases = AliasTable{};
     s.staticIntroAt.clear();
     s.secretSeen.clear();
@@ -3247,7 +3261,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                             for (auto& kv2 : sessions_) {
                                 Session& o = kv2.second;
                                 if (!o.inGame || o.sessionId == s.sessionId) continue;
-                                EmitNewPlayer(o, s, 0);   // 남들에게도 「이제 논다」
+                                IntroduceOnce(o, s, 0);   // 남들에게도 「이제 논다」 — ★ 10-31 이미 소개했으면 안 보냄(입장문 되풀이 · 정답지도 관전 풀기에 `2d` 를 안 보냄)
                             }
                             // ★★★ **모두에게 보낸다 — 본인에게만이 아니다.**
                             //   `2d` 가 세운 1번 비트(관전)는 OR 라 안 꺼지고,
@@ -18262,7 +18276,7 @@ void Server::RunTick(int ticks) {
                 Session& o = kv2.second;
                 if (!o.inGame || o.sessionId == s.sessionId) continue;
                 // 상태는 **그 사람이 지금 어떤지** 그대로 — 관전 중이면 1, 놀고 있으면 0.
-                EmitNewPlayer(o, s, s.observer ? 1 : 0);   // 먼저 온 사람에게 새 사람을
+                IntroduceOnce(o, s, s.observer ? 1 : 0);   // 먼저 온 사람에게 새 사람을(★ 10-31 맵 한 번에 한 번)
                 // ★ 09-29 — 먼저 온 사람에게 새 사람의 `e9 <번호2> <프레임4> ff 01`(기본 차림 다시 그리기). 정답지는 새 사람이 기본 장비를 받을 때
                 //   `netSendPlayerRespawn_4EFC30(…, 1)` 을 **모두에게** 보낸다 — 정품 녹음 18:53:27.374 먼저 온 워리어가 `e9 61 00 7c 02 00 00 ff 01` 받음.
                 //   ✖ 전에는 새 사람 본인(스냅샷 꼬리)에게만 갔다 — 먼저 온 사람 화면에서 새 사람의 로브가 갈색으로 보였다(09-29 사람 판)
@@ -18274,7 +18288,7 @@ void Server::RunTick(int ticks) {
                     EmitSeq(o, e9, sizeof(e9));
                     ++introRedrawSent_;
                 }
-                EmitNewPlayer(s, o, o.observer ? 1 : 0);   // 새 사람에게 먼저 온 사람을
+                IntroduceOnce(s, o, o.observer ? 1 : 0);   // 새 사람에게 먼저 온 사람을(★ 10-31 맵 한 번에 한 번)
                 SendWornLooks(s, o);                       // ★ 09-29 — 그 사람이 입은 것 전부(색 수식 포함 · `sub_4DDE10`)
 
                 // ★★★ **소개 바로 뒤에 상태를 한 번 더 갈아 끼운다.**

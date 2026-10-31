@@ -25425,6 +25425,68 @@ void TestLobbyClientRatingNotice() {
     std::printf("  매칭 손보기 1 — SAVED 꼬리 → 판의 방 그 이름 사람에게 점수 알림(영문) · 방에 없음 · 방 모름 셈 · 꼬리 없으면 0\n");
 }
 
+// ── 10-31 — 남 소개(`2d`)는 맵 한 번에 한 사람당 한 번(`Session::introGot` · 클라는 `2d` 마다 입장문을 띄움) ─────────
+//   10-30 사람 판 — 대기 맵 입장문 세 번 · 기록 `[2d정보] 조립 8`(두 사람이 1초 안에)
+//   ① 진짜 접속 길로 둘이 같은 틱 묶음에 들어와 준비 → 서로 한 통씩(합 2) · 싣는 중 미룸이 돈다
+//   ② 관전 풀기 클릭 → 남에게 다시 안 감 ③ 맵 다시 열기 → 준비 뒤 다시 한 통씩(합 4)
+void TestIntroOnce() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    const uint8_t readyPkt[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_READY) };
+    char m[400];
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    MapCatalog cat;
+    cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+    const int r = MakeLobbyLikeRoom(srv.Rooms(), cat, "so_lod", "");
+    nox::Server& g = srv.Rooms().Game(r);
+    g.SetGameFlags(nox::ModeGameFlags("arena"));   // 아레나 — 관전으로 시작(대기 맵 채팅 모드는 바로 놀아 ② 관전 풀기가 없음)
+    uint32_t now = 1000;
+    std::vector<nox::OutPacket> o;
+    srv.Tick(now, o);
+    now += 33; srv.Tick(now, o);
+    auto join = [&](const std::string& account, const std::string& ip, uint64_t nonce) {
+        const auto tail = TrailerAs(account, r, ip, nonce);
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        srv.OnPacket(ip + ":1", tj.data(), tj.size(), o);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        srv.OnPacket(ip + ":2", cn.data(), cn.size(), o);
+        const auto ac = AcceptPkt("Jack");
+        srv.OnPacket(ip + ":2", ac.data(), ac.size(), o);
+        srv.OnPacket(ip + ":2", readyPkt, sizeof(readyPkt), o);
+        return ip + ":2";
+    };
+    const std::string A = join("amy", "10.72.0.1", 721), B = join("bob", "10.72.0.2", 722);
+    const int64_t sa = srv.Network().SessionIdOf(A), sb = srv.Network().SessionIdOf(B);
+    for (int i = 0; i < 15; ++i) { now += 34; srv.Tick(now, o); }
+    auto sent2d = [&]() { return g.newPlayerInfo(0) + g.newPlayerInfo(1) + g.newPlayerInfo(2); };
+    const unsigned long long s1 = sent2d(), once1 = g.introOnce(0), deferred1 = g.introOnce(2);
+    const bool got1 = g.DebugIntroGot(sa, sb) && g.DebugIntroGot(sb, sa);
+    std::snprintf(m, sizeof(m), "① 접속 — 2d 나감 %llu(2) · 보냄 %llu · 싣는중미룸 %llu(>0) · 서로 받음 %d · 스냅샷 대기 %d·%d(-1)",
+                  s1, once1, deferred1, (int)got1, g.DebugSnapshotIn(sa), g.DebugSnapshotIn(sb));
+    Check(s1 == 2 && once1 == 2 && deferred1 > 0 && got1 && g.DebugSnapshotIn(sa) < 0 && g.DebugSnapshotIn(sb) < 0, m);
+    // ② A 관전 풀기
+    const bool obsBefore = g.IsObserver(sa);
+    const unsigned long long skip1 = g.introOnce(1);
+    const auto click = InputPacket(6);
+    srv.OnPacket(A, click.data(), click.size(), o);
+    for (int i = 0; i < 3; ++i) { now += 34; srv.Tick(now, o); }
+    const unsigned long long s2 = sent2d(), skip2 = g.introOnce(1);
+    std::snprintf(m, sizeof(m), "② 관전 풀기 — A 관전 %d → %d(1 → 0) · 2d 나감 %llu(2 그대로) · 이미소개 %llu → %llu(+1)",
+                  (int)obsBefore, (int)g.IsObserver(sa), s2, skip1, skip2);
+    Check(obsBefore && !g.IsObserver(sa) && s2 == 2 && skip2 == skip1 + 1, m);
+    // ③ 맵 다시 열기 → 둘 다 준비
+    g.ReopenMap();
+    const bool cleared = !g.DebugIntroGot(sa, sb) && !g.DebugIntroGot(sb, sa);
+    srv.OnPacket(A, readyPkt, sizeof(readyPkt), o);
+    srv.OnPacket(B, readyPkt, sizeof(readyPkt), o);
+    for (int i = 0; i < 15; ++i) { now += 34; srv.Tick(now, o); }
+    const unsigned long long s3 = sent2d();
+    std::snprintf(m, sizeof(m), "③ 다시 엶 — 비움 %d · 2d 나감 %llu(4) · 서로 받음 %d", (int)cleared, s3,
+                  (int)(g.DebugIntroGot(sa, sb) && g.DebugIntroGot(sb, sa)));
+    Check(cleared && s3 == 4 && g.DebugIntroGot(sa, sb) && g.DebugIntroGot(sb, sa), m);
+    std::printf("  10-31 — 남 소개 2d 맵 한 번에 한 통(접속 2 · 관전 풀기 0 · 다시 엶 뒤 2)\n");
+}
+
 // ── ★ 7단계 조각 4 — 판 결과 쓰개(`FormatMatchResultJson` · nox_proto) ↔ 읽개(`ParseMatchRecordJson` · nox_common) 왕복 ─────────
 //   판 다섯(사람 승 · 팀 승 · 중단 · 비김 · 이름 없는 승자) · 칸 전부 대조. 이름 바이트 — 949(UTF-8 아님) · 한글 UTF-8 · 따옴표 · 역빗금 ·
 //   제어 바이트 · 8명(나감 · 관전 · 음수 점수) · 최대 칸 값(netCode 65535 · 점수 int32 끝 · 시각 uint32 끝)
@@ -33347,6 +33409,7 @@ int main() {
     TestLobbyClientAlive();   // ★ 7단계 조각 2
     TestLobbyClientHeld();    // ★ 7단계 조각 3
     TestLobbyClientRatingNotice();   // ★ 매칭 손보기 1
+    TestIntroOnce();                 // ★ 10-31 남 소개 맵 한 번에 한 통(입장문 되풀이)
     TestRankOneMap();                // ★ 매칭 손보기 3
     TestMatchRecordRoundTrip();   // ★ 7단계 조각 4
     TestLobbyMapPaths();

@@ -836,6 +836,12 @@ struct Session {
     // 아직 서로 소개(`2d NEW_PLAYER`)를 안 주고받았다. 발송은 `Tick` 에서 한다 —
     // 접속 답장에 붙이면 정품이 그 자리에 보내는 것과 어긋난다.
     bool pendingIntro = false;
+    // ★ 10-31 — 이 사람이 **이번 맵을 싣고 나서** 소개(`2d`)를 받은 사람들(세션 번호).
+    //   클라는 `2d` 를 받을 때마다 「<이름> joined the game」 을 화면 가운데 띄운다(`network_client.go:332-335` — 놀이 상태 3 일 때).
+    //   10-30 사람 판 — 대기 맵에서 상대 입장문이 세 번(기록 `[2d정보] 조립 8` — 두 사람이 1초 안에 서로 4번씩).
+    //   정답지는 들어올 때 한 번(`player.go:439` 모두에게 · `GAME3_2.c:5735` 들어온 사람에게 모두를)
+    //   → 남 소개는 `IntroduceOnce` 로만 · 맵을 다시 실을 때(`RejoinReset`) 비운다
+    std::set<int64_t> introGot;
     // ★ 서두를 어디까지 흘렸나. **접속마다 따로** — 전역으로 두면 둘째 클라가 서두를 못 받는다.
     size_t preludeAt = 0;
     // ★★ 이 사람에게 흘려보낸 프레임. **접속마다 따로 센다.**
@@ -3681,6 +3687,13 @@ public:
     unsigned long long newPlayerGearBits() const { return newPlayerGearBits_; }   // ★ 09-28 — 2d 에 지금 갑옷·무기 비트를 실은 횟수
     // ★ 09-28 — 남을 소개한 2d 의 정보 97B 출처: [0] 녹음 그대로(Jack) · [1] 녹음에 그 사람 97B 를 덮음 · [2] 97B 로 조립
     unsigned long long newPlayerInfo(size_t i) const { return i < 3 ? newPlayerInfo_[i] : 0; }
+    // ★ 10-31 — 남 소개 한 번만: [0] 보냄 · [1] 이미 소개해 건너뜀 · [2] 받는 사람이 맵을 싣는 중이라 미룸
+    unsigned long long introOnce(size_t i) const { return i < 3 ? introOnce_[i] : 0; }
+    // 시험용 — `to` 가 이번 맵에서 `who` 의 소개를 받았나
+    bool DebugIntroGot(int64_t to, int64_t who) const {
+        auto it = sessions_.find(to);
+        return it != sessions_.end() && it->second.introGot.count(who) != 0;
+    }
     // 시험용 — `who` 를 `to` 에게 소개하는 `2d` 를 그대로 만든다(EmitNewPlayer 는 private)
     void DebugEmitNewPlayer(int64_t to, int64_t who) {
         auto t = sessions_.find(to); auto w = sessions_.find(who);
@@ -5186,6 +5199,9 @@ private:
     // 상태는 kNewPlayerStatusAt 주석 참조 — 0 이라야 클라가 HUD 를 그린다.
     void EmitNewPlayer(Session& to, const Session& who, uint8_t status
 );
+    // ★ 10-31 — 남 소개 `2d` 를 **받는 사람이 맵을 다 실은 뒤 · 맵 한 번에 한 사람당 한 번만**(Session::introGot 주석).
+    //   싣는 중(`snapshotIn >= 0`)이면 미룬다 — 그 사람 스냅샷 자리가 소개를 다시 세운다(`pendingIntro`). 보냈으면 참
+    bool IntroduceOnce(Session& to, const Session& who, uint8_t status);
 
     // `6a REPORT_CLIENT_STATUS` 한 통 — **한 사람의 상태를 「받는 쪽 한 명」에게 알린다.**
     //
@@ -5361,6 +5377,7 @@ private:
     unsigned long long appearanceSent_ = 0;   // 겉모습을 남에게 알린 횟수 (P7)
     unsigned long long newPlayerGearBits_ = 0;   // ★ 09-28 — 2d 104·108 에 지금 갑옷·무기 비트를 실은 횟수
     unsigned long long newPlayerInfo_[3] = {};   // ★ 09-28 — 2d 정보 97B 출처(녹음 그대로 · 덮음 · 조립)
+    unsigned long long introOnce_[3] = {};       // ★ 10-31 — IntroduceOnce 나간 길(보냄 · 이미 소개해 건너뜀 · 싣는 중이라 미룸)
     // ★ 09-28 — 게임 중 새로 놓인 바닥 물건(버리기·되돌리기). 시야 반경이 꺼진 판에서도 이것만은 반경 안에 한 번 소개한다
     std::set<uint16_t> freshStatics_;
     unsigned long long appearanceUnknown_ = 0;// 장비 비트를 몰라 못 알린 횟수

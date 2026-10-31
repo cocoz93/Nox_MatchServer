@@ -601,11 +601,12 @@ void nox::CRoom::TickDiagnostics(size_t made) {
         // ★ 09-28 — 버리기(`TRY_DROP` → `drop_4ED810`) 나간 길별
         srv.Log("[버리기] 관전 %llu · 가방에없음 %llu · 벽 %llu · 버림 %llu"
                     " · [줍고입음] 무기 %llu · 갑옷 %llu · 같은부위라안입음 %llu · 두손무기라방패안입음 %llu · 부위모름 %llu · [2d차림실음] %llu"
-                    " · [2d정보] 녹음그대로 %llu · 진짜로덮음 %llu · 조립 %llu\n",
+                    " · [2d정보] 녹음그대로 %llu · 진짜로덮음 %llu · 조립 %llu · [2d소개] 보냄 %llu · 이미소개 %llu · 싣는중미룸 %llu\n",
                     srv.dropGate(nox::DropGate::Observer), srv.dropGate(nox::DropGate::NotInBag),
                     srv.dropGate(nox::DropGate::Wall), srv.dropGate(nox::DropGate::Dropped),
                     srv.autoEquip(0), srv.autoEquip(1), srv.autoEquip(2), srv.autoEquip(3), srv.autoEquip(4),
-                    srv.newPlayerGearBits(), srv.newPlayerInfo(0), srv.newPlayerInfo(1), srv.newPlayerInfo(2));
+                    srv.newPlayerGearBits(), srv.newPlayerInfo(0), srv.newPlayerInfo(1), srv.newPlayerInfo(2),
+                    srv.introOnce(0), srv.introOnce(1), srv.introOnce(2));
         // ★★ 조각 D — **여기서부터 넉 줄이 「눈이 없던 자리」다.**
         //   계수기 41개 중 24개가 한 번도 안 찍히고 있었다(조각 C). 아래가 그 24개를
         //   묶음별로 묶어 낸 것이고, 각 줄은 **하나를 물으면 하나가 답하도록** 갈라 놨다.
