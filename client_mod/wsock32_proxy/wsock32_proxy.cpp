@@ -1055,11 +1055,15 @@ static void RankMenuTick(DWORD world)
 //     창을 「상대 수락 기다리는 중...」 취소(0x22 — 처음 기다림 창 깃발)로(★ 10-31 다음 받기 훅에서). 그 뒤 취소면 ⑩ 이 그 자리 LEAVE → 로비는 거절로
 //   · 아니오 · 로비 `NOXRANK EXPIRED` → 그 자리 LEAVE(★ 10-31 RankLeaveNow) + 창의 취소(4002) 누름을 정품 목록 함수에 넣는다 — 정품 취소 길(창 닫음 · 로비엔 줄 없음)
 //   · 로비 `NOXRANK WAIT`(남이 거절 · 한도 — 줄 맨 앞에 되돌림) → 창을 다시 기다림 글(④ 버퍼 · 지난 시간 이어서) 취소로
+//   · ★ 10-31 로비 `NOXRANK READY`(다 수락 — 로비가 그때 방을 요청) → 창을 「방 만드는 중...」 취소로. 방이 서면 참가 답(③ 토큰) ·
+//     방 실패 · 시간 초과 · 남이 빠지면 WAIT. 여기서 취소면 ⑩ 이 그 자리 LEAVE → 로비가 요청을 접고 남은 사람을 줄 앞에
 //   받은 줄은 받기 훅 안에서 표시만 세우고, 창은 ⑩ 자리(받기 훅 · 게임 주 스레드)에서 바꾼다. 찾음 · 수락 기다림 동안엔 ④ 의 1초 고침을 멈춘다
 static const uintptr_t kDlgOpen = 0x449590;
 static const DWORD kDlgYesNo = 0x18, kDlgWaitFlags = 0x22, kDlgCancelId = 4002;
 static const wchar_t kRankAcceptedText[] = L"상대 수락 기다리는 중...";
-static volatile LONG g_rankEvFound = 0, g_rankEvWait = 0, g_rankEvExpired = 0;   // 받은 줄 → ⑩ 자리에서 처리
+static const wchar_t kRankReadyText[] = L"방 만드는 중...";   // ★ 10-31 — 로비 `NOXRANK READY`(다 수락 → 그때 방 요청)
+static volatile LONG g_rankEvFound = 0, g_rankEvWait = 0, g_rankEvExpired = 0, g_rankEvReady = 0;   // 받은 줄 → ⑩ 자리에서 처리
+static volatile LONG g_rankReadys = 0;        // ★ 10-31 — READY → 창을 「방 만드는 중...」으로
 static volatile LONG g_rankFoundShown = 0;    // 창을 예 · 아니오로 바꿈
 static volatile LONG g_rankAccepts = 0;       // 예 → ACCEPT 보냄
 static volatile LONG g_rankAcceptFail = 0;    // ACCEPT 보내기 실패(로비 소켓 없음 · send 오류)
@@ -1083,6 +1087,7 @@ static void RankOnLobbyLine(SOCKET s, const std::string& line)
         InterlockedExchange(&g_rankEvFound, 1);
     }
     else if (sub == "WAIT") InterlockedExchange(&g_rankEvWait, 1);
+    else if (sub == "READY") InterlockedExchange(&g_rankEvReady, 1);
     else if (sub == "EXPIRED") InterlockedExchange(&g_rankEvExpired, 1);
     Log("⑬ 로비 줄 「%s」 — 받음(창은 다음 받기 훅에서)", line.c_str());
 }
@@ -1160,7 +1165,15 @@ static void RankFoundTick()
             Log("⑬ 예 뒤 — 창을 못 바꿈(알림창 %#lx · 찾음 상태 %ld)", box, g_rankFoundState);
         }
     }
-    if (InterlockedExchange(&g_rankEvWait, 0)) {
+    if (InterlockedExchange(&g_rankEvReady, 0)) {   // ★ 10-31 — 다 수락 → 방 만드는 중(예 뒤 창 바꾸기보다 뒤 — 같은 훅이면 이 글이 남는다)
+        if (open && g_rankWaiting && g_rankFoundState == 2) {
+            RankDlg(kRankReadyText, kDlgWaitFlags);
+            const LONG n = InterlockedIncrement(&g_rankReadys);
+            Log("⑬ READY(누적 %ld) — 알림창 %#lx 를 「방 만드는 중...」 취소로", n, box);
+        } else {
+            Log("⑬ READY — 창을 안 바꿈(알림창 %#lx · 기다림 %ld · 찾음 상태 %ld — 참가 답이 먼저 왔으면 정상)", box, g_rankWaiting, g_rankFoundState);
+        }
+    }    if (InterlockedExchange(&g_rankEvWait, 0)) {
         InterlockedExchange(&g_rankFoundState, 0);
         InterlockedIncrement(&g_rankWaits);
         if (open) RankDlg(g_rankWaitBuf, kDlgWaitFlags);
@@ -1227,13 +1240,13 @@ static void MenuSummary()
 // ★ ⑬ — 수락 단계 셈(따로 한 줄 — 바뀌었을 때만). MenuSummary 와 같은 자리에서 부른다
 static void AcceptSummary()
 {
-    static LONG seen[10] = {};
-    const LONG now[10] = { g_rankFoundShown, g_rankAccepts, g_rankAcceptFail, g_rankDeclines, g_rankWaits, g_rankExpiries, g_rankFoundMiss,
-                          g_rankLeaveNowSent, g_rankLeaveNowFail, g_rankFoundTicks };
+    static LONG seen[11] = {};
+    const LONG now[11] = { g_rankFoundShown, g_rankAccepts, g_rankAcceptFail, g_rankDeclines, g_rankWaits, g_rankExpiries, g_rankFoundMiss,
+                          g_rankLeaveNowSent, g_rankLeaveNowFail, g_rankFoundTicks, g_rankReadys };
     if (memcmp(seen, now, sizeof(now)) == 0) return;
     memcpy(seen, now, sizeof(now));
-    Log("⑬ 수락 셈 — 찾음 창 %ld · 예(ACCEPT) %ld · 보내기 실패 %ld · 아니오 %ld · WAIT %ld · EXPIRED %ld · 못 찾음 %ld | 그 자리 LEAVE %ld · 실패 %ld | 남은 초 고침 %ld",
-        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9]);
+    Log("⑬ 수락 셈 — 찾음 창 %ld · 예(ACCEPT) %ld · 보내기 실패 %ld · 아니오 %ld · WAIT %ld · EXPIRED %ld · 못 찾음 %ld | 그 자리 LEAVE %ld · 실패 %ld | 남은 초 고침 %ld · READY %ld",
+        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9], now[10]);
 }
 
 // ─────────────────────────────────────────────── ⑭ 랭크 점수 알림창 꾸밈 (10-31 · 사용자가 고른 시안 3)
