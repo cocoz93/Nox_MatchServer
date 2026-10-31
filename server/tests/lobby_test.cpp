@@ -724,13 +724,15 @@ void RankAcceptUnitTests() {
     std::vector<Out> o1;
     rankJoin(1, "amy", o1);
     rankJoin(2, "bob", o1);
-    const bool bothFound = has(o1, 1, found) == 1 && has(o1, 2, found) == 1 && tokens(o1, 1) == 0 && tokens(o1, 2) == 0 && lb.RankFoundPending() == 1;
+    const bool bothFound = has(o1, 1, found) == 1 && has(o1, 2, found) == 1 && tokens(o1, 1) == 0 && tokens(o1, 2) == 0 && lb.RankFoundPending() == 1 &&
+                           fake.asks.empty();   // ★ 10-31 — 찾음 때 방 요청 없음
     std::vector<Out> oa;
     lb.OnLine(1, "NOXRANK ACCEPT", oa);
-    const bool waitOther = oa.empty() && lb.RankFoundPending() == 1;
+    const bool waitOther = oa.empty() && lb.RankFoundPending() == 1 && fake.asks.empty();
     lb.OnLine(2, "NOXRANK ACCEPT", oa);
-    Check(bothFound && waitOther && tokens(oa, 1) == 1 && tokens(oa, 2) == 1 && lb.RankFoundPending() == 0 && s.rankAcceptMatched == 2 && s.rankMatched == 2,
-          "★ ① 판 5 둘 → 둘 다 FOUND(참가 답 없음) · 하나 수락은 그대로 · 둘 다 수락 → 각자 참가 답(토큰)");
+    Check(bothFound && waitOther && has(oa, 1, "NOXRANK READY") == 1 && has(oa, 2, "NOXRANK READY") == 1 && fake.asks.size() == 1 &&
+              tokens(oa, 1) == 1 && tokens(oa, 2) == 1 && lb.RankFoundPending() == 0 && s.rankAcceptMatched == 2 && s.rankMatched == 2,
+          "★ ① 판 5 둘 → 둘 다 FOUND(참가 답 · 방 요청 없음) · 하나 수락은 그대로 · ★ 10-31 둘 다 수락 → READY · 그때 방 요청 1 → 각자 참가 답(토큰)");
 
     // ②
     login(3, "cat", 5);
@@ -746,14 +748,17 @@ void RankAcceptUnitTests() {
                          s.rankDeclined[static_cast<size_t>(RankLeave::Dll)] == 1 && s.rankFoundRequeued == 1 &&
                          has(o2, 4, rel("dan")) == 1 && rels(o2, 3) == 0;   // ★ 10-31 — 거절한 dan 만 묶인 참가 풂 · 다시 기다리는 cat 은 묶인 그대로
     o2.clear();
+    const size_t asks2 = fake.asks.size();
     rankJoin(5, "eve", o2);
-    Check(catBack && has(o2, 3, found) == 1 && has(o2, 5, found) == 1 && has(o2, 4, found) == 0 && lb.RankFoundPending() == 1 &&
-              fake.asks.back().roster == std::vector<std::string>{"cat", "eve"},
-          "★ ② 수락 뒤 상대가 LEAVE(거절) → 거절한 dan 에 474(묶인 참가 풂) · 수락한 cat 에 WAIT · 줄 맨 앞 → 다음 eve 와 다시 찾음(명단 cat · eve)");
+    const bool again = catBack && has(o2, 3, found) == 1 && has(o2, 5, found) == 1 && has(o2, 4, found) == 0 && lb.RankFoundPending() == 1 &&
+                       fake.asks.size() == asks2;   // ★ 10-31 — 깨진 묶음 · 다시 찾음 어느 쪽도 게임 서버에 안 닿음
     // 마무리 — 둘 다 수락
     std::vector<Out> o2b;
     lb.OnLine(3, "NOXRANK ACCEPT", o2b);
     lb.OnLine(5, "NOXRANK ACCEPT", o2b);
+    Check(again && fake.asks.size() == asks2 + 1 && fake.asks.back().roster == std::vector<std::string>{"cat", "eve"},
+          "★ ② 수락 뒤 상대가 LEAVE(거절) → 거절한 dan 에 474(묶인 참가 풂) · 수락한 cat 에 WAIT · 줄 맨 앞 → 다음 eve 와 다시 찾음 · "
+          "★ 10-31 방 요청은 둘 다 수락한 뒤 한 번(명단 cat · eve)");
 
     // ③
     login(6, "fay", 5);
@@ -809,6 +814,136 @@ void RankAcceptUnitTests() {
     Check(s.rankJoinReleased == s.rankDeclined[static_cast<size_t>(RankLeave::Dll)] + s.rankDeclined[static_cast<size_t>(RankLeave::List)] + s.rankExpired &&
               s.rankJoinReleased == 2,
           "★ ⑦ 묶인 참가 풂(474) 2 = 거절(창 닫힘 · LIST) + 한도 — 끊김엔 없음");
+    // ★ 10-31 — 버려진 방 0: 찾음 5묶음 가운데 다 수락한 셋(①② 마무리 · ④ 는 옛 길)만 방 요청 — 깨진 묶음(② 첫 · ③ · ⑥)은 요청 없음
+    Check(fake.asks.size() == 3 && s.rankAcceptMatched == 4, "★ ⑦ 방 요청 3 = 다 수락 2묶음 + 옛 길 1묶음 · 깨진 찾음 3묶음은 게임 서버에 안 닿음");
+}
+
+// ── ★ 10-31 — 다 수락한 뒤 방 요청(사용자 결정 ②). 묶음마다 새 로비(줄 · 쉬는 시간이 섞이지 않게)
+//   ⑧ 게임 서버에 물음(Pending) → 다 수락 READY · 그때 물음 · CREATED → 참가 답
+//   ⑨ 다 수락 뒤 방 시간 초과 → 둘 다 WAIT · 줄 맨 앞(차례 그대로) · 요청 접음 · 쉬고 나서 다시 찾음
+//   ⑩ 다 수락 뒤 곧바로 실패 → 둘 다 WAIT · 줄 앞
+//   ⑪ 다 수락 뒤 방 기다리는 중 한 사람 LEAVE → 그 사람 474 · 남은 사람 WAIT · 줄 앞 · 요청 접음 → 늦은 CREATED 는 버림(참가 답 없음)
+//   ⑫ 옛 길(판 4)은 방 시간 초과에 WAIT 없음
+void RankReadyUnitTests() {
+    using namespace nox::wol;
+    uint32_t clock = 0x10000u;
+    LobbyConfig cfg;
+    cfg.room.maxPlayers = 31;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    cfg.nowMs = [&clock] { return clock; };
+    cfg.rankMin = cfg.rankMax = 2;
+    auto login = [](Lobby& lb, int conn, const std::string& nick, int ver) {
+        lb.OnConnect(conn, 0x7f000001, 0x7f000001);
+        std::vector<Out> o;
+        for (const std::string l : {"NOXCLIENT " + std::to_string(ver), "NICK " + nick, std::string("USER UserName HostName irc.westwood.com :RealName")})
+            lb.OnLine(conn, l, o);
+    };
+    auto rankJoin = [](Lobby& lb, int conn, const std::string& nick, std::vector<Out>& o) {
+        lb.OnLine(conn, "NOXRANK JOIN", o);
+        lb.OnLine(conn, "JOINGAME #" + nick + "'s_game 1 ", o);
+    };
+    auto has = [](const std::vector<Out>& o, int conn, const std::string& line) {
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line == line ? 1 : 0;
+        return n;
+    };
+    auto tokens = [](const std::vector<Out>& o, int conn) {
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line.rfind("NOXTOKEN ", 0) == 0 ? 1 : 0;
+        return n;
+    };
+    const std::string found = "NOXRANK FOUND " + std::to_string(kRankAcceptMs / 1000);
+    // 둘(판 ver)을 줄에 세워 둘 다 수락까지 — 나온 줄은 o 에
+    auto bothAccept = [&](Lobby& lb, int ver, std::vector<Out>& o) {
+        login(lb, 1, "amy", ver);
+        login(lb, 2, "bob", ver);
+        rankJoin(lb, 1, "amy", o);
+        rankJoin(lb, 2, "bob", o);
+        if (ver >= kNoxClientAcceptVersion) {
+            lb.OnLine(1, "NOXRANK ACCEPT", o);
+            lb.OnLine(2, "NOXRANK ACCEPT", o);
+        }
+    };
+
+    {   // ⑧
+        FakeRooms fake;
+        fake.ask = true;
+        Lobby lb(cfg, fake);
+        std::vector<Out> o;
+        bothAccept(lb, 5, o);
+        const bool asked = has(o, 1, "NOXRANK READY") == 1 && has(o, 2, "NOXRANK READY") == 1 && fake.asked.size() == 1 && tokens(o, 1) + tokens(o, 2) == 0 &&
+                           lb.RankRequestsPending() == 1 && lb.RankFoundPending() == 0;
+        std::vector<Out> oc;
+        lb.OnRoomCreated(fake.asked.back(), fake.Make("amy"), oc);
+        Check(asked && tokens(oc, 1) == 1 && tokens(oc, 2) == 1 && lb.RankRequestsPending() == 0 && lb.Stats().rankMatched == 2,
+              "★ ⑧ 게임 서버에 묻는 꼴 — 다 수락 → READY 둘 · 그때 물음 1 · 토큰 없음 → CREATED → 각자 참가 답");
+    }
+    {   // ⑨
+        FakeRooms fake;
+        fake.ask = true;
+        Lobby lb(cfg, fake);
+        std::vector<Out> o;
+        bothAccept(lb, 5, o);
+        const uint32_t req = fake.asked.back();
+        clock += kRoomRequestTimeoutMs - 1;
+        std::vector<Out> ot;
+        lb.Tick(ot);
+        const bool held = ot.empty() && lb.RankRequestsPending() == 1;
+        clock += 1;
+        lb.Tick(ot);
+        const bool back = has(ot, 1, "NOXRANK WAIT") == 1 && has(ot, 2, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 2 && lb.RankRequestsPending() == 0 &&
+                          lb.Stats().rankRoomTimeout == 1 && lb.Stats().rankRequeued == 2 && fake.cancelled == std::vector<uint32_t>{req} &&
+                          tokens(ot, 1) + tokens(ot, 2) == 0 && has(ot, 1, found) == 0;   // 쉬는 중 — 곧바로 다시 안 묶음
+        clock += kRankRetryMs;
+        std::vector<Out> or2;
+        lb.Tick(or2);
+        Check(held && back && has(or2, 1, found) == 1 && has(or2, 2, found) == 1 && fake.asked.size() == 1,
+              "★ ⑨ 다 수락 뒤 방 시간 초과 — 1ms 앞 그대로 · 한도에 둘 다 WAIT · 줄 앞 2 · 요청 접음 · 쉬는 동안 안 묶음 → 쉬고 나서 다시 찾음(방 요청은 아직 1)");
+    }
+    {   // ⑩
+        FakeRooms fake;
+        fake.canCreate = false;
+        Lobby lb(cfg, fake);
+        std::vector<Out> o;
+        bothAccept(lb, 5, o);
+        Check(has(o, 1, "NOXRANK READY") == 1 && has(o, 1, "NOXRANK WAIT") == 1 && has(o, 2, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 2 &&
+                  lb.Stats().rankRoomFailed == 1 && tokens(o, 1) + tokens(o, 2) == 0,
+              "★ ⑩ 다 수락 뒤 곧바로 실패 → READY 뒤 둘 다 WAIT · 줄 앞 2 · 참가 답 없음");
+    }
+    {   // ⑪
+        FakeRooms fake;
+        fake.ask = true;
+        Lobby lb(cfg, fake);
+        std::vector<Out> o;
+        bothAccept(lb, 5, o);
+        const uint32_t req = fake.asked.back();
+        std::vector<Out> ol;
+        lb.OnLine(2, "NOXRANK LEAVE", ol);
+        const bool broke = has(ol, 1, "NOXRANK WAIT") == 1 && has(ol, 2, "NOXRANK WAIT") == 0 &&
+                           has(ol, 2, ": " + std::to_string(kRankReleaseNumeric) + " u #bob's_game :Ranked match left") == 1 && lb.RankQueueSize() == 1 &&
+                           lb.RankRequestsPending() == 0 && fake.cancelled == std::vector<uint32_t>{req} && lb.Stats().rankReadyRequeued == 1 &&
+                           lb.Stats().rankLeftRequested[static_cast<size_t>(RankLeave::Dll)] == 1;
+        const unsigned long long late0 = lb.Stats().lateRoomReply;
+        std::vector<Out> oc;
+        lb.OnRoomCreated(req, fake.Make("amy"), oc);
+        Check(broke && tokens(oc, 1) == 0 && tokens(oc, 2) == 0 && lb.Stats().lateRoomReply == late0 + 1 && lb.RankQueueSize() == 1,
+              "★ ⑪ 다 수락 뒤 방 기다리는 중 bob LEAVE → bob 474 · amy WAIT · 줄 앞 · 요청 접음 → 늦은 CREATED 버림(참가 답 없음 · amy 는 줄에)");
+    }
+    {   // ⑫
+        FakeRooms fake;
+        fake.ask = true;
+        Lobby lb(cfg, fake);
+        std::vector<Out> o;
+        bothAccept(lb, 4, o);
+        const bool asked = fake.asked.size() == 1 && has(o, 1, found) == 0 && has(o, 1, "NOXRANK READY") == 0;
+        clock += kRoomRequestTimeoutMs;
+        std::vector<Out> ot;
+        lb.Tick(ot);
+        Check(asked && has(ot, 1, "NOXRANK WAIT") == 0 && has(ot, 2, "NOXRANK WAIT") == 0 && lb.RankQueueSize() == 2,
+              "★ ⑫ 옛 길(판 4) — 찾음 · READY 없이 곧바로 물음 · 시간 초과에 WAIT 없음(정품 창 그대로) · 줄 앞 2");
+    }
 }
 
 void RankQueueUnitTests() {
@@ -2662,6 +2797,7 @@ int main(int argc, char** argv) {
         PendingRoomUnitTests();   // ★ 10-20 v2 작업 3a
         RankQueueUnitTests();     // ★ 랭크 매칭 조각 4
         RankAcceptUnitTests();    // ★ 매칭 손보기 6
+        RankReadyUnitTests();     // ★ 10-31 다 수락 뒤 방 요청
         MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
         LinkAliveUnitTests();     // ★ 7단계 조각 2
         LobbyStoreUnitTests();    // ★ 7단계 조각 4

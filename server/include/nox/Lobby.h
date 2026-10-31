@@ -81,7 +81,7 @@ constexpr int kNoxClientAuthVersion = 3;
 //   「서버 접속 시도중...」 창이 닫히면 다음 줄 앞에 `NOXRANK LEAVE` 를 끼운다(`wsock32_proxy.cpp` ⑪). 낮은 판의 표시는 안 믿는다
 constexpr int kNoxClientRankVersion = 4;
 // ★ 매칭 손보기 6(`Docs/MATCH_UX_REVIEW.md`) — 이 판부터 DLL 이 로비의 `NOXRANK FOUND` 에 기다림 창을 「수락?」 예 · 아니오로 바꾸고 예면 `NOXRANK ACCEPT`.
-//   묶음의 방이 서면 아직 요청 중인 사람이 둘 이상이고 다 이 판 이상일 때만 수락 단계(하나라도 낮거나 한 사람만 남았으면 옛 길 — 곧바로 참가 답)
+//   묶을 때 둘 이상이고 다 이 판 이상일 때만 수락 단계(하나라도 낮으면 옛 길 — 곧바로 방 요청 · 참가 답). ★ 10-31 — 방은 다 수락한 뒤 요청(`NOXRANK READY`)
 constexpr int kNoxClientAcceptVersion = 5;
 // 수락 한도 — 플랜 「10초 무응답」. 넘으면 수락한 사람은 줄 앞에 되돌리고(`NOXRANK WAIT`) 안 한 사람은 줄에서 뺀다(`NOXRANK EXPIRED`)
 constexpr uint32_t kRankAcceptMs = 10000;
@@ -291,11 +291,12 @@ struct LobbyStats {
     unsigned long long rankFoundGroups = 0;     // 수락 단계로 간 묶음
     unsigned long long rankFound = 0;           // 그 사람 수(FOUND 보냄)
     unsigned long long rankAccepted = 0;        // ACCEPT 받음(찾음 중)
-    unsigned long long rankAcceptMatched = 0;   // 다 수락 → 참가 답
+    unsigned long long rankAcceptMatched = 0;   // 다 수락 → ★ 10-31 방 요청(참가 답은 방이 서면 — `rankMatched`)
     unsigned long long rankFoundRequeued = 0;   // 남이 거절 · 한도 → 줄 앞에 되돌림(WAIT)
     unsigned long long rankDeclined[kRankLeaveCount] = {};   // 찾음 · 수락 뒤 빠짐 = 거절(까닭별)
     unsigned long long rankExpired = 0;         // 한도까지 수락 안 함 → 줄에서 뺀(EXPIRED)
     unsigned long long rankAcceptStray = 0;     // 찾음 중이 아닌 접속의 ACCEPT(버림)
+    unsigned long long rankReadyRequeued = 0;   // ★ 10-31 — 다 수락 뒤 방 기다리는 동안 남이 빠져 줄 앞에 되돌림(WAIT · 요청 접음)
     unsigned long long rankJoinReleased = 0;    // ★ 10-31 — 빠진 사람(창 닫힘 · LIST · 한도 — 끊김은 빼고)의 묶인 참가에 474
                                                 //   = 빠짐(줄 · 요청 중) 창 닫힘 · LIST + 거절 창 닫힘 · LIST + 한도
     unsigned long long RankDeclinedTotal() const {
@@ -431,7 +432,10 @@ private:
     void RankPump(std::vector<Out>& out);
     void RankRequest(size_t count, bool full, std::vector<Out>& out);
     void RankReply(uint32_t req, const std::vector<int>& group, const LobbyRoom& room, std::vector<Out>& out);
-    void RankRequeue(uint32_t req, const std::vector<int>& group);
+    void RankRequeue(uint32_t req, const std::vector<int>& group, bool ready, std::vector<Out>& out);
+    // ★ 10-31 — 방 요청(옛 길 · 다 수락한 묶음 공용) · 다 수락한 묶음이 방을 기다리는 동안 빠짐
+    void RankAskRoom(uint32_t req, const std::vector<int>& group, bool ready, const char* how, std::vector<Out>& out);
+    void RankReadyBreak(uint32_t req, std::vector<Out>& out);
     std::string RankNames(const std::vector<int>& conns) const;
     // ★ 매칭 손보기 6 — 수락 단계: 찾음 보내기 · 수락 받기 · 묶음 풀기(남은 사람을 줄 맨 앞에 — 쉬지 않음 · `except` 는 빼고) · 참가 답
     void RankAccept(int conn, Conn& c, std::vector<Out>& out);
@@ -465,12 +469,12 @@ private:
     struct RankGroup {
         std::vector<int> conns;
         uint32_t deadlineMs = 0;
+        bool ready = false;   // ★ 10-31 — 수락 단계를 다 거친 묶음(실패 · 시간 초과 · 빠짐에 WAIT)
     };
     std::map<uint32_t, RankGroup> rankPending_;
-    // ★ 매칭 손보기 6 — 수락을 기다리는 묶음(방 요청 번호 → 사람 · 선 방 · 한도)
+    // ★ 매칭 손보기 6 — 수락을 기다리는 묶음(요청 번호 → 사람 · 한도). ★ 10-31 — 방은 아직 없음(다 수락 뒤 요청)
     struct RankFoundGroup {
         std::vector<int> conns;
-        LobbyRoom room;
         uint32_t deadlineMs = 0;
     };
     std::map<uint32_t, RankFoundGroup> rankFound_;
