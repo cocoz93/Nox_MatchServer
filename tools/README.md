@@ -9,7 +9,7 @@
 | `v2_split_smoke.ps1` | 자체검사 `v2_split_smoke`(★ 10-20 v2 — 로비 하나 + 게임 서버 둘 127.0.0.1 · 127.0.0.2 — 남의 게임 서버 토큰 거절 · 게임 서버 · 로비 껐다 켜기 · 포트 14400 · 14410 · UDP 18611)의 본체 |
 | `router_smoke.ps1` | 자체검사 `router_smoke`(라우터 `nox_router` 4005 왕복 — 시험용 포트 14005 · 14006, 채널 주소 설정 없음/있음)의 본체. 같은 절이 부른다 |
 | `mo_local.ps1` | ★ 10-20 v2 — 이 PC 하나에서 정품 클라로 보는 판(사람 확인). `-Mode Start` = 라우터 127.0.0.1:4005 · 로비 127.0.0.1:4000 · 게임 서버 `--lobby` · 클라1 · 클라2(기록 `_out\mo_local\<시각>\`) · `-Mode Stop` = 닫기 이벤트로 끔. `hosts_lobby.ps1 -Mode On` 이 먼저 |
-| `ui_apply.ps1` | ★ 랭크 매칭 조각 1 — 게임 목록 여섯째 칸(10007) 글자를 「랭크 매칭」으로(`window\noxworld.wnd` 글자 열쇠 · `nox.csf` 새 열쇠) · ★ 매칭 손보기 8 — 필터 창 「완료」 버튼 10090(`window\filter.wnd` — 정품 그림 · 글자 `WolFind.wnd:Done`). `-Mode Restore` = 되돌림(원본 사본 `_out\ui_backup` 과 바이트 대조) · `-Mode Check` = 상태. `mo_local.ps1` 이 클라 DLL 을 바꿔 끼우는 자리에서 부른다 |
+| `ui_apply.ps1` | ★ 랭크 매칭 조각 1 — 게임 목록 여섯째 칸(10007) 글자를 「랭크 매칭」으로(`window\noxworld.wnd` 글자 열쇠 · `nox.csf` 새 열쇠 · ★ 10-31 자리는 셋째 칸 y 169 로) · ★ 매칭 손보기 8 — 필터 창 「완료」 버튼 10090(`window\filter.wnd` — 정품 그림 · 글자 `WolFind.wnd:Done`). `-Mode Restore` = 되돌림(원본 사본 `_out\ui_backup` 과 바이트 대조) · `-Mode Check` = 상태. `mo_local.ps1` 이 클라 DLL 을 바꿔 끼우는 자리에서 부른다 |
 | `mo_host.ps1` | 다른 PC 를 붙이는 판(`서버_MO_열기.bat` · `서버_MO_닫기.bat`) — 방화벽 · 로비(0.0.0.0:4000) · 게임 서버 · 라우터(0.0.0.0:4005) |
 
 한글이 들어가므로 **UTF-8 BOM 이 필수**다(없으면 CP949 로 오독해 파싱부터 실패).

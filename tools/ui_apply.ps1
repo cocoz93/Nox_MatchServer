@@ -1,5 +1,6 @@
 ﻿# ui_apply.ps1 — 게임 목록 화면 여섯째 칸(10007) 글자를 「랭크 매칭」으로 (랭크 매칭 조각 1 · Docs/RANK_MATCH_PLAN.md)
 #                · 필터 창에 「완료」 버튼(★ 매칭 손보기 8 · Docs/MATCH_UX_REVIEW.md)
+#                · ★ 10-31 그 버튼을 셋째 칸(y 169 — 숨긴 「리스트」 자리)으로
 #
 #   .\tools\ui_apply.ps1                  → 적용(이미 적용이면 그대로)
 #   .\tools\ui_apply.ps1 -Mode Restore    → 되돌림(적용 전 사본과 바이트 대조)
@@ -32,6 +33,10 @@ $latin1 = [Text.Encoding]::GetEncoding(28591)   # 바이트 그대로 글자로(
 $wndPath = Join-Path $GameDir 'window\noxworld.wnd'
 $csfPath = Join-Path $GameDir 'nox.csf'
 $blockHead = '10007 40 349 150 32 PUSHBUTTON (Find);'
+# ★ 10-31 — 「랭크 매칭」을 여섯째 칸(y 349)에서 셋째 칸(y 169 — 「리스트」 10004 자리 · DLL ⑫ 가 숨김)으로(사용자 「3번째로 올리자」).
+#   - 상태 셋: 원본(옛 머리 + 옛 열쇠) · 글만(옛 머리 + 새 열쇠 — 10-31 전 이 스크립트가 만든 꼴, 적용하면 자리만 더 옮김) · 적용됨(새 머리 + 새 열쇠)
+#   - DLL 없는 인터넷 모드면 「리스트」와 겹침(그때 이 버튼은 정품 「찾기」라 우리 로비에서 쓸 일 없음)
+$blockHeadNew = '10007 40 169 150 32 PUSHBUTTON (Find);'
 $textOrig = 'TEXT = Noxworld.wnd:Find;'
 $textNew = 'TEXT = Noxworld.wnd:RankMatch;'
 $label = 'Noxworld.wnd:RankMatch'
@@ -60,14 +65,27 @@ function Count-Of([string]$hay, [string]$needle) { ([regex]::Matches($hay, [rege
 # 창 파일 — 10007 칸 안의 글자 줄이 원래 열쇠면 원본 · 새 열쇠면 적용됨. 파일 전체에서 각 줄이 몇 번인지도 본다(다른 칸에 같은 줄이 생기면 모름)
 function Wnd-State([byte[]]$b) {
   $t = $latin1.GetString($b)
-  $h = $t.IndexOf($blockHead, [StringComparison]::Ordinal)
-  if ($h -lt 0 -or (Count-Of $t $blockHead) -ne 1) { return @{ state = '모름'; why = '10007 칸 머리 줄이 하나가 아님' } }
+  $nHO = Count-Of $t $blockHead; $nHN = Count-Of $t $blockHeadNew
+  if ($nHO + $nHN -ne 1) { return @{ state = '모름'; why = "10007 칸 머리 줄 — 옛 자리 $nHO · 새 자리 $nHN(합이 하나여야 함)" } }
+  $moved = $nHN -eq 1
+  $h = $t.IndexOf($(if ($moved) { $blockHeadNew } else { $blockHead }), [StringComparison]::Ordinal)
   $end = $t.IndexOf('END', $h, [StringComparison]::Ordinal)
   $nOrig = Count-Of $t $textOrig; $nNew = Count-Of $t $textNew
   $inOrig = $t.IndexOf($textOrig, $h, [StringComparison]::Ordinal); $inNew = $t.IndexOf($textNew, $h, [StringComparison]::Ordinal)
-  if ($nOrig -eq 1 -and $nNew -eq 0 -and $inOrig -gt $h -and $inOrig -lt $end) { return @{ state = '원본'; text = $t } }
-  if ($nOrig -eq 0 -and $nNew -eq 1 -and $inNew -gt $h -and $inNew -lt $end) { return @{ state = '적용됨'; text = $t } }
-  return @{ state = '모름'; why = "원래 열쇠 줄 $nOrig · 새 열쇠 줄 $nNew(10007 칸 안이어야 함)" }
+  $isOrig = $nOrig -eq 1 -and $nNew -eq 0 -and $inOrig -gt $h -and $inOrig -lt $end
+  $isNew = $nOrig -eq 0 -and $nNew -eq 1 -and $inNew -gt $h -and $inNew -lt $end
+  if (-not $moved -and $isOrig) { return @{ state = '원본'; text = $t } }
+  if (-not $moved -and $isNew) { return @{ state = '글만'; text = $t } }
+  if ($moved -and $isNew) { return @{ state = '적용됨'; text = $t } }
+  return @{ state = '모름'; why = "새 자리 $moved · 원래 열쇠 줄 $nOrig · 새 열쇠 줄 $nNew(10007 칸 안이어야 함 · 새 자리에 옛 열쇠는 이 스크립트 꼴 아님)" }
+}
+# 10007 칸 머리 · 글 줄을 그 상태에서 원본 꼴로(되돌림) 또는 적용됨 꼴로(적용)
+function Wnd-To([string]$t, [string]$from, [string]$to) {
+  if ($from -eq '원본' -and $to -eq '적용됨') { return Swap-Once (Swap-Once $t $textOrig $textNew) $blockHead $blockHeadNew }
+  if ($from -eq '글만' -and $to -eq '적용됨') { return Swap-Once $t $blockHead $blockHeadNew }
+  if ($from -eq '적용됨' -and $to -eq '원본') { return Swap-Once (Swap-Once $t $textNew $textOrig) $blockHeadNew $blockHead }
+  if ($from -eq '글만' -and $to -eq '원본') { return Swap-Once $t $textNew $textOrig }
+  throw "noxworld.wnd — $from → $to 길 없음"
 }
 
 # 글자 파일 — 머리 24바이트(' FSC' · 판 · 열쇠 수 · 글 수 · ? · 언어) 뒤 열쇠 묶음(' LBL' · 글 수 · 이름 길이 · 이름 · 글 묶음들)을 끝까지 걷는다.
@@ -173,11 +191,7 @@ if ($ws.state -eq '모름' -or $cs.state -eq '모름' -or $fs.state -eq '모름'
 # 세 파일의 새 바이트를 다 지은 뒤에 쓴다 — 하나만 바뀐 채 멈추지 않게(10-30 시험: 글자 파일 사본이 없을 때 창 파일만 되돌아갔다)
 $wndOut = $null; $csfOut = $null; $filOut = $null; $wndNote = ''; $csfNote = ''; $filNote = ''
 if ($Mode -eq 'Apply') {
-  if ($ws.state -eq '원본') {
-    $t = $ws.text
-    $h = $t.IndexOf($blockHead, [StringComparison]::Ordinal); $i = $t.IndexOf($textOrig, $h, [StringComparison]::Ordinal)
-    $wndOut = $latin1.GetBytes($t.Substring(0, $i) + $textNew + $t.Substring($i + $textOrig.Length))
-  }
+  if ($ws.state -ne '적용됨') { $wndOut = $latin1.GetBytes((Wnd-To $ws.text $ws.state '적용됨')) }   # ★ 10-31 — 원본 · 글만 → 적용됨
   if ($cs.state -eq '원본') {
     $lb = Label-Bytes
     $csfOut = New-Object byte[] ($csfB.Length + $lb.Length)
@@ -189,14 +203,13 @@ if ($Mode -eq 'Apply') {
     $t = Swap-Once $fs.text $filterHeadOrig $filterHeadNew
     $filOut = $latin1.GetBytes($t.Substring(0, $t.Length - $filterRest.Length) + $doneBlock + $filterRest)
   }
-  if ($wndOut) { $wndNote = "적용 — 원본 사본 $(Save-Backup 'noxworld.wnd' $wndB)" }
+  # 사본은 원본 꼴로 — 글만 상태면 되돌린 바이트를 사본으로(되돌림 대조가 원본과 하게)
+  if ($wndOut) { $wndNote = "적용($($ws.state) →) — 원본 사본 $(Save-Backup 'noxworld.wnd' $(if ($ws.state -eq '원본') { $wndB } else { $latin1.GetBytes((Wnd-To $ws.text $ws.state '원본')) }))" }
   if ($csfOut) { $csfNote = "적용 — 원본 사본 $(Save-Backup 'nox.csf' $csfB) (+$($csfOut.Length - $csfB.Length) 바이트)" }
   if ($filOut) { $filNote = "적용 — 원본 사본 $(Save-Backup 'filter.wnd' $filB) (+$($filOut.Length - $filB.Length) 바이트)" }
 } else {
-  if ($ws.state -eq '적용됨') {
-    $t = $ws.text
-    $h = $t.IndexOf($blockHead, [StringComparison]::Ordinal); $i = $t.IndexOf($textNew, $h, [StringComparison]::Ordinal)
-    $wndOut = $latin1.GetBytes($t.Substring(0, $i) + $textOrig + $t.Substring($i + $textNew.Length))
+  if ($ws.state -ne '원본') {   # ★ 10-31 — 적용됨 · 글만 → 원본
+    $wndOut = $latin1.GetBytes((Wnd-To $ws.text $ws.state '원본'))
     $bk = Find-Backup 'noxworld.wnd' $wndOut
     if (-not $bk) { throw 'noxworld.wnd — 거꾸로 고친 것과 같은 원본 사본이 없다(두 파일 다 손대지 않음)' }
     $wndNote = "되돌림 — 사본과 바이트 같음 $bk"
