@@ -777,6 +777,17 @@ typedef int(__cdecl* PFN_sethidden)(DWORD win, DWORD hide);
 static bool RankFoundClick(DWORD id);   // ★ 매칭 손보기 6 — ⑬ 찾음 창의 예(4007) · 아니오(4006) — 가로챘으면 true
 static void RankLeaveNow(const char* why);   // ★ 10-31 — ⑪ 기다리는 중이면 그 자리에서 NOXRANK LEAVE(⑬ 절)
 static volatile LONG g_rankFoundState = 0;   // ★ ⑬ 0 없음 · 1 찾음(예 · 아니오 창) · 2 수락함(남 기다림) — ④ 의 1초 고침을 멈춤
+// ★ 10-31 — ⑬ 찾음 창 남은 초(`NOXRANK FOUND <초>` 의 초 · DLL 시각으로 셈). 1 동안 ④ 자리가 1초마다 이 버퍼를 고친다
+static volatile LONG g_rankFoundSec = 10;      // 로비가 준 수락 한도(초) — 못 읽으면 10(`Lobby.h` kRankAcceptMs)
+static DWORD g_rankFoundSince = 0;             // 찾음 창을 띄운 시각(게임 주 스레드만)
+static DWORD g_rankFoundShownLeft = 0;         // 창에 낸 남은 초(창을 띄울 때 한도로 맞춤 — 앞 찾음의 값이 남아 한 칸 건너뛰지 않게)
+static wchar_t g_rankFoundBuf[64];             // 정품 글 칸이 쥐는 찾음 글(게임 주 스레드만 씀)
+static volatile LONG g_rankFoundTicks = 0;     // 남은 초 고침(초가 바뀔 때마다)
+static void RankFoundText(DWORD left)
+{
+    swprintf(g_rankFoundBuf, sizeof(g_rankFoundBuf) / sizeof(g_rankFoundBuf[0]),
+             L"매칭 성공! 수락하시겠습니까? 남은 시간 %lu초 (시간이 끝나면 자동 거절)", left);
+}
 
 static int __cdecl RankListProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
 {
@@ -933,6 +944,16 @@ static void RankWaitText()
         return;
     }
     if (!text) return;   // 이 창은 글 칸을 못 찾았다
+    if (g_rankFoundState == 1) {   // ★ 10-31 — 찾음 창(같은 알림창 · 같은 글 칸) 남은 초. 0 이 되면 로비의 EXPIRED 가 창을 닫는다
+        const DWORD gone = (now - g_rankFoundSince) / 1000, lim = (DWORD)g_rankFoundSec;
+        const DWORD left = gone >= lim ? 0 : lim - gone;
+        if (left == g_rankFoundShownLeft) return;
+        g_rankFoundShownLeft = left;
+        RankFoundText(left);
+        ((PFN_wndproc4)proc)(text, kMsgSetText, (DWORD)(uintptr_t)g_rankFoundBuf, (DWORD)-1);
+        InterlockedIncrement(&g_rankFoundTicks);
+        return;
+    }
     if (g_rankFoundState) return;   // ★ ⑬ 찾음 · 수락 기다림 — 창 글이 그 문구(지난 시간은 계속 셈 — WAIT 뒤 이어서)
     const DWORD sec = (now - since) / 1000;
     if (sec == shownSec) return;
@@ -1024,6 +1045,8 @@ static void RankMenuTick(DWORD world)
 
 // ─────────────────────────────────────────────── ⑬ 수락 단계 (매칭 손보기 6 · Docs/MATCH_UX_REVIEW.md · 판 5)
 // 로비가 묶음의 방을 세우면 참가 답 대신 `NOXRANK FOUND <초>` → 기다림 창(같은 창)을 「매칭 성공! 수락하시겠습니까?」 예 · 아니오로 바꾼다.
+//   ★ 10-31 — 글 뒤에 「남은 시간 N초 (시간이 끝나면 자동 거절)」 · 1초마다 ④ 자리(RankWaitText)가 고침(시각은 DLL — 창을 띄운 때부터 · 로비 한도와 왕복 시간만큼 차이)
+//   - 왜: 고정 글만으론 한도가 있다는 것도, 안 누르면 거절로 처리된다는 것도 안 보였음(10-31 사람 판)
 //   창 바꾸기 = 정품 알림창 열기 `0x449590(부모, 제목, 글, 깃발, 0, 0)` — 창이 이미 있으면 그 창의 깃발(`0x449a20`) · 글만 바꾸고 둔다(`0x4495d9`~`0x44960f`).
 //   깃발 예 0x8 · 아니오 0x10 · 취소 0x2 · 누르면 닫힘 0x20(OpenNox `client/gui/dialog.go`). 예 · 아니오 함수 칸은 0 — 정품이 다음에 이 함수를 부르면
 //   앞 「아니오 함수」를 불러 버린다(`0x4495a9`). 대신 누름은 창이 부모(게임 목록 창 — ⑩ 이 감쌈)에 넘기므로 거기서 4007 · 4006 을 가로챈다
@@ -1035,7 +1058,6 @@ static void RankMenuTick(DWORD world)
 //   받은 줄은 받기 훅 안에서 표시만 세우고, 창은 ⑩ 자리(받기 훅 · 게임 주 스레드)에서 바꾼다. 찾음 · 수락 기다림 동안엔 ④ 의 1초 고침을 멈춘다
 static const uintptr_t kDlgOpen = 0x449590;
 static const DWORD kDlgYesNo = 0x18, kDlgWaitFlags = 0x22, kDlgCancelId = 4002;
-static const wchar_t kRankFoundText[] = L"매칭 성공! 수락하시겠습니까?";
 static const wchar_t kRankAcceptedText[] = L"상대 수락 기다리는 중...";
 static volatile LONG g_rankEvFound = 0, g_rankEvWait = 0, g_rankEvExpired = 0;   // 받은 줄 → ⑩ 자리에서 처리
 static volatile LONG g_rankFoundShown = 0;    // 창을 예 · 아니오로 바꿈
@@ -1054,7 +1076,12 @@ typedef int(__cdecl* PFN_dlgopen)(DWORD parent, const wchar_t* title, const wcha
 static void RankOnLobbyLine(SOCKET s, const std::string& line)
 {
     const std::string sub = line.substr(strlen(LobbyLineFilter::kRankMark));
-    if (sub.compare(0, 5, "FOUND") == 0) { g_rankSock = s; InterlockedExchange(&g_rankEvFound, 1); }
+    if (sub.compare(0, 5, "FOUND") == 0) {
+        const long sec = sub.size() > 6 ? strtol(sub.c_str() + 6, NULL, 10) : 0;   // `FOUND <초>` — 이상하면 10 그대로
+        if (sec > 0 && sec <= 120) InterlockedExchange(&g_rankFoundSec, sec);
+        g_rankSock = s;
+        InterlockedExchange(&g_rankEvFound, 1);
+    }
     else if (sub == "WAIT") InterlockedExchange(&g_rankEvWait, 1);
     else if (sub == "EXPIRED") InterlockedExchange(&g_rankEvExpired, 1);
     Log("⑬ 로비 줄 「%s」 — 받음(창은 다음 받기 훅에서)", line.c_str());
@@ -1115,10 +1142,13 @@ static void RankFoundTick()
             InterlockedIncrement(&g_rankFoundMiss);
             Log("⑬ FOUND — 기다림 창이 없음(알림창 %#lx · 기다림 %ld) · 그대로", box, g_rankWaiting);
         } else {
+            g_rankFoundSince = GetTickCount();
+            g_rankFoundShownLeft = (DWORD)g_rankFoundSec;
+            RankFoundText(g_rankFoundShownLeft);   // ★ 10-31 — 남은 초 · 자동 거절 안내(1초마다 ④ 자리가 고침)
             InterlockedExchange(&g_rankFoundState, 1);
-            RankDlg(kRankFoundText, kDlgYesNo);
+            RankDlg(g_rankFoundBuf, kDlgYesNo);
             const LONG n = InterlockedIncrement(&g_rankFoundShown);
-            Log("⑬ 찾음(누적 %ld) — 알림창 %#lx 를 「매칭 성공! 수락하시겠습니까?」 예 · 아니오로", n, box);
+            Log("⑬ 찾음(누적 %ld) — 알림창 %#lx 를 「매칭 성공! 수락하시겠습니까? 남은 시간 %ld초」 예 · 아니오로", n, box, g_rankFoundSec);
         }
     }
     if (InterlockedExchange(&g_rankEvAccepted, 0)) {   // ★ 10-31 — 예 누름 처리가 끝난 뒤(아래 RankFoundClick 주석)
@@ -1197,13 +1227,13 @@ static void MenuSummary()
 // ★ ⑬ — 수락 단계 셈(따로 한 줄 — 바뀌었을 때만). MenuSummary 와 같은 자리에서 부른다
 static void AcceptSummary()
 {
-    static LONG seen[9] = {};
-    const LONG now[9] = { g_rankFoundShown, g_rankAccepts, g_rankAcceptFail, g_rankDeclines, g_rankWaits, g_rankExpiries, g_rankFoundMiss,
-                          g_rankLeaveNowSent, g_rankLeaveNowFail };
+    static LONG seen[10] = {};
+    const LONG now[10] = { g_rankFoundShown, g_rankAccepts, g_rankAcceptFail, g_rankDeclines, g_rankWaits, g_rankExpiries, g_rankFoundMiss,
+                          g_rankLeaveNowSent, g_rankLeaveNowFail, g_rankFoundTicks };
     if (memcmp(seen, now, sizeof(now)) == 0) return;
     memcpy(seen, now, sizeof(now));
-    Log("⑬ 수락 셈 — 찾음 창 %ld · 예(ACCEPT) %ld · 보내기 실패 %ld · 아니오 %ld · WAIT %ld · EXPIRED %ld · 못 찾음 %ld | 그 자리 LEAVE %ld · 실패 %ld",
-        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8]);
+    Log("⑬ 수락 셈 — 찾음 창 %ld · 예(ACCEPT) %ld · 보내기 실패 %ld · 아니오 %ld · WAIT %ld · EXPIRED %ld · 못 찾음 %ld | 그 자리 LEAVE %ld · 실패 %ld | 남은 초 고침 %ld",
+        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8], now[9]);
 }
 
 // ─────────────────────────────────────────────── ⑭ 랭크 점수 알림창 꾸밈 (10-31 · 사용자가 고른 시안 3)
