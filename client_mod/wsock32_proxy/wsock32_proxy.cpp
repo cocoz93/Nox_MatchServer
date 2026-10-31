@@ -255,6 +255,7 @@ static bool g_chanGuardOn = false;          // ★ 10-21 — ⑧ 동굴을 붙�
 static void RankSummary();
 static void MenuSummary();   // ★ 매칭 손보기 8 — ⑫
 static void AcceptSummary(); // ★ 매칭 손보기 6 — ⑬
+static void NoticeSummary(); // ★ 10-31 — ⑭
 
 static DWORD WINAPI SummaryThread(LPVOID)
 {
@@ -270,6 +271,7 @@ static DWORD WINAPI SummaryThread(LPVOID)
         RankSummary();   // ★ 랭크 매칭 조각 2 — ⑩ 셈이 바뀌었으면 한 줄
         MenuSummary();   // ★ 매칭 손보기 8 — ⑫ 도
         AcceptSummary(); // ★ 매칭 손보기 6 — ⑬ 도
+        NoticeSummary(); // ★ 10-31 — ⑭ 도
         if (tick % 10) continue;   // 모듈 요약은 10초마다
         ModStat now[kMaxMods];
         int n;
@@ -1204,6 +1206,109 @@ static void AcceptSummary()
         now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8]);
 }
 
+// ─────────────────────────────────────────────── ⑭ 랭크 점수 알림창 꾸밈 (10-31 · 사용자가 고른 시안 3)
+// 게임 서버가 판 뒤 `0xa8` 깃발 0x10(알림창 길 — 서버 `Server::SendNoticeBoxTo`)으로 「랭크 상승! 1000 -> 1010 (+10)」을 보내면 정품이 공용 알림창을 띄운다
+//   (`Game.exe` 0x471e9f → 0x449590(0, 「Notice」, 글, 0x21) · 창 `[0x69cba4]` · 제목 4005 · 글 4004 · OK 4001 — `window\dlg.wnd`, 글꼴이 크면 `ldlg.wnd`(0x449624)).
+// 창이 뜬 뒤 다음 받기 · 보내기 훅(게임 주 스레드)에서 그 창을 시안 3 꼴로 바꾼다:
+//   · 창 300x150 을 화면 가운데로 — 정품 띄움과 같은 셈(0x44970e — 화면 너비 [0x95410c] · 높이 [0x954764] · 자리 함수 0x4882c0 이 끝 칸도 고침)
+//   · 제목 칸 = 첫 줄 「랭크 상승!」(오름 초록 · 내림 빨강 · 같음 금색) · 글 칸 = 둘째 줄 「1000 -> 1010 (+10)」 흰색 · OK 는 가운데 아래
+//   · 큰 글꼴 = 정품 0x449ee0(1)(제목 · 글 칸 +0xec 에 「large」 — 정품이 쓰는 큰 알림창 갈래)
+//   - 색 칸 +0x68 은 OpenNox `WindowData.TextColorVal` 자리 — GOG 판에서 정적 확인을 못 해, 쓰기 전에 지금 값이 dlg.wnd 의 글 금색(240 180 42) ·
+//     제목 초록(0 200 0)을 정품 색 함수 0x435e10 으로 지은 값과 같은지 본다. 다르면 색은 안 건드리고 셈 · 값을 기록에(다음 판에서 자리를 고칠 근거)
+//   - 글은 칸 +0x20 → 글 자료 +0 의 넓은 글 포인터(정품은 0x4001 로 포인터만 쥠 — OpenNox `StaticTextSetText`) — 우리 버퍼(프로세스 끝까지)를 0x4001 로 넣는다
+//   - 한 번 꾸민 창은 글 포인터가 우리 버퍼라 다시 안 꾸민다 · 「랭크 」로 시작하지 않는 글(수락 창 등)은 손 안 댐
+//   - 왜: 정품 알림창은 150x155 · 작은 글꼴 한 줄이라 판 뒤 점수 변화가 잘 안 보임(10-31 사람 판 「글자 크게 · 창 크기」 → 시안 3)
+static const DWORD kDlgTitleId = 4005, kDlgOkId = 4001;   // 글 칸 kDlgTextId(4004) · 글 넣기 kMsgSetText(0x4001)는 ⑪ ④ 것
+static const uintptr_t kWinSetPos = 0x4882c0, kDlgBigFont = 0x449ee0, kColorRgb = 0x435e10, kWinCall94 = 0x488da0;
+static const uintptr_t kScreenW = 0x95410c, kScreenH = 0x954764;
+static const int kNbW = 300, kNbH = 150, kNbLineH = 24;
+static wchar_t g_nbLine1[32], g_nbLine2[48];          // 꾸민 창이 가리키는 글(프로세스 끝까지)
+static DWORD g_nbBadText = 0;                         // 숫자가 없어 못 나눈 글 포인터(같은 창에 한 번만 셈)
+static volatile LONG g_nbDone = 0, g_nbMiss = 0, g_nbColorSkip = 0, g_nbBad = 0;
+static volatile LONG g_nbRan = 0;                     // 주 스레드에서 한 번이라도 돌았나(0 이면 이 훅이 주 스레드에서 안 불림)
+typedef int(__cdecl* PFN_setpos)(DWORD win, int x, int y);
+typedef void(__cdecl* PFN_dlgfont)(int mode);
+typedef DWORD(__cdecl* PFN_rgb)(int r, int g, int b);
+
+static void NbPlace(DWORD win, int w, int h, int x, int y)
+{
+    *(volatile int*)(win + 8) = w;
+    *(volatile int*)(win + 0xc) = h;
+    ((PFN_setpos)kWinSetPos)(win, x, y);
+}
+
+static void NoticeBoxTick(const char* where)
+{
+    if (!g_rankOn || GetCurrentThreadId() != g_mainTid) return;
+    if (!InterlockedExchange(&g_nbRan, 1)) Log("⑭ 점수 알림창 꾸밈 — 주 스레드 %s 훅에서 처음 돎", where);
+    DWORD box = 0;
+    if (!ReadSelf(kMsgBox, &box) || !box) return;
+    const DWORD text = ((PFN_findchild)kFindChild)(box, kDlgTextId);
+    DWORD wd = 0, tp = 0;
+    if (!text || !ReadSelf(text + 0x20, &wd) || !wd || !ReadSelf(wd, &tp) || !tp) return;
+    if (tp == (DWORD)(uintptr_t)g_nbLine2 || tp == g_nbBadText) return;   // 이미 꾸밈 · 이미 못 나눔
+    wchar_t s[64] = {};
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), (LPCVOID)(uintptr_t)tp, s, sizeof(s) - sizeof(wchar_t), &got)) return;
+    if (wcsncmp(s, L"랭크 ", 3) != 0) return;   // 우리 알림이 아님
+    const wchar_t* digit = s;
+    while (*digit && !(*digit >= L'0' && *digit <= L'9')) ++digit;
+    const DWORD title = ((PFN_findchild)kFindChild)(box, kDlgTitleId);
+    const DWORD ok = ((PFN_findchild)kFindChild)(box, kDlgOkId);
+    if (!*digit || !title || !ok) {
+        g_nbBadText = tp;
+        InterlockedIncrement(!*digit ? &g_nbBad : &g_nbMiss);
+        Log("⑭ 알림창 %#lx — %s · 손 안 댐", box, !*digit ? "글에 숫자가 없어 못 나눔" : "제목(4005) · OK(4001) 칸을 못 찾음");
+        return;
+    }
+    size_t headLen = (size_t)(digit - s);
+    while (headLen && s[headLen - 1] == L' ') --headLen;
+    if (headLen >= _countof(g_nbLine1)) headLen = _countof(g_nbLine1) - 1;
+    wmemcpy(g_nbLine1, s, headLen);
+    g_nbLine1[headLen] = 0;
+    wcsncpy(g_nbLine2, digit, _countof(g_nbLine2) - 1);
+    g_nbLine2[_countof(g_nbLine2) - 1] = 0;
+    const bool up = wcsstr(g_nbLine1, L"상승") != NULL, down = wcsstr(g_nbLine1, L"하락") != NULL;   // 셋째 = 같음(유지)
+
+    const PFN_rgb rgb = (PFN_rgb)kColorRgb;
+    const DWORD gold = rgb(240, 180, 42), green = rgb(0, 200, 0);
+    DWORD textColor = 0, titleColor = 0;
+    const bool colorOk = ReadSelf(text + 0x68, &textColor) && ReadSelf(title + 0x68, &titleColor) && textColor == gold && titleColor == green;
+
+    ((PFN_dlgfont)kDlgBigFont)(1);   // 제목 · 글 칸 큰 글꼴(정품 갈래)
+    DWORD okW = 55, okH = 20;
+    ReadSelf(ok + 8, &okW);
+    ReadSelf(ok + 0xc, &okH);
+    const int scrW = *(volatile int*)kScreenW, scrH = *(volatile int*)kScreenH;
+    NbPlace(box, kNbW, kNbH, (scrW - kNbW) / 2, (scrH - kNbH) / 2);
+    NbPlace(title, kNbW, kNbLineH, 0, 30);
+    NbPlace(text, kNbW, kNbLineH, 0, 64);
+    ((PFN_setpos)kWinSetPos)(ok, (kNbW - (int)okW) / 2, kNbH - (int)okH - 12);
+    ((PFN_wndproc4)kWinCall94)(title, kMsgSetText, (DWORD)(uintptr_t)g_nbLine1, (DWORD)-1);   // 0x488da0 = 칸 +0x178 처리 함수 부르기(정품 · ⑪ ④ 와 같은 길)
+    ((PFN_wndproc4)kWinCall94)(text, kMsgSetText, (DWORD)(uintptr_t)g_nbLine2, (DWORD)-1);
+    if (colorOk) {
+        *(volatile DWORD*)(title + 0x68) = up ? rgb(60, 230, 60) : down ? rgb(235, 60, 50) : gold;
+        *(volatile DWORD*)(text + 0x68) = rgb(242, 242, 242);
+    } else {
+        InterlockedIncrement(&g_nbColorSkip);
+    }
+    const LONG n = InterlockedIncrement(&g_nbDone);
+    char l1[96] = {}, l2[144] = {};   // 기록 파일은 UTF-8(`%ls` 는 C 로캘에서 한글이 깨짐)
+    WideCharToMultiByte(CP_UTF8, 0, g_nbLine1, -1, l1, sizeof(l1) - 1, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, g_nbLine2, -1, l2, sizeof(l2) - 1, NULL, NULL);
+    Log("⑭ 알림창 %#lx 꾸밈(누적 %ld) — %dx%d 화면 %dx%d 가운데 · 「%s」(%s) / 「%s」 · 색 %s(글 칸 %#lx · 제목 칸 %#lx · 기대 금 %#lx · 초록 %#lx)", box, n, kNbW,
+        kNbH, scrW, scrH, l1, up ? "오름" : down ? "내림" : "같음", l2, colorOk ? "바꿈" : "안 바꿈(자리 값이 기대와 다름)", textColor, titleColor, gold, green);
+}
+
+static void NoticeSummary()
+{
+    static LONG seen[5] = {};
+    const LONG now[5] = { g_nbRan, g_nbDone, g_nbColorSkip, g_nbBad, g_nbMiss };
+    if (memcmp(seen, now, sizeof(now)) == 0) return;
+    memcpy(seen, now, sizeof(now));
+    Log("⑭ 점수 알림창 셈 — 주 스레드에서 돎 %ld · 꾸밈 %ld(그중 색 안 바꿈 %ld) · 못 나눔 %ld · 칸 못 찾음 %ld", now[0], now[1], now[2], now[3], now[4]);
+}
+
 // 받기 훅에서 — 새 게임 목록 창이면 감싸고 10007 을 보이게
 static void RankUiTick()
 {
@@ -1365,6 +1470,7 @@ extern "C" int WSAAPI Hook_recv(SOCKET s, char* buf, int len, int flags)
 extern "C" int WSAAPI Hook_sendto(SOCKET s, const char* buf, int len, int flags, const struct sockaddr* to, int tolen)
 {
     void* ret = _ReturnAddress();
+    NoticeBoxTick("sendto");   // ★ 10-31 — ⑭ 게임 안 보내기(주 스레드일 때만)
     // ③ 쥔 토큰의 게임 서버로 가는 접속 시도 · CONNECT 에 꼬리. 부른 쪽에는 원래 길이를 돌려준다(UDP 는 통째로 가거나 실패)
     unsigned char tail[kTokenRaw + 4];
     const char* why = NULL;
@@ -1423,6 +1529,7 @@ extern "C" int WSAAPI Hook_closesocket(SOCKET s)
 extern "C" int WSAAPI Hook_recvfrom(SOCKET s, char* buf, int len, int flags, struct sockaddr* from, int* fromlen)
 {
     void* ret = _ReturnAddress();
+    NoticeBoxTick("recvfrom");   // ★ 10-31 — ⑭ 게임 안 받기(주 스레드일 때만)
     int rc = ((PFN_recvfrom)Resolve(17))(s, buf, len, flags, from, fromlen);
     if (g_log[0]) {
         DWORD err = GetLastError();
