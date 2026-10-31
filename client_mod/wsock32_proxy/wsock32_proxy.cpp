@@ -773,6 +773,7 @@ typedef DWORD(__cdecl* PFN_findchild)(DWORD win, DWORD id);
 typedef int(__cdecl* PFN_sethidden)(DWORD win, DWORD hide);
 
 static bool RankFoundClick(DWORD id);   // ★ 매칭 손보기 6 — ⑬ 찾음 창의 예(4007) · 아니오(4006) — 가로챘으면 true
+static void RankLeaveNow(const char* why);   // ★ 10-31 — ⑪ 기다리는 중이면 그 자리에서 NOXRANK LEAVE(⑬ 절)
 static volatile LONG g_rankFoundState = 0;   // ★ ⑬ 0 없음 · 1 찾음(예 · 아니오 창) · 2 수락함(남 기다림) — ④ 의 1초 고침을 멈춤
 
 static int __cdecl RankListProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
@@ -781,6 +782,9 @@ static int __cdecl RankListProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
     DWORD id = 0;
     if (msg != kMsgClick || !a3 || !ReadSelf(a3, &id)) return orig(win, msg, a3, a4);
     if ((id == 4006 || id == 4007) && RankFoundClick(id)) return 0;   // ★ ⑬ — 정품 목록 함수로 안 넘김(그 번호를 정품이 어떻게 하는지 모름)
+    // ★ 10-31 — 기다림 창(「상대 찾는 중」 · 「상대 수락 기다리는 중」)의 취소(4002)는 그 자리에서 LEAVE. 정품 취소 길은 로비에 아무 줄도 안 보낸다
+    //   (10-31 사람 판 — 취소 뒤 LIST 없음 · ⑪ 「다음 보내기 앞」 LEAVE 0 → 로비가 몰라 줄에 남거나 · 다음 랭크 누름의 LIST 를 빠짐으로 읽음). 누름은 정품으로 넘긴다
+    if (id == 4002) RankLeaveNow("기다림 창 취소");   // 기다리는 중이 아니면 아무것도 안 함
     switch (id) {
         case kBtnRank: {
             if (!g_ourLobby) {
@@ -826,6 +830,7 @@ static int __cdecl RankListProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
 //   ② 기다리는 동안 로비로 나가는 보내기마다 「서버 접속 시도중...」 창을 본다 — 정품 공용 알림창 `[0x69cba4]`(띄움 `0x43b1b0` → `0x449590` ·
 //      닫으면 0 `0x449f80`). 닫혀 있으면 그 보내기 앞에 `NOXRANK LEAVE` · 기다림 끔.
 //      취소 = 단추 0xfa2 → 목록 창 `0x439c3b` → 창 닫음(`0x43a4e0`) → 목록 다시(`0x4375b0` → LIST) — 그래서 그 LIST 앞에 실린다(정적 분석 · 정품 화면 미확인)
+//      ✕ 10-31 사람 판 — 취소 뒤 LIST 가 안 나감(다음 누름 때에야). 이제 취소 · 아니오 · 한도는 ⑬ 의 RankLeaveNow 가 그 자리에서 보내고, 여기는 놓친 경우의 뒷받침
 //   ③ 로비 참가 답의 토큰(`NOXTOKEN`)이 오면 기다림 끔(잡혔다 — 창은 판으로 가며 닫힌다)
 //   보내는 자리는 게임이 그 소켓에 보내는 순간뿐(따로 스레드에서 쓰지 않는다 — 로비 모듈의 줄과 섞이지 않게)
 // 시험 스위치 NOX_TEST_RANKMARK=1 — 판 확인 없이 내 방 참가마다 ① (selftest — 그 exe 엔 알림창 칸이 없어 「닫힘」으로 읽힌다)
@@ -1022,8 +1027,8 @@ static void RankMenuTick(DWORD world)
 //   앞 「아니오 함수」를 불러 버린다(`0x4495a9`). 대신 누름은 창이 부모(게임 목록 창 — ⑩ 이 감쌈)에 넘기므로 거기서 4007 · 4006 을 가로챈다
 //   · 예 → 로비 소켓에 `NOXRANK ACCEPT` 를 곧바로(게임 주 스레드 · 줄 하나 send 하나 — 정품 로비 모듈은 줄마다 send 한 번(10-30 기록) ·
 //     그 send 가 어느 스레드인지는 미확인 — 받기는 주 스레드(④ 근거)) ·
-//     창을 「상대 수락 기다리는 중...」 취소(0x22 — 처음 기다림 창 깃발)로. 그 뒤 취소면 정품 취소 길 → ⑪ LEAVE → 로비는 거절로
-//   · 아니오 · 로비 `NOXRANK EXPIRED` → 창의 취소(4002) 누름을 정품 목록 함수에 넣는다 — 정품 취소 길(채널 나감 · 창 닫음 · LIST — ⑪ 이 LEAVE 를 앞에)
+//     창을 「상대 수락 기다리는 중...」 취소(0x22 — 처음 기다림 창 깃발)로(★ 10-31 다음 받기 훅에서). 그 뒤 취소면 ⑩ 이 그 자리 LEAVE → 로비는 거절로
+//   · 아니오 · 로비 `NOXRANK EXPIRED` → 그 자리 LEAVE(★ 10-31 RankLeaveNow) + 창의 취소(4002) 누름을 정품 목록 함수에 넣는다 — 정품 취소 길(창 닫음 · 로비엔 줄 없음)
 //   · 로비 `NOXRANK WAIT`(남이 거절 · 한도 — 줄 맨 앞에 되돌림) → 창을 다시 기다림 글(④ 버퍼 · 지난 시간 이어서) 취소로
 //   받은 줄은 받기 훅 안에서 표시만 세우고, 창은 ⑩ 자리(받기 훅 · 게임 주 스레드)에서 바꾼다. 찾음 · 수락 기다림 동안엔 ④ 의 1초 고침을 멈춘다
 static const uintptr_t kDlgOpen = 0x449590;
@@ -1038,7 +1043,10 @@ static volatile LONG g_rankDeclines = 0;      // 아니오 → 취소 길
 static volatile LONG g_rankWaits = 0;         // WAIT → 기다림 창으로
 static volatile LONG g_rankExpiries = 0;      // EXPIRED → 취소 길
 static volatile LONG g_rankFoundMiss = 0;     // 창 · 취소 단추를 못 찾음(아무것도 안 함)
-static SOCKET g_rankSock = INVALID_SOCKET;    // FOUND 가 온 로비 소켓(ACCEPT 를 보낼 곳)
+static volatile LONG g_rankLeaveNowSent = 0;  // ★ 10-31 — 그 자리 LEAVE 보냄(⑪ 「창 닫힘 LEAVE」 셈에도 듦)
+static volatile LONG g_rankLeaveNowFail = 0;  // ★ 10-31 — 그 자리 LEAVE 보내기 실패(기다림 그대로 — ⑪ 다음 보내기 앞 LEAVE 로 넘김)
+static volatile LONG g_rankEvAccepted = 0;    // ★ 10-31 — 예 → 창을 「상대 수락 기다리는 중...」으로(다음 받기 훅에서)
+static SOCKET g_rankSock = INVALID_SOCKET;    // 랭크 참가 줄이 나간 로비 소켓 · FOUND 가 온 소켓(ACCEPT · LEAVE 를 보낼 곳)
 typedef int(__cdecl* PFN_dlgopen)(DWORD parent, const wchar_t* title, const wchar_t* text, DWORD flags, DWORD yes, DWORD no);
 
 static void RankOnLobbyLine(SOCKET s, const std::string& line)
@@ -1050,9 +1058,32 @@ static void RankOnLobbyLine(SOCKET s, const std::string& line)
     Log("⑬ 로비 줄 「%s」 — 받음(창은 다음 받기 훅에서)", line.c_str());
 }
 
-// 창의 취소(4002) 누름을 정품 목록 함수에 — 정품 취소 길
+// ★ 10-31 — ⑪ 기다리는 중이면 로비 소켓에 `NOXRANK LEAVE` 를 곧바로(ACCEPT 와 같은 자리 · 게임 주 스레드 · 줄 하나 send 하나).
+//   왜 — 정품 취소 길(창의 취소 · 아래 RankInjectCancel)은 로비에 아무 줄도 안 보낸다(10-31 사람 판 두 번 — 취소 · 「아니오」 뒤 LIST · PART 없음).
+//   ⑪ 의 「다음 보내기 앞 LEAVE」만으론 로비가 다음 랭크 누름(그때의 LIST)까지 모르고, 「아니오」는 거절이 아니라 한도로 끝났다.
+//   로비는 LEAVE 를 받으면 묶여 있던 참가에 474 를 보내 정품 로비 모듈의 참가 기다림을 푼다(`Lobby.h` `kRankReleaseNumeric`)
+static void RankLeaveNow(const char* why)
+{
+    if (!InterlockedExchange(&g_rankWaiting, 0)) return;
+    InterlockedExchange(&g_rankFoundState, 0);
+    typedef int(WSAAPI* PFN_send_t)(SOCKET, const char*, int, int);
+    const int len = (int)strlen(kRankLeaveLine);
+    const int rc = g_rankSock == INVALID_SOCKET ? -1 : ((PFN_send_t)Resolve(19))(g_rankSock, kRankLeaveLine, len, 0);
+    if (rc != len) {
+        InterlockedExchange(&g_rankWaiting, 1);   // 창이 닫히면 ⑪ 이 다음 보내기 앞에 싣는다
+        InterlockedIncrement(&g_rankLeaveNowFail);
+        Log("⑬ %s — LEAVE 곧바로 보내기 실패 rc=%d err=%lu(로비 소켓 %u) · 다음 보내기 앞으로 넘김", why, rc, GetLastError(), (unsigned)g_rankSock);
+        return;
+    }
+    InterlockedIncrement(&g_rankLeaves);
+    const LONG n = InterlockedIncrement(&g_rankLeaveNowSent);
+    Log("⑬ %s — 로비에 NOXRANK LEAVE 곧바로(누적 %ld) · 기다림 끔", why, n);
+}
+
+// 창의 취소(4002) 누름을 정품 목록 함수에 — 정품 취소 길(로비엔 아무 줄도 안 감 — 그래서 먼저 LEAVE)
 static bool RankInjectCancel(const char* why)
 {
+    RankLeaveNow(why);
     DWORD box = 0;
     const DWORD world = *(volatile DWORD*)kListWin;
     const DWORD cancel = ReadSelf(kMsgBox, &box) && box ? ((PFN_findchild)kFindChild)(box, kDlgCancelId) : 0;
@@ -1062,7 +1093,7 @@ static bool RankInjectCancel(const char* why)
         return false;
     }
     ((PFN_wndproc4)kListProc)(world, kMsgClick, cancel, 0);
-    Log("⑬ %s — 알림창 %#lx 의 취소 누름을 정품 목록 함수에 넣음(채널 나감 · 창 닫음 · LIST)", why, box);
+    Log("⑬ %s — 알림창 %#lx 의 취소 누름을 정품 목록 함수에 넣음(창 닫음)", why, box);
     return true;
 }
 
@@ -1088,6 +1119,15 @@ static void RankFoundTick()
             Log("⑬ 찾음(누적 %ld) — 알림창 %#lx 를 「매칭 성공! 수락하시겠습니까?」 예 · 아니오로", n, box);
         }
     }
+    if (InterlockedExchange(&g_rankEvAccepted, 0)) {   // ★ 10-31 — 예 누름 처리가 끝난 뒤(아래 RankFoundClick 주석)
+        if (open && g_rankFoundState == 2) {
+            RankDlg(kRankAcceptedText, kDlgWaitFlags);
+            Log("⑬ 예 뒤 — 알림창 %#lx 를 「상대 수락 기다리는 중...」 취소로", box);
+        } else {
+            InterlockedIncrement(&g_rankFoundMiss);
+            Log("⑬ 예 뒤 — 창을 못 바꿈(알림창 %#lx · 찾음 상태 %ld)", box, g_rankFoundState);
+        }
+    }
     if (InterlockedExchange(&g_rankEvWait, 0)) {
         InterlockedExchange(&g_rankFoundState, 0);
         InterlockedIncrement(&g_rankWaits);
@@ -1109,7 +1149,10 @@ static bool RankFoundClick(DWORD id)
         typedef int(WSAAPI* PFN_send_t)(SOCKET, const char*, int, int);
         const int rc = g_rankSock == INVALID_SOCKET ? -1 : ((PFN_send_t)Resolve(19))(g_rankSock, kAccept, (int)strlen(kAccept), 0);
         InterlockedExchange(&g_rankFoundState, 2);
-        RankDlg(kRankAcceptedText, kDlgWaitFlags);
+        // ★ 10-31 — 창 바꾸기는 다음 받기 훅에서. 이 함수는 정품 알림창의 누름 처리 한가운데서 불린다 — 알림창은 부모에 누름을 넘긴 뒤
+        //   깃발을 다시 읽어 「누르면 닫힘」(0x20)이면 창을 닫는데, 그 앞의 쌓기 빼기는 옛 깃발(0x18)로 건너뛴다(OpenNox `gui_dialog.go:248-259`).
+        //   여기서 0x22 로 바꾸면 창만 닫히고 쌓기는 남아 화면이 굳었다(10-31 사람 판 — 「불러오는 중...」 · 옵션 · 뒤로가 안 먹음 · WAIT 때 알림창 0)
+        InterlockedExchange(&g_rankEvAccepted, 1);
         if (rc != (int)strlen(kAccept)) {
             InterlockedIncrement(&g_rankAcceptFail);
             Log("⑬ 예 — ACCEPT 보내기 실패 rc=%d err=%lu(로비 소켓 %u)", rc, GetLastError(), (unsigned)g_rankSock);   // 이 DLL 은 ws2_32 를 안 링크 — WSAGetLastError 대신
@@ -1152,12 +1195,13 @@ static void MenuSummary()
 // ★ ⑬ — 수락 단계 셈(따로 한 줄 — 바뀌었을 때만). MenuSummary 와 같은 자리에서 부른다
 static void AcceptSummary()
 {
-    static LONG seen[7] = {};
-    const LONG now[7] = { g_rankFoundShown, g_rankAccepts, g_rankAcceptFail, g_rankDeclines, g_rankWaits, g_rankExpiries, g_rankFoundMiss };
+    static LONG seen[9] = {};
+    const LONG now[9] = { g_rankFoundShown, g_rankAccepts, g_rankAcceptFail, g_rankDeclines, g_rankWaits, g_rankExpiries, g_rankFoundMiss,
+                          g_rankLeaveNowSent, g_rankLeaveNowFail };
     if (memcmp(seen, now, sizeof(now)) == 0) return;
     memcpy(seen, now, sizeof(now));
-    Log("⑬ 수락 셈 — 찾음 창 %ld · 예(ACCEPT) %ld · 보내기 실패 %ld · 아니오 %ld · WAIT %ld · EXPIRED %ld · 못 찾음 %ld",
-        now[0], now[1], now[2], now[3], now[4], now[5], now[6]);
+    Log("⑬ 수락 셈 — 찾음 창 %ld · 예(ACCEPT) %ld · 보내기 실패 %ld · 아니오 %ld · WAIT %ld · EXPIRED %ld · 못 찾음 %ld | 그 자리 LEAVE %ld · 실패 %ld",
+        now[0], now[1], now[2], now[3], now[4], now[5], now[6], now[7], now[8]);
 }
 
 // 받기 훅에서 — 새 게임 목록 창이면 감싸고 10007 을 보이게
@@ -1262,6 +1306,7 @@ extern "C" int WSAAPI Hook_send(SOCKET s, const char* buf, int len, int flags)
     if ((g_listOn || g_hostGameOn || g_rankMarkTest) && lobbySock) NoteNick(buf, len);   // ⑤ · ⑥ · ⑪
     // ★ 랭크 매칭 조각 3 — ⑪ 이 보내기 앞에 끼울 표시 줄(랭크 참가 · 기다림 창 닫힘)
     const std::string rankPre = ((g_rankOn || g_rankMarkTest) && lobbySock) ? RankPrefix(buf, len) : std::string();
+    if (rankPre == kRankJoinLine) g_rankSock = s;   // ★ 10-31 — ⑬ 의 그 자리 LEAVE 를 보낼 곳(찾음 전 취소에도)
     int rc;
     CLoginRewriter* lw = (buf && len > 0) ? LoginRewriterOf(s) : NULL;
     if (lw) {

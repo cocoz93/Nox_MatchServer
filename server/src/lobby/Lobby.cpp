@@ -257,6 +257,7 @@ void Lobby::Tick(std::vector<Out>& out) {
             ci->second.rank = Conn::Rank::None;
             ++stats_.rankExpired;
             out.push_back({id, "NOXRANK EXPIRED"});
+            RankReleaseJoin(id, ci->second, out);   // ★ 10-31
             log_.push_back("[랭크 — 수락 한도] " + ci->second.nick + " — " + std::to_string(kRankAcceptMs / 1000) + "초 안에 수락 안 함 · 줄에서 뺌");
         }
         RankFoundBreak(req, -1, out);
@@ -317,23 +318,27 @@ void Lobby::RankEnqueue(int conn, Conn& c, std::vector<Out>& out) {
     RankPump(out);
 }
 
-// 줄에 있으면 빼고 남은 사람으로 모으기를 다시 본다 · 요청 중이면 그 사람만 표시를 지운다(방이 서도 답을 안 보낸다) · 둘 다 아니면 DLL 알림만 센다
+// 줄에 있으면 빼고 남은 사람으로 모으기를 다시 본다 · 요청 중이면 그 사람만 표시를 지운다(방이 서도 방 참가 답은 안 보낸다) · 둘 다 아니면 DLL 알림만 센다
+//   ★ 10-31 — 빠진 사람(끊김 말고)의 묶인 참가엔 474 를 보내 정품 로비 모듈의 참가 기다림을 푼다(`RankReleaseJoin`)
 void Lobby::RankRemove(int conn, RankLeave why, std::vector<Out>& out) {
     const auto ci = conns_.find(conn);
     if (ci == conns_.end()) return;
     Conn& c = ci->second;
     const size_t w = static_cast<size_t>(why);
+    const bool release = why != RankLeave::Closed;   // 끊김 — 받을 접속이 없다
     switch (c.rank) {
         case Conn::Rank::Queued:
             rankQueue_.erase(std::find(rankQueue_.begin(), rankQueue_.end(), conn));
             c.rank = Conn::Rank::None;
             ++stats_.rankLeft[w];
+            if (release) RankReleaseJoin(conn, c, out);
             log_.push_back("[랭크 — 빠짐] " + c.nick + " — " + RankLeaveName(why) + " (줄 " + std::to_string(rankQueue_.size()) + "명)");
             RankPump(out);
             return;
         case Conn::Rank::Requested:
             c.rank = Conn::Rank::None;
             ++stats_.rankLeftRequested[w];
+            if (release) RankReleaseJoin(conn, c, out);
             log_.push_back("[랭크 — 빠짐] " + c.nick + " — " + RankLeaveName(why) + " · 방 요청 " + std::to_string(c.rankReq) + " 중(방이 서도 답 안 함)");
             return;
         case Conn::Rank::Found:      // ★ 매칭 손보기 6 — 찾음 · 수락 뒤 빠짐 = 거절(창의 「아니오」 · 취소 → LEAVE · LIST · 끊김) — 남은 사람을 줄 앞에
@@ -341,6 +346,7 @@ void Lobby::RankRemove(int conn, RankLeave why, std::vector<Out>& out) {
             const uint32_t req = c.rankReq;
             c.rank = Conn::Rank::None;
             ++stats_.rankDeclined[w];
+            if (release) RankReleaseJoin(conn, c, out);
             log_.push_back("[랭크 — 거절] " + c.nick + " — " + RankLeaveName(why) + " · 찾음 " + std::to_string(req) + " 풀어 남은 사람 줄 앞에");
             RankFoundBreak(req, conn, out);
             RankPump(out);
@@ -532,6 +538,12 @@ void Lobby::RankFoundBreak(uint32_t req, int except, std::vector<Out>& out) {
     rankQueue_.insert(rankQueue_.begin(), back.begin(), back.end());
     stats_.rankFoundRequeued += back.size();
     if (!back.empty()) log_.push_back("[랭크 — 찾음 풂] 요청 " + std::to_string(req) + " — " + RankNames(back) + " 줄 앞에(WAIT)");
+}
+
+// ★ 10-31 — 묶인 랭크 참가 풀기(`Lobby.h` `kRankReleaseNumeric`). 채널은 랭크 참가가 늘 쓰는 제 이름 채널(줄 서기는 그 채널만 받는다 · `OnLine` JOINGAME)
+void Lobby::RankReleaseJoin(int conn, const Conn& c, std::vector<Out>& out) {
+    ++stats_.rankJoinReleased;
+    out.push_back({conn, ": " + std::to_string(kRankReleaseNumeric) + " u #" + c.nick + "'s_game :Ranked match left"});
 }
 
 // ★ 10-20 거절 답 — 까닭이 무엇이든 숫자는 471(정품이 받아 주는 유일한 것 — `Lobby.h` `JoinReject` 주석). 꼴은 다른 숫자 답과 같은 `: <숫자> u <채널> :<글>`

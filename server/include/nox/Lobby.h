@@ -185,6 +185,11 @@ enum class JoinReject : uint8_t {
 };
 constexpr size_t kJoinRejectCount = static_cast<size_t>(JoinReject::kCount);
 constexpr int kJoinRejectNumeric = 471;   // 정품이 받아 주는 유일한 거절 숫자(위 주석)
+// ★ 10-31 — 랭크 줄에서 빠진 사람(취소 · 아니오 · 수락 한도)의 묶인 참가를 푸는 답. 랭크는 참가(`JOINGAME`)의 답을 묶어 둔다 —
+//   정품 로비 모듈은 답을 기다리는 동안(`WOLAPI.dll` `[+0x62a0]` = 1) 새 참가를 안 보내고 `0x800401f7` 을 돌려준다(`0x210088da`).
+//   그래서 빠진 뒤 다시 「랭크 매칭」을 누르면 로비에 참가가 안 와 줄에 못 섰다(10-31 사람 판). 474 는 그 기다림을 풀고(`0x2100999f` → `0x210099d9`)
+//   게임엔 `0x80040072` 로 넘어가 게임 목록 화면에서 버려진다(위 주석 — 471 과 달리 창이 안 뜸). 정적 분석 · 정품 화면은 사람 확인
+constexpr int kRankReleaseNumeric = 474;
 // 거절 줄 끝 글(ASCII — 정품 화면엔 안 나오고 정품 기록 · DLL 기록에만 남는다)
 const char* JoinRejectText(JoinReject why);
 
@@ -291,6 +296,8 @@ struct LobbyStats {
     unsigned long long rankDeclined[kRankLeaveCount] = {};   // 찾음 · 수락 뒤 빠짐 = 거절(까닭별)
     unsigned long long rankExpired = 0;         // 한도까지 수락 안 함 → 줄에서 뺀(EXPIRED)
     unsigned long long rankAcceptStray = 0;     // 찾음 중이 아닌 접속의 ACCEPT(버림)
+    unsigned long long rankJoinReleased = 0;    // ★ 10-31 — 빠진 사람(창 닫힘 · LIST · 한도 — 끊김은 빼고)의 묶인 참가에 474
+                                                //   = 빠짐(줄 · 요청 중) 창 닫힘 · LIST + 거절 창 닫힘 · LIST + 한도
     unsigned long long RankDeclinedTotal() const {
         unsigned long long n = 0;
         for (const unsigned long long v : rankDeclined) n += v;
@@ -430,6 +437,7 @@ private:
     void RankAccept(int conn, Conn& c, std::vector<Out>& out);
     void RankFoundBreak(uint32_t req, int except, std::vector<Out>& out);
     void RankJoinReply(int id, Conn& c, const LobbyRoom& room, std::vector<Out>& out);
+    void RankReleaseJoin(int conn, const Conn& c, std::vector<Out>& out);   // ★ 10-31 — 묶인 참가에 474(`kRankReleaseNumeric`)
 
     LobbyConfig cfg_;
     ILobbyRooms& rooms_;                      // ★ 10-14 작업 8d — 옛 `roomInfo_`(설정 방마다 미리 싼 방 정보) 자리

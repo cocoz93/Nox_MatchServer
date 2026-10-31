@@ -710,6 +710,13 @@ void RankAcceptUnitTests() {
     };
     const std::string found = "NOXRANK FOUND " + std::to_string(kRankAcceptMs / 1000);
     const LobbyStats& s = lb.Stats();
+    // ★ 10-31 — 빠진 사람의 묶인 참가 풀기 줄(474)
+    auto rel = [](const std::string& nick) { return ": " + std::to_string(kRankReleaseNumeric) + " u #" + nick + "'s_game :Ranked match left"; };
+    auto rels = [](const std::vector<Out>& o, int conn) {
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line.rfind(": " + std::to_string(kRankReleaseNumeric) + " ", 0) == 0 ? 1 : 0;
+        return n;
+    };
 
     // ①
     login(1, "amy", 5);
@@ -736,12 +743,13 @@ void RankAcceptUnitTests() {
     o2.clear();
     lb.OnLine(4, "NOXRANK LEAVE", o2);
     const bool catBack = has(o2, 3, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 1 && lb.RankFoundPending() == 0 &&
-                         s.rankDeclined[static_cast<size_t>(RankLeave::Dll)] == 1 && s.rankFoundRequeued == 1;
+                         s.rankDeclined[static_cast<size_t>(RankLeave::Dll)] == 1 && s.rankFoundRequeued == 1 &&
+                         has(o2, 4, rel("dan")) == 1 && rels(o2, 3) == 0;   // ★ 10-31 — 거절한 dan 만 묶인 참가 풂 · 다시 기다리는 cat 은 묶인 그대로
     o2.clear();
     rankJoin(5, "eve", o2);
     Check(catBack && has(o2, 3, found) == 1 && has(o2, 5, found) == 1 && has(o2, 4, found) == 0 && lb.RankFoundPending() == 1 &&
               fake.asks.back().roster == std::vector<std::string>{"cat", "eve"},
-          "★ ② 수락 뒤 상대가 LEAVE(거절) → 수락한 cat 에 WAIT · 줄 맨 앞 → 다음 eve 와 다시 찾음(명단 cat · eve)");
+          "★ ② 수락 뒤 상대가 LEAVE(거절) → 거절한 dan 에 474(묶인 참가 풂) · 수락한 cat 에 WAIT · 줄 맨 앞 → 다음 eve 와 다시 찾음(명단 cat · eve)");
     // 마무리 — 둘 다 수락
     std::vector<Out> o2b;
     lb.OnLine(3, "NOXRANK ACCEPT", o2b);
@@ -761,8 +769,8 @@ void RankAcceptUnitTests() {
     clock += 1;
     lb.Tick(o3);
     Check(heldBefore && has(o3, 7, "NOXRANK EXPIRED") == 1 && has(o3, 6, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 1 && s.rankExpired == 1 &&
-              lb.RankFoundPending() == 0,
-          "★ ③ 수락 한도 1ms 앞 그대로 · 한도에 수락 안 한 gus EXPIRED(줄에서 빠짐) · 수락한 fay WAIT(줄 맨 앞)");
+              lb.RankFoundPending() == 0 && has(o3, 7, rel("gus")) == 1 && rels(o3, 6) == 0,
+          "★ ③ 수락 한도 1ms 앞 그대로 · 한도에 수락 안 한 gus EXPIRED + 474(줄에서 빠짐 · 묶인 참가 풂) · 수락한 fay WAIT(줄 맨 앞 · 묶인 그대로)");
 
     // ④ — fay(5, 줄에 남음) + hal(4) → 옛 길(곧바로 참가 답)
     login(8, "hal", 4);
@@ -786,8 +794,9 @@ void RankAcceptUnitTests() {
     rankJoin(10, "jon", o6);
     o6.clear();
     lb.OnClose(9, o6);
-    Check(has(o6, 10, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 1 && s.rankDeclined[static_cast<size_t>(RankLeave::Closed)] == 1,
-          "★ ⑥ 찾음 중 ivy 끊김 → 거절(끊김) · 남은 jon WAIT · 줄 맨 앞");
+    Check(has(o6, 10, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 1 && s.rankDeclined[static_cast<size_t>(RankLeave::Closed)] == 1 &&
+              rels(o6, 9) == 0 && rels(o6, 10) == 0,
+          "★ ⑥ 찾음 중 ivy 끊김 → 거절(끊김 — 474 없음) · 남은 jon WAIT · 줄 맨 앞");
 
     // ⑦ 셈의 합 — 찾음 한 사람 = 다 수락 참가 + 되돌림 + 거절 + 한도 + 아직 찾음
     char m[300];
@@ -796,6 +805,10 @@ void RankAcceptUnitTests() {
     Check(s.rankFound == s.rankAcceptMatched + s.rankFoundRequeued + s.RankDeclinedTotal() + s.rankExpired && lb.RankFoundPending() == 0 &&
               s.rankFound == 10 && s.rankFoundGroups == 5,
           m);
+    // ★ 10-31 — 474 = 거절(창 닫힘 · LIST) + 한도 — 이 묶음엔 dan(창 닫힘) · gus(한도) 둘
+    Check(s.rankJoinReleased == s.rankDeclined[static_cast<size_t>(RankLeave::Dll)] + s.rankDeclined[static_cast<size_t>(RankLeave::List)] + s.rankExpired &&
+              s.rankJoinReleased == 2,
+          "★ ⑦ 묶인 참가 풂(474) 2 = 거절(창 닫힘 · LIST) + 한도 — 끊김엔 없음");
 }
 
 void RankQueueUnitTests() {
@@ -912,6 +925,13 @@ void RankQueueUnitTests() {
     lb.OnLine(7, "LIST 37 37", out);      // 줄 0 · 목록 답은 그대로
     bool listReplied = false;
     for (const auto& o : out) listReplied = listReplied || (o.conn == 7 && o.line == ": 323 u:");
+    // ★ 10-31 — 빠진 둘 다 묶인 참가 풂(474) — 제 채널로 한 줄씩
+    const auto relCount = [&out](int conn, const std::string& nick) {
+        int n = 0;
+        for (const auto& o : out) n += o.conn == conn && o.line == ": " + std::to_string(kRankReleaseNumeric) + " u #" + nick + "'s_game :Ranked match left" ? 1 : 0;
+        return n;
+    };
+    const bool released4 = relCount(6, "fay") == 1 && relCount(7, "gus") == 1;
     login(8, "hal");
     rankJoin(8, "hal", out);
     rankJoin(6, "fay", out);   // 다시 줄 — 모으기 시계는 새로(옛 시계가 남았으면 20초 뒤 묶인다)
@@ -923,10 +943,12 @@ void RankQueueUnitTests() {
     lb.Tick(out);
     lb.OnLine(7, "NOXRANK LEAVE", out);   // 줄에도 요청에도 없음 — 버림
     const LobbyStats& s4 = lb.Stats();
-    Check(listReplied && freshClock && fake.asks.size() == 2 && lb.RankQueueSize() == 1 &&
+    Check(listReplied && released4 && freshClock && fake.asks.size() == 2 && lb.RankQueueSize() == 1 &&
               s4.rankLeft[static_cast<size_t>(RankLeave::Dll)] == 1 && s4.rankLeft[static_cast<size_t>(RankLeave::List)] == 1 &&
-              s4.rankLeft[static_cast<size_t>(RankLeave::Closed)] == 1 && s4.rankLeaveStray == 1,
-          "④ 빠짐 셋(창 닫힘 · LIST · 끊김) 하나씩 · LIST 엔 목록 답 · 다시 차면 모으기 시계를 새로 · 빠진 뒤 최소 밑이면 안 묶음 · 줄 밖의 창 닫힘은 버림");
+              s4.rankLeft[static_cast<size_t>(RankLeave::Closed)] == 1 && s4.rankLeaveStray == 1 &&
+              relCount(8, "hal") == 0 && relCount(7, "gus") == 1 && s4.rankJoinReleased == 2,
+          "④ 빠짐 셋(창 닫힘 · LIST · 끊김) 하나씩 · 창 닫힘 · LIST 엔 474(끊김 · 줄 밖 창 닫힘엔 없음) · LIST 엔 목록 답 · 다시 차면 모으기 시계를 새로 · "
+          "빠진 뒤 최소 밑이면 안 묶음 · 줄 밖의 창 닫힘은 버림");
     lb.OnClose(6, out);   // 줄 0 으로 정리
     out.clear();
 
@@ -941,9 +963,9 @@ void RankQueueUnitTests() {
     lb.OnLine(9, "NOXRANK LEAVE", out);
     const LobbyRoom r5 = made("ivy");
     lb.OnRoomCreated(req5, r5, out);
-    Check(fake.asks.back().roster == std::vector<std::string>{"ivy", "jon"} && kindsFor(out, 9).empty() && joinedOwn(out, 10, "jon", r5.gameRoomId) &&
-              lb.Stats().rankLeftRequested[static_cast<size_t>(RankLeave::Dll)] == 1,
-          "⑤ 요청 중 창 닫힘 → 방이 서도 그 사람엔 답 없음 · 남은 jon 만 참가 답");
+    Check(fake.asks.back().roster == std::vector<std::string>{"ivy", "jon"} && kindsFor(out, 9) == std::to_string(kRankReleaseNumeric) &&
+              joinedOwn(out, 10, "jon", r5.gameRoomId) && lb.Stats().rankLeftRequested[static_cast<size_t>(RankLeave::Dll)] == 1,
+          "⑤ 요청 중 창 닫힘 → 그 사람엔 474(묶인 참가 풂) 하나뿐 · 방이 서도 참가 답 없음 · 남은 jon 만 참가 답");
     out.clear();
 
     // ⑥ 방 실패 → 줄 앞에 되돌림(차례 그대로 · 거절 줄 없음) → 쉬는 동안 안 물음 → 쉬고 나면 곧바로 다시 묶음(모으기 시간 또 안 기다림)
