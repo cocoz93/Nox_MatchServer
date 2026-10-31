@@ -2369,6 +2369,41 @@ void Server::SendNoticeTo(int64_t sessionId, const char* text) {
     Emit(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size());
 }
 
+// ★ 10-31 — 머리 주석은 `Server.h`
+void Server::SendNoticeBoxTo(int64_t sessionId, const std::string& utf8) {
+    std::vector<uint16_t> w;
+    w.reserve(utf8.size());
+    for (size_t i = 0; i < utf8.size();) {
+        const uint8_t b = static_cast<uint8_t>(utf8[i]);
+        auto cont = [&](size_t k) { return i + k < utf8.size() && (static_cast<uint8_t>(utf8[i + k]) & 0xc0) == 0x80; };
+        if (b < 0x80) { w.push_back(b); i += 1; }
+        else if ((b & 0xe0) == 0xc0 && cont(1)) { w.push_back(static_cast<uint16_t>(((b & 0x1f) << 6) | (utf8[i + 1] & 0x3f))); i += 2; }
+        else if ((b & 0xf0) == 0xe0 && cont(1) && cont(2)) {
+            w.push_back(static_cast<uint16_t>(((b & 0x0f) << 12) | ((utf8[i + 1] & 0x3f) << 6) | (utf8[i + 2] & 0x3f)));
+            i += 3;
+        } else { w.push_back('?'); i += 1; }   // BMP 밖 · 틀린 바이트
+    }
+    if (w.empty() || w.size() > 200) return;
+    auto it = sessions_.find(sessionId);
+    if (it == sessions_.end() || !it->second.inGame) return;
+    Session& s = it->second;
+    w.push_back(0);   // 끝 0 — 클라가 wcscpy 로 베낀다(0x471e21)
+    std::vector<uint8_t> msg;
+    msg.reserve(11 + w.size() * 2);
+    msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
+    msg.push_back(static_cast<uint8_t>(s.netCode));
+    msg.push_back(static_cast<uint8_t>(s.netCode >> 8));
+    msg.push_back(0x10);                       // 깃발 = 알림창(UTF-16)
+    msg.push_back(static_cast<uint8_t>(s.x));
+    msg.push_back(static_cast<uint8_t>(s.x >> 8));
+    msg.push_back(static_cast<uint8_t>(s.y));
+    msg.push_back(static_cast<uint8_t>(s.y >> 8));
+    msg.push_back(static_cast<uint8_t>(w.size()));   // 글자 수(끝 0 포함)
+    msg.push_back(0); msg.push_back(0);        // 지속 = 0
+    for (uint16_t c : w) { msg.push_back(static_cast<uint8_t>(c)); msg.push_back(static_cast<uint8_t>(c >> 8)); }
+    Emit(s, /*reliable=*/true, /*stream=*/0, msg.data(), msg.size());
+}
+
 void Server::StartCtf(int redX, int redY, int blueX, int blueY) {
     flags_.clear();
     caps_[0] = caps_[1] = caps_[2] = 0;

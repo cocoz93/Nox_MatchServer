@@ -410,8 +410,9 @@ if ($Rank) {   # ★ 랭크 매칭 조각 6 — 로비 · 게임 서버 기록�
 Check ($tl -match '판 저장 요청 1\(SAVED ok 1 · dup 0 · 실패 0 · 끊긴 뒤 답 0 · 모르는 답 0 · 끝날 때 남음 0\)') '로비 끝 줄 — 판 저장 요청 1(SAVED ok 1)'
 Check ($tg -match '판 결과 SAVED\(ok 1 · dup 0 · bad 0 · 모르는 판 0\)' -and $tg -match '쥔 채 끝 0') '게임 서버 끝 줄 — SAVED ok 1 · 쥔 채 끝 0'
 if ($Ranked -or $Rank) {   # ★ 매칭 손보기 1 — 랭크 판 SAVED 꼬리 → 판의 방 그 사람에게 점수 알림(게임 서버 기록 — 이 패킷 클라는 알림 글을 안 읽음)
-  Check ($tg -match '점수 알림 — alice 「Rating 1000 -> 1010 \(\+10\)」 1명' -and $tg -match '점수 알림 — bob 「Rating 1000 -> 990 \(-10\)」 1명' -and
-         $tg -match '점수 알림 2\(판의 방 없음 0 · 방에 그 이름 없음 0\)') '랭크 — SAVED 꼬리로 alice 「Rating 1000 -> 1010 (+10)」 · bob 「Rating 1000 -> 990 (-10)」 알림 · 끝 줄 점수 알림 2'
+  # ★ 10-31 — 글이 한글로(정품 알림창 길 · `CLobbyClient::RatingNoticeText`)
+  Check ($tg -match '점수 알림 — alice 「랭크 상승! 1000 -> 1010 \(\+10\)」 1명' -and $tg -match '점수 알림 — bob 「랭크 하락! 1000 -> 990 \(-10\)」 1명' -and
+         $tg -match '점수 알림 2\(판의 방 없음 0 · 방에 그 이름 없음 0\)') '랭크 — SAVED 꼬리로 alice 「랭크 상승! 1000 -> 1010 (+10)」 · bob 「랭크 하락! 1000 -> 990 (-10)」 알림 · 끝 줄 점수 알림 2'
 } else {
   Check ($tg -match '점수 알림 0\(판의 방 없음 0 · 방에 그 이름 없음 0\)') '일반 판 — 점수 알림 0(SAVED 꼬리 없음 · 끝 줄)'
 }

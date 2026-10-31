@@ -3644,6 +3644,13 @@ public:
     void SendNotice(const char* text);
     // ★ 10-16 작업 12b — 그 사람에게만(게임 안이 아니면 안 보냄 · 짜임은 `SendNotice` 와 같다)
     void SendNoticeTo(int64_t sessionId, const char* text);
+    // ★ 10-31 — 그 사람 화면에 **정품 알림창**(제목 「Notice」 + OK). 같은 `0xa8` 에 깃발 0x10 · 글은 UTF-16(한글 그대로)
+    //   - 근거(GOG `Game.exe`): 0x471e5d `test [ebp+3],0x10` → 놀이 상태 3(게임 안)일 때만 0x449590(정품 알림창 — DLL ⑬ 수락 창과 같은 함수) ·
+    //     깃발에 0x2 · 0x8 이 없으면 글을 UTF-16 으로 그대로 베낌(0x471e21) · 넘김 = 크기 × 2(0x471eb7)
+    //   - 왜: 말풍선 길(`SendNoticeTo`)은 내 캐릭터가 한 말처럼 머리 위에 떠 잘 안 보임(10-31 사람 판)
+    //   `utf8` 은 UTF-8(BMP 밖 · 틀린 바이트는 '?') · 끝 0 을 크기에 넣어 보냄 · 비었거나 200자 넘으면 안 보냄 · 게임 안이 아니면 안 보냄 ·
+    //   믿음 길로 보냄(한 번뿐인 창 — 말풍선과 달리 잃으면 다시 안 옴)
+    void SendNoticeBoxTo(int64_t sessionId, const std::string& utf8);
     // ★ 10-16 플랜 B 작업 12b — 채팅 명령(`!` 로 시작하는 말). 게임은 퍼뜨리지 않고 쌓아 두고 방(`CRoom`)이 꺼내 처리한다 —
     //   판 시작 같은 방 규칙은 방 몫이다(`Docs/ROOMS_DESIGN.md` 결정 2). 글자는 ASCII 로 바꿔 담는다(UTF-16 이면 아래 바이트 · 밖의 글자는 '?')
     struct ChatCommand {

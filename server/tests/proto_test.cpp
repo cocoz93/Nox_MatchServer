@@ -25384,15 +25384,26 @@ void TestLobbyClientRatingNotice() {
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, ""), rq);
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkHello("00112233445566778899aabbccddeeff")), rq);
     auto lobby = [&](const std::string& line) { lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, line), rq); };
-    // 그 사람에게 간 「Rating …」 알림 수(틱 한 번 뒤 나간 것에서 — 조각 안 어느 자리든 · 다른 시험의 `textTo` 꼴)
+    // 그 사람에게 간 점수 알림 수(틱 한 번 뒤 나간 것에서 — 조각 안 어느 자리든 · 다른 시험의 `textTo` 꼴)
+    //   ★ 10-31 — 알림창 길(깃발 0x10 · UTF-16 · 크기 = 끝 0 포함 글자 수)만 셈 · 글은 UTF-8 로 되돌려 찾음. `bubble` = 옛 말풍선 길(깃발 0x02) 수
+    int bubble = 0;
     auto notices = [&](const std::vector<nox::OutPacket>& out, const std::string& to, const std::string& has) {
         int n = 0;
         for (const auto& x : FlattenTo(out, to)) {
             for (size_t i = 0; i + 11 <= x.size(); ++i) {
                 if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
                 const size_t len = x[i + 8];
-                if (i + 11 + len > x.size()) continue;
-                const std::string text(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len));
+                if (x[i + 3] == 0x02 && i + 11 + len <= x.size() &&
+                    std::string(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len)).find("Rating") != std::string::npos) ++bubble;
+                if (x[i + 3] != 0x10 || len == 0 || i + 11 + len * 2 > x.size()) continue;
+                if (x[i + 11 + (len - 1) * 2] != 0 || x[i + 12 + (len - 1) * 2] != 0) continue;   // 끝 0 이 크기 안에
+                std::string text;
+                for (size_t k = 0; k + 1 < len; ++k) {
+                    const unsigned c = x[i + 11 + k * 2] | (x[i + 12 + k * 2] << 8);
+                    if (c < 0x80) text += static_cast<char>(c);
+                    else if (c < 0x800) { text += static_cast<char>(0xc0 | (c >> 6)); text += static_cast<char>(0x80 | (c & 0x3f)); }
+                    else { text += static_cast<char>(0xe0 | (c >> 12)); text += static_cast<char>(0x80 | ((c >> 6) & 0x3f)); text += static_cast<char>(0x80 | (c & 0x3f)); }
+                }
                 if (text.find(has) != std::string::npos) ++n;
             }
         }
@@ -25404,7 +25415,7 @@ void TestLobbyClientRatingNotice() {
     lobby(nox::LinkSavedLine("1760000000-0-1", O::Ok, {{"amy", 1010, 10}, {"zed", 990, -10}}));
     std::vector<nox::OutPacket> o1;
     now += 34; srv.Tick(now, o1);
-    const int toA = notices(o1, A, "Rating 1000 -> 1010 (+10)"), toB = notices(o1, B, "Rating ");
+    const int toA = notices(o1, A, "랭크 상승! 1000 -> 1010 (+10)"), toB = notices(o1, B, "랭크 ");
     // ②
     lc.OnMatchResult("1760000000-0-2", "{\"match\":\"1760000000-0-2\"}", rq, -1);
     lobby(nox::LinkSavedLine("1760000000-0-2", O::Ok, {{"amy", 1020, 10}, {"bob", 980, -10}}));
@@ -25413,16 +25424,17 @@ void TestLobbyClientRatingNotice() {
     lobby(nox::LinkSavedLine("1760000000-0-3", O::Ok));
     std::vector<nox::OutPacket> o2;
     now += 34; srv.Tick(now, o2);
-    const int later = notices(o2, A, "Rating ") + notices(o2, B, "Rating ");
+    const int later = notices(o2, A, "랭크 ") + notices(o2, B, "랭크 ");
     const nox::CLobbyClientStats& s = lc.Stats();
-    std::snprintf(m, sizeof(m), "① amy 알림 %d · bob 0 = %d · 알림 셈 %llu · 방에 없음(zed) %llu | ② 방 모름 %llu | ③ 꼬리 없음 → 뒤 알림 %d · ok 셈 %llu · 쥔 것 %zu",
-                  toA, toB, s.ratingNotices, s.ratingNotHere, s.ratingNoRoom, later, s.savedOk, lc.HeldResults());
-    Check(toA == 1 && toB == 0 && s.ratingNotices == 1 && s.ratingNotHere == 1 && s.ratingNoRoom == 2 && later == 0 && s.savedOk == 3 && lc.HeldResults() == 0, m);
+    std::snprintf(m, sizeof(m), "① amy 알림 %d · bob 0 = %d · 알림 셈 %llu · 방에 없음(zed) %llu | ② 방 모름 %llu | ③ 꼬리 없음 → 뒤 알림 %d · ok 셈 %llu · 쥔 것 %zu | 옛 말풍선 %d",
+                  toA, toB, s.ratingNotices, s.ratingNotHere, s.ratingNoRoom, later, s.savedOk, lc.HeldResults(), bubble);
+    Check(toA == 1 && toB == 0 && s.ratingNotices == 1 && s.ratingNotHere == 1 && s.ratingNoRoom == 2 && later == 0 && s.savedOk == 3 && lc.HeldResults() == 0 &&
+              bubble == 0, m);
     // ④
-    Check(nox::CLobbyClient::RatingNoticeText(1010, 10) == "Rating 1000 -> 1010 (+10)" && nox::CLobbyClient::RatingNoticeText(990, -10) == "Rating 1000 -> 990 (-10)" &&
-              nox::CLobbyClient::RatingNoticeText(1000, 0) == "Rating 1000 -> 1000 (+0)",
+    Check(nox::CLobbyClient::RatingNoticeText(1010, 10) == "랭크 상승! 1000 -> 1010 (+10)" && nox::CLobbyClient::RatingNoticeText(990, -10) == "랭크 하락! 1000 -> 990 (-10)" &&
+              nox::CLobbyClient::RatingNoticeText(1000, 0) == "랭크 유지 1000 -> 1000 (+0)",
           "④ 점수 알림 글 꼴 — +10 · -10 · +0");
-    std::printf("  매칭 손보기 1 — SAVED 꼬리 → 판의 방 그 이름 사람에게 점수 알림(영문) · 방에 없음 · 방 모름 셈 · 꼬리 없으면 0\n");
+    std::printf("  매칭 손보기 1 — SAVED 꼬리 → 판의 방 그 이름 사람에게 점수 알림(정품 알림창 · 한글) · 방에 없음 · 방 모름 셈 · 꼬리 없으면 0\n");
 }
 
 // ── 10-31 — 남 소개(`2d`)는 맵 한 번에 한 사람당 한 번(`Session::introGot` · 클라는 `2d` 마다 입장문을 띄움) ─────────

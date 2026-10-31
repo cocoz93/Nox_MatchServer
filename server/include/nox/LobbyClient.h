@@ -112,6 +112,9 @@ public:
     //   ★ 매칭 손보기 1 — `roomId` = 그 판의 방(`SAVED` 꼬리의 점수 알림을 보낼 곳 · -1 = 모름 — 알림 없음)
     void OnMatchResult(const std::string& match, const std::string& json, std::vector<NetworkRequest>& out, int roomId = -1);
     // ★ 매칭 손보기 1 — 점수 알림 글(영문 ASCII — 게임 안 알림의 한글은 정품 화면 미확인) 「Rating 1000 -> 1010 (+10)」
+    //   ★ 10-31 — 정품 알림창(`Server::SendNoticeBoxTo` — UTF-16 이라 한글)으로 옮기며 글도 한글로(UTF-8 로 돌려줌):
+    //   오름 「랭크 상승! 1000 -> 1010 (+10)」 · 내림 「랭크 하락! 1000 -> 990 (-10)」 · 같음 「랭크 유지 1000 -> 1000 (+0)」
+    //   - 왜: 말풍선은 머리 위 작은 글이라 잘 안 보임(10-31 사람 판 「좀 더 명확하게」 → 시안 2 고름) · 화살표는 정품 글꼴에 없을 수 있어 `->`
     static std::string RatingNoticeText(int32_t after, int32_t delta);
     size_t HeldResults() const { return _held.size(); }   // 아직 `SAVED` 를 못 받은 판 결과
 

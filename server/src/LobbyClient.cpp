@@ -315,8 +315,10 @@ void CLobbyClient::OnMatchResult(const std::string& match, const std::string& js
 
 // ★ 매칭 손보기 1 — 머리 주석은 `LobbyClient.h`. 증감은 부호를 붙여(+10 · -10 · +0)
 std::string CLobbyClient::RatingNoticeText(int32_t after, int32_t delta) {
-    char b[64];
-    std::snprintf(b, sizeof(b), "Rating %ld -> %ld (%+ld)", static_cast<long>(after) - static_cast<long>(delta), static_cast<long>(after),
+    // ★ 10-31 — 앞말 = 오름 · 내림 · 같음 세 갈래(시험 ④ 가 셋 다 봄)
+    const char* head = delta > 0 ? "랭크 상승!" : delta < 0 ? "랭크 하락!" : "랭크 유지";
+    char b[96];
+    std::snprintf(b, sizeof(b), "%s %ld -> %ld (%+ld)", head, static_cast<long>(after) - static_cast<long>(delta), static_cast<long>(after),
                   static_cast<long>(delta));
     return b;
 }
@@ -335,7 +337,7 @@ void CLobbyClient::NoticeRatings(int roomId, const std::vector<LinkRatingChange>
         size_t n = 0;
         for (const RoomMember& m : room.Members()) {
             if (m.account != c.account) continue;
-            room.Game().SendNoticeTo(m.sessionId, text.c_str());
+            room.Game().SendNoticeBoxTo(m.sessionId, text);   // ★ 10-31 — 말풍선(`SendNoticeTo`) → 정품 알림창
             ++n;
         }
         if (n == 0) ++_stats.ratingNotHere;
