@@ -108,6 +108,7 @@
 #include <windows.h>
 #include <shellapi.h>   // ★ 런처 P5 — ⑮ 「등록」 → 가입 페이지(ShellExecuteW)
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "user32.lib")   // ★ 11-02 — ⑱ IsWindow
 #include <intrin.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -894,6 +895,19 @@ static bool MsgBoxOpen()
     return ReadSelf(kMsgBox, &v) && v != 0;   // 못 읽으면 닫힘
 }
 
+// ★ 11-02 — 알림창 포인터를 따라 들어가기 전 확인. 정품은 화면을 통째로 치울 때(`0x489ee0`) 창만 풀고
+//   `[0x69cba4]` 는 그대로 둔다(0 으로 만드는 곳은 알림창 닫기 `0x449fe3` 뿐) — 풀린 창은 0xAC 로 채워져
+//   자식 찾기(`0x4889d0`)가 `0x4889e8` 에서 죽는다(11-02 판 끝 알림창이 뜬 채 창 닫기 · 6판 전부)
+static bool LiveMsgBox(DWORD* box)
+{
+    static DWORD s_logged = 0;
+    DWORD flags = 0;
+    if (!ReadSelf(kMsgBox, box) || !*box) return false;
+    if (ReadSelf(*box + 4, &flags) && flags != 0xACACACAC) return true;
+    if (*box != s_logged) { s_logged = *box; Log("⑱ 알림창 %#lx 는 이미 치워짐(포인터만 남음) — 건드리지 않음", *box); }
+    return false;
+}
+
 // 로비 소켓으로 나가는 보내기 하나 — 그 앞에 끼울 줄(없으면 빈 글)
 static std::string RankPrefix(const char* buf, int len)
 {
@@ -952,7 +966,7 @@ static void RankWaitText()
         return;
     }
     DWORD box = 0;
-    if (!ReadSelf(kMsgBox, &box) || !box) return;
+    if (!LiveMsgBox(&box)) return;
     const DWORD now = GetTickCount();
     if (box != done) {
         done = box;
@@ -1149,7 +1163,7 @@ static bool RankInjectCancel(const char* why)
     RankLeaveNow(why);
     DWORD box = 0;
     const DWORD world = *(volatile DWORD*)kListWin;
-    const DWORD cancel = ReadSelf(kMsgBox, &box) && box ? ((PFN_findchild)kFindChild)(box, kDlgCancelId) : 0;
+    const DWORD cancel = LiveMsgBox(&box) ? ((PFN_findchild)kFindChild)(box, kDlgCancelId) : 0;
     if (!world || !cancel) {
         InterlockedIncrement(&g_rankFoundMiss);
         Log("⑬ %s — 게임 목록 창 %#lx · 알림창 %#lx 의 취소(4002)를 못 찾아 아무것도 안 함", why, world, box);
@@ -1314,7 +1328,7 @@ static void NoticeBoxTick(const char* where)
     if (!g_rankOn || GetCurrentThreadId() != g_mainTid) return;
     if (!InterlockedExchange(&g_nbRan, 1)) Log("⑭ 점수 알림창 꾸밈 — 주 스레드 %s 훅에서 처음 돎", where);
     DWORD box = 0;
-    if (!ReadSelf(kMsgBox, &box) || !box) return;
+    if (!LiveMsgBox(&box)) return;
     const DWORD text = ((PFN_findchild)kFindChild)(box, kDlgTextId);
     DWORD wd = 0, tp = 0;
     if (!text || !ReadSelf(text + 0x20, &wd) || !wd || !ReadSelf(wd, &tp) || !tp) return;
@@ -2102,6 +2116,25 @@ static void InstallLoginHook()
     InstallTickHook();   // ★ 런처 P6 · P7 — ⑯
 }
 
+// ★ 11-02 ⑱ 판 안에서 창 닫기 — 프로세스가 창 없이 남던 것.
+//   정품 `WM_DESTROY`(`0x444dc4`)는 끝내기 깃발 둘(`0x59b7bc` · `0x59b7c0`)을 0 으로 내려 주 고리를 끝낸다.
+//   그런데 WinMain 은 주 고리(`0x43de10`)를 두 자리에서 부른다 — 메뉴 `0x4016a8`(0 을 돌려주면 종료 길 `0x401a49`) ·
+//   판 안 `0x401964`(반환값을 안 봄). 판 안에서 닫으면 맨 위로 돌아 메뉴 자리가 주 고리를 다시 열며 깃발을 1 로 되살린다
+//   → 창 없는 게임 목록 화면을 계속 돈다(정품 원래 흐름 · 전체 화면 전제라 판 안 X 를 안 본 것으로 짐작).
+//   그래서 메뉴 자리에서 게임 창이 이미 없으면 주 고리를 열지 않고 0 을 돌려준다 = 대화방에서 닫을 때와 같은 정품 종료 길.
+//   깃발로 가르지 말 것 — 메뉴로 판을 나갈 때(`0x43dd90`)도 0 이다. 창이 없는 경우만 끝낸다
+static const uintptr_t kMainLoop = 0x43de10, kMainLoopCallMenu = 0x4016a8, kGameWnd = 0x83a31c;
+typedef int(__cdecl* PFN_mainloop)(void);
+static int __cdecl MenuLoopEntry()
+{
+    const HWND wnd = (HWND)(uintptr_t)*(volatile DWORD*)kGameWnd;
+    if (wnd && !IsWindow(wnd)) {
+        Log("⑱ 게임 창 %p 이 이미 닫힘 — 메뉴로 돌아가지 않고 정품 종료 길로", wnd);
+        return 0;
+    }
+    return ((PFN_mainloop)kMainLoop)();
+}
+
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH) {
@@ -2151,6 +2184,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         if (gameOk && !noGuard) InstallChanGuard();   // ★ 10-20 v2 작업 5 — 로그 파일을 정한 뒤(붙임 · 안 붙임 줄이 기록에 남게)
         if (gameOk) InstallCountryHook();             // ★ 10-30 — 두 클라 판 국가 고르기 창
         if (gameOk) InstallLoginHook();               // ★ 런처 P5 — ⑮ 정품 로그인 창(「로그인!」 막음 · 「등록」 → 가입 페이지)
+        if (gameOk) HookCallSite(kMainLoopCallMenu, kMainLoop, (void*)MenuLoopEntry, "⑱ 메뉴 주 고리");   // ★ 11-02 — 판 안에서 창 닫기
     }
     return TRUE;
 }
