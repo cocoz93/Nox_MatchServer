@@ -23,6 +23,10 @@ constexpr std::string_view kLoginTokenMark = "NXL1";
 constexpr std::string_view kLoginFailMark = "NXL!";
 constexpr std::string_view kGuestApgar = "None";
 constexpr std::string_view kRedacted = "***";
+// ★ 런처 P1 — 자동 로그인 열쇠(로그인 서버 `/launcher/login` 의 답 · 런처가 DPAPI 로 저장 · DLL 이 `/token` 에 댐).
+//   `NXK1<16진 64자>`(32바이트 난수). 서버는 SHA-256 만 둔다(`server/src/auth/AccountStore.h`)
+constexpr std::string_view kLoginKeyMark = "NXK1";
+constexpr size_t kLoginKeyBytes = 32;
 
 // 로그인을 못 받은 까닭 — 로그인 서버가 답으로 · DLL 이 못 닿을 때 스스로 짓는다
 enum class LoginFail : uint8_t {
@@ -31,6 +35,8 @@ enum class LoginFail : uint8_t {
     ServerError,     // 로그인 서버엔 닿았는데 DB 가 안 됨 · 서명 실패
     Unreachable,     // DLL 이 로그인 서버에 못 닿음(한도 3초)
     BadInput,        // 이름 · 암호 규칙 밖
+    KeyInvalid,          // ★ 런처 P1 — 열쇠가 없음 · 만료 · 폐기 · 남의 이름(런처로 다시 로그인)
+    LauncherRequired,    // ★ 런처 P1 — 런처 없이 켬(DLL 이 스스로) · 암호 → 토큰 길(`/login`)은 닫힘
     kCount
 };
 
@@ -42,6 +48,8 @@ inline const char* LoginFailName(LoginFail f) {
     case LoginFail::ServerError: return "server_error";
     case LoginFail::Unreachable: return "unreachable";
     case LoginFail::BadInput: return "bad_input";
+    case LoginFail::KeyInvalid: return "key_invalid";
+    case LoginFail::LauncherRequired: return "launcher_required";
     case LoginFail::kCount: break;
     }
     return "?";

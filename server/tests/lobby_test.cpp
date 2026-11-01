@@ -2166,6 +2166,8 @@ void LoginUnitTests() {
                  {"server_error", "Login server error"},
                  {"unreachable", "Cannot reach the login server"},
                  {"bad_input", "letters/digits 1-9. Password: 4-8,"},
+                 {"key_invalid", "start Nox Online from the launcher again"},   // ★ 런처 P1
+                 {"launcher_required", "Start Nox Online from the launcher."},  // ★ 런처 P1
                  {"what", "get the new client patch"}};
     unsigned failShown = 0;
     for (const auto& f : fails) {
@@ -2180,9 +2182,9 @@ void LoginUnitTests() {
     const bool plain3 = failWith("Login token missing");
     tryLogin("3", "gus", "");
     const bool missing = failWith("Login token missing");
-    Check(failShown == 6 && guest && old2 && plain3 && missing,
-          "④ 실패 표시 다섯(계정 없음 = 가입 주소) · 모르는 까닭 · 손님 · 평문(DLL 판 2 = 판 낮음 · 판 3 = 토큰 없음) · apgar 없음 — 안내 (" +
-              std::to_string(failShown) + "/6)");
+    Check(failShown == 8 && guest && old2 && plain3 && missing,
+          "④ 실패 표시 일곱(계정 없음 = 가입 주소) · 모르는 까닭 · 손님 · 평문(DLL 판 2 = 판 낮음 · 판 3 = 토큰 없음) · apgar 없음 — 안내 (" +
+              std::to_string(failShown) + "/8)");
 
     // ⑤ 정할 것 b — 같은 계정(7) 새 접속
     const int k5 = tryLogin("3", "wn", apgar(Tok{}));
@@ -2268,7 +2270,7 @@ void LoginUnitTests() {
     Check(longName && !early && deadline && out.empty(),
           "⑦ 17바이트 이름 → 안내 · 로그인 마감 1ms 앞 그대로 · 마감에 끊는 줄 하나 · 두 번째 USER → 아무것도 안 함");
 
-    // ⑧ 셈 — 첫 USER 하나 = 갈래 하나 · 토큰 갈래(통과 포함 여덟) · 실패 까닭 다섯이 다 나옴
+    // ⑧ 셈 — 첫 USER 하나 = 갈래 하나 · 토큰 갈래(통과 포함 여덟) · 실패 까닭 일곱이 다 나옴(★ 런처 P1 — 둘 더함)
     const LobbyStats& s = lb.Stats();
     unsigned tokenKinds = 0, failKinds = 0;
     for (const auto v : s.loginToken) tokenKinds += v ? 1 : 0;
@@ -2278,7 +2280,7 @@ void LoginUnitTests() {
               s.loginFailUnknown == 1 && s.loginGuest == 1 && s.loginPlain == 2 && s.loginMissing == 1 && s.loginBadName == 1 && s.loginNoAuth == 0 &&
               s.loginRejected == users - s.loginToken[static_cast<size_t>(nox::LoginTokenCheck::Ok)],
           "⑧ 셈 — 로그인 " + std::to_string(s.LoginTotal()) + " = 첫 USER " + std::to_string(users) +
-              " · 토큰 거절 갈래 일곱 · 실패 까닭 다섯 · 모르는 1 · 손님 1 · 평문 2 · 없음 1 · 이름 1 · 거절 378 " + std::to_string(s.loginRejected) +
+              " · 토큰 거절 갈래 일곱 · 실패 까닭 일곱 · 모르는 1 · 손님 1 · 평문 2 · 없음 1 · 이름 1 · 거절 378 " + std::to_string(s.loginRejected) +
               " = USER − 통과");
 
     // ⑨ ★ 레이팅 조각 4 — 저장소를 붙인 로비. 토큰 통과 → 점수 물음 → 답까지 인사를 미루고 뒷줄은 쌓음 →

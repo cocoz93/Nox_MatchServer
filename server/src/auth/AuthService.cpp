@@ -7,7 +7,36 @@
 
 #include <utility>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <bcrypt.h>
+
 namespace nox::auth {
+
+// ★ 런처 P1 — 열쇠 지문(SHA-256 · BCrypt — nox_common 이 이미 bcrypt 를 링크)
+static bool Sha256(const uint8_t* p, size_t n, LoginKeyHash& out) {
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_HASH_HANDLE hh = nullptr;
+    const bool ok = BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0 &&
+                    BCryptCreateHash(alg, &hh, nullptr, 0, nullptr, 0, 0) == 0 &&
+                    BCryptHashData(hh, const_cast<PUCHAR>(p), static_cast<ULONG>(n), 0) == 0 &&
+                    BCryptFinishHash(hh, out.data(), static_cast<ULONG>(out.size()), 0) == 0;
+    if (hh) BCryptDestroyHash(hh);
+    if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+    return ok;
+}
+
+static void SecureZero(void* p, size_t n) { SecureZeroMemory(p, n); }
+
+// ★ 런처 P1 — 기기 이름은 보이기용(로그인을 막지 않음) — 자르고 조절 글자는 `?`
+static std::string CleanDevice(const std::string& s) {
+    std::string out = s.substr(0, kDeviceMax);
+    for (char& c : out)
+        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7f) c = '?';
+    return out;
+}
 
 const char* AuthOutcomeName(AuthOutcome o) {
     switch (o) {
@@ -23,6 +52,14 @@ const char* AuthOutcomeName(AuthOutcome o) {
     case AuthOutcome::LoginNoAccount: return "로그인 — 계정 없음";
     case AuthOutcome::LoginBadInput: return "로그인 — 규칙 밖";
     case AuthOutcome::LoginFailed: return "로그인 — 실패";
+    case AuthOutcome::LoginClosed: return "옛 로그인 — 닫힘";
+    case AuthOutcome::TokenOk: return "토큰 — 됨";
+    case AuthOutcome::TokenBadKey: return "토큰 — 열쇠 없음";
+    case AuthOutcome::TokenExpired: return "토큰 — 열쇠 만료";
+    case AuthOutcome::TokenBadInput: return "토큰 — 규칙 밖";
+    case AuthOutcome::TokenFailed: return "토큰 — 실패";
+    case AuthOutcome::LogoutOk: return "로그아웃 — 됨";
+    case AuthOutcome::LogoutFailed: return "로그아웃 — 실패";
     case AuthOutcome::BadForm: return "폼 틀림";
     case AuthOutcome::SignupPage: return "가입 양식";
     case AuthOutcome::NotFound: return "없는 길";
@@ -93,13 +130,28 @@ static HttpResponse Page(int status, std::string html) {
     return r;
 }
 
+static HttpResponse LoginFailReply(int status, LoginFail why);
+
 HttpResponse CAuthService::Handle(const HttpRequest& req, IAccountStore& db, AuthOutcome* outcome) {
     AuthOutcome o = AuthOutcome::NotFound;
     HttpResponse r;
     const bool page = req.path == "/" || req.path == "/signup";
-    if (req.path == "/login" || page) {
+    // ★ 런처 P1 — POST 만 받는 길 넷(옛 `/login` 은 닫힘 답)
+    const bool postOnly = req.path == "/login" || req.path == "/launcher/login" || req.path == "/token" || req.path == "/logout";
+    if (postOnly || page) {
         if (req.method == "POST" && req.path != "/") {
-            r = req.path == "/login" ? Login(req, db, o) : Signup(req, db, o);
+            if (req.path == "/login") {
+                o = AuthOutcome::LoginClosed;
+                r = LoginFailReply(410, LoginFail::LauncherRequired);
+            } else if (req.path == "/launcher/login") {
+                r = Login(req, db, o);
+            } else if (req.path == "/token") {
+                r = Token(req, db, o);
+            } else if (req.path == "/logout") {
+                r = Logout(req, db, o);
+            } else {
+                r = Signup(req, db, o);
+            }
         } else if (req.method == "GET" && page) {
             o = AuthOutcome::SignupPage;
             r = Page(200, SignupFormPage());
@@ -177,23 +229,103 @@ HttpResponse CAuthService::Login(const HttpRequest& req, IAccountStore& db, Auth
         o = AuthOutcome::LoginWrongPassword;
         return LoginFailReply(401, LoginFail::WrongPassword);
     }
+    // ★ 런처 P1 — 토큰 대신 열쇠를 준다(토큰은 게임이 로비에 갈 때 DLL 이 `/token` 으로 받음 — 토큰의 IP 가 게임 PC 가 되게)
     const uint32_t now = cfg_.unixNow();
-    LoginToken t;
-    t.accountId = row.id;
-    t.clientIp = req.peerIp;
-    t.expiresAt = now + kLoginTokenLifetimeSec;
-    t.name = name();
-    bool nonceOk = true;
-    if (cfg_.nonce) t.nonce = cfg_.nonce();
-    else nonceOk = RandomBytes(reinterpret_cast<uint8_t*>(&t.nonce), sizeof(t.nonce));
-    uint8_t raw[kLoginTokenSize];
-    if (!db.TouchLogin(row.id, now) || !nonceOk || !SignLoginToken(cfg_.loginKey, t, raw)) {
+    uint8_t key[kLoginKeyBytes];
+    LoginKeyHash h{};
+    const uint32_t ttl = form["remember"] == "1" ? kKeyTtlRememberSec : kKeyTtlSessionSec;
+    if (!RandomBytes(key, sizeof(key)) || !Sha256(key, sizeof(key), h) || !db.InsertKey(row.id, h, CleanDevice(form["device"]), ttl, now)) {
+        SecureZero(key, sizeof(key));
         o = AuthOutcome::LoginFailed;
         return LoginFailReply(503, LoginFail::ServerError);
     }
     o = AuthOutcome::LoginOk;
     HttpResponse r;
-    r.body = std::string(kLoginTokenMark) + ToHex(raw, sizeof(raw));
+    r.body = std::string(kLoginKeyMark) + ToHex(key, sizeof(key));
+    SecureZero(key, sizeof(key));
+    r.headers.emplace_back("Cache-Control", "no-store");
+    return r;
+}
+
+// 토큰 짓기(옛 `/login` 의 뒷부분 그대로) — 마지막 로그인을 적고 서명
+bool CAuthService::IssueLoginToken(const HttpRequest& req, IAccountStore& db, uint64_t accountId, const std::string& name, uint32_t now,
+                                   std::string& line) {
+    LoginToken t;
+    t.accountId = accountId;
+    t.clientIp = req.peerIp;
+    t.expiresAt = now + kLoginTokenLifetimeSec;
+    t.name = name;
+    bool nonceOk = true;
+    if (cfg_.nonce) t.nonce = cfg_.nonce();
+    else nonceOk = RandomBytes(reinterpret_cast<uint8_t*>(&t.nonce), sizeof(t.nonce));
+    uint8_t raw[kLoginTokenSize];
+    if (!db.TouchLogin(accountId, now) || !nonceOk || !SignLoginToken(cfg_.loginKey, t, raw)) return false;
+    line = std::string(kLoginTokenMark) + ToHex(raw, sizeof(raw));
+    return true;
+}
+
+// ★ 런처 P1 — 폼의 `key` 칸(`NXK1` + 16진 64자) → 지문
+static bool KeyHashOf(const std::string& field, LoginKeyHash& h) {
+    if (field.size() != kLoginKeyMark.size() + 2 * kLoginKeyBytes || field.compare(0, kLoginKeyMark.size(), kLoginKeyMark) != 0) return false;
+    uint8_t key[kLoginKeyBytes];
+    const bool ok = ParseHex(field.substr(kLoginKeyMark.size()), key, sizeof(key)) && Sha256(key, sizeof(key), h);
+    SecureZero(key, sizeof(key));
+    return ok;
+}
+
+HttpResponse CAuthService::Token(const HttpRequest& req, IAccountStore& db, AuthOutcome& o) {
+    std::map<std::string, std::string> form;
+    LoginKeyHash h{};
+    if (!ParseForm(req.body, form) || CheckAccountName(form["name"]) != NameCheck::Ok || !KeyHashOf(form["key"], h)) {
+        o = AuthOutcome::TokenBadInput;
+        return LoginFailReply(400, LoginFail::BadInput);
+    }
+    LoginKeyRow k;
+    switch (db.FindKey(h, k)) {
+    case FindResult::Found: break;
+    case FindResult::NotFound:
+        o = AuthOutcome::TokenBadKey;
+        return LoginFailReply(401, LoginFail::KeyInvalid);
+    case FindResult::Failed:
+    case FindResult::kCount:
+        o = AuthOutcome::TokenFailed;
+        return LoginFailReply(503, LoginFail::ServerError);
+    }
+    if (k.accountName != form["name"]) {   // 남의 열쇠를 제 이름으로(바이트 그대로 같음 — 로비 · DB 와 같은 잣대)
+        o = AuthOutcome::TokenBadKey;
+        return LoginFailReply(401, LoginFail::KeyInvalid);
+    }
+    const uint32_t now = cfg_.unixNow();
+    if (k.expiresUnix < now) {
+        o = AuthOutcome::TokenExpired;
+        return LoginFailReply(401, LoginFail::KeyInvalid);
+    }
+    std::string line;
+    if (!db.TouchKey(h, now, now + k.ttlSec) || !IssueLoginToken(req, db, k.accountId, k.accountName, now, line)) {
+        o = AuthOutcome::TokenFailed;
+        return LoginFailReply(503, LoginFail::ServerError);
+    }
+    o = AuthOutcome::TokenOk;
+    HttpResponse r;
+    r.body = std::move(line);
+    r.headers.emplace_back("Cache-Control", "no-store");
+    return r;
+}
+
+HttpResponse CAuthService::Logout(const HttpRequest& req, IAccountStore& db, AuthOutcome& o) {
+    std::map<std::string, std::string> form;
+    LoginKeyHash h{};
+    if (!ParseForm(req.body, form) || !KeyHashOf(form["key"], h)) {
+        o = AuthOutcome::BadForm;
+        return LoginFailReply(400, LoginFail::BadInput);
+    }
+    if (!db.DeleteKey(h)) {
+        o = AuthOutcome::LogoutFailed;
+        return LoginFailReply(503, LoginFail::ServerError);
+    }
+    o = AuthOutcome::LogoutOk;
+    HttpResponse r;
+    r.body = std::string(kLogoutOk);
     return r;
 }
 

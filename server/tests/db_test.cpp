@@ -9,6 +9,7 @@
 //   ③ 칸 한도 → Invalid(DB 에 안 감) ④ 끊김 — 같은 계정으로 워커 연결을 KILL → 다음 요청이 다시 붙어 성공(retries 1)
 //   ⑤ 표 버전이 다르면 Start 실패 ⑥ 끝낼 때 남은 일을 다 함(Stop 직전에 넣은 판 셋이 다 들어감) ⑦ 셈
 //   ⑧ ★ 레이팅 조각 3(⑤ 와 ⑥ 사이) — 랭크 판 점수 · 겹친 판 안 셈 · 일반 판 NULL · 점수 · 순위 읽기 · 읽기 실패
+//   ⑨ ★ 런처 P1(⑤ 와 ⑧ 사이) — 로그인 서버의 MySQL 열쇠 저장소(넣기 · 찾기 · 쓰임 · 만료 지움 · 같은 지문 · 지우기)
 #ifdef _WIN32
 #include <winsock2.h>
 #endif
@@ -26,6 +27,7 @@
 
 #include "nox/DbWorker.h"
 #include "nox/IniFile.h"
+#include "../src/auth/MySqlAccountStore.h"   // ★ 런처 P1 — ⑨ 열쇠 저장소
 
 namespace {
 
@@ -187,7 +189,7 @@ int main(int argc, char** argv) {
         std::printf("[건너뜀] 시험 DB %s 에 못 붙음 — %s(사람 1회 config/db_setup.sql 전이면 이 꼴)\n", cfg.database.c_str(), err.c_str());
         return 77;
     }
-    bool laid = ad.Run("DROP TABLE IF EXISTS ratings, match_players, matches, accounts, schema_version");   // ★ 레이팅 조각 3 — ratings 가 accounts 를 가리켜 먼저
+    bool laid = ad.Run("DROP TABLE IF EXISTS login_keys, ratings, match_players, matches, accounts, schema_version");   // ★ 레이팅 조각 3 — ratings 가 accounts 를 가리켜 먼저 · ★ 런처 P1 — login_keys 도
     for (int i = 2; i < argc; ++i) {
         std::ifstream f(argv[i], std::ios::binary);
         std::stringstream ss;
@@ -281,6 +283,39 @@ int main(int argc, char** argv) {
         Check(!w2.Start(e2) && e2.find("표 버전 99") != std::string::npos, "⑤ 표 버전이 다르면 Start 실패(" + e2 + ")");
     }
     Check(ad.Run("UPDATE schema_version SET version = " + std::to_string(nox::db::kSchemaVersion) + " WHERE id = 1"), "⑤ 표 버전 되돌림");
+
+    // ⑨ ★ 런처 P1 — 로그인 서버의 MySQL 열쇠 저장소(`004_launcher_keys.sql`). 시험 DB 를 로비 사용자로 붙는다
+    //   (진짜 로그인 서버는 nox_auth 사용자 — 그 권한은 사람 1회 `config/launcher_setup.sql` · auth_smoke 가 본다)
+    {
+        using nox::auth::FindResult;
+        nox::auth::CMySqlAccountStore st(cfg);
+        std::string e9;
+        const bool opened = st.Open(e9);
+        Check(opened, "⑨ 열쇠 저장소 Open(준비된 문장 아홉) " + e9);
+        const uint64_t wnId = std::strtoull(ad.One("SELECT id FROM accounts WHERE name = 'wn'").c_str(), nullptr, 10);
+        nox::auth::LoginKeyHash h1{}, h2{}, h3{};
+        h1.fill(1);
+        h2.fill(2);
+        h3.fill(3);
+        nox::auth::LoginKeyRow k;
+        const bool ins = opened && st.InsertKey(wnId, h1, "PC1", 100, 1000) && st.InsertKey(wnId, h2, "PC2", 50, 1000);
+        const bool found = st.FindKey(h1, k) == FindResult::Found && k.accountId == wnId && k.accountName == "wn" && k.ttlSec == 100 &&
+                           k.expiresUnix == 1100 && ad.One("SELECT device FROM login_keys WHERE key_hash = UNHEX(REPEAT('02', 32))") == "PC2";
+        const bool none = st.FindKey(h3, k) == FindResult::NotFound;
+        const bool touched = st.TouchKey(h1, 1090, 1190) && st.FindKey(h1, k) == FindResult::Found && k.expiresUnix == 1190 &&
+                             ad.One("SELECT last_used_unix FROM login_keys WHERE key_hash = UNHEX(REPEAT('01', 32))") == "1090";
+        // 1060 에 새 열쇠 — 만료 1050 인 h2 는 지워지고 1190 인 h1 은 남는다
+        const bool pruned = st.InsertKey(wnId, h3, "PC3", 10, 1060) && ad.One("SELECT COUNT(*) FROM login_keys") == "2" &&
+                            st.FindKey(h2, k) == FindResult::NotFound;
+        const bool dup = !st.InsertKey(wnId, h3, "PC3", 10, 1060);   // 같은 지문 → 실패(유일 색인)
+        const bool deleted = st.DeleteKey(h1) && st.DeleteKey(h1) && st.FindKey(h1, k) == FindResult::NotFound &&
+                             ad.One("SELECT COUNT(*) FROM login_keys") == "1";
+        Check(ins && found && none && touched && pruned && dup && deleted,
+              "⑨ 열쇠 — 넣기 · 찾기(계정 이름 이음 · 기기) · 없음 · 쓰임 · 만료 지움 · 같은 지문 실패 · 지우기 두 번 (" +
+                  std::to_string(ins) + std::to_string(found) + std::to_string(none) + std::to_string(touched) + std::to_string(pruned) +
+                  std::to_string(dup) + std::to_string(deleted) + ") " + st.LastError());
+        Check(ad.Run("DELETE FROM login_keys"), "⑨ 열쇠 행 치움");
+    }
 
     // ⑧ ★ 레이팅 조각 3 — 랭크 판이 같은 트랜잭션에서 점수를 고치나 · 겹친 판은 안 고치나 · 일반 판은 NULL · 점수 · 순위 읽기
     Check(ad.One("SELECT COUNT(*) FROM matches WHERE ranked <> 0") == "0" && ad.One("SELECT COUNT(*) FROM match_players WHERE rating_delta IS NOT NULL") == "0" &&

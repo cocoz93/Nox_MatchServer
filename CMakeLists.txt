@@ -116,9 +116,9 @@ if (EXISTS "${NOX_MYSQL_DIR}/include/mysql.h" AND EXISTS "${NOX_MYSQL_DIR}/lib/l
   target_link_libraries(nox_db PUBLIC nox_lobby_core "${NOX_MYSQL_DIR}/lib/libmysql.lib")
   # 실행 파일 옆에 둘 DLL 셋(libmysql 이 TLS 로 libssl · libcrypto 를 부른다)
   set(NOX_MYSQL_DLLS "${NOX_MYSQL_DIR}/lib/libmysql.dll" "${NOX_MYSQL_DIR}/bin/libssl-3-x64.dll" "${NOX_MYSQL_DIR}/bin/libcrypto-3-x64.dll")
-  add_executable(db_test server/tests/db_test.cpp)
+  add_executable(db_test server/tests/db_test.cpp server/src/auth/MySqlAccountStore.cpp)   # ★ 런처 P1 — ⑨ 로그인 서버의 열쇠 저장소도 본다
   target_include_directories(db_test PRIVATE "${NOX_MYSQL_DIR}/include")   # 시험은 표를 깔고 대조하려고 MySQL 을 직접 쓴다
-  target_link_libraries(db_test PRIVATE nox_db)
+  target_link_libraries(db_test PRIVATE nox_db nox_auth_core)
   add_custom_command(TARGET db_test POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NOX_MYSQL_DLLS} $<TARGET_FILE_DIR:db_test>)
   # ★ 7단계 조각 8 — 로비가 DB 워커를 쓴다([db] · --no-db 면 메모리 저장소)
   target_link_libraries(nox_lobby PRIVATE nox_db)
@@ -146,7 +146,7 @@ add_test(NAME common_unit COMMAND common_test)
 add_test(NAME auth_unit COMMAND auth_test)   # ★ 로그인 암호 조각 2
 # ★ 7단계 조각 7 — 진짜 MySQL 의 시험 DB(nox_mo_test). 설정 [db] 가 없거나 못 붙으면 77 = 「건너뜀」(통과로 안 보이게)
 if (NOX_HAVE_MYSQL)
-  add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql" "${CMAKE_SOURCE_DIR}/tools/db/002_auth.sql" "${CMAKE_SOURCE_DIR}/tools/db/003_rating.sql")
+  add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql" "${CMAKE_SOURCE_DIR}/tools/db/002_auth.sql" "${CMAKE_SOURCE_DIR}/tools/db/003_rating.sql" "${CMAKE_SOURCE_DIR}/tools/db/004_launcher_keys.sql")
   set_tests_properties(db_test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 

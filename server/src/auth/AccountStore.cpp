@@ -54,4 +54,58 @@ uint32_t CMemoryAccountStore::LastLogin(uint64_t id) const {
     return 0;
 }
 
+// ★ 런처 P1 — 열쇠(MySQL 쪽과 같은 뜻 — `MySqlAccountStore.cpp`)
+bool CMemoryAccountStore::InsertKey(uint64_t accountId, const LoginKeyHash& h, const std::string& device, uint32_t ttlSec, uint32_t nowUnix) {
+    if (fail_) return false;
+    for (auto it = keys_.begin(); it != keys_.end();) {   // 그 계정의 만료된 열쇠 지움
+        if (it->second.accountId == accountId && it->second.expiresUnix < nowUnix) it = keys_.erase(it);
+        else ++it;
+    }
+    KeyRow k;
+    k.accountId = accountId;
+    k.device = device;
+    k.ttlSec = ttlSec;
+    k.expiresUnix = nowUnix + ttlSec;
+    k.lastUsed = nowUnix;
+    return keys_.emplace(h, k).second;   // 같은 지문이 이미 있으면 실패(32바이트 난수라 실제로는 없음 — 표의 유일 색인과 같은 뜻)
+}
+
+FindResult CMemoryAccountStore::FindKey(const LoginKeyHash& h, LoginKeyRow& out) {
+    if (fail_) return FindResult::Failed;
+    const auto it = keys_.find(h);
+    if (it == keys_.end()) return FindResult::NotFound;
+    for (const auto& kv : rows_) {
+        if (kv.second.row.id == it->second.accountId) {
+            out = LoginKeyRow{};
+            out.accountId = it->second.accountId;
+            out.accountName = kv.first;
+            out.ttlSec = it->second.ttlSec;
+            out.expiresUnix = it->second.expiresUnix;
+            return FindResult::Found;
+        }
+    }
+    return FindResult::NotFound;   // 계정 행이 없음(표의 외래 키가 막는 꼴)
+}
+
+bool CMemoryAccountStore::TouchKey(const LoginKeyHash& h, uint32_t nowUnix, uint32_t expiresUnix) {
+    if (fail_) return false;
+    const auto it = keys_.find(h);
+    if (it == keys_.end()) return false;
+    it->second.lastUsed = nowUnix;
+    it->second.expiresUnix = expiresUnix;
+    return true;
+}
+
+bool CMemoryAccountStore::DeleteKey(const LoginKeyHash& h) {
+    if (fail_) return false;
+    keys_.erase(h);
+    return true;
+}
+
+bool CMemoryAccountStore::HasDevice(const std::string& device) const {
+    for (const auto& kv : keys_)
+        if (kv.second.device == device) return true;
+    return false;
+}
+
 }  // namespace nox::auth

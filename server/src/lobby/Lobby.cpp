@@ -760,6 +760,8 @@ void Lobby::CheckLoginToken(int conn, Conn& c, std::vector<Out>& out) {
                 case LoginFail::ServerError: notice = "Login server error - try again later."; break;
                 case LoginFail::Unreachable: notice = "Cannot reach the login server - try again later."; break;
                 case LoginFail::BadInput: notice = "Name: letters/digits 1-9. Password: 4-8, a letter and a digit, no spaces."; break;
+                case LoginFail::KeyInvalid: notice = "Login expired - start Nox Online from the launcher again."; break;   // ★ 런처 P1
+                case LoginFail::LauncherRequired: notice = "Start Nox Online from the launcher."; break;                   // ★ 런처 P1
                 case LoginFail::kCount: notice = "Login failed."; break;
             }
             log_.push_back("[로그인 — 실패 표시] " + c.nick + " — " + LoginFailName(f) + "(거절 378)");

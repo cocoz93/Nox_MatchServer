@@ -2,11 +2,14 @@
 //
 //   ① 폼 풀기 — `+` · `%xx` · 틀린 `%` · 같은 이름 둘 · 빈 짝 · `=` 없음
 //   ② 가입 갈래 — 만듦 · 옛 행에 암호 · 이미 있음 · 이름 · 암호 · 확인 다름 · 실패 · 폼 틀림
-//   ③ 로그인 갈래 — 됨(토큰이 로비 쪽 확인을 통과 · 계정 번호 · IP · 만료 · 마지막 로그인) · 암호 틀림 · 계정 없음(없음 · 옛 행) · 규칙 밖 · 실패
+//   ③ 로그인 갈래 — ★ 런처 P1: 옛 /login 닫힘(410) · /launcher/login 열쇠 발급(NXK1 · 수명 30일 · 12시간 · 만료 행 지움 · 기기 이름) ·
+//     /token 토큰(로비 쪽 확인 통과 · 계정 번호 · IP · 만료 · 마지막 로그인 · 쓸 때마다 만료 밀림 · 만료 · 남의 이름 · 없는 열쇠 · 꼴 · 실패) ·
+//     /logout(지운 열쇠는 토큰 못 받음 · 두 번 · 꼴 · 실패) · 발급의 암호 갈래(암호 틀림 · 계정 없음(없음 · 옛 행) · 규칙 밖 · 실패)
 //   ④ 길 — 방식 다름 405 · 없는 길 404
 //   ⑤ 셈 — 갈래 열여섯이 모두 나옴 · 합 = 요청 수(세는 자리 하나)
 //   ⑥ ★ 조각 3 화면 — 양식(GET / · /signup · 칸 한도 · 스크립트 없음) · 결과 화면 · 되돌린 이름 걸러 냄 · 암호 안 실림 ·
 //     규칙 갈래마다 안내 글 · 화면 답 머리(HTML · 콘텐츠 보안 정책 · nosniff)
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -52,13 +55,14 @@ HttpRequest Post(const std::string& path, const std::string& body) {
 
 struct Rig {
     CMemoryAccountStore db;
+    uint32_t clock = kNow;   // ★ 런처 P1 — 열쇠 만료를 보려고 시계를 움직인다
     CAuthService svc;
     unsigned requests = 0;
-    Rig() : svc([] {
+    Rig() : svc([this] {
                 AuthConfig c;
                 c.loginKey = Key();
                 c.iterations = 1000;   // 시험만 짧게(실제는 600,000 — 일꾼이 뜰 때 시간을 찍음)
-                c.unixNow = [] { return kNow; };
+                c.unixNow = [this] { return clock; };
                 c.nonce = [] { return 0x0123456789abcdefull; };
                 return c;
             }()) {}
@@ -134,11 +138,22 @@ void TestSignupLogin() {
     g.db.SetFail(false);
     Check(g.db.Count() == 2, "실패한 가입은 행을 안 남김");
 
-    // ③ 로그인
-    r = g.Do(Post("/login", "name=alice9&password=ab12cd"), O::LoginOk, "로그인 됨");
+    // ③ 로그인 — ★ 런처 P1: 옛 `/login` 은 닫힘 · `/launcher/login` 이 열쇠 · `/token` 이 토큰 · `/logout` 이 폐기
+    r = g.Do(Post("/login", "name=alice9&password=ab12cd"), O::LoginClosed, "옛 /login 닫힘");
+    Check(FailBody(r, 410, nox::LoginFail::LauncherRequired), "410 NXL!launcher_required");
+    r = g.Do(Post("/launcher/login", "name=alice9&password=ab12cd&device=PC%01one&remember=1"), O::LoginOk, "열쇠 발급(자동 로그인)");
+    const std::string keyMark(nox::kLoginKeyMark);
+    const std::string aliceKey = r.body;
+    bool keyHex = r.status == 200 && aliceKey.size() == keyMark.size() + 2 * nox::kLoginKeyBytes && aliceKey.compare(0, keyMark.size(), keyMark) == 0;
+    for (size_t i = keyMark.size(); keyHex && i < aliceKey.size(); ++i) keyHex = std::isxdigit(static_cast<unsigned char>(aliceKey[i])) != 0;
+    Check(keyHex && g.db.KeyCount() == 1 && Header(r, "Cache-Control") == "no-store", "본문 = NXK1 + 16진 64자 · 열쇠 행 하나 · 저장 금지 머리");
+    Check(g.db.LastLogin(1) == 0, "열쇠 발급은 마지막 로그인이 아님(게임에 들어갈 때 — /token)");
+    auto tokenOf = [&](const std::string& name, const std::string& key) { return Post("/token", "name=" + name + "&key=" + key); };
+    r = g.Do(tokenOf("alice9", aliceKey), O::TokenOk, "토큰 됨");
     std::string payload;
-    Check(r.status == 200 && nox::ClassifyApgar(r.body, payload) == nox::ApgarKind::Token && payload.size() == nox::kLoginTokenSize * 2,
-          "본문 = NXL1 + 16진 114자");
+    Check(r.status == 200 && nox::ClassifyApgar(r.body, payload) == nox::ApgarKind::Token && payload.size() == nox::kLoginTokenSize * 2 &&
+              Header(r, "Cache-Control") == "no-store",
+          "본문 = NXL1 + 16진 114자(옛 /login 답과 같은 꼴)");
     uint8_t raw[nox::kLoginTokenSize] = {};
     nox::LoginToken t;
     Check(nox::ParseHex(payload, raw, sizeof(raw)) &&
@@ -146,25 +161,75 @@ void TestSignupLogin() {
           "토큰이 로비 쪽 확인을 통과(같은 키 · IP · 이름)");
     Check(t.accountId == 1 && t.expiresAt == kNow + nox::kLoginTokenLifetimeSec && t.nonce == 0x0123456789abcdefull && t.clientIp == kIp,
           "계정 번호 · 만료 60초 · 일회용 · 상대 IP");
-    Check(g.db.LastLogin(1) == kNow, "마지막 로그인 적힘");
-    Check(g.Do(Post("/login", "name=bob&password=pw1234"), O::LoginOk, "옛 행에 암호 넣은 계정").status == 200, "옛 행 로그인");
-    Check(FailBody(g.Do(Post("/login", "name=alice9&password=ab12ce"), O::LoginWrongPassword, "암호 틀림"), 401, nox::LoginFail::WrongPassword),
-          "401 NXL!wrong_password");
-    g.Do(Post("/login", "name=alice9&password=AB12cd"), O::LoginWrongPassword, "대소문자 다른 암호");
-    Check(FailBody(g.Do(Post("/login", "name=dave&password=ab12cd"), O::LoginNoAccount, "없는 계정"), 401, nox::LoginFail::NoAccount),
-          "401 NXL!no_account");
-    g.db.AddLegacy("erin");
-    g.Do(Post("/login", "name=erin&password=ab12cd"), O::LoginNoAccount, "암호 없는 옛 행 → 계정 없음(가입 안내)");
-    Check(FailBody(g.Do(Post("/login", "name=al ice&password=ab12cd"), O::LoginBadInput, "이름 빈칸(+ 아닌 날 빈칸)"), 400, nox::LoginFail::BadInput),
-          "400 NXL!bad_input");
-    g.Do(Post("/login", "name=alice9&password=abc"), O::LoginBadInput, "규칙 밖 암호(3자) — 해시 없이");
-    g.Do(Post("/login", "name=alice9&password=ab%zz"), O::LoginBadInput, "틀린 %");
-    g.Do(Post("/login", "password=ab12cd"), O::LoginBadInput, "이름 칸 없음");
+    Check(g.db.LastLogin(1) == kNow, "마지막 로그인 적힘(/token)");
+    g.clock = kNow + 29u * 24u * 3600u;   // 자동 로그인 열쇠 — 29일 뒤에도 됨 · 쓸 때마다 30일 밀림
+    g.Do(tokenOf("alice9", aliceKey), O::TokenOk, "29일 뒤 토큰");
+    g.clock += 29u * 24u * 3600u;
+    g.Do(tokenOf("alice9", aliceKey), O::TokenOk, "다시 29일 뒤(밀린 만료) 토큰");
+    g.clock += kKeyTtlRememberSec + 1;
+    Check(FailBody(g.Do(tokenOf("alice9", aliceKey), O::TokenExpired, "30일 넘게 안 씀"), 401, nox::LoginFail::KeyInvalid), "401 NXL!key_invalid(만료)");
+    g.clock = kNow;
+    r = g.Do(Post("/launcher/login", "name=bob&password=pw1234"), O::LoginOk, "옛 행에 암호 넣은 계정 · 이번 실행만(remember 없음)");
+    const std::string bobKey = r.body;
+    g.clock = kNow + kKeyTtlSessionSec - 1;
+    g.Do(tokenOf("bob", bobKey), O::TokenOk, "이번 실행만 열쇠 — 12시간 안");
+    g.clock += kKeyTtlSessionSec + 1;   // 밀린 만료(마지막 씀 + 12시간)를 넘김(같은 초는 아직 됨 — `<`)
+    g.Do(tokenOf("bob", bobKey), O::TokenExpired, "이번 실행만 열쇠 — 마지막 씀부터 12시간 넘음");
+    const size_t keysBefore = g.db.KeyCount();
+    g.Do(Post("/launcher/login", "name=bob&password=pw1234&remember=0"), O::LoginOk, "bob 새 열쇠(만료된 bob 열쇠는 지워짐)");
+    Check(keysBefore == 2 && g.db.KeyCount() == 2, "만료된 bob 열쇠 지움 — 행 수 그대로 2(alice9 1 · bob 새 1 — 다른 계정 행은 안 건드림)");
+    g.clock = kNow;
+    Check(FailBody(g.Do(tokenOf("bob", aliceKey), O::TokenBadKey, "남의 열쇠를 제 이름으로"), 401, nox::LoginFail::KeyInvalid), "401 남의 이름");
+    const std::string unknownKey = keyMark + std::string(64, '0');
+    Check(FailBody(g.Do(tokenOf("alice9", unknownKey), O::TokenBadKey, "없는 열쇠"), 401, nox::LoginFail::KeyInvalid), "401 없는 열쇠");
+    Check(FailBody(g.Do(tokenOf("al_ce", aliceKey), O::TokenBadInput, "이름 규칙 밖"), 400, nox::LoginFail::BadInput), "400 이름");
+    g.Do(tokenOf("alice9", aliceKey.substr(0, aliceKey.size() - 1)), O::TokenBadInput, "열쇠 63자");
+    g.Do(tokenOf("alice9", "NXK2" + aliceKey.substr(4)), O::TokenBadInput, "열쇠 머리 다름");
+    g.Do(tokenOf("alice9", keyMark + std::string(64, 'g')), O::TokenBadInput, "열쇠 16진 아님");
+    g.Do(Post("/token", "name=alice9"), O::TokenBadInput, "열쇠 칸 없음");
+    g.Do(Post("/token", "name=alice9&key=%zz"), O::TokenBadInput, "틀린 %");
     g.db.SetFail(true);
-    Check(FailBody(g.Do(Post("/login", "name=alice9&password=ab12cd"), O::LoginFailed, "DB 안 됨"), 503, nox::LoginFail::ServerError),
-          "503 NXL!server_error");
+    Check(FailBody(g.Do(tokenOf("alice9", aliceKey), O::TokenFailed, "토큰 — DB 안 됨"), 503, nox::LoginFail::ServerError), "503 토큰");
     g.db.SetFail(false);
 
+    // 열쇠 발급의 암호 확인 갈래(옛 /login 과 같은 판단)
+    Check(FailBody(g.Do(Post("/launcher/login", "name=alice9&password=ab12ce"), O::LoginWrongPassword, "암호 틀림"), 401, nox::LoginFail::WrongPassword),
+          "401 NXL!wrong_password");
+    g.Do(Post("/launcher/login", "name=alice9&password=AB12cd"), O::LoginWrongPassword, "대소문자 다른 암호");
+    Check(FailBody(g.Do(Post("/launcher/login", "name=dave&password=ab12cd"), O::LoginNoAccount, "없는 계정"), 401, nox::LoginFail::NoAccount),
+          "401 NXL!no_account");
+    g.db.AddLegacy("erin");
+    g.Do(Post("/launcher/login", "name=erin&password=ab12cd"), O::LoginNoAccount, "암호 없는 옛 행 → 계정 없음(가입 안내)");
+    Check(FailBody(g.Do(Post("/launcher/login", "name=al ice&password=ab12cd"), O::LoginBadInput, "이름 빈칸(+ 아닌 날 빈칸)"), 400, nox::LoginFail::BadInput),
+          "400 NXL!bad_input");
+    g.Do(Post("/launcher/login", "name=alice9&password=abc"), O::LoginBadInput, "규칙 밖 암호(3자) — 해시 없이");
+    g.Do(Post("/launcher/login", "name=alice9&password=ab%zz"), O::LoginBadInput, "틀린 %");
+    g.Do(Post("/launcher/login", "password=ab12cd"), O::LoginBadInput, "이름 칸 없음");
+    const size_t keysNoFail = g.db.KeyCount();
+    g.db.SetFail(true);
+    Check(FailBody(g.Do(Post("/launcher/login", "name=alice9&password=ab12cd"), O::LoginFailed, "DB 안 됨"), 503, nox::LoginFail::ServerError),
+          "503 NXL!server_error");
+    g.db.SetFail(false);
+    Check(g.db.KeyCount() == keysNoFail, "실패한 발급은 열쇠를 안 남김");
+
+    // 기기 이름 — 조절 글자 `?` · 64바이트에서 자름(로그인은 막지 않음)
+    r = g.Do(Post("/launcher/login", "name=alice9&password=ab12cd&device=" + std::string(70, 'x')), O::LoginOk, "긴 기기 이름");
+    Check(r.status == 200, "긴 기기 이름도 발급");
+    Check(g.db.HasDevice("PC?one") && g.db.HasDevice(std::string(64, 'x')) && !g.db.HasDevice(std::string(70, 'x')),
+          "기기 이름 — %01 → ? · 70바이트 → 64");
+
+    // 로그아웃 — 지운 열쇠는 토큰 못 받음 · 몇 번 해도 같음
+    r = g.Do(Post("/logout", "key=" + aliceKey), O::LogoutOk, "로그아웃");
+    Check(r.status == 200 && r.body == std::string(kLogoutOk), "200 NXOK");
+    g.Do(tokenOf("alice9", aliceKey), O::TokenBadKey, "로그아웃한 열쇠로 토큰");
+    Check(g.Do(Post("/logout", "key=" + aliceKey), O::LogoutOk, "또 로그아웃").status == 200, "없는 열쇠 로그아웃도 200");
+    Check(g.Do(Post("/logout", "key=abc"), O::BadForm, "로그아웃 열쇠 꼴 틀림").status == 400, "로그아웃 400");
+    g.db.SetFail(true);
+    Check(g.Do(Post("/logout", "key=" + bobKey), O::LogoutFailed, "로그아웃 — DB 안 됨").status == 503, "로그아웃 503");
+    g.db.SetFail(false);
+    HttpRequest getTok = tokenOf("alice9", aliceKey);
+    getTok.method = "GET";
+    Check(g.Do(getTok, O::BadMethod, "GET /token").status == 405, "GET /token 405");
     // ④ 길
     HttpRequest get = Post("/login", "");
     get.method = "GET";

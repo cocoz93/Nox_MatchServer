@@ -15,6 +15,14 @@ constexpr const char* kInsert =
     "INSERT INTO accounts (name, pass_salt, pass_hash, pass_iter, created_unix, last_login_unix) VALUES (?, ?, ?, ?, ?, 0)";
 constexpr const char* kClaim = "UPDATE accounts SET pass_salt = ?, pass_hash = ?, pass_iter = ? WHERE name = ? AND pass_hash IS NULL";
 constexpr const char* kTouch = "UPDATE accounts SET last_login_unix = ? WHERE id = ?";
+// ★ 런처 P1 — 열쇠(`tools/db/004_launcher_keys.sql`)
+constexpr const char* kKeyPrune = "DELETE FROM login_keys WHERE account_id = ? AND expires_unix < ?";
+constexpr const char* kKeyInsert =
+    "INSERT INTO login_keys (key_hash, account_id, device, ttl_sec, created_unix, last_used_unix, expires_unix) VALUES (?, ?, ?, ?, ?, ?, ?)";
+constexpr const char* kKeyFind =
+    "SELECT k.account_id, a.name, k.ttl_sec, k.expires_unix FROM login_keys k JOIN accounts a ON a.id = k.account_id WHERE k.key_hash = ?";
+constexpr const char* kKeyTouch = "UPDATE login_keys SET last_used_unix = ?, expires_unix = ? WHERE key_hash = ?";
+constexpr const char* kKeyDelete = "DELETE FROM login_keys WHERE key_hash = ?";
 
 }  // namespace
 
@@ -24,11 +32,16 @@ struct CMySqlAccountStore::Conn {
     MYSQL_STMT* insert = nullptr;
     MYSQL_STMT* claim = nullptr;
     MYSQL_STMT* touch = nullptr;
+    MYSQL_STMT* keyPrune = nullptr;    // ★ 런처 P1
+    MYSQL_STMT* keyInsert = nullptr;
+    MYSQL_STMT* keyFind = nullptr;
+    MYSQL_STMT* keyTouch = nullptr;
+    MYSQL_STMT* keyDelete = nullptr;
     unsigned lastErrno = 0;
     std::string lastError;
 
     ~Conn() {
-        for (MYSQL_STMT* s : {find, insert, claim, touch})
+        for (MYSQL_STMT* s : {find, insert, claim, touch, keyPrune, keyInsert, keyFind, keyTouch, keyDelete})
             if (s) mysql_stmt_close(s);
         if (m) mysql_close(m);
     }
@@ -68,7 +81,9 @@ bool CMySqlAccountStore::Open(std::string& err) {
         lastError_ = err;
         return false;
     }
-    if (!c->Prepare(c->find, kFind) || !c->Prepare(c->insert, kInsert) || !c->Prepare(c->claim, kClaim) || !c->Prepare(c->touch, kTouch)) {
+    if (!c->Prepare(c->find, kFind) || !c->Prepare(c->insert, kInsert) || !c->Prepare(c->claim, kClaim) || !c->Prepare(c->touch, kTouch) ||
+        !c->Prepare(c->keyPrune, kKeyPrune) || !c->Prepare(c->keyInsert, kKeyInsert) || !c->Prepare(c->keyFind, kKeyFind) ||
+        !c->Prepare(c->keyTouch, kKeyTouch) || !c->Prepare(c->keyDelete, kKeyDelete)) {
         err = lastError_ = "준비된 문장 — " + c->lastError + "(표 모양 · nox_auth 권한이 SQL 파일과 다른가)";
         return false;
     }
@@ -199,6 +214,95 @@ bool CMySqlAccountStore::TouchLogin(uint64_t id, uint32_t nowUnix) {
         db::U64(p[1], id);
         if (mysql_stmt_bind_param(c.touch, p) != 0) return c.StmtFail(c.touch, "마지막 로그인 묶기");
         if (mysql_stmt_execute(c.touch) != 0) return c.StmtFail(c.touch, "마지막 로그인");
+        return true;
+    });
+}
+
+// ★ 런처 P1 — 열쇠. 지우기 · 넣기는 한 문장씩(넣기가 실패해도 만료된 행을 지운 것은 해가 없다 — 트랜잭션 안 씀)
+bool CMySqlAccountStore::InsertKey(uint64_t accountId, const LoginKeyHash& h, const std::string& device, uint32_t ttlSec, uint32_t nowUnix) {
+    const std::string hash(reinterpret_cast<const char*>(h.data()), h.size());
+    const uint32_t expires = nowUnix + ttlSec;
+    return Retry([&](Conn& c) {
+        MYSQL_BIND p[2] = {};
+        db::U64(p[0], accountId);
+        db::U32(p[1], nowUnix);
+        if (mysql_stmt_bind_param(c.keyPrune, p) != 0) return c.StmtFail(c.keyPrune, "만료 열쇠 지우기 묶기");
+        if (mysql_stmt_execute(c.keyPrune) != 0) return c.StmtFail(c.keyPrune, "만료 열쇠 지우기");
+        MYSQL_BIND q[7] = {};
+        unsigned long l0 = 0, l2 = 0;
+        db::Bin(q[0], hash, l0);
+        db::U64(q[1], accountId);
+        db::Bin(q[2], device, l2);
+        db::U32(q[3], ttlSec);
+        db::U32(q[4], nowUnix);
+        db::U32(q[5], nowUnix);
+        db::U32(q[6], expires);
+        if (mysql_stmt_bind_param(c.keyInsert, q) != 0) return c.StmtFail(c.keyInsert, "열쇠 넣기 묶기");
+        if (mysql_stmt_execute(c.keyInsert) != 0) return c.StmtFail(c.keyInsert, "열쇠 넣기");
+        return true;
+    });
+}
+
+FindResult CMySqlAccountStore::FindKey(const LoginKeyHash& h, LoginKeyRow& out) {
+    const std::string hash(reinterpret_cast<const char*>(h.data()), h.size());
+    bool found = false;
+    const bool ok = Retry([&](Conn& c) {
+        MYSQL_BIND p[1] = {};
+        unsigned long l0 = 0;
+        db::Bin(p[0], hash, l0);
+        uint64_t id = 0;
+        char name[32];
+        unsigned long nameLen = 0;
+        uint32_t ttl = 0, expires = 0;
+        MYSQL_BIND r[4] = {};
+        db::U64(r[0], id);
+        r[1].buffer_type = MYSQL_TYPE_BLOB;
+        r[1].buffer = name;
+        r[1].buffer_length = sizeof(name);
+        r[1].length = &nameLen;
+        db::U32(r[2], ttl);
+        db::U32(r[3], expires);
+        if (mysql_stmt_bind_param(c.keyFind, p) != 0 || mysql_stmt_bind_result(c.keyFind, r) != 0) return c.StmtFail(c.keyFind, "열쇠 찾기 묶기");
+        if (mysql_stmt_execute(c.keyFind) != 0) return c.StmtFail(c.keyFind, "열쇠 찾기");
+        if (mysql_stmt_store_result(c.keyFind) != 0) return c.StmtFail(c.keyFind, "열쇠 찾기 받기");
+        const int f = mysql_stmt_fetch(c.keyFind);
+        mysql_stmt_free_result(c.keyFind);
+        if (f == MYSQL_NO_DATA) return found = false, true;
+        if (f != 0) return c.StmtFail(c.keyFind, "열쇠 찾기 꺼내기");   // 이름은 VARBINARY(16) — 잘림은 표 모양이 다를 때뿐
+        found = true;
+        out = LoginKeyRow{};
+        out.accountId = id;
+        out.accountName.assign(name, nameLen);
+        out.ttlSec = ttl;
+        out.expiresUnix = expires;
+        return true;
+    });
+    if (!ok) return FindResult::Failed;
+    return found ? FindResult::Found : FindResult::NotFound;
+}
+
+bool CMySqlAccountStore::TouchKey(const LoginKeyHash& h, uint32_t nowUnix, uint32_t expiresUnix) {
+    const std::string hash(reinterpret_cast<const char*>(h.data()), h.size());
+    return Retry([&](Conn& c) {
+        MYSQL_BIND p[3] = {};
+        unsigned long l2 = 0;
+        db::U32(p[0], nowUnix);
+        db::U32(p[1], expiresUnix);
+        db::Bin(p[2], hash, l2);
+        if (mysql_stmt_bind_param(c.keyTouch, p) != 0) return c.StmtFail(c.keyTouch, "열쇠 쓰임 묶기");
+        if (mysql_stmt_execute(c.keyTouch) != 0) return c.StmtFail(c.keyTouch, "열쇠 쓰임");
+        return true;
+    });
+}
+
+bool CMySqlAccountStore::DeleteKey(const LoginKeyHash& h) {
+    const std::string hash(reinterpret_cast<const char*>(h.data()), h.size());
+    return Retry([&](Conn& c) {
+        MYSQL_BIND p[1] = {};
+        unsigned long l0 = 0;
+        db::Bin(p[0], hash, l0);
+        if (mysql_stmt_bind_param(c.keyDelete, p) != 0) return c.StmtFail(c.keyDelete, "열쇠 지우기 묶기");
+        if (mysql_stmt_execute(c.keyDelete) != 0) return c.StmtFail(c.keyDelete, "열쇠 지우기");
         return true;
     });
 }
