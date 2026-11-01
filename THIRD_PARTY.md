@@ -107,6 +107,23 @@ SOFTWARE.
 ## 링크하는 라이브러리
 
 - **MySQL 클라이언트**(`libmysql` · 그것이 부르는 `libssl`·`libcrypto`) — 로비·로그인 서버의 DB 연결. 리포에 넣지 않고, 빌드하는 PC 의 MySQL 8.0 설치본에서 링크한다(`CMakeLists.txt` 의 `NOX_MYSQL_DIR`). 없으면 DB 없이 빌드된다
+- **Microsoft Edge WebView2 SDK**(1.0.2903.40 · 머리 파일 + 정적 로더 `WebView2LoaderStatic.lib`) — 런처(`client_mod/launcher`)의 화면. 리포에 넣지 않고 `client_mod/launcher/build.bat` 이 nuget.org 에서 `third_party/webview2`(git 밖)로 받는다. 정적 로더가 NoxLauncher.exe 안에 들어가므로 런처를 나눠 줄 때는 아래 고지를 같이 둔다(BSD 꼴 · 패키지의 LICENSE.txt). 화면을 그리는 런타임은 윈도에 깔린 것을 쓴다(나눠 주지 않음)
+
+  ```
+  Copyright (C) Microsoft Corporation. All rights reserved.
+  Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following
+  conditions are met: * Redistributions of source code must retain the above copyright notice, this list of conditions and the
+  following disclaimer. * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the
+  following disclaimer in the documentation and/or other materials provided with the distribution. * The name of Microsoft
+  Corporation, or the names of its contributors may not be used to endorse or promote products derived from this software without
+  specific prior written permission.
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT
+  NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+  OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  ```
 - 나머지는 Windows 기본 라이브러리(`ws2_32` · `bcrypt` · `httpapi` 등)뿐이다
 
 ---
