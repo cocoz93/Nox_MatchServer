@@ -7,6 +7,7 @@
 //   로그인 서버 일은 일꾼 스레드에서(창이 안 멈추게) — 끝나면 창 메시지로 화면 스레드에 돌아와 화면에 보낸다
 // 게임 — 띄우면 런처 창을 숨기고, 게임이 끝나면 다시 보인다. 자동 로그인이 아니면 그때 로그아웃(열쇠 지움 — 결정 2)
 //
+// 화면 모드 인자 — [--exe <게임 exe>](mo_local 이 클라2 런처 창에 Game2.exe) · [--dev](개발 도구 · 오른쪽 단추 메뉴)
 // 명령 줄 모드(창 없음 — tools\mo_local.ps1 · 시험)
 //   NoxLauncher.exe --cli --name <이름> --password <암호> [--remember] [--exe <게임 exe>] [--no-wait]
 //     로그인 → 게임 띄움 → (기본) 게임이 끝날 때까지 기다리고 자동 로그인이 아니면 로그아웃. 종료 코드 0 됨 · 2 로그인 실패 · 3 게임 못 띄움
@@ -404,7 +405,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
         LocalFree(argv);
         return rc;
     }
+    // ★ 런처 P11 — 화면 모드도 --exe 를 받는다(mo_local 이 클라마다 런처 창 하나 · 클라2 = Game2.exe). 창 제목에 그 이름을 붙임
+    const std::wstring exeArg = ArgAfter(argc, argv, L"--exe");
+    if (!exeArg.empty()) g_cfg.gameExe = exeArg;
     LocalFree(argv);
+    std::wstring title = L"녹스 온라인";
+    if (!exeArg.empty()) title += L" — " + exeArg.substr(exeArg.find_last_of(L"\\/") + 1);
 
     SetProcessDPIAware();
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -425,7 +431,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
     AdjustWindowRect(&r, style, FALSE);
     const int ww = r.right - r.left, wh = r.bottom - r.top;
     const int x = (GetSystemMetrics(SM_CXSCREEN) - ww) / 2, y = (GetSystemMetrics(SM_CYSCREEN) - wh) / 2;
-    g_hwnd = CreateWindowExW(0, kClass, L"녹스 온라인", style, x, y, ww, wh, NULL, NULL, inst, NULL);
+    g_hwnd = CreateWindowExW(0, kClass, title.c_str(), style, x, y, ww, wh, NULL, NULL, inst, NULL);
     ShowWindow(g_hwnd, show);
     UpdateWindow(g_hwnd);
     CreateWebView();

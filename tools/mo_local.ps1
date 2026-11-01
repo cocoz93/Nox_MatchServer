@@ -16,6 +16,10 @@
 #          ★ 랭크 매칭 조각 1 — 같은 자리에서 tools\ui_apply.ps1(게임 목록 여섯째 칸 「랭크 매칭」 글자 · ★ 매칭 손보기 8 필터 창 「완료」 버튼 ·
 #          되돌리기 = -Mode Restore) · -KeepDll 이면 이것도 안 함
 #       ⑦ 클라1 Game.exe · 클라2 Game2.exe(-OneClient 면 클라1 만 · -NoClients 면 안 띄움). DLL 기록(NOX_HOOK_LOG_DIR)도 같은 기록 폴더에
+#          ★ 런처 P11 — 이제 DLL 이 런처 없이 켠 정품 로그인을 막는다(⑮). 그래서 클라는 런처로 연다(client_mod\launcher\out\NoxLauncher.exe — build.bat 먼저):
+#            · 기본(로그인 서버 있음) — 클라마다 런처 창 하나(--exe Game.exe · Game2.exe). 사람이 런처에 로그인 → 게임이 화면 넷을 스스로 넘어 대화방까지(⑯)
+#            · -Password1 / -Password2 를 주면 그 클라는 창 없이 런처 명령 줄(--cli · 이름 -Name1 / -Name2 · 이번 실행만 — 게임이 끝나면 로그아웃)
+#            · -NoAuth — 런처 없이 Game.exe 를 NOX_LAUNCH=<-Name1 / -Name2>(기본 mo1 · mo2)로. 열쇠가 없어 DLL 은 key_invalid 를 싣지만 로비가 아이디만 봄
 #       기록 = _out\mo_local\<월일_시분초>\ — router.log · auth.log · lobby.log · server.log · 판 결과는 게임 서버 실행 파일 옆 results\matches.jsonl
 #   -Mode Stop
 #       게임 서버 · 로비 · 로그인 서버 = 닫기 이벤트(nox_server_stop_<pid> · nox_lobby_stop_<pid> · nox_auth_stop_<pid> — 끝 줄 셈을 찍고 나감 · 응답 없을 때만 강제)
@@ -23,7 +27,8 @@
 #
 # 왜 — 10-20 v2 로 로비와 게임 서버가 다른 프로세스가 됐다. 옛 사람 판은 채널 하나(nox_server --lobby-port)만 띄웠다.
 #   다른 PC 를 붙이는 판은 mo_host.ps1(서버_MO_열기.bat) — 이것은 같은 PC 루프백 전용(바깥에 안 엶)
-param([ValidateSet('Start', 'Stop')][string]$Mode = 'Start', [switch]$NoClients, [switch]$OneClient, [switch]$KeepDll, [int]$BattleScoreLimit = 0, [switch]$RankedAll, [switch]$RankOneMap, [switch]$NoDb, [switch]$NoAuth)
+param([ValidateSet('Start', 'Stop')][string]$Mode = 'Start', [switch]$NoClients, [switch]$OneClient, [switch]$KeepDll, [int]$BattleScoreLimit = 0, [switch]$RankedAll, [switch]$RankOneMap, [switch]$NoDb, [switch]$NoAuth,
+      [string]$Name1 = 'mo1', [string]$Password1 = '', [string]$Name2 = 'mo2', [string]$Password2 = '')   # ★ 런처 P11
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $repo 'build\Release'
@@ -150,16 +155,29 @@ try {
     if ((Get-Item -LiteralPath $k).GetValue('') -ne '20') { Set-Item -LiteralPath $k -Value '20' }
   }
   if (-not $NoClients) {
-    $env:NOX_HOOK_LOG_DIR = $logDir   # 클라 DLL 기록도 같은 폴더에
-    $c1 = Start-Process -FilePath (Join-Path $game 'Game.exe') -WorkingDirectory $game -PassThru
-    Write-Host "클라1 Game.exe pid $($c1.Id)"
-    if (-not $OneClient) {
+    $env:NOX_HOOK_LOG_DIR = $logDir   # 클라 DLL 기록도 같은 폴더에(런처가 게임에 물려줌)
+    $launcherExe = Join-Path $repo 'client_mod\launcher\out\NoxLauncher.exe'
+    if (-not $NoAuth -and -not (Test-Path -LiteralPath $launcherExe)) { throw "런처 빌드가 없다 — client_mod\launcher\build.bat 먼저: $launcherExe" }
+    $clients = @(@{ exe = 'Game.exe'; name = $Name1; pw = $Password1; tag = '클라1' })
+    if (-not $OneClient) { $clients += @{ exe = 'Game2.exe'; name = $Name2; pw = $Password2; tag = '클라2' } }
+    foreach ($c in $clients) {
+      $exePath = Join-Path $game $c.exe
+      if ($NoAuth) {   # ★ 런처 P11 — 로그인 서버 없음: 런처 없이 이름 표시만(DLL 이 화면을 넘기고 로비는 아이디만)
+        $env:NOX_LAUNCH = $c.name
+        $p = Start-Process -FilePath $exePath -WorkingDirectory $game -PassThru
+        Remove-Item Env:\NOX_LAUNCH -ErrorAction SilentlyContinue
+        Write-Host "$($c.tag) $($c.exe) pid $($p.Id) — 런처 없이 NOX_LAUNCH=$($c.name)(-NoAuth)"
+      } elseif ($c.pw) {   # 런처 명령 줄 — 로그인 → 게임 → 끝나면 로그아웃(이 런처는 게임이 끝날 때까지 뒤에서 기다림)
+        $p = Start-Process -FilePath $launcherExe -PassThru -ArgumentList @('--cli', '--name', $c.name, '--password', $c.pw, '--exe', "`"$exePath`"", '--log', "`"$(Join-Path $logDir ($c.tag + '_launcher.log'))`"")
+        Write-Host "$($c.tag) 런처 명령 줄 pid $($p.Id) — $($c.name) 로 로그인 → $($c.exe)"
+      } else {   # 런처 창 — 사람이 로그인
+        $p = Start-Process -FilePath $launcherExe -PassThru -ArgumentList @('--exe', "`"$exePath`"")
+        Write-Host "$($c.tag) 런처 창 pid $($p.Id) — 로그인하면 $($c.exe) 가 대화방까지 스스로 감"
+      }
       Start-Sleep -Seconds 3
-      $c2 = Start-Process -FilePath (Join-Path $game 'Game2.exe') -WorkingDirectory $game -PassThru
-      Write-Host "클라2 Game2.exe pid $($c2.Id)"
     }
   }
-  Write-Host '[열림] 정품 — 인터넷(Westwood Online) 로그인 → 채팅 채널 → 「게임」 → Host Game / 목록에서 방 · 끝나면 mo_local.ps1 -Mode Stop'
+  Write-Host '[열림] 런처에 로그인 → 게임이 대화방까지 스스로 감 → 「게임」 → Host Game / 목록에서 방 · 끝나면 mo_local.ps1 -Mode Stop'
 } catch {
   Write-Host "[실패] $($_.Exception.Message)"
   exit 1
