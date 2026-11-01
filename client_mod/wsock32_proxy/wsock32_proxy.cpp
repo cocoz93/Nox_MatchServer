@@ -106,6 +106,8 @@
 
 #include <winsock2.h>
 #include <windows.h>
+#include <shellapi.h>   // ★ 런처 P5 — ⑮ 「등록」 → 가입 페이지(ShellExecuteW)
+#pragma comment(lib, "shell32.lib")
 #include <intrin.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -257,6 +259,7 @@ static void RankSummary();
 static void MenuSummary();   // ★ 매칭 손보기 8 — ⑫
 static void AcceptSummary(); // ★ 매칭 손보기 6 — ⑬
 static void NoticeSummary(); // ★ 10-31 — ⑭
+static void LauncherSummary(); // ★ 런처 P5 — ⑮
 
 static DWORD WINAPI SummaryThread(LPVOID)
 {
@@ -273,6 +276,7 @@ static DWORD WINAPI SummaryThread(LPVOID)
         MenuSummary();   // ★ 매칭 손보기 8 — ⑫ 도
         AcceptSummary(); // ★ 매칭 손보기 6 — ⑬ 도
         NoticeSummary(); // ★ 10-31 — ⑭ 도
+        LauncherSummary(); // ★ 런처 P5 — ⑮ 도
         if (tick % 10) continue;   // 모듈 요약은 10초마다
         ModStat now[kMaxMods];
         int n;
@@ -1730,6 +1734,126 @@ static void InstallCountryHook()
     Log("국가 칸 — 로그인 누름의 국가 읽기(0x44a9df)를 DLL 로 돌림(읽기 앞에 Nick0~129 를 20 으로)");
 }
 
+// ─────────────────────────────────────────────── ⑮ 런처 — 정품 로그인 창(wolapi.wnd) 감싸기 (런처 P5 · Docs/LAUNCHER_RESEARCH.md ②)
+// 로그인 창을 여는 `0x44a0e0` 이 `call 0x49fde0("wolapi.wnd", 0x44a690)` 으로 창을 만든다(`0x44a144`). 그 call 을 DLL 로 돌려
+//   처리 함수 인자만 DLL 함수로 바꿔 넘긴다 — 창이 처음부터 DLL 함수를 쥔다(만든 뒤 칸을 바꾸는 ⑩ 꼴과 달리 소켓 훅을 기다릴 필요 없음 ·
+//   창 처리 함수는 게임 주 스레드의 GUI 가 부른다). 누름(0x4007 · 셋째 인자 = 눌린 단추 창 · 번호는 창 +0)만 보고 나머지는 원래 함수로
+//   · 「로그인!」(0x6aa) — 런처로 안 켰으면(NOX_LAUNCH 없음) 원래 함수로 안 넘기고 공용 알림창에 안내(11-01 사용자 결정 4 · 문구 그대로).
+//     서버도 암호 → 토큰 길을 닫았으므로(410) 이 막음은 친절의 몫 — 막는 것은 서버 · DLL 열쇠 길(④)
+//   · 「등록」(0x6a9) — 정품은 WOL 등록 화면(상태 6)으로 감 → 우리 가입 페이지를 기본 브라우저로 열고 원래 함수로 안 넘김.
+//     주소 = NOX_AUTH_URL(기준 주소 · 꾸러미) 또는 라우터 이름(servserv.westwood.com — hosts 가 우리 서버로) :8443/signup. 못 정하면 정품 그대로
+//   알림창 = `0x449590`(부모, 제목, 글, 깃발, 확인 콜백, 취소 콜백 — OpenNox `NewDialogWindow` · 정품 「서버 접속 시도중...」 `0x43b1e7` 과 같은 함수).
+//     깃발 0x21 = 확인 단추 + 누르면 닫힘(OpenNox gui.DialogOKButton | DialogFlag6). 확인 누름은 부모(이 창)로 4001 번이 다시 오는데
+//     원래 함수는 0x6a7 · 0x6a9 · 0x6aa · 0x7c1 · 0xfaa 밖의 번호를 안 본다(`0x44a89d`~`0x44aa0f`) — 그대로 넘겨도 해가 없다
+static const uintptr_t kWndLoad = 0x49fde0;          // (창 파일 이름, 처리 함수) → 창(정품 창 파일 읽어 만들기)
+static const uintptr_t kLoginWndLoadCall = 0x44a144; // 로그인 창 만들기 call
+static const uintptr_t kLoginProc = 0x44a690;        // 로그인 창 원래 처리 함수
+static const uintptr_t kNewDialog = 0x449590;        // 공용 알림창 띄우기
+static const DWORD kBtnLogin = 0x6aa, kBtnRegister = 0x6a9;
+static const DWORD kDlgOkCloseFlags = 0x21;
+static const wchar_t kLauncherTitle[] = L"녹스 온라인";
+static const wchar_t kLauncherText[] = L"녹스 온라인에 접속하려면 런처로 실행하세요";   // 11-01 사용자 문구 그대로
+static volatile LONG g_loginWndMade = 0;     // 감싼 채로 만든 로그인 창 수
+static volatile LONG g_loginBlocked = 0;     // 「로그인!」 막고 안내
+static volatile LONG g_loginPassed = 0;      // 「로그인!」 넘김(런처로 켬)
+static volatile LONG g_loginSignup = 0;      // 「등록」 → 가입 페이지
+static volatile LONG g_loginSignupMiss = 0;  // 「등록」인데 주소를 못 정해 정품 그대로
+
+typedef DWORD(__cdecl* PFN_wndload)(DWORD file, DWORD proc);
+typedef int(__cdecl* PFN_newdialog)(DWORD parent, const wchar_t* title, const wchar_t* text, DWORD flags, DWORD okCb, DWORD cancelCb);
+
+// 가입 페이지 주소 — 못 정하면 빈 글
+static std::wstring SignupUrl()
+{
+    wchar_t over[512];
+    const DWORD en = GetEnvironmentVariableW(L"NOX_AUTH_URL", over, 512);
+    if (en > 0 && en < 512) return authclient::WithPath(over, L"/signup");
+    typedef int(WSAAPI * PFN_startup)(WORD, LPWSADATA);
+    typedef int(WSAAPI * PFN_cleanup)(void);
+    WSADATA wd;
+    if (((PFN_startup)Resolve(115))(MAKEWORD(1, 1), &wd) != 0) return std::wstring();   // 정품이 이미 했어도 셈만 하나 늘었다 줄어든다
+    struct hostent* h = ((PFN_gethostbyname)Resolve(52))("servserv.westwood.com");
+    std::wstring url;
+    if (h && h->h_addrtype == AF_INET && h->h_addr_list && h->h_addr_list[0]) {
+        const unsigned char* b = (const unsigned char*)h->h_addr_list[0];
+        wchar_t buf[64];
+        swprintf(buf, 64, L"https://%u.%u.%u.%u:8443/signup", b[0], b[1], b[2], b[3]);
+        url = buf;
+    }
+    ((PFN_cleanup)Resolve(116))();
+    return url;
+}
+
+static int __cdecl LoginProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
+{
+    const PFN_wndproc4 orig = (PFN_wndproc4)kLoginProc;
+    DWORD id = 0;
+    if (msg != kMsgClick || !a3 || !ReadSelf(a3, &id)) return orig(win, msg, a3, a4);
+    if (id == kBtnLogin) {
+        if (LaunchName().empty()) {
+            const LONG n = InterlockedIncrement(&g_loginBlocked);
+            Log("⑮ 「로그인!」 막음(누적 %ld) — 런처로 안 켬(NOX_LAUNCH 없음) · 안내창", n);
+            ((PFN_newdialog)kNewDialog)(win, kLauncherTitle, kLauncherText, kDlgOkCloseFlags, 0, 0);
+            return 0;
+        }
+        InterlockedIncrement(&g_loginPassed);
+    } else if (id == kBtnRegister) {
+        const std::wstring url = SignupUrl();
+        if (!url.empty()) {
+            const HINSTANCE r = ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+            const LONG n = InterlockedIncrement(&g_loginSignup);
+            Log("⑮ 「등록」 → 가입 페이지(누적 %ld) %ls · ShellExecute %ld", n, url.c_str(), (LONG)(INT_PTR)r);
+            return 0;
+        }
+        const LONG n = InterlockedIncrement(&g_loginSignupMiss);
+        Log("⑮ 「등록」 — 가입 주소를 못 정함(누적 %ld · NOX_AUTH_URL 없음 · servserv.westwood.com 못 풂) → 정품 등록 화면 그대로", n);
+    }
+    return orig(win, msg, a3, a4);
+}
+
+static DWORD __cdecl LoginWndLoad(DWORD file, DWORD proc)
+{
+    const bool ours = proc == (DWORD)kLoginProc;
+    const DWORD win = ((PFN_wndload)kWndLoad)(file, ours ? (DWORD)(uintptr_t)LoginProc : proc);
+    const LONG n = ours && win ? InterlockedIncrement(&g_loginWndMade) : g_loginWndMade;
+    Log("⑮ 로그인 창 만듦(누적 %ld) 창=%#lx 처리 함수=%s · 런처 %s", n, win, ours ? "DLL" : "원래(인자가 0x44a690 아님)",
+        LaunchName().empty() ? "아님" : "켬");
+    return win;
+}
+
+// call 하나의 대상만 바꾼다(국가 칸 훅과 같은 꼴) — 그 자리가 정품 `call <want>` 일 때만
+static bool HookCallSite(uintptr_t siteAddr, uintptr_t want, void* ours, const char* what)
+{
+    unsigned char* site = (unsigned char*)siteAddr;
+    DWORD rel = 0;
+    memcpy(&rel, site + 1, 4);
+    if (site[0] != 0xE8 || (DWORD)(uintptr_t)(site + 5) + rel != (DWORD)want) {
+        Log("%s — %#lx 가 정품 `call %#lx` 이 아니라 안 붙임", what, (DWORD)siteAddr, (DWORD)want);
+        return false;
+    }
+    DWORD old = 0;
+    if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &old)) { Log("%s — 보호 바꾸기 실패 err=%lu", what, GetLastError()); return false; }
+    Put32(site + 1, (DWORD)(uintptr_t)ours - (DWORD)(uintptr_t)(site + 5));
+    VirtualProtect(site, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    Log("%s — %#lx 의 call 을 DLL 로 돌림", what, (DWORD)siteAddr);
+    return true;
+}
+
+static void LauncherSummary()
+{
+    static LONG seen[5] = {};
+    const LONG now[5] = { g_loginWndMade, g_loginBlocked, g_loginPassed, g_loginSignup, g_loginSignupMiss };
+    if (memcmp(seen, now, sizeof(now)) == 0) return;
+    memcpy(seen, now, sizeof(now));
+    Log("⑮ 로그인 창 셈 — 만듦 %ld · 「로그인!」 막음 %ld · 넘김 %ld · 「등록」 → 가입 페이지 %ld · 주소 못 정함 %ld", now[0], now[1], now[2], now[3], now[4]);
+}
+
+static void InstallLoginHook()
+{
+    HookCallSite(kLoginWndLoadCall, kWndLoad, (void*)LoginWndLoad, "⑮ 로그인 창");
+}
+
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH) {
@@ -1773,6 +1897,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         }
         if (gameOk && !noGuard) InstallChanGuard();   // ★ 10-20 v2 작업 5 — 로그 파일을 정한 뒤(붙임 · 안 붙임 줄이 기록에 남게)
         if (gameOk) InstallCountryHook();             // ★ 10-30 — 두 클라 판 국가 고르기 창
+        if (gameOk) InstallLoginHook();               // ★ 런처 P5 — ⑮ 정품 로그인 창(「로그인!」 막음 · 「등록」 → 가입 페이지)
     }
     return TRUE;
 }
