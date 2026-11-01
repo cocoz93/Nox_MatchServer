@@ -1840,18 +1840,214 @@ static bool HookCallSite(uintptr_t siteAddr, uintptr_t want, void* ours, const c
     return true;
 }
 
+// ─────────────────────────────────────────────── ⑯ 런처 — 정품 화면 넷 자동 진행 (런처 P6 · P7 · Docs/LAUNCHER_RESEARCH.md ③ ④)
+// 런처로 켰으면(NOX_LAUNCH — DLL 이 붙을 때 한 번 읽음) 메인 메뉴 → 접속 방식 → 로그인 → 서버 목록을 사람 손 없이 지나간다.
+//   프레임 자리 — 「모든 창 그리기」(`0x489bf0` · 인자 없음 · 창 목록 `[0x6f73e8]` 을 돎)를 프레임 루프에서 부르는 call 둘(`0x43e29a` · `0x4aa99d`)을
+//   DLL 로 돌려 그리기 직전에 LauncherTick. 이때는 어느 창 함수도 호출 중이 아니다(누른 단추가 창을 닫아도 그 창을 다시 읽는 정품 줄이 없음).
+//   ✕ 11-01 파일럿 — PeekMessageA 가져오기 칸은 메뉴 동안 0번(정품 펌프 `0x444f30` · `0x556ff0` 가 안 돎) · timeGetTime 첫 자리 `0x416b2d` 는
+//   아무 데서나 불리는 시계 · 그리기 칸(+0x17c)은 `0x489c80` 이 부른 뒤 같은 창을 계속 읽고 숨긴 창은 안 불러 — 셋 다 버림
+//   화면마다 정품 전역 창 칸이 새 값이 되면 기다렸다가(kSettleTicks 프레임 + kSettleMs — 화면 바꾸기가 끝나기 전에 누르지 않게 · 미확인 3) 한 번 누른다.
+//   누름 = `0x488da0(창, 0x4007, 단추 창, 0)`(칸 +0x178 처리 함수 부르기 — ⑪ ④ · ⑭ 와 같은 길). 화면마다 한 프로세스에 한 번만
+//   (로그인이 실패해 로그인 창이 다시 떠도 또 누르지 않는다 — 되풀이 막음. 그다음은 사람이 누른다)
+//   · 메인 메뉴 `[0x71132c]` 112 「멀티플레이」 · 접속 방식 `[0x711ca0]` 411 「인터넷」
+//   · 로그인 `[0x69cbbc]` — 이름 칸 `[0x69cbc4]` 에 계정 이름 · 암호 칸 `[0x69cbc8]` 에 아무 글(0x401e · 넓은 글자 — 정품 `0x44a7fb` 꼴 ·
+//     DLL 이 apgar 자리를 열쇠 토큰으로 바꾸므로 이 글은 어디에도 안 나감) → 1706 「로그인!」
+//   · 서버 목록 `[0x69cb30]` — 목록 1961 이 딱 한 줄이면 그 줄을 고르고(0x4013 · 정품 `0x44a275` 꼴) 1962 「확인」. 둘 이상이면 손 안 댐
+// 숨기지 않는다 — 숨긴 창은 그려지지 않고, 로그인이 실패하면 숨긴 창이 남아 사람이 못 쓴다. 화면이 잠깐 보였다 넘어간다(기능 먼저)
+static const uintptr_t kMainMenuWin = 0x71132c, kConnWin = 0x711ca0, kLoginWin = 0x69cbbc, kServListWin = 0x69cb30;
+static const uintptr_t kLoginNameEdit = 0x69cbc4, kLoginPassEdit = 0x69cbc8;
+static const DWORD kBtnMulti = 112, kBtnInternet = 411, kServList = 0x7a9, kServOk = 0x7aa;
+static const DWORD kMsgSetEditText = 0x401e, kMsgListSelect = 0x4013;
+static const LONG kSettleTicks = 3;
+static const DWORD kSettleMs = 300;   // 근거 없는 값 — 파일럿에서 줄이거나 늘린다
+static std::string g_launchAtStart;   // DllMain 에서 한 번(NOX_LAUNCH) — 프레임마다 환경을 안 읽게
+// 시험 스위치 NOX_TEST_LOGINBLOCK=1(런처 없이 켠 판에서만) — 메인 메뉴 · 접속 방식은 자동으로 넘기고 로그인 창에선 칸을 안 채우고 「로그인!」만 한 번
+//   누른다 → ⑮ 가 막고 안내창을 띄우는지 사람 손 없이 본다(⑨ · ⑪ 시험 스위치와 같은 관례)
+static bool g_testLoginBlock = false;
+static volatile LONG g_ticks = 0;            // 프레임 자리가 돈 수(주 스레드)
+static volatile LONG g_autoPress[4] = {};    // 화면마다 누름(메인 메뉴 · 접속 방식 · 로그인 · 서버 목록)
+static volatile LONG g_autoSkip = 0;         // 서버 목록이 한 줄이 아니라 손 안 댐 · 단추 못 찾음
+
+// ✕ 11-01 파일럿 — 메인 메뉴가 뜬 지 344ms 에 넣은 112 가 무시됨: 메뉴 처리 함수는 화면 기록 `[0x711338]+0x40` 이 켜져 있으면
+//   누름을 버린다(`0x4a10f5`~`0x4a1110` — 화면이 움직이는 동안으로 짐작). 그래서 「한 번 누르고 끝」 대신 화면마다 성공 표시를 보고
+//   아직이면 kRetryMs 마다 다시 누른다(최대 kMaxTries). 성공 표시 = 메인 메뉴 → 접속 방식 창이 뜸 · 접속 방식 → 로그인 창이 뜸 ·
+//   로그인 → WOL 화면 상태가 1(로그인)이 아님 · 서버 목록 → 그 창이 사라지거나 바뀜
+static const DWORD kRetryMs = 1500;
+static const int kMaxTries = 5;
+static const uintptr_t kWolStateSlot = 0x652f18;   // ⑨ kWolState 와 같은 칸(1 = 로그인 화면)
+
+struct AutoStep {
+    const char* name;
+    uintptr_t winSlot;
+    DWORD seenWin;    // 지켜본 창(새 창이면 다시 셈)
+    LONG sinceTick;
+    DWORD sinceMs;
+    int tries;        // 누른 수
+    DWORD lastPressMs;
+    bool done;
+};
+static AutoStep g_steps[4] = {
+    { "메인 메뉴", kMainMenuWin, 0, 0, 0, 0, 0, false },
+    { "접속 방식", kConnWin, 0, 0, 0, 0, 0, false },
+    { "로그인", kLoginWin, 0, 0, 0, 0, 0, false },
+    { "서버 목록", kServListWin, 0, 0, 0, 0, 0, false },
+};
+
+// 화면 i 의 누름이 먹었나(다음 화면으로 넘어갔나)
+static bool AutoSucceeded(int i, DWORD win)
+{
+    DWORD v = 0;
+    switch (i) {
+        case 0: return ReadSelf(kConnWin, &v) && v;
+        case 1: return ReadSelf(kLoginWin, &v) && v;
+        case 2: return ReadSelf(kWolStateSlot, &v) && v != 1;
+        case 3: return !ReadSelf(kServListWin, &v) || v != win;
+    }
+    return true;
+}
+
+static bool PressChild(DWORD win, DWORD id)
+{
+    const DWORD btn = ((PFN_findchild)kFindChild)(win, id);
+    if (!btn) return false;
+    ((PFN_wndproc4)kWinCall94)(win, kMsgClick, btn, 0);
+    return true;
+}
+
+static bool SetEdit(uintptr_t slot, const wchar_t* text)
+{
+    DWORD edit = 0;
+    if (!ReadSelf(slot, &edit) || !edit) return false;
+    ((PFN_wndproc4)kWinCall94)(edit, kMsgSetEditText, (DWORD)(uintptr_t)text, 0);
+    return true;
+}
+
+// 화면 i 의 누름 — 갈래 셋(눌렀음 · 단추 · 칸을 못 찾음 · 사람 몫이라 손 안 댐)
+enum class AutoResult { Pressed, Missing, LeftAlone };
+static AutoResult Pressed(bool ok) { return ok ? AutoResult::Pressed : AutoResult::Missing; }
+static AutoResult AutoAct(int i, DWORD win)
+{
+    switch (i) {
+        case 0: return Pressed(PressChild(win, kBtnMulti));
+        case 1: return Pressed(PressChild(win, kBtnInternet));
+        case 2: {
+            if (g_testLoginBlock) return PressChild(win, kBtnLogin) ? AutoResult::LeftAlone : AutoResult::Missing;   // 시험 — 한 번 누르고 끝(다시 안 누름)
+            static wchar_t name[32];
+            swprintf(name, 32, L"%S", g_launchAtStart.c_str());
+            if (!SetEdit(kLoginNameEdit, name) || !SetEdit(kLoginPassEdit, L"launcher")) return AutoResult::Missing;
+            return Pressed(PressChild(win, kBtnLogin));
+        }
+        case 3: {
+            const DWORD list = ((PFN_findchild)kFindChild)(win, kServList);
+            DWORD data = 0, count = 0;
+            if (!list || !ReadSelf(list + 0x20, &data) || !ReadSelf(data + 0x2c, &count)) return AutoResult::Missing;   // 목록 줄 수 = 자료 +0x2c(⑨ 대화방 목록과 같은 목록 칸)
+            const int rows = (int)(short)(count & 0xFFFF);
+            if (rows != 1) {
+                Log("⑯ 서버 목록 — 줄 %d 개라 손 안 댐(한 줄일 때만 고름)", rows);
+                return AutoResult::LeftAlone;
+            }
+            ((PFN_wndproc4)kWinCall94)(list, kMsgListSelect, 0, 0);
+            return Pressed(PressChild(win, kServOk));
+        }
+    }
+    return AutoResult::LeftAlone;
+}
+
+static void LauncherTick()
+{
+    if (g_launchAtStart.empty() && !g_testLoginBlock) return;
+    const LONG tick = g_ticks;
+    const DWORD now = GetTickCount();
+    for (int i = 0; i < 4; ++i) {
+        AutoStep& s = g_steps[i];
+        if (s.done) continue;
+        if (s.tries > 0 && AutoSucceeded(i, s.seenWin)) {
+            s.done = true;
+            Log("⑯ %s — 넘어감(누름 %d 번 · 마지막 누름 %lums 뒤)", s.name, s.tries, now - s.lastPressMs);
+            continue;
+        }
+        DWORD win = 0, flags = 0;
+        if (!ReadSelf(s.winSlot, &win) || !win || !ReadSelf(win + 4, &flags) || (flags & kWinHidden)) { s.seenWin = 0; continue; }
+        if (win != s.seenWin) {
+            s.seenWin = win;
+            s.sinceTick = tick;
+            s.sinceMs = now;
+            s.tries = 0;
+            continue;
+        }
+        if (s.tries == 0) {
+            if (tick - s.sinceTick < kSettleTicks || now - s.sinceMs < kSettleMs) continue;
+        } else {
+            if (now - s.lastPressMs < kRetryMs) continue;
+            if (s.tries >= kMaxTries) {
+                s.done = true;
+                InterlockedIncrement(&g_autoSkip);
+                Log("⑯ %s 창 %#lx — %d 번 눌러도 안 넘어감 · 그만(사람이 누름)", s.name, win, s.tries);
+                continue;
+            }
+        }
+        const AutoResult r = AutoAct(i, win);
+        ++s.tries;
+        s.lastPressMs = now;
+        if (r != AutoResult::Pressed) {
+            s.done = true;   // 단추 · 칸을 못 찾음 · 서버 목록이 한 줄이 아님 — 사람 몫
+            InterlockedIncrement(&g_autoSkip);
+        } else if (s.tries == 1) {
+            InterlockedIncrement(&g_autoPress[i]);
+        }
+        Log("⑯ %s 창 %#lx — %s %d 번째(창 뜬 뒤 프레임 %ld · %lums)", s.name, win,
+            r == AutoResult::Pressed ? "자동 누름" : r == AutoResult::LeftAlone ? "손 안 댐(사람 몫)" : "단추 · 칸을 못 찾아 손 안 댐", s.tries, tick - s.sinceTick,
+            now - s.sinceMs);
+        return;   // 한 프레임에 한 화면만
+    }
+}
+
+static const uintptr_t kDrawAll = 0x489bf0;
+static const uintptr_t kDrawAllCallMain = 0x43e29a, kDrawAllCallB = 0x4aa99d;   // 주 루프 그리기 · 다른 프레임 루프(어느 쪽이 메뉴에서 도는지는 셈으로)
+static volatile LONG g_drawMain = 0, g_drawB = 0;
+typedef void(__cdecl* PFN_void)(void);
+static void FrameTick(volatile LONG* count, const char* what)
+{
+    if (GetCurrentThreadId() != g_mainTid) return;
+    if (InterlockedIncrement(count) == 1) Log("⑯ 프레임 자리 — 첫 %s", what);
+    InterlockedIncrement(&g_ticks);
+    LauncherTick();
+}
+static void __cdecl DrawAllMain()
+{
+    FrameTick(&g_drawMain, "주 루프 그리기(0x43e29a)");
+    ((PFN_void)kDrawAll)();
+}
+static void __cdecl DrawAllB()
+{
+    FrameTick(&g_drawB, "다른 루프 그리기(0x4aa99d)");
+    ((PFN_void)kDrawAll)();
+}
+
+static void InstallTickHook()
+{
+    const bool a = HookCallSite(kDrawAllCallMain, kDrawAll, (void*)DrawAllMain, "⑯ 프레임 자리 — 주 루프 그리기");
+    const bool b = HookCallSite(kDrawAllCallB, kDrawAll, (void*)DrawAllB, "⑯ 프레임 자리 — 다른 루프 그리기");
+    Log("⑯ 프레임 자리 — %s · %s · 런처 %s", a ? "붙임" : "못 붙임", b ? "붙임" : "못 붙임",
+        g_launchAtStart.empty() ? "아님(자동 진행 안 함 · 셈만)" : g_launchAtStart.c_str());
+}
+
 static void LauncherSummary()
 {
-    static LONG seen[5] = {};
-    const LONG now[5] = { g_loginWndMade, g_loginBlocked, g_loginPassed, g_loginSignup, g_loginSignupMiss };
+    static LONG seen[10] = {};
+    const LONG now[10] = { g_loginWndMade, g_loginBlocked, g_loginPassed, g_loginSignup, g_loginSignupMiss,
+                           g_autoPress[0], g_autoPress[1], g_autoPress[2], g_autoPress[3], g_autoSkip };
     if (memcmp(seen, now, sizeof(now)) == 0) return;
     memcpy(seen, now, sizeof(now));
     Log("⑮ 로그인 창 셈 — 만듦 %ld · 「로그인!」 막음 %ld · 넘김 %ld · 「등록」 → 가입 페이지 %ld · 주소 못 정함 %ld", now[0], now[1], now[2], now[3], now[4]);
+    Log("⑯ 자동 진행 셈 — 메인 메뉴 %ld · 접속 방식 %ld · 로그인 %ld · 서버 목록 %ld · 손 안 댐 %ld · 프레임 %ld(주 루프 %ld · 다른 루프 %ld)", now[5], now[6],
+        now[7], now[8], now[9], (LONG)g_ticks, (LONG)g_drawMain, (LONG)g_drawB);
 }
 
 static void InstallLoginHook()
 {
     HookCallSite(kLoginWndLoadCall, kWndLoad, (void*)LoginWndLoad, "⑮ 로그인 창");
+    InstallTickHook();   // ★ 런처 P6 · P7 — ⑯
 }
 
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
@@ -1878,6 +2074,9 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         sw[0] = 0;
         g_testGuard = gameOk && GetEnvironmentVariableA("NOX_TEST_CHANGUARD", sw, sizeof(sw)) && sw[0] == '1';   // ★ 10-21 ⑨ 시험
         g_mainTid = GetCurrentThreadId();
+        g_launchAtStart = LaunchName();   // ★ 런처 P7 — ⑯ 자동 진행은 처음 환경으로만 가른다
+        sw[0] = 0;
+        g_testLoginBlock = gameOk && g_launchAtStart.empty() && GetEnvironmentVariableA("NOX_TEST_LOGINBLOCK", sw, sizeof(sw)) && sw[0] == '1';   // ★ 런처 P5 시험
 
         char dir[MAX_PATH];
         if (GetEnvironmentVariableA("NOX_HOOK_LOG_DIR", dir, MAX_PATH)) {
