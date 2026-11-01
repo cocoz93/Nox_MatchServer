@@ -882,6 +882,9 @@ static const char kRankJoinLine[] = "NOXRANK JOIN\r\n";
 static const char kRankLeaveLine[] = "NOXRANK LEAVE\r\n";
 static bool g_rankMarkTest = false;
 static volatile LONG g_rankWaiting = 0;    // ① 뒤 · ② · ③ 전
+// ★ 11-02 — 랭크 기다림이 취소 · 거절 · 수락 한도로 끝나면 방 목록으로(RankBackToListTick). 랭크 누름이 Host Game 길을 타서
+//   지도 화면이 남는데, 돌아갈 「리스트」 칸은 ⑫ 가 숨겼고 「리스트 갱신」은 지도를 안 닫는다(`noxworld.c` 10006 · 10004)
+static volatile LONG g_rankToList = 0;
 static volatile LONG g_rankMarked = 0;     // ① 참가 줄 앞 표시
 static volatile LONG g_rankLeaves = 0;     // ② 창 닫힘 → LEAVE
 static volatile LONG g_rankTokenEnds = 0;  // ③ 토큰 → 기다림 끝
@@ -923,6 +926,7 @@ static std::string RankPrefix(const char* buf, int len)
         return kRankJoinLine;
     }
     if (g_rankWaiting && !MsgBoxOpen() && InterlockedExchange(&g_rankWaiting, 0)) {
+        InterlockedExchange(&g_rankToList, 1);
         char p[64];
         Preview(buf, len < 40 ? len : 40, p, sizeof(p));
         const LONG n = InterlockedIncrement(&g_rankLeaves);
@@ -936,6 +940,7 @@ static std::string RankPrefix(const char* buf, int len)
 static void RankOnToken()
 {
     InterlockedExchange(&g_rankFoundState, 0);   // ★ ⑬ 잡혔다(다 수락 — 참가 답)
+    InterlockedExchange(&g_rankToList, 0);       // ★ 11-02 — 판으로 들어간다
     if (!InterlockedExchange(&g_rankWaiting, 0)) return;
     const LONG n = InterlockedIncrement(&g_rankTokenEnds);
     Log("⑪ 랭크 잡힘(누적 %ld) — 참가 토큰 받음 · 기다림 끔", n);
@@ -1028,6 +1033,26 @@ static volatile LONG g_menuDoneMiss = 0;           // 「완료」인데 게임 
 static volatile LONG g_menuListHidden = 0;         // 「리스트」 칸 숨김(보여서 숨긴 횟수)
 static volatile LONG g_menuListMiss = 0;           // 게임 목록 창에서 「리스트」 버튼을 못 찾음(창마다 한 번)
 
+// 「리스트」(10004) 누름을 정품 목록 함수에 + 라디오 맞춤 — 만들기 표시를 끄고 목록을 보여 주고 새로 받는다(`noxworld.c` 10004)
+static void PressListMode(DWORD world, DWORD list, DWORD a4)
+{
+    ((PFN_wndproc4)kListProc)(world, kMsgClick, list, a4);
+    const DWORD filter = ((PFN_findchild)kFindChild)(world, kBtnFilter);
+    *(volatile DWORD*)(list + 0x24) |= kRadioOn;
+    if (filter) *(volatile DWORD*)(filter + 0x24) &= ~kRadioOn;
+}
+
+// ★ 11-02 — 받기 훅(주 스레드 · 어느 창 함수도 호출 중이 아님) — 알림창이 닫힌 뒤 방 목록으로(`g_rankToList` 머리 주석)
+static void RankBackToListTick(DWORD world)
+{
+    if (!g_rankToList || MsgBoxOpen()) return;
+    InterlockedExchange(&g_rankToList, 0);
+    const DWORD list = ((PFN_findchild)kFindChild)(world, kBtnList);
+    if (!list) { Log("⑲ 랭크 끝남 — 「리스트」(10004)를 못 찾아 지도 그대로"); return; }
+    PressListMode(world, list, 0);
+    Log("⑲ 랭크 끝남 — 지도 대신 방 목록으로(「리스트」 누름을 넣음)");
+}
+
 static int __cdecl RankFilterProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
 {
     const PFN_wndproc4 orig = (PFN_wndproc4)kFilterProc;
@@ -1040,10 +1065,8 @@ static int __cdecl RankFilterProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
         Log("⑫ 「완료」 누름 — 게임 목록 창 %#lx 의 「리스트」(10004)를 못 찾아 아무것도 안 함", world);
         return 0;
     }
-    ((PFN_wndproc4)kListProc)(world, kMsgClick, list, a4);
+    PressListMode(world, list, a4);
     const DWORD filter = ((PFN_findchild)kFindChild)(world, kBtnFilter);
-    *(volatile DWORD*)(list + 0x24) |= kRadioOn;
-    if (filter) *(volatile DWORD*)(filter + 0x24) &= ~kRadioOn;
     const LONG n = InterlockedIncrement(&g_menuDone);
     Log("⑫ 「완료」 누름(누적 %ld) — 필터 창 %#lx → 「리스트」 누름을 게임 목록 창에 넣음 · 라디오 리스트 켬 · 필터 %s", n, win, filter ? "끔" : "못 찾음");
     return 0;
@@ -1143,6 +1166,7 @@ static void RankLeaveNow(const char* why)
 {
     if (!InterlockedExchange(&g_rankWaiting, 0)) return;
     InterlockedExchange(&g_rankFoundState, 0);
+    InterlockedExchange(&g_rankToList, 1);   // ★ 11-02 — 취소 · 아니오 · 수락 한도 공통
     typedef int(WSAAPI* PFN_send_t)(SOCKET, const char*, int, int);
     const int len = (int)strlen(kRankLeaveLine);
     const int rc = g_rankSock == INVALID_SOCKET ? -1 : ((PFN_send_t)Resolve(19))(g_rankSock, kRankLeaveLine, len, 0);
@@ -1404,6 +1428,7 @@ static void RankUiTick()
     const DWORD win = *(volatile DWORD*)kListWin;
     if (!win) return;
     RankMenuTick(win);   // ★ 매칭 손보기 8 — ⑫ 필터 창 감싸기 · 「리스트」 칸 숨김
+    RankBackToListTick(win);   // ★ 11-02 — ⑲ 랭크 취소 · 거절 · 한도 뒤 방 목록으로
     DWORD proc = 0;
     if (!ReadSelf(win + kProcSlot, &proc) || proc == (DWORD)(uintptr_t)RankListProc) return;
     if (proc != kListProc) {
