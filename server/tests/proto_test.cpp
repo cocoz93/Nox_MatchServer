@@ -26332,6 +26332,21 @@ void TestRoomChatCommands() {
     const auto o5 = say(A, "!START", true);
     const int startA = textTo(o5, A, "Match starting!"), startB = textTo(o5, B, "Match starting!");
     const nox::RoomPhase after5 = room.Phase();
+    // ★ 11-02 — 알림 끝 0. 클라는 깃발 2 면 길이를 안 보고 0 까지 베끼므로(`0x471dd1`) 크기 안 마지막 바이트가 0 이어야 한다(뒷 패킷이 글자로 찍힘)
+    auto zeroEnded = [](const std::vector<nox::OutPacket>& out, const std::string& to, const char* has) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i + 11 <= x.size(); ++i) {
+                if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
+                const size_t len = x[i + 8];
+                if (len == 0 || i + 11 + len > x.size() || x[i + 11 + len - 1] != 0) continue;
+                if (std::string(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len)).find(has) != std::string::npos) ++n;
+            }
+        return n;
+    };
+    std::snprintf(m, sizeof(m), "알림 끝 0 — 모두에게(SendNotice) %d · 한 사람(SendNoticeTo) %d",
+                  zeroEnded(o5, A, "Match starting!"), zeroEnded(o4, A, "Unknown command"));
+    Check(zeroEnded(o5, A, "Match starting!") == 1 && zeroEnded(o4, A, "Unknown command") == 1, m);
     // ⑥ 판 중 다시
     const auto o6 = say(A, "!start", false);
     const int already = textTo(o6, A, "already in progress");

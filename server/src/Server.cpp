@@ -2322,11 +2322,13 @@ void Server::BroadcastChat(const Session& who, const uint8_t* text, size_t n
 }
 
 // 글자 한 줄 — `0xa8 TEXT_MESSAGE`. 짜임은 실측이고 **문구만 우리 것**이다.
+// ★ 11-02 — 끝 0 을 싣는다(크기 칸에도 포함). 클라는 깃발 2 면 크기를 안 보고 `%S` 로 0 까지 베끼므로(`0x471dd1`),
+//   없으면 같은 패킷의 뒷 메시지 바이트가 글자로 찍힌다(버퍼 실측 `Ranked: … (1000)` + 01 cc 0c)
 void Server::SendNotice(const char* text) {
     const size_t n = std::strlen(text);
     if (n == 0 || n > 200) return;
     std::vector<uint8_t> msg;
-    msg.reserve(11 + n);
+    msg.reserve(11 + n + 1);
     msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
     for (auto& kv : sessions_) {
         if (!kv.second.inGame) continue;
@@ -2339,9 +2341,10 @@ void Server::SendNotice(const char* text) {
         msg.push_back(static_cast<uint8_t>(s.x >> 8));
         msg.push_back(static_cast<uint8_t>(s.y));
         msg.push_back(static_cast<uint8_t>(s.y >> 8));
-        msg.push_back(static_cast<uint8_t>(n));
+        msg.push_back(static_cast<uint8_t>(n + 1));   // 끝 0 포함
         msg.push_back(0); msg.push_back(0);        // 지속 = 0
         msg.insert(msg.end(), text, text + n);
+        msg.push_back(0);
         Emit(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size());
     }
 }
@@ -2354,7 +2357,7 @@ void Server::SendNoticeTo(int64_t sessionId, const char* text) {
     if (it == sessions_.end() || !it->second.inGame) return;
     Session& s = it->second;
     std::vector<uint8_t> msg;
-    msg.reserve(11 + n);
+    msg.reserve(11 + n + 1);
     msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
     msg.push_back(static_cast<uint8_t>(s.netCode));
     msg.push_back(static_cast<uint8_t>(s.netCode >> 8));
@@ -2363,9 +2366,10 @@ void Server::SendNoticeTo(int64_t sessionId, const char* text) {
     msg.push_back(static_cast<uint8_t>(s.x >> 8));
     msg.push_back(static_cast<uint8_t>(s.y));
     msg.push_back(static_cast<uint8_t>(s.y >> 8));
-    msg.push_back(static_cast<uint8_t>(n));
+    msg.push_back(static_cast<uint8_t>(n + 1));   // 끝 0 포함(`SendNotice` 머리 주석)
     msg.push_back(0); msg.push_back(0);        // 지속 = 0
     msg.insert(msg.end(), text, text + n);
+    msg.push_back(0);
     Emit(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size());
 }
 
