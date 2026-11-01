@@ -23,8 +23,15 @@ function show(id) {
   if (id === 'login') ($('name').value ? $('password') : $('name')).focus();
 }
 
-function showLogin(msg) {
-  $('loginMsg').textContent = msg || '';
+// 알림(info — 진행 · 안내) 과 오류는 색이 다르다
+function setMsg(id, text, info) {
+  $(id).dataset.info = info ? '1' : '0';
+  $(id).classList.toggle('info', !!info);
+  $(id).textContent = text || '';
+}
+
+function showLogin(msg, info) {
+  setMsg('loginMsg', msg, info);
   $('loginBtn').disabled = false;
   $('password').value = '';
   show('login');
@@ -33,7 +40,7 @@ function showLogin(msg) {
 function showSigned(note) {
   $('whoName').textContent = me.name;
   $('whoNote').textContent = note || (me.remember ? '자동 로그인 켜짐' : '이번 실행만 로그인');
-  $('startMsg').textContent = '';
+  setMsg('startMsg', '');
   $('startBtn').disabled = false;
   show('signed');
 }
@@ -42,9 +49,9 @@ $('login').addEventListener('submit', (e) => {
   e.preventDefault();
   const name = $('name').value.trim();
   const password = $('password').value;
-  if (!name || !password) { $('loginMsg').textContent = '아이디와 암호를 넣어 주세요.'; return; }
+  if (!name || !password) { setMsg('loginMsg', '아이디와 암호를 넣어 주세요.'); return; }
   $('loginBtn').disabled = true;
-  $('loginMsg').textContent = '로그인 중…';
+  setMsg('loginMsg', '로그인 중…', true);
   send({ cmd: 'login', name, password, remember: $('remember').checked ? '1' : '0', saveId: $('saveId').checked ? '1' : '0' });
   $('password').value = '';
 });
@@ -52,7 +59,7 @@ $('remember').addEventListener('change', () => { if ($('remember').checked) $('s
 $('signup').addEventListener('click', (e) => { e.preventDefault(); send({ cmd: 'signup' }); });
 $('startBtn').addEventListener('click', () => {
   $('startBtn').disabled = true;
-  $('startMsg').textContent = '게임을 여는 중…';
+  setMsg('startMsg', '게임을 여는 중…', true);
   send({ cmd: 'start' });
 });
 $('logout').addEventListener('click', (e) => { e.preventDefault(); send({ cmd: 'logout' }); });
@@ -71,23 +78,27 @@ if (host) {
         else showLogin(reasonText(m.get('reason')));
         break;
       case 'start':
-        if (m.get('ok') === '1') $('startMsg').textContent = '게임 실행 중';
+        if (m.get('ok') === '1') setMsg('startMsg', '게임 실행 중', true);
         else if (m.get('reason') === 'key_invalid') showLogin(reasonText('key_invalid'));
-        else { $('startMsg').textContent = reasonText(m.get('reason')); $('startBtn').disabled = false; }
+        else { setMsg('startMsg', reasonText(m.get('reason'))); $('startBtn').disabled = false; }
         break;
       case 'gameExit':
-        if (m.get('loggedOut') === '1') showLogin('게임이 끝나 로그아웃했습니다.');
+        if (m.get('loggedOut') === '1') showLogin('게임이 끝나 로그아웃했습니다.', true);
         else showSigned();
         break;
       case 'logout':
         $('remember').checked = false;
-        showLogin('로그아웃했습니다.');
+        showLogin('로그아웃했습니다.', true);
         break;
       case 'busy':
         break;
     }
   });
-  send({ cmd: 'init' });
-} else {
-  showLogin('런처 밖에서 열었습니다(화면 미리 보기).');
 }
+
+// 정품 그림을 먼저 읽고(못 읽으면 기본 모양) 본체에 시작을 알린다 — 화면이 두 번 바뀌어 보이지 않게
+stage.load().finally(() => {
+  document.body.classList.remove('booting');
+  if (host) send({ cmd: 'init' });
+  else showLogin('런처 밖에서 열었습니다(화면 미리 보기).', true);
+});

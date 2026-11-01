@@ -19,6 +19,8 @@ https://github.com/opennox/libs
 
 같은 방식으로 뽑은 표가 하나 더 있다 — `server/src/SpellNames.cpp`(주문 번호 ↔ 이름 136개, `spell` 패키지에서 `-genspells`).
 
+**런처의 그림 · 글꼴 읽기** (2026-11-02) — `client_mod/launcher/NoxArt.h` 는 `bag` · `nxz` · `noximage/pcx`, `client_mod/launcher/ui/stage.js` 의 글꼴 읽기는 `noxfont` 를 읽고 C++ · JS 로 옮겼다(형식 · 표 값). 정품 그림과 글꼴은 저장소에 넣지 않고 실행 때 사용자의 설치본에서 뽑는다.
+
 MIT는 조건이 하나뿐이다 — 저작권 고지 유지. 아래가 그것이다.
 
 ```

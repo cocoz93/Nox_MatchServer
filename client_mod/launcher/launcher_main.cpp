@@ -6,6 +6,7 @@
 //   본체가 보내는 것: init(lastName · auto · hasKey) · login(ok · reason) · start(ok · reason) · logout · gameExit · busy
 //   로그인 서버 일은 일꾼 스레드에서(창이 안 멈추게) — 끝나면 창 메시지로 화면 스레드에 돌아와 화면에 보낸다
 // 게임 — 띄우면 런처 창을 숨기고, 게임이 끝나면 다시 보인다. 자동 로그인이 아니면 그때 로그아웃(열쇠 지움 — 결정 2)
+// 그림 — 시작할 때 게임 폴더에서 정품 그림 · 글꼴을 뽑아(NoxArt.h · 처음 한 번) `https://art.nox/` 로 화면에 준다. 창은 640x480 의 정수배
 //
 // 화면 모드 인자 — [--exe <게임 exe>](mo_local 이 클라2 런처 창에 Game2.exe) · [--dev](개발 도구 · 오른쪽 단추 메뉴)
 // 명령 줄 모드(창 없음 — tools\mo_local.ps1 · 시험)
@@ -26,6 +27,7 @@
 
 #include "WebView2.h"
 #include "LauncherCore.h"
+#include "NoxArt.h"
 
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
@@ -44,7 +46,9 @@ const UINT WM_APP_POST = WM_APP + 1;        // lParam = new std::string(화면�
 const UINT WM_APP_GAMEEXIT = WM_APP + 2;    // lParam = new std::string(화면에 보낼 글)
 const wchar_t kClass[] = L"NoxOnlineLauncher";
 const wchar_t kHost[] = L"launcher.nox";
+const wchar_t kArtHost[] = L"art.nox";
 
+std::wstring g_artDir;       // 정품 그림을 뽑아 둔 폴더(못 뽑았으면 빈 글 — 화면은 기본 모양)
 HWND g_hwnd = NULL;
 ComPtr<ICoreWebView2Controller> g_ctrl;
 ComPtr<ICoreWebView2> g_web;
@@ -246,6 +250,8 @@ void CreateWebView()
                             if (SUCCEEDED(g_web.As(&w3))) {
                                 const std::wstring ui = g_cfg.exeDir + L"\\launcher_ui";
                                 w3->SetVirtualHostNameToFolderMapping(kHost, ui.c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_DENY_CORS);
+                                // 화면이 그림 픽셀을 읽어야 하므로(글자 오리기 · 그늘) fetch 까지 허용
+                                if (!g_artDir.empty()) w3->SetVirtualHostNameToFolderMapping(kArtHost, g_artDir.c_str(), COREWEBVIEW2_HOST_RESOURCE_ACCESS_KIND_ALLOW);
                             }
                             EventRegistrationToken tok;
                             g_web->add_WebMessageReceived(
@@ -385,6 +391,33 @@ int RunCli(int argc, wchar_t** argv)
     return 0;
 }
 
+// 게임 폴더에서 정품 그림을 뽑는다(처음 한 번 — 이후는 art.stamp 로 건너뜀). 못 뽑아도 런처는 뜬다
+void PrepareArt()
+{
+    const std::wstring keys = launchkey::KeyDir();   // …\NoxOnline\keys
+    const size_t cut = keys.rfind(L'\\');
+    const std::wstring game = launcher::GamePath(g_cfg);
+    const size_t gameCut = game.find_last_of(L"\\/");
+    if (cut == std::wstring::npos || gameCut == std::wstring::npos) return;
+    const std::wstring art = keys.substr(0, cut) + L"\\art";
+    if (noxart::Extract(game.substr(0, gameCut), art)) g_artDir = art;
+}
+
+// 창 안쪽 = 640x480 의 정수배. 화면에 들어가는 가장 큰 배수 — 다만 100% 배율 기준 2배(게임 창과 같은 크기)까지만 · 고해상도 화면은 그 배율만큼 더
+int StageScale(DWORD style, int dpi, RECT& work)
+{
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+        work = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    }
+    RECT frame = { 0, 0, 0, 0 };
+    AdjustWindowRect(&frame, style, FALSE);
+    const int availW = (work.right - work.left) - (frame.right - frame.left);
+    const int availH = (work.bottom - work.top) - (frame.bottom - frame.top);
+    const int fits = (std::min)(availW / 640, availH / 480);
+    const int cap = (std::max)(2, MulDiv(2, dpi, 96));
+    return (std::max)(1, (std::min)(fits, cap));
+}
+
 std::wstring ExeDir()
 {
     wchar_t p[MAX_PATH];
@@ -425,15 +458,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
     HDC dc = GetDC(NULL);
     const int dpi = GetDeviceCaps(dc, LOGPIXELSX);
     ReleaseDC(NULL, dc);
-    const int cw = MulDiv(900, dpi, 96), ch = MulDiv(560, dpi, 96);
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT r = { 0, 0, cw, ch };
+    RECT work;
+    const int scale = StageScale(style, dpi, work);
+    RECT r = { 0, 0, 640 * scale, 480 * scale };
     AdjustWindowRect(&r, style, FALSE);
     const int ww = r.right - r.left, wh = r.bottom - r.top;
-    const int x = (GetSystemMetrics(SM_CXSCREEN) - ww) / 2, y = (GetSystemMetrics(SM_CYSCREEN) - wh) / 2;
+    const int x = work.left + ((work.right - work.left) - ww) / 2, y = work.top + ((work.bottom - work.top) - wh) / 2;
     g_hwnd = CreateWindowExW(0, kClass, title.c_str(), style, x, y, ww, wh, NULL, NULL, inst, NULL);
     ShowWindow(g_hwnd, show);
     UpdateWindow(g_hwnd);
+    PrepareArt();
     CreateWebView();
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0)) {

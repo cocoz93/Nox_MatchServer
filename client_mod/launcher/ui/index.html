@@ -2,14 +2,15 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https://art.nox; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://art.nox; style-src 'self' 'unsafe-inline'; script-src 'self'">
 <title>녹스 온라인</title>
 <link rel="stylesheet" href="app.css">
 </head>
-<body>
-<!-- 런처 화면(런처 P8 — 임시 모양). 녹스 정품 그림은 P9 후보를 사용자가 고른 뒤 P10 에서 입힌다(그림은 리포에 안 넣고 실행 때 사용자 PC 에서 뽑음).
+<body class="booting">
+<!-- 런처 화면. 정품 그림 · 글꼴은 stage.js 가 그림판에 그린다(그림은 리포에 안 넣고 실행 때 사용자 PC 에서 뽑음 — NoxArt.h). 못 뽑으면 app.css 의 기본 모양.
      본체와는 window.chrome.webview.postMessage / message 로 폼 꼴 글 한 줄씩(launcher_main.cpp 머리 주석) -->
-<main class="frame">
+<canvas id="stage" width="640" height="480"></canvas>
+<main class="frame" id="frame">
   <section class="brand">
     <h1>NOX <span>ONLINE</span></h1>
     <p class="sub">녹스 온라인</p>
@@ -43,6 +44,7 @@
     <p class="foot"><a href="#" id="logout">로그아웃</a></p>
   </section>
 </main>
+<script src="stage.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

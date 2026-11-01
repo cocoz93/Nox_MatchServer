@@ -1,11 +1,13 @@
 ﻿// launcher_test.cpp — LauncherCore.h 의 창 없는 몫 시험(런처 P8). test.bat 이 돌린다.
 //   ① 설정 줄 읽기(공백 · 주석 · 없는 키 · CRLF) ② 설정 파일 + 환경 변수가 이김 ③ 기억 파일 왕복(임시 LOCALAPPDATA) · 꼴 틀린 이름은 버림
 //   ④ 게임 환경 덩어리 — NOX_LAUNCH 하나만(있던 것은 바꿈) · 다른 값 그대로 · 끝 \0\0 ⑤ 게임 경로(상대 · 절대)
+//   ⑥ 그림 풀기(NoxArt.h) — 줄 묶음 · 잘린 자료 · PNG 꼴 · 게임 폴더 없음 · (NOX_TEST_GAME · NOX_TEST_ART 가 있으면) 정품에서 실제로 뽑기
 //   로그인 서버 길(Login · CheckKey · Logout)은 실제 nox_auth 파일럿으로 본다(전송 몫은 auth_client_test)
 #include <cstdio>
 #include <string>
 
 #include "LauncherCore.h"
+#include "NoxArt.h"
 
 static int g_checks = 0, g_fail = 0;
 static void Check(bool ok, const char* what)
@@ -86,6 +88,43 @@ int main()
     Check(launcher::GamePath(c3) == L"D:\\Nox\\Game.exe", "⑤ 상대 이름은 런처 폴더 기준");
     c3.gameExe = L"Game2.exe";
     Check(launcher::GamePath(c3) == L"D:\\Nox\\Game2.exe", "⑤ 다른 이름(클라2)");
+
+    // ⑥ 그림 풀기(NoxArt.h) — 줄 묶음 3종 · 잘린 자료는 실패
+    {
+        std::vector<uint8_t> d(17, 0);
+        d[0] = 3;   // 폭 3
+        d[4] = 2;   // 높이 2
+        // 첫 줄: 빈칸 1 + RGB555 빨강 2 / 둘째 줄: RGBA4444 1 + 재질 2
+        const uint8_t body[] = { 1, 1, 2, 2, 0x00, 0x7C, 0x00, 0x7C, 5, 1, 0x3F, 0xF0, 4, 2, 0x80, 0x40 };
+        d.insert(d.end(), body, body + sizeof(body));
+        noxart::Image im;
+        Check(noxart::DecodeImage(d.data(), d.size(), 3, im) && im.w == 3 && im.h == 2, "⑥ 그림 풀림(폭 · 높이)");
+        const auto px = [&im](int x, int y) { return &im.rgba[(static_cast<size_t>(y) * im.w + x) * 4]; };
+        Check(px(0, 0)[3] == 0 && px(1, 0)[0] == 0xF8 && px(1, 0)[1] == 0 && px(2, 0)[3] == 0xFF, "⑥ 빈칸은 투명 · RGB555 빨강");
+        Check(px(0, 1)[0] == 0xF0 && px(0, 1)[3] == 0xF0 && px(1, 1)[0] == 0x80 && px(2, 1)[1] == 0x40, "⑥ RGBA4444 · 재질은 회색");
+        noxart::Image cut;
+        Check(!noxart::DecodeImage(d.data(), d.size() - 1, 3, cut), "⑥ 잘린 자료는 실패");
+        Check(!noxart::DecodeImage(d.data(), d.size(), 9, cut), "⑥ 모르는 종류는 실패");
+        const std::vector<uint8_t> png = noxart::EncodePng(im);
+        Check(png.size() > 40 && png[1] == 'P' && png[12] == 'I' && std::string(png.end() - 8, png.end() - 4) == "IEND", "⑥ PNG 꼴");
+    }
+    {
+        // 없는 게임 폴더 → 실패(화면은 기본 모양) · 그림 폴더도 안 만듦
+        const std::wstring art = dir + L"\\art_none";
+        Check(!noxart::Extract(dir + L"\\no_game", art) && GetFileAttributesW(art.c_str()) == INVALID_FILE_ATTRIBUTES, "⑥ 게임 폴더 없음 → 실패");
+    }
+    // 실물 — NOX_TEST_GAME 이 있으면 정품 video.bag 에서 NOX_TEST_ART 로 뽑아 본다(값 대조는 부른 쪽 · 시간도 찍음)
+    {
+        const std::wstring game = launcher::EnvW(L"NOX_TEST_GAME"), art = launcher::EnvW(L"NOX_TEST_ART");
+        if (!game.empty() && !art.empty()) {
+            const DWORD t0 = GetTickCount();
+            Check(noxart::Extract(game, art), "⑥ 실물 — 정품 폴더에서 뽑기");
+            std::printf("art extract %lu ms\n", GetTickCount() - t0);
+            const DWORD t1 = GetTickCount();
+            Check(noxart::Extract(game, art), "⑥ 실물 — 두 번째는 건너뜀");
+            std::printf("art again %lu ms\n", GetTickCount() - t1);
+        }
+    }
 
     DeleteFileW(launcher::StatePath().c_str());
     DeleteFileW((dir + L"\\NoxLauncher.ini").c_str());

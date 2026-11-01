@@ -1,4 +1,4 @@
-/* 런처 화면 — 임시 모양(런처 P8). P10 에서 녹스 정품 그림(나무 테두리 · 단추)으로 바꾼다 */
+/* 런처 화면 — 기본 모양(정품 그림을 못 읽을 때 · 런처 P8). 정품 모양은 stage.js + 맨 아래 body.art */
 :root {
   --bg: #0c0a08;
   --panel: #17120d;
@@ -46,4 +46,28 @@ button:disabled { opacity: .55; cursor: default; }
 .who b { color: var(--gold); }
 .foot { margin: 14px 0 0; text-align: center; color: var(--muted); font-size: 13px; }
 a { color: var(--gold); }
+.msg.info { color: var(--muted); }
 @media (max-width: 700px) { .frame { grid-template-columns: 1fr; padding: 0 16px; } .brand { display: none; } }
+
+/* 시작 전 · 기본 모양일 때 그림판은 안 보임 */
+#stage { display: none; }
+body.booting .frame { visibility: hidden; }
+
+/* 정품 모양(런처 P10) — 그림판을 창에 꽉 채워 정수배로 키움(창 크기는 본체가 640x480 의 정수배로 잡음).
+   HTML 요소는 그림판과 같은 640x480 좌표에 투명하게 얹는다 · 위치는 stage.js */
+body.art { background: #000; }
+body.art #stage { display: block; position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; image-rendering: pixelated; }
+body.art .frame { display: block; position: fixed; left: 0; top: 0; width: 640px; height: 480px; padding: 0; transform-origin: 0 0; }
+body.art .brand, body.art .note, body.art .who, body.art .msg, body.art #loading { display: none; }
+body.art .panel { background: none; border: 0; padding: 0; box-shadow: none; }
+body.art .panel.hidden { display: none; }
+body.art label { position: static; display: block; margin: 0; font-size: 0; }
+body.art .checks { display: block; margin: 0; }
+body.art .foot { position: static; margin: 0; font-size: 0; }
+body.art input:not([type=checkbox]), body.art button, body.art a, body.art label.check {
+  position: absolute; display: block; margin: 0; padding: 0; opacity: 0; border: 0; outline: none; background: none; font-size: 13px;
+}
+body.art label.check input { position: absolute; left: 0; top: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+body.art label.check, body.art button:not(:disabled), body.art a { cursor: pointer; }
+body.art button:disabled { cursor: default; }
+body.art input:not([type=checkbox]) { cursor: text; }
