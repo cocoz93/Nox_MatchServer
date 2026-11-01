@@ -1,14 +1,15 @@
 ﻿// auth_client_test.cpp — AuthClient.h 시험(DLL 과 같은 코드). test.bat 이 돌린다. 실제 nox_auth · 인증서 없이 가짜 HTTP 서버로.
 //
 // 확인할 것
-//   ① 요청 — POST /login · 폼 · 이름 · 암호가 바이트 단위로 정확히 인코딩돼 서버가 같은 값으로 푼다(공백 · & · = · % · + · 한글 바이트)
+//   ① 요청 — POST /token(★ 런처 P4 — 옛 /login) · 폼 · 이름 · 열쇠가 바이트 단위로 정확히 인코딩돼 서버가 같은 값으로 푼다(공백 · & · = · % · + · 한글 바이트)
 //   ② 답 — 200 은 토큰 꼴(NXL1 + 16진 114자)만 · 400 401 503 은 아는 까닭(NXL!…)만 그대로. 상태와 본문이 안 맞거나 이상하면 NXL!server_error
 //   ③ 못 닿음 — 연결 거절 · 응답 없음 · 연결 끊김 · HTTP 아닌 답 · 틀린 주소 · 평문 서버에 https → 늘 NXL!unreachable (한도 안에 돌아옴)
 //   ④ 한도는 처음부터 끝까지 — 헤더는 한도 안에 오고 본문이 늦어 합이 한도를 넘으면 unreachable (단계마다 한도를 새로 주면 통과해 버린다)
 //   ⑤ 넘겨주기(302)를 따라가지 않는다 — 서버가 요청을 한 번만 받는다
 //   ⑥ 토큰 길이 상수가 서버의 kLoginTokenSize 와 같다
 //   ⑦ ★ 10-28 지문 고정 — 평문 주소 · 꼴이 틀린 지문은 붙지 않음(요청 0) · SHA-256 · 대문자 지문
-//   ⑧ ★ 10-28 실제 nox_auth 에 지문 고정(NOX_AUTH_LIVE_PIN 이 있고 8443 이 떠 있을 때만 — 아니면 건너뜀)
+//   ⑧ ★ 10-28 실제 nox_auth 에 지문 고정(NOX_AUTH_LIVE_PIN 이 있고 8443 이 떠 있을 때만 — 아니면 건너뜀) · ★ 런처 P4 부터 /launcher/login 에
+//   ⑨ ★ 런처 P4 — 런처 요청(열쇠 발급 · 로그아웃) 본문 · 요청마다 다른 200 답 꼴 · 기준 주소(WithPath)
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -235,7 +236,7 @@ private:
     Seen seen_;
 };
 
-static std::wstring UrlFor(const char* scheme, unsigned short port, const char* path = "/login")
+static std::wstring UrlFor(const char* scheme, unsigned short port, const char* path = "/token")
 {
     char u[128];
     std::snprintf(u, sizeof(u), "%s://127.0.0.1:%u%s", scheme, static_cast<unsigned>(port), path);
@@ -267,23 +268,23 @@ int main()
         Script s;
         s.body = tok;
         srv.Set(s);
-        const authclient::Result r = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
+        const authclient::Result r = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
         const Seen seen = srv.Last();
         Check(r.line == tok && r.status == 200 && r.error == 0, "① 성공 — 토큰 그대로 · 200");
-        Check(seen.count == 1 && seen.method == "POST" && seen.path == "/login", "① POST /login 한 번");
+        Check(seen.count == 1 && seen.method == "POST" && seen.path == "/token", "① POST /token 한 번(★ 런처 P4)");
         Check(seen.contentType.compare(0, 33, "application/x-www-form-urlencoded") == 0, "① 폼 꼴");
-        Check(seen.body == "name=wn9457&password=ab12cd", "① 본문이 정확히 name=…&password=…");
+        Check(seen.body == "name=wn9457&key=ab12cd", "① 본문이 정확히 name=…&key=…");
     }
     {
         Script s;
         s.body = Tok('b');
         srv.Set(s);
         const std::string name = "n m", pw = std::string("a&b=c%1+ x") + "\xb0\xa1" + "~-_.";
-        const authclient::Result r = authclient::Login(UrlFor("http", srv.Port()), name, pw, kTo);
+        const authclient::Result r = authclient::Token(UrlFor("http", srv.Port()), name, pw, kTo);
         const Seen seen = srv.Last();
         Check(r.line == s.body, "① 특수 글자 — 성공");
-        Check(FormGet(seen.body, "name") == name && FormGet(seen.body, "password") == pw, "① 공백 · & · = · % · + · 한글 바이트가 그대로 풀림");
-        Check(seen.body == "name=n%20m&password=a%26b%3Dc%251%2B%20x%B0%A1~-_.", "① 인코딩 글자 그대로(영숫자와 -_.~ 만 안 바꿈)");
+        Check(FormGet(seen.body, "name") == name && FormGet(seen.body, "key") == pw, "① 공백 · & · = · % · + · 한글 바이트가 그대로 풀림");
+        Check(seen.body == "name=n%20m&key=a%26b%3Dc%251%2B%20x%B0%A1~-_.", "① 인코딩 글자 그대로(영숫자와 -_.~ 만 안 바꿈)");
         Check(std::count(seen.body.begin(), seen.body.end(), '&') == 1, "① 칸 경계 & 는 하나뿐");
     }
 
@@ -309,7 +310,7 @@ int main()
             s.status = c.status;
             s.body = c.body;
             srv.Set(s);
-            const authclient::Result r = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
+            const authclient::Result r = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
             Check(r.line == c.want && r.status == c.status, c.what);
         }
         // 토큰 꼴이 한 글자라도 틀리면 서버 오류
@@ -320,14 +321,14 @@ int main()
             Script s;
             s.body = b;
             srv.Set(s);
-            const authclient::Result r = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
+            const authclient::Result r = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
             Check(r.line == kServerError, "② 토큰 꼴이 틀림(113 · 115 · 비16진 · 판 · 대소문자 · 너무 김) → server_error");
         }
         // 대문자 16진은 16진이다
         Script up;
         up.body = "NXL1" + std::string(authclient::kTokenHexLen, 'A');
         srv.Set(up);
-        Check(authclient::Login(UrlFor("http", srv.Port()), "a1", "ab12", kTo).line == up.body, "② 대문자 16진도 토큰");
+        Check(authclient::Token(UrlFor("http", srv.Port()), "a1", "ab12", kTo).line == up.body, "② 대문자 16진도 토큰");
     }
 
     // ⑤ 넘겨주기 안 따라감
@@ -336,9 +337,9 @@ int main()
         s.status = 302;
         s.extraHeaders = "Location: http://127.0.0.1:" + std::to_string(srv.Port()) + "/elsewhere\r\n";
         srv.Set(s);
-        const authclient::Result r = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
+        const authclient::Result r = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
         const Seen seen = srv.Last();
-        Check(r.line == kServerError && r.status == 302 && seen.count == 1 && seen.path == "/login", "⑤ 302 를 안 따라감 — 요청 한 번뿐");
+        Check(r.line == kServerError && r.status == 302 && seen.count == 1 && seen.path == "/token", "⑤ 302 를 안 따라감 — 요청 한 번뿐");
     }
 
     // ③ 못 닿음
@@ -352,32 +353,32 @@ int main()
         getsockname(tmp, reinterpret_cast<sockaddr*>(&a), &len);
         const unsigned short closedPort = ntohs(a.sin_port);
         closesocket(tmp);
-        const authclient::Result r = authclient::Login(UrlFor("http", closedPort), "wn9457", "ab12cd", kTo);
+        const authclient::Result r = authclient::Token(UrlFor("http", closedPort), "wn9457", "ab12cd", kTo);
         Check(r.line == kUnreachable && r.status == 0 && r.error != 0 && r.ms <= kTo + 800, "③ 연결 거절 → unreachable · 한도 안");
     }
     {
         Script s;
         s.act = Act::Hang;
         srv.Set(s);
-        const authclient::Result r = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", 1000);
+        const authclient::Result r = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", 1000);
         Check(r.line == kUnreachable && r.status == 0 && r.ms >= 900 && r.ms <= 1000 + 800, "③ 응답 없음 → 한도(1초)에 unreachable");    }
     {
         Script s;
         s.act = Act::CloseNow;
         srv.Set(s);
-        Check(authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo).line == kUnreachable, "③ 답 없이 끊김 → unreachable");
+        Check(authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo).line == kUnreachable, "③ 답 없이 끊김 → unreachable");
         s.act = Act::Garbage;
         srv.Set(s);
-        Check(authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo).line == kUnreachable, "③ HTTP 아닌 답 → unreachable");
+        Check(authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo).line == kUnreachable, "③ HTTP 아닌 답 → unreachable");
     }
     {
         Script s;
         s.body = Tok();
         srv.Set(s);
-        const authclient::Result r = authclient::Login(UrlFor("https", srv.Port()), "wn9457", "ab12cd", kTo);
+        const authclient::Result r = authclient::Token(UrlFor("https", srv.Port()), "wn9457", "ab12cd", kTo);
         Check(r.line == kUnreachable && r.status == 0 && srv.Last().count == 0, "③ 평문 서버에 https → 인사가 안 끝나 unreachable · 요청은 안 감");
-        Check(authclient::Login(L"not a url", "a1", "ab12", kTo).line == kUnreachable, "③ 틀린 주소");
-        Check(authclient::Login(UrlFor("ftp", srv.Port()), "a1", "ab12", kTo).line == kUnreachable, "③ http · https 아닌 주소");
+        Check(authclient::Token(L"not a url", "a1", "ab12", kTo).line == kUnreachable, "③ 틀린 주소");
+        Check(authclient::Token(UrlFor("ftp", srv.Port()), "a1", "ab12", kTo).line == kUnreachable, "③ http · https 아닌 주소");
     }
 
     // ④ 한도는 처음부터 끝까지
@@ -388,11 +389,11 @@ int main()
         s.delay1 = 700;   // 헤더가 한도(1초) 안에 오고
         s.delay2 = 700;   // 본문이 늦어 합 1.4초
         srv.Set(s);
-        const authclient::Result r = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", 1000);
+        const authclient::Result r = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", 1000);
         Check(r.line == kUnreachable && r.ms <= 1000 + 500, "④ 헤더 700ms + 본문 700ms → 한도(1초)를 넘으면 unreachable · 1.4초까지 안 기다림");        s.act = Act::Slow;
         s.delay1 = 600;
         srv.Set(s);
-        const authclient::Result ok = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
+        const authclient::Result ok = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
         Check(ok.line == s.body && ok.ms >= 550, "④ 600ms 늦은 답은 한도 안이면 받음");
     }
 
@@ -402,19 +403,19 @@ int main()
         Script s;
         s.body = Tok();
         srv.Set(s);
-        const authclient::Result plain = authclient::Login(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo, pin);
+        const authclient::Result plain = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo, pin);
         Check(plain.line == kUnreachable && plain.error == ERROR_WINHTTP_SECURE_FAILURE && srv.Last().count == 0,
               "⑦ 지문을 줬는데 평문(http) 주소 → 붙지 않음 · 요청 0");
         const char* const bad[] = {"", "a", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" /*63*/, "?"};
         int refused = 0;
         for (const char* b : bad) {
             if (!*b) continue;   // 빈 지문 = 옛 길(위 ①~⑤ 가 그 길)
-            const authclient::Result r = authclient::Login(UrlFor("https", srv.Port()), "wn9457", "ab12cd", kTo, b);
+            const authclient::Result r = authclient::Token(UrlFor("https", srv.Port()), "wn9457", "ab12cd", kTo, b);
             refused += (r.line == kUnreachable && r.error == ERROR_INVALID_PARAMETER) ? 1 : 0;
         }
         std::string g = pin;
         g[10] = 'g';
-        const authclient::Result r = authclient::Login(UrlFor("https", srv.Port()), "wn9457", "ab12cd", kTo, g);
+        const authclient::Result r = authclient::Token(UrlFor("https", srv.Port()), "wn9457", "ab12cd", kTo, g);
         refused += (r.line == kUnreachable && r.error == ERROR_INVALID_PARAMETER) ? 1 : 0;
         Check(refused == 4 && srv.Last().count == 0, "⑦ 꼴이 틀린 지문(1자 · 63자 · ? · 16진 아닌 글자) → 옛 길로 안 물러서고 unreachable · 요청 0");
         unsigned char p[authclient::kPinBytes];
@@ -434,26 +435,71 @@ int main()
         char live[80] = {};
         const DWORD n = GetEnvironmentVariableA("NOX_AUTH_LIVE_PIN", live, sizeof(live));
         const std::string pin = n > 0 && n < sizeof(live) ? std::string(live, n) : std::string();
-        const std::wstring here = L"https://127.0.0.1:8443/login", other = L"https://127.0.0.2:8443/login";
+        const std::wstring here = L"https://127.0.0.1:8443/launcher/login", other = L"https://127.0.0.2:8443/launcher/login";   // ★ 런처 P4 — 옛 /login 은 닫힘
         const std::string kNoAccount = "NXL!no_account";
         // ★ 10-29 — 8443 이 꺼져 있으면 윈도가 거절을 약 2초 되풀이한 뒤에야 CANNOT_CONNECT 를 준다(실측 2,031ms).
         //   kTo(1.5초)로는 마감이 먼저 와 TIMEOUT 이 되어 건너뜀에 안 걸리고 아래 셋이 실패했다 — 그래서 이 묶음만 5초
         const DWORD kLiveTo = 5000;
-        const authclient::Result probe = pin.empty() ? authclient::Result() : authclient::Login(here, "zz9pin", "ab12cd", kLiveTo, pin);
+        const authclient::Result probe = pin.empty() ? authclient::Result() : authclient::LauncherLogin(here, "zz9pin", "ab12cd", "", false, kLiveTo, pin);
         if (pin.empty() || probe.error == ERROR_WINHTTP_CANNOT_CONNECT) {
             std::printf("  ⑧ 실제 로그인 서버 — 건너뜀(%s)\n", pin.empty() ? "NOX_AUTH_LIVE_PIN 없음 · 사람 1회 전" : "8443 안 떠 있음");
         } else {
             Check(probe.line == kNoAccount && probe.status == 401, "⑧ 맞는 지문 · 127.0.0.1 → 본문이 닿음(401 no_account)");
-            const authclient::Result o = authclient::Login(other, "zz9pin", "ab12cd", kLiveTo, pin);
+            const authclient::Result o = authclient::LauncherLogin(other, "zz9pin", "ab12cd", "", false, kLiveTo, pin);
             Check(o.line == kNoAccount && o.status == 401, "⑧ 맞는 지문 · 인증서 이름에 없는 주소(127.0.0.2) → 통과(다른 PC 꼴)");
-            const authclient::Result noPin = authclient::Login(other, "zz9pin", "ab12cd", kLiveTo);
+            const authclient::Result noPin = authclient::LauncherLogin(other, "zz9pin", "ab12cd", "", false, kLiveTo);
             Check(noPin.line == kUnreachable && noPin.status == 0, "⑧ 지문 없이 인증서 이름에 없는 주소 → 윈도 검사에 막힘(옛 길 그대로)");
             std::string wrong = pin;
             wrong[0] = wrong[0] == '0' ? '1' : '0';
-            const authclient::Result w = authclient::Login(here, "zz9pin", "ab12cd", kLiveTo, wrong);
+            const authclient::Result w = authclient::LauncherLogin(here, "zz9pin", "ab12cd", "", false, kLiveTo, wrong);
             Check(w.line == kUnreachable && w.status == 0 && w.error == ERROR_WINHTTP_SECURE_INVALID_CERT,
                   "⑧ 틀린 지문 → 본문 쓰기 전에 멈춤(SECURE_INVALID_CERT · 상태 0)");
         }
+    }
+
+    // ⑨ ★ 런처 P4 — 런처 요청 둘(열쇠 발급 · 로그아웃) · 요청마다 200 답 꼴이 다름 · 기준 주소
+    {
+        const std::wstring kLogin = UrlFor("http", srv.Port(), "/launcher/login"), kOut = UrlFor("http", srv.Port(), "/logout");
+        const std::string key = "NXK1" + std::string(authclient::kKeyHexLen, 'c');
+        Script s;
+        s.body = key;
+        srv.Set(s);
+        authclient::Result r = authclient::LauncherLogin(kLogin, "wn9457", "a&b 1", "PC 1", true, kTo);
+        Seen seen = srv.Last();
+        Check(r.line == key && seen.path == "/launcher/login" && seen.body == "name=wn9457&password=a%26b%201&device=PC%201&remember=1",
+              "⑨ 열쇠 발급 — 200 NXK1 + 16진 64자 · 본문 넷(인코딩) · remember=1");
+        authclient::LauncherLogin(kLogin, "wn9457", "ab12cd", "", false, kTo);
+        Check(FormGet(srv.Last().body, "remember") == "0" && FormGet(srv.Last().body, "device").empty(), "⑨ remember=0 · 빈 기기");
+        int wrongShape = 0;
+        for (const std::string& b : { Tok(), "NXK1" + std::string(authclient::kKeyHexLen - 1, 'c'), "NXK1" + std::string(authclient::kKeyHexLen, 'g') }) {
+            s.body = b;
+            srv.Set(s);
+            wrongShape += authclient::LauncherLogin(kLogin, "wn9457", "ab12cd", "", false, kTo).line == kServerError ? 1 : 0;
+        }
+        s.body = key;
+        srv.Set(s);
+        wrongShape += authclient::Token(UrlFor("http", srv.Port()), "wn9457", key, kTo).line == kServerError ? 1 : 0;
+        Check(wrongShape == 4, "⑨ 요청과 안 맞는 200 답(열쇠 발급에 토큰 꼴 · 열쇠 63자 · 비16진 · 토큰 요청에 열쇠 꼴) → server_error");
+        s.status = 401;
+        s.body = "NXL!wrong_password";
+        srv.Set(s);
+        Check(authclient::LauncherLogin(kLogin, "wn9457", "ab12cd", "", false, kTo).line == s.body, "⑨ 열쇠 발급 401 까닭 그대로");
+        s.body = "NXL!key_invalid";
+        srv.Set(s);
+        Check(authclient::Token(UrlFor("http", srv.Port()), "wn9457", key, kTo).line == s.body, "⑨ 토큰 401 key_invalid 그대로(새 까닭)");
+        s.status = 200;
+        s.body = "NXOK";
+        srv.Set(s);
+        r = authclient::Logout(kOut, key, kTo);
+        seen = srv.Last();
+        Check(r.line == "NXOK" && seen.path == "/logout" && seen.body == "key=" + key, "⑨ 로그아웃 — 200 NXOK · 본문 key=…");
+        s.body = "NXOKX";
+        srv.Set(s);
+        Check(authclient::Logout(kOut, key, kTo).line == kServerError, "⑨ 로그아웃 200 인데 다른 글 → server_error");
+        Check(authclient::WithPath(L"https://h:8443/login", L"/token") == L"https://h:8443/token" &&
+                  authclient::WithPath(L"https://h:8443", L"/token") == L"https://h:8443/token" &&
+                  authclient::WithPath(L"https://h:8443/", L"/logout") == L"https://h:8443/logout",
+              "⑨ 기준 주소 — 옛 꼴(/login 꼬리) · 맨 주소 · 끝 / 를 다 같은 길로");
     }
 
     srv.Stop();

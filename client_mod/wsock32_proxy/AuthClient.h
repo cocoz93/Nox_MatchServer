@@ -2,9 +2,12 @@
 //   DLL(wsock32_proxy.cpp)과 시험(auth_client_test.cpp)이 같이 쓴다 — 시험이 본 코드가 곧 DLL 코드다(`LobbyLineFilter.h` 와 같은 꼴).
 //   설계 Docs/LOGIN_AUTH_DESIGN.md 「로그인 한 번의 부르는 차례」 · 요청 · 답 꼴의 짝은 server/src/auth/AuthService.cpp 의 Login
 //
-// 요청 = POST <url> · 폼 `name=…&password=…`(바이트 단위 %XX 인코딩)
-// 답   = 200 `NXL1<토큰 16진 114자>` 또는 400 · 401 · 503 `NXL!<까닭>` 한 줄
-// 돌려주는 글(Result::line)은 늘 `apgar` 자리에 넣을 수 있는 두 꼴 가운데 하나다 — 서버 답이 이상하면 `NXL!server_error`, 못 닿으면 `NXL!unreachable`
+// ★ 런처 P4 — 요청 셋(옛 `POST /login` 이름 · 암호 → 토큰은 서버가 닫음 · `AuthService.h`). 전송 · 한도 · 지문은 셋이 같다
+//   Token         — DLL: POST <기준>/token · 폼 `name=…&key=…` → 200 `NXL1<토큰 16진 114자>` 또는 400 · 401 · 503 `NXL!<까닭>`
+//   LauncherLogin — 런처: POST <기준>/launcher/login · 폼 `name` · `password` · `device` · `remember` → 200 `NXK1<열쇠 16진 64자>` 또는 `NXL!<까닭>`
+//   Logout        — 런처: POST <기준>/logout · 폼 `key` → 200 `NXOK` 또는 `NXL!<까닭>`
+// 폼 값은 바이트 단위 %XX 인코딩. 돌려주는 글(Result::line)은 늘 그 요청의 성공 꼴 하나 또는 `NXL!<까닭>` 이다 —
+//   서버 답이 이상하면 `NXL!server_error`, 못 닿으면 `NXL!unreachable`(Token 의 답은 그대로 `apgar` 자리에 넣을 수 있다)
 //
 // 한도 — 처음부터 끝까지 timeoutMs. 게임 주 스레드가 막히는 시간이라(5초 넘으면 윈도가 「응답 없음」으로 봄 — 설계 메모) 반드시 지켜야 한다.
 //   WinHTTP 의 단계별 시간 제한은 합을 보장하지 않는다(10-26 시험 — 한도 1초에 응답 없음이 1.9초 · 헤더 0.7초 + 본문 0.7초가 그대로 성공).
@@ -45,7 +48,12 @@ namespace authclient {
 constexpr DWORD kTimeoutMs = 3000;
 constexpr size_t kPinBytes = 32;       // ★ 10-28 지문 = 서버 인증서(DER)의 SHA-256 — 16진 64자로 받는다(`tools/auth_pin.ps1` 이 찍는 값)
 constexpr size_t kTokenHexLen = 114;   // LoginToken.h kLoginTokenSize(57) × 2 — auth_client_test 가 static_assert 로 대조한다
+constexpr size_t kKeyHexLen = 2 * nox::kLoginKeyBytes;   // ★ 런처 P4 — 열쇠 16진 64자
 constexpr size_t kMaxReply = 1024;     // 이보다 긴 답은 로그인 서버의 답이 아니다
+constexpr std::string_view kLogoutOk = "NXOK";   // ★ 런처 P4 — 서버 `AuthService.h` kLogoutOk 와 같은 값
+
+// ★ 런처 P4 — 200 답이 무엇이어야 하나(요청마다)
+enum class Reply : unsigned char { Token, Key, LogoutOk };
 
 struct Result {
     std::string line;   // `apgar` 자리에 넣을 글(`NXL1…` 또는 `NXL!…`)
@@ -86,13 +94,24 @@ inline std::string Trim(const std::string& s)
     return s.substr(b, e - b);
 }
 
-// 서버 답을 `apgar` 자리에 넣을 글로 — 상태와 본문이 서로 맞아야 믿는다(200 은 토큰만 · 400 401 503 은 아는 까닭만). 그 밖은 서버 오류
-inline std::string Classify(int status, const std::string& rawBody)
+inline bool MarkHex(const std::string& body, std::string_view mark, size_t hexLen)
+{
+    bool ok = body.size() == mark.size() + hexLen && body.compare(0, mark.size(), mark) == 0;
+    for (size_t i = mark.size(); ok && i < body.size(); ++i) ok = IsHex(body[i]);
+    return ok;
+}
+
+// 서버 답을 돌려줄 글로 — 상태와 본문이 서로 맞아야 믿는다(200 은 그 요청의 성공 꼴만 · 400 401 503 은 아는 까닭만). 그 밖은 서버 오류
+inline std::string Classify(Reply kind, int status, const std::string& rawBody)
 {
     const std::string body = Trim(rawBody);
     if (status == 200) {
-        bool ok = body.size() == nox::kLoginTokenMark.size() + kTokenHexLen && body.compare(0, nox::kLoginTokenMark.size(), nox::kLoginTokenMark) == 0;
-        for (size_t i = nox::kLoginTokenMark.size(); ok && i < body.size(); ++i) ok = IsHex(body[i]);
+        bool ok = false;
+        switch (kind) {
+        case Reply::Token: ok = MarkHex(body, nox::kLoginTokenMark, kTokenHexLen); break;
+        case Reply::Key: ok = MarkHex(body, nox::kLoginKeyMark, kKeyHexLen); break;
+        case Reply::LogoutOk: ok = body == kLogoutOk; break;
+        }
         if (ok) return body;
     } else if (status == 400 || status == 401 || status == 503) {
         if (body.compare(0, nox::kLoginFailMark.size(), nox::kLoginFailMark) == 0) {
@@ -147,7 +166,8 @@ struct Shared {
     HINTERNET ses = NULL, con = NULL, req = NULL;
     Result res;
     std::wstring url;
-    std::string name, password;
+    std::string body;                    // ★ 런처 P4 — 인코딩한 폼(암호 · 열쇠가 든다 — 보낸 뒤 · 끝날 때 지움)
+    Reply kind = Reply::Token;
     DWORD timeoutMs = kTimeoutMs;
     bool pinned = false;                 // ★ 10-28 지문 고정
     unsigned char pin[kPinBytes] = {};
@@ -223,8 +243,8 @@ inline void Work(Shared& s)
         if (!WinHttpSetOption(s.req, WINHTTP_OPTION_SECURITY_FLAGS, &flags, sizeof(flags))) return bail(GetLastError());
     }
 
-    std::string body = "name=" + UrlEncode(s.name) + "&password=" + UrlEncode(s.password);
-    SecureZeroMemory(&s.password[0], s.password.size());   // 암호 글은 인코딩한 뒤 바로 지운다
+    std::string body;
+    body.swap(s.body);   // ★ 런처 P4 — 부른 쪽이 인코딩해 넘긴 폼(아래에서 보낸 뒤 지운다)
     static const wchar_t kHeader[] = L"Content-Type: application/x-www-form-urlencoded";
     BOOL sent;
     if (s.pinned) {
@@ -264,17 +284,20 @@ inline void Work(Shared& s)
         if (got == 0) break;
         reply.append(buf, got);
     }
-    res.line = Classify(res.status, reply);
+    res.line = Classify(s.kind, res.status, reply);
     res.error = 0;
 }
 
 }  // namespace detail
 
-// url 예: L"https://127.0.0.1:8443/login". 막는 호출 — timeoutMs 안에 돌아온다(스레드 정리까지 조금 넘을 수 있다)
+// 막는 호출 — timeoutMs 안에 돌아온다(스레드 정리까지 조금 넘을 수 있다). body = 인코딩한 폼(이 함수가 끝나면 지워진다)
 //   ★ 10-28 pinHex — 비면 옛 길(윈도 인증서 검사) · 있으면 지문 고정(머리 주석). 꼴이 틀린 지문이면 붙지 않고 unreachable(옛 길로 안 물러섬)
-inline Result Login(const std::wstring& url, const std::string& name, const std::string& password, DWORD timeoutMs = kTimeoutMs,
-                    const std::string& pinHex = std::string())
+inline Result Post(const std::wstring& url, std::string& body, Reply kind, DWORD timeoutMs = kTimeoutMs, const std::string& pinHex = std::string())
 {
+    struct Wipe {   // 어느 길로 돌아가도 폼(암호 · 열쇠)을 지운다
+        std::string& b;
+        ~Wipe() { if (!b.empty()) SecureZeroMemory(&b[0], b.size()); b.clear(); }
+    } wipe{ body };
     const ULONGLONG t0 = GetTickCount64();
     auto s = std::make_shared<detail::Shared>();
     if (!pinHex.empty()) {
@@ -287,8 +310,8 @@ inline Result Login(const std::wstring& url, const std::string& name, const std:
         s->pinned = true;
     }
     s->url = url;
-    s->name = name;
-    s->password = password;
+    s->body = body;
+    s->kind = kind;
     s->timeoutMs = timeoutMs;
 
     std::thread worker([s] {
@@ -324,10 +347,44 @@ inline Result Login(const std::wstring& url, const std::string& name, const std:
             r.line = detail::FailLine(nox::LoginFail::Unreachable);
             r.error = ERROR_WINHTTP_TIMEOUT;
         }
-        if (!s->password.empty()) SecureZeroMemory(&s->password[0], s->password.size());
+        if (!s->body.empty()) SecureZeroMemory(&s->body[0], s->body.size());   // 일꾼이 보내기 전에 끝난 길(틀린 주소 등)
     }
     r.ms = static_cast<DWORD>(GetTickCount64() - t0);
     return r;
+}
+
+// ★ 런처 P4 — 기준 주소(`https://host:8443`) 뒤에 길을 붙인다. 옛 꼴(`…/login` — 꾸러미의 NOX_AUTH_URL)이면 그 꼬리를 떼고 붙인다
+inline std::wstring WithPath(std::wstring base, const wchar_t* path)
+{
+    static const std::wstring kOld = L"/login";
+    if (base.size() >= kOld.size() && base.compare(base.size() - kOld.size(), kOld.size(), kOld) == 0) base.resize(base.size() - kOld.size());
+    while (!base.empty() && base.back() == L'/') base.pop_back();
+    return base + path;
+}
+
+// DLL — 열쇠로 60초 토큰. 답(line)은 그대로 `apgar` 자리에
+inline Result Token(const std::wstring& url, const std::string& name, const std::string& key, DWORD timeoutMs = kTimeoutMs,
+                    const std::string& pinHex = std::string())
+{
+    std::string body = "name=" + detail::UrlEncode(name) + "&key=" + detail::UrlEncode(key);
+    return Post(url, body, Reply::Token, timeoutMs, pinHex);
+}
+
+// 런처 — 암호로 열쇠(remember = 자동 로그인 30일 · 아니면 이번 실행만 12시간 — 서버가 정함)
+inline Result LauncherLogin(const std::wstring& url, const std::string& name, const std::string& password, const std::string& device, bool remember,
+                            DWORD timeoutMs = kTimeoutMs, const std::string& pinHex = std::string())
+{
+    std::string pw = detail::UrlEncode(password);
+    std::string body = "name=" + detail::UrlEncode(name) + "&password=" + pw + "&device=" + detail::UrlEncode(device) + "&remember=" + (remember ? "1" : "0");
+    SecureZeroMemory(&pw[0], pw.size());
+    return Post(url, body, Reply::Key, timeoutMs, pinHex);
+}
+
+// 런처 — 열쇠 폐기(로그아웃 · 이번 실행만 열쇠를 게임이 끝난 뒤)
+inline Result Logout(const std::wstring& url, const std::string& key, DWORD timeoutMs = kTimeoutMs, const std::string& pinHex = std::string())
+{
+    std::string body = "key=" + detail::UrlEncode(key);
+    return Post(url, body, Reply::LogoutOk, timeoutMs, pinHex);
 }
 
 }  // namespace authclient

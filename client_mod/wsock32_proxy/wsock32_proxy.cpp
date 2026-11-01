@@ -118,7 +118,8 @@
 #include "HostGameEntry.h"     // ⑤ · ⑥ 내 방 정보 · 항목 · 채널 짓기(방 정보 포장은 서버와 같은 WolGameInfo — build.bat 이 같이 빌드)
 #include "LobbyLineFilter.h"
 #include "LoginRewriter.h"     // ★ 로그인 암호 조각 5 — 기록에 찍는 보낸 글에서 암호 칸 가리기(Log 모드) · 로비 연결의 apgar 자리 바꿔쓰기(Lobby 모드)
-#include "AuthClient.h"        // ★ 로그인 암호 조각 5 의 3 — 로그인 서버(nox_auth)에 이름 · 암호를 묻는 부품(WinHTTP)
+#include "AuthClient.h"        // ★ 로그인 암호 조각 5 의 3 — 로그인 서버(nox_auth)에 이름 · 암호를 묻는 부품(WinHTTP) · ★ 런처 P4 — 이제 이름 · 열쇠로 토큰
+#include "../common/LaunchKey.h"   // ★ 런처 P4 — 런처가 이 PC 에 둔 자동 로그인 열쇠(DPAPI)
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -419,12 +420,34 @@ static std::string RedactedForLog(SOCKET s, const char* buf, int len)
     return out;
 }
 
-// ★ 조각 5 의 3 — 로비 연결의 이름 · 암호를 로그인 서버(nox_auth)에 묻고 `apgar` 자리에 넣을 글 한 줄(`NXL1…` 또는 `NXL!…`)을 받아 온다.
-//   주소 = 이 로비 연결의 상대 IP : 8443(서버 `kDefaultAuthPort`) · 환경변수 NOX_AUTH_URL(예: https://host:8443/login)이 있으면 그것.
-//   게임 주 스레드가 최대 3초 막힌다(`AuthClient.h`). TLS 검사를 끄지 않으므로 믿을 수 없는 서버(XWIS 등 우리 로비가 아닌 곳)에는 본문(암호)이 나가기 전에 멈춘다
+// ★ 런처 P4 — 런처로 켰나: 런처가 Game.exe 를 띄울 때 환경 변수 NOX_LAUNCH=<계정 이름>을 넣는다(열쇠는 안 넣음 — `LaunchKey.h`).
+//   부를 때마다 읽는다 — 시험(selftest)이 프로세스 안에서 바꿔 본다. 이름 꼴이 틀리면 없는 것으로
+static std::string LaunchName()
+{
+    char v[64] = {};
+    const DWORD n = GetEnvironmentVariableA("NOX_LAUNCH", v, sizeof(v));
+    const std::string name = n > 0 && n < sizeof(v) ? std::string(v, n) : std::string();
+    return launchkey::NameOk(name) ? name : std::string();
+}
+
+// ★ 조각 5 의 3 — 로비 연결의 이름으로 로그인 서버(nox_auth)에서 `apgar` 자리에 넣을 글 한 줄(`NXL1…` 또는 `NXL!…`)을 받아 온다.
+//   ★ 런처 P4 — 암호(정품 로그인 창에 친 글)는 안 쓴다. 런처로 켰으면 그 이름의 열쇠(`LaunchKey.h`)로 `/token`, 아니면 안 묻고 `NXL!launcher_required`
+//     (11-01 사용자 결정 4 — 서버도 암호 → 토큰 길을 닫음). 열쇠 파일이 없거나 못 풀면 `NXL!key_invalid`(런처로 다시 로그인)
+//   주소 = 이 로비 연결의 상대 IP : 8443(서버 `kDefaultAuthPort`) · 환경변수 NOX_AUTH_URL(예: https://host:8443 · 옛 꼴 …/login 도 받음)이 있으면 그것.
+//   게임 주 스레드가 최대 3초 막힌다(`AuthClient.h`). TLS 검사를 끄지 않으므로 믿을 수 없는 서버(XWIS 등 우리 로비가 아닌 곳)에는 본문(열쇠)이 나가기 전에 멈춘다
 //   ★ 10-28 다른 PC — 환경변수 NOX_AUTH_PIN(서버 인증서 SHA-256 16진 64자 · 꾸러미 2_PLAY 가 넣음)이 있으면 윈도 검사 대신 그 지문으로 가른다
 static std::string AuthLogin(SOCKET s, const std::string& name, const std::string& password)
 {
+    (void)password;   // ★ 런처 P4 — 정품 창의 암호 칸은 쓰지 않는다(선에도 안 나감 — apgar 자리를 통째로 바꿈)
+    if (LaunchName().empty()) {
+        if (g_log[0]) Detail("로그인 서버 안 부름 s=%u — 런처로 안 켬(NOX_LAUNCH 없음) → NXL!launcher_required", (unsigned)s);
+        return authclient::detail::FailLine(nox::LoginFail::LauncherRequired);
+    }
+    std::string key;
+    if (!launchkey::Load(name, key)) {
+        if (g_log[0]) Detail("로그인 서버 안 부름 s=%u — 「%s」 의 열쇠 파일이 없거나 못 풂 → NXL!key_invalid", (unsigned)s, name.c_str());
+        return authclient::detail::FailLine(nox::LoginFail::KeyInvalid);
+    }
     char pin[80] = {};
     const DWORD pn = GetEnvironmentVariableA("NOX_AUTH_PIN", pin, sizeof(pin));
     const std::string pinHex = pn > 0 && pn < sizeof(pin) ? std::string(pin, pn) : std::string(pn ? "?" : "");   // 너무 길면 틀린 꼴로 넘겨 붙지 않게
@@ -443,10 +466,12 @@ static std::string AuthLogin(SOCKET s, const std::string& name, const std::strin
         }
         const unsigned char* b = (const unsigned char*)&peer.sin_addr;
         wchar_t buf[64];
-        swprintf(buf, 64, L"https://%u.%u.%u.%u:8443/login", b[0], b[1], b[2], b[3]);
+        swprintf(buf, 64, L"https://%u.%u.%u.%u:8443", b[0], b[1], b[2], b[3]);
         url = buf;
     }
-    const authclient::Result r = authclient::Login(url, name, password, authclient::kTimeoutMs, pinHex);
+    url = authclient::WithPath(url, L"/token");
+    const authclient::Result r = authclient::Token(url, name, key, authclient::kTimeoutMs, pinHex);
+    SecureZeroMemory(&key[0], key.size());
     if (g_log[0]) {
         const bool token = std::string_view(r.line).substr(0, nox::kLoginTokenMark.size()) == nox::kLoginTokenMark;
         Detail("로그인 서버 호출 s=%u 상태=%d 오류=%lu %lums 지문=%s → %s", (unsigned)s, r.status, r.error, r.ms, pinHex.empty() ? "없음" : "고정",

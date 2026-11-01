@@ -20,6 +20,8 @@
 
 #include <string>
 
+#include "../common/LaunchKey.h"   // ★ 런처 P4 — 열쇠 파일을 시험 폴더에 두고 지움
+
 static int g_fail = 0;
 
 static void Check(bool ok, const char* what)
@@ -246,49 +248,78 @@ int main(int argc, char** argv)
             if (r <= 0) break;
             atLobby2.append(b, r);
         }
-        // ★ 로그인 암호 조각 5 의 3 — 암호 줄이 두 번에 걸쳐 나가도(정품은 묶음을 64바이트씩 쪼갠다) 평문 암호는 선(로비 연결)에 안 나가고,
-        //   로그인 서버로 간 요청에만 실리며, 선에는 apgar 자리가 서버 답(토큰)으로 바뀐 줄이 간다. 게임엔 원래 길이를 돌려준다. 기록에는 암호가 안 남는다(아래 log 검사)
+        // ★ 로그인 암호 조각 5 의 3 → ★ 런처 P4 — 암호 줄이 두 번에 걸쳐 나가도(정품은 묶음을 64바이트씩 쪼갠다) 친 암호는 어디에도 안 나간다.
+        //   런처 없이(NOX_LAUNCH 없음) → 로그인 서버를 안 부르고 apgar 자리 = NXL!launcher_required ·
+        //   런처로(NOX_LAUNCH=이름 + 그 이름의 열쇠 파일) → POST /token(이름 · 열쇠) · 선에는 서버 답(토큰) · 열쇠 파일 없음 → NXL!key_invalid ·
+        //   못 닿음 → NXL!unreachable. 게임엔 원래 길이를 돌려준다. 기록에는 암호가 안 남는다(아래 log 검사)
         {
-            SOCKET als = socket(AF_INET, SOCK_STREAM, 0);
-            bind(als, (sockaddr*)&any, sizeof(any)); listen(als, 1);
-            FakeAuth fa;
-            fa.ls = als;
-            fa.reply = "NXL1" + std::string(114, 'a');
-            const std::string url = "http://127.0.0.1:" + std::to_string(PortOf(als)) + "/login";
-            SetEnvironmentVariableA("NOX_AUTH_URL", url.c_str());
-            HANDLE th = CreateThread(NULL, 0, FakeAuthMain, &fa, 0, NULL);
+            auto wireLine = [&](const std::string& want) {
+                std::string got;
+                while (got.size() < want.size()) {
+                    char b[64]; int r = recv(lsv, b, sizeof(b), 0);
+                    if (r <= 0) break;
+                    got.append(b, r);
+                }
+                return got;
+            };
+            char tmpDir[MAX_PATH];
+            GetTempPathA(MAX_PATH, tmpDir);
+            const std::string appData = std::string(tmpDir) + "nox_selftest_appdata_" + std::to_string(GetCurrentProcessId());
+            SetEnvironmentVariableA("LOCALAPPDATA", appData.c_str());   // 열쇠 파일을 사용자 프로필 밖에(LaunchKey.h)
+            SetEnvironmentVariableA("NOX_LAUNCH", NULL);
+
+            // ① 런처 없이 — 로그인 서버 안 부름
             const char a1[] = "apgar Sec7", a2[] = "ret9 0\r\n";
             Check(send(lc, a1, (int)strlen(a1), 0) == (int)strlen(a1), "login: half apgar line — caller gets its own length");
             const char oth[] = "NOOP interleaved\r\n";
             send(c, oth, (int)strlen(oth), 0);   // 다른 소켓의 보내기가 끼어들어도 로비 소켓의 덜 온 줄 상태와 섞이면 안 된다
             Check(send(lc, a2, (int)strlen(a2), 0) == (int)strlen(a2), "login: rest of the apgar line — caller gets its own length though the wire line is longer");
+            const std::string wantL = "apgar NXL!launcher_required 0\r\n";
+            Check(wireLine(wantL) == wantL, "login: no launcher (NOX_LAUNCH unset) -> apgar field = NXL!launcher_required, login server not called");
+
+            // ② 런처로 — 열쇠로 POST /token
+            const std::string key = "NXK1" + std::string(64, 'c');
+            SetEnvironmentVariableA("NOX_LAUNCH", "selftst");
+            Check(launchkey::Save("selftst", key), "login: launcher key saved under the temp LOCALAPPDATA (DPAPI)");
+            SOCKET als = socket(AF_INET, SOCK_STREAM, 0);
+            bind(als, (sockaddr*)&any, sizeof(any)); listen(als, 1);
+            FakeAuth fa;
+            fa.ls = als;
+            fa.reply = "NXL1" + std::string(114, 'a');
+            const std::string url = "http://127.0.0.1:" + std::to_string(PortOf(als));   // 기준 주소(길은 DLL 이 붙임)
+            SetEnvironmentVariableA("NOX_AUTH_URL", url.c_str());
+            HANDLE th = CreateThread(NULL, 0, FakeAuthMain, &fa, 0, NULL);
+            const char a3[] = "apgar Sec7ret9 0\r\n";
+            Check(send(lc, a3, (int)strlen(a3), 0) == (int)strlen(a3), "login: launcher case — caller gets its own length");
             const std::string wantA = "apgar " + fa.reply + " 0\r\n";
-            std::string wireA;
-            while (wireA.size() < wantA.size()) {
-                char b[64]; int r = recv(lsv, b, sizeof(b), 0);
-                if (r <= 0) break;
-                wireA.append(b, r);
-            }
+            const std::string wireA = wireLine(wantA);
             WaitForSingleObject(th, 5000); CloseHandle(th);
             closesocket(als);
             Check(wireA == wantA, "login: apgar field replaced by the login server's token on the lobby wire");
-            Check(wireA.find("Sec7ret9") == std::string::npos, "login: plain password never on the lobby wire");
-            Check(fa.request.find("POST /login") == 0 && fa.request.find("name=selftst") != std::string::npos && fa.request.find("password=Sec7ret9") != std::string::npos,
-                  "login: login server got POST /login with NICK name and the whole password (joined across two sends)");
+            Check(wireA.find("Sec7ret9") == std::string::npos && fa.request.find("Sec7ret9") == std::string::npos,
+                  "login: typed password never on the lobby wire nor to the login server");
+            Check(fa.request.find("POST /token") == 0 && fa.request.find("name=selftst&key=" + key) != std::string::npos,
+                  "login: login server got POST /token with NICK name and the saved launcher key");
 
-            // 로그인 서버에 못 닿으면 실패 표시가 apgar 자리에 간다(안 닫히는 포트 1)
+            // ③ 못 닿음(옛 꼴 주소 …/login 도 받음 · 안 닫히는 포트 1)
             SetEnvironmentVariableA("NOX_AUTH_URL", "http://127.0.0.1:1/login");
-            const char a3[] = "apgar Other999 0\r\n";
-            Check(send(lc, a3, (int)strlen(a3), 0) == (int)strlen(a3), "login: unreachable case — caller gets its own length");
+            const char a4[] = "apgar Other999 0\r\n";
+            Check(send(lc, a4, (int)strlen(a4), 0) == (int)strlen(a4), "login: unreachable case — caller gets its own length");
             const std::string wantU = "apgar NXL!unreachable 0\r\n";
-            std::string wireU;
-            while (wireU.size() < wantU.size()) {
-                char b[64]; int r = recv(lsv, b, sizeof(b), 0);
-                if (r <= 0) break;
-                wireU.append(b, r);
-            }
-            Check(wireU == wantU, "login: login server unreachable -> apgar field = NXL!unreachable (password not sent anywhere)");
+            Check(wireLine(wantU) == wantU, "login: login server unreachable -> apgar field = NXL!unreachable");
+
+            // ④ 런처로 켰는데 그 이름의 열쇠 파일이 없음
+            Check(launchkey::Remove("selftst"), "login: launcher key removed");
+            const char a5[] = "apgar x 0\r\n";
+            send(lc, a5, (int)strlen(a5), 0);
+            const std::string wantK = "apgar NXL!key_invalid 0\r\n";
+            Check(wireLine(wantK) == wantK, "login: launcher name but no key file -> apgar field = NXL!key_invalid");
             SetEnvironmentVariableA("NOX_AUTH_URL", NULL);
+            SetEnvironmentVariableA("NOX_LAUNCH", NULL);
+            const std::string keysDir = appData + "\\NoxOnline\\keys";
+            RemoveDirectoryA(keysDir.c_str());
+            RemoveDirectoryA((appData + "\\NoxOnline").c_str());
+            RemoveDirectoryA(appData.c_str());
         }
         // 표시 줄 전의 목록 — 우리 로비인지 아직 모르니 스위치가 켜져 있어도 끼우지 않는다(XWIS 에선 이 상태가 계속된다)
         const std::string before = ": 321 u:\r\n: 323 u:\r\n";
