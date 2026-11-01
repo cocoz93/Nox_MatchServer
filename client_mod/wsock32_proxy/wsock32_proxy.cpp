@@ -2002,6 +2002,57 @@ static void LauncherTick()
     }
 }
 
+// ─────────────────────────────────────────────── ⑰ 시험 — 파일로 받은 단추 누름 (사람 확인 대신 돌리는 판 · 11-02)
+// 시험 스위치 NOX_TEST_PRESS=<파일>(판 확인 통과일 때만 · ⑨ · ⑪ 시험 스위치와 같은 관례). 없으면 아무 일도 안 한다.
+//   바깥 시험 도구가 파일 끝에 한 줄씩 더하면 프레임 자리(주 스레드 · 어느 창 함수도 호출 중이 아님 — ⑯ 과 같은 자리)에서 차례로 실행한다
+//   `p <창 칸 16진> <단추 번호>`         그 창의 단추 누름(0x4007) — 정품 단추가 부모에게 보내는 것과 같은 꼴(⑯ PressChild)
+//   `s <창 칸 16진> <목록 번호> <줄>`    목록 줄 고름(0x4013 — ⑯ 서버 목록과 같은 꼴)
+//   왜 — 마우스 주입은 커서 배율 같은 게임과 무관한 문제를 만든다(`CLAUDE.md`). 대신 마우스 좌표 → 단추 판정은 이 길로 못 본다
+static std::string g_testPressFile;
+static long g_testPressDone = 0;       // 파일에서 처리한 바이트
+static DWORD g_testPressLastMs = 0;
+static volatile LONG g_testPressOk = 0, g_testPressMiss = 0;
+
+static bool TestPressLine(const char* line)
+{
+    char op = 0;
+    unsigned long slot = 0, id = 0;
+    int row = 0;
+    const int got = sscanf(line, " %c %lx %lu %d", &op, &slot, &id, &row);
+    DWORD win = 0;
+    if (got < 3 || !ReadSelf((uintptr_t)slot, &win) || !win) return false;
+    switch (op) {
+        case 'p': return PressChild(win, id);
+        case 's': {
+            if (got < 4) return false;
+            const DWORD list = ((PFN_findchild)kFindChild)(win, id);
+            if (!list) return false;
+            ((PFN_wndproc4)kWinCall94)(list, kMsgListSelect, (DWORD)row, 0);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void TestPressTick()
+{
+    if (g_testPressFile.empty()) return;
+    const DWORD now = GetTickCount();
+    if (now - g_testPressLastMs < 100) return;
+    g_testPressLastMs = now;
+    FILE* f = fopen(g_testPressFile.c_str(), "rb");
+    if (!f) return;
+    char line[128];
+    const bool have = fseek(f, g_testPressDone, SEEK_SET) == 0 && fgets(line, sizeof(line), f) != NULL;
+    fclose(f);
+    if (!have || !strchr(line, '\n')) return;   // 아직 안 씀 · 쓰는 중인 줄은 다음 차례에(한 프레임에 한 줄)
+    g_testPressDone += (long)strlen(line);
+    line[strcspn(line, "\r\n")] = 0;
+    const bool ok = TestPressLine(line);
+    const LONG n = InterlockedIncrement(ok ? &g_testPressOk : &g_testPressMiss);
+    Log("⑰ 시험 누름 「%s」 — %s(누적 %ld)", line, ok ? "함" : "창 · 단추를 못 찾음", n);
+}
+
 static const uintptr_t kDrawAll = 0x489bf0;
 static const uintptr_t kDrawAllCallMain = 0x43e29a, kDrawAllCallB = 0x4aa99d;   // 주 루프 그리기 · 다른 프레임 루프(어느 쪽이 메뉴에서 도는지는 셈으로)
 static volatile LONG g_drawMain = 0, g_drawB = 0;
@@ -2012,6 +2063,7 @@ static void FrameTick(volatile LONG* count, const char* what)
     if (InterlockedIncrement(count) == 1) Log("⑯ 프레임 자리 — 첫 %s", what);
     InterlockedIncrement(&g_ticks);
     LauncherTick();
+    TestPressTick();
 }
 static void __cdecl DrawAllMain()
 {
@@ -2077,6 +2129,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         g_launchAtStart = LaunchName();   // ★ 런처 P7 — ⑯ 자동 진행은 처음 환경으로만 가른다
         sw[0] = 0;
         g_testLoginBlock = gameOk && g_launchAtStart.empty() && GetEnvironmentVariableA("NOX_TEST_LOGINBLOCK", sw, sizeof(sw)) && sw[0] == '1';   // ★ 런처 P5 시험
+        char pressFile[MAX_PATH] = { 0 };
+        if (gameOk && GetEnvironmentVariableA("NOX_TEST_PRESS", pressFile, MAX_PATH)) g_testPressFile = pressFile;   // ★ ⑰ 시험
 
         char dir[MAX_PATH];
         if (GetEnvironmentVariableA("NOX_HOOK_LOG_DIR", dir, MAX_PATH)) {
