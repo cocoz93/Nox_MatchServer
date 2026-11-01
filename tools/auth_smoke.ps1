@@ -3,9 +3,10 @@
 # 시험 DB(`[db] test_database` — 보통 nox_mo_test)에 표를 새로 깔고(001 + 002 · 로비 사용자 nox_mo 가 그 DB 만 표를 만든다)
 # nox_auth --test-db 를 8443 에 띄운다(인증서 묶음 · 주소 예약이 8443 에만 있다 — tools/auth_setup.ps1). 브라우저처럼 인증서 검사를 켠 채로 붙는다.
 #   ① 가입 — 만듦 201 · 같은 이름 409 · 이름 규칙 400 · 확인 다름 400 · 옛 행(암호 NULL)에 암호 201
-#   ② 로그인 — 됨 200 `NXL1<16진 114>` · 암호 틀림 401 `NXL!wrong_password` · 계정 없음 401 · 규칙 밖 400 · GET 405
-#   ③ DB 행 — 소금 16 · 해시 32 · 반복 600000 · 마지막 로그인 적힘 · 옛 행 번호 그대로
-#   ④ 기록 — 친 암호 글자 0곳 · 끝 줄 요청 수 = 보낸 수 · 닫기 이벤트로 끝남(종료 코드 0)
+#   ② 로그인 — ★ 런처 P3: 옛 /login 410 `NXL!launcher_required` · /launcher/login 열쇠 200 `NXK1<16진 64>` · /token 200 `NXL1<16진 114>` ·
+#      암호 틀림 401 `NXL!wrong_password` · 계정 없음 401 · 규칙 밖 400 · 없는 열쇠 401 `NXL!key_invalid` · /logout 200 `NXOK` 뒤 토큰 401 · GET 405
+#   ③ DB 행 — 소금 16 · 해시 32 · 반복 600000 · 마지막 로그인 적힘 · 옛 행 번호 그대로 · ★ 열쇠 행(지문 32바이트 · 열쇠 글은 없음 · 수명 30일 · 기기)
+#   ④ 기록 — 친 암호 글자 0곳 · ★ 열쇠 글 0곳 · 끝 줄 요청 수 = 보낸 수 · 닫기 이벤트로 끝남(종료 코드 0)
 # 사람 1회 전(인증서 · nox_auth DB 사용자 없음)이면 종료 코드 77 = ctest 「건너뜀」
 param([string]$Exe = '', [string]$Config = '')
 $ErrorActionPreference = 'Stop'
@@ -44,9 +45,10 @@ function Sql([string]$text) {
   if ($LASTEXITCODE -ne 0) { throw "SQL 실패: $out" }
   return $out
 }
-$schema = 'DROP TABLE IF EXISTS ratings, match_players, matches, accounts, schema_version;' + "`n" +
+$schema = 'DROP TABLE IF EXISTS login_keys, ratings, match_players, matches, accounts, schema_version;' + "`n" +
   [IO.File]::ReadAllText((Join-Path $repo 'tools\db\001_init.sql')) + "`n" + [IO.File]::ReadAllText((Join-Path $repo 'tools\db\002_auth.sql')) + "`n" +
-  [IO.File]::ReadAllText((Join-Path $repo 'tools\db\003_rating.sql'))   # ★ 레이팅 조각 3 — 표 버전 3(로그인 서버도 본다)
+  [IO.File]::ReadAllText((Join-Path $repo 'tools\db\003_rating.sql')) + "`n" +   # ★ 레이팅 조각 3 — 표 버전 3(로그인 서버도 본다)
+  [IO.File]::ReadAllText((Join-Path $repo 'tools\db\004_launcher_keys.sql'))   # ★ 런처 P3 — 열쇠 표 · 표 버전 4
 try { Sql $schema | Out-Null } catch { Skip "시험 DB $testDb 표 깔기 못 함 — $_" }
 Sql "INSERT INTO accounts (name, created_unix, last_login_unix) VALUES ('legacy1', 1, 1);" | Out-Null
 $legacyId = [int](Sql "SELECT id FROM accounts WHERE name = 'legacy1';")
@@ -65,6 +67,7 @@ if (-not $listening) {
   if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
   Write-Host $text
   if ($text -match '사람 1회|1045') { Skip 'nox_auth 가 사람 1회 전 까닭으로 안 뜸(위 줄)' }
+  if ($text -match 'login_keys') { Skip 'nox_auth 가 열쇠 표 권한이 없어 안 뜸(위 줄) — 사람 1회 config/launcher_setup.sql 전' }   # ★ 런처 P3
   Write-Host '[실패] nox_auth 가 안 뜸'; exit 1
 }
 
@@ -105,19 +108,36 @@ try {
   $r = Req 'GET' '/signup' ''
   Check ($r.status -eq 200 -and $r.body.Contains('<form method="post" action="/signup"')) "GET /signup 양식 200 ($($r.status))"
 
-  Write-Host '② 로그인'
+  Write-Host '② 로그인(★ 런처 P3 — 열쇠 길)'
   $r = Req 'POST' '/login' "name=smoke1&password=$([uri]::EscapeDataString($pw))"
-  Check ($r.status -eq 200 -and $r.body -cmatch '^NXL1[0-9a-f]{114}$') "됨 200 NXL1 + 16진 114자 ($($r.status) · 길이 $($r.body.Length) · $($r.ms) ms)"
-  $r = Req 'POST' '/login' "name=legacy1&password=$pwLegacy"
-  Check ($r.status -eq 200 -and $r.body.StartsWith('NXL1')) "옛 행 계정 로그인 200 ($($r.status))"
-  $r = Req 'POST' '/login' "name=smoke1&password=Sm0k!p13"
+  Check ($r.status -eq 410 -and $r.body -ceq 'NXL!launcher_required') "옛 /login 닫힘 410 ($($r.status) $($r.body))"
+  $r = Req 'POST' '/launcher/login' "name=smoke1&password=$([uri]::EscapeDataString($pw))&device=SMOKE-PC&remember=1"
+  $key = $r.body
+  Check ($r.status -eq 200 -and $key -cmatch '^NXK1[0-9a-f]{64}$') "열쇠 200 NXK1 + 16진 64자 ($($r.status) · 길이 $($key.Length) · $($r.ms) ms)"
+  $r = Req 'POST' '/token' "name=smoke1&key=$key"
+  Check ($r.status -eq 200 -and $r.body -cmatch '^NXL1[0-9a-f]{114}$') "토큰 200 NXL1 + 16진 114자 ($($r.status) · 길이 $($r.body.Length) · $($r.ms) ms)"
+  $r = Req 'POST' '/launcher/login' "name=legacy1&password=$pwLegacy"
+  $legacyKey = $r.body
+  $r = Req 'POST' '/token' "name=legacy1&key=$legacyKey"
+  Check ($r.status -eq 200 -and $r.body.StartsWith('NXL1')) "옛 행 계정 열쇠 → 토큰 200 ($($r.status))"
+  $r = Req 'POST' '/launcher/login' "name=smoke1&password=Sm0k!p13"
   Check ($r.status -eq 401 -and $r.body -ceq 'NXL!wrong_password') "암호 틀림 401 ($($r.status) $($r.body))"
-  $r = Req 'POST' '/login' "name=nobody9&password=ab12cd"
+  $r = Req 'POST' '/launcher/login' "name=nobody9&password=ab12cd"
   Check ($r.status -eq 401 -and $r.body -ceq 'NXL!no_account') "계정 없음 401 ($($r.status) $($r.body))"
-  $r = Req 'POST' '/login' "name=smoke1&password=ab1"
+  $r = Req 'POST' '/launcher/login' "name=smoke1&password=ab1"
   Check ($r.status -eq 400 -and $r.body -ceq 'NXL!bad_input') "규칙 밖 400 ($($r.status) $($r.body))"
+  $r = Req 'POST' '/token' "name=smoke1&key=NXK1$('0' * 64)"
+  Check ($r.status -eq 401 -and $r.body -ceq 'NXL!key_invalid') "없는 열쇠 401 ($($r.status) $($r.body))"
+  $r = Req 'POST' '/token' "name=legacy1&key=$key"
+  Check ($r.status -eq 401 -and $r.body -ceq 'NXL!key_invalid') "남의 열쇠 401 ($($r.status) $($r.body))"
+  $r = Req 'POST' '/logout' "key=$legacyKey"
+  Check ($r.status -eq 200 -and $r.body -ceq 'NXOK') "로그아웃 200 NXOK ($($r.status) $($r.body))"
+  $r = Req 'POST' '/token' "name=legacy1&key=$legacyKey"
+  Check ($r.status -eq 401 -and $r.body -ceq 'NXL!key_invalid') "로그아웃한 열쇠 → 토큰 401 ($($r.status) $($r.body))"
   $r = Req 'GET' '/login' ''
   Check ($r.status -eq 405) "GET /login 405 ($($r.status))"
+  $r = Req 'GET' '/token' ''
+  Check ($r.status -eq 405) "GET /token 405 ($($r.status))"
   $r = Req 'POST' '/nope' ''
   Check ($r.status -eq 404) "없는 길 404 ($($r.status))"
 
@@ -126,6 +146,11 @@ try {
   Check ($row[0] -eq '16' -and $row[1] -eq '32' -and $row[2] -eq '600000' -and $row[3] -eq '1') "smoke1 — 소금 16 · 해시 32 · 반복 600000 · 마지막 로그인 적힘 ($($row -join ' '))"
   $n = Sql "SELECT COUNT(*) FROM accounts;"
   Check ($n -eq '2') "행 둘(smoke1 · legacy1 — 실패한 가입은 행 없음) ($n)"
+  # ★ 런처 P3 — 열쇠 행: smoke1 하나만 남음(legacy1 은 로그아웃) · 지문 32바이트 · 열쇠 글 자체는 DB 에 없음 · 수명 30일 · 기기
+  $krow = (Sql "SELECT COUNT(*), MAX(LENGTH(key_hash)), MAX(ttl_sec), MAX(device), MAX(LOWER(HEX(key_hash))) FROM login_keys;") -split "`t"
+  $keyHex = if ($key.Length -ge 68) { $key.Substring(4) } else { '?' }
+  Check ($krow[0] -eq '1' -and $krow[1] -eq '32' -and $krow[2] -eq '2592000' -and $krow[3] -eq 'SMOKE-PC' -and $krow[4] -ne $keyHex) `
+    "열쇠 행 하나 · 지문 32 · 30일 · 기기 · 열쇠 글이 아닌 지문 ($($krow[0]) $($krow[1]) $($krow[2]) $($krow[3]))"
 } finally {
   try { ([Threading.EventWaitHandle]::OpenExisting("nox_auth_stop_$($p.Id)")).Set() | Out-Null } catch { }
   if (-not $p.WaitForExit(10000)) { Stop-Process -Id $p.Id -Force; Write-Host '  [실패] 닫기 이벤트에 안 끝남(강제 종료)'; $script:fails++ }
@@ -135,6 +160,7 @@ $text = [IO.File]::ReadAllText($log)
 Check ($p.ExitCode -eq 0) "종료 코드 0 ($($p.ExitCode))"
 Check (-not $text.Contains($pw) -and -not $text.Contains($pwLegacy) -and -not $text.Contains('Sm0k%21')) '기록에 친 암호 글자 0곳'
 Check (-not ($text -match 'NXL1[0-9a-f]{20}')) '기록에 토큰 0곳'
+Check (-not ($text -match 'NXK1[0-9a-f]{20}') -and -not ($keyHex.Length -eq 64 -and $text.Contains($keyHex))) '기록에 열쇠 0곳(★ 런처 P3)'
 $m = [regex]::Match($text, '끝 — 요청 (\d+)\(')
 Check ($m.Success -and [int]$m.Groups[1].Value -eq $script:sent) "끝 줄 요청 $($m.Groups[1].Value) = 보낸 $($script:sent)"
 $h = [regex]::Match($text, '한 번 = ([\d.]+) ms')

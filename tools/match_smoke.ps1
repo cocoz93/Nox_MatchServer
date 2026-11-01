@@ -9,7 +9,7 @@
 #          로비 끝 줄 판 저장 요청 1(SAVED ok 1) · 게임 서버 끝 줄 SAVED(ok 1) · 쥔 채 끝 0
 #   -Db — 로비를 설정 config\nox_mo.ini([token] · [db] — 사람 1회 config\db_setup.sql 뒤)로 띄우고 DB 의 판 · 사람 · 계정 행까지 본다
 #   -Auth — ★ 로그인 암호 조각 6b — 로그인 토큰 판. 시험 DB([db] test_database)에 표를 새로 깔고(001 + 002) 로그인 서버 nox_auth --test-db 를 8443 에 띄워
-#          alice · bob 이 HTTPS 로 가입 → /login 으로 토큰(NXL1…) → 로비 로그인 묶음 `NOXCLIENT 3` · `apgar <토큰> 0`(DLL 이 바꿔 보낸 꼴) — 로비는 --no-auth 없이 설정 [auth] key 로 확인.
+#          alice · bob 이 HTTPS 로 가입 → ★ 런처 P3: /launcher/login 열쇠(NXK1…) → /token 으로 토큰(NXL1…) → 로비 로그인 묶음 `NOXCLIENT 3` · `apgar <토큰> 0`(DLL 이 바꿔 보낸 꼴) — 로비는 --no-auth 없이 설정 [auth] key 로 확인.
 #          더 보는 것 = 로비 끝 줄 토큰 통과 2 · 아이디만 0 · 시험 DB accounts 마지막 로그인 둘 · 세 기록(로비 · 게임 서버 · 로그인 서버)에 친 암호 · 토큰 글 0곳.
 #          사람 1회(인증서 · nox_auth DB 사용자 — tools\auth_setup.ps1 · config\auth_setup.sql) 전이면 종료 코드 77 = ctest 「건너뜀」(auth_smoke 와 같음) · -Db 와 같이 못 씀(계정이 시험 DB)
 #   -Ranked — ★ 레이팅 조각 2 — 게임 서버를 `--ranked-all` 로(판 결과 `ranked` 가 true 인지 · 없으면 false 인지 본다)
@@ -232,9 +232,10 @@ if ($Auth) {
     if ($LASTEXITCODE -ne 0) { throw "SQL 실패: $out" }
     return $out
   }
-  $schema = 'DROP TABLE IF EXISTS ratings, match_players, matches, accounts, schema_version;' + "`n" +
+  $schema = 'DROP TABLE IF EXISTS login_keys, ratings, match_players, matches, accounts, schema_version;' + "`n" +
     [IO.File]::ReadAllText((Join-Path $repo 'tools\db\001_init.sql')) + "`n" + [IO.File]::ReadAllText((Join-Path $repo 'tools\db\002_auth.sql')) + "`n" +
-    [IO.File]::ReadAllText((Join-Path $repo 'tools\db\003_rating.sql'))   # ★ 레이팅 조각 3 — 표 버전 3(로그인 서버도 본다)
+    [IO.File]::ReadAllText((Join-Path $repo 'tools\db\003_rating.sql')) + "`n" +   # ★ 레이팅 조각 3 — 표 버전 3(로그인 서버도 본다)
+    [IO.File]::ReadAllText((Join-Path $repo 'tools\db\004_launcher_keys.sql'))   # ★ 런처 P3 — 열쇠 표 · 표 버전 4
   try { Sql $schema | Out-Null } catch { Skip "시험 DB $testDb 표 깔기 못 함 — $_" }
   $ap = Start-Process -FilePath $AuthExe -PassThru -WindowStyle Hidden -RedirectStandardOutput $alog -ArgumentList @(
     '--config', "`"$ini`"", '--test-db', '--workers', '2', '--seconds', '150')
@@ -249,6 +250,7 @@ if ($Auth) {
     $text = ReadLog $alog
     Write-Host $text
     if ($text -match '사람 1회|1045') { Skip 'nox_auth 가 사람 1회 전 까닭으로 안 뜸(위 줄)' }
+    if ($text -match 'login_keys') { Skip 'nox_auth 가 열쇠 표 권한이 없어 안 뜸(위 줄) — 사람 1회 config/launcher_setup.sql 전' }   # ★ 런처 P3
     Write-Host '  [실패] nox_auth 가 안 뜸'; exit 1
   }
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -268,12 +270,13 @@ if ($Auth) {
   foreach ($u in @(@{ n = 'alice'; p = $pwA }, @{ n = 'bob'; p = $pwB })) {
     $e = [uri]::EscapeDataString($u.p)
     $s = AuthReq '/signup' "name=$($u.n)&password=$e&password2=$e"
-    $l = AuthReq '/login' "name=$($u.n)&password=$e"
-    $ok = $s.status -eq 201 -and $l.status -eq 200 -and $l.body -cmatch '^NXL1[0-9a-f]{114}$'
-    if ($u.n -eq 'alice') { $tokA = $l.body } else { $tokB = $l.body }
-    if (-not $ok) { $authOk = $false; Write-Host "  [실패] $($u.n) — 가입 $($s.status) · 로그인 $($l.status) $(if ($l.body.StartsWith('NXL!')) { $l.body })" }
+    $k = AuthReq '/launcher/login' "name=$($u.n)&password=$e&remember=1"   # ★ 런처 P3 — 열쇠(런처 몫) → 토큰(DLL 몫)
+    $l = AuthReq '/token' "name=$($u.n)&key=$($k.body)"
+    $ok = $s.status -eq 201 -and $k.status -eq 200 -and $k.body -cmatch '^NXK1[0-9a-f]{64}$' -and $l.status -eq 200 -and $l.body -cmatch '^NXL1[0-9a-f]{114}$'
+    if ($u.n -eq 'alice') { $tokA = $l.body; $keyA = $k.body } else { $tokB = $l.body }
+    if (-not $ok) { $authOk = $false; Write-Host "  [실패] $($u.n) — 가입 $($s.status) · 열쇠 $($k.status) · 토큰 $($l.status) $(if ($l.body.StartsWith('NXL!')) { $l.body })" }
   }
-  Check $authOk '⓪ 로그인 서버 — alice · bob 가입 201 · /login 200 NXL1 + 16진 114자(인증서 검사 켬)'
+  Check $authOk '⓪ 로그인 서버 — alice · bob 가입 201 · /launcher/login 200 NXK1 + 16진 64자 · /token 200 NXL1 + 16진 114자(인증서 검사 켬)'
 }
 
 $lobbyArgs = @('--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '120')   # 연결 줄을 찍게 --quiet 없이
@@ -366,7 +369,7 @@ try {
   $a.k.c.Close(); $b.k.c.Close()
   if ($Auth) {   # ★ 레이팅 조각 4
     Start-Sleep -Milliseconds 500   # 로비가 옛 접속 끊김을 먼저 보게(안 그러면 「옛 접속 끊음」 갈래로 샌다 — 로비 바퀴 100ms) — 판 뒤 alice 가 다시 로그인(새 토큰 — 일회용) → 랭크 판이면 이긴 점수 · 일반 판이면 그대로
-    $tokA2 = (AuthReq '/login' "name=alice&password=$([uri]::EscapeDataString($pwA))").body
+    $tokA2 = (AuthReq '/token' "name=alice&key=$keyA").body   # ★ 런처 P3 — 같은 열쇠로 새 토큰(다시 로비에 갈 때마다 DLL 이 하는 일)
     $k2 = Open $LobbyPort
     Send $k2 @('NOXCLIENT 3', 'NICK alice', "apgar $tokA2 0", 'USER UserName HostName irc.westwood.com :RealName')
     $h2 = ReadUntil $k2 '376'
@@ -436,6 +439,7 @@ if ($Auth) {
   Check ($ta -match '듣기 https' -and $tl.Length -gt 0 -and $tg.Length -gt 0) "기록 셋을 읽음(로비 $($tl.Length) · 게임 서버 $($tg.Length) · 로그인 서버 $($ta.Length) 글자 — 아래 0곳 검사가 빈 것을 보지 않게)"
   Check (-not $all.Contains($pwA) -and -not $all.Contains($pwB) -and -not $all.Contains([uri]::EscapeDataString($pwA))) '기록 셋에 친 암호 글자 0곳'
   Check (-not ($all -match 'NXL1[0-9a-f]{20}')) '기록 셋에 로그인 토큰 글 0곳'
+  Check (-not ($all -match 'NXK1[0-9a-f]{20}')) '기록 셋에 열쇠 글 0곳(★ 런처 P3)'
 } else {
   $nLogin = if ($Rank) { 3 } else { 2 }   # ★ 매칭 손보기 7 — -Rank 는 목록을 볼 carl 하나 더
   Check ($tl -match "끝 — 로그인 $nLogin\(토큰 \[[^\]1-9]*\] .* 아이디만 $nLogin\) · 옛 접속 끊음 0") "로비 끝 줄 — 로그인 $nLogin(아이디만 $nLogin · 토큰 갈래 0 — ★ 로그인 암호 조각 4)"
