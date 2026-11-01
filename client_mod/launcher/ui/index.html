@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https://art.nox; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>녹스 온라인</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- 런처 화면(런처 P8 — 임시 모양). 녹스 정품 그림은 P9 후보를 사용자가 고른 뒤 P10 에서 입힌다(그림은 리포에 안 넣고 실행 때 사용자 PC 에서 뽑음).
+     본체와는 window.chrome.webview.postMessage / message 로 폼 꼴 글 한 줄씩(launcher_main.cpp 머리 주석) -->
+<main class="frame">
+  <section class="brand">
+    <h1>NOX <span>ONLINE</span></h1>
+    <p class="sub">녹스 온라인</p>
+  </section>
+
+  <section class="panel" id="loading">
+    <p class="note">불러오는 중…</p>
+  </section>
+
+  <form class="panel hidden" id="login" autocomplete="off">
+    <label>아이디
+      <input id="name" maxlength="9" spellcheck="false" autocomplete="off">
+    </label>
+    <label>암호
+      <input id="password" type="password" maxlength="8" autocomplete="off">
+    </label>
+    <div class="checks">
+      <label class="check"><input type="checkbox" id="saveId" checked> 아이디 저장</label>
+      <label class="check"><input type="checkbox" id="remember"> 자동 로그인</label>
+    </div>
+    <button type="submit" id="loginBtn">로그인</button>
+    <p class="msg" id="loginMsg" role="alert"></p>
+    <p class="foot">계정이 없나요? <a href="#" id="signup">가입하기</a></p>
+  </form>
+
+  <section class="panel hidden" id="signed">
+    <p class="who"><b id="whoName"></b> 님</p>
+    <p class="note" id="whoNote"></p>
+    <button id="startBtn">게임 시작</button>
+    <p class="msg" id="startMsg" role="alert"></p>
+    <p class="foot"><a href="#" id="logout">로그아웃</a></p>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

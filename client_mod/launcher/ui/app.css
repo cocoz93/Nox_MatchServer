@@ -1,0 +1,49 @@
+/* 런처 화면 — 임시 모양(런처 P8). P10 에서 녹스 정품 그림(나무 테두리 · 단추)으로 바꾼다 */
+:root {
+  --bg: #0c0a08;
+  --panel: #17120d;
+  --line: #4a3a26;
+  --gold: #e7b64a;
+  --gold-dim: #a8843a;
+  --text: #eadfcb;
+  --muted: #9b8c74;
+  --bad: #ff7a5c;
+  --field: #0f0c09;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: radial-gradient(ellipse at 30% 20%, #241a10 0%, var(--bg) 60%);
+  color: var(--text);
+  font: 15px/1.5 "Malgun Gothic", "맑은 고딕", sans-serif;
+  user-select: none;
+  overflow: hidden;
+}
+.frame { height: 100%; display: grid; grid-template-columns: 1fr 360px; align-items: center; padding: 0 56px; gap: 40px; }
+.brand h1 { margin: 0; font: 700 64px/1 Georgia, "Times New Roman", serif; letter-spacing: 6px; color: var(--gold); text-shadow: 0 2px 0 #3b2a12, 0 0 24px rgba(231, 182, 74, .25); }
+.brand h1 span { display: block; font-size: 28px; letter-spacing: 12px; color: var(--gold-dim); margin-top: 8px; }
+.brand .sub { color: var(--muted); margin: 18px 0 0; letter-spacing: 2px; }
+.panel { background: var(--panel); border: 1px solid var(--line); padding: 28px 28px 20px; box-shadow: inset 0 0 0 1px #000, 0 10px 30px rgba(0, 0, 0, .5); }
+.hidden { display: none; }
+label { display: block; margin-bottom: 14px; color: var(--muted); font-size: 13px; }
+input:not([type=checkbox]) {
+  display: block; width: 100%; margin-top: 6px; padding: 10px 12px;
+  background: var(--field); border: 1px solid var(--line); color: var(--text); font: inherit; outline: none;
+}
+input:not([type=checkbox]):focus { border-color: var(--gold-dim); }
+.checks { display: flex; gap: 18px; margin: 4px 0 18px; }
+.check { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text); font-size: 13px; cursor: pointer; }
+.check input { accent-color: var(--gold); }
+button {
+  width: 100%; padding: 12px; border: 1px solid #7a5a22; cursor: pointer;
+  background: linear-gradient(#5a3b14, #3b260c); color: var(--gold); font-family: inherit; font-weight: 700; font-size: 16px; line-height: 1; letter-spacing: 2px;
+}
+button:hover:not(:disabled) { background: linear-gradient(#6b4718, #45300f); }
+button:disabled { opacity: .55; cursor: default; }
+.msg { min-height: 22px; margin: 12px 0 0; color: var(--bad); font-size: 13px; }
+.note { color: var(--muted); margin: 0 0 18px; }
+.who { font-size: 20px; margin: 0 0 6px; }
+.who b { color: var(--gold); }
+.foot { margin: 14px 0 0; text-align: center; color: var(--muted); font-size: 13px; }
+a { color: var(--gold); }
+@media (max-width: 700px) { .frame { grid-template-columns: 1fr; padding: 0 16px; } .brand { display: none; } }
