@@ -545,8 +545,20 @@ void CUdpServer::SendOn(CUdpSession& s, bool reliable, uint8_t stream,
         t.seq = h.seq;
         s.reliableQueue.push_back(std::move(pr));
         if (s.reliableQueue.size() > kReliableQueueMax) {
-            s.reliableQueue.erase(s.reliableQueue.begin());
-            ++_stats.reliableQueueDropped;
+            // ★ 11-02 — 넘쳐도 **버리지 않는다.** 전에는 제일 오래된 것을 지웠는데, 그게 곧 클라가 「다음에 받을 번호」로
+            //   기다리는 조각이라 지우면 클라는 영원히 그 번호를 기다리고 뒤 번호는 전부 버린다(그 클라의 신뢰 채널이 멎음).
+            //   확인을 한도만큼 안 보내는 상대는 조용한 상대와 같다 — 시간 초과와 같은 길로 끊김을 **한 번** 알리고,
+            //   지우는 건 게임(`RequestDisconnectSession`). 알림은 `Tick` 이 넘긴다(이 함수엔 이벤트 통로가 없다).
+            ++_stats.reliableQueueOverflow;
+            if (s.announced && !s.timeoutNotified) {
+                s.timeoutNotified = true;
+                NetworkEvent ev;
+                ev.type = NetworkEvent::Type::DISCONNECTED;
+                ev.reason = DisconnectReason::TIMEOUT;
+                ev.sessionId = s.sessionId;
+                ev.addr = s.addr;
+                _deferredEvents.push_back(std::move(ev));
+            }
         }
         PushTimer(t);
     }
@@ -559,13 +571,20 @@ void CUdpServer::SendOn(CUdpSession& s, bool reliable, uint8_t stream,
 
 // 원본 `SetCurrent(seq)` = `retry(seq)` + `ackOlder(seq)`(`send_reliable.go:183-239`).
 //   retry — 그 순번이 아직 있으면 「다시 보낼 것」으로 표시한다(클라가 그것부터 못 받았다는 뜻).
-//   ackOlder — 그보다 앞 순번은 받았으니 지운다. 원본 그대로 바이트 크기로 견준다(순번이 255 를 넘어 돌 때의 처리는 원본도 없다 — `FIXME`).
+//   ackOlder — 그보다 앞 순번은 받았으니 지운다.
+//   ★ 11-02 **원본과 다르게** 바이트 대소가 아니라 **거리**(`int8_t(p.seq - seq) < 0`)로 견준다 — 순번·확인값이 1바이트라
+//     255 다음이 0 인데, 대소로 견주면 확인 0 이 253·254·255 를 못 지워 2초마다 영원히 다시 보내고, 한 바퀴 뒤 클라가 다시
+//     254 를 기다릴 때 옛 254 가 먼저 닿으면 새 254 자리를 가로챌 수 있다. 원본도 같은 자리에 `FIXME` 만 달려 있다(`send_reliable.go:224`).
+//     거리 비교는 대기 순번 폭이 128 미만일 때 맞다 — 산 상대는 틱마다 확인이 와 폭이 몇 개뿐이다(`kReliableQueueMax` 주석).
+//     시험 = `TestReliableSeqWrap` ①(고치기 전 「확인 0 뒤 대기 3」).
 void CUdpServer::Ack(CUdpSession& s, uint8_t seq) {
     for (auto& p : s.reliableQueue)
         if (p.seq == seq) { p.shouldSend = true; ++_stats.reliableRetryMarked; }
     const size_t before = s.reliableQueue.size();
     s.reliableQueue.erase(std::remove_if(s.reliableQueue.begin(), s.reliableQueue.end(),
-                                         [seq](const CUdpSession::PendingReliable& p) { return p.seq < seq; }),
+                                         [seq](const CUdpSession::PendingReliable& p) {
+                                             return static_cast<int8_t>(static_cast<uint8_t>(p.seq - seq)) < 0;
+                                         }),
                           s.reliableQueue.end());
     _stats.reliableAcked += before - s.reliableQueue.size();
 }
@@ -661,6 +680,11 @@ void CUdpServer::Tick(uint32_t nowMs, std::vector<OutPacket>& out, std::vector<N
         }
     }
     _nowMs = nowMs;
+    // ★ 11-02 — 보내기 길(`RequestSendMsg`)에서 만든 끊김 알림(신뢰 큐 넘침)을 여기서 넘긴다
+    if (!_deferredEvents.empty()) {
+        for (auto& ev : _deferredEvents) events.push_back(std::move(ev));
+        _deferredEvents.clear();
+    }
     // ★ 10-09 조각 5b — 마감이 지난 타이머만 꺼낸다(옛 「1초마다 모든 세션 훑기」 — 원본 `MaybeSendReliable` `send_reliable.go:16-28` 꼴).
     //   꺼내며 새로 거는 마감은 늘 지금보다 뒤라 이 고리는 끝난다.
     while (!_timers.empty() && static_cast<int32_t>(nowMs - _timers.front().dueMs) >= 0) {

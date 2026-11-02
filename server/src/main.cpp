@@ -986,9 +986,9 @@ int main(int argc, char** argv) {
                 //   클라의 확인 순번을 못 읽는 것이다(UdpServer.cpp Ack)
                 // ★ 10-09 조각 5b — 「타이머」는 힙에 든 항목 수(꺼낼 때 버릴 항목 포함). 세션 수 + 확인 기다리는 조각 수 근처에서
                 //   머물러야 한다 — 버릴 항목은 제 마감(2초 · 한도 시간)에 빠진다. 계속 불어나면 버릴 항목이 안 빠지는 것이다
-                std::printf("[다시보냄] 다시 보냄 %llu · 확인으로 지움 %llu · 바로 다시 보낼 표시 %llu · 한도 넘쳐 버림 %llu · 대기 %zu · 타이머 %zu\n",
+                std::printf("[다시보냄] 다시 보냄 %llu · 확인으로 지움 %llu · 바로 다시 보낼 표시 %llu · 한도 넘쳐 끊음 %llu · 대기 %zu · 타이머 %zu\n",
                             ns.reliableResent, ns.reliableAcked,
-                            ns.reliableRetryMarked, ns.reliableQueueDropped,
+                            ns.reliableRetryMarked, ns.reliableQueueOverflow,
                             ns.reliablePending, ns.timerCount);
                 // ★ 10-08 조각 4 — 지운 세션 번호로 보내려다 버린 수. 0 이 아니면 게임이 지운 사람에게 아직 보내고 있다
                 std::printf("[세션] 없는 번호로 보내려다 버림 %llu · 접속 전 상대 걷어냄 %llu · 시간 초과로 넘김 %llu · 입장 요청 %llu · 거절 %llu · 답할 때 없음 %llu\n",

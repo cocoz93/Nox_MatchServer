@@ -211,7 +211,7 @@ struct CUdpStats {
     unsigned long long reliableResent = 0;         // 다시 보낸 조각 수
     unsigned long long reliableAcked = 0;          // 확인받아 지운 조각 수
     unsigned long long reliableRetryMarked = 0;    // 클라가 「그 순번부터 다시」라고 해서 표시한 수
-    unsigned long long reliableQueueDropped = 0;   // 한도를 넘어 버린 수
+    unsigned long long reliableQueueOverflow = 0;  // 한도를 넘은 수(★ 11-02 — 버리지 않고 끊김을 알린다 · 옛 이름 reliableQueueDropped)
     // ★ 10-08 조각 4 · 4c · 10-09 조각 5a · 5c — 세션
     unsigned long long sendNoSession = 0;
     unsigned long long unannouncedSwept = 0;
@@ -355,7 +355,7 @@ public:
     unsigned long long reliableResent() const { return _stats.reliableResent; }
     unsigned long long reliableAcked() const { return _stats.reliableAcked; }
     unsigned long long reliableRetryMarked() const { return _stats.reliableRetryMarked; }
-    unsigned long long reliableQueueDropped() const { return _stats.reliableQueueDropped; }
+    unsigned long long reliableQueueOverflow() const { return _stats.reliableQueueOverflow; }
     size_t reliablePending() const {
         size_t n = 0;
         for (const auto& kv : _sessions) n += kv.second.reliableQueue.size();
@@ -421,7 +421,11 @@ private:
 
     // 원본 값(`send_reliable.go:13` `reliableRetry = 2 * time.Second` · `:19` 1초마다 살핌 — 10-09 조각 5b 부터 살피는 주기는 안 쓴다)
     static constexpr uint32_t kReliableRetryMs = 2000;
-    // 우리 값 — 원본은 한도가 없다. 확인을 안 보내는 상대(진단 봇 등)에게 쌓이기만 하는 것을 막는다. 넘치면 오래된 것부터 버리고 센다
+    // 우리 값 — 원본은 한도가 없다. 확인을 안 보내는 상대(진단 봇 등)에게 쌓이기만 하는 것을 막는다.
+    //   ★ 11-02 — 넘치면 버리지 않고(제일 오래된 것 = 클라가 기다리는 번호라 버리면 그 클라의 신뢰 채널이 멎는다)
+    //     끊김(TIMEOUT)을 한 번 알린다(`RequestSendMsg` · `TestReliableSeqWrap` ②).
+    //     `Ack` 의 거리 비교는 대기 순번 폭이 128 미만일 때 맞다 — 산 상대는 틱마다 확인이 와 폭이 몇 개뿐이고,
+    //     폭이 128 을 넘는 상대는 이 한도에서 이미 끊기로 했으므로 그 뒤의 오판(덜 지움 → 다시 보냄)은 무해하다
     static constexpr size_t kReliableQueueMax = 128;
     // ★ 10-08 조각 4c — 게임에 안 넘긴 상대를 걷어내는 조용한 시간. 옛 게임 쪽 값(판에 안 든 사람 30초 · 지금 `kSessionTimeoutMs`) 그대로
     static constexpr uint32_t kUnannouncedIdleMs = 30000;
@@ -468,6 +472,7 @@ private:
 
     // ★ 10-08 조각 3b — 다시 보내기
     bool _reliableResend = true;
+    std::vector<NetworkEvent> _deferredEvents;   // ★ 11-02 — 보내기 길에서 만든 끊김 알림(신뢰 큐 넘침) · 다음 `Tick` 이 넘긴다
     uint32_t _nowMs = 0;               // 마지막 Tick 의 시각 — 그 사이에 보낸 조각의 `retryAt` 기준
     bool _clockSet = false;            // 첫 Tick 에 시계를 잡았나(그 전에 건 타이머는 그때 다시 건다)
     std::vector<Timer> _timers;        // ★ 10-09 조각 5b — 최소 힙(`PushTimer` · 맨 앞이 가장 이른 마감)

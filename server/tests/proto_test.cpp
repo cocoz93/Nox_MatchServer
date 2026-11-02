@@ -24574,6 +24574,72 @@ void TestSyncHostOrder() {
     std::printf("  10-09 조각 5d-1b — 한 스레드 조립은 쌓인 게임 요청을 받기·틱보다 먼저 통신 층에 넘김(옛 그 자리 호출과 같은 차례)\n");
 }
 
+// ── 11-02 — 신뢰 큐 결함 둘(순번 256 넘김 · 한도 넘침) ─────────
+//   ① 순번·확인값이 1바이트라 255 다음은 0 이다. 지우기를 바이트 대소로 하면 확인 0 이 253·254·255 를 못 지워
+//      2초마다 영원히 다시 보내고, 한 바퀴 뒤 옛 254 가 먼저 닿으면 새 254 자리를 가로챌 수 있다. 고치기 전 값 = 「확인 0 뒤 대기 3」.
+//   ② 확인 없이 129개째를 보내면 제일 오래된 것을 조용히 버렸다 — 그게 곧 클라가 기다리는 번호라 그 클라의 신뢰 채널이
+//      영구히 멎는다. 고친 뒤 = 버리지 않고 끊김(TIMEOUT)을 한 번 알린다. 고치기 전 값 = 「대기 128 · 끊김 알림 0」.
+void TestReliableSeqWrap() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    using Ev = nox::NetworkEvent;
+    using Req = nox::NetworkRequest;
+    char m[240];
+    auto sendRel = [](nox::CUdpServer& net, int64_t sid, int count) {
+        Req r; r.type = Req::Type::SEND_MSG; r.sessionId = sid; r.reliable = true; r.stream = 0; r.body = { 0xc6 };
+        for (int i = 0; i < count; ++i) { std::vector<nox::OutPacket> o; net.OnRequest(r, o); }
+    };
+    auto ackNext = [](nox::CUdpServer& net, const std::string& a, uint8_t next, std::vector<Ev>& ev) {
+        const uint8_t hdr[2] = { 0x00, next };                      // 스트림 0 비신뢰 머리만 — 「다음에 받을 번호」
+        std::vector<nox::OutPacket> o; net.OnDatagram(a, hdr, sizeof(hdr), o, ev);
+    };
+    auto timeouts = [](const std::vector<Ev>& ev) {
+        int n = 0;
+        for (const auto& e : ev) if (e.type == Ev::Type::DISCONNECTED && e.reason == nox::DisconnectReason::TIMEOUT) ++n;
+        return n;
+    };
+    {
+        nox::CUdpServer net; net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> ev;
+        net.Tick(1000, o, ev);
+        const std::string a = "10.10.9.41:10941";
+        net.OnDatagram(a, conn, sizeof(conn), o, ev);              // 접속 수락 = 스트림 0 신뢰 순번 0
+        const int64_t sa = net.SessionIdOf(a);
+        ackNext(net, a, 1, ev);                                     // 0 받음
+        // 순번 1~252 — 실제처럼 틱마다 확인이 온다고 보고 100개씩 끊어 확인한다(확인 없이 128 을 넘기면 ② 의 넘침 길이다)
+        sendRel(net, sa, 100); ackNext(net, a, 101, ev);
+        sendRel(net, sa, 100); ackNext(net, a, 201, ev);
+        sendRel(net, sa, 52);  ackNext(net, a, 253, ev);
+        const size_t before = net.reliablePending();
+        sendRel(net, sa, 3);                                        // 253·254·255
+        ackNext(net, a, 0, ev);                                     // 다음은 256 = 0
+        const size_t atWrap = net.reliablePending();
+        sendRel(net, sa, 1);                                        // 순번 0
+        ackNext(net, a, 1, ev);
+        const size_t after = net.reliablePending();
+        std::snprintf(m, sizeof(m), "① 순번 넘김 — 253 전 대기 %zu · 확인 0 뒤 대기 %zu · 한 바퀴 뒤 대기 %zu (전부 0 이어야)",
+                      before, atWrap, after);
+        Check(before == 0 && atWrap == 0 && after == 0, m);
+    }
+    {
+        nox::CUdpServer net; net.SetXorKey(0);
+        std::vector<nox::OutPacket> o; std::vector<Ev> ev;
+        net.Tick(1000, o, ev);
+        const std::string b = "10.10.9.42:10942";
+        net.OnDatagram(b, conn, sizeof(conn), o, ev);              // 접속 — 게임에 넘긴 상대(announced)
+        const int64_t sb = net.SessionIdOf(b);
+        ackNext(net, b, 1, ev);
+        sendRel(net, sb, 129);                                      // 확인 없이 한도(128) + 1
+        std::vector<Ev> ev1; net.Tick(1001, o, ev1);
+        const size_t pending1 = net.reliablePending();
+        const unsigned long long over1 = net.reliableQueueOverflow();
+        sendRel(net, sb, 1);                                        // 하나 더 — 알림은 한 번만
+        std::vector<Ev> ev2; net.Tick(1002, o, ev2);
+        std::snprintf(m, sizeof(m), "② 한도 넘침 — 대기 %zu(129 이어야 · 버림 없음) · 넘침 %llu · 끊김 알림 %d · 하나 더 뒤 알림 %d(0 이어야)",
+                      pending1, over1, timeouts(ev1), timeouts(ev2));
+        Check(pending1 == 129 && over1 == 1 && timeouts(ev1) == 1 && timeouts(ev2) == 0, m);
+    }
+}
+
 // ── 10-09 플랜 A 조각 5d-2a — 통신 층 지표 사본(`CUdpServer::Stats`) ─────────
 //   5d-2 부터 게임 스레드는 네트워크 스레드의 지표를 직접 읽지 않고 이 사본으로 찍는다.
 //   ① 사본 값이 조회 함수와 같다(대기 조각 수 · 타이머 수는 사본을 뜰 때 센다) ② 사본은 그 뒤 바뀌어도 그대로다
@@ -33416,6 +33482,7 @@ int main() {
     TestNetworkRequest();
     TestSyncHostOrder();
     TestUdpStats();
+    TestReliableSeqWrap();
     TestNetworkThread();
     TestRoomManager();
     TestRooms();
