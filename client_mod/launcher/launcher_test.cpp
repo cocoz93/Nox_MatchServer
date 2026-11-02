@@ -69,7 +69,7 @@ int main()
     // ④ 게임 환경 덩어리
     SetEnvironmentVariableW(L"NOX_LAUNCH", L"old");
     SetEnvironmentVariableW(L"NOX_TEST_KEEP", L"keep me");
-    const std::wstring env = launcher::BuildEnvBlock("pilot1");
+    const std::wstring env = launcher::BuildEnvBlock(launcher::Config(), "pilot1");
     int launch = 0;
     bool keep = false, old = false;
     for (const wchar_t* p = env.c_str(); *p; p += wcslen(p) + 1) {
@@ -81,6 +81,36 @@ int main()
     Check(launch == 1 && !old && keep, "④ NOX_LAUNCH 하나뿐(있던 값은 바꿈) · 다른 값 그대로");
     Check(env.size() >= 2 && env[env.size() - 1] == L'\0' && env[env.size() - 2] == L'\0', "④ 끝이 \\0\\0");
     SetEnvironmentVariableW(L"NOX_LAUNCH", NULL);
+    // ④ 꾸러미 — 설정 파일의 auth_url · auth_pin 이 게임 환경에도(환경에 이미 있으면 환경이 이김 · 기본 주소 · 빈 지문은 안 넣음)
+    auto envVals = [](const std::wstring& block, const wchar_t* key) {   // <개수, 마지막 값>
+        std::pair<int, std::wstring> r(0, L"");
+        const std::wstring k = std::wstring(key) + L"=";
+        for (const wchar_t* p = block.c_str(); *p; p += wcslen(p) + 1) {
+            const std::wstring v(p);
+            if (v.rfind(k, 0) == 0) {
+                ++r.first;
+                r.second = v.substr(k.size());
+            }
+        }
+        return r;
+    };
+    SetEnvironmentVariableW(L"NOX_AUTH_URL", NULL);
+    SetEnvironmentVariableW(L"NOX_AUTH_PIN", NULL);
+    launcher::Config cf;
+    cf.authBase = L"https://10.0.0.5:8443";
+    cf.authBaseFromFile = true;
+    cf.pin = std::string(64, 'c');
+    const std::wstring envF = launcher::BuildEnvBlock(cf, "pilot1");
+    Check(envVals(envF, L"NOX_AUTH_URL") == std::make_pair(1, std::wstring(L"https://10.0.0.5:8443")) &&
+              envVals(envF, L"NOX_AUTH_PIN") == std::make_pair(1, std::wstring(64, L'c')),
+          "④ 설정 파일 주소 · 지문이 게임 환경에 하나씩");
+    SetEnvironmentVariableW(L"NOX_AUTH_PIN", L"bb");
+    const std::wstring envE = launcher::BuildEnvBlock(cf, "pilot1");
+    Check(envVals(envE, L"NOX_AUTH_PIN") == std::make_pair(1, std::wstring(L"bb")) && envVals(envE, L"NOX_AUTH_URL").first == 1,
+          "④ 환경에 있는 지문은 그대로(설정 파일 값으로 안 덮음) · 주소는 설정 파일 것");
+    SetEnvironmentVariableW(L"NOX_AUTH_PIN", NULL);
+    const std::wstring envD = launcher::BuildEnvBlock(launcher::Config(), "pilot1");
+    Check(envVals(envD, L"NOX_AUTH_URL").first == 0 && envVals(envD, L"NOX_AUTH_PIN").first == 0, "④ 설정 파일 없음(기본 주소 · 빈 지문) → 둘 다 안 넣음");
 
     // ⑤ 게임 경로
     launcher::Config c3;

@@ -109,6 +109,7 @@ inline std::wstring EnvW(const wchar_t* name)
 struct Config {
     std::wstring exeDir;                                  // 런처가 있는 폴더(끝 \ 없음)
     std::wstring authBase = L"https://127.0.0.1:8443";   // 로그인 서버 기준 주소(옛 꼴 …/login 도 받음 — WithPath)
+    bool authBaseFromFile = false;                        // 설정 파일이 준 주소인가(기본값이면 게임에 안 넘김 — DLL 은 로비 상대 IP:8443 으로 스스로 감)
     std::string pin;                                      // 서버 인증서 지문(16진 64자) · 비면 윈도 인증서 검사
     std::wstring gameExe = L"Game.exe";                   // exeDir 기준(절대 경로도 됨)
 };
@@ -120,7 +121,10 @@ inline Config LoadConfig(const std::wstring& exeDir)
     std::string ini;
     if (ReadFileUtf8(exeDir + L"\\NoxLauncher.ini", ini)) {
         const std::string url = IniValue(ini, "auth_url"), pin = IniValue(ini, "auth_pin"), game = IniValue(ini, "game_exe");
-        if (!url.empty()) c.authBase = Wide(url);
+        if (!url.empty()) {
+            c.authBase = Wide(url);
+            c.authBaseFromFile = true;
+        }
         if (!pin.empty()) c.pin = pin;
         if (!game.empty()) c.gameExe = Wide(game);
     }
@@ -181,17 +185,24 @@ inline std::string DeviceName()
 }
 
 // 이 프로세스 환경 + NOX_LAUNCH=<이름>(이미 있으면 바꿈) — CreateProcessW 의 환경 덩어리(UNICODE · 끝 \0\0)
-inline std::wstring BuildEnvBlock(const std::string& launchName)
+//   ★ 11-02 꾸러미 — 설정 파일(NoxLauncher.ini)의 auth_url · auth_pin 도 NOX_AUTH_URL · NOX_AUTH_PIN 으로 넣는다(환경에 이미 있으면 그대로).
+//     DLL 이 /token 때 같은 이름을 읽어 서버를 가르므로(wsock32_proxy.cpp AuthLogin) 런처만 알고 게임이 모르면 다른 PC 에서 자작 인증서 검사에 막힌다
+inline std::wstring BuildEnvBlock(const Config& c, const std::string& launchName)
 {
     std::vector<std::wstring> vars;
+    bool hasUrl = false, hasPin = false;
     if (wchar_t* env = GetEnvironmentStringsW()) {
         for (const wchar_t* p = env; *p; p += wcslen(p) + 1) {
             const std::wstring v(p);
             if (_wcsnicmp(v.c_str(), L"NOX_LAUNCH=", 11) == 0) continue;
+            if (_wcsnicmp(v.c_str(), L"NOX_AUTH_URL=", 13) == 0) hasUrl = true;
+            if (_wcsnicmp(v.c_str(), L"NOX_AUTH_PIN=", 13) == 0) hasPin = true;
             vars.push_back(v);
         }
         FreeEnvironmentStringsW(env);
     }
+    if (!hasUrl && c.authBaseFromFile && !c.authBase.empty()) vars.push_back(L"NOX_AUTH_URL=" + c.authBase);
+    if (!hasPin && !c.pin.empty()) vars.push_back(L"NOX_AUTH_PIN=" + Wide(c.pin));
     vars.push_back(L"NOX_LAUNCH=" + Wide(launchName));
     std::wstring block;
     for (const std::wstring& v : vars) {
@@ -290,7 +301,7 @@ inline bool LaunchGame(const Config& c, const std::string& name, PROCESS_INFORMA
     const std::wstring exe = GamePath(c);
     const std::wstring dir = exe.substr(0, exe.rfind(L'\\'));
     std::wstring cmd = L"\"" + exe + L"\"";
-    std::wstring env = BuildEnvBlock(name);
+    std::wstring env = BuildEnvBlock(c, name);
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
