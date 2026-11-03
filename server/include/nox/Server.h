@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <list>
 #include <map>
@@ -1116,6 +1117,8 @@ struct Session {
         uint32_t sentFrame = 0;        // 마지막으로 실은 조각의 시각(클라 확인과 맞춰 본다)
         uint32_t wait = 0;             // 다시 싣기까지 남은 틱
         bool sent = false;
+        uint32_t firstMs = 0;          // ★ 11-03 손실 파일럿 — 처음 실은 시각(ms · `nox::NowMs`) · 확인 때 지연을 잰다
+        uint16_t resends = 0;          // 다시 실은 수
     };
     std::vector<PendingImportant> importantQ;
     // 정답지는 CLIENT_READY 를 받아 상태 비트 0x10 을 세운 뒤에만 중요 메시지를 싣는다
@@ -3721,6 +3724,11 @@ public:
     //   걷기(4)는 서기(0)와 그림 차이가 작아 캡처로 안 갈린다. 죽음(2)처럼
     //   **눕는 자세**로 시험하면 먹는지 안 먹는지가 한눈에 난다.
     void SetForceAnimPose(int v) { forceAnimPose_ = v; }
+    // ★ 11-03 손실 파일럿 — N ms 마다 판 안 사람 전부에게 기력 보고(중요 봉투 `cc`)를 보낸다(`RunTick` · 0 이면 안 함)
+    void SetPilotReliableMs(int ms) { pilotReliableMs_ = ms; }
+    // ★ 11-03 손실 파일럿 — 중요 메시지(`cc` 봉투 · 맨 메시지)마다 「처음 실은 시각 → 클라 확인(`ab`)」 지연을 CSV 한 줄로.
+    //   파일은 부르는 쪽이 열고 닫는다(WorldBuild · `--pilot-lat`). 줄 = first_ms,id,op,latency_ms,resends
+    void SetPilotLatFile(FILE* f) { pilotLat_ = f; }
     // ★★ 진단 — 사람 항목 덧붙이 **첫 바이트의 방향 3비트**를 못 박는다(0~7, -1 이면 안 함).
     //   자세(하위 4비트든 별도 바이트든)가 두 방식 다 화면을 못 바꿨다. 그래서 묻는다 —
     //   **덧붙이 바이트가 클라에 닿기는 하나?** 방향이 바뀌면 캐릭터가 다른 쪽을 보므로
@@ -5407,6 +5415,9 @@ private:
     bool arrowFreeze_ = false;  // 진단 — 화살을 난 자리에 세워 둔다
     int arrowFrameAlt_ = 0;     // 진단 — N 틱마다 프레임 0↔16 번갈기(0 이면 안 함)
     int forceAnimPose_ = -1;    // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
+    int pilotReliableMs_ = 0;   // ★ 11-03 손실 파일럿 — 기력 보고 주기(ms · 0 이면 안 함)
+    uint32_t pilotNextFrame_ = 0;   // 다음에 보낼 프레임
+    FILE* pilotLat_ = nullptr;      // 중요 메시지 전달 지연 CSV(없으면 안 적음)
     unsigned long long stopped_ = 0;   // 끝까지 못 쪼개 통째로 넘긴 조각 수
     std::map<uint8_t, unsigned long long> stoppedByOp_;
     std::vector<uint8_t> lastFragOps_;          // 마지막 조각에서 읽어낸 오프코드들(진단)

@@ -323,6 +323,13 @@ int main(int argc, char** argv) {
         } else if (a == "--anim-pose" && i + 1 < argc) {
             // 진단 — 사람 자세 번호를 못 박는다(0 서기 · 2 죽음 · 4 걷기).
             opt.room.forcePose = std::atoi(argv[++i]);
+        } else if (a == "--pilot-reliable" && i + 1 < argc) {
+            // ★ 11-03 손실 파일럿 — N ms 마다 판 안 사람 전부에게 기력 보고(`47 <기력>` · 게임 층 중요 봉투 `cc`)를 보낸다.
+            //   값이 지금 것 그대로라 화면엔 아무 변화가 없고, `--pilot-lat` 이 잴 전달 지연 표본만 늘린다
+            opt.room.pilotReliableMs = std::atoi(argv[++i]);
+        } else if (a == "--pilot-lat" && i + 1 < argc) {
+            // ★ 11-03 손실 파일럿 — 중요 메시지(`cc` 봉투)마다 「처음 실음 → 클라 확인 `ab`」 지연을 이 CSV 에 적는다
+            opt.room.pilotLatPath = argv[++i];
         } else if (a == "--spell-start") {
             // ★ 시전 알림(0x70)을 **켠다.** 기본은 끔 — Server.h 의 noSpellStart_ 주석 참조.
             opt.room.spellStart = true;

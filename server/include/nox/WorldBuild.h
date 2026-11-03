@@ -138,6 +138,8 @@ struct RoomSettings {
     bool dumpHarpoon = false;        // 진단 ⑦ — 걸린 동안 매 틱 자리를 찍는다
     int arrowFrameAlt = 0;     // 진단 ⑬ — N 틱마다 프레임 0↔16 번갈기
     int forcePose = -1;        // 진단 — 사람 자세 번호 고정(-1 이면 안 함)
+    int pilotReliableMs = 0;   // ★ 11-03 손실 파일럿 — N ms 마다 판 안 사람 전부에게 기력 보고(`47` · 중요 봉투)를 다시 보냄(0 이면 안 함)
+    std::string pilotLatPath;  // ★ 11-03 손실 파일럿 — 중요 메시지 전달 지연 CSV 경로(비면 안 적음)
     bool spellStart = false;   // 시전 알림 0x70 을 켜는 손잡이 (기본 끔)   // 시험용 — 아이템 하나를 스폰 자리로 옮긴다
     int questCount = 4;
     // ⚠ 기본 300 은 실측 아닌 자리표시다. 실클라 시험에서는 **근접 사거리(45) 안**에 세운다 —

@@ -2196,6 +2196,21 @@ int BuildRoomWorld(nox::Server& srv, const RoomSettings& opt, const GameFiles& f
         }
         if (forcePose >= 0) srv.SetForceAnimPose(forcePose);
         if (forceDir  >= 0) srv.SetForceAnimDir(forceDir);
+        if (opt.pilotReliableMs > 0) {   // ★ 11-03 손실 파일럿
+            srv.SetPilotReliableMs(opt.pilotReliableMs);
+            srv.Log("[진단스위치] 파일럿 신뢰 보고 %d ms 마다\n", opt.pilotReliableMs);
+        }
+        if (!opt.pilotLatPath.empty()) {   // ★ 11-03 손실 파일럿 — 중요 메시지 전달 지연 CSV(프로세스가 끝날 때 OS 가 닫는다 · 줄마다 flush)
+            FILE* f = std::fopen(opt.pilotLatPath.c_str(), "wb");
+            if (f) {
+                std::fprintf(f, "first_ms,id,op,latency_ms,resends\n");
+                std::fflush(f);
+                srv.SetPilotLatFile(f);
+                srv.Log("[진단스위치] 파일럿 전달 지연 CSV %s\n", opt.pilotLatPath.c_str());
+            } else {
+                srv.Log("[진단스위치] 파일럿 전달 지연 CSV 를 못 열었다: %s\n", opt.pilotLatPath.c_str());
+            }
+        }
         if (forceArrowFrame >= 0) {
             srv.SetForceArrowFrame(forceArrowFrame);
             srv.Log("[진단] 화살 프레임을 %d 로 못 박는다\n", forceArrowFrame);

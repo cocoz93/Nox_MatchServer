@@ -21,6 +21,7 @@
 #include "nox/JoinBundle.h"
 #include "nox/SpellNames.h"
 #include "nox/DirVectors.h"
+#include "nox/Clock.h"   // ★ 11-03 손실 파일럿 — 중요 메시지 전달 지연(ms)
 
 namespace nox {
 
@@ -496,7 +497,8 @@ void Server::FlushImportant(Session& s) {
             if (resentThisTick >= 1) continue;
         }
         if (pkt.size() + p.wire.size() > kImportantPacketBudget) break;   // 다음 틱에
-        if (p.sent) { ++resentThisTick; ++s.importantResent; }
+        if (p.sent) { ++resentThisTick; ++s.importantResent; ++p.resends; }
+        else if (pilotLat_) p.firstMs = nox::NowMs();   // ★ 11-03 손실 파일럿 — 처음 실은 시각
         pkt.insert(pkt.end(), p.wire.begin(), p.wire.end());
         p.sent = true;
         p.sentFrame = s.tickFrame;
@@ -3188,6 +3190,18 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 const uint8_t* b = it.body();
                 const uint32_t fr = static_cast<uint32_t>(b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24));
                 const size_t before = s.importantQ.size();
+                if (pilotLat_) {   // ★ 11-03 손실 파일럿 — 지워지는 것마다 「처음 실음 → 확인」 지연 한 줄(`cc` 봉투면 번호·안 메시지, 맨 메시지면 번호 -)
+                    const uint32_t now = nox::NowMs();
+                    for (const auto& p : s.importantQ) {
+                        if (!(p.sent && ((p.sentFrame ^ fr) & 0xFFFF) == 0)) continue;
+                        const bool env = !p.wire.empty() && p.wire[0] == static_cast<uint8_t>(Op::SEQ_IMPORTANT) && p.wire.size() >= 5;
+                        const int id = env ? static_cast<int>(p.wire[1] | (p.wire[2] << 8)) : -1;
+                        const uint8_t op = env ? p.wire[4] : (p.wire.empty() ? 0 : p.wire[0]);
+                        std::fprintf(pilotLat_, "%u,%d,%s,%u,%u\n", p.firstMs, id, OpName(static_cast<Op>(op)),
+                                     now - p.firstMs, static_cast<unsigned>(p.resends));
+                    }
+                    std::fflush(pilotLat_);
+                }
                 s.importantQ.erase(std::remove_if(s.importantQ.begin(), s.importantQ.end(),
                     [fr](const Session::PendingImportant& p) {
                         return p.sent && ((p.sentFrame ^ fr) & 0xFFFF) == 0;
@@ -17478,6 +17492,14 @@ void Server::RunTick(int ticks) {
     // ★ 09-20 ⑰ — 지난 틱에 만든 물체의 **낙하 시작 알림**을 여기서 낸다.
     //   지난 틱 끝의 `a4 UPDATE_STREAM` 이 그 물체를 이미 소개했으므로 클라가 그림을 찾는다.
     FlushDeltaZStart();
+    // ★ 11-03 손실 파일럿 — N ms 마다 판 안 사람 전부에게 기력 보고(`47 <기력>` · 중요 봉투 `cc`)를 보낸다. 값이 지금 것이라 화면 변화 없음.
+    //   `--pilot-lat`(IMPORTANT_ACK 처리)이 봉투마다 처음 실음 ↔ 클라 확인 시각을 재는 표본이다(스위치 없으면 아무것도 안 함)
+    if (pilotReliableMs_ > 0 && frame_ >= pilotNextFrame_) {
+        const uint32_t every = static_cast<uint32_t>(pilotReliableMs_) / (tickMs_ ? tickMs_ : 33u);
+        pilotNextFrame_ = frame_ + (every ? every : 1u);
+        for (auto& kv : sessions_)
+            if (kv.second.inGame) ReportStamina(kv.second);
+    }
 
     // ── 판 다시 열기 ────────────────────────────────────────────────
     //

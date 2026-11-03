@@ -10,6 +10,18 @@
 //
 //   nox_proxy.exe [--listen 18590] [--host 127.0.0.1] [--host-port 18591]
 //                 [--dump 파일] [--quiet]
+//                 [--loss <%>] [--delay <ms>] [--seed <n>] [--lat <csv>] [--secs <n>]   ← ★ 11-03 손실 파일럿
+//
+// ★ 11-03 손실 파일럿 — 녹스 릴라이어블 UDP(고정 2초 재전송 · 순서 밖 버림)가 손실 회선에서 얼마나 체감되나.
+//   · `--loss`·`--delay` — 키가 오간 뒤(keyed) 양방향 패킷을 무작위로 버리고 한 방향 N ms 늦춘다(양쪽 다 늦추니 왕복은 2N).
+//     ⚠ 씨앗은 난수열만 고정한다 — 어느 패킷이 버려지는지는 도착 차례(타이밍)에 따라 달라지므로 판을 똑같이 재현하진 못한다.
+//     손실은 패킷마다 독립 균일(실제 회선은 몰려서 잃는다 — 몰리면 한 묶음에 실린 중요 메시지가 한꺼번에 밀린다) · 지연은 떨림 없이 고정.
+//   · `--lat` — **전송 층**(머리 0x80) 신뢰 순번마다 첫 송신 시각을 적어 두고, 클라 **비신뢰** 머리 순번(어느 스트림이든 ·
+//     클라 매 틱 패킷은 스트림 1)이 그 뒤를 가리키면 전달 끝으로 쳐서 지연을 CSV 한 줄로 남긴다.
+//     ⚠ 전송 층 신뢰는 접속 절차 4건뿐이다(11-03 실측) — 게임 중 「상태 바뀜」 알림은 **게임 층 중요 봉투(`cc`/`aa`/`ab`)** 로
+//       비신뢰 패킷에 실려 가므로, 본 측정은 서버 `--pilot-lat`(`Server.cpp` IMPORTANT_ACK) 이 하고 여기 것은 참고용이다.
+//     손실·지연은 측정 **뒤에** 적용하므로 지연에는 주입한 서버→클라 한 방향 지연이 든다.
+//   · `--secs` — 그 뒤 스스로 끝내며 요약을 찍는다(자동 판용 · 요약 = 버림 수 · 표본 · 중앙값 · 90분위 · 최대 · 2초 초과).
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -18,7 +30,10 @@
 #include <cstring>
 #include <ctime>
 #include <share.h>
+#include <algorithm>
+#include <deque>
 #include <map>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -38,6 +53,9 @@ struct Peer {
     uint8_t hostKey = 0;          // 호스트가 정한 XOR 키
     uint8_t myKey = 0;            // 내가 클라에게 준 XOR 키
     bool keyed = false;           // 수락이 오간 뒤인가
+    // ★ 11-03 손실 파일럿 — 서버→클라 스트림 0 신뢰 순번별 첫 송신(확인이 오면 지운다)
+    struct RelSent { double firstMs = 0; uint8_t op = 0; int resends = 0; };
+    std::map<uint8_t, RelSent> rel;
 };
 
 // 클라를 구분하는 열쇠 — 주소와 포트
@@ -77,6 +95,83 @@ std::string g_mapName;        // U3.2 — 맵 지정(0x2b) 의 이름 칸을 내
 std::string g_chatText;       // U3.3 — 방송되는 채팅 글자를 내 것으로 바꾼다
 std::map<uint8_t, unsigned long long> g_opCount;   // U2.7 에서 쓸 오프코드 집계
 
+// ★ 11-03 손실 파일럿 — 주입 · 측정 (머리 주석 참조)
+int g_lossPct = 0;                // keyed 뒤 양방향 무작위 버림(%)
+int g_delayMs = 0;                // keyed 뒤 한 방향 지연(ms)
+unsigned g_seed = 1;
+int g_secs = 0;                   // 0 이면 끝없이
+FILE* g_lat = nullptr;            // 전달 지연 CSV
+std::mt19937 g_rng(1);
+double g_startMs = 0;
+unsigned long long g_dropToHost = 0, g_dropToClient = 0, g_delayedSent = 0, g_resendsSeen = 0, g_over2s = 0;
+std::vector<double> g_latencies;  // ms
+
+double NowMs() {
+    static LARGE_INTEGER f = [] { LARGE_INTEGER v; QueryPerformanceFrequency(&v); return v; }();
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return static_cast<double>(c.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
+}
+
+struct Delayed {
+    double dueMs = 0;
+    bool toHost = false;
+    PeerKey key = 0;
+    std::vector<uint8_t> data;
+};
+std::deque<Delayed> g_delayQ;     // 지연이 같으니 넣은 차례 = 나갈 차례
+
+// 서버→클라 조각 — 스트림 0 신뢰면 순번의 첫 송신 시각을 적는다(이미 있으면 재전송으로 센다). `key` 로 머리를 평문으로 본다
+void NoteSent(Peer& p, const uint8_t* buf, int n, uint8_t key) {
+    if (n < 3) return;
+    const uint8_t b0 = buf[0] ^ key, b1 = buf[1] ^ key, b2 = buf[2] ^ key;
+    if (!(b0 & 0x80) || (b0 & 0x7f) != 0) return;
+    auto it = p.rel.find(b1);
+    if (it == p.rel.end()) p.rel[b1] = Peer::RelSent{ NowMs(), b2, 0 };
+    else { ++it->second.resends; ++g_resendsSeen; }
+}
+
+// 클라→서버 조각 — **비신뢰** 머리 순번 A = 「서버 신뢰 가운데 다음에 받을 번호」. A 보다 앞(거리 비교)인 순번은 전달 끝.
+//   스트림은 안 가린다 — 클라의 매 틱 패킷은 **스트림 1** 로 온다(11-03 덤프 `71 xx` 5,837건 · 스트림 0 은 0건).
+//   확인 칸은 연결마다 하나라 어느 스트림에 실려도 같은 값이다(원본 `data2hdr()[1]` · 우리 서버 `UdpServer.cpp:220` 도 스트림을 안 가림)
+void NoteAck(Peer& p, const uint8_t* buf, int n, uint8_t key) {
+    if (n < 2 || p.rel.empty()) return;
+    const uint8_t b0 = buf[0] ^ key, a = buf[1] ^ key;
+    if (b0 & 0x80) return;
+    const double now = NowMs();
+    for (auto it = p.rel.begin(); it != p.rel.end();) {
+        if (static_cast<int8_t>(static_cast<uint8_t>(a - it->first)) > 0) {
+            const double lat = now - it->second.firstMs;
+            g_latencies.push_back(lat);
+            if (lat > 2000.0) ++g_over2s;
+            if (g_lat) {
+                std::fprintf(g_lat, "%.1f,%u,%s,%.1f,%d\n", it->second.firstMs - g_startMs, it->first,
+                             nox::OpName(static_cast<nox::Op>(it->second.op)), lat, it->second.resends);
+                std::fflush(g_lat);
+            }
+            it = p.rel.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void PrintPilotSummary(FILE* f) {
+    if (g_lossPct == 0 && g_delayMs == 0 && !g_lat) return;
+    std::fprintf(f, "\n=== 손실 파일럿 ===\n");
+    std::fprintf(f, "  주입 — 손실 %d%% · 지연 %d ms · 씨앗 %u · 버림 클라→서버 %llu · 서버→클라 %llu · 지연 보냄 %llu\n",
+                 g_lossPct, g_delayMs, g_seed, g_dropToHost, g_dropToClient, g_delayedSent);
+    std::vector<double> v = g_latencies;
+    std::sort(v.begin(), v.end());
+    if (v.empty()) {
+        std::fprintf(f, "  전달 지연 — 표본 0 (신뢰 순번을 한 번도 못 봤다 — 계측이 안 돈 것)\n");
+        return;
+    }
+    const auto at = [&](double q) { size_t i = static_cast<size_t>(q * (v.size() - 1)); return v[i]; };
+    std::fprintf(f, "  전달 지연 — 표본 %zu · 중앙값 %.1f · 90분위 %.1f · 최대 %.1f ms · 2초 초과 %llu · 재전송 본 수 %llu\n",
+                 v.size(), at(0.5), at(0.9), v.back(), g_over2s, g_resendsSeen);
+}
+
 // U3.2 — 맵 이름 칸을 내 것으로 바꾼다. 길이가 같을 때만(뒤 칸이 밀리면 안 된다).
 // 맵 이름은 두 군데에 실린다: 0x2b 의 3번, 0xb8 의 10번.
 bool PatchMapName(uint8_t* p, int n, int off, const std::string& name) {
@@ -109,6 +204,8 @@ void Log(const char* dir, const sockaddr_in& who, const uint8_t* p, int n) {
 }
 
 void PrintSummary() {
+    PrintPilotSummary(stdout);
+    if (g_dump) PrintPilotSummary(g_dump);
     std::printf("\n=== 오프코드 집계 ===\n");
     for (const auto& kv : g_opCount) {
         std::printf("  0x%02x  %-34s %llu\n", kv.first,
@@ -155,6 +252,16 @@ int main(int argc, char** argv) {
         else if (a == "--fix-players") g_fixPlayers = true;
         else if (a == "--chat" && i + 1 < argc) g_chatText = argv[++i];
         else if (a == "--my-key" && i + 1 < argc) g_myKey = static_cast<uint8_t>(std::strtoul(argv[++i], nullptr, 0));
+        else if (a == "--loss" && i + 1 < argc) g_lossPct = std::atoi(argv[++i]);      // ★ 11-03 손실 파일럿
+        else if (a == "--delay" && i + 1 < argc) g_delayMs = std::atoi(argv[++i]);
+        else if (a == "--seed" && i + 1 < argc) g_seed = static_cast<unsigned>(std::strtoul(argv[++i], nullptr, 0));
+        else if (a == "--secs" && i + 1 < argc) g_secs = std::atoi(argv[++i]);
+        else if (a == "--lat" && i + 1 < argc) {
+            const char* path = argv[++i];
+            g_lat = _fsopen(path, "wb", _SH_DENYWR);
+            if (!g_lat) { std::printf("전달 지연 파일을 열지 못했다: %s\n", path); return 1; }
+            std::fprintf(g_lat, "first_ms,seq,op,latency_ms,resends\n");
+        }
         else { std::printf("모르는 인자: %s\n", a.c_str()); return 2; }
     }
 
@@ -167,6 +274,10 @@ int main(int argc, char** argv) {
         }
     }
     SetConsoleCtrlHandler(OnConsoleEvent, TRUE);
+    g_rng.seed(g_seed);
+    g_startMs = NowMs();
+    if (g_lossPct < 0) g_lossPct = 0;
+    if (g_lossPct > 100) g_lossPct = 100;
 
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -202,15 +313,70 @@ int main(int argc, char** argv) {
     std::map<PeerKey, Peer> peers;
     uint8_t buf[4096];
 
+    // ★ 11-03 손실 파일럿 — 실제 보내기. keyed 뒤면 손실(버림)·지연(큐)을 거친다. 측정은 부르는 쪽이 이 앞에서 한다
+    auto sendNow = [&](bool toHost, Peer& peer, const uint8_t* p, int n) {
+        if (toHost) {
+            sendto(peer.up, reinterpret_cast<const char*>(p), n, 0,
+                   reinterpret_cast<sockaddr*>(&hostAddr), sizeof(hostAddr));
+            ++peer.toHost;
+        } else {
+            // 반드시 듣는 소켓으로 되돌린다. 클라는 18590 에서 답이 오길 기대한다.
+            sendto(down, reinterpret_cast<const char*>(p), n, 0,
+                   reinterpret_cast<sockaddr*>(&peer.addr), sizeof(peer.addr));
+            ++peer.toClient;
+        }
+    };
+    auto forward = [&](bool toHost, PeerKey key, Peer& peer, const uint8_t* p, int n) {
+        if (peer.keyed && g_lossPct > 0 && static_cast<int>(g_rng() % 100u) < g_lossPct) {
+            if (toHost) ++g_dropToHost; else ++g_dropToClient;
+            return;
+        }
+        if (peer.keyed && g_delayMs > 0) {
+            Delayed d;
+            d.dueMs = NowMs() + g_delayMs;
+            d.toHost = toHost;
+            d.key = key;
+            d.data.assign(p, p + n);
+            g_delayQ.push_back(std::move(d));
+            return;
+        }
+        sendNow(toHost, peer, p, n);
+    };
+    auto flushDelayed = [&]() {
+        const double now = NowMs();
+        while (!g_delayQ.empty() && g_delayQ.front().dueMs <= now) {
+            Delayed d = std::move(g_delayQ.front());
+            g_delayQ.pop_front();
+            auto it = peers.find(d.key);
+            if (it == peers.end()) continue;   // 그 사이 사라진 상대
+            sendNow(d.toHost, it->second, d.data.data(), static_cast<int>(d.data.size()));
+            ++g_delayedSent;
+        }
+    };
+
     for (;;) {
+        if (g_secs > 0 && NowMs() - g_startMs >= g_secs * 1000.0) {   // ★ 11-03 — 스스로 끝내며 요약
+            PrintSummary();
+            if (g_dump) std::fclose(g_dump);
+            if (g_lat) std::fclose(g_lat);
+            return 0;
+        }
         fd_set rd;
         FD_ZERO(&rd);
         FD_SET(down, &rd);
         for (auto& kv : peers) FD_SET(kv.second.up, &rd);
 
         timeval tv{};
-        tv.tv_sec = 1;
-        if (select(0, &rd, nullptr, nullptr, &tv) <= 0) continue;
+        double waitMs = 1000.0;
+        if (!g_delayQ.empty()) {
+            const double d = g_delayQ.front().dueMs - NowMs();
+            waitMs = d < 0 ? 0 : (d < waitMs ? d : waitMs);
+        }
+        tv.tv_sec = static_cast<long>(waitMs / 1000.0);
+        tv.tv_usec = static_cast<long>((waitMs - tv.tv_sec * 1000.0) * 1000.0);
+        const int sel = select(0, &rd, nullptr, nullptr, &tv);
+        flushDelayed();
+        if (sel <= 0) continue;
 
         // 클라 → 호스트
         if (FD_ISSET(down, &rd)) {
@@ -240,6 +406,8 @@ int main(int argc, char** argv) {
                 if (it != peers.end()) {
                     // 기록은 클라 쪽 키 공간으로 통일한다. 번역은 기록 뒤에.
                     Log("C->S", from, buf, n);
+                    // ★ 11-03 손실 파일럿 — 클라 머리는 클라 쪽 키(수락을 바꿔 쓰면 내 키 · 아니면 호스트 키 = myKey)로 잠겨 있다
+                    if (g_lat && it->second.keyed) NoteAck(it->second, buf, n, it->second.myKey);
                     if (g_ownAccept && it->second.keyed) {
                         // 내 키로 풀어 평문에서 손대고 호스트 키로 다시 잠근다
                         if (it->second.myKey)
@@ -247,9 +415,7 @@ int main(int argc, char** argv) {
                         if (it->second.hostKey)
                             for (int i = 0; i < n; ++i) buf[i] ^= it->second.hostKey;
                     }
-                    sendto(it->second.up, reinterpret_cast<const char*>(buf), n, 0,
-                           reinterpret_cast<sockaddr*>(&hostAddr), sizeof(hostAddr));
-                    ++it->second.toHost;
+                    forward(true, key, it->second, buf, n);
                 }
             }
         }
@@ -262,14 +428,25 @@ int main(int argc, char** argv) {
             int n = recvfrom(kv.second.up, reinterpret_cast<char*>(buf), sizeof(buf), 0,
                                    reinterpret_cast<sockaddr*>(&from), &fromLen);
             if (n <= 0) continue;
+            // ★ 수락은 재전송된다. 재전송분도 평문이라 keyed 뒤에 와도 번역하면 안 된다.
+            //   무늬(80 00 1f 00 01 01 00 00 00 키)로 알아본다.
+            // 5번은 플레이어 번호다 (첫째 0x01, 둘째 0x02 …). 고정으로 보면 안 된다.
+            const bool looksAccept =
+                (n == 10 && buf[0] == 0x80 && buf[1] == 0x00 &&
+                 buf[2] == static_cast<uint8_t>(nox::Op::ACCEPTED) &&
+                 buf[3] == 0x00 && buf[4] == 0x01 && buf[5] != 0x00);
+            // ★ 11-03 손실 파일럿 — 우리 서버의 수락은 5~8번이 접속 번호(4바이트 · 0 부터)라 위 무늬의 `buf[5] != 0` 에 안 걸린다.
+            //   키만 적을 때는 번호 칸을 안 본다(`80 00 1f 00 01 … 키`)
+            const bool looksAcceptAny =
+                (n == 10 && buf[0] == 0x80 && buf[1] == 0x00 &&
+                 buf[2] == static_cast<uint8_t>(nox::Op::ACCEPTED) && buf[3] == 0x00 && buf[4] == 0x01);
+            if (!g_ownAccept && looksAcceptAny && !kv.second.keyed) {
+                // 수락을 안 바꿔 쓰는 모드에서도 키를 적어 둔다(머리를 평문으로 읽어 재고, 주입을 keyed 뒤로 한정). 패킷은 손대지 않는다
+                kv.second.hostKey = buf[9];
+                kv.second.myKey = buf[9];
+                kv.second.keyed = true;
+            }
             if (g_ownAccept) {
-                // ★ 수락은 재전송된다. 재전송분도 평문이라 keyed 뒤에 와도 번역하면 안 된다.
-                //   무늬(80 00 1f 00 01 01 00 00 00 키)로 알아본다.
-                // 5번은 플레이어 번호다 (첫째 0x01, 둘째 0x02 …). 고정으로 보면 안 된다.
-                const bool looksAccept =
-                    (n == 10 && buf[0] == 0x80 && buf[1] == 0x00 &&
-                     buf[2] == static_cast<uint8_t>(nox::Op::ACCEPTED) &&
-                     buf[3] == 0x00 && buf[4] == 0x01 && buf[5] != 0x00);
                 if (looksAccept) {
                     kv.second.hostKey = buf[9];
                     kv.second.myKey = g_myKey;
@@ -360,10 +537,9 @@ int main(int argc, char** argv) {
                                 was, buf[4], buf[4]);
             }
             Log("S->C", kv.second.addr, buf, n);
-            // 반드시 듣는 소켓으로 되돌린다. 클라는 18590 에서 답이 오길 기대한다.
-            sendto(down, reinterpret_cast<const char*>(buf), n, 0,
-                   reinterpret_cast<sockaddr*>(&kv.second.addr), sizeof(kv.second.addr));
-            ++kv.second.toClient;
+            // ★ 11-03 손실 파일럿 — 여기 buf 는 클라에게 갈 모습(수락은 평문 · 그 뒤는 클라 쪽 키). 손실·지연 **앞에서** 잰다
+            if (g_lat && kv.second.keyed) NoteSent(kv.second, buf, n, looksAccept ? 0 : kv.second.myKey);
+            forward(false, kv.first, kv.second, buf, n);
         }
     }
 }
