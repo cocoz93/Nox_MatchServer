@@ -3838,8 +3838,78 @@ void TestImportantQueue() {
             if (FindImportantPacket(o, a, nullptr, &ids))
                 for (uint16_t id : ids) if (id == watch) resentAt = i;
         }
-        Check(resentAt >= nox::kImportantResendTicks && resentAt <= nox::kImportantResendTicks + 2,
-              "확인 없는 중요 메시지가 60틱 무렵에 다시 안 실림");
+        // ★ 11-03 — 이 세션은 ③ 에서 확인을 한 번 받아 왕복 표본(0틱)이 있다 → 대기 = 2×0+2 → 최소 3틱 → 4~5틱째 다시 실린다(고치기 전 61)
+        char m4[160];
+        std::snprintf(m4, sizeof(m4), "확인 없는 중요 메시지가 왕복 기준(3틱)으로 다시 안 실림 — %d틱째 (왕복 표본 %.1f)",
+                      resentAt, srv->DebugImportantSrtt(Sid(srv, a)));
+        Check(resentAt >= 4 && resentAt <= 12, m4);   // 앞에 확인 못 받은 조각이 몇 개 있으면 틱당 1개 규칙에 그만큼 밀린다
+
+    }
+
+    // ④-b 왕복 표본이 없는 새 세션은 원본대로 60틱 — ★ 11-03
+    const std::string b = "10.9.9.2:49002";
+    {
+        srv.DebugEnterGame(b, 740);
+        srv->DebugImportantReal(Sid(srv, b), /*ready=*/false);
+        std::vector<nox::OutPacket> out;
+        const auto ready = WireOf({ static_cast<uint8_t>(nox::Op::CLIENT_READY) });
+        srv.OnPacket(b, ready.data(), ready.size(), out);
+        ms += 34; srv.Tick(ms, out);                                       // 준비 뒤 첫 조각(접속 묶음의 중요들) — 확인 안 줌
+        std::vector<uint16_t> idsB;
+        Check(FindImportantPacket(out, b, nullptr, &idsB), "④-b 새 세션의 첫 중요 조각이 안 나감");
+        const uint16_t watch = idsB.empty() ? 0xFFFF : idsB.front();
+        int resentAt = -1;
+        for (int i = 1; i <= 70 && resentAt < 0; ++i) {
+            std::vector<nox::OutPacket> o;
+            ms += 34; srv.Tick(ms, o);
+            std::vector<uint16_t> ids;
+            if (FindImportantPacket(o, b, nullptr, &ids))
+                for (uint16_t id : ids) if (id == watch) resentAt = i;
+        }
+        char mb[160];
+        std::snprintf(mb, sizeof(mb), "④-b 표본 없는 세션의 재전송이 60틱 무렵이 아님 — %d틱째 (표본 %.1f)", resentAt, srv->DebugImportantSrtt(Sid(srv, b)));
+        Check(resentAt >= nox::kImportantResendTicks && resentAt <= nox::kImportantResendTicks + 2, mb);
+    }
+
+    // ⑥ 대기열 한도(256) 넘침 — ★ 11-03: 버리지 않고(고치기 전 256 에서 잘림), 맨 앞이 세 번 다시 실려도 확인 없으면 시간 초과로 끊음(고치기 전 None)
+    //   ⚠ 새 세션으로 — a 는 앞 단계의 확인 못 받은 조각이 이미 여러 번 다시 실려 있어 넣는 순간 끊긴다(처음 시험이 그렇게 깨짐)
+    {
+        const std::string c = "10.9.9.3:49003";
+        srv.DebugEnterGame(c, 740);
+        srv->DebugImportantReal(Sid(srv, c), /*ready=*/false);
+        const int64_t sc = Sid(srv, c);
+        std::vector<nox::OutPacket> out;
+        const auto ready = WireOf({ static_cast<uint8_t>(nox::Op::CLIENT_READY) });
+        srv.OnPacket(c, ready.data(), ready.size(), out);
+        ms += 34; srv.Tick(ms, out);
+        uint16_t fc = 0; std::vector<uint16_t> idsC;
+        Check(FindImportantPacket(out, c, &fc, &idsC), "⑥ 새 세션의 첫 중요 조각이 안 나감");
+        {   // 첫 조각을 확인해 왕복 표본(0틱)을 만든다 → 대기 3틱. 그 뒤 몇 틱 돌려 남은 접속 묶음 조각도 다 나가게 하고 확인
+            const auto ack = WireOf({ static_cast<uint8_t>(nox::Op::IMPORTANT_ACK), static_cast<uint8_t>(fc), static_cast<uint8_t>(fc >> 8), 0, 0 });
+            srv.OnPacket(c, ack.data(), ack.size(), out);
+            for (int i = 0; i < 6; ++i) {
+                std::vector<nox::OutPacket> o; ms += 34; srv.Tick(ms, o);
+                uint16_t f = 0; std::vector<uint16_t> ids;
+                if (FindImportantPacket(o, c, &f, &ids)) {
+                    const auto a2 = WireOf({ static_cast<uint8_t>(nox::Op::IMPORTANT_ACK), static_cast<uint8_t>(f), static_cast<uint8_t>(f >> 8), 0, 0 });
+                    srv.OnPacket(c, a2.data(), a2.size(), o);
+                }
+            }
+        }
+        const size_t clean = srv->DebugImportantPending(sc);              // 0 이어야 아래가 깨끗하다
+        srv->DebugImportantPush(sc, 300);                                  // 확인 없이 300개
+        const size_t pend = srv->DebugImportantPending(sc);
+        const nox::LeaveBy before = srv->DebugLeaveBy(sc);
+        ms += 34; srv.Tick(ms, out);                                       // 처음 싣기(예산 안에서) — 아직 안 끊음
+        const nox::LeaveBy afterFirst = srv->DebugLeaveBy(sc);
+        for (int i = 0; i < 40; ++i) { std::vector<nox::OutPacket> o; ms += 34; srv.Tick(ms, o); }   // 대기 3틱 × 재전송 셋이면 충분
+        srv->DebugImportantPush(sc, 1);                                    // 넘침 검사는 새로 넣을 때 돈다
+        const nox::LeaveBy after = srv->DebugLeaveBy(sc);
+        Check(clean == 0, "⑥ 확인을 다 줬는데 대기열이 비지 않음");
+        char m6[200];
+        std::snprintf(m6, sizeof(m6), "⑥ 넘침 — 300개 넣은 뒤 대기 %zu(300 이상이어야) · 끊김 전 %d · 첫 싣기 뒤 %d(둘 다 None=0) · 확인 없이 40틱 뒤 %d(Timeout=%d)",
+                      pend, static_cast<int>(before), static_cast<int>(afterFirst), static_cast<int>(after), static_cast<int>(nox::LeaveBy::Timeout));
+        Check(pend >= 300 && before == nox::LeaveBy::None && afterFirst == nox::LeaveBy::None && after == nox::LeaveBy::Timeout, m6);
     }
 
     // ⑤ 사라짐(32)은 **봉투 없이** 중요 조각에 실린다 — 정답지 `netObjectOutOfSight_528A60` → Packet0

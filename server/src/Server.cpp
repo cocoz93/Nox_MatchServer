@@ -443,16 +443,35 @@ void Server::EmitSeq(Session& s, const uint8_t* msg, size_t n
     }
     // ★ 바로 안 보낸다 — 대기열에 쌓고 FlushImportant 가 준비 뒤에 싣고, 확인이 올 때까지 다시 싣는다.
     //   (Session::importantQ 주석 — 한 번만 보내던 것이 접속 직후 순번 구멍을 만들어 뒤 cc 가 전부 막혔다)
-    if (s.importantQ.size() >= kImportantQueueMax) {
-        // 정답지는 넘치면 그 사람을 끊는다(`nox_xxx_importantCheckRate_4E52B0` → playerKickDueToRate).
-        // 여기서는 끊지 않고 알리기만 한다 — 끊기 경로는 아직 옮기지 않았다.
-        Log("[중요] %s 대기열 %zu 개로 넘침 — 새 순번 %u 버림\n", AddrText(s.sessionId),
-                    s.importantQ.size(), static_cast<unsigned>(s.seqImpId - 1));
-        return;
-    }
+    ImportantOverflowCheck(s);   // ★ 11-03 — 넘쳐도 버리지 않는다(버리면 그 순번이 영영 비어 클라가 뒤 봉투를 다 막는다)
     Session::PendingImportant p;
     p.wire = std::move(buf);
     s.importantQ.push_back(std::move(p));
+}
+
+// ★ 11-03 — 중요 대기열이 한도를 넘었을 때. 정답지는 넘치면 그 사람을 끊는다(`nox_xxx_importantCheckRate_4E52B0` → playerKickDueToRate).
+//   전에는 **새 것을 버리고 로그만** 남겼다 — 그런데 `cc` 순번은 이미 올라가 있어 버린 번호가 영영 비고, 클라는 그 번호를 기다리며
+//   뒤 봉투를 전부 쌓아 둔다(그 클라의 알림이 통째로 멎음 — 전송 층 큐와 같은 꼴의 결함, 11-02 `UdpServer.cpp` 참조).
+//   지금은 ① 버리지 않고 ② 맨 앞 조각이 세 번 다시 실려도 확인이 없으면(= 한참 동안 `ab` 가 하나도 안 옴) 시간 초과와 같은 길로 끊는다.
+//   한도만 넘고 확인은 오는 중(한꺼번에 많이 생긴 경우)이면 그대로 둔다 — 산 상대를 끊지 않으려는 의도적 차이.
+void Server::ImportantOverflowCheck(Session& s) {
+    if (s.importantQ.size() < kImportantQueueMax) return;
+    if (s.leaveBy != LeaveBy::None) return;
+    const Session::PendingImportant& front = s.importantQ.front();
+    if (!(front.sent && front.resends >= 3)) return;
+    Log("[중요] %s 대기열 %zu 개로 넘침 · 맨 앞 순번이 %u 번 다시 실려도 확인 없음 — 시간 초과로 끊음\n",
+        AddrText(s.sessionId), s.importantQ.size(), static_cast<unsigned>(front.resends));
+    MarkLeave(s, LeaveBy::Timeout);
+}
+
+// ★ 11-03 — 중요 메시지 재전송 대기(틱). 원본은 고정 60틱(2초 · 2000년 모뎀 기준)이라 손실 한 번에 알림이 2초 늦었다(11-03 손실 파일럿 실측).
+//   클라는 `cc` 를 번호로 모아 차례로 처리하고 중복은 버리므로(`GAME2_3.c:499`) 서버가 더 일찍 다시 보내도 해가 없다 —
+//   왕복 표본이 있으면 **2×왕복 + 2틱**(최소 3 · 최대 60), 없으면 원본 60틱. 표본은 확인된 조각 중 다시 안 실은 것만(모호한 재전송 제외).
+static uint32_t ImportantResendWait(const Session& s) {
+    if (s.impSrttTicks < 0.f) return kImportantResendTicks;
+    const float w = 2.f * s.impSrttTicks + 2.f + 0.5f;
+    const uint32_t ticks = w < 3.f ? 3u : static_cast<uint32_t>(w);
+    return ticks > kImportantResendTicks ? kImportantResendTicks : ticks;
 }
 
 // 중요 대기열에 **봉투 없이** 싣는다 — 정답지 `nox_xxx_netSendPacket0_4E5420`(GAME3_3.c:1762, 마지막 인자 0).
@@ -464,11 +483,7 @@ void Server::EmitImportantRaw(Session& s, const uint8_t* msg, size_t n
         Emit(s, /*reliable=*/false, /*stream=*/0, msg, n);
         return;
     }
-    if (s.importantQ.size() >= kImportantQueueMax) {
-        Log("[중요] %s 대기열 %zu 개로 넘침 — 맨 메시지 0x%02x 버림\n", AddrText(s.sessionId),
-                    s.importantQ.size(), msg[0]);
-        return;
-    }
+    ImportantOverflowCheck(s);   // ★ 11-03 — 버리지 않는다(`ImportantOverflowCheck` 주석)
     Session::PendingImportant p;
     p.wire.assign(msg, msg + n);
     s.importantQ.push_back(std::move(p));
@@ -479,6 +494,7 @@ void Server::EmitImportantRaw(Session& s, const uint8_t* msg, size_t n
 //   ② 처음 싣는 것은 다 싣는다 · 이미 실은 것은 기다림(+132)이 끝났을 때 **틱당 1개까지**만 다시 싣는다
 //      (2001줄 `v14 >= byte(1565124+12*pl)` — 그 값은 처음 1, `nox_xxx_playerResetImportantCtr_4E4F40`).
 //   ③ 기다림 = FPS × 2 / 전송률(1) = 60틱(2039줄 · 1565125 자리 초깃값 2).
+//      ★ 11-03 **원본과 다르게** 왕복 표본이 생기면 2×왕복+2틱(최소 3)으로 줄인다(`ImportantResendWait`) — 손실 한 번에 2초 늦던 것을 왕복 수준으로.
 //   ④ 머리 `aa` 는 조각마다 한 번(2011~2022줄 — 호스트가 아닌 사람에게는 `aa` 1바이트).
 //   ⑤ 확인은 조각의 시각으로 온다 — 클라가 같은 조각의 `27` 로 localFrame 을 잡아 `ab <그 프레임>` 을 돌려준다
 //      (`network_client.go:302~318`). ★ 09-30 — 이제 **묶음의 맨 끝 칸**에 `aa`+ 만 쓴다 — 같은 묶음 머리의 `27`(이 틱 `tickFrame`)이 그 시각이다
@@ -502,7 +518,7 @@ void Server::FlushImportant(Session& s) {
         pkt.insert(pkt.end(), p.wire.begin(), p.wire.end());
         p.sent = true;
         p.sentFrame = s.tickFrame;
-        p.wait = kImportantResendTicks;
+        p.wait = ImportantResendWait(s);   // ★ 11-03 — 원본 고정 60틱 → 왕복 기준(함수 주석)
     }
     if (pkt.size() == headLen) return;
     s.bundleImp.insert(s.bundleImp.end(), pkt.begin(), pkt.end());
@@ -3190,17 +3206,25 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 const uint8_t* b = it.body();
                 const uint32_t fr = static_cast<uint32_t>(b[0] | (b[1] << 8) | (b[2] << 16) | (b[3] << 24));
                 const size_t before = s.importantQ.size();
-                if (pilotLat_) {   // ★ 11-03 손실 파일럿 — 지워지는 것마다 「처음 실음 → 확인」 지연 한 줄(`cc` 봉투면 번호·안 메시지, 맨 메시지면 번호 -)
-                    const uint32_t now = nox::NowMs();
+                {
+                    const uint32_t now = pilotLat_ ? nox::NowMs() : 0;
                     for (const auto& p : s.importantQ) {
                         if (!(p.sent && ((p.sentFrame ^ fr) & 0xFFFF) == 0)) continue;
+                        // ★ 11-03 — 왕복 표본(틱) — 다시 안 실은 조각만(어느 송신의 확인인지 모호한 재전송은 뺀다). 지수 평균 1/8
+                        if (p.resends == 0) {
+                            const uint16_t rtt = static_cast<uint16_t>(s.tickFrame - p.sentFrame);
+                            if (rtt <= 600) s.impSrttTicks = s.impSrttTicks < 0.f ? static_cast<float>(rtt)
+                                                                                 : s.impSrttTicks * 0.875f + static_cast<float>(rtt) * 0.125f;
+                        }
+                        if (!pilotLat_) continue;
+                        // ★ 11-03 손실 파일럿 — 지워지는 것마다 「처음 실음 → 확인」 지연 한 줄(`cc` 봉투면 번호·안 메시지, 맨 메시지면 번호 -)
                         const bool env = !p.wire.empty() && p.wire[0] == static_cast<uint8_t>(Op::SEQ_IMPORTANT) && p.wire.size() >= 5;
                         const int id = env ? static_cast<int>(p.wire[1] | (p.wire[2] << 8)) : -1;
                         const uint8_t op = env ? p.wire[4] : (p.wire.empty() ? 0 : p.wire[0]);
                         std::fprintf(pilotLat_, "%u,%d,%s,%u,%u\n", p.firstMs, id, OpName(static_cast<Op>(op)),
                                      now - p.firstMs, static_cast<unsigned>(p.resends));
                     }
-                    std::fflush(pilotLat_);
+                    if (pilotLat_) std::fflush(pilotLat_);
                 }
                 s.importantQ.erase(std::remove_if(s.importantQ.begin(), s.importantQ.end(),
                     [fr](const Session::PendingImportant& p) {

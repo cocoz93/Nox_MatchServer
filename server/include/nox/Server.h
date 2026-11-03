@@ -1124,6 +1124,8 @@ struct Session {
     // 정답지는 CLIENT_READY 를 받아 상태 비트 0x10 을 세운 뒤에만 중요 메시지를 싣는다
     //   (`GAME3_2.c:5602` gameServerReadyMB → `GAME3_3.c:1966` 의 `v3[3680] & 0x10`).
     bool importantReady = false;
+    // ★ 11-03 — 중요 메시지 왕복 시간(틱 · 지수 평균). 재전송 대기를 정한다(`ImportantResendWait` · Server.cpp). -1 = 표본 없음 → 원본 60틱
+    float impSrttTicks = -1.f;
     // 시험용 — 켜면 예전처럼 **바로** 한 통씩 보낸다(대기열·확인 없음). DebugEnterGame 만 켠다.
     //   메시지 **내용**을 보는 시험 수십 곳이 처리 직후 out 을 들여다본다. 전송 경로는 TestImportantQueue 가 따로 잰다.
     bool importantImmediate = false;
@@ -3566,6 +3568,10 @@ public:
     }
     // ★ 10-09 조각 5d — 옛 `DebugTouch`(10-d 시험용 · 받은 시각 적기)는 통신 층 일이라 `CSyncHost::DebugTouch` 로 옮겼다
     void DebugLeave(int64_t sessionId) { auto it = sessions_.find(sessionId); if (it != sessions_.end()) SetInGame(it->second, false); }
+    // ★ 11-03 시험용 — 중요 대기열 넘침·재전송 대기 시험(`TestImportantQueue` ④·⑥)
+    LeaveBy DebugLeaveBy(int64_t sessionId) const { auto it = sessions_.find(sessionId); return it == sessions_.end() ? LeaveBy::None : it->second.leaveBy; }
+    void DebugImportantPush(int64_t sessionId, int count) { auto it = sessions_.find(sessionId); if (it == sessions_.end()) return; for (int i = 0; i < count; ++i) ReportStamina(it->second); }
+    float DebugImportantSrtt(int64_t sessionId) const { auto it = sessions_.find(sessionId); return it == sessions_.end() ? -1.f : it->second.impSrttTicks; }
     int DebugDurUpdates() const { return debugDurUpdates_; }
     uint8_t DebugDurSpellAt(size_t i) const {
         size_t k = 0;
@@ -5147,6 +5153,7 @@ private:
     void EmitImportantRawSupersede(Session& s, const uint8_t* msg, size_t n);   // sub_4E5450 — 같은 옵 대기 지우고 Packet0
     // 틱마다 부른다. 준비(CLIENT_READY) 뒤에만 `[27 시각][aa][cc·맨 메시지…]` 한 조각을 낸다.
     void FlushImportant(Session& s);
+    void ImportantOverflowCheck(Session& s);   // ★ 11-03 — 대기열 한도 넘침: 버리지 않고, 확인이 한참 없으면 시간 초과로 끊음
     // 사람 한 틱(묶음 2-a 걷기 · 3-a 공격) — 상태·힘·적분. Server.cpp 정의 머리 주석 참조.
     //   frame = 이 걸음의 프레임(Tick 이 여러 틱을 몰아 돌 때 걸음마다 다르다).
     void UpdatePlayerMovement(uint32_t frame);
