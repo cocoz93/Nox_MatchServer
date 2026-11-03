@@ -1375,9 +1375,11 @@ static void NbPlace(DWORD win, int w, int h, int x, int y)
 }
 
 // ★ 11-03 ㉑ — 로비 연결이 끊기면 알린다. 정품은 기다림 창을 없애고 「불러오는 중...」만 남겨(`_out/qa_1103/q1/cut_end.png`) 사람은 까닭을 모른다
-//   끊김은 받기 훅에서 표시만(`g_lobbyLost` — 그때 목록 창이 보였을 때만 · 판 안에선 게임 서버가 살아 있어 안 건드림),
-//   창은 다음 UDP 훅(주 스레드 · `NoticeBoxTick` 자리)에서. 소켓이 닫히면 로비 받기 훅은 더 안 불린다
+//   끊김은 받기 훅에서 표시만(`g_lobbyLost` — 목록 창이 보이거나 랭크를 기다리는 중일 때만 · 판 안에선 게임 서버가 살아 있어 안 건드림.
+//   기다리는 동안은 목록 창이 숨어 있다 — `_out/qa_1103/e1` 「안 보임 · 안내 안 함」),
+//   창은 1초 뒤 프레임 자리(`FrameTick`)에서 — 정품이 끊김을 받아 기다림 창을 닫는 일이 끝난 뒤. 소켓이 닫히면 로비 받기 훅은 더 안 불린다
 static volatile LONG g_lobbyLost = 0;
+static DWORD g_lobbyLostAtMs = 0;
 static volatile LONG g_lobbyLostShown = 0;
 static const wchar_t kLobbyLostText[] = L"서버와 연결이 끊겼습니다. 뒤로를 눌러 나간 뒤 다시 접속해 주세요";
 static void LobbyLostMark(int rc, DWORD err)
@@ -1386,23 +1388,27 @@ static void LobbyLostMark(int rc, DWORD err)
     if (rc > 0 || (rc < 0 && err == WSAEWOULDBLOCK)) return;
     DWORD world = 0, flags = 0;
     const bool shown = ReadSelf(kListWin, &world) && world && ReadSelf(world + 4, &flags) && !(flags & kWinHidden);
-    Log("㉑ 로비 연결 끊김 rc=%d err=%lu — 목록 창 %#lx %s", rc, err, world, shown ? "보임 · 안내 창 예약" : "안 보임 · 안내 안 함");
-    if (shown) InterlockedExchange(&g_lobbyLost, 1);
+    const bool waiting = g_rankWaiting || g_rankFoundState;
+    Log("㉑ 로비 연결 끊김 rc=%d err=%lu — 목록 창 %#lx %s · 랭크 기다림 %d — %s", rc, err, world, shown ? "보임" : "안 보임", waiting ? 1 : 0,
+        shown || waiting ? "안내 창 예약" : "안내 안 함");
+    if (shown || waiting) {
+        g_lobbyLostAtMs = GetTickCount();
+        InterlockedExchange(&g_lobbyLost, 1);
+    }
 }
 static void LobbyLostTick(const char* where)
 {
-    if (!g_lobbyLost || GetCurrentThreadId() != g_mainTid) return;
+    if (!g_lobbyLost || GetCurrentThreadId() != g_mainTid || GetTickCount() - g_lobbyLostAtMs < 1000) return;
     InterlockedExchange(&g_lobbyLost, 0);
     InterlockedExchange(&g_rankWaiting, 0);      // 줄은 로비가 끊김으로 이미 뺐다(`Lobby::OnClose`)
     InterlockedExchange(&g_rankFoundState, 0);
     ((PFN_dlgopen)kDlgOpen)(0, NULL, kLobbyLostText, kDlgNoticeFlags, 0, 0);   // 부모 0 = 정품 「Timeout」 알림과 같은 꼴(`noxworld.c` 243)
     const LONG n = InterlockedIncrement(&g_lobbyLostShown);
-    Log("㉑ 안내 창 띄움(누적 %ld · %s 훅)", n, where);
+    Log("㉑ 안내 창 띄움(누적 %ld · %s)", n, where);
 }
 
 static void NoticeBoxTick(const char* where)
 {
-    LobbyLostTick(where);
     if (!g_rankOn || GetCurrentThreadId() != g_mainTid) return;
     if (!InterlockedExchange(&g_nbRan, 1)) Log("⑭ 점수 알림창 꾸밈 — 주 스레드 %s 훅에서 처음 돎", where);
     DWORD box = 0;
@@ -2162,6 +2168,7 @@ static void FrameTick(volatile LONG* count, const char* what)
     if (InterlockedIncrement(count) == 1) Log("⑯ 프레임 자리 — 첫 %s", what);
     InterlockedIncrement(&g_ticks);
     LauncherTick();
+    LobbyLostTick(what);   // ★ 11-03 ㉑
     TestPressTick();
 }
 static void __cdecl DrawAllMain()
