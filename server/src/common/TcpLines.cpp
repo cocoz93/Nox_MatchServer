@@ -1,6 +1,7 @@
 ﻿// TcpLines.cpp — TCP 줄 서버 부품. 설명은 `TcpLines.h` 머리.
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 
 #include "nox/TcpLines.h"
 
@@ -150,6 +151,17 @@ void CTcpLines::Accept(const Listener& l, std::vector<TcpLineEvent>& out) {
         sockaddr_in local{};
         int llen = sizeof(local);
         getsockname(s, reinterpret_cast<sockaddr*>(&local), &llen);
+        // ★ 11-03 — 받은 접속에 TCP 살아 있음 확인(30초 조용하면 5초 간격). 로비 클라는 대기 중 줄이 하나도 안 오간다(랭크 대기 20분 줄 0 ·
+        //   클라에 PING 없음) — 공유기가 조용한 접속을 지우면 양쪽 다 모른 채 기다린다(다른 PC 판 「랭크 대기 중 창이 꺼짐」의 가능 경로 · 가정).
+        //   서버 쪽만 켜도 빈 확인 패킷이 왕복해 공유기 기록이 유지되고, 죽은 상대는 끊김 사건으로 온다 · 실패해도 접속은 그대로
+        {
+            tcp_keepalive ka{};
+            ka.onoff = 1;
+            ka.keepalivetime = kKeepAliveIdleMs;
+            ka.keepaliveinterval = kKeepAliveGapMs;
+            DWORD got = 0;
+            if (WSAIoctl(s, SIO_KEEPALIVE_VALS, &ka, sizeof(ka), nullptr, 0, &got, nullptr, nullptr) == 0) ++_keepAliveOn;
+        }
         const int id = _nextConn++;
         Conn c;
         c.s = static_cast<uintptr_t>(s);

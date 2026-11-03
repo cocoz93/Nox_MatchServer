@@ -85,6 +85,7 @@ void TestTcpLines() {
     Check(ev.size() == 1 && ev[0].type == E::Type::OPENED && ev[0].port == port && ev[0].peerIp == 0x7f000002u &&
               ev[0].localIp == 0x7f000001u && t.ConnCount() == 1,
           "새 접속 = OPENED 하나 · 듣기 포트 · 상대 127.0.0.2 · 내 쪽 127.0.0.1");
+    Check(t.KeepAliveOn() == 1, "★ 11-03 받은 접속에 TCP 살아 있음 확인을 켬");
     int conn = ev.empty() ? 0 : ev[0].conn;
     ev.clear();
     t.Poll(ev);

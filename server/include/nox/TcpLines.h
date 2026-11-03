@@ -81,6 +81,9 @@ public:
     void CloseAll();
 
     size_t ConnCount() const { return _conns.size(); }
+    // ★ 11-03 — 받은 접속 중 TCP 살아 있음 확인을 켠 수(`Accept`) · 받은 접속 수와 같아야 정상
+    static constexpr unsigned long kKeepAliveIdleMs = 30000, kKeepAliveGapMs = 5000;
+    unsigned long long KeepAliveOn() const { return _keepAliveOn; }
     bool Has(int conn) const { return _conns.count(conn) != 0; }
 
 private:
@@ -107,6 +110,7 @@ private:
     std::vector<Listener> _listeners;
     std::map<int, Conn> _conns;
     int _nextConn = 1;
+    unsigned long long _keepAliveOn = 0;   // ★ 11-03
     void* _event = nullptr;   // WSAEVENT
     bool _wsaUp = false;
 };
