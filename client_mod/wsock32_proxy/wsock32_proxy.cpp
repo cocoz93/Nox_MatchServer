@@ -1973,6 +1973,9 @@ static bool HookCallSite(uintptr_t siteAddr, uintptr_t want, void* ours, const c
 //     DLL 이 apgar 자리를 열쇠 토큰으로 바꾸므로 이 글은 어디에도 안 나감) → 1706 「로그인!」
 //   · 서버 목록 `[0x69cb30]` — 목록 1961 이 딱 한 줄이면 그 줄을 고르고(0x4013 · 정품 `0x44a275` 꼴) 1962 「확인」. 둘 이상이면 손 안 댐
 // 숨기지 않는다 — 숨긴 창은 그려지지 않고, 로그인이 실패하면 숨긴 창이 남아 사람이 못 쓴다. 화면이 잠깐 보였다 넘어간다(기능 먼저)
+//   ★ 11-04 위 줄을 뒤집음 — 런처로 켠 판은 화면 넷을 첫 그리기 전에 숨긴 채 누른다(숨긴 창에도 누름이 먹음 · 11-04 파일럿 8판).
+//     왜: 사용자가 런처에 로그인했는데 게임이 멀티플레이 → 온라인 → 로그인을 혼자 눌러 가는 모습이 어색함 · 대화방까지 약 4초(`Docs/MO_UX_FIX_PLAN_1104.md`).
+//     갇힘 걱정은 실패 길에서 푼다(AutoRunWatch · BackToConnTick · AutoGiveUp — 숨김을 풀고 사람에게 넘김)
 static const uintptr_t kMainMenuWin = 0x71132c, kConnWin = 0x711ca0, kLoginWin = 0x69cbbc, kServListWin = 0x69cb30;
 static const uintptr_t kLoginNameEdit = 0x69cbc4, kLoginPassEdit = 0x69cbc8;
 static const DWORD kBtnMulti = 112, kBtnInternet = 411, kServList = 0x7a9, kServOk = 0x7aa;
@@ -1993,7 +1996,80 @@ static volatile LONG g_autoSkip = 0;         // 서버 목록이 한 줄이 아�
 //   로그인 → WOL 화면 상태가 1(로그인)이 아님 · 서버 목록 → 그 창이 사라지거나 바뀜
 static const DWORD kRetryMs = 1500;
 static const int kMaxTries = 5;
+// ★ 11-04 런처로 켠 판 — 숨긴 채 넘어가므로 기다릴 까닭이 줄었다. 150ms · 60ms = 파일럿 값(이 값으로 8판 대화방까지 3.8~4.1초 · 메인 메뉴 · 접속 방식은 움직임이 끝날 때까지 몇 번 더 누른다).
+//   40번 = 150ms × 40 = 6초 — 움직임이 길어도 넉넉하되 사람이 갇혔다고 느끼기 전에 포기
+static const DWORD kFastRetryMs = 150;
+static const int kFastMaxTries = 40;
+static const DWORD kFastSettleMs = 60;
 static const uintptr_t kWolStateSlot = 0x652f18;   // ⑨ kWolState 와 같은 칸(1 = 로그인 화면)
+
+static bool PressChild(DWORD win, DWORD id);
+// ★ 11-04 자동 넘김 동안 소리 막기 — 누름 하나마다 클릭 · 미끄러짐 소리가 나 부팅 약 3초 동안 20번 넘게 울렸다(11-04 실측 22~23번).
+//   정품 소리 함수 `0x4528d0`(⑬ kSoundPlay) 입구 5바이트 `mov eax,[esp+4] · push esi`를 DLL 로 돌린다. 막는 동안은 그대로 돌아가고, 아니면 그 두 명령을 대신 하고 `0x4528d5` 로 이어 간다
+static volatile LONG g_autoMute = 0;       // 주 스레드만 씀
+static volatile LONG g_autoMuted = 0;      // 막은 수
+static DWORD g_muteOffAt = 0;              // 이 시각이 지나면 푼다(켤 때 안전장치 시각 · 대화방에 들어오면 1초 뒤로 앞당김)
+static const DWORD kMuteAfterChatMs = 1000;   // 대화방에 들어온 뒤 — 대화방이 내려오는 소리도 부팅 소리의 끝이라 같이 막는다(파일럿 값)
+static const DWORD kMuteMaxMs = 20000;        // 안전장치 — 대화방에 못 가도 언제까지나 무음이지 않게(정상은 약 4초)
+static const uintptr_t kSoundResume = 0x4528d5;
+__declspec(naked) static void SoundStub()
+{
+    __asm {
+        cmp g_autoMute, 0
+        je pass
+        lock inc g_autoMuted
+        ret
+    pass:
+        mov eax, dword ptr [esp + 4]
+        push esi
+        mov ecx, kSoundResume
+        jmp ecx
+    }
+}
+static bool InstallSoundMute()
+{
+    static const unsigned char want[5] = { 0x8B, 0x44, 0x24, 0x04, 0x56 };
+    unsigned char* site = (unsigned char*)kSoundPlay;
+    if (memcmp(site, want, 5) != 0) {
+        Log("⑯ 소리 막기 — %#lx 입구가 정품과 달라 안 붙임", (DWORD)kSoundPlay);
+        return false;
+    }
+    DWORD old = 0;
+    if (!VirtualProtect(site, 5, PAGE_EXECUTE_READWRITE, &old)) { Log("⑯ 소리 막기 — 보호 바꾸기 실패 err=%lu", GetLastError()); return false; }
+    site[0] = 0xE9;
+    Put32(site + 1, (DWORD)(uintptr_t)&SoundStub - (DWORD)(uintptr_t)(site + 5));
+    VirtualProtect(site, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, 5);
+    Log("⑯ 소리 막기 — %#lx 입구를 DLL 로 돌림", (DWORD)kSoundPlay);
+    return true;
+}
+static void AutoMuteSet(bool on, const char* why)
+{
+    if ((g_autoMute != 0) == on) return;
+    InterlockedExchange(&g_autoMute, on ? 1 : 0);
+    g_muteOffAt = on ? GetTickCount() + kMuteMaxMs : 0;
+    Log("⑯ 소리 막기 %s — %s(막은 수 누적 %ld)", on ? "켬" : "끔", why, g_autoMuted);
+}
+
+// ★ 11-04 고지 화면(저작권) 건너뜀 — 창 칸 `[0x745d54]` · 타이머 word `[0x745d78]`. 정품은 타이머를 300(`0x4cb906`)에서 내리며 270 초과면 누름을 버린다(`0x4cb9b0` — 약 8초의 정체).
+//   타이머를 270 으로 놓고 9901 을 누른다. 글은 런처 창 아래로 옮김(11-04 사용자 결정)
+static const uintptr_t kLegalWin = 0x745d54, kLegalTimer = 0x745d78;
+static const DWORD kBtnLegalOk = 9901;
+static const unsigned short kLegalReady = 270;
+static bool LegalSkipTick()
+{
+    static bool done = false;
+    if (done) return false;
+    DWORD legal = 0;
+    if (!ReadSelf(kLegalWin, &legal) || !legal) return false;
+    done = true;
+    ((PFN_sethidden)kSetHidden)(legal, 1);
+    *(volatile unsigned short*)kLegalTimer = kLegalReady;
+    const bool ok = PressChild(legal, kBtnLegalOk);
+    if (!ok) ((PFN_sethidden)kSetHidden)(legal, 0);   // 못 누르면 정품 고지 화면 그대로(사람이 누름)
+    Log("⑯ 고지 화면 %#lx — %s", legal, ok ? "숨기고 건너뜀" : "단추를 못 찾아 그대로");
+    return true;
+}
 
 struct AutoStep {
     const char* name;
@@ -2042,7 +2118,7 @@ static bool SetEdit(uintptr_t slot, const wchar_t* text)
 }
 
 // 화면 i 의 누름 — 갈래 셋(눌렀음 · 단추 · 칸을 못 찾음 · 사람 몫이라 손 안 댐)
-enum class AutoResult { Pressed, Missing, LeftAlone };
+enum class AutoResult { Pressed, Missing, LeftAlone, NotYet };
 static AutoResult Pressed(bool ok) { return ok ? AutoResult::Pressed : AutoResult::Missing; }
 static AutoResult AutoAct(int i, DWORD win)
 {
@@ -2061,6 +2137,7 @@ static AutoResult AutoAct(int i, DWORD win)
             DWORD data = 0, count = 0;
             if (!list || !ReadSelf(list + 0x20, &data) || !ReadSelf(data + 0x2c, &count)) return AutoResult::Missing;   // 목록 줄 수 = 자료 +0x2c(⑨ 대화방 목록과 같은 목록 칸)
             const int rows = (int)(short)(count & 0xFFFF);
+            if (rows == 0 && !g_launchAtStart.empty()) return AutoResult::NotYet;   // ★ 11-04 — 빠른 간격이면 줄이 오기 전에 볼 수 있다. 다음 차례에 다시
             if (rows != 1) {
                 Log("⑯ 서버 목록 — 줄 %d 개라 손 안 댐(한 줄일 때만 고름)", rows);
                 return AutoResult::LeftAlone;
@@ -2072,47 +2149,183 @@ static AutoResult AutoAct(int i, DWORD win)
     return AutoResult::LeftAlone;
 }
 
+// ★ 11-04 대화방 「뒤로」 · 실패 길 — 로그인 창을 사람에게 보이지 않고 접속 방식(온라인 고르는 화면)으로 돌려보낸다.
+//   왜: 대화방 「뒤로」는 정품이 로그인 창을 다시 띄우는데(칸 `[0x69cbbc]` 가 0 → 새 창 · 11-04 칸 기록), 런처로 로그인한 판에서 이 창은 쓸 일이 없다.
+//       그대로 자동 통과시키면 대화방에 갇힌다(「뒤로」를 눌러도 다시 대화방). 사용자 결정 = 온라인 고르는 화면으로.
+//   누름 = 화면 공용 아래 줄 창 `[0x711328]`(OptsBack.wnd — `0x4a0d75` 에서 칸에 넣음)의 「뒤로」 152. 움직임 중엔 정품이 버리므로(`gui_main_menu.go` guiOptsBackProc · 원본 기준) 사라질 때까지 되풀이.
+//   실패 길 = 로그인을 누른 뒤 ① 로그인 화면으로 돌아옴(취소 · 서버 거절) ② kAutoRunLimitMs 안에 대화방에 못 감 → 진행 창 `[0x6d5d94]`(wolProg.wnd — `0x467a85`)의 취소 1806 을 대신 눌러 ① 로 만듦.
+//     ✕ 숨긴 로그인 창에 사람이 갇힌다(`:1961` 쪽 옛 걱정 · 11-04 라우터를 끈 판: 「소프트웨어 업데이트 확인...」 취소만 남고 WOLAPI 가 연결을 되풀이)
+static const uintptr_t kChatWin = 0x69c8bc, kOptsBackWin = 0x711328, kWolProgWin = 0x6d5d94;
+static const DWORD kBtnOptsBack = 152, kBtnProgCancel = 1806, kBtnProgOk = 1807;
+static const DWORD kAutoRunLimitMs = 10000;   // 정상은 약 1초(11-04 로컬 · 다른 PC 는 미측정). 사람이 「안 되나 보다」 할 때쯤으로 어림 — 다른 PC 판에서 다시 볼 값
+static const wchar_t kAutoFailText[] = L"서버에 연결할 수 없습니다. 잠시 후 온라인을 다시 눌러 주세요.";
+enum class BackWhy { None, Chat, Fail };
+static BackWhy g_backWhy = BackWhy::None;     // 지금 로그인 창을 돌려보내는 중인가(주 스레드만)
+static DWORD g_backLastMs = 0;
+static int g_backTries = 0;
+static bool g_chatReached = false;            // 대화방에 들어왔고 아직 로그인 창이 안 생김
+static bool g_autoRunning = false;            // 로그인을 넘겼고 아직 대화방 전
+static DWORD g_autoRunSince = 0;
+static bool g_autoCancelPressed = false;
+static volatile LONG g_chatBacks = 0, g_autoFails = 0, g_backGiveUps = 0;
+
+static void AutoGiveUp(int i, DWORD win, const char* why)
+{
+    ((PFN_sethidden)kSetHidden)(win, 0);   // 숨긴 채 두면 사람이 못 쓴다
+    AutoMuteSet(false, why);
+    InterlockedIncrement(&g_autoSkip);
+    Log("⑯ %s 창 %#lx — 숨김 풂 · 사람 몫(%s)", g_steps[i].name, win, why);
+}
+
+static bool ChatVisible()
+{
+    DWORD win = 0, flags = 0;
+    return ReadSelf(kChatWin, &win) && win && ReadSelf(win + 4, &flags) && !(flags & kWinHidden);
+}
+
+// 돌려보내는 중이면 true(이 프레임은 다른 자동 누름 안 함)
+static bool BackToConnTick(DWORD now)
+{
+    DWORD login = 0, flags = 0;
+    ReadSelf(kLoginWin, &login);
+    if (g_chatReached && login) {
+        g_chatReached = false;
+        g_backWhy = BackWhy::Chat;
+        g_backTries = 0;
+        g_backLastMs = now - kFastRetryMs;
+        InterlockedIncrement(&g_chatBacks);
+        AutoMuteSet(true, "대화방 뒤로 · 접속 방식으로");
+        Log("⑯ 대화방 뒤로 — 로그인 창 %#lx 를 숨기고 접속 방식으로", login);
+    }
+    if (g_backWhy == BackWhy::None) return false;
+    if (!login) {   // 로그인 창이 사라짐 = 접속 방식으로 돌아감. 다음 온라인 누름에 다시 통과하게
+        const BackWhy why = g_backWhy;
+        g_backWhy = BackWhy::None;
+        for (int i = 2; i < 4; ++i) { g_steps[i].done = false; g_steps[i].seenWin = 0; g_steps[i].tries = 0; }
+        AutoMuteSet(false, "접속 방식 도착");
+        Log("⑯ 접속 방식으로 돌아감(누름 %d 번 · 까닭 %s)", g_backTries, why == BackWhy::Fail ? "실패" : "대화방 뒤로");
+        if (why == BackWhy::Fail) ((PFN_dlgopen)kDlgOpen)(0, NULL, kAutoFailText, kDlgNoticeFlags, 0, 0);   // 부모 0 = ㉑ 안내 창과 같은 꼴
+        return false;
+    }
+    if (ReadSelf(login + 4, &flags) && !(flags & kWinHidden)) ((PFN_sethidden)kSetHidden)(login, 1);   // 첫 그리기 전에
+    if (now - g_backLastMs < kFastRetryMs) return true;
+    g_backLastMs = now;
+    DWORD bar = 0;
+    if (g_backTries >= kFastMaxTries || !ReadSelf(kOptsBackWin, &bar) || !bar || !PressChild(bar, kBtnOptsBack)) {
+        g_backWhy = BackWhy::None;
+        InterlockedIncrement(&g_backGiveUps);
+        ((PFN_sethidden)kSetHidden)(login, 0);
+        AutoMuteSet(false, "접속 방식으로 못 돌아감");
+        Log("⑯ 접속 방식으로 못 돌아감(누름 %d 번) — 로그인 창 숨김 풂", g_backTries);
+        return false;
+    }
+    ++g_backTries;
+    return true;
+}
+
+// 로그인을 넘긴 뒤 대화방까지 지켜봄
+static void AutoRunWatch(DWORD now)
+{
+    if (!g_chatReached && ChatVisible()) {
+        g_chatReached = true;
+        if (g_autoRunning) Log("⑯ 대화방 도착 — 로그인 넘긴 뒤 %lums", now - g_autoRunSince);
+        g_autoRunning = false;
+        if (g_autoMute) g_muteOffAt = now + kMuteAfterChatMs;
+        return;
+    }
+    if (!g_autoRunning) return;
+    DWORD login = 0, state = 0;
+    if (ReadSelf(kLoginWin, &login) && login && ReadSelf(kWolStateSlot, &state) && state == 1) {   // 로그인 화면으로 돌아옴(취소 · 서버 거절 · 진행 창 확인)
+        g_autoRunning = false;
+        g_backWhy = BackWhy::Fail;
+        g_backTries = 0;
+        g_backLastMs = now - kFastRetryMs;
+        InterlockedIncrement(&g_autoFails);
+        Log("⑯ 대화방 못 감 — 로그인 화면으로 돌아옴(%lums 뒤) · 접속 방식 + 안내", now - g_autoRunSince);
+        return;
+    }
+    if (!g_autoCancelPressed && now - g_autoRunSince > kAutoRunLimitMs) {
+        g_autoCancelPressed = true;
+        DWORD prog = 0, cancel = 0, cflags = 0;
+        ReadSelf(kWolProgWin, &prog);
+        if (prog && (cancel = ((PFN_findchild)kFindChild)(prog, kBtnProgCancel)) != 0 && ReadSelf(cancel + 4, &cflags)) {
+            const DWORD id = (cflags & kWinHidden) ? kBtnProgOk : kBtnProgCancel;   // 진행 창은 끝나면 취소를 숨기고 확인을 보인다
+            const bool ok = PressChild(prog, id);
+            Log("⑯ 대화방 못 감 — %lums · 진행 창 %#lx 의 %lu 대신 누름(%s)", now - g_autoRunSince, prog, id, ok ? "함" : "못 찾음");
+        } else {
+            Log("⑯ 대화방 못 감 — %lums · 진행 창 없음(%#lx)", now - g_autoRunSince, prog);
+        }
+        AutoMuteSet(false, "대화방 못 감");
+    }
+}
+
 static void LauncherTick()
 {
     if (g_launchAtStart.empty() && !g_testLoginBlock) return;
     const LONG tick = g_ticks;
     const DWORD now = GetTickCount();
+    const bool fast = !g_launchAtStart.empty();   // ★ 11-04 시험 스위치 NOX_TEST_LOGINBLOCK 판은 옛 꼴(보이는 채 · 옛 간격)
+    if (fast) {
+        if (g_autoMute && now - g_muteOffAt < 0x80000000u) AutoMuteSet(false, g_chatReached ? "대화방 1초 뒤" : "안전장치 20초");
+        if (LegalSkipTick()) return;
+        AutoRunWatch(now);
+        if (BackToConnTick(now)) return;
+    }
+    const DWORD retryMs = fast ? kFastRetryMs : kRetryMs;
+    const int maxTries = fast ? kFastMaxTries : kMaxTries;
+    const DWORD settleMs = fast ? kFastSettleMs : kSettleMs;
     for (int i = 0; i < 4; ++i) {
         AutoStep& s = g_steps[i];
         if (s.done) continue;
         if (s.tries > 0 && AutoSucceeded(i, s.seenWin)) {
             s.done = true;
             Log("⑯ %s — 넘어감(누름 %d 번 · 마지막 누름 %lums 뒤)", s.name, s.tries, now - s.lastPressMs);
+            if (fast && i == 2) {   // ★ 11-04 여기부터 대화방까지 지켜봄(AutoRunWatch)
+                g_autoRunning = true;
+                g_autoRunSince = now;
+                g_autoCancelPressed = false;
+            }
             continue;
         }
         DWORD win = 0, flags = 0;
-        if (!ReadSelf(s.winSlot, &win) || !win || !ReadSelf(win + 4, &flags) || (flags & kWinHidden)) { s.seenWin = 0; continue; }
+        if (!ReadSelf(s.winSlot, &win) || !win || !ReadSelf(win + 4, &flags)) { s.seenWin = 0; continue; }
+        if (fast) {   // ★ 11-04 첫 그리기 전에 숨김(이 틱은 그리기 바로 앞에서 돈다) · 숨긴 채 누른다
+            if (!(flags & kWinHidden)) ((PFN_sethidden)kSetHidden)(win, 1);
+        } else if (flags & kWinHidden) { s.seenWin = 0; continue; }
         if (win != s.seenWin) {
             s.seenWin = win;
             s.sinceTick = tick;
             s.sinceMs = now;
             s.tries = 0;
+            if (fast && i == 2) AutoMuteSet(true, "온라인 · 대화방까지");   // ★ 11-04 부팅은 이미 켜져 있음 · 사람이 온라인을 다시 눌렀을 때
             continue;
         }
         if (s.tries == 0) {
-            if (tick - s.sinceTick < kSettleTicks || now - s.sinceMs < kSettleMs) continue;
+            if (tick - s.sinceTick < kSettleTicks || now - s.sinceMs < settleMs) continue;
         } else {
-            if (now - s.lastPressMs < kRetryMs) continue;
-            if (s.tries >= kMaxTries) {
+            if (now - s.lastPressMs < retryMs) continue;
+            if (s.tries >= maxTries) {
                 s.done = true;
-                InterlockedIncrement(&g_autoSkip);
+                if (fast) AutoGiveUp(i, win, "눌러도 안 넘어감"); else InterlockedIncrement(&g_autoSkip);
                 Log("⑯ %s 창 %#lx — %d 번 눌러도 안 넘어감 · 그만(사람이 누름)", s.name, win, s.tries);
                 continue;
             }
         }
         const AutoResult r = AutoAct(i, win);
-        ++s.tries;
         s.lastPressMs = now;
-        if (r != AutoResult::Pressed) {
-            s.done = true;   // 단추 · 칸을 못 찾음 · 서버 목록이 한 줄이 아님 — 사람 몫
-            InterlockedIncrement(&g_autoSkip);
-        } else if (s.tries == 1) {
-            InterlockedIncrement(&g_autoPress[i]);
+        switch (r) {
+            case AutoResult::NotYet:
+                return;   // 누른 수에 안 넣는다(다음 차례에 다시 봄)
+            case AutoResult::Pressed:
+                ++s.tries;
+                if (s.tries == 1) InterlockedIncrement(&g_autoPress[i]);
+                break;
+            case AutoResult::Missing:
+            case AutoResult::LeftAlone:
+                ++s.tries;
+                s.done = true;   // 단추 · 칸을 못 찾음 · 서버 목록이 한 줄이 아님 — 사람 몫
+                if (fast) AutoGiveUp(i, win, r == AutoResult::Missing ? "단추 · 칸 못 찾음" : "서버 목록이 한 줄이 아님"); else InterlockedIncrement(&g_autoSkip);
+                break;
         }
         Log("⑯ %s 창 %#lx — %s %d 번째(창 뜬 뒤 프레임 %ld · %lums)", s.name, win,
             r == AutoResult::Pressed ? "자동 누름" : r == AutoResult::LeftAlone ? "손 안 댐(사람 몫)" : "단추 · 칸을 못 찾아 손 안 댐", s.tries, tick - s.sinceTick,
@@ -2153,9 +2366,30 @@ static bool TestPressLine(const char* line)
     return false;
 }
 
+// ★ 11-04 시험 판에서만 — 화면 칸 값 · 숨김 변화를 기록에 찍는다(어느 칸이 언제 비고 다시 차는지가 「뒤로」 왕복의 근거)
+static void TestSlotLogTick()
+{
+    struct Watch { const char* name; uintptr_t slot; DWORD last; DWORD lastFlags; };
+    static Watch w[] = { { "메인 메뉴", kMainMenuWin, 0, 0 }, { "접속 방식", kConnWin, 0, 0 }, { "로그인", kLoginWin, 0, 0 }, { "서버 목록", kServListWin, 0, 0 },
+                         { "대화방", kChatWin, 0, 0 }, { "게임 목록", kListWin, 0, 0 }, { "옵션 뒤로", kOptsBackWin, 0, 0 }, { "진행", kWolProgWin, 0, 0 } };
+    for (Watch& x : w) {
+        DWORD v = 0, f = 0;
+        if (!ReadSelf(x.slot, &v)) continue;
+        if (v) ReadSelf(v + 4, &f);
+        if (v != x.last || (f & kWinHidden) != (x.lastFlags & kWinHidden)) {
+            Log("⑰ 칸 %s %#lx → %#lx 숨김 %d", x.name, x.last, v, (f & kWinHidden) ? 1 : 0);
+            x.last = v; x.lastFlags = f;
+        }
+    }
+    static DWORD lastState = 0xFFFFFFFF;
+    DWORD st = 0;
+    if (ReadSelf(kWolStateSlot, &st) && st != lastState) { Log("⑰ 칸 WOL 상태 %ld → %ld", (long)lastState, (long)st); lastState = st; }
+}
+
 static void TestPressTick()
 {
     if (g_testPressFile.empty()) return;
+    TestSlotLogTick();
     const DWORD now = GetTickCount();
     if (now - g_testPressLastMs < 100) return;
     g_testPressLastMs = now;
@@ -2289,6 +2523,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         }
         if (gameOk && !noGuard) InstallChanGuard();   // ★ 10-20 v2 작업 5 — 로그 파일을 정한 뒤(붙임 · 안 붙임 줄이 기록에 남게)
         if (gameOk) InstallCountryHook();             // ★ 10-30 — 두 클라 판 국가 고르기 창
+        if (gameOk && !g_launchAtStart.empty() && InstallSoundMute()) AutoMuteSet(true, "런처로 켠 판 · 대화방까지");   // ★ 11-04
         if (gameOk) InstallLoginHook();               // ★ 런처 P5 — ⑮ 정품 로그인 창(「로그인!」 막음 · 「등록」 → 가입 페이지)
         if (gameOk) HookCallSite(kMainLoopCallMenu, kMainLoop, (void*)MenuLoopEntry, "⑱ 메뉴 주 고리");   // ★ 11-02 — 판 안에서 창 닫기
     }
