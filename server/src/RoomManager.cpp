@@ -216,6 +216,20 @@ void CRoomManager::CloseEmptyRooms(uint32_t nowMs) {
     }
 }
 
+size_t CRoomManager::OnClientLobbyGone(const std::string& account) {
+    size_t n = 0;
+    if (account.empty()) return n;
+    for (auto& kv : _rooms) {
+        CRoom& room = *kv.second;
+        for (const RoomMember& m : room.Members()) {
+            if (m.account != account) continue;
+            room.Game().ClientLobbyGone(m.sessionId);
+            ++n;
+        }
+    }
+    return n;
+}
+
 bool CRoomManager::CloseRoom(int id) {
     auto it = _rooms.find(id);
     if (it == _rooms.end()) return false;

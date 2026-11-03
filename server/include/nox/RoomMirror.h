@@ -65,6 +65,7 @@ struct MirrorStats {
     unsigned long long deadLinks = 0;         // 받은 줄이 `kLinkDeadMs` 동안 없어 끊음(어느 단계든 — 등록 전 말없는 접속도)
     // ★ 7단계 조각 5 — 판 저장(RESULT 하나는 저장 요청 · 못 읽음 · 저장소 없음 중 하나)
     unsigned long long saveRequests = 0;      // 저장소에 판 저장 요청
+    unsigned long long clientGoneSent = 0;    // ★ 11-03 — CLIENT_GONE 줄(줄마다 · 게임 서버마다)
     unsigned long long savedOk = 0;           // 답 Saved → SAVED ok
     unsigned long long savedDup = 0;          // 답 Duplicate → SAVED dup
     unsigned long long savedBad = 0;          // SAVED bad 보냄(못 읽음 · 판 번호는 읽음 → 곧바로 · ★ 7단계 조각 7 저장소가 못 받음)
@@ -109,6 +110,7 @@ public:
     RoomRequest RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom& out, std::string& why) override;
     void CancelRoom(uint32_t req) override;   // ★ 작업 3c — 로비가 접은 요청을 기다림 장부에서 지운다
     uint64_t ListVersion() const override { return listVersion_; }   // ★ 11-03
+    void OnClientGone(const std::string& name) override;             // ★ 11-03
 
     const MirrorStats& Stats() const { return stats_; }
     size_t ServerCount() const;   // 등록된 게임 서버 수

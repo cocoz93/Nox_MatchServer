@@ -139,6 +139,8 @@ public:
     // ★ 11-03 — 목록에 보이는 방이 바뀔 때마다 느는 수. 로비가 값이 달라진 것을 보고 클라에 `NOXRANK ROOMS` 를 민다(`kRoomsPushGapMs`).
     //   왜 — 정품 클라는 LIST 를 그 화면에 들어갈 때 · 「리스트 갱신」을 누를 때만 보내(`_out/qa_1103/b1` DLL 기록) 먼저 나온 사람 화면엔 닫힌 방이 그대로 남았다
     virtual uint64_t ListVersion() const { return 0; }
+    // ★ 11-03 — 로그인한 사람의 로비 접속이 끊김(같은 계정이 새 접속으로 이미 옮겼으면 안 부름) — 거울이 게임 서버에 `CLIENT_GONE` 으로 전함
+    virtual void OnClientGone(const std::string& /*name*/) {}
 };
 
 // ★ 11-03 — 목록 바뀜 알림 사이 최소 간격. 몰려도 1초에 한 번(클라마다 LIST 한 번 · 근거 없는 값 — 사람이 보는 목록이라 그 정도면 충분)

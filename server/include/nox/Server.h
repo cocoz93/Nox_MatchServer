@@ -1124,6 +1124,8 @@ struct Session {
     // 정답지는 CLIENT_READY 를 받아 상태 비트 0x10 을 세운 뒤에만 중요 메시지를 싣는다
     //   (`GAME3_2.c:5602` gameServerReadyMB → `GAME3_3.c:1966` 의 `v3[3680] & 0x10`).
     bool importantReady = false;
+    // ★ 11-03 — 판을 연 뒤 첫 `CLIENT_READY`(맵을 다 읽음)에 점수 한도 공지(`Server::ArmLimitNotice`)
+    bool limitNoticeOnReady = false;
     // ★ 11-03 — 중요 메시지 왕복 시간(틱 · 지수 평균). 재전송 대기를 정한다(`ImportantResendWait` · Server.cpp). -1 = 표본 없음 → 원본 60틱
     float impSrttTicks = -1.f;
     // 시험용 — 켜면 예전처럼 **바로** 한 통씩 보낸다(대기열·확인 없음). DebugEnterGame 만 켠다.
@@ -1255,6 +1257,9 @@ constexpr uint16_t kArenaKillLimit = 10;
 //   프레임이 아니라 시각으로 센다 — 원본은 초(`SecToFrames(sec)`)이고, 옛 900·2700틱은 우리 틱 33ms로 29.7·89.1초였다.
 constexpr uint32_t kSessionTimeoutMs = 30000;          // 30초 — 아직 판에 안 든 사람
 constexpr uint32_t kSessionTimeoutMsInGame = 90000;    // 90초 — 판에 든 사람
+// ★ 11-03 — 로비 접속까지 끊긴 사람의 한도. 90초는 통신만 볼 때 값이고, 로비 TCP 가 끊겼으면 프로세스가 죽었을 공산이 크다(강제 종료 뒤 로비는 0.5초 안에 앎 — `_out/qa_1103/b1`).
+//   5초 = 정품이 평소 조용한 틈보다 충분히 긴 값으로 짐작(근거 없는 값 · 8초 때 걸린 사례는 로비가 살아 있던 때라 다른 경우 — 위 주석)
+constexpr uint32_t kSessionTimeoutMsLobbyGone = 5000;
 
 // 판 시계를 얼마마다 뿌리나. 실측 표본은 **2초 남짓 간격**이었다
 // (15:05:08.299 · 10.538 · 12.709 · 14.867 — 2.2초씩). 30Hz 기준 그만큼으로 둔다.
@@ -2639,6 +2644,15 @@ public:
         return it == sessions_.end() ? 0 : it->second.importantQ.size();
     }
     // 시험용 — 대기열에 맨 메시지(Packet0)로 실린 옵 op 가 몇 개인가(sub_4E5450 겹침 지우기를 잰다)
+    // ★ 11-03 — 순번 봉투(`cc` · `EmitSeq`) 안의 메시지로 센다 — 봉투 머리 4바이트 뒤가 그 메시지
+    size_t DebugImportantPendingSeqOp(int64_t sessionId, uint8_t op) const {
+        auto it = sessions_.find(sessionId);
+        if (it == sessions_.end()) return 0;
+        size_t n = 0;
+        for (const auto& q : it->second.importantQ)
+            if (q.wire.size() > 4 && q.wire[0] == static_cast<uint8_t>(Op::SEQ_IMPORTANT) && q.wire[4] == op) ++n;
+        return n;
+    }
     size_t DebugImportantPendingOp(int64_t sessionId, uint8_t op) const {
         auto it = sessions_.find(sessionId);
         if (it == sessions_.end()) return 0;
@@ -5762,6 +5776,10 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     void ClearNextRoundMap() { nextRoundTables_.reset(); nextRoundInitial_.reset(); nextRoundFlags_ = 0; }
     const std::string& MapFileName() const { return mt_->saMapName; }   // 지금 맵(`USE_MAP` 에 실리는 이름)
     unsigned long long mapSwitches() const { return mapSwitches_; }
+    // ★ 11-03 — 몇 킬에 끝나는 판인지 알린다. 맵을 바꾸는 틱에 보내면 클라가 읽는 동안 사라지고(11-03 실물 · 화면에 안 뜸),
+    //   화면 왼쪽 위 「남은 판수」는 그 클라의 첫 판이면 실제 한도가 1 이어도 15 로 나온다(`_out/qa_1103/c3/_zoom_score.png` · 까닭 미상 — 진행 파일 미결)
+    void ArmLimitNotice() { for (auto& kv : sessions_) if (kv.second.inGame) kv.second.limitNoticeOnReady = true; }
+    unsigned long long limitNotices() const { return limitNotices_; }
     unsigned long long gameSettingsResent() const { return gameSettingsResent_; }   // 맵을 바꾸며 다시 보낸 `af`·`b0` 쌍(사람 수)
     // ★ 매칭 손보기 2(`Docs/MATCH_UX_REVIEW.md`) — 다음 판 다시 열기 때 맵을 바꾸기 **앞에** 게임 안 사람마다 `SERVER_QUIT`(0xC7) — 한 번 쓰면 비운다.
     //   방이 랭크 판 끝에 건다(판 끝 쉬는 `kRoundRestartTicks` 동안 결과를 본 뒤 나감 — 상대와 같은 방에 남지 않게).
@@ -5777,6 +5795,13 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     void RestartInPlace();
     unsigned long long inPlaceStarts() const { return inPlaceStarts_; }
     void QuitAtRestart() { quitAtRestart_ = true; }
+    // ★ 11-03 — 판 중 상대가 다 나가 판을 끝낸다(`CRoom::CheckMatchHeadcount` 가 부름): 남은 사람에게 승자 알림(`58`) · 쉬는 시간 뒤 다시 열기는 보통 판 끝과 같다.
+    //   판 끝 기록(`EndRound`)은 안 탄다 — 이 판은 방이 이미 「중단」으로 지었다. 왜 — 옛 꼴은 그 자리에서 대기 맵으로 옮겨, 남은 사람은 판이 끝난 줄 모르고 계속 걸어 다녔다(11-03 다른 PC 판 ②)
+    void EndRoundForfeit();
+    unsigned long long roundForfeits() const { return roundForfeits_; }
+    // ★ 11-03 — 로비 접속이 끊긴 사람(`CLIENT_GONE`). 한도만 줄인다 — 통신이 살아 있으면(로비만 끊김) 안 걸리고, 강제 종료 · 전원 꺼짐은 `0a` 없이 이 한도로 나간다
+    void ClientLobbyGone(int64_t sessionId) { RequestSetSessionTimeout(sessionId, kSessionTimeoutMsLobbyGone); ++lobbyGoneShortened_; }
+    unsigned long long lobbyGoneShortened() const { return lobbyGoneShortened_; }
     bool QuitAtRestartArmed() const { return quitAtRestart_; }
     unsigned long long serverQuitSent() const { return serverQuitSent_; }   // 보낸 사람 수(누적)
     unsigned long long serverQuitAcks() const { return serverQuitAcks_; }   // 받은 답(0xC8) 수(누적)
@@ -5788,9 +5813,12 @@ private:
     bool quitAtRestart_ = false;                 // ★ 매칭 손보기 2
     unsigned long long inPlaceStarts_ = 0;       // ★ 매칭 손보기 3
     unsigned long long serverQuitSent_ = 0;
+    unsigned long long roundForfeits_ = 0;        // ★ 11-03 — `EndRoundForfeit`
+    unsigned long long lobbyGoneShortened_ = 0;   // ★ 11-03 — `ClientLobbyGone`
     unsigned long long serverQuitAcks_ = 0;
     unsigned long long mapSwitches_ = 0;
     unsigned long long gameSettingsResent_ = 0;
+    unsigned long long limitNotices_ = 0;   // ★ 11-03
     std::shared_ptr<GameTables> gtOwn_ = std::make_shared<GameTables>();   // 제 표 — 넣기가 쓴다(같이 쓰는 표를 가리키면 비어 있다)
     std::shared_ptr<const GameTables> gt_ = gtOwn_;                         // 읽는 표 — 제 것이거나 방들이 같이 쓰는 것
     GameTables& GtMut() {   // 쓸 때 복사

@@ -10,7 +10,7 @@ namespace nox {
 namespace {
 
 const char* const kWords[] = {"HELLO", "AUTH", "REGISTER", "ROOM", "ROOM_GONE", "CREATE", "CREATED", "CREATE_FAILED", "RESULT", "BYE",
-                              "PING", "SAVED"};
+                              "PING", "SAVED", "CLIENT_GONE"};
 static_assert(sizeof(kWords) / sizeof(kWords[0]) == static_cast<size_t>(LinkKind::kCount), "낱말 표 = 갈래 수");
 const char* const kSaveWords[] = {"ok", "dup", "bad"};
 static_assert(sizeof(kSaveWords) / sizeof(kSaveWords[0]) == static_cast<size_t>(SaveOutcome::kCount), "SAVED 끝 칸 표 = 갈래 수");
@@ -182,6 +182,8 @@ std::string LinkCreateFailed(uint32_t req, const std::string& reason) {
 
 std::string LinkBye(const std::string& reason) { return std::string(kWords[9]) + " " + EncodeLinkText(reason); }
 
+std::string LinkClientGone(const std::string& name) { return std::string(kWords[12]) + " " + EncodeLinkText(name); }   // ★ 11-03
+
 std::string LinkPing() { return kWords[10]; }
 
 std::string LinkSavedLine(const std::string& match, SaveOutcome outcome, const std::vector<LinkRatingChange>& ratings) {
@@ -278,6 +280,7 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
             if (!ParseNum(t[1], 0xffffffffu, out.req)) return LinkParse::BadNumber;
             return DecodeLinkText(t[2], out.text) ? LinkParse::Ok : LinkParse::BadText;
         case LinkKind::Bye:
+        case LinkKind::ClientGone:   // ★ 11-03
             if (!want(2)) return LinkParse::FieldCount;
             return DecodeLinkText(t[1], out.text) ? LinkParse::Ok : LinkParse::BadText;
         case LinkKind::Created:

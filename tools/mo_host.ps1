@@ -1,6 +1,7 @@
 ﻿# mo_host.ps1 — 다른 PC가 붙을 수 있게 이 PC의 MO 서버를 연다/닫는다 (리포 맨 위 서버_MO_열기.bat · 서버_MO_닫기.bat 이 부른다).
 #
-#   -Mode Open [-PublicIp a.b.c.d] [-AllowIp a.b.c.d] [-NoDb] [-NoAuth] [-PilotLat]
+#   -Mode Open [-PublicIp a.b.c.d] [-AllowIp a.b.c.d] [-NoDb] [-NoAuth] [-PilotLat] [-BattleScoreLimit N]
+#       ★ 11-03 -BattleScoreLimit — 판의 점수 한도(기본 1 · 0 = 원작 기본 15). 다른 PC 판 「한 번 죽였는데 안 끝남」 — 옛 꼴은 안 넘겨 15 킬 판이었다(DB matches 12 · 13 score_limit 15)
 #       ★ 7단계 — 로비는 설정 [db](MySQL)에 붙어야 뜬다. -NoDb 면 메모리 저장소(--no-db — 계정 · 판 기록이 로비와 같이 사라짐)
 #       ★ 11-03 -PilotLat — 게임 서버에 --pilot-lat <csv> 를 붙여 중요 메시지(cc 봉투) 「처음 실음 → 클라 확인」 지연을 적는다
 #          (_evidence\_runs\line_pilot_<때>.lat.csv · 줄 = first_ms,id,op,latency_ms,resends · 실제 회선의 손실·지연 실측 — 사람 28).
@@ -21,7 +22,7 @@
 #
 # ⚠ 이 PC는 공유기 없이 공인 IP 가 직접 붙어 있어, 여는 동안 세 포트가 인터넷에 드러난다 — 시험이 끝나면 꼭 닫기.
 #   로비 · 게임 서버는 시간 제한 · 접속 상한 · 낯선 패킷 시험이 없다(Docs/LOBBY_DESIGN.md 「다른 PC용 꾸러미」 절).
-param([ValidateSet('Open', 'Close')][string]$Mode = 'Open', [string]$PublicIp = '', [string]$AllowIp = '', [switch]$NoDb, [switch]$NoAuth, [switch]$PilotLat)
+param([ValidateSet('Open', 'Close')][string]$Mode = 'Open', [string]$PublicIp = '', [string]$AllowIp = '', [switch]$NoDb, [switch]$NoAuth, [switch]$PilotLat, [int]$BattleScoreLimit = 1)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $routerExe = Join-Path $repo 'build\Release\nox_router.exe'
@@ -113,6 +114,7 @@ try {
       Write-Host '게임 서버: 이미 떠 있음 (UDP 18590) — --lobby 127.0.0.1:4010 으로 띄운 것이어야 로비 목록에 방이 생긴다'
     } else {
       $serverArgs = @('--port', '18590', '--lobby', '127.0.0.1:4010', '--config', "`"$cfg`"", '--quiet', '--aoi', '--friends')
+      if ($BattleScoreLimit -gt 0) { $serverArgs += @('--battle-score-limit', "$BattleScoreLimit") }   # ★ 11-03
       if ($PilotLat) {   # ★ 11-03 — 실제 회선 손실·지연 CSV(머리 주석). 경로는 git 밖 _evidence\_runs\
         $runs = Join-Path $repo '_evidence\_runs'
         New-Item -ItemType Directory -Force -Path $runs | Out-Null

@@ -144,10 +144,13 @@ void Lobby::OnClose(int conn, std::vector<Out>& out) {
         it = pending_.erase(it);
     }
     // ★ 로그인 암호 조각 4 — 계정 장부에서 이 접속을 지운다(새 접속이 이미 차지했으면 그대로 — 끊긴 쪽이 옛 접속)
+    bool stillCurrent = true;   // ★ 11-03 — 같은 계정이 새 접속으로 옮겼으면 false
     if (ci != conns_.end() && ci->second.accountId != 0) {
         const auto a = accountConn_.find(ci->second.accountId);
         if (a != accountConn_.end() && a->second == conn) accountConn_.erase(a);
+        else stillCurrent = false;
     }
+    if (ci != conns_.end() && stillCurrent && ci->second.login == LoginState::Ok && !ci->second.nick.empty()) rooms_.OnClientGone(ci->second.nick);   // ★ 11-03
     // ★ 레이팅 조각 4 — 점수를 기다리던 접속 — 답은 늦은 답으로 버린다(저장소는 읽기만 해서 남는 일 없음)
     if (ci != conns_.end() && ci->second.login == LoginState::Rating) {
         ratingPending_.erase(ci->second.ratingReq);

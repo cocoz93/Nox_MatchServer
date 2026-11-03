@@ -26698,6 +26698,19 @@ void TestRoomMatchSwitch() {
                   (int)game.Settings().limitValue);
     Check(limBefore == 15 && rooms.Game(rLim).Settings().limitValue == 1 && afLimit == 1 && rooms.Room(rLim).Phase() == nox::RoomPhase::Playing &&
           game.Settings().limitValue == 15, m);
+    // ★ 11-03 — 맵을 다 읽은 뒤(`CLIENT_READY`) 점수 한도 공지 · 사람마다 한 번 · 되풀이 준비엔 안 보냄
+    {
+        const auto rd = WireOf({ static_cast<uint8_t>(nox::Op::CLIENT_READY) });
+        std::vector<nox::OutPacket> r1, r2;
+        srv.OnPacket(E, rd.data(), rd.size(), r1);
+        now += 34; srv.Tick(now, r1);
+        srv.OnPacket(E, rd.data(), rd.size(), r2);
+        now += 34; srv.Tick(now, r2);
+        const char* const line = "First to 1 kill wins";
+        const int a1 = textTo(r1, E, line), a2 = textTo(r2, E, line), af2 = textTo(r1, F, line);
+        std::snprintf(m, sizeof(m), "⑥-b 맵 다 읽은 뒤 공지 — 첫 준비 %d · 되풀이 준비 %d · 다른 사람 %d · 셈 %llu", a1, a2, af2, rooms.Game(rLim).limitNotices());
+        Check(a1 == 1 && a2 == 0 && af2 == 0 && rooms.Game(rLim).limitNotices() == 1, m);
+    }
     std::printf("  10-16 플랜 B 작업 13b — 판 열기: !start → 대전 맵(USE_MAP · af 아레나 · 시작 자리) · 판 끝 → 대기 맵(af 채팅 · 알림) · 두 바퀴 · 같은 연결 · 대전 맵 없음\n");
 }
 
@@ -26708,7 +26721,7 @@ void TestRoomMatchSwitch() {
 void TestMatchHeadcount() {
     const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
     const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
-    char m[360];
+    char m[420];
     auto useMapTo = [](const std::vector<nox::OutPacket>& out, const std::string& to, const std::string& name) {
         int n = 0;
         for (const auto& x : FlattenTo(out, to))
@@ -26791,10 +26804,24 @@ void TestMatchHeadcount() {
         leaveOne(s, 1, o2);
         nox::RoomFact f;
         for (const auto& x : s.srv.Rooms().ListRooms()) if (x.roomId == s.r) f = x;
-        std::snprintf(m, sizeof(m), "② 하나 남음 — USE_MAP so_lod %d · 알림 %d · 방 %s · 목록 %s/%s · 걸어 둔 맵 %d · 맵 %s · 전환 %llu · 셈 %llu",
-                      useMapTo(o2, s.addr[0], "so_lod.map"), textTo(o2, s.addr[0], "Not enough players"), nox::RoomPhaseName(room.Phase()),
+        // ★ 11-03 — 그 자리에서 옮기지 않고 판 끝처럼 닫는다(`Server::EndRoundForfeit`): 승자 알림 · 알림 줄 · 쉬는 시간 동안 판 그대로 → 다시 열 때 대기 맵
+        const nox::RoomPhase phaseAtLeave = room.Phase();
+        const bool overAtLeave = game.RoundOver();
+        const std::string mapAtLeave = game.MapFileName();
+        // 승자 알림은 중요 대기열로 간다 — 가짜 클라는 대기열 준비 전이라 나간 것 대신 대기열을 본다
+        const int winnerAtLeave = static_cast<int>(game.DebugImportantPendingSeqOp(Sid(s.srv, s.addr[0]), static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER)));
+        const int noticeAtLeave = textTo(o2, s.addr[0], "Opponent left");
+        const int useMapAtLeave = useMapTo(o2, s.addr[0], "so_lod.map");
+        const unsigned long long forfeits = game.roundForfeits();
+        for (int k = 0; k < 40 && room.Phase() == nox::RoomPhase::Playing; ++k) { s.now += 500; s.srv.Tick(s.now, o2); }
+        s.now += 34; s.srv.Tick(s.now, o2);
+        for (const auto& x : s.srv.Rooms().ListRooms()) if (x.roomId == s.r) f = x;
+        std::snprintf(m, sizeof(m), "② 하나 남음 — 그때 방 %s · 판 끝 %d · 맵 %s · 승자 알림 %d · 나감 알림 %d · USE_MAP %d · 몰수 %llu · 다시 연 뒤 USE_MAP so_lod %d · 대기 알림 %d · 방 %s · 목록 %s/%s · 걸어 둔 맵 %d · 맵 %s · 전환 %llu · 셈 %llu",
+                      nox::RoomPhaseName(phaseAtLeave), (int)overAtLeave, mapAtLeave.c_str(), winnerAtLeave, noticeAtLeave, useMapAtLeave, forfeits,
+                      useMapTo(o2, s.addr[0], "so_lod.map"), textTo(o2, s.addr[0], "Back to the waiting room. Host"), nox::RoomPhaseName(room.Phase()),
                       f.mapKey.c_str(), f.mode.c_str(), (int)game.HasNextRoundMap(), game.MapFileName().c_str(), game.mapSwitches(), room.MatchAborts());
-        Check(useMapTo(o2, s.addr[0], "so_lod.map") == 1 && textTo(o2, s.addr[0], "Not enough players") == 1 &&
+        Check(phaseAtLeave == nox::RoomPhase::Playing && overAtLeave && mapAtLeave == "estate.map" && winnerAtLeave == 1 && noticeAtLeave == 1 && useMapAtLeave == 0 && forfeits == 1 &&
+              useMapTo(o2, s.addr[0], "so_lod.map") >= 1 && textTo(o2, s.addr[0], "Back to the waiting room. Host") == 1 &&   // USE_MAP 은 가짜 클라가 확인을 안 해 다시 실린다
               room.Phase() == nox::RoomPhase::Waiting && f.mapKey == "so_lod" && f.mode == "chat" && !game.HasNextRoundMap() &&
               game.MapFileName() == "so_lod.map" && game.mapSwitches() == 2 && room.MatchAborts() == 1, m);
     }
@@ -26813,11 +26840,30 @@ void TestMatchHeadcount() {
         s.now += 34; s.srv.Tick(s.now, o3);
         std::snprintf(m, sizeof(m), "③ 판 끝 쉬는 중 빠짐 — 그때 방 %s · 셈 %llu · 다시 연 뒤 방 %s · 판 끝 알림 %d · 사람 모자람 알림 %d · 맵 %s · 셈 %llu",
                       nox::RoomPhaseName(during), abortsDuring, nox::RoomPhaseName(room.Phase()), textTo(o3, s.addr[0], "Back to the waiting room. Host"),
-                      textTo(o3, s.addr[0], "Not enough players"), game.MapFileName().c_str(), room.MatchAborts());
+                      textTo(o3, s.addr[0], "Opponent left"), game.MapFileName().c_str(), room.MatchAborts());
         Check(during == nox::RoomPhase::Playing && abortsDuring == 0 && room.Phase() == nox::RoomPhase::Waiting &&
-              textTo(o3, s.addr[0], "Not enough players") == 0 && game.MapFileName() == "so_lod.map" && room.MatchAborts() == 0, m);
+              textTo(o3, s.addr[0], "Opponent left") == 0 && game.MapFileName() == "so_lod.map" && room.MatchAborts() == 0, m);
     }
-    std::printf("  10-16 결함 ④ — 판 중 한 명만 남으면 대기 맵으로(둘 남으면 그대로 · 판 끝 쉬는 중이면 다시 열기에 맡김)\n");
+    // ★ 11-03 ④ 로비 접속이 끊긴 사람만 시간 초과 한도 5초(`CLIENT_GONE` → `Server::ClientLobbyGone`) — 다른 PC 판 「클라를 껐는데 상대는 계속」(강제 종료 90초)
+    //   대조군 = 안 끊긴 사람(같은 판 · 같이 말 없음)은 안 끊김 · 없는 이름은 0
+    {
+        Setup s;
+        make(s, 4, 3);
+        const size_t none = s.srv.Rooms().OnClientLobbyGone("nobody");
+        const size_t hit = s.srv.Rooms().OnClientLobbyGone("p2");
+        nox::Server& game = s.srv.Rooms().Game(s.r);
+        const size_t before = game.inGameCount();
+        std::vector<nox::OutPacket> o4;
+        bool at4s = false;
+        for (int k = 0; k < 180; ++k) {   // 6.1초
+            s.now += 34; s.srv.Tick(s.now, o4);
+            if (k == 117) at4s = game.inGameCount() == before;   // 4초쯤엔 아직
+        }
+        std::snprintf(m, sizeof(m), "④ 로비 끊김 — 없는 이름 %zu · p2 %zu · 게임 안 %zu → 4초 그대로 %d → 6초 %zu · 줄임 셈 %llu",
+                      none, hit, before, (int)at4s, game.inGameCount(), game.lobbyGoneShortened());
+        Check(none == 0 && hit == 1 && before == 3 && at4s && game.inGameCount() == 2 && game.lobbyGoneShortened() == 1, m);
+    }
+    std::printf("  10-16 결함 ④ — 판 중 한 명만 남으면 대기 맵으로(둘 남으면 그대로 · 판 끝 쉬는 중이면 다시 열기에 맡김 · ★ 11-03 판 끝처럼 닫고 쉬는 시간 뒤)\n");
 }
 
 // ── ★ 10-19 MO 5단계 작업 2 — 판 결과(`CRoom` · 방 이벤트 `MATCH_RESULT`) ─────────
@@ -26954,6 +27000,8 @@ void TestMatchResult() {
         const nox::MatchResult* r = rs.size() == 1 ? &rs[0] : nullptr;
         const nox::MatchPlayer* p1 = r ? who(*r, "p1") : nullptr;
         const nox::MatchPlayer* p2 = r ? who(*r, "p2") : nullptr;
+        // ★ 11-03 — 대기 맵은 쉬는 시간 뒤(`EndRoundForfeit`) — 판 끝처럼 닫는 동안 결과가 둘이 되지 않는지도 여기서 본다
+        ticks(s, 320);
         std::snprintf(m, sizeof(m), "③ 중단 — 결과 %zu · 끝 %s · 승자 %s · p1 %d/%d · p2 나감 %d · 중단 셈 %llu · 방 %s · 지금 점수 %d",
                       rs.size(), r ? nox::MatchEndName(*r) : "-", r ? nox::RoundWinnerKindName(r->winner) : "-", p1 ? p1->score : -1,
                       p1 ? (int)p1->left : -1, p2 ? (int)p2->left : -1, room.MatchAborts(), nox::RoomPhaseName(room.Phase()),
@@ -27337,10 +27385,17 @@ void TestRankRoom() {
     int rankedAborts = 0;
     for (const nox::RoomEvent& e : ev)
         if (e.type == nox::RoomEvent::Type::MATCH_RESULT && e.roomId == r1 && e.result.ranked && e.result.aborted) ++rankedAborts;
-    std::snprintf(m, sizeof(m), "⑥ amy(세션 %lld) 나감 → 랭크 중단 결과 %d · 상태 %d · 설정 랭크 %d · 명단 %zu · 판 상태 %s · 끝 셈 %llu",
-                  (long long)sa, rankedAborts, (int)rooms.Room(r1).RankState(), (int)rooms.Room(r1).Settings().ranked, rooms.Room(r1).Settings().roster.size(),
+    // ★ 11-03 — 남은 bob 은 판 끝처럼 쉬는 시간을 보고 내보내진다(`c7` · 다른 PC 판 「상대가 나갔는데 계속 플레이」) — 그동안 방은 판 · 랭크 그대로
+    const bool heldInRest = rooms.Room(r1).Phase() == nox::RoomPhase::Playing && rooms.Room(r1).RankState() == W::Started && rooms.Game(r1).RoundOver();
+    const unsigned long long quitArmedR1 = rooms.Room(r1).RankQuitArmed();
+    const unsigned long long quitSent0 = rooms.Game(r1).serverQuitSent();
+    { int guard = 0; while (rooms.Game(r1).RoundOver() && guard++ < 400) { now += 34; srv.Tick(now, ol); } now += 34; srv.Tick(now, ol); }
+    { std::vector<nox::RoomEvent> more; rooms.SwapOutRoomEvents(more);
+      for (const nox::RoomEvent& e : more) if (e.type == nox::RoomEvent::Type::MATCH_RESULT && e.roomId == r1) ++rankedAborts; }
+    std::snprintf(m, sizeof(m), "⑥ amy(세션 %lld) 나감 → 쉬는 중 %d · 걸림 %llu · c7 %llu | 랭크 중단 결과 %d · 상태 %d · 설정 랭크 %d · 명단 %zu · 판 상태 %s · 끝 셈 %llu",
+                  (long long)sa, (int)heldInRest, quitArmedR1, rooms.Game(r1).serverQuitSent() - quitSent0, rankedAborts, (int)rooms.Room(r1).RankState(), (int)rooms.Room(r1).Settings().ranked, rooms.Room(r1).Settings().roster.size(),
                   nox::RoomPhaseName(rooms.Room(r1).Phase()), rooms.Stats().rankEnded);
-    Check(rankedAborts == 1 && rooms.Room(r1).RankState() == W::None && !rooms.Room(r1).Settings().ranked && rooms.Room(r1).Settings().roster.empty() &&
+    Check(heldInRest && quitArmedR1 == 1 && rooms.Game(r1).serverQuitSent() - quitSent0 == 1 && rankedAborts == 1 && rooms.Room(r1).RankState() == W::None && !rooms.Room(r1).Settings().ranked && rooms.Room(r1).Settings().roster.empty() &&
               rooms.Room(r1).Phase() == nox::RoomPhase::Waiting && rooms.Stats().rankEnded == 1,
           m);
 
@@ -27417,7 +27472,7 @@ void TestRankRoom() {
     }
 
     // ⑨ ★ 매칭 손보기 2 — 랭크 판 끝(점수 한도) → 내보내기 걸림 · 쉬는 시간이 끝나는 틱에 게임 안 둘에게 `c7` 한 바이트가 `USE_MAP` 앞에 ·
-    //   그 뒤 옛 길(대기 · 일반 방) · 클라 답 `c8`(본문 0) 셈 · 중단으로 끝난 ⑥ 의 r1 은 안 걸림
+    //   그 뒤 옛 길(대기 · 일반 방) · 클라 답 `c8`(본문 0) 셈 · ★ 11-03 중단으로 끝난 ⑥ 의 r1 도 이제 걸린다(⑥ 에서 봄)
     {
         nox::Server& g6 = rooms.Game(r6);
         const std::string M = "10.66.0.1:1002", N = "10.66.0.2:2002";
@@ -27452,10 +27507,10 @@ void TestRankRoom() {
         std::snprintf(m, sizeof(m), "⑨ 랭크 판 끝 → 걸림 %d · 쉬는 시간 %d틱 · mia c7@%d USE_MAP@%d · ned c7@%d USE_MAP@%d · 보낸 %llu(전 %llu) · 걸린 채 %d · "
                       "판 상태 %s · 랭크 %d · 답 c8 %llu · 중단 r1 걸림 %llu",
                       (int)armedNow, guard, om.first, om.second, on.first, on.second, g6.serverQuitSent(), sent0, (int)g6.QuitAtRestartArmed(),
-                      nox::RoomPhaseName(rooms.Room(r6).Phase()), (int)rooms.Room(r6).RankState(), g6.serverQuitAcks(), rooms.Room(r1).RankQuitArmed());
+                      nox::RoomPhaseName(rooms.Room(r6).Phase()), (int)rooms.Room(r6).RankState(), g6.serverQuitAcks(), rooms.Room(r1).RankQuitArmed());   // ★ 11-03 r1 = 중단도 내보냄
         Check(armedNow && om.first >= 0 && om.second > om.first && on.first >= 0 && on.second > on.first && g6.serverQuitSent() == sent0 + 2 &&
                   !g6.QuitAtRestartArmed() && rooms.Room(r6).Phase() == nox::RoomPhase::Waiting && rooms.Room(r6).RankState() == W::None &&
-                  g6.serverQuitAcks() == 1 && rooms.Room(r1).RankQuitArmed() == 0,
+                  g6.serverQuitAcks() == 1 && rooms.Room(r1).RankQuitArmed() == 1,
               m);
     }
 }

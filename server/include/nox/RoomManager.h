@@ -337,6 +337,8 @@ public:
     CRoom& Room(int id) { return *_rooms.at(id); }
     const CRoom& Room(int id) const { return *_rooms.at(id); }
     bool HasRoom(int id) const { return _rooms.count(id) != 0; }
+    // ★ 11-03 — 그 로비 이름의 세션마다 `Server::ClientLobbyGone`. 돌려주는 값 = 줄인 세션 수(이름은 방 구성원의 입장 토큰 이름)
+    size_t OnClientLobbyGone(const std::string& account);
     Server& Game(int roomId) { return Room(roomId).Game(); }
     const Server& Game(int roomId) const { return Room(roomId).Game(); }
     size_t RoomCount() const { return _rooms.size(); }

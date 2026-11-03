@@ -181,6 +181,7 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
         case LinkKind::Create:
         case LinkKind::Bye:
         case LinkKind::Saved:
+        case LinkKind::ClientGone:
         case LinkKind::kCount:
             break;
     }
@@ -309,6 +310,15 @@ void RoomMirror::CancelRoom(uint32_t req) {
     for (auto& kv : servers_) {
         kv.second.askedRanked.erase(req);
         if (kv.second.asked.erase(req)) ++stats_.cancelled;
+    }
+}
+
+// ★ 11-03 — 어느 게임 서버의 어느 방인지 로비는 모른다(토큰을 준 뒤 들어왔는지도) — 등록된 게임 서버 모두에
+void RoomMirror::OnClientGone(const std::string& name) {
+    for (const auto& kv : servers_) {
+        if (kv.second.stage != Stage::Registered) continue;
+        ++stats_.clientGoneSent;
+        pendingOut_.push_back({kv.first, LinkClientGone(name)});
     }
 }
 

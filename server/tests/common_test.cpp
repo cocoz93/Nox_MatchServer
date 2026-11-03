@@ -248,7 +248,7 @@ void TestTcpLines() {
     std::printf("⑦ TCP 줄 부품\n");
     const auto r = RunTcpLinesChecks();
     for (const auto& c : r) Check(c.first, c.second.c_str());
-    Check(r.size() == 27, "TCP 줄 부품 확인 수 27(본체가 끝까지 돌았나 — 듣기 14 + ★ 10-20 줄 한도 경계 2 · 바깥으로 붙기 11)");
+    Check(r.size() == 28, "TCP 줄 부품 확인 수 28(본체가 끝까지 돌았나 — 듣기 15(★ 11-03 살아 있음 확인 하나) + ★ 10-20 줄 한도 경계 2 · 바깥으로 붙기 11)");
 }
 
 void TestLobbyLink() {
@@ -351,6 +351,7 @@ void TestLobbyLink() {
     Check(parse(nox::LinkBye("same address")) == P::Ok && l.kind == K::Bye && l.text == "same address" &&
               nox::LinkBye("") == "BYE ~",
           "BYE 왕복(빈칸 든 까닭 · 빈 까닭 ~)");
+    Check(parse(nox::LinkClientGone("a b")) == P::Ok && l.kind == K::ClientGone && l.text == "a b", "★ 11-03 CLIENT_GONE 왕복(빈칸 든 이름)");
     // ★ 7단계 — 살아 있음 · 판 결과 저장 답(끝 칸 셋 각각 · 개수로)
     Check(nox::LinkPing() == "PING" && parse(nox::LinkPing()) == P::Ok && l.kind == K::Ping, "PING 왕복(칸 없음)");
     using O = nox::SaveOutcome;
@@ -382,7 +383,7 @@ void TestLobbyLink() {
     }
     unsigned kindsSeen = 0;
     for (unsigned c : kinds) kindsSeen += c ? 1 : 0;
-    Check(kindsSeen == static_cast<unsigned>(K::kCount), "줄 갈래 열둘이 모두 읽힘");
+    Check(kindsSeen == static_cast<unsigned>(K::kCount), "줄 갈래 열셋이 모두 읽힘");
     for (int k = 0; k < static_cast<int>(K::kCount); ++k)
         Check(nox::LinkKindWord(static_cast<K>(k))[0] != '?', "갈래마다 낱말 있음");
 

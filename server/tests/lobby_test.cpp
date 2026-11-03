@@ -1605,12 +1605,30 @@ void MirrorUnitTests() {
         lb.OnLine(c2, "JOINGAME #" + std::string(n2) + "'s_game 1 ", o);
         std::vector<Out> s;
         mirror.TakeOut(s);
+        s.erase(std::remove_if(s.begin(), s.end(), [](const Out& x) { return x.line.rfind("CLIENT_GONE ", 0) == 0; }), s.end());   // ★ 11-03 — 앞 끊김들의 줄은 아래 ⑫-b 가 본다
         nox::LinkLine ll;
         const bool okLine = s.size() == 1 && s[0].conn == a3.conn && nox::ParseLinkLine(s[0].line, ll) == nox::LinkParse::Ok &&
                             ll.kind == nox::LinkKind::Create && ll.ranked && ll.roster.size() == 2;
         lastRatings = ll.rosterRatings;   // ★ 매칭 손보기 5 — CREATE 랭크 칸 2 의 명단 점수
         return okLine ? ll.req : 0u;
     };
+    // ★ 11-03 ⑫-b 로그인한 접속이 끊기면 등록된 게임 서버에 `CLIENT_GONE <이름>` · 로그인 전 접속은 안 보냄(대조군)
+    {
+        std::vector<Out> d;
+        mirror.TakeOut(d);
+        const unsigned long long sent0 = mirror.Stats().clientGoneSent;
+        login4(30, "zed");
+        lb.OnConnect(31, peer, local);
+        std::vector<Out> c;
+        lb.OnClose(31, c);
+        std::vector<Out> quiet;
+        mirror.TakeOut(quiet);
+        lb.OnClose(30, c);
+        std::vector<Out> s;
+        mirror.TakeOut(s);
+        Check(quiet.empty() && s.size() == 1 && s[0].conn == a3.conn && s[0].line == nox::LinkClientGone("zed") && mirror.Stats().clientGoneSent == sent0 + 1,
+              "⑫-b 끊김 알림 — 로그인 전 끊김 줄 " + std::to_string(quiet.size()) + " · 로그인 뒤 끊김 줄 " + std::to_string(s.size()) + (s.empty() ? std::string() : " = " + s[0].line));
+    }
     const uint32_t reqJay = rankAsk(8, "jay", 9, "kim");
     const std::vector<int32_t> jayRatings = lastRatings;
     login4(10, "lee");

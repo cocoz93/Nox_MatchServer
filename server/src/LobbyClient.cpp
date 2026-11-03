@@ -128,6 +128,13 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
             ++_stats.byes;
             std::printf("[로비 연결] 로비가 끊음 — %s(설정 키 · 등록 주소 확인)\n", Printable(l.text).c_str());
             return;
+        case LinkKind::ClientGone: {   // ★ 11-03 — 시간 초과 한도만 줄인다(`Server::ClientLobbyGone`)
+            ++_stats.clientGoneIn;
+            const size_t n = _rooms.OnClientLobbyGone(l.text);
+            _stats.clientGoneShortened += n;
+            std::printf("[로비 연결] CLIENT_GONE %s — 들어 있던 세션 %zu개 한도 줄임\n", Printable(l.text).c_str(), n);
+            return;
+        }
         case LinkKind::Ping:   // ★ 7단계 — 받은 시각은 사건에서 적었다(어느 단계든)
             ++_stats.pingsIn;
             return;

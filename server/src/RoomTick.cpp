@@ -879,6 +879,7 @@ void nox::CRoom::StartMatch(bool inPlace) {
     }
     _game.Log("[판] 시작 — 대전 맵 %s(%s) · 끝나면 대기 맵 %s · 사람 %zu\n", battle->key.c_str(), _settings.battleMode.c_str(), wait->key.c_str(),
               _game.inGameCount());
+    if (!inPlace) _game.ArmLimitNotice();   // ★ 11-03 — 다른 PC 판 ① 「한 번 죽였는데 안 끝남」 · 맵을 안 바꾸는 한 맵 방은 준비가 다시 안 와 안 건다
 }
 
 // ★ 10-19 MO 5단계 작업 2 — 머리 주석은 `RoomManager.h` `CollectRoundOutcome`. 방 관리자가 틱 뒤(판 상태를 바꾸기 전에) 부른다
@@ -1057,12 +1058,25 @@ void nox::CRoom::CheckMatchHeadcount() {
         _game.SnapshotStandings(now.players, now.teams);
         PushMatchResult(true, now);
     }
+    ++_matchAborts;
+    // ★ 11-03 — 남은 사람이 있으면 판 끝처럼 닫는다(`Server::EndRoundForfeit`): 승자 알림 · 쉬는 시간 뒤 대기 맵(`OnRoundRestarted`) · 랭크면 모두 내보냄.
+    //   일반 방이 한 명으로 대기 맵에 남는 것은 그대로(10-16 사용자 결정 「한 명 남으면 대기」 — 옮기는 때만 뒤로)
+    if (left > 0) {
+        _game.SendNotice("Opponent left. Match over.");
+        if (_rankWait == RankWait::Started) {
+            _game.QuitAtRestart();
+            ++_rankQuitArmed;
+        }
+        _game.EndRoundForfeit();
+        _wasRoundOver = true;   // 판 끝 기록 없는 판 끝으로 세지 않게(`RoundEndsNoOutcome` — 중단 결과는 위에서 지었다) · 다시 열리면 `OnRoundRestarted`
+        _game.Log("[판] 사람 모자람(게임 안 %zu < %zu) — 판 끝처럼 닫음(쉬는 시간 뒤 %s)\n", left, kMinPlayers, _rankWait == RankWait::Started ? "모두 내보냄" : "대기 맵");
+        return;
+    }
     _game.SwitchMap(wait->tables, wait->initial, nox::ModeGameFlags(_settings.mode));
     _game.ClearNextRoundMap();                              // 그 맵으로 이미 왔다 — 다음 판 끝에 또 바꾸지 않게
     _phase = RoomPhase::Waiting;
     _curMapKey = wait->key;
     _curMode = _settings.mode;
-    ++_matchAborts;
     _game.SendNotice("Not enough players. Back to the waiting room. Host: !start");
     _game.Log("[판] 사람 모자람(게임 안 %zu < %zu) — 대기 맵 %s 로\n", left, kMinPlayers, wait->key.c_str());
     EndRankedMatch("중단");   // ★ 랭크 매칭 조각 6 — 중단 결과(ranked)는 위에서 지었다

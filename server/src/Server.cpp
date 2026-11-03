@@ -2007,6 +2007,20 @@ void Server::EndRound(RoundEndReason why, RoundWinnerKind winner, uint16_t winne
     SnapshotStandings(lastOutcome_.players, lastOutcome_.teams);
 }
 
+// ★ 11-03 — 머리 주석은 `Server.h` `EndRoundForfeit`
+void Server::EndRoundForfeit() {
+    if (roundOver_) return;
+    roundOver_ = true;
+    restartAtFrame_ = frame_ + kRoundRestartTicks;
+    ++roundForfeits_;
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.observer || o.netCode == 0) continue;
+        SendRoundWinner(static_cast<uint8_t>(Op::REPORT_DEATHMATCH_WINNER), o.netCode, 0);
+        break;
+    }
+}
+
 void Server::SnapshotStandings(std::vector<RoundStanding>& players, std::vector<RoundTeamScore>& teams) const {
     players.clear();
     for (const auto& kv : sessions_) {
@@ -3196,6 +3210,13 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                                 frame_, AddrText(s.sessionId), s.importantQ.size());
                 }
                 GameServerReadyMB(s);                 // network_server.go:99 → nox_xxx_gameServerReadyMB_4DD180
+                if (s.limitNoticeOnReady) {           // ★ 11-03 — `ArmLimitNotice` 주석
+                    s.limitNoticeOnReady = false;
+                    char line[48];
+                    std::snprintf(line, sizeof(line), "First to %u kill%s wins", static_cast<unsigned>(gameSettings_.limitValue), gameSettings_.limitValue == 1 ? "" : "s");
+                    SendNoticeTo(s.sessionId, line);
+                    ++limitNotices_;
+                }
                 break;
 
             // ★ 중요 메시지 확인 — `ab <프레임4>`. 그 프레임 조각에 실었던 것을 지운다

@@ -444,6 +444,7 @@ int main(int argc, char** argv) {
             opt.room.debugScoreVal = std::atoi(argv[++i]);
         } else if (a == "--battle-score-limit" && i + 1 < argc) {
             // ★ 10-16 작업 13d — 진단 — 판(`!start`)의 점수 한도를 N 으로(0 = 그대로) · 방 틀이라 로비가 만든 방에도 실린다
+            //   ★ 11-03 — 다른 PC 판도 이 값(`tools/mo_host.ps1 -BattleScoreLimit` — 기본 1)
             opt.room.battleScoreLimit = std::atoi(argv[++i]);
         } else if (a == "--ranked-all") {
             // ★ 레이팅 조각 2 — 시험 손잡이 — 모든 방을 랭크로(매칭 전 점수 검증용 · 방 틀이라 로비가 만든 방에도 실린다)

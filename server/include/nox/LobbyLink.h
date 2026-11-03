@@ -18,6 +18,7 @@
 //   게임 서버 → 로비  CREATED <요청 번호> <방>  ·  CREATE_FAILED <요청 번호> <까닭>       답 앞에 그 방의 `ROOM` 이 먼저 간다
 //   게임 서버 → 로비  RESULT <판 결과 JSON 한 줄>                                     파일 기록기와 같은 줄(`FormatMatchResultJson`)
 //   로비 → 게임 서버  BYE <까닭>                                                     ★ 작업 3a-2 — 끊기 직전(확인 실패 · 같은 주소 등록 · 차례 틀림)
+//   로비 → 게임 서버  CLIENT_GONE <이름>                                              ★ 11-03 — 그 사람의 로비 접속이 끊김(`Server::ClientLobbyGone` — 시간 초과 한도만 줄임)
 //   양쪽             PING                                                           ★ 7단계(`Docs/ACCOUNT_DB_DESIGN.md`) — 살아 있음. 전원째 꺼진 상대는
 //                                                                                    끊김 신호가 안 와 연결이 끊긴 것을 「받은 줄이 없다」로만 안다
 //   로비 → 게임 서버  SAVED <판 번호> <ok|dup|bad> [<이름> <새 점수> <증감>]…          ★ 7단계 — 판 결과를 DB 에 넣은 뒤. ok 새로 넣음 · dup 이미 있음 ·
@@ -75,7 +76,7 @@ struct LinkRoom {
     std::string mode;           // 방 설정의 모드(`chat` · `arena` …)
 };
 
-enum class LinkKind : uint8_t { Hello, Auth, Register, Room, RoomGone, Create, Created, CreateFailed, Result, Bye, Ping, Saved, kCount };
+enum class LinkKind : uint8_t { Hello, Auth, Register, Room, RoomGone, Create, Created, CreateFailed, Result, Bye, Ping, Saved, ClientGone, kCount };
 const char* LinkKindWord(LinkKind k);   // 줄 앞 낱말(`HELLO` …)
 
 // ★ 7단계 — `SAVED` 의 끝 칸(로비가 판 결과를 어떻게 했나). 셋 다 게임 서버는 쥔 것을 지운다
@@ -133,6 +134,7 @@ std::string LinkCreate(uint32_t req, const std::string& creator, bool ranked = f
 std::string LinkCreated(uint32_t req, uint32_t id);
 std::string LinkCreateFailed(uint32_t req, const std::string& reason);
 std::string LinkBye(const std::string& reason);
+std::string LinkClientGone(const std::string& name);   // ★ 11-03
 std::string LinkPing();
 // 판 번호는 글 칸(빈 글이면 받는 쪽이 글 칸 실패) · ★ 매칭 손보기 1 — `ratings` 가 있으면 꼬리(앞 `kLinkMaxRoster` 명까지 — 넘는 사람은 안 실음)
 std::string LinkSavedLine(const std::string& match, SaveOutcome outcome, const std::vector<LinkRatingChange>& ratings = {});
