@@ -193,6 +193,7 @@ void CRoomManager::CloseEmptyRooms(uint32_t nowMs) {
         const auto it = seats.find(room._id);
         if (it != seats.end() && it->second > 0) {
             room._emptyArmed = false;
+            room._everSeated = true;   // ★ 11-03
             continue;
         }
         if (!room._emptyArmed) {
@@ -200,13 +201,16 @@ void CRoomManager::CloseEmptyRooms(uint32_t nowMs) {
             room._emptySinceMs = nowMs;
             continue;
         }
-        if (static_cast<uint32_t>(nowMs - room._emptySinceMs) >= kEmptyRoomCloseMs) toClose.push_back(room._id);
+        // ★ 11-03 — 앉은 적 있는 방은 짧게(`kEmptyUsedRoomCloseMs` 머리 주석). 랭크 도착 기다리는 방은 아직 올 사람이 있어 옛 값
+        const uint32_t limit = room._everSeated && room._rankWait != CRoom::RankWait::Arriving ? kEmptyUsedRoomCloseMs : kEmptyRoomCloseMs;
+        if (static_cast<uint32_t>(nowMs - room._emptySinceMs) >= limit) toClose.push_back(room._id);
     }
     for (const int id : toClose) {
+        const uint32_t emptyMs = nowMs - _rooms.at(id)->_emptySinceMs;
         CloseRoom(id);
         ++_stats.emptyRoomsClosed;
         if (_logRooms) {
-            std::printf("[방] %d 닫음 — 빈 채 %u초\n", id, kEmptyRoomCloseMs / 1000);
+            std::printf("[방] %d 닫음 — 빈 채 %u초\n", id, emptyMs / 1000);
             std::fflush(stdout);
         }
     }

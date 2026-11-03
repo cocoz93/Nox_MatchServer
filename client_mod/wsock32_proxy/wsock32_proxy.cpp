@@ -1025,6 +1025,9 @@ static void RankWaitText()
 static const uintptr_t kFilterWin = 0x699024;      // 필터 창(없으면 0)
 static const uintptr_t kFilterProc = 0x49c5b0;     // 그 창의 원래 처리 함수(0x17 · 0x4007 — 10015~10028 갈래 표)
 static const DWORD kBtnList = 10004, kBtnFilter = 10005, kBtnDone = 10090;
+static const DWORD kBtnRefresh = 10006;            // ★ 11-03 ⑳ — 「리스트 갱신」
+static volatile LONG g_roomsChanged = 0;           // ★ 11-03 ⑳ — `NOXRANK ROOMS` 받음(받기 훅에서 누름)
+static volatile LONG g_roomsRefresh = 0;           // ★ 11-03 ⑳ — 누른 횟수
 static const DWORD kRadioOn = 4;                   // 창 +0x24 — 라디오 눌림
 static volatile LONG g_menuFilterWrapped = 0;      // 감싼 필터 창
 static volatile LONG g_menuFilterSkip = 0;         // 처리 함수 칸이 원래 함수가 아니라 안 감싼 필터 창
@@ -1051,6 +1054,23 @@ static void RankBackToListTick(DWORD world)
     if (!list) { Log("⑲ 랭크 끝남 — 「리스트」(10004)를 못 찾아 지도 그대로"); return; }
     PressListMode(world, list, 0);
     Log("⑲ 랭크 끝남 — 지도 대신 방 목록으로(「리스트」 누름을 넣음)");
+}
+
+static bool PressChild(DWORD win, DWORD id);
+// ★ 11-03 ⑳ — 로비의 `NOXRANK ROOMS`(방 목록이 바뀜) → 받기 훅(주 스레드 · 어느 창 함수도 호출 중이 아님)에서 「리스트 갱신」(10006)을 누른다.
+//   왜 — 정품은 LIST 를 그 화면에 들어갈 때 · 그 단추를 누를 때만 보내, 먼저 나온 사람 화면엔 닫힌 방이 그대로 남았다(11-03 다른 PC 판 ③).
+//   알림창이 떠 있거나(랭크 기다림 · 안내) 필터 화면이면(정품이 그 단추를 꺼 둠) 다음 틱으로 미룬다 — 누름은 사람이 누른 것과 같은 꼴(⑯ PressChild)
+static void RoomsChangedTick(DWORD world)
+{
+    if (!g_roomsChanged || MsgBoxOpen()) return;
+    DWORD filter = 0, flags = 0;
+    if (ReadSelf(kFilterWin, &filter) && filter && ReadSelf(filter + 4, &flags) && !(flags & kWinHidden)) return;
+    // 10006 은 만들기 깃발까지 끈다(`noxworld.c` 10006) — 「게임 호스트하기」 를 누르고 캐릭터 고르는 중이면 그 길이 끊기므로 안 누른다 · 창이 숨었을 때도
+    if (*(volatile DWORD*)kCreateOrJoin || !ReadSelf(world + 4, &flags) || (flags & kWinHidden)) return;
+    InterlockedExchange(&g_roomsChanged, 0);
+    const bool ok = PressChild(world, kBtnRefresh);
+    const LONG n = InterlockedIncrement(&g_roomsRefresh);
+    Log("⑳ 방 목록 바뀜 — 「리스트 갱신」(10006) %s(누적 %ld)", ok ? "누름" : "못 찾음", n);
 }
 
 static int __cdecl RankFilterProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
@@ -1155,6 +1175,7 @@ static void RankOnLobbyLine(SOCKET s, const std::string& line)
     else if (sub == "WAIT") InterlockedExchange(&g_rankEvWait, 1);
     else if (sub == "READY") InterlockedExchange(&g_rankEvReady, 1);
     else if (sub == "EXPIRED") InterlockedExchange(&g_rankEvExpired, 1);
+    else if (sub == "ROOMS") InterlockedExchange(&g_roomsChanged, 1);   // ★ 11-03 ⑳ — 방 목록이 바뀜(`RoomsChangedTick`)
     Log("⑬ 로비 줄 「%s」 — 받음(창은 다음 받기 훅에서)", line.c_str());
 }
 
@@ -1426,9 +1447,10 @@ static void RankUiTick()
     RankWaitText();   // ★ ⑪ ④ 기다림 창 글
     RankFoundTick();  // ★ 매칭 손보기 6 — ⑬ 로비 수락 줄 → 창
     const DWORD win = *(volatile DWORD*)kListWin;
-    if (!win) return;
+    if (!win) { InterlockedExchange(&g_roomsChanged, 0); return; }   // ★ 11-03 ⑳ — 이 화면 밖의 바뀜은 들어올 때 LIST 가 다 받는다
     RankMenuTick(win);   // ★ 매칭 손보기 8 — ⑫ 필터 창 감싸기 · 「리스트」 칸 숨김
     RankBackToListTick(win);   // ★ 11-02 — ⑲ 랭크 취소 · 거절 · 한도 뒤 방 목록으로
+    RoomsChangedTick(win);     // ★ 11-03 — ⑳ 방 목록 바뀜 → 리스트 갱신
     DWORD proc = 0;
     if (!ReadSelf(win + kProcSlot, &proc) || proc == (DWORD)(uintptr_t)RankListProc) return;
     if (proc != kListProc) {

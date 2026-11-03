@@ -215,6 +215,7 @@ private:
     // ★ 10-14 작업 9e — 빈 방 닫기(방 관리자가 쓴다): 빈 채가 된 때
     bool _emptyArmed = false;
     uint32_t _emptySinceMs = 0;
+    bool _everSeated = false;                  // ★ 11-03 — 사람이 앉은 적 있나(`kEmptyUsedRoomCloseMs` 를 고른다)
     // ★ 10-16 작업 12a
     RoomPhase _phase = RoomPhase::Waiting;
     std::vector<RoomMember> _members;          // 들어온 차례 — 세션표(`CRoomManager::_seats`)의 이 방 세션과 같은 사람들
@@ -319,6 +320,9 @@ public:
     static constexpr int kNoRoom = -1;
     // ★ 10-14 작업 9e — 빈 방 닫기까지(`RoomSettings::closeWhenEmpty`). 입장 토큰 수명 — 방을 만든 사람이 토큰을 받고 들어올 동안은 둔다
     static constexpr uint32_t kEmptyRoomCloseMs = kJoinTokenLifetimeSec * 1000;
+    // ★ 11-03 — 사람이 앉았다가 빈 방은 이만큼 뒤 닫는다. 왜 — 위 30초는 「아직 안 온 사람」 몫인데 다 나간 방도 같이 기다려,
+    //   다른 PC 판에서 둘 다 나온 뒤 목록에 30초 남았다(`_out/qa_1103/b1` ROOM 0 0 → ROOM_GONE 30.3초). 2초 = 마지막 사람의 `ae` 뒤 `0a` 가 오는 틈(근거 없는 값 — 그만큼만)
+    static constexpr uint32_t kEmptyUsedRoomCloseMs = 2000;
     // ★ 랭크 매칭 조각 6 — 랭크 방의 도착 한도(방을 처음 본 틱부터). 기본값 근거 = 입장 토큰 수명(`Docs/RANK_MATCH_PLAN.md` 「기본값으로 둔 것」) —
     //   토큰이 만료되면 어차피 못 들어오므로 그보다 길 까닭이 없다. 빈 방 닫기와 같은 틱에 닿으면 판정이 먼저(`BeginTick`)
     static constexpr uint32_t kRankArriveMs = kJoinTokenLifetimeSec * 1000;

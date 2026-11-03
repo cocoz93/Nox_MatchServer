@@ -265,6 +265,16 @@ void Lobby::Tick(std::vector<Out>& out) {
         RankFoundBreak(req, -1, out);
     }
     RankPump(out);
+    // ★ 11-03 — 목록 바뀜 알림(`ILobbyRooms::ListVersion`). 떼는 줄 `NOXRANK` 을 빌린다 — 그 줄을 떼는 DLL 판(`kNoxClientAcceptVersion`)만, 모르는 낱말은 DLL 이 넘김
+    if (rooms_.ListVersion() != roomsVerPushed_ && static_cast<uint32_t>(now - roomsPushedMs_) >= kRoomsPushGapMs) {
+        roomsVerPushed_ = rooms_.ListVersion();
+        roomsPushedMs_ = now;
+        ++stats_.roomsPushes;
+        for (const auto& kv : conns_) {
+            const Conn& c = kv.second;
+            if (!c.closing && c.login == LoginState::Ok && c.clientVer >= kNoxClientAcceptVersion) out.push_back({kv.first, "NOXRANK ROOMS"});
+        }
+    }
     if (pending_.empty()) return;
     for (auto it = pending_.begin(); it != pending_.end();) {
         if (static_cast<int32_t>(now - it->second.deadlineMs) < 0) {   // 32비트 시계가 돌아도 맞게

@@ -189,6 +189,8 @@ struct FakeRooms final : nox::wol::ILobbyRooms {
         return nox::wol::RoomRequest::Created;
     }
     void CancelRoom(uint32_t req) override { cancelled.push_back(req); }
+    uint64_t version = 0;    // ★ 11-03 — 목록 바뀜 수(시험이 올림)
+    uint64_t ListVersion() const override { return version; }
     nox::wol::LobbyRoom Make(const std::string& creator) {
         ++created;
         nox::wol::LobbyRoom r = FakeRoom(static_cast<uint16_t>(100 + created), creator.c_str());
@@ -2786,6 +2788,57 @@ int ReplayRecording(const char* path) {
 
 }  // namespace
 
+// ★ 11-03 — 목록 바뀜 알림(`NOXRANK ROOMS`): 바뀌어야 · 줄을 떼는 DLL 판에만 · 몰려도 `kRoomsPushGapMs` 에 한 번
+static void RoomsPushUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;
+    cfg.room.maxPlayers = 31;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    uint32_t clock = 0xfffff000u;   // 32비트 시계가 도는 자리
+    cfg.nowMs = [&clock] { return clock; };
+    FakeRooms fake;
+    Lobby lb(cfg, fake);
+    auto login = [&](int conn, const std::string& nick, int ver) {
+        lb.OnConnect(conn, 0x7f000001, 0x7f000001);
+        std::vector<Out> o;
+        for (const std::string l : {"NOXCLIENT " + std::to_string(ver), "NICK " + nick, std::string("USER UserName HostName irc.westwood.com :RealName")})
+            lb.OnLine(conn, l, o);
+    };
+    login(1, "newdll", kNoxClientAcceptVersion);
+    login(2, "olddll", kNoxClientAcceptVersion - 1);
+    auto pushes = [&](int conn) {
+        std::vector<Out> o;
+        lb.Tick(o);
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line == "NOXRANK ROOMS" ? 1 : 0;
+        return n;
+    };
+    clock += kRoomsPushGapMs;
+    Check(pushes(1) == 0, "목록 바뀜 알림 ① 안 바뀌면 안 나감");
+    ++fake.version;
+    int oldDll = 0;
+    {
+        std::vector<Out> o;
+        lb.Tick(o);
+        int n = 0;
+        for (const auto& x : o) {
+            n += x.conn == 1 && x.line == "NOXRANK ROOMS" ? 1 : 0;
+            oldDll += x.conn == 2 && x.line == "NOXRANK ROOMS" ? 1 : 0;
+        }
+        Check(n == 1, "목록 바뀜 알림 ② 바뀌면 한 줄");
+        Check(oldDll == 0, "목록 바뀜 알림 ③ 줄을 못 떼는 옛 DLL 엔 안 보냄");
+    }
+    ++fake.version;
+    Check(pushes(1) == 0, "목록 바뀜 알림 ④ 간격 안엔 미룸");
+    clock += kRoomsPushGapMs;
+    Check(pushes(1) == 1, "목록 바뀜 알림 ⑤ 간격 지나면 미룬 것 한 줄");
+    clock += kRoomsPushGapMs;
+    Check(pushes(1) == 0, "목록 바뀜 알림 ⑥ 또 안 바뀌면 안 나감");
+    Check(lb.Stats().roomsPushes == 2, "목록 바뀜 알림 ⑦ 민 횟수 2");
+}
+
 int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "--gameinfo") == 0) {
         if (GameInfoFromRecording(argv[2]) != 0) return 1;
@@ -2796,6 +2849,7 @@ int main(int argc, char** argv) {
         LobbyUnitTests();
         ChannelLobbyUnitTests();
         NewRoomUnitTests();
+        RoomsPushUnitTests();   // ★ 11-03
         PendingRoomUnitTests();   // ★ 10-20 v2 작업 3a
         RankQueueUnitTests();     // ★ 랭크 매칭 조각 4
         RankAcceptUnitTests();    // ★ 매칭 손보기 6

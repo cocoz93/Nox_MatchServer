@@ -41,6 +41,7 @@ void RoomMirror::OnLinkClose(int conn, std::vector<Out>& out) {
     else
         log_.push_back("[게임 서버] c" + std::to_string(conn) + " 끊김(등록 전)");
     const std::set<uint32_t> asked = std::move(s.asked);
+    if (!s.rooms.empty()) ++listVersion_;   // ★ 11-03 — 그 게임 서버의 방이 목록에서 내려감
     servers_.erase(it);   // 로비에 넘기기 전에 지운다 — 로비가 곧바로 목록을 다시 그려도 끊긴 방이 안 나온다
     for (const uint32_t req : asked) {
         ++stats_.failedOnClose;
@@ -108,10 +109,12 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
         case LinkKind::Room:
             ++stats_.roomLines;
             s.rooms[l.room.id] = l.room;
+            if (s.rankRooms.count(l.room.id) == 0) ++listVersion_;   // ★ 11-03 — 남의 목록에 안 실리는 랭크 방은 안 셈
             return;
         case LinkKind::RoomGone:
             ++stats_.roomGoneLines;
             if (s.rooms.erase(l.room.id) == 0) ++stats_.roomGoneUnknown;
+            if (s.rankRooms.count(l.room.id) == 0) ++listVersion_;   // ★ 11-03
             s.rankRooms.erase(l.room.id);   // ★ 매칭 손보기 7 — 같은 번호가 다음에 일반 방으로 와도 보이게
             return;
         case LinkKind::Created:

@@ -25018,15 +25018,16 @@ void TestRoomFacts() {
     const uint32_t t1 = t0 + 6 * RM::kEmptyRoomCloseMs;
     rooms.BeginTick(t1);                                 // 나간 뒤 처음 — 여기서부터 잰다(들기 전 t0 부터가 아니다)
     const bool cAtLeave = rooms.HasRoom(c);
-    rooms.BeginTick(t1 + RM::kEmptyRoomCloseMs - 1);
+    // ★ 11-03 — 앉은 적 있는 방은 짧게(`kEmptyUsedRoomCloseMs`) — 위 A(아무도 안 앉음)는 30초 그대로
+    rooms.BeginTick(t1 + RM::kEmptyUsedRoomCloseMs - 1);
     const bool cAfterLeave = rooms.HasRoom(c);
-    rooms.BeginTick(t1 + RM::kEmptyRoomCloseMs);
-    std::snprintf(m, sizeof(m), "③ 사람 있는 동안 C %d · 나간 뒤 세션표 %zu · 나간 직후 C %d · 29.999초 C %d · 30초 C %d · B %d · 빈 방 닫음 %llu",
+    rooms.BeginTick(t1 + RM::kEmptyUsedRoomCloseMs);
+    std::snprintf(m, sizeof(m), "③ 사람 있는 동안 C %d · 나간 뒤 세션표 %zu · 나간 직후 C %d · 1.999초 C %d · 2초 C %d · B %d · 빈 방 닫음 %llu",
                   (int)cStays, rooms.SeatCount(), (int)cAtLeave, (int)cAfterLeave, (int)rooms.HasRoom(c), (int)rooms.HasRoom(b),
                   rooms.Stats().emptyRoomsClosed);
     Check(cStays && rooms.SeatCount() == 0 && cAtLeave && cAfterLeave && !rooms.HasRoom(c) && rooms.HasRoom(b) &&
           rooms.Stats().emptyRoomsClosed == 2, m);
-    std::printf("  10-14 플랜 B 작업 9e — 돌고 있는 방의 사실 · 빈 방 닫기(빈 채 30초 · 사람 있으면 안 닫음 · 실행 인자의 방은 안 닫음)\n");
+    std::printf("  10-14 플랜 B 작업 9e — 돌고 있는 방의 사실 · 빈 방 닫기(안 온 방 30초 · ★ 11-03 쓴 방 2초 · 사람 있으면 안 닫음 · 실행 인자의 방은 안 닫음)\n");
 }
 
 // ── ★ 10-14 플랜 B 작업 8d — 채널 안 로비(`CChannelLobby`) 시험은 ★ 10-20 v2 작업 4b-2 에서 걷었다 — 목록 · 참가 토큰 꼴은 lobby_test(로비 규약 ·

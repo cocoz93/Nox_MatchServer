@@ -108,6 +108,7 @@ public:
     std::vector<LobbyRoom> LobbyRooms() const override;
     RoomRequest RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom& out, std::string& why) override;
     void CancelRoom(uint32_t req) override;   // ★ 작업 3c — 로비가 접은 요청을 기다림 장부에서 지운다
+    uint64_t ListVersion() const override { return listVersion_; }   // ★ 11-03
 
     const MirrorStats& Stats() const { return stats_; }
     size_t ServerCount() const;   // 등록된 게임 서버 수
@@ -151,6 +152,7 @@ private:
     std::vector<std::string> log_;
     std::vector<std::string> results_;
     MirrorStats stats_;
+    uint64_t listVersion_ = 0;   // ★ 11-03 — 목록에 보이는 방이 바뀐 횟수(`ILobbyRooms::ListVersion`)
 };
 
 }  // namespace nox::wol

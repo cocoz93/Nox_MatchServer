@@ -136,7 +136,13 @@ public:
     // ★ 10-20 v2 작업 3c — 로비가 기다림을 접은 요청(시간 초과 · 클라 끊김). 거울은 그 요청을 기다림 장부에서 지운다
     //   (안 지우면 게임 서버가 끊길 때 이미 접은 요청을 「실패」로 다시 넘긴다 — nox_lobby_smoke 에서 나옴). 늦게 온 답은 「안 물은 답」으로 버린다
     virtual void CancelRoom(uint32_t /*req*/) {}
+    // ★ 11-03 — 목록에 보이는 방이 바뀔 때마다 느는 수. 로비가 값이 달라진 것을 보고 클라에 `NOXRANK ROOMS` 를 민다(`kRoomsPushGapMs`).
+    //   왜 — 정품 클라는 LIST 를 그 화면에 들어갈 때 · 「리스트 갱신」을 누를 때만 보내(`_out/qa_1103/b1` DLL 기록) 먼저 나온 사람 화면엔 닫힌 방이 그대로 남았다
+    virtual uint64_t ListVersion() const { return 0; }
 };
+
+// ★ 11-03 — 목록 바뀜 알림 사이 최소 간격. 몰려도 1초에 한 번(클라마다 LIST 한 번 · 근거 없는 값 — 사람이 보는 목록이라 그 정도면 충분)
+constexpr uint32_t kRoomsPushGapMs = 1000;
 
 // ★ 10-20 v2 작업 3a — 미룬 새 방 답을 기다리는 한도. 근거 없는 값 — 같은 PC 연결 왕복은 ms 단위 · 정품이 얼마나 기다리는지는 미확인
 //   (넘으면 실패와 같은 꼴 — ★ 10-20 거절 답 뒤로는 `471` · 그 전엔 답이 없어 정품이 참가 화면에 머물렀다)
@@ -220,6 +226,7 @@ struct LobbyConfig {
 // 로비의 셈 — 입장 토큰 갈래
 struct LobbyStats {
     unsigned long long tokensIssued = 0;     // `NOXTOKEN` 을 보냄
+    unsigned long long roomsPushes = 0;      // ★ 11-03 — 목록 바뀜 알림을 민 횟수(한 번 = 접속 전부에 한 줄)
     unsigned long long loginNoClient = 0;    // 로그인 — `NOXCLIENT` 없음(인사말로 알림)
     unsigned long long loginOldClient = 0;   // 로그인 — DLL 판이 낮음(인사말로 알림)
     unsigned long long joinNoClient = 0;     // 방 참가 — DLL 없음(로그인 전 참가 포함) · 토큰 없이 답함
@@ -464,6 +471,8 @@ private:
     std::vector<int> rankQueue_;
     bool rankGathering_ = false;
     uint32_t rankGatherDueMs_ = 0;
+    uint64_t roomsVerPushed_ = 0;                 // ★ 11-03 — 클라에 알린 `ListVersion`
+    uint32_t roomsPushedMs_ = 0;                  // ★ 11-03 — 그 때
     bool rankResting_ = false;
     uint32_t rankRestDueMs_ = 0;
     struct RankGroup {
