@@ -449,7 +449,7 @@ inline const ArtEntry* ArtTable(size_t& count)
     return kArt;
 }
 
-constexpr const char* kArtVersion = "1";
+constexpr const char* kArtVersion = "2";   // ★ 11-04 2 = small.fnt 추가(저작권 글) — 옛 그림 폴더를 다시 뽑게
 
 inline std::string StampFor(const std::wstring& gameDir)
 {
@@ -486,6 +486,7 @@ inline bool Extract(const std::wstring& gameDir, const std::wstring& artDir)
     }
     std::vector<uint8_t> fnt;
     if (!ReadAll(gameDir + L"\\default.fnt", fnt) || !WriteAll(artDir + L"\\default.fnt", fnt.data(), fnt.size())) return false;
+    if (!ReadAll(gameDir + L"\\small.fnt", fnt) || !WriteAll(artDir + L"\\small.fnt", fnt.data(), fnt.size())) return false;
     return WriteAll(stampPath, reinterpret_cast<const uint8_t*>(stamp.data()), stamp.size());
 }
 

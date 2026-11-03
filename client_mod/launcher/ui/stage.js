@@ -13,12 +13,12 @@ const stage = (() => {
   const BTN_W = 198, BTN_H = 40;
 
   const $ = (id) => document.getElementById(id);
-  let ctx = null, base = null, font = null;
+  let ctx = null, base = null, font = null, smallFont = null;
   const img = {};
   let dirty = false, caretOn = true;
 
   // ── 글꼴(default.fnt — 머리 28바이트 · 구간표 · 글자마다 [폭 1바이트][비트맵]). 형식은 opennox/libs noxfont
-  function parseFont(buf) {
+  function parseFont(buf, needHangul = true) {
     const v = new DataView(buf), bytes = new Uint8Array(buf);
     if (String.fromCharCode(bytes[3], bytes[2], bytes[1], bytes[0]) !== 'FoNt') throw new Error('font magic');
     const stride = v.getUint32(12, true), height = v.getUint32(16, true), count = v.getUint32(20, true), size = v.getUint32(24, true);
@@ -32,35 +32,35 @@ const stage = (() => {
       for (const r of ranges) if (c >= r.start && c <= r.end) return data + size * (r.off + c - r.start);
       return -1;
     };
-    if (glyph(0xc544) < 0) throw new Error('font has no hangul');   // 「아」 — 한글 없는 글꼴이면 라벨이 비므로 기본 모양으로
+    if (needHangul && glyph(0xc544) < 0) throw new Error('font has no hangul');   // 「아」 — 한글 없는 글꼴이면 라벨이 비므로 기본 모양으로
     return { bytes, stride, height, glyph };
   }
 
-  const glyphAt = (c) => {
-    let at = font.glyph(c);
-    if (at < 0) at = font.glyph(0xfffd);
+  const glyphAt = (c, f) => {
+    let at = f.glyph(c);
+    if (at < 0) at = f.glyph(0xfffd);
     return at;
   };
 
-  function textWidth(s) {
+  function textWidth(s, f = font) {
     let w = 0;
     for (let i = 0; i < s.length; i++) {
-      const at = glyphAt(s.charCodeAt(i));
-      w += at < 0 ? 4 : font.bytes[at] + 1;
+      const at = glyphAt(s.charCodeAt(i), f);
+      w += at < 0 ? 4 : f.bytes[at] + 1;
     }
     return w;
   }
 
-  function stamp(g, s, x, y, color) {
+  function stamp(g, s, x, y, color, f = font) {
     g.fillStyle = color;
     for (let i = 0; i < s.length; i++) {
-      const at = glyphAt(s.charCodeAt(i));
+      const at = glyphAt(s.charCodeAt(i), f);
       if (at < 0) { x += 4; continue; }
-      const w = font.bytes[at];
-      for (let row = 0; row < font.height; row++) {
-        const line = at + 1 + row * font.stride;
+      const w = f.bytes[at];
+      for (let row = 0; row < f.height; row++) {
+        const line = at + 1 + row * f.stride;
         for (let col = 0; col < w; col++) {
-          if ((font.bytes[line + (col >> 3)] >> (7 - (col & 7))) & 1) g.fillRect(x + col, y + row, 1, 1);
+          if ((f.bytes[line + (col >> 3)] >> (7 - (col & 7))) & 1) g.fillRect(x + col, y + row, 1, 1);
         }
       }
       x += w + 1;
@@ -140,6 +140,26 @@ const stage = (() => {
     g.putImageData(im, x0, y0);
   }
 
+  // ★ 11-04 저작권 글 — 창 아래 작은 글씨(글은 index.html #legal). 폭 = default.fnt 는 첫 줄이 705 로 판(640)을 넘고 small.fnt 는 586.
+  //   small.fnt · default.fnt 에 ™ 가 없어 그 자리만 점으로 찍는다(글을 바꾸지 않으려고)
+  const TM_ROWS = ['### #   #', ' #  ## ##', ' #  # # #', ' #  #   #'];
+  function drawLegal(g) {
+    const lines = [...$('legal').children].map((el) => el.textContent), step = smallFont.height + 1, tmW = TM_ROWS[0].length + 1;
+    let y = H - lines.length * step - 3;
+    for (const raw of lines) {
+      const [a, b = ''] = raw.split('\u2122');
+      const hasTm = raw.includes('\u2122');
+      const aW = textWidth(a, smallFont);
+      const x = Math.floor((W - aW - (hasTm ? tmW : 0) - textWidth(b, smallFont)) / 2);
+      for (const [d, color] of [[1, '#000'], [0, DIM]]) {   // 그림자 먼저(text() 와 같은 꼴)
+        stamp(g, a, x + d, y + d, color, smallFont);
+        if (hasTm) TM_ROWS.forEach((row, r) => { [...row].forEach((ch, col) => { if (ch === '#') g.fillRect(x + aW + d + col, y + d + r, 1, 1); }); });
+        stamp(g, b, x + aW + tmW + d, y + d, color, smallFont);
+      }
+      y += step;
+    }
+  }
+
   function buildBase() {
     base = newCanvas(W, H);
     const g = base.getContext('2d', { willReadFrequently: true });
@@ -150,6 +170,7 @@ const stage = (() => {
     g.imageSmoothingEnabled = true;
     g.imageSmoothingQuality = 'high';
     g.drawImage(logo.canvas, logo.x, logo.y, logo.w, logo.h, lx, ly, w, h);
+    drawLegal(g);
   }
 
   function tile(bmp, x0, y0, x1, y1) {
@@ -334,12 +355,11 @@ const stage = (() => {
     try {
       const names = ['WolapiLoginBG', 'CopyrightScreen', 'UICheckBox', 'UICheckBoxLit', 'UIButtonHuge', 'UIButtonHugeLit', 'UIButtonHugeDis',
                      'BorderCornerUL', 'BorderCornerUR', 'BorderCornerLL', 'BorderCornerLR', 'BorderHorizontal', 'BorderVertical'];
-      const [bitmaps, fnt] = await Promise.all([
-        Promise.all(names.map(loadBitmap)),
-        fetch(ART + 'default.fnt').then((r) => { if (!r.ok) throw new Error('font'); return r.arrayBuffer(); }),
-      ]);
+      const getFont = (n) => fetch(ART + n).then((r) => { if (!r.ok) throw new Error('font'); return r.arrayBuffer(); });
+      const [bitmaps, fnt, smallFnt] = await Promise.all([Promise.all(names.map(loadBitmap)), getFont('default.fnt'), getFont('small.fnt')]);
       names.forEach((n, i) => { img[n] = bitmaps[i]; });
       font = parseFont(fnt);
+      smallFont = parseFont(smallFnt, false);
       buildBase();
       const c = $('stage');
       ctx = c.getContext('2d');
