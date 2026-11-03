@@ -1,7 +1,10 @@
 ﻿# mo_host.ps1 — 다른 PC가 붙을 수 있게 이 PC의 MO 서버를 연다/닫는다 (리포 맨 위 서버_MO_열기.bat · 서버_MO_닫기.bat 이 부른다).
 #
-#   -Mode Open [-PublicIp a.b.c.d] [-AllowIp a.b.c.d] [-NoDb]
+#   -Mode Open [-PublicIp a.b.c.d] [-AllowIp a.b.c.d] [-NoDb] [-NoAuth] [-PilotLat]
 #       ★ 7단계 — 로비는 설정 [db](MySQL)에 붙어야 뜬다. -NoDb 면 메모리 저장소(--no-db — 계정 · 판 기록이 로비와 같이 사라짐)
+#       ★ 11-03 -PilotLat — 게임 서버에 --pilot-lat <csv> 를 붙여 중요 메시지(cc 봉투) 「처음 실음 → 클라 확인」 지연을 적는다
+#          (_evidence\_runs\line_pilot_<때>.lat.csv · 줄 = first_ms,id,op,latency_ms,resends · 실제 회선의 손실·지연 실측 — 사람 28).
+#          방마다 같은 파일에 이어 쓴다(WorldBuild.cpp "ab"). 게임 서버가 이미 떠 있으면 못 붙이니 멈춘다 — 그 창을 닫고 다시
 #       ① 방화벽 열기(tools\mo_firewall.ps1 — 승인 창 1회, -AllowIp 를 주면 그 주소만)
 #       ② ★ 10-20 v2 작업 6 — 로비(nox_lobby — 클라 TCP 4000 · 게임 서버 연결 127.0.0.1:4010)가 안 떠 있으면 띄운다
 #          ★ 로그인 암호 조각 6 — 로비는 --no-auth(아이디만 · 설정에 [auth] 가 있어도). 로그인 서버(nox_auth)는 이 판에 안 띄운다
@@ -18,7 +21,7 @@
 #
 # ⚠ 이 PC는 공유기 없이 공인 IP 가 직접 붙어 있어, 여는 동안 세 포트가 인터넷에 드러난다 — 시험이 끝나면 꼭 닫기.
 #   로비 · 게임 서버는 시간 제한 · 접속 상한 · 낯선 패킷 시험이 없다(Docs/LOBBY_DESIGN.md 「다른 PC용 꾸러미」 절).
-param([ValidateSet('Open', 'Close')][string]$Mode = 'Open', [string]$PublicIp = '', [string]$AllowIp = '', [switch]$NoDb, [switch]$NoAuth)
+param([ValidateSet('Open', 'Close')][string]$Mode = 'Open', [string]$PublicIp = '', [string]$AllowIp = '', [switch]$NoDb, [switch]$NoAuth, [switch]$PilotLat)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $routerExe = Join-Path $repo 'build\Release\nox_router.exe'
@@ -104,13 +107,22 @@ try {
       Write-Host '로비: 띄움 (클라 TCP 0.0.0.0:4000 · 게임 서버 연결 127.0.0.1:4010)'
     }
     # 게임 서버 — UDP 18590 을 든 nox_server 가 있으면 그것을 쓴다(로비에 붙어 있는지는 로비 창의 「등록」 줄로 본다)
+    $latCsv = ''
     if (Get-NetUDPEndpoint -LocalPort 18590 -ErrorAction SilentlyContinue) {
+      if ($PilotLat) { throw '게임 서버가 이미 떠 있어 --pilot-lat 를 못 붙인다 — 그 창을 닫고 다시 실행하세요(-PilotLat 는 새로 띄울 때만)' }
       Write-Host '게임 서버: 이미 떠 있음 (UDP 18590) — --lobby 127.0.0.1:4010 으로 띄운 것이어야 로비 목록에 방이 생긴다'
     } else {
-      Start-Process -FilePath $serverExe -ArgumentList @('--port', '18590', '--lobby', '127.0.0.1:4010', '--config', "`"$cfg`"", '--quiet', '--aoi', '--friends')
+      $serverArgs = @('--port', '18590', '--lobby', '127.0.0.1:4010', '--config', "`"$cfg`"", '--quiet', '--aoi', '--friends')
+      if ($PilotLat) {   # ★ 11-03 — 실제 회선 손실·지연 CSV(머리 주석). 경로는 git 밖 _evidence\_runs\
+        $runs = Join-Path $repo '_evidence\_runs'
+        New-Item -ItemType Directory -Force -Path $runs | Out-Null
+        $latCsv = Join-Path $runs ("line_pilot_{0:yyyyMMdd_HHmm}.lat.csv" -f (Get-Date))
+        $serverArgs += @('--pilot-lat', "`"$latCsv`"")
+      }
+      Start-Process -FilePath $serverExe -ArgumentList $serverArgs
       Start-Sleep -Seconds 3
       if (-not (Get-NetUDPEndpoint -LocalPort 18590 -ErrorAction SilentlyContinue)) { throw '게임 서버가 뜨지 않았다 — 게임 서버 창의 글을 보세요' }
-      Write-Host '게임 서버: 띄움 (UDP 18590 · 로비에 붙음 · 방 없이 시작)'
+      Write-Host "게임 서버: 띄움 (UDP 18590 · 로비에 붙음 · 방 없이 시작$(if ($latCsv) { " · 전달 지연 CSV $latCsv" }))"
     }
 
     # ★ 10-28 — 로그인 서버. http.sys(System)가 대신 들어 포트 주인으로는 못 보니 가입 페이지가 답하나로 본다(이 PC 는 자작 인증서를 믿는 루트에 둠)
@@ -134,6 +146,7 @@ try {
     if ($listen.Count -lt 1) { throw '라우터가 0.0.0.0:4005 로 뜨지 않았다 — 라우터 창의 글을 보세요' }
     Write-Host "라우터: 띄움 — 0.0.0.0:4005 → 로비 $PublicIp`:4000(클라가 붙은 주소)"
     if ($authOn) { Write-Host "다른 PC 꾸러미 = tools\pack_client.ps1 -ServerIp $PublicIp (인증서 지문을 싣는다 · 가입 https://$PublicIp`:8443/signup)" }
+    if ($latCsv) { Write-Host "전달 지연 CSV: $latCsv — 판이 끝난 뒤 열어 보면 된다(방이 처음 생길 때 머리줄 · 그 뒤 중요 메시지 확인마다 한 줄)" }
     Write-Host '[열림] 이제 다른 PC 에서 2_PLAY.bat — 시험이 끝나면 꼭 서버_MO_닫기.bat'
   } else {
     Stop-Router
