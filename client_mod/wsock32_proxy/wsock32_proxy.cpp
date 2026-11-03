@@ -782,7 +782,8 @@ static const uintptr_t kListProc = 0x439a30;       // 그 창의 원래 처리 �
 static const uintptr_t kFindChild = 0x4889d0;      // (창, 번호) → 자식 창(재귀)
 static const uintptr_t kSetHidden = 0x488510;      // (창, 0 이면 보임 · 아니면 숨김)
 static const DWORD kProcSlot = 0x178;
-static const DWORD kBtnHost = 10002, kBtnRank = 10007;
+static const DWORD kBtnHost = 10002, kBtnRank = 10007, kBtnQuest = 10003;
+static volatile LONG g_questBlocked = 0;           // ★ 11-04 퀘스트 호스트(10003) 누름을 막은 수
 static const DWORD kMsgClick = 0x4007;
 static const DWORD kWinHidden = 0x10;
 static bool g_rankOn = false;                      // 판 확인 통과 · ⑥ 켬(⑥ 길을 타므로 같이 켜고 같이 끈다)
@@ -849,6 +850,12 @@ static int __cdecl RankListProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
             g_rankInjecting = false;
             return r;
         }
+        case kBtnQuest:   // ★ 11-04 — 퀘스트 호스트 막음. 우리 서버엔 퀘스트가 없어 원래 길은 퀘스트 캐릭터를 고르게 한 뒤 일반 방과 같은 대기 맵으로 들어간다(`Docs/MO_UX_AUDIT_1103.md` q1 · q2)
+            if (!g_ourLobby) return orig(win, msg, a3, a4);
+            InterlockedIncrement(&g_questBlocked);
+            if (InterlockedExchange(&g_rankArmed, 0)) Log("⑩ 퀘스트 호스트 누름 — 남아 있던 랭크 표시 끔");
+            Log("⑩ 퀘스트 호스트 누름 막음(누적 %ld) — 글자는 tools/ui_apply.ps1 「퀘스트 호스트 (미구현)」", (long)g_questBlocked);
+            return 0;
         case kBtnHost:
             InterlockedIncrement(&g_rankHostClicks);
             if (InterlockedExchange(&g_rankArmed, 0)) Log("⑩ 게임 호스트하기 누름 — 남아 있던 랭크 표시 끔(일반 방)");
