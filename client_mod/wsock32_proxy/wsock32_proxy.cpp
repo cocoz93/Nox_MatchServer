@@ -1159,6 +1159,11 @@ static const wchar_t kRankReadyText[] = L"방 만드는 중...";   // ★ 10-31 
 static const wchar_t kRankExpiredText[] = L"수락 시간이 지나 매칭이 취소되었습니다";
 static const DWORD kDlgNoticeFlags = 0x21;    // 확인 단추 + 누르면 닫힘(정품 「Kicked」 · 「Timeout」 알림과 같은 값 — `noxworld.c` 237 · 243)
 static volatile LONG g_rankEvFound = 0, g_rankEvWait = 0, g_rankEvExpired = 0, g_rankEvReady = 0;   // 받은 줄 → ⑩ 자리에서 처리
+// ★ 11-04 — 정품 소리 함수 `0x4528d0`(cdecl 번호 · 음량 — 호출 꼴 `push 0x64 · push 번호 · call · add esp,8` · 실제 호출을 훅으로 재 확인).
+//   번호 = OpenNox `common/sound/sound.go` 상수 차례(ShellClick 921 등 호출 기록과 일치). 775 = MetallicBong(bong1.wav · 3.0초 · 사용자가 소리 모음에서 고름)
+typedef void(__cdecl* PFN_sound)(int id, int volume);
+static const uintptr_t kSoundPlay = 0x4528d0;
+static const int kSoundMatchFound = 775;
 static volatile LONG g_rankReadys = 0;        // ★ 10-31 — READY → 창을 「방 만드는 중...」으로
 static volatile LONG g_rankFoundShown = 0;    // 창을 예 · 아니오로 바꿈
 static volatile LONG g_rankAccepts = 0;       // 예 → ACCEPT 보냄
@@ -1250,6 +1255,8 @@ static void RankFoundTick()
             RankFoundText(g_rankFoundShownLeft);   // ★ 10-31 — 남은 초 · 자동 거절 안내(1초마다 ④ 자리가 고침)
             InterlockedExchange(&g_rankFoundState, 1);
             RankDlg(g_rankFoundBuf, kDlgYesNo);
+            // ★ 11-04 — 잡혔다는 소리. 기다리는 동안 다른 창을 보고 있어도 알 수 있게(깜빡임은 사용자 결정으로 안 함)
+            ((PFN_sound)kSoundPlay)(kSoundMatchFound, 100);
             const LONG n = InterlockedIncrement(&g_rankFoundShown);
             Log("⑬ 찾음(누적 %ld) — 알림창 %#lx 를 「매칭 성공! 수락하시겠습니까? 남은 시간 %ld초」 예 · 아니오로", n, box, g_rankFoundSec);
         }
