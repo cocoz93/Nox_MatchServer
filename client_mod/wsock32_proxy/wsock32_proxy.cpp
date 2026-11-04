@@ -2345,6 +2345,7 @@ static long g_testPressDone = 0;       // 파일에서 처리한 바이트
 static DWORD g_testPressLastMs = 0;
 static volatile LONG g_testPressOk = 0, g_testPressMiss = 0;
 
+static const DWORD kBtnJoinGame = 10001;   // 게임 목록 정보 창의 참가(`noxworld.wnd:71`)
 static bool TestPressLine(const char* line)
 {
     char op = 0;
@@ -2355,6 +2356,16 @@ static bool TestPressLine(const char* line)
     if (got < 3 || !ReadSelf((uintptr_t)slot, &win) || !win) return false;
     switch (op) {
         case 'p': return PressChild(win, id);
+        case 'l': {   // 게임 목록 줄 참가 — 이름 칸(id + 1)이 목록(id)에 알리는 꼴 그대로(0x4010 · 줄 번호 — `GAME1_2.c:3862` sub_439050) 뒤 참가 단추
+            if (got < 4) return false;
+            const DWORD list = ((PFN_findchild)kFindChild)(win, id);
+            const DWORD names = ((PFN_findchild)kFindChild)(win, id + 1);
+            const DWORD join = ((PFN_findchild)kFindChild)(win, kBtnJoinGame);   // 줄을 고르면 정보 창이 목록에서 떨어져 나가 그 뒤엔 못 찾는다(`noxworld.c:415` 부모 0) — 먼저 찾아 둠
+            if (!list || !names || !join) return false;
+            ((PFN_wndproc4)kWinCall94)(list, 0x4010, names, (DWORD)row);
+            ((PFN_wndproc4)kWinCall94)(win, kMsgClick, join, 0);
+            return true;
+        }
         case 's': {
             if (got < 4) return false;
             const DWORD list = ((PFN_findchild)kFindChild)(win, id);
