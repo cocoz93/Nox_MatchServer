@@ -466,6 +466,22 @@ void SetWeights(std::vector<nox::Server::WorldStatic>& st, uint8_t w) {
     for (auto& z : st) z.weight = w;
 }
 
+// ★ 11-05 — 조각의 i 자리 `0xa8` 글자를 UTF-8 로 — 깃발 0 · 0x10 = UTF-16(크기 = 글자 수) · 그 밖 = 한 바이트(크기 = 바이트 수). 끝 0 도 그대로 든다. 넘치면 거짓
+bool A8TextAt(const std::vector<uint8_t>& x, size_t i, std::string& text) {
+    const size_t len = x[i + 8];
+    const uint8_t flags = x[i + 3];
+    const bool wide = (flags & 0x0a) == 0;   // 클라: 깃발에 2 · 8 이 없으면 UTF-16(`0x471e21`)
+    if (i + 11 + (wide ? len * 2 : len) > x.size()) return false;
+    text.clear();
+    for (size_t k = 0; k < len; ++k) {
+        const unsigned c = wide ? (x[i + 11 + k * 2] | (x[i + 12 + k * 2] << 8)) : x[i + 11 + k];
+        if (!wide || c < 0x80) text += static_cast<char>(c);
+        else if (c < 0x800) { text += static_cast<char>(0xc0 | (c >> 6)); text += static_cast<char>(0x80 | (c & 0x3f)); }
+        else { text += static_cast<char>(0xe0 | (c >> 12)); text += static_cast<char>(0x80 | ((c >> 6) & 0x3f)); text += static_cast<char>(0x80 | (c & 0x3f)); }
+    }
+    return true;
+}
+
 std::vector<std::vector<uint8_t>> FlattenTo(const std::vector<nox::OutPacket>& out,
                                             const std::string& to) {
     std::vector<nox::OutPacket> mine;
@@ -3653,7 +3669,7 @@ void TestBundleOneDatagram() {
         t2 += 34; s2.Tick(t2, w2);
         std::vector<nox::OutPacket> out;
         s2->DebugGiveExp(Sid(s2, c), 300.0f); s2.TakeOut(out);
-        const std::string line(190, 'x');
+        const std::string line(95, 'x');   // ★ 11-05 공지가 UTF-16 — 글자 95 = 옛 190 바이트와 같은 크기
         for (int i = 0; i < 12; ++i) { s2->DebugSendNotice(line.c_str()); s2.TakeOut(out); }
         out.clear();
         const unsigned long long ov0 = s2->bundleStat(BS::Overflow), ex0 = s2->bundleStat(BS::OverExtra), sz0 = s2->bundleStat(BS::OverSize);
@@ -26480,9 +26496,8 @@ void TestRoomChatCommands() {
         for (const auto& x : FlattenTo(out, to)) {
             for (size_t i = 0; i + 11 <= x.size(); ++i) {
                 if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
-                const size_t len = x[i + 8];
-                if (i + 11 + len > x.size()) continue;
-                const std::string text(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len));
+                std::string text;
+                if (!A8TextAt(x, i, text)) continue;
                 if (text.find(has) != std::string::npos) ++n;
             }
         }
@@ -26513,26 +26528,26 @@ void TestRoomChatCommands() {
     now += 34; srv.Tick(now, o);
     // ① 혼자
     const auto o1 = say(A, "!start", false);
-    const int tooFew = textTo(o1, A, "at least 2");
+    const int tooFew = textTo(o1, A, "2명 이상");
     join(srv, TrailerAs("bob", r, "10.42.0.2", 422), "10.42.0.2:2001", B, o);
     now += 34; srv.Tick(now, o);
     // ② 방장 아닌 사람
     const auto o2 = say(B, "!start", false);
-    const int notHostB = textTo(o2, B, "Only the host (alice)"), notHostA = textTo(o2, A, "Only the host");
+    const int notHostB = textTo(o2, B, "방장(alice)만"), notHostA = textTo(o2, A, "만 시작할 수 있습니다");
     // ③ 보통 말 · 명령 글자는 안 퍼짐(②에서 alice 에게 「!start」 가 안 갔다)
     const unsigned long long chats0 = rooms.Game(r).chats();
     const auto o3 = say(A, "hello", false);
     const int helloB = textTo(o3, B, "hello"), cmdEchoA = textTo(o2, A, "!start");
     // ④ 모르는 명령
     const auto o4 = say(A, "!foo bar", false);
-    const int unknownA = textTo(o4, A, "Unknown command");
+    const int unknownA = textTo(o4, A, "없는 명령");
     std::snprintf(m, sizeof(m), "①~④ 혼자 인원 모자람 %d · 방장 아님 B %d(A 에게 %d) · 명령 글자 퍼짐 %d · 보통 말 B 에게 %d(채팅 +%llu) · 모르는 명령 %d · 상태 %s",
                   tooFew, notHostB, notHostA, cmdEchoA, helloB, rooms.Game(r).chats() - chats0, unknownA, nox::RoomPhaseName(room.Phase()));
     Check(tooFew == 1 && notHostB == 1 && notHostA == 0 && cmdEchoA == 0 && helloB == 1 && rooms.Game(r).chats() - chats0 == 1 &&
           unknownA == 1 && room.Phase() == nox::RoomPhase::Waiting, m);
     // ⑤ 방장 · 둘 · UTF-16 대문자
     const auto o5 = say(A, "!START", true);
-    const int startA = textTo(o5, A, "Match starting!"), startB = textTo(o5, B, "Match starting!");
+    const int startA = textTo(o5, A, "대전을 시작합니다!"), startB = textTo(o5, B, "대전을 시작합니다!");
     const nox::RoomPhase after5 = room.Phase();
     // ★ 11-02 — 알림 끝 0. 클라는 깃발 2 면 길이를 안 보고 0 까지 베끼므로(`0x471dd1`) 크기 안 마지막 바이트가 0 이어야 한다(뒷 패킷이 글자로 찍힘)
     auto zeroEnded = [](const std::vector<nox::OutPacket>& out, const std::string& to, const char* has) {
@@ -26540,24 +26555,37 @@ void TestRoomChatCommands() {
         for (const auto& x : FlattenTo(out, to))
             for (size_t i = 0; i + 11 <= x.size(); ++i) {
                 if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
-                const size_t len = x[i + 8];
-                if (len == 0 || i + 11 + len > x.size() || x[i + 11 + len - 1] != 0) continue;
-                if (std::string(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len)).find(has) != std::string::npos) ++n;
+                std::string text;
+                if (x[i + 8] == 0 || !A8TextAt(x, i, text) || text.back() != 0) continue;
+                if (text.find(has) != std::string::npos) ++n;
             }
         return n;
     };
     std::snprintf(m, sizeof(m), "알림 끝 0 — 모두에게(SendNotice) %d · 한 사람(SendNoticeTo) %d",
-                  zeroEnded(o5, A, "Match starting!"), zeroEnded(o4, A, "Unknown command"));
-    Check(zeroEnded(o5, A, "Match starting!") == 1 && zeroEnded(o4, A, "Unknown command") == 1, m);
+                  zeroEnded(o5, A, "대전을 시작합니다!"), zeroEnded(o4, A, "없는 명령"));
+    Check(zeroEnded(o5, A, "대전을 시작합니다!") == 1 && zeroEnded(o4, A, "없는 명령") == 1, m);
+    // ★ 11-05 — 공지는 보낸 사람 번호 0(서버 — 화면 가운데) · 깃발 0(UTF-16 — 한글). 자기 번호로 가면 내 캐릭터 말풍선으로 뜬다
+    auto fromServer = [](const std::vector<nox::OutPacket>& out, const std::string& to, const char* has) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i + 11 <= x.size(); ++i) {
+                if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE) || x[i + 1] != 0 || x[i + 2] != 0 || x[i + 3] != 0) continue;
+                std::string text;
+                if (A8TextAt(x, i, text) && text.find(has) != std::string::npos) ++n;
+            }
+        return n;
+    };
+    std::snprintf(m, sizeof(m), "공지 머리 — 모두에게 %d · 한 사람 %d", fromServer(o5, A, "대전을 시작합니다!"), fromServer(o4, A, "없는 명령"));
+    Check(fromServer(o5, A, "대전을 시작합니다!") == 1 && fromServer(o4, A, "없는 명령") == 1, m);
     // ⑥ 판 중 다시
     const auto o6 = say(A, "!start", false);
-    const int already = textTo(o6, A, "already in progress");
+    const int already = textTo(o6, A, "이미 대전 중");
     // ⑦ 방장이 나가면 bob 에게 「새 방장」 알림(나감은 틱에서 · 알림은 다음 옮기기)
     std::vector<nox::OutPacket> o7;
     LeaveAndClose(srv, A, o7);
     now += 34; srv.Tick(now, o7);
     now += 34; srv.Tick(now, o7);
-    const int newHost = textTo(o7, B, "bob is now the host.");
+    const int newHost = textTo(o7, B, "bob 님이 새 방장입니다.");
     unsigned long long sum = 0;
     for (size_t i = 0; i < static_cast<size_t>(O::kCount); ++i) sum += room.CmdCount(static_cast<O>(i));
     std::snprintf(m, sizeof(m), "⑤~⑧ 시작 알림 A %d · B %d · 상태 %s · 판 중 다시 %d · 새 방장 알림 %d · 셈 시작 %llu · 방장아님 %llu · 대기아님 %llu · 모자람 %llu · 모름 %llu (합 %llu = 쌓은 명령 %llu)",
@@ -26627,9 +26655,9 @@ void TestRoomMatchSwitch() {
         for (const auto& x : FlattenTo(out, to))
             for (size_t i = 0; i + 11 <= x.size(); ++i) {
                 if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
-                const size_t len = x[i + 8];
-                if (i + 11 + len > x.size()) continue;
-                if (std::string(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len)).find(has) != std::string::npos) ++n;
+                std::string text;
+                if (!A8TextAt(x, i, text)) continue;
+                if (text.find(has) != std::string::npos) ++n;
             }
         return n;
     };
@@ -26717,12 +26745,12 @@ void TestRoomMatchSwitch() {
     const auto fct2 = fact(rooms, r);
     std::snprintf(m, sizeof(m), "② 판 끝 — USE_MAP so_lod A %d B %d · 채팅 af(시각 > %u) A %d B %d · 자리 A %.0f,%.0f · 방 %s · 목록 %s/%s · 알림 A %d B %d · 전환 %llu · 걸어 둔 맵 %d · 맵 %s",
                   useMapTo(o2, A, "so_lod.map"), useMapTo(o2, B, "so_lod.map"), fA, af2, af2b, game.DebugPosX(sa), game.DebugPosY(sa),
-                  nox::RoomPhaseName(room.Phase()), fct2.mapKey.c_str(), fct2.mode.c_str(), textTo(o2, A, "Back to the waiting room"),
-                  textTo(o2, B, "Back to the waiting room"), game.mapSwitches(), (int)game.HasNextRoundMap(), game.MapFileName().c_str());
+                  nox::RoomPhaseName(room.Phase()), fct2.mapKey.c_str(), fct2.mode.c_str(), textTo(o2, A, "대기실로 돌아왔습니다"),
+                  textTo(o2, B, "대기실로 돌아왔습니다"), game.mapSwitches(), (int)game.HasNextRoundMap(), game.MapFileName().c_str());
     Check(useMapTo(o2, A, "so_lod.map") >= 1 && useMapTo(o2, B, "so_lod.map") >= 1 && af2 >= 1 && af2b >= 1 &&
           near(sa, 1000.0) && near(sb, 1000.0) && room.Phase() == nox::RoomPhase::Waiting &&
-          fct2.mapKey == "so_lod" && fct2.mode == "chat" && textTo(o2, A, "Back to the waiting room") == 1 &&
-          textTo(o2, B, "Back to the waiting room") == 1 && game.mapSwitches() == 2 && !game.HasNextRoundMap() && game.MapFileName() == "so_lod.map", m);
+          fct2.mapKey == "so_lod" && fct2.mode == "chat" && textTo(o2, A, "대기실로 돌아왔습니다") == 1 &&
+          textTo(o2, B, "대기실로 돌아왔습니다") == 1 && game.mapSwitches() == 2 && !game.HasNextRoundMap() && game.MapFileName() == "so_lod.map", m);
     // ③ 두 바퀴 · ⑤ 같은 연결
     const auto o3 = say(A, "!start");
     std::snprintf(m, sizeof(m), "③⑤ 두 바퀴 — USE_MAP estate A %d · 방 %s · 전환 %llu · 시작 셈 %llu · 같은 연결(세션 A %lld→%lld · B %lld→%lld · 방 %d·%d)",
@@ -26740,9 +26768,9 @@ void TestRoomMatchSwitch() {
     now += 34; srv.Tick(now, jc);
     const auto o4 = say(C, "!start");
     std::snprintf(m, sizeof(m), "④ 대전 맵 없음 — 알림 %d · 맵 없음 셈 %llu · 방 %s · 전환 %llu · USE_MAP %d",
-                  textTo(o4, C, "No battle map"), rooms.Room(rNo).CmdCount(O::NoMap), nox::RoomPhaseName(rooms.Room(rNo).Phase()),
+                  textTo(o4, C, "대전 맵이 없습니다"), rooms.Room(rNo).CmdCount(O::NoMap), nox::RoomPhaseName(rooms.Room(rNo).Phase()),
                   rooms.Game(rNo).mapSwitches(), useMapTo(o4, C, "so_lod.map"));
-    Check(textTo(o4, C, "No battle map") == 1 && rooms.Room(rNo).CmdCount(O::NoMap) == 1 && rooms.Room(rNo).Phase() == nox::RoomPhase::Waiting &&
+    Check(textTo(o4, C, "대전 맵이 없습니다") == 1 && rooms.Room(rNo).CmdCount(O::NoMap) == 1 && rooms.Room(rNo).Phase() == nox::RoomPhase::Waiting &&
           rooms.Game(rNo).mapSwitches() == 0 && useMapTo(o4, C, "so_lod.map") == 0, m);
     // ⑥ ★ 13d 시험 손잡이 — 판 점수 한도 1 이면 판을 열 때 한도 1(전환의 `af` 18번 칸에도) · 손잡이 없는 방은 15 그대로
     const int rLim = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", /*battleScoreLimit=*/1);
@@ -26771,7 +26799,7 @@ void TestRoomMatchSwitch() {
         now += 34; srv.Tick(now, r1);
         srv.OnPacket(E, rd.data(), rd.size(), r2);
         now += 34; srv.Tick(now, r2);
-        const char* const line = "First to 1 kill wins";
+        const char* const line = "먼저 1킬을 하면 승리합니다";
         const int a1 = textTo(r1, E, line), a2 = textTo(r2, E, line), af2 = textTo(r1, F, line);
         std::snprintf(m, sizeof(m), "⑥-b 맵 다 읽은 뒤 공지 — 첫 준비 %d · 되풀이 준비 %d · 다른 사람 %d · 셈 %llu", a1, a2, af2, rooms.Game(rLim).limitNotices());
         Check(a1 == 1 && a2 == 0 && af2 == 0 && rooms.Game(rLim).limitNotices() == 1, m);
@@ -26800,9 +26828,9 @@ void TestMatchHeadcount() {
         for (const auto& x : FlattenTo(out, to))
             for (size_t i = 0; i + 11 <= x.size(); ++i) {
                 if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
-                const size_t len = x[i + 8];
-                if (i + 11 + len > x.size()) continue;
-                if (std::string(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len)).find(has) != std::string::npos) ++n;
+                std::string text;
+                if (!A8TextAt(x, i, text)) continue;
+                if (text.find(has) != std::string::npos) ++n;
             }
         return n;
     };
@@ -26875,7 +26903,7 @@ void TestMatchHeadcount() {
         const std::string mapAtLeave = game.MapFileName();
         // 승자 알림은 중요 대기열로 간다 — 가짜 클라는 대기열 준비 전이라 나간 것 대신 대기열을 본다
         const int winnerAtLeave = static_cast<int>(game.DebugImportantPendingSeqOp(Sid(s.srv, s.addr[0]), static_cast<uint8_t>(nox::Op::REPORT_DEATHMATCH_WINNER)));
-        const int noticeAtLeave = textTo(o2, s.addr[0], "Opponent left");
+        const int noticeAtLeave = textTo(o2, s.addr[0], "상대가 나가");
         const int useMapAtLeave = useMapTo(o2, s.addr[0], "so_lod.map");
         const unsigned long long forfeits = game.roundForfeits();
         for (int k = 0; k < 40 && room.Phase() == nox::RoomPhase::Playing; ++k) { s.now += 500; s.srv.Tick(s.now, o2); }
@@ -26883,10 +26911,10 @@ void TestMatchHeadcount() {
         for (const auto& x : s.srv.Rooms().ListRooms()) if (x.roomId == s.r) f = x;
         std::snprintf(m, sizeof(m), "② 하나 남음 — 그때 방 %s · 판 끝 %d · 맵 %s · 승자 알림 %d · 나감 알림 %d · USE_MAP %d · 몰수 %llu · 다시 연 뒤 USE_MAP so_lod %d · 대기 알림 %d · 방 %s · 목록 %s/%s · 걸어 둔 맵 %d · 맵 %s · 전환 %llu · 셈 %llu",
                       nox::RoomPhaseName(phaseAtLeave), (int)overAtLeave, mapAtLeave.c_str(), winnerAtLeave, noticeAtLeave, useMapAtLeave, forfeits,
-                      useMapTo(o2, s.addr[0], "so_lod.map"), textTo(o2, s.addr[0], "Back to the waiting room."), nox::RoomPhaseName(room.Phase()),
+                      useMapTo(o2, s.addr[0], "so_lod.map"), textTo(o2, s.addr[0], "대기실로 돌아왔습니다."), nox::RoomPhaseName(room.Phase()),
                       f.mapKey.c_str(), f.mode.c_str(), (int)game.HasNextRoundMap(), game.MapFileName().c_str(), game.mapSwitches(), room.MatchAborts());
         Check(phaseAtLeave == nox::RoomPhase::Playing && overAtLeave && mapAtLeave == "estate.map" && winnerAtLeave == 1 && noticeAtLeave == 1 && useMapAtLeave == 0 && forfeits == 1 &&
-              useMapTo(o2, s.addr[0], "so_lod.map") >= 1 && textTo(o2, s.addr[0], "Back to the waiting room.") == 1 &&   // USE_MAP 은 가짜 클라가 확인을 안 해 다시 실린다
+              useMapTo(o2, s.addr[0], "so_lod.map") >= 1 && textTo(o2, s.addr[0], "대기실로 돌아왔습니다.") == 1 &&   // USE_MAP 은 가짜 클라가 확인을 안 해 다시 실린다
               room.Phase() == nox::RoomPhase::Waiting && f.mapKey == "so_lod" && f.mode == "chat" && !game.HasNextRoundMap() &&
               game.MapFileName() == "so_lod.map" && game.mapSwitches() == 2 && room.MatchAborts() == 1, m);
     }
@@ -26904,10 +26932,10 @@ void TestMatchHeadcount() {
         for (int k = 0; k < 40 && room.Phase() == nox::RoomPhase::Playing; ++k) { s.now += 500; s.srv.Tick(s.now, o3); }
         s.now += 34; s.srv.Tick(s.now, o3);
         std::snprintf(m, sizeof(m), "③ 판 끝 쉬는 중 빠짐 — 그때 방 %s · 셈 %llu · 다시 연 뒤 방 %s · 판 끝 알림 %d · 사람 모자람 알림 %d · 맵 %s · 셈 %llu",
-                      nox::RoomPhaseName(during), abortsDuring, nox::RoomPhaseName(room.Phase()), textTo(o3, s.addr[0], "Back to the waiting room."),
-                      textTo(o3, s.addr[0], "Opponent left"), game.MapFileName().c_str(), room.MatchAborts());
+                      nox::RoomPhaseName(during), abortsDuring, nox::RoomPhaseName(room.Phase()), textTo(o3, s.addr[0], "대기실로 돌아왔습니다."),
+                      textTo(o3, s.addr[0], "상대가 나가"), game.MapFileName().c_str(), room.MatchAborts());
         Check(during == nox::RoomPhase::Playing && abortsDuring == 0 && room.Phase() == nox::RoomPhase::Waiting &&
-              textTo(o3, s.addr[0], "Opponent left") == 0 && game.MapFileName() == "so_lod.map" && room.MatchAborts() == 0, m);
+              textTo(o3, s.addr[0], "상대가 나가") == 0 && game.MapFileName() == "so_lod.map" && room.MatchAborts() == 0, m);
     }
     // ★ 11-03 ④ 로비 접속이 끊긴 사람만 시간 초과 한도 5초(`CLIENT_GONE` → `Server::ClientLobbyGone`) — 다른 PC 판 「클라를 껐는데 상대는 계속」(강제 종료 90초)
     //   대조군 = 안 끊긴 사람(같은 판 · 같이 말 없음)은 안 끊김 · 없는 이름은 0
@@ -27500,15 +27528,14 @@ void TestRankRoom() {
             for (const auto& x : FlattenTo(out, to)) {
                 for (size_t i = 0; i + 11 <= x.size(); ++i) {
                     if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
-                    const size_t len = x[i + 8];
-                    if (i + 11 + len > x.size()) continue;
-                    const std::string text(x.begin() + static_cast<long>(i + 11), x.begin() + static_cast<long>(i + 11 + len));
+                    std::string text;
+                    if (!A8TextAt(x, i, text)) continue;
                     if (text.find(has) != std::string::npos) ++n;
                 }
             }
             return n;
         };
-        const int vsM = textTo(o, "10.66.0.1:1002", "Ranked: mia (1000) vs ned (1010)"), vsN = textTo(o, "10.66.0.2:2002", "Ranked: mia (1000) vs ned (1010)");
+        const int vsM = textTo(o, "10.66.0.1:1002", "랭크 대전: mia (1000) vs ned (1010)"), vsN = textTo(o, "10.66.0.2:2002", "랭크 대전: mia (1000) vs ned (1010)");
         std::snprintf(m, sizeof(m), "★ 상대 알림 — ⑧ mia %d · ned %d · 보낸 수 r6 %llu · r1 %llu · r2 %llu · r3 %llu · r4 %llu",
                       vsM, vsN, rooms.Room(r6).RankVsSent(), rooms.Room(r1).RankVsSent(), rooms.Room(r2).RankVsSent(), rooms.Room(r3).RankVsSent(),
                       rooms.Room(r4).RankVsSent());
@@ -27530,7 +27557,7 @@ void TestRankRoom() {
             join(srv, TrailerAs(names[i], r7, ip, 671 + i), ip + ":1001", ip + ":1002", o);
         }
         const std::string vs = rooms.Room(r7).RankVsText();
-        const std::string head = "Ranked: " + names[0] + " (-2147483648) vs " + names[1];
+        const std::string head = "랭크 대전: " + names[0] + " (-2147483648) vs " + names[1];
         std::snprintf(m, sizeof(m), "★ 긴 명단 알림 %zu바이트 · 끝 「 ...」 %d · 앞 두 사람 %d · 도착 %zu", vs.size(),
                       (int)(vs.size() >= 4 && vs.compare(vs.size() - 4, 4, " ...") == 0), (int)(vs.rfind(head, 0) == 0), rooms.Room(r7).RankArrived());
         Check(vs.size() <= 200 && vs.size() >= 4 && vs.compare(vs.size() - 4, 4, " ...") == 0 && vs.rfind(head, 0) == 0 && rooms.Room(r7).RankArrived() == 8, m);
@@ -32934,7 +32961,7 @@ void TestQuest() {
         for (const auto& p : all) {
             auto body = Body(p);
             if (!body.empty() && body[0] == static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) {
-                Check(body.size() == 11u + body[8], "0xa8 길이가 머리10+글자와 안 맞음");
+                Check(body.size() == 11u + body[8] * 2u, "0xa8 길이가 머리10+글자(UTF-16 — 글자당 2바이트)와 안 맞음");
                 ++notices;
             }
         }

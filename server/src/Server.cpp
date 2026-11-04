@@ -2358,60 +2358,8 @@ void Server::BroadcastChat(const Session& who, const uint8_t* text, size_t n, bo
     }
 }
 
-// 글자 한 줄 — `0xa8 TEXT_MESSAGE`. 짜임은 실측이고 **문구만 우리 것**이다.
-// ★ 11-02 — 끝 0 을 싣는다(크기 칸에도 포함). 클라는 깃발 2 면 크기를 안 보고 `%S` 로 0 까지 베끼므로(`0x471dd1`),
-//   없으면 같은 패킷의 뒷 메시지 바이트가 글자로 찍힌다(버퍼 실측 `Ranked: … (1000)` + 01 cc 0c)
-void Server::SendNotice(const char* text) {
-    const size_t n = std::strlen(text);
-    if (n == 0 || n > 200) return;
-    std::vector<uint8_t> msg;
-    msg.reserve(11 + n + 1);
-    msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
-    for (auto& kv : sessions_) {
-        if (!kv.second.inGame) continue;
-        Session& s = kv.second;
-        msg.resize(1);
-        msg.push_back(static_cast<uint8_t>(s.netCode));
-        msg.push_back(static_cast<uint8_t>(s.netCode >> 8));
-        msg.push_back(0x02);                       // 깃발 = UTF-8 (그래야 한 글자 한 바이트)
-        msg.push_back(static_cast<uint8_t>(s.x));
-        msg.push_back(static_cast<uint8_t>(s.x >> 8));
-        msg.push_back(static_cast<uint8_t>(s.y));
-        msg.push_back(static_cast<uint8_t>(s.y >> 8));
-        msg.push_back(static_cast<uint8_t>(n + 1));   // 끝 0 포함
-        msg.push_back(0); msg.push_back(0);        // 지속 = 0
-        msg.insert(msg.end(), text, text + n);
-        msg.push_back(0);
-        Emit(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size());
-    }
-}
-
-// ★ 10-16 작업 12b — `SendNotice` 의 한 사람 판(같은 짜임)
-void Server::SendNoticeTo(int64_t sessionId, const char* text) {
-    const size_t n = std::strlen(text);
-    if (n == 0 || n > 200) return;
-    auto it = sessions_.find(sessionId);
-    if (it == sessions_.end() || !it->second.inGame) return;
-    Session& s = it->second;
-    std::vector<uint8_t> msg;
-    msg.reserve(11 + n + 1);
-    msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
-    msg.push_back(static_cast<uint8_t>(s.netCode));
-    msg.push_back(static_cast<uint8_t>(s.netCode >> 8));
-    msg.push_back(0x02);                       // 깃발 = UTF-8 (그래야 한 글자 한 바이트)
-    msg.push_back(static_cast<uint8_t>(s.x));
-    msg.push_back(static_cast<uint8_t>(s.x >> 8));
-    msg.push_back(static_cast<uint8_t>(s.y));
-    msg.push_back(static_cast<uint8_t>(s.y >> 8));
-    msg.push_back(static_cast<uint8_t>(n + 1));   // 끝 0 포함(`SendNotice` 머리 주석)
-    msg.push_back(0); msg.push_back(0);        // 지속 = 0
-    msg.insert(msg.end(), text, text + n);
-    msg.push_back(0);
-    Emit(s, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size());
-}
-
-// ★ 10-31 — 머리 주석은 `Server.h`
-void Server::SendNoticeBoxTo(int64_t sessionId, const std::string& utf8) {
+// UTF-8 → UTF-16(BMP 밖 · 틀린 바이트는 '?') — 공지 · 알림창이 나눠 쓴다
+static std::vector<uint16_t> NoticeWide(const std::string& utf8) {
     std::vector<uint16_t> w;
     w.reserve(utf8.size());
     for (size_t i = 0; i < utf8.size();) {
@@ -2424,6 +2372,54 @@ void Server::SendNoticeBoxTo(int64_t sessionId, const std::string& utf8) {
             i += 3;
         } else { w.push_back('?'); i += 1; }   // BMP 밖 · 틀린 바이트
     }
+    return w;
+}
+
+// ★ 11-05 공지 한 줄(사람 모두 같은 바이트) — 보낸 사람 번호 0 = 서버 · 깃발 0 = UTF-16 · 크기 = 글자 수(끝 0 포함)
+//   - 왜: 받는 사람 자기 번호로 보내면 내 캐릭터가 한 말처럼 머리 위 말풍선으로 뜨고(`w1/d1_start_1s.png`) 깃발 2 는 한글을 못 싣는다
+//   - 근거: 번호 0 이면 화면 가운데에 찍는다(`network_client.go:517` · 원본 기준 · 이 exe 는 실물 화면으로 확인) · 좌표 칸은 안 쓰여 0
+//   비었거나 200자 넘으면 빈 값(안 보냄)
+static std::vector<uint8_t> BuildServerNotice(const std::string& utf8) {
+    std::vector<uint16_t> w = NoticeWide(utf8);
+    if (w.empty() || w.size() > 200) return {};
+    w.push_back(0);
+    std::vector<uint8_t> msg;
+    msg.reserve(11 + w.size() * 2);
+    msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
+    msg.push_back(0); msg.push_back(0);        // 보낸 사람 번호 = 0(서버)
+    msg.push_back(0x00);                       // 깃발 = UTF-16
+    msg.push_back(0); msg.push_back(0);        // 좌표 X
+    msg.push_back(0); msg.push_back(0);        // 좌표 Y
+    msg.push_back(static_cast<uint8_t>(w.size()));   // 글자 수(끝 0 포함)
+    msg.push_back(0); msg.push_back(0);        // 지속 = 0
+    for (uint16_t c : w) { msg.push_back(static_cast<uint8_t>(c)); msg.push_back(static_cast<uint8_t>(c >> 8)); }
+    return msg;
+}
+
+// 글자 한 줄 — `0xa8 TEXT_MESSAGE`. 짜임은 실측이고 **문구만 우리 것**이다.
+// ★ 11-02 — 끝 0 을 싣는다(크기 칸에도 포함). 클라는 깃발 2 면 크기를 안 보고 `%S` 로 0 까지 베끼므로(`0x471dd1`),
+//   없으면 같은 패킷의 뒷 메시지 바이트가 글자로 찍힌다(버퍼 실측 `Ranked: … (1000)` + 01 cc 0c)
+void Server::SendNotice(const char* text) {
+    const std::vector<uint8_t> msg = BuildServerNotice(text);
+    if (msg.empty()) return;
+    for (auto& kv : sessions_) {
+        if (!kv.second.inGame) continue;
+        Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size());
+    }
+}
+
+// ★ 10-16 작업 12b — `SendNotice` 의 한 사람 판(같은 짜임)
+void Server::SendNoticeTo(int64_t sessionId, const char* text) {
+    const std::vector<uint8_t> msg = BuildServerNotice(text);
+    if (msg.empty()) return;
+    auto it = sessions_.find(sessionId);
+    if (it == sessions_.end() || !it->second.inGame) return;
+    Emit(it->second, /*reliable=*/false, /*stream=*/0, msg.data(), msg.size());
+}
+
+// ★ 10-31 — 머리 주석은 `Server.h`
+void Server::SendNoticeBoxTo(int64_t sessionId, const std::string& utf8) {
+    std::vector<uint16_t> w = NoticeWide(utf8);
     if (w.empty() || w.size() > 200) return;
     auto it = sessions_.find(sessionId);
     if (it == sessions_.end() || !it->second.inGame) return;
@@ -3218,7 +3214,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 if (s.limitNoticeOnReady) {           // ★ 11-03 — `ArmLimitNotice` 주석
                     s.limitNoticeOnReady = false;
                     char line[48];
-                    std::snprintf(line, sizeof(line), "First to %u kill%s wins", static_cast<unsigned>(gameSettings_.limitValue), gameSettings_.limitValue == 1 ? "" : "s");
+                    std::snprintf(line, sizeof(line), "먼저 %u킬을 하면 승리합니다", static_cast<unsigned>(gameSettings_.limitValue));
                     SendNoticeTo(s.sessionId, line);
                     ++limitNotices_;
                 }

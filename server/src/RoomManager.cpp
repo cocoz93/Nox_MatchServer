@@ -176,12 +176,12 @@ void CRoomManager::CheckRankRooms(uint32_t nowMs) {
             case Decision::Unranked:
                 ++_stats.rankUnranked;
                 what = "도착 한도 — 모자라 랭크 풂(일반 방)";
-                room._game.SendNotice("Not enough players arrived. Unranked room now.");
+                room._game.SendNotice("상대가 오지 않아 일반 방으로 바꿉니다.");
                 break;
             case Decision::NoMap:
                 ++_stats.rankNoMap;
                 what = "대전 맵 · 대기 맵 원본 없음 — 랭크 풂(일반 방)";
-                room._game.SendNotice("No battle map on this server. Unranked room now.");
+                room._game.SendNotice("대전 맵이 없어 일반 방으로 바꿉니다.");
                 break;
         }
         if (_logRooms) {
@@ -196,7 +196,7 @@ void CRoomManager::CheckRankRooms(uint32_t nowMs) {
             continue;
         }
         room._rankWait = CRoom::RankWait::Started;
-        room._game.SendNotice("Ranked match starting!");
+        room._game.SendNotice("랭크 대전을 시작합니다!");
         // ★ 매칭 손보기 3 — 한 맵 랭크 방(대기 맵 = 대전 맵 — `CLobbyClient` 가 `SetRankOneMap` 일 때 그렇게 만든다)이면 제자리에서
         room.StartMatch(_rankOneMap && !room._settings.mapPath.empty() && room._settings.mapPath == room._settings.battleMapPath);
     }
@@ -364,7 +364,7 @@ void CRoomManager::RemoveMember(CRoom& room, int64_t sessionId) {
             LogHost(room, "방장이 나감");
             // ★ 10-16 작업 12b — 남은 사람에게 알림(게임 요청으로 쌓여 다음 옮기기 때 나간다)
             char line[96];
-            std::snprintf(line, sizeof(line), "%s is now the host.", ms.front().account.empty() ? "Next player" : ms.front().account.c_str());
+            std::snprintf(line, sizeof(line), "%s 님이 새 방장입니다.", ms.front().account.empty() ? "다음 사람" : ms.front().account.c_str());
             room._game.SendNotice(line);
         }
         return;

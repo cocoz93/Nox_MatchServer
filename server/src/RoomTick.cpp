@@ -804,30 +804,30 @@ void nox::CRoom::HandleChatCommands() {
         char line[160];
         switch (r) {
             case CmdOutcome::Started:
-                _game.SendNotice("Match starting!");
+                _game.SendNotice("대전을 시작합니다!");
                 StartMatch();   // ★ 13b — 대전 맵으로(접속 유지) · 판
                 break;
             case CmdOutcome::NoMap:
-                _game.SendNoticeTo(c.sessionId, "No battle map on this server.");
+                _game.SendNoticeTo(c.sessionId, "이 서버에 대전 맵이 없습니다.");
                 break;
             case CmdOutcome::NotHost: {
                 const RoomMember* h = Host();
-                std::snprintf(line, sizeof(line), "Only the host (%s) can start.", h && !h->account.empty() ? h->account.c_str() : "?");
+                std::snprintf(line, sizeof(line), "방장(%s)만 시작할 수 있습니다.", h && !h->account.empty() ? h->account.c_str() : "?");
                 _game.SendNoticeTo(c.sessionId, line);
                 break;
             }
             case CmdOutcome::NotWaiting:
-                _game.SendNoticeTo(c.sessionId, "A match is already in progress.");
+                _game.SendNoticeTo(c.sessionId, "이미 대전 중입니다.");
                 break;
             case CmdOutcome::RankAuto:
-                _game.SendNoticeTo(c.sessionId, "Ranked match starts automatically when everyone arrives.");
+                _game.SendNoticeTo(c.sessionId, "랭크 대전은 모두 들어오면 자동으로 시작합니다.");
                 break;
             case CmdOutcome::TooFew:
-                std::snprintf(line, sizeof(line), "Need at least %zu players to start.", kMinPlayers);
+                std::snprintf(line, sizeof(line), "%zu명 이상이어야 시작할 수 있습니다.", kMinPlayers);
                 _game.SendNoticeTo(c.sessionId, line);
                 break;
             case CmdOutcome::Unknown:
-                _game.SendNoticeTo(c.sessionId, "Unknown command.");
+                _game.SendNoticeTo(c.sessionId, "없는 명령입니다.");
                 break;
             case CmdOutcome::kCount:
                 break;
@@ -975,7 +975,7 @@ void nox::CRoom::OnRoundRestarted() {
     _phase = RoomPhase::Waiting;
     _curMapKey = _settings.mapPath.empty() ? std::string() : MapKeyOf(_settings.mapPath);
     _curMode = _settings.mode;
-    _game.SendNotice("Back to the waiting room.");
+    _game.SendNotice("대기실로 돌아왔습니다.");
     _game.Log("[판] 끝 — 대기 맵 %s 로 돌아옴(지금 맵 %s)\n", _curMapKey.c_str(), _game.MapFileName().c_str());
     EndRankedMatch("판 끝");   // ★ 랭크 매칭 조각 6 — 판 결과(ranked)는 판 끝에 이미 지었다(`CollectRoundOutcome`)
 }
@@ -986,7 +986,7 @@ void nox::CRoom::EndRankedMatch(const char* why) {
     _rankWait = RankWait::None;
     _settings.ranked = false;
     _settings.roster.clear();
-    _game.SendNotice("Ranked match over. This is a normal room now.");
+    _game.SendNotice("랭크 대전이 끝났습니다. 이제 일반 방입니다.");
     _game.Log("[판] 랭크 판 %s — 이 방은 이제 일반 방\n", why);
 }
 
@@ -1024,7 +1024,7 @@ std::string nox::CRoom::RankVsText() const {
                 if (_settings.roster[i] == m.account) here[i] = true;
         }
     const size_t kMax = 200;   // `Server::SendNotice` 한도
-    std::string t = "Ranked:";
+    std::string t = "랭크 대전:";
     size_t shown = 0;
     for (size_t i = 0; i < _settings.roster.size(); ++i) {
         if (!here[i]) continue;
@@ -1064,7 +1064,7 @@ void nox::CRoom::CheckMatchHeadcount() {
     // ★ 11-03 — 남은 사람이 있으면 판 끝처럼 닫는다(`Server::EndRoundForfeit`): 승자 알림 · 쉬는 시간 뒤 대기 맵(`OnRoundRestarted`) · 랭크면 모두 내보냄.
     //   일반 방이 한 명으로 대기 맵에 남는 것은 그대로(10-16 사용자 결정 「한 명 남으면 대기」 — 옮기는 때만 뒤로)
     if (left > 0) {
-        _game.SendNotice("Opponent left. Match over.");
+        _game.SendNotice("상대가 나가 대전이 끝났습니다.");
         if (_rankWait == RankWait::Started) {
             _game.QuitAtRestart();
             ++_rankQuitArmed;
@@ -1079,7 +1079,7 @@ void nox::CRoom::CheckMatchHeadcount() {
     _phase = RoomPhase::Waiting;
     _curMapKey = wait->key;
     _curMode = _settings.mode;
-    _game.SendNotice("Not enough players. Back to the waiting room.");
+    _game.SendNotice("인원이 모자라 대기실로 돌아갑니다.");
     _game.Log("[판] 사람 모자람(게임 안 %zu < %zu) — 대기 맵 %s 로\n", left, kMinPlayers, wait->key.c_str());
     EndRankedMatch("중단");   // ★ 랭크 매칭 조각 6 — 중단 결과(ranked)는 위에서 지었다
 }
