@@ -473,10 +473,15 @@ int main(int argc, char** argv) {
         Check(ad.Run("INSERT INTO accounts (name, created_unix, last_login_unix) VALUES ('h5', 1, 1)"), "⑪ 판 없는 계정");
         hw.GetMatchHistory(req++, "h5");
         auto noRow = WaitAnswers(hw, 1);
+        for (const nox::test::HistoryAccountCase& c2 : nox::test::HistoryAccountCases()) {   // ★ 전적 검색 — 계정 유무 · lobby_test 메모리 가짜와 같은 표
+            hw.GetMatchHistory(req++, c2.name);
+            auto acc = WaitAnswers(hw, 1);
+            Check(acc.size() == 1 && acc[0].historyOk && acc[0].accountFound == c2.found, std::string("⑪ 계정 유무 ") + c2.name);
+        }
         Check(noRow.size() == 1 && noRow[0].historyOk && noRow[0].history.totals == MatchTotals{} && noRow[0].history.rows.empty() && totalsOf("h5").empty(), "⑪ 합계 행 없는 계정 — 전부 0 · 줄 없음");
         hw.Stop();
         const nox::db::DbStats hs = hw.Stats();
-        Check(hs.historyRequests == 8 && hs.historyReads == 6 && hs.historyFailed == 2, "⑩ 셈 — 읽기 요청 8 = 읽음 6 + 실패 2");
+        Check(hs.historyRequests == 15 && hs.historyReads == 13 && hs.historyFailed == 2, "⑩ 셈 — 읽기 요청 15 = 읽음 13 + 실패 2");
 
         // ⑫ ★ 11-04 전적 검색 — 다시 계산(`MatchTotalsRebuild.h`). 판정 입력이 저장(`MatchRowOf`)과 읽기(`MatchRowBinds`) 두 길이라 값이 같아야 한다
         auto totalsTable = [&] {   // 0 행은 행 없음으로 친다 — 다시 계산은 행을 안 지운다

@@ -19,6 +19,7 @@
 #include "nox/LobbyLink.h"
 #include "MatchHistoryScenario.h"
 #include "nox/LobbyStore.h"
+#include "nox/RecordDesk.h"
 #include "nox/RoomMirror.h"
 #include "nox/Router.h"
 #include "nox/WolGameInfo.h"
@@ -2432,13 +2433,16 @@ void LoginUnitTests() {
         st.TakeAnswers(ans);
         Lobby rl(makeCfg(true), fake);
         rl.AttachStore(&st);
+        RecordDesk desk;   // ★ 11-04 전적 검색 — 물음과 셈은 전적 창구로 옮겼다
+        desk.AttachStore(&st);
+        rl.AttachRecords(&desk);
         auto pump = [&]() {   // 소켓 루프의 한 바퀴(`lobby_main.cpp` 갈래와 같게)
             ans.clear();
             st.TakeAnswers(ans);
             out.clear();
             for (const StoreAnswer& a : ans) {
                 if (a.kind == StoreAnswerKind::Rating) rl.OnRatingAnswer(a, out);
-                else if (a.kind == StoreAnswerKind::History) rl.OnHistoryAnswer(a, out);
+                else if (a.kind == StoreAnswerKind::History) desk.OnAnswer(a, out);
             }
         };
         const std::vector<std::string> ask = {"NOXRANK RECORD"};
@@ -2451,13 +2455,13 @@ void LoginUnitTests() {
         login(2, 22, "h3");
         // a) 답 전엔 줄 없음 · 겹친 물음은 버림 · 답은 묻는 접속에만
         feed(rl, 1, ask);
-        const bool waited = out.empty() && rl.PendingHistories() == 1;
+        const bool waited = out.empty() && desk.Pending() == 1;
         feed(rl, 1, ask);
-        const bool busy = out.empty() && rl.Stats().recordBusy == 1 && rl.PendingHistories() == 1;
+        const bool busy = out.empty() && desk.Stats().recordBusy == 1 && desk.Pending() == 1;
         pump();
         bool onlyAsker = true;
         for (const Out& o : out) onlyAsker = onlyAsker && o.conn == 1;
-        Check(waited && busy && onlyAsker && lines() == nox::test::HistoryExpectH1() && rl.PendingHistories() == 0,
+        Check(waited && busy && onlyAsker && lines() == nox::test::HistoryExpectH1() && desk.Pending() == 0,
               "⑩ 대전 기록 — 답 전 줄 없음 · 겹침 버림 · 답 뒤 물은 접속에 요약 · 다섯 줄 · 끝(받은 줄 " + std::to_string(out.size()) + ")");
         // b) 답이 끝나면 다시 물을 수 있다 · 21판 넘어도 줄은 20
         feed(rl, 2, ask);
@@ -2485,7 +2489,7 @@ void LoginUnitTests() {
         out.clear();
         rl.OnClose(2, out);
         pump();
-        Check(out.empty() && rl.Stats().recordClosed == 1 && rl.Stats().recordLate == 1 && rl.PendingHistories() == 0, "⑩ 끊긴 접속의 답은 늦은 답");
+        Check(out.empty() && desk.Stats().recordClosed == 1 && desk.Stats().recordLate == 1 && desk.Pending() == 0, "⑩ 끊긴 접속의 답은 늦은 답");
         // e) 로그인 전 물음 · 판 4 미만 DLL · 저장소 없는 로비
         rl.OnConnect(3, peer, peer);
         feed(rl, 3, {"NOXCLIENT 5", "NOXRANK RECORD"});
@@ -2493,19 +2497,133 @@ void LoginUnitTests() {
         rl.OnConnect(4, peer, peer);
         const unsigned long long oldBefore = rl.Stats().rankOldClient;
         feed(rl, 4, {"NOXCLIENT 3", "NOXRANK RECORD"});
-        const bool old = rl.Stats().rankOldClient == oldBefore + 1 && rl.PendingHistories() == 0;
+        const bool old = rl.Stats().rankOldClient == oldBefore + 1 && desk.Pending() == 0;
         Lobby bare(makeCfg(true), fake);
+        RecordDesk bareDesk;   // 저장소 없음
+        bare.AttachRecords(&bareDesk);
         bare.OnConnect(1, peer, peer);
         feed(bare, 1, bundle("5", "h1", apgar(Tok{21, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "h1"})));
         feed(bare, 1, ask);
-        const bool noStore = lines() == std::vector<std::string>{"NOXRANK RECFAIL"} && bare.Stats().recordFailed == 1;
+        const bool noStore = lines() == std::vector<std::string>{"NOXRANK RECFAIL"} && bareDesk.Stats().recordFailed == 1;
         Check(noLogin && old && noStore, "⑩ 로그인 전 · 낮은 판 DLL 은 안 물음 · 저장소 없으면 RECFAIL");
+        Lobby noDesk(makeCfg(true), fake);   // ★ 전적 검색 — 창구 없는 로비(모르는 줄)
+        noDesk.OnConnect(1, peer, peer);
+        feed(noDesk, 1, bundle("5", "h1", apgar(Tok{21, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "h1"})));
+        out.clear();
+        feed(noDesk, 1, ask);
+        Check(out.empty(), "⑩ 전적 창구 없는 로비 — 답 없음");
         // f) 안 물은 답 · 셈
         out.clear();
-        rl.OnHistoryAnswer(StoreAnswer{StoreAnswerKind::History, 999}, out);
-        const LobbyStats& s = rl.Stats();
+        desk.OnAnswer(StoreAnswer{StoreAnswerKind::History, 999}, out);
+        const RecordDeskStats& s = desk.Stats();
         Check(out.empty() && s.recordLate == 2 && s.recordAsked == 7 && s.RecordTotal() == s.recordAsked && s.recordSent == 5 && s.recordFailed == 1 && s.recordClosed == 1,
               "⑩ 셈 — 물음 7 = 답 5 · 못 읽음 1 · 끊김 1 · 늦은 답 2");
+    }
+
+    // ⑩′ ★ 11-04 전적 검색 — `NOXRANK RECORD <이름>`. 남의 이름 · 없는 이름 · 형식 위반 · 판 없는 계정 · 대소문자 다름 · 내 기록은 그대로
+    {
+        CMemoryLobbyStore st;
+        uint32_t saveReq = 1;
+        for (const nox::MatchRecord& m : nox::test::HistoryScenario()) st.SaveMatch(saveReq++, MatchSource{1, 1}, m, "{}");
+        st.AddAccount("h5");
+        std::vector<StoreAnswer> ans;
+        st.TakeAnswers(ans);
+        // 저장소 대조 — db_test ⑪ 과 같은 표
+        uint32_t accReq = 900;
+        for (const nox::test::HistoryAccountCase& c2 : nox::test::HistoryAccountCases()) {
+            st.GetMatchHistory(accReq++, c2.name);
+            ans.clear();
+            st.TakeAnswers(ans);
+            Check(ans.size() == 1 && ans[0].historyOk && ans[0].accountFound == c2.found, std::string("⑩′ 메모리 저장소 계정 유무 ") + c2.name);
+        }
+        Lobby rl(makeCfg(true), fake);
+        RecordDesk desk;
+        desk.AttachStore(&st);
+        rl.AttachStore(&st);
+        rl.AttachRecords(&desk);
+        auto pump = [&]() {
+            ans.clear();
+            st.TakeAnswers(ans);
+            out.clear();
+            for (const StoreAnswer& a : ans) {
+                if (a.kind == StoreAnswerKind::Rating) rl.OnRatingAnswer(a, out);
+                else if (a.kind == StoreAnswerKind::History) desk.OnAnswer(a, out);
+            }
+        };
+        auto login = [&](int conn, uint64_t account, const std::string& name) {
+            rl.OnConnect(conn, peer, peer);
+            feed(rl, conn, bundle("5", name, apgar(Tok{account, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, name})));
+            pump();
+        };
+        login(1, 21, "h1");
+        const std::string hangul = "\xC7\xD1\xB1\xDB";   // CP949 「한글」
+        const std::string overLong(100, 'x');
+        const std::string noneLong = "NOXRANK RECNONE " + std::string(kRecordEchoMaxBytes, 'x');
+        struct Case {
+            std::string line;
+            bool asksStore;                  // 저장소까지 가나(형식 위반은 안 간다)
+            std::vector<std::string> want;
+            const char* what;
+        };
+        const std::vector<Case> asks = {
+            {"NOXRANK RECORD h3", true, nox::test::HistoryExpectH3(), "남의 이름 — 그 사람의 요약 · 표"},
+            {"noxrank record h3", true, nox::test::HistoryExpectH3(), "줄 이름은 대소문자 무관 · 물을 이름은 그대로"},
+            {"NOXRANK RECORD h1", true, nox::test::HistoryExpectH1(), "내 이름을 쳐도 같은 답"},
+            {"NOXRANK RECORD h5", true, {"NOXRANK RECSUM 0 1000 0 0 0 0 0 h5", "NOXRANK RECEND 0"}, "계정은 있고 판 없음 — 요약 · 끝 줄 0"},
+            {"NOXRANK RECORD zzz", true, {"NOXRANK RECNONE zzz"}, "없는 이름"},
+            {"NOXRANK RECORD H1", true, {"NOXRANK RECNONE H1"}, "대소문자만 다름 — 다른 이름"},
+            {"NOXRANK RECORD " + hangul, false, {"NOXRANK RECNONE " + hangul}, "형식 위반 — 한글"},
+            {"NOXRANK RECORD abcdefghij", false, {"NOXRANK RECNONE abcdefghij"}, "형식 위반 — 10자"},
+            {"NOXRANK RECORD a-b", false, {"NOXRANK RECNONE a-b"}, "형식 위반 — 특수문자"},
+            {"NOXRANK RECORD a b", false, {"NOXRANK RECNONE a b"}, "형식 위반 — 빈칸(앞토막 a 를 묻지 않음)"},
+            {"NOXRANK RECORD " + overLong, false, {noneLong}, "형식 위반 — 긴 이름은 한도까지만 되돌림"},
+            {"NOXRANK RECORD ", true, nox::test::HistoryExpectH1(), "이름 없이 빈칸만 — 내 기록"},
+            {"NOXRANK RECORD", true, nox::test::HistoryExpectH1(), "이름 없음 — 내 기록"},
+        };
+        for (const Case& k : asks) {
+            out.clear();
+            feed(rl, 1, {k.line});
+            const bool immediate = k.asksStore ? (out.empty() && desk.Pending() == 1) : (desk.Pending() == 0 && lines() == k.want);
+            if (k.asksStore) pump();
+            else {
+                ans.clear();
+                st.TakeAnswers(ans);
+            }
+            Check(immediate && (k.asksStore || ans.empty()) && lines() == k.want && desk.Pending() == 0, std::string("⑩′ ") + k.what + "(받은 줄 " + std::to_string(out.size()) + ")");
+        }
+        const RecordDeskStats& s0 = desk.Stats();
+        Check(s0.recordAsked == asks.size() && s0.recordSent == 6 && s0.recordNoUser == 7 && s0.RecordTotal() == s0.recordAsked, "⑩′ 셈 — 물음 13 = 답 6 + 없는 사용자 7");
+        // 내 기록은 계정이 없어도 빈 기록(옛 DLL 은 RECNONE 을 모른다) · 같은 이름을 남의 이름으로 물으면 없는 사용자
+        login(2, 24, "nobody");
+        feed(rl, 2, {"NOXRANK RECORD"});
+        pump();
+        Check(lines() == nox::test::HistoryExpectNobody(), "⑩′ 계정 없는 사람의 내 기록 — 요약 · 끝 줄 0");
+        feed(rl, 2, {"NOXRANK RECORD nobody"});
+        pump();
+        Check(lines() == std::vector<std::string>{"NOXRANK RECNONE nobody"}, "⑩′ 같은 이름을 남의 이름으로 — 없는 사용자");
+        // 겹침 · 못 읽음 · 끊김 · 로그인 전도 이름 물음에 그대로
+        out.clear();
+        feed(rl, 1, {"NOXRANK RECORD h3"});
+        feed(rl, 1, {"NOXRANK RECORD a-b"});
+        const bool busy = out.empty() && desk.Stats().recordBusy == 1 && desk.Pending() == 1;
+        pump();
+        Check(busy && lines() == nox::test::HistoryExpectH3(), "⑩′ 기다리는 중 또 물음 — 형식 위반이어도 말없이 버림 · 앞 답만 옴");
+        st.SetFailHistory(true);
+        feed(rl, 1, {"NOXRANK RECORD h3"});
+        pump();
+        st.SetFailHistory(false);
+        Check(lines() == std::vector<std::string>{"NOXRANK RECFAIL"}, "⑩′ 못 읽음 — 계정 유무보다 RECFAIL 이 먼저");
+        feed(rl, 2, {"NOXRANK RECORD h3"});
+        rl.OnClose(2, out);
+        out.clear();
+        pump();
+        Check(out.empty() && desk.Stats().recordClosed == 1 && desk.Stats().recordLate == 1 && desk.Pending() == 0, "⑩′ 끊긴 접속의 답은 늦은 답(로비가 창구에 알림)");
+        rl.OnConnect(3, peer, peer);
+        out.clear();
+        feed(rl, 3, {"NOXCLIENT 5", "NOXRANK RECORD h3"});
+        Check(rl.Stats().recordNoLogin == 1 && desk.Pending() == 0 && lines() == std::vector<std::string>{"NOXSERVER 1"}, "⑩′ 로그인 전엔 남의 이름도 안 물음");
+        const RecordDeskStats& s1 = desk.Stats();
+        Check(s1.RecordTotal() == s1.recordAsked, "⑩′ 셈 — 답 + 못 읽음 + 없는 사용자 + 끊김 = 물음");
     }
 }
 

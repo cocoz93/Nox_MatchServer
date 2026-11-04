@@ -13,7 +13,7 @@
 // 로비 → DLL 줄(읽는 쪽 `wsock32_proxy.cpp` `RecOnLine` — 칸 수 · 폭이 그쪽과 맞아야 한다)
 //   `NOXRANK RECSUM <랭크 판 있음 0/1> <점수> <순위> <랭크 승> <랭크 패> <일반 승> <일반 패> <이름>`
 //   `NOXRANK RECROW <결과> <랭크 0/1> <점수|-> <증감|-> <맵> <킬|-> <데스|-> <초> <끝 유닉스 시각>`
-//   `NOXRANK RECEND <줄 수>` · 못 읽음 = `NOXRANK RECFAIL`
+//   `NOXRANK RECEND <줄 수>` · 못 읽음 = `NOXRANK RECFAIL` · ★ 11-04 전적 검색 — 없는 사용자 = `NOXRANK RECNONE <물은 이름>`(`RecordDesk.h`)
 //   결과 = W 승 · L 패 · D 비김 · A 중단 · Q 이탈 · 숫자 = 등수
 #pragma once
 

@@ -86,6 +86,7 @@ add_library(nox_lobby_core STATIC
   server/src/lobby/Router.cpp
   server/src/lobby/RoomMirror.cpp   # ★ 10-20 MO 6단계 v2 작업 3a-2 — 로비의 방 거울(게임 서버 연결 · 등록 · 방 알림 · 새 방 요청)
   server/src/lobby/LobbyStore.cpp   # ★ 7단계 조각 4 — 저장소 경계의 메모리 가짜(--no-db · 시험)
+  server/src/lobby/RecordDesk.cpp   # ★ 11-04 전적 검색 — 전적 창구(기록 물음 · 답 → 줄)
 )
 target_include_directories(nox_lobby_core PUBLIC server/include)
 target_link_libraries(nox_lobby_core PUBLIC nox_common)   # 입장 토큰 서명 · 설정 파일 읽기

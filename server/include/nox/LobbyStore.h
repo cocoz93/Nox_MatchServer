@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -68,6 +69,7 @@ struct StoreAnswer {
     std::vector<LinkRatingChange> changes;
     // ★ 11-04 플랜2 — History. `historyOk` false = 못 읽음. 점수 칸은 Rating 과 같은 뜻(`ratingFound` · `rating` · `rank`)
     bool historyOk = false;
+    bool accountFound = false;                 // ★ 11-04 전적 검색 — 그 이름의 계정이 있음(판이 없어도). 없으면 나머지 칸은 판 없는 사람과 같다
     MatchHistory history;
 };
 
@@ -99,6 +101,7 @@ public:
     void SetFailRatings(bool on) { failRatings_ = on; }   // ★ 레이팅 조각 3 — 점수 읽기 실패 흉내
     void SetHoldRatings(bool on) { holdRatings_ = on; }   // ★ 레이팅 조각 4 — 점수 답을 안 냄(로그인 한도 흉내)
     void SetFailHistory(bool on) { failHistory_ = on; }   // ★ 11-04 플랜2 — 대전 기록 읽기 실패 흉내
+    void AddAccount(const std::string& name) { accounts_.insert(name); }   // ★ 11-04 전적 검색 — 판 없는 계정(시험 · 아래 `accounts_`)
 
     size_t MatchCount() const { return matches_.size(); }
     const MatchRecord* FindMatch(const MatchSource& src, const std::string& match) const;   // 없으면 nullptr
@@ -113,6 +116,7 @@ private:
     std::vector<const MatchRecord*> saved_;    // ★ 11-04 플랜2 — 저장 차례(`matches_` 원소는 주소가 안 바뀐다)
     std::map<std::string, int32_t> ratings_;   // 계정 이름 → 점수
     std::map<std::string, MatchTotals> totals_;   // ★ 11-04 전적 검색 — 계정 이름 → 승패 합계(저장 때 올림 · DB 워커와 같은 잣대)
+    std::set<std::string> accounts_;   // ★ 11-04 전적 검색 — 계정 표가 없어 저장된 판의 이름(점수 행은 그 일부) + 시험이 넣은 이름을 계정으로 친다(`--no-db` · 시험 잣대)
     bool failSaves_ = false;
     bool failRatings_ = false;
     bool holdRatings_ = false;

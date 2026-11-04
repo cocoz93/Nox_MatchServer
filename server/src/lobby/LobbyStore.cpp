@@ -73,6 +73,7 @@ void CMemoryLobbyStore::SaveMatch(uint32_t req, const MatchSource& src, const Ma
             saved_.push_back(&ins.first->second);
             const RatingResult rr = RatingDeltas(rec);
             for (size_t i = 0; i < rec.players.size(); ++i) {
+                if (rec.players[i].hasAccount) accounts_.insert(rec.players[i].account);   // ★ 11-04 전적 검색 — 관전도 계정이다
                 if (!rec.players[i].observer && rec.players[i].hasAccount) totals_[rec.players[i].account].Add(MatchRowOf(rec, rr, i));   // ★ 11-04 전적 검색
                 if (!rr.seats[i].rated) continue;
                 const auto it = ratings_.emplace(rec.players[i].account, kRatingStart).first;
@@ -121,6 +122,7 @@ void CMemoryLobbyStore::GetMatchHistory(uint32_t req, const std::string& account
         return;
     }
     a.historyOk = true;
+    a.accountFound = accounts_.count(account) != 0;   // ★ 11-04 전적 검색
     ReadRatingInto(account, a);
     if (const auto t = totals_.find(account); t != totals_.end()) a.history.totals = t->second;   // ★ 11-04 전적 검색 — 합계는 저장 때 올린 값
     for (auto m = saved_.rbegin(); m != saved_.rend() && a.history.rows.size() < kMatchHistoryMaxRows; ++m) {   // 저장 차례 최신부터(`kSelHistory` 와 같은 차례)

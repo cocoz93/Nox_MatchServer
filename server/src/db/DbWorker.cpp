@@ -602,10 +602,12 @@ bool CDbWorker::ExecRating(Conn& c, const Job& j, wol::StoreAnswer& a) {
 bool CDbWorker::ExecHistory(Conn& c, const Job& j, wol::StoreAnswer& a) {
     a.history = wol::MatchHistory{};
     if (mysql_query(c.m, "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY") != 0) return c.ConnFail("읽기 시점 열기");
-    const bool ok = c.ReadRating(j.account, a.ratingFound, a.rating, a.rank) && c.ReadTotals(j.account, a.history.totals) && c.ReadHistory(j.account, a.history.rows);
+    uint64_t accountId = 0;   // ★ 11-04 전적 검색 — 없는 계정과 판 없는 계정을 가른다(내 기록은 계정이 없어도 줄을 내므로 나머지도 그대로 읽는다)
+    const bool ok = c.FindAccount(j.account, accountId) && c.ReadRating(j.account, a.ratingFound, a.rating, a.rank) && c.ReadTotals(j.account, a.history.totals) && c.ReadHistory(j.account, a.history.rows);
     mysql_rollback(c.m);   // 늘 닫는다 — 안 닫으면 다음 조회까지 이 시점이 남는다(실패해 끊긴 연결이면 다음 일이 다시 붙는다)
     if (!ok) return false;
     a.historyOk = true;
+    a.accountFound = accountId != 0;
     std::lock_guard<std::mutex> lk(mu_);
     ++stats_.historyReads;
     return true;

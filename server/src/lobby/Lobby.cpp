@@ -1,6 +1,7 @@
 ﻿// Lobby.cpp — 명령 → 답. 답의 꼴은 모두 1단계 녹음(XWIS 원래 줄)을 따른다.
 //   표 = Docs/LOBBY_DESIGN.md 「명령 → 답」 · 녹음 = _evidence/_wol_record_20261006/relay_log_20261006_233255.txt
 #include "nox/Lobby.h"
+#include "nox/RecordDesk.h"   // ★ 11-04 전적 검색
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -156,10 +157,7 @@ void Lobby::OnClose(int conn, std::vector<Out>& out) {
         ratingPending_.erase(ci->second.ratingReq);
         ++stats_.ratingClosed;
     }
-    if (ci != conns_.end() && ci->second.historyReq != 0) {   // ★ 11-04 플랜2 — 답은 늦은 답으로 버린다
-        historyPending_.erase(ci->second.historyReq);
-        ++stats_.recordClosed;
-    }
+    if (records_) records_->OnClose(conn);   // ★ 11-04 전적 검색 — 답은 늦은 답으로 버린다
     conns_.erase(conn);
 }
 
@@ -714,52 +712,21 @@ void Lobby::OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out) {
     FinishLogin(conn, c, LoginState::Ok, std::string(), out, line);
 }
 
-// ★ 11-04 플랜2 — 대전 기록. 판 안에서는 안 오고(창이 대화방 입구) 물음이 겹치면 앞 답을 기다린다.
-//   이름은 로그인으로 확인된 `c.nick` 만 쓴다(줄에 이름을 안 받아 남의 기록을 못 묻는다 — 플랜에서 뺀 기능)
-void Lobby::RecordAsk(int conn, Conn& c, std::vector<Out>& out) {
+// ★ 11-04 플랜2 — 대전 기록. 판 안에서는 안 온다(창이 대화방 입구).
+// ★ 11-04 전적 검색 — 물음은 전적 창구 몫이고 로비는 로그인만 거른다. 이름이 없으면 로그인으로 확인된 `c.nick` · 있으면 줄의 나머지 전부
+//   (`t[2]` 만 쓰면 빈칸이 든 이름의 앞토막을 물어 보게 된다 — DLL 은 물은 이름과 답의 이름을 대조한다)
+void Lobby::RecordAsk(int conn, Conn& c, const std::vector<std::string>& t, std::string_view line, std::vector<Out>& out) {
     if (c.login != LoginState::Ok) {
         ++stats_.recordNoLogin;
         return;
     }
-    if (c.historyReq != 0) {
-        ++stats_.recordBusy;
+    if (!records_) {
+        Unknown("NOXRANK RECORD", line);
         return;
     }
-    ++stats_.recordAsked;
-    if (!store_) {
-        ++stats_.recordFailed;
-        out.push_back({conn, "NOXRANK RECFAIL"});
-        return;
-    }
-    c.historyReq = nextHistoryReq_++;
-    historyPending_[c.historyReq] = conn;
-    store_->GetMatchHistory(c.historyReq, c.nick);
-}
-
-void Lobby::OnHistoryAnswer(const StoreAnswer& a, std::vector<Out>& out) {
-    const auto p = historyPending_.find(a.req);
-    if (a.kind != StoreAnswerKind::History || p == historyPending_.end()) {
-        ++stats_.recordLate;   // 끊긴 물음 · 안 물은 답
-        return;
-    }
-    const int conn = p->second;
-    historyPending_.erase(p);
-    const auto ci = conns_.find(conn);
-    if (ci == conns_.end() || ci->second.historyReq != a.req) {
-        ++stats_.recordLate;
-        return;
-    }
-    Conn& c = ci->second;
-    c.historyReq = 0;
-    if (!a.historyOk) {
-        ++stats_.recordFailed;
-        log_.push_back("[대전 기록 — 못 읽음] " + c.nick + " — " + (a.why.empty() ? std::string("저장소 실패") : a.why));
-        out.push_back({conn, "NOXRANK RECFAIL"});
-        return;
-    }
-    ++stats_.recordSent;
-    log_.push_back("[대전 기록] " + c.nick + " — 판 " + std::to_string(a.history.totals.games) + " · 줄 " + std::to_string(a.history.rows.size()));
-    for (std::string& l : MatchHistoryLines(c.nick, a.ratingFound, a.rating, a.rank, a.history)) out.push_back({conn, std::move(l)});
+    const size_t head = t[0].size() + t[1].size() + 2;   // `Split` 은 빈칸 하나마다 자른다
+    if (line.size() <= head) records_->AskMine(conn, c.nick, out);
+    else records_->AskName(conn, std::string(line.substr(head)), out);
 }
 
 // ★ 매칭 손보기 5 — 머리 주석은 `Lobby.h`
@@ -953,7 +920,7 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         if (sub == "JOIN") c.rankNext = true;
         else if (sub == "LEAVE") RankRemove(conn, RankLeave::Dll, out);
         else if (sub == "ACCEPT") RankAccept(conn, c, out);   // ★ 매칭 손보기 6 — 판 5 DLL · 찾음 창의 「예」
-        else if (sub == "RECORD") RecordAsk(conn, c, out);   // ★ 11-04 플랜2 — 대전 기록 창이 열림
+        else if (sub == "RECORD") RecordAsk(conn, c, t, line, out);   // ★ 11-04 플랜2 — 대전 기록 창이 열림 · ★ 전적 검색 — 이름이 붙으면 그 사람
         else Unknown("NOXRANK " + sub, line);
         return;
     }

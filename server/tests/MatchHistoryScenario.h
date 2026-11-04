@@ -135,4 +135,14 @@ inline std::vector<std::string> HistoryExpectNobody() {
     return {"NOXRANK RECSUM 0 1000 0 0 0 0 0 nobody", "NOXRANK RECEND 0"};
 }
 
+// ★ 11-04 전적 검색 — 계정 유무(`StoreAnswer::accountFound`). 저장소 둘이 같은 답이어야 한다
+//   h4 = 관전 · 이김 · h5 = 판 없는 계정(시험이 미리 넣는다) · H1 = 대소문자만 다름(이름은 바이트 그대로 비교) · nobody = 계정 없음
+struct HistoryAccountCase {
+    const char* name;
+    bool found;
+};
+inline std::vector<HistoryAccountCase> HistoryAccountCases() {
+    return {{"h1", true}, {"h2", true}, {"h3", true}, {"h4", true}, {"h5", true}, {"H1", false}, {"nobody", false}};
+}
+
 }  // namespace nox::test
