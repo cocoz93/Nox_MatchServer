@@ -16,6 +16,17 @@ namespace {
 
 uint32_t NowUnix() { return static_cast<uint32_t>(std::time(nullptr)); }
 
+// ★ 11-04 전적 검색 — 그 역할이 하는 일(나누는 곳 `DbLobbyStore.cpp`). 다른 역할의 문장은 준비돼 있지 않다
+bool RoleDoes(DbWorkerRole role, wol::StoreAnswerKind kind) {
+    switch (kind) {
+        case wol::StoreAnswerKind::SaveMatch:
+        case wol::StoreAnswerKind::Rating: return role == DbWorkerRole::Writer;
+        case wol::StoreAnswerKind::History: return role == DbWorkerRole::Reader;
+        case wol::StoreAnswerKind::kCount: break;
+    }
+    return false;
+}
+
 // ★ 로그인 암호 조각 4 — 계정 만들기 · 마지막 로그인은 로그인 서버 몫(정할 것 a). 로비는 판 사람의 계정 번호를 이름으로 찾기만
 constexpr const char* kSelAccount = "SELECT id FROM accounts WHERE name = ?";
 // ★ 레이팅 조각 3 — matches.ranked · match_players.rating_delta(`003_rating.sql`)
@@ -81,6 +92,13 @@ struct CDbWorker::Conn {
         if (mysql_stmt_prepare(s, sql, static_cast<unsigned long>(std::strlen(sql))) != 0) return StmtFail(s, sql);
         return true;
     }
+    // ★ 11-04 전적 검색 — 역할의 문장만. 표 모양 검사는 두 연결이 각자 지난다
+    bool PrepareFor(DbWorkerRole role) {
+        if (!Prepare(selAccount, kSelAccount) || !Prepare(selRating, kSelRating) || !Prepare(selRank, kSelRank)) return false;
+        if (role == DbWorkerRole::Writer)
+            return Prepare(insMatch, kInsMatch) && Prepare(insPlayer, kInsPlayer) && Prepare(upsRating, kUpsRating) && Prepare(upsTotals, kUpsTotals);
+        return Prepare(selTotals, kSelTotals) && Prepare(selHistory, kSelHistory);
+    }
     // 이름으로 계정 번호(없으면 0). 실패면 false(lastErrno)
     bool FindAccount(const std::string& name, uint64_t& id) {
         MYSQL_BIND p[1] = {};
@@ -112,11 +130,11 @@ struct CDbWorker::Conn {
         if (mysql_stmt_bind_param(upsRating, p) != 0 || mysql_stmt_execute(upsRating) != 0) return StmtFail(upsRating, "점수 고치기");
         return true;
     }
-    // ★ 레이팅 조각 3 — 이름으로 점수 · 순위(행이 없으면 found false). 실패면 false(lastErrno)
-    bool ReadRating(const std::string& name, bool& found, int32_t& rating, uint32_t& rank) {
+    // ★ 레이팅 조각 3 — 이름으로 점수(행이 없으면 found false). 실패면 false(lastErrno)
+    //   ★ 11-04 전적 검색 — 순위(`ReadRank`)와 나눔. 판 저장은 고친 점수만 쓰는데 사람마다 순위까지 세고 버렸다
+    bool ReadScore(const std::string& name, bool& found, int32_t& rating) {
         found = false;
         rating = kRatingStart;
-        rank = 0;
         MYSQL_BIND p[1] = {};
         unsigned long len = 0;
         Bin(p[0], name, len);
@@ -132,6 +150,10 @@ struct CDbWorker::Conn {
         if (f != 0) return StmtFail(selRating, "점수 읽기 꺼내기");
         found = true;
         rating = got;
+        return true;
+    }
+    // 그 점수보다 높은 사람 수 + 1
+    bool ReadRank(const int32_t& rating, uint32_t& rank) {
         MYSQL_BIND q[1] = {};
         I32(q[0], rating);
         uint64_t higher = 0;
@@ -145,6 +167,12 @@ struct CDbWorker::Conn {
         if (g != 0) return StmtFail(selRank, "순위 꺼내기");
         rank = static_cast<uint32_t>(higher + 1);
         return true;
+    }
+    // 점수 · 순위(점수 행이 없으면 순위 0)
+    bool ReadRating(const std::string& name, bool& found, int32_t& rating, uint32_t& rank) {
+        rank = 0;
+        if (!ReadScore(name, found, rating)) return false;
+        return !found || ReadRank(rating, rank);
     }
     // ★ 11-04 전적 검색 — 합계 올리기(판 저장 트랜잭션 안에서 부른다)
     bool AddTotals(uint64_t accountId, const wol::MatchTotals& t, uint32_t now) {
@@ -202,7 +230,7 @@ struct CDbWorker::Conn {
     }
 };
 
-CDbWorker::CDbWorker(DbConfig cfg) : cfg_(std::move(cfg)) {}
+CDbWorker::CDbWorker(DbConfig cfg, DbWorkerRole role) : cfg_(std::move(cfg)), role_(role) {}
 
 CDbWorker::~CDbWorker() { Stop(); }
 
@@ -224,9 +252,7 @@ bool CDbWorker::Connect(std::string& err) {
         }
         return false;
     }
-    if (!c->Prepare(c->selAccount, kSelAccount) || !c->Prepare(c->insMatch, kInsMatch) || !c->Prepare(c->insPlayer, kInsPlayer) ||
-        !c->Prepare(c->upsRating, kUpsRating) || !c->Prepare(c->selRating, kSelRating) || !c->Prepare(c->selRank, kSelRank) ||
-        !c->Prepare(c->selHistory, kSelHistory) || !c->Prepare(c->selTotals, kSelTotals) || !c->Prepare(c->upsTotals, kUpsTotals)) {
+    if (!c->PrepareFor(role_)) {
         err = "준비된 문장 — " + c->lastError + "(표 모양이 SQL 파일과 다른가)";
         return false;
     }
@@ -267,6 +293,25 @@ void CDbWorker::Stop() {
         std::lock_guard<std::mutex> lk(mu_);
         stop_ = true;
     }
+    JoinAndClose();
+}
+
+void CDbWorker::StopDiscarding() {
+    if (!started_) {
+        Drop();
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        stop_ = true;
+        discard_ = true;
+        stats_.historyDropped += queue_.size();
+        queue_.clear();
+    }
+    JoinAndClose();
+}
+
+void CDbWorker::JoinAndClose() {
     cv_.notify_all();
     if (thread_.joinable()) thread_.join();   // 워커가 남은 일을 다 하고 나간다
     Drop();
@@ -342,6 +387,13 @@ void CDbWorker::Run() {
             if (local.size() > stats_.queueMax) stats_.queueMax = local.size();
         }
         for (const Job& j : local) {
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (discard_) {   // ★ 11-04 전적 검색 — 꺼내 둔 일도 `StopDiscarding` 뒤엔 버린다
+                    ++stats_.historyDropped;
+                    continue;
+                }
+            }
             wol::StoreAnswer a = Exec(j);
             std::lock_guard<std::mutex> lk(mu_);
             answers_.push_back(std::move(a));
@@ -362,168 +414,27 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
         ++stats_.invalid;
         return a;
     }
+    if (!RoleDoes(role_, j.kind)) {   // ★ 11-04 전적 검색 — 짜는 실수(`DbLobbyStore.cpp`) · 안 준비된 문장을 부르면 라이브러리가 죽는다
+        a.why = "이 워커의 역할이 아닌 일";
+        NoteError(a.why);
+        return FailAnswer(j, std::move(a));
+    }
     for (int attempt = 0; attempt < 2; ++attempt) {
         std::string err;
         if (!conn_ && !Connect(err)) {
             a.why = "DB 에 못 붙음 — " + err;
             break;
         }
-        bool ok = false;
-        bool duplicate = false;
         Conn& c = *conn_;
         c.lastErrno = 0;
-        const uint32_t now = NowUnix();
+        bool ok = false;
         switch (j.kind) {
-            case wol::StoreAnswerKind::SaveMatch: {
-                const MatchRecord& r = j.rec;
-                if (mysql_query(c.m, "START TRANSACTION") != 0) {
-                    c.ConnFail("트랜잭션 열기");
-                    break;
-                }
-                MYSQL_BIND p[19] = {};
-                unsigned long lMatch = 0, lRoom = 0, lMap = 0, lMode = 0, lEnd = 0, lKind = 0, lWin = 0, lRaw = 0;
-                bool nullWinId = false, nullWinName = false;
-                const uint8_t ranked = r.ranked ? 1 : 0;   // ★ 레이팅 조각 3
-                U32(p[0], j.src.ip);
-                U16(p[1], j.src.port);
-                Txt(p[2], r.match, lMatch);
-                I32(p[3], r.room);
-                Bin(p[4], r.roomName, lRoom);
-                Txt(p[5], r.map, lMap);
-                Txt(p[6], r.mode, lMode);
-                U32(p[7], r.start);
-                U32(p[8], r.end);
-                U32(p[9], r.frames);
-                Txt(p[10], r.endReason, lEnd);
-                Txt(p[11], r.winnerKind, lKind);
-                if (r.hasWinnerId) U32(p[12], r.winnerId);
-                else Null(p[12], nullWinId);
-                if (r.hasWinnerAccount) Bin(p[13], r.winnerAccount, lWin);
-                else Null(p[13], nullWinName);
-                U32(p[14], r.limit);
-                U32(p[15], r.timeLimitSec);
-                U8(p[16], ranked);
-                Txt(p[17], j.raw, lRaw);
-                U32(p[18], now);
-                if (mysql_stmt_bind_param(c.insMatch, p) != 0 || mysql_stmt_execute(c.insMatch) != 0) {
-                    c.StmtFail(c.insMatch, "판 넣기");
-                    duplicate = c.lastErrno == ER_DUP_ENTRY;   // 같은 (게임 서버 · 판 번호) — 다시 보낸 판
-                    mysql_rollback(c.m);
-                    break;
-                }
-                const uint64_t matchId = mysql_stmt_insert_id(c.insMatch);
-                // ★ 레이팅 조각 3 — 자리별 증감(`Rating.h`). 계정을 못 찾은 사람(이름만 있고 계정 행 없음)은 반영 안 함(NULL)
-                const RatingResult rr = RatingDeltas(r);
-                bool rowsOk = true;
-                unsigned long long ratingRows = 0, totalsRows = 0;
-                std::vector<std::pair<std::string, int32_t>> changed;   // ★ 매칭 손보기 1 — 점수를 고친 사람(이름 · 증감 — 커밋 뒤 새 점수를 읽는다)
-                for (size_t seat = 0; rowsOk && seat < r.players.size(); ++seat) {
-                    const MatchRecordPlayer& pl = r.players[seat];
-                    uint64_t accountId = 0;
-                    if (pl.hasAccount && !c.FindAccount(pl.account, accountId)) {
-                        rowsOk = false;
-                        break;
-                    }
-                    const bool rated = rr.seats[seat].rated && accountId != 0;
-                    const int32_t delta = rr.seats[seat].delta;
-                    MYSQL_BIND q[12] = {};
-                    const uint8_t seat8 = static_cast<uint8_t>(seat);
-                    const uint8_t observer = pl.observer ? 1 : 0;
-                    const std::string state = pl.left ? "left" : "finished";
-                    unsigned long lName = 0, lState = 0;
-                    bool nullAcc = false, nullName = false, nullTeam = false, nullScore = false, nullDeaths = false, nullDelta = false, nullKills = false;
-                    U64(q[0], matchId);
-                    U8(q[1], seat8);
-                    if (accountId != 0) U64(q[2], accountId);
-                    else Null(q[2], nullAcc);   // 로비를 안 거친 사람 · 그 이름 계정이 없음
-                    if (pl.hasAccount) Bin(q[3], pl.account, lName);
-                    else Null(q[3], nullName);
-                    U16(q[4], pl.netCode);
-                    Txt(q[5], state, lState);
-                    if (pl.left) {   // 나간 사람은 팀 · 점수 · 죽은 수가 안 실렸다
-                        Null(q[6], nullTeam);
-                        Null(q[7], nullScore);
-                        Null(q[8], nullDeaths);
-                    } else {
-                        U8(q[6], pl.team);
-                        I32(q[7], pl.score);
-                        U32(q[8], pl.deaths);
-                    }
-                    U8(q[9], observer);
-                    if (rated) I32(q[10], delta);
-                    else Null(q[10], nullDelta);
-                    if (!pl.left && pl.hasKills) U32(q[11], pl.kills);   // ★ 11-04 플랜2 — 나간 사람 · 옛 줄은 NULL
-                    else Null(q[11], nullKills);
-                    if (mysql_stmt_bind_param(c.insPlayer, q) != 0 || mysql_stmt_execute(c.insPlayer) != 0) {
-                        c.StmtFail(c.insPlayer, "판 사람 넣기");
-                        rowsOk = false;
-                    } else if (rated) {
-                        if (c.AddRating(accountId, delta, now)) {
-                            ++ratingRows;
-                            changed.emplace_back(pl.account, delta);
-                        } else {
-                            rowsOk = false;
-                        }
-                    }
-                    if (rowsOk && accountId != 0 && !pl.observer) {   // ★ 11-04 전적 검색 — 승패 합계(같은 트랜잭션 · 겹친 판은 `uq_matches_server_key` 에서 이미 되돌아갔다)
-                        wol::MatchTotals one;
-                        one.Add(wol::MatchRowOf(r, rr, seat));
-                        if (c.AddTotals(accountId, one, now)) ++totalsRows;
-                        else rowsOk = false;
-                    }
-                }
-                if (!rowsOk) {
-                    mysql_rollback(c.m);
-                    break;
-                }
-                if (mysql_commit(c.m) != 0) {
-                    c.ConnFail("판 넣기 끝내기(commit)");
-                    mysql_rollback(c.m);
-                    break;
-                }
-                ok = true;
-                // ★ 매칭 손보기 1 — 고친 점수를 다시 읽어 답에(로비가 `SAVED` 꼬리로). 못 읽으면 그 사람만 빼고 저장은 그대로 Saved
-                for (const auto& rp : changed) {
-                    bool found = false;
-                    int32_t after = 0;
-                    uint32_t rank = 0;
-                    if (c.ReadRating(rp.first, found, after, rank) && found) a.changes.push_back({rp.first, after, rp.second});
-                }
-                if (ratingRows || totalsRows) {
-                    std::lock_guard<std::mutex> lk(mu_);
-                    stats_.ratingRows += ratingRows;
-                    stats_.totalsRows += totalsRows;
-                }
-                break;
-            }
-            case wol::StoreAnswerKind::Rating: {   // ★ 레이팅 조각 3 — 읽기만(트랜잭션 없음)
-                if (c.ReadRating(j.account, a.ratingFound, a.rating, a.rank)) {
-                    a.ratingOk = true;
-                    std::lock_guard<std::mutex> lk(mu_);
-                    ++stats_.ratingReads;
-                    return a;
-                }
-                break;
-            }
-            case wol::StoreAnswerKind::History: {   // ★ 11-04 플랜2 — 읽기만 · 다시 할 때 앞서 읽은 줄을 비운다
-                a.history = wol::MatchHistory{};
-                if (c.ReadRating(j.account, a.ratingFound, a.rating, a.rank) && c.ReadTotals(j.account, a.history.totals) && c.ReadHistory(j.account, a.history.rows)) {
-                    a.historyOk = true;
-                    std::lock_guard<std::mutex> lk(mu_);
-                    ++stats_.historyReads;
-                    return a;
-                }
-                break;
-            }
-            case wol::StoreAnswerKind::kCount:
-                break;
+            case wol::StoreAnswerKind::SaveMatch: ok = ExecSave(c, j, a); break;
+            case wol::StoreAnswerKind::Rating: ok = ExecRating(c, j, a); break;
+            case wol::StoreAnswerKind::History: ok = ExecHistory(c, j, a); break;
+            case wol::StoreAnswerKind::kCount: break;
         }
-        if (ok || duplicate) {
-            std::lock_guard<std::mutex> lk(mu_);
-            a.save = duplicate ? wol::SaveResult::Duplicate : wol::SaveResult::Saved;
-            ++(duplicate ? stats_.duplicates : stats_.saved);
-            return a;
-        }
+        if (ok) return a;
         a.why = c.lastError;
         NoteError(c.lastError);
         if (!IsLost(c.lastErrno)) break;   // 끊김이 아니면 다시 해도 같다
@@ -533,6 +444,10 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
             ++stats_.retries;
         }
     }
+    return FailAnswer(j, std::move(a));
+}
+
+wol::StoreAnswer CDbWorker::FailAnswer(const Job& j, wol::StoreAnswer a) {
     std::lock_guard<std::mutex> lk(mu_);
     if (j.kind == wol::StoreAnswerKind::Rating) {   // ★ 레이팅 조각 3 — 못 읽음(ratingOk false) · 로비는 점수 줄 없이 로그인을 끝낸다
         ++stats_.ratingFailed;
@@ -546,6 +461,154 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
     a.save = wol::SaveResult::Failed;
     ++stats_.saveFailed;
     return a;
+}
+
+// 판 하나 — 성공 · 겹침이면 true(`a.save`)
+bool CDbWorker::ExecSave(Conn& c, const Job& j, wol::StoreAnswer& a) {
+    const uint32_t now = NowUnix();
+    const MatchRecord& r = j.rec;
+    if (mysql_query(c.m, "START TRANSACTION") != 0) return c.ConnFail("트랜잭션 열기");
+    MYSQL_BIND p[19] = {};
+    unsigned long lMatch = 0, lRoom = 0, lMap = 0, lMode = 0, lEnd = 0, lKind = 0, lWin = 0, lRaw = 0;
+    bool nullWinId = false, nullWinName = false;
+    const uint8_t ranked = r.ranked ? 1 : 0;   // ★ 레이팅 조각 3
+    U32(p[0], j.src.ip);
+    U16(p[1], j.src.port);
+    Txt(p[2], r.match, lMatch);
+    I32(p[3], r.room);
+    Bin(p[4], r.roomName, lRoom);
+    Txt(p[5], r.map, lMap);
+    Txt(p[6], r.mode, lMode);
+    U32(p[7], r.start);
+    U32(p[8], r.end);
+    U32(p[9], r.frames);
+    Txt(p[10], r.endReason, lEnd);
+    Txt(p[11], r.winnerKind, lKind);
+    if (r.hasWinnerId) U32(p[12], r.winnerId);
+    else Null(p[12], nullWinId);
+    if (r.hasWinnerAccount) Bin(p[13], r.winnerAccount, lWin);
+    else Null(p[13], nullWinName);
+    U32(p[14], r.limit);
+    U32(p[15], r.timeLimitSec);
+    U8(p[16], ranked);
+    Txt(p[17], j.raw, lRaw);
+    U32(p[18], now);
+    if (mysql_stmt_bind_param(c.insMatch, p) != 0 || mysql_stmt_execute(c.insMatch) != 0) {
+        c.StmtFail(c.insMatch, "판 넣기");
+        const bool duplicate = c.lastErrno == ER_DUP_ENTRY;   // 같은 (게임 서버 · 판 번호) — 다시 보낸 판
+        mysql_rollback(c.m);
+        if (!duplicate) return false;
+        a.save = wol::SaveResult::Duplicate;
+        std::lock_guard<std::mutex> lk(mu_);
+        ++stats_.duplicates;
+        return true;
+    }
+    const uint64_t matchId = mysql_stmt_insert_id(c.insMatch);
+    // ★ 레이팅 조각 3 — 자리별 증감(`Rating.h`). 계정을 못 찾은 사람(이름만 있고 계정 행 없음)은 반영 안 함(NULL)
+    const RatingResult rr = RatingDeltas(r);
+    bool rowsOk = true;
+    unsigned long long ratingRows = 0, totalsRows = 0;
+    std::vector<std::pair<std::string, int32_t>> changed;   // ★ 매칭 손보기 1 — 점수를 고친 사람(이름 · 증감 — 커밋 뒤 새 점수를 읽는다)
+    for (size_t seat = 0; rowsOk && seat < r.players.size(); ++seat) {
+        const MatchRecordPlayer& pl = r.players[seat];
+        uint64_t accountId = 0;
+        if (pl.hasAccount && !c.FindAccount(pl.account, accountId)) {
+            rowsOk = false;
+            break;
+        }
+        const bool rated = rr.seats[seat].rated && accountId != 0;
+        const int32_t delta = rr.seats[seat].delta;
+        MYSQL_BIND q[12] = {};
+        const uint8_t seat8 = static_cast<uint8_t>(seat);
+        const uint8_t observer = pl.observer ? 1 : 0;
+        const std::string state = pl.left ? "left" : "finished";
+        unsigned long lName = 0, lState = 0;
+        bool nullAcc = false, nullName = false, nullTeam = false, nullScore = false, nullDeaths = false, nullDelta = false, nullKills = false;
+        U64(q[0], matchId);
+        U8(q[1], seat8);
+        if (accountId != 0) U64(q[2], accountId);
+        else Null(q[2], nullAcc);   // 로비를 안 거친 사람 · 그 이름 계정이 없음
+        if (pl.hasAccount) Bin(q[3], pl.account, lName);
+        else Null(q[3], nullName);
+        U16(q[4], pl.netCode);
+        Txt(q[5], state, lState);
+        if (pl.left) {   // 나간 사람은 팀 · 점수 · 죽은 수가 안 실렸다
+            Null(q[6], nullTeam);
+            Null(q[7], nullScore);
+            Null(q[8], nullDeaths);
+        } else {
+            U8(q[6], pl.team);
+            I32(q[7], pl.score);
+            U32(q[8], pl.deaths);
+        }
+        U8(q[9], observer);
+        if (rated) I32(q[10], delta);
+        else Null(q[10], nullDelta);
+        if (!pl.left && pl.hasKills) U32(q[11], pl.kills);   // ★ 11-04 플랜2 — 나간 사람 · 옛 줄은 NULL
+        else Null(q[11], nullKills);
+        if (mysql_stmt_bind_param(c.insPlayer, q) != 0 || mysql_stmt_execute(c.insPlayer) != 0) {
+            c.StmtFail(c.insPlayer, "판 사람 넣기");
+            rowsOk = false;
+        } else if (rated) {
+            if (c.AddRating(accountId, delta, now)) {
+                ++ratingRows;
+                changed.emplace_back(pl.account, delta);
+            } else {
+                rowsOk = false;
+            }
+        }
+        if (rowsOk && accountId != 0 && !pl.observer) {   // ★ 11-04 전적 검색 — 승패 합계(같은 트랜잭션 · 겹친 판은 `uq_matches_server_key` 에서 이미 되돌아갔다)
+            wol::MatchTotals one;
+            one.Add(wol::MatchRowOf(r, rr, seat));
+            if (c.AddTotals(accountId, one, now)) ++totalsRows;
+            else rowsOk = false;
+        }
+    }
+    if (!rowsOk) {
+        mysql_rollback(c.m);
+        return false;
+    }
+    if (mysql_commit(c.m) != 0) {
+        c.ConnFail("판 넣기 끝내기(commit)");
+        mysql_rollback(c.m);
+        return false;
+    }
+    // ★ 매칭 손보기 1 — 고친 점수를 다시 읽어 답에(로비가 `SAVED` 꼬리로). 못 읽으면 그 사람만 빼고 저장은 그대로 Saved
+    for (const auto& rp : changed) {
+        bool found = false;
+        int32_t after = 0;
+        if (c.ReadScore(rp.first, found, after) && found) a.changes.push_back({rp.first, after, rp.second});
+    }
+    a.save = wol::SaveResult::Saved;
+    std::lock_guard<std::mutex> lk(mu_);
+    ++stats_.saved;
+    stats_.ratingRows += ratingRows;
+    stats_.totalsRows += totalsRows;
+    return true;
+}
+
+// ★ 레이팅 조각 3 — 읽기만(트랜잭션 없음)
+bool CDbWorker::ExecRating(Conn& c, const Job& j, wol::StoreAnswer& a) {
+    if (!c.ReadRating(j.account, a.ratingFound, a.rating, a.rank)) return false;
+    a.ratingOk = true;
+    std::lock_guard<std::mutex> lk(mu_);
+    ++stats_.ratingReads;
+    return true;
+}
+
+// ★ 11-04 플랜2 — 읽기만 · 다시 할 때 앞서 읽은 줄을 비운다
+//   ★ 11-04 전적 검색 — 저장이 다른 스레드로 갈라져 문장 넷 사이에 판이 끼어들 수 있다. 점수 칸은 지금 점수에서 표의 증감을 되짚어 구하므로(`MatchHistory.cpp`)
+//     읽기 하나를 한 시점으로 묶는다
+bool CDbWorker::ExecHistory(Conn& c, const Job& j, wol::StoreAnswer& a) {
+    a.history = wol::MatchHistory{};
+    if (mysql_query(c.m, "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY") != 0) return c.ConnFail("읽기 시점 열기");
+    const bool ok = c.ReadRating(j.account, a.ratingFound, a.rating, a.rank) && c.ReadTotals(j.account, a.history.totals) && c.ReadHistory(j.account, a.history.rows);
+    mysql_rollback(c.m);   // 늘 닫는다 — 안 닫으면 다음 조회까지 이 시점이 남는다(실패해 끊긴 연결이면 다음 일이 다시 붙는다)
+    if (!ok) return false;
+    a.historyOk = true;
+    std::lock_guard<std::mutex> lk(mu_);
+    ++stats_.historyReads;
+    return true;
 }
 
 }  // namespace nox::db

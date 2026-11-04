@@ -3,7 +3,9 @@
 // 왜 — 계정 · 판 기록의 정본은 MySQL(결정 1). 로비 스레드는 DB 를 기다리지 않는다 — 요청은 큐에 넣고 곧바로 돌아오며,
 //   전용 스레드 하나가 MySQL 연결 하나로 차례대로 실행해 답 큐에 넣는다. 로비 루프가 바퀴마다 꺼낸다(`ILobbyStore` — 메모리 가짜와 같은 경계).
 //   꼴은 MMO_Zone DB 워커(`MMO_Zone/MMOServer/MMOServer/DB/DBWorker.h` — 전용 스레드 · 큐 통째로 꺼내기 · 준비된 문장 · 끊기면 다시 붙기)를 따른다
-//   · 연결 하나 · 스레드 하나 — 로비 하나 · 소수 시험이라 더 둘 까닭이 아직 없다(★ 로그인 암호 조각 4 — 로그인은 걷어 내고 판 저장만)
+//   · 워커 하나 = 연결 하나 · 스레드 하나(★ 로그인 암호 조각 4 — 로그인은 걷어 내고 판 저장만)
+//     ★ 11-04 전적 검색 — 쓰기 · 읽기 두 워커로 나눴다(`DbLobbyStore.h`). 기록 읽기가 판 저장과 같은 줄에 서면 남의 이름으로 묻는 전적 검색이
+//     판 결과 저장을 기다리게 한다 — 역할마다 그 일의 문장만 준비한다
 //   · 서버 계정은 표를 못 만든다(정할 것 a) — 뜰 때 `schema_version` 이 `kSchemaVersion` 인지와 준비된 문장이 모두 준비되는지로 표 모양을 본다.
 //     못 붙거나 다르면 `Start` 가 실패 — 로비가 안 뜬다(토큰 키가 없을 때와 같은 꼴)
 //   · 끊기면(2006 · 2013) 그 자리에서 한 번 다시 붙어 같은 일을 다시 한다. 그래도 안 되면 그 일은 실패 답(판 → 게임 서버가 다시)
@@ -47,14 +49,18 @@ struct DbStats {
     unsigned long long historyRequests = 0;
     unsigned long long historyReads = 0;
     unsigned long long historyFailed = 0;
+    unsigned long long historyDropped = 0;  // ★ 11-04 전적 검색 — 끝낼 때 버린 조회(요청 = 읽음 + 실패 + 버림)
     size_t queueMax = 0;                    // 한 번에 꺼낸 일의 최대
     std::string lastError;                  // 마지막 오류 글(기록용 — 비밀번호는 안 실린다)
 };
 
-class CDbWorker final : public wol::ILobbyStore {
+// ★ 11-04 전적 검색 — 쓰기 = 판 저장 · 로그인 공지 점수(저장 뒤 새 점수가 보이도록 같은 줄) / 읽기 = 기록 읽기
+enum class DbWorkerRole : uint8_t { Writer, Reader };
+
+class CDbWorker final {
 public:
-    explicit CDbWorker(DbConfig cfg);
-    ~CDbWorker() override;
+    CDbWorker(DbConfig cfg, DbWorkerRole role);
+    ~CDbWorker();
     CDbWorker(const CDbWorker&) = delete;
     CDbWorker& operator=(const CDbWorker&) = delete;
 
@@ -62,12 +68,14 @@ public:
     bool Start(std::string& err);
     // 남은 일을 다 하고 닫는다(두 번 불러도 됨)
     void Stop();
+    // ★ 11-04 전적 검색 — 지금 하던 일만 끝내고 남은 일은 버리고(`historyDropped`) 닫는다. 읽기 워커 몫 — 조회는 잃어도 다시 물으면 된다
+    void StopDiscarding();
 
-    // ILobbyStore — 요청은 곧바로 돌아온다 · 답은 워커가 넣고 로비가 꺼낸다
-    void SaveMatch(uint32_t req, const wol::MatchSource& src, const MatchRecord& rec, const std::string& rawJson) override;
-    void GetRating(uint32_t req, const std::string& account) override;   // ★ 레이팅 조각 3
-    void GetMatchHistory(uint32_t req, const std::string& account) override;   // ★ 11-04 플랜2
-    void TakeAnswers(std::vector<wol::StoreAnswer>& out) override;
+    // 요청은 곧바로 돌아온다 · 답은 워커가 넣고 로비가 꺼낸다(`ILobbyStore` 는 `CDbLobbyStore` 가 받아 역할별로 나눈다)
+    void SaveMatch(uint32_t req, const wol::MatchSource& src, const MatchRecord& rec, const std::string& rawJson);
+    void GetRating(uint32_t req, const std::string& account);   // ★ 레이팅 조각 3
+    void GetMatchHistory(uint32_t req, const std::string& account);   // ★ 11-04 플랜2
+    void TakeAnswers(std::vector<wol::StoreAnswer>& out);
 
     DbStats Stats() const;
     unsigned long ConnectionId() const;   // 지금 연결의 MySQL 스레드 번호(시험이 KILL 로 끊어 보려고 · 0 = 없음)
@@ -85,11 +93,18 @@ private:
 
     void Run();
     wol::StoreAnswer Exec(const Job& j);
+    // ★ 11-04 전적 검색 — 일 하나씩 · 끊김이면 false(`Exec` 이 다시 붙어 한 번 더)
+    bool ExecSave(Conn& c, const Job& j, wol::StoreAnswer& a);
+    bool ExecRating(Conn& c, const Job& j, wol::StoreAnswer& a);
+    bool ExecHistory(Conn& c, const Job& j, wol::StoreAnswer& a);
+    wol::StoreAnswer FailAnswer(const Job& j, wol::StoreAnswer a);   // 그 일의 실패 셈 + 실패 답
+    void JoinAndClose();
     bool Connect(std::string& err);    // `conn_` 을 새로(실패면 비움)
     void Drop();                       // 연결 · 문장 닫기
     void NoteError(const std::string& e);
 
     DbConfig cfg_;
+    DbWorkerRole role_;
     std::unique_ptr<Conn> conn_;       // 워커 스레드만 만진다(Start 전 · Stop 뒤엔 부르는 스레드)
     std::thread thread_;
     mutable std::mutex mu_;            // 큐 · 답 · 셈
@@ -99,6 +114,7 @@ private:
     DbStats stats_;
     unsigned long connId_ = 0;
     bool stop_ = false;
+    bool discard_ = false;   // `StopDiscarding` — 꺼내 둔 일도 버린다
     bool started_ = false;
 };
 

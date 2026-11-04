@@ -25,7 +25,7 @@
 #include <thread>
 #include <vector>
 
-#include "nox/DbWorker.h"
+#include "nox/DbLobbyStore.h"   // ★ 11-04 전적 검색 — 쓰기 · 읽기 워커를 나누는 저장소(`CDbWorker` 는 그 안에)
 #include "MatchHistoryScenario.h"
 #include "nox/IniFile.h"
 #include "nox/MatchTotalsRebuild.h"   // ★ 11-04 전적 검색 — ⑫ 다시 계산
@@ -113,7 +113,7 @@ struct Admin {
 };
 
 // 답 n 개를 기다린다(5초 한도)
-std::vector<nox::wol::StoreAnswer> WaitAnswers(nox::db::CDbWorker& w, size_t n) {
+std::vector<nox::wol::StoreAnswer> WaitAnswers(nox::wol::ILobbyStore& w, size_t n) {
     std::vector<nox::wol::StoreAnswer> got;
     const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (got.size() < n && std::chrono::steady_clock::now() < until) {
@@ -203,8 +203,8 @@ int main(int argc, char** argv) {
     }
     Check(laid, "표 새로 깔기(시험 DB · SQL 파일 " + std::to_string(argc - 2) + "개 그대로 차례로)");
 
-    nox::db::CDbWorker w(cfg);
-    Check(w.Start(err), "워커 뜸(붙기 · 표 버전 · 준비된 문장) " + err);
+    nox::db::CDbLobbyStore w(cfg);
+    Check(w.Start(err), "워커 둘 뜸(붙기 · 표 버전 · 준비된 문장) " + err);
 
     // ① ★ 로그인 암호 조각 4 — 계정은 로그인 서버가 만든다(로비는 계정 확인 길을 걷어냄 · 정할 것 a). 시험이 계정 행을 직접 깐다 —
     //   대소문자만 다른 이름 · 949 바이트 이름(판 사람의 계정 번호를 이름 바이트 그대로 찾는지 ② 가 본다)
@@ -270,21 +270,24 @@ int main(int argc, char** argv) {
           "③ 방 이름 65바이트 · UTF-8 아닌 원문 → Invalid(DB 에 안 감)");
 
     // ④
-    const unsigned long cid = w.ConnectionId();
+    const unsigned long cid = w.WriterConnectionId();
     Check(cid != 0 && ad.Run("KILL " + std::to_string(cid)), "④ 워커 연결을 KILL(같은 계정 — 제 연결은 권한 없이 끊음)");
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     w.SaveMatch(20, srcA, Sample("1760000000-3-20"), "{}");   // ★ 로그인 암호 조각 4 — 로그인 대신 판으로(끊김 뒤 다시 붙기 · 계정 찾기도 지나감)
     auto a5 = WaitAnswers(w, 1);
     const nox::db::DbStats s4 = w.Stats();
-    Check(a5.size() == 1 && a5[0].save == SaveResult::Saved && s4.retries == 1 && s4.connects == 2 && w.ConnectionId() != cid,
-          "④ 끊긴 뒤 다음 요청 → 다시 붙어 성공(다시 1 · 붙음 2 · 새 연결 번호) " + s4.lastError);
+    Check(a5.size() == 1 && a5[0].save == SaveResult::Saved && s4.retries == 1 && s4.connects == 3 && w.WriterConnectionId() != cid,
+          "④ 끊긴 뒤 다음 요청 → 다시 붙어 성공(다시 1 · 붙음 3 = 처음 둘 + 다시 하나 · 새 연결 번호) " + s4.lastError);
 
     // ⑤
     Check(ad.Run("UPDATE schema_version SET version = 99 WHERE id = 1"), "⑤ 표 버전을 99 로");
     {
-        nox::db::CDbWorker w2(cfg);
+        nox::db::CDbLobbyStore w2(cfg);
         std::string e2;
         Check(!w2.Start(e2) && e2.find("표 버전 99") != std::string::npos, "⑤ 표 버전이 다르면 Start 실패(" + e2 + ")");
+        nox::db::CDbWorker r2(cfg, nox::db::DbWorkerRole::Reader);   // ★ 11-04 전적 검색 — 읽기 연결도 따로 본다
+        std::string e3;
+        Check(!r2.Start(e3) && e3.find("표 버전 99") != std::string::npos, "⑤ 읽기 워커도 표 버전이 다르면 Start 실패(" + e3 + ")");
     }
     Check(ad.Run("UPDATE schema_version SET version = " + std::to_string(nox::db::kSchemaVersion) + " WHERE id = 1"), "⑤ 표 버전 되돌림");
 
@@ -395,7 +398,7 @@ int main(int argc, char** argv) {
     {
         Check(ad.Run("INSERT INTO accounts (name, created_unix, last_login_unix) VALUES ('h1', 1, 1), ('h2', 1, 1), ('h3', 1, 1), ('h4', 1, 1)"), "⑩ 계정 넷");
         Check(ad.Run("DELETE FROM ratings"), "⑩ 앞 시험의 점수 행 치움 — 순위가 메모리 가짜의 기대 줄과 같은 사람들로만 나오게");
-        nox::db::CDbWorker hw(cfg);
+        nox::db::CDbLobbyStore hw(cfg);
         std::string herr;
         Check(hw.Start(herr), "⑩ 워커 — " + herr);
         uint32_t req = 100;
@@ -496,6 +499,111 @@ int main(int argc, char** argv) {
         Check(ad.Run("RENAME TABLE match_players TO match_players_off"), "⑫ 시험용 — match_players 를 잠깐 치움");
         Check(!nox::db::RebuildMatchTotals(cfg, rb, rbErr) && !rbErr.empty() && totalsTable() == raised, "⑫ 판 행을 못 읽음 → 실패 · 합계 그대로(" + rbErr + ")");
         Check(ad.Run("RENAME TABLE match_players_off TO match_players"), "⑫ match_players 되돌림");
+
+        // ⑬ ★ 11-04 전적 검색 — 쓰기 · 읽기 연결 나누기(`DbLobbyStore.h`). 일부러 잠가 멈춘 동안 무엇이 오나를 본다(우연에 안 기댐).
+        //   잠금은 3초(워커 읽기 한도 `rwTimeoutSec`)보다 짧게 쥔다
+        nox::db::CDbLobbyStore ss(cfg);
+        std::string e13;
+        Check(ss.Start(e13) && ss.Stats().connects == 2 && ss.WriterConnectionId() != 0 && ss.ReaderConnectionId() != 0 && ss.WriterConnectionId() != ss.ReaderConnectionId(),
+              "⑬ 뜰 때 연결 둘 " + e13);
+        auto countOf = [](const std::vector<StoreAnswer>& v, StoreAnswerKind k) {
+            size_t n = 0;
+            for (const StoreAnswer& x : v) n += x.kind == k ? 1 : 0;
+            return n;
+        };
+        auto gather = [&](std::vector<StoreAnswer>& v, int ms, bool stopOnAny) {   // `ms` 동안 답을 모은다
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+            while (std::chrono::steady_clock::now() < until && !(stopOnAny && !v.empty())) {
+                ss.TakeAnswers(v);
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        };
+        // 1 — 기록 읽기가 멈춘 동안 저장 답이 온다(일반 판은 `ratings` 를 안 고쳐 이 잠금에 안 걸린다 · 나누기 전 측정 = 저장 답 0)
+        nox::MatchRecord splitNormal = scenario.back();
+        splitNormal.ranked = false;
+        splitNormal.match = "split-1";
+        Check(ad.Run("LOCK TABLES ratings WRITE"), "⑬ ratings 잠금");
+        ss.GetMatchHistory(req++, "h1");
+        ss.SaveMatch(req++, srcA, splitNormal, "{}");
+        std::vector<StoreAnswer> during;
+        gather(during, 1500, true);
+        Check(countOf(during, StoreAnswerKind::SaveMatch) == 1 && countOf(during, StoreAnswerKind::History) == 0, "⑬ 읽기가 멈춘 동안 저장 답 옴 · 기록 답 없음(받은 답 " + std::to_string(during.size()) + ")");
+        Check(ad.Run("UNLOCK TABLES"), "⑬ 잠금 풀기");
+        auto afterUnlock = WaitAnswers(ss, 1);
+        Check(afterUnlock.size() == 1 && afterUnlock[0].kind == StoreAnswerKind::History && afterUnlock[0].historyOk, "⑬ 풀리면 기록 답 옴");
+        // 2 — 읽기 연결을 끊어도 저장은 안 멈추고 읽기는 다시 붙어 답한다
+        const unsigned long rid13 = ss.ReaderConnectionId(), wid13 = ss.WriterConnectionId();
+        Check(ad.Run("KILL " + std::to_string(rid13)), "⑬ 읽기 연결 KILL");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        nox::MatchRecord splitNormal2 = splitNormal;
+        splitNormal2.match = "split-2";
+        ss.SaveMatch(req++, srcA, splitNormal2, "{}");
+        ss.GetMatchHistory(req++, "h1");
+        auto afterKill = WaitAnswers(ss, 2);
+        const nox::db::DbStats sk = ss.Stats();
+        Check(countOf(afterKill, StoreAnswerKind::SaveMatch) == 1 && countOf(afterKill, StoreAnswerKind::History) == 1 && sk.retries == 1 && sk.connects == 3 &&
+                  ss.ReaderConnectionId() != rid13 && ss.WriterConnectionId() == wid13,
+              "⑬ 읽기 연결 KILL → 저장 · 읽기 둘 다 답 · 읽기만 다시 붙음(다시 " + std::to_string(sk.retries) + " · 붙음 " + std::to_string(sk.connects) + ")");
+        for (const StoreAnswer& x : afterKill)
+            if (x.kind == StoreAnswerKind::SaveMatch) Check(x.save == SaveResult::Saved, "⑬ 그동안의 저장 Saved");
+            else Check(x.historyOk, "⑬ 다시 붙어 읽음");
+        // 3 — 같은 시점. 읽기를 줄 읽기 앞에서 세워 두고 그 사이 새 줄을 넣는다 → 답에 없어야 한다 · 다음 읽기엔 보인다(대조)
+        //   `LOCK TABLES` 중엔 잠근 표만 읽을 수 있어 번호를 먼저 읽는다. 부모 표(`matches` · `accounts`)는 읽기로 함께 잠겨 점수 · 합계 읽기는 지나간다
+        const std::string splitId = ad.One("SELECT id FROM matches WHERE match_key = 'split-1'"), h1Id = ad.One("SELECT id FROM accounts WHERE name = 'h1'");
+        ss.GetMatchHistory(req++, "h1");
+        auto snapBefore = WaitAnswers(ss, 1);
+        const size_t rowsBefore = snapBefore.empty() ? 0 : snapBefore[0].history.rows.size();
+        const std::string readerState = "SELECT IFNULL(STATE, '') FROM information_schema.PROCESSLIST WHERE ID = " + std::to_string(ss.ReaderConnectionId());
+        Check(ad.Run("LOCK TABLES match_players WRITE"), "⑬ match_players 잠금");
+        ss.GetMatchHistory(req++, "h1");
+        bool readerWaits = false;
+        for (int i = 0; i < 200 && !readerWaits; ++i) {
+            readerWaits = ad.One(readerState).find("metadata lock") != std::string::npos;
+            if (!readerWaits) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        Check(readerWaits, "⑬ 읽기가 줄 읽기 앞에서 멈춤(`Waiting for table metadata lock`)");
+        Check(ad.Run("INSERT INTO match_players (match_id, seat, account_id, name, net_code, state, team, score, deaths, observer, rating_delta, kills) VALUES (" + splitId + ", 9, " + h1Id + ", 'h1', 9, 'finished', 0, 0, 0, 0, NULL, 0)"),
+              "⑬ 그 사이 새 줄 넣기");
+        Check(ad.Run("UNLOCK TABLES"), "⑬ 잠금 풀기");
+        auto snapShot = WaitAnswers(ss, 1);
+        Check(snapShot.size() == 1 && snapShot[0].historyOk && snapShot[0].history.rows.size() == rowsBefore, "⑬ 시작한 뒤 넣은 줄은 안 보임(한 시점 · 줄 " + std::to_string(snapShot.empty() ? 0 : snapShot[0].history.rows.size()) + " · 전 " + std::to_string(rowsBefore) + ")");
+        ss.GetMatchHistory(req++, "h1");
+        auto snapAfter = WaitAnswers(ss, 1);
+        Check(snapAfter.size() == 1 && snapAfter[0].history.rows.size() == rowsBefore + 1, "⑬ 다음 읽기엔 보임(늘 안 보이는 것이 아님)");
+        // 4 — 순서. 저장을 세워 두면 뒤에 넣은 점수 읽기도 기다리고, 풀리면 저장 답 뒤에 새 점수가 온다
+        const int h2Before = std::atoi(ad.One("SELECT r.rating FROM ratings r JOIN accounts a ON a.id = r.account_id WHERE a.name = 'h2'").c_str());
+        nox::MatchRecord splitRanked = scenario.back();
+        splitRanked.match = "split-ranked";
+        Check(splitRanked.ranked && ad.Run("LOCK TABLES matches WRITE"), "⑬ matches 잠금");
+        ss.SaveMatch(req++, srcA, splitRanked, "{}");
+        ss.GetRating(req++, "h2");
+        std::vector<StoreAnswer> heldOrder;
+        gather(heldOrder, 500, false);
+        Check(heldOrder.empty(), "⑬ 저장이 멈춘 동안 뒤의 점수 읽기도 답 없음(받은 답 " + std::to_string(heldOrder.size()) + ")");
+        Check(ad.Run("UNLOCK TABLES"), "⑬ 잠금 풀기");
+        auto ordered = WaitAnswers(ss, 2);
+        Check(ordered.size() == 2 && ordered[0].kind == StoreAnswerKind::SaveMatch && ordered[0].save == SaveResult::Saved && ordered[1].kind == StoreAnswerKind::Rating && ordered[1].ratingOk && ordered[1].rating == h2Before + 10,
+              "⑬ 풀리면 저장 답 뒤 새 점수(전 " + std::to_string(h2Before) + " · 뒤 " + std::to_string(ordered.size() == 2 ? ordered[1].rating : 0) + ")");
+        // 5 — 끝낼 때 — 읽기는 하던 것만 하고 남은 조회를 버린다 · 쓰기는 남은 판을 다 한다
+        const nox::db::DbStats beforeStop = ss.Stats();
+        Check(ad.Run("LOCK TABLES ratings WRITE, matches WRITE"), "⑬ 두 표 잠금");
+        for (int i = 0; i < 3; ++i) ss.GetMatchHistory(req++, "h1");
+        for (int i = 0; i < 3; ++i) {
+            nox::MatchRecord left3 = splitNormal;
+            left3.match = "split-stop-" + std::to_string(i);
+            ss.SaveMatch(req++, srcA, left3, "{}");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::thread stopper([&ss] { ss.Stop(); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        Check(ad.Run("UNLOCK TABLES"), "⑬ 잠금 풀기");
+        stopper.join();
+        std::vector<StoreAnswer> leftovers;
+        ss.TakeAnswers(leftovers);
+        const nox::db::DbStats ds = ss.Stats();
+        Check(ds.saved == beforeStop.saved + 3 && countOf(leftovers, StoreAnswerKind::SaveMatch) == 3 && ad.One("SELECT COUNT(*) FROM matches WHERE match_key LIKE 'split-stop-%'") == "3", "⑬ 끝낼 때 남은 판 셋 다 저장");
+        Check(ds.historyDropped == 2 && ds.historyReads == beforeStop.historyReads + 1 && countOf(leftovers, StoreAnswerKind::History) == 1 && ds.historyRequests == ds.historyReads + ds.historyFailed + ds.historyDropped,
+              "⑬ 끝낼 때 조회 — 하던 것 1 · 버림 2 · 요청 = 읽음 + 실패 + 버림(버림 " + std::to_string(ds.historyDropped) + ")");
     }
     std::printf("  ④ KILL 뒤 처음 걸린 오류: %s\n", s4.lastError.c_str());   // 끊김 번호가 무엇으로 오는지(`IsLost` 갈래 확인용)
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

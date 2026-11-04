@@ -42,7 +42,7 @@
 #include "nox/IniFile.h"
 #include "nox/Lobby.h"
 #if NOX_HAVE_MYSQL
-#include "nox/DbWorker.h"   // ★ 7단계 조각 8 — MySQL 머리 파일은 안 끌어온다(DbWorker.cpp 에만)
+#include "nox/DbLobbyStore.h"   // ★ 7단계 조각 8 — MySQL 머리 파일은 안 끌어온다(DbWorker.cpp 에만)
 #endif
 #include "nox/LobbyLink.h"
 #include "nox/LobbyStore.h"
@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
     nox::wol::CMemoryLobbyStore memStore;
     nox::wol::ILobbyStore* storePtr = &memStore;
 #if NOX_HAVE_MYSQL
-    std::unique_ptr<nox::db::CDbWorker> dbWorker;
+    std::unique_ptr<nox::db::CDbLobbyStore> dbStore;
 #endif
     if (noDb) {
         Log("[로비] 저장소 = 메모리(--no-db) — 계정 · 판 기록은 로비가 끝나면 사라진다\n");
@@ -208,14 +208,14 @@ int main(int argc, char** argv) {
             Log("[멈춤] 설정 파일에 [db] user 가 없다(%s) — DB 없이 띄우려면 --no-db(계정 · 판 기록이 끝나면 사라짐)\n", configPath.c_str());
             return 2;
         }
-        dbWorker = std::make_unique<nox::db::CDbWorker>(dc);
+        dbStore = std::make_unique<nox::db::CDbLobbyStore>(dc);
         std::string err;
-        if (!dbWorker->Start(err)) {
+        if (!dbStore->Start(err)) {
             Log("[멈춤] DB %s:%u/%s — %s(사람 1회 config/db_setup.sql 을 돌렸나 · DB 없이 띄우려면 --no-db)\n", dc.host.c_str(), dc.port,
                 dc.database.c_str(), err.c_str());
             return 2;
         }
-        storePtr = dbWorker.get();
+        storePtr = dbStore.get();
         Log("[로비] 저장소 = DB %s:%u/%s(계정 · 판 기록 · 표 버전 %u)\n", dc.host.c_str(), dc.port, dc.database.c_str(), nox::db::kSchemaVersion);
 #else
         Log("[멈춤] 이 로비는 MySQL 없이 빌드됐다(CMake NOX_MYSQL_DIR) — --no-db 로만 뜬다\n");
@@ -347,13 +347,15 @@ int main(int argc, char** argv) {
     if (stopEvent) CloseHandle(stopEvent);
 #if NOX_HAVE_MYSQL
     // ★ 7단계 조각 8 — 남은 일(판 저장)을 다 넣고 닫는다 · 셈(요청 하나 = 아래 갈래 중 하나)
-    if (dbWorker) {
-        dbWorker->Stop();
-        const nox::db::DbStats ds = dbWorker->Stats();
+    //   ★ 11-04 전적 검색 — 읽기 워커의 남은 조회는 버린다(기록 읽기 요청 = 읽음 + 실패 + 버림) · 붙음은 두 연결의 합(정상 2)
+    if (dbStore) {
+        dbStore->Stop();
+        const nox::db::DbStats ds = dbStore->Stats();
         Log("[로비] 끝 — DB 요청 %llu(판 Saved %llu · Duplicate %llu · Invalid %llu · 판 실패 %llu) · "   // ★ 로그인 암호 조각 4 — 로그인 걷음
+            "기록 읽기 요청 %llu(읽음 %llu · 실패 %llu · 버림 %llu) · "
             "붙음 %llu · 못 붙음 %llu · 끊겨 다시 %llu · 한 번에 꺼낸 일 최대 %zu%s%s\n",
-            ds.requests, ds.saved, ds.duplicates, ds.invalid, ds.saveFailed, ds.connects,
-            ds.connectFailed, ds.retries, ds.queueMax, ds.lastError.empty() ? "" : " · 마지막 오류 ", ds.lastError.c_str());
+            ds.requests, ds.saved, ds.duplicates, ds.invalid, ds.saveFailed, ds.historyRequests, ds.historyReads, ds.historyFailed, ds.historyDropped,
+            ds.connects, ds.connectFailed, ds.retries, ds.queueMax, ds.lastError.empty() ? "" : " · 마지막 오류 ", ds.lastError.c_str());
     }
 #endif
     const nox::wol::LobbyStats& ls = lobby.Stats();
