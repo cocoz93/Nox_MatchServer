@@ -466,7 +466,7 @@ void Lobby::RankAskRoom(uint32_t req, const std::vector<int>& group, bool ready,
     for (int id : group) {
         const Conn& c = conns_[id];
         ask.roster.push_back(c.nick);
-        ask.ratings.push_back(RatingOf(c.nick));   // ★ 매칭 손보기 5 — 게임 서버가 판 시작 전 「Ranked: … vs …」에
+        ask.ratings.push_back(RatingOf(c.nick));   // ★ 매칭 손보기 5 — 게임 서버가 판 시작 전 「랭크 대전: … vs …」에
     }
     ask.creator = ask.roster.front();
     ++stats_.rankRequests;
