@@ -26818,10 +26818,10 @@ void TestMatchHeadcount() {
         for (const auto& x : s.srv.Rooms().ListRooms()) if (x.roomId == s.r) f = x;
         std::snprintf(m, sizeof(m), "② 하나 남음 — 그때 방 %s · 판 끝 %d · 맵 %s · 승자 알림 %d · 나감 알림 %d · USE_MAP %d · 몰수 %llu · 다시 연 뒤 USE_MAP so_lod %d · 대기 알림 %d · 방 %s · 목록 %s/%s · 걸어 둔 맵 %d · 맵 %s · 전환 %llu · 셈 %llu",
                       nox::RoomPhaseName(phaseAtLeave), (int)overAtLeave, mapAtLeave.c_str(), winnerAtLeave, noticeAtLeave, useMapAtLeave, forfeits,
-                      useMapTo(o2, s.addr[0], "so_lod.map"), textTo(o2, s.addr[0], "Back to the waiting room. Host"), nox::RoomPhaseName(room.Phase()),
+                      useMapTo(o2, s.addr[0], "so_lod.map"), textTo(o2, s.addr[0], "Back to the waiting room."), nox::RoomPhaseName(room.Phase()),
                       f.mapKey.c_str(), f.mode.c_str(), (int)game.HasNextRoundMap(), game.MapFileName().c_str(), game.mapSwitches(), room.MatchAborts());
         Check(phaseAtLeave == nox::RoomPhase::Playing && overAtLeave && mapAtLeave == "estate.map" && winnerAtLeave == 1 && noticeAtLeave == 1 && useMapAtLeave == 0 && forfeits == 1 &&
-              useMapTo(o2, s.addr[0], "so_lod.map") >= 1 && textTo(o2, s.addr[0], "Back to the waiting room. Host") == 1 &&   // USE_MAP 은 가짜 클라가 확인을 안 해 다시 실린다
+              useMapTo(o2, s.addr[0], "so_lod.map") >= 1 && textTo(o2, s.addr[0], "Back to the waiting room.") == 1 &&   // USE_MAP 은 가짜 클라가 확인을 안 해 다시 실린다
               room.Phase() == nox::RoomPhase::Waiting && f.mapKey == "so_lod" && f.mode == "chat" && !game.HasNextRoundMap() &&
               game.MapFileName() == "so_lod.map" && game.mapSwitches() == 2 && room.MatchAborts() == 1, m);
     }
@@ -26839,7 +26839,7 @@ void TestMatchHeadcount() {
         for (int k = 0; k < 40 && room.Phase() == nox::RoomPhase::Playing; ++k) { s.now += 500; s.srv.Tick(s.now, o3); }
         s.now += 34; s.srv.Tick(s.now, o3);
         std::snprintf(m, sizeof(m), "③ 판 끝 쉬는 중 빠짐 — 그때 방 %s · 셈 %llu · 다시 연 뒤 방 %s · 판 끝 알림 %d · 사람 모자람 알림 %d · 맵 %s · 셈 %llu",
-                      nox::RoomPhaseName(during), abortsDuring, nox::RoomPhaseName(room.Phase()), textTo(o3, s.addr[0], "Back to the waiting room. Host"),
+                      nox::RoomPhaseName(during), abortsDuring, nox::RoomPhaseName(room.Phase()), textTo(o3, s.addr[0], "Back to the waiting room."),
                       textTo(o3, s.addr[0], "Opponent left"), game.MapFileName().c_str(), room.MatchAborts());
         Check(during == nox::RoomPhase::Playing && abortsDuring == 0 && room.Phase() == nox::RoomPhase::Waiting &&
               textTo(o3, s.addr[0], "Opponent left") == 0 && game.MapFileName() == "so_lod.map" && room.MatchAborts() == 0, m);

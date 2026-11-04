@@ -10,7 +10,7 @@ namespace nox {
 namespace {
 
 const char* const kWords[] = {"HELLO", "AUTH", "REGISTER", "ROOM", "ROOM_GONE", "CREATE", "CREATED", "CREATE_FAILED", "RESULT", "BYE",
-                              "PING", "SAVED", "CLIENT_GONE"};
+                              "PING", "SAVED", "CLIENT_GONE", "ROOMUI"};
 static_assert(sizeof(kWords) / sizeof(kWords[0]) == static_cast<size_t>(LinkKind::kCount), "낱말 표 = 갈래 수");
 const char* const kSaveWords[] = {"ok", "dup", "bad"};
 static_assert(sizeof(kSaveWords) / sizeof(kSaveWords[0]) == static_cast<size_t>(SaveOutcome::kCount), "SAVED 끝 칸 표 = 갈래 수");
@@ -184,6 +184,14 @@ std::string LinkBye(const std::string& reason) { return std::string(kWords[9]) +
 
 std::string LinkClientGone(const std::string& name) { return std::string(kWords[12]) + " " + EncodeLinkText(name); }   // ★ 11-03
 
+// ★ 11-04 플랜1
+static std::string RoomUiTail(const LinkRoomUi& u) {
+    return std::to_string(static_cast<unsigned>(u.state)) + " " + (u.host ? "1" : "0") + " " + (u.canStart ? "1" : "0") + " " +
+           std::to_string(u.scoreLimit) + " " + std::to_string(u.timeLimitMin) + " " + EncodeLinkText(u.map);
+}
+std::string LinkRoomUiLine(const LinkRoomUi& u) { return std::string(kWords[13]) + " " + EncodeLinkText(u.name) + " " + RoomUiTail(u); }
+std::string RoomUiClientLine(const LinkRoomUi& u) { return "NOXRANK ROOMUI " + RoomUiTail(u); }
+
 std::string LinkPing() { return kWords[10]; }
 
 std::string LinkSavedLine(const std::string& match, SaveOutcome outcome, const std::vector<LinkRatingChange>& ratings) {
@@ -283,6 +291,19 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
         case LinkKind::ClientGone:   // ★ 11-03
             if (!want(2)) return LinkParse::FieldCount;
             return DecodeLinkText(t[1], out.text) ? LinkParse::Ok : LinkParse::BadText;
+        case LinkKind::RoomUi: {   // ★ 11-04 플랜1
+            if (!want(8)) return LinkParse::FieldCount;
+            uint32_t state = 0, host = 0, canStart = 0;
+            LinkRoomUi& u = out.roomUi;
+            if (!ParseNum(t[2], static_cast<uint32_t>(RoomUiState::kCount) - 1, state) || !ParseNum(t[3], 1, host) || !ParseNum(t[4], 1, canStart) ||
+                !ParseNum(t[5], 0xffffffffu, u.scoreLimit) || !ParseNum(t[6], 0xffffffffu, u.timeLimitMin))
+                return LinkParse::BadNumber;
+            u.state = static_cast<RoomUiState>(state);
+            u.host = host != 0;
+            u.canStart = canStart != 0;
+            if (!DecodeLinkText(t[1], u.name) || u.name.empty() || !DecodeLinkText(t[7], u.map)) return LinkParse::BadText;   // 빈 이름은 넘길 곳이 없다
+            return LinkParse::Ok;
+        }
         case LinkKind::Created:
             if (!want(3)) return LinkParse::FieldCount;
             return ParseNum(t[1], 0xffffffffu, out.req) && ParseNum(t[2], kMaxRoomId, out.room.id) ? LinkParse::Ok

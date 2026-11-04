@@ -111,6 +111,10 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
             s.rooms[l.room.id] = l.room;
             if (s.rankRooms.count(l.room.id) == 0) ++listVersion_;   // ★ 11-03 — 남의 목록에 안 실리는 랭크 방은 안 셈
             return;
+        case LinkKind::RoomUi:   // ★ 11-04 플랜1 — 로비가 그 사람 접속으로 넘긴다
+            ++stats_.roomUiLines;
+            clientLines_.push_back({l.roomUi.name, RoomUiClientLine(l.roomUi)});
+            return;
         case LinkKind::RoomGone:
             ++stats_.roomGoneLines;
             if (s.rooms.erase(l.room.id) == 0) ++stats_.roomGoneUnknown;
@@ -320,6 +324,11 @@ void RoomMirror::OnClientGone(const std::string& name) {
         ++stats_.clientGoneSent;
         pendingOut_.push_back({kv.first, LinkClientGone(name)});
     }
+}
+
+void RoomMirror::TakeClientLines(std::vector<std::pair<std::string, std::string>>& out) {
+    out.swap(clientLines_);
+    clientLines_.clear();
 }
 
 void RoomMirror::TakeOut(std::vector<Out>& out) {

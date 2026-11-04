@@ -64,6 +64,7 @@ void CLobbyClient::OnNetworkEvent(const NetworkEvent& ev, std::vector<NetworkReq
             _conn = ev.lobbyConn;
             _stage = Stage::WaitHello;
             _sent.clear();
+            _sentUi.clear();   // ★ 11-04 플랜1 — 새 로비엔 다시 다 알린다
             _lastRecvMs = _nowMs();   // ★ 7단계 — 붙은 때부터 잰다(HELLO 도 안 오는 로비 — 멈춘 로비의 대기 줄에 붙음 — 도 한도에 끊는다)
             _nextPingMs = _lastRecvMs + kLinkPingEveryMs;
             _closeAsked = false;
@@ -163,6 +164,7 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
         case LinkKind::Auth:
         case LinkKind::Register:
         case LinkKind::Room:
+        case LinkKind::RoomUi:
         case LinkKind::RoomGone:
         case LinkKind::Created:
         case LinkKind::CreateFailed:
@@ -256,6 +258,32 @@ void CLobbyClient::SendChanged(std::vector<NetworkRequest>& out) {
         Send(LinkRoomGone(kv.first), out);
     }
     _sent.swap(now);
+    // ★ 11-04 플랜1 — 방 안 화면 상태(방 줄과 같은 꼴 — 달라진 사람만)
+    std::map<std::string, std::string> ui;
+    for (const MemberUiFact& f : _rooms.ListMemberUi()) {
+        LinkRoomUi u;
+        u.name = f.account;
+        u.state = f.rankArriving ? RoomUiState::RankArriving : f.phase == RoomPhase::Playing ? RoomUiState::Playing : RoomUiState::Waiting;
+        u.host = f.host;
+        u.canStart = f.canStart;
+        u.scoreLimit = f.scoreLimit;
+        constexpr uint32_t kFramesPerMin = 30 * 60;   // 서버 틱 30/초(`timeLimitFrames` 비교 자리 `Server.cpp` RoundTimeUp)
+        u.timeLimitMin = (f.timeLimitFrames + kFramesPerMin - 1) / kFramesPerMin;
+        u.map = f.battleMap;
+        ui[u.name] = LinkRoomUiLine(u);
+    }
+    for (const auto& kv : ui) {
+        const auto s = _sentUi.find(kv.first);
+        if (s != _sentUi.end() && s->second == kv.second) continue;
+        Send(kv.second, out);
+    }
+    for (const auto& kv : _sentUi) {
+        if (ui.count(kv.first)) continue;
+        LinkRoomUi gone;
+        gone.name = kv.first;
+        Send(LinkRoomUiLine(gone), out);
+    }
+    _sentUi.swap(ui);
 }
 
 void CLobbyClient::AfterTick(std::vector<NetworkRequest>& out) {

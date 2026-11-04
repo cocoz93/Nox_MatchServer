@@ -162,6 +162,7 @@ private:
     bool _verbose = false;
     Stage _stage = Stage::Down;
     int _conn = 0;                            // 로비 연결 접속 번호(네트워크 스레드 `CTcpLines` 것)
+    std::map<std::string, std::string> _sentUi;   // ★ 11-04 플랜1 — 이름 → 지난번 `ROOMUI` 줄(달라진 사람만 · 빠진 사람은 떠남 줄)
     std::map<uint32_t, std::string> _sent;    // 방 번호 → 지난번 보낸 ROOM 줄(바뀜 견주기)
     std::function<uint32_t()> _nowMs = NowMs;
     uint32_t _lastRecvMs = 0;                 // ★ 7단계 — 이 접속에서 마지막으로 줄을 받은 때(붙은 때부터)

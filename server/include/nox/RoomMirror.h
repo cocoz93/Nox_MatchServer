@@ -65,6 +65,7 @@ struct MirrorStats {
     unsigned long long deadLinks = 0;         // 받은 줄이 `kLinkDeadMs` 동안 없어 끊음(어느 단계든 — 등록 전 말없는 접속도)
     // ★ 7단계 조각 5 — 판 저장(RESULT 하나는 저장 요청 · 못 읽음 · 저장소 없음 중 하나)
     unsigned long long saveRequests = 0;      // 저장소에 판 저장 요청
+    unsigned long long roomUiLines = 0;       // ★ 11-04 플랜1 — ROOMUI 줄
     unsigned long long clientGoneSent = 0;    // ★ 11-03 — CLIENT_GONE 줄(줄마다 · 게임 서버마다)
     unsigned long long savedOk = 0;           // 답 Saved → SAVED ok
     unsigned long long savedDup = 0;          // 답 Duplicate → SAVED dup
@@ -110,6 +111,7 @@ public:
     RoomRequest RequestRoom(uint32_t req, const RoomAsk& ask, LobbyRoom& out, std::string& why) override;
     void CancelRoom(uint32_t req) override;   // ★ 작업 3c — 로비가 접은 요청을 기다림 장부에서 지운다
     uint64_t ListVersion() const override { return listVersion_; }   // ★ 11-03
+    void TakeClientLines(std::vector<std::pair<std::string, std::string>>& out) override;   // ★ 11-04 플랜1
     void OnClientGone(const std::string& name) override;             // ★ 11-03
 
     const MirrorStats& Stats() const { return stats_; }
@@ -151,6 +153,7 @@ private:
     uint32_t nextSaveReq_ = 1;
     std::map<int, Server> servers_;   // 연결 접속 번호 → 게임 서버(차례 = 붙은 차례)
     std::vector<Out> pendingOut_;
+    std::vector<std::pair<std::string, std::string>> clientLines_;   // ★ 11-04 플랜1 — 이름 · DLL 로 넘길 줄
     std::vector<std::string> log_;
     std::vector<std::string> results_;
     MirrorStats stats_;

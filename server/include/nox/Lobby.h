@@ -141,6 +141,8 @@ public:
     virtual uint64_t ListVersion() const { return 0; }
     // ★ 11-03 — 로그인한 사람의 로비 접속이 끊김(같은 계정이 새 접속으로 이미 옮겼으면 안 부름) — 거울이 게임 서버에 `CLIENT_GONE` 으로 전함
     virtual void OnClientGone(const std::string& /*name*/) {}
+    // ★ 11-04 플랜1 — 그 사람 DLL 에 넘길 줄(이름 · 줄)을 꺼낸다. 로비는 이름으로 접속을 찾아 보낸다(`ROOMUI`)
+    virtual void TakeClientLines(std::vector<std::pair<std::string, std::string>>& /*out*/) {}
 };
 
 // ★ 11-03 — 목록 바뀜 알림 사이 최소 간격. 몰려도 1초에 한 번(클라마다 LIST 한 번 · 근거 없는 값 — 사람이 보는 목록이라 그 정도면 충분)
@@ -228,6 +230,8 @@ struct LobbyConfig {
 // 로비의 셈 — 입장 토큰 갈래
 struct LobbyStats {
     unsigned long long tokensIssued = 0;     // `NOXTOKEN` 을 보냄
+    unsigned long long roomUiSent = 0;       // ★ 11-04 플랜1 — DLL 로 넘긴 방 안 화면 상태 줄
+    unsigned long long roomUiNoConn = 0;     // ★ 11-04 플랜1 — 받을 접속이 없어 버림(끊김 · 줄을 못 떼는 옛 DLL)
     unsigned long long roomsPushes = 0;      // ★ 11-03 — 목록 바뀜 알림을 민 횟수(한 번 = 접속 전부에 한 줄)
     unsigned long long loginNoClient = 0;    // 로그인 — `NOXCLIENT` 없음(인사말로 알림)
     unsigned long long loginOldClient = 0;   // 로그인 — DLL 판이 낮음(인사말로 알림)

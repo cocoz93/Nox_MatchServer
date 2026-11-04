@@ -352,6 +352,37 @@ void TestLobbyLink() {
               nox::LinkBye("") == "BYE ~",
           "BYE 왕복(빈칸 든 까닭 · 빈 까닭 ~)");
     Check(parse(nox::LinkClientGone("a b")) == P::Ok && l.kind == K::ClientGone && l.text == "a b", "★ 11-03 CLIENT_GONE 왕복(빈칸 든 이름)");
+    // ★ 11-04 플랜1 — 방 안 화면 상태(상태 넷 각각 · 방장/시작 가능 · 빈 맵 · 틀린 꼴은 개수로)
+    {
+        int okStates = 0;
+        for (unsigned st = 0; st < static_cast<unsigned>(nox::RoomUiState::kCount); ++st) {
+            nox::LinkRoomUi u;
+            u.name = "a b";
+            u.state = static_cast<nox::RoomUiState>(st);
+            u.host = st % 2 != 0;
+            u.canStart = st == 1;
+            u.scoreLimit = 15;
+            u.timeLimitMin = st;
+            u.map = st == 0 ? "" : "estate";
+            const bool same = parse(nox::LinkRoomUiLine(u)) == P::Ok && l.kind == K::RoomUi && l.roomUi.name == "a b" && l.roomUi.state == u.state &&
+                              l.roomUi.host == u.host && l.roomUi.canStart == u.canStart && l.roomUi.scoreLimit == 15 && l.roomUi.timeLimitMin == st && l.roomUi.map == u.map;
+            okStates += same ? 1 : 0;
+        }
+        Check(okStates == static_cast<int>(nox::RoomUiState::kCount), "ROOMUI 왕복 — 상태 넷");
+        nox::LinkRoomUi w;
+        w.name = "qa1";
+        w.state = nox::RoomUiState::Waiting;
+        w.host = true;
+        w.scoreLimit = 15;
+        w.map = "estate";
+        Check(nox::RoomUiClientLine(w) == "NOXRANK ROOMUI 1 1 0 15 0 estate", "ROOMUI DLL 줄 꼴(이름 칸 뺌)");
+        int bad = 0;
+        bad += parse("ROOMUI qa1 4 1 0 15 0 estate") == P::BadNumber;   // 없는 상태
+        bad += parse("ROOMUI qa1 1 2 0 15 0 estate") == P::BadNumber;   // 방장 칸
+        bad += parse("ROOMUI ~ 1 1 0 15 0 estate") == P::BadText;       // 빈 이름
+        bad += parse("ROOMUI qa1 1 1 0 15 0") == P::FieldCount;         // 칸 모자람
+        Check(bad == 4, "ROOMUI 틀린 꼴 넷 거름");
+    }
     // ★ 7단계 — 살아 있음 · 판 결과 저장 답(끝 칸 셋 각각 · 개수로)
     Check(nox::LinkPing() == "PING" && parse(nox::LinkPing()) == P::Ok && l.kind == K::Ping, "PING 왕복(칸 없음)");
     using O = nox::SaveOutcome;

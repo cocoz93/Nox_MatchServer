@@ -315,6 +315,18 @@ struct RoomFact {
     RoomPhase phase = RoomPhase::Waiting;   // ★ 10-16 작업 12a
 };
 
+// ★ 11-04 플랜1 — 방 안 화면 상태 한 사람치(`CLobbyClient` 가 `ROOMUI` 로). 이름 있는 구성원만(열린 방식은 넘길 곳이 없다)
+struct MemberUiFact {
+    std::string account;
+    RoomPhase phase = RoomPhase::Waiting;
+    bool rankArriving = false;  // 랭크 방이 명단 도착을 기다리는 중(판은 저절로 열림)
+    bool host = false;
+    bool canStart = false;      // `HandleChatCommands` 의 `!start` 와 같은 조건 — 방장 · 대기 · 인원 · 맵
+    uint32_t scoreLimit = 0;    // 판을 열면 쓸 점수 한도(`StartMatch`)
+    uint32_t timeLimitFrames = 0;
+    std::string battleMap;      // 대전 맵 열쇠
+};
+
 class CRoomManager {
 public:
     static constexpr int kNoRoom = -1;
@@ -355,6 +367,7 @@ public:
     bool CloseRoom(int id);
     // ★ 10-14 작업 9e — 돌고 있는 방의 사실(번호 차례) · 방을 만들고 닫을 때 한 줄씩 찍는다(`main` 이 켠다 — 시험은 조용히)
     std::vector<RoomFact> ListRooms() const;
+    std::vector<MemberUiFact> ListMemberUi() const;   // ★ 11-04 플랜1
     void SetLogRooms(bool on) { _logRooms = on; }
 
     // ── 입장 방식 ── (머리 주석 「10-10 토큰 작업 2」)

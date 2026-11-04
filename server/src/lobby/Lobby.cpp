@@ -278,6 +278,21 @@ void Lobby::Tick(std::vector<Out>& out) {
             if (!c.closing && c.login == LoginState::Ok && c.clientVer >= kNoxClientAcceptVersion) out.push_back({kv.first, "NOXRANK ROOMS"});
         }
     }
+    // ★ 11-04 플랜1 — 방 안 화면 상태. 줄이 있을 때만 접속을 훑는다(사람의 상태가 바뀔 때뿐)
+    std::vector<std::pair<std::string, std::string>> uiLines;
+    rooms_.TakeClientLines(uiLines);
+    for (const auto& ul : uiLines) {
+        bool sent = false;
+        for (const auto& kv : conns_) {
+            const Conn& c = kv.second;
+            if (c.closing || c.login != LoginState::Ok || c.nick != ul.first || c.clientVer < kNoxClientAcceptVersion) continue;
+            out.push_back({kv.first, ul.second});
+            sent = true;
+            break;
+        }
+        if (sent) ++stats_.roomUiSent;
+        else ++stats_.roomUiNoConn;
+    }
     if (pending_.empty()) return;
     for (auto it = pending_.begin(); it != pending_.end();) {
         if (static_cast<int32_t>(now - it->second.deadlineMs) < 0) {   // 32비트 시계가 돌아도 맞게

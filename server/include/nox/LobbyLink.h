@@ -76,7 +76,7 @@ struct LinkRoom {
     std::string mode;           // 방 설정의 모드(`chat` · `arena` …)
 };
 
-enum class LinkKind : uint8_t { Hello, Auth, Register, Room, RoomGone, Create, Created, CreateFailed, Result, Bye, Ping, Saved, ClientGone, kCount };
+enum class LinkKind : uint8_t { Hello, Auth, Register, Room, RoomGone, Create, Created, CreateFailed, Result, Bye, Ping, Saved, ClientGone, RoomUi, kCount };
 const char* LinkKindWord(LinkKind k);   // 줄 앞 낱말(`HELLO` …)
 
 // ★ 7단계 — `SAVED` 의 끝 칸(로비가 판 결과를 어떻게 했나). 셋 다 게임 서버는 쥔 것을 지운다
@@ -88,6 +88,19 @@ struct LinkRatingChange {
     std::string account;   // 로비 이름(판 사람의 계정 이름 그대로)
     int32_t after = 0;     // 고친 뒤 점수
     int32_t delta = 0;     // 이 판의 증감(`Rating.h` `RatingDeltas`)
+};
+
+// ★ 11-04 플랜1 — 방 안 화면 상태 한 사람치(`ROOMUI` · 게임 서버 → 로비 → 그 사람 DLL). 시작 단추 · Home 창 값이 쓴다
+//   왜 한 사람치 — 방장 여부가 사람마다 다르고, 로비는 누가 어느 방에 앉았는지 모른다(토큰을 준 뒤 들어왔는지도). 로비는 이름으로 접속을 찾아 넘기기만
+enum class RoomUiState : uint8_t { Gone, Waiting, Playing, RankArriving, kCount };   // Gone = 방을 떠남(나머지 칸은 안 봄)
+struct LinkRoomUi {
+    std::string name;      // 로비 이름
+    RoomUiState state = RoomUiState::Gone;
+    bool host = false;     // 지금 방장
+    bool canStart = false; // 지금 누르면 판이 열림(방장 · 대기 · 인원 · 맵) — 서버 `!start` 와 같은 조건
+    uint32_t scoreLimit = 0;   // 판의 점수 한도
+    uint32_t timeLimitMin = 0; // 판의 시간 한도(분 · 0 = 없음)
+    std::string map;       // 대전 맵 열쇠(소문자 · 확장자 없음)
 };
 
 // 읽은 줄 하나 — 갈래에 따라 쓰는 칸만 채운다
@@ -104,6 +117,7 @@ struct LinkLine {
     std::vector<std::string> roster;
     std::vector<LinkRatingChange> ratings;     // ★ 매칭 손보기 1 — Saved 꼬리(옛 꼴이면 빔)
     std::vector<int32_t> rosterRatings;        // ★ 매칭 손보기 5 — Create 랭크 칸 2 의 사람마다 점수(명단과 같은 차례 · 1 이면 빔)
+    LinkRoomUi roomUi;                         // ★ 11-04 플랜1 — RoomUi
 };
 
 // 읽기 실패 까닭 — 갈래마다 따로 센다(시험은 개수로 본다)
@@ -135,6 +149,8 @@ std::string LinkCreated(uint32_t req, uint32_t id);
 std::string LinkCreateFailed(uint32_t req, const std::string& reason);
 std::string LinkBye(const std::string& reason);
 std::string LinkClientGone(const std::string& name);   // ★ 11-03
+std::string LinkRoomUiLine(const LinkRoomUi& u);        // ★ 11-04 플랜1 — 게임 서버 → 로비
+std::string RoomUiClientLine(const LinkRoomUi& u);      // ★ 11-04 플랜1 — 로비 → DLL `NOXRANK ROOMUI <상태> <방장> <시작 가능> <점수> <분> <맵>`(이름 칸만 뺌 · 맵은 글 칸)
 std::string LinkPing();
 // 판 번호는 글 칸(빈 글이면 받는 쪽이 글 칸 실패) · ★ 매칭 손보기 1 — `ratings` 가 있으면 꼬리(앞 `kLinkMaxRoster` 명까지 — 넘는 사람은 안 실음)
 std::string LinkSavedLine(const std::string& match, SaveOutcome outcome, const std::vector<LinkRatingChange>& ratings = {});

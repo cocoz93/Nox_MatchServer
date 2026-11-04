@@ -94,6 +94,31 @@ std::vector<RoomFact> CRoomManager::ListRooms() const {
     return r;
 }
 
+// ★ 11-04 플랜1 — 방 안 화면 상태. 점수 한도는 `StartMatch` 가 쓸 값(방 틀 값이 있으면 그것 · 없으면 지금 설정값)
+std::vector<MemberUiFact> CRoomManager::ListMemberUi() const {
+    std::vector<MemberUiFact> r;
+    for (const auto& kv : _rooms) {
+        const CRoom& room = *kv.second;
+        const RoomMember* host = room.Host();
+        const bool arriving = room._rankWait == CRoom::RankWait::Arriving;
+        const bool startable = room._phase == RoomPhase::Waiting && !arriving && room._game.inGameCount() >= CRoom::kMinPlayers && room.CanStartMatch();
+        for (const RoomMember& m : room._members) {
+            if (m.account.empty()) continue;
+            MemberUiFact f;
+            f.account = m.account;
+            f.phase = room._phase;
+            f.rankArriving = arriving;
+            f.host = host && host->sessionId == m.sessionId;
+            f.canStart = f.host && startable;
+            f.scoreLimit = room._settings.battleScoreLimit > 0 ? static_cast<uint32_t>(std::min(room._settings.battleScoreLimit, 255)) : room._game.Settings().limitValue;
+            f.timeLimitFrames = room._game.Settings().timeLimitFrames;
+            f.battleMap = room._settings.battleMapPath.empty() ? std::string() : MapKeyOf(room._settings.battleMapPath);
+            r.push_back(std::move(f));
+        }
+    }
+    return r;
+}
+
 // ★ 랭크 매칭 조각 6 — 도착 기다리는 랭크 방(머리 주석은 `RoomManager.h` `CRoom::RankWait`). 한도는 처음 본 `BeginTick` 의 시각부터
 void CRoomManager::CheckRankRooms(uint32_t nowMs) {
     for (auto& kv : _rooms) {
@@ -151,7 +176,7 @@ void CRoomManager::CheckRankRooms(uint32_t nowMs) {
             case Decision::Unranked:
                 ++_stats.rankUnranked;
                 what = "도착 한도 — 모자라 랭크 풂(일반 방)";
-                room._game.SendNotice("Not enough players arrived. Unranked room now. Host: !start");
+                room._game.SendNotice("Not enough players arrived. Unranked room now.");
                 break;
             case Decision::NoMap:
                 ++_stats.rankNoMap;

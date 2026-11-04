@@ -827,7 +827,7 @@ void nox::CRoom::HandleChatCommands() {
                 _game.SendNoticeTo(c.sessionId, line);
                 break;
             case CmdOutcome::Unknown:
-                _game.SendNoticeTo(c.sessionId, "Unknown command. Host: !start");
+                _game.SendNoticeTo(c.sessionId, "Unknown command.");
                 break;
             case CmdOutcome::kCount:
                 break;
@@ -973,7 +973,7 @@ void nox::CRoom::OnRoundRestarted() {
     _phase = RoomPhase::Waiting;
     _curMapKey = _settings.mapPath.empty() ? std::string() : MapKeyOf(_settings.mapPath);
     _curMode = _settings.mode;
-    _game.SendNotice("Back to the waiting room. Host: !start");
+    _game.SendNotice("Back to the waiting room.");
     _game.Log("[판] 끝 — 대기 맵 %s 로 돌아옴(지금 맵 %s)\n", _curMapKey.c_str(), _game.MapFileName().c_str());
     EndRankedMatch("판 끝");   // ★ 랭크 매칭 조각 6 — 판 결과(ranked)는 판 끝에 이미 지었다(`CollectRoundOutcome`)
 }
@@ -1077,7 +1077,7 @@ void nox::CRoom::CheckMatchHeadcount() {
     _phase = RoomPhase::Waiting;
     _curMapKey = wait->key;
     _curMode = _settings.mode;
-    _game.SendNotice("Not enough players. Back to the waiting room. Host: !start");
+    _game.SendNotice("Not enough players. Back to the waiting room.");
     _game.Log("[판] 사람 모자람(게임 안 %zu < %zu) — 대기 맵 %s 로\n", left, kMinPlayers, wait->key.c_str());
     EndRankedMatch("중단");   // ★ 랭크 매칭 조각 6 — 중단 결과(ranked)는 위에서 지었다
 }

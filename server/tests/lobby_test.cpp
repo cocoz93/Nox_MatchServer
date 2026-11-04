@@ -191,6 +191,8 @@ struct FakeRooms final : nox::wol::ILobbyRooms {
     void CancelRoom(uint32_t req) override { cancelled.push_back(req); }
     uint64_t version = 0;    // ★ 11-03 — 목록 바뀜 수(시험이 올림)
     uint64_t ListVersion() const override { return version; }
+    std::vector<std::pair<std::string, std::string>> uiLines;   // ★ 11-04 플랜1 — 시험이 넣는 줄
+    void TakeClientLines(std::vector<std::pair<std::string, std::string>>& out) override { out.swap(uiLines); uiLines.clear(); }
     nox::wol::LobbyRoom Make(const std::string& creator) {
         ++created;
         nox::wol::LobbyRoom r = FakeRoom(static_cast<uint16_t>(100 + created), creator.c_str());
@@ -1629,6 +1631,22 @@ void MirrorUnitTests() {
         Check(quiet.empty() && s.size() == 1 && s[0].conn == a3.conn && s[0].line == nox::LinkClientGone("zed") && mirror.Stats().clientGoneSent == sent0 + 1,
               "⑫-b 끊김 알림 — 로그인 전 끊김 줄 " + std::to_string(quiet.size()) + " · 로그인 뒤 끊김 줄 " + std::to_string(s.size()) + (s.empty() ? std::string() : " = " + s[0].line));
     }
+    // ★ 11-04 플랜1 — 거울은 ROOMUI 를 받아 DLL 줄(이름 칸 뺌)로 바꿔 쌓는다
+    {
+        nox::LinkRoomUi u;
+        u.name = "zed";
+        u.state = nox::RoomUiState::Playing;
+        u.scoreLimit = 7;
+        u.map = "estate";
+        const unsigned long long n0 = mirror.Stats().roomUiLines;
+        send(a3, nox::LinkRoomUiLine(u));
+        std::vector<std::pair<std::string, std::string>> ul;
+        mirror.TakeClientLines(ul);
+        Check(ul.size() == 1 && ul[0].first == "zed" && ul[0].second == "NOXRANK ROOMUI 2 0 0 7 0 estate" && mirror.Stats().roomUiLines == n0 + 1, "거울 ROOMUI → DLL 줄 한 개");
+        ul.clear();
+        mirror.TakeClientLines(ul);
+        Check(ul.empty(), "거울 ROOMUI 한 번 꺼내면 빔");
+    }
     const uint32_t reqJay = rankAsk(8, "jay", 9, "kim");
     const std::vector<int32_t> jayRatings = lastRatings;
     login4(10, "lee");
@@ -2855,6 +2873,20 @@ static void RoomsPushUnitTests() {
     clock += kRoomsPushGapMs;
     Check(pushes(1) == 0, "목록 바뀜 알림 ⑥ 또 안 바뀌면 안 나감");
     Check(lb.Stats().roomsPushes == 2, "목록 바뀜 알림 ⑦ 민 횟수 2");
+    // ★ 11-04 플랜1 — 방 안 화면 상태 줄 — 그 이름의 접속 하나로만 · 옛 DLL · 없는 이름은 버리고 센다
+    {
+        fake.uiLines = {{"newdll", "NOXRANK ROOMUI 1 1 0 15 0 estate"}, {"olddll", "NOXRANK ROOMUI 1 0 0 15 0 estate"}, {"nobody", "NOXRANK ROOMUI 0 0 0 0 0 ~"}};
+        std::vector<Out> o;
+        lb.Tick(o);
+        int toNew = 0, ui = 0;
+        for (const auto& x : o) {
+            if (x.line.rfind("NOXRANK ROOMUI", 0) != 0) continue;
+            ++ui;
+            toNew += x.conn == 1 && x.line == "NOXRANK ROOMUI 1 1 0 15 0 estate" ? 1 : 0;
+        }
+        Check(ui == 1 && toNew == 1, "ROOMUI ① 새 DLL 그 사람에게만 한 줄");
+        Check(lb.Stats().roomUiSent == 1 && lb.Stats().roomUiNoConn == 2, "ROOMUI ② 보냄 1 · 버림 2");
+    }
 }
 
 int main(int argc, char** argv) {
