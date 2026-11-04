@@ -2439,6 +2439,81 @@ static void StartBtnTick(bool inRoom, const RoomUi& s)
         Log("㉒ 시작 단추 %s", s.canStart ? "켬" : "회색");
     }
 }
+// ★ 11-04 플랜1 ㉓ Home(방 설정) 창 — 창은 남기되(사용자 결정 · 확장 여지) 못 바꾸게 회색으로 · 칸에는 실제 판 값
+//   왜 — 정품 창의 판수 · 시간 · 맵은 클라에만 남고 서버로 안 간다(`hm2` 측정) · 그대로 두면 바꾼 줄 알게 된다
+//   값은 칸에 글자만 넣는다 — 정품이 칸을 떠날 때 받는 0x4003 을 안 보내 클라 쪽 값도 그대로. 맵 줄 고르기(0x4013)는 알림 없이 표시만 바꾼다(`GAME3.c:700` · 원본 기준)
+//   정품 한계 우회: 창을 닫으면 지워지고 다시 만들어져 한 번만 하면 안 된다 → 주소가 바뀔 때마다 · 끈 칸은 그림만 바뀌고 맵 목록 · 탭은 모양이 그대로라 눌림만 막힘(`client/gui/window.go:286` · 원본 기준)
+//   확인의 윗칸까지 끄면 누름이 거기 안 닿아(같은 곳 — 켜진 칸만 따라 내려감) 확인이 든 칸은 남긴다
+static const DWORD kHomeOkId = 10149, kHomeScoreId = 10134, kHomeTimeId = 10135, kHomeMapListId = 10114;
+static const DWORD kMsgListTop = 0x401c, kMsgListText = 0x4016;
+static const uintptr_t kHomeToggleFn = 0x457050;   // 정품 Home 키가 부르는 자리(열림 ↔ 닫힘 · 시험 누름 `H` 전용 — `guiserv.c` guiServerOptsLoad · 0x6d1870 에 저장해 찾음)
+static bool HomeGrayWalk(DWORD win, int depth, int& off)
+{
+    bool hasOk = false;
+    if (depth > 8) return false;
+    DWORD c = 0;
+    ReadSelf(win + 400, &c);
+    for (int guard = 0; c && guard < 400; ++guard) {
+        DWORD id = 0, f = 0, next = 0;
+        ReadSelf(c, &id);
+        ReadSelf(c + 4, &f);
+        const bool sub = HomeGrayWalk(c, depth + 1, off);
+        if (id == kHomeOkId || sub) hasOk = true;
+        else if (f & kWinEnabled) { *(volatile DWORD*)(c + 4) = f & ~kWinEnabled; ++off; }
+        if (!ReadSelf(c + 388, &next)) break;
+        c = next;
+    }
+    return hasOk;
+}
+static void HomeFieldNumber(DWORD home, DWORD id, int value)
+{
+    const DWORD field = ((PFN_findchild)kFindChild)(home, id);
+    if (!field) { Log("㉓ Home 칸 %lu 못 찾음", id); return; }
+    wchar_t text[16];
+    swprintf_s(text, L"%d", value);
+    ((PFN_wndproc4)kWinCall94)(field, kMsgSetEditText, (DWORD)(uintptr_t)text, 0);
+}
+// 줄 글자 = 맵 이름 + 탭 + 사람 수 → 이름이 같은 줄을 찾는다(`guiserv.c` updateMapList)
+static int HomeMapSelect(DWORD home, const char* map)
+{
+    const DWORD list = ((PFN_findchild)kFindChild)(home, kHomeMapListId);
+    if (!list) return -2;
+    const size_t n = strlen(map);
+    for (int row = 0; row < 512; ++row) {
+        const wchar_t* line = (const wchar_t*)(uintptr_t)((PFN_wndproc4)kWinCall94)(list, kMsgListText, (DWORD)row, 0);
+        if (!line || !line[0]) break;
+        size_t i = 0;
+        while (i < n && line[i] && towlower(line[i]) == (wchar_t)tolower((unsigned char)map[i])) ++i;
+        if (i == n && (line[i] == 0 || line[i] == L'\t' || line[i] == L' ')) {
+            ((PFN_wndproc4)kWinCall94)(list, kMsgListSelect, (DWORD)row, 0);
+            ((PFN_wndproc4)kWinCall94)(list, kMsgListTop, (DWORD)row, 0);
+            return row;
+        }
+    }
+    return -1;
+}
+static void HomeWinTick(bool inRoom, const RoomUi& s)
+{
+    static DWORD grayed = 0, filled = 0;
+    DWORD home = 0;
+    ReadSelf(kHomeWin, &home);
+    if (!home) { grayed = filled = 0; return; }
+    if (!inRoom) return;   // 방 밖에서 정품이 쓰는 경우(LAN 호스트 흐름)는 손대지 않는다
+    if (home != filled && s.valid) {   // 줄이 창보다 늦어도 그때 채운다
+        filled = home;
+        HomeFieldNumber(home, kHomeScoreId, s.score);
+        HomeFieldNumber(home, kHomeTimeId, s.timeMin);
+        const int row = s.map[0] ? HomeMapSelect(home, s.map) : -3;
+        Log("㉓ Home 창 값 — 판수 %d · 시간 %d · 맵 %s 줄 %d", s.score, s.timeMin, s.map, row);
+    }
+    if (home != grayed) {   // 값을 넣은 뒤에 끈다(칸은 켜져 있어야 글자를 받는 경로를 그대로 — `hm2`)
+        grayed = home;
+        int off = 0;
+        HomeGrayWalk(home, 0, off);
+        Log("㉓ Home 창 %#lx 회색 칸 %d", home, off);
+    }
+}
+
 // 방 안 = 게임 목록 · 대화방 칸이 다 비었을 때. 나가면 목록이나 대화방이 다시 선다 — 그때 값을 지운다(다음 방의 줄이 올 때까지 옛 값을 안 쓰게)
 //   들어갈 때는 줄이 목록이 닫히기 전에 올 수 있어(`_out/qa_p12` 로그) 방 안 → 밖으로 바뀔 때만 지운다
 static void RoomUiTick()
@@ -2455,11 +2530,13 @@ static void RoomUiTick()
     LeaveCriticalSection(&g_ruCs);
     wasIn = inRoom;
     StartBtnTick(inRoom, s);
+    HomeWinTick(inRoom, s);
 }
 
 static const DWORD kBtnJoinGame = 10001;   // 게임 목록 정보 창의 참가(`noxworld.wnd:71`)
 static bool TestPressLine(const char* line)
 {
+    if (line[0] == 'H') { ((int(__cdecl*)())kHomeToggleFn)(); return true; }   // ★ 11-04 ㉓ — Home 키 자리(앞세우기 없이)
     if (line[0] == 'S') {   // ★ 11-04 ㉒ 시작 단추 — 회색이면 사람처럼 안 눌린 것으로 친다(정품은 꺼진 칸에 누름을 안 보냄 · 마우스 확인은 사람 판)
         const DWORD btn = g_startWin ? ((PFN_findchild)kFindChild)(g_startWin, kStartBtnId) : 0;
         DWORD bf = 0;
