@@ -3607,6 +3607,38 @@ void TestBundleOneDatagram() {
         //   「제어 갈래」는 +0 이어야 맞다(+1 이면 핑이 게임으로 새고 있는 것이다). 「곧바로」는 퐁이 out2 에 있는 것으로 본다.
         Check(chatToA && srv->bundleStat(BS::DirectChat) - c0 == 2 && pong && srv->bundleStat(BS::DirectCtrl) - k0 == 0, msg);
     }
+    // ③′ 11-05 채팅 글자 꼴 — 한글(UTF-16 · 깃발 0)이 깃발 2 로 바뀌면 받는 화면에서 깨진다. 받은 꼴 · 글자 수 칸 · 바이트를 그대로 보내고 그 밖의 깃발은 안 옮긴다
+    {
+        struct Row { uint8_t flags; uint8_t size; std::vector<uint8_t> text; uint8_t wantFlags; uint8_t wantSize; size_t wantBytes; const char* what; };
+        const std::vector<uint8_t> annyeong = { 0x48, 0xc5, 0x55, 0xb1, 0, 0 };   // 「안녕」 + 끝 0 — 글자 3
+        const std::vector<uint8_t> hi0 = { 'h', 'i', 0 };
+        const std::vector<Row> rows = {
+            { 0x00, 3, annyeong, 0x00, 3, 6, "한글 UTF-16 → 깃발 0 · 글자 수 3 · 6바이트" },
+            { 0x02, 3, hi0,      0x02, 3, 3, "ASCII → 깃발 2 · 3바이트" },
+            { 0x08, 3, hi0,      0x02, 3, 3, "지역화 깃발 → 한 바이트 꼴(깃발 2)" },
+            { 0x10, 3, annyeong, 0x00, 3, 6, "알림창 깃발은 안 옮김" },
+            { 0x03, 3, hi0,      0x02, 3, 3, "팀 깃발은 안 옮김" },
+            { 0x00, 3, { 0x48, 0xc5, 0x55, 0xb1, 0 }, 0x00, 2, 4, "잘려 홀수 바이트 → 반 글자 버림 · 글자 수 2" },
+        };
+        for (const Row& r : rows) {
+            std::vector<nox::OutPacket> out;
+            std::vector<uint8_t> chat(nox::kWireHeaderSize, 0);
+            const uint8_t head[11] = { static_cast<uint8_t>(nox::Op::TEXT_MESSAGE), 0xee, 0x02, r.flags, 0, 0, 0, 0, r.size, 0, 0 };
+            chat.insert(chat.end(), head, head + 11);
+            chat.insert(chat.end(), r.text.begin(), r.text.end());
+            srv.OnPacket(a, chat.data(), chat.size(), out);
+            int seen = 0, match = 0;
+            for (const auto& m : FlattenTo(out, b)) {
+                if (m.empty() || m[0] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
+                ++seen;
+                if (m.size() == 11 + r.wantBytes && m[3] == r.wantFlags && m[8] == r.wantSize &&
+                    std::equal(r.text.begin(), r.text.begin() + static_cast<long>(r.wantBytes), m.begin() + 11)) ++match;
+            }
+            char msg[160];
+            std::snprintf(msg, sizeof(msg), "③′ 채팅 글자 꼴 — %s (본 줄 %d · 맞은 줄 %d)", r.what, seen, match);
+            Check(seen == 1 && match == 1, msg);
+        }
+    }
     // ⑤ 넘침(조각 2) — 알림 글 12줄(한 줄 201B) + 중요 `6e` 가 2048 을 넘으면 그 틱 안에서 **둘로** 끊는다.
     //   둘 다 같은 `27` 로 시작 · 둘 다 2048 이하 · 글 12줄은 **하나도 안 버림**(정답지는 넘친 Kind1 을 버린다 — 우리는 안 버린다) ·
     //   갱신 `a4` 는 첫 조각에 · 중요 칸 `aa` 는 마지막 조각에만

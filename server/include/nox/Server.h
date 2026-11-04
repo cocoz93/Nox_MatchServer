@@ -5146,8 +5146,8 @@ private:
     uint32_t ClockOf(const Session& s) const { return s.tickFrameSet ? s.tickFrame : frame_; }
 
     // 한 사람이 한 말을 모두에게. 머리는 **서버가 새로 짓는다**(남의 번호로 말하기 방지).
-    void BroadcastChat(const Session& who, const uint8_t* text, size_t n
-);
+    // `n` 은 바이트 수 · `utf16` 은 받은 글자 꼴 — 그대로 보낸다
+    void BroadcastChat(const Session& who, const uint8_t* text, size_t n, bool utf16);
 
     // 이 사람이 지금 겨누는 쪽(라디안). 겨눔이 없거나 낡았으면 몸 바라보는 쪽.
     double AimRadians(const Session& s) const;

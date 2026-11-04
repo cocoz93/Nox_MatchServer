@@ -2332,20 +2332,22 @@ double Server::AimRadians(const Session& s) const {
 // 말한 이의 번호와 그때 좌표로. 글자만 받은 것에서 가져온다.
 //
 // ⚠ 클라가 준 머리를 그대로 쓰면 **남의 번호로 말하기**가 된다.
-void Server::BroadcastChat(const Session& who, const uint8_t* text, size_t n
-) {
+//
+// ★ 11-05 — 글자 꼴은 받은 그대로 보낸다(정답지도 받은 메시지를 깃발째 보냄 · `network_server.go:150`). 정품 클라는 한글을 UTF-16(깃발 0)으로
+//   보내는데 깃발 2 로 고정해 「안녕하세요」가 `HÅU±XÕ8Á”Æ` 로 보였다(11-05 판 화면). 그 밖의 깃발(팀 · 알림창)은 안 옮긴다 — 남의 화면에 알림창을 못 띄우게
+void Server::BroadcastChat(const Session& who, const uint8_t* text, size_t n, bool utf16) {
     if (n == 0 || n > kChatMaxBytes) return;
     std::vector<uint8_t> msg;
     msg.reserve(11 + n);
     msg.push_back(static_cast<uint8_t>(Op::TEXT_MESSAGE));
     msg.push_back(static_cast<uint8_t>(who.netCode));
     msg.push_back(static_cast<uint8_t>(who.netCode >> 8));
-    msg.push_back(0x02);                                  // 깃발 = UTF-8 (한 글자 한 바이트)
+    msg.push_back(utf16 ? 0x00 : 0x02);                   // 깃발 = UTF-16(0) · UTF-8(0x02 — 한 글자 한 바이트)
     msg.push_back(static_cast<uint8_t>(who.x));
     msg.push_back(static_cast<uint8_t>(who.x >> 8));
     msg.push_back(static_cast<uint8_t>(who.y));
     msg.push_back(static_cast<uint8_t>(who.y >> 8));
-    msg.push_back(static_cast<uint8_t>(n));
+    msg.push_back(static_cast<uint8_t>(utf16 ? n / 2 : n));   // 크기 칸 = 글자 수(UTF-16 은 바이트의 절반 — `Wire.h` · 받는 쪽이 두 배로 읽음)
     msg.push_back(0); msg.push_back(0);                   // 미상 2 — 표본 전수가 0
     msg.insert(msg.end(), text, text + n);
     for (auto& kv : sessions_) {
@@ -3957,6 +3959,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 const bool utf16 = (b[2] & 0x02) == 0 && (b[2] & 0x08) == 0;
                 if (utf16) sz *= 2;   // UTF-16 이면 두 배
                 if (sz > it.bodyLen() - 10) sz = it.bodyLen() - 10;
+                if (utf16) sz &= ~static_cast<size_t>(1);   // 잘려서 홀수면 반 글자를 버린다 — 크기 칸(글자 수)과 바이트가 어긋나면 받는 쪽이 뒷 바이트를 다음 메시지로 읽음
                 if (sz == 0 || sz > kChatMaxBytes) { ++handled_; break; }
                 // ★ 10-16 작업 12b — `!` 로 시작하면 명령 — 퍼뜨리지 않고 방이 꺼내 가게 쌓는다(`SwapOutChatCommands`)
                 {
@@ -3975,7 +3978,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                         break;
                     }
                 }
-                BroadcastChat(s, b + 10, sz);
+                BroadcastChat(s, b + 10, sz, utf16);
                 ++chats_;
                 ++handled_;
                 break;

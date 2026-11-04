@@ -2967,6 +2967,12 @@ static bool TestPressLine(const char* line)
         ((PFN_wndproc4)kWinCall94)(entry, kMsgEntrySet, (DWORD)(uintptr_t)w, 0);
         return true;
     }
+    if (line[0] == 'C') {   // `C 안녕` — 정품 채팅 보내기 함수로 한 줄(UTF-8 파일 글자 → UTF-16). `K` 는 입력칸 1910 에 글자를 못 넣어(11-05) 진짜 와이어 꼴을 보려면 이 길
+        wchar_t w[160] = {};
+        MultiByteToWideChar(CP_UTF8, 0, line + 2, -1, w, 159);
+        ((PFN_chatSend)kChatSendFn)(w, 0);
+        return true;
+    }
     if (line[0] == 'K') { TestKeys(line + 1); return true; }   // `K 1e 30` — 스캔 코드(16진)
     if (line[0] == 'U') {   // `U 9651` — 그 칸의 키 처리 함수에 Enter(눌림 · 뗌). 정품 단추의 누름 길(`ButtonProc2` → +0x34 로 0x4007 · 원본 기준)을 그대로 지난다 — NOFOCUS 칸은 포커스로 못 가므로 바로
         const DWORD w = TestFindChild(strtoul(line + 1, nullptr, 10));
