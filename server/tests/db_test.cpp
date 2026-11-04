@@ -147,6 +147,8 @@ nox::MatchRecord Sample(const std::string& match) {
     a.team = 0;
     a.score = -1;
     a.deaths = 4294967295u;
+    a.hasKills = true;   // ★ 11-04 플랜2
+    a.kills = 4294967295u;
     b.hasAccount = true;
     b.account = std::string("\xb0\xc7", 2);
     b.netCode = 2;
@@ -226,13 +228,13 @@ int main(int argc, char** argv) {
     Check(matchRow, "② matches 한 행 — 칸 열여덟 전부(등록 주소 · 포트 · 판 번호 · 방 이름 바이트 · 승자 949 · 원문 JSON UTF-8)");
     const std::string mid = mr.empty() ? "0" : mr[0][0];
     const auto pr = ad.Rows("SELECT seat, IFNULL(account_id,'NULL'), IFNULL(HEX(name),'NULL'), net_code, state, IFNULL(team,'NULL'), IFNULL(score,'NULL'), "
-                            "IFNULL(deaths,'NULL'), observer FROM match_players WHERE match_id = " + mid + " ORDER BY seat");
+                            "IFNULL(deaths,'NULL'), observer, IFNULL(kills,'NULL') FROM match_players WHERE match_id = " + mid + " ORDER BY seat");
 
     const bool players = pr.size() == 4 && pr[0][0] == "0" && pr[0][1] == idWn && pr[0][2] == Hex("wn") && pr[0][3] == "1" && pr[0][4] == "finished" &&
                          pr[0][5] == "0" && pr[0][6] == "-1" && pr[0][7] == "4294967295" && pr[0][8] == "0" && pr[1][1] == id949 && pr[1][2] == "B0C7" &&
                          pr[1][8] == "1" && pr[2][1] == "NULL" && pr[2][2] == Hex("ghost") && pr[2][3] == "65535" && pr[2][5] == "2" &&
                          pr[2][6] == "2147483647" && pr[3][1] == "NULL" && pr[3][2] == "NULL" && pr[3][4] == "left" && pr[3][5] == "NULL" &&
-                         pr[3][6] == "NULL" && pr[3][7] == "NULL";
+                         pr[3][6] == "NULL" && pr[3][7] == "NULL" && pr[0][9] == "4294967295" && pr[1][9] == "NULL" && pr[3][9] == "NULL";
     Check(players, "② match_players 넷 — (판, 자리) · 계정 번호(이름으로 찾음 · 없으면 NULL) · 바이트 이름 · 음수 · 최대 값 · 나간 사람 NULL 칸");
     w.SaveMatch(11, srcA, m1, raw1);
     w.SaveMatch(12, srcB, m1, raw1);

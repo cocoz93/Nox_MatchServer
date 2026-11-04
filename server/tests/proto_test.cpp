@@ -19555,6 +19555,38 @@ void TestModeScoring() {
         Check(srv->DebugIsCrown(Sid(srv, a)), "왕관을 가졌는데 왕이 아니다");
     }
 
+    // ★ 11-04 플랜2 — 대전 기록의 킬: 모드와 상관없이 남을 죽였을 때만 1 · 자살 · 같은 팀 · 죽인 이 없음은 안 셈 · 판 끝 기록에 실림
+    {
+        nox::CSyncHost srv; mk(srv, 0x100u);
+        std::vector<nox::OutPacket> out;
+        srv->DebugDeathScoring(Sid(srv, b), Sid(srv, a)); srv.TakeOut(out);
+        Check(srv->MatchKillsOf(Sid(srv, a)) == 1 && srv->MatchKillsOf(Sid(srv, b)) == 0, "아레나 — 남을 죽였는데 킬이 1 이 아니다");
+        srv->DebugDeathScoring(Sid(srv, a), Sid(srv, a)); srv.TakeOut(out);
+        Check(srv->MatchKillsOf(Sid(srv, a)) == 1, "자살이 킬로 셈해졌다");
+        srv->DebugDeathScoring(Sid(srv, a), nox::kNoSession); srv.TakeOut(out);
+        Check(srv->MatchKillsOf(Sid(srv, a)) == 1 && srv->MatchKillsOf(Sid(srv, b)) == 0, "죽인 이 없는 죽음이 킬로 셈해졌다");
+        srv->DebugSetTeam(Sid(srv, a), 1);
+        srv->DebugSetTeam(Sid(srv, b), 1);
+        srv->DebugDeathScoring(Sid(srv, b), Sid(srv, a)); srv.TakeOut(out);
+        Check(srv->MatchKillsOf(Sid(srv, a)) == 1, "같은 팀을 죽였는데 킬로 셈해졌다");
+        srv->DebugSetTeam(Sid(srv, b), 2);
+        srv->DebugDeathScoring(Sid(srv, b), Sid(srv, a)); srv.TakeOut(out);
+        Check(srv->MatchKillsOf(Sid(srv, a)) == 2, "다른 팀을 죽였는데 킬이 안 올랐다");
+        std::vector<nox::RoundStanding> pl; std::vector<nox::RoundTeamScore> tm;
+        srv->SnapshotStandings(pl, tm);
+        bool found = false;
+        for (const nox::RoundStanding& s : pl) if (s.sessionId == Sid(srv, a)) found = s.kills == 2;
+        Check(found, "판 끝 기록에 킬이 안 실렸다");
+    }
+    {   // 왕 죽이기 — 점수는 3 이어도 킬은 1
+        nox::CSyncHost srv; mk(srv, 0x10u);
+        srv->DebugGiveCrown(Sid(srv, a));
+        srv->DebugGiveCrown(Sid(srv, b));
+        std::vector<nox::OutPacket> out;
+        srv->DebugDeathScoring(Sid(srv, b), Sid(srv, a)); srv.TakeOut(out);
+        Check(srv->KillsOf(Sid(srv, a)) == 3 && srv->MatchKillsOf(Sid(srv, a)) == 1, "왕 판 — 점수 3 · 킬 1 이 아니다");
+    }
+
     // ② **KOTR — 아무도 왕이 아니면 죽은 횟수만 오른다**
     {
         nox::CSyncHost srv; mk(srv, 0x10u);
@@ -25653,6 +25685,7 @@ void TestMatchRecordRoundTrip() {
         p.team = team;
         p.score = left ? 0 : score;
         p.deaths = left ? 0 : deaths;
+        p.kills = left ? 0 : deaths + 2;   // ★ 11-04 플랜2 — 죽은 수와 다른 값
         p.observer = obs;
         p.left = left;
         return p;
@@ -25746,7 +25779,7 @@ void TestMatchRecordRoundTrip() {
             const MatchPlayer& a = r.players[i];
             const nox::MatchRecordPlayer& b = rec.players[i];
             same = b.hasAccount == !a.account.empty() && b.account == a.account && b.netCode == a.netCode && b.left == a.left &&
-                   (a.left || (b.team == a.team && b.score == a.score && b.deaths == a.deaths && b.observer == a.observer));
+                   (a.left ? !b.hasKills : (b.team == a.team && b.score == a.score && b.deaths == a.deaths && b.hasKills && b.kills == a.kills && b.observer == a.observer));
         }
         for (size_t i = 0; same && i < r.teams.size(); ++i)
             same = rec.teams[i].id == r.teams[i].id && rec.teams[i].score == r.teams[i].score && rec.teams[i].caps == r.teams[i].caps;
@@ -27077,7 +27110,7 @@ void TestMatchRecorder() {
     r.winner = nox::RoundWinnerKind::Player; r.winnerId = 728; r.winnerAccount = "Jack";
     r.limit = 15; r.timeLimitFrames = 0;
     auto pl = [](const std::string& acc, uint16_t nc, int32_t score, uint32_t deaths, bool left) {
-        nox::MatchPlayer p; p.account = acc; p.netCode = nc; p.score = score; p.deaths = deaths; p.left = left; return p;
+        nox::MatchPlayer p; p.account = acc; p.netCode = nc; p.score = score; p.deaths = deaths; p.kills = left ? 0 : deaths + 1; p.left = left; return p;
     };
     r.players.push_back(pl("Jack", 728, 15, 3, false));
     r.players.push_back(pl("", 729, 7, 15, false));
@@ -27091,10 +27124,10 @@ void TestMatchRecorder() {
         "{\"match\":\"1760780000-3-2\",\"room\":3,\"roomName\":\"Jack's \\\"game\\\"\",\"map\":\"estate\",\"mode\":\"arena\","
         "\"start\":1760780123,\"end\":1760780456,\"frames\":9990,\"sec\":333,\"endReason\":\"score_player\","
         "\"winner\":{\"kind\":\"player\",\"id\":728,\"account\":\"Jack\"},\"limit\":15,\"timeLimitSec\":0,\"ranked\":false,"
-        "\"players\":[{\"account\":\"Jack\",\"netCode\":728,\"state\":\"finished\",\"team\":0,\"score\":15,\"deaths\":3},"
-        "{\"account\":null,\"netCode\":729,\"state\":\"finished\",\"team\":0,\"score\":7,\"deaths\":15},"
+        "\"players\":[{\"account\":\"Jack\",\"netCode\":728,\"state\":\"finished\",\"team\":0,\"score\":15,\"deaths\":3,\"kills\":4},"
+        "{\"account\":null,\"netCode\":729,\"state\":\"finished\",\"team\":0,\"score\":7,\"deaths\":15,\"kills\":16},"
         "{\"account\":\"Tom\",\"netCode\":730,\"state\":\"left\"},"
-        "{\"account\":\"한글\",\"netCode\":731,\"state\":\"finished\",\"team\":0,\"score\":0,\"deaths\":0},"
+        "{\"account\":\"한글\",\"netCode\":731,\"state\":\"finished\",\"team\":0,\"score\":0,\"deaths\":0,\"kills\":1},"
         "{\"account\":\"\\u00b0\\u00a1\",\"netCode\":732,\"state\":\"left\"}],"
         "\"teams\":[{\"id\":1,\"score\":4,\"caps\":2}]}";
     const std::string gotJson = nox::FormatMatchResultJson(r);

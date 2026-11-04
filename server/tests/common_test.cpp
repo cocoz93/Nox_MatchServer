@@ -535,7 +535,7 @@ void TestMatchRecord() {
         "{\"match\":\"1760000000-0-1\",\"room\":0,\"roomName\":\"wn's game\",\"map\":\"estate\",\"mode\":\"arena\",\"start\":1760000010,"
         "\"end\":1760000027,\"frames\":510,\"sec\":17,\"endReason\":\"score_player\",\"winner\":{\"kind\":\"player\",\"id\":2,\"account\":\"bob\"},"
         "\"limit\":1,\"timeLimitSec\":0,\"players\":[{\"account\":\"wn\",\"netCode\":1,\"state\":\"finished\",\"team\":0,\"score\":-1,\"deaths\":1},"
-        "{\"account\":\"bob\",\"netCode\":2,\"state\":\"finished\",\"team\":0,\"score\":1,\"deaths\":0,\"observer\":true},"
+        "{\"account\":\"bob\",\"netCode\":2,\"state\":\"finished\",\"team\":0,\"score\":1,\"deaths\":0,\"kills\":7,\"observer\":true},"
         "{\"account\":null,\"netCode\":3,\"state\":\"left\"}],\"teams\":[{\"id\":1,\"score\":3,\"caps\":2}]}";
     nox::MatchRecord r;
     std::string field;
@@ -550,6 +550,8 @@ void TestMatchRecord() {
               !r.players[2].hasAccount && r.players[2].netCode == 3 && r.players[2].left && r.players[2].deaths == 0,
           "사람 셋 — 이름 · 음수 점수 · 관전 · 이름 null · 나감(점수 칸 없음)");
     Check(r.teams.size() == 1 && r.teams[0].id == 1 && r.teams[0].score == 3 && r.teams[0].caps == 2, "팀 하나 — 번호 · 점수 · 깃발");
+    Check(r.players.size() == 3 && !r.players[0].hasKills && r.players[0].kills == 0 && r.players[1].hasKills && r.players[1].kills == 7 && !r.players[2].hasKills,
+          "★ 플랜2 킬 — 없으면 hasKills false(옛 줄) · 있으면 값 · 나간 사람은 없음");
     // ★ 레이팅 조각 2 — 랭크 칸(없으면 false · 참거짓만)
     Check(!r.ranked, "랭크 칸 없음 → false(옛 줄)");
     {

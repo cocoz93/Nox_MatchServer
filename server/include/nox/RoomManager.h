@@ -53,6 +53,7 @@ struct MatchPlayer {
     uint8_t team = 0;
     int32_t score = 0;        // `left` 면 0(안 적는다)
     uint32_t deaths = 0;
+    uint32_t kills = 0;       // ★ 11-04 플랜2 — 대전 기록(`left` 면 0 · 안 적는다)
     bool observer = false;
     bool left = false;        // 판을 열 때 게임 안에 있었는데 끝에 없음 — 이름 + 나감 · 점수 없음(10-19 결정)
 };

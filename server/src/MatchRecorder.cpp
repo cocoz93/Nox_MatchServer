@@ -128,6 +128,7 @@ std::string FormatMatchResultJson(const MatchResult& r) {
             o += ','; PutKeyNumber(o, "team", static_cast<unsigned>(p.team));
             o += ','; PutKeyNumber(o, "score", p.score);
             o += ','; PutKeyNumber(o, "deaths", p.deaths);
+            o += ','; PutKeyNumber(o, "kills", p.kills);   // ★ 11-04 플랜2
             if (p.observer) o += ",\"observer\":true";
         }
         o += '}';

@@ -309,6 +309,10 @@ MatchJsonParse ParseMatchRecordJson(std::string_view json, MatchRecord& out, std
                 f.Int(pv, "team", p.team);
                 f.Int(pv, "score", p.score);
                 f.Int(pv, "deaths", p.deaths);
+                if (f.Get(pv, "kills", JVal::T::Int, /*required=*/false)) {   // ★ 11-04 플랜2 — 옛 줄엔 없음(칸이 있는데 타입이 틀리면 Get 이 실패로 적는다)
+                    p.hasKills = true;
+                    f.Int(pv, "kills", p.kills);
+                }
                 if (const JVal* ob = f.Get(pv, "observer", JVal::T::Bool, /*required=*/false)) p.observer = ob->b;
             } else {
                 f.Set(MatchJsonParse::Value, "players[].state");

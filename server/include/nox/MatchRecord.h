@@ -36,6 +36,8 @@ struct MatchRecordPlayer {
     uint8_t team = 0;          // 아래 넷은 finished 만 실린다(left 면 0)
     int32_t score = 0;         // 음수 있음(아레나 자살)
     uint32_t deaths = 0;
+    bool hasKills = false;     // ★ 11-04 플랜2 — 이 변경 전 게임 서버의 줄엔 없다(DB NULL · 대전 기록 `-`)
+    uint32_t kills = 0;
     bool observer = false;     // 실리면 늘 true
 };
 

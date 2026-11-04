@@ -940,6 +940,7 @@ void nox::CRoom::PushMatchResult(bool aborted, const RoundOutcome& o) {
             p.team = o.players[i].team;
             p.score = o.players[i].score;
             p.deaths = o.players[i].deaths;
+            p.kills = o.players[i].kills;
             p.observer = o.players[i].observer;
         }
         r.players.push_back(std::move(p));
@@ -954,6 +955,7 @@ void nox::CRoom::PushMatchResult(bool aborted, const RoundOutcome& o) {
         p.team = s.team;
         p.score = s.score;
         p.deaths = s.deaths;
+        p.kills = s.kills;
         p.observer = s.observer;
         r.players.push_back(std::move(p));
     }

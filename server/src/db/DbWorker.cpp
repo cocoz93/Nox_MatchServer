@@ -22,8 +22,8 @@ constexpr const char* kInsMatch =
     "INSERT INTO matches (server_ip, server_port, match_key, room_id, room_name, map_key, mode, start_unix, end_unix, frames, end_reason, "
     "winner_kind, winner_id, winner_name, score_limit, time_limit_sec, ranked, raw_json, saved_unix) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
 constexpr const char* kInsPlayer =
-    "INSERT INTO match_players (match_id, seat, account_id, name, net_code, state, team, score, deaths, observer, rating_delta) "
-    "VALUES (?,?,?,?,?,?,?,?,?,?,?)";
+    "INSERT INTO match_players (match_id, seat, account_id, name, net_code, state, team, score, deaths, observer, rating_delta, kills) "
+    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)";
 // ★ 레이팅 조각 3 — 점수 올리기(행이 없으면 시작 점수 + 증감으로 만든다) · 이름으로 점수 · 그보다 높은 사람 수
 constexpr const char* kUpsRating =
     "INSERT INTO ratings (account_id, rating, updated_unix) VALUES (?,?,?) ON DUPLICATE KEY UPDATE rating = rating + ?, updated_unix = ?";
@@ -341,12 +341,12 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                     }
                     const bool rated = rr.seats[seat].rated && accountId != 0;
                     const int32_t delta = rr.seats[seat].delta;
-                    MYSQL_BIND q[11] = {};
+                    MYSQL_BIND q[12] = {};
                     const uint8_t seat8 = static_cast<uint8_t>(seat);
                     const uint8_t observer = pl.observer ? 1 : 0;
                     const std::string state = pl.left ? "left" : "finished";
                     unsigned long lName = 0, lState = 0;
-                    bool nullAcc = false, nullName = false, nullTeam = false, nullScore = false, nullDeaths = false, nullDelta = false;
+                    bool nullAcc = false, nullName = false, nullTeam = false, nullScore = false, nullDeaths = false, nullDelta = false, nullKills = false;
                     U64(q[0], matchId);
                     U8(q[1], seat8);
                     if (accountId != 0) U64(q[2], accountId);
@@ -367,6 +367,8 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                     U8(q[9], observer);
                     if (rated) I32(q[10], delta);
                     else Null(q[10], nullDelta);
+                    if (!pl.left && pl.hasKills) U32(q[11], pl.kills);   // ★ 11-04 플랜2 — 나간 사람 · 옛 줄은 NULL
+                    else Null(q[11], nullKills);
                     if (mysql_stmt_bind_param(c.insPlayer, q) != 0 || mysql_stmt_execute(c.insPlayer) != 0) {
                         c.StmtFail(c.insPlayer, "판 사람 넣기");
                         rowsOk = false;

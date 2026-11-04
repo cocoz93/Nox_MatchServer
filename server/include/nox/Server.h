@@ -1092,6 +1092,7 @@ struct Session {
     // 묶음 7-c — 점수(+2136 `Lessons`)와 죽은 횟수(+2140). 둘 다 `4e` 한 통에 실린다
     int32_t score = 0;
     uint32_t deaths = 0;
+    uint32_t matchKills = 0;       // ★ 11-04 플랜2 — 대전 기록의 킬(정품에 없는 칸 · 클라로 안 나감). `score` 는 도움 +1 · 자살 −1 이 섞이고 모드마다 뜻이 달라 킬이 아니다
     float experience = 0.0f;
     uint8_t level = 1;
     bool statsDirty = false;       // +2184 plrReadVals_4EEDC0 끝에 1 → `dd`·`de`·`48` 한 벌(접속 때는 스냅샷 꼬리가 그 몫)
@@ -1434,6 +1435,7 @@ struct RoundStanding {
     uint8_t team = 0;        // 0 = 무소속 · 1 = 빨강 · 2 = 파랑
     int32_t score = 0;
     uint32_t deaths = 0;
+    uint32_t kills = 0;      // ★ 11-04 플랜2 — `Session::matchKills`
     bool observer = false;
 };
 struct RoundTeamScore {
@@ -2924,6 +2926,10 @@ public:
     uint32_t DeathsOf(int64_t sessionId) const {
         auto it = sessions_.find(sessionId);
         return it == sessions_.end() ? 0u : it->second.deaths;
+    }
+    uint32_t MatchKillsOf(int64_t sessionId) const {   // ★ 11-04 플랜2 — `KillsOf` 는 옛 이름이라 점수를 돌려준다(7-c 에서 합침)
+        auto it = sessions_.find(sessionId);
+        return it == sessions_.end() ? 0u : it->second.matchKills;
     }
     // 판이 끝났나 (점수 한도에 닿았나).
     bool RoundOver() const { return roundOver_; }

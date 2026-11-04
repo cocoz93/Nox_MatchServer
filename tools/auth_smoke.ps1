@@ -48,7 +48,8 @@ function Sql([string]$text) {
 $schema = 'DROP TABLE IF EXISTS login_keys, ratings, match_players, matches, accounts, schema_version;' + "`n" +
   [IO.File]::ReadAllText((Join-Path $repo 'tools\db\001_init.sql')) + "`n" + [IO.File]::ReadAllText((Join-Path $repo 'tools\db\002_auth.sql')) + "`n" +
   [IO.File]::ReadAllText((Join-Path $repo 'tools\db\003_rating.sql')) + "`n" +   # ★ 레이팅 조각 3 — 표 버전 3(로그인 서버도 본다)
-  [IO.File]::ReadAllText((Join-Path $repo 'tools\db\004_launcher_keys.sql'))   # ★ 런처 P3 — 열쇠 표 · 표 버전 4
+  [IO.File]::ReadAllText((Join-Path $repo 'tools\db\004_launcher_keys.sql')) + "`n" +   # ★ 런처 P3 — 열쇠 표 · 표 버전 4
+  [IO.File]::ReadAllText((Join-Path $repo 'tools\db\005_match_kills.sql'))   # ★ 11-04 플랜2 — 표 버전 5
 try { Sql $schema | Out-Null } catch { Skip "시험 DB $testDb 표 깔기 못 함 — $_" }
 Sql "INSERT INTO accounts (name, created_unix, last_login_unix) VALUES ('legacy1', 1, 1);" | Out-Null
 $legacyId = [int](Sql "SELECT id FROM accounts WHERE name = 'legacy1';")

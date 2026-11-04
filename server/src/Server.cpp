@@ -1833,6 +1833,7 @@ void Server::RestartPlayers() {
         if (!s.inGame) continue;
         s.score = 0;
         s.deaths = 0;
+        s.matchKills = 0;
         for (int i = 0; i < 4; ++i) s.markSet[i] = false;
         if (s.observer) continue;
         // `PlayerRespawn` 의 상태 몫(`Server.cpp` PlayerRespawn 머리 · `GAME4.c:1420` playerRespawn_4F7EF0) — 알림은 스냅샷 꼬리가
@@ -1872,6 +1873,7 @@ void Server::RestartInPlace() {
         if (!s.inGame) continue;
         s.score = 0;
         s.deaths = 0;
+        s.matchKills = 0;
         for (int i = 0; i < 4; ++i) s.markSet[i] = false;
         if (s.observer) continue;
         PlayerRespawn(s, frame_);
@@ -2032,6 +2034,7 @@ void Server::SnapshotStandings(std::vector<RoundStanding>& players, std::vector<
         r.team = o.team;
         r.score = o.score;
         r.deaths = o.deaths;
+        r.kills = o.matchKills;   // ★ 11-04 플랜2
         r.observer = o.observer;
         players.push_back(r);
     }
@@ -9449,6 +9452,8 @@ void Server::DeathScoring(Session& victim) {
         auto k = sessions_.find(victim.lastHit.player);
         if (k != sessions_.end() && k->second.inGame) killer = &k->second;
     }
+    // ★ 11-04 플랜2 — 대전 기록의 킬. 모드마다 갈라지기 전 한 자리에서 — 모드별 점수(아레나 ±1 · 왕 3점 · 깃발 판 없음)와 달리 뜻이 하나다. 자살 · 같은 팀은 안 셈
+    if (killer != nullptr && killer != &victim && !(victim.team != 0 && killer->team == victim.team)) ++killer->matchKills;
     const uint32_t f = gameSettings_.gameFlags;
     if (f & 0x100u)      PlayerUpdateScore(victim);   // 256 아레나(7-c)
     else if (f & 0x10u)  KotrDeath(victim, killer);   // 16 왕 죽이기
@@ -17561,6 +17566,7 @@ void Server::RunTick(int ticks) {
         for (auto& kv : sessions_) {
             kv.second.score = 0;
             kv.second.deaths = 0;
+            kv.second.matchKills = 0;
         }
         caps_[0] = caps_[1] = caps_[2] = 0;
         // ★ 매칭 손보기 2 — 방이 걸어 둔 내보내기(랭크 판 끝) — 맵을 바꾸는 `USE_MAP` 보다 앞에(`QuitAtRestart` 머리 주석).
