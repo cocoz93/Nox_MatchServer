@@ -66,7 +66,7 @@ bool DefaultGearLook(uint16_t type, uint8_t look[4], uint16_t& durability) {
 }
 
 std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame,
-                                       uint32_t enchantBits, const std::string& mapName) {
+                                       uint32_t enchantBits, const std::string& mapName, uint8_t limitValue) {
     std::vector<uint8_t> m;
     m.reserve(400);
     uint16_t seq = 0;
@@ -116,6 +116,10 @@ std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t
             const size_t n = mapName.size() < 12 ? mapName.size() : 12;
             std::memcpy(b1 + 2, mapName.data(), n);
         }
+        // ★ 11-05 — `07 21 0f` 의 `0f` 는 **점수 한도**다(칸 +0x36 · `b1[2 + 0x36]`). 판을 열 때 `af` 가 한도 1 을 넣어도
+        //   이 메시지가 약 0.2초 뒤 칸을 15 로 덮어 왼쪽 위 「남은 판수」가 15 로 보였다(읽기 전용 관측 `_out/qa_1105/m1/limit_c1.txt`).
+        //   `07 21` 은 모드 칸(+0x34)인데 보이는 증상이 없어 실측 그대로 둔다
+        b1[56] = limitValue;
         PushSeq(m, seq, b1, 60);
     }
     // 페이드 인 — 낱으로 하나, cc(#0)로 하나. 실측 순서 그대로.

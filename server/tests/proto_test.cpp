@@ -31866,6 +31866,22 @@ void TestSnapshotTail() {
             Check(other[at + 8] == 0 && other[at + 11] == 0, "맵 이름 뒤 남는 자리가 0 이 아니다");
         }
     }
+
+    // ★ 11-05 — **점수 한도가 인자대로 간다**(`b1` 에 15 가 박혀 있었다). 클라가 `b1` 을 설정 칸에 통째로 복사해
+    //   `af` 의 한도 1 이 0.2초 뒤 15 로 덮였고 「남은 판수」가 15 로 보였다 — 맵 이름 · 무적과 같은 꼴
+    {
+        const std::vector<uint8_t> one = nox::BuildSnapshotTail(713, nox::CharClass::Wizard, 0x4b17, 0x4b1f,
+                                                                0x00800000u, std::string(), 1);
+        Check(one.size() == built.size(), "한도를 바꿨는데 꼬리 크기가 달라졌다");
+        size_t d3 = 0, at = 0;
+        for (size_t i = 0; i < one.size() && i < built.size(); ++i)
+            if (one[i] != built[i]) { ++d3; at = i; }
+        Check(d3 == 1, "한도만 바꿨는데 다른 자리가 1개가 아니다(꼬리가 한도를 안 싣나)");
+        if (d3 == 1) {
+            Check(built[at] == 0x0f && one[at] == 1, "다른 한 자리의 값이 한도 15 → 1 이 아니다");
+            Check(built[at - 2] == 0x07 && built[at - 1] == 0x21, "다른 한 자리가 모드 칸(07 21) 바로 뒤가 아니다");
+        }
+    }
 }
 
 void TestWallCollision() {

@@ -18315,7 +18315,7 @@ void Server::RunTick(int ticks) {
                 std::string mn = mt_->saMapName;
                 if (mn.size() > 4 && mn.compare(mn.size() - 4, 4, ".map") == 0) mn.resize(mn.size() - 4);
                 const std::vector<uint8_t> tail = BuildSnapshotTail(s.netCode, s.charClass, s.tickFrame, s.tickFrame,
-                                                                    s.buffs.bits, mn);
+                                                                    s.buffs.bits, mn, gameSettings_.limitValue);
                 patched.insert(patched.end(), tail.begin(), tail.end());
             } else if (!(patchSnapshot_ &&
                   PatchPreludePlayer(firstSnapshot_, s.netCode, s.x, s.y, patched, forceHudOn_, this))) {

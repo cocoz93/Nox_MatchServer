@@ -124,8 +124,11 @@ extern bool fillColorsOn;
 //   박아 두어, 클라가 **접속 내내 사람을 무적으로 보고 파란 보호막을 돌렸다**(09-20 실측·고침).
 // ⚠ `mapName` 도 같은 까닭이다 — `b1` 에 녹음본 `"estate"` 가 박혀 있어 **어느 맵에서든 estate 라고**
 //   말하고 있었다(09-20 고침). 비우면 녹음본 값 그대로 간다(바이트 대조 시험용).
+// ⚠ `limitValue` 도 같은 꼴이다 — `b1` 에 녹음본 15 가 박혀 판 한도가 1 이어도 클라 「남은 판수」가 15 였다(11-05 고침).
+//   기본값 15 = 녹음본(바이트 대조 시험용)
 std::vector<uint8_t> BuildSnapshotTail(uint16_t netCode, CharClass cls, uint32_t eaFrame, uint32_t e9Frame,
-                                       uint32_t enchantBits = 0, const std::string& mapName = std::string());
+                                       uint32_t enchantBits = 0, const std::string& mapName = std::string(),
+                                       uint8_t limitValue = 15);
 
 // ★ 09-28 B4b — 기본 장비 한 종류의 `4c` 색 4바이트와 내구도(`44` · 0 이면 안 보냄). 스냅샷 꼬리와 **같은 표**다
 //   (부활 때 새로 주는 기본 장비가 쓴다). 표에 없는 종류면 거짓 · 색은 ff ff ff ff · 내구도 0

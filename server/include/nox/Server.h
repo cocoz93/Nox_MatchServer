@@ -5783,7 +5783,7 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     const std::string& MapFileName() const { return mt_->saMapName; }   // 지금 맵(`USE_MAP` 에 실리는 이름)
     unsigned long long mapSwitches() const { return mapSwitches_; }
     // ★ 11-03 — 몇 킬에 끝나는 판인지 알린다. 맵을 바꾸는 틱에 보내면 클라가 읽는 동안 사라지고(11-03 실물 · 화면에 안 뜸),
-    //   화면 왼쪽 위 「남은 판수」는 그 클라의 첫 판이면 실제 한도가 1 이어도 15 로 나온다(`_out/qa_1103/c3/_zoom_score.png` · 까닭 미상 — 진행 파일 미결)
+    //   화면 왼쪽 위 「남은 판수」가 실제 한도 1 인데 15 로 나오던 것은 스냅샷 꼬리 `b1` 에 박힌 15 탓이었다(11-05 고침 — `BuildSnapshotTail` 의 `limitValue`)
     void ArmLimitNotice() { for (auto& kv : sessions_) if (kv.second.inGame) kv.second.limitNoticeOnReady = true; }
     unsigned long long limitNotices() const { return limitNotices_; }
     unsigned long long gameSettingsResent() const { return gameSettingsResent_; }   // 맵을 바꾸며 다시 보낸 `af`·`b0` 쌍(사람 수)
