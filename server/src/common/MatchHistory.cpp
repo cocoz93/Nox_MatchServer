@@ -32,7 +32,8 @@ std::string ResultToken(const MatchHistoryRow& r) {
 
 MatchOutcome MatchOutcomeOf(const MatchHistoryRow& r) {
     if (r.left) return MatchOutcome::Left;
-    if (r.endReason == "aborted") return MatchOutcome::Aborted;
+    // 중단은 판 도중 2명 밑일 때뿐 — 상대가 나가 +10 을 받은 랭크 판(`RATING_DESIGN.md` 4′)은 승. 일반 판은 점수가 없어 중단 그대로
+    if (r.endReason == "aborted") return r.ranked && r.hasDelta && r.delta > 0 ? MatchOutcome::Win : MatchOutcome::Aborted;
     if (r.winnerKind == "team") {
         if (!r.hasWinnerId || r.team == 0) return MatchOutcome::Draw;
         return r.team == r.winnerId ? MatchOutcome::Win : MatchOutcome::Loss;

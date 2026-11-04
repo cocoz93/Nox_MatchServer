@@ -107,12 +107,12 @@ inline std::vector<std::string> HistoryExpectH1() {
 }
 
 inline std::vector<std::string> HistoryExpectH2() {
-    return {"NOXRANK RECSUM 1 1000 1 0 1 1 1 h2",
+    return {"NOXRANK RECSUM 1 1000 1 1 1 1 1 h2",
             "NOXRANK RECROW L 0 - - lod 1 5 60 4000",
             "NOXRANK RECROW D 0 - - estate 2 2 30 3000",
             "NOXRANK RECROW W 0 - - estate 9 0 20 3000",
             "NOXRANK RECROW L 1 1000 -10 so_lod 1 3 17 2000",
-            "NOXRANK RECROW A 1 1010 +10 so_lod 0 0 10 1000",
+            "NOXRANK RECROW W 1 1010 +10 so_lod 0 0 10 1000",
             "NOXRANK RECEND 5"};
 }
 

@@ -2568,6 +2568,20 @@ void MatchHistoryUnitTests() {
     for (int n : seen) everyKind = everyKind && n > 0;
     Check(wrong == 0 && everyKind && cases.size() == 16, "대전 기록 결과 16줄 — 틀림 " + std::to_string(wrong) + " · 갈래 여섯 다 나옴");
 
+    // 중단 판의 승 — 랭크에서 점수가 오른 남은 사람만. 증감 0 · 증감 없음 · 일반 판 · 나간 사람은 그대로
+    const auto abortedRow = [&](bool ranked, bool hasDelta, int delta, bool left) {
+        MatchHistoryRow r = row("aborted", "none", -1, left, 1, 1, 2, 0);
+        r.ranked = ranked;
+        r.hasDelta = hasDelta;
+        r.delta = delta;
+        return r;
+    };
+    Check(MatchOutcomeOf(abortedRow(true, true, 10, false)) == MatchOutcome::Win, "상대가 나간 랭크 판 +10 = 승");
+    Check(MatchOutcomeOf(abortedRow(true, true, 0, false)) == MatchOutcome::Aborted, "아무도 안 나간 랭크 중단(증감 0) = 중단");
+    Check(MatchOutcomeOf(abortedRow(true, false, 0, false)) == MatchOutcome::Aborted, "증감 없는 랭크 중단 = 중단");
+    Check(MatchOutcomeOf(abortedRow(false, true, 10, false)) == MatchOutcome::Aborted, "일반 판은 증감이 있어도 중단");
+    Check(MatchOutcomeOf(abortedRow(true, true, -10, true)) == MatchOutcome::Left, "나간 사람은 이탈");
+
     // 줄 — 킬 · 데스 없음 `-` · 증감 0 · 맵 공백 · 긴 맵(DLL 칸 39) · 초 · 점수는 증감 있는 랭크 판에만 거꾸로
     MatchHistory h;
     MatchHistoryRow a = row("score_player", "player", 1, false, 1, 0, 2, 0);
