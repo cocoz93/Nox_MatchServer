@@ -758,7 +758,7 @@ void Lobby::OnHistoryAnswer(const StoreAnswer& a, std::vector<Out>& out) {
         return;
     }
     ++stats_.recordSent;
-    log_.push_back("[대전 기록] " + c.nick + " — 판 " + std::to_string(a.history.total) + " · 줄 " + std::to_string(a.history.rows.size()));
+    log_.push_back("[대전 기록] " + c.nick + " — 판 " + std::to_string(a.history.totals.games) + " · 줄 " + std::to_string(a.history.rows.size()));
     for (std::string& l : MatchHistoryLines(c.nick, a.ratingFound, a.rating, a.rank, a.history)) out.push_back({conn, std::move(l)});
 }
 

@@ -51,9 +51,14 @@ inline MatchRecord HistMatch(const std::string& key, const char* map, uint32_t e
     return m;
 }
 
-// 저장 차례 = 끝난 차례(점수가 그 차례로 고쳐진다). 같은 끝 시각(판 4 · 판 3)은 나중에 넣은 판이 먼저 나온다
+// 표 차례 = 저장 차례(점수가 그 차례로 고쳐진다 — ★ 11-04 전적 검색). 끝난 시각은 안 본다 — 마지막 판(끝 시각 500)이 맨 위에 와야 한다
 inline std::vector<MatchRecord> HistoryScenario() {
     std::vector<MatchRecord> v;
+    for (int i = 0; i < 22; ++i) {   // h3 혼자 22판 — 표 한도 20 · 승패는 전체
+        MatchRecord m = HistMatch("h-f" + std::to_string(i), "estate", 100 + static_cast<uint32_t>(i), 30, false, "score_player", "player", 103);
+        m.players = {HistSeat("h3", 103, 1, 0, 1)};
+        v.push_back(m);
+    }
     {   // 판 1 — 랭크 중단. h1 나감(−10) · h2 남음(+10)
         MatchRecord m = HistMatch("h-1", "so_lod", 1000, 300, true, "aborted", "none", -1);
         m.players = {HistLeft("h1", 101), HistSeat("h2", 102, 0, 0, 0)};
@@ -88,32 +93,34 @@ inline std::vector<MatchRecord> HistoryScenario() {
         m.players = {ob, HistSeat("h4", 104, 1, 0, 1)};
         v.push_back(m);
     }
-    for (int i = 0; i < 22; ++i) {   // h3 혼자 22판 — 표 한도 20 · 승패는 전체
-        MatchRecord m = HistMatch("h-f" + std::to_string(i), "estate", 100 + static_cast<uint32_t>(i), 30, false, "score_player", "player", 103);
-        m.players = {HistSeat("h3", 103, 1, 0, 1)};
+    {   // 판 7 — 늦게 다시 보낸 옛 판(끝 시각은 이르고 저장은 맨 나중). 랭크 h2 이김 — 점수는 저장할 때 고쳐지므로 표에서도 맨 위여야 점수 칸이 맞다
+        MatchRecord m = HistMatch("h-late", "so_lod", 500, 600, true, "score_player", "player", 102);
+        m.players = {HistSeat("h1", 101, 0, 2, 0), HistSeat("h2", 102, 2, 0, 2)};
         v.push_back(m);
     }
     return v;
 }
 
 inline std::vector<std::string> HistoryExpectH1() {
-    return {"NOXRANK RECSUM 1 1000 1 1 1 1 1 h1",
+    return {"NOXRANK RECSUM 1 990 2 1 2 1 1 h1",
+            "NOXRANK RECROW L 1 990 -10 so_lod 0 2 20 500",
             "NOXRANK RECROW W 0 - - lod 5 1 60 4000",
             "NOXRANK RECROW D 0 - - estate 2 2 30 3000",
             "NOXRANK RECROW 3 0 - - estate - 4 20 3000",
             "NOXRANK RECROW W 1 1000 +10 so_lod 3 1 17 2000",
             "NOXRANK RECROW Q 1 990 -10 so_lod - - 10 1000",
-            "NOXRANK RECEND 5"};
+            "NOXRANK RECEND 6"};
 }
 
 inline std::vector<std::string> HistoryExpectH2() {
-    return {"NOXRANK RECSUM 1 1000 1 1 1 1 1 h2",
+    return {"NOXRANK RECSUM 1 1010 1 2 1 1 1 h2",
+            "NOXRANK RECROW W 1 1010 +10 so_lod 2 0 20 500",
             "NOXRANK RECROW L 0 - - lod 1 5 60 4000",
             "NOXRANK RECROW D 0 - - estate 2 2 30 3000",
             "NOXRANK RECROW W 0 - - estate 9 0 20 3000",
             "NOXRANK RECROW L 1 1000 -10 so_lod 1 3 17 2000",
             "NOXRANK RECROW W 1 1010 +10 so_lod 0 0 10 1000",
-            "NOXRANK RECEND 5"};
+            "NOXRANK RECEND 6"};
 }
 
 // h3 — 랭크 판 없음 · 판 3 의 2등 + 22판 승 · 표는 20줄(판 3 + 나중 19판)

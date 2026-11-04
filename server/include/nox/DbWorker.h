@@ -42,6 +42,7 @@ struct DbStats {
     unsigned long long ratingReads = 0;
     unsigned long long ratingFailed = 0;
     unsigned long long ratingRows = 0;
+    unsigned long long totalsRows = 0;      // ★ 11-04 전적 검색 — 판 저장이 올린 합계 행(관전 아님 · 계정 있는 사람 · 커밋된 것만)
     // ★ 11-04 플랜2 — 대전 기록 읽기 요청 = 읽음 + 실패
     unsigned long long historyRequests = 0;
     unsigned long long historyReads = 0;

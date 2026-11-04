@@ -1,7 +1,6 @@
 ﻿// LobbyStore.cpp — 로비 저장소의 메모리 가짜. 설명은 `LobbyStore.h` 머리.
 #include "nox/LobbyStore.h"
 
-#include <algorithm>
 #include <utility>
 
 namespace nox::wol {
@@ -74,6 +73,7 @@ void CMemoryLobbyStore::SaveMatch(uint32_t req, const MatchSource& src, const Ma
             saved_.push_back(&ins.first->second);
             const RatingResult rr = RatingDeltas(rec);
             for (size_t i = 0; i < rec.players.size(); ++i) {
+                if (!rec.players[i].observer && rec.players[i].hasAccount) totals_[rec.players[i].account].Add(MatchRowOf(rec, rr, i));   // ★ 11-04 전적 검색
                 if (!rr.seats[i].rated) continue;
                 const auto it = ratings_.emplace(rec.players[i].account, kRatingStart).first;
                 it->second += rr.seats[i].delta;
@@ -122,38 +122,12 @@ void CMemoryLobbyStore::GetMatchHistory(uint32_t req, const std::string& account
     }
     a.historyOk = true;
     ReadRatingInto(account, a);
-    std::vector<const MatchRecord*> order(saved_.rbegin(), saved_.rend());   // 나중 저장 먼저 → 끝난 시각으로 안정 정렬
-    std::stable_sort(order.begin(), order.end(), [](const MatchRecord* x, const MatchRecord* y) { return x->end > y->end; });
-    for (const MatchRecord* m : order) {
-        const RatingResult rr = RatingDeltas(*m);
-        uint32_t seats = 0;
-        for (const MatchRecordPlayer& p : m->players) seats += p.observer ? 0 : 1;
-        for (size_t i = 0; i < m->players.size(); ++i) {
-            const MatchRecordPlayer& p = m->players[i];
-            if (p.observer || !p.hasAccount || p.account != account) continue;
-            MatchHistoryRow r;
-            r.ranked = m->ranked;
-            r.map = m->map;
-            r.end = m->end;
-            r.frames = m->frames;
-            r.endReason = m->endReason;
-            r.winnerKind = m->winnerKind;
-            r.hasWinnerId = m->hasWinnerId;
-            r.winnerId = m->winnerId;
-            r.left = p.left;
-            r.netCode = p.netCode;
-            r.team = p.team;
-            r.hasKills = !p.left && p.hasKills;
-            r.kills = p.kills;
-            r.hasDeaths = !p.left;
-            r.deaths = p.deaths;
-            r.hasDelta = rr.seats[i].rated;
-            r.delta = rr.seats[i].delta;
-            r.seats = seats;
-            if (!p.left)
-                for (const MatchRecordPlayer& o : m->players)
-                    if (!o.observer && !o.left && o.score > p.score) ++r.higher;
-            a.history.Add(r);
+    if (const auto t = totals_.find(account); t != totals_.end()) a.history.totals = t->second;   // ★ 11-04 전적 검색 — 합계는 저장 때 올린 값
+    for (auto m = saved_.rbegin(); m != saved_.rend() && a.history.rows.size() < kMatchHistoryMaxRows; ++m) {   // 저장 차례 최신부터(`kSelHistory` 와 같은 차례)
+        const RatingResult rr = RatingDeltas(**m);
+        for (size_t i = 0; i < (*m)->players.size() && a.history.rows.size() < kMatchHistoryMaxRows; ++i) {
+            const MatchRecordPlayer& p = (*m)->players[i];
+            if (!p.observer && p.hasAccount && p.account == account) a.history.rows.push_back(MatchRowOf(**m, rr, i));
         }
     }
     pending_.push_back(std::move(a));

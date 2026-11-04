@@ -11,6 +11,7 @@
 //     로비는 서명 토큰만 본다 → 이 경계는 판 저장만(`RoomMirror`). 판 사람의 계정 번호는 저장소가 이름으로 찾는다(없으면 NULL)
 //   ★ 레이팅 조각 3(`Docs/RATING_DESIGN.md`) — 판 저장이 랭크 판 점수도 고치고, 로그인 공지용 점수 읽기(`GetRating`)가 늘었다
 //   ★ 11-04 플랜2 — 대전 기록 읽기(`GetMatchHistory`) · 결과 판정 · 승패 셈은 `MatchHistory.h` 한 곳
+//   ★ 11-04 전적 검색 — 판 저장이 승패 합계도 올린다(점수와 같은 트랜잭션) · 대전 기록 읽기는 합계 + 최근 20줄만
 #pragma once
 
 #include <cstdint>
@@ -75,10 +76,12 @@ public:
     virtual ~ILobbyStore() = default;
     // 판 하나(한 트랜잭션) — 같은 (게임 서버 · 판 번호)가 이미 있으면 Duplicate · `rawJson` = 받은 줄 그대로(파일 줄 대조용)
     //   ★ 레이팅 조각 3 — 랭크 판이면 같은 트랜잭션에서 점수도 고친다(`Rating.h` `RatingDeltas` · 겹친 판은 안 고침)
+    //   ★ 11-04 전적 검색 — 관전이 아니고 계정이 있는 자리마다 승패 합계도(`MatchTotals::Add` · 겹친 판은 안 올림)
     virtual void SaveMatch(uint32_t req, const MatchSource& src, const MatchRecord& rec, const std::string& rawJson) = 0;
     // ★ 레이팅 조각 3 — 계정 이름(바이트 그대로 — 판 사람의 계정을 찾는 잣대와 같음)의 점수 · 순위 → 답 Rating
     virtual void GetRating(uint32_t req, const std::string& account) = 0;
-    // ★ 11-04 플랜2 — 계정 이름의 점수 · 순위 + 관전 뺀 판 전부 최신부터(끝난 시각 · 같으면 나중 저장 먼저) → 답 History
+    // ★ 11-04 플랜2 — 계정 이름의 점수 · 순위 + 승패 합계 + 관전 뺀 최근 판 `kMatchHistoryMaxRows` 개(저장 차례 최신부터 — ★ 11-04 전적 검색 ·
+    //   점수 칸을 되짚는 계산 `MatchHistory.cpp` 와 같은 차례. 늦게 다시 보낸 옛 판은 저장한 때의 자리에) → 답 History
     virtual void GetMatchHistory(uint32_t req, const std::string& account) = 0;
     virtual void TakeAnswers(std::vector<StoreAnswer>& out) = 0;   // 덧붙인다
 };
@@ -109,6 +112,7 @@ private:
     std::map<MatchKey, MatchRecord> matches_;
     std::vector<const MatchRecord*> saved_;    // ★ 11-04 플랜2 — 저장 차례(`matches_` 원소는 주소가 안 바뀐다)
     std::map<std::string, int32_t> ratings_;   // 계정 이름 → 점수
+    std::map<std::string, MatchTotals> totals_;   // ★ 11-04 전적 검색 — 계정 이름 → 승패 합계(저장 때 올림 · DB 워커와 같은 잣대)
     bool failSaves_ = false;
     bool failRatings_ = false;
     bool holdRatings_ = false;

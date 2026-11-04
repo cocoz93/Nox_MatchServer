@@ -7,12 +7,13 @@
 
 namespace nox::db {
 
-constexpr uint32_t kSchemaVersion = 5;   // `tools/db/` SQL 파일을 차례로 돌린 schema_version — 표를 바꾸면 SQL 파일과 같이 올린다
+constexpr uint32_t kSchemaVersion = 6;   // `tools/db/` SQL 파일을 차례로 돌린 schema_version — 표를 바꾸면 SQL 파일과 같이 올린다
                                          //   ★ 로그인 암호 조각 1 — 2 = `002_auth.sql`(pass_iter · 로비는 그 칸을 안 씀)
                                          //   ★ 레이팅 조각 3 — 3 = `003_rating.sql`(ratings · matches.ranked · match_players.rating_delta ·
                                          //     로그인 서버는 그 칸들을 안 씀 — 버전만 같이 본다)
                                          //   ★ 런처 P1 — 4 = `004_launcher_keys.sql`(login_keys · 로비는 안 씀)
                                          //   ★ 11-04 플랜2 — 5 = `005_match_kills.sql`(match_players.kills · 로그인 서버는 안 씀)
+                                         //   ★ 11-04 전적 검색 — 6 = `006_match_totals.sql`(match_totals · 로그인 서버는 안 씀)
 
 struct DbConfig {
     std::string host = "127.0.0.1";

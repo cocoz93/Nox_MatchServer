@@ -46,8 +46,37 @@ MatchOutcome MatchOutcomeOf(const MatchHistoryRow& r) {
     return MatchOutcome::Draw;   // draw · none
 }
 
-void MatchHistory::Add(const MatchHistoryRow& row) {
-    ++total;
+// 메모리 가짜의 줄과 DB 의 줄(`DbWorker.cpp` `kSelHistory`)이 같은 값이어야 한다 — 없는 칸은 0(DB 의 NULL 을 읽을 때와 같게)
+MatchHistoryRow MatchRowOf(const MatchRecord& m, const RatingResult& rr, size_t seat) {
+    const MatchRecordPlayer& p = m.players[seat];
+    MatchHistoryRow r;
+    r.ranked = m.ranked;
+    r.map = m.map;
+    r.end = m.end;
+    r.frames = m.frames;
+    r.endReason = m.endReason;
+    r.winnerKind = m.winnerKind;
+    r.hasWinnerId = m.hasWinnerId;
+    r.winnerId = m.hasWinnerId ? m.winnerId : 0;
+    r.left = p.left;
+    r.netCode = p.netCode;
+    r.team = p.left ? 0 : p.team;
+    r.hasKills = !p.left && p.hasKills;
+    r.kills = r.hasKills ? p.kills : 0;
+    r.hasDeaths = !p.left;
+    r.deaths = r.hasDeaths ? p.deaths : 0;
+    r.hasDelta = rr.seats[seat].rated;
+    r.delta = r.hasDelta ? rr.seats[seat].delta : 0;
+    for (const MatchRecordPlayer& o : m.players) {
+        if (o.observer) continue;
+        ++r.seats;
+        if (!p.left && !o.left && o.score > p.score) ++r.higher;
+    }
+    return r;
+}
+
+void MatchTotals::Add(const MatchHistoryRow& row) {
+    ++games;
     uint32_t& wins = row.ranked ? rankedWins : normalWins;
     uint32_t& losses = row.ranked ? rankedLosses : normalLosses;
     switch (MatchOutcomeOf(row)) {
@@ -59,15 +88,14 @@ void MatchHistory::Add(const MatchHistoryRow& row) {
         case MatchOutcome::Draw:
         case MatchOutcome::kCount: break;
     }
-    if (rows.size() < kMatchHistoryMaxRows) rows.push_back(row);
 }
 
 std::vector<std::string> MatchHistoryLines(const std::string& name, bool ratingFound, int32_t rating, uint32_t rank, const MatchHistory& h) {
     std::vector<std::string> out;
     out.reserve(h.rows.size() + 2);
     out.push_back("NOXRANK RECSUM " + std::string(ratingFound ? "1 " : "0 ") + std::to_string(rating) + " " + std::to_string(rank) + " " +
-                  std::to_string(h.rankedWins) + " " + std::to_string(h.rankedLosses) + " " + std::to_string(h.normalWins) + " " +
-                  std::to_string(h.normalLosses) + " " + name);
+                  std::to_string(h.totals.rankedWins) + " " + std::to_string(h.totals.rankedLosses) + " " + std::to_string(h.totals.normalWins) + " " +
+                  std::to_string(h.totals.normalLosses) + " " + name);
     int64_t after = rating;   // 최신 판이 끝난 뒤 값 = 지금 점수 · 한 판 내려갈 때마다 그 판의 증감을 뺀다
     for (const MatchHistoryRow& r : h.rows) {
         std::string afterText = "-", deltaText = "-";

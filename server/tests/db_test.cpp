@@ -192,7 +192,7 @@ int main(int argc, char** argv) {
         std::printf("[건너뜀] 시험 DB %s 에 못 붙음 — %s(사람 1회 config/db_setup.sql 전이면 이 꼴)\n", cfg.database.c_str(), err.c_str());
         return 77;
     }
-    bool laid = ad.Run("DROP TABLE IF EXISTS login_keys, ratings, match_players, matches, accounts, schema_version");   // ★ 레이팅 조각 3 — ratings 가 accounts 를 가리켜 먼저 · ★ 런처 P1 — login_keys 도
+    bool laid = ad.Run("DROP TABLE IF EXISTS match_totals, login_keys, ratings, match_players, matches, accounts, schema_version");   // ★ 레이팅 조각 3 — ratings 가 accounts 를 가리켜 먼저 · ★ 런처 P1 — login_keys 도 · ★ 11-04 전적 검색 — match_totals 도
     for (int i = 2; i < argc; ++i) {
         std::ifstream f(argv[i], std::ios::binary);
         std::stringstream ss;
@@ -388,11 +388,12 @@ int main(int argc, char** argv) {
     //   · ★ 레이팅 조각 3 — 점수 읽기 5(50~54) = 읽음 4 + 실패 1 · 고친 점수 행 3(판 40 의 wn · 판 41 의 wn · Wn)
     const nox::db::DbStats s = w.Stats();
     Check(s.requests == 14 && s.saved == 9 && s.duplicates == 2 && s.invalid == 2 && s.saveFailed == 1 && s.retries == 1 &&
-              s.ratingRequests == 5 && s.ratingReads == 4 && s.ratingFailed == 1 && s.ratingRows == 3 && ad.One("SELECT COUNT(*) FROM accounts") == "3",
-          "⑦ 셈 — 요청 14 = Saved 9 · Duplicate 2 · Invalid 2 · 실패 1 · 다시 1 · 점수 읽기 5 = 읽음 4 + 실패 1 · 점수 행 3 · 로비가 계정을 안 만듦(셋 그대로)");
+              s.ratingRequests == 5 && s.ratingReads == 4 && s.ratingFailed == 1 && s.ratingRows == 3 && s.totalsRows == 10 && ad.One("SELECT COUNT(*) FROM accounts") == "3",
+          "⑦ 셈 — 요청 14 = Saved 9 · Duplicate 2 · Invalid 2 · 실패 1 · 다시 1 · 점수 읽기 5 = 읽음 4 + 실패 1 · 점수 행 3 · 합계 행 10(판 9 의 wn + 판 41 의 Wn) · 로비가 계정을 안 만듦(셋 그대로)");
     // ⑩ ★ 11-04 플랜2 — 대전 기록 읽기. lobby_test 메모리 가짜와 같은 판 묶음 · 같은 기대 줄(`MatchHistoryScenario.h`)
     {
         Check(ad.Run("INSERT INTO accounts (name, created_unix, last_login_unix) VALUES ('h1', 1, 1), ('h2', 1, 1), ('h3', 1, 1), ('h4', 1, 1)"), "⑩ 계정 넷");
+        Check(ad.Run("DELETE FROM ratings"), "⑩ 앞 시험의 점수 행 치움 — 순위가 메모리 가짜의 기대 줄과 같은 사람들로만 나오게");
         nox::db::CDbWorker hw(cfg);
         std::string herr;
         Check(hw.Start(herr), "⑩ 워커 — " + herr);
@@ -429,10 +430,49 @@ int main(int argc, char** argv) {
         Check(ad.Run("RENAME TABLE match_players_off TO match_players"), "⑩ match_players 되돌림");
         hw.GetMatchHistory(req++, "h1");
         auto again = WaitAnswers(hw, 1);
-        Check(again.size() == 1 && again[0].historyOk && again[0].history.total == 5, "⑩ 되돌린 뒤 다시 읽음 — 판 5");
+        Check(again.size() == 1 && again[0].historyOk && again[0].history.totals.games == 6 && again[0].history.rows.size() == 6, "⑩ 되돌린 뒤 다시 읽음 — 판 6 · 줄 6");
+
+        // ⑪ ★ 11-04 전적 검색 — 합계 표. 저장 때 올린 값 · 같은 판 다시 · 저장 실패 때 되돌림 · 합계를 못 올리면 판도 없음 · 합계 행 없는 계정
+        auto totalsOf = [&](const char* name) {
+            const auto rows = ad.Rows(std::string("SELECT t.games, t.ranked_wins, t.ranked_losses, t.normal_wins, t.normal_losses FROM match_totals t JOIN accounts a ON a.id = t.account_id WHERE a.name = '") + name + "'");
+            std::string out;
+            if (!rows.empty())
+                for (const std::string& v : rows[0]) out += (out.empty() ? "" : " ") + v;
+            return out;
+        };
+        // 판 / 랭크 승 · 패 / 일반 승 · 패 — h1 판 6(관전 판 6 뺌) · h3 = 22승 + 판 3 의 2등 · h4 = 관전 판 3 뺌 + 판 6 이김
+        Check(totalsOf("h1") == "6 1 2 1 1" && totalsOf("h2") == "6 2 1 1 1" && totalsOf("h3") == "23 0 0 22 1" && totalsOf("h4") == "1 0 0 1 0",
+              "⑪ 합계 — h1 " + totalsOf("h1") + " · h2 " + totalsOf("h2") + " · h3 " + totalsOf("h3") + " · h4 " + totalsOf("h4"));
+        hw.SaveMatch(req++, srcA, scenario.back(), "{}");
+        auto dupT = WaitAnswers(hw, 1);
+        Check(dupT.size() == 1 && dupT[0].save == SaveResult::Duplicate && totalsOf("h1") == "6 1 2 1 1" && totalsOf("h2") == "6 2 1 1 1", "⑪ 같은 판 다시 → Duplicate · 합계 그대로");
+        const std::string matchesBefore = ad.One("SELECT COUNT(*) FROM matches");
+        Check(ad.Run("ALTER TABLE match_players ADD CONSTRAINT ck_db_test CHECK (net_code <> 4242)"), "⑪ 시험용 CHECK 걸기");
+        nox::MatchRecord halfT = scenario.back();
+        halfT.match = "h-half";
+        halfT.players[1].netCode = 4242;
+        hw.SaveMatch(req++, srcA, halfT, "{}");
+        auto failT = WaitAnswers(hw, 1);
+        Check(failT.size() == 1 && failT[0].save == SaveResult::Failed && totalsOf("h1") == "6 1 2 1 1" && ad.One("SELECT COUNT(*) FROM matches") == matchesBefore,
+              "⑪ 둘째 사람 넣기 실패 → Failed · 첫 사람 합계 되돌아감 · 판 행 없음");
+        Check(ad.Run("ALTER TABLE match_players DROP CHECK ck_db_test"), "⑪ 시험용 CHECK 풀기");
+        Check(ad.Run("RENAME TABLE match_totals TO match_totals_off"), "⑪ 시험용 — match_totals 를 잠깐 치움");
+        nox::MatchRecord noTotals = scenario.back();
+        noTotals.match = "h-no-totals";
+        hw.SaveMatch(req++, srcA, noTotals, "{}");
+        auto failN = WaitAnswers(hw, 1);
+        Check(failN.size() == 1 && failN[0].save == SaveResult::Failed && ad.One("SELECT COUNT(*) FROM matches") == matchesBefore, "⑪ 합계를 못 올림 → Failed · 판 행 없음(점수와 같은 트랜잭션)");
+        hw.GetMatchHistory(req++, "h1");
+        auto failH = WaitAnswers(hw, 1);
+        Check(failH.size() == 1 && !failH[0].historyOk && failH[0].history.rows.empty(), "⑪ 합계를 못 읽음 → historyOk false");
+        Check(ad.Run("RENAME TABLE match_totals_off TO match_totals"), "⑪ match_totals 되돌림");
+        Check(ad.Run("INSERT INTO accounts (name, created_unix, last_login_unix) VALUES ('h5', 1, 1)"), "⑪ 판 없는 계정");
+        hw.GetMatchHistory(req++, "h5");
+        auto noRow = WaitAnswers(hw, 1);
+        Check(noRow.size() == 1 && noRow[0].historyOk && noRow[0].history.totals == MatchTotals{} && noRow[0].history.rows.empty() && totalsOf("h5").empty(), "⑪ 합계 행 없는 계정 — 전부 0 · 줄 없음");
         hw.Stop();
         const nox::db::DbStats hs = hw.Stats();
-        Check(hs.historyRequests == 6 && hs.historyReads == 5 && hs.historyFailed == 1, "⑩ 셈 — 읽기 요청 6 = 읽음 5 + 실패 1");
+        Check(hs.historyRequests == 8 && hs.historyReads == 6 && hs.historyFailed == 2, "⑩ 셈 — 읽기 요청 8 = 읽음 6 + 실패 2");
     }
     std::printf("  ④ KILL 뒤 처음 걸린 오류: %s\n", s4.lastError.c_str());   // 끊김 번호가 무엇으로 오는지(`IsLost` 갈래 확인용)
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

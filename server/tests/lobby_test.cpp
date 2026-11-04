@@ -2427,6 +2427,7 @@ void LoginUnitTests() {
         CMemoryLobbyStore st;
         uint32_t saveReq = 1;
         for (const nox::MatchRecord& m : nox::test::HistoryScenario()) st.SaveMatch(saveReq++, MatchSource{1, 1}, m, "{}");
+        for (const nox::MatchRecord& m : nox::test::HistoryScenario()) st.SaveMatch(saveReq++, MatchSource{1, 1}, m, "{}");   // ★ 11-04 전적 검색 — 겹친 판은 합계 · 줄이 안 늘어야(아래 기대 줄 그대로)
         std::vector<StoreAnswer> ans;
         st.TakeAnswers(ans);
         Lobby rl(makeCfg(true), fake);
@@ -2552,12 +2553,14 @@ void MatchHistoryUnitTests() {
     int wrong = 0;
     for (const Case& c : cases) {
         ++seen[static_cast<size_t>(MatchOutcomeOf(c.r))];
-        MatchHistory rankedH, normalH;
+        MatchTotals rankedH, normalH;
         MatchHistoryRow rk = c.r;
         rk.ranked = true;
         rankedH.Add(rk);
         normalH.Add(c.r);
-        const auto ls = MatchHistoryLines("x", false, 1000, 0, normalH);
+        MatchHistory shown;
+        shown.rows.push_back(c.r);
+        const auto ls = MatchHistoryLines("x", false, 1000, 0, shown);
         const std::string prefix = std::string("NOXRANK RECROW ") + c.token + " ";
         if (MatchOutcomeOf(c.r) != c.want || static_cast<int>(rankedH.rankedWins) != c.wins || static_cast<int>(rankedH.rankedLosses) != c.losses ||
             rankedH.normalWins + rankedH.normalLosses != 0 || static_cast<int>(normalH.normalWins) != c.wins || static_cast<int>(normalH.normalLosses) != c.losses ||
@@ -2606,10 +2609,10 @@ void MatchHistoryUnitTests() {
     MatchHistoryRow d = a;
     d.delta = 25;
     d.map = "x";
-    h.Add(a);
-    h.Add(b);
-    h.Add(c);
-    h.Add(d);
+    for (const MatchHistoryRow* one : {&a, &b, &c, &d}) {
+        h.totals.Add(*one);
+        h.rows.push_back(*one);
+    }
     const std::vector<std::string> want = {"NOXRANK RECSUM 1 1200 7 4 0 0 0 me",
                                            "NOXRANK RECROW W 1 1200 0 two_words 3 4 2 7",
                                            "NOXRANK RECROW W 1 1200 -10 " + std::string(39, 'm') + " - 4 2 7",
@@ -2620,10 +2623,10 @@ void MatchHistoryUnitTests() {
     // 점수 행이 없으면(증감이 있어도) 점수 칸을 안 지어낸다
     const auto noRating = MatchHistoryLines("me", false, 1000, 0, h);
     Check(noRating[0] == "NOXRANK RECSUM 0 1000 0 4 0 0 0 me" && noRating[1] == "NOXRANK RECROW W 1 - - two_words 3 4 2 7", "대전 기록 줄 — 점수 행 없음 → 점수 · 증감 -");
-    // 표 한도 — 승패는 전체
-    MatchHistory many;
+    // 합계 — 판 수 · 승패(표 한도는 저장소 몫 — `MatchHistoryScenario.h` h3)
+    MatchTotals many;
     for (int i = 0; i < 25; ++i) many.Add(row("score_player", "player", 1, false, 1, 0, 2, 0));
-    Check(many.rows.size() == kMatchHistoryMaxRows && many.total == 25 && many.normalWins == 25, "대전 기록 — 25판 → 줄 20 · 승 25");
+    Check(many.games == 25 && many.normalWins == 25, "대전 기록 합계 — 25판 → 판 25 · 승 25");
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
