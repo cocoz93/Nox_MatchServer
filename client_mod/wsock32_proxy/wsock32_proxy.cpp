@@ -2592,6 +2592,8 @@ static const DWORD kRecBtnId = 1927, kRecBackId = 9690, kRecMsgId = 9601, kRecCo
 static const DWORD kSearchBtnId = 1902, kSearchPanelId = 9602, kSearchEntryId = 9650, kSearchGoId = 9651;
 static const DWORD kMsgEntrySet = 0x401e, kMsgEntryEnter = 0x401f;   // 입력 칸 — 글자 넣기 · Enter 알림(`GAME2_2.c` 16414 · 16415 · 원본 기준 · 알림은 11-04 r17 실측)
 static const DWORD kEntryNotifySlot = 0x34, kEntryDataSlot = 0x20;   // 알림 받을 곳 · 글자 칸(11-04 r17 실측 — 글자는 칸 맨 앞 UTF-16)
+// ★ 11-04 전적 검색 조각 4 — 키는 포커스 칸으로 간다 · 대화방을 숨겨도 포커스는 안 옮겨 간다(r18 — 숨은 칸이 계속 키를 받음) → 창을 열 때 저장해 옮기고 닫을 때 되돌린다
+static const uintptr_t kFocusSlot = 0x6f73f8, kFocusFn = 0x488e10;   // 지금 포커스 칸 · 포커스 함수 — 인자 0 = 빈 포커스(원본 `GUI.Focus` · 이 exe 는 조각 4 파일럿 로그)
 static const DWORD kMsgListAdd = 16397, kMsgListClear = 16399;
 static const DWORD kRecTimeoutMs = 5000;
 enum { kRecCols = 8, kRecVals = 5 };
@@ -2606,6 +2608,7 @@ static struct {
     bool drawn;                   // 답을 기다리지 않음(그림 · 안내를 넣음 · 전적 검색의 처음 화면)
     DWORD askedAt;
     DWORD chatOrigProc, panelOrigProc;
+    DWORD savedFocus;             // 창을 열기 전 포커스 칸
     wchar_t val[kRecVals][48];    // 정품 글 칸은 글을 복사하지 않고 쥔다(㉑ 안내 글과 같음) — 전역
     wchar_t msg[64];
 } g_rec = {};
@@ -2697,13 +2700,25 @@ static void RecDraw(const RecData& d)
     RecSetMessage(d.n ? NULL : L"아직 대전 기록이 없습니다.");
     Log("㉔ 대전 기록 그림 — 줄 %d · 점수 %d · 순위 %d · 랭크 %d승 %d패 · 일반 %d승 %d패", d.n, d.rating, d.rank, d.rw, d.rl, d.nw, d.nl);
 }
+static void RecSetFocus(DWORD w, const char* why)
+{
+    ((int(__cdecl*)(DWORD))kFocusFn)(w);
+    DWORD now = 0, id = 0;
+    if (ReadSelf(kFocusSlot, &now) && now) ReadSelf(now, &id);
+    Log("㉔ 포커스 %s — 넣은 칸 %#lx · 지금 %#lx(번호 %lu)", why, w, now, id);
+}
 static void RecClose(const char* why)
 {
     if (!g_rec.open) return;
     g_rec.open = false;
     if (RecWin()) ((PFN_sethidden)kSetHidden)(RecWin(), 1);
     DWORD chat = 0;
-    if (ReadSelf(kChatWin, &chat) && chat) ((PFN_sethidden)kSetHidden)(chat, 0);
+    if (ReadSelf(kChatWin, &chat) && chat) {
+        ((PFN_sethidden)kSetHidden)(chat, 0);
+        RecSetFocus(g_rec.savedFocus, "되돌림");
+    } else {
+        RecSetFocus(0, "대화방이 없어져 비움");   // 저장한 칸도 대화방과 함께 없어졌을 수 있다 · 숨은 이름 칸이 판 중 키를 받으면 안 된다
+    }
     Log("㉔ %s 닫음 — %s", kRecName[g_rec.kind], why);
 }
 static int __cdecl RecWinProc(DWORD win, DWORD ev, DWORD a1, DWORD)
@@ -2774,12 +2789,12 @@ static bool RecEnsureWin(RecKind kind)
     }
     Log("㉔ %s 창 만듦 %#lx", kRecName[kind], w);
     if (kind == kRecSearch) {
-        const DWORD panel = ((PFN_findchild)kFindChild)(w, kSearchPanelId), entry = ((PFN_findchild)kFindChild)(w, kSearchEntryId);
-        DWORD proc = 0, notify = 0;
-        if (panel && entry && ReadSelf(panel + kProcSlot, &proc) && ReadSelf(entry + kEntryNotifySlot, &notify)) {
+        const DWORD panel = ((PFN_findchild)kFindChild)(w, kSearchPanelId), entry = ((PFN_findchild)kFindChild)(w, kSearchEntryId), go = ((PFN_findchild)kFindChild)(w, kSearchGoId);
+        DWORD proc = 0, notify = 0, goNotify = 0;
+        if (panel && entry && go && ReadSelf(panel + kProcSlot, &proc) && ReadSelf(entry + kEntryNotifySlot, &notify) && ReadSelf(go + kEntryNotifySlot, &goNotify)) {
             g_rec.panelOrigProc = proc;
             *(volatile DWORD*)(panel + kProcSlot) = (DWORD)(uintptr_t)RecPanelProc;
-            Log("㉔ 전적 검색 왼쪽 칸 %#lx 처리 함수 감쌈(원래 %#lx) · 이름 칸 %#lx 의 알림 곳 %#lx", panel, proc, entry, notify);
+            Log("㉔ 전적 검색 왼쪽 칸 %#lx 처리 함수 감쌈(원래 %#lx) · 이름 칸 %#lx 의 알림 곳 %#lx · 검색 단추 %#lx 의 알림 곳 %#lx", panel, proc, entry, notify, go, goNotify);
         } else {
             Log("㉔ 전적 검색 왼쪽 칸 · 이름 칸을 못 찾음 — 칸 %#lx · %#lx", panel, entry);
         }
@@ -2795,10 +2810,17 @@ static void RecOpen(DWORD chat, RecKind kind)
     ((PFN_sethidden)kSetHidden)(RecWin(), 0);
     ((PFN_sethidden)kSetHidden)(chat, 1);
     g_rec.open = true;
-    if (kind == kRecRecord) { RecAsk(""); return; }
+    g_rec.savedFocus = 0;
+    ReadSelf(kFocusSlot, &g_rec.savedFocus);
+    if (kind == kRecRecord) {
+        RecSetFocus(0, "대전 기록 — 비움");   // 키 받을 칸이 없는 창 · 숨은 대화방 칸이 받지 않게(사람 확인 97)
+        RecAsk("");
+        return;
+    }
     // ★ 11-04 전적 검색 — 처음 화면(뒤로 후 다시 열어도): 칸 · 표를 비움 · 물음 없음
     const DWORD entry = ((PFN_findchild)kFindChild)(RecWin(), kSearchEntryId);
     if (entry) ((PFN_wndproc4)kWinCall94)(entry, kMsgEntrySet, (DWORD)(uintptr_t)L"", 0);
+    RecSetFocus(entry, "전적 검색 — 이름 칸");
     RecSetMessage(L"이름을 입력하세요");
     g_rec.drawn = true;
     Log("㉔ 전적 검색 열림");
@@ -2878,7 +2900,6 @@ static void RoomUiTick()
 
 static const DWORD kBtnJoinGame = 10001;   // 게임 목록 정보 창의 참가(`noxworld.wnd:71`)
 // ★ 11-04 전적 검색 시험 — 포커스 · 칸 글자를 찍고 키를 포커스 칸에 넣는다(`K` = 키 처리 함수 자리 +0x174 를 포커스부터 부모로 — 정품 키 전달의 뒤쪽 절반 · 진짜 키보드 경로는 사람 확인)
-static const uintptr_t kFocusSlot = 0x6f73f8, kFocusFn = 0x488e10;   // 11-04 r17 실측
 static const DWORD kKeySlot = 0x174, kParentSlot = 0x18c, kEvKey = 0x15;
 static DWORD TestFindChild(DWORD id)   // 열린 창 먼저 · 다음 대화방
 {
@@ -2947,11 +2968,19 @@ static bool TestPressLine(const char* line)
         return true;
     }
     if (line[0] == 'K') { TestKeys(line + 1); return true; }   // `K 1e 30` — 스캔 코드(16진)
+    if (line[0] == 'U') {   // `U 9651` — 그 칸의 키 처리 함수에 Enter(눌림 · 뗌). 정품 단추의 누름 길(`ButtonProc2` → +0x34 로 0x4007 · 원본 기준)을 그대로 지난다 — NOFOCUS 칸은 포커스로 못 가므로 바로
+        const DWORD w = TestFindChild(strtoul(line + 1, nullptr, 10));
+        DWORD proc = 0;
+        if (!w || !ReadSelf(w + kKeySlot, &proc) || !proc) return false;
+        ((PFN_wndproc4)proc)(w, kEvKey, 0x1c, 2);
+        ((PFN_wndproc4)proc)(w, kEvKey, 0x1c, 1);
+        return true;
+    }
     if (line[0] == 'f') { TestLogFocus("f"); return true; }
     if (line[0] == 'F') {   // `F 1910` — 그 칸으로 포커스(정품 포커스 함수)
         const DWORD w = TestFindChild(strtoul(line + 1, nullptr, 10));
         if (!w) return false;
-        ((int(__cdecl*)(DWORD))kFocusFn)(w);
+        ((int(__cdecl*)(DWORD))kFocusFn)(w);   // 포커스를 안 받는 칸(NOFOCUS)이면 그대로(원본 `GUI.Focus`)
         TestLogFocus("F");
         return true;
     }
