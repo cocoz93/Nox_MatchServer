@@ -389,9 +389,39 @@ void ChannelLobbyUnitTests() {
         }
     }
     Check(n326 == 1 && chan == "#wn's_game" && ipCol == std::to_string(local), "326 = 만든 사람 채널 · 방장 주소 칸 = 붙은 내 쪽 주소");
-    Check(g.name == "wn game" && g.map == "so_lod" && (g.flags & kMapTypeMask) == kMapChat && g.players == 2 && g.maxPlayers == 31 &&
+    Check(g.name == "wn game" && g.map == "so_lod" && (g.flags & kMapTypeMask) == kMapArena && g.players == 2 && g.maxPlayers == 31 &&
           g.access == 0,
-          "방 정보 = 방의 이름 · 맵 · 모드(chat) · 인원 + 틀의 최대 인원 · 열림");
+          "방 정보 = 방의 이름 · 맵 · 모드(목록에선 chat 을 대전으로) · 인원 + 틀의 최대 인원 · 열림");
+    {   // ★ 11-05 — 목록 줄만 대전으로: 들어간 뒤 332 는 실제 값(chat) · 채팅이 아닌 모드는 목록에서도 그대로
+        FakeRooms fakeJ;   // 아래 시험이 lb 의 「아직 안 들어감」에 기대므로 들어가기는 따로
+        fakeJ.rooms = {r};
+        Lobby lbJ(cfg, fakeJ);
+        std::vector<Out> oJ;
+        lbJ.OnConnect(1, peer, local);
+        for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #wn's_game 1 "}) lbJ.OnLine(1, l, oJ);
+        GameInfo in;
+        int n332 = 0;
+        for (const auto& o : oJ) {
+            const auto t = Tokens(o.line);
+            if (t.size() >= 5 && t[1] == "332") { ++n332; Unpack(t[4], in); }
+        }
+        Check(n332 == 1 && (in.flags & kMapTypeMask) == kMapChat, "들어간 뒤 332 = 실제 모드(chat) 그대로");
+        LobbyRoom r3 = r;
+        r3.mode = "ctf";
+        FakeRooms fake3;
+        fake3.rooms = {r3};
+        Lobby lb3(cfg, fake3);
+        std::vector<Out> o3;
+        lb3.OnConnect(1, peer, local);
+        for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName", "LIST 37 37"}) lb3.OnLine(1, l, o3);
+        GameInfo g3;
+        int n3 = 0;
+        for (const auto& o : o3) {
+            const auto t = Tokens(o.line);
+            if (t.size() == 11 && t[1] == "326") { ++n3; Unpack(t[10].substr(4), g3); }
+        }
+        Check(n3 == 1 && (g3.flags & kMapTypeMask) == kMapCtf, "채팅이 아닌 모드(ctf)는 목록에서도 그대로");
+    }
     {   // ★ 10-16 작업 12c — 방의 최대 인원이 있으면 그 값 · 판 중이면 닫힘(access 1)
         LobbyRoom r2 = r;
         r2.maxPlayers = 8;

@@ -104,12 +104,17 @@ bool Lobby::IsRoomHost(const std::string& name) const {
 }
 
 // ★ 10-14 작업 8d — 방 정보 = 틀 + 그 방의 이름 · 맵 · 모드 · 인원(옛 「방마다 이름만 방장 이름으로」 — 10-10)
-std::string Lobby::RoomInfo(const LobbyRoom& r, int codepage) const {
+std::string Lobby::RoomInfo(const LobbyRoom& r, int codepage, bool forList) const {
     GameInfo g = cfg_.room;
     g.name = ToCodepage(r.name.empty() ? r.host : r.name, codepage, kNameBytes);   // ★ 10-14 작업 10a
     if (!r.map.empty()) g.map = r.map;
     uint16_t bits = 0;
-    if (ModeFlagsOf(r.mode, bits)) g.flags = static_cast<uint16_t>((g.flags & ~kMapTypeMask) | bits);
+    if (ModeFlagsOf(r.mode, bits)) {
+        // ★ 11-05 — 목록 줄의 「게임종류」는 그 방이 뭘 하는 방인지 보여 주는 칸이다. 대기 맵이 채팅 모드라 늘 「채팅」으로 보여
+        //   대전 방을 찾는 사람에게 어색했다 → 목록에서만 대전으로. 들어간 뒤의 332 는 실제 값 그대로
+        if (forList && bits == kMapChat) bits = kMapArena;
+        g.flags = static_cast<uint16_t>((g.flags & ~kMapTypeMask) | bits);
+    }
     g.players = r.players;
     if (r.maxPlayers != 0) g.maxPlayers = r.maxPlayers;   // ★ 10-16 작업 12c
     if (r.playing) g.access = 1;                          // ★ 10-16 작업 12c — 닫힘(정품 목록이 어떻게 그리는지는 정품 확인)
@@ -1151,7 +1156,7 @@ void Lobby::SendList(int conn, bool withChat, std::vector<Out>& out) {
         const std::string room = Channel(lr);
         const size_t users = 1 + members_[room].size();
         out.push_back({conn, ": 326 u " + room + " " + std::to_string(users) + " 0 37 1 41681088 " +
-                                 std::to_string(gameIp) + " " + std::string(kListPrefix) + RoomInfo(lr, codepage)});
+                                 std::to_string(gameIp) + " " + std::string(kListPrefix) + RoomInfo(lr, codepage, true)});
     }
     // ★ 10-29 — 대화방 사람 수도 +1(위 방 줄과 같은 꼴). 정품은 채널마다 이 칸에서 시작해 들어옴 +1 · 나감 −1 로 세고
     //   0 이 되면 그 채널을 목록에서 지운다(Game.exe 0x41ee40 · 0x41eed4 → 0x41ea70 · 되살리는 길은 새 LIST 뿐).

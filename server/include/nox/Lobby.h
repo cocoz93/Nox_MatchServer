@@ -422,7 +422,8 @@ private:
     static const LobbyRoom* FindRoom(const std::vector<LobbyRoom>& rooms, const std::string& channel);
     bool IsRoomHost(const std::string& name) const;
     // 방 정보 덩어리(`Pack` — 86바이트, ':' 로 시작). ★ 10-14 작업 10a — 방 이름(UTF-8)은 그 접속의 코드페이지로 바꿔 싣는다
-    std::string RoomInfo(const LobbyRoom& r, int codepage) const;
+    //   ★ 11-05 forList = 목록 줄(326) — 채팅 모드 대기 방을 대전으로 보임
+    std::string RoomInfo(const LobbyRoom& r, int codepage, bool forList = false) const;
     // ★ 10-20 v2 작업 3a — 그 방의 게임 서버 주소(방에 있으면 그것 · 없으면 옛 동작 — 설정 · 이 접속이 붙은 내 쪽 주소)
     uint32_t GameServerIp(const Conn& c, const LobbyRoom& r) const {
         return r.gameIp ? r.gameIp : cfg_.gameServerIp ? cfg_.gameServerIp : c.localIp;
