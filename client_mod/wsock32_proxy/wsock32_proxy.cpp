@@ -660,6 +660,8 @@ static const uintptr_t kSelValid = 0x699064;       // 고름 유효
 static const uintptr_t kJoinGate = 0x699058;       // 들어가기 문
 static const uintptr_t kSelPort = 0x698EA0;        // 고른 방 포트(16비트)
 static const uintptr_t kCharWin = 0x711500;        // 캐릭터 창(+4 = 창 깃발 — 0x810 이면 닫히는 중 · 0xACACACAC 는 풀린 메모리)
+static const uintptr_t kClassWin = 0x7114E4;       // 직업 고르기 창(「SelClass.wnd」 만든 뒤 넣는 칸 — 0x4a3b7a) — ★ 11-05 캐릭터가 하나도 없으면 캐릭터 창 없이 곧바로 이 창
+static const uintptr_t kColorWin = 0x711640;       // 캐릭터 꾸미기 창(「SelColor.wnd」 — 0x4a5029) — 직업 다음 창
 static const DWORD kAliveMs = 400;                 // 캐릭터 창이 뜨고 이만큼 지나서 쓴다(memhost4 와 같음)
 
 static bool GameBuildOk()
@@ -681,6 +683,13 @@ static bool ReadSelf(uintptr_t a, DWORD* v)   // 풀렸을지 모르는 곳(창 
 static unsigned char g_hgEntry[hostgame::kEntrySize];       // 지은 항목 · 채널 — 들어가는 동안 정품이 가리킨다(프로세스 끝까지 둔다)
 static unsigned char g_hgChannel[hostgame::kChannelSize];
 
+static bool CharStepWinAlive(uintptr_t slot)
+{
+    const DWORD win = *(volatile DWORD*)slot;
+    DWORD flags = 0;
+    return win && ReadSelf(win + 4, &flags) && flags != 0xACACACAC && (flags & 0x810) == 0;
+}
+
 static DWORD WINAPI HostGameThread(LPVOID)
 {
     bool done = false;
@@ -691,9 +700,9 @@ static DWORD WINAPI HostGameThread(LPVOID)
         const DWORD netMode = *(volatile DWORD*)kNetMode;
         if (done && coj == 1 && prevCoj != 1) done = false;   // Host Game 을 다시 눌렀다
         prevCoj = coj;
-        const DWORD win = *(volatile DWORD*)kCharWin;
-        DWORD flags = 0;
-        const bool alive = win && ReadSelf(win + 4, &flags) && flags != 0xACACACAC && (flags & 0x810) == 0;
+        // ★ 11-05 — 캐릭터 파일이 없는 사람은 캐릭터 창이 안 떠 여기를 못 지나 자기 PC 에 로컬 게임을 열었다(꾸러미 파일럿 — 빈 Save 로 「게임 호스트」 → 정품 게임 설정 창).
+        //   캐릭터를 고르거나 만드는 세 창 가운데 어느 것이든 뜨면 돌린다
+        const bool alive = CharStepWinAlive(kCharWin) || CharStepWinAlive(kClassWin) || CharStepWinAlive(kColorWin);
         if (!alive) aliveSince = 0;
         else if (!aliveSince) aliveSince = GetTickCount() | 1;
         if (done || coj != 1 || netMode != 1 || !alive || GetTickCount() - aliveSince < kAliveMs) continue;
@@ -3007,6 +3016,12 @@ static bool TestPressLine(const char* line)
     if (got < 3 || !ReadSelf((uintptr_t)slot, &win) || !win) return false;
     switch (op) {
         case 'p': return PressChild(win, id);
+        case 'd': {   // `d 7114e4 601` — 눌림 알림(0x4005). 직업 고르기 그림(601~603)은 뗌(0x4007)이 아니라 이 알림으로 고른다(`client__shell__selclass.c` sub_4A4A20)
+            const DWORD btn = ((PFN_findchild)kFindChild)(win, id);
+            if (!btn) return false;
+            ((PFN_wndproc4)kWinCall94)(win, 0x4005, btn, 0);
+            return true;
+        }
         case 'l': {   // 게임 목록 줄 참가 — 이름 칸(id + 1)이 목록(id)에 알리는 꼴 그대로(0x4010 · 줄 번호 — `GAME1_2.c:3862` sub_439050) 뒤 참가 단추
             if (got < 4) return false;
             const DWORD list = ((PFN_findchild)kFindChild)(win, id);
