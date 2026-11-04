@@ -16,7 +16,7 @@
 #                        사용자 필터 묶음(10012 · 처음엔 숨김)의 높이 280 → 220 — 내용은 y200+10 에서 끝나는데 상자가 창 끝(405)까지라 버튼 자리와 겹침.
 #                        OpenNox 기준 그리기는 나중에 붙은 자식부터(`window.go` drawRecursive) — 겹치면 먼저 쓴 10012 가 버튼 위에 그려질 수 있어 겹침을 없앰
 #   ★ 11-04 — 대화방 · 찾기 · 게임 목록의 글자 묶음
-#   window\wolchat.wnd   1913 감정표현 · 1926 클랜 · 1927 랭킹 확인(옛 래더 — 칸 폭도 넓힘) · 1902 찾기 글자를 새 열쇠로 · 1914 「서버」 숨김
+#   window\wolchat.wnd   1913 감정표현 · 1926 클랜 · 1927 랭킹 확인(옛 래더 — 칸 폭도 넓힘) · 1902 찾기 글자를 새 열쇠로 · 1914 「서버」 · ★ 11-05 1904 옵션 숨김
 #   window\wolfind.wnd   1932 「호출!」 숨김
 #   window\noxworld.wnd  10003 퀘스트 호스트 글자를 새 열쇠로(누름은 DLL 이 막음 · ⑩)
 #   nox.csf              새 열쇠 다섯을 끝에 더함 · 기존 열쇠 cdecode.c:EnterChat 값만 「방에 들어왔습니다.」로 바꿈(코드가 그 열쇠로 찾아 창 파일로는 못 돌림)
@@ -201,6 +201,8 @@ $lineEdits = @(
   # 1902 — mid = 앞 판이 적용한 꼴(「찾기 (미구현)」) · 적용 · 되돌림 어느 쪽으로든 지나간다
   @{ file = 'window\wolchat.wnd'; head = '1902 448 375 109 25 PUSHBUTTON'; from = 'TEXT = WolChat.wnd:FindPage;'; to = 'TEXT = WolChat.wnd:Search;'; mid = 'TEXT = WolChat.wnd:FindTodo;' },
   @{ file = 'window\wolchat.wnd'; head = '1914 42 453 109 30 PUSHBUTTON'; from = 'STATUS = ENABLED+IMAGE+NOFOCUS;'; to = 'STATUS = ENABLED+IMAGE+HIDDEN+NOFOCUS;' },
+  # 1904 옵션 — 「웨스트우드 온라인 옵션」 창이 그대로 뜨는데 욕설 필터 · 찾기 · 호출 · 위치 변경 모두 서버가 버려 뜻이 없다(Lobby.cpp SETOPT · 11-05 전수검사 #5)
+  @{ file = 'window\wolchat.wnd'; head = '1904 238 361 109 55 PUSHBUTTON'; from = 'STATUS = ENABLED+IMAGE+NOFOCUS;'; to = 'STATUS = ENABLED+IMAGE+HIDDEN+NOFOCUS;' },
   @{ file = 'window\wolfind.wnd'; head = '1932 100 30 70 20 PUSHBUTTON'; from = 'STATUS = ENABLED+IMAGE;'; to = 'STATUS = ENABLED+IMAGE+HIDDEN;' })
 # ★ 매칭 손보기 8 — 필터 창. 버튼 칸은 10012 칸이 끝난 뒤 · 10022 의 자식 묶음 끝(END 둘) 앞에 — 파일이 그 세 줄로 끝나야 원본
 $filterPath = Join-Path $GameDir 'window\filter.wnd'
