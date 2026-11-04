@@ -1178,6 +1178,29 @@ static volatile LONG g_rankEvAccepted = 0;    // ★ 10-31 — 예 → 창을 �
 static SOCKET g_rankSock = INVALID_SOCKET;    // 랭크 참가 줄이 나간 로비 소켓 · FOUND 가 온 소켓(ACCEPT · LEAVE 를 보낼 곳)
 typedef int(__cdecl* PFN_dlgopen)(DWORD parent, const wchar_t* title, const wchar_t* text, DWORD flags, DWORD yes, DWORD no);
 
+// ★ 11-04 플랜1 ㉒ — 로비 줄 `NOXRANK ROOMUI <상태> <방장> <시작 가능> <점수> <분> <맵>`(서버 `CLobbyClient::SendChanged` · 사람마다 · 달라질 때만)
+//   받기 훅에서 값만 적고 쓰는 건 프레임 자리(`RoomUiTick`). 맵 칸은 `~` = 없음 · 그 밖은 영문 맵 열쇠라 `%XX` 를 안 푼다(`MapKeyOf` — 소문자 파일 이름)
+enum { kRuGone = 0, kRuWaiting = 1, kRuPlaying = 2, kRuRankArriving = 3 };
+struct RoomUi { bool valid; int state; bool host; bool canStart; int score; int timeMin; char map[32]; };
+static CRITICAL_SECTION g_ruCs;
+static RoomUi g_ru = {};
+static void RoomUiOnLine(const char* tail)
+{
+    int state = 0, host = 0, canStart = 0, score = 0, timeMin = 0;
+    char map[32] = {};
+    const int got = sscanf(tail, "%d %d %d %d %d %31s", &state, &host, &canStart, &score, &timeMin, map);
+    if (got != 6) { Log("㉒ 방 안 화면 줄을 못 읽음 — 칸 %d 개", got); return; }
+    EnterCriticalSection(&g_ruCs);
+    g_ru.valid = state != kRuGone;
+    g_ru.state = state;
+    g_ru.host = host != 0;
+    g_ru.canStart = canStart != 0;
+    g_ru.score = score;
+    g_ru.timeMin = timeMin;
+    strcpy_s(g_ru.map, map[0] == '~' ? "" : map);
+    LeaveCriticalSection(&g_ruCs);
+}
+
 static void RankOnLobbyLine(SOCKET s, const std::string& line)
 {
     const std::string sub = line.substr(strlen(LobbyLineFilter::kRankMark));
@@ -1191,6 +1214,7 @@ static void RankOnLobbyLine(SOCKET s, const std::string& line)
     else if (sub == "READY") InterlockedExchange(&g_rankEvReady, 1);
     else if (sub == "EXPIRED") InterlockedExchange(&g_rankEvExpired, 1);
     else if (sub == "ROOMS") InterlockedExchange(&g_roomsChanged, 1);   // ★ 11-03 ⑳ — 방 목록이 바뀜(`RoomsChangedTick`)
+    else if (sub.compare(0, 7, "ROOMUI ") == 0) RoomUiOnLine(sub.c_str() + 7);   // ★ 11-04 ㉒
     Log("⑬ 로비 줄 「%s」 — 받음(창은 다음 받기 훅에서)", line.c_str());
 }
 
@@ -2345,9 +2369,104 @@ static long g_testPressDone = 0;       // 파일에서 처리한 바이트
 static DWORD g_testPressLastMs = 0;
 static volatile LONG g_testPressOk = 0, g_testPressMiss = 0;
 
+// ★ 11-04 플랜1 ㉒ 시작 단추 — 일반 방의 방장 · 대기 중에만 보이는 정품 창(`window\\MoStart.wnd` — `tools/ui_apply.ps1` 이 넣음). 누르면 채팅 `!start`
+//   왜 창 — 서버 명령을 사람이 외우지 않게. 조건 판정은 서버(`ROOMUI` 의 방장 · 시작 가능) · 서버가 마지막에 또 거른다(`RoomTick.cpp` HandleChatCommands)
+//   정품 한계 우회: 창 파일 머리 좌표가 판(640) 밖이면 안 그려져 파일은 0 0 + 런타임 `kWinSetPos`(11-04 시험 t3 · t4) · 판 나갈 때 정품이 모든 창을 지워 이벤트 2 로 칸을 비움 ·
+//     맵이 바뀌어도 창은 그대로(시험 t4 so_lod → estate → so_lod) · 칸 값은 Home 창이 열리면 그 아래로 옮겨 겹치지 않음
+static const uintptr_t kChatSendFn = 0x486fd0;   // 정품 채팅 보내기(`MSG_TEXT_MESSAGE` 를 채우는 자리 0x487016 으로 찾음 · 11-04 실물)
+static const uintptr_t kHomeWin = 0x6d1870;      // Home(방 설정) 창 — 열리면 주소 · 닫히면 0
+static const DWORD kStartBtnId = 9501, kWinEnabled = 0x8;
+static const int kStartBtnW = 140, kStartBtnH = 40;
+typedef DWORD(__cdecl* PFN_moWndLoad)(const char*, void*);
+typedef void(__cdecl* PFN_chatSend)(const wchar_t*, int);
+static DWORD g_startWin = 0;
+static bool g_startLoadFailed = false;
+static int __cdecl StartWinProc(DWORD win, DWORD ev, DWORD a1, DWORD)
+{
+    if (ev == kMsgClick) {
+        Log("㉒ 시작 단추 누름 → !start");
+        ((PFN_chatSend)kChatSendFn)(L"!start", 0);   // 서버는 `!` 줄을 퍼뜨리지 않는다(`Server.cpp`) — 화면에 안 뜸(시험 t3)
+        return 1;
+    }
+    if (ev == 2 && win == g_startWin) { Log("㉒ 시작 단추 창 지워짐"); g_startWin = 0; }
+    (void)a1;
+    return 0;
+}
+// 자리 — Home 창이 닫혔으면 오른쪽 위 맨 위 · 열렸으면 그 바로 아래(사용자 고른 시안 `_out/qa_1104/start_pos/button_follow_compare.png`)
+static void StartBtnPlace()
+{
+    static int lastX = -1, lastY = -1;
+    const int scrW = *(volatile int*)kScreenW;
+    int x = scrW - 255, y = 10;   // Home 창(폭 350 · 오른쪽 끝에서 10 — `guiserv.c` setPos) 가운데와 같은 줄 — 열고 닫을 때 가로로 안 움직인다
+    DWORD home = 0;
+    if (ReadSelf(kHomeWin, &home) && home) {
+        int hx = 0, hy = 0, hw = 0, hh = 0;
+        ReadSelf(home + 8, (DWORD*)&hw);
+        ReadSelf(home + 0xc, (DWORD*)&hh);
+        ReadSelf(home + 0x10, (DWORD*)&hx);
+        ReadSelf(home + 0x14, (DWORD*)&hy);
+        x = hx + (hw - kStartBtnW) / 2;
+        y = hy + hh + 6;
+    }
+    if (x == lastX && y == lastY) return;
+    lastX = x; lastY = y;
+    ((PFN_setpos)kWinSetPos)(g_startWin, x, y);
+    Log("㉒ 시작 단추 자리 %d,%d(Home 창 %s · 화면 폭 %d)", x, y, home ? "열림" : "닫힘", scrW);
+    if (home) { DWORD r[4] = {}; for (int i = 0; i < 4; i++) ReadSelf(home + 8 + 4 * i, &r[i]); Log("㉒ Home 창 +8.. = %lu %lu %lu %lu", r[0], r[1], r[2], r[3]); }
+}
+static void StartBtnTick(bool inRoom, const RoomUi& s)
+{
+    const bool want = inRoom && s.valid && s.host && s.state == kRuWaiting;
+    if (want && !g_startWin && !g_startLoadFailed) {
+        g_startWin = ((PFN_moWndLoad)kWndLoad)("MoStart.wnd", (void*)StartWinProc);
+        if (!g_startWin) { g_startLoadFailed = true; Log("㉒ 시작 단추 창을 못 만듦 — 게임 폴더에 window\\MoStart.wnd 가 없음(ui_apply)"); return; }
+        Log("㉒ 시작 단추 창 만듦 %#lx", g_startWin);
+    }
+    if (!g_startWin) return;
+    DWORD f = 0;
+    if (!ReadSelf(g_startWin + 4, &f)) return;
+    const bool hidden = (f & kWinHidden) != 0;
+    if (hidden == want) {
+        ((PFN_sethidden)kSetHidden)(g_startWin, want ? 0 : 1);
+        Log("㉒ 시작 단추 %s(상태 %d · 방장 %d)", want ? "보임" : "숨김", s.state, s.host ? 1 : 0);
+    }
+    if (!want) return;
+    StartBtnPlace();
+    const DWORD btn = ((PFN_findchild)kFindChild)(g_startWin, kStartBtnId);
+    DWORD bf = 0;
+    if (btn && ReadSelf(btn + 4, &bf) && ((bf & kWinEnabled) != 0) != s.canStart) {
+        *(volatile DWORD*)(btn + 4) = s.canStart ? (bf | kWinEnabled) : (bf & ~kWinEnabled);   // 정품은 이 비트로 그림을 고르고 누름을 안 받는다(`DISABLEDIMAGE`)
+        Log("㉒ 시작 단추 %s", s.canStart ? "켬" : "회색");
+    }
+}
+// 방 안 = 게임 목록 · 대화방 칸이 다 비었을 때. 나가면 목록이나 대화방이 다시 선다 — 그때 값을 지운다(다음 방의 줄이 올 때까지 옛 값을 안 쓰게)
+//   들어갈 때는 줄이 목록이 닫히기 전에 올 수 있어(`_out/qa_p12` 로그) 방 안 → 밖으로 바뀔 때만 지운다
+static void RoomUiTick()
+{
+    DWORD list = 0, chat = 0;
+    ReadSelf(kListWin, &list);
+    ReadSelf(kChatWin, &chat);
+    const bool inRoom = !list && !chat;
+    static bool wasIn = false;
+    RoomUi s;
+    EnterCriticalSection(&g_ruCs);
+    if (wasIn && !inRoom) g_ru.valid = false;
+    s = g_ru;
+    LeaveCriticalSection(&g_ruCs);
+    wasIn = inRoom;
+    StartBtnTick(inRoom, s);
+}
+
 static const DWORD kBtnJoinGame = 10001;   // 게임 목록 정보 창의 참가(`noxworld.wnd:71`)
 static bool TestPressLine(const char* line)
 {
+    if (line[0] == 'S') {   // ★ 11-04 ㉒ 시작 단추 — 회색이면 사람처럼 안 눌린 것으로 친다(정품은 꺼진 칸에 누름을 안 보냄 · 마우스 확인은 사람 판)
+        const DWORD btn = g_startWin ? ((PFN_findchild)kFindChild)(g_startWin, kStartBtnId) : 0;
+        DWORD bf = 0;
+        if (!btn || !ReadSelf(btn + 4, &bf) || !(bf & kWinEnabled)) return false;
+        ((PFN_wndproc4)kWinCall94)(g_startWin, kMsgClick, btn, 0);
+        return true;
+    }
     char op = 0;
     unsigned long slot = 0, id = 0;
     int row = 0;
@@ -2428,6 +2547,7 @@ static void FrameTick(volatile LONG* count, const char* what)
     InterlockedIncrement(&g_ticks);
     LauncherTick();
     LobbyLostTick(what);   // ★ 11-03 ㉑
+    RoomUiTick();          // ★ 11-04 ㉒
     TestPressTick();
 }
 static void __cdecl DrawAllMain()
@@ -2494,6 +2614,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         InitializeCriticalSection(&g_statCs);
         InitializeCriticalSection(&g_resolveCs);
         InitializeCriticalSection(&g_tokCs);
+        InitializeCriticalSection(&g_ruCs);   // ★ 11-04 ㉒
         char sw[8] = { 0 };
         const bool off = GetEnvironmentVariableA("NOX_NO_HOSTGAME", sw, sizeof(sw)) && sw[0] == '1';   // ⑤ · ⑥ 끄기
         sw[0] = 0;

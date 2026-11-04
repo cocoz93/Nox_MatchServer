@@ -21,6 +21,7 @@
 #   window\noxworld.wnd  10003 퀘스트 호스트 글자를 새 열쇠로(누름은 DLL 이 막음 · ⑩)
 #   nox.csf              새 열쇠 다섯을 끝에 더함 · 기존 열쇠 cdecode.c:EnterChat 값만 「방에 들어왔습니다.」로 바꿈(코드가 그 열쇠로 찾아 창 파일로는 못 돌림)
 #                        다른 기존 열쇠는 값을 안 바꾼다 — Noxworld.c:Ladder 처럼 다른 화면도 같은 열쇠를 쓰기 때문(`noxworld.c:515` · 원본 기준)
+#   ★ 11-04 플랜1 — window\MoStart.wnd 새 파일(시작 단추 · 되돌리면 지움) · 새 열쇠 MoStart.wnd:Start · 값 바꾸는 열쇠 WolFind.wnd:WindowTitle(찾기 창 제목)
 # 왜 이 꼴인가
 #   · 정품은 창 파일 · 글자 파일을 디스크에서 읽는다(10-30 파일럿 — mainmenu.wnd 첫 버튼 열쇠를 바꾸니 화면 글자가 바뀜 · 원본으로 되돌리니 그대로)
 #   · 글자 파일 열쇠는 읽은 뒤 정렬하고(Game.exe 0x40f3c1 qsort) 이진 탐색으로 찾는다(0x40f160) → 끝에 더해도 된다(파일 안 차례는 원래도 정렬 안 됨)
@@ -55,11 +56,21 @@ $csfAdds = @(
   @{ name = 'WolChat.wnd:ClansTodo'; text = '클랜 (미구현)' },
   @{ name = 'WolChat.wnd:LadderTodo'; text = '랭킹 확인 (미구현)' },
   @{ name = 'WolChat.wnd:ActionTodo'; text = '감정표현 (미구현)' },
-  @{ name = 'WolChat.wnd:FindTodo'; text = '찾기 (미구현)' })
+  @{ name = 'WolChat.wnd:FindTodo'; text = '찾기 (미구현)' },
+  @{ name = 'MoStart.wnd:Start'; text = '게임시작' })
 # 값을 바꾸는 기존 열쇠 — 값이 둘 다 아니면(다른 판 정품) 모름으로 멈춘다
-$csfSwapName = 'cdecode.c:EnterChat'
-$csfSwapOrig = '채팅실 들어가는 중...'
-$csfSwapNew = '방에 들어왔습니다.'
+$csfSwaps = @(
+  @{ name = 'cdecode.c:EnterChat'; orig = '채팅실 들어가는 중...'; new = '방에 들어왔습니다.' },
+  @{ name = 'WolFind.wnd:WindowTitle'; orig = '찾기/호출'; new = '유저 찾기' })   # ★ 11-04 플랜1 — 「호출!」 단추를 숨겨 제목만 남아 있었음. wolfind.wnd 만 쓰는 열쇠
+# ★ 11-04 플랜1 — 새 창 파일. 원본 = 없음 · 적용됨 = 이 바이트 그대로 · 다르면 모름(남의 파일을 지우지 않게)
+#   ENABLEDIMAGE = NULL — 정품은 꺼져도 앞 그림(ENABLED)을 그린다. 꺼진 그림은 뒤 칸만 바꿔(`widget_button.go` buttonDrawImg · 원본 기준) 앞 그림이 있으면 빨강 그대로(11-04 캡처 s2)
+#   글자 · 칸 색은 정품 창과 같은 꼴 · 머리 좌표 0 0(DLL 이 옮김 — 판 밖 좌표는 파일로 못 넣음) · 그림은 대화방 「뒤로」와 같은 큰 단추(시안)
+$newFiles = @(
+  @{ file = 'window\MoStart.wnd'; text = (@(
+    'ENABLEDCOLOR = TRANSPARENT;', 'HILITECOLOR = TRANSPARENT;', 'DISABLEDCOLOR = TRANSPARENT;', 'SELECTEDCOLOR = TRANSPARENT;', 'TEXTCOLOR = 240 180 42;', 'BACKGROUNDCOLOR = TRANSPARENT;', '',
+    'WINDOW', '  9500 0 0 140 40 USER;', '  STATUS = ENABLED+ABOVE;', '  CHILD', '    WINDOW', '      9501 0 0 140 40 PUSHBUTTON;', '      STATUS = ENABLED+IMAGE+NOFOCUS;', '      STYLE = MOUSETRACK;', '      IMAGEOFFSET = 0 5;',
+    '      SELECTEDIMAGE = NoxWorldChatButton8;', '      HILITEIMAGE = NoxWorldChatButton8;', '      BACKGROUNDIMAGE = NoxWorldChatButton8;', '      DISABLEDIMAGE = NoxWorldMapButton1Dis;', '      ENABLEDIMAGE = NULL;',
+    '      TEXT = MoStart.wnd:Start;', '    END', '  END', 'END', '') -join "`r`n") })
 # 창 파일 줄 바꿈 — head 칸(머리 줄 ~ 다음 END) 안의 from 줄을 to 로. 파일마다 전부 원본이거나 전부 적용이어야 한다(섞이면 일부 — 적용 · 되돌림으로 맞춤)
 $lineEdits = @(
   @{ file = 'window\noxworld.wnd'; head = '10003 40 109 150 32 PUSHBUTTON'; from = 'TEXT = Noxworld.wnd:HostQuest;'; to = 'TEXT = Noxworld.wnd:HostQuestTodo;' },
@@ -148,23 +159,24 @@ function Csf-Str([byte[]]$b, [int]$at, [int]$chars) {   # 글 묶음의 글자(�
 function Csf-State([byte[]]$b) {
   if ($b.Length -lt 24 -or $latin1.GetString($b, 0, 4) -ne ' FSC') { return @{ state = '모름'; why = '머리가 FSC 가 아님' } }
   $nLabels = [BitConverter]::ToUInt32($b, 8); $nStrings = [BitConverter]::ToUInt32($b, 12)
-  $pos = 24; $seenL = 0; $seenS = 0; $seen = @{}; $swapAt = -1; $swapChars = 0; $swapOn = $null
+  $pos = 24; $seenL = 0; $seenS = 0; $seen = @{}; $swaps = @()
   while ($pos -lt $b.Length) {
     if ($latin1.GetString($b, $pos, 4) -ne ' LBL') { return @{ state = '모름'; why = "열쇠 머리가 아닌 자리 $pos(열쇠 $seenL 개 읽음)" } }
     $cnt = [BitConverter]::ToUInt32($b, $pos + 4); $nlen = [BitConverter]::ToUInt32($b, $pos + 8)
     $name = $latin1.GetString($b, $pos + 12, $nlen)
     $at = $pos
     foreach ($add in $csfAdds) { if ($name -ieq $add.name) { $seen[$add.name] = $at } }
-    $isSwap = $name -ieq $csfSwapName
+    $swap = $null
+    foreach ($c in $csfSwaps) { if ($name -ieq $c.name) { $swap = $c } }
     $pos += 12 + $nlen; $seenL++
     for ($i = 0; $i -lt $cnt; $i++) {
       $tag = $latin1.GetString($b, $pos, 4).ToUpper()
       $slen = [BitConverter]::ToUInt32($b, $pos + 4)
-      if ($isSwap) {
-        if ($cnt -ne 1 -or $tag -ne ' RTS') { return @{ state = '모름'; why = "$csfSwapName 이 글 하나짜리 꼴이 아님" } }
-        $swapAt = $pos; $swapChars = $slen
+      if ($swap) {
+        if ($cnt -ne 1 -or $tag -ne ' RTS') { return @{ state = '모름'; why = "$($swap.name) 이 글 하나짜리 꼴이 아님" } }
         $s = Csf-Str $b ($pos + 8) $slen
-        if ($s -ceq $csfSwapOrig) { $swapOn = $false } elseif ($s -ceq $csfSwapNew) { $swapOn = $true } else { return @{ state = '모름'; why = "$csfSwapName 값이 원래 값도 새 값도 아님" } }
+        if ($s -ceq $swap.orig) { $on = $false } elseif ($s -ceq $swap.new) { $on = $true } else { return @{ state = '모름'; why = "$($swap.name) 값이 원래 값도 새 값도 아님" } }
+        $swaps += @{ at = $pos; chars = $slen; on = $on; orig = $swap.orig; new = $swap.new }
       }
       $pos += 8 + 2 * $slen; $seenS++
       if ($tag -eq 'WRTS') { $pos += 4 + [BitConverter]::ToUInt32($b, $pos) }
@@ -172,7 +184,8 @@ function Csf-State([byte[]]$b) {
   }
   if ($pos -ne $b.Length) { return @{ state = '모름'; why = "끝을 넘음($pos / $($b.Length))" } }
   if ($seenL -ne $nLabels -or $seenS -ne $nStrings) { return @{ state = '모름'; why = "머리 수(열쇠 $nLabels · 글 $nStrings)와 읽은 수(열쇠 $seenL · 글 $seenS)가 다름" } }
-  if ($swapAt -lt 0) { return @{ state = '모름'; why = "$csfSwapName 열쇠 없음" } }
+  if ($swaps.Count -ne $csfSwaps.Count) { return @{ state = '모름'; why = "값 바꿀 열쇠 $($csfSwaps.Count) 개 중 $($swaps.Count) 개만 있음" } }
+  $swapOnCount = @($swaps | Where-Object { $_.on }).Count
   # 더한 열쇠는 csfAdds 앞에서부터 k 개가 이 차례 그대로 파일 끝에 있어야 한다(되돌릴 때 잘라 내므로)
   $k = $seen.Count; $tail = 0; $tailOk = $true
   for ($i = 0; $i -lt $k; $i++) { if (-not $seen.ContainsKey($csfAdds[$i].name)) { $tailOk = $false } else { $tail += (Label-Bytes $csfAdds[$i].name $csfAdds[$i].text).Length } }
@@ -183,22 +196,25 @@ function Csf-State([byte[]]$b) {
     $at += $lb.Length
   }
   if (-not $tailOk) { return @{ state = '모름'; why = "더한 열쇠 $k 개가 맨 끝의 이 스크립트 꼴이 아님(되돌림 못 함)" } }
-  $st = if ($k -eq 0 -and -not $swapOn) { '원본' } elseif ($k -eq $csfAdds.Count -and $swapOn) { '적용됨' } else { '일부' }
-  return @{ state = $st; labels = $seenL; strings = $seenS; k = $k; tail = $tail; swapAt = $swapAt; swapChars = $swapChars }
+  $st = if ($k -eq 0 -and $swapOnCount -eq 0) { '원본' } elseif ($k -eq $csfAdds.Count -and $swapOnCount -eq $swaps.Count) { '적용됨' } else { '일부' }
+  return @{ state = $st; labels = $seenL; strings = $seenS; k = $k; tail = $tail; swaps = $swaps }
 }
 
 # 원본 꼴(want = 원본) 또는 적용됨 꼴로 지은 새 바이트
 function Csf-To([byte[]]$b, $cs, [string]$want) {
-  $text = if ($want -eq '적용됨') { $csfSwapNew } else { $csfSwapOrig }
-  $u = [Text.Encoding]::Unicode.GetBytes($text)
-  $inv = [byte[]]($u | ForEach-Object { (-bnot $_) -band 0xFF })
   $ms = New-Object IO.MemoryStream
   $body = $b.Length - $cs.tail   # 더한 열쇠 앞까지
-  $strAt = $cs.swapAt + 8; $strEnd = $strAt + 2 * $cs.swapChars
-  $ms.Write($b, 0, $cs.swapAt + 4)
-  $ms.Write([BitConverter]::GetBytes([uint32]($u.Length / 2)), 0, 4)
-  $ms.Write($inv, 0, $inv.Length)
-  $ms.Write($b, $strEnd, $body - $strEnd)
+  $from = 0
+  foreach ($sw in @($cs.swaps | Sort-Object { $_.at })) {   # 파일 차례대로 — 앞 값의 길이가 달라도 뒤 자리는 원본 기준
+    $text = if ($want -eq '적용됨') { $sw.new } else { $sw.orig }
+    $u = [Text.Encoding]::Unicode.GetBytes($text)
+    $inv = [byte[]]($u | ForEach-Object { (-bnot $_) -band 0xFF })
+    $ms.Write($b, $from, $sw.at + 4 - $from)
+    $ms.Write([BitConverter]::GetBytes([uint32]($u.Length / 2)), 0, 4)
+    $ms.Write($inv, 0, $inv.Length)
+    $from = $sw.at + 8 + 2 * $sw.chars
+  }
+  $ms.Write($b, $from, $body - $from)
   $delta = -$cs.k
   if ($want -eq '적용됨') {
     foreach ($add in $csfAdds) { $lb = Label-Bytes $add.name $add.text; $ms.Write($lb, 0, $lb.Length) }
@@ -298,7 +314,16 @@ foreach ($f in $otherFiles) {
 function Say-Others($map) { (@($otherFiles | ForEach-Object { "{0} = {1}{2}" -f (Split-Path -Leaf $_), $map[$_].st.state, $(if ($map[$_].st.why) { " ($($map[$_].st.why))" }) }) -join ' · ') }
 Write-Host ("[{0}] noxworld.wnd = {1}{2} · 그 안 11-04 줄 = {3}{4} · nox.csf = {5}{6} · filter.wnd = {7}{8} · {9}" -f $Mode, $ws.state, $(if ($ws.why) { " ($($ws.why))" }), $wl.state, $(if ($wl.why) { " ($($wl.why))" }), $cs.state,
   $(if ($cs.why) { " ($($cs.why))" } else { " (열쇠 $($cs.labels) · 글 $($cs.strings))" }), $fs.state, $(if ($fs.why) { " ($($fs.why))" }), (Say-Others $others))
-$allStates = @($ws.state, $wl.state, $cs.state, $fs.state) + @($otherFiles | ForEach-Object { $others[$_].st.state })
+# ★ 11-04 플랜1 — 새 창 파일 상태
+function New-State($nf) {
+  $p = Join-Path $GameDir $nf.file
+  if (-not (Test-Path -LiteralPath $p)) { return '원본' }
+  if ($latin1.GetString([IO.File]::ReadAllBytes($p)) -ceq $nf.text) { return '적용됨' }
+  return '모름'
+}
+$newStates = @($newFiles | ForEach-Object { New-State $_ })
+Write-Host ("  새 파일 " + ((0..($newFiles.Count - 1) | ForEach-Object { "{0} = {1}" -f (Split-Path -Leaf $newFiles[$_].file), $newStates[$_] }) -join ' · '))
+$allStates = @($ws.state, $wl.state, $cs.state, $fs.state) + @($otherFiles | ForEach-Object { $others[$_].st.state }) + $newStates
 if ($Mode -eq 'Check') {
   if (@($allStates | Where-Object { $_ -ne '적용됨' }).Count -eq 0) { exit 0 }
   exit 1
@@ -370,6 +395,11 @@ if ($wndOut) { [IO.File]::WriteAllBytes($wndPath, $wndOut); Write-Host "  noxwor
 if ($csfOut) { [IO.File]::WriteAllBytes($csfPath, $csfOut); Write-Host "  nox.csf $csfNote" }
 if ($filOut) { [IO.File]::WriteAllBytes($filterPath, $filOut); Write-Host "  filter.wnd $filNote" }
 foreach ($f in $otherOut.Keys) { [IO.File]::WriteAllBytes((Join-Path $GameDir $f), $otherOut[$f]); Write-Host "  $f $($otherNote[$f])" }
+foreach ($nf in $newFiles) {   # ★ 11-04 플랜1 — 위 판정에서 모름이면 여기까지 안 옴
+  $p = Join-Path $GameDir $nf.file
+  if ($Mode -eq 'Apply') { [IO.File]::WriteAllBytes($p, $latin1.GetBytes($nf.text)) }
+  elseif (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
+}
 $wndB2 = [IO.File]::ReadAllBytes($wndPath)
 $ws2 = Wnd-State $wndB2
 $wl2 = Lines-State ($latin1.GetString($wndB2)) $wndLineEdits
@@ -378,6 +408,6 @@ $fs2 = Filter-State ([IO.File]::ReadAllBytes($filterPath))
 $others2 = @{}
 foreach ($f in $otherFiles) { $others2[$f] = @{ st = (Lines-State ($latin1.GetString([IO.File]::ReadAllBytes((Join-Path $GameDir $f)))) @($lineEdits | Where-Object { $_.file -eq $f })) } }
 Write-Host ("  지금 noxworld.wnd = {0} · 그 안 11-04 줄 = {1} · nox.csf = {2} · filter.wnd = {3} · {4}" -f $ws2.state, $wl2.state, $cs2.state, $fs2.state, (Say-Others $others2))
-$end = @($ws2.state, $wl2.state, $cs2.state, $fs2.state) + @($otherFiles | ForEach-Object { $others2[$_].st.state })
+$end = @($ws2.state, $wl2.state, $cs2.state, $fs2.state) + @($otherFiles | ForEach-Object { $others2[$_].st.state }) + @($newFiles | ForEach-Object { New-State $_ })
 if (@($end | Where-Object { $_ -ne $want }).Count -ne 0) { throw "끝 상태가 $want 이 아님" }
 Write-Host "[OK] $Mode"
