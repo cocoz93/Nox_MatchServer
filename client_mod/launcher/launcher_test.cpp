@@ -2,6 +2,7 @@
 //   ① 설정 줄 읽기(공백 · 주석 · 없는 키 · CRLF) ② 설정 파일 + 환경 변수가 이김 ③ 기억 파일 왕복(임시 LOCALAPPDATA) · 꼴 틀린 이름은 버림
 //   ④ 게임 환경 덩어리 — NOX_LAUNCH 하나만(있던 것은 바꿈) · 다른 값 그대로 · 끝 \0\0 ⑤ 게임 경로(상대 · 절대)
 //   ⑥ 그림 풀기(NoxArt.h) — 줄 묶음 · 잘린 자료 · PNG 꼴 · 게임 폴더 없음 · (NOX_TEST_GAME · NOX_TEST_ART 가 있으면) 정품에서 실제로 뽑기
+//   ⑦ 창 안쪽 크기(화면 높이의 2/3 · 어디에 막혀도 4:3 · 최소 1배)
 //   로그인 서버 길(Login · CheckKey · Logout)은 실제 nox_auth 파일럿으로 본다(전송 몫은 auth_client_test)
 #include <cstdio>
 #include <string>
@@ -153,6 +154,26 @@ int main()
             const DWORD t1 = GetTickCount();
             Check(noxart::Extract(game, art), "⑥ 실물 — 두 번째는 건너뜀");
             std::printf("art again %lu ms\n", GetTickCount() - t1);
+        }
+    }
+
+    // ⑦ 창 안쪽 크기 — 화면 높이의 2/3 · 4:3 · 작업 영역 안 · 최소 1배. 작업 영역 값은 작업 표시줄 40 · 창 테두리 16x39 기준
+    {
+        struct Row { int screenH, availW, availH, w, h; const char* what; };
+        const Row rows[] = {
+            { 1080, 1904, 1001,  960,  720, "⑦ 1920x1080 → 1.5배(사용자 결정)" },
+            { 1440, 2544, 1361, 1280,  960, "⑦ 2560x1440 → 2배" },
+            { 2160, 3824, 2081, 1920, 1440, "⑦ 3840x2160 → 3배" },
+            {  768, 1350,  689,  680,  510, "⑦ 1366x768 → 약 1.06배 · 4:3 그대로" },
+            {  600, 1008,  521,  640,  480, "⑦ 2/3 가 1배보다 작음 → 1배" },
+            { 1920, 1064, 1841, 1064,  798, "⑦ 세로 화면 → 너비에 막힘" },
+            { 1080, 1904,  500,  664,  498, "⑦ 작업 영역이 낮음 → 높이에 막힘" },
+            {  480,  300,  200,  640,  480, "⑦ 아무것도 안 맞아도 1배 아래로 안 감" },
+        };
+        for (const Row& r : rows) {
+            const launcher::StageSize s = launcher::StageClientSize(r.screenH, r.availW, r.availH);
+            Check(s.w == r.w && s.h == r.h, r.what);
+            if (s.w != r.w || s.h != r.h) std::printf("  got %dx%d want %dx%d\n", s.w, s.h, r.w, r.h);
         }
     }
 

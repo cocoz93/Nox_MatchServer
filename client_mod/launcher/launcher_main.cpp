@@ -6,7 +6,7 @@
 //   본체가 보내는 것: init(lastName · auto · hasKey) · login(ok · reason) · start(ok · reason) · logout · gameExit · busy
 //   로그인 서버 일은 일꾼 스레드에서(창이 안 멈추게) — 끝나면 창 메시지로 화면 스레드에 돌아와 화면에 보낸다
 // 게임 — 띄우면 런처 창을 숨기고, 게임이 끝나면 다시 보인다. 자동 로그인이 아니면 그때 로그아웃(열쇠 지움 — 결정 2)
-// 그림 — 시작할 때 게임 폴더에서 정품 그림 · 글꼴을 뽑아(NoxArt.h · 처음 한 번) `https://art.nox/` 로 화면에 준다. 창은 640x480 의 정수배
+// 그림 — 시작할 때 게임 폴더에서 정품 그림 · 글꼴을 뽑아(NoxArt.h · 처음 한 번) `https://art.nox/` 로 화면에 준다. 창은 화면 높이의 2/3(LauncherCore.h StageClientSize)
 //
 // 화면 모드 인자 — [--exe <게임 exe>](mo_local 이 클라2 런처 창에 Game2.exe) · [--dev](개발 도구 · 오른쪽 단추 메뉴)
 // 명령 줄 모드(창 없음 — tools\mo_local.ps1 · 시험)
@@ -403,8 +403,8 @@ void PrepareArt()
     if (noxart::Extract(game.substr(0, gameCut), art)) g_artDir = art;
 }
 
-// 창 안쪽 = 640x480 의 정수배. 화면에 들어가는 가장 큰 배수 — 다만 100% 배율 기준 2배(게임 창과 같은 크기)까지만 · 고해상도 화면은 그 배율만큼 더
-int StageScale(DWORD style, int dpi, RECT& work)
+// 창 안쪽 크기(판단은 LauncherCore.h StageClientSize) · work 는 창을 가운데 놓을 작업 영역. 프로세스가 DPI 인식이라 값은 실제 화소 — 화면 배율과 상관없이 같은 몫을 가린다
+launcher::StageSize StageSizeForScreen(DWORD style, RECT& work)
 {
     if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
         work = { 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
@@ -413,9 +413,7 @@ int StageScale(DWORD style, int dpi, RECT& work)
     AdjustWindowRect(&frame, style, FALSE);
     const int availW = (work.right - work.left) - (frame.right - frame.left);
     const int availH = (work.bottom - work.top) - (frame.bottom - frame.top);
-    const int fits = (std::min)(availW / 640, availH / 480);
-    const int cap = (std::max)(2, MulDiv(2, dpi, 96));
-    return (std::max)(1, (std::min)(fits, cap));
+    return launcher::StageClientSize(GetSystemMetrics(SM_CYSCREEN), availW, availH);
 }
 
 std::wstring ExeDir()
@@ -455,13 +453,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show)
     wc.lpszClassName = kClass;
     wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     RegisterClassExW(&wc);
-    HDC dc = GetDC(NULL);
-    const int dpi = GetDeviceCaps(dc, LOGPIXELSX);
-    ReleaseDC(NULL, dc);
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     RECT work;
-    const int scale = StageScale(style, dpi, work);
-    RECT r = { 0, 0, 640 * scale, 480 * scale };
+    const launcher::StageSize stage = StageSizeForScreen(style, work);
+    RECT r = { 0, 0, stage.w, stage.h };
     AdjustWindowRect(&r, style, FALSE);
     const int ww = r.right - r.left, wh = r.bottom - r.top;
     const int x = work.left + ((work.right - work.left) - ww) / 2, y = work.top + ((work.bottom - work.top) - wh) / 2;

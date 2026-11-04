@@ -16,6 +16,7 @@
 #endif
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -296,6 +297,18 @@ inline LoginResult Logout(const Config& c, const std::string& name)
 }
 
 // 게임 띄우기 — 성공이면 pi(부른 쪽이 핸들을 닫음)
+// 런처 창 안쪽 크기 — 640x480 그림판을 화면 높이의 2/3 로 키운다(11-05 사용자 결정).
+//   2배는 1920x1080 넓이의 62%로 컸고 1배(16%)는 「너무 작다」 · 1.5배(36%)로 정함. 고정 배수가 아니라 비율이라 큰 화면에서도 같은 몫을 가린다
+//   기준이 작업 영역이 아니라 화면 높이인 까닭: 작업 표시줄 크기에 따라 1920x1080 에서 1.5배가 어긋나지 않게
+//   4:3 이 딱 떨어지게 한 칸(4x3)의 정수배로 잡는다 — 그림판은 창 너비로 맞추므로(stage.js fit) 비율이 어긋나면 아래가 잘림
+//   작업 영역(테두리 뺀 값)을 넘지 않는다 · 다만 1배 아래로는 안 줄인다(그림판 한 점이 한 점 아래로 뭉개지므로)
+struct StageSize { int w; int h; };
+inline StageSize StageClientSize(int screenH, int availW, int availH)
+{
+    const int unit = (std::max)(160, (std::min)({ screenH * 2 / 3 / 3, availW / 4, availH / 3 }));
+    return { unit * 4, unit * 3 };
+}
+
 inline bool LaunchGame(const Config& c, const std::string& name, PROCESS_INFORMATION& pi, std::wstring& err)
 {
     const std::wstring exe = GamePath(c);

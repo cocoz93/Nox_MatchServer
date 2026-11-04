@@ -58,7 +58,7 @@ body.booting .legal { visibility: hidden; }
 #stage { display: none; }
 body.booting .frame { visibility: hidden; }
 
-/* 정품 모양(런처 P10) — 그림판을 창에 꽉 채워 정수배로 키움(창 크기는 본체가 640x480 의 정수배로 잡음).
+/* 정품 모양(런처 P10) — 그림판을 창에 꽉 채워 키움(창 크기는 본체가 화면 높이의 2/3 로 잡음 · 4:3 · 정수배가 아님).
    HTML 요소는 그림판과 같은 640x480 좌표에 투명하게 얹는다 · 위치는 stage.js */
 body.art { background: #000; }
 body.art #stage { display: block; position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; image-rendering: pixelated; }
