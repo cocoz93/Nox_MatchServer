@@ -1206,34 +1206,50 @@ static void RoomUiOnLine(const char* tail)
     LeaveCriticalSection(&g_ruCs);
 }
 
-// ★ 11-04 플랜2 ㉔ 대전 기록 — 로비 줄 `NOXRANK REC...`(서버 `Lobby::OnMatchHistory`) · 받기 훅에서 칸만 채우고 그리는 건 프레임 자리(`RecordTick`)
+// ★ 11-04 플랜2 ㉔ 대전 기록 — 로비 줄 `NOXRANK REC...`(서버 `RecordDesk`) · 받기 훅에서 칸만 채우고 그리는 건 프레임 자리(`RecordTick`)
+//   ★ 11-04 전적 검색 — `RECNONE <물은 이름>` = 없는 사용자. 서버는 접속당 한 물음이라 겹치면 뒤 물음을 말없이 버린다 → 앞 창에서 물은 답이 늦게 오면 이름을 보고 버린다(내 기록의 이름 = 로그인 `NICK` 글자 · 서버 `c.nick` 도 그 줄 그대로 · 못 읽어 빈 글자면 대조 안 함)
 //   RECSUM <랭크 판 있음> <점수> <순위> <랭크 승> <랭크 패> <일반 승> <일반 패> <이름> · RECROW <결과> <랭크> <점수|-> <증감|-> <맵> <킬|-> <데스|-> <초> <끝 시각> · RECEND <줄 수> · RECFAIL
 //   결과 = W 승 · L 패 · D 비김 · A 중단 · Q 이탈 · 숫자 = 그 등수. 값 판단은 서버(`MatchHistory.h`) · DLL 은 글자 · 색만
 enum { kRecMaxRows = 20 };
 struct RecRow { char res[8]; int ranked; char after[12]; char delta[12]; char map[40]; char kills[12]; char deaths[12]; unsigned sec; unsigned endUnix; };
 struct RecData { int hasRanked, rating, rank, rw, rl, nw, nl; char name[33]; int n; RecRow rows[kRecMaxRows]; };
+enum RecState { kRecWait = 0, kRecDone = 1, kRecFail = 2, kRecNoUser = 3 };
 static RecData g_recIn = {};              // g_ruCs 안에서만
-static volatile LONG g_recState = 0;      // 0 기다림 · 1 다 옴 · 2 못 읽음
+static char g_recAskName[33] = "";        // g_ruCs 안에서만 — 답에 실릴 이름(빈 글자 = 대조 안 함)
+static bool g_recSkip = false;            // g_ruCs 안에서만 — 이름이 다른 RECSUM 뒤의 RECROW · RECEND 를 버리는 중
+static volatile LONG g_recState = kRecWait;
 static void RecOnLine(const char* sub)
 {
     EnterCriticalSection(&g_ruCs);
     if (strcmp(sub, "RECFAIL") == 0) {
-        InterlockedExchange(&g_recState, 2);
+        InterlockedExchange(&g_recState, kRecFail);
+    } else if (strncmp(sub, "RECNONE ", 8) == 0) {
+        if (strcmp(sub + 8, g_recAskName) == 0) InterlockedExchange(&g_recState, kRecNoUser);
+        else Log("㉔ 물은 이름과 다른 답 버림(없는 사용자) — 물음 「%s」 · 답 「%s」", g_recAskName, sub + 8);
     } else if (strncmp(sub, "RECSUM ", 7) == 0) {
-        memset(&g_recIn, 0, sizeof(g_recIn));
-        InterlockedExchange(&g_recState, 0);
-        if (sscanf(sub + 7, "%d %d %d %d %d %d %d %32s", &g_recIn.hasRanked, &g_recIn.rating, &g_recIn.rank, &g_recIn.rw, &g_recIn.rl, &g_recIn.nw, &g_recIn.nl, g_recIn.name) != 8) {
-            Log("㉔ 대전 기록 요약 줄을 못 읽음");
-            InterlockedExchange(&g_recState, 2);
+        RecData in = {};
+        const int got = sscanf(sub + 7, "%d %d %d %d %d %d %d %32s", &in.hasRanked, &in.rating, &in.rank, &in.rw, &in.rl, &in.nw, &in.nl, in.name);
+        g_recSkip = got == 8 && g_recAskName[0] && strcmp(in.name, g_recAskName) != 0;
+        if (g_recSkip) {
+            Log("㉔ 물은 이름과 다른 답 버림 — 물음 「%s」 · 답 「%s」", g_recAskName, in.name);
+        } else {
+            g_recIn = in;
+            InterlockedExchange(&g_recState, kRecWait);
+            if (got != 8) {
+                Log("㉔ 대전 기록 요약 줄을 못 읽음");
+                InterlockedExchange(&g_recState, kRecFail);
+            }
         }
+    } else if (g_recSkip) {
+        if (strncmp(sub, "RECEND ", 7) == 0) g_recSkip = false;
     } else if (strncmp(sub, "RECROW ", 7) == 0) {
         RecRow r = {};
         const int got = sscanf(sub + 7, "%7s %d %11s %11s %39s %11s %11s %u %u", r.res, &r.ranked, r.after, r.delta, r.map, r.kills, r.deaths, &r.sec, &r.endUnix);
         if (got == 9 && g_recIn.n < kRecMaxRows) g_recIn.rows[g_recIn.n++] = r;
-        else { Log("㉔ 대전 기록 줄을 못 읽음 — 칸 %d 개 · 줄 %d", got, g_recIn.n); InterlockedExchange(&g_recState, 2); }
+        else { Log("㉔ 대전 기록 줄을 못 읽음 — 칸 %d 개 · 줄 %d", got, g_recIn.n); InterlockedExchange(&g_recState, kRecFail); }
     } else if (strncmp(sub, "RECEND ", 7) == 0) {
         const int want = atoi(sub + 7);
-        if (g_recState == 0) InterlockedExchange(&g_recState, want == g_recIn.n ? 1 : 2);
+        if (g_recState == kRecWait) InterlockedExchange(&g_recState, want == g_recIn.n ? kRecDone : kRecFail);
         if (want != g_recIn.n) Log("㉔ 대전 기록 줄 수가 다름 — 알린 %d · 받은 %d", want, g_recIn.n);
     }
     LeaveCriticalSection(&g_ruCs);
@@ -2568,34 +2584,52 @@ static void HomeWinTick(bool inRoom, const RoomUi& s)
 //   왜 게임 안 창 — 런처는 게임 중 숨겨진다(`launcher_main.cpp:125`). 값 판단은 서버 · 여기는 받은 줄을 글자 · 색으로만
 //   왜 열마다 목록 칸 — 정품 목록은 줄 하나에 색 하나라 칸이 줄을 나눠 가지면 한 줄 안에서 색이 갈린다(정품 게임 목록 `noxworld.wnd` 10038~10042 와 같은 짜임 — 11-04 시험 캡처)
 //   정품 한계 우회: 대화방 처리 함수에 1927 칸을 다루는 길이 없어 ⑩ 처럼 처리 함수 칸을 감싼다 · 열려 있는 동안 대화방을 숨겨 그 아래 칸이 눌리지 않게 · 대화방이 없어지면(끊김) 같이 닫음
+// ★ 11-04 전적 검색 — 입구 = 대화방 1902(옛 「찾기」 · 정품 찾기 창은 더 안 연다) · 창 = `window\MoSearch.wnd`(대전 기록 창과 자식 번호가 같고 왼쪽 칸에 이름 칸 · 검색 단추만 더함 · `tools/ui_apply.ps1`).
+//   표 · 줄 · 판정은 대전 기록 것 그대로 — 두 창은 동시에 안 열리므로(둘 다 대화방을 숨김) 그리기는 「지금 열린 창」 하나만 본다
+//   정품 한계 우회: 입력 칸은 Enter(0x401f)를 칸 +0x34 가 가리키는 곳으로만 보낸다(`GAME2_2.c` 키 처리 · 원본 기준). 칸이 보이려면 왼쪽 칸 9602 의 자식이어야 해서(맨 위 창의 자식은 9602 에 가려짐 · 11-04 r17 캡처)
+//   창 파일 처리 함수(맨 위 창)에 안 온다 → 대화방과 같은 방식으로 9602 처리 함수 칸을 감싼다
 static const DWORD kRecBtnId = 1927, kRecBackId = 9690, kRecMsgId = 9601, kRecColFirst = 9610, kRecValFirst = 9630;
+static const DWORD kSearchBtnId = 1902, kSearchPanelId = 9602, kSearchEntryId = 9650, kSearchGoId = 9651;
+static const DWORD kMsgEntrySet = 0x401e, kMsgEntryEnter = 0x401f;   // 입력 칸 — 글자 넣기 · Enter 알림(`GAME2_2.c` 16414 · 16415 · 원본 기준 · 알림은 11-04 r17 실측)
+static const DWORD kEntryNotifySlot = 0x34, kEntryDataSlot = 0x20;   // 알림 받을 곳 · 글자 칸(11-04 r17 실측 — 글자는 칸 맨 앞 UTF-16)
 static const DWORD kMsgListAdd = 16397, kMsgListClear = 16399;
 static const DWORD kRecTimeoutMs = 5000;
 enum { kRecCols = 8, kRecVals = 5 };
-static DWORD g_recWin = 0, g_chatOrigProc = 0, g_recOpenedAt = 0;
-static bool g_recOpen = false, g_recDrawn = false, g_recLoadFailed = false;
-static wchar_t g_recVal[kRecVals][48];   // 정품 글 칸은 글을 복사하지 않고 쥔다(㉑ 안내 글과 같음) — 전역
-static wchar_t g_recMsg[64];
+enum RecKind { kRecRecord = 0, kRecSearch = 1, kRecKinds };
+static const char* const kRecFile[kRecKinds] = { "MoRecord.wnd", "MoSearch.wnd" };
+static const char* const kRecName[kRecKinds] = { "대전 기록", "전적 검색" };
+static struct {
+    DWORD win[kRecKinds];         // 만든 창(지워지면 0)
+    bool loadFailed[kRecKinds];
+    RecKind kind;                 // 지금 열린 창
+    bool open;
+    bool drawn;                   // 답을 기다리지 않음(그림 · 안내를 넣음 · 전적 검색의 처음 화면)
+    DWORD askedAt;
+    DWORD chatOrigProc, panelOrigProc;
+    wchar_t val[kRecVals][48];    // 정품 글 칸은 글을 복사하지 않고 쥔다(㉑ 안내 글과 같음) — 전역
+    wchar_t msg[64];
+} g_rec = {};
+static DWORD RecWin() { return g_rec.win[g_rec.kind]; }
 
 static void RecSetMessage(const wchar_t* text)
 {
-    const DWORD w = ((PFN_findchild)kFindChild)(g_recWin, kRecMsgId);
+    const DWORD w = ((PFN_findchild)kFindChild)(RecWin(), kRecMsgId);
     if (!w) return;
-    wcsncpy(g_recMsg, text ? text : L"", _countof(g_recMsg) - 1);
-    ((PFN_wndproc4)kWinCall94)(w, kMsgSetText, (DWORD)(uintptr_t)g_recMsg, (DWORD)-1);
+    wcsncpy(g_rec.msg, text ? text : L"", _countof(g_rec.msg) - 1);
+    ((PFN_wndproc4)kWinCall94)(w, kMsgSetText, (DWORD)(uintptr_t)g_rec.msg, (DWORD)-1);
     ((PFN_sethidden)kSetHidden)(w, text ? 0 : 1);
 }
 static void RecSetVal(int i, const wchar_t* text)
 {
-    const DWORD w = ((PFN_findchild)kFindChild)(g_recWin, kRecValFirst + (DWORD)i);
+    const DWORD w = ((PFN_findchild)kFindChild)(RecWin(), kRecValFirst + (DWORD)i);
     if (!w) return;
-    wcsncpy(g_recVal[i], text, _countof(g_recVal[i]) - 1);
-    ((PFN_wndproc4)kWinCall94)(w, kMsgSetText, (DWORD)(uintptr_t)g_recVal[i], (DWORD)-1);
+    wcsncpy(g_rec.val[i], text, _countof(g_rec.val[i]) - 1);
+    ((PFN_wndproc4)kWinCall94)(w, kMsgSetText, (DWORD)(uintptr_t)g_rec.val[i], (DWORD)-1);
 }
 static void RecClearAll()
 {
     for (int c = 0; c < kRecCols; ++c) {
-        const DWORD w = ((PFN_findchild)kFindChild)(g_recWin, kRecColFirst + (DWORD)c);
+        const DWORD w = ((PFN_findchild)kFindChild)(RecWin(), kRecColFirst + (DWORD)c);
         if (w) ((PFN_wndproc4)kWinCall94)(w, kMsgListClear, 0, 0);
     }
     for (int i = 0; i < kRecVals; ++i) RecSetVal(i, L"");
@@ -2618,7 +2652,7 @@ static void RecDraw(const RecData& d)
     wl(d.rw, d.rl); RecSetVal(3, t);
     wl(d.nw, d.nl); RecSetVal(4, t);
     DWORD col[kRecCols];
-    for (int c = 0; c < kRecCols; ++c) col[c] = ((PFN_findchild)kFindChild)(g_recWin, kRecColFirst + (DWORD)c);
+    for (int c = 0; c < kRecCols; ++c) col[c] = ((PFN_findchild)kFindChild)(RecWin(), kRecColFirst + (DWORD)c);
     int rowNow = 0;
     // 정품 줄 더하기의 색 인자는 색이 아니라 색 표 번호(0~16 · 그 밖 = 칸 글자색 — `GAME3.c` AddLine · 원본 기준)라 초록 · 빨강을 고를 수 없다 → 더한 줄의 색 칸(+516)에 직접 넣는다
     const auto add = [&col, &rowNow](int c, const wchar_t* s, DWORD color) {
@@ -2665,48 +2699,118 @@ static void RecDraw(const RecData& d)
 }
 static void RecClose(const char* why)
 {
-    if (!g_recOpen) return;
-    g_recOpen = false;
-    if (g_recWin) ((PFN_sethidden)kSetHidden)(g_recWin, 1);
+    if (!g_rec.open) return;
+    g_rec.open = false;
+    if (RecWin()) ((PFN_sethidden)kSetHidden)(RecWin(), 1);
     DWORD chat = 0;
     if (ReadSelf(kChatWin, &chat) && chat) ((PFN_sethidden)kSetHidden)(chat, 0);
-    Log("㉔ 대전 기록 닫음 — %s", why);
+    Log("㉔ %s 닫음 — %s", kRecName[g_rec.kind], why);
 }
 static int __cdecl RecWinProc(DWORD win, DWORD ev, DWORD a1, DWORD)
 {
     DWORD id = 0;
     if (ev == kMsgClick && a1 && ReadSelf(a1, &id) && id == kRecBackId) { RecClose("뒤로"); return 1; }
-    if (ev == 2 && win == g_recWin) { Log("㉔ 대전 기록 창 지워짐"); g_recWin = 0; g_recOpen = false; }
+    if (ev == 2) {
+        for (int k = 0; k < kRecKinds; ++k) {
+            if (win != g_rec.win[k]) continue;
+            Log("㉔ %s 창 지워짐", kRecName[k]);
+            g_rec.win[k] = 0;
+            if (g_rec.kind == k) g_rec.open = false;
+        }
+    }
     return 0;
 }
-static void RecOpen(DWORD chat)
+// 로비에 물음 한 줄 · 화면은 「묻는 중」 — 빈 글자 = 내 기록(`NOXRANK RECORD`)
+static void RecAsk(const char* name)
 {
-    if (g_recOpen) return;
-    if (!g_recWin && !g_recLoadFailed) {
-        g_recWin = ((PFN_moWndLoad)kWndLoad)("MoRecord.wnd", (void*)RecWinProc);
-        if (!g_recWin) { g_recLoadFailed = true; Log("㉔ 대전 기록 창을 못 만듦 — 게임 폴더에 window\\MoRecord.wnd 가 없음(ui_apply)"); }
-        else Log("㉔ 대전 기록 창 만듦 %#lx", g_recWin);
-    }
-    if (!g_recWin) return;
+    const std::string expect = name[0] ? std::string(name) : NickNow();
+    EnterCriticalSection(&g_ruCs);
+    strncpy_s(g_recAskName, expect.c_str(), _TRUNCATE);
+    LeaveCriticalSection(&g_ruCs);
+    InterlockedExchange(&g_recState, kRecWait);
     RecClearAll();
     RecSetMessage(L"기록을 불러오는 중입니다.");
-    ((PFN_sethidden)kSetHidden)(g_recWin, 0);
-    ((PFN_sethidden)kSetHidden)(chat, 1);
-    g_recOpen = true;
-    g_recDrawn = false;
-    g_recOpenedAt = GetTickCount();
-    InterlockedExchange(&g_recState, 0);
-    static const char kLine[] = "NOXRANK RECORD\r\n";
+    g_rec.drawn = false;
+    g_rec.askedAt = GetTickCount();
+    char line[64];
+    sprintf_s(line, name[0] ? "NOXRANK RECORD %s\r\n" : "NOXRANK RECORD\r\n", name);
     typedef int(WSAAPI* PFN_send_t)(SOCKET, const char*, int, int);
-    const int rc = g_recSock == INVALID_SOCKET ? -1 : ((PFN_send_t)Resolve(19))(g_recSock, kLine, (int)strlen(kLine), 0);
-    Log("㉔ 대전 기록 요청 rc=%d(로비 소켓 %u)", rc, (unsigned)g_recSock);
-    if (rc < 0) InterlockedExchange(&g_recState, 2);
+    const int rc = g_recSock == INVALID_SOCKET ? -1 : ((PFN_send_t)Resolve(19))(g_recSock, line, (int)strlen(line), 0);
+    Log("㉔ %s 요청 「%s」 rc=%d(로비 소켓 %u)", kRecName[g_rec.kind], name, rc, (unsigned)g_recSock);
+    if (rc < 0) InterlockedExchange(&g_recState, kRecFail);
+}
+// ★ 11-04 전적 검색 — Enter · 검색 단추. 묻는 중엔 무시(서버가 겹친 물음을 말없이 버린다) · 빈 칸은 안 보낸다 · 칸의 글자는 그대로 두고 표만 바꾼다
+static void RecSearchSubmit(const char* how)
+{
+    if (!g_rec.open || g_rec.kind != kRecSearch) return;
+    if (!g_rec.drawn) { Log("㉔ 전적 검색 묻는 중 — %s 무시", how); return; }
+    const DWORD entry = ((PFN_findchild)kFindChild)(RecWin(), kSearchEntryId);
+    DWORD data = 0;
+    if (!entry || !ReadSelf(entry + kEntryDataSlot, &data) || !data) { Log("㉔ 전적 검색 이름 칸을 못 읽음 — %s", how); return; }
+    char name[33];
+    const int n = WideCharToMultiByte(949, 0, (const wchar_t*)(uintptr_t)data, -1, name, sizeof(name), NULL, NULL);
+    if (n <= 1) { Log("㉔ 전적 검색 빈 칸 또는 긴 이름 — %s 안 보냄", how); return; }
+    Log("㉔ 전적 검색 %s", how);
+    RecAsk(name);
+}
+static int __cdecl RecPanelProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
+{
+    DWORD id = 0;
+    if ((msg == kMsgEntryEnter || msg == kMsgClick) && a3 && ReadSelf(a3, &id)) {
+        if (msg == kMsgEntryEnter && id == kSearchEntryId) { RecSearchSubmit("Enter"); return 1; }
+        if (msg == kMsgClick && id == kSearchGoId) { RecSearchSubmit("검색 단추"); return 1; }
+    }
+    return g_rec.panelOrigProc ? ((PFN_wndproc4)g_rec.panelOrigProc)(win, msg, a3, a4) : 0;
+}
+static bool RecEnsureWin(RecKind kind)
+{
+    DWORD& w = g_rec.win[kind];
+    if (w || g_rec.loadFailed[kind]) return w != 0;
+    w = ((PFN_moWndLoad)kWndLoad)(kRecFile[kind], (void*)RecWinProc);
+    if (!w) {
+        g_rec.loadFailed[kind] = true;
+        Log("㉔ %s 창을 못 만듦 — 게임 폴더에 window\\%s 가 없음(ui_apply)", kRecName[kind], kRecFile[kind]);
+        return false;
+    }
+    Log("㉔ %s 창 만듦 %#lx", kRecName[kind], w);
+    if (kind == kRecSearch) {
+        const DWORD panel = ((PFN_findchild)kFindChild)(w, kSearchPanelId), entry = ((PFN_findchild)kFindChild)(w, kSearchEntryId);
+        DWORD proc = 0, notify = 0;
+        if (panel && entry && ReadSelf(panel + kProcSlot, &proc) && ReadSelf(entry + kEntryNotifySlot, &notify)) {
+            g_rec.panelOrigProc = proc;
+            *(volatile DWORD*)(panel + kProcSlot) = (DWORD)(uintptr_t)RecPanelProc;
+            Log("㉔ 전적 검색 왼쪽 칸 %#lx 처리 함수 감쌈(원래 %#lx) · 이름 칸 %#lx 의 알림 곳 %#lx", panel, proc, entry, notify);
+        } else {
+            Log("㉔ 전적 검색 왼쪽 칸 · 이름 칸을 못 찾음 — 칸 %#lx · %#lx", panel, entry);
+        }
+    }
+    return true;
+}
+static void RecOpen(DWORD chat, RecKind kind)
+{
+    if (g_rec.open) return;
+    if (!RecEnsureWin(kind)) return;
+    g_rec.kind = kind;
+    RecClearAll();
+    ((PFN_sethidden)kSetHidden)(RecWin(), 0);
+    ((PFN_sethidden)kSetHidden)(chat, 1);
+    g_rec.open = true;
+    if (kind == kRecRecord) { RecAsk(""); return; }
+    // ★ 11-04 전적 검색 — 처음 화면(뒤로 후 다시 열어도): 칸 · 표를 비움 · 물음 없음
+    const DWORD entry = ((PFN_findchild)kFindChild)(RecWin(), kSearchEntryId);
+    if (entry) ((PFN_wndproc4)kWinCall94)(entry, kMsgEntrySet, (DWORD)(uintptr_t)L"", 0);
+    RecSetMessage(L"이름을 입력하세요");
+    g_rec.drawn = true;
+    Log("㉔ 전적 검색 열림");
 }
 static int __cdecl RecChatProc(DWORD win, DWORD msg, DWORD a3, DWORD a4)
 {
     DWORD id = 0;
-    if (msg == kMsgClick && a3 && ReadSelf(a3, &id) && id == kRecBtnId) { RecOpen(win); return 0; }
-    return ((PFN_wndproc4)g_chatOrigProc)(win, msg, a3, a4);
+    if (msg == kMsgClick && a3 && ReadSelf(a3, &id)) {
+        if (id == kRecBtnId) { RecOpen(win, kRecRecord); return 0; }
+        if (id == kSearchBtnId) { RecOpen(win, kRecSearch); return 0; }   // ★ 11-04 전적 검색 — 정품 찾기 창 대신
+    }
+    return ((PFN_wndproc4)g_rec.chatOrigProc)(win, msg, a3, a4);
 }
 static void RecordTick()
 {
@@ -2715,26 +2819,42 @@ static void RecordTick()
     if (chat && g_ourLobby) {
         DWORD proc = 0;
         if (ReadSelf(chat + kProcSlot, &proc) && proc && proc != (DWORD)(uintptr_t)RecChatProc) {
-            g_chatOrigProc = proc;
+            g_rec.chatOrigProc = proc;
             *(volatile DWORD*)(chat + kProcSlot) = (DWORD)(uintptr_t)RecChatProc;
             Log("㉔ 대화방 창 %#lx 처리 함수 감쌈(원래 %#lx)", chat, proc);
         }
     }
-    if (!g_recOpen) return;
+    if (!g_rec.open) return;
     if (!chat) { RecClose("대화방이 없어짐"); return; }
-    if (g_recDrawn) return;
+    if (g_rec.drawn) return;
     const LONG st = g_recState;
-    if (st == 1) {
-        RecData d;
-        EnterCriticalSection(&g_ruCs);
-        d = g_recIn;
-        LeaveCriticalSection(&g_ruCs);
-        RecDraw(d);
-        g_recDrawn = true;
-    } else if (st == 2 || GetTickCount() - g_recOpenedAt > kRecTimeoutMs) {
-        RecSetMessage(L"기록을 읽을 수 없습니다.");
-        Log("㉔ 대전 기록 못 읽음 — %s", st == 2 ? "로비가 실패로 답함" : "5초 안에 답 없음");
-        g_recDrawn = true;
+    switch (st) {
+        case kRecDone: {
+            RecData d;
+            EnterCriticalSection(&g_ruCs);
+            d = g_recIn;
+            LeaveCriticalSection(&g_ruCs);
+            RecDraw(d);
+            g_rec.drawn = true;
+            break;
+        }
+        case kRecNoUser:   // ★ 11-04 전적 검색
+            RecSetMessage(L"없는 사용자입니다.");
+            Log("㉔ 전적 검색 없는 사용자");
+            g_rec.drawn = true;
+            break;
+        case kRecFail:
+            RecSetMessage(L"기록을 읽을 수 없습니다.");
+            Log("㉔ %s 못 읽음 — 로비가 실패로 답함", kRecName[g_rec.kind]);
+            g_rec.drawn = true;
+            break;
+        default:
+            if (GetTickCount() - g_rec.askedAt > kRecTimeoutMs) {
+                RecSetMessage(L"기록을 읽을 수 없습니다.");
+                Log("㉔ %s 못 읽음 — 5초 안에 답 없음", kRecName[g_rec.kind]);
+                g_rec.drawn = true;
+            }
+            break;
     }
 }
 
@@ -2757,14 +2877,85 @@ static void RoomUiTick()
 }
 
 static const DWORD kBtnJoinGame = 10001;   // 게임 목록 정보 창의 참가(`noxworld.wnd:71`)
+// ★ 11-04 전적 검색 시험 — 포커스 · 칸 글자를 찍고 키를 포커스 칸에 넣는다(`K` = 키 처리 함수 자리 +0x174 를 포커스부터 부모로 — 정품 키 전달의 뒤쪽 절반 · 진짜 키보드 경로는 사람 확인)
+static const uintptr_t kFocusSlot = 0x6f73f8, kFocusFn = 0x488e10;   // 11-04 r17 실측
+static const DWORD kKeySlot = 0x174, kParentSlot = 0x18c, kEvKey = 0x15;
+static DWORD TestFindChild(DWORD id)   // 열린 창 먼저 · 다음 대화방
+{
+    const DWORD w = g_rec.open && RecWin() ? ((PFN_findchild)kFindChild)(RecWin(), id) : 0;
+    if (w) return w;
+    DWORD chat = 0;
+    return ReadSelf(kChatWin, &chat) && chat ? ((PFN_findchild)kFindChild)(chat, id) : 0;
+}
+static void TestLogFocus(const char* tag)
+{
+    DWORD f = 0, id = 0, fl = 0;
+    ReadSelf(kFocusSlot, &f);
+    if (f) { ReadSelf(f, &id); ReadSelf(f + 4, &fl); }
+    Log("⑰ 시험 %s 포커스 %#lx 번호 %lu 칸값 %#lx", tag, f, id, fl);
+}
+static void TestLogText(DWORD win)
+{
+    DWORD data = 0, id = 0;
+    if (!win || !ReadSelf(win + kEntryDataSlot, &data) || !data) { Log("⑰ 시험 글자 못 읽음 %#lx", win); return; }
+    ReadSelf(win, &id);
+    char u[256] = {};
+    WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)(uintptr_t)data, -1, u, sizeof(u) - 1, NULL, NULL);
+    Log("⑰ 시험 칸 %lu 글자 「%s」", id, u);
+}
+static void TestKeys(const char* s)
+{
+    char* e = nullptr;
+    for (unsigned long sc = strtoul(s, &e, 16); e != s; s = e, sc = strtoul(s, &e, 16)) {
+        for (int st = 2; st >= 1; --st) {   // 눌림 2 · 뗌 1
+            DWORD f = 0, who = 0;
+            ReadSelf(kFocusSlot, &f);
+            for (DWORD w = f; w; ) {
+                DWORD proc = 0, up = 0;
+                ReadSelf(w + kKeySlot, &proc);
+                if (proc && ((PFN_wndproc4)proc)(w, kEvKey, sc, (DWORD)st)) { who = w; break; }
+                if (!ReadSelf(w + kParentSlot, &up)) break;
+                w = up;
+            }
+            DWORD id = 0;
+            if (who) ReadSelf(who, &id);
+            if (st == 2) Log("⑰ 시험 키 %#lx 받은 칸 %lu(%#lx)", sc, id, who);
+        }
+    }
+}
 static bool TestPressLine(const char* line)
 {
-    if (line[0] == 'B') {   // ★ 11-04 ㉔ 대전 기록 뒤로
-        const DWORD back = g_recWin ? ((PFN_findchild)kFindChild)(g_recWin, kRecBackId) : 0;
+    if (line[0] == 'B') {   // ★ 11-04 ㉔ 대전 기록 · 전적 검색 뒤로
+        const DWORD back = RecWin() ? ((PFN_findchild)kFindChild)(RecWin(), kRecBackId) : 0;
         if (!back) return false;
-        ((PFN_wndproc4)kWinCall94)(g_recWin, kMsgClick, back, 0);
+        ((PFN_wndproc4)kWinCall94)(RecWin(), kMsgClick, back, 0);
         return true;
     }
+    if (line[0] == 'Q') {   // ★ 11-04 전적 검색 단추 — 왼쪽 칸에 누름 알림(정품 단추가 부모에게 보내는 꼴)
+        const DWORD panel = g_rec.win[kRecSearch] ? ((PFN_findchild)kFindChild)(g_rec.win[kRecSearch], kSearchPanelId) : 0;
+        const DWORD go = panel ? ((PFN_findchild)kFindChild)(panel, kSearchGoId) : 0;
+        if (!go) return false;
+        ((PFN_wndproc4)kWinCall94)(panel, kMsgClick, go, 0);
+        return true;
+    }
+    if (line[0] == 'N') {   // ★ 11-04 전적 검색 이름 칸에 글자 넣기 — 키로 못 치는 이름(`N 한글` — 시험 파일은 UTF-8 · 칸은 영문 · 숫자만 받는다)
+        const DWORD entry = TestFindChild(kSearchEntryId);
+        if (!entry) return false;
+        wchar_t w[64] = {};
+        if (line[1]) MultiByteToWideChar(CP_UTF8, 0, line + 2, -1, w, _countof(w) - 1);
+        ((PFN_wndproc4)kWinCall94)(entry, kMsgEntrySet, (DWORD)(uintptr_t)w, 0);
+        return true;
+    }
+    if (line[0] == 'K') { TestKeys(line + 1); return true; }   // `K 1e 30` — 스캔 코드(16진)
+    if (line[0] == 'f') { TestLogFocus("f"); return true; }
+    if (line[0] == 'F') {   // `F 1910` — 그 칸으로 포커스(정품 포커스 함수)
+        const DWORD w = TestFindChild(strtoul(line + 1, nullptr, 10));
+        if (!w) return false;
+        ((int(__cdecl*)(DWORD))kFocusFn)(w);
+        TestLogFocus("F");
+        return true;
+    }
+    if (line[0] == 'T') { TestLogText(TestFindChild(strtoul(line + 1, nullptr, 10))); return true; }   // `T 9650` — 칸 글자
     if (line[0] == 'H') { ((int(__cdecl*)())kHomeToggleFn)(); return true; }   // ★ 11-04 ㉓ — Home 키 자리(앞세우기 없이)
     if (line[0] == 'S') {   // ★ 11-04 ㉒ 시작 단추 — 회색이면 사람처럼 안 눌린 것으로 친다(정품은 꺼진 칸에 누름을 안 보냄 · 마우스 확인은 사람 판)
         const DWORD btn = g_startWin ? ((PFN_findchild)kFindChild)(g_startWin, kStartBtnId) : 0;

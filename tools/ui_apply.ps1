@@ -22,6 +22,7 @@
 #   nox.csf              새 열쇠 다섯을 끝에 더함 · 기존 열쇠 cdecode.c:EnterChat 값만 「방에 들어왔습니다.」로 바꿈(코드가 그 열쇠로 찾아 창 파일로는 못 돌림)
 #                        다른 기존 열쇠는 값을 안 바꾼다 — Noxworld.c:Ladder 처럼 다른 화면도 같은 열쇠를 쓰기 때문(`noxworld.c:515` · 원본 기준)
 #   ★ 11-04 플랜2 — window\MoRecord.wnd 새 파일(대전 기록 창 · 되돌리면 지움) · 입구 단추 글 「대전 기록」 · 새 열쇠 MoRecord.wnd:* 열네 개
+#   ★ 11-04 전적 검색 — window\MoSearch.wnd 새 파일(되돌리면 지움 · 내용은 MoRecord.wnd 에서 지어냄) · 1902 글자 「전적 검색」 · 새 열쇠 셋(옛 열쇠 WolChat.wnd:FindTodo 는 끝 차례를 지키려고 남김)
 #   ★ 11-04 플랜1 — window\MoStart.wnd 새 파일(시작 단추 · 되돌리면 지움) · 새 열쇠 MoStart.wnd:Start · 값 바꾸는 열쇠 WolFind.wnd:WindowTitle(찾기 창 제목)
 # 왜 이 꼴인가
 #   · 정품은 창 파일 · 글자 파일을 디스크에서 읽는다(10-30 파일럿 — mainmenu.wnd 첫 버튼 열쇠를 바꾸니 화면 글자가 바뀜 · 원본으로 되돌리니 그대로)
@@ -72,7 +73,10 @@ $csfAdds = @(
   @{ name = 'MoRecord.wnd:KillDeath'; text = '킬/데스' },
   @{ name = 'MoRecord.wnd:Time'; text = '시간' },
   @{ name = 'MoRecord.wnd:Date'; text = '날짜' },
-  @{ name = 'MoRecord.wnd:Blank'; text = ' ' })
+  @{ name = 'MoRecord.wnd:Blank'; text = ' ' },
+  @{ name = 'WolChat.wnd:Search'; text = '전적 검색' },
+  @{ name = 'MoSearch.wnd:Title'; text = '전적 검색' },
+  @{ name = 'MoSearch.wnd:Go'; text = '검색' })
 # 값을 바꾸는 기존 열쇠 — 값이 둘 다 아니면(다른 판 정품) 모름으로 멈춘다
 $csfSwaps = @(
   @{ name = 'cdecode.c:EnterChat'; orig = '채팅실 들어가는 중...'; new = '방에 들어왔습니다.' },
@@ -154,6 +158,36 @@ $newFiles = @(
     '', '    WINDOW', '      9690 40 408 150 32 PUSHBUTTON;', '      STATUS = ENABLED+IMAGE+NOFOCUS;', '      STYLE = MOUSETRACK;', '      BACKGROUNDIMAGE = NULL;',
     '      SELECTEDIMAGE = NoxWorldMapButton7;', '      ENABLEDIMAGE = NULL;', '      HILITEIMAGE = NoxWorldMapButton7;', '      DISABLEDIMAGE = NULL;', '      TEXT = Noxworld.wnd:Back;', '    END',
     '', '  END', 'END', '') -join "`r`n") })
+# ★ 11-04 전적 검색 — 전적 검색 창 = 대전 기록 창 + 왼쪽 칸 줄을 아래로 + 이름 칸 · 검색 단추(둘 다 왼쪽 칸 9602 의 자식 — 맨 위 창의 자식은 9602 에 가려짐 · r17 캡처)
+#   자식 번호가 같아야 DLL 이 그리기를 나눠 쓴다(`RecDraw`) · 두 파일을 따로 적으면 칸이 갈라지므로 여기서 지어낸다 · 이 칸 줄이 대전 기록 창에 없으면 멈춘다
+#   이름 칸 DATA = 글자 수 10(끝 글자 빼고 9 = 계정 이름 상한 kAccountNameMax) · 칸 그림 폭 138(칸 폭과 같게 — 작으면 오른쪽으로 붙는다 · r18 캡처) · 0 · 2(영문 · 숫자만 — 숫자 · 영문 제한이 있어야 한국어 판의 문자 입력 길을 안 탄다 · `GAME2_2.c` 원본 기준)
+#   검색 단추 NOFOCUS = 단추에 마우스만 올려도 포커스가 옮겨 가 글자가 끊긴다(원본 기준)
+function Make-Search([string]$t) {
+  $swaps = @(
+    @('DATA = 1 0 MoRecord.wnd:Title;', 'DATA = 1 0 MoSearch.wnd:Title;'),
+    @('9604 8 32 142 1 USER;', '9604 8 96 142 1 USER;'),
+    @('9620 10 44 40 15 STATICTEXT;', '9620 10 108 40 15 STATICTEXT;'), @('9630 52 44 100 15 STATICTEXT;', '9630 52 108 100 15 STATICTEXT;'),
+    @('9621 10 68 40 15 STATICTEXT;', '9621 10 132 40 15 STATICTEXT;'), @('9631 52 68 100 15 STATICTEXT;', '9631 52 132 100 15 STATICTEXT;'),
+    @('9622 10 92 40 15 STATICTEXT;', '9622 10 156 40 15 STATICTEXT;'), @('9632 52 92 100 15 STATICTEXT;', '9632 52 156 100 15 STATICTEXT;'),
+    @('9605 8 120 142 1 USER;', '9605 8 184 142 1 USER;'),
+    @('9623 10 132 40 15 STATICTEXT;', '9623 10 196 40 15 STATICTEXT;'), @('9633 52 132 100 15 STATICTEXT;', '9633 52 196 100 15 STATICTEXT;'),
+    @('9624 10 156 40 15 STATICTEXT;', '9624 10 220 40 15 STATICTEXT;'), @('9634 52 156 100 15 STATICTEXT;', '9634 52 220 100 15 STATICTEXT;'))
+  foreach ($s in $swaps) {
+    if (([regex]::Matches($t, [regex]::Escape($s[0]))).Count -ne 1) { throw "MoRecord.wnd 에 칸 줄이 하나가 아님: $($s[0])" }
+    $t = $t.Replace($s[0], $s[1])
+  }
+  $add = (@(
+    '        WINDOW', '          9650 10 36 138 25 ENTRYFIELD;', '          STATUS = ENABLED+BORDER+ONE_LINE;', '          STYLE = MOUSETRACK+TABSTOP;',
+    '          ENABLEDCOLOR = 200 150 60;', '          TEXTCOLOR = 240 180 42;', '          TEXT = WolChat.wnd:Empty;', '          DATA = 10 138 0 2;', '        END', '',
+    '        WINDOW', '          9651 44 68 70 20 PUSHBUTTON;', '          STATUS = ENABLED+IMAGE+NOFOCUS;', '          STYLE = MOUSETRACK;',
+    '          SELECTEDIMAGE = UIButtonLgLit;', '          HILITEIMAGE = UIButtonLgLit;', '          BACKGROUNDIMAGE = UIButtonLg;', '          ENABLEDIMAGE = NULL;', '          DISABLEDIMAGE = UIButtonLgDis;',
+    '          TEXT = MoSearch.wnd:Go;', '        END', '', '') -join "`r`n")
+  $at = "        WINDOW`r`n          9620 10 108 40 15 STATICTEXT;"
+  if (([regex]::Matches($t, [regex]::Escape($at))).Count -ne 1) { throw 'MoRecord.wnd 에 넣을 자리가 하나가 아님' }
+  return $t.Replace($at, $add + $at)
+}
+$newFiles += @{ file = 'window\MoSearch.wnd'; text = (Make-Search ($newFiles | Where-Object { $_.file -eq 'window\MoRecord.wnd' }).text) }
+
 # 창 파일 줄 바꿈 — head 칸(머리 줄 ~ 다음 END) 안의 from 줄을 to 로. 파일마다 전부 원본이거나 전부 적용이어야 한다(섞이면 일부 — 적용 · 되돌림으로 맞춤)
 $lineEdits = @(
   @{ file = 'window\noxworld.wnd'; head = '10003 40 109 150 32 PUSHBUTTON'; from = 'TEXT = Noxworld.wnd:HostQuest;'; to = 'TEXT = Noxworld.wnd:HostQuestTodo;' },
@@ -164,7 +198,8 @@ $lineEdits = @(
   @{ file = 'window\wolchat.wnd'; head = 'PUSHBUTTON (Ladder);'; from = '1927 151 453 82 26 PUSHBUTTON'; to = '1927 140 453 98 26 PUSHBUTTON' },
   @{ file = 'window\wolchat.wnd'; head = 'PUSHBUTTON (Ladder);'; from = 'IMAGEOFFSET = 1 2;'; to = 'IMAGEOFFSET = 12 2;' },
   @{ file = 'window\wolchat.wnd'; head = '1913 40 430 109 30 PUSHBUTTON'; from = 'TEXT = WolChat.wnd:Action;'; to = 'TEXT = WolChat.wnd:ActionTodo;' },
-  @{ file = 'window\wolchat.wnd'; head = '1902 448 375 109 25 PUSHBUTTON'; from = 'TEXT = WolChat.wnd:FindPage;'; to = 'TEXT = WolChat.wnd:FindTodo;' },
+  # 1902 — mid = 앞 판이 적용한 꼴(「찾기 (미구현)」) · 적용 · 되돌림 어느 쪽으로든 지나간다
+  @{ file = 'window\wolchat.wnd'; head = '1902 448 375 109 25 PUSHBUTTON'; from = 'TEXT = WolChat.wnd:FindPage;'; to = 'TEXT = WolChat.wnd:Search;'; mid = 'TEXT = WolChat.wnd:FindTodo;' },
   @{ file = 'window\wolchat.wnd'; head = '1914 42 453 109 30 PUSHBUTTON'; from = 'STATUS = ENABLED+IMAGE+NOFOCUS;'; to = 'STATUS = ENABLED+IMAGE+HIDDEN+NOFOCUS;' },
   @{ file = 'window\wolfind.wnd'; head = '1932 100 30 70 20 PUSHBUTTON'; from = 'STATUS = ENABLED+IMAGE;'; to = 'STATUS = ENABLED+IMAGE+HIDDEN;' })
 # ★ 매칭 손보기 8 — 필터 창. 버튼 칸은 10012 칸이 끝난 뒤 · 10022 의 자식 묶음 끝(END 둘) 앞에 — 파일이 그 세 줄로 끝나야 원본
@@ -318,7 +353,8 @@ function Lines-State([string]$t, $edits) {
     $end = $t.IndexOf('END', $h, [StringComparison]::Ordinal)
     $block = $t.Substring($h, $end - $h)
     $f = Count-Of $block $e.from; $g = Count-Of $block $e.to
-    if ($f + $g -ne 1) { return @{ state = '모름'; why = "「$($e.head)」 칸 안 — 원래 줄 $f · 새 줄 $g(합이 하나여야 함)" } }
+    $m = if ($e.mid) { Count-Of $block $e.mid } else { 0 }
+    if ($f + $g + $m -ne 1) { return @{ state = '모름'; why = "「$($e.head)」 칸 안 — 원래 줄 $f · 앞 판 줄 $m · 새 줄 $g(합이 하나여야 함)" } }
     if ($g -eq 1) { $on++ }
   }
   $st = if ($on -eq 0) { '원본' } elseif ($on -eq $edits.Count) { '적용됨' } else { '일부' }
@@ -330,6 +366,7 @@ function Lines-To([string]$t, $edits, [string]$want) {
     $end = $t.IndexOf('END', $h, [StringComparison]::Ordinal)
     $block = $t.Substring($h, $end - $h)
     $x = if ($want -eq '적용됨') { $block.Replace($e.from, $e.to) } else { $block.Replace($e.to, $e.from) }
+    if ($e.mid) { $x = $x.Replace($e.mid, $(if ($want -eq '적용됨') { $e.to } else { $e.from })) }
     $t = $t.Substring(0, $h) + $x + $t.Substring($end)
   }
   return $t
