@@ -80,6 +80,8 @@ $csfAdds = @(
 # 값을 바꾸는 기존 열쇠 — 값이 둘 다 아니면(다른 판 정품) 모름으로 멈춘다
 $csfSwaps = @(
   @{ name = 'cdecode.c:EnterChat'; orig = '채팅실 들어가는 중...'; new = '방에 들어왔습니다.' },
+  # ★ 11-05 — 서버가 판 안 이름을 로비 이름으로 덮으면 방에 들 때 클라가 한 번 찍는 문구(`cdecode.c:1470` · 실물 _out/qa_1105/o1/o0_room_2s_c1.png). 왜 바뀌었는지 알게
+  @{ name = 'Cdecode.c:NameChange'; orig = '서버에서 당신의 이름을 %s로 바꾸었습니다.'; new = '게임 안에서는 계정 이름 %s(으)로 표시됩니다.' },
   @{ name = 'WolFind.wnd:WindowTitle'; orig = '찾기/호출'; new = '유저 찾기' })   # ★ 11-04 플랜1 — 「호출!」 단추를 숨겨 제목만 남아 있었음. wolfind.wnd 만 쓰는 열쇠
 # ★ 11-04 플랜1 — 새 창 파일. 원본 = 없음 · 적용됨 = 이 바이트 그대로 · 다르면 모름(남의 파일을 지우지 않게)
 #   ENABLEDIMAGE = NULL — 정품은 꺼져도 앞 그림(ENABLED)을 그린다. 꺼진 그림은 뒤 칸만 바꿔(`widget_button.go` buttonDrawImg · 원본 기준) 앞 그림이 있으면 빨강 그대로(11-04 캡처 s2)

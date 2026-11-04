@@ -2375,6 +2375,26 @@ static std::vector<uint16_t> NoticeWide(const std::string& utf8) {
     return w;
 }
 
+// ★ 11-05 판 안 이름 = 로비 이름 — 접속 정보 97B 의 이름 칸(앞 50바이트 · UTF-16)을 덮는다. 빈 이름(열린 방식)은 캐릭터 이름 그대로
+//   - 왜: 대화방 · 전적은 계정(qa1) · 머리 위 · 점수판은 캐릭터(Jack)라 판에서 본 상대를 전적 검색으로 못 찾았다
+//   - 근거: 클라는 `2d` 의 이 칸으로 이름을 정한다(`network_client.go:322~323` · 원본 기준) · 원작 서버도 같은 이름이면 뒤에 번호를 붙여 바꾼다(`server/player.go:410`)
+static void PutInfoName(std::vector<uint8_t>& info97, const std::string& utf8) {
+    constexpr size_t kNameBytes = 50;   // `PlayerInfo.name` — 끝 0 포함 25글자
+    std::vector<uint16_t> w = NoticeWide(utf8);
+    if (w.empty() || info97.size() < kNameBytes) return;
+    if (w.size() > kNameBytes / 2 - 1) w.resize(kNameBytes / 2 - 1);
+    std::memset(info97.data(), 0, kNameBytes);   // 캐릭터 이름이 더 길면 뒤가 남는다
+    for (size_t i = 0; i < w.size(); ++i) {
+        info97[2 * i] = static_cast<uint8_t>(w[i]);
+        info97[2 * i + 1] = static_cast<uint8_t>(w[i] >> 8);
+    }
+}
+
+void Server::SetAccountName(int64_t sessionId, const std::string& account) {
+    const auto it = sessions_.find(sessionId);
+    if (it != sessions_.end()) it->second.name = account;
+}
+
 // ★ 11-05 공지 한 줄(사람 모두 같은 바이트) — 보낸 사람 번호 0 = 서버 · 깃발 0 = UTF-16 · 크기 = 글자 수(끝 0 포함)
 //   - 왜: 받는 사람 자기 번호로 보내면 내 캐릭터가 한 말처럼 머리 위 말풍선으로 뜨고(`w1/d1_start_1s.png`) 깃발 2 는 한글을 못 싣는다
 //   - 근거: 번호 0 이면 화면 가운데에 찍는다(`network_client.go:517` · 원본 기준 · 이 exe 는 실물 화면으로 확인) · 좌표 칸은 안 쓰여 0
@@ -4161,8 +4181,10 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 // ★★ **직업과 레벨을 읽어 스탯을 정한다** (2026-09-10 기획데이터 이식).
                 //   전에는 누구에게나 75/150 — 녹음본 주인공(위저드) 값이 굳어 있었다.
                 //   그래서 워리어가 정본 150 대신 75 로 놀았다. 자리는 `GameBalance.h`.
-                if (it.bodyLen() >= kJoinPlayerInfoLen)
+                if (it.bodyLen() >= kJoinPlayerInfoLen) {
                     s.info97.assign(it.body(), it.body() + kJoinPlayerInfoLen);
+                    PutInfoName(s.info97, s.name);   // ★ 11-05 — 수락이 다시 와도 여기를 지난다
+                }
                 if (it.bodyLen() > kInfoClassAt) {
                     const uint8_t c = it.body()[kInfoClassAt];
                     s.charClass = (c <= 2) ? static_cast<CharClass>(c) : CharClass::Warrior;
@@ -4237,8 +4259,8 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                     //   클라는 `CLIENT_ACCEPT` 에 피부·머리·바지·윗옷 색을 담아 보낸다
                     //   (`gameloop.go:424~430` `info.Colors.*`)
                     acceptBodyLenLast_ = it.bodyLen();
-                    const uint8_t* info97 =
-                        (it.bodyLen() >= 97) ? it.body() : nullptr;
+                    const uint8_t* info97 =   // ★ 11-05 — 받은 그대로가 아니라 이름을 덮은 사본(남에게 소개하는 값과 같게)
+                        (it.bodyLen() >= 97) ? s.info97.data() : nullptr;
                     if (!info97) ++joinInfo97Null_; else ++joinInfo97Ok_;
                     // ★ 09-19 — 97B **내용**을 한 번 찍는다. 「실었다」와 「값이 들어 있다」는 다르다.
                     //   클라가 색을 0 으로 보내는 것이라면 우리 서버는 죄가 없다

@@ -3195,6 +3195,8 @@ public:
     void SetGameFlags(uint32_t f) { gameSettings_.gameFlags = f; }
     // ★ 10-16 작업 13d — 점수 한도(`af` 18번 칸 · `RoundCheckLimit`). 방이 판을 열 때 시험 손잡이(`RoomSettings::battleScoreLimit`)로만 바꾼다
     void SetLimitValue(uint8_t v) { gameSettings_.limitValue = v; }
+    // ★ 11-05 — 판 안 이름을 로비 이름으로(토큰 방식 · 방 배정 때 방 관리자가 부름). 빈 이름이면 캐릭터 이름 그대로
+    void SetAccountName(int64_t sessionId, const std::string& account);
     void SetMaxPlayers(uint8_t n) { gameSettings_.maxPlayers = n; }
 
     // ★ 10-12 플랜 B 작업 7b — 방 로그(`Docs/ROOMS_DESIGN.md` 「작업 7·8 플랜」 7b).

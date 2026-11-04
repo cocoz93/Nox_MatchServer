@@ -26355,6 +26355,32 @@ void TestRoomRules() {
         for (const auto& mb : r.Members()) s += (s.empty() ? "" : ",") + mb.account;
         return s;
     };
+    {   // ★ 11-05 — 방 배정이 토큰의 로비 이름을 판 안 이름으로 넘긴다(묶음 이름 칸이 수락의 캐릭터 이름 Jack 이 아니라 alice)
+        nox::CSyncHost srv;
+        UseTokens(srv);
+        srv.Network().SetXorKey(0);
+        RM& rooms = srv.Rooms();
+        RoomSettings rs;
+        const int r = rooms.CreateRoom(rs);
+        rooms.Game(r).SetStandalone("so_lod.map", 0x18d8f4d9u);   // 묶음은 단독 실행일 때 나간다
+        std::vector<nox::OutPacket> t0; srv.Tick(1000, t0); srv.Tick(1033, t0);
+        std::vector<nox::OutPacket> o;
+        join(srv, TrailerAs("alice", r, "10.40.0.1", 401), "10.40.0.1:1001", "10.40.0.1:1002", o);
+        srv.Tick(1066, o);
+        auto u16Count = [&](const std::string& s) {
+            std::vector<uint8_t> pat;
+            for (char ch : s) { pat.push_back(static_cast<uint8_t>(ch)); pat.push_back(0); }
+            int n = 0;
+            for (const auto& p : o) {
+                if (p.to != "10.40.0.1:1002") continue;
+                const std::vector<uint8_t> bd = Body(p);
+                if (std::search(bd.begin(), bd.end(), pat.begin(), pat.end()) != bd.end()) ++n;
+            }
+            return n;
+        };
+        std::snprintf(m, sizeof(m), "방 배정 → 판 안 이름 — alice 든 조각 %d · Jack 든 조각 %d(0) · 나간 조각 %zu", u16Count("alice"), u16Count("Jack"), o.size());
+        Check(u16Count("alice") > 0 && u16Count("Jack") == 0, m);
+    }
     {
         nox::CSyncHost srv;
         UseTokens(srv);
@@ -27967,6 +27993,78 @@ void TestJoinStartByMode() {
 //     읽다가 둘째 자리 `00`(`endsAtZero`)에서 멈추고 앞부분을 정상으로 처리했다. 실제 토큰은 무작위라 그렇게 끝나지 않는다.
 //     그래서 여기서는 「꼬리 바이트가 메시지로 하나라도 읽혔나」(읽은 메시지 수 · 멈춘 조각 · 바로 나간 답)를 센다.
 //   ① 접속 시도 + 꼬리 ② CONNECT + 꼬리 ③ 꼬리 없는 접속 시도
+// ★ 11-05 판 안 이름 = 로비 이름 — ① 내 접속 묶음 ② 남에게 소개하는 `2d` 둘 다 이름 칸을 덮는다 · 캐릭터 이름이 더 길어도 뒤가 안 남고
+//   이름 칸 밖(직업)은 그대로 · 로비 이름이 없으면(열린 방식) 캐릭터 이름 그대로 · 긴 이름은 끝 0 자리를 남기고 자른다
+void TestInGameNameIsAccount() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    struct R { std::vector<uint8_t> own, intro; };
+    auto run = [&](const std::string& accA, const std::string& accB) {
+        R r;
+        nox::CSyncHost srv;
+        srv.Network().SetXorKey(0);
+        srv->SetStandalone("so_lod.map", 0x18d8f4d9u);
+        srv->SetGameFlags(nox::ModeGameFlags("chat"));
+        const std::string a = "10.9.17.1:11701", b = "10.9.17.2:11702";
+        std::vector<nox::OutPacket> t; srv.Tick(100000, t); srv.Tick(100034, t);
+        std::vector<uint8_t> acc = AcceptPkt("Jacqueline");
+        acc[3 + nox::kInfoClassAt] = 1;
+        std::vector<nox::OutPacket> oa, ob;
+        srv.OnPacket(a, conn, sizeof(conn), oa);
+        srv->SetAccountName(srv.Network().SessionIdOf(a), accA);
+        srv.OnPacket(a, acc.data(), acc.size(), oa);
+        for (const auto& p : oa) {
+            if (p.to != a) continue;
+            const std::vector<uint8_t> bd = Body(p);
+            const size_t off = (!bd.empty() && bd[0] == 0xa9) ? 6 : 0;
+            if (bd.size() < off + 81 + 3 + 97 || bd[off] != 0x28 || bd[off + 5] != 0x2c || bd[off + 81] != 0x2d) continue;
+            r.own.assign(bd.begin() + off + 81 + 3, bd.begin() + off + 81 + 3 + 97);
+        }
+        srv.OnPacket(b, conn, sizeof(conn), ob);
+        srv->SetAccountName(srv.Network().SessionIdOf(b), accB);
+        srv.OnPacket(b, acc.data(), acc.size(), ob);
+        uint16_t codeB = 0;
+        for (const auto& p : ob) {
+            if (p.to != b) continue;
+            const std::vector<uint8_t> bd = Body(p);
+            const size_t off = (!bd.empty() && bd[0] == 0xa9) ? 6 : 0;
+            if (bd.size() < off + 12 || bd[off] != 0x28 || bd[off + 5] != 0x2c) continue;
+            codeB = static_cast<uint16_t>(bd[off + 6] | (bd[off + 7] << 8));
+        }
+        srv->DebugImportantReal(srv.Network().SessionIdOf(a), /*ready=*/true);
+        srv->DebugImportantReal(srv.Network().SessionIdOf(b), /*ready=*/true);
+        std::vector<nox::OutPacket> o;
+        uint32_t now = 100034;
+        for (int k = 0; k < 10; ++k) { now += 34; srv.Tick(now, o); }
+        for (const auto& p : o) {
+            if (p.to != a) continue;
+            const std::vector<uint8_t> bd = Body(p);
+            for (size_t q = 0; q + 4 + nox::kNewPlayerSize <= bd.size(); ++q) {
+                if (bd[q] != static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) || bd[q + 3] != nox::kNewPlayerSize ||
+                    bd[q + 4] != static_cast<uint8_t>(nox::Op::NEW_PLAYER)) continue;
+                if (static_cast<uint16_t>(bd[q + 5] | (bd[q + 6] << 8)) != codeB) continue;
+                r.intro.assign(bd.begin() + q + 7, bd.begin() + q + 7 + 97);
+            }
+        }
+        return r;
+    };
+    auto nameIs = [](const std::vector<uint8_t>& info, const std::u16string& want) {   // 이름 칸 전체(뒤는 0) · 칸 밖 직업
+        if (info.size() < 97 || want.size() > 24) return false;
+        for (size_t i = 0; i < 25; ++i) {
+            const uint16_t c = static_cast<uint16_t>(info[2 * i] | (info[2 * i + 1] << 8));
+            if (c != (i < want.size() ? static_cast<uint16_t>(want[i]) : 0)) return false;
+        }
+        return info[nox::kInfoClassAt] == 1;
+    };
+    const R acct = run("qa1", "가나");   // 둘째 = UTF-8 한글(소스가 /utf-8)
+    Check(nameIs(acct.own, u"qa1"), "내 접속 묶음의 이름 칸 = 로비 이름 · 캐릭터 이름 찌꺼기 없음 · 직업 그대로");
+    Check(nameIs(acct.intro, u"가나"), "남에게 소개하는 2d 의 이름 칸 = 그 사람 로비 이름(한글은 UTF-16)");
+    const R open = run("", "");
+    Check(nameIs(open.own, u"Jacqueline") && nameIs(open.intro, u"Jacqueline"), "로비 이름이 없으면(열린 방식) 캐릭터 이름 그대로");
+    const R longName = run(std::string(30, 'x'), "b");
+    Check(nameIs(longName.own, std::u16string(24, u'x')), "긴 로비 이름은 24글자로 자름 · 끝 0 자리를 남김");
+    std::printf("  판 안 이름 — 내 묶음 · 남 소개 모두 로비 이름 · 없으면 캐릭터 이름\n");
+}
+
 void TestJoinTrailer() {
     char m[260];
     auto seenTotal = [](const nox::CUdpStats& s) {
@@ -33741,6 +33839,7 @@ int main() {
     TestRankOneMap();                // ★ 매칭 손보기 3
     TestMatchRecordRoundTrip();   // ★ 7단계 조각 4
     TestLobbyMapPaths();
+    TestInGameNameIsAccount();   // ★ 11-05
     TestJoinTrailer();
     TestReliableResend();
     TestNewPlayerGearBits();

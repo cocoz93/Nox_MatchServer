@@ -437,7 +437,9 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
         ++_stats.assigned;
         AddMember(Room(roomId), ev.sessionId, tok.account);   // ★ 10-16 작업 12a
         LogJoin("방 배정", ev, roomId, tok, why);
-        return Forward(roomId, ev);
+        const size_t forwarded = Forward(roomId, ev);
+        Room(roomId)._game.SetAccountName(ev.sessionId, tok.account);   // ★ 11-05 — 자리는 Forward 가 만든다 · 수락(CLIENT_ACCEPT)보다 먼저
+        return forwarded;
     }
     ++_stats.droppedUnknown;   // 토큰 방식 — 방에 안 든 세션의 이벤트(끊은 세션에 늦게 온 것 등)
     return 0;
