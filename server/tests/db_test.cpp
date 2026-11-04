@@ -28,6 +28,7 @@
 #include "nox/DbWorker.h"
 #include "MatchHistoryScenario.h"
 #include "nox/IniFile.h"
+#include "nox/MatchTotalsRebuild.h"   // ★ 11-04 전적 검색 — ⑫ 다시 계산
 #include "../src/auth/MySqlAccountStore.h"   // ★ 런처 P1 — ⑨ 열쇠 저장소
 
 namespace {
@@ -473,6 +474,28 @@ int main(int argc, char** argv) {
         hw.Stop();
         const nox::db::DbStats hs = hw.Stats();
         Check(hs.historyRequests == 8 && hs.historyReads == 6 && hs.historyFailed == 2, "⑩ 셈 — 읽기 요청 8 = 읽음 6 + 실패 2");
+
+        // ⑫ ★ 11-04 전적 검색 — 다시 계산(`MatchTotalsRebuild.h`). 판정 입력이 저장(`MatchRowOf`)과 읽기(`MatchRowBinds`) 두 길이라 값이 같아야 한다
+        auto totalsTable = [&] {   // 0 행은 행 없음으로 친다 — 다시 계산은 행을 안 지운다
+            return ad.Rows("SELECT account_id, games, ranked_wins, ranked_losses, normal_wins, normal_losses FROM match_totals WHERE games > 0 ORDER BY account_id");
+        };
+        const auto raised = totalsTable();
+        nox::db::MatchTotalsRebuildResult rb;
+        std::string rbErr;
+        Check(nox::db::RebuildMatchTotals(cfg, rb, rbErr), "⑫ 다시 계산 — " + rbErr);
+        Check(raised.size() >= 5 && totalsTable() == raised && rb.accounts == raised.size() && rb.existing == raised.size(),
+              "⑫ 올린 합계 = 다시 계산한 합계(계정 " + std::to_string(raised.size()) + " · 있던 행 " + std::to_string(rb.existing) + " · 쓴 계정 " + std::to_string(rb.accounts) + " · 판 줄 " + std::to_string(rb.rows) + ")");
+        // 어긋난 표를 고친다 — 값 틀림 · 행 없음 · 판 없는 계정의 행
+        Check(ad.Run("UPDATE match_totals t JOIN accounts a ON a.id = t.account_id SET t.games = t.games + 5, t.ranked_wins = 99 WHERE a.name = 'h1'") &&
+              ad.Run("DELETE t FROM match_totals t JOIN accounts a ON a.id = t.account_id WHERE a.name = 'h2'") &&
+              ad.Run("INSERT INTO match_totals SELECT id, 7, 7, 0, 0, 0, 1 FROM accounts WHERE name = 'h5'"), "⑫ 시험용 — 표를 어긋나게");
+        Check(totalsTable() != raised, "⑫ 어긋난 표는 다르게 보인다");
+        Check(nox::db::RebuildMatchTotals(cfg, rb, rbErr) && totalsTable() == raised && totalsOf("h5") == "0 0 0 0 0", "⑫ 값 틀림 · 행 없음 · 판 없는 계정의 행을 고침(h5 " + totalsOf("h5") + ")");
+        Check(nox::db::RebuildMatchTotals(cfg, rb, rbErr) && totalsTable() == raised, "⑫ 두 번 돌려도 같다");
+        // 실패하면 되돌아간다 — 0 으로 돌린 뒤 판 행 읽기에서 실패
+        Check(ad.Run("RENAME TABLE match_players TO match_players_off"), "⑫ 시험용 — match_players 를 잠깐 치움");
+        Check(!nox::db::RebuildMatchTotals(cfg, rb, rbErr) && !rbErr.empty() && totalsTable() == raised, "⑫ 판 행을 못 읽음 → 실패 · 합계 그대로(" + rbErr + ")");
+        Check(ad.Run("RENAME TABLE match_players_off TO match_players"), "⑫ match_players 되돌림");
     }
     std::printf("  ④ KILL 뒤 처음 걸린 오류: %s\n", s4.lastError.c_str());   // 끊김 번호가 무엇으로 오는지(`IsLost` 갈래 확인용)
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
