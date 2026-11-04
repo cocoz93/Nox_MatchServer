@@ -1,6 +1,7 @@
 ﻿// LobbyStore.cpp — 로비 저장소의 메모리 가짜. 설명은 `LobbyStore.h` 머리.
 #include "nox/LobbyStore.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace nox::wol {
@@ -70,6 +71,7 @@ void CMemoryLobbyStore::SaveMatch(uint32_t req, const MatchSource& src, const Ma
         const auto ins = matches_.emplace(MatchKey{src.ip, src.port, rec.match}, rec);
         a.save = ins.second ? SaveResult::Saved : SaveResult::Duplicate;
         if (ins.second) {   // ★ 레이팅 조각 3 — 새 판만(겹친 판은 DB 처럼 안 고침) · 계정 표가 없어 이름 있는 사람 = 계정
+            saved_.push_back(&ins.first->second);
             const RatingResult rr = RatingDeltas(rec);
             for (size_t i = 0; i < rec.players.size(); ++i) {
                 if (!rr.seats[i].rated) continue;
@@ -92,14 +94,66 @@ void CMemoryLobbyStore::GetRating(uint32_t req, const std::string& account) {
         a.why = "메모리 저장소 — 점수 읽기 실패 시험 스위치";
     } else {
         a.ratingOk = true;
-        a.rating = kRatingStart;
-        const auto it = ratings_.find(account);
-        if (it != ratings_.end()) {
-            a.ratingFound = true;
-            a.rating = it->second;
-            a.rank = 1;
-            for (const auto& kv : ratings_)
-                if (kv.second > it->second) ++a.rank;
+        ReadRatingInto(account, a);
+    }
+    pending_.push_back(std::move(a));
+}
+
+void CMemoryLobbyStore::ReadRatingInto(const std::string& account, StoreAnswer& a) const {
+    a.rating = kRatingStart;
+    const auto it = ratings_.find(account);
+    if (it == ratings_.end()) return;
+    a.ratingFound = true;
+    a.rating = it->second;
+    a.rank = 1;
+    for (const auto& kv : ratings_)
+        if (kv.second > it->second) ++a.rank;
+}
+
+// ★ 11-04 플랜2 — DB 워커의 `kSelHistory` 와 같은 잣대(시험이 같은 판 묶음으로 대조 — `MatchHistoryScenario.h`)
+void CMemoryLobbyStore::GetMatchHistory(uint32_t req, const std::string& account) {
+    StoreAnswer a;
+    a.kind = StoreAnswerKind::History;
+    a.req = req;
+    if (failHistory_) {
+        a.why = "메모리 저장소 — 대전 기록 읽기 실패 시험 스위치";
+        pending_.push_back(std::move(a));
+        return;
+    }
+    a.historyOk = true;
+    ReadRatingInto(account, a);
+    std::vector<const MatchRecord*> order(saved_.rbegin(), saved_.rend());   // 나중 저장 먼저 → 끝난 시각으로 안정 정렬
+    std::stable_sort(order.begin(), order.end(), [](const MatchRecord* x, const MatchRecord* y) { return x->end > y->end; });
+    for (const MatchRecord* m : order) {
+        const RatingResult rr = RatingDeltas(*m);
+        uint32_t seats = 0;
+        for (const MatchRecordPlayer& p : m->players) seats += p.observer ? 0 : 1;
+        for (size_t i = 0; i < m->players.size(); ++i) {
+            const MatchRecordPlayer& p = m->players[i];
+            if (p.observer || !p.hasAccount || p.account != account) continue;
+            MatchHistoryRow r;
+            r.ranked = m->ranked;
+            r.map = m->map;
+            r.end = m->end;
+            r.frames = m->frames;
+            r.endReason = m->endReason;
+            r.winnerKind = m->winnerKind;
+            r.hasWinnerId = m->hasWinnerId;
+            r.winnerId = m->winnerId;
+            r.left = p.left;
+            r.netCode = p.netCode;
+            r.team = p.team;
+            r.hasKills = !p.left && p.hasKills;
+            r.kills = p.kills;
+            r.hasDeaths = !p.left;
+            r.deaths = p.deaths;
+            r.hasDelta = rr.seats[i].rated;
+            r.delta = rr.seats[i].delta;
+            r.seats = seats;
+            if (!p.left)
+                for (const MatchRecordPlayer& o : m->players)
+                    if (!o.observer && !o.left && o.score > p.score) ++r.higher;
+            a.history.Add(r);
         }
     }
     pending_.push_back(std::move(a));

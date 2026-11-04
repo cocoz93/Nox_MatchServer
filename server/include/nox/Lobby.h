@@ -280,6 +280,15 @@ struct LobbyStats {
     unsigned long long heldLines = 0;        // 기다리는 동안 쌓았다가 376 뒤 넘긴 줄
     unsigned long long heldDropped = 0;      // 쌓기 한도를 넘어 버린 줄
     unsigned long long RatingTotal() const { return ratingShown + ratingNoGames + ratingFailed + ratingTimeout + ratingClosed; }
+    // ★ 11-04 플랜2 — 대전 기록 물음 하나 = 줄로 답 · 못 읽음(RECFAIL) · 끊김 중 하나(합 = 물음 · 끝날 때 남은 것 빼고)
+    unsigned long long recordAsked = 0;
+    unsigned long long recordSent = 0;
+    unsigned long long recordFailed = 0;
+    unsigned long long recordClosed = 0;
+    unsigned long long recordLate = 0;      // 끝난 물음의 답 · 안 물은 답(버림)
+    unsigned long long recordBusy = 0;      // 답을 기다리는 중 또 물음(묻지 않고 버림 — 앞 답이 곧 간다)
+    unsigned long long recordNoLogin = 0;   // 로그인 끝나기 전에 물음(버림)
+    unsigned long long RecordTotal() const { return recordSent + recordFailed + recordClosed; }
     // ★ 랭크 매칭 조각 4 — 줄. 줄 선 사람 하나는 「빠짐(줄에서 · 까닭 셋)」 · 「묶임(방 요청에 실림)」 중 하나로 줄을 떠나고(되돌림은 다시 줄),
     //   묶인 사람 하나는 「참가 답」 · 「되돌림(요청 실패 · 시간 초과)」 · 「빠짐(요청 중)」 중 하나로 끝난다. 시험은 이 합을 본다
     unsigned long long rankQueued = 0;          // 줄 섬(NOXRANK JOIN 바로 뒤 내 방 참가)
@@ -366,6 +375,9 @@ public:
     // 저장소 답 Rating(소켓 루프가 꺼내 넘긴다) — 끝난 물음이면 버리고 센다
     void OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out);
     size_t PendingRatings() const { return ratingPending_.size(); }
+    // ★ 11-04 플랜2 — 저장소 답 History → 물은 접속에 `NOXRANK RECSUM` · `RECROW` … · `RECEND`(또는 `RECFAIL`) — 줄 뜻은 `MatchHistory.h`
+    void OnHistoryAnswer(const StoreAnswer& a, std::vector<Out>& out);
+    size_t PendingHistories() const { return historyPending_.size(); }
     // ★ 매칭 손보기 5 — 판 저장이 고친 점수(거울이 SAVED ok 를 지을 때 넘긴다) → 로비가 쥔 점수(랭크 방 요청의 명단 점수)
     void OnRatingsChanged(const std::vector<LinkRatingChange>& changes);
     // 로비가 쥔 그 이름의 점수 — 로그인 점수 답 · 판 저장 답에서. 모르면(점수를 안 물은 로그인 · 읽기 실패) 시작 점수
@@ -397,6 +409,7 @@ private:
         uint32_t loginDueMs = 0;        // 대기 — 로그인 마감(붙은 때 + kLoginDeadlineMs) · ★ 10-28 거절 — 끊는 때(378 + kLoginRejectCloseMs)
                                         //   · ★ 레이팅 조각 4 점수 기다림 — 한도(물은 때 + kRatingTimeoutMs)
         uint32_t ratingReq = 0;         // ★ 레이팅 조각 4 — 점수 기다림의 저장소 요청 번호
+        uint32_t historyReq = 0;        // ★ 11-04 플랜2 — 기다리는 대전 기록 요청(0 = 없음 · 접속당 하나)
         std::vector<std::string> held;  // ★ 레이팅 조각 4 — 점수 기다림 중에 온 뒷줄(376 뒤 차례대로)
         bool closing = false;           // 끊는 줄을 보냄(마감 · 옛 접속 · ★ 10-28 거절 뒤 — 끊김 사건까지 다시 안 함 · 뒷줄 안 받음)
         uint64_t accountId = 0;         // 확인됨 — 계정 번호(토큰 · 아이디만이면 0)
@@ -452,6 +465,7 @@ private:
     std::string RankNames(const std::vector<int>& conns) const;
     // ★ 매칭 손보기 6 — 수락 단계: 찾음 보내기 · 수락 받기 · 묶음 풀기(남은 사람을 줄 맨 앞에 — 쉬지 않음 · `except` 는 빼고) · 참가 답
     void RankAccept(int conn, Conn& c, std::vector<Out>& out);
+    void RecordAsk(int conn, Conn& c, std::vector<Out>& out);   // ★ 11-04 플랜2 — `NOXRANK RECORD`
     void RankFoundBreak(uint32_t req, int except, std::vector<Out>& out);
     void RankJoinReply(int id, Conn& c, const LobbyRoom& room, std::vector<Out>& out);
     void RankReleaseJoin(int conn, const Conn& c, std::vector<Out>& out);   // ★ 10-31 — 묶인 참가에 474(`kRankReleaseNumeric`)
@@ -471,6 +485,8 @@ private:
     std::map<uint64_t, int> accountConn_;         // ★ 조각 4 — 계정 → 로그인된 접속(정할 것 b)
     ILobbyStore* store_ = nullptr;                // ★ 레이팅 조각 4 — 점수를 물을 저장소(없으면 안 물음)
     std::map<uint32_t, int> ratingPending_;       // 점수 요청 번호 → 기다리는 접속
+    std::map<uint32_t, int> historyPending_;      // ★ 11-04 플랜2 — 대전 기록 요청 번호 → 기다리는 접속
+    uint32_t nextHistoryReq_ = 1;
     std::map<std::string, int32_t> ratingOf_;     // ★ 매칭 손보기 5 — 계정 이름 → 점수(`RatingOf`)
     uint32_t nextRatingReq_ = 1;
     // ★ 랭크 매칭 조각 4 — 줄(선 차례) · 모으기 시계 · 되돌린 뒤 쉬는 시계 · 답을 기다리는 랭크 방 요청(번호 → 묶인 접속 · 한도)

@@ -17,6 +17,7 @@
 
 #include "nox/Lobby.h"
 #include "nox/LobbyLink.h"
+#include "MatchHistoryScenario.h"
 #include "nox/LobbyStore.h"
 #include "nox/RoomMirror.h"
 #include "nox/Router.h"
@@ -2420,6 +2421,195 @@ void LoginUnitTests() {
                   rs.ratingTimeout == 1 && rs.ratingClosed == 1,
               "⑨ 셈 — 물음 6 = 점수 줄 2 · 판 없음 1 · 못 읽음 1 · 시간 초과 1 · 끊김 1");
     }
+
+    // ⑩ ★ 11-04 플랜2 — `NOXRANK RECORD` → 저장소 → 물은 접속에만 RECSUM · RECROW · RECEND. 못 읽음 · 끊김 · 겹침 · 로그인 전 · 낮은 판
+    {
+        CMemoryLobbyStore st;
+        uint32_t saveReq = 1;
+        for (const nox::MatchRecord& m : nox::test::HistoryScenario()) st.SaveMatch(saveReq++, MatchSource{1, 1}, m, "{}");
+        std::vector<StoreAnswer> ans;
+        st.TakeAnswers(ans);
+        Lobby rl(makeCfg(true), fake);
+        rl.AttachStore(&st);
+        auto pump = [&]() {   // 소켓 루프의 한 바퀴(`lobby_main.cpp` 갈래와 같게)
+            ans.clear();
+            st.TakeAnswers(ans);
+            out.clear();
+            for (const StoreAnswer& a : ans) {
+                if (a.kind == StoreAnswerKind::Rating) rl.OnRatingAnswer(a, out);
+                else if (a.kind == StoreAnswerKind::History) rl.OnHistoryAnswer(a, out);
+            }
+        };
+        const std::vector<std::string> ask = {"NOXRANK RECORD"};
+        auto login = [&](int conn, uint64_t account, const std::string& name) {
+            rl.OnConnect(conn, peer, peer);
+            feed(rl, conn, bundle("5", name, apgar(Tok{account, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, name})));
+            pump();
+        };
+        login(1, 21, "h1");
+        login(2, 22, "h3");
+        // a) 답 전엔 줄 없음 · 겹친 물음은 버림 · 답은 묻는 접속에만
+        feed(rl, 1, ask);
+        const bool waited = out.empty() && rl.PendingHistories() == 1;
+        feed(rl, 1, ask);
+        const bool busy = out.empty() && rl.Stats().recordBusy == 1 && rl.PendingHistories() == 1;
+        pump();
+        bool onlyAsker = true;
+        for (const Out& o : out) onlyAsker = onlyAsker && o.conn == 1;
+        Check(waited && busy && onlyAsker && lines() == nox::test::HistoryExpectH1() && rl.PendingHistories() == 0,
+              "⑩ 대전 기록 — 답 전 줄 없음 · 겹침 버림 · 답 뒤 물은 접속에 요약 · 다섯 줄 · 끝(받은 줄 " + std::to_string(out.size()) + ")");
+        // b) 답이 끝나면 다시 물을 수 있다 · 21판 넘어도 줄은 20
+        feed(rl, 2, ask);
+        pump();
+        Check(lines() == nox::test::HistoryExpectH3(), "⑩ h3 — 전체 23판 승패 · 표 20줄(받은 줄 " + std::to_string(out.size()) + ")");
+        feed(rl, 1, ask);
+        pump();
+        Check(lines() == nox::test::HistoryExpectH1(), "⑩ 같은 접속이 다시 물음 — 같은 답");
+        login(5, 23, "h2");
+        feed(rl, 5, ask);
+        pump();
+        Check(lines() == nox::test::HistoryExpectH2(), "⑩ h2 — 중단 판 남음 · 랭크 패 · 팀 패 · 여러 명 승");
+        login(6, 24, "nobody");
+        feed(rl, 6, ask);
+        pump();
+        Check(lines() == nox::test::HistoryExpectNobody(), "⑩ 판 없는 이름 — 요약 · 끝 줄 0");
+        // c) 못 읽음
+        st.SetFailHistory(true);
+        feed(rl, 1, ask);
+        pump();
+        st.SetFailHistory(false);
+        Check(lines() == std::vector<std::string>{"NOXRANK RECFAIL"}, "⑩ 저장소 못 읽음 → RECFAIL 한 줄");
+        // d) 답 기다리는 동안 끊김 → 답 버림
+        feed(rl, 2, ask);
+        out.clear();
+        rl.OnClose(2, out);
+        pump();
+        Check(out.empty() && rl.Stats().recordClosed == 1 && rl.Stats().recordLate == 1 && rl.PendingHistories() == 0, "⑩ 끊긴 접속의 답은 늦은 답");
+        // e) 로그인 전 물음 · 판 4 미만 DLL · 저장소 없는 로비
+        rl.OnConnect(3, peer, peer);
+        feed(rl, 3, {"NOXCLIENT 5", "NOXRANK RECORD"});
+        const bool noLogin = lines() == std::vector<std::string>{"NOXSERVER 1"} && rl.Stats().recordNoLogin == 1;
+        rl.OnConnect(4, peer, peer);
+        const unsigned long long oldBefore = rl.Stats().rankOldClient;
+        feed(rl, 4, {"NOXCLIENT 3", "NOXRANK RECORD"});
+        const bool old = rl.Stats().rankOldClient == oldBefore + 1 && rl.PendingHistories() == 0;
+        Lobby bare(makeCfg(true), fake);
+        bare.OnConnect(1, peer, peer);
+        feed(bare, 1, bundle("5", "h1", apgar(Tok{21, peer, kLobbyTestNow + nox::kLoginTokenLifetimeSec, 0, "h1"})));
+        feed(bare, 1, ask);
+        const bool noStore = lines() == std::vector<std::string>{"NOXRANK RECFAIL"} && bare.Stats().recordFailed == 1;
+        Check(noLogin && old && noStore, "⑩ 로그인 전 · 낮은 판 DLL 은 안 물음 · 저장소 없으면 RECFAIL");
+        // f) 안 물은 답 · 셈
+        out.clear();
+        rl.OnHistoryAnswer(StoreAnswer{StoreAnswerKind::History, 999}, out);
+        const LobbyStats& s = rl.Stats();
+        Check(out.empty() && s.recordLate == 2 && s.recordAsked == 7 && s.RecordTotal() == s.recordAsked && s.recordSent == 5 && s.recordFailed == 1 && s.recordClosed == 1,
+              "⑩ 셈 — 물음 7 = 답 5 · 못 읽음 1 · 끊김 1 · 늦은 답 2");
+    }
+}
+
+// ★ 11-04 플랜2 — 대전 기록 순수 계산(`MatchHistory.h`). 결과 갈래 전부 · 승패 · 표 한도 · 줄 꼴
+void MatchHistoryUnitTests() {
+    using namespace nox::wol;
+    auto row = [](const char* reason, const char* kind, int winner, bool left, uint16_t netCode, uint8_t team, uint32_t seats, uint32_t higher) {
+        MatchHistoryRow r;
+        r.endReason = reason;
+        r.winnerKind = kind;
+        r.hasWinnerId = winner >= 0;
+        r.winnerId = winner >= 0 ? static_cast<uint32_t>(winner) : 0;
+        r.left = left;
+        r.netCode = netCode;
+        r.team = team;
+        r.seats = seats;
+        r.higher = higher;
+        return r;
+    };
+    struct Case {
+        MatchHistoryRow r;
+        MatchOutcome want;
+        const char* token;   // 줄의 결과 칸
+        int wins, losses;
+    };
+    const std::vector<Case> cases = {
+        {row("score_player", "player", 1, true, 1, 0, 2, 0), MatchOutcome::Left, "Q", 0, 1},       // 이긴 줄로 적혀도 나감이 먼저
+        {row("aborted", "none", -1, true, 1, 0, 2, 0), MatchOutcome::Left, "Q", 0, 1},             // 중단 판에서 나감 = 이탈
+        {row("aborted", "none", -1, false, 1, 1, 2, 0), MatchOutcome::Aborted, "A", 0, 0},         // 중단 판 남은 사람
+        {row("aborted", "player", 1, false, 1, 0, 2, 0), MatchOutcome::Aborted, "A", 0, 0},        // 중단이 승자 칸보다 먼저
+        {row("time_limit", "draw", -1, false, 1, 0, 2, 0), MatchOutcome::Draw, "D", 0, 0},
+        {row("time_limit", "none", -1, false, 1, 0, 2, 0), MatchOutcome::Draw, "D", 0, 0},
+        {row("score_team", "team", 1, false, 5, 1, 4, 0), MatchOutcome::Win, "W", 1, 0},
+        {row("score_team", "team", 1, false, 5, 2, 4, 3), MatchOutcome::Loss, "L", 0, 1},          // 팀 판은 등수 없음
+        {row("score_team", "team", 1, false, 5, 0, 4, 0), MatchOutcome::Draw, "D", 0, 0},          // 무소속(점수 반영도 없음)
+        {row("score_team", "team", -1, false, 5, 1, 4, 0), MatchOutcome::Draw, "D", 0, 0},         // 승자 번호 없음
+        {row("score_player", "player", 5, false, 5, 0, 3, 0), MatchOutcome::Win, "W", 1, 0},
+        {row("score_player", "player", 9, false, 5, 0, 2, 1), MatchOutcome::Loss, "L", 0, 1},      // 두 명 = 패
+        {row("score_player", "player", 9, false, 5, 0, 3, 1), MatchOutcome::Place, "2", 0, 1},
+        {row("score_player", "player", 9, false, 5, 0, 3, 0), MatchOutcome::Place, "2", 0, 1},     // 승자와 점수가 같음
+        {row("score_player", "player", 9, false, 5, 0, 5, 3), MatchOutcome::Place, "4", 0, 1},
+        {row("score_player", "player", -1, false, 5, 0, 3, 0), MatchOutcome::Draw, "D", 0, 0},
+    };
+    std::vector<int> seen(static_cast<size_t>(MatchOutcome::kCount), 0);
+    int wrong = 0;
+    for (const Case& c : cases) {
+        ++seen[static_cast<size_t>(MatchOutcomeOf(c.r))];
+        MatchHistory rankedH, normalH;
+        MatchHistoryRow rk = c.r;
+        rk.ranked = true;
+        rankedH.Add(rk);
+        normalH.Add(c.r);
+        const auto ls = MatchHistoryLines("x", false, 1000, 0, normalH);
+        const std::string prefix = std::string("NOXRANK RECROW ") + c.token + " ";
+        if (MatchOutcomeOf(c.r) != c.want || static_cast<int>(rankedH.rankedWins) != c.wins || static_cast<int>(rankedH.rankedLosses) != c.losses ||
+            rankedH.normalWins + rankedH.normalLosses != 0 || static_cast<int>(normalH.normalWins) != c.wins || static_cast<int>(normalH.normalLosses) != c.losses ||
+            normalH.rankedWins + normalH.rankedLosses != 0 || ls.size() != 3 || ls[1].rfind(prefix, 0) != 0)
+            ++wrong;
+    }
+    bool everyKind = true;
+    for (int n : seen) everyKind = everyKind && n > 0;
+    Check(wrong == 0 && everyKind && cases.size() == 16, "대전 기록 결과 16줄 — 틀림 " + std::to_string(wrong) + " · 갈래 여섯 다 나옴");
+
+    // 줄 — 킬 · 데스 없음 `-` · 증감 0 · 맵 공백 · 긴 맵(DLL 칸 39) · 초 · 점수는 증감 있는 랭크 판에만 거꾸로
+    MatchHistory h;
+    MatchHistoryRow a = row("score_player", "player", 1, false, 1, 0, 2, 0);
+    a.ranked = true;
+    a.hasDelta = true;
+    a.delta = 0;
+    a.map = "two words";
+    a.frames = 89;
+    a.end = 7;
+    a.hasKills = true;
+    a.kills = 3;
+    a.hasDeaths = true;
+    a.deaths = 4;
+    MatchHistoryRow b = a;
+    b.delta = -10;
+    b.map = std::string(70, 'm');
+    b.hasKills = false;
+    MatchHistoryRow c = a;
+    c.hasDelta = false;     // 랭크인데 반영 없음(무소속) — 점수 칸 `-` · 다음 판 값에 영향 없음
+    c.map.clear();
+    c.hasDeaths = false;
+    MatchHistoryRow d = a;
+    d.delta = 25;
+    d.map = "x";
+    h.Add(a);
+    h.Add(b);
+    h.Add(c);
+    h.Add(d);
+    const std::vector<std::string> want = {"NOXRANK RECSUM 1 1200 7 4 0 0 0 me",
+                                           "NOXRANK RECROW W 1 1200 0 two_words 3 4 2 7",
+                                           "NOXRANK RECROW W 1 1200 -10 " + std::string(39, 'm') + " - 4 2 7",
+                                           "NOXRANK RECROW W 1 - - - 3 - 2 7",
+                                           "NOXRANK RECROW W 1 1210 +25 x 3 4 2 7",
+                                           "NOXRANK RECEND 4"};
+    Check(MatchHistoryLines("me", true, 1200, 7, h) == want, "대전 기록 줄 — 0 · -10 · 반영 없음 · +25 거꾸로 · 맵 고침 · - 칸");
+    // 점수 행이 없으면(증감이 있어도) 점수 칸을 안 지어낸다
+    const auto noRating = MatchHistoryLines("me", false, 1000, 0, h);
+    Check(noRating[0] == "NOXRANK RECSUM 0 1000 0 4 0 0 0 me" && noRating[1] == "NOXRANK RECROW W 1 - - two_words 3 4 2 7", "대전 기록 줄 — 점수 행 없음 → 점수 · 증감 -");
+    // 표 한도 — 승패는 전체
+    MatchHistory many;
+    for (int i = 0; i < 25; ++i) many.Add(row("score_player", "player", 1, false, 1, 0, 2, 0));
+    Check(many.rows.size() == kMatchHistoryMaxRows && many.total == 25 && many.normalWins == 25, "대전 기록 — 25판 → 줄 20 · 승 25");
 }
 
 // ── 라우터 단위 시험(작업 8b) — 605 의 채널 주소 갈래 둘 · QUIT 뒤 끊기 · 모르는 명령 ──
@@ -2909,6 +3099,7 @@ int main(int argc, char** argv) {
         LobbyStoreUnitTests();    // ★ 7단계 조각 4
         MirrorSaveUnitTests();    // ★ 7단계 조각 5
         LoginUnitTests();         // ★ 7단계 조각 6
+        MatchHistoryUnitTests();  // ★ 11-04 플랜2
         ChatUnitTests();          // ★ 10-20 v2 작업 3b
         RouterUnitTests();
     }

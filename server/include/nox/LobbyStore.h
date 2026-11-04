@@ -10,6 +10,7 @@
 //   ★ 로그인 암호 조각 4(`Docs/LOGIN_AUTH_DESIGN.md` 정할 것 a) — 로그인(계정 확인 · 만들기)을 걷어냄. 계정은 로그인 서버(nox_auth)가 쥐고
 //     로비는 서명 토큰만 본다 → 이 경계는 판 저장만(`RoomMirror`). 판 사람의 계정 번호는 저장소가 이름으로 찾는다(없으면 NULL)
 //   ★ 레이팅 조각 3(`Docs/RATING_DESIGN.md`) — 판 저장이 랭크 판 점수도 고치고, 로그인 공지용 점수 읽기(`GetRating`)가 늘었다
+//   ★ 11-04 플랜2 — 대전 기록 읽기(`GetMatchHistory`) · 결과 판정 · 승패 셈은 `MatchHistory.h` 한 곳
 #pragma once
 
 #include <cstdint>
@@ -19,13 +20,15 @@
 #include <vector>
 
 #include "nox/LobbyLink.h"   // ★ 매칭 손보기 1 — `LinkRatingChange`
+#include "nox/MatchHistory.h"
 #include "nox/MatchRecord.h"
 #include "nox/Rating.h"
 
 namespace nox::wol {
 
 // ★ 로그인 암호 조각 4 — Login 갈래 걷음 · ★ 레이팅 조각 3 — Rating(로그인 공지에 실을 점수 · 순위)
-enum class StoreAnswerKind : uint8_t { SaveMatch, Rating, kCount };
+//   ★ 11-04 플랜2 — History(대전 기록 창)
+enum class StoreAnswerKind : uint8_t { SaveMatch, Rating, History, kCount };
 // 판 저장 — 못 넣음(Failed)이면 로비는 SAVED 를 안 보낸다(게임 서버가 30초 뒤 다시 · `LobbyClient.h` `kResultResendMs`)
 //   ★ 7단계 조각 7 — Invalid = 저장소 칸에 안 맞는 판(글 길이 · UTF-8 아닌 원문 · 사람 수). 다시 보내도 같으므로 로비는 SAVED bad
 //     (Failed 로 두면 게임 서버가 30초마다 끝없이 다시 보낸다 — MySQL 엄격 모드는 넘는 글을 거절한다)
@@ -62,6 +65,9 @@ struct StoreAnswer {
     // ★ 매칭 손보기 1 — SaveMatch 가 Saved(새로 넣음)이고 점수를 고친 사람(반영한 자리 — `RatingSeat::rated` · 계정 있음 · 판 사람 차례).
     //   새 점수는 커밋 뒤 다시 읽은 값 — 못 읽은 사람은 뺀다(저장은 그대로 Saved). 로비가 `SAVED` 꼬리로 게임 서버에 넘긴다
     std::vector<LinkRatingChange> changes;
+    // ★ 11-04 플랜2 — History. `historyOk` false = 못 읽음. 점수 칸은 Rating 과 같은 뜻(`ratingFound` · `rating` · `rank`)
+    bool historyOk = false;
+    MatchHistory history;
 };
 
 class ILobbyStore {
@@ -72,6 +78,8 @@ public:
     virtual void SaveMatch(uint32_t req, const MatchSource& src, const MatchRecord& rec, const std::string& rawJson) = 0;
     // ★ 레이팅 조각 3 — 계정 이름(바이트 그대로 — 판 사람의 계정을 찾는 잣대와 같음)의 점수 · 순위 → 답 Rating
     virtual void GetRating(uint32_t req, const std::string& account) = 0;
+    // ★ 11-04 플랜2 — 계정 이름의 점수 · 순위 + 관전 뺀 판 전부 최신부터(끝난 시각 · 같으면 나중 저장 먼저) → 답 History
+    virtual void GetMatchHistory(uint32_t req, const std::string& account) = 0;
     virtual void TakeAnswers(std::vector<StoreAnswer>& out) = 0;   // 덧붙인다
 };
 
@@ -80,12 +88,14 @@ class CMemoryLobbyStore final : public ILobbyStore {
 public:
     void SaveMatch(uint32_t req, const MatchSource& src, const MatchRecord& rec, const std::string& rawJson) override;
     void GetRating(uint32_t req, const std::string& account) override;
+    void GetMatchHistory(uint32_t req, const std::string& account) override;
     void TakeAnswers(std::vector<StoreAnswer>& out) override;
 
     // 시험 손잡이 — 저장소가 답을 못 내는 길(DB 끊김 흉내)
     void SetFailSaves(bool on) { failSaves_ = on; }
     void SetFailRatings(bool on) { failRatings_ = on; }   // ★ 레이팅 조각 3 — 점수 읽기 실패 흉내
     void SetHoldRatings(bool on) { holdRatings_ = on; }   // ★ 레이팅 조각 4 — 점수 답을 안 냄(로그인 한도 흉내)
+    void SetFailHistory(bool on) { failHistory_ = on; }   // ★ 11-04 플랜2 — 대전 기록 읽기 실패 흉내
 
     size_t MatchCount() const { return matches_.size(); }
     const MatchRecord* FindMatch(const MatchSource& src, const std::string& match) const;   // 없으면 nullptr
@@ -94,12 +104,15 @@ public:
 
 private:
     using MatchKey = std::tuple<uint32_t, uint16_t, std::string>;
+    void ReadRatingInto(const std::string& account, StoreAnswer& a) const;
     std::vector<StoreAnswer> pending_;
     std::map<MatchKey, MatchRecord> matches_;
+    std::vector<const MatchRecord*> saved_;    // ★ 11-04 플랜2 — 저장 차례(`matches_` 원소는 주소가 안 바뀐다)
     std::map<std::string, int32_t> ratings_;   // 계정 이름 → 점수
     bool failSaves_ = false;
     bool failRatings_ = false;
     bool holdRatings_ = false;
+    bool failHistory_ = false;
 };
 
 }  // namespace nox::wol

@@ -326,6 +326,7 @@ int main(int argc, char** argv) {
             switch (a.kind) {
                 case nox::wol::StoreAnswerKind::SaveMatch: mirror.OnStoreAnswer(a, outs); break;
                 case nox::wol::StoreAnswerKind::Rating: lobby.OnRatingAnswer(a, outs); break;   // ★ 레이팅 조각 4 — 로그인 공지
+                case nox::wol::StoreAnswerKind::History: lobby.OnHistoryAnswer(a, outs); break;   // ★ 11-04 플랜2 — 대전 기록 창
                 case nox::wol::StoreAnswerKind::kCount: break;
             }
         }
@@ -383,6 +384,9 @@ int main(int argc, char** argv) {
         "늦은 답 %llu · 쌓은 뒷줄 %llu(버림 %llu)\n",
         ls.ratingAsked, ls.ratingShown, ls.ratingNoGames, ls.ratingFailed, ls.ratingTimeout, ls.ratingClosed, lobby.PendingRatings(), ls.ratingLate,
         ls.heldLines, ls.heldDropped);
+    // ★ 11-04 플랜2 — 대전 기록 물음 하나 = 줄로 답 · 못 읽음 · 끊김 중 하나(합 = 물음 · 끝날 때 남은 것 빼고)
+    Log("[로비] 끝 — 대전 기록 물음 %llu(답 %llu · 못 읽음 %llu · 끊김 %llu · 끝날 때 남음 %zu) · 늦은 답 %llu · 겹친 물음 %llu · 로그인 전 %llu\n",
+        ls.recordAsked, ls.recordSent, ls.recordFailed, ls.recordClosed, lobby.PendingHistories(), ls.recordLate, ls.recordBusy, ls.recordNoLogin);
     // ★ 랭크 매칭 조각 4 — 줄 섬 = 빠짐(줄) + 묶임 + 끝날 때 줄(되돌림은 다시 줄) · 묶임 = 참가 답 + 되돌림 + 빠짐(요청 중) + 끝날 때 요청 중 ·
     //   요청 = 섬 + 실패 + 시간 초과 + 끝날 때 기다림
     {

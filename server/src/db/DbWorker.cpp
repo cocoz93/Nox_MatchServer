@@ -29,6 +29,15 @@ constexpr const char* kUpsRating =
     "INSERT INTO ratings (account_id, rating, updated_unix) VALUES (?,?,?) ON DUPLICATE KEY UPDATE rating = rating + ?, updated_unix = ?";
 constexpr const char* kSelRating = "SELECT r.rating FROM accounts a JOIN ratings r ON r.account_id = a.id WHERE a.name = ?";
 constexpr const char* kSelRank = "SELECT COUNT(*) FROM ratings WHERE rating > ?";
+// ★ 11-04 플랜2 — 대전 기록. 승패가 전체 판 기준이라 끊지 않고 다 읽는다(`MatchHistory::Add` 가 세고 줄은 20개만 쥔다) ·
+//   한 계정의 판 수만큼이고 부 질의는 기본 열쇠 앞부분(match_id)으로 찾는다. 나간 사람은 점수가 NULL 이라 `higher` 0 ·
+//   같은 끝 시각은 나중 저장 먼저(메모리 가짜와 같은 잣대). 워커 하나 · 연결 하나라 점수 읽기와 이 읽기 사이에 판 저장이 안 낀다
+constexpr const char* kSelHistory =
+    "SELECT m.ranked, m.map_key, m.end_unix, m.frames, m.end_reason, m.winner_kind, m.winner_id, p.state, p.net_code, p.team, p.kills, p.deaths, p.rating_delta, "
+    "(SELECT COUNT(*) FROM match_players o WHERE o.match_id = p.match_id AND o.observer = 0 AND o.state = 'finished' AND o.score > p.score), "
+    "(SELECT COUNT(*) FROM match_players o WHERE o.match_id = p.match_id AND o.observer = 0) "
+    "FROM match_players p JOIN matches m ON m.id = p.match_id JOIN accounts a ON a.id = p.account_id "
+    "WHERE a.name = ? AND p.observer = 0 ORDER BY m.end_unix DESC, m.id DESC";
 
 }  // namespace
 
@@ -40,11 +49,12 @@ struct CDbWorker::Conn {
     MYSQL_STMT* upsRating = nullptr;   // ★ 레이팅 조각 3
     MYSQL_STMT* selRating = nullptr;
     MYSQL_STMT* selRank = nullptr;
+    MYSQL_STMT* selHistory = nullptr;   // ★ 11-04 플랜2
     unsigned lastErrno = 0;
     std::string lastError;
 
     ~Conn() {
-        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer, upsRating, selRating, selRank})
+        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer, upsRating, selRating, selRank, selHistory})
             if (s) mysql_stmt_close(s);
         if (m) mysql_close(m);
     }
@@ -129,6 +139,82 @@ struct CDbWorker::Conn {
         rank = static_cast<uint32_t>(higher + 1);
         return true;
     }
+    // ★ 11-04 플랜2 — 이름의 판을 최신부터 `h` 에. 실패면 false(lastErrno · `h` 는 일부만 찬 채)
+    bool ReadHistory(const std::string& name, wol::MatchHistory& h) {
+        MYSQL_BIND p[1] = {};
+        unsigned long len = 0;
+        Bin(p[0], name, len);
+        // 글 칸 = 표 칸 한도(`kMapKeyBytes` · ASCII) + 끝 · 넘으면 꺼내기가 잘림으로 실패한다(저장 때 `MatchFitsStore` 가 막아 안 생김)
+        char mapBuf[wol::kMapKeyBytes + 1], reasonBuf[wol::kEndReasonBytes + 1], kindBuf[wol::kWinnerKindBytes + 1], stateBuf[9];
+        unsigned long mapLen = 0, reasonLen = 0, kindLen = 0, stateLen = 0;
+        uint8_t ranked = 0, team = 0;
+        uint16_t netCode = 0;
+        uint32_t endUnix = 0, frames = 0, winnerId = 0, kills = 0, deaths = 0;
+        int32_t delta = 0;
+        uint64_t higher = 0, seats = 0;
+        bool nullWinner = false, nullTeam = false, nullKills = false, nullDeaths = false, nullDelta = false;
+        MYSQL_BIND r[15] = {};
+        auto str = [](MYSQL_BIND& b, char* buf, size_t cap, unsigned long& got) {
+            b.buffer_type = MYSQL_TYPE_STRING;
+            b.buffer = buf;
+            b.buffer_length = static_cast<unsigned long>(cap);
+            b.length = &got;
+        };
+        U8(r[0], ranked);
+        str(r[1], mapBuf, sizeof(mapBuf), mapLen);
+        U32(r[2], endUnix);
+        U32(r[3], frames);
+        str(r[4], reasonBuf, sizeof(reasonBuf), reasonLen);
+        str(r[5], kindBuf, sizeof(kindBuf), kindLen);
+        U32(r[6], winnerId);
+        r[6].is_null = &nullWinner;
+        str(r[7], stateBuf, sizeof(stateBuf), stateLen);
+        U16(r[8], netCode);
+        U8(r[9], team);
+        r[9].is_null = &nullTeam;
+        U32(r[10], kills);
+        r[10].is_null = &nullKills;
+        U32(r[11], deaths);
+        r[11].is_null = &nullDeaths;
+        I32(r[12], delta);
+        r[12].is_null = &nullDelta;
+        U64(r[13], higher);
+        U64(r[14], seats);
+        if (mysql_stmt_bind_param(selHistory, p) != 0 || mysql_stmt_bind_result(selHistory, r) != 0) return StmtFail(selHistory, "대전 기록 묶기");
+        if (mysql_stmt_execute(selHistory) != 0) return StmtFail(selHistory, "대전 기록");
+        if (mysql_stmt_store_result(selHistory) != 0) return StmtFail(selHistory, "대전 기록 받기");
+        int f = 0;
+        while ((f = mysql_stmt_fetch(selHistory)) == 0) {
+            wol::MatchHistoryRow row;
+            row.ranked = ranked != 0;
+            row.map.assign(mapBuf, mapLen);
+            row.end = endUnix;
+            row.frames = frames;
+            row.endReason.assign(reasonBuf, reasonLen);
+            row.winnerKind.assign(kindBuf, kindLen);
+            row.hasWinnerId = !nullWinner;
+            row.winnerId = nullWinner ? 0 : winnerId;
+            row.left = std::string(stateBuf, stateLen) == "left";
+            row.netCode = netCode;
+            row.team = nullTeam ? 0 : team;
+            row.hasKills = !nullKills;
+            row.kills = nullKills ? 0 : kills;
+            row.hasDeaths = !nullDeaths;
+            row.deaths = nullDeaths ? 0 : deaths;
+            row.hasDelta = !nullDelta;
+            row.delta = nullDelta ? 0 : delta;
+            row.higher = static_cast<uint32_t>(higher);
+            row.seats = static_cast<uint32_t>(seats);
+            h.Add(row);
+        }
+        if (f != MYSQL_NO_DATA) {
+            StmtFail(selHistory, "대전 기록 꺼내기");
+            mysql_stmt_free_result(selHistory);
+            return false;
+        }
+        mysql_stmt_free_result(selHistory);
+        return true;
+    }
 };
 
 CDbWorker::CDbWorker(DbConfig cfg) : cfg_(std::move(cfg)) {}
@@ -154,7 +240,8 @@ bool CDbWorker::Connect(std::string& err) {
         return false;
     }
     if (!c->Prepare(c->selAccount, kSelAccount) || !c->Prepare(c->insMatch, kInsMatch) || !c->Prepare(c->insPlayer, kInsPlayer) ||
-        !c->Prepare(c->upsRating, kUpsRating) || !c->Prepare(c->selRating, kSelRating) || !c->Prepare(c->selRank, kSelRank)) {
+        !c->Prepare(c->upsRating, kUpsRating) || !c->Prepare(c->selRating, kSelRating) || !c->Prepare(c->selRank, kSelRank) ||
+        !c->Prepare(c->selHistory, kSelHistory)) {
         err = "준비된 문장 — " + c->lastError + "(표 모양이 SQL 파일과 다른가)";
         return false;
     }
@@ -225,6 +312,19 @@ void CDbWorker::GetRating(uint32_t req, const std::string& account) {
         std::lock_guard<std::mutex> lk(mu_);
         queue_.push_back(std::move(j));
         ++stats_.ratingRequests;
+    }
+    cv_.notify_one();
+}
+
+void CDbWorker::GetMatchHistory(uint32_t req, const std::string& account) {
+    Job j;
+    j.kind = wol::StoreAnswerKind::History;
+    j.req = req;
+    j.account = account;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        queue_.push_back(std::move(j));
+        ++stats_.historyRequests;
     }
     cv_.notify_one();
 }
@@ -413,6 +513,16 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
                 }
                 break;
             }
+            case wol::StoreAnswerKind::History: {   // ★ 11-04 플랜2 — 읽기만 · 다시 할 때 앞서 읽은 줄을 비운다
+                a.history = wol::MatchHistory{};
+                if (c.ReadRating(j.account, a.ratingFound, a.rating, a.rank) && c.ReadHistory(j.account, a.history)) {
+                    a.historyOk = true;
+                    std::lock_guard<std::mutex> lk(mu_);
+                    ++stats_.historyReads;
+                    return a;
+                }
+                break;
+            }
             case wol::StoreAnswerKind::kCount:
                 break;
         }
@@ -434,6 +544,11 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
     std::lock_guard<std::mutex> lk(mu_);
     if (j.kind == wol::StoreAnswerKind::Rating) {   // ★ 레이팅 조각 3 — 못 읽음(ratingOk false) · 로비는 점수 줄 없이 로그인을 끝낸다
         ++stats_.ratingFailed;
+        return a;
+    }
+    if (j.kind == wol::StoreAnswerKind::History) {   // ★ 11-04 플랜2 — 못 읽음(historyOk false) · 로비는 `RECFAIL`
+        a.history = wol::MatchHistory{};
+        ++stats_.historyFailed;
         return a;
     }
     a.save = wol::SaveResult::Failed;

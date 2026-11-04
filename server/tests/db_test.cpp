@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "nox/DbWorker.h"
+#include "MatchHistoryScenario.h"
 #include "nox/IniFile.h"
 #include "../src/auth/MySqlAccountStore.h"   // ★ 런처 P1 — ⑨ 열쇠 저장소
 
@@ -389,6 +390,50 @@ int main(int argc, char** argv) {
     Check(s.requests == 14 && s.saved == 9 && s.duplicates == 2 && s.invalid == 2 && s.saveFailed == 1 && s.retries == 1 &&
               s.ratingRequests == 5 && s.ratingReads == 4 && s.ratingFailed == 1 && s.ratingRows == 3 && ad.One("SELECT COUNT(*) FROM accounts") == "3",
           "⑦ 셈 — 요청 14 = Saved 9 · Duplicate 2 · Invalid 2 · 실패 1 · 다시 1 · 점수 읽기 5 = 읽음 4 + 실패 1 · 점수 행 3 · 로비가 계정을 안 만듦(셋 그대로)");
+    // ⑩ ★ 11-04 플랜2 — 대전 기록 읽기. lobby_test 메모리 가짜와 같은 판 묶음 · 같은 기대 줄(`MatchHistoryScenario.h`)
+    {
+        Check(ad.Run("INSERT INTO accounts (name, created_unix, last_login_unix) VALUES ('h1', 1, 1), ('h2', 1, 1), ('h3', 1, 1), ('h4', 1, 1)"), "⑩ 계정 넷");
+        nox::db::CDbWorker hw(cfg);
+        std::string herr;
+        Check(hw.Start(herr), "⑩ 워커 — " + herr);
+        uint32_t req = 100;
+        const auto scenario = nox::test::HistoryScenario();
+        for (const nox::MatchRecord& m : scenario) hw.SaveMatch(req++, srcA, m, "{}");
+        auto saved = WaitAnswers(hw, scenario.size());
+        size_t savedOk = 0;
+        for (const StoreAnswer& a : saved) savedOk += a.save == SaveResult::Saved ? 1 : 0;
+        Check(savedOk == scenario.size(), "⑩ 판 묶음 저장 " + std::to_string(savedOk));
+        const std::vector<std::pair<std::string, std::vector<std::string>>> who = {{"h1", nox::test::HistoryExpectH1()},
+                                                                                   {"h2", nox::test::HistoryExpectH2()},
+                                                                                   {"h3", nox::test::HistoryExpectH3()},
+                                                                                   {"nobody", nox::test::HistoryExpectNobody()}};
+        for (const auto& w2 : who) {
+            hw.GetMatchHistory(req, w2.first);
+            auto got = WaitAnswers(hw, 1);
+            bool same = got.size() == 1 && got[0].kind == StoreAnswerKind::History && got[0].req == req && got[0].historyOk;
+            std::string shown;
+            if (same) {
+                const auto ls = nox::wol::MatchHistoryLines(w2.first, got[0].ratingFound, got[0].rating, got[0].rank, got[0].history);
+                same = ls == w2.second;
+                for (const auto& l : ls) shown += l + " | ";
+            }
+            Check(same, "⑩ " + w2.first + " 줄 — " + shown);
+            ++req;
+        }
+        // 못 읽음 → historyOk false · 칸을 되돌리면 같은 연결로 다시 읽음
+        Check(ad.Run("RENAME TABLE match_players TO match_players_off"), "⑩ 시험용 — match_players 를 잠깐 치움");
+        hw.GetMatchHistory(req++, "h1");
+        auto failed = WaitAnswers(hw, 1);
+        Check(failed.size() == 1 && failed[0].kind == StoreAnswerKind::History && !failed[0].historyOk && !failed[0].why.empty() && failed[0].history.rows.empty(),
+              "⑩ 읽기 실패 → historyOk false · 까닭 " + (failed.empty() ? std::string() : failed[0].why));
+        Check(ad.Run("RENAME TABLE match_players_off TO match_players"), "⑩ match_players 되돌림");
+        hw.GetMatchHistory(req++, "h1");
+        auto again = WaitAnswers(hw, 1);
+        Check(again.size() == 1 && again[0].historyOk && again[0].history.total == 5, "⑩ 되돌린 뒤 다시 읽음 — 판 5");
+        hw.Stop();
+        const nox::db::DbStats hs = hw.Stats();
+        Check(hs.historyRequests == 6 && hs.historyReads == 5 && hs.historyFailed == 1, "⑩ 셈 — 읽기 요청 6 = 읽음 5 + 실패 1");
+    }
     std::printf("  ④ KILL 뒤 처음 걸린 오류: %s\n", s4.lastError.c_str());   // 끊김 번호가 무엇으로 오는지(`IsLost` 갈래 확인용)
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;

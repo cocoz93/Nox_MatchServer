@@ -42,6 +42,10 @@ struct DbStats {
     unsigned long long ratingReads = 0;
     unsigned long long ratingFailed = 0;
     unsigned long long ratingRows = 0;
+    // ★ 11-04 플랜2 — 대전 기록 읽기 요청 = 읽음 + 실패
+    unsigned long long historyRequests = 0;
+    unsigned long long historyReads = 0;
+    unsigned long long historyFailed = 0;
     size_t queueMax = 0;                    // 한 번에 꺼낸 일의 최대
     std::string lastError;                  // 마지막 오류 글(기록용 — 비밀번호는 안 실린다)
 };
@@ -61,6 +65,7 @@ public:
     // ILobbyStore — 요청은 곧바로 돌아온다 · 답은 워커가 넣고 로비가 꺼낸다
     void SaveMatch(uint32_t req, const wol::MatchSource& src, const MatchRecord& rec, const std::string& rawJson) override;
     void GetRating(uint32_t req, const std::string& account) override;   // ★ 레이팅 조각 3
+    void GetMatchHistory(uint32_t req, const std::string& account) override;   // ★ 11-04 플랜2
     void TakeAnswers(std::vector<wol::StoreAnswer>& out) override;
 
     DbStats Stats() const;
@@ -73,7 +78,7 @@ private:
         wol::MatchSource src;
         MatchRecord rec;
         std::string raw;
-        std::string account;   // ★ 레이팅 조각 3 — Rating
+        std::string account;   // ★ 레이팅 조각 3 — Rating · ★ 11-04 플랜2 — History
     };
     struct Conn;   // MYSQL* · 준비된 문장들(.cpp 에만)
 
