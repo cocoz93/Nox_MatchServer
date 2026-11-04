@@ -441,6 +441,7 @@ static std::string LaunchName()
 //   주소 = 이 로비 연결의 상대 IP : 8443(서버 `kDefaultAuthPort`) · 환경변수 NOX_AUTH_URL(예: https://host:8443 · 옛 꼴 …/login 도 받음)이 있으면 그것.
 //   게임 주 스레드가 최대 3초 막힌다(`AuthClient.h`). TLS 검사를 끄지 않으므로 믿을 수 없는 서버(XWIS 등 우리 로비가 아닌 곳)에는 본문(열쇠)이 나가기 전에 멈춘다
 //   ★ 10-28 다른 PC — 환경변수 NOX_AUTH_PIN(서버 인증서 SHA-256 16진 64자 · 꾸러미 2_PLAY 가 넣음)이 있으면 윈도 검사 대신 그 지문으로 가른다
+static volatile LONG g_loginKeyInvalid = 0;   // ★ 11-04 플랜1 — 마지막 로그인 답이 열쇠 거절이었나(`NXL!key_invalid`) · 실패 안내를 고른다(받기 스레드 → 주 스레드)
 static std::string AuthLogin(SOCKET s, const std::string& name, const std::string& password)
 {
     (void)password;   // ★ 런처 P4 — 정품 창의 암호 칸은 쓰지 않는다(선에도 안 나감 — apgar 자리를 통째로 바꿈)
@@ -451,6 +452,7 @@ static std::string AuthLogin(SOCKET s, const std::string& name, const std::strin
     std::string key;
     if (!launchkey::Load(name, key)) {
         if (g_log[0]) Detail("로그인 서버 안 부름 s=%u — 「%s」 의 열쇠 파일이 없거나 못 풂 → NXL!key_invalid", (unsigned)s, name.c_str());
+        InterlockedExchange(&g_loginKeyInvalid, 1);
         return authclient::detail::FailLine(nox::LoginFail::KeyInvalid);
     }
     char pin[80] = {};
@@ -482,6 +484,7 @@ static std::string AuthLogin(SOCKET s, const std::string& name, const std::strin
         Detail("로그인 서버 호출 s=%u 상태=%d 오류=%lu %lums 지문=%s → %s", (unsigned)s, r.status, r.error, r.ms, pinHex.empty() ? "없음" : "고정",
                token ? "로그인 토큰(NXL1…)" : r.line.c_str());   // 토큰 글은 기록에 안 남김
     }
+    InterlockedExchange(&g_loginKeyInvalid, r.line == authclient::detail::FailLine(nox::LoginFail::KeyInvalid) ? 1 : 0);
     return r.line;
 }
 
@@ -2183,6 +2186,7 @@ static const uintptr_t kChatWin = 0x69c8bc, kOptsBackWin = 0x711328, kWolProgWin
 static const DWORD kBtnOptsBack = 152, kBtnProgCancel = 1806, kBtnProgOk = 1807;
 static const DWORD kAutoRunLimitMs = 10000;   // 정상은 약 1초(11-04 로컬 · 다른 PC 는 미측정). 사람이 「안 되나 보다」 할 때쯤으로 어림 — 다른 PC 판에서 다시 볼 값
 static const wchar_t kAutoFailText[] = L"서버에 연결할 수 없습니다. 잠시 후 온라인을 다시 눌러 주세요.";
+static const wchar_t kAutoExpiredText[] = L"로그인이 만료되었습니다. 런처에서 다시 로그인해 주세요.";   // ★ 11-04 플랜1 — 열쇠 거절만. 다시 눌러도 안 되는 실패를 「잠시 후 다시」로 안내하면 사람이 갇힌다
 enum class BackWhy { None, Chat, Fail };
 static BackWhy g_backWhy = BackWhy::None;     // 지금 로그인 창을 돌려보내는 중인가(주 스레드만)
 static DWORD g_backLastMs = 0;
@@ -2228,7 +2232,11 @@ static bool BackToConnTick(DWORD now)
         for (int i = 2; i < 4; ++i) { g_steps[i].done = false; g_steps[i].seenWin = 0; g_steps[i].tries = 0; }
         AutoMuteSet(false, "접속 방식 도착");
         Log("⑯ 접속 방식으로 돌아감(누름 %d 번 · 까닭 %s)", g_backTries, why == BackWhy::Fail ? "실패" : "대화방 뒤로");
-        if (why == BackWhy::Fail) ((PFN_dlgopen)kDlgOpen)(0, NULL, kAutoFailText, kDlgNoticeFlags, 0, 0);   // 부모 0 = ㉑ 안내 창과 같은 꼴
+        if (why == BackWhy::Fail) {
+            const bool expired = g_loginKeyInvalid != 0;
+            Log("⑯ 실패 안내 — %s", expired ? "로그인 만료(key_invalid)" : "서버 연결");
+            ((PFN_dlgopen)kDlgOpen)(0, NULL, expired ? kAutoExpiredText : kAutoFailText, kDlgNoticeFlags, 0, 0);   // 부모 0 = ㉑ 안내 창과 같은 꼴
+        }
         return false;
     }
     if (ReadSelf(login + 4, &flags) && !(flags & kWinHidden)) ((PFN_sethidden)kSetHidden)(login, 1);   // 첫 그리기 전에
