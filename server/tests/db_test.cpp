@@ -15,6 +15,7 @@
 #endif
 #include <mysql.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -609,6 +610,33 @@ int main(int argc, char** argv) {
         Check(ds.saved == beforeStop.saved + 3 && countOf(leftovers, StoreAnswerKind::SaveMatch) == 3 && ad.One("SELECT COUNT(*) FROM matches WHERE match_key LIKE 'split-stop-%'") == "3", "⑬ 끝낼 때 남은 판 셋 다 저장");
         Check(ds.historyDropped == 2 && ds.historyReads == beforeStop.historyReads + 1 && countOf(leftovers, StoreAnswerKind::History) == 1 && ds.historyRequests == ds.historyReads + ds.historyFailed + ds.historyDropped,
               "⑬ 끝낼 때 조회 — 하던 것 1 · 버림 2 · 요청 = 읽음 + 실패 + 버림(버림 " + std::to_string(ds.historyDropped) + ")");
+    }
+    {
+        // ⑭ ★ 11-05 — 쓰기 · 읽기 워커 모두 답을 넣은 **뒤** 깨운다(`SetWake`). 깨우기 안에서 곧바로 꺼내 본다 —
+        //   넣기 전에 깨우면 읽기 워커의 답이 남아 꺼낸 수가 모자라고, 잠금을 쥔 채 깨우면 여기서 막힌다
+        nox::db::CDbLobbyStore ws(cfg);
+        std::string e14;
+        Check(ws.Start(e14), "⑭ 워커 둘 뜸 " + e14);
+        std::atomic<int> woke{0}, seen{0};
+        ws.SetWake([&ws, &woke, &seen] {
+            std::vector<StoreAnswer> peek;
+            ws.TakeAnswers(peek);
+            seen += static_cast<int>(peek.size());
+            ++woke;
+        });
+        auto waitWoke = [&woke](int n) {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (woke.load() < n && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        };
+        ws.GetRating(1, "wn");
+        ws.SaveMatch(2, srcA, Sample("wake-1"), "{}");
+        waitWoke(2);   // 쓰기 워커 둘을 먼저 — 읽기 워커의 깨우기가 쓰기 쪽 답을 대신 꺼내 주지 못하게
+        const int wokeWriter = woke.load();
+        ws.GetMatchHistory(3, "wn");
+        waitWoke(3);
+        ws.Stop();
+        Check(wokeWriter == 2 && woke.load() == 3 && seen.load() == 3,
+              "⑭ 답 3개 — 쓰기 워커 깨움 " + std::to_string(wokeWriter) + " · 합 " + std::to_string(woke.load()) + " · 깨울 때 꺼낸 답 " + std::to_string(seen.load()));
     }
     std::printf("  ④ KILL 뒤 처음 걸린 오류: %s\n", s4.lastError.c_str());   // 끊김 번호가 무엇으로 오는지(`IsLost` 갈래 확인용)
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

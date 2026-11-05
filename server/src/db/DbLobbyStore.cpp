@@ -36,6 +36,11 @@ void CDbLobbyStore::TakeAnswers(std::vector<wol::StoreAnswer>& out) {
     reader_.TakeAnswers(out);
 }
 
+void CDbLobbyStore::SetWake(std::function<void()> wake) {
+    writer_.SetWake(wake);
+    reader_.SetWake(std::move(wake));
+}
+
 DbStats CDbLobbyStore::Stats() const {
     DbStats s = writer_.Stats();
     const DbStats r = reader_.Stats();

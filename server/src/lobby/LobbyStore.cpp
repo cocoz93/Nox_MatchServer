@@ -82,7 +82,7 @@ void CMemoryLobbyStore::SaveMatch(uint32_t req, const MatchSource& src, const Ma
             }
         }
     }
-    pending_.push_back(std::move(a));
+    Answer(std::move(a));
 }
 
 // ★ 레이팅 조각 3 — 순위 = 나보다 점수 높은 사람 수 + 1(DB 워커와 같은 잣대)
@@ -97,7 +97,7 @@ void CMemoryLobbyStore::GetRating(uint32_t req, const std::string& account) {
         a.ratingOk = true;
         ReadRatingInto(account, a);
     }
-    pending_.push_back(std::move(a));
+    Answer(std::move(a));
 }
 
 void CMemoryLobbyStore::ReadRatingInto(const std::string& account, StoreAnswer& a) const {
@@ -118,7 +118,7 @@ void CMemoryLobbyStore::GetMatchHistory(uint32_t req, const std::string& account
     a.req = req;
     if (failHistory_) {
         a.why = "메모리 저장소 — 대전 기록 읽기 실패 시험 스위치";
-        pending_.push_back(std::move(a));
+        Answer(std::move(a));
         return;
     }
     a.historyOk = true;
@@ -132,7 +132,7 @@ void CMemoryLobbyStore::GetMatchHistory(uint32_t req, const std::string& account
             if (!p.observer && p.hasAccount && p.account == account) a.history.rows.push_back(MatchRowOf(**m, rr, i));
         }
     }
-    pending_.push_back(std::move(a));
+    Answer(std::move(a));
 }
 
 bool CMemoryLobbyStore::FindRating(const std::string& account, int32_t& rating) const {
@@ -140,6 +140,11 @@ bool CMemoryLobbyStore::FindRating(const std::string& account, int32_t& rating) 
     if (it == ratings_.end()) return false;
     rating = it->second;
     return true;
+}
+
+void CMemoryLobbyStore::Answer(StoreAnswer a) {
+    pending_.push_back(std::move(a));
+    if (wake_) wake_();
 }
 
 void CMemoryLobbyStore::TakeAnswers(std::vector<StoreAnswer>& out) {

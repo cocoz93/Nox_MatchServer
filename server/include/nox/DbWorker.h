@@ -17,10 +17,12 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "nox/DbConfig.h"   // ★ 로그인 암호 조각 2 — 표 버전 · 붙을 곳(로그인 서버와 같이 씀)
@@ -76,6 +78,8 @@ public:
     void GetRating(uint32_t req, const std::string& account);   // ★ 레이팅 조각 3
     void GetMatchHistory(uint32_t req, const std::string& account);   // ★ 11-04 플랜2
     void TakeAnswers(std::vector<wol::StoreAnswer>& out);
+    // ★ 11-05 — 답을 넣은 뒤마다 워커 스레드에서 부른다. 첫 요청 전에 한 번만 꽂는다 — 워커는 일을 꺼낸 뒤에만 읽으므로 큐 잠금이 차례를 보장한다
+    void SetWake(std::function<void()> wake) { wake_ = std::move(wake); }
 
     DbStats Stats() const;
     unsigned long ConnectionId() const;   // 지금 연결의 MySQL 스레드 번호(시험이 KILL 로 끊어 보려고 · 0 = 없음)
@@ -111,6 +115,7 @@ private:
     std::condition_variable cv_;
     std::vector<Job> queue_;
     std::vector<wol::StoreAnswer> answers_;
+    std::function<void()> wake_;       // ★ 11-05 — `SetWake`
     DbStats stats_;
     unsigned long connId_ = 0;
     bool stop_ = false;

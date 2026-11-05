@@ -12,13 +12,16 @@
 //   ★ 레이팅 조각 3(`Docs/RATING_DESIGN.md`) — 판 저장이 랭크 판 점수도 고치고, 로그인 공지용 점수 읽기(`GetRating`)가 늘었다
 //   ★ 11-04 플랜2 — 대전 기록 읽기(`GetMatchHistory`) · 결과 판정 · 승패 셈은 `MatchHistory.h` 한 곳
 //   ★ 11-04 전적 검색 — 판 저장이 승패 합계도 올린다(점수와 같은 트랜잭션) · 대전 기록 읽기는 합계 + 최근 20줄만
+//   ★ 11-05 — 답을 낼 때 부르는 깨우기(`SetWake`). 누가 깨어나는지는 저장소가 모른다 — 로비 루프가 꽂는다(`lobby_main.cpp` 머리 주석에 까닭)
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "nox/LobbyLink.h"   // ★ 매칭 손보기 1 — `LinkRatingChange`
@@ -86,6 +89,9 @@ public:
     //   점수 칸을 되짚는 계산 `MatchHistory.cpp` 와 같은 차례. 늦게 다시 보낸 옛 판은 저장한 때의 자리에) → 답 History
     virtual void GetMatchHistory(uint32_t req, const std::string& account) = 0;
     virtual void TakeAnswers(std::vector<StoreAnswer>& out) = 0;   // 덧붙인다
+    // ★ 11-05 — 답을 `TakeAnswers` 로 꺼낼 수 있게 된 뒤마다 부른다(안 꽂으면 안 부름). 첫 요청 전에 한 번만 꽂는다.
+    //   DB 워커는 자기 스레드에서 부르므로 오래 걸리는 일을 넣지 말 것
+    virtual void SetWake(std::function<void()> wake) = 0;
 };
 
 // 메모리 가짜 — 답은 다음 `TakeAnswers` 에(DB 워커의 「다른 스레드가 나중에」를 바퀴 하나로 흉내)
@@ -95,6 +101,7 @@ public:
     void GetRating(uint32_t req, const std::string& account) override;
     void GetMatchHistory(uint32_t req, const std::string& account) override;
     void TakeAnswers(std::vector<StoreAnswer>& out) override;
+    void SetWake(std::function<void()> wake) override { wake_ = std::move(wake); }
 
     // 시험 손잡이 — 저장소가 답을 못 내는 길(DB 끊김 흉내)
     void SetFailSaves(bool on) { failSaves_ = on; }
@@ -111,6 +118,8 @@ public:
 private:
     using MatchKey = std::tuple<uint32_t, uint16_t, std::string>;
     void ReadRatingInto(const std::string& account, StoreAnswer& a) const;
+    void Answer(StoreAnswer a);   // ★ 11-05 — 답을 넣고 깨운다(답을 내는 자리는 전부 여기로)
+    std::function<void()> wake_;
     std::vector<StoreAnswer> pending_;
     std::map<MatchKey, MatchRecord> matches_;
     std::vector<const MatchRecord*> saved_;    // ★ 11-04 플랜2 — 저장 차례(`matches_` 원소는 주소가 안 바뀐다)

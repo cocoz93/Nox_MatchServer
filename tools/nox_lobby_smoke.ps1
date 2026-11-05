@@ -263,6 +263,34 @@ if ($end.Count -eq 7 -and $endOf['게임 서버 연결'] -match '게임 서버 �
 Check $linkOk '끝 줄 — 연결 셈(연결 5 · 확인 4 · 실패 1 · 등록 3 · 거절 1 · 받음 17 · 보냄 PING 빼고 13 · PING 3 이상 · 방 알림 3 · 판 결과 4 · 무소식 끊음 1)'
 # ★ 7단계 조각 5 — 판 결과 넷 = 저장 요청 2(ok 1 · dup 1) + 못 읽음 2(빠진 칸 1 → bad · 문법 1 → 판 번호도 없음)
 Check ($end.Count -eq 7 -and $endOf['판 저장 요청'] -match '판 저장 요청 2\(SAVED ok 1 · dup 1 · 실패 0 · 끊긴 뒤 답 0 · 모르는 답 0 · 끝날 때 남음 0\) · 못 읽음 2\(문법 1 · 빠진 칸 1 · 타입 0 · 값 0 · SAVED bad 1 · 판 번호도 못 읽음 1\) · 저장소 없음 0') '끝 줄 — 판 저장(요청 2 · ok 1 · dup 1 · 못 읽음 2 — 문법 1 · 빠진 칸 1 · bad 1 · 판 번호 없음 1)'
+# ⑥ ★ 11-05 — 저장소 답에 루프가 깨어난다(`lobby_main` 의 `SetWake` · 이벤트 둘 기다리기 — 단위 시험은 이 연결을 안 본다).
+#   소켓 일이 없어 100ms 대기에 든 뒤 묻는다. 깨우기가 없으면 가장 빠른 답도 100ms 를 채우므로 최솟값으로 가른다(답을 다 읽었는지도 같이)
+$logW = "$log.wake"
+$pw = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $logW -ArgumentList @(
+  '--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort, '--seconds', '30', '--no-db')
+$null = $pw.Handle
+try {
+  $kw = Open $LobbyPort $latin1
+  Send $kw @('NOXCLIENT 5', 'NICK wakeup', 'USER UserName HostName irc.westwood.com :RealName')
+  $null = ReadUntil $kw '376'
+  $ms = @()
+  for ($i = 0; $i -lt 5; $i++) {
+    Start-Sleep -Milliseconds 150
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    Send $kw @('NOXRANK RECORD')
+    do { $l = ReadOne $kw } while ($null -ne $l -and $l -notmatch 'NOXRANK (RECEND|RECFAIL|RECNONE)')
+    if ($l -match 'RECEND') { $ms += $sw.Elapsed.TotalMilliseconds }
+  }
+  $best = if ($ms.Count) { ($ms | Measure-Object -Minimum).Minimum } else { -1 }
+  Check ($ms.Count -eq 5 -and $best -ge 0 -and $best -lt 50) "⑥ 저장소 답에 곧바로 깨어남 — 답 $($ms.Count)/5 · 가장 빠른 답 $([math]::Round($best, 1))ms(깨우기가 없으면 100ms 이상)"
+  $kw.c.Close()
+} catch {
+  Check $false "⑥ 예외: $($_.Exception.Message)"
+} finally {
+  try { [void][Threading.EventWaitHandle]::OpenExisting("nox_lobby_stop_$($pw.Id)").Set() } catch { }
+  if (-not $pw.WaitForExit(15000)) { Check $false '⑥ 로비가 닫기 이벤트 뒤에 끝나지 않음 — 강제 종료'; Stop-Process -Id $pw.Id -Force -ErrorAction SilentlyContinue }
+}
+Remove-Item -LiteralPath $logW -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $log, $ini -ErrorAction SilentlyContinue
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)
 exit $(if ($script:fails) { 1 } else { 0 })

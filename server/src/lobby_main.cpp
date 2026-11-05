@@ -14,6 +14,9 @@
 //   · 둘은 같은 접속 번호 공간이라 돌려받은 줄(`wol::Out`)을 그대로 보낸다. 사건이 어느 듣기에서 왔는지는 듣기 포트로 가른다
 //   · 새 방 답을 기다리는 동안에도 다른 줄을 그대로 받는다 — 시간 초과는 루프가 100ms 마다 `Lobby::Tick`
 //     (★ 7단계 — 게임 서버 살아 있음 `RoomMirror::Tick` 도 같은 자리)
+//   · ★ 11-05 — 저장소 답도 소켓 일과 같이 기다린다(`ILobbyStore::SetWake`). 전엔 답이 와도 안 깨어나 소켓 일이 없으면 100ms 대기가 끝나야 집었다
+//     (시험 DB 전적 물음 → 답 중앙값 108ms). 프레임 루프로 안 바꾼 까닭 — 로비엔 시간마다 움직일 세계가 없고(`Tick` 은 시간 초과 · 살아 있음 확인뿐)
+//     한가한 때가 대부분이라, 일이 왔을 때 깨어나는 쪽이 지연도 없고 헛도는 일도 없다
 //   · 닫기 신호 둘 — 콘솔(Ctrl+C · 창 닫기)과 이름 있는 이벤트 `nox_lobby_stop_<pid>`(창 없이 띄운 도구가 켠다 — `nox_server_stop_<pid>` 와 같은 꼴).
 //     끝 줄(셈)을 찍고 나간다 — 강제 종료로 셈을 잃지 않게
 //
@@ -224,6 +227,13 @@ int main(int argc, char** argv) {
 #endif
     }
     nox::wol::ILobbyStore& store = *storePtr;
+    // ★ 11-05 — 저장소 답에 루프를 깨운다(자동으로 꺼지는 이벤트 · 닫기는 저장소를 멈춘 뒤)
+    HANDLE storeWake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!storeWake) {
+        Log("[멈춤] 저장소 깨우기 이벤트를 못 만들었다\n");
+        return 2;
+    }
+    store.SetWake([storeWake] { SetEvent(storeWake); });
 
     nox::CTcpLines tcp;
     {
@@ -319,11 +329,13 @@ int main(int argc, char** argv) {
         sendOuts();
     };
 
+    // ★ 11-05 — 깨어난 까닭은 안 가린다. 바퀴마다 답 · 소켓을 다 보므로 둘이 같이 켜져 앞쪽만 돌아와도 답을 놓치지 않는다(뒤쪽이 켜진 채 남아 한 바퀴 더 돌 뿐)
+    const HANDLE waitFor[] = {static_cast<HANDLE>(tcp.WaitHandle()), storeWake};
     while (!g_stop) {
         if (seconds > 0 && std::chrono::steady_clock::now() - start >= std::chrono::seconds(seconds)) break;
         if (stopEvent && WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;
         // 100ms — 미룬 새 방 답의 시간 초과(`Tick`) · --seconds · 닫기 신호를 보려고 깨어난다
-        WaitForSingleObject(static_cast<HANDLE>(tcp.WaitHandle()), 100);
+        WaitForMultipleObjects(2, waitFor, FALSE, 100);
         // ★ 7단계 조각 5 — 저장소 답을 바퀴 맨 앞에서(지난 바퀴 요청의 답 — 메모리 가짜도 「다음 바퀴에 답」이 된다 · 정할 것 b)
         answers.clear();
         store.TakeAnswers(answers);
@@ -363,6 +375,7 @@ int main(int argc, char** argv) {
             ds.connects, ds.connectFailed, ds.retries, ds.queueMax, ds.lastError.empty() ? "" : " · 마지막 오류 ", ds.lastError.c_str());
     }
 #endif
+    CloseHandle(storeWake);   // ★ 11-05 — 워커가 멈춘 뒤라 더 안 불린다(메모리 저장소는 루프 밖에서 요청이 없다)
     const nox::wol::LobbyStats& ls = lobby.Stats();
     const nox::wol::MirrorStats& ms = mirror.Stats();
     // ★ 10-20 거절 답 — 참가 거절(471) 합과 까닭 넷(`JoinReject` 차례 — 곧바로 실패 · 게임 서버 실패 · 시간 초과 · 없는 방)

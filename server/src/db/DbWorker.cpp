@@ -395,8 +395,12 @@ void CDbWorker::Run() {
                 }
             }
             wol::StoreAnswer a = Exec(j);
-            std::lock_guard<std::mutex> lk(mu_);
-            answers_.push_back(std::move(a));
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                answers_.push_back(std::move(a));
+            }
+            // ★ 11-05 — 넣은 뒤에 깨운다. 꺼내기 뒤에 넣은 답은 이 호출이 다시 깨우므로 놓치지 않는다 · 잠금 밖이라 깨우는 쪽이 저장소를 불러도 된다
+            if (wake_) wake_();
         }
         local.clear();
     }

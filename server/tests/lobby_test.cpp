@@ -1889,6 +1889,43 @@ void LobbyStoreUnitTests() {
               ans[3].save == SaveResult::Invalid && ans[4].save == SaveResult::Invalid && whys && st.MatchCount() == 4,
           "⑤ 칸 한도 꼭 맞음 Saved · 방 이름 65 · 이름 17 · 사람 256 · UTF-8 아닌 원문 → Invalid(까닭 글 · 안 넣음)");
 
+    // ⑤′ ★ 11-05 — 답을 낼 때마다 깨운다(`SetWake`) · 깨울 때 이미 꺼낼 수 있다 · 답을 안 내면 안 깨운다. 답을 내는 갈래마다
+    {
+        CMemoryLobbyStore ws;
+        int woke = 0;
+        size_t seen = 0;
+        ws.SetWake([&ws, &woke, &seen] {
+            std::vector<StoreAnswer> peek;
+            ws.TakeAnswers(peek);
+            seen += peek.size();
+            ++woke;
+        });
+        nox::MatchRecord wr;
+        wr.match = "wake-1";
+        wr.players.resize(1);
+        ws.SaveMatch(1, a, wr, "{}");                    // Saved
+        ws.SaveMatch(2, a, wr, "{}");                    // Duplicate
+        ws.SaveMatch(3, b, wr, std::string("\xff", 1));   // Invalid
+        ws.SetFailSaves(true);
+        ws.SaveMatch(4, b, wr, "{}");                    // Failed
+        ws.SetFailSaves(false);
+        ws.GetRating(5, "wn");
+        ws.SetFailRatings(true);
+        ws.GetRating(6, "wn");
+        ws.SetFailRatings(false);
+        ws.GetMatchHistory(7, "wn");
+        ws.SetFailHistory(true);
+        ws.GetMatchHistory(8, "wn");
+        ws.SetFailHistory(false);
+        const int wokeAnswered = woke;
+        const size_t seenAnswered = seen;
+        ws.SetHoldRatings(true);
+        ws.GetRating(9, "wn");
+        char m55[160];
+        std::snprintf(m55, sizeof(m55), "⑤′ 답 8개 — 깨움 %d · 깨울 때 꺼낸 답 %zu · 답 안 낸 물음 뒤 깨움 %d(8)", wokeAnswered, seenAnswered, woke);
+        Check(wokeAnswered == 8 && seenAnswered == 8 && woke == 8, m55);
+    }
+
     // ⑥ ★ 레이팅 조각 3 — 랭크 판만 점수(DB 워커와 같은 `RatingDeltas`) · 겹친 판 안 셈 · 점수 · 순위 읽기 · 읽기 실패 스위치
     CMemoryLobbyStore rs;
     auto duel = [](const char* match, bool ranked, const char* win, const char* lose) {
