@@ -29,6 +29,7 @@
 
 #include "AuthClient.h"
 #include "LoginNotice.h"
+#include "RankNotice.h"
 #include "nox/LoginToken.h"   // kLoginTokenSize 만 쓴다(머리 파일만 — 링크 안 함)
 
 #pragma comment(lib, "ws2_32.lib")
@@ -563,6 +564,65 @@ int main()
         Check(badRead, "⑩ 끝 시각 못 읽음 — 빈 글 · 숫자 없음 · 0 · 숫자 아님 · 넘침(값 안 건드림)");
         Check(nox::ParseBanUntil("4294967295", until) && until == nox::kBanForever && nox::MakeBanDetail(5, "") == "5", "⑩ 영구 값 · 사유 없으면 끝 시각만");
 
+        // ★ 11-05 플랜1 — 줄 서기 제한 줄 · 문구(`RankNotice.h`). 맞는 꼴 넷 갈래 + 틀린 꼴은 전부 None(옛 DLL 규칙처럼 조용히 넘김)
+        {
+            using ranknotice::Kind;
+            const struct {
+                const char* sub;
+                Kind kind;
+                uint32_t value;
+            } rows[] = {
+                {"WARN accept", Kind::WarnAccept, 0},
+                {"WARN match", Kind::WarnMatch, 0},
+                {"BLOCKED 125", Kind::Blocked, 125},
+                {"BLOCKED 1", Kind::Blocked, 1},
+                {"BLOCKED 4294967295", Kind::Blocked, 4294967295u},
+                {"BANNED 1800000000", Kind::Banned, 1800000000u},
+                {"BANNED 4294967295", Kind::Banned, 4294967295u},
+                {"", Kind::None, 0},
+                {"WARN", Kind::None, 0},
+                {"WARN ", Kind::None, 0},
+                {"WARN x", Kind::None, 0},
+                {"WARN accept ", Kind::None, 0},
+                {"WARN match x", Kind::None, 0},
+                {"warn accept", Kind::None, 0},
+                {"BLOCKED", Kind::None, 0},
+                {"BLOCKED ", Kind::None, 0},
+                {"BLOCKED 0", Kind::None, 0},
+                {"BLOCKED -1", Kind::None, 0},
+                {"BLOCKED 12a", Kind::None, 0},
+                {"BLOCKED 4294967296", Kind::None, 0},
+                {"BLOCKED 99999999999999999999999", Kind::None, 0},
+                {"BLOCKEDx60", Kind::None, 0},
+                {"BANNEDx1800000000", Kind::None, 0},
+                {"BANNED", Kind::None, 0},
+                {"BANNED 0", Kind::None, 0},
+                {"BANNED x", Kind::None, 0},
+                {"FOUND 10", Kind::None, 0},
+                {"WAIT", Kind::None, 0},
+            };
+            int goodRows = 0, nRows = 0;
+            int seenKinds[static_cast<int>(Kind::kCount)] = {};
+            for (const auto& r : rows) {
+                const ranknotice::Line l = ranknotice::Parse(r.sub);
+                ++nRows;
+                goodRows += l.kind == r.kind && l.value == r.value ? 1 : 0;
+                ++seenKinds[static_cast<int>(l.kind)];
+            }
+            int kindsSeen = 0;
+            for (const int n : seenKinds) kindsSeen += n ? 1 : 0;
+            Check(nRows == 28 && goodRows == nRows && kindsSeen == static_cast<int>(Kind::kCount), "⑪ 줄 읽기 표 28칸 · 다섯 갈래 다 나옴");
+            Check(ranknotice::Text(Kind::WarnAccept, 0) == L"매칭을 수락하지 않아 경고를 받았습니다. 반복하면 랭크 매칭이 제한됩니다." &&
+                      ranknotice::Text(Kind::WarnMatch, 0) == L"랭크 매칭이나 판을 끝까지 마치지 않아 경고를 받았습니다. 반복하면 랭크 매칭이 제한됩니다." &&
+                      ranknotice::Text(Kind::Blocked, 125) == L"랭크 매칭 제한 중입니다. 남은 시간 2분 5초" &&
+                      ranknotice::Text(Kind::Blocked, 59) == L"랭크 매칭 제한 중입니다. 남은 시간 0분 59초" &&
+                      ranknotice::Text(Kind::Blocked, 900) == L"랭크 매칭 제한 중입니다. 남은 시간 15분 0초",
+                  "⑪ 문구 — 플랜 9절 그대로");
+            Check(ranknotice::Text(Kind::Banned, 1800000000u).empty() && ranknotice::Text(Kind::None, 0).empty(), "⑪ 정지 · 없음은 빈 글(정지 글은 loginnotice 몫)");
+            int named = 0;
+            for (int i = 0; i < static_cast<int>(Kind::kCount); ++i) named += std::string(ranknotice::KindName(static_cast<Kind>(i))) != "?" ? 1 : 0;
+            Check(named == 5, "⑪ 갈래마다 이름");
+        }
         // 네 갈래가 다 나오고 글이 서로 다른지 — 값이 아니라 개수로 본다
         const struct {
             bool keyInvalid;

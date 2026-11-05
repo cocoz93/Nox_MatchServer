@@ -176,6 +176,7 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
         case LinkKind::Created:
         case LinkKind::CreateFailed:
         case LinkKind::Result:
+        case LinkKind::RankNoShow:
         case LinkKind::kCount:
             break;
     }
@@ -296,6 +297,20 @@ void CLobbyClient::SendChanged(std::vector<NetworkRequest>& out) {
 void CLobbyClient::AfterTick(std::vector<NetworkRequest>& out) {
     LinkTick(out);
     SendChanged(out);
+    SendRankNoShows(out);
+}
+
+// ★ 11-05 플랜1 — 끊긴 동안은 쥐고 있다가 붙으면 보낸다(로비는 참가 답을 보낸 지 오래된 방은 안 센다 · `Lobby.h` `kRankJoinedKeepMs`)
+void CLobbyClient::SendRankNoShows(std::vector<NetworkRequest>& out) {
+    if (_stage != Stage::Registered) return;
+    std::vector<CRoomManager::RankNoShow> names;
+    _rooms.TakeRankNoShows(names);
+    for (const CRoomManager::RankNoShow& n : names) {
+        ++_stats.rankNoShowOut;
+        Send(LinkRankNoShow(static_cast<uint32_t>(n.room), n.name), out);
+        std::printf("[로비 연결] RANK_NOSHOW 방 %d %s\n", n.room, Printable(n.name).c_str());
+        std::fflush(stdout);
+    }
 }
 
 void CLobbyClient::LinkTick(std::vector<NetworkRequest>& out) {

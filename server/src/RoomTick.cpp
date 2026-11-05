@@ -994,21 +994,31 @@ void nox::CRoom::EndRankedMatch(const char* why) {
 //   준비까지 — 게임 안(`inGame`)은 입장(0x20)에서 바로 켜지는데 클라는 그 뒤 대기 맵을 다 싣고서야 준비(0xc0)를 보낸다.
 //   준비 전에 판을 열면 맵을 싣는 중에 대전 맵으로 바뀐다(10-30 match_smoke -Rank — 마지막 사람의 입장 틱에 판이 열림)
 size_t nox::CRoom::RankArrived() const {
+    const std::vector<bool> seen = RankSeen();
+    return static_cast<size_t>(std::count(seen.begin(), seen.end(), true));
+}
+
+// ★ 11-05 플랜1 — 머리 주석은 `RoomManager.h`
+std::vector<std::string> nox::CRoom::RankMissing() const {
+    const std::vector<bool> seen = RankSeen();
+    std::vector<std::string> names;
+    for (size_t i = 0; i < seen.size(); ++i)
+        if (!seen[i]) names.push_back(_settings.roster[i]);
+    return names;
+}
+
+std::vector<bool> nox::CRoom::RankSeen() const {
     std::vector<RoundStanding> ps;
     std::vector<RoundTeamScore> ts;
     _game.SnapshotStandings(ps, ts);
     std::vector<bool> seen(_settings.roster.size(), false);
-    size_t n = 0;
     for (const RoundStanding& p : ps)
         for (const RoomMember& m : _members) {
             if (m.sessionId != p.sessionId || m.account.empty() || !_game.ClientReady(p.sessionId)) continue;
             for (size_t i = 0; i < _settings.roster.size(); ++i)
-                if (!seen[i] && _settings.roster[i] == m.account) {
-                    seen[i] = true;
-                    ++n;
-                }
+                if (!seen[i] && _settings.roster[i] == m.account) seen[i] = true;
         }
-    return n;
+    return seen;
 }
 
 // ★ 매칭 손보기 5 — 머리 주석은 `RoomManager.h` `RankVsText`. 「게임 안 + 준비」는 `RankArrived` 와 같은 잣대

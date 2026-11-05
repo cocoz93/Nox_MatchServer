@@ -760,6 +760,37 @@ int main(int argc, char** argv) {
         bs.Stop();
         const nox::db::DbStats ds15 = bs.Stats();
         Check(ds15.bansRequests == 4 && ds15.bansReads == 3 && ds15.bansFailed == 1 && ds15.bansDropped == 0, "⑮ 셈 — 요청 4 = 읽음 3 + 실패 1 + 버림 0");
+
+        // ⑯ ★ 11-05 플랜1 — 줄 서기 10회째 자동 정지(`CDbWorker::ExecBanWrite`). 실제 INSERT 바이트 · 같은 테이블을 `GetActiveBans` 가 읽는가 · 없는 이름 · 못 넣음
+        nox::db::CDbLobbyStore bw(cfg);
+        std::string e16;
+        Check(bw.Start(e16), "⑯ 워커 둘 뜸 " + e16);
+        const uint32_t now16 = 2000000000u;
+        const uint32_t until16 = now16 + 86400u;
+        const std::string reason16 = "랭크 매칭 거절·이탈 반복";   // 플랜 9절 문구 그대로(상수를 안 써서 상수가 틀리면 lobby_test 와 어긋난다)
+        Check(ad.Run("DELETE FROM account_bans"), "⑯ 정지 행 비움");
+        bw.BanAccount("wn", until16, reason16, now16);
+        const auto w1 = WaitAnswers(bw, 1);
+        Check(w1.size() == 1 && w1[0].kind == StoreAnswerKind::BanWrite && w1[0].banWritten, "⑯ 넣음 — 답 banWritten");
+        const std::string q16 = "SELECT CONCAT_WS('|', account_id, until_unix, HEX(reason), source, created_unix, lifted_unix) FROM account_bans";
+        Check(ad.One(q16) == idWn + "|" + std::to_string(until16) + "|" + Hex(reason16) + "|auto|" + std::to_string(now16) + "|0", "⑯ 행 바이트 — 계정 · 끝 · 사유 · 출처 auto · 넣은 때 · 안 풀림");
+        bw.GetActiveBans(1, now16);
+        const auto r16 = WaitAnswers(bw, 1);
+        Check(r16.size() == 1 && r16[0].bansOk && r16[0].bans.size() == 1 && r16[0].bans[0].name == "wn" && r16[0].bans[0].until == until16, "⑯ 활성 정지 읽기에 나옴");
+        bw.BanAccount("no_such_account", until16, reason16, now16);
+        const auto w2 = WaitAnswers(bw, 1);
+        Check(w2.size() == 1 && !w2[0].banWritten && !w2[0].why.empty() && ad.One("SELECT COUNT(*) FROM account_bans") == "1", "⑯ 없는 이름 — 못 넣음 · 행 그대로");
+        Check(ad.Run("RENAME TABLE account_bans TO account_bans_gone"), "⑯ 테이블 치움");
+        bw.BanAccount("wn", until16, reason16, now16);
+        const auto w3 = WaitAnswers(bw, 1);
+        Check(ad.Run("RENAME TABLE account_bans_gone TO account_bans"), "⑯ 테이블 돌려놓음");
+        Check(w3.size() == 1 && !w3[0].banWritten && !w3[0].why.empty(), "⑯ 쓰기 실패 — 못 넣음 · 까닭");
+        bw.BanAccount("wn", until16 + 1, reason16, now16);
+        const auto w4 = WaitAnswers(bw, 1);
+        Check(w4.size() == 1 && w4[0].banWritten && ad.One("SELECT COUNT(*) FROM account_bans") == "2", "⑯ 돌려놓으면 다음 쓰기는 됨");
+        bw.Stop();
+        const nox::db::DbStats ds16 = bw.Stats();
+        Check(ds16.banWriteRequests == 4 && ds16.banWrites == 2 && ds16.banWriteNoAccount == 1 && ds16.banWriteFailed == 1, "⑯ 셈 — 요청 4 = 넣음 2 + 계정 없음 1 + 실패 1");
     }
     std::printf("  ④ KILL 뒤 처음 걸린 오류: %s\n", s4.lastError.c_str());   // 끊김 번호가 무엇으로 오는지(`IsLost` 갈래 확인용)
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

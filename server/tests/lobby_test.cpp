@@ -3708,6 +3708,705 @@ void BanUnitTests() {
     }
 }
 
+// ★ 11-05 플랜1 — 줄 서기 제한(플랜 7절). 표의 줄마다 개수를 본다 — 세는 자리가 일곱이라 한 자리가 빠져도 합은 맞을 수 있다
+void RankPenaltyUnitTests() {
+    using namespace nox::wol;
+    // ① 횟수 → 단계 전수(값을 돌려주는 함수)
+    {
+        struct Row { uint32_t count; PenaltyResult::Kind kind; uint32_t sec; };
+        const Row rows[] = {
+            {0, PenaltyResult::Kind::Warn, 0},   {1, PenaltyResult::Kind::Warn, 0},    {2, PenaltyResult::Kind::Block, 60},   {3, PenaltyResult::Kind::Block, 300},
+            {4, PenaltyResult::Kind::Block, 900}, {5, PenaltyResult::Kind::Block, 900}, {6, PenaltyResult::Kind::Block, 900},  {7, PenaltyResult::Kind::Block, 900},
+            {8, PenaltyResult::Kind::Block, 900}, {9, PenaltyResult::Kind::Block, 900}, {10, PenaltyResult::Kind::Ban, 0},     {11, PenaltyResult::Kind::Ban, 0},
+        };
+        int good = 0, goodShort = 0;
+        for (const Row& r : rows) {
+            const PenaltyResult p = PenaltyStep(r.count);
+            good += p.kind == r.kind && p.blockSec == r.sec && p.count == r.count ? 1 : 0;
+            const PenaltyResult s = PenaltyStep(r.count, 7);   // 시험 인자는 제한 시간만 줄인다
+            goodShort += s.kind == r.kind && s.blockSec == (r.kind == PenaltyResult::Kind::Block ? 7u : 0u) ? 1 : 0;
+        }
+        Check(good == 12 && goodShort == 12, "① 횟수별 단계 전수 12칸 — 1 경고 · 2 60초 · 3 300초 · 4~9 900초 · 10 정지 · 시험 인자는 제한 시간만 바꿈");
+        Check(kRankPenaltyBanCount == 10 && kRankPenaltyBanSec == 86400 && kRankPenaltyResetSec == 1800, "① 값 — 10회 · 정지 1일 · 30분(플랜 1절)");
+        int named = 0;
+        for (size_t i = 0; i < kRankStrikeCount; ++i) named += RankStrikeName(static_cast<RankStrike>(i))[0] != '?' ? 1 : 0;
+        Check(named == 7 && kRankStrikeCount == 7, "① 위반 이유 일곱 다 이름 있음");
+    }
+    // ② 클래스 — 이어지는 횟수 · 제한 끝 · 30분 시계 · 막힌 동안 위반 · 정지 뒤 0 · Clear · Sweep · 밀린 경고
+    {
+        CRankPenalty p;
+        uint32_t now = 1000000;
+        const PenaltyResult w = p.Strike("a", RankStrike::Declined, now);
+        const bool warn = w.kind == PenaltyResult::Kind::Warn && w.count == 1 && p.BlockedForSec("a", now) == 0 && p.CountOf("a", now) == 1;
+        const bool t1 = p.TakeWarnPending("a", now);
+        const bool t2 = p.TakeWarnPending("a", now);
+        Check(warn && t1 && !t2, "② 1회 = 경고 · 안 막힘 · 밀린 경고는 한 번만 꺼냄");
+        // 경고의 30분 — 경고 시각부터. 1초 전까지 이어지고 그 시각이면 0
+        const bool keep = p.CountOf("a", now + 1799) == 1;
+        const bool gone = p.CountOf("a", now + 1800) == 0;
+        const PenaltyResult again = p.Strike("a", RankStrike::Declined, now + 1800);
+        Check(keep && gone && again.kind == PenaltyResult::Kind::Warn && again.count == 1, "② 경고만이면 그 시각부터 30분 — 1799초 이어짐 · 1800초 0 · 그 뒤 위반은 다시 1회");
+        // 제한의 30분 — 풀린 순간부터
+        now = 2000000;
+        p.Strike("b", RankStrike::Declined, now);
+        const PenaltyResult b2 = p.Strike("b", RankStrike::Declined, now);
+        const bool blocked = b2.kind == PenaltyResult::Kind::Block && b2.blockSec == 60 && p.BlockedForSec("b", now) == 60 && p.BlockedForSec("b", now + 59) == 1 && p.BlockedForSec("b", now + 60) == 0;
+        const bool countKept = p.CountOf("b", now + 60 + 1799) == 2 && p.CountOf("b", now + 60 + 1800) == 0;
+        Check(blocked && countKept, "② 2회 = 60초 — 59초에 1초 남음 · 60초에 풀림 · 횟수는 풀린 뒤 30분까지(시작부터 30분이 아님)");
+        // 막힌 동안 들어온 위반이 남은 시간을 줄이지 않음(늦게 온 판 결과)
+        now = 3000000;
+        for (int i = 0; i < 3; ++i) p.Strike("c", RankStrike::MatchLeft, now);   // 3회 = 300초
+        const PenaltyResult c4 = p.Strike("c", RankStrike::MatchLeft, now + 10);   // 4회 = 900초
+        const uint32_t afterLonger = p.BlockedForSec("c", now + 10);
+        CRankPenalty q(5);   // 시험 인자 5초 — 앞 제한 뒤에 더 짧은 제한이 와도 안 줄어듦
+        q.Strike("c", RankStrike::MatchLeft, now);
+        q.Strike("c", RankStrike::MatchLeft, now);
+        const uint32_t q0 = q.BlockedForSec("c", now);
+        q.Strike("c", RankStrike::MatchLeft, now + 2);
+        Check(c4.blockSec == 900 && afterLonger == 900 && q0 == 5 && q.BlockedForSec("c", now + 2) == 5, "② 막힌 동안 위반 — 늦은 끝을 씀(900초 · 시험 인자 5초면 now+7)");
+        // 정지 — 칸 지움 · 풀린 뒤 1회 경고부터
+        now = 4000000;
+        PenaltyResult last;
+        for (int i = 0; i < 10; ++i) last = p.Strike("d", RankStrike::NoShow, now);
+        const bool banned = last.kind == PenaltyResult::Kind::Ban && last.count == 10 && p.CountOf("d", now) == 0 && p.BlockedForSec("d", now) == 0;
+        const PenaltyResult after = p.Strike("d", RankStrike::NoShow, now);
+        Check(banned && after.kind == PenaltyResult::Kind::Warn && after.count == 1, "② 10회째 정지 — 칸 지움 · 막힘 0 · 다음은 다시 1회 경고");
+        // 시계가 뒤로 가도 남은 시간이 안 줄어듦(벽시계라 뒤로 갈 수 있음)
+        CRankPenalty back(5);
+        back.Strike("w", RankStrike::Declined, 5000);
+        back.Strike("w", RankStrike::Declined, 5000);   // 끝 5005
+        back.Strike("w", RankStrike::Declined, 4997);   // 시계가 3초 뒤로 — 그대로 쓰면 끝 5002
+        Check(back.BlockedForSec("w", 5000) == 5, "② 시계가 뒤로 가도 늦은 끝을 씀");
+        // 밀린 경고 — 제한 안내가 대신하면 지움 · 30분이 지나면 안 꺼냄
+        CRankPenalty pend;
+        pend.Strike("a", RankStrike::Closed, 6000);
+        pend.Strike("a", RankStrike::Closed, 6000);
+        const bool blockClears = !pend.TakeWarnPending("a", 6000);
+        pend.Strike("b", RankStrike::Closed, 6000);
+        const bool lateNo = !pend.TakeWarnPending("b", 6000 + kRankPenaltyResetSec);
+        const bool inTimeYes = pend.TakeWarnPending("b", 6000 + kRankPenaltyResetSec - 1);
+        Check(blockClears, "② 2회 제한이 밀린 경고를 지움(다음 단추에 경고가 또 안 뜸)");
+        Check(lateNo && inTimeYes, "② 30분 지난 밀린 경고는 안 꺼냄 · 1초 전엔 꺼냄");
+        // Clear · Sweep
+        p.Strike("e", RankStrike::Closed, now);
+        p.Clear("e");
+        const bool cleared = p.CountOf("e", now) == 0;
+        CRankPenalty sw;
+        sw.Strike("x", RankStrike::Closed, 100);
+        sw.Sweep(100);                                // 첫 바퀴 — 다음 때를 잡음(아직 안 지남)
+        const size_t kept = sw.Size();
+        sw.Sweep(100 + kRankPenaltyResetSec - 1);     // 때는 됐지만 x 는 1초 남음
+        const size_t kept2 = sw.Size();
+        sw.Sweep(100 + kRankPenaltyResetSec + kRankPenaltySweepSec);
+        Check(cleared && kept == 1 && kept2 == 1 && sw.Size() == 0, "② Clear 칸 지움 · Sweep 은 30분 지난 칸만");
+        // 이유별 칸 — 이번 시험 위 호출 수 그대로
+        Check(p.Struck(RankStrike::Declined) == 4 && p.Struck(RankStrike::MatchLeft) == 4 && p.Struck(RankStrike::NoShow) == 11 && p.Struck(RankStrike::Closed) == 1 &&
+                  p.Struck(RankStrike::AcceptTimeout) == 0 && p.Struck(RankStrike::ListLeft) == 0 && p.Struck(RankStrike::ReadyLeft) == 0,
+              "② 이유별 칸이 따로 셈(거절 4 · 판 나감 4 · 안 들어옴 11 · 끊김 1 · 나머지 0)");
+    }
+
+    // ───── 로비 — 표의 줄마다
+    uint32_t clock = 0xfffff000u;
+    uint32_t unixNow = 1800000000u;
+    LobbyConfig cfg;
+    cfg.room.maxPlayers = 31;
+    cfg.authOn = false;
+    cfg.unixNow = [&unixNow] { return unixNow; };
+    cfg.nowMs = [&clock] { return clock; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    cfg.rankMin = cfg.rankMax = 2;
+    const uint32_t peer = 0x7f000001;
+    auto rel = [](const std::string& nick) { return ": " + std::to_string(kRankReleaseNumeric) + " u #" + nick + "'s_game :Ranked match left"; };
+    auto count = [](const std::vector<Out>& o, int conn, const std::string& line) {
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line == line ? 1 : 0;
+        return n;
+    };
+    auto startsCount = [](const std::vector<Out>& o, int conn, const std::string& head) {
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line.rfind(head, 0) == 0 ? 1 : 0;
+        return n;
+    };
+    struct Rig {
+        FakeRooms fake;
+        CMemoryLobbyStore store;
+        Lobby lb;
+        int next = 1;
+        explicit Rig(const LobbyConfig& c) : lb(c, fake) { lb.AttachStore(&store); }
+        int Login(const std::string& nick, int ver = 6) {
+            const int conn = next++;
+            lb.OnConnect(conn, 0x7f000001, 0x7f000001);
+            std::vector<Out> o;
+            for (const std::string& l : std::vector<std::string>{"NOXCLIENT " + std::to_string(ver), "NICK " + nick, "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(conn, l, o);
+            return conn;
+        }
+        void Rank(int conn, const std::string& nick, std::vector<Out>& o) {
+            lb.OnLine(conn, "NOXRANK JOIN", o);
+            lb.OnLine(conn, "JOINGAME #" + nick + "'s_game 1 ", o);
+        }
+    };
+    const size_t kFive = static_cast<size_t>(RankStrike::kCount);
+    auto strikes = [&](const Lobby& lb, RankStrike only, uint64_t n) {   // 그 칸만 n · 나머지 0
+        bool ok = true;
+        for (size_t i = 0; i < kFive; ++i) ok = ok && lb.Penalty().Struck(static_cast<RankStrike>(i)) == (static_cast<RankStrike>(i) == only ? n : 0);
+        return ok;
+    };
+    auto noStrikes = [&](const Lobby& lb) {
+        uint64_t sum = 0;
+        for (size_t i = 0; i < kFive; ++i) sum += lb.Penalty().Struck(static_cast<RankStrike>(i));
+        return sum == 0;
+    };
+    const std::string warnAccept = "NOXRANK WARN accept", warnMatch = "NOXRANK WARN match";
+
+    // ③ 수락 한도 — 한도에 안 한 쪽만 셈 · 수락한 쪽 안 셈 · EXPIRED 뒤 경고
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        r.lb.OnLine(a, "NOXRANK ACCEPT", o);
+        o.clear();
+        clock += kRankAcceptMs - 1;
+        r.lb.Tick(o);
+        const bool before = noStrikes(r.lb);
+        clock += 1;
+        r.lb.Tick(o);
+        size_t expiredAt = o.size(), warnAt = o.size();
+        for (size_t i = o.size(); i-- > 0;) {
+            if (o[i].conn == b && o[i].line == "NOXRANK EXPIRED") expiredAt = i;
+            if (o[i].conn == b && o[i].line == warnAccept) warnAt = i;
+        }
+        Check(before && strikes(r.lb, RankStrike::AcceptTimeout, 1) && r.lb.Penalty().CountOf("bob", unixNow) == 1 && r.lb.Penalty().CountOf("amy", unixNow) == 0 &&
+                  count(o, b, warnAccept) == 1 && expiredAt < warnAt && count(o, a, warnAccept) == 0 && r.lb.Stats().rankWarned == 1,
+              "③ 수락 한도 — 1ms 앞 안 셈 · 안 한 bob 만 1회 · EXPIRED 뒤 WARN accept · 수락한 amy 안 셈");
+        // 같은 사람이 다시 넘기면 BLOCKED(대기열에 다시 서려면 막힘을 먼저 봄)
+        std::vector<Out> o2;
+        r.Rank(b, "bob", o2);
+        Check(count(o2, b, warnAccept) == 0 && r.lb.Penalty().Struck(RankStrike::AcceptTimeout) == 1 && startsCount(o2, b, "NOXRANK BLOCKED") == 0,
+              "③ 1회 뒤 다시 단추 — 안 막힘 · 이미 본 경고는 또 안 나감");
+    }
+    // ④ 창 「아니오」 · 목록 · 끊김 — 각 칸
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        o.clear();
+        r.lb.OnLine(a, "NOXRANK LEAVE", o);
+        size_t relAt = o.size(), warnAt = o.size();
+        for (size_t i = 0; i < o.size(); ++i) {
+            if (o[i].conn == a && o[i].line == rel("amy")) relAt = i;
+            if (o[i].conn == a && o[i].line == warnAccept) warnAt = i;
+        }
+        Check(strikes(r.lb, RankStrike::Declined, 1) && relAt < warnAt && warnAt < o.size() && count(o, b, "NOXRANK WAIT") == 1 && r.lb.Penalty().CountOf("bob", unixNow) == 0,
+              "④ 창 「아니오」 — 거절 칸 1 · 474 뒤 WARN accept · 남이 거절해 풀린 bob 안 셈(표 「남이 거절해 풀림」)");
+    }
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        o.clear();
+        r.lb.OnLine(a, "LIST 0 0", o);
+        Check(strikes(r.lb, RankStrike::ListLeft, 1) && count(o, a, warnAccept) == 1 && r.lb.Penalty().CountOf("bob", unixNow) == 0, "④ 창 뜬 동안 LIST — 목록 칸 1 · WARN accept");
+    }
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        o.clear();
+        r.lb.OnClose(a, o);
+        const bool none = count(o, a, warnAccept) == 0;
+        const bool closedOnly = strikes(r.lb, RankStrike::Closed, 1);
+        // 끊겼으니 안내는 다음 랭크 단추에서(문구는 판 · 끊김 쪽)
+        const int a2 = r.Login("amy");
+        std::vector<Out> o2;
+        r.Rank(a2, "amy", o2);
+        const bool later = count(o2, a2, warnMatch) == 1 && r.lb.Stats().rankWarnLater == 1;
+        Check(closedOnly, "④ 창 뜬 동안 끊김 — 끊김 칸 1 · 다른 칸 0");
+        Check(none && later, "④ 끊긴 접속엔 줄 없음 · 다음 랭크 단추에서 WARN match(줄은 그대로 섬)");
+    }
+    // ⑤ 다 수락 뒤 방 기다리는 중 빠짐 — ReadyLeft · 남은 사람 줄 앞 안 셈
+    {
+        Rig r(cfg);
+        r.fake.ask = true;
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        r.lb.OnLine(a, "NOXRANK ACCEPT", o);
+        r.lb.OnLine(b, "NOXRANK ACCEPT", o);
+        o.clear();
+        r.lb.OnLine(a, "NOXRANK LEAVE", o);
+        Check(strikes(r.lb, RankStrike::ReadyLeft, 1) && count(o, a, warnMatch) == 1 && r.lb.Penalty().CountOf("bob", unixNow) == 0 && r.fake.cancelled.size() == 1,
+              "⑤ 다 수락 뒤 방 기다리다 빠짐 — 그 칸 1 · WARN match · 남은 bob 안 셈 · 요청 접음");
+    }
+    {
+        Rig r(cfg);
+        r.fake.ask = true;
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        r.lb.OnLine(a, "NOXRANK ACCEPT", o);
+        r.lb.OnLine(b, "NOXRANK ACCEPT", o);
+        o.clear();
+        r.lb.OnClose(a, o);
+        Check(strikes(r.lb, RankStrike::ReadyLeft, 1) && count(o, a, warnMatch) == 0, "⑤ 방 기다리다 끊김 — 같은 칸 1 · 끊긴 접속엔 줄 없음");
+    }
+    // ⑥ 안 세는 자리 — 창 뜨기 전 줄에서 나감 · 방 실패로 되돌림
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        o.clear();
+        r.lb.OnLine(a, "NOXRANK LEAVE", o);
+        Check(noStrikes(r.lb) && count(o, a, rel("amy")) == 1 && startsCount(o, a, "NOXRANK WARN") == 0, "⑥ 창 뜨기 전 줄에서 나감 — 안 셈 · 경고 없음");
+    }
+    {
+        Rig r(cfg);
+        r.fake.canCreate = false;
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        r.lb.OnLine(a, "NOXRANK ACCEPT", o);
+        o.clear();
+        r.lb.OnLine(b, "NOXRANK ACCEPT", o);   // 방 못 만듦 → RankRequeue
+        Check(noStrikes(r.lb) && r.lb.Penalty().CountOf("amy", unixNow) == 0 && r.lb.Penalty().CountOf("bob", unixNow) == 0 && r.lb.RankQueueSize() == 2,
+              "⑥ 방 실패로 되돌림 — 안 셈 · 둘 다 줄로");
+    }
+    // ⑦ 정지로 줄 · 찾음 · 방 요청에서 빠짐 — 안 셈
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        r.store.SetActiveBans({{"amy", unixNow + 1000}});
+        clock += kBanReadMs;
+        o.clear();
+        r.lb.Tick(o);
+        std::vector<StoreAnswer> ans;
+        r.store.TakeAnswers(ans);
+        for (const StoreAnswer& x : ans) r.lb.OnBansAnswer(x, o);
+        Check(noStrikes(r.lb) && count(o, a, "ERROR :Closing Link (account suspended)") == 1 && count(o, a, "NOXRANK BANNED " + std::to_string(unixNow + 1000)) == 1,
+              "⑦ 정지로 찾음에서 빠짐 — 안 셈 · 판 6 이면 끊기 전에 NOXRANK BANNED <끝>");
+        size_t bannedAt = o.size(), errAt = o.size();
+        for (size_t i = 0; i < o.size(); ++i) {
+            if (o[i].conn == a && o[i].line.rfind("NOXRANK BANNED", 0) == 0) bannedAt = i;
+            if (o[i].conn == a && o[i].line.rfind("ERROR", 0) == 0) errAt = i;
+        }
+        Check(bannedAt < errAt && o[errAt].closeAfter && !o[bannedAt].closeAfter, "⑦ BANNED 먼저 · 끊기는 ERROR 줄에서");
+    }
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy", 5);
+        (void)a;
+        r.store.SetActiveBans({{"amy", unixNow + 1000}});
+        clock += kBanReadMs;
+        std::vector<Out> o;
+        r.lb.Tick(o);
+        std::vector<StoreAnswer> ans;
+        r.store.TakeAnswers(ans);
+        for (const StoreAnswer& x : ans) r.lb.OnBansAnswer(x, o);
+        Check(startsCount(o, a, "NOXRANK BANNED") == 0 && startsCount(o, a, "ERROR") == 1, "⑦ 판 5 DLL 엔 BANNED 안 보냄(모르는 낱말이지만 안 보내는 쪽으로)");
+    }
+
+    {
+        // 다 수락 뒤 방 기다리는 중에 정지 — 안 셈(⑤ 의 같은 자리가 RankLeave::Banned 를 가림)
+        Rig r(cfg);
+        r.fake.ask = true;
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        r.lb.OnLine(a, "NOXRANK ACCEPT", o);
+        r.lb.OnLine(b, "NOXRANK ACCEPT", o);
+        r.store.SetActiveBans({{"amy", unixNow + 1000}});
+        o.clear();   // 시계를 안 돌림 — 새 Rig 의 첫 Tick 이 바로 묻고, 5초를 돌리면 방 요청 한도(같은 5초)가 먼저 터져 이 자리를 안 지나감
+        r.lb.Tick(o);
+        std::vector<StoreAnswer> ans;
+        r.store.TakeAnswers(ans);
+        for (const StoreAnswer& x : ans) r.lb.OnBansAnswer(x, o);
+        Check(noStrikes(r.lb) && r.lb.Stats().rankRoomTimeout == 0 && r.lb.Stats().rankLeftRequested[static_cast<size_t>(RankLeave::Banned)] == 1 && count(o, a, "ERROR :Closing Link (account suspended)") == 1 && r.fake.cancelled.size() == 1, "⑦ 정지로 방 기다리는 중에 빠짐 — 안 셈 · 요청 접음");
+    }
+
+    // ⑧ 입구 — 제한 중 단추 · 판 6 = BLOCKED + 474 · 판 5 = 471
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy");
+        const int old = r.Login("oli", 5);
+        std::vector<Out> o;
+        for (const std::string& n : {std::string("amy"), std::string("oli")}) {
+            std::vector<std::string> left{n};
+            r.lb.OnRankResult(left, {}, o);
+            r.lb.OnRankResult(left, {}, o);
+        }
+        const bool warnSkipped = count(o, a, warnMatch) == 0;
+        o.clear();
+        r.Rank(a, "amy", o);
+        const bool blocked = count(o, a, "NOXRANK BLOCKED 60") == 1 && count(o, a, rel("amy")) == 1 && r.lb.RankQueueSize() == 0 && r.lb.Stats().rankBlockedEntry == 1;
+        unixNow += 59;
+        o.clear();
+        r.Rank(a, "amy", o);
+        const bool oneLeft = count(o, a, "NOXRANK BLOCKED 1") == 1 && r.lb.RankQueueSize() == 0;
+        o.clear();
+        r.Rank(old, "oli", o);
+        const bool oldReject = OnlyReject(o, old, "#oli's_game", JoinReject::RankBlocked) && r.lb.RankQueueSize() == 0 && r.lb.Stats().rankBlockedEntry == 3;
+        unixNow += 1;
+        o.clear();
+        r.Rank(a, "amy", o);
+        const bool freed = startsCount(o, a, "NOXRANK BLOCKED") == 0 && r.lb.RankQueueSize() == 1;
+        Check(warnSkipped && blocked, "⑧ 제한 중 단추(판 6) — BLOCKED 60 + 474 · 줄 안 섬");
+        Check(oneLeft, "⑧ 59초 뒤 — BLOCKED 1(남은 초)");
+        Check(oldReject, "⑧ 판 5 DLL — 471 거절(RankBlocked) · 줄 안 섬");
+        Check(freed, "⑧ 60초에 풀림 — 줄 섬");
+        Check(std::string(JoinRejectText(JoinReject::RankBlocked)) == "Ranked match restricted", "⑧ 471 글");
+    }
+    // ⑨ 밀린 경고 — 판 나감 · 안 들어옴 뒤 다음 단추에서 한 번 · 줄은 섬
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy");
+        std::vector<Out> o;
+        r.lb.OnRankResult({"amy"}, {}, o);
+        const bool quiet = count(o, a, warnMatch) == 0 && strikes(r.lb, RankStrike::MatchLeft, 1) && r.lb.Stats().rankResultLeft == 1;
+        o.clear();
+        r.Rank(a, "amy", o);
+        const bool first = count(o, a, warnMatch) == 1 && r.lb.RankQueueSize() == 1 && r.lb.Stats().rankWarnLater == 1;
+        o.clear();
+        r.lb.OnLine(a, "NOXRANK LEAVE", o);
+        r.Rank(a, "amy", o);
+        Check(quiet && first && count(o, a, warnMatch) == 0 && r.lb.RankQueueSize() == 1, "⑨ 판 나감 — 그때 줄 없음 · 다음 단추에 WARN match · 줄 섬 · 그다음 단추엔 안 나감");
+    }
+    {   // 낮은 판은 밀린 경고를 안 꺼낸다(줄은 그대로 섬)
+        Rig r(cfg);
+        const int a = r.Login("oli", 5);
+        std::vector<Out> o;
+        r.lb.OnRankResult({"oli"}, {}, o);
+        o.clear();
+        r.Rank(a, "oli", o);
+        Check(startsCount(o, a, "NOXRANK WARN") == 0 && r.lb.RankQueueSize() == 1 && r.lb.Stats().rankWarnLater == 0, "⑨ 판 5 — 경고 줄 없음 · 줄 섬");
+    }
+    // ⑩ 판 결과 — 끝까지 = 0 · 정지로 내보낸 판 안 셈 · 겹친 판(Duplicate) 안 셈(거울 경유)
+    {
+        Rig r(cfg);
+        std::vector<Out> o;
+        r.lb.OnRankResult({"amy"}, {"bob"}, o);
+        r.lb.OnRankResult({"amy"}, {"bob"}, o);
+        const bool two = r.lb.Penalty().CountOf("amy", unixNow) == 2 && r.lb.Penalty().CountOf("bob", unixNow) == 0;
+        r.lb.OnRankResult({}, {"amy"}, o);
+        const bool reset = r.lb.Penalty().CountOf("amy", unixNow) == 0 && r.lb.Penalty().BlockedForSec("amy", unixNow) == 0 && r.lb.Stats().rankResultFinished == 3;
+        Check(two && reset, "⑩ 나감 = 셈 · 끝까지 = 0(제한도 같이 풀림 · 플랜 1절)");
+        r.store.SetActiveBans({{"ban", unixNow + 1000}});
+        clock += kBanReadMs;
+        r.lb.Tick(o);
+        std::vector<StoreAnswer> ans;
+        r.store.TakeAnswers(ans);
+        for (const StoreAnswer& x : ans) r.lb.OnBansAnswer(x, o);
+        const auto left0 = r.lb.Stats().rankResultLeft;
+        r.lb.OnRankResult({"ban"}, {}, o);
+        Check(r.lb.Penalty().CountOf("ban", unixNow) == 0 && r.lb.Stats().rankResultBanSkipped == 1 && r.lb.Stats().rankResultLeft == left0, "⑩ 정지로 내보낸 판 — 안 셈");
+    }
+    {
+        // 거울 경유 — 저장됨에서만 · 같은 판 두 번이면 한 번 · 랭크 아닌 판 안 셈 · 답할 연결이 끊긴 뒤에도 셈 · 저장 실패 안 셈
+        RoomMirror mirror(LobbyTestKey());
+        CMemoryLobbyStore store;
+        mirror.AttachStore(store);
+        LobbyConfig c = cfg;
+        Lobby lb(c, mirror);
+        mirror.Attach(lb);
+        std::vector<Out> out;
+        auto reg = [&](int conn, uint32_t ip) {
+            out.clear();
+            mirror.OnLinkOpen(conn, out);
+            nox::LinkLine l;
+            nox::ParseLinkLine(out.empty() ? std::string() : out[0].line, l);
+            out.clear();
+            mirror.OnLinkLine(conn, nox::LinkAuth(nox::LinkAuthSig(nox::LinkAuthKey(LobbyTestKey()), l.text)), out);
+            mirror.OnLinkLine(conn, nox::LinkRegister(1760000000u, ip, 18590), out);
+        };
+        auto json = [](const std::string& match, bool ranked) {
+            return std::string("{\"match\":\"") + match + "\",\"room\":0,\"roomName\":\"r\",\"map\":\"so_lod\",\"mode\":\"chat\",\"start\":1,\"end\":2,\"frames\":30,"
+                   "\"sec\":1,\"endReason\":\"score_player\",\"winner\":{\"kind\":\"player\",\"id\":2,\"account\":\"bob\"},\"limit\":1,\"timeLimitSec\":0," +
+                   (ranked ? "\"ranked\":true," : "") +
+                   "\"players\":[{\"account\":\"amy\",\"netCode\":1,\"state\":\"left\"},{\"account\":\"bob\",\"netCode\":2,\"state\":\"finished\",\"team\":0,\"score\":1,\"deaths\":0}]}";
+        };
+        auto result = [&](int conn, const std::string& j) {
+            std::string line;
+            nox::LinkResult(j, line);
+            out.clear();
+            mirror.OnLinkLine(conn, line, out);
+        };
+        auto pump = [&]() {
+            std::vector<StoreAnswer> ans;
+            store.TakeAnswers(ans);
+            out.clear();
+            for (const StoreAnswer& a : ans) mirror.OnStoreAnswer(a, out);
+        };
+        const uint32_t ipA = (10u << 24) | 1u, ipB = (10u << 24) | 2u;
+        reg(401, ipA);
+        reg(402, ipB);
+        result(401, json("1760000000-0-1", true));
+        const bool notYet = lb.Penalty().CountOf("amy", unixNow) == 0;
+        pump();
+        const bool once = lb.Penalty().CountOf("amy", unixNow) == 1 && lb.Stats().rankResultLeft == 1 && lb.Stats().rankResultFinished == 1;
+        result(401, json("1760000000-0-1", true));
+        pump();
+        const bool dup = lb.Penalty().CountOf("amy", unixNow) == 1 && lb.Stats().rankResultLeft == 1 && mirror.Stats().savedDup == 1;
+        result(401, json("1760000000-0-2", false));
+        pump();
+        const bool unranked = lb.Penalty().CountOf("amy", unixNow) == 1 && lb.Stats().rankResultLeft == 1 && mirror.Stats().savedOk == 2;
+        store.SetFailSaves(true);
+        result(401, json("1760000000-0-3", true));
+        pump();
+        const bool failed = lb.Penalty().CountOf("amy", unixNow) == 1 && mirror.Stats().saveFailed == 1;
+        store.SetFailSaves(false);
+        result(402, json("1760000000-0-4", true));
+        mirror.OnLinkClose(402, out);
+        pump();
+        const bool gone = lb.Penalty().CountOf("amy", unixNow) == 2 && mirror.Stats().saveConnGone == 1;
+        reg(403, (10u << 24) | 3u);
+        // 계정 없는 사람 · 구경꾼은 안 넘김(나간 사람 ivy 하나 · 끝까지 한 사람 bea 하나만)
+        const auto left0 = lb.Stats().rankResultLeft;
+        const auto fin0 = lb.Stats().rankResultFinished;
+        const auto ok0 = mirror.Stats().savedOk;
+        result(401, std::string("{\"match\":\"1760000000-0-5\",\"room\":0,\"roomName\":\"r\",\"map\":\"so_lod\",\"mode\":\"chat\",\"start\":1,\"end\":2,\"frames\":30,"
+                                "\"sec\":1,\"endReason\":\"score_player\",\"winner\":{\"kind\":\"player\",\"id\":2,\"account\":\"bea\"},\"limit\":1,\"timeLimitSec\":0,\"ranked\":true,"
+                                "\"players\":[{\"account\":\"ivy\",\"netCode\":1,\"state\":\"left\"},{\"account\":null,\"netCode\":3,\"state\":\"left\"},"
+                                "{\"account\":\"eve\",\"netCode\":4,\"state\":\"finished\",\"team\":0,\"score\":0,\"deaths\":0,\"observer\":true},"
+                                "{\"account\":\"bea\",\"netCode\":2,\"state\":\"finished\",\"team\":0,\"score\":1,\"deaths\":0}]}"));
+        pump();
+        Check(mirror.Stats().savedOk == ok0 + 1 && lb.Stats().rankResultLeft == left0 + 1 && lb.Stats().rankResultFinished == fin0 + 1 && lb.Penalty().CountOf("ivy", unixNow) == 1,
+              "⑩ 거울 — 계정 없는 사람 · 구경꾼은 안 넘김");
+        Check(notYet && once, "⑩ 거울 — 저장 답 전엔 안 셈 · 저장됨 뒤 나감 1 · 끝까지 1");
+        Check(dup, "⑩ 거울 — 같은 판 다시(Duplicate) 안 셈");
+        Check(unranked, "⑩ 거울 — 랭크 아닌 판 안 셈");
+        Check(failed, "⑩ 거울 — 저장 실패 안 셈");
+        Check(gone, "⑩ 거울 — 답할 연결이 끊긴 뒤라도 저장됐으면 셈");
+
+        // ⑪ RANK_NOSHOW — 거울 → 로비. 참가 답 기록이 없는 방이면 안 셈
+        out.clear();
+        mirror.OnLinkLine(401, nox::LinkRankNoShow(55, "zed"), out);
+        Check(lb.Penalty().CountOf("zed", unixNow) == 0 && lb.Stats().rankNoShowIgnored == 1 && mirror.Stats().rankNoShowLines == 1, "⑪ 거울 — 참가 답을 안 보낸 방의 RANK_NOSHOW 는 버림(접힌 요청의 방)");
+
+        // ⑪ 거울 끝까지 — 참가 답을 적을 때의 열쇠(`LobbyRoom`)와 줄의 열쇠(등록 주소 · 포트 · 방 번호)가 같은가. 메모리 가짜로는 못 본다
+        auto login = [&](int conn, const std::string& nick) {
+            lb.OnConnect(conn, peer, peer);
+            std::vector<Out> lo;
+            for (const std::string& l : std::vector<std::string>{"NOXCLIENT 6", "NICK " + nick, "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(conn, l, lo);
+        };
+        login(11, "ann");
+        login(12, "ben");
+        std::vector<Out> lo;
+        for (const auto& pr : std::vector<std::pair<int, std::string>>{{11, "ann"}, {12, "ben"}}) {
+            lb.OnLine(pr.first, "NOXRANK JOIN", lo);
+            lb.OnLine(pr.first, "JOINGAME #" + pr.second + "'s_game 1 ", lo);
+        }
+        lb.OnLine(11, "NOXRANK ACCEPT", lo);
+        lb.OnLine(12, "NOXRANK ACCEPT", lo);
+        std::vector<Out> sent;
+        mirror.TakeOut(sent);
+        nox::LinkLine ll;
+        const bool askedRoom = !sent.empty() && nox::ParseLinkLine(sent.back().line, ll) == nox::LinkParse::Ok && ll.kind == nox::LinkKind::Create;
+        const int gs = askedRoom ? sent.back().conn : 401;
+        const uint32_t reqRank = ll.req;
+        nox::LinkRoom lr;
+        lr.id = 77;
+        lr.maxPlayers = 8;
+        lr.name = "ann's game";
+        lr.creator = "ann";
+        lr.host = "ann";
+        lr.map = "so_lod";
+        lr.mode = "chat";
+        out.clear();
+        mirror.OnLinkLine(gs, nox::LinkRoomLine(lr), out);
+        mirror.OnLinkLine(gs, nox::LinkCreated(reqRank, 77), out);
+        const bool joined = lb.RankJoinedRooms() == 1;
+        const auto ign0 = lb.Stats().rankNoShowIgnored;
+        mirror.OnLinkLine(gs == 401 ? 403 : 401, nox::LinkRankNoShow(77, "ann"), out);   // 다른 게임 서버의 같은 방 번호
+        const bool otherServer = lb.Stats().rankNoShowIgnored == ign0 + 1 && lb.Penalty().CountOf("ann", unixNow) == 0;
+        mirror.OnLinkLine(gs, nox::LinkRankNoShow(77, "ann"), out);
+        Check(askedRoom && joined && lb.Stats().rankNoShowCounted == 1 && lb.Penalty().CountOf("ann", unixNow) == 1 && lb.Penalty().CountOf("ben", unixNow) == 0,
+              "⑪ 거울 끝까지 — 참가 답을 적은 방의 RANK_NOSHOW 는 셈(그 이름만)");
+        Check(otherServer, "⑪ 거울 끝까지 — 다른 게임 서버가 보낸 같은 방 번호는 안 셈");
+    }
+    // ⑪ 안 들어옴 — 참가 답을 보낸 이름만 · 한 번만 · 시간 지나면 기록 지움 · 정지된 이름 안 셈
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy"), b = r.Login("bob");
+        std::vector<Out> o;
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        r.lb.OnLine(a, "NOXRANK ACCEPT", o);
+        r.lb.OnLine(b, "NOXRANK ACCEPT", o);
+        Check(r.fake.rooms.size() == 1 && r.lb.RankJoinedRooms() == 1, "⑪ 참가 답을 보냄 → 기록 한 방");
+        const LobbyRoom room = r.fake.rooms.back();
+        const uint32_t ip = room.gameIp;
+        const uint16_t port = room.gamePort;
+        const uint32_t id = room.gameRoomId;
+        o.clear();
+        r.lb.OnRankNoShow(ip, port, id, "cat", o);   // 명단 밖 이름
+        const bool stranger = r.lb.Stats().rankNoShowIgnored == 1 && noStrikes(r.lb);
+        r.lb.OnRankNoShow(ip, port + 1, id, "amy", o);   // 다른 게임 서버의 같은 방 번호
+        r.lb.OnRankNoShow(ip, port, id + 1, "amy", o);   // 다른 방
+        const bool others = r.lb.Stats().rankNoShowIgnored == 3 && noStrikes(r.lb);
+        r.lb.OnRankNoShow(ip, port, id, "amy", o);
+        const bool counted = strikes(r.lb, RankStrike::NoShow, 1) && r.lb.Stats().rankNoShowCounted == 1 && count(o, a, warnMatch) == 0;
+        r.lb.OnRankNoShow(ip, port, id, "amy", o);   // 같은 줄이 또 와도 한 번
+        const bool once = strikes(r.lb, RankStrike::NoShow, 1) && r.lb.Stats().rankNoShowIgnored == 4;
+        Check(stranger && others, "⑪ 안 들어옴 — 명단 밖 · 다른 포트 · 다른 방 번호 안 셈");
+        Check(counted && once, "⑪ 안 들어옴 — 답 보낸 amy 1회(그때 줄 없음) · 같은 줄 또 와도 한 번");
+        clock += 120 * 1000 - 1;
+        std::vector<Out> ot;
+        r.lb.Tick(ot);
+        const bool kept = r.lb.RankJoinedRooms() == 1;
+        clock += 1;
+        r.lb.Tick(ot);
+        r.lb.OnRankNoShow(ip, port, id, "bob", ot);
+        Check(kept && r.lb.RankJoinedRooms() == 0 && r.lb.Penalty().CountOf("bob", unixNow) == 0, "⑪ 기록은 120초까지 — 지난 뒤 온 줄은 안 셈");
+        // 마지막 이름이 빠지면 칸도 지움
+        Rig r2(cfg);
+        const int c = r2.Login("cat"), d = r2.Login("dan");
+        std::vector<Out> o2;
+        r2.Rank(c, "cat", o2);
+        r2.Rank(d, "dan", o2);
+        r2.lb.OnLine(c, "NOXRANK ACCEPT", o2);
+        r2.lb.OnLine(d, "NOXRANK ACCEPT", o2);
+        const LobbyRoom room2 = r2.fake.rooms.back();
+        r2.lb.OnRankNoShow(room2.gameIp, room2.gamePort, room2.gameRoomId, "cat", o2);
+        const size_t one = r2.lb.RankJoinedRooms();
+        r2.lb.OnRankNoShow(room2.gameIp, room2.gamePort, room2.gameRoomId, "dan", o2);
+        Check(one == 1 && r2.lb.RankJoinedRooms() == 0 && r2.lb.Stats().rankNoShowCounted == 2, "⑪ 다 빠지면 방 기록도 지움");
+        // 정지된 이름
+        Rig r3(cfg);
+        const int e = r3.Login("eve"), f = r3.Login("fay");
+        std::vector<Out> o3;
+        r3.Rank(e, "eve", o3);
+        r3.Rank(f, "fay", o3);
+        r3.lb.OnLine(e, "NOXRANK ACCEPT", o3);
+        r3.lb.OnLine(f, "NOXRANK ACCEPT", o3);
+        const LobbyRoom room3 = r3.fake.rooms.back();
+        r3.store.SetActiveBans({{"eve", unixNow + 1000}});
+        clock += kBanReadMs;
+        r3.lb.Tick(o3);
+        std::vector<StoreAnswer> ans;
+        r3.store.TakeAnswers(ans);
+        for (const StoreAnswer& x : ans) r3.lb.OnBansAnswer(x, o3);
+        r3.lb.OnRankNoShow(room3.gameIp, room3.gamePort, room3.gameRoomId, "eve", o3);
+        Check(noStrikes(r3.lb) && r3.lb.Stats().rankNoShowBanSkipped == 1, "⑪ 정지된 이름 — 안 셈");
+    }
+    // ⑫ 10회째 — BanAccount 값 · CBanList · 내보내기 · 끊기 · 횟수 0 · 쓰기 답 셈 · 쓰기 실패여도 이번 실행은 막힘
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy");
+        std::vector<Out> o;
+        std::vector<std::string> left{"amy"};
+        for (int i = 0; i < 9; ++i) r.lb.OnRankResult(left, {}, o);
+        const bool nine = r.lb.Penalty().CountOf("amy", unixNow) == 9 && r.store.WrittenBans().empty() && r.lb.Stats().rankPenalized == 8 && r.lb.Stats().rankWarned == 1 && r.fake.kicked.empty();
+        o.clear();
+        r.lb.OnRankResult(left, {}, o);
+        const uint32_t until = unixNow + kRankPenaltyBanSec;
+        const auto& w = r.store.WrittenBans();
+        const bool written = w.size() == 1 && w[0].account == "amy" && w[0].until == until && w[0].reason == "랭크 매칭 거절·이탈 반복";
+        const bool enforced = r.fake.kicked == std::vector<std::string>{"amy"} && r.lb.Bans().UntilOf("amy", unixNow) == until && count(o, a, "NOXRANK BANNED " + std::to_string(until)) == 1 &&
+                              count(o, a, "ERROR :Closing Link (account suspended)") == 1;
+        Check(nine, "⑫ 9회까지 — 경고 1 + 제한 8 · 쓰기 없음 · 내보내기 없음");
+        Check(written, "⑫ 10회째 — BanAccount(amy · 1일 · 사유 플랜 9절 그대로)");
+        Check(enforced, "⑫ 10회째 — 목록 · KICK · BANNED + ERROR");
+        Check(r.lb.Penalty().CountOf("amy", unixNow) == 0 && r.lb.Stats().rankAutoBans == 1 && r.lb.Stats().rankWarned + r.lb.Stats().rankPenalized + r.lb.Stats().rankAutoBans == 10,
+              "⑫ 정지 뒤 횟수 0 · 위반 10 = 경고 1 + 제한 8 + 자동 정지 1");
+        std::vector<StoreAnswer> ans;
+        r.store.TakeAnswers(ans);
+        int writes = 0;
+        for (const StoreAnswer& x : ans)
+            if (x.kind == StoreAnswerKind::BanWrite) {
+                ++writes;
+                r.lb.OnBanWriteAnswer(x);
+            }
+        Check(writes == 1 && r.lb.Stats().rankBanWrites == 1 && r.lb.Stats().rankBanWriteFailed == 0, "⑫ 쓰기 답 한 번 — 넣음 셈");
+        // 쓴 정지가 다음 읽기에 실림(가짜 저장소도 테이블처럼)
+        r.store.GetActiveBans(99, unixNow);
+        std::vector<StoreAnswer> ansRead;
+        r.store.TakeAnswers(ansRead);
+        Check(ansRead.size() == 1 && ansRead[0].bansOk && ansRead[0].bans.size() == 1 && ansRead[0].bans[0].name == "amy", "⑫ 쓴 정지가 다음 읽기에 실림");
+        // 로비 Tick 이 지난 칸을 지움(이름 칸이 끝없이 안 쌓임)
+        {
+            Rig rs(cfg);
+            std::vector<Out> os;
+            rs.lb.OnRankResult({"sam"}, {}, os);
+            const bool had = rs.lb.Penalty().Size() == 1;
+            unixNow += kRankPenaltyResetSec;
+            rs.lb.Tick(os);
+            Check(had && rs.lb.Penalty().Size() == 0, "⑫ 로비 Tick 이 30분 지난 칸을 지움");
+        }
+        // 쓰기 실패 — 로비 목록에는 남아 이번 실행은 막힌다 · 읽기 전 목록 교체에도 안 사라짐(`CBanList::Add` — `BanList.h`)
+        Rig r2(cfg);
+        r2.store.SetFailBanWrites(true);
+        r2.Login("bob");
+        std::vector<Out> o2;
+        for (int i = 0; i < 10; ++i) r2.lb.OnRankResult({"bob"}, {}, o2);
+        std::vector<StoreAnswer> ans2;
+        r2.store.TakeAnswers(ans2);
+        for (const StoreAnswer& x : ans2)
+            if (x.kind == StoreAnswerKind::BanWrite) r2.lb.OnBanWriteAnswer(x);
+        Check(r2.lb.Stats().rankBanWriteFailed == 1 && r2.lb.Stats().rankBanWrites == 0 && r2.lb.Bans().UntilOf("bob", unixNow) != 0 && r2.store.WrittenBans().empty(), "⑫ 쓰기 실패 — 못 넣음 셈 · 이번 실행 목록엔 남음");
+        // 끊김으로 10회째 — 닫히는 접속에 줄을 안 쓴다
+        Rig r3(cfg);
+        const int c = r3.Login("cat"), d = r3.Login("dan");
+        std::vector<Out> o3;
+        for (int i = 0; i < 9; ++i) r3.lb.OnRankResult({"cat"}, {}, o3);
+        unixNow += 901;   // 제한이 풀린 때(횟수는 이어짐)
+        r3.Rank(c, "cat", o3);
+        r3.Rank(d, "dan", o3);
+        o3.clear();
+        r3.lb.OnClose(c, o3);
+        Check(r3.lb.Stats().rankAutoBans == 1 && startsCount(o3, c, "") == 0 && r3.fake.kicked == std::vector<std::string>{"cat"} && r3.store.WrittenBans().size() == 1 && r3.lb.Stats().banConnsClosed == 0,
+              "⑫ 끊김으로 10회째 — 닫히는 접속엔 줄 없음 · KICK · 정지는 넣음");
+    }
+    // ⑬ 시험 인자 — 제한 시간만 줄임 · BLOCKED 글도 그 값
+    {
+        LobbyConfig c = cfg;
+        c.rankPenaltySec = 5;
+        Rig r(c);
+        const int a = r.Login("amy");
+        std::vector<Out> o;
+        r.lb.OnRankResult({"amy"}, {}, o);
+        r.lb.OnRankResult({"amy"}, {}, o);
+        o.clear();
+        r.Rank(a, "amy", o);
+        Check(count(o, a, "NOXRANK BLOCKED 5") == 1, "⑬ --rank-penalty-sec 5 → BLOCKED 5");
+    }
+    // ⑭ 2회째 창 안내 — 수락 쪽 위반은 그 자리에서 BLOCKED(남은 초 그대로)
+    {
+        Rig r(cfg);
+        const int a = r.Login("amy");
+        std::vector<Out> o;
+        r.lb.OnRankResult({"amy"}, {}, o);
+        const int b = r.Login("bob");
+        r.Rank(a, "amy", o);
+        r.Rank(b, "bob", o);
+        o.clear();
+        r.lb.OnLine(a, "NOXRANK LEAVE", o);
+        Check(count(o, a, "NOXRANK BLOCKED 60") == 1 && startsCount(o, a, "NOXRANK WARN") == 0 && r.lb.Penalty().Struck(RankStrike::Declined) == 1, "⑭ 2회째 거절 — 그 자리에서 BLOCKED 60 · 경고 줄 없음");
+        // 낮은 판은 줄을 안 받는다
+        Rig r2(cfg);
+        const int c = r2.Login("cat", 5), d = r2.Login("dan", 5);
+        std::vector<Out> o2;
+        r2.Rank(c, "cat", o2);
+        r2.Rank(d, "dan", o2);
+        o2.clear();
+        r2.lb.OnLine(c, "NOXRANK LEAVE", o2);
+        Check(startsCount(o2, c, "NOXRANK WARN") == 0 && r2.lb.Penalty().Struck(RankStrike::Declined) == 1 && r2.lb.Penalty().CountOf("cat", unixNow) == 1, "⑭ 판 5 — 셈은 하되 줄 없음");
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "--gameinfo") == 0) {
         if (GameInfoFromRecording(argv[2]) != 0) return 1;
@@ -3723,6 +4422,7 @@ int main(int argc, char** argv) {
         RankQueueUnitTests();     // ★ 랭크 매칭 조각 4
         RankAcceptUnitTests();    // ★ 매칭 손보기 6
         RankReadyUnitTests();     // ★ 10-31 다 수락 뒤 방 요청
+        RankPenaltyUnitTests();   // ★ 11-05 플랜1 줄 서기 제한
         MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
         LinkAliveUnitTests();     // ★ 7단계 조각 2
         LobbyStoreUnitTests();    // ★ 7단계 조각 4

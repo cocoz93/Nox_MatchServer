@@ -157,6 +157,20 @@ void CMemoryLobbyStore::GetActiveBans(uint32_t req, uint32_t now) {
     Answer(std::move(a));
 }
 
+void CMemoryLobbyStore::BanAccount(const std::string& account, uint32_t until, const std::string& reason, uint32_t /*now*/) {
+    StoreAnswer a;
+    a.kind = StoreAnswerKind::BanWrite;
+    if (failBanWrites_) {
+        a.why = "메모리 저장소 — 정지 쓰기 실패 시험 스위치";
+        Answer(std::move(a));
+        return;
+    }
+    a.banWritten = true;
+    writtenBans_.push_back({account, until, reason});
+    bans_.push_back({account, until});   // 테이블처럼 다음 읽기에 실린다
+    Answer(std::move(a));
+}
+
 void CMemoryLobbyStore::Answer(StoreAnswer a) {
     pending_.push_back(std::move(a));
     if (wake_) wake_();

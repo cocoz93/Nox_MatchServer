@@ -172,6 +172,8 @@ public:
     unsigned long long RankQuitArmed() const { return _rankQuitArmed; }
     // 명단 가운데 지금 게임 안에 든 사람 수(같은 이름은 한 번)
     size_t RankArrived() const;
+    // ★ 11-05 플랜1 — 명단 가운데 아직 안 온 이름(`RankArrived` 와 같은 잣대 · 줄 서기 제한의 「안 들어옴」)
+    std::vector<std::string> RankMissing() const;
     // ★ 매칭 손보기 5 — 판 시작 알림 글 「Ranked: amy (1000) vs bob (1010)」(명단 차례 · 게임 안 + 준비한 사람만 · 점수 모르면 이름만).
     //   영문 ASCII(게임 안 알림의 한글은 정품 화면 미확인) · 알림 한도(`Server::SendNotice` 200바이트)를 넘으면 들어가는 데까지 + 「 ...」
     std::string RankVsText() const;
@@ -179,6 +181,7 @@ public:
 
 private:
     friend class CRoomManager;
+    std::vector<bool> RankSeen() const;   // ★ 11-05 플랜1 — 명단 차례대로 게임 안에 들었나(`RankArrived` · `RankMissing` 이 같이 쓴다)
     // ★ 10-16 작업 13b — 판 열기(대전 맵으로 · 대기 맵을 다음 판 맵으로 걸어 둠) · 판 끝 뒤 다시 열림(방 관리자가 판 끝 참 → 거짓을 보고 부른다)
     std::shared_ptr<const MapOriginal> FindMap(const std::string& path) const;
     bool CanStartMatch() const { return FindMap(_settings.battleMapPath) && FindMap(_settings.mapPath); }
@@ -296,6 +299,7 @@ struct CRoomStats {
     unsigned long long rankStartDeadline = 0;  // 도착 한도에 `kMinPlayers` 이상 → 온 사람으로 판
     unsigned long long rankUnranked = 0;       // 도착 한도에 모자람 → 랭크 풂(일반 방)
     unsigned long long rankNoMap = 0;          // 시작할 때 대전 맵 · 대기 맵 원본이 없음 → 랭크 풂(일반 방)
+    unsigned long long rankNoShows = 0;        // ★ 11-05 플랜1 — 도착 한도에 안 온 이름(줄마다)
     unsigned long long rankClosedWaiting = 0;  // 기다리는 동안 방이 닫힘
     unsigned long long rankEnded = 0;          // 랭크로 연 판이 끝나거나 중단돼 일반 방이 됨
     unsigned long long rejectRoster = 0;       // 판 전 랭크 방에 명단 밖 이름(토큰 · 접속 시도와 CONNECT 를 합쳐 셈) — `ConnectError::Closed`
@@ -354,6 +358,15 @@ public:
     size_t OnClientLobbyGone(const std::string& account);
     // ★ 11-05 플랜1 — 계정 정지(`KICK`). 그 로비 이름의 세션마다 `Server::KickByLobby`. 돌려주는 값 = 내보낸 세션 수
     size_t KickAccount(const std::string& account);
+    // ★ 11-05 플랜1 — 도착 한도에 안 온 이름(`CLobbyClient` 가 `RANK_NOSHOW` 로 보낸다)
+    struct RankNoShow {
+        int room = 0;
+        std::string name;
+    };
+    void TakeRankNoShows(std::vector<RankNoShow>& out) {
+        out.insert(out.end(), _rankNoShows.begin(), _rankNoShows.end());
+        _rankNoShows.clear();
+    }
     Server& Game(int roomId) { return Room(roomId).Game(); }
     const Server& Game(int roomId) const { return Room(roomId).Game(); }
     size_t RoomCount() const { return _rooms.size(); }
@@ -409,6 +422,7 @@ public:
     // ★ 랭크 매칭 조각 6 — 도착 한도(기본 `kRankArriveMs`). 시험이 짧게 — 30초를 한 번에 건너뛰면 들어와 있는 가짜 클라가 시간 초과로 끊긴다
     void SetRankArriveMs(uint32_t ms) { _rankArriveMs = ms; }
     uint32_t RankArriveMs() const { return _rankArriveMs; }
+    size_t RankNoShowsWaiting() const { return _rankNoShows.size(); }   // ★ 11-05 플랜1 — 시험
     void SetRankSettleMs(uint32_t ms) { _rankSettleMs = ms; }   // ★ 10-30 — 시작 전 쉬기(기본 `kRankSettleMs` · 0 = 곧바로)
     // ★ 매칭 손보기 3(파일럿 — 기본 꺼짐 · 게임 서버 `--rank-one-map`) — 랭크 방을 처음부터 대전 맵 · 대전 모드로 만들고(`CLobbyClient`)
     //   다 오면 맵을 다시 싣지 않고 그 자리에서 판(`CRoom::StartMatch(true)`). 정품이 따라오는지는 사람 판 몸(순간이동 그림 · 가방)
@@ -460,6 +474,7 @@ private:
     std::vector<RoomEvent> _roomEvents;
     uint32_t _epoch = UnixNow();                  // ★ 10-19 MO 5단계 작업 2 — 판 번호 앞자리(방을 만들 때 넘긴다)
     uint32_t _rankArriveMs = kRankArriveMs;       // ★ 랭크 매칭 조각 6
+    std::vector<RankNoShow> _rankNoShows;         // ★ 11-05 플랜1 — `TakeRankNoShows`
     uint32_t _rankSettleMs = kRankSettleMs;       // ★ 10-30
     bool _rankOneMap = false;                     // ★ 매칭 손보기 3
     CRoomStats _stats;

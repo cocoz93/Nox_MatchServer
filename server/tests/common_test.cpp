@@ -354,6 +354,11 @@ void TestLobbyLink() {
     Check(parse(nox::LinkClientGone("a b")) == P::Ok && l.kind == K::ClientGone && l.text == "a b", "★ 11-03 CLIENT_GONE 왕복(빈칸 든 이름)");
     Check(parse(nox::LinkKick("a b")) == P::Ok && l.kind == K::Kick && l.text == "a b" && nox::LinkKick("x") == "KICK x", "★ 11-05 플랜1 KICK 왕복(빈칸 든 이름)");
     Check(parse("KICK") == P::FieldCount && parse("KICK a b") == P::FieldCount, "★ 11-05 플랜1 KICK 칸 수 틀림");
+    Check(parse(nox::LinkRankNoShow(7, "a b")) == P::Ok && l.kind == K::RankNoShow && l.room.id == 7 && l.text == "a b" && nox::LinkRankNoShow(7, "x") == "RANK_NOSHOW 7 x",
+          "★ 11-05 플랜1 RANK_NOSHOW 왕복(방 번호 · 빈칸 든 이름)");
+    Check(parse("RANK_NOSHOW") == P::FieldCount && parse("RANK_NOSHOW 7") == P::FieldCount && parse("RANK_NOSHOW 7 a b") == P::FieldCount && parse("RANK_NOSHOW x a") == P::BadNumber &&
+              parse("RANK_NOSHOW 7 a~b") == P::BadText,
+          "★ 11-05 플랜1 RANK_NOSHOW 틀린 꼴 — 칸 수 · 방 번호 · 글");
     // ★ 11-04 플랜1 — 방 안 화면 상태(상태 넷 각각 · 방장/시작 가능 · 빈 맵 · 틀린 꼴은 개수로)
     {
         int okStates = 0;

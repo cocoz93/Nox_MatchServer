@@ -184,6 +184,12 @@ void CRoomManager::CheckRankRooms(uint32_t nowMs) {
                 room._game.SendNotice("대전 맵이 없어 일반 방으로 바꿉니다.");
                 break;
         }
+        // ★ 11-05 플랜1 — 안 온 이름(아래 `roster.clear()` 앞). 맵 없음은 사람 탓이 아니라 안 알린다 · 쉬는 동안 온 사람은 여기서 이미 빠진다
+        if (d == Decision::StartDeadline || d == Decision::Unranked)
+            for (std::string& name : room.RankMissing()) {
+                ++_stats.rankNoShows;
+                _rankNoShows.push_back({room._id, std::move(name)});
+            }
         if (_logRooms) {
             std::printf("[방] %d 랭크 — %s(게임 안 명단 %zu / %zu · %u초)\n", room._id, what, arrived, want,
                         static_cast<uint32_t>(nowMs - room._rankSinceMs) / 1000);

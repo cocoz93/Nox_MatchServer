@@ -10,7 +10,7 @@ namespace nox {
 namespace {
 
 const char* const kWords[] = {"HELLO", "AUTH", "REGISTER", "ROOM", "ROOM_GONE", "CREATE", "CREATED", "CREATE_FAILED", "RESULT", "BYE",
-                              "PING", "SAVED", "CLIENT_GONE", "ROOMUI", "KICK"};
+                              "PING", "SAVED", "CLIENT_GONE", "ROOMUI", "KICK", "RANK_NOSHOW"};
 static_assert(sizeof(kWords) / sizeof(kWords[0]) == static_cast<size_t>(LinkKind::kCount), "낱말 표 = 갈래 수");
 const char* const kSaveWords[] = {"ok", "dup", "bad"};
 static_assert(sizeof(kSaveWords) / sizeof(kSaveWords[0]) == static_cast<size_t>(SaveOutcome::kCount), "SAVED 끝 칸 표 = 갈래 수");
@@ -184,6 +184,7 @@ std::string LinkBye(const std::string& reason) { return std::string(kWords[9]) +
 
 std::string LinkClientGone(const std::string& name) { return std::string(kWords[12]) + " " + EncodeLinkText(name); }   // ★ 11-03
 std::string LinkKick(const std::string& name) { return std::string(kWords[14]) + " " + EncodeLinkText(name); }   // ★ 11-05 플랜1
+std::string LinkRankNoShow(uint32_t roomId, const std::string& name) { return std::string(kWords[15]) + " " + std::to_string(roomId) + " " + EncodeLinkText(name); }   // ★ 11-05 플랜1
 
 // ★ 11-04 플랜1
 static std::string RoomUiTail(const LinkRoomUi& u) {
@@ -293,6 +294,10 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
         case LinkKind::Kick:         // ★ 11-05 플랜1
             if (!want(2)) return LinkParse::FieldCount;
             return DecodeLinkText(t[1], out.text) ? LinkParse::Ok : LinkParse::BadText;
+        case LinkKind::RankNoShow:   // ★ 11-05 플랜1
+            if (!want(3)) return LinkParse::FieldCount;
+            if (!ParseNum(t[1], kMaxRoomId, out.room.id)) return LinkParse::BadNumber;
+            return DecodeLinkText(t[2], out.text) ? LinkParse::Ok : LinkParse::BadText;
         case LinkKind::RoomUi: {   // ★ 11-04 플랜1
             if (!want(8)) return LinkParse::FieldCount;
             uint32_t state = 0, host = 0, canStart = 0;

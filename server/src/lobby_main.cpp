@@ -2,7 +2,7 @@
 //
 //   nox_lobby.exe --config <설정 파일> [--bind 0.0.0.0] [--lobby-port 4000]
 //                 [--link-bind 127.0.0.1] [--link-port 4010] [--seconds N] [--quiet] [--no-db] [--test-db] [--no-auth]
-//                 [--rank-min N] [--rank-max N] [--rank-gather-sec N]
+//                 [--rank-min N] [--rank-max N] [--rank-gather-sec N] [--rank-penalty-sec N]
 //
 // 왜 다시 따로 된 프로세스인가 — 목표 구조 v2(10-20 결정): 로비 하나가 전체 상태(로그인 · 채팅 채널 · 게임 목록 ·
 //   나중 계정 · 친구 · 매칭)를 쥐고, 게임 서버(`nox_server`)는 판만 돌려 늘리고 줄인다. 10-14 작업 8d 가 이 실행 파일을 없애고
@@ -127,6 +127,7 @@ int main(int argc, char** argv) {
     bool testDb = false; // ★ 11-05 플랜1 — `nox_auth --test-db` 와 같은 DB. 정지 시험은 운영 명령과 로비가 같은 DB 를 봐야 한다(`--no-db` 면 정지 목록이 없다)
     bool noAuth = false; // ★ 로그인 암호 조각 4
     std::string argRankMin, argRankMax, argRankGather;   // ★ 랭크 매칭 조각 4 — 비면 설정 파일 · 그것도 없으면 기본값
+    uint32_t argRankPenalty = 0;   // ★ 11-05 플랜1 — 시험 인자 · 줄 서기 제한 시간을 이 초로(10회까지 96분이라 없으면 실물로 못 본다 · 플랜 7절)
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -146,6 +147,7 @@ int main(int argc, char** argv) {
         else if (a == "--rank-min" && hasNext) argRankMin = argv[++i];
         else if (a == "--rank-max" && hasNext) argRankMax = argv[++i];
         else if (a == "--rank-gather-sec" && hasNext) argRankGather = argv[++i];
+        else if (a == "--rank-penalty-sec" && hasNext) argRankPenalty = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 10));
         else { Log("[실패] 모르는 인자: %s\n", a.c_str()); return 2; }
     }
     if (lobbyPort == 0 || linkPort == 0 || lobbyPort == linkPort) {
@@ -191,6 +193,8 @@ int main(int argc, char** argv) {
             return 2;
         }
         cfg.rankGatherMs = gatherSec * 1000;
+        cfg.rankPenaltySec = argRankPenalty;
+        if (argRankPenalty > 0) Log("[로비] 시험 인자 — 줄 서기 제한 시간을 %u초로\n", argRankPenalty);
         Log("[로비] 랭크 줄 — 최소 %u · 최대 %u · 최소가 차면 %u초 더 모음 · 기다림 한도 없음\n", cfg.rankMin, cfg.rankMax, gatherSec);
     }
 
@@ -348,6 +352,7 @@ int main(int argc, char** argv) {
                 case nox::wol::StoreAnswerKind::Rating: lobby.OnRatingAnswer(a, outs); break;   // ★ 레이팅 조각 4 — 로그인 공지
                 case nox::wol::StoreAnswerKind::History: records.OnAnswer(a, outs); break;   // ★ 11-04 플랜2 — 대전 기록 창 · ★ 전적 검색
                 case nox::wol::StoreAnswerKind::ActiveBans: lobby.OnBansAnswer(a, outs); break;   // ★ 11-05 플랜1 — 활성 정지
+                case nox::wol::StoreAnswerKind::BanWrite: lobby.OnBanWriteAnswer(a); break;   // ★ 11-05 플랜1 — 줄 서기 10회째
                 case nox::wol::StoreAnswerKind::kCount: break;
             }
         }
@@ -416,6 +421,17 @@ int main(int argc, char** argv) {
             "랭크에서 뺌 줄 %llu · 요청 중 %llu · 찾음 %llu\n",
             ls.banReads, ls.banReadOk, ls.banReadFailed, ls.banReadLate, ls.banRowsLast, ls.banEnforced, ls.banConnsClosed, ms.kickSent, ls.loginBanned,
             ls.rankLeft[rb], ls.rankLeftRequested[rb], ls.rankDeclined[rb]);
+    }
+    // ★ 11-05 플랜1 — 줄 서기 제한. 위반 = 경고 + 제한 + 자동 정지 · 이유별 합 = 위반 · 자동 정지 = 넣음 + 못 넣음(끝날 때 기다림 차이)
+    {
+        using nox::wol::RankStrike;
+        const nox::wol::CRankPenalty& rp = lobby.Penalty();
+        Log("[로비] 끝 — 줄 서기 위반 수락 한도 %llu · 거절 %llu · 목록 %llu · 끊김 %llu · 방 기다리다 %llu · 안 들어옴 %llu · 판 나감 %llu = 경고 %llu + 제한 %llu + 자동 정지 %llu(넣음 %llu · 못 넣음 %llu) · "
+            "제한 중 단추 %llu · 밀린 경고 %llu · 판 끝까지 %llu · 판 나감 안 셈(정지) %llu · 안 온 이름 셈 %llu · 버림 %llu · 정지 %llu\n",
+            rp.Struck(RankStrike::AcceptTimeout), rp.Struck(RankStrike::Declined), rp.Struck(RankStrike::ListLeft), rp.Struck(RankStrike::Closed),
+            rp.Struck(RankStrike::ReadyLeft), rp.Struck(RankStrike::NoShow), rp.Struck(RankStrike::MatchLeft), ls.rankWarned, ls.rankPenalized, ls.rankAutoBans,
+            ls.rankBanWrites, ls.rankBanWriteFailed, ls.rankBlockedEntry, ls.rankWarnLater, ls.rankResultFinished, ls.rankResultBanSkipped, ls.rankNoShowCounted,
+            ls.rankNoShowIgnored, ls.rankNoShowBanSkipped);
     }
     // ★ 11-04 플랜2 — 대전 기록 물음 하나 = 줄로 답 · 못 읽음 · 없는 사용자 · 끊김 중 하나(합 = 물음 · 끝날 때 남은 것 빼고 · 셈은 `RecordDeskStats`)
     {

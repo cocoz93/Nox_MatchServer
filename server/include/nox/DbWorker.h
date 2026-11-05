@@ -56,6 +56,11 @@ struct DbStats {
     unsigned long long bansReads = 0;
     unsigned long long bansFailed = 0;
     unsigned long long bansDropped = 0;
+    // ★ 11-05 플랜1 — 자동 정지 요청 = 넣음 + 계정 없음 + 실패
+    unsigned long long banWriteRequests = 0;
+    unsigned long long banWrites = 0;
+    unsigned long long banWriteNoAccount = 0;
+    unsigned long long banWriteFailed = 0;
     unsigned long long historyDropped = 0;  // ★ 11-04 전적 검색 — 끝낼 때 버린 조회(요청 = 읽음 + 실패 + 버림)
     size_t queueMax = 0;                    // 한 번에 꺼낸 일의 최대
     std::string lastError;                  // 마지막 오류 글(기록용 — 비밀번호는 안 실린다)
@@ -83,6 +88,7 @@ public:
     void GetRating(uint32_t req, const std::string& account);   // ★ 레이팅 조각 3
     void GetMatchHistory(uint32_t req, const std::string& account);   // ★ 11-04 플랜2
     void GetActiveBans(uint32_t req, uint32_t now);                   // ★ 11-05 플랜1
+    void BanAccount(const std::string& account, uint32_t until, const std::string& reason, uint32_t now);   // ★ 11-05 플랜1
     void TakeAnswers(std::vector<wol::StoreAnswer>& out);
     // ★ 11-05 — 답을 넣은 뒤마다 워커 스레드에서 부른다. 첫 요청 전에 한 번만 꽂는다 — 워커는 일을 꺼낸 뒤에만 읽으므로 큐 잠금이 차례를 보장한다
     void SetWake(std::function<void()> wake) { wake_ = std::move(wake); }
@@ -98,7 +104,9 @@ private:
         MatchRecord rec;
         std::string raw;
         std::string account;   // ★ 레이팅 조각 3 — Rating · ★ 11-04 플랜2 — History
-        uint32_t now = 0;      // ★ 11-05 플랜1 — ActiveBans
+        uint32_t now = 0;      // ★ 11-05 플랜1 — ActiveBans · BanWrite
+        uint32_t until = 0;    // ★ 11-05 플랜1 — BanWrite
+        std::string reason;    // ★ 11-05 플랜1 — BanWrite
     };
     struct Conn;   // MYSQL* · 준비된 문장들(.cpp 에만)
 
@@ -109,6 +117,7 @@ private:
     bool ExecRating(Conn& c, const Job& j, wol::StoreAnswer& a);
     bool ExecHistory(Conn& c, const Job& j, wol::StoreAnswer& a);
     bool ExecBans(Conn& c, const Job& j, wol::StoreAnswer& a);   // ★ 11-05 플랜1
+    bool ExecBanWrite(Conn& c, const Job& j, wol::StoreAnswer& a);   // ★ 11-05 플랜1
     wol::StoreAnswer FailAnswer(const Job& j, wol::StoreAnswer a);   // 그 일의 실패 셈 + 실패 답
     void JoinAndClose();
     bool Connect(std::string& err);    // `conn_` 을 새로(실패면 비움)

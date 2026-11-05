@@ -67,6 +67,7 @@ struct MirrorStats {
     unsigned long long saveRequests = 0;      // 저장소에 판 저장 요청
     unsigned long long roomUiLines = 0;       // ★ 11-04 플랜1 — ROOMUI 줄
     unsigned long long kickSent = 0;          // ★ 11-05 플랜1 — KICK 줄(줄마다 · 게임 서버마다)
+    unsigned long long rankNoShowLines = 0;   // ★ 11-05 플랜1 — 받은 RANK_NOSHOW
     unsigned long long clientGoneSent = 0;    // ★ 11-03 — CLIENT_GONE 줄(줄마다 · 게임 서버마다)
     unsigned long long savedOk = 0;           // 답 Saved → SAVED ok
     unsigned long long savedDup = 0;          // 답 Duplicate → SAVED dup
@@ -150,6 +151,9 @@ private:
     struct PendingSave {
         int conn = 0;          // 판 결과를 보낸 연결(접속 번호는 다시 안 쓴다 — 끊겼으면 그 게임 서버의 그 연결이 아니다)
         std::string match;     // SAVED 에 실을 판 번호
+        bool ranked = false;   // ★ 11-05 플랜1 — 랭크 판이면 저장된 뒤 로비에 나간 사람 · 끝까지 한 사람을 알린다(줄 서기 제한)
+        std::vector<std::string> left;
+        std::vector<std::string> finished;
     };
     std::map<uint32_t, PendingSave> saves_;   // 저장 요청 번호 → 답할 곳
     uint32_t nextSaveReq_ = 1;

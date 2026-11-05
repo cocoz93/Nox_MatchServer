@@ -35,7 +35,7 @@ namespace nox::wol {
 
 // ★ 로그인 암호 조각 4 — Login 갈래 걷음 · ★ 레이팅 조각 3 — Rating(로그인 공지에 실을 점수 · 순위)
 //   ★ 11-04 플랜2 — History(대전 기록 창)
-enum class StoreAnswerKind : uint8_t { SaveMatch, Rating, History, ActiveBans, kCount };   // ★ 11-05 플랜1 ActiveBans
+enum class StoreAnswerKind : uint8_t { SaveMatch, Rating, History, ActiveBans, BanWrite, kCount };   // ★ 11-05 플랜1 ActiveBans · BanWrite
 // 판 저장 — 못 넣음(Failed)이면 로비는 SAVED 를 안 보낸다(게임 서버가 30초 뒤 다시 · `LobbyClient.h` `kResultResendMs`)
 //   ★ 7단계 조각 7 — Invalid = 저장소 칸에 안 맞는 판(글 길이 · UTF-8 아닌 원문 · 사람 수). 다시 보내도 같으므로 로비는 SAVED bad
 //     (Failed 로 두면 게임 서버가 30초마다 끝없이 다시 보낸다 — MySQL 엄격 모드는 넘는 글을 거절한다)
@@ -79,6 +79,7 @@ struct StoreAnswer {
     // ★ 11-05 플랜1 — ActiveBans. `bansOk` false = 못 읽음(0건과 다르다 — 로비는 앞 목록을 그대로 둔다)
     bool bansOk = false;
     std::vector<BanEntry> bans;
+    bool banWritten = false;   // ★ 11-05 플랜1 — BanWrite. false = 못 넣음(까닭 `why` — 로비 목록엔 끝 시각까지 남아 이번 실행 동안은 막힌다)
 };
 
 class ILobbyStore {
@@ -95,6 +96,8 @@ public:
     virtual void GetMatchHistory(uint32_t req, const std::string& account) = 0;
     // ★ 11-05 플랜1 — `now` 에 유효한 정지 전체(이름마다 가장 늦은 끝 시각) → 답 ActiveBans
     virtual void GetActiveBans(uint32_t req, uint32_t now) = 0;
+    // ★ 11-05 플랜1 — 줄 서기 10회째 자동 정지(`account_bans` 한 행 · 출처 `auto`) → 답 BanWrite
+    virtual void BanAccount(const std::string& account, uint32_t until, const std::string& reason, uint32_t now) = 0;
     virtual void TakeAnswers(std::vector<StoreAnswer>& out) = 0;   // 덧붙인다
     // ★ 11-05 — 답을 `TakeAnswers` 로 꺼낼 수 있게 된 뒤마다 부른다(안 꽂으면 안 부름). 첫 요청 전에 한 번만 꽂는다.
     //   DB 워커는 자기 스레드에서 부르므로 오래 걸리는 일을 넣지 말 것
@@ -108,6 +111,7 @@ public:
     void GetRating(uint32_t req, const std::string& account) override;
     void GetMatchHistory(uint32_t req, const std::string& account) override;
     void GetActiveBans(uint32_t req, uint32_t now) override;
+    void BanAccount(const std::string& account, uint32_t until, const std::string& reason, uint32_t now) override;
     void TakeAnswers(std::vector<StoreAnswer>& out) override;
     void SetWake(std::function<void()> wake) override { wake_ = std::move(wake); }
 
@@ -118,6 +122,13 @@ public:
     void SetFailHistory(bool on) { failHistory_ = on; }   // ★ 11-04 플랜2 — 대전 기록 읽기 실패 흉내
     void SetFailBans(bool on) { failBans_ = on; }         // ★ 11-05 플랜1 — 정지 읽기 실패 흉내
     void SetActiveBans(std::vector<BanEntry> rows) { bans_ = std::move(rows); }   // ★ 11-05 플랜1 — 테이블 행 흉내(끝 시각 지난 행은 답에 안 실음)
+    void SetFailBanWrites(bool on) { failBanWrites_ = on; }   // ★ 11-05 플랜1 — 자동 정지 쓰기 실패 흉내
+    struct WrittenBan {   // ★ 11-05 플랜1 — 시험이 넣은 값을 본다
+        std::string account;
+        uint32_t until = 0;
+        std::string reason;
+    };
+    const std::vector<WrittenBan>& WrittenBans() const { return writtenBans_; }
     void AddAccount(const std::string& name) { accounts_.insert(name); }   // ★ 11-04 전적 검색 — 판 없는 계정(시험 · 아래 `accounts_`)
 
     size_t MatchCount() const { return matches_.size(); }
@@ -141,7 +152,9 @@ private:
     bool holdRatings_ = false;
     bool failHistory_ = false;
     bool failBans_ = false;
+    bool failBanWrites_ = false;
     std::vector<BanEntry> bans_;
+    std::vector<WrittenBan> writtenBans_;
 };
 
 }  // namespace nox::wol

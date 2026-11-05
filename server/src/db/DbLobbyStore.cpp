@@ -33,6 +33,8 @@ void CDbLobbyStore::GetMatchHistory(uint32_t req, const std::string& account) { 
 
 void CDbLobbyStore::GetActiveBans(uint32_t req, uint32_t now) { reader_.GetActiveBans(req, now); }
 
+void CDbLobbyStore::BanAccount(const std::string& account, uint32_t until, const std::string& reason, uint32_t now) { writer_.BanAccount(account, until, reason, now); }
+
 void CDbLobbyStore::TakeAnswers(std::vector<wol::StoreAnswer>& out) {
     writer_.TakeAnswers(out);
     reader_.TakeAnswers(out);

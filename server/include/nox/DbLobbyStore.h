@@ -32,6 +32,7 @@ public:
     void GetRating(uint32_t req, const std::string& account) override;
     void GetMatchHistory(uint32_t req, const std::string& account) override;
     void GetActiveBans(uint32_t req, uint32_t now) override;
+    void BanAccount(const std::string& account, uint32_t until, const std::string& reason, uint32_t now) override;   // 쓰기 워커
     void TakeAnswers(std::vector<wol::StoreAnswer>& out) override;
     void SetWake(std::function<void()> wake) override;
 

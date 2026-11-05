@@ -89,7 +89,7 @@ std::string IpDotted(uint32_t ip) {
            std::to_string((ip >> 8) & 0xff) + "." + std::to_string(ip & 0xff);
 }
 
-Lobby::Lobby(LobbyConfig cfg, ILobbyRooms& rooms) : cfg_(std::move(cfg)), rooms_(rooms) {}
+Lobby::Lobby(LobbyConfig cfg, ILobbyRooms& rooms) : cfg_(std::move(cfg)), rooms_(rooms), penalty_(cfg_.rankPenaltySec) {}
 
 const LobbyRoom* Lobby::FindRoom(const std::vector<LobbyRoom>& rooms, const std::string& channel) {
     for (const LobbyRoom& r : rooms)
@@ -130,6 +130,7 @@ void Lobby::OnConnect(int conn, uint32_t peerIp, uint32_t localIp) {
 }
 
 void Lobby::OnClose(int conn, std::vector<Out>& out) {
+    if (const auto cl = conns_.find(conn); cl != conns_.end()) cl->second.closing = true;   // ★ 11-05 플랜1 — 아래 끊김이 10회째면 `EnforceBan` 이 닫히는 접속에 줄을 쓰지 않게
     RankRemove(conn, RankLeave::Closed, out);   // ★ 랭크 매칭 조각 4 — 줄 · 요청에서 빼고(남은 사람으로 모으기를 다시 본다) 접속을 지운다
     // ★ 10-20 v2 작업 3b — 끊기면 대화방 남은 사람들에게 PART(드나듦 알림의 나머지 반 — 안 알리면 그 이름이 사용자 목록에 남는다).
     //   QUIT 줄 꼴은 정품이 받는지 미확인이라 이미 쓰는 PART 꼴로 · 게임 방 채널은 정품이 그 화면에 없어 안 알림
@@ -223,6 +224,12 @@ void Lobby::Tick(std::vector<Out>& out) {
         ++stats_.banReads;
         store_->GetActiveBans(++banReq_, cfg_.unixNow());
     }
+    // ★ 11-05 플랜1 — 줄 서기 제한의 지난 칸 · 다 온 방의 참가 답 기록
+    penalty_.Sweep(cfg_.unixNow());
+    for (auto it = rankJoined_.begin(); it != rankJoined_.end();) {
+        if (static_cast<uint32_t>(now - it->second.atMs) >= kRankJoinedKeepMs) it = rankJoined_.erase(it);
+        else ++it;
+    }
     // ★ 7단계 조각 6 — 로그인 마감(끊기). 32비트 시계가 돌아도 맞게 · ★ 로그인 암호 조각 4 — 계정 확인 한도는 걷음
     for (auto& kv : conns_) {
         Conn& c = kv.second;
@@ -262,6 +269,7 @@ void Lobby::Tick(std::vector<Out>& out) {
         RankRequeue(req, group, ready, out);
     }
     // ★ 매칭 손보기 6 — 수락 한도. 수락 안 한 사람은 줄에서 빼고 `NOXRANK EXPIRED`(DLL 이 창을 정품 취소 길로 닫음) · 수락한 사람은 줄 앞에
+    std::vector<std::pair<int, std::string>> expired;   // ★ 11-05 플랜1 — 다 푼 뒤에 센다(10회째면 `EnforceBan` 이 줄을 건드리는데 지금 `rankFound_` 를 도는 중)
     for (auto it = rankFound_.begin(); it != rankFound_.end();) {
         if (static_cast<int32_t>(now - it->second.deadlineMs) < 0) {
             ++it;
@@ -278,9 +286,11 @@ void Lobby::Tick(std::vector<Out>& out) {
             out.push_back({id, "NOXRANK EXPIRED"});
             RankReleaseJoin(id, ci->second, out);   // ★ 10-31
             log_.push_back("[랭크 — 수락 한도] " + ci->second.nick + " — " + std::to_string(kRankAcceptMs / 1000) + "초 안에 수락 안 함 · 줄에서 뺌");
+            expired.push_back({id, ci->second.nick});
         }
         RankFoundBreak(req, -1, out);
     }
+    for (const auto& e : expired) ApplyStrike(e.second, RankStrike::AcceptTimeout, e.first, out);
     RankPump(out);
     // ★ 11-03 — 목록 바뀜 알림(`ILobbyRooms::ListVersion`). 떼는 줄 `NOXRANK` 을 빌린다 — 그 줄을 떼는 DLL 판(`kNoxClientAcceptVersion`)만, 모르는 낱말은 DLL 이 넘김
     if (rooms_.ListVersion() != roomsVerPushed_ && static_cast<uint32_t>(now - roomsPushedMs_) >= kRoomsPushGapMs) {
@@ -363,6 +373,17 @@ void Lobby::RankEnqueue(int conn, Conn& c, std::vector<Out>& out) {
     RankPump(out);
 }
 
+static RankStrike RankFoundStrike(RankLeave why) {   // ★ 11-05 플랜1 — 찾음 창에서 빠진 까닭 → 셈 칸(정지로 빠짐은 부르는 쪽이 거른다)
+    switch (why) {
+        case RankLeave::Dll: return RankStrike::Declined;
+        case RankLeave::List: return RankStrike::ListLeft;
+        case RankLeave::Closed:
+        case RankLeave::Banned:
+        case RankLeave::kCount: break;
+    }
+    return RankStrike::Closed;
+}
+
 // 줄에 있으면 빼고 남은 사람으로 모으기를 다시 본다 · 요청 중이면 그 사람만 표시를 지운다(방이 서도 방 참가 답은 안 보낸다) · 둘 다 아니면 DLL 알림만 센다
 //   ★ 10-31 — 빠진 사람(끊김 말고)의 묶인 참가엔 474 를 보내 정품 로비 모듈의 참가 기다림을 푼다(`RankReleaseJoin`)
 void Lobby::RankRemove(int conn, RankLeave why, std::vector<Out>& out) {
@@ -386,6 +407,7 @@ void Lobby::RankRemove(int conn, RankLeave why, std::vector<Out>& out) {
             if (release) RankReleaseJoin(conn, c, out);
             log_.push_back("[랭크 — 빠짐] " + c.nick + " — " + RankLeaveName(why) + " · 방 요청 " + std::to_string(c.rankReq) + " 중(방이 서도 답 안 함)");
             RankReadyBreak(c.rankReq, out);   // ★ 10-31 — 다 수락한 묶음이면 남은 사람 줄 앞에 · 요청 접음
+            if (why != RankLeave::Banned) ApplyStrike(c.nick, RankStrike::ReadyLeft, release ? conn : -1, out);   // ★ 11-05 플랜1
             return;
         case Conn::Rank::Found:      // ★ 매칭 손보기 6 — 찾음 · 수락 뒤 빠짐 = 거절(창의 「아니오」 · 취소 → LEAVE · LIST · 끊김) — 남은 사람을 줄 앞에
         case Conn::Rank::Accepted: {
@@ -396,6 +418,7 @@ void Lobby::RankRemove(int conn, RankLeave why, std::vector<Out>& out) {
             log_.push_back("[랭크 — 거절] " + c.nick + " — " + RankLeaveName(why) + " · 찾음 " + std::to_string(req) + " 풀어 남은 사람 줄 앞에");
             RankFoundBreak(req, conn, out);
             RankPump(out);
+            if (why != RankLeave::Banned) ApplyStrike(c.nick, RankFoundStrike(why), release ? conn : -1, out);   // ★ 11-05 플랜1
             return;
         }
         case Conn::Rank::None:
@@ -536,6 +559,9 @@ void Lobby::RankRequeue(uint32_t req, const std::vector<int>& group, bool ready,
 // ★ 매칭 손보기 6 — 참가 답 하나(제 채널 · 353 방장 = 그 사람 · 토큰은 그 방 — 옛 `RankReply` 안 몫 그대로)
 void Lobby::RankJoinReply(int id, Conn& c, const LobbyRoom& room, std::vector<Out>& out) {
     c.rank = Conn::Rank::None;
+    RankJoined& joined = rankJoined_[std::make_tuple(room.gameIp, room.gamePort, static_cast<uint32_t>(room.gameRoomId))];   // ★ 11-05 플랜1 — `OnRankNoShow`
+    joined.atMs = cfg_.nowMs();
+    joined.names.insert(c.nick);
     LobbyRoom mine = room;
     mine.host = c.nick;
     members_.erase(Channel(mine));   // 같은 이름 채널의 옛 방 구성원(`JoinNewRoom` 과 같은 까닭)
@@ -637,6 +663,7 @@ const char* JoinRejectText(JoinReject why) {
         case JoinReject::Timeout:       return "Cannot create game (game server timed out)";
         case JoinReject::NoSuchRoom:    return "No such game";
         case JoinReject::NotLoggedIn:   return "Not logged in";
+        case JoinReject::RankBlocked:   return "Ranked match restricted";
         case JoinReject::kCount:        break;
     }
     return "?";
@@ -724,9 +751,84 @@ void Lobby::EnforceBan(const std::string& name, uint32_t until, std::vector<Out>
     rooms_.KickAccount(name);
     log_.push_back("[정지 — 내보냄] " + name + " · 끝 " + std::to_string(until) + (conn >= 0 ? " · 로비 접속 c" + std::to_string(conn) + " 끊음" : " · 로비 접속 없음"));
     if (conn < 0) return;
-    conns_[conn].closing = true;
+    Conn& kicked = conns_[conn];
+    kicked.closing = true;
     ++stats_.banConnsClosed;
+    if (kicked.clientVer >= kNoxClientPenaltyVersion) out.push_back({conn, "NOXRANK BANNED " + std::to_string(until)});   // 끊김 안내가 정지 문구를 쓰게(DLL `LobbyLostTick`)
     out.push_back({conn, "ERROR :Closing Link (account suspended)", true});
+}
+
+// ★ 11-05 플랜1 — 판단은 `CRankPenalty`, 여기는 답을 줄로 바꾸기만(플랜 7절). 창이 없는 사람(끊김 · 안 들어옴 · 판 나감)의 1회 경고는 다음 랭크 단추로 넘어간다
+void Lobby::ApplyStrike(const std::string& name, RankStrike why, int notifyConn, std::vector<Out>& out) {
+    const uint32_t now = cfg_.unixNow();
+    const PenaltyResult r = penalty_.Strike(name, why, now);
+    log_.push_back("[랭크 — 위반] " + name + " — " + RankStrikeName(why) + " · " + std::to_string(r.count) + "회째");
+    const auto cv = conns_.find(notifyConn);
+    const bool tell = cv != conns_.end() && !cv->second.closing && cv->second.clientVer >= kNoxClientPenaltyVersion;
+    switch (r.kind) {
+        case PenaltyResult::Kind::Warn:
+            ++stats_.rankWarned;
+            if (tell && penalty_.TakeWarnPending(name, now)) {
+                const bool acceptWord = why == RankStrike::AcceptTimeout || why == RankStrike::Declined || why == RankStrike::ListLeft;   // 나머지 = 수락한 뒤 빠짐
+                out.push_back({notifyConn, acceptWord ? "NOXRANK WARN accept" : "NOXRANK WARN match"});
+            }
+            return;
+        case PenaltyResult::Kind::Block:
+            ++stats_.rankPenalized;
+            if (tell) out.push_back({notifyConn, "NOXRANK BLOCKED " + std::to_string(penalty_.BlockedForSec(name, now))});
+            log_.push_back("[랭크 — 제한] " + name + " — " + std::to_string(r.blockSec) + "초");
+            return;
+        case PenaltyResult::Kind::Ban: {
+            ++stats_.rankAutoBans;
+            const uint32_t until = now + kRankPenaltyBanSec;
+            if (store_) store_->BanAccount(name, until, kRankAutoBanReason, now);
+            banList_.Add(name, until);   // 테이블에 쓰기 전에도 막히게(머리 주석 `BanList.h`)
+            log_.push_back("[랭크 — 자동 정지] " + name + " — " + std::to_string(r.count) + "회째 · 끝 " + std::to_string(until));
+            EnforceBan(name, until, out);
+            return;
+        }
+    }
+}
+
+void Lobby::OnRankResult(const std::vector<std::string>& left, const std::vector<std::string>& finished, std::vector<Out>& out) {
+    const uint32_t now = cfg_.unixNow();
+    for (const std::string& name : finished) {
+        ++stats_.rankResultFinished;
+        penalty_.Clear(name);
+    }
+    for (const std::string& name : left) {
+        if (banList_.UntilOf(name, now) != 0) {   // 정지로 내보낸 판 — 사용자 「그러자」(플랜 9절)
+            ++stats_.rankResultBanSkipped;
+            continue;
+        }
+        ++stats_.rankResultLeft;
+        ApplyStrike(name, RankStrike::MatchLeft, -1, out);
+    }
+}
+
+void Lobby::OnRankNoShow(uint32_t ip, uint16_t port, uint32_t roomId, const std::string& name, std::vector<Out>& out) {
+    const auto it = rankJoined_.find(std::make_tuple(ip, port, roomId));
+    if (it == rankJoined_.end() || it->second.names.erase(name) == 0) {
+        ++stats_.rankNoShowIgnored;
+        log_.push_back("[랭크 — 안 온 이름 버림] " + name + " · 방 " + std::to_string(roomId) + " — 참가 답을 안 보낸 이름");
+        return;
+    }
+    if (it->second.names.empty()) rankJoined_.erase(it);
+    if (banList_.UntilOf(name, cfg_.unixNow()) != 0) {
+        ++stats_.rankNoShowBanSkipped;
+        return;
+    }
+    ++stats_.rankNoShowCounted;
+    ApplyStrike(name, RankStrike::NoShow, -1, out);
+}
+
+void Lobby::OnBanWriteAnswer(const StoreAnswer& a) {
+    if (a.banWritten) {
+        ++stats_.rankBanWrites;
+        return;
+    }
+    ++stats_.rankBanWriteFailed;
+    log_.push_back("[랭크 — 자동 정지 못 넣음] 이번 실행 동안만 막힘 — " + a.why);
 }
 
 void Lobby::OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out) {
@@ -1130,6 +1232,23 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
         const bool ownChannel = t.size() >= 2 && !c.nick.empty() && t[1] == "#" + c.nick + "'s_game";
         if (rankMark) {
             if (ownChannel) {   // 줄 서기 — 답은 묶여 방이 선 뒤(한도 없음 · 빠짐은 DLL 알림 · LIST · 끊김)
+                // ★ 11-05 플랜1 — 줄 서기 제한(플랜 7절). 경고가 밀려 있으면 안내하고 줄은 세운다
+                const uint32_t unixNow = cfg_.unixNow();
+                if (const uint32_t blockedSec = penalty_.BlockedForSec(c.nick, unixNow); blockedSec > 0) {
+                    ++stats_.rankBlockedEntry;
+                    log_.push_back("[랭크 — 제한 중] " + c.nick + " — 남은 " + std::to_string(blockedSec) + "초 · 줄 안 세움");
+                    if (c.clientVer >= kNoxClientPenaltyVersion) {
+                        out.push_back({conn, "NOXRANK BLOCKED " + std::to_string(blockedSec)});
+                        RankReleaseJoin(conn, c, out);
+                    } else {
+                        RejectJoin(conn, t[1], JoinReject::RankBlocked, out);
+                    }
+                    return;
+                }
+                if (c.clientVer >= kNoxClientPenaltyVersion && penalty_.TakeWarnPending(c.nick, unixNow)) {
+                    ++stats_.rankWarnLater;
+                    out.push_back({conn, "NOXRANK WARN match"});
+                }
                 RankEnqueue(conn, c, out);
                 return;
             }

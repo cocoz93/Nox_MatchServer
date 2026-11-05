@@ -171,11 +171,22 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
                 return;
             }
             const uint32_t req = nextSaveReq_++;
-            saves_[req] = PendingSave{conn, rec.match};
+            PendingSave ps;
+            ps.conn = conn;
+            ps.match = rec.match;
+            ps.ranked = rec.ranked;
+            if (rec.ranked)
+                for (const MatchRecordPlayer& p : rec.players)
+                    if (p.hasAccount && !p.observer) (p.left ? ps.left : ps.finished).push_back(p.account);
+            saves_[req] = std::move(ps);
             ++stats_.saveRequests;
             store_->SaveMatch(req, MatchSource{s.ip, s.port}, rec, l.text);
             return;
         }
+        case LinkKind::RankNoShow:   // ★ 11-05 플랜1 — 누구를 셀지는 로비가 안다(`Lobby::OnRankNoShow`)
+            ++stats_.rankNoShowLines;
+            if (lobby_) lobby_->OnRankNoShow(s.ip, s.port, l.room.id, l.text, out);
+            return;
         case LinkKind::Ping:   // ★ 7단계 — 받은 시각은 위에서 적었다
             ++stats_.pingsIn;
             return;
@@ -202,6 +213,8 @@ void RoomMirror::OnStoreAnswer(const StoreAnswer& a, std::vector<Out>& out) {
     }
     const PendingSave ps = std::move(it->second);
     saves_.erase(it);
+    // ★ 11-05 플랜1 — 저장됨에서만(같은 판을 다시 보내면 Duplicate 라 두 번 안 센다 · 플랜 7절). 답할 연결이 끊긴 뒤라도 저장은 됐으니 그 검사보다 앞
+    if (a.save == SaveResult::Saved && ps.ranked && lobby_) lobby_->OnRankResult(ps.left, ps.finished, out);
     const auto sv = servers_.find(ps.conn);
     if (sv == servers_.end() || sv->second.stage != Stage::Registered) {   // 끊김 · 닫는 중 — 다시 붙으면 게임 서버가 다시 보낸다(dup)
         ++stats_.saveConnGone;

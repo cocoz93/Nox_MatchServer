@@ -121,6 +121,7 @@
 #include "HostGameEntry.h"     // ⑤ · ⑥ 내 방 정보 · 항목 · 채널 짓기(방 정보 포장은 서버와 같은 WolGameInfo — build.bat 이 같이 빌드)
 #include "LobbyLineFilter.h"
 #include "LoginRewriter.h"     // ★ 로그인 암호 조각 5 — 기록에 찍는 보낸 글에서 암호 칸 가리기(Log 모드) · 로비 연결의 apgar 자리 바꿔쓰기(Lobby 모드)
+#include "RankNotice.h"        // ★ 11-05 플랜1 — 줄 서기 제한 줄 · 문구
 #include "LoginNotice.h"       // ★ 11-05 플랜1 — 로그인 화면에서 돌아왔을 때의 안내 고르기
 #include "AuthClient.h"        // ★ 로그인 암호 조각 5 의 3 — 로그인 서버(nox_auth)에 이름 · 암호를 묻는 부품(WinHTTP) · ★ 런처 P4 — 이제 이름 · 열쇠로 토큰
 #include "../common/LaunchKey.h"   // ★ 런처 P4 — 런처가 이 PC 에 둔 자동 로그인 열쇠(DPAPI)
@@ -366,7 +367,9 @@ FWD(1120) FWD(1130) FWD(1140) FWD(1141) FWD(1142)
 //   ★ 판 3 = 로그인 암호(`kNoxClientAuthVersion`) — 로비가 이 판 이상만 암호 판으로 봄
 //   ★ 판 4 = 랭크 매칭(`kNoxClientRankVersion`) — ⑪ `NOXRANK JOIN` · `NOXRANK LEAVE` 를 보냄 · 로비는 이 판 이상의 표시만 믿음
 //   ★ 판 5 = 수락 단계(`kNoxClientAcceptVersion` · 매칭 손보기 6) — ⑬ 로비 `NOXRANK FOUND` 에 「수락?」 · 예면 `NOXRANK ACCEPT`
-static const char kNoxClientHello[] = "NOXCLIENT 5\r\n";
+//   ★ 판 6 = 줄 서기 제한 안내(`kNoxClientPenaltyVersion` · 플랜 11-05 7절) — `NOXRANK WARN` · `BLOCKED` · `BANNED`
+static const char kNoxClientHello[] = "NOXCLIENT 6\r\n";
+static wchar_t g_rankWaitNote[100];   // ★ 11-05 플랜1 — 기다림 글 앞에 얹는 경고(머리 주석 `g_rankWaitBuf`)
 static const DWORD kTokenHoldMs = 60000;                   // 토큰을 쥐고 있는 시간(토큰 만료 30초보다 넉넉히 — 판정은 서버가 한다)
 static const size_t kTokenRaw = 51;                        // `JoinToken.h` kJoinTokenSize
 static CRITICAL_SECTION g_tokCs;
@@ -388,6 +391,7 @@ static volatile LONG g_lobbyIp = 0;     // 그 로비 연결의 상대 IPv4(a<<2
 static std::string g_nick;              // ⑤ · ⑥ 로비 로그인의 `NICK <닉>` — g_tokCs 로 지킨다
 
 static std::string MyRoomLine(const std::vector<std::string>& items);
+static void RankListArrived();   // ★ 11-05 플랜1 — `RankListBusy`
 static std::string AuthLogin(SOCKET s, const std::string& name, const std::string& password);
 static void RankOnToken();   // ★ 랭크 매칭 조각 3 — ⑪
 static void RankOnLobbyLine(SOCKET s, const std::string& line);   // ★ 매칭 손보기 6 — ⑬
@@ -399,7 +403,7 @@ static bool MarkLobby(SOCKET s)   // 새로 적었으면 true
     const bool added = g_lobby.find(s) == g_lobby.end();
     if (added) {
         LobbyLineFilter* f = new LobbyLineFilter();
-        if (g_listOn) f->onListEnd = [](const std::vector<std::string>& items) { return MyRoomLine(items); };
+        if (g_listOn) f->onListEnd = [](const std::vector<std::string>& items) { RankListArrived(); return MyRoomLine(items); };   // ★ 11-05 플랜1 — `RankListBusy`
         g_lobby[s] = f;
         CLoginRewriter* rw = new CLoginRewriter(CLoginRewriter::Mode::Lobby);   // ★ 조각 5 의 3 — 이 연결의 apgar 줄을 로그인 토큰으로
         rw->onLogin = [s](const std::string& name, const std::string& password) { return AuthLogin(s, name, password); };
@@ -634,6 +638,17 @@ static std::string Dotted(DWORD ip)
     char a[16];
     sprintf(a, "%lu.%lu.%lu.%lu", (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
     return a;
+}
+
+// ★ 11-05 플랜1 — ⑲ 「리스트」 누름부터 그 목록 답이 끝나고 조금 뒤까지 공용 알림창을 안 건드린다(`RankListBusy` · `RankFoundTick`)
+//   0 = 안 기다림 · 1 = 답 기다림 · 2 = 답 받음(정품이 창을 닫을 때까지 잠깐 더)
+static volatile LONG g_rankListState = 0;
+static DWORD g_rankListSinceMs = 0;
+static void RankListArrived()
+{
+    if (g_rankListState != 1) return;
+    g_rankListSinceMs = GetTickCount();
+    InterlockedExchange(&g_rankListState, 2);
 }
 
 // ⑤ 방 목록 끝 바로 앞에 끼울 `326` 줄. 칸 꼴은 `Lobby::SendList` 와 같다 — 방장 주소 칸 = 이 로비 연결의 상대(채널이 곧 게임 서버)
@@ -949,6 +964,7 @@ static std::string RankPrefix(const char* buf, int len)
         const bool armed = g_rankMarkTest || InterlockedExchange(&g_rankArmed, 0) != 0;
         if (!armed) return std::string();
         InterlockedExchange(&g_rankWaiting, 1);
+        g_rankWaitNote[0] = L'\0';   // ★ 11-05 플랜1 — 앞 기다림의 경고를 지움
         const LONG n = InterlockedIncrement(&g_rankMarked);
         Log("⑪ 랭크 참가(누적 %ld) — 내 방 참가 줄 앞에 NOXRANK JOIN · 기다림 켬(알림창 %s)", n, MsgBoxOpen() ? "떠 있음" : "없음");
         return kRankJoinLine;
@@ -983,7 +999,9 @@ static void RankOnToken()
 //   받기 훅은 기다리는 동안 초당 약 30번 돈다(10-30 사람 판 DLL 기록 — WOLAPI recv 10초 297회 · 글 바꿈이 참가 줄과 같은 1/1000초)
 static const DWORD kDlgTextId = 4004;
 static const DWORD kMsgSetText = 0x4001;
-static wchar_t g_rankWaitBuf[48];          // 정품 글 칸이 쥐는 글(게임 주 스레드만 씀)
+// ★ 11-05 플랜1 — 판 나가기 · 끊김으로 받은 1회 경고(다음 랭크 단추의 `NOXRANK WARN match`). 줄은 그대로 서므로 확인 창으로 바꾸면 안 된다 —
+//   확인을 누르면 창이 닫혀 ⑪ 이 줄에서 뺀다. 기다림 글 앞에 얹어 기다리는 동안 보여 준다
+static wchar_t g_rankWaitBuf[160];         // 정품 글 칸이 쥐는 글(게임 주 스레드만 씀)
 static volatile LONG g_rankTextSet = 0;    // ④ 글 바꿈(창마다 처음 한 번)
 static volatile LONG g_rankTextMiss = 0;   // ④ 글 칸 · 처리 함수를 못 찾음
 static volatile LONG g_rankTextTicks = 0;  // ★ ④ 지난 시간 고침(초가 바뀔 때마다)
@@ -1013,7 +1031,7 @@ static void RankWaitText()
         }
         since = now;
         shownSec = 0;
-        swprintf(g_rankWaitBuf, sizeof(g_rankWaitBuf) / sizeof(g_rankWaitBuf[0]), L"상대 찾는 중... 0:00");
+        swprintf(g_rankWaitBuf, sizeof(g_rankWaitBuf) / sizeof(g_rankWaitBuf[0]), L"%ls상대 찾는 중... 0:00", g_rankWaitNote);
         ((PFN_wndproc4)proc)(text, kMsgSetText, (DWORD)(uintptr_t)g_rankWaitBuf, (DWORD)-1);
         const LONG n = InterlockedIncrement(&g_rankTextSet);
         Log("⑪ 기다림 글(누적 %ld) — 알림창 %#lx 글을 「상대 찾는 중... 0:00」으로(1초마다 지난 시간)", n, box);
@@ -1034,7 +1052,7 @@ static void RankWaitText()
     const DWORD sec = (now - since) / 1000;
     if (sec == shownSec) return;
     shownSec = sec;
-    swprintf(g_rankWaitBuf, sizeof(g_rankWaitBuf) / sizeof(g_rankWaitBuf[0]), L"상대 찾는 중... %lu:%02lu", sec / 60, sec % 60);
+    swprintf(g_rankWaitBuf, sizeof(g_rankWaitBuf) / sizeof(g_rankWaitBuf[0]), L"%ls상대 찾는 중... %lu:%02lu", g_rankWaitNote, sec / 60, sec % 60);
     ((PFN_wndproc4)proc)(text, kMsgSetText, (DWORD)(uintptr_t)g_rankWaitBuf, (DWORD)-1);
     InterlockedIncrement(&g_rankTextTicks);
 }
@@ -1081,6 +1099,8 @@ static void RankBackToListTick(DWORD world)
     const DWORD list = ((PFN_findchild)kFindChild)(world, kBtnList);
     if (!list) { Log("⑲ 랭크 끝남 — 「리스트」(10004)를 못 찾아 지도 그대로"); return; }
     PressListMode(world, list, 0);
+    g_rankListSinceMs = GetTickCount();
+    InterlockedExchange(&g_rankListState, 1);   // ★ 11-05 플랜1
     Log("⑲ 랭크 끝남 — 지도 대신 방 목록으로(「리스트」 누름을 넣음)");
 }
 
@@ -1180,6 +1200,10 @@ static const wchar_t kRankReadyText[] = L"방 만드는 중...";   // ★ 10-31 
 static const wchar_t kRankExpiredText[] = L"수락 시간이 지나 매칭이 취소되었습니다";
 static const DWORD kDlgNoticeFlags = 0x21;    // 확인 단추 + 누르면 닫힘(정품 「Kicked」 · 「Timeout」 알림과 같은 값 — `noxworld.c` 237 · 243)
 static volatile LONG g_rankEvFound = 0, g_rankEvWait = 0, g_rankEvExpired = 0, g_rankEvReady = 0;   // 받은 줄 → ⑩ 자리에서 처리
+// ★ 11-05 플랜1 — 줄 서기 제한 줄. 정품 글 칸은 글을 복사하지 않고 주소만 쥐어 전역 버퍼에 둔다
+static volatile LONG g_rankEvNotice = 0, g_rankNoticeValue = 0, g_rankNoticeShown = 0;
+static wchar_t g_rankNoticeBuf[96];
+static volatile LONG g_lobbyBannedUntil = 0;   // `NOXRANK BANNED` — 뒤이은 끊김 안내(㉑)가 정지 문구를 쓰게
 // ★ 11-04 — 정품 소리 함수 `0x4528d0`(cdecl 번호 · 음량 — 호출 꼴 `push 0x64 · push 번호 · call · add esp,8` · 실제 호출을 훅으로 재 확인).
 //   번호 = OpenNox `common/sound/sound.go` 상수 차례(ShellClick 921 등 호출 기록과 일치). 775 = MetallicBong(bong1.wav · 3.0초 · 사용자가 소리 모음에서 고름)
 typedef void(__cdecl* PFN_sound)(int id, int volume);
@@ -1290,6 +1314,15 @@ static void RankOnLobbyLine(SOCKET s, const std::string& line)
     else if (sub == "EXPIRED") InterlockedExchange(&g_rankEvExpired, 1);
     else if (sub == "ROOMS") InterlockedExchange(&g_roomsChanged, 1);   // ★ 11-03 ⑳ — 방 목록이 바뀜(`RoomsChangedTick`)
     else if (sub.compare(0, 7, "ROOMUI ") == 0) RoomUiOnLine(sub.c_str() + 7);   // ★ 11-04 ㉒
+    else {
+        const ranknotice::Line n = ranknotice::Parse(sub.c_str());   // ★ 11-05 플랜1 — 줄 서기 제한. 창은 ⑩ 자리에서
+        if (n.kind == ranknotice::Kind::Banned) {
+            InterlockedExchange(&g_lobbyBannedUntil, (LONG)n.value);
+        } else if (n.kind != ranknotice::Kind::None) {
+            InterlockedExchange(&g_rankNoticeValue, (LONG)n.value);
+            InterlockedExchange(&g_rankEvNotice, (LONG)n.kind);
+        }
+    }
     Log("⑬ 로비 줄 「%s」 — 받음(창은 다음 받기 훅에서)", line.c_str());
 }
 
@@ -1339,6 +1372,37 @@ static void RankDlg(const wchar_t* text, DWORD flags)
     ((PFN_dlgopen)kDlgOpen)(world, NULL, text, flags, 0, 0);
 }
 
+// ★ 11-05 플랜1 — ⑲ 의 목록 새로 받기가 도는 중인가. 공용 알림창은 하나뿐이라(`0x449590` — 있으면 그 창의 글만 바꿈) 이때 띄운 안내는
+//   목록 답과 함께 닫힌다(실물 — 거절 뒤 안내가 안 보임 · 창이 없다고 읽히는 프레임에 띄워도 다음 프레임 LIST 뒤 사라짐). 값 = 답 3초(로비가 안 답해도 안내는 나가게 · 제 판단) ·
+//   답 뒤 200ms(약 6프레임 · 정품이 받은 목록을 넣고 창을 닫을 시간 · 제 판단 — 실물 판으로 확인)
+static const DWORD kRankListWaitMs = 3000, kRankListSettleMs = 200;
+static bool RankListBusy()
+{
+    const LONG st = g_rankListState;
+    if (st == 0) return false;
+    if (GetTickCount() - g_rankListSinceMs < (st == 1 ? kRankListWaitMs : kRankListSettleMs)) return true;
+    InterlockedExchange(&g_rankListState, 0);
+    return false;
+}
+
+// ★ 11-05 플랜1 — 받기 훅(주 스레드 · 어느 창 함수도 호출 중이 아님 — `RankFoundClick` 주석). 갈래 넷:
+//   줄 서기 전에 온 경고(기다림 중 · 줄은 섬) = 기다림 글 앞에 얹음 / 제한(기다림 중 · 줄 안 섬) = EXPIRED 처럼 정품 취소 길 뒤 확인 창 /
+//   거절 · 수락 한도 뒤 = 확인 창(창이 닫혔으면 새로 · 수락 한도 안내가 떠 있으면 그 창의 글이 바뀜 — 창 함수가 같은 창을 다시 쓴다)
+static void RankNoticeShow(ranknotice::Kind k, DWORD value)
+{
+    const std::wstring text = ranknotice::Text(k, value);
+    wcsncpy_s(g_rankNoticeBuf, sizeof(g_rankNoticeBuf) / sizeof(g_rankNoticeBuf[0]), text.c_str(), _TRUNCATE);
+    if (k == ranknotice::Kind::WarnMatch && g_rankWaiting) {
+        swprintf(g_rankWaitNote, sizeof(g_rankWaitNote) / sizeof(g_rankWaitNote[0]), L"%ls\n", g_rankNoticeBuf);
+        Log("⑬ 줄 서기 제한 — %s · 기다림 글 앞에 얹음(줄은 그대로)", ranknotice::KindName(k));
+        return;
+    }
+    if (g_rankWaiting) RankInjectCancel("줄 서기 제한");
+    RankDlg(g_rankNoticeBuf, kDlgNoticeFlags);
+    const LONG n = InterlockedIncrement(&g_rankNoticeShown);
+    Log("⑬ 줄 서기 제한 — %s 값 %lu · 안내 창(누적 %ld)", ranknotice::KindName(k), value, n);
+}
+
 // ⑩ 자리(받기 훅 · 게임 주 스레드) — 받은 줄을 창에
 static void RankFoundTick()
 {
@@ -1383,13 +1447,22 @@ static void RankFoundTick()
         if (open) RankDlg(g_rankWaitBuf, kDlgWaitFlags);
         Log("⑬ WAIT — 다시 기다림(알림창 %#lx · 글은 ④ 버퍼 · 취소 단추)", box);
     }
+    bool expiredBox = false;   // ★ 11-05 플랜1
     if (InterlockedExchange(&g_rankEvExpired, 0)) {
         InterlockedExchange(&g_rankFoundState, 0);
         InterlockedIncrement(&g_rankExpiries);
         if (open && RankInjectCancel("EXPIRED(수락 한도)")) {
             RankDlg(kRankExpiredText, kDlgNoticeFlags);   // 받기 훅 자리라 누름 처리 한가운데가 아니다(`RankFoundClick` 주석) · 방 목록으로는 이 창이 닫힌 뒤(`RankBackToListTick`)
             Log("⑬ EXPIRED — 안내 창 「수락 시간이 지나...」(누적 %ld)", g_rankExpiries);
+            expiredBox = true;
         }
+    }
+    // ★ 11-05 플랜1 — EXPIRED 뒤 — 같은 바퀴면 수락 한도 안내 위에 경고 · 제한 글이 남는다
+    //   공용 알림창은 하나뿐이다 — 남의 창(⑲ 목록 새로 받기)이 떠 있거나 곧 뜰 때 글만 바꾸면 목록이 오는 순간 같이 닫혀 안 보인다(`RankListBusy`).
+    //   그 일이 끝날 때까지 미룬다 · 내 창(기다림 · 찾음 · 방금 띄운 안내)은 그 자리에서
+    if (g_rankEvNotice && (g_rankWaiting || expiredBox || (!MsgBoxOpen() && !RankListBusy()))) {
+        const LONG notice = InterlockedExchange(&g_rankEvNotice, 0);
+        if (notice) RankNoticeShow((ranknotice::Kind)notice, (DWORD)g_rankNoticeValue);
     }
 }
 
@@ -1495,6 +1568,7 @@ static volatile LONG g_lobbyLost = 0;
 static DWORD g_lobbyLostAtMs = 0;
 static volatile LONG g_lobbyLostShown = 0;
 static const wchar_t kLobbyLostText[] = L"서버와 연결이 끊겼습니다. 뒤로를 눌러 나간 뒤 다시 접속해 주세요";
+static wchar_t g_lobbyLostBuf[64];   // ★ 11-05 플랜1 — 정지 문구(글 칸은 주소만 쥔다)
 static void LobbyLostMark(int rc, DWORD err)
 {
     if (!g_rankOn || !g_ourLobby || GetCurrentThreadId() != g_mainTid) return;
@@ -1507,15 +1581,27 @@ static void LobbyLostMark(int rc, DWORD err)
     if (shown || waiting) {
         g_lobbyLostAtMs = GetTickCount();
         InterlockedExchange(&g_lobbyLost, 1);
+    } else {
+        InterlockedExchange(&g_lobbyBannedUntil, 0);   // ★ 11-05 플랜1 — 판 안 등 안내 안 띄움(다음 온라인 누름의 정지 안내가 받음) — 묵은 값이 나중 끊김 안내로 새지 않게
     }
 }
+static bool BackToConnBusy();   // ★ 11-05 플랜1 — ⑯ 절
 static void LobbyLostTick(const char* where)
 {
     if (!g_lobbyLost || GetCurrentThreadId() != g_mainTid || GetTickCount() - g_lobbyLostAtMs < 1000) return;
+    if (BackToConnBusy()) return;   // ★ 11-05 플랜1 — 메뉴를 돌려보내는 중에 띄우면 화면이 바뀌며 창이 풀린다(실물 — 정지 안내가 1초 만에 사라짐) · 접속 방식에 도착한 뒤에
     InterlockedExchange(&g_lobbyLost, 0);
     InterlockedExchange(&g_rankWaiting, 0);      // 줄은 로비가 끊김으로 이미 뺐다(`Lobby::OnClose`)
     InterlockedExchange(&g_rankFoundState, 0);
-    ((PFN_dlgopen)kDlgOpen)(0, NULL, kLobbyLostText, kDlgNoticeFlags, 0, 0);   // 부모 0 = 정품 「Timeout」 알림과 같은 꼴(`noxworld.c` 243)
+    // ★ 11-05 플랜1 — 정지로 끊겼으면(`NOXRANK BANNED`) 「다시 접속해 주세요」 대신 정지 문구 — 다시 눌러도 안 되는 일을 다시 하라고 하지 않게
+    const uint32_t bannedUntil = (uint32_t)InterlockedExchange(&g_lobbyBannedUntil, 0);
+    const wchar_t* text = kLobbyLostText;
+    if (bannedUntil) {
+        const std::wstring b = loginnotice::Text(loginnotice::Pick(false, bannedUntil), bannedUntil);
+        wcsncpy_s(g_lobbyLostBuf, sizeof(g_lobbyLostBuf) / sizeof(g_lobbyLostBuf[0]), b.c_str(), _TRUNCATE);
+        text = g_lobbyLostBuf;
+    }
+    ((PFN_dlgopen)kDlgOpen)(0, NULL, text, kDlgNoticeFlags, 0, 0);   // 부모 0 = 정품 「Timeout」 알림과 같은 꼴(`noxworld.c` 243)
     const LONG n = InterlockedIncrement(&g_lobbyLostShown);
     Log("㉑ 안내 창 띄움(누적 %ld · %s)", n, where);
 }
@@ -2280,6 +2366,8 @@ static bool ChatVisible()
     DWORD win = 0, flags = 0;
     return ReadSelf(kChatWin, &win) && win && ReadSelf(win + 4, &flags) && !(flags & kWinHidden);
 }
+
+static bool BackToConnBusy() { return g_backWhy != BackWhy::None; }   // ★ 11-05 플랜1 — `LobbyLostTick`
 
 // 돌려보내는 중이면 true(이 프레임은 다른 자동 누름 안 함)
 static bool BackToConnTick(DWORD now)

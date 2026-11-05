@@ -67,6 +67,7 @@ struct CLobbyClientStats {
     unsigned long long clientGoneShortened = 0; // ★ 11-03 — 그중 세션 한도를 줄인 수
     unsigned long long kickIn = 0;              // ★ 11-05 플랜1 — 받은 KICK(정지)
     unsigned long long kickedSessions = 0;      // ★ 11-05 플랜1 — 그중 내보낸 세션(이 게임 서버에 없는 이름은 0)
+    unsigned long long rankNoShowOut = 0;       // ★ 11-05 플랜1 — 보낸 RANK_NOSHOW
     unsigned long long byes = 0;             // 로비가 BYE(끊기 직전 까닭)
     unsigned long long badLines = 0;         // 못 읽는 줄 · 차례에 안 맞는 줄(버림)
     // ★ 7단계 — 살아 있음
@@ -140,6 +141,7 @@ private:
     static bool ToLinkRoom(const RoomFact& f, LinkRoom& out);
     // 지난번 보낸 것(`_sent`)과 다른 방만 ROOM · 사라진 방은 ROOM_GONE — 붙을 때 · 끊길 때 `_sent` 를 비워 다시 붙으면 전부 간다
     void SendChanged(std::vector<NetworkRequest>& out);
+    void SendRankNoShows(std::vector<NetworkRequest>& out);   // ★ 11-05 플랜1
     // ★ 7단계 — 등록 뒤 PING · 받은 줄이 한도 동안 없으면 `LOBBY_CLOSE`(한 접속에 한 번)
     void LinkTick(std::vector<NetworkRequest>& out);
     // ★ 7단계 조각 3 — 쥔 판 결과 하나를 보낸다(처음이면 `results` · 다시면 `resultsResent`)

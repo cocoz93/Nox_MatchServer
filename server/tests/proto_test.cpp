@@ -27581,6 +27581,15 @@ void TestRankRoom() {
               halClosed == 0,
           m);
 
+    // ★ 11-05 플랜1 — 안 온 이름(`RANK_NOSHOW` 재료) = 한도 판 · 랭크 풂만. 다 옴(①) · 맵 없음(④) · 닫힘(⑤)의 이름이 섞이면 수가 틀어진다
+    {
+        std::vector<RM::RankNoShow> ns, again;
+        rooms.TakeRankNoShows(ns);
+        rooms.TakeRankNoShows(again);
+        Check(ns.size() == 2 && ns[0].room == r2 && ns[0].name == "eve" && ns[1].room == r3 && ns[1].name == "gus" && again.empty() && rooms.Stats().rankNoShows == 2,
+              "★ 11-05 안 온 이름 — ② 한도 판의 eve · ③ 랭크 풂의 gus 둘뿐 · 꺼내면 비움");
+    }
+
     // ⑥ 랭크 판 중단(amy 나감 → 혼자 남음) → 결과 ranked · aborted → 일반 방(설정 ranked 끔 · 명단 지움) · 끝 셈
     std::vector<nox::RoomEvent> drop;
     rooms.SwapOutRoomEvents(drop);
@@ -27718,6 +27727,75 @@ void TestRankRoom() {
                   !g6.QuitAtRestartArmed() && rooms.Room(r6).Phase() == nox::RoomPhase::Waiting && rooms.Room(r6).RankState() == W::None &&
                   g6.serverQuitAcks() == 1 && rooms.Room(r1).RankQuitArmed() == 1,
               m);
+    }
+
+    // ⑩ ★ 11-05 플랜1 — 안 온 이름의 나머지 갈래 — 맵 없음(한도에 둘 · 하나 안 옴)은 안 알림 · 쉬는 동안 온 사람은 안 알림 · 쉬기가 끝나야 알림 · 로비 줄
+    {
+        std::vector<RM::RankNoShow> drop;
+        rooms.TakeRankNoShows(drop);
+        const unsigned long long ns0 = rooms.Stats().rankNoShows;
+        rooms.SetRankSettleMs(0);
+        const int r8 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "", 0, {"oli", "pam", "quy"});       // 맵 없음
+        const int r9 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"rob", "sue", "tom"});  // 한도 판(쉬기 0)
+        now += 34; srv.Tick(now, o);
+        const uint32_t armed2 = now - 34;   // 처음 본 틱
+        join(srv, TrailerAs("oli", r8, "10.68.0.1", 681), "10.68.0.1:1001", "10.68.0.1:1002", o);
+        join(srv, TrailerAs("pam", r8, "10.68.0.2", 682), "10.68.0.2:2001", "10.68.0.2:2002", o);
+        join(srv, TrailerAs("rob", r9, "10.69.0.1", 691), "10.69.0.1:1001", "10.69.0.1:1002", o);
+        join(srv, TrailerAs("sue", r9, "10.69.0.2", 692), "10.69.0.2:2001", "10.69.0.2:2002", o);
+        now = armed2 + 34 + rooms.RankArriveMs();
+        srv.Tick(now, o);
+        const bool noMapQuiet = rooms.Room(r8).RankState() == W::None && rooms.Stats().rankNoShows == ns0 + 1 && rooms.RankNoShowsWaiting() == 1;
+        Check(noMapQuiet, "⑩ 맵 없음은 안 온 quy 를 안 알림 · 한도 판의 tom 만 하나");
+
+        // 로비 줄 — 등록 전엔 쥐고 있고 · 등록 뒤 한 줄씩 · 보낸 뒤 비움
+        nox::CLobbyClient::Config lcfg;
+        for (size_t i = 0; i < lcfg.tokenKey.size(); ++i) lcfg.tokenKey[i] = static_cast<uint8_t>(i + 1);
+        lcfg.epoch = 1760000000u;
+        lcfg.registerIp = 0x7f000002u;
+        lcfg.port = 18590;
+        nox::CLobbyClient lc(rooms, lcfg);
+        lc.SetClock([] { return 1000u; });
+        std::vector<nox::NetworkRequest> rq;
+        lc.AfterTick(rq);
+        const bool kept = rooms.RankNoShowsWaiting() == 1 && lc.Stats().rankNoShowOut == 0;
+        auto ev = [](nox::NetworkEvent::Type t, const std::string& line) {
+            nox::NetworkEvent e;
+            e.type = t;
+            e.lobbyConn = 9;
+            e.lobbyLine = line;
+            e.lobbyWhy = "test";
+            return e;
+        };
+        lc.OnNetworkEvent(ev(nox::NetworkEvent::Type::LOBBY_OPENED, ""), rq);
+        lc.OnNetworkEvent(ev(nox::NetworkEvent::Type::LOBBY_LINE, nox::LinkHello("00112233445566778899aabbccddeeff")), rq);
+        rq.clear();
+        lc.AfterTick(rq);
+        const std::string want = "RANK_NOSHOW " + std::to_string(r9) + " tom";
+        int lines = 0;
+        for (const nox::NetworkRequest& r : rq) lines += r.type == nox::NetworkRequest::Type::LOBBY_SEND && r.lobbyLine == want ? 1 : 0;
+        rq.clear();
+        lc.AfterTick(rq);
+        int again = 0;
+        for (const nox::NetworkRequest& r : rq) again += r.lobbyLine.rfind("RANK_NOSHOW", 0) == 0 ? 1 : 0;
+        Check(kept && lines == 1 && again == 0 && rooms.RankNoShowsWaiting() == 0 && lc.Stats().rankNoShowOut == 1, "⑩ RANK_NOSHOW 줄 — 등록 전엔 쥐고 · 등록 뒤 한 줄 · 다시 안 나감");
+
+        // 쉬기 — 한도에 둘 → 쉬는 동안 셋째 옴 = 안 알림
+        rooms.SetRankSettleMs(2000);
+        const int r10 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"uma", "val", "wes"});
+        now += 34; srv.Tick(now, o);
+        const uint32_t armed3 = now - 34;
+        join(srv, TrailerAs("uma", r10, "10.70.0.1", 701), "10.70.0.1:1001", "10.70.0.1:1002", o);
+        join(srv, TrailerAs("val", r10, "10.70.0.2", 702), "10.70.0.2:2001", "10.70.0.2:2002", o);
+        now = armed3 + 34 + rooms.RankArriveMs();
+        srv.Tick(now, o);
+        const bool waitingSettle = rooms.Room(r10).RankState() == W::Arriving && rooms.RankNoShowsWaiting() == 0;
+        join(srv, TrailerAs("wes", r10, "10.70.0.3", 703), "10.70.0.3:3001", "10.70.0.3:3002", o);
+        now += 34; srv.Tick(now, o);
+        now += 2000; srv.Tick(now, o);
+        Check(waitingSettle && rooms.Room(r10).RankState() == W::Started && rooms.RankNoShowsWaiting() == 0 && rooms.Stats().rankNoShows == ns0 + 1,
+              "⑩ 쉬는 동안 온 사람 — 안 알림(쉬기 전에 알리면 들어온 사람을 안 온 사람으로 센다)");
+        rooms.SetRankSettleMs(nox::CRoomManager::kRankSettleMs);
     }
 }
 

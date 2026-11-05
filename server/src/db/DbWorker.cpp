@@ -1,5 +1,6 @@
 ﻿// DbWorker.cpp — 로비의 DB 워커. 설명은 `DbWorker.h` 머리 · 표는 `tools/db/001_init.sql`.
 #include "nox/DbWorker.h"
+#include "nox/LoginLine.h"   // ★ 11-05 플랜1 — `kBanSourceAuto`
 
 #include "MatchRowBinds.h"   // ★ 11-04 전적 검색 — 판 줄 읽기 · 합계 쓰기 칸(다시 계산 도구와 같이 씀)
 #include "MySqlBind.h"   // ★ 로그인 암호 조각 2 — 라이브러리 초기화 · 끊김 · 자리 묶기 · 붙기(로그인 서버와 같이 씀)
@@ -20,7 +21,8 @@ uint32_t NowUnix() { return static_cast<uint32_t>(std::time(nullptr)); }
 bool RoleDoes(DbWorkerRole role, wol::StoreAnswerKind kind) {
     switch (kind) {
         case wol::StoreAnswerKind::SaveMatch:
-        case wol::StoreAnswerKind::Rating: return role == DbWorkerRole::Writer;
+        case wol::StoreAnswerKind::Rating:
+        case wol::StoreAnswerKind::BanWrite: return role == DbWorkerRole::Writer;   // ★ 11-05 플랜1 — 판 저장과 같은 쓰기 연결(권한 INSERT · `config/account_bans_setup.sql`)
         case wol::StoreAnswerKind::History:
         case wol::StoreAnswerKind::ActiveBans: return role == DbWorkerRole::Reader;
         case wol::StoreAnswerKind::kCount: break;
@@ -34,6 +36,8 @@ constexpr const char* kSelAccount = "SELECT id FROM accounts WHERE name = ?";
 constexpr const char* kSelBans =
     "SELECT a.name, MAX(b.until_unix) FROM account_bans b JOIN accounts a ON a.id = b.account_id "
     "WHERE b.lifted_unix = 0 AND b.until_unix > ? GROUP BY a.name";
+// ★ 11-05 플랜1 — 줄 서기 10회째 자동 정지(`MySqlAccountStore` 의 운영 명령과 같은 칸 · 출처만 `auto`)
+constexpr const char* kInsBan = "INSERT INTO account_bans (account_id, until_unix, reason, source, created_unix, lifted_unix) VALUES (?, ?, ?, ?, ?, 0)";
 // ★ 레이팅 조각 3 — matches.ranked · match_players.rating_delta(`003_rating.sql`)
 constexpr const char* kInsMatch =
     "INSERT INTO matches (server_ip, server_port, match_key, room_id, room_name, map_key, mode, start_unix, end_unix, frames, end_reason, "
@@ -74,11 +78,12 @@ struct CDbWorker::Conn {
     MYSQL_STMT* selTotals = nullptr;    // ★ 11-04 전적 검색
     MYSQL_STMT* upsTotals = nullptr;
     MYSQL_STMT* selBans = nullptr;      // ★ 11-05 플랜1
+    MYSQL_STMT* insBan = nullptr;       // ★ 11-05 플랜1
     unsigned lastErrno = 0;
     std::string lastError;
 
     ~Conn() {
-        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer, upsRating, selRating, selRank, selHistory, selTotals, upsTotals, selBans})
+        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer, upsRating, selRating, selRank, selHistory, selTotals, upsTotals, selBans, insBan})
             if (s) mysql_stmt_close(s);
         if (m) mysql_close(m);
     }
@@ -102,7 +107,7 @@ struct CDbWorker::Conn {
     bool PrepareFor(DbWorkerRole role) {
         if (!Prepare(selAccount, kSelAccount) || !Prepare(selRating, kSelRating) || !Prepare(selRank, kSelRank)) return false;
         if (role == DbWorkerRole::Writer)
-            return Prepare(insMatch, kInsMatch) && Prepare(insPlayer, kInsPlayer) && Prepare(upsRating, kUpsRating) && Prepare(upsTotals, kUpsTotals);
+            return Prepare(insMatch, kInsMatch) && Prepare(insPlayer, kInsPlayer) && Prepare(upsRating, kUpsRating) && Prepare(upsTotals, kUpsTotals) && Prepare(insBan, kInsBan);
         return Prepare(selTotals, kSelTotals) && Prepare(selHistory, kSelHistory) && Prepare(selBans, kSelBans);
     }
     // 이름으로 계정 번호(없으면 0). 실패면 false(lastErrno)
@@ -409,6 +414,21 @@ void CDbWorker::GetActiveBans(uint32_t req, uint32_t now) {
     cv_.notify_one();
 }
 
+void CDbWorker::BanAccount(const std::string& account, uint32_t until, const std::string& reason, uint32_t now) {
+    Job j;
+    j.kind = wol::StoreAnswerKind::BanWrite;
+    j.account = account;
+    j.until = until;
+    j.reason = reason;
+    j.now = now;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        queue_.push_back(std::move(j));
+        ++stats_.banWriteRequests;
+    }
+    cv_.notify_one();
+}
+
 void CDbWorker::TakeAnswers(std::vector<wol::StoreAnswer>& out) {
     std::lock_guard<std::mutex> lk(mu_);
     for (wol::StoreAnswer& a : answers_) out.push_back(std::move(a));
@@ -488,6 +508,7 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
             case wol::StoreAnswerKind::Rating: ok = ExecRating(c, j, a); break;
             case wol::StoreAnswerKind::History: ok = ExecHistory(c, j, a); break;
             case wol::StoreAnswerKind::ActiveBans: ok = ExecBans(c, j, a); break;
+            case wol::StoreAnswerKind::BanWrite: ok = ExecBanWrite(c, j, a); break;
             case wol::StoreAnswerKind::kCount: break;
         }
         if (ok) return a;
@@ -517,6 +538,10 @@ wol::StoreAnswer CDbWorker::FailAnswer(const Job& j, wol::StoreAnswer a) {
     if (j.kind == wol::StoreAnswerKind::ActiveBans) {   // ★ 11-05 플랜1 — 못 읽음(bansOk false) · 로비는 앞 목록을 그대로 둔다
         a.bans.clear();
         ++stats_.bansFailed;
+        return a;
+    }
+    if (j.kind == wol::StoreAnswerKind::BanWrite) {   // ★ 11-05 플랜1 — 못 넣음(banWritten false) · 로비 목록엔 남는다
+        ++stats_.banWriteFailed;
         return a;
     }
     a.save = wol::SaveResult::Failed;
@@ -660,6 +685,31 @@ bool CDbWorker::ExecRating(Conn& c, const Job& j, wol::StoreAnswer& a) {
 // ★ 11-04 플랜2 — 읽기만 · 다시 할 때 앞서 읽은 줄을 비운다
 //   ★ 11-04 전적 검색 — 저장이 다른 스레드로 갈라져 문장 넷 사이에 판이 끼어들 수 있다. 점수 칸은 지금 점수에서 표의 증감을 되짚어 구하므로(`MatchHistory.cpp`)
 //     읽기 하나를 한 시점으로 묶는다
+// ★ 11-05 플랜1 — 머리 주석은 `kInsBan`. 없는 이름은 실패가 아니라 답(다시 해도 같다 · 메모리 저장소로 뜬 로비에서 가입 없이 들어온 이름)
+bool CDbWorker::ExecBanWrite(Conn& c, const Job& j, wol::StoreAnswer& a) {
+    uint64_t id = 0;
+    if (!c.FindAccount(j.account, id)) return false;
+    if (id == 0) {
+        a.why = "계정 없음";
+        std::lock_guard<std::mutex> lk(mu_);
+        ++stats_.banWriteNoAccount;
+        return true;
+    }
+    MYSQL_BIND p[5] = {};
+    unsigned long lReason = 0, lSource = 0;
+    const std::string source(kBanSourceAuto);
+    U64(p[0], id);
+    U32(p[1], j.until);
+    Txt(p[2], j.reason, lReason);
+    Txt(p[3], source, lSource);
+    U32(p[4], j.now);
+    if (mysql_stmt_bind_param(c.insBan, p) != 0 || mysql_stmt_execute(c.insBan) != 0) return c.StmtFail(c.insBan, "정지 넣기");
+    a.banWritten = true;
+    std::lock_guard<std::mutex> lk(mu_);
+    ++stats_.banWrites;
+    return true;
+}
+
 bool CDbWorker::ExecBans(Conn& c, const Job& j, wol::StoreAnswer& a) {
     a.bans.clear();
     if (!c.ReadBans(j.now, a.bans)) return false;
