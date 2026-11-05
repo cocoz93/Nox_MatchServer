@@ -15,6 +15,9 @@
 //                            통과하면 열쇠 만료를 「지금 + 수명」으로 밀고 마지막 로그인을 적는다
 //     POST /logout         — 폼 `key` → 200 `NXOK`(없는 열쇠여도 — 몇 번 해도 같다) · 400 · 503
 //     열쇠 글은 저장하지 않는다 — SHA-256 만(`AccountStore.h`)
+//     POST /launcher/password — ★ 11-05 플랜1 암호 바꾸기 · 폼 `name` · `password`(현재) · `new_password` · `device` · `remember`
+//                            → 200 `NXK1<새 열쇠>`(그 계정의 다른 열쇠는 전부 지움 — 이 PC 만 유지) · 실패는 `NXL!<까닭>`(400 · 401 · 429 · 503).
+//                            새 암호가 규칙 밖이면 400 `NXL!bad_input` + 둘째 줄 안내 글(UTF-8)
 //   · POST /signup — 폼 `name` · `password` · `password2` → 201 · 409 · 400 · 429(★ 11-05 플랜1 시도 제한) · 503 · 본문은 결과 화면(★ 조각 3 `SignupPage.h`)
 //   · GET / · /signup — 가입 양식(★ 조각 3)
 //   · 그 밖 — 404 · 길은 맞는데 방식이 다르면 405
@@ -67,6 +70,10 @@ enum class AuthOutcome : uint8_t {
     LoginBadInput,       // 이름 · 암호 규칙 밖 · 폼이 틀림
     LoginFailed,         // DB · 서명 · 열쇠 넣기 실패
     LoginThrottled,      // ★ 11-05 플랜1 — 시도 제한(DB · 해시 안 돎)
+    PasswordChanged,     // ★ 11-05 플랜1 — 암호 바꿈(암호 저장 + 열쇠 전부 삭제 + 새 열쇠)
+    PasswordWrong,       // 현재 암호 틀림 · 없는 이름 · 암호 없는 옛 행
+    PasswordBadInput,    // 폼 틀림 · 새 암호 규칙 밖 · 새 암호가 현재와 같음
+    PasswordFailed,      // 해시 · DB 실패 — 암호도 열쇠도 그대로
     LoginClosed,         // ★ 런처 P1 — 옛 `/login`(410)
     TokenOk,             // ★ 런처 P1 — `/token`
     TokenBadKey,         //   열쇠 없음 · 남의 이름
@@ -98,6 +105,7 @@ private:
     HttpResponse Login(const HttpRequest& req, IAccountStore& db, AuthOutcome& o);   // ★ 런처 P1 — `/launcher/login`(열쇠 발급)
     HttpResponse Token(const HttpRequest& req, IAccountStore& db, AuthOutcome& o);   // ★ 런처 P1
     HttpResponse Logout(const HttpRequest& req, IAccountStore& db, AuthOutcome& o);  // ★ 런처 P1
+    HttpResponse ChangePassword(const HttpRequest& req, IAccountStore& db, AuthOutcome& o);   // ★ 11-05 플랜1 — `/launcher/password`
     HttpResponse Signup(const HttpRequest& req, IAccountStore& db, AuthOutcome& o);
     bool IssueLoginToken(const HttpRequest& req, IAccountStore& db, uint64_t accountId, const std::string& name, uint32_t now, std::string& line);
 

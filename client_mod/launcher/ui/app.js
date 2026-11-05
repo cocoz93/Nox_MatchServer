@@ -7,7 +7,7 @@ const send = (obj) => { if (host) host.postMessage(new URLSearchParams(obj).toSt
 const REASON = {
   wrong_password: '암호가 맞지 않습니다.',
   no_account: '없는 아이디입니다. 가입부터 해 주세요.',
-  bad_input: '아이디는 영문 · 숫자 9자까지, 암호는 4~8자입니다.',
+  bad_input: '아이디는 영문 · 숫자 9자까지, 암호는 4~16자입니다.',
   unreachable: '로그인 서버에 닿지 못했습니다. 잠시 뒤 다시 해 주세요.',
   server_error: '로그인 서버 오류입니다. 잠시 뒤 다시 해 주세요.',
   key_invalid: '로그인이 만료되었습니다. 다시 로그인해 주세요.',
@@ -21,13 +21,14 @@ function reasonText(r, detail) {
     const minutes = Math.max(1, Math.ceil((Number(parts[0]) || 60) / 60));
     return (parts[1] === 'address' ? '시도가 너무 많습니다. ' : '암호를 여러 번 틀렸습니다. ') + minutes + '분 뒤 다시 해 주세요.';
   }
+  if (r === 'bad_input' && detail) return detail;   // 암호 바꾸기 — 서버가 어떤 규칙에 걸렸는지 글로 보냄
   return REASON[r] || '알 수 없는 오류입니다(' + (r || '?') + ').';
 }
 
 let me = { name: '', remember: false };
 
 function show(id) {
-  for (const p of ['loading', 'login', 'signed']) $(p).classList.toggle('hidden', p !== id);
+  for (const p of ['loading', 'login', 'signed', 'pw']) $(p).classList.toggle('hidden', p !== id);
   if (id === 'login') ($('name').value ? $('password') : $('name')).focus();
 }
 
@@ -72,6 +73,28 @@ $('startBtn').addEventListener('click', () => {
 });
 $('logout').addEventListener('click', (e) => { e.preventDefault(); send({ cmd: 'logout' }); });
 
+// ★ 11-05 플랜1 — 암호 바꾸기 패널
+function clearPw() { for (const id of ['pwCurrent', 'pwNew', 'pwConfirm']) $(id).value = ''; }
+$('changePw').addEventListener('click', (e) => {
+  e.preventDefault();
+  clearPw();
+  setMsg('pwMsg', '');
+  $('pwBtn').disabled = false;
+  show('pw');
+  $('pwCurrent').focus();
+});
+$('pwCancel').addEventListener('click', (e) => { e.preventDefault(); clearPw(); showSigned(); });
+$('pw').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const current = $('pwCurrent').value, next = $('pwNew').value;
+  if (!current || !next) { setMsg('pwMsg', '칸을 모두 넣어 주세요.'); return; }
+  if (next !== $('pwConfirm').value) { setMsg('pwMsg', '새 암호 확인이 다릅니다.'); return; }
+  $('pwBtn').disabled = true;
+  setMsg('pwMsg', '바꾸는 중…', true);
+  send({ cmd: 'password', current, next });
+  clearPw();
+});
+
 if (host) {
   host.addEventListener('message', (e) => {
     const m = new URLSearchParams(String(e.data));
@@ -89,6 +112,11 @@ if (host) {
         if (m.get('ok') === '1') setMsg('startMsg', '게임 실행 중', true);
         else if (m.get('reason') === 'key_invalid') showLogin(reasonText('key_invalid'));
         else { setMsg('startMsg', reasonText(m.get('reason'), m.get('detail'))); $('startBtn').disabled = false; }
+        break;
+      case 'password':
+        if (m.get('ok') === '1') { showSigned(); setMsg('startMsg', '암호를 바꿨습니다. 다른 PC는 다시 로그인해야 합니다.', true); }
+        else if (m.get('reason') === 'key_store_changed') showLogin('암호는 바뀌었습니다. 다시 로그인해 주세요.', true);
+        else { setMsg('pwMsg', reasonText(m.get('reason'), m.get('detail'))); $('pwBtn').disabled = false; }
         break;
       case 'gameExit':
         if (m.get('loggedOut') === '1') showLogin('게임이 끝나 로그아웃했습니다.', true);

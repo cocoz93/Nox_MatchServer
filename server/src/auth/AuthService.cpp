@@ -54,6 +54,10 @@ const char* AuthOutcomeName(AuthOutcome o) {
     case AuthOutcome::LoginBadInput: return "로그인 — 규칙 밖";
     case AuthOutcome::LoginFailed: return "로그인 — 실패";
     case AuthOutcome::LoginThrottled: return "로그인 — 시도 제한";
+    case AuthOutcome::PasswordChanged: return "암호 바꾸기 — 됨";
+    case AuthOutcome::PasswordWrong: return "암호 바꾸기 — 현재 암호 틀림";
+    case AuthOutcome::PasswordBadInput: return "암호 바꾸기 — 규칙 밖";
+    case AuthOutcome::PasswordFailed: return "암호 바꾸기 — 실패";
     case AuthOutcome::LoginClosed: return "옛 로그인 — 닫힘";
     case AuthOutcome::TokenOk: return "토큰 — 됨";
     case AuthOutcome::TokenBadKey: return "토큰 — 열쇠 없음";
@@ -138,8 +142,8 @@ HttpResponse CAuthService::Handle(const HttpRequest& req, IAccountStore& db, Aut
     AuthOutcome o = AuthOutcome::NotFound;
     HttpResponse r;
     const bool page = req.path == "/" || req.path == "/signup";
-    // ★ 런처 P1 — POST 만 받는 길 넷(옛 `/login` 은 닫힘 답)
-    const bool postOnly = req.path == "/login" || req.path == "/launcher/login" || req.path == "/token" || req.path == "/logout";
+    // ★ 런처 P1 — POST 만 받는 길 다섯(옛 `/login` 은 닫힘 답 · ★ 11-05 플랜1 — 암호 바꾸기)
+    const bool postOnly = req.path == "/login" || req.path == "/launcher/login" || req.path == "/token" || req.path == "/logout" || req.path == "/launcher/password";
     if (postOnly || page) {
         if (req.method == "POST" && req.path != "/") {
             if (req.path == "/login") {
@@ -151,6 +155,8 @@ HttpResponse CAuthService::Handle(const HttpRequest& req, IAccountStore& db, Aut
                 r = Token(req, db, o);
             } else if (req.path == "/logout") {
                 r = Logout(req, db, o);
+            } else if (req.path == "/launcher/password") {
+                r = ChangePassword(req, db, o);
             } else {
                 r = Signup(req, db, o);
             }
@@ -187,7 +193,7 @@ static const char* NameMessage(NameCheck c) {
 static const char* PasswordMessage(PasswordCheck c) {
     switch (c) {
     case PasswordCheck::TooShort: return "암호는 4자 이상입니다.";
-    case PasswordCheck::TooLong: return "암호는 8자까지입니다.";
+    case PasswordCheck::TooLong: return "암호는 16자까지입니다.";
     case PasswordCheck::HasSpace: return "암호에 빈칸은 안 됩니다.";
     case PasswordCheck::BadChar: return "암호는 영문 · 숫자 · 특수문자만 됩니다(한글 안 됨).";
     case PasswordCheck::NoLetter: return "암호에 영문을 하나 이상 넣어 주세요.";
@@ -259,6 +265,79 @@ HttpResponse CAuthService::Login(const HttpRequest& req, IAccountStore& db, Auth
         return LoginFailReply(503, LoginFail::ServerError);
     }
     o = AuthOutcome::LoginOk;
+    HttpResponse r;
+    r.body = std::string(kLoginKeyMark) + ToHex(key, sizeof(key));
+    SecureZero(key, sizeof(key));
+    r.headers.emplace_back("Cache-Control", "no-store");
+    return r;
+}
+
+// ★ 11-05 플랜1 — 암호 바꾸기(플랜 4절). 순서: 폼 → 시도 제한 → 현재 암호 → 새 암호 규칙 → 해시 · 새 열쇠 짓기(트랜잭션 밖 — 해시 동안 DB 를 안 잡음)
+//   → 저장 + 열쇠 전부 삭제 + 새 열쇠를 한 트랜잭션으로(`IAccountStore::ChangePassword`). 새 열쇠까지 한 트랜잭션에 넣는 까닭 — 중간에 실패해도 암호도 열쇠도 그대로 남게.
+//   판 중 접속은 안 끊는다(사용자 결정 — 토큰 · 열쇠만 없앰)
+static HttpResponse BadNewPassword(const std::string& message) {
+    HttpResponse r = LoginFailReply(400, LoginFail::BadInput);
+    r.body += "\n" + message;
+    return r;
+}
+
+HttpResponse CAuthService::ChangePassword(const HttpRequest& req, IAccountStore& db, AuthOutcome& o) {
+    std::map<std::string, std::string> form;
+    const auto name = [&]() -> const std::string& { return form["name"]; };
+    if (!ParseForm(req.body, form) || CheckAccountName(name()) != NameCheck::Ok || CheckPassword(form["password"]) != PasswordCheck::Ok) {
+        o = AuthOutcome::PasswordBadInput;   // 규칙 밖 암호는 어떤 행과도 안 맞는다(`Login` 과 같은 뜻)
+        return LoginFailReply(400, LoginFail::BadInput);
+    }
+    const uint32_t now = cfg_.unixNow();
+    ThrottleScope scope = ThrottleScope::Account;
+    if (const uint32_t wait = throttle_.RetryAfterSec(name(), req.peerIp, now, &scope)) {   // 로그인과 같은 셈 — 이 길로 대입하지 못하게
+        o = AuthOutcome::LoginThrottled;
+        return ThrottledReply(wait, scope);
+    }
+    AccountRow row;
+    switch (db.Find(name(), row)) {
+    case FindResult::Found: break;
+    case FindResult::NotFound:
+        throttle_.OnFail(nullptr, req.peerIp, now);
+        o = AuthOutcome::PasswordWrong;
+        return LoginFailReply(401, LoginFail::NoAccount);
+    case FindResult::Failed:
+    case FindResult::kCount:
+        o = AuthOutcome::PasswordFailed;
+        return LoginFailReply(503, LoginFail::ServerError);
+    }
+    if (!row.hasPassword) {
+        throttle_.OnFail(nullptr, req.peerIp, now);
+        o = AuthOutcome::PasswordWrong;
+        return LoginFailReply(401, LoginFail::NoAccount);
+    }
+    if (!VerifyPassword(form["password"], row.password)) {
+        throttle_.OnFail(&name(), req.peerIp, now);
+        o = AuthOutcome::PasswordWrong;
+        return LoginFailReply(401, LoginFail::WrongPassword);
+    }
+    throttle_.OnSuccess(name(), now);
+    const std::string& next = form["new_password"];
+    const PasswordCheck pc = CheckPassword(next);
+    if (pc != PasswordCheck::Ok) {
+        o = AuthOutcome::PasswordBadInput;
+        return BadNewPassword(PasswordMessage(pc));
+    }
+    if (next == form["password"]) {   // 사용자 결정 — 같은 암호로 다른 PC 만 끊는 길을 만들지 않는다
+        o = AuthOutcome::PasswordBadInput;
+        return BadNewPassword("새 암호가 지금 암호와 같습니다.");
+    }
+    PasswordRecord rec;
+    uint8_t key[kLoginKeyBytes];
+    LoginKeyHash h{};
+    const uint32_t ttl = form["remember"] == "1" ? kKeyTtlRememberSec : kKeyTtlSessionSec;
+    if (!MakePasswordRecord(next, cfg_.iterations, rec) || !RandomBytes(key, sizeof(key)) || !Sha256(key, sizeof(key), h) ||
+        !db.ChangePassword(row.id, rec, h, CleanDevice(form["device"]), ttl, now)) {
+        SecureZero(key, sizeof(key));
+        o = AuthOutcome::PasswordFailed;
+        return LoginFailReply(503, LoginFail::ServerError);
+    }
+    o = AuthOutcome::PasswordChanged;
     HttpResponse r;
     r.body = std::string(kLoginKeyMark) + ToHex(key, sizeof(key));
     SecureZero(key, sizeof(key));

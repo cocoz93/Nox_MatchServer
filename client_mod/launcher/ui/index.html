@@ -25,7 +25,7 @@
       <input id="name" maxlength="9" spellcheck="false" autocomplete="off">
     </label>
     <label>암호
-      <input id="password" type="password" maxlength="8" autocomplete="off">
+      <input id="password" type="password" maxlength="16" autocomplete="off">
     </label>
     <div class="checks">
       <label class="check"><input type="checkbox" id="saveId" checked> 아이디 저장</label>
@@ -41,8 +41,23 @@
     <p class="note" id="whoNote"></p>
     <button id="startBtn">게임 시작</button>
     <p class="msg" id="startMsg" role="alert"></p>
-    <p class="foot"><a href="#" id="logout">로그아웃</a></p>
+    <p class="foot"><a href="#" id="changePw">암호 바꾸기</a> · <a href="#" id="logout">로그아웃</a></p>
   </section>
+
+  <form class="panel hidden" id="pw" autocomplete="off">
+    <label>현재 암호
+      <input id="pwCurrent" type="password" maxlength="16" autocomplete="off">
+    </label>
+    <label>새 암호
+      <input id="pwNew" type="password" maxlength="16" autocomplete="off">
+    </label>
+    <label>새 암호 확인
+      <input id="pwConfirm" type="password" maxlength="16" autocomplete="off">
+    </label>
+    <button type="submit" id="pwBtn">암호 바꾸기</button>
+    <p class="msg" id="pwMsg" role="alert"></p>
+    <p class="foot"><a href="#" id="pwCancel">취소</a></p>
+  </form>
 </main>
 <!-- ★ 11-04 정품 고지 화면(Legal.wnd:LegalText) 글 그대로 — 게임이 고지 화면을 건너뛰므로 여기로 옮김(사용자 결정). 정품 모양이면 stage.js 가 small.fnt 로 그림 -->
 <p class="legal" id="legal"><span>© 2000 Electronic Arts. Westwood Studios is a trademark or registered trademark of Electronic Arts in the U.S. and/or other countries.</span><span>All Rights Reserved.</span><span>Westwood Studios is an Electronic Arts™ company.</span></p>

@@ -3,7 +3,7 @@
 // 일꾼 스레드 하나에 하나 — 그 스레드에서 만들고(`Open`) 쓰고 닫는다(MySQL 연결은 스레드끼리 나눠 쓰지 않는다).
 //   · DB 사용자 `nox_auth` = accounts 의 SELECT · INSERT · UPDATE 만(`config/auth_setup.sql` · 표를 못 만듦)
 //     ★ 런처 P1 — + login_keys 의 SELECT · INSERT · UPDATE · DELETE(`config/launcher_setup.sql`)
-//   · 뜰 때 표 버전(`DbConfig.h` kSchemaVersion)과 준비된 문장 아홉(★ 런처 P1 — 넷 + 열쇠 다섯)을 본다 — 다르면 `Open` 실패 → 로그인 서버가 안 뜬다
+//   · 뜰 때 표 버전(`DbConfig.h` kSchemaVersion)과 준비된 문장 열하나(★ 런처 P1 — 넷 + 열쇠 다섯 · ★ 11-05 플랜1 — 암호 바꾸기 둘)을 본다 — 다르면 `Open` 실패 → 로그인 서버가 안 뜬다
 //   · 끊기면(`IsLost`) 그 자리에서 한 번 다시 붙어 같은 일을 다시 한다(로비 DB 워커와 같은 꼴 `DbWorker.h:9`)
 // MySQL 머리 파일은 .cpp 에만
 #pragma once
@@ -33,6 +33,7 @@ public:
     FindResult FindKey(const LoginKeyHash& h, LoginKeyRow& out) override;
     bool TouchKey(const LoginKeyHash& h, uint32_t nowUnix, uint32_t expiresUnix) override;
     bool DeleteKey(const LoginKeyHash& h) override;
+    bool ChangePassword(uint64_t id, const PasswordRecord& pw, const LoginKeyHash& h, const std::string& device, uint32_t ttlSec, uint32_t nowUnix) override;   // ★ 11-05 플랜1
 
     // 일꾼 스레드가 끝날 때 한 번(mysql_thread_end — 그 스레드의 저장소를 다 닫은 뒤). 붙기(mysql_init)가 스레드 준비를 스스로 한다
     static void ThreadDone();

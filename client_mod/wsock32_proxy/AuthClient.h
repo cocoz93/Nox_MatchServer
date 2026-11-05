@@ -389,6 +389,17 @@ inline Result LauncherLogin(const std::wstring& url, const std::string& name, co
     return Post(url, body, Reply::Key, timeoutMs, pinHex);
 }
 
+// 런처 — 암호 바꾸기(★ 11-05 플랜1). 답은 새 열쇠(그 계정의 다른 열쇠는 서버가 전부 지움) · 실패 답 꼴은 로그인과 같음
+inline Result ChangePassword(const std::wstring& url, const std::string& name, const std::string& current, const std::string& next, const std::string& device,
+                             bool remember, DWORD timeoutMs = kTimeoutMs, const std::string& pinHex = std::string())
+{
+    std::string cur = detail::UrlEncode(current), nw = detail::UrlEncode(next);
+    std::string body = "name=" + detail::UrlEncode(name) + "&password=" + cur + "&new_password=" + nw + "&device=" + detail::UrlEncode(device) + "&remember=" + (remember ? "1" : "0");
+    SecureZeroMemory(&cur[0], cur.size());
+    SecureZeroMemory(&nw[0], nw.size());
+    return Post(url, body, Reply::Key, timeoutMs, pinHex);
+}
+
 // 런처 — 열쇠 폐기(로그아웃 · 이번 실행만 열쇠를 게임이 끝난 뒤)
 inline Result Logout(const std::wstring& url, const std::string& key, DWORD timeoutMs = kTimeoutMs, const std::string& pinHex = std::string())
 {

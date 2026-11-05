@@ -255,6 +255,35 @@ inline LoginResult Login(const Config& c, const std::string& name, std::string& 
     return r;
 }
 
+// ★ 11-05 플랜1 — 암호 바꾸기. 서버가 그 계정 열쇠를 전부 지우고 새 열쇠를 주므로 이 PC 는 새 열쇠로 바꿔 둔다(자동 로그인 상태는 그대로 · 플랜 4절).
+//   저장 실패(key_store_changed) = 암호는 이미 바뀜 · 옛 열쇠는 쓸모없어 지우고 다시 로그인을 안내
+inline LoginResult ChangePassword(const Config& c, const std::string& name, std::string& current, std::string& next, bool remember)
+{
+    LoginResult r;
+    authclient::Result a = authclient::ChangePassword(authclient::WithPath(c.authBase, L"/launcher/password"), name, current, next, DeviceName(), remember, kAuthTimeoutMs, c.pin);
+    if (!current.empty()) SecureZeroMemory(&current[0], current.size());
+    if (!next.empty()) SecureZeroMemory(&next[0], next.size());
+    current.clear();
+    next.clear();
+    if (a.line.compare(0, nox::kLoginKeyMark.size(), nox::kLoginKeyMark) != 0) {
+        r.reason = ReasonOf(a.line);
+        r.detail = a.detail;
+        return r;
+    }
+    const bool saved = launchkey::Save(name, a.line);
+    SecureZeroMemory(&a.line[0], a.line.size());
+    if (!saved) {
+        launchkey::Remove(name);
+        State s = LoadState();
+        s.autoLogin = false;
+        SaveState(s);
+        r.reason = "key_store_changed";
+        return r;
+    }
+    r.outcome = Outcome::Ok;
+    return r;
+}
+
 // 자동 로그인으로 시작할 때 — 둔 열쇠가 아직 되나(`/token` 한 번 · 받은 토큰은 버림). 안 되면 열쇠 지움
 inline LoginResult CheckKey(const Config& c, const std::string& name)
 {

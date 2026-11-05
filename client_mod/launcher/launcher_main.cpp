@@ -2,8 +2,8 @@
 //
 // 화면 — WebView2(윈도에 들어 있는 엣지 화면)에 런처 옆 `launcher_ui\index.html` 을 `https://launcher.nox/` 로 띄운다.
 //   화면 ↔ 본체는 폼 꼴 글 한 줄(`cmd=login&name=…` · `ev=login&ok=1` — URLSearchParams 와 같은 꼴 · JSON 처리기 없음)
-//   화면이 보내는 것: init · login(name · password · remember) · start · logout · signup · quit
-//   본체가 보내는 것: init(lastName · auto · hasKey) · login(ok · reason) · start(ok · reason) · logout · gameExit · busy
+//   화면이 보내는 것: init · login(name · password · remember) · start · logout · signup · quit · password(current · next — ★ 11-05 플랜1)
+//   본체가 보내는 것: init(lastName · auto · hasKey) · login(ok · reason · detail) · start(ok · reason · detail) · password(ok · reason · detail) · logout · gameExit · busy
 //   로그인 서버 일은 일꾼 스레드에서(창이 안 멈추게) — 끝나면 창 메시지로 화면 스레드에 돌아와 화면에 보낸다
 // 게임 — 띄우면 런처 창을 숨기고, 게임이 끝나면 다시 보인다. 자동 로그인이 아니면 그때 로그아웃(열쇠 지움 — 결정 2)
 // 그림 — 시작할 때 게임 폴더에서 정품 그림 · 글꼴을 뽑아(NoxArt.h · 처음 한 번) `https://art.nox/` 로 화면에 준다. 창은 화면 높이의 2/3(LauncherCore.h StageClientSize)
@@ -193,6 +193,21 @@ void OnPageMessage(const std::string& text)
             }
             RunGame(name, remember);
         }).detach();
+        return;
+    }
+    if (cmd == "password") {   // ★ 11-05 플랜1 — 이름 · 자동 로그인은 지금 상태 그대로(게임 시작과 같은 고르기)
+        std::string current = m["current"], next = m["next"];
+        const bool fresh = !g_sessionName.empty();
+        const launcher::State s = launcher::LoadState();
+        const std::string name = fresh ? g_sessionName : s.lastName;
+        const bool remember = fresh ? g_sessionRemember : s.autoLogin;
+        std::thread([name, current, next, remember]() mutable {
+            const launcher::LoginResult r = launcher::ChangePassword(g_cfg, name, current, next, remember);
+            InterlockedExchange(&g_busy, 0);
+            PostToUi(WM_APP_POST, Q({ { "ev", "password" }, { "ok", r.outcome == launcher::Outcome::Ok ? "1" : "0" }, { "reason", r.reason }, { "detail", r.detail } }));
+        }).detach();
+        SecureZeroMemory(&m["current"][0], m["current"].size());
+        SecureZeroMemory(&m["next"][0], m["next"].size());
         return;
     }
     if (cmd == "logout") {

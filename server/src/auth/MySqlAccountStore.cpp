@@ -23,6 +23,9 @@ constexpr const char* kKeyFind =
     "SELECT k.account_id, a.name, k.ttl_sec, k.expires_unix FROM login_keys k JOIN accounts a ON a.id = k.account_id WHERE k.key_hash = ?";
 constexpr const char* kKeyTouch = "UPDATE login_keys SET last_used_unix = ?, expires_unix = ? WHERE key_hash = ?";
 constexpr const char* kKeyDelete = "DELETE FROM login_keys WHERE key_hash = ?";
+// ★ 11-05 플랜1 — 암호 바꾸기(권한은 그대로 — accounts UPDATE · login_keys DELETE 를 이미 가짐)
+constexpr const char* kPassSet = "UPDATE accounts SET pass_salt = ?, pass_hash = ?, pass_iter = ? WHERE id = ?";
+constexpr const char* kKeyDeleteAll = "DELETE FROM login_keys WHERE account_id = ?";
 
 }  // namespace
 
@@ -37,11 +40,13 @@ struct CMySqlAccountStore::Conn {
     MYSQL_STMT* keyFind = nullptr;
     MYSQL_STMT* keyTouch = nullptr;
     MYSQL_STMT* keyDelete = nullptr;
+    MYSQL_STMT* passSet = nullptr;     // ★ 11-05 플랜1
+    MYSQL_STMT* keyDeleteAll = nullptr;
     unsigned lastErrno = 0;
     std::string lastError;
 
     ~Conn() {
-        for (MYSQL_STMT* s : {find, insert, claim, touch, keyPrune, keyInsert, keyFind, keyTouch, keyDelete})
+        for (MYSQL_STMT* s : {find, insert, claim, touch, keyPrune, keyInsert, keyFind, keyTouch, keyDelete, passSet, keyDeleteAll})
             if (s) mysql_stmt_close(s);
         if (m) mysql_close(m);
     }
@@ -83,7 +88,8 @@ bool CMySqlAccountStore::Open(std::string& err) {
     }
     if (!c->Prepare(c->find, kFind) || !c->Prepare(c->insert, kInsert) || !c->Prepare(c->claim, kClaim) || !c->Prepare(c->touch, kTouch) ||
         !c->Prepare(c->keyPrune, kKeyPrune) || !c->Prepare(c->keyInsert, kKeyInsert) || !c->Prepare(c->keyFind, kKeyFind) ||
-        !c->Prepare(c->keyTouch, kKeyTouch) || !c->Prepare(c->keyDelete, kKeyDelete)) {
+        !c->Prepare(c->keyTouch, kKeyTouch) || !c->Prepare(c->keyDelete, kKeyDelete) || !c->Prepare(c->passSet, kPassSet) ||
+        !c->Prepare(c->keyDeleteAll, kKeyDeleteAll)) {
         err = lastError_ = "준비된 문장 — " + c->lastError + "(표 모양 · nox_auth 권한이 SQL 파일과 다른가)";
         return false;
     }
@@ -303,6 +309,63 @@ bool CMySqlAccountStore::DeleteKey(const LoginKeyHash& h) {
         db::Bin(p[0], hash, l0);
         if (mysql_stmt_bind_param(c.keyDelete, p) != 0) return c.StmtFail(c.keyDelete, "열쇠 지우기 묶기");
         if (mysql_stmt_execute(c.keyDelete) != 0) return c.StmtFail(c.keyDelete, "열쇠 지우기");
+        return true;
+    });
+}
+
+// ★ 11-05 플랜1 — 암호 저장 + 그 계정 열쇠 전부 삭제 + 새 열쇠 넣기를 한 트랜잭션으로(꼴은 `DbWorker.cpp` ExecSave).
+//   끊겨 다시 하는 경우(`Retry`) 먼저 번이 커밋까지 갔어도 같은 값으로 다시 하면 결과가 같다(지운 뒤 같은 열쇠를 넣음)
+bool CMySqlAccountStore::ChangePassword(uint64_t id, const PasswordRecord& pw, const LoginKeyHash& h, const std::string& device, uint32_t ttlSec, uint32_t nowUnix) {
+    const std::string salt(reinterpret_cast<const char*>(pw.salt.data()), pw.salt.size());
+    const std::string pass(reinterpret_cast<const char*>(pw.hash.data()), pw.hash.size());
+    const std::string hash(reinterpret_cast<const char*>(h.data()), h.size());
+    const uint32_t iter = pw.iterations, expires = nowUnix + ttlSec;
+    return Retry([&](Conn& c) {
+        if (mysql_query(c.m, "START TRANSACTION") != 0) {
+            c.lastErrno = mysql_errno(c.m);
+            c.lastError = "트랜잭션 열기";
+            return false;
+        }
+        const auto fail = [&](MYSQL_STMT* s, const char* what) {
+            c.StmtFail(s, what);   // 오류 번호를 먼저 받아 둔다(되돌린 뒤엔 지워짐)
+            mysql_rollback(c.m);
+            return false;
+        };
+        MYSQL_BIND p[4] = {};
+        unsigned long l0 = 0, l1 = 0;
+        db::Bin(p[0], salt, l0);
+        db::Bin(p[1], pass, l1);
+        db::U32(p[2], iter);
+        db::U64(p[3], id);
+        if (mysql_stmt_bind_param(c.passSet, p) != 0) return fail(c.passSet, "암호 저장 묶기");
+        if (mysql_stmt_execute(c.passSet) != 0) return fail(c.passSet, "암호 저장");
+        if (mysql_stmt_affected_rows(c.passSet) != 1) {   // 소금이 늘 새 값이라 있는 행이면 1 — 없는 계정 번호
+            c.lastErrno = 0;
+            c.lastError = "암호 저장 — 계정 행 없음";
+            mysql_rollback(c.m);
+            return false;
+        }
+        MYSQL_BIND d[1] = {};
+        db::U64(d[0], id);
+        if (mysql_stmt_bind_param(c.keyDeleteAll, d) != 0) return fail(c.keyDeleteAll, "열쇠 전부 지우기 묶기");
+        if (mysql_stmt_execute(c.keyDeleteAll) != 0) return fail(c.keyDeleteAll, "열쇠 전부 지우기");
+        MYSQL_BIND q[7] = {};
+        unsigned long k0 = 0, k2 = 0;
+        db::Bin(q[0], hash, k0);
+        db::U64(q[1], id);
+        db::Bin(q[2], device, k2);
+        db::U32(q[3], ttlSec);
+        db::U32(q[4], nowUnix);
+        db::U32(q[5], nowUnix);
+        db::U32(q[6], expires);
+        if (mysql_stmt_bind_param(c.keyInsert, q) != 0) return fail(c.keyInsert, "새 열쇠 넣기 묶기");
+        if (mysql_stmt_execute(c.keyInsert) != 0) return fail(c.keyInsert, "새 열쇠 넣기");
+        if (mysql_commit(c.m) != 0) {
+            c.lastErrno = mysql_errno(c.m);
+            c.lastError = "암호 바꾸기 커밋";
+            mysql_rollback(c.m);
+            return false;
+        }
         return true;
     });
 }

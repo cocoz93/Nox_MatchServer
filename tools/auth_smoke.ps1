@@ -154,6 +154,29 @@ try {
   $r = Req 'POST' '/token' "name=smoke1&key=$key"
   Check ($r.status -eq 200 -and $r.body.StartsWith('NXL1')) "잠겨도 열쇠 길은 됨 200 ($($r.status))"
 
+  # ★ 11-05 플랜1 — 암호 바꾸기(nox_auth 사용자 권한 · 실제 트랜잭션): 16자 · 옛 암호 거절 · 다른 기기 열쇠 삭제 · 이 기기 열쇠만 유지. 끝에 열쇠를 지워 아래 행 셈은 그대로
+  $pwLong = 'Leg4cyPw16chars1'
+  $k1 = (Req 'POST' '/launcher/login' "name=legacy1&password=$pwLegacy&device=PC-A&remember=1").body
+  $k2 = (Req 'POST' '/launcher/login' "name=legacy1&password=$pwLegacy&device=PC-B&remember=1").body
+  $r = Req 'POST' '/launcher/password' "name=legacy1&password=$pwLegacy&new_password=$pwLong&device=PC-C&remember=1"
+  $k3 = $r.body
+  Check ($r.status -eq 200 -and $k3 -cmatch '^NXK1[0-9a-f]{64}$') "암호 바꾸기 200 새 열쇠 ($($r.status) · $($r.ms) ms)"
+  $dev = @(Sql "SELECT k.device FROM login_keys k JOIN accounts a ON a.id = k.account_id WHERE a.name = 'legacy1';")
+  Check ($dev.Count -eq 1 -and $dev[0] -eq 'PC-C') "그 계정 열쇠는 새 기기 하나 ($($dev -join ','))"
+  $r = Req 'POST' '/token' "name=legacy1&key=$k1"
+  Check ($r.status -eq 401 -and $r.body -ceq 'NXL!key_invalid') "다른 기기 옛 열쇠 401 ($($r.status))"
+  $r = Req 'POST' '/token' "name=legacy1&key=$k3"
+  Check ($r.status -eq 200 -and $r.body.StartsWith('NXL1')) "새 열쇠로 토큰 200 ($($r.status))"
+  $r = Req 'POST' '/launcher/login' "name=legacy1&password=$pwLegacy"
+  Check ($r.status -eq 401 -and $r.body -ceq 'NXL!wrong_password') "옛 암호 401 ($($r.status))"
+  $r = Req 'POST' '/launcher/login' "name=legacy1&password=$pwLong"
+  $k4 = $r.body
+  Check ($r.status -eq 200 -and $k4.StartsWith('NXK1')) "새 16자 암호 로그인 200 ($($r.status))"
+  $r = Req 'POST' '/launcher/password' "name=legacy1&password=$pwLong&new_password=short"
+  Check ($r.status -eq 400 -and ($r.body -split "`n")[0] -ceq 'NXL!bad_input') "규칙 밖 새 암호 400 ($($r.status))"
+  Req 'POST' '/logout' "key=$k3" | Out-Null
+  Req 'POST' '/logout' "key=$k4" | Out-Null
+
   Write-Host '③ DB 행'
   $row = (Sql "SELECT LENGTH(pass_salt), LENGTH(pass_hash), pass_iter, last_login_unix > 1 FROM accounts WHERE name = 'smoke1';") -split "`t"
   Check ($row[0] -eq '16' -and $row[1] -eq '32' -and $row[2] -eq '600000' -and $row[3] -eq '1') "smoke1 — 소금 16 · 해시 32 · 반복 600000 · 마지막 로그인 적힘 ($($row -join ' '))"
@@ -171,7 +194,7 @@ try {
 Write-Host '④ 기록'
 $text = [IO.File]::ReadAllText($log)
 Check ($p.ExitCode -eq 0) "종료 코드 0 ($($p.ExitCode))"
-Check (-not $text.Contains($pw) -and -not $text.Contains($pwLegacy) -and -not $text.Contains('Sm0k%21')) '기록에 친 암호 글자 0곳'
+Check (-not $text.Contains($pw) -and -not $text.Contains($pwLegacy) -and -not $text.Contains($pwLong) -and -not $text.Contains('Sm0k%21')) '기록에 친 암호 글자 0곳'
 Check (-not ($text -match 'NXL1[0-9a-f]{20}')) '기록에 토큰 0곳'
 Check (-not ($text -match 'NXK1[0-9a-f]{20}') -and -not ($keyHex.Length -eq 64 -and $text.Contains($keyHex))) '기록에 열쇠 0곳(★ 런처 P3)'
 $m = [regex]::Match($text, '끝 — 요청 (\d+)\(')

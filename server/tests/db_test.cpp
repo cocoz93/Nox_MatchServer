@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
         nox::auth::CMySqlAccountStore st(cfg);
         std::string e9;
         const bool opened = st.Open(e9);
-        Check(opened, "⑨ 열쇠 저장소 Open(준비된 문장 아홉) " + e9);
+        Check(opened, "⑨ 열쇠 저장소 Open(준비된 문장 열하나) " + e9);
         const uint64_t wnId = std::strtoull(ad.One("SELECT id FROM accounts WHERE name = 'wn'").c_str(), nullptr, 10);
         nox::auth::LoginKeyHash h1{}, h2{}, h3{};
         h1.fill(1);
@@ -322,6 +322,50 @@ int main(int argc, char** argv) {
               "⑨ 열쇠 — 넣기 · 찾기(계정 이름 이음 · 기기) · 없음 · 쓰임 · 만료 지움 · 같은 지문 실패 · 지우기 두 번 (" +
                   std::to_string(ins) + std::to_string(found) + std::to_string(none) + std::to_string(touched) + std::to_string(pruned) +
                   std::to_string(dup) + std::to_string(deleted) + ") " + st.LastError());
+        // ★ 11-05 플랜1 — 암호 바꾸기: 실제 트랜잭션. h3(PC3) 하나가 남아 있는 상태에서 시작
+        {
+            const uint64_t otherId = std::strtoull(ad.One("SELECT id FROM accounts WHERE name = 'Wn'").c_str(), nullptr, 10);
+            nox::auth::LoginKeyHash other{}, h4{}, h5{};
+            other.fill(9);
+            h4.fill(4);
+            h5.fill(5);
+            nox::PasswordRecord rec1, rec2;
+            rec1.salt.fill(0x11);
+            rec1.hash.fill(0x22);
+            rec1.iterations = 1000;
+            rec2.salt.fill(0x33);
+            rec2.hash.fill(0x44);
+            rec2.iterations = 2000;
+            const bool otherKey = st.InsertKey(otherId, other, "OTHER", 100, 2000) && st.InsertKey(wnId, h1, "PC1", 100, 2000) && st.InsertKey(wnId, h3, "PC3", 100, 2000) &&
+                                  ad.One("SELECT COUNT(*) FROM login_keys WHERE account_id = " + std::to_string(wnId)) == "2";   // 앞 만료 지움에 h3 이 사라져 다시 넣는다
+            // 바뀜 — wn 열쇠 둘(h3 · h1) 지워지고 h4 하나 · 남의 열쇠는 그대로 · 암호 칸 셋 · 새 열쇠의 값
+            const bool changed = st.ChangePassword(wnId, rec1, h4, "PC4", 100, 3000);
+            // 커밋됐나 — 다른 연결(ad)에서 곧바로. 같은 연결로 읽으면 커밋을 빼도 통과한다(다음 START TRANSACTION 이 앞 일을 커밋)
+            const bool committed = ad.One("SELECT pass_iter FROM accounts WHERE id = " + std::to_string(wnId)) == "1000" &&
+                                   ad.One("SELECT COUNT(*) FROM login_keys WHERE account_id = " + std::to_string(wnId)) == "1";
+            nox::auth::AccountRow row;
+            const bool saved = changed && st.Find("wn", row) == FindResult::Found && row.hasPassword && row.password.iterations == 1000 && row.password.salt == rec1.salt &&
+                               row.password.hash == rec1.hash;
+            const bool keys = ad.One("SELECT COUNT(*) FROM login_keys WHERE account_id = " + std::to_string(wnId)) == "1" && st.FindKey(h4, k) == FindResult::Found && k.accountId == wnId &&
+                              k.ttlSec == 100 && k.expiresUnix == 3100 && st.FindKey(h1, k) == FindResult::NotFound && st.FindKey(h3, k) == FindResult::NotFound &&
+                              st.FindKey(other, k) == FindResult::Found;
+            // 되돌림 — 새 열쇠가 남의 지문과 겹쳐 넣기(셋째 문장)가 실패 → 암호 · 열쇠 그대로
+            const bool rolledBack = !st.ChangePassword(wnId, rec2, other, "PC5", 100, 4000);
+            nox::auth::AccountRow after;
+            const bool kept = st.Find("wn", after) == FindResult::Found && after.password.iterations == 1000 && after.password.hash == rec1.hash &&
+                              ad.One("SELECT pass_iter FROM accounts WHERE id = " + std::to_string(wnId)) == "1000" && st.FindKey(h4, k) == FindResult::Found &&
+                              ad.One("SELECT COUNT(*) FROM login_keys WHERE account_id = " + std::to_string(wnId)) == "1" &&
+                              ad.One("SELECT account_id FROM login_keys WHERE key_hash = UNHEX(REPEAT('09', 32))") == std::to_string(otherId);
+            // 없는 계정 — 바뀌는 행 0 → 실패 · 아무것도 안 남음
+            const bool noRow = !st.ChangePassword(99999999ull, rec2, h5, "PC5", 100, 4000) && st.LastError().find("계정 행 없음") != std::string::npos && st.FindKey(h5, k) == FindResult::NotFound;
+            // 되돌린 뒤 연결이 그대로 자동 커밋으로 돎 — 다른 연결(ad)에서 바로 보임
+            const bool afterTx = st.InsertKey(wnId, h5, "PC5", 100, 4000) && ad.One("SELECT device FROM login_keys WHERE key_hash = UNHEX(REPEAT('05', 32))") == "PC5";
+            Check(otherKey && changed && committed && saved && keys && rolledBack && kept && noRow && afterTx,
+                  "⑨ 암호 바꾸기 — 암호 저장 + 열쇠 전부 삭제 + 새 열쇠 · 남의 열쇠 그대로 · 셋째 문장 실패면 되돌림 · 없는 계정 · 되돌린 뒤 연결 멀쩡 (" + std::to_string(otherKey) +
+                      std::to_string(changed) + std::to_string(committed) + std::to_string(saved) + std::to_string(keys) + std::to_string(rolledBack) + std::to_string(kept) + std::to_string(noRow) +
+                      std::to_string(afterTx) + ") " + st.LastError());
+            Check(ad.Run("UPDATE accounts SET pass_salt = NULL, pass_hash = NULL, pass_iter = NULL WHERE id = " + std::to_string(wnId)), "⑨ 암호 칸 치움");
+        }
         Check(ad.Run("DELETE FROM login_keys"), "⑨ 열쇠 행 치움");
     }
 

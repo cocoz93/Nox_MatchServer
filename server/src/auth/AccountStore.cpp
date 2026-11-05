@@ -104,6 +104,31 @@ bool CMemoryAccountStore::DeleteKey(const LoginKeyHash& h) {
     return true;
 }
 
+// ★ 11-05 플랜1 — 한 트랜잭션과 같은 뜻: 실패할 자리를 먼저 다 본 뒤에 바꾼다
+bool CMemoryAccountStore::ChangePassword(uint64_t id, const PasswordRecord& pw, const LoginKeyHash& h, const std::string& device, uint32_t ttlSec, uint32_t nowUnix) {
+    if (fail_ || failChange_) return false;
+    Row* row = nullptr;
+    for (auto& kv : rows_)
+        if (kv.second.row.id == id) row = &kv.second;
+    if (!row) return false;
+    const auto dup = keys_.find(h);
+    if (dup != keys_.end() && dup->second.accountId != id) return false;   // 남의 행과 같은 지문(유일 색인 실패 → 되돌림과 같은 뜻)
+    row->row.hasPassword = true;
+    row->row.password = pw;
+    for (auto it = keys_.begin(); it != keys_.end();) {
+        if (it->second.accountId == id) it = keys_.erase(it);
+        else ++it;
+    }
+    KeyRow k;
+    k.accountId = id;
+    k.device = device;
+    k.ttlSec = ttlSec;
+    k.expiresUnix = nowUnix + ttlSec;
+    k.lastUsed = nowUnix;
+    keys_.emplace(h, k);
+    return true;
+}
+
 bool CMemoryAccountStore::HasDevice(const std::string& device) const {
     for (const auto& kv : keys_)
         if (kv.second.device == device) return true;

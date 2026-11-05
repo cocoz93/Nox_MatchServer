@@ -9,6 +9,7 @@
 //   ⑤ 셈 — 갈래 열여섯이 모두 나옴 · 합 = 요청 수(세는 자리 하나)
 //   ⑥ ★ 조각 3 화면 — 양식(GET / · /signup · 칸 한도 · 스크립트 없음) · 결과 화면 · 되돌린 이름 걸러 냄 · 암호 안 실림 ·
 //     규칙 갈래마다 안내 글 · 화면 답 머리(HTML · 콘텐츠 보안 정책 · nosniff)
+//   ⑧ ★ 11-05 플랜1 암호 바꾸기 — 바뀜 · 옛 암호 거절 · 다른 기기 열쇠 전부 삭제 · 현재 암호 틀림 · 새 암호 규칙 밖 · 같은 암호 · 저장 실패면 그대로 · 시도 제한
 //   ⑦ ★ 11-05 플랜1 시도 제한 — 단계 표 전수 · 횟수별 잠금 시간 · 막힌 동안 DB · 해시 안 감 · 성공 · 1시간 초기화 · 다른 계정 · 주소 안 막힘 ·
 //     주소별 합산(로그인 실패 + 가입) · 없는 이름은 계정 칸 안 만듦 · 잠긴 동안 돌아온 요청은 안 셈 · 지난 칸 지움
 #include <cctype>
@@ -248,11 +249,11 @@ void TestSignupLogin() {
         for (size_t at = hay.find(needle); at != std::string::npos; at = hay.find(needle, at + 1)) ++n;
         return n;
     };
-    Check(count(r.body, "maxlength=\"8\"") == 2 && count(r.body, "minlength=\"4\"") == 2 && count(r.body, "maxlength=\"9\"") == 1,
-          "칸 한도 — 암호 둘 4~8 · 이름 9(칸마다 셈 — 한 칸만 바뀌어도 걸리게)");
-    Check(r.status == 200 && IsPage(r) && Has(r.body, "maxlength=\"9\"") && Has(r.body, "maxlength=\"8\"") &&
+    Check(count(r.body, "maxlength=\"16\"") == 2 && count(r.body, "minlength=\"4\"") == 2 && count(r.body, "maxlength=\"9\"") == 1,
+          "칸 한도 — 암호 둘 4~16 · 이름 9(칸마다 셈 — 한 칸만 바뀌어도 걸리게)");
+    Check(r.status == 200 && IsPage(r) && Has(r.body, "maxlength=\"9\"") && Has(r.body, "maxlength=\"16\"") &&
               Has(r.body, "action=\"/signup\"") && Has(r.body, "name=\"password2\"") && !Has(r.body, "<script"),
-          "양식 — 칸 한도 9 · 8 · 보내는 곳 · 확인 칸 · 스크립트 없음");
+          "양식 — 칸 한도 9 · 16 · 보내는 곳 · 확인 칸 · 스크립트 없음");
     getPage.path = "/";
     Check(g.Do(getPage, O::SignupPage, "GET /").status == 200, "/ 도 양식");
     Check(g.Do(Post("/", ""), O::BadMethod, "POST /").status == 405, "POST / 405");
@@ -277,7 +278,7 @@ void TestSignupLogin() {
             {"name=abcdefghij&password=ab12&password2=ab12", O::SignupBadName, "9자까지"},
             {"name=a.b&password=ab12&password2=ab12", O::SignupBadName, "영문 · 숫자만"},
             {"name=gina&password=ab1&password2=ab1", O::SignupBadPassword, "4자 이상"},
-            {"name=gina&password=abcdefg12&password2=abcdefg12", O::SignupBadPassword, "8자까지"},
+            {"name=gina&password=abcdefghijklmno12&password2=abcdefghijklmno12", O::SignupBadPassword, "16자까지"},
             {"name=gina&password=ab+12&password2=ab+12", O::SignupBadPassword, "빈칸은"},
             {"name=gina&password=ab12%B0%A1&password2=ab12%B0%A1", O::SignupBadPassword, "특수문자만 됩니다"},   // 「한글 안 됨」은 양식 도움말에도 있어 못 가름
             {"name=gina&password=123456&password2=123456", O::SignupBadPassword, "영문을 하나"},
@@ -292,6 +293,15 @@ void TestSignupLogin() {
         }
         Check(shown == sizeof(cases) / sizeof(cases[0]), "안내 글 " + std::to_string(shown) + "/" + std::to_string(sizeof(cases) / sizeof(cases[0])));
     }
+
+    // ⑧ 암호 바꾸기 네 갈래가 이 셈에도 나오게(자세한 값은 TestChangePassword)
+    g.Do(Post("/launcher/password", "name=alice9&password=ab12cd&new_password=ef34gh"), O::PasswordChanged, "셈 — 바꿈");
+    g.Do(Post("/launcher/password", "name=alice9&password=ab12cd&new_password=ij56kl"), O::PasswordWrong, "셈 — 옛 암호");
+    g.Do(Post("/launcher/password", "name=alice9&password=ef34gh&new_password=ef34gh"), O::PasswordBadInput, "셈 — 같은 암호");
+    g.db.SetFailChange(true);
+    g.Do(Post("/launcher/password", "name=alice9&password=ef34gh&new_password=ij56kl"), O::PasswordFailed, "셈 — 저장 실패");
+    g.db.SetFailChange(false);
+    g.Do(Post("/launcher/password", "name=alice9&password=ef34gh&new_password=ab12cd"), O::PasswordChanged, "셈 — 되돌림");
 
     // ⑦ 시도 제한 두 갈래가 이 셈에도 나오게(자세한 값은 TestThrottle)
     constexpr uint32_t kThrottledIp = 0x0a000009u;
@@ -483,6 +493,113 @@ void TestThrottle() {
     }
 }
 
+// ★ 11-05 플랜1 — 암호 바꾸기(플랜 4절)
+void TestChangePassword() {
+    std::printf("⑧ 암호 바꾸기\n");
+    using O = AuthOutcome;
+    auto tokenOf = [](const std::string& name, const std::string& key) { return Post("/token", "name=" + name + "&key=" + key); };
+    auto change = [](const std::string& cur, const std::string& next, const std::string& rest = "") {
+        return Post("/launcher/password", "name=alice9&password=" + cur + "&new_password=" + next + rest);
+    };
+    Rig g;
+    g.Do(Post("/signup", "name=alice9&password=ab12cd&password2=ab12cd"), O::SignupCreated, "alice9 가입");
+    g.Do(Post("/signup", "name=bob&password=pw1234&password2=pw1234"), O::SignupCreated, "bob 가입");
+    const std::string pc1 = g.Do(Post("/launcher/login", "name=alice9&password=ab12cd&device=PC1&remember=1"), O::LoginOk, "PC1 열쇠").body;
+    const std::string pc2 = g.Do(Post("/launcher/login", "name=alice9&password=ab12cd&device=PC2&remember=1"), O::LoginOk, "PC2 열쇠").body;
+    const std::string bobKey = g.Do(Post("/launcher/login", "name=bob&password=pw1234&device=BOB&remember=1"), O::LoginOk, "bob 열쇠").body;
+    Check(g.db.KeyCount() == 3, "열쇠 셋(alice9 둘 · bob 하나)");
+
+    // 규칙 밖 — 현재 암호가 맞아도 아무것도 안 바뀜 · 까닭 글이 둘째 줄
+    const struct {
+        const char* next;
+        const char* text;
+    } bad[] = {
+        {"ab1", "암호는 4자 이상입니다."},
+        {"abcdefghijklmno12", "암호는 16자까지입니다."},
+        {"ab+12", "암호에 빈칸은 안 됩니다."},
+        {"123456", "암호에 영문을 하나 이상 넣어 주세요."},
+        {"abcdef", "암호에 숫자를 하나 이상 넣어 주세요."},
+        {"", "암호는 4자 이상입니다."},
+        {"ab12cd", "새 암호가 지금 암호와 같습니다."},
+    };
+    const unsigned hashesBefore = g.db.FindCalls();
+    for (const auto& b : bad) {
+        HttpResponse r = g.Do(change("ab12cd", b.next), O::PasswordBadInput, std::string("규칙 밖 ") + b.next);
+        Check(r.status == 400 && Detail(r) == b.text && r.body.compare(0, 14, "NXL!bad_input\n") == 0, std::string("400 둘째 줄 — ") + b.text);
+    }
+    Check(g.db.FindCalls() == hashesBefore + 7, "규칙 밖 일곱 — 찾기는 한 번씩(현재 암호를 먼저 봄)");
+    // 폼이 틀림 · 현재 암호 칸이 규칙 밖 · 이름 규칙 밖 — 바꾸기 전에 거절(둘째 줄 없음)
+    for (const char* body : {"name=alice9&password=ab%zz&new_password=ef34gh", "name=alice9&password=ab1&new_password=ef34gh", "name=ab_c&password=ab12cd&new_password=ef34gh"}) {
+        HttpResponse r = g.Do(Post("/launcher/password", body), O::PasswordBadInput, std::string("폼 — ") + body);
+        Check(FailBody(r, 400, nox::LoginFail::BadInput), "400 까닭 한 줄");
+    }
+    // 없는 이름 · 옛 행
+    g.db.AddLegacy("erin");
+    Check(FailBody(g.Do(Post("/launcher/password", "name=nobody&password=ab12cd&new_password=ef34gh"), O::PasswordWrong, "없는 이름"), 401, nox::LoginFail::NoAccount), "없는 이름 401");
+    Check(FailBody(g.Do(Post("/launcher/password", "name=erin&password=ab12cd&new_password=ef34gh"), O::PasswordWrong, "옛 행"), 401, nox::LoginFail::NoAccount), "옛 행 401");
+    // 현재 암호 틀림 — 그대로
+    Check(FailBody(g.Do(change("ab12zz", "ef34gh"), O::PasswordWrong, "현재 암호 틀림"), 401, nox::LoginFail::WrongPassword), "현재 암호 틀림 401");
+    Check(g.db.KeyCount() == 3, "실패 뒤 열쇠 그대로");
+    g.Do(tokenOf("alice9", pc1), O::TokenOk, "실패 뒤 PC1 열쇠 됨");
+    // 저장 실패 — 그대로 · 찾기 실패 — 503
+    g.db.SetFailChange(true);
+    Check(FailBody(g.Do(change("ab12cd", "ef34gh"), O::PasswordFailed, "저장 실패"), 503, nox::LoginFail::ServerError), "저장 실패 503");
+    g.db.SetFailChange(false);
+    Check(g.db.KeyCount() == 3, "저장 실패 뒤 열쇠 그대로");
+    g.Do(tokenOf("alice9", pc2), O::TokenOk, "저장 실패 뒤 PC2 열쇠 됨");
+    g.db.SetFail(true);
+    Check(FailBody(g.Do(change("ab12cd", "ef34gh"), O::PasswordFailed, "찾기 실패"), 503, nox::LoginFail::ServerError), "찾기 실패 503");
+    g.db.SetFail(false);
+    g.Do(Post("/launcher/login", "name=alice9&password=ab12cd&device=PC2&remember=1"), O::LoginOk, "저장 실패 뒤 옛 암호가 아직 맞음");
+
+    // 바뀜 — 답은 새 열쇠 · 다른 기기 열쇠 전부 삭제 · 남의 열쇠는 그대로
+    HttpResponse ok = g.Do(change("ab12cd", "ef34gh", "&device=PC3&remember=1"), O::PasswordChanged, "바뀜");
+    Check(ok.status == 200 && ok.body.size() == 68 && ok.body.compare(0, 4, "NXK1") == 0 && Header(ok, "Cache-Control") == "no-store", "200 NXK1 · no-store");
+    const std::string pc3 = ok.body;
+    Check(g.db.KeyCount() == 2 && g.db.HasDevice("PC3") && !g.db.HasDevice("PC1") && !g.db.HasDevice("PC2") && g.db.HasDevice("BOB"), "alice9 열쇠는 새것 하나 · bob 그대로");
+    Check(FailBody(g.Do(tokenOf("alice9", pc1), O::TokenBadKey, "옛 열쇠 PC1"), 401, nox::LoginFail::KeyInvalid), "옛 열쇠 401");
+    g.Do(tokenOf("alice9", pc2), O::TokenBadKey, "옛 열쇠 PC2");
+    g.Do(tokenOf("alice9", pc3), O::TokenOk, "새 열쇠로 토큰");
+    g.Do(tokenOf("bob", bobKey), O::TokenOk, "bob 열쇠는 안 건드림");
+    g.Do(Post("/launcher/login", "name=alice9&password=ab12cd"), O::LoginWrongPassword, "옛 암호 거절");
+    g.Do(Post("/launcher/login", "name=alice9&password=ef34gh&device=PC4"), O::LoginOk, "새 암호로 로그인");
+    g.Do(Post("/launcher/login", "name=bob&password=ef34gh"), O::LoginWrongPassword, "bob 암호는 안 바뀜");
+    g.Do(Post("/launcher/login", "name=bob&password=pw1234"), O::LoginOk, "bob 암호 그대로");
+
+    // 수명 — remember 없으면 12시간 · 16자 새 암호 됨
+    HttpResponse ses = g.Do(change("ef34gh", "abcdefghijklmn12"), O::PasswordChanged, "16자 · 이번 실행만");
+    g.clock += kKeyTtlSessionSec + 1;
+    g.Do(tokenOf("alice9", ses.body), O::TokenExpired, "이번 실행만 열쇠 — 12시간 넘음");
+    HttpResponse rem = g.Do(change("abcdefghijklmn12", "ef34gh", "&remember=1"), O::PasswordChanged, "자동 로그인 유지");
+    g.clock += kKeyTtlSessionSec + 1;
+    g.Do(tokenOf("alice9", rem.body), O::TokenOk, "자동 로그인 열쇠 — 12시간 넘어도 됨");
+
+    // 시도 제한 — 로그인과 같은 셈(이 길로 대입 못 함) · 막힌 동안 DB 안 감 · 맞는 암호면 셈 초기화
+    for (int i = 1; i <= 4; ++i) g.Do(change("zz99zz", "ab12cd"), O::PasswordWrong, "틀림");
+    g.Do(change("ef34gh", "ef34gh"), O::PasswordBadInput, "맞는 암호 — 셈 0 부터");
+    for (int i = 1; i <= 5; ++i) g.Do(change("zz99zz", "ab12cd"), O::PasswordWrong, "다시 틀림");
+    const unsigned finds = g.db.FindCalls();
+    HttpResponse lock = g.Do(change("ef34gh", "ab12cd"), O::LoginThrottled, "잠김 — 맞는 암호도");
+    Check(lock.status == 429 && Detail(lock) == "60 account" && Header(lock, "Retry-After") == "60" && g.db.FindCalls() == finds, "429 · 둘째 줄 · DB 안 감");
+    g.Do(Post("/launcher/login", "name=alice9&password=ef34gh"), O::LoginThrottled, "로그인 길도 잠김");
+    // 없는 이름 · 옛 행도 주소 칸에 센다(이 길로 이름을 훑어도 막히게) — 갈래마다 주소를 따로 써서 한쪽만 빠져도 걸리게
+    const struct {
+        const char* name;
+        uint32_t ip;
+    } scans[] = {{"nobody", 0xC6336447u}, {"erin", 0xC6336448u}};
+    for (const auto& s : scans) {
+        HttpRequest r = Post("/launcher/password", std::string("name=") + s.name + "&password=ab12cd&new_password=ef34gh");
+        r.peerIp = s.ip;
+        for (uint32_t i = 1; i <= kAddressLimit; ++i) g.Do(r, O::PasswordWrong, std::string("주소 셈 — ") + s.name);
+        HttpResponse locked = g.Do(r, O::LoginThrottled, std::string("주소 잠김 — ") + s.name);
+        Check(locked.status == 429 && Detail(locked) == std::to_string(kAddressLockSec) + " address", std::string("주소 잠금 답 — ") + s.name);
+    }
+    // GET 은 405
+    HttpRequest get = Post("/launcher/password", "");
+    get.method = "GET";
+    Check(g.Do(get, O::BadMethod, "GET").status == 405, "GET 405");
+}
+
 }  // namespace
 
 // ★ 조각 3 — `auth_test --dump-pages <폴더>` = 화면 다섯을 파일로(헤드리스 크롬 캡처로 눈으로 보려고 · 시험과 같은 판단 길)
@@ -519,6 +636,7 @@ int main(int argc, char** argv) {
     TestForm();
     TestSignupLogin();
     TestThrottle();
+    TestChangePassword();
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

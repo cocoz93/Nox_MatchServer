@@ -497,6 +497,20 @@ int main()
               "⑨ 열쇠 발급 — 200 NXK1 + 16진 64자 · 본문 넷(인코딩) · remember=1");
         authclient::LauncherLogin(kLogin, "wn9457", "ab12cd", "", false, kTo);
         Check(FormGet(srv.Last().body, "remember") == "0" && FormGet(srv.Last().body, "device").empty(), "⑨ remember=0 · 빈 기기");
+        // ★ 11-05 플랜1 — 암호 바꾸기: 본문 다섯(인코딩) · 200 은 열쇠 꼴만
+        r = authclient::ChangePassword(UrlFor("http", srv.Port(), "/launcher/password"), "wn9457", "a&b 1", "c=d+2", "PC 1", true, kTo);
+        seen = srv.Last();
+        Check(r.line == key && seen.path == "/launcher/password" && seen.body == "name=wn9457&password=a%26b%201&new_password=c%3Dd%2B2&device=PC%201&remember=1",
+              "⑨ 암호 바꾸기 — 200 NXK1 · 본문 다섯(인코딩) · remember=1");
+        {
+            Script bad;
+            bad.status = 400;
+            bad.body = "NXL!bad_input\n\xEC\x95\x94\xED\x98\xB8 message";   // 둘째 줄 안내 글(UTF-8)
+            srv.Set(bad);
+            const authclient::Result b = authclient::ChangePassword(UrlFor("http", srv.Port(), "/launcher/password"), "wn9457", "ab12", "cd34", "", false, kTo);
+            Check(b.line == "NXL!bad_input" && b.detail == "\xEC\x95\x94\xED\x98\xB8 message", "⑨ 암호 바꾸기 400 — 첫 줄 까닭 · 둘째 줄 안내 글 그대로");
+            srv.Set(s);
+        }
         int wrongShape = 0;
         for (const std::string& b : { Tok(), "NXK1" + std::string(authclient::kKeyHexLen - 1, 'c'), "NXK1" + std::string(authclient::kKeyHexLen, 'g') }) {
             s.body = b;

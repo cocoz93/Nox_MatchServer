@@ -11,6 +11,7 @@ const stage = (() => {
   const PANEL = { x: (W - STRIP_W) / 2 - 2, y: 172, w: STRIP_W + 4 };
   const FIELD_X = PANEL.x + 40, FIELD_W = PANEL.w - 80;
   const BTN_W = 198, BTN_H = 40;
+  const FIELD_IDS = ['name', 'password', 'pwCurrent', 'pwNew', 'pwConfirm'];
 
   const $ = (id) => document.getElementById(id);
   let ctx = null, base = null, font = null, smallFont = null;
@@ -301,8 +302,31 @@ const stage = (() => {
       centered(msg, y, msgColor($('startMsg')));
       y += h + 5;
     }
-    const b = '로그아웃';
-    drawLink($('logout'), PANEL.x + Math.floor((PANEL.w - textWidth(b)) / 2), y, b);
+    const a = '암호 바꾸기', gap = textWidth('    '), b = '로그아웃';
+    const fx = PANEL.x + Math.floor((PANEL.w - textWidth(a) - gap - textWidth(b)) / 2);
+    drawLink($('changePw'), fx, y, a);
+    drawLink($('logout'), fx + textWidth(a) + gap, y, b);
+  }
+
+  // ★ 11-05 플랜1 — 암호 바꾸기 패널. 칸이 셋이라 로그인 판보다 한 줄(체크 줄 뺀 차이) 길다 · 아래 저작권 글(약 445)에 안 닿음
+  function drawPw() {
+    const h = font.height, msg = $('pwMsg').textContent;
+    panelBack((msg ? 410 : 394) + h + 8);
+    let y = PANEL.y + 18;
+    for (const [id, label] of [['pwCurrent', '현재 암호'], ['pwNew', '새 암호'], ['pwConfirm', '새 암호 확인']]) {
+      text(label, FIELD_X, y, GOLD);
+      y += h + 4;
+      drawField($(id), FIELD_X, y, FIELD_W, h + 8, '*'.repeat($(id).value.length));
+      y += h + 18;
+    }
+    drawButton($('pwBtn'), y, '암호 바꾸기');
+    y += BTN_H + 14;
+    if (msg) {
+      centered(msg, y, msgColor($('pwMsg')));
+      y += h + 5;
+    }
+    const b = '취소';
+    drawLink($('pwCancel'), PANEL.x + Math.floor((PANEL.w - textWidth(b)) / 2), y, b);
   }
 
   function paint() {
@@ -310,6 +334,7 @@ const stage = (() => {
     ctx.drawImage(base, 0, 0);
     if (!$('login').classList.contains('hidden')) drawLogin();
     else if (!$('signed').classList.contains('hidden')) drawSigned();
+    else if (!$('pw').classList.contains('hidden')) drawPw();
     else {
       panelBack(240);
       centered('불러오는 중…', 200, DIM);
@@ -343,11 +368,11 @@ const stage = (() => {
     new MutationObserver(invalidate).observe($('frame'), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class', 'disabled'] });
     for (const ev of ['input', 'change', 'focusin', 'focusout', 'pointerover', 'pointerout', 'keyup', 'selectionchange']) document.addEventListener(ev, invalidate);
     window.addEventListener('resize', fit);
-    for (const id of ['name', 'password']) $(id).addEventListener('mouseup', caretFromClick);
+    for (const id of FIELD_IDS) $(id).addEventListener('mouseup', caretFromClick);
     setInterval(() => {
       const f = document.activeElement;
       caretOn = !caretOn;
-      if (f && (f.id === 'name' || f.id === 'password')) invalidate();
+      if (f && FIELD_IDS.includes(f.id)) invalidate();
     }, 500);
   }
 

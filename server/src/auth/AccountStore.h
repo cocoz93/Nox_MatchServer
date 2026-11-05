@@ -8,6 +8,7 @@
 //     새 행을 안 만들고 그 행에 암호를 넣는다(`Claimed` — 판 기록의 계정 번호가 그대로 이어짐)
 //   · ★ 런처 P1 — 자동 로그인 열쇠(`login_keys` 표 · Docs/LAUNCHER_PLAN.md). 열쇠 글 자체는 저장하지 않고 SHA-256 만 둔다
 //     (DB 가 새도 열쇠를 못 씀). 열쇠 하나 = 기기 하나 · 만료는 쓸 때마다 「지금 + 수명」으로 밀린다
+//   · ★ 11-05 플랜1 — 암호 바꾸기는 한 트랜잭션: 암호 저장 + 그 계정 열쇠 전부 삭제 + 새 열쇠 넣기. 중간에 실패하면 암호도 열쇠도 그대로
 #pragma once
 
 #include <array>
@@ -56,6 +57,10 @@ public:
     virtual FindResult FindKey(const LoginKeyHash& h, LoginKeyRow& out) = 0;
     virtual bool TouchKey(const LoginKeyHash& h, uint32_t nowUnix, uint32_t expiresUnix) = 0;   // 마지막 씀 · 새 만료
     virtual bool DeleteKey(const LoginKeyHash& h) = 0;   // 없는 열쇠여도 true(로그아웃은 몇 번 해도 같다)
+
+    // ★ 11-05 플랜1 — 암호 바꾸기(머리 주석). false = 아무것도 안 바뀜
+    virtual bool ChangePassword(uint64_t id, const PasswordRecord& pw, const LoginKeyHash& h, const std::string& device, uint32_t ttlSec,
+                                uint32_t nowUnix) = 0;
 };
 
 // 메모리 가짜(시험) — 실패 손잡이 · 옛 행 넣기
@@ -68,8 +73,10 @@ public:
     FindResult FindKey(const LoginKeyHash& h, LoginKeyRow& out) override;
     bool TouchKey(const LoginKeyHash& h, uint32_t nowUnix, uint32_t expiresUnix) override;
     bool DeleteKey(const LoginKeyHash& h) override;
+    bool ChangePassword(uint64_t id, const PasswordRecord& pw, const LoginKeyHash& h, const std::string& device, uint32_t ttlSec, uint32_t nowUnix) override;
 
     void SetFail(bool on) { fail_ = on; }
+    void SetFailChange(bool on) { failChange_ = on; }   // 암호 바꾸기 저장만 실패(찾기는 됨 — 그대로 남는지 보려고)
     uint64_t AddLegacy(const std::string& name);   // 암호 없는 옛 행
     size_t Count() const { return rows_.size(); }
     uint32_t LastLogin(uint64_t id) const;         // 0 = 없음 · 안 들어옴
@@ -94,6 +101,7 @@ private:
     std::map<LoginKeyHash, KeyRow> keys_;
     uint64_t next_ = 1;
     bool fail_ = false;
+    bool failChange_ = false;
     unsigned findCalls_ = 0;
     unsigned insertCalls_ = 0;
 };

@@ -2272,7 +2272,7 @@ void LoginUnitTests() {
                  {"no_account", "sign up at https://127.0.0.1:8443/signup"},
                  {"server_error", "Login server error"},
                  {"unreachable", "Cannot reach the login server"},
-                 {"bad_input", "letters/digits 1-9. Password: 4-8,"},
+                 {"bad_input", "letters/digits 1-9. Password: 4-16,"},
                  {"key_invalid", "start Nox Online from the launcher again"},   // ★ 런처 P1
                  {"launcher_required", "Start Nox Online from the launcher."},  // ★ 런처 P1
                  {"too_many_tries", "Too many tries - try again later."},       // ★ 11-05 플랜1
