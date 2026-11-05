@@ -74,6 +74,7 @@ struct LinkRoom {
     std::string host;           // 지금 방장의 로비 이름 — 로비 채널 `#<방장>'s_game`
     std::string map;            // 맵 열쇠(소문자 · 확장자 없음)
     std::string mode;           // 방 설정의 모드(`chat` · `arena` …)
+    std::string battleMap;      // ★ 11-06 플랜1 조각 6 — 대전 맵 이름(대소문자 그대로) — 게임 목록 맵 칸 · 비면 `map`
 };
 
 enum class LinkKind : uint8_t { Hello, Auth, Register, Room, RoomGone, Create, Created, CreateFailed, Result, Bye, Ping, Saved, ClientGone, RoomUi, Kick, RankNoShow, kCount };

@@ -152,7 +152,7 @@ std::string LinkRegister(uint32_t epoch, uint32_t ip, uint16_t port) {
 std::string LinkRoomLine(const LinkRoom& r) {
     return std::string(kWords[3]) + " " + std::to_string(r.id) + " " + std::to_string(r.players) + " " +
            std::to_string(r.maxPlayers) + " " + (r.playing ? "1" : "0") + " " + EncodeLinkText(r.name) + " " +
-           EncodeLinkText(r.creator) + " " + EncodeLinkText(r.host) + " " + EncodeLinkText(r.map) + " " + EncodeLinkText(r.mode);
+           EncodeLinkText(r.creator) + " " + EncodeLinkText(r.host) + " " + EncodeLinkText(r.map) + " " + EncodeLinkText(r.mode) + " " + EncodeLinkText(r.battleMap);
 }
 
 std::string LinkRoomGone(uint32_t id) { return std::string(kWords[4]) + " " + std::to_string(id); }
@@ -246,7 +246,7 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
             return LinkParse::Ok;
         }
         case LinkKind::Room: {
-            if (!want(10)) return LinkParse::FieldCount;
+            if (!want(11)) return LinkParse::FieldCount;
             uint32_t playing = 0;
             LinkRoom& r = out.room;
             if (!ParseNum(t[1], kMaxRoomId, r.id) || !ParseNum(t[2], 0xffffffffu, r.players) ||
@@ -254,7 +254,7 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
                 return LinkParse::BadNumber;
             r.playing = playing != 0;
             if (!DecodeLinkText(t[5], r.name) || !DecodeLinkText(t[6], r.creator) || !DecodeLinkText(t[7], r.host) ||
-                !DecodeLinkText(t[8], r.map) || !DecodeLinkText(t[9], r.mode))
+                !DecodeLinkText(t[8], r.map) || !DecodeLinkText(t[9], r.mode) || !DecodeLinkText(t[10], r.battleMap))
                 return LinkParse::BadText;
             return LinkParse::Ok;
         }

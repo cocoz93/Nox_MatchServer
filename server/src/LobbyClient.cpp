@@ -40,6 +40,7 @@ bool CLobbyClient::ToLinkRoom(const RoomFact& f, LinkRoom& lr) {
     lr.host = f.host.empty() ? f.creator : f.host;
     lr.name = lr.host == f.creator ? f.name : RoomNameFor(lr.host);
     lr.map = f.mapKey;
+    lr.battleMap = f.battleMapName;   // ★ 11-06 플랜1 조각 6
     lr.mode = f.mode;
     lr.players = static_cast<uint32_t>(f.players);
     lr.maxPlayers = static_cast<uint32_t>(std::max(f.maxPlayers, 0));
@@ -227,8 +228,11 @@ int CLobbyClient::CreateRoomFor(const std::string& creator, bool ranked, const s
     s.mapPath = _waitMaps[std::uniform_int_distribution<size_t>(0, _waitMaps.size() - 1)(_rng)];
     s.mode = "chat";        // 대기 = 원작 채팅 모드 맵(결정 1 — 싸움 막기는 작업 13)
     // ★ 10-16 작업 13a — 대전 맵(후보에서 무작위 · 없으면 빈 것 — `!start` 가 「대전 맵 없음」) · 아레나(「10-16 정한 것」)
+    // ★ 11-06 플랜1 조각 6 — 무작위는 랭크 방만(방장이 없어 고를 사람이 없고 맵 유불리가 갈림). 일반 방 = 맨 앞 맵 · 방장이 `!map` 으로 바꿈
+    s.battleMapChoices = _battleMaps;
     s.battleMapPath = _battleMaps.empty() ? std::string()
-                                          : _battleMaps[std::uniform_int_distribution<size_t>(0, _battleMaps.size() - 1)(_rng)];
+                      : s.ranked          ? _battleMaps[std::uniform_int_distribution<size_t>(0, _battleMaps.size() - 1)(_rng)]
+                                          : _battleMaps.front();
     s.battleMode = "arena";
     // ★ 매칭 손보기 3(파일럿 · `--rank-one-map`) — 랭크 방은 처음부터 대전 맵 · 대전 모드(대기 맵 = 대전 맵 → 방 관리자가 제자리 판)
     if (ranked && _rooms.RankOneMap() && !s.battleMapPath.empty()) {

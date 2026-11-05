@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "AuthClient.h"
+#include "GameListRow.h"   // ★ 11-06 플랜1 조각 6
 #include "LoginNotice.h"
 #include "RankNotice.h"
 #include "nox/LoginToken.h"   // kLoginTokenSize 만 쓴다(머리 파일만 — 링크 안 함)
@@ -673,6 +674,27 @@ int main()
         Check(loginnotice::Text(loginnotice::Kind::Banned, static_cast<uint32_t>(std::mktime(&tm))) == L"계정이 3월 10일 0시까지 정지되었습니다.", "⑩ 자정 넘어감 — 다음 날 0시");
     }
 
+    {   // ⑫ ★ 11-06 플랜1 조각 6 — 게임 목록 줄(열림 · 닫힘 · 맵 글 · 필터 고침)
+        using gamelist::Status;
+        using gamelist::StatusOf;
+        Check(StatusOf(0, 0, 8) == Status::Open && StatusOf(0, 7, 8) == Status::Open && StatusOf(0xEF, 1, 8) == Status::Open, "⑫ 열림 — 자리 남음 · 닫힘 비트 말고 다른 깃발은 안 봄");
+        Check(StatusOf(0, 8, 8) == Status::Closed && StatusOf(0, 9, 8) == Status::Closed && StatusOf(0x10, 1, 8) == Status::Closed && StatusOf(0x10, 8, 8) == Status::Closed,
+              "⑫ 닫힘 — 꽉 참 · 넘침 · 닫힘 비트 · 둘 다");
+        Check(std::wstring(gamelist::StatusText(Status::Open)) == L"열림" && std::wstring(gamelist::StatusText(Status::Closed)) == L"닫힘", "⑫ 상태 글");
+        wchar_t mt[16];
+        Check(gamelist::MapText("MiniMine\0", mt, 16) && std::wstring(mt) == L"MiniMine", "⑫ 맵 글 — 끝 0 앞까지");
+        Check(gamelist::MapText("ABCDEFGHIJK", mt, 16) && std::wstring(mt) == L"ABCDEFGHI", "⑫ 맵 글 — 끝 0 없어도 9바이트에서 멈춤");
+        Check(!gamelist::MapText("\0abc", mt, 16) && mt[0] == 0, "⑫ 맵 글 — 빈 값은 false(정품 글 유지) · 글은 비움");
+        Check(!gamelist::MapText("\xC7\xD1x", mt, 16) && mt[0] == 0, "⑫ 맵 글 — 첫 바이트가 ASCII 밖");
+        Check(gamelist::MapText("ab\x01" "cd", mt, 16) && std::wstring(mt) == L"ab", "⑫ 맵 글 — 제어 문자에서 멈춤");
+        Check(gamelist::MapText(" ~\x7f", mt, 16) && std::wstring(mt) == L" ~", "⑫ 맵 글 — 0x20 · 0x7e 는 보이고 0x7f 는 멈춤");
+        Check(gamelist::MapText("MiniMine", mt, 4) && std::wstring(mt) == L"Min", "⑫ 맵 글 — 받는 칸이 작으면 칸까지");
+        using gamelist::FilterFix;
+        using gamelist::FilterFixOf;
+        Check(FilterFixOf(0, false) == FilterFix::None && FilterFixOf(0, true) == FilterFix::None && FilterFixOf(1, false) == FilterFix::ModeOff && FilterFixOf(1, true) == FilterFix::ModeOff &&
+                  FilterFixOf(2, false) == FilterFix::None && FilterFixOf(2, true) == FilterFix::ClosedOff && FilterFixOf(3, true) == FilterFix::None,
+              "⑫ 필터 고침 — 모드 셋 × 켜짐 둘 + 표 밖 모드");
+    }
     srv.Stop();
     WSACleanup();
     std::printf("authclient checks=%d fail=%d\n", g_checks, g_fail);

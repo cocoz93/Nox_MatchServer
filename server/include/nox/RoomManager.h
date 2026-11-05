@@ -145,10 +145,12 @@ public:
     //   `!start` = 방장 · 대기 · 게임 안 사람 `kMinPlayers` 이상이면 판 — 대전 맵으로 바꾼다(★ 13b · 대전 맵 · 대기 맵 원본이 없으면 `NoMap`).
     //   결과는 갈래마다 센다
     //   ★ 랭크 매칭 조각 6 — `RankAuto` = 명단 도착을 기다리는 랭크 방(판은 저절로 시작 — 방장도 못 엶)
-    enum class CmdOutcome : uint8_t { Started, NotHost, NotWaiting, TooFew, NoMap, RankAuto, Unknown, kCount };
+    enum class CmdOutcome : uint8_t { Started, NotHost, NotWaiting, TooFew, NoMap, RankAuto, MapChanged, MapList, MapRanked, Unknown, kCount };
     static const char* CmdOutcomeName(CmdOutcome o);
     static constexpr size_t kMinPlayers = 2;   // 판을 돌릴 최소 인원(`Docs/ROOMS_DESIGN.md` 「10-13 정한 것」)
     void HandleChatCommands();
+    // ★ 11-06 플랜1 조각 6 — `!map <이름>` 판정(값을 돌려주는 함수 — 갈래마다 개수를 시험). `MapChanged` 면 `_settings.battleMapPath` 를 바꿔 둠
+    CmdOutcome MapCommand(const Server::ChatCommand& c);
     unsigned long long CmdCount(CmdOutcome o) const { return _cmd[static_cast<size_t>(o)]; }
     // ★ 10-16 결함 ④ — 판 중에 게임 안 사람이 `kMinPlayers` 밑으로(나감 · 시간 초과) 내려가 대기 맵으로 돌린 수
     unsigned long long MatchAborts() const { return _matchAborts; }
@@ -313,6 +315,7 @@ struct RoomFact {
     std::string creator;   // ★ 10-14 작업 8d — 방을 만든 사람의 로비 이름(`RoomSettings::creator` — 비면 로비 목록에 안 나옴)
     std::string host;      // ★ 10-16 결함 ② — 지금 방장의 로비 이름(`CRoom::HostName` — 처음엔 만든 사람 · 비어도 마지막 방장)
     std::string mapKey;    // 맵 열쇠(`MapKeyOf` — 녹음 모드는 빈 것)
+    std::string battleMapName;   // ★ 11-06 플랜1 조각 6 — 대전 맵 이름(`MapNameOf`) — 게임 목록 맵 칸
     std::string mode;      // 방 설정의 모드(`arena` · `chat` …)
     size_t players = 0;    // 게임 안 사람 수(`Server::inGameCount`)
     size_t seats = 0;      // 세션표에서 이 방 세션 수(들어오는 중 포함)

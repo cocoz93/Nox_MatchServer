@@ -80,6 +80,8 @@ $csfAdds = @(
 # 값을 바꾸는 기존 열쇠 — 값이 둘 다 아니면(다른 판 정품) 모름으로 멈춘다
 $csfSwaps = @(
   @{ name = 'cdecode.c:EnterChat'; orig = '채팅실 들어가는 중...'; new = '방에 들어왔습니다.' },
+  # ★ 11-06 플랜1 조각 6 — 게임 목록의 핑 칸 자리에 맵 이름을 넣는다(DLL ㉓ · 핑은 이 서버에서 늘 `--`). 이 열쇠는 noxworld.wnd 머리 칸 하나만 쓴다(필터 창은 Noxworld.wnd:FilterPing)
+  @{ name = 'Noxworld.wnd:Ping'; orig = '핑'; new = '맵' },
   # ★ 11-05 — 서버가 판 안 이름을 로비 이름으로 덮으면 방에 들 때 클라가 한 번 찍는 문구(`cdecode.c:1470` · 실물 _out/qa_1105/o1/o0_room_2s_c1.png). 왜 바뀌었는지 알게
   @{ name = 'Cdecode.c:NameChange'; orig = '서버에서 당신의 이름을 %s로 바꾸었습니다.'; new = '게임 안에서는 계정 이름 %s(으)로 표시됩니다.' },
   @{ name = 'WolFind.wnd:WindowTitle'; orig = '찾기/호출'; new = '유저 찾기' })   # ★ 11-04 플랜1 — 「호출!」 단추를 숨겨 제목만 남아 있었음. wolfind.wnd 만 쓰는 열쇠
@@ -193,6 +195,12 @@ $newFiles += @{ file = 'window\MoSearch.wnd'; text = (Make-Search ($newFiles | W
 # 창 파일 줄 바꿈 — head 칸(머리 줄 ~ 다음 END) 안의 from 줄을 to 로. 파일마다 전부 원본이거나 전부 적용이어야 한다(섞이면 일부 — 적용 · 되돌림으로 맞춤)
 $lineEdits = @(
   @{ file = 'window\noxworld.wnd'; head = '10003 40 109 150 32 PUSHBUTTON'; from = 'TEXT = Noxworld.wnd:HostQuest;'; to = 'TEXT = Noxworld.wnd:HostQuestTodo;' },
+  # ★ 11-06 플랜1 조각 6 — 게임 목록 선택색. 정품 초록 바탕이면 상태 칸 초록 글자(DLL ㉓)가 묻힌다 · 회색 값은 제 판단. 줄 배경은 선택한 줄에만 칠한다(`GAME3.c:1275` · 원본 기준)
+  @{ file = 'window\noxworld.wnd'; head = '10038 16 0 100 400 SCROLLLISTBOX'; from = 'SELECTEDCOLOR = 0 150 0;'; to = 'SELECTEDCOLOR = 70 70 70;' },
+  @{ file = 'window\noxworld.wnd'; head = '10039 116 0 50 400 SCROLLLISTBOX'; from = 'SELECTEDCOLOR = 0 150 0;'; to = 'SELECTEDCOLOR = 70 70 70;' },
+  @{ file = 'window\noxworld.wnd'; head = '10040 166 0 75 400 SCROLLLISTBOX'; from = 'SELECTEDCOLOR = 0 150 0;'; to = 'SELECTEDCOLOR = 70 70 70;' },
+  @{ file = 'window\noxworld.wnd'; head = '10041 241 0 50 400 SCROLLLISTBOX'; from = 'SELECTEDCOLOR = 0 150 0;'; to = 'SELECTEDCOLOR = 70 70 70;' },
+  @{ file = 'window\noxworld.wnd'; head = '10042 291 0 90 400 SCROLLLISTBOX'; from = 'SELECTEDCOLOR = 0 150 0;'; to = 'SELECTEDCOLOR = 70 70 70;' },
   @{ file = 'window\wolchat.wnd'; head = '1926 151 433 82 26 PUSHBUTTON'; from = 'TEXT = WolChat.wnd:Clans;'; to = 'TEXT = WolChat.wnd:ClansTodo;' },
   # 1927 — 「랭킹 확인 (미구현)」이 폭 82 를 넘어 두 줄로 꺾여 창 밖으로 잘렸다(11-04 캡처). 글자는 칸 폭을 넘으면 꺾이므로(`widget_button.go` DrawStringWrapped · 원본 기준)
   #        칸을 98 로 넓힘 · 오른쪽 끝이 「뒤로」 머리에 닿아(11-04 캡처) 왼쪽으로 3 더 옮겨 가운데 189(판 가운데 192) · 그림 자리는 그대로 되게 IMAGEOFFSET X 를 11 더함

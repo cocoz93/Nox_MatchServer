@@ -111,7 +111,7 @@ try {
   $nonce = if ($hello -match '^HELLO ([0-9a-f]{32})$') { $Matches[1] } else { '' }
   Check ($nonce -ne '') "게임 서버 연결 — 붙자마자 HELLO 일회용 값 ($hello)"
   $sig = ToHex (Hmac $authKey ([Text.Encoding]::ASCII.GetBytes($nonce)))
-  Send $g @("AUTH $sig", 'REGISTER 1760000000 127.0.0.2 18590', "ROOM 0 1 8 0 alice's%20game alice alice so_lod chat")
+  Send $g @("AUTH $sig", 'REGISTER 1760000000 127.0.0.2 18590', "ROOM 0 1 8 0 alice's%20game alice alice so_lod chat ~")
 
   $bad = Open $LinkPort $utf8
   $null = ReadOne $bad
@@ -148,7 +148,7 @@ try {
   $create = ReadLink $g
   $req = if ($create -match '^CREATE (\d+) wn$') { $Matches[1] } else { '' }
   Check ($req -ne '') "새 방 → 게임 서버에 CREATE(요청 번호 · 만든 사람 wn) ($create)"
-  Send $g @("ROOM 1 0 8 0 wn's%20game wn wn so_lod chat", "CREATED $req 1")
+  Send $g @("ROOM 1 0 8 0 wn's%20game wn wn so_lod chat ~", "CREATED $req 1")
   $j = ReadUntil $k '366'
   $kinds = ($j | ForEach-Object { Kind $_ }) -join ','
   $nt = if ($j.Count -ge 1) { $j[0].Split(' ') } else { @() }
@@ -183,7 +183,7 @@ try {
   Check ($rj2 -eq ": 471 u #wn's_game :Cannot create game (request failed)") "게임 서버 없음 → 새 방에 곧바로 거절 471 한 줄 ($rj2)"
 
   # ⑤ ★ 7단계 — 살아 있음(말없는 게임 서버 g2 · 같은 주소 g3 거절 · 한도 뒤 g4 받힘)
-  $g2 = Gs @('REGISTER 1760000200 127.0.0.3 18590', "ROOM 0 1 8 0 carl's%20game carl carl so_lod chat")
+  $g2 = Gs @('REGISTER 1760000200 127.0.0.3 18590', "ROOM 0 1 8 0 carl's%20game carl carl so_lod chat ~")
   Start-Sleep -Milliseconds 300
   Send $k @('LIST 37 37')
   $l3all = ReadUntil $k '323'

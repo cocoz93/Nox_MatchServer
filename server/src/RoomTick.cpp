@@ -774,6 +774,9 @@ const char* nox::CRoom::CmdOutcomeName(CmdOutcome o) {
         case CmdOutcome::TooFew: return "인원 모자람";
         case CmdOutcome::NoMap: return "맵 없음";
         case CmdOutcome::RankAuto: return "랭크 — 저절로 시작";
+        case CmdOutcome::MapChanged: return "맵 바꿈";
+        case CmdOutcome::MapList: return "맵 후보 답";
+        case CmdOutcome::MapRanked: return "랭크 — 맵 못 바꿈";
         case CmdOutcome::Unknown: return "모르는 명령";
         case CmdOutcome::kCount: break;
     }
@@ -781,6 +784,32 @@ const char* nox::CRoom::CmdOutcomeName(CmdOutcome o) {
 }
 
 // ★ 10-16 플랜 B 작업 12b — 채팅 명령. 알림 문구는 영문(정품 글꼴 · 코드페이지 걱정 없이 — 방 이름을 영문으로 바꾼 10-16 과 같은 까닭)
+// ★ 11-06 플랜1 조각 6 — 방장 · 대기 확인은 `!start` 와 같은 꼴. 랭크 판이 끝나기 전엔(도착 기다림 · 랭크 판 · `--ranked-all` 방) 못 바꾼다 —
+//   매칭이 뽑은 맵을 방장이 고르면 유불리가 생긴다(방장은 줄 앞 사람일 뿐). 바꾼 맵은 다음 `StartMatch` 부터(`FindMap(_settings.battleMapPath)`).
+//   후보는 서버가 뜰 때 읽은 맵만이라(`main.cpp` 못 읽은 맵 빠짐) 여기서 다시 안 본다 · 이름은 대소문자 무시 · 둘째 낱말만 본다
+nox::CRoom::CmdOutcome nox::CRoom::MapCommand(const Server::ChatCommand& c) {
+    const RoomMember* h = Host();
+    if (!h || h->sessionId != c.sessionId) return CmdOutcome::NotHost;
+    if (_settings.ranked || _rankWait != RankWait::None) return CmdOutcome::MapRanked;
+    if (_phase != RoomPhase::Waiting) return CmdOutcome::NotWaiting;
+    if (_settings.battleMapChoices.empty()) return CmdOutcome::NoMap;
+    std::string want;
+    size_t i = c.text.find(' ');
+    if (i != std::string::npos) {
+        while (i < c.text.size() && c.text[i] == ' ') ++i;
+        for (; i < c.text.size() && c.text[i] != ' '; ++i) {
+            const char ch = c.text[i];
+            want.push_back((ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch);
+        }
+    }
+    for (const std::string& path : _settings.battleMapChoices) {
+        if (MapKeyOf(path) != want) continue;
+        _settings.battleMapPath = path;
+        return CmdOutcome::MapChanged;
+    }
+    return CmdOutcome::MapList;
+}
+
 void nox::CRoom::HandleChatCommands() {
     _game.SwapOutChatCommands(_cmdBuf);
     for (const Server::ChatCommand& c : _cmdBuf) {
@@ -799,6 +828,8 @@ void nox::CRoom::HandleChatCommands() {
             else if (_game.inGameCount() < kMinPlayers) r = CmdOutcome::TooFew;
             else if (!CanStartMatch()) r = CmdOutcome::NoMap;   // ★ 13b — 대전 맵 · 대기 맵 원본이 맵 목록에 있어야
             else r = CmdOutcome::Started;
+        } else if (word == "!map") {
+            r = MapCommand(c);
         }
         ++_cmd[static_cast<size_t>(r)];
         char line[160];
@@ -813,9 +844,25 @@ void nox::CRoom::HandleChatCommands() {
             case CmdOutcome::NotHost: {
                 const RoomMember* h = Host();
                 std::snprintf(line, sizeof(line), "방장(%s)만 시작할 수 있습니다.", h && !h->account.empty() ? h->account.c_str() : "?");
-                _game.SendNoticeTo(c.sessionId, line);
+                _game.SendNoticeTo(c.sessionId, word == "!map" ? "방장만 맵을 바꿀 수 있습니다." : line);
                 break;
             }
+            case CmdOutcome::MapChanged: {
+                const std::string name = MapNameOf(_settings.battleMapPath);
+                std::snprintf(line, sizeof(line), "맵을 %s(으)로 바꿨습니다.", name.c_str());
+                _game.SendNotice(line);
+                _game.Log("[맵] 대전 맵 → %s\n", name.c_str());
+                break;
+            }
+            case CmdOutcome::MapList: {
+                std::string names = "바꿀 수 있는 맵: ";
+                for (size_t i = 0; i < _settings.battleMapChoices.size(); ++i) names += (i ? ", " : "") + MapNameOf(_settings.battleMapChoices[i]);
+                _game.SendNoticeTo(c.sessionId, names.c_str());
+                break;
+            }
+            case CmdOutcome::MapRanked:
+                _game.SendNoticeTo(c.sessionId, "랭크 판이 끝난 뒤에 맵을 바꿀 수 있습니다.");
+                break;
             case CmdOutcome::NotWaiting:
                 _game.SendNoticeTo(c.sessionId, "이미 대전 중입니다.");
                 break;

@@ -84,6 +84,7 @@ std::vector<RoomFact> CRoomManager::ListRooms() const {
         f.host = room._hostName;      // ★ 10-16 결함 ②
         f.mapKey = room._curMapKey;   // ★ 10-16 작업 13b — 지금 맵 · 모드(판 중이면 대전 맵 — 옛 값 = 방 설정의 맵 · 모드)
         f.mode = room._curMode;
+        f.battleMapName = room._settings.battleMapPath.empty() ? std::string() : MapNameOf(room._settings.battleMapPath);
         f.players = room._game.inGameCount();
         const auto it = seats.find(room._id);
         f.seats = it == seats.end() ? 0 : it->second;

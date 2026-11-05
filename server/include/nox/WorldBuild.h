@@ -42,6 +42,8 @@ struct RoomSettings {
     //   비면 판을 못 연다. 로비가 만든 방은 대전 맵 후보(`--battle-maps` · 기본 `Estate`)에서 하나. 대기 맵 = 위 `mapPath`(방을 만든 맵)
     std::string battleMapPath;
     std::string battleMode = "arena";
+    // ★ 11-06 플랜1 조각 6 — 방장이 `!map` 으로 고를 수 있는 대전 맵(맵 파일 경로 · `CLobbyClient` 가 `--battle-maps` 를 복사). 비면 못 바꾼다
+    std::vector<std::string> battleMapChoices;
     // ★ 10-16 작업 13d — 진단(시험 손잡이) `--battle-score-limit N` — 판을 열 때 점수 한도를 N 으로(0 = 그대로 · 원작 15).
     //   정품 확인에서 판 끝(→ 대기 맵)을 한 킬로 보려고. 판 끝 조건 결정(「10-16 정한 것」 — 지금 서버 그대로)은 안 바꾼다
     int battleScoreLimit = 0;
@@ -236,6 +238,8 @@ struct MapCatalog {
     std::shared_ptr<const MapOriginal> Find(const std::string& key) const;   // 없으면 nullptr
 };
 std::string MapKeyOf(const std::string& mapPath);
+// ★ 11-06 플랜1 조각 6 — 파일 이름 그대로(대소문자 유지 · 확장자 뗌). 사람이 보는 자리(게임 목록 맵 칸 · `!map` 답)
+std::string MapNameOf(const std::string& mapPath);
 std::vector<std::string> MapListFromOptions(const ServerOptions& opt);
 // ★ 10-14 작업 10a — 대기 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것). 열쇠는 `<게임 폴더>\maps\<열쇠>\<열쇠>.map`
 // ★ 10-20 v2 작업 4b — 로비 방식(로비에 붙기 `--lobby` — 4b-2 부터 이것 하나) — 방 없이 시작 · 대기 · 대전 맵 후보를 차려 둔다

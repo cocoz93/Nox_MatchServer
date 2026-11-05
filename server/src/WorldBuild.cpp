@@ -883,10 +883,15 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
 
 // ★ 10-12 플랜 B 작업 7e-4b — 맵 원본(`WorldBuild.h` `MapOriginal` 머리 주석 · `Docs/ROOMS_DESIGN.md` 「7e-4 다시 짬」)
 std::string MapKeyOf(const std::string& mapPath) {
+    std::string k = MapNameOf(mapPath);
+    for (char& ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return k;
+}
+
+std::string MapNameOf(const std::string& mapPath) {
     std::string k = mapPath;
     const size_t sl = k.find_last_of("\\/");
     if (sl != std::string::npos) k = k.substr(sl + 1);
-    for (char& ch : k) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     const size_t dot = k.find('.');
     if (dot != std::string::npos) k.resize(dot);
     return k;

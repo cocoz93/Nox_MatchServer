@@ -394,6 +394,34 @@ void ChannelLobbyUnitTests() {
     Check(g.name == "wn game" && g.map == "so_lod" && (g.flags & kMapTypeMask) == kMapArena && g.players == 2 && g.maxPlayers == 31 &&
           g.access == 0,
           "방 정보 = 방의 이름 · 맵 · 모드(목록에선 chat 을 대전으로) · 인원 + 틀의 최대 인원 · 열림");
+    {   // ★ 11-06 플랜1 조각 6 — 목록 줄의 맵 칸 = 대전 맵 이름 · 들어간 뒤 332 는 실제 대기 맵(그 값으로 맵을 찾는다) · 대전 맵 없는 방은 위 시험대로 대기 맵
+        FakeRooms fakeM;
+        LobbyRoom rm = r;
+        rm.battleMap = "MiniMine";
+        fakeM.rooms = {rm};
+        Lobby lbM(cfg, fakeM);
+        std::vector<Out> oM;
+        lbM.OnConnect(1, peer, local);
+        for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName"}) lbM.OnLine(1, l, oM);
+        oM.clear();
+        lbM.OnLine(1, "LIST 37 37", oM);
+        GameInfo inL;
+        int nL = 0;
+        for (const auto& o : oM) {
+            const auto t = Tokens(o.line);
+            if (t.size() == 11 && t[1] == "326") { ++nL; Unpack(t[10].substr(4), inL); }
+        }
+        Check(nL == 1 && inL.map == "MiniMine", "목록 줄 맵 칸 = 대전 맵 이름(대소문자 그대로)");
+        oM.clear();
+        lbM.OnLine(1, "JOINGAME #wn's_game 1 ", oM);
+        GameInfo inJ;
+        int nJ = 0;
+        for (const auto& o : oM) {
+            const auto t = Tokens(o.line);
+            if (t.size() >= 5 && t[1] == "332") { ++nJ; Unpack(t[4], inJ); }
+        }
+        Check(nJ == 1 && inJ.map == "so_lod", "들어간 뒤 332 맵 = 실제 대기 맵(대전 맵 아님)");
+    }
     {   // ★ 11-05 — 목록 줄만 대전으로: 들어간 뒤 332 는 실제 값(chat) · 채팅이 아닌 모드는 목록에서도 그대로
         FakeRooms fakeJ;   // 아래 시험이 lb 의 「아직 안 들어감」에 기대므로 들어가기는 따로
         fakeJ.rooms = {r};
@@ -1428,6 +1456,13 @@ void MirrorUnitTests() {
     lr = mirror.LobbyRooms();
     Check(lr.size() == 2 && lr[0].host == "amy" && lr[0].players == 4 && lr[0].playing && mirror.Stats().roomGoneUnknown == 1,
           "④ ROOM 다시 → 바뀜(인원 · 판 중) · ROOM_GONE → 빠짐 · 없는 방의 ROOM_GONE 셈");
+    {   // ★ 11-06 플랜1 조각 6 — ROOM 끝 칸의 대전 맵이 거울을 지나 로비 방까지 간다(대기 맵 칸은 그대로)
+        nox::LinkRoom withMap = up;
+        withMap.battleMap = "MiniMine";
+        send(a, nox::LinkRoomLine(withMap));
+        lr = mirror.LobbyRooms();
+        Check(lr.size() == 2 && lr[0].battleMap == "MiniMine" && lr[0].map == "so_lod", "④ ROOM 끝 칸 대전 맵 → 거울 → 로비 방(대기 맵 칸은 그대로)");
+    }
     {   // 방장 칸이 비어 오면 만든 사람(옛 `CChannelLobby::ToLobbyRoom` 의 「방장 없으면 만든 사람」)
         nox::LinkRoom noHost = room(5, "hal", 0);
         noHost.host.clear();

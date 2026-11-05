@@ -24996,7 +24996,8 @@ std::shared_ptr<MapOriginal> FakeMapOriginal(const std::string& key, uint32_t cr
 }
 // 로비가 만든 방처럼 — 대기 맵 원본에 붙은 독립 모드 · 채팅 · 대전 맵(열쇠가 목록에 없으면 빈 것) · 최대 8 · 맵 목록
 int MakeLobbyLikeRoom(nox::CRoomManager& rooms, const MapCatalog& cat, const std::string& waitKey, const std::string& battleKey,
-                      int battleScoreLimit = 0, const std::vector<std::string>& roster = {}, const std::vector<int32_t>& ratings = {}) {
+                      int battleScoreLimit = 0, const std::vector<std::string>& roster = {}, const std::vector<int32_t>& ratings = {},
+                      const std::vector<std::string>& mapChoices = {}) {
     const auto wait = cat.Find(waitKey);
     const auto battle = cat.Find(battleKey);
     RoomSettings rs;
@@ -25007,6 +25008,7 @@ int MakeLobbyLikeRoom(nox::CRoomManager& rooms, const MapCatalog& cat, const std
     rs.mapPath = wait ? wait->path : std::string();
     rs.mode = "chat";
     rs.battleMapPath = battle ? battle->path : std::string();
+    rs.battleMapChoices = mapChoices;         // ★ 11-06 플랜1 조각 6 — `!map` 후보
     rs.battleMode = "arena";
     rs.maxPlayers = 8;
     const int r = rooms.CreateRoom(rs);
@@ -25169,7 +25171,7 @@ void TestLobbyClient() {
     auto l1 = lines(rq);
     bool connOk = true;
     for (const Rq& r : rq) connOk = connOk && r.lobbyConn == 7;
-    const std::string wantRoom = "ROOM " + std::to_string(made) + " 0 8 0 wn%20game wn wn so_lod chat";
+    const std::string wantRoom = "ROOM " + std::to_string(made) + " 0 8 0 wn%20game wn wn so_lod chat ~";
     const bool authOk = l1.size() == 3 && l1[0].rfind("AUTH ", 0) == 0 &&
                         nox::CheckLinkAuth(nox::LinkAuthKey(cfg.tokenKey), nonce, l1[0].substr(5));
     std::snprintf(m, sizeof(m), "① 붙음 → 줄 없음 %d · HELLO → 줄 %zu(AUTH 서명 %d · %s · %s) · 접속 번호 %d · 등록 %d",
@@ -25194,7 +25196,7 @@ void TestLobbyClient() {
     auto l2b = lines(rq);
     std::snprintf(m, sizeof(m), "② 틱 뒤 — 안 바뀜 줄 없음 %d · 판 중 [%s] · 실행 인자 방 바뀜 줄 없음 %d · 닫힘 [%s]", (int)still,
                   l2.empty() ? "" : l2[0].c_str(), (int)plainQuiet, l2b.empty() ? "" : l2b[0].c_str());
-    Check(still && l2.size() == 1 && l2[0] == "ROOM " + std::to_string(made) + " 0 8 1 wn%20game wn wn so_lod chat" && plainQuiet &&
+    Check(still && l2.size() == 1 && l2[0] == "ROOM " + std::to_string(made) + " 0 8 1 wn%20game wn wn so_lod chat ~" && plainQuiet &&
               l2b.size() == 1 && l2b[0] == "ROOM_GONE " + std::to_string(made), m);
 
     // ③ CREATE → 새 방(틀 · 만든 사람 · 이름 · 대기 맵 · 채팅 · 대전 맵 · 비면 닫음 · 최대 8 · 봇 없음) → ROOM 먼저 · CREATED
@@ -25209,7 +25211,7 @@ void TestLobbyClient() {
                   newId, l3.size(), l3.empty() ? "" : l3[0].c_str(), l3.size() > 1 ? l3[1].c_str() : "", rs ? rs->roomName.c_str() : "",
                   rs ? rs->mode.c_str() : "", rs ? rs->battleMapPath.c_str() : "", rs ? (int)rs->closeWhenEmpty : -1, rs ? rs->maxPlayers : -1,
                   rs ? (int)rs->aoi : -1, rs ? rs->bots.size() : 99);
-    Check(newId >= 0 && l3.size() == 2 && l3[0] == "ROOM " + std::to_string(newId) + " 0 8 0 averylon's%20game averylongnick averylongnick so_lod chat" &&
+    Check(newId >= 0 && l3.size() == 2 && l3[0] == "ROOM " + std::to_string(newId) + " 0 8 0 averylon's%20game averylongnick averylongnick so_lod chat Estate" &&
               l3[1] == "CREATED 42 " + std::to_string(newId) && rs && rs->roomName == "averylon's game" && rs->mode == "chat" &&
               rs->battleMapPath == battles[0] && rs->battleMode == "arena" && rs->closeWhenEmpty && rs->standalone &&
               rs->maxPlayers == nox::CLobbyClient::kRoomMaxPlayers && rs->aoi && rs->bots.empty(),
@@ -25265,7 +25267,7 @@ void TestLobbyClient() {
                   (int)downQuiet, l5.size(), l5.size() > 2 ? l5[2].c_str() : "", l5.size() > 3 ? l5[3].c_str() : "", l5.size() > 4 ? l5[4].c_str() : "",
                   (int)conn8, lc.Stats().linksUp, lc.Stats().linksDown, lc.Stats().registers, lc.Stats().results, lc.Stats().resultsResent);
     Check(downQuiet && l5.size() == 5 && l5[0].rfind("AUTH ", 0) == 0 && l5[1] == "REGISTER 1760000000 127.0.0.2 18590" &&
-              l5[2] == "ROOM " + std::to_string(newId) + " 0 8 0 averylon's%20game averylongnick averylongnick so_lod chat" &&
+              l5[2] == "ROOM " + std::to_string(newId) + " 0 8 0 averylon's%20game averylongnick averylongnick so_lod chat Estate" &&
               l5[3] == "RESULT {\"match\":\"1760000000-0-1\"}" && l5[4] == "RESULT {}" && conn8 && lc.Stats().linksUp == 2 &&
               lc.Stats().linksDown == 1 && lc.Stats().registers == 2 && lc.Stats().results == 2 && lc.Stats().resultsResent == 1, m);
 
@@ -27400,6 +27402,236 @@ void TestMatchRecorder() {
 // ── ★ 10-16 작업 13b 실물 — 진짜 맵 파일(So_LOD · Estate)로 서버처럼 차린 방에서 판 열기 · 판 끝(게임이 깔려 있을 때만) ─────────
 //   서버가 뜰 때와 같은 길(`LoadGameFiles` → `BuildGameTables` → `BuildMapCatalog`) · 방은 로비가 만드는 설정 그대로 방 관리자의 만들기 입구로.
 //   본다 — `USE_MAP` 의 이름 · CRC 가 맵 원본 값 · 사람 자리가 그 맵의 PlayerStart 가운데 하나 근처 · 바닥 물건 · 문 수가 그 맵 원본의 처음 상태
+// ── ★ 11-06 플랜1 조각 6 — 방장 `!map`: 갈래마다 개수 · 바꾼 맵으로 판이 열리나 · 목록 사실 · 일반 방 맨 앞 맵 · 랭크 방 후보에서 고름
+void TestRoomMapCommand() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    using O = nox::CRoom::CmdOutcome;
+    char m[420];
+    auto join = [&](nox::CSyncHost& h, const std::vector<uint8_t>& tail, const std::string& p1, const std::string& p2,
+                    std::vector<nox::OutPacket>& out) {
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        h.OnPacket(p1, tj.data(), tj.size(), out);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        h.OnPacket(p2, cn.data(), cn.size(), out);
+        const int64_t sid = h.Network().SessionIdOf(p2);
+        const auto ac = AcceptPkt("Jack");
+        h.OnPacket(p2, ac.data(), ac.size(), out);
+        return sid;
+    };
+    auto chat = [](const std::string& text) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::TEXT_MESSAGE));
+        p.push_back(0); p.push_back(0); p.push_back(0x02);
+        p.push_back(0); p.push_back(0); p.push_back(0); p.push_back(0);
+        p.push_back(static_cast<uint8_t>(text.size()));
+        p.push_back(0); p.push_back(0);
+        for (const char c : text) p.push_back(static_cast<uint8_t>(c));
+        return p;
+    };
+    auto useMapTo = [](const std::vector<nox::OutPacket>& out, const std::string& to, const std::string& name) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i + 2 + name.size() <= x.size(); ++i)
+                if (x[i] == static_cast<uint8_t>(nox::Op::USE_MAP) && std::memcmp(x.data() + i + 1, name.data(), name.size()) == 0 &&
+                    x[i + 1 + name.size()] == 0) ++n;
+        return n;
+    };
+    auto textTo = [](const std::vector<nox::OutPacket>& out, const std::string& to, const char* has) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i + 11 <= x.size(); ++i) {
+                if (x[i] != static_cast<uint8_t>(nox::Op::TEXT_MESSAGE)) continue;
+                std::string text;
+                if (!A8TextAt(x, i, text)) continue;
+                if (text.find(has) != std::string::npos) ++n;
+            }
+        return n;
+    };
+    auto fact = [](const nox::CRoomManager& rooms, int r) {
+        for (const auto& f : rooms.ListRooms()) if (f.roomId == r) return f;
+        return nox::RoomFact{};
+    };
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    nox::CRoomManager& rooms = srv.Rooms();
+    MapCatalog cat;
+    cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+    cat.maps.push_back(FakeMapOriginal("estate", 0x22222222u, 3000.0f, 3000.0f));
+    cat.maps.push_back(FakeMapOriginal("minimine", 0x33333333u, 3200.0f, 3200.0f));
+    cat.maps.push_back(FakeMapOriginal("oasis", 0x44444444u, 3400.0f, 3400.0f));
+    // 후보는 실행 인자처럼 대소문자가 섞인 경로 — 화면 글은 그 대소문자 · 고르기는 대소문자 무시
+    const std::vector<std::string> choices = {"C:\\T\\Estate\\Estate.map", "C:\\T\\MiniMine\\MiniMine.map", "C:\\T\\Oasis\\Oasis.map"};
+    const int r = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {}, {}, choices);
+    const int rNo = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate");
+    rooms.SetRankSettleMs(0);   // 시작 전 쉬기는 `TestRankRoom` ⑧ 몫
+    const int rRank = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 0, {"amy", "ben"}, {}, choices);
+    const uint8_t readyPkt[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_READY) };   // 랭크 방은 맵을 다 실은 뒤 이 패킷이 와야 도착으로 친다
+    nox::CRoom& room = rooms.Room(r);
+    uint32_t now = 1000;
+    std::vector<nox::OutPacket> t0; srv.Tick(now, t0); now += 33; srv.Tick(now, t0);
+    const std::string A = "10.46.0.1:1002", B = "10.46.0.2:2002", C = "10.46.0.3:3002", E = "10.46.0.5:5002", F = "10.46.0.6:6002";
+    std::vector<nox::OutPacket> ja;
+    join(srv, TrailerAs("alice", r, "10.46.0.1", 461), "10.46.0.1:1001", A, ja);
+    join(srv, TrailerAs("bob", r, "10.46.0.2", 462), "10.46.0.2:2001", B, ja);
+    join(srv, TrailerAs("carl", rNo, "10.46.0.3", 463), "10.46.0.3:3001", C, ja);
+    join(srv, TrailerAs("amy", rRank, "10.46.0.5", 465), "10.46.0.5:5001", E, ja);
+    srv.OnPacket(E, readyPkt, sizeof(readyPkt), ja);
+    now += 34; srv.Tick(now, ja);
+    auto say = [&](const std::string& from, const std::string& text) {
+        std::vector<nox::OutPacket> out;
+        const auto p = chat(text);
+        srv.OnPacket(from, p.data(), p.size(), out);
+        now += 34;
+        srv.Tick(now, out);
+        return out;
+    };
+    auto sumOf = [](const nox::CRoom& x) {
+        unsigned long long s = 0;
+        for (size_t i = 0; i < static_cast<size_t>(O::kCount); ++i) s += x.CmdCount(static_cast<O>(i));
+        return s;
+    };
+    const std::string estatePath = rooms.Room(r).Settings().battleMapPath;
+
+    // ① 방장 아님 — 맵 그대로 · 그 사람에게만 맵 문구 · `!start` 의 방장 문구는 안 바뀜
+    const auto o1 = say(B, "!map oasis");
+    const auto o1s = say(B, "!start");
+    std::snprintf(m, sizeof(m), "!map ① 방장 아님 — 셈 %llu · 문구 B %d A %d · !start 문구에 맵 %d · 맵 %s",
+                  room.CmdCount(O::NotHost), textTo(o1, B, "방장만 맵을 바꿀 수 있습니다."), textTo(o1, A, "방장만 맵을"), textTo(o1s, B, "방장만 맵을"),
+                  fact(rooms, r).battleMapName.c_str());
+    Check(room.CmdCount(O::NotHost) == 2 && textTo(o1, B, "방장만 맵을 바꿀 수 있습니다.") == 1 && textTo(o1, A, "방장만 맵을") == 0 &&
+              textTo(o1s, B, "방장만 맵을") == 0 && room.Settings().battleMapPath == estatePath && fact(rooms, r).battleMapName == "estate", m);
+    // ② 후보 밖 · 이름 없음 — 그 사람에게 후보(대소문자 그대로 · 맨 앞부터) · 맵 그대로
+    const auto o2 = say(A, "!map nope");
+    const auto o2b = say(A, "!map");
+    std::snprintf(m, sizeof(m), "!map ② 후보 밖 · 이름 없음 — 셈 %llu · 문구 A %d·%d B %d", room.CmdCount(O::MapList),
+                  textTo(o2, A, "바꿀 수 있는 맵: Estate, MiniMine, Oasis"), textTo(o2b, A, "바꿀 수 있는 맵: Estate, MiniMine, Oasis"), textTo(o2, B, "바꿀 수 있는 맵"));
+    Check(room.CmdCount(O::MapList) == 2 && textTo(o2, A, "바꿀 수 있는 맵: Estate, MiniMine, Oasis") == 1 &&
+              textTo(o2b, A, "바꿀 수 있는 맵: Estate, MiniMine, Oasis") == 1 && textTo(o2, B, "바꿀 수 있는 맵") == 0 && room.Settings().battleMapPath == estatePath, m);
+    // ③ 바꿈 — 대소문자 무시 · 낱말 사이 빈칸 · 전체 공지 · 목록 사실은 후보의 대소문자
+    const auto o3 = say(A, "!MAP oAsIs");
+    const auto f3 = fact(rooms, r);
+    const auto o3b = say(A, "!map    minimine   ");
+    const auto f3b = fact(rooms, r);
+    std::snprintf(m, sizeof(m), "!map ③ 바꿈 — 셈 %llu · 공지 A %d B %d · 다음 A %d B %d · 목록 %s → %s · 경로 %s", room.CmdCount(O::MapChanged),
+                  textTo(o3, A, "맵을 Oasis(으)로 바꿨습니다."), textTo(o3, B, "맵을 Oasis(으)로 바꿨습니다."), textTo(o3b, A, "맵을 MiniMine(으)로 바꿨습니다."),
+                  textTo(o3b, B, "맵을 MiniMine(으)로 바꿨습니다."), f3.battleMapName.c_str(), f3b.battleMapName.c_str(), room.Settings().battleMapPath.c_str());
+    Check(room.CmdCount(O::MapChanged) == 2 && textTo(o3, A, "맵을 Oasis(으)로 바꿨습니다.") == 1 && textTo(o3, B, "맵을 Oasis(으)로 바꿨습니다.") == 1 &&
+              textTo(o3b, A, "맵을 MiniMine(으)로 바꿨습니다.") == 1 && textTo(o3b, B, "맵을 MiniMine(으)로 바꿨습니다.") == 1 && f3.battleMapName == "Oasis" &&
+              f3b.battleMapName == "MiniMine" && room.Settings().battleMapPath == choices[1], m);
+    // ④ 판 열기 — 바꾼 맵으로 · 판 중 거절(맵 그대로)
+    const auto o4 = say(A, "!start");
+    const auto o4b = say(A, "!map estate");
+    std::snprintf(m, sizeof(m), "!map ④ 판 — USE_MAP A %d B %d · 파일 %s · 방 %s · 판 중 셈 %llu · 문구 %d · 경로 %s", useMapTo(o4, A, "minimine.map"), useMapTo(o4, B, "minimine.map"),
+                  rooms.Game(r).MapFileName().c_str(), nox::RoomPhaseName(room.Phase()), room.CmdCount(O::NotWaiting), textTo(o4b, A, "이미 대전 중입니다."),
+                  room.Settings().battleMapPath.c_str());
+    Check(useMapTo(o4, A, "minimine.map") == 1 && useMapTo(o4, B, "minimine.map") == 1 && rooms.Game(r).MapFileName() == "minimine.map" &&
+              room.Phase() == nox::RoomPhase::Playing && room.CmdCount(O::NotWaiting) == 1 && textTo(o4b, A, "이미 대전 중입니다.") == 1 &&
+              room.Settings().battleMapPath == choices[1], m);
+    // ⑤ 판 끝 → 대기 맵 · 맵은 그대로 → 다음 판도 같은 맵
+    rooms.Game(r).DebugEndRound();
+    std::vector<nox::OutPacket> o5;
+    for (int k = 0; k < 40 && room.Phase() == nox::RoomPhase::Playing; ++k) { now += 500; srv.Tick(now, o5); }
+    now += 34; srv.Tick(now, o5);
+    const auto f5 = fact(rooms, r);
+    const auto o5b = say(A, "!start");
+    std::snprintf(m, sizeof(m), "!map ⑤ 판 끝 — 대기 맵 %s(목록 대전 맵 %s) · 다음 판 USE_MAP %d", f5.mapKey.c_str(), f5.battleMapName.c_str(), useMapTo(o5b, A, "minimine.map"));
+    Check(f5.mapKey == "so_lod" && f5.battleMapName == "MiniMine" && useMapTo(o5b, A, "minimine.map") == 1 && rooms.Game(r).MapFileName() == "minimine.map", m);
+    // ⑥ 합 — 쌓은 명령 수와 갈래 합이 같다(세는 자리 전수)
+    const unsigned long long sum = sumOf(room);
+    std::snprintf(m, sizeof(m), "!map ⑥ 합 %llu(큐 %llu) — 방장 아님 %llu · 후보 %llu · 바꿈 %llu · 판 중 %llu · 시작 %llu · 모름 %llu", sum, rooms.Game(r).chatCommandsQueued(),
+                  room.CmdCount(O::NotHost), room.CmdCount(O::MapList), room.CmdCount(O::MapChanged), room.CmdCount(O::NotWaiting), room.CmdCount(O::Started), room.CmdCount(O::Unknown));
+    Check(sum == 9 && rooms.Game(r).chatCommandsQueued() == 9 && room.CmdCount(O::Started) == 2 && room.CmdCount(O::Unknown) == 0, m);
+    // ⑦ 후보 없는 방
+    nox::CRoom& roomNo = rooms.Room(rNo);
+    const auto o7 = say(C, "!map estate");
+    std::snprintf(m, sizeof(m), "!map ⑦ 후보 없음 — 셈 %llu · 문구 %d", roomNo.CmdCount(O::NoMap), textTo(o7, C, "이 서버에 대전 맵이 없습니다."));
+    Check(roomNo.CmdCount(O::NoMap) == 1 && textTo(o7, C, "이 서버에 대전 맵이 없습니다.") == 1 && sumOf(roomNo) == 1, m);
+    // ⑧ 랭크 방 — 판 전 · 판 중 거절 · 비방장은 방장 아님 · 판이 끝나 남으면 일반 방이라 바꿈
+    nox::CRoom& roomR = rooms.Room(rRank);
+    const std::string rankPath = roomR.Settings().battleMapPath;
+    const auto o8 = say(E, "!map oasis");
+    std::vector<nox::OutPacket> o8j;
+    join(srv, TrailerAs("ben", rRank, "10.46.0.6", 466), "10.46.0.6:6001", F, o8j);
+    const auto o8f = say(F, "!map oasis");
+    srv.OnPacket(F, readyPkt, sizeof(readyPkt), o8j);
+    for (int k = 0; k < 60 && roomR.Phase() != nox::RoomPhase::Playing; ++k) { now += 500; srv.Tick(now, o8j); }
+    const auto o8p = say(E, "!map oasis");
+    const auto phase8 = roomR.Phase();
+    std::snprintf(m, sizeof(m), "!map ⑧ 랭크 — 거절 셈 %llu · 문구 판 전 %d 판 중 %d · 비방장 %llu · 방 %s · 맵 그대로 %d", roomR.CmdCount(O::MapRanked),
+                  textTo(o8, E, "랭크 판이 끝난 뒤에 맵을 바꿀 수 있습니다."), textTo(o8p, E, "랭크 판이 끝난 뒤에 맵을 바꿀 수 있습니다."), roomR.CmdCount(O::NotHost),
+                  nox::RoomPhaseName(phase8), (int)(roomR.Settings().battleMapPath == rankPath));
+    Check(roomR.CmdCount(O::MapRanked) == 2 && textTo(o8, E, "랭크 판이 끝난 뒤에 맵을 바꿀 수 있습니다.") == 1 &&
+              textTo(o8p, E, "랭크 판이 끝난 뒤에 맵을 바꿀 수 있습니다.") == 1 && roomR.CmdCount(O::NotHost) == 1 && textTo(o8f, F, "방장만 맵을") == 1 &&
+              phase8 == nox::RoomPhase::Playing && roomR.Settings().battleMapPath == rankPath, m);
+    rooms.Game(rRank).DebugEndRound();
+    std::vector<nox::OutPacket> o9;
+    for (int k = 0; k < 40 && roomR.Phase() == nox::RoomPhase::Playing; ++k) { now += 500; srv.Tick(now, o9); }
+    now += 34; srv.Tick(now, o9);
+    const auto o9b = say(E, "!map oasis");
+    std::snprintf(m, sizeof(m), "!map ⑨ 랭크 판 끝 — 일반 방 %d · 바꿈 %llu · 공지 %d · 맵 %s", (int)!roomR.Settings().ranked, roomR.CmdCount(O::MapChanged),
+                  textTo(o9b, E, "맵을 Oasis(으)로 바꿨습니다."), fact(rooms, rRank).battleMapName.c_str());
+    Check(!roomR.Settings().ranked && roomR.CmdCount(O::MapChanged) == 1 && textTo(o9b, E, "맵을 Oasis(으)로 바꿨습니다.") == 1 && fact(rooms, rRank).battleMapName == "Oasis", m);
+
+    // ⑩ 로비 연결이 만드는 방 — 일반 = 맨 앞 맵(몇 번을 만들어도) · 랭크 = 후보에서 고름(셋 다 나옴) · 후보를 방에 넘김
+    {
+        using Ev = nox::NetworkEvent;
+        using Rq = nox::NetworkRequest;
+        nox::CRoomManager lr;
+        nox::CLobbyClient::Config cfg;
+        for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 1);
+        cfg.epoch = 1760000000u;
+        cfg.registerIp = 0x7f000002u;
+        cfg.port = 18590;
+        const std::vector<std::string> waits = {"C:\\Nox\\maps\\So_LOD\\So_LOD.map"};
+        const std::vector<std::string> battles = {"C:\\Nox\\maps\\Estate\\Estate.map", "C:\\Nox\\maps\\MiniMine\\MiniMine.map", "C:\\Nox\\maps\\Oasis\\Oasis.map"};
+        nox::CLobbyClient lc(lr, cfg, RoomSettings{}, waits, battles);
+        lc.SetSeed(3);
+        lc.SetClock([] { return 1000u; });
+        auto ev = [](Ev::Type t, const std::string& line) {
+            Ev e;
+            e.type = t;
+            e.lobbyConn = 7;
+            e.lobbyLine = line;
+            e.lobbyWhy = "test";
+            return e;
+        };
+        std::vector<Rq> rq;
+        lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, ""), rq);
+        lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkHello("00112233445566778899aabbccddeeff")), rq);
+        auto roomOf = [&](const std::string& creator) {
+            for (const auto& f : lr.ListRooms()) if (f.creator == creator) return f.roomId;
+            return -1;
+        };
+        int plainFront = 0, plainChoices = 0, rankChoices = 0, rankMade = 0;
+        int rankPick[3] = {0, 0, 0};
+        std::string firstPlainName;
+        for (uint32_t i = 0; i < 6; ++i) {
+            const std::string name = "p" + std::to_string(i);
+            lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkCreate(100 + i, name)), rq);
+            const int id = roomOf(name);
+            if (id < 0) continue;
+            const RoomSettings& s = lr.Room(id).Settings();
+            if (s.battleMapPath == battles[0]) ++plainFront;
+            if (s.battleMapChoices == battles) ++plainChoices;
+            if (firstPlainName.empty()) for (const auto& f : lr.ListRooms()) if (f.roomId == id) firstPlainName = f.battleMapName;
+        }
+        for (uint32_t i = 0; i < 24; ++i) {
+            const std::string name = "q" + std::to_string(i);
+            lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkCreate(200 + i, name, true, {name, "z" + std::to_string(i)})), rq);
+            const int id = roomOf(name);
+            if (id < 0) continue;
+            ++rankMade;
+            const RoomSettings& s = lr.Room(id).Settings();
+            for (int k = 0; k < 3; ++k) if (s.battleMapPath == battles[static_cast<size_t>(k)]) ++rankPick[k];
+            if (s.battleMapChoices == battles) ++rankChoices;
+        }
+        std::snprintf(m, sizeof(m), "!map ⑩ 로비 연결 — 일반 맨 앞 %d/6 · 후보 %d · 목록 이름 %s | 랭크 %d개 — Estate %d · MiniMine %d · Oasis %d · 후보 %d",
+                      plainFront, plainChoices, firstPlainName.c_str(), rankMade, rankPick[0], rankPick[1], rankPick[2], rankChoices);
+        Check(plainFront == 6 && plainChoices == 6 && firstPlainName == "Estate" && rankMade == 24 && rankPick[0] > 0 && rankPick[1] > 0 && rankPick[2] > 0 &&
+                  rankPick[0] + rankPick[1] + rankPick[2] == 24 && rankChoices == 24, m);
+    }
+}
+
 // ── ★ 랭크 매칭 조각 6 — 게임 서버의 로비 연결이 받은 랭크 CREATE → 방 설정(ranked · 명단 · 최대 인원 = max(8, 명단 수)) ─────────
 void TestLobbyClientRank() {
     using Ev = nox::NetworkEvent;
@@ -27449,7 +27681,7 @@ void TestLobbyClientRank() {
                   r10, l1.empty() ? "" : l1[0].c_str(), s10 ? (int)s10->ranked : -1, s10 ? s10->roster.size() : 0, s10 ? s10->maxPlayers : -1,
                   s3 ? s3->maxPlayers : -1, s3 ? (int)s3->ranked : -1, sN ? (int)sN->ranked : -1, sN ? sN->roster.size() : 99, sN ? sN->maxPlayers : -1,
                   lc.Stats().creates, lc.Stats().createsRanked, rooms.Stats().rankRooms);
-    Check(s10 && s3 && sN && l1.size() == 2 && l1[0] == "ROOM " + std::to_string(r10) + " 0 10 0 p0's%20game p0 p0 so_lod chat" &&
+    Check(s10 && s3 && sN && l1.size() == 2 && l1[0] == "ROOM " + std::to_string(r10) + " 0 10 0 p0's%20game p0 p0 so_lod chat Estate" &&
               l1[1] == "CREATED 50 " + std::to_string(r10) && s10->ranked && s10->roster == ten && s10->maxPlayers == 10 &&
               rooms.Room(r10).RankState() == W::Arriving && s3->ranked && s3->roster.size() == 3 &&
               s3->maxPlayers == nox::CLobbyClient::kRoomMaxPlayers && rooms.Room(r3).RankState() == W::Arriving && !sN->ranked &&
@@ -33988,6 +34220,7 @@ int main() {
     TestHostRename();
     TestRoomChatCommands();
     TestRoomMatchSwitch();
+    TestRoomMapCommand();   // ★ 11-06 플랜1 조각 6
     TestLobbyClientRank();   // ★ 랭크 매칭 조각 6
     TestRankRoom();          // ★ 랭크 매칭 조각 6
     TestRoomMatchSwitchRealMaps();

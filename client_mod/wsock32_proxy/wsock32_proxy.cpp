@@ -122,6 +122,7 @@
 #include "LobbyLineFilter.h"
 #include "LoginRewriter.h"     // ★ 로그인 암호 조각 5 — 기록에 찍는 보낸 글에서 암호 칸 가리기(Log 모드) · 로비 연결의 apgar 자리 바꿔쓰기(Lobby 모드)
 #include "RankNotice.h"        // ★ 11-05 플랜1 — 줄 서기 제한 줄 · 문구
+#include "GameListRow.h"       // ★ 11-06 플랜1 조각 6 ㉓ — 게임 목록 줄
 #include "LoginNotice.h"       // ★ 11-05 플랜1 — 로그인 화면에서 돌아왔을 때의 안내 고르기
 #include "AuthClient.h"        // ★ 로그인 암호 조각 5 의 3 — 로그인 서버(nox_auth)에 이름 · 암호를 묻는 부품(WinHTTP) · ★ 런처 P4 — 이제 이름 · 열쇠로 토큰
 #include "../common/LaunchKey.h"   // ★ 런처 P4 — 런처가 이 PC 에 둔 자동 로그인 열쇠(DPAPI)
@@ -1679,12 +1680,79 @@ static void NoticeSummary()
 }
 
 // 받기 훅에서 — 새 게임 목록 창이면 감싸고 10007 을 보이게
+// ★ 11-06 플랜1 조각 6 ㉓ 게임 목록 — 정품 줄 함수(`0x43b340` · 부르는 자리 둘)가 칸마다 줄을 더한 **뒤에** 핑 칸 글을 맵 이름으로, 상태 칸 글을
+//   「열림 · 닫힘」으로, 상태 칸 색을 초록 · 빨강으로 고친다. 줄 더하기 메시지의 색 인자는 색 표 번호라 초록 · 빨강을 못 고른다(대전 기록 창과 같은 까닭).
+//   원본 소스의 `0x43B7C0` 은 실제 `Game.exe` 에서 함수 시작이 아니라 쓰면 안 된다. 다섯 칸 갈래(`[0x59a140]` ≠ 0)일 때만 · 우리 로비일 때만 고친다.
+//   글자 칸 = 항목 배열 + 524×줄 + 4 · 색 = +516 · 다음 줄 번호 = 칸 자료 +46(`GAME3.c` AddLine · 원본 기준). 줄이 정확히 하나 는 걸 보고서만 쓴다 —
+//   줄을 못 넣었는데 쓰면 앞 줄을 덮는다.
+static const uintptr_t kListRowFn = 0x43b340, kListRowCallA = 0x43ad34, kListRowCallB = 0x49f685;
+static const uintptr_t kListFiveCols = 0x59a140, kListColMap = 0x699048, kListColStatus = 0x69904c;   // 전역에 든 칸 창 — 맵(원래 핑) · 상태
+static const uintptr_t kFilterIdx = 0x59a13c, kFilterModes = 0x710be8, kFilterVals = 0x710bf8;        // 필터 함수 `0x49c100` 의 칸 번호 · 모드 표 · 값 묶음(44바이트씩)
+static volatile LONG g_listRowFixed = 0, g_listRowSkipped = 0;
+typedef int(__cdecl* PFN_listrow)(DWORD srv);
+
+static int ListNextRow(DWORD colSlot, DWORD* items)
+{
+    const DWORD col = *(volatile DWORD*)colSlot;
+    DWORD data = 0, pos = 0;
+    if (!col || !ReadSelf(col + 32, &data) || !data || !ReadSelf(data + 24, items) || !*items || !ReadSelf(data + 44, &pos)) return -1;
+    return (short)(pos >> 16);   // +44 개수 · +46 다음 줄 번호
+}
+
+static int __cdecl ListRowHook(DWORD srv)
+{
+    const bool on = g_ourLobby && srv && *(volatile DWORD*)kListFiveCols != 0;
+    DWORD mapItems = 0, stItems = 0;
+    const int mapRow = on ? ListNextRow(kListColMap, &mapItems) : -1;
+    const int stRow = on ? ListNextRow(kListColStatus, &stItems) : -1;
+    const int r = ((PFN_listrow)kListRowFn)(srv);
+    if (!on) return r;
+    const bool added = mapRow >= 0 && stRow >= 0 && ListNextRow(kListColMap, &mapItems) == mapRow + 1 && ListNextRow(kListColStatus, &stItems) == stRow + 1;
+    if (!added) {
+        if (InterlockedIncrement(&g_listRowSkipped) == 1) Log("㉓ 목록 줄 — 줄이 하나 늘지 않아 안 고침(맵 칸 %d · 상태 칸 %d)", mapRow, stRow);
+        return r;
+    }
+    const unsigned char flags = *(const unsigned char*)(srv + 0x64), players = *(const unsigned char*)(srv + 0x67), maxPlayers = *(const unsigned char*)(srv + 0x68);
+    wchar_t map[16];
+    const bool haveMap = gamelist::MapText((const char*)(srv + 111), map, _countof(map));
+    if (haveMap) wcscpy_s((wchar_t*)(mapItems + 524 * (DWORD)mapRow + 4), 256, map);
+    const gamelist::Status st = gamelist::StatusOf(flags, players, maxPlayers);
+    wcscpy_s((wchar_t*)(stItems + 524 * (DWORD)stRow + 4), 256, gamelist::StatusText(st));
+    const PFN_rgb rgb = (PFN_rgb)kColorRgb;
+    *(volatile DWORD*)(stItems + 524 * (DWORD)stRow + 516) = st == gamelist::Status::Open ? rgb(60, 220, 60) : rgb(230, 70, 60);
+    const LONG n = InterlockedIncrement(&g_listRowFixed);
+    if (n <= 8) Log("㉓ 목록 줄 %ld — 깃발 %#x · %u/%u · 맵 %s · %s", n, flags, players, maxPlayers, haveMap ? (const char*)(srv + 111) : "(없음)", st == gamelist::Status::Open ? "열림" : "닫힘");
+    return r;
+}
+
+// 판 중인 방(`access 1`)이 목록에서 사라지면 빨간 「닫힘」을 볼 수 없다. 프로세스에서 목록 창을 처음 볼 때 한 번만 정품 필터 값을 고친다 —
+//   매 프레임 쓰지 않으므로 사람이 필터 창으로 다시 켤 수 있다. 줄에서 닫힘 표시를 지우는 길은 안 쓴다(정품 글 · 들어가기 거절이 그 표시를 본다).
+static void ListFilterOnce()
+{
+    static bool done = false;
+    if (done) return;
+    done = true;
+    const DWORD idx = *(volatile DWORD*)kFilterIdx;
+    if (idx > 1) { Log("㉓ 필터 — 칸 번호 %lu 가 표 밖이라 안 고침", idx); return; }
+    volatile DWORD* mode = (volatile DWORD*)(kFilterModes + 4 * idx);
+    volatile DWORD* vals = (volatile DWORD*)(kFilterVals + 44 * idx);
+    const DWORD before = *mode, closedBefore = vals[1];
+    const gamelist::FilterFix fix = gamelist::FilterFixOf(before, closedBefore != 0);
+    switch (fix) {
+        case gamelist::FilterFix::ModeOff: *mode = 0; break;
+        case gamelist::FilterFix::ClosedOff: vals[1] = 0; break;
+        case gamelist::FilterFix::None: break;
+    }
+    Log("㉓ 필터 — 칸 %lu · 모드 %lu · 닫힌 방 거름 %lu → 모드 %lu · 닫힌 방 거름 %lu", idx, before, closedBefore, *mode, vals[1]);
+}
+
 static void RankUiTick()
 {
     if (GetCurrentThreadId() != g_mainTid || !g_ourLobby || *(volatile DWORD*)kNetMode != 1) return;
     RankWaitText();   // ★ ⑪ ④ 기다림 창 글
     RankFoundTick();  // ★ 매칭 손보기 6 — ⑬ 로비 수락 줄 → 창
     const DWORD win = *(volatile DWORD*)kListWin;
+    if (win) ListFilterOnce();   // ★ 11-06 플랜1 조각 6 ㉓
     if (!win) { InterlockedExchange(&g_roomsChanged, 0); return; }   // ★ 11-03 ⑳ — 이 화면 밖의 바뀜은 들어올 때 LIST 가 다 받는다
     RankMenuTick(win);   // ★ 매칭 손보기 8 — ⑫ 필터 창 감싸기 · 「리스트」 칸 숨김
     RankBackToListTick(win);   // ★ 11-02 — ⑲ 랭크 취소 · 거절 · 한도 뒤 방 목록으로
@@ -3300,6 +3368,10 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         if (gameOk) InstallCountryHook();             // ★ 10-30 — 두 클라 판 국가 고르기 창
         if (gameOk && !g_launchAtStart.empty() && InstallSoundMute()) AutoMuteSet(true, "런처로 켠 판 · 대화방까지");   // ★ 11-04
         if (gameOk) InstallLoginHook();               // ★ 런처 P5 — ⑮ 정품 로그인 창(「로그인!」 막음 · 「등록」 → 가입 페이지)
+        if (gameOk) {   // ★ 11-06 플랜1 조각 6 ㉓ — 게임 목록 줄
+            HookCallSite(kListRowCallA, kListRowFn, (void*)ListRowHook, "㉓ 목록 줄 — 새 항목");
+            HookCallSite(kListRowCallB, kListRowFn, (void*)ListRowHook, "㉓ 목록 줄 — 다시 그리기");
+        }
         if (gameOk) HookCallSite(kMainLoopCallMenu, kMainLoop, (void*)MenuLoopEntry, "⑱ 메뉴 주 고리");   // ★ 11-02 — 판 안에서 창 닫기
     }
     return TRUE;

@@ -113,7 +113,7 @@ try {
       if ($PilotLat) { throw '게임 서버가 이미 떠 있어 --pilot-lat 를 못 붙인다 — 그 창을 닫고 다시 실행하세요(-PilotLat 는 새로 띄울 때만)' }
       Write-Host '게임 서버: 이미 떠 있음 (UDP 18590) — --lobby 127.0.0.1:4010 으로 띄운 것이어야 로비 목록에 방이 생긴다'
     } else {
-      $serverArgs = @('--port', '18590', '--lobby', '127.0.0.1:4010', '--config', "`"$cfg`"", '--quiet', '--aoi', '--friends')
+      $serverArgs = @('--port', '18590', '--lobby', '127.0.0.1:4010', '--config', "`"$cfg`"", '--quiet', '--aoi', '--friends', '--battle-maps', 'Estate,MiniMine,Oasis')   # ★ 11-06 플랜1 조각 6 — 대전 맵 후보(맨 앞 = 일반 방 기본 맵)
       if ($BattleScoreLimit -gt 0) { $serverArgs += @('--battle-score-limit', "$BattleScoreLimit") }   # ★ 11-03
       if ($PilotLat) {   # ★ 11-03 — 실제 회선 손실·지연 CSV(머리 주석). 경로는 git 밖 _evidence\_runs\
         $runs = Join-Path $repo '_evidence\_runs'

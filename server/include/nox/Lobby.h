@@ -101,6 +101,7 @@ struct LobbyRoom {
     std::string name;          // 방 이름(UTF-8) — 방 정보의 이름 칸(비면 방장 이름 — 옛 「방 정보 이름도 방장 이름」) · 실을 때 접속의 코드페이지로
     std::string map;           // 맵 열쇠(소문자 · 확장자 없음) — 방 정보의 맵 칸(비면 틀의 맵)
     std::string mode;          // 방 설정의 모드 — 방 정보 깃발의 맵 종류(`ModeFlagsOf` · 모르는 이름이면 틀의 깃발)
+    std::string battleMap;     // ★ 11-06 플랜1 조각 6 — 대전 맵 이름(대소문자 그대로) — 게임 목록 줄의 맵 칸만(들어간 뒤 332 는 `map` · 비면 `map`)
     uint8_t players = 0;       // 게임 안 사람 수 — 방 정보의 인원
     uint8_t maxPlayers = 0;    // ★ 10-16 작업 12c — 방의 최대 인원(방 설정 · 0 이면 틀의 값)
     bool playing = false;      // ★ 10-16 작업 12c — 판 중이면 방 정보 `access` 1(닫힘 — 원작 칸 · 들어오면 게임 서버가 사유 4 로 거절)

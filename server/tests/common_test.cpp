@@ -294,11 +294,17 @@ void TestLobbyLink() {
     room.map = "estate";
     room.mode = "";
     const std::string roomLine = nox::LinkRoomLine(room);
-    Check(roomLine == "ROOM 65535 3 8 1 \xEC\xB2\xA0\xEC\x88\x98's%20game a%7Eb c%25d estate ~", "ROOM 꼴(칸 차례 · 글 칸)");
+    Check(roomLine == "ROOM 65535 3 8 1 \xEC\xB2\xA0\xEC\x88\x98's%20game a%7Eb c%25d estate ~ ~", "ROOM 꼴(칸 차례 · 글 칸)");
     Check(parse(roomLine) == P::Ok && l.kind == K::Room && l.room.id == 65535 && l.room.players == 3 && l.room.maxPlayers == 8 &&
               l.room.playing && l.room.name == room.name && l.room.creator == "a~b" && l.room.host == "c%d" &&
-              l.room.map == "estate" && l.room.mode.empty(),
-          "ROOM 왕복(한글 · 빈칸 · % · ~ · 빈 모드)");
+              l.room.map == "estate" && l.room.mode.empty() && l.room.battleMap.empty(),
+          "ROOM 왕복(한글 · 빈칸 · % · ~ · 빈 모드 · 대전 맵 없음)");
+    // ★ 11-06 플랜1 조각 6 — 끝 칸 = 대전 맵 이름(화면에 그대로 보이므로 대소문자 유지)
+    room.battleMap = "MiniMine";
+    Check(nox::LinkRoomLine(room) == "ROOM 65535 3 8 1 \xEC\xB2\xA0\xEC\x88\x98's%20game a%7Eb c%25d estate ~ MiniMine", "ROOM 끝 칸 = 대전 맵 이름");
+    Check(parse(nox::LinkRoomLine(room)) == P::Ok && l.room.battleMap == "MiniMine" && l.room.map == "estate" && l.room.mode.empty(),
+          "ROOM 왕복 — 대전 맵 · 앞 칸과 안 섞임");
+    room.battleMap.clear();
     room.playing = false;
     Check(parse(nox::LinkRoomLine(room)) == P::Ok && !l.room.playing, "ROOM 판 중 0");
     Check(parse(nox::LinkRoomGone(7)) == P::Ok && l.kind == K::RoomGone && l.room.id == 7, "ROOM_GONE 왕복");
@@ -436,7 +442,7 @@ void TestLobbyLink() {
     Check(bad("NOPE 1", P::UnknownWord) && bad("room 1", P::UnknownWord) && bad("ping", P::UnknownWord),
           "모르는 낱말 · 소문자 → 모르는 낱말");
     Check(bad("ROOM_GONE 1 2", P::FieldCount) && bad("ROOM_GONE  1", P::FieldCount) && bad("CREATED 1 2 ", P::FieldCount) &&
-              bad("RESULT", P::FieldCount) && bad("RESULT ", P::FieldCount) && bad("ROOM 1 2 8 0 a b c d", P::FieldCount) &&
+              bad("RESULT", P::FieldCount) && bad("RESULT ", P::FieldCount) && bad("ROOM 1 2 8 0 a b c d", P::FieldCount) && bad("ROOM 1 2 8 0 a b c d e", P::FieldCount) && bad("ROOM 1 2 8 0 a b c d e f g", P::FieldCount) &&
               bad("PING 1", P::FieldCount) && bad("PING ", P::FieldCount) && bad("SAVED 1-0-1", P::FieldCount) &&
               bad("SAVED 1-0-1 ok x", P::FieldCount) && bad("CREATE 7 amy 1", P::FieldCount) && bad("CREATE 7 amy 1 ", P::FieldCount),
           "칸 수 — 남음 · 빈칸 둘 · 꼬리 빈칸 · 빈 결과 · ROOM 아홉 칸 · PING 칸 있음 · SAVED 둘 · 넷 · ★ CREATE 랭크만 있고 명단 없음");
@@ -459,7 +465,7 @@ void TestLobbyLink() {
     Check(bad("ROOM_GONE 65536", P::BadNumber) && bad("ROOM_GONE 01", P::BadNumber) && bad("ROOM_GONE -1", P::BadNumber) &&
               bad("ROOM_GONE +1", P::BadNumber) && bad("CREATED 4294967296 1", P::BadNumber) &&
               bad("REGISTER 1 0.0.0.0 0", P::BadNumber) && bad("REGISTER 1 0.0.0.0 65536", P::BadNumber) &&
-              bad("ROOM 1 2 8 2 a b c d e", P::BadNumber),
+              bad("ROOM 1 2 8 2 a b c d e f", P::BadNumber),
           "수 — 방 65536 · 앞 0 · 부호 · 32비트 넘음 · 포트 0 · 포트 65536 · 판 중 2");
     Check(bad("CREATE 1 a~b", P::BadText) && bad("CREATE 1 %4", P::BadText) && bad("CREATE 1 %zz", P::BadText) &&
               bad("CREATE 1 ", P::BadText) && bad(std::string("CREATE 1 a\x01", 11), P::BadText),

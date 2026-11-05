@@ -274,6 +274,7 @@ LobbyRoom RoomMirror::ToLobbyRoom(const Server& s, const LinkRoom& r) const {
     lr.host = r.host.empty() ? r.creator : r.host;
     lr.name = r.name;
     lr.map = r.map;
+    lr.battleMap = r.battleMap;   // ★ 11-06 플랜1 조각 6
     lr.mode = r.mode;
     lr.players = static_cast<uint8_t>(std::min<uint32_t>(r.players, 255));
     lr.maxPlayers = static_cast<uint8_t>(std::min<uint32_t>(r.maxPlayers, 255));

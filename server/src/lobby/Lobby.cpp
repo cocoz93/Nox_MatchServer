@@ -108,6 +108,8 @@ std::string Lobby::RoomInfo(const LobbyRoom& r, int codepage, bool forList) cons
     GameInfo g = cfg_.room;
     g.name = ToCodepage(r.name.empty() ? r.host : r.name, codepage, kNameBytes);   // ★ 10-14 작업 10a
     if (!r.map.empty()) g.map = r.map;
+    // ★ 11-06 플랜1 조각 6 — 목록 맵 칸은 이 방이 판을 돌릴 맵(지금 맵은 대기 맵이라 다 같은 이름). 332 는 그대로 — 아래 게임종류와 같은 꼴
+    if (forList && !r.battleMap.empty()) g.map = r.battleMap;
     uint16_t bits = 0;
     if (ModeFlagsOf(r.mode, bits)) {
         // ★ 11-05 — 목록 줄의 「게임종류」는 그 방이 뭘 하는 방인지 보여 주는 칸이다. 대기 맵이 채팅 모드라 늘 「채팅」으로 보여

@@ -104,7 +104,7 @@ try {
   $ok = $false
   for ($i = 0; $i -lt 50 -and -not $ok; $i++) { Start-Sleep -Milliseconds 200; $ok = [bool](Get-NetTCPConnection -State Listen -LocalPort 4000 -ErrorAction SilentlyContinue) }
   if (-not $ok) { throw "로비가 TCP 4000 을 못 열었다 — $logDir\lobby.log (★ 7단계 — [멈춤] DB 줄이면 사람 1회 config\db_setup.sql 또는 -NoDb)" }
-  $gsArgs = "--port 18590 --lobby 127.0.0.1:4010 --config `"$cfg`" --aoi --friends"
+  $gsArgs = "--port 18590 --lobby 127.0.0.1:4010 --config `"$cfg`" --aoi --friends --battle-maps Estate,MiniMine,Oasis"   # ★ 11-06 플랜1 조각 6 — 대전 맵 후보(맨 앞 = 일반 방 기본 맵)
   if ($BattleScoreLimit -gt 0) { $gsArgs += " --battle-score-limit $BattleScoreLimit" }
   if ($RankedAll) { $gsArgs += ' --ranked-all' }
   if ($RankOneMap) { $gsArgs += ' --rank-one-map' }   # ★ 매칭 손보기 3 — 파일럿(랭크 방 한 맵 · 제자리 판)
