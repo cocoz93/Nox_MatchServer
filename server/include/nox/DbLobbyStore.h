@@ -4,6 +4,7 @@
 //   판 결과가 밀리면 게임 서버가 다시 보내므로 쓰기 줄에는 판 저장만 둔다
 //   · `SaveMatch` · `GetRating` = 쓰기 — 로그인 공지 점수는 앞서 넣은 판 저장 뒤에 읽혀야 새 점수가 보인다(순서)
 //   · `GetMatchHistory` = 읽기 — 저장과 갈라졌으므로 읽기 하나를 한 시점으로 묶는다(`CDbWorker::ExecHistory`)
+//   · `GetActiveBans` = 읽기 — ★ 11-05 플랜1 · 문장 하나라 묶을 시점이 없다
 //   · 시작 검사(표 버전 · 문장 준비)는 두 연결이 각자 지난다 · 하나라도 실패면 `Start` 실패(로비가 안 뜬다) · 다시 붙기는 워커마다 따로
 //   · 끝낼 때 읽기 먼저 — 남은 조회는 버린다(잃어도 다시 물으면 된다) · 쓰기는 남은 판을 다 한다(판 결과를 잃지 않게)
 //   · 답을 합치는 차례는 상관없다 — 읽기 답은 로비 상태를 안 고친다
@@ -30,6 +31,7 @@ public:
     void SaveMatch(uint32_t req, const wol::MatchSource& src, const MatchRecord& rec, const std::string& rawJson) override;
     void GetRating(uint32_t req, const std::string& account) override;
     void GetMatchHistory(uint32_t req, const std::string& account) override;
+    void GetActiveBans(uint32_t req, uint32_t now) override;
     void TakeAnswers(std::vector<wol::StoreAnswer>& out) override;
     void SetWake(std::function<void()> wake) override;
 

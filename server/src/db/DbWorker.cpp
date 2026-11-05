@@ -21,7 +21,8 @@ bool RoleDoes(DbWorkerRole role, wol::StoreAnswerKind kind) {
     switch (kind) {
         case wol::StoreAnswerKind::SaveMatch:
         case wol::StoreAnswerKind::Rating: return role == DbWorkerRole::Writer;
-        case wol::StoreAnswerKind::History: return role == DbWorkerRole::Reader;
+        case wol::StoreAnswerKind::History:
+        case wol::StoreAnswerKind::ActiveBans: return role == DbWorkerRole::Reader;
         case wol::StoreAnswerKind::kCount: break;
     }
     return false;
@@ -29,6 +30,10 @@ bool RoleDoes(DbWorkerRole role, wol::StoreAnswerKind kind) {
 
 // ★ 로그인 암호 조각 4 — 계정 만들기 · 마지막 로그인은 로그인 서버 몫(정할 것 a). 로비는 판 사람의 계정 번호를 이름으로 찾기만
 constexpr const char* kSelAccount = "SELECT id FROM accounts WHERE name = ?";
+// ★ 11-05 플랜1 — 지금 유효한 정지 전체 · 이름마다 가장 늦은 끝(플랜 5절 「여러 행이면 가장 늦은 끝 시각」)
+constexpr const char* kSelBans =
+    "SELECT a.name, MAX(b.until_unix) FROM account_bans b JOIN accounts a ON a.id = b.account_id "
+    "WHERE b.lifted_unix = 0 AND b.until_unix > ? GROUP BY a.name";
 // ★ 레이팅 조각 3 — matches.ranked · match_players.rating_delta(`003_rating.sql`)
 constexpr const char* kInsMatch =
     "INSERT INTO matches (server_ip, server_port, match_key, room_id, room_name, map_key, mode, start_unix, end_unix, frames, end_reason, "
@@ -68,11 +73,12 @@ struct CDbWorker::Conn {
     MYSQL_STMT* selHistory = nullptr;   // ★ 11-04 플랜2
     MYSQL_STMT* selTotals = nullptr;    // ★ 11-04 전적 검색
     MYSQL_STMT* upsTotals = nullptr;
+    MYSQL_STMT* selBans = nullptr;      // ★ 11-05 플랜1
     unsigned lastErrno = 0;
     std::string lastError;
 
     ~Conn() {
-        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer, upsRating, selRating, selRank, selHistory, selTotals, upsTotals})
+        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer, upsRating, selRating, selRank, selHistory, selTotals, upsTotals, selBans})
             if (s) mysql_stmt_close(s);
         if (m) mysql_close(m);
     }
@@ -97,7 +103,7 @@ struct CDbWorker::Conn {
         if (!Prepare(selAccount, kSelAccount) || !Prepare(selRating, kSelRating) || !Prepare(selRank, kSelRank)) return false;
         if (role == DbWorkerRole::Writer)
             return Prepare(insMatch, kInsMatch) && Prepare(insPlayer, kInsPlayer) && Prepare(upsRating, kUpsRating) && Prepare(upsTotals, kUpsTotals);
-        return Prepare(selTotals, kSelTotals) && Prepare(selHistory, kSelHistory);
+        return Prepare(selTotals, kSelTotals) && Prepare(selHistory, kSelHistory) && Prepare(selBans, kSelBans);
     }
     // 이름으로 계정 번호(없으면 0). 실패면 false(lastErrno)
     bool FindAccount(const std::string& name, uint64_t& id) {
@@ -206,6 +212,37 @@ struct CDbWorker::Conn {
         return true;
     }
     // ★ 11-04 플랜2 — 이름의 최근 판을 저장 차례 최신부터 `rows` 에. 실패면 false(lastErrno · `rows` 는 일부만 찬 채)
+    // ★ 11-05 플랜1 — 끊겨 다시 할 때 앞 번 줄이 남지 않게 부르는 쪽이 비운다
+    bool ReadBans(uint32_t now, std::vector<wol::BanEntry>& rows) {
+        MYSQL_BIND p[1] = {};
+        U32(p[0], now);
+        char name[wol::kAccountNameBytes];
+        unsigned long nameLen = 0;
+        uint32_t until = 0;
+        MYSQL_BIND r[2] = {};
+        r[0].buffer_type = MYSQL_TYPE_BLOB;
+        r[0].buffer = name;
+        r[0].buffer_length = sizeof(name);
+        r[0].length = &nameLen;
+        U32(r[1], until);
+        if (mysql_stmt_bind_param(selBans, p) != 0 || mysql_stmt_bind_result(selBans, r) != 0) return StmtFail(selBans, "정지 읽기 묶기");
+        if (mysql_stmt_execute(selBans) != 0) return StmtFail(selBans, "정지 읽기");
+        if (mysql_stmt_store_result(selBans) != 0) return StmtFail(selBans, "정지 읽기 받기");
+        int f = 0;
+        while ((f = mysql_stmt_fetch(selBans)) == 0) {
+            wol::BanEntry e;
+            e.name.assign(name, nameLen);
+            e.until = until;
+            rows.push_back(std::move(e));
+        }
+        if (f != MYSQL_NO_DATA) {
+            StmtFail(selBans, "정지 읽기 꺼내기");
+            mysql_stmt_free_result(selBans);
+            return false;
+        }
+        mysql_stmt_free_result(selBans);
+        return true;
+    }
     bool ReadHistory(const std::string& name, std::vector<wol::MatchHistoryRow>& rows) {
         MYSQL_BIND p[2] = {};
         unsigned long len = 0;
@@ -359,6 +396,19 @@ void CDbWorker::GetMatchHistory(uint32_t req, const std::string& account) {
     cv_.notify_one();
 }
 
+void CDbWorker::GetActiveBans(uint32_t req, uint32_t now) {
+    Job j;
+    j.kind = wol::StoreAnswerKind::ActiveBans;
+    j.req = req;
+    j.now = now;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        queue_.push_back(std::move(j));
+        ++stats_.bansRequests;
+    }
+    cv_.notify_one();
+}
+
 void CDbWorker::TakeAnswers(std::vector<wol::StoreAnswer>& out) {
     std::lock_guard<std::mutex> lk(mu_);
     for (wol::StoreAnswer& a : answers_) out.push_back(std::move(a));
@@ -390,7 +440,8 @@ void CDbWorker::Run() {
             {
                 std::lock_guard<std::mutex> lk(mu_);
                 if (discard_) {   // ★ 11-04 전적 검색 — 꺼내 둔 일도 `StopDiscarding` 뒤엔 버린다
-                    ++stats_.historyDropped;
+                    if (j.kind == wol::StoreAnswerKind::ActiveBans) ++stats_.bansDropped;   // ★ 11-05 플랜1
+                    else ++stats_.historyDropped;
                     continue;
                 }
             }
@@ -436,6 +487,7 @@ wol::StoreAnswer CDbWorker::Exec(const Job& j) {
             case wol::StoreAnswerKind::SaveMatch: ok = ExecSave(c, j, a); break;
             case wol::StoreAnswerKind::Rating: ok = ExecRating(c, j, a); break;
             case wol::StoreAnswerKind::History: ok = ExecHistory(c, j, a); break;
+            case wol::StoreAnswerKind::ActiveBans: ok = ExecBans(c, j, a); break;
             case wol::StoreAnswerKind::kCount: break;
         }
         if (ok) return a;
@@ -460,6 +512,11 @@ wol::StoreAnswer CDbWorker::FailAnswer(const Job& j, wol::StoreAnswer a) {
     if (j.kind == wol::StoreAnswerKind::History) {   // ★ 11-04 플랜2 — 못 읽음(historyOk false) · 로비는 `RECFAIL`
         a.history = wol::MatchHistory{};
         ++stats_.historyFailed;
+        return a;
+    }
+    if (j.kind == wol::StoreAnswerKind::ActiveBans) {   // ★ 11-05 플랜1 — 못 읽음(bansOk false) · 로비는 앞 목록을 그대로 둔다
+        a.bans.clear();
+        ++stats_.bansFailed;
         return a;
     }
     a.save = wol::SaveResult::Failed;
@@ -603,6 +660,15 @@ bool CDbWorker::ExecRating(Conn& c, const Job& j, wol::StoreAnswer& a) {
 // ★ 11-04 플랜2 — 읽기만 · 다시 할 때 앞서 읽은 줄을 비운다
 //   ★ 11-04 전적 검색 — 저장이 다른 스레드로 갈라져 문장 넷 사이에 판이 끼어들 수 있다. 점수 칸은 지금 점수에서 표의 증감을 되짚어 구하므로(`MatchHistory.cpp`)
 //     읽기 하나를 한 시점으로 묶는다
+bool CDbWorker::ExecBans(Conn& c, const Job& j, wol::StoreAnswer& a) {
+    a.bans.clear();
+    if (!c.ReadBans(j.now, a.bans)) return false;
+    a.bansOk = true;
+    std::lock_guard<std::mutex> lk(mu_);
+    ++stats_.bansReads;
+    return true;
+}
+
 bool CDbWorker::ExecHistory(Conn& c, const Job& j, wol::StoreAnswer& a) {
     a.history = wol::MatchHistory{};
     if (mysql_query(c.m, "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY") != 0) return c.ConnFail("읽기 시점 열기");

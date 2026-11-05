@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -720,6 +721,45 @@ int main(int argc, char** argv) {
         ws.Stop();
         Check(wokeWriter == 2 && woke.load() == 3 && seen.load() == 3,
               "⑭ 답 3개 — 쓰기 워커 깨움 " + std::to_string(wokeWriter) + " · 합 " + std::to_string(woke.load()) + " · 깨울 때 꺼낸 답 " + std::to_string(seen.load()));
+    }
+    {
+        // ⑮ ★ 11-05 플랜1 — 활성 정지 읽기(`CDbWorker::ExecBans`). 실제 SELECT — 지난 행 · 푼 행 제외 · 여러 행이면 늦은 끝 · 이름 바이트 그대로 · 「0건」과 「못 읽음」을 가름
+        nox::db::CDbLobbyStore bs(cfg);
+        std::string e15;
+        Check(bs.Start(e15), "⑮ 워커 둘 뜸 " + e15);
+        const uint32_t now15 = 2000000000u;
+        auto ask = [&](uint32_t req) {
+            bs.GetActiveBans(req, now15);
+            return WaitAnswers(bs, 1);
+        };
+        Check(ad.Run("DELETE FROM account_bans"), "⑮ 정지 행 비움");
+        const auto a0 = ask(1);
+        Check(a0.size() == 1 && a0[0].kind == StoreAnswerKind::ActiveBans && a0[0].req == 1 && a0[0].bansOk && a0[0].bans.empty(), "⑮ 0건 = 읽음 · 행 0");
+        const std::string idUpper = ad.One("SELECT id FROM accounts WHERE name = 'Wn'");
+        auto row = [](const std::string& id, unsigned long long until, unsigned lifted) {
+            return "(" + id + "," + std::to_string(until) + ",'r','admin',1," + std::to_string(lifted) + ")";
+        };
+        Check(ad.Run("INSERT INTO account_bans (account_id, until_unix, reason, source, created_unix, lifted_unix) VALUES " +
+                     row(idWn, now15 + 100ull, 0) + "," + row(idWn, now15 + 500ull, 0) + "," + row(idWn, now15 + 9000ull, 5) + "," +   // 푼 행은 늦어도 안 셈
+                     row(idUpper, now15, 0) + "," +                                                                                    // 끝이 지금 = 끝남(경계)
+                     row(id949, 4294967295ull, 0)),
+              "⑮ 정지 행 다섯 깔기(wn 셋 · Wn 하나 · 949 이름 영구)");
+        const auto a1 = ask(2);
+        std::map<std::string, uint32_t> got;
+        if (a1.size() == 1)
+            for (const BanEntry& b : a1[0].bans) got[Hex(b.name)] = b.until;
+        Check(a1.size() == 1 && a1[0].bansOk && a1[0].bans.size() == 2 && got[Hex("wn")] == now15 + 500 && got["B0C7"] == 4294967295u && got.count(Hex("Wn")) == 0,
+              "⑮ wn = 늦은 끝(푼 행 제외) · Wn = 끝남 제외 · 949 이름 바이트 · 영구 · 행 " + std::to_string(a1.empty() ? 0 : a1[0].bans.size()));
+        // 못 읽음 — 테이블을 잠시 치우면 문장이 실패한다(0건이 아님)
+        Check(ad.Run("RENAME TABLE account_bans TO account_bans_gone"), "⑮ 테이블 치움");
+        const auto a2 = ask(3);
+        Check(ad.Run("RENAME TABLE account_bans_gone TO account_bans"), "⑮ 테이블 돌려놓음");
+        Check(a2.size() == 1 && a2[0].kind == StoreAnswerKind::ActiveBans && !a2[0].bansOk && a2[0].bans.empty() && !a2[0].why.empty(), "⑮ 못 읽음 = bansOk false · 까닭 있음");
+        const auto a3b = ask(4);
+        Check(a3b.size() == 1 && a3b[0].bansOk && a3b[0].bans.size() == 2, "⑮ 돌려놓으면 다음 읽기는 됨");
+        bs.Stop();
+        const nox::db::DbStats ds15 = bs.Stats();
+        Check(ds15.bansRequests == 4 && ds15.bansReads == 3 && ds15.bansFailed == 1 && ds15.bansDropped == 0, "⑮ 셈 — 요청 4 = 읽음 3 + 실패 1 + 버림 0");
     }
     std::printf("  ④ KILL 뒤 처음 걸린 오류: %s\n", s4.lastError.c_str());   // 끊김 번호가 무엇으로 오는지(`IsLost` 갈래 확인용)
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);

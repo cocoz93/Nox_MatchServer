@@ -191,6 +191,8 @@ struct FakeRooms final : nox::wol::ILobbyRooms {
         return nox::wol::RoomRequest::Created;
     }
     void CancelRoom(uint32_t req) override { cancelled.push_back(req); }
+    std::vector<std::string> kicked;   // ★ 11-05 플랜1 — 받은 내보내기 이름
+    void KickAccount(const std::string& name) override { kicked.push_back(name); }
     uint64_t version = 0;    // ★ 11-03 — 목록 바뀜 수(시험이 올림)
     uint64_t ListVersion() const override { return version; }
     std::vector<std::pair<std::string, std::string>> uiLines;   // ★ 11-04 플랜1 — 시험이 넣는 줄
@@ -1646,6 +1648,28 @@ void MirrorUnitTests() {
         lastRatings = ll.rosterRatings;   // ★ 매칭 손보기 5 — CREATE 랭크 칸 2 의 명단 점수
         return okLine ? ll.req : 0u;
     };
+    // ★ 11-05 플랜1 ⑫-c 계정 정지 — 등록된 게임 서버 전부에 `KICK <이름>`(로비는 누가 어디 있는지 모른다) · 등록 전 연결은 안 받음 · 게임 서버가 보내면 맞지 않는 줄
+    {
+        Gs b3{122, 1760000201u, ipB, 18590, {}};
+        Gs c3{123, 1760000202u, ipB + 1, 18590, {}};
+        open(b3);
+        authReg(b3);
+        open(c3);   // 등록 전
+        std::vector<Out> d;
+        mirror.TakeOut(d);
+        const unsigned long long kick0 = mirror.Stats().kickSent, bad0 = mirror.Stats().badLines;
+        mirror.KickAccount("a b");
+        std::vector<Out> s;
+        mirror.TakeOut(s);
+        const bool toA = s.size() == 2 && s[0].conn != s[1].conn && (s[0].conn == a3.conn || s[1].conn == a3.conn) && (s[0].conn == b3.conn || s[1].conn == b3.conn);
+        const bool lineOk = s.size() == 2 && s[0].line == nox::LinkKick("a b") && s[1].line == nox::LinkKick("a b") && !s[0].closeAfter && !s[1].closeAfter;
+        send(a3, nox::LinkKick("x"));
+        Check(toA && lineOk && mirror.Stats().kickSent == kick0 + 2 && mirror.Stats().badLines == bad0 + 1 && out.empty(),
+              "⑫-c 정지 — 등록된 게임 서버 둘에만 줄 " + std::to_string(s.size()) + " · 게임 서버가 보낸 KICK 은 맞지 않는 줄");
+        out.clear();
+        mirror.OnLinkClose(b3.conn, out);
+        mirror.OnLinkClose(c3.conn, out);
+    }
     // ★ 11-03 ⑫-b 로그인한 접속이 끊기면 등록된 게임 서버에 `CLIENT_GONE <이름>` · 로그인 전 접속은 안 보냄(대조군)
     {
         std::vector<Out> d;
@@ -2416,7 +2440,10 @@ void LoginUnitTests() {
             ans.clear();
             st.TakeAnswers(ans);
             out.clear();
-            for (const StoreAnswer& a : ans) rl.OnRatingAnswer(a, out);
+            for (const StoreAnswer& a : ans) {
+                if (a.kind == StoreAnswerKind::ActiveBans) rl.OnBansAnswer(a, out);   // ★ 11-05 플랜1 — `Tick` 이 묻는다(`lobby_main.cpp` 갈래와 같게)
+                else rl.OnRatingAnswer(a, out);
+            }
         };
         // 인사 차례 — 375 · … · 점수 줄(있으면 376 바로 앞) · 376 → 379 → 329
         auto greeted = [&](const std::string& ratingBytes) {
@@ -3283,6 +3310,404 @@ static void RoomsPushUnitTests() {
     }
 }
 
+// ★ 11-05 플랜1 조각 4 — 즉시 차단(`BanList.h` · 플랜 6절)
+//   ① `CBanList` 단독 ② 읽는 때 — 첫 `Tick` · 답 전엔 안 물음 · 5초 간격 · 저장소 없으면 안 물음
+//   ③ 새 이름만 내보냄 — 로비 접속 · 게임 서버 · 남은 사람 ④ 못 읽으면 앞 목록 유지 ⑤ 풀면 다시 들어옴 · 다시 막으면 또 내보냄
+//   ⑥ 로그인 거절 — 맞는 토큰만 이 갈래 · 일회용 번호는 씀 ⑦ 늦은 답 ⑧ 랭크 세 칸 — `Banned` 칸에만 셈(위반 아님)
+void BanUnitTests() {
+    using namespace nox::wol;
+    using Names = std::vector<std::string>;
+    const uint32_t now = kLobbyTestNow;
+    const uint32_t later = now + 1000;
+    // ①
+    {
+        CBanList b;
+        const Names f1 = b.Replace({{"a", 2500}, {"b", 3000}, {"a", 2000}}, 1000);
+        Check(f1 == Names{"a", "b"} && b.UntilOf("a", 1000) == 2500 && b.UntilOf("b", 1000) == 3000 && b.UntilOf("c", 1000) == 0,
+              "① 첫 읽기 — 새 이름 둘 · 같은 이름 여러 행이면 늦은 끝 · 없는 이름 0");
+        Check(b.UntilOf("a", 2499) == 2500 && b.UntilOf("a", 2500) == 0, "① 끝 시각 경계 — 1초 앞은 정지 · 그 초부터 풀림(찾기 문장의 until_unix > ? 와 같음)");
+        const Names f2 = b.Replace({{"a", 2500}, {"b", 3000}}, 1000);
+        const Names f3 = b.Replace({{"a", 2500}}, 1000);
+        const bool gone = b.UntilOf("b", 1000) == 0;
+        const Names f4 = b.Replace({{"a", 2500}, {"b", 3000}}, 1000);
+        Check(f2.empty() && f3.empty() && gone && f4 == Names{"b"}, "① 같은 목록 = 새 이름 0 · 빠지면 풀림 · 다시 나타나면 새 이름");
+        b.Add("c", 5000);
+        b.Add("c", 4000);
+        const bool addNow = b.UntilOf("c", 1000) == 5000 && b.AddedCount() == 1;
+        const Names f5 = b.Replace({{"a", 2500}, {"b", 3000}, {"c", 5000}}, 1000);
+        const bool moved = f5.empty() && b.AddedCount() == 0 && b.UntilOf("c", 1000) == 5000;
+        b.Replace({{"a", 2500}, {"b", 3000}}, 1000);
+        Check(addNow && moved && b.UntilOf("c", 1000) == 0, "① Add — 읽기 전에 바로 막힘(늦은 끝) · 목록에 나타나면 새 이름 아님 · 넘어가서 풀기가 먹음");
+        b.Add("d", 1500);
+        b.Replace({}, 1000);
+        const bool kept = b.UntilOf("d", 1000) == 1500 && b.AddedCount() == 1;
+        b.Replace({}, 1500);
+        Check(kept && b.UntilOf("d", 1000) == 0 && b.AddedCount() == 0, "① Add — 테이블에 행이 없어도 끝 시각까지 남고 지나면 지움");
+    }
+    uint32_t clock = 0xfffff000u;   // 32비트 시계가 도는 자리(간격을 뺄셈으로 재는지)
+    nox::JoinKey loginKey = LobbyTestKey();
+    loginKey[0] ^= 0x77;            // 입장 토큰 키와 다른 값
+    uint64_t nextNonce = 900;
+    const uint32_t peer = 0x7f000001u;
+    LobbyConfig cfg;
+    cfg.gameServerIp = peer;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    cfg.nowMs = [&clock] { return clock; };
+    cfg.authOn = true;
+    cfg.loginKey = loginKey;
+    FakeRooms fake;
+    CMemoryLobbyStore st;
+    Lobby rl(cfg, fake);
+    rl.AttachStore(&st);
+    const LobbyStats& s = rl.Stats();
+    std::vector<Out> out;
+    auto pump = [&]() {   // 소켓 루프의 한 바퀴(`lobby_main.cpp` 갈래와 같게)
+        std::vector<StoreAnswer> ans;
+        st.TakeAnswers(ans);
+        out.clear();
+        for (const StoreAnswer& a : ans) {
+            if (a.kind == StoreAnswerKind::ActiveBans) rl.OnBansAnswer(a, out);
+            else if (a.kind == StoreAnswerKind::Rating) rl.OnRatingAnswer(a, out);
+        }
+    };
+    auto read = [&]() {   // 5초 지나 한 번 묻고 답까지
+        clock += kBanReadMs;
+        std::vector<Out> t;
+        rl.Tick(t);
+        pump();
+    };
+    auto token = [&](const std::string& name, uint64_t account, bool otherKey = false) {
+        nox::LoginToken lt;
+        lt.version = nox::kLoginTokenVersion;
+        lt.accountId = account;
+        lt.clientIp = peer;
+        lt.expiresAt = now + nox::kLoginTokenLifetimeSec;
+        lt.nonce = nextNonce++;
+        lt.name = name;
+        uint8_t raw[nox::kLoginTokenSize];
+        nox::SignLoginToken(otherKey ? LobbyTestKey() : loginKey, lt, raw);
+        return "apgar NXL1" + nox::ToHex(raw, sizeof(raw)) + " 0";
+    };
+    unsigned users = 0;
+    auto login = [&](int conn, const std::string& nick, const std::string& apgarLine) {   // 받은 줄은 `out` 에(점수 답 뒤 인사까지)
+        ++users;
+        rl.OnConnect(conn, peer, peer);
+        std::vector<Out> o;
+        for (const std::string& l : Names{"NOXCLIENT 5", "CVERS 11020 9472", "PASS supersecret", "NICK " + nick, apgarLine, "SERIAL 7726",
+                                          "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33", "SETCODEPAGE 949"})
+            rl.OnLine(conn, l, o);
+        pump();
+        out.insert(out.begin(), o.begin(), o.end());
+    };
+    auto has = [&](const std::string& part) {
+        for (const Out& x : out)
+            if (x.line.find(part) != std::string::npos) return true;
+        return false;
+    };
+    const auto tokenOk = static_cast<size_t>(nox::LoginTokenCheck::Ok);
+
+    // ②
+    {
+        LobbyConfig noStoreCfg = cfg;
+        FakeRooms f0;
+        Lobby noStore(noStoreCfg, f0);
+        std::vector<Out> o;
+        noStore.Tick(o);
+        const bool quiet = noStore.Stats().banReads == 0;
+        rl.Tick(o);
+        const auto r1 = s.banReads;
+        rl.Tick(o);
+        clock += kBanReadMs;
+        rl.Tick(o);   // 5초가 지나도 답 전엔 더 안 묻는다 — DB 가 막힌 동안 일이 쌓이지 않게
+        const auto r2 = s.banReads;
+        pump();
+        rl.Tick(o);   // 그사이 간격이 지났으니 바로 다음을 묻는다
+        const auto r3 = s.banReads;
+        pump();
+        clock += kBanReadMs - 1;
+        rl.Tick(o);
+        const auto r4 = s.banReads;
+        clock += 1;
+        rl.Tick(o);
+        const auto r5 = s.banReads;
+        pump();
+        Check(quiet && r1 == 1 && r2 == 1 && r3 == 2 && r4 == 2 && r5 == 3 && s.banReadOk == 3 && s.banRowsLast == 0 && s.banEnforced == 0,
+              "② 읽는 때 — 저장소 없음 0 · 첫 Tick 1 · 답 전 그대로 " + std::to_string(r2) + " · 답 뒤 " + std::to_string(r3) + " · 5초 1ms 앞 " + std::to_string(r4) + " · 5초 " + std::to_string(r5));
+    }
+
+    // ③
+    login(1, "wn", token("wn", 7));
+    const bool wnIn = has(": 376 u");
+    login(2, "bob", token("bob", 8));
+    const bool inBoth = wnIn && has(": 376 u") && s.loginToken[tokenOk] == 2;
+    st.SetActiveBans({{"wn", later}, {"ghost", later}, {"old", now}});
+    rl.TakeLog();
+    {
+        rl.OnConnect(3, peer, peer);
+        std::vector<Out> o;
+        rl.OnLine(3, "NICK wn", o);
+    }
+    read();
+    {
+        int toWn = 0, toBob = 0, toWaiting = 0;
+        bool closeOk = false;
+        for (const Out& x : out) {
+            if (x.conn == 1) {
+                ++toWn;
+                closeOk = x.line == "ERROR :Closing Link (account suspended)" && x.closeAfter;
+            } else if (x.conn == 2) {
+                ++toBob;
+            } else if (x.conn == 3) {
+                ++toWaiting;
+            }
+        }
+        // 닫는 중이면 소켓이 닫히기 전에 온 줄에 답하지 않는다
+        std::vector<Out> afterClose;
+        rl.OnLine(1, "LIST 37 37", afterClose);
+        Check(afterClose.empty(), "③ 끊는 줄을 보낸 접속은 그 뒤 줄에 답 안 함(답 " + std::to_string(afterClose.size()) + ")");
+        Check(inBoth && toWn == 1 && closeOk && toBob == 0 && toWaiting == 0 && fake.kicked == Names{"ghost", "wn"} && s.banEnforced == 2 && s.banConnsClosed == 1 && s.banRowsLast == 2,
+              "③ 새 이름 — wn 접속에 끊는 줄 하나 · bob 줄 0 · 게임 서버엔 로비에 없는 ghost 까지 둘 · 끝난 행 빠짐(wn 줄 " + std::to_string(toWn) + " · 내보낸 이름 " + std::to_string(s.banEnforced) + ")");
+    }
+    {
+        std::vector<Out> o;
+        rl.OnClose(1, o);
+        rl.OnClose(3, o);
+        read();
+        Check(out.empty() && fake.kicked.size() == 2 && s.banEnforced == 2 && s.banRowsLast == 2 && s.banConnsClosed == 1, "③ 같은 목록을 다시 읽음 → 더 안 내보냄");
+    }
+
+    // ④
+    {
+        st.SetFailBans(true);
+        rl.TakeLog();
+        read();
+        read();
+        const bool kept = rl.Bans().UntilOf("wn", now) == later && fake.kicked.size() == 2 && s.banReadFailed == 2 && s.banRowsLast == 2;
+        int failLogs = 0, backLogs = 0;
+        for (const std::string& l : rl.TakeLog()) failLogs += l.rfind("[정지 — 못 읽음]", 0) == 0 ? 1 : 0;
+        st.SetFailBans(false);
+        st.SetActiveBans({{"wn", later}, {"ghost", later}});
+        read();
+        for (const std::string& l : rl.TakeLog()) backLogs += l.rfind("[정지 — 다시 읽음]", 0) == 0 ? 1 : 0;
+        Check(kept && failLogs == 1 && backLogs == 1 && fake.kicked.size() == 2, "④ 못 읽음 둘 — 앞 목록 그대로 · 0건으로 안 봄 · 기록은 바뀔 때만(못 읽음 " + std::to_string(failLogs) + " · 다시 " + std::to_string(backLogs) + ") · 다시 읽어도 안 내보냄");
+    }
+
+    // ⑥(풀기 전에) 정지 목록에 있는 동안
+    {
+        const auto okBefore = s.loginToken[tokenOk];
+        const std::string held = token("wn", 7);
+        login(4, "wn", held);
+        const bool refused = has(": 378 u :") && has("Account suspended.") && !has(": 376 u") && s.loginBanned == 1 && s.loginToken[tokenOk] == okBefore && rl.PendingRatings() == 0;
+        const auto badBefore = s.LoginTotal();
+        login(5, "wn", token("wn", 7, true));
+        const bool wrongKeyIsNotBan = has("Login token rejected") && !has("Account suspended.") && s.loginBanned == 1 && s.LoginTotal() == badBefore + 1;
+        // ⑤ 풀기 — 다음 읽기에 풀림 · 같은 토큰은 이미 썼으므로 거절 · 새 토큰으로 들어옴
+        st.SetActiveBans({{"ghost", later}});
+        read();
+        const bool lifted = rl.Bans().UntilOf("wn", now) == 0 && s.banRowsLast == 1;
+        std::vector<Out> o;
+        rl.OnClose(4, o);
+        rl.OnClose(5, o);
+        login(6, "wn", held);
+        const bool replayed = has("already used") && s.loginReplay == 1 && !has(": 376 u");
+        rl.OnClose(6, o);
+        login(7, "wn", token("wn", 7));
+        const bool backIn = has(": 376 u") && s.loginToken[tokenOk] == okBefore + 1;
+        Check(refused && wrongKeyIsNotBan, "⑥ 정지 중 맞는 토큰 → 378 「Account suspended.」 · 인사 없음 · 점수 안 물음 · 틀린 키 토큰은 이 갈래가 아님");
+        Check(lifted && replayed && backIn, "⑤ 풀면 다음 읽기에 풀림 · 거절 때 쓴 토큰은 일회용이라 다시 못 씀 · 새 토큰으로 들어옴");
+        // 다시 막기 — 또 새 이름
+        st.SetActiveBans({{"ghost", later}, {"wn", later}});
+        read();
+        bool closed = false;
+        for (const Out& x : out) closed = closed || (x.conn == 7 && x.closeAfter);
+        Check(closed && fake.kicked.size() == 3 && fake.kicked.back() == "wn" && s.banConnsClosed == 2, "⑤ 풀고 다시 막으면 또 내보냄");
+        rl.OnClose(7, o);
+    }
+    // ⑥-b 점수 답을 기다리는 접속(토큰은 통과 · 인사 전)도 끊는다 — 쓰기 · 읽기 워커가 달라 정지 답이 먼저 올 수 있다.
+    //   묻고 나서 로그인한다 — 시계를 먼저 밀면 `Tick` 이 점수 한도로 로그인을 끝내 버려 이 갈래를 안 지난다(일부러 틀림이 안 걸려 알았다)
+    {
+        ++users;
+        st.SetActiveBans({{"ghost", later}, {"wn", later}, {"rita", later}});
+        clock += kBanReadMs;
+        std::vector<Out> o;
+        rl.Tick(o);
+        rl.OnConnect(8, peer, peer);
+        for (const std::string& l : Names{"NOXCLIENT 5", "CVERS 11020 9472", "PASS supersecret", "NICK rita", token("rita", 9), "SERIAL 7726",
+                                          "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33", "SETCODEPAGE 949"})
+            rl.OnLine(8, l, o);
+        const bool waiting = rl.PendingRatings() == 1;
+        std::vector<StoreAnswer> ans;
+        st.TakeAnswers(ans);
+        out.clear();
+        for (const StoreAnswer& a : ans)
+            if (a.kind == StoreAnswerKind::ActiveBans) rl.OnBansAnswer(a, out);
+        bool closed = false;
+        for (const Out& x : out) closed = closed || (x.conn == 8 && x.closeAfter && x.line == "ERROR :Closing Link (account suspended)");
+        for (const StoreAnswer& a : ans)
+            if (a.kind == StoreAnswerKind::Rating) rl.OnRatingAnswer(a, out);
+        rl.OnClose(8, o);
+        Check(waiting && closed && rl.PendingRatings() == 0, "⑥-b 점수 기다리는 접속도 끊김 · 늦게 온 점수 답을 받아도 남는 것 없음");
+        st.SetActiveBans({{"ghost", later}, {"wn", later}});
+        read();
+    }
+    Check(s.LoginTotal() == users, "⑥ 셈 — 로그인 갈래 합 " + std::to_string(s.LoginTotal()) + " = USER " + std::to_string(users));
+
+    // ⑦
+    {
+        StoreAnswer late;
+        late.kind = StoreAnswerKind::ActiveBans;
+        late.req = 0xABCD;
+        late.bansOk = true;
+        late.bans = {{"zzz", later}};
+        const size_t kicked0 = fake.kicked.size();
+        std::vector<Out> o;
+        rl.OnBansAnswer(late, o);   // 안 묻는 중
+        const auto late1 = s.banReadLate;
+        clock += kBanReadMs;
+        rl.Tick(o);
+        rl.OnBansAnswer(late, o);   // 묻는 중인데 번호가 다름
+        const auto late2 = s.banReadLate;
+        const auto ok0 = s.banReadOk;
+        pump();
+        Check(late1 == 1 && late2 == 2 && s.banReadOk == ok0 + 1 && rl.Bans().UntilOf("zzz", now) == 0 && fake.kicked.size() == kicked0,
+              "⑦ 늦은 답 둘 — 버림 · 목록 그대로 · 묻던 답은 그대로 받음");
+        // 묻는 중엔 또 안 묻고, 같은 답이 두 번 오면 둘째는 번호가 맞아도 늦은 답
+        clock += kBanReadMs;
+        rl.Tick(o);
+        const auto reads = s.banReads;
+        clock += kBanReadMs;
+        rl.Tick(o);
+        std::vector<StoreAnswer> ans;
+        st.TakeAnswers(ans);
+        const StoreAnswer* mine = nullptr;
+        for (const StoreAnswer& a : ans)
+            if (a.kind == StoreAnswerKind::ActiveBans) mine = &a;
+        Check(mine != nullptr && s.banReads == reads, "⑦ 묻는 중엔 시간이 지나도 또 안 물음");
+        if (mine) {
+            rl.OnBansAnswer(*mine, o);
+            const auto ok1 = s.banReadOk;
+            const auto late3 = s.banReadLate;
+            rl.OnBansAnswer(*mine, o);
+            Check(s.banReadOk == ok1 && s.banReadLate == late3 + 1, "⑦ 같은 답 두 번 — 둘째는 번호가 맞아도 늦은 답");
+        }
+    }
+    // ⑦-b 시계가 도는 자리 — 다음 읽기 시각이 0 을 넘어가도 5초 전엔 안 묻고 5초에 묻는다
+    {
+        uint32_t ck = 0xffffffffu - 1000u;
+        LobbyConfig c3 = cfg;
+        c3.nowMs = [&ck] { return ck; };
+        CMemoryLobbyStore st3;
+        Lobby r3(c3, fake);
+        r3.AttachStore(&st3);
+        std::vector<Out> o;
+        auto tickAnswer = [&]() {
+            r3.Tick(o);
+            std::vector<StoreAnswer> ans;
+            st3.TakeAnswers(ans);
+            for (const StoreAnswer& a : ans) r3.OnBansAnswer(a, o);
+        };
+        tickAnswer();
+        const auto r0 = r3.Stats().banReads;
+        ck += 500;
+        tickAnswer();
+        ck += 4499;
+        tickAnswer();
+        const auto r1 = r3.Stats().banReads;
+        ck += 1;
+        tickAnswer();
+        Check(r0 == 1 && r1 == 1 && r3.Stats().banReads == 2, "⑦-b 시계가 도는 자리 — 4999ms 까지 안 묻고 5000ms 에 물음(" + std::to_string(r0) + " · " + std::to_string(r1) + " · " + std::to_string(r3.Stats().banReads) + ")");
+    }
+
+    // ⑧ 랭크 — 줄 · 방 요청 중 · 찾음 세 칸. 가장 많이 쓰일 위반 판정(플랜 7절)이 `Banned` 를 안 세므로 다른 칸에 안 들어가야 한다
+    {
+        LobbyConfig c2 = cfg;
+        c2.authOn = false;
+        c2.room.maxPlayers = 31;
+        c2.rankMin = c2.rankMax = 2;
+        FakeRooms f2;
+        f2.ask = true;
+        CMemoryLobbyStore st2;
+        Lobby lb(c2, f2);
+        lb.AttachStore(&st2);
+        const LobbyStats& s2 = lb.Stats();
+        auto log4 = [&](int conn, const std::string& nick) {
+            lb.OnConnect(conn, peer, peer);
+            std::vector<Out> o;
+            for (const std::string& l : Names{"NOXCLIENT 5", "NICK " + nick, "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(conn, l, o);
+        };
+        auto rankJoin = [&](int conn, const std::string& nick) {
+            std::vector<Out> o;
+            lb.OnLine(conn, "NOXRANK JOIN", o);
+            lb.OnLine(conn, "JOINGAME #" + nick + "'s_game 1 ", o);
+        };
+        // 묻고(시계를 먼저 옮김) · 랭크를 움직이고 · 답을 준다 — 찾음 · 방 요청 시간 한도가 안 지나게
+        std::vector<StoreAnswer> held;
+        auto ask = [&]() {
+            clock += kBanReadMs;
+            std::vector<Out> t;
+            lb.Tick(t);
+            std::vector<StoreAnswer> ans;
+            st2.TakeAnswers(ans);
+            held.clear();
+            for (const StoreAnswer& a : ans)
+                if (a.kind == StoreAnswerKind::ActiveBans) held.push_back(a);
+        };
+        std::vector<Out> o8;
+        auto deliver = [&](std::vector<BanEntry> rows) {
+            held.back().bans = std::move(rows);
+            o8.clear();
+            lb.OnBansAnswer(held.back(), o8);
+        };
+        // 그 접속 — 묶인 참가를 풀고(474) 마지막 줄에서 끊긴다
+        auto releasedThenClosed = [&](int conn) {
+            std::vector<const Out*> mine;
+            for (const Out& x : o8)
+                if (x.conn == conn) mine.push_back(&x);
+            bool released = false;
+            for (const Out* x : mine) released = released || x->line.rfind(": " + std::to_string(kRankReleaseNumeric) + " ", 0) == 0;
+            return released && mine.size() >= 2 && mine.back()->closeAfter && mine.back()->line == "ERROR :Closing Link (account suspended)";
+        };
+        const size_t rb = static_cast<size_t>(RankLeave::Banned);
+        log4(1, "amy");
+        log4(2, "bob");
+        log4(3, "cat");
+        // 찾음
+        ask();
+        rankJoin(1, "amy");
+        rankJoin(2, "bob");
+        const bool found = lb.RankFoundPending() == 1;
+        deliver({{"amy", later}});
+        const bool f8 = found && s2.rankDeclined[rb] == 1 && lb.RankFoundPending() == 0 && lb.RankQueueSize() == 1 && releasedThenClosed(1);
+        std::vector<Out> oc;
+        lb.OnClose(1, oc);
+        // 방 요청 중
+        ask();
+        rankJoin(3, "cat");
+        lb.OnLine(2, "NOXRANK ACCEPT", oc);
+        lb.OnLine(3, "NOXRANK ACCEPT", oc);
+        const bool requested = lb.RankRequestsPending() == 1;
+        deliver({{"amy", later}, {"cat", later}});
+        const bool r8 = requested && s2.rankLeftRequested[rb] == 1 && lb.RankRequestsPending() == 0 && lb.RankQueueSize() == 1 && f2.cancelled.size() == 1 && releasedThenClosed(3);
+        lb.OnClose(3, oc);
+        // 줄
+        ask();
+        deliver({{"amy", later}, {"cat", later}, {"bob", later}});
+        const bool q8 = s2.rankLeft[rb] == 1 && lb.RankQueueSize() == 0 && releasedThenClosed(2);
+        lb.OnClose(2, oc);
+        unsigned long long others = 0;
+        for (size_t i = 0; i < static_cast<size_t>(RankLeave::kCount); ++i) {
+            if (i == rb) continue;
+            others += s2.rankLeft[i] + s2.rankLeftRequested[i] + s2.rankDeclined[i];
+        }
+        Check(f8, "⑧ 찾음에서 정지 — 거절 칸 Banned · 남은 사람 줄로 · 묶인 참가 풂 뒤 끊김");
+        Check(r8, "⑧ 방 요청 중 정지 — 요청 칸 Banned · 요청 접음 · 남은 사람 줄로 · 묶인 참가 풂 뒤 끊김");
+        Check(q8, "⑧ 줄에서 정지 — 줄 칸 Banned · 묶인 참가 풂 뒤 끊김");
+        Check(others == 0 && f2.kicked == Names{"amy", "cat", "bob"}, "⑧ 다른 까닭 칸(끊김 · DLL · 목록) 0 — 끊긴 뒤에도 안 셈(" + std::to_string(others) + ") · 게임 서버 내보내기 셋");
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "--gameinfo") == 0) {
         if (GameInfoFromRecording(argv[2]) != 0) return 1;
@@ -3304,6 +3729,7 @@ int main(int argc, char** argv) {
         MirrorSaveUnitTests();    // ★ 7단계 조각 5
         LoginUnitTests();         // ★ 7단계 조각 6
         MatchHistoryUnitTests();  // ★ 11-04 플랜2
+        BanUnitTests();           // ★ 11-05 플랜1 조각 4
         ChatUnitTests();          // ★ 10-20 v2 작업 3b
         RouterUnitTests();
     }

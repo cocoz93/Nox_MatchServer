@@ -352,6 +352,8 @@ void TestLobbyLink() {
               nox::LinkBye("") == "BYE ~",
           "BYE 왕복(빈칸 든 까닭 · 빈 까닭 ~)");
     Check(parse(nox::LinkClientGone("a b")) == P::Ok && l.kind == K::ClientGone && l.text == "a b", "★ 11-03 CLIENT_GONE 왕복(빈칸 든 이름)");
+    Check(parse(nox::LinkKick("a b")) == P::Ok && l.kind == K::Kick && l.text == "a b" && nox::LinkKick("x") == "KICK x", "★ 11-05 플랜1 KICK 왕복(빈칸 든 이름)");
+    Check(parse("KICK") == P::FieldCount && parse("KICK a b") == P::FieldCount, "★ 11-05 플랜1 KICK 칸 수 틀림");
     // ★ 11-04 플랜1 — 방 안 화면 상태(상태 넷 각각 · 방장/시작 가능 · 빈 맵 · 틀린 꼴은 개수로)
     {
         int okStates = 0;

@@ -255,6 +255,21 @@ size_t CRoomManager::OnClientLobbyGone(const std::string& account) {
     return n;
 }
 
+// `KickPlayer` 는 끊기 요청만 낸다 — 방 명단은 `PullRequests` 가 고치므로 이 차례 안에서는 안 바뀐다
+size_t CRoomManager::KickAccount(const std::string& account) {
+    size_t n = 0;
+    if (account.empty()) return n;
+    for (auto& kv : _rooms) {
+        CRoom& room = *kv.second;
+        for (const RoomMember& m : room.Members()) {
+            if (m.account != account) continue;
+            room.Game().KickByLobby(m.sessionId);
+            ++n;
+        }
+    }
+    return n;
+}
+
 bool CRoomManager::CloseRoom(int id) {
     auto it = _rooms.find(id);
     if (it == _rooms.end()) return false;

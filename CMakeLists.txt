@@ -86,6 +86,7 @@ add_library(nox_lobby_core STATIC
   server/src/lobby/Router.cpp
   server/src/lobby/RoomMirror.cpp   # ★ 10-20 MO 6단계 v2 작업 3a-2 — 로비의 방 거울(게임 서버 연결 · 등록 · 방 알림 · 새 방 요청)
   server/src/lobby/LobbyStore.cpp   # ★ 7단계 조각 4 — 저장소 경계의 메모리 가짜(--no-db · 시험)
+  server/src/lobby/BanList.cpp      # ★ 11-05 플랜1 — 활성 정지 목록
   server/src/lobby/RecordDesk.cpp   # ★ 11-04 전적 검색 — 전적 창구(기록 물음 · 답 → 줄)
 )
 target_include_directories(nox_lobby_core PUBLIC server/include)
@@ -213,6 +214,11 @@ if (NOX_POWERSHELL AND WIN32)
                    -LobbyPort 14800 -LinkPort 14810 -UdpPort 18841)
   # ★ 로그인 암호 조각 2 — 로그인 서버를 진짜로 띄워 HTTPS 가입 · 로그인(시험 DB · 8443). 사람 1회(인증서 · nox_auth 사용자) 전이면 77 = 「건너뜀」
   if (NOX_HAVE_MYSQL)
+    # ★ 11-05 플랜1 조각 4 — 즉시 차단 소켓 왕복(시험 DB · 로비 하나 · 게임 서버 둘 · 운영 명령). 사람 1회 전이면 77
+    add_test(NAME ban_smoke
+             COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                     -File ${CMAKE_SOURCE_DIR}/tools/ban_smoke.ps1 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby> -AuthExe $<TARGET_FILE:nox_auth>)
+    set_tests_properties(ban_smoke PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME auth_smoke
              COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                      -File ${CMAKE_SOURCE_DIR}/tools/auth_smoke.ps1 -Exe $<TARGET_FILE:nox_auth>)

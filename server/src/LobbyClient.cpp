@@ -136,6 +136,13 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
             std::printf("[로비 연결] CLIENT_GONE %s — 들어 있던 세션 %zu개 한도 줄임\n", Printable(l.text).c_str(), n);
             return;
         }
+        case LinkKind::Kick: {   // ★ 11-05 플랜1 — 계정 정지. 그 이름이 없으면 0(로비가 게임 서버 전부에 보낸다)
+            ++_stats.kickIn;
+            const size_t n = _rooms.KickAccount(l.text);
+            _stats.kickedSessions += n;
+            std::printf("[로비 연결] KICK %s — 내보낸 세션 %zu개\n", Printable(l.text).c_str(), n);
+            return;
+        }
         case LinkKind::Ping:   // ★ 7단계 — 받은 시각은 사건에서 적었다(어느 단계든)
             ++_stats.pingsIn;
             return;

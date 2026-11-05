@@ -142,6 +142,21 @@ bool CMemoryLobbyStore::FindRating(const std::string& account, int32_t& rating) 
     return true;
 }
 
+void CMemoryLobbyStore::GetActiveBans(uint32_t req, uint32_t now) {
+    StoreAnswer a;
+    a.kind = StoreAnswerKind::ActiveBans;
+    a.req = req;
+    if (failBans_) {
+        a.why = "메모리 저장소 — 정지 읽기 실패 시험 스위치";
+        Answer(std::move(a));
+        return;
+    }
+    a.bansOk = true;
+    for (const BanEntry& b : bans_)
+        if (b.until > now) a.bans.push_back(b);
+    Answer(std::move(a));
+}
+
 void CMemoryLobbyStore::Answer(StoreAnswer a) {
     pending_.push_back(std::move(a));
     if (wake_) wake_();

@@ -1,7 +1,7 @@
 ﻿// lobby_main.cpp — 로비 프로세스 `nox_lobby` (MO 6단계 v2 작업 3c — `Docs/LOBBY_SPLIT_DESIGN.md`).
 //
 //   nox_lobby.exe --config <설정 파일> [--bind 0.0.0.0] [--lobby-port 4000]
-//                 [--link-bind 127.0.0.1] [--link-port 4010] [--seconds N] [--quiet] [--no-db] [--no-auth]
+//                 [--link-bind 127.0.0.1] [--link-port 4010] [--seconds N] [--quiet] [--no-db] [--test-db] [--no-auth]
 //                 [--rank-min N] [--rank-max N] [--rank-gather-sec N]
 //
 // 왜 다시 따로 된 프로세스인가 — 목표 구조 v2(10-20 결정): 로비 하나가 전체 상태(로그인 · 채팅 채널 · 게임 목록 ·
@@ -124,6 +124,7 @@ int main(int argc, char** argv) {
     int seconds = 0;   // 0 이면 끝없이. 자체검사가 정해진 시간 뒤 스스로 끝나게 쓴다
     std::string configPath;
     bool noDb = false;   // ★ 7단계 조각 8
+    bool testDb = false; // ★ 11-05 플랜1 — `nox_auth --test-db` 와 같은 DB. 정지 시험은 운영 명령과 로비가 같은 DB 를 봐야 한다(`--no-db` 면 정지 목록이 없다)
     bool noAuth = false; // ★ 로그인 암호 조각 4
     std::string argRankMin, argRankMax, argRankGather;   // ★ 랭크 매칭 조각 4 — 비면 설정 파일 · 그것도 없으면 기본값
 
@@ -140,6 +141,7 @@ int main(int argc, char** argv) {
         else if (a == "--config" && hasNext) configPath = argv[++i];
         else if (a == "--seconds" && hasNext) seconds = std::atoi(argv[++i]);
         else if (a == "--no-db") noDb = true;
+        else if (a == "--test-db") testDb = true;
         else if (a == "--no-auth") noAuth = true;
         else if (a == "--rank-min" && hasNext) argRankMin = argv[++i];
         else if (a == "--rank-max" && hasNext) argRankMax = argv[++i];
@@ -207,7 +209,8 @@ int main(int argc, char** argv) {
         if (!ini.Get("db", "port").empty()) dc.port = static_cast<uint16_t>(std::atoi(ini.Get("db", "port").c_str()));
         dc.user = ini.Get("db", "user");
         dc.password = ini.Get("db", "password");   // 찍지 않는다
-        dc.database = ini.Get("db", "database").empty() ? std::string("nox_mo") : ini.Get("db", "database");
+        const std::string dbKey = testDb ? "test_database" : "database";
+        dc.database = ini.Get("db", dbKey).empty() ? std::string(testDb ? "nox_mo_test" : "nox_mo") : ini.Get("db", dbKey);
         if (dc.user.empty()) {
             Log("[멈춤] 설정 파일에 [db] user 가 없다(%s) — DB 없이 띄우려면 --no-db(계정 · 판 기록이 끝나면 사라짐)\n", configPath.c_str());
             return 2;
@@ -344,6 +347,7 @@ int main(int argc, char** argv) {
                 case nox::wol::StoreAnswerKind::SaveMatch: mirror.OnStoreAnswer(a, outs); break;
                 case nox::wol::StoreAnswerKind::Rating: lobby.OnRatingAnswer(a, outs); break;   // ★ 레이팅 조각 4 — 로그인 공지
                 case nox::wol::StoreAnswerKind::History: records.OnAnswer(a, outs); break;   // ★ 11-04 플랜2 — 대전 기록 창 · ★ 전적 검색
+                case nox::wol::StoreAnswerKind::ActiveBans: lobby.OnBansAnswer(a, outs); break;   // ★ 11-05 플랜1 — 활성 정지
                 case nox::wol::StoreAnswerKind::kCount: break;
             }
         }
@@ -404,6 +408,15 @@ int main(int argc, char** argv) {
         "늦은 답 %llu · 쌓은 뒷줄 %llu(버림 %llu)\n",
         ls.ratingAsked, ls.ratingShown, ls.ratingNoGames, ls.ratingFailed, ls.ratingTimeout, ls.ratingClosed, lobby.PendingRatings(), ls.ratingLate,
         ls.heldLines, ls.heldDropped);
+    // ★ 11-05 플랜1 — 정지 읽기 한 번 = 읽음 · 못 읽음 중 하나(끝날 때 기다림 하나 차이 · 늦은 답은 따로) · 랭크 뺌 = 줄 · 요청 중 · 찾음 까닭 `계정 정지`
+    {
+        using nox::wol::RankLeave;
+        const size_t rb = static_cast<size_t>(RankLeave::Banned);
+        Log("[로비] 끝 — 정지 읽기 %llu(읽음 %llu · 못 읽음 %llu · 늦은 답 %llu · 마지막 행 %llu) · 내보낸 이름 %llu(로비 접속 끊음 %llu · KICK 줄 %llu) · 정지 로그인 거절 %llu · "
+            "랭크에서 뺌 줄 %llu · 요청 중 %llu · 찾음 %llu\n",
+            ls.banReads, ls.banReadOk, ls.banReadFailed, ls.banReadLate, ls.banRowsLast, ls.banEnforced, ls.banConnsClosed, ms.kickSent, ls.loginBanned,
+            ls.rankLeft[rb], ls.rankLeftRequested[rb], ls.rankDeclined[rb]);
+    }
     // ★ 11-04 플랜2 — 대전 기록 물음 하나 = 줄로 답 · 못 읽음 · 없는 사용자 · 끊김 중 하나(합 = 물음 · 끝날 때 남은 것 빼고 · 셈은 `RecordDeskStats`)
     {
         const nox::wol::RecordDeskStats& rs = records.Stats();

@@ -66,6 +66,7 @@ struct MirrorStats {
     // ★ 7단계 조각 5 — 판 저장(RESULT 하나는 저장 요청 · 못 읽음 · 저장소 없음 중 하나)
     unsigned long long saveRequests = 0;      // 저장소에 판 저장 요청
     unsigned long long roomUiLines = 0;       // ★ 11-04 플랜1 — ROOMUI 줄
+    unsigned long long kickSent = 0;          // ★ 11-05 플랜1 — KICK 줄(줄마다 · 게임 서버마다)
     unsigned long long clientGoneSent = 0;    // ★ 11-03 — CLIENT_GONE 줄(줄마다 · 게임 서버마다)
     unsigned long long savedOk = 0;           // 답 Saved → SAVED ok
     unsigned long long savedDup = 0;          // 답 Duplicate → SAVED dup
@@ -113,6 +114,7 @@ public:
     uint64_t ListVersion() const override { return listVersion_; }   // ★ 11-03
     void TakeClientLines(std::vector<std::pair<std::string, std::string>>& out) override;   // ★ 11-04 플랜1
     void OnClientGone(const std::string& name) override;             // ★ 11-03
+    void KickAccount(const std::string& name) override;              // ★ 11-05 플랜1
 
     const MirrorStats& Stats() const { return stats_; }
     size_t ServerCount() const;   // 등록된 게임 서버 수

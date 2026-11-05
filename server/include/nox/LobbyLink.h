@@ -76,7 +76,7 @@ struct LinkRoom {
     std::string mode;           // 방 설정의 모드(`chat` · `arena` …)
 };
 
-enum class LinkKind : uint8_t { Hello, Auth, Register, Room, RoomGone, Create, Created, CreateFailed, Result, Bye, Ping, Saved, ClientGone, RoomUi, kCount };
+enum class LinkKind : uint8_t { Hello, Auth, Register, Room, RoomGone, Create, Created, CreateFailed, Result, Bye, Ping, Saved, ClientGone, RoomUi, Kick, kCount };
 const char* LinkKindWord(LinkKind k);   // 줄 앞 낱말(`HELLO` …)
 
 // ★ 7단계 — `SAVED` 의 끝 칸(로비가 판 결과를 어떻게 했나). 셋 다 게임 서버는 쥔 것을 지운다
@@ -149,6 +149,9 @@ std::string LinkCreated(uint32_t req, uint32_t id);
 std::string LinkCreateFailed(uint32_t req, const std::string& reason);
 std::string LinkBye(const std::string& reason);
 std::string LinkClientGone(const std::string& name);   // ★ 11-03
+// ★ 11-05 플랜1 — 로비 → 게임 서버 전부. 로비는 누가 어느 방에 있는지 모르므로 다 보내고 그 사람이 있는 서버만 처리한다
+//   `CLIENT_GONE` 은 시간 초과 한도만 줄여(통신이 살아 있으면 안 끊김) 내보내기엔 못 쓴다
+std::string LinkKick(const std::string& name);
 std::string LinkRoomUiLine(const LinkRoomUi& u);        // ★ 11-04 플랜1 — 게임 서버 → 로비
 std::string RoomUiClientLine(const LinkRoomUi& u);      // ★ 11-04 플랜1 — 로비 → DLL `NOXRANK ROOMUI <상태> <방장> <시작 가능> <점수> <분> <맵>`(이름 칸만 뺌 · 맵은 글 칸)
 std::string LinkPing();

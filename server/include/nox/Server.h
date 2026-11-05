@@ -4987,7 +4987,7 @@ private:
 );
     void VoteDropPlayer(int64_t who);
     void VoteUpdate();
-    void KickPlayer(int64_t sessionId);
+    void KickPlayer(int64_t sessionId, bool backToList = false);
 
     // 묶음 8-d — 플래그볼
     void SendBallStatus();
@@ -5810,6 +5810,12 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     // ★ 11-03 — 로비 접속이 끊긴 사람(`CLIENT_GONE`). 한도만 줄인다 — 통신이 살아 있으면(로비만 끊김) 안 걸리고, 강제 종료 · 전원 꺼짐은 `0a` 없이 이 한도로 나간다
     void ClientLobbyGone(int64_t sessionId) { RequestSetSessionTimeout(sessionId, kSessionTimeoutMsLobbyGone); ++lobbyGoneShortened_; }
     unsigned long long lobbyGoneShortened() const { return lobbyGoneShortened_; }
+    // ★ 11-05 플랜1 — 계정 정지. 투표 강퇴와 같은 절차(깃발 · 공 떨구기 · 남은 사람 화면에서 지우기 · `0xC5` 통지 · 세션 지우기).
+    //   세션만 조용히 지우는 `RequestDisconnectSession` 은 안 쓴다 — UDP 라 클라가 끊긴 줄 모른다
+    //   ★ 정품은 `0xC5` 만 받으면 판에 남는다 — 표시만 해 두고 목록 창이 열릴 때 안내한다(`cdecode.c:2475` → `noxworld.c:973` · `:234`).
+    //     13초 뒤에도 멈춘 판 화면이었다(_out/plan1/game_p4/m_c.png) → 뒤에 `0xC7` 을 붙여 목록으로 돌려보낸다
+    void KickByLobby(int64_t sessionId) { KickPlayer(sessionId, /*backToList=*/true); ++lobbyKicks_; }
+    unsigned long long lobbyKicks() const { return lobbyKicks_; }
     bool QuitAtRestartArmed() const { return quitAtRestart_; }
     unsigned long long serverQuitSent() const { return serverQuitSent_; }   // 보낸 사람 수(누적)
     unsigned long long serverQuitAcks() const { return serverQuitAcks_; }   // 받은 답(0xC8) 수(누적)
@@ -5822,6 +5828,7 @@ private:
     unsigned long long inPlaceStarts_ = 0;       // ★ 매칭 손보기 3
     unsigned long long serverQuitSent_ = 0;
     unsigned long long roundForfeits_ = 0;        // ★ 11-03 — `EndRoundForfeit`
+    unsigned long long lobbyKicks_ = 0;           // ★ 11-05 플랜1 — `KickByLobby`
     unsigned long long lobbyGoneShortened_ = 0;   // ★ 11-03 — `ClientLobbyGone`
     unsigned long long serverQuitAcks_ = 0;
     unsigned long long mapSwitches_ = 0;

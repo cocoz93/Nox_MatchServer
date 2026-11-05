@@ -216,6 +216,13 @@ void Lobby::OnRoomCreateFailed(uint32_t req, const std::string& why, std::vector
 
 void Lobby::Tick(std::vector<Out>& out) {
     const uint32_t now = cfg_.nowMs();
+    // ★ 11-05 플랜1 — 활성 정지 읽기(답은 `OnBansAnswer`)
+    if (store_ && !banAsking_ && (!banAsked_ || static_cast<int32_t>(now - banDueMs_) >= 0)) {
+        banAsked_ = banAsking_ = true;
+        banDueMs_ = now + kBanReadMs;
+        ++stats_.banReads;
+        store_->GetActiveBans(++banReq_, cfg_.unixNow());
+    }
     // ★ 7단계 조각 6 — 로그인 마감(끊기). 32비트 시계가 돌아도 맞게 · ★ 로그인 암호 조각 4 — 계정 확인 한도는 걷음
     for (auto& kv : conns_) {
         Conn& c = kv.second;
@@ -332,6 +339,7 @@ const char* RankLeaveName(RankLeave why) {
         case RankLeave::Dll:    return "창 닫힘(DLL)";
         case RankLeave::List:   return "LIST";
         case RankLeave::Closed: return "끊김";
+        case RankLeave::Banned: return "계정 정지";
         case RankLeave::kCount: break;
     }
     return "?";
@@ -684,6 +692,43 @@ void Lobby::BeginOkLogin(int conn, Conn& c, std::vector<Out>& out) {
     store_->GetRating(c.ratingReq, c.nick);
 }
 
+// ★ 11-05 플랜1 — 머리 주석은 `BanList.h` · 플랜 6절
+void Lobby::OnBansAnswer(const StoreAnswer& a, std::vector<Out>& out) {
+    if (a.kind != StoreAnswerKind::ActiveBans || !banAsking_ || a.req != banReq_) {
+        ++stats_.banReadLate;
+        return;
+    }
+    banAsking_ = false;
+    if (!a.bansOk) {
+        ++stats_.banReadFailed;
+        if (!banReadFailing_) log_.push_back("[정지 — 못 읽음] 앞 목록 그대로(" + std::to_string(banList_.ReadCount()) + "명) — " + a.why);
+        banReadFailing_ = true;
+        return;
+    }
+    ++stats_.banReadOk;
+    stats_.banRowsLast = a.bans.size();
+    if (banReadFailing_) log_.push_back("[정지 — 다시 읽음] " + std::to_string(a.bans.size()) + "행");
+    banReadFailing_ = false;
+    const uint32_t now = cfg_.unixNow();
+    for (const std::string& name : banList_.Replace(a.bans, now)) EnforceBan(name, banList_.UntilOf(name, now), out);
+}
+
+void Lobby::EnforceBan(const std::string& name, uint32_t until, std::vector<Out>& out) {
+    ++stats_.banEnforced;
+    int conn = -1;
+    for (const auto& kv : conns_) {   // 이름으로 찾는 일은 정지 때뿐 — 이름 장부를 따로 안 둔다
+        const Conn& c = kv.second;
+        if (c.nick == name && !c.closing && (c.login == LoginState::Ok || c.login == LoginState::Rating)) conn = kv.first;
+    }
+    if (conn >= 0) RankRemove(conn, RankLeave::Banned, out);
+    rooms_.KickAccount(name);
+    log_.push_back("[정지 — 내보냄] " + name + " · 끝 " + std::to_string(until) + (conn >= 0 ? " · 로비 접속 c" + std::to_string(conn) + " 끊음" : " · 로비 접속 없음"));
+    if (conn < 0) return;
+    conns_[conn].closing = true;
+    ++stats_.banConnsClosed;
+    out.push_back({conn, "ERROR :Closing Link (account suspended)", true});
+}
+
 void Lobby::OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out) {
     const auto p = ratingPending_.find(a.req);
     if (a.kind != StoreAnswerKind::Rating || p == ratingPending_.end()) {
@@ -783,6 +828,12 @@ void Lobby::CheckLoginToken(int conn, Conn& c, std::vector<Out>& out) {
                 ++stats_.loginReplay;
                 log_.push_back("[로그인 — 다시 쓴 토큰] " + c.nick + " — 일회용 번호를 이미 씀(거절 378)");
                 FinishLogin(conn, c, LoginState::Failed, "Login token was already used - log in again.", out);
+                return;
+            }
+            if (r == LoginTokenCheck::Ok && banList_.UntilOf(c.nick, now) != 0) {   // ★ 11-05 플랜1 — 정지 직전에 받은 로그인 토큰(60초)의 틈
+                ++stats_.loginBanned;
+                log_.push_back("[로그인 — 정지] " + c.nick + "(거절 378)");
+                FinishLogin(conn, c, LoginState::Failed, "Account suspended.", out);
                 return;
             }
             ++stats_.loginToken[static_cast<size_t>(r)];

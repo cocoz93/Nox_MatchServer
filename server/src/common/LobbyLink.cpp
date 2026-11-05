@@ -10,7 +10,7 @@ namespace nox {
 namespace {
 
 const char* const kWords[] = {"HELLO", "AUTH", "REGISTER", "ROOM", "ROOM_GONE", "CREATE", "CREATED", "CREATE_FAILED", "RESULT", "BYE",
-                              "PING", "SAVED", "CLIENT_GONE", "ROOMUI"};
+                              "PING", "SAVED", "CLIENT_GONE", "ROOMUI", "KICK"};
 static_assert(sizeof(kWords) / sizeof(kWords[0]) == static_cast<size_t>(LinkKind::kCount), "낱말 표 = 갈래 수");
 const char* const kSaveWords[] = {"ok", "dup", "bad"};
 static_assert(sizeof(kSaveWords) / sizeof(kSaveWords[0]) == static_cast<size_t>(SaveOutcome::kCount), "SAVED 끝 칸 표 = 갈래 수");
@@ -183,6 +183,7 @@ std::string LinkCreateFailed(uint32_t req, const std::string& reason) {
 std::string LinkBye(const std::string& reason) { return std::string(kWords[9]) + " " + EncodeLinkText(reason); }
 
 std::string LinkClientGone(const std::string& name) { return std::string(kWords[12]) + " " + EncodeLinkText(name); }   // ★ 11-03
+std::string LinkKick(const std::string& name) { return std::string(kWords[14]) + " " + EncodeLinkText(name); }   // ★ 11-05 플랜1
 
 // ★ 11-04 플랜1
 static std::string RoomUiTail(const LinkRoomUi& u) {
@@ -289,6 +290,7 @@ LinkParse ParseLinkLine(std::string_view line, LinkLine& out) {
             return DecodeLinkText(t[2], out.text) ? LinkParse::Ok : LinkParse::BadText;
         case LinkKind::Bye:
         case LinkKind::ClientGone:   // ★ 11-03
+        case LinkKind::Kick:         // ★ 11-05 플랜1
             if (!want(2)) return LinkParse::FieldCount;
             return DecodeLinkText(t[1], out.text) ? LinkParse::Ok : LinkParse::BadText;
         case LinkKind::RoomUi: {   // ★ 11-04 플랜1

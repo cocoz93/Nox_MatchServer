@@ -65,6 +65,8 @@ struct CLobbyClientStats {
     unsigned long long resultsDropped = 0;   // 쥔 것이 `kMaxHeldResults` 를 넘어 가장 옛것을 버림(파일엔 있다)
     unsigned long long clientGoneIn = 0;        // ★ 11-03 — 받은 CLIENT_GONE
     unsigned long long clientGoneShortened = 0; // ★ 11-03 — 그중 세션 한도를 줄인 수
+    unsigned long long kickIn = 0;              // ★ 11-05 플랜1 — 받은 KICK(정지)
+    unsigned long long kickedSessions = 0;      // ★ 11-05 플랜1 — 그중 내보낸 세션(이 게임 서버에 없는 이름은 0)
     unsigned long long byes = 0;             // 로비가 BYE(끊기 직전 까닭)
     unsigned long long badLines = 0;         // 못 읽는 줄 · 차례에 안 맞는 줄(버림)
     // ★ 7단계 — 살아 있음

@@ -31,6 +31,8 @@ void CDbLobbyStore::GetRating(uint32_t req, const std::string& account) { writer
 
 void CDbLobbyStore::GetMatchHistory(uint32_t req, const std::string& account) { reader_.GetMatchHistory(req, account); }
 
+void CDbLobbyStore::GetActiveBans(uint32_t req, uint32_t now) { reader_.GetActiveBans(req, now); }
+
 void CDbLobbyStore::TakeAnswers(std::vector<wol::StoreAnswer>& out) {
     writer_.TakeAnswers(out);
     reader_.TakeAnswers(out);
@@ -51,6 +53,10 @@ DbStats CDbLobbyStore::Stats() const {
     s.historyReads += r.historyReads;
     s.historyFailed += r.historyFailed;
     s.historyDropped += r.historyDropped;
+    s.bansRequests += r.bansRequests;
+    s.bansReads += r.bansReads;
+    s.bansFailed += r.bansFailed;
+    s.bansDropped += r.bansDropped;
     s.queueMax = std::max(s.queueMax, r.queueMax);
     if (s.lastError.empty()) s.lastError = r.lastError;
     return s;

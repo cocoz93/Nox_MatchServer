@@ -10648,7 +10648,7 @@ void Server::UpdateBall() {
 //   조용해서 내보내는 길(틱 안)과 **같은 절차**를 한 자리로 모은 것이다 —
 //   들고 있던 깃발·공을 떨구고 · 걸던 주문을 끊고 · 표를 지우고 · 자리를 비우고 ·
 //   모두에게 `PLAYER_QUIT` 와 `DESTROY_OBJECT` 를 알린다.
-void Server::KickPlayer(int64_t sessionId) {
+void Server::KickPlayer(int64_t sessionId, bool backToList) {
     uint16_t netCode = 0;
     bool wasInGame = false;
     {
@@ -10671,6 +10671,10 @@ void Server::KickPlayer(int64_t sessionId) {
         if (g != sessions_.end()) {
             const uint8_t kick[1] = { static_cast<uint8_t>(Op::KICK_NOTIFICATION) };
             Emit(g->second, /*reliable=*/true, /*stream=*/0, kick, sizeof(kick));
+            if (backToList) {   // `c5` 다음 — 같은 신뢰 길이라 클라는 `c5` 표시를 먼저 받고 목록으로 돌아가 「Kicked」 를 띄운다
+                const uint8_t quit[1] = { static_cast<uint8_t>(Op::SERVER_QUIT) };
+                Emit(g->second, /*reliable=*/true, /*stream=*/0, quit, sizeof(quit));
+            }
         }
     }
     sessions_.erase(sessionId);

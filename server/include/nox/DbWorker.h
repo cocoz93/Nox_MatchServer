@@ -51,6 +51,11 @@ struct DbStats {
     unsigned long long historyRequests = 0;
     unsigned long long historyReads = 0;
     unsigned long long historyFailed = 0;
+    // ★ 11-05 플랜1 — 정지 읽기 요청 = 읽음 + 실패 + 버림(끝낼 때)
+    unsigned long long bansRequests = 0;
+    unsigned long long bansReads = 0;
+    unsigned long long bansFailed = 0;
+    unsigned long long bansDropped = 0;
     unsigned long long historyDropped = 0;  // ★ 11-04 전적 검색 — 끝낼 때 버린 조회(요청 = 읽음 + 실패 + 버림)
     size_t queueMax = 0;                    // 한 번에 꺼낸 일의 최대
     std::string lastError;                  // 마지막 오류 글(기록용 — 비밀번호는 안 실린다)
@@ -77,6 +82,7 @@ public:
     void SaveMatch(uint32_t req, const wol::MatchSource& src, const MatchRecord& rec, const std::string& rawJson);
     void GetRating(uint32_t req, const std::string& account);   // ★ 레이팅 조각 3
     void GetMatchHistory(uint32_t req, const std::string& account);   // ★ 11-04 플랜2
+    void GetActiveBans(uint32_t req, uint32_t now);                   // ★ 11-05 플랜1
     void TakeAnswers(std::vector<wol::StoreAnswer>& out);
     // ★ 11-05 — 답을 넣은 뒤마다 워커 스레드에서 부른다. 첫 요청 전에 한 번만 꽂는다 — 워커는 일을 꺼낸 뒤에만 읽으므로 큐 잠금이 차례를 보장한다
     void SetWake(std::function<void()> wake) { wake_ = std::move(wake); }
@@ -92,6 +98,7 @@ private:
         MatchRecord rec;
         std::string raw;
         std::string account;   // ★ 레이팅 조각 3 — Rating · ★ 11-04 플랜2 — History
+        uint32_t now = 0;      // ★ 11-05 플랜1 — ActiveBans
     };
     struct Conn;   // MYSQL* · 준비된 문장들(.cpp 에만)
 
@@ -101,6 +108,7 @@ private:
     bool ExecSave(Conn& c, const Job& j, wol::StoreAnswer& a);
     bool ExecRating(Conn& c, const Job& j, wol::StoreAnswer& a);
     bool ExecHistory(Conn& c, const Job& j, wol::StoreAnswer& a);
+    bool ExecBans(Conn& c, const Job& j, wol::StoreAnswer& a);   // ★ 11-05 플랜1
     wol::StoreAnswer FailAnswer(const Job& j, wol::StoreAnswer a);   // 그 일의 실패 셈 + 실패 답
     void JoinAndClose();
     bool Connect(std::string& err);    // `conn_` 을 새로(실패면 비움)

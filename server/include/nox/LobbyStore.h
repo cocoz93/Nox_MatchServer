@@ -12,6 +12,7 @@
 //   ★ 레이팅 조각 3(`Docs/RATING_DESIGN.md`) — 판 저장이 랭크 판 점수도 고치고, 로그인 공지용 점수 읽기(`GetRating`)가 늘었다
 //   ★ 11-04 플랜2 — 대전 기록 읽기(`GetMatchHistory`) · 결과 판정 · 승패 셈은 `MatchHistory.h` 한 곳
 //   ★ 11-04 전적 검색 — 판 저장이 승패 합계도 올린다(점수와 같은 트랜잭션) · 대전 기록 읽기는 합계 + 최근 20줄만
+//   ★ 11-05 플랜1 — 활성 정지 읽기(`GetActiveBans` · 로비가 5초마다 · `BanList.h`)
 //   ★ 11-05 — 답을 낼 때 부르는 깨우기(`SetWake`). 누가 깨어나는지는 저장소가 모른다 — 로비 루프가 꽂는다(`lobby_main.cpp` 머리 주석에 까닭)
 #pragma once
 
@@ -24,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "nox/BanList.h"
 #include "nox/LobbyLink.h"   // ★ 매칭 손보기 1 — `LinkRatingChange`
 #include "nox/MatchHistory.h"
 #include "nox/MatchRecord.h"
@@ -33,7 +35,7 @@ namespace nox::wol {
 
 // ★ 로그인 암호 조각 4 — Login 갈래 걷음 · ★ 레이팅 조각 3 — Rating(로그인 공지에 실을 점수 · 순위)
 //   ★ 11-04 플랜2 — History(대전 기록 창)
-enum class StoreAnswerKind : uint8_t { SaveMatch, Rating, History, kCount };
+enum class StoreAnswerKind : uint8_t { SaveMatch, Rating, History, ActiveBans, kCount };   // ★ 11-05 플랜1 ActiveBans
 // 판 저장 — 못 넣음(Failed)이면 로비는 SAVED 를 안 보낸다(게임 서버가 30초 뒤 다시 · `LobbyClient.h` `kResultResendMs`)
 //   ★ 7단계 조각 7 — Invalid = 저장소 칸에 안 맞는 판(글 길이 · UTF-8 아닌 원문 · 사람 수). 다시 보내도 같으므로 로비는 SAVED bad
 //     (Failed 로 두면 게임 서버가 30초마다 끝없이 다시 보낸다 — MySQL 엄격 모드는 넘는 글을 거절한다)
@@ -74,6 +76,9 @@ struct StoreAnswer {
     bool historyOk = false;
     bool accountFound = false;                 // ★ 11-04 전적 검색 — 그 이름의 계정이 있음(판이 없어도). 없으면 나머지 칸은 판 없는 사람과 같다
     MatchHistory history;
+    // ★ 11-05 플랜1 — ActiveBans. `bansOk` false = 못 읽음(0건과 다르다 — 로비는 앞 목록을 그대로 둔다)
+    bool bansOk = false;
+    std::vector<BanEntry> bans;
 };
 
 class ILobbyStore {
@@ -88,6 +93,8 @@ public:
     // ★ 11-04 플랜2 — 계정 이름의 점수 · 순위 + 승패 합계 + 관전 뺀 최근 판 `kMatchHistoryMaxRows` 개(저장 차례 최신부터 — ★ 11-04 전적 검색 ·
     //   점수 칸을 되짚는 계산 `MatchHistory.cpp` 와 같은 차례. 늦게 다시 보낸 옛 판은 저장한 때의 자리에) → 답 History
     virtual void GetMatchHistory(uint32_t req, const std::string& account) = 0;
+    // ★ 11-05 플랜1 — `now` 에 유효한 정지 전체(이름마다 가장 늦은 끝 시각) → 답 ActiveBans
+    virtual void GetActiveBans(uint32_t req, uint32_t now) = 0;
     virtual void TakeAnswers(std::vector<StoreAnswer>& out) = 0;   // 덧붙인다
     // ★ 11-05 — 답을 `TakeAnswers` 로 꺼낼 수 있게 된 뒤마다 부른다(안 꽂으면 안 부름). 첫 요청 전에 한 번만 꽂는다.
     //   DB 워커는 자기 스레드에서 부르므로 오래 걸리는 일을 넣지 말 것
@@ -100,6 +107,7 @@ public:
     void SaveMatch(uint32_t req, const MatchSource& src, const MatchRecord& rec, const std::string& rawJson) override;
     void GetRating(uint32_t req, const std::string& account) override;
     void GetMatchHistory(uint32_t req, const std::string& account) override;
+    void GetActiveBans(uint32_t req, uint32_t now) override;
     void TakeAnswers(std::vector<StoreAnswer>& out) override;
     void SetWake(std::function<void()> wake) override { wake_ = std::move(wake); }
 
@@ -108,6 +116,8 @@ public:
     void SetFailRatings(bool on) { failRatings_ = on; }   // ★ 레이팅 조각 3 — 점수 읽기 실패 흉내
     void SetHoldRatings(bool on) { holdRatings_ = on; }   // ★ 레이팅 조각 4 — 점수 답을 안 냄(로그인 한도 흉내)
     void SetFailHistory(bool on) { failHistory_ = on; }   // ★ 11-04 플랜2 — 대전 기록 읽기 실패 흉내
+    void SetFailBans(bool on) { failBans_ = on; }         // ★ 11-05 플랜1 — 정지 읽기 실패 흉내
+    void SetActiveBans(std::vector<BanEntry> rows) { bans_ = std::move(rows); }   // ★ 11-05 플랜1 — 테이블 행 흉내(끝 시각 지난 행은 답에 안 실음)
     void AddAccount(const std::string& name) { accounts_.insert(name); }   // ★ 11-04 전적 검색 — 판 없는 계정(시험 · 아래 `accounts_`)
 
     size_t MatchCount() const { return matches_.size(); }
@@ -130,6 +140,8 @@ private:
     bool failRatings_ = false;
     bool holdRatings_ = false;
     bool failHistory_ = false;
+    bool failBans_ = false;
+    std::vector<BanEntry> bans_;
 };
 
 }  // namespace nox::wol

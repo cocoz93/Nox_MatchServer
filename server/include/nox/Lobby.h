@@ -60,6 +60,7 @@
 #include <vector>
 
 #include "nox/Clock.h"
+#include "nox/BanList.h"
 #include "nox/JoinToken.h"
 #include "nox/LobbyStore.h"   // ★ 레이팅 조각 4 — 로그인 공지의 점수를 묻는다
 #include "nox/LoginLine.h"
@@ -143,6 +144,8 @@ public:
     virtual uint64_t ListVersion() const { return 0; }
     // ★ 11-03 — 로그인한 사람의 로비 접속이 끊김(같은 계정이 새 접속으로 이미 옮겼으면 안 부름) — 거울이 게임 서버에 `CLIENT_GONE` 으로 전함
     virtual void OnClientGone(const std::string& /*name*/) {}
+    // ★ 11-05 플랜1 — 정지된 사람을 판에서 내보낸다 — 거울이 게임 서버 전부에 `KICK` 으로 전함(플랜 6절)
+    virtual void KickAccount(const std::string& /*name*/) {}
     // ★ 11-04 플랜1 — 그 사람 DLL 에 넘길 줄(이름 · 줄)을 꺼낸다. 로비는 이름으로 접속을 찾아 보낸다(`ROOMUI`)
     virtual void TakeClientLines(std::vector<std::pair<std::string, std::string>>& /*out*/) {}
 };
@@ -174,8 +177,10 @@ constexpr uint32_t kRankMaxLimit = 31;   // 설정 최대의 위 한도 — 방 
 // 랭크 방 요청이 실패 · 시간 초과로 사람들을 줄 앞에 되돌린 뒤 다시 묻기까지 쉬는 시간. 근거 없는 값 — 게임 서버 다시 붙기 3초 ·
 //   붙는 한도 5초(`NetworkThread.h`)와 어울리게. 안 쉬면 게임 서버가 없을 때 곧바로 실패 → 되돌림 → 다시 물음이 한 바퀴 안에서 돈다
 constexpr uint32_t kRankRetryMs = 5000;
+// ★ 11-05 플랜1 — 활성 정지를 읽는 간격. 운영자가 명령을 치고 확인하는 사람 시간이면 충분(제 판단 · 플랜 6절)
+constexpr uint32_t kBanReadMs = 5000;
 // 랭크 줄에서 빠진 까닭(`LobbyStats::rankLeft` 차례) — 「서버 접속 시도중...」 창 닫힘(DLL) · 목록 다시 받기(LIST) · 접속 끊김
-enum class RankLeave : uint8_t { Dll, List, Closed, kCount };
+enum class RankLeave : uint8_t { Dll, List, Closed, Banned, kCount };   // ★ 11-05 플랜1 Banned — 줄 서기 위반으로 안 셈(플랜 7절)
 constexpr size_t kRankLeaveCount = static_cast<size_t>(RankLeave::kCount);
 const char* RankLeaveName(RankLeave why);
 
@@ -266,6 +271,15 @@ struct LobbyStats {
     unsigned long long loginGuest = 0;       // `apgar None` — 암호 판엔 손님 없음
     unsigned long long loginPlain = 0;       // 평문 암호(DLL 없음 · 판 낮음)
     unsigned long long loginMissing = 0;     // `apgar` 줄 없음
+    unsigned long long loginBanned = 0;      // ★ 11-05 플랜1 — 토큰은 맞는데 정지 목록에 있음(거절 · 이미 받은 로그인 토큰 60초의 틈)
+    // ★ 11-05 플랜1 — 정지 읽기 한 번 = 읽음 · 못 읽음 · 늦은 답 · 끝날 때 기다림 중 하나. 「0건」과 「못 읽음」을 가른다(행 수를 같이 본다)
+    unsigned long long banReads = 0;
+    unsigned long long banReadOk = 0;
+    unsigned long long banReadFailed = 0;
+    unsigned long long banReadLate = 0;
+    unsigned long long banRowsLast = 0;      // 마지막으로 읽은 행 수
+    unsigned long long banEnforced = 0;      // 내보낸 이름(`EnforceBan`)
+    unsigned long long banConnsClosed = 0;   // 그중 로비 접속을 끊은 수
     unsigned long long loginKickedOld = 0;   // 같은 계정 새 접속이 옛 접속을 끊음(정할 것 b)
     unsigned long long chatViewOnly = 0;     // 로그인 안 된 접속의 대화방 입장 — 보기만(이름 안 알림 · ★ 10-28 실패는 거절하므로 USER 전 접속만)
     unsigned long long loginDeadlineClosed = 0;   // `kLoginDeadlineMs` 안에 USER 가 없어 끊음
@@ -327,7 +341,7 @@ struct LobbyStats {
         return n;
     }
     unsigned long long LoginTotal() const {   // USER 로 끝난 로그인 수(위 갈래 합 — 끊음 · 보기만 빼고)
-        unsigned long long n = loginBadName + loginNoAuth + loginReplay + loginFailUnknown + loginGuest + loginPlain + loginMissing;
+        unsigned long long n = loginBadName + loginNoAuth + loginReplay + loginFailUnknown + loginGuest + loginPlain + loginMissing + loginBanned;
         for (const unsigned long long v : loginToken) n += v;
         for (const unsigned long long v : loginFail) n += v;
         return n;
@@ -369,6 +383,9 @@ public:
     void AttachStore(ILobbyStore* store) { store_ = store; }
     // 저장소 답 Rating(소켓 루프가 꺼내 넘긴다) — 끝난 물음이면 버리고 센다
     void OnRatingAnswer(const StoreAnswer& a, std::vector<Out>& out);
+    // ★ 11-05 플랜1 — 저장소 답 ActiveBans. 못 읽으면 앞 목록을 그대로 둔다 · 새로 생긴 이름은 내보낸다
+    void OnBansAnswer(const StoreAnswer& a, std::vector<Out>& out);
+    const CBanList& Bans() const { return banList_; }
     size_t PendingRatings() const { return ratingPending_.size(); }
     // ★ 11-04 전적 검색 — 기록 물음을 넘길 전적 창구(없으면 `NOXRANK RECORD` 는 모르는 줄). 끊기면 창구에 알린다 · 로비보다 오래 살아야 한다
     void AttachRecords(RecordDesk* records) { records_ = records; }
@@ -414,6 +431,8 @@ private:
         uint32_t rankReq = 0;
     };
 
+    // ★ 11-05 플랜1 — ① 랭크 줄에서 뺌(위반으로 안 셈) ② 게임 서버 전부에 내보내기 ③ 로비 접속이 있으면 안내 줄 + 끊기
+    void EnforceBan(const std::string& name, uint32_t until, std::vector<Out>& out);
     void OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<std::string>& t,
                 std::string_view line, std::vector<Out>& out);
     void SendList(int conn, bool withChat, std::vector<Out>& out);
@@ -480,6 +499,13 @@ private:
     std::map<uint64_t, int> accountConn_;         // ★ 조각 4 — 계정 → 로그인된 접속(정할 것 b)
     ILobbyStore* store_ = nullptr;                // ★ 레이팅 조각 4 — 점수를 물을 저장소(없으면 안 물음)
     std::map<uint32_t, int> ratingPending_;       // 점수 요청 번호 → 기다리는 접속
+    // ★ 11-05 플랜1 — 활성 정지. 답이 오기 전엔 더 안 묻는다(DB 가 막힌 동안 일이 쌓이지 않게) · 첫 읽기는 첫 `Tick`(뜬 직후 로그인도 막히게)
+    CBanList banList_;
+    uint32_t banReq_ = 0;
+    bool banAsking_ = false;
+    bool banAsked_ = false;
+    bool banReadFailing_ = false;   // 못 읽음 기록을 바뀔 때만 남기려고
+    uint32_t banDueMs_ = 0;
     RecordDesk* records_ = nullptr;               // ★ 11-04 전적 검색 — 전적 창구(`RecordDesk.h`)
     std::map<std::string, int32_t> ratingOf_;     // ★ 매칭 손보기 5 — 계정 이름 → 점수(`RatingOf`)
     uint32_t nextRatingReq_ = 1;

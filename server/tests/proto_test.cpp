@@ -26982,6 +26982,94 @@ void TestMatchHeadcount() {
                       none, hit, before, (int)at4s, game.inGameCount(), game.lobbyGoneShortened());
         Check(none == 0 && hit == 1 && before == 3 && at4s && game.inGameCount() == 2 && game.lobbyGoneShortened() == 1, m);
     }
+    // ★ 11-05 플랜1 ⑤ 계정 정지 — 로비 줄 `KICK` → `CLobbyClient` → `CRoomManager::KickAccount` → `Server::KickPlayer`
+    //   그 이름만 바로 나감 · 그 사람에게 `0xC5` 한 번 + 그 뒤 `0xC7` 한 번(정품은 `0xC5` 만으론 판에 남는다) · 남은 사람은 판 그대로 · 없는 이름 · 빈 이름 0 · 대조군 = 다른 방의 같은 번호 자리 그대로
+    {
+        Setup s, other;
+        make(s, 5, 3);
+        make(other, 6, 3);
+        nox::CRoomManager& rooms = s.srv.Rooms();
+        nox::Server& game = rooms.Game(s.r);
+        nox::CLobbyClient::Config lcfg;
+        for (size_t i = 0; i < lcfg.tokenKey.size(); ++i) lcfg.tokenKey[i] = static_cast<uint8_t>(i + 1);
+        nox::CLobbyClient lc(rooms, lcfg);
+        lc.SetClock([] { return 1000u; });
+        std::vector<nox::NetworkRequest> rq;
+        nox::NetworkEvent e;
+        e.lobbyConn = 7;
+        e.type = nox::NetworkEvent::Type::LOBBY_OPENED;
+        lc.OnNetworkEvent(e, rq);
+        e.type = nox::NetworkEvent::Type::LOBBY_LINE;
+        e.lobbyLine = nox::LinkKick("nobody");
+        lc.OnNetworkEvent(e, rq);
+        const bool nobodyQuiet = lc.Stats().kickIn == 1 && lc.Stats().kickedSessions == 0 && game.lobbyKicks() == 0;
+        const size_t blank = rooms.KickAccount("");
+        const size_t before = game.inGameCount();
+        std::vector<nox::OutPacket> o5;
+        e.lobbyLine = nox::LinkKick("p2");
+        lc.OnNetworkEvent(e, rq);
+        const size_t right = game.inGameCount();   // 틱을 기다리지 않는다
+        for (int k = 0; k < 3; ++k) { s.now += 34; s.srv.Tick(s.now, o5); }
+        const auto kickTo = [&](const std::string& who) {
+            size_t n = 0;
+            for (const auto& x : FlattenTo(o5, who))
+                if (x.size() == 1 && x[0] == static_cast<uint8_t>(nox::Op::KICK_NOTIFICATION)) ++n;
+            return n;
+        };
+        // 차례까지 — 한 조각에 실려도 메시지 머리만 읽어 고른다(`c7` 이 앞서면 클라가 `c5` 표시를 못 하고 나갈 수 있다)
+        const auto quitTo = [&](const std::string& who) {
+            size_t n = 0;
+            for (const auto& x : FlattenTo(o5, who))
+                if (x.size() == 1 && x[0] == static_cast<uint8_t>(nox::Op::SERVER_QUIT)) ++n;
+            return n;
+        };
+        const auto kickThenQuit = [&](const std::string& who) {
+            int kickAt = -1, quitAt = -1, i = 0;
+            for (const auto& x : FlattenTo(o5, who)) {
+                if (x.size() == 1 && x[0] == static_cast<uint8_t>(nox::Op::KICK_NOTIFICATION)) kickAt = i;
+                if (x.size() == 1 && x[0] == static_cast<uint8_t>(nox::Op::SERVER_QUIT)) quitAt = i;
+                ++i;
+            }
+            return kickAt >= 0 && quitAt > kickAt;
+        };
+        std::snprintf(m, sizeof(m), "⑤ 정지 — 0xC7 p2 %zu · p1 %zu · p3 %zu · 0xC5 다음 %d", quitTo(s.addr[1]), quitTo(s.addr[0]), quitTo(s.addr[2]), (int)kickThenQuit(s.addr[1]));
+        Check(quitTo(s.addr[1]) == 1 && quitTo(s.addr[0]) == 0 && quitTo(s.addr[2]) == 0 && kickThenQuit(s.addr[1]), m);
+        size_t members = 0;
+        for (const nox::RoomMember& mem : rooms.Room(s.r).Members()) members += mem.account == "p2" ? 100 : 1;
+        std::snprintf(m, sizeof(m), "⑤ 정지 — 없는 이름 조용 %d · 빈 이름 %zu · 게임 안 %zu → %zu · 0xC5 p2 %zu · p1 %zu · p3 %zu · 셈 %llu/%llu · 명단 %zu · 방 %s",
+                      (int)nobodyQuiet, blank, before, right, kickTo(s.addr[1]), kickTo(s.addr[0]), kickTo(s.addr[2]), lc.Stats().kickIn, lc.Stats().kickedSessions, members,
+                      nox::RoomPhaseName(rooms.Room(s.r).Phase()));
+        Check(nobodyQuiet && blank == 0 && before == 3 && right == 2 && kickTo(s.addr[1]) == 1 && kickTo(s.addr[0]) == 0 && kickTo(s.addr[2]) == 0 && lc.Stats().kickIn == 2 &&
+                  lc.Stats().kickedSessions == 1 && game.lobbyKicks() == 1 && members == 2 && rooms.Room(s.r).Phase() == nox::RoomPhase::Playing && game.inGameCount() == 2, m);
+        // 대조군 — 투표 강퇴는 `0xC5` 만(이 길의 내보내기를 안 바꿈)
+        {
+            int64_t p1Session = -1;
+            for (const nox::RoomMember& mem : rooms.Room(s.r).Members()) if (mem.account == "p1") p1Session = mem.sessionId;
+            o5.clear();
+            game.DebugKickPlayer(p1Session);
+            for (int k = 0; k < 3; ++k) { s.now += 34; s.srv.Tick(s.now, o5); }
+            std::snprintf(m, sizeof(m), "⑤ 대조군 투표 강퇴 — 0xC5 %zu · 0xC7 %zu · 셈 %llu", kickTo(s.addr[0]), quitTo(s.addr[0]), game.lobbyKicks());
+            Check(kickTo(s.addr[0]) == 1 && quitTo(s.addr[0]) == 0 && game.lobbyKicks() == 1, m);
+        }
+        // 여러 방 — 이름이 들어 있는 방을 모두 찾는다(이 시험은 방마다 p1 · p2 · p3 — 실물은 한 사람이 한 방)
+        nox::CRoomManager& rooms2 = other.srv.Rooms();
+        const int r2b = MakeLobbyLikeRoom(rooms2, cat, "so_lod", "estate");
+        std::vector<nox::OutPacket> t2;
+        other.now += 34; other.srv.Tick(other.now, t2);
+        const std::string ip = "10.44.7.1";
+        const auto tail = TrailerAs("solo", r2b, ip, 4471ull);
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        other.srv.OnPacket(ip + ":1", tj.data(), tj.size(), t2);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        other.srv.OnPacket(ip + ":2", cn.data(), cn.size(), t2);
+        const auto ac = AcceptPkt("Jack");
+        other.srv.OnPacket(ip + ":2", ac.data(), ac.size(), t2);
+        other.now += 34; other.srv.Tick(other.now, t2);
+        const size_t firstRoomBefore = rooms2.Game(other.r).inGameCount(), secondBefore = rooms2.Game(r2b).inGameCount();
+        const size_t hit2 = rooms2.KickAccount("solo");
+        std::snprintf(m, sizeof(m), "⑤ 둘째 방의 이름 — 내보냄 %zu · 첫 방 %zu → %zu · 둘째 방 %zu → %zu", hit2, firstRoomBefore, rooms2.Game(other.r).inGameCount(), secondBefore, rooms2.Game(r2b).inGameCount());
+        Check(hit2 == 1 && firstRoomBefore == 3 && rooms2.Game(other.r).inGameCount() == 3 && secondBefore == 1 && rooms2.Game(r2b).inGameCount() == 0, m);
+    }
     std::printf("  10-16 결함 ④ — 판 중 한 명만 남으면 대기 맵으로(둘 남으면 그대로 · 판 끝 쉬는 중이면 다시 열기에 맡김 · ★ 11-03 판 끝처럼 닫고 쉬는 시간 뒤)\n");
 }
 

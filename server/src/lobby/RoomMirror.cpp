@@ -186,6 +186,7 @@ void RoomMirror::OnLinkLine(int conn, std::string_view line, std::vector<Out>& o
         case LinkKind::Bye:
         case LinkKind::Saved:
         case LinkKind::ClientGone:
+        case LinkKind::Kick:
         case LinkKind::kCount:
             break;
     }
@@ -323,6 +324,15 @@ void RoomMirror::OnClientGone(const std::string& name) {
         if (kv.second.stage != Stage::Registered) continue;
         ++stats_.clientGoneSent;
         pendingOut_.push_back({kv.first, LinkClientGone(name)});
+    }
+}
+
+// ★ 11-05 플랜1 — 받는 쪽이 그 이름이 있는 방만 처리한다(`CRoomManager::KickAccount`)
+void RoomMirror::KickAccount(const std::string& name) {
+    for (const auto& kv : servers_) {
+        if (kv.second.stage != Stage::Registered) continue;
+        ++stats_.kickSent;
+        pendingOut_.push_back({kv.first, LinkKick(name)});
     }
 }
 
